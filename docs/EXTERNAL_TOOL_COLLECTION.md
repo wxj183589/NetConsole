@@ -4,7 +4,7 @@
 
 “工具集”是 Electron Desktop 的本机第三方 Windows 工具启动器，Feature key 为 `web.tool_collection`，路由为 `/tools`。它记录用户主动选择的 `.exe`，支持分类、收藏、常用排序、路径状态、程序图标、编辑、重新定位、启动权限和资源管理器定位。
 
-工具程序不复制到 NetConsole 安装目录，也不进入 Python Backend、局点数据库、数据根、局点切换、`.ncsite` 或 `.ncresult`。iperf3 与 fping 是流量测试、高频 Ping、Agent 或本机任务使用的业务依赖，继续由“系统设置 → 网络测试组件”维护且不自动加入工具集。SecureCRT、Xshell 与 PuTTY 的用户可见配置入口位于“工具集 → 外部终端”；工具集默认预置这三张 `system_setting` 引用卡片，启动和定位时实时读取外部终端配置，不复制路径。路径为空时卡片保留但不可启动，预置卡片不可删除。
+工具程序不复制到 NetConsole 安装目录，也不进入 Python Backend、局点数据库、数据根、局点切换、`.ncsite` 或 `.ncresult`。网络测试组件 iperf3 与 fping 由“工具集 → 网络测试组件”统一维护，支持内置组件优先和显式自定义回退，不自动登记为第三方 EXE。SecureCRT、Xshell 与 PuTTY 的用户可见配置入口位于“工具集 → 外部终端”；工具集默认预置这三张 `system_setting` 引用卡片，启动和定位时实时读取外部终端配置，不复制路径。第三方 EXE 管理页仍保留 `/tools` 隐藏兼容路由和已有链接，主导航使用工具集子菜单。
 
 IPOP 是工具集中的普通独立工具。首次读取 schema v2 Store 时，Main 从兼容保留的旧 `ipop_path` 尝试一次迁移：空路径直接记录完成；有效 `IPOP.EXE` 在按规范化路径去重后加入“网络工具”并收藏；已存在相同路径只记录完成；无效路径或写入失败保持迁移可重试且不清除旧设置。新版系统设置 UI 和 Renderer Bridge 不再暴露 IPOP 选择或 `launch_ipop`，Python 字段与后端动作仅保留一个版本的兼容读取。
 

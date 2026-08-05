@@ -27,6 +27,28 @@ export interface SystemSettingsSnapshot {
   language_status: 'BLOCKED_ON_GLOBAL_I18N'
 }
 
+export type NetworkComponentName = 'iperf3' | 'fping'
+export type NetworkComponentMode = 'builtin' | 'custom'
+export type NetworkComponentSource = 'builtin' | 'custom'
+
+export interface NetworkComponentStatus {
+  component_name: NetworkComponentName
+  mode: NetworkComponentMode
+  source: NetworkComponentSource
+  configured_path: string
+  effective_path: string
+  available: boolean
+  file_exists: boolean
+  fallback_used: boolean
+  fallback_reason: string
+  validation_message: string
+}
+
+export interface NetworkComponentsSnapshot {
+  version: string
+  components: NetworkComponentStatus[]
+}
+
 export interface FeatureSetting {
   feature_id: string
   title: string

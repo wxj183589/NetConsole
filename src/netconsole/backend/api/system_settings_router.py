@@ -10,6 +10,7 @@ from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.core.settings import SettingsConflictError, SettingsFileInvalidError, SettingsStore
 from netconsole.models.api.system_settings import (
     FeatureSettingsSnapshotDTO, FeatureSettingsUpdateDTO, SystemSettingsSaveDTO,
+    NetworkComponentsSnapshotDTO, NetworkComponentUpdateDTO,
     SystemSettingsSnapshotDTO, RuntimeSelfCheckSnapshotDTO,
 )
 from netconsole.services.external_tool_service import launch_ipop
@@ -56,6 +57,12 @@ def _feature_switch(request: Request) -> None:
     raise HTTPException(status_code=404, detail="功能未启用")
 
 
+def _network_components(request: Request) -> None:
+    if request.app.state.feature_gate.is_enabled("web.network_test_components"):
+        return
+    raise HTTPException(status_code=404, detail="功能未启用")
+
+
 def _service(request: Request) -> SettingsApplicationService:
     return request.app.state.settings_application_service
 
@@ -77,6 +84,28 @@ def save_settings(request: Request, payload: SystemSettingsSaveDTO) -> SystemSet
 @router.post("/reload", response_model=SystemSettingsSnapshotDTO, dependencies=[Depends(_desktop)])
 def reload_settings(request: Request) -> SystemSettingsSnapshotDTO:
     return _call(_service(request).reload)
+
+
+@router.get(
+    "/network-components",
+    response_model=NetworkComponentsSnapshotDTO,
+    dependencies=[Depends(_desktop), Depends(_network_components)],
+)
+def get_network_components(request: Request) -> NetworkComponentsSnapshotDTO:
+    return _call(_service(request).network_components)
+
+
+@router.put(
+    "/network-components/{component_name}",
+    response_model=NetworkComponentsSnapshotDTO,
+    dependencies=[Depends(_desktop), Depends(_network_components)],
+)
+def save_network_component(
+    component_name: Literal["iperf3", "fping"],
+    payload: NetworkComponentUpdateDTO,
+    request: Request,
+) -> NetworkComponentsSnapshotDTO:
+    return _call(lambda: _service(request).save_network_component(component_name, payload))
 
 
 @router.get(

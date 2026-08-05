@@ -27,9 +27,11 @@ from netconsole.core.paths import PathResolver
 from netconsole.core.settings import DEFAULT_SETTINGS, SettingsStore
 from netconsole.models.api.system_settings import (
     FeatureSettingsSnapshotDTO, FeatureSettingsUpdateDTO, FeatureStateDTO,
+    NetworkComponentStatusDTO, NetworkComponentsSnapshotDTO, NetworkComponentUpdateDTO,
     SystemSettingsSaveDTO, SystemSettingsSnapshotDTO, SystemSettingsValuesDTO,
 )
 from netconsole.services.settings_tool_validation import validate_settings_tool_path
+from netconsole.services.tool_path_resolver import resolve_network_tool
 
 
 _TERMINAL_KEYS = {
@@ -37,9 +39,12 @@ _TERMINAL_KEYS = {
     "securecrt": "external_terminal/securecrt_path",
     "xshell": "external_terminal/xshell_path",
 }
-_TOOL_FIELDS = {
-    "iperf3": "iperf_path", "fping": "fping_path",
+_TERMINAL_FIELDS = {
     "putty": "putty", "securecrt": "securecrt", "xshell": "xshell",
+}
+_NETWORK_COMPONENT_KEYS = {
+    "iperf3": ("network_tools/iperf_path", "network_components/iperf3_mode", "iperf_path"),
+    "fping": ("online_mr.fping_path", "network_components/fping_mode", "fping_path"),
 }
 _INTERNAL_TITLE_KEY = re.compile(r"^[a-z][a-z0-9_-]*(?:\.[a-z0-9_-]+)+$")
 
@@ -74,8 +79,6 @@ class SettingsApplicationService:
             updates = {
                 "theme": values["theme"], "language": values["language"],
                 "theme_color": values["theme_color"],
-                "network_tools/iperf_path": values["iperf_path"],
-                "online_mr.fping_path": values["fping_path"],
                 "external_tools/ipop_path": values["ipop_path"],
                 "external_terminal/type": values["terminal_type"],
                 "external_terminal/securecrt_sessions_root": values["securecrt_sessions_root"],
@@ -84,6 +87,7 @@ class SettingsApplicationService:
                 "external_terminal/crt_encoding": values["crt_encoding"],
                 **{key: terminal_paths[name] for name, key in _TERMINAL_KEYS.items()},
             }
+            updates.update(self._legacy_component_updates(payload, self._settings))
             self._settings.update_explicit(updates, expected_version=payload.expected_version)
             return self._snapshot()
 
@@ -91,6 +95,34 @@ class SettingsApplicationService:
         with self._lock:
             self._settings = SettingsStore(self.paths)
             return self._snapshot()
+
+    def network_components(self) -> NetworkComponentsSnapshotDTO:
+        with self._lock:
+            self._settings = SettingsStore(self.paths)
+            return self._network_components_snapshot(self._settings)
+
+    def save_network_component(
+        self,
+        component_name: str,
+        payload: NetworkComponentUpdateDTO,
+    ) -> NetworkComponentsSnapshotDTO:
+        if component_name not in _NETWORK_COMPONENT_KEYS:
+            raise ValueError("不支持的网络测试组件")
+        with self._lock:
+            self._settings = SettingsStore(self.paths)
+            path_key, mode_key, _field = _NETWORK_COMPONENT_KEYS[component_name]
+            custom_path = payload.custom_path.strip()
+            if payload.mode == "custom":
+                if not custom_path:
+                    raise ValueError("选择自定义组件时必须提供可执行文件")
+                custom_path = str(validate_settings_tool_path(component_name, custom_path))
+            else:
+                custom_path = ""
+            self._settings.update_explicit(
+                {path_key: custom_path, mode_key: payload.mode},
+                expected_version=payload.expected_version,
+            )
+            return self._network_components_snapshot(self._settings)
 
     def feature_settings(self) -> FeatureSettingsSnapshotDTO:
         return self._feature_snapshot()
@@ -156,11 +188,32 @@ class SettingsApplicationService:
             crt_encoding=str(source["external_terminal/crt_encoding"]),
         )
 
+    def _network_components_snapshot(self, store: SettingsStore) -> NetworkComponentsSnapshotDTO:
+        components: list[NetworkComponentStatusDTO] = []
+        for component_name in ("iperf3", "fping"):
+            resolution = resolve_network_tool(component_name, self.paths, settings=store)
+            effective_path = resolution.effective_path
+            components.append(
+                NetworkComponentStatusDTO(
+                    component_name=component_name,
+                    mode=resolution.mode,
+                    source=resolution.source,
+                    configured_path=resolution.configured_path,
+                    effective_path=str(effective_path or ""),
+                    available=resolution.available,
+                    file_exists=bool(effective_path and effective_path.is_file()),
+                    fallback_used=resolution.fallback_used,
+                    fallback_reason=resolution.fallback_reason,
+                    validation_message=resolution.validation_message,
+                )
+            )
+        return NetworkComponentsSnapshotDTO(version=store.version, components=components)
+
     def _validate_paths(self, payload: SystemSettingsSaveDTO) -> None:
         values = payload.model_dump()
         terminal_paths = values["terminal_paths"]
-        for tool_id, field in _TOOL_FIELDS.items():
-            value = terminal_paths[field] if tool_id in _TERMINAL_KEYS else values[field]
+        for tool_id, field in _TERMINAL_FIELDS.items():
+            value = terminal_paths[field]
             if value:
                 validate_settings_tool_path(tool_id, value)
         root = payload.securecrt_sessions_root
@@ -168,6 +221,24 @@ class SettingsApplicationService:
             path = Path(root)
             if not path.is_absolute() or not path.is_dir() or path.is_symlink():
                 raise ValueError("SecureCRT 会话根目录必须是已存在的绝对目录")
+
+    @staticmethod
+    def _legacy_component_updates(
+        payload: SystemSettingsSaveDTO,
+        store: SettingsStore,
+    ) -> dict[str, object]:
+        updates: dict[str, object] = {}
+        for component_name, (path_key, mode_key, field) in _NETWORK_COMPONENT_KEYS.items():
+            requested = str(getattr(payload, field) or "").strip()
+            current = str(store.get_value(path_key, "") or "").strip()
+            if requested == current:
+                continue
+            if requested:
+                requested = str(validate_settings_tool_path(component_name, requested))
+                updates.update({path_key: requested, mode_key: "custom"})
+            else:
+                updates.update({path_key: "", mode_key: "builtin"})
+        return updates
 
     def _customer_profile_path(self) -> Path:
         return profiles_dir(self.paths.app_root) / "customer.json"

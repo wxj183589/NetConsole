@@ -35,7 +35,16 @@ describe('Web route ownership', () => {
     expect((monitorRedirect as (to: { query: Record<string, string> }) => object)({ query: {} })).toEqual({ name: 'rail-train-online', query: {} })
     expect(routes.find((route) => route.path === 'rail-transit/car-network-diagnostic')?.redirect).toEqual({ name: 'train-communication' })
     expect(routes.find((route) => route.path === 'rail-transit/train-communication')?.meta?.title).toBe('轨道交通 / 车内通信检测')
-    expect(routes.find((route) => route.path === 'network-tools/overview')?.redirect).toEqual({ name: 'network-tools-toolbox' })
+    expect(routes.find((route) => route.path === 'network-tools/overview')?.redirect).toEqual({ name: 'tools-connectivity' })
+    const trafficRedirect = routes.find((route) => route.path === 'network-tools/traffic')?.redirect
+    const toolboxRedirect = routes.find((route) => route.path === 'network-tools/toolbox')?.redirect
+    const wirelessRedirect = routes.find((route) => route.path === 'network-tools/wireless-scan')?.redirect
+    expect(typeof trafficRedirect).toBe('function')
+    expect(typeof toolboxRedirect).toBe('function')
+    expect(typeof wirelessRedirect).toBe('function')
+    expect((trafficRedirect as (to: { query: Record<string, string>; hash: string }) => object)({ query: { run: '1' }, hash: '#top' })).toEqual({ name: 'tools-traffic', query: { run: '1' }, hash: '#top' })
+    expect((toolboxRedirect as (to: { query: Record<string, string>; hash: string }) => object)({ query: {}, hash: '' })).toEqual({ name: 'tools-connectivity', query: {}, hash: '' })
+    expect((wirelessRedirect as (to: { query: Record<string, string>; hash: string }) => object)({ query: {}, hash: '' })).toEqual({ name: 'tools-wireless-scan', query: {}, hash: '' })
     expect(routes.find((route) => route.path === 'rail-transit/trackside-ap-plan')?.redirect).toEqual({
       name: 'rail-transit-base-data', query: { tab: 'trackside-ap-planning' },
     })
@@ -66,6 +75,13 @@ describe('Web route ownership', () => {
       moduleId: 'tools',
       desktopOnly: true,
     })
+  })
+
+  it('registers the consolidated toolbox routes', () => {
+    expect(routes.find((route) => route.name === 'tools-traffic')?.path).toBe('tools/traffic')
+    expect(routes.find((route) => route.name === 'tools-connectivity')?.path).toBe('tools/connectivity')
+    expect(routes.find((route) => route.name === 'tools-wireless-scan')?.path).toBe('tools/wireless-scan')
+    expect(routes.find((route) => route.name === 'tools-network-components')?.path).toBe('tools/network-components')
   })
 
   it('does not register excluded or unfinished routes', () => {

@@ -8,6 +8,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -201,7 +202,10 @@ def test_local_iperf_client_reuses_runner_store_and_persists_samples(tmp_path: P
     context, progress = _context(paths, run, TASK_IPERF_CLIENT, config.as_dict())
     tool = tmp_path / "iperf3.exe"
     tool.write_bytes(b"fake")
-    monkeypatch.setattr("netconsole.services.traffic.local_adapter.find_iperf_tool", lambda _paths: tool)
+    monkeypatch.setattr(
+        "netconsole.services.traffic.local_adapter.resolve_network_tool",
+        lambda *_args, **_kwargs: SimpleNamespace(effective_path=tool, source="custom", validation_message="", fallback_used=False),
+    )
     monkeypatch.setattr(
         "netconsole.services.traffic.local_adapter.run_iperf_client_preflight",
         lambda *_args, **_kwargs: IperfPreflightResult(True, message="ok"),
@@ -270,7 +274,10 @@ def test_local_iperf_nonzero_status_fails_instead_of_returning_success(tmp_path:
     context, _progress = _context(paths, run, TASK_IPERF_SERVER, {"port": 5201})
     tool = tmp_path / "iperf3.exe"
     tool.write_bytes(b"fake")
-    monkeypatch.setattr("netconsole.services.traffic.local_adapter.find_iperf_tool", lambda _paths: tool)
+    monkeypatch.setattr(
+        "netconsole.services.traffic.local_adapter.resolve_network_tool",
+        lambda *_args, **_kwargs: SimpleNamespace(effective_path=tool, source="custom", validation_message="", fallback_used=False),
+    )
 
     class FailedRunner:
         def __init__(self, *_args, **_kwargs) -> None:
@@ -311,6 +318,12 @@ def test_local_fping_runs_all_targets_batches_samples_and_keeps_timeout_null(tmp
         config=config.to_dict(),
     )
     context, progress = _context(paths, run, TASK_FPING, config.to_dict())
+    fping_tool = tmp_path / "fping.exe"
+    fping_tool.write_bytes(b"fake")
+    monkeypatch.setattr(
+        "netconsole.services.traffic.local_adapter.resolve_network_tool",
+        lambda *_args, **_kwargs: SimpleNamespace(effective_path=fping_tool, source="custom", validation_message="", fallback_used=False),
+    )
     monkeypatch.setattr(
         "netconsole.services.traffic.local_adapter.check_fping_v5_available",
         lambda **_kwargs: FpingV5CheckResult(True, "fping.exe", "fping 5.5", True, ""),
@@ -404,6 +417,12 @@ def test_local_fping_without_effective_samples_fails_parse(tmp_path: Path, monke
         config=config.to_dict(),
     )
     context, _progress = _context(paths, run, TASK_FPING, config.to_dict())
+    fping_tool = tmp_path / "fping.exe"
+    fping_tool.write_bytes(b"fake")
+    monkeypatch.setattr(
+        "netconsole.services.traffic.local_adapter.resolve_network_tool",
+        lambda *_args, **_kwargs: SimpleNamespace(effective_path=fping_tool, source="custom", validation_message="", fallback_used=False),
+    )
     monkeypatch.setattr(
         "netconsole.services.traffic.local_adapter.check_fping_v5_available",
         lambda **_kwargs: FpingV5CheckResult(True, "fping.exe", "fping 5.5", True, ""),

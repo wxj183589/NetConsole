@@ -19,7 +19,6 @@ describe('Web navigation registry', () => {
       'AC 管理',
       '轨道交通',
       '设备文件下载',
-      '网络工具',
       '工具集',
       '任务中心',
       'Agent 管理',
@@ -29,7 +28,7 @@ describe('Web navigation registry', () => {
     ])
   })
 
-  it('keeps AC, rail transit, and network tools ownership stable', () => {
+  it('keeps AC, rail transit, and toolbox ownership stable', () => {
     const flat = flattenNavigation()
     const parent = (id: string) => flat.find((item) => item.navigation_id === id)?.parent_id
 
@@ -37,8 +36,10 @@ describe('Web navigation registry', () => {
     expect(parent('rail.online-mr')).toBe('rail')
     expect(parent('rail.online-mr-analysis')).toBe('rail')
     expect(parent('rail.ground-unattended')).toBe('rail')
-    expect(parent('network.traffic')).toBe('network')
-    expect(parent('network.wireless-scan')).toBe('network')
+    expect(parent('tools.traffic')).toBe('tools')
+    expect(parent('tools.wireless-scan')).toBe('tools')
+    expect(parent('tools.network-components')).toBe('tools')
+    expect(flat.some((item) => item.navigation_id === 'network')).toBe(false)
     expect(flat.some((item) => /snmp|wifi-survey/.test(item.navigation_id))).toBe(false)
   })
 
@@ -57,28 +58,25 @@ describe('Web navigation registry', () => {
     expect(flattenNavigation().some((item) => item.navigation_id === 'config')).toBe(false)
     expect(flattenNavigation().some((item) => item.navigation_id === 'rail.car-network-diagnostic')).toBe(false)
     expect(flattenNavigation().some((item) => item.navigation_id === 'rail.trackside-ap-plan')).toBe(false)
-    expect(navigationRegistry.find((item) => item.navigation_id === 'network')?.children.map((item) => item.title)).toEqual([
-      '流量测试', '小工具与连通性检测', '无线扫描',
+    expect(navigationRegistry.find((item) => item.navigation_id === 'tools')?.children.map((item) => item.navigation_id)).toEqual([
+      'tools.traffic', 'tools.connectivity', 'tools.wireless-scan', 'tools.network-components',
     ])
     const visible = flattenNavigation(visibleNavigation(() => true))
     expect(visible.every((item) => item.children.length > 0 || Boolean(item.route_name && item.route_path))).toBe(true)
-    expect(visible.some((item) => item.navigation_id === 'network.wireless-scan')).toBe(true)
+    expect(visible.some((item) => item.navigation_id === 'tools.wireless-scan')).toBe(true)
     expect(visible.some((item) => item.navigation_id === 'command-reference')).toBe(false)
   })
 
-  it('shows the desktop-only tool collection in Electron between network tools and tasks', () => {
+  it('shows the toolbox group between files and tasks in Electron', () => {
     const previous = window.netconsoleDesktop
     Object.defineProperty(window, 'netconsoleDesktop', { configurable: true, value: {} })
     const visible = visibleNavigation(() => true)
     const ids = visible.map((entry) => entry.navigation_id)
-    expect(ids.slice(ids.indexOf('network'), ids.indexOf('tasks') + 1)).toEqual(['network', 'tools', 'tasks'])
+    expect(ids.slice(ids.indexOf('files'), ids.indexOf('tasks') + 1)).toEqual(['files', 'tools', 'tasks'])
     const tools = visible.find((entry) => entry.navigation_id === 'tools')
-    expect(tools).toMatchObject({
-      route_name: 'tool-collection',
-      route_path: '/tools',
-      feature_id: 'web.tool_collection',
-      desktop_only: true,
-    })
+    expect(tools?.children.map((item) => item.route_path)).toEqual([
+      '/tools/traffic', '/tools/connectivity', '/tools/wireless-scan', '/tools/network-components',
+    ])
     if (previous === undefined) Reflect.deleteProperty(window, 'netconsoleDesktop')
     else Object.defineProperty(window, 'netconsoleDesktop', { configurable: true, value: previous })
   })

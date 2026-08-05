@@ -11,6 +11,9 @@ Theme = Literal["light", "dark", "auto"]
 Language = Literal["zh_CN", "en_US"]
 ThemeColor = Literal["#0078D4", "#2563EB", "#0891B2", "#16A34A"]
 TerminalType = Literal["putty", "securecrt", "xshell"]
+NetworkComponentName = Literal["iperf3", "fping"]
+NetworkComponentMode = Literal["builtin", "custom"]
+NetworkComponentSource = Literal["builtin", "custom"]
 
 
 class TerminalPathsDTO(ApiModel):
@@ -55,6 +58,35 @@ class SystemSettingsSnapshotDTO(ApiModel):
     current_site_name: str
     current_site_path: str
     language_status: Literal["BLOCKED_ON_GLOBAL_I18N"] = "BLOCKED_ON_GLOBAL_I18N"
+
+
+class NetworkComponentStatusDTO(ApiModel):
+    component_name: NetworkComponentName
+    mode: NetworkComponentMode
+    source: NetworkComponentSource
+    configured_path: str
+    effective_path: str
+    available: bool
+    file_exists: bool
+    fallback_used: bool
+    fallback_reason: str
+    validation_message: str
+
+
+class NetworkComponentsSnapshotDTO(ApiModel):
+    version: str
+    components: list[NetworkComponentStatusDTO]
+
+
+class NetworkComponentUpdateDTO(ApiModel):
+    mode: NetworkComponentMode
+    custom_path: str = Field(default="", max_length=32_767)
+    expected_version: str = Field(min_length=7, max_length=64)
+
+    @field_validator("custom_path")
+    @classmethod
+    def validate_custom_path(cls, value: str) -> str:
+        return _path_text(value)
 
 
 class FeatureStateDTO(ApiModel):
@@ -121,6 +153,7 @@ def _path_text(value: str) -> str:
 
 __all__ = [
     "FeatureSettingsSnapshotDTO", "FeatureSettingsUpdateDTO", "FeatureStateDTO", "FeatureStateUpdateDTO",
+    "NetworkComponentStatusDTO", "NetworkComponentsSnapshotDTO", "NetworkComponentUpdateDTO",
     "RuntimeSelfCheckItemDTO", "RuntimeSelfCheckSnapshotDTO",
     "SystemSettingsSaveDTO", "SystemSettingsSnapshotDTO", "SystemSettingsValuesDTO",
 ]

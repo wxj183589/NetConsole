@@ -17,7 +17,7 @@ from netconsole.models.api.system_settings import (
     RuntimeSelfCheckItemDTO,
     RuntimeSelfCheckSnapshotDTO,
 )
-from netconsole.services.tool_path_resolver import resolve_tool_path
+from netconsole.services.tool_path_resolver import resolve_network_tool
 
 
 _UNICODE_SAMPLE = "宁波地铁1号线 · 中文设备 · 任务已完成"
@@ -275,15 +275,18 @@ class RuntimeSelfCheckService:
         )
 
     def _tool(self, tool_id: str, title: str) -> RuntimeSelfCheckItemDTO:
-        path = resolve_tool_path(tool_id, self.paths, settings=SettingsStore(self.paths))
+        resolution = resolve_network_tool(tool_id, self.paths, settings=SettingsStore(self.paths))
+        path = resolution.effective_path
         if path is not None and path.is_file():
-            return _item(f"tool_{tool_id}", title, "normal", f"{title} 工具可用。")
+            status = "warning" if resolution.fallback_used else "normal"
+            message = resolution.fallback_reason or f"{title} {resolution.source} 组件可用。"
+            return _item(f"tool_{tool_id}", title, status, message)
         return _item(
             f"tool_{tool_id}",
             title,
             "warning",
-            f"{title} 工具未找到。",
-            "在系统设置中选择工具，或重新安装包含工具资源的正式包。",
+            resolution.validation_message,
+            "在工具集的网络测试组件页面恢复内置组件，或选择有效的自定义组件。",
         )
 
     @staticmethod
