@@ -93,8 +93,11 @@ export function useExternalTerminalLauncher() {
   }
 
   async function requestFitApTerminal(target: FitApTerminalTarget): Promise<AcExternalTerminalAction | null> {
-    const normalized = normalizeFitApTarget(target)
-    if (!normalized || busy.value) return null
+    const normalized = {
+      acId: String(target.acId || '').trim(),
+      apId: String(target.apId || '').trim(),
+    }
+    if (!normalized.acId || !normalized.apId || busy.value) return null
     busy.value = true
     fitApTarget.value = normalized
     try {
@@ -192,12 +195,6 @@ export function useExternalTerminalLauncher() {
 
 function uniqueValues(values: string[]): string[] {
   return [...new Set(values.map((value) => String(value || '').trim()).filter(Boolean))]
-}
-
-function normalizeFitApTarget(target: FitApTerminalTarget): FitApTerminalTarget | null {
-  const acId = String(target.acId || '').trim()
-  const apId = String(target.apId || '').trim()
-  return acId && apId ? { acId, apId } : null
 }
 
 function chooseTerminalType(
