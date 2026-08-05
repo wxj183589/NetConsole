@@ -148,6 +148,7 @@ class _RunningLocalProcess:
     cancel_scheduled: bool = False
     protocol_fatal_scheduled: bool = False
     finalized: bool = False
+    terminalizing: bool = False
     process_tree_closed: bool = False
     forced: bool = False
 
@@ -281,7 +282,7 @@ class LocalProcessAdapter:
 
         with self._state_lock:
             state = self._states.get(str(job_id or ""))
-            if state is None or state.done.is_set():
+            if state is None or state.done.is_set() or state.terminalizing:
                 return False
             if state.cancel_scheduled:
                 return True
@@ -301,11 +302,19 @@ class LocalProcessAdapter:
     def is_running(self, job_id: str) -> bool:
         with self._state_lock:
             state = self._states.get(str(job_id or ""))
-            return state is not None and not state.done.is_set()
+            return (
+                state is not None
+                and not state.done.is_set()
+                and not state.terminalizing
+            )
 
     def active_job_ids(self) -> tuple[str, ...]:
         with self._state_lock:
-            return tuple(job_id for job_id, state in self._states.items() if not state.done.is_set())
+            return tuple(
+                job_id
+                for job_id, state in self._states.items()
+                if not state.done.is_set() and not state.terminalizing
+            )
 
     def wait(self, job_id: str, timeout: float | None = None) -> bool:
         with self._state_lock:
@@ -319,7 +328,7 @@ class LocalProcessAdapter:
 
         with self._state_lock:
             state = self._states.get(str(job_id or ""))
-            if state is None or state.done.is_set():
+            if state is None or state.done.is_set() or state.terminalizing:
                 return False
             schedule_cancel = not state.cancel_scheduled
             state.cancel_scheduled = True
@@ -344,7 +353,11 @@ class LocalProcessAdapter:
         deadline = started + timeout
         with self._state_lock:
             self._closing = True
-            states = tuple(self._states.values())
+            states = tuple(
+                state
+                for state in self._states.values()
+                if not state.done.is_set() and not state.terminalizing
+            )
         for state in states:
             thread = threading.Thread(
                 target=self.cancel_job,
@@ -477,12 +490,19 @@ class LocalProcessAdapter:
         if not self._claim_finalization(state):
             return
         payload: dict[str, object] | None = None
+        with self._state_lock:
+            completing_after_cancel = state.cancel_scheduled
+            if not completing_after_cancel:
+                state.terminalizing = True
         try:
             with self._service_lock:
                 payload = self.task_service.complete(state.job_id, exit_code)
         except Exception as exc:
             app_logger.log_error("LOCAL_WORKER_COMPLETE_FAILED", f"job_id={state.job_id} error={exc}")
         finally:
+            if completing_after_cancel:
+                with self._state_lock:
+                    state.terminalizing = True
             self._notify_completion(
                 state,
                 exit_code=exit_code,
@@ -492,7 +512,7 @@ class LocalProcessAdapter:
             self._remove_state(state)
 
     def _cancel_after_grace(self, state: _RunningLocalProcess, grace_ms: int) -> None:
-        if state.done.wait(max(0, int(grace_ms)) / 1000.0):
+        if state.done.wait(max(0, int(grace_ms)) / 1000.0) or state.terminalizing:
             return
         self._terminate_process(state)
         if state.done.wait(self._terminate_timeout_seconds):

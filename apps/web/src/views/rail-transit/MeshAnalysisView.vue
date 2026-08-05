@@ -2934,24 +2934,20 @@ function rememberTask(value: RailTransitTask | null): void {
 }
 function stopTaskPolling(): void { if (taskTimer) clearTimeout(taskTimer); taskTimer = null }
 
-function normalizedTaskSessionId(value: unknown): string | null {
-  return normalizeMeshSessionIdentifier(typeof value === 'string' ? value : '')
-}
-
 function affectedSessionId(completedTask: RailTransitTask): string | null {
   const resultSummary = completedTask.result_summary || {}
-  const direct = normalizedTaskSessionId(resultSummary.session_id)
+  const direct = normalizeMeshSessionIdentifier(resultSummary.session_id)
   if (direct) return direct
   const created = Array.isArray(resultSummary.created_session_ids)
     ? resultSummary.created_session_ids
-      .map(normalizedTaskSessionId)
+      .map(normalizeMeshSessionIdentifier)
       .filter((item): item is string => Boolean(item))
     : []
   const selectedId = selected.value?.session.session_id || ''
   if (selectedId && created.includes(selectedId)) return selectedId
   if (created.length === 1) return created[0]
   if (created.length > 1) return null
-  return normalizedTaskSessionId(selectedId)
+  return normalizeMeshSessionIdentifier(selectedId)
 }
 
 function queuePendingTaskCompletion(completedTask: RailTransitTask): void {
@@ -2989,7 +2985,7 @@ async function refreshAnalysisResults(options: {
   notify?: boolean
 } = {}): Promise<boolean> {
   const selectedAtStart = selected.value?.session.session_id || null
-  const sessionId = normalizedTaskSessionId(options.sessionId ?? selectedAtStart)
+  const sessionId = normalizeMeshSessionIdentifier(options.sessionId ?? selectedAtStart)
   savePageScrollPosition()
   await refreshOverview(true, true)
   if (!sessionId || !selectedAtStart) {

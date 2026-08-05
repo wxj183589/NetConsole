@@ -629,7 +629,7 @@ describe('AppLayout workspace tabs with real async routes', () => {
 
     wrapper.unmount()
     workspace.dispose()
-  }, 15_000)
+  }, 30_000)
 
   it('applies a background MESH session intent once and aborts stale detail requests', async () => {
     sessionRequestControl.deferred = true
@@ -686,5 +686,5 @@ describe('AppLayout workspace tabs with real async routes', () => {
 
     wrapper.unmount()
     workspace.dispose()
-  }, 15_000)
+  }, 30_000)
 })

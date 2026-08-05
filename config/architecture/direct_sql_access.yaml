@@ -91,5 +91,8 @@
   {"path":"tests/test_traffic_repository.py","classification":"TEST_ONLY","owner":"test","reason":"Traffic Repository 测试 fixture。"},
   {"path":"tests/test_upgrade_ap_extension_schema_tool.py","classification":"TEST_ONLY","owner":"test","reason":"Schema upgrade 测试 fixture。"},
   {"path":"tests/test_unified_data_root_migration.py","classification":"TEST_ONLY","owner":"test","reason":"统一数据根迁移测试构造临时来源 SQLite fixture。"},
-  {"path":"tests/test_vehicle_mr_online.py","classification":"TEST_ONLY","owner":"test","reason":"Vehicle MR 测试 fixture。"}
+  {"path":"tests/test_vehicle_mr_online.py","classification":"TEST_ONLY","owner":"test","reason":"Vehicle MR 测试 fixture。"},
+  {"path":"scripts/maintenance/remap_mesh_identity.py","classification":"MIGRATION_TOOL","owner":"mesh","reason":"显式 MESH 身份重映射维护工具仅对用户指定的分析库执行受控迁移。"},
+  {"path":"tests/test_mesh_identity_remap.py","classification":"TEST_ONLY","owner":"test","reason":"MESH 身份重映射测试构造 pytest 临时 SQLite 副本。"},
+  {"path":"tests/test_mesh_source_delete_service.py","classification":"TEST_ONLY","owner":"test","reason":"MESH 来源删除服务测试构造临时 SQLite 副本。"}
 ]

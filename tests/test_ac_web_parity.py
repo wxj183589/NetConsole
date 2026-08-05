@@ -388,14 +388,17 @@ def test_fit_ap_refresh_starts_real_collect_job_with_fixed_parameters(tmp_path: 
     assert job.params["source"] == "cli"
     assert job.params["device_uuid"] == "ac-1"
     assert started.status == "RUNNING"
+    normal.complete(started.task_id)
 
     ac_started = service.start_refresh("demo", "ac", ac_id="ac-1")
     assert normal.jobs[ac_started.task_id].task_type == "ac_info_refresh"
+    normal.complete(ac_started.task_id)
 
     detail_started = service.start_refresh("demo", "ap-detail", ac_id="ac-1", ap_id="ap-online")
     detail_job = normal.jobs[detail_started.task_id]
     assert detail_job.task_type == "ac_fit_ap_detail_refresh"
     assert detail_job.params["ap_uuid"] == "ap-online"
+    normal.complete(detail_started.task_id)
 
     optical_started = service.start_refresh("demo", "optical", ac_id="ac-1")
     optical_job = normal.jobs[optical_started.task_id]
