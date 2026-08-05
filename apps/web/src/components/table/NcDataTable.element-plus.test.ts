@@ -13,11 +13,11 @@ class ResizeObserverStub {
 }
 
 function headerLabels(wrapper: VueWrapper): string[] {
-  return wrapper.findAll('.el-table__header-wrapper th:not(.nc-data-table__column--hidden) .cell').map((cell) => cell.text()).filter(Boolean)
+  return wrapper.findAll('.el-table__header-wrapper th .cell').map((cell) => cell.text()).filter(Boolean)
 }
 
 function bodyValues(wrapper: VueWrapper): string[] {
-  return wrapper.findAll('.el-table__body-wrapper tbody tr:first-child td:not(.nc-data-table__column--hidden) .cell').map((cell) => cell.text()).filter(Boolean)
+  return wrapper.findAll('.el-table__body-wrapper tbody tr:first-child td .cell').map((cell) => cell.text()).filter(Boolean)
 }
 
 async function renderTable(): Promise<VueWrapper> {
@@ -71,7 +71,7 @@ describe('NcDataTable with Element Plus', () => {
     await settleColumnLayout()
     expect(headerLabels(wrapper)).toEqual(['A列', 'C列'])
     expect(bodyValues(wrapper)).toEqual(['A1', 'C1'])
-    expect(wrapper.get('.el-table').element).toBe(tableElement)
+    expect(wrapper.get('.el-table').element).not.toBe(tableElement)
     expect(bodyValues(wrapper)).toEqual(['A1', 'C1'])
 
     settings.vm.$emit('toggle', 'b', true)
@@ -96,6 +96,30 @@ describe('NcDataTable with Element Plus', () => {
     wrapper.getComponent(NcColumnSettings).vm.$emit('reset')
     await settleColumnLayout()
     expect(headerLabels(wrapper)).toEqual(['A列', 'B列', 'C列'])
+    wrapper.unmount()
+  })
+
+  it('keeps structurally hidden columns absent through repeated data and empty-state refreshes', async () => {
+    const wrapper = await renderTable()
+    wrapper.getComponent(NcColumnSettings).vm.$emit('toggle', 'b', false)
+    await settleColumnLayout()
+
+    for (let index = 0; index < 10; index += 1) {
+      await wrapper.setProps({ data: [{ a: `A${index}`, b: `B${index}`, c: `C${index}` }] })
+      await flushPromises()
+      expect(headerLabels(wrapper)).toEqual(['A列', 'C列'])
+      expect(bodyValues(wrapper)).toEqual([`A${index}`, `C${index}`])
+      expect(wrapper.findAll('.el-table__header-wrapper th')).toHaveLength(2)
+      expect(wrapper.findAll('.el-table__body-wrapper tbody tr:first-child td')).toHaveLength(2)
+    }
+
+    await wrapper.setProps({ data: [] })
+    await flushPromises()
+    expect(headerLabels(wrapper)).toEqual(['A列', 'C列'])
+    await wrapper.setProps({ data: [{ a: '恢复A', b: '不可见B', c: '恢复C' }] })
+    await flushPromises()
+    expect(headerLabels(wrapper)).toEqual(['A列', 'C列'])
+    expect(bodyValues(wrapper)).toEqual(['恢复A', '恢复C'])
     wrapper.unmount()
   })
 

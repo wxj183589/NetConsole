@@ -222,8 +222,8 @@ describe('NcDataTable', () => {
     await flushPromises()
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 120))
     await flushPromises()
-    expect(wrapper.findAll('.el-table-column-stub:not(.nc-data-table__column--hidden)').map((item) => item.attributes('data-key'))).toEqual(['name', 'status'])
-    expect(tableDoLayout).not.toHaveBeenCalled()
+    expect(wrapper.findAll('.el-table-column-stub').map((item) => item.attributes('data-key'))).toEqual(['name', 'status'])
+    expect(tableDoLayout).toHaveBeenCalled()
     wrapper.unmount()
   })
 
@@ -302,7 +302,45 @@ describe('NcDataTable', () => {
     await wrapper.vm.$nextTick()
     resolvePreference({ version: 1, order: ['name', 'status'], columns: [{ key: 'name', visible: true }, { key: 'status', visible: true }] })
     await flushPromises()
-    expect(wrapper.findAll('.el-table-column-stub:not(.nc-data-table__column--hidden)').map((item) => item.attributes('data-key'))).toEqual(['name'])
+    expect(wrapper.findAll('.el-table-column-stub').map((item) => item.attributes('data-key'))).toEqual(['name'])
+    wrapper.unmount()
+  })
+
+  it('waits for a registered Electron preference before mounting the formal table', async () => {
+    let resolvePreference: (value: unknown) => void = () => undefined
+    Object.defineProperty(window, 'netconsoleDesktop', {
+      configurable: true,
+      value: {
+        getUiPreference: vi.fn(() => new Promise((resolve) => { resolvePreference = resolve })),
+      },
+    })
+    const wrapper = mount(NcDataTable, {
+      props: {
+        tableId: 'trackside-ap-business',
+        routeKey: '/rail-transit/trackside-ap-business',
+        language: 'zh-CN',
+        data: [{ site: '站点A', vendor: '中兴 ZTE' }],
+        columns: [
+          { key: 'site', label: '站点', prop: 'site' },
+          { key: 'vendor', label: '交换机厂商', prop: 'vendor' },
+        ],
+      },
+      global,
+    })
+
+    expect(wrapper.findComponent(ElTable).exists()).toBe(false)
+    resolvePreference({
+      version: 1,
+      order: ['site', 'vendor'],
+      columns: [
+        { key: 'site', visible: true, fixed: false },
+        { key: 'vendor', visible: false, fixed: false },
+      ],
+    })
+    await flushPromises()
+
+    expect(wrapper.findComponent(ElTable).exists()).toBe(true)
+    expect(wrapper.findAll('.el-table-column-stub').map((item) => item.attributes('data-key'))).toEqual(['site'])
     wrapper.unmount()
   })
 

@@ -109,7 +109,7 @@ describe('table preferences', () => {
     })).toBeUndefined()
   })
 
-  it('uses stable isolated Electron keys for the device list and five detail tables', async () => {
+  it('uses stable isolated Electron keys for device and trackside AP tables', async () => {
     const tableKeys = new Map([
       ['device-list', 'device-management.device-list'],
       ['device-detail-sections:interfaces', 'device-detail.interfaces'],
@@ -117,6 +117,9 @@ describe('table preferences', () => {
       ['device-detail-sections:lldp', 'device-detail.lldp'],
       ['device-detail-sections:tasks', 'device-detail.task-records'],
       ['device-detail-sections:business', 'device-detail.related-businesses'],
+      ['trackside-ap-business', 'rail.trackside-ap-business.table.main'],
+      ['trackside-ap-business-scope-excluded', 'rail.trackside-ap-business.table.scope-excluded'],
+      ['trackside-ap-business-unmatched-online', 'rail.trackside-ap-business.table.unmatched-online'],
     ])
     const getUiPreference = vi.fn().mockResolvedValue(preference)
     const setUiPreference = vi.fn().mockResolvedValue(undefined)

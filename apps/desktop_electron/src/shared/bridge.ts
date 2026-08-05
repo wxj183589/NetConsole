@@ -398,6 +398,9 @@ export const UI_PREFERENCE_KEYS = Object.freeze([
   'device-detail.lldp',
   'device-detail.task-records',
   'device-detail.related-businesses',
+  'rail.trackside-ap-business.table.main',
+  'rail.trackside-ap-business.table.scope-excluded',
+  'rail.trackside-ap-business.table.unmatched-online',
 ] as const)
 
 export type UiPreferenceKey = typeof UI_PREFERENCE_KEYS[number]

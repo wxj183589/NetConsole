@@ -137,6 +137,16 @@ const unmatchedLabel = computed(() => {
 
 function failure(reason: unknown, fallback: string): string { return reason instanceof Error ? reason.message : fallback }
 function cleanIdentity(value: string): string { return String(value || '').trim() }
+function businessRowKey(row: TracksideApBusinessRow): string {
+  return [
+    row.effective_station_id || row.station_id || row.site,
+    row.device_name,
+    row.interface_name,
+    row.ap_mac || row.ap_uuid,
+  ].map(cleanIdentity).join('|')
+}
+function excludedRowKey(row: TracksideApScopeExcluded): string { return cleanIdentity(row.item_id) }
+function unmatchedRowKey(row: TracksideApUnmatchedOnline): string { return cleanIdentity(row.item_id) }
 function handleStationChange(): void { filters.page = 1; void loadRows() }
 function singleApUpdatePayload(row: TracksideApBusinessRow): TracksideApUpdateRequest | null {
   const apUuid = cleanIdentity(row.ap_uuid)
@@ -385,6 +395,7 @@ onMounted(() => {
           route-key="/rail-transit/trackside-ap-business"
           :data="page?.items || []"
           :columns="businessColumns"
+          :row-key="businessRowKey"
           class="business-table"
           height="100%"
           :empty-text="emptyReasonLabel(page?.empty_reason || '')"
@@ -407,6 +418,7 @@ onMounted(() => {
         route-key="/rail-transit/trackside-ap-business"
         :data="page?.excluded_items || []"
         :columns="excludedColumns"
+        :row-key="excludedRowKey"
         height="460"
         empty-text="没有排除项"
       />
@@ -417,6 +429,7 @@ onMounted(() => {
         route-key="/rail-transit/trackside-ap-business"
         :data="page?.unmatched_online_items || []"
         :columns="unmatchedColumns"
+        :row-key="unmatchedRowKey"
         height="460"
         empty-text="没有待补充基础资料的在线 AP"
       />

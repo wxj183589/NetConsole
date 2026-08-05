@@ -20,11 +20,22 @@ describe('UI preference store', () => {
     await first.set('mesh-analysis-airload.show-switch-points', true)
     await first.set('mesh-analysis-rssi.layout-mode', 'trackside-focus')
     await first.set('mesh-analysis-rssi.compare-split-ratio', 0.65)
+    await first.set('rail.trackside-ap-business.table.main', {
+      version: 1,
+      order: ['site', 'ap_name'],
+      columns: [
+        { key: 'site', visible: true, fixed: 'left', width: 180 },
+        { key: 'ap_name', visible: false, fixed: false },
+      ],
+    })
 
     const second = new UiPreferenceStore(root)
     await expect(second.get('mesh-analysis-airload.show-switch-points')).resolves.toBe(true)
     await expect(second.get('mesh-analysis-rssi.layout-mode')).resolves.toBe('trackside-focus')
     await expect(second.get('mesh-analysis-rssi.compare-split-ratio')).resolves.toBe(0.65)
+    await expect(second.get('rail.trackside-ap-business.table.main')).resolves.toMatchObject({
+      order: ['site', 'ap_name'],
+    })
     expect(await fs.readFile(join(root, 'ui-preferences.json'), 'utf8')).toContain('show-switch-points')
   })
 
