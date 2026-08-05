@@ -12,7 +12,7 @@ from netconsole.core import app_logger
 from netconsole.core.database import Database
 from netconsole.core.i18n import I18n
 from netconsole.core.sources.switch_source import build_switch_data_lookup
-from netconsole.repositories.ac_repository import AcRepository
+from netconsole.repositories.ac_repository import AcRepository, TRACKSIDE_AP_PLAN_MODE
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.ap_online_overview import AP_ONLINE_OVERVIEW_COLUMNS
@@ -46,7 +46,11 @@ from netconsole.services.rail_transit.trackside_ap_identity_shadow import (
 from netconsole.services.rail_transit.effective_trackside_ap_scope import (
     EffectiveTracksideApScope,
     TracksideApScopeContext,
-    resolve_effective_trackside_ap_scope_from_database,
+    resolve_effective_trackside_ap_scope,
+)
+from netconsole.services.rail_transit.trackside_ap_runtime_snapshot import (
+    TracksideApRuntimeSnapshot,
+    build_trackside_ap_runtime_snapshot,
 )
 
 ProgressCallback = Callable[[str, int, int, str], None]
@@ -72,7 +76,18 @@ class TracksideApBusinessLoadResult:
     fit_ap_resource_count: int = 0
     fit_ap_resource_total_count: int = 0
     fit_ap_matched_count: int = 0
+    fit_ap_matched_online_count: int = 0
+    fit_ap_online_total_count: int = 0
+    fit_ap_offline_total_count: int = 0
+    fit_ap_unknown_total_count: int = 0
     fit_ap_unmatched_online_count: int = 0
+    fit_ap_lldp_snapshot_stale_count: int = 0
+    fit_ap_lldp_exact_match_pending_count: int = 0
+    fit_ap_current_conflict_count: int = 0
+    fit_ap_planning_missing_count: int = 0
+    fit_ap_ambiguous_online_count: int = 0
+    fit_ap_station_master_missing_count: int = 0
+    fit_ap_unknown_association_count: int = 0
     candidate_ap_interface_count: int = 0
     row_count: int = 0
     business_row_count: int = 0
@@ -82,6 +97,7 @@ class TracksideApBusinessLoadResult:
     partial_data: bool = False
     source_statuses: dict[str, str] = field(default_factory=dict)
     unavailable_sources: list[dict[str, str]] = field(default_factory=list)
+    runtime_snapshot: TracksideApRuntimeSnapshot = field(default_factory=TracksideApRuntimeSnapshot)
 
 
 def build_trackside_ap_business_export_name(site_display_name: str, created_at: datetime) -> str:
@@ -131,6 +147,7 @@ def load_trackside_ap_business_snapshot(
         "planning": "loaded",
     }
     unavailable_sources: list[dict[str, str]] = []
+    context = scope_context or TracksideApScopeContext(site_id=site_name, project_id=site_name)
 
     def source_failure(
         source: str,
@@ -170,18 +187,18 @@ def load_trackside_ap_business_snapshot(
             "FIT_AP_RESOURCES_UNAVAILABLE",
             exc,
         )
-    scope = resolve_effective_trackside_ap_scope_from_database(
-        repository.database,
-        site_id=site_name,
-        context=scope_context,
-        resource_rows=fit_ap_resource_input,
-    )
+    try:
+        runtime_station_rows = ac_repository.list_trackside_ap_runtime_station_evidence_rows()
+    except Exception as exc:
+        runtime_station_rows = []
+        source_statuses["lldp"] = "failed"
+        source_failure("lldp", "车站交换机 LLDP", "SWITCH_LLDP_UNAVAILABLE", exc)
     try:
         devices = filter_station_switch_devices(
             repository.list(),
             repository.database,
             site_name,
-            project_phase=scope.context.project_phase,
+            project_phase=context.project_phase,
         )
     except Exception as exc:
         devices = []
@@ -293,6 +310,20 @@ def load_trackside_ap_business_snapshot(
             "TRACKSIDE_AP_PLAN_UNAVAILABLE",
             exc,
         )
+    runtime_snapshot = build_trackside_ap_runtime_snapshot(
+        fit_ap_rows=fit_ap_resource_rows,
+        switch_lldp_rows=runtime_station_rows,
+        optical_rows=fit_ap_optical_rows,
+    )
+    scope = resolve_effective_trackside_ap_scope(
+        context=context,
+        station_rows=ac_repository.list_ap_extension_points(),
+        plan_rows=ac_repository.list_trackside_ap_plan(TRACKSIDE_AP_PLAN_MODE),
+        reference_rows=ac_repository.list_ap_extension_points(),
+        resource_rows=fit_ap_resource_input,
+        runtime_station_rows=runtime_station_rows,
+        runtime_snapshot=runtime_snapshot,
+    )
     switch_lookup = build_switch_data_lookup(devices, optical_by_device)
     try:
         latest_lldp, latest_optical = build_latest_ap_history_indexes(
@@ -340,6 +371,7 @@ def load_trackside_ap_business_snapshot(
             historical_lldp_rows,
             station_names=scope.station_names,
             latest_switch_collect_runs=latest_switch_collect_runs,
+            runtime_snapshot=runtime_snapshot,
         ),
         switch_device_ids={str(device.device_uuid or "") for device in devices},
     )
@@ -374,7 +406,18 @@ def load_trackside_ap_business_snapshot(
         fit_ap_resource_count=len(fit_ap_resource_rows),
         fit_ap_resource_total_count=scope.fit_ap_resource_total_count,
         fit_ap_matched_count=scope.fit_ap_matched_count,
+        fit_ap_matched_online_count=scope.fit_ap_matched_online_count,
+        fit_ap_online_total_count=scope.fit_ap_online_total_count,
+        fit_ap_offline_total_count=scope.fit_ap_offline_total_count,
+        fit_ap_unknown_total_count=scope.fit_ap_unknown_total_count,
         fit_ap_unmatched_online_count=scope.fit_ap_unmatched_online_count,
+        fit_ap_lldp_snapshot_stale_count=scope.fit_ap_lldp_snapshot_stale_count,
+        fit_ap_lldp_exact_match_pending_count=scope.fit_ap_lldp_exact_match_pending_count,
+        fit_ap_current_conflict_count=scope.fit_ap_current_conflict_count,
+        fit_ap_planning_missing_count=scope.fit_ap_planning_missing_count,
+        fit_ap_ambiguous_online_count=scope.fit_ap_ambiguous_online_count,
+        fit_ap_station_master_missing_count=scope.fit_ap_station_master_missing_count,
+        fit_ap_unknown_association_count=scope.fit_ap_unknown_association_count,
         candidate_ap_interface_count=candidate_ap_interface_count,
         row_count=row_count,
         business_row_count=row_count,
@@ -384,6 +427,7 @@ def load_trackside_ap_business_snapshot(
         partial_data=bool(unavailable_sources),
         source_statuses=source_statuses,
         unavailable_sources=unavailable_sources,
+        runtime_snapshot=runtime_snapshot,
     )
 
 
@@ -438,7 +482,7 @@ def export_trackside_ap_business_from_database(
     scope = snapshot.scope
     if scope is None:
         raise RuntimeError("轨旁 AP 有效范围解析失败")
-    resources = scope.resources
+    resources = scope.runtime_resources
     ac_device_names = {str(device.device_uuid or ""): device.name for device in repository.list() if str(device.device_uuid or "")}
     resources = [
         {
@@ -450,9 +494,7 @@ def export_trackside_ap_business_from_database(
     check_cancel()
 
     emit("query_fit_ap_optical", 0, 0, "正在读取光衰与状态")
-    resource_history_rows = scope.filter_identity_rows(
-        ac_repository.list_all_fit_ap_resource_history()
-    )
+    resource_history_rows = ac_repository.list_all_fit_ap_resource_history()
     ap_optical_history_rows = scope.filter_identity_rows(
         ac_repository.list_all_ap_optical_history()
     )
@@ -489,9 +531,7 @@ def export_trackside_ap_business_from_database(
             ap_lldp_history_rows=ap_lldp_history_rows,
         )
     ]
-    unauthenticated_rows = scope.filter_identity_rows(
-        ac_repository.list_all_fit_ap_unauthenticated()
-    )
+    unauthenticated_rows = ac_repository.list_all_fit_ap_unauthenticated()
     new_online_ap_rows = build_new_online_ap_overview_rows(resources, resource_history_rows, snapshot.rows, unauthenticated_rows)
     optical_treatment_rows = build_ap_optical_treatment_records(
         rows,

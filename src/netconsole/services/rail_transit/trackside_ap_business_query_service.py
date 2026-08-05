@@ -151,12 +151,24 @@ class TracksideApBusinessQueryService:
             fit_ap_resource_count=snapshot.fit_ap_resource_count,
             fit_ap_resource_total_count=snapshot.fit_ap_resource_total_count,
             fit_ap_matched_count=snapshot.fit_ap_matched_count,
+            fit_ap_matched_online_count=snapshot.fit_ap_matched_online_count,
+            fit_ap_online_total_count=snapshot.fit_ap_online_total_count,
+            fit_ap_offline_total_count=snapshot.fit_ap_offline_total_count,
+            fit_ap_unknown_total_count=snapshot.fit_ap_unknown_total_count,
             fit_ap_unmatched_online_count=snapshot.fit_ap_unmatched_online_count,
+            fit_ap_lldp_snapshot_stale_count=snapshot.fit_ap_lldp_snapshot_stale_count,
+            fit_ap_lldp_exact_match_pending_count=snapshot.fit_ap_lldp_exact_match_pending_count,
+            fit_ap_current_conflict_count=snapshot.fit_ap_current_conflict_count,
+            fit_ap_planning_missing_count=snapshot.fit_ap_planning_missing_count,
+            fit_ap_ambiguous_online_count=snapshot.fit_ap_ambiguous_online_count,
+            fit_ap_station_master_missing_count=snapshot.fit_ap_station_master_missing_count,
+            fit_ap_unknown_association_count=snapshot.fit_ap_unknown_association_count,
             business_row_count=snapshot.business_row_count or len(business_rows),
             query_ms=snapshot.query_ms,
             build_ms=snapshot.build_ms,
             empty_reason=snapshot.empty_reason,
             identity_shadow=snapshot.identity_shadow,
+            runtime_snapshot=snapshot.runtime_snapshot.to_dict(),
             scope_description=(
                 scope.scope_description
                 if scope is not None
@@ -198,7 +210,7 @@ class TracksideApBusinessQueryService:
         identity_mac = observed_neighbor_mac or str(row.get("ap_mac") or "")
         identity_match = identity_query.resolve_mac(identity_mac) if identity_query else None
         lldp_match_status = str(row.get("lldp_match_status") or "")
-        if observed_neighbor_mac:
+        if observed_neighbor_mac and not lldp_match_status:
             lldp_match_status = (
                 identity_match.status.upper() if identity_match else "UNAVAILABLE"
             )
@@ -271,6 +283,11 @@ class TracksideApBusinessQueryService:
             ),
             lldp_observed_neighbor_mac=observed_neighbor_mac,
             lldp_match_status=lldp_match_status,
+            lldp_history_status=str(row.get("lldp_history_status") or "no_current_evidence"),
+            runtime_snapshot_status=str(row.get("runtime_snapshot_status") or "unavailable"),
+            fit_ap_snapshot_collected_at=str(row.get("fit_ap_snapshot_collected_at") or ""),
+            lldp_snapshot_collected_at=str(row.get("lldp_snapshot_collected_at") or ""),
+            lldp_snapshot_generation=str(row.get("lldp_snapshot_generation") or ""),
             local_rx_power_dbm=row.get("local_rx_power_dbm"),
             local_tx_power_dbm=row.get("local_tx_power_dbm"),
             remote_rx_power_dbm=row.get("remote_rx_power_dbm"),

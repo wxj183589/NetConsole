@@ -94,6 +94,7 @@ const unmatchedColumns: NcTableColumn<TracksideApUnmatchedOnline>[] = [
   { key: 'mac', label: 'AP MAC', valueType: 'mac', width: 170 },
   { key: 'ac_status', label: 'AC状态', valueType: 'status', width: 130 },
   { key: 'runtime_station_text', label: '运行态站点', valueType: 'name', minWidth: 170 },
+  { key: 'association_status', label: '当前关联状态', valueType: 'status', width: 150 },
   { key: 'reason', label: '资料状态', valueType: 'description', minWidth: 280, align: 'left', alignmentReason: 'long-text' },
   { key: 'suggested_action', label: '建议处理', valueType: 'description', minWidth: 300, align: 'left', alignmentReason: 'long-text' },
 ]
@@ -107,6 +108,32 @@ const exportTaskRunning = computed(() => taskStore.tasks.some(
   (item) => item.type === TRACKSIDE_AP_BUSINESS_EXPORT_TASK_TYPE && activeStates.has(item.status),
 ))
 const updateFeatureEnabled = computed(() => isFeatureEnabled('web.rail_trackside_ap_business_update') && isFeatureEnabled('web.rail_task_control'))
+const lldpPendingCount = computed(() => (
+  (page.value?.fit_ap_lldp_snapshot_stale_count || 0)
+  + (page.value?.fit_ap_lldp_exact_match_pending_count || 0)
+))
+const lldpConflictCount = computed(() => (
+  (page.value?.fit_ap_current_conflict_count || 0)
+  + (page.value?.fit_ap_ambiguous_online_count || 0)
+))
+const planningMissingCount = computed(() => {
+  const explicit = page.value?.fit_ap_planning_missing_count
+  if (explicit !== undefined) return explicit + (page.value?.fit_ap_station_master_missing_count || 0)
+  return lldpPendingCount.value ? 0 : (page.value?.fit_ap_unmatched_online_count || 0)
+})
+const otherUnmatchedCount = computed(() => Math.max(
+  0,
+  (page.value?.fit_ap_unmatched_online_count || 0)
+  - lldpPendingCount.value
+  - lldpConflictCount.value
+  - planningMissingCount.value,
+))
+const unmatchedLabel = computed(() => {
+  if (!page.value?.runtime_snapshot && page.value?.fit_ap_planning_missing_count === undefined) return '基础资料待补充'
+  if (lldpPendingCount.value && !planningMissingCount.value && !lldpConflictCount.value) return '等待 LLDP 同步'
+  if (planningMissingCount.value && !lldpPendingCount.value && !lldpConflictCount.value) return '基础资料待补充'
+  return '待关联在线 AP'
+})
 
 function failure(reason: unknown, fallback: string): string { return reason instanceof Error ? reason.message : fallback }
 function cleanIdentity(value: string): string { return String(value || '').trim() }
@@ -302,16 +329,29 @@ onMounted(() => {
       </details>
     </el-alert>
     <el-alert v-if="actionError" :title="actionError" type="error" show-icon closable @close="actionError = ''" />
+    <el-alert
+      v-if="page?.runtime_snapshot?.snapshot_status === 'lldp_stale'"
+      :title="`FIT-AP：${page.runtime_snapshot.fit_ap_collected_at || '未知'}；交换机 LLDP：${page.runtime_snapshot.switch_lldp_collected_at || '未知'}。LLDP 快照较旧，站点关联结果可能暂时不完整。`"
+      type="warning"
+      show-icon
+      :closable="false"
+    />
     <div v-if="page" class="scope-summary">
       <strong>统计范围：{{ page.scope_description || '当前项目 · 当前工作范围轨旁 AP' }}</strong>
       <span>纳入站点 {{ page.scope_station_count || 0 }}</span>
       <span>基础 AP 资料 {{ page.scope_ap_reference_count ?? page.scope_device_count ?? 0 }}</span>
       <span>排除设备 {{ page.excluded_device_count || 0 }}</span>
-      <el-button v-if="page.fit_ap_unmatched_online_count" link type="warning" @click="unmatchedVisible = true">基础资料待补充 {{ page.fit_ap_unmatched_online_count }}</el-button>
+      <el-button v-if="lldpPendingCount" link type="warning" @click="unmatchedVisible = true">等待 LLDP 同步 {{ lldpPendingCount }}</el-button>
+      <el-button v-if="lldpConflictCount" link type="danger" @click="unmatchedVisible = true">当前 LLDP 冲突 {{ lldpConflictCount }}</el-button>
+      <el-button v-if="planningMissingCount" link type="warning" @click="unmatchedVisible = true">基础资料待补充 {{ planningMissingCount }}</el-button>
+      <el-button v-if="otherUnmatchedCount" link type="warning" @click="unmatchedVisible = true">其他待关联 {{ otherUnmatchedCount }}</el-button>
       <el-button v-if="page.excluded_device_count" link type="warning" @click="excludedVisible = true">查看排除项</el-button>
     </div>
     <div class="summary-grid">
-      <article><span>站点交换机</span><strong>{{ metricValue(page?.device_count, ['switch_devices']) }}</strong></article><article><span>候选 AP 端口</span><strong>{{ metricValue(page?.candidate_interface_count, ['switch_devices', 'interfaces', 'planning']) }}</strong></article><article><span>AC AP 资源</span><strong>{{ metricValue(page?.fit_ap_resource_count, ['fit_ap_resources']) }}</strong></article><article><span>基础资料待补充</span><strong>{{ metricValue(page?.fit_ap_unmatched_online_count, ['fit_ap_resources']) }}</strong></article><article><span>光衰异常</span><strong>{{ metricValue(page?.optical_abnormal_count, ['interfaces', 'switch_optical', 'fit_ap_optical']) }}</strong></article>
+      <article><span>站点交换机</span><strong>{{ metricValue(page?.device_count, ['switch_devices']) }}</strong></article><article><span>候选 AP 端口</span><strong>{{ metricValue(page?.candidate_interface_count, ['switch_devices', 'interfaces', 'planning']) }}</strong></article><article><span>AC AP 资源</span><strong>{{ metricValue(page?.fit_ap_resource_count, ['fit_ap_resources']) }}</strong></article><article><span>{{ unmatchedLabel }}</span><strong>{{ metricValue(page?.fit_ap_unmatched_online_count, ['fit_ap_resources']) }}</strong></article><article><span>光衰异常</span><strong>{{ metricValue(page?.optical_abnormal_count, ['interfaces', 'switch_optical', 'fit_ap_optical']) }}</strong></article>
+      <template v-if="page?.runtime_snapshot">
+        <article><span>FIT-AP 总数</span><strong>{{ metricValue(page?.fit_ap_resource_total_count ?? page?.fit_ap_resource_count, ['fit_ap_resources']) }}</strong></article><article><span>实际在线</span><strong>{{ metricValue(page?.fit_ap_online_total_count ?? ((page?.fit_ap_matched_online_count || 0) + (page?.fit_ap_unmatched_online_count || 0)), ['fit_ap_resources']) }}</strong></article><article><span>实际离线</span><strong>{{ metricValue(page?.fit_ap_offline_total_count, ['fit_ap_resources']) }}</strong></article><article><span>状态未知</span><strong>{{ metricValue(page?.fit_ap_unknown_total_count, ['fit_ap_resources']) }}</strong></article><article><span>等待 LLDP 同步</span><strong>{{ metricValue(lldpPendingCount, ['fit_ap_resources']) }}</strong></article><article><span>当前 LLDP 冲突</span><strong>{{ metricValue(lldpConflictCount, ['fit_ap_resources']) }}</strong></article><article><span>真实资料缺失</span><strong>{{ metricValue(planningMissingCount, ['fit_ap_resources']) }}</strong></article>
+      </template>
     </div>
     <div class="content-card">
       <div class="toolbar">
@@ -371,7 +411,7 @@ onMounted(() => {
         empty-text="没有排除项"
       />
     </el-dialog>
-    <el-dialog v-model="unmatchedVisible" title="基础资料待补充的在线 AP" width="min(1280px, 96vw)">
+    <el-dialog v-model="unmatchedVisible" :title="`${unmatchedLabel}的在线 AP`" width="min(1280px, 96vw)">
       <NcDataTable
         table-id="trackside-ap-business-unmatched-online"
         route-key="/rail-transit/trackside-ap-business"

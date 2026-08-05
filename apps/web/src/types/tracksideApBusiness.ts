@@ -15,7 +15,9 @@ export interface TracksideApBusinessRow {
   switch_optical_data_status: 'current' | 'stale' | 'missing' | 'unknown'
   ap_uuid: string; ap_mac: string; ap_name: string; ap_rx_power: unknown; ap_tx_power: unknown; ap_optical_status: string
   ap_match_source: string; ap_match_confidence: number; lldp_match_status: string
-    ap_identity_entity_id?: string; identity_match_status?: string; identity_match_rule?: string; lldp_observed_neighbor_mac?: string
+  ap_identity_entity_id?: string; identity_match_status?: string; identity_match_rule?: string; lldp_observed_neighbor_mac?: string
+  lldp_history_status?: string; runtime_snapshot_status?: string; fit_ap_snapshot_collected_at?: string
+    lldp_snapshot_collected_at?: string; lldp_snapshot_generation?: string
   local_rx_power_dbm: unknown; local_tx_power_dbm: unknown; remote_rx_power_dbm: unknown; remote_tx_power_dbm: unknown
   forward_loss_db: unknown; reverse_loss_db: unknown; calculation_status: string; calculation_reason: string
   local_sample_time: string; remote_sample_time: string; sample_time_delta_seconds: number | null; updated_at: string
@@ -27,7 +29,14 @@ export interface TracksideApBusinessPage {
   station_options: string[]
   device_count: number; candidate_interface_count: number; optical_abnormal_count: number
   fit_ap_resource_count: number; fit_ap_resource_total_count?: number; fit_ap_matched_count?: number
+  fit_ap_matched_online_count?: number; fit_ap_online_total_count?: number
+  fit_ap_offline_total_count?: number; fit_ap_unknown_total_count?: number
   fit_ap_unmatched_online_count?: number; business_row_count?: number
+  fit_ap_lldp_snapshot_stale_count?: number; fit_ap_lldp_exact_match_pending_count?: number
+  fit_ap_current_conflict_count?: number; fit_ap_planning_missing_count?: number
+  fit_ap_ambiguous_online_count?: number; fit_ap_station_master_missing_count?: number
+  fit_ap_unknown_association_count?: number
+  runtime_snapshot?: Record<string, unknown>
   query_ms: number; build_ms: number; empty_reason: string
   identity_shadow: Record<string, unknown>
   scope_description?: string; scope_station_count?: number; scope_device_count?: number
@@ -120,6 +129,8 @@ export interface TracksideApScopeExcluded {
 export interface TracksideApUnmatchedOnline {
   source: string; item_id: string; ap_name: string; mac: string; ac_status: string
   runtime_station_text: string; reason: string; suggested_action: string
+  association_status?: string; reason_code?: string; fit_ap_collected_at?: string
+  lldp_collected_at?: string; lldp_candidate_count?: number
 }
 
 export interface TracksideApOnlineStatus {
@@ -131,9 +142,15 @@ export interface TracksideApOnlineStatus {
   scope_description?: string; scope_station_count?: number; scope_device_count?: number
   scope_ap_reference_count?: number; excluded_device_count?: number; excluded_items?: TracksideApScopeExcluded[]
   fit_ap_resource_total_count?: number; fit_ap_matched_count?: number; fit_ap_unmatched_online_count?: number
-  fit_ap_unresolved_online_count?: number; fit_ap_ambiguous_online_count?: number
+  fit_ap_matched_online_count?: number; fit_ap_online_total_count?: number
+  fit_ap_offline_total_count?: number; fit_ap_unknown_total_count?: number
+  fit_ap_unresolved_online_count?: number
   unmatched_online_items?: TracksideApUnmatchedOnline[]
   generated_at?: string; revision?: string; source_revision?: Record<string, unknown>; cache_hit?: boolean
+  snapshot_status?: string; snapshot_age_seconds?: number | null; snapshot_warnings?: string[]
+  fit_ap_collected_at?: string; switch_lldp_collected_at?: string
+  fit_ap_ambiguous_online_count?: number; fit_ap_station_master_missing_count?: number
+  fit_ap_unknown_association_count?: number
 }
 
 export interface TracksideApScopeExcludedPage {

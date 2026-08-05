@@ -80,5 +80,14 @@ export function displayLldpStatus(value: unknown): string {
     UNRESOLVED: '未匹配',
     NO_NEIGHBOR: '无邻居',
     SAMPLE_REQUIRED: '待真实样本验证',
+    CURRENT_CONSISTENT: '正常',
+    CURRENT_CONFLICT: '当前冲突',
+    HISTORICAL_CONFLICT: '历史冲突',
+    PORT_MIGRATED: '接口已迁移',
+    STALE_SNAPSHOT: '快照过期',
+    NO_CURRENT_EVIDENCE: '无当前记录',
+    LLDP_SNAPSHOT_STALE: '等待同步',
+    LLDP_EXACT_MATCH_PENDING: '等待同步',
+    LLDP_CONFLICT_CURRENT: '当前冲突',
   }[status] || status || '—'
 }

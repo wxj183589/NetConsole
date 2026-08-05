@@ -54,6 +54,11 @@ class TracksideApBusinessRowDTO(ApiModel):
     identity_match_rule: str = ""
     lldp_observed_neighbor_mac: str = ""
     lldp_match_status: str = ""
+    lldp_history_status: str = "no_current_evidence"
+    runtime_snapshot_status: str = "unavailable"
+    fit_ap_snapshot_collected_at: str = ""
+    lldp_snapshot_collected_at: str = ""
+    lldp_snapshot_generation: str = ""
     local_rx_power_dbm: Any = None
     local_tx_power_dbm: Any = None
     remote_rx_power_dbm: Any = None
@@ -89,6 +94,11 @@ class TracksideApUnmatchedOnlineDTO(ApiModel):
     runtime_station_text: str = ""
     reason: str = ""
     suggested_action: str = ""
+    association_status: str = "unknown"
+    reason_code: str = ""
+    fit_ap_collected_at: str = ""
+    lldp_collected_at: str = ""
+    lldp_candidate_count: int = 0
 
 
 class TracksideApScopeExcludedPageDTO(ApiModel):
@@ -128,7 +138,19 @@ class TracksideApBusinessPageDTO(ApiModel):
     fit_ap_resource_count: int = 0
     fit_ap_resource_total_count: int = 0
     fit_ap_matched_count: int = 0
+    fit_ap_matched_online_count: int = 0
+    fit_ap_online_total_count: int = 0
+    fit_ap_offline_total_count: int = 0
+    fit_ap_unknown_total_count: int = 0
     fit_ap_unmatched_online_count: int = 0
+    fit_ap_lldp_snapshot_stale_count: int = 0
+    fit_ap_lldp_exact_match_pending_count: int = 0
+    fit_ap_current_conflict_count: int = 0
+    fit_ap_planning_missing_count: int = 0
+    fit_ap_ambiguous_online_count: int = 0
+    fit_ap_station_master_missing_count: int = 0
+    fit_ap_unknown_association_count: int = 0
+    runtime_snapshot: dict[str, object] = Field(default_factory=dict)
     business_row_count: int = 0
     query_ms: int = 0
     build_ms: int = 0
@@ -292,7 +314,18 @@ class TracksideApOnlineStatusDTO(ApiModel):
     excluded_items: list[TracksideApScopeExcludedDTO] = Field(default_factory=list)
     fit_ap_resource_total_count: int = Field(default=0, ge=0)
     fit_ap_matched_count: int = Field(default=0, ge=0)
+    fit_ap_matched_online_count: int = Field(default=0, ge=0)
+    fit_ap_online_total_count: int = Field(default=0, ge=0)
+    fit_ap_offline_total_count: int = Field(default=0, ge=0)
+    fit_ap_unknown_total_count: int = Field(default=0, ge=0)
     fit_ap_unmatched_online_count: int = Field(default=0, ge=0)
+    fit_ap_lldp_snapshot_stale_count: int = Field(default=0, ge=0)
+    fit_ap_lldp_exact_match_pending_count: int = Field(default=0, ge=0)
+    fit_ap_current_conflict_count: int = Field(default=0, ge=0)
+    fit_ap_planning_missing_count: int = Field(default=0, ge=0)
+    fit_ap_ambiguous_online_count: int = Field(default=0, ge=0)
+    fit_ap_station_master_missing_count: int = Field(default=0, ge=0)
+    fit_ap_unknown_association_count: int = Field(default=0, ge=0)
     fit_ap_unresolved_online_count: int = Field(default=0, ge=0)
     fit_ap_ambiguous_online_count: int = Field(default=0, ge=0)
     unmatched_online_items: list[TracksideApUnmatchedOnlineDTO] = Field(default_factory=list)
@@ -300,6 +333,11 @@ class TracksideApOnlineStatusDTO(ApiModel):
     revision: str = ""
     source_revision: dict[str, object] = Field(default_factory=dict)
     cache_hit: bool = False
+    snapshot_status: str = "unavailable"
+    snapshot_age_seconds: int | None = None
+    snapshot_warnings: list[str] = Field(default_factory=list)
+    fit_ap_collected_at: str = ""
+    switch_lldp_collected_at: str = ""
 
 
 class ApManagementVlanPlanningDTO(ApiModel):

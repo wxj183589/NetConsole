@@ -17,6 +17,12 @@ from netconsole.services.rail_transit.station_source_utils import (
     canonical_station_name,
     format_station_display_name,
 )
+from netconsole.services.rail_transit.trackside_ap_runtime_snapshot import (
+    TracksideApRuntimeSnapshot,
+    build_trackside_ap_runtime_snapshot,
+    deduplicate_lldp_snapshot_rows,
+    select_latest_lldp_snapshot_rows,
+)
 
 
 _BASE_STATION = "__base_station__"
@@ -85,7 +91,7 @@ class TracksideApScopeExcludedItem:
     reason: str = ""
     mac: str = ""
 
-    def to_dict(self) -> dict[str, str]:
+    def to_dict(self) -> dict[str, object]:
         return {
             "source": self.source,
             "item_id": self.item_id,
@@ -108,8 +114,13 @@ class TracksideApScopeUnmatchedOnlineItem:
     runtime_station_text: str = ""
     reason: str = ""
     suggested_action: str = ""
+    association_status: str = "unknown"
+    reason_code: str = ""
+    fit_ap_collected_at: str = ""
+    lldp_collected_at: str = ""
+    lldp_candidate_count: int = 0
 
-    def to_dict(self) -> dict[str, str]:
+    def to_dict(self) -> dict[str, object]:
         return {
             "source": self.source,
             "item_id": self.item_id,
@@ -119,6 +130,11 @@ class TracksideApScopeUnmatchedOnlineItem:
             "runtime_station_text": self.runtime_station_text,
             "reason": self.reason,
             "suggested_action": self.suggested_action,
+            "association_status": self.association_status,
+            "reason_code": self.reason_code,
+            "fit_ap_collected_at": self.fit_ap_collected_at,
+            "lldp_collected_at": self.lldp_collected_at,
+            "lldp_candidate_count": self.lldp_candidate_count,
         }
 
 
@@ -142,6 +158,7 @@ class EffectiveTracksideApScope:
     station_sort_orders: dict[str, int]
     references: list[EffectiveTracksideApReference]
     resources: list[dict[str, object | None]]
+    runtime_resources: list[dict[str, object | None]]
     plans_by_station: dict[str, dict[str, object | None]]
     online_reference_ids: set[str]
     excluded_items: list[TracksideApScopeExcludedItem]
@@ -149,6 +166,9 @@ class EffectiveTracksideApScope:
         default_factory=list
     )
     fit_ap_resource_total_count: int = 0
+    fit_ap_online_total_count: int = 0
+    fit_ap_offline_total_count: int = 0
+    fit_ap_unknown_total_count: int = 0
     excluded_device_total_count: int | None = None
     unmatched_online_total_count: int | None = None
     ambiguous_online_total_count: int = 0
@@ -168,6 +188,9 @@ class EffectiveTracksideApScope:
     _all_identity_index: dict[tuple[str, str], set[str]] = field(
         default_factory=dict,
         repr=False,
+    )
+    runtime_snapshot: TracksideApRuntimeSnapshot = field(
+        default_factory=TracksideApRuntimeSnapshot
     )
 
     @property
@@ -195,12 +218,44 @@ class EffectiveTracksideApScope:
         return len(self.resources)
 
     @property
+    def fit_ap_matched_online_count(self) -> int:
+        return len(self.online_reference_ids)
+
+    @property
     def fit_ap_unmatched_online_count(self) -> int:
         return (
             self.unmatched_online_total_count
             if self.unmatched_online_total_count is not None
             else len(self.unmatched_online_items)
         )
+
+    @property
+    def fit_ap_lldp_snapshot_stale_count(self) -> int:
+        return sum(1 for item in self.unmatched_online_items if item.association_status == "lldp_snapshot_stale")
+
+    @property
+    def fit_ap_lldp_exact_match_pending_count(self) -> int:
+        return sum(1 for item in self.unmatched_online_items if item.association_status == "lldp_exact_match_pending")
+
+    @property
+    def fit_ap_current_conflict_count(self) -> int:
+        return sum(1 for item in self.unmatched_online_items if item.association_status == "lldp_conflict_current")
+
+    @property
+    def fit_ap_ambiguous_online_count(self) -> int:
+        return sum(1 for item in self.unmatched_online_items if item.association_status == "ambiguous")
+
+    @property
+    def fit_ap_station_master_missing_count(self) -> int:
+        return sum(1 for item in self.unmatched_online_items if item.association_status == "station_master_missing")
+
+    @property
+    def fit_ap_unknown_association_count(self) -> int:
+        return sum(1 for item in self.unmatched_online_items if item.association_status == "unknown")
+
+    @property
+    def fit_ap_planning_missing_count(self) -> int:
+        return sum(1 for item in self.unmatched_online_items if item.association_status == "planning_missing")
 
     @property
     def excluded_device_count(self) -> int:
@@ -433,24 +488,66 @@ class EffectiveTracksideApScope:
             int(row["actual_online_count"] or 0) for row in station_rows
         )
         unmatched_online_total = self.fit_ap_unmatched_online_count
-        if unmatched_online_total:
+        stale_total = self.fit_ap_lldp_snapshot_stale_count + self.fit_ap_lldp_exact_match_pending_count
+        conflict_total = self.fit_ap_current_conflict_count + self.fit_ap_ambiguous_online_count
+        real_missing_total = self.fit_ap_planning_missing_count + self.fit_ap_station_master_missing_count
+        unknown_total = self.fit_ap_unknown_association_count
+        if stale_total:
+            result.append(
+                {
+                    "site": "等待 LLDP 同步",
+                    "total": None,
+                    "online": stale_total,
+                    "offline": None,
+                    "online_rate": "—",
+                    "remark": "FIT-AP 已在线，车站交换机 LLDP 快照较旧或尚未完成当前精确关联，已计入合计实际上线数。",
+                    "status": "lldp_snapshot_stale",
+                }
+            )
+        if real_missing_total:
             result.append(
                 {
                     "site": "基础资料待补充",
                     "total": None,
-                    "online": unmatched_online_total,
+                    "online": real_missing_total,
                     "offline": None,
                     "online_rate": "—",
-                    "remark": "在线 AP 尚未关联有效站点，已计入合计实际上线数。",
+                    "remark": "在线 AP 缺少可用的正式站点或 AP 基础资料，已计入合计实际上线数。",
                     "status": "unassigned",
+                }
+            )
+        if conflict_total:
+            result.append(
+                {
+                    "site": "当前 LLDP 冲突",
+                    "total": None,
+                    "online": conflict_total,
+                    "offline": None,
+                    "online_rate": "—",
+                    "remark": "当前完整 LLDP 快照存在多个有效站点或接口候选，已计入合计实际上线数。",
+                    "status": "lldp_conflict_current",
+                }
+            )
+        if unknown_total:
+            result.append(
+                {
+                    "site": "状态未知",
+                    "total": None,
+                    "online": unknown_total,
+                    "offline": None,
+                    "online_rate": "—",
+                    "remark": "FIT-AP 在线状态缺少明确运行态证据，未计入实际上线数。",
+                    "status": "unknown",
                 }
             )
         online_total = matched_online_total + unmatched_online_total
         total_anomaly = any(bool(row.get("count_anomaly")) for row in station_rows)
         total_remark = (
             f"AC AP 资源 {self.fit_ap_resource_total_count} 个；"
+            f"实际上线 {self.fit_ap_online_total_count} 个；"
             f"已关联上线 {matched_online_total} 个；"
-            f"基础资料待补充 {unmatched_online_total} 个。"
+            f"等待 LLDP 同步 {stale_total} 个；当前 LLDP 冲突 {conflict_total} 个；"
+            f"基础资料待补充 {real_missing_total} 个；状态未知 {self.fit_ap_unknown_total_count} 个。"
         )
         if total_anomaly:
             total_remark = f"{total_remark} 统计范围存在数量异常，请查看分站状态。"
@@ -518,6 +615,7 @@ def resolve_effective_trackside_ap_scope(
     reference_rows: Iterable[Mapping[str, object | None]],
     resource_rows: Iterable[Mapping[str, object | None]],
     runtime_station_rows: Iterable[Mapping[str, object | None]] | None = None,
+    runtime_snapshot: TracksideApRuntimeSnapshot | None = None,
     detail_limit: int | None = None,
 ) -> EffectiveTracksideApScope:
     all_station_rows = [dict(row) for row in station_rows]
@@ -526,11 +624,24 @@ def resolve_effective_trackside_ap_scope(
     station_names, station_sort_orders, station_aliases, station_node_uids = (
         _build_station_index(context.site_id, all_station_rows, plans)
     )
+    selected_runtime_rows = deduplicate_lldp_snapshot_rows(
+        select_latest_lldp_snapshot_rows(runtime_station_rows or ())
+    )
     runtime_station_index = _build_runtime_station_index(
         context,
         station_names,
         station_aliases,
-        runtime_station_rows or (),
+        selected_runtime_rows,
+    )
+    runtime_station_master_missing_macs = _build_runtime_station_master_missing_macs(
+        context,
+        station_names,
+        station_aliases,
+        selected_runtime_rows,
+    )
+    snapshot = runtime_snapshot or build_trackside_ap_runtime_snapshot(
+        fit_ap_rows=resources_input,
+        switch_lldp_rows=selected_runtime_rows,
     )
     excluded: list[TracksideApScopeExcludedItem] = []
     unmatched_online: list[TracksideApScopeUnmatchedOnlineItem] = []
@@ -651,9 +762,17 @@ def resolve_effective_trackside_ap_scope(
     updated_at = ""
     resource_identity_index: dict[tuple[str, str], set[str]] = defaultdict(set)
     runtime_identity_keys: set[tuple[str, str]] = set()
+    online_resource_total = 0
+    offline_resource_total = 0
+    unknown_resource_total = 0
     matched_resources: dict[str, dict[str, object | None]] = {}
+    runtime_resources_by_key: dict[tuple[str, str], dict[str, object | None]] = {}
     for resource in resources_input:
-        runtime_identity_keys.add(_runtime_resource_key(resource))
+        runtime_key = _runtime_resource_key(resource)
+        runtime_identity_keys.add(runtime_key)
+        current_runtime = runtime_resources_by_key.get(runtime_key)
+        if current_runtime is None or _resource_preference_key(resource) > _resource_preference_key(current_runtime):
+            runtime_resources_by_key[runtime_key] = resource
         reference_id, reason = _match_resource_reference(
             resource,
             all_references,
@@ -689,6 +808,15 @@ def resolve_effective_trackside_ap_scope(
             elif len(station_ids) > 1:
                 reason = "交换机 LLDP 精确证据关联到多个站点，需人工处理。"
         online = is_fit_ap_online(resource)
+        if online:
+            online_resource_total += 1
+        elif any(
+            str(resource.get(field) or "").strip()
+            for field in ("state", "state_raw", "state_display")
+        ):
+            offline_resource_total += 1
+        else:
+            unknown_resource_total += 1
         updated_at = max(
             updated_at,
             str(resource.get("updated_at") or resource.get("collected_at") or ""),
@@ -728,11 +856,15 @@ def resolve_effective_trackside_ap_scope(
                         )
                     )
                 else:
-                    diagnostic_reason, suggested_action = _unmatched_online_diagnostics(
+                    association_status, reason_code, diagnostic_reason, suggested_action = _unmatched_online_diagnostics(
                         resource,
                         reason,
+                        snapshot,
+                        bool(runtime_station_rows),
+                        len(runtime_station_index.get(normalize_mac(resource.get("ap_mac")) or "", set())),
+                        normalize_mac(resource.get("ap_mac")) in runtime_station_master_missing_macs,
                     )
-                    if "多个站点" in diagnostic_reason:
+                    if association_status == "lldp_conflict_current" or "多个站点" in diagnostic_reason:
                         ambiguous_online_keys.add(_runtime_resource_key(resource))
                     add_unmatched(
                         _runtime_resource_key(resource),
@@ -750,6 +882,11 @@ def resolve_effective_trackside_ap_scope(
                             runtime_station_text=runtime_station_text,
                             reason=diagnostic_reason,
                             suggested_action=suggested_action,
+                            association_status=association_status,
+                            reason_code=reason_code,
+                            fit_ap_collected_at=snapshot.fit_ap_collected_at,
+                            lldp_collected_at=snapshot.switch_lldp_collected_at,
+                            lldp_candidate_count=len(runtime_station_index.get(normalize_mac(resource.get("ap_mac")) or "", set())),
                         ),
                     )
             continue
@@ -771,6 +908,18 @@ def resolve_effective_trackside_ap_scope(
             online_reference_ids.add(reference_id)
 
     resources = list(matched_resources.values())
+    runtime_resources = list(runtime_resources_by_key.values())
+    online_resource_total = sum(1 for resource in runtime_resources if is_fit_ap_online(resource))
+    offline_resource_total = sum(
+        1
+        for resource in runtime_resources
+        if not is_fit_ap_online(resource)
+        and any(
+            str(resource.get(field) or "").strip()
+            for field in ("state", "state_raw", "state_display")
+        )
+    )
+    unknown_resource_total = len(runtime_resources) - online_resource_total - offline_resource_total
     for key, values in resource_identity_index.items():
         eligible_identity_index.setdefault(key, set()).update(values)
 
@@ -791,11 +940,15 @@ def resolve_effective_trackside_ap_scope(
         station_sort_orders=station_sort_orders,
         references=list(eligible.values()),
         resources=resources,
+        runtime_resources=runtime_resources,
         plans_by_station=plans_by_station,
         online_reference_ids=online_reference_ids,
         excluded_items=excluded,
         unmatched_online_items=unmatched_online,
         fit_ap_resource_total_count=len(runtime_identity_keys),
+        fit_ap_online_total_count=online_resource_total,
+        fit_ap_offline_total_count=offline_resource_total,
+        fit_ap_unknown_total_count=unknown_resource_total,
         excluded_device_total_count=len(excluded_keys),
         unmatched_online_total_count=len(unmatched_online_keys),
         ambiguous_online_total_count=len(ambiguous_online_keys),
@@ -804,6 +957,7 @@ def resolve_effective_trackside_ap_scope(
         _identity_index=eligible_identity_index,
         _all_reference_by_id=all_references,
         _all_identity_index=all_identity_index,
+        runtime_snapshot=snapshot,
     )
 
 
@@ -836,6 +990,37 @@ def _build_runtime_station_index(
         if not station_id:
             continue
         result[mac].add(station_id)
+    return result
+
+
+def _build_runtime_station_master_missing_macs(
+    context: TracksideApScopeContext,
+    station_names: Mapping[str, str],
+    station_aliases: Mapping[str, set[str]],
+    rows: Iterable[Mapping[str, object | None]],
+) -> set[str]:
+    result: set[str] = set()
+    for row in rows:
+        project_phase = str(row.get("project_phase") or "").strip()
+        if context.project_phase and (
+            not project_phase
+            or _scope_token(project_phase) != _scope_token(context.project_phase)
+        ):
+            continue
+        mac = normalize_mac(row.get("ap_mac") or row.get("observed_ap_mac")) or ""
+        if not mac:
+            continue
+        station_id = str(row.get("station_id") or "").strip()
+        if station_id in station_names:
+            continue
+        station_key = _station_key(
+            row.get("device_station")
+            or row.get("formal_station_name")
+            or row.get("station_name")
+        )
+        if len(station_aliases.get(station_key, set())) == 1:
+            continue
+        result.add(mac)
     return result
 
 
@@ -1055,26 +1240,66 @@ def _match_resource_reference(
 def _unmatched_online_diagnostics(
     resource: Mapping[str, object | None],
     reason: str,
-) -> tuple[str, str]:
+    snapshot: TracksideApRuntimeSnapshot | None = None,
+    has_runtime_rows: bool = False,
+    candidate_count: int = 0,
+    station_master_missing: bool = False,
+) -> tuple[str, str, str, str]:
     """Explain why an online AP stays unresolved without weakening identity rules."""
 
     lldp_status = _scope_token(resource.get("lldp_match_status"))
     if lldp_status == "conflict":
         return (
+            "lldp_conflict_current",
+            "LLDP_CONFLICT_CURRENT",
             "AC 侧 LLDP 结果冲突，且未发现当前车站交换机的精确 AP MAC 证据。",
             "重新采集对应车站交换机 LLDP，确认 AP MAC 唯一归属；或补充轨旁 AP 基础资料 MAC 后重新刷新。",
         )
     if lldp_status in {"ambiguous", "multiple"}:
         return (
+            "ambiguous",
+            "LLDP_AMBIGUOUS",
             "AC 侧 LLDP 结果关联到多个候选，且未发现唯一车站交换机 AP MAC 证据，需人工处理。",
             "核对车站交换机 station_id 与 LLDP 邻居 MAC，消除多候选后重新刷新。",
         )
     if "多个站点" in reason:
         return (
+            "ambiguous",
+            "LLDP_STATION_AMBIGUOUS",
             reason,
             "检查车站交换机 station_id 与 LLDP 邻居 MAC 后重新刷新。",
         )
+    if snapshot is not None and snapshot.snapshot_status == "lldp_stale":
+        return (
+            "lldp_snapshot_stale",
+            "LLDP_SNAPSHOT_STALE",
+            "FIT-AP 已在线，但当前车站交换机 LLDP 快照早于 FIT-AP，等待 LLDP 同步。",
+            "完成车站交换机 LLDP 采集后刷新当前拓扑。",
+        )
+    if candidate_count > 1:
+        return (
+            "lldp_conflict_current",
+            "LLDP_CONFLICT_CURRENT",
+            "当前车站交换机 LLDP 对同一 AP 存在多个站点候选，需人工处理。",
+            "核对当前完整 LLDP 快照中的站点和接口后重新刷新。",
+        )
+    if station_master_missing:
+        return (
+            "station_master_missing",
+            "STATION_MASTER_MISSING",
+            "当前 LLDP 已发现该 AP，但对端交换机没有可用的正式站点主数据。",
+            "补充交换机 station_id 或站点主数据后重新刷新当前拓扑。",
+        )
+    if has_runtime_rows:
+        return (
+            "lldp_exact_match_pending",
+            "LLDP_EXACT_MATCH_PENDING",
+            "当前车站交换机 LLDP 尚未发现该 AP 的精确 MAC 记录，等待同步。",
+            "完成车站交换机 LLDP 采集后刷新当前拓扑。",
+        )
     return (
+        "planning_missing",
+        "BASE_DATA_MISSING",
         reason or _BASE_DATA_MISSING_REASON,
         "可按需补充轨旁 AP 基础资料 MAC，以完善站点和工程属性。",
     )

@@ -9,12 +9,18 @@ STATE_DISPLAY = {
     "C": "Config",
     "DC": "DataCheck",
     "R": "Run",
+    "M": "Run",
     "R/M": "\u8fd0\u884c(\u4e3b)",
     "R/B": "\u8fd0\u884c(\u5907)",
 }
-FIT_AP_RUNNING_STATE_TOKENS = frozenset({"R/M", "R/B"})
+FIT_AP_RUNNING_STATE_TOKENS = frozenset(
+    {"R/M", "R/B", "R", "M", "RUN", "UP", "ONLINE", "ACTIVE", "ENABLED"}
+)
 FIT_AP_RUNNING_STATE_DISPLAYS = frozenset(
-    str(STATE_DISPLAY[token]).casefold() for token in FIT_AP_RUNNING_STATE_TOKENS
+    {
+        "run", "running", "online", "up", "active", "enabled",
+        "运行", "运行(主)", "运行(备)", "在线",
+    }
 )
 
 
@@ -28,18 +34,19 @@ def normalize_fit_ap_state_token(value: object) -> str:
 def classify_fit_ap_state(*values: object) -> str:
     """Classify explicit H3C FIT-AP state evidence for business consumers."""
 
+    saw_explicit = False
     for value in values:
         text = str(value or "").strip()
         if not text:
             continue
+        saw_explicit = True
         token = normalize_fit_ap_state_token(text)
         if (
             token in FIT_AP_RUNNING_STATE_TOKENS
             or text.casefold() in FIT_AP_RUNNING_STATE_DISPLAYS
         ):
             return "online"
-        return "offline"
-    return "unknown"
+    return "offline" if saw_explicit else "unknown"
 
 
 def map_fit_ap_state(state_raw: object) -> str:
