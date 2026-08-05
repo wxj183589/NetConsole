@@ -50,7 +50,8 @@ class TracksideApBusinessRowDTO(ApiModel):
     ap_name: str = ""
     model: str = ""
     ap_optical_applicable: bool = True
-    ap_terminal_device_uuid: str = ""
+    ap_terminal_ac_id: str = ""
+    ap_terminal_ap_id: str = ""
     ap_terminal_available: bool = False
     ap_terminal_unavailable_reason: str = ""
     ap_rx_power: Any = None

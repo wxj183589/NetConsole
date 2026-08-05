@@ -37,7 +37,7 @@ import {
 import {
   useUserSelectedExport,
 } from '../../composables/useUserSelectedExport'
-import { useDeviceTerminalLauncher } from '../../composables/useDeviceTerminalLauncher'
+import { useExternalTerminalLauncher } from '../../composables/useExternalTerminalLauncher'
 import { downloadBackendResource, getPlatformAdapter, getRuntimeConfig } from '../../platform/runtime'
 import { useTaskStore } from '../../stores/tasks'
 import DeviceDetailPanel from '../../components/device-detail/DeviceDetailPanel.vue'
@@ -114,7 +114,7 @@ const {
   launchDeviceTerminalTargets,
   showPreflightSkipped,
   showLaunchResult,
-} = useDeviceTerminalLauncher()
+} = useExternalTerminalLauncher()
 const loading = ref(false)
 const error = ref('')
 const pageData = ref<DevicePage>(emptyPage())
