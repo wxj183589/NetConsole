@@ -210,7 +210,7 @@ def test_ac_optical_anomaly_is_independent_from_ap_online_state(tmp_path: Path) 
     assert offline is not None
     assert offline.optical_status == "critical"
     assert offline.ap_rx_status == "abnormal"
-    assert offline.switch_rx_status == "alarm"
+    assert offline.switch_rx_status == "abnormal"
     assert offline.ap_offline_related is True
     assert offline.ap_online_status == "offline"
     assert offline.is_current_anomaly is True
@@ -240,12 +240,12 @@ def test_ac_optical_reports_switch_side_alarm_without_coloring_ap_rx(tmp_path: P
 
     assert optical is not None
     assert optical.ap_rx_status == "normal"
-    assert optical.switch_rx_status == "alarm"
+    assert optical.switch_rx_status == "abnormal"
     assert optical.tx_power_status == "unknown"
-    assert optical.raw_status == "alarm"
-    assert optical.threshold_status == "一般告警"
+    assert optical.raw_status == "abnormal"
+    assert optical.threshold_status == "光衰大"
     assert optical.is_current_anomaly is True
-    assert "交换机侧收光一般告警：-19.75 dBm" in optical.anomaly_reason
+    assert "交换机侧收光光衰大：-19.75 dBm（低于 -13.90 dBm）" in optical.anomaly_reason
     assert "AP 侧收光正常：-8.63 dBm" in optical.anomaly_reason
 
 
@@ -327,6 +327,56 @@ def test_ac_optical_fixed_threshold_overrides_backend_normal_status(tmp_path: Pa
     assert service.list_optical_anomalies("demo").items[0].id == "ap-online"
 
 
+def test_ac_optical_switch_fixed_threshold_drives_combined_critical_status(
+    tmp_path: Path,
+) -> None:
+    paths, db_path, _files = build_ac_management_fixture(tmp_path)
+    with Database(db_path).connect() as conn:
+        conn.execute(
+            "UPDATE ac_fit_ap_optical SET rx_power = '-7.72', optical_alarm_status = 'normal' WHERE ap_uuid = 'ap-online'"
+        )
+        conn.execute(
+            "UPDATE device_optical_modules SET rx_power = '-19.10', rx_low_alarm = '-25', rx_low_warning = '-23', status = 'normal' WHERE interface_name = 'GigabitEthernet1/0/1'"
+        )
+        conn.commit()
+
+    service = AcManagementQueryService(paths)
+    optical = service.get_ap_optical("demo", "ap-online")
+
+    assert optical is not None
+    assert optical.ap_rx_status == "normal"
+    assert optical.switch_rx_status == "abnormal"
+    assert optical.raw_status == "abnormal"
+    assert optical.optical_status == "critical"
+    assert optical.threshold_status == "光衰大"
+    assert optical.is_current_anomaly is True
+    assert "交换机侧收光光衰大：-19.10 dBm（低于 -13.90 dBm）" in optical.anomaly_reason
+    assert "AP 侧收光正常：-7.72 dBm" in optical.anomaly_reason
+
+
+def test_ac_optical_one_normal_side_and_one_missing_side_is_no_data(
+    tmp_path: Path,
+) -> None:
+    paths, db_path, _files = build_ac_management_fixture(tmp_path)
+    with Database(db_path).connect() as conn:
+        conn.execute(
+            "UPDATE ac_fit_ap_optical SET rx_power = '-7.72', optical_alarm_status = 'normal' WHERE ap_uuid = 'ap-online'"
+        )
+        conn.execute(
+            "UPDATE device_optical_modules SET rx_power = NULL, status = 'success' WHERE interface_name = 'GigabitEthernet1/0/1'"
+        )
+        conn.commit()
+
+    optical = AcManagementQueryService(paths).get_ap_optical("demo", "ap-online")
+
+    assert optical is not None
+    assert optical.ap_rx_status == "normal"
+    assert optical.switch_rx_status == "unknown"
+    assert optical.raw_status == "unknown"
+    assert optical.optical_status == "no_data"
+    assert optical.is_current_anomaly is False
+
+
 def test_ac_optical_wa6522_is_not_applicable_or_anomalous(tmp_path: Path) -> None:
     paths, db_path, _files = build_ac_management_fixture(tmp_path)
     with Database(db_path).connect() as conn:
@@ -404,7 +454,7 @@ def test_ac_optical_online_general_alarm_is_current_anomaly_and_stale_data_is_no
     assert optical.ap_online_status == "online"
     assert optical.raw_status == "abnormal"
     assert optical.ap_rx_status == "abnormal"
-    assert optical.switch_rx_status == "warning"
+    assert optical.switch_rx_status == "abnormal"
     assert optical.threshold_status == "光衰大"
     assert optical.optical_status == "critical"
     assert optical.is_current_anomaly is True
@@ -412,6 +462,7 @@ def test_ac_optical_online_general_alarm_is_current_anomaly_and_stale_data_is_no
 
     with Database(db_path).connect() as conn:
         conn.execute("UPDATE ac_fit_ap_optical SET collected_at = '2020-01-01T00:00:00+00:00', updated_at = '2020-01-01T00:00:00+00:00' WHERE ap_uuid = 'ap-online'")
+        conn.execute("UPDATE device_optical_modules SET collected_at = '2020-01-01T00:00:00+00:00', updated_at = '2020-01-01T00:00:00+00:00' WHERE interface_name = 'GigabitEthernet1/0/1'")
         conn.commit()
 
     stale = service.get_ap_optical("demo", "ap-online")
@@ -419,7 +470,7 @@ def test_ac_optical_online_general_alarm_is_current_anomaly_and_stale_data_is_no
     assert stale.data_freshness == "stale"
     assert stale.is_current_anomaly is False
     assert stale.ap_rx_status == "abnormal"
-    assert stale.switch_rx_status == "warning"
+    assert stale.switch_rx_status == "abnormal"
     assert stale.optical_status == "critical"
     assert "不作为当前实时状态统计" in stale.anomaly_reason
     assert "ap-online" not in {item.id for item in service.list_optical_anomalies("demo").items}

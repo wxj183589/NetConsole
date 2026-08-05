@@ -7,8 +7,8 @@ from netconsole.core.optical_severity_engine import (
     STATUS_COLORS,
     compute_optical_severity,
     display_optical_status,
-    worse_optical_severity,
 )
+from netconsole.core.optical_rx_threshold import evaluate_dual_optical_rx
 from netconsole.core.sources.ap_source import compute_ap_status
 from netconsole.core.sources.switch_source import compute_switch_status
 
@@ -46,11 +46,21 @@ def compute_state(context: dict) -> StateResult:
     else:
         switch_status = "unknown"
     ap_status = compute_ap_status(fit_ap_row)
-    optical_status = (
-        ap_status
-        if ap_status == "not_applicable"
-        else worse_optical_severity(switch_status, ap_status)
-    )
+    if ap_status == "not_applicable":
+        switch_status = "not_applicable"
+        optical_status = "not_applicable"
+    else:
+        evaluation = evaluate_dual_optical_rx(
+            fit_ap_row.get("rx_power"),
+            context.get("switch_rx_power")
+            if "switch_rx_power" in context
+            else fit_ap_row.get("neighbor_rx_power"),
+            ap_reported_status=ap_status,
+            switch_reported_status=switch_status,
+        )
+        ap_status = evaluation.ap.status
+        switch_status = evaluation.switch.status
+        optical_status = evaluation.status
     return StateResult(
         switch_status=switch_status,
         ap_status=ap_status,

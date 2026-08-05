@@ -464,9 +464,35 @@ describe('AC Management optical detail behavior', () => {
     expect(apRxPower.classes()).not.toContain('optical-value-danger')
     expect(switchRxPower.text()).toBe('-19.75 dBm')
     expect(switchRxPower.classes()).toContain('optical-value-danger')
-    expect(threshold.text()).toContain('一般告警')
+    expect(threshold.text()).toContain('光衰大')
     expect(threshold.classes()).toContain('optical-value-danger')
     expect(wrapper.find('[data-testid="optical-judgement"]').text()).toBe('异常')
+    wrapper.unmount()
+  })
+
+  it('lets low switch Rx override a stale backend normal status in the detail view', () => {
+    const wrapper = mountView(optical({
+      optical_status: 'normal',
+      optical_severity: 'normal',
+      raw_status: 'normal',
+      ap_rx_status: 'normal',
+      switch_rx_status: 'normal',
+      tx_power_status: 'unknown',
+      is_current_anomaly: false,
+      anomaly_reason: '光衰结果正常',
+      rx_power: '-7.72',
+      switch_rx_power: '-19.10',
+      tx_power: '-19.10',
+      threshold_status: '正常',
+    }))
+
+    expect(wrapper.get('[data-testid="optical-ap-rx-power"]').classes()).toContain('optical-value-normal')
+    expect(wrapper.get('[data-testid="optical-switch-rx-power"]').classes()).toContain('optical-value-danger')
+    expect(wrapper.get('[data-testid="optical-tx-power"]').classes()).toContain('optical-value-muted')
+    expect(wrapper.get('[data-testid="optical-threshold-status"]').text()).toContain('光衰大')
+    expect(wrapper.get('[data-testid="optical-judgement"]').text()).toBe('异常')
+    expect(wrapper.text()).toContain('交换机侧收光异常：-19.10 dBm，低于 -13.90 dBm')
+    expect(wrapper.text()).toContain('严重告警')
     wrapper.unmount()
   })
 

@@ -682,7 +682,7 @@ def test_trackside_query_maps_partial_source_status(monkeypatch, tmp_path: Path)
     assert page.unavailable_sources[0].code == "FIT_AP_RESOURCES_UNAVAILABLE"
 
 
-def test_trackside_query_applies_business_threshold_only_to_ap_rx(
+def test_trackside_query_applies_business_threshold_to_both_rx_sides(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -694,9 +694,9 @@ def test_trackside_query_applies_business_threshold_only_to_ap_rx(
                 **original.rows[0],
                 "pvid": 71,
                 "vlan": "Native/PVID 71; Tagged 201",
-                "switch_rx_power": -24.7,
+                "switch_rx_power": -19.10,
                 "switch_optical_status": "normal",
-                "ap_rx_power": -26.8,
+                "ap_rx_power": -7.72,
                 "ap_optical_status": "normal",
             }
         ],
@@ -717,12 +717,13 @@ def test_trackside_query_applies_business_threshold_only_to_ap_rx(
     assert page.optical_abnormal_count == 1
     assert page.items[0].pvid == 71
     assert page.items[0].vlan == "Tagged 201"
-    assert page.items[0].switch_optical_status == "normal"
+    assert page.items[0].switch_device_optical_status == "normal"
+    assert page.items[0].switch_optical_status == "abnormal"
     assert page.items[0].ap_device_optical_status == "normal"
     assert page.items[0].ap_business_optical_status == "abnormal"
-    assert page.items[0].ap_optical_status == "abnormal"
+    assert page.items[0].ap_optical_status == "normal"
     assert page.items[0].ap_business_threshold_dbm == -13.90
-    assert "-26.80 dBm 低于业务门限 -13.90 dBm" in page.items[0].ap_business_reason
+    assert "交换机侧收光 -19.10 dBm 低于业务门限 -13.90 dBm" in page.items[0].ap_business_reason
     assert page.items[0].optical_severity == "abnormal"
 
 

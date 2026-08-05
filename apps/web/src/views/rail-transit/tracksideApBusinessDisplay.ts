@@ -1,4 +1,10 @@
-import { normalizedOpticalStatus, opticalStatusPresentation } from '../../utils/opticalPresentation'
+import {
+  dualOpticalStatusPresentation,
+  isApOpticalApplicable,
+  normalizedOpticalStatus,
+  opticalRxStatusPresentation,
+  opticalStatusPresentation,
+} from '../../utils/opticalPresentation'
 import { t } from '../../i18n/runtime'
 
 export type TracksideOpticalTagType = 'success' | 'warning' | 'danger' | 'info'
@@ -24,6 +30,7 @@ const classByStatus: Record<string, string> = {
   dom_unavailable: 'optical-not-collected',
   skipped: 'optical-skipped',
   not_collected: 'optical-not-collected',
+  not_applicable: 'optical-not-collected',
   unknown: 'optical-unknown',
   offline: 'optical-offline',
 }
@@ -42,6 +49,73 @@ export function tracksideOpticalPresentation(value: unknown): TracksideOpticalPr
     label: presentation.label,
     tagType: presentation.tagType,
     className: classByStatus[status] || 'optical-unknown',
+  }
+}
+
+export function tracksideRxPresentation(
+  rxPower: unknown,
+  backendStatus: unknown,
+  freshness: unknown = 'fresh',
+  model?: unknown,
+  opticalApplicable?: boolean,
+): TracksideOpticalPresentation {
+  if (!isApOpticalApplicable(model, opticalApplicable)) {
+    return tracksideOpticalPresentation('not_applicable')
+  }
+  return toTracksidePresentation(opticalRxStatusPresentation({
+    rxPower,
+    backendStatus,
+    freshness,
+  }))
+}
+
+export function tracksideDeviceOpticalPresentation(
+  backendStatus: unknown,
+  model?: unknown,
+  opticalApplicable?: boolean,
+): TracksideOpticalPresentation {
+  if (!isApOpticalApplicable(model, opticalApplicable)) {
+    return tracksideOpticalPresentation('not_applicable')
+  }
+  return tracksideOpticalPresentation(backendStatus)
+}
+
+export function tracksideBusinessOpticalPresentation(row: {
+  ap_rx_power?: unknown
+  switch_rx_power?: unknown
+  ap_device_optical_status?: unknown
+  ap_optical_status?: unknown
+  switch_device_optical_status?: unknown
+  switch_optical_status?: unknown
+  optical_severity?: unknown
+  model?: unknown
+  ap_optical_applicable?: boolean
+  ap_optical_data_freshness?: unknown
+  switch_optical_data_status?: unknown
+}): TracksideOpticalPresentation {
+  const freshness = normalizedOpticalStatus(row.ap_optical_data_freshness) === 'stale'
+    || normalizedOpticalStatus(row.switch_optical_data_status) === 'stale'
+    ? 'stale'
+    : 'fresh'
+  const presentation = dualOpticalStatusPresentation({
+    apBackendStatus: row.ap_device_optical_status || row.ap_optical_status,
+    apRxPower: row.ap_rx_power,
+    switchBackendStatus: row.switch_device_optical_status || row.switch_optical_status,
+    switchRxPower: row.switch_rx_power,
+    model: row.model,
+    opticalApplicable: row.ap_optical_applicable,
+    freshness,
+  }).overall
+  return toTracksidePresentation(presentation)
+}
+
+function toTracksidePresentation(
+  presentation: ReturnType<typeof opticalStatusPresentation>,
+): TracksideOpticalPresentation {
+  return {
+    label: presentation.label,
+    tagType: presentation.tagType,
+    className: classByStatus[presentation.status] || 'optical-unknown',
   }
 }
 

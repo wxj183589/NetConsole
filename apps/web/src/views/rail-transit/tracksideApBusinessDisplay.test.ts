@@ -5,7 +5,10 @@ import {
   displaySwitchVendor,
   displayTracksideSnapshotTime,
   displayTracksideValue,
+  tracksideBusinessOpticalPresentation,
+  tracksideDeviceOpticalPresentation,
   tracksideOpticalPresentation,
+  tracksideRxPresentation,
 } from './tracksideApBusinessDisplay'
 
 describe('trackside AP business display', () => {
@@ -48,5 +51,35 @@ describe('trackside AP business display', () => {
     expect(displayTracksideSnapshotTime('2026-08-03T10:00:00+08:00', 'current')).toBe(
       '2026-08-03T10:00:00+08:00',
     )
+  })
+
+  it('uses the fixed receive threshold even when the switch backend status is normal', () => {
+    expect(tracksideRxPresentation('-19.10', 'normal')).toMatchObject({
+      label: '光衰大',
+      tagType: 'danger',
+      className: 'optical-alarm',
+    })
+    expect(tracksideBusinessOpticalPresentation({
+      model: 'WA6528X-E',
+      ap_rx_power: '-7.72',
+      ap_device_optical_status: 'normal',
+      switch_rx_power: '-19.10',
+      switch_device_optical_status: 'normal',
+    })).toMatchObject({ label: '光衰大', tagType: 'danger' })
+  })
+
+  it('keeps WA6522 out of both side and combined optical alarms', () => {
+    expect(tracksideRxPresentation('-30', 'critical', 'fresh', 'wa6522')).toMatchObject({
+      label: '不适用',
+      tagType: 'info',
+    })
+    expect(tracksideBusinessOpticalPresentation({
+      model: 'wa6522',
+      ap_rx_power: '-30',
+      ap_device_optical_status: 'critical',
+      switch_rx_power: '-30',
+      switch_device_optical_status: 'critical',
+    }).label).toBe('不适用')
+    expect(tracksideDeviceOpticalPresentation('critical', 'wa6522').label).toBe('不适用')
   })
 })
