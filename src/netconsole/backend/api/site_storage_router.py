@@ -20,6 +20,9 @@ from netconsole.models.api.site_storage import (
     SiteImportInspectRequest,
     SiteImportRequest,
     SiteTaskResponse,
+    SiteTrashRequest,
+    SiteTrashResponse,
+    SiteUpdateRequest,
 )
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.site_lifecycle import (
@@ -113,6 +116,43 @@ def active_site(request: Request) -> dict[str, object]:
 )
 def get_site(request: Request, site_id: str) -> dict[str, object]:
     return _call(lambda: _sites(request).get_site(site_id))
+
+
+@router.patch(
+    "/sites/{site_id}",
+    summary="修改局点信息",
+    description="只更新显示名称和基础信息，不修改稳定 ID、物理目录或历史关联。",
+    dependencies=[Depends(_desktop), Depends(_persistent_storage)],
+)
+def update_site(
+    request: Request, site_id: str, payload: SiteUpdateRequest
+) -> dict[str, object]:
+    return _call(
+        lambda: _sites(request).update_site_info(
+            site_id,
+            display_name=payload.display_name,
+            line_name=payload.line_name,
+            project_type=payload.project_type,
+        )
+    )
+
+
+@router.post(
+    "/sites/{site_id}/trash",
+    response_model=SiteTrashResponse,
+    summary="安全删除普通局点",
+    description="将非当前普通局点原子移动到数据根 .trash 后再注销 Registry。",
+    dependencies=[Depends(_desktop), Depends(_persistent_storage)],
+)
+def trash_site(
+    request: Request, site_id: str, payload: SiteTrashRequest
+) -> SiteTrashResponse:
+    result = _call(
+        lambda: _cleanup(request).trash_site(
+            site_id, confirm_display_name=payload.confirm_display_name
+        )
+    )
+    return SiteTrashResponse.model_validate(result)
 
 
 @router.post(
@@ -486,13 +526,27 @@ def _call(callback):
     try:
         return callback()
     except SiteStorageError as exc:
-        status_code = (
-            404
-            if exc.code == "SITE_NOT_FOUND"
-            else 409
-            if exc.code.endswith(("CONFLICT", "EXISTS", "BLOCKED", "ACTIVE_TASKS"))
-            else 422
-        )
+        if exc.code == "SITE_NOT_FOUND":
+            status_code = 404
+        elif exc.code == "SITE_TRASH_LOCKED":
+            status_code = 423
+        elif exc.code in {
+            "SITE_INFO_UPDATE_FAILED",
+            "SITE_TRASH_FAILED",
+            "SITE_TRASH_ROLLBACK_FAILED",
+        }:
+            status_code = 503
+        elif exc.code.endswith(
+            ("CONFLICT", "EXISTS", "BLOCKED", "ACTIVE_TASKS")
+        ) or exc.code in {
+            "SITE_TRASH_CURRENT",
+            "SITE_TRASH_DEMO",
+            "SITE_TRASH_EMPTY_SHELL",
+            "SITE_TRASH_PATH_INVALID",
+        }:
+            status_code = 409
+        else:
+            status_code = 422
         detail: dict[str, object] = {"code": exc.code, "message": str(exc)}
         if exc.details:
             detail["details"] = exc.details

@@ -66,6 +66,98 @@ def test_site_registry_create_list_and_activate(tmp_path: Path) -> None:
     assert activated.json()["restart_required"] is True
 
 
+def test_site_info_patch_updates_summary_and_rejects_duplicate_name(
+    tmp_path: Path,
+) -> None:
+    client = _client(tmp_path)
+    for site_id, name in (("line-1", "一号线"), ("line-2", "二号线")):
+        response = client.post(
+            "/api/v1/sites", json={"site_id": site_id, "display_name": name}
+        )
+        assert response.status_code == 201, response.text
+
+    updated = client.patch(
+        "/api/v1/sites/line-1",
+        json={
+            "display_name": " 杭州地铁10号线 ",
+            "line_name": "杭州地铁10号线",
+            "project_type": "PIS车地无线系统",
+        },
+    )
+
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["display_name"] == "杭州地铁10号线"
+    assert updated.json()["line_name"] == "杭州地铁10号线"
+    assert updated.json()["project_type"] == "PIS车地无线系统"
+    conflict = client.patch(
+        "/api/v1/sites/line-2",
+        json={
+            "display_name": "杭州地铁10号线",
+            "line_name": None,
+            "project_type": None,
+        },
+    )
+    assert conflict.status_code == 409
+    assert conflict.json()["detail"]["code"] == "SITE_NAME_CONFLICT"
+
+
+def test_site_trash_requires_exact_name_and_rejects_current_demo_and_tasks(
+    tmp_path: Path,
+) -> None:
+    client = _client(tmp_path)
+    created = client.post(
+        "/api/v1/sites", json={"site_id": "line-1", "display_name": "一号线"}
+    )
+    assert created.status_code == 201, created.text
+
+    mismatch = client.post(
+        "/api/v1/sites/line-1/trash",
+        json={"confirm_display_name": " 一号线 "},
+    )
+    assert mismatch.status_code == 422
+    assert mismatch.json()["detail"]["code"] == "SITE_TRASH_CONFIRMATION_MISMATCH"
+
+    demo = client.post(
+        "/api/v1/sites/demo/trash", json={"confirm_display_name": "演示局点"}
+    )
+    assert demo.status_code == 409
+    assert demo.json()["detail"]["code"] in {"SITE_TRASH_CURRENT", "SITE_TRASH_DEMO"}
+
+    client.app.state.task_service.create_external_task(
+        task_id="running-trash-task",
+        task_type="site_export",
+        task_name="导出局点",
+        source="external",
+        site_name="line-1",
+    )
+    blocked = client.post(
+        "/api/v1/sites/line-1/trash", json={"confirm_display_name": "一号线"}
+    )
+    assert blocked.status_code == 409
+    assert blocked.json()["detail"]["code"] == "SITE_HAS_ACTIVE_TASKS"
+
+
+def test_site_trash_moves_non_current_site_and_refreshes_list(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    display_name = "长" * 65
+    created = client.post(
+        "/api/v1/sites", json={"site_id": "line-1", "display_name": display_name}
+    )
+    source = Path(created.json()["path"])
+
+    trashed = client.post(
+        "/api/v1/sites/line-1/trash", json={"confirm_display_name": display_name}
+    )
+
+    assert trashed.status_code == 200, trashed.text
+    assert trashed.json()["recoverable"] is True
+    assert not source.exists()
+    assert trashed.json()["trash_path"].startswith(".trash/")
+    assert all(
+        item["site_id"] != "line-1" for item in client.get("/api/v1/sites").json()
+    )
+
+
 def test_legacy_chinese_site_is_listed_and_activated_by_stable_id(
     tmp_path: Path,
 ) -> None:

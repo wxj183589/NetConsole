@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -16,10 +18,12 @@ from netconsole.services.site_storage import (
     DataRootApplicationService,
     SiteApplicationService,
     SitePackageService,
+    SiteRecord,
     SiteStorageError,
     validate_display_name,
     validate_site_id,
 )
+from netconsole.services.site_lifecycle import SiteCleanupApplicationService
 
 
 def _paths(tmp_path: Path) -> PathResolver:
@@ -103,6 +107,217 @@ def test_duplicate_site_id_and_display_name_are_rejected(tmp_path: Path) -> None
 
     assert duplicate_id.value.code == "SITE_ALREADY_EXISTS"
     assert duplicate_name.value.code == "SITE_ALREADY_EXISTS"
+
+
+def test_site_info_update_persists_nullable_fields_without_renaming_directory(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    service = SiteApplicationService(paths)
+    created = service.create_site("line-12", "十二号线")
+    original_path = Path(str(created["path"]))
+
+    updated = service.update_site_info(
+        "line-12",
+        display_name="  杭州地铁10号线  ",
+        line_name=" 杭州地铁10号线 ",
+        project_type=" PIS车地无线系统 ",
+    )
+
+    assert updated["site_id"] == "line-12"
+    assert updated["display_name"] == "杭州地铁10号线"
+    assert updated["line_name"] == "杭州地铁10号线"
+    assert updated["project_type"] == "PIS车地无线系统"
+    assert Path(str(updated["path"])) == original_path
+    assert original_path.is_dir()
+    reloaded = SiteApplicationService(paths).get_site("line-12")
+    assert reloaded["display_name"] == "杭州地铁10号线"
+    assert reloaded["line_name"] == "杭州地铁10号线"
+    assert reloaded["project_type"] == "PIS车地无线系统"
+    metadata = json.loads(
+        (original_path / "site_meta.json").read_text(encoding="utf-8")
+    )
+    assert metadata["display_name"] == "杭州地铁10号线"
+    assert metadata["line_name"] == "杭州地铁10号线"
+    assert metadata["system_type"] == "PIS车地无线系统"
+
+    cleared = service.update_site_info(
+        "line-12",
+        display_name="杭州地铁10号线",
+        line_name="   ",
+        project_type="",
+    )
+    assert cleared["line_name"] is None
+    assert cleared["project_type"] is None
+
+
+def test_site_info_duplicate_name_restores_original_manifest(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    service = SiteApplicationService(paths)
+    service.create_site("line-1", "一号线")
+    service.create_site("line-2", "二号线")
+    metadata_path = paths.site_dir("line-2") / "site_meta.json"
+    before = metadata_path.read_bytes()
+
+    with pytest.raises(SiteStorageError) as conflict:
+        service.update_site_info(
+            "line-2",
+            display_name="一号线",
+            line_name="被回滚的线路",
+            project_type="信号系统",
+        )
+
+    assert conflict.value.code == "SITE_NAME_CONFLICT"
+    assert metadata_path.read_bytes() == before
+    assert service.get_site("line-2")["display_name"] == "二号线"
+
+
+def test_legacy_registry_without_site_info_fields_returns_null(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    service = SiteApplicationService(paths)
+    service.create_site("line-1", "一号线")
+    registry = json.loads(service.registry.path.read_text(encoding="utf-8"))
+    registry["sites"][0].pop("line_name", None)
+    registry["sites"][0].pop("project_type", None)
+    service.registry.path.write_text(
+        json.dumps(registry, ensure_ascii=False), encoding="utf-8"
+    )
+    metadata_path = paths.site_dir("line-1") / "site_meta.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata.pop("line_name", None)
+    metadata.pop("system_type", None)
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    loaded = SiteApplicationService(paths).get_site("line-1")
+
+    assert loaded["line_name"] is None
+    assert loaded["project_type"] is None
+
+
+def test_site_trash_moves_directory_and_unregisters_site(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    sites = SiteApplicationService(paths)
+    if not paths.site_dir("demo").is_dir():
+        sites.create_site("demo", "演示局点")
+    created = sites.create_site("line-1", "一号线")
+    source = Path(str(created["path"]))
+
+    result = SiteCleanupApplicationService(paths, sites).trash_site(
+        "line-1", confirm_display_name="一号线"
+    )
+
+    destination = paths.data_root / str(result["trash_path"])
+    assert not source.exists()
+    assert destination.is_dir()
+    assert destination.parent == paths.trash_dir
+    assert (destination / ".netconsole-trash.json").is_file()
+    with pytest.raises(SiteStorageError) as missing:
+        sites.get_site("line-1")
+    assert missing.value.code == "SITE_NOT_FOUND"
+
+
+def test_site_trash_catalog_failure_rolls_directory_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _paths(tmp_path)
+    sites = SiteApplicationService(paths)
+    sites.create_site("demo", "演示局点")
+    created = sites.create_site("line-1", "一号线")
+    source = Path(str(created["path"]))
+    cleanup = SiteCleanupApplicationService(paths, sites)
+    monkeypatch.setattr(
+        cleanup.registry,
+        "unregister",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("catalog failed")),
+    )
+
+    with pytest.raises(SiteStorageError) as failed:
+        cleanup.trash_site("line-1", confirm_display_name="一号线")
+
+    assert failed.value.code == "SITE_TRASH_FAILED"
+    assert source.is_dir()
+    assert sites.get_site("line-1")["display_name"] == "一号线"
+
+
+def test_site_trash_rejects_out_of_root_and_locked_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _paths(tmp_path)
+    sites = SiteApplicationService(paths)
+    cleanup = SiteCleanupApplicationService(paths, sites)
+    outside = tmp_path / "outside-site"
+    outside.mkdir()
+    unsafe = cleanup.registry.get
+    monkeypatch.setattr(
+        cleanup.registry,
+        "get",
+        lambda _site_id: SiteRecord("line-unsafe", "越界局点", outside),
+    )
+    with pytest.raises(SiteStorageError) as invalid:
+        cleanup.trash_site("line-unsafe", confirm_display_name="越界局点")
+    assert invalid.value.code == "SITE_TRASH_PATH_INVALID"
+
+    monkeypatch.setattr(cleanup.registry, "get", unsafe)
+    if not paths.site_dir("demo").is_dir():
+        sites.create_site("demo", "演示局点")
+    sites.create_site("line-locked", "锁定局点")
+    original_replace = os.replace
+
+    def locked_replace(source: object, destination: object) -> None:
+        if Path(source) == paths.site_dir("line-locked"):
+            raise PermissionError("locked")
+        original_replace(source, destination)
+
+    monkeypatch.setattr("netconsole.services.site_lifecycle.os.replace", locked_replace)
+    with pytest.raises(SiteStorageError) as locked:
+        cleanup.trash_site("line-locked", confirm_display_name="锁定局点")
+    assert locked.value.code == "SITE_TRASH_LOCKED"
+    assert paths.site_dir("line-locked").is_dir()
+
+
+def test_site_trash_rejects_registry_symlink_alias(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    sites = SiteApplicationService(paths)
+    sites.create_site("demo", "演示局点")
+    sites.create_site("line-target", "目标局点")
+    sites.create_site("line-link", "链接局点")
+    link = paths.site_dir("line-link")
+    displaced = tmp_path / "line-link-original"
+    os.replace(link, displaced)
+    try:
+        link.symlink_to(paths.site_dir("line-target"), target_is_directory=True)
+    except OSError as exc:
+        os.replace(displaced, link)
+        pytest.skip(f"当前 Windows 环境不允许创建目录符号链接：{exc}")
+
+    cleanup = SiteCleanupApplicationService(paths, sites)
+    with pytest.raises(SiteStorageError) as invalid:
+        cleanup.trash_site("line-link", confirm_display_name="链接局点")
+
+    assert invalid.value.code == "SITE_TRASH_PATH_INVALID"
+    assert paths.site_dir("line-target").is_dir()
+    assert not paths.trash_dir.exists()
+
+
+def test_concurrent_site_trash_only_moves_once(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    sites = SiteApplicationService(paths)
+    sites.create_site("demo", "演示局点")
+    sites.create_site("line-1", "一号线")
+    cleanup = SiteCleanupApplicationService(paths, sites)
+
+    def run() -> str:
+        try:
+            cleanup.trash_site("line-1", confirm_display_name="一号线")
+            return "moved"
+        except SiteStorageError as exc:
+            return exc.code
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _index: run(), range(2)))
+
+    assert results.count("moved") == 1
+    assert len(list(paths.trash_dir.glob("line-1-*"))) == 1
 
 
 def test_data_root_rejects_project_and_nested_paths(tmp_path: Path) -> None:

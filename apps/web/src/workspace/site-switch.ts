@@ -1,4 +1,9 @@
 export const BEFORE_SITE_SWITCH_EVENT = 'netconsole:before-site-switch'
+export const SITE_CONTEXT_CHANGED_EVENT = 'netconsole:site-context-changed'
+
+export function notifySiteContextChanged(): void {
+  window.dispatchEvent(new CustomEvent(SITE_CONTEXT_CHANGED_EVENT))
+}
 
 export class SiteSwitchCancelled extends Error {
   constructor() {

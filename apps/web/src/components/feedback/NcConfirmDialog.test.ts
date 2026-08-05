@@ -214,6 +214,39 @@ describe('NcConfirmDialog', () => {
     wrapper.unmount()
   })
 
+  it('requires an exact typed name for destructive confirmations', async () => {
+    const wrapper = mount(NcConfirmDialog, {
+      global: {
+        stubs: {
+          ElDialog: DialogStub,
+          ElButton: ButtonStub,
+          ElAlert: Passthrough,
+          ElCheckbox: CheckboxStub,
+          ElIcon: Passthrough,
+        },
+      },
+    })
+    const promise = useConfirm().confirm({
+      type: 'DESTRUCTIVE',
+      title: '删除局点',
+      message: '局点将移入 .trash。',
+      confirmationText: '杭州地铁10号线',
+      confirmationLabel: '输入完整局点名称',
+      confirmText: '移入 .trash',
+    })
+    await flushPromises()
+    const confirmButton = wrapper.findAll('button').find((button) => button.text() === '移入 .trash')!
+    expect(confirmButton.attributes('disabled')).toBeDefined()
+
+    await wrapper.get('[data-testid="nc-confirm-typed-input"]').setValue('杭州地铁10号')
+    expect(confirmButton.attributes('disabled')).toBeDefined()
+    await wrapper.get('[data-testid="nc-confirm-typed-input"]').setValue('杭州地铁10号线')
+    await confirmButton.trigger('click')
+
+    await expect(promise).resolves.toBe(true)
+    wrapper.unmount()
+  })
+
   it('cancels through the close button and Escape without running the action', async () => {
     const wrapper = mount(NcConfirmDialog, {
       global: { stubs: { ElDialog: DialogStub, ElButton: ButtonStub, ElAlert: Passthrough, ElCheckbox: CheckboxStub, ElIcon: Passthrough } },

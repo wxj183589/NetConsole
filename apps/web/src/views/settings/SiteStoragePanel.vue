@@ -1,15 +1,15 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowDown } from '@element-plus/icons-vue'
+import { ArrowDown, MoreFilled } from '@element-plus/icons-vue'
 
-import { activateSite, applySiteCleanup, auditSite, createSite, exportSite, getDataRoot, getLatestSiteAudit, importSite, inspectSitePackage, listSites, migrateDataRoot, migrateSite, preflightSiteActivation, prepareSiteCleanup, rebuildDemoSite, validateDataRoot, type DataRootSnapshot, type SiteConflictChoice, type SiteConflictResolution, type SitePackageInspection, type SitePackageType, type SiteRecord } from '../../api/siteStorage'
+import { activateSite, applySiteCleanup, auditSite, createSite, exportSite, getDataRoot, getLatestSiteAudit, importSite, inspectSitePackage, listSites, migrateDataRoot, migrateSite, preflightSiteActivation, prepareSiteCleanup, rebuildDemoSite, trashSite, updateSite, validateDataRoot, type DataRootSnapshot, type SiteConflictChoice, type SiteConflictResolution, type SitePackageInspection, type SitePackageType, type SiteRecord } from '../../api/siteStorage'
 import { ApiRequestError } from '../../api/client'
 import { getPlatformAdapter } from '../../platform/runtime'
 import { getTask } from '../../api/tasks'
 import { useConfirm } from '../../components/feedback/useConfirm'
 import { useWorkspaceStore } from '../../stores/workspace'
-import { coordinateSiteSwitch } from '../../workspace/site-switch'
+import { coordinateSiteSwitch, notifySiteContextChanged } from '../../workspace/site-switch'
 
 const props = defineProps<{ focused?: boolean; switchBlocked?: boolean }>()
 
@@ -35,6 +35,11 @@ const importDisplayName = ref('')
 const importTargetSiteId = ref('')
 const importRawOnly = ref(false)
 const conflictChoices = ref<Record<string, { choice: SiteConflictChoice; manualValue: string }>>({})
+const editDialogVisible = ref(false)
+const editMode = ref<'full' | 'rename'>('full')
+const editingSite = ref<SiteRecord | null>(null)
+const editForm = ref({ display_name: '', line_name: '', project_type: '' })
+const projectTypeOptions = ['PIS车地无线系统', '信号系统', '通信系统', '综合监控系统', '其他']
 const desktopOnly = getPlatformAdapter().hostType === 'electron'
 const { confirm: confirmAction } = useConfirm()
 const workspace = useWorkspaceStore()
@@ -219,6 +224,111 @@ async function rebuildDemo(site: SiteRecord): Promise<void> {
   finally { busy.value = false }
 }
 
+function openSiteEditor(site: SiteRecord, mode: 'full' | 'rename'): void {
+  editingSite.value = site
+  editMode.value = mode
+  editForm.value = {
+    display_name: String(site.display_name || ''),
+    line_name: siteInfoText(site.line_name),
+    project_type: siteInfoText(site.project_type),
+  }
+  editDialogVisible.value = true
+}
+
+async function saveSiteInfo(): Promise<void> {
+  const site = editingSite.value
+  if (!site) return
+  const displayName = editForm.value.display_name.trim()
+  const lineName = editForm.value.line_name.trim()
+  const projectType = editForm.value.project_type.trim()
+  if (!displayName) {
+    ElMessage.warning('局点名称不能为空')
+    return
+  }
+  if (displayName.length > 64) {
+    ElMessage.warning('局点名称不能超过 64 个字符')
+    return
+  }
+  if ([displayName, lineName, projectType].some((value) => /[\u0000-\u001f\u007f]/.test(value))) {
+    ElMessage.warning('局点信息不能包含控制字符')
+    return
+  }
+  busy.value = true
+  try {
+    await updateSite(site.site_id, {
+      display_name: displayName,
+      line_name: lineName || null,
+      project_type: projectType || null,
+    })
+    editDialogVisible.value = false
+    await reload()
+    await getPlatformAdapter().refreshSiteContext()
+    notifySiteContextChanged()
+    ElMessage.success(editMode.value === 'rename' ? '局点已重命名' : '局点信息已保存')
+  } catch (cause) {
+    showError(cause, '局点信息保存失败')
+  } finally {
+    busy.value = false
+  }
+}
+
+async function deleteSite(site: SiteRecord): Promise<void> {
+  if (site.active) {
+    ElMessage.warning('当前局点不可删除，请先切换到其他局点。')
+    return
+  }
+  if (site.site_kind === 'demo') {
+    ElMessage.warning('内置 Demo 局点请使用“重建 Demo”')
+    return
+  }
+  if (site.classification === 'empty_shell') {
+    ElMessage.warning('空壳局点请使用“清理空壳局点”')
+    return
+  }
+  const confirmed = await confirmAction({
+    type: 'DESTRUCTIVE',
+    title: '删除局点',
+    message: `确认将“${site.display_name}”移入数据根 .trash 目录？`,
+    detail: [
+      `局点 ID：${site.site_id}`,
+      `数据目录：${site.path || '不可用'}`,
+      `数据大小：${formatBytes(site.size_bytes)}`,
+      '删除后原目录会从局点清单移除，但数据仍保留在 .trash 中。',
+    ].join('\n'),
+    notice: '请输入完整局点名称。当前操作不会递归永久删除原始数据。',
+    confirmationText: site.display_name,
+    confirmationLabel: `输入“${site.display_name}”以确认`,
+    confirmText: '移入 .trash',
+    closeOnEscape: false,
+  })
+  if (!confirmed) return
+  busy.value = true
+  try {
+    await trashSite(site.site_id, site.display_name)
+    await reload()
+    await getPlatformAdapter().refreshSiteContext()
+    notifySiteContextChanged()
+    ElMessage.success('局点已移入 .trash')
+  } catch (cause) {
+    blockingTasks.value = blockingTasksFrom(cause)
+    showError(cause, '局点删除失败')
+  } finally {
+    busy.value = false
+  }
+}
+
+async function handleSiteAction(site: SiteRecord, command: unknown): Promise<void> {
+  switch (String(command)) {
+    case 'edit': openSiteEditor(site, 'full'); break
+    case 'rename': openSiteEditor(site, 'rename'); break
+    case 'open': await openSiteDirectory(site); break
+    case 'migrate': await moveSite(site); break
+    case 'cleanup': await cleanupSite(site); break
+    case 'rebuild-demo': await rebuildDemo(site); break
+    case 'delete': await deleteSite(site); break
+  }
+}
+
 async function exportCurrent(packageType: SitePackageType): Promise<void> {
   const current = sites.value.find((site) => site.active)
   if (!current) return
@@ -318,13 +428,11 @@ async function chooseRoot(): Promise<void> {
   finally { busy.value = false }
 }
 
-async function moveCurrentSite(): Promise<void> {
-  const current = sites.value.find((site) => site.active)
-  if (!current) return
+async function moveSite(site: SiteRecord): Promise<void> {
   const selected = await getPlatformAdapter().selectDataRootDirectory()
   if (selected.cancelled || !selected.path) return
   busy.value = true
-  try { const task = await migrateSite(current.site_id, selected.path); await openTask(task.task_id); ElMessage.success('局点迁移任务已提交') }
+  try { const task = await migrateSite(site.site_id, selected.path); await openTask(task.task_id); ElMessage.success('局点迁移任务已提交') }
   catch (cause) { showError(cause, '局点迁移失败') }
   finally { busy.value = false }
 }
@@ -337,7 +445,11 @@ async function restoreDefaultRoot(): Promise<void> {
   finally { busy.value = false }
 }
 
-async function openCurrentSite(): Promise<void> {
+async function openSiteDirectory(site: SiteRecord): Promise<void> {
+  if (!site.active) {
+    ElMessage.warning('为避免开放任意路径，仅当前局点可直接打开目录')
+    return
+  }
   const result = await getPlatformAdapter().executeSettingsAction('open_current_site')
   if (!result.success) showError(new Error(result.error || '打开目录失败'), '打开目录失败')
 }
@@ -387,6 +499,14 @@ function classificationLabel(value: string): string { return ({ active_site: '�
 function actionLabel(value: string): string { return ({ audit_required: '需要审计', safe_delete_to_recycle: '可安全移入回收区', backup_then_rebuild: '备份后重建 Demo', keep_and_review: '保留并复核' } as Record<string, string>)[value] || value }
 function integrityLabel(value: SiteRecord['data_integrity']): string { return ({ ok: '正常', failed: '异常', unknown: '待审计' } as const)[value] || '待审计' }
 function classificationTag(site: SiteRecord): 'success' | 'warning' | 'danger' | 'info' { const value = site.classification || 'unknown'; if (value === 'managed_demo') return 'success'; if (value === 'empty_shell') return 'danger'; if (value.startsWith('legacy')) return 'warning'; return 'info' }
+function siteInfoText(value: string | null | undefined): string { return String(value || '').trim() }
+function deleteDisabled(site: SiteRecord): boolean { return site.active || site.site_kind === 'demo' || site.classification === 'empty_shell' || busy.value }
+function deleteDisabledReason(site: SiteRecord): string {
+  if (site.active) return '当前局点不可删除，请先切换到其他局点。'
+  if (site.site_kind === 'demo') return '内置 Demo 局点请使用“重建 Demo”'
+  if (site.classification === 'empty_shell') return '空壳局点请使用“清理空壳局点”'
+  return ''
+}
 function packageTypeLabel(value: SitePackageType): string { return ({ full_migration: '完整迁移包', sanitized_share: '脱敏分享包', field_collection: '现场采集包', collection_return: '采集回传包' } as const)[value] }
 function displayValue(value: unknown): string { if (value === null || value === undefined || value === '') return '空'; if (typeof value === 'object') return JSON.stringify(value); return String(value) }
 </script>
@@ -438,10 +558,66 @@ function displayValue(value: unknown): string { if (value === null || value === 
     <div v-if="root" class="root-summary"><span>{{ root.persistent ? '全局数据根' : '临时测试数据根' }}</span><code :title="root.persistent ? root.data_root : undefined">{{ root.data_root }}</code><span>{{ root.site_count }} 个局点</span><template v-if="root.persistent"><el-button data-testid="migrate-data-root" size="small" @click="chooseRoot">选择并迁移</el-button><el-button data-testid="restore-data-root" size="small" :disabled="root.data_root === root.default_data_root" @click="restoreDefaultRoot">恢复默认路径</el-button></template></div>
     <div class="site-list">
       <article v-for="site in sites" :key="site.site_id" class="site-item" :class="{ active: site.active }">
-        <div class="site-main"><strong>{{ site.display_name }}</strong><el-tag v-if="site.active" type="success">当前</el-tag><el-tag size="small" :type="classificationTag(site)">{{ classificationLabel(site.classification || 'unknown') }}</el-tag><code>{{ site.site_id }}</code><span>{{ formatBytes(site.size_bytes) }}</span><span>完整性：{{ integrityLabel(site.data_integrity) }}</span></div>
-        <div v-if="root?.persistent" class="site-actions"><el-button :data-testid="`audit-site-${site.site_id}`" size="small" :disabled="busy" @click="auditSelectedSite(site)">审计</el-button><el-button v-if="site.audited_at" :data-testid="`show-audit-${site.site_id}`" size="small" :disabled="busy" @click="showAudit(site)">查看清单</el-button><el-button v-if="site.classification === 'empty_shell'" :data-testid="`cleanup-site-${site.site_id}`" size="small" type="danger" plain :disabled="site.active || busy" @click="cleanupSite(site)">安全清理</el-button><el-button v-if="site.site_kind === 'demo'" :data-testid="`rebuild-demo-${site.site_id}`" size="small" :disabled="site.active || busy" @click="rebuildDemo(site)">重建 Demo</el-button><el-button :data-testid="`switch-site-${site.site_id}`" size="small" :disabled="site.active || busy" @click="switchSite(site)">{{ site.active ? '当前局点' : '切换' }}</el-button><el-button v-if="site.active" size="small" @click="openCurrentSite">打开目录</el-button><el-button v-if="site.active" size="small" :disabled="busy" @click="moveCurrentSite">迁移局点</el-button></div>
+        <div class="site-content">
+          <div class="site-main">
+            <strong>{{ site.display_name }}</strong>
+            <el-tag v-if="site.active" type="success">当前</el-tag>
+            <el-tag size="small" :type="classificationTag(site)">{{ classificationLabel(site.classification || 'unknown') }}</el-tag>
+          </div>
+          <div class="site-info-tags">
+            <el-tag v-if="siteInfoText(site.line_name)" size="small" effect="plain">线路：{{ siteInfoText(site.line_name) }}</el-tag>
+            <el-tag v-else size="small" type="warning" effect="plain">线路未填写</el-tag>
+            <el-tag v-if="siteInfoText(site.project_type)" size="small" effect="plain">项目类型：{{ siteInfoText(site.project_type) }}</el-tag>
+            <el-tag v-else size="small" type="warning" effect="plain">项目类型未填写</el-tag>
+          </div>
+          <div class="site-facts"><code>{{ site.site_id }}</code><span>{{ formatBytes(site.size_bytes) }}</span><span>完整性：{{ integrityLabel(site.data_integrity) }}</span></div>
+        </div>
+        <div v-if="root?.persistent" class="site-actions">
+          <el-button :data-testid="`audit-site-${site.site_id}`" size="small" :disabled="busy" @click="auditSelectedSite(site)">审计</el-button>
+          <el-button v-if="site.audited_at" :data-testid="`show-audit-${site.site_id}`" size="small" :disabled="busy" @click="showAudit(site)">查看清单</el-button>
+          <el-button :data-testid="`switch-site-${site.site_id}`" size="small" :disabled="site.active || busy" @click="switchSite(site)">{{ site.active ? '当前局点' : '切换' }}</el-button>
+          <el-dropdown :disabled="busy" trigger="click" @command="handleSiteAction(site, $event)">
+            <el-button :data-testid="`more-site-${site.site_id}`" size="small" :disabled="busy">
+              更多<el-icon class="el-icon--right"><MoreFilled /></el-icon>
+            </el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="edit">编辑局点信息</el-dropdown-item>
+                <el-dropdown-item command="rename">重命名</el-dropdown-item>
+                <el-dropdown-item command="open" :disabled="!site.active">打开目录</el-dropdown-item>
+                <el-dropdown-item command="migrate">迁移局点</el-dropdown-item>
+                <el-dropdown-item v-if="site.classification === 'empty_shell'" command="cleanup" divided :disabled="site.active" :data-testid="`cleanup-site-${site.site_id}`">清理空壳局点</el-dropdown-item>
+                <el-dropdown-item v-if="site.site_kind === 'demo'" command="rebuild-demo" divided :disabled="site.active" :data-testid="`rebuild-demo-${site.site_id}`">重建 Demo</el-dropdown-item>
+                <el-dropdown-item command="delete" divided class="danger-menu-item" style="color:var(--el-color-danger)" :disabled="deleteDisabled(site)" :title="deleteDisabledReason(site)" :data-testid="`delete-site-${site.site_id}`">删除局点</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+        </div>
       </article>
     </div>
+    <el-dialog v-model="editDialogVisible" class="site-edit-dialog" width="min(620px, calc(100vw - 32px))" :close-on-click-modal="false" :title="editMode === 'rename' ? '重命名局点' : '编辑局点信息'">
+      <el-form label-position="top">
+        <el-form-item label="局点名称" required>
+          <el-input v-model="editForm.display_name" maxlength="64" show-word-limit data-testid="site-display-name-input" />
+        </el-form-item>
+        <template v-if="editMode === 'full'">
+          <el-form-item label="线路名称">
+            <el-input v-model="editForm.line_name" maxlength="128" placeholder="可选" data-testid="site-line-name-input" />
+          </el-form-item>
+          <el-form-item label="项目类型">
+            <el-select v-model="editForm.project_type" filterable allow-create default-first-option clearable class="full-width" placeholder="选择或输入项目类型" data-testid="site-project-type-input">
+              <el-option v-for="option in projectTypeOptions" :key="option" :label="option" :value="option" />
+            </el-select>
+          </el-form-item>
+        </template>
+        <el-form-item label="局点 ID"><el-input :model-value="editingSite?.site_id" readonly /></el-form-item>
+        <el-form-item label="数据目录"><el-input :model-value="editingSite?.path || '不可用'" readonly /></el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button :disabled="busy" @click="editDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="busy" data-testid="save-site-info" @click="saveSiteInfo">保存</el-button>
+      </template>
+    </el-dialog>
     <el-dialog v-model="importDialogVisible" class="site-import-dialog" width="min(920px, 94vw)" :close-on-click-modal="false" title="数据包导入预检">
       <template v-if="importInspection">
         <el-descriptions :column="2" border>
@@ -527,5 +703,5 @@ function displayValue(value: unknown): string { if (value === null || value === 
 
 <style scoped>
 .el-alert{margin-top:14px}
-.storage-panel{padding:18px 20px;scroll-margin-top:16px;background:var(--el-bg-color);border:1px solid var(--el-border-color-light);border-radius:8px;transition:outline-color .18s ease,box-shadow .18s ease}.storage-panel--focused{outline:1px solid var(--nc-primary);box-shadow:0 0 0 3px color-mix(in srgb,var(--nc-primary),transparent 82%)}.panel-heading,.actions,.root-summary,.site-item,.site-main,.site-actions{display:flex;align-items:center;gap:10px}.panel-heading{justify-content:space-between;gap:18px}.panel-heading h2{margin:0 0 5px;font-size:17px}.panel-heading p{margin:0;color:var(--nc-text-secondary);font-size:13px}.actions,.site-actions{flex-wrap:wrap;justify-content:flex-end}.blocking-tasks{display:grid;gap:8px;margin-top:10px}.blocking-task{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 12px;border:1px solid var(--el-color-warning-light-5);border-radius:6px;background:var(--el-color-warning-light-9)}.blocking-task>div{display:flex;align-items:center;gap:8px;min-width:0;flex-wrap:wrap}.blocking-task code{overflow-wrap:anywhere}.blocking-task p{width:100%;margin:0;color:var(--nc-text-secondary);font-size:12px}.root-summary{margin:16px 0;padding:10px 12px;background:var(--nc-surface-muted);border-radius:6px;flex-wrap:wrap}.root-summary code{flex:1;min-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.site-list{display:grid;gap:8px}.site-item{justify-content:space-between;padding:11px 12px;border:1px solid var(--el-border-color-lighter);border-radius:6px}.site-item.active{border-color:var(--el-color-success-light-5);background:var(--el-color-success-light-9)}.site-main{min-width:0;flex-wrap:wrap}.site-main strong{font-size:14px}.site-main code{color:var(--nc-text-secondary)}.site-main span{color:var(--nc-text-secondary);font-size:12px}.preflight-grid{display:grid;grid-template-columns:repeat(4,minmax(120px,1fr));gap:8px;margin:14px 0}.preflight-grid span{padding:9px 10px;background:var(--nc-surface-muted);border-radius:6px;color:var(--nc-text-secondary);font-size:12px}.preflight-grid strong{display:block;margin-bottom:2px;color:var(--nc-text-primary);font-size:16px}.preflight-grid .danger strong{color:var(--el-color-danger)}.import-options{display:grid;gap:14px;margin-top:16px}.import-options :deep(.el-form){display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.import-options :deep(.el-form-item){margin-bottom:0}.full-width{width:100%}.raw-only-option{margin:14px 0}.conflict-section{margin-top:4px}.section-heading{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:8px}.section-heading span{color:var(--nc-text-secondary);font-size:12px}.conflict-table-wrap{width:100%;overflow-x:auto}.conflict-table-wrap :deep(.el-table){min-width:980px}.site-import-dialog code{overflow-wrap:anywhere}@media(max-width:900px){.panel-heading{align-items:flex-start;flex-direction:column}.actions{justify-content:flex-start}.blocking-task{align-items:flex-start;flex-direction:column}.site-item{align-items:flex-start;flex-direction:column}.site-actions{justify-content:flex-start}.preflight-grid{grid-template-columns:repeat(2,minmax(110px,1fr))}.import-options :deep(.el-form){grid-template-columns:1fr}.section-heading{align-items:flex-start;flex-direction:column}}
+.storage-panel{padding:18px 20px;scroll-margin-top:16px;background:var(--el-bg-color);border:1px solid var(--el-border-color-light);border-radius:8px;transition:outline-color .18s ease,box-shadow .18s ease}.storage-panel--focused{outline:1px solid var(--nc-primary);box-shadow:0 0 0 3px color-mix(in srgb,var(--nc-primary),transparent 82%)}.panel-heading,.actions,.root-summary,.site-item,.site-main,.site-actions,.site-info-tags,.site-facts{display:flex;align-items:center;gap:10px}.panel-heading{justify-content:space-between;gap:18px}.panel-heading h2{margin:0 0 5px;font-size:17px}.panel-heading p{margin:0;color:var(--nc-text-secondary);font-size:13px}.actions,.site-actions{flex-wrap:wrap;justify-content:flex-end}.blocking-tasks{display:grid;gap:8px;margin-top:10px}.blocking-task{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 12px;border:1px solid var(--el-color-warning-light-5);border-radius:6px;background:var(--el-color-warning-light-9)}.blocking-task>div{display:flex;align-items:center;gap:8px;min-width:0;flex-wrap:wrap}.blocking-task code{overflow-wrap:anywhere}.blocking-task p{width:100%;margin:0;color:var(--nc-text-secondary);font-size:12px}.root-summary{margin:16px 0;padding:10px 12px;background:var(--nc-surface-muted);border-radius:6px;flex-wrap:wrap}.root-summary code{flex:1;min-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.site-list{display:grid;gap:8px}.site-item{justify-content:space-between;padding:11px 12px;border:1px solid var(--el-border-color-lighter);border-radius:6px}.site-item.active{border-color:var(--el-color-success-light-5);background:var(--el-color-success-light-9)}.site-content{display:grid;min-width:0;gap:7px}.site-main,.site-info-tags,.site-facts{min-width:0;flex-wrap:wrap}.site-main strong{font-size:14px}.site-facts code{color:var(--nc-text-secondary)}.site-facts span{color:var(--nc-text-secondary);font-size:12px}.site-edit-dialog :deep(.el-form){display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 14px}.site-edit-dialog :deep(.el-form-item){min-width:0}.site-edit-dialog :deep(.el-form-item:first-child),.site-edit-dialog :deep(.el-form-item:nth-child(2)),.site-edit-dialog :deep(.el-form-item:nth-child(3)){grid-column:1/-1}.preflight-grid{display:grid;grid-template-columns:repeat(4,minmax(120px,1fr));gap:8px;margin:14px 0}.preflight-grid span{padding:9px 10px;background:var(--nc-surface-muted);border-radius:6px;color:var(--nc-text-secondary);font-size:12px}.preflight-grid strong{display:block;margin-bottom:2px;color:var(--nc-text-primary);font-size:16px}.preflight-grid .danger strong{color:var(--el-color-danger)}.import-options{display:grid;gap:14px;margin-top:16px}.import-options :deep(.el-form){display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.import-options :deep(.el-form-item){margin-bottom:0}.full-width{width:100%}.raw-only-option{margin:14px 0}.conflict-section{margin-top:4px}.section-heading{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:8px}.section-heading span{color:var(--nc-text-secondary);font-size:12px}.conflict-table-wrap{width:100%;overflow-x:auto}.conflict-table-wrap :deep(.el-table){min-width:980px}.site-import-dialog code{overflow-wrap:anywhere}@media(max-width:900px){.panel-heading{align-items:flex-start;flex-direction:column}.actions{justify-content:flex-start}.blocking-task{align-items:flex-start;flex-direction:column}.site-item{align-items:flex-start;flex-direction:column}.site-actions{justify-content:flex-start}.site-edit-dialog :deep(.el-form){grid-template-columns:1fr}.preflight-grid{grid-template-columns:repeat(2,minmax(110px,1fr))}.import-options :deep(.el-form){grid-template-columns:1fr}.section-heading{align-items:flex-start;flex-direction:column}}
 </style>

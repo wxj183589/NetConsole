@@ -96,6 +96,10 @@ class PathResolver:
         return self.data_root / "staging"
 
     @property
+    def trash_dir(self) -> Path:
+        return self.data_root / ".trash"
+
+    @property
     def agents_dir(self) -> Path:
         return self.data_root / "agents"
 

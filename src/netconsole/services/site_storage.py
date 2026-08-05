@@ -66,6 +66,8 @@ class SiteRecord:
     created_at: str = ""
     updated_at: str = ""
     remark: str = ""
+    line_name: str | None = None
+    project_type: str | None = None
 
     def to_public(self, *, include_path: bool = True) -> dict[str, object]:
         value: dict[str, object] = {
@@ -74,6 +76,8 @@ class SiteRecord:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "remark": self.remark,
+            "line_name": self.line_name,
+            "project_type": self.project_type,
         }
         if include_path:
             value["path"] = str(self.root_path)
@@ -143,9 +147,24 @@ def _atomic_json(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
-        temporary.write_text(
-            json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        with temporary.open("w", encoding="utf-8") as handle:
+            json.dump(value, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _atomic_bytes(path: Path, value: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temporary.open("wb") as handle:
+            handle.write(value)
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
@@ -187,6 +206,34 @@ def validate_display_name(value: str) -> str:
     return name
 
 
+def normalize_site_display_name(value: str) -> str:
+    name = validate_display_name(str(value or "").strip())
+    if len(name) > 64:
+        raise SiteStorageError("SITE_NAME_INVALID", "局点名称不能超过 64 个字符")
+    return name
+
+
+def normalize_optional_site_info(
+    value: object,
+    *,
+    field_name: str,
+    max_length: int = 128,
+) -> str | None:
+    normalized = str(value or "").strip()
+    if any(ord(char) < 32 or ord(char) == 127 for char in normalized):
+        raise SiteStorageError("SITE_INFO_INVALID", f"{field_name}不能包含控制字符")
+    if len(normalized) > max_length:
+        raise SiteStorageError(
+            "SITE_INFO_INVALID", f"{field_name}不能超过 {max_length} 个字符"
+        )
+    return normalized or None
+
+
+def _read_optional_site_info(value: object) -> str | None:
+    normalized = str(value or "").strip()
+    return normalized or None
+
+
 def _lock_for(paths: PathResolver, name: str) -> RLock:
     key = f"{paths.data_root.resolve()}:{name}"
     with _LOCKS_GUARD:
@@ -212,6 +259,7 @@ class SiteRegistryRepository:
     def list(self) -> list[SiteRecord]:
         raw = self._load()
         records: dict[str, SiteRecord] = {}
+        manager = SiteManager(self.paths)
         for item in raw.get("sites", []):
             if not isinstance(item, dict):
                 continue
@@ -221,6 +269,7 @@ class SiteRegistryRepository:
                     str(item.get("relative_path") or f"sites/{site_id}")
                 )
                 if root.is_dir():
+                    metadata = manager.load_site_metadata(root.name)
                     records[site_id] = SiteRecord(
                         site_id=site_id,
                         display_name=validate_display_name(
@@ -230,6 +279,16 @@ class SiteRegistryRepository:
                         created_at=str(item.get("created_at") or ""),
                         updated_at=str(item.get("updated_at") or ""),
                         remark=str(item.get("remark") or ""),
+                        line_name=_read_optional_site_info(
+                            item.get("line_name")
+                            if "line_name" in item
+                            else metadata.get("line_name")
+                        ),
+                        project_type=_read_optional_site_info(
+                            item.get("project_type")
+                            if "project_type" in item
+                            else metadata.get("system_type")
+                        ),
                     )
             except SiteStorageError:
                 continue
@@ -247,7 +306,7 @@ class SiteRegistryRepository:
                 continue
             try:
                 site_id = self._legacy_site_id(root.name, records)
-                metadata = SiteManager(self.paths).load_site_metadata(root.name)
+                metadata = manager.load_site_metadata(root.name)
                 display_name = self._legacy_display_name(
                     root.name, metadata, used_names
                 )
@@ -264,6 +323,8 @@ class SiteRegistryRepository:
                 created_at=str(metadata.get("created_at") or ""),
                 updated_at=str(metadata.get("updated_at") or ""),
                 remark=str(metadata.get("remark") or ""),
+                line_name=_read_optional_site_info(metadata.get("line_name")),
+                project_type=_read_optional_site_info(metadata.get("system_type")),
             )
             used_names.add(display_name.casefold())
             discovered = True
@@ -272,7 +333,7 @@ class SiteRegistryRepository:
             _atomic_json(
                 self.path,
                 {
-                    "schema_version": 1,
+                    "schema_version": 2,
                     "updated_at": now,
                     "sites": [self._serialize(item) for item in records.values()],
                 },
@@ -331,17 +392,60 @@ class SiteRegistryRepository:
             record.created_at or now,
             now,
             record.remark,
+            record.line_name,
+            record.project_type,
         )
         records[site_id] = value
         _atomic_json(
             self.path,
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "updated_at": now,
                 "sites": [self._serialize(item) for item in records.values()],
             },
         )
         return value
+
+    def update_metadata(
+        self,
+        site_id: str,
+        *,
+        display_name: str,
+        line_name: str | None,
+        project_type: str | None,
+    ) -> SiteRecord:
+        wanted = validate_site_id(site_id)
+        name = normalize_site_display_name(display_name)
+        records = {item.site_id: item for item in self.list()}
+        current = records.get(wanted)
+        if current is None:
+            raise SiteStorageError("SITE_NOT_FOUND", "局点不存在")
+        if any(
+            item.site_id != wanted
+            and item.display_name.casefold() == name.casefold()
+            for item in records.values()
+        ):
+            raise SiteStorageError("SITE_NAME_CONFLICT", "局点名称已存在")
+        updated = SiteRecord(
+            site_id=current.site_id,
+            display_name=name,
+            root_path=current.root_path,
+            created_at=current.created_at,
+            updated_at=_now(),
+            remark=current.remark,
+            line_name=line_name,
+            project_type=project_type,
+        )
+        records[wanted] = updated
+        _atomic_json(
+            self.path,
+            {
+                "schema_version": 2,
+                "updated_at": updated.updated_at,
+                "sites": [self._serialize(item) for item in records.values()],
+            },
+        )
+        return updated
 
     def unregister(self, site_id: str, expected_root: Path) -> None:
         """Remove one exact registry record without discovering or touching other sites."""
@@ -367,8 +471,25 @@ class SiteRegistryRepository:
         if not removed:
             raise SiteStorageError("SITE_NOT_FOUND", "局点不存在")
         _atomic_json(
-            self.path, {"schema_version": 1, "updated_at": _now(), "sites": retained}
+            self.path, {"schema_version": 2, "updated_at": _now(), "sites": retained}
         )
+
+    def registered_root_path(self, site_id: str) -> Path:
+        """Return the Registry path without resolving links for mutation checks."""
+        wanted = validate_site_id(site_id)
+        for item in self._load().get("sites", []):
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("site_id") or "").casefold() != wanted:
+                continue
+            relative = str(item.get("relative_path") or f"sites/{wanted}")
+            relative_path = Path(relative)
+            if relative_path.is_absolute() or ".." in relative_path.parts:
+                raise SiteStorageError(
+                    "SITE_REGISTRY_CONFLICT", "Registry 局点路径必须是受控相对路径"
+                )
+            return self.paths.data_root / relative_path
+        raise SiteStorageError("SITE_NOT_FOUND", "局点不存在")
 
     def _load(self) -> dict[str, object]:
         if not self.path.exists():
@@ -432,7 +553,7 @@ class SiteRegistryRepository:
             raise SiteStorageError(
                 "SITE_REGISTRY_CONFLICT", "局点必须位于当前数据根内"
             ) from exc
-        return {
+        value: dict[str, object] = {
             "site_id": item.site_id,
             "display_name": item.display_name,
             "relative_path": relative,
@@ -440,6 +561,11 @@ class SiteRegistryRepository:
             "updated_at": item.updated_at,
             "remark": item.remark,
         }
+        if item.line_name is not None:
+            value["line_name"] = item.line_name
+        if item.project_type is not None:
+            value["project_type"] = item.project_type
+        return value
 
     def _resolve_root(self, relative: str) -> Path:
         candidate = (self.paths.data_root / relative).resolve()
@@ -569,6 +695,61 @@ class SiteApplicationService:
 
     def active_site_directory_name(self) -> str:
         return self.registry.directory_name(self.active_site_id())
+
+    def update_site_info(
+        self,
+        site_id: str,
+        *,
+        display_name: str,
+        line_name: object = None,
+        project_type: object = None,
+    ) -> dict[str, object]:
+        wanted = validate_site_id(site_id)
+        name = normalize_site_display_name(display_name)
+        normalized_line = normalize_optional_site_info(
+            line_name, field_name="线路名称"
+        )
+        normalized_project = normalize_optional_site_info(
+            project_type, field_name="项目类型"
+        )
+        with storage_lock(self.paths, "site-mutation"):
+            current = self.registry.get(wanted)
+            metadata_path = current.root_path / "site_meta.json"
+            metadata_existed = metadata_path.is_file()
+            metadata_backup = metadata_path.read_bytes() if metadata_existed else b""
+            try:
+                self.manager.save_site_metadata(
+                    current.root_path.name,
+                    {
+                        "display_name": name,
+                        "line_name": normalized_line or "",
+                        "system_type": normalized_project or "",
+                    },
+                )
+                self.registry.update_metadata(
+                    wanted,
+                    display_name=name,
+                    line_name=normalized_line,
+                    project_type=normalized_project,
+                )
+            except Exception as exc:
+                try:
+                    if metadata_existed:
+                        _atomic_bytes(metadata_path, metadata_backup)
+                    else:
+                        metadata_path.unlink(missing_ok=True)
+                except OSError:
+                    app_logger.log_error(
+                        "SITE_INFO_ROLLBACK_FAILED",
+                        f"site_id={wanted} stage=site_metadata",
+                    )
+                if isinstance(exc, SiteStorageError):
+                    raise
+                raise SiteStorageError(
+                    "SITE_INFO_UPDATE_FAILED", "局点信息保存失败，原信息已恢复"
+                ) from exc
+        app_logger.log_info("SITE_INFO_UPDATED", f"site_id={wanted}")
+        return self.get_site(wanted)
 
     def create_site(
         self,
@@ -1029,6 +1210,8 @@ class SitePackageService:
                     "site_id": site.site_id,
                     "site_uuid": identity["site_uuid"],
                     "site_name": site.display_name,
+                    "line_name": site.line_name,
+                    "project_type": site.project_type,
                     "site_revision": identity["revision"],
                     "base_revision": identity["revision"],
                     "created_at": _now(),
@@ -1116,6 +1299,8 @@ class SitePackageService:
                     "site_id": site.site_id,
                     "site_uuid": identity["site_uuid"],
                     "site_name": site.display_name,
+                    "line_name": site.line_name,
+                    "project_type": site.project_type,
                     "site_revision": identity["revision"],
                     "base_revision": identity["revision"],
                     "created_at": _now(),
@@ -1276,6 +1461,12 @@ class SitePackageService:
                     "site_id": str(manifest.get("site_id") or ""),
                     "site_uuid": str(manifest.get("site_uuid") or ""),
                     "site_name": str(manifest.get("site_name") or ""),
+                    "line_name": _read_optional_site_info(
+                        manifest.get("line_name")
+                    ),
+                    "project_type": _read_optional_site_info(
+                        manifest.get("project_type")
+                    ),
                     "package_type": package_type,
                     "package_id": str(manifest.get("package_id") or ""),
                     "base_revision": int(
@@ -1394,8 +1585,36 @@ class SitePackageService:
                     _remove_directory_after_backup(target)
                 _publish_directory(imported_root, target)
                 published = True
+                imported_metadata = self.sites.manager.load_site_metadata(target.name)
+                line_name = normalize_optional_site_info(
+                    manifest.get("line_name")
+                    if "line_name" in manifest
+                    else imported_metadata.get("line_name"),
+                    field_name="线路名称",
+                )
+                project_type = normalize_optional_site_info(
+                    manifest.get("project_type")
+                    if "project_type" in manifest
+                    else imported_metadata.get("system_type"),
+                    field_name="项目类型",
+                )
+                self.sites.manager.save_site_metadata(
+                    target.name,
+                    {
+                        "display_name": name,
+                        "line_name": line_name or "",
+                        "system_type": project_type or "",
+                    },
+                )
                 self.sites.registry.register(
-                    SiteRecord(wanted_id, name, target, remark="imported")
+                    SiteRecord(
+                        wanted_id,
+                        name,
+                        target,
+                        remark="imported",
+                        line_name=line_name,
+                        project_type=project_type,
+                    )
                 )
                 if package_type == FIELD_COLLECTION:
                     SiteSyncService(self.paths, self.sites).record_field_baseline(

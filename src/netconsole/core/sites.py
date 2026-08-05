@@ -194,7 +194,11 @@ class SiteManager:
         payload.setdefault("created_at", now)
         temporary = root_path / f".site_meta.{uuid.uuid4().hex}.tmp"
         try:
-            temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            with temporary.open("w", encoding="utf-8") as file:
+                json.dump(payload, file, ensure_ascii=False, indent=2)
+                file.write("\n")
+                file.flush()
+                os.fsync(file.fileno())
             os.replace(temporary, root_path / "site_meta.json")
         finally:
             temporary.unlink(missing_ok=True)

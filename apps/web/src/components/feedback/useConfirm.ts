@@ -14,13 +14,23 @@ export const confirmState = reactive<{ request: ConfirmRequest | null; providerR
 export function useConfirm() {
   function confirm(options: ConfirmOptions): Promise<boolean> {
     if (!confirmState.providerReady) {
-      return ElMessageBox.confirm(options.message, options.title, {
-        type: options.type === 'DANGER' || options.type === 'DESTRUCTIVE' ? 'error' : 'warning',
-        confirmButtonText: options.confirmText || '确认操作',
-        cancelButtonText: options.cancelText || '取消',
-        confirmButtonType: options.type === 'DANGER' || options.type === 'DESTRUCTIVE' ? 'danger' : 'primary',
-        customStyle: options.width ? { width: options.width, maxWidth: 'calc(100vw - 32px)' } : undefined,
-      }).then(async () => {
+      const action = options.confirmationText
+        ? ElMessageBox.prompt(options.message, options.title, {
+            type: 'error',
+            confirmButtonText: options.confirmText || '确认操作',
+            cancelButtonText: options.cancelText || '取消',
+            confirmButtonType: 'danger',
+            inputPlaceholder: options.confirmationPlaceholder || options.confirmationText,
+            inputValidator: (value) => value === options.confirmationText || '输入内容与完整名称不一致',
+          })
+        : ElMessageBox.confirm(options.message, options.title, {
+            type: options.type === 'DANGER' || options.type === 'DESTRUCTIVE' ? 'error' : 'warning',
+            confirmButtonText: options.confirmText || '确认操作',
+            cancelButtonText: options.cancelText || '取消',
+            confirmButtonType: options.type === 'DANGER' || options.type === 'DESTRUCTIVE' ? 'danger' : 'primary',
+            customStyle: options.width ? { width: options.width, maxWidth: 'calc(100vw - 32px)' } : undefined,
+          })
+      return action.then(async () => {
         await options.onConfirm?.()
         return true
       }).catch(() => false)
