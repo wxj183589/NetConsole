@@ -34,8 +34,9 @@
 | 无线扫描 / BSSID 工具 | `src/netconsole/services/network_tools/trackside_bssid_resolver.py` | BSSID / Radio 观测 | `resolve_peer_macs(ap_role="trackside")`，每批扫描一次 | 否 | 否 | 无线扫描 run/result 自有库保存 revision/status/统计 | 不适用 | 中 | 第二阶段 / P0 | 已统一；正式路径无 `radio_mac_map` |
 | AC Mesh-Link | `src/netconsole/services/ac/mesh_link_query_service.py` | Peer Radio MAC | 单值 Query + 本地候选索引 | 是 | 是 | 否 | 否 | 中 | 第二阶段 / P1 | 删除直接 JOIN 和私有 `by_mac` |
 | 轨旁 AP 基础资料与搜索 | `src/netconsole/services/rail_transit/base_data_query_service.py` | 物理 AP / Radio / LLDP MAC、名称 | `search_aps()` + 兼容 `resolve_mac()` | 否 | 是 | 部分返回 entity | 不适用 | 中 | 第二阶段 / P1 | 改显式 `resolve_ap_mac(s)` 并移除直接 JOIN |
-| 轨旁 AP 业务 | `src/netconsole/services/rail_transit/trackside_ap_business_query_service.py` | 物理 AP / LLDP MAC | `search_aps()` + 兼容 `resolve_mac()` | 否 | 否 | 否 | 不适用 | 中 | 第二阶段 / P1 | 物理查询显式化并固定 revision |
-| 报告与导出读取路径 | `src/netconsole/services/rail_transit/mesh_analysis_query_service.py`、MESH/Online MR/轨旁报告服务 | 已持久化 identity 投影及 AP/Peer 展示字段 | 主要读取持久化投影 | 否 | 部分读取 index revision | MESH 已保存，其余不统一 | MESH 可触发 remap | 中 | 第二阶段 / P1 | 下沉 revision 判断，保持 workbook 契约不变 |
+| 轨旁 AP 业务 | `src/netconsole/services/trackside_ap_export_service.py`、`src/netconsole/services/rail_transit/trackside_ap_business_query_service.py` | 物理 AP / LLDP、Radio、BSSID alias | distinct `resolve_ap_macs(ap_role="trackside")` 单批查询 | 否 | 否 | 是，页面快照保存固定 revision/status/计数 | 不适用 | 低 | 第二阶段 / P1 已完成 | 页面投影、筛选和分页固定同一 Identity revision；ambiguous 不选候选 |
+| 轨旁 AP 业务导出 | `src/netconsole/services/trackside_ap_export_service.py`、`src/netconsole/export_worker.py` | 页面同一批物理 AP/LLDP alias 的冻结投影 | 提交阶段复用轨旁业务单批结果；Worker 不查询 Identity | 否 | 否 | 是，staging、Task result 和 Artifact manifest 保存 revision/计数 | 不适用 | 低 | 第二阶段 / P1 已完成 | expected revision 校验后冻结业务行；Worker 只读快照，工作簿契约不变 |
+| 其他报告与导出读取路径 | `src/netconsole/services/rail_transit/mesh_analysis_query_service.py`、MESH/Online MR 报告服务 | 已持久化 identity 投影及 AP/Peer 展示字段 | 主要读取持久化投影 | 否 | 部分读取 index revision | MESH 已保存，其余不统一 | MESH 可触发 remap | 中 | 第二阶段 / P1 | 下沉 revision 判断，保持 workbook 契约不变 |
 | 设备管理与 LLDP topology binding | 设备事实、LLDP 与轨旁绑定服务 | 物理设备 / Chassis / 邻居 MAC | 未统一 | 存在领域索引 | 部分 | 否 | 不适用 | 中 | 第二阶段 / P2 | 只统一身份解析段，拓扑关系仍由本领域负责 |
 | FIT-AP / AC 搜索 | `src/netconsole/services/ac/query_service.py` | AP MAC / 名称 | `search_aps()` | 否 | 否 | 否 | 不适用 | 低 | 已有入口 / 持续收敛 | 已使用统一搜索；详情按 entity 接口继续收敛 |
 
@@ -67,7 +68,8 @@ MAC 索引、导入 H3C 推导、直接访问 Identity 表、调用旧 Resolver 
 
 第二阶段建议使用独立分支 `codex/ap-identity-consumer-consolidation-phase2`，
 不在第一阶段已合并分支继续开发。优先顺序为：P0 车载 MR 实时、车载 MR 历史、
-无线扫描；P1 AC Mesh-Link、轨旁 AP 业务与搜索、报告和导出读取路径；P2 设备
+无线扫描；轨旁 AP 业务与业务导出已在 P1 独立收口，P1 剩余 AC Mesh-Link、
+轨旁基础资料搜索和其他报告读取路径；P2 设备
 管理与 LLDP topology binding。每次接管都要保留原始 MAC、批次 revision、
 歧义状态和可回滚的单模块边界。
 

@@ -261,7 +261,6 @@ def test_trackside_terminal_targets_use_exact_switch_and_fit_ap_ids() -> None:
             "ap_state": "R/M",
         },
         "normal",
-        None,
         terminal_devices,
     )
     assert linked_row.switch_device_uuid == "switch-device-1"
@@ -277,7 +276,6 @@ def test_trackside_terminal_targets_use_exact_switch_and_fit_ap_ids() -> None:
             "ap_name": "AP-DISPLAY-NAME",
         },
         "normal",
-        None,
         terminal_devices,
     )
     assert missing_row.switch_device_uuid == ""
@@ -778,39 +776,10 @@ def test_trackside_query_station_options_use_full_snapshot_before_filters(monkey
     query_filtered = service.list_rows("demo", query="AP-10")
     assert query_filtered.station_options == expected
 
-    class IdentityQuery:
-        def __init__(self, _database: object, **_kwargs: object) -> None:
-            pass
-
-        def pin_index_health(self) -> None:
-            pass
-
-        @staticmethod
-        def resolve_mac(_mac: str):
-            return SimpleNamespace(
-                status="unresolved",
-                matched_entity_id="",
-                match_rule="",
-                matched_alias_type="",
-                unresolved_reason="exact_alias_not_found",
-            )
-
-        @staticmethod
-        def search_aps(_query: str):
-            return [
-                {
-                    "ap_name": "AP-YL-01",
-                    "ap_mac": "0011-2233-4401",
-                    "ac_ap_mac": "",
-                    "base_ap_mac": "0011-2233-4401",
-                }
-            ]
-
-    monkeypatch.setattr(
-        trackside_ap_business_query_service,
-        "ApIdentityQueryService",
-        IdentityQuery,
-    )
+    snapshot.identity_query_entities["001122334a01"] = "entity-yl-01"
+    next(
+        row for row in snapshot.rows if row.get("ap_name") == "AP-YL-01"
+    )["ap_identity_entity_id"] = "entity-yl-01"
     radio_filtered = service.list_rows(
         "demo",
         query="0011-2233-4a01",

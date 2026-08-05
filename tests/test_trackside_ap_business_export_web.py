@@ -13,7 +13,6 @@ from web_parity_test_support import FakeExportProcessAdapter, FakeLocalProcessAd
 from netconsole.application.rail_transit import web_application_service as rail_transit_web_application_service
 from netconsole.application.rail_transit.web_application_service import (
     RailTransitWebApplicationService,
-    RailTransitWebError,
 )
 from netconsole.backend.api.main import create_app
 from netconsole.core.database import Database
@@ -27,6 +26,7 @@ from netconsole.services.ap_online_overview import AP_ONLINE_OVERVIEW_COLUMNS
 from netconsole.services.export.export_job import ExportJob
 from netconsole.services.file_contract import attach_export_metadata
 from netconsole.services.job_center.task_application_service import TaskApplicationService
+from netconsole.services.job_center.query_service import JobCenterQueryService
 from netconsole.services.offline_ap_ledger import (
     OFFLINE_AP_LEDGER_COLUMNS,
     OFFLINE_AP_STATS_COLUMNS,
@@ -74,11 +74,12 @@ def test_trackside_business_export_name_uses_site_display_name_and_sanitizes_win
         build_trackside_ap_business_export_name("", created_at)
 
 
-def test_trackside_business_export_waits_for_optical_update(
+def test_trackside_business_export_uses_frozen_snapshot_without_optical_update_lock(
     tmp_path: Path,
 ) -> None:
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
     paths.ensure_site_dirs("demo")
+    Database(paths.site_db_path("demo")).initialize()
     SiteManager(paths).save_site_metadata("demo", {"display_name": "测试局点"})
     tasks = TaskApplicationService(paths=paths, site_name="demo")
     process = FakeLocalProcessAdapter(tasks)
@@ -92,14 +93,12 @@ def test_trackside_business_export_waits_for_optical_update(
 
     service.start_trackside_ap_update("demo")
 
-    with pytest.raises(RailTransitWebError) as error:
-        service.start_trackside_ap_business_export("demo")
+    started = service.start_trackside_ap_business_export("demo")
 
-    assert error.value.code == "TRACKSIDE_AP_OPTICAL_UPDATE_RUNNING"
-    assert not any(
-        item.task_type == "web_export_trackside_ap_business"
-        for item in tasks.repository("demo").list(limit=100)
-    )
+    snapshot = tasks.repository("demo").get(started.task_id)
+    assert snapshot is not None
+    assert snapshot.task_type == "web_export_trackside_ap_business"
+    assert snapshot.resource_keys == []
 
 
 def test_trackside_business_export_api_uses_owned_artifact_and_supports_cancel(
@@ -164,12 +163,35 @@ def test_trackside_business_export_api_uses_owned_artifact_and_supports_cancel(
         job = export.jobs[task_id]
         assert job.job_type == "trackside_ap_business"
         assert job.site_name == "demo"
-        assert job.db_path == str(paths.site_db_path("demo"))
+        assert job.db_path == ""
         assert job.params["language"] == "zh_CN"
-        assert job.params["scope_context"]["display_name"] == "宁波地铁12号线"
+        assert Path(str(job.params["snapshot_path"])).is_file()
+        assert len(str(job.params["snapshot_sha256"])) == 64
         assert Path(job.output_path).name == expected_name
 
-        export.complete(task_id, b"xlsx-fixture")
+        export.complete(
+            task_id,
+            b"xlsx-fixture",
+            result={
+                "snapshot_id": "snapshot-1",
+                "business_revision": "b" * 64,
+                "export_revision": "e" * 64,
+                "source_revisions": {"base_data_revision": "1"},
+                "content_sha256": "c" * 64,
+                "export_content_sha256": "d" * 64,
+                "snapshot_created_at": "2026-08-06T01:00:00+08:00",
+                "export_kind": "trackside_ap_business",
+                "row_count": 2,
+                "abnormal_count": 1,
+                "unresolved_count": 1,
+                "ambiguous_count": 0,
+                "identity_distinct_count": 2,
+                "identity_revision": 7,
+                "snapshot_build_ms": 12,
+                "snapshot_retry_count": 1,
+                "export_render_ms": 8,
+            },
+        )
         completed = client.get(
             f"/api/rail-transit/trackside-ap-business/tasks/{task_id}"
         )
@@ -177,6 +199,32 @@ def test_trackside_business_export_api_uses_owned_artifact_and_supports_cancel(
         completed_payload = completed.json()
         assert completed_payload["available"] is True
         assert completed_payload["artifact_name"] == expected_name
+        assert completed_payload["result_summary"] == {
+            "snapshot_id": "snapshot-1",
+            "business_revision": "b" * 64,
+            "export_revision": "e" * 64,
+            "source_revisions": {"base_data_revision": "1"},
+            "content_sha256": "c" * 64,
+            "export_content_sha256": "d" * 64,
+            "snapshot_created_at": "2026-08-06T01:00:00+08:00",
+            "export_kind": "trackside_ap_business",
+            "row_count": 2,
+            "abnormal_count": 1,
+            "unresolved_count": 1,
+            "ambiguous_count": 0,
+            "identity_distinct_count": 2,
+            "identity_revision": 7,
+            "snapshot_build_ms": 12,
+            "snapshot_retry_count": 1,
+            "export_render_ms": 8,
+        }
+        job_detail = JobCenterQueryService(paths).get_task("demo", task_id)
+        assert job_detail is not None
+        assert job_detail.details["source_revisions"] == {
+            "base_data_revision": "1"
+        }
+        assert job_detail.details["export_kind"] == "trackside_ap_business"
+        assert job_detail.details["abnormal_count"] == 1
         assert str(tmp_path) not in json.dumps(completed_payload, ensure_ascii=False)
 
         download = client.get(
@@ -447,6 +495,10 @@ def test_trackside_export_worker_cleans_temporary_file_on_cancel(
         tmp_path=str(temporary),
         cancel_path=str(tmp_path / "cancel"),
         db_path=str(tmp_path / "site.sqlite"),
+        params={
+            "snapshot_path": str(tmp_path / "snapshot.json"),
+            "snapshot_sha256": "a" * 64,
+        },
     )
 
     def cancelled(**_kwargs):
@@ -454,10 +506,44 @@ def test_trackside_export_worker_cleans_temporary_file_on_cancel(
 
     monkeypatch.setattr(
         export_worker,
-        "export_trackside_ap_business_from_database",
+        "export_trackside_ap_business_from_snapshot",
         cancelled,
     )
 
     assert export_worker.run_job(job) == 2
     assert not temporary.exists()
     assert not output.exists()
+
+
+def test_trackside_export_worker_reports_missing_snapshot_code(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from netconsole import export_worker
+
+    events: list[dict[str, object]] = []
+    monkeypatch.setattr(export_worker, "_emit", events.append)
+    job = ExportJob(
+        job_id="trackside-missing",
+        job_type="trackside_ap_business",
+        site_name="demo",
+        output_path=str(tmp_path / "output.xlsx"),
+        tmp_path=str(tmp_path / "output.xlsx.task.tmp"),
+        params={
+            "snapshot_path": str(tmp_path / "missing-snapshot.json"),
+            "snapshot_sha256": "a" * 64,
+            "_web_public_result": {
+                "artifact_id": "artifact-1",
+                "artifact_name": "轨旁AP业务.xlsx",
+            },
+        },
+    )
+
+    assert export_worker.run_job(job) == 1
+    terminal = events[-1]
+    assert terminal["type"] == "error"
+    assert terminal["error_code"] == "TRACKSIDE_AP_SNAPSHOT_NOT_FOUND"
+    assert terminal["result"] == {
+        "error_code": "TRACKSIDE_AP_SNAPSHOT_NOT_FOUND",
+        "error_message": "轨旁 AP 导出快照不存在，请重新导出。",
+    }

@@ -38,7 +38,10 @@ from netconsole.services.rail_transit.mesh_ap_location_service import (
 )
 from netconsole.services.mesh_report_process import MeshReportProcessRequest, run_mesh_report_process
 from netconsole.services.trackside_ap_business import TracksideApExportCancelled
-from netconsole.services.trackside_ap_export_service import export_trackside_ap_business_from_database
+from netconsole.services.trackside_ap_export_service import export_trackside_ap_business_from_snapshot
+from netconsole.services.rail_transit.trackside_ap_business_snapshot import (
+    TracksideApBusinessSnapshotError,
+)
 
 
 def _emit(event: dict[str, Any]) -> None:
@@ -67,10 +70,35 @@ def _web_public_result(
         raise ValueError("Web 导出公开结果无效")
     result = dict(sanitized)
     result["row_count"] = int(row_count or 0)
-    for key in ("ap_count", "radio_count", "warning_count"):
+    for key in (
+        "ap_count",
+        "radio_count",
+        "warning_count",
+        "snapshot_id",
+        "business_revision",
+        "export_revision",
+        "content_sha256",
+        "export_content_sha256",
+        "export_kind",
+        "identity_revision",
+        "abnormal_count",
+        "unresolved_count",
+        "ambiguous_count",
+        "identity_distinct_count",
+        "snapshot_created_at",
+        "snapshot_build_ms",
+        "snapshot_retry_count",
+        "export_render_ms",
+    ):
         value = (details or {}).get(key)
-        if isinstance(value, int) and value >= 0:
+        if isinstance(value, (str, int)) and not isinstance(value, bool):
             result[key] = value
+    source_revisions = (details or {}).get("source_revisions")
+    if isinstance(source_revisions, dict) and all(
+        isinstance(key, str) and isinstance(value, str)
+        for key, value in source_revisions.items()
+    ):
+        result["source_revisions"] = dict(source_revisions)
     result["artifact_pending"] = True
     return result
 
@@ -89,10 +117,28 @@ def _finished(
     return finished_event(job.job_id, output_path, message=message, row_count=row_count)
 
 
-def _error(job: ExportJob, message: str, *, traceback_text: str = "", cancelled: bool = False) -> dict[str, Any]:
+def _error(
+    job: ExportJob,
+    message: str,
+    *,
+    traceback_text: str = "",
+    cancelled: bool = False,
+    error_code: str = "",
+) -> dict[str, Any]:
     if _web_public_result(job, row_count=0) is not None:
         safe_message = redact_web_export_text(message)
-        return task_cancelled_event(job.job_id, safe_message) if cancelled else task_error_event(job.job_id, safe_message)
+        event = (
+            task_cancelled_event(job.job_id, safe_message)
+            if cancelled
+            else task_error_event(job.job_id, safe_message)
+        )
+        if error_code:
+            event["error_code"] = error_code
+            event["result"] = {
+                "error_code": error_code,
+                "error_message": safe_message,
+            }
+        return event
     return error_event(
         job.job_id,
         message,
@@ -104,20 +150,17 @@ def _error(job: ExportJob, message: str, *, traceback_text: str = "", cancelled:
 
 def _run_trackside_ap_business(job: ExportJob) -> None:
     job.validate()
-    if not job.db_path:
-        raise ValueError("轨旁AP业务导出缺少数据库路径")
+    snapshot_path = str(job.params.get("snapshot_path") or "")
+    snapshot_sha256 = str(job.params.get("snapshot_sha256") or "")
+    if not snapshot_path or not snapshot_sha256:
+        raise ValueError("轨旁AP业务导出缺少冻结快照")
     language = str(job.params.get("language") or "zh_CN")
-    result = export_trackside_ap_business_from_database(
-        database_path=job.db_path,
-        site_name=job.site_name,
+    result = export_trackside_ap_business_from_snapshot(
+        snapshot_path=snapshot_path,
+        snapshot_sha256=snapshot_sha256,
         output_path=job.output_path,
         tmp_path=job.tmp_path,
         language=language,
-        scope_context=(
-            dict(job.params.get("scope_context") or {})
-            if isinstance(job.params.get("scope_context"), dict)
-            else None
-        ),
         progress_callback=lambda stage, current, total, message: _emit_progress(job, current, total, stage, message),
         should_cancel=lambda: _should_cancel(job),
     )
@@ -127,6 +170,7 @@ def _run_trackside_ap_business(job: ExportJob) -> None:
             str(result.get("path") or job.output_path),
             message="导出完成",
             row_count=int(result.get("row_count") or 0),
+            details=result,
         )
     )
 
@@ -363,6 +407,17 @@ def _run_job(job: ExportJob) -> int:
         _cleanup_tmp(job)
         _emit(_error(job, str(exc), cancelled=True))
         return 2
+    except TracksideApBusinessSnapshotError as exc:
+        _cleanup_tmp(job)
+        _emit(
+            _error(
+                job,
+                str(exc),
+                cancelled=False,
+                error_code=exc.code,
+            )
+        )
+        return 1
     except Exception as exc:
         _cleanup_tmp(job)
         stack = traceback.format_exc()

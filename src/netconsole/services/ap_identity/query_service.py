@@ -7,6 +7,7 @@ from netconsole.models.ap_identity_index import (
     ApIdentityBatchResult,
     ApIdentityBuildResult,
     ApIdentityMatch,
+    ApIdentityRevisionState,
 )
 from netconsole.repositories.ap_identity_repository import ApIdentityRepository
 from netconsole.services.ap_identity.index_builder import build_ap_identity_index
@@ -52,6 +53,41 @@ class ApIdentityQueryService:
     def index_state(self) -> dict[str, object] | None:
         return self.repository.index_state(site_id=self.site_id)
 
+    def revision_state(self) -> ApIdentityRevisionState:
+        state, current_source_revision = self.repository.index_health(
+            site_id=self.site_id
+        )
+        revision = int((state or {}).get("revision") or 0)
+        indexed_source_revision = (
+            int(state["source_revision"])
+            if state is not None and state.get("source_revision") is not None
+            else -1
+        )
+        status = (
+            "missing"
+            if state is None or revision <= 0
+            else "ready"
+            if indexed_source_revision == current_source_revision
+            else "stale"
+        )
+        revision_token = ":".join(
+            (
+                str(revision),
+                str(indexed_source_revision),
+                str(current_source_revision),
+                status,
+            )
+        )
+        return ApIdentityRevisionState(
+            site_id=self.site_id,
+            revision=revision,
+            indexed_source_revision=indexed_source_revision,
+            current_source_revision=current_source_revision,
+            status=status,
+            revision_token=revision_token,
+            built_at=str((state or {}).get("built_at") or ""),
+        )
+
     def ensure_index(
         self, reason: str = "missing_index_compat"
     ) -> ApIdentityBuildResult | None:
@@ -88,10 +124,13 @@ class ApIdentityQueryService:
     def resolve_ap_macs(
         self,
         macs: Sequence[object],
+        *,
+        ap_role: str | None = None,
     ) -> ApIdentityBatchResult:
         return self._resolve_exact_alias_batch(
             macs,
             alias_order=_EXACT_ALIAS_ORDER,
+            ap_role=ap_role,
         )
 
     def resolve_peer_mac(

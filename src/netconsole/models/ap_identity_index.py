@@ -108,6 +108,17 @@ class ApIdentityBuildResult:
 
 
 @dataclass(frozen=True)
+class ApIdentityRevisionState:
+    site_id: str
+    revision: int
+    indexed_source_revision: int
+    current_source_revision: int
+    status: str
+    revision_token: str
+    built_at: str = ""
+
+
+@dataclass(frozen=True)
 class ApIdentityMatch:
     status: str
     identity_revision: int = 0

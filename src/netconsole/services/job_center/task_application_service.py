@@ -328,6 +328,12 @@ class TaskApplicationService:
             snapshot = self._artifact_task(site_name, task_id, owner, source, task_type)
         except (KeyError, ValueError):
             return None
+        structured_error: dict[str, object] = {}
+        if snapshot.status is TaskState.FAILED:
+            for key in ("error_code", "error_message"):
+                value = snapshot.result.get(key)
+                if isinstance(value, str) and value:
+                    structured_error[key] = value
         return self.record_external_event(
             task_id,
             "artifact_rejected",
@@ -335,6 +341,7 @@ class TaskApplicationService:
                 "state": TaskState.FAILED.value if snapshot.status is TaskState.COMPLETED else snapshot.status.value,
                 "error": str(error_message or "报告完整性校验失败"),
                 "message": "报告不可用",
+                "result": structured_error,
             },
             source="artifact_store",
             site_name=site_name,
@@ -692,10 +699,11 @@ class TaskApplicationService:
             )
         elif event_type == "artifact_rejected":
             state = TaskState(str(payload.get("state") or snapshot.status.value))
+            result = payload.get("result")
             values.update(
                 {
                     "status": state,
-                    "result": {},
+                    "result": dict(result) if isinstance(result, dict) else {},
                     "result_path": "",
                     "message": str(payload.get("message") or "报告不可用"),
                     "error_message": str(payload.get("error") or "报告完整性校验失败")

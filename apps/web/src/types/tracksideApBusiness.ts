@@ -1,6 +1,7 @@
 import type { RailTransitTask } from './railTransitWeb'
 
 export interface TracksideApBusinessRow {
+  row_id?: string
   station_id?: string; site: string; device_name: string; switch_device_uuid?: string; switch_terminal_available?: boolean; switch_terminal_unavailable_reason?: string; switch_vendor: string; interface_name: string; link_status: string; port_type: string
     switch_station_id?: string; ap_station_id?: string; planning_station_id?: string; effective_station_id?: string
     station_consistency_status?: string; station_consistency_reason?: string
@@ -48,6 +49,10 @@ export interface TracksideApBusinessPage {
   partial_data?: boolean
   source_statuses?: Record<string, 'loaded' | 'partial' | 'failed'>
   unavailable_sources?: TracksideApDataSourceIssue[]
+  snapshot_id?: string; business_revision?: string; source_revisions?: Record<string, string>
+  identity_revision?: number; created_at?: string; content_sha256?: string
+  row_count?: number; abnormal_count?: number; unresolved_count?: number; ambiguous_count?: number
+  snapshot_retry_count?: number; identity_distinct_count?: number
 }
 
 export interface TracksideApDataSourceIssue {
@@ -57,6 +62,10 @@ export interface TracksideApDataSourceIssue {
 export interface TracksideApUpdateRequest { station?: string; ap_uuid?: string; ap_mac?: string; ap_name?: string }
 export interface TracksideApBusinessExportProposal {
   site_id: string; site_display_name: string; generated_at: string; suggested_name: string
+}
+export interface TracksideApBusinessExportRequest {
+  generated_at: string; suggested_name: string; expected_revision: string
+  station?: string; query?: string; optical_anomaly_only?: boolean; selected_row_ids?: string[]
 }
 export type TracksideApTask = RailTransitTask
 

@@ -101,7 +101,13 @@ class FakeExportProcessAdapter:
         self._finish(job_id, 2, payload, True)
         return True
 
-    def complete(self, job_id: str, content: bytes = b"fixture-report") -> Path:
+    def complete(
+        self,
+        job_id: str,
+        content: bytes = b"fixture-report",
+        *,
+        result: dict[str, object] | None = None,
+    ) -> Path:
         job = self.jobs[job_id]
         path = Path(job.output_path)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -110,7 +116,7 @@ class FakeExportProcessAdapter:
             "type": "finished",
             "job_id": job_id,
             "message": "fixture export completed",
-            "result": {"output_path": str(path)},
+            "result": {"output_path": str(path), **dict(result or {})},
         }
         self.tasks.feed_stdout(job_id, (json.dumps(event) + "\n").encode("utf-8"))
         payload = self.tasks.complete(job_id, 0)

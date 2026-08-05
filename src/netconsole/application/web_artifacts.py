@@ -215,9 +215,42 @@ class WebArtifactStore:
                     0, int(task.result.get("row_count") or 0)
                 )
             if isinstance(task.result, dict):
-                for key in ("ap_count", "radio_count", "warning_count"):
+                for key in (
+                    "ap_count",
+                    "radio_count",
+                    "warning_count",
+                    "abnormal_count",
+                    "unresolved_count",
+                    "ambiguous_count",
+                    "identity_distinct_count",
+                ):
                     if isinstance(task.result.get(key), int):
                         manifest[key] = max(0, int(task.result[key]))
+                for key in (
+                    "snapshot_id",
+                    "business_revision",
+                    "export_revision",
+                    "content_sha256",
+                    "export_content_sha256",
+                    "snapshot_created_at",
+                    "export_kind",
+                ):
+                    if isinstance(task.result.get(key), str):
+                        manifest[key] = str(task.result[key])
+                for key in (
+                    "identity_revision",
+                    "snapshot_build_ms",
+                    "snapshot_retry_count",
+                    "export_render_ms",
+                ):
+                    if isinstance(task.result.get(key), int):
+                        manifest[key] = max(0, int(task.result[key]))
+                source_revisions = task.result.get("source_revisions")
+                if isinstance(source_revisions, dict) and all(
+                    isinstance(key, str) and isinstance(value, str)
+                    for key, value in source_revisions.items()
+                ):
+                    manifest["source_revisions"] = dict(source_revisions)
             self._write_manifest(reservation.site_id, reservation.artifact_id, manifest)
             result = self._safe_task_result(manifest)
             self.task_service.finalize_artifact_result(
@@ -575,9 +608,42 @@ class WebArtifactStore:
         }
         if "row_count" in manifest:
             result["row_count"] = max(0, int(manifest.get("row_count") or 0))
-        for key in ("ap_count", "radio_count", "warning_count"):
+        for key in (
+            "ap_count",
+            "radio_count",
+            "warning_count",
+            "abnormal_count",
+            "unresolved_count",
+            "ambiguous_count",
+            "identity_distinct_count",
+        ):
             if key in manifest:
                 result[key] = max(0, int(manifest.get(key) or 0))
+        for key in (
+            "snapshot_id",
+            "business_revision",
+            "export_revision",
+            "content_sha256",
+            "export_content_sha256",
+            "snapshot_created_at",
+            "export_kind",
+        ):
+            if key in manifest:
+                result[key] = str(manifest.get(key) or "")
+        for key in (
+            "identity_revision",
+            "snapshot_build_ms",
+            "snapshot_retry_count",
+            "export_render_ms",
+        ):
+            if key in manifest:
+                result[key] = max(0, int(manifest.get(key) or 0))
+        source_revisions = manifest.get("source_revisions")
+        if isinstance(source_revisions, dict) and all(
+            isinstance(key, str) and isinstance(value, str)
+            for key, value in source_revisions.items()
+        ):
+            result["source_revisions"] = dict(source_revisions)
         return result
 
     def _reject_task(self, reservation: ReservedWebArtifact, error_message: str) -> None:

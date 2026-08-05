@@ -15,6 +15,7 @@ from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.models.task_snapshot import TaskSnapshot
 from netconsole.models.task_state import TaskState
 from netconsole.repositories.task_repository import TaskRepository
+from netconsole.services.background_job import BackgroundJob
 from netconsole.services.job_center.artifact_reconciliation import (
     ArtifactReconciliationService,
     ArtifactTaskBinding,
@@ -124,6 +125,51 @@ def test_completed_artifact_availability_tracks_delete_and_restore(
     assert restored.artifact_availability == "AVAILABLE"
     assert restored.artifact_download is not None
     assert repository.get(reservation.task_id).status is TaskState.COMPLETED
+
+
+def test_failed_artifact_rejection_preserves_structured_worker_error(
+    tmp_path: Path,
+) -> None:
+    paths, task_service, repository, store = _runtime(tmp_path)
+    task_id = "artifact-structured-error"
+    reservation = _reserve(paths, store, task_id)
+    launch = task_service.prepare(
+        BackgroundJob(
+            job_id=task_id,
+            task_type=TASK_TYPE,
+            params={
+                "site_name": "demo",
+                "owner": OWNER,
+                "task_source": "local",
+            },
+        )
+    )
+    task_service.mark_running(launch.job.job_id)
+    event = {
+        "type": "error",
+        "job_id": task_id,
+        "message": "冻结快照不存在",
+        "error": "冻结快照不存在",
+        "result": {
+            "error_code": "TRACKSIDE_AP_SNAPSHOT_NOT_FOUND",
+            "error_message": "冻结快照不存在",
+        },
+    }
+    task_service.feed_stdout(
+        task_id,
+        (json.dumps(event, ensure_ascii=False) + "\n").encode("utf-8"),
+    )
+    task_service.complete(task_id, 1)
+
+    store.fail(reservation, "冻结快照不存在")
+
+    persisted = repository.get(task_id)
+    assert persisted is not None
+    assert persisted.status is TaskState.FAILED
+    assert persisted.result == {
+        "error_code": "TRACKSIDE_AP_SNAPSHOT_NOT_FOUND",
+        "error_message": "冻结快照不存在",
+    }
 
 
 def test_deleted_artifact_directory_and_unsafe_manifest_degrade_without_500(

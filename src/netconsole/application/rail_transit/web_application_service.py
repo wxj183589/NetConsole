@@ -11,7 +11,7 @@ import time
 from dataclasses import asdict, replace
 from datetime import datetime
 from pathlib import Path
-from typing import BinaryIO, Callable, Mapping, NoReturn
+from typing import BinaryIO, Callable, Mapping, NoReturn, Sequence
 from uuid import uuid4
 
 from netconsole.adapters.trackside_switch import resolve_trackside_switch_adapter
@@ -147,7 +147,13 @@ from netconsole.services.rail_transit.ap_management_vlan_planning import (
     project_legacy_station_rows,
 )
 from netconsole.services.trackside_ap_export_service import (
+    build_trackside_ap_business_export_snapshot,
     build_trackside_ap_business_export_name,
+)
+from netconsole.services.rail_transit.trackside_ap_business_snapshot import (
+    TracksideApBusinessSnapshotError,
+    cleanup_export_snapshot,
+    write_export_snapshot,
 )
 from netconsole.services.trackside_ap_base_export import (
     build_trackside_ap_base_export_name,
@@ -662,6 +668,11 @@ class RailTransitWebApplicationService:
         *,
         generated_at: str = "",
         suggested_name: str = "",
+        expected_revision: str = "",
+        station: str = "",
+        query: str = "",
+        optical_anomaly_only: bool = False,
+        selected_row_ids: Sequence[str] = (),
     ) -> RailTransitTaskDTO:
         site_id = self._site(site_id)
         site_display_name = self._site_display_name(site_id)
@@ -687,6 +698,39 @@ class RailTransitWebApplicationService:
                 "TRACKSIDE_AP_EXPORT_NAME_MISMATCH",
                 "导出文件名契约已变化，请重新打开保存对话框",
             )
+        site_metadata = SiteManager(self.paths).load_site_metadata(site_id)
+        scope_context = {
+            **{
+                key: site_metadata[key]
+                for key in (
+                    "project_id",
+                    "line_name",
+                    "construction_phase_id",
+                    "project_phase_id",
+                    "project_phase",
+                    "display_name",
+                )
+                if key in site_metadata
+            },
+            "site_id": site_id,
+            "site_display_name": site_display_name,
+            "generated_at": created_at.isoformat(timespec="seconds"),
+        }
+        snapshot_payload = build_trackside_ap_business_export_snapshot(
+            DeviceRepository(Database(self.paths.site_db_path(site_id))),
+            site_id,
+            scope_context=scope_context,
+            station=station,
+            query=query,
+            optical_anomaly_only=optical_anomaly_only,
+            selected_row_ids=selected_row_ids,
+        )
+        current_revision = str(snapshot_payload.get("business_revision") or "")
+        if expected_revision and expected_revision != current_revision:
+            raise TracksideApBusinessSnapshotError(
+                "TRACKSIDE_AP_SNAPSHOT_STALE",
+                "轨旁 AP 数据已更新，请刷新后重新导出。",
+            )
         task_id = f"rail-export-{uuid4().hex}"
         try:
             reservation = self.artifact_store.reserve(
@@ -702,29 +746,38 @@ class RailTransitWebApplicationService:
             )
         except WebArtifactError as exc:
             self._task_window_blocked("轨旁 AP 业务导出", exc)
+        try:
+            snapshot_path, snapshot_sha256 = write_export_snapshot(
+                self.paths.staging_dir,
+                site_id=site_id,
+                task_id=task_id,
+                payload=snapshot_payload,
+            )
+        except Exception:
+            self.artifact_store.fail(reservation)
+            raise
         job = ExportJob(
             job_id=task_id,
             job_type="trackside_ap_business",
             site_name=site_id,
             output_path=str(reservation.output_path),
-            db_path=str(self.paths.site_db_path(site_id)),
             params={
                 "language": "zh_CN",
-                "scope_context": {
-                    **SiteManager(self.paths).load_site_metadata(site_id),
-                    "site_id": site_id,
-                    "site_display_name": site_display_name,
-                    "generated_at": created_at.isoformat(timespec="seconds"),
-                },
+                "snapshot_path": str(snapshot_path),
+                "snapshot_sha256": snapshot_sha256,
             },
         )
-        return self._start_export(
-            site_id,
-            job,
-            "trackside_ap_business_export",
-            reservation,
-            resource_keys=[self._trackside_ap_business_data_resource_key(site_id)],
-        )
+        try:
+            return self._start_export(
+                site_id,
+                job,
+                "trackside_ap_business_export",
+                reservation,
+                cleanup_paths=[snapshot_path],
+            )
+        except Exception:
+            self._cleanup_staging_paths([snapshot_path])
+            raise
 
     def open_trackside_ap_business_export(
         self,
@@ -3547,15 +3600,25 @@ class RailTransitWebApplicationService:
         reservation: ReservedWebArtifact,
         *,
         resource_keys: list[str] | None = None,
+        cleanup_paths: Sequence[Path] = (),
     ) -> RailTransitTaskDTO:
         def completed(value: LocalProcessCompletion) -> None:
-            if value.exit_code == 0 and not value.cancelled:
-                try:
-                    self.artifact_store.complete(reservation)
-                except WebArtifactError:
-                    self.artifact_store.fail(reservation)
-            else:
-                self.artifact_store.fail(reservation)
+            try:
+                if value.exit_code == 0 and not value.cancelled:
+                    try:
+                        self.artifact_store.complete(reservation)
+                    except WebArtifactError:
+                        self.artifact_store.fail(reservation)
+                else:
+                    payload = value.payload or {}
+                    failure_message = str(
+                        payload.get("error_message")
+                        or payload.get("error")
+                        or "报告不可用"
+                    )
+                    self.artifact_store.fail(reservation, failure_message)
+            finally:
+                self._cleanup_staging_paths(cleanup_paths)
 
         try:
             self.export_adapter.start_export(
@@ -3590,6 +3653,20 @@ class RailTransitWebApplicationService:
             artifact_id=reservation.artifact_id,
             artifact_name=reservation.display_name,
         )
+
+    @staticmethod
+    def _cleanup_staging_paths(paths: Sequence[Path]) -> None:
+        for raw_path in paths:
+            path = Path(raw_path)
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                continue
+            for parent in (path.parent, path.parent.parent):
+                try:
+                    parent.rmdir()
+                except OSError:
+                    break
 
     def _snapshot(self, site_id: str, task_id: str):
         snapshot = self.task_service.repository(site_id).get(str(task_id or ""))
@@ -3672,10 +3749,21 @@ class RailTransitWebApplicationService:
             "deleted_file_count", "missing_file_count", "deleted_reports",
             "parsed_links", "parsed_events", "parsed_issues", "source_file_id",
             "scanned_count", "valid_command_count", "blocking_error_count",
+            "snapshot_id", "business_revision", "export_revision",
+            "content_sha256", "export_content_sha256", "snapshot_created_at",
+            "export_kind", "identity_revision", "abnormal_count",
+            "unresolved_count", "ambiguous_count", "identity_distinct_count",
+            "snapshot_build_ms", "snapshot_retry_count", "export_render_ms",
         ):
             value = result.get(key)
             if isinstance(value, (bool, int, float, str)):
                 summary[key] = value
+        source_revisions = result.get("source_revisions")
+        if isinstance(source_revisions, dict) and all(
+            isinstance(key, str) and isinstance(value, str)
+            for key, value in source_revisions.items()
+        ):
+            summary["source_revisions"] = dict(source_revisions)
         round_summaries = result.get("round_summaries")
         if isinstance(round_summaries, list):
             summary["round_summaries_count"] = len(round_summaries)
@@ -3926,6 +4014,15 @@ class RailTransitWebApplicationService:
 
     def _cleanup_recovered_task(self, site_id: str, snapshot) -> bool:
         cleaned = False
+        if snapshot.task_type == self._ARTIFACT_TASK_TYPES["trackside_ap_business"]:
+            try:
+                cleaned = cleanup_export_snapshot(
+                    self.paths.staging_dir,
+                    site_id=site_id,
+                    task_id=snapshot.task_id,
+                ) or cleaned
+            except ValueError:
+                pass
         if snapshot.task_type == "mesh_log_import":
             job_path = self.paths.runtime_cache_dir / "background_jobs" / f"{snapshot.task_id}.json"
             try:
