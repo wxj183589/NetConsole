@@ -6,7 +6,10 @@ from pathlib import Path
 
 import pytest
 
+from netconsole.models.ap_identity_index import ApIdentityBatchResult, ApIdentityMatch
 from netconsole.repositories.online_mr_diagnosis_repository import OnlineMrDiagnosisRepository
+from netconsole.services.ap_identity.normalizers import normalize_mac_key
+from netconsole.services.rail_transit.online_mr_identity_remap_service import OnlineMrIdentityRemapService
 
 
 def test_online_mr_diagnosis_repository_initializes_existing_schema_and_indexes(
@@ -130,7 +133,229 @@ def test_online_mr_diagnosis_repository_additively_upgrades_main_link_identity_c
         "identity_match_confidence",
     }.issubset(columns)
     assert count == 1
-    assert schema_version == "online_mr_business_tables_v10_peer_identity_fields"
+    assert schema_version == "online_mr_business_tables_v11_identity_projection"
+
+
+def test_online_mr_identity_remap_batches_all_fact_endpoints_and_preserves_facts(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "parsed" / "online_diagnosis.sqlite"
+    repository = OnlineMrDiagnosisRepository(db_path)
+    repository.initialize()
+    session_id = "session-1"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO main_link_samples (
+                session_id, collector_time, link_state, peer_name, peer_mac,
+                peer_mac_normalized, mr_rssi, bssid, mesh_interface, online_time
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (session_id, "2026-07-19 10:00:00.000", "ACTIVE", "AP-A", "0200-0000-0001", "020000000001", -42, "", "WLAN-MeshLink1", ""),
+        )
+        conn.execute(
+            """
+            INSERT INTO switch_history_events (
+                session_id, event_time_device, event_time_local,
+                old_peer_name, old_peer_mac, new_peer_name, new_peer_mac,
+                old_rssi, new_rssi
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (session_id, "2026-07-19 10:00:01", "2026-07-19 10:00:01", "AP-A", "020000000001", "AP-B", "020000000002", -45, -40),
+        )
+        conn.execute(
+            """
+            INSERT INTO switch_realtime_events (
+                session_id, device_time, old_peer_name, old_peer_mac,
+                new_peer_name, new_peer_mac, old_rssi, new_rssi
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (session_id, "2026-07-19 10:00:02", "AP-B", "020000000002", "AP-C", "020000000003", -41, -39),
+        )
+
+    class QueryService:
+        def __init__(self) -> None:
+            self.calls: list[tuple[list[object], str | None]] = []
+            self.revision = 80
+
+        def resolve_peer_macs(self, values, *, ap_role=None):
+            self.calls.append((list(values), ap_role))
+            keys = tuple(dict.fromkeys(key for value in values if (key := normalize_mac_key(value))))
+            matches = {
+                key: ApIdentityMatch(
+                    status="matched" if key != "020000000002" else "ambiguous",
+                    identity_revision=self.revision,
+                    query_mac=key,
+                    matched_entity_id=f"entity-{key}" if key != "020000000002" else "",
+                    effective_ap_name=f"AP-{key[-2:]}",
+                    effective_ap_mac="020000000000",
+                    station="鼓楼站",
+                    section="鼓楼-东门口",
+                    matched_alias_type="ac_radio_mac",
+                    matched_source="ac_runtime",
+                    match_rule="ac_radio_mac",
+                    match_confidence=100,
+                    radio_id=1,
+                    unresolved_reason="duplicate_exact_alias" if key == "020000000002" else "",
+                )
+                for key in keys
+            }
+            return ApIdentityBatchResult(
+                revision=self.revision,
+                index_status="ready",
+                requested_count=len(values),
+                normalized_count=len(keys),
+                distinct_count=len(keys),
+                matched_count=sum(match.status == "matched" for match in matches.values()),
+                unresolved_count=sum(match.status == "unresolved" for match in matches.values()),
+                ambiguous_count=sum(match.status == "ambiguous" for match in matches.values()),
+                invalid_count=sum(normalize_mac_key(value) is None for value in values),
+                matches=matches,
+            )
+
+    query = QueryService()
+    before = repository.identity_fact_fingerprint(session_id)
+    result = OnlineMrIdentityRemapService(repository, query).remap(session_id)  # type: ignore[arg-type]
+    after = repository.identity_fact_fingerprint(session_id)
+
+    assert len(query.calls) == 1
+    assert query.calls[0][1] == "trackside"
+    assert result.revision == 80
+    assert result.mapping_status == "partial"
+    assert result.fact_fingerprint_before == before == after == result.fact_fingerprint_after
+    assert result.updated_rows == 3
+    with sqlite3.connect(db_path) as conn:
+        main = conn.execute(
+            "SELECT identity_entity_id, identity_revision, identity_status, matched_alias_type, belong_station FROM main_link_samples"
+        ).fetchone()
+        history = conn.execute(
+            "SELECT old_identity_status, old_identity_revision, new_identity_status, new_identity_revision FROM switch_history_events"
+        ).fetchone()
+        realtime = conn.execute(
+            "SELECT old_identity_status, old_identity_revision, new_identity_status, new_identity_revision FROM switch_realtime_events"
+        ).fetchone()
+        metadata = conn.execute(
+            "SELECT identity_index_revision, identity_mapping_status, identity_distinct_count, identity_ambiguous_count FROM online_identity_metadata"
+        ).fetchone()
+    assert main == ("entity-020000000001", 80, "matched", "ac_radio_mac", "鼓楼站")
+    assert history == ("matched", 80, "ambiguous", 80)
+    assert realtime == ("ambiguous", 80, "matched", 80)
+    assert metadata == (80, "partial", 3, 1)
+
+    query.revision = 81
+    second = OnlineMrIdentityRemapService(repository, query).remap(session_id)  # type: ignore[arg-type]
+    assert len(query.calls) == 2
+    assert second.revision == 81
+    assert second.fact_fingerprint_before == before == second.fact_fingerprint_after
+
+
+def test_online_mr_identity_remap_rejects_zero_matched_writeback_and_rolls_back(
+    tmp_path: Path,
+) -> None:
+    repository = OnlineMrDiagnosisRepository(tmp_path / "parsed" / "online_diagnosis.sqlite")
+    repository.initialize()
+    fingerprint = repository.identity_fact_fingerprint("session-1")
+    with pytest.raises(RuntimeError, match="matched"):
+        repository.apply_identity_projection(
+            "session-1",
+            {"main_link_samples": [], "switch_history_events": [], "switch_realtime_events": []},
+            {
+                "identity_index_revision": 90,
+                "identity_index_status": "ready",
+                "identity_mapping_status": "mapped",
+                "identity_matched_count": 1,
+            },
+            expected_fact_fingerprint=fingerprint,
+            matched_updated_rows=0,
+        )
+    assert repository.identity_metadata("session-1") == {}
+
+
+def test_online_mr_identity_remap_batches_50000_facts_with_200_distinct_macs(
+    tmp_path: Path,
+) -> None:
+    repository = OnlineMrDiagnosisRepository(
+        tmp_path / "parsed" / "online_diagnosis.sqlite"
+    )
+    repository.initialize()
+    session_id = "session-scale"
+    macs = [f"02000000{index:04x}" for index in range(200)]
+    with sqlite3.connect(repository.db_path) as conn:
+        conn.executemany(
+            """
+            INSERT INTO main_link_samples (
+                session_id, collector_time, link_state, peer_name,
+                peer_mac, peer_mac_normalized, mr_rssi
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    session_id,
+                    f"2026-07-19 10:{index % 60:02d}:{index % 60:02d}.000",
+                    "ACTIVE",
+                    f"AP-{index % 200}",
+                    macs[index % 200],
+                    macs[index % 200],
+                    -40,
+                )
+                for index in range(50_000)
+            ],
+        )
+
+    class QueryService:
+        def __init__(self) -> None:
+            self.calls: list[tuple[list[object], str | None]] = []
+
+        def resolve_peer_macs(self, values, *, ap_role=None):
+            self.calls.append((list(values), ap_role))
+            keys = tuple(
+                dict.fromkeys(
+                    key for value in values if (key := normalize_mac_key(value))
+                )
+            )
+            matches = {
+                key: ApIdentityMatch(
+                    status="matched",
+                    identity_revision=101,
+                    query_mac=key,
+                    matched_entity_id=f"entity-{key}",
+                    effective_ap_name=f"AP-{key[-4:]}",
+                    effective_ap_mac=key,
+                    station="站点A",
+                    matched_alias_type="ac_radio_mac",
+                    matched_source="ac_runtime",
+                    match_rule="ac_radio_mac",
+                    match_confidence=100,
+                )
+                for key in keys
+            }
+            return ApIdentityBatchResult(
+                revision=101,
+                index_status="ready",
+                requested_count=len(values),
+                normalized_count=len(values),
+                distinct_count=len(keys),
+                matched_count=len(keys),
+                unresolved_count=0,
+                ambiguous_count=0,
+                invalid_count=0,
+                matches=matches,
+            )
+
+    query = QueryService()
+    result = OnlineMrIdentityRemapService(repository, query).remap(session_id)  # type: ignore[arg-type]
+
+    assert len(query.calls) == 1
+    assert len(query.calls[0][0]) == 200
+    assert query.calls[0][1] == "trackside"
+    assert result.requested_count == 200
+    assert result.distinct_count == 200
+    assert result.updated_rows == 50_000
+    assert result.fact_fingerprint_before == result.fact_fingerprint_after
+    with sqlite3.connect(repository.db_path) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM main_link_samples WHERE identity_revision = 101"
+        ).fetchone()[0] == 50_000
 
 
 def test_online_mr_diagnosis_repository_preserves_write_query_and_reset_contract(

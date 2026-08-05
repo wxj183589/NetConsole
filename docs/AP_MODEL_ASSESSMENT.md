@@ -30,7 +30,7 @@ Job Center、Online MR、SNMP 与 AC Domain 第一阶段迁移完成后，AP 相
 - `src/netconsole/services/rail_transit/`
 - `src/netconsole/services/online_mr/`
 - `src/netconsole/services/vehicle_mr_online.py`
-- `src/netconsole/services/ap_radio_mapping_service.py`
+- 历史 `src/netconsole/services/ap_radio_mapping_service.py`（第二阶段 P0 已删除）
 - `src/netconsole/services/mesh_peer_mapping_service.py`
 - `src/netconsole/services/network_tools/trackside_bssid_resolver.py`
 - `src/netconsole/services/mesh_analysis_report.py`
@@ -206,7 +206,7 @@ Job Center、Online MR、SNMP 与 AC Domain 第一阶段迁移完成后，AP 相
 5. metadata 对名称的兼容 join 可能在重名时产生错误富化，尤其是多 AC 共用站点库时。
 6. `trackside_ap_view_cache` 的行身份是 `site_id + switch_uuid + interface_name`，描述拓扑视图而非 AP；AP 移动端口后不能把 cache row 当作 AP identity。
 7. Online MR lookup 加载带有对 FIT-AP `site` 的反填副作用，读写边界不清晰。
-8. `ApRadioMappingService` 在缺少显式 Radio MAC 时可回退为 Peer MAC，调用者必须查看 source/match rule，不能只看值。
+8. 历史 `ApRadioMappingService` 在缺少显式 Radio MAC 时可回退为 Peer MAC；第二阶段 P0 已删除该旁路，Online MR 历史解析改用正式批量 Identity 投影。
 
 ### 9.3 记录但本轮不修复的明显问题
 

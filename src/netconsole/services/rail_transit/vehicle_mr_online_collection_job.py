@@ -56,7 +56,7 @@ def run_vehicle_mr_online_collection(context: JobContext) -> dict[str, object]:
         interval_seconds=interval_seconds,
         store=store,
         registered_trains=registered,
-        ap_lookup=load_trackside_ap_lookup(repository),
+        identity_query_service=load_trackside_ap_lookup(repository),
         mapping_lookup=build_mapping_lookup(mappings),
         connection_config=OnlineMrConnectionConfig(
             site=site_id,

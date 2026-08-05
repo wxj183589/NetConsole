@@ -31,7 +31,15 @@ class WirelessScanRepository:
                     ended_at TEXT NOT NULL,
                     status TEXT NOT NULL,
                     network_count INTEGER DEFAULT 0,
-                    raw_file TEXT DEFAULT ''
+                    raw_file TEXT DEFAULT '',
+                    identity_index_revision INTEGER DEFAULT 0,
+                    identity_index_status TEXT DEFAULT '',
+                    identity_requested_count INTEGER DEFAULT 0,
+                    identity_distinct_count INTEGER DEFAULT 0,
+                    identity_matched_count INTEGER DEFAULT 0,
+                    identity_unresolved_count INTEGER DEFAULT 0,
+                    identity_ambiguous_count INTEGER DEFAULT 0,
+                    identity_invalid_count INTEGER DEFAULT 0
                 );
                 CREATE TABLE IF NOT EXISTS wireless_scan_results (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -80,7 +88,14 @@ class WirelessScanRepository:
                     matched_direction TEXT DEFAULT '',
                     matched_radio_id INTEGER NULL,
                     match_rule TEXT DEFAULT '',
-                    match_candidates_json TEXT DEFAULT ''
+                    match_candidates_json TEXT DEFAULT '',
+                    identity_entity_id TEXT DEFAULT '',
+                    identity_revision INTEGER DEFAULT 0,
+                    identity_status TEXT DEFAULT '',
+                    identity_source TEXT DEFAULT '',
+                    identity_reason TEXT DEFAULT '',
+                    matched_alias_type TEXT DEFAULT '',
+                    identity_match_confidence INTEGER DEFAULT 0
                 );
                 CREATE INDEX IF NOT EXISTS idx_wireless_scan_results_scan ON wireless_scan_results(scan_id);
                 CREATE INDEX IF NOT EXISTS idx_wireless_scan_results_bssid ON wireless_scan_results(bssid);
@@ -103,14 +118,25 @@ class WirelessScanRepository:
         project_id: str = "",
         project_name: str = "",
         project_description: str = "",
+        identity_revision: int = 0,
+        identity_index_status: str = "",
+        identity_requested_count: int = 0,
+        identity_distinct_count: int = 0,
+        identity_matched_count: int = 0,
+        identity_unresolved_count: int = 0,
+        identity_ambiguous_count: int = 0,
+        identity_invalid_count: int = 0,
     ) -> None:
         with self._connect() as conn:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO wireless_scan_runs (
                     scan_id, site, project_id, project_name, project_description,
-                    adapter_name, adapter_guid, started_at, ended_at, status, network_count, raw_file
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    adapter_name, adapter_guid, started_at, ended_at, status, network_count, raw_file,
+                    identity_index_revision, identity_index_status, identity_requested_count,
+                    identity_distinct_count, identity_matched_count, identity_unresolved_count,
+                    identity_ambiguous_count, identity_invalid_count
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     scan_id,
@@ -125,6 +151,14 @@ class WirelessScanRepository:
                     status,
                     len(results),
                     raw_file,
+                    int(identity_revision),
+                    str(identity_index_status or ""),
+                    int(identity_requested_count),
+                    int(identity_distinct_count),
+                    int(identity_matched_count),
+                    int(identity_unresolved_count),
+                    int(identity_ambiguous_count),
+                    int(identity_invalid_count),
                 ),
             )
             conn.execute("DELETE FROM wireless_scan_results WHERE scan_id = ?", (scan_id,))
@@ -137,8 +171,10 @@ class WirelessScanRepository:
                     auth_method, security, encryption_method, raw_ie_available, parse_warnings_json, vendor, is_hidden, last_seen, raw_json,
                     matched_trackside_ap, match_status, matched_ap_name, matched_ap_mac, matched_station,
                     matched_section, matched_belong_type, matched_belonging_source,
-                    matched_location, matched_direction, matched_radio_id, match_rule, match_candidates_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    matched_location, matched_direction, matched_radio_id, match_rule, match_candidates_json,
+                    identity_entity_id, identity_revision, identity_status, identity_source,
+                    identity_reason, matched_alias_type, identity_match_confidence
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [self._result_row(scan_id, result) for result in results],
             )
@@ -256,6 +292,20 @@ class WirelessScanRepository:
             conn.execute("ALTER " "TABLE wireless_scan_runs ADD COLUMN project_name TEXT DEFAULT ''")
         if "project_description" not in columns:
             conn.execute("ALTER " "TABLE wireless_scan_runs ADD COLUMN project_description TEXT DEFAULT ''")
+        for column, definition in {
+            "identity_index_revision": "INTEGER DEFAULT 0",
+            "identity_index_status": "TEXT DEFAULT ''",
+            "identity_requested_count": "INTEGER DEFAULT 0",
+            "identity_distinct_count": "INTEGER DEFAULT 0",
+            "identity_matched_count": "INTEGER DEFAULT 0",
+            "identity_unresolved_count": "INTEGER DEFAULT 0",
+            "identity_ambiguous_count": "INTEGER DEFAULT 0",
+            "identity_invalid_count": "INTEGER DEFAULT 0",
+        }.items():
+            if column not in columns:
+                conn.execute(
+                    f"ALTER TABLE wireless_scan_runs ADD COLUMN {column} {definition}"
+                )
 
     @staticmethod
     def _ensure_results_columns(conn: sqlite3.Connection) -> None:
@@ -284,6 +334,19 @@ class WirelessScanRepository:
         for column in ("matched_section", "matched_belong_type", "matched_belonging_source"):
             if column not in columns:
                 conn.execute(f"ALTER " f"TABLE wireless_scan_results ADD COLUMN {column} TEXT DEFAULT ''")
+        for column, definition in {
+            "identity_entity_id": "TEXT DEFAULT ''",
+            "identity_revision": "INTEGER DEFAULT 0",
+            "identity_status": "TEXT DEFAULT ''",
+            "identity_source": "TEXT DEFAULT ''",
+            "identity_reason": "TEXT DEFAULT ''",
+            "matched_alias_type": "TEXT DEFAULT ''",
+            "identity_match_confidence": "INTEGER DEFAULT 0",
+        }.items():
+            if column not in columns:
+                conn.execute(
+                    f"ALTER TABLE wireless_scan_results ADD COLUMN {column} {definition}"
+                )
 
     @staticmethod
     def _result_row(scan_id: str, result: WirelessScanResult) -> tuple[object, ...]:
@@ -336,4 +399,11 @@ class WirelessScanRepository:
             match.radio_id,
             match.match_rule,
             json.dumps(list(match.candidates), ensure_ascii=False),
+            match.identity_entity_id,
+            match.identity_revision,
+            match.match_status,
+            match.identity_source,
+            match.identity_reason,
+            match.matched_alias_type,
+            match.confidence,
         )

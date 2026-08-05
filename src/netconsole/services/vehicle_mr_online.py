@@ -6,16 +6,18 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Callable, Protocol
+from types import MappingProxyType
+from typing import Callable, Mapping, Protocol, Sequence
 
 from netconsole.core.paths import PathResolver
+from netconsole.models.ap_identity_index import ApIdentityBatchResult, ApIdentityMatch
 from netconsole.models.device import Device
 from netconsole.models.online_mr_models import OnlineMrConnectionConfig
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.ap_identity import ApIdentityQueryService
 from netconsole.services.online_mr_collector import NetmikoShellConnection
-from netconsole.services.ap_identity.normalizers import normalize_mac
+from netconsole.services.ap_identity.normalizers import normalize_mac, normalize_mac_key
 from netconsole.utils.natural_sort import train_natural_sort_key
 
 
@@ -28,8 +30,6 @@ TRAIN_STATUS_ABNORMAL_SINGLE = "异常单端"
 TRAIN_STATUS_UNEXPECTED_END = "非预期端在线"
 TRAIN_STATUS_DUAL_ONLINE = "双端在线"
 UNKNOWN_STATION = "未知车站"
-_AP_IDENTITY_QUERY_KEY = "__ap_identity_query_service__"
-_AP_IDENTITY_ENTITIES_KEY = "__ap_identity_entities__"
 ONLINE_POLICY_AUTO = "auto"
 ONLINE_POLICY_SINGLE_TAIL = "single_tail"
 ONLINE_POLICY_DUAL_ACTIVE = "dual_active"
@@ -91,6 +91,54 @@ class MatchedAp:
     match_score: int = 0
     ap_mac: str = ""
     station_source: str = ""
+
+
+@dataclass(frozen=True)
+class VehicleMrIdentitySnapshot:
+    revision: int = 0
+    index_status: str = "not_checked"
+    requested_count: int = 0
+    distinct_count: int = 0
+    matched_count: int = 0
+    unresolved_count: int = 0
+    ambiguous_count: int = 0
+    invalid_count: int = 0
+    matches: Mapping[str, ApIdentityMatch] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "matches", MappingProxyType(dict(self.matches)))
+
+    @classmethod
+    def from_batch(cls, batch: ApIdentityBatchResult) -> "VehicleMrIdentitySnapshot":
+        return cls(
+            revision=batch.revision,
+            index_status=batch.index_status,
+            requested_count=batch.requested_count,
+            distinct_count=batch.distinct_count,
+            matched_count=batch.matched_count,
+            unresolved_count=batch.unresolved_count,
+            ambiguous_count=batch.ambiguous_count,
+            invalid_count=batch.invalid_count,
+            matches=batch.matches,
+        )
+
+    def match_for(self, local_mac: object) -> ApIdentityMatch:
+        key = normalize_mac_key(local_mac)
+        if key is None:
+            return ApIdentityMatch(
+                status="invalid",
+                identity_revision=self.revision,
+                unresolved_reason="invalid_peer_mac",
+            )
+        return self.matches.get(
+            key,
+            ApIdentityMatch(
+                status="unresolved",
+                identity_revision=self.revision,
+                query_mac=key,
+                unresolved_reason="exact_alias_not_found",
+            ),
+        )
 
 
 @dataclass(frozen=True)
@@ -330,20 +378,6 @@ def is_empty_station(value: object) -> bool:
     return str(value or "").strip().casefold() in EMPTY_STATION_VALUES
 
 
-def is_same_or_h3c_radio_mac(mac_a: object, mac_b: object) -> bool:
-    return h3c_radio_mac_match_method(mac_a, mac_b) != ""
-
-
-def h3c_radio_mac_match_method(mac_a: object, mac_b: object) -> str:
-    left = normalize_mac(mac_a) or ""
-    right = normalize_mac(mac_b) or ""
-    if not left or not right:
-        return ""
-    if left == right:
-        return "exact_mac"
-    return ""
-
-
 def parse_train_identity(peer_name: str) -> TrainIdentity | None:
     text = canonical_peer_name(peer_name)
     match = _MR_NAME_RE.match(text)
@@ -540,14 +574,25 @@ def choose_best_links(links: list[VehicleMrMeshLink]) -> dict[str, VehicleMrMesh
     return best
 
 
+def resolve_vehicle_mr_identity_snapshot(
+    query_service: ApIdentityQueryService,
+    links: Sequence[VehicleMrMeshLink],
+) -> VehicleMrIdentitySnapshot:
+    batch = query_service.resolve_peer_macs(
+        [link.local_mac for link in links],
+        ap_role="trackside",
+    )
+    return VehicleMrIdentitySnapshot.from_batch(batch)
+
+
 def build_train_states(
     registered_trains: dict[str, VehicleMrTrainState],
     parse_result: VehicleMrMeshParseResult,
-    ap_lookup: dict[str, MatchedAp] | None = None,
+    identity_snapshot: VehicleMrIdentitySnapshot | Mapping[str, MatchedAp] | None = None,
     previous: dict[str, VehicleMrTrainState] | None = None,
     mapping_lookup: dict[str, TrainIdentity] | None = None,
 ) -> list[VehicleMrTrainState]:
-    ap_lookup = ap_lookup or {}
+    identity_snapshot = identity_snapshot or VehicleMrIdentitySnapshot()
     previous = previous or {}
     mapping_lookup = mapping_lookup or {}
     states = {
@@ -578,7 +623,7 @@ def build_train_states(
             state.is_registered = True
         if state.online_policy == ONLINE_POLICY_AUTO and identity.online_policy != ONLINE_POLICY_AUTO:
             state.online_policy = normalize_online_policy(identity.online_policy)
-        matched = match_ap(link.local_ap_name, ap_lookup, link.local_mac)
+        matched = match_ap(link.local_ap_name, identity_snapshot, link.local_mac)
         end_state = VehicleMrEndState(
             seen=True,
             station=matched.station if matched else UNKNOWN_STATION,
@@ -681,19 +726,28 @@ def _find_previous_by_train_no(previous: dict[str, VehicleMrTrainState], train_n
     return None
 
 
-def match_ap(ap_name: str, ap_lookup: dict[str, object], local_mac: str = "") -> MatchedAp | None:
-    query_service = ap_lookup.get(_AP_IDENTITY_QUERY_KEY)
-    if isinstance(query_service, ApIdentityQueryService):
-        match = query_service.resolve_peer_mac(local_mac, peer_name=ap_name)
-        if match.matched:
-            return MatchedAp(
-                ap_name=match.effective_ap_name or ap_name,
-                station=match.station or UNKNOWN_STATION,
-                match_method=match.match_rule or match.matched_alias_type,
-                match_score=match.match_confidence,
-                ap_mac=match.effective_ap_mac,
-                station_source=match.matched_source,
-            )
+def match_ap(
+    ap_name: str,
+    identity_snapshot: VehicleMrIdentitySnapshot | Mapping[str, MatchedAp],
+    local_mac: str = "",
+) -> MatchedAp | None:
+    if isinstance(identity_snapshot, VehicleMrIdentitySnapshot):
+        match = identity_snapshot.match_for(local_mac)
+        if not match.matched:
+            return None
+        return MatchedAp(
+            ap_name=match.effective_ap_name or ap_name,
+            station=match.station or UNKNOWN_STATION,
+            match_method=match.match_rule or match.matched_alias_type,
+            match_score=match.match_confidence,
+            ap_mac=match.effective_ap_mac,
+            station_source=match.matched_source,
+        )
+    key = normalize_mac_key(local_mac)
+    if key:
+        candidate = identity_snapshot.get(f"mac:{key}") or identity_snapshot.get(key)
+        if isinstance(candidate, MatchedAp):
+            return candidate
     return None
 
 
@@ -732,6 +786,15 @@ class VehicleMrOnlineStore:
                     link_count INTEGER,
                     parse_status TEXT,
                     error_message TEXT,
+                    identity_revision INTEGER DEFAULT 0,
+                    identity_index_status TEXT,
+                    identity_requested_count INTEGER DEFAULT 0,
+                    identity_distinct_count INTEGER DEFAULT 0,
+                    identity_matched_count INTEGER DEFAULT 0,
+                    identity_unresolved_count INTEGER DEFAULT 0,
+                    identity_ambiguous_count INTEGER DEFAULT 0,
+                    identity_invalid_count INTEGER DEFAULT 0,
+                    identity_mapped_at TEXT,
                     created_at TEXT
                 );
                 CREATE TABLE IF NOT EXISTS vehicle_mr_online_links (
@@ -757,6 +820,15 @@ class VehicleMrOnlineStore:
                     match_method TEXT,
                     match_score INTEGER,
                     station_source TEXT,
+                    identity_entity_id TEXT,
+                    identity_revision INTEGER DEFAULT 0,
+                    identity_status TEXT,
+                    identity_source TEXT,
+                    identity_reason TEXT,
+                    matched_alias_type TEXT,
+                    matched_ap_mac TEXT,
+                    matched_radio_id INTEGER,
+                    matched_section TEXT,
                     created_at TEXT
                 );
                 CREATE TABLE IF NOT EXISTS vehicle_mr_train_current_state (
@@ -829,11 +901,31 @@ class VehicleMrOnlineStore:
 
     def _ensure_columns(self, conn: sqlite3.Connection) -> None:
         additions = {
+            "vehicle_mr_online_snapshots": {
+                "identity_revision": "INTEGER DEFAULT 0",
+                "identity_index_status": "TEXT",
+                "identity_requested_count": "INTEGER DEFAULT 0",
+                "identity_distinct_count": "INTEGER DEFAULT 0",
+                "identity_matched_count": "INTEGER DEFAULT 0",
+                "identity_unresolved_count": "INTEGER DEFAULT 0",
+                "identity_ambiguous_count": "INTEGER DEFAULT 0",
+                "identity_invalid_count": "INTEGER DEFAULT 0",
+                "identity_mapped_at": "TEXT",
+            },
             "vehicle_mr_online_links": {
                 "train_display_name": "TEXT",
                 "match_method": "TEXT",
                 "match_score": "INTEGER",
                 "station_source": "TEXT",
+                "identity_entity_id": "TEXT",
+                "identity_revision": "INTEGER DEFAULT 0",
+                "identity_status": "TEXT",
+                "identity_source": "TEXT",
+                "identity_reason": "TEXT",
+                "matched_alias_type": "TEXT",
+                "matched_ap_mac": "TEXT",
+                "matched_radio_id": "INTEGER",
+                "matched_section": "TEXT",
             },
             "vehicle_mr_train_current_state": {
                 "train_display_name": "TEXT",
@@ -1118,8 +1210,42 @@ class VehicleMrOnlineStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def backfill_event_stations(self, ap_lookup: dict[str, object]) -> int:
+    def backfill_event_stations(self, query_service: ApIdentityQueryService) -> int:
         with self.connect() as conn:
+            link_rows = conn.execute(
+                """
+                SELECT DISTINCT local_mac, local_ap_name
+                FROM vehicle_mr_online_links
+                WHERE local_mac IS NOT NULL AND TRIM(local_mac) <> ''
+                """
+            ).fetchall()
+            snapshot = resolve_vehicle_mr_identity_snapshot(
+                query_service,
+                [
+                    VehicleMrMeshLink(
+                        local_ap_name=str(row["local_ap_name"] or ""),
+                        local_mac=str(row["local_mac"] or ""),
+                        peer_name="",
+                    )
+                    for row in link_rows
+                ],
+            )
+            stations_by_name: dict[str, set[str]] = {}
+            for row in link_rows:
+                matched = match_ap(
+                    str(row["local_ap_name"] or ""),
+                    snapshot,
+                    str(row["local_mac"] or ""),
+                )
+                if (
+                    matched is not None
+                    and not is_empty_station(matched.station)
+                    and matched.station != UNKNOWN_STATION
+                ):
+                    stations_by_name.setdefault(
+                        str(row["local_ap_name"] or ""),
+                        set(),
+                    ).add(matched.station)
             rows = conn.execute(
                 """
                 SELECT id, ap_name, station FROM vehicle_mr_train_pass_events
@@ -1128,9 +1254,9 @@ class VehicleMrOnlineStore:
             ).fetchall()
             updates: list[tuple[str, int]] = []
             for row in rows:
-                matched = match_ap(str(row["ap_name"] or ""), ap_lookup)
-                if matched is not None and not is_empty_station(matched.station) and matched.station != UNKNOWN_STATION:
-                    updates.append((matched.station, int(row["id"])))
+                stations = stations_by_name.get(str(row["ap_name"] or ""), set())
+                if len(stations) == 1:
+                    updates.append((next(iter(stations)), int(row["id"])))
             if updates:
                 conn.executemany("UPDATE vehicle_mr_train_pass_events SET station = ? WHERE id = ?", updates)
             return len(updates)
@@ -1141,18 +1267,27 @@ class VehicleMrOnlineStore:
         sample_index: int,
         parse_result: VehicleMrMeshParseResult,
         trains: list[VehicleMrTrainState],
-        ap_lookup: dict[str, MatchedAp],
+        identity_snapshot: VehicleMrIdentitySnapshot | Mapping[str, MatchedAp],
         duration_ms: int,
     ) -> int:
         now = datetime.now().isoformat(sep=" ", timespec="seconds")
         previous = self.load_current_states()
+        batch = (
+            identity_snapshot
+            if isinstance(identity_snapshot, VehicleMrIdentitySnapshot)
+            else VehicleMrIdentitySnapshot()
+        )
         with self.connect() as conn:
             cursor = conn.execute(
                 """
                 INSERT INTO vehicle_mr_online_snapshots (
                     session_id, sample_index, ac_time, local_time, command_duration_ms,
-                    link_count, parse_status, error_message, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    link_count, parse_status, error_message, identity_revision,
+                    identity_index_status, identity_requested_count, identity_distinct_count,
+                    identity_matched_count, identity_unresolved_count,
+                    identity_ambiguous_count, identity_invalid_count, identity_mapped_at,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     session_id,
@@ -1163,6 +1298,15 @@ class VehicleMrOnlineStore:
                     len(parse_result.links),
                     parse_result.parse_status,
                     parse_result.error_message,
+                    batch.revision,
+                    batch.index_status,
+                    batch.requested_count,
+                    batch.distinct_count,
+                    batch.matched_count,
+                    batch.unresolved_count,
+                    batch.ambiguous_count,
+                    batch.invalid_count,
+                    now,
                     now,
                 ),
             )
@@ -1172,10 +1316,23 @@ class VehicleMrOnlineStore:
                 INSERT INTO vehicle_mr_online_links (
                     session_id, snapshot_id, ac_time, peer_name, peer_mac, local_ap_name, local_mac,
                     status, rssi, rx_packets, tx_packets, train_id, train_display_name, train_no, car_end, car_end_label,
-                    matched_station, matched_ap_name, match_method, match_score, station_source, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    matched_station, matched_ap_name, match_method, match_score, station_source,
+                    identity_entity_id, identity_revision, identity_status, identity_source,
+                    identity_reason, matched_alias_type, matched_ap_mac, matched_radio_id,
+                    matched_section, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                [self._link_values(session_id, snapshot_id, parse_result.ac_time, link, ap_lookup, now) for link in parse_result.links],
+                [
+                    self._link_values(
+                        session_id,
+                        snapshot_id,
+                        parse_result.ac_time,
+                        link,
+                        identity_snapshot,
+                        now,
+                    )
+                    for link in parse_result.links
+                ],
             )
             for train in trains:
                 conn.execute(
@@ -1222,11 +1379,24 @@ class VehicleMrOnlineStore:
         snapshot_id: int,
         ac_time: str,
         link: VehicleMrMeshLink,
-        ap_lookup: dict[str, MatchedAp],
+        identity_snapshot: VehicleMrIdentitySnapshot | Mapping[str, MatchedAp],
         now: str,
     ) -> tuple[object, ...]:
         identity = parse_train_identity(link.peer_name)
-        matched = match_ap(link.local_ap_name, ap_lookup, link.local_mac)
+        identity_match = (
+            identity_snapshot.match_for(link.local_mac)
+            if isinstance(identity_snapshot, VehicleMrIdentitySnapshot)
+            else ApIdentityMatch(
+                status="invalid" if normalize_mac_key(link.local_mac) is None else "unresolved",
+                query_mac=normalize_mac_key(link.local_mac) or "",
+                unresolved_reason=(
+                    "invalid_peer_mac"
+                    if normalize_mac_key(link.local_mac) is None
+                    else "exact_alias_not_found"
+                ),
+            )
+        )
+        matched = match_ap(link.local_ap_name, identity_snapshot, link.local_mac)
         train_display_name = f"{identity.train_no}车" if identity else ""
         return (
             session_id,
@@ -1250,6 +1420,15 @@ class VehicleMrOnlineStore:
             matched.match_method if matched else "unmatched",
             matched.match_score if matched else 0,
             matched.station_source if matched else "",
+            identity_match.matched_entity_id,
+            identity_match.identity_revision,
+            identity_match.status,
+            identity_match.matched_source,
+            identity_match.unresolved_reason,
+            identity_match.matched_alias_type,
+            identity_match.effective_ap_mac,
+            identity_match.radio_id,
+            identity_match.section,
             now,
         )
 
@@ -1421,48 +1600,8 @@ def backfill_fit_ap_resource_station_from_optical(repository: DeviceRepository) 
         return len(updates)
 
 
-def load_trackside_ap_lookup(repository: DeviceRepository) -> dict[str, object]:
-    query_service = ApIdentityQueryService(repository.database)
-    entities = [
-        MatchedAp(
-            ap_name=str(row.get("ap_name") or row.get("point_code") or ""),
-            station=str(row.get("station") or UNKNOWN_STATION),
-            match_method="identity_entity",
-            match_score=100,
-            ap_mac=str(row.get("ap_mac") or ""),
-            station_source=str(row.get("source") or ""),
-        )
-        for row in query_service.list_entities()
-    ]
-    return {
-        _AP_IDENTITY_QUERY_KEY: query_service,
-        _AP_IDENTITY_ENTITIES_KEY: entities,
-    }
-
-
-def _merge_ap_rows(conn: sqlite3.Connection, records: dict[str, dict[str, object]], source: str, table: str, wanted: tuple[str, ...]) -> None:
-    if not _table_exists(conn, table):
-        return
-    columns = {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table})")}
-    selected = [column for column in wanted if column in columns]
-    if not selected:
-        return
-    for row in conn.execute(f"SELECT {', '.join(selected)} FROM {table}").fetchall():
-        row_data = dict(row)
-        ap_name = str(row_data.get("ap_name") or "").strip()
-        ap_mac = normalize_mac(row_data.get("ap_mac"))
-        key = ap_mac or f"{source}:{len(records)}"
-        if not key:
-            continue
-        record = records.setdefault(key, {})
-        if ap_name and not record.get("ap_name"):
-            record["ap_name"] = ap_name
-        if ap_mac and not record.get("ap_mac"):
-            record["ap_mac"] = ap_mac
-        for column, value in row_data.items():
-            record[f"{source}.{column}"] = value
-        if source in {"entity", "cache"} and "station" in row_data:
-            record[f"{source}.site"] = row_data.get("station")
+def load_trackside_ap_lookup(repository: DeviceRepository) -> ApIdentityQueryService:
+    return ApIdentityQueryService(repository.database)
 
 
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
@@ -1487,7 +1626,7 @@ class VehicleMrOnlineCollector:
         interval_seconds: int,
         store: VehicleMrOnlineStore,
         registered_trains: dict[str, VehicleMrTrainState],
-        ap_lookup: dict[str, MatchedAp],
+        identity_query_service: ApIdentityQueryService,
         mapping_lookup: dict[str, TrainIdentity] | None,
         connection_config: OnlineMrConnectionConfig,
         connection_factory: VehicleMrConnectionFactory | None = None,
@@ -1499,7 +1638,7 @@ class VehicleMrOnlineCollector:
         self.interval_seconds = max(3, min(300, int(interval_seconds)))
         self.store = store
         self.registered_trains = registered_trains
-        self.ap_lookup = ap_lookup
+        self.identity_query_service = identity_query_service
         self.mapping_lookup = mapping_lookup or {}
         self.connection_config = connection_config
         self.connection_factory = connection_factory or (lambda config: NetmikoShellConnection(config))
@@ -1562,8 +1701,25 @@ class VehicleMrOnlineCollector:
         if parse_result.parse_status == "FAILED":
             self.store.update_session(self.session_id, "解析失败/格式未适配", parse_result.ac_time, parse_result.error_message)
             return VehicleMrOnlineSnapshot(self.session_id, "解析失败/格式未适配", parse_result.ac_time, list(self.current_by_train.values()), parse_result.error_message)
-        trains = build_train_states(self.registered_trains, parse_result, self.ap_lookup, self.current_by_train, self.mapping_lookup)
-        self.store.persist_snapshot(self.session_id, self.sample_index, parse_result, trains, self.ap_lookup, duration_ms)
+        identity_snapshot = resolve_vehicle_mr_identity_snapshot(
+            self.identity_query_service,
+            parse_result.links,
+        )
+        trains = build_train_states(
+            self.registered_trains,
+            parse_result,
+            identity_snapshot,
+            self.current_by_train,
+            self.mapping_lookup,
+        )
+        self.store.persist_snapshot(
+            self.session_id,
+            self.sample_index,
+            parse_result,
+            trains,
+            identity_snapshot,
+            duration_ms,
+        )
         self.current_by_train = {train.train_id: train for train in trains}
         self.store.update_session(self.session_id, "采集中", parse_result.ac_time)
         return VehicleMrOnlineSnapshot(self.session_id, "采集中", parse_result.ac_time, trains)
