@@ -60,6 +60,15 @@ def test_excludes_skill_packages_but_keeps_regular_project_paths(tmp_path: Path)
     assert any("SKILL.md" in path for path, _ in report.excluded_files)
 
 
+def test_excludes_protected_investigation_material(tmp_path: Path) -> None:
+    tracked = ["docs/investigations/archive.md", "docs/README.md"]
+    report = scan_tracked_files(tracked, tmp_path)
+
+    assert "docs/investigations" not in report.maintained_directories
+    assert "docs/investigations" not in report.missing_directories
+    assert any(path.endswith("docs/investigations/archive.md") for path, _ in report.excluded_files)
+
+
 def test_excludes_pure_fixture_data_but_not_fixture_source(tmp_path: Path) -> None:
     tracked = [
         "tests/fixtures/h3c/display.txt",

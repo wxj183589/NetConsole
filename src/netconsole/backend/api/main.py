@@ -822,6 +822,9 @@ def _initialize_active_site_database(paths: PathResolver, site_name: str) -> Non
     if not database.exists():
         raise RuntimeError("当前局点设备数据库不存在，Backend 未启动")
     database.initialize()
+    # Database.initialize() may normalize legacy rows and advance the source
+    # revision; refresh the read-only identity index before API consumers use it.
+    ApIdentityQueryService(database).ensure_index("backend_startup")
 
 
 def _frontend_dist(paths: PathResolver) -> Path:

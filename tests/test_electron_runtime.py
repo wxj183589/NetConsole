@@ -295,7 +295,7 @@ def test_electron_backend_initializes_legacy_active_site_before_device_query(
     ) == 1
 
 
-def test_electron_backend_startup_does_not_rebuild_stale_identity_index(
+def test_electron_backend_startup_refreshes_stale_identity_index(
     tmp_path: Path,
 ) -> None:
     paths = PathResolver(
@@ -326,8 +326,9 @@ def test_electron_backend_startup_does_not_rebuild_stale_identity_index(
     after = ApIdentityQueryService(database).index_state()
     assert before is not None
     assert after is not None
-    assert after["revision"] == before["revision"] == 0
-    assert after["source_revision"] == before["source_revision"] == -1
+    assert before["revision"] == 0
+    assert after["revision"] == 1
+    assert after["source_revision"] >= 0
 
 
 def test_electron_runtime_does_not_publish_api_documentation(tmp_path, monkeypatch) -> None:

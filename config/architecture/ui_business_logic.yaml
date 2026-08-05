@@ -78,5 +78,6 @@
   {"path":"apps/web/src/views/settings/SystemSettingsView.vue","symbol":"aggregateSelfCheckStatus","classification":"DISPLAY_ONLY","reason":"将 Backend 自检项状态聚合为设置页摘要展示。","test":"apps/web/src/views/settings/SystemSettingsView.test.ts"},
   {"path":"apps/web/src/views/settings/SystemSettingsView.vue","symbol":"resolveFeatureConfigurationAvailability","classification":"DISPLAY_ONLY","reason":"将 Feature Registry 与 Backend 配置状态投影为设置页可用性展示。","test":"apps/web/src/views/settings/SystemSettingsView.test.ts"},
   {"path":"apps/web/src/workspace/route-identity.ts","symbol":"resolveWorkspacePolicy","classification":"FALSE_POSITIVE","reason":"解析路由元数据中的工作区基础设施策略。","test":"apps/web/src/workspace/route-identity.test.ts"},
-  {"path":"apps/web/src/workspace/route-identity.ts","symbol":"normalizeParam","classification":"FALSE_POSITIVE","reason":"规范化路由参数以生成稳定的工作区标识。","test":"apps/web/src/workspace/route-identity.test.ts"}
+  {"path":"apps/web/src/workspace/route-identity.ts","symbol":"normalizeParam","classification":"FALSE_POSITIVE","reason":"规范化路由参数以生成稳定的工作区标识。","test":"apps/web/src/workspace/route-identity.test.ts"},
+  {"path":"apps/web/src/api/client.ts","symbol":"normalizeQueryTimeout","classification":"FALSE_POSITIVE","reason":"仅规范化客户端请求超时参数，属于传输层边界校验，不计算业务事实。","test":"apps/web/src/api/client.test.ts"}
 ]

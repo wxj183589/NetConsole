@@ -175,7 +175,9 @@ ApIdentityMatch]`，现有按 key、`values()` 或 `dict.update()` 消费方式�
 MESH 分析、历史报告和页面刷新都是只读操作，数据库指纹在普通 GET
 请求期间保持不变。
 
-Backend 启动只保留缺失或过期索引的兼容性收口；正常来源写入不会依赖
+Backend 启动只保留缺失或过期索引的兼容性收口；`_initialize_active_site_database()`
+在数据库初始化/历史行规范化完成后调用一次 `ensure_index("backend_startup")`，
+确保启动期间可能提升的 source revision 与只读索引一致。正常来源写入不会依赖
 启动时机，也不会把启动修复当作来源写入的替代路径。
 
 来源 revision 监听 `ap_extension_points`、FIT-AP 当前资源、
