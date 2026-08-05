@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { onBeforeRouteLeave } from 'vue-router'
 import { ElMessage } from 'element-plus'
 
 import {
@@ -70,18 +71,28 @@ const dependencyIssues = computed(() => features.value.flatMap((item) => {
       if (!dependency?.enabled) issues.push(`${item.title} 依赖未启用的 ${dependency?.title || dependencyId}`)
     }
   }
-  if (target.value === 'customer' && item.package_included) {
+  if (target.value === 'customer' && Boolean(item.package_included)) {
     for (const dependencyId of item.dependencies) {
       const dependency = byId(dependencyId)
-      if (!dependency?.package_included) issues.push(`${item.title} 依赖未纳入客户版的 ${dependency?.title || dependencyId}`)
+      if (!Boolean(dependency?.package_included)) issues.push(`${item.title} 依赖未纳入客户版的 ${dependency?.title || dependencyId}`)
     }
   }
   return issues
 }))
 const changedCount = computed(() => features.value.filter(isModified).length)
-const includedCount = computed(() => features.value.filter((item) => item.package_included).length)
+const includedCount = computed(() => features.value.filter((item) => Boolean(item.package_included)).length)
 
 onMounted(() => { void loadTarget('customer') })
+onBeforeRouteLeave(async () => {
+  if (dirty.value && !await confirm({
+    type: 'WARNING',
+    title: '模板尚未保存',
+    message: '离开页面将放弃当前未保存修改，是否继续？',
+    confirmText: '放弃并离开',
+  })) return false
+  await stopPreviewSilently()
+  return true
+})
 
 async function selectTarget(value: string | number | boolean | undefined): Promise<void> {
   const next = String(value) as ProfileTarget
@@ -92,6 +103,7 @@ async function selectTarget(value: string | number | boolean | undefined): Promi
     message: '切换版本将放弃当前未保存修改，是否继续？',
     confirmText: '放弃并切换',
   })) return
+  await stopPreviewSilently()
   target.value = next
   await loadTarget(next)
 }
@@ -111,13 +123,21 @@ async function loadTarget(selected: ProfileTarget): Promise<void> {
 
 function accept(data: FeatureSettingsSnapshot): void {
   snapshot.value = data
-  features.value = data.items
-  baseline.value = JSON.stringify(data.items)
+  features.value = normalizeItems(data.items)
+  baseline.value = JSON.stringify(features.value)
   previewing.value = data.preview_active
 }
 
+function normalizeItems(items: FeatureSetting[]): FeatureSetting[] {
+  return items.map((item) => ({
+    ...item,
+    package_included: Boolean(item.package_included ?? item.client_package),
+    package_editable: Boolean(item.package_editable),
+  }))
+}
+
 async function save(): Promise<void> {
-  if (!dirty.value || dependencyIssues.value.length) return
+  if (!dirty.value || dependencyIssues.value.length || previewing.value) return
   const label = target.value === 'customer' ? '客户版' : '完整版'
   if (!await confirm({
     type: 'WARNING',
@@ -138,7 +158,7 @@ async function save(): Promise<void> {
 }
 
 async function preview(): Promise<void> {
-  if (dependencyIssues.value.length) return
+  if (dependencyIssues.value.length || previewing.value) return
   if (!await confirm({
     type: 'WARNING',
     title: '会话预览版本模板',
@@ -146,9 +166,11 @@ async function preview(): Promise<void> {
     confirmText: '开始预览',
   })) return
   try {
-    accept(await previewFeatureSettings(features.value, target.value))
+    const response = await previewFeatureSettings(features.value, target.value)
+    snapshot.value = response
     previewing.value = true
-    ElMessage.success('版本模板已进入会话预览；未保存到打包模板')
+    await loadWebFeatures(true)
+    ElMessage.success('版本模板已进入会话预览；草稿仍保持未保存状态')
   } catch (cause) {
     error.value = message(cause, '会话预览失败')
     ElMessage.error(error.value)
@@ -157,16 +179,32 @@ async function preview(): Promise<void> {
 
 async function exitPreview(): Promise<void> {
   try {
-    accept(await exitFeatureSettingsPreview(target.value))
+    const response = await exitFeatureSettingsPreview(target.value)
+    snapshot.value = response
+    previewing.value = false
     await loadWebFeatures(true)
-    ElMessage.success('已退出版本模板预览')
+    ElMessage.success('已退出版本模板预览；未保存草稿仍然保留')
   } catch (cause) {
     error.value = message(cause, '退出会话预览失败')
     ElMessage.error(error.value)
   }
 }
 
+async function stopPreviewSilently(): Promise<void> {
+  if (!previewing.value) return
+  try {
+    await exitFeatureSettingsPreview(target.value)
+    await loadWebFeatures(true)
+  } finally {
+    previewing.value = false
+  }
+}
+
 async function restoreDefaults(): Promise<void> {
+  if (previewing.value) {
+    ElMessage.warning('请先退出会话预览')
+    return
+  }
   const label = target.value === 'customer' ? '客户版' : '完整版'
   if (!await confirm({
     type: 'WARNING',
@@ -184,7 +222,7 @@ async function restoreDefaults(): Promise<void> {
 }
 
 function undo(): void {
-  if (!baseline.value) return
+  if (!baseline.value || previewing.value) return
   features.value = JSON.parse(baseline.value) as FeatureSetting[]
 }
 
@@ -194,14 +232,14 @@ function featureMode(item: FeatureSetting): FeatureMode {
 }
 
 async function setFeatureMode(item: FeatureSetting, value: string | number | boolean | undefined): Promise<void> {
-  if (item.locked) return
+  if (item.locked || previewing.value) return
   const mode = String(value) as FeatureMode
   if (mode === 'disabled') {
     const dependents = enabledDependents(item.feature_id)
     if (dependents.length && !await confirm({
       type: 'WARNING',
       title: '联动禁用依赖功能',
-      message: `禁用“${item.title}”将同时禁用 ${dependents.map((value) => value.title).join('、')}。是否继续？`,
+      message: `禁用“${item.title}”将同时禁用 ${dependents.map((candidate) => candidate.title).join('、')}。是否继续？`,
       confirmText: '联动禁用',
     })) return
     for (const dependent of dependents) disable(dependent)
@@ -213,22 +251,22 @@ async function setFeatureMode(item: FeatureSetting, value: string | number | boo
   for (const dependency of dependencies) {
     dependency.enabled = true
     dependency.visible = true
-    if (target.value === 'customer' && dependency.package_editable) dependency.package_included = true
+    if (target.value === 'customer' && dependency.package_editable === true) dependency.package_included = true
   }
   item.enabled = true
   item.visible = mode === 'enabled_visible'
-  if (target.value === 'customer' && item.package_editable) item.package_included = true
+  if (target.value === 'customer' && item.package_editable === true) item.package_included = true
 }
 
 async function setPackageIncluded(item: FeatureSetting, value: string | number | boolean | undefined): Promise<void> {
-  if (target.value !== 'customer' || !item.package_editable) return
+  if (target.value !== 'customer' || item.package_editable !== true || previewing.value) return
   const included = Boolean(value)
   if (!included) {
     const dependents = customerDependents(item.feature_id)
     if (dependents.length && !await confirm({
       type: 'WARNING',
       title: '移出客户版',
-      message: `移出“${item.title}”将同时移出 ${dependents.map((value) => value.title).join('、')}。是否继续？`,
+      message: `移出“${item.title}”将同时移出 ${dependents.map((candidate) => candidate.title).join('、')}。是否继续？`,
       confirmText: '联动移出',
     })) return
     for (const dependent of dependents) excludeFromCustomer(dependent)
@@ -237,7 +275,7 @@ async function setPackageIncluded(item: FeatureSetting, value: string | number |
   }
 
   const dependencies = dependencyClosure(item)
-  const blocked = dependencies.find((dependency) => !dependency.package_editable && !dependency.package_included)
+  const blocked = dependencies.find((dependency) => dependency.package_editable !== true && !Boolean(dependency.package_included))
   if (blocked) {
     ElMessage.error(`依赖功能“${blocked.title}”不能纳入客户版`)
     return
@@ -265,7 +303,7 @@ function dependencyClosure(item: FeatureSetting, seen = new Set<string>()): Feat
     if (!dependency) continue
     result.push(...dependencyClosure(dependency, seen), dependency)
   }
-  return [...new Map(result.map((value) => [value.feature_id, value])).values()]
+  return [...new Map(result.map((candidate) => [candidate.feature_id, candidate])).values()]
 }
 
 function enabledDependents(featureId: string): FeatureSetting[] {
@@ -273,7 +311,7 @@ function enabledDependents(featureId: string): FeatureSetting[] {
 }
 
 function customerDependents(featureId: string): FeatureSetting[] {
-  return transitiveDependents(featureId, (candidate) => candidate.package_included)
+  return transitiveDependents(featureId, (candidate) => Boolean(candidate.package_included))
 }
 
 function transitiveDependents(
@@ -304,14 +342,14 @@ function isModified(item: FeatureSetting): boolean {
   return Boolean(original && (
     original.visible !== item.visible
     || original.enabled !== item.enabled
-    || original.package_included !== item.package_included
+    || Boolean(original.package_included) !== Boolean(item.package_included)
   ))
 }
 
 function groupSummary(items: FeatureSetting[]): string {
   const enabled = items.filter((item) => item.enabled).length
   if (target.value === 'customer') {
-    const included = items.filter((item) => item.package_included).length
+    const included = items.filter((item) => Boolean(item.package_included)).length
     return `客户版 ${included}/${items.length} · 启用 ${enabled}`
   }
   return `启用 ${enabled}/${items.length}`
@@ -339,25 +377,25 @@ function message(cause: unknown, fallback: string): string {
       </div>
       <div class="header-actions">
         <el-tag v-if="dirty" type="warning">{{ changedCount }} 项未保存</el-tag>
-        <el-button :disabled="!dirty" @click="undo">撤销修改</el-button>
-        <el-button @click="restoreDefaults">恢复默认</el-button>
-        <el-button :disabled="Boolean(dependencyIssues.length)" @click="preview">会话预览</el-button>
+        <el-button :disabled="!dirty || previewing" @click="undo">撤销修改</el-button>
+        <el-button :disabled="previewing" @click="restoreDefaults">恢复默认</el-button>
+        <el-button :disabled="Boolean(dependencyIssues.length) || previewing" @click="preview">会话预览</el-button>
         <el-button v-if="previewing" type="warning" @click="exitPreview">退出预览</el-button>
-        <el-button type="primary" :loading="saving" :disabled="!dirty || Boolean(dependencyIssues.length)" @click="save">保存模板</el-button>
+        <el-button type="primary" :loading="saving" :disabled="!dirty || previewing || Boolean(dependencyIssues.length)" @click="save">保存模板</el-button>
       </div>
     </header>
 
     <el-alert v-if="error" :title="error" type="error" :closable="false" />
     <el-alert
       v-if="snapshot"
-      :title="snapshot.save_effect"
+      :title="snapshot.save_effect || '保存模板只影响下次打包，不会立即改变当前运行界面。'"
       :type="snapshot.applies_immediately ? 'warning' : 'info'"
       :closable="false"
       show-icon
     />
     <el-alert
       v-if="previewing"
-      title="当前处于会话预览：只影响本次进程，未写入打包模板；重启后自动恢复。"
+      title="当前处于会话预览：只影响本次进程，未写入打包模板；草稿仍保持未保存状态。"
       type="warning"
       :closable="false"
       show-icon
@@ -371,7 +409,7 @@ function message(cause: unknown, fallback: string): string {
 
     <section class="profile-card">
       <div class="profile-selector">
-        <el-radio-group :model-value="target" @change="selectTarget">
+        <el-radio-group :model-value="target" :disabled="previewing" @change="selectTarget">
           <el-radio-button value="customer">客户版模板</el-radio-button>
           <el-radio-button value="full">完整版模板</el-radio-button>
         </el-radio-group>
@@ -424,8 +462,8 @@ function message(cause: unknown, fallback: string): string {
             <el-table-column v-if="target === 'customer'" label="纳入客户版" width="130" align="center">
               <template #default="{ row }">
                 <el-switch
-                  :model-value="row.package_included"
-                  :disabled="!row.package_editable"
+                  :model-value="Boolean(row.package_included)"
+                  :disabled="row.package_editable !== true || previewing"
                   @change="setPackageIncluded(row, $event)"
                 />
               </template>
@@ -434,7 +472,7 @@ function message(cause: unknown, fallback: string): string {
               <template #default="{ row }">
                 <el-select
                   :model-value="featureMode(row)"
-                  :disabled="row.locked || (target === 'customer' && !row.package_included)"
+                  :disabled="row.locked || previewing || (target === 'customer' && !Boolean(row.package_included))"
                   @change="setFeatureMode(row, $event)"
                 >
                   <el-option label="显示并启用" value="enabled_visible" />
