@@ -77,6 +77,8 @@ Worker 写帧前使用固定的 `1,048,576 bytes`（1 MiB）上限执行 JSON �
 
 当前公开 DTO 包含 `status`、`error_code`、`error_summary`、`has_warning` 和按任务白名单返回的 `details`。轨旁 AP 光衰任务 `trackside_ap_optical_update` 已在详情白名单中返回 `status/success_count/failed_count/skipped_count/actionable_skipped_count/ignored_skipped_count/target_count` 及原因计数，Vue 详情可在 `COMPLETED` 旁独立显示“部分成功”。这些字段不是第八个 Task 状态，也不能把 `COMPLETED` 改写为 `FAILED`。
 
+轨旁 AP 业务导出 `web_export_trackside_ap_business` 的详情白名单还返回快照时间、business/export revision、来源 revision、业务/工作簿 hash、行数、异常与 Identity 计数以及构建/渲染耗时。冻结快照缺失或损坏时，Worker 在 error result 中保存 `TRACKSIDE_AP_SNAPSHOT_NOT_FOUND` 或 `TRACKSIDE_AP_SNAPSHOT_INVALID`；Artifact 拒绝协调保留该结构化错误，不把它降级成无法区分的“导出失败”。
+
 当前 Job Center 查询层已把结构化业务结果投影为统一字段：`lifecycle_status`、`business_status`、成功/失败/跳过/告警计数、`partial_success` 和 `primary_failure_reason`。列表、详情和顶部告警使用同一投影；历史 `NO_TARGET` 仅在读取时显示为 `NO_EFFECTIVE_TARGET`，不改写历史记录。仍有部分异构 legacy handler 只提供旧 `details` 结构，后续按领域继续收敛。
 
 后续代码收口应满足：

@@ -15,21 +15,26 @@ from netconsole.models.api.trackside_ap_business import (
 from netconsole.models.device import Device
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.adapters.trackside_switch import resolve_trackside_switch_adapter
-from netconsole.services.ap_identity import ApIdentityQueryService
 from netconsole.services.ap_identity.normalizers import normalize_mac_key
+from netconsole.services.ap_identity import ApIdentityQueryService
 from netconsole.models.device_address import normalize_ip_address
 from netconsole.services.netmiko_connection import connection_targets
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
 from netconsole.services.trackside_ap_business import (
     count_current_optical_abnormal_aps,
-    filter_trackside_ap_business_rows,
-    is_current_optical_abnormal_row,
     normalize_trackside_ap_business_row,
     trackside_station_options,
     trackside_row_status,
     is_trackside_device_eligible,
 )
-from netconsole.services.trackside_ap_export_service import load_trackside_ap_business_snapshot
+from netconsole.services.trackside_ap_export_service import (
+    load_trackside_ap_business_snapshot,
+    select_trackside_ap_business_rows,
+)
+from netconsole.services.rail_transit.trackside_ap_business_snapshot import (
+    TracksideApBusinessSnapshotError,
+    content_sha256,
+)
 from netconsole.services.rail_transit.effective_trackside_ap_scope import (
     TracksideApScopeContext,
 )
@@ -93,6 +98,7 @@ class TracksideApBusinessQueryService:
         optical_anomaly_only: bool = False,
         page: int = 1,
         page_size: int = 50,
+        expected_revision: str = "",
     ) -> TracksideApBusinessPageDTO:
         database = Database(self.paths.site_db_path(site_id))
         repository = DeviceRepository(database)
@@ -104,52 +110,32 @@ class TracksideApBusinessQueryService:
                 site_id,
                 SiteManager(self.paths).load_site_metadata(site_id),
             ),
+            identity_query_macs=(query,),
         )
+        if expected_revision and expected_revision != snapshot.business_revision:
+            raise TracksideApBusinessSnapshotError(
+                "TRACKSIDE_AP_SNAPSHOT_STALE",
+                "轨旁 AP 数据已更新，请刷新后重试。",
+            )
         business_rows = [
             normalize_trackside_ap_business_row(row)
             for row in snapshot.rows
         ]
         station_options = trackside_station_options(business_rows)
-        if normalize_mac_key(query):
-            identity_rows = ApIdentityQueryService(database).search_aps(query)
-            matched_macs = {
-                mac
-                for item in identity_rows
-                for field in ("ap_mac", "ac_ap_mac", "base_ap_mac")
-                if (mac := normalize_mac_key(item.get(field)))
-            }
-            matched_names = {
-                str(item.get("ap_name") or "").strip().casefold()
-                for item in identity_rows
-                if str(item.get("ap_name") or "").strip()
-            }
-            rows = [
-                row
-                for row in filter_trackside_ap_business_rows(
-                    business_rows, station, ""
-                )
-                if normalize_mac_key(row.get("ap_mac")) in matched_macs
-                or str(row.get("ap_name") or "").strip().casefold()
-                in matched_names
-            ]
-        else:
-            rows = filter_trackside_ap_business_rows(
-                business_rows, station, query
-            )
+        rows = select_trackside_ap_business_rows(
+            business_rows,
+            station=station,
+            query=query,
+            optical_anomaly_only=optical_anomaly_only,
+            identity_query_entities=snapshot.identity_query_entities,
+        )
         enriched = [(row, trackside_row_status(row)) for row in rows]
-        if optical_anomaly_only:
-            enriched = [(row, severity) for row, severity in enriched if is_current_optical_abnormal_row(row)]
         current_page = max(1, int(page))
         size = max(1, min(int(page_size), 200))
         start = (current_page - 1) * size
-        try:
-            identity_query: ApIdentityQueryService | None = ApIdentityQueryService(database)
-            identity_query.pin_index_health()
-        except (AttributeError, OSError):
-            identity_query = None
-        terminal_indexes = self._terminal_device_indexes(repository.list())
+        terminal_indexes = self._terminal_device_indexes(snapshot.all_devices)
         items = [
-            self._row(row, severity, identity_query, terminal_indexes)
+            self._row(row, severity, terminal_indexes)
             for row, severity in enriched[start : start + size]
         ]
         scope = snapshot.scope
@@ -213,6 +199,24 @@ class TracksideApBusinessQueryService:
             partial_data=snapshot.partial_data,
             source_statuses=snapshot.source_statuses,
             unavailable_sources=snapshot.unavailable_sources,
+            snapshot_id=snapshot.snapshot_id,
+            business_revision=snapshot.business_revision,
+            source_revisions=dict(snapshot.source_revisions),
+            identity_revision=snapshot.identity_revision,
+            created_at=snapshot.created_at,
+            content_sha256=content_sha256(rows),
+            row_count=len(rows),
+            abnormal_count=count_current_optical_abnormal_aps(rows),
+            unresolved_count=sum(
+                row.get("identity_match_status") == "unresolved"
+                for row in rows
+            ),
+            ambiguous_count=sum(
+                row.get("identity_match_status") == "ambiguous"
+                for row in rows
+            ),
+            snapshot_retry_count=snapshot.snapshot_retry_count,
+            identity_distinct_count=snapshot.identity_distinct_count,
         )
 
     @staticmethod
@@ -277,17 +281,14 @@ class TracksideApBusinessQueryService:
     def _row(
         row: dict[str, object | None],
         severity: str,
-        identity_query: ApIdentityQueryService | None,
-        terminal_indexes: _TerminalDeviceIndexes,
+        identity_or_terminal_indexes: ApIdentityQueryService | _TerminalDeviceIndexes | None,
+        terminal_indexes: _TerminalDeviceIndexes | None = None,
     ) -> TracksideApBusinessRowDTO:
+        terminal_indexes = terminal_indexes or identity_or_terminal_indexes
+        if not isinstance(terminal_indexes, _TerminalDeviceIndexes):
+            terminal_indexes = _TerminalDeviceIndexes({}, {}, {})
         observed_neighbor_mac = str(row.get("lldp_observed_neighbor_mac") or "")
-        identity_mac = observed_neighbor_mac or str(row.get("ap_mac") or "")
-        identity_match = identity_query.resolve_mac(identity_mac) if identity_query else None
         lldp_match_status = str(row.get("lldp_match_status") or "")
-        if observed_neighbor_mac and not lldp_match_status:
-            lldp_match_status = (
-                identity_match.status.upper() if identity_match else "UNAVAILABLE"
-            )
         effective_station_id = str(
             row.get("effective_station_id") or row.get("station_id") or ""
         )
@@ -306,6 +307,7 @@ class TracksideApBusinessQueryService:
         if ap_device is None:
             ap_uuid, ap_available, ap_reason = "", False, ap_resolution_reason
         return TracksideApBusinessRowDTO(
+            row_id=str(row.get("business_row_id") or ""),
             station_id=effective_station_id,
             switch_station_id=str(row.get("switch_station_id") or ""),
             ap_station_id=str(row.get("ap_station_id") or ""),
@@ -374,17 +376,9 @@ class TracksideApBusinessQueryService:
             ap_optical_status=str(row.get("ap_optical_status") or ""),
             ap_match_source=str(row.get("ap_match_source") or ""),
             ap_match_confidence=int(row.get("ap_match_confidence") or 0),
-            ap_identity_entity_id=(identity_match.matched_entity_id if identity_match else ""),
-            identity_match_status=(identity_match.status if identity_match else "unavailable"),
-            identity_match_rule=(
-                (
-                    identity_match.match_rule
-                    or identity_match.matched_alias_type
-                    or identity_match.unresolved_reason
-                )
-                if identity_match
-                else "IDENTITY_INDEX_UNAVAILABLE"
-            ),
+            ap_identity_entity_id=str(row.get("ap_identity_entity_id") or ""),
+            identity_match_status=str(row.get("identity_match_status") or "unresolved"),
+            identity_match_rule=str(row.get("identity_match_rule") or ""),
             lldp_observed_neighbor_mac=observed_neighbor_mac,
             lldp_match_status=lldp_match_status,
             lldp_history_status=str(row.get("lldp_history_status") or "no_current_evidence"),

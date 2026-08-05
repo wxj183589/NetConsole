@@ -270,7 +270,7 @@ def test_snapshot_and_compatibility_job_append_shadow_after_old_rows(
         )
     )
 
-    assert snapshot.rows == []
+    assert snapshot.rows == ()
     assert snapshot.identity_shadow["available"] is True
     assert snapshot.identity_shadow["total"] == 0
     assert job.ok is True
@@ -305,7 +305,7 @@ def test_aggregate_shadow_failure_does_not_change_rows_or_finished(
         )
     )
 
-    assert snapshot.rows == []
+    assert snapshot.rows == ()
     assert snapshot.identity_shadow["available"] is False
     assert job.ok is True
     assert job.result["row_count"] == 0

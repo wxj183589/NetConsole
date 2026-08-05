@@ -75,6 +75,22 @@ TRACKSIDE_AP_RESULT_DETAIL_KEYS = (
     "skipped_reason_counts",
     "failure_reason_counts",
     "warning_reason_counts",
+    "snapshot_id",
+    "business_revision",
+    "snapshot_created_at",
+    "row_count",
+    "content_sha256",
+    "export_content_sha256",
+    "source_revisions",
+    "export_kind",
+    "identity_revision",
+    "abnormal_count",
+    "unresolved_count",
+    "ambiguous_count",
+    "identity_distinct_count",
+    "snapshot_build_ms",
+    "snapshot_retry_count",
+    "export_render_ms",
 )
 CAR_NETWORK_POINT_TABLE_GENERATE_RESULT_DETAIL_KEYS = (
     "nodes_count",
@@ -795,7 +811,10 @@ class JobCenterQueryService:
         result: dict[str, Any],
     ) -> dict[str, Any]:
         details = cls._progress_details(row)
-        if task_type == "trackside_ap_optical_update":
+        if task_type in {
+            "trackside_ap_optical_update",
+            "web_export_trackside_ap_business",
+        }:
             details.update(
                 {key: result[key] for key in TRACKSIDE_AP_RESULT_DETAIL_KEYS if key in result}
             )

@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import type { TracksideApBusinessExportProposal } from '../types/tracksideApBusiness'
+import type {
+  TracksideApBusinessExportProposal,
+  TracksideApBusinessExportRequest,
+} from '../types/tracksideApBusiness'
 
 import {
   cancelTracksideApTask,
@@ -24,9 +27,10 @@ describe('trackside AP business API', () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ task_id: 'task-export' }) })
     vi.stubGlobal('fetch', fetchMock)
 
-    const proposal: TracksideApBusinessExportProposal = {
+    const proposal: TracksideApBusinessExportProposal & TracksideApBusinessExportRequest = {
       generated_at: '2026-08-02T18:00:00+08:00',
       suggested_name: '宁波地铁12号线_轨旁AP业务_20260802_180000.xlsx',
+      expected_revision: 'revision-1',
       site_id: '宁波地铁12号线',
       site_display_name: '宁波地铁12号线',
     }
@@ -38,6 +42,7 @@ describe('trackside AP business API', () => {
       body: JSON.stringify({
         generated_at: '2026-08-02T18:00:00+08:00',
         suggested_name: '宁波地铁12号线_轨旁AP业务_20260802_180000.xlsx',
+        expected_revision: 'revision-1',
       }),
     })
   })

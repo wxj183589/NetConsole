@@ -40,6 +40,9 @@ from netconsole.models.api.trackside_ap_business import (
     TracksideSwitchSampleRequestDTO,
 )
 from netconsole.services.rail_transit.trackside_ap_business_query_service import TracksideApBusinessQueryService
+from netconsole.services.rail_transit.trackside_ap_business_snapshot import (
+    TracksideApBusinessSnapshotError,
+)
 
 
 router = APIRouter(prefix="/rail-transit/trackside-ap-business", tags=["trackside-ap-business"])
@@ -80,15 +83,20 @@ def rows(
     optical_anomaly_only: bool = False,
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
+    expected_revision: str = Query(default="", max_length=64),
 ) -> TracksideApBusinessPageDTO:
-    return _query_service(request).list_rows(
-        _site_id(request),
-        station=station,
-        query=query,
-        optical_anomaly_only=optical_anomaly_only,
-        page=page,
-        page_size=page_size,
-    )
+    try:
+        return _query_service(request).list_rows(
+            _site_id(request),
+            station=station,
+            query=query,
+            optical_anomaly_only=optical_anomaly_only,
+            page=page,
+            page_size=page_size,
+            expected_revision=expected_revision,
+        )
+    except TracksideApBusinessSnapshotError as exc:
+        _raise_snapshot_error(exc)
 
 
 @router.get(
@@ -172,7 +180,14 @@ def export_business(
             _site_id(request),
             generated_at=payload.generated_at if payload else "",
             suggested_name=payload.suggested_name if payload else "",
+            expected_revision=payload.expected_revision if payload else "",
+            station=payload.station if payload else "",
+            query=payload.query if payload else "",
+            optical_anomaly_only=payload.optical_anomaly_only if payload else False,
+            selected_row_ids=payload.selected_row_ids if payload else (),
         )
+    except TracksideApBusinessSnapshotError as exc:
+        _raise_snapshot_error(exc)
     except RailTransitWebError as exc:
         _raise_error(exc)
 
@@ -706,6 +721,18 @@ def _raise_error(exc: RailTransitWebError) -> None:
         "BLOCKED_ON_TASK_WINDOW": status.HTTP_503_SERVICE_UNAVAILABLE,
     }.get(exc.code, status.HTTP_422_UNPROCESSABLE_ENTITY)
     raise HTTPException(status_code=status_code, detail={"code": exc.code, "message": str(exc)}) from exc
+
+
+def _raise_snapshot_error(exc: TracksideApBusinessSnapshotError) -> NoReturn:
+    status_code = (
+        status.HTTP_503_SERVICE_UNAVAILABLE
+        if exc.code == "TRACKSIDE_AP_SNAPSHOT_UNSTABLE"
+        else status.HTTP_409_CONFLICT
+    )
+    raise HTTPException(
+        status_code=status_code,
+        detail={"code": exc.code, "message": str(exc)},
+    ) from exc
 
 
 def _raise_plan_error(

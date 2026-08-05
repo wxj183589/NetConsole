@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
+import { ApiRequestError } from '../../api/client'
 
 import {
   getTracksideApBusinessExportProposal,
@@ -67,6 +68,7 @@ const page = ref<TracksideApBusinessPage | null>(null)
 const excludedVisible = ref(false)
 const unmatchedVisible = ref(false)
 const currentTaskId = ref('')
+const selectedRows = ref<TracksideApBusinessRow[]>([])
 const filters = reactive({ station: '', query: '', optical_anomaly_only: false, page: 1, page_size: 50 })
 const pageActive = ref(true)
 const pageDirty = ref(false)
@@ -83,6 +85,7 @@ const BUSINESS_PAGE_STALE_MS = 5 * 60 * 1000
 const terminalTaskRefreshes = new Set<string>()
 
 const businessColumns: NcTableColumn<TracksideApBusinessRow>[] = [
+  { key: 'selection', label: '', type: 'selection', valueType: 'selection', width: 48, fixed: 'left', hideable: false },
   { key: 'site', label: '站点', valueType: 'name', fixed: 'left' },
   { key: 'device_name', label: '车站交换机', valueType: 'name', fixed: 'left' },
   { key: 'switch_vendor', label: '交换机厂商', valueType: 'name', displayValue: (row) => displaySwitchVendor(row.switch_vendor) },
@@ -194,8 +197,9 @@ const businessContextMenuItems = computed<NcDataTableContextMenuItem<TracksideAp
 ])
 
 function failure(reason: unknown, fallback: string): string { return reason instanceof Error ? reason.message : fallback }
-function cleanIdentity(value: string): string { return String(value || '').trim() }
+function cleanIdentity(value: unknown): string { return String(value || '').trim() }
 function businessRowKey(row: TracksideApBusinessRow): string {
+  if (cleanIdentity(row.row_id)) return cleanIdentity(row.row_id)
   return [
     row.effective_station_id || row.station_id || row.site,
     row.device_name,
@@ -246,7 +250,7 @@ function metricValue(value: number | undefined, sources: string[]): string | num
   if (availability === 'partial') return '部分可用'
   return Number(value ?? 0)
 }
-async function loadRows(reset = false): Promise<boolean> {
+async function loadRows(reset = false, forceNewRevision = false): Promise<boolean> {
   if (reset) filters.page = 1
   const generation = ++loadGeneration
   const selectedStation = cleanIdentity(filters.station)
@@ -256,8 +260,15 @@ async function loadRows(reset = false): Promise<boolean> {
   loadError.value = ''
   let succeeded = false
   try {
-    const nextPage = await listTracksideApBusiness({ ...filters })
+    const expectedRevision = !forceNewRevision ? cleanIdentity(page.value?.business_revision || '') : ''
+    const nextPage = await listTracksideApBusiness({
+      ...filters,
+      ...(expectedRevision ? { expected_revision: expectedRevision } : {}),
+    })
     if (generation === loadGeneration) {
+      if (page.value?.business_revision && page.value.business_revision !== nextPage.business_revision) {
+        selectedRows.value = []
+      }
       page.value = nextPage
       pageDirty.value = false
       pendingRefreshReason.value = ''
@@ -266,9 +277,18 @@ async function loadRows(reset = false): Promise<boolean> {
     }
   } catch (reason) {
     if (generation === loadGeneration) {
-      loadError.value = page.value
-        ? '部分数据不可用，已保留最后成功数据。'
-        : failure(reason, '轨旁 AP 业务加载失败')
+      if (reason instanceof ApiRequestError && reason.code === 'TRACKSIDE_AP_SNAPSHOT_STALE') {
+        selectedRows.value = []
+        filters.page = 1
+        ElMessage.warning('轨旁 AP 数据已更新，正在重新加载第一页。')
+        void loadRows(true, true)
+      } else if (reason instanceof ApiRequestError && reason.code === 'TRACKSIDE_AP_SNAPSHOT_UNSTABLE') {
+        loadError.value = '轨旁 AP 数据正在刷新，已保留当前表格，请稍后重试。'
+      } else {
+        loadError.value = page.value
+          ? '部分数据不可用，已保留最后成功数据。'
+          : failure(reason, '轨旁 AP 业务加载失败')
+      }
     }
   } finally {
     if (generation === loadGeneration) {
@@ -373,13 +393,35 @@ async function exportBusiness(): Promise<void> {
     const result = await userSelectedExport.submitExportAfterDestinationSelected({
       action: 'rail.trackside_business',
       suggestedName: proposal.suggested_name,
-      submit: () => startTracksideApBusinessExport(proposal),
+      submit: () => startTracksideApBusinessExport({
+        generated_at: proposal.generated_at,
+        suggested_name: proposal.suggested_name,
+        expected_revision: page.value?.business_revision || '',
+        station: filters.station,
+        query: filters.query,
+        optical_anomaly_only: filters.optical_anomaly_only,
+        selected_row_ids: selectedRows.value
+          .map((row) => row.row_id)
+          .filter((value): value is string => Boolean(value)),
+      }),
     })
     if (result.status === 'cancelled') return
     currentTaskId.value = result.task.task_id
     await taskStore.refresh()
   } catch (reason) {
-    actionError.value = failure(reason, '轨旁 AP 业务导出启动失败')
+    if (reason instanceof ApiRequestError && reason.code === 'TRACKSIDE_AP_SNAPSHOT_STALE') {
+      actionError.value = '轨旁 AP 数据已更新，请在刷新后重新导出。'
+      selectedRows.value = []
+      filters.page = 1
+      void loadRows(true, true)
+    } else if (reason instanceof ApiRequestError && reason.code === 'TRACKSIDE_AP_EXPORT_SELECTION_STALE') {
+      actionError.value = '所选轨旁 AP 行已变化，请刷新后重新选择。'
+      selectedRows.value = []
+    } else if (reason instanceof ApiRequestError && reason.code === 'TRACKSIDE_AP_SNAPSHOT_UNSTABLE') {
+      actionError.value = '轨旁 AP 数据正在刷新，请稍后重试导出。'
+    } else {
+      actionError.value = failure(reason, '轨旁 AP 业务导出启动失败')
+    }
   } finally {
     taskSubmitting.value = false
     pendingScopeKey.value = ''
@@ -402,7 +444,7 @@ watch(
     ))
     if (!newlyCompleted.length) return
     for (const item of newlyCompleted) terminalTaskRefreshes.add(item.id)
-    if (pageActive.value) void loadRows()
+    if (pageActive.value) void loadRows(false, true)
     else markPageDirty('轨旁 AP 业务相关任务已完成')
   },
 )
@@ -470,7 +512,7 @@ onBeforeUnmount(() => {
     <header class="page-heading">
       <div><p class="eyebrow">RAIL TRANSIT · TRACKSIDE AP</p><h1>轨旁 AP 业务</h1><p>交换机侧沿用设备模块门限，AP 侧业务光衰按固定业务门限投影。</p></div>
       <div class="actions">
-        <el-button :loading="refreshing" :disabled="initialLoading" @click="loadRows()">刷新</el-button>
+        <el-button :loading="refreshing" :disabled="initialLoading" @click="loadRows(false, true)">刷新</el-button>
         <el-button
           type="primary"
           :loading="taskSubmitting"
@@ -513,6 +555,7 @@ onBeforeUnmount(() => {
       <span>纳入站点 {{ page.scope_station_count || 0 }}</span>
       <span>基础 AP 资料 {{ page.scope_ap_reference_count ?? page.scope_device_count ?? 0 }}</span>
       <span>排除设备 {{ page.excluded_device_count || 0 }}</span>
+      <span>快照 {{ (page.business_revision || '').slice(0, 12) }} · {{ displayTracksideSnapshotTime(page.created_at || '', 'current') }}</span>
       <el-button v-if="lldpPendingCount" link type="warning" @click="unmatchedVisible = true">等待 LLDP 同步 {{ lldpPendingCount }}</el-button>
       <el-button v-if="lldpConflictCount" link type="danger" @click="unmatchedVisible = true">当前 LLDP 冲突 {{ lldpConflictCount }}</el-button>
       <el-button v-if="planningMissingCount" link type="warning" @click="unmatchedVisible = true">基础资料待补充 {{ planningMissingCount }}</el-button>
@@ -562,6 +605,7 @@ onBeforeUnmount(() => {
           class="business-table"
           height="100%"
           :empty-text="emptyReasonLabel(page?.empty_reason || '')"
+          @selection-change="(rows: TracksideApBusinessRow[]) => selectedRows = rows"
         >
           <template #cell-switch_rx_power="{ row }"><span :class="tracksideOpticalPresentation(row.switch_optical_status).className">{{ displayTracksideValue(row.switch_rx_power) }}</span></template>
           <template #cell-switch_tx_power="{ row }"><span :class="tracksideOpticalPresentation(row.switch_optical_status).className">{{ displayTracksideValue(row.switch_tx_power) }}</span></template>

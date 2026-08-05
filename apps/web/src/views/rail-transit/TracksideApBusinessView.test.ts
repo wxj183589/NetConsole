@@ -5,6 +5,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent, ref } from 'vue'
 
+import { ApiRequestError } from '../../api/client'
 import { resetWebFeaturesForTest, setWebFeaturesForTest } from '../../features'
 import { resetUserSelectedExportForTests } from '../../composables/useUserSelectedExport'
 import { useTaskStore } from '../../stores/tasks'
@@ -175,6 +176,24 @@ function page(items = rows, pageNo = 1, stationOptions = stationOptionsFor(items
   }
 }
 
+function snapshotPage(revision = 'a'.repeat(64), pageNo = 1): TracksideApBusinessPage {
+  return {
+    ...page(rows.map((row, index) => ({ ...row, row_id: `row-${index + 1}` })), pageNo),
+    snapshot_id: `snapshot-${revision[0]}`,
+    business_revision: revision,
+    source_revisions: { base_data_revision: revision[0] },
+    identity_revision: 7,
+    created_at: '2026-08-06T01:02:03+08:00',
+    content_sha256: 'c'.repeat(64),
+    row_count: rows.length,
+    abnormal_count: 1,
+    unresolved_count: 0,
+    ambiguous_count: 0,
+    snapshot_retry_count: 0,
+    identity_distinct_count: rows.length,
+  }
+}
+
 function task(
   taskId: string,
   status = 'RUNNING',
@@ -245,6 +264,7 @@ const NcDataTableStub = defineComponent({
     rowKey: [String, Function],
     contextMenuItems: { type: Array, default: () => [] },
   },
+  emits: ['selection-change'],
   template: `
     <div class="nc-data-table nc-data-table__scroll" :data-table-id="tableId" :data-height="height">
       <div v-for="(row, index) in data" :key="index" class="table-row">
@@ -985,6 +1005,98 @@ describe('TracksideApBusinessView mounted behavior', () => {
     expect(wrapper.text()).not.toContain('保存导出表格')
     expect(wrapper.text()).not.toContain('轨旁 AP 任务')
     expect(buttons(wrapper, '打开任务中心')).toHaveLength(0)
+    wrapper.unmount()
+  })
+
+  it('shows snapshot time and sends expected revision for pagination', async () => {
+    const revision = 'a'.repeat(64)
+    api.listTracksideApBusiness.mockResolvedValue(snapshotPage(revision))
+    const wrapper = await mountView()
+    expect(wrapper.text()).toContain(`快照 ${revision.slice(0, 12)}`)
+    api.listTracksideApBusiness.mockClear()
+
+    await wrapper.get('.pagination-next').trigger('click')
+    await flushPromises()
+
+    expect(api.listTracksideApBusiness).toHaveBeenLastCalledWith({
+      station: '',
+      query: '',
+      optical_anomaly_only: false,
+      page: 2,
+      page_size: 50,
+      expected_revision: revision,
+    })
+    wrapper.unmount()
+  })
+
+  it('exports the current filter and stable selected row ids', async () => {
+    const revision = 'a'.repeat(64)
+    api.listTracksideApBusiness.mockResolvedValue(snapshotPage(revision))
+    const wrapper = await mountView()
+    const firstTable = wrapper.findAllComponents(NcDataTableStub)[0]
+    firstTable.vm.$emit('selection-change', [snapshotPage(revision).items[0]])
+    await flushPromises()
+
+    await button(wrapper, '导出表格').trigger('click')
+    await flushPromises()
+
+    expect(api.startTracksideApBusinessExport).toHaveBeenCalledWith({
+      generated_at: '2026-07-21T23:45:01+08:00',
+      suggested_name: '宁波地铁12号线_轨旁AP业务_20260721_234501.xlsx',
+      expected_revision: revision,
+      station: '',
+      query: '',
+      optical_anomaly_only: false,
+      selected_row_ids: ['row-1'],
+    })
+    wrapper.unmount()
+  })
+
+  it('reloads the first page without an expected revision after stale conflict', async () => {
+    const oldRevision = 'a'.repeat(64)
+    const newRevision = 'b'.repeat(64)
+    api.listTracksideApBusiness.mockResolvedValueOnce(snapshotPage(oldRevision))
+    const wrapper = await mountView()
+    api.listTracksideApBusiness.mockReset()
+    api.listTracksideApBusiness
+      .mockRejectedValueOnce(new ApiRequestError('数据已更新', 409, 'TRACKSIDE_AP_SNAPSHOT_STALE'))
+      .mockResolvedValueOnce(snapshotPage(newRevision))
+
+    await wrapper.get('.pagination-next').trigger('click')
+    await flushPromises()
+    await flushPromises()
+
+    expect(api.listTracksideApBusiness).toHaveBeenNthCalledWith(1, {
+      station: '',
+      query: '',
+      optical_anomaly_only: false,
+      page: 2,
+      page_size: 50,
+      expected_revision: oldRevision,
+    })
+    expect(api.listTracksideApBusiness).toHaveBeenNthCalledWith(2, {
+      station: '',
+      query: '',
+      optical_anomaly_only: false,
+      page: 1,
+      page_size: 50,
+    })
+    expect(wrapper.text()).toContain(newRevision.slice(0, 12))
+    wrapper.unmount()
+  })
+
+  it('keeps the current table when snapshot creation is temporarily unstable', async () => {
+    api.listTracksideApBusiness.mockResolvedValueOnce(snapshotPage())
+    const wrapper = await mountView()
+    api.listTracksideApBusiness.mockRejectedValueOnce(
+      new ApiRequestError('数据刷新中', 503, 'TRACKSIDE_AP_SNAPSHOT_UNSTABLE'),
+    )
+
+    await button(wrapper, '查询').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('已保留当前表格')
+    expect(wrapper.findAll('.table-row')).toHaveLength(rows.length)
     wrapper.unmount()
   })
 })
