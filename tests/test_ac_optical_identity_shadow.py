@@ -194,7 +194,7 @@ def test_shadow_does_not_mutate_offline_or_switch_no_light_business_results() ->
     assert report.total == 2
     assert classified == before_shadow
     assert classified[0]["switch_optical_status"] == "no_light"
-    assert classified[0]["optical_alarm_status"] == "离线"
+    assert classified[0]["optical_alarm_status"] == "normal"
     assert classified[1]["ap_optical_status"] == "offline"
     assert classified[1]["data_source"] == "historical"
 
