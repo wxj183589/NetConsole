@@ -40,6 +40,7 @@ describe('Web navigation registry', () => {
     expect(parent('tools.wireless-scan')).toBe('tools')
     expect(parent('tools.network-components')).toBe('tools')
     expect(flat.some((item) => item.navigation_id === 'network')).toBe(false)
+    expect(flat.find((item) => item.navigation_id === 'tools.external-tools')?.parent_id).toBe('tools')
     expect(flat.some((item) => /snmp|wifi-survey/.test(item.navigation_id))).toBe(false)
   })
 
@@ -59,7 +60,7 @@ describe('Web navigation registry', () => {
     expect(flattenNavigation().some((item) => item.navigation_id === 'rail.car-network-diagnostic')).toBe(false)
     expect(flattenNavigation().some((item) => item.navigation_id === 'rail.trackside-ap-plan')).toBe(false)
     expect(navigationRegistry.find((item) => item.navigation_id === 'tools')?.children.map((item) => item.navigation_id)).toEqual([
-      'tools.traffic', 'tools.connectivity', 'tools.wireless-scan', 'tools.network-components',
+      'tools.external-tools', 'tools.traffic', 'tools.connectivity', 'tools.wireless-scan', 'tools.network-components',
     ])
     const visible = flattenNavigation(visibleNavigation(() => true))
     expect(visible.every((item) => item.children.length > 0 || Boolean(item.route_name && item.route_path))).toBe(true)
@@ -75,7 +76,18 @@ describe('Web navigation registry', () => {
     expect(ids.slice(ids.indexOf('files'), ids.indexOf('tasks') + 1)).toEqual(['files', 'tools', 'tasks'])
     const tools = visible.find((entry) => entry.navigation_id === 'tools')
     expect(tools?.children.map((item) => item.route_path)).toEqual([
-      '/tools/traffic', '/tools/connectivity', '/tools/wireless-scan', '/tools/network-components',
+      '/tools', '/tools/traffic', '/tools/connectivity', '/tools/wireless-scan', '/tools/network-components',
+    ])
+    if (previous === undefined) Reflect.deleteProperty(window, 'netconsoleDesktop')
+    else Object.defineProperty(window, 'netconsoleDesktop', { configurable: true, value: previous })
+  })
+
+  it('hides only desktop toolbox children in browser navigation', () => {
+    const previous = window.netconsoleDesktop
+    Reflect.deleteProperty(window, 'netconsoleDesktop')
+    const tools = visibleNavigation(() => true).find((entry) => entry.navigation_id === 'tools')
+    expect(tools?.children.map((item) => item.navigation_id)).toEqual([
+      'tools.traffic', 'tools.connectivity', 'tools.wireless-scan',
     ])
     if (previous === undefined) Reflect.deleteProperty(window, 'netconsoleDesktop')
     else Object.defineProperty(window, 'netconsoleDesktop', { configurable: true, value: previous })

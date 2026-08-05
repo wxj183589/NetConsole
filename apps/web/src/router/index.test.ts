@@ -66,15 +66,18 @@ describe('Web route ownership', () => {
     expect(appRoutes.some((route) => route.path === '/desktop/tasks')).toBe(false)
   })
 
-  it('registers the desktop-only tool collection route consistently', () => {
+  it('registers the external tool collection route as a visible toolbox child', () => {
     const route = routes.find((item) => item.name === 'tool-collection')
     expect(route?.path).toBe('tools')
     expect(route?.meta).toMatchObject({
-      navigationId: 'tools',
+      navigationId: 'tools.external-tools',
       featureId: 'web.tool_collection',
       moduleId: 'tools',
       desktopOnly: true,
     })
+    expect(route?.meta?.hiddenRoute).toBeUndefined()
+    expect(route?.component).toBeDefined()
+    expect(route?.meta?.workspace).toEqual({ identity: 'singleton', cache: true, allowDuplicate: false })
   })
 
   it('registers the consolidated toolbox routes', () => {
