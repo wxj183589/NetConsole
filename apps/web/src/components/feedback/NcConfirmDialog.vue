@@ -4,6 +4,7 @@ import { Lock, WarningFilled, CircleCheckFilled, InfoFilled } from '@element-plu
 import { confirmState, resolveConfirm } from './useConfirm'
 
 const acknowledged = ref(false)
+const confirmationValue = ref('')
 const busy = ref(false)
 const cancelButton = ref<{ $el?: HTMLElement } | HTMLElement | null>(null)
 const request = computed(() => confirmState.request)
@@ -13,7 +14,11 @@ const visible = computed({
 })
 const type = computed(() => request.value?.options.type || 'WARNING')
 const needsAcknowledgement = computed(() => Boolean(request.value?.options.requireAcknowledgement))
-const canConfirm = computed(() => !needsAcknowledgement.value || acknowledged.value)
+const needsTypedConfirmation = computed(() => Boolean(request.value?.options.confirmationText))
+const canConfirm = computed(() => (
+  (!needsAcknowledgement.value || acknowledged.value)
+  && (!needsTypedConfirmation.value || confirmationValue.value === request.value?.options.confirmationText)
+))
 const icon = computed(() => type.value === 'SECURITY' ? Lock : type.value === 'INFO' ? InfoFilled : type.value === 'WARNING' || type.value === 'DANGER' || type.value === 'DESTRUCTIVE' ? WarningFilled : CircleCheckFilled)
 const dialogClass = computed(() => `nc-confirm-dialog nc-confirm-${type.value.toLowerCase()}`)
 const dialogWidth = computed(() => request.value?.options.width || 'min(620px, calc(100vw - 32px))')
@@ -32,6 +37,7 @@ const messageParts = computed(() => {
 
 watch(request, async (value) => {
   acknowledged.value = false
+  confirmationValue.value = ''
   busy.value = false
   if (value) {
     await nextTick()
@@ -95,6 +101,17 @@ async function submit(result: 'confirm' | 'secondary' = 'confirm'): Promise<void
         </div>
         <el-alert v-if="type === 'SECURITY' || type === 'DESTRUCTIVE'" :title="type === 'SECURITY' ? '请确认你了解该操作的安全影响。' : '该操作可能影响现有数据。'" :type="type === 'SECURITY' ? 'warning' : 'error'" show-icon :closable="false" />
         <el-checkbox v-if="needsAcknowledgement" v-model="acknowledged" class="nc-confirm-ack">{{ request.options.acknowledgementText || '我已了解上述风险' }}</el-checkbox>
+        <div v-if="needsTypedConfirmation" class="nc-confirm-typed">
+          <label for="nc-confirm-typed-input">{{ request.options.confirmationLabel || '请输入完整名称以确认' }}</label>
+          <el-input
+            id="nc-confirm-typed-input"
+            v-model="confirmationValue"
+            data-testid="nc-confirm-typed-input"
+            :placeholder="request.options.confirmationPlaceholder || request.options.confirmationText"
+            autocomplete="off"
+            @keyup.enter="submit('confirm')"
+          />
+        </div>
       </div>
     </div>
     <template #footer>
@@ -112,5 +129,5 @@ async function submit(result: 'confirm' | 'secondary' = 'confirm'): Promise<void
 </template>
 
 <style scoped>
-.nc-confirm-body{display:flex;gap:14px;align-items:flex-start}.nc-confirm-icon{flex:0 0 auto;font-size:26px;color:var(--el-color-warning);margin-top:1px}.nc-confirm-security .nc-confirm-icon{color:var(--el-color-danger)}.nc-confirm-danger .nc-confirm-icon,.nc-confirm-destructive .nc-confirm-icon{color:var(--el-color-danger)}.nc-confirm-copy{min-width:0;flex:1}.nc-confirm-message{margin:0;white-space:pre-wrap;line-height:1.65}.nc-confirm-message strong{color:var(--nc-text-primary);font-weight:700}.nc-confirm-detail{margin:10px 0 0;white-space:pre-wrap;color:var(--el-text-color-secondary);line-height:1.5}.nc-confirm-notice{display:flex;align-items:flex-start;gap:8px;margin-top:14px;padding:11px 12px;border:1px solid var(--nc-border-light);border-radius:8px;background:var(--nc-bg-muted);color:var(--nc-text-secondary);font-size:12px;line-height:1.6}.nc-confirm-notice .el-icon{flex:0 0 auto;margin-top:3px;color:var(--nc-info)}.nc-confirm-ack{display:block;margin-top:14px}.nc-confirm-footer{display:flex;justify-content:flex-end;gap:10px}
+.nc-confirm-body{display:flex;gap:14px;align-items:flex-start}.nc-confirm-icon{flex:0 0 auto;font-size:26px;color:var(--el-color-warning);margin-top:1px}.nc-confirm-security .nc-confirm-icon{color:var(--el-color-danger)}.nc-confirm-danger .nc-confirm-icon,.nc-confirm-destructive .nc-confirm-icon{color:var(--el-color-danger)}.nc-confirm-copy{min-width:0;flex:1}.nc-confirm-message{margin:0;white-space:pre-wrap;line-height:1.65}.nc-confirm-message strong{color:var(--nc-text-primary);font-weight:700}.nc-confirm-detail{margin:10px 0 0;white-space:pre-wrap;color:var(--el-text-color-secondary);line-height:1.5}.nc-confirm-notice{display:flex;align-items:flex-start;gap:8px;margin-top:14px;padding:11px 12px;border:1px solid var(--nc-border-light);border-radius:8px;background:var(--nc-bg-muted);color:var(--nc-text-secondary);font-size:12px;line-height:1.6}.nc-confirm-notice .el-icon{flex:0 0 auto;margin-top:3px;color:var(--nc-info)}.nc-confirm-ack{display:block;margin-top:14px}.nc-confirm-typed{display:grid;gap:7px;margin-top:14px}.nc-confirm-typed label{color:var(--nc-text-secondary);font-size:12px}.nc-confirm-footer{display:flex;justify-content:flex-end;gap:10px}
 </style>

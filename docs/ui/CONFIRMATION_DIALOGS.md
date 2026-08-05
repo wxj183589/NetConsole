@@ -12,7 +12,7 @@ NetConsole 的业务确认统一由 `apps/web/src/components/feedback/useConfirm
 | `SECURITY` | 凭据、主机密钥或外部进程风险 | `确认启用` |
 | `DESTRUCTIVE` | 删除、覆盖、强制停止 | `确认删除` |
 
-调用方应使用动作化标题和按钮文案，并把设备、影响范围、命令计划或风险说明放入 `message`/`detail`。安全操作可通过 `requireAcknowledgement` 要求用户勾选风险确认。
+调用方应使用动作化标题和按钮文案，并把设备、影响范围、命令计划或风险说明放入 `message`/`detail`。安全操作可通过 `requireAcknowledgement` 要求用户勾选风险确认。需要名称级强确认的删除可传入 `confirmationText`；`NcConfirmDialog` 仅在输入值与其逐字符完全一致时启用确认按钮，Element Plus fallback 也必须使用相同的精确校验。可通过 `confirmationLabel` 和 `confirmationPlaceholder` 调整输入提示，但不得在调用方另建私有弹窗。
 
 ## 生命周期与安全边界
 

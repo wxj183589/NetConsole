@@ -18,6 +18,23 @@ class SiteActivateRequest(ApiModel):
     confirmed: bool = True
 
 
+class SiteUpdateRequest(ApiModel):
+    display_name: str = Field(min_length=1, max_length=64)
+    line_name: str | None = Field(default=None, max_length=128)
+    project_type: str | None = Field(default=None, max_length=128)
+
+
+class SiteTrashRequest(ApiModel):
+    confirm_display_name: str = Field(min_length=1, max_length=128)
+
+
+class SiteTrashResponse(ApiModel):
+    site_id: str
+    display_name: str
+    trash_path: str
+    recoverable: bool
+
+
 class SiteMigrateRequest(ApiModel):
     destination_root: str = Field(min_length=1, max_length=32_767)
 
@@ -120,6 +137,9 @@ class SiteCleanupPlanResponse(ApiModel):
 __all__ = [
     "DataRootPathRequest",
     "SiteActivateRequest",
+    "SiteUpdateRequest",
+    "SiteTrashRequest",
+    "SiteTrashResponse",
     "SiteCreateRequest",
     "SiteExportRequest",
     "SiteConflictResolution",
