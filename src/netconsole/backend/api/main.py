@@ -485,7 +485,9 @@ def create_app(
     app.state.data_root_application_service = data_root_application_service
     app.state.site_package_service = site_package_service
     app.state.site_audit_service = SiteAuditService(paths)
-    app.state.site_cleanup_application_service = SiteCleanupApplicationService(paths)
+    app.state.site_cleanup_application_service = SiteCleanupApplicationService(
+        paths, site_application_service
+    )
     app.state.site_process_adapter = web_process_adapter
     app.state.web_artifact_store = web_artifact_store
     app.state.desktop_action_service = desktop_action_service

@@ -70,6 +70,7 @@ def test_path_resolver_creates_project_dirs(tmp_path):
     assert paths.config_dir.is_dir()
     assert paths.logs_dir.is_dir()
     assert paths.sites_dir.is_dir()
+    assert not paths.trash_dir.exists()
     assert not (tmp_path / "docs").exists()
     assert not (tmp_path / "tests").exists()
     assert not (tmp_path / "project").exists()

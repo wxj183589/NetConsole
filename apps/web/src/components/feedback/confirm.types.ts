@@ -14,6 +14,9 @@ export interface ConfirmOptions {
   cancelText?: string
   acknowledgementText?: string
   requireAcknowledgement?: boolean
+  confirmationText?: string
+  confirmationLabel?: string
+  confirmationPlaceholder?: string
   closeOnEscape?: boolean
   onConfirm?: () => void | Promise<void>
 }

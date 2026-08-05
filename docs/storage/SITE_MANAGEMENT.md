@@ -1,12 +1,14 @@
 # 局点管理
 
-局点 Registry 位于当前数据根的 `config/site_registry.json`，是局点列表的唯一事实源。每个记录有稳定 `site_id`、中文 `display_name`、相对路径、创建/更新时间和备注；显示名称不作为数据库主键。
+局点 Registry 位于当前数据根的 `config/site_registry.json`，是局点列表的唯一事实源。每个记录有稳定 `site_id`、中文 `display_name`、可空的 `line_name/project_type`、相对路径、创建/更新时间和备注；显示名称不作为数据库主键。历史 Registry 缺少新增字段时读取为 `null`，并兼容既有 `site_meta.json` 中的 `line_name/system_type`，不会伪造线路或项目类型。
 
 首次启动或 Registry 缺少历史记录时，系统只扫描受控的 `sites/<目录>/db/devices.db`，以无覆盖、幂等方式补登记既有局点。符合稳定 ID 规则的目录沿用目录名；中文或其他历史目录生成 `legacy-<稳定哈希>` 作为内部 `site_id`，原目录名保留为相对路径和 Backend 的实际存储名称，`site_meta.json` 中的 `display_name` 优先用于显示。没有主数据库、路径越界、符号链接或损坏 Registry 的目录不会被自动登记，也不会被删除、重命名或初始化。
 
 Electron 重启传递稳定 `site_id`，Backend 启动时先通过 Registry 解析到实际目录名；所有 Repository、任务和历史数据继续使用原局点目录。这样局点 ID 与 Windows/中文目录名可以安全分离。
 
 新建流程为：校验 ID/名称、创建 staging、初始化必要数据库和默认设备组、写 `site_meta.json`、执行 SQLite `quick_check`、原子发布、注册 Registry。失败清理 staging，不改变当前局点。
+
+`PATCH /api/v1/sites/{site_id}` 修改显示名称、线路名称和项目类型。显示名称去除首尾空格后必须为 1～64 字符，并在同一数据根内唯一；线路和项目类型的空字符串持久化为 `null`。更新同步写入 Registry 与既有 `site_meta.json`，每个文件使用临时文件、`fsync` 和原子替换，失败恢复原 Manifest。重命名只改变 `display_name`，不改变 `site_id`、物理目录、数据库主键、Task、报告或 Artifact 关联；成功后 Renderer 重新读取当前局点，Electron 重新读取托盘局点清单。
 
 `site_meta.json` 同时保存跨电脑同步使用的不可变 `site_uuid` 与 revision。局点显示名称可以修改，不能作为同步匹配键。历史 `legacy-*` 局点保持只读审计优先：未产生审计记录前不能导出现场采集包或采集回传包；审计后才补齐同步标识。完整迁移/备份不依赖该限制。
 
@@ -25,13 +27,19 @@ Electron 重启传递稳定 `site_id`，Backend 启动时先通过 Registry 解�
 
 默认 manifest 写入 `<data_root>/migrations/site-audits/`；也可通过 `--output` 指定报告文件。报告中的 `active_site`、`managed_demo`、`legacy_demo`、`empty_shell`、`legacy_alias`、`legacy_valid` 和 `normal_site` 是审计分类，不是删除指令。存在业务表记录、raw、parsed、报告/Artifact、当前局点或 bootstrap 引用时必须保留并人工复核。
 
-## 二阶段安全回收
+## 普通局点安全删除
+
+`POST /api/v1/sites/{site_id}/trash` 只处理普通非当前局点。用户必须输入与当前 `display_name` 完全相同的名称；当前局点、内置 Demo、最近审计仍分类为 `empty_shell` 的局点以及存在任意运行任务的局点会被拒绝。Demo 继续使用受控重建，空壳继续使用下述二阶段清理，两种语义不合并。
+
+执行时在同一 `site-mutation` 互斥锁内再次复核名称、当前局点和全局任务状态，收敛 SQLite WAL 后，使用同卷原子移动把 `sites/<directory>` 变为 `.trash/<site_id>-<UTC timestamp>`；不递归删除目录，也不跟随目标目录外的符号链接。目录移动成功后才原子注销 Registry 并清理 `recent_sites`。任一 Catalog/配置/墓碑阶段失败都会把目录移回并恢复原文件；目录回滚本身失败时返回明确诊断，不能报告成功。`.trash` 不属于缓存或自动清理白名单，当前不提供永久清空或任意路径恢复 API。
+
+## 空壳二阶段安全回收
 
 只有审计确认无独有业务数据且不属于当前局点、bootstrap 当前引用的局点，才允许进入二阶段回收：
 
 1. `prepare` 只接受最近一次正式审计 manifest，生成一次性 token、文件 manifest、引用清单、阻断原因和审计 manifest 哈希，不在同步请求中重新扫描目录，也不移动目录。
 2. 用户确认后，`apply` 逐文件复核大小与 SHA-256；任一文件变化即拒绝执行，要求重新审计。
-3. 通过复核后，原目录只移动到 `<data_root>/archive/site-recycle/<site_id>-<token>/site/`，同时注销精确 Registry 记录并清理 `recent_sites` 引用，不做永久删除。
+3. 通过复核后，原目录只移动到 `<data_root>/migrations/archive/site-recycle/<site_id>-<token>/site/`，同时注销精确 Registry 记录并清理 `recent_sites` 引用，不做永久删除。
 
 回收目录保留 Registry、应用配置备份和 `tombstone.json`。执行中任一步失败会恢复原目录、Registry 和应用配置；成功后的 tombstone 可在 30 天内通过 `POST /api/v1/sites/recycle/{cleanup_token}/restore` 进入 Task Center 恢复，恢复后 token 失效。当前没有“永久清空回收区”或任意路径恢复入口，不得手工删除或移动受控回收目录。
 

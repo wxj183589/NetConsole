@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from netconsole.core import app_logger
 from netconsole.core.paths import PathResolver
 from netconsole.core.sites import DEFAULT_SITE, SiteManager
 from netconsole.services.site_storage import SiteRecord, SiteRegistryRepository, SiteStorageError, storage_lock
@@ -75,7 +76,24 @@ def _atomic_json(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
-        temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        with temporary.open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _atomic_bytes(path: Path, payload: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temporary.open("wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
@@ -219,6 +237,9 @@ def _registry_records(paths: PathResolver) -> list[SiteRecord]:
                     created_at=str(item.get("created_at") or ""),
                     updated_at=str(item.get("updated_at") or ""),
                     remark=str(item.get("remark") or ""),
+                    line_name=str(item.get("line_name") or "").strip() or None,
+                    project_type=str(item.get("project_type") or "").strip()
+                    or None,
                 )
             )
         except (SiteStorageError, ValueError):
@@ -591,11 +612,169 @@ class SiteAuditService:
 class SiteCleanupApplicationService:
     """二阶段、可恢复的局点回收：只把目录移入受控回收区，不永久删除。"""
 
-    def __init__(self, paths: PathResolver) -> None:
+    def __init__(self, paths: PathResolver, sites: object | None = None) -> None:
         self.paths = paths
         self.auditor = SiteAuditService(paths)
         self.registry = SiteRegistryRepository(paths)
+        if sites is None:
+            from netconsole.services.site_storage import SiteApplicationService
+
+            sites = SiteApplicationService(paths)
+        self.sites = sites
         self._recover_incomplete_transactions()
+
+    def trash_site(
+        self, site_id: str, *, confirm_display_name: str
+    ) -> dict[str, Any]:
+        record = self.registry.get(site_id)
+        if str(confirm_display_name or "") != record.display_name:
+            raise SiteStorageError(
+                "SITE_TRASH_CONFIRMATION_MISMATCH", "输入的局点名称与当前名称不一致"
+            )
+        self._validate_trash_target(record)
+        self.sites.ensure_no_active_tasks_anywhere()
+
+        with storage_lock(self.paths, "site-mutation"):
+            record = self.registry.get(site_id)
+            if str(confirm_display_name or "") != record.display_name:
+                raise SiteStorageError(
+                    "SITE_TRASH_CONFIRMATION_MISMATCH",
+                    "局点名称已变化，请重新确认",
+                )
+            self._validate_trash_target(record)
+            self.sites.ensure_no_active_tasks_anywhere()
+
+            source = record.root_path
+            trash_root = self.paths.trash_dir
+            if trash_root.exists() and (
+                trash_root.is_symlink() or not trash_root.is_dir()
+            ):
+                raise SiteStorageError(
+                    "SITE_TRASH_PATH_INVALID", "局点回收目录必须是普通目录"
+                )
+            trash_root.mkdir(parents=True, exist_ok=True)
+            if trash_root.is_symlink():
+                raise SiteStorageError(
+                    "SITE_TRASH_PATH_INVALID", "局点回收目录不能是符号链接"
+                )
+            resolved_trash = trash_root.resolve()
+            if resolved_trash.parent != self.paths.data_root.resolve():
+                raise SiteStorageError("SITE_TRASH_PATH_INVALID", "局点回收目录越界")
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+            destination = resolved_trash / f"{record.site_id}-{stamp}"
+            if destination.exists():
+                raise SiteStorageError("SITE_TRASH_CONFLICT", "局点回收目标已存在")
+
+            registry_existed = self.registry.path.is_file()
+            registry_backup = (
+                self.registry.path.read_bytes() if registry_existed else b""
+            )
+            app_existed = self.paths.app_config_path.is_file()
+            app_backup = (
+                self.paths.app_config_path.read_bytes() if app_existed else b""
+            )
+            try:
+                _finalize_sqlite_files(source)
+                os.replace(source, destination)
+            except (OSError, sqlite3.Error) as exc:
+                app_logger.log_warning(
+                    "SITE_TRASH_MOVE_BLOCKED",
+                    "site_id="
+                    f"{record.site_id} error_type={type(exc).__name__} "
+                    f"errno={getattr(exc, 'errno', '')} "
+                    f"winerror={getattr(exc, 'winerror', '')}",
+                )
+                raise SiteStorageError(
+                    "SITE_TRASH_LOCKED",
+                    "局点目录或数据库正在使用，暂时无法删除",
+                    details={
+                        "error_type": type(exc).__name__,
+                        "errno": getattr(exc, "errno", None),
+                        "winerror": getattr(exc, "winerror", None),
+                    },
+                ) from exc
+
+            try:
+                self.registry.unregister(record.site_id, source)
+                self._remove_from_recent_sites(source.name)
+                _atomic_json(
+                    destination / ".netconsole-trash.json",
+                    {
+                        "schema_version": 1,
+                        "site_id": record.site_id,
+                        "display_name": record.display_name,
+                        "line_name": record.line_name,
+                        "project_type": record.project_type,
+                        "source_relative_path": _relative(
+                            self.paths.data_root, source
+                        ),
+                        "trashed_at": _now(),
+                        "recoverable": True,
+                    },
+                )
+            except Exception as exc:
+                try:
+                    os.replace(destination, source)
+                except OSError as rollback_exc:
+                    raise SiteStorageError(
+                        "SITE_TRASH_ROLLBACK_FAILED",
+                        "局点回收未完成且目录回滚失败，请停止操作并检查诊断日志",
+                    ) from rollback_exc
+                if registry_existed:
+                    _atomic_bytes(self.registry.path, registry_backup)
+                else:
+                    self.registry.path.unlink(missing_ok=True)
+                if app_existed:
+                    _atomic_bytes(self.paths.app_config_path, app_backup)
+                else:
+                    self.paths.app_config_path.unlink(missing_ok=True)
+                if isinstance(exc, SiteStorageError):
+                    raise
+                raise SiteStorageError(
+                    "SITE_TRASH_FAILED", "局点回收失败，原目录和 Registry 已恢复"
+                ) from exc
+        return {
+            "site_id": record.site_id,
+            "display_name": record.display_name,
+            "trash_path": _relative(self.paths.data_root, destination),
+            "recoverable": True,
+        }
+
+    def _validate_trash_target(self, record: SiteRecord) -> None:
+        current = self.sites.active_site_id()
+        if current in {record.site_id, record.root_path.name}:
+            raise SiteStorageError(
+                "SITE_TRASH_CURRENT", "当前局点不可删除，请先切换到其他局点。"
+            )
+        if record.site_id == DEFAULT_SITE:
+            raise SiteStorageError(
+                "SITE_TRASH_DEMO", "内置 Demo 局点请使用“重建 Demo”"
+            )
+        audit = self.auditor.latest(record.site_id)
+        if audit and str(audit.get("classification") or "") == "empty_shell":
+            raise SiteStorageError(
+                "SITE_TRASH_EMPTY_SHELL", "空壳局点请使用“清理空壳局点”"
+            )
+        source = record.root_path
+        sites_root = self.paths.sites_dir.resolve()
+        if (
+            not source.is_dir()
+            or source.is_symlink()
+            or source.parent != sites_root
+            or source == sites_root
+        ):
+            raise SiteStorageError(
+                "SITE_TRASH_PATH_INVALID", "局点目录不在当前数据根的受控 sites 目录内"
+            )
+        registered_root = self.registry.registered_root_path(record.site_id)
+        if (
+            registered_root.is_symlink()
+            or registered_root.parent.resolve() != sites_root
+            or registered_root.resolve() != source.resolve()
+        ):
+            raise SiteStorageError(
+                "SITE_TRASH_PATH_INVALID", "Registry 局点路径不是受控普通目录"
+            )
 
     def prepare_cleanup(self, site_id: str) -> dict[str, Any]:
         payload, audit_path = self._latest_audit(site_id)
@@ -691,6 +870,8 @@ class SiteCleanupApplicationService:
                     "created_at_source": record.created_at,
                     "updated_at_source": record.updated_at,
                     "remark_source": record.remark,
+                    "line_name_source": record.line_name,
+                    "project_type_source": record.project_type,
                     "source_relative_path": str(plan.get("source_relative_path") or ""),
                     "recycle_path": _relative(self.paths.data_root, moved),
                     "file_count": len(expected_manifest),
@@ -756,6 +937,9 @@ class SiteCleanupApplicationService:
                     str(tombstone.get("created_at_source") or ""),
                     str(tombstone.get("updated_at_source") or ""),
                     str(tombstone.get("remark_source") or ""),
+                    str(tombstone.get("line_name_source") or "").strip() or None,
+                    str(tombstone.get("project_type_source") or "").strip()
+                    or None,
                 )
                 self.registry.register(restored)
                 tombstone.update({"recoverable": False, "restored_at": _now()})

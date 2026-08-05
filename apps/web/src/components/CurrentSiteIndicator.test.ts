@@ -145,6 +145,19 @@ describe('CurrentSiteIndicator', () => {
     expect(runtime.unsubscribe).toHaveBeenCalledOnce()
   })
 
+  it('reloads the current name after site information changes without restarting Backend', async () => {
+    const { wrapper } = await mounted()
+    await flushPromises()
+    vi.mocked(api.getActiveSite).mockResolvedValueOnce(activeSite('已重命名局点'))
+
+    window.dispatchEvent(new CustomEvent('netconsole:site-context-changed'))
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('当前局点：已重命名局点')
+    expect(api.getActiveSite).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
+  })
+
   it('keeps long names in one truncatable span with the complete label in the tooltip', async () => {
     const longName = '测试地铁线路-信号系统-A网超长联调环境名称'
     vi.mocked(api.getActiveSite).mockResolvedValueOnce(activeSite(longName))

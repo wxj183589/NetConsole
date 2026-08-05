@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { flushPromises, mount } from '@vue/test-utils'
+import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -44,6 +44,8 @@ function site(overrides: Partial<SiteRecord> = {}): SiteRecord {
   return {
     site_id: 'demo',
     display_name: '演示局点',
+    line_name: null,
+    project_type: null,
     created_at: '',
     updated_at: '',
     remark: '',
@@ -59,6 +61,14 @@ function site(overrides: Partial<SiteRecord> = {}): SiteRecord {
     audited_at: '2026-07-21T08:00:00+08:00',
     ...overrides,
   }
+}
+
+async function emitSiteCommand(wrapper: VueWrapper, siteId: string, command: string): Promise<void> {
+  const dropdown = wrapper.findAllComponents({ name: 'ElDropdown' })
+    .find((item) => item.find(`[data-testid="more-site-${siteId}"]`).exists())
+  expect(dropdown).toBeDefined()
+  dropdown!.vm.$emit('command', command)
+  await flushPromises()
 }
 
 beforeEach(() => {
@@ -84,6 +94,67 @@ describe('SiteStoragePanel', () => {
     expect(wrapper.find('[data-testid="import-site"]').text()).toBe('导入数据包')
     expect(wrapper.find('[data-testid="export-site"]').text()).toContain('导出当前局点')
     expect(wrapper.find('[data-testid="migrate-data-root"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('线路未填写')
+    expect(wrapper.text()).toContain('项目类型未填写')
+  })
+
+  it('shows real site information and treats blank legacy fields as missing', async () => {
+    vi.mocked(api.listSites).mockResolvedValue([
+      site({ site_id: 'line-filled', display_name: '已填写局点', active: false, site_kind: 'formal', line_name: '杭州地铁10号线', project_type: 'PIS车地无线系统' }),
+      site({ site_id: 'line-blank', display_name: '空字段局点', active: false, site_kind: 'legacy', line_name: '   ', project_type: '' }),
+      site({ site_id: 'line-old', display_name: '旧版局点', active: false, site_kind: 'legacy', line_name: undefined, project_type: undefined }),
+    ])
+
+    const wrapper = mount(SiteStoragePanel)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('线路：杭州地铁10号线')
+    expect(wrapper.text()).toContain('项目类型：PIS车地无线系统')
+    expect(wrapper.text()).toContain('空字段局点')
+    expect(wrapper.text()).toContain('旧版局点')
+    expect(wrapper.text().match(/线路未填写/g)?.length).toBe(2)
+    expect(wrapper.text().match(/项目类型未填写/g)?.length).toBe(2)
+  })
+
+  it('edits site information, reloads the list and refreshes current site surfaces', async () => {
+    const initial = site({ line_name: null, project_type: 'PIS车地无线系统' })
+    const updated = site({ display_name: '新演示局点', line_name: '演示线路', project_type: 'PIS车地无线系统' })
+    vi.mocked(api.listSites).mockResolvedValueOnce([initial]).mockResolvedValueOnce([updated])
+    vi.mocked(api.updateSite).mockResolvedValue(updated)
+    const wrapper = mount(SiteStoragePanel)
+    await flushPromises()
+
+    await emitSiteCommand(wrapper, 'demo', 'edit')
+    const dialog = wrapper.findComponent({ name: 'ElDialog' })
+    await dialog.get('[data-testid="site-display-name-input"]').setValue(' 新演示局点 ')
+    await dialog.get('[data-testid="site-line-name-input"]').setValue(' 演示线路 ')
+    await dialog.get('[data-testid="save-site-info"]').trigger('click')
+    await flushPromises()
+
+    expect(api.updateSite).toHaveBeenCalledWith('demo', {
+      display_name: '新演示局点',
+      line_name: '演示线路',
+      project_type: 'PIS车地无线系统',
+    })
+    expect(wrapper.text()).toContain('线路：演示线路')
+    expect(adapter.refreshSiteContext).toHaveBeenCalledOnce()
+  })
+
+  it('keeps the editor open and shows a duplicate-name backend error', async () => {
+    vi.mocked(api.updateSite).mockRejectedValue(new ApiRequestError('局点名称已存在', 409, 'SITE_NAME_CONFLICT'))
+    const message = vi.spyOn(ElMessage, 'error')
+    const wrapper = mount(SiteStoragePanel)
+    await flushPromises()
+
+    await emitSiteCommand(wrapper, 'demo', 'rename')
+    const dialog = wrapper.findComponent({ name: 'ElDialog' })
+    await dialog.get('[data-testid="site-display-name-input"]').setValue('重复局点')
+    await dialog.get('[data-testid="save-site-info"]').trigger('click')
+    await flushPromises()
+
+    expect(message).toHaveBeenCalledWith('局点名称已存在')
+    expect(api.listSites).toHaveBeenCalledOnce()
+    expect(dialog.props('modelValue')).toBe(true)
   })
 
   it('applies a successful data-root refresh when the site list request fails', async () => {
@@ -372,8 +443,7 @@ describe('SiteStoragePanel', () => {
     const wrapper = mount(SiteStoragePanel)
     await flushPromises()
 
-    await wrapper.find('[data-testid="cleanup-site-legacy-empty"]').trigger('click')
-    await flushPromises()
+    await emitSiteCommand(wrapper, 'legacy-empty', 'cleanup')
 
     expect(api.prepareSiteCleanup).toHaveBeenCalledWith('legacy-empty')
     expect(api.applySiteCleanup).toHaveBeenCalledWith('legacy-empty', '1234567890abcdef')
@@ -386,8 +456,7 @@ describe('SiteStoragePanel', () => {
     const wrapper = mount(SiteStoragePanel)
     await flushPromises()
 
-    await wrapper.find('[data-testid="cleanup-site-legacy-current"]').trigger('click')
-    await flushPromises()
+    await emitSiteCommand(wrapper, 'legacy-current', 'cleanup')
 
     expect(api.applySiteCleanup).not.toHaveBeenCalled()
   })
@@ -400,11 +469,41 @@ describe('SiteStoragePanel', () => {
     const wrapper = mount(SiteStoragePanel)
     await flushPromises()
 
-    await wrapper.find('[data-testid="rebuild-demo-demo"]').trigger('click')
-    await flushPromises()
+    await emitSiteCommand(wrapper, 'demo', 'rebuild-demo')
 
     expect(api.rebuildDemoSite).toHaveBeenCalledWith(false)
     expect(adapter.openTaskWindow).toHaveBeenCalledWith({ taskId: 'demo-1', module: 'logs' })
+  })
+
+  it('keeps current and Demo sites out of the ordinary delete flow', async () => {
+    const warning = vi.spyOn(ElMessage, 'warning')
+    const wrapper = mount(SiteStoragePanel)
+    await flushPromises()
+
+    await emitSiteCommand(wrapper, 'demo', 'delete')
+
+    expect(api.trashSite).not.toHaveBeenCalled()
+    expect(warning).toHaveBeenCalledWith('当前局点不可删除，请先切换到其他局点。')
+  })
+
+  it('requires the full display name before moving a normal site to trash', async () => {
+    const normal = site({ site_id: 'line-1', display_name: '一号线', active: false, site_kind: 'formal', classification: 'normal_site', managed_demo: false })
+    vi.mocked(api.listSites).mockResolvedValueOnce([normal]).mockResolvedValueOnce([])
+    vi.mocked(api.trashSite).mockResolvedValue({ site_id: 'line-1', display_name: '一号线', trash_path: '.trash/line-1-20260806', recoverable: true })
+    const prompt = vi.spyOn(ElMessageBox, 'prompt').mockResolvedValueOnce({ value: '一号线', action: 'confirm' } as never)
+    const wrapper = mount(SiteStoragePanel)
+    await flushPromises()
+
+    await emitSiteCommand(wrapper, 'line-1', 'delete')
+
+    expect(prompt).toHaveBeenCalledWith(
+      expect.stringContaining('一号线'),
+      '删除局点',
+      expect.objectContaining({ inputPlaceholder: '一号线' }),
+    )
+    expect(api.trashSite).toHaveBeenCalledWith('line-1', '一号线')
+    expect(wrapper.text()).not.toContain('一号线')
+    expect(adapter.refreshSiteContext).toHaveBeenCalledOnce()
   })
 
   it('refreshes the list and tray context only after a submitted import completes', async () => {

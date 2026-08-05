@@ -28,10 +28,11 @@ D:\NetConsoleData
 │  └─ locks/netconsole-backend.lock
 ├─ agents/
 ├─ migrations/
-└─ staging/
+├─ staging/
+└─ .trash/                       # 普通局点安全删除时按需创建
 ```
 
-Electron 的 `userData`、`sessionData`、`cache`、`logs`、`crashDumps` 和 `temp` 都在 `runtime/`；Backend 日志位于 `runtime/logs/`。`staging/` 只用于正在进行且可恢复的迁移，完成后应为空。迁移报告、冲突保留文件、备份和中断 staging 回收记录写入 `migrations/`，不是普通缓存。
+Electron 的 `userData`、`sessionData`、`cache`、`logs`、`crashDumps` 和 `temp` 都在 `runtime/`；Backend 日志位于 `runtime/logs/`。`staging/` 只用于正在进行且可恢复的迁移，完成后应为空。迁移报告、冲突保留文件、备份和中断 staging 回收记录写入 `migrations/`，不是普通缓存。`.trash/` 只保存普通局点安全删除后移入的完整目录，目标名为 `<site-id>-<UTC timestamp>`；它与空壳 cleanup 的 `migrations/archive/site-recycle/` 各自保留独立语义。
 
 ## 局点布局
 
@@ -140,7 +141,7 @@ API 调用方内存/Renderer 状态中流转，不写 SQLite、不修改 NDJSON�
 
 ## 清理边界
 
-自动和手动清理只能处理已白名单的 `runtime/cache/`、`runtime/temp/` 与受认可的运行日志；不触及局点数据库、配置、raw、会话业务日志、正式 outputs、报告、备份、Agent 包或迁移材料。删除前必须重新确认规范化后的路径位于数据根的允许子树。
+自动和手动缓存清理只能处理已白名单的 `runtime/cache/`、`runtime/temp/` 与受认可的运行日志；不触及局点数据库、配置、raw、会话业务日志、正式 outputs、报告、备份、Agent 包、迁移材料或 `.trash/`。普通局点删除只允许把 Registry 中的一级 `sites/<site>/` 普通目录原子移动到 `.trash/`，不递归永久删除；移动和 Registry 更新任一阶段失败都必须回滚。执行前必须重新确认规范化路径位于数据根允许子树，并拒绝符号链接和路径逃逸。
 
 任务中心的“清理”不是磁盘清理。它只在当前局点 `tasks.db` 的任务快照上写入 `dismissed_at / dismissed_by / dismiss_reason`，隐藏已结束的历史记录；任务事件、日志、采集结果、会话文件、正式导出和 Artifact 均保留。真正的物理清理只能由独立数据库维护或文件管理用例按白名单、保留期和路径边界执行。
 

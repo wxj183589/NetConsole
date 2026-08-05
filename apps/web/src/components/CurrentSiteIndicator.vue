@@ -7,6 +7,7 @@ import { useRouter } from 'vue-router'
 import { getActiveSite, type SiteRecord } from '../api/siteStorage'
 import { getPlatformAdapter } from '../platform/runtime'
 import { useWorkspaceStore } from '../stores/workspace'
+import { SITE_CONTEXT_CHANGED_EVENT } from '../workspace/site-switch'
 
 type LoadState = 'loading' | 'ready' | 'error'
 
@@ -18,6 +19,7 @@ const loadState = ref<LoadState>('loading')
 let loadSequence = 0
 let focusSequence = 0
 let unsubscribe: (() => void) | undefined
+const handleSiteContextChanged = () => { void loadCurrentSite() }
 
 const siteName = computed(() => {
   if (loadState.value === 'loading') return '加载中…'
@@ -62,6 +64,7 @@ async function openSiteStorage(): Promise<void> {
 }
 
 onMounted(() => {
+  window.addEventListener(SITE_CONTEXT_CHANGED_EVENT, handleSiteContextChanged)
   unsubscribe = runtime.onBackendStatusChanged((status) => {
     if (status.state === 'ready') {
       void loadCurrentSite()
@@ -76,6 +79,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   ++loadSequence
+  window.removeEventListener(SITE_CONTEXT_CHANGED_EVENT, handleSiteContextChanged)
   unsubscribe?.()
 })
 </script>
