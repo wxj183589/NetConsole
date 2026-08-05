@@ -13,7 +13,7 @@ import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import { isFeatureEnabled } from '../../features'
 import { t } from '../../i18n/runtime'
 import { useUserSelectedExport } from '../../composables/useUserSelectedExport'
-import { useDeviceTerminalLauncher } from '../../composables/useDeviceTerminalLauncher'
+import { useExternalTerminalLauncher } from '../../composables/useExternalTerminalLauncher'
 import { getPlatformAdapter } from '../../platform/runtime'
 import type { NcDataTableContextMenuItem } from '../../components/table/NcDataTableContextMenu'
 import { BEFORE_SITE_SWITCH_EVENT } from '../../workspace/site-switch'
@@ -41,7 +41,14 @@ import {
 
 const userSelectedExport = useUserSelectedExport()
 const taskStore = useTaskStore()
-const terminalLauncher = useDeviceTerminalLauncher()
+const terminalLauncher = useExternalTerminalLauncher()
+const {
+  busy: terminalLoading,
+  fitApTerminalVisible: terminalVisible,
+  fitApTerminalType: terminalType,
+  fitApTerminalOptions: terminalOptions,
+  launchSelectedFitApTerminal,
+} = terminalLauncher
 const activeStates = new Set(activeTaskStatuses)
 const businessTaskTypes = new Set([
   'trackside_ap_optical_update',
@@ -75,7 +82,11 @@ const pendingRefreshReason = ref('')
 const savedTableScroll = reactive({ top: 0, left: 0 })
 const businessTableHost = ref<HTMLElement | null>(null)
 const desktopHost = computed(() => getPlatformAdapter().hostType === 'electron')
-const terminalFeatureEnabled = computed(() => isFeatureEnabled('web.device_management_desktop'))
+const deviceTerminalFeatureEnabled = computed(() => isFeatureEnabled('web.device_management_desktop'))
+const fitApTerminalFeatureEnabled = computed(() => (
+  isFeatureEnabled('web.ac_fit_ap_external_terminal')
+  && isFeatureEnabled('desktop.native_bridge')
+))
 let loadGeneration = 0
 let pageMounted = false
 let taskObservationReady = false
@@ -169,27 +180,37 @@ const unmatchedLabel = computed(() => {
 const businessContextMenuItems = computed<NcDataTableContextMenuItem<TracksideApBusinessRow>[]>(() => [
   {
     key: 'switch-external-terminal',
-    label: '打开车站交换机外部终端',
+    label: t('ac.context.external_terminal', '打开外部终端'),
     visible: ({ columnKey }) => columnKey === 'device_name',
-    disabled: ({ row }) => !desktopHost.value || !terminalFeatureEnabled.value || !row.switch_terminal_available,
+    disabled: ({ row }) => !desktopHost.value || !deviceTerminalFeatureEnabled.value || !row.switch_terminal_available,
     disabledReason: ({ row }) => !desktopHost.value
       ? '仅 Electron Desktop 可用'
-      : !terminalFeatureEnabled.value
+      : !deviceTerminalFeatureEnabled.value
         ? '外部终端功能未启用'
         : row.switch_terminal_unavailable_reason || '未找到可启动终端的交换机设备记录',
-    action: ({ row }) => openExternalTerminal(row.switch_device_uuid || '', '车站交换机'),
+    action: ({ row }) => openDeviceExternalTerminal(row.switch_device_uuid || ''),
   },
   {
     key: 'ap-external-terminal',
-    label: '打开轨旁 AP 外部终端',
+    label: t('ac.context.external_terminal', '打开外部终端'),
     visible: ({ columnKey }) => columnKey === 'ap_mac' || columnKey === 'ap_name',
-    disabled: ({ row }) => !desktopHost.value || !terminalFeatureEnabled.value || !row.ap_terminal_available,
+    disabled: ({ row }) => !desktopHost.value || !fitApTerminalFeatureEnabled.value || !row.ap_terminal_available,
     disabledReason: ({ row }) => !desktopHost.value
       ? '仅 Electron Desktop 可用'
-      : !terminalFeatureEnabled.value
+      : !fitApTerminalFeatureEnabled.value
         ? '外部终端功能未启用'
-        : row.ap_terminal_unavailable_reason || '未找到可启动终端的 AP 设备记录',
-    action: ({ row }) => openExternalTerminal(row.ap_terminal_device_uuid || '', '轨旁 AP'),
+        : row.ap_terminal_unavailable_reason || '未关联到 FIT-AP 资源',
+    action: ({ row }) => openFitApExternalTerminal(row),
+  },
+  {
+    key: 'copy-cell',
+    label: t('ac.context.copy_cell', '复制单元格'),
+    action: ({ cellValue }) => copyText(String(cellValue ?? '')),
+  },
+  {
+    key: 'copy-row',
+    label: t('ac.context.copy_row', '复制整行'),
+    action: ({ row }) => copyBusinessRow(row),
   },
 ])
 
@@ -312,9 +333,9 @@ function markPageDirty(reason: string): void {
   pendingRefreshReason.value = reason
 }
 
-async function openExternalTerminal(deviceUuid: string, targetLabel: string): Promise<void> {
+async function openDeviceExternalTerminal(deviceUuid: string): Promise<void> {
   const target = cleanIdentity(deviceUuid)
-  if (!target || !desktopHost.value || !terminalFeatureEnabled.value) return
+  if (!target || !desktopHost.value || !deviceTerminalFeatureEnabled.value) return
   try {
     const preflight = await terminalLauncher.preflightDeviceTerminalTargets([target])
     if (!preflight) return
@@ -330,8 +351,34 @@ async function openExternalTerminal(deviceUuid: string, targetLabel: string): Pr
       terminalLauncher.showLaunchResult(result)
     }
   } catch (reason) {
-    ElMessage.error(failure(reason, `${targetLabel}外部终端启动失败`))
+    ElMessage.error(failure(reason, '打开外部终端失败'))
   }
+}
+
+async function openFitApExternalTerminal(row: TracksideApBusinessRow): Promise<void> {
+  if (!desktopHost.value || !fitApTerminalFeatureEnabled.value || !row.ap_terminal_available) return
+  await terminalLauncher.requestFitApTerminal({
+    acId: row.ap_terminal_ac_id || '',
+    apId: row.ap_terminal_ap_id || '',
+  })
+}
+
+async function copyText(value: string): Promise<void> {
+  await navigator.clipboard.writeText(value)
+  ElMessage.success(t('common.copied', '已复制'))
+}
+
+async function copyBusinessRow(row: TracksideApBusinessRow): Promise<void> {
+  await copyText([
+    row.site,
+    row.device_name,
+    row.interface_name,
+    row.ap_mac,
+    row.ap_name,
+    displayTracksideValue(row.switch_rx_power),
+    displayTracksideValue(row.ap_rx_power),
+    row.updated_at,
+  ].join('\t'))
 }
 
 async function startTask(factory: () => Promise<TracksideApTask>, fallback: string, scopeKey: string): Promise<void> {
@@ -576,6 +623,10 @@ onBeforeUnmount(() => {
       </div>
       <div class="pagination"><span>共 {{ page?.total || 0 }} 条</span><el-pagination :current-page="page?.page || filters.page" :page-size="filters.page_size" :page-sizes="[20, 50, 100, 200]" layout="sizes, prev, pager, next" :total="page?.total || 0" @current-change="(value: number) => { filters.page = value; loadRows() }" @size-change="(value: number) => { filters.page_size = value; filters.page = 1; loadRows() }" /></div>
     </div>
+    <el-dialog v-model="terminalVisible" :title="t('ac.terminal.select', '选择外部终端')" width="420px">
+      <el-select v-model="terminalType" style="width: 100%"><el-option v-for="option in terminalOptions" :key="option.terminal_type" :label="option.label" :value="option.terminal_type" /></el-select>
+      <template #footer><el-button @click="terminalVisible = false">{{ t('common.cancel', '取消') }}</el-button><el-button type="primary" :loading="terminalLoading" @click="launchSelectedFitApTerminal">{{ t('ac.terminal.open', '打开终端') }}</el-button></template>
+    </el-dialog>
     <el-dialog v-model="excludedVisible" title="当前统计范围排除项" width="min(1040px, 94vw)">
       <NcDataTable
         table-id="trackside-ap-business-scope-excluded"
