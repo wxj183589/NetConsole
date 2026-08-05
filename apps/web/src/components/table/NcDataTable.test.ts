@@ -426,6 +426,51 @@ describe('NcDataTable', () => {
     wrapper.unmount()
   })
 
+  it('filters context actions by cell and does not open an empty menu', async () => {
+    const action = vi.fn()
+    const row = { name: 'AP01', status: 'online' }
+    const wrapper = mount(NcDataTable, {
+      attachTo: document.body,
+      props: {
+        tableId: 'context-menu-visible',
+        routeKey: '/trackside-ap-business',
+        showColumnSettings: false,
+        data: [row],
+        columns: [
+          { key: 'name', label: '名称', valueType: 'name' },
+          { key: 'status', label: '状态', valueType: 'status' },
+        ],
+        contextMenuItems: [{
+          key: 'open',
+          label: '打开终端',
+          visible: ({ columnKey }: { columnKey: string }) => columnKey === 'name',
+          action,
+        }],
+      },
+      global,
+    })
+    const table = wrapper.getComponent(ElTable)
+
+    table.vm.$emit(
+      'row-contextmenu',
+      row,
+      { property: 'status', columnKey: 'status' },
+      new MouseEvent('contextmenu', { clientX: 80, clientY: 80 }),
+    )
+    await flushPromises()
+    expect(document.body.querySelector('[role="menu"]')).toBeNull()
+
+    table.vm.$emit(
+      'row-contextmenu',
+      row,
+      { property: 'name', columnKey: 'name' },
+      new MouseEvent('contextmenu', { clientX: 80, clientY: 80 }),
+    )
+    await flushPromises()
+    expect(document.body.querySelector('[role="menu"]')?.textContent).toContain('打开终端')
+    wrapper.unmount()
+  })
+
   it('retargets another row and closes on outside pointer, Escape, resize, table scroll and data refresh', async () => {
     const action = vi.fn()
     const first = { name: 'AP01' }

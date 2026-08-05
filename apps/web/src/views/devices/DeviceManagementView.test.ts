@@ -215,8 +215,9 @@ describe('Device Management Web view', () => {
   it('builds edit values and launches only configured desktop terminals', () => {
     expect(source).toContain('function currentDeviceWriteValues()')
     expect(source).toContain('Object.assign(writeForm, values)')
-    expect(source).toContain('launchExternalTerminals')
-    expect(source).toContain('issueExternalTerminalConfirmation')
+    expect(source).toContain('useDeviceTerminalLauncher')
+    expect(source).toContain('preflightDeviceTerminalTargets')
+    expect(source).toContain('launchDeviceTerminalTargets')
     expect(source).toContain('getExternalTerminalSettings')
     expect(source).toContain('getPlatformAdapter().selectFile')
     expect(source).toContain("terminalSettings[`${terminalType}_path`] = path")

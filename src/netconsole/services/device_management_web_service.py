@@ -49,6 +49,9 @@ from netconsole.models.api.device_management import (
     DeviceExternalTerminalActionDTO,
     DeviceExternalTerminalBatchDTO,
     DeviceExternalTerminalBatchRequestDTO,
+    DeviceExternalTerminalPreflightDTO,
+    DeviceExternalTerminalPreflightItemDTO,
+    DeviceExternalTerminalPreflightRequestDTO,
     DeviceExternalTerminalConfirmationDTO,
     DeviceExternalTerminalConfirmationRequestDTO,
     DeviceExternalTerminalRequestDTO,
@@ -1435,6 +1438,34 @@ class DeviceManagementWebService:
             success=success,
             failed=len(failures),
             failures=failures[:20],
+        )
+
+    def preflight_external_terminals(
+        self, payload: DeviceExternalTerminalPreflightRequestDTO
+    ) -> DeviceExternalTerminalPreflightDTO:
+        selected = self._unique_ids(payload.device_uuids)
+        devices, _groups, _facts = self._repositories(self.current_site_id())
+        launchable: list[str] = []
+        skipped: list[DeviceExternalTerminalPreflightItemDTO] = []
+        for device_uuid in selected:
+            try:
+                device = self._require_device(devices, device_uuid)
+                # Build and validate the allowlisted launch descriptor without
+                # starting a process or exposing credentials to the client.
+                self._external_terminal_launch(device, payload.terminal_type)
+            except (KeyError, ValueError) as exc:
+                skipped.append(
+                    DeviceExternalTerminalPreflightItemDTO(
+                        device_uuid=device_uuid,
+                        reason=sanitize_sensitive_text(str(exc)),
+                    )
+                )
+            else:
+                launchable.append(device_uuid)
+        return DeviceExternalTerminalPreflightDTO(
+            terminal_type=payload.terminal_type,
+            launchable_devices=launchable,
+            skipped_devices=skipped,
         )
 
     def issue_external_terminal_confirmation(

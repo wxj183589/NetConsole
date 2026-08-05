@@ -791,6 +791,18 @@ export interface DeviceExternalTerminalBatch {
   failures: string[]
 }
 
+export interface DeviceExternalTerminalPreflightItem {
+  device_uuid: string
+  available: boolean
+  reason: string
+}
+
+export interface DeviceExternalTerminalPreflight {
+  terminal_type: 'securecrt' | 'putty' | 'xshell'
+  launchable_devices: string[]
+  skipped_devices: DeviceExternalTerminalPreflightItem[]
+}
+
 export interface DeviceExternalTerminalConfirmation {
   confirmation_token: string
   device_uuids: string[]

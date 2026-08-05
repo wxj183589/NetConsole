@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, reactive, ref, watch } from 'vue'
+import { ElMessage } from 'element-plus'
 
 import {
   getTracksideApBusinessExportProposal,
@@ -12,6 +13,10 @@ import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import { isFeatureEnabled } from '../../features'
 import { t } from '../../i18n/runtime'
 import { useUserSelectedExport } from '../../composables/useUserSelectedExport'
+import { useDeviceTerminalLauncher } from '../../composables/useDeviceTerminalLauncher'
+import { getPlatformAdapter } from '../../platform/runtime'
+import type { NcDataTableContextMenuItem } from '../../components/table/NcDataTableContextMenu'
+import { BEFORE_SITE_SWITCH_EVENT } from '../../workspace/site-switch'
 import type {
   TracksideApBusinessPage,
   TracksideApBusinessRow,
@@ -36,10 +41,21 @@ import {
 
 const userSelectedExport = useUserSelectedExport()
 const taskStore = useTaskStore()
+const terminalLauncher = useDeviceTerminalLauncher()
 const activeStates = new Set(activeTaskStatuses)
 const businessTaskTypes = new Set([
   'trackside_ap_optical_update',
   TRACKSIDE_AP_BUSINESS_EXPORT_TASK_TYPE,
+])
+const businessProjectionTaskTypes = new Set([
+  'trackside_ap_optical_update',
+  'device_detail_collect',
+  'device_optical_refresh',
+  'ac_fit_ap_resources_refresh',
+  'ac_fit_ap_detail_refresh',
+  'ac_fit_ap_verbose_all_refresh',
+  'ac_fit_ap_verbose_selected_refresh',
+  'ac_fit_ap_optical_refresh',
 ])
 const initialLoading = ref(false)
 const refreshing = ref(false)
@@ -52,7 +68,19 @@ const excludedVisible = ref(false)
 const unmatchedVisible = ref(false)
 const currentTaskId = ref('')
 const filters = reactive({ station: '', query: '', optical_anomaly_only: false, page: 1, page_size: 50 })
+const pageActive = ref(true)
+const pageDirty = ref(false)
+const lastLoadedAt = ref(0)
+const pendingRefreshReason = ref('')
+const savedTableScroll = reactive({ top: 0, left: 0 })
+const businessTableHost = ref<HTMLElement | null>(null)
+const desktopHost = computed(() => getPlatformAdapter().hostType === 'electron')
+const terminalFeatureEnabled = computed(() => isFeatureEnabled('web.device_management_desktop'))
 let loadGeneration = 0
+let pageMounted = false
+let taskObservationReady = false
+const BUSINESS_PAGE_STALE_MS = 5 * 60 * 1000
+const terminalTaskRefreshes = new Set<string>()
 
 const businessColumns: NcTableColumn<TracksideApBusinessRow>[] = [
   { key: 'site', label: '站点', valueType: 'name', fixed: 'left' },
@@ -138,6 +166,33 @@ const unmatchedLabel = computed(() => {
   return '待关联在线 AP'
 })
 
+const businessContextMenuItems = computed<NcDataTableContextMenuItem<TracksideApBusinessRow>[]>(() => [
+  {
+    key: 'switch-external-terminal',
+    label: '打开车站交换机外部终端',
+    visible: ({ columnKey }) => columnKey === 'device_name',
+    disabled: ({ row }) => !desktopHost.value || !terminalFeatureEnabled.value || !row.switch_terminal_available,
+    disabledReason: ({ row }) => !desktopHost.value
+      ? '仅 Electron Desktop 可用'
+      : !terminalFeatureEnabled.value
+        ? '外部终端功能未启用'
+        : row.switch_terminal_unavailable_reason || '未找到可启动终端的交换机设备记录',
+    action: ({ row }) => openExternalTerminal(row.switch_device_uuid || '', '车站交换机'),
+  },
+  {
+    key: 'ap-external-terminal',
+    label: '打开轨旁 AP 外部终端',
+    visible: ({ columnKey }) => columnKey === 'ap_mac' || columnKey === 'ap_name',
+    disabled: ({ row }) => !desktopHost.value || !terminalFeatureEnabled.value || !row.ap_terminal_available,
+    disabledReason: ({ row }) => !desktopHost.value
+      ? '仅 Electron Desktop 可用'
+      : !terminalFeatureEnabled.value
+        ? '外部终端功能未启用'
+        : row.ap_terminal_unavailable_reason || '未找到可启动终端的 AP 设备记录',
+    action: ({ row }) => openExternalTerminal(row.ap_terminal_device_uuid || '', '轨旁 AP'),
+  },
+])
+
 function failure(reason: unknown, fallback: string): string { return reason instanceof Error ? reason.message : fallback }
 function cleanIdentity(value: string): string { return String(value || '').trim() }
 function businessRowKey(row: TracksideApBusinessRow): string {
@@ -204,6 +259,9 @@ async function loadRows(reset = false): Promise<boolean> {
     const nextPage = await listTracksideApBusiness({ ...filters })
     if (generation === loadGeneration) {
       page.value = nextPage
+      pageDirty.value = false
+      pendingRefreshReason.value = ''
+      lastLoadedAt.value = Date.now()
       succeeded = true
     }
   } catch (reason) {
@@ -226,6 +284,56 @@ async function loadRows(reset = false): Promise<boolean> {
   return succeeded
 }
 
+function tableScrollElement(): HTMLElement | null {
+  const host = businessTableHost.value
+  return host?.querySelector<HTMLElement>('.el-table__body-wrapper .el-scrollbar__wrap')
+    || host?.querySelector<HTMLElement>('.el-table__body-wrapper')
+    || host?.querySelector<HTMLElement>('.nc-data-table__scroll')
+    || null
+}
+
+function saveTableScroll(): void {
+  const element = tableScrollElement()
+  if (!element) return
+  savedTableScroll.top = element.scrollTop
+  savedTableScroll.left = element.scrollLeft
+}
+
+async function restoreTableScroll(): Promise<void> {
+  await nextTick()
+  const element = tableScrollElement()
+  if (!element) return
+  element.scrollTop = savedTableScroll.top
+  element.scrollLeft = savedTableScroll.left
+}
+
+function markPageDirty(reason: string): void {
+  pageDirty.value = true
+  pendingRefreshReason.value = reason
+}
+
+async function openExternalTerminal(deviceUuid: string, targetLabel: string): Promise<void> {
+  const target = cleanIdentity(deviceUuid)
+  if (!target || !desktopHost.value || !terminalFeatureEnabled.value) return
+  try {
+    const preflight = await terminalLauncher.preflightDeviceTerminalTargets([target])
+    if (!preflight) return
+    if (!preflight.launchableDevices.length) {
+      terminalLauncher.showPreflightSkipped(preflight.skippedDevices)
+      return
+    }
+    const result = await terminalLauncher.launchDeviceTerminalTargets(
+      preflight.launchableDevices,
+      preflight.terminalType,
+    )
+    if (result) {
+      terminalLauncher.showLaunchResult(result)
+    }
+  } catch (reason) {
+    ElMessage.error(failure(reason, `${targetLabel}外部终端启动失败`))
+  }
+}
+
 async function startTask(factory: () => Promise<TracksideApTask>, fallback: string, scopeKey: string): Promise<void> {
   if (pendingScopeKey.value === scopeKey) return
   pendingScopeKey.value = scopeKey
@@ -234,6 +342,7 @@ async function startTask(factory: () => Promise<TracksideApTask>, fallback: stri
   try {
     const started = await factory()
     currentTaskId.value = started.task_id
+    terminalTaskRefreshes.delete(started.task_id)
     await taskStore.refresh()
   }
   catch (reason) { actionError.value = failure(reason, fallback) }
@@ -283,26 +392,76 @@ function exportTimestamp(now = new Date()): string {
 }
 
 watch(
-  () => currentTask.value?.status,
-  (status, previousStatus) => {
-    if (
-      currentTask.value?.type === 'trackside_ap_optical_update'
-      && status
-      && !activeStates.has(status)
-      && status !== previousStatus
-    ) void loadRows()
+  () => taskStore.tasks.map((item) => `${item.id}:${item.type}:${item.status}`),
+  () => {
+    if (!taskObservationReady) return
+    const newlyCompleted = taskStore.tasks.filter((item) => (
+      businessProjectionTaskTypes.has(item.type)
+      && !activeStates.has(item.status)
+      && !terminalTaskRefreshes.has(item.id)
+    ))
+    if (!newlyCompleted.length) return
+    for (const item of newlyCompleted) terminalTaskRefreshes.add(item.id)
+    if (pageActive.value) void loadRows()
+    else markPageDirty('轨旁 AP 业务相关任务已完成')
   },
 )
 
+function handleBeforeSiteSwitch(): void {
+  loadGeneration += 1
+  page.value = null
+  initialLoading.value = false
+  refreshing.value = false
+  pageDirty.value = false
+  pendingRefreshReason.value = ''
+  lastLoadedAt.value = 0
+  filters.station = ''
+  filters.page = 1
+  savedTableScroll.top = 0
+  savedTableScroll.left = 0
+}
+
+onActivated(() => {
+  pageActive.value = true
+  if (!pageMounted) return
+  void restoreTableScroll()
+  if (initialLoading.value) return
+  if (!page.value) {
+    void loadRows()
+    return
+  }
+  if (pageDirty.value || Date.now() - lastLoadedAt.value > BUSINESS_PAGE_STALE_MS) {
+    void loadRows()
+  }
+})
+
+onDeactivated(() => {
+  pageActive.value = false
+  saveTableScroll()
+})
+
 onMounted(() => {
+  pageMounted = true
+  window.addEventListener(BEFORE_SITE_SWITCH_EVENT, handleBeforeSiteSwitch)
   void Promise.all([
     loadRows(),
     taskStore.refresh().then(() => {
       currentTaskId.value = taskStore.tasks.find(
         (item) => businessTaskTypes.has(item.type) && activeStates.has(item.status),
       )?.id || ''
+      for (const item of taskStore.tasks) {
+        if (businessProjectionTaskTypes.has(item.type) && !activeStates.has(item.status)) {
+          terminalTaskRefreshes.add(item.id)
+        }
+      }
+      taskObservationReady = true
     }),
   ])
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener(BEFORE_SITE_SWITCH_EVENT, handleBeforeSiteSwitch)
+  loadGeneration += 1
 })
 </script>
 
@@ -391,7 +550,7 @@ onMounted(() => {
         <span v-if="refreshing" class="refresh-indicator">正在刷新，当前数据保持显示</span>
         <span class="work-scope-filter-hint">设备管理与 AC 生成业务行；基础资料仅补充站点和工程属性</span>
       </div>
-      <div class="business-table-host">
+      <div ref="businessTableHost" class="business-table-host">
         <NcDataTable
           v-loading="initialLoading"
           table-id="trackside-ap-business"
@@ -399,6 +558,7 @@ onMounted(() => {
           :data="page?.items || []"
           :columns="businessColumns"
           :row-key="businessRowKey"
+          :context-menu-items="businessContextMenuItems"
           class="business-table"
           height="100%"
           :empty-text="emptyReasonLabel(page?.empty_reason || '')"

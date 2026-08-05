@@ -3473,6 +3473,38 @@ def test_large_external_terminal_batch_requires_scoped_single_use_confirmation(
     assert replayed.status_code == 422
 
 
+def test_external_terminal_preflight_validates_without_launching_or_exposing_credentials(
+    tmp_path: Path,
+) -> None:
+    client, service, _adapter, devices, _facts, mr, _sw = _fixture(tmp_path)
+    unavailable = devices.create(Device(name="无管理地址", primary_address=""))
+
+    response = client.post(
+        "/api/device-management/external-terminal/preflight",
+        json={
+            "device_uuids": [
+                str(mr.device_uuid),
+                str(unavailable.device_uuid),
+                "missing-device",
+                str(mr.device_uuid),
+            ],
+            "terminal_type": "securecrt",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["launchable_devices"] == [str(mr.device_uuid)]
+    assert {item["device_uuid"] for item in payload["skipped_devices"]} == {
+        str(unavailable.device_uuid),
+        "missing-device",
+    }
+    assert "secret-password" not in response.text
+    desktop_adapter = service.desktop_action_service.adapter
+    assert isinstance(desktop_adapter, _FakeDesktopAdapter)
+    assert desktop_adapter.terminal_calls == []
+
+
 def test_external_terminal_settings_are_desktop_only_and_reject_arbitrary_executables(
     tmp_path: Path,
 ) -> None:
