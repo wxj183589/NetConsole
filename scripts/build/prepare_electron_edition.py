@@ -7,8 +7,11 @@ from pathlib import Path
 from typing import Any
 
 from netconsole.core.feature_flags import (
+    default_profile,
     embedded_runtime_dir,
-    install_runtime_feature_files,
+    hash_admin_unlock_password,
+    install_embedded_feature_files,
+    profiles_dir,
     verify_admin_unlock_password,
 )
 
@@ -45,28 +48,44 @@ def prepare_electron_edition(
         )
 
     profile = normalized_edition
-    install_runtime_feature_files(
+    build_info: dict[str, Any] = {
+        "edition": normalized_edition,
+        "feature_profile": profile,
+        "admin_unlock_enabled": False,
+    }
+    if normalized_edition == "customer":
+        build_info.update(hash_admin_unlock_password(password))
+
+    feature_flags = _load_profile_payload(profile)
+    full_flags = _load_profile_payload("full")
+    install_embedded_feature_files(
         target,
-        edition=normalized_edition,
-        profile=profile,
-        admin_unlock_password=password if normalized_edition == "customer" else None,
+        build_info=build_info,
+        feature_flags=feature_flags,
+        session_full_flags=full_flags,
     )
 
     build_info_path = embedded_runtime_dir(target) / "build_info.json"
     feature_flags_path = embedded_runtime_dir(target) / "feature_flags.json"
-    build_info = _read_json(build_info_path)
-    feature_flags = _read_json(feature_flags_path)
+    embedded_build_info = _read_json(build_info_path)
+    embedded_feature_flags = _read_json(feature_flags_path)
     _validate_embedded_identity(
-        build_info,
-        feature_flags,
+        embedded_build_info,
+        embedded_feature_flags,
         edition=normalized_edition,
         profile=profile,
         customer_password=password,
     )
+    if (target / "runtime").exists():
+        raise EditionPreparationError(
+            "Electron Backend 载荷不得生成顶层 runtime；版本策略必须只存在于内嵌资源"
+        )
     result = {
         "edition": normalized_edition,
         "feature_profile": profile,
-        "admin_unlock_configured": bool(build_info.get("admin_unlock_enabled")),
+        "admin_unlock_configured": bool(
+            embedded_build_info.get("admin_unlock_enabled")
+        ),
         "build_info_path": str(build_info_path),
         "feature_flags_path": str(feature_flags_path),
     }
@@ -77,6 +96,15 @@ def prepare_electron_edition(
         f"{str(result['admin_unlock_configured']).lower()}"
     )
     return result
+
+
+def _load_profile_payload(profile: str) -> dict[str, Any]:
+    source = profiles_dir() / f"{profile}.json"
+    if not source.exists():
+        return default_profile(profile)
+    payload = _read_json(source)
+    payload["profile"] = profile
+    return payload
 
 
 def _validate_embedded_identity(
@@ -123,9 +151,9 @@ def _read_json(path: Path) -> dict[str, Any]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise EditionPreparationError(f"无法读取包内身份文件：{path}") from exc
+        raise EditionPreparationError(f"无法读取 JSON：{path}") from exc
     if not isinstance(payload, dict):
-        raise EditionPreparationError(f"包内身份文件必须为 JSON 对象：{path}")
+        raise EditionPreparationError(f"JSON 顶层必须为对象：{path}")
     return payload
 
 
