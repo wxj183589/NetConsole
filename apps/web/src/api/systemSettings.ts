@@ -1,5 +1,6 @@
 import { apiRequest } from './client'
 import type {
+  FeatureConfigurationTarget,
   FeatureSetting,
   FeatureSettingsSnapshot,
   NetworkComponentMode,
@@ -24,13 +25,26 @@ export const saveNetworkComponent = (
   method: 'PUT',
   body: JSON.stringify({ mode, custom_path: customPath, expected_version: expectedVersion }),
 })
-export const getFeatureSettings = () => apiRequest<FeatureSettingsSnapshot>('/api/settings/features')
-export const saveFeatureSettings = (items: FeatureSetting[]) => featureRequest('/api/settings/features', items, 'PUT')
-export const previewFeatureSettings = (items: FeatureSetting[]) => featureRequest('/api/settings/features/preview', items, 'POST')
-export const exitFeatureSettingsPreview = () => apiRequest<FeatureSettingsSnapshot>('/api/settings/features/preview/exit', { method: 'POST' })
-export const restoreFeatureSettings = () => apiRequest<FeatureSettingsSnapshot>('/api/settings/features/restore', { method: 'POST', body: JSON.stringify({ confirmed: true }) })
+export const getFeatureSettings = (target: FeatureConfigurationTarget = 'runtime') => apiRequest<FeatureSettingsSnapshot>(`/api/settings/features?target=${encodeURIComponent(target)}`)
+export const saveFeatureSettings = (items: FeatureSetting[], target: FeatureConfigurationTarget) => featureRequest('/api/settings/features', items, target, 'PUT')
+export const previewFeatureSettings = (items: FeatureSetting[], target: FeatureConfigurationTarget) => featureRequest('/api/settings/features/preview', items, target, 'POST')
+export const exitFeatureSettingsPreview = (target: FeatureConfigurationTarget) => apiRequest<FeatureSettingsSnapshot>(`/api/settings/features/preview/exit?target=${encodeURIComponent(target)}`, { method: 'POST' })
+export const restoreFeatureSettings = (target: FeatureConfigurationTarget) => apiRequest<FeatureSettingsSnapshot>('/api/settings/features/restore', { method: 'POST', body: JSON.stringify({ target, confirmed: true }) })
 
-function featureRequest(path: string, items: FeatureSetting[], method: 'PUT' | 'POST') {
-  const updates = items.map(({ feature_id, visible, enabled }) => ({ feature_id, visible, enabled }))
-  return apiRequest<FeatureSettingsSnapshot>(path, { method, body: JSON.stringify({ items: updates, confirmed: true }) })
+function featureRequest(
+  path: string,
+  items: FeatureSetting[],
+  target: FeatureConfigurationTarget,
+  method: 'PUT' | 'POST',
+) {
+  const updates = items.map(({ feature_id, visible, enabled, package_included }) => ({
+    feature_id,
+    visible,
+    enabled,
+    package_included,
+  }))
+  return apiRequest<FeatureSettingsSnapshot>(path, {
+    method,
+    body: JSON.stringify({ target, items: updates, confirmed: true }),
+  })
 }
