@@ -102,7 +102,7 @@ def test_trackside_switch_keeps_zte_native_threshold_result() -> None:
     assert native.severity == "normal"
 
 
-def test_trackside_row_normalization_applies_business_threshold_only_to_ap() -> None:
+def test_trackside_row_normalization_applies_business_threshold_to_both_rx_sides() -> None:
     row = normalize_trackside_ap_business_row(
         {
             "pvid": 71,
@@ -120,7 +120,8 @@ def test_trackside_row_normalization_applies_business_threshold_only_to_ap() -> 
 
     assert row["pvid"] == 71
     assert row["vlan"] == "Tagged 201"
-    assert row["switch_optical_status"] == "normal"
+    assert row["switch_device_optical_status"] == "normal"
+    assert row["switch_optical_status"] == "abnormal"
     assert row["ap_device_optical_status"] == "normal"
     assert row["ap_business_optical_status"] == "abnormal"
     assert row["ap_optical_status"] == "abnormal"
@@ -175,4 +176,4 @@ def test_trackside_export_has_no_bidirectional_column_and_uses_normalized_vlan(
     assert "双向光衰" not in headers
     assert "calculation_status" not in headers
     assert headers == ["PVID", "VLAN", "交换机模块状态", "业务综合状态", "更新时间"]
-    assert values[:4] == ["71", "Tagged 201", "正常", "normal"]
+    assert values[:4] == ["71", "Tagged 201", "光衰大", "abnormal"]
