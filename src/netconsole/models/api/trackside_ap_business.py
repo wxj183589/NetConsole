@@ -39,6 +39,7 @@ class TracksideApBusinessRowDTO(ApiModel):
     switch_rx_high_alarm: Any = None
     switch_tx_low_alarm: Any = None
     switch_tx_high_alarm: Any = None
+    switch_device_optical_status: str = ""
     switch_optical_status: str = ""
     switch_interface_updated_at: str = ""
     switch_optical_updated_at: str = ""
@@ -47,6 +48,8 @@ class TracksideApBusinessRowDTO(ApiModel):
     ap_uuid: str = ""
     ap_mac: str = ""
     ap_name: str = ""
+    model: str = ""
+    ap_optical_applicable: bool = True
     ap_terminal_device_uuid: str = ""
     ap_terminal_available: bool = False
     ap_terminal_unavailable_reason: str = ""
@@ -54,7 +57,7 @@ class TracksideApBusinessRowDTO(ApiModel):
     ap_tx_power: Any = None
     ap_device_optical_status: str = ""
     ap_business_optical_status: str = "unknown"
-    ap_business_threshold_dbm: float = -13.90
+    ap_business_threshold_dbm: float | None = -13.90
     ap_business_reason: str = ""
     ap_optical_status: str = ""
     ap_match_source: str = ""

@@ -340,6 +340,9 @@ class TracksideApBusinessQueryService:
             switch_rx_high_alarm=row.get("switch_rx_high_alarm"),
             switch_tx_low_alarm=row.get("switch_tx_low_alarm"),
             switch_tx_high_alarm=row.get("switch_tx_high_alarm"),
+            switch_device_optical_status=str(
+                row.get("switch_device_optical_status") or ""
+            ),
             switch_optical_status=str(row.get("switch_optical_status") or ""),
             switch_interface_updated_at=str(
                 row.get("switch_interface_updated_at") or ""
@@ -356,6 +359,10 @@ class TracksideApBusinessQueryService:
             ap_uuid=str(row.get("ap_uuid") or ""),
             ap_mac=str(row.get("ap_mac") or ""),
             ap_name=str(row.get("ap_name") or ""),
+            model=str(row.get("model") or row.get("ap_model") or ""),
+            ap_optical_applicable=bool(
+                row.get("ap_optical_applicable", True)
+            ),
             ap_terminal_device_uuid=ap_uuid,
             ap_terminal_available=ap_available,
             ap_terminal_unavailable_reason=ap_reason,
@@ -367,8 +374,10 @@ class TracksideApBusinessQueryService:
             ap_business_optical_status=str(
                 row.get("ap_business_optical_status") or "unknown"
             ),
-            ap_business_threshold_dbm=float(
-                row.get("ap_business_threshold_dbm") or -13.90
+            ap_business_threshold_dbm=(
+                float(row.get("ap_business_threshold_dbm") or -13.90)
+                if bool(row.get("ap_optical_applicable", True))
+                else None
             ),
             ap_business_reason=str(row.get("ap_business_reason") or ""),
             ap_optical_status=str(row.get("ap_optical_status") or ""),

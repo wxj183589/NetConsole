@@ -6,16 +6,17 @@ rx_power / port_status.
 """
 from __future__ import annotations
 
-import math
-import re
-
 from netconsole.core.ap_optical_capability import (
     OPTICAL_NOT_APPLICABLE_STATUS,
     is_ap_optical_applicable,
 )
+from netconsole.core.optical_rx_threshold import (
+    OPTICAL_BUSINESS_RX_MIN_DBM,
+    parse_optical_rx_dbm,
+)
 from netconsole.core.optical_severity_engine import compute_optical_severity
 
-AP_BUSINESS_RX_MIN_DBM = -13.90
+AP_BUSINESS_RX_MIN_DBM = OPTICAL_BUSINESS_RX_MIN_DBM
 
 
 def compute_ap_status(
@@ -51,7 +52,7 @@ def compute_ap_status(
     result = severity_result.severity
     if result in {"no_module", "link_abnormal", "link_down"}:
         return result
-    rx_power = _parse_rx_power(fit_ap_row.get("rx_power"))
+    rx_power = parse_optical_rx_dbm(fit_ap_row.get("rx_power"))
     if rx_power is not None and rx_power < AP_BUSINESS_RX_MIN_DBM:
         return "abnormal"
     reported_status = str(
@@ -89,16 +90,3 @@ def compute_ap_status(
         if result == "no_light" and severity_result.rx_power is not None
         else "unknown"
     )
-
-
-def _parse_rx_power(value: object) -> float | None:
-    if value is None or isinstance(value, bool):
-        return None
-    match = re.search(r"[-+]?\d+(?:\.\d+)?", str(value))
-    if not match:
-        return None
-    try:
-        result = float(match.group(0))
-    except ValueError:
-        return None
-    return result if math.isfinite(result) else None

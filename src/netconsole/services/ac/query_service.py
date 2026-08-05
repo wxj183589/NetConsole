@@ -20,7 +20,11 @@ from netconsole.core.optical_severity_engine import (
     classify_optical_freshness,
     classify_optical_health,
     display_optical_status,
-    worse_optical_severity,
+)
+from netconsole.core.optical_rx_threshold import (
+    OPTICAL_BUSINESS_RX_MIN_DBM,
+    evaluate_dual_optical_rx,
+    parse_optical_rx_dbm,
 )
 from netconsole.core.paths import PathResolver
 from netconsole.core.sites import SiteManager
@@ -996,10 +1000,18 @@ class AcManagementQueryService:
             switch_status = "unknown"
             switch_rx = ""
         ap_status = compute_ap_status(row)
-        raw_status = worse_optical_severity(switch_status, ap_status)
+        evaluation = evaluate_dual_optical_rx(
+            row.get("rx_power"),
+            switch_rx,
+            ap_reported_status=ap_status,
+            switch_reported_status=switch_status,
+        )
+        ap_status = evaluation.ap.status
+        switch_status = evaluation.switch.status
+        raw_status = evaluation.status
         offline = is_fit_ap_offline(resource)
         status = classify_optical_health(raw_status)
-        if ap_status == "abnormal":
+        if raw_status == "abnormal":
             status = "critical"
         freshness = self._optical_freshness(row, module, raw_status, ap_status, switch_status)
         is_current_anomaly = status in {"warning", "critical"} and freshness == "fresh"
@@ -1087,6 +1099,8 @@ class AcManagementQueryService:
             return ""
         power_text = cls._format_optical_power(power)
         suffix = f"：{power_text}" if power_text else ""
+        if status == "abnormal" and parse_optical_rx_dbm(power) is not None:
+            suffix = f"{suffix}（低于 {OPTICAL_BUSINESS_RX_MIN_DBM:.2f} dBm）"
         return f"{side_label}{display_optical_status(status)}{suffix}"
 
     @classmethod

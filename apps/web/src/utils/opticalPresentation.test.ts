@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 
 import {
   apOpticalStatusPresentation,
+  dualOpticalReason,
+  dualOpticalStatusPresentation,
   formatOpticalPower,
   opticalValuePresentation,
 } from './opticalPresentation'
@@ -52,5 +54,50 @@ describe('optical presentation utilities', () => {
     })
 
     expect(presentation).toMatchObject({ status: 'not_applicable', label: '不适用', tagType: 'info' })
+  })
+
+  it('marks the combined status abnormal when only switch Rx is below the fixed threshold', () => {
+    const input = {
+      apBackendStatus: 'normal',
+      apRxPower: '-7.72',
+      switchBackendStatus: 'normal',
+      switchRxPower: '-19.10',
+    }
+    const presentation = dualOpticalStatusPresentation(input)
+
+    expect(presentation.ap.status).toBe('normal')
+    expect(presentation.switch.status).toBe('abnormal')
+    expect(presentation.overall).toMatchObject({ status: 'abnormal', tagType: 'danger' })
+    expect(dualOpticalReason(input)).toContain('交换机侧收光异常：-19.10 dBm，低于 -13.90 dBm')
+    expect(dualOpticalReason(input)).toContain('AP 侧收光正常：-7.72 dBm')
+  })
+
+  it.each([
+    ['-13.90', '-13.90', 'normal'],
+    ['-13.91', '-13.90', 'abnormal'],
+    ['-13.90', '-13.91', 'abnormal'],
+    ['-13.89', '-13.89', 'normal'],
+    ['-13.89', null, 'not_collected'],
+  ])('combines AP Rx %s and switch Rx %s as %s', (apRxPower, switchRxPower, status) => {
+    expect(dualOpticalStatusPresentation({
+      apBackendStatus: 'normal',
+      apRxPower,
+      switchBackendStatus: 'normal',
+      switchRxPower,
+    }).overall.status).toBe(status)
+  })
+
+  it('keeps both sides not applicable for WA6522', () => {
+    const presentation = dualOpticalStatusPresentation({
+      apBackendStatus: 'critical',
+      apRxPower: '-30',
+      switchBackendStatus: 'critical',
+      switchRxPower: '-30',
+      model: ' WA6522 ',
+    })
+
+    expect(presentation.ap.status).toBe('not_applicable')
+    expect(presentation.switch.status).toBe('not_applicable')
+    expect(presentation.overall.status).toBe('not_applicable')
   })
 })
