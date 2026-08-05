@@ -1045,15 +1045,14 @@ def test_start_is_idempotent_for_active_run_and_rejects_archived_day(tmp_path) -
     repository = GroundUnattendedRepository(
         paths.ground_unattended_db_path("site-a"), site_id="site-a"
     )
-    repository.save_profile(
-        repository.get_profile().model_copy(
-            update={
-                "enabled": True,
-                "syslog_server_ip": "192.0.2.100",
-                "allow_external_syslog_address": True,
-            }
-        )
+    profile = repository.get_profile().model_copy(
+        update={
+            "enabled": True,
+            "syslog_server_ip": "192.0.2.100",
+            "allow_external_syslog_address": True,
+        }
     )
+    repository.save_profile(profile)
     supervisor = _Supervisor()
     service = GroundUnattendedApplicationService(
         paths,
@@ -1061,7 +1060,12 @@ def test_start_is_idempotent_for_active_run_and_rejects_archived_day(tmp_path) -
         repository=repository,
         supervisor=supervisor,  # type: ignore[arg-type]
     )
-    window = schedule_window(datetime.now().astimezone(), "07:00", "23:00", "system")
+    window = schedule_window(
+        datetime.now().astimezone(),
+        profile.schedule_start_time,
+        profile.schedule_end_time,
+        profile.timezone,
+    )
     run = repository.create_or_get_run(
         run_id="run-today",
         run_date=window.run_date,
