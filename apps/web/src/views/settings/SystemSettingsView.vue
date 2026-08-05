@@ -4,13 +4,6 @@ import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { CopyDocument } from '@element-plus/icons-vue'
 import {
-  SETTINGS_TOOL_DEFINITIONS,
-  settingsToolMismatchMessage,
-  settingsToolNameMatches,
-  type SettingsToolId,
-} from '../../../../desktop_electron/src/shared/bridge'
-
-import {
   exitFeatureSettingsPreview, getFeatureSettings, getSystemSettings, reloadSystemSettings,
   restoreFeatureSettings, saveFeatureSettings, saveSystemSettings, getRuntimeSelfCheck,
 } from '../../api/systemSettings'
@@ -23,7 +16,6 @@ import { applySystemAppearance } from '../../settings/appearance'
 import { useConfirm } from '../../components/feedback/useConfirm'
 import type { FeatureSetting, FeatureSettingsSnapshot, RuntimeSelfCheckItem, RuntimeSelfCheckSnapshot, SystemSettingsSnapshot, SystemSettingsValues } from '../../types/systemSettings'
 import SiteStoragePanel from './SiteStoragePanel.vue'
-import NcExecutablePathField from '../../components/settings/NcExecutablePathField.vue'
 
 const emptyValues: SystemSettingsValues = {
   theme: 'light', language: 'zh_CN', theme_color: '#0078D4', iperf_path: '', fping_path: '', ipop_path: '',
@@ -65,18 +57,9 @@ const desktopHost = Boolean(window.netconsoleDesktop)
 let siteStorageFocusTimer: ReturnType<typeof setTimeout> | undefined
 let removeCloseToTrayListener: (() => void) | undefined
 let traySiteSwitchInProgress = ''
-const runtimeToolErrors = reactive<Partial<Record<SettingsToolId, string>>>({})
 const dirty = computed(() => Boolean(baseline.value && JSON.stringify(form) !== JSON.stringify(baseline.value)))
 const featuresDirty = computed(() => featureSwitchAvailable.value && JSON.stringify(features.value) !== featureBaseline.value)
 const anyDirty = computed(() => dirty.value || featuresDirty.value)
-const pathErrors = computed<Record<SettingsToolId, string>>(() => ({
-  iperf3: toolPathError('iperf3', form.iperf_path),
-  fping: toolPathError('fping', form.fping_path),
-  securecrt: '',
-  xshell: '',
-  putty: '',
-}))
-const hasBlockingPathError = computed(() => Boolean(pathErrors.value.iperf3 || pathErrors.value.fping))
 const featureSwitchAvailable = computed(() => featureConfigurationAllowed.value && isFeatureEnabled('web.feature_switch'))
 const featureColumns: NcTableColumn<FeatureSetting>[] = [
   { key: 'title', label: '功能', valueType: 'name', align: 'left', alignmentReason: 'description', fixed: 'left' },
@@ -291,7 +274,6 @@ async function save(): Promise<void> {
       error.value = `功能开关已保存，但系统设置保存失败：${message(cause, '未知错误')}`
       ElMessage.error(error.value)
     } else {
-      assignToolError(cause)
       showError(cause, saveStage === 'feature_profile' ? '功能开关保存失败，系统设置未保存' : '系统设置保存失败')
     }
   } finally { saving.value = false }
@@ -355,10 +337,10 @@ function resetFeatureConfigurationState(): void {
 }
 
 function acceptSnapshot(value: SystemSettingsSnapshot): void {
-  snapshot.value = value; baseline.value = cloneValues(value.values); Object.assign(form, cloneValues(value.values)); clearToolErrors(); previewAppearance()
+  snapshot.value = value; baseline.value = cloneValues(value.values); Object.assign(form, cloneValues(value.values)); previewAppearance()
 }
-function resetDefaults(): void { if (snapshot.value) { Object.assign(form, cloneValues(snapshot.value.defaults)); clearToolErrors(); previewAppearance() } }
-function cancelChanges(): void { if (baseline.value) Object.assign(form, cloneValues(baseline.value)); clearToolErrors(); previewAppearance(); undoFeatureChanges() }
+function resetDefaults(): void { if (snapshot.value) { Object.assign(form, cloneValues(snapshot.value.defaults)); previewAppearance() } }
+function cancelChanges(): void { if (baseline.value) Object.assign(form, cloneValues(baseline.value)); previewAppearance(); undoFeatureChanges() }
 function previewAppearance(): void { applySystemAppearance(form) }
 function restoreAppearance(): void { if (baseline.value) applySystemAppearance(baseline.value) }
 function cloneValues(value: SystemSettingsValues): SystemSettingsValues { return { ...value, terminal_paths: { ...value.terminal_paths } } }
@@ -416,36 +398,6 @@ watch(
   { immediate: true },
 )
 
-async function selectTool(toolId: SettingsToolId, field?: 'iperf_path' | 'fping_path'): Promise<void> {
-  try {
-    const result = await getPlatformAdapter().selectSettingsTool(toolId)
-    if (result.cancelled || !result.path) return
-    if (field) form[field] = result.path
-    clearToolError(toolId)
-  } catch (cause) {
-    runtimeToolErrors[toolId] = message(cause, '工具路径选择失败')
-    showError(cause, '工具路径选择失败')
-  }
-}
-function toolPathError(toolId: SettingsToolId, value: string): string {
-  if (runtimeToolErrors[toolId]) return runtimeToolErrors[toolId] ?? ''
-  return settingsToolNameMatches(toolId, value) ? '' : settingsToolMismatchMessage(toolId)
-}
-function toolPathSuccess(toolId: SettingsToolId, value: string): string {
-  return value && !pathErrors.value[toolId] ? `已识别为 ${SETTINGS_TOOL_DEFINITIONS[toolId].displayName} 程序` : ''
-}
-function clearToolError(toolId: SettingsToolId): void { delete runtimeToolErrors[toolId]; error.value = '' }
-function clearToolErrors(): void { for (const toolId of Object.keys(runtimeToolErrors) as SettingsToolId[]) delete runtimeToolErrors[toolId] }
-function assignToolError(cause: unknown): void {
-  const detail = message(cause, '')
-  const normalized = detail.toLowerCase()
-  for (const [toolId, definition] of Object.entries(SETTINGS_TOOL_DEFINITIONS) as [SettingsToolId, typeof SETTINGS_TOOL_DEFINITIONS[SettingsToolId]][]) {
-    if (normalized.includes(toolId) || normalized.includes(definition.displayName.toLowerCase())) {
-      runtimeToolErrors[toolId] = detail
-      return
-    }
-  }
-}
 async function selectColor(): Promise<void> {
   try {
     const result = await getPlatformAdapter().selectSettingsColor()
@@ -584,7 +536,7 @@ function message(cause: unknown, fallback: string): string { return cause instan
         <el-button data-testid="cancel" :disabled="!anyDirty" @click="cancelChanges">{{ t('settings.cancel', '取消修改') }}</el-button>
         <el-button data-testid="reload" @click="reload">{{ t('settings.reload', '重载') }}</el-button>
         <el-button data-testid="open-settings-config" @click="nativeAction('open_settings_config')">打开配置目录</el-button>
-        <el-button data-testid="save" type="primary" :loading="saving" :disabled="!anyDirty || hasBlockingPathError" @click="save">{{ t('settings.save', '保存') }}</el-button>
+        <el-button data-testid="save" type="primary" :loading="saving" :disabled="!anyDirty" @click="save">{{ t('settings.save', '保存') }}</el-button>
       </div>
     </header>
     <el-alert v-if="error" :title="error" type="error" :closable="false" />
@@ -638,13 +590,6 @@ function message(cause: unknown, fallback: string): string { return cause instan
     </section>
 
     <SiteStoragePanel ref="siteStoragePanel" :focused="siteStorageFocused" :switch-blocked="saving || anyDirty" />
-
-    <section class="settings-band"><h2>{{ t('settings.network_test_components', '网络测试组件') }}</h2>
-      <el-form label-position="top">
-        <el-form-item :label="SETTINGS_TOOL_DEFINITIONS.iperf3.fieldLabel"><NcExecutablePathField v-model="form.iperf_path" :error="pathErrors.iperf3" :success="toolPathSuccess('iperf3', form.iperf_path)" @select="selectTool('iperf3','iperf_path')" @clear="clearToolError('iperf3')" /></el-form-item>
-        <el-form-item :label="SETTINGS_TOOL_DEFINITIONS.fping.fieldLabel"><NcExecutablePathField v-model="form.fping_path" :error="pathErrors.fping" :success="toolPathSuccess('fping', form.fping_path)" @select="selectTool('fping','fping_path')" @clear="clearToolError('fping')" /></el-form-item>
-      </el-form>
-    </section>
 
     <section v-if="featureSwitchAvailable" class="settings-band feature-settings-band">
       <div class="section-heading feature-heading">

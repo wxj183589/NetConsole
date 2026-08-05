@@ -26,6 +26,8 @@ DEFAULT_SETTINGS = {
     "report_dir": "",
     "network_tools/iperf_path": "",
     "online_mr.fping_path": "",
+    "network_components/iperf3_mode": "",
+    "network_components/fping_mode": "",
     "external_tools/ipop_path": "",
     "last_export_path": "",
     "file_transfer_max_concurrency": 1,

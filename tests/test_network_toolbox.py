@@ -221,16 +221,17 @@ def test_ping_output_decode_prefers_utf8_and_marks_final_replacement() -> None:
 
 
 
-def test_fping_discovery_prefers_environment_path(tmp_path, monkeypatch) -> None:
-    exe = tmp_path / "fping.exe"
-    exe.write_text("", encoding="utf-8")
+def test_fping_discovery_uses_project_builtin_path(tmp_path, monkeypatch) -> None:
+    exe = tmp_path / "resources" / "tools" / "windows-x64" / "fping" / "fping.exe"
+    exe.parent.mkdir(parents=True, exist_ok=True)
+    exe.write_bytes(b"fake")
+    (exe.parent / "cygwin1.dll").write_bytes(b"fake")
 
     def fake_run(args, **_kwargs):
         if args[1] == "-v":
             return subprocess.CompletedProcess(args, 0, b"fping: Version 5.5", b"")
         return subprocess.CompletedProcess(args, 0, b"-J --json -S --src", b"")
 
-    monkeypatch.setenv("NETCONSOLE_FPING_EXE", str(exe))
     monkeypatch.setattr("netconsole.services.network_tools.toolbox.fping_runner.subprocess.run", fake_run)
 
     result = discover_fping(tmp_path)
@@ -240,12 +241,11 @@ def test_fping_discovery_prefers_environment_path(tmp_path, monkeypatch) -> None
     assert result.supports_json is True
 
 
-def test_fping_discovery_reports_unavailable(tmp_path, monkeypatch) -> None:
-    monkeypatch.delenv("NETCONSOLE_FPING_EXE", raising=False)
-    result = discover_fping(tmp_path, env={})
+def test_fping_discovery_reports_unavailable(tmp_path) -> None:
+    result = discover_fping(tmp_path)
 
     assert result.available is False
-    assert "fping.exe" in result.error
+    assert "fping" in result.error
 
 
 def test_parse_fping_json_line_maps_statuses() -> None:

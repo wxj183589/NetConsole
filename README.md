@@ -38,7 +38,7 @@ Windows Server 2012 x64 兼容事实（2026-07-30）：主程序和独立 Agent 
 | 轨道交通 | `module.rail_transit` | 基础资料、列车在线、独立地面无人值守、车载 MR、Online MR、MR/Mesh 离线分析、轨旁 AP、全列车车内通信检测与点表 |
 | 配置采集 | `module.config_collection` | 配置快照、勾选/左右对比、批量采集和差异导出 |
 | 文件管理 | `module.file_management` | 受控 SFTP 浏览、持久下载队列、MESH 日志归档和本地文件管理 |
-| 网络工具 | `module.network_tools` | Ping/fping、iPerf3、工具箱和用户配置的可选外部 IPOP v4.1 |
+| 工具集 | `module.tools` | 流量测试、连通性检测、无线扫描、网络测试组件和第三方 EXE 管理 |
 | 命令参考 | `module.command_reference` | 命令、参数、解析器与消费者索引 |
 | 日志 | `module.logs` | 应用日志查看与导出 |
 | 系统设置 | `module.system_settings` | 局点、主题、工具路径、磁盘清理和版本信息 |
