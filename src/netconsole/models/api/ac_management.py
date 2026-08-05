@@ -41,6 +41,7 @@ class AcManagementSummaryDTO(ApiModel):
 
 
 class AcOpticalDTO(ApiModel):
+    optical_applicable: bool = True
     optical_status: str = "no_data"
     optical_severity: str = "no_data"
     raw_status: str = "unknown"
@@ -154,6 +155,7 @@ class AcApDTO(ApiModel):
     switch_interface: str = ""
     lldp_status: str = ""
     optical_status: str = "no_data"
+    optical_applicable: bool = True
     optical_severity: str = "no_data"
     optical_data_freshness: str = "unknown"
     optical_is_current_anomaly: bool = False

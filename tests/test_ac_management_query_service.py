@@ -208,8 +208,8 @@ def test_ac_optical_anomaly_is_independent_from_ap_online_state(tmp_path: Path) 
     assert online.is_current_anomaly is True
     assert "当前 AP 在线" in online.anomaly_reason
     assert offline is not None
-    assert offline.optical_status == "warning"
-    assert offline.ap_rx_status == "alarm"
+    assert offline.optical_status == "critical"
+    assert offline.ap_rx_status == "abnormal"
     assert offline.switch_rx_status == "alarm"
     assert offline.ap_offline_related is True
     assert offline.ap_online_status == "offline"
@@ -271,10 +271,10 @@ def test_ac_optical_reports_ap_side_alarm_without_switch_alarm(tmp_path: Path) -
     optical = AcManagementQueryService(paths).get_ap_optical("demo", "ap-online")
 
     assert optical is not None
-    assert optical.ap_rx_status == "alarm"
+    assert optical.ap_rx_status == "abnormal"
     assert optical.switch_rx_status == "normal"
-    assert optical.raw_status == "alarm"
-    assert "AP 侧收光一般告警：-19.75 dBm" in optical.anomaly_reason
+    assert optical.raw_status == "abnormal"
+    assert "AP 侧收光光衰大：-19.75 dBm" in optical.anomaly_reason
     assert "交换机侧收光正常：-8.63 dBm" in optical.anomaly_reason
 
 
@@ -304,6 +304,80 @@ def test_ac_optical_reports_both_sides_normal_and_no_data_status(tmp_path: Path)
     assert no_data.switch_rx_status == "unknown"
 
 
+def test_ac_optical_fixed_threshold_overrides_backend_normal_status(tmp_path: Path) -> None:
+    paths, db_path, _files = build_ac_management_fixture(tmp_path)
+    with Database(db_path).connect() as conn:
+        conn.execute(
+            "UPDATE ac_fit_ap_optical SET rx_power = '-17.80', optical_alarm_status = 'normal' WHERE ap_uuid = 'ap-online'"
+        )
+        conn.execute(
+            "UPDATE device_optical_modules SET rx_power = '-8.63', rx_low_alarm = '-19', rx_low_warning = '-17' WHERE interface_name = 'GigabitEthernet1/0/1'"
+        )
+        conn.commit()
+
+    service = AcManagementQueryService(paths)
+    optical = service.get_ap_optical("demo", "ap-online")
+
+    assert optical is not None
+    assert optical.ap_rx_status == "abnormal"
+    assert optical.raw_status == "abnormal"
+    assert optical.optical_status == "critical"
+    assert optical.threshold_status == "光衰大"
+    assert optical.is_current_anomaly is True
+    assert service.list_optical_anomalies("demo").items[0].id == "ap-online"
+
+
+def test_ac_optical_wa6522_is_not_applicable_or_anomalous(tmp_path: Path) -> None:
+    paths, db_path, _files = build_ac_management_fixture(tmp_path)
+    with Database(db_path).connect() as conn:
+        conn.execute(
+            "UPDATE ac_fit_ap_resources SET model = ' wa6522 ' WHERE ap_uuid = 'ap-online'"
+        )
+        conn.execute(
+            "UPDATE ac_fit_ap_optical SET rx_power = '-30', optical_alarm_status = 'no_light' WHERE ap_uuid = 'ap-online'"
+        )
+        conn.commit()
+
+    service = AcManagementQueryService(paths)
+    optical = service.get_ap_optical("demo", "ap-online")
+    item = next(ap for ap in service.list_aps("demo", page_size=10).items if ap.id == "ap-online")
+    anomaly_ids = {ap.id for ap in service.list_optical_anomalies("demo", page_size=10).items}
+
+    assert optical is not None
+    assert optical.optical_applicable is False
+    assert optical.optical_status == "not_applicable"
+    assert optical.is_current_anomaly is False
+    assert optical.anomaly_reason == "该型号使用网口接入，不适用 AP 光模块光衰检测。"
+    assert item.optical_applicable is False
+    assert item.optical_status == "not_applicable"
+    assert item.optical_rx_power == ""
+    assert "ap-online" not in anomaly_ids
+
+
+@pytest.mark.parametrize("rx_power", [None, "", "--", "invalid"])
+def test_ac_optical_missing_or_invalid_ap_rx_is_not_collected(
+    tmp_path: Path,
+    rx_power: object,
+) -> None:
+    paths, db_path, _files = build_ac_management_fixture(tmp_path)
+    with Database(db_path).connect() as conn:
+        conn.execute(
+            "UPDATE ac_fit_ap_optical SET rx_power = ?, optical_alarm_status = 'normal', neighbor_rx_power = NULL WHERE ap_uuid = 'ap-online'",
+            (rx_power,),
+        )
+        conn.execute(
+            "UPDATE device_optical_modules SET rx_power = NULL, status = 'success' WHERE interface_name = 'GigabitEthernet1/0/1'"
+        )
+        conn.commit()
+
+    optical = AcManagementQueryService(paths).get_ap_optical("demo", "ap-online")
+
+    assert optical is not None
+    assert optical.ap_rx_status == "unknown"
+    assert optical.optical_status == "no_data"
+    assert optical.is_current_anomaly is False
+
+
 def test_ac_optical_online_general_alarm_is_current_anomaly_and_stale_data_is_not(tmp_path: Path) -> None:
     paths, db_path, _files = build_ac_management_fixture(tmp_path)
     with Database(db_path).connect() as conn:
@@ -328,13 +402,13 @@ def test_ac_optical_online_general_alarm_is_current_anomaly_and_stale_data_is_no
 
     assert optical is not None
     assert optical.ap_online_status == "online"
-    assert optical.raw_status == "alarm"
-    assert optical.ap_rx_status == "alarm"
+    assert optical.raw_status == "abnormal"
+    assert optical.ap_rx_status == "abnormal"
     assert optical.switch_rx_status == "warning"
-    assert optical.threshold_status == "一般告警"
-    assert optical.optical_status == "warning"
+    assert optical.threshold_status == "光衰大"
+    assert optical.optical_status == "critical"
     assert optical.is_current_anomaly is True
-    assert "已计入异常 AP 光衰；当前 AP 在线" in optical.anomaly_reason
+    assert "已计入严重光衰异常；当前 AP 在线" in optical.anomaly_reason
 
     with Database(db_path).connect() as conn:
         conn.execute("UPDATE ac_fit_ap_optical SET collected_at = '2020-01-01T00:00:00+00:00', updated_at = '2020-01-01T00:00:00+00:00' WHERE ap_uuid = 'ap-online'")
@@ -344,9 +418,9 @@ def test_ac_optical_online_general_alarm_is_current_anomaly_and_stale_data_is_no
     assert stale is not None
     assert stale.data_freshness == "stale"
     assert stale.is_current_anomaly is False
-    assert stale.ap_rx_status == "alarm"
+    assert stale.ap_rx_status == "abnormal"
     assert stale.switch_rx_status == "warning"
-    assert stale.optical_status == "warning"
+    assert stale.optical_status == "critical"
     assert "不作为当前实时状态统计" in stale.anomaly_reason
     assert "ap-online" not in {item.id for item in service.list_optical_anomalies("demo").items}
 
