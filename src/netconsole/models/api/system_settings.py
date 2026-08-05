@@ -14,6 +14,7 @@ TerminalType = Literal["putty", "securecrt", "xshell"]
 NetworkComponentName = Literal["iperf3", "fping"]
 NetworkComponentMode = Literal["builtin", "custom"]
 NetworkComponentSource = Literal["builtin", "custom"]
+FeatureConfigurationTarget = Literal["runtime", "full", "customer"]
 
 
 class TerminalPathsDTO(ApiModel):
@@ -100,6 +101,8 @@ class FeatureStateDTO(ApiModel):
     inherited_visible: bool
     inherited_enabled: bool
     client_package: bool
+    package_included: bool
+    package_editable: bool
     internal_only: bool
     package_range: Literal["customer_internal", "internal", "internal_only", "not_included"]
     status: Literal["ENABLED", "DISABLED", "DEVELOPMENT", "HIDDEN"]
@@ -111,20 +114,30 @@ class FeatureStateDTO(ApiModel):
 
 class FeatureSettingsSnapshotDTO(ApiModel):
     items: list[FeatureStateDTO]
+    target: FeatureConfigurationTarget
     preview_active: bool
-    configuration_name: str = "当前实例运行配置"
+    configuration_name: str
     scope_label: str = "全局"
     inherited_profile: str
+    applies_immediately: bool
+    save_effect: str
 
 
 class FeatureStateUpdateDTO(ApiModel):
     feature_id: str
     visible: bool
     enabled: bool
+    package_included: bool | None = None
 
 
 class FeatureSettingsUpdateDTO(ApiModel):
+    target: FeatureConfigurationTarget = "runtime"
     items: list[FeatureStateUpdateDTO]
+    confirmed: bool
+
+
+class FeatureSettingsRestoreDTO(ApiModel):
+    target: FeatureConfigurationTarget = "runtime"
     confirmed: bool
 
 
@@ -152,7 +165,8 @@ def _path_text(value: str) -> str:
 
 
 __all__ = [
-    "FeatureSettingsSnapshotDTO", "FeatureSettingsUpdateDTO", "FeatureStateDTO", "FeatureStateUpdateDTO",
+    "FeatureConfigurationTarget", "FeatureSettingsRestoreDTO", "FeatureSettingsSnapshotDTO",
+    "FeatureSettingsUpdateDTO", "FeatureStateDTO", "FeatureStateUpdateDTO",
     "NetworkComponentStatusDTO", "NetworkComponentsSnapshotDTO", "NetworkComponentUpdateDTO",
     "RuntimeSelfCheckItemDTO", "RuntimeSelfCheckSnapshotDTO",
     "SystemSettingsSaveDTO", "SystemSettingsSnapshotDTO", "SystemSettingsValuesDTO",
