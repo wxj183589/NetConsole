@@ -1,6 +1,6 @@
 # NetConsole 更新日志
 
-## v1.4.7 - 2026-08-03
+## v1.4.7 - 2026-08-05
 
 ### 工具集与设备任务交互
 
@@ -179,7 +179,7 @@
 
 ### 版本与发布
 
-- 正式产品版本升级到 `v1.4.6`，同步 Python 版本事实源、Electron 包版本、Web/Electron 产品标题、内置更新日志和发布文档；正式安装包继续使用 Git 提交号、UTC 构建时间和 dirty 状态记录唯一构建身份。
+- 正式产品版本升级到 `v1.4.7`，同步 Python 版本事实源、Electron 包版本、Web/Electron 产品标题、内置更新日志和发布文档；正式安装包继续使用 Git 提交号、UTC 构建时间和 dirty 状态记录唯一构建身份，自动构建只记录 `real_windows_install_status=PENDING`，不能替代后续 Windows GUI 安装验收。
 
 ## v1.4.5 - 2026-07-29
 
