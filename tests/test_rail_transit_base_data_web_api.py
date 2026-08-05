@@ -34,6 +34,11 @@ def _fingerprint(path: Path) -> tuple[str, int]:
     return hashlib.sha256(path.read_bytes()).hexdigest(), path.stat().st_mtime_ns
 
 
+def _checkpoint_startup_writes(db_path: Path) -> None:
+    with Database(db_path).connect() as conn:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
+
 def _app(paths, tmp_path: Path):
     return create_app(
         RuntimeMode.SERVER,
@@ -210,6 +215,7 @@ def test_edit_snapshot_does_not_load_runtime_sources_or_rebuild_identity(
 ) -> None:
     paths, db_path = build_rail_transit_base_data_fixture(tmp_path)
     app = _app(paths, tmp_path)
+    _checkpoint_startup_writes(db_path)
 
     def forbidden(*_args, **_kwargs):
         raise AssertionError("edit snapshot must not touch runtime or identity rebuild paths")
@@ -233,10 +239,14 @@ def test_edit_snapshot_does_not_load_runtime_sources_or_rebuild_identity(
     assert _fingerprint(db_path) == before
 
 
-def test_station_source_preview_uses_station_field_only_and_is_read_only(tmp_path: Path) -> None:
+def test_station_source_preview_uses_station_field_only_and_is_read_only(
+    tmp_path: Path,
+) -> None:
     paths, db_path = build_rail_transit_base_data_fixture(tmp_path)
     _insert_station_source_devices(db_path)
-    with TestClient(_app(paths, tmp_path)) as client:
+    app = _app(paths, tmp_path)
+    _checkpoint_startup_writes(db_path)
+    with TestClient(app) as client:
         before = _fingerprint(db_path)
         response = client.get("/api/rail-transit/base-data/station-source-preview")
     assert response.status_code == 200
@@ -338,7 +348,9 @@ def test_station_source_preview_normalizes_prefix_variants_and_matches_existing_
 
 def test_station_source_preview_reports_missing_group_without_writes(tmp_path: Path) -> None:
     paths, db_path = build_rail_transit_base_data_fixture(tmp_path)
-    with TestClient(_app(paths, tmp_path)) as client:
+    app = _app(paths, tmp_path)
+    _checkpoint_startup_writes(db_path)
+    with TestClient(app) as client:
         before = _fingerprint(db_path)
         payload = client.get("/api/rail-transit/base-data/station-source-preview").json()
     assert _fingerprint(db_path) == before

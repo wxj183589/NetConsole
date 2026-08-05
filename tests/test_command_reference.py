@@ -72,11 +72,13 @@ def test_command_reference_json_is_unique_and_has_non_cli_section():
     items = data["items"]
     ids = [item["id"] for item in items]
 
-    assert len(items) == 85
+    assert len(items) == 87
     assert len(ids) == len(set(ids))
     assert {
         "ac_display_wlan_ap_all_connection_record",
         "ac_display_wlan_ap_all_radio_type",
+        "ac_display_wlan_ap_all_verbose",
+        "ac_display_wlan_ap_name_verbose",
     } <= set(ids)
     assert sum(1 for item in items if not item["is_cli"]) >= 1
     assert not any(item["module"] == "SNMP 中心" for item in items)

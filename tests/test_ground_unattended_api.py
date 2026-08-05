@@ -111,9 +111,13 @@ def test_ground_unattended_rejects_invalid_profile_and_archive_delete_without_co
 
 def test_ground_unattended_run_history_delete_removes_run_records_and_keeps_archive(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     paths = PathResolver(tmp_path / "app", tmp_path / "data")
     app = create_app(paths=paths)
+    # This test drives repository state directly; the live supervisor would
+    # race the explicit COMPLETED transition during the API assertion.
+    monkeypatch.setattr(app.state.ground_unattended_supervisor, "start", lambda: None)
     repository = app.state.ground_unattended_repository
     run_id = "run-history-delete"
     run_date = "2026-07-29"

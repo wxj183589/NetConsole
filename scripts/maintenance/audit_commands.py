@@ -31,6 +31,14 @@ EXPECTED_NON_COMMAND_LITERALS = {
         "src/netconsole/utils/interface_sort.py",
         "display name",
     ),
+    (
+        "src/netconsole/parsers/h3c/ac/wlan_ap_verbose_parser.py",
+        "display wlan ap",
+    ),
+    (
+        "src/netconsole/services/command_guard.py",
+        "display wlan ap name",
+    ),
 }
 
 COMMAND_PATTERNS = (
@@ -291,6 +299,12 @@ def normalize_candidate(value: str) -> str:
     text = re.sub(r"ping -n <[^>]+> -l <[^>]+> -w <[^>]+> <[^>]+>", "ping -n <count> -l <size> -w <timeout_ms> <target>", text, flags=re.IGNORECASE)
     text = re.sub(r"repeat (?:\d+|<[^>]+>) delay (?:\d+|<[^>]+>)", "repeat <count> delay <seconds>", text, flags=re.IGNORECASE)
     text = re.sub(r"display interface <[^>]+>", "display interface", text, flags=re.IGNORECASE)
+    text = re.sub(
+        r"display wlan ap name \[[^\]]+\](?:\[[^\]]+\])?\{0,\d+\} verbose",
+        "display wlan ap name <value> verbose",
+        text,
+        flags=re.IGNORECASE,
+    )
     text = re.sub(r"display ar5drv (?:\d+|<[^>]+>) channelbusy", "display ar5drv <radio_id> channelbusy", text, flags=re.IGNORECASE)
     text = re.sub(r"display ar5drv (?:\d+|<[^>]+>) statistics", "display ar5drv <radio_id> statistics", text, flags=re.IGNORECASE)
     text = re.sub(r"display ar5drv (?:\d+|<[^>]+>) client all rssi", "display ar5drv <radio_id> client all rssi", text, flags=re.IGNORECASE)

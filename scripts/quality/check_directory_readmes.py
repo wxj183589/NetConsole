@@ -64,6 +64,7 @@ THIRD_PARTY_TOOL_ROOTS = frozenset(
         "resources/tools/windows-x64/iperf3",
     }
 )
+PROTECTED_DIRECTORY_ROOTS = frozenset({"docs/investigations"})
 REQUIRED_MAJOR_SECTIONS = (
     "## 用途与边界",
     "## 主要入口",
@@ -157,6 +158,10 @@ def _is_third_party_tool(path: str) -> bool:
     return any(path == root or path.startswith(f"{root}/") for root in THIRD_PARTY_TOOL_ROOTS)
 
 
+def _is_protected_directory(path: str) -> bool:
+    return any(path == root or path.startswith(f"{root}/") for root in PROTECTED_DIRECTORY_ROOTS)
+
+
 def _is_binary(path: str) -> bool:
     return Path(path).suffix.lower() in BINARY_SUFFIXES
 
@@ -170,6 +175,8 @@ def _exclusion_reason(path: str) -> str | None:
         return "pure-data test fixture"
     if _is_third_party_tool(path):
         return "third-party tool internal directory"
+    if _is_protected_directory(path):
+        return "protected investigation material"
     if _is_binary(path):
         return "binary file"
     return None

@@ -19,12 +19,12 @@ def test_default_and_regular_schedule_window() -> None:
     assert profile.schedule_start_time == "07:00"
     assert profile.schedule_end_time == "23:00"
     active = schedule_window(
-        datetime.fromisoformat("2026-07-25T07:00:00+08:00"), "07:00", "23:00", "system"
+        datetime.fromisoformat("2026-07-25T07:00:00+08:00"), "07:00", "23:00", "Asia/Shanghai"
     )
     assert active.active
     assert active.run_date == "2026-07-25"
     ended = schedule_window(
-        datetime.fromisoformat("2026-07-25T23:00:00+08:00"), "07:00", "23:00", "system"
+        datetime.fromisoformat("2026-07-25T23:00:00+08:00"), "07:00", "23:00", "Asia/Shanghai"
     )
     assert not ended.active
     assert ended.next_start.date().isoformat() == "2026-07-26"
@@ -32,13 +32,13 @@ def test_default_and_regular_schedule_window() -> None:
 
 def test_cross_midnight_schedule_uses_start_date() -> None:
     late = schedule_window(
-        datetime.fromisoformat("2026-07-25T23:30:00+08:00"), "22:00", "06:00", "system"
+        datetime.fromisoformat("2026-07-25T23:30:00+08:00"), "22:00", "06:00", "Asia/Shanghai"
     )
     early = schedule_window(
-        datetime.fromisoformat("2026-07-26T05:59:00+08:00"), "22:00", "06:00", "system"
+        datetime.fromisoformat("2026-07-26T05:59:00+08:00"), "22:00", "06:00", "Asia/Shanghai"
     )
     gap = schedule_window(
-        datetime.fromisoformat("2026-07-26T12:00:00+08:00"), "22:00", "06:00", "system"
+        datetime.fromisoformat("2026-07-26T12:00:00+08:00"), "22:00", "06:00", "Asia/Shanghai"
     )
     assert late.active and early.active
     assert late.run_date == early.run_date == "2026-07-25"

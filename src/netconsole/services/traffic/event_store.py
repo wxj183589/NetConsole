@@ -5,7 +5,6 @@ import os
 import re
 import threading
 import uuid
-import weakref
 from collections import OrderedDict
 from dataclasses import replace
 from pathlib import Path
@@ -17,9 +16,10 @@ from netconsole.repositories.traffic_run_repository import TrafficRunRepository
 
 
 _STATE_GUARD = threading.Lock()
-_PATH_LOCKS: weakref.WeakValueDictionary[Path, threading.RLock] = weakref.WeakValueDictionary()
+_PATH_LOCKS: OrderedDict[Path, threading.RLock] = OrderedDict()
 _PATH_WATERMARKS: OrderedDict[Path, tuple[int, int]] = OrderedDict()
 _MAX_WATERMARKS = 4_096
+_MAX_PATH_LOCKS = 4_096
 _ABSOLUTE_PATH_RE = re.compile(
     r"(?i)(?:file://[^\s\"']+|[a-z]:[\\/][^\s\"']+|\\\\[^\\/\s]+[\\/][^\s\"']+)"
 )
@@ -146,6 +146,9 @@ class TrafficEventStore:
             if lock is None:
                 lock = threading.RLock()
                 _PATH_LOCKS[path] = lock
+            _PATH_LOCKS.move_to_end(path)
+            while len(_PATH_LOCKS) > _MAX_PATH_LOCKS:
+                _PATH_LOCKS.popitem(last=False)
             return lock
 
     def _watermark(self, traffic_run_id: str) -> tuple[int, int]:
