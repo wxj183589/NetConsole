@@ -419,7 +419,9 @@ describe('Electron-only packaging', () => {
 
 describe('Local Windows packaging launcher', () => {
   const repositoryRoot = resolve(appRoot, '..', '..')
-  const cmd = readFileSync(resolve(repositoryRoot, '一键打包安装包.cmd'), 'utf8')
+  const cmdPath = resolve(repositoryRoot, '一键打包安装包.cmd')
+  const cmdBytes = readFileSync(cmdPath)
+  const cmd = cmdBytes.toString('utf8')
   const localScript = readFileSync(resolve(repositoryRoot, 'scripts', 'build', 'package_local.ps1'), 'utf8')
   const formalScript = readFileSync(resolve(repositoryRoot, 'scripts', 'build', 'package_windows.ps1'), 'utf8')
 
@@ -433,6 +435,15 @@ describe('Local Windows packaging launcher', () => {
     expect(cmd).toContain('exit /b %EXIT_CODE%')
     expect(cmd).toContain('打包完成')
     expect(cmd).toContain('打包失败')
+  })
+
+  it('uses cmd.exe-safe UTF-8 text with CRLF line endings', () => {
+    const attributes = readFileSync(resolve(repositoryRoot, '.gitattributes'), 'utf8')
+
+    expect(attributes).toContain('*.cmd text eol=crlf')
+    expect(cmdBytes.subarray(0, 3).equals(Buffer.from([0xef, 0xbb, 0xbf]))).toBe(false)
+    expect(cmd.startsWith('@echo off\r\n')).toBe(true)
+    expect(cmd.replaceAll('\r\n', '')).not.toContain('\n')
   })
 
   it('supports both, single-edition, and preflight selections without a second builder', () => {
