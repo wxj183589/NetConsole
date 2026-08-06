@@ -6,8 +6,10 @@ from threading import RLock
 
 from netconsole.core.feature_flags import (
     FeatureGate,
+    auto_fix_feature_dependencies,
     default_profile,
     engineer_package_enabled,
+    feature_dependency_issues,
     load_profile,
     load_runtime_feature_overrides,
     normalize_feature_states,
@@ -20,6 +22,8 @@ from netconsole.core.feature_registry import (
     FEATURE_BY_ID,
     FEATURE_GROUP_TITLE_BY_ID,
     FeatureStatus,
+    configuration_layer_of,
+    delivery_dependencies_of,
     dependencies_of,
     group_id_of,
     list_features,
@@ -29,6 +33,8 @@ from netconsole.core.paths import PathResolver
 from netconsole.core.settings import DEFAULT_SETTINGS, SettingsStore
 from netconsole.models.api.system_settings import (
     FeatureConfigurationTarget,
+    FeatureDependencyIssueDTO,
+    FeatureRuntimeStatusDTO,
     FeatureSettingsSnapshotDTO,
     FeatureSettingsUpdateDTO,
     FeatureStateDTO,
@@ -57,12 +63,10 @@ _NETWORK_COMPONENT_KEYS = {
 }
 _INTERNAL_TITLE_KEY = re.compile(r"^[a-z][a-z0-9_-]*(?:\.[a-z0-9_-]+)+$")
 _CONFIGURATION_NAMES: dict[FeatureConfigurationTarget, str] = {
-    "runtime": "当前实例运行配置",
-    "full": "完整版打包模板",
-    "customer": "客户版打包模板",
+    "full": "完整版默认配置",
+    "customer": "客户版交付配置",
 }
 _SAVE_EFFECTS: dict[FeatureConfigurationTarget, str] = {
-    "runtime": "保存后立即刷新当前实例的导航、路由和 Backend 功能 Gate。",
     "full": "仅更新 full.json；当前实例不变，下次构建完整版时生效。",
     "customer": "仅更新 customer.json；当前实例不变，下次构建客户版时生效。",
 }
@@ -145,7 +149,7 @@ class SettingsApplicationService:
 
     def feature_settings(
         self,
-        target: FeatureConfigurationTarget = "runtime",
+        target: FeatureConfigurationTarget = "customer",
     ) -> FeatureSettingsSnapshotDTO:
         return self._feature_snapshot(target=target)
 
@@ -156,12 +160,17 @@ class SettingsApplicationService:
         features = self._feature_map(payload, target=target)
         self._validate_target_states(target, features)
         normalized = normalize_feature_states(features)
-        if target == "runtime":
-            self._save_runtime_overrides(normalized)
-            self.feature_gate.reload()
-        else:
-            self._save_profile_states(target, normalized)
+        self._save_profile_states(target, normalized)
         return self._feature_snapshot(target=target)
+
+    def check_features(self, payload: FeatureSettingsUpdateDTO) -> FeatureSettingsSnapshotDTO:
+        features = normalize_feature_states(self._feature_map(payload, target=payload.target))
+        return self._feature_snapshot(target=payload.target, features=features)
+
+    def auto_fix_features(self, payload: FeatureSettingsUpdateDTO) -> FeatureSettingsSnapshotDTO:
+        features = normalize_feature_states(self._feature_map(payload, target=payload.target))
+        fixed = auto_fix_feature_dependencies(features, target=payload.target)
+        return self._feature_snapshot(target=payload.target, features=fixed)
 
     def preview_features(self, payload: FeatureSettingsUpdateDTO) -> FeatureSettingsSnapshotDTO:
         if not payload.confirmed:
@@ -178,7 +187,7 @@ class SettingsApplicationService:
 
     def exit_feature_preview(
         self,
-        target: FeatureConfigurationTarget = "runtime",
+        target: FeatureConfigurationTarget = "customer",
     ) -> FeatureSettingsSnapshotDTO:
         self.feature_gate.disable_session_runtime_preview(reason="web-settings-exit")
         return self._feature_snapshot(target=target)
@@ -187,18 +196,54 @@ class SettingsApplicationService:
         self,
         *,
         confirmed: bool,
-        target: FeatureConfigurationTarget = "runtime",
+        target: FeatureConfigurationTarget = "customer",
     ) -> FeatureSettingsSnapshotDTO:
         if not confirmed:
             raise ValueError("恢复功能配置前必须确认")
         self.feature_gate.disable_session_runtime_preview(reason="web-settings")
-        if target == "runtime":
-            self._save_runtime_overrides(self._inherited_feature_states())
-            self.feature_gate.reload()
-        else:
-            defaults = normalize_feature_states(default_profile(target)["features"])
-            self._save_profile_states(target, defaults)
+        defaults = normalize_feature_states(default_profile(target)["features"])
+        self._save_profile_states(target, defaults)
         return self._feature_snapshot(target=target)
+
+    def runtime_feature_status(self) -> FeatureRuntimeStatusDTO:
+        local_override_count = len(
+            load_runtime_feature_overrides(self._runtime_override_path())
+        )
+        preview_active = self.feature_gate.is_runtime_preview_active()
+        session_override_active = self.feature_gate.is_session_override_active()
+        state = (
+            "session_preview"
+            if preview_active
+            else "customer_unlocked"
+            if session_override_active
+            else "normal"
+        )
+        return FeatureRuntimeStatusDTO(
+            edition=self.feature_gate.edition,
+            base_profile=self.feature_gate.base_profile,
+            active_profile=self.feature_gate.profile,
+            state=state,
+            preview_active=preview_active,
+            session_override_active=session_override_active,
+            local_override_count=local_override_count,
+            configuration_available=self.feature_gate.is_feature_configuration_available(),
+        )
+
+    def clear_runtime_feature_overrides(self) -> FeatureRuntimeStatusDTO:
+        if (
+            self.feature_gate.is_feature_configuration_available()
+            and self.feature_gate.is_runtime_preview_active()
+        ):
+            self.feature_gate.disable_session_runtime_preview(
+                reason="web-settings-clear-overrides"
+            )
+        save_runtime_feature_overrides(self._runtime_override_path(), {})
+        self.feature_gate.reload()
+        return self.runtime_feature_status()
+
+    def reload_feature_gate(self) -> FeatureRuntimeStatusDTO:
+        self.feature_gate.reload()
+        return self.runtime_feature_status()
 
     def _snapshot(self) -> SystemSettingsSnapshotDTO:
         if self._settings is None:
@@ -289,12 +334,6 @@ class SettingsApplicationService:
     def _runtime_override_path(self) -> Path:
         return self.paths.runtime_dir / "feature_flags.local.json"
 
-    def _inherited_feature_states(self) -> dict[str, dict[str, bool]]:
-        path = profiles_dir(self.paths.app_root) / f"{self.feature_gate.base_profile}.json"
-        if path.exists():
-            return load_profile(path, self.feature_gate.base_profile)
-        return default_profile(self.feature_gate.base_profile)["features"]
-
     def _profile_states(
         self,
         target: FeatureConfigurationTarget,
@@ -321,19 +360,6 @@ class SettingsApplicationService:
             },
         )
 
-    def _save_runtime_overrides(self, features: dict[str, dict[str, bool]]) -> None:
-        inherited = self._inherited_feature_states()
-        overrides = {
-            feature_id: {"visible": state["visible"], "enabled": state["enabled"]}
-            for feature_id, state in features.items()
-            if FEATURE_BY_ID[feature_id].runtime_toggleable
-            and any(
-                state[key] != inherited[feature_id][key]
-                for key in ("visible", "enabled")
-            )
-        }
-        save_runtime_feature_overrides(self._runtime_override_path(), overrides)
-
     def _feature_map(
         self,
         payload: FeatureSettingsUpdateDTO,
@@ -345,25 +371,12 @@ class SettingsApplicationService:
         if actual != expected or len(actual) != len(payload.items):
             raise ValueError("功能配置列表必须完整且不能重复")
 
-        if target == "runtime":
-            baseline = self._inherited_feature_states()
-            current = {
-                item.feature_id: self.feature_gate.configured_state_for(item.feature_id)
-                for item in list_features()
-            }
-        else:
-            baseline = self._profile_states(target)
-            current = baseline
+        baseline = self._profile_states(target)
         result = {feature_id: dict(state) for feature_id, state in baseline.items()}
 
         for update in payload.items:
             item = FEATURE_BY_ID[update.feature_id]
             requested = {"visible": update.visible, "enabled": update.enabled}
-            if target == "runtime" and not item.runtime_toggleable and any(
-                requested[key] != current[update.feature_id][key]
-                for key in requested
-            ):
-                raise ValueError(f"{update.feature_id}: 该运行时功能由系统锁定，不能修改")
             if item.status is FeatureStatus.DISABLED and update.enabled:
                 raise ValueError(f"{update.feature_id}: 已停用功能不能启用")
 
@@ -388,45 +401,28 @@ class SettingsApplicationService:
         error = validate_feature_states(features)
         if error:
             raise ValueError(error)
-        if target != "customer":
-            return
-        normalized = normalize_feature_states(features)
-        for item in list_features():
-            state = normalized[item.feature_id]
-            if not state["client_package"]:
-                continue
-            for dependency_id in dependencies_of(item.feature_id):
-                dependency = normalized[dependency_id]
-                if not dependency["client_package"]:
-                    raise ValueError(
-                        f"{item.feature_id}: 客户版依赖功能 {dependency_id} 未纳入客户版"
-                    )
+        issues = feature_dependency_issues(features, target=target)
+        if issues:
+            raise ValueError(issues[0].message)
 
     def _feature_snapshot(
         self,
         *,
-        target: FeatureConfigurationTarget = "runtime",
+        target: FeatureConfigurationTarget = "customer",
         features: dict[str, dict[str, bool]] | None = None,
     ) -> FeatureSettingsSnapshotDTO:
         customer_states = self._profile_states("customer")
-        if target == "runtime":
-            inherited = self._inherited_feature_states()
-            configured = features or {
-                item.feature_id: self.feature_gate.configured_state_for(item.feature_id)
-                for item in list_features()
-            }
-            overridden_ids = set(load_runtime_feature_overrides(self._runtime_override_path()))
-        else:
-            inherited = normalize_feature_states(default_profile(target)["features"])
-            configured = features or self._profile_states(target)
-            overridden_ids = {
-                feature_id
-                for feature_id, state in configured.items()
-                if any(
-                    state[key] != inherited[feature_id][key]
-                    for key in ("visible", "enabled", "client_package", "internal_only")
-                )
-            }
+        inherited = normalize_feature_states(default_profile(target)["features"])
+        configured = features or self._profile_states(target)
+        overridden_ids = {
+            feature_id
+            for feature_id, state in configured.items()
+            if any(
+                state[key] != inherited[feature_id][key]
+                for key in ("visible", "enabled", "client_package", "internal_only")
+            )
+        }
+        issues = feature_dependency_issues(configured, target=target)
 
         return FeatureSettingsSnapshotDTO(
             items=[
@@ -435,6 +431,9 @@ class SettingsApplicationService:
                     title=_readable_feature_title(item.title_key),
                     group_id=group_id_of(item.feature_id),
                     group_title=FEATURE_GROUP_TITLE_BY_ID[group_id_of(item.feature_id)],
+                    parent_id=item.parent_id,
+                    item_type=item.item_type,
+                    configuration_layer=configuration_layer_of(item.feature_id),
                     scope="global",
                     visible=configured[item.feature_id]["visible"],
                     enabled=configured[item.feature_id]["enabled"],
@@ -450,11 +449,13 @@ class SettingsApplicationService:
                         target == "customer"
                         and not item.internal_only
                         and item.status is FeatureStatus.ENABLED
+                        and configuration_layer_of(item.feature_id) != "technical"
                     ),
                     internal_only=configured[item.feature_id]["internal_only"],
                     package_range=self._package_range(item, customer_states[item.feature_id]),
                     status=item.status.value,
                     dependencies=list(dependencies_of(item.feature_id)),
+                    delivery_dependencies=list(delivery_dependencies_of(item.feature_id)),
                     locked=self._feature_locked(item, target),
                     lock_reason=self._feature_lock_reason(item, target),
                     overridden=item.feature_id in overridden_ids,
@@ -464,17 +465,33 @@ class SettingsApplicationService:
             target=target,
             preview_active=self.feature_gate.is_runtime_preview_active(),
             configuration_name=_CONFIGURATION_NAMES[target],
-            inherited_profile=(self.feature_gate.base_profile if target == "runtime" else "registry_defaults"),
-            applies_immediately=target == "runtime",
+            inherited_profile="registry_defaults",
+            applies_immediately=False,
             save_effect=_SAVE_EFFECTS[target],
+            dependency_issues=[
+                FeatureDependencyIssueDTO(
+                    feature_id=issue.feature_id,
+                    feature_title=_readable_feature_title(
+                        FEATURE_BY_ID[issue.feature_id].title_key
+                    ),
+                    dependency_id=issue.dependency_id,
+                    dependency_title=_readable_feature_title(
+                        FEATURE_BY_ID[issue.dependency_id].title_key
+                    ),
+                    issue_type=issue.issue_type,
+                    message=issue.message,
+                    auto_fix=issue.auto_fix,
+                )
+                for issue in issues
+            ],
         )
 
     @staticmethod
     def _feature_locked(item, target: FeatureConfigurationTarget) -> bool:
         if item.status is FeatureStatus.DISABLED:
             return True
-        if target == "runtime":
-            return not item.runtime_toggleable
+        if configuration_layer_of(item.feature_id) == "technical":
+            return True
         if target == "customer":
             return item.internal_only or item.status is not FeatureStatus.ENABLED
         return False
@@ -483,8 +500,8 @@ class SettingsApplicationService:
     def _feature_lock_reason(item, target: FeatureConfigurationTarget) -> str:
         if item.status is FeatureStatus.DISABLED:
             return "功能已停用"
-        if target == "runtime" and not item.runtime_toggleable:
-            return "系统保护功能不能在运行时修改"
+        if configuration_layer_of(item.feature_id) == "technical":
+            return "技术能力由业务功能和依赖自动带出"
         if target == "customer" and item.internal_only:
             return "内部专用功能不能进入客户版"
         if target == "customer" and item.status is not FeatureStatus.ENABLED:

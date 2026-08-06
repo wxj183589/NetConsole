@@ -7,7 +7,6 @@ import { ElMessage } from 'element-plus'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import * as api from '../../api/systemSettings'
-import { loadWebFeatures } from '../../features'
 import { currentAppLocale } from '../../i18n/runtime'
 import type { SystemSettingsSnapshot } from '../../types/systemSettings'
 import SystemSettingsView from './SystemSettingsView.vue'
@@ -45,19 +44,16 @@ function snapshot(): SystemSettingsSnapshot {
   return { version: 'missing', values, defaults: { ...values, terminal_paths: { putty: '', securecrt: '', xshell: '' } }, current_site_name: 'demo', current_site_path: 'C:\\data\\sites\\demo', language_status: 'BLOCKED_ON_GLOBAL_I18N' }
 }
 
-const featureData = {
-  items: [{
-    feature_id: 'web.agent_management', title: 'Agent 管理', group_id: 'tasks', group_title: '任务与 Agent', scope: 'global' as const,
-    visible: true, enabled: true, inherited_visible: true, inherited_enabled: true,
-    client_package: true, internal_only: false, package_range: 'customer_internal' as const, status: 'ENABLED' as const,
-    dependencies: [], locked: false, lock_reason: '', overridden: false,
-  }],
+const runtimeStatus = () => ({
+  edition: 'dev',
+  base_profile: 'full',
+  active_profile: 'full',
+  state: 'normal' as const,
   preview_active: false,
-  configuration_name: '当前实例运行配置',
-  scope_label: '全局',
-  inherited_profile: 'full',
-}
-const featureSnapshot = () => ({ ...featureData, items: featureData.items.map((item) => ({ ...item })) })
+  session_override_active: false,
+  local_override_count: 0,
+  configuration_available: true,
+})
 const selfCheckSnapshot = () => ({
   status: 'normal' as const,
   checked_at: '2026-07-24T08:00:00+00:00',
@@ -99,9 +95,9 @@ const SiteStoragePanelStub = defineComponent({
 
 async function mounted(): Promise<{ wrapper: VueWrapper; router: ReturnType<typeof createRouter> }> {
   vi.mocked(api.getSystemSettings).mockResolvedValue(snapshot())
-  vi.mocked(api.getFeatureSettings).mockResolvedValue(featureSnapshot())
+  vi.mocked(api.getFeatureRuntimeStatus).mockResolvedValue(runtimeStatus())
   vi.mocked(api.getRuntimeSelfCheck).mockResolvedValue(selfCheckSnapshot())
-  const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/settings', component: SystemSettingsView }, { path: '/tools', component: defineComponent({ template: '<div>tools</div>' }) }, { path: '/other', component: defineComponent({ template: '<div>other</div>' }) }] })
+  const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/settings', component: SystemSettingsView }, { path: '/tools', component: defineComponent({ template: '<div>tools</div>' }) }, { path: '/feature-flags', component: defineComponent({ template: '<div>feature delivery</div>' }) }, { path: '/other', component: defineComponent({ template: '<div>other</div>' }) }] })
   await router.push('/settings'); await router.isReady()
   const wrapper = mount(defineComponent({ template: '<RouterView />' }), {
     global: { plugins: [router], stubs: { SiteStoragePanel: SiteStoragePanelStub } },
@@ -115,19 +111,13 @@ async function change(wrapper: VueWrapper, id: string, value: string): Promise<v
   control.vm.$emit('update:modelValue', value); control.vm.$emit('change', value); await nextTick()
 }
 
-async function changeFeatureMode(wrapper: VueWrapper, value: 'enabled_visible' | 'enabled_hidden' | 'disabled'): Promise<void> {
-  const control = wrapper.findComponent('[data-testid="feature-mode-web.agent_management"]') as VueWrapper
-  control.vm.$emit('change', value)
-  await nextTick()
-}
-
 beforeEach(() => {
   vi.clearAllMocks(); vi.stubGlobal('WebSocket', SelfCheckWebSocket); document.documentElement.className = ''; document.documentElement.lang = 'zh-CN'; document.documentElement.style.cssText = ''
   siteStorageReload.mockClear()
   siteStorageFocus.mockClear()
   siteStorageRequestSwitch.mockClear()
   confirmAction.mockResolvedValue(true)
-  vi.mocked(api.getFeatureSettings).mockResolvedValue(featureSnapshot())
+  vi.mocked(api.getFeatureRuntimeStatus).mockResolvedValue(runtimeStatus())
   settingsBridge.selectSettingsTool.mockResolvedValue({ cancelled: false, path: 'C:\\tools\\Xshell.exe' })
   settingsBridge.selectSettingsDirectory.mockResolvedValue({ cancelled: false, path: 'C:\\sessions' })
   settingsBridge.selectSettingsColor.mockResolvedValue({ cancelled: false, color: '#2563EB' })
@@ -225,102 +215,41 @@ describe('SystemSettingsView mounted behavior', () => {
     wrapper.unmount()
   })
 
-  it('shows a non-mutating change preview with read-only release metadata', async () => {
-    const { wrapper } = await mounted()
-    await changeFeatureMode(wrapper, 'enabled_hidden')
-    await wrapper.find('[data-testid="preview-features"]').trigger('click'); await flushPromises()
-    expect(api.previewFeatureSettings).not.toHaveBeenCalled()
-    expect(wrapper.text()).toContain('变更预览')
-    expect(wrapper.text()).toContain('显示并启用 → 隐藏入口')
-    expect(wrapper.text()).toContain('客户包、内部包')
-    expect(wrapper.find('[data-testid="feature-visible-web.agent_management"]').exists()).toBe(false)
+  it('shows only the read-only version status and opens the single delivery editor', async () => {
+    const { wrapper, router } = await mounted()
+
+    expect(wrapper.text()).toContain('当前版本状态')
+    expect(wrapper.text()).toContain('开发版')
+    expect(wrapper.text()).not.toContain('搜索功能或 ID')
+    await wrapper.find('[data-testid="open-feature-delivery"]').trigger('click')
+    await flushPromises()
+    expect(router.currentRoute.value.path).toBe('/feature-flags')
     wrapper.unmount()
   })
 
-  it('does not persist either stage when combined changes are not confirmed', async () => {
+  it('clears legacy runtime overrides only after confirmation', async () => {
+    vi.mocked(api.getFeatureRuntimeStatus).mockResolvedValueOnce({ ...runtimeStatus(), local_override_count: 3 })
+    vi.mocked(api.clearFeatureRuntimeOverrides).mockResolvedValueOnce(runtimeStatus())
     const { wrapper } = await mounted()
-    await change(wrapper, 'theme', 'dark')
-    await changeFeatureMode(wrapper, 'disabled')
-    confirmAction.mockResolvedValueOnce(false)
 
-    await wrapper.find('[data-testid="save"]').trigger('click'); await flushPromises()
+    await wrapper.find('[data-testid="clear-runtime-overrides"]').trigger('click')
+    await flushPromises()
 
-    expect(api.saveFeatureSettings).not.toHaveBeenCalled()
-    expect(api.saveSystemSettings).not.toHaveBeenCalled()
+    expect(confirmAction).toHaveBeenCalledOnce()
+    expect(api.clearFeatureRuntimeOverrides).toHaveBeenCalledOnce()
+    expect(wrapper.text()).toContain('本地覆盖')
     wrapper.unmount()
   })
 
-  it('does not save normal settings when the feature stage fails', async () => {
-    const { wrapper } = await mounted()
-    await change(wrapper, 'theme', 'dark')
-    await changeFeatureMode(wrapper, 'disabled')
-    confirmAction.mockResolvedValueOnce(true)
-    vi.mocked(api.saveFeatureSettings).mockRejectedValueOnce(new Error('profile write failed'))
-
-    await wrapper.find('[data-testid="save"]').trigger('click'); await flushPromises()
-
-    expect(api.saveSystemSettings).not.toHaveBeenCalled()
-    expect(wrapper.text()).toContain('profile write failed')
-    expect(document.documentElement.classList.contains('dark')).toBe(false)
-    wrapper.unmount()
-  })
-
-  it('refreshes the effective feature gate and reports a later settings failure as partial success', async () => {
-    const { wrapper } = await mounted()
-    await change(wrapper, 'theme', 'dark')
-    await changeFeatureMode(wrapper, 'disabled')
-    confirmAction.mockResolvedValueOnce(true)
-    vi.mocked(api.saveFeatureSettings).mockResolvedValueOnce({ ...featureData, items: [{ ...featureData.items[0]!, visible: false }] })
-    vi.mocked(api.saveSystemSettings).mockRejectedValueOnce(new Error('settings conflict'))
-
-    await wrapper.find('[data-testid="save"]').trigger('click'); await flushPromises()
-
-    expect(loadWebFeatures).toHaveBeenCalledWith(true)
-    expect(vi.mocked(api.saveFeatureSettings).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(api.saveSystemSettings).mock.invocationCallOrder[0]!)
-    expect(wrapper.text()).toContain('功能开关已保存，但系统设置保存失败')
-    wrapper.unmount()
-  })
-
-  it('stops before settings save and reports the exact stage when Gate refresh fails', async () => {
-    const { wrapper } = await mounted()
-    await change(wrapper, 'theme', 'dark')
-    await changeFeatureMode(wrapper, 'disabled')
-    confirmAction.mockResolvedValueOnce(true)
-    vi.mocked(api.saveFeatureSettings).mockResolvedValueOnce({ ...featureData, items: [{ ...featureData.items[0]!, visible: false }] })
-    vi.mocked(loadWebFeatures).mockRejectedValueOnce(new Error('gate refresh failed'))
-
-    await wrapper.find('[data-testid="save"]').trigger('click'); await flushPromises()
-
-    expect(api.saveFeatureSettings).toHaveBeenCalledOnce()
-    expect(api.saveSystemSettings).not.toHaveBeenCalled()
-    expect(wrapper.text()).toContain('功能开关已保存，但 Gate/导航刷新失败，系统设置未保存')
-    wrapper.unmount()
-  })
-
-  it('keeps system settings reload successful when feature loading fails', async () => {
-    const { wrapper } = await mounted()
-    const success = vi.spyOn(ElMessage, 'success')
-    vi.mocked(api.reloadSystemSettings).mockResolvedValueOnce(snapshot())
-    vi.mocked(api.getFeatureSettings).mockRejectedValueOnce(new Error('feature load failed'))
-
-    await wrapper.find('[data-testid="reload"]').trigger('click'); await flushPromises()
-
-    expect(wrapper.text()).toContain('feature load failed')
-    expect(success).toHaveBeenCalledWith('系统设置已重载')
-    wrapper.unmount()
-  })
-
-  it('keeps site storage but never requests feature configuration in a packaged runtime', async () => {
-    settingsBridge.getAppInfo.mockResolvedValueOnce({ version: '1.4.3', platform: 'win32', isPackaged: true })
-
+  it('keeps the status card but hides template editing in packaged runtime', async () => {
+    vi.mocked(api.getFeatureRuntimeStatus).mockResolvedValueOnce({
+      ...runtimeStatus(), edition: 'customer', base_profile: 'customer', active_profile: 'customer', configuration_available: false,
+    })
     const { wrapper } = await mounted()
 
     expect(wrapper.find('#site-storage-management').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="preview-features"]').exists()).toBe(false)
-    expect(api.getFeatureSettings).not.toHaveBeenCalled()
-    expect(api.previewFeatureSettings).not.toHaveBeenCalled()
-    expect(api.restoreFeatureSettings).not.toHaveBeenCalled()
-    expect(api.saveFeatureSettings).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('客户版')
+    expect(wrapper.find('[data-testid="open-feature-delivery"]').exists()).toBe(false)
     wrapper.unmount()
   })
 

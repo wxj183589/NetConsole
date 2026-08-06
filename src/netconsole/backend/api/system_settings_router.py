@@ -10,6 +10,7 @@ from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.core.settings import SettingsConflictError, SettingsFileInvalidError, SettingsStore
 from netconsole.models.api.system_settings import (
     FeatureConfigurationTarget,
+    FeatureRuntimeStatusDTO,
     FeatureSettingsRestoreDTO,
     FeatureSettingsSnapshotDTO,
     FeatureSettingsUpdateDTO,
@@ -133,7 +134,7 @@ def runtime_self_check(request: Request) -> RuntimeSelfCheckSnapshotDTO:
 )
 def get_feature_settings(
     request: Request,
-    target: FeatureConfigurationTarget = "runtime",
+    target: FeatureConfigurationTarget = "customer",
 ) -> FeatureSettingsSnapshotDTO:
     return _call(lambda: _service(request).feature_settings(target))
 
@@ -148,6 +149,30 @@ def save_feature_settings(
     payload: FeatureSettingsUpdateDTO,
 ) -> FeatureSettingsSnapshotDTO:
     return _call(lambda: _service(request).save_features(payload))
+
+
+@router.post(
+    "/features/check",
+    response_model=FeatureSettingsSnapshotDTO,
+    dependencies=[Depends(_desktop), Depends(_feature_switch)],
+)
+def check_feature_settings(
+    request: Request,
+    payload: FeatureSettingsUpdateDTO,
+) -> FeatureSettingsSnapshotDTO:
+    return _call(lambda: _service(request).check_features(payload))
+
+
+@router.post(
+    "/features/auto-fix",
+    response_model=FeatureSettingsSnapshotDTO,
+    dependencies=[Depends(_desktop), Depends(_feature_switch)],
+)
+def auto_fix_feature_settings(
+    request: Request,
+    payload: FeatureSettingsUpdateDTO,
+) -> FeatureSettingsSnapshotDTO:
+    return _call(lambda: _service(request).auto_fix_features(payload))
 
 
 @router.post(
@@ -169,7 +194,7 @@ def preview_feature_settings(
 )
 def exit_feature_preview(
     request: Request,
-    target: FeatureConfigurationTarget = "runtime",
+    target: FeatureConfigurationTarget = "customer",
 ) -> FeatureSettingsSnapshotDTO:
     return _call(lambda: _service(request).exit_feature_preview(target))
 
@@ -189,6 +214,38 @@ def restore_feature_settings(
             target=payload.target,
         )
     )
+
+
+@router.get(
+    "/features/runtime-status",
+    response_model=FeatureRuntimeStatusDTO,
+    dependencies=[Depends(_desktop)],
+)
+def feature_runtime_status(request: Request) -> FeatureRuntimeStatusDTO:
+    return _call(_service(request).runtime_feature_status)
+
+
+@router.post(
+    "/features/runtime-overrides/clear",
+    response_model=FeatureRuntimeStatusDTO,
+    dependencies=[Depends(_desktop)],
+)
+def clear_feature_runtime_overrides(
+    request: Request,
+    payload: ConfirmedAction,
+) -> FeatureRuntimeStatusDTO:
+    if not payload.confirmed:
+        raise HTTPException(status_code=422, detail="清除历史运行时覆盖前必须确认")
+    return _call(_service(request).clear_runtime_feature_overrides)
+
+
+@router.post(
+    "/features/reload",
+    response_model=FeatureRuntimeStatusDTO,
+    dependencies=[Depends(_desktop)],
+)
+def reload_feature_gate(request: Request) -> FeatureRuntimeStatusDTO:
+    return _call(_service(request).reload_feature_gate)
 
 
 @router.post("/native-action", dependencies=[Depends(_desktop)])

@@ -24,7 +24,7 @@ describe('Web navigation registry', () => {
       'Agent 管理',
       '日志中心',
       '系统设置',
-      '版本功能配置',
+      '版本与功能交付',
     ])
   })
 

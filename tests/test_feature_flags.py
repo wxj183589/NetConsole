@@ -10,15 +10,25 @@ from netconsole.core.feature_flags import (
     PACKAGED_PRODUCTION_FEATURE_IDS,
     FeatureDisabledError,
     FeatureGate,
+    auto_fix_feature_dependencies,
     default_profile,
     engineer_package_enabled,
+    feature_dependency_issues,
     install_runtime_feature_files,
     load_profile,
     normalize_feature_state,
     save_profile,
+    validate_feature_profile_payload,
     validate_feature_states,
 )
-from netconsole.core.feature_registry import FEATURE_BY_ID, REMOVED_FEATURE_IDS, FeatureStatus, list_features
+from netconsole.core.feature_registry import (
+    FEATURE_BY_ID,
+    REMOVED_FEATURE_IDS,
+    FeatureStatus,
+    delivery_dependencies_of,
+    dependencies_of,
+    list_features,
+)
 from scripts.build.build_release import EDITION_STAGING_ALLOWED_ITEMS, validate_embedded_feature_gate, validate_zip_file, zip_directory
 
 
@@ -158,7 +168,16 @@ def test_feature_gate_full_profile_defaults_visible(tmp_path: Path) -> None:
 
     gate = FeatureGate(tmp_path)
 
-    assert all(gate.is_visible(item.feature_id) for item in list_features() if item.status is FeatureStatus.ENABLED)
+    assert all(
+        gate.is_visible(item.feature_id)
+        for item in list_features()
+        if item.status is FeatureStatus.ENABLED and item.item_type != "capability"
+    )
+    assert all(
+        gate.is_enabled(item.feature_id) and not gate.is_visible(item.feature_id)
+        for item in list_features()
+        if item.item_type == "capability"
+    )
     assert gate.is_visible("module.feature_switch")
     assert gate.is_visible("system.feature_flags")
     assert not gate.is_visible("module.snmp_center")
@@ -474,7 +493,7 @@ def test_default_profiles_have_complete_boolean_state() -> None:
     )
 
 
-def test_customer_effective_state_cascades_parent_flags(tmp_path: Path) -> None:
+def test_customer_parent_is_presentation_hierarchy_not_runtime_dependency(tmp_path: Path) -> None:
     write_runtime(
         tmp_path,
         "customer",
@@ -488,12 +507,12 @@ def test_customer_effective_state_cascades_parent_flags(tmp_path: Path) -> None:
 
     gate = FeatureGate(tmp_path)
 
-    assert not gate.is_visible("rail.online_mr_collection")
-    assert not gate.is_enabled("rail.online_mr_collection")
-    assert not gate.is_in_client_package("rail.online_mr_collection")
-    assert not gate.is_visible("online_mr.advanced_ping")
-    assert not gate.is_enabled("online_mr.advanced_ping")
-    assert not gate.is_in_client_package("online_mr.advanced_ping")
+    assert gate.is_visible("rail.online_mr_collection")
+    assert gate.is_enabled("rail.online_mr_collection")
+    assert gate.is_in_client_package("rail.online_mr_collection")
+    assert gate.is_visible("online_mr.advanced_ping")
+    assert gate.is_enabled("online_mr.advanced_ping")
+    assert gate.is_in_client_package("online_mr.advanced_ping")
 
 
 def test_hidden_runtime_entry_stays_enabled_and_keeps_release_metadata(tmp_path: Path) -> None:
@@ -524,7 +543,7 @@ def test_disabled_dependency_makes_dependent_feature_unavailable(tmp_path: Path)
         "internal",
         "full",
         {
-            "web.job_center": {
+            "cap.task_center": {
                 "visible": False,
                 "enabled": False,
                 "client_package": True,
@@ -673,3 +692,58 @@ def test_packaged_runtime_missing_build_info_uses_production_identity(
     assert gate.resolution.source == "packaged_registry_fallback"
     assert gate.is_visible("module.system_settings")
     assert gate.is_visible("web.job_center")
+
+
+def test_registry_separates_parent_runtime_and_delivery_dependencies() -> None:
+    assert FEATURE_BY_ID["ac.mesh_link.refresh"].parent_id == "web.rail_train_online"
+    assert dependencies_of("ac.mesh_link.refresh") == ("cap.train_online_data",)
+    assert delivery_dependencies_of("ac.mesh_link.refresh") == (
+        "cap.train_online_data",
+    )
+
+
+def test_customer_dependency_check_and_auto_fix_use_hidden_delivery_capabilities() -> None:
+    features = default_profile("customer")["features"]
+    features["web.rail_train_online"].update(
+        visible=False,
+        enabled=False,
+        client_package=False,
+    )
+    features["ac.mesh_link.refresh"].update(
+        visible=True,
+        enabled=True,
+        client_package=True,
+    )
+
+    issues = feature_dependency_issues(features, target="customer")
+
+    assert any(
+        issue.feature_id == "ac.mesh_link.refresh"
+        and issue.dependency_id == "web.rail_train_online"
+        and issue.issue_type == "delivery_parent_missing"
+        for issue in issues
+    )
+    fixed = auto_fix_feature_dependencies(features, target="customer")
+    assert fixed["web.rail_train_online"] == {
+        "visible": False,
+        "enabled": True,
+        "client_package": True,
+        "internal_only": False,
+    }
+    assert feature_dependency_issues(fixed, target="customer") == []
+
+
+def test_profile_preflight_rejects_missing_delivery_dependency_chain() -> None:
+    payload = default_profile("customer")
+    payload["features"]["cap.train_online_data"].update(
+        visible=False,
+        enabled=False,
+        client_package=False,
+    )
+
+    errors = validate_feature_profile_payload(payload, profile="customer")
+
+    assert any(
+        "web.rail_train_online" in error and "cap.train_online_data" in error
+        for error in errors
+    )

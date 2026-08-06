@@ -4,6 +4,8 @@ import { onBeforeRouteLeave } from 'vue-router'
 import { ElMessage } from 'element-plus'
 
 import {
+  autoFixFeatureSettings,
+  checkFeatureSettings,
   exitFeatureSettingsPreview,
   getFeatureSettings,
   previewFeatureSettings,
@@ -21,6 +23,7 @@ import type {
 
 type ProfileTarget = Exclude<FeatureConfigurationTarget, 'runtime'>
 type FeatureMode = 'enabled_visible' | 'enabled_hidden' | 'disabled'
+type CustomerState = 'not_delivered' | 'delivered_visible' | 'delivered_hidden'
 
 const { confirm } = useConfirm()
 const target = ref<ProfileTarget>('customer')
@@ -47,6 +50,7 @@ const groups = computed(() => {
   const keyword = search.value.trim().toLocaleLowerCase()
   const result = new Map<string, { id: string; title: string; items: FeatureSetting[] }>()
   for (const item of features.value) {
+    if (item.configuration_layer === 'technical') continue
     if (groupFilter.value !== 'all' && item.group_id !== groupFilter.value) continue
     if (keyword && !`${item.title} ${item.feature_id}`.toLocaleLowerCase().includes(keyword)) continue
     if (modifiedOnly.value && !isModified(item)) continue
@@ -61,24 +65,19 @@ const groups = computed(() => {
   return [...result.values()]
 })
 const groupOptions = computed(() => [...new Map(
-  features.value.map((item) => [item.group_id, item.group_title]),
+  features.value
+    .filter((item) => item.configuration_layer !== 'technical')
+    .map((item) => [item.group_id, item.group_title]),
 ).entries()])
-const dependencyIssues = computed(() => features.value.flatMap((item) => {
-  const issues: string[] = []
-  if (item.enabled) {
-    for (const dependencyId of item.dependencies) {
-      const dependency = byId(dependencyId)
-      if (!dependency?.enabled) issues.push(`${item.title} 依赖未启用的 ${dependency?.title || dependencyId}`)
-    }
-  }
-  if (target.value === 'customer' && Boolean(item.package_included)) {
-    for (const dependencyId of item.dependencies) {
-      const dependency = byId(dependencyId)
-      if (!Boolean(dependency?.package_included)) issues.push(`${item.title} 依赖未纳入客户版的 ${dependency?.title || dependencyId}`)
-    }
-  }
-  return issues
-}))
+const technicalFeatures = computed(() => features.value.filter((item) => item.configuration_layer === 'technical'))
+const dependencyIssues = computed(() => snapshot.value?.dependency_issues ?? [])
+const dependencyIssueGroups = computed(() => [...new Map(
+  dependencyIssues.value.map((issue) => [issue.dependency_id, {
+    dependencyId: issue.dependency_id,
+    dependencyTitle: issue.dependency_title,
+    issues: dependencyIssues.value.filter((candidate) => candidate.dependency_id === issue.dependency_id),
+  }]),
+).values()])
 const changedCount = computed(() => features.value.filter(isModified).length)
 const includedCount = computed(() => features.value.filter((item) => Boolean(item.package_included)).length)
 
@@ -113,7 +112,7 @@ async function loadTarget(selected: ProfileTarget): Promise<void> {
   error.value = ''
   try {
     accept(await getFeatureSettings(selected))
-    activeGroups.value = groups.value.map((group) => group.id)
+    activeGroups.value = []
   } catch (cause) {
     error.value = message(cause, '版本功能模板加载失败')
   } finally {
@@ -121,10 +120,10 @@ async function loadTarget(selected: ProfileTarget): Promise<void> {
   }
 }
 
-function accept(data: FeatureSettingsSnapshot): void {
+function accept(data: FeatureSettingsSnapshot, updateBaseline = true): void {
   snapshot.value = data
   features.value = normalizeItems(data.items)
-  baseline.value = JSON.stringify(features.value)
+  if (updateBaseline) baseline.value = JSON.stringify(features.value)
   previewing.value = data.preview_active
 }
 
@@ -221,9 +220,35 @@ async function restoreDefaults(): Promise<void> {
   }
 }
 
+async function runDependencyCheck(showSuccess = true): Promise<void> {
+  try {
+    accept(await checkFeatureSettings(features.value, target.value), false)
+    if (!showSuccess) return
+    if (dependencyIssues.value.length) {
+      ElMessage.warning(`发现 ${dependencyIssues.value.length} 项依赖问题`)
+    } else {
+      ElMessage.success('构建前检查通过')
+    }
+  } catch (cause) {
+    error.value = message(cause, '依赖检查失败')
+    ElMessage.error(error.value)
+  }
+}
+
+async function autoFixDependencies(showSuccess = true): Promise<void> {
+  try {
+    accept(await autoFixFeatureSettings(features.value, target.value), false)
+    if (showSuccess) ElMessage.success('已在当前草稿中自动补齐依赖，保存后才会写入模板')
+  } catch (cause) {
+    error.value = message(cause, '依赖自动修复失败')
+    ElMessage.error(error.value)
+  }
+}
+
 function undo(): void {
   if (!baseline.value || previewing.value) return
   features.value = JSON.parse(baseline.value) as FeatureSetting[]
+  void runDependencyCheck(false)
 }
 
 function featureMode(item: FeatureSetting): FeatureMode {
@@ -244,24 +269,24 @@ async function setFeatureMode(item: FeatureSetting, value: string | number | boo
     })) return
     for (const dependent of dependents) disable(dependent)
     disable(item)
+    await runDependencyCheck(false)
     return
   }
 
-  const dependencies = dependencyClosure(item)
-  for (const dependency of dependencies) {
-    dependency.enabled = true
-    dependency.visible = true
-    if (target.value === 'customer' && dependency.package_editable === true) dependency.package_included = true
-  }
   item.enabled = true
   item.visible = mode === 'enabled_visible'
-  if (target.value === 'customer' && item.package_editable === true) item.package_included = true
+  await autoFixDependencies(false)
 }
 
-async function setPackageIncluded(item: FeatureSetting, value: string | number | boolean | undefined): Promise<void> {
+function customerState(item: FeatureSetting): CustomerState {
+  if (!item.package_included) return 'not_delivered'
+  return item.visible ? 'delivered_visible' : 'delivered_hidden'
+}
+
+async function setCustomerState(item: FeatureSetting, value: string | number | boolean | undefined): Promise<void> {
   if (target.value !== 'customer' || item.package_editable !== true || previewing.value) return
-  const included = Boolean(value)
-  if (!included) {
+  const state = String(value) as CustomerState
+  if (state === 'not_delivered') {
     const dependents = customerDependents(item.feature_id)
     if (dependents.length && !await confirm({
       type: 'WARNING',
@@ -271,17 +296,13 @@ async function setPackageIncluded(item: FeatureSetting, value: string | number |
     })) return
     for (const dependent of dependents) excludeFromCustomer(dependent)
     excludeFromCustomer(item)
+    await runDependencyCheck(false)
     return
   }
-
-  const dependencies = dependencyClosure(item)
-  const blocked = dependencies.find((dependency) => dependency.package_editable !== true && !Boolean(dependency.package_included))
-  if (blocked) {
-    ElMessage.error(`依赖功能“${blocked.title}”不能纳入客户版`)
-    return
-  }
-  for (const dependency of dependencies) dependency.package_included = true
   item.package_included = true
+  item.enabled = true
+  item.visible = state === 'delivered_visible'
+  await autoFixDependencies(false)
 }
 
 function disable(item: FeatureSetting): void {
@@ -294,29 +315,18 @@ function excludeFromCustomer(item: FeatureSetting): void {
   disable(item)
 }
 
-function dependencyClosure(item: FeatureSetting, seen = new Set<string>()): FeatureSetting[] {
-  const result: FeatureSetting[] = []
-  for (const dependencyId of item.dependencies) {
-    if (seen.has(dependencyId)) continue
-    seen.add(dependencyId)
-    const dependency = byId(dependencyId)
-    if (!dependency) continue
-    result.push(...dependencyClosure(dependency, seen), dependency)
-  }
-  return [...new Map(result.map((candidate) => [candidate.feature_id, candidate])).values()]
-}
-
 function enabledDependents(featureId: string): FeatureSetting[] {
   return transitiveDependents(featureId, (candidate) => candidate.enabled)
 }
 
 function customerDependents(featureId: string): FeatureSetting[] {
-  return transitiveDependents(featureId, (candidate) => Boolean(candidate.package_included))
+  return transitiveDependents(featureId, (candidate) => Boolean(candidate.package_included), true)
 }
 
 function transitiveDependents(
   featureId: string,
   predicate: (candidate: FeatureSetting) => boolean,
+  delivery = false,
 ): FeatureSetting[] {
   const result: FeatureSetting[] = []
   const queue = [featureId]
@@ -324,17 +334,15 @@ function transitiveDependents(
   while (queue.length) {
     const current = queue.shift()!
     for (const candidate of features.value) {
-      if (seen.has(candidate.feature_id) || !predicate(candidate) || !candidate.dependencies.includes(current)) continue
+      const linked = candidate.dependencies.includes(current)
+        || (delivery && (candidate.delivery_dependencies.includes(current) || candidate.parent_id === current))
+      if (seen.has(candidate.feature_id) || !predicate(candidate) || !linked) continue
       seen.add(candidate.feature_id)
       result.push(candidate)
       queue.push(candidate.feature_id)
     }
   }
   return result
-}
-
-function byId(featureId: string): FeatureSetting | undefined {
-  return features.value.find((item) => item.feature_id === featureId)
 }
 
 function isModified(item: FeatureSetting): boolean {
@@ -372,15 +380,14 @@ function message(cause: unknown, fallback: string): string {
   <section class="profile-page" v-loading="loading">
     <header class="page-header">
       <div>
-        <h1>版本功能配置</h1>
-        <p>完整版与客户版使用独立模板。保存模板不会实时隐藏当前功能。</p>
+        <h1>版本与功能交付</h1>
+        <p>唯一功能矩阵入口；正式模板持久化，会话预览仅影响当前进程。</p>
       </div>
       <div class="header-actions">
         <el-tag v-if="dirty" type="warning">{{ changedCount }} 项未保存</el-tag>
         <el-button :disabled="!dirty || previewing" @click="undo">撤销修改</el-button>
         <el-button :disabled="previewing" @click="restoreDefaults">恢复默认</el-button>
-        <el-button :disabled="Boolean(dependencyIssues.length) || previewing" @click="preview">会话预览</el-button>
-        <el-button v-if="previewing" type="warning" @click="exitPreview">退出预览</el-button>
+        <el-button data-testid="profile-preflight" :disabled="previewing" @click="runDependencyCheck()">构建前检查</el-button>
         <el-button type="primary" :loading="saving" :disabled="!dirty || previewing || Boolean(dependencyIssues.length)" @click="save">保存模板</el-button>
       </div>
     </header>
@@ -402,25 +409,44 @@ function message(cause: unknown, fallback: string): string {
     />
     <el-alert
       v-if="dependencyIssues.length"
-      :title="`存在 ${dependencyIssues.length} 项依赖异常，修复后才能保存或预览。`"
+      :title="`存在 ${dependencyIssueGroups.length} 组、${dependencyIssues.length} 项依赖问题，修复后才能保存或预览。`"
       type="error"
       :closable="false"
     />
 
+    <section v-if="dependencyIssues.length" class="profile-card dependency-panel">
+      <div class="dependency-heading">
+        <strong>依赖检查</strong>
+        <el-button
+          data-testid="auto-fix-dependencies"
+          type="primary"
+          plain
+          :disabled="!dependencyIssues.some((issue) => issue.auto_fix) || previewing"
+          @click="autoFixDependencies()"
+        >自动修复依赖</el-button>
+      </div>
+      <article v-for="group in dependencyIssueGroups" :key="group.dependencyId">
+        <strong>{{ group.dependencyTitle }}</strong>
+        <code>{{ group.dependencyId }}</code>
+        <p>被以下功能需要：</p>
+        <ul><li v-for="issue in group.issues" :key="`${issue.feature_id}-${issue.issue_type}`">{{ issue.feature_title }}</li></ul>
+      </article>
+    </section>
+
     <section class="profile-card">
       <div class="profile-selector">
         <el-radio-group :model-value="target" :disabled="previewing" @change="selectTarget">
-          <el-radio-button value="customer">客户版模板</el-radio-button>
-          <el-radio-button value="full">完整版模板</el-radio-button>
+          <el-radio-button value="customer">客户版交付配置</el-radio-button>
+          <el-radio-button value="full">完整版默认配置</el-radio-button>
         </el-radio-group>
         <div class="profile-facts">
           <span>当前模板：<strong>{{ snapshot?.configuration_name || '--' }}</strong></span>
-          <span v-if="target === 'customer'">纳入客户版：<strong>{{ includedCount }}</strong></span>
+          <span v-if="target === 'customer'">已交付：<strong>{{ includedCount }}</strong></span>
           <span>修改项：<strong>{{ changedCount }}</strong></span>
         </div>
       </div>
       <p class="profile-help" v-if="target === 'customer'">
-        “纳入客户版”控制客户包是否交付该能力；未纳入时会同时隐藏并禁用。内部、开发中和停用功能不能纳入客户版。
+        客户版状态统一表示是否交付以及入口是否显示；技术依赖由 Backend 自动以“交付但隐藏”补齐。
       </p>
       <p class="profile-help" v-else>
         完整版模板控制完整版首次启动时的显示与启用状态；不改变客户版模板。
@@ -448,7 +474,7 @@ function message(cause: unknown, fallback: string): string {
             <el-table-column label="功能" min-width="230" fixed="left">
               <template #default="{ row }">
                 <div class="feature-title">
-                  <strong>{{ row.title }}</strong>
+                  <strong>{{ row.title }} <el-tag v-if="row.configuration_layer === 'business'" size="small" type="info">业务入口</el-tag></strong>
                   <code>{{ row.feature_id }}</code>
                   <small v-if="row.lock_reason">{{ row.lock_reason }}</small>
                 </div>
@@ -459,20 +485,23 @@ function message(cause: unknown, fallback: string): string {
                 <el-tag :type="statusType(row.status)" size="small">{{ statusLabel(row.status) }}</el-tag>
               </template>
             </el-table-column>
-            <el-table-column v-if="target === 'customer'" label="纳入客户版" width="130" align="center">
-              <template #default="{ row }">
-                <el-switch
-                  :model-value="Boolean(row.package_included)"
-                  :disabled="row.package_editable !== true || previewing"
-                  @change="setPackageIncluded(row, $event)"
-                />
-              </template>
-            </el-table-column>
-            <el-table-column label="模板状态" width="180" align="center" fixed="right">
+            <el-table-column :label="target === 'customer' ? '客户版状态' : '完整版状态'" width="190" align="center" fixed="right">
               <template #default="{ row }">
                 <el-select
+                  v-if="target === 'customer'"
+                  :model-value="customerState(row)"
+                  :data-testid="`customer-state-${row.feature_id}`"
+                  :disabled="row.package_editable !== true || previewing"
+                  @change="setCustomerState(row, $event)"
+                >
+                  <el-option label="不交付" value="not_delivered" />
+                  <el-option label="交付并显示" value="delivered_visible" />
+                  <el-option label="交付但隐藏" value="delivered_hidden" />
+                </el-select>
+                <el-select
+                  v-else
                   :model-value="featureMode(row)"
-                  :disabled="row.locked || previewing || (target === 'customer' && !Boolean(row.package_included))"
+                  :disabled="row.locked || previewing"
                   @change="setFeatureMode(row, $event)"
                 >
                   <el-option label="显示并启用" value="enabled_visible" />
@@ -485,9 +514,47 @@ function message(cause: unknown, fallback: string): string {
         </el-collapse-item>
       </el-collapse>
     </section>
+
+    <section class="profile-card">
+      <el-collapse>
+        <el-collapse-item name="technical">
+          <template #title>
+            <span class="group-title">技术能力</span>
+            <el-tag size="small" type="info">{{ technicalFeatures.length }} 项 · 只读</el-tag>
+          </template>
+          <el-table :data="technicalFeatures" row-key="feature_id" max-height="420" border>
+            <el-table-column label="技术能力" min-width="260">
+              <template #default="{ row }"><div class="feature-title"><strong>{{ row.title }}</strong><code>{{ row.feature_id }}</code></div></template>
+            </el-table-column>
+            <el-table-column label="运行状态" width="120" align="center">
+              <template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{ row.enabled ? '启用' : '关闭' }}</el-tag></template>
+            </el-table-column>
+            <el-table-column v-if="target === 'customer'" label="交付状态" width="140" align="center">
+              <template #default="{ row }"><el-tag :type="row.package_included ? 'success' : 'info'" size="small">{{ row.package_included ? '交付但隐藏' : '不交付' }}</el-tag></template>
+            </el-table-column>
+          </el-table>
+        </el-collapse-item>
+      </el-collapse>
+    </section>
+
+    <section class="profile-card">
+      <el-collapse>
+        <el-collapse-item name="preview">
+          <template #title>
+            <span class="group-title">当前会话预览</span>
+            <el-tag v-if="previewing" size="small" type="warning">预览中</el-tag>
+          </template>
+          <div class="preview-actions">
+            <span>不持久化，立即检查当前草稿在导航、路由和 Backend Gate 中的实际效果。</span>
+            <el-button :disabled="Boolean(dependencyIssues.length) || previewing" @click="preview">开始预览</el-button>
+            <el-button v-if="previewing" type="warning" @click="exitPreview">退出预览</el-button>
+          </div>
+        </el-collapse-item>
+      </el-collapse>
+    </section>
   </section>
 </template>
 
 <style scoped>
-.profile-page{display:flex;flex-direction:column;gap:16px;max-width:1680px;margin:0 auto}.page-header,.header-actions,.profile-selector,.profile-facts,.filters{display:flex;align-items:center;gap:12px}.page-header,.profile-selector{justify-content:space-between}.page-header h1{margin:0}.page-header p,.profile-help{margin:6px 0 0;color:var(--nc-text-secondary)}.header-actions,.profile-facts{flex-wrap:wrap;justify-content:flex-end}.profile-card{padding:18px 20px;background:var(--el-bg-color);border:1px solid var(--el-border-color-light);border-radius:8px}.filters{display:grid;grid-template-columns:minmax(280px,1fr) 240px auto;margin-bottom:16px}.feature-groups{border-top:1px solid var(--el-border-color-light)}.group-title{margin-right:10px;font-weight:600}.feature-title{display:flex;min-width:0;flex-direction:column;align-items:flex-start;gap:4px}.feature-title code{max-width:100%;overflow:hidden;color:var(--nc-text-secondary);font-family:Consolas,"Courier New",monospace;font-size:12px;text-overflow:ellipsis;white-space:nowrap}.feature-title small{color:var(--el-color-warning);font-size:12px}@media(max-width:900px){.page-header,.profile-selector{align-items:flex-start;flex-direction:column}.header-actions,.profile-facts{justify-content:flex-start}.filters{grid-template-columns:1fr}}
+.profile-page{display:flex;flex-direction:column;gap:16px;max-width:1680px;margin:0 auto}.page-header,.header-actions,.profile-selector,.profile-facts,.filters,.dependency-heading,.preview-actions{display:flex;align-items:center;gap:12px}.page-header,.profile-selector,.dependency-heading{justify-content:space-between}.page-header h1{margin:0}.page-header p,.profile-help{margin:6px 0 0;color:var(--nc-text-secondary)}.header-actions,.profile-facts{flex-wrap:wrap;justify-content:flex-end}.profile-card{padding:18px 20px;background:var(--el-bg-color);border:1px solid var(--el-border-color-light);border-radius:8px}.filters{display:grid;grid-template-columns:minmax(280px,1fr) 240px auto;margin-bottom:16px}.feature-groups{border-top:1px solid var(--el-border-color-light)}.group-title{margin-right:10px;font-weight:600}.feature-title{display:flex;min-width:0;flex-direction:column;align-items:flex-start;gap:4px}.feature-title code,.dependency-panel code{max-width:100%;overflow:hidden;color:var(--nc-text-secondary);font-family:Consolas,"Courier New",monospace;font-size:12px;text-overflow:ellipsis;white-space:nowrap}.feature-title small{color:var(--el-color-warning);font-size:12px}.dependency-panel{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.dependency-heading{grid-column:1/-1}.dependency-panel article{min-width:0;padding:12px;border-left:3px solid var(--el-color-danger);background:var(--el-fill-color-light)}.dependency-panel article strong,.dependency-panel article code{display:block}.dependency-panel article p{margin:10px 0 4px;color:var(--nc-text-secondary)}.dependency-panel article ul{margin:0;padding-left:20px}.preview-actions{justify-content:flex-end;flex-wrap:wrap}.preview-actions span{margin-right:auto;color:var(--nc-text-secondary)}@media(max-width:900px){.page-header,.profile-selector{align-items:flex-start;flex-direction:column}.header-actions,.profile-facts{justify-content:flex-start}.filters,.dependency-panel{grid-template-columns:1fr}}
 </style>

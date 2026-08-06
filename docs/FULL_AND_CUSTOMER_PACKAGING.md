@@ -4,21 +4,37 @@ NetConsole 使用同一套 Electron、Vue 和 Python Backend 源码生成两个�
 
 ## 功能配置职责
 
-| 配置目标 | 文件 | 保存后影响 | 用途 |
+| 配置目标 | 文件或作用域 | 保存后影响 | 用途 |
 | --- | --- | --- | --- |
-| 当前运行时 | 数据根 `runtime/feature_flags.local.json` | 立即刷新当前实例导航、路由和 Backend Gate | 开发调试、当前实例临时配置 |
-| 完整版模板 | `config/profiles/features/full.json` | 不影响当前实例 | 下次构建 Full 安装包 |
-| 客户版模板 | `config/profiles/features/customer.json` | 不影响当前实例 | 下次构建 Customer 安装包 |
+| 完整版默认配置 | `config/profiles/features/full.json` | 不改变当前运行状态 | 下次构建 Full 安装包 |
+| 客户版交付配置 | `config/profiles/features/customer.json` | 不改变当前运行状态 | 下次构建 Customer 安装包 |
+| 当前会话预览 | Backend 当前进程内存 | 立即刷新导航、路由和 Backend Gate | 验证尚未保存的模板草稿 |
 
-“版本功能配置”页面可分别编辑 Full 与 Customer 模板。页面中的“会话预览”会临时应用草稿，但不会保存；退出预览或重启 Backend 后恢复。
+源码开发态的“版本与功能交付”是 Full/Customer 模板的唯一矩阵编辑入口。系统设置不再提供第二套运行时矩阵，只显示当前版本状态，并可退出会话预览、清除历史运行时覆盖或重新加载 Feature Gate。会话预览不写模板或 `runtime/feature_flags.local.json`，退出预览或重启 Backend 后恢复。旧覆盖文件仅作为升级兼容状态展示，必须由用户显式确认后写回空覆盖集合；正式包继续忽略该文件。
 
-客户版的“纳入客户版”与“显示/启用”是不同维度：
+客户版每项功能使用单一三态，避免“纳入客户版”和运行状态相互冲突：
 
-- 未纳入客户版：安装包运行时隐藏并禁用该能力。
-- 已纳入但隐藏入口：Backend 能力保留，导航入口不显示。
-- 已纳入并完全禁用：导航和 Backend Gate 均关闭。
+| 客户版状态 | `client_package` | `enabled` | `visible` |
+| --- | ---: | ---: | ---: |
+| 不交付 | `false` | `false` | `false` |
+| 交付并显示 | `true` | `true` | `true` |
+| 交付但隐藏 | `true` | `true` | `false` |
 
-内部专用、开发中、隐藏或已停用功能不能纳入客户版。父级和显式依赖必须形成完整的客户版依赖闭包。
+完整版仍使用“显示并启用 / 隐藏入口但保留能力 / 关闭”。业务分类默认只展示模块，展开后显示页面与操作；`cap.*` 技术能力单独折叠并只读，由依赖检查和自动修复带出。
+
+Feature Registry 明确区分三种关系：
+
+- `parent_id` 只表达界面树和交付父级闭包，不参与运行时 Gate 依赖计算；
+- `requires` 表达运行时技术依赖；
+- `delivery_requires` 表达客户版交付依赖。
+
+Backend 的检查接口返回结构化依赖问题，页面按缺失依赖聚合展示。自动修复只修改当前草稿：运行依赖会启用并隐藏，客户交付依赖还会纳入客户版；内部、开发中、隐藏或已停用能力不能通过自动修复进入客户版。用户确认保存后才写 Full/Customer 模板。
+
+当前客户模板已将 `web.rail_train_online` 和 `web.rail_task_control` 作为“交付但隐藏”的必要能力，并明确排除未交付的 Online MR 会话定位和删除动作。
+
+## 模板门禁
+
+`scripts/build/prepare_electron_edition.py` 在写入 Electron Backend 内嵌资源前校验目标 Profile；`scripts/build/build_release.py` 的各版本载荷准备复用同一入口。校验覆盖 Registry 中的功能状态、运行依赖、客户交付父级、`delivery_requires`、内部功能和非正式状态泄漏。Full 或 Customer 模板存在问题时构建立即失败，并以 `FULL PROFILE INVALID` 或 `CUSTOMER PROFILE INVALID` 列出具体依赖链。
 
 ## 构建命令
 
@@ -70,4 +86,4 @@ Customer 包默认执行 `customer.json`。在桌面右上角版本号处按住 
 
 ## 功能业务分类
 
-版本功能配置不再只按父级粗略归类，当前分为：基础与桌面、任务与 Agent、设备管理、AC 与 FIT-AP、配置采集与文件、轨道交通基础资料、轨旁 AP、列车在线与无人值守、车载 MR 采集与分析、MESH 日志分析、轨道交通综合、网络测试与工具集、日志/命令/系统维护、内部与实验功能。
+版本与功能交付不再只按父级粗略归类，当前分为：基础与桌面、任务与 Agent、设备管理、AC 与 FIT-AP、配置采集与文件、轨道交通基础资料、轨旁 AP、列车在线与无人值守、车载 MR 采集与分析、MESH 日志分析、轨道交通综合、网络测试与工具集、日志/命令/系统维护、内部与实验功能。

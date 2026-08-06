@@ -45,7 +45,7 @@ Windows Server 2012 x64 兼容事实（2026-07-30）：主程序和独立 Agent 
 
 模块、页面、Tab、动作和按钮的真实启用状态以 `src/netconsole/core/feature_registry.py` 为准。新增用户可见能力必须先登记 Feature key，再由页面通过 `FeatureGate` 控制。入口实现、自动化、Electron 人工、真实设备/局点和正式包五个验收维度见[迁移矩阵事实维度表](docs/architecture/MIGRATION_MATRIX.md#事实维度验收矩阵)；`FeatureStatus` 和 Navigation `parity_state` 不替代这些验收结论。
 
-源码开发态继续提供全局运行时功能配置、变更预览和恢复能力；`client_package/internal_only` 只读展示，保存仅写应用数据根中的 `visible/enabled` 覆盖，不修改发布 profile。正式 Electron 包采用不可编辑的固定生产功能集，不显示或调用功能配置入口。打包基线缺失或损坏时回退到 Feature Registry 的稳定生产默认，而不是关闭全部功能。系统设置、局点与数据管理、任务中心和运行日志属于正式包核心能力，不依赖 customer profile 或本地 override；`client_package` 只表达构建选择/发布元数据，不作为正式运行时的通用权限开关。
+源码开发态以“版本与功能交付”作为 Full/Customer 模板的唯一功能矩阵入口；系统设置只展示当前版本、基础模板、会话状态和历史覆盖数量。模板草稿可进入当前进程预览，但不写运行时覆盖，退出预览或重启后恢复；历史 `feature_flags.local.json` 仅保留显式清理兼容。正式 Electron 包采用不可编辑的固定生产功能集，不显示或调用模板配置入口。打包基线缺失或损坏时回退到 Feature Registry 的稳定生产默认，而不是关闭全部功能。系统设置、局点与数据管理、任务中心和运行日志属于正式包核心能力，不依赖 customer profile 或本地 override；`client_package` 只表达构建选择/发布元数据，不作为正式运行时的通用权限开关。Full/Customer 模板、客户交付三态和构建前依赖门禁见[完整版与客户版打包](docs/FULL_AND_CUSTOMER_PACKAGING.md)。
 
 ## 仓库结构
 

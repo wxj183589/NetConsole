@@ -4,7 +4,8 @@ import json
 
 import pytest
 
-from netconsole.core.feature_flags import verify_admin_unlock_password
+from netconsole.core.feature_flags import default_profile, verify_admin_unlock_password
+from scripts.build import prepare_electron_edition as prepare_module
 from scripts.build.prepare_electron_edition import (
     EditionPreparationError,
     prepare_electron_edition,
@@ -74,4 +75,38 @@ def test_prepare_customer_edition_rejects_missing_or_weak_password(tmp_path) -> 
             root,
             edition="customer",
             customer_password="short",
+        )
+
+
+def test_prepare_customer_edition_rejects_invalid_profile_before_packaging(
+    tmp_path, monkeypatch
+) -> None:
+    root = _backend_root(tmp_path)
+    profile_dir = tmp_path / "profiles"
+    profile_dir.mkdir()
+    full = default_profile("full")
+    customer = default_profile("customer")
+    customer["features"]["cap.train_online_data"].update(
+        visible=False,
+        enabled=False,
+        client_package=False,
+    )
+    (profile_dir / "full.json").write_text(
+        json.dumps(full, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (profile_dir / "customer.json").write_text(
+        json.dumps(customer, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(prepare_module, "profiles_dir", lambda: profile_dir)
+
+    with pytest.raises(
+        EditionPreparationError,
+        match="CUSTOMER PROFILE INVALID",
+    ):
+        prepare_electron_edition(
+            root,
+            edition="customer",
+            customer_password="customer-maintenance-password",
         )

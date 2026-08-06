@@ -4,7 +4,7 @@
 
 用户可见模块、页面、Tab、动作和按钮统一登记在 `src/netconsole/core/feature_registry.py`。Feature key 使用点号分层；页面通过 `FeatureGate` 和 `apply_feature_to_widget` 控制，而不是散落读取配置。Registry 使用 `FeatureStatus` 表达 `ENABLED / DISABLED / DEVELOPMENT / HIDDEN`，profile 不能重新开启 `DISABLED` 能力。
 
-内部功能开关页面使用 `module.feature_switch`。该页面只在源码开发态注册；所有冻结/安装包运行态（包括 internal、customer、engineer）都强制隐藏并禁用，不能通过 profile 或本地覆盖重新开启。
+内部“版本与功能交付”页面使用 `module.feature_switch`。该页面只在源码开发态注册；所有冻结/安装包运行态（包括 internal、customer、engineer）都强制隐藏并禁用，不能通过 profile 或本地覆盖重新开启。
 
 正式 Electron 包由 `PackagedRuntimeFeaturePolicy` 执行固定生产功能集：只读取包内 `customer/production` 基线，忽略环境变量、外部 runtime 配置和 `feature_flags.local.json`；外部 `feature_flags.json` 的 schema 版本不改变这条边界。功能配置读写、预览和恢复 API 固定拒绝。包内基线缺失或损坏时，Gate 记录 `PACKAGED_FEATURE_POLICY_FALLBACK` 并回退 Registry 稳定默认。`module.system_settings`、`web.system_settings`、`web.job_center`、`module.logs` 和 `web.logs` 受到核心保护；internal-only 以及 `DISABLED / HIDDEN / DEVELOPMENT` 状态仍强制关闭。源码开发态继续按现有语义读取外部 runtime 配置和本地覆盖。
 
@@ -59,11 +59,13 @@ Registry 当前显式登记的主要子功能包括：设备管理页面、连�
 
 构建配置可按 internal/customer/engineer edition 或 profile 生成默认功能集合，但运行时仍由统一 Registry/Gate 判定。客户 profile 的 `build_options.engineer_package` 只决定 `both` 是否附加工程师包，不是运行时功能开关。不得在页面用 edition 名称硬编码同一能力的第二套开关。
 
-`client_package/internal_only` 只表示构建选择或发布元数据。源码开发态的功能开关页面将其合并为只读“发布范围”标签，更新 DTO 不接受这两个字段；页面保存只写应用数据根 `runtime/feature_flags.local.json` 中的 `visible/enabled` 覆盖，不再修改 `config/profiles/features/customer.json`。覆盖文件使用文件锁与原子替换，恢复默认写回空覆盖集合，发布 profile 和构建选项保持不变。正式包继续忽略该本地覆盖并固定拒绝配置 API。
+`client_package/internal_only` 只表示构建选择或发布元数据，不是正式运行时权限。源码开发态的“版本与功能交付”直接维护 `config/profiles/features/full.json` 与 `customer.json`，是唯一矩阵编辑入口；系统设置只提供当前版本状态和显式维护动作，不再保存新的运行时矩阵。旧 `runtime/feature_flags.local.json` 仅保留升级兼容清理，正式包继续忽略该文件并固定拒绝模板配置 API。
 
-当前运行时配置作用域只有“全局”。页面显示当前配置、作用范围和继承 profile，并按基础能力、任务与 Agent、设备与 AC、配置与文件、轨道交通、内部与实验功能分组；搜索、仅显示已修改、三状态选择器和右侧变更预览均为 Renderer 展示/轻量联动。独立发布配置管理页、局点/用户覆盖、运行中任务阻断和批量更新尚未实现，不能从当前页面状态推断这些能力已经存在。
+客户模板使用“不交付 / 交付并显示 / 交付但隐藏”单一三态；完整版使用“显示并启用 / 隐藏入口但保留能力 / 关闭”。页面按业务分类默认折叠模块，展开后显示页面和操作；`cap.*` 技术能力单独只读折叠。草稿会话预览只存于当前 Backend 进程，不写模板或运行时覆盖，退出或重启后恢复。
 
-Registry 的 `parent_id + dependencies` 共同组成运行时依赖。当前显式补充了 Agent 管理对任务中心、设备采集与诊断对设备管理/任务中心、车载 MR 实时展示对任务中心/轨道交通基础资料、车内通信检测对轨道交通基础资料/任务中心的依赖。Gate 在读取时递归收敛有效状态，保存前拒绝依赖不完整配置；页面启用子功能或禁用依赖时会确认并明确列出联动项。
+Registry 将层级与依赖拆开：`parent_id` 只表达界面树和客户交付父级闭包，`requires` 只表达运行时技术依赖，`delivery_requires` 表达客户版交付依赖。Gate 只按 `requires` 递归收敛运行状态，父级隐藏不会自动关闭仍需保留的底层能力。任务中心、轨交基础数据、轨交任务控制、列车在线数据、Online MR 分析和 Desktop Bridge 等共用技术能力登记为只读 `cap.*` 项，业务页面与动作不再借另一个页面充当技术依赖。
+
+模板检查与自动修复由 Backend 统一计算结构化依赖问题，Renderer 不维护第二套依赖算法。自动修复会把可修复依赖设为“启用但隐藏”，客户模板同时纳入交付；修复只进入当前草稿，保存后才写模板。Electron 版本资源注入前再次校验 Full/Customer Profile，依赖闭包、内部功能或非正式状态泄漏会直接中止构建并输出具体链路。
 
 ## 6. AP Identity 特例
 

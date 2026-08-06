@@ -14,7 +14,7 @@ TerminalType = Literal["putty", "securecrt", "xshell"]
 NetworkComponentName = Literal["iperf3", "fping"]
 NetworkComponentMode = Literal["builtin", "custom"]
 NetworkComponentSource = Literal["builtin", "custom"]
-FeatureConfigurationTarget = Literal["runtime", "full", "customer"]
+FeatureConfigurationTarget = Literal["full", "customer"]
 
 
 class TerminalPathsDTO(ApiModel):
@@ -95,6 +95,9 @@ class FeatureStateDTO(ApiModel):
     title: str
     group_id: str
     group_title: str
+    parent_id: str | None
+    item_type: str
+    configuration_layer: Literal["business", "operation", "technical"]
     scope: Literal["global"] = "global"
     visible: bool
     enabled: bool
@@ -107,6 +110,7 @@ class FeatureStateDTO(ApiModel):
     package_range: Literal["customer_internal", "internal", "internal_only", "not_included"]
     status: Literal["ENABLED", "DISABLED", "DEVELOPMENT", "HIDDEN"]
     dependencies: list[str] = Field(default_factory=list)
+    delivery_dependencies: list[str] = Field(default_factory=list)
     locked: bool = False
     lock_reason: str = ""
     overridden: bool = False
@@ -121,6 +125,36 @@ class FeatureSettingsSnapshotDTO(ApiModel):
     inherited_profile: str
     applies_immediately: bool
     save_effect: str
+    dependency_issues: list["FeatureDependencyIssueDTO"] = Field(default_factory=list)
+
+
+class FeatureDependencyIssueDTO(ApiModel):
+    feature_id: str
+    feature_title: str
+    dependency_id: str
+    dependency_title: str
+    issue_type: Literal[
+        "runtime_dependency_disabled",
+        "delivery_parent_missing",
+        "delivery_dependency_missing",
+        "forbidden_feature_delivery",
+    ]
+    message: str
+    auto_fix: Literal[
+        "include_dependency_hidden",
+        "enable_dependency_hidden",
+    ] | None = None
+
+
+class FeatureRuntimeStatusDTO(ApiModel):
+    edition: str
+    base_profile: str
+    active_profile: str
+    state: Literal["normal", "session_preview", "customer_unlocked"]
+    preview_active: bool
+    session_override_active: bool
+    local_override_count: int
+    configuration_available: bool
 
 
 class FeatureStateUpdateDTO(ApiModel):
@@ -131,13 +165,13 @@ class FeatureStateUpdateDTO(ApiModel):
 
 
 class FeatureSettingsUpdateDTO(ApiModel):
-    target: FeatureConfigurationTarget = "runtime"
+    target: FeatureConfigurationTarget = "customer"
     items: list[FeatureStateUpdateDTO]
     confirmed: bool
 
 
 class FeatureSettingsRestoreDTO(ApiModel):
-    target: FeatureConfigurationTarget = "runtime"
+    target: FeatureConfigurationTarget = "customer"
     confirmed: bool
 
 
@@ -165,7 +199,8 @@ def _path_text(value: str) -> str:
 
 
 __all__ = [
-    "FeatureConfigurationTarget", "FeatureSettingsRestoreDTO", "FeatureSettingsSnapshotDTO",
+    "FeatureConfigurationTarget", "FeatureDependencyIssueDTO", "FeatureRuntimeStatusDTO",
+    "FeatureSettingsRestoreDTO", "FeatureSettingsSnapshotDTO",
     "FeatureSettingsUpdateDTO", "FeatureStateDTO", "FeatureStateUpdateDTO",
     "NetworkComponentStatusDTO", "NetworkComponentsSnapshotDTO", "NetworkComponentUpdateDTO",
     "RuntimeSelfCheckItemDTO", "RuntimeSelfCheckSnapshotDTO",

@@ -10,6 +10,7 @@ import zipfile
 from pathlib import Path
 
 from netconsole.core.feature_flags import (
+    PACKAGED_ENABLED_ONLY_FEATURE_IDS,
     PACKAGED_PRODUCTION_FEATURE_IDS,
     FeatureGate,
     engineer_package_enabled,
@@ -378,6 +379,9 @@ def validate_packaged_core_features(gate: FeatureGate) -> None:
     for feature_id in PACKAGED_PRODUCTION_FEATURE_IDS:
         if not gate.is_visible(feature_id) or not gate.is_enabled(feature_id):
             raise BuildError(f"Packaged build disables production feature: {feature_id}")
+    for feature_id in PACKAGED_ENABLED_ONLY_FEATURE_IDS:
+        if not gate.is_enabled(feature_id):
+            raise BuildError(f"Packaged build disables hidden production capability: {feature_id}")
     for item in list_features():
         if item.internal_only or item.status in {
             FeatureStatus.DISABLED,

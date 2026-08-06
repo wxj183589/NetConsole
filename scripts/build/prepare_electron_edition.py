@@ -12,6 +12,7 @@ from netconsole.core.feature_flags import (
     hash_admin_unlock_password,
     install_embedded_feature_files,
     profiles_dir,
+    validate_feature_profile_payload,
     verify_admin_unlock_password,
 )
 
@@ -101,9 +102,15 @@ def prepare_electron_edition(
 def _load_profile_payload(profile: str) -> dict[str, Any]:
     source = profiles_dir() / f"{profile}.json"
     if not source.exists():
-        return default_profile(profile)
-    payload = _read_json(source)
+        payload = default_profile(profile)
+    else:
+        payload = _read_json(source)
     payload["profile"] = profile
+    errors = validate_feature_profile_payload(payload, profile=profile)
+    if errors:
+        heading = f"{profile.upper()} PROFILE INVALID"
+        detail = "\n".join(f"- {error}" for error in errors)
+        raise EditionPreparationError(f"{heading}\n{detail}")
     return payload
 
 

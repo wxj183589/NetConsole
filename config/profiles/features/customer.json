@@ -437,6 +437,18 @@
       "client_package": false,
       "internal_only": false
     },
+    "web.online_mr_session_open_location": {
+      "visible": false,
+      "enabled": false,
+      "client_package": false,
+      "internal_only": false
+    },
+    "web.online_mr_session_delete": {
+      "visible": false,
+      "enabled": false,
+      "client_package": false,
+      "internal_only": false
+    },
     "web.rail_transit_base_data": {
       "visible": true,
       "enabled": true,
@@ -480,9 +492,9 @@
       "internal_only": false
     },
     "web.rail_task_control": {
-      "visible": true,
+      "visible": false,
       "enabled": true,
-      "client_package": false,
+      "client_package": true,
       "internal_only": false
     },
     "web.rail_transit_wireless_dashboard": {
@@ -492,9 +504,9 @@
       "internal_only": false
     },
     "web.rail_train_online": {
-      "visible": true,
+      "visible": false,
       "enabled": true,
-      "client_package": false,
+      "client_package": true,
       "internal_only": false
     },
     "web.ground_unattended": {
