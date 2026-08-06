@@ -135,7 +135,7 @@ def is_device_eligible_for_automatic_collection(device: "Device") -> bool:
 
 
 def normalize_device_vendor(value: object) -> str:
-    """Legacy canonical form retained for callers that display known vendors."""
+    """Legacy canonical form retained for existing callers."""
 
     text = normalize_device_vendor_text(value)
     normalized = _DEVICE_VENDOR_ALIASES.get(text.casefold())

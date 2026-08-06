@@ -22,10 +22,11 @@
   {"path":"scripts/maintenance/check_online_mr_session_state.py","classification":"READ_ONLY_DATA_GATEWAY","owner":"online-mr","reason":"只读会话诊断脚本。"},
   {"path":"scripts/maintenance/migrate_legacy_runtime_data.py","classification":"MIGRATION_TOOL","owner":"data","reason":"历史运行数据迁移脚本。"},
   {"path":"scripts/maintenance/migrate_unified_data_root.py","classification":"MIGRATION_TOOL","owner":"data","reason":"显式统一数据根迁移工具仅对 staging 中发现的 SQLite 副本执行只读完整性校验，源目录在发布前保持不变。"},
-  {"path":"scripts/maintenance/rebuild_mesh_parsed_data.py","classification":"MIGRATION_TOOL","owner":"mesh","reason":"显式重建 MESH 可派生 SQLite 的维护工具。"},
   {"path":"scripts/maintenance/backfill_trackside_ap_station_identity.py","classification":"MIGRATION_TOOL","owner":"rail-transit","reason":"轨旁 AP station_id 维护工具仅接受显式数据库副本，默认 dry-run；apply 受 revision hash 保护，不访问自动解析的正式局点库。"},
   {"path":"scripts/maintenance/upgrade_ap_extension_schema.py","classification":"MIGRATION_TOOL","owner":"ac","reason":"显式 schema 升级脚本。"},
   {"path":"src/netconsole/services/mesh_parsed_rebuild_service.py","classification":"ANALYSIS_DB_OWNER","owner":"mesh","reason":"在 Job Worker 中归档、重建、校验并失败回滚 MESH 派生 SQLite；原始日志只读保留。"},
+  {"path":"src/netconsole/services/database_upgrade/sqlite_consistency.py","classification":"REPOSITORY_REQUIRED","owner":"data","reason":"统一数据库升级框架的 SQLite Backup、WAL checkpoint 和只读完整性校验边界。"},
+  {"path":"src/netconsole/services/mesh_derived_data_maintenance_service.py","classification":"ANALYSIS_DB_OWNER","owner":"mesh","reason":"MESH 派生数据库维护状态与来源恢复的 SQLite 生命周期所有者。"},
   {"path":"src/netconsole/services/mesh_source_rebuild_service.py","classification":"ANALYSIS_DB_OWNER","owner":"mesh","reason":"在 Job Worker 中恢复单一 raw 来源、生成并原子替换当前 detail SQLite，失败时恢复旧 detail 与来源元数据。"},
   {"path":"src/netconsole/services/mesh_analysis_report.py","classification":"READ_ONLY_DATA_GATEWAY","owner":"mesh","reason":"MESH 报告只读数据网关。"},
   {"path":"src/netconsole/services/mesh_bundle_import_service.py","classification":"ANALYSIS_DB_OWNER","owner":"mesh","reason":"MESH ZIP 隔离副本的 SQLite Backup、staging 绝对路径改写、提交前完整性复验与 checkpoint 生命周期所有者；正式 Profile 数据仍通过既有 Mesh Repository 生成。"},
@@ -94,5 +95,9 @@
   {"path":"tests/test_vehicle_mr_online.py","classification":"TEST_ONLY","owner":"test","reason":"Vehicle MR 测试 fixture。"},
   {"path":"scripts/maintenance/remap_mesh_identity.py","classification":"MIGRATION_TOOL","owner":"mesh","reason":"显式 MESH 身份重映射维护工具仅对用户指定的分析库执行受控迁移。"},
   {"path":"tests/test_mesh_identity_remap.py","classification":"TEST_ONLY","owner":"test","reason":"MESH 身份重映射测试构造 pytest 临时 SQLite 副本。"},
-  {"path":"tests/test_mesh_source_delete_service.py","classification":"TEST_ONLY","owner":"test","reason":"MESH 来源删除服务测试构造临时 SQLite 副本。"}
+  {"path":"tests/test_mesh_source_delete_service.py","classification":"TEST_ONLY","owner":"test","reason":"MESH 来源删除服务测试构造临时 SQLite 副本。"},
+  {"path":"tests/test_database_upgrade_api.py","classification":"TEST_ONLY","owner":"test","reason":"数据库升级 API 测试 fixture。"},
+  {"path":"tests/test_database_upgrade_framework.py","classification":"TEST_ONLY","owner":"test","reason":"数据库升级框架测试 fixture。"},
+  {"path":"tests/test_mesh_derived_data_maintenance_service.py","classification":"TEST_ONLY","owner":"test","reason":"MESH 派生数据库维护测试 fixture。"},
+  {"path":"tests/test_mesh_local_scan_service.py","classification":"TEST_ONLY","owner":"test","reason":"MESH 本地扫描测试 fixture。"}
 ]

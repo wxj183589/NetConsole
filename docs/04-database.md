@@ -16,6 +16,14 @@ If the database already exists, `Database.initialize()` applies only additive, i
 
 Current schema version: `2026.08.01.ap_identity_and_trackside_ap_location`. The prior query-plan evidence and rollback boundaries remain recorded in [the E6 database archive](archive/migrations/electron-only/E6-2026-07-18.md).
 
+## Shared database upgrade framework
+
+`src/netconsole/services/database_upgrade/` provides the common `DatabaseUpgradeCoordinator`, `DatabaseUpgradeRegistry`, verified backup store, upgrade journal, history organizer, and GUI management service. The coordinator owns the maintenance lock, WAL checkpoint, consistent backup, shadow build, validation, atomic switch, reopen/smoke test, rollback, and interrupted-startup recovery lifecycle. It does not know business tables. Each database kind must supply its own descriptor and adapter and choose one of `SCHEMA_MIGRATION`, `REBUILD_FROM_SOURCE`, `EMPTY_DATABASE_RECREATE`, or `MANUAL_INTERVENTION_REQUIRED`; authoritative databases must never inherit a generic delete-and-recreate policy.
+
+The first production adapter is `mesh_derived`. MESH is a rebuildable derived database, so an incompatible schema can be rebuilt only from source rows actually registered in that Profile plus files frozen by the current import request. The adapter must not traverse all Profiles or treat every file in `raw/` as an existing source. Missing raw files remain registered with a warning, and `raw/` itself is never moved or deleted by database repair. Device, task, unattended, Agent, and other SQLite databases are not yet migrated to this framework; they continue to use their existing ordered initialization/migration code until a dedicated adapter is implemented and tested.
+
+Every upgrade first writes a verified copy below `<data_root>/backups/database_upgrade/`. The old database remains recoverable until the shadow database has passed schema/integrity validation and the reopened active database has passed its business smoke test. A failed or partially completed switch restores the rollback file or the verified backup and retains the failed new database for diagnosis. Successful backups are not subject to automatic retention cleanup; only an explicitly confirmed GUI action may delete one. See [Data and path layout](DATA_LAYOUT.md) for the permanent path and retention contract.
+
 The 2026-07-30 device classification migration uses `project_phase` only for
 the construction phase and adds the following work-scope fields to `devices`:
 `work_scope_status`, `work_scope_reason`, `work_scope_updated_at`, and

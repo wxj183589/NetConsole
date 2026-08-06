@@ -402,6 +402,18 @@ FEATURES: tuple[FeatureItem, ...] = (
         "page",
     ),
     FeatureItem(
+        "web.database_upgrade",
+        "数据库升级与备份（Web）",
+        "web.system_settings",
+        "page",
+    ),
+    FeatureItem("web.database_upgrade_start", "启动数据库升级（Web）", "web.database_upgrade", "action"),
+    FeatureItem("web.database_backup_validate", "验证数据库备份（Web）", "web.database_upgrade", "action"),
+    FeatureItem("web.database_backup_restore", "恢复数据库备份（Web）", "web.database_upgrade", "action"),
+    FeatureItem("web.database_backup_delete", "删除数据库备份（Web）", "web.database_upgrade", "action"),
+    FeatureItem("web.database_backup_open_directory", "打开数据库备份目录（Web）", "web.database_upgrade", "action"),
+    FeatureItem("web.database_legacy_archive_organize", "整理历史数据库归档（Web）", "web.database_upgrade", "action"),
+    FeatureItem(
         "web.feature_switch",
         "功能开关配置（Web）",
         "system.feature_flags",

@@ -835,6 +835,10 @@ class AcManagementQueryService:
             if isinstance(topology, ResolvedApTopology)
             else str(row.get("location_note") or row.get("extension_location_desc") or "")
         )
+        display_mileage = format_track_mileage(
+            resolved_mileage,
+            direction=resolved_direction,
+        )
         return AcApDTO(
             id=str(row.get("ap_uuid") or f"unauth-{row.get('id') or row.get('ap_name') or 'unknown'}"),
             ac_id=ac_id,
@@ -875,7 +879,7 @@ class AcManagementQueryService:
             detail_updated_at=str(detail.get("updated_at") or ""),
             detail_available=bool(detail),
             section=resolved_section,
-            mileage=resolved_mileage if resolved_mileage != "-" else "",
+            mileage=display_mileage if display_mileage != "-" else "",
             direction=resolved_direction,
             location_note=resolved_location,
             point_code=str(row.get("extension_ap_point_code") or ""),

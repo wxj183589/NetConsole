@@ -38,6 +38,11 @@ from netconsole.services.network_tools.job_handlers import (
 )
 from netconsole.services.traffic.application_service import TRAFFIC_CONTROLLER_TASK_TYPES
 from netconsole.services.job_center.handlers.site_jobs import SITE_STORAGE_OWNER, SITE_STORAGE_TASK_TYPES
+from netconsole.services.job_center.handlers.database_jobs import (
+    DATABASE_UPGRADE_NONCANCELLABLE_TASK_TYPES,
+    DATABASE_UPGRADE_OWNER,
+    DATABASE_UPGRADE_TASK_TYPES,
+)
 from netconsole.services.traffic.errors import TrafficTestError
 
 
@@ -279,6 +284,11 @@ async def cancel(request: Request, task_id: str) -> JobCenterTaskDTO:
         elif task.owner == SITE_STORAGE_OWNER and task.type in SITE_STORAGE_TASK_TYPES:
             if not request.app.state.site_process_adapter.cancel_job(task_id):
                 raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="局点存储任务已结束或不在当前进程")
+        elif task.owner == DATABASE_UPGRADE_OWNER and task.type in DATABASE_UPGRADE_TASK_TYPES:
+            if task.type in DATABASE_UPGRADE_NONCANCELLABLE_TASK_TYPES:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="数据库备份删除提交后不可停止")
+            if not request.app.state.site_process_adapter.cancel_job(task_id):
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="数据库维护任务已结束或不在当前进程")
         elif task.owner == "controller" and task.type in TRAFFIC_CONTROLLER_TASK_TYPES:
             await request.app.state.traffic_web_application_service.cancel_controller_task(task_id)
         else:

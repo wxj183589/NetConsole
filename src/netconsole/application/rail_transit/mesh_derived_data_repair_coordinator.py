@@ -41,7 +41,8 @@ class MeshDerivedDataRepairCoordinator:
         operation_payload: Mapping[str, object],
     ) -> RailTransitTaskDTO | None:
         maintenance = MeshDerivedDataMaintenanceService(self.paths)
-        inspection = maintenance.inspect(site_id)
+        profile_ids = _profile_ids_from_payload(operation_payload)
+        inspection = maintenance.inspect(site_id, profile_ids=profile_ids or None)
         if bool(inspection["compatible"]):
             return None
         maintenance.enqueue_operation(
@@ -65,6 +66,7 @@ class MeshDerivedDataRepairCoordinator:
                     f"mesh-import:{site_id}",
                 ],
                 "resource_conflict_message": "当前局点正在自动修复 MESH 分析数据库",
+                "profile_ids": list(profile_ids),
             },
         )
         try:
@@ -86,6 +88,23 @@ class MeshDerivedDataRepairCoordinator:
             message=snapshot.message,
             error_message=snapshot.error_message,
         )
+
+
+def _profile_ids_from_payload(payload: Mapping[str, object]) -> tuple[str, ...]:
+    values: list[str] = []
+    profile = payload.get("profile")
+    if isinstance(profile, Mapping):
+        value = str(profile.get("mr_id") or "").strip()
+        if value:
+            values.append(value)
+    mappings = payload.get("mappings")
+    if isinstance(mappings, (list, tuple)):
+        for item in mappings:
+            if isinstance(item, Mapping):
+                value = str(item.get("profile_id") or "").strip()
+                if value:
+                    values.append(value)
+    return tuple(dict.fromkeys(values))
 
 
 __all__ = ["MeshDerivedDataRepairCoordinator"]

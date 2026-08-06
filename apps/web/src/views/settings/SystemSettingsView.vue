@@ -6,13 +6,14 @@ import {
   clearFeatureRuntimeOverrides, exitFeatureSettingsPreview, getFeatureRuntimeStatus, getSystemSettings,
   reloadFeatureGate, reloadSystemSettings, saveSystemSettings, getRuntimeSelfCheck,
 } from '../../api/systemSettings'
-import { loadWebFeatures } from '../../features'
+import { isFeatureEnabled, loadWebFeatures } from '../../features'
 import { t } from '../../i18n/runtime'
 import { getPlatformAdapter, resolveWebSocketUrl } from '../../platform/runtime'
 import { applySystemAppearance } from '../../settings/appearance'
 import { useConfirm } from '../../components/feedback/useConfirm'
 import type { FeatureRuntimeStatus, RuntimeSelfCheckItem, RuntimeSelfCheckSnapshot, SystemSettingsSnapshot, SystemSettingsValues } from '../../types/systemSettings'
 import SiteStoragePanel from './SiteStoragePanel.vue'
+import DatabaseUpgradePanel from '../../components/settings/DatabaseUpgradePanel.vue'
 
 const emptyValues: SystemSettingsValues = {
   theme: 'light', language: 'zh_CN', theme_color: '#0078D4', iperf_path: '', fping_path: '', ipop_path: '',
@@ -419,6 +420,8 @@ function message(cause: unknown, fallback: string): string { return cause instan
     </section>
 
     <SiteStoragePanel ref="siteStoragePanel" :focused="siteStorageFocused" :switch-blocked="saving || anyDirty" />
+
+    <DatabaseUpgradePanel v-if="isFeatureEnabled('web.database_upgrade')" />
 
     <section class="settings-band feature-status-band">
       <div class="section-heading">
