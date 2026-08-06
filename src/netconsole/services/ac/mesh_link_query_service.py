@@ -36,6 +36,19 @@ _FRESH_SECONDS = 30
 _STALE_SECONDS = 300
 
 
+def _first_nonempty_text(primary: object, fallback: object) -> str:
+    """Return the first non-empty text value without treating valid falsey values as empty."""
+    for value in (primary, fallback):
+        if value is None:
+            continue
+        if isinstance(value, str):
+            if value.strip():
+                return value
+            continue
+        return str(value)
+    return ""
+
+
 def _normalize_vehicle_mac(value: object) -> str:
     from netconsole.services.vehicle_mr_online import normalize_mac
 
@@ -583,6 +596,16 @@ class AcMeshLinkQueryService:
                 if identity_matched
                 else None
             )
+            # Identity matching proves the AP identity only; topology fields can still be incomplete.
+            # Resolve each field independently so fallback never changes the matched AP or source.
+            identity_station = identity_match.station if identity_matched else ""
+            identity_section = identity_match.section if identity_matched else ""
+            identity_mileage = identity_match.mileage if identity_matched else ""
+            identity_line_side = identity_match.direction if identity_matched else ""
+            ap_station = ap.station if ap else ""
+            ap_section = ap.section if ap else ""
+            ap_mileage = ap.mileage if ap else ""
+            ap_line_side = ap.direction if ap else ""
             mr_id = device.uuid if device else _normalize_vehicle_mac(raw.get("peer_mac")) or self._normalize_name(raw.get("peer_name")) or f"link-{raw['id']}"
             link_status = str(raw.get("status") or "")
             result.append(
@@ -623,34 +646,10 @@ class AcMeshLinkQueryService:
                     peer_radio=f"Mesh Radio {radio_id}" if radio_id else "",
                     mesh_interface=f"Mesh Radio {radio_id}" if radio_id else "",
                     rssi=self._optional_int(raw.get("rssi")),
-                    station=(
-                        identity_match.station
-                        if identity_matched
-                        else ap.station
-                        if ap
-                        else ""
-                    ),
-                    section=(
-                        identity_match.section
-                        if identity_matched
-                        else ap.section
-                        if ap
-                        else ""
-                    ),
-                    mileage=(
-                        identity_match.mileage
-                        if identity_matched
-                        else ap.mileage
-                        if ap
-                        else ""
-                    ),
-                    line_side=(
-                        identity_match.direction
-                        if identity_matched
-                        else ap.direction
-                        if ap
-                        else ""
-                    ),
+                    station=_first_nonempty_text(identity_station, ap_station),
+                    section=_first_nonempty_text(identity_section, ap_section),
+                    mileage=_first_nonempty_text(identity_mileage, ap_mileage),
+                    line_side=_first_nonempty_text(identity_line_side, ap_line_side),
                     ap_rx_power=optical.rx_power if optical else "",
                     switch_rx_power=optical.switch_rx_power if optical else "",
                     last_seen_at=str(raw.get("ac_time") or raw.get("created_at") or snapshot.collected_at),
