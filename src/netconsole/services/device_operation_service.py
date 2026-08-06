@@ -30,6 +30,7 @@ from netconsole.services.device_command_profile_service import (
     device_operation_capability,
     resolve_device_operation_profile,
 )
+from netconsole.services.device_collection_support import resolve_device_collection_support
 from netconsole.services.job_center.job_context import JobContext
 from netconsole.services.job_center.local_process_adapter import LocalProcessAdapter
 from netconsole.services.job_center.task_application_service import TaskApplicationService
@@ -115,6 +116,20 @@ class DeviceOperationService:
         self, device: Device, fact: dict[str, object | None] | None = None
     ) -> DeviceCapability:
         platform_facts = self._platform_facts(device, fact)
+        support = resolve_device_collection_support(
+            device,
+            DEVICE_INVENTORY_OPERATION_ID,
+            platform_facts=platform_facts,
+            paths=self.paths,
+        )
+        if not support.supported:
+            return DeviceCapability(
+                capability_id=DEVICE_INVENTORY_OPERATION_ID,
+                available=False,
+                executable=False,
+                source="device_collection_support",
+                reason=support.reason_message,
+            )
         return device_operation_capability(
             device,
             DEVICE_INVENTORY_OPERATION_ID,
@@ -129,6 +144,27 @@ class DeviceOperationService:
         *,
         idempotency_key: str | None = None,
     ) -> DeviceOperationTask:
+        device = self.gateway.get_device(device_uuid)
+        if device is None:
+            raise KeyError(device_uuid)
+        facts = self._platform_facts(device, self.gateway.get_fact(device_uuid))
+        support = resolve_device_collection_support(
+            device,
+            operation_id,
+            platform_facts=facts,
+            paths=self.paths,
+        )
+        if not support.supported:
+            return DeviceOperationTask(
+                task_id="",
+                operation_id=operation_id,
+                status="SKIPPED",
+                reused=False,
+                message=support.reason_message,
+                profile_id=None,
+                profile_version=None,
+                reason_code=support.reason_code,
+            )
         plan = self._plan(device_uuid, operation_id)
         return self._start_planned(plan, idempotency_key=idempotency_key)
 
@@ -264,7 +300,9 @@ class DeviceOperationService:
         device: Device, fact: dict[str, object | None] | None
     ) -> DevicePlatformFacts:
         return identify_device_platform(
-            vendor=(fact or {}).get("vendor") or device.device_vendor,
+            # Driver selection is always anchored to the managed device record.
+            # A stale fact must never redirect an unsupported vendor to H3C/ZTE.
+            vendor=device.vendor_key,
             device_type=device.device_type,
             software_version=(fact or {}).get("software_version"),
             collected_at=(fact or {}).get("collected_at"),

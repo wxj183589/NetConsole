@@ -52,6 +52,7 @@ class DeviceOperationTask:
     message: str | None = None
     profile_id: str | None = None
     profile_version: int | None = None
+    reason_code: str | None = None
 
 
 def normalize_device_role(device_type: object) -> DeviceRole:

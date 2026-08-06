@@ -380,6 +380,7 @@ class DeviceRefreshTaskDTO(ApiModel):
     message: str | None = None
     profile_id: str | None = None
     profile_version: int | None = None
+    reason_code: str | None = None
 
 
 __all__ = [name for name in globals() if name.endswith("DTO")]

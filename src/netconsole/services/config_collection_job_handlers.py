@@ -149,7 +149,7 @@ def config_web_save_force(context: JobContext) -> dict[str, object]:
             },
         )
         device = devices.get_by_uuid(device_uuid)
-        if device is None or str(device.device_vendor or "").upper() != "H3C":
+        if device is None or device.vendor_key != "h3c":
             failed_items.append({"device_uuid": device_uuid, "error": "H3C 设备不存在"})
         else:
             item_result = service.save_force(device)
