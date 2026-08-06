@@ -11,6 +11,7 @@ import TaskDetailDrawer from '../../task-center/components/TaskDetailDrawer.vue'
 import { useTaskStore } from '../../stores/tasks'
 import type { TaskItem } from '../../types/task'
 import { activeTaskStatuses } from '../../utils/taskStatus'
+import { formatTaskDateTime } from '../../utils/dateTime'
 
 const store = useTaskStore()
 const route = useRoute()
@@ -40,7 +41,7 @@ const columns: NcTableColumn<TaskItem>[] = [
   { key: 'site_name', label: '局点', valueType: 'text' },
   { key: 'device_name', label: '设备', valueType: 'name' },
   { key: 'executor', label: 'Owner / 执行端', valueType: 'text', displayValue: (row) => `${row.owner || '—'} / ${row.executor}` },
-  { key: 'started_time', label: '开始时间', valueType: 'datetime', displayValue: (row) => formatTime(row.started_time || row.created_time) },
+  { key: 'started_time', label: '开始时间', valueType: 'datetime', displayValue: (row) => formatTaskDateTime(row.started_time || row.created_time) },
   { key: 'duration_seconds', label: '持续时间', valueType: 'duration', displayValue: (row) => formatDuration(row.duration_seconds) },
   { key: 'session_id', label: 'Session', valueType: 'text' },
   { key: 'error_summary', label: '错误 / 告警', valueType: 'error', align: 'left', alignmentReason: 'long-text' },
@@ -157,12 +158,6 @@ function businessResultText(task: TaskItem): string {
     task.warning_count ? `告警 ${task.warning_count}` : '',
   ].filter(Boolean)
   return counts.length ? `${status} · ${counts.join(' / ')}` : status
-}
-
-function formatTime(value: string): string {
-  if (!value) return '--'
-  const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN', { hour12: false })
 }
 
 function formatDuration(seconds: number): string {

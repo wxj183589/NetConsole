@@ -10,6 +10,7 @@ import type { TaskItem } from '../../types/task'
 import { downloadBackendResource, getPlatformAdapter } from '../../platform/runtime'
 import { t } from '../../i18n/runtime'
 import { useUserSelectedExport } from '../../composables/useUserSelectedExport'
+import { formatTaskDateTime, taskDateTimeTitle } from '../../utils/dateTime'
 import {
   isTracksideApBusinessArtifactTask,
   saveTracksideApBusinessArtifact,
@@ -247,12 +248,6 @@ onBeforeUnmount(() => {
   clearSavedCapability()
   if (ownsDetailContext) store.setDetailVisible(false)
 })
-
-function formatTime(value: string): string {
-  if (!value) return '--'
-  const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN', { hour12: false })
-}
 
 function formatDuration(seconds: number): string {
   const total = Math.max(0, Math.round(seconds || 0))
@@ -556,8 +551,13 @@ function handleClosed(): void {
           <el-descriptions-item label="设备">{{ store.selected.device_name || '--' }}（{{ store.selected.device_id || '--' }}）</el-descriptions-item>
           <el-descriptions-item label="MR">{{ store.selected.mr_name || '--' }}</el-descriptions-item>
           <el-descriptions-item label="Agent">{{ store.selected.agent || '--' }}</el-descriptions-item>
-          <el-descriptions-item label="开始时间">{{ formatTime(store.selected.started_time) }}</el-descriptions-item>
-          <el-descriptions-item label="结束时间">{{ formatTime(store.selected.finished_time) }}</el-descriptions-item>
+          <el-descriptions-item label="创建时间" :title="taskDateTimeTitle(store.selected.created_time)">{{ formatTaskDateTime(store.selected.created_time) }}</el-descriptions-item>
+          <el-descriptions-item label="开始时间" :title="taskDateTimeTitle(store.selected.started_time)">{{ formatTaskDateTime(store.selected.started_time) }}</el-descriptions-item>
+          <el-descriptions-item label="结束时间" :title="taskDateTimeTitle(store.selected.finished_time)">{{ formatTaskDateTime(store.selected.finished_time) }}</el-descriptions-item>
+          <el-descriptions-item label="更新时间" :title="taskDateTimeTitle(store.selected.updated_time)">{{ formatTaskDateTime(store.selected.updated_time) }}</el-descriptions-item>
+          <el-descriptions-item label="过期时间" :title="taskDateTimeTitle(store.selected.expires_at || '')">{{ formatTaskDateTime(store.selected.expires_at || '') }}</el-descriptions-item>
+          <el-descriptions-item label="处理时间" :title="taskDateTimeTitle(store.selected.acknowledged_at || '')">{{ formatTaskDateTime(store.selected.acknowledged_at || '') }}</el-descriptions-item>
+          <el-descriptions-item v-if="store.selected.text_integrity_updated_at" label="恢复校验时间" :title="taskDateTimeTitle(store.selected.text_integrity_updated_at)">{{ formatTaskDateTime(store.selected.text_integrity_updated_at) }}</el-descriptions-item>
           <el-descriptions-item label="持续时间">{{ formatDuration(store.selected.duration_seconds) }}</el-descriptions-item>
           <el-descriptions-item label="Mapping">{{ store.selected.mapping_state || '--' }}</el-descriptions-item>
           <el-descriptions-item label="错误码">{{ store.selected.error_code || '--' }}</el-descriptions-item>
@@ -577,7 +577,7 @@ function handleClosed(): void {
             <el-descriptions-item label="Parser">{{ store.selected.parser_version || '--' }}</el-descriptions-item>
           </template>
           <template v-if="store.selected.type === 'web_export_trackside_ap_business'">
-            <el-descriptions-item label="数据快照时间">{{ formatTime(stringDetail('snapshot_created_at')) }}</el-descriptions-item>
+            <el-descriptions-item label="数据快照时间">{{ formatTaskDateTime(stringDetail('snapshot_created_at')) }}</el-descriptions-item>
             <el-descriptions-item label="导出行数">{{ numberDetail('row_count') }}</el-descriptions-item>
             <el-descriptions-item label="业务 Revision"><code>{{ stringDetail('business_revision') || '--' }}</code></el-descriptions-item>
             <el-descriptions-item label="快照 ID"><code>{{ stringDetail('snapshot_id') || '--' }}</code></el-descriptions-item>
@@ -591,12 +591,12 @@ function handleClosed(): void {
             <el-descriptions-item label="重连 / 连续失败">
               {{ numberDetail('reconnect_count') }} / {{ numberDetail('consecutive_failures') }}
             </el-descriptions-item>
-            <el-descriptions-item label="最近成功">{{ formatTime(stringDetail('last_success_at', '')) }}</el-descriptions-item>
-            <el-descriptions-item label="下次轮询">{{ formatTime(stringDetail('next_poll_at', '')) }}</el-descriptions-item>
+            <el-descriptions-item label="最近成功">{{ formatTaskDateTime(stringDetail('last_success_at', '')) }}</el-descriptions-item>
+            <el-descriptions-item label="下次轮询">{{ formatTaskDateTime(stringDetail('next_poll_at', '')) }}</el-descriptions-item>
             <el-descriptions-item label="最近快照">
               {{ stringDetail('latest_snapshot_id') }} · {{ numberDetail('latest_snapshot_record_count') }} 条
             </el-descriptions-item>
-            <el-descriptions-item label="心跳">{{ formatTime(stringDetail('heartbeat_at', '')) }}</el-descriptions-item>
+            <el-descriptions-item label="心跳">{{ formatTaskDateTime(stringDetail('heartbeat_at', '')) }}</el-descriptions-item>
             <el-descriptions-item v-if="selectedDetails.last_error_message" label="最近异常" :span="2">
               {{ stringDetail('last_error_message') }}
             </el-descriptions-item>
@@ -705,10 +705,10 @@ function handleClosed(): void {
             <el-alert v-if="store.logError" :title="store.logError" type="error" :closable="false" show-icon />
             <div ref="logContainer" class="task-log" @scroll="handleLogScroll">
               <div v-for="line in store.logs" :key="line.sequence" :class="['log-line', logLineClass(line)]">
-                <time>{{ formatTime(line.time) }}</time><span>{{ logStatusLabel(line) }}</span><p>{{ line.message }}<small v-if="line.details?.reason_code"> · {{ reasonLabel(line.details.reason_code) }}</small></p>
+                <time :title="taskDateTimeTitle(line.time)">{{ formatTaskDateTime(line.time) }}</time><span>{{ logStatusLabel(line) }}</span><p>{{ line.message }}<small v-if="line.details?.reason_code"> · {{ reasonLabel(line.details.reason_code) }}</small></p>
               </div>
               <div v-for="line in businessLogSummaryLines" :key="line.key" :class="['log-line', 'business-log-summary', line.tone]">
-                <time>{{ store.selected.finished_time ? formatTime(store.selected.finished_time) : '--' }}</time><span>{{ line.label }}</span><p>{{ line.value }}</p>
+                <time :title="taskDateTimeTitle(store.selected.finished_time)">{{ formatTaskDateTime(store.selected.finished_time) }}</time><span>{{ line.label }}</span><p>{{ line.value }}</p>
               </div>
               <el-empty v-if="!store.logs.length && !store.logError" description="暂无日志" :image-size="68" />
             </div>

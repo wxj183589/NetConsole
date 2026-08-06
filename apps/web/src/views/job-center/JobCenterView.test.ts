@@ -34,6 +34,12 @@ it('renders the controlled point-table preview summary instead of a generic empt
   expect(detailSource).toContain("stringDetail('target_train_display', stringDetail('target_train'))")
 })
 
+it('uses the shared business-time formatter for the task list timestamp', () => {
+  expect(source).toContain("import { formatTaskDateTime } from '../../utils/dateTime'")
+  expect(source).toContain("displayValue: (row) => formatTaskDateTime(row.started_time || row.created_time)")
+  expect(source).not.toContain('toLocaleString')
+})
+
 const platformMocks = vi.hoisted(() => ({
   download: vi.fn(),
   open: vi.fn(),

@@ -10,6 +10,7 @@ import { useTaskStore } from '../../stores/tasks'
 import { useWorkspaceStore } from '../../stores/workspace'
 import type { TaskCleanupResult, TaskCleanupType, TaskItem } from '../../types/task'
 import { activeTaskStatuses, taskStatusLabel, taskStatusType } from '../../utils/taskStatus'
+import { formatTaskDateTime, parseUtcDateTime, taskDateTimeTitle } from '../../utils/dateTime'
 import {
   onTaskCenterOpenRequested,
   type TaskCenterOpenContext,
@@ -141,9 +142,15 @@ onBeforeUnmount(() => {
 })
 
 function sortNewest(left: TaskItem, right: TaskItem): number {
-  return String(right.updated_time || right.created_time).localeCompare(
-    String(left.updated_time || left.created_time),
-  )
+  const rightTime = taskTimestamp(right)
+  const leftTime = taskTimestamp(left)
+  return rightTime - leftTime || right.id.localeCompare(left.id)
+}
+
+function taskTimestamp(task: TaskItem): number {
+  return parseUtcDateTime(task.updated_time)?.getTime()
+    ?? parseUtcDateTime(task.created_time)?.getTime()
+    ?? Number.NEGATIVE_INFINITY
 }
 
 function sortDrawerTasks(left: TaskItem, right: TaskItem): number {
@@ -515,7 +522,7 @@ function terminalTitle(task: TaskItem, kind: 'success' | 'warning' | 'failure'):
             <span :class="['task-state-dot', taskStatusType(task.status)]"></span>
             <div>
               <strong>{{ task.name || task.type }}</strong>
-              <small>{{ taskStatusLabel(task.status) }} · {{ task.updated_time || task.created_time }}</small>
+              <small :title="taskDateTimeTitle(task.updated_time || task.created_time)">{{ taskStatusLabel(task.status) }} · {{ formatTaskDateTime(task.updated_time || task.created_time) }}</small>
             </div>
             <el-tag :type="task.has_warning ? 'warning' : taskStatusType(task.status)" size="small">
               {{ task.has_warning ? '部分完成' : taskStatusLabel(task.status) }}
