@@ -17,6 +17,7 @@ $script:MinimumPasswordLength = 8
 $script:MinimumFreeBytes = 10GB
 $script:PasswordEnvironmentName = "NETCONSOLE_CUSTOMER_UNLOCK_PASSWORD"
 $script:MutexName = "Global\NetConsoleLocalInstallerBuild"
+$script:CorepackPnpmVersion = "11.16.0"
 
 function Write-Stage {
     param(
@@ -46,6 +47,57 @@ function Resolve-NativeCommand {
         throw "未找到命令：$Name"
     }
     return $command.Source
+}
+
+function Resolve-PnpmCommand {
+    param(
+        [Parameter(Mandatory = $true)][string]$NodePath,
+        [Parameter(Mandatory = $true)][string]$ProjectRoot
+    )
+
+    $command = Get-Command "pnpm.cmd" -CommandType Application -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($null -ne $command) {
+        return [PSCustomObject]@{
+            Path = $command.Source
+            ShimRoot = $null
+            Source = "PATH"
+        }
+    }
+
+    $nodeDirectory = Split-Path -Parent $NodePath
+    $corepackPath = Join-Path $nodeDirectory "corepack.cmd"
+    if (-not (Test-Path -LiteralPath $corepackPath -PathType Leaf)) {
+        $corepack = Get-Command "corepack.cmd" -CommandType Application -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if ($null -eq $corepack) {
+            throw "未找到 pnpm.cmd，且当前 Node.js 未提供 corepack.cmd。请安装包含 Corepack 的 Node.js 24。"
+        }
+        $corepackPath = $corepack.Source
+    }
+
+    $buildRoot = Join-Path $ProjectRoot "dist\_build"
+    New-Item -ItemType Directory -Path $buildRoot -Force | Out-Null
+    $shimRoot = Join-Path $buildRoot ("package-tool-shim-" + [guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $shimRoot | Out-Null
+    $shimPath = Join-Path $shimRoot "pnpm.cmd"
+    $shimContent = @(
+        "@echo off",
+        "`"$corepackPath`" pnpm@$script:CorepackPnpmVersion %*",
+        "exit /b %ERRORLEVEL%",
+        ""
+    ) -join "`r`n"
+    [System.IO.File]::WriteAllText(
+        $shimPath,
+        $shimContent,
+        [System.Text.UTF8Encoding]::new($true)
+    )
+    $env:PATH = "$shimRoot$([System.IO.Path]::PathSeparator)$env:PATH"
+    return [PSCustomObject]@{
+        Path = $shimPath
+        ShimRoot = $shimRoot
+        Source = "Corepack pnpm@$script:CorepackPnpmVersion（进程内临时代理）"
+    }
 }
 
 function Invoke-NativeCapture {
@@ -405,6 +457,8 @@ $startedAt = Get-Date
 $logPath = $null
 $childLogPath = $null
 $stagingRoot = $null
+$pnpmShimRoot = $null
+$originalProcessPath = [Environment]::GetEnvironmentVariable("PATH", "Process")
 $script:CurrentStage = "初始化"
 
 try {
@@ -435,7 +489,9 @@ try {
     }
     $gitPath = Resolve-NativeCommand "git.exe"
     $nodePath = Resolve-NativeCommand "node.exe"
-    $pnpmPath = Resolve-NativeCommand "pnpm.cmd"
+    $pnpmResolution = Resolve-PnpmCommand -NodePath $nodePath -ProjectRoot $projectRoot
+    $pnpmPath = $pnpmResolution.Path
+    $pnpmShimRoot = $pnpmResolution.ShimRoot
     $powerShellPath = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
     if (-not (Test-Path -LiteralPath $powerShellPath)) {
         throw "未找到 Windows PowerShell 5.1：$powerShellPath"
@@ -490,6 +546,7 @@ try {
     Write-Host "Python：$(Invoke-NativeCapture $pythonPath @('--version') $projectRoot)"
     Write-Host "Node.js：$(Invoke-NativeCapture $nodePath @('--version') $projectRoot)"
     Write-Host "pnpm：$(Invoke-NativeCapture $pnpmPath @('--version') $projectRoot)"
+    Write-Host "pnpm 来源：$($pnpmResolution.Source)"
     Invoke-NativeCapture $pythonPath @("-m", "pip", "check") $projectRoot | Out-Null
     Write-Host "pip check：通过"
     Write-StageComplete 1 "构建环境"
@@ -568,6 +625,17 @@ catch {
     exit 1
 }
 finally {
+    if ($null -ne $pnpmShimRoot) {
+        [Environment]::SetEnvironmentVariable("PATH", $originalProcessPath, "Process")
+        $resolvedBuildRoot = [System.IO.Path]::GetFullPath((Join-Path $projectRoot "dist\_build"))
+        $resolvedShimRoot = [System.IO.Path]::GetFullPath($pnpmShimRoot)
+        if (
+            [System.IO.Path]::GetDirectoryName($resolvedShimRoot) -eq $resolvedBuildRoot -and
+            [System.IO.Path]::GetFileName($resolvedShimRoot).StartsWith("package-tool-shim-", [StringComparison]::Ordinal)
+        ) {
+            Remove-Item -LiteralPath $resolvedShimRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
     if ($originalPasswordPresent) {
         [Environment]::SetEnvironmentVariable($script:PasswordEnvironmentName, $originalPassword, "Process")
     }

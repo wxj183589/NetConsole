@@ -10,7 +10,7 @@
 
 ## 主要入口
 
-`package_windows.ps1` 是 Windows 正式安装包链路，`package_windows.bat` 可用于从传统终端启动。项目根目录的 `一键打包安装包.cmd` 调用 `package_local.ps1`，负责 SecureString 密码、单实例、日志和 `dist/release` 整理；正式构建仍由 `package_windows.ps1` 复用锁定依赖、两端测试、Electron `package:full/customer/all` 和最终 Gate。构建完成后会再次核对 release manifest、文件大小和 SHA-256。`-PreflightOnly` 只执行环境与 Git 预检。PowerShell 入口保持 UTF-8 BOM，以便 Windows PowerShell 5.1 在执行编码初始化语句前正确解析中文。
+`package_windows.ps1` 是 Windows 正式安装包链路，`package_windows.bat` 可用于从传统终端启动。项目根目录的 `一键打包安装包.cmd` 调用 `package_local.ps1`，负责 SecureString 密码、单实例、日志和 `dist/release` 整理；正式构建仍由 `package_windows.ps1` 复用锁定依赖、两端测试、Electron `package:full/customer/all` 和最终 Gate。构建完成后会再次核对 release manifest、文件大小和 SHA-256。`-PreflightOnly` 只执行环境与 Git 预检。未找到全局 `pnpm.cmd` 时，本地入口通过 Node 24 的 Corepack 建立固定 `pnpm@11.16.0` 进程内临时代理，不修改机器级 PATH 或全局 npm 安装。PowerShell 入口保持 UTF-8 BOM，以便 Windows PowerShell 5.1 在执行编码初始化语句前正确解析中文。
 
 `build_release.py`/`release.py` 编排底层发布，`check_packaged_runtime.py`、`check_runtime_deps.py`、`pyinstaller_artifact_inventory.py` 和工具校验脚本提供门禁。
 

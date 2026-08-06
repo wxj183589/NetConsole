@@ -484,6 +484,17 @@ describe('Local Windows packaging launcher', () => {
     expect(formalScript).toContain('Electron 分发目录恢复失败')
   })
 
+  it('falls back to a process-local Corepack pnpm without changing the machine', () => {
+    expect(localScript).toContain('CorepackPnpmVersion = "11.16.0"')
+    expect(localScript).toContain('corepack.cmd')
+    expect(localScript).toContain('package-tool-shim-')
+    expect(localScript).toContain('pnpm@$script:CorepackPnpmVersion %*')
+    expect(localScript).toContain('[Environment]::SetEnvironmentVariable("PATH", $originalProcessPath, "Process")')
+    expect(localScript).toContain('Remove-Item -LiteralPath $resolvedShimRoot -Recurse -Force')
+    expect(localScript).not.toContain('corepack enable')
+    expect(localScript).not.toContain('npm install -g')
+  })
+
   it('creates an atomic, self-contained release directory and summary', () => {
     expect(localScript).toContain('dist\\release')
     expect(localScript).toContain('.staging-')
