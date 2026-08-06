@@ -2284,6 +2284,129 @@ def test_trackside_online_status_refreshes_from_exact_switch_lldp_station_eviden
     assert snapshot.scope.resources[0]["site"] == "站点A"
 
 
+def test_trackside_online_status_recovers_from_ac_lldp_after_switch_identity_arrives(
+    tmp_path: Path,
+) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    paths.ensure_site_dirs("demo")
+    database = Database(paths.site_db_path("demo"))
+    database.initialize()
+    repository = AcRepository(database)
+    station_ids = _seed_base_stations(repository, ["站点A"])
+    repository.replace_trackside_ap_plan_rows(
+        TRACKSIDE_AP_PLAN_MODE,
+        [{
+            "station_id": station_ids["站点A"],
+            "station_name": "站点A",
+            "ap_count": 1,
+            "ap_management_vlans": "921",
+        }],
+    )
+    repository.replace_fit_ap_resources(
+        "ac-fixture",
+        [{
+            "ap_uuid": "ap-runtime-1",
+            "ap_name": "AP-RUNTIME-1",
+            "ap_mac": "0011-2233-4455",
+            "state": "R/M",
+            "lldp_neighbor_name": "HZDT-SC",
+            "lldp_neighbor_interface": "gei-0/3/0/1",
+            "lldp_match_status": "matched",
+        }],
+    )
+    group = DeviceGroupRepository(database, "demo").create("车站")
+    switch = DeviceRepository(database).create(
+        Device(
+            name="SW-ZTE-A",
+            primary_address="192.0.2.10",
+            device_type="SW",
+            group_id=group.id,
+            station="站点A",
+            station_id="",
+            project_phase="phase_1",
+            work_scope_status="included",
+        )
+    )
+    tasks = TaskApplicationService(paths=paths, site_name="demo")
+    service = RailTransitWebApplicationService(
+        paths,
+        tasks,
+        process_adapter=FakeLocalProcessAdapter(tasks),  # type: ignore[arg-type]
+        export_adapter=FakeExportProcessAdapter(tasks),  # type: ignore[arg-type]
+    )
+
+    before = service.get_trackside_ap_online_status("demo")
+    assert before.actual_online_count == 0
+    assert before.fit_ap_switch_not_found_count == 1
+    before_detail = service.list_trackside_ap_online_unmatched("demo")
+    assert before_detail.items[0].reason_code == "SWITCH_NOT_FOUND"
+
+    DeviceFactRepository(database).upsert_device_fact({
+        "device_uuid": str(switch.device_uuid),
+        "sysname": "hzdt_sc.example.com",
+        "collected_at": "2026-08-06T12:00:00+08:00",
+        "updated_at": "2026-08-06T12:00:00+08:00",
+    })
+
+    after = service.get_trackside_ap_online_status("demo")
+    assert after.cache_hit is False
+    assert after.revision != before.revision
+    assert after.actual_online_count == 1
+    assert after.fit_ap_matched_online_count == 1
+    assert after.fit_ap_unmatched_online_count == 0
+    assert after.source_revision["station_switch_fact_count"] == 1
+
+    snapshot = load_trackside_ap_business_snapshot(
+        DeviceRepository(database),
+        "demo",
+        generation=1,
+    )
+    assert snapshot.scope is not None
+    assert snapshot.scope.resources[0]["_scope_binding_source"] == "ac_lldp_switch_identity"
+
+
+def test_trackside_online_status_retries_when_source_revision_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    paths.ensure_site_dirs("demo")
+    database = Database(paths.site_db_path("demo"))
+    database.initialize()
+    repository = AcRepository(database)
+    _seed_effective_trackside_scope(
+        repository,
+        [("站点A", 1, 1, 1, "")],
+        numbered_display=False,
+    )
+    tasks = TaskApplicationService(paths=paths, site_name="demo")
+    service = RailTransitWebApplicationService(
+        paths,
+        tasks,
+        process_adapter=FakeLocalProcessAdapter(tasks),  # type: ignore[arg-type]
+        export_adapter=FakeExportProcessAdapter(tasks),  # type: ignore[arg-type]
+    )
+    original_revision = service._trackside_online_revision
+    calls = 0
+
+    def changing_revision(site_id: str, current_repository: AcRepository):
+        nonlocal calls
+        calls += 1
+        revision, source_revision = original_revision(site_id, current_repository)
+        return (
+            "stale-first-read" if calls == 1 else revision,
+            source_revision,
+        )
+
+    monkeypatch.setattr(service, "_trackside_online_revision", changing_revision)
+
+    status = service.get_trackside_ap_online_status("demo")
+
+    assert calls == 4
+    assert status.actual_online_count == 1
+    assert status.cache_hit is False
+
+
 def test_trackside_ap_online_status_ignores_reference_count_and_flags_excess(
     tmp_path: Path,
 ) -> None:

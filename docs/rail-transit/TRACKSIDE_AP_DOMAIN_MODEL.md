@@ -70,7 +70,9 @@ SQLite 使用一个 `BEGIN IMMEDIATE`；任何稳定 ID、引用、唯一性或�
 
 业务行分别公开 `switch_station_id`、`ap_station_id`、`planning_station_id` 和 `effective_station_id`，并返回 `station_consistency_status/reason`。三个来源一致时使用该 ID；存在冲突时不按名称或 VLAN 选边；只有规划有 ID 时可作为规划口径的有效站点，并保留原因诊断。
 
-LLDP 关联 FIT-AP 只接受规范化后的完整邻居/Chassis MAC 精确等值。设备管理中的当前车站交换机候选端口和 AC FIT-AP 运行态构成业务行主来源；交换机缺少正式 `station_id` 时仍保留设备管理站点文本和候选端口，基础 AP 资料只在精确命中时补充稳定关系。明确排除或多条基础资料不能被 LLDP 覆盖；基础 AP 完全未命中时，交换机有效 `station_id` 可直接作为只读运行态站点投影，缺失 ID 时只允许设备管理 `station` 唯一规范化命中当前正式站点后投影。该站名匹配只解析交换机归站，AP 仍由完整 MAC 精确关联；站名歧义、多站同 MAC、无证据和建设阶段不一致均保持稳定关系未解析。邻居 IP、系统名、AP 名称、VLAN 和历史接口名称不参与 AP 绑定。该投影不写入基础资料、设备绑定、规划或 AP Identity，也不把交换机接口提升为 AP 身份。每个业务请求固定一次 AP Identity 健康状态，逐行解析只读索引且不触发 rebuild。
+LLDP 关联 FIT-AP 只接受规范化后的完整 AP 邻居/Chassis MAC 精确等值。设备管理中的当前车站交换机候选端口和 AC FIT-AP 运行态构成业务行主来源；交换机缺少正式 `station_id` 时仍保留设备管理站点文本和候选端口，基础 AP 资料只在精确命中时补充稳定关系。明确排除或多条基础资料不能被 LLDP 覆盖；基础 AP 完全未命中时，交换机有效 `station_id` 可直接作为只读运行态站点投影，缺失 ID 时只允许设备管理 `station` 唯一规范化命中当前正式站点后投影。该站名匹配只解析交换机归站，AP 仍由完整 MAC 精确关联；站名歧义、多站同 MAC、无证据和建设阶段不一致均保持稳定关系未解析。AP 名称、VLAN 和历史接口名称不参与 AP 绑定。
+
+当交换机侧尚无 AP MAC 记录、但 AC/FIT-AP 已保存上联 LLDP 身份时，可在同一局点内按稳定交换机 UUID、唯一 Chassis/MAC、唯一管理地址、唯一规范化 system name、明确设备别名的顺序解析上联交换机。该 system name/IP/MAC 只识别交换机，不直接识别 AP，也不跨局点或以模糊相似度匹配；多候选返回 `SWITCH_IDENTITY_AMBIGUOUS`。交换机站点和逐站规划有效后生成 `ac_lldp_switch_identity` 只读投影。该投影不写入基础资料、设备绑定、规划或 AP Identity，也不把交换机接口提升为 AP 身份。每个业务请求固定一次 AP Identity 健康状态，逐行解析只读索引且不触发 rebuild。
 
 FIT-AP 运行态由 AC 原始状态统一判定：`R/M`、`R/B` 为在线，其余明确状态为离线，完全没有状态证据才为未知。轨旁业务从 FIT-AP 光衰事实读取最新 AP Rx，并通过共享业务函数按严格小于 `-13.90 dBm` 判异常；等于门限正常，空值、无效值和过期值未知。兼容字段 `ap_optical_status` 表示 AP 业务光衰，`ap_device_optical_status` 单独保留模块自身门限结果；交换机模块状态仍按交换机原生门限判断。固定门限不进入设备管理、AC/FIT-AP 资源或通用光模块状态。
 

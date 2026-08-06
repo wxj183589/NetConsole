@@ -1111,6 +1111,8 @@ class RailTransitWebApplicationService:
     def get_trackside_ap_online_status(
         self,
         site_id: str,
+        *,
+        _snapshot_attempt: int = 0,
     ) -> TracksideApOnlineStatusDTO:
         started = time.perf_counter()
         site_id = self._site(site_id)
@@ -1146,6 +1148,7 @@ class RailTransitWebApplicationService:
         runtime_station_rows = (
             repository.list_trackside_ap_runtime_station_evidence_rows()
         )
+        switch_identity_rows = repository.list_trackside_switch_identity_rows()
         identity_ms = (time.perf_counter() - identity_started) * 1000
         fit_ap_started = time.perf_counter()
         resources = repository.list_fit_ap_online_scope_rows()
@@ -1158,8 +1161,22 @@ class RailTransitWebApplicationService:
             reference_rows=references,
             resource_rows=resources,
             runtime_station_rows=runtime_station_rows,
+            switch_identity_rows=switch_identity_rows,
             detail_limit=0,
         )
+        confirmed_revision, _confirmed_source_revision = (
+            self._trackside_online_revision(site_id, repository)
+        )
+        if confirmed_revision != revision:
+            if _snapshot_attempt < 2:
+                return self.get_trackside_ap_online_status(
+                    site_id,
+                    _snapshot_attempt=_snapshot_attempt + 1,
+                )
+            raise TracksideApBusinessSnapshotError(
+                "TRACKSIDE_AP_SNAPSHOT_UNSTABLE",
+                "轨旁 AP 数据正在刷新，暂时无法形成一致快照，请稍后重试。",
+            )
         aggregation_ms = (time.perf_counter() - aggregation_started) * 1000
         serialization_started = time.perf_counter()
         result = [
@@ -1171,22 +1188,8 @@ class RailTransitWebApplicationService:
         actual_online_total = min(matched_online_total, planned_total)
         anomaly = any(row.count_anomaly for row in result)
         warning_parts = []
-        if scope.fit_ap_unmatched_online_count:
-            pending_count = (
-                scope.fit_ap_lldp_snapshot_stale_count
-                + scope.fit_ap_lldp_exact_match_pending_count
-            )
-            if pending_count:
-                warning_parts.append(
-                    f"数据质量提示：另有 {scope.fit_ap_unmatched_online_count} 个 AC 在线 AP "
-                    "未关联到 AP 规划维护中的有效站点，未计入业务统计；"
-                    f"其中 {pending_count} 个等待 LLDP 同步。"
-                )
-            else:
-                warning_parts.append(
-                    f"数据质量提示：另有 {scope.fit_ap_unmatched_online_count} 个 AC 在线 AP "
-                    "未关联到 AP 规划维护中的有效站点，未计入业务统计。"
-                )
+        if unmatched_summary := scope.unmatched_online_summary():
+            warning_parts.append(unmatched_summary)
         if scope.excluded_device_count:
             warning_parts.append(
                 f"已按项目、当前工作状态、站点关联和稳定身份排除 {scope.excluded_device_count} 项。"
@@ -1228,6 +1231,12 @@ class RailTransitWebApplicationService:
             fit_ap_ambiguous_online_count=scope.fit_ap_ambiguous_online_count,
             fit_ap_station_master_missing_count=scope.fit_ap_station_master_missing_count,
             fit_ap_unknown_association_count=scope.fit_ap_unknown_association_count,
+            fit_ap_switch_not_found_count=scope.fit_ap_switch_not_found_count,
+            fit_ap_switch_identity_ambiguous_count=scope.fit_ap_switch_identity_ambiguous_count,
+            fit_ap_switch_data_incomplete_count=scope.fit_ap_switch_data_incomplete_count,
+            fit_ap_plan_not_found_count=scope.fit_ap_plan_not_found_count,
+            fit_ap_plan_station_missing_count=scope.fit_ap_plan_station_missing_count,
+            fit_ap_plan_station_invalid_count=scope.fit_ap_plan_station_invalid_count,
             unmatched_online_items=[],
             generated_at=datetime.now().astimezone().isoformat(timespec="seconds"),
             revision=revision,
@@ -1309,19 +1318,43 @@ class RailTransitWebApplicationService:
     ):
         database = Database(self.paths.site_db_path(site_id))
         repository = AcRepository(database)
-        revision, _source_revision = self._trackside_online_revision(
-            site_id,
-            repository,
-        )
         metadata = SiteManager(self.paths).load_site_metadata(site_id)
-        scope = resolve_effective_trackside_ap_scope_from_database(
-            database,
-            site_id=site_id,
-            context=TracksideApScopeContext.from_metadata(site_id, metadata),
-            lightweight=True,
-            detail_limit=None,
+        for _attempt in range(3):
+            revision, source_revision = self._trackside_online_revision(
+                site_id,
+                repository,
+            )
+            scope = resolve_effective_trackside_ap_scope_from_database(
+                database,
+                site_id=site_id,
+                context=TracksideApScopeContext.from_metadata(site_id, metadata),
+                lightweight=True,
+                detail_limit=None,
+            )
+            confirmed_revision, _confirmed_source_revision = (
+                self._trackside_online_revision(site_id, repository)
+            )
+            if confirmed_revision != revision:
+                continue
+            generated_at = datetime.now().astimezone().isoformat(
+                timespec="milliseconds"
+            )
+            scope.unmatched_online_items = [
+                replace(
+                    item,
+                    source_revisions={
+                        key: str(value) for key, value in source_revision.items()
+                    },
+                    snapshot_revision=revision,
+                    snapshot_created_at=generated_at,
+                )
+                for item in scope.unmatched_online_items
+            ]
+            return scope, revision
+        raise TracksideApBusinessSnapshotError(
+            "TRACKSIDE_AP_SNAPSHOT_UNSTABLE",
+            "轨旁 AP 数据正在刷新，暂时无法形成一致快照，请稍后重试。",
         )
-        return scope, revision
 
     def _trackside_online_revision(
         self,

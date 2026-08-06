@@ -128,6 +128,241 @@ def test_current_exact_lldp_resolves_same_ap_after_refresh():
     assert scope.resources[0]["_scope_binding_source"] == "switch_lldp_exact"
 
 
+def test_ac_side_lldp_switch_identity_recovers_34_aps_without_detail_refresh():
+    resources = [_resource(f"{index:012x}") for index in range(358)]
+    for resource in resources[324:]:
+        resource.update(
+            {
+                "lldp_neighbor_name": "HZDT-SC",
+                "lldp_neighbor_interface": "gei-0/3/0/1",
+                "lldp_match_status": "matched",
+                "lldp_collected_at": "2026-08-06T11:40:00+08:00",
+            }
+        )
+    switch_side_lldp = [
+        {
+            "device_uuid": "sw-existing",
+            "local_interface": f"gei-0/3/0/{index + 1}",
+            "ap_mac": resource["ap_mac"],
+            "station_id": "station-a",
+            "observed_at": "2026-08-06T11:39:00+08:00",
+            "collected_at": "2026-08-06T11:39:00+08:00",
+            "collect_run_uuid": "switch-lldp-run",
+        }
+        for index, resource in enumerate(resources[:324])
+    ]
+    before = _scope(resources, switch_side_lldp)
+
+    after = resolve_effective_trackside_ap_scope(
+        context=TracksideApScopeContext(site_id="demo", project_id="demo"),
+        station_rows=[_station()],
+        plan_rows=[
+            {
+                "id": 7,
+                "station_id": "station-a",
+                "station_name": "Station A",
+                "ap_count": 358,
+            }
+        ],
+        reference_rows=[],
+        resource_rows=resources,
+        runtime_station_rows=switch_side_lldp,
+        switch_identity_rows=[
+            {
+                "device_uuid": "sw-zte",
+                "name": "16-Station A",
+                "system_name": "hzdt_sc.example.com",
+                "station_id": "station-a",
+                "station": "Station A",
+                "device_type": "SW",
+                "work_scope_status": "included",
+            }
+        ],
+    )
+
+    assert before.fit_ap_matched_online_count == 324
+    assert before.fit_ap_unmatched_online_count == 34
+    assert after.fit_ap_matched_online_count == 358
+    assert after.fit_ap_unmatched_online_count == 0
+    assert after.fit_ap_online_total_count == (
+        after.fit_ap_matched_online_count + after.fit_ap_unmatched_online_count
+    )
+    assert sum(
+        resource.get("_scope_binding_source") == "ac_lldp_switch_identity"
+        for resource in after.resources
+    ) == 34
+
+
+def test_ac_side_lldp_reports_switch_not_found_instead_of_planning_missing():
+    resource = {
+        **_resource(),
+        "lldp_neighbor_name": "HZDT-MISSING",
+        "lldp_neighbor_interface": "gei-0/3/0/1",
+        "lldp_match_status": "matched",
+    }
+
+    scope = resolve_effective_trackside_ap_scope(
+        context=TracksideApScopeContext(site_id="demo", project_id="demo"),
+        station_rows=[_station()],
+        plan_rows=[{"station_id": "station-a", "station_name": "Station A", "ap_count": 1}],
+        reference_rows=[],
+        resource_rows=[resource],
+        switch_identity_rows=[],
+    )
+
+    item = scope.unmatched_online_items[0]
+    assert item.association_status == "switch_not_found"
+    assert item.reason_code == "SWITCH_NOT_FOUND"
+    assert scope.fit_ap_switch_not_found_count == 1
+    assert scope.fit_ap_planning_missing_count == 0
+
+
+def test_ac_side_lldp_reports_ambiguous_switch_identity():
+    resource = {
+        **_resource(),
+        "lldp_neighbor_name": "HZDT-SC",
+        "lldp_match_status": "matched",
+    }
+    switches = [
+        {"device_uuid": device_uuid, "name": name, "system_name": system_name, "station_id": "station-a", "station": "Station A", "device_type": "SW"}
+        for device_uuid, name, system_name in (
+            ("sw-a", "Switch A", "HZDT-SC"),
+            ("sw-b", "Switch B", "hzdt_sc.example.com"),
+        )
+    ]
+
+    scope = resolve_effective_trackside_ap_scope(
+        context=TracksideApScopeContext(site_id="demo", project_id="demo"),
+        station_rows=[_station()],
+        plan_rows=[{"station_id": "station-a", "station_name": "Station A", "ap_count": 1}],
+        reference_rows=[],
+        resource_rows=[resource],
+        switch_identity_rows=switches,
+    )
+
+    item = scope.unmatched_online_items[0]
+    assert item.association_status == "switch_identity_ambiguous"
+    assert item.reason_code == "SWITCH_IDENTITY_AMBIGUOUS"
+    assert item.switch_candidate_count == 2
+    assert scope.fit_ap_switch_identity_ambiguous_count == 1
+
+
+def test_ac_side_lldp_reports_incomplete_switch_station_data():
+    resource = {
+        **_resource(),
+        "lldp_neighbor_name": "HZDT-SC",
+        "lldp_match_status": "matched",
+    }
+
+    scope = resolve_effective_trackside_ap_scope(
+        context=TracksideApScopeContext(site_id="demo", project_id="demo"),
+        station_rows=[_station()],
+        plan_rows=[{"station_id": "station-a", "station_name": "Station A", "ap_count": 1}],
+        reference_rows=[],
+        resource_rows=[resource],
+        switch_identity_rows=[
+            {"device_uuid": "sw-zte", "name": "Switch A", "system_name": "HZDT-SC", "device_type": "SW"}
+        ],
+    )
+
+    item = scope.unmatched_online_items[0]
+    assert item.association_status == "switch_data_incomplete"
+    assert item.reason_code == "SWITCH_DATA_INCOMPLETE"
+    assert item.matched_switch_device_id == "sw-zte"
+
+
+def test_ac_side_lldp_reports_missing_station_plan():
+    resource = {
+        **_resource(),
+        "lldp_neighbor_name": "HZDT-SC",
+        "lldp_match_status": "matched",
+    }
+
+    scope = resolve_effective_trackside_ap_scope(
+        context=TracksideApScopeContext(site_id="demo", project_id="demo"),
+        station_rows=[_station()],
+        plan_rows=[],
+        reference_rows=[],
+        resource_rows=[resource],
+        switch_identity_rows=[
+            {
+                "device_uuid": "sw-zte",
+                "name": "Switch A",
+                "system_name": "HZDT-SC",
+                "station_id": "station-a",
+                "station": "Station A",
+                "device_type": "SW",
+            }
+        ],
+    )
+
+    item = scope.unmatched_online_items[0]
+    assert item.association_status == "ap_plan_not_found"
+    assert item.reason_code == "AP_PLAN_NOT_FOUND"
+    assert item.plan_station_id == "station-a"
+
+
+def test_ac_side_lldp_reports_plan_station_missing_and_invalid():
+    resource = {
+        **_resource(),
+        "lldp_neighbor_name": "HZDT-SC",
+        "lldp_match_status": "matched",
+    }
+    switch = {
+        "device_uuid": "sw-zte",
+        "name": "Switch A",
+        "system_name": "HZDT-SC",
+        "station_id": "station-a",
+        "station": "站点A",
+        "device_type": "SW",
+    }
+
+    missing = resolve_effective_trackside_ap_scope(
+        context=TracksideApScopeContext(site_id="demo", project_id="demo"),
+        station_rows=[_station()],
+        plan_rows=[{"id": 8, "station_id": "", "station_name": "站点A", "ap_count": 1}],
+        reference_rows=[],
+        resource_rows=[resource],
+        switch_identity_rows=[switch],
+    )
+    invalid = resolve_effective_trackside_ap_scope(
+        context=TracksideApScopeContext(site_id="demo", project_id="demo"),
+        station_rows=[_station()],
+        plan_rows=[{"id": 9, "station_id": "other-site", "station_name": "站点A", "ap_count": 1}],
+        reference_rows=[],
+        resource_rows=[resource],
+        switch_identity_rows=[switch],
+    )
+
+    assert missing.unmatched_online_items[0].reason_code == "PLAN_STATION_MISSING"
+    assert missing.fit_ap_plan_station_missing_count == 1
+    assert invalid.unmatched_online_items[0].reason_code == "PLAN_STATION_INVALID"
+    assert invalid.fit_ap_plan_station_invalid_count == 1
+
+
+def test_unmatched_category_counts_survive_detail_truncation():
+    resource = {
+        **_resource(),
+        "lldp_neighbor_name": "HZDT-MISSING",
+        "lldp_match_status": "matched",
+    }
+    scope = resolve_effective_trackside_ap_scope(
+        context=TracksideApScopeContext(site_id="demo", project_id="demo"),
+        station_rows=[_station()],
+        plan_rows=[{"station_id": "station-a", "station_name": "站点A", "ap_count": 1}],
+        reference_rows=[],
+        resource_rows=[resource],
+        switch_identity_rows=[],
+        detail_limit=0,
+    )
+
+    assert scope.unmatched_online_items == []
+    assert scope.fit_ap_unmatched_online_count == 1
+    assert scope.fit_ap_switch_not_found_count == 1
+    assert sum(scope.unmatched_status_counts.values()) == scope.fit_ap_unmatched_online_count
+    assert "上联交换机未匹配设备管理记录" in scope.unmatched_online_summary()
+
+
 def test_lldp_pending_status_is_distinct_from_planning_missing():
     scope = _scope([_resource()], [{"ap_mac": "00aabbccddeeff", "station_id": "station-a", "observed_at": "2026-08-05T14:27:41+08:00", "collect_run_uuid": "lldp-new"}])
     assert scope.unmatched_online_items[0].association_status == "lldp_exact_match_pending"
