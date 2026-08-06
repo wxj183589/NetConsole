@@ -34,10 +34,12 @@ from netconsole.services.offline_ap_ledger import (
 )
 from netconsole.services.trackside_ap_business import (
     AP_OPTICAL_TREATMENT_RECORD_COLUMNS,
+    CURRENT_OPTICAL_ABNORMAL_COLUMNS,
     NEW_ONLINE_AP_OVERVIEW_COLUMNS,
     TRACKSIDE_AP_BUSINESS_EXPORT_COLUMNS,
     TracksideApExportCancelled,
     export_trackside_ap_business_xlsx,
+    trackside_export_fill_status,
 )
 from netconsole.services.trackside_ap_export_service import build_trackside_ap_business_export_name
 from netconsole.utils.interface_normalize import display_interface_name
@@ -72,6 +74,116 @@ def test_trackside_business_export_name_uses_site_display_name_and_sanitizes_win
     assert ".xlsx.xlsx" not in build_trackside_ap_business_export_name("测试.xlsx", created_at)
     with pytest.raises(ValueError, match="缺少局点名称"):
         build_trackside_ap_business_export_name("", created_at)
+
+
+def test_trackside_export_contract_and_fill_matrix(tmp_path: Path) -> None:
+    output = tmp_path / "trackside-fill-matrix.xlsx"
+    i18n = I18n("zh_CN")
+    rows = [
+        {
+            "site": "16-双陈站",
+            "device_name": "SW-16",
+            "interface_name": "gei-0/3/0/41",
+            "link_status": "UP",
+            "switch_rx_power": "-8.00",
+            "switch_optical_status": "normal",
+            "ap_mac": "0011-2233-4455",
+            "ap_name": "AP-Normal",
+            "ap_rx_power": "-8.00",
+            "ap_optical_status": "normal",
+            "ap_side_has_data": True,
+        },
+        {
+            "site": "16-双陈站",
+            "device_name": "SW-16",
+            "interface_name": "gei-0/3/0/42",
+            "link_status": "DOWN",
+            "switch_optical_status": "no_module",
+            "ap_mac": "-",
+            "ap_name": "-",
+            "ap_optical_status": "-",
+        },
+        {
+            "site": "25-千秋广场站",
+            "device_name": "SW-25",
+            "interface_name": "gei-0/4/0/42",
+            "link_status": "DOWN",
+            "switch_optical_status": "no_light",
+            "ap_mac": "-",
+            "ap_name": "-",
+            "ap_optical_status": "-",
+        },
+        {
+            "site": "25-千秋广场站",
+            "device_name": "SW-25",
+            "interface_name": "gei-0/4/0/43",
+            "link_status": "DOWN",
+            "switch_rx_power": "-36.96",
+            "switch_optical_status": "no_light",
+            "ap_mac": "0011-2233-4466",
+            "ap_name": "AP-Historical",
+            "has_historical_lldp": True,
+            "lldp_history_status": "stale_snapshot",
+            "ap_rx_power": "-7.99",
+            "ap_optical_status": "offline",
+            "is_ap_offline": True,
+        },
+        {
+            "site": "16-双陈站",
+            "device_name": "SW-16",
+            "interface_name": "gei-0/3/0/44",
+            "link_status": "UP",
+            "switch_rx_power": "-19.10",
+            "switch_optical_status": "normal",
+            "ap_mac": "0011-2233-4477",
+            "ap_name": "AP-Abnormal",
+            "ap_rx_power": "-8.00",
+            "ap_optical_status": "normal",
+            "ap_side_has_data": True,
+        },
+    ]
+    export_trackside_ap_business_xlsx(
+        output,
+        rows,
+        TRACKSIDE_AP_BUSINESS_EXPORT_COLUMNS,
+        [i18n.t(key) for key, _field in TRACKSIDE_AP_BUSINESS_EXPORT_COLUMNS],
+        current_optical_abnormal_headers=[
+            i18n.t(key) for key, _field in CURRENT_OPTICAL_ABNORMAL_COLUMNS
+        ],
+    )
+
+    workbook = load_workbook(output)
+    main = workbook["轨旁AP业务"]
+    abnormal = workbook["当前异常光衰"]
+    assert [cell.value for cell in main[1]] == [
+        i18n.t(key) for key, _field in TRACKSIDE_AP_BUSINESS_EXPORT_COLUMNS
+    ]
+    abnormal_headers = [cell.value for cell in abnormal[1]]
+    assert abnormal_headers == [
+        i18n.t(key) for key, _field in CURRENT_OPTICAL_ABNORMAL_COLUMNS
+    ]
+    assert len(abnormal_headers) == 19
+    assert not {"AP业务光衰", "AP业务判定原因", "光衰判定"}.intersection(abnormal_headers)
+    interface_column = abnormal_headers.index("接口名称") + 1
+    assert [
+        abnormal.cell(row=index, column=interface_column).value
+        for index in range(2, abnormal.max_row + 1)
+    ] == ["gei-0/3/0/44", "gei-0/4/0/43"]
+
+    main_headers = [cell.value for cell in main[1]]
+    main_interface_column = main_headers.index("接口名称") + 1
+    fills = {
+        main.cell(row=index, column=main_interface_column).value: main.cell(row=index, column=1).fill
+        for index in range(2, main.max_row + 1)
+    }
+    assert fills["gei-0/3/0/41"].fill_type == "solid"
+    assert fills["gei-0/3/0/41"].fgColor.rgb == "00DCFCE7"
+    assert fills["gei-0/3/0/42"].fill_type is None
+    assert fills["gei-0/4/0/42"].fill_type is None
+    assert fills["gei-0/4/0/43"].fill_type == "solid"
+    assert fills["gei-0/3/0/44"].fill_type == "solid"
+    assert trackside_export_fill_status(rows[1]) is None
+    assert trackside_export_fill_status(rows[2]) is None
 
 
 def test_trackside_business_export_uses_frozen_snapshot_without_optical_update_lock(

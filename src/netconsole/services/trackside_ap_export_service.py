@@ -33,6 +33,7 @@ from netconsole.services.offline_ap_ledger import (
 )
 from netconsole.services.trackside_ap_business import (
     AP_OPTICAL_TREATMENT_RECORD_COLUMNS,
+    CURRENT_OPTICAL_ABNORMAL_COLUMNS,
     NEW_ONLINE_AP_OVERVIEW_COLUMNS,
     TRACKSIDE_AP_BUSINESS_EXPORT_COLUMNS,
     TRACKSIDE_AP_UNMATCHED_ONLINE_COLUMNS,
@@ -1022,6 +1023,9 @@ def _render_trackside_ap_business_export(
         i18n.t("trackside.export.sheet_unmatched_online"),
         progress_callback=emit,
         should_cancel=should_cancel,
+        current_optical_abnormal_headers=[
+            i18n.t(key) for key, _field in CURRENT_OPTICAL_ABNORMAL_COLUMNS
+        ],
     )
     check_cancel()
     from netconsole.services.file_contract import attach_export_metadata
