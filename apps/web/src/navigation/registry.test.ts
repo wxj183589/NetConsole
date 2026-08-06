@@ -24,7 +24,7 @@ describe('Web navigation registry', () => {
       'Agent 管理',
       '日志中心',
       '系统设置',
-      '功能开关配置',
+      '版本功能配置',
     ])
   })
 
@@ -109,7 +109,7 @@ describe('Web navigation registry', () => {
   })
 
   it('writes legacy metadata with neutral names while reading schema v1 fields', () => {
-    expect(NAVIGATION_SCHEMA_VERSION).toBe(2)
+    expect(NAVIGATION_SCHEMA_VERSION).toBe(3)
     expect(flattenNavigation().some((entry) => 'qt_page_id' in entry || 'qt_feature_id' in entry)).toBe(false)
 
     const migrated = normalizeNavigationItem({
