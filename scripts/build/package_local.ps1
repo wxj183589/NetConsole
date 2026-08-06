@@ -74,7 +74,7 @@ function Invoke-PackageWindows {
         [Parameter(Mandatory = $true)][string]$ProjectRoot,
         [Parameter(Mandatory = $true)][string]$PackageScript,
         [Parameter(Mandatory = $true)][string]$BuildEdition,
-        [Parameter(Mandatory = $true)][string]$LogPath,
+        [Parameter(Mandatory = $true)][string]$ChildLogPath,
         [switch]$PreflightOnly
     )
 
@@ -99,7 +99,7 @@ function Invoke-PackageWindows {
         try {
             $ErrorActionPreference = "Continue"
             & $PowerShellPath @arguments 2>&1 |
-                Tee-Object -FilePath $LogPath -Append |
+                Tee-Object -FilePath $ChildLogPath -Append |
                 Out-Host
             $exitCode = $LASTEXITCODE
         }
@@ -403,6 +403,7 @@ $originalPasswordPresent = Test-Path "Env:$script:PasswordEnvironmentName"
 $originalPassword = if ($originalPasswordPresent) { [Environment]::GetEnvironmentVariable($script:PasswordEnvironmentName, "Process") } else { $null }
 $startedAt = Get-Date
 $logPath = $null
+$childLogPath = $null
 $stagingRoot = $null
 $script:CurrentStage = "初始化"
 
@@ -412,6 +413,7 @@ try {
     $logRoot = Join-Path $projectRoot "dist\package-logs"
     New-Item -ItemType Directory -Path $logRoot -Force | Out-Null
     $logPath = Join-Path $logRoot ("package-" + $startedAt.ToString("yyyyMMdd-HHmmss") + ".log")
+    $childLogPath = Join-Path $logRoot ("package-" + $startedAt.ToString("yyyyMMdd-HHmmss") + ".child.log")
     Start-Transcript -LiteralPath $logPath -Force | Out-Null
     $transcriptStarted = $true
 
@@ -496,7 +498,7 @@ try {
     if ($Edition -eq "preflight") {
         Write-Stage 3 "预检模式"
         Invoke-PackageWindows -PowerShellPath $powerShellPath -ProjectRoot $projectRoot `
-            -PackageScript $packageScript -BuildEdition "both" -LogPath $logPath -PreflightOnly
+            -PackageScript $packageScript -BuildEdition "both" -ChildLogPath $childLogPath -PreflightOnly
         Write-StageComplete 3 "预检模式"
         Write-Host "预检通过；未安装依赖、未运行测试、未生成安装包。" -ForegroundColor Green
         exit 0
@@ -522,7 +524,7 @@ try {
     Write-Stage 6 "构建 $Edition 安装包"
     Write-Stage 7 "验证安装包和发布清单"
     Invoke-PackageWindows -PowerShellPath $powerShellPath -ProjectRoot $projectRoot `
-        -PackageScript $packageScript -BuildEdition $Edition -LogPath $logPath
+        -PackageScript $packageScript -BuildEdition $Edition -ChildLogPath $childLogPath
     Write-StageComplete 4 "锁定依赖"
     Write-StageComplete 5 "Web 与 Electron 测试"
     Write-StageComplete 6 "安装包构建"
@@ -581,5 +583,14 @@ finally {
     }
     if ($transcriptStarted) {
         Stop-Transcript | Out-Null
+    }
+    if (
+        $null -ne $childLogPath -and
+        $null -ne $logPath -and
+        (Test-Path -LiteralPath $childLogPath -PathType Leaf)
+    ) {
+        Get-Content -LiteralPath $childLogPath |
+            Add-Content -LiteralPath $logPath -Encoding UTF8
+        Remove-Item -LiteralPath $childLogPath -Force -ErrorAction SilentlyContinue
     }
 }
