@@ -42,6 +42,7 @@ describe('system settings feature API', () => {
     await saveFeatureSettings([feature])
 
     expect(JSON.parse(String(fetchMock.mock.calls[0][1].body))).toEqual({
+      target: 'runtime',
       items: [{
         feature_id: 'web.agent_management',
         visible: false,

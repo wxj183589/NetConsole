@@ -79,6 +79,7 @@ try {
     $webRoot = Join-Path $projectRoot "apps\web"
     $pythonPath = Join-Path $projectRoot ".venv\Scripts\python.exe"
     $artifactRoot = Join-Path $projectRoot "dist\electron"
+    $expectedEditions = @("full", "customer")
 
     Write-Step "检查构建环境"
     $gitPath = Resolve-NativeCommand "git.exe"
@@ -130,6 +131,13 @@ try {
         exit 0
     }
 
+    if ([string]::IsNullOrWhiteSpace($env:NETCONSOLE_CUSTOMER_UNLOCK_PASSWORD)) {
+        throw "构建客户版前必须设置 NETCONSOLE_CUSTOMER_UNLOCK_PASSWORD。"
+    }
+    if ($env:NETCONSOLE_CUSTOMER_UNLOCK_PASSWORD.Length -lt 8) {
+        throw "NETCONSOLE_CUSTOMER_UNLOCK_PASSWORD 至少需要 8 位。"
+    }
+
     Write-Step "安装 Web 锁定依赖"
     Invoke-Native $pnpmPath @("install", "--frozen-lockfile") $webRoot
 
@@ -142,60 +150,85 @@ try {
     Write-Step "运行 Electron 测试"
     Invoke-Native $pnpmPath @("test") $desktopRoot
 
-    Write-Step "构建并验证正式 Windows 安装包"
+    Write-Step "构建并验证完整版与客户版 Windows 安装包"
     Invoke-Native $pnpmPath @("package") $desktopRoot
 
-    Write-Step "复核发布清单与安装包"
+    Write-Step "复核双版本发布清单与安装包"
     $manifests = @(
         Get-ChildItem -LiteralPath $artifactRoot -Filter "*.exe.release.json" -File |
             Sort-Object LastWriteTimeUtc -Descending
     )
-    $releaseManifestPath = $null
-    $releaseManifest = $null
-    foreach ($candidate in $manifests) {
-        $candidateManifest = Get-Content -LiteralPath $candidate.FullName -Raw -Encoding UTF8 |
-            ConvertFrom-Json
-        if ($candidateManifest.installer_git_commit -eq $head) {
-            $releaseManifestPath = $candidate.FullName
-            $releaseManifest = $candidateManifest
-            break
+    $verified = @()
+    foreach ($edition in $expectedEditions) {
+        $releaseManifestPath = $null
+        $releaseManifest = $null
+        foreach ($candidate in $manifests) {
+            $candidateManifest = Get-Content -LiteralPath $candidate.FullName -Raw -Encoding UTF8 |
+                ConvertFrom-Json
+            if (
+                $candidateManifest.installer_git_commit -eq $head -and
+                $candidateManifest.edition -eq $edition
+            ) {
+                $releaseManifestPath = $candidate.FullName
+                $releaseManifest = $candidateManifest
+                break
+            }
         }
-    }
-    if ($null -eq $releaseManifest) {
-        throw "未找到与当前 HEAD 对应的安装包发布清单：$head"
-    }
+        if ($null -eq $releaseManifest) {
+            throw "未找到与当前 HEAD 对应的 $edition 安装包发布清单：$head"
+        }
+        if ($releaseManifest.schema -ne "netconsole.installer-release.v1") {
+            throw "$edition 发布清单 schema 不受支持：$($releaseManifest.schema)"
+        }
+        if ($releaseManifest.packaged_dirty -ne $false) {
+            throw "$edition 发布清单标记 packaged_dirty=true，拒绝交付。"
+        }
+        if ($releaseManifest.real_windows_install_status -ne "PENDING") {
+            throw "$edition 自动构建的真实安装状态必须为 PENDING。"
+        }
+        if ($releaseManifest.feature_profile -ne $edition) {
+            throw "$edition 发布清单的 feature_profile 不匹配。"
+        }
+        if ($releaseManifest.edition_payload_verified -ne $true) {
+            throw "$edition 发布清单未通过包内版本策略校验。"
+        }
+        if ($edition -eq "customer" -and $releaseManifest.admin_unlock_configured -ne $true) {
+            throw "客户版未配置维护密码哈希。"
+        }
+        if ($edition -eq "full" -and $releaseManifest.admin_unlock_configured -ne $false) {
+            throw "完整版不应携带客户维护密码哈希。"
+        }
 
-    if ($releaseManifest.schema -ne "netconsole.installer-release.v1") {
-        throw "发布清单 schema 不受支持：$($releaseManifest.schema)"
-    }
-    if ($releaseManifest.packaged_dirty -ne $false) {
-        throw "发布清单标记 packaged_dirty=true，拒绝交付。"
-    }
-    if ($releaseManifest.real_windows_install_status -ne "PENDING") {
-        throw "自动构建的真实安装状态必须为 PENDING。"
-    }
-
-    $artifactPath = Join-Path $artifactRoot $releaseManifest.artifact_name
-    if (-not (Test-Path -LiteralPath $artifactPath -PathType Leaf)) {
-        throw "发布清单指向的安装包不存在：$artifactPath"
-    }
-
-    $artifact = Get-Item -LiteralPath $artifactPath
-    $actualHash = (Get-FileHash -LiteralPath $artifactPath -Algorithm SHA256).Hash.ToLowerInvariant()
-    $expectedHash = ([string]$releaseManifest.artifact_sha256).ToLowerInvariant()
-    if ($actualHash -ne $expectedHash) {
-        throw "安装包 SHA-256 与发布清单不一致。expected=$expectedHash，actual=$actualHash"
-    }
-    if ($artifact.Length -ne [int64]$releaseManifest.artifact_size) {
-        throw "安装包字节数与发布清单不一致。expected=$($releaseManifest.artifact_size)，actual=$($artifact.Length)"
+        $artifactPath = Join-Path $artifactRoot $releaseManifest.artifact_name
+        if (-not (Test-Path -LiteralPath $artifactPath -PathType Leaf)) {
+            throw "$edition 发布清单指向的安装包不存在：$artifactPath"
+        }
+        $artifact = Get-Item -LiteralPath $artifactPath
+        $actualHash = (Get-FileHash -LiteralPath $artifactPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $expectedHash = ([string]$releaseManifest.artifact_sha256).ToLowerInvariant()
+        if ($actualHash -ne $expectedHash) {
+            throw "$edition 安装包 SHA-256 与发布清单不一致。expected=$expectedHash，actual=$actualHash"
+        }
+        if ($artifact.Length -ne [int64]$releaseManifest.artifact_size) {
+            throw "$edition 安装包字节数与发布清单不一致。expected=$($releaseManifest.artifact_size)，actual=$($artifact.Length)"
+        }
+        $verified += [PSCustomObject]@{
+            Edition = $edition
+            ArtifactPath = $artifactPath
+            ManifestPath = $releaseManifestPath
+            Size = $artifact.Length
+            Hash = $actualHash
+        }
     }
 
     Write-Host ""
-    Write-Host "自动打包完成。" -ForegroundColor Green
-    Write-Host "安装包 : $artifactPath"
-    Write-Host "发布清单: $releaseManifestPath"
-    Write-Host "文件大小: $($artifact.Length) bytes"
-    Write-Host "SHA-256 : $actualHash"
+    Write-Host "双版本自动打包完成。" -ForegroundColor Green
+    foreach ($item in $verified) {
+        Write-Host "[$($item.Edition)] 安装包 : $($item.ArtifactPath)"
+        Write-Host "[$($item.Edition)] 发布清单: $($item.ManifestPath)"
+        Write-Host "[$($item.Edition)] 文件大小: $($item.Size) bytes"
+        Write-Host "[$($item.Edition)] SHA-256 : $($item.Hash)"
+    }
     Write-Host "真实 GUI 安装验收状态仍为 PENDING，发布前需按文档完成人工验收。"
     exit 0
 }

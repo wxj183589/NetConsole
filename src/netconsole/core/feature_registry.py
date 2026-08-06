@@ -351,11 +351,19 @@ FEATURES: tuple[FeatureItem, ...] = (
 FEATURE_BY_ID = {item.feature_id: item for item in FEATURES}
 
 FEATURE_GROUPS = (
-    ("foundation", "基础能力"),
+    ("foundation", "基础与桌面"),
     ("tasks", "任务与 Agent"),
-    ("devices", "设备与 AC"),
-    ("configuration", "配置与文件"),
-    ("rail_transit", "轨道交通"),
+    ("devices", "设备管理"),
+    ("ac", "AC 与 FIT-AP"),
+    ("configuration", "配置采集与文件"),
+    ("rail_base", "轨道交通基础资料"),
+    ("trackside_ap", "轨旁 AP"),
+    ("train_online", "列车在线与无人值守"),
+    ("online_mr", "车载 MR 采集与分析"),
+    ("mesh", "MESH 日志分析"),
+    ("rail_general", "轨道交通综合"),
+    ("network_tools", "网络测试与工具集"),
+    ("system", "日志、命令与系统维护"),
     ("internal", "内部与实验功能"),
 )
 FEATURE_GROUP_TITLE_BY_ID = dict(FEATURE_GROUPS)
@@ -390,28 +398,69 @@ def dependencies_of(feature_id: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(value for value in values if value))
 
 
-def group_id_of(feature_id: str) -> str:
-    item = get_feature(feature_id)
-    if item.internal_only or item.status in {FeatureStatus.DEVELOPMENT, FeatureStatus.HIDDEN}:
-        return "internal"
-    lineage = {item.feature_id}
-    parent_id = item.parent_id
+def _lineage_of(feature_id: str) -> set[str]:
+    lineage = {feature_id}
+    parent_id = FEATURE_BY_ID[feature_id].parent_id
     while parent_id and parent_id not in lineage:
         lineage.add(parent_id)
         parent = FEATURE_BY_ID.get(parent_id)
         parent_id = parent.parent_id if parent else None
+    return lineage
+
+
+def group_id_of(feature_id: str) -> str:
+    item = get_feature(feature_id)
+    if item.internal_only or item.status in {FeatureStatus.DEVELOPMENT, FeatureStatus.HIDDEN}:
+        return "internal"
+
+    lineage = _lineage_of(feature_id)
     if lineage & {"web.agent_management", "web.job_center"}:
         return "tasks"
-    if "module.rail_transit" in lineage or any(
-        value.startswith(("rail.", "online_mr.", "mesh.")) for value in lineage
+    if lineage & {
+        "web.rail_trackside_ap_business",
+        "web.rail_trackside_ap_plan",
+        "rail.trackside_ap_business",
+        "ac.trackside_ap_plan",
+    } or feature_id == "rail.zte_trackside_switch_adapter":
+        return "trackside_ap"
+    if lineage & {"web.rail_train_online", "web.ground_unattended", "rail.train_online"}:
+        return "train_online"
+    if lineage & {
+        "rail.online_mr_collection",
+        "rail.online_mr_analysis",
+        "web.online_mr_analysis",
+        "web.train_communication_monitoring",
+        "rail.car_network_diagnostic",
+    } or any(value.startswith("online_mr.") for value in lineage):
+        return "online_mr"
+    if lineage & {"rail.raw_mesh_log_analysis", "web.mesh_analysis"} or any(
+        value.startswith("mesh.") for value in lineage
     ):
-        return "rail_transit"
-    if lineage & {"module.config_collection", "module.file_management"}:
-        return "configuration"
-    if lineage & {"module.devices", "module.ac"} or any(
-        value.startswith(("devices.", "ac.")) for value in lineage
+        return "mesh"
+    if lineage & {"web.rail_transit_base_data"}:
+        return "rail_base"
+    if "module.rail_transit" in lineage or any(value.startswith("rail.") for value in lineage):
+        return "rail_general"
+    if "module.ac" in lineage or "web.ac_management" in lineage or any(
+        value.startswith("ac.") for value in lineage
     ):
+        return "ac"
+    if "module.devices" in lineage or any(value.startswith("devices.") for value in lineage):
         return "devices"
+    if lineage & {"module.config_collection", "module.file_management"} or any(
+        value.startswith("file.") for value in lineage
+    ):
+        return "configuration"
+    if lineage & {"module.network_tools", "module.tools"} or any(
+        value.startswith("network_tools.") for value in lineage
+    ):
+        return "network_tools"
+    if lineage & {
+        "module.logs",
+        "module.command_reference",
+        "module.system_settings",
+    } or any(value.startswith(("system.", "desktop.")) for value in lineage):
+        return "system"
     return "foundation"
 
 

@@ -9,9 +9,15 @@ from netconsole.core import app_logger
 from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.core.settings import SettingsConflictError, SettingsFileInvalidError, SettingsStore
 from netconsole.models.api.system_settings import (
-    FeatureSettingsSnapshotDTO, FeatureSettingsUpdateDTO, SystemSettingsSaveDTO,
-    NetworkComponentsSnapshotDTO, NetworkComponentUpdateDTO,
-    SystemSettingsSnapshotDTO, RuntimeSelfCheckSnapshotDTO,
+    FeatureConfigurationTarget,
+    FeatureSettingsRestoreDTO,
+    FeatureSettingsSnapshotDTO,
+    FeatureSettingsUpdateDTO,
+    SystemSettingsSaveDTO,
+    NetworkComponentsSnapshotDTO,
+    NetworkComponentUpdateDTO,
+    SystemSettingsSnapshotDTO,
+    RuntimeSelfCheckSnapshotDTO,
 )
 from netconsole.services.external_tool_service import launch_ipop
 from netconsole.services.settings_application_service import SettingsApplicationService
@@ -120,29 +126,69 @@ def runtime_self_check(request: Request) -> RuntimeSelfCheckSnapshotDTO:
     )
 
 
-@router.get("/features", response_model=FeatureSettingsSnapshotDTO, dependencies=[Depends(_desktop), Depends(_feature_switch)])
-def get_feature_settings(request: Request) -> FeatureSettingsSnapshotDTO:
-    return _call(_service(request).feature_settings)
+@router.get(
+    "/features",
+    response_model=FeatureSettingsSnapshotDTO,
+    dependencies=[Depends(_desktop), Depends(_feature_switch)],
+)
+def get_feature_settings(
+    request: Request,
+    target: FeatureConfigurationTarget = "runtime",
+) -> FeatureSettingsSnapshotDTO:
+    return _call(lambda: _service(request).feature_settings(target))
 
 
-@router.put("/features", response_model=FeatureSettingsSnapshotDTO, dependencies=[Depends(_desktop), Depends(_feature_switch)])
-def save_feature_settings(request: Request, payload: FeatureSettingsUpdateDTO) -> FeatureSettingsSnapshotDTO:
+@router.put(
+    "/features",
+    response_model=FeatureSettingsSnapshotDTO,
+    dependencies=[Depends(_desktop), Depends(_feature_switch)],
+)
+def save_feature_settings(
+    request: Request,
+    payload: FeatureSettingsUpdateDTO,
+) -> FeatureSettingsSnapshotDTO:
     return _call(lambda: _service(request).save_features(payload))
 
 
-@router.post("/features/preview", response_model=FeatureSettingsSnapshotDTO, dependencies=[Depends(_desktop), Depends(_feature_switch)])
-def preview_feature_settings(request: Request, payload: FeatureSettingsUpdateDTO) -> FeatureSettingsSnapshotDTO:
+@router.post(
+    "/features/preview",
+    response_model=FeatureSettingsSnapshotDTO,
+    dependencies=[Depends(_desktop), Depends(_feature_switch)],
+)
+def preview_feature_settings(
+    request: Request,
+    payload: FeatureSettingsUpdateDTO,
+) -> FeatureSettingsSnapshotDTO:
     return _call(lambda: _service(request).preview_features(payload))
 
 
-@router.post("/features/preview/exit", response_model=FeatureSettingsSnapshotDTO, dependencies=[Depends(_desktop), Depends(_feature_switch)])
-def exit_feature_preview(request: Request) -> FeatureSettingsSnapshotDTO:
-    return _call(_service(request).exit_feature_preview)
+@router.post(
+    "/features/preview/exit",
+    response_model=FeatureSettingsSnapshotDTO,
+    dependencies=[Depends(_desktop), Depends(_feature_switch)],
+)
+def exit_feature_preview(
+    request: Request,
+    target: FeatureConfigurationTarget = "runtime",
+) -> FeatureSettingsSnapshotDTO:
+    return _call(lambda: _service(request).exit_feature_preview(target))
 
 
-@router.post("/features/restore", response_model=FeatureSettingsSnapshotDTO, dependencies=[Depends(_desktop), Depends(_feature_switch)])
-def restore_feature_settings(request: Request, payload: ConfirmedAction) -> FeatureSettingsSnapshotDTO:
-    return _call(lambda: _service(request).restore_features(confirmed=payload.confirmed))
+@router.post(
+    "/features/restore",
+    response_model=FeatureSettingsSnapshotDTO,
+    dependencies=[Depends(_desktop), Depends(_feature_switch)],
+)
+def restore_feature_settings(
+    request: Request,
+    payload: FeatureSettingsRestoreDTO,
+) -> FeatureSettingsSnapshotDTO:
+    return _call(
+        lambda: _service(request).restore_features(
+            confirmed=payload.confirmed,
+            target=payload.target,
+        )
+    )
 
 
 @router.post("/native-action", dependencies=[Depends(_desktop)])

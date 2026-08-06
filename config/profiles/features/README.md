@@ -1,5 +1,17 @@
 # 功能特性配置
 
-本目录提供 `customer.json`、`full.json` 等脱敏 Feature profile，供启动/构建配置选择默认能力。文件只包含功能开关和允许的配置字段。
+本目录保存两个独立、脱敏的发布 Feature Profile：
 
-修改后需核对 `src/netconsole/core/feature_registry.py` 的 key 与默认值，并运行相关 Python/Web 测试；不要把真实局点配置复制到这里。
+- `full.json`：完整版打包模板，控制完整版首次启动时的功能显示与启用状态。
+- `customer.json`：客户版打包模板，同时控制功能显示、启用状态和是否纳入客户版。
+
+两份模板共用 `src/netconsole/core/feature_registry.py` 中的 Feature ID、依赖关系、成熟度和业务分类，但互不覆盖。修改模板不会实时改变当前开发实例；只有“系统设置 / 当前运行功能配置”会写入运行时覆盖并立即刷新导航与 Backend Gate。“版本功能配置”页面提供显式的会话预览，预览不写模板，退出或重启后恢复。
+
+客户版规则：
+
+- `package_included=false` 的能力不进入客户版有效功能集，并同时隐藏、禁用。
+- 内部专用、开发中、隐藏或已停用功能不能纳入客户版。
+- 纳入客户版的功能，其父级和显式依赖也必须纳入客户版。
+- 客户版维护密码不写入本目录；打包时仅从 `NETCONSOLE_CUSTOMER_UNLOCK_PASSWORD` 读取，并在包内保存 PBKDF2 哈希参数。
+
+修改后需核对 Feature ID、父级和依赖闭包，并运行 Python/Web 测试；不要把真实局点配置、凭据或客户数据复制到这里。

@@ -30,6 +30,7 @@ export interface SystemSettingsSnapshot {
 export type NetworkComponentName = 'iperf3' | 'fping'
 export type NetworkComponentMode = 'builtin' | 'custom'
 export type NetworkComponentSource = 'builtin' | 'custom'
+export type FeatureConfigurationTarget = 'runtime' | 'full' | 'customer'
 
 export interface NetworkComponentStatus {
   component_name: NetworkComponentName
@@ -60,6 +61,8 @@ export interface FeatureSetting {
   inherited_visible: boolean
   inherited_enabled: boolean
   client_package: boolean
+  package_included?: boolean
+  package_editable?: boolean
   internal_only: boolean
   package_range: 'customer_internal' | 'internal' | 'internal_only' | 'not_included'
   status: 'ENABLED' | 'DISABLED' | 'DEVELOPMENT' | 'HIDDEN'
@@ -71,10 +74,13 @@ export interface FeatureSetting {
 
 export interface FeatureSettingsSnapshot {
   items: FeatureSetting[]
+  target?: FeatureConfigurationTarget
   preview_active: boolean
   configuration_name: string
   scope_label: string
   inherited_profile: string
+  applies_immediately?: boolean
+  save_effect?: string
 }
 
 export interface RuntimeSelfCheckItem {
