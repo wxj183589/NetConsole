@@ -439,6 +439,7 @@ describe('Local Windows packaging launcher', () => {
     expect(localScript).toContain('[ValidateSet("full", "customer", "both", "preflight")]')
     expect(localScript).toContain('[string]$Edition = "both"')
     expect(localScript).toContain('package_windows.ps1')
+    expect(localScript).toContain('Tee-Object -FilePath $LogPath -Append')
     expect(localScript).toContain('-PreflightOnly')
     expect(localScript).toContain('Get-ExpectedEditions')
     expect(localScript).toContain('package-logs')
@@ -477,6 +478,9 @@ describe('Local Windows packaging launcher', () => {
     expect(localScript).toContain('10GB')
     expect(formalScript).toContain('$PreflightOnly')
     expect(formalScript).toContain('$head -ne $upstream')
+    expect(formalScript).toContain('node_modules\\electron\\install.js')
+    expect(formalScript).toContain('node_modules\\electron\\dist\\electron.exe')
+    expect(formalScript).toContain('Electron 分发目录恢复失败')
   })
 
   it('creates an atomic, self-contained release directory and summary', () => {

@@ -152,6 +152,18 @@ try {
 
     Write-Step "安装 Electron 锁定依赖"
     Invoke-Native $pnpmPath @("install", "--frozen-lockfile") $desktopRoot
+    $electronInstallScript = Join-Path $desktopRoot "node_modules\electron\install.js"
+    $electronExecutable = Join-Path $desktopRoot "node_modules\electron\dist\electron.exe"
+    if (-not (Test-Path -LiteralPath $electronExecutable -PathType Leaf)) {
+        if (-not (Test-Path -LiteralPath $electronInstallScript -PathType Leaf)) {
+            throw "Electron 锁定依赖缺少安装脚本：$electronInstallScript"
+        }
+        Write-Host "Electron 分发目录缺失，正在按锁定版本恢复。"
+        Invoke-Native $nodePath @($electronInstallScript) $desktopRoot
+    }
+    if (-not (Test-Path -LiteralPath $electronExecutable -PathType Leaf)) {
+        throw "Electron 分发目录恢复失败：$electronExecutable"
+    }
 
     Write-Step "运行 Web 测试"
     Invoke-Native $pnpmPath @("test") $webRoot

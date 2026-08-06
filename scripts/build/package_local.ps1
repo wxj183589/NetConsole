@@ -74,6 +74,7 @@ function Invoke-PackageWindows {
         [Parameter(Mandatory = $true)][string]$ProjectRoot,
         [Parameter(Mandatory = $true)][string]$PackageScript,
         [Parameter(Mandatory = $true)][string]$BuildEdition,
+        [Parameter(Mandatory = $true)][string]$LogPath,
         [switch]$PreflightOnly
     )
 
@@ -94,9 +95,19 @@ function Invoke-PackageWindows {
 
     Push-Location -LiteralPath $ProjectRoot
     try {
-        & $PowerShellPath @arguments
-        if ($LASTEXITCODE -ne 0) {
-            throw "正式构建链失败（退出码 $LASTEXITCODE）。"
+        $previousErrorActionPreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = "Continue"
+            & $PowerShellPath @arguments 2>&1 |
+                Tee-Object -FilePath $LogPath -Append |
+                Out-Host
+            $exitCode = $LASTEXITCODE
+        }
+        finally {
+            $ErrorActionPreference = $previousErrorActionPreference
+        }
+        if ($exitCode -ne 0) {
+            throw "正式构建链失败（退出码 $exitCode）。"
         }
     }
     finally {
@@ -485,7 +496,7 @@ try {
     if ($Edition -eq "preflight") {
         Write-Stage 3 "预检模式"
         Invoke-PackageWindows -PowerShellPath $powerShellPath -ProjectRoot $projectRoot `
-            -PackageScript $packageScript -BuildEdition "both" -PreflightOnly
+            -PackageScript $packageScript -BuildEdition "both" -LogPath $logPath -PreflightOnly
         Write-StageComplete 3 "预检模式"
         Write-Host "预检通过；未安装依赖、未运行测试、未生成安装包。" -ForegroundColor Green
         exit 0
@@ -511,7 +522,7 @@ try {
     Write-Stage 6 "构建 $Edition 安装包"
     Write-Stage 7 "验证安装包和发布清单"
     Invoke-PackageWindows -PowerShellPath $powerShellPath -ProjectRoot $projectRoot `
-        -PackageScript $packageScript -BuildEdition $Edition
+        -PackageScript $packageScript -BuildEdition $Edition -LogPath $logPath
     Write-StageComplete 4 "锁定依赖"
     Write-StageComplete 5 "Web 与 Electron 测试"
     Write-StageComplete 6 "安装包构建"
