@@ -38,6 +38,18 @@
       "client_package": true,
       "internal_only": false
     },
+    "module.tools": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "module.command_reference": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
     "module.logs": {
       "visible": true,
       "enabled": true,
@@ -55,6 +67,336 @@
       "enabled": true,
       "client_package": false,
       "internal_only": true
+    },
+    "cap.task_center": {
+      "visible": false,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "cap.rail_base_data": {
+      "visible": false,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "cap.rail_task_control": {
+      "visible": false,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "cap.train_online_data": {
+      "visible": false,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "cap.online_mr_analysis": {
+      "visible": false,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "cap.desktop_bridge": {
+      "visible": false,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.agent_management": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.job_center": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.device_management": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.device_connection_test": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.device_form_connection_test": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.device_management_write": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.device_management_collect": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.device_management_import": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.device_management_export": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.device_management_desktop": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.config_collection": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.config_collection_fetch": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.config_collection_diff": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.config_collection_download": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.config_collection_delete": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.config_collection_save_force": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.config_collection_export": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.config_collection_open_directory": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.file_management": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.file_management_download": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.file_management_local_write": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.file_management_remote": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.file_management_desktop_actions": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.network_tools": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.network_tools_toolbox": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.network_tools_wireless_scan": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.network_test_components": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.network_tools_tcp_port_test": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.tool_collection": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.ac_management": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.ac_fit_ap_resources": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.ac_online_overview": {
+      "visible": false,
+      "enabled": false,
+      "client_package": false,
+      "internal_only": false
+    },
+    "web.ac_optical": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.ac_extensions": {
+      "visible": false,
+      "enabled": false,
+      "client_package": false,
+      "internal_only": false
+    },
+    "web.ac_extensions_preview": {
+      "visible": false,
+      "enabled": false,
+      "client_package": false,
+      "internal_only": false
+    },
+    "web.ac_extensions_apply": {
+      "visible": false,
+      "enabled": false,
+      "client_package": false,
+      "internal_only": false
+    },
+    "web.ac_extensions_rollback": {
+      "visible": false,
+      "enabled": false,
+      "client_package": false,
+      "internal_only": false
+    },
+    "web.ac_extensions_export": {
+      "visible": false,
+      "enabled": false,
+      "client_package": false,
+      "internal_only": false
+    },
+    "web.ac_refresh": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.ac_fit_ap_delete": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.ac_fit_ap_metadata_import": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.ac_fit_ap_metadata_write": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.ac_fit_ap_history": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.ac_fit_ap_resource_export": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.ac_fit_ap_external_terminal": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.ac_open_web": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.ac_dangerous_actions": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.ac_config_snapshots": {
+      "visible": false,
+      "enabled": false,
+      "client_package": false,
+      "internal_only": false
+    },
+    "ac.mesh_link.refresh": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
     },
     "devices.external_terminal": {
       "visible": true,
@@ -104,6 +446,246 @@
       "client_package": true,
       "internal_only": false
     },
+    "online_mr.analysis_link_details": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "online_mr.analysis_fping_1s": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "online_mr.collection_notes": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "online_mr.agent_packages": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.online_mr_realtime": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.online_mr_report_export": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.online_mr_parse": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.online_mr_session_open_location": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.online_mr_session_delete": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.rail_transit_base_data": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.train_communication_monitoring": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.online_mr_local_control": {
+      "visible": true,
+      "enabled": true,
+      "client_package": false,
+      "internal_only": false
+    },
+    "web.online_mr_agent_control": {
+      "visible": true,
+      "enabled": true,
+      "client_package": false,
+      "internal_only": false
+    },
+    "web.mesh_analysis": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.mesh_analysis_import": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.mesh_analysis_report_export": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.rail_task_control": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.rail_transit_wireless_dashboard": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.rail_train_online": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.ground_unattended": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.rail_train_online_refresh": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.rail_train_online_collect": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.rail_train_online_history_export": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.rail_train_online_mapping_write": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.rail_train_online_mapping_import": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.rail_train_online_mapping_export": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.rail_car_network_diagnostic": {
+      "visible": false,
+      "enabled": false,
+      "client_package": false,
+      "internal_only": false
+    },
+    "web.rail_car_network_diagnostic_execute": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.rail_car_network_point_table_write": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.rail_car_network_point_table_export": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.rail_trackside_ap_business": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.rail_trackside_ap_business_update": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.rail_trackside_ap_business_export": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "rail.zte_trackside_switch_adapter": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.rail_trackside_ap_plan": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.rail_trackside_ap_plan_write": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.rail_trackside_ap_plan_export": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.rail_trackside_ap_base_io": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.online_mr_analysis": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.rail_transit_base_data_write": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
     "ac.trackside_ap_plan": {
       "visible": true,
       "enabled": true,
@@ -146,6 +728,12 @@
       "client_package": true,
       "internal_only": false
     },
+    "ac.omnipeek_name_table_export": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
     "file.mesh_log_download": {
       "visible": true,
       "enabled": true,
@@ -170,6 +758,24 @@
       "client_package": true,
       "internal_only": false
     },
+    "network_tools.traffic": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "network_tools.wireless_scan": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "network_tools.ipop": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
     "online_mr.advanced_ping": {
       "visible": true,
       "enabled": true,
@@ -182,55 +788,25 @@
       "client_package": true,
       "internal_only": false
     },
-    "online_mr.collection_notes": {
-      "visible": true,
-      "enabled": true,
-      "client_package": true,
-      "internal_only": false
-    },
-    "online_mr.agent_packages": {
-      "visible": true,
-      "enabled": true,
-      "client_package": true,
-      "internal_only": false
-    },
-    "web.rail_trackside_ap_business": {
-      "visible": true,
-      "enabled": true,
-      "client_package": true,
-      "internal_only": false
-    },
-    "web.rail_trackside_ap_business_update": {
-      "visible": true,
-      "enabled": true,
-      "client_package": true,
-      "internal_only": false
-    },
-    "rail.zte_trackside_switch_adapter": {
-      "visible": true,
-      "enabled": true,
-      "client_package": true,
-      "internal_only": false
-    },
-    "web.job_center": {
-      "visible": true,
-      "enabled": true,
-      "client_package": true,
-      "internal_only": false
-    },
-    "web.online_mr_realtime": {
-      "visible": true,
-      "enabled": true,
-      "client_package": true,
-      "internal_only": false
-    },
-    "web.ground_unattended": {
-      "visible": true,
-      "enabled": true,
-      "client_package": true,
-      "internal_only": false
-    },
     "mesh.generate_report": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "system.disk_cleanup": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "system.changelog": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "system.open_source": {
       "visible": true,
       "enabled": true,
       "client_package": true,
@@ -242,7 +818,43 @@
       "client_package": true,
       "internal_only": false
     },
+    "desktop.native_bridge": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
     "system.feature_flags": {
+      "visible": true,
+      "enabled": true,
+      "client_package": false,
+      "internal_only": true
+    },
+    "web.command_reference": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.logs": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.logs_export": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.system_settings": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.feature_switch": {
       "visible": true,
       "enabled": true,
       "client_package": false,
