@@ -41,6 +41,12 @@
       "client_package": true,
       "internal_only": false
     },
+    "module.tools": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
     "module.command_reference": {
       "visible": true,
       "enabled": true,
@@ -60,13 +66,49 @@
       "internal_only": false
     },
     "module.feature_switch": {
-      "visible": true,
-      "enabled": true,
+      "visible": false,
+      "enabled": false,
       "client_package": false,
       "internal_only": true
     },
+    "cap.task_center": {
+      "visible": false,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "cap.rail_base_data": {
+      "visible": false,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "cap.rail_task_control": {
+      "visible": false,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "cap.train_online_data": {
+      "visible": false,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "cap.online_mr_analysis": {
+      "visible": false,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "cap.desktop_bridge": {
+      "visible": false,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
     "web.agent_management": {
-      "visible": true,
+      "visible": false,
       "enabled": true,
       "client_package": true,
       "internal_only": false
@@ -90,38 +132,38 @@
       "internal_only": false
     },
     "web.device_form_connection_test": {
-      "visible": true,
-      "enabled": true,
+      "visible": false,
+      "enabled": false,
       "client_package": false,
       "internal_only": false
     },
     "web.device_management_write": {
-      "visible": true,
-      "enabled": true,
+      "visible": false,
+      "enabled": false,
       "client_package": false,
       "internal_only": false
     },
     "web.device_management_collect": {
-      "visible": true,
-      "enabled": true,
+      "visible": false,
+      "enabled": false,
       "client_package": false,
       "internal_only": false
     },
     "web.device_management_import": {
-      "visible": true,
-      "enabled": true,
+      "visible": false,
+      "enabled": false,
       "client_package": false,
       "internal_only": false
     },
     "web.device_management_export": {
-      "visible": true,
-      "enabled": true,
+      "visible": false,
+      "enabled": false,
       "client_package": false,
       "internal_only": false
     },
     "web.device_management_desktop": {
-      "visible": true,
-      "enabled": true,
+      "visible": false,
+      "enabled": false,
       "client_package": false,
       "internal_only": false
     },
@@ -192,14 +234,14 @@
       "internal_only": false
     },
     "web.file_management_remote": {
-      "visible": true,
-      "enabled": true,
+      "visible": false,
+      "enabled": false,
       "client_package": false,
       "internal_only": false
     },
     "web.file_management_desktop_actions": {
-      "visible": true,
-      "enabled": true,
+      "visible": false,
+      "enabled": false,
       "client_package": false,
       "internal_only": false
     },
@@ -233,6 +275,12 @@
       "client_package": true,
       "internal_only": false
     },
+    "web.tool_collection": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
     "web.ac_management": {
       "visible": true,
       "enabled": true,
@@ -246,8 +294,8 @@
       "internal_only": false
     },
     "web.ac_online_overview": {
-      "visible": true,
-      "enabled": true,
+      "visible": false,
+      "enabled": false,
       "client_package": false,
       "internal_only": false
     },
@@ -258,32 +306,32 @@
       "internal_only": false
     },
     "web.ac_extensions": {
-      "visible": true,
-      "enabled": true,
+      "visible": false,
+      "enabled": false,
       "client_package": false,
       "internal_only": false
     },
     "web.ac_extensions_preview": {
-      "visible": true,
-      "enabled": true,
+      "visible": false,
+      "enabled": false,
       "client_package": false,
       "internal_only": false
     },
     "web.ac_extensions_apply": {
-      "visible": true,
-      "enabled": true,
+      "visible": false,
+      "enabled": false,
       "client_package": false,
       "internal_only": false
     },
     "web.ac_extensions_rollback": {
-      "visible": true,
-      "enabled": true,
+      "visible": false,
+      "enabled": false,
       "client_package": false,
       "internal_only": false
     },
     "web.ac_extensions_export": {
-      "visible": true,
-      "enabled": true,
+      "visible": false,
+      "enabled": false,
       "client_package": false,
       "internal_only": false
     },
@@ -317,6 +365,12 @@
       "client_package": true,
       "internal_only": false
     },
+    "web.ac_fit_ap_resource_export": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
     "web.ac_fit_ap_external_terminal": {
       "visible": true,
       "enabled": true,
@@ -336,8 +390,8 @@
       "internal_only": false
     },
     "web.ac_config_snapshots": {
-      "visible": true,
-      "enabled": true,
+      "visible": false,
+      "enabled": false,
       "client_package": false,
       "internal_only": false
     },
@@ -354,8 +408,8 @@
       "internal_only": false
     },
     "devices.securecrt_sessions": {
-      "visible": true,
-      "enabled": true,
+      "visible": false,
+      "enabled": false,
       "client_package": false,
       "internal_only": false
     },
@@ -384,56 +438,56 @@
       "internal_only": false
     },
     "rail.online_mr_collection": {
-      "visible": true,
-      "enabled": true,
+      "visible": false,
+      "enabled": false,
       "client_package": false,
       "internal_only": false
     },
     "rail.online_mr_analysis": {
-      "visible": true,
-      "enabled": true,
+      "visible": false,
+      "enabled": false,
       "client_package": false,
       "internal_only": false
     },
     "online_mr.analysis_link_details": {
-      "visible": true,
-      "enabled": true,
+      "visible": false,
+      "enabled": false,
       "client_package": false,
       "internal_only": false
     },
     "online_mr.analysis_fping_1s": {
-      "visible": true,
-      "enabled": true,
+      "visible": false,
+      "enabled": false,
       "client_package": false,
       "internal_only": false
     },
     "online_mr.collection_notes": {
-      "visible": true,
-      "enabled": true,
+      "visible": false,
+      "enabled": false,
       "client_package": false,
       "internal_only": false
     },
     "online_mr.agent_packages": {
-      "visible": true,
-      "enabled": true,
+      "visible": false,
+      "enabled": false,
       "client_package": false,
       "internal_only": false
     },
     "web.online_mr_realtime": {
-      "visible": true,
-      "enabled": true,
+      "visible": false,
+      "enabled": false,
       "client_package": false,
       "internal_only": false
     },
     "web.online_mr_report_export": {
-      "visible": true,
-      "enabled": true,
+      "visible": false,
+      "enabled": false,
       "client_package": false,
       "internal_only": false
     },
     "web.online_mr_parse": {
-      "visible": true,
-      "enabled": true,
+      "visible": false,
+      "enabled": false,
       "client_package": false,
       "internal_only": false
     },
@@ -462,14 +516,14 @@
       "internal_only": false
     },
     "web.online_mr_local_control": {
-      "visible": true,
-      "enabled": true,
+      "visible": false,
+      "enabled": false,
       "client_package": false,
       "internal_only": false
     },
     "web.online_mr_agent_control": {
-      "visible": true,
-      "enabled": true,
+      "visible": false,
+      "enabled": false,
       "client_package": false,
       "internal_only": false
     },
@@ -482,12 +536,12 @@
     "web.mesh_analysis_import": {
       "visible": true,
       "enabled": true,
-      "client_package": false,
+      "client_package": true,
       "internal_only": false
     },
     "web.mesh_analysis_report_export": {
-      "visible": true,
-      "enabled": true,
+      "visible": false,
+      "enabled": false,
       "client_package": false,
       "internal_only": false
     },
@@ -498,7 +552,7 @@
       "internal_only": false
     },
     "web.rail_transit_wireless_dashboard": {
-      "visible": true,
+      "visible": false,
       "enabled": true,
       "client_package": true,
       "internal_only": false
@@ -516,44 +570,44 @@
       "internal_only": false
     },
     "web.rail_train_online_refresh": {
-      "visible": true,
-      "enabled": true,
+      "visible": false,
+      "enabled": false,
       "client_package": false,
       "internal_only": false
     },
     "web.rail_train_online_collect": {
-      "visible": true,
-      "enabled": true,
+      "visible": false,
+      "enabled": false,
       "client_package": false,
       "internal_only": false
     },
     "web.rail_train_online_history_export": {
-      "visible": true,
-      "enabled": true,
+      "visible": false,
+      "enabled": false,
       "client_package": false,
       "internal_only": false
     },
     "web.rail_train_online_mapping_write": {
-      "visible": true,
-      "enabled": true,
+      "visible": false,
+      "enabled": false,
       "client_package": false,
       "internal_only": false
     },
     "web.rail_train_online_mapping_import": {
-      "visible": true,
-      "enabled": true,
+      "visible": false,
+      "enabled": false,
       "client_package": false,
       "internal_only": false
     },
     "web.rail_train_online_mapping_export": {
-      "visible": true,
-      "enabled": true,
+      "visible": false,
+      "enabled": false,
       "client_package": false,
       "internal_only": false
     },
     "web.rail_car_network_diagnostic": {
-      "visible": true,
-      "enabled": true,
+      "visible": false,
+      "enabled": false,
       "client_package": false,
       "internal_only": false
     },
@@ -587,52 +641,58 @@
       "client_package": true,
       "internal_only": false
     },
+    "web.rail_trackside_ap_business_export": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
     "rail.zte_trackside_switch_adapter": {
       "visible": true,
       "enabled": true,
       "client_package": true,
       "internal_only": false
     },
-    "web.rail_trackside_ap_business_export": {
-      "visible": true,
-      "enabled": true,
-      "client_package": false,
-      "internal_only": false
-    },
     "web.rail_trackside_ap_plan": {
       "visible": true,
       "enabled": true,
-      "client_package": false,
+      "client_package": true,
       "internal_only": false
     },
     "web.rail_trackside_ap_plan_write": {
       "visible": true,
       "enabled": true,
-      "client_package": false,
+      "client_package": true,
       "internal_only": false
     },
     "web.rail_trackside_ap_plan_export": {
       "visible": true,
       "enabled": true,
-      "client_package": false,
+      "client_package": true,
+      "internal_only": false
+    },
+    "web.rail_trackside_ap_base_io": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
       "internal_only": false
     },
     "web.online_mr_analysis": {
-      "visible": true,
-      "enabled": true,
+      "visible": false,
+      "enabled": false,
       "client_package": false,
       "internal_only": false
     },
     "web.rail_transit_base_data_write": {
-      "visible": true,
-      "enabled": true,
+      "visible": false,
+      "enabled": false,
       "client_package": false,
       "internal_only": false
     },
     "ac.trackside_ap_plan": {
       "visible": true,
-      "enabled": false,
-      "client_package": false,
+      "enabled": true,
+      "client_package": true,
       "internal_only": false
     },
     "ac.ap_online_overview": {
@@ -720,20 +780,20 @@
       "internal_only": false
     },
     "online_mr.advanced_ping": {
-      "visible": true,
-      "enabled": true,
+      "visible": false,
+      "enabled": false,
       "client_package": false,
       "internal_only": false
     },
     "online_mr.iperf_test": {
-      "visible": true,
-      "enabled": true,
+      "visible": false,
+      "enabled": false,
       "client_package": false,
       "internal_only": false
     },
     "mesh.generate_report": {
-      "visible": true,
-      "enabled": true,
+      "visible": false,
+      "enabled": false,
       "client_package": false,
       "internal_only": false
     },
@@ -744,13 +804,13 @@
       "internal_only": false
     },
     "system.changelog": {
-      "visible": true,
+      "visible": false,
       "enabled": true,
       "client_package": true,
       "internal_only": false
     },
     "system.open_source": {
-      "visible": true,
+      "visible": false,
       "enabled": true,
       "client_package": true,
       "internal_only": false
@@ -768,8 +828,8 @@
       "internal_only": false
     },
     "system.feature_flags": {
-      "visible": true,
-      "enabled": true,
+      "visible": false,
+      "enabled": false,
       "client_package": false,
       "internal_only": true
     },
@@ -798,8 +858,8 @@
       "internal_only": false
     },
     "web.feature_switch": {
-      "visible": true,
-      "enabled": true,
+      "visible": false,
+      "enabled": false,
       "client_package": false,
       "internal_only": true
     }

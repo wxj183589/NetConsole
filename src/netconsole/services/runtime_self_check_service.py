@@ -10,7 +10,12 @@ from typing import Literal
 from netconsole.core import app_logger
 from netconsole.core.build_metadata import current_build_metadata
 from netconsole.core.database import Database
-from netconsole.core.feature_flags import PACKAGED_PRODUCTION_FEATURE_IDS, FeatureGate
+from netconsole.core.feature_flags import (
+    PACKAGED_CORE_FEATURE_IDS,
+    PACKAGED_ENABLED_ONLY_FEATURE_IDS,
+    PACKAGED_PRODUCTION_FEATURE_IDS,
+    FeatureGate,
+)
 from netconsole.core.runtime_environment import is_packaged_runtime
 from netconsole.core.settings import SettingsStore
 from netconsole.models.api.system_settings import (
@@ -157,12 +162,23 @@ class RuntimeSelfCheckService:
         )
 
     def _feature_policy(self, packaged: bool) -> RuntimeSelfCheckItemDTO:
+        required_visible = (
+            PACKAGED_CORE_FEATURE_IDS
+            if self.feature_gate.profile == "customer"
+            else PACKAGED_PRODUCTION_FEATURE_IDS
+        )
         missing = [
             feature
-            for feature in PACKAGED_PRODUCTION_FEATURE_IDS
+            for feature in required_visible
             if not self.feature_gate.is_visible(feature)
             or not self.feature_gate.is_enabled(feature)
         ]
+        if self.feature_gate.profile != "customer":
+            missing.extend(
+                feature
+                for feature in PACKAGED_ENABLED_ONLY_FEATURE_IDS
+                if not self.feature_gate.is_enabled(feature)
+            )
         configuration_open = self.feature_gate.is_feature_configuration_available()
         if packaged and (missing or configuration_open):
             return _item(

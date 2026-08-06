@@ -878,6 +878,16 @@ def validate_feature_profile_payload(
             errors.append(
                 f"{feature_id}: internal/development/disabled feature leaked into customer delivery"
             )
+    if profile == "customer":
+        for feature_id in sorted(PACKAGED_CORE_FEATURE_IDS):
+            state = raw_features.get(feature_id)
+            if not isinstance(state, dict) or not all(
+                state.get(key) is True
+                for key in ("visible", "enabled", "client_package")
+            ):
+                errors.append(
+                    f"{feature_id}: packaged core feature must remain visible, enabled, and delivered"
+                )
     if errors:
         return errors
     normalized = normalize_feature_states(raw_features)

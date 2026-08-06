@@ -5,6 +5,7 @@ from pathlib import Path
 from threading import RLock
 
 from netconsole.core.feature_flags import (
+    PACKAGED_CORE_FEATURE_IDS,
     FeatureGate,
     auto_fix_feature_dependencies,
     default_profile,
@@ -383,6 +384,12 @@ class SettingsApplicationService:
             result[update.feature_id].update(requested)
             if target == "customer":
                 included = bool(update.package_included)
+                if item.feature_id in PACKAGED_CORE_FEATURE_IDS and not (
+                    update.visible and update.enabled and included
+                ):
+                    raise ValueError(
+                        f"{update.feature_id}: 正式包核心能力必须保持显示、启用并交付"
+                    )
                 if included and (
                     item.internal_only
                     or item.status is not FeatureStatus.ENABLED
@@ -447,6 +454,7 @@ class SettingsApplicationService:
                     ),
                     package_editable=(
                         target == "customer"
+                        and item.feature_id not in PACKAGED_CORE_FEATURE_IDS
                         and not item.internal_only
                         and item.status is FeatureStatus.ENABLED
                         and configuration_layer_of(item.feature_id) != "technical"
@@ -492,6 +500,8 @@ class SettingsApplicationService:
             return True
         if configuration_layer_of(item.feature_id) == "technical":
             return True
+        if target == "customer" and item.feature_id in PACKAGED_CORE_FEATURE_IDS:
+            return True
         if target == "customer":
             return item.internal_only or item.status is not FeatureStatus.ENABLED
         return False
@@ -502,6 +512,8 @@ class SettingsApplicationService:
             return "功能已停用"
         if configuration_layer_of(item.feature_id) == "technical":
             return "技术能力由业务功能和依赖自动带出"
+        if target == "customer" and item.feature_id in PACKAGED_CORE_FEATURE_IDS:
+            return "正式包核心能力不能从客户版隐藏或移除"
         if target == "customer" and item.internal_only:
             return "内部专用功能不能进入客户版"
         if target == "customer" and item.status is not FeatureStatus.ENABLED:

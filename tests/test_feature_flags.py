@@ -7,6 +7,7 @@ import pytest
 
 from netconsole.core import atomic_file
 from netconsole.core.feature_flags import (
+    PACKAGED_CORE_FEATURE_IDS,
     PACKAGED_PRODUCTION_FEATURE_IDS,
     FeatureDisabledError,
     FeatureGate,
@@ -33,6 +34,7 @@ from scripts.build.build_release import EDITION_STAGING_ALLOWED_ITEMS, validate_
 
 
 PROTECTED_INTERNAL_STATE = {"visible": True, "enabled": True, "client_package": False, "internal_only": True}
+PROTECTED_INTERNAL_DISABLED_STATE = {"visible": False, "enabled": False, "client_package": False, "internal_only": True}
 FORMALIZED_PRODUCTION_FEATURE_IDS = (
     "web.device_form_connection_test",
     "web.device_management_write",
@@ -330,8 +332,8 @@ def test_install_runtime_feature_files_writes_distinct_editions(tmp_path: Path) 
     assert internal_info["admin_unlock_enabled"] is False
     assert customer_info["admin_unlock_enabled"] is True
     assert "temporary-secret" not in embedded_info_text
-    assert customer_flags["features"]["module.feature_switch"] == PROTECTED_INTERNAL_STATE
-    assert customer_flags["features"]["system.feature_flags"] == PROTECTED_INTERNAL_STATE
+    assert customer_flags["features"]["module.feature_switch"] == PROTECTED_INTERNAL_DISABLED_STATE
+    assert customer_flags["features"]["system.feature_flags"] == PROTECTED_INTERNAL_DISABLED_STATE
     assert (customer / "_internal" / "netconsole" / "assets" / "runtime" / "build_info.json").is_file()
     assert (customer / "_internal" / "netconsole" / "assets" / "runtime" / "feature_flags.json").is_file()
     assert (customer / "_internal" / "netconsole" / "assets" / "runtime" / "feature_flags.full.json").is_file()
@@ -589,10 +591,10 @@ def test_customer_zip_keeps_allowlist_and_hidden_feature_config(tmp_path: Path) 
     assert "_internal/netconsole/assets/runtime/feature_flags.json" in names
     assert "_internal/netconsole/assets/runtime/feature_flags.full.json" in names
     assert all(not name.startswith(("docs/", "tests/", "project/")) for name in names)
-    assert flags["features"]["module.feature_switch"] == PROTECTED_INTERNAL_STATE
-    assert flags["features"]["system.feature_flags"] == PROTECTED_INTERNAL_STATE
-    assert embedded_flags["features"]["module.feature_switch"] == PROTECTED_INTERNAL_STATE
-    assert embedded_flags["features"]["system.feature_flags"] == PROTECTED_INTERNAL_STATE
+    assert flags["features"]["module.feature_switch"] == PROTECTED_INTERNAL_DISABLED_STATE
+    assert flags["features"]["system.feature_flags"] == PROTECTED_INTERNAL_DISABLED_STATE
+    assert embedded_flags["features"]["module.feature_switch"] == PROTECTED_INTERNAL_DISABLED_STATE
+    assert embedded_flags["features"]["system.feature_flags"] == PROTECTED_INTERNAL_DISABLED_STATE
     assert embedded_full_flags["features"]["module.feature_switch"] == PROTECTED_INTERNAL_STATE
     assert embedded_full_flags["features"]["system.feature_flags"] == PROTECTED_INTERNAL_STATE
 
@@ -618,9 +620,11 @@ def test_packaged_runtime_ignores_external_overrides_and_protects_core_features(
 
     assert gate.resolution.source == "embedded"
     assert gate.allow_local_override is False
-    for feature_id in PACKAGED_PRODUCTION_FEATURE_IDS:
+    for feature_id in PACKAGED_CORE_FEATURE_IDS:
         assert gate.is_visible(feature_id), feature_id
         assert gate.is_enabled(feature_id), feature_id
+    assert not gate.is_visible("online_mr.iperf_test")
+    assert not gate.is_enabled("online_mr.iperf_test")
     assert not gate.is_visible("module.feature_switch")
     assert not gate.is_visible("system.feature_flags")
 

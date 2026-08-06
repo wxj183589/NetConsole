@@ -310,6 +310,11 @@ def test_feature_profile_check_auto_fix_and_save_use_backend_dependency_contract
         item for item in snapshot["items"] if item["feature_id"] == "module.devices"
     )
     assert devices_module["title"] != "nav.devices"
+    job_center = next(
+        item for item in snapshot["items"] if item["feature_id"] == "web.job_center"
+    )
+    assert job_center["locked"] is True
+    assert job_center["package_editable"] is False
     target = next(
         item for item in snapshot["items"] if item["feature_id"] == "web.agent_management"
     )
