@@ -586,6 +586,17 @@ async function validateFrozenGroundUnattendedStatus(dataRoot) {
         )
       }
     }
+    // Customer 包不交付设备采集写入能力，MESH 场景依赖该能力创建测试设备。
+    // 该版本仍验证无人值守状态契约，完整 MESH 导入链路由 Full 包 smoke 覆盖。
+    if (String(process.env.NETCONSOLE_BUILD_EDITION || '').trim().toLowerCase() === 'customer') {
+      child.stdin.write(`${JSON.stringify({ command: 'shutdown' })}\n`)
+      await withTimeout(shutdownAck, 10_000, '冻结 Backend 正常停止确认超时')
+      child.stdin.write(`${JSON.stringify({ command: 'exit' })}\n`)
+      const code = await withTimeout(exited, 10_000, '冻结 Backend 退出超时')
+      if (code !== 0) throw new Error(`冻结 Backend 非正常退出：exit=${code}`)
+      await assertLoopbackPortReleased(port)
+      return
+    }
     const requestJson = async (path, init = {}, expectedStatus = 200) => {
       const response = await fetch(`http://127.0.0.1:${port}${path}`, {
         ...init,
