@@ -12,6 +12,7 @@ from netconsole.services.h3c_ac_collect_service import collect_h3c_ac_resources
 from netconsole.parsers.h3c.interface_parser import parse_interfaces
 from netconsole.services import command_guard
 from netconsole.services.trackside_ap_business import (
+    TRACKSIDE_AP_BUSINESS_COLUMNS,
     TRACKSIDE_AP_BUSINESS_EXPORT_COLUMNS,
     build_trackside_ap_business_rows,
     enrich_trackside_export_rows,
@@ -75,6 +76,53 @@ def test_export_columns_exclude_ui_only_fields_and_port_change_fields():
         "history_compared_at",
     ):
         assert field not in fields
+
+
+def test_trackside_export_columns_keep_fixed_business_order():
+    assert [field for _key, field in TRACKSIDE_AP_BUSINESS_EXPORT_COLUMNS] == [
+        "site",
+        "device_name",
+        "interface_name",
+        "link_status",
+        "switch_rx_power",
+        "switch_optical_status",
+        "ap_mac",
+        "ap_name",
+        "ap_rx_power",
+        "ap_device_optical_status",
+        "ap_optical_status",
+        "updated_at",
+        "switch_optical_change",
+        "ap_optical_change",
+        "ap_business_threshold_dbm",
+        "ap_business_reason",
+    ]
+
+
+def test_trackside_page_columns_keep_existing_order():
+    assert [field for _key, field in TRACKSIDE_AP_BUSINESS_COLUMNS] == [
+        "site",
+        "device_name",
+        "interface_name",
+        "link_status",
+        "port_type",
+        "description",
+        "pvid",
+        "planned_management_vlan",
+        "pvid_plan_status",
+        "vlan_group_name",
+        "vlan",
+        "switch_rx_power",
+        "switch_optical_status",
+        "ap_mac",
+        "ap_name",
+        "ap_rx_power",
+        "ap_device_optical_status",
+        "ap_optical_status",
+        "ap_business_threshold_dbm",
+        "ap_business_reason",
+        "updated_at",
+    ]
 
 
 def test_display_interface_brief_parses_bridge_and_route_modes():
