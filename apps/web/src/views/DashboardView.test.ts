@@ -145,7 +145,7 @@ describe('Dashboard home page', () => {
     expect(deviceManagementSource).toContain('deleteDevices')
     expect(deviceManagementSource).toContain('删除后设备将从当前局点数据库移除')
     expect(fileManagementSource).toContain('clearFileDownloads')
-    expect(fileManagementSource).toContain("actionLabels: ['取消', '重试', '打开', '所在目录']")
+    expect(fileManagementSource).toContain("actionLabels: ['取消', '重试', '打开', '所在目录', '导入到 MESH 分析', '查看分析']")
     expect(jobCenterSource).toContain('TaskDetailDrawer')
     expect(taskDetailSource).toContain('requestCancel')
     expect(taskDetailSource).toContain('保存导出表格')

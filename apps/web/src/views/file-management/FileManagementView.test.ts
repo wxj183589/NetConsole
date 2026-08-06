@@ -113,7 +113,7 @@ describe('file management API contract', () => {
   })
 
   it('uses real task paths and direct opaque Desktop actions without a save stage', () => {
-    expect(source).toContain("actionLabels: ['取消', '重试', '打开', '所在目录']")
+    expect(source).toContain("actionLabels: ['取消', '重试', '打开', '所在目录', '导入到 MESH 分析', '查看分析']")
     expect(source).toContain("openTaskResult(row)")
     expect(source).toContain("openTaskResult(row, true)")
     expect(source).toContain("'open_result_dir' : 'open_result'")

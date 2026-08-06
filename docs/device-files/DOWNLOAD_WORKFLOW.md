@@ -13,5 +13,16 @@ status + limit/offset`，活动任务优先；下载 descriptor、hidden 和 wai
 目标路径由后端决定：
 
 - 普通设备文件默认进入 `<data_root>/sites/<site>/files/file_manager/downloads/<safe_device_name>/`；用户已进入其受控子目录时进入当前目录。
-- 设备必须精确属于“车载-MR”分组并关联 MR Profile，且文件名命中 MESH 规则，才强制进入 `<data_root>/sites/<site>/files/rail_transit/mesh/<mr>/raw/`。
+- 设备必须精确属于“车载-MR”分组并关联 MR Profile，且文件名命中 MESH 规则，才强制进入 `<data_root>/sites/<site>/files/rail_transit/mr_raw_mesh/<mr>/raw/`。
 - MESH raw 原文件在自动导入失败时仍保留；不得因设备名称包含 `MR` 而推断身份。
+
+车载 MR 的完成链路固定为：
+
+```text
+远端下载 -> .part -> 大小/SHA-256 校验 -> 原子改名
+  -> 登记 device_download 来源 -> 提交 MESH 导入 Job -> 刷新分析来源
+```
+
+登记或解析失败不回滚已完成下载。任务结果中的 `mesh_import_status` 单独记录 `pending`、`completed`、
+`duplicate`、`failed` 或 `rebuild_required`，页面可对已有 raw 文件执行“重新导入”，不会重新连接设备或再次下载。
+相同正文按当前局点/Profile 的 SHA-256（并保留文件大小）去重；同名但内容不同的文件仍分别登记。

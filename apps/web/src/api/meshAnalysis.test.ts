@@ -3,7 +3,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   applyMeshBundleImport, createMeshProfile, deleteMeshArtifact, deleteMeshSource, exportMeshLinkDetails, getMeshActivePathChart, getMeshAnalysisParamsTemplate,
   getMeshAnalysisSession, getMeshCounterDeltas, getMeshPeerSegmentChart, getMeshRateSeries, getMeshTracksideSignalChart, listMeshActiveBuildOrder, listMeshProfiles, listMeshSwitchEvents,
-  previewMeshBundle, saveMeshAnalysisParams,
+  getMeshLocalScan, ignoreMeshLocalScanCandidates, importMeshLocalScan, openMeshLocalScanCandidateDirectory,
+  previewMeshBundle, saveMeshAnalysisParams, startMeshLocalScan,
 } from './meshAnalysis'
 
 describe('Mesh profile API', () => {
@@ -45,6 +46,32 @@ describe('Mesh profile API', () => {
       mappings: [{ member_id: '001-ctmeshlog.log', train_number: '01', role: 'CT', profile_id: 'profile-1' }],
       explicit_confirmation: true,
     })
+  })
+
+  it('uses the managed local scan and confirmed import endpoints', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) })
+    vi.stubGlobal('fetch', fetchMock)
+    const scanId = `mls1_${'a'.repeat(32)}`
+    const candidateId = `mlc1_${'b'.repeat(32)}`
+
+    await startMeshLocalScan()
+    await getMeshLocalScan(scanId)
+    await importMeshLocalScan(scanId, [{ candidate_id: candidateId, profile_id: 'profile-1' }])
+    await ignoreMeshLocalScanCandidates(scanId, [candidateId])
+    await openMeshLocalScanCandidateDirectory(scanId, candidateId)
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      '/api/rail-transit/mesh-analysis/local-scans',
+      `/api/rail-transit/mesh-analysis/local-scans/${scanId}`,
+      `/api/rail-transit/mesh-analysis/local-scans/${scanId}/import`,
+      `/api/rail-transit/mesh-analysis/local-scans/${scanId}/ignore`,
+      `/api/rail-transit/mesh-analysis/local-scans/${scanId}/candidates/${candidateId}/open-directory`,
+    ])
+    expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toEqual({
+      mappings: [{ candidate_id: candidateId, profile_id: 'profile-1' }],
+      explicit_confirmation: true,
+    })
+    expect(JSON.parse(fetchMock.mock.calls[3][1].body)).toEqual({ candidate_ids: [candidateId] })
   })
 
   it('queries Rate, counter deltas and switch events through formal Query APIs', async () => {

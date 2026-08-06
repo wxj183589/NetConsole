@@ -73,6 +73,8 @@ export interface FileDownloadResult {
   mesh_parsed_record_count: number
   mesh_import_error_code?: string
   mesh_import_error: string
+  mesh_session_id?: string
+  mesh_source_file_id?: number | null
 }
 
 export interface FileDownloadTask {

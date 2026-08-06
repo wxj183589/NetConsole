@@ -10,6 +10,7 @@ from netconsole.services.mesh_source_rebuild_service import (
 )
 from netconsole.services.mesh_source_delete_service import MeshSourceDeleteService
 from netconsole.repositories.mesh_catalog_repository import MeshCatalogRepository
+from netconsole.services.mesh_local_scan_service import MeshLocalScanService
 
 mesh_log_import = legacy_handler(legacy_tasks._mesh_log_import)
 mesh_derived_rebuild = legacy_handler(legacy_tasks._mesh_derived_rebuild)
@@ -62,6 +63,36 @@ def mesh_analysis_source_delete(context: JobContext) -> dict[str, object]:
     context.progress("mesh_analysis_source_delete", 1, 1, "MESH 来源删除完成")
     return result
 
+
+def mesh_local_scan(context: JobContext) -> dict[str, object]:
+    context.check_cancelled()
+    site_name = str(context.params.get("site_name") or "")
+    scan_id = str(context.params.get("scan_id") or "")
+    result = MeshLocalScanService(site_name, context.paths).scan(
+        scan_id,
+        should_cancel=context.should_cancel,
+        progress=context.progress,
+    )
+    context.check_cancelled()
+    return result
+
+
+def mesh_local_scan_import(context: JobContext) -> dict[str, object]:
+    context.check_cancelled()
+    site_name = str(context.params.get("site_name") or "")
+    scan_id = str(context.params.get("scan_id") or "")
+    raw_mappings = context.params.get("mappings") or ()
+    mappings = tuple(dict(item) for item in raw_mappings if isinstance(item, dict))
+    result = MeshLocalScanService(site_name, context.paths).import_candidates(
+        scan_id,
+        mappings,
+        job_id=context.job_id,
+        should_cancel=context.should_cancel,
+        progress=context.progress,
+    )
+    context.check_cancelled()
+    return result
+
 HANDLERS = {
     "mesh_log_import": mesh_log_import,
     "mesh_derived_rebuild": mesh_derived_rebuild,
@@ -69,4 +100,6 @@ HANDLERS = {
     "mesh_schema_rebuild": mesh_schema_rebuild,
     "mesh_source_rebuild": mesh_source_rebuild,
     "mesh_analysis_source_delete": mesh_analysis_source_delete,
+    "mesh_local_scan": mesh_local_scan,
+    "mesh_local_scan_import": mesh_local_scan_import,
 }

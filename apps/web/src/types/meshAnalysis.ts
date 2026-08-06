@@ -61,6 +61,25 @@ export interface MeshBundleImportRequest {
   preview_id: string; mappings: MeshBundleMapping[]; explicit_confirmation: boolean
 }
 
+export interface MeshLocalScanStats {
+  found_count: number; unregistered_count: number; imported_count: number; duplicate_count: number
+  invalid_count: number; needs_metadata_count: number; failed_count: number
+}
+export interface MeshLocalScanProfile { profile_id: string; display_name: string }
+export interface MeshLocalScanCandidate {
+  candidate_id: string; relative_path: string; file_name: string; file_type: 'log' | 'log_gz' | 'zip'
+  file_size: number; modified_at: string; mtime_ns: number; sha256: string
+  profile_id: string; profile_name: string; train_no: string; mr_role: string
+  match_status: 'matched' | 'unmatched' | 'ambiguous'
+  scan_status: 'unregistered' | 'imported' | 'duplicate' | 'invalid' | 'needs_metadata' | 'failed' | 'ignored'
+  error_message: string; existing_session_id: string; existing_profile_name: string; duplicate_of_candidate_id: string
+}
+export interface MeshLocalScanResult {
+  scan_id: string; site_id: string; created_at: string; updated_at: string; status: string
+  stats: MeshLocalScanStats; profiles: MeshLocalScanProfile[]; candidates: MeshLocalScanCandidate[]
+}
+export interface MeshLocalScanStart { scan_id: string; task: import('./railTransitWeb').RailTransitTask }
+
 export interface MeshAnalysisSession {
   session_id: string
   site_id: string

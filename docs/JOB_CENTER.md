@@ -263,6 +263,18 @@ Vue 只向具名 FastAPI endpoint 提交白名单 DTO；Router 调用对应 Appl
 - Vue 可通过受控游标轮询或 WebSocket 跟踪日志尾部，但不得在 Renderer 做大文件解析。手动和实时解析使用 `online_mr_parse` Job，分析报告使用 Export Process。
 - LOCAL 执行端仍是本地 Worker Process；Windows Go Agent 的单 Agent、单 MR 执行器已经实现但默认关闭，只提供固定 start/status/normal stop、Controller 到期停止和安全包导入。CentOS Agent、多 Agent 编排和远端强停尚未实现。
 
+## MESH 本地扫描与补录 Job
+
+- `mesh_local_scan` 只在用户点击“扫描本地日志”后提交，参数仅包含当前局点和随机 `scan_id`；Worker 通过
+  `PathResolver` 限定当前局点 MESH raw 根，递归检查 `.log`、`.log.gz`、`.zip`，并把结构化候选和统计写入
+  有 TTL 的受管 manifest。Renderer 不接收服务器绝对路径。
+- `mesh_local_scan_import` 只接收扫描 ID 和最多 200 条 `candidate_id + profile_id` 映射；Worker 重新校验候选仍在
+  允许根内、文件大小/mtime/指纹未变化后，复用现有 MESH 导入服务逐项登记和解析。单项损坏或解析失败以业务
+  结果汇总，不影响其他候选继续处理。
+- 两个 Job 均在目录遍历、哈希和逐文件导入之间检查取消；普通页面进入只查询 catalog，不隐式启动扫描。
+- 设备下载后的精确自动导入仍属于对应文件下载 Job 的后处理阶段。下载终态与 MESH 导入业务状态分离，后处理
+  失败不把已经校验并原子落盘的下载改成失败。
+
 ## AC 资源刷新 Job
 
 - `ac_fit_ap_resources_refresh` 保持原 task_type；`mode=load` 读取现有资源，`mode=collect` 通过 `AcService / AcResourceService` 执行设备采集，兼容旧调用方。

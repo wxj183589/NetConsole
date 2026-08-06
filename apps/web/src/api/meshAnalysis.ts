@@ -3,6 +3,7 @@ import type {
   MeshAnalysisSession, MeshAnalysisSummary, MeshAnomaly, MeshArtifact,
   MeshActiveBuildOrder, MeshChannelBusy, MeshCounterDeltaPage, MeshLinkDetail, MeshPathChart, MeshRawSource, MeshRawTail, MeshRatePage, MeshRssi, MeshSessionDetail, MeshSwitchEvent,
   MeshTimelineItem, MeshProfile, MeshImportContext, MeshImportContextPrepare, MeshBundleImportRequest, MeshBundlePreview, MeshAnalysisParams, MeshTracksideSignalChartData, MeshAnalysisOverview, Page,
+  MeshLocalScanResult, MeshLocalScanStart,
 } from '../types/meshAnalysis'
 import type { RailTransitTask } from '../types/railTransitWeb'
 import type { BackendDownloadRequest } from '../../../desktop_electron/src/shared/bridge'
@@ -43,6 +44,20 @@ export function previewMeshImport(files: File[], signal?: AbortSignal): Promise<
   return apiRequest<MeshBundlePreview>(`${root}/import-preview`, { method: 'POST', body: form, signal })
 }
 export const applyMeshBundleImport = (payload: MeshBundleImportRequest): Promise<RailTransitTask> => apiRequest(`${root}/bundles/import`, { method: 'POST', body: JSON.stringify(payload) })
+export const startMeshLocalScan = (): Promise<MeshLocalScanStart> => apiRequest(`${root}/local-scans`, { method: 'POST' })
+export const getMeshLocalScan = (scanId: string): Promise<MeshLocalScanResult> => apiRequest(`${root}/local-scans/${encodeURIComponent(scanId)}`)
+export const importMeshLocalScan = (scanId: string, mappings: Array<{ candidate_id: string; profile_id: string }>): Promise<RailTransitTask> => apiRequest(
+  `${root}/local-scans/${encodeURIComponent(scanId)}/import`,
+  { method: 'POST', body: JSON.stringify({ mappings, explicit_confirmation: true }) },
+)
+export const ignoreMeshLocalScanCandidates = (scanId: string, candidateIds: string[]): Promise<MeshLocalScanResult> => apiRequest(
+  `${root}/local-scans/${encodeURIComponent(scanId)}/ignore`,
+  { method: 'POST', body: JSON.stringify({ candidate_ids: candidateIds }) },
+)
+export const openMeshLocalScanCandidateDirectory = (scanId: string, candidateId: string): Promise<{ success: boolean; code: string; message: string }> => apiRequest(
+  `${root}/local-scans/${encodeURIComponent(scanId)}/candidates/${encodeURIComponent(candidateId)}/open-directory`,
+  { method: 'POST' },
+)
 export const listMeshAnalysisSessions = (values: Record<string, string | number | boolean | null | undefined>): Promise<Page<MeshAnalysisSession>> => apiRequest(`${root}/sessions${qs(values)}`)
 export const getMeshAnalysisSession = (id: string, signal?: AbortSignal): Promise<MeshSessionDetail> => apiRequest(
   `${root}/sessions/${meshSessionPathSegment(id)}`,

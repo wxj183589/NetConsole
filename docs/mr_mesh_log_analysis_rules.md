@@ -8,6 +8,20 @@
 
 ## 2. 导入与存储
 
+### 2.1 统一入口与本地扫描
+
+手工文件、设备下载完成文件、本地扫描和无人值守采集最终都调用同一 `register_mesh_source()` /
+`enqueue_mesh_import()` 语义，解析器、去重、错误和 catalog 发布规则保持一致。来源元数据至少保留
+`source_type`（`manual_upload`、`device_download`、`local_scan`、`unattended_collection`）、原始路径、
+文件名、大小、`sha256`、修改时间、设备/列车/MR/角色、导入状态、解析任务 ID 和错误信息。
+
+“扫描本地日志”只允许用户显式触发，范围限定为当前局点
+`<data_root>/sites/<site>/files/rail_transit/mr_raw_mesh/` 下各 MR 的 `raw/` 子目录，递归识别 `.log`、
+`.log.gz` 和 `.zip`，跳过 `.part`、`.tmp`、符号链接及正在写入的文件。扫描 manifest 保存 `path`、大小、
+`mtime_ns` 与 `sha256`，只有大小或修改时间变化时才重新计算指纹；扫描不会在页面进入时全量执行。
+内容指纹优先于文件名判断重复，重命名文件或根目录/年份子目录中的同一正文不会生成第二个来源。无法从
+设备任务、父目录（例如 `列车07-MR-CT`）或文件名识别列车/MR/角色时，候选进入待补充信息状态，不直接拒绝。
+
 - 原始文件归档到当前数据根的局点 MESH MR `raw/` 目录，重名使用防冲突归档名；路径由 `PathResolver` 解析，不写死仓库或历史 `.local` 位置。
 - `catalog.sqlite` 和目录型 `mesh.sqlite` 管理文件目录与入口；明细数据可能在 `source_files.parsed_db_path` 指向的单文件 parsed SQLite。`catalog.sqlite` 中的 `mesh_session_index`、`mesh_source_fingerprints` 和 `mesh_catalog_index_state` 是可重建的中央查询目录：会话摘要、筛选和分页只查询中央目录，不得在 HTTP 请求中遍历 Profile 或打开单文件 parsed SQLite。旧数据先从各 Profile 的 `source_files` 后台发现并发布基础行，再逐来源低优先级补齐明细统计；页面必须展示 `pending/discovering/enriching/ready/failed` 状态，回填失败时继续显示最近一次可用目录。
 - `raw/` 永不因解析失败而删除；`parsed/` 和 `outputs/` 可重建。

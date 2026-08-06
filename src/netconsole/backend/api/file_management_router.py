@@ -343,6 +343,16 @@ def retry_download(request: Request, task_id: str, site_id: str = Query(default=
 
 
 @router.post(
+    "/downloads/{task_id}/mesh-import",
+    response_model=FileDownloadTaskDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(require_feature("web.file_management_download"))],
+)
+def retry_mesh_import(request: Request, task_id: str, site_id: str = Query(default="", max_length=100)) -> FileDownloadTaskDTO:
+    return _remote_call(lambda: _service(request).retry_mesh_import(_site_id(request, site_id), task_id))
+
+
+@router.post(
     "/downloads/clear",
     response_model=FileDownloadClearDTO,
     dependencies=[Depends(require_feature("web.file_management_download"))],

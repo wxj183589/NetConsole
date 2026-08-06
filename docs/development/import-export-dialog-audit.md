@@ -38,6 +38,7 @@
 | `/rail-transit/train-communication` | 同上 | 点表 CSV/XLSX | 导出 | 直接提交任务 → 先选路径再提交 | 点击后立即“另存为” | Main 授权的用户路径 | 确认路径后创建 | `rail.car_network_points_csv/xlsx` | 静态审计、协调器测试 |
 | `/rail-transit/trackside-ap-business` | `TracksideApBusinessView.vue` | 轨旁 AP 业务表 | 导出 | 任务完成/恢复后自动 Save As → 点击时先选路径 | 点击后立即“另存为” | Main 授权的用户路径 | 确认路径后创建 | 删除页面私有 auto-save storage/watch；历史任务不自动弹窗 | `TracksideApBusinessView.test.ts`、协调器测试 |
 | `/rail-transit/mesh-analysis` | `MeshAnalysisView.vue` | MESH 文件、多文件、文件夹导入 | 导入 | 保持用户触发的 file/multiple/webkitdirectory | 文件或文件夹选择 | 仅用户选中的 FileList | 预览/确认按原流程 | 取消不 prepare；清空 input；不扫描未选目录 | `MeshAnalysisView.behavior.test.ts`、静态审计 |
+| `/rail-transit/mesh-analysis` | 同上 | 扫描当前局点受管 MESH raw 日志 | 受管数据修复 | 用户显式点击后提交 `mesh_local_scan` | 不弹文件选择器 | 当前局点受管数据根 | 扫描与批量补录分别创建 Job | 已登记例外：不接受任意路径；不访问其他局点；页面进入不自动扫描；复用统一 MESH 导入服务 | `test_mesh_local_scan_service.py`、MESH 页面定向测试 |
 | `/rail-transit/mesh-analysis` | 同上 | 分析报告、链路明细 | 导出 | 直接提交任务 → 先选路径再提交 | 点击后立即“另存为” | Main 授权的用户路径 | 确认路径后创建 | `rail.mesh_report/mesh_link_details` | 页面行为测试、协调器测试 |
 | `/rail-transit/mesh-analysis` | 同上、Task Center | 历史报告/明细 Artifact | 历史文件 | 保持用户点击另存 | 点击时一次“另存为” | 用户路径 | 否 | 未绑定历史任务不自动保存 | 协调器恢复测试、Task Center 测试 |
 | `/rail-transit/online-mr-analysis` | `OnlineMrAnalysisView.vue` | Online MR 分析报告 | 导出 | 直接提交任务 → 先选路径再提交 | 点击后立即“另存为” | Main 授权的用户路径 | 确认路径后创建 | `rail.online_mr_report` | `OnlineMrAnalysisView.test.ts`、静态审计 |

@@ -748,6 +748,7 @@ class MeshBundleImportService:
         mappings: Iterable[Mapping[str, object]],
         *,
         job_id: str,
+        source_type: str = "manual_upload",
         should_cancel: Callable[[], bool] | None = None,
         progress: Callable[[str, int, int, str], None] | None = None,
     ) -> dict[str, object]:
@@ -823,6 +824,8 @@ class MeshBundleImportService:
                     profiles,
                     approved,
                     member_paths,
+                    source_type=source_type,
+                    parse_task_id=job_id,
                     should_cancel=should_cancel,
                     progress=progress,
                 )
@@ -1143,6 +1146,8 @@ class MeshBundleImportService:
         mappings: tuple[dict[str, object], ...],
         member_paths: Mapping[str, Path],
         *,
+        source_type: str,
+        parse_task_id: str,
         should_cancel: Callable[[], bool] | None,
         progress: Callable[[str, int, int, str], None] | None,
     ) -> tuple[dict[str, str], dict[str, object]]:
@@ -1208,6 +1213,8 @@ class MeshBundleImportService:
                 files,
                 should_cancel=should_cancel,
                 progress=on_progress,
+                source_type=source_type,
+                parse_task_id=parse_task_id,
             )
             _raise_if_cancelled(should_cancel)
             completed += len(rows)

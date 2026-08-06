@@ -6,6 +6,7 @@ from pydantic import Field
 
 from netconsole.models.api.common import ApiModel
 from netconsole.models.api.rail_transit_base_data import VehicleMrDTO
+from netconsole.models.api.rail_transit_web import RailTransitTaskDTO
 
 
 class MeshAnalysisWarningDTO(ApiModel):
@@ -127,6 +128,79 @@ class MeshBundleImportRequestDTO(ApiModel):
     preview_id: str = Field(min_length=16, max_length=100)
     mappings: list[MeshBundleMappingDTO] = Field(min_length=1, max_length=200)
     explicit_confirmation: bool = False
+
+
+class MeshLocalScanStatsDTO(ApiModel):
+    found_count: int = Field(default=0, ge=0)
+    unregistered_count: int = Field(default=0, ge=0)
+    imported_count: int = Field(default=0, ge=0)
+    duplicate_count: int = Field(default=0, ge=0)
+    invalid_count: int = Field(default=0, ge=0)
+    needs_metadata_count: int = Field(default=0, ge=0)
+    failed_count: int = Field(default=0, ge=0)
+    ignored_count: int = Field(default=0, ge=0)
+
+
+class MeshLocalScanProfileDTO(ApiModel):
+    profile_id: str
+    display_name: str
+
+
+class MeshLocalScanCandidateDTO(ApiModel):
+    candidate_id: str = Field(pattern=r"^mlc1_[0-9a-f]{32}$")
+    relative_path: str
+    file_name: str
+    file_type: Literal["log", "log_gz", "zip"]
+    file_size: int = Field(ge=0)
+    modified_at: str
+    mtime_ns: int = Field(ge=0)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    profile_id: str = ""
+    profile_name: str = ""
+    train_no: str = ""
+    mr_role: str = ""
+    match_status: Literal["matched", "unmatched", "ambiguous"]
+    scan_status: Literal["unregistered", "imported", "duplicate", "invalid", "needs_metadata", "failed", "ignored"]
+    error_message: str = ""
+    existing_session_id: str = ""
+    existing_profile_name: str = ""
+    duplicate_of_candidate_id: str = ""
+
+
+class MeshLocalScanResultDTO(ApiModel):
+    scan_id: str = Field(pattern=r"^mls1_[0-9a-f]{32}$")
+    site_id: str
+    created_at: str
+    updated_at: str
+    status: str
+    stats: MeshLocalScanStatsDTO
+    profiles: list[MeshLocalScanProfileDTO] = Field(default_factory=list)
+    candidates: list[MeshLocalScanCandidateDTO] = Field(default_factory=list)
+
+
+class MeshLocalScanStartDTO(ApiModel):
+    scan_id: str = Field(pattern=r"^mls1_[0-9a-f]{32}$")
+    task: RailTransitTaskDTO
+
+
+class MeshLocalScanMappingDTO(ApiModel):
+    candidate_id: str = Field(pattern=r"^mlc1_[0-9a-f]{32}$")
+    profile_id: str = Field(default="", max_length=200)
+
+
+class MeshLocalScanImportRequestDTO(ApiModel):
+    mappings: list[MeshLocalScanMappingDTO] = Field(min_length=1, max_length=200)
+    explicit_confirmation: bool = False
+
+
+class MeshLocalScanIgnoreRequestDTO(ApiModel):
+    candidate_ids: list[str] = Field(min_length=1, max_length=200)
+
+
+class MeshLocalScanOpenResultDTO(ApiModel):
+    success: bool
+    code: str = ""
+    message: str = ""
 
 
 class MeshRebuildRequestDTO(ApiModel):

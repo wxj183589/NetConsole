@@ -133,6 +133,10 @@ def test_mesh_analysis_queries_keep_analysis_files_unchanged(tmp_path: Path) -> 
         "/rail-transit/mesh-analysis/sessions/{session_id}/rebuild",
         "/rail-transit/mesh-analysis/sessions/{session_id}/report",
         "/rail-transit/mesh-analysis/sessions/{session_id}/link-details/export",
+        "/rail-transit/mesh-analysis/local-scans",
+        "/rail-transit/mesh-analysis/local-scans/{scan_id}/import",
+        "/rail-transit/mesh-analysis/local-scans/{scan_id}/ignore",
+        "/rail-transit/mesh-analysis/local-scans/{scan_id}/candidates/{candidate_id}/open-directory",
     }
     assert all(route.methods in ({"GET"}, {"POST"}, {"PUT"}, {"DELETE"}) for route in routes)
     generated_report_paths = post_paths | {

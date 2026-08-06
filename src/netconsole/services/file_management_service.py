@@ -46,6 +46,7 @@ from netconsole.models.task_state import TaskState
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.repositories.mesh_mr_repository import MeshSchemaRebuildRequired
+from netconsole.repositories.mesh_catalog_repository import MeshCatalogRepository
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.config_lifecycle_service import safe_artifact_display_name
 from netconsole.services.file_transfer_service import (
@@ -68,6 +69,7 @@ from netconsole.services.host_key_trust_service import (
 )
 from netconsole.services.external_terminal import find_winscp_exe, launch_winscp
 from netconsole.services.mesh_import_service import MeshImportService
+from netconsole.services.mesh_catalog_index_service import MeshCatalogIndexService
 from netconsole.services.mesh_storage_service import MeshStorageService
 from netconsole.services.job_center.web_export_event_safety import redact_web_task_text
 from netconsole.services.netmiko_connection import sanitize_sensitive_text
@@ -1367,6 +1369,8 @@ class FileManagementApplicationService:
         if task is None:
             raise FileReferenceNotFound("下载任务不存在")
         mesh_import_failed = task.result is not None and task.result.mesh_import_status == "failed"
+        if mesh_import_failed and task.result is not None and task.result.target_kind == "mr_raw" and task.result.relative_path:
+            return self.retry_mesh_import(site, task_id)
         if task.status not in {TaskState.FAILED.value, TaskState.CANCELLED.value} and not mesh_import_failed:
             raise FileManagementError("只有失败、已取消或 MESH 导入失败的下载可以重试")
         descriptor = self._task_descriptor(self.task_service.repository(site), task_id) if self.task_service else None
@@ -1380,6 +1384,31 @@ class FileManagementApplicationService:
             target, target_kind = self._download_target(site, device, remote_file, "")
             retry["target_relative_path"] = target.relative_to(self.paths.site_dir(site).resolve()).as_posix()
             retry["target_kind"] = target_kind
+        return self._start_download(site, retry)
+
+    def retry_mesh_import(self, site_id: str, task_id: str) -> FileDownloadTaskDTO:
+        site = self._site_id(site_id)
+        task = self.download_task(site, task_id)
+        if task is None:
+            raise FileReferenceNotFound("下载任务不存在")
+        if task.status != TaskState.COMPLETED.value or task.result is None:
+            raise FileManagementError("只有已完成下载的 MESH 原始日志可以提交分析")
+        if task.result.target_kind != "mr_raw" or not task.result.relative_path:
+            raise FileManagementError("该下载结果不是受管 MESH 原始日志")
+        descriptor = self._task_descriptor(self.task_service.repository(site), task_id) if self.task_service else None
+        if descriptor is None:
+            raise FileManagementError("旧下载任务没有可恢复的下载描述")
+        retry = dict(descriptor)
+        retry.update(
+            {
+                "batch_id": str(retry.get("batch_id") or f"fb1_{uuid4().hex}"),
+                "target_relative_path": task.result.relative_path,
+                "target_kind": "mr_raw",
+                "mesh_auto_import": True,
+                "mesh_retry_only": True,
+                "expected_sha256": task.result.sha256,
+            }
+        )
         return self._start_download(site, retry)
 
     def clear_downloads(self, site_id: str, statuses: Iterable[str]) -> FileDownloadClearDTO:
@@ -1459,6 +1488,12 @@ class FileManagementApplicationService:
                         mesh_parsed_record_count=max(0, int(result.get("mesh_parsed_record_count") or 0)),
                         mesh_import_error_code=str(result.get("mesh_import_error_code") or ""),
                         mesh_import_error=str(result.get("mesh_import_error") or ""),
+                        mesh_session_id=str(result.get("mesh_session_id") or ""),
+                        mesh_source_file_id=(
+                            int(result["mesh_source_file_id"])
+                            if result.get("mesh_source_file_id") not in (None, "")
+                            else None
+                        ),
                     )
                 except (TypeError, ValueError):
                     result_dto = None
@@ -1548,6 +1583,8 @@ class FileManagementApplicationService:
 
     def validate_for_download(self, context: JobContext) -> dict[str, object]:
         site = self._site_id(str(context.params.get("site_name") or ""))
+        if bool(context.params.get("mesh_retry_only")):
+            return self._import_existing_mesh(context, site)
         file_ref = str(context.params.get("file_ref") or "")
         if file_ref:
             source = self.resolve_ref(site, file_ref)
@@ -1562,6 +1599,32 @@ class FileManagementApplicationService:
                 "size_bytes": source.path.stat().st_size,
             }
         return self._download_remote(context, site)
+
+    def _import_existing_mesh(self, context: JobContext, site: str) -> dict[str, object]:
+        relative = str(context.params.get("target_relative_path") or "")
+        target = self._safe_download_target(site, relative, "mr_raw")
+        if not target.is_file() or target.is_symlink():
+            raise FileReferenceNotFound("已下载的 MESH 原始日志不存在")
+        expected_sha256 = str(context.params.get("expected_sha256") or "")
+        digest = file_sha256(target)
+        if expected_sha256 and digest != expected_sha256:
+            raise FileManagementError("已下载的 MESH 原始日志校验失败，请重新扫描或重新下载")
+        device = self._resolve_device(site, str(context.params.get("device_id") or ""))
+        context.progress("mesh_auto_import", 0, 1, "正在重新导入已下载的 MESH 日志")
+        mesh_import = self._auto_import_mesh(context, site, device, target, "mr_raw")
+        stat = target.stat()
+        return {
+            "result_kind": "device_file",
+            "name": target.name,
+            "size_bytes": int(stat.st_size),
+            "sha256": digest,
+            "relative_path": relative,
+            "device_file_ref": self._device_file_ref(context.job_id, relative, digest),
+            "device_id": str(context.params.get("device_id") or ""),
+            "remote_entry_id": str(context.params.get("remote_entry_id") or ""),
+            "target_kind": "mr_raw",
+            **mesh_import,
+        }
 
     def _download_remote(self, context: JobContext, site: str) -> dict[str, object]:
         device_id = str(context.params.get("device_id") or "").strip()
@@ -1672,15 +1735,48 @@ class FileManagementApplicationService:
                 profile,
                 [path],
                 should_cancel=should_cancel,
+                source_type="device_download",
+                source_device_id=str(device.device_uuid or device.id or ""),
+                parse_task_id=context.job_id,
             )
+            source_results = list(getattr(result, "source_results", []) or [])
+            catalog = MeshCatalogRepository(context.paths.mesh_catalog_path(site))
+            fingerprint_rows = [
+                {
+                    "content_sha256": item.get("content_sha256"),
+                    "raw_sha256": item.get("raw_sha256"),
+                    "mr_id": item.get("profile_id") or profile.mr_id,
+                    "source_file_id": item.get("source_id") or item.get("existing_source_id"),
+                    "stored_filename": item.get("stored_filename") or item.get("existing_stored_filename"),
+                }
+                for item in source_results
+                if item.get("source_id") or item.get("existing_source_id")
+            ]
+            if fingerprint_rows:
+                catalog.upsert_source_fingerprints(fingerprint_rows)
+            catalog.mark_index_pending()
+            try:
+                MeshCatalogIndexService(context.paths).rebuild_now(site)
+            except Exception as exc:
+                app_logger.log_warning(
+                    "MESH_CATALOG_REFRESH_PENDING",
+                    f"site={site} task={context.job_id} error={type(exc).__name__}",
+                )
             context.check_cancelled()
             context.progress("mesh_auto_import", 1, 1, "MESH 日志自动导入完成")
             status = "duplicate" if result.duplicate_count and not result.imported_count else "completed"
+            source_result = source_results[0] if source_results else {}
             return {
                 "mesh_import_status": status,
                 "mesh_imported_count": result.imported_count,
                 "mesh_duplicate_count": result.duplicate_count,
                 "mesh_parsed_record_count": result.parsed_record_count,
+                "mesh_session_id": str(
+                    source_result.get("session_id") or source_result.get("existing_session_id") or ""
+                ),
+                "mesh_source_file_id": (
+                    source_result.get("source_id") or source_result.get("existing_source_id")
+                ),
             }
         except MeshSchemaRebuildRequired:
             context.progress("mesh_auto_import", 1, 1, "MESH 派生数据库需要重建，原始日志已保留")
@@ -1694,6 +1790,10 @@ class FileManagementApplicationService:
 
             if isinstance(exc, BackgroundTaskCancelled):
                 raise
+            app_logger.log_error(
+                "MESH_DEVICE_DOWNLOAD_IMPORT_FAILED",
+                f"site={site} task={context.job_id} file={path.name} error={type(exc).__name__}: {exc}",
+            )
             return {
                 "mesh_import_status": "failed",
                 "mesh_import_error": "MESH 日志格式不受支持或解析失败",
@@ -1973,6 +2073,8 @@ class FileManagementApplicationService:
 
     @staticmethod
     def _descriptor_task_name(descriptor: dict[str, object]) -> str:
+        if descriptor.get("mesh_retry_only"):
+            return f"MESH 日志重新导入 - {descriptor.get('remote_name') or '文件'}"
         if descriptor.get("source_kind") == "remote":
             return f"设备文件下载 - {descriptor.get('remote_name') or '文件'}"
         return f"文件下载 - {descriptor.get('name') or '文件'}"

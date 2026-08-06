@@ -20,6 +20,7 @@ from netconsole.application.ac.web_application_service import AcWebApplicationSe
 from netconsole.application.desktop import DesktopActionResolver, DesktopActionService
 from netconsole.application.device_detail import DeviceDetailApplicationService
 from netconsole.application.rail_transit.mesh_bundle_application_service import MeshBundleApplicationService
+from netconsole.application.rail_transit.mesh_local_scan_application_service import MeshLocalScanApplicationService
 from netconsole.application.rail_transit.web_application_service import RailTransitWebApplicationService
 from netconsole.application.system_maintenance import SystemMaintenanceApplicationService
 from netconsole.application.web_artifacts import WebArtifactStore
@@ -639,6 +640,12 @@ def create_app(
         task_service,
         web_process_adapter,
         app.state.rail_transit_base_data_query_service,
+    )
+    app.state.mesh_local_scan_application_service = MeshLocalScanApplicationService(
+        paths,
+        task_service,
+        web_process_adapter,
+        desktop_action_service,
     )
     app.state.ground_unattended_repository = None
     app.state.ground_unattended_supervisor = None

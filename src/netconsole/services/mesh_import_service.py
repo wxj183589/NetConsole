@@ -19,6 +19,11 @@ from netconsole.services.mesh_storage_service import MeshStorageService
 from netconsole.services.file_contract import ImportValidationError
 
 
+MESH_SOURCE_TYPES = frozenset(
+    {"manual_upload", "device_download", "local_scan", "unattended_collection"}
+)
+
+
 @dataclass
 class MeshImportResult:
     files: list[ImportedLogFile] = field(default_factory=list)
@@ -43,7 +48,14 @@ class MeshImportService:
         files: list[Path],
         should_cancel: Callable[[], bool] | None = None,
         progress: Callable[[int, int, int, int, int], None] | None = None,
+        *,
+        source_type: str = "manual_upload",
+        source_device_id: str = "",
+        parse_task_id: str = "",
     ) -> MeshImportResult:
+        source_type = str(source_type or "manual_upload").strip().casefold()
+        if source_type not in MESH_SOURCE_TYPES:
+            raise ImportValidationError(f"不支持的 MESH 来源类型：{source_type}")
         self._validate_files(files)
         repo = self.storage.mr_repository(profile)
         analysis_params = load_site_mesh_analysis_params(self.paths, self.site_name)
@@ -80,6 +92,7 @@ class MeshImportService:
                         ),
                         "existing_session_id": f"{profile.mr_id}:{int(duplicate['id'])}",
                         "existing_profile_id": profile.mr_id,
+                        "source_type": str(duplicate.get("source_type") or source_type),
                     }
                 )
                 app_logger.log_info("MESH_FILE_DUPLICATE", path.name)
@@ -166,6 +179,9 @@ class MeshImportService:
                 rename_status=archive.rename_status,
                 rename_warning=archive.rename_warning,
                 source_status="imported" if records else "timestamp_not_found",
+                source_type=source_type,
+                source_device_id=str(source_device_id or ""),
+                parse_task_id=str(parse_task_id or ""),
             )
             result.source_results.append(
                 {
@@ -184,6 +200,9 @@ class MeshImportService:
                     "daily_sequence": archive.daily_sequence,
                     "rename_status": archive.rename_status,
                     "rename_warning": archive.rename_warning,
+                    "source_type": source_type,
+                    "source_device_id": str(source_device_id or ""),
+                    "parse_task_id": str(parse_task_id or ""),
                 }
             )
             result.imported_count += 1

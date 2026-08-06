@@ -112,6 +112,10 @@ export function retryFileDownload(taskId: string, siteId = ''): Promise<FileDown
   return apiRequest(`${root}/downloads/${encodeURIComponent(taskId)}/retry${qs({ site_id: siteId })}`, { method: 'POST' })
 }
 
+export function retryMeshFileImport(taskId: string, siteId = ''): Promise<FileDownloadTask> {
+  return apiRequest(`${root}/downloads/${encodeURIComponent(taskId)}/mesh-import${qs({ site_id: siteId })}`, { method: 'POST' })
+}
+
 export function clearFileDownloads(statuses: Array<'COMPLETED' | 'FAILED'>, siteId = ''): Promise<{ cleared_count: number }> {
   return apiRequest(`${root}/downloads/clear${qs({ site_id: siteId })}`, {
     method: 'POST',

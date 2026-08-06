@@ -197,6 +197,8 @@ class FileDownloadResultDTO(ApiModel):
     mesh_parsed_record_count: int = Field(default=0, ge=0)
     mesh_import_error_code: str = ""
     mesh_import_error: str = ""
+    mesh_session_id: str = ""
+    mesh_source_file_id: int | None = Field(default=None, gt=0)
 
 
 class FileDownloadTaskDTO(ApiModel):

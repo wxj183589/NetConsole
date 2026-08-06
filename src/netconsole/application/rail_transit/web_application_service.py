@@ -189,6 +189,8 @@ class RailTransitWebApplicationService:
     _TASK_NAMES = {
         "mesh_log_import": "MESH 原始日志导入分析",
         "mesh_bundle_import": "MESH ZIP 批量导入分析",
+        "mesh_local_scan": "扫描本地 MESH 日志",
+        "mesh_local_scan_import": "补录本地 MESH 日志",
         "mesh_schema_rebuild": "MESH 派生数据库重建",
         "mesh_source_rebuild": "MESH 当前来源恢复与重新解析",
         "mesh_analysis_source_delete": "删除 MESH 来源及解析结果",
@@ -3736,7 +3738,7 @@ class RailTransitWebApplicationService:
             "imported_count", "duplicate_count", "parsed_record_count", "member_count",
             "raw_archived_count", "parsed_source_count",
             "mesh_samples", "channel_busy_samples", "fping_samples", "iperf_samples", "issue_count",
-            "session_id", "status", "scope", "target_label", "target_count", "skipped_count",
+            "session_id", "scan_id", "status", "scope", "target_label", "target_count", "skipped_count",
             "fit_ap_resource_count", "fit_ap_optical_success_count", "fit_ap_optical_failed_count",
             "candidate_ap_interface_count", "current_lldp_port_count", "preserved_lldp_port_count",
             "concurrency", "requested_concurrency", "effective_concurrency",

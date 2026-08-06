@@ -215,6 +215,7 @@ class MeshCatalogIndexService:
                 "id", "parse_status", "issue_count", "records_parsed", "imported_at",
                 "first_sample_time", "last_sample_time", "parsed_deleted_at",
                 "parsed_db_path", "content_sha256", "raw_sha256", "sha256",
+                "source_type", "source_device_id", "parse_task_id",
             )
         )
         payload += f"\0{detail_revision}"
@@ -246,7 +247,7 @@ class MeshCatalogIndexService:
             "train_name": train_name,
             "mr_name": mr_name,
             "mr_role": role,
-            "source_type": "raw_mesh_log",
+            "source_type": str(source.get("source_type") or "manual_upload"),
             "original_filename": str(
                 source.get("original_filename")
                 or source.get("archived_filename")

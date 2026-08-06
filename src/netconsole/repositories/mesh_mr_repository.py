@@ -251,6 +251,9 @@ class MeshMrRepository:
                     rename_status TEXT DEFAULT '',
                     rename_warning TEXT DEFAULT '',
                     source_status TEXT DEFAULT 'imported',
+                    source_type TEXT DEFAULT 'manual_upload',
+                    source_device_id TEXT DEFAULT '',
+                    parse_task_id TEXT DEFAULT '',
                     lines_read INTEGER DEFAULT 0,
                     records_parsed INTEGER DEFAULT 0,
                     records_skipped INTEGER DEFAULT 0,
@@ -553,8 +556,15 @@ class MeshMrRepository:
                 "rename_status",
                 "rename_warning",
                 "source_status",
+                "source_device_id",
+                "parse_task_id",
             ):
                 self._ensure_column(conn, "source_files", column, "TEXT DEFAULT ''")
+            self._ensure_column(conn, "source_files", "source_type", "TEXT DEFAULT 'manual_upload'")
+            conn.execute(
+                "UPDATE source_files SET source_type = 'manual_upload' "
+                "WHERE COALESCE(source_type, '') = ''"
+            )
             self._ensure_column(conn, "source_files", "daily_sequence", "INTEGER NULL")
             conn.execute(
                 """
@@ -767,6 +777,9 @@ class MeshMrRepository:
         rename_status: str = "",
         rename_warning: str = "",
         source_status: str = "imported",
+        source_type: str = "manual_upload",
+        source_device_id: str = "",
+        parse_task_id: str = "",
     ) -> int:
         if not self._is_index_database():
             return self._insert_file_result_current_db(
@@ -801,6 +814,9 @@ class MeshMrRepository:
                 rename_status=rename_status,
                 rename_warning=rename_warning,
                 source_status=source_status,
+                source_type=source_type,
+                source_device_id=source_device_id,
+                parse_task_id=parse_task_id,
             )
 
         detail_path = self._single_log_db_path(archived_path, sha256)
@@ -819,10 +835,10 @@ class MeshMrRepository:
                     stored_filename, raw_sha256, content_sha256, profile_id, linked_mr_id,
                     parser_version, parse_status, encoding, is_gzip, first_sample_time, last_sample_time,
                     first_log_timestamp, last_log_timestamp, log_date, daily_sequence,
-                    rename_status, rename_warning, source_status,
+                    rename_status, rename_warning, source_status, source_type, source_device_id, parse_task_id,
                     lines_read, records_parsed, records_skipped, duplicate_records, issue_count, error_message,
                     analysis_params_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     mr_id,
@@ -855,6 +871,9 @@ class MeshMrRepository:
                     rename_status,
                     rename_warning,
                     source_status,
+                    source_type,
+                    source_device_id,
+                    parse_task_id,
                     lines_read,
                     records_parsed,
                     records_skipped,
@@ -902,6 +921,9 @@ class MeshMrRepository:
             rename_status=rename_status,
             rename_warning=rename_warning,
             source_status=source_status,
+            source_type=source_type,
+            source_device_id=source_device_id,
+            parse_task_id=parse_task_id,
         )
         detail_repo.rebuild_derived_analysis()
         parsed_size = detail_path.stat().st_size if detail_path.exists() else 0
@@ -947,6 +969,9 @@ class MeshMrRepository:
         rename_status: str = "",
         rename_warning: str = "",
         source_status: str = "imported",
+        source_type: str = "manual_upload",
+        source_device_id: str = "",
+        parse_task_id: str = "",
     ) -> int:
         with self._connect() as conn:
             cursor = conn.execute(
@@ -958,9 +983,9 @@ class MeshMrRepository:
                     file_size, file_mtime, imported_at, parser_version, parse_status, encoding, is_gzip,
                     first_sample_time, last_sample_time, lines_read, records_parsed, records_skipped,
                     first_log_timestamp, last_log_timestamp, log_date, daily_sequence,
-                    rename_status, rename_warning, source_status,
+                    rename_status, rename_warning, source_status, source_type, source_device_id, parse_task_id,
                     duplicate_records, issue_count, error_message, analysis_params_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     mr_id,
@@ -996,6 +1021,9 @@ class MeshMrRepository:
                     rename_status,
                     rename_warning,
                     source_status,
+                    source_type,
+                    source_device_id,
+                    parse_task_id,
                     duplicate_records,
                     issue_count,
                     error_message,

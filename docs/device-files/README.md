@@ -52,6 +52,13 @@ WinSCP 动作只允许 Renderer 提交 60 秒有效、一次性消费的 `action
 自动导入若遇到旧 schema，会单独记录 `MESH_SCHEMA_REBUILD_REQUIRED` / `rebuild_required`，由 MESH 分析页或
 任务中心的 `mesh_schema_rebuild` Job 从受保护 raw 日志重建。
 
+车载 MR 的 raw 文件在下载任务完成并通过大小/SHA-256 校验后，直接以受管 raw 路径登记为
+`device_download` 来源并提交既有 MESH 导入服务，不复制第二份文件。下载状态与分析状态分离：下载保持
+`COMPLETED`，导入可独立处于 `pending`、`completed`、`duplicate` 或 `failed`；导入失败仍保留 raw，
+可在队列中重新导入。MESH 分析页的“扫描本地日志”是补偿机制，只扫描当前局点
+`rail_transit/mr_raw_mesh/**/raw/**`，递归识别 `.log`、`.log.gz`、`.zip`，按文件大小、mtime 和 SHA-256
+增量去重并复用同一导入服务，不访问其他局点。
+
 ## 状态
 
 页面和下载队列已接入 Electron。普通文件直接写入设备专属目录或当前受控子目录；精确属于“车载-MR”分组且已关联 MR Profile 的 MESH 日志强制写入对应 `raw` 并自动导入。完成任务不再提供浏览器式“保存”，而是直接刷新左侧列表并提供受控“打开/所在目录”。真实交换机 SFTP 已有单设备现场证据；2026-07-28 的真实 MR 只读尝试在备用直连和两个跳板入口均因网络超时停止，未进入 SFTP 或文件落盘。其余角色与主机密钥场景仍需现场验收，不能仅凭本地集成测试标记为 `COMPLETE`。

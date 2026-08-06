@@ -17,6 +17,7 @@ import {
   listRemoteFiles,
   prepareFileDesktopAction,
   retryFileDownload,
+  retryMeshFileImport,
   startRemoteFileDownloadBatch,
   trustDeviceHostKey,
 } from '../../api/fileManagement'
@@ -118,9 +119,10 @@ const downloadTaskColumns: NcTableColumn<FileDownloadTask>[] = [
   { key: 'local_path', label: '真实本地路径', valueType: 'description', alignmentReason: 'long-text' },
   { key: 'batch', label: '批次', valueType: 'text', displayValue: (row) => row.batch_id ? row.batch_id.slice(0, 10) : '—' },
   { key: 'status', label: '状态', valueType: 'status', cellKind: 'tag' },
+  { key: 'analysis', label: '分析状态', valueType: 'status', cellKind: 'tag' },
   { key: 'progress', label: '进度', valueType: 'percentage', measureValue: (row) => `${row.progress}% ${formatBytes(row.downloaded_bytes)} / ${formatBytes(row.total_bytes)}` },
   { key: 'message', label: '信息', valueType: 'description', alignmentReason: 'long-text' },
-  { key: 'actions', label: '操作', valueType: 'actions', cellKind: 'actions', actionLabels: ['取消', '重试', '打开', '所在目录'] },
+  { key: 'actions', label: '操作', valueType: 'actions', cellKind: 'actions', actionLabels: ['取消', '重试', '打开', '所在目录', '导入到 MESH 分析', '查看分析'] },
 ]
 const SFTP_SETUP_SUCCESS_MESSAGE = '已在设备侧启用 SFTP，并完成重新连接。'
 const SFTP_CONNECTION_ERROR_MESSAGES: Record<string, string> = {
@@ -143,10 +145,10 @@ const SFTP_CONNECTION_ERROR_MESSAGES: Record<string, string> = {
   DEVICE_FILE_SESSION_DISCONNECTED: '设备文件会话已断开，请重新连接。',
 }
 const MESH_IMPORT_STATUS_LABELS: Record<string, string> = {
-  completed: '完成',
-  duplicate: '重复',
-  failed: '失败',
-  rebuild_required: '重建待处理',
+  completed: '已导入',
+  duplicate: '重复，已存在',
+  failed: '导入失败，可重试',
+  rebuild_required: '已下载，重建待处理',
 }
 
 function openTaskWindow(taskId = ''): void {
@@ -553,6 +555,21 @@ function messageOf(reason: unknown, fallback: string): string {
   return reason instanceof Error ? reason.message : fallback
 }
 
+async function importDownloadedMesh(task: FileDownloadTask): Promise<void> {
+  try {
+    tasks.value = mergeDownloadTasks(tasks.value, [await retryMeshFileImport(task.task_id, siteId.value)])
+    scheduleTaskRefresh()
+  } catch (reason) {
+    queueError.value = messageOf(reason, 'MESH 日志导入任务启动失败')
+  }
+}
+
+function viewMeshAnalysis(task: FileDownloadTask): void {
+  const sessionId = task.result?.mesh_session_id
+  if (!sessionId) return
+  void router.push({ name: 'mesh-analysis', query: { session_id: sessionId } })
+}
+
 function connectionRouteText(value: FileConnection): string {
   const role = value.target_role === 'backup' ? '备用地址' : '主用地址'
   const target = `${role} ${value.target_host}:${value.target_port}`
@@ -672,12 +689,20 @@ function connectionRouteText(value: FileConnection): string {
         </el-tag>
       </div>
       <NcDataTable v-loading="queueLoading" :data="tasks" :columns="downloadTaskColumns" table-id="file-download-queue" route-key="/file-management" empty-text="暂无下载任务">
-        <template #cell-file="{ row }"><strong>{{ row.remote_name || row.result?.name || row.task_id }}</strong><small>{{ row.device_name || (row.result?.result_kind === 'device_file' ? '设备文件' : '受控本地文件') }}{{ row.result?.target_kind === 'mr_raw' ? ' · MR 日志目录' : '' }}{{ row.result?.mesh_import_status ? ` · MESH 导入 ${meshImportStatusText(row.result.mesh_import_status)}` : '' }}</small></template>
+        <template #cell-file="{ row }"><strong>{{ row.remote_name || row.result?.name || row.task_id }}</strong><small>{{ row.device_name || (row.result?.result_kind === 'device_file' ? '设备文件' : '受控本地文件') }}{{ row.result?.target_kind === 'mr_raw' ? ' · MR 日志目录' : '' }}</small></template>
         <template #cell-status="{ row }"><el-tag :type="taskType(row.status)">{{ row.status }}</el-tag></template>
+        <template #cell-analysis="{ row }">
+          <el-tag v-if="row.result?.target_kind === 'mr_raw'" :type="row.result.mesh_import_status === 'failed' ? 'danger' : row.result.mesh_import_status === 'completed' ? 'success' : 'info'">
+            {{ row.result.mesh_import_status ? meshImportStatusText(row.result.mesh_import_status) : '等待导入' }}
+          </el-tag>
+          <span v-else>—</span>
+        </template>
         <template #cell-progress="{ row }"><el-progress :percentage="row.progress" :status="row.status === 'FAILED' ? 'exception' : row.status === 'COMPLETED' ? 'success' : undefined" /><small>{{ formatBytes(row.downloaded_bytes) }} / {{ formatBytes(row.total_bytes) }} · {{ formatSpeed(row.speed_bytes_per_second) }}</small></template>
         <template #cell-actions="{ row }">
           <el-button v-if="activeTasks.some((item) => item.task_id === row.task_id)" link type="warning" @click="cancelTask(row)">{{ t('cancel') }}</el-button>
-          <el-button v-if="row.retryable" link type="primary" @click="retryTask(row)">{{ t('retry') }}</el-button>
+          <el-button v-if="row.retryable" link type="primary" @click="retryTask(row)">{{ row.result?.mesh_import_status === 'failed' ? '重新导入' : t('retry') }}</el-button>
+          <el-button v-else-if="row.status === 'COMPLETED' && row.result?.target_kind === 'mr_raw' && !row.result.mesh_import_status" link type="primary" @click="importDownloadedMesh(row)">导入到 MESH 分析</el-button>
+          <el-button v-if="row.result?.mesh_session_id" link type="primary" @click="viewMeshAnalysis(row)">查看分析</el-button>
           <template v-if="row.status === 'COMPLETED' && row.result">
             <el-button link type="primary" :loading="desktopActionBusy" :disabled="desktopActionBusy" @click="openTaskResult(row)">{{ t('open') }}</el-button>
             <el-button link type="primary" :loading="desktopActionBusy" :disabled="desktopActionBusy" @click="openTaskResult(row, true)">{{ t('containingFolder') }}</el-button>

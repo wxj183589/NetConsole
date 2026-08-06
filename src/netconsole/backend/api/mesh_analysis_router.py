@@ -12,6 +12,9 @@ from netconsole.application.rail_transit.mesh_bundle_application_service import 
     MeshBundleApplicationError,
     MeshBundleApplicationService,
 )
+from netconsole.application.rail_transit.mesh_local_scan_application_service import (
+    MeshLocalScanApplicationService,
+)
 from netconsole.application.rail_transit.web_application_service import RailTransitWebApplicationService, RailTransitWebError
 from netconsole.backend.api.error_mapping import map_api_errors
 from netconsole.backend.api.feature_access import require_feature
@@ -31,6 +34,11 @@ from netconsole.models.api.mesh_analysis import (
     MeshBundlePreviewDTO,
     MeshImportContextPrepareDTO,
     MeshImportContextDTO,
+    MeshLocalScanImportRequestDTO,
+    MeshLocalScanIgnoreRequestDTO,
+    MeshLocalScanOpenResultDTO,
+    MeshLocalScanResultDTO,
+    MeshLocalScanStartDTO,
     MeshLinkDetailExportRequestDTO,
     MeshChannelBusyPageDTO,
     MeshCounterDeltaPageDTO,
@@ -60,6 +68,7 @@ from netconsole.services.rail_transit.mesh_analysis_query_service import (
     MeshAnalysisTimeRangeError,
 )
 from netconsole.services.mesh_chart_payload import MeshChartSelectionLimitError
+from netconsole.services.mesh_local_scan_service import MeshLocalScanError
 
 
 router = APIRouter(prefix="/rail-transit/mesh-analysis", tags=["rail-transit-mesh-analysis"])
@@ -82,6 +91,13 @@ def _bundle_service(request: Request) -> MeshBundleApplicationService:
     service = getattr(request.app.state, "mesh_bundle_application_service", None)
     if service is None:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="MESH ZIP 导入服务未接线")
+    return service
+
+
+def _local_scan_service(request: Request) -> MeshLocalScanApplicationService:
+    service = getattr(request.app.state, "mesh_local_scan_application_service", None)
+    if service is None:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="MESH 本地扫描服务未接线")
     return service
 
 
@@ -125,6 +141,21 @@ def _raise_bundle_error(exc: MeshBundleApplicationError) -> None:
     raise HTTPException(
         status_code=status_code,
         detail={"code": exc.code, "message": str(exc), "details": exc.details},
+    ) from exc
+
+
+def _raise_local_scan_error(exc: MeshLocalScanError) -> None:
+    if exc.code in {"SCAN_NOT_FOUND", "CANDIDATE_NOT_FOUND"}:
+        status_code = status.HTTP_404_NOT_FOUND
+    elif exc.code in {"JOB_START_FAILED", "DESKTOP_ACTION_UNAVAILABLE"}:
+        status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    elif exc.code in {"SOURCE_CHANGED"}:
+        status_code = status.HTTP_409_CONFLICT
+    else:
+        status_code = status.HTTP_422_UNPROCESSABLE_ENTITY
+    raise HTTPException(
+        status_code=status_code,
+        detail={"code": exc.code, "message": str(exc)},
     ) from exc
 
 
@@ -299,6 +330,103 @@ def import_bundle(
         )
     except MeshBundleApplicationError as exc:
         _raise_bundle_error(exc)
+
+
+@router.post(
+    "/local-scans",
+    response_model=MeshLocalScanStartDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[
+        Depends(require_feature("web.mesh_analysis_import")),
+        Depends(require_feature("web.rail_task_control")),
+    ],
+)
+def start_local_scan(request: Request) -> MeshLocalScanStartDTO:
+    try:
+        return MeshLocalScanStartDTO.model_validate(
+            _local_scan_service(request).start_scan(_current_site_id(request))
+        )
+    except MeshLocalScanError as exc:
+        _raise_local_scan_error(exc)
+
+
+@router.get(
+    "/local-scans/{scan_id}",
+    response_model=MeshLocalScanResultDTO,
+    dependencies=[Depends(require_feature("web.mesh_analysis_import"))],
+)
+def local_scan_result(request: Request, scan_id: str) -> MeshLocalScanResultDTO:
+    try:
+        return MeshLocalScanResultDTO.model_validate(
+            _local_scan_service(request).get_scan(_current_site_id(request), scan_id)
+        )
+    except MeshLocalScanError as exc:
+        _raise_local_scan_error(exc)
+
+
+@router.post(
+    "/local-scans/{scan_id}/import",
+    response_model=RailTransitTaskDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[
+        Depends(require_feature("web.mesh_analysis_import")),
+        Depends(require_feature("web.rail_task_control")),
+    ],
+)
+def import_local_scan(
+    request: Request,
+    scan_id: str,
+    payload: MeshLocalScanImportRequestDTO,
+) -> RailTransitTaskDTO:
+    try:
+        return _local_scan_service(request).start_import(
+            _current_site_id(request),
+            scan_id,
+            [item.model_dump() for item in payload.mappings],
+            explicit_confirmation=payload.explicit_confirmation,
+        )
+    except MeshLocalScanError as exc:
+        _raise_local_scan_error(exc)
+
+
+@router.post(
+    "/local-scans/{scan_id}/ignore",
+    response_model=MeshLocalScanResultDTO,
+    dependencies=[Depends(require_feature("web.mesh_analysis_import"))],
+)
+def ignore_local_scan(
+    request: Request,
+    scan_id: str,
+    payload: MeshLocalScanIgnoreRequestDTO,
+) -> MeshLocalScanResultDTO:
+    try:
+        return MeshLocalScanResultDTO.model_validate(
+            _local_scan_service(request).ignore_candidates(
+                _current_site_id(request), scan_id, payload.candidate_ids
+            )
+        )
+    except MeshLocalScanError as exc:
+        _raise_local_scan_error(exc)
+
+
+@router.post(
+    "/local-scans/{scan_id}/candidates/{candidate_id}/open-directory",
+    response_model=MeshLocalScanOpenResultDTO,
+    dependencies=[Depends(require_feature("web.mesh_analysis_import"))],
+)
+def open_local_scan_candidate_directory(
+    request: Request,
+    scan_id: str,
+    candidate_id: str,
+) -> MeshLocalScanOpenResultDTO:
+    try:
+        return MeshLocalScanOpenResultDTO.model_validate(
+            _local_scan_service(request).open_candidate_directory(
+                _current_site_id(request), scan_id, candidate_id
+            )
+        )
+    except MeshLocalScanError as exc:
+        _raise_local_scan_error(exc)
 
 
 @router.get("/sessions", response_model=MeshAnalysisSessionPageDTO)
