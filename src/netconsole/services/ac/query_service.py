@@ -53,6 +53,11 @@ from netconsole.services.ac.fit_ap_resource_identity import coalesce_fit_ap_reso
 from netconsole.services.ap_extension_import import normalize_ap_mac
 from netconsole.services.ap_identity import ApIdentityQueryService
 from netconsole.services.ap_identity.normalizers import normalize_mac_key
+from netconsole.services.ap_topology import (
+    ApTopologyEvidence,
+    ResolvedApTopology,
+    resolve_ap_topology,
+)
 from netconsole.services.config_text import (
     build_side_by_side_rows,
     compare_config_text,
@@ -809,6 +814,27 @@ class AcManagementQueryService:
             "ac_resource": "resource",
         }.get(station_source_detail, station_source_detail)
         detail = context.get("fit_ap_details_by_uuid", {}).get(str(row.get("ap_uuid") or ""), {})
+        topology = station_info.get("topology")
+        resolved_section = (
+            topology.section.value
+            if isinstance(topology, ResolvedApTopology)
+            else str(row.get("section_name") or row.get("metadata_belong_section") or "")
+        )
+        resolved_mileage = (
+            topology.mileage.value
+            if isinstance(topology, ResolvedApTopology)
+            else mileage
+        )
+        resolved_direction = (
+            topology.direction.value
+            if isinstance(topology, ResolvedApTopology)
+            else str(row.get("direction") or row.get("extension_line_side") or "")
+        )
+        resolved_location = (
+            topology.location.value
+            if isinstance(topology, ResolvedApTopology)
+            else str(row.get("location_note") or row.get("extension_location_desc") or "")
+        )
         return AcApDTO(
             id=str(row.get("ap_uuid") or f"unauth-{row.get('id') or row.get('ap_name') or 'unknown'}"),
             ac_id=ac_id,
@@ -848,10 +874,10 @@ class AcManagementQueryService:
             boot_version=str(detail.get("boot_version") or ""),
             detail_updated_at=str(detail.get("updated_at") or ""),
             detail_available=bool(detail),
-            section=str(row.get("section_name") or row.get("metadata_belong_section") or ""),
-            mileage=mileage if mileage != "-" else "",
-            direction=str(row.get("direction") or row.get("extension_line_side") or ""),
-            location_note=str(row.get("location_note") or row.get("extension_location_desc") or ""),
+            section=resolved_section,
+            mileage=resolved_mileage if resolved_mileage != "-" else "",
+            direction=resolved_direction,
+            location_note=resolved_location,
             point_code=str(row.get("extension_ap_point_code") or ""),
             trackside_ap_name=str(row.get("extension_ap_name") or ""),
             remark=str(row.get("extension_remark") or ""),
@@ -1348,98 +1374,80 @@ class AcManagementQueryService:
         manual_name = cls._clean_text(row.get("manual_station_name"))
         manual_enabled = bool(row.get("manual_override_enabled"))
         station_names = context.get("station_name_by_id", {})
-        if manual_enabled and (manual_id or manual_name):
-            effective_name = str(station_names.get(manual_id) or manual_name)
-            return {
-                "effective_station_id": manual_id,
-                "effective_station_name": effective_name,
-                "station_source": "manual_override",
-                "station_confidence": 1.0,
-                "manual_station_id": manual_id,
-                "manual_station_name": manual_name or effective_name,
-                "manual_override_enabled": True,
-                "auto_station_id": "",
-                "auto_station_name": "",
-                "auto_match_basis": "",
-                "lldp_suggested_station_id": "",
-                "lldp_suggested_station_name": "",
-                "resource_station_text": cls._clean_text(row.get("resource_station_text")),
-            }
-
         auto_id = cls._clean_text(row.get("extension_station_id") or row.get("station_id"))
         auto_name = cls._clean_text(row.get("extension_station_name") or row.get("extension_station"))
         extension_status = str(row.get("extension_match_status") or "")
-        if extension_status == "matched_by_mac" and (auto_id or auto_name):
-            effective_name = str(station_names.get(auto_id) or auto_name)
-            return {
-                "effective_station_id": auto_id,
-                "effective_station_name": effective_name,
-                "station_source": "base_ap_mac",
-                "station_confidence": 1.0,
-                "manual_station_id": "",
-                "manual_station_name": "",
-                "manual_override_enabled": False,
-                "auto_station_id": auto_id,
-                "auto_station_name": effective_name,
-                "auto_match_basis": "ap_mac",
-                "lldp_suggested_station_id": "",
-                "lldp_suggested_station_name": "",
-                "resource_station_text": cls._clean_text(row.get("resource_station_text")),
-            }
-
         lldp_station_id = str(context.get("switch_station_id_by_uuid", {}).get(lldp.switch_device_uuid, ""))
         lldp_station_name = str(
             station_names.get(lldp_station_id)
             or context.get("switch_station_by_uuid", {}).get(lldp.switch_device_uuid, "")
         )
         resource_station = cls._clean_text(row.get("resource_station_text"))
-        if lldp.raw_match_status in {"matched", "partial"} and lldp_station_name:
-            return {
-                "effective_station_id": lldp_station_id,
-                "effective_station_name": lldp_station_name,
-                "station_source": "lldp_switch_suggestion",
-                "station_confidence": 0.75,
-                "manual_station_id": "",
-                "manual_station_name": "",
-                "manual_override_enabled": False,
-                "auto_station_id": "",
-                "auto_station_name": "",
-                "auto_match_basis": "",
-                "lldp_suggested_station_id": lldp_station_id,
-                "lldp_suggested_station_name": lldp_station_name,
-                "resource_station_text": resource_station,
-            }
-        if resource_station:
-            return {
-                "effective_station_id": "",
-                "effective_station_name": resource_station,
-                "station_source": "ac_resource",
-                "station_confidence": 0.35,
-                "manual_station_id": "",
-                "manual_station_name": "",
-                "manual_override_enabled": False,
-                "auto_station_id": "",
-                "auto_station_name": "",
-                "auto_match_basis": "",
-                "lldp_suggested_station_id": lldp_station_id,
-                "lldp_suggested_station_name": lldp_station_name,
-                "resource_station_text": resource_station,
-            }
-        source = "conflict" if extension_status == "ambiguous_mac" else "empty"
+        topology = resolve_ap_topology(
+            ApTopologyEvidence(
+                lldp_valid=bool(
+                    lldp.raw_match_status in {"matched", "partial"}
+                    and lldp.switch_device_uuid
+                ),
+                lldp_conflict=not bool(lldp.switch_device_uuid)
+                and lldp.raw_match_status in {"matched", "partial"},
+                lldp_switch_uuid=lldp.switch_device_uuid,
+                lldp_station_id=lldp_station_id,
+                lldp_station=lldp_station_name,
+                fit_ap_station=resource_station,
+                fit_ap_section=cls._clean_text(
+                    row.get("metadata_belong_section") or row.get("section_name")
+                ),
+                fit_ap_location=cls._clean_text(
+                    row.get("metadata_location_note") or row.get("location_note")
+                ),
+                fit_ap_mileage=cls._clean_text(
+                    row.get("metadata_mileage") or row.get("mileage")
+                ),
+                fit_ap_direction=cls._clean_text(
+                    row.get("metadata_direction") or row.get("direction")
+                ),
+                fit_ap_belong_type=cls._clean_text(
+                    row.get("metadata_belong_type") or row.get("belong_type")
+                ),
+                ac_runtime_station=manual_name if manual_enabled else "",
+                base_station=(
+                    str(station_names.get(auto_id) or auto_name)
+                    if extension_status == "matched_by_mac"
+                    else ""
+                ),
+                base_section=cls._clean_text(row.get("extension_section_name")),
+                base_location=cls._clean_text(row.get("extension_location_desc")),
+                base_mileage=cls._clean_text(row.get("extension_mileage_text")),
+                base_direction=cls._clean_text(
+                    row.get("extension_line_side") or row.get("extension_direction")
+                ),
+                base_belong_type=cls._clean_text(row.get("extension_belong_type")),
+            )
+        )
+        station_source = topology.station.source
+        station_detail = {
+            "lldp_switch": "lldp_switch_suggestion",
+            "fit_ap_runtime": "resource",
+            "ac_runtime": "metadata",
+            "base_data": "base_ap_mac",
+        }.get(station_source, "conflict" if extension_status == "ambiguous_mac" else "empty")
         return {
-            "effective_station_id": "",
-            "effective_station_name": "",
-            "station_source": source,
-            "station_confidence": 0.0,
-            "manual_station_id": "",
-            "manual_station_name": "",
-            "manual_override_enabled": False,
-            "auto_station_id": "",
-            "auto_station_name": "",
+            "effective_station_id": lldp_station_id if station_source == "lldp_switch" else "",
+            "effective_station_name": topology.station.value,
+            "station_source": station_detail,
+            "station_source_detail": station_source,
+            "station_confidence": topology.station.confidence / 100,
+            "manual_station_id": manual_id,
+            "manual_station_name": manual_name,
+            "manual_override_enabled": manual_enabled,
+            "auto_station_id": auto_id if extension_status == "matched_by_mac" else "",
+            "auto_station_name": auto_name if extension_status == "matched_by_mac" else "",
             "auto_match_basis": "",
             "lldp_suggested_station_id": lldp_station_id,
             "lldp_suggested_station_name": lldp_station_name,
             "resource_station_text": resource_station,
+            "topology": topology,
         }
 
     @staticmethod

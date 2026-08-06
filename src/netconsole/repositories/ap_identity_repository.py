@@ -12,6 +12,7 @@ from netconsole.models.ap_identity_index import (
     ApIdentityBuildResult,
     ApIdentityIndexBuild,
 )
+from netconsole.services.ap_identity.normalizers import normalize_mac_key
 
 
 IndexBuilder = Callable[
@@ -172,6 +173,36 @@ class ApIdentityRepository:
                 ORDER BY a.match_priority DESC, a.alias_id
                 """,
                 (site_id, mac_key),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_alias_entity_rows(
+        self,
+        *,
+        site_id: str = "current",
+    ) -> list[dict[str, object]]:
+        """Return active radio aliases and entity projections for read-only consumers."""
+
+        with self.database.connect_readonly() as connection:
+            rows = connection.execute(
+                """
+                SELECT a.mac_key, a.alias_type, a.source, a.match_priority,
+                       a.confidence, a.radio_id, a.derivation_rule,
+                       e.entity_id, e.effective_ap_name, e.effective_ap_mac_display,
+                       e.effective_station, e.effective_section, e.effective_location,
+                       e.effective_mileage, e.effective_direction,
+                       e.effective_belong_type, e.effective_source,
+                       e.data_quality_warning
+                FROM ap_identity_mac_aliases a
+                JOIN ap_identity_entities e ON e.entity_id = a.entity_id
+                WHERE a.site_id = ? AND a.is_active = 1
+                  AND a.alias_type IN (
+                      'ac_radio_mac', 'ac_bssid', 'ac_bbssid',
+                      'h3c_r1_derived', 'h3c_r2_derived'
+                  )
+                ORDER BY a.mac_key, a.match_priority DESC, a.alias_id
+                """,
+                (site_id,),
             ).fetchall()
         return [dict(row) for row in rows]
 
@@ -419,6 +450,11 @@ class ApIdentityRepository:
             rid = int(history["rid"] or 0)
             if row is not None and rid > 0:
                 row[f"rid{rid}_bbssid_history"] = history["bbssid"]
+        lldp_by_mac = ApIdentityRepository._load_lldp_station_evidence(connection)
+        for row in rows:
+            ap_mac = normalize_mac_key(row.get("ap_mac") or row.get("ap_mac_norm"))
+            if ap_mac and ap_mac in lldp_by_mac:
+                row.update(lldp_by_mac[ap_mac])
         rows.extend(
             ApIdentityRepository._load_legacy_rows(
                 connection,
@@ -481,6 +517,64 @@ class ApIdentityRepository:
             )
         )
         return rows
+
+    @staticmethod
+    def _load_lldp_station_evidence(
+        connection: sqlite3.Connection,
+    ) -> dict[str, dict[str, object]]:
+        """Load only unique structured switch/station evidence for AP MACs."""
+
+        tables = {
+            str(row[0])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        if not {"device_lldp_neighbors", "devices"}.issubset(tables):
+            return {}
+        rows = connection.execute(
+            """
+            SELECT l.neighbor_mac,
+                   d.device_uuid AS switch_device_uuid,
+                   d.station_id AS switch_station_id,
+                   d.station AS device_station,
+                   formal.station_name AS formal_station_name
+            FROM device_lldp_neighbors l
+            JOIN devices d ON d.device_uuid = l.device_uuid
+            LEFT JOIN ap_extension_points formal
+              ON formal.belong_type = '__base_station__'
+             AND formal.station_id = d.station_id
+            WHERE LOWER(TRIM(d.device_type)) IN ('sw', 'switch', '交换机')
+            """
+        ).fetchall()
+        candidates: dict[str, list[tuple[str, str, str]]] = {}
+        for row in rows:
+            mac_key = normalize_mac_key(row["neighbor_mac"])
+            switch_uuid = str(row["switch_device_uuid"] or "").strip()
+            if not mac_key or not switch_uuid:
+                continue
+            candidates.setdefault(mac_key, []).append(
+                (
+                    switch_uuid,
+                    str(row["switch_station_id"] or "").strip(),
+                    str(row["formal_station_name"] or row["device_station"] or "").strip(),
+                )
+            )
+        result: dict[str, dict[str, object]] = {}
+        for mac_key, values in candidates.items():
+            unique = tuple(dict.fromkeys(values))
+            switch_uuids = {item[0] for item in unique}
+            stations = {item[2] for item in unique if item[2]}
+            conflict = len(switch_uuids) > 1 or len(stations) > 1
+            selected = unique[0]
+            result[mac_key] = {
+                "_lldp_valid": bool(switch_uuids),
+                "_lldp_conflict": conflict,
+                "_lldp_switch_uuid": "" if conflict else selected[0],
+                "_lldp_station_id": "" if conflict else selected[1],
+                "_lldp_station": "" if conflict else selected[2],
+            }
+        return result
 
     @staticmethod
     def _load_legacy_rows(
@@ -679,6 +773,12 @@ ApIdentityEntityRecordColumns = (
     "effective_mileage",
     "effective_direction",
     "effective_belong_type",
+    "station_source",
+    "section_source",
+    "location_source",
+    "mileage_source",
+    "direction_source",
+    "belong_type_source",
     "ac_ap_uuid",
     "ac_device_uuid",
     "ac_ap_name",
@@ -695,6 +795,7 @@ ApIdentityEntityRecordColumns = (
     "effective_source",
     "identity_status",
     "data_quality_warning",
+    "topology_warning",
 )
 
 

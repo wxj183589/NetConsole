@@ -24,7 +24,7 @@ from netconsole.core.sqlite_utils import (
 from netconsole.models.device_address import InvalidDeviceAddressError, normalize_ip_address
 
 
-CURRENT_SCHEMA_VERSION = "2026.08.03.fit_ap_association_verbose"
+CURRENT_SCHEMA_VERSION = "2026.08.07.ap_topology_resolver"
 
 DEVICE_CLASSIFICATION_COLUMNS = (
     "project_phase",
@@ -1468,6 +1468,13 @@ CREATE TABLE IF NOT EXISTS ap_identity_entities (
     effective_mileage TEXT,
     effective_direction TEXT,
     effective_belong_type TEXT,
+    station_source TEXT NOT NULL DEFAULT 'unresolved',
+    section_source TEXT NOT NULL DEFAULT 'unresolved',
+    location_source TEXT NOT NULL DEFAULT 'unresolved',
+    mileage_source TEXT NOT NULL DEFAULT 'unresolved',
+    direction_source TEXT NOT NULL DEFAULT 'unresolved',
+    belong_type_source TEXT NOT NULL DEFAULT 'unresolved',
+    topology_warning TEXT,
     ac_ap_uuid TEXT,
     ac_device_uuid TEXT,
     ac_ap_name TEXT,
@@ -1674,7 +1681,7 @@ BEGIN
 END;
 
 CREATE TRIGGER trg_ap_identity_source_devices_update
-AFTER UPDATE OF device_uuid, device_vendor ON devices
+AFTER UPDATE OF device_uuid, device_vendor, station_id, station, device_type, group_id, work_scope_status ON devices
 WHEN EXISTS (
     SELECT 1
     FROM ac_fit_ap_resources
@@ -1694,6 +1701,37 @@ WHEN EXISTS (
     FROM ac_fit_ap_resources
     WHERE ac_device_uuid = OLD.device_uuid
 )
+BEGIN
+    UPDATE ap_identity_source_state
+    SET revision = revision + 1,
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE site_id = 'current';
+END;
+
+DROP TRIGGER IF EXISTS trg_ap_identity_source_device_lldp_neighbors_insert;
+DROP TRIGGER IF EXISTS trg_ap_identity_source_device_lldp_neighbors_update;
+DROP TRIGGER IF EXISTS trg_ap_identity_source_device_lldp_neighbors_delete;
+
+CREATE TRIGGER trg_ap_identity_source_device_lldp_neighbors_insert
+AFTER INSERT ON device_lldp_neighbors
+BEGIN
+    UPDATE ap_identity_source_state
+    SET revision = revision + 1,
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE site_id = 'current';
+END;
+
+CREATE TRIGGER trg_ap_identity_source_device_lldp_neighbors_update
+AFTER UPDATE ON device_lldp_neighbors
+BEGIN
+    UPDATE ap_identity_source_state
+    SET revision = revision + 1,
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE site_id = 'current';
+END;
+
+CREATE TRIGGER trg_ap_identity_source_device_lldp_neighbors_delete
+AFTER DELETE ON device_lldp_neighbors
 BEGIN
     UPDATE ap_identity_source_state
     SET revision = revision + 1,
@@ -2435,6 +2473,22 @@ class Database:
             if self._table_exists(conn, "ap_identity_index_state") and not self._column_exists(conn, "ap_identity_index_state", column):
                 conn.execute(
                     f"ALTER {'TABLE'} ap_identity_index_state ADD COLUMN {column} {column_type}"
+                )
+        ap_identity_entity_columns = {
+            "station_source": "TEXT NOT NULL DEFAULT 'unresolved'",
+            "section_source": "TEXT NOT NULL DEFAULT 'unresolved'",
+            "location_source": "TEXT NOT NULL DEFAULT 'unresolved'",
+            "mileage_source": "TEXT NOT NULL DEFAULT 'unresolved'",
+            "direction_source": "TEXT NOT NULL DEFAULT 'unresolved'",
+            "belong_type_source": "TEXT NOT NULL DEFAULT 'unresolved'",
+            "topology_warning": "TEXT",
+        }
+        for column, column_type in ap_identity_entity_columns.items():
+            if self._table_exists(conn, "ap_identity_entities") and not self._column_exists(
+                conn, "ap_identity_entities", column
+            ):
+                conn.execute(
+                    f"ALTER TABLE ap_identity_entities ADD COLUMN {column} {column_type}"
                 )
         if self._table_exists(conn, "ap_extension_points"):
             self._migrate_trackside_ap_locations(

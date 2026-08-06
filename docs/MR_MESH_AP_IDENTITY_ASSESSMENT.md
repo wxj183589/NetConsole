@@ -97,3 +97,45 @@ MESH 匹配的人工前置步骤。
 相关回归主要位于 `tests/test_ap_identity_index.py`、
 `tests/test_mesh_log_analysis.py`、`tests/test_vehicle_mr_online.py`、
 `tests/test_wireless_scan.py` 和各 Web 查询测试。
+
+## 7. 绍兴 1 号线资料不完整时的验收口径
+
+绍兴 1 号线当前没有 FIT-AP 资源，轨旁 AP 基础资料也不完整。日志中的
+Peer Radio MAC 可能在基础资料中找不到对应 AP，基础资料 AP 也可能缺少
+合法物理 MAC，或因重复 MAC、格式异常、Alias 冲突而无法唯一派生身份。
+
+因此，绍兴的 `unresolved` 和 `ambiguous` 不应被当作解析失败：
+
+- 基础资料存在唯一合法物理 MAC 且 Alias 唯一时，必须 `matched`，并投影 AP、站点、区间、里程和方向；
+- 基础资料无对应 AP、物理 MAC 缺失/非法时，必须保持 `unresolved`，并给出 `base_ap_not_found`、`base_ap_mac_missing` 或等价原因；
+- Alias 指向多个 AP 时必须保持 `ambiguous`，输出候选，不得按名称、站点、MAC 前缀或记录顺序消歧；
+- 同一日志允许同时存在 `matched`、`unresolved` 和 `ambiguous`，部分未匹配是当前资料条件下的正常结果。
+
+核心指标定义为：
+
+```text
+eligible_match_count = 基础资料中存在唯一、合法、可派生 Alias 的 Peer 数
+eligible_matched_count = 上述范围内实际匹配成功数
+```
+
+绍兴验收要求 `eligible_matched_count == eligible_match_count`，并要求可匹配范围内的异常漏匹配数为 0；不要求 `matched_count == distinct_peer_count`。
+
+## 8. 三局点真实数据回归记录
+
+回归使用现有局点数据库、MESH parsed 数据和原始日志，保留原始日志 SHA-256 作为证据索引；查询过程只读，不修改现场数据。选定会话的 Peer Radio MAC 统计如下：
+
+| 局点 | Peer 总数 | 可唯一匹配数 | 实际匹配数 | 正常未匹配数 | 异常漏匹配数 | Ambiguous | 有站点数 | 主要来源 |
+|---|---:|---:|---:|---:|---:|---:|---:|---|
+| 宁波 12 号线 | 1581 | 1581 | 1581 | 0 | 0 | 0 | 1568 | LLDP/FIT-AP |
+| 宁波 6 号线 | 51 | 51 | 51 | 0 | 0 | 0 | 51 | LLDP + Base 补充 |
+| 绍兴 1 号线 | 454 | 290 | 290 | 164 | 0 | 0 | 290 | Base Data |
+
+绍兴 1 号线的 164 条 `unresolved` 属于基础资料覆盖不足的正常结果；本次硬门槛是证据充分的 290 条全部匹配，不能通过模糊匹配把 454 条强行变成 matched。
+
+三份原始日志证据 SHA-256：
+
+- 宁波 12 号线：`ef4046a9335c0e57810ef0d1553266931ecf0c9f406e8ca407077e0596ee7d6c`
+- 宁波 6 号线：`019580a5e8dbe9c7467296d7506d0a70f558c36c21ddc9ab86feb18dcd1707ae`
+- 绍兴 1 号线：`efc17fff68aeec62b5aec080cded00ea8ab9b661812566566d8835f8f614dde7`
+
+端到端只读回归覆盖主链建链顺序、链路明细、RSSI、Channel Busy、速率、计数器、切换事件、动态曲线和 AP 统计。大窗口图表继续遵守 16 MiB 响应上限，采用真实时间窗口验证，不放宽安全限制。
