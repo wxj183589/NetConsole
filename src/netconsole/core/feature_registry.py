@@ -27,8 +27,8 @@ class FeatureItem:
     description_key: str | None = None
     status: FeatureStatus = FeatureStatus.ENABLED
     scope: str = "global"
-    dependencies: tuple[str, ...] = ()
-    runtime_toggleable: bool = True
+    requires: tuple[str, ...] = ()
+    delivery_requires: tuple[str, ...] = ()
 
 
 FEATURES: tuple[FeatureItem, ...] = (
@@ -48,16 +48,65 @@ FEATURES: tuple[FeatureItem, ...] = (
         None,
         "module",
         internal_only=True,
-        runtime_toggleable=False,
+    ),
+    FeatureItem(
+        "cap.task_center",
+        "任务中心能力",
+        None,
+        "capability",
+        default_visible=False,
+    ),
+    FeatureItem(
+        "cap.rail_base_data",
+        "轨道交通基础数据能力",
+        None,
+        "capability",
+        default_visible=False,
+    ),
+    FeatureItem(
+        "cap.rail_task_control",
+        "轨道交通任务执行能力",
+        None,
+        "capability",
+        default_visible=False,
+    ),
+    FeatureItem(
+        "cap.train_online_data",
+        "列车在线数据能力",
+        None,
+        "capability",
+        default_visible=False,
+    ),
+    FeatureItem(
+        "cap.online_mr_analysis",
+        "Online MR 分析能力",
+        None,
+        "capability",
+        default_visible=False,
+    ),
+    FeatureItem(
+        "cap.desktop_bridge",
+        "Electron Desktop Bridge 能力",
+        None,
+        "capability",
+        default_visible=False,
     ),
     FeatureItem(
         "web.agent_management",
         "Agent 管理",
         None,
         "page",
-        dependencies=("web.job_center",),
+        requires=("cap.task_center",),
+        delivery_requires=("cap.task_center",),
     ),
-    FeatureItem("web.job_center", "任务中心", None, "page"),
+    FeatureItem(
+        "web.job_center",
+        "任务中心",
+        None,
+        "page",
+        requires=("cap.task_center",),
+        delivery_requires=("cap.task_center",),
+    ),
     FeatureItem("web.device_management", "设备管理（Web）", "module.devices", "page"),
     FeatureItem("web.device_connection_test", "设备连接测试（Web）", "web.device_management", "action"),
     FeatureItem(
@@ -71,14 +120,16 @@ FEATURES: tuple[FeatureItem, ...] = (
         "设备管理写操作（Web）",
         "web.device_management",
         "action",
-        dependencies=("web.device_management",),
+        requires=("web.device_management",),
+        delivery_requires=("web.device_management",),
     ),
     FeatureItem(
         "web.device_management_collect",
         "设备采集与诊断（Web）",
         "web.device_management",
         "action",
-        dependencies=("web.device_management", "web.job_center"),
+        requires=("web.device_management", "cap.task_center"),
+        delivery_requires=("web.device_management", "cap.task_center"),
     ),
     FeatureItem("web.device_management_import", "设备导入（Web）", "web.device_management", "action"),
     FeatureItem("web.device_management_export", "设备导出（Web）", "web.device_management", "action"),
@@ -109,7 +160,6 @@ FEATURES: tuple[FeatureItem, ...] = (
         "网络测试组件（Web）",
         "web.network_tools",
         "page",
-        runtime_toggleable=False,
     ),
     FeatureItem("web.network_tools_tcp_port_test", "TCP 端口测试（Web）", "web.network_tools_toolbox", "action"),
     FeatureItem(
@@ -117,7 +167,6 @@ FEATURES: tuple[FeatureItem, ...] = (
         "工具集",
         "module.tools",
         "page",
-        runtime_toggleable=False,
     ),
     FeatureItem("web.ac_management", "AC 管理（Web）", "module.ac", "page"),
     FeatureItem("web.ac_fit_ap_resources", "FIT-AP 资源（Web）", "web.ac_management", "page"),
@@ -170,7 +219,14 @@ FEATURES: tuple[FeatureItem, ...] = (
         default_client_package=False,
         status=FeatureStatus.DEVELOPMENT,
     ),
-    FeatureItem("ac.mesh_link.refresh", "刷新列车 Mesh-Link", "web.rail_train_online", "action"),
+    FeatureItem(
+        "ac.mesh_link.refresh",
+        "刷新列车 Mesh-Link",
+        "web.rail_train_online",
+        "action",
+        requires=("cap.train_online_data",),
+        delivery_requires=("cap.train_online_data",),
+    ),
     FeatureItem("devices.external_terminal", "devices.external_terminal", "module.devices", "button"),
     FeatureItem("devices.securecrt_sessions", "devices.generate_crt_sessions", "module.devices", "button"),
     FeatureItem("rail.train_online", "rail_transit.train_online", "module.rail_transit", "tab"),
@@ -188,19 +244,21 @@ FEATURES: tuple[FeatureItem, ...] = (
         "车载 MR 实时展示",
         "rail.online_mr_collection",
         "page",
-        dependencies=("web.job_center", "web.rail_transit_base_data"),
+        requires=("cap.task_center", "cap.rail_base_data"),
+        delivery_requires=("cap.task_center", "cap.rail_base_data"),
     ),
-    FeatureItem("web.online_mr_report_export", "Online MR 报告导出（Web）", "web.online_mr_analysis", "action"),
-    FeatureItem("web.online_mr_parse", "Online MR 会话解析（Web）", "web.online_mr_analysis", "action"),
-    FeatureItem("web.online_mr_session_open_location", "打开 Online MR 会话本地位置", "web.online_mr_analysis", "action"),
-    FeatureItem("web.online_mr_session_delete", "删除 Online MR 历史会话", "web.online_mr_analysis", "action"),
-    FeatureItem("web.rail_transit_base_data", "轨道交通基础资料", "module.rail_transit", "page"),
+    FeatureItem("web.online_mr_report_export", "Online MR 报告导出（Web）", "web.online_mr_analysis", "action", requires=("cap.online_mr_analysis",), delivery_requires=("cap.online_mr_analysis",)),
+    FeatureItem("web.online_mr_parse", "Online MR 会话解析（Web）", "web.online_mr_analysis", "action", requires=("cap.online_mr_analysis",), delivery_requires=("cap.online_mr_analysis",)),
+    FeatureItem("web.online_mr_session_open_location", "打开 Online MR 会话本地位置", "web.online_mr_analysis", "action", requires=("cap.online_mr_analysis",), delivery_requires=("cap.online_mr_analysis",)),
+    FeatureItem("web.online_mr_session_delete", "删除 Online MR 历史会话", "web.online_mr_analysis", "action", requires=("cap.online_mr_analysis",), delivery_requires=("cap.online_mr_analysis",)),
+    FeatureItem("web.rail_transit_base_data", "轨道交通基础资料", "module.rail_transit", "page", requires=("cap.rail_base_data",), delivery_requires=("cap.rail_base_data",)),
     FeatureItem(
         "web.train_communication_monitoring",
         "车内通信检测",
         "module.rail_transit",
         "page",
-        dependencies=("web.rail_transit_base_data", "web.job_center"),
+        requires=("cap.rail_base_data", "cap.task_center"),
+        delivery_requires=("cap.rail_base_data", "cap.task_center"),
     ),
     FeatureItem(
         "web.online_mr_local_control",
@@ -219,18 +277,23 @@ FEATURES: tuple[FeatureItem, ...] = (
     FeatureItem("web.mesh_analysis", "Mesh 原始日志分析", "module.rail_transit", "page"),
     FeatureItem("web.mesh_analysis_import", "MESH 原始日志导入（Web）", "web.mesh_analysis", "action"),
     FeatureItem("web.mesh_analysis_report_export", "MESH 分析报告导出（Web）", "web.mesh_analysis", "action"),
-    FeatureItem("web.rail_task_control", "轨交 Web 任务控制", "module.rail_transit", "action"),
+    FeatureItem("web.rail_task_control", "轨交 Web 任务控制", "module.rail_transit", "action", requires=("cap.rail_task_control",), delivery_requires=("cap.rail_task_control",)),
     FeatureItem("web.rail_transit_wireless_dashboard", "轨道交通无线看板", "module.rail_transit", "page"),
-    FeatureItem("web.rail_train_online", "列车在线情况（Web）", "module.rail_transit", "page"),
+    FeatureItem("web.rail_train_online", "列车在线情况（Web）", "module.rail_transit", "page", requires=("cap.train_online_data",), delivery_requires=("cap.train_online_data",)),
     FeatureItem(
         "web.ground_unattended",
         "地面无人值守",
         "module.rail_transit",
         "page",
-        dependencies=(
-            "web.job_center",
-            "web.rail_transit_base_data",
-            "web.rail_train_online",
+        requires=(
+            "cap.task_center",
+            "cap.rail_base_data",
+            "cap.train_online_data",
+        ),
+        delivery_requires=(
+            "cap.task_center",
+            "cap.rail_base_data",
+            "cap.train_online_data",
         ),
     ),
     FeatureItem("web.rail_train_online_refresh", "列车在线状态与 AP 映射刷新（Web）", "web.rail_train_online", "action"),
@@ -261,7 +324,8 @@ FEATURES: tuple[FeatureItem, ...] = (
         "web.rail_trackside_ap_business",
         "action",
         description_key="ZXR10 C89E-4 Release 已完成只读实机验证；其他型号仍需逐型号复核",
-        dependencies=("web.rail_task_control",),
+        requires=("cap.rail_task_control",),
+        delivery_requires=("cap.rail_task_control",),
     ),
     FeatureItem("web.rail_trackside_ap_plan", "轨旁 AP 规划（基础资料页签）", "web.rail_transit_base_data", "tab"),
     FeatureItem("web.rail_trackside_ap_plan_write", "轨旁 AP 规划维护（Web）", "web.rail_trackside_ap_plan", "action"),
@@ -272,6 +336,8 @@ FEATURES: tuple[FeatureItem, ...] = (
         "车载 MR 收集分析（Web）",
         "module.rail_transit",
         "page",
+        requires=("cap.online_mr_analysis",),
+        delivery_requires=("cap.online_mr_analysis",),
     ),
     FeatureItem(
         "web.rail_transit_base_data_write",
@@ -306,6 +372,8 @@ FEATURES: tuple[FeatureItem, ...] = (
         "Electron Desktop 本机桥接",
         "module.system_settings",
         "action",
+        requires=("cap.desktop_bridge",),
+        delivery_requires=("cap.desktop_bridge",),
     ),
     FeatureItem(
         "system.feature_flags",
@@ -313,7 +381,6 @@ FEATURES: tuple[FeatureItem, ...] = (
         "module.feature_switch",
         "page",
         internal_only=True,
-        runtime_toggleable=False,
     ),
     FeatureItem(
         "web.command_reference",
@@ -344,18 +411,25 @@ FEATURES: tuple[FeatureItem, ...] = (
         default_client_package=False,
         internal_only=True,
         status=FeatureStatus.DEVELOPMENT,
-        runtime_toggleable=False,
     ),
 )
 
 FEATURE_BY_ID = {item.feature_id: item for item in FEATURES}
 
 FEATURE_GROUPS = (
-    ("foundation", "基础能力"),
+    ("foundation", "基础与桌面"),
     ("tasks", "任务与 Agent"),
-    ("devices", "设备与 AC"),
-    ("configuration", "配置与文件"),
-    ("rail_transit", "轨道交通"),
+    ("devices", "设备管理"),
+    ("ac", "AC 与 FIT-AP"),
+    ("configuration", "配置采集与文件"),
+    ("rail_base", "轨道交通基础资料"),
+    ("trackside_ap", "轨旁 AP"),
+    ("train_online", "列车在线与无人值守"),
+    ("online_mr", "车载 MR 采集与分析"),
+    ("mesh", "MESH 日志分析"),
+    ("rail_general", "轨道交通综合"),
+    ("network_tools", "网络测试与工具集"),
+    ("system", "日志、命令与系统维护"),
     ("internal", "内部与实验功能"),
 )
 FEATURE_GROUP_TITLE_BY_ID = dict(FEATURE_GROUPS)
@@ -385,33 +459,100 @@ def get_feature(feature_id: str) -> FeatureItem:
 
 
 def dependencies_of(feature_id: str) -> tuple[str, ...]:
+    """Return runtime requirements only; parent_id is presentation hierarchy."""
+
+    return get_feature(feature_id).requires
+
+
+def delivery_dependencies_of(feature_id: str) -> tuple[str, ...]:
+    return get_feature(feature_id).delivery_requires
+
+
+def ancestors_of(feature_id: str) -> tuple[str, ...]:
+    result: list[str] = []
+    parent_id = get_feature(feature_id).parent_id
+    while parent_id and parent_id not in result:
+        result.append(parent_id)
+        parent = FEATURE_BY_ID.get(parent_id)
+        parent_id = parent.parent_id if parent else None
+    return tuple(result)
+
+
+def configuration_layer_of(feature_id: str) -> str:
     item = get_feature(feature_id)
-    values = [item.parent_id, *item.dependencies]
-    return tuple(dict.fromkeys(value for value in values if value))
+    if item.item_type == "capability" or item.internal_only:
+        return "technical"
+    if item.item_type == "module" or (
+        item.item_type == "page"
+        and (item.parent_id is None or item.parent_id.startswith("module."))
+    ):
+        return "business"
+    return "operation"
+
+
+def _lineage_of(feature_id: str) -> set[str]:
+    lineage = {feature_id}
+    parent_id = FEATURE_BY_ID[feature_id].parent_id
+    while parent_id and parent_id not in lineage:
+        lineage.add(parent_id)
+        parent = FEATURE_BY_ID.get(parent_id)
+        parent_id = parent.parent_id if parent else None
+    return lineage
 
 
 def group_id_of(feature_id: str) -> str:
     item = get_feature(feature_id)
     if item.internal_only or item.status in {FeatureStatus.DEVELOPMENT, FeatureStatus.HIDDEN}:
         return "internal"
-    lineage = {item.feature_id}
-    parent_id = item.parent_id
-    while parent_id and parent_id not in lineage:
-        lineage.add(parent_id)
-        parent = FEATURE_BY_ID.get(parent_id)
-        parent_id = parent.parent_id if parent else None
+
+    lineage = _lineage_of(feature_id)
     if lineage & {"web.agent_management", "web.job_center"}:
         return "tasks"
-    if "module.rail_transit" in lineage or any(
-        value.startswith(("rail.", "online_mr.", "mesh.")) for value in lineage
+    if lineage & {
+        "web.rail_trackside_ap_business",
+        "web.rail_trackside_ap_plan",
+        "rail.trackside_ap_business",
+        "ac.trackside_ap_plan",
+    } or feature_id == "rail.zte_trackside_switch_adapter":
+        return "trackside_ap"
+    if lineage & {"web.rail_train_online", "web.ground_unattended", "rail.train_online"}:
+        return "train_online"
+    if lineage & {
+        "rail.online_mr_collection",
+        "rail.online_mr_analysis",
+        "web.online_mr_analysis",
+        "web.train_communication_monitoring",
+        "rail.car_network_diagnostic",
+    } or any(value.startswith("online_mr.") for value in lineage):
+        return "online_mr"
+    if lineage & {"rail.raw_mesh_log_analysis", "web.mesh_analysis"} or any(
+        value.startswith("mesh.") for value in lineage
     ):
-        return "rail_transit"
-    if lineage & {"module.config_collection", "module.file_management"}:
-        return "configuration"
-    if lineage & {"module.devices", "module.ac"} or any(
-        value.startswith(("devices.", "ac.")) for value in lineage
+        return "mesh"
+    if lineage & {"web.rail_transit_base_data"}:
+        return "rail_base"
+    if "module.rail_transit" in lineage or any(value.startswith("rail.") for value in lineage):
+        return "rail_general"
+    if "module.ac" in lineage or "web.ac_management" in lineage or any(
+        value.startswith("ac.") for value in lineage
     ):
+        return "ac"
+    if "module.devices" in lineage or any(value.startswith("devices.") for value in lineage):
         return "devices"
+    if lineage & {"module.config_collection", "module.file_management"} or any(
+        value.startswith("file.") for value in lineage
+    ):
+        return "configuration"
+    if lineage & {"module.network_tools", "module.tools"} or any(
+        value.startswith("network_tools.") for value in lineage
+    ):
+        return "network_tools"
+    if lineage & {
+        "module.logs",
+        "module.command_reference",
+        "module.system_settings",
+    } or any(value.startswith(("system.", "desktop.")) for value in lineage):
+        return "system"
     return "foundation"
 
 

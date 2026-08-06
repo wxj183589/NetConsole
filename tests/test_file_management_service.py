@@ -1497,7 +1497,7 @@ def test_mr_mesh_download_runs_auto_import_inside_file_job(tmp_path: Path, monke
     assert imported == [target.resolve()]
 
 
-def test_mr_mesh_download_marks_rebuild_required_when_auto_import_needs_rebuild(tmp_path: Path, monkeypatch) -> None:
+def test_mr_mesh_download_keeps_raw_when_auto_repair_cannot_complete(tmp_path: Path, monkeypatch) -> None:
     paths, _source = _fixture(tmp_path)
     database = Database(paths.site_db_path("demo"))
     database.initialize()
@@ -1554,9 +1554,9 @@ def test_mr_mesh_download_marks_rebuild_required_when_auto_import_needs_rebuild(
 
     result = run_file_management_download(JobContext.from_job(job))
 
-    assert result["mesh_import_status"] == "rebuild_required"
-    assert result["mesh_import_error_code"] == "MESH_SCHEMA_REBUILD_REQUIRED"
-    assert "需要重建" in result["mesh_import_error"]
+    assert result["mesh_import_status"] == "repair_failed"
+    assert result["mesh_import_error_code"] == "MESH_DERIVED_DATA_REPAIR_FAILED"
+    assert "自动修复失败" in result["mesh_import_error"]
     assert target.read_text(encoding="utf-8") == "mesh"
 
 

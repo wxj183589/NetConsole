@@ -4,6 +4,11 @@ from netconsole.services.job_center.handlers import legacy_tasks
 from netconsole.services.job_center.handlers.common import legacy_handler
 from netconsole.services.job_center.job_context import BackgroundTaskCancelled, JobContext
 from netconsole.services.mesh_parsed_rebuild_service import MeshParsedRebuildService
+from netconsole.services.mesh_derived_data_maintenance_service import (
+    MeshDerivedDataMaintenanceService,
+    MeshDerivedDatabaseIncompatible,
+)
+from netconsole.repositories.mesh_mr_repository import MeshSchemaRebuildRequired
 from netconsole.services.mesh_source_rebuild_service import (
     MeshSourceRebuildCancelled,
     MeshSourceRebuildService,
@@ -93,12 +98,170 @@ def mesh_local_scan_import(context: JobContext) -> dict[str, object]:
     context.check_cancelled()
     return result
 
+
+def mesh_derived_data_repair(context: JobContext) -> dict[str, object]:
+    """修复局点派生库后，在同一受管 Job 内恢复等待的导入操作。"""
+
+    context.check_cancelled()
+    site_name = str(context.params.get("site_name") or "")
+    maintenance = MeshDerivedDataMaintenanceService(context.paths)
+    operations = maintenance.pending_operations(site_name)
+    operation_ids = [str(item.get("operation_id") or "") for item in operations]
+    maintenance.mark_operations_repairing(site_name, operation_ids)
+    for operation in operations:
+        _set_local_scan_repair_status(maintenance, site_name, operation, "repairing", "正在升级分析数据库。")
+
+    def should_cancel() -> bool:
+        context.check_cancelled()
+        return False
+
+    try:
+        repair_result = maintenance.repair(
+            site_name,
+            progress=context.progress,
+            should_cancel=should_cancel,
+        )
+    except Exception:
+        message = "MESH 分析数据库自动修复失败，原始日志和旧派生数据均已保留"
+        for operation in operations:
+            operation_id = str(operation.get("operation_id") or "")
+            maintenance.fail_operation(site_name, operation_id, message, repair_failed=True)
+            _set_local_scan_repair_status(
+                maintenance,
+                site_name,
+                operation,
+                "repair_failed",
+                message,
+            )
+        raise
+
+    resumed: list[dict[str, object]] = []
+    created_session_ids: list[str] = []
+    total = max(len(operations), 1)
+    for index, operation in enumerate(operations, start=1):
+        context.check_cancelled()
+        operation_id = str(operation.get("operation_id") or "")
+        _set_local_scan_repair_status(maintenance, site_name, operation, "queued", "等待自动导入。")
+        try:
+            result = _resume_mesh_operation(context, operation)
+        except MeshSchemaRebuildRequired as exc:
+            message = "MESH 分析数据库仍需自动修复，请重试自动修复"
+            maintenance.fail_operation(site_name, operation_id, message, repair_failed=True)
+            _set_local_scan_repair_status(maintenance, site_name, operation, "repair_failed", message)
+            raise RuntimeError(message) from exc
+        except Exception as exc:
+            message = _safe_continuation_error(exc)
+            maintenance.fail_operation(site_name, operation_id, message, repair_failed=False)
+            _set_local_scan_repair_status(maintenance, site_name, operation, "parse_failed", message)
+            resumed.append({"operation_id": operation_id, "status": "parse_failed", "error": message})
+        else:
+            maintenance.complete_operation(site_name, operation_id, result)
+            sessions = result.get("created_session_ids") if isinstance(result, dict) else None
+            if isinstance(sessions, list):
+                created_session_ids.extend(str(item) for item in sessions if str(item))
+            resumed.append({"operation_id": operation_id, "status": "completed"})
+        context.progress(
+            "mesh_derived_repair_resume",
+            95 + int(index * 5 / total),
+            100,
+            f"正在继续导入等待中的 MESH 日志：{index} / {total}",
+        )
+    return {
+        **repair_result,
+        "business_status": (
+            "PARTIAL_SUCCESS"
+            if any(item["status"] != "completed" for item in resumed)
+            or int(repair_result.get("warning_count") or 0) > 0
+            else "SUCCESS"
+        ),
+        "resumed_operations": resumed,
+        "resumed_count": sum(item["status"] == "completed" for item in resumed),
+        "imported_pending_count": sum(item["status"] == "completed" for item in resumed),
+        "failed_pending_count": sum(item["status"] != "completed" for item in resumed),
+        "created_session_ids": list(dict.fromkeys(created_session_ids)),
+    }
+
+
+def _resume_mesh_operation(context: JobContext, operation: dict[str, object]) -> dict[str, object]:
+    from netconsole.services.job_center.handlers import legacy_tasks
+    from netconsole.services.mesh_bundle_import_service import MeshBundleImportService
+
+    kind = str(operation.get("kind") or "")
+    payload = dict(operation.get("payload") or {})
+    site_name = str(context.params.get("site_name") or "")
+
+    def should_cancel() -> bool:
+        context.check_cancelled()
+        return False
+
+    if kind == "mesh_log_import":
+        result = legacy_tasks._mesh_log_import(
+            {
+                **payload,
+                "site_name": site_name,
+                "app_root": str(context.paths.app_root),
+                "data_root": str(context.paths.data_root),
+            },
+            lambda stage, current, total, message: context.progress(stage, current, total, message),
+            should_cancel,
+        )
+        MeshDerivedDataMaintenanceService(context.paths).cleanup_manual_staging(site_name, payload.get("files") or ())
+        return result
+    if kind == "mesh_bundle_import":
+        result = MeshBundleImportService(site_name, context.paths).import_approved_preview(
+            str(payload.get("preview_id") or ""),
+            payload.get("mappings") or (),
+            job_id=context.job_id,
+            should_cancel=should_cancel,
+            progress=lambda stage, current, total, message: context.progress(stage, current, total, message),
+        )
+        return result
+    if kind == "mesh_local_scan_import":
+        result = MeshLocalScanService(site_name, context.paths).import_candidates(
+            str(payload.get("scan_id") or ""),
+            payload.get("mappings") or (),
+            job_id=context.job_id,
+            should_cancel=should_cancel,
+            progress=lambda stage, current, total, message: context.progress(stage, current, total, message),
+        )
+        return result
+    raise ValueError("不支持的 MESH 等待导入操作")
+
+
+def _set_local_scan_repair_status(
+    _maintenance: MeshDerivedDataMaintenanceService,
+    site_name: str,
+    operation: dict[str, object],
+    status: str,
+    message: str,
+) -> None:
+    if str(operation.get("kind") or "") != "mesh_local_scan_import":
+        return
+    payload = dict(operation.get("payload") or {})
+    try:
+        MeshLocalScanService(site_name, _maintenance.paths).set_repair_status(
+            str(payload.get("scan_id") or ""),
+            (str(item.get("candidate_id") or "") for item in payload.get("mappings") or () if isinstance(item, dict)),
+            status,
+            message,
+        )
+    except Exception:
+        # The repair journal remains authoritative even if an expired scan manifest cannot be updated.
+        return
+
+
+def _safe_continuation_error(exc: Exception) -> str:
+    if isinstance(exc, MeshDerivedDatabaseIncompatible):
+        return "MESH 分析数据库仍需自动修复"
+    return str(exc) or "MESH 日志解析失败"
+
 HANDLERS = {
     "mesh_log_import": mesh_log_import,
     "mesh_derived_rebuild": mesh_derived_rebuild,
     "mesh_mr_profiles_refresh": mesh_mr_profiles_refresh,
     "mesh_schema_rebuild": mesh_schema_rebuild,
     "mesh_source_rebuild": mesh_source_rebuild,
+    "mesh_derived_data_repair": mesh_derived_data_repair,
     "mesh_analysis_source_delete": mesh_analysis_source_delete,
     "mesh_local_scan": mesh_local_scan,
     "mesh_local_scan_import": mesh_local_scan_import,

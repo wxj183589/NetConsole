@@ -9,6 +9,9 @@ import zipfile
 from uuid import uuid4
 
 from netconsole.core import app_logger
+from netconsole.application.rail_transit.mesh_derived_data_repair_coordinator import (
+    MeshDerivedDataRepairCoordinator,
+)
 from netconsole.core.paths import PathResolver
 from netconsole.core.sites import SiteManager
 from netconsole.models.api.rail_transit_web import RailTransitTaskDTO
@@ -21,6 +24,7 @@ from netconsole.services.mesh_bundle_import_service import (
     MeshBundleImportService,
 )
 from netconsole.services.mesh_storage_service import MeshStorageService
+from netconsole.services.mesh_derived_data_maintenance_service import MeshDerivedDataMaintenanceError
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
 
 
@@ -57,6 +61,11 @@ class MeshBundleApplicationService:
         self.task_service = task_service
         self.process_adapter = process_adapter
         self.base_data_query_service = base_data_query_service or RailTransitBaseDataQueryService(paths)
+        self.mesh_derived_data_repair_coordinator = MeshDerivedDataRepairCoordinator(
+            paths,
+            task_service,
+            process_adapter,
+        )
 
     def prepare_import_context(self, site_id: str) -> dict[str, object]:
         site_id = self._site(site_id)
@@ -323,6 +332,19 @@ class MeshBundleApplicationService:
             )
         except MeshBundleImportError as exc:
             raise MeshBundleApplicationError(exc.code, str(exc)) from exc
+        try:
+            repair_task = self.mesh_derived_data_repair_coordinator.enqueue_if_required(
+                site_id,
+                operation_kind=self._TASK_TYPE,
+                operation_payload={
+                    "preview_id": preview_id,
+                    "mappings": [dict(item) for item in approved],
+                },
+            )
+        except MeshDerivedDataMaintenanceError as exc:
+            raise MeshBundleApplicationError("MESH_REPAIR_START_FAILED", str(exc)) from exc
+        if repair_task is not None:
+            return repair_task
         task_id = f"mesh-bundle-{uuid4().hex}"
         job = BackgroundJob(
             job_id=task_id,
@@ -337,6 +359,8 @@ class MeshBundleApplicationService:
                 "preview_id": preview_id,
                 "archive_sha256": manifest.archive_sha256,
                 "mappings": [dict(item) for item in approved],
+                "resource_keys": [f"mesh-import:{site_id}"],
+                "resource_conflict_message": "当前局点已有 MESH 导入任务正在运行",
             },
         )
         try:

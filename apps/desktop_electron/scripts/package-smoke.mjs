@@ -141,6 +141,13 @@ const requiredProductionFeatureIds = [
   'web.train_communication_monitoring',
   'mesh.generate_report',
 ]
+const requiredPackagedCoreFeatureIds = [
+  'module.logs',
+  'module.system_settings',
+  'web.job_center',
+  'web.logs',
+  'web.system_settings',
+]
 const expectedPackagedPythonLicenses = {
   pyinstaller: {
     file: 'PYINSTALLER_COPYING.txt',
@@ -943,16 +950,33 @@ function validatePackagedRuntimeFeaturePolicy() {
   const runtimeRoot = resolve(backendRoot, '_internal', 'netconsole', 'assets', 'runtime')
   const buildInfo = JSON.parse(readFileSync(resolve(runtimeRoot, 'build_info.json'), 'utf8'))
   const featureFlags = JSON.parse(readFileSync(resolve(runtimeRoot, 'feature_flags.json'), 'utf8'))
-  if (buildInfo.edition !== 'customer' || buildInfo.feature_profile !== 'production') {
-    throw new Error('Electron 包 build_info 不是固定 customer/production 策略。')
+  const edition = String(process.env.NETCONSOLE_BUILD_EDITION || '').trim().toLowerCase()
+  if (!['full', 'customer'].includes(edition)) {
+    throw new Error('Electron 包 smoke 缺少有效 NETCONSOLE_BUILD_EDITION。')
   }
-  if (featureFlags.profile !== 'production' || !featureFlags.features || typeof featureFlags.features !== 'object') {
-    throw new Error('Electron 包缺少有效生产功能基线。')
+  if (buildInfo.edition !== edition || buildInfo.feature_profile !== edition) {
+    throw new Error(`Electron 包 build_info 与 ${edition}/${edition} 版本策略不一致。`)
   }
-  for (const featureId of requiredProductionFeatureIds) {
+  if (featureFlags.profile !== edition || !featureFlags.features || typeof featureFlags.features !== 'object') {
+    throw new Error(`Electron 包缺少有效 ${edition} Feature Profile。`)
+  }
+  const requiredFeatureIds = edition === 'customer'
+    ? requiredPackagedCoreFeatureIds
+    : requiredProductionFeatureIds
+  for (const featureId of requiredFeatureIds) {
     const state = featureFlags.features[featureId]
     if (!state || state.visible !== true || state.enabled !== true || state.internal_only === true) {
       throw new Error(`Electron 包生产功能基线关闭必要能力：${featureId}`)
+    }
+  }
+  for (const [featureId, state] of Object.entries(featureFlags.features)) {
+    if (state.enabled !== true && state.visible === true) {
+      throw new Error(`Electron 包功能状态非法：已禁用功能仍显示入口：${featureId}`)
+    }
+    if (edition === 'customer' && state.client_package === true && (
+      state.internal_only === true || state.enabled !== true
+    )) {
+      throw new Error(`Customer 包交付状态非法：${featureId}`)
     }
   }
   for (const path of [

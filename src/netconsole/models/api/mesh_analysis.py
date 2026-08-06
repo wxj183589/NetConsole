@@ -138,6 +138,12 @@ class MeshLocalScanStatsDTO(ApiModel):
     invalid_count: int = Field(default=0, ge=0)
     needs_metadata_count: int = Field(default=0, ge=0)
     failed_count: int = Field(default=0, ge=0)
+    waiting_repair_count: int = Field(default=0, ge=0)
+    repairing_count: int = Field(default=0, ge=0)
+    queued_count: int = Field(default=0, ge=0)
+    parsing_count: int = Field(default=0, ge=0)
+    repair_failed_count: int = Field(default=0, ge=0)
+    parse_failed_count: int = Field(default=0, ge=0)
     ignored_count: int = Field(default=0, ge=0)
 
 
@@ -160,7 +166,10 @@ class MeshLocalScanCandidateDTO(ApiModel):
     train_no: str = ""
     mr_role: str = ""
     match_status: Literal["matched", "unmatched", "ambiguous"]
-    scan_status: Literal["unregistered", "imported", "duplicate", "invalid", "needs_metadata", "failed", "ignored"]
+    scan_status: Literal[
+        "unregistered", "imported", "duplicate", "invalid", "needs_metadata", "failed", "ignored",
+        "waiting_repair", "repairing", "queued", "parsing", "repair_failed", "parse_failed",
+    ]
     error_message: str = ""
     existing_session_id: str = ""
     existing_profile_name: str = ""

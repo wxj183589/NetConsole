@@ -11,7 +11,8 @@ describe('Electron-only packaging', () => {
   it('packages the managed backend and preserves user data on uninstall', () => {
     const packageJson = JSON.parse(readFileSync(resolve(appRoot, 'package.json'), 'utf8'))
 
-    expect(packageJson.scripts.package).toContain('build-installer.mjs')
+    expect(packageJson.scripts.package).toBe('pnpm run package:all')
+    expect(packageJson.scripts['package:all']).toBe('node scripts/build-edition-installer.mjs both')
     expect(packageJson.scripts['smoke:package']).toContain('package-smoke.mjs')
     expect(packageJson.build.productName).toBe('NetConsole v1.4.7 by wxj')
     expect(packageJson.build.win.executableName).toBe('NetConsole')
@@ -43,18 +44,19 @@ describe('Electron-only packaging', () => {
 
   it('builds a unique commit-named installer through the final EXE gate', () => {
     const packageJson = JSON.parse(readFileSync(resolve(appRoot, 'package.json'), 'utf8'))
-    const launcher = readFileSync(resolve(appRoot, 'scripts', 'build-installer.mjs'), 'utf8')
-    const builder = readFileSync(resolve(appRoot, '..', '..', 'scripts', 'build', 'build_installer.py'), 'utf8')
+    const launcher = readFileSync(resolve(appRoot, 'scripts', 'build-edition-installer.mjs'), 'utf8')
+    const builder = readFileSync(resolve(appRoot, '..', '..', 'scripts', 'build', 'build_edition_installers.py'), 'utf8')
+    const baseBuilder = readFileSync(resolve(appRoot, '..', '..', 'scripts', 'build', 'build_installer.py'), 'utf8')
 
-    expect(packageJson.scripts.package).toBe('node scripts/build-installer.mjs')
-    expect(launcher).toContain('scripts.build.build_installer')
-    expect(builder).toContain('NetConsole-{app_version}-{short}-x64-setup.exe')
+    expect(packageJson.scripts.package).toBe('pnpm run package:all')
+    expect(launcher).toContain('scripts.build.build_edition_installers')
+    expect(builder).toContain('NetConsole-{label}-{app_version}-{short}-x64-setup.exe')
     expect(builder).toContain('electron-builder')
     expect(builder).toContain('--config.win.artifactName=')
-    expect(builder).toContain('SubType = NSIS-3 Unicode')
-    expect(builder).toContain('InstallerGitCommit')
-    expect(builder).toContain('installer_policy_source_sha256')
-    expect(builder).toContain('real_windows_install_status')
+    expect(baseBuilder).toContain('SubType = NSIS-3 Unicode')
+    expect(baseBuilder).toContain('InstallerGitCommit')
+    expect(baseBuilder).toContain('installer_policy_source_sha256')
+    expect(baseBuilder).toContain('real_windows_install_status')
   })
 
   it('adds a separate, validated business-data-root page to the existing NSIS installer', () => {

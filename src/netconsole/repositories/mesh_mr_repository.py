@@ -205,8 +205,7 @@ class MeshMrRepository:
     def initialize(self) -> None:
         if self.path.exists() and not self._is_compact_schema(self.path):
             raise MeshSchemaRebuildRequired(
-                "MESH 派生数据库版本不兼容；请在 NetConsole 完全退出后运行 "
-                "python -m scripts.maintenance.rebuild_mesh_parsed_data --site <局点> --apply"
+                "MESH 派生数据库版本不兼容，系统将自动修复。"
             )
         is_new_database = not self.path.exists()
         with self._connect() as conn:
@@ -2468,8 +2467,7 @@ class MeshMrRepository:
             row = conn.execute("SELECT value FROM schema_meta WHERE key = ?", (DERIVED_ANALYSIS_KEY,)).fetchone()
         except sqlite3.Error:
             raise MeshSchemaRebuildRequired(
-                "MESH 派生数据库无法读取；请在 NetConsole 完全退出后运行 "
-                "python -m scripts.maintenance.rebuild_mesh_parsed_data --site <局点> --apply"
+                "MESH 派生数据库无法读取，系统将自动修复。"
             )
         finally:
             if conn is not None:
