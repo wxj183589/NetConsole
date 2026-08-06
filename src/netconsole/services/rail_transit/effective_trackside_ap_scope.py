@@ -9,10 +9,15 @@ import unicodedata
 from typing import Iterable, Mapping
 from uuid import NAMESPACE_URL, uuid5
 
+from netconsole.core import app_logger
 from netconsole.core.database import Database
 from netconsole.repositories.ac_repository import AcRepository, TRACKSIDE_AP_PLAN_MODE
 from netconsole.services.ap_identity.normalizers import normalize_mac
 from netconsole.services.ap_online_overview import is_fit_ap_online
+from netconsole.services.neighbor_matcher import (
+    NeighborDeviceIdentityIndex,
+    NeighborMatchResult,
+)
 from netconsole.services.rail_transit.station_source_utils import (
     canonical_station_name,
     format_station_display_name,
@@ -119,6 +124,25 @@ class TracksideApScopeUnmatchedOnlineItem:
     fit_ap_collected_at: str = ""
     lldp_collected_at: str = ""
     lldp_candidate_count: int = 0
+    ap_mac_raw: str = ""
+    ap_mac_normalized: str = ""
+    planning_record_id: str = ""
+    planning_station_name: str = ""
+    plan_station_id: str = ""
+    planning_match_method: str = ""
+    lldp_exists: bool = False
+    lldp_local_interface: str = ""
+    lldp_remote_device_name: str = ""
+    lldp_system_name: str = ""
+    lldp_management_ip: str = ""
+    lldp_chassis_id: str = ""
+    switch_candidate_count: int = 0
+    matched_switch_device_id: str = ""
+    switch_match_method: str = ""
+    failure_stage: str = ""
+    source_revisions: dict[str, str] = field(default_factory=dict)
+    snapshot_revision: str = ""
+    snapshot_created_at: str = ""
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -135,6 +159,25 @@ class TracksideApScopeUnmatchedOnlineItem:
             "fit_ap_collected_at": self.fit_ap_collected_at,
             "lldp_collected_at": self.lldp_collected_at,
             "lldp_candidate_count": self.lldp_candidate_count,
+            "ap_mac_raw": self.ap_mac_raw,
+            "ap_mac_normalized": self.ap_mac_normalized,
+            "planning_record_id": self.planning_record_id,
+            "planning_station_name": self.planning_station_name,
+            "plan_station_id": self.plan_station_id,
+            "planning_match_method": self.planning_match_method,
+            "lldp_exists": self.lldp_exists,
+            "lldp_local_interface": self.lldp_local_interface,
+            "lldp_remote_device_name": self.lldp_remote_device_name,
+            "lldp_system_name": self.lldp_system_name,
+            "lldp_management_ip": self.lldp_management_ip,
+            "lldp_chassis_id": self.lldp_chassis_id,
+            "switch_candidate_count": self.switch_candidate_count,
+            "matched_switch_device_id": self.matched_switch_device_id,
+            "switch_match_method": self.switch_match_method,
+            "failure_stage": self.failure_stage,
+            "source_revisions": dict(self.source_revisions),
+            "snapshot_revision": self.snapshot_revision,
+            "snapshot_created_at": self.snapshot_created_at,
         }
 
 
@@ -172,6 +215,7 @@ class EffectiveTracksideApScope:
     excluded_device_total_count: int | None = None
     unmatched_online_total_count: int | None = None
     ambiguous_online_total_count: int = 0
+    unmatched_status_counts: dict[str, int] = field(default_factory=dict)
     updated_at: str = ""
     _reference_by_id: dict[str, EffectiveTracksideApReference] = field(
         default_factory=dict,
@@ -231,31 +275,118 @@ class EffectiveTracksideApScope:
 
     @property
     def fit_ap_lldp_snapshot_stale_count(self) -> int:
-        return sum(1 for item in self.unmatched_online_items if item.association_status == "lldp_snapshot_stale")
+        return self._unmatched_status_count("lldp_snapshot_stale")
 
     @property
     def fit_ap_lldp_exact_match_pending_count(self) -> int:
-        return sum(1 for item in self.unmatched_online_items if item.association_status == "lldp_exact_match_pending")
+        return self._unmatched_status_count("lldp_exact_match_pending")
 
     @property
     def fit_ap_current_conflict_count(self) -> int:
-        return sum(1 for item in self.unmatched_online_items if item.association_status == "lldp_conflict_current")
+        return self._unmatched_status_count("lldp_conflict_current")
 
     @property
     def fit_ap_ambiguous_online_count(self) -> int:
-        return sum(1 for item in self.unmatched_online_items if item.association_status == "ambiguous")
+        return self._unmatched_status_count("ambiguous")
 
     @property
     def fit_ap_station_master_missing_count(self) -> int:
-        return sum(1 for item in self.unmatched_online_items if item.association_status == "station_master_missing")
+        return self._unmatched_status_count("station_master_missing")
 
     @property
     def fit_ap_unknown_association_count(self) -> int:
-        return sum(1 for item in self.unmatched_online_items if item.association_status == "unknown")
+        return self._unmatched_status_count("unknown")
 
     @property
     def fit_ap_planning_missing_count(self) -> int:
-        return sum(1 for item in self.unmatched_online_items if item.association_status == "planning_missing")
+        return self._unmatched_status_count("planning_missing")
+
+    @property
+    def fit_ap_switch_not_found_count(self) -> int:
+        return self._unmatched_status_count("switch_not_found")
+
+    @property
+    def fit_ap_switch_identity_ambiguous_count(self) -> int:
+        return self._unmatched_status_count("switch_identity_ambiguous")
+
+    @property
+    def fit_ap_switch_data_incomplete_count(self) -> int:
+        return self._unmatched_status_count("switch_data_incomplete")
+
+    @property
+    def fit_ap_plan_not_found_count(self) -> int:
+        return self._unmatched_status_count("ap_plan_not_found")
+
+    @property
+    def fit_ap_plan_station_missing_count(self) -> int:
+        return self._unmatched_status_count("plan_station_missing")
+
+    @property
+    def fit_ap_plan_station_invalid_count(self) -> int:
+        return self._unmatched_status_count("plan_station_invalid")
+
+    def _unmatched_status_count(self, status: str) -> int:
+        if self.unmatched_status_counts:
+            return self.unmatched_status_counts.get(status, 0)
+        return sum(
+            1
+            for item in self.unmatched_online_items
+            if item.association_status == status
+        )
+
+    def unmatched_online_summary(self) -> str:
+        parts: list[str] = []
+        pending = (
+            self.fit_ap_lldp_snapshot_stale_count
+            + self.fit_ap_lldp_exact_match_pending_count
+        )
+        conflict = (
+            self.fit_ap_current_conflict_count
+            + self.fit_ap_ambiguous_online_count
+        )
+        invalid_plan_station = (
+            self.fit_ap_plan_station_missing_count
+            + self.fit_ap_plan_station_invalid_count
+        )
+        if pending:
+            parts.append(f"{pending} 个等待 LLDP 数据同步")
+        if conflict:
+            parts.append(f"{conflict} 个存在当前 LLDP 冲突")
+        if self.fit_ap_switch_not_found_count:
+            parts.append(
+                f"{self.fit_ap_switch_not_found_count} 个已有 AC 侧 LLDP，"
+                "但上联交换机未匹配设备管理记录"
+            )
+        if self.fit_ap_switch_identity_ambiguous_count:
+            parts.append(
+                f"{self.fit_ap_switch_identity_ambiguous_count} 个上联交换机身份冲突"
+            )
+        if self.fit_ap_switch_data_incomplete_count:
+            parts.append(
+                f"{self.fit_ap_switch_data_incomplete_count} 个交换机站点资料不完整"
+            )
+        if self.fit_ap_plan_not_found_count:
+            parts.append(f"{self.fit_ap_plan_not_found_count} 个站点缺少 AP 规划")
+        if invalid_plan_station:
+            parts.append(f"{invalid_plan_station} 个规划站点缺失或无效")
+        basic_missing = (
+            self.fit_ap_planning_missing_count
+            + self.fit_ap_station_master_missing_count
+        )
+        if basic_missing:
+            parts.append(f"{basic_missing} 个缺少其他基础资料")
+        if self.fit_ap_unknown_association_count:
+            parts.append(
+                f"{self.fit_ap_unknown_association_count} 个处于未知关联状态"
+            )
+        if not parts:
+            return ""
+        return (
+            f"数据质量提示：另有 {self.fit_ap_unmatched_online_count} 个 AC 在线 AP "
+            "暂未计入业务统计；其中 "
+            + "；".join(parts)
+            + "。"
+        )
 
     @property
     def excluded_device_count(self) -> int:
@@ -485,7 +616,11 @@ class EffectiveTracksideApScope:
         )
         stale_total = self.fit_ap_lldp_snapshot_stale_count + self.fit_ap_lldp_exact_match_pending_count
         conflict_total = self.fit_ap_current_conflict_count + self.fit_ap_ambiguous_online_count
-        real_missing_total = self.fit_ap_planning_missing_count + self.fit_ap_station_master_missing_count
+        real_missing_total = (
+            self.fit_ap_planning_missing_count
+            + self.fit_ap_station_master_missing_count
+            + self.fit_ap_switch_data_incomplete_count
+        )
         online_total = min(matched_online_total, planned_total)
         total_anomaly = any(bool(row.get("count_anomaly")) for row in station_rows)
         total_remark = (
@@ -493,13 +628,14 @@ class EffectiveTracksideApScope:
             f"实际上线 {self.fit_ap_online_total_count} 个；"
             f"已关联上线 {matched_online_total} 个；"
             f"等待 LLDP 同步 {stale_total} 个；当前 LLDP 冲突 {conflict_total} 个；"
+            f"交换机未匹配 {self.fit_ap_switch_not_found_count} 个；"
+            f"交换机身份冲突 {self.fit_ap_switch_identity_ambiguous_count} 个；"
+            f"AP 规划缺失 {self.fit_ap_plan_not_found_count} 个；"
+            f"规划站点无效 {self.fit_ap_plan_station_missing_count + self.fit_ap_plan_station_invalid_count} 个；"
             f"基础资料待补充 {real_missing_total} 个；状态未知 {self.fit_ap_unknown_total_count} 个。"
         )
-        if self.fit_ap_unmatched_online_count:
-            total_remark = (
-                f"{total_remark} 数据质量提示：另有 {self.fit_ap_unmatched_online_count} 个 AC 在线 AP "
-                "未关联到 AP 规划维护中的有效站点，未计入业务统计。"
-            )
+        if summary := self.unmatched_online_summary():
+            total_remark = f"{total_remark} {summary}"
         if total_anomaly:
             total_remark = f"{total_remark} 统计范围存在数量异常，请查看分站状态。"
         result.append(
@@ -527,6 +663,7 @@ def resolve_effective_trackside_ap_scope_from_database(
     context: TracksideApScopeContext | None = None,
     resource_rows: Iterable[Mapping[str, object | None]] | None = None,
     runtime_station_rows: Iterable[Mapping[str, object | None]] | None = None,
+    switch_identity_rows: Iterable[Mapping[str, object | None]] | None = None,
     lightweight: bool = False,
     detail_limit: int | None = None,
 ) -> EffectiveTracksideApScope:
@@ -554,6 +691,11 @@ def resolve_effective_trackside_ap_scope_from_database(
             if runtime_station_rows is not None
             else repository.list_trackside_ap_runtime_station_evidence_rows()
         ),
+        switch_identity_rows=(
+            switch_identity_rows
+            if switch_identity_rows is not None
+            else repository.list_trackside_switch_identity_rows()
+        ),
         detail_limit=detail_limit,
     )
 
@@ -566,6 +708,7 @@ def resolve_effective_trackside_ap_scope(
     reference_rows: Iterable[Mapping[str, object | None]],
     resource_rows: Iterable[Mapping[str, object | None]],
     runtime_station_rows: Iterable[Mapping[str, object | None]] | None = None,
+    switch_identity_rows: Iterable[Mapping[str, object | None]] | None = None,
     runtime_snapshot: TracksideApRuntimeSnapshot | None = None,
     detail_limit: int | None = None,
 ) -> EffectiveTracksideApScope:
@@ -574,6 +717,17 @@ def resolve_effective_trackside_ap_scope(
     resources_input = [dict(row) for row in resource_rows]
     station_names, station_sort_orders, station_aliases, station_node_uids = (
         _build_station_index(context.site_id, all_station_rows, plans)
+    )
+    plans_by_station, plan_rows_by_station_name = _build_plan_index(
+        plans,
+        station_names,
+        station_aliases,
+        station_node_uids,
+    )
+    switch_identity_index = (
+        NeighborDeviceIdentityIndex(switch_identity_rows)
+        if switch_identity_rows is not None
+        else None
     )
     selected_runtime_rows = deduplicate_lldp_snapshot_rows(
         select_latest_lldp_snapshot_rows(runtime_station_rows or ())
@@ -599,6 +753,7 @@ def resolve_effective_trackside_ap_scope(
     excluded_keys: set[tuple[str, str]] = set()
     unmatched_online_keys: set[tuple[str, str]] = set()
     ambiguous_online_keys: set[tuple[str, str]] = set()
+    unmatched_status_counts: dict[str, int] = defaultdict(int)
 
     def add_excluded(item: TracksideApScopeExcludedItem) -> None:
         key = ("mac", item.mac) if item.mac else (item.source, item.item_id)
@@ -618,6 +773,15 @@ def resolve_effective_trackside_ap_scope(
         if key in unmatched_online_keys:
             return
         unmatched_online_keys.add(key)
+        unmatched_status_counts[item.association_status] += 1
+        app_logger.log_debug(
+            "trackside_ap_association.unresolved",
+            (
+                f"site_id={context.site_id} ap_mac={item.mac} "
+                f"device_id={item.matched_switch_device_id} "
+                f"reason_code={item.reason_code} stage={item.failure_stage}"
+            ),
+        )
         if detail_limit is None or len(unmatched_online) < detail_limit:
             unmatched_online.append(item)
     all_references: dict[str, EffectiveTracksideApReference] = {}
@@ -719,6 +883,10 @@ def resolve_effective_trackside_ap_scope(
     matched_resources: dict[str, dict[str, object | None]] = {}
     runtime_resources_by_key: dict[tuple[str, str], dict[str, object | None]] = {}
     for resource in resources_input:
+        switch_match: NeighborMatchResult | None = None
+        diagnostic_plan: dict[str, object | None] | None = None
+        association_diagnostic: tuple[str, str, str, str] | None = None
+        resolved_plan_station_id = ""
         runtime_key = _runtime_resource_key(resource)
         runtime_identity_keys.add(runtime_key)
         current_runtime = runtime_resources_by_key.get(runtime_key)
@@ -758,6 +926,77 @@ def resolve_effective_trackside_ap_scope(
                 reason = ""
             elif len(station_ids) > 1:
                 reason = "交换机 LLDP 精确证据关联到多个站点，需人工处理。"
+            elif (
+                switch_identity_index is not None
+                and _has_ac_lldp_switch_identity(resource)
+                and _scope_token(resource.get("lldp_match_status"))
+                not in {"conflict", "ambiguous", "multiple"}
+            ):
+                switch_match = switch_identity_index.resolve(resource)
+                if switch_match.match_status == "ambiguous":
+                    association_diagnostic = (
+                        "switch_identity_ambiguous",
+                        "SWITCH_IDENTITY_AMBIGUOUS",
+                        "AC 侧 LLDP 交换机身份命中当前局点内多个设备，不能自动选择。",
+                        "核对 LLDP system name、管理地址或 chassis ID，消除同局点重复身份后刷新。",
+                    )
+                elif switch_match.match_status != "matched":
+                    association_diagnostic = (
+                        "switch_not_found",
+                        "SWITCH_NOT_FOUND",
+                        "AC 侧 LLDP 已存在，但未在当前局点设备管理中找到唯一的上联交换机。",
+                        "在设备管理中补充对应交换机，或核对 system name、管理地址和 chassis ID。",
+                    )
+                else:
+                    resolved_plan_station_id = _switch_station_id(
+                        switch_match,
+                        station_names,
+                        station_aliases,
+                        station_node_uids,
+                    )
+                    if not resolved_plan_station_id:
+                        association_diagnostic = (
+                            "switch_data_incomplete",
+                            "SWITCH_DATA_INCOMPLETE",
+                            "已匹配上联交换机，但交换机缺少可唯一解析的当前局点归属站点。",
+                            "补充交换机 station_id，或将交换机站点名称修正为当前局点内的唯一正式站点。",
+                        )
+                    else:
+                        diagnostic_plan = plans_by_station.get(resolved_plan_station_id)
+                        if diagnostic_plan is None:
+                            plan_candidates = _plan_rows_for_station(
+                                resolved_plan_station_id,
+                                station_names,
+                                plan_rows_by_station_name,
+                            )
+                            diagnostic_plan = plan_candidates[0] if plan_candidates else None
+                            association_diagnostic = _missing_plan_diagnostic(
+                                plan_candidates
+                            )
+                        else:
+                            reference_id = f"runtime-lldp:{mac}"
+                            if reference_id not in scope_references:
+                                runtime_reference = EffectiveTracksideApReference(
+                                    reference_id=reference_id,
+                                    station_id=resolved_plan_station_id,
+                                    station_name=station_names[resolved_plan_station_id],
+                                    ap_name=str(resource.get("ap_name") or "").strip(),
+                                    ap_mac=mac,
+                                    ap_uuid=str(resource.get("ap_uuid") or "").strip(),
+                                    operation_status="included",
+                                    project_phase=context.project_phase,
+                                    row={
+                                        "_scope_binding_source": "ac_lldp_switch_identity",
+                                        "switch_device_uuid": switch_match.device_uuid,
+                                        "switch_match_method": switch_match.matched_by,
+                                    },
+                                )
+                                scope_references[reference_id] = runtime_reference
+                                eligible_identity_index.setdefault(
+                                    ("mac", mac), set()
+                                ).add(reference_id)
+                            binding_source = "ac_lldp_switch_identity"
+                            reason = ""
         online = is_fit_ap_online(resource)
         if online:
             online_resource_total += 1
@@ -807,7 +1046,12 @@ def resolve_effective_trackside_ap_scope(
                         )
                     )
                 else:
-                    association_status, reason_code, diagnostic_reason, suggested_action = _unmatched_online_diagnostics(
+                    (
+                        association_status,
+                        reason_code,
+                        diagnostic_reason,
+                        suggested_action,
+                    ) = association_diagnostic or _unmatched_online_diagnostics(
                         resource,
                         reason,
                         snapshot,
@@ -836,8 +1080,81 @@ def resolve_effective_trackside_ap_scope(
                             association_status=association_status,
                             reason_code=reason_code,
                             fit_ap_collected_at=snapshot.fit_ap_collected_at,
-                            lldp_collected_at=snapshot.switch_lldp_collected_at,
+                            lldp_collected_at=str(
+                                resource.get("lldp_collected_at")
+                                or resource.get("lldp_updated_at")
+                                or snapshot.switch_lldp_collected_at
+                                or ""
+                            ),
                             lldp_candidate_count=len(runtime_station_index.get(normalize_mac(resource.get("ap_mac")) or "", set())),
+                            ap_mac_raw=str(resource.get("ap_mac") or ""),
+                            ap_mac_normalized=normalize_mac(resource.get("ap_mac")) or "",
+                            planning_record_id=_plan_record_id(diagnostic_plan),
+                            planning_station_name=str(
+                                (diagnostic_plan or {}).get("station_name") or ""
+                            ),
+                            plan_station_id=(
+                                resolved_plan_station_id
+                                or str((diagnostic_plan or {}).get("station_id") or "")
+                            ),
+                            planning_match_method=(
+                                "switch_station_id"
+                                if diagnostic_plan is not None
+                                else ""
+                            ),
+                            lldp_exists=(
+                                _has_ac_lldp_switch_identity(resource)
+                                or bool(runtime_station_index.get(normalize_mac(resource.get("ap_mac")) or "", set()))
+                            ),
+                            lldp_local_interface=str(
+                                resource.get("lldp_local_interface") or ""
+                            ),
+                            lldp_remote_device_name=str(
+                                resource.get("neighbor_device_name")
+                                or resource.get("lldp_neighbor_name")
+                                or ""
+                            ),
+                            lldp_system_name=str(
+                                resource.get("lldp_system_name")
+                                or resource.get("lldp_neighbor_name")
+                                or ""
+                            ),
+                            lldp_management_ip=str(
+                                resource.get("lldp_management_ip")
+                                or resource.get("lldp_neighbor_ip")
+                                or ""
+                            ),
+                            lldp_chassis_id=str(
+                                resource.get("lldp_chassis_id")
+                                or resource.get("lldp_neighbor_mac")
+                                or ""
+                            ),
+                            switch_candidate_count=(
+                                switch_match.candidate_count if switch_match else 0
+                            ),
+                            matched_switch_device_id=(
+                                str(switch_match.device_uuid or "")
+                                if switch_match
+                                else ""
+                            ),
+                            switch_match_method=(
+                                str(switch_match.matched_by or "")
+                                if switch_match
+                                else ""
+                            ),
+                            failure_stage=_failure_stage(association_status),
+                            source_revisions={
+                                "station_data_revision": snapshot.station_data_revision,
+                                "ap_identity_revision": snapshot.ap_identity_revision,
+                                "fit_ap_generation": snapshot.fit_ap_generation,
+                                "switch_lldp_generation": snapshot.switch_lldp_generation,
+                            },
+                            snapshot_revision=_runtime_snapshot_revision(snapshot),
+                            snapshot_created_at=max(
+                                snapshot.fit_ap_collected_at,
+                                snapshot.switch_lldp_collected_at,
+                                snapshot.optical_collected_at,
+                            ),
                         ),
                     )
             continue
@@ -874,17 +1191,6 @@ def resolve_effective_trackside_ap_scope(
     for key, values in resource_identity_index.items():
         eligible_identity_index.setdefault(key, set()).update(values)
 
-    plans_by_station: dict[str, dict[str, object | None]] = {}
-    station_scope_ids = set(station_names)
-    for plan in plans:
-        station_id, _reason = _resolve_plan_station_id(
-            plan,
-            station_aliases,
-            station_node_uids,
-        )
-        if station_id and station_id in station_scope_ids:
-            plans_by_station[station_id] = plan
-
     return EffectiveTracksideApScope(
         context=context,
         station_names=station_names,
@@ -903,6 +1209,7 @@ def resolve_effective_trackside_ap_scope(
         excluded_device_total_count=len(excluded_keys),
         unmatched_online_total_count=len(unmatched_online_keys),
         ambiguous_online_total_count=len(ambiguous_online_keys),
+        unmatched_status_counts=dict(unmatched_status_counts),
         updated_at=updated_at,
         _reference_by_id=scope_references,
         _identity_index=eligible_identity_index,
@@ -1033,6 +1340,147 @@ def _build_station_index(
         if raw_station_id and raw_station_id != station_id:
             station_node_uids[raw_station_id] = station_id
     return station_names, station_sort_orders, station_aliases, station_node_uids
+
+
+def _build_plan_index(
+    plans: Iterable[Mapping[str, object | None]],
+    station_names: Mapping[str, str],
+    station_aliases: Mapping[str, set[str]],
+    station_node_uids: Mapping[str, str],
+) -> tuple[
+    dict[str, dict[str, object | None]],
+    dict[str, list[dict[str, object | None]]],
+]:
+    plans_by_station: dict[str, dict[str, object | None]] = {}
+    plans_by_name: dict[str, list[dict[str, object | None]]] = defaultdict(list)
+    for raw in plans:
+        plan = dict(raw)
+        station_id, _reason = _resolve_plan_station_id(
+            plan,
+            station_aliases,
+            station_node_uids,
+        )
+        if station_id and station_id in station_names:
+            plans_by_station[station_id] = plan
+        name_key = _station_key(plan.get("station_name"))
+        if name_key:
+            plans_by_name[name_key].append(plan)
+    return plans_by_station, plans_by_name
+
+
+def _has_ac_lldp_switch_identity(
+    resource: Mapping[str, object | None],
+) -> bool:
+    return any(
+        str(resource.get(field) or "").strip()
+        for field in (
+            "switch_device_uuid",
+            "neighbor_device_uuid",
+            "lldp_neighbor_device_uuid",
+            "lldp_neighbor_device_id",
+            "lldp_neighbor_mac_normalized",
+            "lldp_neighbor_mac",
+            "neighbor_mac",
+            "chassis_id",
+            "lldp_chassis_id",
+            "lldp_management_ip",
+            "lldp_neighbor_ip",
+            "neighbor_ip",
+            "management_ip",
+            "lldp_neighbor_name",
+            "lldp_neighbor",
+            "neighbor_device_name",
+            "neighbor_sysname",
+            "lldp_system_name",
+        )
+    )
+
+
+def _switch_station_id(
+    match: NeighborMatchResult,
+    station_names: Mapping[str, str],
+    station_aliases: Mapping[str, set[str]],
+    station_node_uids: Mapping[str, str],
+) -> str:
+    direct = str(match.station_id or "").strip()
+    if direct:
+        mapped = station_node_uids.get(direct, direct)
+        return mapped if mapped in station_names else ""
+    station_key = _station_key(match.station)
+    candidates = station_aliases.get(station_key, set()) if station_key else set()
+    return next(iter(candidates)) if len(candidates) == 1 else ""
+
+
+def _plan_rows_for_station(
+    station_id: str,
+    station_names: Mapping[str, str],
+    plans_by_name: Mapping[str, list[dict[str, object | None]]],
+) -> list[dict[str, object | None]]:
+    key = _station_key(station_names.get(station_id))
+    return list(plans_by_name.get(key, ())) if key else []
+
+
+def _missing_plan_diagnostic(
+    plan_candidates: Iterable[Mapping[str, object | None]],
+) -> tuple[str, str, str, str]:
+    candidates = list(plan_candidates)
+    if not candidates:
+        return (
+            "ap_plan_not_found",
+            "AP_PLAN_NOT_FOUND",
+            "已通过 LLDP 和交换机确定站点，但该站点没有轨旁 AP 规划记录。",
+            "在 AP 规划维护中为该站点新增规划后刷新。",
+        )
+    if any(not str(plan.get("station_id") or "").strip() for plan in candidates):
+        return (
+            "plan_station_missing",
+            "PLAN_STATION_MISSING",
+            "找到同名 AP 规划记录，但规划未填写正式归属站点。",
+            "在 AP 规划维护中选择当前局点的正式站点后刷新。",
+        )
+    return (
+        "plan_station_invalid",
+        "PLAN_STATION_INVALID",
+        "找到同名 AP 规划记录，但规划引用的站点不属于当前局点有效站点。",
+        "修正规划的 station_id，确保其指向当前局点内启用的正式站点。",
+    )
+
+
+def _plan_record_id(plan: Mapping[str, object | None] | None) -> str:
+    if not plan:
+        return ""
+    return str(plan.get("id") or plan.get("plan_id") or "")
+
+
+def _failure_stage(association_status: str) -> str:
+    if association_status in {
+        "switch_not_found",
+        "switch_identity_ambiguous",
+        "switch_data_incomplete",
+    }:
+        return "switch_identity"
+    if association_status in {
+        "ap_plan_not_found",
+        "plan_station_missing",
+        "plan_station_invalid",
+        "planning_missing",
+        "station_master_missing",
+    }:
+        return "planning"
+    if association_status.startswith("lldp_") or association_status == "ambiguous":
+        return "lldp"
+    return "unknown"
+
+
+def _runtime_snapshot_revision(snapshot: TracksideApRuntimeSnapshot) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            snapshot.to_dict(),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
 
 
 def _resolve_station_id(

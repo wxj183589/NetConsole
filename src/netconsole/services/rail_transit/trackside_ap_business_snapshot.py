@@ -13,7 +13,7 @@ from netconsole.core.database import Database
 from netconsole.services.ap_identity import ApIdentityQueryService
 
 
-TRACKSIDE_AP_BUSINESS_RULE_VERSION = "2026.08.snapshot.v1"
+TRACKSIDE_AP_BUSINESS_RULE_VERSION = "2026.08.snapshot.v2"
 TRACKSIDE_AP_EXPORT_SNAPSHOT_SCHEMA_VERSION = 1
 TRACKSIDE_AP_SORT_CONTRACT = (
     "site",

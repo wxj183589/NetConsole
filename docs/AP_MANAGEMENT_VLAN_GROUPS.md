@@ -24,6 +24,13 @@
 
 上线概览只返回站点统计、少量诊断计数、生成时间和来源 revision，不内嵌完整排除项或“基础资料待补充”在线 AP。用户点击对应明细后，页面分别调用 `/plan/online-status/excluded` 和 `/plan/online-status/unmatched` 分页读取；默认页大小为 50，空 MAC 以空字符串返回。概览按规划、FIT-AP、AP Identity、站点交换机绑定、当前 LLDP 和局点元数据 revision 缓存，来源不变时直接复用，`source_revision=0` 仍是合法 revision。缓存命中状态和阶段耗时进入诊断日志，不改变统计口径。
 
+上线概览 revision 还包含交换机 `devices` 身份字段、`device_facts` 与
+`device_interfaces`。AC/FIT-AP 资源已保存 LLDP 上联交换机身份时，即使交换机侧
+尚未采集到该 AP 的邻居 MAC，也可按“交换机 UUID > 唯一 Chassis/MAC > 唯一管理
+地址 > 唯一规范化 system name > 明确设备别名”在当前局点内解析交换机，再通过
+交换机有效站点进入当前逐站规划。交换机 sysName、接口 MAC 或设备身份提交后，
+revision 自动变化并使缓存失效；不依赖设备管理“详情更新”页面作为触发器。
+
 规划编辑只属于规划子页草稿。解锁时以 `scope=trackside_ap_planning` 获取包含正式站点依赖和规划行的编辑快照，并按 `station_id` reconcile：站名修改保留用户值，来源消失或禁用的历史行保留为 `stale`；启用的普通站、车辆段和停车场都可生成规划行，资格不依赖 `participates_in_direction`。保存通过 `POST /api/rail-transit/base-data/changes` 进入 `RailTransitBaseDataApplicationService`，载荷只允许 `trackside_ap_plan`；后端继续执行 revision 检查和 SQLite `BEGIN IMMEDIATE` 单事务，失败整体回滚。修改规划不会保存站点、区间、AP、MR，不连接 AC，也不自动刷新设备状态。
 
 当前用户接口包括（规划模板预览/导出接口仅为历史兼容，不由活动页面调用）：
@@ -77,11 +84,11 @@ LLDP 只取每台交换机最近一次成功批次；旧接口留在历史，接
 是 current，历史冲突不会污染当前冲突。`merged` 与 `ap_direct_lldp` 表达
 同一事实时先去重。
 
-“基础资料待补充”只表示真实的 station master、AP 主资料或规划缺失诊断。新增
+“基础资料待补充”只表示无法归入明确交换机/规划/LLDP分类的其他基础资料缺失。新增
 上线 AP 以 `identity_entity_id` 优先、物理 AP MAC 其次比较历史在线状态，
 站点尚未解析时仍可计入新增上线。
 
-本节替代上文将所有未关联在线 AP 统称为“基础资料待补充”的兼容描述。活动页面可在业务统计之外显示 FIT-AP 总数、实际在线/离线/未知、等待 LLDP 同步、当前 LLDP 冲突和真实基础资料缺失等数据质量诊断；上线概览和统计导出只生成规划站点与合计行。旧 DTO 中的 `fit_ap_matched_count` 只表示已关联资源数，规划范围内实际上线使用 `fit_ap_matched_online_count`；`fit_ap_online_total_count` 是 AC 全量运行态诊断，不能直接作为轨旁业务上线合计。
+本节替代上文将所有未关联在线 AP 统称为“基础资料待补充”的兼容描述。活动页面可在业务统计之外显示 FIT-AP 总数、实际在线/离线/未知、已关联上线、等待 LLDP 同步、当前 LLDP 冲突、交换机未匹配、交换机身份冲突、AP 规划缺失、规划站点无效、真实基础资料缺失和快照状态。互斥原因码包括 `AP_PLAN_NOT_FOUND`、`PLAN_STATION_MISSING`、`PLAN_STATION_INVALID`、`SWITCH_NOT_FOUND`、`SWITCH_IDENTITY_AMBIGUOUS`、`SWITCH_DATA_INCOMPLETE` 及既有 LLDP/基础资料状态。上线概览和统计导出只生成规划站点与合计行。旧 DTO 中的 `fit_ap_matched_count` 只表示已关联资源数，规划范围内实际上线使用 `fit_ap_matched_online_count`；`fit_ap_online_total_count` 是 AC 全量运行态诊断，不能直接作为轨旁业务上线合计。
 
 ## PVID 与历史数据边界
 

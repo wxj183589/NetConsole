@@ -40,6 +40,9 @@ export interface TracksideApBusinessPage {
   fit_ap_current_conflict_count?: number; fit_ap_planning_missing_count?: number
   fit_ap_ambiguous_online_count?: number; fit_ap_station_master_missing_count?: number
   fit_ap_unknown_association_count?: number
+  fit_ap_switch_not_found_count?: number; fit_ap_switch_identity_ambiguous_count?: number
+  fit_ap_switch_data_incomplete_count?: number; fit_ap_plan_not_found_count?: number
+  fit_ap_plan_station_missing_count?: number; fit_ap_plan_station_invalid_count?: number
   runtime_snapshot?: Record<string, unknown>
   query_ms: number; build_ms: number; empty_reason: string
   identity_shadow: Record<string, unknown>
@@ -143,6 +146,13 @@ export interface TracksideApUnmatchedOnline {
   runtime_station_text: string; reason: string; suggested_action: string
   association_status?: string; reason_code?: string; fit_ap_collected_at?: string
   lldp_collected_at?: string; lldp_candidate_count?: number
+  ap_mac_raw?: string; ap_mac_normalized?: string; planning_record_id?: string
+  planning_station_name?: string; plan_station_id?: string; planning_match_method?: string
+  lldp_exists?: boolean; lldp_local_interface?: string; lldp_remote_device_name?: string
+  lldp_system_name?: string; lldp_management_ip?: string; lldp_chassis_id?: string
+  switch_candidate_count?: number; matched_switch_device_id?: string
+  switch_match_method?: string; failure_stage?: string; source_revisions?: Record<string, string>
+  snapshot_revision?: string; snapshot_created_at?: string
 }
 
 export interface TracksideApOnlineStatus {
@@ -163,6 +173,9 @@ export interface TracksideApOnlineStatus {
   fit_ap_collected_at?: string; switch_lldp_collected_at?: string
   fit_ap_ambiguous_online_count?: number; fit_ap_station_master_missing_count?: number
   fit_ap_unknown_association_count?: number
+  fit_ap_switch_not_found_count?: number; fit_ap_switch_identity_ambiguous_count?: number
+  fit_ap_switch_data_incomplete_count?: number; fit_ap_plan_not_found_count?: number
+  fit_ap_plan_station_missing_count?: number; fit_ap_plan_station_invalid_count?: number
 }
 
 export interface TracksideApScopeExcludedPage {

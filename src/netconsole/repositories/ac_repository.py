@@ -1141,9 +1141,44 @@ class AcRepository:
                 """
                 SELECT id, ac_device_uuid, ap_uuid, apid, ap_name, ap_mac,
                        state, state_raw, state_display, site, collected_at,
+                       lldp_neighbor_name, lldp_neighbor_mac,
+                       lldp_neighbor_mac_normalized, lldp_neighbor_interface,
+                       lldp_local_interface, lldp_collected_at,
+                       lldp_match_status,
                        updated_at
                 FROM ac_fit_ap_resources
                 ORDER BY id
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_trackside_switch_identity_rows(
+        self,
+    ) -> list[dict[str, object | None]]:
+        """Return current-site switch identities for deterministic LLDP matching."""
+
+        with self.database.connect_readonly() as conn:
+            rows = conn.execute(
+                """
+                SELECT d.device_uuid,
+                       d.name,
+                       d.system_name,
+                       d.primary_address,
+                       d.normalized_primary_address,
+                       d.mac_address,
+                       d.station_id,
+                       d.station,
+                       d.device_type,
+                       d.device_vendor,
+                       d.work_scope_status,
+                       f.sysname AS fact_sysname,
+                       f.mac_address AS fact_mac_address,
+                       i.mac_address AS interface_mac_address
+                FROM devices d
+                LEFT JOIN device_facts f ON f.device_uuid = d.device_uuid
+                LEFT JOIN device_interfaces i ON i.device_uuid = d.device_uuid
+                WHERE LOWER(TRIM(d.device_type)) IN ('sw', 'switch', '交换机')
+                ORDER BY d.device_uuid, i.interface_name
                 """
             ).fetchall()
         return [dict(row) for row in rows]
@@ -1231,6 +1266,32 @@ class AcRepository:
                   AND TRIM(g.name) = '车站'
                 """
             ).fetchone()
+            switch_identities = conn.execute(
+                """
+                SELECT COUNT(*) AS row_count,
+                       COALESCE(MAX(d.updated_at), '') AS updated_at
+                FROM devices d
+                WHERE LOWER(TRIM(d.device_type)) IN ('sw', 'switch', '交换机')
+                """
+            ).fetchone()
+            switch_facts = conn.execute(
+                """
+                SELECT COUNT(*) AS row_count,
+                       COALESCE(MAX(f.updated_at), '') AS updated_at
+                FROM device_facts f
+                JOIN devices d ON d.device_uuid = f.device_uuid
+                WHERE LOWER(TRIM(d.device_type)) IN ('sw', 'switch', '交换机')
+                """
+            ).fetchone()
+            switch_interfaces = conn.execute(
+                """
+                SELECT COUNT(*) AS row_count,
+                       COALESCE(MAX(i.updated_at), '') AS updated_at
+                FROM device_interfaces i
+                JOIN devices d ON d.device_uuid = i.device_uuid
+                WHERE LOWER(TRIM(d.device_type)) IN ('sw', 'switch', '交换机')
+                """
+            ).fetchone()
             lldp = conn.execute(
                 """
                 SELECT COUNT(*) AS row_count, COALESCE(MAX(l.updated_at), '') AS updated_at
@@ -1267,6 +1328,20 @@ class AcRepository:
             "fit_ap_updated_at": str(resources["updated_at"] or ""),
             "station_switch_count": int(station_switches["row_count"] or 0),
             "station_switch_updated_at": str(station_switches["updated_at"] or ""),
+            "switch_identity_count": int(switch_identities["row_count"] or 0),
+            "switch_identity_updated_at": str(
+                switch_identities["updated_at"] or ""
+            ),
+            "station_switch_fact_count": int(switch_facts["row_count"] or 0),
+            "station_switch_fact_updated_at": str(
+                switch_facts["updated_at"] or ""
+            ),
+            "station_switch_interface_count": int(
+                switch_interfaces["row_count"] or 0
+            ),
+            "station_switch_interface_updated_at": str(
+                switch_interfaces["updated_at"] or ""
+            ),
             "station_switch_lldp_count": int(lldp["row_count"] or 0),
             "station_switch_lldp_updated_at": str(lldp["updated_at"] or ""),
             "identity_revision": int(identity["revision"] or 0) if identity else 0,
