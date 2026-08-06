@@ -647,6 +647,12 @@
       "client_package": true,
       "internal_only": false
     },
+    "web.rail_trackside_ap_business_wps_sync": {
+      "visible": false,
+      "enabled": false,
+      "client_package": false,
+      "internal_only": false
+    },
     "rail.zte_trackside_switch_adapter": {
       "visible": true,
       "enabled": true,

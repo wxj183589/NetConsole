@@ -8,6 +8,7 @@
 - [轨旁 AP 逐站规划](AP_MANAGEMENT_VLAN_GROUPS.md)
 - [轨旁 AP 主数据与关联模型](rail-transit/TRACKSIDE_AP_DOMAIN_MODEL.md)
 - [轨旁 AP 业务只读快照](TRACKSIDE_AP_BUSINESS_SNAPSHOT.md)
+- [轨旁 AP 业务 WPS 双目标同步](WPS_DUAL_TRACKSIDE_AP_SYNC.md)
 - [车内通信检测：点表与固定拓扑](rail-transit/train-communication/README.md)
 - [检测点表模型](rail-transit/train-communication/POINT_TABLE.md)
 - [检测任务流程](rail-transit/train-communication/CHECK_WORKFLOW.md)

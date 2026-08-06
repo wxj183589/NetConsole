@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, reactive, ref, watch } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { ApiRequestError } from '../../api/client'
 
 import {
   getTracksideApBusinessExportProposal,
+  listTracksideWpsTargets,
   listTracksideApBusiness,
   startTracksideApBusinessExport,
   startTracksideApUpdate,
+  syncTracksideWpsTargets,
 } from '../../api/tracksideApBusiness'
 import NcDataTable from '../../components/table/NcDataTable.vue'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
@@ -25,6 +27,8 @@ import type {
   TracksideApUnmatchedOnline,
   TracksideApTask,
   TracksideApUpdateRequest,
+  WpsTracksideTarget,
+  WpsTracksideTargetCode,
 } from '../../types/tracksideApBusiness'
 import { useTaskStore } from '../../stores/tasks'
 import type { TaskItem } from '../../types/task'
@@ -56,9 +60,11 @@ const activeStates = new Set(activeTaskStatuses)
 const businessTaskTypes = new Set([
   'trackside_ap_optical_update',
   TRACKSIDE_AP_BUSINESS_EXPORT_TASK_TYPE,
+  'trackside_ap_wps_sync',
 ])
 const businessProjectionTaskTypes = new Set([
   'trackside_ap_optical_update',
+  'trackside_ap_wps_sync',
   'device_detail_collect',
   'device_optical_refresh',
   'ac_fit_ap_resources_refresh',
@@ -70,6 +76,8 @@ const businessProjectionTaskTypes = new Set([
 const initialLoading = ref(false)
 const refreshing = ref(false)
 const taskSubmitting = ref(false)
+const wpsSyncing = ref(false)
+const wpsTargets = ref<WpsTracksideTarget[]>([])
 const pendingScopeKey = ref('')
 const loadError = ref('')
 const actionError = ref('')
@@ -90,6 +98,10 @@ const deviceTerminalFeatureEnabled = computed(() => isFeatureEnabled('web.device
 const fitApTerminalFeatureEnabled = computed(() => (
   isFeatureEnabled('web.ac_fit_ap_external_terminal')
   && isFeatureEnabled('desktop.native_bridge')
+))
+const wpsSyncFeatureEnabled = computed(() => isFeatureEnabled('web.rail_trackside_ap_business_wps_sync'))
+const wpsTaskRunning = computed(() => taskStore.tasks.some(
+  (item) => item.type === 'trackside_ap_wps_sync' && activeStates.has(item.status),
 ))
 let loadGeneration = 0
 let pageMounted = false
@@ -539,6 +551,55 @@ async function exportBusiness(): Promise<void> {
   }
 }
 
+async function loadWpsTargets(): Promise<void> {
+  if (!wpsSyncFeatureEnabled.value) return
+  try {
+    wpsTargets.value = await listTracksideWpsTargets()
+  } catch {
+    wpsTargets.value = []
+  }
+}
+
+async function syncWps(command: 'all' | WpsTracksideTargetCode): Promise<void> {
+  if (wpsSyncing.value || wpsTaskRunning.value || !wpsSyncFeatureEnabled.value || !page.value?.business_revision) return
+  const enabledTargets = wpsTargets.value.filter((target) => target.enabled)
+  const targetCodes = command === 'all'
+    ? enabledTargets.map((target) => target.target_code)
+    : [command]
+  if (!targetCodes.length) {
+    actionError.value = '没有已启用的 WPS 同步目标'
+    return
+  }
+  const labels = targetCodes.map((code) => wpsTargets.value.find((target) => target.target_code === code)?.target_name || code)
+  try {
+    await ElMessageBox.confirm(
+      `当前局点：${page.value.site_id}\n业务：轨旁 AP 业务\nrevision：${page.value.business_revision}\n同步目标：${labels.join('、')}\nAP 上线情况概览将新增历史批次，旧历史不会删除。`,
+      '确认同步云文档',
+      { type: 'warning', confirmButtonText: '开始同步', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  wpsSyncing.value = true
+  actionError.value = ''
+  try {
+    const task = await syncTracksideWpsTargets({ target_codes: targetCodes, expected_revision: page.value.business_revision })
+    currentTaskId.value = task.task_id
+    await taskStore.refresh()
+    ElMessage.info('WPS 同步任务已提交，可在任务中心查看两个目标的独立结果')
+    await loadWpsTargets()
+  } catch (reason) {
+    actionError.value = failure(reason, 'WPS 云文档同步失败')
+  } finally {
+    wpsSyncing.value = false
+  }
+}
+
+function openWpsTarget(command: WpsTracksideTargetCode): void {
+  const target = wpsTargets.value.find((item) => item.target_code === command)
+  if (target?.document_open_url) window.open(target.document_open_url, '_blank', 'noopener,noreferrer')
+}
+
 function exportTimestamp(now = new Date()): string {
   const part = (value: number) => String(value).padStart(2, '0')
   return `${now.getFullYear()}${part(now.getMonth() + 1)}${part(now.getDate())}_${part(now.getHours())}${part(now.getMinutes())}${part(now.getSeconds())}`
@@ -555,6 +616,7 @@ watch(
     ))
     if (!newlyCompleted.length) return
     for (const item of newlyCompleted) terminalTaskRefreshes.add(item.id)
+    if (newlyCompleted.some((item) => item.type === 'trackside_ap_wps_sync')) void loadWpsTargets()
     if (pageActive.value) void loadRows(false, true)
     else markPageDirty('轨旁 AP 业务相关任务已完成')
   },
@@ -598,6 +660,7 @@ onMounted(() => {
   window.addEventListener(BEFORE_SITE_SWITCH_EVENT, handleBeforeSiteSwitch)
   void Promise.all([
     loadRows(),
+    loadWpsTargets(),
     taskStore.refresh().then(() => {
       currentTaskId.value = taskStore.tasks.find(
         (item) => businessTaskTypes.has(item.type) && activeStates.has(item.status),
@@ -635,6 +698,13 @@ onBeforeUnmount(() => {
           :disabled="updateTaskRunning || exportTaskRunning || !isFeatureEnabled('web.rail_trackside_ap_business_export') || !isFeatureEnabled('web.rail_task_control')"
           @click="exportBusiness"
         >导出表格</el-button>
+        <template v-if="wpsSyncFeatureEnabled">
+          <el-button type="success" :loading="wpsSyncing" :disabled="wpsSyncing || wpsTaskRunning || updateTaskRunning" @click="syncWps('all')">同步全部目标</el-button>
+          <el-button link type="success" :disabled="wpsSyncing || wpsTaskRunning || updateTaskRunning" @click="syncWps('wps_standard_spreadsheet')">同步普通表格</el-button>
+          <el-button link type="success" :disabled="wpsSyncing || wpsTaskRunning || updateTaskRunning" @click="syncWps('wps_smart_sheet')">同步智能表格</el-button>
+          <el-button link type="info" :disabled="wpsSyncing || wpsTaskRunning" @click="openWpsTarget('wps_standard_spreadsheet')">打开普通表格</el-button>
+          <el-button link type="info" :disabled="wpsSyncing || wpsTaskRunning" @click="openWpsTarget('wps_smart_sheet')">打开智能表格</el-button>
+        </template>
       </div>
     </header>
     <el-alert v-if="loadError" :title="loadError" type="warning" show-icon :closable="true" @close="loadError = ''" />

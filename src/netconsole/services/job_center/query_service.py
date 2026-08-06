@@ -92,6 +92,18 @@ TRACKSIDE_AP_RESULT_DETAIL_KEYS = (
     "snapshot_retry_count",
     "export_render_ms",
 )
+WPS_SYNC_RESULT_DETAIL_KEYS = (
+    "status",
+    "batch_id",
+    "site_id",
+    "business_key",
+    "snapshot_revision",
+    "snapshot_sha256",
+    "snapshot_generated_at",
+    "payload_bytes",
+    "sheet_count",
+    "targets",
+)
 CAR_NETWORK_POINT_TABLE_GENERATE_RESULT_DETAIL_KEYS = (
     "nodes_count",
     "generated_nodes_count",
@@ -817,6 +829,10 @@ class JobCenterQueryService:
         }:
             details.update(
                 {key: result[key] for key in TRACKSIDE_AP_RESULT_DETAIL_KEYS if key in result}
+            )
+        elif task_type == "trackside_ap_wps_sync":
+            details.update(
+                {key: result[key] for key in WPS_SYNC_RESULT_DETAIL_KEYS if key in result}
             )
         elif task_type == "car_network_generate_point_table":
             details.update(

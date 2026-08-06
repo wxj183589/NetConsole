@@ -5,11 +5,13 @@ import type {
   TracksideApBusinessExportProposal, TracksideApBusinessExportRequest, TracksideApOnlineStatus, TracksideApPlan, TracksideApPlanDraft, TracksideApPlanPreview, TracksideApPlanRow,
   TracksideApScopeExcludedPage, TracksideApUnmatchedOnlinePage,
   TracksideApTask, TracksideApUpdateRequest, TracksideSwitchAdapterCatalog,
-  TracksideSwitchSampleRequest,
+  TracksideSwitchSampleRequest, WpsTracksideTarget,
+  WpsTracksideTargetCode,
 } from '../types/tracksideApBusiness'
 import type { TracksideAp } from '../types/railTransitBaseData'
 
 const root = '/api/rail-transit/trackside-ap-business'
+const wpsRoot = `${root}/wps`
 const invalidArtifactNamePattern = /[\u0000-\u001f\u007f<>:"/\\|?*]/
 const tracksideBusinessArtifactNamePattern = /^.+_轨旁AP业务_\d{8}_\d{6}\.xlsx$/
 const switchSampleArtifactNamePattern = /^[a-z0-9._-]+-adapter-sample-[a-z0-9._-]+-\d{8}_\d{6}\.zip$/i
@@ -51,6 +53,29 @@ export function startTracksideApBusinessExport(
           body: JSON.stringify(payload),
         }
       : {}),
+  })
+}
+
+export function listTracksideWpsTargets(): Promise<WpsTracksideTarget[]> {
+  return apiRequest(`${wpsRoot}/targets`)
+}
+
+export function testTracksideWpsTarget(targetCode: WpsTracksideTargetCode): Promise<{
+  target_code: WpsTracksideTargetCode
+  result: Record<string, unknown>
+}> {
+  return apiRequest(`${wpsRoot}/targets/${encodeURIComponent(targetCode)}/connection-test`, {
+    method: 'POST',
+  })
+}
+
+export function syncTracksideWpsTargets(payload: {
+  target_codes?: WpsTracksideTargetCode[]
+  expected_revision?: string
+} = {}): Promise<TracksideApTask> {
+  return apiRequest(`${wpsRoot}/sync`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
   })
 }
 

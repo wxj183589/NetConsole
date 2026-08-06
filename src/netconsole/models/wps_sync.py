@@ -1,0 +1,123 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from enum import StrEnum
+from typing import Any
+
+
+WPS_SYNC_PROTOCOL_VERSION = 2
+TRACKSIDE_AP_WPS_BUSINESS_KEY = "rail_transit.trackside_ap_business"
+
+
+class WpsTargetType(StrEnum):
+    STANDARD_SPREADSHEET = "WPS_STANDARD_SPREADSHEET"
+    SMART_SHEET = "WPS_SMART_SHEET"
+
+
+class WpsSyncMode(StrEnum):
+    FULL_REPLACE = "FULL_REPLACE"
+    APPEND_SNAPSHOT = "APPEND_SNAPSHOT"
+    DISABLED = "DISABLED"
+
+
+@dataclass(frozen=True)
+class WpsSyncTarget:
+    target_id: str
+    site_id: str
+    business_key: str
+    target_code: str
+    target_type: WpsTargetType
+    credential_id: str
+    target_name: str
+    document_open_url: str
+    webhook_url: str
+    expected_document_id: str
+    enabled: bool = True
+    protocol_version: int = WPS_SYNC_PROTOCOL_VERSION
+    timeout_seconds: int = 30
+    token_configured: bool = False
+    token_suffix: str = ""
+    last_test_at: str = ""
+    last_test_status: str = ""
+    last_test_message: str = ""
+    last_sync_at: str = ""
+    last_sync_status: str = ""
+    last_sync_revision: str = ""
+
+    def public_dict(self) -> dict[str, Any]:
+        return {
+            "target_id": self.target_id,
+            "site_id": self.site_id,
+            "business_key": self.business_key,
+            "target_code": self.target_code,
+            "target_type": self.target_type.value,
+            "target_name": self.target_name,
+            "document_open_url": self.document_open_url,
+            "expected_document_id": self.expected_document_id,
+            "enabled": self.enabled,
+            "protocol_version": self.protocol_version,
+            "timeout_seconds": self.timeout_seconds,
+            "token_configured": self.token_configured,
+            "token_suffix": self.token_suffix,
+            "last_test_at": self.last_test_at,
+            "last_test_status": self.last_test_status,
+            "last_test_message": self.last_test_message,
+            "last_sync_at": self.last_sync_at,
+            "last_sync_status": self.last_sync_status,
+            "last_sync_revision": self.last_sync_revision,
+        }
+
+
+@dataclass(frozen=True)
+class WorkbookSheetDTO:
+    logical_sheet_key: str
+    sheet_name: str
+    sync_mode: WpsSyncMode
+    cells: list[list[Any]]
+    row_count: int
+    column_count: int
+    merges: list[str] = field(default_factory=list)
+    row_heights: dict[str, float] = field(default_factory=dict)
+    column_widths: dict[str, float] = field(default_factory=dict)
+    number_formats: dict[str, str] = field(default_factory=dict)
+    fills: dict[str, str] = field(default_factory=dict)
+    fonts: dict[str, dict[str, Any]] = field(default_factory=dict)
+    alignments: dict[str, dict[str, Any]] = field(default_factory=dict)
+    freeze_panes: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "logical_sheet_key": self.logical_sheet_key,
+            "sheet_name": self.sheet_name,
+            "sync_mode": self.sync_mode.value,
+            "cells": self.cells,
+            "row_count": self.row_count,
+            "column_count": self.column_count,
+            "merges": self.merges,
+            "row_heights": self.row_heights,
+            "column_widths": self.column_widths,
+            "number_formats": self.number_formats,
+            "fills": self.fills,
+            "fonts": self.fonts,
+            "alignments": self.alignments,
+            "freeze_panes": self.freeze_panes,
+        }
+
+
+@dataclass(frozen=True)
+class WorkbookDTO:
+    sheets: tuple[WorkbookSheetDTO, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"sheets": [sheet.to_dict() for sheet in self.sheets]}
+
+
+__all__ = [
+    "TRACKSIDE_AP_WPS_BUSINESS_KEY",
+    "WPS_SYNC_PROTOCOL_VERSION",
+    "WorkbookDTO",
+    "WorkbookSheetDTO",
+    "WpsSyncMode",
+    "WpsSyncTarget",
+    "WpsTargetType",
+]

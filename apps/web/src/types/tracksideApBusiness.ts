@@ -249,3 +249,48 @@ export interface TracksideApPlanPreview {
   rows: TracksideApPlanPreviewRow[]; result_rows: TracksideApPlanRow[]; result_plan: TracksideApPlan | null
   legacy_schema: boolean; message: string
 }
+
+export type WpsTracksideTargetCode = 'wps_standard_spreadsheet' | 'wps_smart_sheet'
+
+export interface WpsTracksideTarget {
+  target_id: string
+  site_id: string
+  business_key: string
+  target_code: WpsTracksideTargetCode
+  target_type: 'WPS_STANDARD_SPREADSHEET' | 'WPS_SMART_SHEET'
+  target_name: string
+  document_open_url: string
+  expected_document_id: string
+  enabled: boolean
+  protocol_version: number
+  timeout_seconds: number
+  token_configured: boolean
+  token_suffix: string
+  last_test_at: string
+  last_test_status: string
+  last_test_message: string
+  last_sync_at: string
+  last_sync_status: string
+  last_sync_revision: string
+}
+
+export interface WpsTracksideSyncResult {
+  batch_id: string
+  site_id: string
+  business_key: string
+  snapshot_revision: string
+  snapshot_sha256: string
+  snapshot_generated_at: string
+  payload_bytes: number
+  sheet_count: number
+  status: 'SUCCESS' | 'PARTIAL_SUCCESS' | 'FAILED'
+  targets: Array<{
+    target_code: WpsTracksideTargetCode
+    target_name: string
+    target_type: string
+    target_batch_id: string
+    status: 'SUCCESS' | 'FAILED'
+    error_code?: string
+    message?: string
+  }>
+}

@@ -88,6 +88,7 @@ from netconsole.services.rail_transit.train_communication_query_service import T
 from netconsole.services.rail_transit.trackside_ap_business_query_service import TracksideApBusinessQueryService
 from netconsole.services.rail_transit.vehicle_mr_online_query_service import VehicleMrOnlineQueryService
 from netconsole.services.rail_transit.wireless_dashboard_query_service import WirelessDashboardQueryService
+from netconsole.services.wps_trackside_ap_sync import TracksideApWpsSyncService
 from netconsole.services.traffic.application_service import TrafficTestApplicationService
 from netconsole.services.traffic.errors import TrafficErrorCode, TrafficTestError
 from netconsole.services.traffic.web_application_service import TrafficWebApplicationService
@@ -296,6 +297,7 @@ def create_app(
         desktop_action_service=desktop_action_service,
     )
     trackside_ap_business_query_service = TracksideApBusinessQueryService(paths)
+    trackside_ap_wps_sync_service = TracksideApWpsSyncService(paths)
     device_detail_application_service = DeviceDetailApplicationService(
         DeviceDetailQueryService(
             device_detail_gateway,
@@ -566,6 +568,7 @@ def create_app(
         vehicle_online_query=app.state.vehicle_mr_online_query_service,
     )
     app.state.trackside_ap_business_query_service = trackside_ap_business_query_service
+    app.state.trackside_ap_wps_sync_service = trackside_ap_wps_sync_service
     app.state.mesh_analysis_query_service = MeshAnalysisQueryService(
         paths,
         base_query=app.state.rail_transit_base_data_query_service,
