@@ -8,7 +8,7 @@ from netconsole.models.api.common import ApiModel
 from netconsole.models.device import (
     ProjectPhase,
     WorkScopeStatus,
-    normalize_device_vendor,
+    normalize_device_vendor_text,
     normalize_project_phase,
     normalize_work_scope_status,
     validate_device_vendor_type,
@@ -28,6 +28,7 @@ DeviceBatchRefreshStatus = Literal[
     "ACCEPTED",
     "REUSED",
     "REJECTED",
+    "SKIPPED",
     "RUNNING",
     "COMPLETED",
     "PARTIAL_SUCCESS",
@@ -75,6 +76,8 @@ class DeviceListItemDTO(ApiModel):
     group_id: int | None = None
     group_name: str = "未分组"
     device_vendor: str = ""
+    vendor_key: str = "unknown"
+    collection_support: dict[str, object] = Field(default_factory=dict)
     device_type: str = ""
     project_phase: ProjectPhaseValue = "unspecified"
     work_scope_status: WorkScopeStatusValue = "included"
@@ -264,7 +267,7 @@ class DeviceWriteRequestDTO(ApiModel):
     @field_validator("device_vendor", mode="before")
     @classmethod
     def normalize_vendor(cls, value: object) -> str:
-        return normalize_device_vendor(value)
+        return normalize_device_vendor_text(value)
 
     @field_validator("project_phase", mode="before")
     @classmethod
@@ -383,7 +386,7 @@ class DeviceBatchRefreshItemDTO(ApiModel):
     device_type: str = ""
     profile_id: str = ""
     profile_version: int | None = None
-    submission_status: Literal["ACCEPTED", "REUSED", "REJECTED"]
+    submission_status: Literal["ACCEPTED", "REUSED", "REJECTED", "SKIPPED"]
     status: DeviceBatchRefreshStatus
     task_id: str = ""
     task_status: str = ""
@@ -396,6 +399,7 @@ class DeviceBatchRefreshItemDTO(ApiModel):
     finished_at: str = ""
     last_collected_at: str = ""
     error_message: str = ""
+    reason_code: str = ""
 
 
 class DeviceBatchRefreshSummaryDTO(ApiModel):
@@ -403,6 +407,7 @@ class DeviceBatchRefreshSummaryDTO(ApiModel):
     accepted: int = 0
     reused: int = 0
     rejected: int = 0
+    skipped: int = 0
     running: int = 0
     completed: int = 0
     partial_success: int = 0
@@ -468,6 +473,8 @@ class DeviceImportPreviewDTO(ApiModel):
     total_rows: int = 0
     valid_rows: int = 0
     invalid_rows: int = 0
+    collection_supported_rows: int = 0
+    collection_unsupported_rows: int = 0
     vendor_summary: dict[str, int] = Field(default_factory=dict)
     device_type_summary: dict[str, int] = Field(default_factory=dict)
     create_count: int = 0

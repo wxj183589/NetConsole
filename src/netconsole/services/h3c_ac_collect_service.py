@@ -306,7 +306,7 @@ def collect_h3c_fit_ap_resources(
     app_logger.log_info("REAL_DEVICE_COLLECT_STARTED", _detail(ac_device, collect_run_uuid))
     progress("正在连接AC...")
     command_results: list[CommandResult] = []
-    if str(ac_device.device_type or "").upper() != "AC" or str(ac_device.device_vendor or "").upper() != "H3C":
+    if str(ac_device.device_type or "").upper() != "AC" or ac_device.vendor_key != "h3c":
         message = "AC resource collection only supports H3C AC devices"
         fact_repository.update_collect_run_status(collect_run_uuid, "failed", error_message=message)
         app_logger.log_error("AC_COLLECT_FAILED", _detail(ac_device, collect_run_uuid, error=message))
@@ -631,7 +631,7 @@ def collect_h3c_fit_ap_verbose(
             "created_at": started_at,
         }
     )
-    if str(ac_device.device_type or "").upper() != "AC" or str(ac_device.device_vendor or "").upper() != "H3C":
+    if str(ac_device.device_type or "").upper() != "AC" or ac_device.vendor_key != "h3c":
         message = "AP verbose collection only supports H3C AC devices"
         fact_repository.update_collect_run_status(collect_run_uuid, "failed", error_message=message)
         return AcResourceCollectResult(False, str(ac_device.device_uuid), collect_run_uuid, str(raw_log_file), False, 0, None, False, False, None, message, command_results, detail_mode=mode)
@@ -775,7 +775,7 @@ def collect_h3c_ac_info(
         }
     )
     progress("正在连接AC...")
-    if str(ac_device.device_type or "").upper() != "AC" or str(ac_device.device_vendor or "").upper() != "H3C":
+    if str(ac_device.device_type or "").upper() != "AC" or ac_device.vendor_key != "h3c":
         message = "AC information collection only supports H3C AC devices"
         fact_repository.update_collect_run_status(collect_run_uuid, "failed", error_message=message)
         _write_raw_files(raw_log_file, commands_file, ac_device, collect_run_uuid, command_results, fatal_error=message)
@@ -869,7 +869,7 @@ def run_h3c_ac_action(
             "created_at": started_at,
         }
     )
-    if str(ac_device.device_type or "").upper() != "AC" or str(ac_device.device_vendor or "").upper() != "H3C":
+    if str(ac_device.device_type or "").upper() != "AC" or ac_device.vendor_key != "h3c":
         message = "AC action only supports H3C AC devices"
         fact_repository.update_collect_run_status(collect_run_uuid, "failed", error_message=message)
         _write_raw_files(raw_log_file, commands_file, ac_device, collect_run_uuid, command_results, fatal_error=message)

@@ -35,7 +35,7 @@ from netconsole.models.api.device_detail import (
     DeviceTransceiverPageDTO,
     DeviceTracksideApAssociationFactsDTO,
 )
-from netconsole.models.device import Device
+from netconsole.models.device import Device, normalize_device_vendor_key
 from netconsole.models.device_detail import (
     DeviceCapability,
     identify_device_platform,
@@ -129,7 +129,7 @@ class DeviceDetailQueryService:
         device = self._device(device_uuid)
         fact = self.gateway.get_fact(device_uuid)
         platform = identify_device_platform(
-            vendor=(fact or {}).get("vendor") or device.device_vendor,
+            vendor=device.vendor_key,
             device_type=device.device_type,
             software_version=(fact or {}).get("software_version"),
             collected_at=(fact or {}).get("collected_at"),
@@ -143,7 +143,7 @@ class DeviceDetailQueryService:
         config_available = (
             self.config_reader is not None
             and device.id is not None
-            and str(device.device_vendor or "").strip().casefold() == "h3c"
+            and device.vendor_key == "h3c"
         )
         capabilities = [
             self._capability(capability_id)
@@ -338,7 +338,7 @@ class DeviceDetailQueryService:
                 ),
             ),
             transceiver=(
-                self._transceiver(optical, device_vendor=device.device_vendor)
+                self._transceiver(optical, device_vendor=device.vendor_key)
                 if optical
                 else None
             ),
@@ -373,7 +373,7 @@ class DeviceDetailQueryService:
                 limit=_TRANSCEIVER_SCAN_LIMIT,
             )
             mapped = [
-                self._transceiver(row, device_vendor=device.device_vendor)
+                self._transceiver(row, device_vendor=device.vendor_key)
                 for row in rows
             ]
             selected = [item for item in mapped if item.severity == selected_severity]
@@ -389,7 +389,7 @@ class DeviceDetailQueryService:
                 offset=offset,
             )
             items = [
-                self._transceiver(row, device_vendor=device.device_vendor)
+                self._transceiver(row, device_vendor=device.vendor_key)
                 for row in rows
             ]
         return DeviceTransceiverPageDTO(
@@ -455,7 +455,7 @@ class DeviceDetailQueryService:
         if (
             self.config_reader is None
             or device.id is None
-            or str(device.device_vendor or "").strip().casefold() != "h3c"
+            or device.vendor_key != "h3c"
         ):
             return DeviceConfigSnapshotPageDTO(
                 page=current_page,
@@ -536,7 +536,7 @@ class DeviceDetailQueryService:
         device = self._device(device_uuid)
         current_page, size, offset = _pagination(page, page_size)
         platform = identify_device_platform(
-            vendor=device.device_vendor,
+            vendor=device.vendor_key,
             device_type=device.device_type,
             software_version=(self.gateway.get_fact(device_uuid) or {}).get(
                 "software_version"
@@ -1002,7 +1002,8 @@ class DeviceDetailQueryService:
             ),
             device_vendor=(
                 normalized_device_vendor
-                if str(normalized_device_vendor or "").casefold() == "zte"
+                if normalized_device_vendor
+                and normalize_device_vendor_key(normalized_device_vendor) == "zte"
                 else None
             ),
             device_reported_status=_text(row.get("device_reported_status")),
@@ -1457,7 +1458,8 @@ def _has_optical_module_evidence(row: dict[str, object | None]) -> bool:
 def _optical_severity(
     row: dict[str, object | None],
 ) -> tuple[str, str | None, str]:
-    if str(row.get("device_vendor") or "").strip().casefold() == "zte":
+    vendor = str(row.get("device_vendor") or "").strip()
+    if vendor and normalize_device_vendor_key(vendor) == "zte":
         result = compute_zte_optical_severity(row)
         return result.severity, result.reason, result.warning_source
 

@@ -996,7 +996,7 @@ _ADAPTER_REGISTRY: dict[str, type[TracksideSwitchAdapter]] = {
 
 
 def resolve_trackside_switch_adapter(device: Device) -> TracksideSwitchAdapter:
-    vendor = str(device.device_vendor or "").strip().casefold()
+    vendor = device.vendor_key
     try:
         adapter_type = _ADAPTER_REGISTRY[vendor]
     except KeyError as exc:

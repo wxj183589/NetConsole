@@ -16,7 +16,6 @@ from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.device_command_profile_service import (
     DEVICE_INVENTORY_OPERATION_ID,
-    DeviceCommandProfileNotFound,
 )
 from netconsole.services.device_detail_query_service import DeviceDetailQueryService
 from netconsole.services.device_operation_service import (
@@ -961,8 +960,9 @@ def test_device_fact_platform_conflict_fails_closed_for_capability_and_start(
     overview = query.overview(str(h3c.device_uuid))
     assert overview.platform_facts.platform == "vrp"
     assert overview.command_profile.executable is False
-    with pytest.raises(DeviceCommandProfileNotFound, match="Comware"):
-        operation.start(str(h3c.device_uuid), DEVICE_INVENTORY_OPERATION_ID)
+    skipped = operation.start(str(h3c.device_uuid), DEVICE_INVENTORY_OPERATION_ID)
+    assert skipped.status == "SKIPPED"
+    assert skipped.reason_code == "UNSUPPORTED_COMMAND_PROFILE"
 
 
 def test_severity_filter_reports_bounded_transceiver_scan(
@@ -1049,8 +1049,9 @@ def test_device_operation_is_idempotent_and_profile_fails_closed(tmp_path: Path)
     assert adapter.jobs[0].params["platform"] == "comware"
     assert adapter.jobs[0].params["idempotency_key"] == "request-0001"
 
-    with pytest.raises(DeviceCommandProfileNotFound, match="仅支持 H3C"):
-        operation.start(str(huawei.device_uuid), DEVICE_INVENTORY_OPERATION_ID)
+    skipped = operation.start(str(huawei.device_uuid), DEVICE_INVENTORY_OPERATION_ID)
+    assert skipped.status == "SKIPPED"
+    assert skipped.reason_code == "UNSUPPORTED_VENDOR"
 
 
 def test_wireless_controller_operation_keeps_identity_and_submits_profile(

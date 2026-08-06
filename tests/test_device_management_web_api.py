@@ -543,7 +543,8 @@ def test_real_edit_is_validated_and_persisted(
 
     assert response.status_code == 200
     assert response.json()["device"]["name"] == "MR-NEW"
-    assert rejected.status_code == 422
+    assert rejected.status_code == 200
+    assert rejected.json()["device"]["device_vendor"] == "unsupported"
     assert rejected_v3.status_code == 422
     assert rejected_rw.status_code == 422
     assert "snmp_v3_enabled" not in detail
@@ -3264,7 +3265,8 @@ def test_batch_refresh_accepts_supported_devices_independently_and_rejects_other
         "total": 4,
         "accepted": 2,
         "reused": 0,
-        "rejected": 2,
+        "rejected": 1,
+        "skipped": 1,
         "running": 2,
         "completed": 0,
         "partial_success": 0,
@@ -3277,7 +3279,8 @@ def test_batch_refresh_accepts_supported_devices_independently_and_rejects_other
         by_uuid[str(zte.device_uuid)]["profile_id"]
         == "zte.zxr10.switch.generic.device-inventory.v3"
     )
-    assert by_uuid[str(unsupported.device_uuid)]["status"] == "REJECTED"
+    assert by_uuid[str(unsupported.device_uuid)]["status"] == "SKIPPED"
+    assert by_uuid[str(unsupported.device_uuid)]["reason_code"] == "UNSUPPORTED_VENDOR"
     assert by_uuid["00000000-0000-0000-0000-000000000001"]["status"] == "REJECTED"
     assert len(adapter.jobs) == 2
 

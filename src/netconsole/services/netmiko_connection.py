@@ -424,7 +424,7 @@ def choose_connection_target(device: Device) -> ConnectionTarget | None:
 
 def connection_targets(device: Device) -> list[ConnectionTarget]:
     targets: list[ConnectionTarget] = []
-    vendor = str(device.device_vendor or "H3C").strip().casefold()
+    vendor = device.vendor_key
     ssh_device_type = (
         ZTE_NETMIKO_DEVICE_TYPE if vendor == "zte" else H3C_NETMIKO_DEVICE_TYPE
     )
