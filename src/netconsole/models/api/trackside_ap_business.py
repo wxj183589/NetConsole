@@ -9,6 +9,7 @@ from netconsole.models.api.rail_transit_base_data import TracksideApDTO
 
 
 class TracksideApBusinessRowDTO(ApiModel):
+    row_id: str = ""
     station_id: str = ""
     switch_station_id: str = ""
     ap_station_id: str = ""
@@ -185,6 +186,18 @@ class TracksideApBusinessPageDTO(ApiModel):
     unavailable_sources: list[TracksideApDataSourceIssueDTO] = Field(
         default_factory=list
     )
+    snapshot_id: str = ""
+    business_revision: str = ""
+    source_revisions: dict[str, str] = Field(default_factory=dict)
+    identity_revision: int = Field(default=0, ge=0)
+    created_at: str = ""
+    content_sha256: str = ""
+    row_count: int = Field(default=0, ge=0)
+    abnormal_count: int = Field(default=0, ge=0)
+    unresolved_count: int = Field(default=0, ge=0)
+    ambiguous_count: int = Field(default=0, ge=0)
+    snapshot_retry_count: int = Field(default=0, ge=0)
+    identity_distinct_count: int = Field(default=0, ge=0)
 
 
 class TracksideApUpdateRequestDTO(ApiModel):
@@ -204,6 +217,11 @@ class TracksideApBusinessExportProposalDTO(ApiModel):
 class TracksideApBusinessExportRequestDTO(ApiModel):
     generated_at: str = ""
     suggested_name: str = Field(default="", max_length=180)
+    expected_revision: str = Field(default="", max_length=64)
+    station: str = Field(default="", max_length=100)
+    query: str = Field(default="", max_length=200)
+    optical_anomaly_only: bool = False
+    selected_row_ids: list[str] = Field(default_factory=list, max_length=1000)
 
 
 class TracksideSwitchCommandProfileDTO(ApiModel):

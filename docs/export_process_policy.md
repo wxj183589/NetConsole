@@ -177,6 +177,13 @@ ExportProcessManager
 
 ## 七、数据库和文件规则
 
+轨旁 AP 业务导出是“提交时冻结业务快照”的正式实现。Backend 先校验页面
+`expected_revision`，再把基础业务行、工作簿输入、来源 revision 和 SHA-256 写入
+`staging/trackside_ap_business/<site>/<task>/snapshot.json`；Worker 只读快照并分别
+校验业务行和工作簿行 hash，不访问实时业务库。终态回调和重启恢复清理 staging，
+Task/Artifact 保留安全 revision、hash 和计数。详见
+[轨旁 AP 业务只读快照](TRACKSIDE_AP_BUSINESS_SNAPSHOT.md)。
+
 必须：
 
 - 导出进程自己打开 SQLite 连接。

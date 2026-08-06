@@ -2,7 +2,7 @@ import { apiRequest } from './client'
 import type { BackendDownloadRequest } from '../../../desktop_electron/src/shared/bridge'
 import type {
   ApManagementVlanPlanningMode, ApManagementVlanPreview, TracksideApBusinessPage,
-  TracksideApBusinessExportProposal, TracksideApOnlineStatus, TracksideApPlan, TracksideApPlanDraft, TracksideApPlanPreview, TracksideApPlanRow,
+  TracksideApBusinessExportProposal, TracksideApBusinessExportRequest, TracksideApOnlineStatus, TracksideApPlan, TracksideApPlanDraft, TracksideApPlanPreview, TracksideApPlanRow,
   TracksideApScopeExcludedPage, TracksideApUnmatchedOnlinePage,
   TracksideApTask, TracksideApUpdateRequest, TracksideSwitchAdapterCatalog,
   TracksideSwitchSampleRequest,
@@ -15,7 +15,7 @@ const tracksideBusinessArtifactNamePattern = /^.+_轨旁AP业务_\d{8}_\d{6}\.xl
 const switchSampleArtifactNamePattern = /^[a-z0-9._-]+-adapter-sample-[a-z0-9._-]+-\d{8}_\d{6}\.zip$/i
 
 export function listTracksideApBusiness(params: {
-  station?: string; query?: string; optical_anomaly_only?: boolean; page?: number; page_size?: number
+  station?: string; query?: string; optical_anomaly_only?: boolean; page?: number; page_size?: number; expected_revision?: string
 } = {}): Promise<TracksideApBusinessPage> {
   const query = new URLSearchParams()
   for (const [key, value] of Object.entries(params)) if (value !== undefined && value !== '') query.set(key, String(value))
@@ -31,16 +31,24 @@ export function getTracksideApBusinessExportProposal(): Promise<TracksideApBusin
 }
 
 export function startTracksideApBusinessExport(
-  proposal?: Pick<TracksideApBusinessExportProposal, 'generated_at' | 'suggested_name'>,
+  request?: TracksideApBusinessExportRequest,
 ): Promise<TracksideApTask> {
+  const payload = request
+    ? {
+        generated_at: request.generated_at,
+        suggested_name: request.suggested_name,
+        expected_revision: request.expected_revision,
+        station: request.station,
+        query: request.query,
+        optical_anomaly_only: request.optical_anomaly_only,
+        selected_row_ids: request.selected_row_ids,
+      }
+    : undefined
   return apiRequest(`${root}/export`, {
     method: 'POST',
-    ...(proposal
+    ...(payload
       ? {
-          body: JSON.stringify({
-            generated_at: proposal.generated_at,
-            suggested_name: proposal.suggested_name,
-          }),
+          body: JSON.stringify(payload),
         }
       : {}),
   })

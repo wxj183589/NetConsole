@@ -83,6 +83,38 @@ def test_zero_source_revision_is_a_valid_current_index(tmp_path: Path) -> None:
     assert match.unresolved_reason == "exact_alias_not_collected"
 
 
+def test_revision_state_reports_missing_ready_and_stale_without_exposing_rows(
+    tmp_path: Path,
+) -> None:
+    _database, repository, service = _fixture(tmp_path)
+
+    missing = service.revision_state()
+    assert missing.status == "missing"
+    assert missing.revision == 0
+    assert missing.indexed_source_revision == -1
+    assert missing.current_source_revision == 0
+    assert missing.revision_token == "0:-1:0:missing"
+
+    built = service.rebuild_index("empty_source")
+    ready = service.revision_state()
+    assert ready.status == "ready"
+    assert ready.revision == built.revision
+    assert ready.indexed_source_revision == 0
+    assert ready.current_source_revision == 0
+    assert ready.revision_token == f"{built.revision}:0:0:ready"
+    assert service.revision_state() == ready
+
+    _base_ap(repository, name="AP-A", mac="74ad-cb9d-3320")
+    stale = service.revision_state()
+    assert stale.status == "stale"
+    assert stale.revision == built.revision
+    assert stale.indexed_source_revision == 0
+    assert stale.current_source_revision > 0
+    assert stale.revision_token == (
+        f"{built.revision}:0:{stale.current_source_revision}:stale"
+    )
+
+
 def test_legacy_identity_state_schema_is_upgraded_before_new_columns_are_used(
     tmp_path: Path,
 ) -> None:

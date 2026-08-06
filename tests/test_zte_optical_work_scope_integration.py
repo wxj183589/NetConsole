@@ -548,7 +548,7 @@ def test_zte_connection_failure_does_not_present_old_realtime_state(
     assert row["switch_optical_data_status"] == "stale"
     assert row["switch_rx_power"] is None
     assert row["switch_tx_power"] is None
-    assert row["switch_optical_status"] == "not_collected"
+    assert row["switch_optical_status"] == "unknown"
     assert row["switch_interface_updated_at"] == "2026-08-02T10:00:00+08:00"
     assert row["switch_optical_updated_at"] == "2026-08-02T10:00:00+08:00"
 

@@ -302,11 +302,7 @@ class LocalProcessAdapter:
     def is_running(self, job_id: str) -> bool:
         with self._state_lock:
             state = self._states.get(str(job_id or ""))
-            return (
-                state is not None
-                and not state.done.is_set()
-                and not state.terminalizing
-            )
+            return state is not None and not state.done.is_set()
 
     def active_job_ids(self) -> tuple[str, ...]:
         with self._state_lock:

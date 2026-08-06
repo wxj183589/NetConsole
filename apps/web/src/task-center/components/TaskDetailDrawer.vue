@@ -576,6 +576,12 @@ function handleClosed(): void {
             <el-descriptions-item label="链路记录数">{{ store.selected.records_count ?? '--' }}</el-descriptions-item>
             <el-descriptions-item label="Parser">{{ store.selected.parser_version || '--' }}</el-descriptions-item>
           </template>
+          <template v-if="store.selected.type === 'web_export_trackside_ap_business'">
+            <el-descriptions-item label="数据快照时间">{{ formatTime(stringDetail('snapshot_created_at')) }}</el-descriptions-item>
+            <el-descriptions-item label="导出行数">{{ numberDetail('row_count') }}</el-descriptions-item>
+            <el-descriptions-item label="业务 Revision"><code>{{ stringDetail('business_revision') || '--' }}</code></el-descriptions-item>
+            <el-descriptions-item label="快照 ID"><code>{{ stringDetail('snapshot_id') || '--' }}</code></el-descriptions-item>
+          </template>
           <template v-if="selectedResident">
             <el-descriptions-item label="连接状态">{{ stringDetail('connection_state') }}</el-descriptions-item>
             <el-descriptions-item label="轮询间隔">{{ numberDetail('poll_interval_seconds') }} 秒</el-descriptions-item>
