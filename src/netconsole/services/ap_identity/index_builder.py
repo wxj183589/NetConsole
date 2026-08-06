@@ -19,6 +19,7 @@ from netconsole.services.ap_identity.normalizers import (
     normalize_ap_name,
     normalize_mac_key,
 )
+from netconsole.services.ap_topology import ApTopologyEvidence, resolve_ap_topology
 from netconsole.utils.mac_utils import (
     H3cMacDeriveError,
     MacAddressError,
@@ -71,6 +72,11 @@ class _SourceAp:
     updated_at: str
     radio_aliases: tuple[tuple[str, int | None, str], ...]
     raw: Mapping[str, object]
+    lldp_valid: bool = False
+    lldp_conflict: bool = False
+    lldp_switch_uuid: str = ""
+    lldp_station_id: str = ""
+    lldp_station: str = ""
 
 
 def build_ap_identity_index(
@@ -269,6 +275,11 @@ def _source_ap(row: Mapping[str, object], *, source: str) -> _SourceAp:
         updated_at=_first_text(row, "updated_at", "collected_at"),
         radio_aliases=_radio_aliases(row, ap_mac_key),
         raw=dict(row),
+        lldp_valid=bool(row.get("_lldp_valid")),
+        lldp_conflict=bool(row.get("_lldp_conflict")),
+        lldp_switch_uuid=str(row.get("_lldp_switch_uuid") or "").strip(),
+        lldp_station_id=str(row.get("_lldp_station_id") or "").strip(),
+        lldp_station=str(row.get("_lldp_station") or "").strip(),
     )
 
 
@@ -358,11 +369,32 @@ def _entity_projection(
     effective_name = ac.ap_name if ac and ac.ap_name else (
         base.ap_name if base and base.ap_name else legacy.ap_name if legacy else ""
     )
-    effective_station = ac.station if ac and ac.station else (
-        base.station if base and base.station else legacy.station if legacy else ""
-    )
-    effective_section = ac.section if ac and ac.section else (
-        base.section if base and base.section else legacy.section if legacy else ""
+    topology = resolve_ap_topology(
+        ApTopologyEvidence(
+            lldp_valid=bool(ac and ac.lldp_valid),
+            lldp_conflict=bool(ac and ac.lldp_conflict),
+            lldp_switch_uuid=ac.lldp_switch_uuid if ac else "",
+            lldp_station_id=ac.lldp_station_id if ac else "",
+            lldp_station=ac.lldp_station if ac else "",
+            fit_ap_station=ac.station if ac else "",
+            fit_ap_section=ac.section if ac else "",
+            fit_ap_location=ac.location if ac else "",
+            fit_ap_mileage=ac.mileage if ac else "",
+            fit_ap_direction=ac.direction if ac else "",
+            fit_ap_belong_type=ac.belong_type if ac else "",
+            base_station=base.station if base else "",
+            base_section=base.section if base else "",
+            base_location=base.location if base else "",
+            base_mileage=base.mileage if base else "",
+            base_direction=base.direction if base else "",
+            base_belong_type=base.belong_type if base else "",
+            legacy_station=legacy.station if legacy else "",
+            legacy_section=legacy.section if legacy else "",
+            legacy_location=legacy.location if legacy else "",
+            legacy_mileage=legacy.mileage if legacy else "",
+            legacy_direction=legacy.direction if legacy else "",
+            legacy_belong_type=legacy.belong_type if legacy else "",
+        )
     )
     warning_types: list[str] = []
     conflict_rows: list[ApIdentityConflictRecord] = []
@@ -402,15 +434,16 @@ def _entity_projection(
                 )
             )
 
-    warning = AC_BASE_CONFLICT_CODE if warning_types else ""
+    warning_values = ([AC_BASE_CONFLICT_CODE] if warning_types else []) + list(topology.warnings)
+    warning = ";".join(dict.fromkeys(warning_values))
     entity = ApIdentityEntityRecord(
         entity_id=entity_id,
         site_id=site_id,
         effective_ap_name=effective_name or effective.point_code,
         effective_ap_mac_key=effective_mac,
         effective_ap_mac_display=format_mac(effective_mac),
-        effective_station=effective_station,
-        effective_section=effective_section,
+        effective_station=topology.station.value,
+        effective_section=topology.section.value,
         effective_point_code=(
             ac.point_code
             if ac and ac.point_code
@@ -429,42 +462,16 @@ def _entity_projection(
             if legacy
             else ""
         ),
-        effective_location=(
-            ac.location
-            if ac and ac.location
-            else base.location
-            if base and base.location
-            else legacy.location
-            if legacy
-            else ""
-        ),
-        effective_mileage=(
-            ac.mileage
-            if ac and ac.mileage
-            else base.mileage
-            if base and base.mileage
-            else legacy.mileage
-            if legacy
-            else ""
-        ),
-        effective_direction=(
-            ac.direction
-            if ac and ac.direction
-            else base.direction
-            if base and base.direction
-            else legacy.direction
-            if legacy
-            else ""
-        ),
-        effective_belong_type=(
-            ac.belong_type
-            if ac and ac.belong_type != "unknown"
-            else base.belong_type
-            if base
-            else legacy.belong_type
-            if legacy
-            else "unknown"
-        ),
+        effective_location=topology.location.value,
+        effective_mileage=topology.mileage.value,
+        effective_direction=topology.direction.value,
+        effective_belong_type=topology.belong_type.value or "unknown",
+        station_source=topology.station.source,
+        section_source=topology.section.source,
+        location_source=topology.location.source,
+        mileage_source=topology.mileage.source,
+        direction_source=topology.direction.source,
+        belong_type_source=topology.belong_type.source,
         ac_ap_uuid=ac.ap_uuid if ac else "",
         ac_device_uuid=ac.ac_device_uuid if ac else "",
         ac_ap_name=ac.ap_name if ac else "",
@@ -481,8 +488,9 @@ def _entity_projection(
         effective_source=(
             "ac_runtime" if ac else "base_data" if base else "legacy_cache"
         ),
-        identity_status="conflict" if warning else "matched",
+        identity_status="conflict" if warning_types else "matched",
         data_quality_warning=warning,
+        topology_warning=";".join(topology.warnings),
     )
 
     aliases: list[ApIdentityMacAliasRecord] = []

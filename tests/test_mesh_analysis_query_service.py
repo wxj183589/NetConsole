@@ -5,6 +5,7 @@ import shutil
 import sqlite3
 from collections import defaultdict
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -14,6 +15,7 @@ from netconsole.services.rail_transit.mesh_analysis_query_service import (
     MeshAnalysisQueryService,
     MeshAnalysisTimeRangeError,
 )
+from netconsole.services.rail_transit.mesh_ap_location_service import MeshApLocationSnapshot
 from netconsole.repositories.mesh_mr_repository import MeshMrRepository
 from netconsole.services.job_center.job_registry import registered_task_types
 from netconsole.services.mesh_chart_payload import (
@@ -340,6 +342,52 @@ def test_real_peer_observation_stays_unresolved_across_mesh_dtos(tmp_path: Path)
     assert point.peer_ap_name is None
     assert point.peer_ap_mac is None
     assert point.identity_status == "unresolved"
+
+
+def test_mesh_analysis_consumers_reuse_base_radio_alias_snapshot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    paths, session_id, detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    snapshot = MeshApLocationSnapshot.from_base_data_items(
+        (
+            SimpleNamespace(
+                name="AP-BASE",
+                point_code="AP-BASE",
+                mac="0000-0000-0010",
+                station="杞︾珯A",
+                section="杞︾珯A-杞︾珯B",
+                mileage=SimpleNamespace(raw="K1+000"),
+                line_side="涓婅",
+                direction="涓婅",
+            ),
+        )
+    ).with_base_radio_aliases()
+    with sqlite3.connect(detail) as conn:
+        conn.execute(
+            "UPDATE mesh_links SET peer_ap_mac = '', peer_ap_name = '', peer_identity_status = 'unresolved' WHERE id = 1"
+        )
+        conn.execute(
+            "UPDATE active_points SET peer_ap_name = '', peer_site = '' WHERE link_id = 1"
+        )
+    service = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())  # type: ignore[arg-type]
+    monkeypatch.setattr(service, "_ap_map", lambda _site_id: snapshot)
+
+    link = service.list_link_details("demo", session_id, page_size=10).items[0]
+    rssi = service.get_rssi_statistics("demo", session_id, max_points=10).points[0]
+    busy = service.get_channel_busy("demo", session_id, max_points=10).items[0]
+    rate = service.get_rate_series("demo", session_id, max_points=10).items[0]
+    counter = service.get_counter_deltas("demo", session_id, max_points=10).items[0]
+    event = service.list_switch_events("demo", session_id).items[0]
+    stats = service.list_ap_statistics("demo", session_id).items[0]
+
+    for item in (link, rssi, busy, rate):
+        assert item.identity_status == "matched"
+        assert item.peer_ap_name == "AP-BASE"
+        assert item.peer_ap_mac.replace("-", "") == "000000000010"
+    assert counter.identity_status == "matched"
+    assert busy.station == "杞︾珯A"
+    assert event.from_identity_status == "matched"
+    assert event.from_ap_name
+    assert stats.match_status == "matched"
+    assert stats.peer_ap_name == "AP-BASE"
 
 
 def test_catalog_index_serves_summary_and_page_without_opening_detail_databases(

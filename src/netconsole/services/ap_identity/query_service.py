@@ -386,6 +386,9 @@ class ApIdentityQueryService:
             for row in self.repository.list_entity_rows(site_id=self.site_id)
         ]
 
+    def list_alias_entities(self) -> list[dict[str, object]]:
+        return self.repository.list_alias_entity_rows(site_id=self.site_id)
+
     def list_conflicts(self) -> list[dict[str, object]]:
         return self.repository.conflict_rows(site_id=self.site_id)
 
@@ -443,6 +446,13 @@ class ApIdentityQueryService:
             mileage=str(row.get("effective_mileage") or ""),
             direction=str(row.get("effective_direction") or ""),
             belong_type=str(row.get("effective_belong_type") or "unknown"),
+            station_source=str(row.get("station_source") or row.get("effective_source") or "unresolved"),
+            section_source=str(row.get("section_source") or row.get("effective_source") or "unresolved"),
+            location_source=str(row.get("location_source") or row.get("effective_source") or "unresolved"),
+            mileage_source=str(row.get("mileage_source") or row.get("effective_source") or "unresolved"),
+            direction_source=str(row.get("direction_source") or row.get("effective_source") or "unresolved"),
+            belong_type_source=str(row.get("belong_type_source") or row.get("effective_source") or "unresolved"),
+            topology_warning=str(row.get("topology_warning") or ""),
             matched_alias_type=str(row.get("alias_type") or ""),
             matched_source=str(row.get("source") or row.get("effective_source") or ""),
             match_rule=str(row.get("derivation_rule") or ""),
@@ -482,6 +492,9 @@ def _candidate_payload(
         "base_ap_mac": format_mac(row.get("base_ap_mac_key")),
         "base_record_id": str(row.get("base_record_id") or ""),
         "data_quality_warning": str(row.get("data_quality_warning") or ""),
+        "station_source": str(row.get("station_source") or "unresolved"),
+        "section_source": str(row.get("section_source") or "unresolved"),
+        "topology_warning": str(row.get("topology_warning") or ""),
     }
 
 
@@ -501,6 +514,13 @@ def _search_payload(match: ApIdentityMatch) -> dict[str, object]:
         "base_ap_mac": match.base_ap_mac,
         "base_record_id": match.base_record_id,
         "data_quality_warning": match.data_quality_warning,
+        "station_source": match.station_source,
+        "section_source": match.section_source,
+        "location_source": match.location_source,
+        "mileage_source": match.mileage_source,
+        "direction_source": match.direction_source,
+        "belong_type_source": match.belong_type_source,
+        "topology_warning": match.topology_warning,
     }
 
 
@@ -527,6 +547,9 @@ def _entity_search_payload(row: Mapping[str, object]) -> dict[str, object]:
         "base_record_id": str(row.get("base_record_id") or ""),
         "identity_status": str(row.get("identity_status") or "matched"),
         "data_quality_warning": str(row.get("data_quality_warning") or ""),
+        "station_source": str(row.get("station_source") or "unresolved"),
+        "section_source": str(row.get("section_source") or "unresolved"),
+        "topology_warning": str(row.get("topology_warning") or ""),
     }
 
 
