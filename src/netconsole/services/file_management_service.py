@@ -71,6 +71,7 @@ from netconsole.services.external_terminal import find_winscp_exe, launch_winscp
 from netconsole.services.mesh_import_service import MeshImportService
 from netconsole.services.mesh_catalog_index_service import MeshCatalogIndexService
 from netconsole.services.mesh_storage_service import MeshStorageService
+from netconsole.services.mesh_derived_data_maintenance_service import MeshDerivedDataMaintenanceService
 from netconsole.services.job_center.web_export_event_safety import redact_web_task_text
 from netconsole.services.netmiko_connection import sanitize_sensitive_text
 
@@ -1503,7 +1504,9 @@ class FileManagementApplicationService:
         elif snapshot.status is TaskState.CANCELLED:
             message = "文件下载已取消"
         elif result_dto is not None and result_dto.mesh_import_status == "rebuild_required":
-            message = "文件下载完成，MESH 派生数据库需要重建"
+            message = "文件下载完成，等待 MESH 分析数据库自动修复"
+        elif result_dto is not None and result_dto.mesh_import_status == "repair_failed":
+            message = "文件下载完成，MESH 分析数据库自动修复失败"
         elif result_dto is not None and result_dto.mesh_import_status == "failed":
             message = "文件下载完成，MESH 自动导入失败"
         total = max(0, int(snapshot.total or descriptor.get("remote_size") or 0))
@@ -1517,7 +1520,7 @@ class FileManagementApplicationService:
                 local_path = str(self._safe_download_target(site, target_relative_path, target_kind))
             except FileManagementError:
                 local_path = ""
-        mesh_import_failed = result_dto is not None and result_dto.mesh_import_status == "failed"
+        mesh_import_failed = result_dto is not None and result_dto.mesh_import_status in {"failed", "repair_failed"}
         retryable = (
             snapshot.status in {TaskState.FAILED, TaskState.CANCELLED} or mesh_import_failed
         ) and bool(descriptor)
@@ -1731,14 +1734,47 @@ class FileManagementApplicationService:
                 context.check_cancelled()
                 return False
 
-            result = MeshImportService(site, context.paths).import_files(
-                profile,
-                [path],
-                should_cancel=should_cancel,
-                source_type="device_download",
-                source_device_id=str(device.device_uuid or device.id or ""),
-                parse_task_id=context.job_id,
-            )
+            def import_downloaded_log():
+                return MeshImportService(site, context.paths).import_files(
+                    profile,
+                    [path],
+                    should_cancel=should_cancel,
+                    source_type="device_download",
+                    source_device_id=str(device.device_uuid or device.id or ""),
+                    parse_task_id=context.job_id,
+                )
+
+            try:
+                result = import_downloaded_log()
+            except MeshSchemaRebuildRequired:
+                context.progress(
+                    "mesh_auto_import_repair",
+                    0,
+                    1,
+                    "检测到 MESH 分析数据库需要升级，正在自动修复",
+                )
+                try:
+                    MeshDerivedDataMaintenanceService(context.paths).repair(
+                        site,
+                        progress=lambda stage, current, total, message: context.progress(
+                            stage,
+                            current,
+                            total,
+                            message,
+                        ),
+                        should_cancel=should_cancel,
+                    )
+                    result = import_downloaded_log()
+                except Exception as repair_exc:
+                    app_logger.log_error(
+                        "MESH_DEVICE_DOWNLOAD_REPAIR_FAILED",
+                        f"site={site} task={context.job_id} file={path.name} error={type(repair_exc).__name__}",
+                    )
+                    return {
+                        "mesh_import_status": "repair_failed",
+                        "mesh_import_error_code": "MESH_DERIVED_DATA_REPAIR_FAILED",
+                        "mesh_import_error": "MESH 分析数据库自动修复失败，原始日志已保留，可重试自动修复。",
+                    }
             source_results = list(getattr(result, "source_results", []) or [])
             catalog = MeshCatalogRepository(context.paths.mesh_catalog_path(site))
             fingerprint_rows = [
@@ -1777,13 +1813,6 @@ class FileManagementApplicationService:
                 "mesh_source_file_id": (
                     source_result.get("source_id") or source_result.get("existing_source_id")
                 ),
-            }
-        except MeshSchemaRebuildRequired:
-            context.progress("mesh_auto_import", 1, 1, "MESH 派生数据库需要重建，原始日志已保留")
-            return {
-                "mesh_import_status": "rebuild_required",
-                "mesh_import_error_code": "MESH_SCHEMA_REBUILD_REQUIRED",
-                "mesh_import_error": "MESH 派生数据库需要重建，版本不兼容；原始日志已下载，请在应用内启动 MESH 派生数据库重建任务。",
             }
         except Exception as exc:
             from netconsole.services.job_center.job_context import BackgroundTaskCancelled

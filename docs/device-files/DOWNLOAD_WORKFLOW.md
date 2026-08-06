@@ -20,9 +20,14 @@ status + limit/offset`，活动任务优先；下载 descriptor、hidden 和 wai
 
 ```text
 远端下载 -> .part -> 大小/SHA-256 校验 -> 原子改名
-  -> 登记 device_download 来源 -> 提交 MESH 导入 Job -> 刷新分析来源
+  -> 登记 device_download 来源 -> 提交统一 MESH 导入服务 -> 刷新分析来源
 ```
 
 登记或解析失败不回滚已完成下载。任务结果中的 `mesh_import_status` 单独记录 `pending`、`completed`、
-`duplicate`、`failed` 或 `rebuild_required`，页面可对已有 raw 文件执行“重新导入”，不会重新连接设备或再次下载。
+`duplicate`、`failed` 或 `repair_failed`；`repair_failed` 只表示 MESH 派生数据库维护未完成，不表示下载失败。
+页面可对已有 raw 文件执行“重新导入”或“重试自动修复”，不会重新连接设备或再次下载。
 相同正文按当前局点/Profile 的 SHA-256（并保留文件大小）去重；同名但内容不同的文件仍分别登记。
+
+当设备文件自动登记或解析发现当前局点的 MESH 派生数据库版本不兼容时，下载任务保持
+`COMPLETED`，系统直接复用内部派生数据维护服务完成备份、重建和校验，再继续原导入。用户不需要退出
+NetConsole，也不需要执行维护脚本；raw 文件始终保留。

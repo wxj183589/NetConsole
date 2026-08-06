@@ -10,7 +10,7 @@ from typing import Callable
 
 from netconsole.core.paths import PathResolver
 from netconsole.repositories.mesh_mr_repository import SCHEMA_VERSION
-from netconsole.services.mesh_import_service import MeshImportService
+from netconsole.services.mesh_import_service import MeshImportResult, MeshImportService
 from netconsole.services.mesh_storage_service import MeshStorageService
 
 
@@ -31,6 +31,8 @@ class MeshParsedRebuildService:
         *,
         progress: ProgressCallback | None = None,
         should_cancel: CancelCallback | None = None,
+        allow_empty_raw: bool = False,
+        raw_files: list[Path] | None = None,
     ) -> dict[str, object]:
         storage = MeshStorageService(site_id, self.paths)
         profile = storage.catalog.get_profile(mr_id)
@@ -44,10 +46,17 @@ class MeshParsedRebuildService:
         parsed_dir = self.paths.mesh_mr_parsed_dir(site_id, profile.safe_folder_name).resolve()
         for path, label in ((raw_root, "raw 目录"), (index_path, "索引数据库"), (parsed_dir, "parsed 目录")):
             self._require_inside(path, profile_root, label)
-        raw_files = self._raw_files(raw_root)
-        if not raw_files:
+        raw_files = self._raw_files(raw_root) if raw_files is None else [path.resolve() for path in raw_files]
+        for raw_file in raw_files:
+            self._require_inside(raw_file, raw_root, "MESH raw 文件")
+        if not raw_files and not allow_empty_raw:
             raise ValueError("没有可用于重建的原始 MESH 日志")
-        fingerprints = {path.relative_to(raw_root).as_posix(): self._sha256(path) for path in raw_files}
+        # 维护服务可能只恢复实际登记过的来源。未登记的历史副本和本次等待
+        # 导入的候选都不属于该次重建输入，也不能让它们的变化中断重建。
+        raw_snapshot = {
+            path.relative_to(raw_root).as_posix(): self._sha256(path)
+            for path in raw_files
+        }
         self._check_cancel(should_cancel)
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         archived_index = index_path.with_name(f"{index_path.name}.schema_archive_{stamp}")
@@ -80,15 +89,24 @@ class MeshParsedRebuildService:
                         f"正在重建 MESH 日志 {file_index}/{total}，已解析 {parsed} 行，跳过 {skipped} 行",
                     )
 
-            result = MeshImportService(site_id, self.paths).import_files(
-                profile,
-                raw_files,
-                should_cancel=should_cancel,
-                progress=import_progress,
-            )
+            if raw_files:
+                result = MeshImportService(site_id, self.paths).import_files(
+                    profile,
+                    raw_files,
+                    should_cancel=should_cancel,
+                    progress=import_progress,
+                )
+            else:
+                from netconsole.repositories.mesh_mr_repository import MeshMrRepository
+
+                MeshMrRepository(index_path)
+                result = MeshImportResult()
             self._check_cancel(should_cancel)
-            current = {path.relative_to(raw_root).as_posix(): self._sha256(path) for path in self._raw_files(raw_root)}
-            if current != fingerprints:
+            current = {
+                path.relative_to(raw_root).as_posix(): self._sha256(path)
+                for path in raw_files
+            }
+            if current != raw_snapshot:
                 raise RuntimeError("重建期间原始 MESH 日志发生变化")
             if self._schema_version(index_path) != SCHEMA_VERSION:
                 raise RuntimeError("MESH 派生数据库版本校验失败")
@@ -102,6 +120,8 @@ class MeshParsedRebuildService:
                 "parsed_record_count": result.parsed_record_count,
                 "issue_count": len(result.issues),
                 "archive_created": moved_index or moved_parsed,
+                "archived_index_path": str(archived_index) if moved_index else "",
+                "archived_parsed_path": str(archived_parsed) if moved_parsed else "",
             }
         except Exception:
             gc.collect()
