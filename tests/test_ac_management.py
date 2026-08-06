@@ -100,6 +100,7 @@ from netconsole.services.neighbor_matcher import (
 )
 from netconsole.services.trackside_ap_business import (
     AP_OPTICAL_TREATMENT_RECORD_COLUMNS,
+    CURRENT_OPTICAL_ABNORMAL_COLUMNS,
     NEW_ONLINE_AP_OVERVIEW_COLUMNS,
     TRACKSIDE_AP_BUSINESS_COLUMNS,
     TRACKSIDE_AP_BUSINESS_EXPORT_COLUMNS,
@@ -3290,16 +3291,9 @@ def test_trackside_ap_business_export_adds_current_optical_abnormal_sheet(tmp_pa
     assert workbook.sheetnames[:2] == ["轨旁AP业务", "当前异常光衰"]
     source_sheet = workbook["轨旁AP业务"]
     abnormal_sheet = workbook["当前异常光衰"]
-    source_headers = [cell.value for cell in source_sheet[1]]
     abnormal_headers = [cell.value for cell in abnormal_sheet[1]]
     assert abnormal_headers == [
-        *source_headers,
-        "AP 在线状态",
-        "光衰判定",
-        "异常原因",
-        "异常侧",
-        "异常等级",
-        "异常说明",
+        i18n.t(key) for key, _field in CURRENT_OPTICAL_ABNORMAL_COLUMNS
     ]
     assert [
         abnormal_sheet.cell(row=row, column=3).value

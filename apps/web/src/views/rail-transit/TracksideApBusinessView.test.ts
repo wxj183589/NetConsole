@@ -693,6 +693,50 @@ describe('TracksideApBusinessView mounted behavior', () => {
     wrapper.unmount()
   })
 
+  it('separates switch and planning failures and exposes structured diagnostics', async () => {
+    api.listTracksideApBusiness.mockResolvedValueOnce({
+      ...page(),
+      fit_ap_unmatched_online_count: 5,
+      fit_ap_switch_not_found_count: 2,
+      fit_ap_switch_identity_ambiguous_count: 1,
+      fit_ap_plan_not_found_count: 1,
+      fit_ap_plan_station_invalid_count: 1,
+      unmatched_online_items: [{
+        source: 'fit_ap_online',
+        item_id: 'ap-unmatched',
+        ap_name: 'AP-UNMATCHED',
+        mac: '0011-2233-4455',
+        ac_status: 'R',
+        runtime_station_text: '',
+        association_status: 'switch_not_found',
+        reason_code: 'SWITCH_NOT_FOUND',
+        reason: '上联交换机未匹配设备管理记录',
+        suggested_action: '核对交换机身份',
+        lldp_exists: true,
+        lldp_system_name: 'HZDT-SC',
+        switch_candidate_count: 0,
+        failure_stage: 'switch_identity',
+      }],
+    })
+    const wrapper = await mountView()
+
+    expect(wrapper.text()).toContain('交换机未匹配 2')
+    expect(wrapper.text()).toContain('交换机身份冲突 1')
+    expect(wrapper.text()).toContain('AP 规划缺失 1')
+    expect(wrapper.text()).toContain('规划站点无效 1')
+    expect(wrapper.text()).toContain('状态：最新')
+    await button(wrapper, '交换机未匹配').trigger('click')
+    await flushPromises()
+    const tables = wrapper.findAllComponents(NcDataTableStub)
+    const diagnosticColumns = tables
+      .flatMap((table) => table.props('columns') as Array<{ key: string }>)
+      .map((column) => column.key)
+    expect(diagnosticColumns).toContain('reason_code')
+    expect(diagnosticColumns).toContain('lldp_system_name')
+    expect(diagnosticColumns).toContain('matched_switch_device_id')
+    wrapper.unmount()
+  })
+
   it('keeps station update enabled while disabling AP update without identity', async () => {
     const candidate: TracksideApBusinessRow = {
       ...rows[1],

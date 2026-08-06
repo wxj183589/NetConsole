@@ -107,6 +107,21 @@ def test_source_revisions_track_runtime_content_but_ignore_unrelated_metadata(
     with database.connect() as connection:
         connection.execute(
             """
+            INSERT INTO device_facts (
+                device_uuid, sysname, collected_at, updated_at
+            ) VALUES ('sw-1', 'HZDT-SC', 't1', 't1')
+            """
+        )
+        connection.commit()
+    facts_changed = read_trackside_ap_source_revisions(database)
+    assert (
+        facts_changed["switch_facts_revision"]
+        != changed["switch_facts_revision"]
+    )
+
+    with database.connect() as connection:
+        connection.execute(
+            """
             INSERT INTO device_lldp_neighbors (
                 device_uuid, local_interface, neighbor_mac, collected_at, updated_at
             ) VALUES ('sw-1', 'XGE1/0/1', '0011-2233-4455', 't1', 't1')
@@ -114,7 +129,7 @@ def test_source_revisions_track_runtime_content_but_ignore_unrelated_metadata(
         )
         connection.commit()
     lldp_changed = read_trackside_ap_source_revisions(database)
-    assert lldp_changed["lldp_revision"] != changed["lldp_revision"]
+    assert lldp_changed["lldp_revision"] != facts_changed["lldp_revision"]
 
     with database.connect() as connection:
         connection.execute(

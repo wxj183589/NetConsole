@@ -8,7 +8,10 @@
 冻结到受控 staging JSON。Export Worker 只读该文件，不再访问实时业务数据库。
 
 本契约没有修改数据库 schema、AP/Radio MAC 派生规则、AP Identity 优先级、
-`-13.90 dBm` 业务门限、工作表、表头、列顺序、排序或文件名规则。
+`-13.90 dBm` 业务门限、工作表、排序或文件名规则。2026-08 的明确导出变更只调整
+“轨旁AP业务”和“当前异常光衰”的字段契约及主 sheet 的表现层填色，页面列序、业务
+判定、异常统计和冻结快照内容不变；详细字段与着色规则见
+[轨道交通业务规则](RAIL_TRANSIT_RULES.md#导出规则)。
 
 ## 数据源矩阵
 
@@ -25,10 +28,10 @@
 | 轨旁 AP 规划 | `ac_trackside_ap_plan`、`ac_trackside_ap_plan_settings`、`rail_ap_vlan_*` | `base_data_revision` | `get_active_trackside_pvid_plan()`、`list_trackside_ap_plan()` | 规划 Application Service/Repository | R1/R2 | PVID、管理 VLAN、VLAN 组和规划状态 |
 | 设备管理与投运范围 | `devices`、`device_groups` | `base_data_revision` | `DeviceRepository.list()`、`filter_station_switch_devices()` | 设备管理 Service/Repository | R1/R2 | 交换机 UUID/名称/厂商、设备类型、项目阶段、参与状态 |
 | `station_id` 绑定 | `devices.station_id`、`ap_extension_points.station_id/section_id` | `base_data_revision` | 有效范围 Service、`list_trackside_ap_runtime_station_evidence_rows()` | 基础资料和设备管理正式写入口 | R1/R2 | 交换机/AP/规划站点及一致性状态 |
-| 交换机接口事实 | `device_facts`、`device_interfaces` | `switch_facts_revision` 内容指纹 | `DeviceFactRepository.list_device_facts/list_device_interfaces()` | 交换机采集 Job/Repository | R1/R2；每个 Repository 连接独立关闭 | 接口、链路、描述、VLAN、采集代次和时效 |
+| 交换机接口与身份事实 | `device_facts`、`device_interfaces` | `switch_facts_revision` 内容指纹 | `DeviceFactRepository.list_device_facts/list_device_interfaces()`、`AcRepository.list_trackside_switch_identity_rows()` | 交换机采集 Job/Repository | R1/R2；每个 Repository 连接独立关闭 | 接口、链路、描述、VLAN、sysName、设备/接口 MAC、采集代次和时效 |
 | 交换机当前光模块 | `device_optical_modules` | `switch_facts_revision` 内容指纹 | `DeviceFactRepository.list_optical_modules()` | 交换机采集 Job/Repository | R1/R2 | 交换机 RX/TX、原生门限、告警和时效 |
 | 当前 LLDP | `device_lldp_neighbors` | `lldp_revision` 内容指纹 | `DeviceFactRepository.list_lldp_neighbors()`、`AcRepository.list_trackside_ap_runtime_station_evidence_rows()` | 交换机采集 Job/Repository | R1/R2 | 本地端口、邻居 MAC/接口/名称、站点证据和采集代次 |
-| FIT-AP 当前资源 | `ac_fit_ap_resources`、`ac_fit_ap_metadata`、`ac_fit_ap_unauthenticated` | `fit_ap_resource_revision` 内容指纹 | `AcRepository.list_all_fit_ap_resources_with_metadata()` | AC/FIT-AP 采集与受控管理 Service | R1/R2 | AP 在线状态、稳定身份、AC、站点元数据和未固化状态 |
+| FIT-AP 当前资源 | `ac_fit_ap_resources`、`ac_fit_ap_metadata`、`ac_fit_ap_unauthenticated` | `fit_ap_resource_revision` 内容指纹 | `AcRepository.list_all_fit_ap_resources_with_metadata()` | AC/FIT-AP 采集与受控管理 Service | R1/R2 | AP 在线状态、稳定身份、AC、AC 侧 LLDP 上联交换机身份、站点元数据和未固化状态 |
 | FIT-AP 历史稳定身份 | `ap_lldp_history`、`ac_fit_ap_lldp_history`、`ac_fit_ap_unauthenticated_history` | `ap_history_revision` 内容指纹 | `list_latest_ap_lldp_histories()` 及 FIT-AP metadata enrichment | AC/FIT-AP 与 LLDP 采集 Repository | R1/R2 | 离线 AP 的最后交换机/端口、历史未认证状态 |
 | AP Identity | `ap_identity_index_state`、`ap_identity_source_state` 和索引 alias | `ap_identity_revision`，包含 index/source/status | `ApIdentityQueryService.resolve_ap_macs(..., ap_role="trackside")` | AP Identity 正式构建入口；业务查询只读 | distinct MAC 单批只读事务，并由外层 R1/R2复核 | entity、matched/unresolved/ambiguous、匹配规则和批次 revision |
 | FIT-AP 当前光衰 | `ac_fit_ap_optical` | `optical_data_revision` 内容指纹 | `AcRepository.list_all_fit_ap_optical()` | AC 光衰采集 Job/Repository | R1/R2 | AP RX/TX、设备模块状态、业务异常和采集时间 |
@@ -71,6 +74,22 @@ LLDP/Peer、Radio/BSSID 等有效 alias，规范化去重后只调用一次
 `resolve_ap_macs(..., ap_role="trackside")`；行关联仍以 LLDP 观测优先、AP MAC 次之，
 ambiguous 不选择候选。
 
+基础 AP MAC 和交换机侧“AP MAC 精确邻居”仍是首选关联。两者都未命中时，
+查询可消费 FIT-AP 资源已经保存的 AC 侧 LLDP 上联交换机身份，并在当前局点
+`devices + device_facts + device_interfaces` 中建立只读索引。匹配优先级为已保存的
+交换机 UUID、唯一 Chassis/MAC、唯一管理地址、规范化后唯一 system name、明确设备
+别名；名称规范化只处理 NFKC、大小写、FQDN、分隔符及厂商/型号前缀，不做相似度
+匹配。任一层出现多个候选即返回冲突，不选择第一条。交换机匹配后只接受有效
+`station_id`，或将设备管理 `station` 唯一解析到当前局点正式站点；对应逐站规划
+存在时生成 `ac_lldp_switch_identity` 只读运行态投影，不写回设备、规划或基础资料。
+
+页面请求本身每次执行 R1/构建/R2，因此没有可被“设备详情更新”单独唤醒的持久
+业务快照。上线概览另有 revision-keyed 进程内缓存，并同样在构建前后复核 revision，
+变化时最多重试三次而不发布混合时点结果；其 revision 同时包含 FIT-AP、
+交换机 LLDP、`devices`、`device_facts`、`device_interfaces`、规划、基础资料、Identity
+和局点 metadata。任一身份事实提交后，下次查询自动 miss 并重算，不要求进入设备
+管理点击详情更新。
+
 ## 页面契约
 
 `GET /api/rail-transit/trackside-ap-business/rows` 返回 `snapshot_id`、
@@ -82,6 +101,11 @@ ambiguous 不选择候选。
 `content_sha256` 均基于当前 station/query/异常筛选后的全部业务行，不基于当前页，
 也不再使用筛选前全量行。`content_sha256` 对规范化业务行 JSON 计算，因此相同
 revision 和筛选得到确定性结果。
+
+未完成关联项返回互斥 `association_status/reason_code`，并携带 AP MAC 原始/规范值、
+规划记录和站点、LLDP 身份与时间、交换机候选和最终 device ID、失败阶段、来源
+revisions、业务 revision 与快照生成时间。页面明细、上线概览分页诊断和 XLSX
+“待关联在线 AP”Sheet 复用同一作用域结果，不在前端重新推断分类。
 
 ## 导出冻结和 Worker
 
@@ -134,6 +158,7 @@ Artifact 拒绝协调不会再清空该错误码。导出从 staging 渲染期�
 
 ## 兼容边界
 
-轨旁 AP 业务工作簿仍使用原文件名、Sheet、表头、列顺序、MAC 格式、排序、冻结
-窗格、筛选和样式。`station_id` 不因本快照契约新增到既有用户列；重命名命令、
-导入问题和基础资料导出走原有独立契约。数据库和历史业务数据均不迁移、不改写。
+轨旁 AP 业务工作簿仍使用原文件名、Sheet、MAC 格式、排序、冻结窗格、筛选和样式；
+仅“轨旁AP业务”和“当前异常光衰”按 [轨道交通业务规则](RAIL_TRANSIT_RULES.md#导出规则)
+的明确列契约生成。`station_id` 不因本快照契约新增到既有用户列；重命名命令、导入
+问题和基础资料导出走原有独立契约。数据库和历史业务数据均不迁移、不改写。

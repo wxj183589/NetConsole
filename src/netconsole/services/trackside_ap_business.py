@@ -137,11 +137,33 @@ TRACKSIDE_AP_BUSINESS_EXPORT_COLUMNS = (
     ("ac.ap_side_rx_power", "ap_rx_power"),
     ("trackside.ap_device_optical_status", "ap_device_optical_status"),
     ("trackside.ap_optical_status", "ap_optical_status"),
-    ("trackside.ap_business_threshold", "ap_business_threshold_dbm"),
-    ("trackside.ap_business_reason", "ap_business_reason"),
     ("trackside_ap.last_collected_at", "updated_at"),
     ("trackside.export.switch_optical_change", "switch_optical_change"),
     ("trackside.export.ap_optical_change", "ap_optical_change"),
+    ("trackside.ap_business_threshold", "ap_business_threshold_dbm"),
+    ("trackside.ap_business_reason", "ap_business_reason"),
+)
+
+CURRENT_OPTICAL_ABNORMAL_COLUMNS = (
+    ("ac.station", "site"),
+    ("ac.indoor_switch", "device_name"),
+    ("details.interface_name", "interface_name"),
+    ("details.link", "link_status"),
+    ("ac.indoor_switch_rx_power", "switch_rx_power"),
+    ("trackside.switch_optical_status", "switch_optical_status"),
+    ("ac.ap_mac", "ap_mac"),
+    ("ac.ap_name", "ap_name"),
+    ("ac.ap_side_rx_power", "ap_rx_power"),
+    ("trackside.ap_device_optical_status", "ap_device_optical_status"),
+    ("trackside.export.ap_online_status", "ap_online_status"),
+    ("trackside.export.abnormal_side", "side"),
+    ("trackside.export.abnormal_level", "level"),
+    ("trackside.export.abnormal_reason", "reason"),
+    ("trackside_ap.last_collected_at", "updated_at"),
+    ("trackside.export.switch_optical_change", "switch_optical_change"),
+    ("trackside.export.ap_optical_change", "ap_optical_change"),
+    ("trackside.ap_business_threshold", "ap_business_threshold_dbm"),
+    ("trackside.export.abnormal_detail", "detail"),
 )
 
 NEW_ONLINE_AP_OVERVIEW_COLUMNS = (
@@ -193,6 +215,25 @@ TRACKSIDE_AP_UNMATCHED_ONLINE_COLUMNS = (
     ("trackside.export.unmatched_fit_ap_collected_at", "fit_ap_collected_at"),
     ("trackside.export.unmatched_lldp_collected_at", "lldp_collected_at"),
     ("trackside.export.unmatched_lldp_candidate_count", "lldp_candidate_count"),
+    ("trackside.export.unmatched_ap_mac_raw", "ap_mac_raw"),
+    ("trackside.export.unmatched_ap_mac_normalized", "ap_mac_normalized"),
+    ("trackside.export.unmatched_planning_record_id", "planning_record_id"),
+    ("trackside.export.unmatched_planning_station", "planning_station_name"),
+    ("trackside.export.unmatched_plan_station_id", "plan_station_id"),
+    ("trackside.export.unmatched_planning_match_method", "planning_match_method"),
+    ("trackside.export.unmatched_lldp_exists", "lldp_exists"),
+    ("trackside.export.unmatched_lldp_local_interface", "lldp_local_interface"),
+    ("trackside.export.unmatched_lldp_remote_device", "lldp_remote_device_name"),
+    ("trackside.export.unmatched_lldp_system_name", "lldp_system_name"),
+    ("trackside.export.unmatched_lldp_management_ip", "lldp_management_ip"),
+    ("trackside.export.unmatched_lldp_chassis_id", "lldp_chassis_id"),
+    ("trackside.export.unmatched_switch_candidate_count", "switch_candidate_count"),
+    ("trackside.export.unmatched_switch_device_id", "matched_switch_device_id"),
+    ("trackside.export.unmatched_switch_match_method", "switch_match_method"),
+    ("trackside.export.unmatched_failure_stage", "failure_stage"),
+    ("trackside.export.unmatched_source_revisions", "source_revisions"),
+    ("trackside.export.unmatched_snapshot_revision", "snapshot_revision"),
+    ("trackside.export.unmatched_snapshot_created_at", "snapshot_created_at"),
     ("trackside.export.unmatched_reason", "reason"),
     ("trackside.export.unmatched_suggestion", "suggested_action"),
 )
@@ -283,16 +324,6 @@ TRACKSIDE_EXPORT_WARNING_FILL = TRACKSIDE_OPTICAL_COLOR_RGB["warning"]
 TRACKSIDE_EXPORT_ALARM_FILL = TRACKSIDE_OPTICAL_COLOR_RGB["alarm"]
 CURRENT_OPTICAL_ABNORMAL_SHEET_TITLE = "当前异常光衰"
 CURRENT_OPTICAL_ABNORMAL_EMPTY_TEXT = "当前无异常光衰（已排除无 AP 绑定、无光模块和非告警光功率）"
-CURRENT_OPTICAL_ABNORMAL_EXTRA_COLUMNS = (
-    ("AP 在线状态", "ap_online_status"),
-    ("光衰判定", "judgement"),
-    ("异常原因", "reason"),
-    ("异常侧", "side"),
-    ("异常等级", "level"),
-    ("异常说明", "detail"),
-)
-
-
 class TracksideApExportCancelled(RuntimeError):
     """Raised when a trackside AP export is cancelled."""
 
@@ -1984,6 +2015,55 @@ def trackside_row_status(row: dict[str, object | None]) -> str:
     return _dual_business_evaluation(row).status
 
 
+_TRACKSIDE_EXPORT_MISSING_IDENTITY_VALUES = frozenset(
+    {"", "-", "—", "n/a", "na", "none", "null"}
+)
+
+
+def _has_trackside_export_identity(value: object) -> bool:
+    return str(value or "").strip().casefold() not in _TRACKSIDE_EXPORT_MISSING_IDENTITY_VALUES
+
+
+def has_trackside_export_ap_evidence(row: dict[str, object | None]) -> bool:
+    """Return whether a port has current or historical AP business evidence."""
+
+    for field in (
+        "has_current_lldp",
+        "has_historical_lldp",
+        "has_fit_ap_resource",
+    ):
+        value = row.get(field)
+        if isinstance(value, str):
+            if value.strip().casefold() not in {"", "0", "false", "no", "none", "null"}:
+                return True
+        elif bool(value):
+            return True
+    if any(_has_trackside_export_identity(row.get(field)) for field in ("ap_uuid", "ap_mac", "ap_name")):
+        return True
+    history_status = str(row.get("lldp_history_status") or "").strip().casefold()
+    return history_status not in {"", "no_current_evidence", "none", "unknown", "-"}
+
+
+def _trackside_export_switch_statuses(row: dict[str, object | None]) -> set[str]:
+    statuses = {
+        _normalized_optical_status(row.get(field))
+        for field in ("switch_optical_status", "switch_device_optical_status")
+    }
+    statuses.discard("")
+    return statuses
+
+
+def trackside_export_fill_status(row: dict[str, object | None]) -> str | None:
+    """Return the export-only row fill status without changing business semantics."""
+
+    switch_statuses = _trackside_export_switch_statuses(row)
+    if "no_module" in switch_statuses or _explicit_no_module(row):
+        return None
+    if "no_light" in switch_statuses and not has_trackside_export_ap_evidence(row):
+        return None
+    return trackside_row_status(row)
+
+
 def is_trackside_optical_abnormal_status(status: object) -> bool:
     """Return whether a trackside optical status belongs in the optical anomaly set."""
     return is_optical_health_abnormal(_normalized_optical_status(status))
@@ -2221,6 +2301,7 @@ def export_trackside_ap_business_xlsx(
     unmatched_online_sheet_title: str = "待关联在线AP",
     progress_callback=None,
     should_cancel=None,
+    current_optical_abnormal_headers: list[str] | None = None,
 ) -> None:
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -2249,7 +2330,7 @@ def export_trackside_ap_business_xlsx(
     header_fill = PatternFill(fill_type="solid", fgColor=TRACKSIDE_EXPORT_HEADER_FILL)
     for row_index, row in enumerate(rows, start=1):
         sheet.append([_export_value(field, row) for _key, field in columns])
-        fill = fills.get(trackside_row_status(row))
+        fill = fills.get(trackside_export_fill_status(row))
         for cell in sheet[sheet.max_row]:
             if fill:
                 cell.fill = fill
@@ -2276,7 +2357,13 @@ def export_trackside_ap_business_xlsx(
     _raise_if_trackside_export_cancelled(should_cancel)
     phase_start = perf_counter()
     _emit_trackside_export_progress(progress_callback, "write_current_optical_abnormal", 0, 0, "正在写入异常光衰")
-    build_current_optical_abnormal_sheet(workbook, sheet, rows)
+    build_current_optical_abnormal_sheet(
+        workbook,
+        sheet,
+        rows,
+        source_columns=columns,
+        headers=current_optical_abnormal_headers,
+    )
     log_write_phase("write_current_optical_abnormal_sheet", phase_start, rows=sum(1 for row in rows if is_current_optical_abnormal_export_row(row)))
     _raise_if_trackside_export_cancelled(should_cancel)
     _emit_trackside_export_progress(progress_callback, "write_ap_online_overview", 0, len(ap_online_overview_rows or []), "正在写入AP上线情况")
@@ -3248,6 +3335,11 @@ def current_optical_abnormal_reason(row: dict[str, object | None]) -> dict[str, 
 def is_current_optical_abnormal_export_row(row: dict[str, object | None]) -> bool:
     if not is_ap_optical_applicable(row.get("model") or row.get("ap_model")):
         return False
+    switch_statuses = _trackside_export_switch_statuses(row)
+    if "no_module" in switch_statuses or _explicit_no_module(row):
+        return False
+    if "no_light" in switch_statuses and not has_trackside_export_ap_evidence(row):
+        return False
     freshness = str(row.get("data_freshness") or "").strip().casefold()
     if freshness == "stale" or classify_optical_freshness(row.get("updated_at"), row.get("collected_at")) == "stale":
         return False
@@ -3266,31 +3358,68 @@ def is_current_optical_abnormal_row(row: dict[str, object | None]) -> bool:
     return is_current_optical_abnormal_export_row(row)
 
 
-def build_current_optical_abnormal_sheet(workbook, source_sheet, rows: list[dict[str, object | None]]) -> None:
+def build_current_optical_abnormal_sheet(
+    workbook,
+    source_sheet,
+    rows: list[dict[str, object | None]],
+    *,
+    source_columns: tuple[tuple[str, str], ...] | None = None,
+    headers: list[str] | None = None,
+) -> None:
+    """Build the independent current optical abnormal sheet contract."""
+
     from copy import copy
+    from openpyxl.styles import PatternFill
     from openpyxl.utils import get_column_letter
 
     if CURRENT_OPTICAL_ABNORMAL_SHEET_TITLE in workbook.sheetnames:
         del workbook[CURRENT_OPTICAL_ABNORMAL_SHEET_TITLE]
     source_index = workbook.worksheets.index(source_sheet)
     sheet = workbook.create_sheet(CURRENT_OPTICAL_ABNORMAL_SHEET_TITLE, source_index + 1)
-    _copy_worksheet_columns(source_sheet, sheet)
-    _copy_worksheet_row(source_sheet, sheet, 1, 1)
-    extra_start_column = source_sheet.max_column + 1
-    header_style_cell = source_sheet.cell(row=1, column=source_sheet.max_column)
-    for offset, (header, _field) in enumerate(CURRENT_OPTICAL_ABNORMAL_EXTRA_COLUMNS):
-        column = extra_start_column + offset
-        _copy_cell_style(header_style_cell, sheet.cell(row=1, column=column, value=header))
-        sheet.column_dimensions[get_column_letter(column)].width = max(12, len(header) + 4)
+    if headers is None:
+        from netconsole.core.i18n import TRANSLATIONS
+
+        headers = [
+            TRANSLATIONS["zh_CN"].get(key, key)
+            for key, _field in CURRENT_OPTICAL_ABNORMAL_COLUMNS
+        ]
+    sheet.append(headers)
+    source_field_columns = {
+        field: index
+        for index, (_key, field) in enumerate(source_columns or (), start=1)
+    }
+    for index, (key, field) in enumerate(CURRENT_OPTICAL_ABNORMAL_COLUMNS, start=1):
+        source_column = source_field_columns.get(field)
+        if source_column:
+            width = source_sheet.column_dimensions[get_column_letter(source_column)].width
+            if width is not None:
+                sheet.column_dimensions[get_column_letter(index)].width = width
+        if sheet.column_dimensions[get_column_letter(index)].width is None:
+            sheet.column_dimensions[get_column_letter(index)].width = max(12, len(headers[index - 1]) + 4)
+        _copy_cell_style(source_sheet.cell(row=1, column=1), sheet.cell(row=1, column=index))
+
+    fills = {
+        status: PatternFill(fill_type="solid", fgColor=color)
+        for status, color in TRACKSIDE_OPTICAL_COLOR_RGB.items()
+        if color
+    }
+    text_fields = {"ap_mac", "ap_name", "ap_online_status"}
     target_row = 2
     for source_row, data in enumerate(rows, start=2):
         if not is_current_optical_abnormal_export_row(data):
             continue
-        _copy_worksheet_row(source_sheet, sheet, source_row, target_row)
-        reason = current_optical_abnormal_reason(data)
-        data_style_cell = source_sheet.cell(row=source_row, column=source_sheet.max_column)
-        for offset, (_header, field) in enumerate(CURRENT_OPTICAL_ABNORMAL_EXTRA_COLUMNS):
-            _copy_cell_style(data_style_cell, sheet.cell(row=target_row, column=extra_start_column + offset, value=reason.get(field, "")))
+        values = dict(data)
+        values.update(current_optical_abnormal_reason(data))
+        sheet.append([_export_value(field, values) for _key, field in CURRENT_OPTICAL_ABNORMAL_COLUMNS])
+        if source_sheet.row_dimensions[source_row].height is not None:
+            sheet.row_dimensions[target_row].height = source_sheet.row_dimensions[source_row].height
+        for index, (_key, field) in enumerate(CURRENT_OPTICAL_ABNORMAL_COLUMNS, start=1):
+            if field in text_fields:
+                sheet.cell(row=target_row, column=index).number_format = "@"
+        fill = fills.get(trackside_export_fill_status(data))
+        if fill is not None:
+            for cell in sheet[target_row]:
+                cell.fill = fill
         target_row += 1
     if target_row == 2:
         cell = sheet.cell(row=2, column=1, value=CURRENT_OPTICAL_ABNORMAL_EMPTY_TEXT)
@@ -3304,34 +3433,6 @@ def build_current_optical_abnormal_sheet(workbook, source_sheet, rows: list[dict
         sheet.row_dimensions[2].height = 22
     sheet.freeze_panes = source_sheet.freeze_panes
     sheet.auto_filter.ref = sheet.dimensions
-
-
-def _copy_worksheet_columns(source_sheet, target_sheet) -> None:
-    from copy import copy
-
-    for key, dimension in source_sheet.column_dimensions.items():
-        target = target_sheet.column_dimensions[key]
-        target.width = dimension.width
-        target.hidden = dimension.hidden
-        target.outlineLevel = dimension.outlineLevel
-        target.collapsed = dimension.collapsed
-        if dimension.style:
-            target.style = copy(dimension.style)
-
-
-def _copy_worksheet_row(source_sheet, target_sheet, source_row: int, target_row: int) -> None:
-    target_sheet.row_dimensions[target_row].height = source_sheet.row_dimensions[source_row].height
-    for source_cell in source_sheet[source_row]:
-        target_cell = target_sheet.cell(row=target_row, column=source_cell.column, value=source_cell.value)
-        _copy_cell_style(source_cell, target_cell)
-        if source_cell.hyperlink:
-            from copy import copy
-
-            target_cell._hyperlink = copy(source_cell.hyperlink)
-        if source_cell.comment:
-            from copy import copy
-
-            target_cell.comment = copy(source_cell.comment)
 
 
 def _copy_cell_style(source_cell, target_cell) -> None:

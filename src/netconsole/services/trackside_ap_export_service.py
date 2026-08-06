@@ -33,6 +33,7 @@ from netconsole.services.offline_ap_ledger import (
 )
 from netconsole.services.trackside_ap_business import (
     AP_OPTICAL_TREATMENT_RECORD_COLUMNS,
+    CURRENT_OPTICAL_ABNORMAL_COLUMNS,
     NEW_ONLINE_AP_OVERVIEW_COLUMNS,
     TRACKSIDE_AP_BUSINESS_EXPORT_COLUMNS,
     TRACKSIDE_AP_UNMATCHED_ONLINE_COLUMNS,
@@ -107,6 +108,12 @@ class TracksideApBusinessLoadResult:
     fit_ap_ambiguous_online_count: int = 0
     fit_ap_station_master_missing_count: int = 0
     fit_ap_unknown_association_count: int = 0
+    fit_ap_switch_not_found_count: int = 0
+    fit_ap_switch_identity_ambiguous_count: int = 0
+    fit_ap_switch_data_incomplete_count: int = 0
+    fit_ap_plan_not_found_count: int = 0
+    fit_ap_plan_station_missing_count: int = 0
+    fit_ap_plan_station_invalid_count: int = 0
     candidate_ap_interface_count: int = 0
     row_count: int = 0
     business_row_count: int = 0
@@ -193,13 +200,24 @@ def load_trackside_ap_business_snapshot(
                 for row in snapshot.rows
             )
             revision = build_business_revision(site_name, confirmed_revisions)
+            created_at = datetime.now().astimezone().isoformat(timespec="milliseconds")
+            if snapshot.scope is not None:
+                snapshot.scope.unmatched_online_items = [
+                    replace(
+                        item,
+                        source_revisions=dict(confirmed_revisions),
+                        snapshot_revision=revision,
+                        snapshot_created_at=created_at,
+                    )
+                    for item in snapshot.scope.unmatched_online_items
+                ]
             stable_snapshot = replace(
                 snapshot,
                 rows=rows,
                 snapshot_id=uuid4().hex,
                 business_revision=revision,
                 source_revisions=MappingProxyType(dict(confirmed_revisions)),
-                created_at=datetime.now().astimezone().isoformat(timespec="milliseconds"),
+                created_at=created_at,
                 content_sha256=content_sha256(rows),
                 snapshot_retry_count=attempt,
                 identity_query_entities=MappingProxyType(
@@ -425,6 +443,7 @@ def _load_trackside_ap_business_snapshot_once(
         reference_rows=ac_repository.list_ap_extension_points(),
         resource_rows=fit_ap_resource_input,
         runtime_station_rows=runtime_station_rows,
+        switch_identity_rows=ac_repository.list_trackside_switch_identity_rows(),
         runtime_snapshot=runtime_snapshot,
     )
     switch_lookup = build_switch_data_lookup(devices, optical_by_device)
@@ -526,6 +545,12 @@ def _load_trackside_ap_business_snapshot_once(
         fit_ap_ambiguous_online_count=scope.fit_ap_ambiguous_online_count,
         fit_ap_station_master_missing_count=scope.fit_ap_station_master_missing_count,
         fit_ap_unknown_association_count=scope.fit_ap_unknown_association_count,
+        fit_ap_switch_not_found_count=scope.fit_ap_switch_not_found_count,
+        fit_ap_switch_identity_ambiguous_count=scope.fit_ap_switch_identity_ambiguous_count,
+        fit_ap_switch_data_incomplete_count=scope.fit_ap_switch_data_incomplete_count,
+        fit_ap_plan_not_found_count=scope.fit_ap_plan_not_found_count,
+        fit_ap_plan_station_missing_count=scope.fit_ap_plan_station_missing_count,
+        fit_ap_plan_station_invalid_count=scope.fit_ap_plan_station_invalid_count,
         candidate_ap_interface_count=candidate_ap_interface_count,
         row_count=row_count,
         business_row_count=row_count,
@@ -1022,6 +1047,9 @@ def _render_trackside_ap_business_export(
         i18n.t("trackside.export.sheet_unmatched_online"),
         progress_callback=emit,
         should_cancel=should_cancel,
+        current_optical_abnormal_headers=[
+            i18n.t(key) for key, _field in CURRENT_OPTICAL_ABNORMAL_COLUMNS
+        ],
     )
     check_cancel()
     from netconsole.services.file_contract import attach_export_metadata

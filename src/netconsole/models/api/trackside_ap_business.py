@@ -114,6 +114,25 @@ class TracksideApUnmatchedOnlineDTO(ApiModel):
     fit_ap_collected_at: str = ""
     lldp_collected_at: str = ""
     lldp_candidate_count: int = 0
+    ap_mac_raw: str = ""
+    ap_mac_normalized: str = ""
+    planning_record_id: str = ""
+    planning_station_name: str = ""
+    plan_station_id: str = ""
+    planning_match_method: str = ""
+    lldp_exists: bool = False
+    lldp_local_interface: str = ""
+    lldp_remote_device_name: str = ""
+    lldp_system_name: str = ""
+    lldp_management_ip: str = ""
+    lldp_chassis_id: str = ""
+    switch_candidate_count: int = 0
+    matched_switch_device_id: str = ""
+    switch_match_method: str = ""
+    failure_stage: str = ""
+    source_revisions: dict[str, str] = Field(default_factory=dict)
+    snapshot_revision: str = ""
+    snapshot_created_at: str = ""
 
 
 class TracksideApScopeExcludedPageDTO(ApiModel):
@@ -165,6 +184,12 @@ class TracksideApBusinessPageDTO(ApiModel):
     fit_ap_ambiguous_online_count: int = 0
     fit_ap_station_master_missing_count: int = 0
     fit_ap_unknown_association_count: int = 0
+    fit_ap_switch_not_found_count: int = 0
+    fit_ap_switch_identity_ambiguous_count: int = 0
+    fit_ap_switch_data_incomplete_count: int = 0
+    fit_ap_plan_not_found_count: int = 0
+    fit_ap_plan_station_missing_count: int = 0
+    fit_ap_plan_station_invalid_count: int = 0
     runtime_snapshot: dict[str, object] = Field(default_factory=dict)
     business_row_count: int = 0
     query_ms: int = 0
@@ -358,8 +383,13 @@ class TracksideApOnlineStatusDTO(ApiModel):
     fit_ap_ambiguous_online_count: int = Field(default=0, ge=0)
     fit_ap_station_master_missing_count: int = Field(default=0, ge=0)
     fit_ap_unknown_association_count: int = Field(default=0, ge=0)
+    fit_ap_switch_not_found_count: int = Field(default=0, ge=0)
+    fit_ap_switch_identity_ambiguous_count: int = Field(default=0, ge=0)
+    fit_ap_switch_data_incomplete_count: int = Field(default=0, ge=0)
+    fit_ap_plan_not_found_count: int = Field(default=0, ge=0)
+    fit_ap_plan_station_missing_count: int = Field(default=0, ge=0)
+    fit_ap_plan_station_invalid_count: int = Field(default=0, ge=0)
     fit_ap_unresolved_online_count: int = Field(default=0, ge=0)
-    fit_ap_ambiguous_online_count: int = Field(default=0, ge=0)
     unmatched_online_items: list[TracksideApUnmatchedOnlineDTO] = Field(default_factory=list)
     generated_at: str = ""
     revision: str = ""
