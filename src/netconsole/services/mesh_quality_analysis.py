@@ -582,7 +582,15 @@ def analyze_switch_events(segments: list[dict[str, object]], samples: list[dict[
                 switch_type, severity, diagnosis = "SHORT_SEGMENT_SWITCH", "WARNING", "新 Active 区段持续时间过短。"
             if switch_type == "NORMAL_SWITCH" and before and (_all_low(before, rules.rssi_good_threshold) and _has_better_backup(before) or _all_low(before, rules.rssi_warning_threshold)):
                 switch_type, severity, diagnosis = "LATE_SWITCH", "BAD", "切换前主链路 RSSI 已偏低且未及时切换。"
-            if switch_type == "NORMAL_SWITCH" and after and (_avg([_num(row.get("active_mr_rssi")) for row in after]) < rules.rssi_good_threshold or min([_num(row.get("active_mr_rssi")) for row in after if _num(row.get("active_mr_rssi")) is not None], default=999) < rules.rssi_warning_threshold):
+            after_avg = _num(_avg([_num(row.get("active_mr_rssi")) for row in after]))
+            after_min = min(
+                [_num(row.get("active_mr_rssi")) for row in after if _num(row.get("active_mr_rssi")) is not None],
+                default=999,
+            )
+            if switch_type == "NORMAL_SWITCH" and after and (
+                (after_avg is not None and after_avg < rules.rssi_good_threshold)
+                or after_min < rules.rssi_warning_threshold
+            ):
                 switch_type, severity, diagnosis = "WEAK_TARGET_SWITCH", "BAD", "切入后的新主链路 RSSI 偏低。"
             evidence_id = f"SW{len(events) + 1:04d}"
             events.append(
