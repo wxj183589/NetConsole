@@ -8,7 +8,31 @@ from uuid import uuid4
 
 import pytest
 
-from scripts.build import build_installer
+from scripts.build import build_edition_installers, build_installer
+
+
+def test_edition_installer_prefers_explicit_pnpm_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pnpm = tmp_path / "pnpm.cmd"
+    pnpm.write_text("@echo off\r\n", encoding="utf-8")
+    monkeypatch.setenv(build_edition_installers.PNPM_PATH_ENV, str(pnpm))
+    monkeypatch.setattr(build_edition_installers.shutil, "which", lambda _name: None)
+
+    assert build_edition_installers._resolve_pnpm_command() == str(pnpm.resolve())
+
+
+def test_edition_installer_rejects_missing_explicit_pnpm_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    missing = tmp_path / "missing-pnpm.cmd"
+    monkeypatch.setenv(build_edition_installers.PNPM_PATH_ENV, str(missing))
+
+    with pytest.raises(
+        build_edition_installers.EditionInstallerError,
+        match=build_edition_installers.PNPM_PATH_ENV,
+    ):
+        build_edition_installers._resolve_pnpm_command()
 
 
 def test_policy_source_requires_new_text_and_rejects_old_text() -> None:
