@@ -16,6 +16,7 @@ $OutputEncoding = $utf8
 $script:MinimumPasswordLength = 8
 $script:MinimumFreeBytes = 10GB
 $script:PasswordEnvironmentName = "NETCONSOLE_CUSTOMER_UNLOCK_PASSWORD"
+$script:PnpmPathEnvironmentName = "NETCONSOLE_PNPM_PATH"
 $script:MutexName = "Global\NetConsoleLocalInstallerBuild"
 $script:CorepackPnpmVersion = "11.16.0"
 
@@ -76,9 +77,9 @@ function Resolve-PnpmCommand {
         $corepackPath = $corepack.Source
     }
 
-    $buildRoot = Join-Path $ProjectRoot "dist\_build"
-    New-Item -ItemType Directory -Path $buildRoot -Force | Out-Null
-    $shimRoot = Join-Path $buildRoot ("package-tool-shim-" + [guid]::NewGuid().ToString("N"))
+    $shimContainer = Join-Path $ProjectRoot "dist\_package_tool_shims"
+    New-Item -ItemType Directory -Path $shimContainer -Force | Out-Null
+    $shimRoot = Join-Path $shimContainer ("package-tool-shim-" + [guid]::NewGuid().ToString("N"))
     New-Item -ItemType Directory -Path $shimRoot | Out-Null
     $shimPath = Join-Path $shimRoot "pnpm.cmd"
     $shimContent = @(
@@ -459,6 +460,14 @@ $childLogPath = $null
 $stagingRoot = $null
 $pnpmShimRoot = $null
 $originalProcessPath = [Environment]::GetEnvironmentVariable("PATH", "Process")
+$buildEnvironmentNames = @($script:PnpmPathEnvironmentName, "PYTHONUTF8", "PYTHONIOENCODING")
+$originalBuildEnvironment = @{}
+foreach ($environmentName in $buildEnvironmentNames) {
+    $originalBuildEnvironment[$environmentName] = [PSCustomObject]@{
+        Present = Test-Path -LiteralPath "Env:$environmentName"
+        Value = [Environment]::GetEnvironmentVariable($environmentName, "Process")
+    }
+}
 $script:CurrentStage = "初始化"
 
 try {
@@ -492,6 +501,9 @@ try {
     $pnpmResolution = Resolve-PnpmCommand -NodePath $nodePath -ProjectRoot $projectRoot
     $pnpmPath = $pnpmResolution.Path
     $pnpmShimRoot = $pnpmResolution.ShimRoot
+    [Environment]::SetEnvironmentVariable($script:PnpmPathEnvironmentName, $pnpmPath, "Process")
+    [Environment]::SetEnvironmentVariable("PYTHONUTF8", "1", "Process")
+    [Environment]::SetEnvironmentVariable("PYTHONIOENCODING", "utf-8", "Process")
     $powerShellPath = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
     if (-not (Test-Path -LiteralPath $powerShellPath)) {
         throw "未找到 Windows PowerShell 5.1：$powerShellPath"
@@ -625,15 +637,36 @@ catch {
     exit 1
 }
 finally {
+    foreach ($environmentName in $buildEnvironmentNames) {
+        $originalEnvironment = $originalBuildEnvironment[$environmentName]
+        if ($originalEnvironment.Present) {
+            [Environment]::SetEnvironmentVariable(
+                $environmentName,
+                $originalEnvironment.Value,
+                "Process"
+            )
+        }
+        else {
+            Remove-Item -LiteralPath "Env:$environmentName" -ErrorAction SilentlyContinue
+        }
+    }
     if ($null -ne $pnpmShimRoot) {
         [Environment]::SetEnvironmentVariable("PATH", $originalProcessPath, "Process")
-        $resolvedBuildRoot = [System.IO.Path]::GetFullPath((Join-Path $projectRoot "dist\_build"))
+        $resolvedShimContainer = [System.IO.Path]::GetFullPath(
+            (Join-Path $projectRoot "dist\_package_tool_shims")
+        )
         $resolvedShimRoot = [System.IO.Path]::GetFullPath($pnpmShimRoot)
         if (
-            [System.IO.Path]::GetDirectoryName($resolvedShimRoot) -eq $resolvedBuildRoot -and
+            [System.IO.Path]::GetDirectoryName($resolvedShimRoot) -eq $resolvedShimContainer -and
             [System.IO.Path]::GetFileName($resolvedShimRoot).StartsWith("package-tool-shim-", [StringComparison]::Ordinal)
         ) {
             Remove-Item -LiteralPath $resolvedShimRoot -Recurse -Force -ErrorAction SilentlyContinue
+            if (
+                (Test-Path -LiteralPath $resolvedShimContainer -PathType Container) -and
+                @(Get-ChildItem -LiteralPath $resolvedShimContainer -Force).Count -eq 0
+            ) {
+                Remove-Item -LiteralPath $resolvedShimContainer -Force -ErrorAction SilentlyContinue
+            }
         }
     }
     if ($originalPasswordPresent) {
