@@ -4,6 +4,9 @@ from collections.abc import Mapping
 from uuid import uuid4
 
 from netconsole.application.desktop import DesktopActionService
+from netconsole.application.rail_transit.mesh_derived_data_repair_coordinator import (
+    MeshDerivedDataRepairCoordinator,
+)
 from netconsole.core.paths import PathResolver
 from netconsole.core.sites import SiteManager
 from netconsole.models.api.rail_transit_web import RailTransitTaskDTO
@@ -11,6 +14,7 @@ from netconsole.services.background_job import BackgroundJob
 from netconsole.services.job_center.local_process_adapter import LocalProcessAdapter
 from netconsole.services.job_center.task_application_service import TaskApplicationService
 from netconsole.services.mesh_local_scan_service import MeshLocalScanError, MeshLocalScanService
+from netconsole.services.mesh_derived_data_maintenance_service import MeshDerivedDataMaintenanceError
 
 
 class MeshLocalScanApplicationService:
@@ -27,6 +31,11 @@ class MeshLocalScanApplicationService:
         self.task_service = task_service
         self.process_adapter = process_adapter
         self.desktop_action_service = desktop_action_service
+        self.mesh_derived_data_repair_coordinator = MeshDerivedDataRepairCoordinator(
+            paths,
+            task_service,
+            process_adapter,
+        )
 
     def start_scan(self, site_id: str) -> dict[str, object]:
         site = self._site(site_id)
@@ -73,10 +82,26 @@ class MeshLocalScanApplicationService:
             raise MeshLocalScanError("CANDIDATE_NOT_FOUND", "本地日志候选不存在或不属于当前扫描")
         if any(
             str(candidates[item["candidate_id"]].get("scan_status") or "")
-            not in {"unregistered", "needs_metadata", "failed"}
+            not in {"unregistered", "needs_metadata", "failed", "parse_failed", "repair_failed"}
             for item in prepared
         ):
-            raise MeshLocalScanError("CANDIDATE_SELECTION_INVALID", "只能导入未登记、待补充或失败的本地日志")
+            raise MeshLocalScanError("CANDIDATE_SELECTION_INVALID", "只能导入未登记、待补充或可重试的本地日志")
+        try:
+            repair_task = self.mesh_derived_data_repair_coordinator.enqueue_if_required(
+                site,
+                operation_kind="mesh_local_scan_import",
+                operation_payload={"scan_id": scan_id, "mappings": prepared},
+            )
+        except MeshDerivedDataMaintenanceError as exc:
+            raise MeshLocalScanError("MESH_REPAIR_START_FAILED", str(exc)) from exc
+        if repair_task is not None:
+            MeshLocalScanService(site, self.paths).set_repair_status(
+                scan_id,
+                (item["candidate_id"] for item in prepared),
+                "waiting_repair",
+                "检测到 MESH 分析数据库需要升级，系统正在自动修复。",
+            )
+            return repair_task
         return self._start_job(
             site,
             task_type="mesh_local_scan_import",

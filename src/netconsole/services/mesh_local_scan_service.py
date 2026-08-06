@@ -200,7 +200,13 @@ class MeshLocalScanService:
         for candidate in candidates:
             if str(candidate.get("candidate_id") or "") not in selected:
                 continue
-            if str(candidate.get("scan_status") or "") in {"unregistered", "needs_metadata", "failed"}:
+            if str(candidate.get("scan_status") or "") in {
+                "unregistered",
+                "needs_metadata",
+                "failed",
+                "parse_failed",
+                "repair_failed",
+            }:
                 candidate["scan_status"] = "ignored"
                 candidate["error_message"] = "已忽略"
         manifest["updated_at"] = self._now()
@@ -260,11 +266,24 @@ class MeshLocalScanService:
                         "SOURCE_INVALID",
                         str(candidate.get("error_message") or "本地日志无效"),
                     )
-                if candidate_status not in {"unregistered", "needs_metadata", "failed"}:
+                if candidate_status not in {
+                    "unregistered",
+                    "needs_metadata",
+                    "failed",  # 兼容升级前的扫描记录
+                    "parse_failed",
+                    "repair_failed",
+                    "repairing",
+                    "queued",
+                }:
                     raise MeshLocalScanError("SOURCE_NOT_IMPORTABLE", "当前本地日志状态不可导入")
                 path = self._resolve_candidate(candidate)
                 if self._sha256(path, should_cancel) != str(candidate.get("sha256") or ""):
                     raise MeshLocalScanError("SOURCE_CHANGED", "本地日志在扫描后发生变化，请重新扫描")
+                candidate["scan_status"] = "parsing"
+                candidate["error_message"] = "正在解析"
+                manifest["updated_at"] = self._now()
+                manifest["stats"] = self._stats(list(candidates.values()))
+                self._write_manifest(manifest)
                 if path.name.casefold().endswith(".zip"):
                     result = self._import_zip(
                         path,
@@ -304,6 +323,8 @@ class MeshLocalScanService:
                 candidate["profile_name"] = profile.display_name
                 candidate["match_status"] = "matched"
                 candidate["error_message"] = ""
+            except MeshSchemaRebuildRequired:
+                raise
             except Exception as exc:
                 if exc.__class__.__name__ == "BackgroundTaskCancelled":
                     raise
@@ -335,6 +356,34 @@ class MeshLocalScanService:
             "failed_files": failed_files,
             "created_session_ids": unique_sessions,
         }
+
+    def set_repair_status(
+        self,
+        scan_id: str,
+        candidate_ids: Iterable[str],
+        status: str,
+        message: str = "",
+    ) -> dict[str, object]:
+        if status not in {"waiting_repair", "repairing", "queued", "parsing", "repair_failed", "parse_failed"}:
+            raise MeshLocalScanError("REPAIR_STATUS_INVALID", "本地日志维护状态无效")
+        selected = {str(value or "") for value in candidate_ids if str(value or "")}
+        if not selected:
+            return self.get_scan(scan_id)
+        manifest = self._read_manifest(scan_id)
+        changed = False
+        for candidate in manifest.get("candidates") or []:
+            if not isinstance(candidate, dict) or str(candidate.get("candidate_id") or "") not in selected:
+                continue
+            candidate["scan_status"] = status
+            candidate["error_message"] = str(message)
+            changed = True
+        if changed:
+            manifest["updated_at"] = self._now()
+            manifest["stats"] = self._stats(
+                [item for item in manifest.get("candidates") or [] if isinstance(item, dict)]
+            )
+            self._write_manifest(manifest)
+        return self.get_scan(scan_id)
 
     def candidate_directory(self, scan_id: str, candidate_id: str) -> Path:
         manifest = self._read_manifest(scan_id)
@@ -582,12 +631,21 @@ class MeshLocalScanService:
         statuses = [str(item.get("scan_status") or "") for item in candidates]
         return {
             "found_count": len(candidates),
-            "unregistered_count": sum(value in {"unregistered", "needs_metadata", "failed"} for value in statuses),
+            "unregistered_count": sum(
+                value in {"unregistered", "needs_metadata", "failed", "parse_failed", "repair_failed"}
+                for value in statuses
+            ),
             "imported_count": statuses.count("imported"),
             "duplicate_count": statuses.count("duplicate"),
             "invalid_count": statuses.count("invalid"),
             "needs_metadata_count": statuses.count("needs_metadata"),
-            "failed_count": statuses.count("failed"),
+            "failed_count": sum(value in {"failed", "parse_failed", "repair_failed"} for value in statuses),
+            "waiting_repair_count": statuses.count("waiting_repair"),
+            "repairing_count": statuses.count("repairing"),
+            "queued_count": statuses.count("queued"),
+            "parsing_count": statuses.count("parsing"),
+            "repair_failed_count": statuses.count("repair_failed"),
+            "parse_failed_count": statuses.count("parse_failed"),
             "ignored_count": statuses.count("ignored"),
         }
 

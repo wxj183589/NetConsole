@@ -354,6 +354,15 @@ const taskActive = computed(() => Boolean(taskCard.value && !terminalStates.has(
 const taskProgress = computed(() => taskCard.value?.progress ?? 0)
 const taskSummary = computed(() => {
   if (!taskCard.value) return ''
+  if (taskCard.value.type === 'mesh_derived_data_repair') {
+    if (taskCard.value.status === 'FAILED') {
+      return '数据库升级未完成，等待重试。原始日志和旧派生数据库均已保留。'
+    }
+    const details = taskCard.value.details || {}
+    if (taskCard.value.status === 'COMPLETED' && Number(details.warning_count || 0) > 0) {
+      return `分析数据库升级完成，${Number(details.skipped_missing_source_count || 0)} 个历史来源因原始文件缺失未恢复，本次已继续导入 ${Number(details.imported_pending_count || details.resumed_count || 0)} 个日志。`
+    }
+  }
   if (taskCard.value.error_summary) return taskCard.value.error_summary
   if (taskCard.value.message) return taskCard.value.message
   const count = Object.keys(taskCard.value.details || {}).length
@@ -391,12 +400,15 @@ const bundleValidationMessage = computed(() => {
 })
 const localScanCandidates = computed(() => localScanResult.value?.candidates || [])
 const localScanImportable = computed(() => localScanCandidates.value.filter((item) => (
-  ['unregistered', 'needs_metadata', 'failed'].includes(item.scan_status)
+  ['unregistered', 'needs_metadata', 'failed', 'parse_failed', 'repair_failed'].includes(item.scan_status)
 )))
 const localScanCanImport = computed(() => Boolean(
   localScanSelected.value.length
   && localScanSelected.value.every((candidateId) => Boolean(localScanMappings[candidateId])),
 ))
+const localScanActionLabel = computed(() => localScanCandidates.value.some((item) => (
+  localScanSelected.value.includes(item.candidate_id) && item.scan_status === 'repair_failed'
+)) ? '重试自动修复' : '导入选中')
 const linkTimeGroups = computed(() => buildMeshTimeGroupClasses(links.value, (row) => `${row.timestamp}::${row.timestamp_tag || ''}`))
 const switchTimeGroups = computed(() => buildMeshTimeGroupClasses(switches.value, (row) => row.timestamp))
 const chartData = computed(() => rssiActivePath.value)
@@ -2635,7 +2647,7 @@ async function loadLocalScanResult(scanId = localScanId.value): Promise<boolean>
     const result = await getMeshLocalScan(scanId)
     localScanId.value = result.scan_id
     localScanResult.value = result
-    const importable = result.candidates.filter((item) => ['unregistered', 'needs_metadata', 'failed'].includes(item.scan_status))
+    const importable = result.candidates.filter((item) => ['unregistered', 'needs_metadata', 'failed', 'parse_failed', 'repair_failed'].includes(item.scan_status))
     localScanSelected.value = importable.map((item) => item.candidate_id)
     for (const item of result.candidates) {
       if (item.profile_id) localScanMappings[item.candidate_id] = item.profile_id
@@ -2679,7 +2691,9 @@ async function importSelectedLocalScan(): Promise<void> {
     )
     rememberTask(created)
     pollTask()
-    ElMessage.success('已提交所选本地 MESH 日志导入任务')
+    ElMessage.success(created.action === 'mesh_derived_data_repair'
+      ? '检测到分析数据库需要升级，系统正在自动修复并将在完成后继续导入。'
+      : '已提交所选本地 MESH 日志导入任务')
   } catch (reason) {
     localScanError.value = reason instanceof Error ? reason.message : '本地 MESH 日志导入启动失败'
   } finally {
@@ -2720,6 +2734,12 @@ function localScanStatusText(status: MeshLocalScanCandidate['scan_status']): str
     invalid: '无效文件',
     needs_metadata: '待补充信息',
     failed: '导入失败，可重试',
+    waiting_repair: '等待分析数据库升级',
+    repairing: '正在自动修复',
+    queued: '等待自动导入',
+    parsing: '正在解析',
+    repair_failed: '数据库升级未完成，等待重试',
+    parse_failed: '日志解析失败，可重试',
     ignored: '已忽略',
   }[status]
 }
@@ -3203,7 +3223,7 @@ async function afterTask(): Promise<void> {
   processedTerminalTaskIds.add(completedTask.task_id)
   if (pendingCompletedTaskId === completedTask.task_id) pendingCompletedTaskId = null
   if (completedTask.status !== 'COMPLETED') {
-    if (['mesh_local_scan', 'mesh_local_scan_import'].includes(completedTask.action)) {
+    if (['mesh_local_scan', 'mesh_local_scan_import', 'mesh_derived_data_repair'].includes(completedTask.action)) {
       localScanImporting.value = false
       const scanId = String(completedTask.result_summary?.scan_id || localScanId.value || '')
       if (scanId) await loadLocalScanResult(scanId)
@@ -3224,6 +3244,14 @@ async function afterTask(): Promise<void> {
     localScanImporting.value = false
     const scanId = String(resultSummary.scan_id || localScanId.value || '')
     if (scanId) await loadLocalScanResult(scanId)
+  }
+  if (completedTask.action === 'mesh_derived_data_repair') {
+    localScanImporting.value = false
+    if (localScanId.value) await loadLocalScanResult(localScanId.value)
+    await refreshOverview(true, true)
+    scheduleCatalogRefresh()
+    await loadProfiles()
+    return
   }
   if (completedTask.action === 'mesh_analysis_source_delete') {
     await refreshOverview(true, true)
@@ -3637,6 +3665,11 @@ function exportTimestamp(now = new Date()): string {
           <el-tag type="info" effect="plain">重复 {{ localScanResult.stats.duplicate_count }}</el-tag>
           <el-tag type="danger" effect="plain">无效 {{ localScanResult.stats.invalid_count }}</el-tag>
           <el-tag effect="plain">待补充 {{ localScanResult.stats.needs_metadata_count }}</el-tag>
+          <el-tag v-if="localScanResult.stats.waiting_repair_count" type="warning" effect="plain">等待升级 {{ localScanResult.stats.waiting_repair_count }}</el-tag>
+          <el-tag v-if="localScanResult.stats.repairing_count" type="warning" effect="plain">正在修复 {{ localScanResult.stats.repairing_count }}</el-tag>
+          <el-tag v-if="localScanResult.stats.queued_count" type="info" effect="plain">等待导入 {{ localScanResult.stats.queued_count }}</el-tag>
+          <el-tag v-if="localScanResult.stats.parsing_count" type="info" effect="plain">正在解析 {{ localScanResult.stats.parsing_count }}</el-tag>
+          <el-tag v-if="localScanResult.stats.repair_failed_count" type="danger" effect="plain">升级失败 {{ localScanResult.stats.repair_failed_count }}</el-tag>
         </div>
         <div class="jump-actions local-scan-toolbar">
           <el-button @click="selectAllLocalScanCandidates">导入全部未登记文件</el-button>
@@ -3646,22 +3679,22 @@ function exportTimestamp(now = new Date()): string {
         <div class="bundle-table-wrap local-scan-table-wrap">
           <table class="bundle-table"><thead><tr><th>选择</th><th>文件</th><th>指纹 / 修改时间</th><th>列车 / MR</th><th>状态</th><th>操作</th></tr></thead><tbody>
             <tr v-for="candidate in localScanCandidates" :key="candidate.candidate_id">
-              <td><el-checkbox :model-value="localScanSelected.includes(candidate.candidate_id)" :disabled="!['unregistered', 'needs_metadata', 'failed'].includes(candidate.scan_status)" @change="(value: string | number | boolean) => toggleLocalScanCandidate(candidate, Boolean(value))" /></td>
+              <td><el-checkbox :model-value="localScanSelected.includes(candidate.candidate_id)" :disabled="!['unregistered', 'needs_metadata', 'failed', 'parse_failed', 'repair_failed'].includes(candidate.scan_status)" @change="(value: string | number | boolean) => toggleLocalScanCandidate(candidate, Boolean(value))" /></td>
               <td><strong>{{ candidate.file_name }}</strong><small>{{ candidate.relative_path }} · {{ candidate.file_size }} B</small></td>
               <td><code>{{ candidate.sha256.slice(0, 16) }}…</code><small>{{ candidate.modified_at }}</small></td>
               <td>
-                <el-select v-model="localScanMappings[candidate.candidate_id]" clearable filterable placeholder="选择 MR" :disabled="!['unregistered', 'needs_metadata', 'failed'].includes(candidate.scan_status)">
+                <el-select v-model="localScanMappings[candidate.candidate_id]" clearable filterable placeholder="选择 MR" :disabled="!['unregistered', 'needs_metadata', 'failed', 'parse_failed', 'repair_failed'].includes(candidate.scan_status)">
                   <el-option v-for="profile in localScanResult.profiles" :key="profile.profile_id" :label="profile.display_name" :value="profile.profile_id" />
                 </el-select>
                 <small>{{ candidate.train_no ? `列车${candidate.train_no}` : '列车待识别' }} · {{ candidate.mr_role || '角色待识别' }}</small>
               </td>
-              <td><el-tag :type="candidate.scan_status === 'invalid' || candidate.scan_status === 'failed' ? 'danger' : candidate.scan_status === 'imported' ? 'success' : 'info'">{{ localScanStatusText(candidate.scan_status) }}</el-tag><small v-if="candidate.error_message">{{ candidate.error_message }}</small></td>
+              <td><el-tag :type="['invalid', 'failed', 'parse_failed', 'repair_failed'].includes(candidate.scan_status) ? 'danger' : candidate.scan_status === 'imported' ? 'success' : 'info'">{{ localScanStatusText(candidate.scan_status) }}</el-tag><small v-if="candidate.error_message">{{ candidate.error_message }}</small></td>
               <td><el-button link type="primary" @click="openLocalScanDirectory(candidate)">打开所在目录</el-button></td>
             </tr>
           </tbody></table>
         </div>
       </template>
-      <template #footer><el-button @click="localScanVisible = false">关闭</el-button><el-button type="primary" :loading="localScanImporting" :disabled="!localScanCanImport" @click="importSelectedLocalScan">导入选中</el-button></template>
+      <template #footer><el-button @click="localScanVisible = false">关闭</el-button><el-button type="primary" :loading="localScanImporting" :disabled="!localScanCanImport" @click="importSelectedLocalScan">{{ localScanActionLabel }}</el-button></template>
     </el-dialog>
 
     <el-dialog v-model="importVisible" title="MESH 原始日志导入" width="min(1180px, 96vw)">

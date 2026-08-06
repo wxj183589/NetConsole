@@ -64,6 +64,8 @@ export interface MeshBundleImportRequest {
 export interface MeshLocalScanStats {
   found_count: number; unregistered_count: number; imported_count: number; duplicate_count: number
   invalid_count: number; needs_metadata_count: number; failed_count: number
+  waiting_repair_count: number; repairing_count: number; repair_failed_count: number; parse_failed_count: number
+  queued_count: number; parsing_count: number; ignored_count: number
 }
 export interface MeshLocalScanProfile { profile_id: string; display_name: string }
 export interface MeshLocalScanCandidate {
@@ -72,6 +74,7 @@ export interface MeshLocalScanCandidate {
   profile_id: string; profile_name: string; train_no: string; mr_role: string
   match_status: 'matched' | 'unmatched' | 'ambiguous'
   scan_status: 'unregistered' | 'imported' | 'duplicate' | 'invalid' | 'needs_metadata' | 'failed' | 'ignored'
+    | 'waiting_repair' | 'repairing' | 'queued' | 'parsing' | 'repair_failed' | 'parse_failed'
   error_message: string; existing_session_id: string; existing_profile_name: string; duplicate_of_candidate_id: string
 }
 export interface MeshLocalScanResult {

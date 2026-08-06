@@ -2285,7 +2285,7 @@ class MeshAnalysisQueryService:
                 )
             )
         except MeshSchemaRebuildRequired as exc:
-            raise MeshAnalysisQueryError(str(exc)) from exc
+            raise MeshAnalysisQueryError("MESH 分析数据库正在自动修复，请稍后刷新结果。") from exc
 
     @staticmethod
     def _chart_repository(context: _SessionContext) -> MeshMrRepository:
@@ -2294,7 +2294,7 @@ class MeshAnalysisQueryService:
         try:
             return MeshMrRepository(context.detail_db, read_only=True)
         except MeshSchemaRebuildRequired as exc:
-            raise MeshAnalysisQueryError(str(exc)) from exc
+            raise MeshAnalysisQueryError("MESH 分析数据库正在自动修复，请稍后刷新结果。") from exc
 
     def _chart_dto(
         self,
