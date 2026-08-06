@@ -49,12 +49,12 @@ WinSCP 动作只允许 Renderer 提交 60 秒有效、一次性消费的 `action
 `YYYY_MM_DD_Nmeshlog.log.gz`，不会创建任务；所有文件统一由“下载选中”提交，且只下载当前明确勾选项。
 车载 MR 的这些日志下载只准备 MR Profile 身份、catalog 与 raw/parsed/export
 目录，不打开或初始化可重建的 MESH 派生 SQLite。旧派生 schema 不再阻断原始日志下载；下载任务完成后，
-自动导入若遇到旧 schema，会单独记录 `MESH_SCHEMA_REBUILD_REQUIRED` / `rebuild_required`，由 MESH 分析页或
-任务中心的 `mesh_schema_rebuild` Job 从受保护 raw 日志重建。
+自动导入若遇到旧 schema，会把文件保留在 raw 并直接复用内部派生数据维护服务完成备份、重建和校验。
+修复完成后会继续原导入，不把数据库维护问题显示为普通日志解析失败，也不要求用户执行 Python 命令或退出软件。
 
 车载 MR 的 raw 文件在下载任务完成并通过大小/SHA-256 校验后，直接以受管 raw 路径登记为
 `device_download` 来源并提交既有 MESH 导入服务，不复制第二份文件。下载状态与分析状态分离：下载保持
-`COMPLETED`，导入可独立处于 `pending`、`completed`、`duplicate` 或 `failed`；导入失败仍保留 raw，
+`COMPLETED`，导入可独立处于 `pending`、`completed`、`duplicate`、`failed` 或 `repair_failed`；导入失败仍保留 raw，
 可在队列中重新导入。MESH 分析页的“扫描本地日志”是补偿机制，只扫描当前局点
 `rail_transit/mr_raw_mesh/**/raw/**`，递归识别 `.log`、`.log.gz`、`.zip`，按文件大小、mtime 和 SHA-256
 增量去重并复用同一导入服务，不访问其他局点。

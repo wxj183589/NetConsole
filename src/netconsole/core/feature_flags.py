@@ -5,6 +5,7 @@ import os
 import hashlib
 import hmac
 import secrets
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -14,7 +15,9 @@ from netconsole.core.feature_registry import (
     FEATURE_BY_ID,
     FeatureItem,
     FeatureStatus,
+    ancestors_of,
     children_of,
+    delivery_dependencies_of,
     dependencies_of,
     list_features,
 )
@@ -81,13 +84,11 @@ PACKAGED_PRODUCTION_FEATURE_IDS = PACKAGED_CORE_FEATURE_IDS | frozenset(
         "web.online_mr_parse",
         "web.online_mr_realtime",
         "web.online_mr_report_export",
-        "web.rail_task_control",
         "web.rail_trackside_ap_business",
         "web.rail_trackside_ap_business_export",
         "web.rail_trackside_ap_plan",
         "web.rail_trackside_ap_plan_export",
         "web.rail_trackside_ap_plan_write",
-        "web.rail_train_online",
         "web.rail_train_online_collect",
         "web.rail_train_online_history_export",
         "web.rail_train_online_mapping_export",
@@ -100,6 +101,9 @@ PACKAGED_PRODUCTION_FEATURE_IDS = PACKAGED_CORE_FEATURE_IDS | frozenset(
         "mesh.generate_report",
     }
 )
+PACKAGED_ENABLED_ONLY_FEATURE_IDS = frozenset(
+    {"web.rail_task_control", "web.rail_train_online"}
+)
 FEATURE_STATE_KEYS = ("visible", "enabled", "client_package", "internal_only")
 FEATURE_PROFILE_SCHEMA_VERSION = 2
 LEGACY_FORMALIZED_FEATURE_IDS = frozenset(
@@ -110,6 +114,15 @@ LEGACY_FORMALIZED_FEATURE_IDS = frozenset(
         "web.rail_trackside_ap_business_update",
     }
 )
+
+
+@dataclass(frozen=True)
+class FeatureDependencyIssue:
+    feature_id: str
+    dependency_id: str
+    issue_type: str
+    message: str
+    auto_fix: str | None
 
 
 def project_root() -> Path:
@@ -672,6 +685,126 @@ def validate_feature_states(features: dict[str, dict[str, bool]]) -> str:
     return ""
 
 
+def feature_dependency_issues(
+    features: dict[str, dict[str, bool]],
+    *,
+    target: str,
+) -> list[FeatureDependencyIssue]:
+    normalized = normalize_feature_states(features)
+    issues: list[FeatureDependencyIssue] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    def append(
+        item: FeatureItem,
+        dependency_id: str,
+        issue_type: str,
+        message: str,
+        *,
+        delivery: bool,
+    ) -> None:
+        key = (item.feature_id, dependency_id, issue_type)
+        if key in seen:
+            return
+        seen.add(key)
+        dependency = FEATURE_BY_ID[dependency_id]
+        fixable = not (
+            dependency.internal_only
+            or dependency.status is not FeatureStatus.ENABLED
+        )
+        issues.append(
+            FeatureDependencyIssue(
+                feature_id=item.feature_id,
+                dependency_id=dependency_id,
+                issue_type=issue_type,
+                message=message,
+                auto_fix=(
+                    "include_dependency_hidden"
+                    if delivery and fixable
+                    else "enable_dependency_hidden"
+                    if fixable
+                    else None
+                ),
+            )
+        )
+
+    for item in list_features():
+        state = normalized[item.feature_id]
+        if state["enabled"]:
+            for dependency_id in dependencies_of(item.feature_id):
+                if normalized[dependency_id]["enabled"]:
+                    continue
+                append(
+                    item,
+                    dependency_id,
+                    "runtime_dependency_disabled",
+                    f"{item.feature_id} 需要已启用的 {dependency_id}",
+                    delivery=False,
+                )
+
+        if target != "customer" or not state["client_package"]:
+            continue
+        if item.internal_only or item.status is not FeatureStatus.ENABLED:
+            append(
+                item,
+                item.feature_id,
+                "forbidden_feature_delivery",
+                f"{item.feature_id} 是内部或非正式功能，不能进入客户版",
+                delivery=True,
+            )
+            continue
+        for parent_id in ancestors_of(item.feature_id):
+            if normalized[parent_id]["client_package"]:
+                continue
+            append(
+                item,
+                parent_id,
+                "delivery_parent_missing",
+                f"{item.feature_id} 的交付父级 {parent_id} 未纳入客户版",
+                delivery=True,
+            )
+        for dependency_id in delivery_dependencies_of(item.feature_id):
+            if normalized[dependency_id]["client_package"]:
+                continue
+            append(
+                item,
+                dependency_id,
+                "delivery_dependency_missing",
+                f"{item.feature_id} 的交付依赖 {dependency_id} 未纳入客户版",
+                delivery=True,
+            )
+    return issues
+
+
+def auto_fix_feature_dependencies(
+    features: dict[str, dict[str, bool]],
+    *,
+    target: str,
+) -> dict[str, dict[str, bool]]:
+    fixed = normalize_feature_states(features)
+    for _attempt in range(len(FEATURE_BY_ID) + 1):
+        issues = feature_dependency_issues(fixed, target=target)
+        fixable = [issue for issue in issues if issue.auto_fix]
+        if not fixable:
+            return fixed
+        changed = False
+        for issue in fixable:
+            dependency = fixed[issue.dependency_id]
+            if issue.auto_fix == "include_dependency_hidden":
+                requested = {
+                    "visible": False,
+                    "enabled": True,
+                    "client_package": True,
+                }
+            else:
+                requested = {"visible": False, "enabled": True}
+            if any(dependency[key] != value for key, value in requested.items()):
+                dependency.update(requested)
+                changed = True
+        if not changed:
+            return fixed
+    raise ValueError("功能依赖自动修复未能收敛")
+
+
 def load_runtime_feature_overrides(path: Path) -> dict[str, dict[str, bool]]:
     data = _read_json(path) if path.exists() else {}
     result: dict[str, dict[str, bool]] = {}
@@ -712,6 +845,60 @@ def default_profile(profile: str) -> dict[str, Any]:
     for item in list_features():
         features[item.feature_id] = default_feature_state(item)
     return {"schema_version": FEATURE_PROFILE_SCHEMA_VERSION, "profile": profile, "features": features}
+
+
+def validate_feature_profile_payload(
+    payload: dict[str, Any],
+    *,
+    profile: str,
+) -> list[str]:
+    errors: list[str] = []
+    if payload.get("profile") != profile:
+        errors.append(
+            f"profile identity mismatch: expected={profile} actual={payload.get('profile')!r}"
+        )
+    raw_features = payload.get("features")
+    if not isinstance(raw_features, dict):
+        return [*errors, "features must be an object"]
+    unknown = sorted(set(raw_features) - set(FEATURE_BY_ID))
+    errors.extend(f"unknown feature: {feature_id}" for feature_id in unknown)
+    for feature_id, raw_state in raw_features.items():
+        if feature_id not in FEATURE_BY_ID:
+            continue
+        if not isinstance(raw_state, dict):
+            errors.append(f"{feature_id}: state must be an object")
+            continue
+        for key in FEATURE_STATE_KEYS:
+            if not isinstance(raw_state.get(key), bool):
+                errors.append(f"{feature_id}: {key} must be boolean")
+        item = FEATURE_BY_ID[feature_id]
+        if raw_state.get("client_package") is True and (
+            item.internal_only or item.status is not FeatureStatus.ENABLED
+        ):
+            errors.append(
+                f"{feature_id}: internal/development/disabled feature leaked into customer delivery"
+            )
+    if profile == "customer":
+        for feature_id in sorted(PACKAGED_CORE_FEATURE_IDS):
+            state = raw_features.get(feature_id)
+            if not isinstance(state, dict) or not all(
+                state.get(key) is True
+                for key in ("visible", "enabled", "client_package")
+            ):
+                errors.append(
+                    f"{feature_id}: packaged core feature must remain visible, enabled, and delivered"
+                )
+    if errors:
+        return errors
+    normalized = normalize_feature_states(raw_features)
+    state_error = validate_feature_states(normalized)
+    if state_error:
+        errors.append(state_error)
+    errors.extend(
+        issue.message
+        for issue in feature_dependency_issues(normalized, target=profile)
+    )
+    return errors
 
 
 def load_profile(path: Path, profile: str) -> dict[str, dict[str, bool]]:

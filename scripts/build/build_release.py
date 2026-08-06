@@ -10,6 +10,8 @@ import zipfile
 from pathlib import Path
 
 from netconsole.core.feature_flags import (
+    PACKAGED_CORE_FEATURE_IDS,
+    PACKAGED_ENABLED_ONLY_FEATURE_IDS,
     PACKAGED_PRODUCTION_FEATURE_IDS,
     FeatureGate,
     engineer_package_enabled,
@@ -361,10 +363,12 @@ def validate_customer_feature_gate(gate: FeatureGate) -> None:
             raise BuildError(f"Customer build exposes {feature_id}")
     expected = load_profile(profiles_dir() / "customer.json", "customer")
     for feature_id, state in expected.items():
-        if not state.get("visible", True) and gate.is_visible(feature_id):
-            raise BuildError(f"Customer build exposes hidden feature: {feature_id}")
-        if not state.get("enabled", True) and gate.is_enabled(feature_id):
-            raise BuildError(f"Customer build enables disabled feature: {feature_id}")
+        if gate.is_visible(feature_id) is not state["visible"]:
+            raise BuildError(f"Customer build visibility mismatch: {feature_id}")
+        if gate.is_enabled(feature_id) is not state["enabled"]:
+            raise BuildError(f"Customer build enabled state mismatch: {feature_id}")
+        if gate.is_in_client_package(feature_id) is not state["client_package"]:
+            raise BuildError(f"Customer build delivery state mismatch: {feature_id}")
     for item in list_features():
         if item.internal_only and (
             gate.is_visible(item.feature_id) or gate.is_enabled(item.feature_id)
@@ -375,9 +379,18 @@ def validate_customer_feature_gate(gate: FeatureGate) -> None:
 
 
 def validate_packaged_core_features(gate: FeatureGate) -> None:
-    for feature_id in PACKAGED_PRODUCTION_FEATURE_IDS:
+    required_visible = (
+        PACKAGED_CORE_FEATURE_IDS
+        if gate.profile == "customer"
+        else PACKAGED_PRODUCTION_FEATURE_IDS
+    )
+    for feature_id in required_visible:
         if not gate.is_visible(feature_id) or not gate.is_enabled(feature_id):
             raise BuildError(f"Packaged build disables production feature: {feature_id}")
+    if gate.profile != "customer":
+        for feature_id in PACKAGED_ENABLED_ONLY_FEATURE_IDS:
+            if not gate.is_enabled(feature_id):
+                raise BuildError(f"Packaged build disables hidden production capability: {feature_id}")
     for item in list_features():
         if item.internal_only or item.status in {
             FeatureStatus.DISABLED,

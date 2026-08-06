@@ -16,6 +16,9 @@ from uuid import uuid4
 
 from netconsole.adapters.trackside_switch import resolve_trackside_switch_adapter
 from netconsole.application.web_artifacts import ReservedWebArtifact, WebArtifactError, WebArtifactStore
+from netconsole.application.rail_transit.mesh_derived_data_repair_coordinator import (
+    MeshDerivedDataRepairCoordinator,
+)
 from netconsole.application.web_export_process_adapter import WebExportProcessAdapter
 from netconsole.core.database import Database
 from netconsole.core import app_logger
@@ -192,6 +195,7 @@ class RailTransitWebApplicationService:
         "mesh_local_scan": "扫描本地 MESH 日志",
         "mesh_local_scan_import": "补录本地 MESH 日志",
         "mesh_schema_rebuild": "MESH 派生数据库重建",
+        "mesh_derived_data_repair": "自动修复 MESH 分析数据库",
         "mesh_source_rebuild": "MESH 当前来源恢复与重新解析",
         "mesh_analysis_source_delete": "删除 MESH 来源及解析结果",
         "car_network_diagnostic": "车内通信检测",
@@ -285,6 +289,11 @@ class RailTransitWebApplicationService:
         self.mesh_query_service = mesh_query_service or MeshAnalysisQueryService(paths)
         self.vehicle_mr_online_query_service = vehicle_mr_online_query_service or VehicleMrOnlineQueryService(paths)
         self.artifact_store = artifact_store or WebArtifactStore(paths, task_service)
+        self.mesh_derived_data_repair_coordinator = MeshDerivedDataRepairCoordinator(
+            paths,
+            task_service,
+            process_adapter,
+        )
         self._trackside_online_cache: dict[
             str,
             tuple[str, TracksideApOnlineStatusDTO],
@@ -373,10 +382,22 @@ class RailTransitWebApplicationService:
                 "linked_device_id": profile.linked_device_id,
                 "notes": profile.notes,
             }
+            repair_task = self.mesh_derived_data_repair_coordinator.enqueue_if_required(
+                site_id,
+                operation_kind="mesh_log_import",
+                operation_payload={"profile": profile_payload, "files": [str(path) for path in staged]},
+            )
+            if repair_task is not None:
+                return repair_task
             return self._start_task(
                 site_id,
                 "mesh_log_import",
-                {"profile": profile_payload, "files": [str(path) for path in staged]},
+                {
+                    "profile": profile_payload,
+                    "files": [str(path) for path in staged],
+                    "resource_keys": [f"mesh-import:{site_id}"],
+                    "resource_conflict_message": "当前局点已有 MESH 导入任务正在运行",
+                },
                 on_complete=lambda _value: self._cleanup_staging(site_id, staging_dir),
             )
         except Exception:
@@ -3368,6 +3389,7 @@ class RailTransitWebApplicationService:
             "mesh_log_import",
             "mesh_bundle_import",
             "mesh_schema_rebuild",
+            "mesh_derived_data_repair",
             "mesh_source_rebuild",
             "mesh_analysis_source_delete",
             "web_export_mesh_analysis_report",
@@ -3784,6 +3806,9 @@ class RailTransitWebApplicationService:
             "deleted_file_count", "missing_file_count", "deleted_reports",
             "parsed_links", "parsed_events", "parsed_issues", "source_file_id",
             "scanned_count", "valid_command_count", "blocking_error_count",
+            "business_status", "repair_mode", "rebuilt_source_count", "skipped_missing_source_count",
+            "pending_import_count", "imported_pending_count", "failed_pending_count", "resumed_count", "warning_count",
+            "archive_created", "failed_stage",
             "snapshot_id", "business_revision", "export_revision",
             "content_sha256", "export_content_sha256", "snapshot_created_at",
             "export_kind", "identity_revision", "abnormal_count",
