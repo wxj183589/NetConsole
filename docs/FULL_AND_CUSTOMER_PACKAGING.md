@@ -59,7 +59,7 @@ pnpm package:customer
 
 项目根目录的 `一键打包安装包.cmd` 是面向 Windows 用户的双击入口。它只负责定位仓库、初始化 UTF-8 控制台并调用 `scripts/build/package_local.ps1`；正式构建、版本注入和安装包 Gate 仍由 `scripts/build/package_windows.ps1` 及现有 `package:full`、`package:customer`、`package:all` 完成。
 
-机器需要安装 Git、包含 Corepack 的 Node.js 24 和项目 `.venv`，无需另外全局安装 pnpm。脚本优先使用当前 `PATH` 中的 `pnpm.cmd`；未找到时通过 Node 同目录的 Corepack 调用固定 `pnpm@11.16.0`，并在 `dist/_build` 创建仅供本轮子进程继承的临时代理。构建结束或失败后会恢复进程原始 `PATH` 并删除代理，不执行 `corepack enable`、全局 npm 安装或系统环境变量修改。如果 Node 不含 Corepack，环境预检会在测试和构建前明确停止。
+机器需要安装 Git、包含 Corepack 的 Node.js 24 和项目 `.venv`，无需另外全局安装 pnpm。脚本优先使用当前 `PATH` 中的 `pnpm.cmd`；未找到时通过 Node 同目录的 Corepack 调用固定 `pnpm@11.16.0`，并在不会被正式构建清理的 `dist/_package_tool_shims` 中创建仅供本轮子进程继承的临时代理，同时把代理绝对路径显式传给嵌套安装器构建进程。构建结束或失败后会恢复进程原始 `PATH` 和相关进程环境，并删除代理及空容器目录，不执行 `corepack enable`、全局 npm 安装或系统环境变量修改。如果 Node 不含 Corepack，环境预检会在测试和构建前明确停止。
 
 普通使用时直接双击脚本，默认生成 Full 和 Customer 两个版本。也可以从命令行选择单个版本或只做预检：
 

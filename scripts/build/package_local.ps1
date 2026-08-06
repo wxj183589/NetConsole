@@ -77,9 +77,9 @@ function Resolve-PnpmCommand {
         $corepackPath = $corepack.Source
     }
 
-    $buildRoot = Join-Path $ProjectRoot "dist\_build"
-    New-Item -ItemType Directory -Path $buildRoot -Force | Out-Null
-    $shimRoot = Join-Path $buildRoot ("package-tool-shim-" + [guid]::NewGuid().ToString("N"))
+    $shimContainer = Join-Path $ProjectRoot "dist\_package_tool_shims"
+    New-Item -ItemType Directory -Path $shimContainer -Force | Out-Null
+    $shimRoot = Join-Path $shimContainer ("package-tool-shim-" + [guid]::NewGuid().ToString("N"))
     New-Item -ItemType Directory -Path $shimRoot | Out-Null
     $shimPath = Join-Path $shimRoot "pnpm.cmd"
     $shimContent = @(
@@ -652,13 +652,21 @@ finally {
     }
     if ($null -ne $pnpmShimRoot) {
         [Environment]::SetEnvironmentVariable("PATH", $originalProcessPath, "Process")
-        $resolvedBuildRoot = [System.IO.Path]::GetFullPath((Join-Path $projectRoot "dist\_build"))
+        $resolvedShimContainer = [System.IO.Path]::GetFullPath(
+            (Join-Path $projectRoot "dist\_package_tool_shims")
+        )
         $resolvedShimRoot = [System.IO.Path]::GetFullPath($pnpmShimRoot)
         if (
-            [System.IO.Path]::GetDirectoryName($resolvedShimRoot) -eq $resolvedBuildRoot -and
+            [System.IO.Path]::GetDirectoryName($resolvedShimRoot) -eq $resolvedShimContainer -and
             [System.IO.Path]::GetFileName($resolvedShimRoot).StartsWith("package-tool-shim-", [StringComparison]::Ordinal)
         ) {
             Remove-Item -LiteralPath $resolvedShimRoot -Recurse -Force -ErrorAction SilentlyContinue
+            if (
+                (Test-Path -LiteralPath $resolvedShimContainer -PathType Container) -and
+                @(Get-ChildItem -LiteralPath $resolvedShimContainer -Force).Count -eq 0
+            ) {
+                Remove-Item -LiteralPath $resolvedShimContainer -Force -ErrorAction SilentlyContinue
+            }
         }
     }
     if ($originalPasswordPresent) {
