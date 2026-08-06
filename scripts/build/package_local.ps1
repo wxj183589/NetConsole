@@ -24,7 +24,8 @@ function Write-Stage {
         [Parameter(Mandatory = $true)][string]$Message
     )
 
-    Write-Host "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') [$Number/8] $Message" -ForegroundColor Cyan
+    $script:CurrentStage = "[$Number/8] $Message"
+    Write-Host "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $script:CurrentStage" -ForegroundColor Cyan
 }
 
 function Write-StageComplete {
@@ -392,6 +393,7 @@ $originalPassword = if ($originalPasswordPresent) { [Environment]::GetEnvironmen
 $startedAt = Get-Date
 $logPath = $null
 $stagingRoot = $null
+$script:CurrentStage = "初始化"
 
 try {
     $scriptDirectory = Split-Path -Parent $PSCommandPath
@@ -544,7 +546,9 @@ try {
 }
 catch {
     Write-Host ""
-    Write-Error "自动打包失败：$($_.Exception.Message)"
+    $failedAt = Get-Date
+    $duration = [math]::Round(($failedAt - $startedAt).TotalSeconds, 3)
+    Write-Error "自动打包失败（阶段：$script:CurrentStage，总耗时：${duration}s）：$($_.Exception.Message)"
     if ($null -ne $logPath) {
         Write-Host "失败日志：$logPath" -ForegroundColor Yellow
     }
