@@ -1416,7 +1416,7 @@ def _collect_one_target(
             connection,
             artifact_dir=artifact_dir,
             cancel_check=(cancel_event.is_set if cancel_event is not None else None),
-            optical_fast_only=(str(current_device.device_vendor or "").casefold() == "zte"),
+            optical_fast_only=(current_device.vendor_key == "zte"),
         )
         raw_log_path = str(artifact_dir or "")
         rows = [
@@ -1633,7 +1633,7 @@ def _result_row(
     raw_log_path: str = "",
 ) -> dict[str, object | None]:
     collected_at = _now()
-    if str(target.device.device_vendor or "").strip().casefold() == "zte":
+    if target.device.vendor_key == "zte":
         parsed = normalize_zte_optical_record(parsed)
         collector_status = str(parsed.get("status") or "").strip().casefold()
         severity = compute_zte_optical_severity(parsed).severity

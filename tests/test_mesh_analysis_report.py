@@ -776,6 +776,26 @@ def test_quality_switch_late_weak_target_and_flap_detection():
     assert late_switches[0]["switch_type"] in {"LATE_SWITCH", "WEAK_TARGET_SWITCH"}
 
 
+def test_quality_switch_with_missing_target_rssi_does_not_raise():
+    rules = MeshQualityRules(
+        switch_late_window_seconds=5,
+        switch_target_window_seconds=5,
+        short_active_segment_seconds=0,
+    )
+    rows = normalize_samples(
+        [
+            _row("2025-12-03 10:02:00", PEER_A, "ACTIVE", mr_rssi=40),
+            _row("2025-12-03 10:02:01", PEER_B, "ACTIVE", mr_rssi=None),
+        ]
+    )
+    samples = build_sample_quality(rows, rules)
+    segments = build_quality_active_segments(samples, rows, rules)
+
+    events = analyze_switch_events(segments, samples, rules)
+
+    assert events
+
+
 def test_quality_switch_long_return_is_not_pingpong_abnormal():
     rules = MeshQualityRules(
         switch_late_window_seconds=5,

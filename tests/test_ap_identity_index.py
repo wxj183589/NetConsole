@@ -336,6 +336,55 @@ def test_base_data_alone_resolves_exact_h3c_radio_alias(tmp_path: Path) -> None:
     assert match.radio_id == 1
 
 
+def test_ap_identity_uses_lldp_switch_station_without_base_record(tmp_path: Path) -> None:
+    database, repository, service = _fixture(tmp_path)
+    repository.replace_fit_ap_resources(
+        "ac-1",
+        [
+            {
+                "ap_uuid": "ap-live",
+                "ap_name": "AP-LIVE",
+                "ap_mac": "74ad-cb9d-3320",
+                "site": "",
+            }
+        ],
+    )
+    with database.connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO devices (
+                device_uuid, name, device_vendor, device_type, primary_address,
+                created_at, updated_at
+            ) VALUES ('ac-1', 'AC-1', 'H3C', 'AC', '10.0.0.1', '', '')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO devices (
+                device_uuid, name, station, station_id, device_type,
+                primary_address, created_at, updated_at
+            ) VALUES ('switch-live', 'SW-LIVE', '现场站', '', 'SWITCH', '10.0.0.10', '', '')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO device_lldp_neighbors (
+                device_uuid, local_interface, neighbor_mac, collected_at,
+                collect_run_uuid, updated_at
+            ) VALUES ('switch-live', 'GigabitEthernet1/0/1', '74ad-cb9d-3320', '', 'run-1', '')
+            """
+        )
+        connection.commit()
+
+    service.rebuild_index("lldp_topology")
+    match = service.resolve_peer_mac("74ad-cb9d-332f", ap_role="trackside")
+
+    assert match.status == "matched"
+    assert match.station == "现场站"
+    assert match.station_source == "lldp_switch"
+    assert match.topology_warning == ""
+
+
 def test_offline_fit_ap_keeps_exact_h3c_radio2_alias(tmp_path: Path) -> None:
     database, repository, service = _fixture(tmp_path)
     with database.connect() as connection:

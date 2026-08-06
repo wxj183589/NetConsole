@@ -21,6 +21,7 @@ from scripts.build.prepare_electron_edition import (
 EDITION_SELECTIONS = (*BUILD_EDITIONS, "both")
 EDITION_LABELS = {"full": "Full", "customer": "Customer"}
 BACKEND_STAGING = installer.DESKTOP_ROOT / "dist" / "package-resources" / "backend"
+PNPM_PATH_ENV = "NETCONSOLE_PNPM_PATH"
 
 
 class EditionInstallerError(RuntimeError):
@@ -55,7 +56,7 @@ def build_edition_installers(selection: str) -> list[dict[str, Any]]:
 
     installer.require_clean_synced_git()
     installer.clean_installer_outputs()
-    pnpm = shutil.which("pnpm.cmd") or shutil.which("pnpm")
+    pnpm = _resolve_pnpm_command()
     node = shutil.which("node.exe") or shutil.which("node")
     if pnpm is None or node is None:
         raise EditionInstallerError("构建安装器需要项目环境中的 pnpm 和 Node.js")
@@ -148,6 +149,18 @@ def build_edition_installers(selection: str) -> list[dict[str, Any]]:
             shutil.copy2(path, installer.ELECTRON_DIST / path.name)
 
     return results
+
+
+def _resolve_pnpm_command() -> str | None:
+    configured = os.environ.get(PNPM_PATH_ENV, "").strip()
+    if configured:
+        candidate = Path(configured)
+        if not candidate.is_file():
+            raise EditionInstallerError(
+                f"{PNPM_PATH_ENV} 指向的 pnpm 不存在：{candidate}"
+            )
+        return str(candidate.resolve())
+    return shutil.which("pnpm.cmd") or shutil.which("pnpm")
 
 
 def _selected_editions(selection: str) -> tuple[str, ...]:

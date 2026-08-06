@@ -117,7 +117,7 @@ def collect_h3c_device_details(
     device.ensure_device_uuid()
     collect_run_uuid = str(uuid4())
     started_at = _now()
-    persist_raw_logs = _persist_raw_logs() or str(device.device_vendor).casefold() == "zte"
+    persist_raw_logs = _persist_raw_logs() or device.vendor_key == "zte"
     run_dir = paths.config_center_raw_logs_root(site_name) / "collect" / collect_run_uuid
     raw_log_file = run_dir / f"{device.device_uuid}.log"
     commands_file = run_dir / f"{device.device_uuid}_commands.jsonl"
@@ -259,7 +259,7 @@ def collect_h3c_device_details(
             )
             command_results.append(result)
             if (
-                str(device.device_vendor or "").strip().casefold() == "zte"
+                device.vendor_key == "zte"
                 and not result.success
                 and step.selector
                 in {
@@ -272,14 +272,14 @@ def collect_h3c_device_details(
             if result.success:
                 outputs[step.selector] = result.output
                 if (
-                    str(device.device_vendor or "").strip().casefold() == "zte"
+                    device.vendor_key == "zte"
                     and step.selector == "inventory.version"
                     and parse_zte_device_identity(result.output).status != "OK"
                 ):
                     raise ValueError("ZTE_DEVICE_NOT_RECOGNIZED")
         if (
             include_zte_optical_detail
-            and str(device.device_vendor or "").strip().casefold() == "zte"
+            and device.vendor_key == "zte"
             and outputs.get("inventory.optical_brief")
         ):
             optical_step = next(
@@ -331,7 +331,7 @@ def collect_h3c_device_details(
                         outputs[detail_selector] = detail_result.output
         _write_raw_files(raw_log_file, commands_file, device, target.protocol, collect_run_uuid, command_results, target_protocol=target.protocol)
         write_result = _parse_and_write(repository, device, collect_run_uuid, relative_raw_log_path, outputs, progress_callback=progress_callback)
-        if str(device.device_vendor or "").strip().casefold() == "zte":
+        if device.vendor_key == "zte":
             _write_zte_vlan_artifacts(
                 run_dir,
                 command_results,
@@ -409,7 +409,7 @@ def _run_command(
         )
     app_logger.log_info("COMMAND_ALLOWED", _detail(device, collect_run_uuid, command=command))
     try:
-        if str(device.device_vendor or "").strip().casefold() == "zte":
+        if device.vendor_key == "zte":
             paged_output = safe_send_command_with_paging(
                 connection,
                 command,
@@ -467,7 +467,7 @@ def _run_command(
             ended_at=_now(),
             page_count=(
                 paged_output.page_count
-                if str(device.device_vendor or "").strip().casefold() == "zte"
+                if device.vendor_key == "zte"
                 else 1
             ),
             output_size=len(raw_output.encode("utf-8", errors="replace")),
@@ -483,7 +483,7 @@ def _run_command(
         ended_at=_now(),
         page_count=(
             paged_output.page_count
-            if str(device.device_vendor or "").strip().casefold() == "zte"
+                if device.vendor_key == "zte"
             else 1
         ),
         output_size=len(raw_output.encode("utf-8", errors="replace")),
@@ -551,7 +551,7 @@ def _parse_and_write(
     _emit_progress(progress_callback, 85, "batch_collect.stage.parsing")
     collected_at = _now()
     metadata = {"collected_at": collected_at, "updated_at": collected_at, "collect_run_uuid": collect_run_uuid, "raw_log_path": raw_log_path}
-    if str(device.device_vendor or "").strip().casefold() == "zte":
+    if device.vendor_key == "zte":
         return _parse_zte_and_write(
             repository,
             device,
@@ -680,7 +680,7 @@ def _write_raw_files(
     fatal_error: str | None = None,
     disconnected_at: str | None = None,
 ) -> None:
-    if not _persist_raw_logs() and str(device.device_vendor).casefold() != "zte":
+    if not _persist_raw_logs() and device.vendor_key != "zte":
         return
     raw_log_file.parent.mkdir(parents=True, exist_ok=True)
     lines = [

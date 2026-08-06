@@ -56,7 +56,7 @@ def test_ac_query_service_reads_summary_filters_and_details_without_writes(tmp_p
     assert all(radio.radio_id != 3 for radio in detail.radios)
     assert [radio.clients for radio in detail.radios] == [3, 1]
     assert detail.ap.station == "车站B"
-    assert detail.ap.station_source == "metadata"
+    assert detail.ap.station_source == "resource"
     assert "serial" not in str(detail.model_dump()).casefold()
     assert "SECRET-SN" not in str(detail.model_dump())
     assert _fingerprint(db_path) == before

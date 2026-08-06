@@ -1,4 +1,5 @@
 # 版本化运行工具的来源、许可证和合规材料参与发布哈希，必须跨平台保持字节稳定。
+*.cmd text eol=crlf
 resources/tools/**/*.md text eol=lf
 resources/tools/**/*.txt text eol=lf
 resources/tools/**/*.txt whitespace=-blank-at-eol,-blank-at-eof

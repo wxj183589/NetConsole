@@ -1,6 +1,7 @@
 import csv
 import sqlite3
 from datetime import datetime
+from pathlib import Path
 
 import pytest
 
@@ -748,9 +749,37 @@ def test_zte_ac_is_a_structured_row_error(tmp_path):
     preview = service.preview_csv(source)
 
     assert preview.total_rows == 1
-    assert preview.valid_rows == 0
-    assert preview.invalid_rows == 1
-    assert preview.vendor_summary == {"ZTE": 1}
-    assert preview.errors[0].line == 2
-    assert preview.errors[0].field == "设备类型"
-    assert preview.errors[0].message == "当前版本尚未适配 ZTE 无线控制器"
+    assert preview.valid_rows == 1
+    assert preview.invalid_rows == 0
+    assert preview.vendor_summary == {"中兴": 1}
+    assert preview.collection_supported_rows == 0
+    assert preview.collection_unsupported_rows == 1
+
+
+@pytest.mark.parametrize("vendor", ["Huawei", "华为", "Mexon", "兆越", "现场自研"])
+def test_unsupported_vendor_import_preserves_raw_value_and_roundtrips(
+    tmp_path: Path, vendor: str
+) -> None:
+    repository, _groups, service = make_group_service(tmp_path)
+    source = tmp_path / "unsupported-vendor.csv"
+    row = sanitized_mixed_vendor_rows()[:1][0]
+    row[LEGACY_TEMPLATE_FIELDS.index("设备名称")] = f"{vendor}-设备"
+    ip_octet = {"Huawei": 20, "华为": 21, "Mexon": 22, "兆越": 23, "现场自研": 24}[vendor]
+    row[LEGACY_TEMPLATE_FIELDS.index("主用地址")] = f"192.0.2.{ip_octet}"
+    row[LEGACY_TEMPLATE_FIELDS.index("厂商")] = vendor
+    write_rows(source, [LEGACY_TEMPLATE_FIELDS, row], encoding="utf-8-sig")
+
+    preview = service.preview_csv(source)
+    result = service.import_csv_atomic(source)
+
+    assert preview.valid_rows == 1
+    assert preview.collection_supported_rows == 0
+    assert preview.collection_unsupported_rows == 1
+    assert result.created == 1
+    device = repository.list()[0]
+    assert device.device_vendor == vendor
+
+    exported = tmp_path / "roundtrip.csv"
+    service.export_csv(exported, include_sensitive=False)
+    exported_rows = read_csv(exported)
+    assert exported_rows[1][DEVICE_CSV_COLUMNS.index("厂商")] == vendor

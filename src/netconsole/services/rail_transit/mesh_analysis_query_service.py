@@ -1073,10 +1073,28 @@ class MeshAnalysisQueryService:
         with closing(self._connect_readonly(context.detail_db)) as conn:
             total = int(conn.execute(f"SELECT COUNT(*) FROM switch_events {where}", values).fetchone()[0] or 0)
             rows = conn.execute(f"SELECT * FROM switch_events {where} ORDER BY event_time, id LIMIT ? OFFSET ?", (*values, size, offset)).fetchall()
+            link_columns = self._table_columns(conn, "mesh_links")
+            peer_identity_select = ", ".join(
+                (
+                    f"MAX({column}) AS {alias}"
+                    if column in link_columns
+                    else f"NULL AS {alias}"
+                )
+                for column, alias in (
+                    ("peer_mac_raw", "peer_mac_raw"),
+                    ("peer_radio_mac", "peer_radio_mac"),
+                    ("peer_match_rule", "peer_match_rule"),
+                    ("peer_match_confidence", "peer_match_confidence"),
+                    ("peer_resolve_source", "peer_resolve_source"),
+                    ("peer_identity_status", "peer_identity_status"),
+                    ("peer_identity_source", "peer_identity_source"),
+                    ("peer_identity_reason", "peer_identity_reason"),
+                )
+            )
             peer_rows = conn.execute(
-                """
+                f"""
                 SELECT peer_mac_normalized, MAX(peer_ap_name) AS peer_ap_name, MAX(peer_ap_mac) AS peer_ap_mac,
-                       MAX(peer_site) AS peer_site
+                       MAX(peer_site) AS peer_site, {peer_identity_select}
                 FROM mesh_links WHERE COALESCE(peer_mac_normalized, '') != '' GROUP BY peer_mac_normalized
                 """
             ).fetchall()
@@ -1091,8 +1109,12 @@ class MeshAnalysisQueryService:
             build = build_by_start.get(str(data.get("current_sample_time") or data.get("event_time") or ""), {})
             from_peer = peer_map.get(self._mac_key(data.get("from_peer_mac")), {})
             to_peer = peer_map.get(self._mac_key(data.get("to_peer_mac")), {})
+            from_peer["peer_mac_normalized"] = data.get("from_peer_mac")
+            to_peer["peer_mac_normalized"] = data.get("to_peer_mac")
             from_location = self._locate_ap(ap_map, from_peer)
             to_location = self._locate_ap(ap_map, to_peer)
+            from_identity = self._identity_payload(from_peer, from_location)
+            to_identity = self._identity_payload(to_peer, to_location)
             items.append(
                 MeshSwitchEventDTO(
                     event_id=int(data["id"]),
@@ -1102,15 +1124,21 @@ class MeshAnalysisQueryService:
                     local_radio=data.get("radio"),
                     from_peer_mac=str(data.get("from_peer_mac") or "") or None,
                     to_peer_mac=str(data.get("to_peer_mac") or "") or None,
-                    from_ap_name=from_location.name or str(from_peer.get("peer_ap_name") or "") or None,
-                    to_ap_name=to_location.name or str(to_peer.get("peer_ap_name") or build.get("peer_ap_name") or "") or None,
+                    from_ap_name=self._resolved_ap_name(from_peer, from_location),
+                    to_ap_name=self._resolved_ap_name(to_peer, to_location) or str(build.get("peer_ap_name") or "") or None,
                     before_rssi=self._number(details.get("from_local_rssi")),
                     after_rssi=self._number(details.get("to_local_rssi")),
                     duration_ms=data.get("observed_window_ms"),
                     is_short_link=build.get("build_result") == "short",
                     is_pingpong=bool(build.get("is_pingpong_abnormal")),
-                    station=to_location.station or str(build.get("peer_site") or "") or None,
-                    section=to_location.section or None,
+                    station=self._resolved_location_value(to_peer, to_location, "station") or str(build.get("peer_site") or "") or None,
+                    section=self._resolved_location_value(to_peer, to_location, "section"),
+                    from_identity_status=str(from_identity["identity_status"]),
+                    from_identity_source=from_identity["identity_source"],
+                    from_identity_reason=from_identity["identity_reason"],
+                    to_identity_status=str(to_identity["identity_status"]),
+                    to_identity_source=to_identity["identity_source"],
+                    to_identity_reason=to_identity["identity_reason"],
                 )
             )
         return MeshSwitchEventPageDTO(items=items, total=total, page=current, page_size=size)
@@ -1137,6 +1165,7 @@ class MeshAnalysisQueryService:
             clauses.append("sample_time <= ?")
             values.append(time_to)
         where = "WHERE " + " AND ".join(clauses) if clauses else ""
+        ap_map = self._ap_map(site_id)
         with closing(self._connect_readonly(context.detail_db)) as conn:
             total = int(conn.execute(f"SELECT COUNT(*) FROM active_points {where}", values).fetchone()[0] or 0)
             missing = int(conn.execute(f"SELECT COUNT(*) FROM active_points {where} {'AND' if where else 'WHERE'} local_rssi_db IS NULL", values).fetchone()[0] or 0)
@@ -1175,8 +1204,13 @@ class MeshAnalysisQueryService:
             point_rows = conn.execute(
                 f"""
                 WITH ordered AS (
-                    SELECT ap.sample_time, ap.local_rssi_db, ap.peer_ap_name,
+                    SELECT ap.sample_time,
+                           COALESCE(NULLIF(ap.peer_ap_name, ''),
+                                    (SELECT peer_ap_name FROM mesh_links ml WHERE ml.id = ap.link_id)) AS peer_ap_name,
                            (SELECT peer_ap_mac FROM mesh_links ml WHERE ml.id = ap.link_id) AS peer_ap_mac,
+                           (SELECT peer_mac_normalized FROM mesh_links ml WHERE ml.id = ap.link_id) AS peer_mac_normalized,
+                           (SELECT peer_radio_mac FROM mesh_links ml WHERE ml.id = ap.link_id) AS peer_radio_mac,
+                           ap.local_rssi_db,
                            ap.radio, {identity_select},
                            ROW_NUMBER() OVER (ORDER BY sample_time, id) AS rn
                     FROM active_points ap {where}
@@ -1197,17 +1231,20 @@ class MeshAnalysisQueryService:
             low_rssi_count=int(data.get("low_rssi_count") or 0),
             severe_low_rssi_count=int(data.get("severe_low_rssi_count") or 0),
         )
-        points = [
-            MeshRssiPointDTO(
-                timestamp=str(row["sample_time"]),
-                value=self._number(row["local_rssi_db"]),
-                peer_ap_name=self._resolved_ap_name(dict(row)),
-                peer_ap_mac=self._resolved_ap_mac(dict(row)),
-                local_radio=row["radio"],
-                **self._identity_payload(dict(row)),
+        points = []
+        for row in point_rows:
+            data = dict(row)
+            location = self._locate_ap(ap_map, data)
+            points.append(
+                MeshRssiPointDTO(
+                    timestamp=str(data["sample_time"]),
+                    value=self._number(data["local_rssi_db"]),
+                    peer_ap_name=self._resolved_ap_name(data, location),
+                    peer_ap_mac=self._resolved_ap_mac(data, location),
+                    local_radio=data["radio"],
+                    **self._identity_payload(data, location),
+                )
             )
-            for row in point_rows
-        ]
         return MeshRssiDTO(statistics=statistics, points=points, downsampled=step > 1, total_points=total)
 
     def get_channel_busy(
@@ -1232,31 +1269,45 @@ class MeshAnalysisQueryService:
             clauses.append("sample_time <= ?")
             values.append(time_to)
         where = "WHERE " + " AND ".join(clauses)
+        ap_map = self._ap_map(site_id)
         with closing(self._connect_readonly(context.detail_db)) as conn:
             total = int(conn.execute(f"SELECT COUNT(*) FROM active_points {where}", values).fetchone()[0] or 0)
             step = max(1, (total + max_points - 1) // max_points)
             rows = conn.execute(
                 f"""
                 WITH ordered AS (
-                    SELECT sample_time, radio, local_tx_busy, local_rx_busy, peer_ap_name, peer_site,
+                    SELECT sample_time, radio, local_tx_busy, local_rx_busy,
+                           COALESCE(NULLIF(ap.peer_ap_name, ''),
+                                    (SELECT peer_ap_name FROM mesh_links ml WHERE ml.id = ap.link_id)) AS peer_ap_name,
+                           COALESCE(NULLIF(ap.peer_site, ''),
+                                    (SELECT peer_site FROM mesh_links ml WHERE ml.id = ap.link_id)) AS peer_site,
+                           (SELECT peer_ap_mac FROM mesh_links ml WHERE ml.id = ap.link_id) AS peer_ap_mac,
+                           (SELECT peer_mac_normalized FROM mesh_links ml WHERE ml.id = ap.link_id) AS peer_mac_normalized,
+                           (SELECT peer_radio_mac FROM mesh_links ml WHERE ml.id = ap.link_id) AS peer_radio_mac,
                            ROW_NUMBER() OVER (ORDER BY sample_time, id) AS rn
-                    FROM active_points {where}
+                    FROM active_points ap {where}
                 )
                 SELECT * FROM ordered WHERE ((rn - 1) % ?) = 0 ORDER BY sample_time LIMIT ?
                 """,
                 (*values, step, max_points),
             ).fetchall()
-        items = [
-            MeshChannelBusyDTO(
-                timestamp=str(row["sample_time"]),
-                local_radio=row["radio"],
-                tx_busy=self._number(row["local_tx_busy"]),
-                rx_busy=self._number(row["local_rx_busy"]),
-                peer_ap_name=str(row["peer_ap_name"] or "") or None,
-                station=str(row["peer_site"] or "") or None,
+        items = []
+        for row in rows:
+            data = dict(row)
+            location = self._locate_ap(ap_map, data)
+            items.append(
+                MeshChannelBusyDTO(
+                    timestamp=str(data["sample_time"]),
+                    local_radio=data["radio"],
+                    tx_busy=self._number(data["local_tx_busy"]),
+                    rx_busy=self._number(data["local_rx_busy"]),
+                    peer_ap_name=self._resolved_ap_name(data, location),
+                    peer_ap_mac=self._resolved_ap_mac(data, location),
+                    station=self._resolved_location_value(data, location, "station"),
+                    section=self._resolved_location_value(data, location, "section"),
+                    **self._identity_payload(data, location),
+                )
             )
-            for row in rows
-        ]
         return MeshChannelBusyPageDTO(items=items, total=total, downsampled=step > 1)
 
     def get_active_path_chart(
@@ -1533,10 +1584,12 @@ class MeshAnalysisQueryService:
         clauses.extend(time_clauses)
         values.extend(time_values)
         where = "WHERE " + " AND ".join(clauses)
+        ap_map = self._ap_map(site_id)
         with closing(self._connect_readonly(context.detail_db)) as conn:
             total = int(conn.execute(f"SELECT COUNT(*) FROM mesh_links {where}", values).fetchone()[0] or 0)
             step = max(1, (total + max_points - 1) // max_points)
             link_columns = self._table_columns(conn, "mesh_links")
+            timestamp_expr = "timestamp_tag" if "timestamp_tag" in link_columns else "''"
             identity_select = ", ".join(
                 (
                     column
@@ -1556,9 +1609,9 @@ class MeshAnalysisQueryService:
                 f"""
                 WITH ordered AS (
                     SELECT sample_time, radio, peer_ap_name,
-                           peer_ap_mac, {identity_select},
+                           peer_ap_mac, peer_mac_normalized, peer_radio_mac, {identity_select},
                            local_rate_raw, peer_rate_raw,
-                           ROW_NUMBER() OVER (ORDER BY sample_time, timestamp_tag, id) AS rn
+                           ROW_NUMBER() OVER (ORDER BY sample_time, {timestamp_expr}, id) AS rn
                     FROM mesh_links {where}
                 )
                 SELECT * FROM ordered
@@ -1568,18 +1621,21 @@ class MeshAnalysisQueryService:
                 """,
                 (*values, step, max_points),
             ).fetchall()
-        items = [
-            MeshRatePointDTO(
-                timestamp=str(row["sample_time"]),
-                local_radio=row["radio"],
-                peer_ap_name=self._resolved_ap_name(dict(row)),
-                peer_ap_mac=self._resolved_ap_mac(dict(row)),
-                **self._identity_payload(dict(row)),
-                local_rate_raw=self._number(row["local_rate_raw"]),
-                peer_rate_raw=self._number(row["peer_rate_raw"]),
+        items = []
+        for row in rows:
+            data = dict(row)
+            location = self._locate_ap(ap_map, data)
+            items.append(
+                MeshRatePointDTO(
+                    timestamp=str(data["sample_time"]),
+                    local_radio=data["radio"],
+                    peer_ap_name=self._resolved_ap_name(data, location),
+                    peer_ap_mac=self._resolved_ap_mac(data, location),
+                    **self._identity_payload(data, location),
+                    local_rate_raw=self._number(data["local_rate_raw"]),
+                    peer_rate_raw=self._number(data["peer_rate_raw"]),
+                )
             )
-            for row in rows
-        ]
         return MeshRatePageDTO(items=items, total=total, downsampled=step > 1)
 
     def get_counter_deltas(
@@ -1597,8 +1653,10 @@ class MeshAnalysisQueryService:
         max_points = min(max(int(max_points), 10), 2_000)
         time_clauses, time_values = self._time_clauses("sample_time", "sample_time", time_from, time_to)
         time_where = " AND ".join(time_clauses) if time_clauses else "1"
+        ap_map = self._ap_map(site_id)
         with closing(self._connect_readonly(context.detail_db)) as conn:
             link_columns = self._table_columns(conn, "mesh_links")
+        timestamp_expr = "timestamp_tag" if "timestamp_tag" in link_columns else "''"
         identity_select = ", ".join(
             (
                 column
@@ -1616,8 +1674,8 @@ class MeshAnalysisQueryService:
         )
         counter_cte = f"""
             WITH ordered AS (
-                SELECT id, source_file_id, sample_time, timestamp_tag, radio, peer_ap_name,
-                       peer_ap_mac, {identity_select},
+                SELECT id, source_file_id, sample_time, {timestamp_expr} AS timestamp_tag, radio, peer_ap_name,
+                       peer_ap_mac, peer_mac_normalized, peer_radio_mac, {identity_select},
                        local_retry, peer_retry, local_err, peer_err,
                        LAG(local_retry) OVER sample_partition AS previous_local_retry,
                        LAG(peer_retry) OVER sample_partition AS previous_peer_retry,
@@ -1627,7 +1685,7 @@ class MeshAnalysisQueryService:
                 WINDOW sample_partition AS (
                     PARTITION BY source_file_id, radio,
                         COALESCE(NULLIF(session_id, ''), NULLIF(peer_mac_normalized, ''), peer_mac_raw, '')
-                    ORDER BY sample_time, timestamp_tag, id
+                    ORDER BY sample_time, {timestamp_expr}, id
                 )
             ), deltas AS (
                 SELECT *,
@@ -1668,20 +1726,23 @@ class MeshAnalysisQueryService:
                 """,
                 (*time_values, step, max_points),
             ).fetchall()
-        items = [
-            MeshCounterDeltaPointDTO(
-                timestamp=str(row["sample_time"]),
-                local_radio=row["radio"],
-                peer_ap_name=self._resolved_ap_name(dict(row)),
-                peer_ap_mac=self._resolved_ap_mac(dict(row)),
-                **self._identity_payload(dict(row)),
-                local_retry_delta=int(row["local_retry_delta"]) if row["local_retry_delta"] is not None else None,
-                peer_retry_delta=int(row["peer_retry_delta"]) if row["peer_retry_delta"] is not None else None,
-                local_error_delta=int(row["local_error_delta"]) if row["local_error_delta"] is not None else None,
-                peer_error_delta=int(row["peer_error_delta"]) if row["peer_error_delta"] is not None else None,
+        items = []
+        for row in rows:
+            data = dict(row)
+            location = self._locate_ap(ap_map, data)
+            items.append(
+                MeshCounterDeltaPointDTO(
+                    timestamp=str(data["sample_time"]),
+                    local_radio=data["radio"],
+                    peer_ap_name=self._resolved_ap_name(data, location),
+                    peer_ap_mac=self._resolved_ap_mac(data, location),
+                    **self._identity_payload(data, location),
+                    local_retry_delta=int(data["local_retry_delta"]) if data["local_retry_delta"] is not None else None,
+                    peer_retry_delta=int(data["peer_retry_delta"]) if data["peer_retry_delta"] is not None else None,
+                    local_error_delta=int(data["local_error_delta"]) if data["local_error_delta"] is not None else None,
+                    peer_error_delta=int(data["peer_error_delta"]) if data["peer_error_delta"] is not None else None,
+                )
             )
-            for row in rows
-        ]
         return MeshCounterDeltaPageDTO(items=items, total=total, downsampled=step > 1)
 
     def list_anomalies(
@@ -1697,11 +1758,13 @@ class MeshAnalysisQueryService:
         if context.detail_db is None:
             return MeshAnomalyPageDTO(page=page, page_size=page_size)
         train_name, _role = self._mr_identity(context.mr_name)
+        ap_map = self._ap_map(site_id)
         rows: list[MeshAnomalyDTO] = []
         with closing(self._connect_readonly(context.detail_db)) as conn:
             if self._table_exists(conn, "diagnosis_events"):
                 for row in conn.execute("SELECT * FROM diagnosis_events ORDER BY event_time, id"):
                     data = dict(row)
+                    location = self._locate_ap(ap_map, {"peer_mac_normalized": data.get("related_peer_mac")})
                     rows.append(
                         MeshAnomalyDTO(
                             anomaly_id=f"diagnosis:{data['id']}",
@@ -1710,6 +1773,10 @@ class MeshAnalysisQueryService:
                             start_time=str(data.get("event_time") or "") or None,
                             train_name=train_name,
                             mr_name=context.mr_name,
+                            peer_ap_name=self._resolved_ap_name(data, location),
+                            peer_ap_mac=self._resolved_ap_mac(data, location),
+                            station=self._resolved_location_value(data, location, "station"),
+                            section=self._resolved_location_value(data, location, "section"),
                             description=str(data.get("detail") or data.get("title") or ""),
                             evidence_reference=str(data.get("evidence") or "") or None,
                         )
@@ -1729,12 +1796,22 @@ class MeshAnalysisQueryService:
                         )
                     )
         for build in self._build_rows(context):
+            location = self._locate_ap(
+                ap_map,
+                {
+                    "peer_ap_mac": build.get("peer_ap_mac"),
+                    "peer_ap_name": build.get("peer_ap_name"),
+                    "peer_mac_normalized": build.get("active_peer_mac") or build.get("peer_radio_mac"),
+                    "peer_site": build.get("peer_site"),
+                },
+            )
             common = {
                 "train_name": train_name,
                 "mr_name": context.mr_name,
-                "peer_ap_name": str(build.get("peer_ap_name") or "") or None,
-                "peer_ap_mac": str(build.get("peer_ap_mac") or "") or None,
-                "station": str(build.get("peer_site") or "") or None,
+                "peer_ap_name": self._resolved_ap_name(build, location),
+                "peer_ap_mac": self._resolved_ap_mac(build, location),
+                "station": self._resolved_location_value(build, location, "station"),
+                "section": self._resolved_location_value(build, location, "section"),
                 "start_time": str(build.get("build_start_time") or "") or None,
                 "end_time": str(build.get("build_end_time") or "") or None,
                 "rule_version": "existing_mesh_analysis_params",
@@ -1779,6 +1856,7 @@ class MeshAnalysisQueryService:
         context = self._context(site_id, session_id)
         if context.detail_db is None:
             return MeshApStatisticsPageDTO(page=page, page_size=page_size)
+        ap_map = self._ap_map(site_id)
         with closing(self._connect_readonly(context.detail_db)) as conn:
             link_columns = self._table_columns(conn, "mesh_links")
             identity_aggregates = ", ".join(
@@ -1797,31 +1875,39 @@ class MeshAnalysisQueryService:
             )
             grouped = conn.execute(
                 f"""
-                SELECT peer_ap_mac AS ap_mac,
+                SELECT COALESCE(NULLIF(peer_ap_mac, ''), NULLIF(peer_radio_mac, ''), peer_mac_normalized) AS ap_key,
+                       MAX(peer_ap_mac) AS ap_mac, MAX(peer_radio_mac) AS peer_radio_mac,
+                       MAX(peer_mac_normalized) AS peer_mac_normalized,
                        MAX(peer_ap_name) AS ap_name, MAX(peer_site) AS peer_site,
                        {identity_aggregates},
                        AVG(local_rssi_db) AS avg_rssi, MIN(local_rssi_db) AS min_rssi
                 FROM mesh_links
                 WHERE COALESCE(peer_ap_mac, '') != ''
-                GROUP BY peer_ap_mac
-                ORDER BY ap_name, ap_mac
+                   OR COALESCE(peer_radio_mac, '') != ''
+                   OR COALESCE(peer_mac_normalized, '') != ''
+                GROUP BY ap_key
+                ORDER BY ap_name, ap_key
                 """
             ).fetchall()
             switches = [dict(row) for row in conn.execute("SELECT from_peer_mac, to_peer_mac FROM switch_events WHERE event_type = 'ACTIVE_SWITCH'")]
             anomalies = [str(row[0] or "") for row in conn.execute("SELECT related_peer_mac FROM diagnosis_events WHERE COALESCE(related_peer_mac, '') != ''")]
             segment_peers = [str(row[0] or "") for row in conn.execute("SELECT peer_mac_normalized FROM active_segments")]
-            peer_to_ap = {
-                self._mac_key(row["peer_mac_normalized"]): self._mac_key(row["peer_ap_mac"])
-                for row in conn.execute(
+            peer_to_ap_rows = [dict(row) for row in conn.execute(
                     """
-                    SELECT peer_mac_normalized, MAX(peer_ap_mac) AS peer_ap_mac
+                    SELECT peer_mac_normalized, MAX(peer_ap_mac) AS peer_ap_mac,
+                           MAX(peer_radio_mac) AS peer_radio_mac
                     FROM mesh_links
                     WHERE COALESCE(peer_mac_normalized, '') != ''
-                      AND COALESCE(peer_ap_mac, '') != ''
                     GROUP BY peer_mac_normalized
                     """
-                )
-            }
+                )]
+        peer_to_ap = {
+            self._mac_key(row.get("peer_mac_normalized")): self._mac_key(
+                self._resolved_ap_mac(row, self._locate_ap(ap_map, row))
+            )
+            for row in peer_to_ap_rows
+            if self._mac_key(row.get("peer_mac_normalized"))
+        }
         switch_in: dict[str, int] = {}
         switch_out: dict[str, int] = {}
         for row in switches:
@@ -1847,19 +1933,29 @@ class MeshAnalysisQueryService:
             if not key:
                 continue
             build_counts[key] = build_counts.get(key, 0) + 1
-        ap_map = self._ap_map(site_id)
         items: list[MeshApStatisticsDTO] = []
         for row in grouped:
             data = dict(row)
-            location = self._locate_ap(ap_map, {"peer_ap_mac": data.get("ap_mac"), "peer_ap_name": data.get("ap_name"), "peer_site": data.get("peer_site")})
-            key = self._mac_key(data.get("ap_mac"))
+            location = self._locate_ap(
+                ap_map,
+                {
+                    "peer_ap_mac": data.get("ap_mac"),
+                    "peer_ap_name": data.get("ap_name"),
+                    "peer_radio_mac": data.get("peer_radio_mac"),
+                    "peer_mac_normalized": data.get("peer_mac_normalized"),
+                    "peer_site": data.get("peer_site"),
+                },
+            )
+            identity = self._identity_payload(data, location)
+            resolved_mac = self._resolved_ap_mac(data, location)
+            key = self._mac_key(resolved_mac or data.get("ap_key"))
             item = MeshApStatisticsDTO(
-                peer_ap_name=str(data.get("ap_name") or location.name or "") or None,
-                peer_ap_mac=str(data.get("ap_mac") or location.mac or "") or None,
-                station=location.station or str(data.get("peer_site") or "") or None,
-                section=location.section or None,
-                mileage=location.mileage or None,
-                line_side=location.line_side or None,
+                peer_ap_name=self._resolved_ap_name(data, location),
+                peer_ap_mac=resolved_mac,
+                station=self._resolved_location_value(data, location, "station"),
+                section=self._resolved_location_value(data, location, "section"),
+                mileage=self._resolved_location_value(data, location, "mileage"),
+                line_side=self._resolved_location_value(data, location, "line_side"),
                 link_up_count=build_counts.get(key, 0),
                 link_down_count=switch_out.get(key, 0),
                 switch_in_count=switch_in.get(key, 0),
@@ -1867,11 +1963,11 @@ class MeshAnalysisQueryService:
                 avg_rssi=self._number(data.get("avg_rssi")),
                 min_rssi=self._number(data.get("min_rssi")),
                 anomaly_count=anomaly_counts.get(key, 0),
-                match_status=str(data.get("identity_status") or location.identity_status),
-                identity_source=str(data.get("identity_source") or location.identity_source or "") or None,
-                identity_rule=str(data.get("identity_rule") or "") or None,
-                identity_confidence=int(data.get("identity_confidence") or 0),
-                identity_reason=str(data.get("identity_reason") or location.identity_reason or "") or None,
+                match_status=str(identity["identity_status"]),
+                identity_source=identity["identity_source"],
+                identity_rule=identity["identity_rule"],
+                identity_confidence=int(identity["identity_confidence"] or 0),
+                identity_reason=identity["identity_reason"],
             )
             if not query or query.casefold() in f"{item.peer_ap_name} {item.peer_ap_mac} {item.station} {item.section}".casefold():
                 items.append(item)
@@ -2562,11 +2658,17 @@ class MeshAnalysisQueryService:
             )
             from_location = self._locate_ap(
                 ap_map,
-                {"peer_ap_name": event.get("from_peer_ap_name")},
+                {
+                    "peer_ap_name": event.get("from_peer_ap_name"),
+                    "peer_mac_normalized": event.get("from_peer_mac"),
+                },
             )
             to_location = self._locate_ap(
                 ap_map,
-                {"peer_ap_name": event.get("to_peer_ap_name")},
+                {
+                    "peer_ap_name": event.get("to_peer_ap_name"),
+                    "peer_mac_normalized": event.get("to_peer_mac"),
+                },
             )
             before_point = prepared.get("before_point")
             after_point = prepared.get("after_point")
@@ -2587,8 +2689,8 @@ class MeshAnalysisQueryService:
                     local_radio=self._int(event.get("radio")),
                     from_peer_mac=str(event.get("from_peer_mac") or "") or None,
                     to_peer_mac=str(event.get("to_peer_mac") or "") or None,
-                    from_ap_name=str(event.get("from_peer_ap_name") or from_location.name or "") or None,
-                    to_ap_name=str(event.get("to_peer_ap_name") or to_location.name or "") or None,
+                    from_ap_name=self._resolved_ap_name(event, from_location),
+                    to_ap_name=self._resolved_ap_name(event, to_location),
                     segment_sequence=self._int((event_segment or {}).get("sequence")),
                     duration_ms=self._int(event.get("observed_window_ms")),
                     point_timestamp=str((render_point or {}).get("timestamp") or "") or None,
@@ -4101,13 +4203,26 @@ class MeshAnalysisQueryService:
             or row.get("identity_status")
             or ""
         ).strip().casefold()
-        if explicit_status in {"matched", "unresolved", "ambiguous"}:
+        if (
+            explicit_status == "unresolved"
+            and location is not None
+            and location.identity_status == "matched"
+            and location.mac
+        ):
+            status = "matched"
+        elif explicit_status in {"matched", "unresolved", "ambiguous"}:
             status = explicit_status
         elif (
             location is not None
             and location.identity_status == "ambiguous"
         ):
             status = "ambiguous"
+        elif (
+            location is not None
+            and location.identity_status == "matched"
+            and location.mac
+        ):
+            status = "matched"
         else:
             status = "unresolved"
         if status == "matched" and not physical_mac:
@@ -4131,6 +4246,8 @@ class MeshAnalysisQueryService:
             or (location.identity_reason if location is not None else "")
             or ""
         ).strip()
+        if status == "matched" and location is not None and location.identity_status == "matched":
+            reason = str(location.identity_reason or "").strip()
         confidence = cls._int(
             row.get("peer_match_confidence")
             if row.get("peer_match_confidence") is not None

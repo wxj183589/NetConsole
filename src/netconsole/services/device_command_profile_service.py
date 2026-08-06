@@ -8,6 +8,7 @@ from pathlib import Path
 
 from netconsole.core.paths import PathResolver
 from netconsole.core.resources import package_resource_path
+from netconsole.core.runtime_environment import app_root as default_app_root
 from netconsole.models.device import Device, validate_device_vendor_type
 from netconsole.models.device_detail import (
     DeviceCapability,
@@ -206,10 +207,14 @@ def resolve_vendor_command_profile(device: Device) -> VendorCommandProfile:
     vendor, device_type = validate_device_vendor_type(
         device.device_vendor, device.device_type
     )
-    if vendor == "H3C" and (vendor, device_type) not in _VENDOR_COMMAND_PROFILES:
-        return _VENDOR_COMMAND_PROFILES[("H3C", "SW")]
+    vendor_key = device.vendor_key
+    profile_vendor = {"h3c": "H3C", "zte": "ZTE"}.get(vendor_key)
+    if profile_vendor is None:
+        raise DeviceCommandProfileNotFound(
+            f"当前版本尚未适配 {vendor} 命令能力"
+        )
     try:
-        return _VENDOR_COMMAND_PROFILES[(vendor, device_type)]
+        return _VENDOR_COMMAND_PROFILES[(profile_vendor, device_type)]
     except KeyError as exc:
         raise DeviceCommandProfileNotFound(
             f"当前版本尚未适配 {vendor} {device_type} 命令能力"
@@ -231,7 +236,7 @@ def device_cli_output_is_unsupported(device: Device, output: object) -> bool:
 def resolve_step_command_candidates(
     device: Device, step: "DeviceCommandStep"
 ) -> tuple[str, ...]:
-    if str(device.device_vendor or "").strip().casefold() != "zte":
+    if device.vendor_key != "zte":
         return (step.command,)
     capabilities = {
         "inventory.version": "version",
@@ -323,10 +328,17 @@ class DeviceCommandProfile:
 def device_command_profile_path(paths: PathResolver | None = None) -> Path:
     resolver = paths or PathResolver()
     source_path = resolver.app_root / "resources" / PROFILE_FILENAME
-    if source_path.is_file():
-        return source_path
+    candidates = [source_path]
     packaged_path = package_resource_path("assets", PROFILE_FILENAME)
-    return packaged_path if packaged_path.is_file() else source_path
+    if packaged_path not in candidates:
+        candidates.append(packaged_path)
+    default_source_path = default_app_root() / "resources" / PROFILE_FILENAME
+    if default_source_path not in candidates:
+        candidates.append(default_source_path)
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return source_path
 
 
 def load_device_command_profiles(paths: PathResolver | None = None) -> tuple[DeviceCommandProfile, ...]:
@@ -411,7 +423,7 @@ def resolve_device_inventory_profile(
     if platform_facts is None and isinstance(bound, tuple) and len(bound) == 3:
         platform_facts = bound[2]
     facts = platform_facts or identify_device_platform(
-        vendor=device.device_vendor,
+        vendor=device.vendor_key,
         device_type=device.device_type,
         software_version=software_version,
     )
@@ -507,7 +519,7 @@ def resolve_device_sftp_enable_profile(
     paths: PathResolver | None = None,
 ) -> DeviceCommandProfile:
     facts = platform_facts or identify_device_platform(
-        vendor=device.device_vendor,
+        vendor=device.vendor_key,
         device_type=device.device_type,
         software_version=software_version,
     )

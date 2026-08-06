@@ -6,6 +6,7 @@ from typing import Any, Iterable, Mapping
 from netconsole.core.database import Database
 from netconsole.services.ap_identity import ApIdentityQueryService
 from netconsole.services.ap_identity.normalizers import format_mac, normalize_mac_key
+from netconsole.utils.mac_utils import H3cMacDeriveError, MacAddressError, derive_h3c_r1_mac, derive_h3c_r2_mac
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
 
 
@@ -24,9 +25,10 @@ class MeshApLocation:
     identity_status: str = "unresolved"
     identity_source: str = ""
     identity_reason: str = ""
+    alias_mac: str = ""
 
-    def to_serializable(self) -> dict[str, str]:
-        return {
+    def to_serializable(self) -> dict[str, object]:
+        result: dict[str, object] = {
             "name": self.name,
             "point_code": self.point_code,
             "mac": format_mac(self.mac),
@@ -41,19 +43,29 @@ class MeshApLocation:
             "identity_source": self.identity_source,
             "identity_reason": self.identity_reason,
         }
+        if self.alias_mac:
+            result["alias_mac"] = self.alias_mac
+        return result
 
 
 class MeshApLocationSnapshot:
     def __init__(self, locations: Iterable[MeshApLocation] = ()) -> None:
         self._locations = tuple(locations)
         self._by_mac: dict[str, MeshApLocation | None] = {}
+        self._by_alias: dict[str, MeshApLocation | None] = {}
         for location in self._locations:
             mac = normalize_mac_key(location.mac)
             if mac:
-                if mac in self._by_mac:
+                if mac in self._by_mac and not location.alias_mac:
                     self._by_mac[mac] = None  # type: ignore[assignment]
-                else:
+                elif mac not in self._by_mac:
                     self._by_mac[mac] = location
+            alias = normalize_mac_key(location.alias_mac)
+            if alias:
+                if alias in self._by_alias:
+                    self._by_alias[alias] = None  # type: ignore[assignment]
+                else:
+                    self._by_alias[alias] = location
 
     @classmethod
     def from_base_data_items(cls, items: Iterable[object]) -> MeshApLocationSnapshot:
@@ -126,6 +138,7 @@ class MeshApLocationSnapshot:
                 identity_status=str(row.get("identity_status") or "unresolved"),
                 identity_source=str(row.get("identity_source") or ""),
                 identity_reason=str(row.get("identity_reason") or ""),
+                alias_mac=str(row.get("alias_mac") or ""),
             )
             for row in rows
         )
@@ -157,6 +170,67 @@ class MeshApLocationSnapshot:
             )
         )
 
+    def with_identity_aliases(
+        self,
+        rows: Iterable[Mapping[str, object]],
+    ) -> MeshApLocationSnapshot:
+        alias_locations: list[MeshApLocation] = []
+        for row in rows:
+            alias = normalize_mac_key(row.get("mac_key"))
+            if not alias:
+                continue
+            alias_locations.append(
+                MeshApLocation(
+                    name=str(row.get("effective_ap_name") or ""),
+                    mac=str(row.get("effective_ap_mac_display") or ""),
+                    station=str(row.get("effective_station") or ""),
+                    section=str(row.get("effective_section") or ""),
+                    mileage=str(row.get("effective_mileage") or ""),
+                    line_side=str(row.get("effective_direction") or ""),
+                    direction=str(row.get("effective_direction") or ""),
+                    identity_status="matched",
+                    identity_source=str(row.get("source") or row.get("effective_source") or ""),
+                    identity_reason=str(row.get("data_quality_warning") or ""),
+                    alias_mac=alias,
+                )
+            )
+        return MeshApLocationSnapshot((*self._locations, *alias_locations))
+
+    def with_base_radio_aliases(self) -> MeshApLocationSnapshot:
+        """Provide a read-only base-data fallback when the identity index is unavailable."""
+
+        aliases: list[MeshApLocation] = []
+        for location in self._locations:
+            base_mac = normalize_mac_key(location.mac)
+            if not base_mac or base_mac[-1] != "0":
+                continue
+            for derive in (derive_h3c_r1_mac, derive_h3c_r2_mac):
+                try:
+                    alias = normalize_mac_key(derive(base_mac))
+                except (H3cMacDeriveError, MacAddressError):
+                    continue
+                if not alias:
+                    continue
+                aliases.append(
+                    MeshApLocation(
+                        name=location.name,
+                        mac=location.mac,
+                        point_code=location.point_code,
+                        station=location.station,
+                        section=location.section,
+                        section_start_station=location.section_start_station,
+                        section_end_station=location.section_end_station,
+                        mileage=location.mileage,
+                        line_side=location.line_side,
+                        direction=location.direction,
+                        identity_status="matched",
+                        identity_source="base_data",
+                        identity_reason="base_data_radio_alias_fallback",
+                        alias_mac=alias,
+                    )
+                )
+        return MeshApLocationSnapshot((*self._locations, *aliases))
+
     def resolve(self, row: Mapping[str, Any]) -> MeshApLocation:
         mac_key = normalize_mac_key(
             row.get("canonical_ap_mac")
@@ -165,6 +239,24 @@ class MeshApLocationSnapshot:
         )
         name = str(row.get("peer_ap_name") or row.get("ap_name") or "")
         location = self._by_mac.get(mac_key) if mac_key else None
+        if location is None:
+            alias_keys = (
+                row.get("peer_radio_mac"),
+                row.get("peer_mac_normalized"),
+                row.get("peer_mac_raw"),
+            )
+            for alias_value in alias_keys:
+                alias_key = normalize_mac_key(alias_value)
+                if not alias_key or alias_key not in self._by_alias:
+                    continue
+                location = self._by_alias[alias_key]
+                if location is None:
+                    return MeshApLocation(
+                        name=name,
+                        identity_status="ambiguous",
+                        identity_reason="duplicate_alias",
+                    )
+                break
         if location is not None:
             return location
         reason = "缺少规范 AP MAC" if not mac_key else "未找到唯一 AP Identity"
@@ -215,6 +307,19 @@ def enrich_mesh_ap_location_row(
         result.get("peer_direction") or result.get("line_side") or ""
     )
     result["line_side"] = result["peer_direction"]
+    current_status = str(
+        result.get("peer_identity_status") or result.get("identity_status") or ""
+    ).strip().casefold()
+    if location.identity_status in {"matched", "ambiguous"} and current_status in {
+        "",
+        "unresolved",
+    }:
+        result["peer_identity_status"] = location.identity_status
+        result["peer_identity_source"] = location.identity_source
+        result["peer_identity_reason"] = location.identity_reason
+        if location.identity_status == "matched" and location.mac:
+            result["peer_ap_mac"] = location.mac
+            result["canonical_ap_mac"] = location.mac
     return result
 
 
@@ -244,12 +349,11 @@ class MeshApLocationService:
             database = Database(paths.site_db_path(site_id))
             if database.exists():
                 identity_query = ApIdentityQueryService(database)
-                state = identity_query.index_state()
-                if state is not None and int(state.get("revision") or 0) > 0:
-                    return snapshot.with_identity_entities(
-                        identity_query.list_entities()
-                    )
-        return snapshot
+                revision_state = identity_query.revision_state()
+                if revision_state.status == "ready":
+                    snapshot = snapshot.with_identity_entities(identity_query.list_entities())
+                    return snapshot.with_identity_aliases(identity_query.list_alias_entities())
+        return snapshot.with_base_radio_aliases()
 
 
 def normalize_mesh_ap_mac(value: object) -> str:

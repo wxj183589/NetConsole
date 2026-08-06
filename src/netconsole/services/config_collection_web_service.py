@@ -823,7 +823,7 @@ class ConfigCollectionApplicationService:
             device = repository.get(int(device_id))
         except KeyError as exc:
             raise FileNotFoundError("设备不存在") from exc
-        if str(device.device_vendor or "").upper() != "H3C":
+        if device.vendor_key != "h3c":
             raise ValueError("配置中心仅支持 H3C 设备")
         return device
 
