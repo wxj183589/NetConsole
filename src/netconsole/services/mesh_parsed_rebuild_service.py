@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import gc
 import sqlite3
 from contextlib import closing
 from datetime import UTC, datetime
@@ -431,7 +432,9 @@ class _MeshUpgradeAdapter:
         self._move_sidecars(shadow_path, active)
         shadow_path.replace(active)
         if self.shadow_parsed and self.shadow_parsed.exists():
+            shadow_parsed = self.shadow_parsed
             self.shadow_parsed.replace(self.parsed_dir)
+            self._rewrite_parsed_paths(active, shadow_parsed, self.parsed_dir)
 
     def rollback(self, descriptor: DatabaseDescriptor, rollback_path: Path, failed_shadow_path: Path, failure_dir: Path) -> None:
         failure_dir.mkdir(parents=True, exist_ok=True)
@@ -499,11 +502,42 @@ class _MeshUpgradeAdapter:
 
     @staticmethod
     def _move_sidecars(source: Path, target: Path) -> None:
+        gc.collect()
         for suffix in ("-wal", "-shm"):
             source_sidecar = source.with_name(source.name + suffix)
             target_sidecar = target.with_name(target.name + suffix)
             if source_sidecar.exists():
                 source_sidecar.replace(target_sidecar)
+
+    @staticmethod
+    def _rewrite_parsed_paths(index_path: Path, old_root: Path, new_root: Path) -> None:
+        """影子 parsed 目录切换后，修正索引中的绝对路径引用。"""
+
+        if not index_path.is_file():
+            return
+        old_root = old_root.resolve()
+        new_root = new_root.resolve()
+        with closing(sqlite3.connect(index_path)) as connection:
+            columns = {
+                str(row[1])
+                for row in connection.execute("PRAGMA table_info(source_files)").fetchall()
+            }
+            if "parsed_db_path" not in columns:
+                return
+            rows = connection.execute(
+                "SELECT id, parsed_db_path FROM source_files WHERE COALESCE(parsed_db_path, '') != ''"
+            ).fetchall()
+            for row in rows:
+                current = Path(str(row[1]).strip().strip("'\""))
+                try:
+                    relative = current.resolve().relative_to(old_root)
+                except (OSError, ValueError):
+                    continue
+                connection.execute(
+                    "UPDATE source_files SET parsed_db_path = ? WHERE id = ?",
+                    (str(new_root / relative), int(row[0])),
+                )
+            connection.commit()
 
     @staticmethod
     def _unique_path(path: Path) -> Path:

@@ -195,6 +195,16 @@ class _ReadOnlyConnection(_ManagedConnection):
     pass
 
 
+def _read_only_uri(path: Path) -> str:
+    """无 WAL 数据时使用 immutable URI，避免只读查询创建运行侧车。"""
+
+    uri = f"{path.resolve().as_uri()}?mode=ro"
+    wal_path = path.with_name(path.name + "-wal")
+    if not wal_path.is_file() or wal_path.stat().st_size == 0:
+        uri += "&immutable=1"
+    return uri
+
+
 class MeshMrRepository:
     def __init__(
         self,
@@ -640,7 +650,7 @@ class MeshMrRepository:
     def _is_compact_schema(path: Path) -> bool:
         conn: sqlite3.Connection | None = None
         try:
-            conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=5)
+            conn = sqlite3.connect(_read_only_uri(path), uri=True, timeout=5)
             conn.execute("PRAGMA query_only = ON")
             row = conn.execute("SELECT value FROM schema_meta WHERE key = ?", (SCHEMA_KEY,)).fetchone()
             if row is not None:
@@ -2906,7 +2916,7 @@ class MeshMrRepository:
     def _connect(self) -> sqlite3.Connection:
         if self.read_only:
             conn = sqlite3.connect(
-                f"{self.path.resolve().as_uri()}?mode=ro",
+                _read_only_uri(self.path),
                 uri=True,
                 timeout=5,
                 factory=_ReadOnlyConnection,

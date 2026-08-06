@@ -148,6 +148,10 @@ class DeviceOperationService:
         if device is None:
             raise KeyError(device_uuid)
         facts = self._platform_facts(device, self.gateway.get_fact(device_uuid))
+        if operation_id == DEVICE_SFTP_ENABLE_OPERATION_ID and not facts.software_major:
+            raise DeviceSftpEnableProfileUnresolved(
+                "无法确认设备的软件版本，未执行 SFTP 配置命令。"
+            )
         support = resolve_device_collection_support(
             device,
             operation_id,

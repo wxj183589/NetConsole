@@ -95,36 +95,36 @@ _STATION_PRIORITY = (
 )
 _FIELD_PRIORITIES = {
     "section": (
-        ("fit_ap_runtime", "fit_ap_section"),
         ("device_management", "device_section"),
+        ("fit_ap_runtime", "fit_ap_section"),
         ("ac_runtime", "ac_runtime_section"),
         ("base_data", "base_section"),
         ("legacy", "legacy_section"),
     ),
     "location": (
-        ("fit_ap_runtime", "fit_ap_location"),
         ("device_management", "device_location"),
+        ("fit_ap_runtime", "fit_ap_location"),
         ("ac_runtime", "ac_runtime_location"),
         ("base_data", "base_location"),
         ("legacy", "legacy_location"),
     ),
     "mileage": (
-        ("fit_ap_runtime", "fit_ap_mileage"),
         ("device_management", "device_mileage"),
+        ("fit_ap_runtime", "fit_ap_mileage"),
         ("ac_runtime", "ac_runtime_mileage"),
         ("base_data", "base_mileage"),
         ("legacy", "legacy_mileage"),
     ),
     "direction": (
-        ("fit_ap_runtime", "fit_ap_direction"),
         ("device_management", "device_direction"),
+        ("fit_ap_runtime", "fit_ap_direction"),
         ("ac_runtime", "ac_runtime_direction"),
         ("base_data", "base_direction"),
         ("legacy", "legacy_direction"),
     ),
     "belong_type": (
-        ("fit_ap_runtime", "fit_ap_belong_type"),
         ("device_management", "device_belong_type"),
+        ("fit_ap_runtime", "fit_ap_belong_type"),
         ("ac_runtime", "ac_runtime_belong_type"),
         ("base_data", "base_belong_type"),
         ("legacy", "legacy_belong_type"),
@@ -137,7 +137,7 @@ def resolve_ap_topology(evidence: ApTopologyEvidence) -> ResolvedApTopology:
 
     LLDP is eligible only when the caller has already established a unique,
     structured switch relationship. The resolver deliberately knows nothing
-    about databases or display names, so a neighbor string cannot become a
+    about databases or rendered labels, so a neighbor string cannot become a
     station by accident.
     """
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import gc
 import os
 import sqlite3
 from pathlib import Path
@@ -40,6 +41,7 @@ def checkpoint_wal(path: Path) -> dict[str, Any]:
     finally:
         if connection is not None:
             connection.close()
+            gc.collect()
     wal_path = path.with_name(path.name + "-wal")
     shm_path = path.with_name(path.name + "-shm")
     wal_size = wal_path.stat().st_size if wal_path.exists() else 0
@@ -47,18 +49,40 @@ def checkpoint_wal(path: Path) -> dict[str, Any]:
         raise RuntimeError(f"SQLite WAL checkpoint 后仍有未清理数据：{wal_path.name} ({wal_size} bytes)")
     # These are runtime sidecars, never part of a database backup. They may
     # remain as zero-length files on Windows after the last connection closes.
-    if wal_path.exists():
-        wal_path.unlink()
-    if shm_path.exists():
-        shm_path.unlink()
+    wal_sidecar = _try_remove_runtime_sidecar(wal_path)
+    # SQLite's shared-memory file can remain locked by the Windows VFS even
+    # after the last Python connection is closed. It is runtime state, not
+    # database content, so retaining it is safe when Windows refuses unlink.
+    shm_sidecar = _try_remove_runtime_sidecar(shm_path, tolerate_in_use=True)
     return {
         "status": "OK",
         "busy": checkpoint_result[0],
         "log_frames": checkpoint_result[1],
         "checkpointed_frames": checkpoint_result[2],
         "journal_mode": journal_mode,
-        "wal_sidecar": "cleared",
+        "wal_sidecar": wal_sidecar,
+        "shm_sidecar": shm_sidecar,
     }
+
+
+def _try_remove_runtime_sidecar(path: Path, *, tolerate_in_use: bool = False) -> str:
+    """清理已无数据的 SQLite 运行侧车；Windows 句柄暂未释放时保留空文件。"""
+
+    if not path.exists():
+        return "absent"
+    try:
+        path.unlink()
+        return "cleared"
+    except OSError:
+        try:
+            size = path.stat().st_size
+        except OSError:
+            if tolerate_in_use:
+                return "retained_in_use"
+            raise
+        if size > 0 and not tolerate_in_use:
+            raise
+        return "retained_in_use" if tolerate_in_use else "retained_empty_in_use"
 
 
 def sqlite_backup(source: Path, destination: Path) -> None:

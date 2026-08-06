@@ -20,7 +20,7 @@ def test_windows_package_script_reuses_the_formal_release_entry() -> None:
     assert '@("-m", "pip", "check")' in script
     assert script.count('@("install", "--frozen-lockfile")') == 2
     assert script.count('@("test")') == 2
-    assert 'Invoke-Native $pnpmPath @("package") $desktopRoot' in script
+    assert 'Invoke-Native $pnpmPath @("run", $packageScript) $desktopRoot' in script
 
 
 def test_windows_package_script_rechecks_the_final_artifact() -> None:
