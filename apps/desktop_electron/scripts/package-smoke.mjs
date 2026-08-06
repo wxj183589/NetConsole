@@ -385,7 +385,11 @@ try {
   rmSync(smokeRoot, { recursive: true, force: true })
 }
 
-console.log('Electron packaged smoke passed with frozen timezone data, device database migration/list HTTP 200, ground unattended status HTTP 200, MESH import context idempotency, four duplicate basenames, duplicate-safe archive naming, frozen Worker Chinese protocol, no Qt residue, and NOTICE/SBOM metadata.')
+const smokeEdition = String(process.env.NETCONSOLE_BUILD_EDITION || '').trim().toLowerCase()
+const editionSmokeScope = smokeEdition === 'customer'
+  ? 'customer feature policy and core Backend smoke'
+  : 'ground unattended status HTTP 200'
+console.log(`Electron packaged smoke passed with frozen timezone data, device database migration/list HTTP 200, ${editionSmokeScope}, MESH import context idempotency, four duplicate basenames, duplicate-safe archive naming, frozen Worker Chinese protocol, no Qt residue, and NOTICE/SBOM metadata.`)
 
 function validateFrozenWorkerTextProtocol(dataRoot) {
   const backend = resolve(unpackedRoot, 'resources', 'backend', 'NetConsoleBackend.exe')
@@ -547,9 +551,11 @@ async function validateFrozenGroundUnattendedStatus(dataRoot) {
   })
   child.stdin.write(`${JSON.stringify({ session_token: token })}\n`)
 
+  const edition = String(process.env.NETCONSOLE_BUILD_EDITION || '').trim().toLowerCase()
   let failure = null
   try {
     port = await withTimeout(listening, 20_000, '冻结 Backend 监听超时')
+    if (edition !== 'customer') {
     const url =
       `http://127.0.0.1:${port}/api/rail-transit/ground-unattended/status`
     for (let attempt = 1; attempt <= 2; attempt += 1) {
@@ -588,7 +594,8 @@ async function validateFrozenGroundUnattendedStatus(dataRoot) {
     }
     // Customer 包不交付设备采集写入能力，MESH 场景依赖该能力创建测试设备。
     // 该版本仍验证无人值守状态契约，完整 MESH 导入链路由 Full 包 smoke 覆盖。
-    if (String(process.env.NETCONSOLE_BUILD_EDITION || '').trim().toLowerCase() === 'customer') {
+    }
+    if (edition === 'customer') {
       child.stdin.write(`${JSON.stringify({ command: 'shutdown' })}\n`)
       await withTimeout(shutdownAck, 10_000, '冻结 Backend 正常停止确认超时')
       child.stdin.write(`${JSON.stringify({ command: 'exit' })}\n`)

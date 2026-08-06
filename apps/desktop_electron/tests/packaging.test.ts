@@ -244,6 +244,8 @@ describe('Electron-only packaging', () => {
     expect(script).toContain("PYTHONTZPATH: ''")
     expect(script).toContain('/api/rail-transit/ground-unattended/status')
     expect(script).toContain("payload?.timezone !== 'Asia/Shanghai'")
+    expect(script).toContain("if (edition !== 'customer')")
+    expect(script).toContain("if (edition === 'customer')")
     expect(script).toContain('for (let attempt = 1; attempt <= 2; attempt += 1)')
     expect(script).toContain('assertLoopbackPortReleased')
     expect(script).toContain('ground unattended status HTTP 200')
