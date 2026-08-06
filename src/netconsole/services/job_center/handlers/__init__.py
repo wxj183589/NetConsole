@@ -7,6 +7,7 @@ def builtin_handlers() -> dict[str, JobHandler]:
     from netconsole.services.job_center.handlers import (
         ac_jobs,
         config_jobs,
+        database_jobs,
         device_jobs,
         file_jobs,
         ground_unattended_jobs,
@@ -26,6 +27,7 @@ def builtin_handlers() -> dict[str, JobHandler]:
         device_jobs.HANDLERS,
         ac_jobs.HANDLERS,
         config_jobs.HANDLERS,
+        database_jobs.HANDLERS,
         file_jobs.HANDLERS,
         ground_unattended_jobs.HANDLERS,
         mesh_bundle_jobs.HANDLERS,

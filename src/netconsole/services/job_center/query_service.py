@@ -57,6 +57,11 @@ from netconsole.services.job_center.handlers.site_jobs import (
     SITE_STORAGE_OWNER,
     SITE_STORAGE_TASK_TYPES,
 )
+from netconsole.services.job_center.handlers.database_jobs import (
+    DATABASE_UPGRADE_NONCANCELLABLE_TASK_TYPES,
+    DATABASE_UPGRADE_OWNER,
+    DATABASE_UPGRADE_TASK_TYPES,
+)
 from netconsole.models.task_history_policy import (
     business_result_has_warning,
     project_business_result,
@@ -562,6 +567,8 @@ class JobCenterQueryService:
             return "logs"
         if owner == SITE_STORAGE_OWNER and task_type in SITE_STORAGE_TASK_TYPES:
             return "logs"
+        if owner == DATABASE_UPGRADE_OWNER and task_type in DATABASE_UPGRADE_TASK_TYPES:
+            return "logs"
         return "other"
 
     def _cancel_capability(
@@ -612,6 +619,10 @@ class JobCenterQueryService:
         if owner == SITE_STORAGE_OWNER and task_type in SITE_STORAGE_TASK_TYPES:
             if task_type in SITE_STORAGE_NONCANCELLABLE_TASK_TYPES:
                 return False, "数据提交阶段不可停止，以避免局点目录和 Registry 不一致"
+            return True, ""
+        if owner == DATABASE_UPGRADE_OWNER and task_type in DATABASE_UPGRADE_TASK_TYPES:
+            if task_type in DATABASE_UPGRADE_NONCANCELLABLE_TASK_TYPES:
+                return False, "数据库备份删除提交后不可停止"
             return True, ""
         return False, "当前任务 owner 未接入统一停止能力"
 

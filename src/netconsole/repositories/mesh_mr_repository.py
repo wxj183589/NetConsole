@@ -12,7 +12,7 @@ from pathlib import Path
 from statistics import median
 
 from netconsole.core import app_logger
-from netconsole.core.sqlite_utils import connect_sqlite, initialize_sqlite_wal
+from netconsole.core.sqlite_utils import configure_sqlite_connection, initialize_sqlite_wal
 from netconsole.models.mesh_log_models import (
     EVENT_ACTIVE_SWITCH,
     EVENT_COUNTER_RESET,
@@ -183,7 +183,7 @@ class MeshIdentityRemapValidationError(RuntimeError):
         super().__init__(f"{code}: {fields}")
 
 
-class _ReadOnlyConnection(sqlite3.Connection):
+class _ManagedConnection(sqlite3.Connection):
     def __exit__(self, exc_type, exc_value, traceback) -> bool:
         try:
             return bool(super().__exit__(exc_type, exc_value, traceback))
@@ -191,10 +191,23 @@ class _ReadOnlyConnection(sqlite3.Connection):
             self.close()
 
 
+class _ReadOnlyConnection(_ManagedConnection):
+    pass
+
+
 class MeshMrRepository:
-    def __init__(self, path: Path, *, read_only: bool = False) -> None:
+    def __init__(
+        self,
+        path: Path,
+        *,
+        read_only: bool = False,
+        parsed_dir: Path | None = None,
+        index_database: bool | None = None,
+    ) -> None:
         self.path = path
         self.read_only = read_only
+        self.parsed_dir = Path(parsed_dir) if parsed_dir is not None else self.path.parent / "parsed"
+        self._index_database = index_database
         if read_only:
             if not self.path.is_file() or not self._is_compact_schema(self.path):
                 raise MeshSchemaRebuildRequired("MESH 派生数据库不存在或版本不兼容")
@@ -641,10 +654,12 @@ class MeshMrRepository:
                 conn.close()
 
     def _is_index_database(self) -> bool:
+        if self._index_database is not None:
+            return self._index_database
         return self.path.name == "mesh.sqlite" and self.path.parent.name != "parsed"
 
     def _single_log_db_path(self, archived_path: Path, sha256: str) -> Path:
-        parsed_dir = self.path.parent / "parsed"
+        parsed_dir = self.parsed_dir
         parsed_dir.mkdir(parents=True, exist_ok=True)
         stem = _safe_mesh_db_stem(archived_path.name)
         candidate = parsed_dir / f"{stem}.mesh.sqlite"
@@ -2900,7 +2915,14 @@ class MeshMrRepository:
             conn.execute("PRAGMA query_only = ON")
             conn.execute("PRAGMA busy_timeout = 5000")
             return conn
-        return connect_sqlite(self.path, foreign_keys=True, temp_store_memory=True)
+        conn = sqlite3.connect(self.path, timeout=30, factory=_ManagedConnection)
+        conn.row_factory = sqlite3.Row
+        configure_sqlite_connection(
+            conn,
+            foreign_keys=True,
+            temp_store_memory=True,
+        )
+        return conn
 
     @staticmethod
     def _update_meta_counts(conn: sqlite3.Connection) -> None:

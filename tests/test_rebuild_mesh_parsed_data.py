@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from contextlib import closing
 from pathlib import Path
@@ -40,7 +41,12 @@ def test_rebuild_plan_is_dry_run_and_apply_preserves_raw(tmp_path: Path) -> None
     assert raw_file.read_bytes() == raw_bytes
     with closing(sqlite3.connect(index_path)) as connection:
         assert connection.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0] == SCHEMA_VERSION
-    assert list(index_path.parent.glob("mesh.sqlite.schema_archive_*"))
+    backups = list(paths.database_upgrade_backups_dir.rglob("manifest.json"))
+    assert len(backups) == 1
+    backup_dir = backups[0].parent
+    assert (backup_dir / "database.sqlite").stat().st_size > 0
+    assert (backup_dir / "validation.json").is_file()
+    assert json.loads((backup_dir / "manifest.json").read_text(encoding="utf-8"))["result_status"] == "VALID_BACKUP"
 
 
 def test_rebuild_refuses_changed_raw_after_plan(tmp_path: Path) -> None:

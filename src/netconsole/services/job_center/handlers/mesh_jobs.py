@@ -106,6 +106,19 @@ def mesh_derived_data_repair(context: JobContext) -> dict[str, object]:
     site_name = str(context.params.get("site_name") or "")
     maintenance = MeshDerivedDataMaintenanceService(context.paths)
     operations = maintenance.pending_operations(site_name)
+    requested_profile_ids = [
+        str(value)
+        for value in context.params.get("profile_ids") or ()
+        if str(value)
+    ]
+    for operation in operations:
+        operation_profile_ids = _operation_profile_ids(operation)
+        if not operation_profile_ids:
+            raise ValueError("等待导入的 MESH 操作缺少 Profile 标识，已停止自动修复")
+        requested_profile_ids.extend(operation_profile_ids)
+    requested_profile_ids = list(dict.fromkeys(requested_profile_ids))
+    if not requested_profile_ids:
+        raise ValueError("MESH 自动修复缺少当前请求的 Profile 标识")
     operation_ids = [str(item.get("operation_id") or "") for item in operations]
     maintenance.mark_operations_repairing(site_name, operation_ids)
     for operation in operations:
@@ -118,6 +131,7 @@ def mesh_derived_data_repair(context: JobContext) -> dict[str, object]:
     try:
         repair_result = maintenance.repair(
             site_name,
+            profile_ids=requested_profile_ids,
             progress=context.progress,
             should_cancel=should_cancel,
         )
@@ -254,6 +268,27 @@ def _safe_continuation_error(exc: Exception) -> str:
     if isinstance(exc, MeshDerivedDatabaseIncompatible):
         return "MESH 分析数据库仍需自动修复"
     return str(exc) or "MESH 日志解析失败"
+
+
+def _operation_profile_ids(operation: dict[str, object]) -> tuple[str, ...]:
+    payload = operation.get("payload")
+    if not isinstance(payload, dict):
+        return ()
+    values: list[str] = []
+    profile = payload.get("profile")
+    if isinstance(profile, dict):
+        mr_id = str(profile.get("mr_id") or "").strip()
+        if mr_id:
+            values.append(mr_id)
+    mappings = payload.get("mappings")
+    if isinstance(mappings, (list, tuple)):
+        for item in mappings:
+            if not isinstance(item, dict):
+                continue
+            profile_id = str(item.get("profile_id") or "").strip()
+            if profile_id:
+                values.append(profile_id)
+    return tuple(dict.fromkeys(values))
 
 HANDLERS = {
     "mesh_log_import": mesh_log_import,
