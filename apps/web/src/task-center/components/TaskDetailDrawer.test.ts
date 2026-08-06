@@ -135,6 +135,33 @@ describe('TaskDetailDrawer', () => {
     wrapper.unmount()
   })
 
+  it('renders UTC task details and log times in the business timezone', async () => {
+    mocks.getTask.mockResolvedValue(task('task-time'))
+    mocks.getTaskLogs.mockResolvedValue({
+      task_id: 'task-time',
+      lines: [{
+        sequence: 1,
+        time: '2026-08-06T15:31:15.538Z',
+        level: 'ERROR',
+        type: 'error',
+        source: 'worker',
+        message: '任务失败',
+      }],
+      message: '',
+    })
+    const wrapper = mount(TaskDetailDrawer, {
+      props: { modelValue: true, taskId: 'task-time' },
+      global: { plugins: [createPinia()] },
+    })
+
+    await flushPromises()
+    const rendered = document.body.textContent || ''
+    expect(rendered).toContain('2026-07-29 16:01:00')
+    expect(rendered).not.toContain('2026-07-29T08:01:00Z')
+    expect(source).toContain('formatTaskDateTime(line.time)')
+    wrapper.unmount()
+  })
+
   it('keeps COMPLETED visible while hiding Artifact actions for a missing output', async () => {
     mocks.getTask.mockResolvedValue({
       ...task('task-missing'),

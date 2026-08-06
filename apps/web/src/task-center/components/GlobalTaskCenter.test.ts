@@ -64,4 +64,11 @@ describe('GlobalTaskCenter', () => {
     expect(source).not.toContain('openFullTaskCenter')
     expect(source).not.toContain("openOrActivateRoute(`/tasks")
   })
+
+  it('formats REST and WebSocket task timestamps through the shared business-time utility', () => {
+    expect(source).toContain("import { formatTaskDateTime, parseUtcDateTime, taskDateTimeTitle } from '../../utils/dateTime'")
+    expect(source).toContain('formatTaskDateTime(task.updated_time || task.created_time)')
+    expect(source).toContain('function taskTimestamp(task: TaskItem): number')
+    expect(source).not.toContain('{{ taskStatusLabel(task.status) }} · {{ task.updated_time || task.created_time }}')
+  })
 })

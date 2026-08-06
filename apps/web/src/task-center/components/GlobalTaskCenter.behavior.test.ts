@@ -202,6 +202,24 @@ describe('GlobalTaskCenter behavior', () => {
     wrapper.unmount()
   })
 
+  it('keeps REST and live task updates on the same business-time display path', async () => {
+    const pinia = createPinia()
+    const wrapper = mountGlobal(pinia)
+    await flushPromises()
+    await wrapper.find('[data-testid="global-task-indicator"]').trigger('click')
+    await nextTick()
+
+    expect(wrapper.text()).toContain('2026-07-29 16:01:00')
+    expect(wrapper.text()).not.toContain('2026-07-29T08:01:00Z')
+
+    const store = useTaskStore(pinia)
+    store.tasks = [{ ...runningTask, updated_time: '2026-07-29T08:02:00Z' }]
+    await nextTick()
+    expect(wrapper.text()).toContain('2026-07-29 16:02:00')
+    expect(wrapper.text()).not.toContain('2026-07-29T08:02:00Z')
+    wrapper.unmount()
+  })
+
   it('routes task-center open events by task id without changing the current route', async () => {
     const pinia = createPinia()
     const workspace = useWorkspaceStore(pinia)
