@@ -417,6 +417,84 @@ describe('Electron-only packaging', () => {
   })
 })
 
+describe('Local Windows packaging launcher', () => {
+  const repositoryRoot = resolve(appRoot, '..', '..')
+  const cmd = readFileSync(resolve(repositoryRoot, '一键打包安装包.cmd'), 'utf8')
+  const localScript = readFileSync(resolve(repositoryRoot, 'scripts', 'build', 'package_local.ps1'), 'utf8')
+  const formalScript = readFileSync(resolve(repositoryRoot, 'scripts', 'build', 'package_windows.ps1'), 'utf8')
+
+  it('uses the launcher directory and preserves the real exit code', () => {
+    expect(cmd).toContain('%~dp0')
+    expect(cmd).toContain('chcp 65001')
+    expect(cmd).toContain('package_local.ps1')
+    expect(cmd).toContain('%*')
+    expect(cmd).toContain('%ERRORLEVEL%')
+    expect(cmd).toContain('pause')
+    expect(cmd).toContain('exit /b %EXIT_CODE%')
+    expect(cmd).toContain('打包完成')
+    expect(cmd).toContain('打包失败')
+  })
+
+  it('supports both, single-edition, and preflight selections without a second builder', () => {
+    expect(localScript).toContain('[ValidateSet("full", "customer", "both", "preflight")]')
+    expect(localScript).toContain('[string]$Edition = "both"')
+    expect(localScript).toContain('package_windows.ps1')
+    expect(localScript).toContain('-PreflightOnly')
+    expect(localScript).toContain('Get-ExpectedEditions')
+    expect(localScript).toContain('package-logs')
+    expect(localScript).not.toContain('package:legacy')
+    expect(localScript).not.toContain('electron-builder')
+    expect(formalScript).toContain('[ValidateSet("full", "customer", "both")]')
+    expect(formalScript).toContain('[string]$Edition = "both"')
+    expect(formalScript).toContain('"full" { "package:full" }')
+    expect(formalScript).toContain('"customer" { "package:customer" }')
+    expect(formalScript).toContain('default { "package:all" }')
+    expect(localScript).toContain('"-Edition",')
+    expect(formalScript).toContain('[switch]$NoOpenOutput')
+  })
+
+  it('keeps the customer password in SecureString/process scope only', () => {
+    expect(localScript).toContain('Read-Host "请输入客户版维护密码" -AsSecureString')
+    expect(localScript).toContain('请再次输入客户版维护密码')
+    expect(localScript).toContain('ZeroFreeBSTR')
+    expect(localScript).toContain('NETCONSOLE_CUSTOMER_UNLOCK_PASSWORD')
+    expect(localScript).toContain('"Process"')
+    expect(localScript).toContain('finally')
+    expect(localScript).toContain('Remove-Item -LiteralPath $environmentPath')
+    expect(localScript).not.toContain('--password')
+    expect(localScript).not.toContain('-Password')
+    expect(cmd).not.toContain('CUSTOMER_UNLOCK_PASSWORD')
+  })
+
+  it('keeps the formal preflight and concurrency gates', () => {
+    expect(localScript).toContain('Global\\NetConsoleLocalInstallerBuild')
+    expect(localScript).toContain('WaitOne(0)')
+    expect(localScript).toContain('已有 NetConsole 打包任务正在运行')
+    expect(localScript).toContain('status", "--porcelain"')
+    expect(localScript).toContain('"@{upstream}"')
+    expect(localScript).toContain('pip", "check"')
+    expect(localScript).toContain('AvailableFreeSpace')
+    expect(localScript).toContain('10GB')
+    expect(formalScript).toContain('$PreflightOnly')
+    expect(formalScript).toContain('$head -ne $upstream')
+  })
+
+  it('creates an atomic, self-contained release directory and summary', () => {
+    expect(localScript).toContain('dist\\release')
+    expect(localScript).toContain('.staging-')
+    expect(localScript).toContain('Move-Item -LiteralPath $stagingRoot -Destination $finalRoot')
+    expect(localScript).toContain('SHA256SUMS.txt')
+    expect(localScript).toContain('BUILD_SUMMARY.json')
+    expect(localScript).toContain('BUILD_SUMMARY.md')
+    expect(localScript).toContain('artifact_sha256')
+    expect(localScript).toContain('real_windows_install_status = "PENDING"')
+    expect(localScript).toContain('自动构建和包内校验已通过；真实 Windows GUI 安装验收仍为 PENDING。')
+    expect(localScript).toContain('explorer.exe')
+    expect(localScript).toContain('Explorer 打开失败')
+    expect(localScript).not.toContain('D:\\NetConsoleData')
+  })
+})
+
 function rewriteProvenance(
   root: string,
   tool: 'iperf3' | 'fping',

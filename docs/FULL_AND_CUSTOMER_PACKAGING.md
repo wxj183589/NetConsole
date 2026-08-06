@@ -55,6 +55,25 @@ pnpm package:full
 pnpm package:customer
 ```
 
+## 一键本地打包
+
+项目根目录的 `一键打包安装包.cmd` 是面向 Windows 用户的双击入口。它只负责定位仓库、初始化 UTF-8 控制台并调用 `scripts/build/package_local.ps1`；正式构建、版本注入和安装包 Gate 仍由 `scripts/build/package_windows.ps1` 及现有 `package:full`、`package:customer`、`package:all` 完成。
+
+普通使用时直接双击脚本，默认生成 Full 和 Customer 两个版本。也可以从命令行选择单个版本或只做预检：
+
+```text
+一键打包安装包.cmd full
+一键打包安装包.cmd customer
+一键打包安装包.cmd both
+一键打包安装包.cmd preflight
+```
+
+Customer 或 `both` 构建如果当前进程没有有效的 `NETCONSOLE_CUSTOMER_UNLOCK_PASSWORD`，脚本会使用 SecureString 安全读取并要求确认，密码只在当前 PowerShell 进程及其构建子进程中存在。构建结束或失败后都会恢复原环境变量；密码不会写入命令行、日志、JSON、摘要、脚本或 Git 配置。Full-only 构建不要求客户版密码。
+
+每次运行会在 `dist/package-logs/` 生成独立的 `package-YYYYMMDD-HHmmss.log`。验证通过的制品先写入 `dist/release/.staging-<唯一 ID>`，全部校验完成后再原子重命名为 `dist/release/v<版本>-<Git 短 SHA>-<时间戳>`，目录内包含本次选择对应的安装包、`.exe.release.json`、`SHA256SUMS.txt`、`BUILD_SUMMARY.json` 和 `BUILD_SUMMARY.md`。成功后自动打开该目录；Explorer 打开失败不会改变构建结果。失败只清理本次 staging，不删除已有发布目录或业务数据。
+
+脚本会阻止脏工作树、HEAD 未与 upstream 对齐、依赖/磁盘预检失败以及并行打包。`preflight` 只执行环境与 Git 检查，不安装依赖、不运行测试、不生成安装包。摘要明确记录“自动构建和包内校验已通过；真实 Windows GUI 安装验收仍为 PENDING。”，自动成功不等同于真实安装验收通过。
+
 输出名称包含版本类型：
 
 ```text

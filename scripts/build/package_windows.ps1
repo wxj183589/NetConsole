@@ -1,5 +1,8 @@
 ﻿[CmdletBinding()]
 param(
+    [ValidateSet("full", "customer", "both")]
+    [string]$Edition = "both",
+    [switch]$NoOpenOutput,
     [switch]$PreflightOnly
 )
 
@@ -79,7 +82,11 @@ try {
     $webRoot = Join-Path $projectRoot "apps\web"
     $pythonPath = Join-Path $projectRoot ".venv\Scripts\python.exe"
     $artifactRoot = Join-Path $projectRoot "dist\electron"
-    $expectedEditions = @("full", "customer")
+    $expectedEditions = switch ($Edition) {
+        "full" { @("full"); break }
+        "customer" { @("customer"); break }
+        default { @("full", "customer") }
+    }
 
     Write-Step "检查构建环境"
     $gitPath = Resolve-NativeCommand "git.exe"
@@ -131,11 +138,13 @@ try {
         exit 0
     }
 
-    if ([string]::IsNullOrWhiteSpace($env:NETCONSOLE_CUSTOMER_UNLOCK_PASSWORD)) {
-        throw "构建客户版前必须设置 NETCONSOLE_CUSTOMER_UNLOCK_PASSWORD。"
-    }
-    if ($env:NETCONSOLE_CUSTOMER_UNLOCK_PASSWORD.Length -lt 8) {
-        throw "NETCONSOLE_CUSTOMER_UNLOCK_PASSWORD 至少需要 8 位。"
+    if ($Edition -ne "full") {
+        if ([string]::IsNullOrWhiteSpace($env:NETCONSOLE_CUSTOMER_UNLOCK_PASSWORD)) {
+            throw "构建客户版前必须设置 NETCONSOLE_CUSTOMER_UNLOCK_PASSWORD。"
+        }
+        if ($env:NETCONSOLE_CUSTOMER_UNLOCK_PASSWORD.Length -lt 8) {
+            throw "NETCONSOLE_CUSTOMER_UNLOCK_PASSWORD 至少需要 8 位。"
+        }
     }
 
     Write-Step "安装 Web 锁定依赖"
@@ -150,8 +159,13 @@ try {
     Write-Step "运行 Electron 测试"
     Invoke-Native $pnpmPath @("test") $desktopRoot
 
-    Write-Step "构建并验证完整版与客户版 Windows 安装包"
-    Invoke-Native $pnpmPath @("package") $desktopRoot
+    $packageScript = switch ($Edition) {
+        "full" { "package:full" }
+        "customer" { "package:customer" }
+        default { "package:all" }
+    }
+    Write-Step "构建并验证 $Edition Windows 安装包"
+    Invoke-Native $pnpmPath @("run", $packageScript) $desktopRoot
 
     Write-Step "复核双版本发布清单与安装包"
     $manifests = @(
@@ -230,6 +244,14 @@ try {
         Write-Host "[$($item.Edition)] SHA-256 : $($item.Hash)"
     }
     Write-Host "真实 GUI 安装验收状态仍为 PENDING，发布前需按文档完成人工验收。"
+    if (-not $NoOpenOutput) {
+        try {
+            Start-Process -FilePath "explorer.exe" -ArgumentList @($artifactRoot) -ErrorAction Stop | Out-Null
+        }
+        catch {
+            Write-Warning "无法自动打开制品目录：$artifactRoot；请手动打开。"
+        }
+    }
     exit 0
 }
 catch {
