@@ -2,7 +2,7 @@
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { EChartsType } from 'echarts/core'
 
-import type { GroundPingSample, GroundPingSeries } from '../../types/groundUnattended'
+import type { GroundApTransition, GroundPingSample, GroundPingSeries } from '../../types/groundUnattended'
 import { readNetConsoleChartTokens, subscribeNetConsoleChartTheme } from '../../theme/echarts'
 import { groundTransitionContextLabel } from '../../views/rail-transit/groundUnattendedLabels'
 
@@ -149,7 +149,7 @@ function render(): void {
           symbol: 'none',
           label: { formatter: 'AP 切换', color: theme.warning },
           lineStyle: { color: theme.warning, type: 'dashed' },
-          data: transitions.map((item) => ({ xAxis: String(item.ts || '') })),
+          data: transitions.map((item) => ({ xAxis: String(item.ts || ''), transition: item })),
         },
         markArea: {
           silent: true,
@@ -192,7 +192,9 @@ function packetSeries(name: string, points: GroundPingSample[], y: number, color
 }
 
 function tooltip(raw: unknown): string {
-  const item = raw as { data?: { sample?: GroundPingSample } }
+  const item = raw as { data?: { sample?: GroundPingSample; transition?: GroundApTransition } }
+  const transition = item.data?.transition
+  if (transition) return transitionTooltip(transition)
   const point = item.data?.sample
   if (!point) return '暂无数据'
   return [
@@ -209,6 +211,27 @@ function tooltip(raw: unknown): string {
     `AC 位置时间：${escapeHtml(point.ac_received_at || '未知')}`,
     `切换窗口：${escapeHtml(groundTransitionContextLabel(point.ap_transition_context))}`,
   ].join('<br/>')
+}
+
+function transitionTooltip(event: GroundApTransition): string {
+  const oldAp = event.old_ap_name || event.old_ap_raw || event.old_ap_mac || '未知 AP'
+  const newAp = event.new_ap_name || event.new_ap_raw || event.new_ap_mac || '未知 AP'
+  return [
+    'AP 主链路切换',
+    `时间：${escapeHtml(event.event_time || event.ts)}`,
+    `列车 / MR：${escapeHtml(event.train_id || '未知')} / ${escapeHtml(event.mr_role || event.mr_id || '未知')}`,
+    `切换：${escapeHtml(oldAp)} → ${escapeHtml(newAp)}`,
+    `站点：${escapeHtml(event.old_station || '未知')} → ${escapeHtml(event.new_station || '未知')}`,
+    `切换前 RSSI：${formatRssiEvidence(event.rssi_before, event.rssi_before_delta_ms, event.rssi_before_reason)}`,
+    `切换后 RSSI：${formatRssiEvidence(event.rssi_after, event.rssi_after_delta_ms, event.rssi_after_reason)}`,
+    `来源：${escapeHtml(event.source || 'MR Syslog / WMESH')}`,
+  ].join('<br/>')
+}
+
+function formatRssiEvidence(value: number | null, deltaMs: number | null, reason: string): string {
+  if (value == null) return escapeHtml(reason === 'AP_IDENTITY_UNAVAILABLE' ? 'AP 身份未解析，无法关联采样' : '无对应采样')
+  const delta = deltaMs == null ? '' : ` (${deltaMs >= 0 ? '+' : ''}${deltaMs} ms)`
+  return `${escapeHtml(value)} dBm${escapeHtml(delta)}`
 }
 
 function escapeHtml(value: unknown): string {

@@ -44,12 +44,15 @@ class FakeIdentityQuery:
             for key in keys
         }
 
+    def resolve_current_ap_macs(self, macs, *, ap_role=None):
+        return self.resolve_peer_macs(macs, ap_role=ap_role)
+
     def index_state(self) -> dict[str, object]:
         self.state_calls += 1
         return {"revision": self.revision}
 
 
-def test_ap_display_resolver_uses_strict_peer_semantics_and_identity_fields() -> None:
+def test_ap_display_resolver_resolves_registered_current_ap_aliases_and_identity_fields() -> None:
     radio_key = "101122334455"
     query = FakeIdentityQuery(
         {
@@ -108,8 +111,9 @@ def test_ap_display_resolver_uses_real_base_identity_for_yard_radio_alias(
     assert radio["peer_ap_mac"] == "74:ad:cb:9d:33:20"
     assert radio["station"] == "车辆段"
     assert radio["identity_source"] == "base_data"
-    assert physical["resolution_status"] == "UNRESOLVED"
-    assert physical["peer_ap_id"] == ""
+    assert physical["resolution_status"] == "PHYSICAL_AP"
+    assert physical["peer_ap_name"] == "车辆段-AP01"
+    assert physical["peer_ap_mac"] == "74:ad:cb:9d:33:20"
 
 
 def test_ap_display_resolver_batches_distinct_current_and_previous_peers() -> None:

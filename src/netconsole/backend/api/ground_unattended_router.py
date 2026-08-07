@@ -18,6 +18,7 @@ from netconsole.models.api.ground_unattended import (
     GroundArchivePageDTO,
     GroundConfigCheckRequestDTO,
     GroundDeepCollectionPageDTO,
+    GroundDeepCollectionRecordPageDTO,
     GroundHealthDTO,
     GroundInventorySummaryDTO,
     GroundMrRuntimeStatusPageDTO,
@@ -697,6 +698,33 @@ def deep_collections(
     return _call(
         lambda: _service(request).deep_collections(
             _site_id(request), run_id=run_id
+        )
+    )
+
+
+@router.get("/deep-collections/records", response_model=GroundDeepCollectionRecordPageDTO)
+def deep_collection_records(
+    request: Request,
+    run_id: str = Query(default="", max_length=100),
+    train_id: str = Query(default="", max_length=100),
+    mr_id: str = Query(default="", max_length=100),
+    mr_role: str = Query(default="", max_length=20),
+    category: str = Query(default="ALL", max_length=30),
+    keyword: str = Query(default="", max_length=500),
+    cursor: str = Query(default="", max_length=20_000),
+    limit: int = Query(default=200, ge=1, le=500),
+) -> GroundDeepCollectionRecordPageDTO:
+    return _call(
+        lambda: _service(request).deep_collection_records(
+            _site_id(request),
+            run_id=run_id,
+            train_id=train_id,
+            mr_id=mr_id,
+            mr_role=mr_role,
+            category=category,
+            keyword=keyword,
+            cursor=cursor,
+            limit=limit,
         )
     )
 

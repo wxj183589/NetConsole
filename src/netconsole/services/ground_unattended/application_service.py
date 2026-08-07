@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import ipaddress
+import json
 import shutil
 import uuid
 from collections.abc import Mapping
@@ -20,6 +22,9 @@ from netconsole.models.api.ground_unattended import (
     GroundArchivePageDTO,
     GroundArchiveValidationDTO,
     GroundDeepCollectionDTO,
+    GroundDeepCollectorDTO,
+    GroundDeepCollectionRecordDTO,
+    GroundDeepCollectionRecordPageDTO,
     GroundDeepCollectionPageDTO,
     GroundPingSummaryPageDTO,
     GroundPingSampleDTO,
@@ -95,6 +100,8 @@ from netconsole.services.system_network_application_service import (
     SystemNetworkApplicationService,
     SystemNetworkError,
 )
+from netconsole.services.online_mr.errors import OnlineMrQueryError
+from netconsole.services.online_mr.query_service import OnlineMrQueryService
 
 
 class DesktopActionResultPort(Protocol):
@@ -1718,6 +1725,8 @@ class GroundUnattendedApplicationService:
                 latest_operations.setdefault(str(operation["train_id"]), {})[
                     str(operation["mr_position_code"])
                 ] = operation
+        query = self._deep_query_service()
+        session_cache: dict[str, tuple[object | None, list[object], str]] = {}
         items = []
         for row in rows:
             train_id = str(row["train_id"])
@@ -1725,6 +1734,38 @@ class GroundUnattendedApplicationService:
             operations = row.get("operations") or {}
             sessions = row.get("sessions") or {}
             latest = latest_operations.get(train_id, {})
+            endpoint_by_role = {
+                str(endpoint.get("endpoint") or ""): endpoint
+                for endpoint in row.get("endpoints", [])
+            }
+            collectors = [
+                self._project_deep_collector(
+                    run_id=str(run["run_id"]) if run else "",
+                    train=row,
+                    operation=operation,
+                    endpoint=endpoint_by_role.get(role, {}),
+                    query=query,
+                    session_cache=session_cache,
+                )
+                for role, operation in latest.items()
+            ]
+            if not collectors:
+                collectors = [
+                    self._project_deep_collector(
+                        run_id=str(run["run_id"]) if run else "",
+                        train=row,
+                        operation=None,
+                        endpoint=endpoint,
+                        query=query,
+                        session_cache=session_cache,
+                    )
+                    for endpoint in endpoint_by_role.values()
+                ]
+            deep_state, deep_reason = self._collection_deep_state(
+                row,
+                collectors,
+                queue_position=queue_positions.get(train_id),
+            )
             items.append(
                 GroundDeepCollectionDTO(
                     train_id=train_id,
@@ -1761,9 +1802,216 @@ class GroundUnattendedApplicationService:
                     covered_rounds=int(row.get("covered_rounds") or 0),
                     failure_reason=row.get("failure_reason", ""),
                     updated_at=row.get("updated_at", ""),
+                    deep_state=deep_state,
+                    deep_state_reason=deep_reason,
+                    collectors=collectors,
                 )
             )
         return GroundDeepCollectionPageDTO(items=items, total=len(items))
+
+    def deep_collection_records(
+        self,
+        site_id: str,
+        *,
+        run_id: str = "",
+        train_id: str = "",
+        mr_id: str = "",
+        mr_role: str = "",
+        category: str = "ALL",
+        keyword: str = "",
+        cursor: str = "",
+        limit: int = 200,
+    ) -> GroundDeepCollectionRecordPageDTO:
+        """Read a bounded increment of the existing Online MR raw logs."""
+
+        self._require_site(site_id)
+        collections = self.deep_collections(site_id, run_id=run_id).items
+        selected = next(
+            (
+                collector
+                for collection in collections
+                if not train_id or collection.train_id == train_id
+                for collector in collection.collectors
+                if (not mr_id or collector.mr_id == mr_id)
+                and (not mr_role or collector.mr_role.upper() == mr_role.upper())
+            ),
+            None,
+        )
+        if selected is None:
+            raise GroundUnattendedError(
+                "DEEP_COLLECTOR_NOT_FOUND", "未找到匹配的深度采集 MR", status_code=404
+            )
+        if not selected.collector_session_id:
+            return GroundDeepCollectionRecordPageDTO(collector=selected)
+        query = self._deep_query_service()
+        if query is None:
+            return GroundDeepCollectionRecordPageDTO(
+                collector=selected.model_copy(
+                    update={"state_reason": "Online MR 查询服务当前不可用"}
+                )
+            )
+        category_key = str(category or "ALL").upper()
+        sources = _DEEP_RECORD_SOURCES.get(category_key)
+        if sources is None:
+            raise GroundUnattendedError(
+                "DEEP_RECORD_CATEGORY_INVALID", "不支持的深采记录分类", status_code=422
+            )
+        cursor_state = _decode_deep_cursor(cursor)
+        if cursor_state.get("session_id") not in {None, "", selected.collector_session_id}:
+            raise GroundUnattendedError(
+                "DEEP_RECORD_CURSOR_INVALID", "深采记录游标与当前会话不匹配", status_code=409
+            )
+        offsets = {
+            str(key): max(0, int(value))
+            for key, value in dict(cursor_state.get("offsets") or {}).items()
+        }
+        per_source = max(1, min(500, int(limit)) // max(1, len(sources)))
+        rows: list[GroundDeepCollectionRecordDTO] = []
+        has_more = False
+        needle = keyword.strip().casefold()
+        for source in sources:
+            try:
+                chunk = query.read_log_chunk(
+                    self.site_id,
+                    selected.collector_session_id,
+                    source,
+                    cursor=offsets.get(source, 0),
+                    limit=per_source,
+                )
+            except OnlineMrQueryError:
+                continue
+            offsets[source] = chunk.next_cursor
+            has_more = has_more or chunk.has_more
+            for line in chunk.lines:
+                if needle and needle not in line.text.casefold():
+                    continue
+                rows.append(
+                    GroundDeepCollectionRecordDTO(
+                        sequence=line.sequence,
+                        timestamp=line.timestamp or "",
+                        category=_deep_record_category(source),
+                        source=source,
+                        text=line.text,
+                    )
+                )
+        rows.sort(key=lambda item: (item.timestamp or "9999", item.source, item.sequence))
+        return GroundDeepCollectionRecordPageDTO(
+            collector=selected,
+            records=rows[: max(1, min(500, int(limit)))],
+            next_cursor=_encode_deep_cursor(
+                {"session_id": selected.collector_session_id, "offsets": offsets}
+            ),
+            has_more=has_more,
+        )
+
+    def _deep_query_service(self) -> OnlineMrQueryService | None:
+        scheduler = getattr(self.supervisor, "deep_scheduler", None)
+        query = getattr(scheduler, "query_service", None)
+        return (
+            query
+            if query is not None
+            and all(
+                callable(getattr(query, name, None))
+                for name in ("get_session", "list_collectors", "read_log_chunk")
+            )
+            else None
+        )
+
+    def _project_deep_collector(
+        self,
+        *,
+        run_id: str,
+        train: Mapping[str, Any],
+        operation: Mapping[str, Any] | None,
+        endpoint: Mapping[str, Any],
+        query: OnlineMrQueryService | None,
+        session_cache: dict[str, tuple[object | None, list[object], str]],
+    ) -> GroundDeepCollectorDTO:
+        operation = operation or {}
+        session_id = str(operation.get("session_id") or "")
+        state, reason = _deep_operation_state(operation, train)
+        bytes_written = 0
+        last_record_at = ""
+        session_error = ""
+        if session_id and query is not None:
+            cached = session_cache.get(session_id)
+            if cached is None:
+                try:
+                    detail = query.get_session(self.site_id, session_id)
+                    status_rows = query.list_collectors(self.site_id, session_id)
+                    cached = (detail, status_rows, "")
+                except OnlineMrQueryError as exc:
+                    cached = (None, [], str(exc))
+                session_cache[session_id] = cached
+            detail, status_rows, session_error = cached
+            for status in status_rows:
+                bytes_written += int(getattr(status, "size_bytes", 0) or 0)
+                updated_at = str(getattr(status, "updated_at", "") or "")
+                if updated_at > last_record_at:
+                    last_record_at = updated_at
+            # Online MR may report an operation as RUNNING immediately after the
+            # session is created.  The ground-unattended view must not present
+            # that as a deep collector that is already producing evidence.
+            if state == "RUNNING" and bytes_written <= 0:
+                state, reason = "STARTING", "Online MR 会话已建立，等待 Collector 写入原始数据"
+            elif bytes_written > 0 and state == "STARTING":
+                state, reason = "RUNNING", "Collector 已写入原始数据"
+            elif session_error and state in {"STARTING", "RUNNING"}:
+                reason = f"{reason}；会话状态暂不可读"
+            elif detail is not None:
+                session_status = str(getattr(detail, "status", "") or "").upper()
+                if session_status in {"FAILED", "ERROR"}:
+                    state, reason = "FAILED", str(
+                        getattr(detail, "error_message", "") or "Online MR 会话失败"
+                    )
+        return GroundDeepCollectorDTO(
+            run_id=run_id,
+            train_id=str(train.get("train_id") or ""),
+            mr_id=str(operation.get("mr_id") or endpoint.get("mr_id") or ""),
+            mr_role=str(operation.get("mr_position_code") or endpoint.get("endpoint") or ""),
+            management_ip=str(endpoint.get("management_ip") or ""),
+            operation_id=str(operation.get("operation_id") or ""),
+            collector_session_id=session_id,
+            state=state,
+            state_reason=reason,
+            started_at=str(operation.get("started_at") or ""),
+            last_record_at=last_record_at,
+            record_count=None,
+            bytes_written=bytes_written,
+            current_ap=str(train.get("current_ap_name") or ""),
+            station=str(train.get("station") or ""),
+            section=str(train.get("section") or ""),
+            last_error=str(operation.get("error_summary") or session_error or ""),
+            retry_count=max(0, int(train.get("attempt_count") or 0) - 1),
+        )
+
+    @staticmethod
+    def _collection_deep_state(
+        train: Mapping[str, Any],
+        collectors: list[GroundDeepCollectorDTO],
+        *,
+        queue_position: int | None,
+    ) -> tuple[str, str]:
+        active_collectors = [item for item in collectors if item.operation_id]
+        if active_collectors:
+            priority = {
+                "FAILED": 8,
+                "RUNNING": 7,
+                "STARTING": 6,
+                "STOPPING": 5,
+                "PAUSED": 4,
+                "QUEUED": 3,
+                "STOPPED": 2,
+                "ELIGIBLE": 1,
+                "INELIGIBLE": 0,
+            }
+            current = max(active_collectors, key=lambda item: priority[item.state])
+            return current.state, current.state_reason
+        if not train.get("deep_collection_eligible"):
+            return "INELIGIBLE", str(train.get("deep_exclusion_reason") or "不具备深度采集资格")
+        if queue_position is not None:
+            return "QUEUED", "已进入深度采集调度队列"
+        return "ELIGIBLE", "符合深度采集资格，等待调度"
 
     def timeline(
         self,
@@ -2760,6 +3008,76 @@ class GroundUnattendedApplicationService:
             raise GroundUnattendedError(
                 "SITE_MISMATCH", "请求局点必须与当前局点一致", status_code=409
             )
+
+
+_DEEP_RECORD_SOURCES = {
+    "ALL": (
+        "collector_output",
+        "mesh_link",
+        "ap_radio_statistics",
+        "wireless_status",
+        "terminal_monitor",
+    ),
+    "WMESH": ("mesh_link", "switch_history"),
+    "RSSI": ("ap_radio_statistics",),
+    "RADIO": ("wireless_status", "interface_rate"),
+    "STATUS": ("collector", "terminal_monitor"),
+    "RAW_OUTPUT": ("collector_output",),
+}
+
+
+def _deep_operation_state(
+    operation: Mapping[str, Any], train: Mapping[str, Any]
+) -> tuple[str, str]:
+    if not operation:
+        if not train.get("deep_collection_eligible"):
+            return "INELIGIBLE", str(
+                train.get("deep_exclusion_reason") or "不具备深度采集资格"
+            )
+        return "ELIGIBLE", "符合深度采集资格，等待调度"
+    state = str(operation.get("state") or "STARTING").upper()
+    reason = str(operation.get("error_summary") or "")
+    mapping = {
+        "STARTING": ("STARTING", "正在建立 Online MR 会话"),
+        "RUNNING": ("RUNNING", "Collector 正在运行，等待写入证据"),
+        "FINALIZING": ("STOPPING", "正在停止并归集采集结果"),
+        "COMPLETED": ("STOPPED", "深度采集已正常结束"),
+        "PARTIAL": ("FAILED", "深度采集仅产生部分结果"),
+        "FAILED": ("FAILED", "深度采集失败"),
+    }
+    resolved, default_reason = mapping.get(state, ("STARTING", "正在建立 Online MR 会话"))
+    return resolved, reason or default_reason
+
+
+def _deep_record_category(source: str) -> str:
+    if source in {"mesh_link", "switch_history"}:
+        return "WMESH"
+    if source == "ap_radio_statistics":
+        return "RSSI"
+    if source in {"wireless_status", "interface_rate"}:
+        return "RADIO"
+    if source in {"collector", "terminal_monitor"}:
+        return "STATUS"
+    return "RAW_OUTPUT"
+
+
+def _decode_deep_cursor(value: str) -> dict[str, Any]:
+    if not value:
+        return {}
+    try:
+        padded = value + "=" * (-len(value) % 4)
+        decoded = base64.urlsafe_b64decode(padded.encode("ascii"))
+        payload = json.loads(decoded.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+        raise GroundUnattendedError(
+            "DEEP_RECORD_CURSOR_INVALID", "深采记录游标无效", status_code=409
+        ) from None
+    return payload if isinstance(payload, dict) else {}
+
+
+def _encode_deep_cursor(payload: dict[str, Any]) -> str:
+    raw = json.dumps(payload, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
 
 def _listen_address_matches(actual: str, configured_host: str, configured_port: int) -> bool:
