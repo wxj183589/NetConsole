@@ -89,7 +89,7 @@ def _metric_database(path: Path) -> None:
                 switch_reason_text TEXT, raw_file TEXT, raw_line_start INTEGER, raw_line_end INTEGER
             );
             CREATE TABLE switch_realtime_events (
-                id INTEGER PRIMARY KEY, device_time TEXT, radio INTEGER,
+                id INTEGER PRIMARY KEY, device_time TEXT,
                 old_peer_name TEXT, old_peer_mac TEXT, old_rssi REAL,
                 new_peer_name TEXT, new_peer_mac TEXT, new_rssi REAL,
                 switch_reason_text TEXT, raw_file TEXT, raw_line_start INTEGER, raw_line_end INTEGER
@@ -119,8 +119,8 @@ def _metric_database(path: Path) -> None:
             (1, "2026-07-13 10:01:00", "2026-07-13 10:01:00", None, 1, "AP-OLD-H", "aa", -81, "AP-NEW-H", "bb", -55, "history", "raw/switch_history_latest.log", 31, 32),
         )
         conn.execute(
-            "INSERT INTO switch_realtime_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (1, "2026-07-13 10:02:00", 2, "AP-OLD-R", "cc", -77, "AP-NEW-R", "dd", -49, "realtime", "raw/terminal_monitor_raw.log", 41, 42),
+            "INSERT INTO switch_realtime_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (1, "2026-07-13 10:02:00", "AP-OLD-R", "cc", -77, "AP-NEW-R", "dd", -49, "realtime", "raw/terminal_monitor_raw.log", 41, 42),
         )
         conn.executemany(
             "INSERT INTO channel_busy_records VALUES (?, ?, ?, ?, ?, ?)",
@@ -501,6 +501,134 @@ def test_business_tables_use_new_keys_active_rows_and_strip_source_fields(tmp_pa
     assert error.value.code == OnlineMrQueryErrorCode.METRIC_UNSUPPORTED
 
 
+def test_business_projection_uses_matched_mac_like_ap_names_and_switch_endpoints(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    session = _session(service, "identity-business")
+    db = session / "parsed" / "online_diagnosis.sqlite"
+    with sqlite3.connect(db) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE main_link_samples (
+                id INTEGER PRIMARY KEY, device_time TEXT, radio INTEGER,
+                link_state TEXT, peer_name TEXT, peer_mac TEXT,
+                resolved_peer_name TEXT, canonical_ap_mac TEXT, peer_ap_mac TEXT,
+                identity_status TEXT, mr_rssi REAL, belong_station TEXT,
+                belong_section TEXT
+            );
+            CREATE TABLE switch_realtime_events (
+                id INTEGER PRIMARY KEY, device_time TEXT, radio INTEGER,
+                old_peer_name TEXT, old_peer_mac TEXT, old_rssi REAL,
+                old_matched_ap_name TEXT, old_matched_ap_mac TEXT,
+                old_belong_station TEXT, old_belong_section TEXT,
+                new_peer_name TEXT, new_peer_mac TEXT, new_rssi REAL,
+                new_matched_ap_name TEXT, new_matched_ap_mac TEXT,
+                new_belong_station TEXT, new_belong_section TEXT,
+                switch_reason_text TEXT
+            );
+            """
+        )
+        conn.execute(
+            "INSERT INTO main_link_samples VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                1,
+                "2026-07-21 16:00:00",
+                1,
+                "ACTIVE",
+                "bc5a-3457-61e0",
+                "bc5a-3457-61ff",
+                "bc5a-3457-61e0",
+                "bc5a345761e0",
+                "bc5a345761e0",
+                "matched",
+                -45,
+                "横溪站",
+                None,
+            ),
+        )
+        conn.execute(
+            "INSERT INTO switch_realtime_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                1,
+                "2026-07-21 16:00:01",
+                1,
+                "bc5a-3457-61e0",
+                "bc5a-3457-61ff",
+                -55,
+                "bc5a-3457-61e0",
+                "bc5a345761e0",
+                "横溪站",
+                None,
+                "bc5a-3457-7080",
+                "bc5a-3457-709f",
+                -43,
+                "bc5a-3457-7080",
+                "bc5a34577080",
+                "横溪站",
+                None,
+                "Better RSSI",
+            ),
+        )
+
+    summary = service.get_business_summary("site-a", "identity-business")
+    main = service.query_business_table("site-a", "identity-business", "main_link")
+    switches = service.query_business_table(
+        "site-a", "identity-business", "switch_realtime"
+    )
+    windows = service.query_switch_rssi_windows(
+        "site-a", "identity-business", "realtime"
+    )
+
+    assert summary.current_peer_name == "bc5a-3457-61e0"
+    assert main.rows[0]["peer_name"] == "bc5a-3457-61e0"
+    assert switches.rows[0]["from_peer_name"] == "bc5a-3457-61e0"
+    assert switches.rows[0]["from_peer_mac"] == "bc5a345761e0"
+    assert switches.rows[0]["from_peer_radio_mac"] == "bc5a-3457-61ff"
+    assert switches.rows[0]["to_station"] == "横溪站"
+    assert windows.items[0].old_peer_name == "bc5a-3457-61e0"
+    assert windows.items[0].old_peer_mac == "bc5a-3457-61ff"
+    assert windows.items[0].old_ap_mac == "bc5a345761e0"
+    assert windows.items[0].new_station == "横溪站"
+
+
+def test_channel_busy_business_and_metrics_keep_every_block_sample(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    session = _session(service, "channel-busy-block")
+    db = session / "parsed" / "online_diagnosis.sqlite"
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            """
+            CREATE TABLE channel_busy_records (
+                id INTEGER PRIMARY KEY, device_time TEXT, radio INTEGER,
+                ctl_channel INTEGER, bandwidth REAL, channel_band_raw TEXT,
+                bandwidth_mhz REAL, record_interval INTEGER, row_index INTEGER,
+                ctl_busy REAL, tx_busy REAL, rx_busy REAL
+            )
+            """
+        )
+        conn.executemany(
+            "INSERT INTO channel_busy_records VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (1, "2026-07-21 15:58:19", 1, 149, 80, "80M", 80, 9, 1, 7, 5, 1),
+                (2, "2026-07-21 15:58:10", 1, 149, 80, "80M", 80, 9, 2, 8, 6, 2),
+                (3, "2026-07-21 15:58:01", 1, 149, 80, "80M", 80, 9, 3, 9, 7, 3),
+            ],
+        )
+
+    page = service.query_business_table(
+        "site-a", "channel-busy-block", "channel_busy"
+    )
+    metrics = service.query_metrics(
+        "site-a", "channel-busy-block", [OnlineMrMetricType.CTL_BUSY]
+    )
+
+    assert len(page.rows) == 3
+    assert {row["channel_band_raw"] for row in page.rows} == {"80M"}
+    assert {row["bandwidth_mhz"] for row in page.rows} == {80.0}
+    assert sum(len(series.points) for series in metrics) == 3
+
+
 def test_fping_business_rows_use_natural_second_buckets_and_loss_status(tmp_path: Path) -> None:
     service = _service(tmp_path)
     session = _session(service, "fping-business")
@@ -594,13 +722,16 @@ def test_switch_rssi_windows_are_source_specific_without_raw_evidence(tmp_path: 
 
     assert [(row.old_rssi_dbm, row.new_rssi_dbm) for row in history.items] == [(-81, -55)]
     assert [(row.old_rssi_dbm, row.new_rssi_dbm) for row in realtime.items] == [(-77, -49)]
+    assert realtime.items[0].radio is None
     assert "raw_file" not in history.items[0].model_dump()
     assert "raw_line_start" not in realtime.items[0].model_dump()
     assert {-60, -70}.isdisjoint({history.items[0].old_rssi_dbm, history.items[0].new_rssi_dbm})
-    assert {row.source for row in service.query_timeline("site-a", "switch-rssi")} == {
+    timeline = service.query_timeline("site-a", "switch-rssi")
+    assert {row.source for row in timeline} == {
         "switch_history",
         "switch_realtime",
     }
+    assert next(row for row in timeline if row.source == "switch_realtime").payload["radio"] is None
 
 
 def test_metrics_support_old_missing_schema_and_deterministic_downsample(tmp_path: Path) -> None:
@@ -624,6 +755,125 @@ def test_metrics_support_old_missing_schema_and_deterministic_downsample(tmp_pat
     )
     assert len(rows) == 1
     assert rows[0].points[0].value == -65
+
+
+def test_summary_and_rssi_metrics_use_mr_device_time_and_trackside_keeps_both_roles(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    session = _session(service, "rssi-timeline")
+    db = session / "parsed" / "online_diagnosis.sqlite"
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            """
+            CREATE TABLE main_link_samples (
+                id INTEGER PRIMARY KEY, device_time TEXT, collector_time TEXT, radio INTEGER,
+                link_state TEXT, mr_rssi REAL, resolved_peer_name TEXT, peer_mac TEXT,
+                canonical_ap_mac TEXT, peer_radio_mac TEXT
+            )
+            """
+        )
+        conn.executemany(
+            "INSERT INTO main_link_samples VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (1, "2026-07-21 12:00:00", "2026-07-21 12:10:00", 1, "ACTIVE", -61, "AP-A", "0011-2233-4455", "001122334400", "001122334455"),
+                (2, "2026-07-21 12:00:01", "2026-07-21 12:10:01", 1, "STANDBY", -72, "AP-A", "0011-2233-4455", "001122334400", "001122334455"),
+            ],
+        )
+
+    summary = service.get_business_summary("site-a", "rssi-timeline")
+    main, trackside = service.query_metrics(
+        "site-a",
+        "rssi-timeline",
+        [OnlineMrMetricType.RSSI, OnlineMrMetricType.TRACKSIDE_RSSI],
+    )
+
+    assert summary.first_sample_time == "2026-07-21 12:00:00"
+    assert summary.last_sample_time == "2026-07-21 12:00:01"
+    assert [point.dimensions["link_state"] for point in main.points] == ["ACTIVE"]
+    assert {point.dimensions["link_state"] for point in trackside.points} == {"ACTIVE", "STANDBY"}
+    assert {point.raw_timestamp for point in trackside.points} == {
+        "2026-07-21 12:00:00",
+        "2026-07-21 12:00:01",
+    }
+
+
+def test_external_metrics_realign_old_derived_times_at_query_time_and_keep_raw_timestamp(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    session = _session(service, "query-time-alignment")
+    db = session / "parsed" / "online_diagnosis.sqlite"
+    with sqlite3.connect(db) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE time_sync_samples (
+                id INTEGER PRIMARY KEY, collector_time TEXT, device_time TEXT, source TEXT
+            );
+            CREATE TABLE fping_1s_summary (
+                id INTEGER PRIMARY KEY, bucket_time TEXT, local_bucket_time TEXT,
+                device_bucket_time TEXT, target_ip TEXT, sent INTEGER, received INTEGER,
+                lost INTEGER, loss_percent REAL
+            );
+            CREATE TABLE iperf_intervals (
+                id INTEGER PRIMARY KEY, run_id TEXT, collector_time TEXT,
+                interval_center_time TEXT, device_aligned_time TEXT,
+                direction TEXT, protocol TEXT, bitrate_mbps REAL
+            );
+            """
+        )
+        anchors = []
+        collector_start = datetime(2026, 7, 21, 12, 0, 4, 250_000)
+        for index in range(20):
+            collector = collector_start + timedelta(seconds=index)
+            device = collector - timedelta(milliseconds=4_250)
+            anchors.append((index + 1, collector.isoformat(sep=" ", timespec="milliseconds"), device.isoformat(sep=" ", timespec="milliseconds"), "mesh_link_display_clock"))
+        conn.executemany("INSERT INTO time_sync_samples VALUES (?, ?, ?, ?)", anchors)
+        conn.execute(
+            "INSERT INTO fping_1s_summary VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (1, "2026-07-21 12:00:10.250", "2026-07-21 12:00:10.250", "2026-07-21 12:00:50.000", "10.0.0.1", 1, 0, 1, 100.0),
+        )
+        conn.execute(
+            "INSERT INTO iperf_intervals VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (1, "run-1", "2026-07-21 12:00:10.250", "2026-07-21 12:00:10.250", "2026-07-21 12:00:50.000", "downlink", "tcp", 286.0),
+        )
+
+    rows = service.query_metrics(
+        "site-a",
+        "query-time-alignment",
+        [OnlineMrMetricType.PING_LOSS, OnlineMrMetricType.IPERF_BITRATE],
+        start_time="2026-07-21 12:00:05.500",
+        end_time="2026-07-21 12:00:06.500",
+    )
+
+    assert {series.metric_type for series in rows} == {
+        OnlineMrMetricType.PING_LOSS,
+        OnlineMrMetricType.IPERF_BITRATE,
+    }
+    for series in rows:
+        point = series.points[0]
+        assert point.timestamp == "2026-07-21 12:00:06.000"
+        assert point.normalized_timestamp == "2026-07-21 12:00:06.000"
+        assert point.raw_timestamp == "2026-07-21 12:00:10.250"
+        assert point.correction_method == "fixed-offset"
+        assert point.correction_confidence == "high"
+
+
+def test_external_metric_without_time_anchor_is_explicitly_low_confidence(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    session = _session(service, "missing-alignment")
+    db = session / "parsed" / "online_diagnosis.sqlite"
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "CREATE TABLE fping_samples (id INTEGER PRIMARY KEY, collector_time TEXT, target_ip TEXT, success INTEGER, latency_ms REAL)"
+        )
+        conn.execute(
+            "INSERT INTO fping_samples VALUES (1, '2026-07-21 12:00:10.250', '10.0.0.1', 1, 12.0)"
+        )
+
+    rows = service.query_metrics("site-a", "missing-alignment", [OnlineMrMetricType.PING_RTT])
+    point = rows[0].points[0]
+
+    assert point.timestamp == "2026-07-21 12:00:10.250"
+    assert point.raw_timestamp == "2026-07-21 12:00:10.250"
+    assert point.correction_method == "none"
+    assert point.correction_confidence == "low"
 
 
 def test_database_missing_corrupt_and_busy_are_controlled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

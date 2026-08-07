@@ -2,7 +2,7 @@
 
 本目录承载 Mesh 离线分析的图表组件，负责把已查询的序列数据呈现为 RSSI 等趋势，不在组件内解析原始日志或计算业务结论。
 
-主要入口为 `MeshRssiChart.vue` 和 `MeshChannelBusyChart.vue`；两者通过 `meshChartViewport.ts` 共享毫秒时间视口契约。数据来自 Mesh API/ViewModel，主题来自统一 ECharts 配置。修改图表字段或语义时运行对应测试并检查空数据和单位。
+主要入口为 `MeshRssiChart.vue`、`MeshTracksideSignalChart.vue` 和 `MeshChannelBusyChart.vue`；它们通过 `meshChartViewport.ts` 共享毫秒时间视口契约。双图布局已下沉到相邻的 `../rail-timeline/RailRssiComparison.vue`，公共游标、选择时刻和两类锁状态由 `../rail-timeline/railTimeline.ts` 管理。MESH 和 Online MR 复用该框架，但公共层不依赖任一业务 API；数据语义仍由各自 Adapter/ViewModel 决定。主题来自统一 ECharts 配置。修改图表字段或语义时运行对应测试并检查空数据、单位、共享 DataZoom、游标和 selectedTime。
 
 ## 页面与报告口径
 

@@ -9,6 +9,7 @@ from netconsole.services.export_identity_diagnostics import (
     unavailable_export_identity_diagnostics,
 )
 from netconsole.services.online_mr_chart_builder import OnlineMrChartBuilder, ChartData
+from netconsole.services.online_mr.traffic_analysis import build_iperf_traffic_overview
 
 
 class OnlineMrAnalysisReportExporter:
@@ -43,6 +44,7 @@ class OnlineMrAnalysisReportExporter:
             ("Ping丢包率趋势表", "Ping丢包率趋势图", builder.build_ping_loss_series(), LineChart),
             ("Ping延迟趋势表", "Ping延迟趋势图", builder.build_ping_latency_series(), LineChart),
             ("接口PPS趋势表", "接口PPS趋势图", builder.build_interface_rate_series(), LineChart),
+            ("业务打流趋势表", "业务打流趋势图", builder.build_traffic_rate_series(), LineChart),
             ("主链路切换原因统计表", "主链路切换原因统计图", builder.build_switch_reason_summary(), BarChart),
         ]
         for data_sheet_name, chart_sheet_name, chart_data, chart_type in chart_specs:
@@ -86,6 +88,7 @@ class OnlineMrAnalysisReportExporter:
             "空口繁忙度分析": self._channel_busy_rows(db_path),
             "射频统计分析": [["时间", "指标", "当前值", "增量", "结论"]],
             "接口速率分析": self._interface_rate_rows(db_path),
+            "业务打流概览": self._traffic_overview_rows(db_path),
             "链路重建与连接异常": [["时间", "Peer", "事件", "RSSI", "原因", "证据ID"]],
             "原始证据片段": [["证据ID", "来源Sheet", "事件类型", "采样时间", "源文件", "源行号"]],
             "参数配置": [["配置项", "值"], ["规则来源", "resources/mesh_quality_rules.json"], ["报告类型", "VEHICLE_MR_REALTIME_OFFLINE"]],
@@ -94,6 +97,59 @@ class OnlineMrAnalysisReportExporter:
             sheet = workbook.create_sheet(name)
             for row in rows:
                 sheet.append(["N/A" if value is None else value for value in row])
+
+    def _traffic_overview_rows(self, db_path: Path) -> list[list[object]]:
+        rows: list[list[object]] = [[
+            "范围", "运行ID", "协议", "方向", "开始时间", "结束时间", "时长(s)",
+            "记录数", "平均吞吐(Mbps)", "最小吞吐(Mbps)", "最大吞吐(Mbps)",
+            "发送数据(B)", "接收数据(B)", "UDP发送包", "UDP接收包", "UDP丢失包",
+            "UDP丢包率(%)", "UDP平均Jitter(ms)", "UDP最小Jitter(ms)", "UDP最大Jitter(ms)",
+            "TCP Retransmits", "数据质量说明",
+        ]]
+        if not db_path.exists():
+            return rows
+        try:
+            with sqlite3.connect(db_path) as conn:
+                overview = build_iperf_traffic_overview(conn)
+        except sqlite3.Error:
+            return rows
+
+        def values(scope: str, item: dict[str, object]) -> list[object]:
+            return [
+                scope,
+                item.get("run_id", ""),
+                item.get("protocol", ""),
+                item.get("label", item.get("direction", "")),
+                item.get("started_at"),
+                item.get("ended_at"),
+                item.get("duration_seconds"),
+                item.get("record_count"),
+                item.get("average_mbps"),
+                item.get("minimum_mbps"),
+                item.get("maximum_mbps"),
+                item.get("sent_bytes"),
+                item.get("received_bytes"),
+                item.get("sent_packets"),
+                item.get("received_packets"),
+                item.get("lost_packets"),
+                item.get("loss_percent"),
+                item.get("average_jitter_ms"),
+                item.get("minimum_jitter_ms"),
+                item.get("maximum_jitter_ms"),
+                item.get("retransmits"),
+                overview.get("data_quality_note", ""),
+            ]
+
+        rows.append(values("整场", {
+            **overview.get("overall", {}),
+            "protocol": overview.get("protocol", ""),
+            "direction": overview.get("direction", ""),
+            "started_at": overview.get("started_at"),
+            "ended_at": overview.get("ended_at"),
+        }))
+        for item in overview.get("directions", []):
+            rows.append(values("单次运行", item))
+        return rows
 
     @staticmethod
     def _inspect_mesh_link_detail_rows(rows: list[list[object]]) -> dict[str, object]:
@@ -159,7 +215,6 @@ class OnlineMrAnalysisReportExporter:
                     """
                     SELECT device_time, radio, ctl_channel, bandwidth, record_interval, ctl_busy, tx_busy, rx_busy
                     FROM channel_busy_records
-                    WHERE COALESCE(row_index, 1) = 1
                     ORDER BY device_time ASC, id ASC
                     LIMIT 20000
                     """
@@ -371,7 +426,7 @@ class OnlineMrAnalysisReportExporter:
                 stats["空链路次数"] = conn.execute("SELECT COUNT(*) FROM switch_realtime_events WHERE old_peer_mac IS NULL OR new_peer_mac IS NULL").fetchone()[0]
                 rssi = conn.execute("SELECT AVG(mr_rssi), MIN(mr_rssi) FROM main_link_samples WHERE UPPER(link_state) LIKE 'ACTIVE%' AND mr_rssi IS NOT NULL").fetchone()
                 stats["平均RSSI"], stats["最低RSSI"] = rssi
-                busy = conn.execute("SELECT AVG(tx_busy), AVG(rx_busy) FROM channel_busy_records WHERE COALESCE(row_index, 1) = 1").fetchone()
+                busy = conn.execute("SELECT AVG(tx_busy), AVG(rx_busy) FROM channel_busy_records").fetchone()
                 if busy and busy[0] is not None and busy[1] is not None:
                     stats["平均信道繁忙度"] = round((float(busy[0]) + float(busy[1])) / 2, 2)
                 ping = conn.execute("SELECT AVG(loss_percent), AVG(avg_latency_ms) FROM fping_1s_summary").fetchone()

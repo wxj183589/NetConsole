@@ -19,8 +19,9 @@ import { t } from '../../i18n/runtime'
 
 import MeshChannelBusyChart from '../../components/mesh-analysis/MeshChannelBusyChart.vue'
 import MeshRssiChart from '../../components/mesh-analysis/MeshRssiChart.vue'
-import MeshRssiChartWorkspace from '../../components/mesh-analysis/MeshRssiChartWorkspace.vue'
 import MeshTracksideSignalChart from '../../components/mesh-analysis/MeshTracksideSignalChart.vue'
+import RailRssiComparison from '../../components/rail-timeline/RailRssiComparison.vue'
+import { useRailTimelineController } from '../../components/rail-timeline/railTimeline'
 import {
   DEFAULT_MESH_RSSI_LAYOUT_MODE,
   DEFAULT_MESH_RSSI_SPLIT_RATIO,
@@ -38,7 +39,6 @@ import {
   visibleMeshSamples,
   type MeshChartHandle,
   type MeshChartViewport,
-  type MeshRssiChartSource,
   type MeshSharedPointerChange,
   type MeshSharedTimeDomain,
 } from '../../components/mesh-analysis/meshChartViewport'
@@ -218,13 +218,15 @@ const selectedChartEvent = ref<MeshChartEvent | null>(null)
 const focusTimestamp = ref('')
 const rssiFocusLabel = ref('')
 // preview 跟随本地缩放；committed 只在双图窗口结果成组发布后更新。
-const rssiViewport = ref<MeshChartViewport | null>(null)
+const railTimeline = useRailTimelineController()
+const rssiViewport = railTimeline.viewport
 const committedRssiViewport = ref<MeshChartViewport | null>(null)
 const pendingRssiQueryViewport = ref<MeshChartViewport | null>(null)
 const rssiViewportInteracting = ref(false)
 const rssiWindowLoading = ref(false)
-const sharedPointerTime = ref<string | null>(null)
-const sharedPointerSource = ref<MeshRssiChartSource | null>(null)
+const sharedPointerTime = railTimeline.cursorTime
+const sharedPointerSource = railTimeline.cursorSource
+const selectedAnalysisTime = railTimeline.selectedTime
 const tracksideChartVisible = ref(typeof IntersectionObserver === 'undefined')
 const busyViewport = ref<MeshChartViewport | null>(null)
 interface MeshChartWindowRange extends MeshChartViewport {
@@ -2365,8 +2367,11 @@ function scheduleRssiWindowReload(
 
 function updateSharedPointer(pointer: MeshSharedPointerChange): void {
   if (sharedPointerTime.value === pointer.time && sharedPointerSource.value === pointer.source_chart) return
-  sharedPointerTime.value = pointer.time
-  sharedPointerSource.value = pointer.source_chart
+  railTimeline.setCursor(pointer)
+}
+
+function selectAnalysisTime(time: string): void {
+  railTimeline.selectTime(time)
 }
 
 function updateBusyViewport(viewport: MeshChartViewport): void {
@@ -2546,6 +2551,7 @@ async function showLinkChart(row: MeshLinkDetail): Promise<void> {
 function selectChartSwitch(event: MeshChartEvent): void {
   selectedChartEvent.value = event
   focusTimestamp.value = event.timestamp
+  railTimeline.selectTime(event.timestamp)
   const range = buildRssiWindowRange(event.timestamp, null, event.local_radio)
   if (range) updateRssiViewport(range)
 }
@@ -4007,7 +4013,7 @@ function exportTimestamp(now = new Date()): string {
             class="rssi-workspace-host"
             :style="{ height: `${rssiPanel.height.value}px` }"
           >
-            <MeshRssiChartWorkspace
+            <RailRssiComparison
               :mode="rssiLayoutMode"
               :split-ratio="rssiCompareSplitRatio"
               :workspace-height="rssiPanel.height.value"
@@ -4039,7 +4045,7 @@ function exportTimestamp(now = new Date()): string {
                   </div>
                   <div v-else-if="chartData" class="mini-summary rssi-pane-summary"><span>当前 PeerMac <strong>{{ chartData.summary.current_peer_mac || '—' }}</strong></span><span>当前 AP <strong>{{ chartData.summary.current_peer_ap_name || '—' }}</strong></span><span>Radio <strong>{{ chartData.summary.current_radio ?? '—' }}</strong></span><span>估算采样间隔 <strong>{{ display(chartData.summary.estimated_interval_seconds, ' s') }}</strong></span><span>采样点 <strong>{{ chartData.summary.sample_count }}</strong></span><span>ACTIVE <strong>{{ chartData.summary.active_count }}</strong></span><span>STANDBY 上下文 <strong>{{ chartData.summary.standby_context_count }}</strong></span><span>切换 <strong>{{ chartData.summary.switch_count }}</strong></span><span>最早 <strong>{{ chartData.summary.first_sample_time || '—' }}</strong></span><span>最新 <strong>{{ chartData.summary.last_sample_time || '—' }}</strong></span></div>
                   <div class="rssi-pane-chart-host">
-                    <MeshRssiChart v-if="rssiActiveLoaded && chartData" ref="rssiChartRef" :points="chartData.points" :events="chartData?.events || []" :location-segments="chartData.location_segments" :show-peer="showRssiPeer" :show-switch-lines="showSwitchLines" :show-switch-points="showSwitchPoints" :show-location-band="showLocationBand" scope="active" :active="pageActive && activeTab === 'rssi' && rssiLayoutMode !== 'trackside-focus'" :focus-timestamp="focusTimestamp" :initial-viewport="rssiViewport" :sync-viewport="rssiViewport" :shared-time-domain="sharedRssiTimeDomain" :sync-pointer-time="sharedPointerTime" :sync-pointer-source="sharedPointerSource" @viewport-change="updateRssiViewport" @viewport-interaction-start="beginRssiViewportInteraction" @viewport-interaction-end="endRssiViewportInteraction" @pointer-change="updateSharedPointer" @select-switch="selectChartSwitch" />
+                    <MeshRssiChart v-if="rssiActiveLoaded && chartData" ref="rssiChartRef" :points="chartData.points" :events="chartData?.events || []" :location-segments="chartData.location_segments" :show-peer="showRssiPeer" :show-switch-lines="showSwitchLines" :show-switch-points="showSwitchPoints" :show-location-band="showLocationBand" scope="active" :active="pageActive && activeTab === 'rssi' && rssiLayoutMode !== 'trackside-focus'" :focus-timestamp="focusTimestamp" :initial-viewport="rssiViewport" :sync-viewport="rssiViewport" :shared-time-domain="sharedRssiTimeDomain" :sync-pointer-time="sharedPointerTime || selectedAnalysisTime" :sync-pointer-source="sharedPointerTime ? sharedPointerSource : 'programmatic'" :selected-time="selectedAnalysisTime" @viewport-change="updateRssiViewport" @viewport-interaction-start="beginRssiViewportInteraction" @viewport-interaction-end="endRssiViewportInteraction" @pointer-change="updateSharedPointer" @select-time="selectAnalysisTime" @select-switch="selectChartSwitch" />
                     <el-empty v-else-if="rssiActiveLoaded && !rssiActiveLoading" description="当前范围没有 RSSI 数据" :image-size="60" />
                   </div>
                 </div>
@@ -4074,13 +4080,13 @@ function exportTimestamp(now = new Date()): string {
                     <span>缺失轨旁信号跳过 <strong>{{ tracksideSignal.skipped_missing_signal_points }}</strong></span>
                   </div>
                   <div ref="tracksideChartHost" class="rssi-pane-chart-host">
-                    <MeshTracksideSignalChart v-if="tracksideSeriesCache" ref="tracksideChartRef" :series-cache="tracksideSeriesCache" :events="chartData?.events || []" :location-segments="chartData?.location_segments || []" :continuity-gap-seconds="tracksideSignal?.continuity_gap_seconds" :show-switch-lines="showSwitchLines" :show-switch-points="showSwitchPoints" :show-location-band="showLocationBand" :active="pageActive && activeTab === 'rssi' && tracksideChartVisible && rssiLayoutMode !== 'active-focus'" :workspace-visible="activeTab === 'rssi'" :initial-viewport="rssiViewport" :sync-viewport="rssiViewport" :shared-time-domain="sharedRssiTimeDomain" :sync-pointer-time="sharedPointerTime" :sync-pointer-source="sharedPointerSource" @viewport-change="updateRssiViewport" @viewport-interaction-start="beginRssiViewportInteraction" @viewport-interaction-end="endRssiViewportInteraction" @pointer-change="updateSharedPointer" @select-switch="selectChartSwitch" @workload-phase="handleTracksideWorkloadPhase" @workload-profile="handleTracksideWorkloadProfile" />
+                    <MeshTracksideSignalChart v-if="tracksideSeriesCache" ref="tracksideChartRef" :series-cache="tracksideSeriesCache" :events="chartData?.events || []" :location-segments="chartData?.location_segments || []" :continuity-gap-seconds="tracksideSignal?.continuity_gap_seconds" :show-switch-lines="showSwitchLines" :show-switch-points="showSwitchPoints" :show-location-band="showLocationBand" :active="pageActive && activeTab === 'rssi' && tracksideChartVisible && rssiLayoutMode !== 'active-focus'" :workspace-visible="activeTab === 'rssi'" :initial-viewport="rssiViewport" :sync-viewport="rssiViewport" :shared-time-domain="sharedRssiTimeDomain" :sync-pointer-time="sharedPointerTime || selectedAnalysisTime" :sync-pointer-source="sharedPointerTime ? sharedPointerSource : 'programmatic'" :selected-time="selectedAnalysisTime" @viewport-change="updateRssiViewport" @viewport-interaction-start="beginRssiViewportInteraction" @viewport-interaction-end="endRssiViewportInteraction" @pointer-change="updateSharedPointer" @select-time="selectAnalysisTime" @select-switch="selectChartSwitch" @workload-phase="handleTracksideWorkloadPhase" @workload-profile="handleTracksideWorkloadProfile" />
                     <el-empty v-else-if="tracksideLoaded && !tracksideLoading" description="当前范围没有轨旁AP信号数据" :image-size="60" />
                     <el-empty v-else-if="!tracksideRecoveryBlocked && !tracksideLoading" :description="rssiActivePaintReady ? '轨旁AP信号图尚未加载' : '等待主链 RSSI 图加载完成'" :image-size="60" />
                   </div>
                 </div>
               </template>
-            </MeshRssiChartWorkspace>
+            </RailRssiComparison>
           </div>
           <div v-if="selectedChartEvent" class="selected-switch"><span>切换：{{ selectedChartEvent.from_ap_name || selectedChartEvent.from_peer_mac || '—' }} → {{ selectedChartEvent.to_ap_name || selectedChartEvent.to_peer_mac || '—' }} · {{ selectedChartEvent.timestamp }}</span><el-button link type="primary" @click="showSwitchInBuildOrder">查看建链顺序</el-button></div>
           <p class="hint">{{ chartData?.downsampled ? `主图从 ${chartData.total_points} 点按业务边界、趋势、普通代表三级预算返回 ${chartData.returned_points} 点（目标 ${chartData.requested_max_points}）` : `主图展示 ${chartData?.returned_points ?? 0} 个真实结构化样本` }}；轨旁图按完整 frame 返回主备链路，缩放后自动加载当前时间窗口。</p>

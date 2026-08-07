@@ -37,12 +37,19 @@ from netconsole.models.api.online_mr import (
     OnlineMrSwitchRssiPageDTO,
     OnlineMrSwitchRssiSource,
     OnlineMrSwitchRssiWindowDTO,
+    OnlineMrTimeAlignmentDTO,
+    OnlineMrTrafficOverviewDTO,
     OnlineMrTimelineEventDTO,
 )
 from netconsole.services.online_mr.collection_paths import OnlineMrCollectionPaths
 from netconsole.services.online_mr.errors import OnlineMrQueryError, OnlineMrQueryErrorCode
+from netconsole.services.online_mr.session_time_alignment import (
+    SessionTimeAlignment,
+    TimeAlignmentAnchor,
+)
 from netconsole.services.online_mr_parser import parse_mesh_link_text
 from netconsole.services.online_mr_session_store import OnlineMrSessionStore
+from netconsole.services.online_mr.traffic_analysis import build_iperf_traffic_overview
 from netconsole.services.ap_identity.normalizers import normalize_mac
 from netconsole.services.rail_transit.online_mr_diagnosis_parser import PARSER_VERSION
 
@@ -906,10 +913,18 @@ class OnlineMrQueryService:
         requested = self._metric_types(metric_types)
         try:
             with closing(self._connect_readonly(path)) as conn:
+                alignment = self._session_time_alignment(conn)
                 series = [
                     row
                     for metric in requested
-                    for row in self._query_metric(conn, metric, start_time, end_time, limit)
+                    for row in self._query_metric(
+                        conn,
+                        metric,
+                        start_time,
+                        end_time,
+                        limit,
+                        alignment=alignment,
+                    )
                 ]
         except OnlineMrQueryError:
             raise
@@ -943,8 +958,17 @@ class OnlineMrQueryService:
         page_size_per_metric = max(1, limit // len(requested))
         try:
             with closing(self._connect_readonly(path)) as conn:
+                alignment = self._session_time_alignment(conn)
                 pages = [
-                    self._query_metric(conn, metric, start_time, end_time, page_size_per_metric + 1, offset)
+                    self._query_metric(
+                        conn,
+                        metric,
+                        start_time,
+                        end_time,
+                        page_size_per_metric + 1,
+                        offset,
+                        alignment=alignment,
+                    )
                     for metric in requested
                 ]
         except OnlineMrQueryError:
@@ -978,6 +1002,25 @@ class OnlineMrQueryService:
         try:
             with closing(self._connect_readonly(path)) as conn:
                 return self._business_summary(conn, session_id)
+        except OnlineMrQueryError:
+            raise
+        except sqlite3.Error as exc:
+            raise self._database_error(exc) from exc
+
+    def get_traffic_overview(
+        self,
+        site_id: str,
+        session_id: str,
+        *,
+        start_time: str | None = None,
+        end_time: str | None = None,
+    ) -> OnlineMrTrafficOverviewDTO:
+        path = self._parsed_database_path(site_id, session_id)
+        try:
+            with closing(self._connect_readonly(path)) as conn:
+                return OnlineMrTrafficOverviewDTO.model_validate(
+                    build_iperf_traffic_overview(conn, start_time=start_time, end_time=end_time)
+                )
         except OnlineMrQueryError:
             raise
         except sqlite3.Error as exc:
@@ -1053,7 +1096,7 @@ class OnlineMrQueryService:
 
     def _business_summary(self, conn: sqlite3.Connection, session_id: str) -> OnlineMrBusinessSummaryDTO:
         main_columns = self._table_columns(conn, "main_link_samples")
-        sample_time_expr = self._time_expr(main_columns, ("collector_time", "device_time", "device_clock"))
+        sample_time_expr = self._time_expr(main_columns, ("device_time", "device_clock", "collector_time"))
         first_sample_time, last_sample_time = self._time_bounds(conn, "main_link_samples", sample_time_expr)
         estimated_interval_seconds = self._estimated_interval_seconds(
             conn,
@@ -1061,9 +1104,16 @@ class OnlineMrQueryService:
             sample_time_expr,
         )
         current = self._latest_active_link_row(conn, main_columns, sample_time_expr)
+        current_ap_mac = normalize_mac(
+            current.get("canonical_ap_mac") or current.get("peer_ap_mac")
+        ) or ""
         segment_columns = self._table_columns(conn, "active_segments")
         current_segment = self._latest_segment_row(conn, segment_columns)
-        time_sync_status, time_sync_avg_offset_ms = self._time_sync_summary(conn)
+        alignment = self._session_time_alignment(conn)
+        time_alignment = self._time_alignment_dto(alignment)
+        traffic_overview = OnlineMrTrafficOverviewDTO.model_validate(build_iperf_traffic_overview(conn))
+        time_sync_status = "已可靠校正" if alignment.confidence in {"high", "medium"} else "时间未可靠校正"
+        time_sync_avg_offset_ms = alignment.offset_median_ms
         sample_count = self._count_rows(conn, "main_link_samples")
         if "link_state" in main_columns:
             active_count = self._count_rows(conn, "main_link_samples", "UPPER(link_state) LIKE 'ACTIVE%'")
@@ -1075,12 +1125,7 @@ class OnlineMrQueryService:
         switch_count = self._count_rows(conn, "switch_history_events") + self._count_rows(conn, "switch_realtime_events")
         fping_point_count = self._count_rows(conn, "fping_1s_summary") or self._count_rows(conn, "fping_samples")
         iperf_point_count = self._count_rows(conn, "iperf_intervals")
-        channel_busy_columns = self._table_columns(conn, "channel_busy_records")
-        channel_busy_count = (
-            self._count_rows(conn, "channel_busy_records", "COALESCE(row_index, 1) = 1")
-            if "row_index" in channel_busy_columns
-            else self._count_rows(conn, "channel_busy_records")
-        )
+        channel_busy_count = self._count_rows(conn, "channel_busy_records")
         interface_pps_count = self._count_rows(conn, "interface_rate_samples")
         diagnosis_count = (
             self._count_rows(conn, "analysis_events")
@@ -1104,13 +1149,19 @@ class OnlineMrQueryService:
             estimated_interval_seconds=estimated_interval_seconds,
             time_sync_status=time_sync_status,
             time_sync_avg_offset_ms=time_sync_avg_offset_ms,
+            time_alignment=time_alignment,
+            traffic_overview=traffic_overview,
             current_radio=int(current.get("radio")) if current.get("radio") is not None else None,
             current_link_state=str(current.get("link_state") or ""),
             current_peer_mac=str(current.get("peer_mac") or ""),
-            current_peer_name=str(current.get("peer_name") or ""),
-            current_ap_mac=normalize_mac(
-                current.get("canonical_ap_mac") or current.get("peer_ap_mac")
-            ) or "",
+            current_peer_name=(
+                self._business_peer_name(
+                    current.get("resolved_peer_name") if current_ap_mac else "",
+                    current.get("peer_name") if current_ap_mac else "",
+                )
+                or ""
+            ),
+            current_ap_mac=current_ap_mac,
             current_peer_radio_mac=str(current.get("bssid") or ""),
             current_station=str(current.get("belong_station") or ""),
             current_section=str(current.get("belong_section") or ""),
@@ -1292,8 +1343,6 @@ class OnlineMrQueryService:
         if not time_expr:
             return []
         where, params = self._time_where(time_expr, start_time, end_time)
-        if "row_index" in columns:
-            where = f"{where} AND COALESCE(row_index, 1) = 1"
         order_by = f"{time_expr} ASC, id ASC" if "id" in columns else f"{time_expr} ASC"
         rows = conn.execute(
             f"""
@@ -1313,7 +1362,17 @@ class OnlineMrQueryService:
                     "device_time": self._text_or_none(row_data.get("device_time")),
                     "radio": row_data.get("radio"),
                     "ctl_channel": row_data.get("ctl_channel"),
-                    "bandwidth": row_data.get("bandwidth"),
+                    "channel_band_raw": self._text_or_none(row_data.get("channel_band_raw")),
+                    "bandwidth_mhz": (
+                        row_data.get("bandwidth_mhz")
+                        if row_data.get("bandwidth_mhz") is not None
+                        else row_data.get("bandwidth")
+                    ),
+                    "bandwidth": (
+                        row_data.get("bandwidth_mhz")
+                        if row_data.get("bandwidth_mhz") is not None
+                        else row_data.get("bandwidth")
+                    ),
                     "record_interval": row_data.get("record_interval"),
                     "ctl_busy": row_data.get("ctl_busy"),
                     "tx_busy": row_data.get("tx_busy"),
@@ -1365,8 +1424,16 @@ class OnlineMrQueryService:
                     {
                         "device_switch_time": self._text_or_none(row_data.get("event_time_device")) or event_time,
                         "radio": row_data.get("radio"),
-                        "from_peer_name": self._text_or_none(row_data.get("old_peer_name")),
-                        "to_peer_name": self._text_or_none(row_data.get("new_peer_name")),
+                        "from_peer_name": self._text_or_none(
+                            row_data.get("old_matched_ap_name") or row_data.get("old_peer_name")
+                        ),
+                        "to_peer_name": self._text_or_none(
+                            row_data.get("new_matched_ap_name") or row_data.get("new_peer_name")
+                        ),
+                        "from_peer_mac": self._text_or_none(row_data.get("old_peer_mac")),
+                        "to_peer_mac": self._text_or_none(row_data.get("new_peer_mac")),
+                        "from_ap_mac": self._text_or_none(row_data.get("old_matched_ap_mac")),
+                        "to_ap_mac": self._text_or_none(row_data.get("new_matched_ap_mac")),
                         "from_rssi": row_data.get("old_rssi"),
                         "to_rssi": row_data.get("new_rssi"),
                         "from_station": self._text_or_none(row_data.get("old_belong_station")),
@@ -1381,13 +1448,23 @@ class OnlineMrQueryService:
                         "device_time": event_time,
                         "device_name": self._text_or_none(row_data.get("device_name")),
                         "radio": row_data.get("radio"),
-                        "from_peer_name": self._text_or_none(row_data.get("old_peer_name")),
-                        "from_peer_mac": self._text_or_none(row_data.get("old_peer_mac")),
+                        "from_peer_name": self._text_or_none(
+                            row_data.get("old_matched_ap_name") or row_data.get("old_peer_name")
+                        ),
+                        "from_peer_mac": self._text_or_none(
+                            row_data.get("old_matched_ap_mac") or row_data.get("old_peer_mac")
+                        ),
+                        "from_peer_radio_mac": self._text_or_none(row_data.get("old_peer_mac")),
                         "from_rssi": row_data.get("old_rssi"),
                         "from_station": self._text_or_none(row_data.get("old_belong_station")),
                         "from_section": self._text_or_none(row_data.get("old_belong_section")),
-                        "to_peer_name": self._text_or_none(row_data.get("new_peer_name")),
-                        "to_peer_mac": self._text_or_none(row_data.get("new_peer_mac")),
+                        "to_peer_name": self._text_or_none(
+                            row_data.get("new_matched_ap_name") or row_data.get("new_peer_name")
+                        ),
+                        "to_peer_mac": self._text_or_none(
+                            row_data.get("new_matched_ap_mac") or row_data.get("new_peer_mac")
+                        ),
+                        "to_peer_radio_mac": self._text_or_none(row_data.get("new_peer_mac")),
                         "to_rssi": row_data.get("new_rssi"),
                         "to_station": self._text_or_none(row_data.get("new_belong_station")),
                         "to_section": self._text_or_none(row_data.get("new_belong_section")),
@@ -1645,15 +1722,9 @@ class OnlineMrQueryService:
     def _business_peer_name(cls, *candidates: object) -> str | None:
         for candidate in candidates:
             text = cls._text_or_none(candidate)
-            if text and not cls._is_mac_like(text):
+            if text:
                 return text
         return None
-
-    @staticmethod
-    def _is_mac_like(value: object) -> bool:
-        text = str(value or "").strip()
-        compact = re.sub(r"[^0-9A-Fa-f]", "", text)
-        return len(compact) == 12 and bool(re.fullmatch(r"[0-9A-Fa-f:.-]+", text))
 
     @classmethod
     def _switch_reason_text(cls, reason: object, code: object) -> str | None:
@@ -1831,15 +1902,57 @@ class OnlineMrQueryService:
         return dict(row) if row else {}
 
     def _time_sync_summary(self, conn: sqlite3.Connection) -> tuple[str, float | None]:
+        alignment = self._session_time_alignment(conn)
+        if alignment.anchor_count <= 0:
+            return "时间未可靠校正", None
+        status = "已可靠校正" if alignment.confidence in {"high", "medium"} else "时间未可靠校正"
+        return status, alignment.offset_median_ms
+
+    def _session_time_alignment(self, conn: sqlite3.Connection) -> SessionTimeAlignment:
         columns = self._table_columns(conn, "time_sync_samples")
-        if not columns:
-            return "unknown", None
-        row = conn.execute("SELECT COUNT(*), AVG(offset_ms) FROM time_sync_samples").fetchone()
-        count = int(row[0] or 0) if row else 0
-        avg_offset = float(row[1]) if row and row[1] is not None else None
-        if count <= 0:
-            return "unknown", None
-        return "已建立", avg_offset
+        if not {"collector_time", "device_time"}.issubset(columns):
+            return SessionTimeAlignment.from_anchors([])
+        anchors: list[TimeAlignmentAnchor] = []
+        source_expr = "source" if "source" in columns else "'' AS source"
+        for row in conn.execute(
+            f"SELECT collector_time, device_time, {source_expr} FROM time_sync_samples "
+            "WHERE collector_time IS NOT NULL AND device_time IS NOT NULL ORDER BY collector_time"
+        ):
+            collector_time = self._as_datetime(row["collector_time"])
+            device_time = self._as_datetime(row["device_time"])
+            if collector_time is None or device_time is None:
+                continue
+            anchors.append(
+                TimeAlignmentAnchor(
+                    collector_time=collector_time,
+                    device_time=device_time,
+                    source=str(row["source"] or "mesh_link_display_clock"),
+                )
+            )
+        return SessionTimeAlignment.from_anchors(anchors)
+
+    @staticmethod
+    def _time_alignment_dto(alignment: SessionTimeAlignment) -> OnlineMrTimeAlignmentDTO:
+        aligned_status = (
+            "aligned"
+            if alignment.confidence in {"high", "medium"}
+            else "aligned-low-confidence"
+            if alignment.anchor_count
+            else "collector-time"
+        )
+        return OnlineMrTimeAlignmentDTO(
+            anchor_count=alignment.anchor_count,
+            inlier_count=alignment.inlier_count,
+            offset_median_ms=alignment.offset_median_ms,
+            offset_p05_ms=alignment.offset_p05_ms,
+            offset_p95_ms=alignment.offset_p95_ms,
+            drift_ms_per_minute=alignment.drift_ms_per_minute,
+            method=alignment.method,
+            confidence=alignment.confidence,
+            warning=alignment.warning,
+            fping_status=aligned_status,
+            traffic_status=aligned_status,
+        )
 
     @staticmethod
     def _duration_seconds(start: object, end: object) -> float | None:
@@ -2182,61 +2295,161 @@ class OnlineMrQueryService:
         end_time: str | None,
         limit: int,
         offset: int = 0,
+        *,
+        alignment: SessionTimeAlignment | None = None,
     ) -> list[OnlineMrMetricSeriesDTO]:
+        if metric in {OnlineMrMetricType.RSSI, OnlineMrMetricType.TRACKSIDE_RSSI}:
+            return self._query_rssi_metric(
+                conn,
+                metric,
+                start_time=start_time,
+                end_time=end_time,
+                limit=limit,
+                offset=offset,
+            )
         specs = {
-            OnlineMrMetricType.RSSI: ("main_link_samples", "mr_rssi", ("device_time", "device_clock", "collector_time"), ("radio", "resolved_peer_name", "peer_name", "peer_mac"), None, "dBm"),
-            OnlineMrMetricType.MAIN_LINK: ("main_link_samples", None, ("device_time", "device_clock", "collector_time"), ("radio", "resolved_peer_name", "peer_name", "peer_mac"), "resolved_peer_name", ""),
-            OnlineMrMetricType.CTL_BUSY: ("channel_busy_records", "ctl_busy", ("device_time", "device_clock"), ("radio",), None, "%"),
-            OnlineMrMetricType.TX_BUSY: ("channel_busy_records", "tx_busy", ("device_time", "device_clock"), ("radio",), None, "%"),
-            OnlineMrMetricType.RX_BUSY: ("channel_busy_records", "rx_busy", ("device_time", "device_clock"), ("radio",), None, "%"),
+            OnlineMrMetricType.MAIN_LINK: (
+                "main_link_samples",
+                None,
+                ("device_time", "device_clock", "collector_time"),
+                (
+                    "radio",
+                    "link_state",
+                    "resolved_peer_name",
+                    "peer_name",
+                    "peer_mac",
+                    "canonical_ap_mac",
+                    "peer_ap_mac",
+                    "peer_radio_mac",
+                    "belong_station",
+                    "belong_section",
+                    "identity_status",
+                    "identity_source",
+                ),
+                "resolved_peer_name",
+                "",
+            ),
+            OnlineMrMetricType.CTL_BUSY: ("channel_busy_records", "ctl_busy", ("device_time", "device_clock"), ("radio", "ctl_channel", "bandwidth_mhz", "bandwidth"), None, "%"),
+            OnlineMrMetricType.TX_BUSY: ("channel_busy_records", "tx_busy", ("device_time", "device_clock"), ("radio", "ctl_channel", "bandwidth_mhz", "bandwidth"), None, "%"),
+            OnlineMrMetricType.RX_BUSY: ("channel_busy_records", "rx_busy", ("device_time", "device_clock"), ("radio", "ctl_channel", "bandwidth_mhz", "bandwidth"), None, "%"),
             OnlineMrMetricType.INTERFACE_IN_PPS: ("interface_rate_samples", "total_pps", ("device_time", "device_clock"), ("interface_normalized", "interface_name"), None, "pps"),
             OnlineMrMetricType.INTERFACE_OUT_PPS: ("interface_rate_samples", "total_pps", ("device_time", "device_clock"), ("interface_normalized", "interface_name"), None, "pps"),
-            OnlineMrMetricType.PING_RTT: ("fping_samples", "latency_ms", ("device_aligned_time", "collector_time", "local_time"), ("target_ip", "target_name"), None, "ms"),
-            OnlineMrMetricType.PING_LOSS: ("fping_1s_summary", "loss_percent", ("device_bucket_time", "bucket_time", "local_bucket_time"), ("target_ip", "target_name"), None, "%"),
-            OnlineMrMetricType.IPERF_BITRATE: ("iperf_intervals", "bitrate_mbps", ("device_interval_center_time", "device_aligned_time", "interval_center_time", "collector_time"), ("run_id",), None, "Mbps"),
+            OnlineMrMetricType.PING_RTT: ("fping_samples", "latency_ms", ("collector_time", "local_time"), ("target_ip", "target_name", "success"), None, "ms"),
+            OnlineMrMetricType.PING_LOSS: ("fping_1s_summary", "loss_percent", ("local_bucket_time", "bucket_time"), ("target_ip", "target_name", "lost", "sent", "received"), None, "%"),
+            OnlineMrMetricType.IPERF_BITRATE: ("iperf_intervals", "bitrate_mbps", ("interval_center_time", "collector_time"), ("run_id", "direction", "protocol", "transfer_bytes", "loss_percent"), None, "Mbps"),
+            OnlineMrMetricType.IPERF_LOSS: ("iperf_intervals", "loss_percent", ("interval_center_time", "collector_time"), ("run_id", "direction", "protocol", "lost_packets", "total_packets"), None, "%"),
+            OnlineMrMetricType.IPERF_JITTER: ("iperf_intervals", "jitter_ms", ("interval_center_time", "collector_time"), ("run_id", "direction", "protocol"), None, "ms"),
+            OnlineMrMetricType.IPERF_RETRANSMITS: ("iperf_intervals", "retransmits", ("interval_center_time", "collector_time"), ("run_id", "direction", "protocol"), None, "次"),
             OnlineMrMetricType.RADIO_STATISTICS: ("radio_statistics_samples", "metric_value", ("collector_time", "device_clock"), ("radio", "metric_name", "metric_unit"), "metric_name", ""),
         }
         table, value_column, time_candidates, dimensions, text_column, unit = specs[metric]
         columns = self._table_columns(conn, table)
         if not columns:
             return []
+        iperf_run_columns = self._table_columns(conn, "iperf_runs") if table == "iperf_intervals" else set()
+        is_iperf_interval = table == "iperf_intervals"
+        def column(name: str) -> str:
+            return f"i.{name}" if is_iperf_interval else name
         time_columns = [name for name in time_candidates if name in columns]
-        available_dimensions = [name for name in dimensions if name in columns]
+        available_dimensions = [name for name in dimensions if name in columns or name in iperf_run_columns]
         if not time_columns or (value_column and value_column not in columns):
             return []
         if text_column not in columns:
             text_column = next((name for name in ("peer_name", "peer_mac") if name in columns), None)
-        time_parts = [f"NULLIF({name}, '')" for name in time_columns]
+        time_parts = [f"NULLIF({column(name)}, '')" for name in time_columns]
         time_expr = time_parts[0] if len(time_parts) == 1 else f"COALESCE({', '.join(time_parts)})"
         selects = [f"{time_expr} AS metric_time"]
-        selects.append(f"{value_column} AS metric_value" if value_column else "NULL AS metric_value")
-        selects.append(f"{text_column} AS text_value" if text_column else "NULL AS text_value")
-        selects.extend(f"{name} AS dim_{name}" for name in available_dimensions)
+        selects.append(f"{column(value_column)} AS metric_value" if value_column else "NULL AS metric_value")
+        selects.append(f"{column(text_column)} AS text_value" if text_column else "NULL AS text_value")
+        selects.extend(f"{column(name) if name in columns else f'r.{name}'} AS dim_{name}" for name in available_dimensions)
         where = [f"{time_expr} IS NOT NULL"]
         params: list[Any] = []
         if metric == OnlineMrMetricType.PING_RTT and "success" in columns:
-            where.extend(["success = 1", "latency_ms IS NOT NULL"])
-        if metric in {OnlineMrMetricType.CTL_BUSY, OnlineMrMetricType.TX_BUSY, OnlineMrMetricType.RX_BUSY} and "row_index" in columns:
-            where.append("COALESCE(row_index, 1) = 1")
+            where.extend([f"{column('success')} = 1", f"{column('latency_ms')} IS NOT NULL"])
         if metric in {OnlineMrMetricType.INTERFACE_IN_PPS, OnlineMrMetricType.INTERFACE_OUT_PPS} and "direction" in columns:
-            where.append("LOWER(direction) = ?")
+            where.append(f"LOWER({column('direction')}) = ?")
             params.append("inbound" if metric == OnlineMrMetricType.INTERFACE_IN_PPS else "outbound")
-        if start_time:
+        if metric in {
+            OnlineMrMetricType.IPERF_BITRATE,
+            OnlineMrMetricType.IPERF_LOSS,
+            OnlineMrMetricType.IPERF_JITTER,
+            OnlineMrMetricType.IPERF_RETRANSMITS,
+        } and "role" in columns:
+            where.append(f"({column('role')} IS NULL OR LOWER({column('role')}) NOT IN ('sum', 'sum_sent', 'sum_received', 'sender', 'receiver'))")
+        external_metric = metric in {
+            OnlineMrMetricType.PING_RTT,
+            OnlineMrMetricType.PING_LOSS,
+            OnlineMrMetricType.IPERF_BITRATE,
+            OnlineMrMetricType.IPERF_LOSS,
+            OnlineMrMetricType.IPERF_JITTER,
+            OnlineMrMetricType.IPERF_RETRANSMITS,
+        }
+        query_start = self._external_query_boundary(start_time, alignment) if external_metric else start_time
+        query_end = self._external_query_boundary(end_time, alignment) if external_metric else end_time
+        if query_start:
             where.append(f"{time_expr} >= ?")
-            params.append(start_time)
-        if end_time:
+            params.append(query_start)
+        if query_end:
             where.append(f"{time_expr} <= ?")
-            params.append(end_time)
+            params.append(query_end)
         params.extend((limit, offset))
-        sql = f"SELECT {', '.join(selects)} FROM {table} WHERE {' AND '.join(where)} ORDER BY metric_time, rowid LIMIT ? OFFSET ?"
+        # Older parsed sessions may not have the optional run metadata table;
+        # keep interval-local protocol/direction fields queryable in that case.
+        from_clause = (
+            "iperf_intervals i LEFT JOIN iperf_runs r ON r.run_id = i.run_id"
+            if is_iperf_interval and iperf_run_columns
+            else ("iperf_intervals i" if is_iperf_interval else table)
+        )
+        order_column = "i.rowid" if is_iperf_interval else "rowid"
+        sql = f"SELECT {', '.join(selects)} FROM {from_clause} WHERE {' AND '.join(where)} ORDER BY metric_time, {order_column} LIMIT ? OFFSET ?"
         grouped: dict[str, list[OnlineMrMetricPointDTO]] = defaultdict(list)
         for row in conn.execute(sql, params):
             dimension_values = {name: row[f"dim_{name}"] for name in available_dimensions if row[f"dim_{name}"] not in (None, "")}
-            key = "|".join(f"{name}={dimension_values[name]}" for name in sorted(available_dimensions) if name in dimension_values) or "default"
+            grouping_dimensions = {
+                OnlineMrMetricType.PING_RTT: ("target_ip", "target_name"),
+                OnlineMrMetricType.PING_LOSS: ("target_ip", "target_name"),
+                OnlineMrMetricType.IPERF_BITRATE: ("run_id", "direction", "protocol"),
+                OnlineMrMetricType.IPERF_LOSS: ("run_id", "direction", "protocol"),
+                OnlineMrMetricType.IPERF_JITTER: ("run_id", "direction", "protocol"),
+                OnlineMrMetricType.IPERF_RETRANSMITS: ("run_id", "direction", "protocol"),
+            }.get(metric, tuple(available_dimensions))
+            key = "|".join(
+                f"{name}={dimension_values[name]}"
+                for name in grouping_dimensions
+                if name in dimension_values
+            ) or "default"
             value = row["metric_value"]
+            raw_timestamp = str(row["metric_time"]) if row["metric_time"] is not None else None
+            timestamp = raw_timestamp
+            correction_ms: float | None = None
+            correction_method = "none"
+            correction_confidence = "high"
+            timestamp_source = "device"
+            if external_metric:
+                timestamp_source = "traffic" if metric in {
+                    OnlineMrMetricType.IPERF_BITRATE,
+                    OnlineMrMetricType.IPERF_LOSS,
+                    OnlineMrMetricType.IPERF_JITTER,
+                    OnlineMrMetricType.IPERF_RETRANSMITS,
+                } else "fping"
+                raw_time = self._as_datetime(raw_timestamp)
+                mapped = alignment.collector_to_device(raw_time) if alignment is not None and raw_time is not None else None
+                if mapped is not None and mapped.normalized_time is not None:
+                    timestamp = mapped.normalized_time.isoformat(sep=" ", timespec="milliseconds")
+                    correction_ms = mapped.correction_ms
+                    correction_method = mapped.method
+                    correction_confidence = mapped.confidence
+                else:
+                    correction_confidence = "low"
             grouped[key].append(
                 OnlineMrMetricPointDTO(
-                    timestamp=str(row["metric_time"]) if row["metric_time"] is not None else None,
+                    timestamp=timestamp,
+                    raw_timestamp=raw_timestamp,
+                    normalized_timestamp=timestamp,
+                    timestamp_source=timestamp_source,
+                    correction_ms=correction_ms,
+                    correction_method=correction_method,
+                    correction_confidence=correction_confidence,
                     value=float(value) if value is not None else None,
                     text_value=self._text_or_none(row["text_value"]),
                     dimensions=dimension_values,
@@ -2247,6 +2460,101 @@ class OnlineMrQueryService:
                 metric_type=metric,
                 series_key=key,
                 unit=unit or str(points[0].dimensions.get("metric_unit") or ""),
+                points=points,
+                summary=self._metric_summary(points),
+            )
+            for key, points in grouped.items()
+        ]
+
+    def _external_query_boundary(
+        self,
+        value: str | None,
+        alignment: SessionTimeAlignment | None,
+    ) -> str | None:
+        if not value or alignment is None:
+            return value
+        device_time = self._as_datetime(value)
+        collector_time = alignment.device_to_collector(device_time) if device_time is not None else None
+        return collector_time.isoformat(sep=" ", timespec="milliseconds") if collector_time is not None else value
+
+    def _query_rssi_metric(
+        self,
+        conn: sqlite3.Connection,
+        metric: OnlineMrMetricType,
+        *,
+        start_time: str | None,
+        end_time: str | None,
+        limit: int,
+        offset: int,
+    ) -> list[OnlineMrMetricSeriesDTO]:
+        columns = self._table_columns(conn, "main_link_samples")
+        if not columns or "mr_rssi" not in columns:
+            return []
+        time_expr = self._time_expr(columns, ("device_time", "device_clock", "collector_time"))
+        if not time_expr:
+            return []
+        where, params = self._time_where(time_expr, start_time, end_time)
+        if metric == OnlineMrMetricType.RSSI and "link_state" in columns:
+            where = f"({where}) AND UPPER(link_state) LIKE 'ACTIVE%'"
+        order_id = "id" if "id" in columns else "rowid"
+        rows = conn.execute(
+            f"SELECT *, {time_expr} AS metric_time FROM main_link_samples "
+            f"WHERE {where} ORDER BY metric_time, {order_id} LIMIT ? OFFSET ?",
+            (*params, limit, offset),
+        ).fetchall()
+        grouped: dict[str, list[OnlineMrMetricPointDTO]] = defaultdict(list)
+        labels: dict[str, str] = {}
+        for row in rows:
+            data = dict(row)
+            timestamp = self._text_or_none(data.get("metric_time"))
+            if not timestamp:
+                continue
+            radio = data.get("radio")
+            ap_name = self._business_peer_name(data.get("resolved_peer_name"), data.get("peer_name"))
+            ap_mac = normalize_mac(data.get("canonical_ap_mac") or data.get("peer_ap_mac")) or ""
+            peer_radio_mac = normalize_mac(data.get("peer_radio_mac") or data.get("peer_mac") or data.get("bssid")) or ""
+            if metric == OnlineMrMetricType.RSSI:
+                key = f"active-main-link|radio={radio if radio is not None else 'unknown'}"
+                labels[key] = f"当前 ACTIVE MR 侧 RSSI · Radio {radio if radio is not None else '—'}"
+            else:
+                identity = ap_mac or peer_radio_mac or str(data.get("peer_mac") or "unresolved")
+                key = f"{identity}|radio={radio if radio is not None else 'unknown'}"
+                labels[key] = f"{ap_name or ap_mac or peer_radio_mac or '未关联 AP'} · Radio {radio if radio is not None else '—'}"
+            dimensions = {
+                name: value
+                for name, value in {
+                    "radio": radio,
+                    "link_state": data.get("link_state"),
+                    "peer_name": ap_name,
+                    "peer_mac": data.get("peer_mac"),
+                    "ap_mac": ap_mac,
+                    "peer_radio_mac": peer_radio_mac,
+                    "station": data.get("belong_station"),
+                    "section": data.get("belong_section"),
+                    "online_time": data.get("online_time"),
+                    "identity_status": data.get("identity_status"),
+                    "identity_source": data.get("identity_source"),
+                }.items()
+                if value not in (None, "")
+            }
+            value = data.get("mr_rssi")
+            grouped[key].append(
+                OnlineMrMetricPointDTO(
+                    timestamp=timestamp,
+                    raw_timestamp=timestamp,
+                    normalized_timestamp=timestamp,
+                    timestamp_source="device",
+                    correction_method="none",
+                    correction_confidence="high" if data.get("device_time") else "low",
+                    value=float(value) if value is not None else None,
+                    dimensions=dimensions,
+                )
+            )
+        return [
+            OnlineMrMetricSeriesDTO(
+                metric_type=metric,
+                series_key=labels[key],
+                unit="dBm",
                 points=points,
                 summary=self._metric_summary(points),
             )
@@ -2267,7 +2575,7 @@ class OnlineMrQueryService:
         if not columns:
             return []
         required = {
-            "id", "radio", "old_peer_name", "old_peer_mac", "old_rssi",
+            "id", "old_peer_name", "old_peer_mac", "old_rssi",
             "new_peer_name", "new_peer_mac", "new_rssi", "switch_reason_text",
         }
         if not required.issubset(columns):
@@ -2292,27 +2600,47 @@ class OnlineMrQueryService:
             params.append(end_time)
         params.extend((limit, offset))
         rows = conn.execute(
-            f"SELECT id, {time_expr} AS event_time, radio, old_peer_name, old_peer_mac, old_rssi, "
-            "new_peer_name, new_peer_mac, new_rssi, switch_reason_text "
+            f"SELECT *, {time_expr} AS event_time "
             f"FROM {table} WHERE {' AND '.join(where)} ORDER BY event_time, id LIMIT ? OFFSET ?",
             params,
         )
-        return [
-            OnlineMrSwitchRssiWindowDTO(
-                event_id=f"{source.value}-{row['id']}",
-                source=source,
-                event_time=self._text_or_none(row["event_time"]),
-                radio=int(row["radio"]) if row["radio"] is not None else None,
-                reason=str(row["switch_reason_text"] or "主链路切换"),
-                old_peer_name=str(row["old_peer_name"] or ""),
-                old_peer_mac=str(row["old_peer_mac"] or ""),
-                old_rssi_dbm=float(row["old_rssi"]) if row["old_rssi"] is not None else None,
-                new_peer_name=str(row["new_peer_name"] or ""),
-                new_peer_mac=str(row["new_peer_mac"] or ""),
-                new_rssi_dbm=float(row["new_rssi"]) if row["new_rssi"] is not None else None,
+        result: list[OnlineMrSwitchRssiWindowDTO] = []
+        for row in rows:
+            data = dict(row)
+            result.append(
+                OnlineMrSwitchRssiWindowDTO(
+                    event_id=f"{source.value}-{data['id']}",
+                    source=source,
+                    event_time=self._text_or_none(data.get("event_time")),
+                    radio=int(data["radio"]) if data.get("radio") is not None else None,
+                    reason=str(data.get("switch_reason_text") or "主链路切换"),
+                    old_peer_name=str(
+                        data.get("old_matched_ap_name") or data.get("old_peer_name") or ""
+                    ),
+                    old_peer_mac=str(data.get("old_peer_mac") or ""),
+                    old_ap_mac=str(data.get("old_matched_ap_mac") or ""),
+                    old_station=str(data.get("old_belong_station") or ""),
+                    old_section=str(data.get("old_belong_section") or ""),
+                    old_rssi_dbm=(
+                        float(data["old_rssi"])
+                        if data.get("old_rssi") is not None
+                        else None
+                    ),
+                    new_peer_name=str(
+                        data.get("new_matched_ap_name") or data.get("new_peer_name") or ""
+                    ),
+                    new_peer_mac=str(data.get("new_peer_mac") or ""),
+                    new_ap_mac=str(data.get("new_matched_ap_mac") or ""),
+                    new_station=str(data.get("new_belong_station") or ""),
+                    new_section=str(data.get("new_belong_section") or ""),
+                    new_rssi_dbm=(
+                        float(data["new_rssi"])
+                        if data.get("new_rssi") is not None
+                        else None
+                    ),
+                )
             )
-            for row in rows
-        ]
+        return result
 
     @staticmethod
     def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
@@ -2361,9 +2689,11 @@ class OnlineMrQueryService:
                         payload={"radio": row["radio"], "old_peer_name": row["old_peer_name"], "new_peer_name": row["new_peer_name"]},
                     )
                 )
-        if self._table_columns(conn, "switch_realtime_events"):
+        realtime_columns = self._table_columns(conn, "switch_realtime_events")
+        if realtime_columns:
+            radio_expr = "radio" if "radio" in realtime_columns else "NULL AS radio"
             for row in conn.execute(
-                "SELECT id, device_time, radio, old_peer_name, old_peer_mac, old_rssi, "
+                f"SELECT id, device_time, {radio_expr}, old_peer_name, old_peer_mac, old_rssi, "
                 "new_peer_name, new_peer_mac, new_rssi, switch_reason_text "
                 "FROM switch_realtime_events "
                 "ORDER BY device_time LIMIT ?",

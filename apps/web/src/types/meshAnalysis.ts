@@ -218,6 +218,9 @@ export interface MeshChartEvent {
   render_busy_rx_busy?: number | null; render_busy_aligned?: boolean; busy_point_context?: MeshChartPoint | null
   before_rssi?: number | null; after_rssi?: number | null
   station?: string | null; section?: string | null
+  reason?: string | null
+  from_station?: string | null; from_section?: string | null
+  to_station?: string | null; to_section?: string | null
 }
 
 export interface MeshLocationSegment {

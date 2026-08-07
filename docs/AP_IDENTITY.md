@@ -218,6 +218,18 @@ MESH DTO、页面和导出必须同时保留原始 Peer、规范化 Peer Radio �
 名称、物理 AP MAC、站点、区间和里程保持空值，并携带状态、规则、
 来源、置信度和原因。
 
+Online MR 离线解析同样批量消费 `resolve_peer_macs()`：主链路和切换事件
+保留原始 Peer Radio MAC，并把有效 AP 名称、物理 AP MAC、站点和区间
+投影到 `parsed/online_diagnosis.sqlite`。本机 BSSID 不作为 Peer 缺失时的
+替代查询证据；空切换端点标记为 `empty`，不计入 `unresolved/invalid`。
+主链路信息、链路明细、切换历史和实时切换 DTO 只能读取这套投影，不得
+各自实现 MAC 推导或位置关联。
+
+LLDP 历史或当前事实可能记录同一 AP 连接过多台交换机。多台交换机均指向
+同一个非空 `station_id`/站点时，位置投影保留该站点并附加
+`topology_lldp_multiple_switches`；只有站点证据相互冲突时才按歧义处理，
+不得因为正常换机历史清空已确认站点。
+
 例如离线物理 AP `bc5a-3457-b5e0` 的合法 H3C Radio 2 alias
 `bc5a-3457-b5ff` 仍通过完整 MAC 等值解析。来源 revision 改变后继续复用
 现有 identity-only remap：更新 distinct Peer 的身份投影，不重新解析或

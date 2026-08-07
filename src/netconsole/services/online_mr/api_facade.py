@@ -113,6 +113,14 @@ class OnlineMrApiFacade:
     def business_summary(self, session_id: str):
         return self.query_service.get_business_summary(self.current_site_id(), session_id)
 
+    def traffic_overview(self, session_id: str, *, start_time: str = "", end_time: str = ""):
+        return self.query_service.get_traffic_overview(
+            self.current_site_id(),
+            session_id,
+            start_time=start_time or None,
+            end_time=end_time or None,
+        )
+
     def business_table(
         self,
         session_id: str,

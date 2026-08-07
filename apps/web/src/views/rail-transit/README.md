@@ -12,6 +12,6 @@
 
 基础资料、Online MR、Mesh 原始回显和通信日志均消费共享面板、状态和代码 Token；图表配色只从 `theme/echarts.ts` 读取。轨旁 AP 业务页首次加载才使用整表遮罩，后续刷新保留上一次成功数据；接口简称和光衰中文展示只是 presentation，导出通过 Task/Artifact 和 Runtime Adapter 保存。
 
-`OnlineMrAnalysisView.vue` 始终先读取会话 metadata，再按 `database_summary.status` 局部加载 parsed 指标；缺库、旧库和不可读库不能阻止原始日志或采集日志展示。切换会话必须立即清空全部派生展示缓存，并通过请求 generation/AbortController 丢弃迟到响应。Online MR 与离线 MESH 的解析/重建均进入 Job Center，不在 Renderer 或 FastAPI 请求线程同步运行。
+`OnlineMrAnalysisView.vue` 始终先读取会话 metadata，再按 `database_summary.status` 局部加载 parsed 数据；缺库、旧库和不可读库不能阻止原始日志或采集日志展示。页面状态和已加载数据按局点与 `session_id` 隔离，切换会话时立即切换到目标缓存，并通过请求 generation/AbortController 丢弃迟到响应；A -> B -> A 可以恢复 A，不能把 B 的表格或视口带回 A。应用级 `KeepAlive` 返回同一分析上下文时保留会话、活动 Tab、已加载表格、统一时间视口、锁定时刻、关联指标和双图布局，不重复拉取完整详情；停用期间关闭图表 active 状态。动态图从 `OnlineMrQueryService` 的统一 Timeline 指标读取 ACTIVE 主链、ACTIVE/STANDBY 轨旁 AP、Channel Busy、fping、iPerf 和接口速率，不从 `main_link` 表格分页结果拼曲线；`OnlineMrRssiChart` 适配后复用离线 MESH 的 `MeshRssiChart`、`MeshTracksideSignalChart` 与公共 `RailRssiComparison`。fping/iPerf 在查询时通过同一 `SessionTimeAlignment` 映射到 MR 设备时间，保留原始采集时间，低置信度显式降级。Online MR 与离线 MESH 的解析/重建均进入 Job Center，不在 Renderer 或 FastAPI 请求线程同步运行。
 
 `MeshAnalysisView.vue` 按会话和指标区隔离旧 schema；单个损坏派生库不能拖垮概览。普通导入固定为“显式准备当前局点正式车载 MR → 统一预览 ZIP/LOG/GZ/文件夹 → 自动匹配 CT/CW → 确认导入并分析 → Task 完成后自动打开新来源”，无法匹配时才展开高级内部归属。当前来源重建使用 `mesh_source_rebuild`，raw 缺失但 bundle 可恢复时显示恢复动作；局点级 schema 不兼容由 `mesh_derived_data_repair` 自动维护并在完成后继续等待导入，不要求退出软件或执行脚本。重建任务完成后，页面只失效受影响会话的详情缓存：活动页面立即重新读取当前详情和活动标签，停用页面在重新激活时消费待刷新状态；顶部“刷新结果”同时刷新概览与当前会话，并保留标签、筛选和分页。页面不得删除 SQLite 或绕过确认。

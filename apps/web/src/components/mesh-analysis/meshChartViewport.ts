@@ -1,7 +1,7 @@
 import { MIN_TIME_CHART_VIEWPORT_SPAN_MS } from '../charts/multiSeriesTimeChart'
 
 export type MeshChartViewportSource = 'user_zoom' | 'programmatic' | 'initial'
-export type MeshRssiChartSource = 'active-rssi' | 'trackside-rssi' | 'programmatic'
+export type MeshRssiChartSource = 'active-rssi' | 'trackside-rssi' | 'timeline-metric' | 'programmatic'
 export type MeshViewportBoundaryMode = 'sample' | 'absolute'
 export const MIN_MESH_VIEWPORT_SPAN_MS = MIN_TIME_CHART_VIEWPORT_SPAN_MS
 
