@@ -145,6 +145,10 @@ export interface TracksideApUnmatchedOnline {
   source: string; item_id: string; ap_name: string; mac: string; ac_status: string
   runtime_station_text: string; reason: string; suggested_action: string
   association_status?: string; reason_code?: string; fit_ap_collected_at?: string
+  observed_association_status?: string; observed_switch_device_id?: string
+  observed_switch_device_name?: string; observed_port?: string; observed_match_method?: string
+  planning_status?: string; planned_switch_device_id?: string
+  planned_switch_device_name?: string; planned_port?: string
   lldp_collected_at?: string; lldp_candidate_count?: number
   ap_mac_raw?: string; ap_mac_normalized?: string; planning_record_id?: string
   planning_station_name?: string; plan_station_id?: string; planning_match_method?: string

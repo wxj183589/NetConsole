@@ -2261,6 +2261,14 @@ onBeforeUnmount(() => {
 
     <el-dialog v-model="trainDialog" :title="t('ground.train_detail', '列车无人值守详情')" width="min(820px, 94vw)">
       <template v-if="selectedTrain">
+        <el-alert
+          :title="`AP Identity: ${selectedTrain.ap_identity_diagnostics?.ap_identity_match_status || 'NOT_CHECKED'} / ${selectedTrain.ap_identity_diagnostics?.canonical_current_ap || '—'}`"
+          :description="`站点匹配 ${selectedTrain.ap_identity_diagnostics?.station_match_status || 'UNMATCHED'}，依据 ${selectedTrain.ap_identity_diagnostics?.matched_by || 'none'}，主线/Ping 原因码 ${selectedTrain.ap_identity_diagnostics?.mainline_exclusion_code || 'ELIGIBLE'} / ${selectedTrain.ap_identity_diagnostics?.ping_exclusion_code || 'ELIGIBLE'}`"
+          type="info"
+          :closable="false"
+          show-icon
+          style="margin-bottom: 12px"
+        />
         <el-descriptions :column="2" border>
           <el-descriptions-item :label="t('ground.train', '列车')">{{ selectedTrain.train_no || selectedTrain.train_name }}</el-descriptions-item>
           <el-descriptions-item :label="t('ground.eligibility', '正线判断')"><el-tag :type="statusType(selectedTrain.eligibility_status)">{{ groundStatusLabel(selectedTrain.eligibility_status) }}</el-tag></el-descriptions-item>

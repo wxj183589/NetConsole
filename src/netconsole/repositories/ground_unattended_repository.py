@@ -140,6 +140,7 @@ CREATE TABLE IF NOT EXISTS ground_unattended_train_runs (
     ac_snapshot_id INTEGER,
     ac_received_at TEXT NOT NULL DEFAULT '',
     endpoints_json TEXT NOT NULL DEFAULT '[]',
+    ap_identity_diagnostics_json TEXT NOT NULL DEFAULT '{}',
     attempt_count INTEGER NOT NULL DEFAULT 0,
     covered_rounds INTEGER NOT NULL DEFAULT 0,
     selection_reason TEXT NOT NULL DEFAULT '',
@@ -687,6 +688,7 @@ _TRAIN_RUN_MIGRATION_COLUMNS = {
     "raw_peer_ap_name": "TEXT NOT NULL DEFAULT ''",
     "raw_peer_ap_mac": "TEXT NOT NULL DEFAULT ''",
     "canonical_station_name": "TEXT NOT NULL DEFAULT ''",
+    "ap_identity_diagnostics_json": "TEXT NOT NULL DEFAULT '{}'",
 }
 
 _ENDPOINT_MIGRATION_COLUMNS = {
@@ -1424,6 +1426,10 @@ class GroundUnattendedRepository:
             "ac_snapshot_id": values.get("ac_snapshot_id"),
             "ac_received_at": values.get("ac_received_at", ""),
             "endpoints_json": json.dumps(endpoints, ensure_ascii=False),
+            "ap_identity_diagnostics_json": json.dumps(
+                values.get("ap_identity_diagnostics", {}),
+                ensure_ascii=False,
+            ),
             "created_at": now,
             "updated_at": now,
         }

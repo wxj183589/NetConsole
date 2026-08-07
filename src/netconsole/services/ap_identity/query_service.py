@@ -123,6 +123,16 @@ class ApIdentityQueryService:
     def resolve_ap_mac(self, mac: object) -> ApIdentityMatch:
         return self._resolve_exact_aliases(mac, alias_order=_EXACT_ALIAS_ORDER)
 
+    def resolve_current_ap_mac(self, mac: object) -> ApIdentityMatch:
+        """Resolve a live Current AP observation.
+
+        Current AP fields can carry either an AP physical MAC or a radio/BSSID
+        address.  Unlike a MESH peer-only observation, an exact physical AP
+        identity is therefore valid evidence here.
+        """
+
+        return self.resolve_ap_mac(mac)
+
     def resolve_ap_macs(
         self,
         macs: Sequence[object],
@@ -134,6 +144,14 @@ class ApIdentityQueryService:
             alias_order=_EXACT_ALIAS_ORDER,
             ap_role=ap_role,
         )
+
+    def resolve_current_ap_macs(
+        self,
+        macs: Sequence[object],
+        *,
+        ap_role: str | None = None,
+    ) -> ApIdentityBatchResult:
+        return self.resolve_ap_macs(macs, ap_role=ap_role)
 
     def resolve_peer_mac(
         self,

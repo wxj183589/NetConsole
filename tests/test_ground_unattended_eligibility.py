@@ -5,6 +5,7 @@ from datetime import datetime
 import pytest
 
 from netconsole.models.api.ac_mesh_link import AcMeshMrStatusDTO
+from netconsole.models.ap_identity_index import ApIdentityBatchResult, ApIdentityMatch
 from netconsole.models.api.rail_transit_base_data import (
     MileageDTO,
     MeshRadioDTO,
@@ -216,6 +217,75 @@ def test_ap_registry_matches_mac_but_ap_name_alias_is_not_identity() -> None:
     assert alias.train.location_match_level == "UNMATCHED"
     assert alias.train.eligibility_status == "AP_UNMATCHED"
     assert alias.train.resolved_ap_name == ""
+
+
+def test_current_ap_identity_resolves_runtime_ap_and_preserves_depot_exclusion() -> None:
+    class IdentityStub:
+        def resolve_current_ap_macs(self, macs, *, ap_role=None):
+            match = ApIdentityMatch(
+                status="matched",
+                identity_revision=9,
+                query_mac="001122334455",
+                query_mac_display="00:11:22:33:44:55",
+                matched_entity_id="identity:ap-1",
+                effective_ap_name="FIT-AP-1",
+                effective_ap_mac="00:11:22:33:44:55",
+                station="正线站",
+                belong_type="trackside",
+                matched_alias_type="ac_bssid",
+            )
+            return ApIdentityBatchResult(
+                revision=9,
+                index_status="ready",
+                requested_count=len(macs),
+                normalized_count=len(macs),
+                distinct_count=1,
+                matched_count=1,
+                unresolved_count=0,
+                ambiguous_count=0,
+                invalid_count=0,
+                matches={"001122334455": match},
+            )
+
+    classifier = GroundUnattendedEligibilityClassifier(IdentityStub())
+    row = AcMeshMrStatusDTO(
+        mr_id="mr-ct",
+        mr_device_id="mr-ct",
+        train_no="01",
+        car_end="CT",
+        management_ip="192.0.2.10",
+        online_status="online",
+        peer_ap_mac="0011-2233-4455",
+        data_status="fresh",
+        last_seen_at=NOW.isoformat(),
+    )
+    result = classifier.classify_all(
+        summary=RailTransitSummaryDTO(site_id="site-a", site_name="A"),
+        stations=[StationDTO(id="s1", name="正线站")],
+        sections=[],
+        aps=[],
+        mrs=[
+            VehicleMrDTO(
+                id="mr-ct",
+                device_id=1,
+                name="01-CT",
+                train_id="train-01",
+                train_no="01",
+                mr_position_code="CT",
+                management_ip="192.0.2.10",
+            )
+        ],
+        ac_rows=[row],
+        trackers={},
+        stationary_exclusion_minutes=10,
+        now=NOW,
+    )[0]
+
+    assert result.train.resolved_ap_id == "identity:ap-1"
+    assert result.train.mainline_eligible
+    assert result.train.ping_eligible
+    assert result.train.ap_identity_diagnostics.identity_revision == 9
+    assert result.train.ap_identity_diagnostics.matched_by == "ac_bssid"
 
 
 def test_primary_ap_mac_match_uses_normalized_format() -> None:

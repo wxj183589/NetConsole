@@ -106,7 +106,6 @@ class GroundUnattendedSupervisor:
         self.ac_resident_service = ac_resident_service
         self.now_provider = now_provider or (lambda: datetime.now().astimezone())
         self.tick_seconds = max(0.05, float(tick_seconds))
-        self.classifier = GroundUnattendedEligibilityClassifier()
         self.fleet_ping = FleetPingSupervisor(repository=repository, site_id=site_id)
         self.deep_scheduler = (
             DeepMrCollectionScheduler(
@@ -136,6 +135,10 @@ class GroundUnattendedSupervisor:
         self.ap_identity_query_service = (
             ap_identity_query_service
             or ApIdentityQueryService(Database(paths.site_db_path(site_id)))
+        )
+        self.ap_identity_query_service.ensure_index("ground_unattended_startup")
+        self.classifier = GroundUnattendedEligibilityClassifier(
+            self.ap_identity_query_service
         )
         self.syslog_receiver = SyslogUdpReceiver(
             repository=repository,

@@ -90,6 +90,10 @@ FIT-AP 运行态由 AC 原始状态统一判定：`R/M`、`R/B` 为在线，其�
 
 旧规划导入 API 仅兼容保留。当前 schema v4 模板必须携带车站 ID；带“组成员站点 ID”的旧模板可从文件内一一对应的 ID 恢复，只有站名而没有稳定 ID 的行必须报错，不查询主数据名称兜底。
 
+Online FIT-AP 的 LLDP 未关联行同时保留 `observed_*` 与 `planning_*` 投影：观测交换机按
+device ID/chassis MAC/管理地址/system name 稳定优先级解析，规划缺失不再被误报为
+`SWITCH_NOT_FOUND`。通用 `H3C` 且无稳定身份时返回 `INSUFFICIENT_LLDP_IDENTITY`，不使用模糊名称匹配。
+
 ## 6. 验证基线
 
 - 前端：各子页独立锁定/解锁、作用域编辑快照、受控组件、纯 reconcile、10 个普通站加 1 个车辆段生成 11 行规划、跨标签隔离草稿、三选项切页保护、只读禁用和作用域保存。

@@ -17,6 +17,7 @@ from netconsole.services.ap_online_overview import is_fit_ap_online
 from netconsole.services.neighbor_matcher import (
     NeighborDeviceIdentityIndex,
     NeighborMatchResult,
+    is_generic_neighbor_name,
 )
 from netconsole.services.rail_transit.station_source_utils import (
     canonical_station_name,
@@ -121,6 +122,15 @@ class TracksideApScopeUnmatchedOnlineItem:
     suggested_action: str = ""
     association_status: str = "unknown"
     reason_code: str = ""
+    observed_association_status: str = "unknown"
+    observed_switch_device_id: str = ""
+    observed_switch_device_name: str = ""
+    observed_port: str = ""
+    observed_match_method: str = ""
+    planning_status: str = "unknown"
+    planned_switch_device_id: str = ""
+    planned_switch_device_name: str = ""
+    planned_port: str = ""
     fit_ap_collected_at: str = ""
     lldp_collected_at: str = ""
     lldp_candidate_count: int = 0
@@ -156,6 +166,15 @@ class TracksideApScopeUnmatchedOnlineItem:
             "suggested_action": self.suggested_action,
             "association_status": self.association_status,
             "reason_code": self.reason_code,
+            "observed_association_status": self.observed_association_status,
+            "observed_switch_device_id": self.observed_switch_device_id,
+            "observed_switch_device_name": self.observed_switch_device_name,
+            "observed_port": self.observed_port,
+            "observed_match_method": self.observed_match_method,
+            "planning_status": self.planning_status,
+            "planned_switch_device_id": self.planned_switch_device_id,
+            "planned_switch_device_name": self.planned_switch_device_name,
+            "planned_port": self.planned_port,
             "fit_ap_collected_at": self.fit_ap_collected_at,
             "lldp_collected_at": self.lldp_collected_at,
             "lldp_candidate_count": self.lldp_candidate_count,
@@ -1079,6 +1098,61 @@ def resolve_effective_trackside_ap_scope(
                             suggested_action=suggested_action,
                             association_status=association_status,
                             reason_code=reason_code,
+                            observed_association_status=(
+                                "RESOLVED"
+                                if switch_match is not None
+                                and switch_match.match_status == "matched"
+                                else "AMBIGUOUS"
+                                if switch_match is not None
+                                and switch_match.match_status == "ambiguous"
+                                else "INSUFFICIENT_IDENTITY"
+                                if association_status == "insufficient_lldp_identity"
+                                else "NOT_FOUND"
+                            ),
+                            observed_switch_device_id=(
+                                str(switch_match.device_uuid or "")
+                                if switch_match is not None
+                                else ""
+                            ),
+                            observed_switch_device_name=(
+                                str(switch_match.device_name or "")
+                                if switch_match is not None
+                                else ""
+                            ),
+                            observed_port=str(
+                                resource.get("lldp_neighbor_interface")
+                                or resource.get("neighbor_interface")
+                                or resource.get("lldp_local_interface")
+                                or ""
+                            ),
+                            observed_match_method=(
+                                str(switch_match.matched_by or "")
+                                if switch_match is not None
+                                else ""
+                            ),
+                            planning_status=(
+                                "RESOLVED"
+                                if diagnostic_plan is not None
+                                else "MISSING"
+                                if switch_match is not None
+                                and switch_match.match_status == "matched"
+                                else "NOT_EVALUATED"
+                            ),
+                            planned_switch_device_id=str(
+                                (diagnostic_plan or {}).get("switch_device_id")
+                                or (diagnostic_plan or {}).get("planned_switch_device_id")
+                                or ""
+                            ),
+                            planned_switch_device_name=str(
+                                (diagnostic_plan or {}).get("switch_device_name")
+                                or (diagnostic_plan or {}).get("planned_switch_device_name")
+                                or ""
+                            ),
+                            planned_port=str(
+                                (diagnostic_plan or {}).get("port")
+                                or (diagnostic_plan or {}).get("planned_port")
+                                or ""
+                            ),
                             fit_ap_collected_at=snapshot.fit_ap_collected_at,
                             lldp_collected_at=str(
                                 resource.get("lldp_collected_at")
@@ -1371,22 +1445,27 @@ def _build_plan_index(
 def _has_ac_lldp_switch_identity(
     resource: Mapping[str, object | None],
 ) -> bool:
+    stable_fields = (
+        "switch_device_uuid",
+        "neighbor_device_uuid",
+        "lldp_neighbor_device_uuid",
+        "lldp_neighbor_device_id",
+        "lldp_neighbor_mac_normalized",
+        "lldp_neighbor_mac",
+        "neighbor_mac",
+        "chassis_id",
+        "lldp_chassis_id",
+        "lldp_management_ip",
+        "lldp_neighbor_ip",
+        "neighbor_ip",
+        "management_ip",
+    )
+    if any(str(resource.get(field) or "").strip() for field in stable_fields):
+        return True
     return any(
         str(resource.get(field) or "").strip()
+        and not is_generic_neighbor_name(resource.get(field))
         for field in (
-            "switch_device_uuid",
-            "neighbor_device_uuid",
-            "lldp_neighbor_device_uuid",
-            "lldp_neighbor_device_id",
-            "lldp_neighbor_mac_normalized",
-            "lldp_neighbor_mac",
-            "neighbor_mac",
-            "chassis_id",
-            "lldp_chassis_id",
-            "lldp_management_ip",
-            "lldp_neighbor_ip",
-            "neighbor_ip",
-            "management_ip",
             "lldp_neighbor_name",
             "lldp_neighbor",
             "neighbor_device_name",
@@ -1455,6 +1534,7 @@ def _plan_record_id(plan: Mapping[str, object | None] | None) -> str:
 def _failure_stage(association_status: str) -> str:
     if association_status in {
         "switch_not_found",
+        "insufficient_lldp_identity",
         "switch_identity_ambiguous",
         "switch_data_incomplete",
     }:
@@ -1647,6 +1727,20 @@ def _unmatched_online_diagnostics(
     """Explain why an online AP stays unresolved without weakening identity rules."""
 
     lldp_status = _scope_token(resource.get("lldp_match_status"))
+    lldp_names = (
+        resource.get("lldp_neighbor_name")
+        or resource.get("lldp_neighbor")
+        or resource.get("neighbor_device_name")
+        or resource.get("neighbor_sysname")
+        or resource.get("lldp_system_name")
+    )
+    if lldp_names and is_generic_neighbor_name(lldp_names) and not _has_ac_lldp_switch_identity(resource):
+        return (
+            "insufficient_lldp_identity",
+            "INSUFFICIENT_LLDP_IDENTITY",
+            "LLDP 仅提供通用交换机名称，缺少可唯一匹配的 chassis、管理地址或系统名。",
+            "重新采集包含交换机 chassis ID 或管理地址的 LLDP，并核对当前局点范围。",
+        )
     if lldp_status == "conflict":
         return (
             "lldp_conflict_current",

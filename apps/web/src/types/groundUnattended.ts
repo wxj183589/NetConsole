@@ -56,6 +56,16 @@ export interface GroundEndpoint {
   last_radio_event_at: string; last_cfg_event_at: string; cfg_command_source: string; cfg_event_index: string
   correlation_confidence: 'HIGH' | 'MEDIUM' | 'UNCONFIRMED'
 }
+export interface GroundApIdentityDiagnostics {
+  train_id: string; mr_id: string; site_id: string; line_id: string
+  raw_current_ap: string; canonical_current_ap: string; identity_revision: number
+  identity_generated_at: string; candidate_count: number; matched_by: string
+  ap_identity_status: string; station_match_status: string; ap_identity_match_status: string
+  resolved_ap_id: string; resolved_ap_name: string; resolved_ap_physical_mac: string
+  resolved_station_id: string; resolved_station_name: string; resolved_section_id: string; resolved_section_name: string
+  position_type: string; mainline_eligible: boolean; mainline_exclusion_code: string; mainline_exclusion_reason: string
+  ping_eligible: boolean; ping_exclusion_code: string; ping_exclusion_reason: string; result_code: string
+}
 export interface GroundRadioInterfaceState {
   interface_name: string; current_state: string; previous_state: string; last_changed_at: string; down_since: string
   last_up_at: string; last_down_at: string; latest_outage_duration_ms: number | null; transition_count_5m: number
@@ -85,7 +95,8 @@ export interface GroundTrain {
   station: string; section: string; mileage: string; rssi: number | null; same_ap_duration_seconds: number
   ac_snapshot_id: number | null; ac_received_at: string; coverage_status: GroundCoverageStatus; priority: boolean
   enabled: boolean; scheduling_priority: number; deep_collection_enabled: boolean; monitor_only: boolean; remark: string; inventory_status: string
-  attempt_count: number; covered_rounds: number; selection_reason: string; failure_reason: string; endpoints: GroundEndpoint[]; updated_at: string
+  attempt_count: number; covered_rounds: number; selection_reason: string; failure_reason: string; endpoints: GroundEndpoint[]
+  ap_identity_diagnostics?: GroundApIdentityDiagnostics; updated_at: string
 }
 export interface GroundPingTarget {
   run_id: string; run_date: string; target_ip: string; train_id: string; train_no: string; mr_id: string; mr_name: string; mr_position_code: string; started_at: string; updated_at: string

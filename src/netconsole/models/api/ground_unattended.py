@@ -332,6 +332,39 @@ class GroundUnattendedEndpointDTO(ApiModel):
     )
 
 
+class GroundApIdentityDiagnosticsDTO(ApiModel):
+    """Current-AP identity evidence retained with the live train state."""
+
+    train_id: str = ""
+    mr_id: str = ""
+    site_id: str = ""
+    line_id: str = ""
+    raw_current_ap: str = ""
+    canonical_current_ap: str = ""
+    identity_revision: int = 0
+    identity_generated_at: str = ""
+    candidate_count: int = 0
+    matched_by: str = "none"
+    ap_identity_status: str = "NOT_FOUND"
+    station_match_status: str = "UNMATCHED"
+    ap_identity_match_status: str = "NOT_FOUND"
+    resolved_ap_id: str = ""
+    resolved_ap_name: str = ""
+    resolved_ap_physical_mac: str = ""
+    resolved_station_id: str = ""
+    resolved_station_name: str = ""
+    resolved_section_id: str = ""
+    resolved_section_name: str = ""
+    position_type: str = "UNKNOWN"
+    mainline_eligible: bool = False
+    mainline_exclusion_code: str = ""
+    mainline_exclusion_reason: str = ""
+    ping_eligible: bool = False
+    ping_exclusion_code: str = ""
+    ping_exclusion_reason: str = ""
+    result_code: str = ""
+
+
 class GroundUnattendedTrainDTO(ApiModel):
     train_id: str
     train_no: str = ""
@@ -381,6 +414,9 @@ class GroundUnattendedTrainDTO(ApiModel):
     selection_reason: str = ""
     failure_reason: str = ""
     endpoints: list[GroundUnattendedEndpointDTO] = Field(default_factory=list)
+    ap_identity_diagnostics: GroundApIdentityDiagnosticsDTO = Field(
+        default_factory=GroundApIdentityDiagnosticsDTO
+    )
     updated_at: str = ""
 
 

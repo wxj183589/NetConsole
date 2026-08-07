@@ -102,6 +102,12 @@ Ping 原始文件和汇总。其他配置保持当前 run 的既有冻结语义�
 
 `GroundUnattendedEligibilityClassifier` 组合当前局点：
 
+Current AP 现场字段在基础资料未直接建立 AP 记录时，通过
+`ApIdentityQueryService.resolve_current_ap_macs(ap_role="trackside")` 使用同一批次
+Identity revision 进行精确解析。运行时 AP 只能由匹配的实体和物理 MAC 构造；
+`ambiguous`/无效 MAC/缺少 alias 仍然不可获得正线或 Ping 资格。匹配证据、
+Identity revision、站点状态和主线/Ping 排除原因以 `ap_identity_diagnostics_json` 保存。
+
 - `main_path_code`；
 - 站点 `node_type/path_code/participates_in_direction/track_facilities`；
 - 区间 `section_kind/path_code`；

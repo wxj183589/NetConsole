@@ -137,6 +137,12 @@ const excludedColumns: NcTableColumn<TracksideApScopeExcluded>[] = [
   { key: 'reason', label: '排除原因', valueType: 'description', minWidth: 280, align: 'left', alignmentReason: 'long-text' },
 ]
 const unmatchedColumns: NcTableColumn<TracksideApUnmatchedOnline>[] = [
+  { key: 'observed_association_status', label: 'LLDP 观测状态', valueType: 'status', width: 140 },
+  { key: 'observed_switch_device_name', label: '观测交换机', valueType: 'name', minWidth: 160 },
+  { key: 'observed_port', label: '观测端口', valueType: 'port', minWidth: 130 },
+  { key: 'planning_status', label: '规划状态', valueType: 'status', width: 120 },
+  { key: 'planned_switch_device_name', label: '规划交换机', valueType: 'name', minWidth: 160 },
+  { key: 'planned_port', label: '规划端口', valueType: 'port', minWidth: 130 },
   { key: 'ap_name', label: 'AP名称', valueType: 'name', minWidth: 170 },
   { key: 'mac', label: 'AP MAC', valueType: 'mac', width: 170 },
   { key: 'ac_status', label: 'AC状态', valueType: 'status', width: 130 },

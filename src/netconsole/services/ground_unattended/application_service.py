@@ -12,6 +12,7 @@ from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.core.sites import SiteManager
 from netconsole.models.api.ground_unattended import (
+    GroundApIdentityDiagnosticsDTO,
     GroundActionResponseDTO,
     GroundArchiveDTO,
     GroundArchiveDetailDTO,
@@ -2128,6 +2129,9 @@ class GroundUnattendedApplicationService:
                 GroundUnattendedEndpointDTO.model_validate(item)
                 for item in row.get("endpoints", [])
             ],
+            ap_identity_diagnostics=GroundApIdentityDiagnosticsDTO.model_validate(
+                row.get("ap_identity_diagnostics") or {}
+            ),
             updated_at=row.get("updated_at", ""),
         )
 
