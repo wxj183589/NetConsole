@@ -231,7 +231,7 @@ def test_current_ap_identity_resolves_runtime_ap_and_preserves_depot_exclusion()
                 effective_ap_name="FIT-AP-1",
                 effective_ap_mac="00:11:22:33:44:55",
                 station="正线站",
-                belong_type="trackside",
+                belong_type="unknown",
                 matched_alias_type="ac_bssid",
             )
             return ApIdentityBatchResult(
@@ -286,6 +286,65 @@ def test_current_ap_identity_resolves_runtime_ap_and_preserves_depot_exclusion()
     assert result.train.ping_eligible
     assert result.train.ap_identity_diagnostics.identity_revision == 9
     assert result.train.ap_identity_diagnostics.matched_by == "ac_bssid"
+
+
+def test_unknown_ap_location_falls_back_to_station_topology_and_undetermined_without_it() -> None:
+    mainline = _classify(
+        ap=_ap("正线站", "", {}).model_copy(
+            update={
+                "location_class": "UNKNOWN",
+                "participates_in_mainline": False,
+                "location_class_source": "AP_IDENTITY",
+            }
+        ),
+        stations=[
+            StationDTO(
+                id="main",
+                name="正线站",
+                path_code="MAIN",
+                participates_in_direction=True,
+            )
+        ],
+    )
+    undetermined = _classify(
+        ap=_ap("", "", {}).model_copy(
+            update={
+                "location_class": "UNKNOWN",
+                "participates_in_mainline": False,
+                "location_class_source": "AP_IDENTITY",
+            }
+        ),
+        stations=[],
+    )
+    depot = _classify(
+        ap=_ap("云龙车辆段", "", {}).model_copy(
+            update={
+                "location_class": "UNKNOWN",
+                "participates_in_mainline": False,
+                "location_class_source": "AP_IDENTITY",
+            }
+        ),
+        stations=[
+            StationDTO(
+                id="depot",
+                name="云龙车辆段",
+                node_type="depot",
+                path_code="UNASSIGNED",
+                participates_in_direction=False,
+            )
+        ],
+    )
+
+    assert mainline.train.eligibility_status == "MAINLINE"
+    assert mainline.train.mainline_eligible
+    assert mainline.train.ping_eligible
+    assert depot.train.eligibility_status == "DEPOT"
+    assert not depot.train.mainline_eligible
+    assert not depot.train.ping_eligible
+    assert undetermined.train.eligibility_status == "LOCATION_UNDETERMINED"
+    assert undetermined.train.location_class == "UNKNOWN"
+    assert not undetermined.train.mainline_eligible
+    assert not undetermined.train.ping_eligible
 
 
 def test_primary_ap_mac_match_uses_normalized_format() -> None:

@@ -1073,6 +1073,7 @@ class GroundUnattendedSupervisor:
             "STORAGE_TRACK",
             "NON_MAIN_PATH",
             "DEPOT_CONNECTION",
+            "LOCATION_UNDETERMINED",
             "MAINLINE_STATIONARY",
         }:
             return "EXCLUDED"

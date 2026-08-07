@@ -19,6 +19,7 @@ const statusLabels: Record<string, string> = {
   TEST_TRACK: '试车线',
   NON_MAINLINE: '非正线',
   NON_MAIN_PATH: '非正线路径',
+  LOCATION_UNDETERMINED: '无法判断正线资格',
   DEPOT_CONNECTION: '出入段线',
   AC_STALE: 'AC 数据过期',
   AC_UNKNOWN: '暂无 AC 数据',

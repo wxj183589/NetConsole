@@ -122,9 +122,10 @@ AP 名称、显示别名和站点名称都不参与位置身份匹配。AC 上�
 
 已匹配的正式轨旁 AP 使用统一 `location_class`。AP 明确标记为
 `DEPOT/PARKING_YARD/STABLING/DEPOT_CONNECTION/TEST_TRACK/NON_MAINLINE` 时按该特殊位置处理；
-历史记录缺少 `location_class` 且没有特殊区域证据时兼容为 `MAINLINE`。这条默认值仅适用于已经匹配的
-轨旁 AP，不得扩展到未匹配 MAC。特殊位置与 `participates_in_mainline=true` 的冲突会在基础资料保存时
-阻断，历史冲突只读可见并保持失败关闭。
+`UNKNOWN`/空值只表示 AP 层没有位置证据，必须继续使用已解析的站点、区间和主路径判断；站点属于
+`MAIN + participates_in_direction` 时按正线处理，车辆段、停车场、存车线和明确非主路径仍按非正线处理。
+站点/区间也不足时返回 `LOCATION_UNDETERMINED`，不得把未知资料解释为非正线。特殊位置与
+`participates_in_mainline=true` 的冲突会在基础资料保存时阻断，历史冲突只读可见并保持失败关闭。
 
 分类结果不再用单一 `eligibility_status` 同时控制全部业务，而是独立返回：
 
