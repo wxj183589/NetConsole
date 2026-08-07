@@ -121,8 +121,17 @@ const wpsTargetResults = computed(() => {
   const targets = selectedDetails.value.targets
   return Array.isArray(targets) ? targets.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object') : []
 })
+function formatWarningSummary(target: Record<string, unknown>): string {
+  const warnings = Array.isArray(target.format_warnings) ? target.format_warnings : []
+  return warnings.slice(0, 3).map((item) => {
+    if (!item || typeof item !== 'object') return ''
+    const warning = item as Record<string, unknown>
+    return [warning.sheet_name, warning.feature, warning.reason].filter(Boolean).join(' / ')
+  }).filter(Boolean).join('；')
+}
 const businessStatusLabel = computed(() => ({
   SUCCESS: t('job_center.business_result.success', '成功'),
+  SUCCESS_WITH_WARNINGS: t('job_center.business_result.warning', '成功（含格式告警）'),
   PARTIAL_SUCCESS: t('job_center.business_result.partial_success', '部分成功'),
   FAILED: t('job_center.business_result.failed', '失败'),
   WARNING: t('job_center.business_result.warning', '告警'),
@@ -642,7 +651,9 @@ function handleClosed(): void {
             <article><span>状态</span><strong>{{ target.status || '--' }}</strong></article>
             <article><span>错误码</span><strong>{{ target.error_code || '--' }}</strong></article>
             <article><span>失败操作</span><strong>{{ target.failed_operation || '--' }}</strong></article>
+            <article><span>格式告警</span><strong>{{ target.format_warning_count || 0 }}</strong></article>
             <article class="wide"><span>消息</span><strong>{{ target.message || '--' }}</strong></article>
+            <article v-if="formatWarningSummary(target)" class="wide"><span>格式告警详情</span><strong>{{ formatWarningSummary(target) }}</strong></article>
           </div>
         </section>
 

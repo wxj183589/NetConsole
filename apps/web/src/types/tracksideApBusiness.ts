@@ -307,14 +307,25 @@ export interface WpsTracksideSyncResult {
   snapshot_generated_at: string
   payload_bytes: number
   sheet_count: number
-  status: 'SUCCESS' | 'PARTIAL_SUCCESS' | 'FAILED'
+  target_count: number
+  success_count: number
+  failed_count: number
+  warning_count: number
+  partial_success: boolean
+  status: 'SUCCESS' | 'SUCCESS_WITH_WARNINGS' | 'PARTIAL_SUCCESS' | 'FAILED'
   targets: Array<{
     target_code: WpsTracksideTargetCode
     target_name: string
     target_type: string
     target_batch_id: string
-    status: 'SUCCESS' | 'FAILED'
+    status: 'SUCCESS' | 'SUCCESS_WITH_WARNINGS' | 'FAILED'
     error_code?: string
     message?: string
+    format_warning_count?: number
+    format_warnings?: Array<{
+      sheet_name: string
+      feature: string
+      reason: string
+    }>
   }>
 }

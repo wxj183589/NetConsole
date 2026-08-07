@@ -93,6 +93,26 @@ class WpsSyncTarget:
 
 
 @dataclass(frozen=True)
+class WorkbookFormatRunDTO:
+    range: str
+    font: dict[str, Any] = field(default_factory=dict)
+    fill: dict[str, Any] = field(default_factory=dict)
+    number_format: str = ""
+    alignment: dict[str, Any] = field(default_factory=dict)
+    border: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "range": self.range,
+            "font": self.font,
+            "fill": self.fill,
+            "number_format": self.number_format,
+            "alignment": self.alignment,
+            "border": self.border,
+        }
+
+
+@dataclass(frozen=True)
 class WorkbookSheetDTO:
     logical_sheet_key: str
     sheet_name: str
@@ -100,13 +120,13 @@ class WorkbookSheetDTO:
     cells: list[list[Any]]
     row_count: int
     column_count: int
+    sheet_order: int = 0
+    sheet_visible: bool = True
+    tab_color: str = ""
     merges: list[str] = field(default_factory=list)
     row_heights: dict[str, float] = field(default_factory=dict)
     column_widths: dict[str, float] = field(default_factory=dict)
-    number_formats: dict[str, str] = field(default_factory=dict)
-    fills: dict[str, str] = field(default_factory=dict)
-    fonts: dict[str, dict[str, Any]] = field(default_factory=dict)
-    alignments: dict[str, dict[str, Any]] = field(default_factory=dict)
+    format_runs: tuple[WorkbookFormatRunDTO, ...] = ()
     freeze_panes: str = ""
 
     def to_dict(self) -> dict[str, Any]:
@@ -117,13 +137,13 @@ class WorkbookSheetDTO:
             "cells": self.cells,
             "row_count": self.row_count,
             "column_count": self.column_count,
+            "sheet_order": self.sheet_order,
+            "sheet_visible": self.sheet_visible,
+            "tab_color": self.tab_color,
             "merges": self.merges,
             "row_heights": self.row_heights,
             "column_widths": self.column_widths,
-            "number_formats": self.number_formats,
-            "fills": self.fills,
-            "fonts": self.fonts,
-            "alignments": self.alignments,
+            "format_runs": [run.to_dict() for run in self.format_runs],
             "freeze_panes": self.freeze_panes,
         }
 
@@ -139,6 +159,7 @@ class WorkbookDTO:
 __all__ = [
     "TRACKSIDE_AP_WPS_BUSINESS_KEY",
     "WPS_SYNC_PROTOCOL_VERSION",
+    "WorkbookFormatRunDTO",
     "WorkbookDTO",
     "WorkbookSheetDTO",
     "WpsSyncMode",

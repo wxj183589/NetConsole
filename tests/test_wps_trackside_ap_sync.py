@@ -6,6 +6,7 @@ from pathlib import Path
 import urllib.error
 
 from openpyxl import Workbook
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 import pytest
 
 from netconsole.core.paths import PathResolver
@@ -323,6 +324,127 @@ def test_workbook_dto_uses_append_mode_for_overview(tmp_path: Path) -> None:
     assert dto.sheets[1].row_count == 2
 
 
+def test_workbook_dto_preserves_sheet_order_and_compresses_format_runs(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "styled.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "轨旁AP业务"
+    sheet.append(["站点", "上线率", "备注"])
+    sheet.append(["A", 0.5, "第一行"])
+    sheet.append(["B", 0.75, "第二行"])
+    header_fill = PatternFill(fill_type="solid", fgColor="4472C4")
+    thin = Side(style="thin", color="D1D5DB")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    for cell in sheet[1]:
+        cell.font = Font(name="Microsoft YaHei", size=11, bold=True, color="FFFFFF")
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = border
+    for row in sheet.iter_rows(min_row=2, max_row=3, min_col=1, max_col=3):
+        for cell in row:
+            cell.font = Font(name="Microsoft YaHei", size=10)
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            cell.border = border
+    for row in (2, 3):
+        sheet.cell(row=row, column=2).number_format = "0.00%"
+    sheet.merge_cells("A4:C4")
+    sheet["A4"] = "合并说明"
+    sheet.column_dimensions["A"].width = 18
+    sheet.row_dimensions[1].height = 24
+    sheet.freeze_panes = "A2"
+    sheet.sheet_properties.tabColor = "70AD47"
+    hidden = workbook.create_sheet("隐藏业务页")
+    hidden.sheet_state = "hidden"
+    workbook.save(path)
+    workbook.close()
+
+    dto = workbook_dto_from_xlsx(path)
+    first, second = dto.sheets
+    assert first.sheet_order == 0
+    assert second.sheet_order == 1
+    assert first.sheet_visible is True
+    assert second.sheet_visible is False
+    assert first.tab_color == "#70AD47"
+    assert first.merges == ["A4:C4"]
+    assert first.column_widths["A"] == 18
+    assert first.row_heights["1"] == 24
+    assert first.freeze_panes == "A2"
+    runs = {run.range: run for run in first.format_runs}
+    assert runs["A1:C1"].font == {
+        "name": "Microsoft YaHei",
+        "size": 11.0,
+        "bold": True,
+        "italic": False,
+        "underline": "",
+        "strike": False,
+        "color": "#FFFFFF",
+    }
+    assert runs["A1:C1"].fill["fg_color"] == "#4472C4"
+    assert runs["A1:C1"].alignment["wrap_text"] is True
+    assert runs["B2:B3"].number_format == "0.00%"
+    assert runs["B2:B3"].border["left"] == {
+        "style": "thin",
+        "color": "#D1D5DB",
+    }
+    assert len(first.format_runs) < first.row_count * first.column_count
+    serialized = first.to_dict()
+    assert "format_runs" in serialized
+    assert "fonts" not in serialized
+    assert "borders" not in serialized
+
+
+def test_standard_airscript_restores_formatting_and_reorders_sheets() -> None:
+    script_path = (
+        Path(__file__).parents[1]
+        / "tools"
+        / "wps_airscript"
+        / "trackside_ap_standard_spreadsheet_sync.js"
+    )
+    script = script_path.read_text(encoding="utf-8")
+
+    assert 'const SCRIPT_VERSION = "2.3.0-standard";' in script
+    assert 'const DEPLOYMENT_ID = "trackside-ap-standard-2.3.0";' in script
+    assert "const sheet = sheets.Add();" in script
+    assert "sheets.Add(null" not in script
+    assert "used.UnMerge()" in script
+    assert "used.Clear()" in script
+    assert 'attemptFormat(warnings, sheet.Name, "append_clear_values_and_formats"' in script
+    assert "sheetDto.format_runs" in script
+    assert 'attemptFormat(warnings, sheet.Name, "format_range"' in script
+    assert "range.Interior.Color" in script
+    assert "range.Font.Bold" in script
+    assert "range.NumberFormat" in script
+    assert "range.HorizontalAlignment" in script
+    assert "range.VerticalAlignment" in script
+    assert "range.WrapText" in script
+    assert "range.Borders.Item" in script
+    assert "sheet.Range(merge).Merge()" in script
+    assert "sheet.Move({ Before: first.Id, After: null })" in script
+    assert 'name.startsWith("_NetConsole")' in script
+    assert 'status: publicWarnings.length ? "SUCCESS_WITH_WARNINGS" : "SUCCESS"' in script
+    assert script.rstrip().endswith("return main();")
+
+
+def test_standard_probe_and_sync_scripts_share_deployment_identity() -> None:
+    root = Path(__file__).parents[1] / "tools" / "wps_airscript"
+    sync_script = (root / "trackside_ap_standard_spreadsheet_sync.js").read_text(
+        encoding="utf-8"
+    )
+    probe_script = (
+        root / "trackside_ap_standard_spreadsheet_connection_probe.js"
+    ).read_text(encoding="utf-8")
+    for expected in (
+        WPS_SCRIPT_VERSIONS[STANDARD_TARGET_CODE],
+        WPS_DEPLOYMENT_IDS[STANDARD_TARGET_CODE],
+    ):
+        assert expected in sync_script
+        assert expected in probe_script
+    assert sync_script.rstrip().endswith("return main();")
+    assert probe_script.rstrip().endswith("return main();")
+
+
 def test_default_target_initialization_splits_legacy_shared_credential(tmp_path: Path) -> None:
     paths = PathResolver(tmp_path)
     repository = WpsSyncRepository(paths, "hangzhou10", protect=_protect, unprotect=_protect)
@@ -416,6 +538,72 @@ def test_dual_sync_reuses_one_snapshot_for_both_adapters(monkeypatch, tmp_path: 
     assert [payload["snapshot_revision"] for payload in fake.payloads] == ["revision-1", "revision-1"]
     assert [payload["snapshot_sha256"] for payload in fake.payloads] == ["sha-1", "sha-1"]
     assert fake.payloads[0]["target_batch_id"] != fake.payloads[1]["target_batch_id"]
+
+
+def test_wps_sync_aggregates_noncritical_format_warnings(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class FakeClient:
+        def post(self, target, *, token, argv):
+            return WpsHttpResponse(
+                status_code=200,
+                body={
+                    "success": True,
+                    "protocol_version": 2,
+                    "target_type": target.target_type.value,
+                    "document_id": target.expected_document_id,
+                    "target_batch_id": argv.get("target_batch_id"),
+                    "site_id": argv.get("site_id"),
+                    "business_key": argv.get("business_key"),
+                    "snapshot_revision": argv.get("snapshot_revision"),
+                    "snapshot_sha256": argv.get("snapshot_sha256"),
+                    "format_warning_count": 1,
+                    "format_warnings": [
+                        {
+                            "sheet_name": "轨旁AP业务",
+                            "feature": "freeze_panes",
+                            "reason": "runtime unsupported",
+                        }
+                    ],
+                },
+            )
+
+    service = TracksideApWpsSyncService(PathResolver(tmp_path), client=FakeClient())
+    service.configure_target(
+        "hzl10",
+        STANDARD_TARGET_CODE,
+        document_open_url="https://www.kdocs.cn/l/standard",
+        webhook_url="https://www.kdocs.cn/api/v3/ide/file/standard/script/test/sync_task",
+    )
+    monkeypatch.setenv("NETCONSOLE_WPS_STANDARD_AIRSCRIPT_TOKEN", "test-token")
+    repository = service._repository("hzl10")
+    target = repository.get_target(TRACKSIDE_AP_WPS_BUSINESS_KEY, STANDARD_TARGET_CODE)
+    repository.set_runtime_capability(target.target_id, "VERIFIED")
+    monkeypatch.setattr(
+        service,
+        "_build_snapshot",
+        lambda site_id: {
+            "business_revision": "revision-1",
+            "created_at": "2026-08-07T10:00:00+08:00",
+        },
+    )
+    from netconsole.models.wps_sync import WorkbookDTO
+
+    monkeypatch.setattr(
+        service,
+        "_build_workbook_dto",
+        lambda site_id, batch_id, snapshot: (WorkbookDTO(sheets=()), "sha-1", 10),
+    )
+
+    result = service.sync("hzl10", target_codes=[STANDARD_TARGET_CODE])
+
+    assert result["status"] == "SUCCESS_WITH_WARNINGS"
+    assert result["success_count"] == 1
+    assert result["failed_count"] == 0
+    assert result["warning_count"] == 1
+    assert result["targets"][0]["status"] == "SUCCESS_WITH_WARNINGS"
+    assert result["targets"][0]["format_warnings"][0]["feature"] == "freeze_panes"
 
 
 def test_wps_sync_is_registered_as_a_job_center_handler() -> None:

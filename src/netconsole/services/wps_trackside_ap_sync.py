@@ -15,6 +15,7 @@ from typing import Any, Callable, Mapping, Sequence
 from uuid import uuid4
 
 from openpyxl import load_workbook
+from openpyxl.utils import get_column_letter
 
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
@@ -23,6 +24,7 @@ from netconsole.core.version import APP_VERSION
 from netconsole.models.wps_sync import (
     TRACKSIDE_AP_WPS_BUSINESS_KEY,
     WPS_SYNC_PROTOCOL_VERSION,
+    WorkbookFormatRunDTO,
     WorkbookDTO,
     WorkbookSheetDTO,
     WpsSyncMode,
@@ -46,11 +48,11 @@ SMART_TARGET_CODE = "wps_smart_sheet"
 WPS_SYNC_TASK_TYPE = "trackside_ap_wps_sync"
 WPS_SYNC_OWNER = "web_rail_transit"
 WPS_SCRIPT_VERSIONS = {
-    STANDARD_TARGET_CODE: "2.2.0-standard",
+    STANDARD_TARGET_CODE: "2.3.0-standard",
     SMART_TARGET_CODE: "2.1.0-smart",
 }
 WPS_DEPLOYMENT_IDS = {
-    STANDARD_TARGET_CODE: "trackside-ap-standard-2.2.0",
+    STANDARD_TARGET_CODE: "trackside-ap-standard-2.3.0",
     SMART_TARGET_CODE: "trackside-ap-smart-2.1.0",
 }
 WPS_RUNTIME_CAPABILITIES = {
@@ -705,13 +707,19 @@ class TracksideApWpsSyncService:
                     self._token(repository, target),
                     request_payload,
                 )
+                format_warnings = response.get("format_warnings")
+                target_status = (
+                    "SUCCESS_WITH_WARNINGS"
+                    if isinstance(format_warnings, list) and format_warnings
+                    else "SUCCESS"
+                )
                 public = {
                     "target_code": target.target_code,
                     "target_name": target.target_name,
                     "target_type": target.target_type.value,
                     "target_batch_id": target_batch_id,
-                    "status": "SUCCESS",
                     **_sanitize_result(response),
+                    "status": target_status,
                 }
                 repository.update_target_remote_state(
                     target.target_id,
@@ -720,12 +728,12 @@ class TracksideApWpsSyncService:
                 )
                 repository.complete_target_run(
                     target_batch_id,
-                    status="SUCCESS",
+                    status=target_status,
                     result=public,
                 )
                 repository.update_target_sync(
                     target.target_id,
-                    status="SUCCESS",
+                    status=target_status,
                     revision=revision,
                 )
             except WpsSyncError as exc:
@@ -759,10 +767,16 @@ class TracksideApWpsSyncService:
                     100,
                     f"{target.target_name}同步完成：{public['status']}",
                 )
-        success_count = sum(result["status"] == "SUCCESS" for result in results)
+        success_count = sum(
+            result["status"] in {"SUCCESS", "SUCCESS_WITH_WARNINGS"}
+            for result in results
+        )
         failed_count = len(results) - success_count
+        warning_count = sum(_target_format_warning_count(result) for result in results)
         status = (
-            "SUCCESS"
+            "SUCCESS_WITH_WARNINGS"
+            if failed_count == 0 and warning_count > 0
+            else "SUCCESS"
             if failed_count == 0
             else "FAILED"
             if success_count == 0
@@ -781,6 +795,7 @@ class TracksideApWpsSyncService:
             "target_count": len(results),
             "success_count": success_count,
             "failed_count": failed_count,
+            "warning_count": warning_count,
             "partial_success": status == "PARTIAL_SUCCESS",
             "targets": results,
         }
@@ -957,30 +972,6 @@ def workbook_dto_from_xlsx(path: str | Path) -> WorkbookDTO:
                 [worksheet.cell(row=row, column=column).value for column in range(1, max_column + 1)]
                 for row in range(1, max_row + 1)
             ]
-            number_formats: dict[str, str] = {}
-            fills: dict[str, str] = {}
-            fonts: dict[str, dict[str, Any]] = {}
-            alignments: dict[str, dict[str, Any]] = {}
-            for row in worksheet.iter_rows():
-                for cell in row:
-                    coordinate = cell.coordinate
-                    if cell.number_format and cell.number_format != "General":
-                        number_formats[coordinate] = cell.number_format
-                    color = cell.fill.fgColor.rgb if cell.fill.fill_type else None
-                    if color:
-                        fills[coordinate] = str(color)
-                    if cell.font.bold or cell.font.italic or cell.font.color:
-                        fonts[coordinate] = {
-                            "bold": bool(cell.font.bold),
-                            "italic": bool(cell.font.italic),
-                            "color": str(cell.font.color.rgb or "") if cell.font.color else "",
-                        }
-                    if cell.alignment.horizontal or cell.alignment.vertical:
-                        alignments[coordinate] = {
-                            "horizontal": str(cell.alignment.horizontal or ""),
-                            "vertical": str(cell.alignment.vertical or ""),
-                            "wrap_text": bool(cell.alignment.wrap_text),
-                        }
             sync_mode = (
                 WpsSyncMode.APPEND_SNAPSHOT
                 if worksheet.title.replace(" ", "") == "AP上线情况概览"
@@ -994,6 +985,9 @@ def workbook_dto_from_xlsx(path: str | Path) -> WorkbookDTO:
                     cells=cells,
                     row_count=max_row,
                     column_count=max_column,
+                    sheet_order=len(sheets),
+                    sheet_visible=worksheet.sheet_state == "visible",
+                    tab_color=_openpyxl_color(worksheet.sheet_properties.tabColor),
                     merges=[str(value) for value in worksheet.merged_cells.ranges],
                     row_heights={
                         str(index): float(dimension.height)
@@ -1005,16 +999,172 @@ def workbook_dto_from_xlsx(path: str | Path) -> WorkbookDTO:
                         for index, dimension in worksheet.column_dimensions.items()
                         if dimension.width is not None
                     },
-                    number_formats=number_formats,
-                    fills=fills,
-                    fonts=fonts,
-                    alignments=alignments,
+                    format_runs=_format_runs_from_worksheet(
+                        worksheet,
+                        max_row=max_row,
+                        max_column=max_column,
+                    ),
                     freeze_panes=str(worksheet.freeze_panes or ""),
                 )
             )
         return WorkbookDTO(sheets=tuple(sheets))
     finally:
         workbook.close()
+
+
+def _format_runs_from_worksheet(
+    worksheet: Any,
+    *,
+    max_row: int,
+    max_column: int,
+) -> tuple[WorkbookFormatRunDTO, ...]:
+    active: dict[tuple[int, int, str], dict[str, Any]] = {}
+    completed: list[dict[str, Any]] = []
+
+    for row_index in range(1, max_row + 1):
+        segments: list[tuple[int, int, str, dict[str, Any]]] = []
+        start_column = 1
+        first_payload = _cell_format_payload(worksheet.cell(row=row_index, column=1))
+        signature = _format_signature(first_payload)
+        for column_index in range(2, max_column + 2):
+            payload = (
+                _cell_format_payload(worksheet.cell(row=row_index, column=column_index))
+                if column_index <= max_column
+                else None
+            )
+            next_signature = _format_signature(payload) if payload is not None else ""
+            if next_signature == signature:
+                continue
+            if first_payload:
+                segments.append(
+                    (start_column, column_index - 1, signature, first_payload)
+                )
+            start_column = column_index
+            first_payload = payload or {}
+            signature = next_signature
+
+        current_keys: set[tuple[int, int, str]] = set()
+        for start_column, end_column, signature, payload in segments:
+            key = (start_column, end_column, signature)
+            current_keys.add(key)
+            run = active.get(key)
+            if run is None:
+                active[key] = {
+                    "start_row": row_index,
+                    "end_row": row_index,
+                    "start_column": start_column,
+                    "end_column": end_column,
+                    "payload": payload,
+                }
+            else:
+                run["end_row"] = row_index
+        for key in tuple(active):
+            if key not in current_keys:
+                completed.append(active.pop(key))
+
+    completed.extend(active.values())
+    completed.sort(
+        key=lambda item: (
+            int(item["start_row"]),
+            int(item["start_column"]),
+            int(item["end_row"]),
+            int(item["end_column"]),
+        )
+    )
+    return tuple(_format_run_dto(item) for item in completed)
+
+
+def _format_run_dto(value: Mapping[str, Any]) -> WorkbookFormatRunDTO:
+    start = f"{get_column_letter(int(value['start_column']))}{int(value['start_row'])}"
+    end = f"{get_column_letter(int(value['end_column']))}{int(value['end_row'])}"
+    payload = dict(value["payload"])
+    return WorkbookFormatRunDTO(
+        range=start if start == end else f"{start}:{end}",
+        font=dict(payload.get("font") or {}),
+        fill=dict(payload.get("fill") or {}),
+        number_format=str(payload.get("number_format") or ""),
+        alignment=dict(payload.get("alignment") or {}),
+        border=dict(payload.get("border") or {}),
+    )
+
+
+def _cell_format_payload(cell: Any) -> dict[str, Any]:
+    font = {
+        "name": str(cell.font.name or ""),
+        "size": float(cell.font.sz) if cell.font.sz is not None else None,
+        "bold": bool(cell.font.bold),
+        "italic": bool(cell.font.italic),
+        "underline": str(cell.font.underline or ""),
+        "strike": bool(cell.font.strike),
+        "color": _openpyxl_color(cell.font.color),
+    }
+    fill = {
+        "fill_type": str(cell.fill.fill_type or ""),
+        "fg_color": _openpyxl_color(cell.fill.fgColor),
+        "bg_color": _openpyxl_color(cell.fill.bgColor),
+    }
+    alignment = {
+        "horizontal": str(cell.alignment.horizontal or ""),
+        "vertical": str(cell.alignment.vertical or ""),
+        "wrap_text": bool(cell.alignment.wrap_text),
+        "text_rotation": int(cell.alignment.text_rotation or 0),
+        "shrink_to_fit": bool(cell.alignment.shrink_to_fit),
+    }
+    border = {
+        side_name: _border_side_payload(getattr(cell.border, side_name, None))
+        for side_name in ("left", "right", "top", "bottom", "diagonal")
+    }
+    border = {key: value for key, value in border.items() if value}
+    if border.get("diagonal"):
+        border["diagonal"]["up"] = bool(cell.border.diagonalUp)
+        border["diagonal"]["down"] = bool(cell.border.diagonalDown)
+    payload: dict[str, Any] = {"font": font}
+    if fill["fill_type"]:
+        payload["fill"] = fill
+    if cell.number_format and cell.number_format != "General":
+        payload["number_format"] = str(cell.number_format)
+    if any(
+        value not in {"", False, 0}
+        for value in alignment.values()
+    ):
+        payload["alignment"] = alignment
+    if border:
+        payload["border"] = border
+    return payload
+
+
+def _border_side_payload(side: Any) -> dict[str, Any]:
+    if side is None or not side.style:
+        return {}
+    return {
+        "style": str(side.style),
+        "color": _openpyxl_color(side.color),
+    }
+
+
+def _openpyxl_color(color: Any) -> str:
+    if color is None or str(getattr(color, "type", "")) != "rgb":
+        return ""
+    value = str(getattr(color, "rgb", "") or "").strip().lstrip("#")
+    if len(value) == 8:
+        value = value[-6:]
+    if len(value) != 6 or not re.fullmatch(r"[0-9A-Fa-f]{6}", value):
+        return ""
+    return f"#{value.upper()}"
+
+
+def _format_signature(payload: Mapping[str, Any]) -> str:
+    return json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+
+
+def _target_format_warning_count(result: Mapping[str, Any]) -> int:
+    warnings = result.get("format_warnings")
+    if isinstance(warnings, list):
+        return len(warnings)
+    try:
+        return max(0, int(result.get("format_warning_count") or 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _logical_sheet_key(name: str) -> str:

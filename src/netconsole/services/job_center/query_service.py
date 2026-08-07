@@ -102,6 +102,11 @@ WPS_SYNC_RESULT_DETAIL_KEYS = (
     "snapshot_generated_at",
     "payload_bytes",
     "sheet_count",
+    "target_count",
+    "success_count",
+    "failed_count",
+    "warning_count",
+    "partial_success",
     "targets",
 )
 CAR_NETWORK_POINT_TABLE_GENERATE_RESULT_DETAIL_KEYS = (

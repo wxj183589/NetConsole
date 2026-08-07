@@ -162,6 +162,45 @@ describe('TaskDetailDrawer', () => {
     wrapper.unmount()
   })
 
+  it('renders WPS format warnings without changing the completed task lifecycle', async () => {
+    mocks.getTask.mockResolvedValue({
+      ...task('wps-format-warning'),
+      type: 'trackside_ap_wps_sync',
+      status: 'COMPLETED',
+      business_status: 'SUCCESS_WITH_WARNINGS',
+      warning_count: 1,
+      error_code: '',
+      error_summary: '',
+      details: {
+        status: 'SUCCESS_WITH_WARNINGS',
+        targets: [{
+          target_code: 'wps_standard_spreadsheet',
+          target_name: '杭州地铁10号线轨旁AP业务-普通在线表格',
+          target_batch_id: 'target-1',
+          status: 'SUCCESS_WITH_WARNINGS',
+          format_warning_count: 1,
+          format_warnings: [{
+            sheet_name: '轨旁AP业务',
+            feature: 'freeze_panes',
+            reason: 'runtime unsupported',
+          }],
+        }],
+      },
+    })
+    const wrapper = mount(TaskDetailDrawer, {
+      props: { modelValue: true, taskId: 'wps-format-warning' },
+      global: { plugins: [createPinia()] },
+    })
+
+    await flushPromises()
+    const rendered = document.body.textContent || ''
+    expect(rendered).toContain('WPS 子目标结果')
+    expect(rendered).toContain('SUCCESS_WITH_WARNINGS')
+    expect(rendered).toContain('格式告警1')
+    expect(rendered).toContain('轨旁AP业务 / freeze_panes / runtime unsupported')
+    wrapper.unmount()
+  })
+
   it('keeps COMPLETED visible while hiding Artifact actions for a missing output', async () => {
     mocks.getTask.mockResolvedValue({
       ...task('task-missing'),
