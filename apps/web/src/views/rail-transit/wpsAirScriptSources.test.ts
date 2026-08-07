@@ -14,16 +14,16 @@ const scripts: Array<{
   {
     targetCode: 'wps_standard_spreadsheet',
     kind: 'probe',
-    scriptVersion: '2.1.0-standard',
-    deploymentId: 'trackside-ap-standard-2.1.0',
+    scriptVersion: '2.2.0-standard',
+    deploymentId: 'trackside-ap-standard-2.2.0',
     documentId: '549847228994',
     targetType: 'WPS_STANDARD_SPREADSHEET',
   },
   {
     targetCode: 'wps_standard_spreadsheet',
     kind: 'sync',
-    scriptVersion: '2.1.0-standard',
-    deploymentId: 'trackside-ap-standard-2.1.0',
+    scriptVersion: '2.2.0-standard',
+    deploymentId: 'trackside-ap-standard-2.2.0',
     documentId: '549847228994',
     targetType: 'WPS_STANDARD_SPREADSHEET',
   },
@@ -71,4 +71,16 @@ describe('WPS AirScript deployment sources', () => {
       expect(source).not.toContain('sync_trackside_ap_business')
     },
   )
+
+  it('makes the ordinary spreadsheet sync fail closed before business writes', () => {
+    const source = wpsAirScriptSource('wps_standard_spreadsheet', 'sync')
+
+    expect(source).toContain('_NetConsoleSyncMeta')
+    expect(source).toContain('WPS_DOCUMENT_BINDING_MISMATCH')
+    expect(source).toContain('runtime_write_probe')
+    expect(source).toContain('.Value2 = values')
+    expect(source).toContain('EntireRow.Insert()')
+    expect(source).not.toContain('Rows.Insert(1, values.length)')
+    expect(source).not.toContain('.Value = values')
+  })
 })

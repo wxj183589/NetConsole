@@ -3626,6 +3626,7 @@ class RailTransitWebApplicationService:
         *,
         target_codes: Sequence[str] = (),
         expected_revision: str = "",
+        initialize_binding: bool = False,
     ) -> RailTransitTaskDTO:
         """提交 WPS 同步到 Job Center，避免在 FastAPI 请求线程执行网络和工作簿 IO。"""
 
@@ -3636,6 +3637,7 @@ class RailTransitWebApplicationService:
             {
                 "target_codes": list(selected_codes),
                 "expected_revision": str(expected_revision or ""),
+                "initialize_binding": bool(initialize_binding),
                 "resource_keys": [f"wps:{self._site(site_id)}:rail_transit.trackside_ap_business"],
                 "reuse_equivalent_task": True,
             },

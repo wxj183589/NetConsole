@@ -5,6 +5,7 @@ import { CopyDocument, Document, Guide } from '@element-plus/icons-vue'
 
 import {
   listTracksideWpsTargets,
+  probeTracksideWpsTarget,
   testTracksideWpsTarget,
   updateTracksideWpsTarget,
 } from '../../api/tracksideApBusiness'
@@ -54,6 +55,7 @@ const localTargets = ref<WpsTracksideTarget[]>([])
 const drafts = ref<TargetDraft[]>([])
 const savingCode = ref<WpsTracksideTargetCode | ''>('')
 const testingCode = ref<WpsTracksideTargetCode | ''>('')
+const probingCode = ref<WpsTracksideTargetCode | ''>('')
 const errorMessage = ref('')
 const testMessages = ref<Partial<Record<WpsTracksideTargetCode, string>>>({})
 const testDiagnostics = ref<Partial<Record<WpsTracksideTargetCode, ConnectionDiagnostic>>>({})
@@ -247,6 +249,22 @@ async function testConnection(code: WpsTracksideTargetCode): Promise<void> {
   }
 }
 
+async function runtimeWriteProbe(code: WpsTracksideTargetCode): Promise<void> {
+  if (probingCode.value || savingCode.value || testingCode.value) return
+  probingCode.value = code
+  errorMessage.value = ''
+  try {
+    const response = await probeTracksideWpsTarget(code)
+    testMessages.value = { ...testMessages.value, [code]: String(response.result.message || '运行时写入探针通过') }
+    await reloadTargets()
+    ElMessage.success('运行时写入探针通过')
+  } catch (reason) {
+    errorMessage.value = reason instanceof Error ? reason.message : '运行时写入探针失败'
+  } finally {
+    probingCode.value = ''
+  }
+}
+
 async function openDocument(target: WpsTracksideTarget): Promise<void> {
   const result = await openWpsDocumentUrl(target.document_open_url)
   if (!result.success) errorMessage.value = result.error || '系统浏览器打开失败'
@@ -279,6 +297,7 @@ async function openDocument(target: WpsTracksideTarget): Promise<void> {
           <div>
             <strong>{{ targetTypeLabel(row.target) }}</strong>
             <span>{{ row.target.target_name }}</span>
+            <span>当前局点：{{ row.target.site_id }} · 远端绑定：{{ row.target.binding_status || 'UNKNOWN' }}</span>
           </div>
           <el-tag :type="row.target.token_configured ? 'success' : 'danger'">
             {{ row.target.token_configured ? `令牌已配置 · ${row.target.token_suffix || '已保护'}` : '令牌未配置' }}
@@ -319,6 +338,7 @@ async function openDocument(target: WpsTracksideTarget): Promise<void> {
         <div class="script-identity">
           <span>本地期望脚本版本 <code>{{ row.target.expected_script_version || '未返回' }}</code></span>
           <span>本地期望部署 ID <code>{{ row.target.expected_deployment_id || '未返回' }}</code></span>
+          <span>远端绑定局点 <code>{{ row.target.remote_site_name || row.target.remote_site_id || '未绑定' }}</code></span>
           <span>webhook 脚本 ID <code>{{ webhookScriptIdSummary(row.draft.webhook_url) }}</code></span>
           <span v-if="testDiagnostics[row.target.target_code]?.remote_script_version">WPS 返回脚本版本 <code>{{ testDiagnostics[row.target.target_code]?.remote_script_version }}</code></span>
           <span v-if="testDiagnostics[row.target.target_code]?.remote_deployment_id">WPS 返回部署 ID <code>{{ testDiagnostics[row.target.target_code]?.remote_deployment_id }}</code></span>
@@ -346,6 +366,7 @@ async function openDocument(target: WpsTracksideTarget): Promise<void> {
         <div class="deployment-actions">
           <el-button :icon="CopyDocument" @click="copyAirScript(row.target.target_code, 'probe')">复制连接测试脚本</el-button>
           <el-button :icon="CopyDocument" @click="copyAirScript(row.target.target_code, 'sync')">复制正式同步脚本</el-button>
+          <el-button v-if="row.target.target_type === 'WPS_STANDARD_SPREADSHEET'" :loading="probingCode === row.target.target_code" :disabled="Boolean(probingCode) || Boolean(savingCode) || Boolean(testingCode)" @click="runtimeWriteProbe(row.target.target_code)">测试写入能力</el-button>
           <el-button :icon="Guide" @click="toggleDeploymentSteps(row.target.target_code)">查看部署步骤</el-button>
         </div>
 

@@ -114,6 +114,13 @@ const wpsConfigurationMissing = computed(() => (
     || !target.token_configured
   ))
 ))
+function wpsTargetReady(code: WpsTracksideTargetCode): boolean {
+  const target = wpsTargets.value.find((item) => item.target_code === code)
+  return Boolean(target?.enabled && target.runtime_capability === 'VERIFIED')
+}
+const hasReadyWpsTarget = computed(() => wpsTargets.value.some(
+  (target) => target.enabled && target.runtime_capability === 'VERIFIED',
+))
 let loadGeneration = 0
 let pageMounted = false
 let taskObservationReady = false
@@ -574,7 +581,7 @@ async function loadWpsTargets(): Promise<void> {
 async function syncWps(command: 'all' | WpsTracksideTargetCode): Promise<void> {
   if (wpsSyncing.value || wpsTaskRunning.value || !wpsSyncFeatureEnabled.value || !page.value?.business_revision) return
   const enabledTargets = wpsTargets.value.filter(
-    (target) => target.enabled && target.runtime_capability !== 'RUNTIME_UNVERIFIED',
+    (target) => target.enabled && target.runtime_capability === 'VERIFIED',
   )
   const targetCodes = command === 'all'
     ? enabledTargets.map((target) => target.target_code)
@@ -582,8 +589,8 @@ async function syncWps(command: 'all' | WpsTracksideTargetCode): Promise<void> {
   const selectedTargets = targetCodes
     .map((code) => wpsTargets.value.find((target) => target.target_code === code))
     .filter((target): target is WpsTracksideTarget => Boolean(target))
-  if (selectedTargets.some((target) => target.runtime_capability === 'RUNTIME_UNVERIFIED')) {
-    actionError.value = '智能表格正式写入接口尚未完成 WPS 运行时验收；请先使用只读连接探针，普通在线表格可独立同步'
+  if (selectedTargets.some((target) => target.runtime_capability !== 'VERIFIED')) {
+    actionError.value = 'WPS 运行时写入能力尚未验证；请先在“配置云文档”执行测试写入能力。'
     wpsConfigVisible.value = true
     return
   }
@@ -616,10 +623,24 @@ async function syncWps(command: 'all' | WpsTracksideTargetCode): Promise<void> {
   } catch {
     return
   }
+  let initializeBinding = false
+  const unboundTargets = selectedTargets.filter((target) => target.binding_status === 'UNBOUND')
+  if (unboundTargets.length) {
+    try {
+      await ElMessageBox.confirm(
+        `以下文档尚未绑定，将绑定到当前局点 ${page.value.site_id} 的轨旁 AP 业务：${unboundTargets.map((target) => target.target_name).join('、')}。绑定后其他局点请求将被拒绝。`,
+        '确认首次绑定',
+        { type: 'warning', confirmButtonText: '确认绑定并同步', cancelButtonText: '取消' },
+      )
+      initializeBinding = true
+    } catch {
+      return
+    }
+  }
   wpsSyncing.value = true
   actionError.value = ''
   try {
-    const task = await syncTracksideWpsTargets({ target_codes: targetCodes, expected_revision: page.value.business_revision })
+    const task = await syncTracksideWpsTargets({ target_codes: targetCodes, expected_revision: page.value.business_revision, initialize_binding: initializeBinding })
     currentTaskId.value = task.task_id
     await taskStore.refresh()
     ElMessage.info('WPS 同步任务已提交，可在任务中心查看两个目标的独立结果')
@@ -750,9 +771,9 @@ onBeforeUnmount(() => {
           @click="exportBusiness"
         >导出表格</el-button>
         <template v-if="wpsSyncFeatureEnabled">
-          <el-button type="success" :loading="wpsSyncing" :disabled="wpsSyncing || wpsTaskRunning || updateTaskRunning" @click="syncWps('all')">同步全部目标</el-button>
-          <el-button link type="success" :disabled="wpsSyncing || wpsTaskRunning || updateTaskRunning" @click="syncWps('wps_standard_spreadsheet')">同步普通表格</el-button>
-          <el-button link type="success" :disabled="wpsSyncing || wpsTaskRunning || updateTaskRunning" @click="syncWps('wps_smart_sheet')">同步智能表格</el-button>
+          <el-button type="success" :loading="wpsSyncing" :disabled="wpsSyncing || wpsTaskRunning || updateTaskRunning || !hasReadyWpsTarget" @click="syncWps('all')">同步全部目标</el-button>
+          <el-button link type="success" :disabled="wpsSyncing || wpsTaskRunning || updateTaskRunning || !wpsTargetReady('wps_standard_spreadsheet')" @click="syncWps('wps_standard_spreadsheet')">同步普通表格</el-button>
+          <el-button link type="success" :disabled="wpsSyncing || wpsTaskRunning || updateTaskRunning || !wpsTargetReady('wps_smart_sheet')" @click="syncWps('wps_smart_sheet')">同步智能表格</el-button>
           <el-button link type="info" :disabled="wpsSyncing || wpsTaskRunning" @click="openWpsTarget('wps_standard_spreadsheet')">打开普通表格</el-button>
           <el-button link type="info" :disabled="wpsSyncing || wpsTaskRunning" @click="openWpsTarget('wps_smart_sheet')">打开智能表格</el-button>
           <el-button link type="warning" :disabled="wpsSyncing || wpsTaskRunning" @click="openWpsConfiguration">配置云文档</el-button>

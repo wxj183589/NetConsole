@@ -20,6 +20,13 @@ class WpsSyncTargetDTO(ApiModel):
     expected_script_version: str = ""
     expected_deployment_id: str = ""
     runtime_capability: str = "RUNTIME_UNVERIFIED"
+    last_runtime_probe_at: str = ""
+    binding_status: str = "UNKNOWN"
+    binding_id: str = ""
+    remote_binding_id: str = ""
+    remote_site_id: str = ""
+    remote_site_name: str = ""
+    remote_business_key: str = ""
     enabled: bool
     protocol_version: int
     timeout_seconds: int
@@ -44,6 +51,7 @@ class WpsSyncTargetUpdateDTO(ApiModel):
 class WpsSyncRequestDTO(ApiModel):
     target_codes: list[str] = Field(default_factory=list, max_length=2)
     expected_revision: str = Field(default="", max_length=128)
+    initialize_binding: bool = False
 
 
 class WpsSyncConnectionTestDTO(ApiModel):

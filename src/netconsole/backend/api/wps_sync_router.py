@@ -108,6 +108,21 @@ def connection_test(request: Request, target_code: str) -> WpsSyncConnectionTest
 
 
 @router.post(
+    "/targets/{target_code}/runtime-write-probe",
+    response_model=WpsSyncConnectionTestDTO,
+    dependencies=[Depends(require_feature("web.rail_trackside_ap_business_wps_sync"))],
+)
+def runtime_write_probe(request: Request, target_code: str) -> WpsSyncConnectionTestDTO:
+    try:
+        return WpsSyncConnectionTestDTO(
+            target_code=target_code,
+            result=_service(request).runtime_write_probe(_site_id(request), target_code),
+        )
+    except WpsSyncError as exc:
+        _raise(exc)
+
+
+@router.post(
     "/sync",
     response_model=RailTransitTaskDTO,
     status_code=status.HTTP_202_ACCEPTED,
@@ -119,6 +134,7 @@ def sync(request: Request, payload: WpsSyncRequestDTO) -> RailTransitTaskDTO:
             _site_id(request),
             target_codes=payload.target_codes,
             expected_revision=payload.expected_revision,
+            initialize_binding=payload.initialize_binding,
         )
     except RailTransitWebError as exc:
         raise HTTPException(

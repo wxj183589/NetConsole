@@ -43,6 +43,13 @@ CREATE TABLE IF NOT EXISTS wps_sync_targets (
     last_sync_at TEXT NOT NULL DEFAULT '',
     last_sync_status TEXT NOT NULL DEFAULT '',
     last_sync_revision TEXT NOT NULL DEFAULT '',
+    runtime_capability TEXT NOT NULL DEFAULT 'DEPLOYMENT_PENDING',
+    last_runtime_probe_at TEXT NOT NULL DEFAULT '',
+    binding_status TEXT NOT NULL DEFAULT 'UNKNOWN',
+    remote_binding_id TEXT NOT NULL DEFAULT '',
+    remote_site_id TEXT NOT NULL DEFAULT '',
+    remote_site_name TEXT NOT NULL DEFAULT '',
+    remote_business_key TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     UNIQUE(site_id, business_key, target_code),
@@ -107,7 +114,26 @@ class WpsSyncRepository:
         with self._connect() as connection:
             initialize_sqlite_wal(connection)
             connection.executescript(WPS_SYNC_SCHEMA)
+            self._ensure_target_columns(connection)
             connection.commit()
+
+    @staticmethod
+    def _ensure_target_columns(connection: sqlite3.Connection) -> None:
+        columns = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(wps_sync_targets)").fetchall()
+        }
+        for name, definition in {
+            "runtime_capability": "TEXT NOT NULL DEFAULT 'DEPLOYMENT_PENDING'",
+            "last_runtime_probe_at": "TEXT NOT NULL DEFAULT ''",
+            "binding_status": "TEXT NOT NULL DEFAULT 'UNKNOWN'",
+            "remote_binding_id": "TEXT NOT NULL DEFAULT ''",
+            "remote_site_id": "TEXT NOT NULL DEFAULT ''",
+            "remote_site_name": "TEXT NOT NULL DEFAULT ''",
+            "remote_business_key": "TEXT NOT NULL DEFAULT ''",
+        }.items():
+            if name not in columns:
+                connection.execute(f"ALTER TABLE wps_sync_targets ADD COLUMN {name} {definition}")
 
     def upsert_target(
         self,
@@ -262,6 +288,40 @@ class WpsSyncRepository:
             target_id,
             "last_sync_at = ?, last_sync_status = ?, last_sync_revision = ?",
             (_now(), status, revision),
+        )
+
+    def update_target_remote_state(
+        self,
+        target_id: str,
+        *,
+        binding_status: str,
+        result: dict[str, object],
+        runtime_capability: str | None = None,
+    ) -> None:
+        assignments = [
+            "binding_status = ?",
+            "remote_binding_id = ?",
+            "remote_site_id = ?",
+            "remote_site_name = ?",
+            "remote_business_key = ?",
+        ]
+        values: list[object] = [
+            str(binding_status or "UNKNOWN"),
+            str(result.get("binding_id") or ""),
+            str(result.get("site_id") or ""),
+            str(result.get("site_name") or ""),
+            str(result.get("business_key") or ""),
+        ]
+        if runtime_capability is not None:
+            assignments.extend(["runtime_capability = ?", "last_runtime_probe_at = ?"])
+            values.extend([str(runtime_capability), _now()])
+        self._update_target(target_id, ", ".join(assignments), values)
+
+    def set_runtime_capability(self, target_id: str, value: str) -> None:
+        self._update_target(
+            target_id,
+            "runtime_capability = ?, last_runtime_probe_at = ?",
+            (str(value), _now()),
         )
 
     def create_batch(
@@ -459,6 +519,13 @@ def _target_from_row(row: sqlite3.Row) -> WpsSyncTarget:
         last_sync_at=str(row["last_sync_at"] or ""),
         last_sync_status=str(row["last_sync_status"] or ""),
         last_sync_revision=str(row["last_sync_revision"] or ""),
+        runtime_capability=str(row["runtime_capability"] or "DEPLOYMENT_PENDING"),
+        last_runtime_probe_at=str(row["last_runtime_probe_at"] or ""),
+        binding_status=str(row["binding_status"] or "UNKNOWN"),
+        remote_binding_id=str(row["remote_binding_id"] or ""),
+        remote_site_id=str(row["remote_site_id"] or ""),
+        remote_site_name=str(row["remote_site_name"] or ""),
+        remote_business_key=str(row["remote_business_key"] or ""),
     )
 
 

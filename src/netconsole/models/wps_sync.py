@@ -43,6 +43,13 @@ class WpsSyncTarget:
     last_sync_at: str = ""
     last_sync_status: str = ""
     last_sync_revision: str = ""
+    runtime_capability: str = "DEPLOYMENT_PENDING"
+    last_runtime_probe_at: str = ""
+    binding_status: str = "UNKNOWN"
+    remote_binding_id: str = ""
+    remote_site_id: str = ""
+    remote_site_name: str = ""
+    remote_business_key: str = ""
 
     def public_dict(self) -> dict[str, Any]:
         return {
@@ -66,6 +73,14 @@ class WpsSyncTarget:
             "last_sync_at": self.last_sync_at,
             "last_sync_status": self.last_sync_status,
             "last_sync_revision": self.last_sync_revision,
+            "runtime_capability": self.runtime_capability,
+            "last_runtime_probe_at": self.last_runtime_probe_at,
+            "binding_status": self.binding_status,
+            "binding_id": self.target_id,
+            "remote_binding_id": self.remote_binding_id,
+            "remote_site_id": self.remote_site_id,
+            "remote_site_name": self.remote_site_name,
+            "remote_business_key": self.remote_business_key,
         }
 
 

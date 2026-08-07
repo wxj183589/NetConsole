@@ -265,6 +265,13 @@ export interface WpsTracksideTarget {
   expected_script_version?: string
   expected_deployment_id?: string
   runtime_capability?: string
+  last_runtime_probe_at?: string
+  binding_status?: string
+  binding_id?: string
+  remote_binding_id?: string
+  remote_site_id?: string
+  remote_site_name?: string
+  remote_business_key?: string
   enabled: boolean
   protocol_version: number
   timeout_seconds: number

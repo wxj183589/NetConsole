@@ -46,11 +46,11 @@ SMART_TARGET_CODE = "wps_smart_sheet"
 WPS_SYNC_TASK_TYPE = "trackside_ap_wps_sync"
 WPS_SYNC_OWNER = "web_rail_transit"
 WPS_SCRIPT_VERSIONS = {
-    STANDARD_TARGET_CODE: "2.1.0-standard",
+    STANDARD_TARGET_CODE: "2.2.0-standard",
     SMART_TARGET_CODE: "2.1.0-smart",
 }
 WPS_DEPLOYMENT_IDS = {
-    STANDARD_TARGET_CODE: "trackside-ap-standard-2.1.0",
+    STANDARD_TARGET_CODE: "trackside-ap-standard-2.2.0",
     SMART_TARGET_CODE: "trackside-ap-smart-2.1.0",
 }
 WPS_RUNTIME_CAPABILITIES = {
@@ -72,7 +72,6 @@ DEFAULT_TARGETS = (
     {
         "target_code": STANDARD_TARGET_CODE,
         "target_type": WpsTargetType.STANDARD_SPREADSHEET,
-        "target_name": "杭州地铁10号线轨旁AP业务-普通在线表格",
         "document_open_url": "",
         "webhook_url": "",
         "expected_document_id": "",
@@ -80,7 +79,6 @@ DEFAULT_TARGETS = (
     {
         "target_code": SMART_TARGET_CODE,
         "target_type": WpsTargetType.SMART_SHEET,
-        "target_name": "杭州地铁10号线轨旁AP业务-智能表格",
         "document_open_url": "",
         "webhook_url": "",
         "expected_document_id": "",
@@ -189,6 +187,9 @@ class BaseWpsAdapter:
                 "operation": "connection_test",
                 "target_code": target.target_code,
                 "target_type": target.target_type.value,
+                "site_id": target.site_id,
+                "business_key": target.business_key,
+                "binding_id": target.target_id,
             },
         )
         result = _unwrap_wps_sync_task_response(response, target, token=token)
@@ -198,6 +199,33 @@ class BaseWpsAdapter:
                 str(result.get("error_code") or "WPS_CONNECTION_TEST_FAILED"),
                 _sanitize_error(str(result.get("message") or "WPS 远端连接测试失败").replace(token, "<redacted>")),
                 details=_target_error_details(target, phase="SCRIPT_EXECUTION"),
+            )
+        return {"http_status": response.status_code, "phase": "SUCCESS", **result}
+
+    def runtime_write_probe(self, target: WpsSyncTarget, token: str) -> dict[str, Any]:
+        response = self.client.post(
+            target,
+            token=token,
+            argv={
+                "protocol_version": WPS_SYNC_PROTOCOL_VERSION,
+                "operation": "runtime_write_probe",
+                "target_code": target.target_code,
+                "target_type": target.target_type.value,
+                "site_id": target.site_id,
+                "business_key": target.business_key,
+                "binding_id": target.target_id,
+                "probe_id": f"wps_probe_{uuid4().hex}",
+            },
+        )
+        result = _unwrap_wps_sync_task_response(response, target, token=token)
+        self._validate_common(target, result)
+        if not bool(result.get("success")):
+            raise _remote_result_error(target, result, token)
+        if str(result.get("runtime_capability") or "") != "VERIFIED":
+            raise WpsSyncError(
+                "WPS_RUNTIME_PROBE_UNVERIFIED",
+                "WPS 运行时写入探针未完成验证",
+                details=_target_error_details(target, phase="RUNTIME_WRITE_PROBE"),
             )
         return {"http_status": response.status_code, "phase": "SUCCESS", **result}
 
@@ -224,11 +252,7 @@ class BaseWpsAdapter:
                     details=_target_error_details(target, phase="DOCUMENT_IDENTITY"),
                 )
         if not bool(result.get("success")):
-            raise WpsSyncError(
-                str(result.get("error_code") or "WPS_REMOTE_FAILED"),
-                _sanitize_error(str(result.get("message") or "WPS 远端同步失败").replace(token, "<redacted>")),
-                details=_target_error_details(target, phase="SCRIPT_EXECUTION"),
-            )
+            raise _remote_result_error(target, result, token)
         return {"http_status": response.status_code, "phase": "SUCCESS", **result}
 
     @staticmethod
@@ -406,6 +430,13 @@ class TracksideApWpsSyncService:
             token=token,
             credential_id=target.credential_id,
         )
+        if document_open_url is not None or webhook_url is not None:
+            repository.set_runtime_capability(
+                configured.target_id, "DEPLOYMENT_PENDING"
+            )
+            configured = repository.get_target(
+                configured.business_key, configured.target_code
+            )
         return self._public_target(
             configured,
             env_token_configured=self._env_token(configured.target_code) != "",
@@ -435,6 +466,29 @@ class TracksideApWpsSyncService:
             status="SUCCESS",
             message="连接测试通过",
         )
+        repository.update_target_remote_state(
+            target.target_id,
+            binding_status=str(result.get("binding_status") or "UNKNOWN"),
+            result=result,
+        )
+        return _sanitize_result(result)
+
+    def runtime_write_probe(self, site_id: str, target_code: str) -> dict[str, Any]:
+        repository = self._repository(site_id)
+        self._ensure_default_targets(repository)
+        target = repository.get_target(TRACKSIDE_AP_WPS_BUSINESS_KEY, target_code)
+        if target.target_type is not WpsTargetType.STANDARD_SPREADSHEET:
+            raise WpsSyncError("WPS_RUNTIME_PROBE_UNSUPPORTED", "当前仅支持普通在线表格写入探针")
+        _validate_target_configuration(target)
+        result = self.adapters[target.target_type].runtime_write_probe(
+            target, self._token(repository, target)
+        )
+        repository.update_target_remote_state(
+            target.target_id,
+            binding_status=str(result.get("binding_status") or "UNKNOWN"),
+            result=result,
+            runtime_capability="VERIFIED",
+        )
         return _sanitize_result(result)
 
     def sync(
@@ -443,6 +497,7 @@ class TracksideApWpsSyncService:
         *,
         target_codes: Sequence[str] = (),
         expected_revision: str = "",
+        initialize_binding: bool = False,
         progress: Callable[[str, int, int, str], None] | None = None,
         should_cancel: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
@@ -472,6 +527,12 @@ class TracksideApWpsSyncService:
             raise WpsSyncError(
                 "WPS_TARGET_DISABLED",
                 f"WPS 目标未启用：{', '.join(disabled)}",
+            )
+        unverified = [target.target_name for target in targets if target.runtime_capability != "VERIFIED"]
+        if unverified:
+            raise WpsSyncError(
+                "WPS_RUNTIME_WRITE_PROBE_REQUIRED",
+                f"WPS 写入探针尚未验证：{', '.join(unverified)}",
             )
 
         if should_cancel is not None:
@@ -517,7 +578,7 @@ class TracksideApWpsSyncService:
                 "target_type": target.target_type.value,
                 "target_code": target.target_code,
                 "binding_id": target.target_id,
-                "initialize_binding": True,
+                "initialize_binding": bool(initialize_binding),
                 "site_id": site_id,
                 "site_name": self._site_display_name(site_id),
                 "business_key": TRACKSIDE_AP_WPS_BUSINESS_KEY,
@@ -549,6 +610,11 @@ class TracksideApWpsSyncService:
                     "status": "SUCCESS",
                     **_sanitize_result(response),
                 }
+                repository.update_target_remote_state(
+                    target.target_id,
+                    binding_status=str(response.get("binding_status") or "UNKNOWN"),
+                    result=response,
+                )
                 repository.complete_target_run(
                     target_batch_id,
                     status="SUCCESS",
@@ -568,6 +634,7 @@ class TracksideApWpsSyncService:
                     "status": "FAILED",
                     "error_code": exc.code,
                     "message": str(exc),
+                    **_sanitize_result(dict(exc.details)),
                 }
                 repository.complete_target_run(
                     target_batch_id,
@@ -703,13 +770,37 @@ class TracksideApWpsSyncService:
                 credential_id=f"wsc_{uuid4().hex}",
             )
         for definition in DEFAULT_TARGETS:
-            if definition["target_code"] in existing:
+            code = str(definition["target_code"])
+            target = existing.get(code)
+            default_name = _default_target_name(
+                self._site_display_name(repository.site_id), code
+            )
+            if target is not None:
+                if _is_legacy_default_target_name(target.target_name, code):
+                    repository.upsert_target(
+                        business_key=target.business_key,
+                        target_code=target.target_code,
+                        target_type=target.target_type,
+                        target_name=default_name,
+                        document_open_url=target.document_open_url,
+                        webhook_url=target.webhook_url,
+                        expected_document_id=target.expected_document_id,
+                        enabled=target.enabled,
+                        timeout_seconds=target.timeout_seconds,
+                        credential_id=target.credential_id,
+                    )
                 continue
             repository.upsert_target(
                 business_key=TRACKSIDE_AP_WPS_BUSINESS_KEY,
                 **definition,
+                target_name=default_name,
                 credential_id=f"wsc_{uuid4().hex}",
             )
+            if code == SMART_TARGET_CODE:
+                created = repository.get_target(TRACKSIDE_AP_WPS_BUSINESS_KEY, code)
+                repository.set_runtime_capability(
+                    created.target_id, "RUNTIME_UNVERIFIED"
+                )
 
     def _repository(self, site_id: str) -> WpsSyncRepository:
         selected = SiteManager(self.paths).validate_site_name(site_id)
@@ -736,9 +827,7 @@ class TracksideApWpsSyncService:
         result = target.public_dict()
         result["expected_script_version"] = WPS_SCRIPT_VERSIONS.get(target.target_code, "")
         result["expected_deployment_id"] = WPS_DEPLOYMENT_IDS.get(target.target_code, "")
-        result["runtime_capability"] = WPS_RUNTIME_CAPABILITIES.get(
-            target.target_code, "RUNTIME_UNVERIFIED"
-        )
+        result["runtime_capability"] = target.runtime_capability or WPS_RUNTIME_CAPABILITIES.get(target.target_code, "RUNTIME_UNVERIFIED")
         result["token_configured"] = bool(
             target.token_configured or env_token_configured
         )
@@ -859,6 +948,53 @@ def _target_error_details(target: WpsSyncTarget, *, phase: str) -> dict[str, obj
         "phase": phase,
         "target_code": target.target_code,
         "document_id": target.expected_document_id,
+    }
+
+
+def _remote_result_error(
+    target: WpsSyncTarget,
+    result: Mapping[str, object],
+    token: str,
+) -> WpsSyncError:
+    details = {
+        **_target_error_details(target, phase="SCRIPT_EXECUTION"),
+        **_sanitize_result(
+            {
+                key: result.get(key)
+                for key in (
+                    "failed_sheet",
+                    "failed_operation",
+                    "written_sheet_count",
+                    "written_row_count",
+                    "runtime_error_name",
+                    "runtime_error_stack",
+                    "binding_status",
+                )
+            }
+        ),
+    }
+    return WpsSyncError(
+        str(result.get("error_code") or "WPS_REMOTE_FAILED"),
+        _sanitize_error(
+            str(result.get("message") or "WPS 远端同步失败").replace(
+                token, "<redacted>"
+            )
+        ),
+        details=details,
+    )
+
+
+def _default_target_name(site_display_name: str, target_code: str) -> str:
+    suffix = "智能表格" if target_code == SMART_TARGET_CODE else "普通在线表格"
+    return f"{site_display_name}轨旁AP业务-{suffix}"
+
+
+def _is_legacy_default_target_name(value: str, target_code: str) -> bool:
+    text = str(value or "").strip()
+    suffix = "智能表格" if target_code == SMART_TARGET_CODE else "普通在线表格"
+    return text in {
+        f"杭州地铁10号线轨旁AP业务-{suffix}",
+        f"杭州地铁10号线轨旁 AP 业务-{suffix}",
     }
 
 

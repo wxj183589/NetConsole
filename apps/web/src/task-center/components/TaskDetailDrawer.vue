@@ -116,6 +116,11 @@ const showPointTablePreviewResult = computed(() => (
   && store.selected.status === 'COMPLETED'
   && Number.isFinite(Number(selectedDetails.value.nodes_count))
 ))
+const wpsTargetResults = computed(() => {
+  if (store.selected?.type !== 'trackside_ap_wps_sync') return []
+  const targets = selectedDetails.value.targets
+  return Array.isArray(targets) ? targets.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object') : []
+})
 const businessStatusLabel = computed(() => ({
   SUCCESS: t('job_center.business_result.success', '成功'),
   PARTIAL_SUCCESS: t('job_center.business_result.partial_success', '部分成功'),
@@ -628,6 +633,17 @@ function handleClosed(): void {
               <span>{{ row.category }} · {{ row.label }}</span><strong>{{ row.count }}</strong>
             </li>
           </ul>
+        </section>
+
+        <section v-if="wpsTargetResults.length" class="business-result">
+          <div class="current-heading"><h3>WPS 子目标结果</h3><strong>{{ selectedBusinessStatus || store.selected.status }}</strong></div>
+          <div v-for="target in wpsTargetResults" :key="String(target.target_batch_id || target.target_code)" class="current-grid">
+            <article><span>目标</span><strong>{{ target.target_name || target.target_code }}</strong></article>
+            <article><span>状态</span><strong>{{ target.status || '--' }}</strong></article>
+            <article><span>错误码</span><strong>{{ target.error_code || '--' }}</strong></article>
+            <article><span>失败操作</span><strong>{{ target.failed_operation || '--' }}</strong></article>
+            <article class="wide"><span>消息</span><strong>{{ target.message || '--' }}</strong></article>
+          </div>
         </section>
 
         <section v-if="showCurrentProcessing" class="current-processing">

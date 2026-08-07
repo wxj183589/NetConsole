@@ -9,6 +9,7 @@ from openpyxl import Workbook
 import pytest
 
 from netconsole.core.paths import PathResolver
+from netconsole.core.sites import SiteManager
 from netconsole.models.wps_sync import TRACKSIDE_AP_WPS_BUSINESS_KEY, WpsSyncTarget, WpsTargetType
 from netconsole.repositories.wps_sync_repository import WpsSyncRepository
 from netconsole.services.wps_trackside_ap_sync import (
@@ -100,6 +101,35 @@ def test_wps_public_targets_expose_deployment_identity_and_disable_smart_by_defa
     assert by_code[SMART_TARGET_CODE]["runtime_capability"] == "RUNTIME_UNVERIFIED"
     assert by_code[STANDARD_TARGET_CODE]["expected_script_version"] == WPS_SCRIPT_VERSIONS[STANDARD_TARGET_CODE]
     assert by_code[STANDARD_TARGET_CODE]["expected_deployment_id"] == WPS_DEPLOYMENT_IDS[STANDARD_TARGET_CODE]
+
+
+def test_wps_default_target_name_uses_site_display_name_and_preserves_custom_name(tmp_path: Path) -> None:
+    paths = PathResolver(tmp_path)
+    manager = SiteManager(paths)
+    manager.create_site("hzl10", display_name="杭州地铁10号线")
+    manager.create_site("nbl12", display_name="宁波地铁12号线")
+    service = TracksideApWpsSyncService(paths)
+
+    hzl10 = {item["target_code"]: item for item in service.list_targets("hzl10")}
+    nbl12 = {item["target_code"]: item for item in service.list_targets("nbl12")}
+    assert hzl10[STANDARD_TARGET_CODE]["target_name"] == "杭州地铁10号线轨旁AP业务-普通在线表格"
+    assert nbl12[STANDARD_TARGET_CODE]["target_name"] == "宁波地铁12号线轨旁AP业务-普通在线表格"
+
+    service.configure_target("hzl10", STANDARD_TARGET_CODE, document_open_url="https://www.kdocs.cn/l/custom")
+    repository = service._repository("hzl10")
+    target = repository.get_target(TRACKSIDE_AP_WPS_BUSINESS_KEY, STANDARD_TARGET_CODE)
+    repository.upsert_target(
+        business_key=target.business_key,
+        target_code=target.target_code,
+        target_type=target.target_type,
+        target_name="用户自定义 WPS 文档",
+        document_open_url=target.document_open_url,
+        webhook_url=target.webhook_url,
+        expected_document_id=target.expected_document_id,
+        credential_id=target.credential_id,
+    )
+    refreshed = {item["target_code"]: item for item in service.list_targets("hzl10")}
+    assert refreshed[STANDARD_TARGET_CODE]["target_name"] == "用户自定义 WPS 文档"
 
 
 @pytest.mark.parametrize(
@@ -363,6 +393,9 @@ def test_dual_sync_reuses_one_snapshot_for_both_adapters(monkeypatch, tmp_path: 
     )
     monkeypatch.setenv("NETCONSOLE_WPS_STANDARD_AIRSCRIPT_TOKEN", "test-token")
     monkeypatch.setenv("NETCONSOLE_WPS_SMART_AIRSCRIPT_TOKEN", "test-token")
+    repository = service._repository("hzl10")
+    for target in repository.list_targets(TRACKSIDE_AP_WPS_BUSINESS_KEY):
+        repository.set_runtime_capability(target.target_id, "VERIFIED")
     monkeypatch.setattr(
         service,
         "_build_snapshot",

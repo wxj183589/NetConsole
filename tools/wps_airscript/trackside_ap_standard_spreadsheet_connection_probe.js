@@ -1,7 +1,7 @@
 // NetConsole read-only WPS_STANDARD_SPREADSHEET connection probe.
 const PROTOCOL_VERSION = 2;
-const SCRIPT_VERSION = "2.1.0-standard";
-const DEPLOYMENT_ID = "trackside-ap-standard-2.1.0";
+const SCRIPT_VERSION = "2.2.0-standard";
+const DEPLOYMENT_ID = "trackside-ap-standard-2.2.0";
 const DOCUMENT_ID = "549847228994";
 const TARGET_TYPE = "WPS_STANDARD_SPREADSHEET";
 const TARGET_CODE = "wps_standard_spreadsheet";
@@ -9,6 +9,17 @@ const RUNTIME_CAPABILITY = "DEPLOYMENT_PENDING";
 
 function main() {
   const args = (typeof Context !== "undefined" && Context.argv) || {};
+  const book = Application.ActiveWorkbook || Application.Workbook || Application;
+  const sheets = book.Worksheets || book.Sheets;
+  let meta = null;
+  for (let index = 0; index < sheets.Count; index += 1) {
+    const sheet = sheets.Item(index + 1);
+    if (String(sheet.Name || "") !== "_NetConsoleSyncMeta") continue;
+    const values = sheet.Range("A1:B20").Value2;
+    meta = {};
+    for (const row of values || []) if (row && row[0]) meta[String(row[0])] = row[1];
+    break;
+  }
   return JSON.stringify({
     success: true,
     protocol_version: PROTOCOL_VERSION,
@@ -19,6 +30,8 @@ function main() {
     target_code: TARGET_CODE,
     runtime_capability: RUNTIME_CAPABILITY,
     operation: String(args.operation || "connection_test"),
+    binding_status: meta && meta.binding_id ? "BOUND" : "UNBOUND",
+    ...(meta || {}),
     objects: [],
     verification: "CONNECTION_PROBE_ONLY",
   });
