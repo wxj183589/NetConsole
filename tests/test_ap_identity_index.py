@@ -115,6 +115,32 @@ def test_revision_state_reports_missing_ready_and_stale_without_exposing_rows(
     )
 
 
+def test_topology_projection_version_marks_legacy_index_stale_and_rebuilds(
+    tmp_path: Path,
+) -> None:
+    database, repository, service = _fixture(tmp_path)
+    _base_ap(repository, name="AP-A", mac="74ad-cb9d-3320")
+    built = service.rebuild_index("initial")
+
+    with database.connect() as connection:
+        connection.execute(
+            "UPDATE ap_identity_index_state SET diagnostics_json = '{}' WHERE site_id = 'current'"
+        )
+        connection.commit()
+
+    stale = service.revision_state()
+    match = service.resolve_peer_mac("74ad-cb9d-332f")
+    rebuilt = service.ensure_index("topology_projection_upgrade")
+
+    assert stale.status == "stale"
+    assert match.status == "unresolved"
+    assert match.unresolved_reason == "identity_topology_projection_stale"
+    assert rebuilt is not None
+    assert rebuilt.revision == built.revision + 1
+    assert service.revision_state().status == "ready"
+    assert service.resolve_peer_mac("74ad-cb9d-332f").status == "matched"
+
+
 def test_legacy_identity_state_schema_is_upgraded_before_new_columns_are_used(
     tmp_path: Path,
 ) -> None:
@@ -363,7 +389,7 @@ def test_ap_identity_uses_lldp_switch_station_without_base_record(tmp_path: Path
             INSERT INTO devices (
                 device_uuid, name, station, station_id, device_type,
                 primary_address, created_at, updated_at
-            ) VALUES ('switch-live', 'SW-LIVE', '现场站', '', 'SWITCH', '10.0.0.10', '', '')
+            ) VALUES ('switch-live', 'SW-LIVE', '现场站', 'station:live', 'SWITCH', '10.0.0.10', '', '')
             """
         )
         connection.execute(

@@ -139,7 +139,9 @@ def _mapping(
         "peer_radio_label": f"radio{radio_id}" if status == "matched" else "",
         "peer_radio_mac": peer,
         "peer_site": "20翠柏里站" if status == "matched" else "",
+        "station_source": "lldp_switch" if status == "matched" else "unresolved",
         "peer_section": "望春桥站-翠柏里站" if status == "matched" else "",
+        "section_source": "base_data" if status == "matched" else "unresolved",
         "peer_location": "K12+300" if status == "matched" else "",
         "peer_direction": "下行" if status == "matched" else "",
         "match_rule": (
@@ -153,6 +155,7 @@ def _mapping(
         "identity_reason": (
             "exact_alias_not_found" if status == "unresolved" else ""
         ),
+        "topology_warning": "topology_lldp_base_conflict" if status == "matched" else "",
     }
 
 
@@ -193,6 +196,14 @@ def test_remap_normalizes_mapping_and_cache_keys(
     assert result["updated_link_row_count"] == 1
     assert result["updated_active_point_row_count"] == 1
     assert result["facts_unchanged"] is True
+    assert result["station_resolved_mapping_count"] == 1
+    assert result["station_unresolved_mapping_count"] == 0
+    assert result["section_resolved_mapping_count"] == 1
+    assert result["station_source_counts"] == {"lldp_switch": 1}
+    assert result["section_source_counts"] == {"base_data": 1}
+    assert result["topology_warning_counts"] == {
+        "topology_lldp_base_conflict": 1,
+    }
 
 
 def test_remap_deduplicates_display_formats_and_skips_invalid_mac(tmp_path: Path) -> None:

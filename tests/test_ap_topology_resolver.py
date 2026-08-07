@@ -65,3 +65,17 @@ def test_no_structured_evidence_stays_unresolved() -> None:
     assert result.station.value == ""
     assert result.station.source == "unresolved"
     assert "switch_station_missing" in result.warnings
+
+
+def test_lldp_station_id_without_display_name_remains_diagnostic_only() -> None:
+    result = resolve_ap_topology(
+        ApTopologyEvidence(
+            lldp_valid=True,
+            lldp_switch_uuid="switch-1",
+            lldp_station_id="station:known-id",
+        )
+    )
+
+    assert result.station.source == "unresolved"
+    assert "switch_station_missing" in result.warnings
+    assert "station_id_unresolved" in result.warnings

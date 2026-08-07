@@ -1,6 +1,7 @@
 """Shared AP topology evidence resolution."""
 
 from .resolver import (
+    AP_TOPOLOGY_PROJECTION_VERSION,
     ApTopologyEvidence,
     ResolvedApTopology,
     ResolvedTopologyField,
@@ -8,6 +9,7 @@ from .resolver import (
 )
 
 __all__ = [
+    "AP_TOPOLOGY_PROJECTION_VERSION",
     "ApTopologyEvidence",
     "ResolvedApTopology",
     "ResolvedTopologyField",

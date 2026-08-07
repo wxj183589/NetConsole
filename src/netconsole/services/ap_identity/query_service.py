@@ -10,6 +10,7 @@ from netconsole.models.ap_identity_index import (
     ApIdentityRevisionState,
 )
 from netconsole.repositories.ap_identity_repository import ApIdentityRepository
+from netconsole.services.ap_topology import AP_TOPOLOGY_PROJECTION_VERSION
 from netconsole.services.ap_identity.index_builder import build_ap_identity_index
 from netconsole.services.ap_identity.normalizers import format_mac, normalize_mac_key
 
@@ -66,9 +67,9 @@ class ApIdentityQueryService:
         status = (
             "missing"
             if state is None or revision <= 0
-            else "ready"
-            if indexed_source_revision == current_source_revision
             else "stale"
+            if _index_health_reason(state, current_source_revision)
+            else "ready"
         )
         revision_token = ":".join(
             (
@@ -101,6 +102,7 @@ class ApIdentityQueryService:
             state is not None
             and int(state.get("revision") or 0) > 0
             and indexed_source_revision == source_revision
+            and _index_health_reason(state, source_revision) == ""
         ):
             return None
         if not self.repository.has_source_rows() and state is not None:
@@ -574,6 +576,8 @@ def _index_health_reason(
     )
     if indexed_source_revision != source_revision:
         return "identity_index_stale"
+    if int(state.get("topology_projection_version") or 0) != AP_TOPOLOGY_PROJECTION_VERSION:
+        return "identity_topology_projection_stale"
     return ""
 
 

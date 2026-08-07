@@ -4,6 +4,11 @@ from dataclasses import dataclass
 from typing import Any
 
 
+# Increment whenever persisted topology projection semantics change. Existing
+# identity rows must then be rebuilt before downstream consumers reuse them.
+AP_TOPOLOGY_PROJECTION_VERSION = 1
+
+
 @dataclass(frozen=True)
 class ApTopologyEvidence:
     """Structured, already-loaded evidence for one physical AP entity."""
@@ -146,6 +151,8 @@ def resolve_ap_topology(evidence: ApTopologyEvidence) -> ResolvedApTopology:
         warnings.append("topology_lldp_ambiguous")
     if evidence.lldp_valid and not _text(evidence.lldp_station):
         warnings.append("switch_station_missing")
+        if _text(evidence.lldp_station_id):
+            warnings.append("station_id_unresolved")
     if evidence.lldp_valid and evidence.lldp_station and evidence.base_station:
         if _text(evidence.lldp_station) != _text(evidence.base_station):
             warnings.append("topology_lldp_base_conflict")
@@ -205,6 +212,7 @@ def _text(value: Any) -> str:
 
 __all__ = [
     "ApTopologyEvidence",
+    "AP_TOPOLOGY_PROJECTION_VERSION",
     "ResolvedApTopology",
     "ResolvedTopologyField",
     "resolve_ap_topology",

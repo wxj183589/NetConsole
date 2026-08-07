@@ -13,6 +13,7 @@ from netconsole.models.ap_identity_index import (
     ApIdentityIndexBuild,
 )
 from netconsole.services.ap_identity.normalizers import normalize_mac_key
+from netconsole.services.ap_topology import AP_TOPOLOGY_PROJECTION_VERSION
 
 
 IndexBuilder = Callable[
@@ -105,7 +106,7 @@ class ApIdentityRepository:
                 "SELECT * FROM ap_identity_index_state WHERE site_id = ?",
                 (site_id,),
             ).fetchone()
-        return dict(row) if row is not None else None
+        return _index_state_with_projection_version(row)
 
     def source_revision(self, *, site_id: str = "current") -> int:
         with self.database.connect_readonly() as connection:
@@ -122,7 +123,7 @@ class ApIdentityRepository:
                 (site_id,),
             ).fetchone()
             source_revision = self._source_revision(connection, site_id=site_id)
-        return (dict(state) if state is not None else None, source_revision)
+        return (_index_state_with_projection_version(state), source_revision)
 
     @staticmethod
     def _source_revision(
@@ -244,7 +245,7 @@ class ApIdentityRepository:
                 )
             connection.commit()
         return (
-            dict(state) if state is not None else None,
+            _index_state_with_projection_version(state),
             source_revision,
             [dict(row) for row in rows],
         )
@@ -828,6 +829,7 @@ def _insert(
 
 def _build_diagnostics(build: ApIdentityIndexBuild) -> dict[str, int]:
     counts = {
+        "topology_projection_version": AP_TOPOLOGY_PROJECTION_VERSION,
         "actual_radio_alias_count": 0,
         "actual_bssid_alias_count": 0,
         "actual_bbssid_alias_count": 0,
@@ -856,6 +858,22 @@ def _build_diagnostics(build: ApIdentityIndexBuild) -> dict[str, int]:
         1 for entities in entities_by_mac.values() if len(entities) > 1
     )
     return counts
+
+
+def _index_state_with_projection_version(
+    row: sqlite3.Row | None,
+) -> dict[str, object] | None:
+    if row is None:
+        return None
+    state = dict(row)
+    try:
+        diagnostics = json.loads(str(state.get("diagnostics_json") or "{}"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        diagnostics = {}
+    state["topology_projection_version"] = int(
+        diagnostics.get("topology_projection_version") or 0
+    ) if isinstance(diagnostics, dict) else 0
+    return state
 
 
 def _now() -> str:

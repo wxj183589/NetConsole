@@ -10,6 +10,7 @@ from datetime import datetime
 from datetime import timedelta
 from pathlib import Path
 from statistics import median
+from typing import Iterable, Mapping
 
 from netconsole.core import app_logger
 from netconsole.core.sqlite_utils import configure_sqlite_connection, initialize_sqlite_wal
@@ -2742,10 +2743,12 @@ class MeshMrRepository:
 
         now = dt_text(datetime.now()) or ""
         values_by_key: dict[str, tuple[object, ...]] = {}
+        rows_by_key: dict[str, dict[str, object]] = {}
         for row in rows:
             peer_key = normalize_mac_key(row.get("peer_mac_normalized"))
             if not peer_key:
                 continue
+            rows_by_key[peer_key] = dict(row)
             values_by_key[peer_key] = (
                 peer_key,
                 row.get("peer_ap_name") or "",
@@ -2830,6 +2833,7 @@ class MeshMrRepository:
             source = str(value[13] or value[12] or "unresolved")
             source_counts[source] = source_counts.get(source, 0) + 1
         summary["source_counts"] = source_counts
+        summary.update(_topology_projection_diagnostics(rows_by_key.values()))
         return summary
 
     @staticmethod
@@ -4391,6 +4395,41 @@ def _validate_peer_identity_remap(summary: dict[str, object]) -> None:
         )
 
 
+def _topology_projection_diagnostics(
+    rows: Iterable[Mapping[str, object]],
+) -> dict[str, object]:
+    station_source_counts: dict[str, int] = {}
+    section_source_counts: dict[str, int] = {}
+    warning_counts: dict[str, int] = {}
+    station_resolved = 0
+    section_resolved = 0
+    total = 0
+    for row in rows:
+        total += 1
+        station = str(row.get("peer_site") or "").strip()
+        section = str(row.get("peer_section") or row.get("belong_section") or "").strip()
+        station_source = str(row.get("station_source") or "unresolved") if station else "unresolved"
+        section_source = str(row.get("section_source") or "unresolved") if section else "unresolved"
+        station_source_counts[station_source] = station_source_counts.get(station_source, 0) + 1
+        section_source_counts[section_source] = section_source_counts.get(section_source, 0) + 1
+        station_resolved += int(bool(station))
+        section_resolved += int(bool(section))
+        for warning in str(row.get("topology_warning") or "").split(";"):
+            code = warning.strip()
+            if code:
+                warning_counts[code] = warning_counts.get(code, 0) + 1
+    return {
+        "peer_total_count": total,
+        "station_resolved_mapping_count": station_resolved,
+        "station_unresolved_mapping_count": total - station_resolved,
+        "section_resolved_mapping_count": section_resolved,
+        "section_unresolved_mapping_count": total - section_resolved,
+        "station_source_counts": station_source_counts,
+        "section_source_counts": section_source_counts,
+        "topology_warning_counts": warning_counts,
+    }
+
+
 def _merge_peer_identity_remap_summaries(
     summaries: list[dict[str, object]],
 ) -> dict[str, object]:
@@ -4399,6 +4438,14 @@ def _merge_peer_identity_remap_summaries(
         "after": {"matched": 0, "unresolved": 0, "ambiguous": 0},
         "mapping_count": 0,
         "source_counts": {},
+        "peer_total_count": 0,
+        "station_resolved_mapping_count": 0,
+        "station_unresolved_mapping_count": 0,
+        "section_resolved_mapping_count": 0,
+        "section_unresolved_mapping_count": 0,
+        "station_source_counts": {},
+        "section_source_counts": {},
+        "topology_warning_counts": {},
         "facts_unchanged": True,
         "validation_status": "passed",
     }
@@ -4429,6 +4476,11 @@ def _merge_peer_identity_remap_summaries(
         "ambiguous_active_point_row_count",
         "switch_event_row_count_before",
         "switch_event_row_count",
+        "peer_total_count",
+        "station_resolved_mapping_count",
+        "station_unresolved_mapping_count",
+        "section_resolved_mapping_count",
+        "section_unresolved_mapping_count",
     )
     before_fingerprints: list[str] = []
     after_fingerprints: list[str] = []
@@ -4467,6 +4519,16 @@ def _merge_peer_identity_remap_summaries(
                 target_sources[str(source)] = int(
                     target_sources.get(str(source), 0)
                 ) + int(count or 0)
+        for field in (
+            "station_source_counts",
+            "section_source_counts",
+            "topology_warning_counts",
+        ):
+            target = result[field]
+            source = summary.get(field) or {}
+            if isinstance(target, dict) and isinstance(source, dict):
+                for key, count in source.items():
+                    target[str(key)] = int(target.get(str(key), 0)) + int(count or 0)
     result["fact_fingerprint_before"] = hashlib.sha256(
         "\n".join(before_fingerprints).encode("ascii")
     ).hexdigest()
