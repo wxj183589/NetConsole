@@ -80,7 +80,7 @@ const apBaseTaskTypes = new Set([
   'web_export_trackside_ap_base_xlsx',
   'web_export_trackside_ap_rename_commands',
 ])
-type EditableSubPage = Exclude<BaseDataEditScope, 'all'>
+type EditableSubPage = Exclude<BaseDataEditScope, 'all' | 'overview'>
 type DraftState = 'READY' | 'DIRTY' | 'VALIDATING' | 'SAVING' | 'SAVE_FAILED' | 'READ_ONLY'
 interface BaseDataDraft {
   metadata: {
@@ -141,7 +141,7 @@ interface RevisionConflictDiff {
   label: string
   overlap: boolean
 }
-const editableSubPages: EditableSubPage[] = ['overview', 'stations', 'trackside_ap', 'trackside_ap_planning', 'vehicles']
+const editableSubPages: EditableSubPage[] = ['stations', 'trackside_ap', 'trackside_ap_planning', 'vehicles']
 function createSubPageContext(): SubPageEditContext {
   return {
     state: 'READY', snapshot: null, draft: null, baseRevision: '', pendingChanges: {},
@@ -151,7 +151,6 @@ function createSubPageContext(): SubPageEditContext {
   }
 }
 const subPageEditContexts = reactive<Record<EditableSubPage, SubPageEditContext>>({
-  overview: createSubPageContext(),
   stations: createSubPageContext(),
   trackside_ap: createSubPageContext(),
   trackside_ap_planning: createSubPageContext(),
@@ -169,7 +168,6 @@ const activeTab = computed({
 })
 function editScopeForTab(tab: string): EditableSubPage | null {
   return ({
-    overview: 'overview',
     stations: 'stations',
     'trackside-ap': 'trackside_ap',
     'trackside-ap-planning': 'trackside_ap_planning',
@@ -231,7 +229,9 @@ const stationReferencePatches = {
 }
 const readOnly = computed(() => Boolean(activeEditScope.value) && editState.value === 'READ_ONLY')
 const saving = computed(() => editState.value === 'VALIDATING' || editState.value === 'SAVING')
-const editing = computed(() => Boolean(activeEditContext.value?.draft) && editState.value !== 'READ_ONLY')
+const editing = computed(() => activeTab.value !== 'overview'
+  && Boolean(activeEditContext.value?.draft)
+  && editState.value !== 'READ_ONLY')
 const stationRows = computed(() => currentPageDraft.value?.stations ?? store.stations)
 const sectionRows = computed(() => currentPageDraft.value?.sections ?? store.sections)
 const apRows = computed(() => currentPageDraft.value
@@ -915,8 +915,7 @@ function discardChanges(scope: EditableSubPage): void {
 }
 
 async function refreshScopeData(scope: EditableSubPage): Promise<void> {
-  if (scope === 'overview') await store.refreshSummary()
-  else if (scope === 'stations') await store.refreshStationBaseData()
+  if (scope === 'stations') await store.refreshStationBaseData()
   else if (scope === 'trackside_ap') await store.refreshTracksideApBaseData()
   else if (scope === 'trackside_ap_planning') await store.refreshTracksideApPlanningData()
   else await store.refreshVehicleBaseData()
@@ -3172,14 +3171,6 @@ function sectionSourceLabel(row: Section): string {
     <div class="content-card">
       <el-tabs v-model="activeTab" :before-leave="beforeTabLeave">
         <el-tab-pane label="基础资料总览" name="overview" lazy>
-          <SubPageEditToolbar
-            :state="subPageEditContexts.overview.state"
-            :dirty="pageIsDirty('overview')"
-            :loading="store.loading || subPageEditContexts.overview.snapshotLoading"
-            @refresh="refreshPage('overview')"
-            @discard="confirmDiscardChanges('overview')"
-            @save="saveAllChanges('', 'overview')"
-          />
           <div class="summary-grid">
             <article v-for="card in summaryCards" :key="String(card[0])" :class="String(card[2])">
               <span>{{ card[0] }}</span><strong>{{ card[1] }}</strong>
@@ -3190,7 +3181,7 @@ function sectionSourceLabel(row: Section): string {
             <el-descriptions-item label="线路与方向参数" :span="2">站序递增方向 = {{ store.summary?.increasing_direction_name || '上行' }}；站序递减方向 = {{ store.summary?.decreasing_direction_name || '下行' }}；递增方向行驶头端 = {{ physicalEndLabel(store.summary?.increasing_direction_leading_end || 'unknown') }}</el-descriptions-item>
             <el-descriptions-item label="线路名称">
               <el-input
-                v-if="editing && editingDraft"
+                v-if="activeTab !== 'overview' && editing && editingDraft"
                 v-model="editingDraft.metadata.line_name"
                 maxlength="200"
                 :disabled="saving"
@@ -3202,7 +3193,7 @@ function sectionSourceLabel(row: Section): string {
             </el-descriptions-item>
             <el-descriptions-item label="项目类型">
               <el-select
-                v-if="editing && editingDraft"
+                v-if="activeTab !== 'overview' && editing && editingDraft"
                 v-model="editingDraft.metadata.system_type"
                 filterable
                 allow-create
@@ -3220,7 +3211,7 @@ function sectionSourceLabel(row: Section): string {
             </el-descriptions-item>
             <el-descriptions-item label="网络类型">
               <el-input
-                v-if="editing && editingDraft"
+                v-if="activeTab !== 'overview' && editing && editingDraft"
                 v-model="editingDraft.metadata.network_domain"
                 maxlength="100"
                 :disabled="saving"
@@ -3230,7 +3221,7 @@ function sectionSourceLabel(row: Section): string {
             </el-descriptions-item>
             <el-descriptions-item label="主线路径编码">
               <el-input
-                v-if="editing && editingDraft"
+                v-if="activeTab !== 'overview' && editing && editingDraft"
                 v-model="editingDraft.metadata.main_path_code"
                 maxlength="50"
                 :disabled="saving"
@@ -3240,7 +3231,7 @@ function sectionSourceLabel(row: Section): string {
             </el-descriptions-item>
             <el-descriptions-item label="站序递增方向">
               <el-input
-                v-if="editing && editingDraft"
+                v-if="activeTab !== 'overview' && editing && editingDraft"
                 v-model="editingDraft.metadata.increasing_direction_name"
                 maxlength="50"
                 :disabled="saving"
@@ -3250,7 +3241,7 @@ function sectionSourceLabel(row: Section): string {
             </el-descriptions-item>
             <el-descriptions-item label="站序递减方向">
               <el-input
-                v-if="editing && editingDraft"
+                v-if="activeTab !== 'overview' && editing && editingDraft"
                 v-model="editingDraft.metadata.decreasing_direction_name"
                 maxlength="50"
                 :disabled="saving"
@@ -3260,7 +3251,7 @@ function sectionSourceLabel(row: Section): string {
             </el-descriptions-item>
             <el-descriptions-item label="递增方向线路侧">
               <el-select
-                v-if="editing && editingDraft"
+                v-if="activeTab !== 'overview' && editing && editingDraft"
                 v-model="editingDraft.metadata.increasing_direction_line_side"
                 filterable
                 allow-create
@@ -3275,7 +3266,7 @@ function sectionSourceLabel(row: Section): string {
             </el-descriptions-item>
             <el-descriptions-item label="递减方向线路侧">
               <el-select
-                v-if="editing && editingDraft"
+                v-if="activeTab !== 'overview' && editing && editingDraft"
                 v-model="editingDraft.metadata.decreasing_direction_line_side"
                 filterable
                 allow-create
@@ -3290,7 +3281,7 @@ function sectionSourceLabel(row: Section): string {
             </el-descriptions-item>
             <el-descriptions-item label="站序递增时的行驶头端">
               <el-select
-                v-if="editing && editingDraft"
+                v-if="activeTab !== 'overview' && editing && editingDraft"
                 v-model="editingDraft.metadata.increasing_direction_leading_end"
                 :disabled="saving"
                 @change="markMetadata"
@@ -3303,7 +3294,7 @@ function sectionSourceLabel(row: Section): string {
             </el-descriptions-item>
             <el-descriptions-item label="来源分组">
               <el-input
-                v-if="editing && editingDraft"
+                v-if="activeTab !== 'overview' && editing && editingDraft"
                 v-model="editingDraft.metadata.station_source_group_name"
                 maxlength="100"
                 :disabled="saving"
@@ -3317,7 +3308,7 @@ function sectionSourceLabel(row: Section): string {
             <el-descriptions-item label="数据更新时间">{{ store.summary?.updated_at || '--' }}</el-descriptions-item>
             <el-descriptions-item label="备注" :span="2">
               <el-input
-                v-if="editing && editingDraft"
+                v-if="activeTab !== 'overview' && editing && editingDraft"
                 v-model="editingDraft.metadata.remark"
                 type="textarea"
                 :rows="2"

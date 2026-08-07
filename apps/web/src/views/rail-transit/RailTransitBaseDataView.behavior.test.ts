@@ -762,6 +762,19 @@ describe('轨道交通基础资料编辑闭环', () => {
     wrapper.unmount()
   })
 
+  it('根路由进入基础资料总览时只读展示且不显示编辑入口', async () => {
+    const wrapper = await mountView(true, '')
+    const overview = wrapper.find('[name="overview"]')
+
+    expect(wrapper.vm.$route.fullPath).toBe('/rail-transit/base-data')
+    expect(overview.find('.summary-grid').exists()).toBe(true)
+    expect(overview.find('.subpage-edit-toolbar').exists()).toBe(false)
+    expect(overview.find('input[placeholder="请输入线路名称"]').exists()).toBe(false)
+    expect(overview.find('select[placeholder="请选择或输入项目类型"]').exists()).toBe(false)
+    expect(mocks.editSnapshot).not.toHaveBeenCalledWith('overview')
+    wrapper.unmount()
+  })
+
   it('可写局点打开后直接建立草稿并渲染编辑控件', async () => {
     mocks.stationsPage.mockResolvedValue({ items: [sourceStationWuxiang], total: 1, page: 1, page_size: 50 })
     mocks.sectionsPage.mockResolvedValue({ items: [generatedIncreasingSection], total: 1, page: 1, page_size: 50 })
@@ -826,7 +839,7 @@ describe('轨道交通基础资料编辑闭环', () => {
     expect(wrapper.text()).toContain('当前有 2 个子页存在未保存修改')
     expect(mocks.save).not.toHaveBeenCalled()
     const toolbars = wrapper.findAllComponents(SubPageEditToolbar)
-    await toolbars[2].findAll('button').find((item) => item.text().trim() === '保存当前子页')!.trigger('click')
+    await toolbars[1].findAll('button').find((item) => item.text().trim() === '保存当前子页')!.trigger('click')
     await flushPromises()
 
     expect(mocks.save).toHaveBeenCalledWith(expect.objectContaining({ scope: 'trackside_ap' }))
@@ -1032,46 +1045,15 @@ describe('轨道交通基础资料编辑闭环', () => {
     wrapper.unmount()
   })
 
-  it('可写会话直接建立草稿并保存线路和项目类型', async () => {
-    let saved = false
-    mocks.summary.mockImplementation(async () => ({
-      ...baseSummary,
-      line_name: saved ? '宁波地铁12号线' : '',
-      project_type: saved ? 'PIS' : '',
-    }))
-    mocks.save.mockImplementation(async () => {
-      saved = true
-      return {
-        revision: 'b'.repeat(64), created_count: 0, updated_count: 1, deleted_count: 0,
-        warnings: [], validation_issues: [],
-      }
-    })
-    const wrapper = await mountView(false)
+  it('基础资料总览只读，不通过总览保存线路和项目元数据', async () => {
+    const wrapper = await mountView(true, 'overview')
+    const overview = wrapper.find('[name="overview"]')
 
-    const lineInput = wrapper.find('input[placeholder="请输入线路名称"]')
-    expect(lineInput.exists()).toBe(true)
-    await lineInput.setValue('宁波地铁12号线')
-    await wrapper.find('select[placeholder="请选择或输入项目类型"]').setValue('PIS')
-    await nextTick()
-
-    const save = button(wrapper, '保存')
-    expect(save.attributes('disabled')).toBeUndefined()
-    await save.trigger('click')
-    await flushPromises()
-
-    expect(mocks.validate).toHaveBeenCalledWith(expect.objectContaining({
-      site_id: 'demo',
-      scope: 'overview',
-      changes: [expect.objectContaining({
-        entity_type: 'site_metadata',
-        values: expect.objectContaining({ line_name: '宁波地铁12号线', system_type: 'PIS' }),
-      })],
-    }))
-    expect(mocks.save).toHaveBeenCalledOnce()
-    expect(wrapper.text()).not.toContain('未保存修改')
-    expect(wrapper.find('input[placeholder="请输入线路名称"]').exists()).toBe(true)
-    expect(button(wrapper, '保存').attributes('disabled')).toBeDefined()
-    expect(wrapper.text()).toContain('宁波地铁12号线 · 宁波地铁12号线 · PIS')
+    expect(overview.find('input[placeholder="请输入线路名称"]').exists()).toBe(false)
+    expect(overview.find('select[placeholder="请选择或输入项目类型"]').exists()).toBe(false)
+    expect(overview.find('.subpage-edit-toolbar').exists()).toBe(false)
+    expect(mocks.save).not.toHaveBeenCalled()
+    expect(mocks.validate).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 
@@ -1310,7 +1292,7 @@ describe('轨道交通基础资料编辑闭环', () => {
     await flushPromises()
     expect(mocks.validate.mock.calls.at(-1)?.[0]).toMatchObject({
       base_revision: 'b'.repeat(64),
-      scope: 'overview',
+      scope: 'stations',
     })
     expect(wrapper.text()).not.toContain('未保存修改')
     wrapper.unmount()
@@ -2175,7 +2157,7 @@ describe('轨道交通基础资料编辑闭环', () => {
   })
 })
 
-async function mountView(_enterEditing = true): Promise<VueWrapper> {
+async function mountView(_enterEditing = true, tab = 'stations'): Promise<VueWrapper> {
   const OtherView = defineComponent({ template: '<div data-testid="other-view">其他页面</div>' })
   const router = createRouter({
     history: createMemoryHistory(),
@@ -2189,7 +2171,7 @@ async function mountView(_enterEditing = true): Promise<VueWrapper> {
       { path: '/other', component: OtherView },
     ],
   })
-  await router.push('/rail-transit/base-data')
+  await router.push(tab ? `/rail-transit/base-data?tab=${tab}` : '/rail-transit/base-data')
   await router.isReady()
   const wrapper = mount(defineComponent({ components: { RouterView }, template: '<RouterView />' }), {
     global: {

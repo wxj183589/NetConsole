@@ -1,6 +1,6 @@
 # 轨道交通基础资料编辑生命周期
 
-`/rail-transit/base-data` 是轨道交通基础资料的唯一 Web 维护入口。获得写授权时，每个可编辑子页默认进入 `LOCKED`，只展示已保存数据；用户解锁当前子页并通过会话、写范围、Backend 与 revision 检查后，才建立该子页草稿。页面不存在全局解锁、全局草稿或全局保存。无授权时进入 `READ_ONLY`。查询、质量问题、导入审计和关联运行状态保持只读。
+`/rail-transit/base-data` 是轨道交通基础资料的唯一 Web 入口，默认落在“基础资料总览”只读 landing。总览只展示局点摘要、统计和导航，不显示输入框、选择器、增删或保存控件。用户主动切换到“站点与区间”“轨旁 AP”“轨旁 AP 规划”或“列车与车载 MR”后，获得写授权的受控会话会直接建立对应子页草稿并允许编辑，不恢复旧的锁定/解锁流程；无授权时保持 `READ_ONLY`。数据质量、导入审计和关联运行状态始终只读。
 
 ## 可编辑范围
 
@@ -12,18 +12,18 @@
 
 ## 编辑会话
 
-每个可编辑子页独立使用以下状态：
+每个维护子页独立使用以下状态：
 
 ```text
-LOCKED -> UNLOCKED_CLEAN -> UNLOCKED_DIRTY -> VALIDATING -> SAVING -> LOCKED
-                                 ^              |             |
-                                 +--------------+------ SAVE_FAILED
+READY -> DIRTY -> VALIDATING -> SAVING -> READY
+                    ^              |        |
+                    +--------------+--------+-- SAVE_FAILED
 READ_ONLY
 ```
 
-页面加载时不创建编辑草稿。`LOCKED` 使用文本和状态标签展示，每个子页只显示自己的解锁入口；`READ_ONLY` 显示原因且不提供编辑入口。用户点击解锁后，页面调用 `GET /api/rail-transit/base-data/edit-snapshot?scope=...`，在同一 revision 边界取得该子页实体和必要只读依赖；编辑基线只来自该作用域快照，不使用带分页、搜索或当前筛选的查看列表拼接。快照成功且写权限仍有效时才复制该子页草稿；失败则保持 `LOCKED` 或 `READ_ONLY`，不会建立部分草稿。子页随后显示“取消修改、保存”，无改动时保存禁用。新增记录使用稳定领域 ID 或临时记录 ID 并显示“新增”；正式记录删除先标记“待删除”，可在提交前撤销。
+根路由加载总览时不创建编辑草稿。显式进入维护子页后，页面调用 `GET /api/rail-transit/base-data/edit-snapshot?scope=...`，在同一 revision 边界取得该子页实体和必要只读依赖；编辑基线只来自该作用域快照，不使用带分页、搜索或当前筛选的查看列表拼接。快照成功且写权限仍有效时才复制纯 DTO 草稿；失败则进入 `READ_ONLY`，不会建立部分草稿。新增记录使用稳定领域 ID 或临时记录 ID 并显示“新增”；正式记录删除先标记“待删除”，可在提交前撤销。
 
-`LOCKED` 刷新后更新服务端快照并保持锁定。切换内部标签时，脏子页必须提供“保存并切换 / 放弃并切换 / 取消切换”；只放弃或保存当前子页，其他子页上下文不受影响，目标子页恢复原状态且不得自动解锁。未保存修改离开路由或关闭窗口时继续保护草稿，不自动保存。保存成功、取消修改或重新锁定只销毁当前子页草稿并返回 `LOCKED`；保存失败保留该子页完整草稿和字段错误。只读轮询可以继续刷新正式数据，但不得覆盖任何已解锁子页草稿。
+切换内部标签时，脏子页继续提供“保存并切换 / 放弃并切换 / 取消切换”；只放弃或保存当前子页，其他子页上下文不受影响。未保存修改离开路由或关闭窗口时继续保护草稿，不自动保存。保存成功后重新加载该 scope 的服务器快照并返回 `READY`；保存失败进入 `SAVE_FAILED` 并保留完整草稿和字段错误。只读轮询可以继续刷新正式数据，但不得覆盖任何维护子页草稿。离开基础资料模块后再次从普通入口进入，必须回到总览；只有 URL 明确携带 `?tab=...` 时才进入指定维护子页。
 
 编辑快照遵循 `Router -> Application Service -> Query Service -> Repository`。Repository 使用 SQLite `mode=ro`、`PRAGMA query_only` 和只读事务按 `scope` 读取当前子页实体及必要依赖，并在读取前后核对局点 metadata；接口不初始化或迁移 schema，不写 revision/缓存，不连接设备，不加载 AC/MESH 运行态，也不触发 AP Identity rebuild。查看态同类刷新若已有请求在途，会复用并等待同一个 Promise，调用方不会因“正在刷新”而提前成功返回。
 
@@ -47,7 +47,7 @@ Vue 草稿
   -> SQLite BEGIN IMMEDIATE 单事务
 ```
 
-每次 changes 请求只允许提交其 `scope` 对应的实体：总览写局点元数据，站点与区间写站点、设备 `station_id` 绑定和区间，轨旁 AP 写 AP，规划写 `trackside_ap_plan`，列车与车载 MR 写 MR。后端在事务前拒绝任何跨作用域实体。revision 同时覆盖 SQLite 和 `site_meta.json`；任意稳定 ID、引用、唯一性、metadata 原子写入或 SQLite 错误都会使本次子页保存整体回滚；返回新 revision 后页面只刷新受影响正式数据、销毁当前草稿并回到 `LOCKED`。
+每次 changes 请求只允许提交其 `scope` 对应的实体：站点与区间写站点、设备 `station_id` 绑定和区间，轨旁 AP 写 AP，规划写 `trackside_ap_plan`，列车与车载 MR 写 MR。总览不提供 changes 入口。后端在事务前拒绝任何跨作用域实体。revision 同时覆盖 SQLite 和 `site_meta.json`；任意稳定 ID、引用、唯一性、metadata 原子写入或 SQLite 错误都会使本次子页保存整体回滚；返回新 revision 后页面只刷新受影响正式数据、销毁当前草稿并回到 `READY`。
 
 后端业务校验负责 IP、MAC、里程、站点引用、MR 历史和逐站规划唯一性等规则；规划中的 AP 起始地址、掩码和网关只作参考，不触发地址分配或网段容量计算。Vue 只做输入展示、轻量状态和字段错误定位。Router 不执行 SQL、设备连接或命令拼接。
 
@@ -70,7 +70,7 @@ NETCONSOLE_ALLOW_BASE_DATA_COPY_WRITE=1  # copy_validation 局点
 NETCONSOLE_ALLOW_REAL_BASE_DATA_WRITE=1  # 正式局点的额外授权
 ```
 
-未获得写权限时，页面始终为 `READ_ONLY`，不显示“编辑”、生成站点、导入或增删入口，后端也拒绝越权写入。Electron 写入必须同时通过短期 `desktop_session_token`；导入预览只在对应子页解锁后进入，确认结果仅应用到该子页草稿。`site_meta.json` 写入只允许当前受控局点，使用临时文件和 `os.replace()`，并保留未知安全字段。
+未获得写权限时，维护子页为 `READ_ONLY`，不显示“编辑”、生成站点、导入或增删入口，后端也拒绝越权写入。Electron 写入必须同时通过短期 `desktop_session_token`；导入预览只在对应可写维护子页中进入，确认结果仅应用到该子页草稿。`site_meta.json` 写入只允许当前受控局点，使用临时文件和 `os.replace()`，并保留未知安全字段。
 
 稳定 ID、规划 reconcile、事务顺序、业务投影和迁移规则见 [轨旁 AP 主数据与关联模型](TRACKSIDE_AP_DOMAIN_MODEL.md)。
 

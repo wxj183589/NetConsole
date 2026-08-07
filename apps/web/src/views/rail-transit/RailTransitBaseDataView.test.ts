@@ -23,9 +23,9 @@ describe('Rail Transit base data maintenance view', () => {
   })
 
   it('owns independent draft scopes and keeps drafts while switching tabs', () => {
-    expect(source).toContain("type EditableSubPage = Exclude<BaseDataEditScope, 'all'>")
+    expect(source).toContain("type EditableSubPage = Exclude<BaseDataEditScope, 'all' | 'overview'>")
     expect(source).toContain('const subPageEditContexts = reactive')
-    expect(source).toContain("overview: createSubPageContext()")
+    expect(source).not.toContain("overview: createSubPageContext()")
     expect(source).toContain("trackside_ap_planning: createSubPageContext()")
     expect(source).toContain('store.refreshEditSnapshot(scope)')
     expect(source).toContain('store.validateChanges(scope, context.baseRevision, changes)')

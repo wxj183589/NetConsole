@@ -12,6 +12,7 @@ function createTestRouter(initial = '/') {
     routes: [
       { path: '/', name: 'dashboard', component: {}, meta: { title: 'Dashboard' } },
       { path: '/devices', name: 'devices', component: {}, meta: { title: '设备管理' } },
+      { path: '/rail-transit/base-data', name: 'rail-transit-base-data', component: {}, meta: { title: '基础资料' } },
       { path: '/devices/:deviceId', name: 'device-detail', component: {}, meta: {
         title: '设备详情',
         workspace: { identity: 'resource', resourceParams: ['deviceId'], allowDuplicate: true },
@@ -73,6 +74,76 @@ describe('workspace store', () => {
     expect(store.tabs.filter((tab) => tab.routeName === 'mesh')).toHaveLength(1)
     expect(store.routeCacheKey('/mesh?session_id=session-2')).toBe(initialCacheKey)
     expect(store.cachedTabs.map((tab) => tab.id)).toEqual([mesh.id])
+  })
+
+  it('returns base data to its overview landing page after workspace re-entry while preserving explicit deep links', async () => {
+    const router = await createTestRouter('/rail-transit/base-data?tab=stations')
+    const store = useWorkspaceStore()
+    await store.initialize(router)
+    const baseData = store.activeTab!
+
+    expect(router.currentRoute.value.fullPath).toBe('/rail-transit/base-data?tab=stations')
+
+    await store.openOrActivateRoute('/devices')
+    await store.activateTab(baseData.id)
+    expect(router.currentRoute.value.fullPath).toBe('/rail-transit/base-data')
+    expect(baseData.routeFullPath).toBe('/rail-transit/base-data')
+
+    await store.openOrActivateRoute('/rail-transit/base-data?tab=trackside-ap')
+    expect(router.currentRoute.value.fullPath).toBe('/rail-transit/base-data?tab=trackside-ap')
+    await store.openOrActivateRoute('/rail-transit/base-data')
+    expect(router.currentRoute.value.fullPath).toBe('/rail-transit/base-data')
+    await store.openOrActivateRoute('/devices')
+    await store.activateTab(baseData.id)
+    expect(router.currentRoute.value.fullPath).toBe('/rail-transit/base-data')
+  })
+
+  it('restores a persisted base data edit tab to the overview landing page', async () => {
+    Object.defineProperty(window, 'netconsoleDesktop', {
+      configurable: true,
+      value: {
+        getWorkspaceWindowState: vi.fn(async () => ({
+          windowId: 'main',
+          snapshot: {
+            schemaVersion: 1,
+            windowId: 'main',
+            activeTabId: 'base-data',
+            tabs: [{
+              id: 'base-data',
+              instanceId: 'base-data',
+              routeFullPath: '/rail-transit/base-data?tab=trackside-ap',
+              title: '基础资料',
+              identityKey: 'ignored',
+              cacheKey: 'base-data',
+              pinned: false,
+              openedAt: 1,
+              lastActivatedAt: 1,
+            }],
+          },
+        })),
+        saveWorkspaceWindowState: vi.fn(async () => undefined),
+        setWorkspaceWindowTitle: vi.fn(),
+      },
+    })
+    const router = await createTestRouter('/devices')
+    const store = useWorkspaceStore()
+
+    await store.initialize(router)
+
+    expect(router.currentRoute.value.fullPath).toBe('/rail-transit/base-data')
+    expect(store.activeTab?.routeFullPath).toBe('/rail-transit/base-data')
+  })
+
+  it('opens the overview after a site switch removes the prior base data tab', async () => {
+    const router = await createTestRouter('/rail-transit/base-data?tab=trackside-ap')
+    const store = useWorkspaceStore()
+    await store.initialize(router)
+
+    await store.prepareForSiteSwitch('line-b', '/settings?section=site-storage')
+    await store.openOrActivateRoute('/rail-transit/base-data')
+
+    expect(router.currentRoute.value.fullPath).toBe('/rail-transit/base-data')
+    expect(store.activeTab?.routeFullPath).toBe('/rail-transit/base-data')
   })
 
   it('closes the active tab toward the left', async () => {

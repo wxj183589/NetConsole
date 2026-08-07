@@ -2,7 +2,7 @@
 
 ## 当前状态
 
-`/rail-transit/base-data` 是站点、设备站点绑定、区间、轨旁 AP、轨旁 AP 规划、列车和车载 MR 的统一入口，Feature key 为 `web.rail_transit_base_data`。总览、站点与区间、轨旁 AP、轨旁 AP 规划、列车与车载 MR 各自维护编辑快照、草稿、脏状态、校验和保存；页面顶部不提供全局保存。正常 `persistent` Electron 受管会话确认当前局点可写后，活动子页自动建立服务器快照和草稿并直接允许编辑，其他子页在首次进入时按同样方式懒加载。`isolated_test`、普通 Server、未认证浏览器和未授权副本进入 `READ_ONLY` 并显示明确原因。页面复用现有 Python Core 和当前局点 `devices.db`，不建立第二套基础资料数据库。
+`/rail-transit/base-data` 是站点、设备站点绑定、区间、轨旁 AP、轨旁 AP 规划、列车和车载 MR 的统一入口，Feature key 为 `web.rail_transit_base_data`。无 query 的根路由是“基础资料总览”只读 landing，只展示局点摘要、统计和维护导航，不建立草稿也不显示输入、增删或保存控件。用户主动切换到站点与区间、轨旁 AP、轨旁 AP 规划或列车与车载 MR 后，对应维护子页才维护自己的编辑快照、草稿、脏状态、校验和保存；页面顶部不提供全局保存，也不恢复锁定/解锁机制。离开模块后再次从普通入口进入、切换局点或恢复工作区时均回到总览；只有显式 `?tab=...` deep-link 才进入指定子页。正常 `persistent` Electron 受管会话确认当前局点可写后，已选维护子页自动建立服务器快照和草稿并直接允许编辑，其他维护子页在首次进入时按同样方式懒加载。`isolated_test`、普通 Server、未认证浏览器和未授权副本进入 `READ_ONLY` 并显示明确原因。页面复用现有 Python Core 和当前局点 `devices.db`，不建立第二套基础资料数据库。
 
 原独立 `/rail-transit/trackside-ap-plan` 页面和导航已删除；旧路由只重定向到 `/rail-transit/base-data?tab=trackside-ap-planning`。规划查询和在线状态刷新继续复用现有能力，但活动页面不再提供规划模板导入、模板下载或规划导出。规划页从设备管理生成时只能采用已经匹配正式站点的 `station_id`；未匹配候选必须先到“站点与区间”维护，规划页不得创建或保存站点。轨旁 AP 规划当前是一站一行的直接维护模型，只维护 AP 数量和 AP 管理 VLAN；多个站使用相同管理 VLAN 合法。IP、掩码、网关和旧 VLAN 分组数据不参与当前规划读取。详细边界见 [轨旁 AP 逐站规划](AP_MANAGEMENT_VLAN_GROUPS.md)。
 
