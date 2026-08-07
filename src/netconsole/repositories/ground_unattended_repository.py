@@ -3172,7 +3172,15 @@ class GroundUnattendedRepository:
         )
 
     def list_wmesh_events(
-        self, *, run_id: str = "", train_id: str = "", limit: int = 200, offset: int = 0
+        self,
+        *,
+        run_id: str = "",
+        train_id: str = "",
+        mr_id: str = "",
+        mr_role: str = "",
+        event_type: str = "",
+        limit: int = 200,
+        offset: int = 0,
     ) -> list[dict[str, Any]]:
         where = [
             "site_id=?",
@@ -3185,6 +3193,15 @@ class GroundUnattendedRepository:
         if train_id:
             where.append("train_id=?")
             params.append(train_id)
+        if mr_id:
+            where.append("device_uuid=?")
+            params.append(mr_id)
+        if mr_role:
+            where.append("UPPER(mr_role)=UPPER(?)")
+            params.append(mr_role)
+        if event_type:
+            where.append("event_type=?")
+            params.append(event_type)
         with self._connection() as conn:
             rows = conn.execute(
                 f"SELECT * FROM ground_unattended_wmesh_events WHERE {' AND '.join(where)} "

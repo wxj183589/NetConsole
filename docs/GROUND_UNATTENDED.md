@@ -365,6 +365,12 @@ Session 只有满足最低时长、Mesh raw 存在且增长、最终化完成、
 计为 `COVERED`；单端失败、时长不足、静止/离线、软件中断或最终化不完整为 `PARTIAL`，后续重新
 符合条件时继续补采。
 
+深采资格与 Collector 状态严格分离。`INELIGIBLE`、`ELIGIBLE`、`QUEUED` 只描述资格或调度位置；
+创建 Online MR 会话但尚无任何 Collector 原始字节时为 `STARTING`。只有会话可读取且至少一个
+Collector 已写入原始字节时才展示 `RUNNING`。`GET /deep-collections/records` 复用受管 Online MR
+原始日志的 source/cursor 读取契约，按会话和分类返回有界增量；UI 的“暂停显示”只停止轮询与滚动，
+不会停止后台 Collector，也不会把文件大小或当前分页行数伪装为记录总数。
+
 ## 数据、归档和恢复
 
 ```text
@@ -440,6 +446,7 @@ PUT      /trains/{train_id}/policy
 GET      /ping-targets | /ping-summary | /ping-series | /ping-series/incremental
 GET      /ping-samples | /timeline
 GET      /deep-collections | /coverage
+GET      /deep-collections/records
 GET      /operations/active | /operations/latest | /operations/{operation_id}
 GET      /archives | /archives/{archive_id} | /archives/{archive_id}/detail
 POST     /archives/{archive_id}/verify

@@ -55,6 +55,17 @@ GroundCoverageStatus = Literal[
     "OFFLINE",
     "FAILED",
 ]
+GroundDeepCollectionState = Literal[
+    "INELIGIBLE",
+    "ELIGIBLE",
+    "QUEUED",
+    "STARTING",
+    "RUNNING",
+    "PAUSED",
+    "STOPPING",
+    "STOPPED",
+    "FAILED",
+]
 GroundDataAvailability = Literal[
     "ACTIVE_RAW",
     "ARCHIVED_RAW",
@@ -669,6 +680,45 @@ class GroundDeepCollectionDTO(ApiModel):
     covered_rounds: int = 0
     failure_reason: str = ""
     updated_at: str = ""
+    deep_state: GroundDeepCollectionState = "INELIGIBLE"
+    deep_state_reason: str = ""
+    collectors: list["GroundDeepCollectorDTO"] = Field(default_factory=list)
+
+
+class GroundDeepCollectorDTO(ApiModel):
+    run_id: str = ""
+    train_id: str = ""
+    mr_id: str = ""
+    mr_role: str = ""
+    management_ip: str = ""
+    operation_id: str = ""
+    collector_session_id: str = ""
+    state: GroundDeepCollectionState = "INELIGIBLE"
+    state_reason: str = ""
+    started_at: str = ""
+    last_record_at: str = ""
+    record_count: int | None = None
+    bytes_written: int = 0
+    current_ap: str = ""
+    station: str = ""
+    section: str = ""
+    last_error: str = ""
+    retry_count: int = 0
+
+
+class GroundDeepCollectionRecordDTO(ApiModel):
+    sequence: int
+    timestamp: str = ""
+    category: str = "RAW_OUTPUT"
+    source: str = ""
+    text: str
+
+
+class GroundDeepCollectionRecordPageDTO(ApiModel):
+    collector: GroundDeepCollectorDTO
+    records: list[GroundDeepCollectionRecordDTO] = Field(default_factory=list)
+    next_cursor: str = ""
+    has_more: bool = False
 
 
 class GroundDeepCollectionPageDTO(ApiModel):
