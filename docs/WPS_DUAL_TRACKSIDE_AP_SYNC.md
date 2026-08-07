@@ -3,7 +3,7 @@
 本功能将当前局点、`rail_transit.trackside_ap_business` 的一次冻结快照同时发送到两个独立目标：
 
 - 普通在线表格：`wps_standard_spreadsheet`，按 Sheet 执行 `FULL_REPLACE` 或 `APPEND_SNAPSHOT`。
-- 智能表格：`wps_smart_sheet`，按记录和批次执行受管数据替换，保留非 NetConsole 记录。
+- 智能表格：`wps_smart_sheet`，目标配置默认关闭。当前仅提供只读连接探针；多维表正式写入标记为 `RUNTIME_UNVERIFIED`，在 WPS 运行时完成 API 验收前不会宣称同步成功。
 
 两个目标共享同一个 `snapshot_revision`、`snapshot_sha256`、工作簿数据和父批次，但每个目标拥有独立的在线文档地址、webhook、DPAPI 凭据、`target_batch_id`、身份校验、状态和重试记录。普通数据库不保存明文 Token；Windows 使用 DPAPI 加密保存凭据，开发连接验证可以临时使用目标专属环境变量 `NETCONSOLE_WPS_STANDARD_AIRSCRIPT_TOKEN` 或 `NETCONSOLE_WPS_SMART_AIRSCRIPT_TOKEN`。
 
@@ -15,20 +15,28 @@
 
 - [`tools/wps_airscript/trackside_ap_standard_spreadsheet_sync.js`](../tools/wps_airscript/trackside_ap_standard_spreadsheet_sync.js)
 - [`tools/wps_airscript/trackside_ap_smart_sheet_sync.js`](../tools/wps_airscript/trackside_ap_smart_sheet_sync.js)
+- [`tools/wps_airscript/trackside_ap_standard_spreadsheet_connection_probe.js`](../tools/wps_airscript/trackside_ap_standard_spreadsheet_connection_probe.js)
+- [`tools/wps_airscript/trackside_ap_smart_sheet_connection_probe.js`](../tools/wps_airscript/trackside_ap_smart_sheet_connection_probe.js)
 
 需要分别复制到对应 WPS 文档并发布。Codex 不能直接修改或发布远端 AirScript。脚本中的 WPS `Application` 对象调用需以当前 WPS AirScript 运行时的实际 API 为准，仓库自动化测试只覆盖本地协议、身份、幂等数据模型和敏感信息边界，不能替代 WPS 运行时验收。
 
-AirScript `sync_task` 的 HTTP 200 响应按 WPS 执行 envelope 解析：外层 `status=finished` 后读取 `data.result`，其中允许是 JSON 字符串或对象；再校验 NetConsole 的 `protocol_version`、`target_type` 和 `document_id`。直接返回协议对象仅作为本地测试 double 的兼容形式，不能据此宣称远端脚本已验证。
+AirScript `sync_task` 的 HTTP 200 响应按 WPS 执行 envelope 解析：外层 `status=finished` 后读取 `data.result`，其中允许是 JSON 字符串或对象；再校验 NetConsole 的 `protocol_version`、`target_type`、`target_code`、`document_id`、`script_version` 和 `deployment_id`。直接返回协议对象仅作为本地测试 double 的兼容形式，不能据此宣称远端脚本已验证。脚本版本与部署 ID 由本地常量和脚本常量共同维护，每次发布脚本必须同步更新。
+
+连接探针只读取 `Context.argv`，不创建 Sheet、字段或记录，不清空、不删除、不写入元数据。仓库没有可替代 WPS 编辑器的 AirScript 运行时；脚本文件末尾使用显式 `main();` 入口，必须在 WPS 编辑器内运行后确认返回 JSON 是否进入 `data.result`。
+
+智能表格脚本不再使用未验证的 `book.Tables`、`DataTables`、`EnsureFields`、`DeleteWhere` 或 `AddRecords`。正式写入前需要在目标运行时核对官方 `Application.Sheet`、`Application.Field`、`Application.Record.CreateRecords` 和 `Application.Record.DeleteRecords` 的实际参数、分页和限额；未完成前脚本返回 `WPS_SMART_SHEET_RUNTIME_UNVERIFIED`。
 
 连接测试失败会返回阶段化脱敏诊断：`LOCAL_CONFIGURATION`、`HTTP_AUTH`、`SCRIPT_EXECUTION`、`PROTOCOL_HANDSHAKE`、`DOCUMENT_IDENTITY` 或 `SUCCESS`，并在适用时包含 HTTP 状态、WPS 错误码、原因和建议。HTTP 错误正文最多读取 64 KiB，不保存令牌、请求头、完整 webhook 或业务 payload；真实 403 原因仍取决于 WPS 返回内容和远端账号/脚本权限。
 
 ## 真实验证顺序
 
-1. 分别设置两个目标专属环境变量，或在“配置云文档”中为每个目标独立保存在线文档地址、webhook 和脚本令牌，然后只执行 `connection_test`。
-2. 核对返回的 `document_id`、`target_type`、`protocol_version` 和对象清单。
-3. 确认杭州地铁10号线当前业务 revision 后，手动点击页面的“同步云文档”。
-4. 分别检查普通表格历史概览追加、智能表格批次记录追加、两个目标的 revision/SHA-256 一致和幂等重试。
-5. 任一目标失败时，只重试失败目标；已成功目标不重复写入。
+1. 在“配置云文档”中为每个目标独立保存在线文档地址、webhook 和脚本令牌；智能表格默认关闭。
+2. 使用界面的“复制连接测试脚本”，在对应文档新建 AirScript 2.0 脚本，运行只读探针后再复制同一个脚本的 webhook。
+3. 回到 NetConsole 更新 webhook，点击“测试连接”，核对返回的 `document_id`、`target_type`、`target_code`、`protocol_version`、脚本版本和部署 ID。
+4. 通过“复制正式同步脚本”替换同一个脚本内容并保存，再重新测试；不要把普通表格和智能表格 webhook 交叉使用。
+5. 确认杭州地铁10号线当前业务 revision 后，手动点击页面的“同步云文档”。
+6. 分别检查普通表格历史概览追加、智能表格批次记录追加、两个目标的 revision/SHA-256 一致和幂等重试。
+7. 任一目标失败时，只重试失败目标；已成功目标不重复写入。
 
 同步按钮只提交 `trackside_ap_wps_sync` Job Center 任务，不在 FastAPI 请求线程执行工作簿构建或 webhook 网络请求。任务完成后，在统一任务中心查看父任务的 `SUCCESS`、`PARTIAL_SUCCESS` 或 `FAILED` 业务结果，以及普通表格和智能表格各自的目标结果。
 

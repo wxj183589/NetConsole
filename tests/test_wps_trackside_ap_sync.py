@@ -19,6 +19,8 @@ from netconsole.services.wps_trackside_ap_sync import (
     WpsHttpResponse,
     WpsStandardSpreadsheetAdapter,
     WpsSyncError,
+    WPS_DEPLOYMENT_IDS,
+    WPS_SCRIPT_VERSIONS,
     WPS_SYNC_TASK_TYPE,
     workbook_dto_from_xlsx,
 )
@@ -86,6 +88,55 @@ def test_wps_target_configuration_rejects_non_kdocs_webhook(tmp_path: Path) -> N
             STANDARD_TARGET_CODE,
             webhook_url="https://localhost/api/sync_task",
         )
+
+
+def test_wps_public_targets_expose_deployment_identity_and_disable_smart_by_default(
+    tmp_path: Path,
+) -> None:
+    targets = TracksideApWpsSyncService(PathResolver(tmp_path)).list_targets("hangzhou10")
+    by_code = {target["target_code"]: target for target in targets}
+
+    assert by_code[SMART_TARGET_CODE]["enabled"] is False
+    assert by_code[SMART_TARGET_CODE]["runtime_capability"] == "RUNTIME_UNVERIFIED"
+    assert by_code[STANDARD_TARGET_CODE]["expected_script_version"] == WPS_SCRIPT_VERSIONS[STANDARD_TARGET_CODE]
+    assert by_code[STANDARD_TARGET_CODE]["expected_deployment_id"] == WPS_DEPLOYMENT_IDS[STANDARD_TARGET_CODE]
+
+
+@pytest.mark.parametrize(
+    ("override", "expected_code"),
+    [
+        ({"script_version": "old-standard"}, "WPS_SCRIPT_VERSION_MISMATCH"),
+        ({"deployment_id": "stale-deployment"}, "WPS_DEPLOYMENT_ID_MISMATCH"),
+        ({"target_code": SMART_TARGET_CODE}, "WPS_TARGET_CODE_MISMATCH"),
+    ],
+)
+def test_wps_connection_test_rejects_stale_or_cross_target_script_identity(
+    override: dict[str, str],
+    expected_code: str,
+) -> None:
+    body = {
+        "success": True,
+        "protocol_version": 2,
+        "script_version": WPS_SCRIPT_VERSIONS[STANDARD_TARGET_CODE],
+        "deployment_id": WPS_DEPLOYMENT_IDS[STANDARD_TARGET_CODE],
+        "target_type": "WPS_STANDARD_SPREADSHEET",
+        "target_code": STANDARD_TARGET_CODE,
+        "document_id": "document",
+        "runtime_capability": "DEPLOYMENT_PENDING",
+        **override,
+    }
+
+    class FakeClient:
+        def post(self, target, *, token, argv):
+            return WpsHttpResponse(status_code=200, body=body)
+
+    with pytest.raises(WpsSyncError) as captured:
+        WpsStandardSpreadsheetAdapter(FakeClient()).connection_test(
+            _wps_target(), "test-only-token"
+        )
+
+    assert captured.value.code == expected_code
+    assert captured.value.details["phase"] == "PROTOCOL_HANDSHAKE"
 
 
 @pytest.mark.parametrize(

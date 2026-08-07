@@ -3,9 +3,12 @@
 // The exact workbook API names are kept in these small helpers so a WPS
 // runtime upgrade does not change the NetConsole payload contract.
 const PROTOCOL_VERSION = 2;
-const SCRIPT_VERSION = "2.0.0-standard";
+const SCRIPT_VERSION = "2.1.0-standard";
+const DEPLOYMENT_ID = "trackside-ap-standard-2.1.0";
 const DOCUMENT_ID = "549847228994";
 const TARGET_TYPE = "WPS_STANDARD_SPREADSHEET";
+const TARGET_CODE = "wps_standard_spreadsheet";
+const RUNTIME_CAPABILITY = "DEPLOYMENT_PENDING";
 
 function argv() {
   const value = (typeof Context !== "undefined" && Context.argv) || {};
@@ -13,7 +16,7 @@ function argv() {
 }
 
 function response(value) {
-  return JSON.stringify({ protocol_version: PROTOCOL_VERSION, script_version: SCRIPT_VERSION, document_id: DOCUMENT_ID, target_type: TARGET_TYPE, ...value });
+  return JSON.stringify({ protocol_version: PROTOCOL_VERSION, script_version: SCRIPT_VERSION, deployment_id: DEPLOYMENT_ID, document_id: DOCUMENT_ID, target_type: TARGET_TYPE, target_code: TARGET_CODE, runtime_capability: RUNTIME_CAPABILITY, ...value });
 }
 
 function workbook() {
@@ -30,14 +33,17 @@ function sheetNames() {
 }
 
 function connectionTest() {
-  return response({ success: true, document_name: String(workbook().Name || ""), objects: sheetNames().map((name) => ({ sheet_name: name })), capabilities: { supports_sheets: true, supports_tables: false, supports_records: false, supports_insert_rows: true, supports_batch_write: true, max_payload_bytes: 20 * 1024 * 1024, max_rows_per_request: 5000 } });
+  // The probe is deliberately side-effect free and reads only Context.argv.
+  return response({ success: true, objects: [], capabilities: { supports_sheets: true, supports_tables: false, supports_records: false, supports_insert_rows: true, supports_batch_write: true, max_payload_bytes: 20 * 1024 * 1024, max_rows_per_request: 5000 }, verification: "CONNECTION_PROBE_ONLY" });
 }
 
 function ensureSheet(name) {
   const book = workbook();
   const sheets = book.Sheets || book.Worksheets;
   for (let index = 0; index < sheets.Count; index += 1) if (String(sheets.Item(index + 1).Name) === name) return sheets.Item(index + 1);
-  return sheets.Add(name);
+  const sheet = sheets.Add();
+  if (sheet && "Name" in sheet) sheet.Name = name;
+  return sheet;
 }
 
 function writeSheet(sheetDto) {
@@ -69,3 +75,7 @@ function main() {
   if (args.operation === "sync_trackside_ap_business") return sync(args);
   return response({ success: false, error_code: "OPERATION_UNSUPPORTED", message: "unsupported operation" });
 }
+
+// Explicit execution entry point. Confirm the returned JSON in the WPS editor
+// before using the newly copied webhook in production.
+main();

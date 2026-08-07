@@ -17,6 +17,9 @@ class WpsSyncTargetDTO(ApiModel):
     document_open_url: str
     webhook_url: str
     expected_document_id: str
+    expected_script_version: str = ""
+    expected_deployment_id: str = ""
+    runtime_capability: str = "RUNTIME_UNVERIFIED"
     enabled: bool
     protocol_version: int
     timeout_seconds: int

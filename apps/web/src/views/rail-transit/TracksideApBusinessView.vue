@@ -573,13 +573,20 @@ async function loadWpsTargets(): Promise<void> {
 
 async function syncWps(command: 'all' | WpsTracksideTargetCode): Promise<void> {
   if (wpsSyncing.value || wpsTaskRunning.value || !wpsSyncFeatureEnabled.value || !page.value?.business_revision) return
-  const enabledTargets = wpsTargets.value.filter((target) => target.enabled)
+  const enabledTargets = wpsTargets.value.filter(
+    (target) => target.enabled && target.runtime_capability !== 'RUNTIME_UNVERIFIED',
+  )
   const targetCodes = command === 'all'
     ? enabledTargets.map((target) => target.target_code)
     : [command]
   const selectedTargets = targetCodes
     .map((code) => wpsTargets.value.find((target) => target.target_code === code))
     .filter((target): target is WpsTracksideTarget => Boolean(target))
+  if (selectedTargets.some((target) => target.runtime_capability === 'RUNTIME_UNVERIFIED')) {
+    actionError.value = '智能表格正式写入接口尚未完成 WPS 运行时验收；请先使用只读连接探针，普通在线表格可独立同步'
+    wpsConfigVisible.value = true
+    return
+  }
   if (selectedTargets.length !== targetCodes.length || selectedTargets.some((target) => !target.enabled)) {
     actionError.value = '目标未启用，请先在“配置云文档”中启用后再同步'
     wpsConfigVisible.value = true

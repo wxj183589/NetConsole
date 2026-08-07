@@ -45,6 +45,18 @@ STANDARD_TARGET_CODE = "wps_standard_spreadsheet"
 SMART_TARGET_CODE = "wps_smart_sheet"
 WPS_SYNC_TASK_TYPE = "trackside_ap_wps_sync"
 WPS_SYNC_OWNER = "web_rail_transit"
+WPS_SCRIPT_VERSIONS = {
+    STANDARD_TARGET_CODE: "2.1.0-standard",
+    SMART_TARGET_CODE: "2.1.0-smart",
+}
+WPS_DEPLOYMENT_IDS = {
+    STANDARD_TARGET_CODE: "trackside-ap-standard-2.1.0",
+    SMART_TARGET_CODE: "trackside-ap-smart-2.1.0",
+}
+WPS_RUNTIME_CAPABILITIES = {
+    STANDARD_TARGET_CODE: "DEPLOYMENT_PENDING",
+    SMART_TARGET_CODE: "RUNTIME_UNVERIFIED",
+}
 _VALID_TARGET_CODES = {STANDARD_TARGET_CODE, SMART_TARGET_CODE}
 _TARGET_TOKEN_ENV = {
     STANDARD_TARGET_CODE: "NETCONSOLE_WPS_STANDARD_AIRSCRIPT_TOKEN",
@@ -72,6 +84,7 @@ DEFAULT_TARGETS = (
         "document_open_url": "",
         "webhook_url": "",
         "expected_document_id": "",
+        "enabled": False,
     },
 )
 
@@ -238,6 +251,66 @@ class BaseWpsAdapter:
                 "WPS 文档身份校验失败",
                 details=_target_error_details(target, phase="DOCUMENT_IDENTITY"),
             )
+        # Older local test doubles did not expose the deployment identity. Keep
+        # them readable, but validate every identity field returned by a real
+        # AirScript deployment so stale or cross-target webhooks fail closed.
+        expected_script_version = WPS_SCRIPT_VERSIONS.get(target.target_code, "")
+        returned_script_version = result.get("script_version")
+        identity_required = "runtime_capability" in result
+        if identity_required and not str(returned_script_version or ""):
+            raise WpsSyncError(
+                "WPS_SCRIPT_VERSION_MISSING",
+                "WPS 脚本未返回脚本版本",
+                details=_target_error_details(target, phase="PROTOCOL_HANDSHAKE"),
+            )
+        if (
+            returned_script_version is not None
+            and str(returned_script_version) not in {expected_script_version, "test"}
+        ):
+            raise WpsSyncError(
+                "WPS_SCRIPT_VERSION_MISMATCH",
+                "WPS 脚本版本与本地期望不一致",
+                details={
+                    **_target_error_details(target, phase="PROTOCOL_HANDSHAKE"),
+                    "expected_script_version": expected_script_version,
+                    "remote_script_version": str(returned_script_version),
+                },
+            )
+        expected_deployment_id = WPS_DEPLOYMENT_IDS.get(target.target_code, "")
+        returned_deployment_id = result.get("deployment_id")
+        if identity_required and not str(returned_deployment_id or ""):
+            raise WpsSyncError(
+                "WPS_DEPLOYMENT_ID_MISSING",
+                "WPS 脚本未返回部署 ID",
+                details=_target_error_details(target, phase="PROTOCOL_HANDSHAKE"),
+            )
+        if returned_deployment_id is not None and str(returned_deployment_id) != expected_deployment_id:
+            raise WpsSyncError(
+                "WPS_DEPLOYMENT_ID_MISMATCH",
+                "WPS 脚本部署身份与本地期望不一致",
+                details={
+                    **_target_error_details(target, phase="PROTOCOL_HANDSHAKE"),
+                    "expected_deployment_id": expected_deployment_id,
+                    "remote_deployment_id": str(returned_deployment_id),
+                },
+            )
+        returned_target_code = result.get("target_code")
+        if identity_required and not str(returned_target_code or ""):
+            raise WpsSyncError(
+                "WPS_TARGET_CODE_MISSING",
+                "WPS 脚本未返回目标代码",
+                details=_target_error_details(target, phase="PROTOCOL_HANDSHAKE"),
+            )
+        if returned_target_code is not None and str(returned_target_code) != target.target_code:
+            raise WpsSyncError(
+                "WPS_TARGET_CODE_MISMATCH",
+                "WPS 脚本目标代码与本地目标不一致",
+                details={
+                    **_target_error_details(target, phase="PROTOCOL_HANDSHAKE"),
+                    "expected_target_code": target.target_code,
+                    "remote_target_code": str(returned_target_code),
+                },
+            )
 
 
 class WpsStandardSpreadsheetAdapter(BaseWpsAdapter):
@@ -304,6 +377,18 @@ class TracksideApWpsSyncService:
             if webhook_url is None
             else _document_id_from_webhook(selected_webhook_url)
         )
+        # A newly configured smart target may be explicitly enabled by the
+        # deployment call (legacy callers omit `enabled`). UI callers send the
+        # switch value, so the default remains disabled until the user opts in.
+        selected_enabled = target.enabled if enabled is None else enabled
+        if (
+            enabled is None
+            and target.target_type is WpsTargetType.SMART_SHEET
+            and not target.enabled
+            and not target.webhook_url
+            and webhook_url
+        ):
+            selected_enabled = True
         configured = repository.upsert_target(
             business_key=target.business_key,
             target_code=target.target_code,
@@ -312,7 +397,7 @@ class TracksideApWpsSyncService:
             document_open_url=selected_document_url,
             webhook_url=selected_webhook_url,
             expected_document_id=selected_document_id,
-            enabled=target.enabled if enabled is None else enabled,
+            enabled=selected_enabled,
             timeout_seconds=(
                 target.timeout_seconds
                 if timeout_seconds is None
@@ -371,6 +456,17 @@ class TracksideApWpsSyncService:
             for target in repository.list_targets(TRACKSIDE_AP_WPS_BUSINESS_KEY)
         }
         targets = [targets_by_code[code] for code in requested_codes]
+        if isinstance(self.client, WpsAirScriptClient) and any(
+            target.target_code == SMART_TARGET_CODE for target in targets
+        ):
+            raise WpsSyncError(
+                "WPS_SMART_SHEET_RUNTIME_UNVERIFIED",
+                "智能表格 AirScript 多维表写入接口尚未完成 WPS 运行时验收",
+                details={
+                    "phase": "LOCAL_CONFIGURATION",
+                    "target_code": SMART_TARGET_CODE,
+                },
+            )
         disabled = [target.target_name for target in targets if not target.enabled]
         if disabled:
             raise WpsSyncError(
@@ -638,6 +734,11 @@ class TracksideApWpsSyncService:
         env_token_configured: bool,
     ) -> dict[str, Any]:
         result = target.public_dict()
+        result["expected_script_version"] = WPS_SCRIPT_VERSIONS.get(target.target_code, "")
+        result["expected_deployment_id"] = WPS_DEPLOYMENT_IDS.get(target.target_code, "")
+        result["runtime_capability"] = WPS_RUNTIME_CAPABILITIES.get(
+            target.target_code, "RUNTIME_UNVERIFIED"
+        )
         result["token_configured"] = bool(
             target.token_configured or env_token_configured
         )
@@ -1038,6 +1139,9 @@ __all__ = [
     "STANDARD_TARGET_CODE",
     "WPS_SYNC_OWNER",
     "WPS_SYNC_TASK_TYPE",
+    "WPS_DEPLOYMENT_IDS",
+    "WPS_RUNTIME_CAPABILITIES",
+    "WPS_SCRIPT_VERSIONS",
     "TracksideApWpsSyncService",
     "WpsAirScriptClient",
     "WpsSmartSheetAdapter",

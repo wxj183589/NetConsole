@@ -262,6 +262,9 @@ export interface WpsTracksideTarget {
   document_open_url: string
   webhook_url: string
   expected_document_id: string
+  expected_script_version?: string
+  expected_deployment_id?: string
+  runtime_capability?: string
   enabled: boolean
   protocol_version: number
   timeout_seconds: number
