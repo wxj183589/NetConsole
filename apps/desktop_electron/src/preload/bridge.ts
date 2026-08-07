@@ -5,6 +5,7 @@ import { DESKTOP_IPC } from '../shared/bridge'
 import {
   validateCapabilityId,
   validateExternalUrl,
+  validateClipboardText,
   validateFileDesktopActionRef,
   validateBackendDownloadRequest,
   validateChooseSavePathOptions,
@@ -246,6 +247,10 @@ export function createDesktopBridge(ipcRenderer: IpcRendererLike): NetConsoleDes
       DESKTOP_IPC.openExternalUrl,
       validateExternalUrl(url),
     ) as ReturnType<NetConsoleDesktopBridge['openExternalUrl']>,
+    writeClipboardText: (text) => ipcRenderer.invoke(
+      DESKTOP_IPC.writeClipboardText,
+      validateClipboardText(text),
+    ) as ReturnType<NonNullable<NetConsoleDesktopBridge['writeClipboardText']>>,
     onBackendStatusChanged: (listener) => {
       const wrapped = (_event: IpcRendererEvent, value: unknown) => listener(value as BackendStatus)
       ipcRenderer.on(DESKTOP_IPC.backendStatusChanged, wrapped)

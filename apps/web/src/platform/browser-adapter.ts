@@ -44,6 +44,14 @@ export function createBrowserAdapter(apiBaseUrl = '', developmentToken = ''): Pl
     openPath: async () => ({ success: false, error: DESKTOP_ONLY_MESSAGE }),
     showItemInFolder: async () => ({ success: false, error: DESKTOP_ONLY_MESSAGE }),
     openExternalUrl: async () => ({ success: false, error: DESKTOP_ONLY_MESSAGE }),
+    writeClipboardText: async (text) => {
+      try {
+        await navigator.clipboard.writeText(text)
+        return { success: true }
+      } catch {
+        return { success: false, error: '浏览器剪贴板权限不可用' }
+      }
+    },
     onBackendStatusChanged: () => () => undefined,
     onTraySiteSwitchRequested: () => () => undefined,
     reportSiteSwitchState: () => undefined,

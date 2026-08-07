@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, Notification as ElectronNotification, screen, shell, Tray } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, nativeTheme, Notification as ElectronNotification, screen, shell, Tray } from 'electron'
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
@@ -308,6 +308,7 @@ async function startDesktop(): Promise<void> {
     ipcMain,
     dialog,
     shell,
+    clipboard,
     window: mainWindow,
     windowForEvent: (event) => BrowserWindow.fromWebContents(event.sender as Electron.WebContents)
       ?? workspaceWindowController?.getMainWindow()

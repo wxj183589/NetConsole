@@ -12,6 +12,7 @@ import type {
   WpsTracksideTarget,
   WpsTracksideTargetCode,
 } from '../../types/tracksideApBusiness'
+import { getPlatformAdapter } from '../../platform/runtime'
 import { openWpsDocumentUrl } from './wpsDocumentLink'
 import { wpsAirScriptSource, type WpsAirScriptKind } from './wpsAirScriptSources'
 
@@ -135,10 +136,11 @@ async function copyAirScript(
   kind: WpsAirScriptKind,
 ): Promise<void> {
   try {
-    await navigator.clipboard.writeText(wpsAirScriptSource(code, kind))
+    const result = await getPlatformAdapter().writeClipboardText(wpsAirScriptSource(code, kind))
+    if (!result.success) throw new Error(result.error || '系统剪贴板不可用')
     ElMessage.success(kind === 'probe' ? '只读连接探针已复制' : '正式同步脚本已复制')
-  } catch {
-    ElMessage.error('复制失败，请检查剪贴板权限')
+  } catch (reason) {
+    ElMessage.error(reason instanceof Error ? reason.message : '复制失败，请检查剪贴板权限')
   }
 }
 

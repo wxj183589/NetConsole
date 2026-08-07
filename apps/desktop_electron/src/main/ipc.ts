@@ -11,6 +11,7 @@ import {
 } from '../shared/bridge'
 import {
   validateChooseSavePathOptions,
+  validateClipboardText,
   validateExternalUrl,
   validateFileDesktopActionRef,
   validateOnlineMrSessionId,
@@ -86,6 +87,10 @@ interface ShellLike {
   openExternal(url: string): Promise<void>
 }
 
+interface ClipboardLike {
+  writeText(text: string): void
+}
+
 interface FileStatusLike {
   isFile(): boolean
   isDirectory?(): boolean
@@ -110,6 +115,7 @@ export interface DesktopIpcDependencies {
   ipcMain: IpcMainLike
   dialog: DialogLike
   shell: ShellLike
+  clipboard?: ClipboardLike
   window: unknown
   windowForEvent?: (event: IpcEventLike) => unknown
   openTaskWindow?: (value: TaskWindowContext) => Promise<NativeActionResult> | NativeActionResult
@@ -595,6 +601,20 @@ export function registerDesktopIpc(
     trusted(async (value) => {
       try {
         await dependencies.shell.openExternal(validateExternalUrl(value))
+        return { success: true }
+      } catch (cause) {
+        return { success: false, error: safeActionError(cause) }
+      }
+    }),
+  )
+  dependencies.ipcMain.handle(
+    DESKTOP_IPC.writeClipboardText,
+    trusted((value) => {
+      if (!dependencies.clipboard) {
+        return { success: false, error: '系统剪贴板不可用' }
+      }
+      try {
+        dependencies.clipboard.writeText(validateClipboardText(value))
         return { success: true }
       } catch (cause) {
         return { success: false, error: safeActionError(cause) }

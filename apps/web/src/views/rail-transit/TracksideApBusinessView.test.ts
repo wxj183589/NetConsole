@@ -41,6 +41,7 @@ const taskApi = vi.hoisted(() => ({
 const platformMocks = vi.hoisted(() => ({
   downloadBackendResource: vi.fn(),
   openExternalUrl: vi.fn(),
+  writeClipboardText: vi.fn(),
   hostType: 'browser' as 'browser' | 'electron',
 }))
 const terminalMocks = vi.hoisted(() => ({
@@ -63,6 +64,7 @@ vi.mock('../../platform/runtime', () => ({
   getPlatformAdapter: () => ({
     hostType: platformMocks.hostType,
     openExternalUrl: platformMocks.openExternalUrl,
+    writeClipboardText: platformMocks.writeClipboardText,
   }),
 }))
 vi.mock('../../composables/useExternalTerminalLauncher', () => ({
@@ -453,6 +455,8 @@ describe('TracksideApBusinessView mounted behavior', () => {
     platformMocks.downloadBackendResource.mockResolvedValue({ status: 'saved', capabilityId: 'cap-1' })
     platformMocks.openExternalUrl.mockReset()
     platformMocks.openExternalUrl.mockResolvedValue({ success: true })
+    platformMocks.writeClipboardText.mockReset()
+    platformMocks.writeClipboardText.mockResolvedValue({ success: true })
     platformMocks.hostType = 'browser'
     terminalMocks.preflightDeviceTerminalTargets.mockReset()
     terminalMocks.launchDeviceTerminalTargets.mockReset()
@@ -570,6 +574,35 @@ describe('TracksideApBusinessView mounted behavior', () => {
     expect(platformMocks.openExternalUrl).toHaveBeenNthCalledWith(2, targets[1].document_open_url)
     expect(nativeOpen).not.toHaveBeenCalled()
     nativeOpen.mockRestore()
+    wrapper.unmount()
+  })
+
+  it('copies WPS deployment scripts through the controlled platform clipboard', async () => {
+    platformMocks.hostType = 'electron'
+    api.listTracksideWpsTargets.mockResolvedValue(wpsTargets(true))
+    const wrapper = await mountView()
+    await button(wrapper, '配置云文档').trigger('click')
+    await flushPromises()
+
+    const dialog = wrapper.getComponent(TracksideApWpsConfigDialog)
+    const vm = dialog.vm as unknown as {
+      copyAirScript: (
+        code: 'wps_standard_spreadsheet' | 'wps_smart_sheet',
+        kind: 'probe' | 'sync',
+      ) => Promise<void>
+    }
+    await vm.copyAirScript('wps_standard_spreadsheet', 'probe')
+    await vm.copyAirScript('wps_smart_sheet', 'sync')
+
+    expect(platformMocks.writeClipboardText).toHaveBeenNthCalledWith(
+      1,
+      expect.stringContaining('trackside-ap-standard-2.1.0'),
+    )
+    expect(platformMocks.writeClipboardText).toHaveBeenNthCalledWith(
+      2,
+      expect.stringContaining('WPS_SMART_SHEET_RUNTIME_UNVERIFIED'),
+    )
+    expect(navigator.clipboard.writeText).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 
