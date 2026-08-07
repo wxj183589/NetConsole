@@ -46,9 +46,16 @@ def _site_id(request: Request) -> str:
 
 def _raise(exc: WpsSyncError) -> None:
     status_code = 422
-    if exc.code.startswith("WPS_HTTP_401") or exc.code.startswith("WPS_HTTP_403"):
+    if (
+        exc.code.startswith(("WPS_HTTP_401", "WPS_HTTP_403"))
+        or exc.details.get("http_status") in {401, 403, 404, 429}
+        or exc.code.startswith(("WPS_REMOTE_", "WPS_TOKEN_", "WPS_DOCUMENT_PERMISSION_"))
+    ):
         status_code = 502
-    raise HTTPException(status_code=status_code, detail={"code": exc.code, "message": str(exc)}) from exc
+    raise HTTPException(
+        status_code=status_code,
+        detail={"code": exc.code, "message": str(exc), "details": exc.details},
+    ) from exc
 
 
 @router.get(

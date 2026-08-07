@@ -19,6 +19,7 @@ from openpyxl import load_workbook
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.core.sites import SiteManager
+from netconsole.core.version import APP_VERSION
 from netconsole.models.wps_sync import (
     TRACKSIDE_AP_WPS_BUSINESS_KEY,
     WPS_SYNC_PROTOCOL_VERSION,
@@ -52,6 +53,8 @@ _TARGET_TOKEN_ENV = {
 _META_SHEET_NAMES = {"_netconsole_meta", "_NetConsoleSyncMeta", "_NetConsoleSyncRuns"}
 _SAFE_ERROR_RE = re.compile(r"(?i)(airscript-token|authorization|token)\s*[:=]\s*\S+")
 _MAX_PAYLOAD_BYTES = 20 * 1024 * 1024
+_MAX_ERROR_BODY_BYTES = 64 * 1024
+_MAX_ERROR_TEXT = 500
 
 DEFAULT_TARGETS = (
     {
@@ -74,15 +77,22 @@ DEFAULT_TARGETS = (
 
 
 class WpsSyncError(RuntimeError):
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        details: Mapping[str, object] | None = None,
+    ) -> None:
         super().__init__(_sanitize_error(message))
         self.code = code
+        self.details = _sanitize_details(details or {})
 
 
 @dataclass(frozen=True)
 class WpsHttpResponse:
     status_code: int
-    body: dict[str, Any]
+    body: object
 
 
 class WpsAirScriptClient:
@@ -94,7 +104,11 @@ class WpsAirScriptClient:
         argv: Mapping[str, object],
     ) -> WpsHttpResponse:
         if not token:
-            raise WpsSyncError("WPS_TOKEN_MISSING", "WPS 脚本凭据未配置")
+            raise WpsSyncError(
+                "WPS_TOKEN_MISSING",
+                "WPS 脚本凭据未配置",
+                details=_target_error_details(target, phase="LOCAL_CONFIGURATION"),
+            )
         body = json.dumps(
             {"Context": {"argv": dict(argv)}},
             ensure_ascii=False,
@@ -110,8 +124,10 @@ class WpsAirScriptClient:
             data=body,
             method="POST",
             headers={
-                "Content-Type": "application/json; charset=utf-8",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
                 "AirScript-Token": token,
+                "User-Agent": f"NetConsole/{APP_VERSION}",
             },
         )
         try:
@@ -122,10 +138,7 @@ class WpsAirScriptClient:
                 raw = response.read(_MAX_PAYLOAD_BYTES + 1)
                 status_code = int(response.status)
         except urllib.error.HTTPError as exc:
-            raise WpsSyncError(
-                f"WPS_HTTP_{exc.code}",
-                f"WPS 远端返回 HTTP {exc.code}",
-            ) from None
+            raise _http_error_from_response(exc, target, token) from None
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             raise WpsSyncError(
                 "WPS_CONNECTION_FAILED",
@@ -136,9 +149,17 @@ class WpsAirScriptClient:
         try:
             decoded = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
-            raise WpsSyncError("WPS_RESPONSE_INVALID", "WPS 返回了非 JSON 内容") from None
+            raise WpsSyncError(
+                "WPS_RESPONSE_INVALID",
+                "WPS 返回了非 JSON 内容",
+                details=_target_error_details(target, phase="SCRIPT_EXECUTION"),
+            ) from None
         if not isinstance(decoded, dict):
-            raise WpsSyncError("WPS_RESPONSE_INVALID", "WPS 返回结构无效")
+            raise WpsSyncError(
+                "WPS_RESPONSE_INVALID",
+                "WPS 返回结构无效",
+                details=_target_error_details(target, phase="SCRIPT_EXECUTION"),
+            )
         return WpsHttpResponse(status_code=status_code, body=decoded)
 
 
@@ -157,14 +178,15 @@ class BaseWpsAdapter:
                 "target_type": target.target_type.value,
             },
         )
-        result = response.body
+        result = _unwrap_wps_sync_task_response(response, target, token=token)
         self._validate_common(target, result)
         if not bool(result.get("success")):
             raise WpsSyncError(
                 str(result.get("error_code") or "WPS_CONNECTION_TEST_FAILED"),
-                str(result.get("message") or "WPS 远端连接测试失败"),
+                _sanitize_error(str(result.get("message") or "WPS 远端连接测试失败").replace(token, "<redacted>")),
+                details=_target_error_details(target, phase="SCRIPT_EXECUTION"),
             )
-        return {"http_status": response.status_code, **result}
+        return {"http_status": response.status_code, "phase": "SUCCESS", **result}
 
     def sync(
         self,
@@ -173,7 +195,7 @@ class BaseWpsAdapter:
         payload: Mapping[str, object],
     ) -> dict[str, Any]:
         response = self.client.post(target, token=token, argv=payload)
-        result = response.body
+        result = _unwrap_wps_sync_task_response(response, target, token=token)
         self._validate_common(target, result)
         for key in (
             "target_batch_id",
@@ -186,22 +208,36 @@ class BaseWpsAdapter:
                 raise WpsSyncError(
                     "WPS_RESPONSE_IDENTITY_MISMATCH",
                     f"WPS 返回的 {key} 与本次同步不一致",
+                    details=_target_error_details(target, phase="DOCUMENT_IDENTITY"),
                 )
         if not bool(result.get("success")):
             raise WpsSyncError(
                 str(result.get("error_code") or "WPS_REMOTE_FAILED"),
-                str(result.get("message") or "WPS 远端同步失败"),
+                _sanitize_error(str(result.get("message") or "WPS 远端同步失败").replace(token, "<redacted>")),
+                details=_target_error_details(target, phase="SCRIPT_EXECUTION"),
             )
-        return {"http_status": response.status_code, **result}
+        return {"http_status": response.status_code, "phase": "SUCCESS", **result}
 
     @staticmethod
     def _validate_common(target: WpsSyncTarget, result: Mapping[str, object]) -> None:
         if int(result.get("protocol_version") or 0) != WPS_SYNC_PROTOCOL_VERSION:
-            raise WpsSyncError("WPS_PROTOCOL_MISMATCH", "WPS 脚本协议版本不兼容")
+            raise WpsSyncError(
+                "WPS_PROTOCOL_MISMATCH",
+                "WPS 脚本协议版本不兼容",
+                details=_target_error_details(target, phase="PROTOCOL_HANDSHAKE"),
+            )
         if str(result.get("target_type") or "") != target.target_type.value:
-            raise WpsSyncError("WPS_TARGET_TYPE_MISMATCH", "WPS 目标类型不匹配")
+            raise WpsSyncError(
+                "WPS_TARGET_TYPE_MISMATCH",
+                "WPS 目标类型不匹配",
+                details=_target_error_details(target, phase="PROTOCOL_HANDSHAKE"),
+            )
         if str(result.get("document_id") or "") != target.expected_document_id:
-            raise WpsSyncError("WPS_DOCUMENT_ID_MISMATCH", "WPS 文档身份校验失败")
+            raise WpsSyncError(
+                "WPS_DOCUMENT_ID_MISMATCH",
+                "WPS 文档身份校验失败",
+                details=_target_error_details(target, phase="DOCUMENT_IDENTITY"),
+            )
 
 
 class WpsStandardSpreadsheetAdapter(BaseWpsAdapter):
@@ -301,6 +337,8 @@ class TracksideApWpsSyncService:
                 self._token(repository, target),
             )
         except WpsSyncError as exc:
+            if not exc.details:
+                exc.details.update(_target_error_details(target, phase="LOCAL_CONFIGURATION"))
             repository.update_target_test(
                 target.target_id,
                 status="FAILED",
@@ -689,7 +727,235 @@ def _logical_sheet_key(name: str) -> str:
 
 
 def _sanitize_error(value: str) -> str:
-    return _SAFE_ERROR_RE.sub("credential=<redacted>", str(value or ""))[:500]
+    sanitized = _SAFE_ERROR_RE.sub("credential=<redacted>", str(value or ""))
+    sanitized = re.sub(r"(?i)(cookie|set-cookie|x-api-key)\s*[:=]\s*\S+", "header=<redacted>", sanitized)
+    sanitized = re.sub(r"<[^>]{0,200}>", " ", sanitized)
+    return re.sub(r"\s+", " ", sanitized).strip()[:_MAX_ERROR_TEXT]
+
+
+def _sanitize_details(value: Mapping[str, object]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, item in value.items():
+        key_text = str(key)
+        if re.search(r"(?i)(token|authorization|cookie|header|webhook)", key_text):
+            continue
+        if isinstance(item, Mapping):
+            result[key_text] = _sanitize_details(item)
+        elif isinstance(item, list):
+            result[key_text] = [
+                _sanitize_error(str(entry)) if isinstance(entry, str) else entry
+                for entry in item[:20]
+            ]
+        elif isinstance(item, str):
+            result[key_text] = _sanitize_error(item)
+        elif item is None or isinstance(item, (bool, int, float)):
+            result[key_text] = item
+    return result
+
+
+def _target_error_details(target: WpsSyncTarget, *, phase: str) -> dict[str, object]:
+    return {
+        "phase": phase,
+        "target_code": target.target_code,
+        "document_id": target.expected_document_id,
+    }
+
+
+def _unwrap_wps_sync_task_response(
+    response: WpsHttpResponse,
+    target: WpsSyncTarget,
+    *,
+    token: str = "",
+) -> dict[str, Any]:
+    body = response.body
+    if not isinstance(body, Mapping):
+        raise WpsSyncError(
+            "WPS_RESPONSE_INVALID",
+            "WPS 返回结构无效",
+            details=_target_error_details(target, phase="SCRIPT_EXECUTION"),
+        )
+
+    # Keep compatibility with existing direct protocol-object test doubles while
+    # preferring the official sync_task execution envelope in production.
+    if "protocol_version" in body and "data" not in body:
+        return dict(body)
+
+    status = str(body.get("status") or "").strip().casefold()
+    details = _target_error_details(target, phase="SCRIPT_EXECUTION")
+    if status not in {"finished", "success", "completed"}:
+        details["execution_status"] = status or "missing"
+        raise WpsSyncError(
+            "WPS_SCRIPT_STATUS_INVALID",
+            f"WPS 脚本执行状态未完成：{status or '未知'}",
+            details=details,
+        )
+
+    outer_error = body.get("error")
+    if outer_error:
+        error_details = body.get("error_details")
+        remote_message = _remote_error_message(outer_error, error_details)
+        if token:
+            remote_message = remote_message.replace(token, "<redacted>")
+        raise WpsSyncError(
+            "WPS_SCRIPT_EXECUTION_FAILED",
+            f"WPS 脚本执行失败：{remote_message}",
+            details={**details, "remote_message": remote_message},
+        )
+
+    data = body.get("data")
+    if not isinstance(data, Mapping):
+        raise WpsSyncError(
+            "WPS_SCRIPT_RESULT_EMPTY",
+            "WPS 脚本响应缺少 data.result",
+            details=details,
+        )
+    raw_result = data.get("result")
+    if raw_result is None:
+        raise WpsSyncError(
+            "WPS_SCRIPT_RESULT_EMPTY",
+            "WPS 脚本返回结果为空",
+            details=details,
+        )
+    if isinstance(raw_result, Mapping):
+        return dict(raw_result)
+    if not isinstance(raw_result, str) or not raw_result.strip():
+        raise WpsSyncError(
+            "WPS_SCRIPT_RESULT_INVALID",
+            "WPS 脚本返回结果不是 JSON 对象",
+            details=details,
+        )
+    try:
+        decoded = json.loads(raw_result)
+    except json.JSONDecodeError:
+        raise WpsSyncError(
+            "WPS_SCRIPT_RESULT_INVALID",
+            "WPS 脚本返回结果不是有效 JSON",
+            details=details,
+        ) from None
+    if not isinstance(decoded, Mapping):
+        raise WpsSyncError(
+            "WPS_SCRIPT_RESULT_INVALID",
+            "WPS 脚本返回结果不是 JSON 对象",
+            details=details,
+        )
+    return dict(decoded)
+
+
+def _remote_error_message(value: object, details: object = None) -> str:
+    values: list[str] = []
+    if isinstance(value, Mapping):
+        for key in ("message", "msg", "error_description", "error"):
+            if value.get(key):
+                values.append(str(value[key]))
+    elif value:
+        values.append(str(value))
+    if isinstance(details, Mapping):
+        for key in ("name", "message", "msg", "error_description"):
+            if details.get(key):
+                values.append(str(details[key]))
+    return _sanitize_error("；".join(values) or "远端未提供具体原因")
+
+
+def _http_error_from_response(
+    exc: urllib.error.HTTPError,
+    target: WpsSyncTarget,
+    token: str,
+) -> WpsSyncError:
+    raw = b""
+    try:
+        raw = exc.read(_MAX_ERROR_BODY_BYTES + 1)
+    except (OSError, ValueError):
+        pass
+    too_large = len(raw) > _MAX_ERROR_BODY_BYTES
+    raw = raw[:_MAX_ERROR_BODY_BYTES]
+    remote_code, remote_message, response_format, request_id = _extract_http_error(raw)
+    if token:
+        remote_code = remote_code.replace(token, "<redacted>")
+        remote_message = remote_message.replace(token, "<redacted>")
+        request_id = request_id.replace(token, "<redacted>")
+    if too_large:
+        remote_message = "WPS 错误响应正文超过安全限制"
+        response_format = "oversized"
+    code = _classify_http_error(int(exc.code), remote_code, remote_message)
+    status_text = int(exc.code)
+    fallback = {
+        401: "WPS 令牌无效或已过期",
+        403: "请检查脚本令牌、文档权限和文档共享脚本状态",
+        404: "请检查 webhook 地址和脚本发布状态",
+        429: "WPS 请求过于频繁，请稍后重试",
+    }.get(status_text, "请检查 WPS 服务状态和网络连接")
+    if code == "WPS_SCRIPT_NOT_AVAILABLE":
+        fallback = "请在对应文档中发布文档共享脚本，并确认 webhook 与该脚本匹配"
+    elif code == "WPS_DOCUMENT_PERMISSION_DENIED":
+        fallback = "请确认当前令牌所属账号拥有该文档的访问和编辑权限"
+    elif code == "WPS_SCRIPT_PERMISSION_DENIED":
+        fallback = "请确认 webhook 对应脚本已发布且允许通过脚本令牌执行"
+    elif code == "WPS_TOKEN_INVALID":
+        fallback = "请在 WPS 重新生成令牌，并在对应目标配置中重新保存"
+    message = (
+        f"WPS 请求失败（HTTP {status_text}），错误码：{remote_code or code}，"
+        f"原因：{remote_message or '远端未提供具体原因'}。建议：{fallback}"
+    )
+    details = {
+        **_target_error_details(target, phase="HTTP_AUTH"),
+        "http_status": status_text,
+        "remote_error_code": remote_code,
+        "remote_message": remote_message,
+        "response_format": response_format,
+        "request_id": request_id,
+        "suggestion": fallback,
+    }
+    # Explicitly include the token in sanitization input without retaining it.
+    safe_message = _sanitize_error(message.replace(token, "<redacted>")) if token else message
+    return WpsSyncError(code, safe_message, details=details)
+
+
+def _extract_http_error(raw: bytes) -> tuple[str, str, str, str]:
+    if not raw:
+        return "", "", "empty", ""
+    text = _sanitize_error(raw.decode("utf-8", errors="replace"))
+    try:
+        decoded = json.loads(raw.decode("utf-8-sig"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return "", text, "text", ""
+    if not isinstance(decoded, Mapping):
+        return "", text, "json", ""
+    nested = decoded.get("error_details")
+    code = ""
+    for key in ("code", "error_code"):
+        if decoded.get(key):
+            code = _sanitize_error(str(decoded[key]))
+            break
+    message = _remote_error_message(decoded, nested)
+    request_id = ""
+    for key in ("request_id", "trace_id"):
+        if decoded.get(key):
+            request_id = _sanitize_error(str(decoded[key]))
+            break
+    return code, message, "json", request_id
+
+
+def _classify_http_error(status: int, remote_code: str, remote_message: str) -> str:
+    haystack = f"{remote_code} {remote_message}".casefold()
+    if status == 401 or re.search(r"token|api[_ -]?key|expired|过期|令牌", haystack):
+        return "WPS_TOKEN_INVALID"
+    if status == 403:
+        if re.search(r"account|账号|user.*document|账户.*文档|不一致", haystack):
+            return "WPS_ACCOUNT_DOCUMENT_MISMATCH"
+        if re.search(r"script.*(permission|access)|脚本.*(权限|访问)", haystack):
+            return "WPS_SCRIPT_PERMISSION_DENIED"
+        if re.search(r"script.*(not found|unavailable|nil|empty)|脚本.*(不存在|不可用|为空)", haystack):
+            return "WPS_SCRIPT_NOT_AVAILABLE"
+        if re.search(r"document|file|sheet|文档|文件|表格", haystack):
+            return "WPS_DOCUMENT_PERMISSION_DENIED"
+        return "WPS_REMOTE_FORBIDDEN"
+    if status == 404:
+        return "WPS_WEBHOOK_NOT_FOUND"
+    if status == 429:
+        return "WPS_REMOTE_RATE_LIMITED"
+    if status >= 500:
+        return "WPS_REMOTE_UNAVAILABLE"
+    return f"WPS_HTTP_{status}"
 
 
 def _validate_wps_url(value: str, *, kind: str) -> str:

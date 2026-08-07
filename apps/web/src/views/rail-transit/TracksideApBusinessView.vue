@@ -21,6 +21,7 @@ import { getPlatformAdapter } from '../../platform/runtime'
 import type { NcDataTableContextMenuItem } from '../../components/table/NcDataTableContextMenu'
 import { BEFORE_SITE_SWITCH_EVENT } from '../../workspace/site-switch'
 import TracksideApWpsConfigDialog from './TracksideApWpsConfigDialog.vue'
+import { openWpsDocumentUrl } from './wpsDocumentLink'
 import type {
   TracksideApBusinessPage,
   TracksideApBusinessRow,
@@ -623,10 +624,11 @@ async function syncWps(command: 'all' | WpsTracksideTargetCode): Promise<void> {
   }
 }
 
-function openWpsTarget(command: WpsTracksideTargetCode): void {
+async function openWpsTarget(command: WpsTracksideTargetCode): Promise<void> {
   const target = wpsTargets.value.find((item) => item.target_code === command)
   if (target?.document_open_url) {
-    window.open(target.document_open_url, '_blank', 'noopener,noreferrer')
+    const result = await openWpsDocumentUrl(target.document_open_url)
+    if (!result.success) actionError.value = result.error || '系统浏览器打开失败'
     return
   }
   actionError.value = '在线文档连接尚未配置，请先打开“配置云文档”'

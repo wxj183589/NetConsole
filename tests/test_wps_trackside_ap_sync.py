@@ -1,17 +1,24 @@
 from __future__ import annotations
 
+import io
+import json
 from pathlib import Path
+import urllib.error
 
 from openpyxl import Workbook
 import pytest
 
 from netconsole.core.paths import PathResolver
-from netconsole.models.wps_sync import TRACKSIDE_AP_WPS_BUSINESS_KEY, WpsTargetType
+from netconsole.models.wps_sync import TRACKSIDE_AP_WPS_BUSINESS_KEY, WpsSyncTarget, WpsTargetType
 from netconsole.repositories.wps_sync_repository import WpsSyncRepository
 from netconsole.services.wps_trackside_ap_sync import (
     SMART_TARGET_CODE,
     STANDARD_TARGET_CODE,
     TracksideApWpsSyncService,
+    WpsAirScriptClient,
+    WpsHttpResponse,
+    WpsStandardSpreadsheetAdapter,
+    WpsSyncError,
     WPS_SYNC_TASK_TYPE,
     workbook_dto_from_xlsx,
 )
@@ -19,6 +26,21 @@ from netconsole.services.wps_trackside_ap_sync import (
 
 def _protect(data: bytes, entropy: bytes) -> bytes:
     return bytes(value ^ entropy[index % len(entropy)] for index, value in enumerate(data))
+
+
+def _wps_target() -> WpsSyncTarget:
+    return WpsSyncTarget(
+        target_id="target-1",
+        site_id="demo",
+        business_key=TRACKSIDE_AP_WPS_BUSINESS_KEY,
+        target_code=STANDARD_TARGET_CODE,
+        target_type=WpsTargetType.STANDARD_SPREADSHEET,
+        credential_id="credential-1",
+        target_name="普通表格",
+        document_open_url="https://www.kdocs.cn/l/document",
+        webhook_url="https://www.kdocs.cn/api/v3/ide/file/document/script/test/sync_task",
+        expected_document_id="document",
+    )
 
 
 def test_wps_targets_keep_independent_encrypted_credentials(tmp_path: Path) -> None:
@@ -57,8 +79,6 @@ def test_wps_targets_keep_independent_encrypted_credentials(tmp_path: Path) -> N
 
 
 def test_wps_target_configuration_rejects_non_kdocs_webhook(tmp_path: Path) -> None:
-    from netconsole.services.wps_trackside_ap_sync import WpsSyncError
-
     service = TracksideApWpsSyncService(PathResolver(tmp_path))
     with pytest.raises(WpsSyncError, match="kdocs.cn"):
         service.configure_target(
@@ -66,6 +86,141 @@ def test_wps_target_configuration_rejects_non_kdocs_webhook(tmp_path: Path) -> N
             STANDARD_TARGET_CODE,
             webhook_url="https://localhost/api/sync_task",
         )
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {
+            "status": "finished",
+            "error": "",
+            "data": {
+                "result": json.dumps({
+                    "success": True,
+                    "protocol_version": 2,
+                    "target_type": "WPS_STANDARD_SPREADSHEET",
+                    "document_id": "document",
+                }),
+            },
+        },
+        {
+            "status": "finished",
+            "error": "",
+            "data": {
+                "result": {
+                    "success": True,
+                    "protocol_version": 2,
+                    "target_type": "WPS_STANDARD_SPREADSHEET",
+                    "document_id": "document",
+                },
+            },
+        },
+    ],
+)
+def test_wps_connection_test_unwraps_official_sync_task_envelope(body: dict[str, object]) -> None:
+    class FakeClient:
+        def post(self, target, *, token, argv):
+            assert token == "test-only-token"
+            return WpsHttpResponse(status_code=200, body=body)
+
+    result = WpsStandardSpreadsheetAdapter(FakeClient()).connection_test(_wps_target(), "test-only-token")
+    assert result["phase"] == "SUCCESS"
+    assert result["document_id"] == "document"
+
+
+@pytest.mark.parametrize(
+    ("body", "code"),
+    [
+        ({"status": "finished", "error": "", "data": {"result": None}}, "WPS_SCRIPT_RESULT_EMPTY"),
+        ({"status": "finished", "error": "", "data": {"result": "not-json"}}, "WPS_SCRIPT_RESULT_INVALID"),
+        ({"status": "running", "error": "", "data": {}}, "WPS_SCRIPT_STATUS_INVALID"),
+        ({"status": "finished", "error": "permission denied", "error_details": {"name": "Forbidden"}}, "WPS_SCRIPT_EXECUTION_FAILED"),
+    ],
+)
+def test_wps_connection_test_reports_envelope_failures(body: dict[str, object], code: str) -> None:
+    class FakeClient:
+        def post(self, target, *, token, argv):
+            return WpsHttpResponse(status_code=200, body=body)
+
+    with pytest.raises(WpsSyncError) as captured:
+        WpsStandardSpreadsheetAdapter(FakeClient()).connection_test(_wps_target(), "test-only-token")
+    assert captured.value.code == code
+    assert captured.value.details["phase"] == "SCRIPT_EXECUTION"
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "expected_code"),
+    [
+        (403, b'{"code":"DOCUMENT_PERMISSION_DENIED","message":"no access"}', "WPS_DOCUMENT_PERMISSION_DENIED"),
+        (403, b"token expired", "WPS_TOKEN_INVALID"),
+        (403, b"script is nil", "WPS_SCRIPT_NOT_AVAILABLE"),
+        (403, b"<html><title>Forbidden</title></html>", "WPS_REMOTE_FORBIDDEN"),
+        (401, b'{"error_code":"TOKEN_INVALID","msg":"invalid token"}', "WPS_TOKEN_INVALID"),
+        (404, b"not found", "WPS_WEBHOOK_NOT_FOUND"),
+        (429, b"rate limited", "WPS_REMOTE_RATE_LIMITED"),
+    ],
+)
+def test_wps_http_errors_keep_safe_remote_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+    status: int,
+    body: bytes,
+    expected_code: str,
+) -> None:
+    token = "test-only-token"
+
+    def raise_http_error(request, *, timeout):
+        raise urllib.error.HTTPError(
+            request.full_url,
+            status,
+            "remote failure",
+            {"Content-Type": "application/json"},
+            io.BytesIO(body),
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", raise_http_error)
+    with pytest.raises(WpsSyncError) as captured:
+        WpsAirScriptClient().post(_wps_target(), token=token, argv={"operation": "connection_test"})
+
+    error = captured.value
+    assert error.code == expected_code
+    assert error.details["phase"] == "HTTP_AUTH"
+    assert error.details["http_status"] == status
+    assert token not in str(error)
+    assert token not in str(error.details)
+    if status == 403:
+        assert "HTTP 403" in str(error)
+        assert "建议" in str(error)
+
+
+def test_wps_http_response_and_request_headers_are_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    target = _wps_target()
+    observed: dict[str, str] = {}
+
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self, size):
+            observed["read_size"] = str(size)
+            return json.dumps({"success": True}).encode("utf-8")
+
+    def open_request(request, *, timeout):
+        observed.update({key.lower(): value for key, value in request.headers.items()})
+        observed["timeout"] = str(timeout)
+        return FakeResponse()
+
+    monkeypatch.setattr("urllib.request.urlopen", open_request)
+    response = WpsAirScriptClient().post(target, token="test-only-token", argv={})
+    assert response.status_code == 200
+    assert observed["content-type"] == "application/json"
+    assert observed["accept"] == "application/json"
+    assert observed["user-agent"].startswith("NetConsole/")
+    assert int(observed["read_size"]) == 20 * 1024 * 1024 + 1
 
 
 def test_workbook_dto_uses_append_mode_for_overview(tmp_path: Path) -> None:

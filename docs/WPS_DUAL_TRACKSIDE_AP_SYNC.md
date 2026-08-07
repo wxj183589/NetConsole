@@ -18,6 +18,10 @@
 
 需要分别复制到对应 WPS 文档并发布。Codex 不能直接修改或发布远端 AirScript。脚本中的 WPS `Application` 对象调用需以当前 WPS AirScript 运行时的实际 API 为准，仓库自动化测试只覆盖本地协议、身份、幂等数据模型和敏感信息边界，不能替代 WPS 运行时验收。
 
+AirScript `sync_task` 的 HTTP 200 响应按 WPS 执行 envelope 解析：外层 `status=finished` 后读取 `data.result`，其中允许是 JSON 字符串或对象；再校验 NetConsole 的 `protocol_version`、`target_type` 和 `document_id`。直接返回协议对象仅作为本地测试 double 的兼容形式，不能据此宣称远端脚本已验证。
+
+连接测试失败会返回阶段化脱敏诊断：`LOCAL_CONFIGURATION`、`HTTP_AUTH`、`SCRIPT_EXECUTION`、`PROTOCOL_HANDSHAKE`、`DOCUMENT_IDENTITY` 或 `SUCCESS`，并在适用时包含 HTTP 状态、WPS 错误码、原因和建议。HTTP 错误正文最多读取 64 KiB，不保存令牌、请求头、完整 webhook 或业务 payload；真实 403 原因仍取决于 WPS 返回内容和远端账号/脚本权限。
+
 ## 真实验证顺序
 
 1. 分别设置两个目标专属环境变量，或在“配置云文档”中为每个目标独立保存在线文档地址、webhook 和脚本令牌，然后只执行 `connection_test`。

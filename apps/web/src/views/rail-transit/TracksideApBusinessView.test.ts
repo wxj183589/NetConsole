@@ -40,6 +40,7 @@ const taskApi = vi.hoisted(() => ({
 }))
 const platformMocks = vi.hoisted(() => ({
   downloadBackendResource: vi.fn(),
+  openExternalUrl: vi.fn(),
   hostType: 'browser' as 'browser' | 'electron',
 }))
 const terminalMocks = vi.hoisted(() => ({
@@ -59,7 +60,10 @@ vi.mock('../../api/tracksideApBusiness', () => api)
 vi.mock('../../api/tasks', () => taskApi)
 vi.mock('../../platform/runtime', () => ({
   downloadBackendResource: platformMocks.downloadBackendResource,
-  getPlatformAdapter: () => ({ hostType: platformMocks.hostType }),
+  getPlatformAdapter: () => ({
+    hostType: platformMocks.hostType,
+    openExternalUrl: platformMocks.openExternalUrl,
+  }),
 }))
 vi.mock('../../composables/useExternalTerminalLauncher', () => ({
   useExternalTerminalLauncher: () => terminalMocks,
@@ -447,6 +451,8 @@ describe('TracksideApBusinessView mounted behavior', () => {
       suggestedName: artifactName,
     }))
     platformMocks.downloadBackendResource.mockResolvedValue({ status: 'saved', capabilityId: 'cap-1' })
+    platformMocks.openExternalUrl.mockReset()
+    platformMocks.openExternalUrl.mockResolvedValue({ success: true })
     platformMocks.hostType = 'browser'
     terminalMocks.preflightDeviceTerminalTargets.mockReset()
     terminalMocks.launchDeviceTerminalTargets.mockReset()
@@ -541,6 +547,59 @@ describe('TracksideApBusinessView mounted behavior', () => {
     }))
     expect(vm.drafts[0].token).toBe('')
     expect(vm.drafts[1].token).toBe('')
+    wrapper.unmount()
+  })
+
+  it('opens each WPS document through the platform adapter without window.open in Electron', async () => {
+    platformMocks.hostType = 'electron'
+    api.listTracksideWpsTargets.mockResolvedValue(wpsTargets(true))
+    const nativeOpen = vi.spyOn(window, 'open').mockImplementation(() => null)
+    const wrapper = await mountView()
+    await button(wrapper, '配置云文档').trigger('click')
+    await flushPromises()
+
+    const dialog = wrapper.getComponent(TracksideApWpsConfigDialog)
+    const vm = dialog.vm as unknown as {
+      openDocument: (target: WpsTracksideTarget) => Promise<void>
+    }
+    const targets = wpsTargets(true)
+    await vm.openDocument(targets[0])
+    await vm.openDocument(targets[1])
+
+    expect(platformMocks.openExternalUrl).toHaveBeenNthCalledWith(1, targets[0].document_open_url)
+    expect(platformMocks.openExternalUrl).toHaveBeenNthCalledWith(2, targets[1].document_open_url)
+    expect(nativeOpen).not.toHaveBeenCalled()
+    nativeOpen.mockRestore()
+    wrapper.unmount()
+  })
+
+  it('opens the page-level ordinary and smart WPS targets independently', async () => {
+    platformMocks.hostType = 'electron'
+    api.listTracksideWpsTargets.mockResolvedValue(wpsTargets(true))
+    const wrapper = await mountView()
+
+    await button(wrapper, '打开普通表格').trigger('click')
+    await button(wrapper, '打开智能表格').trigger('click')
+    await flushPromises()
+
+    expect(platformMocks.openExternalUrl).toHaveBeenNthCalledWith(1, wpsTargets(true)[0].document_open_url)
+    expect(platformMocks.openExternalUrl).toHaveBeenNthCalledWith(2, wpsTargets(true)[1].document_open_url)
+    wrapper.unmount()
+  })
+
+  it('shows a failure when the desktop external link capability rejects the WPS document', async () => {
+    platformMocks.hostType = 'electron'
+    platformMocks.openExternalUrl.mockResolvedValue({ success: false, error: '系统浏览器不可用' })
+    api.listTracksideWpsTargets.mockResolvedValue(wpsTargets(true))
+    const wrapper = await mountView()
+    await button(wrapper, '配置云文档').trigger('click')
+    await flushPromises()
+
+    const dialog = wrapper.getComponent(TracksideApWpsConfigDialog)
+    const vm = dialog.vm as unknown as { openDocument: (target: WpsTracksideTarget) => Promise<void> }
+    await vm.openDocument(wpsTargets(true)[0])
+
+    expect(wrapper.text()).toContain('系统浏览器不可用')
     wrapper.unmount()
   })
 

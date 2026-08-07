@@ -11,6 +11,7 @@ import type {
   WpsTracksideTarget,
   WpsTracksideTargetCode,
 } from '../../types/tracksideApBusiness'
+import { openWpsDocumentUrl } from './wpsDocumentLink'
 
 const props = defineProps<{
   modelValue: boolean
@@ -31,6 +32,14 @@ interface TargetDraft {
   token: string
 }
 
+interface ConnectionDiagnostic {
+  phase: string
+  http_status?: number
+  remote_error_code?: string
+  remote_message?: string
+  suggestion?: string
+}
+
 const visible = computed({
   get: () => props.modelValue,
   set: (value: boolean) => emit('update:modelValue', value),
@@ -41,6 +50,7 @@ const savingCode = ref<WpsTracksideTargetCode | ''>('')
 const testingCode = ref<WpsTracksideTargetCode | ''>('')
 const errorMessage = ref('')
 const testMessages = ref<Partial<Record<WpsTracksideTargetCode, string>>>({})
+const testDiagnostics = ref<Partial<Record<WpsTracksideTargetCode, ConnectionDiagnostic>>>({})
 const targetRows = computed(() => localTargets.value.flatMap((target) => {
   const draft = targetDraft(target.target_code)
   return draft ? [{ target, draft }] : []
@@ -90,6 +100,20 @@ function statusLabel(status: string): string {
   if (status === 'SUCCESS') return '成功'
   if (status === 'FAILED') return '失败'
   return '未执行'
+}
+
+function phaseLabel(phase: string): string {
+  const labels: Record<string, string> = {
+    LOCAL_CONFIGURATION: '本地配置',
+    DNS_CONNECT: 'DNS/连接',
+    TLS_CONNECT: 'TLS 连接',
+    HTTP_AUTH: 'WPS HTTP 鉴权',
+    SCRIPT_EXECUTION: '脚本执行',
+    PROTOCOL_HANDSHAKE: '协议校验',
+    DOCUMENT_IDENTITY: '文档身份',
+    SUCCESS: '成功',
+  }
+  return labels[phase] || phase || '未知'
 }
 
 function clearSensitiveInput(): void {
@@ -152,19 +176,36 @@ async function testConnection(code: WpsTracksideTargetCode): Promise<void> {
       ...testMessages.value,
       [code]: `连接成功：${documentName}，脚本 ${scriptVersion}`,
     }
+    const nextDiagnostics = { ...testDiagnostics.value }
+    delete nextDiagnostics[code]
+    testDiagnostics.value = nextDiagnostics
     await reloadTargets()
     ElMessage.success(`${targetTypeLabel(target)}连接测试通过`)
   } catch (reason) {
     const message = reason instanceof Error ? reason.message : '连接测试失败'
     testMessages.value = { ...testMessages.value, [code]: message }
+    const details = (reason && typeof reason === 'object' && 'details' in reason)
+      ? (reason as { details?: Record<string, unknown> }).details || {}
+      : {}
+    testDiagnostics.value = {
+      ...testDiagnostics.value,
+      [code]: {
+        phase: String(details.phase || 'HTTP_AUTH'),
+        ...(details.http_status === undefined ? {} : { http_status: Number(details.http_status) }),
+        ...(details.remote_error_code ? { remote_error_code: String(details.remote_error_code) } : {}),
+        ...(details.remote_message ? { remote_message: String(details.remote_message) } : {}),
+        ...(details.suggestion ? { suggestion: String(details.suggestion) } : {}),
+      },
+    }
     await reloadTargets().catch(() => undefined)
   } finally {
     testingCode.value = ''
   }
 }
 
-function openDocument(target: WpsTracksideTarget): void {
-  window.open(target.document_open_url, '_blank', 'noopener,noreferrer')
+async function openDocument(target: WpsTracksideTarget): Promise<void> {
+  const result = await openWpsDocumentUrl(target.document_open_url)
+  if (!result.success) errorMessage.value = result.error || '系统浏览器打开失败'
 }
 </script>
 
@@ -247,6 +288,13 @@ function openDocument(target: WpsTracksideTarget): void {
           <el-tag size="small" :type="statusType(row.target.last_sync_status)">{{ statusLabel(row.target.last_sync_status) }}</el-tag>
         </div>
         <p v-if="testMessages[row.target.target_code]" class="test-message">{{ testMessages[row.target.target_code] }}</p>
+        <div v-if="testDiagnostics[row.target.target_code]" class="test-diagnostic">
+          <span>阶段：{{ phaseLabel(testDiagnostics[row.target.target_code]?.phase || '') }}</span>
+          <span v-if="testDiagnostics[row.target.target_code]?.http_status">HTTP 状态：{{ testDiagnostics[row.target.target_code]?.http_status }}</span>
+          <span v-if="testDiagnostics[row.target.target_code]?.remote_error_code">WPS 错误码：{{ testDiagnostics[row.target.target_code]?.remote_error_code }}</span>
+          <span v-if="testDiagnostics[row.target.target_code]?.remote_message">原因：{{ testDiagnostics[row.target.target_code]?.remote_message }}</span>
+          <span v-if="testDiagnostics[row.target.target_code]?.suggestion">建议：{{ testDiagnostics[row.target.target_code]?.suggestion }}</span>
+        </div>
 
         <div class="target-actions">
           <el-button
@@ -272,5 +320,5 @@ function openDocument(target: WpsTracksideTarget): void {
 </template>
 
 <style scoped>
-.wps-config{display:grid;gap:16px;max-height:70vh;overflow:auto;padding-right:4px}.wps-config :deep(.el-form-item){margin-bottom:14px}.wps-target{display:grid;gap:12px;border-top:1px solid var(--el-border-color-lighter);padding-top:16px}.target-heading,.target-actions,.target-status{display:flex;align-items:center;gap:10px}.target-heading{justify-content:space-between}.target-heading>div{display:grid;gap:4px}.target-heading span,.target-status,.target-fields span{color:var(--el-text-color-secondary);font-size:12px}.target-fields{display:grid;grid-template-columns:150px 220px minmax(180px,1fr);gap:16px}.target-fields>label,.target-fields>div{display:grid;align-content:start;gap:7px}.connection-fields{display:grid;grid-template-columns:1fr;gap:0}.target-status{flex-wrap:wrap}.target-status>span:nth-of-type(2){margin-left:12px}.test-message{margin:0;color:var(--el-text-color-regular);font-size:13px}.target-actions{justify-content:flex-end}code{overflow-wrap:anywhere}@media(max-width:720px){.target-fields{grid-template-columns:1fr}.target-heading{align-items:flex-start;flex-direction:column}.target-actions{justify-content:flex-start}}
+.wps-config{display:grid;gap:16px;max-height:70vh;overflow:auto;padding-right:4px}.wps-config :deep(.el-form-item){margin-bottom:14px}.wps-target{display:grid;gap:12px;border-top:1px solid var(--el-border-color-lighter);padding-top:16px}.target-heading,.target-actions,.target-status{display:flex;align-items:center;gap:10px}.target-heading{justify-content:space-between}.target-heading>div{display:grid;gap:4px}.target-heading span,.target-status,.target-fields span{color:var(--el-text-color-secondary);font-size:12px}.target-fields{display:grid;grid-template-columns:150px 220px minmax(180px,1fr);gap:16px}.target-fields>label,.target-fields>div{display:grid;align-content:start;gap:7px}.connection-fields{display:grid;grid-template-columns:1fr;gap:0}.target-status{flex-wrap:wrap}.target-status>span:nth-of-type(2){margin-left:12px}.test-message{margin:0;color:var(--el-text-color-regular);font-size:13px}.test-diagnostic{display:grid;gap:4px;margin:0;padding:8px 10px;background:var(--el-fill-color-light);color:var(--el-text-color-regular);font-size:12px}.target-actions{justify-content:flex-end}code{overflow-wrap:anywhere}@media(max-width:720px){.target-fields{grid-template-columns:1fr}.target-heading{align-items:flex-start;flex-direction:column}.target-actions{justify-content:flex-start}}
 </style>
