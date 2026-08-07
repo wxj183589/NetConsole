@@ -6,6 +6,8 @@
 
 - 修复受管 Backend 重启并切换动态端口和临时会话令牌后，顶部仍显示就绪但 Renderer 继续访问旧 Backend、导致轨旁 AP“导出表格”等请求提示连接中断的问题；Renderer 现在会原子重绑定新 Runtime，并在 Health API 可达后再显示 Online。
 - 只读 GET/HEAD 在明确的 Backend 切换或短暂断线时最多自动恢复一次；创建导出任务等 POST 保持单次发送，避免响应丢失时重复创建任务。轨旁 AP 导出同时区分准备、另存为和创建任务阶段，快照 revision、Excel 内容及 Artifact 保存完整性契约保持不变。
+- 2026-08-07 正式 Electron 人工验收通过：Backend 重启后无需刷新 Renderer，轨旁 AP 导出可继续完成并将 XLSX 保存到用户选择的路径。
+- 修复中文局点标识写入轨旁 AP 导出快照时被 Windows 路径段校验拒绝的问题；完整快照准备改在独立 Export Worker 内执行，任务先进入 Task Center，准备或渲染失败均返回结构化错误并显示于页面。2026-08-07 现场人工验收通过杭州10、宁波12、宁波6和绍兴1四个局点的“另存为 → 创建任务 → XLSX 落盘”流程；本次未修改数据库 schema。
 
 ### 数据库升级与 MESH 恢复
 
