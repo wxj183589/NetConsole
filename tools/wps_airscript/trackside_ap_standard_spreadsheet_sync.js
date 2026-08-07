@@ -78,4 +78,4 @@ function main() {
 
 // Explicit execution entry point. Confirm the returned JSON in the WPS editor
 // before using the newly copied webhook in production.
-main();
+return main();

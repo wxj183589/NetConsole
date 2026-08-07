@@ -22,7 +22,7 @@
 
 AirScript `sync_task` 的 HTTP 200 响应按 WPS 执行 envelope 解析：外层 `status=finished` 后读取 `data.result`，其中允许是 JSON 字符串或对象；再校验 NetConsole 的 `protocol_version`、`target_type`、`target_code`、`document_id`、`script_version` 和 `deployment_id`。直接返回协议对象仅作为本地测试 double 的兼容形式，不能据此宣称远端脚本已验证。脚本版本与部署 ID 由本地常量和脚本常量共同维护，每次发布脚本必须同步更新。
 
-连接探针只读取 `Context.argv`，不创建 Sheet、字段或记录，不清空、不删除、不写入元数据。仓库没有可替代 WPS 编辑器的 AirScript 运行时；脚本文件末尾使用显式 `main();` 入口，必须在 WPS 编辑器内运行后确认返回 JSON 是否进入 `data.result`。
+连接探针只读取 `Context.argv`，不创建 Sheet、字段或记录，不清空、不删除、不写入元数据。仓库没有可替代 WPS 编辑器的 AirScript 运行时；四个脚本都必须以顶层 `return main();` 返回 JSON。仅调用 `main();` 或使用 `console.log(main())` 会使 webhook 的 `data.result` 缺少协议结果，即使 WPS 编辑器显示“执行完毕”，也不能视为连接验证通过。
 
 智能表格脚本不再使用未验证的 `book.Tables`、`DataTables`、`EnsureFields`、`DeleteWhere` 或 `AddRecords`。正式写入前需要在目标运行时核对官方 `Application.Sheet`、`Application.Field`、`Application.Record.CreateRecords` 和 `Application.Record.DeleteRecords` 的实际参数、分页和限额；未完成前脚本返回 `WPS_SMART_SHEET_RUNTIME_UNVERIFIED`。
 
@@ -31,8 +31,8 @@ AirScript `sync_task` 的 HTTP 200 响应按 WPS 执行 envelope 解析：外层
 ## 真实验证顺序
 
 1. 在“配置云文档”中为每个目标独立保存在线文档地址、webhook 和脚本令牌；智能表格默认关闭。
-2. 使用界面的“复制连接测试脚本”，在对应文档新建 AirScript 2.0 脚本，运行只读探针后再复制同一个脚本的 webhook。
-3. 回到 NetConsole 更新 webhook，点击“测试连接”，核对返回的 `document_id`、`target_type`、`target_code`、`protocol_version`、脚本版本和部署 ID。
+2. 使用界面的“复制连接测试脚本”，在对应文档新建 AirScript 2.0 脚本，确认末尾是 `return main();`，运行只读探针后再复制同一个脚本的 webhook。
+3. 回到 NetConsole 更新 webhook，点击“测试连接”，先确认 `sync_task` 的 `data.result` 不是 `[Undefined]`，再核对返回的 `document_id`、`target_type`、`target_code`、`protocol_version`、脚本版本和部署 ID。
 4. 通过“复制正式同步脚本”替换同一个脚本内容并保存，再重新测试；不要把普通表格和智能表格 webhook 交叉使用。
 5. 确认杭州地铁10号线当前业务 revision 后，手动点击页面的“同步云文档”。
 6. 分别检查普通表格历史概览追加、智能表格批次记录追加、两个目标的 revision/SHA-256 一致和幂等重试。
