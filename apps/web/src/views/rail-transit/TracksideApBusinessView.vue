@@ -282,6 +282,10 @@ const businessContextMenuItems = computed<NcDataTableContextMenuItem<TracksideAp
 ])
 
 function failure(reason: unknown, fallback: string): string { return reason instanceof Error ? reason.message : fallback }
+function showExportError(message: string): void {
+  actionError.value = message
+  ElMessage.error(message)
+}
 function exportStageFailure(reason: unknown, stage: string): string {
   if (
     reason instanceof ApiRequestError
@@ -515,7 +519,7 @@ async function exportBusiness(): Promise<void> {
     try {
       proposal = await getTracksideApBusinessExportProposal()
     } catch (reason) {
-      actionError.value = exportStageFailure(reason, '导出准备失败')
+      showExportError(exportStageFailure(reason, '导出准备失败'))
       return
     }
     const result = await userSelectedExport.submitExportAfterDestinationSelected({
@@ -541,20 +545,20 @@ async function exportBusiness(): Promise<void> {
     await taskStore.refresh()
   } catch (reason) {
     if (reason instanceof ApiRequestError && reason.code === 'TRACKSIDE_AP_SNAPSHOT_STALE') {
-      actionError.value = '轨旁 AP 数据已更新，请在刷新后重新导出。'
+      showExportError('轨旁 AP 数据已更新，请在刷新后重新导出。')
       selectedRows.value = []
       filters.page = 1
       void loadRows(true, true)
     } else if (reason instanceof ApiRequestError && reason.code === 'TRACKSIDE_AP_EXPORT_SELECTION_STALE') {
-      actionError.value = '所选轨旁 AP 行已变化，请刷新后重新选择。'
+      showExportError('所选轨旁 AP 行已变化，请刷新后重新选择。')
       selectedRows.value = []
     } else if (reason instanceof ApiRequestError && reason.code === 'TRACKSIDE_AP_SNAPSHOT_UNSTABLE') {
-      actionError.value = '轨旁 AP 数据正在刷新，请稍后重试导出。'
+      showExportError('轨旁 AP 数据正在刷新，请稍后重试导出。')
     } else {
-      actionError.value = exportStageFailure(
+      showExportError(exportStageFailure(
         reason,
         exportSubmissionStarted ? '创建导出任务失败' : '选择保存位置失败',
-      )
+      ))
     }
   } finally {
     taskSubmitting.value = false

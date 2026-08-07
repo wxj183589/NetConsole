@@ -41,6 +41,9 @@ from netconsole.services.trackside_ap_business import (
     export_trackside_ap_business_xlsx,
     trackside_export_fill_status,
 )
+from netconsole.services.rail_transit.trackside_ap_business_snapshot import (
+    TracksideApBusinessSnapshotError,
+)
 from netconsole.services.trackside_ap_export_service import build_trackside_ap_business_export_name
 from netconsole.utils.interface_normalize import display_interface_name
 
@@ -275,10 +278,15 @@ def test_trackside_business_export_api_uses_owned_artifact_and_supports_cancel(
         job = export.jobs[task_id]
         assert job.job_type == "trackside_ap_business"
         assert job.site_name == "demo"
-        assert job.db_path == ""
+        assert Path(job.db_path) == paths.site_db_path("demo")
         assert job.params["language"] == "zh_CN"
-        assert Path(str(job.params["snapshot_path"])).is_file()
-        assert len(str(job.params["snapshot_sha256"])) == 64
+        assert Path(str(job.params["snapshot_staging_root"])) == paths.staging_dir
+        assert job.params["expected_revision"] == ""
+        assert job.params["scope_context"]["site_id"] == "demo"
+        assert job.params["scope_context"]["display_name"] == "宁波地铁12号线"
+        assert job.params["selected_row_ids"] == []
+        assert "snapshot_path" not in job.params
+        assert "snapshot_sha256" not in job.params
         assert Path(job.output_path).name == expected_name
 
         export.complete(
@@ -658,4 +666,51 @@ def test_trackside_export_worker_reports_missing_snapshot_code(
     assert terminal["result"] == {
         "error_code": "TRACKSIDE_AP_SNAPSHOT_NOT_FOUND",
         "error_message": "轨旁 AP 导出快照不存在，请重新导出。",
+    }
+
+
+def test_trackside_export_worker_reports_prepare_failure_after_task_creation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from netconsole import export_worker
+
+    events: list[dict[str, object]] = []
+    monkeypatch.setattr(export_worker, "_emit", events.append)
+
+    def fail_prepare(**_kwargs):
+        raise TracksideApBusinessSnapshotError(
+            "TRACKSIDE_AP_SNAPSHOT_STALE",
+            "轨旁 AP 数据已更新，请刷新后重新导出。",
+        )
+
+    monkeypatch.setattr(
+        export_worker,
+        "export_trackside_ap_business_prepare_and_render",
+        fail_prepare,
+    )
+    job = ExportJob(
+        job_id="trackside-prepare-failed",
+        job_type="trackside_ap_business",
+        site_name="宁波地铁12号线",
+        output_path=str(tmp_path / "output.xlsx"),
+        tmp_path=str(tmp_path / "output.xlsx.task.tmp"),
+        db_path=str(tmp_path / "site.sqlite"),
+        params={
+            "language": "zh_CN",
+            "snapshot_staging_root": str(tmp_path / "staging"),
+            "_web_public_result": {
+                "artifact_id": "artifact-prepare-failed",
+                "artifact_name": "轨旁AP业务.xlsx",
+            },
+        },
+    )
+
+    assert export_worker.run_job(job) == 1
+    terminal = events[-1]
+    assert terminal["type"] == "error"
+    assert terminal["error_code"] == "TRACKSIDE_AP_SNAPSHOT_STALE"
+    assert terminal["result"] == {
+        "error_code": "TRACKSIDE_AP_SNAPSHOT_STALE",
+        "error_message": "轨旁 AP 数据已更新，请刷新后重新导出。",
     }

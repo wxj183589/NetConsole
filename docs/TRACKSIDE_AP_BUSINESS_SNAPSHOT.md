@@ -4,8 +4,10 @@
 
 轨旁 AP 页面和业务导出共用 `load_trackside_ap_business_snapshot()` 与
 `select_trackside_ap_business_rows()`。页面返回一次稳定读取形成的完整业务投影；
-导出在用户提交时重新验证同一 `business_revision`，把基础业务行和工作簿表现行
-冻结到受控 staging JSON。Export Worker 只读该文件，不再访问实时业务数据库。
+导出任务先由 Backend 校验请求契约并创建 Task，再由独立 Export Worker 以只读连接
+重建并校验页面 `business_revision`，把基础业务行和工作簿表现行
+冻结到受控 staging JSON，随后只读取该文件渲染 XLSX。快照准备失败也属于已创建
+Task 的失败终态，不再发生在 Task 生命周期之外。
 
 本契约没有修改数据库 schema、AP/Radio MAC 派生规则、AP Identity 优先级、
 `-13.90 dBm` 业务门限、工作表、排序或文件名规则。2026-08 的明确导出变更只调整
@@ -110,11 +112,11 @@ revisions、业务 revision 与快照生成时间。页面明细、上线概览�
 ## 导出冻结和 Worker
 
 导出请求只接受 `generated_at`、`suggested_name`、`expected_revision`、筛选条件和
-稳定 `selected_row_ids`；局点由 Backend 上下文决定。Backend 重建稳定快照并先
-比较 `expected_revision`，选择不存在时返回
-`TRACKSIDE_AP_EXPORT_SELECTION_STALE`，两种冲突都不会创建 Task 或 Artifact。
-
-确认后，快照写入：
+稳定 `selected_row_ids`；局点由 Backend 上下文决定。Backend 在创建 Task 时原样携带
+`expected_revision` 和选择条件，不同步扫描全量来源表。Task 创建后，Export Worker
+以只读连接重建稳定快照并比较 `expected_revision`、验证选择；发生
+`TRACKSIDE_AP_SNAPSHOT_STALE` 或 `TRACKSIDE_AP_EXPORT_SELECTION_STALE` 时，任务和
+Artifact 进入失败终态。准备成功后快照写入：
 
 ```text
 <data_root>/staging/trackside_ap_business/<site_id>/<task_id>/snapshot.json
@@ -129,11 +131,11 @@ schema version、payload hash 和 payload；payload 同时保存：
 - 其他既有 Sheet 的冻结输入；
 - revisions、两个内容 hash、统计、筛选、选择和排序契约。
 
-Worker 启动时先校验文件 hash、payload hash、schema、基础业务行 hash、工作簿行
+Worker 在准备阶段完成后，再校验冻结文件 hash、payload hash、schema、基础业务行 hash、工作簿行
 hash 和行数。`content_sha256` 对 `business_rows` 计算，
 `export_content_sha256` 对 `workbook.rows` 计算。Worker 不创建
-`DeviceRepository`、`AcRepository` 或业务 Query Service，只把冻结数据交给既有
-XLSX formatter。
+第二套业务连接；快照准备使用只读 `DeviceRepository`，渲染阶段不再访问业务 Query
+Service，只把冻结数据交给既有 XLSX formatter。
 
 成功结果和 Artifact manifest 保存 `snapshot_id`、`business_revision`、
 `export_revision`、`source_revisions`、两个 hash、`row_count`、`export_kind`、

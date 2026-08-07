@@ -150,13 +150,11 @@ from netconsole.services.rail_transit.ap_management_vlan_planning import (
     project_legacy_station_rows,
 )
 from netconsole.services.trackside_ap_export_service import (
-    build_trackside_ap_business_export_snapshot,
     build_trackside_ap_business_export_name,
 )
 from netconsole.services.rail_transit.trackside_ap_business_snapshot import (
     TracksideApBusinessSnapshotError,
     cleanup_export_snapshot,
-    write_export_snapshot,
 )
 from netconsole.services.trackside_ap_base_export import (
     build_trackside_ap_base_export_name,
@@ -739,22 +737,14 @@ class RailTransitWebApplicationService:
             "site_display_name": site_display_name,
             "generated_at": created_at.isoformat(timespec="seconds"),
         }
-        snapshot_payload = build_trackside_ap_business_export_snapshot(
-            DeviceRepository(Database(self.paths.site_db_path(site_id))),
-            site_id,
-            scope_context=scope_context,
-            station=station,
-            query=query,
-            optical_anomaly_only=optical_anomaly_only,
-            selected_row_ids=selected_row_ids,
-        )
-        current_revision = str(snapshot_payload.get("business_revision") or "")
-        if expected_revision and expected_revision != current_revision:
-            raise TracksideApBusinessSnapshotError(
-                "TRACKSIDE_AP_SNAPSHOT_STALE",
-                "轨旁 AP 数据已更新，请刷新后重新导出。",
-            )
         task_id = f"rail-export-{uuid4().hex}"
+        app_logger.log_info(
+            "TRACKSIDE_EXPORT_REQUEST_STARTED",
+            f"site={site_id} task_id={task_id}",
+        )
+        # Reading all source revisions can scan large history tables. Preserve
+        # the expected revision in ExportJob so the visible Worker task owns
+        # all data validation and preparation work.
         try:
             reservation = self.artifact_store.reserve(
                 site_id=site_id,
@@ -769,38 +759,33 @@ class RailTransitWebApplicationService:
             )
         except WebArtifactError as exc:
             self._task_window_blocked("轨旁 AP 业务导出", exc)
-        try:
-            snapshot_path, snapshot_sha256 = write_export_snapshot(
-                self.paths.staging_dir,
-                site_id=site_id,
-                task_id=task_id,
-                payload=snapshot_payload,
-            )
-        except Exception:
-            self.artifact_store.fail(reservation)
-            raise
+        app_logger.log_info(
+            "TRACKSIDE_EXPORT_TASK_RESERVED",
+            f"site={site_id} task_id={task_id}",
+        )
         job = ExportJob(
             job_id=task_id,
             job_type="trackside_ap_business",
             site_name=site_id,
             output_path=str(reservation.output_path),
+            db_path=str(self.paths.site_db_path(site_id)),
             params={
                 "language": "zh_CN",
-                "snapshot_path": str(snapshot_path),
-                "snapshot_sha256": snapshot_sha256,
+                "snapshot_staging_root": str(self.paths.staging_dir),
+                "expected_revision": expected_revision,
+                "scope_context": scope_context,
+                "station": station,
+                "query": query,
+                "optical_anomaly_only": bool(optical_anomaly_only),
+                "selected_row_ids": list(selected_row_ids),
             },
         )
-        try:
-            return self._start_export(
-                site_id,
-                job,
-                "trackside_ap_business_export",
-                reservation,
-                cleanup_paths=[snapshot_path],
-            )
-        except Exception:
-            self._cleanup_staging_paths([snapshot_path])
-            raise
+        return self._start_export(
+            site_id,
+            job,
+            "trackside_ap_business_export",
+            reservation,
+        )
 
     def open_trackside_ap_business_export(
         self,
@@ -3664,6 +3649,11 @@ class RailTransitWebApplicationService:
                 if value.exit_code == 0 and not value.cancelled:
                     try:
                         self.artifact_store.complete(reservation)
+                        if job.job_type == "trackside_ap_business":
+                            app_logger.log_info(
+                                "TRACKSIDE_EXPORT_ARTIFACT_READY",
+                                f"site={site_id} task_id={job.job_id}",
+                            )
                     except WebArtifactError:
                         self.artifact_store.fail(reservation)
                 else:
@@ -3674,6 +3664,11 @@ class RailTransitWebApplicationService:
                         or "报告不可用"
                     )
                     self.artifact_store.fail(reservation, failure_message)
+                    if job.job_type == "trackside_ap_business":
+                        app_logger.log_error(
+                            "TRACKSIDE_EXPORT_WORKER_FAILED",
+                            f"site={site_id} task_id={job.job_id} exit_code={value.exit_code}",
+                        )
             finally:
                 self._cleanup_staging_paths(cleanup_paths)
 
@@ -3691,16 +3686,37 @@ class RailTransitWebApplicationService:
                 resource_keys=resource_keys,
                 on_complete=completed,
             )
+            if job.job_type == "trackside_ap_business":
+                app_logger.log_info(
+                    "TRACKSIDE_EXPORT_TASK_CREATED",
+                    f"site={site_id} task_id={job.job_id}",
+                )
         except TaskResourceConflictError as exc:
             self.artifact_store.fail(reservation)
+            if job.job_type == "trackside_ap_business":
+                app_logger.log_error(
+                    "TRACKSIDE_EXPORT_TASK_CREATE_FAILED",
+                    (
+                        f"site={site_id} task_id={job.job_id} "
+                        f"exception_type={type(exc).__name__}"
+                    ),
+                )
             code = (
                 "TRACKSIDE_AP_OPTICAL_UPDATE_RUNNING"
                 if exc.task.task_type == "trackside_ap_optical_update"
                 else "TASK_RESOURCE_BUSY"
             )
             raise RailTransitWebError(code, str(exc)) from exc
-        except Exception:
+        except Exception as exc:
             self.artifact_store.fail(reservation)
+            if job.job_type == "trackside_ap_business":
+                app_logger.log_error(
+                    "TRACKSIDE_EXPORT_TASK_CREATE_FAILED",
+                    (
+                        f"site={site_id} task_id={job.job_id} "
+                        f"exception_type={type(exc).__name__}"
+                    ),
+                )
             raise
         snapshot = self._snapshot(site_id, job.job_id)
         return RailTransitTaskDTO(

@@ -11,6 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from netconsole.core import app_logger
 from netconsole.repositories.mesh_mr_repository import MeshMrRepository
 from netconsole.repositories.mesh_catalog_repository import MeshCatalogRepository
 from netconsole.core.paths import PathResolver
@@ -38,7 +39,10 @@ from netconsole.services.rail_transit.mesh_ap_location_service import (
 )
 from netconsole.services.mesh_report_process import MeshReportProcessRequest, run_mesh_report_process
 from netconsole.services.trackside_ap_business import TracksideApExportCancelled
-from netconsole.services.trackside_ap_export_service import export_trackside_ap_business_from_snapshot
+from netconsole.services.trackside_ap_export_service import (
+    export_trackside_ap_business_from_snapshot,
+    export_trackside_ap_business_prepare_and_render,
+)
 from netconsole.services.rail_transit.trackside_ap_business_snapshot import (
     TracksideApBusinessSnapshotError,
 )
@@ -152,18 +156,53 @@ def _run_trackside_ap_business(job: ExportJob) -> None:
     job.validate()
     snapshot_path = str(job.params.get("snapshot_path") or "")
     snapshot_sha256 = str(job.params.get("snapshot_sha256") or "")
-    if not snapshot_path or not snapshot_sha256:
-        raise ValueError("轨旁AP业务导出缺少冻结快照")
     language = str(job.params.get("language") or "zh_CN")
-    result = export_trackside_ap_business_from_snapshot(
-        snapshot_path=snapshot_path,
-        snapshot_sha256=snapshot_sha256,
-        output_path=job.output_path,
-        tmp_path=job.tmp_path,
-        language=language,
-        progress_callback=lambda stage, current, total, message: _emit_progress(job, current, total, stage, message),
-        should_cancel=lambda: _should_cancel(job),
+    app_logger.log_info(
+        "TRACKSIDE_EXPORT_WORKER_STARTED",
+        f"site={job.site_name} task_id={job.job_id}",
     )
+    def progress(stage: str, current: int, total: int, message: str) -> None:
+        _emit_progress(job, current, total, stage, message)
+
+    if snapshot_path and snapshot_sha256:
+        result = export_trackside_ap_business_from_snapshot(
+            snapshot_path=snapshot_path,
+            snapshot_sha256=snapshot_sha256,
+            output_path=job.output_path,
+            tmp_path=job.tmp_path,
+            language=language,
+            progress_callback=progress,
+            should_cancel=lambda: _should_cancel(job),
+        )
+    else:
+        snapshot_staging_root = str(job.params.get("snapshot_staging_root") or "")
+        if not job.db_path or not snapshot_staging_root:
+            raise ValueError("轨旁AP业务导出缺少快照准备参数")
+        result = export_trackside_ap_business_prepare_and_render(
+            database_path=job.db_path,
+            site_name=job.site_name,
+            task_id=job.job_id,
+            snapshot_staging_root=snapshot_staging_root,
+            output_path=job.output_path,
+            tmp_path=job.tmp_path,
+            language=language,
+            expected_revision=str(job.params.get("expected_revision") or ""),
+            scope_context=(
+                dict(job.params.get("scope_context") or {})
+                if isinstance(job.params.get("scope_context"), dict)
+                else None
+            ),
+            station=str(job.params.get("station") or ""),
+            query=str(job.params.get("query") or ""),
+            optical_anomaly_only=bool(job.params.get("optical_anomaly_only")),
+            selected_row_ids=[
+                str(value)
+                for value in job.params.get("selected_row_ids") or ()
+                if str(value)
+            ],
+            progress_callback=progress,
+            should_cancel=lambda: _should_cancel(job),
+        )
     _emit(
         _finished(
             job,

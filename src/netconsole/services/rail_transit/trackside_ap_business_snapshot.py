@@ -23,7 +23,7 @@ TRACKSIDE_AP_SORT_CONTRACT = (
     "ap_mac",
 )
 
-_SAFE_SEGMENT = re.compile(r"^[0-9A-Za-z._-]{1,100}$")
+_SAFE_SEGMENT = re.compile(r"^(?!\.\.?$)[^<>:\"/\\|?*\x00-\x1f\x7f]{1,100}$")
 _CURRENT_SOURCE_TABLES: dict[str, tuple[str, ...]] = {
     "switch_facts_revision": (
         "device_facts",

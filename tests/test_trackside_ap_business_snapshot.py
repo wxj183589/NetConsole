@@ -22,6 +22,7 @@ from netconsole.services.rail_transit.effective_trackside_ap_scope import (
 from netconsole.services.rail_transit.trackside_ap_business_snapshot import (
     TracksideApBusinessSnapshotError,
     content_sha256,
+    cleanup_export_snapshot,
     read_export_snapshot,
     read_trackside_ap_source_revisions,
     write_export_snapshot,
@@ -506,6 +507,46 @@ def test_snapshot_write_failure_removes_pending_file(
     assert not (task_dir / "snapshot.json").exists()
 
 
+def test_snapshot_supports_unicode_site_id_and_cleans_snapshot(tmp_path: Path) -> None:
+    payload = _empty_export_payload()
+    site_id = "宁波地铁12号线"
+    task_id = "rail-export-unicode"
+    path, digest = write_export_snapshot(
+        tmp_path / "staging",
+        site_id=site_id,
+        task_id=task_id,
+        payload=payload,
+    )
+
+    assert path.is_file()
+    assert path.parent.name == task_id
+    assert path.parent.parent.name == site_id
+    assert read_export_snapshot(path, expected_sha256=digest) == payload
+    assert cleanup_export_snapshot(
+        tmp_path / "staging",
+        site_id=site_id,
+        task_id=task_id,
+    )
+    assert not path.exists()
+
+
+def test_worker_prepares_unicode_snapshot_and_cleans_staging(tmp_path: Path) -> None:
+    database = _database(tmp_path)
+    output = tmp_path / "result.xlsx"
+    result = export_service.export_trackside_ap_business_prepare_and_render(
+        database_path=database.path,
+        site_name="绍兴1号线",
+        task_id="rail-export-worker",
+        snapshot_staging_root=tmp_path / "staging",
+        output_path=output,
+        tmp_path=tmp_path / "result.xlsx.task.tmp",
+    )
+
+    assert output.is_file()
+    assert result["export_kind"] == "trackside_ap_business"
+    assert not list((tmp_path / "staging").rglob("snapshot.json"))
+
+
 def test_recovery_cleans_terminal_trackside_snapshot(tmp_path: Path) -> None:
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
     paths.ensure_site_dirs("demo")
@@ -537,7 +578,7 @@ def test_recovery_cleans_terminal_trackside_snapshot(tmp_path: Path) -> None:
     assert not pending.exists()
 
 
-def test_stale_expected_revision_creates_no_task_or_staging(tmp_path: Path) -> None:
+def test_stale_expected_revision_creates_task_before_worker_validation(tmp_path: Path) -> None:
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
     paths.ensure_site_dirs("demo")
     database = Database(paths.site_db_path("demo"))
@@ -563,22 +604,39 @@ def test_stale_expected_revision_creates_no_task_or_staging(tmp_path: Path) -> N
         )
         connection.commit()
     tasks = TaskApplicationService(paths=paths, site_name="demo")
+    export = FakeExportProcessAdapter(tasks)
     service = RailTransitWebApplicationService(
         paths,
         tasks,
         process_adapter=FakeLocalProcessAdapter(tasks),  # type: ignore[arg-type]
-        export_adapter=FakeExportProcessAdapter(tasks),  # type: ignore[arg-type]
+        export_adapter=export,  # type: ignore[arg-type]
     )
 
+    started = service.start_trackside_ap_business_export(
+        "demo",
+        expected_revision=current.business_revision,
+    )
+
+    task = tasks.repository("demo").get(started.task_id)
+    assert task is not None
+    assert task.task_type == "web_export_trackside_ap_business"
+    assert export.jobs[started.task_id].params["expected_revision"] == current.business_revision
+    assert not list((paths.staging_dir / "trackside_ap_business").rglob("snapshot.json"))
+
     with pytest.raises(TracksideApBusinessSnapshotError) as error:
-        service.start_trackside_ap_business_export(
-            "demo",
+        export_service.export_trackside_ap_business_prepare_and_render(
+            database_path=database.path,
+            site_name="demo",
+            task_id=started.task_id,
+            snapshot_staging_root=paths.staging_dir,
+            output_path=paths.staging_dir / "stale.xlsx",
+            tmp_path=paths.staging_dir / "stale.xlsx.tmp",
             expected_revision=current.business_revision,
+            scope_context=export.jobs[started.task_id].params["scope_context"],
         )
 
     assert error.value.code == "TRACKSIDE_AP_SNAPSHOT_STALE"
-    assert not tasks.repository("demo").list(limit=100)
-    assert not list((paths.staging_dir / "trackside_ap_business").rglob("snapshot.json"))
+    assert not (paths.staging_dir / "stale.xlsx").exists()
 
 
 def test_page_expected_revision_rejects_mixed_pagination(tmp_path: Path) -> None:
