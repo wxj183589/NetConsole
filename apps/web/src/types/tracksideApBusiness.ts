@@ -291,6 +291,10 @@ export interface WpsTracksideDiagnostic {
   sheet_tab_color_verified?: boolean
   expected_tab_color?: string
   actual_tab_color?: string | number
+  column_width_verified?: boolean
+  expected_column_widths?: Record<string, number>
+  actual_column_widths?: Record<string, number | null>
+  probe_sheet_visible?: boolean
   probe_sheet?: string
   binding_status?: string
   local_binding_id?: string
@@ -343,6 +347,7 @@ export interface WpsTracksideTarget {
   sync_test_diagnostic?: WpsTracksideDiagnostic
   sheet_order_probe_diagnostic?: WpsTracksideDiagnostic
   sheet_tab_color_probe_diagnostic?: WpsTracksideDiagnostic
+  column_width_probe_diagnostic?: WpsTracksideDiagnostic
   remote_script_version?: string
   remote_deployment_id?: string
   remote_script_id?: string
@@ -395,7 +400,44 @@ export interface WpsTracksideSyncResult {
     format_warnings?: Array<{
       sheet_name: string
       feature: string
+      range?: string
       reason: string
+    }>
+    column_width_verification_report?: {
+      status?: 'SUCCESS' | 'SUCCESS_WITH_WARNINGS' | 'FAILED' | 'NOT_ENABLED'
+      total_columns?: number
+      local_explicit_width_count?: number
+      dto_match_count?: number
+      payload_match_count?: number
+      attempted_count?: number
+      read_back_count?: number
+      physical_read_back_count?: number
+      verified_count?: number
+      warning_count?: number
+      failed_count?: number
+      verified_ratio?: number
+      stage_counts?: Record<string, number>
+      largest_differences?: Array<Record<string, unknown>>
+      representative_columns?: Array<Record<string, unknown>>
+      items?: Array<Record<string, unknown>>
+    }
+    format_results?: Record<string, {
+      status?: 'SUCCESS' | 'SUCCESS_WITH_WARNINGS' | 'FAILED' | 'WARN' | 'NOT_ENABLED'
+      attempted_count?: number
+      verified_count?: number
+      failed_count?: number
+      applied_count?: number
+      expected_count?: number
+      warning_count?: number
+      duration_ms?: number
+      examples?: Array<{
+        sheet_name?: string
+        range?: string
+        expected?: number | null
+        before?: number | null
+        actual?: number | null
+        verified?: boolean
+      }>
     }>
   }>
 }

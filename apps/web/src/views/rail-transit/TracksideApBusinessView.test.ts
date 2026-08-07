@@ -26,6 +26,7 @@ const api = vi.hoisted(() => ({
   syncTracksideWpsTargets: vi.fn(),
   testTracksideWpsTarget: vi.fn(),
   migrateTracksideWpsLegacyBinding: vi.fn(),
+  probeTracksideWpsColumnWidth: vi.fn(),
   probeTracksideWpsSheetOrder: vi.fn(),
   probeTracksideWpsSheetTabColor: vi.fn(),
   revalidateTracksideWpsDeployment: vi.fn(),
@@ -460,6 +461,10 @@ describe('TracksideApBusinessView mounted behavior', () => {
       target_code: 'wps_standard_spreadsheet',
       result: { sheet_tab_color_verified: true },
     })
+    api.probeTracksideWpsColumnWidth.mockResolvedValue({
+      target_code: 'wps_standard_spreadsheet',
+      result: { column_width_verified: true },
+    })
     confirmMocks.confirm.mockReset()
     confirmMocks.confirm.mockResolvedValue(true)
     api.syncTracksideWpsTargets.mockResolvedValue(task('wps-task', 'RUNNING', 'trackside_ap_wps_sync'))
@@ -677,6 +682,32 @@ describe('TracksideApBusinessView mounted behavior', () => {
     wrapper.unmount()
   })
 
+  it('runs column width as an independent ordinary spreadsheet probe', async () => {
+    const targets = wpsTargets(true)
+    targets[0].column_width_probe_diagnostic = {
+      status: 'SUCCESS',
+      column_width_verified: true,
+      expected_column_widths: { A: 8, B: 15, C: 25, D: 40 },
+      actual_column_widths: { A: 8, B: 15, C: 25, D: 40 },
+    }
+    api.listTracksideWpsTargets.mockResolvedValue(targets)
+    const wrapper = await mountView()
+    await button(wrapper, '配置云文档').trigger('click')
+    await flushPromises()
+    const dialog = wrapper.getComponent(TracksideApWpsConfigDialog)
+    const vm = dialog.vm as unknown as {
+      columnWidthProbe: (code: 'wps_standard_spreadsheet') => Promise<void>
+    }
+
+    await vm.columnWidthProbe('wps_standard_spreadsheet')
+
+    expect(api.probeTracksideWpsColumnWidth).toHaveBeenCalledWith('wps_standard_spreadsheet')
+    expect(api.revalidateTracksideWpsDeployment).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('列宽写后读回：已验证')
+    expect(wrapper.text()).toContain('A=8，B=15，C=25，D=40')
+    wrapper.unmount()
+  })
+
   it('shows binding identity diagnostics and explicitly upgrades only a legacy binding id', async () => {
     const legacyTargets = wpsTargets(true)
     legacyTargets[0] = {
@@ -856,7 +887,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
 
     expect(platformMocks.writeClipboardText).toHaveBeenNthCalledWith(
       1,
-      expect.stringContaining('trackside-ap-standard-2.4.0'),
+      expect.stringContaining('trackside-ap-standard-2.5.0'),
     )
     expect(platformMocks.writeClipboardText).toHaveBeenNthCalledWith(
       2,

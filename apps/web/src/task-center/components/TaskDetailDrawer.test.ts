@@ -182,8 +182,51 @@ describe('TaskDetailDrawer', () => {
           format_warnings: [{
             sheet_name: '轨旁AP业务',
             feature: 'freeze_panes',
+            range: 'A1:P1',
             reason: 'runtime unsupported',
           }],
+          column_width_verification_report: {
+            status: 'FAILED',
+            total_columns: 16,
+            attempted_count: 16,
+            read_back_count: 16,
+            verified_count: 15,
+            warning_count: 0,
+            failed_count: 1,
+            stage_counts: {
+              WPS_COLUMN_WIDTH_VALUE_VERIFIED: 15,
+              WPS_COLUMN_WIDTH_APPLY_MISMATCH: 1,
+            },
+            largest_differences: [{
+              sheet_name: '轨旁AP业务',
+              range: 'P:P',
+              local_workbook_width: 38,
+              remote_column_width: 8.43,
+              remote_width_points: 59.01,
+              difference: 29.57,
+            }],
+          },
+          format_results: {
+            column_width: {
+              status: 'SUCCESS_WITH_WARNINGS',
+              attempted_count: 16,
+              verified_count: 15,
+              failed_count: 1,
+              applied_count: 15,
+              expected_count: 16,
+              warning_count: 1,
+              examples: [{
+                sheet_name: '轨旁AP业务',
+                range: 'P:P',
+                expected: 38,
+                actual: 8.43,
+                verified: false,
+              }],
+            },
+            row_height: {
+              status: 'NOT_ENABLED',
+            },
+          },
         }],
       },
     })
@@ -197,7 +240,11 @@ describe('TaskDetailDrawer', () => {
     expect(rendered).toContain('WPS 子目标结果')
     expect(rendered).toContain('SUCCESS_WITH_WARNINGS')
     expect(rendered).toContain('格式告警1')
-    expect(rendered).toContain('轨旁AP业务 / freeze_panes / runtime unsupported')
+    expect(rendered).toContain('轨旁AP业务 / A1:P1 / freeze_panes / runtime unsupported')
+    expect(rendered).toContain('列宽自动验收FAILED；设置 16，远端读回 16，验证通过 15，告警 0，失败 1')
+    expect(rendered).toContain('故障层级：WPS_COLUMN_WIDTH_VALUE_VERIFIED 15，WPS_COLUMN_WIDTH_APPLY_MISMATCH 1')
+    expect(rendered).toContain('最大差异 轨旁AP业务 / P:P：29.57（本地 38，WPS 8.43，物理宽度 59.01 pt）')
+    expect(rendered).toContain('行高NOT_ENABLED')
     wrapper.unmount()
   })
 

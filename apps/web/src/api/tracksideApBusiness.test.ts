@@ -14,6 +14,7 @@ import {
   listTracksideWpsTargets,
   listTracksideSwitchAdapters,
   listTracksideApBusiness,
+  probeTracksideWpsColumnWidth,
   recoverTracksideApTasks,
   saveTracksideApPlan,
   startTracksideApBusinessExport,
@@ -119,11 +120,13 @@ describe('trackside AP business API', () => {
       timeout_seconds: 45,
     })
     await testTracksideWpsTarget('wps_standard_spreadsheet')
+    await probeTracksideWpsColumnWidth('wps_standard_spreadsheet')
 
     expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
       '/api/rail-transit/trackside-ap-business/wps/targets',
       '/api/rail-transit/trackside-ap-business/wps/targets/wps_standard_spreadsheet',
       '/api/rail-transit/trackside-ap-business/wps/targets/wps_standard_spreadsheet/connection-test',
+      '/api/rail-transit/trackside-ap-business/wps/targets/wps_standard_spreadsheet/column-width-probe',
     ])
     expect(fetchMock.mock.calls[1][1]).toMatchObject({
       method: 'PUT',

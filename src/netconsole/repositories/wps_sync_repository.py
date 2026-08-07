@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS wps_sync_targets (
     sync_test_diagnostic TEXT NOT NULL DEFAULT '',
     sheet_order_probe_diagnostic TEXT NOT NULL DEFAULT '',
     sheet_tab_color_probe_diagnostic TEXT NOT NULL DEFAULT '',
+    column_width_probe_diagnostic TEXT NOT NULL DEFAULT '',
     remote_script_version TEXT NOT NULL DEFAULT '',
     remote_deployment_id TEXT NOT NULL DEFAULT '',
     remote_script_id TEXT NOT NULL DEFAULT '',
@@ -156,6 +157,7 @@ class WpsSyncRepository:
             "sync_test_diagnostic": "TEXT NOT NULL DEFAULT ''",
             "sheet_order_probe_diagnostic": "TEXT NOT NULL DEFAULT ''",
             "sheet_tab_color_probe_diagnostic": "TEXT NOT NULL DEFAULT ''",
+            "column_width_probe_diagnostic": "TEXT NOT NULL DEFAULT ''",
             "remote_script_version": "TEXT NOT NULL DEFAULT ''",
             "remote_deployment_id": "TEXT NOT NULL DEFAULT ''",
             "remote_script_id": "TEXT NOT NULL DEFAULT ''",
@@ -462,6 +464,7 @@ class WpsSyncRepository:
             "sync_test_sheet": "sync_test_diagnostic",
             "sheet_order_probe": "sheet_order_probe_diagnostic",
             "sheet_tab_color_probe": "sheet_tab_color_probe_diagnostic",
+            "column_width_probe": "column_width_probe_diagnostic",
         }.get(str(operation))
         if not column:
             raise ValueError(f"unsupported WPS diagnostic operation: {operation}")
@@ -487,13 +490,13 @@ class WpsSyncRepository:
             "runtime_probe_script_version = ?, runtime_probe_deployment_id = ?, "
             "connection_diagnostic = ?, runtime_probe_diagnostic = ?, "
             "sync_test_diagnostic = ?, sheet_order_probe_diagnostic = ?, "
-            "sheet_tab_color_probe_diagnostic = ?, "
+            "sheet_tab_color_probe_diagnostic = ?, column_width_probe_diagnostic = ?, "
             "remote_script_version = ?, "
             "remote_deployment_id = ?, remote_script_id = ?, "
             "remote_identity_verified_at = ?",
             (
                 "DEPLOYMENT_PENDING", "", "", "", "", "", "", "",
-                "", "", "", "", "", "", "", "", "", "",
+                "", "", "", "", "", "", "", "", "", "", "",
             ),
         )
 
@@ -712,6 +715,9 @@ def _target_from_row(row: sqlite3.Row) -> WpsSyncTarget:
         ),
         sheet_tab_color_probe_diagnostic=_diagnostic_from_row(
             row, "sheet_tab_color_probe_diagnostic"
+        ),
+        column_width_probe_diagnostic=_diagnostic_from_row(
+            row, "column_width_probe_diagnostic"
         ),
         remote_script_version=str(row["remote_script_version"] or ""),
         remote_deployment_id=str(row["remote_deployment_id"] or ""),

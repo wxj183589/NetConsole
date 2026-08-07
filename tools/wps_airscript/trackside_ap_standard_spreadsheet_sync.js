@@ -3,8 +3,8 @@
 // The exact workbook API names are kept in these small helpers so a WPS
 // runtime upgrade does not change the NetConsole payload contract.
 const PROTOCOL_VERSION = 2;
-const SCRIPT_VERSION = "2.4.0-standard";
-const DEPLOYMENT_ID = "trackside-ap-standard-2.4.0";
+const SCRIPT_VERSION = "2.5.0-standard";
+const DEPLOYMENT_ID = "trackside-ap-standard-2.5.0";
 const DOCUMENT_ID = "549847228994";
 const TARGET_TYPE = "WPS_STANDARD_SPREADSHEET";
 const TARGET_CODE = "wps_standard_spreadsheet";
@@ -12,6 +12,7 @@ const RUNTIME_CAPABILITY = "VERIFIED";
 const META_SHEET = "_NetConsoleSyncMeta";
 const PROBE_SHEET = "_NetConsoleRuntimeProbe";
 const FORMAT_MIRROR_EXPERIMENTAL = false;
+const COLUMN_WIDTH_TOLERANCE = 0.5;
 
 function argv() {
   const value = (typeof Context !== "undefined" && Context.argv) || {};
@@ -220,19 +221,19 @@ function migrateLegacyBinding(args) {
   }
 }
 
-function addFormatWarning(warnings, sheetName, feature, error) {
+function addFormatWarning(warnings, sheetName, feature, error, range = "") {
   const reason = String(error && error.message || error || "unsupported").slice(0, 300);
-  const key = `${sheetName}|${feature}|${reason}`;
+  const key = `${sheetName}|${feature}|${range}|${reason}`;
   if (warnings.some((item) => item.key === key) || warnings.length >= 100) return;
-  warnings.push({ key, sheet_name: sheetName, feature, reason });
+  warnings.push({ key, sheet_name: sheetName, feature, range, reason });
 }
 
-function attemptFormat(warnings, sheetName, feature, action) {
+function attemptFormat(warnings, sheetName, feature, action, range = "") {
   try {
     action();
     return true;
   } catch (error) {
-    addFormatWarning(warnings, sheetName, feature, error);
+    addFormatWarning(warnings, sheetName, feature, error, range);
     return false;
   }
 }
@@ -536,6 +537,160 @@ function applyBusinessSheetTabColors(sheetDtos, warnings) {
   return applied;
 }
 
+function dimensionValue(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? Number(number.toFixed(2)) : null;
+}
+
+function keepDimensionExample(examples, example) {
+  if (examples.length >= 20) return;
+  if (!example.verified || examples.length < 5) examples.push(example);
+}
+
+function readWidthPoints(column) {
+  try {
+    return dimensionValue(column.Width);
+  } catch (_error) {
+    return null;
+  }
+}
+
+function applyBusinessColumnWidths(sheetDtos, warnings) {
+  const sheetResults = {};
+  const examples = [];
+  const items = [];
+  let attempted = 0;
+  let verified = 0;
+  let failed = 0;
+  let durationMs = 0;
+  for (const sheetDto of sheetDtos || []) {
+    const widths = Object.entries(sheetDto.column_widths || {});
+    const startedAt = Date.now();
+    const sheetName = String(sheetDto.sheet_name || "");
+    const sheetExamples = [];
+    const sheetItems = [];
+    let sheetVerified = 0;
+    let sheetFailed = 0;
+    attempted += widths.length;
+    const sheet = findSheet(sheetName);
+    if (!sheet && widths.length) {
+      sheetFailed = widths.length;
+      failed += widths.length;
+      addFormatWarning(warnings, sheetName, "column_width", new Error("worksheet unavailable"));
+      for (const [column, widthValue] of widths) {
+        const range = `${column}:${column}`;
+        const item = {
+          sheet_name: sheetName,
+          column: String(column),
+          range,
+          requested_width: dimensionValue(widthValue),
+          before_column_width: null,
+          remote_column_width: null,
+          before_width_points: null,
+          remote_width_points: null,
+          difference: null,
+          physical_width_change_points: null,
+          read_back: false,
+          verified: false,
+          classification: "WPS_COLUMN_WIDTH_APPLY_MISMATCH",
+          reason: "worksheet unavailable",
+        };
+        sheetItems.push(item);
+        items.push(item);
+        keepDimensionExample(sheetExamples, item);
+      }
+    } else if (sheet) {
+      for (const [column, widthValue] of widths) {
+        const expected = Number(widthValue);
+        const range = `${column}:${column}`;
+        const item = {
+          sheet_name: sheet.Name,
+          column: String(column),
+          range,
+          requested_width: dimensionValue(expected),
+          before_column_width: null,
+          remote_column_width: null,
+          before_width_points: null,
+          remote_width_points: null,
+          difference: null,
+          physical_width_change_points: null,
+          read_back: false,
+          verified: false,
+          classification: "WPS_COLUMN_WIDTH_APPLY_MISMATCH",
+          reason: "",
+        };
+        if (!Number.isFinite(expected) || expected <= 0) {
+          sheetFailed += 1;
+          failed += 1;
+          item.classification = "WPS_COLUMN_WIDTH_PAYLOAD_INVALID";
+          item.reason = "invalid column width";
+          addFormatWarning(warnings, sheet.Name, "column_width", new Error("invalid column width"), range);
+          sheetItems.push(item);
+          items.push(item);
+          keepDimensionExample(sheetExamples, item);
+          continue;
+        }
+        try {
+          if (!sheet.Columns || !sheet.Columns.Item) throw new Error("Worksheet.Columns.Item API unavailable");
+          const targetColumn = sheet.Columns.Item(String(column));
+          item.before_column_width = dimensionValue(targetColumn.ColumnWidth);
+          item.before_width_points = readWidthPoints(targetColumn);
+          targetColumn.ColumnWidth = expected;
+          item.remote_column_width = dimensionValue(targetColumn.ColumnWidth);
+          item.remote_width_points = readWidthPoints(targetColumn);
+          item.read_back = item.remote_column_width !== null;
+          item.difference = item.remote_column_width === null
+            ? null
+            : dimensionValue(Math.abs(item.remote_column_width - expected));
+          item.physical_width_change_points = item.before_width_points === null || item.remote_width_points === null
+            ? null
+            : dimensionValue(item.remote_width_points - item.before_width_points);
+          const matches = item.remote_column_width !== null
+            && Math.abs(item.remote_column_width - expected) <= COLUMN_WIDTH_TOLERANCE;
+          item.verified = matches;
+          item.classification = matches
+            ? "WPS_COLUMN_WIDTH_VALUE_VERIFIED"
+            : "WPS_COLUMN_WIDTH_APPLY_MISMATCH";
+          item.reason = matches
+            ? "ColumnWidth write/readback matched"
+            : `readback mismatch: expected=${expected}, actual=${String(item.remote_column_width)}`;
+          if (matches) {
+            sheetVerified += 1;
+            verified += 1;
+          } else {
+            sheetFailed += 1;
+            failed += 1;
+            addFormatWarning(warnings, sheet.Name, "column_width", new Error(item.reason), range);
+          }
+        } catch (error) {
+          sheetFailed += 1;
+          failed += 1;
+          item.reason = String(error && error.message || error).slice(0, 300);
+          addFormatWarning(warnings, sheet.Name, "column_width", error, range);
+        }
+        sheetItems.push(item);
+        items.push(item);
+        keepDimensionExample(sheetExamples, item);
+      }
+    }
+    const sheetDurationMs = Date.now() - startedAt;
+    durationMs += sheetDurationMs;
+    for (const example of sheetExamples) keepDimensionExample(examples, example);
+    sheetResults[sheetName] = {
+      attempted_count: widths.length,
+      verified_count: sheetVerified,
+      failed_count: sheetFailed,
+      expected_count: widths.length,
+      applied_count: sheetVerified,
+      dimension_ms: sheetDurationMs,
+      examples: sheetExamples,
+      items: sheetItems,
+    };
+  }
+  return { attempted_count: attempted, verified_count: verified, failed_count: failed, expected_count: attempted, applied_count: verified, dimension_ms: durationMs, examples, items, sheets: sheetResults };
+}
+
 function manageSystemSheets(expectedBusinessOrder, warnings) {
   const systemNames = sheetNames().filter(isSystemSheetName);
   for (const name of systemNames) {
@@ -583,6 +738,7 @@ function sync(payload) {
       const runtimeSheet = materializeRuntimeSheet(sheet, args, targetSyncTime);
       const skipRepeatedPrepend = repeatedPrependBatch
         && sheet.sync_mode === "PREPEND_SNAPSHOT";
+      const dataWriteStartedAt = Date.now();
       const result = skipRepeatedPrepend
         ? { written_rows: 0, format_verification: { checked: false }, deduplicated: true }
         : formatMirrorEnabled
@@ -595,10 +751,24 @@ function sync(payload) {
       }
       writtenRows += result.written_rows;
       writtenSheets += 1;
-      sheetResults.push({ sheet_name: sheet.sheet_name, sync_mode: sheet.sync_mode, success: true, written_rows: result.written_rows, deduplicated: !!result.deduplicated, format_verification: result.format_verification });
+      sheetResults.push({ sheet_name: sheet.sheet_name, sync_mode: sheet.sync_mode, success: true, written_rows: result.written_rows, deduplicated: !!result.deduplicated, column_count: Number(sheet.column_count) || 0, column_width_count: Object.keys(sheet.column_widths || {}).length, data_write_ms: Date.now() - dataWriteStartedAt, dimension_ms: 0, format_ms: 0, format_run_count: 0, format_verification: result.format_verification });
     }
   } catch (error) {
     return response({ success: false, error_code: "WPS_SHEET_WRITE_FAILED", failed_sheet: sheets[writtenSheets] && sheets[writtenSheets].sheet_name || "", failed_operation: "WRITE_VALUES", written_sheet_count: writtenSheets, written_row_count: writtenRows, message: String(error && error.message || error).slice(0, 500), runtime_error_name: String(error && error.name || "Error"), runtime_error_stack: String(error && error.stack || "").slice(0, 2048), binding_status: "BOUND" });
+  }
+  const columnWidthEnabled = args.column_width_enabled === true;
+  let columnWidthResult = { attempted_count: 0, verified_count: 0, failed_count: 0, applied_count: 0, expected_count: 0, dimension_ms: 0, examples: [], items: [], sheets: {} };
+  if (columnWidthEnabled) {
+    try {
+      columnWidthResult = applyBusinessColumnWidths(sheets, formatWarnings);
+    } catch (error) {
+      addFormatWarning(formatWarnings, "_NetConsoleColumnWidths", "column_width", error);
+    }
+  }
+  for (const sheetResult of sheetResults) {
+    const columnDimension = columnWidthResult.sheets[sheetResult.sheet_name];
+    sheetResult.column_width_result = columnDimension || { attempted_count: 0, verified_count: 0, failed_count: 0, examples: [] };
+    sheetResult.dimension_ms = Number(columnDimension && columnDimension.dimension_ms || 0);
   }
   const expectedSheetOrder = orderedBusinessSheetNames(sheets);
   let sheetOrderVerification;
@@ -630,7 +800,30 @@ function sync(payload) {
     addFormatWarning(formatWarnings, META_SHEET, "sync_metadata", error);
   }
   const publicWarnings = formatWarnings.map(({ key, ...warning }) => warning);
-  return response({ success: true, status: publicWarnings.length ? "SUCCESS_WITH_WARNINGS" : "SUCCESS", ...bindingDiagnostics(args, binding.meta), parent_batch_id: args.parent_batch_id, target_batch_id: args.target_batch_id, site_id: args.site_id, site_name: args.site_name, business_key: args.business_key, snapshot_revision: args.snapshot_revision, snapshot_sha256: args.snapshot_sha256, target_sync_executed_at: targetSyncTime, idempotent_prepend_replay: repeatedPrependBatch, written_sheet_count: writtenSheets, written_row_count: writtenRows, written_object_count: sheets.length, sheet_order_verified: true, expected_sheet_order: sheetOrderVerification.expected, actual_sheet_order: sheetOrderVerification.actual, ...systemSheetResult, sheet_tab_color_enabled: args.sheet_tab_color_enabled === true, applied_tab_color_count: appliedTabColorCount, format_mirror_experimental: formatMirrorEnabled, format_warning_count: publicWarnings.length, format_warnings: publicWarnings, sheets: sheetResults });
+  const columnWidthWarnings = publicWarnings.filter((warning) => warning.feature === "column_width");
+  const formatResults = {
+    column_width: {
+      status: columnWidthEnabled ? (columnWidthResult.failed_count || columnWidthWarnings.length ? "SUCCESS_WITH_WARNINGS" : "SUCCESS") : "NOT_ENABLED",
+      attempted_count: columnWidthResult.attempted_count,
+      verified_count: columnWidthResult.verified_count,
+      failed_count: columnWidthResult.failed_count,
+      applied_count: columnWidthResult.applied_count,
+      expected_count: columnWidthResult.expected_count,
+      warning_count: columnWidthWarnings.length,
+      duration_ms: columnWidthResult.dimension_ms,
+      examples: columnWidthResult.examples,
+    },
+    row_height: {
+      status: "NOT_ENABLED",
+    },
+    font: { status: "NOT_ENABLED" },
+    fill: { status: "NOT_ENABLED" },
+    number_format: { status: "NOT_ENABLED" },
+    alignment: { status: "NOT_ENABLED" },
+    merge: { status: "NOT_ENABLED" },
+    border: { status: "NOT_ENABLED" },
+  };
+  return response({ success: true, status: publicWarnings.length ? "SUCCESS_WITH_WARNINGS" : "SUCCESS", ...bindingDiagnostics(args, binding.meta), parent_batch_id: args.parent_batch_id, target_batch_id: args.target_batch_id, site_id: args.site_id, site_name: args.site_name, business_key: args.business_key, snapshot_revision: args.snapshot_revision, snapshot_sha256: args.snapshot_sha256, target_sync_executed_at: targetSyncTime, idempotent_prepend_replay: repeatedPrependBatch, written_sheet_count: writtenSheets, written_row_count: writtenRows, written_object_count: sheets.length, sheet_order_verified: true, expected_sheet_order: sheetOrderVerification.expected, actual_sheet_order: sheetOrderVerification.actual, ...systemSheetResult, sheet_tab_color_enabled: args.sheet_tab_color_enabled === true, applied_tab_color_count: appliedTabColorCount, column_width_enabled: columnWidthEnabled, applied_column_width_count: columnWidthResult.applied_count, column_width_result: columnWidthResult, dimension_ms: columnWidthResult.dimension_ms, format_results: formatResults, format_mirror_experimental: formatMirrorEnabled, format_warning_count: publicWarnings.length, format_warnings: publicWarnings, sheets: sheetResults });
 }
 
 function sheetIsHidden(value) {
@@ -834,6 +1027,51 @@ function sheetTabColorProbe(args) {
   }
 }
 
+function columnWidthProbe(args) {
+  const sheetName = "_NetConsoleSyncTest";
+  const expected = { A: 8, B: 15, C: 25, D: 40 };
+  const actual = {};
+  try {
+    const sheet = ensureSheet(sheetName);
+    sheet.Range("A1").Resize(2, 4).Value2 = [
+      ["A = 8", "B = 15", "C = 25", "D = 40"],
+      ["列宽探针", "列宽探针", "列宽探针", "列宽探针"],
+    ];
+    for (const [column, width] of Object.entries(expected)) {
+      if (!sheet.Columns || !sheet.Columns.Item) throw new Error("Worksheet.Columns.Item API unavailable");
+      sheet.Columns.Item(column).ColumnWidth = width;
+    }
+    for (const [column, width] of Object.entries(expected)) {
+      const readback = Number(probeScalarValue(sheet.Columns.Item(column).ColumnWidth));
+      actual[column] = Number.isFinite(readback) ? Number(readback.toFixed(2)) : null;
+      if (!Number.isFinite(readback) || Math.abs(readback - width) > COLUMN_WIDTH_TOLERANCE) {
+        throw new Error(`${column} column width readback mismatch: ${String(readback)}`);
+      }
+    }
+    let probeSheetVisible = true;
+    try {
+      if ("Visible" in sheet) sheet.Visible = true;
+    } catch (_error) {
+      probeSheetVisible = false;
+    }
+    return response({
+      success: true,
+      status: "SUCCESS",
+      error_code: "",
+      message: "列宽能力探针通过",
+      ...bindingDiagnostics(args),
+      column_width_verified: true,
+      expected_column_widths: expected,
+      actual_column_widths: actual,
+      probe_sheet_visible: probeSheetVisible,
+      probe_sheet: sheetName,
+      probe_id: args.probe_id,
+    });
+  } catch (error) {
+    return response({ success: false, status: "FAILED", error_code: "WPS_COLUMN_WIDTH_VERIFY_FAILED", failed_operation: "COLUMN_WIDTH_PROBE", message: String(error && error.message || error).slice(0, 500), runtime_error_name: String(error && error.name || "Error"), runtime_error_stack: String(error && error.stack || "").slice(0, 2048), ...bindingDiagnostics(args), column_width_verified: false, expected_column_widths: expected, actual_column_widths: actual, probe_sheet: sheetName, probe_id: args.probe_id });
+  }
+}
+
 function syncTestSheet(args) {
   const sheet = ensureSheet("_NetConsoleSyncTest");
   const values = [["operation", "probe_id", "status"], ["sync_test_sheet", String(args.probe_id || ""), "OK"]];
@@ -856,6 +1094,7 @@ function main() {
   if (args.operation === "runtime_write_probe") return runtimeWriteProbe(args);
   if (args.operation === "sheet_order_probe") return sheetOrderProbe(args);
   if (args.operation === "sheet_tab_color_probe") return sheetTabColorProbe(args);
+  if (args.operation === "column_width_probe") return columnWidthProbe(args);
   if (args.operation === "sync_test_sheet") return syncTestSheet(args);
   if (args.operation === "sync_trackside_ap_business") return sync(args);
   return response({ success: false, error_code: "OPERATION_UNSUPPORTED", message: "unsupported operation" });

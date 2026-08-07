@@ -126,8 +126,64 @@ function formatWarningSummary(target: Record<string, unknown>): string {
   return warnings.slice(0, 3).map((item) => {
     if (!item || typeof item !== 'object') return ''
     const warning = item as Record<string, unknown>
-    return [warning.sheet_name, warning.feature, warning.reason].filter(Boolean).join(' / ')
+    return [warning.sheet_name, warning.range, warning.feature, warning.reason].filter(Boolean).join(' / ')
   }).filter(Boolean).join('；')
+}
+function columnWidthVerificationRow(target: Record<string, unknown>): { key: string; label: string; value: string; examples: string } | null {
+  if (!target.column_width_verification_report || typeof target.column_width_verification_report !== 'object') return null
+  const report = target.column_width_verification_report as Record<string, unknown>
+  const stages = report.stage_counts && typeof report.stage_counts === 'object'
+    ? Object.entries(report.stage_counts as Record<string, unknown>)
+      .filter(([, count]) => Number(count) > 0)
+      .map(([stage, count]) => `${stage} ${Number(count)}`)
+      .join('，')
+    : ''
+  const differences = Array.isArray(report.largest_differences) ? report.largest_differences : []
+  const largest = differences.find((entry) => entry && typeof entry === 'object') as Record<string, unknown> | undefined
+  const largestText = largest
+    ? `最大差异 ${largest.sheet_name || '--'} / ${largest.range || '--'}：${largest.difference ?? '--'}（本地 ${largest.local_workbook_width ?? '--'}，WPS ${largest.remote_column_width ?? '--'}，物理宽度 ${largest.remote_width_points ?? '--'} pt）`
+    : ''
+  return {
+    key: 'column_width_verification_report',
+    label: '列宽自动验收',
+    value: `${String(report.status || 'UNVERIFIED')}；设置 ${Number(report.attempted_count || 0)}，远端读回 ${Number(report.read_back_count || 0)}，验证通过 ${Number(report.verified_count || 0)}，告警 ${Number(report.warning_count || 0)}，失败 ${Number(report.failed_count || 0)}`,
+    examples: [stages ? `故障层级：${stages}` : '', largestText].filter(Boolean).join('；'),
+  }
+}
+function formatResultRows(target: Record<string, unknown>): Array<{ key: string; label: string; value: string; examples: string }> {
+  if (!target.format_results || typeof target.format_results !== 'object') return []
+  const results = target.format_results as Record<string, unknown>
+  const columnWidthRow = columnWidthVerificationRow(target)
+  const definitions = [
+    ...(columnWidthRow ? [] : [['column_width', '列宽']]),
+    ['row_height', '行高'],
+    ['font', '字体'],
+    ['fill', '填充'],
+    ['number_format', '数字格式'],
+    ['alignment', '对齐'],
+    ['merge', 'Merge'],
+    ['border', 'Border'],
+  ]
+  const rows = definitions.map(([key, label]) => {
+    const item = results[key]
+    const value = item && typeof item === 'object' ? item as Record<string, unknown> : {}
+    const status = String(value.status || 'NOT_ENABLED')
+    const hasVerificationCounts = Number.isFinite(Number(value.attempted_count))
+    const counts = hasVerificationCounts
+      ? `；设置 ${Number(value.attempted_count || 0)}，验证通过 ${Number(value.verified_count || 0)}，差异 ${Number(value.failed_count || 0)}`
+      : Number.isFinite(Number(value.expected_count))
+        ? ` ${Number(value.applied_count || 0)}/${Number(value.expected_count || 0)}`
+        : ''
+    const warnings = Number(value.warning_count || 0)
+    const examples = Array.isArray(value.examples) ? value.examples : []
+    const exampleText = examples.slice(0, 3).map((entry) => {
+      if (!entry || typeof entry !== 'object') return ''
+      const example = entry as Record<string, unknown>
+      return `${example.sheet_name || '--'} / ${example.range || '--'}：本地 ${example.expected ?? '--'}，WPS ${example.actual ?? '--'}`
+    }).filter(Boolean).join('；')
+    return { key, label, value: `${status}${counts}${warnings ? `，告警 ${warnings}` : ''}`, examples: exampleText }
+  })
+  return columnWidthRow ? [columnWidthRow, ...rows] : rows
 }
 const businessStatusLabel = computed(() => ({
   SUCCESS: t('job_center.business_result.success', '成功'),
@@ -654,6 +710,10 @@ function handleClosed(): void {
             <article><span>格式告警</span><strong>{{ target.format_warning_count || 0 }}</strong></article>
             <article class="wide"><span>消息</span><strong>{{ target.message || '--' }}</strong></article>
             <article v-if="formatWarningSummary(target)" class="wide"><span>格式告警详情</span><strong>{{ formatWarningSummary(target) }}</strong></article>
+            <article v-for="item in formatResultRows(target)" :key="item.key" :class="{ wide: Boolean(item.examples) }">
+              <span>{{ item.label }}</span>
+              <strong>{{ item.value }}<small v-if="item.examples">{{ item.examples }}</small></strong>
+            </article>
           </div>
         </section>
 
@@ -782,6 +842,7 @@ function handleClosed(): void {
 .current-grid article.danger { border-color: var(--nc-danger); }
 .current-grid span { display: block; color: var(--nc-text-secondary); font-size: 12px; }
 .current-grid strong { display: block; margin-top: 5px; overflow-wrap: anywhere; color: var(--nc-text-primary); font-size: 13px; font-weight: 600; }
+.current-grid strong small { display: block; margin-top: 5px; color: var(--nc-text-secondary); font-size: 12px; font-weight: 400; }
 .business-reasons { display: grid; gap: 8px; margin: 12px 0 0; padding: 0; list-style: none; }
 .business-reasons li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 12px; background: var(--nc-bg-muted); border: 1px solid var(--nc-border); border-radius: 8px; }
 .business-reasons span { color: var(--nc-text-secondary); font-size: 12px; }

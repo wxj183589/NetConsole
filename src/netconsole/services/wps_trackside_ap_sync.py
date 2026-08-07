@@ -54,11 +54,11 @@ WPS_SYNC_OWNER = "web_rail_transit"
 # The format mirror remains available for a later, separately verified rollout.
 WPS_STANDARD_FORMAT_MIRROR_EXPERIMENTAL = False
 WPS_SCRIPT_VERSIONS = {
-    STANDARD_TARGET_CODE: "2.4.0-standard",
+    STANDARD_TARGET_CODE: "2.5.0-standard",
     SMART_TARGET_CODE: "2.1.0-smart",
 }
 WPS_DEPLOYMENT_IDS = {
-    STANDARD_TARGET_CODE: "trackside-ap-standard-2.4.0",
+    STANDARD_TARGET_CODE: "trackside-ap-standard-2.5.0",
     SMART_TARGET_CODE: "trackside-ap-smart-2.1.0",
 }
 WPS_RUNTIME_CAPABILITIES = {
@@ -327,6 +327,42 @@ class BaseWpsAdapter:
                     **_target_error_details(target, phase="SHEET_TAB_COLOR_PROBE"),
                     "expected_tab_color": result.get("expected_tab_color") or "",
                     "actual_tab_color": result.get("actual_tab_color") or "",
+                },
+            )
+        return {"http_status": response.status_code, "phase": "SUCCESS", **result}
+
+    def column_width_probe(
+        self,
+        target: WpsSyncTarget,
+        token: str,
+    ) -> dict[str, Any]:
+        response = self.client.post(
+            target,
+            token=token,
+            argv={
+                "protocol_version": WPS_SYNC_PROTOCOL_VERSION,
+                "operation": "column_width_probe",
+                "target_code": target.target_code,
+                "target_type": target.target_type.value,
+                "site_id": target.site_id,
+                "business_key": target.business_key,
+                "binding_id": target.binding_id,
+                "probe_id": f"wps_column_width_{uuid4().hex}",
+                "script_id": _script_id_from_webhook(target.webhook_url),
+            },
+        )
+        result = _unwrap_wps_sync_task_response(response, target, token=token)
+        self._validate_common(target, result)
+        if not bool(result.get("success")):
+            raise _remote_result_error(target, result, token)
+        if not bool(result.get("column_width_verified")):
+            raise WpsSyncError(
+                "WPS_COLUMN_WIDTH_VERIFY_FAILED",
+                "WPS 列宽探针未通过写后读回校验",
+                details={
+                    **_target_error_details(target, phase="COLUMN_WIDTH_PROBE"),
+                    "expected_column_widths": result.get("expected_column_widths") or {},
+                    "actual_column_widths": result.get("actual_column_widths") or {},
                 },
             )
         return {"http_status": response.status_code, "phase": "SUCCESS", **result}
@@ -947,6 +983,49 @@ class TracksideApWpsSyncService:
         )
         return _sanitize_result(result)
 
+    def column_width_probe(self, site_id: str, target_code: str) -> dict[str, Any]:
+        repository = self._repository(site_id)
+        self._ensure_default_targets(repository)
+        target = repository.get_target(TRACKSIDE_AP_WPS_BUSINESS_KEY, target_code)
+        if target.target_type is not WpsTargetType.STANDARD_SPREADSHEET:
+            raise WpsSyncError(
+                "WPS_COLUMN_WIDTH_PROBE_UNSUPPORTED",
+                "列宽探针仅支持普通在线表格",
+            )
+        try:
+            _validate_target_configuration(target)
+            result = self.adapters[target.target_type].column_width_probe(
+                target,
+                self._token(repository, target),
+            )
+        except WpsSyncError as exc:
+            details = dict(exc.details) or _target_error_details(
+                target,
+                phase="LOCAL_CONFIGURATION",
+            )
+            repository.update_target_diagnostic(
+                target.target_id,
+                operation="column_width_probe",
+                diagnostic=_operation_diagnostic(
+                    "column_width_probe",
+                    status="FAILED",
+                    message=str(exc),
+                    values=details,
+                ),
+            )
+            raise
+        repository.update_target_diagnostic(
+            target.target_id,
+            operation="column_width_probe",
+            diagnostic=_operation_diagnostic(
+                "column_width_probe",
+                status=str(result.get("status") or "SUCCESS"),
+                message=str(result.get("message") or "列宽探针通过"),
+                values=result,
+            ),
+        )
+        return _sanitize_result(result)
+
     def sync(
         self,
         site_id: str,
@@ -1050,13 +1129,23 @@ class TracksideApWpsSyncService:
         if expected_revision and revision != expected_revision:
             raise WpsSyncError("TRACKSIDE_AP_SNAPSHOT_STALE", "轨旁 AP 数据已更新，请刷新后重试")
         batch_id = f"wps_{uuid4().hex}"
-        workbook, snapshot_sha256, payload_size = self._build_workbook_dto(
+        workbook, snapshot_sha256, payload_size, column_width_manifest = self._build_workbook_dto(
             site_id,
             batch_id,
             snapshot,
         )
         if progress is not None:
             progress("wps_workbook", 30, 100, f"已生成统一工作簿数据集（{len(workbook.sheets)} 个 Sheet）")
+            for sheet in workbook.sheets:
+                progress(
+                    "wps_workbook_dimensions",
+                    30,
+                    100,
+                    (
+                        f"{sheet.sheet_name}: columns={sheet.column_count}, "
+                        f"column_widths={len(sheet.column_widths)}"
+                    ),
+                )
         generated_at = str(snapshot.get("created_at") or _now())
         repository.create_batch(
             batch_id=batch_id,
@@ -1094,6 +1183,7 @@ class TracksideApWpsSyncService:
                 "requested_at": _now(),
                 "format_mirror_experimental": WPS_STANDARD_FORMAT_MIRROR_EXPERIMENTAL,
                 "sheet_tab_color_enabled": _sheet_tab_color_probe_verified(target),
+                "column_width_enabled": target.target_type is WpsTargetType.STANDARD_SPREADSHEET,
                 "workbook": workbook.to_dict(),
             }
             try:
@@ -1110,6 +1200,14 @@ class TracksideApWpsSyncService:
                     self._token(repository, target),
                     request_payload,
                 )
+                column_width_report = _column_width_verification_report(
+                    manifest=column_width_manifest,
+                    request_payload=request_payload,
+                    remote_result=response,
+                    enabled=target.target_type is WpsTargetType.STANDARD_SPREADSHEET,
+                )
+                response["column_width_verification_report"] = column_width_report
+                _append_column_width_report_warning(response, column_width_report)
                 format_warnings = response.get("format_warnings")
                 target_status = (
                     "SUCCESS_WITH_WARNINGS"
@@ -1237,7 +1335,7 @@ class TracksideApWpsSyncService:
         site_id: str,
         batch_id: str,
         snapshot: Mapping[str, object],
-    ) -> tuple[WorkbookDTO, str, int]:
+    ) -> tuple[WorkbookDTO, str, int, list[dict[str, Any]]]:
         root = (self.paths.temp_dir / "wps_trackside_ap" / site_id / batch_id).resolve()
         root.mkdir(parents=True, exist_ok=False)
         output = root / "trackside-ap-business.xlsx"
@@ -1254,7 +1352,9 @@ class TracksideApWpsSyncService:
             workbook = workbook_dto_from_xlsx(
                 output,
                 include_format_mirror=WPS_STANDARD_FORMAT_MIRROR_EXPERIMENTAL,
+                include_column_widths=True,
             )
+            column_width_manifest = _column_width_manifest_from_xlsx(output, workbook)
             digest_payload = {
                 "site_id": site_id,
                 "business_key": TRACKSIDE_AP_WPS_BUSINESS_KEY,
@@ -1267,7 +1367,12 @@ class TracksideApWpsSyncService:
                     "WPS_PAYLOAD_TOO_LARGE",
                     "轨旁 AP 工作簿超过 WPS 单次同步安全大小",
                 )
-            return workbook, content_sha256(digest_payload), len(serialized)
+            return (
+                workbook,
+                content_sha256(digest_payload),
+                len(serialized),
+                column_width_manifest,
+            )
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
@@ -1392,6 +1497,7 @@ def workbook_dto_from_xlsx(
     path: str | Path,
     *,
     include_format_mirror: bool = WPS_STANDARD_FORMAT_MIRROR_EXPERIMENTAL,
+    include_column_widths: bool = False,
 ) -> WorkbookDTO:
     workbook = load_workbook(Path(path), data_only=False, read_only=False)
     try:
@@ -1446,7 +1552,7 @@ def workbook_dto_from_xlsx(
                         str(index): float(dimension.width)
                         for index, dimension in worksheet.column_dimensions.items()
                         if dimension.width is not None
-                    } if include_format_mirror else {},
+                    } if include_format_mirror or include_column_widths else {},
                     format_runs=(
                         _format_runs_from_worksheet(
                             worksheet,
@@ -1464,6 +1570,44 @@ def workbook_dto_from_xlsx(
                 )
             )
         return WorkbookDTO(sheets=tuple(sheets))
+    finally:
+        workbook.close()
+
+
+def _column_width_manifest_from_xlsx(
+    path: str | Path,
+    workbook_dto: WorkbookDTO,
+) -> list[dict[str, Any]]:
+    dto_sheets = {sheet.sheet_name: sheet for sheet in workbook_dto.sheets}
+    workbook = load_workbook(Path(path), data_only=False, read_only=False)
+    try:
+        manifest: list[dict[str, Any]] = []
+        for worksheet in workbook.worksheets:
+            dto_sheet = dto_sheets.get(worksheet.title)
+            if dto_sheet is None:
+                continue
+            for column, dimension in worksheet.column_dimensions.items():
+                if dimension.width is None:
+                    continue
+                column_name = str(column).upper()
+                header_value = worksheet[f"{column_name}1"].value
+                manifest.append(
+                    {
+                        "sheet_name": worksheet.title,
+                        "column": column_name,
+                        "range": f"{column_name}:{column_name}",
+                        "column_label": (
+                            str(header_value).strip()
+                            if header_value is not None
+                            else ""
+                        ),
+                        "local_workbook_width": float(dimension.width),
+                        "sheet_dto_width": _safe_float(
+                            dto_sheet.column_widths.get(column_name)
+                        ),
+                    }
+                )
+        return manifest
     finally:
         workbook.close()
 
@@ -1625,12 +1769,301 @@ def _target_format_warning_count(result: Mapping[str, Any]) -> int:
         return 0
 
 
+def _column_width_verification_report(
+    *,
+    manifest: Sequence[Mapping[str, Any]],
+    request_payload: Mapping[str, Any],
+    remote_result: Mapping[str, Any],
+    enabled: bool,
+) -> dict[str, Any]:
+    if not enabled:
+        return {
+            "status": "NOT_ENABLED",
+            "total_columns": 0,
+            "local_explicit_width_count": 0,
+            "dto_match_count": 0,
+            "payload_match_count": 0,
+            "attempted_count": 0,
+            "read_back_count": 0,
+            "physical_read_back_count": 0,
+            "verified_count": 0,
+            "warning_count": 0,
+            "failed_count": 0,
+            "verified_ratio": 0.0,
+            "stage_counts": {},
+            "largest_differences": [],
+            "representative_columns": [],
+            "items": [],
+        }
+
+    payload_widths: dict[tuple[str, str], float | None] = {}
+    workbook_payload = request_payload.get("workbook")
+    if isinstance(workbook_payload, Mapping):
+        payload_sheets = workbook_payload.get("sheets")
+        if isinstance(payload_sheets, list):
+            for sheet in payload_sheets:
+                if not isinstance(sheet, Mapping):
+                    continue
+                sheet_name = str(sheet.get("sheet_name") or "")
+                widths = sheet.get("column_widths")
+                if not isinstance(widths, Mapping):
+                    continue
+                for column, width in widths.items():
+                    payload_widths[(sheet_name, str(column).upper())] = _safe_float(width)
+
+    remote_items: dict[tuple[str, str], Mapping[str, Any]] = {}
+    raw_column_result = remote_result.get("column_width_result")
+    if isinstance(raw_column_result, Mapping):
+        raw_items = raw_column_result.get("items")
+        if isinstance(raw_items, list):
+            for item in raw_items:
+                if not isinstance(item, Mapping):
+                    continue
+                key = (
+                    str(item.get("sheet_name") or ""),
+                    str(item.get("column") or "").upper(),
+                )
+                if all(key):
+                    remote_items[key] = item
+
+    items: list[dict[str, Any]] = []
+    stage_counts: dict[str, int] = {}
+    dto_match_count = 0
+    payload_match_count = 0
+    read_back_count = 0
+    physical_read_back_count = 0
+    verified_count = 0
+    warning_count = 0
+    failed_count = 0
+    for source in manifest:
+        sheet_name = str(source.get("sheet_name") or "")
+        column = str(source.get("column") or "").upper()
+        key = (sheet_name, column)
+        local_width = _safe_float(source.get("local_workbook_width"))
+        dto_width = _safe_float(source.get("sheet_dto_width"))
+        payload_width = payload_widths.get(key)
+        remote = remote_items.get(key, {})
+        remote_present = bool(remote)
+        wps_requested_width = _safe_float(remote.get("requested_width"))
+        before_column_width = _safe_float(remote.get("before_column_width"))
+        remote_column_width = _safe_float(remote.get("remote_column_width"))
+        before_width_points = _safe_float(remote.get("before_width_points"))
+        remote_width_points = _safe_float(remote.get("remote_width_points"))
+        difference = (
+            abs(remote_column_width - payload_width)
+            if remote_column_width is not None and payload_width is not None
+            else None
+        )
+        dto_matches = _width_matches(local_width, dto_width, tolerance=0.01)
+        payload_matches = _width_matches(dto_width, payload_width, tolerance=0.01)
+        remote_request_matches = _width_matches(
+            payload_width,
+            wps_requested_width,
+            tolerance=0.01,
+        )
+        remote_matches = _width_matches(
+            payload_width,
+            remote_column_width,
+            tolerance=0.5,
+        )
+        if dto_matches:
+            dto_match_count += 1
+        if payload_matches:
+            payload_match_count += 1
+        if remote_column_width is not None:
+            read_back_count += 1
+        if remote_width_points is not None:
+            physical_read_back_count += 1
+
+        if not dto_matches:
+            classification = "WORKBOOK_DTO_WIDTH_MISMATCH"
+            reason = "本地 XLSX 列宽与 SheetDTO 不一致"
+        elif not payload_matches or (remote_present and not remote_request_matches):
+            classification = "WPS_PAYLOAD_WIDTH_MISMATCH"
+            reason = "SheetDTO、序列化 payload 或 WPS 接收值不一致"
+        elif not remote_present or not remote_matches:
+            classification = "WPS_COLUMN_WIDTH_APPLY_MISMATCH"
+            reason = str(remote.get("reason") or "WPS ColumnWidth 写后读回不一致")
+        else:
+            classification = "WPS_COLUMN_WIDTH_VALUE_VERIFIED"
+            reason = "本地 XLSX、SheetDTO、payload 与 WPS ColumnWidth 读回一致"
+
+        verified = classification == "WPS_COLUMN_WIDTH_VALUE_VERIFIED"
+        if verified:
+            verified_count += 1
+        else:
+            failed_count += 1
+        stage_counts[classification] = stage_counts.get(classification, 0) + 1
+
+        physical_width_status = "READ_BACK"
+        if remote_width_points is None:
+            physical_width_status = "READBACK_MISSING"
+            warning_count += 1
+        elif (
+            before_column_width is not None
+            and before_width_points is not None
+            and payload_width is not None
+            and abs(before_column_width - payload_width) > 0.5
+            and abs(remote_width_points - before_width_points) <= 0.01
+        ):
+            physical_width_status = "APPLY_MISMATCH"
+            warning_count += 1
+
+        items.append(
+            {
+                **dict(source),
+                "payload_requested_width": payload_width,
+                "wps_requested_width": wps_requested_width,
+                "before_column_width": before_column_width,
+                "remote_column_width": remote_column_width,
+                "before_width_points": before_width_points,
+                "remote_width_points": remote_width_points,
+                "difference": round(difference, 4) if difference is not None else None,
+                "physical_width_change_points": _safe_float(
+                    remote.get("physical_width_change_points")
+                ),
+                "read_back": remote_column_width is not None,
+                "physical_width_status": physical_width_status,
+                "verified": verified,
+                "classification": classification,
+                "reason": reason,
+            }
+        )
+
+    total = len(items)
+    verified_ratio = round(verified_count / total, 4) if total else 0.0
+    largest_differences = sorted(
+        items,
+        key=lambda item: (
+            item.get("difference") is not None,
+            float(item.get("difference") or 0.0),
+        ),
+        reverse=True,
+    )[:10]
+    representative_columns = [
+        item
+        for item in items
+        if item["sheet_name"] == "轨旁AP业务"
+        and item["column"] in {"A", "B", "C", "G", "H", "P"}
+    ]
+    status = (
+        "FAILED"
+        if failed_count
+        else "SUCCESS_WITH_WARNINGS"
+        if warning_count
+        else "SUCCESS"
+    )
+    return {
+        "status": status,
+        "tolerance": 0.5,
+        "total_columns": total,
+        "local_explicit_width_count": total,
+        "dto_match_count": dto_match_count,
+        "payload_match_count": payload_match_count,
+        "attempted_count": _safe_int(
+            raw_column_result.get("attempted_count")
+            if isinstance(raw_column_result, Mapping)
+            else 0
+        ),
+        "read_back_count": read_back_count,
+        "physical_read_back_count": physical_read_back_count,
+        "verified_count": verified_count,
+        "warning_count": warning_count,
+        "failed_count": failed_count,
+        "verified_ratio": verified_ratio,
+        "stage_counts": stage_counts,
+        "largest_differences": largest_differences,
+        "representative_columns": representative_columns,
+        "items": items,
+    }
+
+
+def _append_column_width_report_warning(
+    remote_result: dict[str, Any],
+    report: Mapping[str, Any],
+) -> None:
+    format_results = remote_result.get("format_results")
+    if not isinstance(format_results, dict):
+        format_results = {}
+        remote_result["format_results"] = format_results
+    column_result = format_results.get("column_width")
+    if not isinstance(column_result, dict):
+        column_result = {}
+        format_results["column_width"] = column_result
+    for key in (
+        "status",
+        "attempted_count",
+        "read_back_count",
+        "physical_read_back_count",
+        "verified_count",
+        "warning_count",
+        "failed_count",
+        "verified_ratio",
+        "stage_counts",
+        "largest_differences",
+        "representative_columns",
+    ):
+        column_result[key] = report.get(key)
+
+    if str(report.get("status") or "") in {"SUCCESS", "NOT_ENABLED"}:
+        return
+    warnings = remote_result.get("format_warnings")
+    if not isinstance(warnings, list):
+        warnings = []
+        remote_result["format_warnings"] = warnings
+    warnings.append(
+        {
+            "sheet_name": "_NetConsoleColumnWidths",
+            "feature": "column_width_verification",
+            "reason": (
+                f"生产列宽自动验收：验证通过 {int(report.get('verified_count') or 0)}/"
+                f"{int(report.get('total_columns') or 0)}，告警 {int(report.get('warning_count') or 0)}，"
+                f"失败 {int(report.get('failed_count') or 0)}"
+            ),
+        }
+    )
+    remote_result["format_warning_count"] = len(warnings)
+
+
+def _safe_float(value: object) -> float | None:
+    try:
+        number = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return number if number == number and abs(number) != float("inf") else None
+
+
+def _safe_int(value: object) -> int:
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _width_matches(
+    left: float | None,
+    right: float | None,
+    *,
+    tolerance: float,
+) -> bool:
+    return left is not None and right is not None and abs(left - right) <= tolerance
+
+
 def _sheet_tab_color_probe_verified(target: WpsSyncTarget) -> bool:
     diagnostic = target.sheet_tab_color_probe_diagnostic
     return (
         str(diagnostic.get("status") or "").upper()
         in {"SUCCESS", "SUCCESS_WITH_WARNINGS"}
         and bool(diagnostic.get("sheet_tab_color_verified"))
+    )
+
+
+def _column_width_probe_verified(target: WpsSyncTarget) -> bool:
+    diagnostic = target.column_width_probe_diagnostic
+    return (
+        str(diagnostic.get("status") or "").upper()
+        in {"SUCCESS", "SUCCESS_WITH_WARNINGS"}
+        and bool(diagnostic.get("column_width_verified"))
     )
 
 
@@ -1855,6 +2288,10 @@ def _operation_diagnostic(
         "sheet_tab_color_verified",
         "expected_tab_color",
         "actual_tab_color",
+        "column_width_verified",
+        "expected_column_widths",
+        "actual_column_widths",
+        "probe_sheet_visible",
         "probe_sheet",
         "binding_status",
         "local_binding_id",

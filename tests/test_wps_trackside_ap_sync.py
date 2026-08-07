@@ -31,6 +31,10 @@ from netconsole.services.wps_trackside_ap_sync import (
     WPS_SCRIPT_VERSIONS,
     WPS_STANDARD_FORMAT_MIRROR_EXPERIMENTAL,
     WPS_SYNC_TASK_TYPE,
+    _append_column_width_report_warning,
+    _column_width_manifest_from_xlsx,
+    _column_width_probe_verified,
+    _column_width_verification_report,
     _openpyxl_color,
     _assert_standard_sync_readiness,
     _sheet_tab_color_probe_verified,
@@ -154,6 +158,7 @@ def test_wps_binding_id_migration_is_additive_repeatable_and_preserves_rows(
             (original.target_id,),
         ).fetchone()[0]
     assert "binding_id" in columns
+    assert "column_width_probe_diagnostic" in columns
     assert row_count == 1
     assert migrated.target_id == original.target_id
     assert migrated.target_name == "保留的普通表格"
@@ -689,6 +694,179 @@ def test_workbook_dto_preserves_sheet_order_and_compresses_format_runs(
     assert "borders" not in serialized
 
 
+def test_workbook_dto_can_include_only_explicit_column_widths(tmp_path: Path) -> None:
+    path = tmp_path / "dimensions.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "轨旁AP业务"
+    sheet.append(["站点", "AP名称"])
+    sheet.column_dimensions["A"].width = 18
+    sheet.column_dimensions["B"].width = 32.5
+    sheet.row_dimensions[1].height = 26
+    sheet["A1"].fill = PatternFill(fill_type="solid", fgColor="FFC6EFCE")
+    workbook.save(path)
+    workbook.close()
+
+    dto = workbook_dto_from_xlsx(path, include_column_widths=True)
+
+    assert dto.sheets[0].column_widths == {"A": 18.0, "B": 32.5}
+    assert dto.sheets[0].row_heights == {}
+    assert dto.sheets[0].format_runs == ()
+    assert dto.sheets[0].merges == []
+
+
+def test_column_width_manifest_preserves_source_dto_widths_and_headers(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "column-width-manifest.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "轨旁AP业务"
+    sheet.append(["归属站点", "室内交换机"])
+    sheet.column_dimensions["A"].width = 22.55
+    sheet.column_dimensions["B"].width = 40
+    workbook.save(path)
+    workbook.close()
+    dto = workbook_dto_from_xlsx(path, include_column_widths=True)
+
+    manifest = _column_width_manifest_from_xlsx(path, dto)
+
+    assert manifest == [
+        {
+            "sheet_name": "轨旁AP业务",
+            "column": "A",
+            "range": "A:A",
+            "column_label": "归属站点",
+            "local_workbook_width": 22.55,
+            "sheet_dto_width": 22.55,
+        },
+        {
+            "sheet_name": "轨旁AP业务",
+            "column": "B",
+            "range": "B:B",
+            "column_label": "室内交换机",
+            "local_workbook_width": 40.0,
+            "sheet_dto_width": 40.0,
+        },
+    ]
+
+
+def test_column_width_verification_report_classifies_all_pipeline_stages() -> None:
+    columns = ("A", "B", "C", "D")
+    local_widths = {"A": 18.0, "B": 22.0, "C": 30.0, "D": 40.0}
+    dto_widths = {"A": 17.0, "B": 22.0, "C": 30.0, "D": 40.0}
+    payload_widths = {"A": 17.0, "B": 21.0, "C": 30.0, "D": 40.0}
+    remote_widths = {"A": 17.0, "B": 21.0, "C": 28.0, "D": 40.0}
+    manifest = [
+        {
+            "sheet_name": "轨旁AP业务",
+            "column": column,
+            "range": f"{column}:{column}",
+            "column_label": column,
+            "local_workbook_width": local_widths[column],
+            "sheet_dto_width": dto_widths[column],
+        }
+        for column in columns
+    ]
+    request_payload = {
+        "workbook": {
+            "sheets": [
+                {
+                    "sheet_name": "轨旁AP业务",
+                    "column_widths": payload_widths,
+                }
+            ]
+        }
+    }
+    remote_result = {
+        "column_width_result": {
+            "attempted_count": 4,
+            "items": [
+                {
+                    "sheet_name": "轨旁AP业务",
+                    "column": column,
+                    "requested_width": payload_widths[column],
+                    "before_column_width": 8.43,
+                    "remote_column_width": remote_widths[column],
+                    "before_width_points": 59.01,
+                    "remote_width_points": (
+                        59.01 if column == "D" else remote_widths[column] * 7
+                    ),
+                    "physical_width_change_points": (
+                        0.0 if column == "D" else remote_widths[column] * 7 - 59.01
+                    ),
+                    "read_back": True,
+                }
+                for column in columns
+            ],
+        }
+    }
+
+    report = _column_width_verification_report(
+        manifest=manifest,
+        request_payload=request_payload,
+        remote_result=remote_result,
+        enabled=True,
+    )
+
+    assert report["status"] == "FAILED"
+    assert report["total_columns"] == 4
+    assert report["dto_match_count"] == 3
+    assert report["payload_match_count"] == 3
+    assert report["attempted_count"] == 4
+    assert report["read_back_count"] == 4
+    assert report["physical_read_back_count"] == 4
+    assert report["verified_count"] == 1
+    assert report["warning_count"] == 1
+    assert report["failed_count"] == 3
+    assert report["stage_counts"] == {
+        "WORKBOOK_DTO_WIDTH_MISMATCH": 1,
+        "WPS_PAYLOAD_WIDTH_MISMATCH": 1,
+        "WPS_COLUMN_WIDTH_APPLY_MISMATCH": 1,
+        "WPS_COLUMN_WIDTH_VALUE_VERIFIED": 1,
+    }
+    assert report["largest_differences"][0]["column"] == "C"
+    assert report["largest_differences"][0]["difference"] == 2.0
+    assert [item["column"] for item in report["representative_columns"]] == ["A", "B", "C"]
+    assert report["items"][-1]["physical_width_status"] == "APPLY_MISMATCH"
+
+
+def test_column_width_report_failure_becomes_noncritical_format_warning() -> None:
+    remote_result: dict[str, object] = {
+        "format_results": {"column_width": {"status": "SUCCESS"}},
+        "format_warnings": [],
+    }
+    report = {
+        "status": "FAILED",
+        "total_columns": 143,
+        "attempted_count": 143,
+        "read_back_count": 143,
+        "physical_read_back_count": 143,
+        "verified_count": 141,
+        "warning_count": 0,
+        "failed_count": 2,
+        "verified_ratio": 0.986,
+        "stage_counts": {
+            "WPS_COLUMN_WIDTH_VALUE_VERIFIED": 141,
+            "WPS_COLUMN_WIDTH_APPLY_MISMATCH": 2,
+        },
+        "largest_differences": [],
+        "representative_columns": [],
+    }
+
+    _append_column_width_report_warning(remote_result, report)
+
+    assert remote_result["format_warning_count"] == 1
+    assert remote_result["format_warnings"] == [
+        {
+            "sheet_name": "_NetConsoleColumnWidths",
+            "feature": "column_width_verification",
+            "reason": "生产列宽自动验收：验证通过 141/143，告警 0，失败 2",
+        }
+    ]
+    assert remote_result["format_results"]["column_width"]["status"] == "FAILED"
+
+
 @pytest.mark.parametrize(
     ("color", "expected"),
     [
@@ -724,6 +902,22 @@ def test_sheet_tab_color_formal_sync_gate_requires_successful_probe() -> None:
     assert _sheet_tab_color_probe_verified(target) is False
 
 
+def test_column_width_probe_diagnostic_recognizes_successful_readback() -> None:
+    target = _wps_target()
+    assert _column_width_probe_verified(target) is False
+
+    target.column_width_probe_diagnostic.update(
+        {
+            "status": "SUCCESS",
+            "column_width_verified": True,
+        }
+    )
+    assert _column_width_probe_verified(target) is True
+
+    target.column_width_probe_diagnostic["column_width_verified"] = False
+    assert _column_width_probe_verified(target) is False
+
+
 def test_workbook_dto_omits_format_mirror_by_default() -> None:
     assert WPS_STANDARD_FORMAT_MIRROR_EXPERIMENTAL is False
 
@@ -738,8 +932,8 @@ def test_standard_airscript_keeps_format_mirror_disabled_behind_explicit_gate() 
     )
     script = script_path.read_text(encoding="utf-8")
 
-    assert 'const SCRIPT_VERSION = "2.4.0-standard";' in script
-    assert 'const DEPLOYMENT_ID = "trackside-ap-standard-2.4.0";' in script
+    assert 'const SCRIPT_VERSION = "2.5.0-standard";' in script
+    assert 'const DEPLOYMENT_ID = "trackside-ap-standard-2.5.0";' in script
     assert "const FORMAT_MIRROR_EXPERIMENTAL = false;" in script
     assert "function writeStableSheet(sheetDto)" in script
     assert "if (used && used.ClearContents) used.ClearContents();" in script
@@ -766,6 +960,19 @@ def test_standard_airscript_keeps_format_mirror_disabled_behind_explicit_gate() 
     assert 'error_code: "WPS_SHEET_ORDER_VERIFY_FAILED"' in script
     assert 'if (args.operation === "sheet_order_probe") return sheetOrderProbe(args);' in script
     assert 'if (args.operation === "sheet_tab_color_probe") return sheetTabColorProbe(args);' in script
+    assert 'if (args.operation === "column_width_probe") return columnWidthProbe(args);' in script
+    assert "const columnWidthEnabled = args.column_width_enabled === true;" in script
+    assert "applyBusinessColumnWidths(sheets, formatWarnings)" in script
+    assert 'sheet.Name, "column_width"' in script
+    assert "requested_width" in script
+    assert "remote_column_width" in script
+    assert "remote_width_points" in script
+    assert "physical_width_change_points" in script
+    assert "WPS_COLUMN_WIDTH_VALUE_VERIFIED" in script
+    assert "const rowHeightEnabled" not in script
+    assert "function rowHeightProbe" not in script
+    assert 'row_height: {' in script
+    assert 'status: "NOT_ENABLED"' in script
     assert "function toWpsColor(value)" in script
     assert 'sheet.Tab.Color = expected;' in script
     assert 'sheet.Name, "sheet_tab_color"' in script
@@ -844,23 +1051,51 @@ def test_dual_sync_reuses_one_snapshot_for_both_adapters(monkeypatch, tmp_path: 
         def post(self, target, *, token, argv):
             assert token == "test-token"
             self.payloads.append(dict(argv))
+            body = {
+                "success": True,
+                "protocol_version": 2,
+                "script_version": "test",
+                "target_type": target.target_type.value,
+                "document_id": target.expected_document_id,
+                "target_batch_id": argv.get("target_batch_id"),
+                "site_id": argv.get("site_id"),
+                "business_key": argv.get("business_key"),
+                "snapshot_revision": argv.get("snapshot_revision"),
+                "snapshot_sha256": argv.get("snapshot_sha256"),
+            }
+            if target.target_code == STANDARD_TARGET_CODE:
+                body.update(
+                    {
+                        "column_width_result": {
+                            "attempted_count": 1,
+                            "items": [
+                                {
+                                    "sheet_name": "轨旁AP业务",
+                                    "column": "A",
+                                    "requested_width": 22.55,
+                                    "before_column_width": 8.43,
+                                    "remote_column_width": 22.55,
+                                    "before_width_points": 59.01,
+                                    "remote_width_points": 157.85,
+                                    "physical_width_change_points": 98.84,
+                                    "read_back": True,
+                                    "verified": True,
+                                }
+                            ],
+                        },
+                        "format_results": {
+                            "column_width": {"status": "SUCCESS"},
+                            "row_height": {"status": "NOT_ENABLED"},
+                        },
+                        "format_warnings": [],
+                    }
+                )
             return type(
                 "Response",
                 (),
                 {
                     "status_code": 200,
-                    "body": {
-                        "success": True,
-                        "protocol_version": 2,
-                        "script_version": "test",
-                        "target_type": target.target_type.value,
-                        "document_id": target.expected_document_id,
-                        "target_batch_id": argv.get("target_batch_id"),
-                        "site_id": argv.get("site_id"),
-                        "business_key": argv.get("business_key"),
-                        "snapshot_revision": argv.get("snapshot_revision"),
-                        "snapshot_sha256": argv.get("snapshot_sha256"),
-                    },
+                    "body": body,
                 },
             )
 
@@ -900,19 +1135,67 @@ def test_dual_sync_reuses_one_snapshot_for_both_adapters(monkeypatch, tmp_path: 
             "created_at": "2026-08-07T10:00:00+08:00",
         },
     )
-    from netconsole.models.wps_sync import WorkbookDTO
+    from netconsole.models.wps_sync import WorkbookDTO, WorkbookSheetDTO, WpsSyncMode
 
+    workbook = WorkbookDTO(
+        sheets=(
+            WorkbookSheetDTO(
+                logical_sheet_key="trackside_ap_business",
+                sheet_name="轨旁AP业务",
+                sync_mode=WpsSyncMode.FULL_REPLACE,
+                cells=[["归属站点"]],
+                row_count=1,
+                column_count=1,
+                column_widths={"A": 22.55},
+            ),
+        )
+    )
+    manifest = [
+        {
+            "sheet_name": "轨旁AP业务",
+            "column": "A",
+            "range": "A:A",
+            "column_label": "归属站点",
+            "local_workbook_width": 22.55,
+            "sheet_dto_width": 22.55,
+        }
+    ]
     monkeypatch.setattr(
         service,
         "_build_workbook_dto",
-        lambda site_id, batch_id, snapshot: (WorkbookDTO(sheets=()), "sha-1", 10),
+        lambda site_id, batch_id, snapshot: (workbook, "sha-1", 10, manifest),
     )
     result = service.sync("hzl10")
     assert result["status"] == "SUCCESS"
     assert [payload["snapshot_revision"] for payload in fake.payloads] == ["revision-1", "revision-1"]
     assert [payload["snapshot_sha256"] for payload in fake.payloads] == ["sha-1", "sha-1"]
     assert fake.payloads[0]["target_batch_id"] != fake.payloads[1]["target_batch_id"]
-    assert [payload["sheet_tab_color_enabled"] for payload in fake.payloads] == [True, False]
+    payload_by_code = {
+        payload["target_code"]: payload
+        for payload in fake.payloads
+    }
+    assert payload_by_code[STANDARD_TARGET_CODE]["sheet_tab_color_enabled"] is True
+    assert payload_by_code[SMART_TARGET_CODE]["sheet_tab_color_enabled"] is False
+    assert payload_by_code[STANDARD_TARGET_CODE]["column_width_enabled"] is True
+    assert payload_by_code[SMART_TARGET_CODE]["column_width_enabled"] is False
+    assert "row_height_enabled" not in payload_by_code[STANDARD_TARGET_CODE]
+    assert "row_height_enabled" not in payload_by_code[SMART_TARGET_CODE]
+    standard_result = next(
+        target
+        for target in result["targets"]
+        if target["target_code"] == STANDARD_TARGET_CODE
+    )
+    report = standard_result["column_width_verification_report"]
+    assert report["status"] == "SUCCESS"
+    assert report["local_explicit_width_count"] == 1
+    assert report["dto_match_count"] == 1
+    assert report["payload_match_count"] == 1
+    assert report["attempted_count"] == 1
+    assert report["read_back_count"] == 1
+    assert report["physical_read_back_count"] == 1
+    assert report["verified_count"] == 1
+    assert report["failed_count"] == 0
+    assert report["representative_columns"][0]["column_label"] == "归属站点"
 
 
 def test_wps_sync_aggregates_noncritical_format_warnings(
@@ -968,7 +1251,7 @@ def test_wps_sync_aggregates_noncritical_format_warnings(
     monkeypatch.setattr(
         service,
         "_build_workbook_dto",
-        lambda site_id, batch_id, snapshot: (WorkbookDTO(sheets=()), "sha-1", 10),
+        lambda site_id, batch_id, snapshot: (WorkbookDTO(sheets=()), "sha-1", 10, []),
     )
 
     result = service.sync("hzl10", target_codes=[STANDARD_TARGET_CODE])
@@ -1071,6 +1354,8 @@ def _seed_verified_wps_target(
         "runtime_write_probe",
         "sync_test_sheet",
         "sheet_order_probe",
+        "sheet_tab_color_probe",
+        "column_width_probe",
     ):
         repository.update_target_diagnostic(
             target.target_id,
@@ -1115,6 +1400,7 @@ def test_wps_target_configuration_noop_and_non_identity_changes_keep_deployment(
     assert refreshed.remote_script_id == "script-one"
     assert refreshed.remote_deployment_id == WPS_DEPLOYMENT_IDS[STANDARD_TARGET_CODE]
     assert refreshed.sheet_order_probe_diagnostic["status"] == "SUCCESS"
+    assert refreshed.column_width_probe_diagnostic["status"] == "SUCCESS"
     if "token" in update:
         assert repository.resolve_token(target) == "rotated-token"
 
@@ -1140,6 +1426,8 @@ def test_wps_target_configuration_document_identity_change_clears_all_runtime_st
     assert refreshed.runtime_probe_diagnostic == {}
     assert refreshed.sync_test_diagnostic == {}
     assert refreshed.sheet_order_probe_diagnostic == {}
+    assert refreshed.sheet_tab_color_probe_diagnostic == {}
+    assert refreshed.column_width_probe_diagnostic == {}
     assert refreshed.remote_identity_verified_at == ""
     assert target.remote_script_id == "script-one"
 
@@ -1401,6 +1689,61 @@ def test_wps_sheet_tab_color_probe_is_independent_and_persists_verification(
     assert target.runtime_probe_diagnostic == {}
     assert target.sync_test_diagnostic == {}
     assert target.sheet_order_probe_diagnostic == {}
+    assert target.binding_status == "UNKNOWN"
+
+
+def test_wps_column_width_probe_is_independent_and_persists_verification(
+    tmp_path: Path,
+) -> None:
+    operations: list[str] = []
+    body = {
+        "success": True,
+        "status": "SUCCESS",
+        "protocol_version": 2,
+        "script_version": WPS_SCRIPT_VERSIONS[STANDARD_TARGET_CODE],
+        "deployment_id": WPS_DEPLOYMENT_IDS[STANDARD_TARGET_CODE],
+        "script_id": "script-one",
+        "target_type": "WPS_STANDARD_SPREADSHEET",
+        "target_code": STANDARD_TARGET_CODE,
+        "document_id": "standard",
+        "binding_status": "BOUND",
+        "runtime_capability": "VERIFIED",
+        "column_width_verified": True,
+        "expected_column_widths": {"A": 8, "B": 15, "C": 25, "D": 40},
+        "actual_column_widths": {"A": 8, "B": 15, "C": 25, "D": 40},
+        "probe_sheet": "_NetConsoleSyncTest",
+        "message": "列宽探针通过",
+    }
+
+    class FakeClient:
+        def post(self, target, *, token, argv):
+            operations.append(str(argv["operation"]))
+            return WpsHttpResponse(status_code=200, body=body)
+
+    service = TracksideApWpsSyncService(PathResolver(tmp_path), client=FakeClient())
+    service.configure_target(
+        "hzl10",
+        STANDARD_TARGET_CODE,
+        document_open_url="https://www.kdocs.cn/l/standard",
+        webhook_url="https://www.kdocs.cn/api/v3/ide/file/standard/script/script-one/sync_task",
+        token="test-token",
+    )
+
+    result = service.column_width_probe("hzl10", STANDARD_TARGET_CODE)
+    target = service._repository("hzl10").get_target(
+        TRACKSIDE_AP_WPS_BUSINESS_KEY,
+        STANDARD_TARGET_CODE,
+    )
+
+    assert operations == ["column_width_probe"]
+    assert result["column_width_verified"] is True
+    assert target.column_width_probe_diagnostic["status"] == "SUCCESS"
+    assert target.column_width_probe_diagnostic["expected_column_widths"] == body["expected_column_widths"]
+    assert target.runtime_capability == "DEPLOYMENT_PENDING"
+    assert target.runtime_probe_diagnostic == {}
+    assert target.sync_test_diagnostic == {}
+    assert target.sheet_order_probe_diagnostic == {}
+    assert target.sheet_tab_color_probe_diagnostic == {}
     assert target.binding_status == "UNKNOWN"
 
 

@@ -14,16 +14,16 @@ const scripts: Array<{
   {
     targetCode: 'wps_standard_spreadsheet',
     kind: 'probe',
-    scriptVersion: '2.4.0-standard',
-    deploymentId: 'trackside-ap-standard-2.4.0',
+    scriptVersion: '2.5.0-standard',
+    deploymentId: 'trackside-ap-standard-2.5.0',
     documentId: '549847228994',
     targetType: 'WPS_STANDARD_SPREADSHEET',
   },
   {
     targetCode: 'wps_standard_spreadsheet',
     kind: 'sync',
-    scriptVersion: '2.4.0-standard',
-    deploymentId: 'trackside-ap-standard-2.4.0',
+    scriptVersion: '2.5.0-standard',
+    deploymentId: 'trackside-ap-standard-2.5.0',
     documentId: '549847228994',
     targetType: 'WPS_STANDARD_SPREADSHEET',
   },
@@ -47,14 +47,23 @@ const scripts: Array<{
 
 function standardSpreadsheetRuntime(
   initialNames: string[],
-  options: { hiddenFailureNames?: string[]; noMoveNames?: string[]; tabColorFailureNames?: string[] } = {},
+  options: {
+    hiddenFailureNames?: string[]
+    noMoveNames?: string[]
+    tabColorFailureNames?: string[]
+    columnWidthFailureNames?: string[]
+    columnWidthMismatchNames?: string[]
+  } = {},
 ) {
   const hiddenFailureNames = new Set(options.hiddenFailureNames || [])
   const noMoveNames = new Set(options.noMoveNames || [])
   const tabColorFailureNames = new Set(options.tabColorFailureNames || [])
+  const columnWidthFailureNames = new Set(options.columnWidthFailureNames || [])
+  const columnWidthMismatchNames = new Set(options.columnWidthMismatchNames || [])
   const moves: Array<{ sheet: string; before: string; after: string }> = []
   const inserts: Array<{ sheet: string; address: string }> = []
   const writes: Array<{ sheet: string; address: string; value: unknown }> = []
+  const columnWidths: Array<{ sheet: string; column: string; width: number }> = []
   const bindingRows = [
     ['document_id', '549847228994'],
     ['binding_id', 'wpsbind_v1_stable'],
@@ -103,6 +112,21 @@ function standardSpreadsheetRuntime(
             return range
           },
         }
+        const columnMatch = address.match(/^([A-Z]+):\1$/)
+        Object.defineProperty(range, 'ColumnWidth', {
+          enumerable: true,
+          get: () => {
+            if (!columnMatch) return undefined
+            return [...columnWidths].reverse().find((item) => (
+              item.sheet === String(sheet.Name) && item.column === columnMatch[1]
+            ))?.width
+          },
+          set: (value) => {
+            if (!columnMatch) throw new Error(`invalid column range: ${address}`)
+            if (columnWidthFailureNames.has(String(sheet.Name))) throw new Error('column width unsupported')
+            columnWidths.push({ sheet: String(sheet.Name), column: columnMatch[1], width: Number(value) })
+          },
+        })
         return range
       },
       Move(before: Record<string, any> | null = null, after: Record<string, any> | null = null) {
@@ -141,6 +165,23 @@ function standardSpreadsheetRuntime(
         tabColor = value
       },
     })
+    sheet.Columns = {
+      Item(column: string) {
+        const currentWidth = () => [...columnWidths].reverse().find((item) => (
+          item.sheet === String(sheet.Name) && item.column === String(column)
+        ))?.width ?? 8.43
+        return {
+          get ColumnWidth(): number { return currentWidth() },
+          set ColumnWidth(value: number) {
+            if (columnWidthFailureNames.has(String(sheet.Name))) throw new Error('column width unsupported')
+            const expected = Number(value)
+            const stored = columnWidthMismatchNames.has(String(sheet.Name)) ? expected - 2 : expected
+            columnWidths.push({ sheet: String(sheet.Name), column: String(column), width: stored })
+          },
+          get Width(): number { return Number((currentWidth() * 7).toFixed(2)) },
+        }
+      },
+    }
     return sheet
   }
 
@@ -162,6 +203,7 @@ function standardSpreadsheetRuntime(
     inserts,
     moves,
     writes,
+    columnWidths,
     names: () => sheets.map((sheet) => String(sheet.Name)),
   }
 }
@@ -252,6 +294,7 @@ describe('WPS AirScript deployment sources', () => {
     expect(source).toContain('sync_test_sheet')
     expect(source).toContain('sheet_order_probe')
     expect(source).toContain('sheet_tab_color_probe')
+    expect(source).toContain('column_width_probe')
     expect(source).toContain('_NetConsoleSyncTest')
     expect(source).toContain('Application.Worksheets')
     expect(source).not.toContain('ActiveWorkbook')
@@ -379,6 +422,177 @@ describe('WPS AirScript deployment sources', () => {
       expected_tab_color_value: 13561798,
       actual_tab_color: 13561798,
       probe_sheet: '_NetConsoleSyncTest',
+    })
+  })
+
+  it('probes four distinct column widths on the sync test sheet', () => {
+    const runtime = standardSpreadsheetRuntime([
+      '保留业务页',
+      '_NetConsoleSyncTest',
+      '_NetConsoleSyncMeta',
+    ])
+
+    const result = executeStandardSpreadsheet(runtime, {
+      operation: 'column_width_probe',
+      protocol_version: 2,
+      target_type: 'WPS_STANDARD_SPREADSHEET',
+      target_code: 'wps_standard_spreadsheet',
+      site_id: 'hzl10',
+      business_key: 'rail_transit.trackside_ap_business',
+      binding_id: 'wpsbind_v1_stable',
+      probe_id: 'column-width-one',
+      script_id: 'test',
+    })
+
+    expect(result).toMatchObject({
+      success: true,
+      status: 'SUCCESS',
+      column_width_verified: true,
+      expected_column_widths: { A: 8, B: 15, C: 25, D: 40 },
+      actual_column_widths: { A: 8, B: 15, C: 25, D: 40 },
+      probe_sheet: '_NetConsoleSyncTest',
+    })
+    expect(runtime.columnWidths).toEqual([
+      { sheet: '_NetConsoleSyncTest', column: 'A', width: 8 },
+      { sheet: '_NetConsoleSyncTest', column: 'B', width: 15 },
+      { sheet: '_NetConsoleSyncTest', column: 'C', width: 25 },
+      { sheet: '_NetConsoleSyncTest', column: 'D', width: 40 },
+    ])
+  })
+
+  it('applies workbook column widths after stable data writes when the probe gate is enabled', () => {
+    const runtime = standardSpreadsheetRuntime(['轨旁AP业务', '_NetConsoleSyncMeta'])
+    const args = standardSyncArgs(['轨旁AP业务']) as Record<string, any>
+    args.column_width_enabled = true
+    args.workbook.sheets[0].column_widths = { A: 18, B: 32.5 }
+
+    const result = executeStandardSpreadsheet(runtime, args)
+
+    expect(result).toMatchObject({
+      success: true,
+      column_width_enabled: true,
+      applied_column_width_count: 2,
+      column_width_result: {
+        attempted_count: 2,
+        items: [
+          expect.objectContaining({
+            sheet_name: '轨旁AP业务',
+            column: 'A',
+            requested_width: 18,
+            before_column_width: 8.43,
+            remote_column_width: 18,
+            before_width_points: 59.01,
+            remote_width_points: 126,
+            physical_width_change_points: 66.99,
+            read_back: true,
+            verified: true,
+            classification: 'WPS_COLUMN_WIDTH_VALUE_VERIFIED',
+          }),
+          expect.objectContaining({
+            sheet_name: '轨旁AP业务',
+            column: 'B',
+            requested_width: 32.5,
+            remote_column_width: 32.5,
+            remote_width_points: 227.5,
+          }),
+        ],
+      },
+      format_results: {
+        column_width: {
+          status: 'SUCCESS',
+          attempted_count: 2,
+          verified_count: 2,
+          failed_count: 0,
+          applied_count: 2,
+          expected_count: 2,
+          warning_count: 0,
+        },
+        row_height: { status: 'NOT_ENABLED' },
+      },
+    })
+    expect(runtime.columnWidths).toEqual([
+      { sheet: '轨旁AP业务', column: 'A', width: 18 },
+      { sheet: '轨旁AP业务', column: 'B', width: 32.5 },
+    ])
+    expect(result.sheets[0]).toMatchObject({
+      data_write_ms: expect.any(Number),
+      dimension_ms: expect.any(Number),
+      format_ms: 0,
+      format_run_count: 0,
+    })
+  })
+
+  it('keeps business data successful when column width application is unsupported', () => {
+    const runtime = standardSpreadsheetRuntime(
+      ['轨旁AP业务', '_NetConsoleSyncMeta'],
+      { columnWidthFailureNames: ['轨旁AP业务'] },
+    )
+    const args = standardSyncArgs(['轨旁AP业务']) as Record<string, any>
+    args.column_width_enabled = true
+    args.workbook.sheets[0].column_widths = { A: 18 }
+
+    const result = executeStandardSpreadsheet(runtime, args)
+
+    expect(result).toMatchObject({
+      success: true,
+      status: 'SUCCESS_WITH_WARNINGS',
+      written_sheet_count: 1,
+      format_results: {
+        column_width: {
+          status: 'SUCCESS_WITH_WARNINGS',
+          attempted_count: 1,
+          verified_count: 0,
+          failed_count: 1,
+          applied_count: 0,
+          expected_count: 1,
+          warning_count: 1,
+        },
+      },
+    })
+    expect(result.format_warnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        sheet_name: '轨旁AP业务',
+        feature: 'column_width',
+        range: 'A:A',
+      }),
+    ]))
+  })
+
+  it('reports a column width mismatch when assignment succeeds but readback differs', () => {
+    const runtime = standardSpreadsheetRuntime(
+      ['轨旁AP业务', '_NetConsoleSyncMeta'],
+      { columnWidthMismatchNames: ['轨旁AP业务'] },
+    )
+    const args = standardSyncArgs(['轨旁AP业务']) as Record<string, any>
+    args.column_width_enabled = true
+    args.workbook.sheets[0].column_widths = { A: 18 }
+
+    const result = executeStandardSpreadsheet(runtime, args)
+
+    expect(result).toMatchObject({
+      success: true,
+      status: 'SUCCESS_WITH_WARNINGS',
+      written_sheet_count: 1,
+      format_results: {
+        column_width: {
+          status: 'SUCCESS_WITH_WARNINGS',
+          attempted_count: 1,
+          verified_count: 0,
+          failed_count: 1,
+          warning_count: 1,
+          examples: [expect.objectContaining({
+            sheet_name: '轨旁AP业务',
+            column: 'A',
+            range: 'A:A',
+            requested_width: 18,
+            remote_column_width: 16,
+            difference: 2,
+            read_back: true,
+            verified: false,
+            classification: 'WPS_COLUMN_WIDTH_APPLY_MISMATCH',
+          })],
+        },
+      },
     })
   })
 

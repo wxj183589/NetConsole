@@ -124,6 +124,15 @@ export function probeTracksideWpsSheetTabColor(targetCode: WpsTracksideTargetCod
   })
 }
 
+export function probeTracksideWpsColumnWidth(targetCode: WpsTracksideTargetCode): Promise<{
+  target_code: WpsTracksideTargetCode
+  result: Record<string, unknown>
+}> {
+  return apiRequest(`${wpsRoot}/targets/${encodeURIComponent(targetCode)}/column-width-probe`, {
+    method: 'POST',
+  })
+}
+
 export function revalidateTracksideWpsDeployment(targetCode: WpsTracksideTargetCode): Promise<{
   target_code: WpsTracksideTargetCode
   result: Record<string, unknown>

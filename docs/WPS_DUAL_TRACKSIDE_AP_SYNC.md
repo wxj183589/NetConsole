@@ -9,7 +9,7 @@
 
 轨旁 AP 页面中的“配置云文档”会分别保存每个目标的“在线文档连接”“webhook地址”和“脚本令牌”。保存 webhook 后，服务端从 webhook 的 `/file/{document_id}/.../script/{script_id}/sync_task` 路径固定文档和脚本身份；同步前会拒绝空地址、非 HTTPS、非 `kdocs.cn` 域名、IP 地址、查询参数和身份不一致的配置。普通在线表格与智能表格不能交叉复用 webhook 或脚本令牌。
 
-连接门禁是：`BOUND` 允许同步；`UNBOUND` 只有在本次请求显式确认初始化绑定时允许；`UNKNOWN` 必须先执行连接测试；`LEGACY_BINDING_ID_MISMATCH` 必须先由用户显式迁移；`MISMATCH` 直接拒绝。连接测试、写入能力探针、`sync_test_sheet`、独立 `sheet_order_probe` 和独立 `sheet_tab_color_probe` 分别持久化执行时间、状态、操作、文档 ID、脚本 ID、脚本版本、部署 ID 和脱敏消息；写入探针还完整保存核心能力、可选能力、全量替换与顶部插行就绪状态。诊断和远端身份是诊断证据，不是互相独立的永久硬门禁。正式同步只要求当前运行时写入探针为 `VERIFIED`，并继续执行绑定校验与运行时身份校验。配置页的“重新验证当前部署”会保留 URL、webhook、令牌和绑定，清除本地验证状态后依次执行连接测试、写入能力探针和 `sync_test_sheet`；两个 Sheet 格式/位置探针都保持独立，不并入既有三项验证链。上述动作只读取或运行探针，绝不自动修改远端绑定。
+连接门禁是：`BOUND` 允许同步；`UNBOUND` 只有在本次请求显式确认初始化绑定时允许；`UNKNOWN` 必须先执行连接测试；`LEGACY_BINDING_ID_MISMATCH` 必须先由用户显式迁移；`MISMATCH` 直接拒绝。连接测试、写入能力探针、`sync_test_sheet`、独立 `sheet_order_probe`、独立 `sheet_tab_color_probe` 和独立 `column_width_probe` 分别持久化执行时间、状态、操作、文档 ID、脚本 ID、脚本版本、部署 ID 和脱敏消息；写入探针还完整保存核心能力、可选能力、全量替换与顶部插行就绪状态。诊断和远端身份是诊断证据，不是互相独立的永久硬门禁。正式同步只要求当前运行时写入探针为 `VERIFIED`，并继续执行绑定校验与运行时身份校验。配置页的“重新验证当前部署”会保留 URL、webhook、令牌和绑定，清除本地验证状态后依次执行连接测试、写入能力探针和 `sync_test_sheet`；三个 Sheet 格式/位置探针都保持独立，不并入既有三项验证链。上述动作只读取或运行探针，绝不自动修改远端绑定。
 
 本地数据库行标识 `target_id` 与云端逻辑绑定 `binding_id` 已分离。`binding_id` 按规范化后的 `site_id + business_key + target_code` 使用 `wpsbind:v1` 规则确定性生成，因此同一业务目标在开发数据根、恢复副本或重新安装后保持一致，不同局点或目标保持隔离。`wps_sync.sqlite` 只执行幂等增量迁移：旧库新增 `binding_id` 列并只回填空值，不重建表、不删除目标、凭据或历史批次；重复初始化不会改变已有稳定值。这个本地迁移不会自动修改远端 `_NetConsoleSyncMeta`。
 
@@ -17,9 +17,9 @@
 
 界面的“升级旧版绑定标识”是显式远端持久化操作。确认框必须展示文档、局点、业务、旧 Binding ID 和新 Binding ID；确认后调用 `migrate_legacy_binding`，参数包含 `expected_old_binding_id` 与 `new_binding_id`。AirScript 再次严格核对 `document_id`、`site_id`、`business_key`、`target_code`、`target_type`，并确认当前远端 Binding ID 仍等于预检时的旧值，随后只更新 `_NetConsoleSyncMeta` 中 `binding_id` 对应的 B 列单元格。任一业务身份不一致、旧值已变化或远端值不是已知旧格式，均返回 `WPS_DOCUMENT_BINDING_MISMATCH` 且零写入；远端已经是新稳定 ID 时返回 `already_migrated=true`，不重复写入。迁移成功后服务端自动执行连接测试、写入能力探针和 `sync_test_sheet`，三项都通过才向界面返回完成。
 
-修改在线文档连接、webhook、webhook 中的文档 ID 或脚本 ID 会清除旧远端身份、五类诊断和运行时探针状态，并将运行时能力降级为 `DEPLOYMENT_PENDING`；已有绑定记录保留，待新的连接测试重新确认。保存完全相同的连接地址和 webhook 是 no-op；修改超时、启用开关或 Token 不会清除远端部署身份、运行时探针或绑定身份。前端仅在草稿真实变化或输入新 Token 时保存，未修改配置时“测试连接”直接执行连接测试。
+修改在线文档连接、webhook、webhook 中的文档 ID 或脚本 ID 会清除旧远端身份、六类诊断和运行时探针状态，并将运行时能力降级为 `DEPLOYMENT_PENDING`；已有绑定记录保留，待新的连接测试重新确认。保存完全相同的连接地址和 webhook 是 no-op；修改超时、启用开关或 Token 不会清除远端部署身份、运行时探针或绑定身份。前端仅在草稿真实变化或输入新 Token 时保存，未修改配置时“测试连接”直接执行连接测试。
 
-普通在线表格的数据写入链路已由杭州地铁 10 号线真实 9 Sheet 同步确认，证据等级为 `USER_FIELD_CONFIRMED`。该 `2.2.0-standard` / `trackside-ap-standard-2.2.0` 状态固定标记为 `WPS_STANDARD_DATA_SYNC_LAST_KNOWN_GOOD`。Phase A 的 `2.3.0-standard` / `trackside-ap-standard-2.3.0` 已由用户现场确认 `Sheet.Move()` 排序和正式 9 Sheet 同步成功，同样标记为 `USER_FIELD_CONFIRMED`。当前 `2.4.0-standard` / `trackside-ap-standard-2.4.0` 增加统一业务 Sheet registry、上线历史块和独立标签色探针；本地自动化已验证，真实 WPS 标签色仍为 `UNVERIFIED`。格式镜像开关继续关闭，列宽、行高、字体、填充、数字格式、对齐、换行、合并和边框均未启用。
+普通在线表格的数据写入链路已由杭州地铁 10 号线真实 9 Sheet 同步确认，证据等级为 `USER_FIELD_CONFIRMED`。该 `2.2.0-standard` / `trackside-ap-standard-2.2.0` 状态固定标记为 `WPS_STANDARD_DATA_SYNC_LAST_KNOWN_GOOD`。Phase A 的 `2.3.0-standard` / `trackside-ap-standard-2.3.0` 已由用户现场确认 `Sheet.Move()` 排序和正式 9 Sheet 同步成功。`2.4.0-standard` / `trackside-ap-standard-2.4.0` 的统一业务 Sheet registry、上线历史块和六个标签色也已由用户现场确认，证据等级均为 `USER_FIELD_CONFIRMED`。`2.4.1-standard` / `trackside-ap-standard-2.4.1` 的独立列宽探针已由用户现场确认 A-D 列读回为 `8 / 15 / 25 / 40` 且视觉宽度明显递增，证据等级为 `USER_FIELD_CONFIRMED`；该能力探针不需要重复执行。旧正式同步显示的 `143/143` 只证明赋值未抛异常，不能证明 143 列远端读回一致。当前候选 `2.5.0-standard` / `trackside-ap-standard-2.5.0` 增加正式 143 列的 XLSX、DTO、payload、`ColumnWidth` 和 `Width(points)` 全链路自动验收；仓库定向自动化已通过，真实 WPS 报告仍为 `UNVERIFIED`。行高、字体、填充、数字格式、对齐、换行、合并和边框继续保持 `NOT_ENABLED`。
 
 ## Phase A：Sheet 顺序（现场已验证）
 
@@ -33,7 +33,21 @@
 
 本地 XLSX 从 registry 应用六个标签色：`AP上线情况概览` 和 `轨旁AP业务` 为 `#C6EFCE`，`当前异常光衰` 为 `#FFEB9C`，`AP光衰处理记录` 为 `#DDEBF7`，`AP离线情况` 和 `AP离线台账` 为 `#D9D9D9`；其余三个业务 Sheet 保持默认。WPS 的 `sheet_tab_color_probe` 只在 `_NetConsoleSyncTest` 上将 `#C6EFCE` 经统一 `toWpsColor()` 转为 RGB 数值并写后读回。只有该目标探针成功后，正式同步才尝试镜像六个业务标签色；单个标签色失败只产生 `sheet_tab_color` warning 和 `SUCCESS_WITH_WARNINGS`，不会把数据同步判为失败。系统 Sheet 不设置业务标签色。字体、填充和边框颜色的后续格式阶段也必须复用同一转换函数。
 
-Phase B～D 仍未启用：Phase B 为列宽和行高，Phase C 为字体、填充、数字格式、对齐和换行，Phase D 为合并、边框、冻结窗格和筛选。默认、透明、Theme 或 Indexed 颜色不进入 DTO；只有显式不透明 RGB 才规范化为 `#RRGGBB`。每个阶段必须在前一阶段真实通过后独立实现、验证和提交。
+## Phase B1：列宽（探针现场已验证，正式读回待验证）
+
+Phase B1 不启用旧的全量格式镜像开关。Python 从同一次本地导出 Workbook 的 `column_dimensions` 直接提取显式 `ColumnWidth` 字符宽度，写入每个 `WorkbookSheetDTO.column_widths`；不换算像素，也不维护按 Sheet 的倍率或魔数。`format_runs`、合并、冻结和其他单元格样式字段保持空载荷。
+
+独立 `column_width_probe` 只操作 `_NetConsoleSyncTest`：写入 A-D 列可视标签，通过 `Worksheet.Columns.Item(column).ColumnWidth` 将列宽依次设置为 `8 / 15 / 25 / 40`，再读回并按 `0.5` 容差校验。该能力已现场确认，不再作为每次正式同步的本地状态门禁；普通在线表格正式同步始终发送 `column_width_enabled=true`，避免重新部署脚本后因清空历史诊断而要求用户重复探针。AirScript 继续先调用未改动的 `writeStableSheet()` 完成全部业务值，再逐列通过同一 API 设置业务列宽并同时读回 `ColumnWidth` 与 `Width(points)`；`AP上线情况概览` 只更新 Sheet 级列宽，不格式化旧历史块。
+
+每个正式业务列保留完整远端项目：Sheet、列、Range、请求宽度、写入前后 `ColumnWidth`、写入前后 `Width(points)`、差异、物理宽度变化、读回状态、验证状态、分类和原因。Python 在临时 XLSX 删除前建立源清单，再与 `SheetDTO`、序列化 payload 和远端项目合并成 `column_width_verification_report`。分类至少区分 `WORKBOOK_DTO_WIDTH_MISMATCH`、`WPS_PAYLOAD_WIDTH_MISMATCH`、`WPS_COLUMN_WIDTH_APPLY_MISMATCH` 和 `WPS_COLUMN_WIDTH_VALUE_VERIFIED`；不在没有证据时引入宽度换算系数。
+
+单列失败记录 `sheet_name`、`feature=column_width`、`range=A:A` 和脱敏原因，目标返回 `SUCCESS_WITH_WARNINGS`，不得把已经成功的数据写入降为失败。报告统计本地显式宽度、DTO 匹配、payload 匹配、设置、远端读回、物理宽度读回、验证通过、告警、失败、验证比例和各故障层级，保留全部列项目，并仅在任务详情展示最大差异和代表列摘要。`轨旁AP业务` 固定抽取 A/B/C/G/H/P 作为代表列。任务详情不能再把“赋值未抛异常”显示为列宽成功。
+
+## Phase B2 及后续格式（未启用）
+
+行高、字体、填充、数字格式、对齐、换行、合并、边框及后续冻结/筛选均为 `NOT_ENABLED`。本阶段不发送 `row_height_enabled`，不提供行高探针，也不把显式行高加入正式 payload；必须等待 Phase B1 的真实 143 列自动验收报告完成后再单独设计、实现和验证。
+
+默认、透明、Theme 或 Indexed 颜色不进入 DTO；只有显式不透明 RGB 才规范化为 `#RRGGBB`。后续所有 WPS 颜色写入必须继续通过唯一 `toWpsColor()` 转换，不能直接把 `#RRGGBB` 字符串赋给 `Color`。
 
 ## AirScript 部署
 
@@ -44,7 +58,7 @@ Phase B～D 仍未启用：Phase B 为列宽和行高，Phase C 为字体、填�
 - [`tools/wps_airscript/trackside_ap_standard_spreadsheet_connection_probe.js`](../tools/wps_airscript/trackside_ap_standard_spreadsheet_connection_probe.js)
 - [`tools/wps_airscript/trackside_ap_smart_sheet_connection_probe.js`](../tools/wps_airscript/trackside_ap_smart_sheet_connection_probe.js)
 
-需要分别复制到对应 WPS 文档并发布。Codex 不能直接修改或发布远端 AirScript。脚本中的 WPS `Application` 对象调用需以当前 WPS AirScript 运行时的实际 API 为准。仓库自动化测试会模拟 `_NetConsoleSyncMeta`、AirScript 2.0 `Move(Before, After)`、`Sheet.Tab.Color` 和顶部整行插入，验证旧绑定迁移边界、动态 DTO 顺序、乱序纠正、系统 Sheet 后置、标签色非关键降级、同批次历史块去重和业务顺序失败；这些本地模拟仍不能替代 WPS 运行时验收。
+需要分别复制到对应 WPS 文档并发布。Codex 不能直接修改或发布远端 AirScript。脚本中的 WPS `Application` 对象调用需以当前 WPS AirScript 运行时的实际 API 为准。仓库自动化测试会模拟 `_NetConsoleSyncMeta`、AirScript 2.0 `Move(Before, After)`、`Sheet.Tab.Color`、`Columns.Item(...).ColumnWidth`、`Columns.Item(...).Width` 和顶部整行插入，验证旧绑定迁移边界、动态 DTO 顺序、乱序纠正、系统 Sheet 后置、列宽与物理宽度写后读回、格式非关键降级、同批次历史块去重和业务顺序失败；这些本地模拟仍不能替代 WPS 运行时验收。
 
 AirScript `sync_task` 的 HTTP 200 响应按 WPS 执行 envelope 解析：外层 `status=finished` 后读取 `data.result`，其中允许是 JSON 字符串或对象；再校验 NetConsole 的 `protocol_version`、`target_type`、`target_code`、`document_id`、`script_id`、`script_version` 和 `deployment_id`。正式同步收到 `success=false` 后立即保留远端 `error_code`、消息、绑定状态、失败 Sheet 和失败操作，不要求错误响应回显批次或快照字段；只有 `success=true` 时才严格校验 `target_batch_id`、局点、业务、revision 和摘要，并在不一致时返回 expected/remote 对照。直接返回协议对象仅作为本地测试 double 的兼容形式，不能据此宣称远端脚本已验证。WPS 编辑器显示“执行完毕”只代表编辑器执行结束，不代表 webhook 有返回值；必须确认 `data.result` 不是 `[Undefined]`。四个部署脚本的顶层入口必须是 `return main();`，不能使用单独 `main();` 或 `console.log(main())`。脚本版本与部署 ID 由本地常量和脚本常量共同维护，每次发布脚本必须同步更新。
 
@@ -61,18 +75,19 @@ AirScript `sync_task` 的 HTTP 200 响应按 WPS 执行 envelope 解析：外层
 1. 在“配置云文档”中为每个目标独立保存在线文档地址、webhook 和脚本令牌；智能表格默认关闭。
 2. 使用界面的“复制连接测试脚本”，在对应文档新建 AirScript 2.0 脚本，确认末尾是 `return main();`，运行只读探针后再复制同一个脚本的 webhook。
 3. 回到 NetConsole 更新 webhook，点击“测试连接”，先确认 `sync_task` 的 `data.result` 不是 `[Undefined]`，再核对返回的 `document_id`、`target_type`、`target_code`、`protocol_version`、脚本版本和部署 ID。
-4. 通过“复制正式同步脚本”替换同一个脚本内容并保存；当前普通表格候选脚本身份必须是 `2.4.0-standard` / `trackside-ap-standard-2.4.0`，再重新测试。不要把普通表格和智能表格 webhook 交叉使用。
+4. 通过“复制正式同步脚本”替换同一个脚本内容并保存；当前普通表格候选脚本身份必须是 `2.5.0-standard` / `trackside-ap-standard-2.5.0`，再重新测试。不要把普通表格和智能表格 webhook 交叉使用。
 5. 对普通表格点击“测试写入能力”，确认 `_NetConsoleRuntimeProbe` 的二维数组写入与回读通过；未通过时正式同步保持禁用。
 6. 点击“测试同步 Sheet”，确认 `_NetConsoleSyncTest` 写入、回读和清理通过；若更换脚本或部署，使用“重新验证当前部署”自动清理旧验证状态并依次重跑三项测试。
 7. 点击“测试 Sheet 排序”，确认返回 `sheet_order_verified=true`、`sheet_move_before_verified=true`、`sheet_move_after_verified=true`；系统 Sheet 隐藏不兼容可以是 warning。该探针不并入“重新验证当前部署”。
 8. 点击“测试标签颜色”，确认 `_NetConsoleSyncTest` 返回 `sheet_tab_color_verified=true`、期望颜色 `#C6EFCE`，且写后读回的 RGB 数值一致。该探针不并入“重新验证当前部署”；失败时仍可执行数据同步，但正式同步不会启用业务标签色。
-9. 连接测试若显示 `LEGACY_BINDING_ID_MISMATCH`，先核对本地/远端 Binding ID 和五类业务身份均匹配，再点击“升级旧版绑定标识”；在确认框复核文档、局点、业务和新旧 ID。完成后系统会自动重跑连接、写入能力和同步测试，Binding 状态必须变为 `BOUND`。`MISMATCH` 不允许迁移。
+9. 列宽能力探针已经现场确认，不重复运行，也不要求用户再次查看 `_NetConsoleSyncTest`。连接测试若显示 `LEGACY_BINDING_ID_MISMATCH`，先核对本地/远端 Binding ID 和五类业务身份均匹配，再点击“升级旧版绑定标识”；在确认框复核文档、局点、业务和新旧 ID。完成后系统会自动重跑连接、写入能力和同步测试，Binding 状态必须变为 `BOUND`。`MISMATCH` 不允许迁移。
 10. 首次同步会显示当前局点与未绑定文档的二次确认；只有确认后才初始化远端绑定。绑定不匹配时停止写入并在任务详情显示原始错误码、失败 Sheet 和失败操作。
 11. 确认当前局点业务 revision 后，手动点击页面的“同步云文档”。
-12. 将同一次本地 XLSX 与普通在线表格逐 Sheet 对比名称、固定九 Sheet 顺序、行列数和关键值，并核对六个业务标签色；标签色失败只能产生 warning，不能导致数据同步失败。列宽、行高和其他格式仍不作为本阶段验收项。
-13. 检查 `AP上线情况概览` 新块依次为日期、更新时间、表头、数据、合计和恰好一行空白，且旧历史值未被覆盖。
-14. 使用相同 `target_batch_id` 重放脚本，确认不会再次插入历史块；使用新的批次再次同步，确认新块位于顶部、旧块完整下移。
-15. 任一目标失败时，只重试失败目标；已成功目标不重复写入。
+12. 在任务详情核对列宽自动验收的设置数、远端读回数、验证通过数、告警数、失败数、故障层级和最大差异。正式杭州 10 号线工作簿应报告全部 143 个显式列宽；重点查看 `轨旁AP业务` 的 A/B/C/G/H/P 代表列。不能只依据 `SUCCESS 143/143` 判断远端格式已生效。
+13. 只有当本地 XLSX、SheetDTO、payload 与远端 `ColumnWidth` 的自动报告完成后，用户才做一次整体视觉抽查；不要求用户逐列测量宽度。`Width(points)` 用于辅助判断平台单位或渲染差异，在形成稳定证据前不加入换算系数。
+14. 检查 `AP上线情况概览` 新块依次为日期、更新时间、表头、数据、合计和恰好一行空白，且旧历史值与旧历史格式未被覆盖。
+15. 使用相同 `target_batch_id` 重放脚本，确认不会再次插入历史块；使用新的批次再次同步，确认新块位于顶部、旧块完整下移。
+16. 任一目标失败时，只重试失败目标；已成功目标不重复写入。
 
 同步按钮只提交 `trackside_ap_wps_sync` Job Center 任务，不在 FastAPI 请求线程执行工作簿构建或 webhook 网络请求。任务完成后，在统一任务中心查看父任务的 `SUCCESS`、`SUCCESS_WITH_WARNINGS`、`PARTIAL_SUCCESS` 或 `FAILED` 业务结果，以及普通表格和智能表格各自的目标结果与格式告警。
 
