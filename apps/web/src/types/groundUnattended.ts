@@ -87,7 +87,11 @@ export interface GroundSyslogHost {
 export interface GroundTrain {
   train_id: string; train_no: string; train_name: string
   location_class: 'MAINLINE' | 'DEPOT' | 'PARKING_YARD' | 'STABLING' | 'DEPOT_CONNECTION' | 'TEST_TRACK' | 'NON_MAINLINE' | 'OFFLINE' | 'UNKNOWN'
-  mainline_eligible: boolean; ping_eligible: boolean; deep_collection_eligible: boolean
+  location_class_source: string; participates_in_mainline: boolean
+  mainline_eligible: boolean; mainline_reason_code: string; mainline_reason_text: string
+  ping_eligible: boolean; ping_reason_code: string; ping_reason_text: string
+  deep_collection_eligible: boolean; deep_collection_reason_code: string; deep_collection_reason_text: string
+  decision_revision: number; decision_source: string
   ping_inclusion_reason: string; ping_exclusion_reason: string; deep_exclusion_reason: string
   eligibility_status: string; exclusion_reason: string; current_ap_name: string; current_ap_mac: string
   location_match_level: 'AP_EXACT' | 'AP_REGISTRY' | 'AP_ALIAS' | 'STATION_EXACT' | 'STATION_ALIAS' | 'UNMATCHED'
@@ -174,15 +178,16 @@ export interface GroundPingSample {
   archive_entry: string; data_source: 'ACTIVE' | 'ARCHIVE'
 }
 export interface GroundApTransition {
+  event_id: string; run_id: string
   ts: string; event_time: string; event_type: string; context: string
-  train_id: string; mr_id: string; mr_role: string
+  train_id: string; mr_id: string; mr_role: string; management_ip: string
   old_ap_raw: string; new_ap_raw: string; old_ap_radio_mac: string; new_ap_radio_mac: string
   old_ap_id: string; new_ap_id: string; old_ap_name: string; new_ap_name: string
   old_ap_mac: string; new_ap_mac: string; old_station: string; new_station: string
   old_section: string; new_section: string; identity_status: string; identity_source: string; identity_revision: number
   rssi_before: number | null; rssi_before_time: string; rssi_before_delta_ms: number | null; rssi_before_reason: string
   rssi_after: number | null; rssi_after_time: string; rssi_after_delta_ms: number | null; rssi_after_reason: string
-  source: string; syslog_event_id: number | string | null; raw_file_id: string; raw_line_number: number | null; source_sequence: number | null
+  source: string; source_type: string; source_event_id: number | string | null; syslog_event_id: number | string | null; raw_file_id: string; raw_line_number: number | null; source_sequence: number | null
 }
 export interface GroundQueryDiagnostics {
   request_id: string; requested_run_id: string; resolved_start_time: string; resolved_end_time: string

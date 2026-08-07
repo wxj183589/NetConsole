@@ -288,7 +288,7 @@ def test_current_ap_identity_resolves_runtime_ap_and_preserves_depot_exclusion()
     assert result.train.ap_identity_diagnostics.matched_by == "ac_bssid"
 
 
-def test_unknown_ap_location_falls_back_to_station_topology_and_undetermined_without_it() -> None:
+def test_unknown_ap_location_falls_back_to_topology_then_default_mainline() -> None:
     mainline = _classify(
         ap=_ap("正线站", "", {}).model_copy(
             update={
@@ -306,7 +306,7 @@ def test_unknown_ap_location_falls_back_to_station_topology_and_undetermined_wit
             )
         ],
     )
-    undetermined = _classify(
+    default_mainline = _classify(
         ap=_ap("", "", {}).model_copy(
             update={
                 "location_class": "UNKNOWN",
@@ -341,10 +341,23 @@ def test_unknown_ap_location_falls_back_to_station_topology_and_undetermined_wit
     assert depot.train.eligibility_status == "DEPOT"
     assert not depot.train.mainline_eligible
     assert not depot.train.ping_eligible
-    assert undetermined.train.eligibility_status == "LOCATION_UNDETERMINED"
-    assert undetermined.train.location_class == "UNKNOWN"
-    assert not undetermined.train.mainline_eligible
-    assert not undetermined.train.ping_eligible
+    assert default_mainline.train.eligibility_status == "MAINLINE"
+    assert default_mainline.train.location_class == "MAINLINE"
+    assert default_mainline.train.location_class_source == "DEFAULT_MAINLINE"
+    assert default_mainline.train.participates_in_mainline
+    assert default_mainline.train.mainline_eligible
+    assert default_mainline.train.ping_eligible
+    assert (
+        default_mainline.train.ping_reason_code
+        == "MAINLINE_DEFAULT_CLASSIFICATION"
+    )
+    assert default_mainline.train.ping_reason_text != "未评估"
+    assert depot.train.location_class_source in {
+        "AP_METADATA",
+        "STATION_TOPOLOGY",
+    }
+    assert not depot.train.participates_in_mainline
+    assert depot.train.ping_reason_code == "DEPOT_PING_DISABLED"
 
 
 def test_primary_ap_mac_match_uses_normalized_format() -> None:

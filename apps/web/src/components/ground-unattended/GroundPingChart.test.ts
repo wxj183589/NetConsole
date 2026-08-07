@@ -202,6 +202,37 @@ describe('Ground Ping chart lifecycle', () => {
     wrapper.unmount()
   })
 
+  it('keeps real flap events while aggregating dense markers in the chart layer', async () => {
+    const transitions = [0, 1, 2].map((index) => ({
+      event_id: `switch-${index}`,
+      run_id: 'run-1',
+      ts: `2026-07-28T08:00:00.${index + 1}00+08:00`,
+      event_time: `2026-07-28T08:00:00.${index + 1}00+08:00`,
+      event_type: 'MESH_ACTIVELINK_SWITCH',
+      context: 'wmesh_active_link_switch',
+      train_id: 'train-1',
+      mr_id: 'mr-ct',
+      mr_role: 'CT',
+      management_ip: '192.0.2.10',
+      old_ap_raw: index % 2 ? 'AP-B' : 'AP-A',
+      new_ap_raw: index % 2 ? 'AP-A' : 'AP-B',
+      source: 'MR Syslog / WMESH',
+      source_type: 'SYSLOG',
+    })) as GroundPingSeries['ap_transitions']
+    const wrapper = mount(GroundPingChart, {
+      props: { series: { ...series, ap_transitions: transitions } },
+    })
+    await flushPromises()
+
+    const rttOptions = mocks.setOption.mock.calls[0]?.[0]
+    const markLine = rttOptions.series[0].markLine
+    expect(markLine.data).toHaveLength(1)
+    expect(markLine.data[0].transitions).toHaveLength(3)
+    expect(markLine.label.formatter({ data: markLine.data[0] })).toBe('AP 切换 ×3')
+    expect(rttOptions.tooltip.formatter({ data: markLine.data[0] })).toContain('AP 主链路切换 ×3')
+    wrapper.unmount()
+  })
+
   it('does not retain chart or observer resources across 100 open-close cycles', async () => {
     for (let cycle = 0; cycle < 100; cycle += 1) {
       const wrapper = mount(GroundPingChart, { props: { series } })

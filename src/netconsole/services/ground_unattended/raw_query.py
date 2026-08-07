@@ -212,22 +212,6 @@ class GroundRawStreamQueryService:
                 bucket = int((ts - start).total_seconds() / bucket_seconds)
                 success_buckets.setdefault((address, bucket), item)
 
-            transition = str(item.get("ap_transition_context") or "")
-            if transition:
-                marker = {
-                    "ts": str(item["ts"]),
-                    "target_ip": address,
-                    "context": transition,
-                    "current_ap_name": str(item.get("current_ap_name") or ""),
-                    "station": str(item.get("station") or ""),
-                    "section": str(item.get("section") or ""),
-                }
-                if (
-                    len(ap_transitions) < max_points
-                    and (not ap_transitions or ap_transitions[-1] != marker)
-                ):
-                    ap_transitions.append(marker)
-
             position = (
                 str(item.get("current_ap_identity") or ""),
                 str(item.get("current_ap_name") or ""),
@@ -306,8 +290,9 @@ class GroundRawStreamQueryService:
             result,
             run_id=run_id,
             train_id=identity.registry_train_id,
-            mr_id=identity.registry_device_uuid,
+            mr_id=_resolved_wmesh_mr_id(identity),
             mr_role=identity.registry_mr_role,
+            management_ip=identity.target_ip,
             start=start,
             end=end,
             max_points=max_points,
@@ -515,8 +500,9 @@ class GroundRawStreamQueryService:
             result,
             run_id=run_id,
             train_id=identity.registry_train_id,
-            mr_id=identity.registry_device_uuid,
+            mr_id=_resolved_wmesh_mr_id(identity),
             mr_role=identity.registry_mr_role,
+            management_ip=identity.target_ip,
             start=start,
             end=now,
             max_points=limit,
@@ -536,6 +522,7 @@ class GroundRawStreamQueryService:
         train_id: str,
         mr_id: str,
         mr_role: str,
+        management_ip: str,
         start: datetime,
         end: datetime,
         max_points: int,
@@ -547,13 +534,20 @@ class GroundRawStreamQueryService:
         sample which happened to land in the same millisecond.
         """
 
-        events = self.repository.list_wmesh_events(
-            run_id=run_id,
-            train_id=train_id,
-            mr_id=mr_id,
-            mr_role=mr_role,
-            limit=2_000,
-        )
+        events = [
+            event
+            for event in self.repository.list_wmesh_events(
+                run_id=run_id,
+                limit=2_000,
+            )
+            if _wmesh_event_matches_identity(
+                event,
+                train_id=train_id,
+                mr_id=mr_id,
+                mr_role=mr_role,
+                management_ip=management_ip,
+            )
+        ]
         if not events:
             return
         lower = start - timedelta(seconds=5)
@@ -572,29 +566,25 @@ class GroundRawStreamQueryService:
         if not switches:
             return
 
-        markers = [
-            _wmesh_transition_marker(event, scoped)
+        projected = [
+            _wmesh_transition_marker(
+                event,
+                scoped,
+                train_id=train_id,
+                mr_id=mr_id,
+                mr_role=mr_role,
+                management_ip=management_ip,
+            )
             for event in switches
             if _wmesh_event_time(event) is not None
         ]
-        existing = list(result.get("ap_transitions") or [])
-        # Legacy Ping-window labels are kept only when there is no persisted
-        # WMESH event for that timestamp.  The structured event carries the
-        # actual AP identities and source provenance required by the tooltip.
-        identities = {
-            str(marker.get("syslog_event_id") or "")
-            for marker in markers
-            if marker.get("syslog_event_id") not in (None, "")
-        }
-        for marker in existing:
-            marker_event_id = str(marker.get("syslog_event_id") or "")
-            if marker_event_id and marker_event_id in identities:
+        markers: list[dict[str, Any]] = []
+        seen: set[tuple[object, ...]] = set()
+        for marker in projected:
+            identity = _wmesh_marker_identity(marker)
+            if identity in seen:
                 continue
-            if not marker_event_id and any(
-                str(marker.get("ts") or "") == str(event.get("ts") or "")
-                for event in markers
-            ):
-                continue
+            seen.add(identity)
             markers.append(marker)
         markers.sort(key=lambda item: str(item.get("ts") or ""))
         result["ap_transitions"] = markers[:max_points]
@@ -1585,18 +1575,6 @@ def _incremental_ping_result(
             _finish_loss_window(current_loss)
             loss_windows.append(current_loss)
             current_loss = None
-        transition = str(item.get("ap_transition_context") or "")
-        if transition:
-            marker = {
-                "ts": str(item.get("ts") or ""),
-                "target_ip": str(item.get("target_ip") or ""),
-                "context": transition,
-                "current_ap_name": str(item.get("current_ap_name") or ""),
-                "station": str(item.get("station") or ""),
-                "section": str(item.get("section") or ""),
-            }
-            if not ap_transitions or ap_transitions[-1] != marker:
-                ap_transitions.append(marker)
         position = (
             str(item.get("current_ap_identity") or ""),
             str(item.get("current_ap_name") or ""),
@@ -1721,15 +1699,77 @@ def _prune_cursor_offsets(
     }
 
 
+def _resolved_wmesh_mr_id(identity: GroundResolvedPingIdentity) -> str:
+    if identity.registry_device_uuid:
+        return identity.registry_device_uuid
+    if len(identity.registered_mr_ids) == 1:
+        return identity.registered_mr_ids[0]
+    return ""
+
+
 def _wmesh_event_time(event: Mapping[str, Any]) -> datetime | None:
     return _parse_time(
         str(event.get("event_time") or event.get("device_time") or event.get("receive_time") or "")
     )
 
 
+def _wmesh_event_matches_identity(
+    event: Mapping[str, Any],
+    *,
+    train_id: str,
+    mr_id: str,
+    mr_role: str,
+    management_ip: str,
+) -> bool:
+    if not any((train_id, mr_id, mr_role, management_ip)):
+        return True
+    event_train = str(event.get("train_id") or "")
+    event_mr = str(event.get("device_uuid") or "")
+    event_role = str(event.get("mr_role") or "")
+    event_ip = str(event.get("source_ip") or "")
+    if event_train and train_id and not train_identity_matches(event_train, train_id):
+        return False
+    if event_mr and mr_id and event_mr != mr_id:
+        return False
+    if event_role and mr_role and event_role.upper() != mr_role.upper():
+        return False
+    return bool(
+        (event_mr and mr_id)
+        or (event_ip and management_ip and event_ip == management_ip)
+        or (event_train and train_id and event_role and mr_role)
+    )
+
+
+def _wmesh_marker_identity(marker: Mapping[str, Any]) -> tuple[object, ...]:
+    event_id = marker.get("syslog_event_id")
+    if event_id not in {None, ""}:
+        return ("event", str(event_id))
+    raw_file_id = str(marker.get("raw_file_id") or "")
+    raw_line_number = marker.get("raw_line_number")
+    source_sequence = marker.get("source_sequence")
+    if raw_file_id and raw_line_number not in {None, ""}:
+        return ("raw", raw_file_id, int(raw_line_number))
+    if raw_file_id and source_sequence not in {None, ""}:
+        return ("sequence", raw_file_id, int(source_sequence))
+    return (
+        "semantic",
+        str(marker.get("train_id") or ""),
+        str(marker.get("mr_id") or ""),
+        str(marker.get("mr_role") or ""),
+        str(marker.get("event_time") or marker.get("ts") or ""),
+        str(marker.get("old_ap_raw") or ""),
+        str(marker.get("new_ap_raw") or ""),
+    )
+
+
 def _wmesh_transition_marker(
     event: Mapping[str, Any],
     candidates: list[dict[str, Any]],
+    *,
+    train_id: str = "",
+    mr_id: str = "",
+    mr_role: str = "",
+    management_ip: str = "",
 ) -> dict[str, Any]:
     details = event.get("details") or {}
     if not isinstance(details, Mapping):
@@ -1763,13 +1803,16 @@ def _wmesh_transition_marker(
         before=False,
     )
     return {
+        "event_id": f"wmesh:{event.get('id') or ''}",
+        "run_id": str(event.get("run_id") or ""),
         "ts": moment.isoformat(timespec="milliseconds"),
         "event_time": moment.isoformat(timespec="milliseconds"),
         "event_type": "MESH_ACTIVELINK_SWITCH",
         "context": "wmesh_active_link_switch",
-        "train_id": str(event.get("train_id") or ""),
-        "mr_id": str(event.get("device_uuid") or ""),
-        "mr_role": str(event.get("mr_role") or ""),
+        "train_id": str(event.get("train_id") or train_id),
+        "mr_id": str(event.get("device_uuid") or mr_id),
+        "mr_role": str(event.get("mr_role") or mr_role),
+        "management_ip": str(event.get("source_ip") or management_ip),
         "old_ap_raw": old_raw,
         "new_ap_raw": new_raw,
         "old_ap_radio_mac": normalize_mac(old_radio) or "",
@@ -1782,8 +1825,8 @@ def _wmesh_transition_marker(
             or ""
         ),
         "new_ap_name": str(details.get("peer_ap_name") or event.get("peer_name") or ""),
-        "old_ap_mac": normalize_mac(old_physical) or normalize_mac(old_raw) or "",
-        "new_ap_mac": normalize_mac(new_physical) or normalize_mac(new_raw) or "",
+        "old_ap_mac": normalize_mac(old_physical) or "",
+        "new_ap_mac": normalize_mac(new_physical) or "",
         "old_station": str(details.get("previous_station") or ""),
         "new_station": str(event.get("station") or ""),
         "old_section": str(details.get("previous_section") or ""),
@@ -1800,6 +1843,8 @@ def _wmesh_transition_marker(
         "rssi_after_delta_ms": after["delta_ms"],
         "rssi_after_reason": after["reason"],
         "source": "MR Syslog / WMESH",
+        "source_type": "SYSLOG",
+        "source_event_id": event.get("id"),
         "syslog_event_id": event.get("id"),
         "raw_file_id": str(event.get("raw_file_id") or ""),
         "raw_line_number": _optional_int(event.get("raw_line_number")),

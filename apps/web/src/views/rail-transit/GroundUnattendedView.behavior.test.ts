@@ -11,6 +11,7 @@ const api = vi.hoisted(() => ({
   getGroundArchive: vi.fn(),
   getGroundProfile: vi.fn(),
   getGroundStatus: vi.fn(),
+  getOnlineMrSession: vi.fn(),
   getGroundTrain: vi.fn(),
   groundArchiveSummaryDownloadRequest: vi.fn(),
   groundArchiveZipDownloadRequest: vi.fn(),
@@ -50,10 +51,13 @@ const api = vi.hoisted(() => ({
   verifyGroundArchive: vi.fn(),
   downloadBackendResource: vi.fn(),
 }))
+const workspace = vi.hoisted(() => ({ openOrActivateRoute: vi.fn() }))
 
 vi.mock('../../api/groundUnattended', () => api)
-vi.mock('../../api/client', () => ({
-  ApiRequestError: class ApiRequestError extends Error {
+vi.mock('../../api/onlineMr', () => ({ getOnlineMrSession: api.getOnlineMrSession }))
+vi.mock('../../stores/workspace', () => ({ useWorkspaceStore: () => workspace }))
+vi.mock('../../api/client', () => {
+  class ApiRequestError extends Error {
     constructor(
       message: string,
       readonly status: number,
@@ -63,8 +67,23 @@ vi.mock('../../api/client', () => ({
       super(message)
       this.name = 'ApiRequestError'
     }
-  },
-}))
+  }
+  return {
+    ApiRequestError,
+    apiErrorDetail: (reason: unknown, path = '') => {
+      if (reason instanceof ApiRequestError) return {
+        path,
+        code: reason.code || 'HTTP_ERROR',
+        status: reason.status,
+        requestId: String(reason.details.request_id || ''),
+        message: reason.message,
+        originalMessage: reason.message,
+      }
+      const message = reason instanceof Error ? reason.message : '未知错误'
+      return { path, code: 'UNEXPECTED_ERROR', status: 0, requestId: '', message, originalMessage: message }
+    },
+  }
+})
 vi.mock('vue-router', () => ({ useRouter: () => ({ push: vi.fn() }) }))
 vi.mock('../../platform/runtime', () => ({ downloadBackendResource: api.downloadBackendResource }))
 vi.mock('../../components/ground-unattended/GroundPingChart.vue', async () => {
@@ -317,6 +336,8 @@ beforeEach(() => {
     message: '运行历史已删除',
   })
   api.getGroundStatus.mockResolvedValue(status())
+  api.getOnlineMrSession.mockResolvedValue({ session_id: 'session-ct', status: 'RUNNING' })
+  workspace.openOrActivateRoute.mockResolvedValue({ id: 'online-mr-tab' })
   api.getGroundProfile.mockResolvedValue(profile())
   api.listGroundTrains.mockResolvedValue({ items: [], total: 0 })
   api.listGroundPingTargets.mockResolvedValue({ items: [], total: 0 })
@@ -384,6 +405,59 @@ afterEach(() => {
 })
 
 describe('Ground unattended page loading behavior', () => {
+  it('preflights and opens CT and historical CW sessions through the workspace', async () => {
+    api.getOnlineMrSession
+      .mockResolvedValueOnce({ session_id: 'session-ct', status: 'RUNNING' })
+      .mockResolvedValueOnce({ session_id: 'session-cw', status: 'COMPLETED' })
+    const wrapper = mountPage()
+    await flushPromises()
+    const view = wrapper.vm as unknown as {
+      openDeepSession: (sessionId: string) => Promise<void>
+    }
+
+    await view.openDeepSession('session-ct')
+    await view.openDeepSession('session-cw')
+
+    expect(api.getOnlineMrSession).toHaveBeenNthCalledWith(1, 'session-ct')
+    expect(api.getOnlineMrSession).toHaveBeenNthCalledWith(2, 'session-cw')
+    expect(workspace.openOrActivateRoute).toHaveBeenNthCalledWith(
+      1,
+      '/rail-transit/online-mr-analysis?session_id=session-ct',
+    )
+    expect(workspace.openOrActivateRoute).toHaveBeenNthCalledWith(
+      2,
+      '/rail-transit/online-mr-analysis?session_id=session-cw',
+    )
+    wrapper.unmount()
+  })
+
+  it('reports missing, invalid, and workspace navigation failures', async () => {
+    const error = vi.spyOn(ElMessage, 'error').mockImplementation(() => undefined as never)
+    const wrapper = mountPage()
+    await flushPromises()
+    const view = wrapper.vm as unknown as {
+      openDeepSession: (sessionId: string) => Promise<void>
+    }
+
+    api.getOnlineMrSession.mockRejectedValueOnce(
+      new ApiRequestError('not found', 404, 'ONLINE_MR_SESSION_NOT_FOUND', { request_id: 'req-404' }),
+    )
+    await view.openDeepSession('missing-session')
+    expect(error).toHaveBeenCalledWith('会话不存在或已被清理')
+
+    await view.openDeepSession('../invalid session')
+    expect(error).toHaveBeenCalledWith('会话 ID 无效')
+
+    api.getOnlineMrSession.mockResolvedValueOnce({ session_id: 'session-nav', status: 'RUNNING' })
+    workspace.openOrActivateRoute.mockRejectedValueOnce(new Error('desktop route failed'))
+    await view.openDeepSession('session-nav')
+    expect(error).toHaveBeenCalledWith(
+      'desktop route failed（error_code: UNEXPECTED_ERROR）',
+    )
+    wrapper.unmount()
+    error.mockRestore()
+  })
+
   it('shows NOT_LOCAL Transport status, blocks start, and does not overwrite the saved address', async () => {
     api.getGroundProfile.mockResolvedValue({ ...profile(), enabled: true, syslog_server_ip: '10.8.0.3' })
     api.getGroundSyslogTransportStatus.mockResolvedValue({

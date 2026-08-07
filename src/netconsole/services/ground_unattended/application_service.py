@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import ipaddress
 import json
+import re
 import shutil
 import uuid
 from collections.abc import Mapping
@@ -1350,6 +1351,9 @@ class GroundUnattendedApplicationService:
             result["points"] = self._project_ping_samples(
                 list(result.get("points") or [])
             )
+            result["ap_transitions"] = self._project_ping_transitions(
+                list(result.get("ap_transitions") or [])
+            )
             return GroundPingSeriesDTO.model_validate(result)
         except GroundRawQueryError as exc:
             raise GroundUnattendedError(
@@ -1372,6 +1376,9 @@ class GroundUnattendedApplicationService:
             result = self.raw_query.ping_series_incremental(**filters)
             result["points"] = self._project_ping_samples(
                 list(result.get("points") or [])
+            )
+            result["ap_transitions"] = self._project_ping_transitions(
+                list(result.get("ap_transitions") or [])
             )
             return GroundPingSeriesDTO.model_validate(result)
         except GroundRawQueryError as exc:
@@ -1419,6 +1426,86 @@ class GroundUnattendedApplicationService:
             ).model_dump(mode="json")
             for row in rows
         ]
+
+    def _project_ping_transitions(
+        self,
+        rows: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        if not rows:
+            return []
+        parsed_rows = [
+            {
+                "event_type": "MESH_ACTIVELINK_SWITCH",
+                "peer_name": row.get("new_ap_name") or "",
+                "peer_mac": row.get("new_ap_raw") or "",
+                "previous_peer_name": row.get("old_ap_name") or "",
+                "previous_peer_mac": row.get("old_ap_raw") or "",
+                "details": {
+                    "new_peer_mac": row.get("new_ap_raw") or "",
+                    "new_peer_radio_mac": row.get("new_ap_radio_mac") or "",
+                    "old_peer_mac": row.get("old_ap_raw") or "",
+                    "old_peer_radio_mac": row.get("old_ap_radio_mac") or "",
+                },
+            }
+            for row in rows
+        ]
+        # Bind every old/new peer in this chart query to one Identity batch.
+        # A request-scoped resolver avoids a second lookup if the shared
+        # realtime cache happens to cross a revision boundary.
+        resolver = GroundApDisplayResolver(self.ap_identity_query_service)
+        resolver.preload_parsed(parsed_rows)
+        projected: list[dict[str, Any]] = []
+        for row, parsed in zip(rows, parsed_rows, strict=True):
+            enriched = resolver.enrich_parsed(parsed)
+            details = dict(enriched.get("details") or {})
+            item = dict(row)
+            item.update(
+                {
+                    "old_ap_id": details.get("previous_peer_ap_id")
+                    or item.get("old_ap_id")
+                    or "",
+                    "new_ap_id": details.get("peer_ap_id")
+                    or item.get("new_ap_id")
+                    or "",
+                    "old_ap_name": details.get("previous_peer_ap_name")
+                    or item.get("old_ap_name")
+                    or "",
+                    "new_ap_name": details.get("peer_ap_name")
+                    or item.get("new_ap_name")
+                    or "",
+                    "old_ap_mac": details.get("previous_peer_ap_mac")
+                    or item.get("old_ap_mac")
+                    or "",
+                    "new_ap_mac": details.get("peer_ap_mac")
+                    or item.get("new_ap_mac")
+                    or "",
+                    "old_station": details.get("previous_station")
+                    or item.get("old_station")
+                    or "",
+                    "new_station": enriched.get("station")
+                    or item.get("new_station")
+                    or "",
+                    "old_section": details.get("previous_section")
+                    or item.get("old_section")
+                    or "",
+                    "new_section": enriched.get("section")
+                    or item.get("new_section")
+                    or "",
+                    "identity_status": details.get("identity_status")
+                    or item.get("identity_status")
+                    or "",
+                    "identity_source": details.get("identity_source")
+                    or item.get("identity_source")
+                    or "",
+                    "identity_revision": max(
+                        int(item.get("identity_revision") or 0),
+                        int(details.get("identity_revision") or 0),
+                        int(details.get("previous_identity_revision") or 0),
+                    ),
+                }
+            )
+            projected.append(item)
+        return projected
 
     def syslog_records(
         self,
@@ -1861,45 +1948,126 @@ class GroundUnattendedApplicationService:
             raise GroundUnattendedError(
                 "DEEP_RECORD_CURSOR_INVALID", "深采记录游标与当前会话不匹配", status_code=409
             )
+        normalized_keyword = keyword.strip().casefold()
+        if cursor and (
+            cursor_state.get("category") != category_key
+            or cursor_state.get("keyword") != normalized_keyword
+        ):
+            raise GroundUnattendedError(
+                "DEEP_RECORD_CURSOR_FILTER_MISMATCH",
+                "深采记录游标与当前筛选条件不匹配",
+                status_code=409,
+            )
         offsets = {
             str(key): max(0, int(value))
             for key, value in dict(cursor_state.get("offsets") or {}).items()
         }
-        per_source = max(1, min(500, int(limit)) // max(1, len(sources)))
-        rows: list[GroundDeepCollectionRecordDTO] = []
-        has_more = False
-        needle = keyword.strip().casefold()
+        page_limit = max(1, min(500, int(limit)))
+        chunk_limit = max(50, min(500, page_limit * 2))
+        candidates: list[
+            tuple[str, GroundDeepCollectionRecordDTO, int]
+        ] = []
+        candidates_by_source: dict[
+            str, list[tuple[str, GroundDeepCollectionRecordDTO, int]]
+        ] = {}
+        scan_end_by_source: dict[str, int] = {}
+        source_has_more: dict[str, bool] = {}
         for source in sources:
+            source_candidates: list[
+                tuple[str, GroundDeepCollectionRecordDTO, int]
+            ] = []
+            next_offset = offsets.get(source, 0)
+            scanned = 0
             try:
-                chunk = query.read_log_chunk(
-                    self.site_id,
-                    selected.collector_session_id,
-                    source,
-                    cursor=offsets.get(source, 0),
-                    limit=per_source,
-                )
+                while len(source_candidates) < page_limit:
+                    chunk = query.read_log_chunk(
+                        self.site_id,
+                        selected.collector_session_id,
+                        source,
+                        cursor=next_offset,
+                        limit=chunk_limit,
+                    )
+                    next_offset = chunk.next_cursor
+                    scanned += len(chunk.lines)
+                    for index, line in enumerate(chunk.lines):
+                        categories = _deep_record_categories(source, line.text)
+                        included = (
+                            category_key in {"ALL", "RAW_OUTPUT"}
+                            or category_key in categories
+                        )
+                        if not included or (
+                            normalized_keyword
+                            and normalized_keyword not in line.text.casefold()
+                        ):
+                            continue
+                        after_cursor = (
+                            int(chunk.lines[index + 1].sequence)
+                            if index + 1 < len(chunk.lines)
+                            else int(chunk.next_cursor)
+                        )
+                        primary_category = (
+                            category_key
+                            if category_key not in {"ALL", "RAW_OUTPUT"}
+                            else _deep_primary_category(categories)
+                            if category_key == "ALL"
+                            else "RAW_OUTPUT"
+                        )
+                        source_candidates.append(
+                            (
+                                source,
+                                GroundDeepCollectionRecordDTO(
+                                    sequence=line.sequence,
+                                    timestamp=line.timestamp or "",
+                                    category=primary_category,
+                                    source=source,
+                                    text=line.text,
+                                ),
+                                after_cursor,
+                            )
+                        )
+                    if not chunk.has_more or not chunk.lines or scanned >= 50_000:
+                        break
             except OnlineMrQueryError:
                 continue
-            offsets[source] = chunk.next_cursor
-            has_more = has_more or chunk.has_more
-            for line in chunk.lines:
-                if needle and needle not in line.text.casefold():
-                    continue
-                rows.append(
-                    GroundDeepCollectionRecordDTO(
-                        sequence=line.sequence,
-                        timestamp=line.timestamp or "",
-                        category=_deep_record_category(source),
-                        source=source,
-                        text=line.text,
-                    )
-                )
-        rows.sort(key=lambda item: (item.timestamp or "9999", item.source, item.sequence))
+            candidates.extend(source_candidates)
+            candidates_by_source[source] = source_candidates
+            scan_end_by_source[source] = next_offset
+            source_has_more[source] = bool(chunk.has_more) or scanned >= 50_000
+        candidates.sort(
+            key=lambda item: (
+                item[1].timestamp or "9999",
+                item[0],
+                item[1].sequence,
+            )
+        )
+        returned = candidates[:page_limit]
+        returned_keys = {
+            (source, row.sequence) for source, row, _after_cursor in returned
+        }
+        has_more = False
+        for source in sources:
+            pending = [
+                item
+                for item in candidates_by_source.get(source, [])
+                if (item[0], item[1].sequence) not in returned_keys
+            ]
+            if pending:
+                offsets[source] = pending[0][1].sequence
+                has_more = True
+            elif source in scan_end_by_source:
+                offsets[source] = scan_end_by_source[source]
+                has_more = has_more or source_has_more.get(source, False)
         return GroundDeepCollectionRecordPageDTO(
             collector=selected,
-            records=rows[: max(1, min(500, int(limit)))],
+            records=[row for _source, row, _after_cursor in returned],
             next_cursor=_encode_deep_cursor(
-                {"session_id": selected.collector_session_id, "offsets": offsets}
+                {
+                    "v": 2,
+                    "session_id": selected.collector_session_id,
+                    "category": category_key,
+                    "keyword": normalized_keyword,
+                    "offsets": offsets,
+                }
             ),
             has_more=has_more,
         )
@@ -2347,8 +2515,35 @@ class GroundUnattendedApplicationService:
             train_id=row["train_id"],
             train_no=row.get("train_no", ""),
             train_name=row.get("train_name", ""),
+            location_class=row.get("location_class", "UNKNOWN"),
+            location_class_source=row.get(
+                "location_class_source", "UNDETERMINED"
+            ),
+            participates_in_mainline=bool(
+                row.get("participates_in_mainline")
+            ),
+            mainline_eligible=bool(row.get("mainline_eligible")),
+            mainline_reason_code=row.get(
+                "mainline_reason_code", "NOT_EVALUATED"
+            ),
+            mainline_reason_text=row.get(
+                "mainline_reason_text", "未评估"
+            ),
             ping_eligible=bool(row.get("ping_eligible")),
+            ping_reason_code=row.get("ping_reason_code", "NOT_EVALUATED"),
+            ping_reason_text=row.get("ping_reason_text", "未评估"),
             deep_collection_eligible=bool(row.get("deep_collection_eligible")),
+            deep_collection_reason_code=row.get(
+                "deep_collection_reason_code", "NOT_EVALUATED"
+            ),
+            deep_collection_reason_text=row.get(
+                "deep_collection_reason_text", "未评估"
+            ),
+            decision_revision=int(row.get("decision_revision") or 0),
+            decision_source=row.get("decision_source", "NOT_EVALUATED"),
+            ping_inclusion_reason=row.get("ping_inclusion_reason", ""),
+            ping_exclusion_reason=row.get("ping_exclusion_reason", ""),
+            deep_exclusion_reason=row.get("deep_exclusion_reason", ""),
             eligibility_status=row.get("eligibility_status", "AC_UNKNOWN"),
             exclusion_reason=row.get("exclusion_reason", ""),
             location_match_level=row.get("location_match_level", "UNMATCHED"),
@@ -3010,19 +3205,37 @@ class GroundUnattendedApplicationService:
             )
 
 
+_ALL_DEEP_RECORD_SOURCES = (
+    "init",
+    "collector",
+    "collector_output",
+    "terminal_monitor",
+    "reconnect",
+    "mesh_link",
+    "switch_history",
+    "ap_radio_statistics",
+    "channel_busy",
+    "wireless_status",
+    "interface_rate",
+)
 _DEEP_RECORD_SOURCES = {
-    "ALL": (
-        "collector_output",
+    "ALL": _ALL_DEEP_RECORD_SOURCES,
+    "WMESH": ("mesh_link", "switch_history", "terminal_monitor"),
+    "RSSI": (
         "mesh_link",
+        "switch_history",
         "ap_radio_statistics",
-        "wireless_status",
         "terminal_monitor",
     ),
-    "WMESH": ("mesh_link", "switch_history"),
-    "RSSI": ("ap_radio_statistics",),
-    "RADIO": ("wireless_status", "interface_rate"),
-    "STATUS": ("collector", "terminal_monitor"),
-    "RAW_OUTPUT": ("collector_output",),
+    "RADIO": (
+        "ap_radio_statistics",
+        "channel_busy",
+        "wireless_status",
+        "interface_rate",
+        "terminal_monitor",
+    ),
+    "STATUS": ("init", "collector", "terminal_monitor", "reconnect"),
+    "RAW_OUTPUT": _ALL_DEEP_RECORD_SOURCES,
 }
 
 
@@ -3049,15 +3262,93 @@ def _deep_operation_state(
     return resolved, reason or default_reason
 
 
-def _deep_record_category(source: str) -> str:
-    if source in {"mesh_link", "switch_history"}:
-        return "WMESH"
-    if source == "ap_radio_statistics":
-        return "RSSI"
-    if source in {"wireless_status", "interface_rate"}:
-        return "RADIO"
-    if source in {"collector", "terminal_monitor"}:
-        return "STATUS"
+_DEEP_MAC_RE = re.compile(
+    r"(?i)(?:[0-9a-f]{4}[-.:]){2}[0-9a-f]{4}|(?:[0-9a-f]{2}:){5}[0-9a-f]{2}"
+)
+_DEEP_RSSI_RE = re.compile(
+    r"(?i)\bRSSI\b\s*(?::|=|\s)\s*-?\d+(?:\s*/\s*-?\d+)?"
+)
+_DEEP_SWITCH_RSSI_RE = re.compile(r"\b-?\d{1,3}\s*/\s*-?\d{1,3}\b")
+_DEEP_RAW_CONTROL_RE = re.compile(
+    r"(?i)(?:\bdisplay\s+clock\b|\btime\s+zone\b|^\s*[<>\[][^\r\n]*[>#]\s*$|\bRX\s+<[^>]+>\s*display\b|>>>\s*display\b)"
+)
+
+
+def _deep_record_categories(source: str, text: str) -> frozenset[str]:
+    value = str(text or "").strip()
+    folded = value.casefold()
+    categories = {"RAW_OUTPUT"}
+    if not value or _DEEP_RAW_CONTROL_RE.search(value):
+        return frozenset(categories)
+    if re.search(r"(?i)\bdisplay\s+(?:wlan\s+mesh-link|ar5drv|counters)\b", value):
+        return frozenset(categories)
+
+    has_mac = bool(_DEEP_MAC_RE.search(value))
+    has_rssi = has_mac and bool(
+        _DEEP_RSSI_RE.search(value) or _DEEP_SWITCH_RSSI_RE.search(value)
+    )
+    has_wmesh_event = any(
+        token in folded
+        for token in (
+            "mesh_linkup",
+            "mesh_linkdown",
+            "mesh_activelink_switch",
+            "active link transition",
+        )
+    )
+    has_mesh_state = has_mac and any(
+        token in folded
+        for token in (
+            " active",
+            " standby",
+            " link state",
+            " linkup",
+            " linkdown",
+            "better rssi",
+            "peer name",
+        )
+    )
+    if has_wmesh_event or (
+        source in {"mesh_link", "switch_history"} and has_mesh_state
+    ):
+        categories.add("WMESH")
+    if has_rssi:
+        categories.add("RSSI")
+
+    radio_value = bool(
+        re.search(
+            r"(?i)(?:channel\s*busy|txbusy|rxbusy|radio\s+statistics|"
+            r"txframe|rxframe|txretry|txerr|discard|packets?/s|\bpps\b|"
+            r"interface\s+rate|wlan-radio\S*\s+(?:up|down))",
+            value,
+        )
+    )
+    if radio_value:
+        categories.add("RADIO")
+
+    status_value = bool(
+        re.search(
+            r"(?i)(?:\b(?:session|collector)\b[^\r\n]{0,80}\b(?:start(?:ed|ing)?|"
+            r"stop(?:ped|ping)?|running|completed|failed|error)\b|"
+            r"\b(?:retry|reconnect(?:ed|ing)?|disconnected|heartbeat|device\s+status)\b|"
+            r"\b(?:start(?:ed|ing)?|stop(?:ped|ping)?)\b[^\r\n]{0,80}"
+            r"\b(?:session|collector)\b)",
+            value,
+        )
+    )
+    if (
+        source in {"init", "collector", "terminal_monitor", "reconnect"}
+        and not ({"WMESH", "RSSI", "RADIO"} & categories)
+        and status_value
+    ):
+        categories.add("STATUS")
+    return frozenset(categories)
+
+
+def _deep_primary_category(categories: frozenset[str]) -> str:
+    for category in ("WMESH", "RSSI", "RADIO", "STATUS"):
+        if category in categories:
+            return category
     return "RAW_OUTPUT"
 
 

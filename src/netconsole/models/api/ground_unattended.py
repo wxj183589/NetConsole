@@ -382,9 +382,19 @@ class GroundUnattendedTrainDTO(ApiModel):
     train_no: str = ""
     train_name: str = ""
     location_class: GroundLocationClass = "UNKNOWN"
+    location_class_source: str = "UNDETERMINED"
+    participates_in_mainline: bool = False
     mainline_eligible: bool = False
+    mainline_reason_code: str = "NOT_EVALUATED"
+    mainline_reason_text: str = "未评估"
     ping_eligible: bool = False
+    ping_reason_code: str = "NOT_EVALUATED"
+    ping_reason_text: str = "未评估"
     deep_collection_eligible: bool = False
+    deep_collection_reason_code: str = "NOT_EVALUATED"
+    deep_collection_reason_text: str = "未评估"
+    decision_revision: int = 0
+    decision_source: str = "NOT_EVALUATED"
     ping_inclusion_reason: str = ""
     ping_exclusion_reason: str = ""
     deep_exclusion_reason: str = ""
@@ -929,6 +939,51 @@ class GroundPingSamplePageDTO(ApiModel):
     )
 
 
+class GroundMeshSwitchEventDTO(ApiModel):
+    event_id: str = ""
+    run_id: str = ""
+    ts: str
+    event_time: str
+    event_type: Literal["MESH_ACTIVELINK_SWITCH"] = "MESH_ACTIVELINK_SWITCH"
+    context: str = "wmesh_active_link_switch"
+    train_id: str = ""
+    mr_id: str = ""
+    mr_role: str = ""
+    management_ip: str = ""
+    old_ap_raw: str = ""
+    new_ap_raw: str = ""
+    old_ap_radio_mac: str = ""
+    new_ap_radio_mac: str = ""
+    old_ap_id: str = ""
+    new_ap_id: str = ""
+    old_ap_name: str = ""
+    new_ap_name: str = ""
+    old_ap_mac: str = ""
+    new_ap_mac: str = ""
+    old_station: str = ""
+    new_station: str = ""
+    old_section: str = ""
+    new_section: str = ""
+    identity_status: str = ""
+    identity_source: str = ""
+    identity_revision: int = 0
+    rssi_before: float | None = None
+    rssi_before_time: str = ""
+    rssi_before_delta_ms: int | None = None
+    rssi_before_reason: str = ""
+    rssi_after: float | None = None
+    rssi_after_time: str = ""
+    rssi_after_delta_ms: int | None = None
+    rssi_after_reason: str = ""
+    source: str = "MR Syslog / WMESH"
+    source_type: str = "SYSLOG"
+    source_event_id: int | str | None = None
+    syslog_event_id: int | str | None = None
+    raw_file_id: str = ""
+    raw_line_number: int | None = None
+    source_sequence: int | None = None
+
+
 class GroundPingSeriesDTO(ApiModel):
     raw_sample_count: int = 0
     effective_sample_count: int = 0
@@ -942,7 +997,7 @@ class GroundPingSeriesDTO(ApiModel):
     max_rtt_ms: float | None = None
     points: list[GroundPingSampleDTO] = Field(default_factory=list)
     loss_windows: list[dict[str, object]] = Field(default_factory=list)
-    ap_transitions: list[dict[str, object]] = Field(default_factory=list)
+    ap_transitions: list[GroundMeshSwitchEventDTO] = Field(default_factory=list)
     position_segments: list[dict[str, object]] = Field(default_factory=list)
     diagnostics: GroundQueryDiagnosticsDTO = Field(
         default_factory=GroundQueryDiagnosticsDTO

@@ -112,6 +112,11 @@ TCP 与 UDP 参数、正反向和报告阈值分开处理，停止采集时同�
 
 纯 Python `OnlineMrQueryService` 只读复用 `OnlineMrSessionStore`、`OnlineMrCollectionPaths`、`session_meta.json` 和 `parsed/online_diagnosis.sqlite`。它提供会话摘要/详情、Artifact 白名单、日志字节游标分块、备注/时间轴、数据库摘要和既有指标查询；SQLite 使用独立 URI 只读连接，不执行 migration，不持有 FastAPI/Electron/Vue 对象。公共 DTO 只返回相对引用，不暴露服务端绝对路径。FastAPI Router 和 Vue 在该边界上提供实时展示；Agent MR 远程执行继续受独立安全开关和正式 Application Service 约束。
 
+地面无人值守不创建平行 Session 或 SSH 实现。深采调度继续生成正式 Online MR Session，实时查看按
+`collector_session_id` 复用本服务的 Session 查询、原始日志字节 cursor 和现有分析页路由；活动与
+历史 Session 使用同一只读入口。Ground 的 `WMESH/RSSI/RADIO/STATUS/RAW_OUTPUT` 只是查询期语义
+投影，不修改或删除 `display clock`、prompt、命令回显和其他原始文件内容。
+
 阶段 5B-2A 新增纯 Python `OnlineMrApplicationService`。新入口先创建 Controller Task 和同局点 `tasks.db` 中的待关联记录，采集进程创建会话后通过 `online_mr_session_created` 结构化事件补齐 `controller_task_id -> session_id`；Task 快照显式保存顶层局点、设备和所有者摘要，不扫描嵌套配置，也不把密码、命令或绝对路径写入任务/映射 DTO。Online MR 业务阶段使用独立 `OnlineMrPhase`，不扩展 Job Center 七状态。
 
 初始连接在会话创建后失败时，会话 metadata 固定落为 `FAILED`，原始目录继续保留。显式 `recover_mappings()` 对 LOCAL 继续把失去活动宿主的旧会话标为 `ABORTED`，不自动解析、打包或删除 raw；对 AGENT 则从持久 Mapping 恢复远端状态、截止时间、正常停止和包导入。AGENT 默认关闭，关闭时返回 `ONLINE_MR_AGENT_EXECUTOR_DISABLED`。Electron 页面启动后的遗留会话核对复用同一恢复逻辑。

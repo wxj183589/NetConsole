@@ -27,8 +27,10 @@ def test_ground_ap_display_has_no_private_alias_index_or_h3c_derivation() -> Non
         SERVICES / "ground_unattended" / "ap_resolver.py"
     ).read_text(encoding="utf-8")
 
-    assert "resolve_peer_macs" in source
+    assert "resolve_current_ap_macs" in source
     for forbidden in (
+        "resolve_current_ap_mac(",
+        "resolve_peer_mac(",
         "_by_ap_mac",
         "_by_radio_mac",
         "_by_alias_mac",

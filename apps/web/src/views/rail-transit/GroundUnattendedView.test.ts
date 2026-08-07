@@ -55,7 +55,48 @@ describe('Ground unattended page', () => {
     expect(source).toContain('getGroundTrain')
     expect(source).toContain('查看长 Ping')
     expect(source).toContain('查看事件时间轴')
-    expect(source).toContain("name: 'online-mr-analysis'")
+    expect(source).toContain('getOnlineMrSession')
+    expect(source).toContain('workspace.openOrActivateRoute')
+    expect(source).toContain('/rail-transit/online-mr-analysis?session_id=')
+  })
+
+  it('keeps the Syslog AP fields together before radio correlation fields', () => {
+    const orderedKeys = [
+      "key: 'peer_name'",
+      "key: 'peer_mac'",
+      "key: 'previous_peer_name'",
+      "key: 'rssi'",
+      "key: 'reason_text'",
+      "key: 'interface_name'",
+      "key: 'physical_state'",
+      "key: 'cfg_event_index'",
+      "key: 'cfg_command_source'",
+      "key: 'correlation_confidence'",
+      "key: 'correlation_delta_ms'",
+      "key: 'composite_event_type'",
+    ]
+    const positions = orderedKeys.map((key) => source.indexOf(key, source.indexOf('const syslogColumns')))
+    expect(positions.every((position) => position >= 0)).toBe(true)
+    expect(positions).toEqual([...positions].sort((left, right) => left - right))
+    expect(source).toContain('table-id="ground-syslog:v2"')
+  })
+
+  it('uses filter-aware deep requests and flexible viewer workspaces', () => {
+    const deepWindowStart = source.indexOf('v-model="deepWindowOpen"')
+    const deepWindow = source.slice(deepWindowStart, source.indexOf('</NcFloatingWindow>', deepWindowStart))
+    expect(source).toContain("requestControllers.has('deep-records')")
+    expect(source).toContain('filterIdentity')
+    expect(source).toContain('class="deep-records-container"')
+    expect(deepWindow).toContain('height="100%"')
+    expect(deepWindow).not.toContain('max-height="480"')
+    expect(source).toContain('class="ping-chart-workspace"')
+    expect(source).toContain('.deep-records-container{flex:1;min-height:0;overflow:hidden}')
+  })
+
+  it('uses the runtime decision reason contract in the train list', () => {
+    expect(source).toContain("key: 'participates_in_mainline'")
+    expect(source).toContain("row.ping_reason_text || '未评估'")
+    expect(source).toContain("row.deep_collection_reason_text || '未评估'")
   })
 
   it('shows the auditable daily queue and current scheduling priority', () => {
@@ -79,7 +120,8 @@ describe('Ground unattended page', () => {
     expect(source.match(/<NcLogWorkspace/g)).toHaveLength(2)
     expect(source.match(/fill-remaining-height/g)).toHaveLength(2)
     expect(source).toContain('.log-console-pane){display:flex;overflow:hidden}')
-    expect(source).toContain('.ground-tabs :deep(.el-tabs__content){flex:1;height:100%;min-height:0;overflow:hidden}')
+    expect(source).toContain('.ground-tabs :deep(.el-tabs__content){flex:1;height:100%;overflow:hidden}')
+    expect(source).toContain('.ground-tabs :deep(.el-tab-pane){height:100%;overflow:auto;overscroll-behavior:contain}')
     expect(source).toContain('高级筛选（{{ syslogAdvancedFilterCount }} 个条件）')
     expect(source).toContain('v-model:current-page="timelinePage"')
     expect(source).toContain('v-model:current-page="syslogFilter.page"')
@@ -114,7 +156,8 @@ describe('Ground unattended page', () => {
     expect(source).toContain("pollDue('ping-series-incremental', 1_800")
     expect(source).toContain("activeTab.value === 'ping'")
     expect(source).toContain("activeTab.value === 'syslog'")
-    expect(source).not.toMatch(/pollDue\('(?:timeline|deep|archives)'/)
+    expect(source).toContain("pollDue('deep', 4_000")
+    expect(source).not.toMatch(/pollDue\('(?:timeline|archives)'/)
     expect(source).toContain('requestFailureCounts')
   })
 

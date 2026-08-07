@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import re
+import sqlite3
 import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
@@ -122,15 +123,20 @@ class GroundUnattendedEligibilityClassifier:
         if self.ap_identity_query_service is not None:
             raw_macs = [row.peer_ap_mac for row in ac_row_list]
             if raw_macs:
-                batch = self.ap_identity_query_service.resolve_current_ap_macs(
-                    raw_macs,
-                    ap_role="trackside",
-                )
-                identity_matches = {
-                    _mac_key(raw): batch.matches.get(_mac_key(raw))
-                    for raw in raw_macs
-                    if _mac_key(raw) and batch.matches.get(_mac_key(raw)) is not None
-                }
+                try:
+                    batch = self.ap_identity_query_service.resolve_current_ap_macs(
+                        raw_macs,
+                        ap_role="trackside",
+                    )
+                except (sqlite3.Error, OSError, RuntimeError):
+                    batch = None
+                if batch is not None:
+                    identity_matches = {
+                        _mac_key(raw): batch.matches.get(_mac_key(raw))
+                        for raw in raw_macs
+                        if _mac_key(raw)
+                        and batch.matches.get(_mac_key(raw)) is not None
+                    }
         ac_groups: dict[str, list[AcMeshMrStatusDTO]] = {}
         for row in ac_row_list:
             key = _train_key(row.train_no)
@@ -217,6 +223,17 @@ class GroundUnattendedEligibilityClassifier:
                     ping_exclusion_reason=address_reason,
                     deep_exclusion_reason=address_reason,
                 )
+            (
+                _resolved_class,
+                location_reason,
+                participates_in_mainline,
+                location_class_source,
+            ) = self._resolved_location_class(summary, location)
+            reason_contract = _decision_reason_contract(
+                decision,
+                location_reason=location_reason,
+                location_class_source=location_class_source,
+            )
             raw_ap_name = representative.peer_ap_name if representative else ""
             raw_ap_mac = representative.peer_ap_mac if representative else ""
             results.append(
@@ -226,11 +243,24 @@ class GroundUnattendedEligibilityClassifier:
                         train_no=train_no,
                         train_name=train_id,
                         location_class=decision.location_class,  # type: ignore[arg-type]
+                        location_class_source=location_class_source,
+                        participates_in_mainline=(
+                            participates_in_mainline
+                            and decision.location_class == "MAINLINE"
+                        ),
                         mainline_eligible=decision.mainline_eligible,
+                        mainline_reason_code=reason_contract[0],
+                        mainline_reason_text=reason_contract[1],
                         ping_eligible=decision.ping_eligible,
+                        ping_reason_code=reason_contract[2],
+                        ping_reason_text=reason_contract[3],
                         deep_collection_eligible=(
                             decision.deep_collection_eligible
                         ),
+                        deep_collection_reason_code=reason_contract[4],
+                        deep_collection_reason_text=reason_contract[5],
+                        decision_revision=2,
+                        decision_source="RUNTIME_AP_IDENTITY",
                         ping_inclusion_reason=decision.ping_inclusion_reason,
                         ping_exclusion_reason=decision.ping_exclusion_reason,
                         deep_exclusion_reason=decision.deep_exclusion_reason,
@@ -588,7 +618,7 @@ class GroundUnattendedEligibilityClassifier:
         stationary_seconds: int,
         ping_depot_trains_enabled: bool,
     ) -> EligibilityDecision:
-        location_class, location_reason, participates = (
+        location_class, location_reason, participates, _location_source = (
             cls._resolved_location_class(summary, location)
         )
         if row is None or row.data_status in {"no_data", "error"}:
@@ -690,10 +720,10 @@ class GroundUnattendedEligibilityClassifier:
     def _resolved_location_class(
         summary: RailTransitSummaryDTO,
         location: LocationResolution,
-    ) -> tuple[str, str, bool]:
+    ) -> tuple[str, str, bool, str]:
         ap = location.ap
         if ap is None:
-            return "UNKNOWN", "当前 AP 未匹配轨旁 AP 基础资料", False
+            return "UNKNOWN", "当前 AP 未匹配轨旁 AP 基础资料", False, "UNDETERMINED"
         if (
             ap.location_class != "UNKNOWN"
             and location_class_is_explicit(ap.location_class_source)
@@ -702,6 +732,7 @@ class GroundUnattendedEligibilityClassifier:
                 ap.location_class,
                 f"当前 AP 基础资料明确标记为 {ap.location_class}",
                 ap.participates_in_mainline,
+                ap.location_class_source,
             )
 
         metadata = {
@@ -727,47 +758,54 @@ class GroundUnattendedEligibilityClassifier:
             metadata.get("facility_type"),
         )
         if "storage_track" in facilities:
-            return "STABLING", "当前 AP 基础资料明确归属于存车线", False
+            return "STABLING", "当前 AP 基础资料明确归属于存车线", False, "AP_METADATA"
         legacy_class, _, _ = resolve_trackside_ap_location(metadata)
         if legacy_class not in {"MAINLINE", "UNKNOWN"}:
             return (
                 legacy_class,
                 f"当前 AP 历史基础资料解析为 {legacy_class}",
                 False,
+                "AP_METADATA",
             )
 
         station = location.station
         if station is not None:
             station_name = canonical_station_name(station.name)
             if station.node_type == "depot":
-                return "DEPOT", f"当前车辆位于{station_name}", False
+                return "DEPOT", f"当前车辆位于{station_name}", False, "STATION_TOPOLOGY"
             if station.node_type == "parking_lot":
-                return "PARKING_YARD", f"当前车辆位于{station_name}", False
+                return "PARKING_YARD", f"当前车辆位于{station_name}", False, "STATION_TOPOLOGY"
             if "storage_track" in station.track_facilities:
-                return "STABLING", "当前站点设施为存车线", False
+                return "STABLING", "当前站点设施为存车线", False, "STATION_TOPOLOGY"
         section = location.section
         if section is not None and section.section_kind == "depot_connection":
-            return "DEPOT_CONNECTION", "当前区间为出入段连接线", False
+            return "DEPOT_CONNECTION", "当前区间为出入段连接线", False, "SECTION_TOPOLOGY"
 
         main_path = summary.main_path_code.strip().casefold()
         if station is not None and (
             not station.participates_in_direction
             or station.path_code.strip().casefold() != main_path
         ):
-            return "NON_MAINLINE", "当前站点不参与局点正线判断", False
+            return "NON_MAINLINE", "当前站点不参与局点正线判断", False, "STATION_TOPOLOGY"
         if section is not None and section.path_code.strip().casefold() != main_path:
-            return "NON_MAINLINE", "当前区间不属于局点主路径", False
+            return "NON_MAINLINE", "当前区间不属于局点主路径", False, "SECTION_TOPOLOGY"
         ap_path = str(metadata.get("path_code") or "").strip().casefold()
         if ap_path and ap_path != main_path:
-            return "NON_MAINLINE", "当前 AP 不属于局点主路径", False
+            return "NON_MAINLINE", "当前 AP 不属于局点主路径", False, "AP_TOPOLOGY"
         if ap.location_class == "MAINLINE" and not ap.participates_in_mainline:
-            return "MAINLINE", "当前 AP 已设置为不参与正线判断", False
+            return (
+                "MAINLINE",
+                "当前 AP 已设置为不参与正线判断",
+                False,
+                ap.location_class_source,
+            )
         if station is not None or section is not None or ap_path:
-            return "MAINLINE", "站点/区间属于局点主路径", True
+            return "MAINLINE", "站点/区间属于局点主路径", True, "SITE_TOPOLOGY"
         return (
-            "UNKNOWN",
-            "当前 AP 未提供明确位置类型，且站点/区间基础资料不足以判定正线",
-            False,
+            "MAINLINE",
+            "AP 已匹配且没有特殊区域标记，按默认正线纳入",
+            True,
+            "DEFAULT_MAINLINE",
         )
 
     @staticmethod
@@ -832,6 +870,64 @@ class GroundUnattendedEligibilityClassifier:
                 )
             )
         return result
+
+
+def _decision_reason_contract(
+    decision: EligibilityDecision,
+    *,
+    location_reason: str,
+    location_class_source: str,
+) -> tuple[str, str, str, str, str, str]:
+    status = decision.status
+    if decision.mainline_eligible:
+        mainline_code = (
+            "MAINLINE_DEFAULT_CLASSIFICATION"
+            if location_class_source == "DEFAULT_MAINLINE"
+            else "MAINLINE_AP_MATCHED"
+        )
+        mainline_text = location_reason or "正线 AP 已匹配"
+    else:
+        mainline_code = status or "NOT_EVALUATED"
+        mainline_text = location_reason or decision.reason or "未评估"
+
+    if decision.ping_eligible:
+        ping_code = (
+            "DEPOT_PING_ENABLED"
+            if decision.location_class in DEPOT_PING_LOCATION_CLASSES
+            else mainline_code
+        )
+        ping_text = decision.ping_inclusion_reason or mainline_text
+    else:
+        ping_code = {
+            "AP_UNMATCHED": "AP_UNMATCHED",
+            "OFFLINE": "TRAIN_OFFLINE",
+            "AC_UNKNOWN": "AC_UNKNOWN",
+            "AC_STALE": "AC_STALE",
+            "LOCATION_UNDETERMINED": "LOCATION_UNDETERMINED",
+            "DEPOT": "DEPOT_PING_DISABLED",
+            "PARKING_LOT": "DEPOT_PING_DISABLED",
+            "STORAGE_TRACK": "DEPOT_PING_DISABLED",
+        }.get(status, status or "NOT_EVALUATED")
+        if "管理 IP" in decision.ping_exclusion_reason:
+            ping_code = "NO_MANAGEMENT_IP"
+        ping_text = decision.ping_exclusion_reason or decision.reason or "未评估"
+
+    if decision.deep_collection_eligible:
+        deep_code = "ELIGIBLE"
+        deep_text = "正线在线，符合深度采集资格"
+    else:
+        deep_code = (
+            "LONG_STAY" if status == "MAINLINE_STATIONARY" else status
+        ) or "NOT_EVALUATED"
+        deep_text = decision.deep_exclusion_reason or decision.reason or "未评估"
+    return (
+        mainline_code,
+        mainline_text,
+        ping_code,
+        ping_text,
+        deep_code,
+        deep_text,
+    )
 
 
 def _train_key(value: str) -> str:

@@ -111,11 +111,21 @@ CREATE TABLE IF NOT EXISTS ground_unattended_train_runs (
     train_no TEXT NOT NULL DEFAULT '',
     train_name TEXT NOT NULL DEFAULT '',
     location_class TEXT NOT NULL DEFAULT 'UNKNOWN',
+    location_class_source TEXT NOT NULL DEFAULT 'UNDETERMINED',
+    participates_in_mainline INTEGER NOT NULL DEFAULT 0,
     mainline_eligible INTEGER NOT NULL DEFAULT 0,
+    mainline_reason_code TEXT NOT NULL DEFAULT 'NOT_EVALUATED',
+    mainline_reason_text TEXT NOT NULL DEFAULT '未评估',
     coverage_status TEXT NOT NULL DEFAULT 'NOT_SEEN',
     priority INTEGER NOT NULL DEFAULT 0,
     ping_eligible INTEGER NOT NULL DEFAULT 0,
+    ping_reason_code TEXT NOT NULL DEFAULT 'NOT_EVALUATED',
+    ping_reason_text TEXT NOT NULL DEFAULT '未评估',
     deep_collection_eligible INTEGER NOT NULL DEFAULT 0,
+    deep_collection_reason_code TEXT NOT NULL DEFAULT 'NOT_EVALUATED',
+    deep_collection_reason_text TEXT NOT NULL DEFAULT '未评估',
+    decision_revision INTEGER NOT NULL DEFAULT 0,
+    decision_source TEXT NOT NULL DEFAULT 'NOT_EVALUATED',
     ping_inclusion_reason TEXT NOT NULL DEFAULT '',
     ping_exclusion_reason TEXT NOT NULL DEFAULT '',
     deep_exclusion_reason TEXT NOT NULL DEFAULT '',
@@ -677,7 +687,17 @@ _PING_SUMMARY_MIGRATION_COLUMNS = {
 
 _TRAIN_RUN_MIGRATION_COLUMNS = {
     "location_class": "TEXT NOT NULL DEFAULT 'UNKNOWN'",
+    "location_class_source": "TEXT NOT NULL DEFAULT 'UNDETERMINED'",
+    "participates_in_mainline": "INTEGER NOT NULL DEFAULT 0",
     "mainline_eligible": "INTEGER NOT NULL DEFAULT 0",
+    "mainline_reason_code": "TEXT NOT NULL DEFAULT 'NOT_EVALUATED'",
+    "mainline_reason_text": "TEXT NOT NULL DEFAULT '未评估'",
+    "ping_reason_code": "TEXT NOT NULL DEFAULT 'NOT_EVALUATED'",
+    "ping_reason_text": "TEXT NOT NULL DEFAULT '未评估'",
+    "deep_collection_reason_code": "TEXT NOT NULL DEFAULT 'NOT_EVALUATED'",
+    "deep_collection_reason_text": "TEXT NOT NULL DEFAULT '未评估'",
+    "decision_revision": "INTEGER NOT NULL DEFAULT 0",
+    "decision_source": "TEXT NOT NULL DEFAULT 'NOT_EVALUATED'",
     "ping_inclusion_reason": "TEXT NOT NULL DEFAULT ''",
     "ping_exclusion_reason": "TEXT NOT NULL DEFAULT ''",
     "deep_exclusion_reason": "TEXT NOT NULL DEFAULT ''",
@@ -812,7 +832,7 @@ class GroundUnattendedRepository:
             conn.execute(
                 """
                 INSERT INTO ground_unattended_schema(key, value, updated_at)
-                VALUES('schema_version', '9', ?)
+                VALUES('schema_version', '10', ?)
                 ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
                 """,
                 (_now(),),
@@ -870,6 +890,62 @@ class GroundUnattendedRepository:
                     'DEPOT_CONNECTION',
                     'NON_MAIN_PATH',
                     'OFFLINE'
+              )
+            """
+        )
+        conn.execute(
+            """
+            UPDATE ground_unattended_train_runs
+            SET location_class_source = CASE
+                    WHEN location_class <> 'UNKNOWN'
+                        THEN 'LEGACY_ELIGIBILITY_STATUS'
+                    ELSE location_class_source
+                END,
+                participates_in_mainline = CASE
+                    WHEN location_class = 'MAINLINE' THEN 1
+                    ELSE 0
+                END,
+                mainline_reason_code = CASE
+                    WHEN eligibility_status IN ('MAINLINE', 'MAINLINE_STATIONARY')
+                        THEN 'MAINLINE_LEGACY_SNAPSHOT'
+                    ELSE eligibility_status
+                END,
+                mainline_reason_text = COALESCE(
+                    NULLIF(exclusion_reason, ''),
+                    '历史快照已执行正线资格判定'
+                ),
+                ping_reason_code = CASE
+                    WHEN ping_eligible = 1 THEN 'LEGACY_PING_ELIGIBLE'
+                    ELSE eligibility_status
+                END,
+                ping_reason_text = COALESCE(
+                    NULLIF(ping_inclusion_reason, ''),
+                    NULLIF(ping_exclusion_reason, ''),
+                    NULLIF(exclusion_reason, ''),
+                    '历史快照已执行 Ping 资格判定'
+                ),
+                deep_collection_reason_code = CASE
+                    WHEN deep_collection_eligible = 1 THEN 'LEGACY_DEEP_ELIGIBLE'
+                    ELSE eligibility_status
+                END,
+                deep_collection_reason_text = COALESCE(
+                    NULLIF(deep_exclusion_reason, ''),
+                    NULLIF(exclusion_reason, ''),
+                    CASE
+                        WHEN deep_collection_eligible = 1
+                            THEN '历史快照符合深度采集资格'
+                        ELSE '历史快照已执行深度采集资格判定'
+                    END
+                ),
+                decision_revision = 1,
+                decision_source = 'LEGACY_ELIGIBILITY_SNAPSHOT'
+            WHERE decision_revision = 0
+              AND (
+                    eligibility_status <> 'AC_UNKNOWN'
+                    OR exclusion_reason <> ''
+                    OR ping_inclusion_reason <> ''
+                    OR ping_exclusion_reason <> ''
+                    OR deep_exclusion_reason <> ''
               )
             """
         )
@@ -1393,12 +1469,38 @@ class GroundUnattendedRepository:
             "train_no": values.get("train_no", ""),
             "train_name": values.get("train_name", ""),
             "location_class": values.get("location_class", "UNKNOWN"),
+            "location_class_source": values.get(
+                "location_class_source", "UNDETERMINED"
+            ),
+            "participates_in_mainline": int(
+                bool(values.get("participates_in_mainline"))
+            ),
             "mainline_eligible": int(bool(values.get("mainline_eligible"))),
+            "mainline_reason_code": values.get(
+                "mainline_reason_code", "NOT_EVALUATED"
+            ),
+            "mainline_reason_text": values.get(
+                "mainline_reason_text", "未评估"
+            ),
             "coverage_status": values.get("coverage_status", "NOT_SEEN"),
             "priority": int(bool(priority)),
             "ping_eligible": int(bool(values.get("ping_eligible"))),
+            "ping_reason_code": values.get(
+                "ping_reason_code", "NOT_EVALUATED"
+            ),
+            "ping_reason_text": values.get("ping_reason_text", "未评估"),
             "deep_collection_eligible": int(
                 bool(values.get("deep_collection_eligible"))
+            ),
+            "deep_collection_reason_code": values.get(
+                "deep_collection_reason_code", "NOT_EVALUATED"
+            ),
+            "deep_collection_reason_text": values.get(
+                "deep_collection_reason_text", "未评估"
+            ),
+            "decision_revision": int(values.get("decision_revision") or 0),
+            "decision_source": values.get(
+                "decision_source", "NOT_EVALUATED"
             ),
             "ping_inclusion_reason": values.get("ping_inclusion_reason", ""),
             "ping_exclusion_reason": values.get("ping_exclusion_reason", ""),
@@ -2625,11 +2727,35 @@ class GroundUnattendedRepository:
             "created_at",
         )
         now = _now()
+        inserted = 0
         with self._transaction() as conn:
-            conn.executemany(
-                f"INSERT INTO ground_unattended_wmesh_events ({', '.join(fields)}) "
-                f"VALUES ({', '.join('?' for _ in fields)})",
-                [
+            for row in values:
+                raw_file_id = str(row.get("raw_file_id") or "")
+                raw_line_number = row.get("raw_line_number")
+                existing = None
+                if raw_file_id and raw_line_number not in {None, ""}:
+                    existing = conn.execute(
+                        "SELECT id FROM ground_unattended_wmesh_events "
+                        "WHERE site_id=? AND raw_file_id=? AND raw_line_number=? "
+                        "LIMIT 1",
+                        (self.site_id, raw_file_id, int(raw_line_number)),
+                    ).fetchone()
+                elif row.get("dedup_key"):
+                    existing = conn.execute(
+                        "SELECT id FROM ground_unattended_wmesh_events "
+                        "WHERE site_id=? AND dedup_key=? LIMIT 1",
+                        (self.site_id, str(row["dedup_key"])),
+                    ).fetchone()
+                if existing is not None:
+                    conn.execute(
+                        "UPDATE ground_unattended_wmesh_events "
+                        "SET duplicate_count=duplicate_count+1 WHERE id=?",
+                        (int(existing["id"]),),
+                    )
+                    continue
+                conn.execute(
+                    f"INSERT INTO ground_unattended_wmesh_events ({', '.join(fields)}) "
+                    f"VALUES ({', '.join('?' for _ in fields)})",
                     tuple(
                         json.dumps(row.get("details") or {}, ensure_ascii=False)
                         if field == "details_json"
@@ -2646,11 +2772,10 @@ class GroundUnattendedRepository:
                             else "",
                         )
                         for field in fields
-                    )
-                    for row in values
-                ],
-            )
-        return len(values)
+                    ),
+                )
+                inserted += 1
+        return inserted
 
     def record_control_syslog_event(
         self, values: dict[str, Any]
@@ -3206,7 +3331,7 @@ class GroundUnattendedRepository:
             rows = conn.execute(
                 f"SELECT * FROM ground_unattended_wmesh_events WHERE {' AND '.join(where)} "
                 "ORDER BY receive_time DESC LIMIT ? OFFSET ?",
-                (*params, max(1, min(int(limit), 500)), max(0, int(offset))),
+                (*params, max(1, min(int(limit), 2_000)), max(0, int(offset))),
             ).fetchall()
         return [_decode_row(row) for row in rows]
 

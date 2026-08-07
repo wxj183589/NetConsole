@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import logging
 import json
+import logging
 import shutil
+import sqlite3
 import threading
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -136,7 +137,10 @@ class GroundUnattendedSupervisor:
             ap_identity_query_service
             or ApIdentityQueryService(Database(paths.site_db_path(site_id)))
         )
-        self.ap_identity_query_service.ensure_index("ground_unattended_startup")
+        try:
+            self.ap_identity_query_service.ensure_index("ground_unattended_startup")
+        except (sqlite3.Error, OSError, RuntimeError) as exc:
+            LOGGER.warning("Ground AP Identity 索引暂不可用，按未解析状态继续启动: %s", exc)
         self.classifier = GroundUnattendedEligibilityClassifier(
             self.ap_identity_query_service
         )

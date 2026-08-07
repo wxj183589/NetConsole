@@ -227,6 +227,69 @@ def test_application_service_uses_injected_identity_query_without_base_alias_cac
     assert service._ap_display_resolver().query_service is query
 
 
+def test_ping_switch_projection_resolves_radio_aliases_in_one_identity_batch(
+    tmp_path,
+) -> None:
+    paths = PathResolver(tmp_path / "app", tmp_path / "data")
+    repository = GroundUnattendedRepository(
+        paths.ground_unattended_db_path("site-a"), site_id="site-a"
+    )
+    query = FakeIdentityQuery(
+        {
+            "101122334455": _match(
+                "101122334455",
+                entity_id="old-ap",
+                name="站点A-AP01",
+                ap_mac="0011-2233-4455",
+                station="站点A",
+                section="站点A-站点B",
+                revision=9,
+            ),
+            "102233445566": _match(
+                "102233445566",
+                entity_id="new-ap",
+                name="站点B-AP01",
+                ap_mac="0022-3344-5566",
+                station="站点B",
+                section="站点B-站点C",
+                revision=9,
+            ),
+        },
+        revision=9,
+    )
+    service = GroundUnattendedApplicationService(
+        paths,
+        site_id="site-a",
+        repository=repository,
+        supervisor=SimpleNamespace(),
+        ap_identity_query_service=query,
+    )
+
+    projected = service._project_ping_transitions(
+        [
+            {
+                "ts": "2026-08-07T20:29:21.840+08:00",
+                "event_time": "2026-08-07T20:29:21.840+08:00",
+                "old_ap_raw": "1011-2233-4455",
+                "new_ap_raw": "1022-3344-5566",
+                "old_ap_mac": "",
+                "new_ap_mac": "",
+            }
+        ]
+    )
+
+    assert query.batch_calls == [
+        (("102233445566", "101122334455"), "trackside")
+    ]
+    assert projected[0]["old_ap_id"] == "old-ap"
+    assert projected[0]["new_ap_id"] == "new-ap"
+    assert projected[0]["old_ap_mac"] == "00:11:22:33:44:55"
+    assert projected[0]["new_ap_mac"] == "00:22:33:44:55:66"
+    assert projected[0]["old_station"] == "站点A"
+    assert projected[0]["new_station"] == "站点B"
+    assert projected[0]["identity_revision"] == 9
+
+
 def test_timeline_enriches_link_events_and_no_active_link_switch(tmp_path) -> None:
     paths = PathResolver(tmp_path / "app", tmp_path / "data")
     repository = GroundUnattendedRepository(
@@ -333,6 +396,8 @@ def _match(
     entity_id: str,
     name: str,
     ap_mac: str = "0011-2233-4455",
+    station: str = "横溪站",
+    section: str = "横溪站-站点B",
     revision: int = 1,
 ) -> ApIdentityMatch:
     return ApIdentityMatch(
@@ -342,8 +407,8 @@ def _match(
         matched_entity_id=entity_id,
         effective_ap_name=name,
         effective_ap_mac=ap_mac,
-        station="横溪站",
-        section="横溪站-站点B",
+        station=station,
+        section=section,
         matched_alias_type="ac_bssid",
         matched_source="ac_runtime",
         match_rule="actual_bssid_exact",

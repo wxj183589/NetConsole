@@ -13,6 +13,8 @@ import {
   getActiveGroundOperation, getGroundOperation, getGroundPingSeries, getGroundPingSeriesIncremental, getGroundSyslogTransportStatus,
   listGroundRuns, listGroundSyslogRecords, previewGroundSyslogDelete, probeGroundRawQueryTransportState, probeGroundSyslogTransportState, submitGroundSyslogDelete, verifyGroundArchive,
 } from '../../api/groundUnattended'
+import { apiErrorDetail } from '../../api/client'
+import { getOnlineMrSession } from '../../api/onlineMr'
 import GroundPingChart from '../../components/ground-unattended/GroundPingChart.vue'
 import { NcDataTable, type NcTableColumn } from '../../components/table'
 import NcFloatingWindow from '../../components/workspace/NcFloatingWindow.vue'
@@ -20,6 +22,7 @@ import NcLogWorkspace from '../../components/workspace/NcLogWorkspace.vue'
 import { useAdaptiveTableHeight } from '../../composables/useAdaptiveTableHeight'
 import { t } from '../../i18n/runtime'
 import { downloadBackendResource } from '../../platform/runtime'
+import { useWorkspaceStore } from '../../stores/workspace'
 import type {
   GroundActionResponse, GroundArchive, GroundArchiveDetail, GroundDeepCollection, GroundDeepCollectionRecord, GroundDeepCollector, GroundPingSeries, GroundPingTarget, GroundProfile, GroundStatus,
   GroundHealth, GroundOperation, GroundPingSample, GroundQueryDiagnostics, GroundRun, GroundSyslogRecord,
@@ -33,6 +36,7 @@ import {
 
 const activeTab = ref('overview')
 const router = useRouter()
+const workspace = useWorkspaceStore()
 const loading = ref(false)
 const saving = ref(false)
 const action = ref('')
@@ -113,6 +117,7 @@ const archiveDetailTab = ref('overview')
 const selectedTrain = ref<GroundTrain | null>(null)
 const archiveDialog = ref(false)
 const trainDialog = ref(false)
+const openingSessionId = ref('')
 const trainFilter = ref('')
 const pingFilter = reactive({ query: '', endpoint: '', station: '', section: '', minLoss: 0 })
 const timelineFilter = reactive({ query: '', eventType: '' })
@@ -276,9 +281,9 @@ const trainColumns: NcTableColumn<GroundTrain>[] = [
   { key: 'train_no', label: t('ground.train', '列车'), valueType: 'name', fixed: 'left' },
   { key: 'location_class', label: '位置类型', valueType: 'status', displayValue: (row) => groundStatusLabel(row.location_class) },
   { key: 'eligibility_status', label: t('ground.eligibility', '正线判断'), valueType: 'status', displayValue: (row) => groundStatusLabel(row.eligibility_status) },
-  { key: 'mainline_eligible', label: '是否正线', valueType: 'status', displayValue: (row) => row.mainline_eligible ? '是' : '否' },
-  { key: 'ping_reason', label: 'Ping 纳入原因', valueType: 'description', minWidth: 220, displayValue: (row) => row.ping_inclusion_reason || row.ping_exclusion_reason || '—' },
-  { key: 'deep_state', label: '深采资格', valueType: 'status', minWidth: 150, displayValue: (row) => row.deep_collection_eligible ? '符合资格' : row.deep_exclusion_reason || '不具备资格' },
+  { key: 'participates_in_mainline', label: '是否正线', valueType: 'status', displayValue: (row) => row.participates_in_mainline ? '是' : '否' },
+  { key: 'ping_reason', label: 'Ping 纳入原因', valueType: 'description', minWidth: 220, displayValue: (row) => row.ping_reason_text || '未评估' },
+  { key: 'deep_state', label: '深采资格', valueType: 'status', minWidth: 180, displayValue: (row) => row.deep_collection_reason_text || '未评估' },
   { key: 'location_match_level', label: '匹配等级', valueType: 'status', width: 130, displayValue: (row) => groundStatusLabel(row.location_match_level) },
   { key: 'exclusion_reason', label: t('ground.exclusion_reason', '排除原因'), valueType: 'description', minWidth: 220 },
   { key: 'raw_peer_ap_name', label: '原始 AP', valueType: 'name' },
@@ -379,6 +384,11 @@ const syslogColumns: NcTableColumn<GroundSyslogRecord>[] = [
   { key: 'severity', label: '级别', valueType: 'status', displayValue: (row) => groundSeverityLabel(row.severity) },
   { key: 'event_family', label: '事件族', valueType: 'status' },
   { key: 'event_type', label: '事件', valueType: 'status', displayValue: (row) => groundEventLabel(row.event_type) },
+  { key: 'peer_name', label: '当前 AP', valueType: 'name', displayValue: (row) => row.peer_name || row.peer_mac || '—' },
+  { key: 'peer_mac', label: 'Peer MAC', valueType: 'mac' },
+  { key: 'previous_peer_name', label: '原 AP', valueType: 'name', displayValue: (row) => row.previous_peer_name || row.previous_peer_mac || '—' },
+  { key: 'rssi', label: 'RSSI', valueType: 'number', displayValue: (row) => row.rssi == null ? '—' : String(row.rssi) },
+  { key: 'reason_text', label: '原因', valueType: 'description', minWidth: 180 },
   { key: 'interface_name', label: '射频接口', valueType: 'text' },
   { key: 'physical_state', label: '接口状态', valueType: 'status', displayValue: (row) => groundStatusLabel(row.physical_state) },
   { key: 'cfg_event_index', label: 'CFG EventIndex', valueType: 'text' },
@@ -386,11 +396,6 @@ const syslogColumns: NcTableColumn<GroundSyslogRecord>[] = [
   { key: 'correlation_confidence', label: '关联置信度', valueType: 'status', displayValue: (row) => groundStatusLabel(row.correlation_confidence) },
   { key: 'correlation_delta_ms', label: '关联时间差', valueType: 'number', displayValue: (row) => metric(row.correlation_delta_ms, 'ms') },
   { key: 'composite_event_type', label: '综合事件', valueType: 'status', displayValue: (row) => row.composite_event_type ? groundEventLabel(row.composite_event_type) : '—' },
-  { key: 'peer_name', label: '当前 AP', valueType: 'name', displayValue: (row) => row.peer_name || row.peer_mac || '—' },
-  { key: 'peer_mac', label: 'Peer MAC', valueType: 'mac' },
-  { key: 'previous_peer_name', label: '原 AP', valueType: 'name', displayValue: (row) => row.previous_peer_name || row.previous_peer_mac || '—' },
-  { key: 'rssi', label: 'RSSI', valueType: 'number', displayValue: (row) => row.rssi == null ? '—' : `${row.rssi} dBm` },
-  { key: 'reason_text', label: '原因', valueType: 'description', minWidth: 180 },
   { key: 'data_source', label: '数据来源', valueType: 'status', displayValue: (row) => groundSourceLabel(row.data_source) },
   { key: 'identity_status', label: '身份状态', valueType: 'status', displayValue: (row) => groundStatusLabel(row.identity_status) },
   { key: 'resolution_status', label: 'AP 解析', valueType: 'status', visible: false, displayValue: (row) => groundStatusLabel(row.resolution_status) },
@@ -1248,9 +1253,33 @@ async function showTrainTimeline(row: GroundTrain): Promise<void> {
   await loadAll(true)
 }
 async function openDeepSession(sessionId: string): Promise<void> {
-  if (!sessionId) return
-  trainDialog.value = false
-  await router.push({ name: 'online-mr-analysis', query: { session_id: sessionId } })
+  const normalized = sessionId.trim()
+  if (!normalized || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(normalized)) {
+    ElMessage.error('会话 ID 无效')
+    return
+  }
+  if (openingSessionId.value) return
+  openingSessionId.value = normalized
+  try {
+    await getOnlineMrSession(normalized)
+    await workspace.openOrActivateRoute(
+      `/rail-transit/online-mr-analysis?session_id=${encodeURIComponent(normalized)}`,
+    )
+    trainDialog.value = false
+  } catch (reason) {
+    const detail = apiErrorDetail(
+      reason,
+      `/api/online-mr/sessions/${encodeURIComponent(normalized)}`,
+    )
+    if (detail.status === 404 || detail.code.includes('NOT_FOUND')) {
+      ElMessage.error('会话不存在或已被清理')
+    } else {
+      const request = detail.requestId ? `，request_id: ${detail.requestId}` : ''
+      ElMessage.error(`${detail.message}（error_code: ${detail.code}${request}）`)
+    }
+  } finally {
+    openingSessionId.value = ''
+  }
 }
 async function showArchive(row: GroundArchive): Promise<void> {
   try {
@@ -1480,29 +1509,48 @@ async function showDeepCollector(collector: GroundDeepCollector): Promise<void> 
 async function loadDeepRecords(reset: boolean): Promise<void> {
   const collector = selectedDeepCollector.value
   if (!collector || !collector.collector_session_id || deepPaused.value && !reset) return
+  if (reset) {
+    deepCursor.value = ''
+    deepRecords.value = []
+  }
+  const requestCursor = reset ? '' : deepCursor.value
+  const filterIdentity = JSON.stringify({
+    sessionId: collector.collector_session_id,
+    category: deepCategory.value,
+    keyword: deepKeyword.value.trim(),
+    cursor: requestCursor,
+  })
   deepRecordsLoading.value = true
-  try {
-    const page = await listGroundDeepCollectionRecords({
+  await latestRequest(
+    'deep-records',
+    '深度采集实时记录',
+    (signal) => listGroundDeepCollectionRecords({
       run_id: collector.run_id || selectedRunId.value,
       train_id: collector.train_id,
       mr_id: collector.mr_id,
       mr_role: collector.mr_role,
       category: deepCategory.value,
       keyword: deepKeyword.value,
-      cursor: reset ? '' : deepCursor.value,
+      cursor: requestCursor,
       limit: 250,
-    })
-    selectedDeepCollector.value = page.collector
-    deepCursor.value = page.next_cursor
-    const seen = new Set(reset ? [] : deepRecords.value.map((row) => `${row.source}:${row.sequence}`))
-    deepRecords.value = reset
-      ? page.records
-      : [...deepRecords.value, ...page.records.filter((row) => !seen.has(`${row.source}:${row.sequence}`))].slice(-2_000)
-  } catch (reason) {
-    ElMessage.error(errorText(reason, '读取深度采集实时记录失败'))
-  } finally {
-    deepRecordsLoading.value = false
-  }
+    }, { signal }),
+    (page) => {
+      selectedDeepCollector.value = page.collector
+      deepCursor.value = page.next_cursor
+      const seen = new Set(reset ? [] : deepRecords.value.map((row) => `${row.source}:${row.sequence}`))
+      deepRecords.value = reset
+        ? page.records
+        : [...deepRecords.value, ...page.records.filter((row) => !seen.has(`${row.source}:${row.sequence}`))].slice(-2_000)
+    },
+    true,
+    filterIdentity,
+  )
+  if (!requestControllers.has('deep-records')) deepRecordsLoading.value = false
+}
+
+function toggleDeepPaused(): void {
+  deepPaused.value = !deepPaused.value
+  if (!deepPaused.value) void loadDeepRecords(false)
 }
 
 function handleDeepWindowClosed(): void {
@@ -1943,7 +1991,7 @@ onBeforeUnmount(() => {
           <NcDataTable
             :data="syslogRecords"
             :columns="syslogColumns"
-            table-id="ground-syslog"
+            table-id="ground-syslog:v2"
             route-key="rail-ground-unattended"
             :row-key="syslogRowKey"
             fill-remaining-height
@@ -2198,25 +2246,28 @@ onBeforeUnmount(() => {
             <el-button @click="openPingBackendLogs">查看 Backend 日志</el-button>
           </div>
         </el-empty>
-        <GroundPingChart
-          v-else
-          :series="pingSeries"
-          :follow-latest="pingFollowLatest"
-          @user-zoom="pingFollowLatest = false"
-        />
-        <h3 v-if="pingSeries?.points.length">丢包区段</h3>
-        <el-table v-if="pingSeries?.points.length" :data="pingSeries?.loss_windows || []" size="small" max-height="260" empty-text="暂无丢包区段">
-          <el-table-column prop="started_at" label="开始时间" min-width="180" />
-          <el-table-column prop="ended_at" label="结束时间" min-width="180" />
-          <el-table-column prop="duration_seconds" label="持续时间（秒）" width="130" />
-          <el-table-column prop="loss_count" label="丢包数" width="90" />
-          <el-table-column prop="mr_name" label="MR" min-width="150" />
-          <el-table-column prop="current_ap_name" label="AP" min-width="150" />
-          <el-table-column prop="station" label="站点" min-width="130" />
-          <el-table-column prop="section" label="区间" min-width="130" />
-          <el-table-column prop="ap_transition_context" label="AP 切换前后" min-width="140"><template #default="{ row }">{{ groundTransitionContextLabel(row.ap_transition_context) }}</template></el-table-column>
-          <el-table-column prop="position_quality" label="位置质量" min-width="110"><template #default="{ row }">{{ groundStatusLabel(row.position_quality) }}</template></el-table-column>
-        </el-table>
+        <div v-else class="ping-chart-workspace">
+          <GroundPingChart
+            :series="pingSeries"
+            :follow-latest="pingFollowLatest"
+            @user-zoom="pingFollowLatest = false"
+          />
+        </div>
+        <section v-if="pingSeries?.points.length" class="ping-loss-panel">
+          <h3>丢包区段</h3>
+          <el-table :data="pingSeries?.loss_windows || []" size="small" max-height="220" empty-text="暂无丢包区段">
+            <el-table-column prop="started_at" label="开始时间" min-width="180" />
+            <el-table-column prop="ended_at" label="结束时间" min-width="180" />
+            <el-table-column prop="duration_seconds" label="持续时间（秒）" width="130" />
+            <el-table-column prop="loss_count" label="丢包数" width="90" />
+            <el-table-column prop="mr_name" label="MR" min-width="150" />
+            <el-table-column prop="current_ap_name" label="AP" min-width="150" />
+            <el-table-column prop="station" label="站点" min-width="130" />
+            <el-table-column prop="section" label="区间" min-width="130" />
+            <el-table-column prop="ap_transition_context" label="AP 切换前后" min-width="140"><template #default="{ row }">{{ groundTransitionContextLabel(row.ap_transition_context) }}</template></el-table-column>
+            <el-table-column prop="position_quality" label="位置质量" min-width="110"><template #default="{ row }">{{ groundStatusLabel(row.position_quality) }}</template></el-table-column>
+          </el-table>
+        </section>
       </section>
     </NcFloatingWindow>
 
@@ -2246,17 +2297,19 @@ onBeforeUnmount(() => {
           </el-select>
           <el-input v-model="deepKeyword" clearable placeholder="搜索实时记录" @change="loadDeepRecords(true)" />
           <el-checkbox v-model="deepAutoRefresh">自动刷新</el-checkbox>
-          <el-button :icon="deepPaused ? VideoPlay : VideoPause" @click="deepPaused = !deepPaused">{{ deepPaused ? '继续显示' : '暂停显示' }}</el-button>
+          <el-button :icon="deepPaused ? VideoPlay : VideoPause" @click="toggleDeepPaused">{{ deepPaused ? '继续显示' : '暂停显示' }}</el-button>
           <el-button :icon="Refresh" :loading="deepRecordsLoading" @click="loadDeepRecords(true)">跳到最新</el-button>
           <el-button :icon="CopyDocument" @click="copyDeepRecords">复制</el-button>
         </div>
         <el-alert v-if="!selectedDeepCollector.collector_session_id" type="info" :closable="false" show-icon :title="selectedDeepCollector.state_reason" />
-        <el-table v-else :data="deepRecords" size="small" max-height="480" :empty-text="selectedDeepCollector.state === 'RUNNING' ? 'Collector 已运行，等待原始记录写入' : '暂无可读取的采集记录'">
-          <el-table-column prop="timestamp" label="时间" min-width="180" />
-          <el-table-column prop="category" label="分类" width="110" />
-          <el-table-column prop="source" label="来源" min-width="150" />
-          <el-table-column prop="text" label="记录" min-width="540" show-overflow-tooltip />
-        </el-table>
+        <div v-else class="deep-records-container">
+          <el-table :data="deepRecords" size="small" height="100%" :empty-text="selectedDeepCollector.state === 'RUNNING' ? 'Collector 已运行，等待原始记录写入' : '暂无可读取的采集记录'">
+            <el-table-column prop="timestamp" label="时间" min-width="180" />
+            <el-table-column prop="category" label="分类" width="110" />
+            <el-table-column prop="source" label="来源" min-width="150" />
+            <el-table-column prop="text" label="记录" min-width="540" show-overflow-tooltip />
+          </el-table>
+        </div>
       </section>
     </NcFloatingWindow>
 
@@ -2378,7 +2431,7 @@ onBeforeUnmount(() => {
       <template v-if="selectedTrain">
         <el-alert
           :title="`AP Identity: ${selectedTrain.ap_identity_diagnostics?.ap_identity_match_status || 'NOT_CHECKED'} / ${selectedTrain.ap_identity_diagnostics?.canonical_current_ap || '—'}`"
-          :description="`站点匹配 ${selectedTrain.ap_identity_diagnostics?.station_match_status || 'UNMATCHED'}，依据 ${selectedTrain.ap_identity_diagnostics?.matched_by || 'none'}，主线/Ping 原因码 ${selectedTrain.ap_identity_diagnostics?.mainline_exclusion_code || 'ELIGIBLE'} / ${selectedTrain.ap_identity_diagnostics?.ping_exclusion_code || 'ELIGIBLE'}`"
+          :description="`站点匹配 ${selectedTrain.ap_identity_diagnostics?.station_match_status || 'UNMATCHED'}，依据 ${selectedTrain.ap_identity_diagnostics?.matched_by || 'none'}，主线/Ping 原因码 ${selectedTrain.mainline_reason_code} / ${selectedTrain.ping_reason_code}，决策 r${selectedTrain.decision_revision} ${selectedTrain.decision_source}`"
           type="info"
           :closable="false"
           show-icon
@@ -2388,9 +2441,10 @@ onBeforeUnmount(() => {
           <el-descriptions-item :label="t('ground.train', '列车')">{{ selectedTrain.train_no || selectedTrain.train_name }}</el-descriptions-item>
           <el-descriptions-item :label="t('ground.eligibility', '正线判断')"><el-tag :type="statusType(selectedTrain.eligibility_status)">{{ groundStatusLabel(selectedTrain.eligibility_status) }}</el-tag></el-descriptions-item>
           <el-descriptions-item label="位置类型">{{ groundStatusLabel(selectedTrain.location_class) }}</el-descriptions-item>
-          <el-descriptions-item label="是否正线">{{ selectedTrain.mainline_eligible ? '是' : '否' }}</el-descriptions-item>
-          <el-descriptions-item label="Ping 纳入原因">{{ selectedTrain.ping_inclusion_reason || selectedTrain.ping_exclusion_reason || '—' }}</el-descriptions-item>
-          <el-descriptions-item label="深采资格">{{ selectedTrain.deep_collection_eligible ? '符合资格' : selectedTrain.deep_exclusion_reason || '不具备资格' }}</el-descriptions-item>
+          <el-descriptions-item label="是否正线">{{ selectedTrain.participates_in_mainline ? '是' : '否' }}</el-descriptions-item>
+          <el-descriptions-item label="位置判定来源">{{ selectedTrain.location_class_source }}</el-descriptions-item>
+          <el-descriptions-item label="Ping 纳入原因" :title="selectedTrain.ping_reason_code">{{ selectedTrain.ping_reason_text || '未评估' }}</el-descriptions-item>
+          <el-descriptions-item label="深采资格" :title="selectedTrain.deep_collection_reason_code">{{ selectedTrain.deep_collection_reason_text || '未评估' }}</el-descriptions-item>
           <el-descriptions-item :label="t('ground.current_ap', '当前 AP')">{{ selectedTrain.current_ap_name || '—' }}</el-descriptions-item>
           <el-descriptions-item label="位置匹配等级">{{ groundStatusLabel(selectedTrain.location_match_level) }}</el-descriptions-item>
           <el-descriptions-item label="原始 AP 名称">{{ selectedTrain.raw_peer_ap_name || '—' }}</el-descriptions-item>
@@ -2445,8 +2499,8 @@ onBeforeUnmount(() => {
           <el-button @click="showTrainPing(selectedTrain)">{{ t('ground.view_ping', '查看长 Ping') }}</el-button>
           <el-button @click="showTrainTimeline(selectedTrain)">{{ t('ground.view_timeline', '查看事件时间轴') }}</el-button>
           <el-button :disabled="!running" @click="checkConfigs(endpoint(selectedTrain, 'CT')?.mr_id || '')">检查 CT 配置</el-button>
-          <el-button :disabled="!selectedTrainCollection?.ct_session_id" @click="openDeepSession(selectedTrainCollection?.ct_session_id || '')">{{ t('ground.open_ct_session', '打开 CT 会话') }}</el-button>
-          <el-button :disabled="!selectedTrainCollection?.cw_session_id" @click="openDeepSession(selectedTrainCollection?.cw_session_id || '')">{{ t('ground.open_cw_session', '打开 CW 会话') }}</el-button>
+          <el-button :loading="openingSessionId === selectedTrainCollection?.ct_session_id" :disabled="!selectedTrainCollection?.ct_session_id || Boolean(openingSessionId)" @click="openDeepSession(selectedTrainCollection?.ct_session_id || '')">{{ t('ground.open_ct_session', '打开 CT 会话') }}</el-button>
+          <el-button :loading="openingSessionId === selectedTrainCollection?.cw_session_id" :disabled="!selectedTrainCollection?.cw_session_id || Boolean(openingSessionId)" @click="openDeepSession(selectedTrainCollection?.cw_session_id || '')">{{ t('ground.open_cw_session', '打开 CW 会话') }}</el-button>
         </div>
       </template>
     </el-dialog>
@@ -2456,7 +2510,7 @@ onBeforeUnmount(() => {
 <style scoped>
 .ground-page{display:flex;flex-direction:column;gap:12px;min-width:0;min-height:0}.page-heading,.heading-actions,.status-line,.toolbar,.coverage-strip,.row-actions,.form-actions,.inline-numbers,.dialog-actions,.network-actions,.network-status,.boot-evidence,.operation-heading,.detail-heading,.mode-switch,.load-warning{display:flex;align-items:center;gap:10px}.page-heading,.operation-heading,.detail-heading{justify-content:space-between;flex-wrap:wrap}.page-heading h1{margin:2px 0 0;font-size:24px;letter-spacing:0}.eyebrow{margin:0;color:var(--el-color-primary);font-size:12px;font-weight:700;letter-spacing:0}.heading-actions,.toolbar,.dialog-actions,.network-actions,.network-status,.boot-evidence{flex-wrap:wrap}.operation-band{padding:12px 14px;border:1px solid var(--el-border-color);border-left:4px solid var(--el-color-warning);background:var(--el-fill-color-light)}.operation-band.operation-completed{border-left-color:var(--el-color-success)}.operation-band.operation-failed{border-left-color:var(--el-color-danger)}.operation-heading>div{display:flex;gap:12px;align-items:center}.operation-band p{margin:8px 0;color:var(--el-text-color-primary)}.operation-band small{color:var(--el-text-color-secondary)}.load-warning{align-items:flex-start}.load-warning :deep(.el-alert){min-width:0;flex:1}.ground-tabs{min-width:0}.ground-tabs :deep(.el-tabs__content),.ground-tabs :deep(.el-tab-pane){min-width:0;min-height:0;overflow:visible}.overview-band{padding:2px 0}.status-line{min-height:42px;flex-wrap:wrap;border-bottom:1px solid var(--el-border-color-lighter)}.metric-grid,.health-grid{display:grid;grid-template-columns:repeat(5,minmax(150px,1fr));gap:1px;margin-top:12px;background:var(--el-border-color-lighter);border:1px solid var(--el-border-color-lighter)}.metric-grid article,.health-grid article{min-width:0;padding:12px;background:var(--el-bg-color)}.metric-grid span,.metric-grid small,.health-grid span,.health-grid small{display:block;color:var(--el-text-color-secondary);font-size:12px}.metric-grid strong,.health-grid strong{display:block;min-height:24px;margin:6px 0 3px;font-size:18px;letter-spacing:0;overflow-wrap:anywhere}.toolbar{min-height:42px;flex-wrap:wrap}.toolbar .el-input{width:210px}.toolbar .el-select{width:130px}.toolbar .el-input-number{width:110px}.table-frame{height:auto;min-width:0;overflow:visible;border-top:1px solid var(--el-border-color-lighter)}.table-pagination{margin-top:8px}.coverage-strip{flex-wrap:wrap;margin-bottom:8px}.coverage-strip span{display:flex;align-items:center;gap:5px;padding:5px 8px;background:var(--el-fill-color-light);border-radius:4px;color:var(--el-text-color-secondary);font-size:12px}.coverage-strip b{color:var(--el-text-color-primary);font-size:16px}.settings-empty{padding:48px 16px}.settings-empty .muted{max-width:720px;margin:0 auto 12px;overflow-wrap:anywhere}.settings-form{display:flex;flex-direction:column;gap:18px;max-width:1180px}.settings-form section{padding-bottom:16px;border-bottom:1px solid var(--el-border-color-lighter)}.settings-form h2{margin:0 0 12px;font-size:16px;letter-spacing:0}.form-grid{display:grid;grid-template-columns:repeat(4,minmax(180px,1fr));gap:0 16px}.form-grid :deep(.el-input-number),.form-grid :deep(.el-select),.form-grid :deep(.el-input){width:100%}.mode-switch{align-items:flex-start;margin-bottom:12px}.mode-switch span{color:var(--el-text-color-secondary);font-size:12px}.budget-disabled{opacity:.66}.inline-numbers{width:100%}.priority-grid{display:grid;grid-template-columns:repeat(6,minmax(110px,1fr));gap:8px}.muted{color:var(--el-text-color-secondary);font-size:12px}.network-actions{margin:12px 0}.network-status{margin:10px 0;padding:8px;background:var(--el-fill-color-light)}.network-ok{color:var(--el-color-success);font-size:12px}.network-error{color:var(--el-color-danger);font-size:12px}.loghost-section{margin-top:14px;padding-top:8px;border-top:1px solid var(--el-border-color-lighter)}.boot-evidence{margin:8px 0;color:var(--el-text-color-secondary);font-size:12px}.form-actions{position:sticky;bottom:0;padding:10px 0;background:var(--el-bg-color)}.dialog-actions{justify-content:flex-end;margin-top:14px}@media(max-width:1300px){.metric-grid,.health-grid{grid-template-columns:repeat(3,minmax(150px,1fr))}.form-grid{grid-template-columns:repeat(3,minmax(170px,1fr))}.priority-grid{grid-template-columns:repeat(4,minmax(110px,1fr))}}@media(max-width:900px){.page-heading{align-items:flex-start;flex-direction:column}.metric-grid,.health-grid{grid-template-columns:repeat(2,minmax(140px,1fr))}.form-grid{grid-template-columns:repeat(2,minmax(150px,1fr))}.priority-grid{grid-template-columns:repeat(3,minmax(100px,1fr))}}@media(max-width:620px){.metric-grid,.health-grid,.form-grid{grid-template-columns:1fr}.priority-grid{grid-template-columns:repeat(2,minmax(100px,1fr))}.heading-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%}.heading-actions .el-button{margin:0}.load-warning{flex-direction:column}.toolbar .el-input,.toolbar .el-select{width:100%}}
 .ac-poller-health{margin-top:14px}.ac-poller-grid{display:grid;grid-template-columns:repeat(2,minmax(280px,1fr));gap:10px}.ac-poller-grid article{padding:12px;border:1px solid var(--el-border-color);border-radius:6px;background:var(--el-fill-color-extra-light)}.ac-poller-grid header{display:flex;align-items:center;justify-content:space-between;gap:12px}.ac-poller-grid p{margin:8px 0}.ac-poller-grid small{display:block;margin-top:5px;color:var(--el-text-color-secondary);overflow-wrap:anywhere}.ac-poller-grid .health-error{color:var(--el-color-danger)}@media(max-width:900px){.ac-poller-grid{grid-template-columns:1fr}}
-.run-context-bar{display:flex;align-items:center;flex-wrap:wrap;gap:10px;padding:10px 12px;border:1px solid var(--el-border-color-lighter);background:var(--el-fill-color-extra-light)}.run-context-bar>div{display:flex;flex-direction:column;min-width:240px}.run-context-bar>div span{font-size:12px;color:var(--el-text-color-secondary)}.run-context-bar .el-select{width:min(440px,100%)}.ping-floating-content,.deep-floating-content{min-width:720px}.ping-floating-content h3,.detail-heading h2{margin:12px 0 8px}.ping-empty-state{height:210px}.raw-record{max-height:320px;overflow:auto;padding:12px;border:1px solid var(--el-border-color-lighter);background:var(--el-fill-color-extra-light);white-space:pre-wrap;overflow-wrap:anywhere}
+.run-context-bar{display:flex;align-items:center;flex-wrap:wrap;gap:10px;padding:10px 12px;border:1px solid var(--el-border-color-lighter);background:var(--el-fill-color-extra-light)}.run-context-bar>div{display:flex;flex-direction:column;min-width:240px}.run-context-bar>div span{font-size:12px;color:var(--el-text-color-secondary)}.run-context-bar .el-select{width:min(440px,100%)}.ping-floating-content,.deep-floating-content{display:flex;width:100%;height:100%;min-width:720px;min-height:0;flex-direction:column}.ping-floating-content{overflow:auto}.deep-floating-content{overflow:hidden}.ping-floating-content h3,.detail-heading h2{margin:12px 0 8px}.ping-chart-workspace{flex:1;min-height:380px;overflow:hidden}.ping-loss-panel{flex:none}.deep-records-container{flex:1;min-height:0;overflow:hidden}.ping-empty-state{height:210px}.raw-record{max-height:320px;overflow:auto;padding:12px;border:1px solid var(--el-border-color-lighter);background:var(--el-fill-color-extra-light);white-space:pre-wrap;overflow-wrap:anywhere}
 .syslog-transport-band{margin-top:14px;padding:14px;border:1px solid var(--el-border-color);background:var(--el-bg-color)}.transport-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap}.transport-heading h2{margin:0;font-size:16px;letter-spacing:0}.transport-heading p{margin:4px 0 0;color:var(--el-text-color-secondary);font-size:12px}.syslog-transport-band>.el-alert{margin-top:12px}.transport-grid{display:grid;grid-template-columns:repeat(3,minmax(190px,1fr));gap:1px;margin-top:12px;background:var(--el-border-color-lighter);border:1px solid var(--el-border-color-lighter)}.transport-grid article{min-width:0;padding:11px;background:var(--el-bg-color)}.transport-grid span,.transport-grid small{display:block;color:var(--el-text-color-secondary);font-size:12px}.transport-grid strong{display:block;margin:5px 0;overflow-wrap:anywhere;font-size:15px;letter-spacing:0}@media(max-width:1000px){.transport-grid{grid-template-columns:repeat(2,minmax(180px,1fr))}}@media(max-width:620px){.transport-grid{grid-template-columns:1fr}}
 .ground-page{height:auto;max-height:none;overflow:visible}
 .ground-tabs{min-height:0;overflow:visible}

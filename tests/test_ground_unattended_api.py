@@ -965,6 +965,108 @@ def test_priority_candidates_are_available_before_first_run(tmp_path) -> None:
     assert ct.configured_log_hosts[0].same_ip_different_port is True
 
 
+def test_runtime_train_list_and_detail_share_persisted_decision_contract(
+    tmp_path,
+) -> None:
+    paths = PathResolver(tmp_path / "app", tmp_path / "data")
+    repository = GroundUnattendedRepository(
+        paths.ground_unattended_db_path("site-a"), site_id="site-a"
+    )
+    run = repository.create_or_get_run(
+        run_id="run-decision-contract",
+        run_date="2026-08-07",
+        scheduled_start_at="2026-08-07T07:00:00+08:00",
+        scheduled_end_at="2026-08-07T23:00:00+08:00",
+    )
+    repository.upsert_train_state(
+        run["run_id"],
+        run["run_date"],
+        {
+            "train_id": "train-01",
+            "train_no": "01",
+            "train_name": "列车01",
+            "location_class": "MAINLINE",
+            "location_class_source": "DEFAULT_MAINLINE",
+            "participates_in_mainline": True,
+            "mainline_eligible": True,
+            "mainline_reason_code": "MAINLINE_DEFAULT_CLASSIFICATION",
+            "mainline_reason_text": "AP 已匹配且没有特殊区域标记，按默认正线纳入",
+            "ping_eligible": True,
+            "ping_reason_code": "MAINLINE_DEFAULT_CLASSIFICATION",
+            "ping_reason_text": "AP 已匹配，无特殊区域标记，按默认正线纳入",
+            "deep_collection_eligible": True,
+            "deep_collection_reason_code": "ELIGIBLE",
+            "deep_collection_reason_text": "正线在线，符合深度采集资格",
+            "decision_revision": 2,
+            "decision_source": "RUNTIME_AP_IDENTITY",
+            "eligibility_status": "MAINLINE",
+            "endpoints": [],
+        },
+        ap_identity="ap-1",
+        same_ap_since="2026-08-07T08:00:00+08:00",
+    )
+    service = GroundUnattendedApplicationService(
+        paths,
+        site_id="site-a",
+        repository=repository,
+        supervisor=_Supervisor(),  # type: ignore[arg-type]
+        base_query=_BaseQuery(),  # type: ignore[arg-type]
+    )
+
+    listed = service.list_trains("site-a").items[0]
+    detailed = service.get_train("site-a", "train-01")
+
+    assert listed.model_dump() == detailed.model_dump()
+    assert listed.location_class == "MAINLINE"
+    assert listed.participates_in_mainline is True
+    assert listed.mainline_eligible is True
+    assert listed.ping_reason_text != "未评估"
+    assert listed.deep_collection_reason_code == "ELIGIBLE"
+    assert listed.decision_revision == 2
+
+
+def test_legacy_evaluated_train_snapshot_gets_auditable_effective_decision(
+    tmp_path,
+) -> None:
+    paths = PathResolver(tmp_path / "app", tmp_path / "data")
+    repository = GroundUnattendedRepository(
+        paths.ground_unattended_db_path("site-a"), site_id="site-a"
+    )
+    run = repository.create_or_get_run(
+        run_id="run-legacy-decision",
+        run_date="2026-08-06",
+        scheduled_start_at="2026-08-06T07:00:00+08:00",
+        scheduled_end_at="2026-08-06T23:00:00+08:00",
+    )
+    repository.upsert_train_state(
+        run["run_id"],
+        run["run_date"],
+        {
+            "train_id": "train-legacy",
+            "location_class": "UNKNOWN",
+            "mainline_eligible": True,
+            "ping_eligible": True,
+            "deep_collection_eligible": True,
+            "eligibility_status": "MAINLINE",
+            "exclusion_reason": "正线在线",
+            "ping_inclusion_reason": "正线在线",
+            "endpoints": [],
+        },
+        ap_identity="legacy-ap",
+        same_ap_since="2026-08-06T08:00:00+08:00",
+    )
+
+    repository.initialize()
+    row = repository.get_train_run(run["run_id"], "train-legacy")
+
+    assert row is not None
+    assert row["location_class"] == "MAINLINE"
+    assert row["participates_in_mainline"] == 1
+    assert row["ping_reason_text"] == "正线在线"
+    assert row["decision_revision"] == 1
+    assert row["decision_source"] == "LEGACY_ELIGIBILITY_SNAPSHOT"
+
+
 def test_target_port_change_requires_single_mr_confirmation_and_is_audited(
     tmp_path,
 ) -> None:
@@ -1254,6 +1356,138 @@ def test_deep_collection_running_requires_raw_evidence_and_reads_incrementally(
     assert [item.text for item in second.records] == ["second record"]
     assert second.has_more is False
 
+    query.source_lines["mesh_link"] = [
+        "2026-07-25 08:00:03 [collector=repeat] RX display clock",
+        "2026-07-25 08:00:04 [collector=repeat] RX Time Zone : BeiJing add 08:00:00",
+        "2026-07-25 08:00:05 bc5a-3457-cbef RSSI: 33 ACTIVE",
+    ]
+    wmesh = service.deep_collection_records(
+        "site-a",
+        run_id=run["run_id"],
+        train_id="train-1",
+        mr_role="CT",
+        category="WMESH",
+        limit=20,
+    )
+    assert [item.text for item in wmesh.records] == [
+        "2026-07-25 08:00:05 bc5a-3457-cbef RSSI: 33 ACTIVE"
+    ]
+    assert all(item.category == "WMESH" for item in wmesh.records)
+
+    rssi = service.deep_collection_records(
+        "site-a",
+        run_id=run["run_id"],
+        train_id="train-1",
+        mr_role="CT",
+        category="RSSI",
+        limit=20,
+    )
+    assert len(rssi.records) == 1
+    assert "RSSI: 33" in rssi.records[0].text
+
+    query.source_lines["terminal_monitor"] = [
+        "2026-07-25 08:00:06 RSSI threshold: 30",
+        "2026-07-25 08:00:07 bc5a-3457-cbef RSSI: 31 ACTIVE",
+        "2026-07-25 08:00:08 channel busy 47",
+    ]
+    rssi = service.deep_collection_records(
+        "site-a",
+        run_id=run["run_id"],
+        train_id="train-1",
+        mr_role="CT",
+        category="RSSI",
+        limit=20,
+    )
+    assert any("RSSI: 31 ACTIVE" in item.text for item in rssi.records)
+    assert all("RSSI threshold" not in item.text for item in rssi.records)
+    radio = service.deep_collection_records(
+        "site-a",
+        run_id=run["run_id"],
+        train_id="train-1",
+        mr_role="CT",
+        category="RADIO",
+        limit=20,
+    )
+    assert [item.text for item in radio.records] == [
+        "2026-07-25 08:00:08 channel busy 47"
+    ]
+
+    query.source_lines["collector"] = [
+        "2026-07-25 08:00:09 arbitrary collector payload",
+        "2026-07-25 08:00:10 collector started",
+    ]
+    status_records = service.deep_collection_records(
+        "site-a",
+        run_id=run["run_id"],
+        train_id="train-1",
+        mr_role="CT",
+        category="STATUS",
+        limit=20,
+    )
+    assert [item.text for item in status_records.records] == [
+        "2026-07-25 08:00:10 collector started"
+    ]
+
+    raw = service.deep_collection_records(
+        "site-a",
+        run_id=run["run_id"],
+        train_id="train-1",
+        mr_role="CT",
+        category="RAW_OUTPUT",
+        limit=20,
+    )
+    assert any("display clock" in item.text for item in raw.records)
+    assert any("Time Zone" in item.text for item in raw.records)
+    with pytest.raises(GroundUnattendedError) as mismatch:
+        service.deep_collection_records(
+            "site-a",
+            run_id=run["run_id"],
+            train_id="train-1",
+            mr_role="CT",
+            category="RSSI",
+            cursor=wmesh.next_cursor,
+            limit=20,
+        )
+    assert mismatch.value.code == "DEEP_RECORD_CURSOR_FILTER_MISMATCH"
+
+    query.source_lines = {
+        "collector_output": [
+            "2026-07-25T08:01:01+08:00 collector first",
+            "2026-07-25T08:01:03+08:00 collector second",
+        ],
+        "mesh_link": [
+            "2026-07-25T08:01:02+08:00 mesh first",
+            "2026-07-25T08:01:04+08:00 mesh second",
+        ],
+    }
+    first_page = service.deep_collection_records(
+        "site-a",
+        run_id=run["run_id"],
+        train_id="train-1",
+        mr_role="CT",
+        category="RAW_OUTPUT",
+        limit=2,
+    )
+    second_page = service.deep_collection_records(
+        "site-a",
+        run_id=run["run_id"],
+        train_id="train-1",
+        mr_role="CT",
+        category="RAW_OUTPUT",
+        cursor=first_page.next_cursor,
+        limit=2,
+    )
+    paged_records = [*first_page.records, *second_page.records]
+    assert [item.text for item in paged_records] == [
+        "2026-07-25T08:01:01+08:00 collector first",
+        "2026-07-25T08:01:02+08:00 mesh first",
+        "2026-07-25T08:01:03+08:00 collector second",
+        "2026-07-25T08:01:04+08:00 mesh second",
+    ]
+    assert len({(item.source, item.sequence) for item in paged_records}) == 4
+    assert first_page.has_more is True
+    assert second_page.has_more is False
+
 
 class _Supervisor:
     def __init__(self) -> None:
@@ -1282,7 +1516,9 @@ class _Supervisor:
 class _DeepCollectionQuery:
     def __init__(self) -> None:
         self.size_bytes = 0
-        self._lines = ["first record", "second record"]
+        self.source_lines = {
+            "collector_output": ["first record", "second record"]
+        }
 
     @staticmethod
     def get_session(*_args, **_kwargs):
@@ -1299,11 +1535,12 @@ class _DeepCollectionQuery:
         ]
 
     def read_log_chunk(self, _site_id, _session_id, source, *, cursor, limit):
-        lines = self._lines[cursor : cursor + limit] if source == "collector_output" else []
+        source_lines = self.source_lines.get(source, [])
+        lines = source_lines[cursor : cursor + limit]
         next_cursor = cursor + len(lines)
         return SimpleNamespace(
             next_cursor=next_cursor,
-            has_more=next_cursor < len(self._lines) if source == "collector_output" else False,
+            has_more=next_cursor < len(source_lines),
             lines=[
                 SimpleNamespace(
                     sequence=index,

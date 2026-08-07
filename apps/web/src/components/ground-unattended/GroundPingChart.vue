@@ -21,6 +21,7 @@ let resizeObserver: ResizeObserver | null = null
 let unsubscribeTheme: (() => void) | null = null
 let disposed = false
 let renderFrame: number | null = null
+let resizeFrame: number | null = null
 let optionsInitialized = false
 let programmaticZoom = false
 
@@ -41,20 +42,21 @@ onMounted(async () => {
   rttChart?.on?.('datazoom', handleUserZoom)
   resultChart?.on?.('datazoom', handleUserZoom)
   unsubscribeTheme = subscribeNetConsoleChartTheme(scheduleRender)
-  resizeObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(resize)
+  resizeObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(scheduleResize)
   if (rttContainer.value) resizeObserver?.observe(rttContainer.value)
   if (resultContainer.value) resizeObserver?.observe(resultContainer.value)
-  window.addEventListener('resize', resize)
+  window.addEventListener('resize', scheduleResize)
   document.addEventListener('visibilitychange', handleVisibilityChange)
   render()
   await nextTick()
-  resize()
+  scheduleResize()
 })
 
 onBeforeUnmount(() => {
   disposed = true
   if (renderFrame !== null) cancelAnimationFrame(renderFrame)
-  window.removeEventListener('resize', resize)
+  if (resizeFrame !== null) cancelAnimationFrame(resizeFrame)
+  window.removeEventListener('resize', scheduleResize)
   document.removeEventListener('visibilitychange', handleVisibilityChange)
   resizeObserver?.disconnect()
   unsubscribeTheme?.()
@@ -74,10 +76,19 @@ function resize(): void {
   resultChart?.resize()
 }
 
+function scheduleResize(): void {
+  if (disposed) return
+  if (resizeFrame !== null) cancelAnimationFrame(resizeFrame)
+  resizeFrame = requestAnimationFrame(() => {
+    resizeFrame = null
+    resize()
+  })
+}
+
 function handleVisibilityChange(): void {
   if (!document.hidden) {
     scheduleRender()
-    resize()
+    scheduleResize()
   }
 }
 
@@ -113,6 +124,7 @@ function render(): void {
   const losses = points.filter((point) => !point.ok && !point.warmup_ignored)
   const warmup = points.filter((point) => point.warmup_ignored)
   const transitions = props.series?.ap_transitions || []
+  const transitionGroups = groupTransitions(transitions)
   const positionSegments = props.series?.position_segments || []
   const lastTimestamp = String(points.at(-1)?.ts || '')
   const markAreas = positionSegments.flatMap((segment, index) => {
@@ -147,9 +159,19 @@ function render(): void {
         itemStyle: { color: theme.primary },
         markLine: {
           symbol: 'none',
-          label: { formatter: 'AP 切换', color: theme.warning },
+          label: {
+            formatter: (params: { data?: { transitions?: GroundApTransition[] } }) => {
+              const count = params.data?.transitions?.length ?? 1
+              return count > 1 ? `AP 切换 ×${count}` : 'AP 切换'
+            },
+            color: theme.warning,
+          },
           lineStyle: { color: theme.warning, type: 'dashed' },
-          data: transitions.map((item) => ({ xAxis: String(item.ts || ''), transition: item })),
+          data: transitionGroups.map((group) => ({
+            xAxis: group.ts,
+            transition: group.events[0],
+            transitions: group.events,
+          })),
         },
         markArea: {
           silent: true,
@@ -191,8 +213,24 @@ function packetSeries(name: string, points: GroundPingSample[], y: number, color
   }
 }
 
+function groupTransitions(events: GroundApTransition[]): Array<{ ts: string; events: GroundApTransition[] }> {
+  const groups: Array<{ bucket: number | string; ts: string; events: GroundApTransition[] }> = []
+  for (const event of events) {
+    const parsed = Date.parse(event.event_time || event.ts)
+    const bucket: number | string = Number.isFinite(parsed)
+      ? Math.floor(parsed / 1000)
+      : event.event_time || event.ts
+    const current = groups.at(-1)
+    if (current?.bucket === bucket) current.events.push(event)
+    else groups.push({ bucket, ts: event.event_time || event.ts, events: [event] })
+  }
+  return groups.map(({ ts, events }) => ({ ts, events }))
+}
+
 function tooltip(raw: unknown): string {
-  const item = raw as { data?: { sample?: GroundPingSample; transition?: GroundApTransition } }
+  const item = raw as { data?: { sample?: GroundPingSample; transition?: GroundApTransition; transitions?: GroundApTransition[] } }
+  const grouped = item.data?.transitions || []
+  if (grouped.length > 1) return groupedTransitionTooltip(grouped)
   const transition = item.data?.transition
   if (transition) return transitionTooltip(transition)
   const point = item.data?.sample
@@ -213,6 +251,15 @@ function tooltip(raw: unknown): string {
   ].join('<br/>')
 }
 
+function groupedTransitionTooltip(events: GroundApTransition[]): string {
+  const rows = events.map((event) => {
+    const oldAp = event.old_ap_name || event.old_ap_raw || event.old_ap_mac || '未知 AP'
+    const newAp = event.new_ap_name || event.new_ap_raw || event.new_ap_mac || '未知 AP'
+    return `${escapeHtml(event.event_time || event.ts)}　${escapeHtml(oldAp)} → ${escapeHtml(newAp)}`
+  })
+  return [`AP 主链路切换 ×${events.length}`, ...rows].join('<br/>')
+}
+
 function transitionTooltip(event: GroundApTransition): string {
   const oldAp = event.old_ap_name || event.old_ap_raw || event.old_ap_mac || '未知 AP'
   const newAp = event.new_ap_name || event.new_ap_raw || event.new_ap_mac || '未知 AP'
@@ -231,7 +278,7 @@ function transitionTooltip(event: GroundApTransition): string {
 function formatRssiEvidence(value: number | null, deltaMs: number | null, reason: string): string {
   if (value == null) return escapeHtml(reason === 'AP_IDENTITY_UNAVAILABLE' ? 'AP 身份未解析，无法关联采样' : '无对应采样')
   const delta = deltaMs == null ? '' : ` (${deltaMs >= 0 ? '+' : ''}${deltaMs} ms)`
-  return `${escapeHtml(value)} dBm${escapeHtml(delta)}`
+  return `${escapeHtml(value)}${escapeHtml(delta)}`
 }
 
 function escapeHtml(value: unknown): string {
@@ -253,8 +300,8 @@ function escapeHtml(value: unknown): string {
 </template>
 
 <style scoped>
-.ping-charts { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; width: 100%; }
+.ping-charts { display: grid; grid-template-rows: minmax(210px, 1fr) minmax(145px, .55fr); grid-template-columns: minmax(0, 1fr); gap: 14px; width: 100%; height: 100%; min-height: 0; }
+.ping-charts>div { display:flex;min-height:0;flex-direction:column; }
 .ping-charts h3 { margin: 0 0 6px; font-size: 14px; letter-spacing: 0; }
-.chart { width: 100%; height: 280px; min-width: 0; }
-.result-chart { height: 190px; }
+.chart { width: 100%; height:auto; min-width: 0; min-height:0; flex:1; }
 </style>
