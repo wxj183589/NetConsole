@@ -741,7 +741,7 @@ def build_trackside_ap_business_export_snapshot(
             scope_context=scope_context,
             station=station,
             query=query,
-            optical_anomaly_only=optical_anomaly_only,
+            optical_anomaly_only=False,
             selected_row_ids=selected_row_ids,
         )
         confirmed = read_trackside_ap_source_revisions(
@@ -843,7 +843,7 @@ def _build_trackside_ap_business_export_snapshot_once(
         snapshot.rows,
         station=station,
         query=query,
-        optical_anomaly_only=optical_anomaly_only,
+        optical_anomaly_only=False,
         selected_row_ids=selected_row_ids,
         identity_query_entities=snapshot.identity_query_entities,
     )
@@ -901,7 +901,6 @@ def _build_trackside_ap_business_export_snapshot_once(
         "filters": {
             "station": station,
             "query": query,
-            "optical_anomaly_only": bool(optical_anomaly_only),
         },
         "selected_row_ids": list(requested_ids),
         "sort_contract": list(TRACKSIDE_AP_SORT_CONTRACT),
@@ -1010,7 +1009,7 @@ def export_trackside_ap_business_prepare_and_render(
             scope_context=scope_context,
             station=station,
             query=query,
-            optical_anomaly_only=optical_anomaly_only,
+            optical_anomaly_only=False,
             selected_row_ids=selected_row_ids,
         )
         current_revision = str(payload.get("business_revision") or "")

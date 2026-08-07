@@ -68,7 +68,7 @@ export interface TracksideApBusinessExportProposal {
 }
 export interface TracksideApBusinessExportRequest {
   generated_at: string; suggested_name: string; expected_revision: string
-  station?: string; query?: string; optical_anomaly_only?: boolean; selected_row_ids?: string[]
+  station?: string; query?: string; selected_row_ids?: string[]
 }
 export type TracksideApTask = RailTransitTask
 

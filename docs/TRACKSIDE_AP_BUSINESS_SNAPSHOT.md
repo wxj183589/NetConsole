@@ -10,9 +10,10 @@
 Task 的失败终态，不再发生在 Task 生命周期之外。
 
 本契约没有修改数据库 schema、AP/Radio MAC 派生规则、AP Identity 优先级、
-`-13.90 dBm` 业务门限、工作表、排序或文件名规则。2026-08 的明确导出变更只调整
-“轨旁AP业务”和“当前异常光衰”的字段契约及主 sheet 的表现层填色，页面列序、业务
-判定、异常统计和冻结快照内容不变；详细字段与着色规则见
+`-13.90 dBm` 业务门限、工作表、排序或文件名规则。2026-08 的字段变更调整了
+“轨旁AP业务”和“当前异常光衰”的字段契约及主 sheet 表现层填色；当前导出范围契约
+进一步将页面异常复选框从冻结快照中移除，但页面业务判定与异常查询保持不变。详细
+字段与着色规则见
 [轨道交通业务规则](RAIL_TRANSIT_RULES.md#导出规则)。
 
 ## 数据源矩阵
@@ -39,7 +40,7 @@ Task 的失败终态，不再发生在 Task 生命周期之外。
 | FIT-AP 当前光衰 | `ac_fit_ap_optical` | `optical_data_revision` 内容指纹 | `AcRepository.list_all_fit_ap_optical()` | AC 光衰采集 Job/Repository | R1/R2 | AP RX/TX、设备模块状态、业务异常和采集时间 |
 | 仅工作簿使用的历史 | `ac_fit_ap_resource_history`、`ac_fit_ap_optical_history`、`device_optical_modules_history` | `export_history_revision` 内容指纹 | AC/DeviceFact 历史查询入口 | 对应采集 Repository | 导出外层 R1/R2；不进入页面 `business_revision` | 新上线概览、光衰处置记录、离线台账和历史统计 |
 | 施工、调试和业务状态 | `devices`、`device_groups`、`ap_extension_points`、规划表相关状态字段 | 当前共享 `base_data_revision` | 有效范围 Service 和业务投影 builder | 对应正式管理/基础资料入口 | R1/R2 | 范围排除、关联状态、规划缺失和业务状态 |
-| 筛选、选择和排序 | API 请求；不持久化到业务库 | 包含在冻结 payload，不生成来源 revision | `select_trackside_ap_business_rows()` | Renderer 只提交受控 DTO | 内存纯函数 | station/query/异常筛选、稳定 `business_row_id` 选择、固定排序契约 |
+| 筛选、选择和排序 | API 请求；不持久化到业务库 | 页面查询包含异常筛选；导出冻结 payload 只包含 station/query、稳定 `business_row_id` 选择和固定排序契约 | `select_trackside_ap_business_rows()` | Renderer 只提交受控 DTO | 内存纯函数 | 页面 station/query/异常筛选；导出 station/query/选择行 |
 | 资源协调 | 局点 `tasks.db` 的 `resource_keys` | Task 生命周期 | `TaskApplicationService` | Job/Export 提交入口 | 导出不持有实时数据资源锁；光衰更新仍持有自身写任务锁 | 不进入工作簿 |
 
 `base_data_revision` 是现有 SQLite trigger 维护的正式计数器，覆盖
@@ -99,10 +100,11 @@ ambiguous 不选择候选。
 `expected_revision`；revision 已变化时返回 `409 TRACKSIDE_AP_SNAPSHOT_STALE`，前端
 回到第一页重新加载，不把两个 revision 的页拼在一起。
 
-`row_count`、`abnormal_count`、`unresolved_count`、`ambiguous_count` 和
-`content_sha256` 均基于当前 station/query/异常筛选后的全部业务行，不基于当前页，
-也不再使用筛选前全量行。`content_sha256` 对规范化业务行 JSON 计算，因此相同
-revision 和筛选得到确定性结果。
+页面 `row_count`、`abnormal_count`、`unresolved_count`、`ambiguous_count` 和
+`content_sha256` 基于当前 station/query/异常筛选后的全部业务行，不基于当前页；
+导出快照的这些字段则基于 station/query/selected row IDs 范围内的完整业务行，完全
+忽略页面的 `optical_anomaly_only`。两者都对规范化业务行 JSON 计算，因此相同
+revision 和正式范围得到确定性结果。
 
 未完成关联项返回互斥 `association_status/reason_code`，并携带 AP MAC 原始/规范值、
 规划记录和站点、LLDP 身份与时间、交换机候选和最终 device ID、失败阶段、来源
@@ -111,9 +113,11 @@ revisions、业务 revision 与快照生成时间。页面明细、上线概览�
 
 ## 导出冻结和 Worker
 
-导出请求只接受 `generated_at`、`suggested_name`、`expected_revision`、筛选条件和
-稳定 `selected_row_ids`；局点由 Backend 上下文决定。Backend 在创建 Task 时原样携带
-`expected_revision` 和选择条件，不同步扫描全量来源表。Task 创建后，Export Worker
+导出请求只接受 `generated_at`、`suggested_name`、`expected_revision`、`station`、`query`
+和稳定 `selected_row_ids`；局点由 Backend 上下文决定。页面异常筛选是展示专用，不能
+进入导出范围。旧客户端仍可提交 `optical_anomaly_only` 以兼容解析，但 Backend 和
+Export Worker 明确忽略它。Backend 在创建 Task 时原样携带 `expected_revision` 和正式
+范围条件，不同步扫描全量来源表。Task 创建后，Export Worker
 以只读连接重建稳定快照并比较 `expected_revision`、验证选择；发生
 `TRACKSIDE_AP_SNAPSHOT_STALE` 或 `TRACKSIDE_AP_EXPORT_SELECTION_STALE` 时，任务和
 Artifact 进入失败终态。准备成功后快照写入：
@@ -126,7 +130,7 @@ Artifact 进入失败终态。准备成功后快照写入：
 SHA-256 与 payload SHA-256。失败会清理 `.tmp` 和无效的已发布文件。wrapper 包含
 schema version、payload hash 和 payload；payload 同时保存：
 
-- `business_rows`：页面同语义的筛选/选择后基础业务行；
+- `business_rows`：导出 station/query/selected row IDs 范围内的完整基础业务行，不含页面异常筛选；
 - `workbook.rows`：仅增加既有历史展示字段的 Excel 行；
 - 其他既有 Sheet 的冻结输入；
 - revisions、两个内容 hash、统计、筛选、选择和排序契约。

@@ -18,6 +18,7 @@ import type { TaskItem } from '../../types/task'
 
 const api = vi.hoisted(() => ({
   listTracksideApBusiness: vi.fn(),
+  getTracksideApOnlineStatus: vi.fn(),
   getTracksideApBusinessExportProposal: vi.fn(),
   startTracksideApBusinessExport: vi.fn(),
   startTracksideApUpdate: vi.fn(),
@@ -189,6 +190,39 @@ function page(items = rows, pageNo = 1, stationOptions = stationOptionsFor(items
   }
 }
 
+function onlineStatus() {
+  return {
+    items: [
+      {
+        station_id: 'station-a', station_name: '站点A', planned_ap_count: 24,
+        actual_online_count: 24, offline_count: 0, online_rate: 100,
+        remark: '', planning_missing: false, count_anomaly: false, status: 'normal', warning: '',
+      },
+      {
+        station_id: 'station-b', station_name: '站点B', planned_ap_count: 28,
+        actual_online_count: 27, offline_count: 1, online_rate: 96.4,
+        remark: '存在离线 AP', planning_missing: false, count_anomaly: true, status: 'normal', warning: '存在离线 AP',
+      },
+    ],
+    planned_ap_count: 992,
+    actual_online_count: 978,
+    offline_count: 14,
+    online_rate: 98.6,
+    unassigned_count: 0,
+    unassigned_items: [],
+    updated_at: '2026-08-06T01:02:03+08:00',
+    warning: '',
+    status: 'normal',
+    scope_description: '当前统计范围',
+    fit_ap_resource_total_count: 992,
+    fit_ap_online_total_count: 978,
+    fit_ap_matched_online_count: 932,
+    fit_ap_unmatched_online_count: 46,
+    fit_ap_offline_total_count: 14,
+    fit_ap_unknown_total_count: 0,
+  }
+}
+
 function snapshotPage(revision = 'a'.repeat(64), pageNo = 1): TracksideApBusinessPage {
   return {
     ...page(rows.map((row, index) => ({ ...row, row_id: `row-${index + 1}` })), pageNo),
@@ -343,6 +377,11 @@ const ElementStubs = {
   }),
   ElTag: defineComponent({ template: '<span class="el-tag"><slot /></span>' }),
   ElTooltip: defineComponent({ props: { content: String }, template: '<span class="el-tooltip" :data-content="content"><slot /></span>' }),
+  ElDialog: defineComponent({
+    props: { modelValue: Boolean, title: String },
+    emits: ['update:modelValue'],
+    template: '<div v-if="modelValue" class="el-dialog"><h2>{{ title }}</h2><slot /><slot name="footer" /></div>',
+  }),
 }
 
 describe('TracksideApBusinessView mounted behavior', () => {
@@ -361,6 +400,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
       'rail.zte_trackside_switch_adapter': { visible: true, enabled: true },
     })
     api.listTracksideApBusiness.mockResolvedValue(page())
+    api.getTracksideApOnlineStatus.mockResolvedValue(onlineStatus())
     api.getTracksideApBusinessExportProposal.mockResolvedValue({
       site_id: 'demo',
       site_display_name: '宁波地铁12号线',
@@ -419,6 +459,10 @@ describe('TracksideApBusinessView mounted behavior', () => {
     expect(wrapper.text()).not.toContain('结果项')
     expect(buttons(wrapper, '打开任务中心')).toHaveLength(0)
     expect(wrapper.find('.business-table-host').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="trackside-core-summary"]').findAll('article')).toHaveLength(5)
+    expect(wrapper.find('[data-testid="trackside-online-overview"]').text()).toContain('AP 上线情况概览')
+    expect(wrapper.find('[data-testid="trackside-online-overview"]').text()).toContain('98.6%')
+    expect(wrapper.find('[data-testid="trackside-diagnostic-summary"]').findAll('.diagnostic-item')).toHaveLength(5)
     expect(wrapper.find('[data-table-id="trackside-ap-business"]').attributes('data-height')).toBe('100%')
     const mainTable = wrapper.getComponent(NcDataTableStub)
     const mainRowKey = mainTable.props('rowKey') as (row: TracksideApBusinessRow) => string
@@ -437,6 +481,57 @@ describe('TracksideApBusinessView mounted behavior', () => {
     expect(wrapper.find('[data-table-id="trackside-ap-business-task-result"]').exists()).toBe(false)
     expect(wrapper.find('input[placeholder="站点"]').exists()).toBe(false)
     expect(wrapper.find('select').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('shows the shared AP online overview and station detail rows', async () => {
+    const wrapper = await mountView()
+
+    expect(api.getTracksideApOnlineStatus).toHaveBeenCalledOnce()
+    const overview = wrapper.get('[data-testid="trackside-online-overview"]')
+    for (const expected of ['FIT-AP 总数992', '实际在线978', '上线率98.6%', '已关联上线932', '未完成关联在线 AP46', '实际离线14', '状态未知0']) {
+      expect(overview.text()).toContain(expected)
+    }
+
+    await button(wrapper, '查看站点明细').trigger('click')
+    await flushPromises()
+    const detailTable = wrapper.findAllComponents(NcDataTableStub).find(
+      (table) => table.props('tableId') === 'trackside-ap-business-online-status',
+    )
+    expect(detailTable?.props('data')).toEqual(onlineStatus().items)
+    expect(detailTable?.props('columns')).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: 'station_name' }),
+      expect.objectContaining({ key: 'planned_ap_count' }),
+      expect.objectContaining({ key: 'actual_online_count' }),
+      expect.objectContaining({ key: 'offline_count' }),
+      expect.objectContaining({ key: 'online_rate' }),
+      expect.objectContaining({ key: 'status' }),
+      expect.objectContaining({ key: 'warning' }),
+    ]))
+    wrapper.unmount()
+  })
+
+  it('keeps the optical anomaly checkbox on row queries but excludes it from exports', async () => {
+    platformMocks.hostType = 'electron'
+    const wrapper = await mountView()
+    api.listTracksideApBusiness.mockClear()
+
+    await wrapper.get('input[type="checkbox"]').setValue(true)
+    await button(wrapper, '查询').trigger('click')
+    await flushPromises()
+    expect(api.listTracksideApBusiness).toHaveBeenLastCalledWith({
+      station: '',
+      query: '',
+      optical_anomaly_only: true,
+      page: 1,
+      page_size: 50,
+    })
+
+    await button(wrapper, '导出表格').trigger('click')
+    await flushPromises()
+    const exportRequest = api.startTracksideApBusinessExport.mock.calls[0][0]
+    expect(exportRequest).toMatchObject({ station: '', query: '', selected_row_ids: [] })
+    expect(exportRequest).not.toHaveProperty('optical_anomaly_only')
     wrapper.unmount()
   })
 
@@ -632,7 +727,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
     expect(wrapper.getComponent(NcDataTableStub).props('data')).toHaveLength(2)
     const cards = wrapper.findAll('.summary-grid article').map((item) => item.text())
     expect(cards).toContain('AC AP 资源加载失败')
-    expect(cards).toContain('基础资料待补充加载失败')
+    expect(wrapper.find('[data-testid="trackside-online-overview"]').text()).toContain('加载失败')
     expect(cards).toContain('候选 AP 端口2')
     wrapper.unmount()
   })
@@ -733,6 +828,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
     })
     const wrapper = await mountView()
 
+    await button(wrapper, '展开全部').trigger('click')
     expect(wrapper.text()).toContain('交换机未匹配 2')
     expect(wrapper.text()).toContain('交换机身份冲突 1')
     expect(wrapper.text()).toContain('AP 规划缺失 1')
@@ -1161,7 +1257,6 @@ describe('TracksideApBusinessView mounted behavior', () => {
       expected_revision: revision,
       station: '',
       query: '',
-      optical_anomaly_only: false,
       selected_row_ids: ['row-1'],
     })
     expect(api.getTracksideApBusinessExportProposal).toHaveBeenCalledOnce()
@@ -1273,7 +1368,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain('已保留当前表格')
-    expect(wrapper.findAll('.table-row')).toHaveLength(rows.length)
+    expect(wrapper.findAll('[data-table-id="trackside-ap-business"] .table-row')).toHaveLength(rows.length)
     wrapper.unmount()
   })
 })

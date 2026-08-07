@@ -254,7 +254,11 @@ class TracksideApBusinessExportRequestDTO(ApiModel):
     expected_revision: str = Field(default="", max_length=64)
     station: str = Field(default="", max_length=100)
     query: str = Field(default="", max_length=200)
-    optical_anomaly_only: bool = False
+    optical_anomaly_only: bool = Field(
+        default=False,
+        deprecated=True,
+        description="兼容旧客户端字段；轨旁 AP 业务导出流程忽略该字段。",
+    )
     selected_row_ids: list[str] = Field(default_factory=list, max_length=1000)
 
 

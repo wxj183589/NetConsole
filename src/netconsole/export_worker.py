@@ -194,7 +194,6 @@ def _run_trackside_ap_business(job: ExportJob) -> None:
             ),
             station=str(job.params.get("station") or ""),
             query=str(job.params.get("query") or ""),
-            optical_anomaly_only=bool(job.params.get("optical_anomaly_only")),
             selected_row_ids=[
                 str(value)
                 for value in job.params.get("selected_row_ids") or ()

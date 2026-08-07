@@ -265,7 +265,10 @@ def test_trackside_business_export_api_uses_owned_artifact_and_supports_cancel(
     _enable_feature(app, "rail.zte_trackside_switch_adapter")
 
     with TestClient(app) as client:
-        started = client.post("/api/rail-transit/trackside-ap-business/export")
+        started = client.post(
+            "/api/rail-transit/trackside-ap-business/export",
+            json={"optical_anomaly_only": True},
+        )
         assert started.status_code == 202
         payload = started.json()
         expected_name = "宁波地铁12号线_轨旁AP业务_20260721_234501.xlsx"
@@ -285,6 +288,7 @@ def test_trackside_business_export_api_uses_owned_artifact_and_supports_cancel(
         assert job.params["scope_context"]["site_id"] == "demo"
         assert job.params["scope_context"]["display_name"] == "宁波地铁12号线"
         assert job.params["selected_row_ids"] == []
+        assert "optical_anomaly_only" not in job.params
         assert "snapshot_path" not in job.params
         assert "snapshot_sha256" not in job.params
         assert Path(job.output_path).name == expected_name

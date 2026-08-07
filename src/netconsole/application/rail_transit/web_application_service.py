@@ -776,7 +776,6 @@ class RailTransitWebApplicationService:
                 "scope_context": scope_context,
                 "station": station,
                 "query": query,
-                "optical_anomaly_only": bool(optical_anomaly_only),
                 "selected_row_ids": list(selected_row_ids),
             },
         )

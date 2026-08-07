@@ -385,6 +385,72 @@ def test_export_snapshot_rejects_stale_selection(tmp_path: Path) -> None:
     assert error.value.code == "TRACKSIDE_AP_EXPORT_SELECTION_STALE"
 
 
+def test_export_snapshot_ignores_deprecated_optical_anomaly_filter(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = DeviceRepository(_database(tmp_path))
+    calls: list[bool] = []
+    source_rows = [
+        {
+            "business_row_id": "row-normal",
+            "site": "站点A",
+            "device_name": "SW-A",
+            "interface_name": "XGE1/0/1",
+            "optical_severity": "normal",
+        },
+        {
+            "business_row_id": "row-abnormal",
+            "site": "站点A",
+            "device_name": "SW-A",
+            "interface_name": "XGE1/0/2",
+            "optical_severity": "warning",
+        },
+    ]
+
+    monkeypatch.setattr(
+        export_service,
+        "read_trackside_ap_source_revisions",
+        lambda *_args, **_kwargs: {"base_data_revision": "1"},
+    )
+
+    def build_once(*_args, optical_anomaly_only: bool, **_kwargs):
+        calls.append(optical_anomaly_only)
+        business_rows = select_trackside_ap_business_rows(
+            source_rows,
+            optical_anomaly_only=optical_anomaly_only,
+        )
+        return {
+            "business_revision": "revision-1",
+            "snapshot_retry_count": 0,
+            "content_sha256": content_sha256(business_rows),
+            "filters": {"station": "", "query": ""},
+            "business_rows": business_rows,
+        }
+
+    monkeypatch.setattr(
+        export_service,
+        "_build_trackside_ap_business_export_snapshot_once",
+        build_once,
+    )
+
+    unfiltered = build_trackside_ap_business_export_snapshot(
+        repository,
+        "demo",
+        optical_anomaly_only=False,
+    )
+    deprecated_true = build_trackside_ap_business_export_snapshot(
+        repository,
+        "demo",
+        optical_anomaly_only=True,
+    )
+
+    assert calls == [False, False]
+    assert deprecated_true["business_rows"] == unfiltered["business_rows"]
+    assert deprecated_true["content_sha256"] == unfiltered["content_sha256"]
+    assert deprecated_true["filters"] == {"station": "", "query": ""}
+
+
 def test_shared_selection_hash_matches_filtered_page_rows(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

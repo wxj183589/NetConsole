@@ -5,6 +5,7 @@ import { ApiRequestError } from '../../api/client'
 
 import {
   getTracksideApBusinessExportProposal,
+  getTracksideApOnlineStatus,
   listTracksideApBusiness,
   startTracksideApBusinessExport,
   startTracksideApUpdate,
@@ -21,6 +22,8 @@ import { BEFORE_SITE_SWITCH_EVENT } from '../../workspace/site-switch'
 import type {
   TracksideApBusinessPage,
   TracksideApBusinessRow,
+  TracksideApOnlineStatus,
+  TracksideApOnlineStatusRow,
   TracksideApScopeExcluded,
   TracksideApUnmatchedOnline,
   TracksideApTask,
@@ -74,6 +77,11 @@ const pendingScopeKey = ref('')
 const loadError = ref('')
 const actionError = ref('')
 const page = ref<TracksideApBusinessPage | null>(null)
+const onlineStatus = ref<TracksideApOnlineStatus | null>(null)
+const onlineStatusLoading = ref(false)
+const onlineStatusError = ref('')
+const onlineStatusVisible = ref(false)
+const diagnosticsExpanded = ref(false)
 const excludedVisible = ref(false)
 const unmatchedVisible = ref(false)
 const currentTaskId = ref('')
@@ -161,6 +169,15 @@ const unmatchedColumns: NcTableColumn<TracksideApUnmatchedOnline>[] = [
   { key: 'reason', label: '诊断原因', valueType: 'description', minWidth: 320, align: 'left', alignmentReason: 'long-text' },
   { key: 'suggested_action', label: '建议处理', valueType: 'description', minWidth: 300, align: 'left', alignmentReason: 'long-text' },
 ]
+const onlineStatusColumns: NcTableColumn<TracksideApOnlineStatusRow>[] = [
+  { key: 'station_name', label: '站点', valueType: 'name', minWidth: 180 },
+  { key: 'planned_ap_count', label: '规划 AP', valueType: 'number', width: 110 },
+  { key: 'actual_online_count', label: '实际在线', valueType: 'number', width: 110 },
+  { key: 'offline_count', label: '离线', valueType: 'number', width: 90 },
+  { key: 'online_rate', label: '上线率', valueType: 'number', width: 100, displayValue: (row) => formatOnlineRate(row.online_rate) },
+  { key: 'status', label: '状态', valueType: 'status', width: 150, displayValue: (row) => onlineStatusLabel(row) },
+  { key: 'warning', label: '告警', valueType: 'description', minWidth: 280, align: 'left', alignmentReason: 'long-text', showOverflowTooltip: true },
+]
 const currentTask = computed<TaskItem | null>(() => (
   taskStore.tasks.find((item) => item.id === currentTaskId.value) || null
 ))
@@ -209,6 +226,38 @@ const otherUnmatchedCount = computed(() => Math.max(
   - apPlanMissingCount.value
   - planStationInvalidCount.value,
 ))
+const onlineOverviewValues = computed(() => ({
+  fitTotal: onlineStatus.value?.fit_ap_resource_total_count ?? page.value?.fit_ap_resource_total_count,
+  actualOnline: onlineStatus.value?.fit_ap_online_total_count ?? page.value?.fit_ap_online_total_count,
+  matchedOnline: onlineStatus.value?.fit_ap_matched_online_count ?? page.value?.fit_ap_matched_online_count,
+  unmatchedOnline: onlineStatus.value?.fit_ap_unmatched_online_count ?? page.value?.fit_ap_unmatched_online_count,
+  offline: onlineStatus.value?.fit_ap_offline_total_count ?? page.value?.fit_ap_offline_total_count,
+  unknown: onlineStatus.value?.fit_ap_unknown_total_count ?? page.value?.fit_ap_unknown_total_count,
+}))
+const onlineOverviewRate = computed(() => {
+  const rate = onlineStatus.value?.online_rate
+  if (rate !== null && rate !== undefined) return formatOnlineRate(rate)
+  if (dataAvailability(['fit_ap_resources']) === 'failed') return '加载失败'
+  return '—'
+})
+type DiagnosticSeverity = 'muted' | 'warning' | 'danger'
+interface DiagnosticItem { key: string; label: string; value: string | number; severity: DiagnosticSeverity; action?: () => void }
+function diagnosticSeverity(value: number, kind: 'warning' | 'danger' = 'warning'): DiagnosticSeverity {
+  return value > 0 ? kind : 'muted'
+}
+const diagnosticItems = computed<DiagnosticItem[]>(() => [
+  { key: 'switch-not-found', label: '交换机未匹配', value: switchNotFoundCount.value, severity: diagnosticSeverity(switchNotFoundCount.value), action: () => { unmatchedVisible.value = true } },
+  { key: 'lldp-pending', label: 'LLDP 待同步', value: lldpPendingCount.value, severity: diagnosticSeverity(lldpPendingCount.value), action: () => { unmatchedVisible.value = true } },
+  { key: 'lldp-conflict', label: 'LLDP 冲突', value: lldpConflictCount.value, severity: diagnosticSeverity(lldpConflictCount.value, 'danger'), action: () => { unmatchedVisible.value = true } },
+  { key: 'ap-plan-missing', label: 'AP 规划缺失', value: apPlanMissingCount.value, severity: diagnosticSeverity(apPlanMissingCount.value), action: () => { unmatchedVisible.value = true } },
+  { key: 'base-data-missing', label: '基础资料待补充', value: planningMissingCount.value + switchDataIncompleteCount.value, severity: diagnosticSeverity(planningMissingCount.value + switchDataIncompleteCount.value), action: () => { unmatchedVisible.value = true } },
+  { key: 'switch-identity-conflict', label: '交换机身份冲突', value: switchIdentityConflictCount.value, severity: diagnosticSeverity(switchIdentityConflictCount.value, 'danger'), action: () => { unmatchedVisible.value = true } },
+  { key: 'plan-station-invalid', label: '规划站点无效', value: planStationInvalidCount.value, severity: diagnosticSeverity(planStationInvalidCount.value), action: () => { unmatchedVisible.value = true } },
+  { key: 'other-unmatched', label: '其他待关联', value: otherUnmatchedCount.value, severity: diagnosticSeverity(otherUnmatchedCount.value), action: () => { unmatchedVisible.value = true } },
+  { key: 'snapshot-status', label: '快照状态', value: snapshotStatusLabel.value, severity: snapshotStatusLabel.value === '最新' ? 'muted' : 'warning' },
+])
+const visibleDiagnosticItems = computed(() => diagnosticsExpanded.value ? diagnosticItems.value : diagnosticItems.value.slice(0, 5))
+const onlineStatusRows = computed(() => onlineStatus.value?.items || [])
 const snapshotStatusLabel = computed(() => {
   if (refreshing.value) return '更新中'
   if (!page.value) return initialLoading.value ? '更新中' : '暂无'
@@ -355,6 +404,41 @@ function metricValue(value: number | undefined, sources: string[]): string | num
   if (availability === 'partial') return '部分可用'
   return Number(value ?? 0)
 }
+function formatOnlineRate(value: number | null | undefined): string {
+  return value === null || value === undefined ? '—' : `${Number(value).toFixed(1)}%`
+}
+function onlineStatusLabel(row: TracksideApOnlineStatusRow): string {
+  if (row.status === 'over_planned') return '超出规划'
+  if (row.status === 'unplanned_online') return '存在未关联'
+  if (row.status === 'planning_missing') return '规划缺失'
+  if (row.offline_count > 0) return '存在离线'
+  if (row.warning || row.count_anomaly) return '存在告警'
+  return '正常'
+}
+function onlineStatusRowKey(row: TracksideApOnlineStatusRow): string {
+  return row.station_id || row.station_name
+}
+function onlineStatusTagType(row: TracksideApOnlineStatusRow): 'success' | 'warning' | 'danger' | 'info' {
+  if (row.status === 'over_planned' || row.status === 'unplanned_online') return 'danger'
+  if (row.status === 'planning_missing' || row.warning || row.offline_count > 0 || row.count_anomaly) return 'warning'
+  return 'success'
+}
+async function loadOnlineStatus(force = false): Promise<void> {
+  if (onlineStatusLoading.value || (!force && onlineStatus.value)) return
+  onlineStatusLoading.value = true
+  onlineStatusError.value = ''
+  try {
+    onlineStatus.value = await getTracksideApOnlineStatus()
+  } catch (reason) {
+    onlineStatusError.value = failure(reason, 'AP 上线情况加载失败')
+  } finally {
+    onlineStatusLoading.value = false
+  }
+}
+function openOnlineStatusDialog(): void {
+  onlineStatusVisible.value = true
+  void loadOnlineStatus()
+}
 async function loadRows(reset = false, forceNewRevision = false): Promise<boolean> {
   if (reset) filters.page = 1
   const generation = ++loadGeneration
@@ -406,6 +490,7 @@ async function loadRows(reset = false, forceNewRevision = false): Promise<boolea
     filters.page = 1
     void loadRows(true)
   }
+  if (succeeded) void loadOnlineStatus(forceNewRevision)
   return succeeded
 }
 
@@ -539,7 +624,6 @@ async function exportBusiness(): Promise<void> {
           expected_revision: page.value?.business_revision || '',
           station: filters.station,
           query: filters.query,
-          optical_anomaly_only: filters.optical_anomaly_only,
           selected_row_ids: selectedRows.value
             .map((row) => row.row_id)
             .filter((value): value is string => Boolean(value)),
@@ -631,6 +715,7 @@ onMounted(() => {
   window.addEventListener(BEFORE_SITE_SWITCH_EVENT, handleBeforeSiteSwitch)
   void Promise.all([
     loadRows(),
+    loadOnlineStatus(),
     taskStore.refresh().then(() => {
       currentTaskId.value = taskStore.tasks.find(
         (item) => businessTaskTypes.has(item.type) && activeStates.has(item.status),
@@ -710,12 +795,44 @@ onBeforeUnmount(() => {
       <el-button v-if="otherUnmatchedCount" link type="warning" @click="unmatchedVisible = true">其他待关联 {{ otherUnmatchedCount }}</el-button>
       <el-button v-if="page.excluded_device_count" link type="warning" @click="excludedVisible = true">查看排除项</el-button>
     </div>
-    <div class="summary-grid">
-      <article><span>站点交换机</span><strong>{{ metricValue(page?.device_count, ['switch_devices']) }}</strong></article><article><span>候选 AP 端口</span><strong>{{ metricValue(page?.candidate_interface_count, ['switch_devices', 'interfaces', 'planning']) }}</strong></article><article><span>AC AP 资源</span><strong>{{ metricValue(page?.fit_ap_resource_count, ['fit_ap_resources']) }}</strong></article><article><span>{{ unmatchedLabel }}</span><strong>{{ metricValue(page?.fit_ap_unmatched_online_count, ['fit_ap_resources']) }}</strong></article><article><span>业务光衰异常</span><strong>{{ metricValue(page?.optical_abnormal_count, ['interfaces', 'switch_optical', 'fit_ap_optical']) }}</strong></article>
-      <template v-if="page?.runtime_snapshot">
-        <article><span>FIT-AP 总数</span><strong>{{ metricValue(page?.fit_ap_resource_total_count ?? page?.fit_ap_resource_count, ['fit_ap_resources']) }}</strong></article><article><span>实际在线</span><strong>{{ metricValue(page?.fit_ap_online_total_count ?? ((page?.fit_ap_matched_online_count || 0) + (page?.fit_ap_unmatched_online_count || 0)), ['fit_ap_resources']) }}</strong></article><article><span>已关联上线</span><strong>{{ metricValue(page?.fit_ap_matched_online_count, ['fit_ap_resources']) }}</strong></article><article><span>实际离线</span><strong>{{ metricValue(page?.fit_ap_offline_total_count, ['fit_ap_resources']) }}</strong></article><article><span>状态未知</span><strong>{{ metricValue(page?.fit_ap_unknown_total_count, ['fit_ap_resources']) }}</strong></article><article><span>等待 LLDP 同步</span><strong>{{ metricValue(lldpPendingCount, ['fit_ap_resources']) }}</strong></article><article><span>当前 LLDP 冲突</span><strong>{{ metricValue(lldpConflictCount, ['fit_ap_resources']) }}</strong></article><article><span>交换机未匹配</span><strong>{{ metricValue(switchNotFoundCount, ['fit_ap_resources']) }}</strong></article><article><span>交换机身份冲突</span><strong>{{ metricValue(switchIdentityConflictCount, ['fit_ap_resources']) }}</strong></article><article><span>AP 规划缺失</span><strong>{{ metricValue(apPlanMissingCount, ['fit_ap_resources']) }}</strong></article><article><span>规划站点无效</span><strong>{{ metricValue(planStationInvalidCount, ['fit_ap_resources']) }}</strong></article><article><span>基础资料待补充</span><strong>{{ metricValue(planningMissingCount + switchDataIncompleteCount, ['fit_ap_resources']) }}</strong></article><article><span>快照状态</span><strong class="snapshot-status-value">{{ snapshotStatusLabel }}</strong></article>
-      </template>
+    <div class="summary-grid" data-testid="trackside-core-summary">
+      <article data-metric="switch-devices"><span>站点交换机</span><strong>{{ metricValue(page?.device_count, ['switch_devices']) }}</strong></article>
+      <article data-metric="candidate-interfaces"><span>候选 AP 端口</span><strong>{{ metricValue(page?.candidate_interface_count, ['switch_devices', 'interfaces', 'planning']) }}</strong></article>
+      <article data-metric="fit-ap-resources"><span>AC AP 资源</span><strong>{{ metricValue(page?.fit_ap_resource_count, ['fit_ap_resources']) }}</strong></article>
+      <article data-metric="fit-ap-online"><span>实际在线</span><strong>{{ metricValue(onlineOverviewValues.actualOnline, ['fit_ap_resources']) }}</strong></article>
+      <article data-metric="optical-abnormal"><span>业务光衰异常</span><strong>{{ metricValue(page?.optical_abnormal_count, ['interfaces', 'switch_optical', 'fit_ap_optical']) }}</strong></article>
     </div>
+    <section class="online-overview" data-testid="trackside-online-overview">
+      <div class="online-overview-heading">
+        <strong>AP 上线情况概览</strong>
+        <span v-if="onlineStatusLoading" class="refresh-indicator">正在加载</span>
+        <span v-if="onlineStatusError" class="online-status-error">{{ onlineStatusError }}</span>
+        <el-button link type="primary" @click="openOnlineStatusDialog">查看站点明细</el-button>
+      </div>
+      <div class="online-overview-metrics">
+        <span><small>FIT-AP 总数</small><strong>{{ metricValue(onlineOverviewValues.fitTotal, ['fit_ap_resources']) }}</strong></span>
+        <span><small>实际在线</small><strong>{{ metricValue(onlineOverviewValues.actualOnline, ['fit_ap_resources']) }}</strong></span>
+        <span><small>上线率</small><strong>{{ onlineOverviewRate }}</strong></span>
+        <span><small>已关联上线</small><strong>{{ metricValue(onlineOverviewValues.matchedOnline, ['fit_ap_resources']) }}</strong></span>
+        <span><small>未完成关联在线 AP</small><strong>{{ metricValue(onlineOverviewValues.unmatchedOnline, ['fit_ap_resources']) }}</strong></span>
+        <span><small>实际离线</small><strong>{{ metricValue(onlineOverviewValues.offline, ['fit_ap_resources']) }}</strong></span>
+        <span><small>状态未知</small><strong>{{ metricValue(onlineOverviewValues.unknown, ['fit_ap_resources']) }}</strong></span>
+      </div>
+    </section>
+    <section class="diagnostic-summary" data-testid="trackside-diagnostic-summary">
+      <strong class="diagnostic-title">关联诊断</strong>
+      <div class="diagnostic-items">
+        <button
+          v-for="item in visibleDiagnosticItems"
+          :key="item.key"
+          type="button"
+          class="diagnostic-item"
+          :class="`diagnostic-${item.severity}`"
+          @click="item.action?.()"
+        >{{ item.label }} <b>{{ item.value }}</b></button>
+      </div>
+      <el-button link type="primary" class="diagnostic-toggle" @click="diagnosticsExpanded = !diagnosticsExpanded">{{ diagnosticsExpanded ? '收起' : '展开全部' }}</el-button>
+    </section>
     <div class="content-card">
       <div class="toolbar">
         <el-input v-model="filters.query" clearable placeholder="交换机、接口、AP、MAC" @keyup.enter="loadRows(true)" />
@@ -768,6 +885,26 @@ onBeforeUnmount(() => {
       </div>
       <div class="pagination"><span>共 {{ page?.total || 0 }} 条</span><el-pagination :current-page="page?.page || filters.page" :page-size="filters.page_size" :page-sizes="[20, 50, 100, 200]" layout="sizes, prev, pager, next" :total="page?.total || 0" @current-change="(value: number) => { filters.page = value; loadRows() }" @size-change="(value: number) => { filters.page_size = value; filters.page = 1; loadRows() }" /></div>
     </div>
+    <el-dialog v-model="onlineStatusVisible" title="AP 上线情况概览" width="min(980px, 94vw)">
+      <div class="online-status-dialog-meta">
+        <span>{{ onlineStatus?.scope_description || page?.scope_description || '当前统计范围' }}</span>
+        <span v-if="onlineStatus?.updated_at">更新时间：{{ displayTracksideSnapshotTime(onlineStatus.updated_at, 'current') }}</span>
+      </div>
+      <el-alert v-if="onlineStatusError" :title="onlineStatusError" type="warning" show-icon :closable="false" />
+      <NcDataTable
+        table-id="trackside-ap-business-online-status"
+        route-key="/rail-transit/trackside-ap-business"
+        :data="onlineStatusRows"
+        :columns="onlineStatusColumns"
+        :row-key="onlineStatusRowKey"
+        height="460"
+        empty-text="暂无站点上线数据"
+      >
+        <template #cell-online_rate="{ row }">{{ formatOnlineRate(row.online_rate) }}</template>
+        <template #cell-status="{ row }"><el-tag :type="onlineStatusTagType(row)">{{ onlineStatusLabel(row) }}</el-tag></template>
+        <template #cell-warning="{ row }"><span>{{ row.warning || row.remark || '—' }}</span></template>
+      </NcDataTable>
+    </el-dialog>
     <el-dialog v-model="terminalVisible" :title="t('ac.terminal.select', '选择外部终端')" width="420px">
       <el-select v-model="terminalType" style="width: 100%"><el-option v-for="option in terminalOptions" :key="option.terminal_type" :label="option.label" :value="option.terminal_type" /></el-select>
       <template #footer><el-button @click="terminalVisible = false">{{ t('common.cancel', '取消') }}</el-button><el-button type="primary" :loading="terminalLoading" @click="launchSelectedFitApTerminal">{{ t('ac.terminal.open', '打开终端') }}</el-button></template>
@@ -798,6 +935,19 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.trackside-page{display:flex;height:100%;min-height:0;min-width:0;flex-direction:column;gap:16px}.page-heading,.actions,.toolbar,.pagination,.scope-summary{display:flex;align-items:center;gap:12px}.page-heading,.pagination{flex:none;justify-content:space-between}.page-heading h1{margin:2px 0 6px}.page-heading p{margin:0;color:var(--el-text-color-secondary)}.eyebrow{color:var(--el-color-primary)!important;font-size:12px;font-weight:700;letter-spacing:0}.actions,.toolbar,.scope-summary{flex-wrap:wrap}.scope-summary{color:var(--el-text-color-secondary)}.scope-summary strong{color:var(--el-text-color-primary)}.summary-grid{display:grid;flex:none;grid-template-columns:repeat(5,minmax(130px,1fr));gap:10px}.summary-grid article,.content-card{background:var(--el-bg-color);border:1px solid var(--el-border-color-lighter);border-radius:8px}.summary-grid article{padding:13px}.summary-grid span{color:var(--el-text-color-secondary);font-size:12px}.summary-grid strong{display:block;margin-top:6px;font-size:22px}.content-card{display:flex;min-height:0;min-width:0;flex:1;flex-direction:column;padding:14px 16px;overflow:hidden}.business-table-host{min-height:0;min-width:0;flex:1}.toolbar{flex:none;margin-bottom:12px}.toolbar .el-input{width:230px}.station-select{width:260px}.refresh-indicator{color:var(--el-color-primary);font-size:13px}.work-scope-filter-hint{color:var(--el-text-color-secondary);font-size:12px}.pagination{flex-wrap:wrap;padding-top:12px}.optical-normal{color:var(--el-color-success)}.optical-notice,.optical-warning{color:var(--el-color-warning)}.optical-alarm,.optical-link-abnormal,.optical-link-down,.optical-no-light,.optical-offline{color:var(--el-color-danger);font-weight:600}.optical-no-module,.optical-missing,.optical-skipped,.optical-not-collected,.optical-unknown{color:var(--el-text-color-secondary)}@media(max-width:1000px){.page-heading{align-items:flex-start;flex-direction:column}.summary-grid{grid-template-columns:repeat(2,minmax(130px,1fr))}}
-.source-warning details{display:grid;gap:4px;margin-top:6px}.source-warning summary{cursor:pointer}.source-warning details span{display:block}
+.trackside-page{display:flex;height:100%;min-height:0;min-width:0;overflow:hidden;flex-direction:column;gap:10px}
+.page-heading,.actions,.toolbar,.pagination,.scope-summary{display:flex;align-items:center;gap:10px}
+.page-heading,.pagination{flex:none;justify-content:space-between}
+.page-heading h1{margin:2px 0 4px}.page-heading p{margin:0;color:var(--el-text-color-secondary)}
+.eyebrow{color:var(--el-color-primary)!important;font-size:12px;font-weight:700;letter-spacing:0}
+.actions,.toolbar,.scope-summary{flex-wrap:wrap}.scope-summary{color:var(--el-text-color-secondary)}.scope-summary strong{color:var(--el-text-color-primary)}
+.summary-grid{display:grid;flex:none;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px}
+.summary-grid article,.content-card,.online-overview,.diagnostic-summary{background:var(--el-bg-color);border:1px solid var(--el-border-color-lighter);border-radius:8px}
+.summary-grid article{height:64px;padding:9px 12px;box-sizing:border-box}.summary-grid span{color:var(--el-text-color-secondary);font-size:12px}.summary-grid strong{display:block;margin-top:4px;font-size:20px;line-height:1.15}
+.online-overview{display:flex;min-width:0;flex:none;align-items:center;gap:14px;padding:8px 12px}.online-overview-heading{display:flex;flex:none;align-items:center;gap:8px;white-space:nowrap}.online-overview-heading strong{font-size:14px}.online-overview-heading .el-button{padding:0}.online-overview-metrics{display:flex;min-width:0;flex:1;align-items:center;justify-content:space-between;gap:14px;overflow-x:auto}.online-overview-metrics span{display:flex;align-items:baseline;gap:5px;white-space:nowrap}.online-overview-metrics small{color:var(--el-text-color-secondary);font-size:12px}.online-overview-metrics strong{font-size:16px;line-height:1.2}.online-status-error{max-width:220px;overflow:hidden;color:var(--el-color-danger);font-size:12px;text-overflow:ellipsis;white-space:nowrap}
+.diagnostic-summary{display:flex;min-width:0;flex:none;align-items:center;gap:10px;padding:6px 10px}.diagnostic-title{flex:none;font-size:13px}.diagnostic-items{display:flex;min-width:0;flex:1;align-items:center;gap:4px;overflow:hidden}.diagnostic-item{border:0;background:transparent;color:var(--el-text-color-secondary);cursor:pointer;font:inherit;font-size:12px;line-height:22px;padding:0 6px;white-space:nowrap}.diagnostic-item:not(:last-child)::after{content:'|';margin-left:10px;color:var(--el-border-color)}.diagnostic-item b{font-weight:600}.diagnostic-warning{color:var(--el-color-warning)}.diagnostic-danger{color:var(--el-color-danger)}.diagnostic-toggle{flex:none;padding:0;white-space:nowrap}
+.content-card{display:flex;min-height:0;min-width:0;flex:1;flex-direction:column;padding:10px 12px;overflow:hidden}.business-table-host{min-height:0;min-width:0;flex:1;overflow:hidden}.toolbar{flex:none;margin-bottom:8px}.toolbar .el-input{width:230px}.station-select{width:260px}.refresh-indicator{color:var(--el-color-primary);font-size:13px}.work-scope-filter-hint{color:var(--el-text-color-secondary);font-size:12px}.pagination{flex-wrap:wrap;padding-top:8px}.optical-normal{color:var(--el-color-success)}.optical-notice,.optical-warning{color:var(--el-color-warning)}.optical-alarm,.optical-link-abnormal,.optical-link-down,.optical-no-light,.optical-offline{color:var(--el-color-danger);font-weight:600}.optical-no-module,.optical-missing,.optical-skipped,.optical-not-collected,.optical-unknown{color:var(--el-text-color-secondary)}
+.online-status-dialog-meta{display:flex;justify-content:space-between;gap:12px;margin-bottom:10px;color:var(--el-text-color-secondary);font-size:12px}.source-warning details{display:grid;gap:4px;margin-top:6px}.source-warning summary{cursor:pointer}.source-warning details span{display:block}
+@media(max-width:1300px){.online-overview{align-items:flex-start;flex-direction:column;gap:6px}.online-overview-heading{width:100%;justify-content:space-between}.online-overview-metrics{width:100%;justify-content:flex-start}.diagnostic-items{overflow-x:auto}}
+@media(max-width:1000px){.page-heading{align-items:flex-start;flex-direction:column}.summary-grid{grid-template-columns:repeat(2,minmax(130px,1fr))}.content-card{padding:8px}.online-status-dialog-meta{align-items:flex-start;flex-direction:column;gap:4px}}
 </style>

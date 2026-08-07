@@ -183,7 +183,6 @@ def export_business(
             expected_revision=payload.expected_revision if payload else "",
             station=payload.station if payload else "",
             query=payload.query if payload else "",
-            optical_anomaly_only=payload.optical_anomaly_only if payload else False,
             selected_row_ids=payload.selected_row_ids if payload else (),
         )
     except TracksideApBusinessSnapshotError as exc:
