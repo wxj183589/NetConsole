@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import re
 import shutil
 import urllib.error
 import urllib.request
+from urllib.parse import urlsplit
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -43,6 +45,10 @@ SMART_TARGET_CODE = "wps_smart_sheet"
 WPS_SYNC_TASK_TYPE = "trackside_ap_wps_sync"
 WPS_SYNC_OWNER = "web_rail_transit"
 _VALID_TARGET_CODES = {STANDARD_TARGET_CODE, SMART_TARGET_CODE}
+_TARGET_TOKEN_ENV = {
+    STANDARD_TARGET_CODE: "NETCONSOLE_WPS_STANDARD_AIRSCRIPT_TOKEN",
+    SMART_TARGET_CODE: "NETCONSOLE_WPS_SMART_AIRSCRIPT_TOKEN",
+}
 _META_SHEET_NAMES = {"_netconsole_meta", "_NetConsoleSyncMeta", "_NetConsoleSyncRuns"}
 _SAFE_ERROR_RE = re.compile(r"(?i)(airscript-token|authorization|token)\s*[:=]\s*\S+")
 _MAX_PAYLOAD_BYTES = 20 * 1024 * 1024
@@ -52,17 +58,17 @@ DEFAULT_TARGETS = (
         "target_code": STANDARD_TARGET_CODE,
         "target_type": WpsTargetType.STANDARD_SPREADSHEET,
         "target_name": "杭州地铁10号线轨旁AP业务-普通在线表格",
-        "document_open_url": "https://www.kdocs.cn/l/cuYXVQ6v36Rv",
-        "webhook_url": "https://www.kdocs.cn/api/v3/ide/file/549847228994/script/V2-2o35ebQ25Bb3Uyrnii2U3o/sync_task",
-        "expected_document_id": "549847228994",
+        "document_open_url": "",
+        "webhook_url": "",
+        "expected_document_id": "",
     },
     {
         "target_code": SMART_TARGET_CODE,
         "target_type": WpsTargetType.SMART_SHEET,
         "target_name": "杭州地铁10号线轨旁AP业务-智能表格",
-        "document_open_url": "https://www.kdocs.cn/l/cbRdGQdb10R9",
-        "webhook_url": "https://www.kdocs.cn/api/v3/ide/file/cbRdGQdb10R9/script/V2-4o35MjmL4CqJSiz0C8pcGT/sync_task",
-        "expected_document_id": "cbRdGQdb10R9",
+        "document_open_url": "",
+        "webhook_url": "",
+        "expected_document_id": "",
     },
 )
 
@@ -153,6 +159,11 @@ class BaseWpsAdapter:
         )
         result = response.body
         self._validate_common(target, result)
+        if not bool(result.get("success")):
+            raise WpsSyncError(
+                str(result.get("error_code") or "WPS_CONNECTION_TEST_FAILED"),
+                str(result.get("message") or "WPS 远端连接测试失败"),
+            )
         return {"http_status": response.status_code, **result}
 
     def sync(
@@ -221,7 +232,10 @@ class TracksideApWpsSyncService:
         repository = self._repository(site_id)
         self._ensure_default_targets(repository)
         return [
-            self._public_target(target, env_token_configured=self._env_token() != "")
+            self._public_target(
+                target,
+                env_token_configured=self._env_token(target.target_code) != "",
+            )
             for target in repository.list_targets(TRACKSIDE_AP_WPS_BUSINESS_KEY)
         ]
 
@@ -231,20 +245,37 @@ class TracksideApWpsSyncService:
         target_code: str,
         *,
         token: str | None = None,
+        document_open_url: str | None = None,
+        webhook_url: str | None = None,
         enabled: bool | None = None,
         timeout_seconds: int | None = None,
     ) -> dict[str, Any]:
         repository = self._repository(site_id)
         self._ensure_default_targets(repository)
         target = repository.get_target(TRACKSIDE_AP_WPS_BUSINESS_KEY, target_code)
+        selected_document_url = (
+            target.document_open_url
+            if document_open_url is None
+            else _validate_wps_url(document_open_url, kind="document")
+        )
+        selected_webhook_url = (
+            target.webhook_url
+            if webhook_url is None
+            else _validate_wps_url(webhook_url, kind="webhook")
+        )
+        selected_document_id = (
+            target.expected_document_id
+            if webhook_url is None
+            else _document_id_from_webhook(selected_webhook_url)
+        )
         configured = repository.upsert_target(
             business_key=target.business_key,
             target_code=target.target_code,
             target_type=target.target_type,
             target_name=target.target_name,
-            document_open_url=target.document_open_url,
-            webhook_url=target.webhook_url,
-            expected_document_id=target.expected_document_id,
+            document_open_url=selected_document_url,
+            webhook_url=selected_webhook_url,
+            expected_document_id=selected_document_id,
             enabled=target.enabled if enabled is None else enabled,
             timeout_seconds=(
                 target.timeout_seconds
@@ -256,7 +287,7 @@ class TracksideApWpsSyncService:
         )
         return self._public_target(
             configured,
-            env_token_configured=self._env_token() != "",
+            env_token_configured=self._env_token(configured.target_code) != "",
         )
 
     def connection_test(self, site_id: str, target_code: str) -> dict[str, Any]:
@@ -264,6 +295,7 @@ class TracksideApWpsSyncService:
         self._ensure_default_targets(repository)
         target = repository.get_target(TRACKSIDE_AP_WPS_BUSINESS_KEY, target_code)
         try:
+            _validate_target_configuration(target)
             result = self.adapters[target.target_type].connection_test(
                 target,
                 self._token(repository, target),
@@ -362,6 +394,7 @@ class TracksideApWpsSyncService:
                 "workbook": workbook.to_dict(),
             }
             try:
+                _validate_target_configuration(target)
                 if progress is not None:
                     progress(
                         "wps_target_sync",
@@ -514,21 +547,34 @@ class TracksideApWpsSyncService:
             shutil.rmtree(root, ignore_errors=True)
 
     def _ensure_default_targets(self, repository: WpsSyncRepository) -> None:
-        existing = {
-            target.target_code: target
-            for target in repository.list_targets(TRACKSIDE_AP_WPS_BUSINESS_KEY)
-        }
-        shared_credential_id = next(
-            (target.credential_id for target in existing.values()),
-            f"wsc_{uuid4().hex}",
-        )
+        existing_targets = repository.list_targets(TRACKSIDE_AP_WPS_BUSINESS_KEY)
+        existing = {target.target_code: target for target in existing_targets}
+        credential_owners: dict[str, str] = {}
+        for target in existing_targets:
+            owner = credential_owners.setdefault(target.credential_id, target.target_code)
+            if owner == target.target_code:
+                continue
+            token = repository.resolve_token(target)
+            repository.upsert_target(
+                business_key=target.business_key,
+                target_code=target.target_code,
+                target_type=target.target_type,
+                target_name=target.target_name,
+                document_open_url=target.document_open_url,
+                webhook_url=target.webhook_url,
+                expected_document_id=target.expected_document_id,
+                enabled=target.enabled,
+                timeout_seconds=target.timeout_seconds,
+                token=token or None,
+                credential_id=f"wsc_{uuid4().hex}",
+            )
         for definition in DEFAULT_TARGETS:
             if definition["target_code"] in existing:
                 continue
             repository.upsert_target(
                 business_key=TRACKSIDE_AP_WPS_BUSINESS_KEY,
                 **definition,
-                credential_id=shared_credential_id,
+                credential_id=f"wsc_{uuid4().hex}",
             )
 
     def _repository(self, site_id: str) -> WpsSyncRepository:
@@ -540,11 +586,12 @@ class TracksideApWpsSyncService:
         return str(metadata.get("display_name") or site_id)
 
     @staticmethod
-    def _env_token() -> str:
-        return str(os.environ.get("NETCONSOLE_WPS_AIRSCRIPT_TOKEN") or "").strip()
+    def _env_token(target_code: str) -> str:
+        name = _TARGET_TOKEN_ENV.get(target_code, "")
+        return str(os.environ.get(name) or "").strip() if name else ""
 
     def _token(self, repository: WpsSyncRepository, target: WpsSyncTarget) -> str:
-        return repository.resolve_token(target) or self._env_token()
+        return repository.resolve_token(target) or self._env_token(target.target_code)
 
     @staticmethod
     def _public_target(
@@ -643,6 +690,57 @@ def _logical_sheet_key(name: str) -> str:
 
 def _sanitize_error(value: str) -> str:
     return _SAFE_ERROR_RE.sub("credential=<redacted>", str(value or ""))[:500]
+
+
+def _validate_wps_url(value: str, *, kind: str) -> str:
+    normalized = str(value or "").strip()
+    try:
+        parsed = urlsplit(normalized)
+    except ValueError:
+        raise WpsSyncError("WPS_URL_INVALID", "WPS 地址格式无效") from None
+    hostname = str(parsed.hostname or "").casefold().rstrip(".")
+    if parsed.scheme.casefold() != "https" or not hostname:
+        raise WpsSyncError("WPS_URL_INVALID", "WPS 地址必须使用 HTTPS")
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise WpsSyncError("WPS_URL_INVALID", "WPS 地址不得包含凭据、查询参数或片段")
+    try:
+        ipaddress.ip_address(hostname)
+    except ValueError:
+        pass
+    else:
+        raise WpsSyncError("WPS_URL_INVALID", "WPS 地址不得使用 IP 地址")
+    if hostname != "kdocs.cn" and not hostname.endswith(".kdocs.cn"):
+        raise WpsSyncError("WPS_URL_INVALID", "WPS 地址必须属于 kdocs.cn")
+    try:
+        port = parsed.port
+    except ValueError:
+        raise WpsSyncError("WPS_URL_INVALID", "WPS 地址端口无效") from None
+    if port not in (None, 443):
+        raise WpsSyncError("WPS_URL_INVALID", "WPS 地址仅允许标准 HTTPS 端口")
+    if kind == "webhook" and not parsed.path.endswith("/sync_task"):
+        raise WpsSyncError("WPS_WEBHOOK_INVALID", "AirScript webhook 必须以 /sync_task 结尾")
+    if kind == "document" and not parsed.path.startswith("/l/"):
+        raise WpsSyncError("WPS_DOCUMENT_URL_INVALID", "在线文档地址必须使用 kdocs.cn/l/ 链接")
+    return normalized
+
+
+def _document_id_from_webhook(value: str) -> str:
+    parts = [part for part in urlsplit(value).path.split("/") if part]
+    try:
+        index = parts.index("file")
+        document_id = parts[index + 1]
+    except (ValueError, IndexError):
+        raise WpsSyncError("WPS_WEBHOOK_INVALID", "AirScript webhook 缺少文档标识") from None
+    if not re.fullmatch(r"[A-Za-z0-9_-]{3,160}", document_id):
+        raise WpsSyncError("WPS_WEBHOOK_INVALID", "AirScript webhook 文档标识无效")
+    return document_id
+
+
+def _validate_target_configuration(target: WpsSyncTarget) -> None:
+    _validate_wps_url(target.document_open_url, kind="document")
+    webhook = _validate_wps_url(target.webhook_url, kind="webhook")
+    if _document_id_from_webhook(webhook) != target.expected_document_id:
+        raise WpsSyncError("WPS_DOCUMENT_ID_MISMATCH", "webhook 文档身份与已保存配置不一致")
 
 
 def _sanitize_result(value: Mapping[str, object]) -> dict[str, Any]:

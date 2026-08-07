@@ -13,14 +13,19 @@ import type {
   TracksideApBusinessPage,
   TracksideApBusinessRow,
   TracksideApTask,
+  WpsTracksideTarget,
 } from '../../types/tracksideApBusiness'
 import type { TaskItem } from '../../types/task'
 
 const api = vi.hoisted(() => ({
   listTracksideApBusiness: vi.fn(),
+  listTracksideWpsTargets: vi.fn(),
   getTracksideApBusinessExportProposal: vi.fn(),
   startTracksideApBusinessExport: vi.fn(),
   startTracksideApUpdate: vi.fn(),
+  syncTracksideWpsTargets: vi.fn(),
+  testTracksideWpsTarget: vi.fn(),
+  updateTracksideWpsTarget: vi.fn(),
   tracksideApBusinessDownloadRequest: vi.fn(),
 }))
 const taskApi = vi.hoisted(() => ({
@@ -61,6 +66,7 @@ vi.mock('../../composables/useExternalTerminalLauncher', () => ({
 }))
 
 import TracksideApBusinessView from './TracksideApBusinessView.vue'
+import TracksideApWpsConfigDialog from './TracksideApWpsConfigDialog.vue'
 
 const extendedRowDefaults = {
   switch_vendor: 'H3C',
@@ -201,6 +207,55 @@ function snapshotPage(revision = 'a'.repeat(64), pageNo = 1): TracksideApBusines
   }
 }
 
+function wpsTargets(configured = false): WpsTracksideTarget[] {
+  return [
+    {
+      target_id: 'target-standard',
+      site_id: 'demo',
+      business_key: 'rail_transit.trackside_ap_business',
+      target_code: 'wps_standard_spreadsheet',
+      target_type: 'WPS_STANDARD_SPREADSHEET',
+      target_name: '普通在线表格',
+      document_open_url: 'https://www.kdocs.cn/l/standard',
+      webhook_url: 'https://www.kdocs.cn/api/v3/ide/file/standard/script/test/sync_task',
+      expected_document_id: 'standard',
+      enabled: true,
+      protocol_version: 2,
+      timeout_seconds: 30,
+      token_configured: configured,
+      token_suffix: configured ? '1111' : '',
+      last_test_at: '',
+      last_test_status: '',
+      last_test_message: '',
+      last_sync_at: '',
+      last_sync_status: '',
+      last_sync_revision: '',
+    },
+    {
+      target_id: 'target-smart',
+      site_id: 'demo',
+      business_key: 'rail_transit.trackside_ap_business',
+      target_code: 'wps_smart_sheet',
+      target_type: 'WPS_SMART_SHEET',
+      target_name: '智能表格',
+      document_open_url: 'https://www.kdocs.cn/l/smart',
+      webhook_url: 'https://www.kdocs.cn/api/v3/ide/file/smart/script/test/sync_task',
+      expected_document_id: 'smart',
+      enabled: true,
+      protocol_version: 2,
+      timeout_seconds: 45,
+      token_configured: configured,
+      token_suffix: configured ? '2222' : '',
+      last_test_at: '',
+      last_test_status: '',
+      last_test_message: '',
+      last_sync_at: '',
+      last_sync_status: '',
+      last_sync_revision: '',
+    },
+  ]
+}
+
 function task(
   taskId: string,
   status = 'RUNNING',
@@ -290,6 +345,13 @@ const NcDataTableStub = defineComponent({
 })
 
 const ElementStubs = {
+  ElDialog: defineComponent({
+    props: { modelValue: Boolean, title: String },
+    emits: ['update:modelValue'],
+    template: '<div v-if="modelValue" class="el-dialog"><h2>{{ title }}</h2><slot /><slot name="footer" /></div>',
+  }),
+  ElForm: defineComponent({ template: '<form><slot /></form>' }),
+  ElFormItem: defineComponent({ props: { label: String }, template: '<label>{{ label }}<slot /></label>' }),
   ElAlert: defineComponent({
     props: { title: String, type: String },
     template: '<div class="el-alert" :data-type="type"><span>{{ title }}</span><slot /></div>',
@@ -313,6 +375,16 @@ const ElementStubs = {
     props: { modelValue: Boolean },
     emits: ['update:modelValue'],
     template: '<label><input type="checkbox" :checked="modelValue" @change="$emit(\'update:modelValue\', $event.target.checked)" /><slot /></label>',
+  }),
+  ElSwitch: defineComponent({
+    props: { modelValue: Boolean },
+    emits: ['update:modelValue'],
+    template: '<input type="checkbox" :checked="modelValue" @change="$emit(\'update:modelValue\', $event.target.checked)" />',
+  }),
+  ElInputNumber: defineComponent({
+    props: { modelValue: Number },
+    emits: ['update:modelValue'],
+    template: '<input type="number" :value="modelValue" @input="$emit(\'update:modelValue\', Number($event.target.value))" />',
   }),
   ElOption: defineComponent({
     props: { label: String, value: String, title: String },
@@ -353,8 +425,13 @@ describe('TracksideApBusinessView mounted behavior', () => {
       'web.ac_fit_ap_external_terminal': { visible: true, enabled: true },
       'desktop.native_bridge': { visible: true, enabled: true },
       'rail.zte_trackside_switch_adapter': { visible: true, enabled: true },
+      'web.rail_trackside_ap_business_wps_sync': { visible: true, enabled: true },
     })
     api.listTracksideApBusiness.mockResolvedValue(page())
+    api.listTracksideWpsTargets.mockResolvedValue([])
+    api.updateTracksideWpsTarget.mockResolvedValue({})
+    api.testTracksideWpsTarget.mockResolvedValue({ target_code: 'wps_standard_spreadsheet', result: {} })
+    api.syncTracksideWpsTargets.mockResolvedValue(task('wps-task', 'RUNNING', 'trackside_ap_wps_sync'))
     api.getTracksideApBusinessExportProposal.mockResolvedValue({
       site_id: 'demo',
       site_display_name: '宁波地铁12号线',
@@ -424,6 +501,46 @@ describe('TracksideApBusinessView mounted behavior', () => {
     expect(wrapper.find('[data-table-id="trackside-ap-business-task-result"]').exists()).toBe(false)
     expect(wrapper.find('input[placeholder="站点"]').exists()).toBe(false)
     expect(wrapper.find('select').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('opens WPS configuration and saves independent URLs, webhooks and tokens', async () => {
+    const initialTargets = wpsTargets(false)
+    api.listTracksideWpsTargets.mockResolvedValue(initialTargets)
+    const wrapper = await mountView()
+
+    expect(wrapper.text()).toContain('在线文档连接、webhook 或脚本令牌尚未完整配置')
+    await button(wrapper, '配置云文档').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('令牌未配置')
+
+    const dialog = wrapper.getComponent(TracksideApWpsConfigDialog)
+    const vm = dialog.vm as unknown as {
+      drafts: Array<{ target_code: string; token: string; document_open_url: string; webhook_url: string }>
+      saveTargetConfiguration: (code: 'wps_standard_spreadsheet' | 'wps_smart_sheet') => Promise<boolean>
+    }
+    vm.drafts[0].token = 'standard-test-token'
+    vm.drafts[0].document_open_url = 'https://www.kdocs.cn/l/standard-updated'
+    vm.drafts[0].webhook_url = 'https://www.kdocs.cn/api/v3/ide/file/standard-updated/script/test/sync_task'
+    vm.drafts[1].token = 'smart-test-token'
+    vm.drafts[1].document_open_url = 'https://www.kdocs.cn/l/smart-updated'
+    vm.drafts[1].webhook_url = 'https://www.kdocs.cn/api/v3/ide/file/smart-updated/script/test/sync_task'
+    api.listTracksideWpsTargets.mockResolvedValue(wpsTargets(true))
+
+    await vm.saveTargetConfiguration('wps_standard_spreadsheet')
+    await vm.saveTargetConfiguration('wps_smart_sheet')
+    expect(api.updateTracksideWpsTarget).toHaveBeenNthCalledWith(1, 'wps_standard_spreadsheet', expect.objectContaining({
+      token: 'standard-test-token',
+      document_open_url: 'https://www.kdocs.cn/l/standard-updated',
+      webhook_url: 'https://www.kdocs.cn/api/v3/ide/file/standard-updated/script/test/sync_task',
+    }))
+    expect(api.updateTracksideWpsTarget).toHaveBeenNthCalledWith(2, 'wps_smart_sheet', expect.objectContaining({
+      token: 'smart-test-token',
+      document_open_url: 'https://www.kdocs.cn/l/smart-updated',
+      webhook_url: 'https://www.kdocs.cn/api/v3/ide/file/smart-updated/script/test/sync_task',
+    }))
+    expect(vm.drafts[0].token).toBe('')
+    expect(vm.drafts[1].token).toBe('')
     wrapper.unmount()
   })
 

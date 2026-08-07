@@ -20,6 +20,7 @@ import { useExternalTerminalLauncher } from '../../composables/useExternalTermin
 import { getPlatformAdapter } from '../../platform/runtime'
 import type { NcDataTableContextMenuItem } from '../../components/table/NcDataTableContextMenu'
 import { BEFORE_SITE_SWITCH_EVENT } from '../../workspace/site-switch'
+import TracksideApWpsConfigDialog from './TracksideApWpsConfigDialog.vue'
 import type {
   TracksideApBusinessPage,
   TracksideApBusinessRow,
@@ -78,6 +79,7 @@ const refreshing = ref(false)
 const taskSubmitting = ref(false)
 const wpsSyncing = ref(false)
 const wpsTargets = ref<WpsTracksideTarget[]>([])
+const wpsConfigVisible = ref(false)
 const pendingScopeKey = ref('')
 const loadError = ref('')
 const actionError = ref('')
@@ -102,6 +104,14 @@ const fitApTerminalFeatureEnabled = computed(() => (
 const wpsSyncFeatureEnabled = computed(() => isFeatureEnabled('web.rail_trackside_ap_business_wps_sync'))
 const wpsTaskRunning = computed(() => taskStore.tasks.some(
   (item) => item.type === 'trackside_ap_wps_sync' && activeStates.has(item.status),
+))
+const wpsConfigurationMissing = computed(() => (
+  wpsSyncFeatureEnabled.value
+  && wpsTargets.value.some((target) => target.enabled && (
+    !target.document_open_url
+    || !target.webhook_url
+    || !target.token_configured
+  ))
 ))
 let loadGeneration = 0
 let pageMounted = false
@@ -566,6 +576,24 @@ async function syncWps(command: 'all' | WpsTracksideTargetCode): Promise<void> {
   const targetCodes = command === 'all'
     ? enabledTargets.map((target) => target.target_code)
     : [command]
+  const selectedTargets = targetCodes
+    .map((code) => wpsTargets.value.find((target) => target.target_code === code))
+    .filter((target): target is WpsTracksideTarget => Boolean(target))
+  if (selectedTargets.length !== targetCodes.length || selectedTargets.some((target) => !target.enabled)) {
+    actionError.value = '目标未启用，请先在“配置云文档”中启用后再同步'
+    wpsConfigVisible.value = true
+    return
+  }
+  if (selectedTargets.some((target) => !target.document_open_url || !target.webhook_url)) {
+    actionError.value = 'WPS 在线文档连接或 webhook 尚未配置，请先完成目标连接配置'
+    wpsConfigVisible.value = true
+    return
+  }
+  if (selectedTargets.some((target) => !target.token_configured)) {
+    actionError.value = 'WPS 脚本令牌尚未配置，请先在“配置云文档”中保存令牌'
+    wpsConfigVisible.value = true
+    return
+  }
   if (!targetCodes.length) {
     actionError.value = '没有已启用的 WPS 同步目标'
     return
@@ -597,7 +625,21 @@ async function syncWps(command: 'all' | WpsTracksideTargetCode): Promise<void> {
 
 function openWpsTarget(command: WpsTracksideTargetCode): void {
   const target = wpsTargets.value.find((item) => item.target_code === command)
-  if (target?.document_open_url) window.open(target.document_open_url, '_blank', 'noopener,noreferrer')
+  if (target?.document_open_url) {
+    window.open(target.document_open_url, '_blank', 'noopener,noreferrer')
+    return
+  }
+  actionError.value = '在线文档连接尚未配置，请先打开“配置云文档”'
+  wpsConfigVisible.value = true
+}
+
+async function openWpsConfiguration(): Promise<void> {
+  await loadWpsTargets()
+  wpsConfigVisible.value = true
+}
+
+function handleWpsTargetsUpdated(targets: WpsTracksideTarget[]): void {
+  wpsTargets.value = targets
 }
 
 function exportTimestamp(now = new Date()): string {
@@ -704,6 +746,7 @@ onBeforeUnmount(() => {
           <el-button link type="success" :disabled="wpsSyncing || wpsTaskRunning || updateTaskRunning" @click="syncWps('wps_smart_sheet')">同步智能表格</el-button>
           <el-button link type="info" :disabled="wpsSyncing || wpsTaskRunning" @click="openWpsTarget('wps_standard_spreadsheet')">打开普通表格</el-button>
           <el-button link type="info" :disabled="wpsSyncing || wpsTaskRunning" @click="openWpsTarget('wps_smart_sheet')">打开智能表格</el-button>
+          <el-button link type="warning" :disabled="wpsSyncing || wpsTaskRunning" @click="openWpsConfiguration">配置云文档</el-button>
         </template>
       </div>
     </header>
@@ -724,6 +767,13 @@ onBeforeUnmount(() => {
       </details>
     </el-alert>
     <el-alert v-if="actionError" :title="actionError" type="error" show-icon closable @close="actionError = ''" />
+    <el-alert
+      v-if="wpsConfigurationMissing"
+      title="WPS 同步目标已启用，但在线文档连接、webhook 或脚本令牌尚未完整配置。"
+      type="warning"
+      show-icon
+      :closable="false"
+    />
     <el-alert
       v-if="page?.runtime_snapshot?.snapshot_status === 'lldp_stale'"
       :title="`FIT-AP：${page.runtime_snapshot.fit_ap_collected_at || '未知'}；交换机 LLDP：${page.runtime_snapshot.switch_lldp_collected_at || '未知'}。LLDP 快照较旧，站点关联结果可能暂时不完整。`"
@@ -831,6 +881,12 @@ onBeforeUnmount(() => {
         empty-text="没有未完成关联的在线 AP"
       />
     </el-dialog>
+    <TracksideApWpsConfigDialog
+      v-if="wpsSyncFeatureEnabled"
+      v-model="wpsConfigVisible"
+      :targets="wpsTargets"
+      @targets-updated="handleWpsTargetsUpdated"
+    />
   </section>
 </template>
 

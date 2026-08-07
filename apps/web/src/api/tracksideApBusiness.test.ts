@@ -11,6 +11,7 @@ import {
   exportTracksideApRenameCommands,
   getTracksideApPlan,
   getTracksideApTask,
+  listTracksideWpsTargets,
   listTracksideSwitchAdapters,
   listTracksideApBusiness,
   recoverTracksideApTasks,
@@ -18,8 +19,10 @@ import {
   startTracksideApBusinessExport,
   startTracksideApUpdate,
   startTracksideSwitchSample,
+  testTracksideWpsTarget,
   tracksideApBusinessDownloadRequest,
   tracksideSwitchSampleDownloadRequest,
+  updateTracksideWpsTarget,
 } from './tracksideApBusiness'
 
 describe('trackside AP business API', () => {
@@ -101,5 +104,36 @@ describe('trackside AP business API', () => {
       'sample-1',
       '../zte-adapter-sample-ZTE-SW-01-20260728_101500.zip',
     )).toThrow('artifactName')
+  })
+
+  it('uses the protected WPS target configuration boundary', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await listTracksideWpsTargets()
+    await updateTracksideWpsTarget('wps_standard_spreadsheet', {
+      token: 'test-only-token',
+      document_open_url: 'https://www.kdocs.cn/l/test-document',
+      webhook_url: 'https://www.kdocs.cn/api/v3/ide/file/test/script/test/sync_task',
+      enabled: true,
+      timeout_seconds: 45,
+    })
+    await testTracksideWpsTarget('wps_standard_spreadsheet')
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      '/api/rail-transit/trackside-ap-business/wps/targets',
+      '/api/rail-transit/trackside-ap-business/wps/targets/wps_standard_spreadsheet',
+      '/api/rail-transit/trackside-ap-business/wps/targets/wps_standard_spreadsheet/connection-test',
+    ])
+    expect(fetchMock.mock.calls[1][1]).toMatchObject({
+      method: 'PUT',
+      body: JSON.stringify({
+        token: 'test-only-token',
+        document_open_url: 'https://www.kdocs.cn/l/test-document',
+        webhook_url: 'https://www.kdocs.cn/api/v3/ide/file/test/script/test/sync_task',
+        enabled: true,
+        timeout_seconds: 45,
+      }),
+    })
   })
 })

@@ -260,6 +260,7 @@ export interface WpsTracksideTarget {
   target_type: 'WPS_STANDARD_SPREADSHEET' | 'WPS_SMART_SHEET'
   target_name: string
   document_open_url: string
+  webhook_url: string
   expected_document_id: string
   enabled: boolean
   protocol_version: number
@@ -272,6 +273,14 @@ export interface WpsTracksideTarget {
   last_sync_at: string
   last_sync_status: string
   last_sync_revision: string
+}
+
+export interface WpsTracksideTargetUpdate {
+  token?: string
+  document_open_url?: string
+  webhook_url?: string
+  enabled?: boolean
+  timeout_seconds?: number
 }
 
 export interface WpsTracksideSyncResult {

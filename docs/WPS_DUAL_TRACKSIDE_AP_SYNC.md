@@ -5,7 +5,9 @@
 - 普通在线表格：`wps_standard_spreadsheet`，按 Sheet 执行 `FULL_REPLACE` 或 `APPEND_SNAPSHOT`。
 - 智能表格：`wps_smart_sheet`，按记录和批次执行受管数据替换，保留非 NetConsole 记录。
 
-两个目标共享同一个 `snapshot_revision`、`snapshot_sha256`、工作簿数据和父批次，但每个目标拥有独立 `target_batch_id`、身份校验、状态和重试记录。普通数据库不保存明文 Token；Windows 使用 DPAPI 加密保存凭据，开发连接验证可以临时使用 `NETCONSOLE_WPS_AIRSCRIPT_TOKEN`。
+两个目标共享同一个 `snapshot_revision`、`snapshot_sha256`、工作簿数据和父批次，但每个目标拥有独立的在线文档地址、webhook、DPAPI 凭据、`target_batch_id`、身份校验、状态和重试记录。普通数据库不保存明文 Token；Windows 使用 DPAPI 加密保存凭据，开发连接验证可以临时使用目标专属环境变量 `NETCONSOLE_WPS_STANDARD_AIRSCRIPT_TOKEN` 或 `NETCONSOLE_WPS_SMART_AIRSCRIPT_TOKEN`。
+
+轨旁 AP 页面中的“配置云文档”会分别保存每个目标的“在线文档连接”“webhook地址”和“脚本令牌”。保存 webhook 后，服务端从 webhook 的 `/file/{document_id}/...` 路径固定文档身份；同步前会拒绝空地址、非 HTTPS、非 `kdocs.cn` 域名、IP 地址、查询参数和身份不一致的配置。
 
 ## AirScript 部署
 
@@ -18,7 +20,7 @@
 
 ## 真实验证顺序
 
-1. 设置 `NETCONSOLE_WPS_AIRSCRIPT_TOKEN`，只执行两个目标的 `connection_test`。
+1. 分别设置两个目标专属环境变量，或在“配置云文档”中为每个目标独立保存在线文档地址、webhook 和脚本令牌，然后只执行 `connection_test`。
 2. 核对返回的 `document_id`、`target_type`、`protocol_version` 和对象清单。
 3. 确认杭州地铁10号线当前业务 revision 后，手动点击页面的“同步云文档”。
 4. 分别检查普通表格历史概览追加、智能表格批次记录追加、两个目标的 revision/SHA-256 一致和幂等重试。

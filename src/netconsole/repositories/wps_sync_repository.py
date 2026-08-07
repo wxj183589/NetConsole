@@ -134,9 +134,11 @@ class WpsSyncRepository:
             ).fetchone()
             target_id = str(row["target_id"]) if row else f"wst_{uuid4().hex}"
             credential_id = (
-                str(row["credential_id"])
+                str(credential_id)
+                if credential_id is not None
+                else str(row["credential_id"])
                 if row
-                else str(credential_id or f"wsc_{uuid4().hex}")
+                else f"wsc_{uuid4().hex}"
             )
             connection.execute(
                 """
@@ -172,6 +174,7 @@ class WpsSyncRepository:
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 2, ?, ?, ?)
                 ON CONFLICT(site_id, business_key, target_code) DO UPDATE SET
                     target_type = excluded.target_type,
+                    credential_id = excluded.credential_id,
                     target_name = excluded.target_name,
                     document_open_url = excluded.document_open_url,
                     webhook_url = excluded.webhook_url,

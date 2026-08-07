@@ -53,6 +53,7 @@ class WpsSyncTarget:
             "target_type": self.target_type.value,
             "target_name": self.target_name,
             "document_open_url": self.document_open_url,
+            "webhook_url": self.webhook_url,
             "expected_document_id": self.expected_document_id,
             "enabled": self.enabled,
             "protocol_version": self.protocol_version,

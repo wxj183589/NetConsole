@@ -15,6 +15,7 @@ class WpsSyncTargetDTO(ApiModel):
     target_type: str
     target_name: str
     document_open_url: str
+    webhook_url: str
     expected_document_id: str
     enabled: bool
     protocol_version: int
@@ -31,6 +32,8 @@ class WpsSyncTargetDTO(ApiModel):
 
 class WpsSyncTargetUpdateDTO(ApiModel):
     token: str | None = Field(default=None, min_length=1, max_length=4096)
+    document_open_url: str | None = Field(default=None, min_length=1, max_length=2048)
+    webhook_url: str | None = Field(default=None, min_length=1, max_length=2048)
     enabled: bool | None = None
     timeout_seconds: int | None = Field(default=None, ge=5, le=120)
 

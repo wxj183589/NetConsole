@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from openpyxl import Workbook
+import pytest
 
 from netconsole.core.paths import PathResolver
 from netconsole.models.wps_sync import TRACKSIDE_AP_WPS_BUSINESS_KEY, WpsTargetType
@@ -20,7 +21,7 @@ def _protect(data: bytes, entropy: bytes) -> bytes:
     return bytes(value ^ entropy[index % len(entropy)] for index, value in enumerate(data))
 
 
-def test_wps_targets_allow_two_codes_and_share_encrypted_credential(tmp_path: Path) -> None:
+def test_wps_targets_keep_independent_encrypted_credentials(tmp_path: Path) -> None:
     paths = PathResolver(tmp_path)
     repository = WpsSyncRepository(paths, "hangzhou10", protect=_protect, unprotect=_protect)
     standard = repository.upsert_target(
@@ -42,14 +43,29 @@ def test_wps_targets_allow_two_codes_and_share_encrypted_credential(tmp_path: Pa
         document_open_url="https://example.test/smart",
         webhook_url="https://example.test/smart-hook",
         expected_document_id="smart",
-        credential_id=standard.credential_id,
+        token="smart-token",
+        credential_id="smart-credential",
     )
     assert standard.target_code != smart.target_code
-    assert standard.credential_id == smart.credential_id == "shared"
+    assert standard.credential_id == "shared"
+    assert smart.credential_id == "smart-credential"
     assert repository.resolve_token(standard) == "secret-token"
+    assert repository.resolve_token(smart) == "smart-token"
     public = standard.public_dict()
-    assert "webhook_url" not in public
+    assert public["webhook_url"] == "https://example.test/standard-hook"
     assert "secret-token" not in str(public)
+
+
+def test_wps_target_configuration_rejects_non_kdocs_webhook(tmp_path: Path) -> None:
+    from netconsole.services.wps_trackside_ap_sync import WpsSyncError
+
+    service = TracksideApWpsSyncService(PathResolver(tmp_path))
+    with pytest.raises(WpsSyncError, match="kdocs.cn"):
+        service.configure_target(
+            "hangzhou10",
+            STANDARD_TARGET_CODE,
+            webhook_url="https://localhost/api/sync_task",
+        )
 
 
 def test_workbook_dto_uses_append_mode_for_overview(tmp_path: Path) -> None:
@@ -69,6 +85,32 @@ def test_workbook_dto_uses_append_mode_for_overview(tmp_path: Path) -> None:
     assert dto.sheets[0].sync_mode.value == "FULL_REPLACE"
     assert dto.sheets[1].sync_mode.value == "APPEND_SNAPSHOT"
     assert dto.sheets[1].row_count == 2
+
+
+def test_default_target_initialization_splits_legacy_shared_credential(tmp_path: Path) -> None:
+    paths = PathResolver(tmp_path)
+    repository = WpsSyncRepository(paths, "hangzhou10", protect=_protect, unprotect=_protect)
+    for code, target_type in (
+        (STANDARD_TARGET_CODE, WpsTargetType.STANDARD_SPREADSHEET),
+        (SMART_TARGET_CODE, WpsTargetType.SMART_SHEET),
+    ):
+        repository.upsert_target(
+            business_key=TRACKSIDE_AP_WPS_BUSINESS_KEY,
+            target_code=code,
+            target_type=target_type,
+            target_name=code,
+            document_open_url=f"https://www.kdocs.cn/l/{code}",
+            webhook_url=f"https://www.kdocs.cn/api/{code}/sync_task",
+            expected_document_id=code,
+            token="legacy-token" if code == STANDARD_TARGET_CODE else None,
+            credential_id="legacy-shared",
+        )
+
+    TracksideApWpsSyncService(paths)._ensure_default_targets(repository)
+
+    targets = repository.list_targets(TRACKSIDE_AP_WPS_BUSINESS_KEY)
+    assert len({target.credential_id for target in targets}) == 2
+    assert {repository.resolve_token(target) for target in targets} == {"legacy-token"}
 
 
 def test_dual_sync_reuses_one_snapshot_for_both_adapters(monkeypatch, tmp_path: Path) -> None:
@@ -101,7 +143,20 @@ def test_dual_sync_reuses_one_snapshot_for_both_adapters(monkeypatch, tmp_path: 
 
     fake = FakeClient()
     service = TracksideApWpsSyncService(PathResolver(tmp_path), client=fake)
-    monkeypatch.setenv("NETCONSOLE_WPS_AIRSCRIPT_TOKEN", "test-token")
+    service.configure_target(
+        "hzl10",
+        STANDARD_TARGET_CODE,
+        document_open_url="https://www.kdocs.cn/l/standard",
+        webhook_url="https://www.kdocs.cn/api/v3/ide/file/standard/script/test/sync_task",
+    )
+    service.configure_target(
+        "hzl10",
+        SMART_TARGET_CODE,
+        document_open_url="https://www.kdocs.cn/l/smart",
+        webhook_url="https://www.kdocs.cn/api/v3/ide/file/smart/script/test/sync_task",
+    )
+    monkeypatch.setenv("NETCONSOLE_WPS_STANDARD_AIRSCRIPT_TOKEN", "test-token")
+    monkeypatch.setenv("NETCONSOLE_WPS_SMART_AIRSCRIPT_TOKEN", "test-token")
     monkeypatch.setattr(
         service,
         "_build_snapshot",

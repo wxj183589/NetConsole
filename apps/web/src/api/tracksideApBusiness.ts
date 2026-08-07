@@ -6,7 +6,7 @@ import type {
   TracksideApScopeExcludedPage, TracksideApUnmatchedOnlinePage,
   TracksideApTask, TracksideApUpdateRequest, TracksideSwitchAdapterCatalog,
   TracksideSwitchSampleRequest, WpsTracksideTarget,
-  WpsTracksideTargetCode,
+  WpsTracksideTargetCode, WpsTracksideTargetUpdate,
 } from '../types/tracksideApBusiness'
 import type { TracksideAp } from '../types/railTransitBaseData'
 
@@ -58,6 +58,16 @@ export function startTracksideApBusinessExport(
 
 export function listTracksideWpsTargets(): Promise<WpsTracksideTarget[]> {
   return apiRequest(`${wpsRoot}/targets`)
+}
+
+export function updateTracksideWpsTarget(
+  targetCode: WpsTracksideTargetCode,
+  payload: WpsTracksideTargetUpdate,
+): Promise<WpsTracksideTarget> {
+  return apiRequest(`${wpsRoot}/targets/${encodeURIComponent(targetCode)}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  })
 }
 
 export function testTracksideWpsTarget(targetCode: WpsTracksideTargetCode): Promise<{

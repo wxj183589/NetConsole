@@ -75,6 +75,8 @@ def update_target(
             _site_id(request),
             target_code,
             token=payload.token,
+            document_open_url=payload.document_open_url,
+            webhook_url=payload.webhook_url,
             enabled=payload.enabled,
             timeout_seconds=payload.timeout_seconds,
         )
