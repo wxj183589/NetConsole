@@ -214,6 +214,7 @@ function onlineStatus() {
     warning: '',
     status: 'normal',
     scope_description: '当前统计范围',
+    scope_station_count: 11,
     fit_ap_resource_total_count: 992,
     fit_ap_online_total_count: 978,
     fit_ap_matched_online_count: 932,
@@ -378,9 +379,9 @@ const ElementStubs = {
   ElTag: defineComponent({ template: '<span class="el-tag"><slot /></span>' }),
   ElTooltip: defineComponent({ props: { content: String }, template: '<span class="el-tooltip" :data-content="content"><slot /></span>' }),
   ElDialog: defineComponent({
-    props: { modelValue: Boolean, title: String },
+    props: { modelValue: Boolean, title: String, draggable: Boolean, width: String, bodyClass: String, alignCenter: Boolean },
     emits: ['update:modelValue'],
-    template: '<div v-if="modelValue" class="el-dialog"><h2>{{ title }}</h2><slot /><slot name="footer" /></div>',
+    template: '<div v-if="modelValue" class="el-dialog" :data-draggable="draggable" :data-width="width" :data-align-center="alignCenter"><h2>{{ title }}</h2><div :class="[\'el-dialog__body\', bodyClass]"><slot /></div><slot name="footer" /></div>',
   }),
 }
 
@@ -495,10 +496,20 @@ describe('TracksideApBusinessView mounted behavior', () => {
 
     await button(wrapper, '查看站点明细').trigger('click')
     await flushPromises()
+    const dialog = wrapper.get('.el-dialog.online-status-dialog')
+    expect(dialog.attributes('data-draggable')).toBe('true')
+    expect(dialog.attributes('data-width')).toBe('min(1100px, 94vw)')
+    expect(dialog.attributes('data-align-center')).toBe('true')
+    expect(dialog.find('.online-status-dialog-body').exists()).toBe(true)
+    const summary = wrapper.get('[data-testid="trackside-online-status-summary"]')
+    for (const expected of ['总计', '规划 AP992', '实际在线978', '离线14', '上线率98.6%', '站点11']) {
+      expect(summary.text()).toContain(expected)
+    }
     const detailTable = wrapper.findAllComponents(NcDataTableStub).find(
       (table) => table.props('tableId') === 'trackside-ap-business-online-status',
     )
     expect(detailTable?.props('data')).toEqual(onlineStatus().items)
+    expect(detailTable?.props('height')).toBe('100%')
     expect(detailTable?.props('columns')).toEqual(expect.arrayContaining([
       expect.objectContaining({ key: 'station_name' }),
       expect.objectContaining({ key: 'planned_ap_count' }),
@@ -509,6 +520,44 @@ describe('TracksideApBusinessView mounted behavior', () => {
       expect.objectContaining({ key: 'warning' }),
     ]))
     wrapper.unmount()
+  })
+
+  it('uses station detail count only when the online status omits scope_station_count', async () => {
+    api.getTracksideApOnlineStatus.mockResolvedValue({ ...onlineStatus(), scope_station_count: undefined })
+    const wrapper = await mountView()
+
+    await button(wrapper, '查看站点明细').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="trackside-online-status-summary"]').text()).toContain('站点2')
+    expect(wrapper.get('[data-testid="trackside-online-status-summary"]').text()).toContain('规划 AP992')
+    wrapper.unmount()
+  })
+
+  it('keeps the station detail dialog usable for empty and failed online status responses', async () => {
+    api.getTracksideApOnlineStatus.mockResolvedValue({ ...onlineStatus(), items: [], scope_station_count: undefined })
+    const emptyWrapper = await mountView()
+
+    await button(emptyWrapper, '查看站点明细').trigger('click')
+    await flushPromises()
+    const emptyTable = emptyWrapper.findAllComponents(NcDataTableStub).find(
+      (table) => table.props('tableId') === 'trackside-ap-business-online-status',
+    )
+    expect(emptyTable?.props('data')).toEqual([])
+    expect(emptyWrapper.get('[data-testid="trackside-online-status-summary"]').text()).toContain('站点0')
+    emptyWrapper.unmount()
+
+    api.getTracksideApOnlineStatus.mockRejectedValue(new Error('online status unavailable'))
+    const errorWrapper = await mountView()
+    await button(errorWrapper, '查看站点明细').trigger('click')
+    await flushPromises()
+
+    expect(errorWrapper.get('.el-dialog .el-alert').text()).toContain('online status unavailable')
+    const errorTable = errorWrapper.findAllComponents(NcDataTableStub).find(
+      (table) => table.props('tableId') === 'trackside-ap-business-online-status',
+    )
+    expect(errorTable?.props('data')).toEqual([])
+    errorWrapper.unmount()
   })
 
   it('keeps the optical anomaly checkbox on row queries but excludes it from exports', async () => {

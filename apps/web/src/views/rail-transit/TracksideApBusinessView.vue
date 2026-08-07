@@ -258,6 +258,17 @@ const diagnosticItems = computed<DiagnosticItem[]>(() => [
 ])
 const visibleDiagnosticItems = computed(() => diagnosticsExpanded.value ? diagnosticItems.value : diagnosticItems.value.slice(0, 5))
 const onlineStatusRows = computed(() => onlineStatus.value?.items || [])
+const onlineStatusSummary = computed(() => {
+  const status = onlineStatus.value
+  if (!status) return null
+  return {
+    plannedApCount: status.planned_ap_count,
+    actualOnlineCount: status.actual_online_count,
+    offlineCount: status.offline_count,
+    onlineRate: status.online_rate,
+    stationCount: status.scope_station_count ?? status.items.length,
+  }
+})
 const snapshotStatusLabel = computed(() => {
   if (refreshing.value) return '更新中'
   if (!page.value) return initialLoading.value ? '更新中' : '暂无'
@@ -885,25 +896,45 @@ onBeforeUnmount(() => {
       </div>
       <div class="pagination"><span>共 {{ page?.total || 0 }} 条</span><el-pagination :current-page="page?.page || filters.page" :page-size="filters.page_size" :page-sizes="[20, 50, 100, 200]" layout="sizes, prev, pager, next" :total="page?.total || 0" @current-change="(value: number) => { filters.page = value; loadRows() }" @size-change="(value: number) => { filters.page_size = value; filters.page = 1; loadRows() }" /></div>
     </div>
-    <el-dialog v-model="onlineStatusVisible" title="AP 上线情况概览" width="min(980px, 94vw)">
-      <div class="online-status-dialog-meta">
-        <span>{{ onlineStatus?.scope_description || page?.scope_description || '当前统计范围' }}</span>
-        <span v-if="onlineStatus?.updated_at">更新时间：{{ displayTracksideSnapshotTime(onlineStatus.updated_at, 'current') }}</span>
+    <el-dialog
+      v-model="onlineStatusVisible"
+      title="AP 上线情况概览"
+      class="online-status-dialog"
+      body-class="online-status-dialog-body"
+      width="min(1100px, 94vw)"
+      draggable
+      align-center
+    >
+      <div class="online-status-dialog-content">
+        <div class="online-status-dialog-meta">
+          <span>{{ onlineStatus?.scope_description || page?.scope_description || '当前统计范围' }}</span>
+          <span v-if="onlineStatus?.updated_at">更新时间：{{ displayTracksideSnapshotTime(onlineStatus.updated_at, 'current') }}</span>
+        </div>
+        <div v-if="onlineStatusSummary" class="online-status-summary" data-testid="trackside-online-status-summary">
+          <strong class="online-status-summary-title">总计</strong>
+          <span><small>规划 AP</small><b>{{ onlineStatusSummary.plannedApCount }}</b></span>
+          <span><small>实际在线</small><b>{{ onlineStatusSummary.actualOnlineCount }}</b></span>
+          <span :class="{ 'online-status-summary-offline': onlineStatusSummary.offlineCount > 0 }"><small>离线</small><b>{{ onlineStatusSummary.offlineCount }}</b></span>
+          <span><small>上线率</small><b>{{ formatOnlineRate(onlineStatusSummary.onlineRate) }}</b></span>
+          <span><small>站点</small><b>{{ onlineStatusSummary.stationCount }}</b></span>
+        </div>
+        <el-alert v-if="onlineStatusError" :title="onlineStatusError" type="warning" show-icon :closable="false" />
+        <div v-loading="onlineStatusLoading" class="online-status-table-host">
+          <NcDataTable
+            table-id="trackside-ap-business-online-status"
+            route-key="/rail-transit/trackside-ap-business"
+            :data="onlineStatusRows"
+            :columns="onlineStatusColumns"
+            :row-key="onlineStatusRowKey"
+            height="100%"
+            empty-text="暂无站点上线数据"
+          >
+            <template #cell-online_rate="{ row }">{{ formatOnlineRate(row.online_rate) }}</template>
+            <template #cell-status="{ row }"><el-tag :type="onlineStatusTagType(row)">{{ onlineStatusLabel(row) }}</el-tag></template>
+            <template #cell-warning="{ row }"><span>{{ row.warning || row.remark || '—' }}</span></template>
+          </NcDataTable>
+        </div>
       </div>
-      <el-alert v-if="onlineStatusError" :title="onlineStatusError" type="warning" show-icon :closable="false" />
-      <NcDataTable
-        table-id="trackside-ap-business-online-status"
-        route-key="/rail-transit/trackside-ap-business"
-        :data="onlineStatusRows"
-        :columns="onlineStatusColumns"
-        :row-key="onlineStatusRowKey"
-        height="460"
-        empty-text="暂无站点上线数据"
-      >
-        <template #cell-online_rate="{ row }">{{ formatOnlineRate(row.online_rate) }}</template>
-        <template #cell-status="{ row }"><el-tag :type="onlineStatusTagType(row)">{{ onlineStatusLabel(row) }}</el-tag></template>
-        <template #cell-warning="{ row }"><span>{{ row.warning || row.remark || '—' }}</span></template>
-      </NcDataTable>
     </el-dialog>
     <el-dialog v-model="terminalVisible" :title="t('ac.terminal.select', '选择外部终端')" width="420px">
       <el-select v-model="terminalType" style="width: 100%"><el-option v-for="option in terminalOptions" :key="option.terminal_type" :label="option.label" :value="option.terminal_type" /></el-select>
@@ -947,7 +978,7 @@ onBeforeUnmount(() => {
 .online-overview{display:flex;min-width:0;flex:none;align-items:center;gap:14px;padding:8px 12px}.online-overview-heading{display:flex;flex:none;align-items:center;gap:8px;white-space:nowrap}.online-overview-heading strong{font-size:14px}.online-overview-heading .el-button{padding:0}.online-overview-metrics{display:flex;min-width:0;flex:1;align-items:center;justify-content:space-between;gap:14px;overflow-x:auto}.online-overview-metrics span{display:flex;align-items:baseline;gap:5px;white-space:nowrap}.online-overview-metrics small{color:var(--el-text-color-secondary);font-size:12px}.online-overview-metrics strong{font-size:16px;line-height:1.2}.online-status-error{max-width:220px;overflow:hidden;color:var(--el-color-danger);font-size:12px;text-overflow:ellipsis;white-space:nowrap}
 .diagnostic-summary{display:flex;min-width:0;flex:none;align-items:center;gap:10px;padding:6px 10px}.diagnostic-title{flex:none;font-size:13px}.diagnostic-items{display:flex;min-width:0;flex:1;align-items:center;gap:4px;overflow:hidden}.diagnostic-item{border:0;background:transparent;color:var(--el-text-color-secondary);cursor:pointer;font:inherit;font-size:12px;line-height:22px;padding:0 6px;white-space:nowrap}.diagnostic-item:not(:last-child)::after{content:'|';margin-left:10px;color:var(--el-border-color)}.diagnostic-item b{font-weight:600}.diagnostic-warning{color:var(--el-color-warning)}.diagnostic-danger{color:var(--el-color-danger)}.diagnostic-toggle{flex:none;padding:0;white-space:nowrap}
 .content-card{display:flex;min-height:0;min-width:0;flex:1;flex-direction:column;padding:10px 12px;overflow:hidden}.business-table-host{min-height:0;min-width:0;flex:1;overflow:hidden}.toolbar{flex:none;margin-bottom:8px}.toolbar .el-input{width:230px}.station-select{width:260px}.refresh-indicator{color:var(--el-color-primary);font-size:13px}.work-scope-filter-hint{color:var(--el-text-color-secondary);font-size:12px}.pagination{flex-wrap:wrap;padding-top:8px}.optical-normal{color:var(--el-color-success)}.optical-notice,.optical-warning{color:var(--el-color-warning)}.optical-alarm,.optical-link-abnormal,.optical-link-down,.optical-no-light,.optical-offline{color:var(--el-color-danger);font-weight:600}.optical-no-module,.optical-missing,.optical-skipped,.optical-not-collected,.optical-unknown{color:var(--el-text-color-secondary)}
-.online-status-dialog-meta{display:flex;justify-content:space-between;gap:12px;margin-bottom:10px;color:var(--el-text-color-secondary);font-size:12px}.source-warning details{display:grid;gap:4px;margin-top:6px}.source-warning summary{cursor:pointer}.source-warning details span{display:block}
+.online-status-dialog-meta{display:flex;flex:none;justify-content:space-between;gap:12px;color:var(--el-text-color-secondary);font-size:12px}.online-status-dialog-content{display:flex;min-width:0;min-height:0;flex:1;flex-direction:column;gap:10px}.online-status-summary{display:flex;min-width:0;flex:none;align-items:center;flex-wrap:wrap;gap:8px 14px;padding:8px 12px;background:var(--el-fill-color-light);border-radius:6px}.online-status-summary-title{font-size:13px}.online-status-summary span{display:flex;align-items:baseline;gap:5px;white-space:nowrap}.online-status-summary small{color:var(--el-text-color-secondary);font-size:12px}.online-status-summary b{font-size:14px}.online-status-summary-offline b{color:var(--el-color-warning)}.online-status-table-host{min-width:0;min-height:0;flex:1;overflow:hidden}:deep(.online-status-dialog){display:flex;box-sizing:border-box;width:min(1100px,94vw);height:min(680px,86vh);min-width:min(760px,94vw);min-height:min(460px,82vh);max-width:96vw;max-height:92vh;flex-direction:column;overflow:hidden;resize:both}:deep(.online-status-dialog .el-dialog__header){flex:none}:deep(.online-status-dialog .el-dialog__body){display:flex;min-width:0;min-height:0;flex:1;overflow:hidden}.source-warning details{display:grid;gap:4px;margin-top:6px}.source-warning summary{cursor:pointer}.source-warning details span{display:block}
 @media(max-width:1300px){.online-overview{align-items:flex-start;flex-direction:column;gap:6px}.online-overview-heading{width:100%;justify-content:space-between}.online-overview-metrics{width:100%;justify-content:flex-start}.diagnostic-items{overflow-x:auto}}
 @media(max-width:1000px){.page-heading{align-items:flex-start;flex-direction:column}.summary-grid{grid-template-columns:repeat(2,minmax(130px,1fr))}.content-card{padding:8px}.online-status-dialog-meta{align-items:flex-start;flex-direction:column;gap:4px}}
 </style>
