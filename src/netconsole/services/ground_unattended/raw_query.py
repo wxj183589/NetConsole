@@ -26,6 +26,7 @@ from netconsole.services.ground_unattended.identity import (
 from netconsole.services.ground_unattended.syslog_runtime import (
     WmeshRealtimeParser,
 )
+from netconsole.services.ap_identity.normalizers import normalize_mac
 from netconsole.services.rail_transit.train_identity import (
     canonical_train_id_for,
     train_identity_matches,
@@ -301,6 +302,16 @@ class GroundRawStreamQueryService:
             "diagnostics": diagnostics,
             "query_identity": identity.query_identity,
         }
+        self._merge_ap_transition_evidence(
+            result,
+            run_id=run_id,
+            train_id=identity.registry_train_id,
+            mr_id=identity.registry_device_uuid,
+            mr_role=identity.registry_mr_role,
+            start=start,
+            end=end,
+            max_points=max_points,
+        )
         self._attach_ping_runtime(
             result,
             run_id=run_id,
@@ -500,12 +511,93 @@ class GroundRawStreamQueryService:
         }
         result["has_more"] = has_more
         result["query_identity"] = identity.query_identity
+        self._merge_ap_transition_evidence(
+            result,
+            run_id=run_id,
+            train_id=identity.registry_train_id,
+            mr_id=identity.registry_device_uuid,
+            mr_role=identity.registry_mr_role,
+            start=start,
+            end=now,
+            max_points=limit,
+        )
         self._attach_ping_runtime(
             result,
             run_id=run_id,
             cursor_state=cursor_state,
         )
         return result
+
+    def _merge_ap_transition_evidence(
+        self,
+        result: dict[str, Any],
+        *,
+        run_id: str,
+        train_id: str,
+        mr_id: str,
+        mr_role: str,
+        start: datetime,
+        end: datetime,
+        max_points: int,
+    ) -> None:
+        """Project persisted WMESH switches as standalone Ping-chart events.
+
+        Ping sampling and WMESH logging are asynchronous.  A marker must
+        therefore come from the persisted switch event rather than a Ping
+        sample which happened to land in the same millisecond.
+        """
+
+        events = self.repository.list_wmesh_events(
+            run_id=run_id,
+            train_id=train_id,
+            mr_id=mr_id,
+            mr_role=mr_role,
+            limit=2_000,
+        )
+        if not events:
+            return
+        lower = start - timedelta(seconds=5)
+        upper = end + timedelta(seconds=5)
+        scoped: list[dict[str, Any]] = []
+        for event in events:
+            moment = _wmesh_event_time(event)
+            if moment is not None and lower <= moment <= upper:
+                scoped.append(event)
+        switches = [
+            event
+            for event in scoped
+            if str(event.get("event_type") or "").upper()
+            == "MESH_ACTIVELINK_SWITCH"
+        ]
+        if not switches:
+            return
+
+        markers = [
+            _wmesh_transition_marker(event, scoped)
+            for event in switches
+            if _wmesh_event_time(event) is not None
+        ]
+        existing = list(result.get("ap_transitions") or [])
+        # Legacy Ping-window labels are kept only when there is no persisted
+        # WMESH event for that timestamp.  The structured event carries the
+        # actual AP identities and source provenance required by the tooltip.
+        identities = {
+            str(marker.get("syslog_event_id") or "")
+            for marker in markers
+            if marker.get("syslog_event_id") not in (None, "")
+        }
+        for marker in existing:
+            marker_event_id = str(marker.get("syslog_event_id") or "")
+            if marker_event_id and marker_event_id in identities:
+                continue
+            if not marker_event_id and any(
+                str(marker.get("ts") or "") == str(event.get("ts") or "")
+                for event in markers
+            ):
+                continue
+            markers.append(marker)
+        markers.sort(key=lambda item: str(item.get("ts") or ""))
+        result["ap_transitions"] = markers[:max_points]
 
     def ping_samples(
         self,
@@ -1627,6 +1719,164 @@ def _prune_cursor_offsets(
         for file_id in ordered_ids[:MAX_CURSOR_FILES]
         if file_id in offsets
     }
+
+
+def _wmesh_event_time(event: Mapping[str, Any]) -> datetime | None:
+    return _parse_time(
+        str(event.get("event_time") or event.get("device_time") or event.get("receive_time") or "")
+    )
+
+
+def _wmesh_transition_marker(
+    event: Mapping[str, Any],
+    candidates: list[dict[str, Any]],
+) -> dict[str, Any]:
+    details = event.get("details") or {}
+    if not isinstance(details, Mapping):
+        details = {}
+    moment = _wmesh_event_time(event)
+    assert moment is not None
+    old_raw = str(
+        details.get("old_peer_mac") or event.get("previous_peer_mac") or ""
+    )
+    new_raw = str(details.get("new_peer_mac") or event.get("peer_mac") or "")
+    old_radio = str(details.get("old_peer_radio_mac") or "")
+    new_radio = str(details.get("new_peer_radio_mac") or "")
+    old_physical = str(details.get("previous_peer_ap_mac") or "")
+    new_physical = str(details.get("peer_ap_mac") or "")
+    before = _nearest_wmesh_rssi(
+        candidates,
+        moment=moment,
+        raw_mac=old_raw,
+        radio_mac=old_radio,
+        physical_mac=old_physical,
+        side="old",
+        before=True,
+    )
+    after = _nearest_wmesh_rssi(
+        candidates,
+        moment=moment,
+        raw_mac=new_raw,
+        radio_mac=new_radio,
+        physical_mac=new_physical,
+        side="new",
+        before=False,
+    )
+    return {
+        "ts": moment.isoformat(timespec="milliseconds"),
+        "event_time": moment.isoformat(timespec="milliseconds"),
+        "event_type": "MESH_ACTIVELINK_SWITCH",
+        "context": "wmesh_active_link_switch",
+        "train_id": str(event.get("train_id") or ""),
+        "mr_id": str(event.get("device_uuid") or ""),
+        "mr_role": str(event.get("mr_role") or ""),
+        "old_ap_raw": old_raw,
+        "new_ap_raw": new_raw,
+        "old_ap_radio_mac": normalize_mac(old_radio) or "",
+        "new_ap_radio_mac": normalize_mac(new_radio) or "",
+        "old_ap_id": str(details.get("previous_peer_ap_id") or ""),
+        "new_ap_id": str(details.get("peer_ap_id") or ""),
+        "old_ap_name": str(
+            details.get("previous_peer_ap_name")
+            or event.get("previous_peer_name")
+            or ""
+        ),
+        "new_ap_name": str(details.get("peer_ap_name") or event.get("peer_name") or ""),
+        "old_ap_mac": normalize_mac(old_physical) or normalize_mac(old_raw) or "",
+        "new_ap_mac": normalize_mac(new_physical) or normalize_mac(new_raw) or "",
+        "old_station": str(details.get("previous_station") or ""),
+        "new_station": str(event.get("station") or ""),
+        "old_section": str(details.get("previous_section") or ""),
+        "new_section": str(event.get("section") or ""),
+        "identity_status": str(details.get("identity_status") or ""),
+        "identity_source": str(details.get("identity_source") or ""),
+        "identity_revision": _optional_int(details.get("identity_revision")) or 0,
+        "rssi_before": before["rssi"],
+        "rssi_before_time": before["timestamp"],
+        "rssi_before_delta_ms": before["delta_ms"],
+        "rssi_before_reason": before["reason"],
+        "rssi_after": after["rssi"],
+        "rssi_after_time": after["timestamp"],
+        "rssi_after_delta_ms": after["delta_ms"],
+        "rssi_after_reason": after["reason"],
+        "source": "MR Syslog / WMESH",
+        "syslog_event_id": event.get("id"),
+        "raw_file_id": str(event.get("raw_file_id") or ""),
+        "raw_line_number": _optional_int(event.get("raw_line_number")),
+        "source_sequence": _optional_int(details.get("source_receive_sequence")),
+    }
+
+
+def _nearest_wmesh_rssi(
+    candidates: list[dict[str, Any]],
+    *,
+    moment: datetime,
+    raw_mac: str,
+    radio_mac: str,
+    physical_mac: str,
+    side: str,
+    before: bool,
+) -> dict[str, Any]:
+    wanted = {
+        key
+        for value in (raw_mac, radio_mac, physical_mac)
+        if (key := _mac_key(value))
+    }
+    if not wanted:
+        return {
+            "rssi": None,
+            "timestamp": "",
+            "delta_ms": None,
+            "reason": "AP_IDENTITY_UNAVAILABLE",
+        }
+    nearest: tuple[float, datetime, float] | None = None
+    for event in candidates:
+        event_time = _wmesh_event_time(event)
+        if event_time is None:
+            continue
+        delta_seconds = (event_time - moment).total_seconds()
+        if (before and not -5 <= delta_seconds <= 0) or (
+            not before and not 0 <= delta_seconds <= 5
+        ):
+            continue
+        details = event.get("details") or {}
+        if not isinstance(details, Mapping):
+            details = {}
+        event_type = str(event.get("event_type") or "").upper()
+        samples: list[tuple[object, object]] = []
+        if event_type in {"MESH_LINKUP", "MESH_LINKDOWN"}:
+            samples.append((event.get("peer_mac") or details.get("peer_mac"), details.get("rssi")))
+        elif event_type == "MESH_ACTIVELINK_SWITCH":
+            samples.append((details.get(f"{side}_peer_mac"), details.get(f"{side}_rssi")))
+        for peer_mac, rssi in samples:
+            value = _optional_float(rssi)
+            if value is None or _mac_key(peer_mac) not in wanted:
+                continue
+            distance = abs(delta_seconds)
+            candidate = (distance, event_time, value)
+            if nearest is None or candidate[0] < nearest[0] or (
+                candidate[0] == nearest[0]
+                and ((before and candidate[1] > nearest[1]) or (not before and candidate[1] < nearest[1]))
+            ):
+                nearest = candidate
+    if nearest is None:
+        return {
+            "rssi": None,
+            "timestamp": "",
+            "delta_ms": None,
+            "reason": "NO_MATCHING_RSSI_SAMPLE",
+        }
+    _, timestamp, rssi = nearest
+    return {
+        "rssi": rssi,
+        "timestamp": timestamp.isoformat(timespec="milliseconds"),
+        "delta_ms": int((timestamp - moment).total_seconds() * 1000),
+        "reason": "",
+    }
+
+
+def _mac_key(value: object) -> str:
+    return (normalize_mac(value) or "").replace(":", "")
 
 
 def _optional_int(value: object) -> int | None:

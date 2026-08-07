@@ -73,15 +73,19 @@ class GroundApDisplayResolver:
         radio_mac: object = "",
     ) -> dict[str, object]:
         name_text = str(name or "").strip()
-        observed_key = normalize_mac_key(radio_mac) or normalize_mac_key(mac)
-        if not observed_key:
+        observed_keys = _observed_keys(mac, radio_mac)
+        if not observed_keys:
             return _unresolved_result(
                 name_text,
                 mac,
                 radio_mac,
                 reason="invalid_peer_mac",
             )
-        match = self._resolve_keys((observed_key,)).get(observed_key)
+        resolved = self._resolve_keys(observed_keys)
+        match = next(
+            (resolved[key] for key in observed_keys if resolved.get(key) and resolved[key].matched),
+            resolved.get(observed_keys[0]),
+        )
         if match is None:
             return _unresolved_result(
                 name_text,
@@ -159,9 +163,17 @@ class GroundApDisplayResolver:
                 "peer_radio_mac": normalize_mac(
                     details.get("peer_radio_mac") or details.get("new_peer_radio_mac")
                 ),
+                "peer_raw_mac": str(
+                    result.get("peer_mac") or details.get("new_peer_mac") or ""
+                ),
                 "previous_peer_radio_mac": normalize_mac(
                     details.get("previous_peer_radio_mac")
                     or details.get("old_peer_radio_mac")
+                ),
+                "previous_peer_raw_mac": str(
+                    result.get("previous_peer_mac")
+                    or details.get("old_peer_mac")
+                    or ""
                 ),
                 "previous_station": previous["station"],
                 "previous_section": previous["section"],
@@ -218,10 +230,15 @@ class GroundApDisplayResolver:
                 identity_revision=self.identity_revision,
             )
         try:
-            return self.query_service.resolve_peer_macs(
+            # WMESH peer observations can be a physical AP MAC, radio MAC or
+            # BSSID.  Use the Current-AP resolver so all registered aliases
+            # remain valid evidence and keep one batch/revision for a query.
+            batch = self.query_service.resolve_current_ap_macs(
                 keys,
                 ap_role="trackside",
             )
+            matches = getattr(batch, "matches", None)
+            return matches if isinstance(matches, Mapping) else batch
         except (sqlite3.Error, OSError, RuntimeError):
             return _unavailable_matches(
                 keys,
@@ -253,8 +270,12 @@ def normalize_mac(value: object) -> str:
 
 
 def _observed_keys(mac: object, radio_mac: object) -> tuple[str, ...]:
-    key = normalize_mac_key(radio_mac) or normalize_mac_key(mac)
-    return (key,) if key else ()
+    keys: list[str] = []
+    for value in (radio_mac, mac):
+        key = normalize_mac_key(value)
+        if key and key not in keys:
+            keys.append(key)
+    return tuple(keys)
 
 
 def _match_result(
@@ -282,7 +303,11 @@ def _match_result(
         "canonical_ap_mac": normalize_mac(match.effective_ap_mac),
         "station": match.station,
         "section": match.section,
-        "resolution_status": "RADIO_BSSID",
+        "resolution_status": (
+            "PHYSICAL_AP"
+            if match.matched_alias_type in {"ac_ap_mac", "base_ap_mac", "legacy_mac"}
+            else "RADIO_BSSID"
+        ),
         "resolution_rule": match.match_rule or match.matched_alias_type,
         "resolution_confidence": str(int(match.match_confidence or 0)),
         "identity_entity_id": match.matched_entity_id,

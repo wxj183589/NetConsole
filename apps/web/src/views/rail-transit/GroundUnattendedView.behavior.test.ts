@@ -21,6 +21,7 @@ const api = vi.hoisted(() => ({
   getGroundPingSeries: vi.fn(),
   getGroundPingSeriesIncremental: vi.fn(),
   getGroundSyslogTransportStatus: vi.fn(),
+  listGroundDeepCollectionRecords: vi.fn(),
   listGroundDeepCollections: vi.fn(),
   listGroundPingTargets: vi.fn(),
   listGroundRuns: vi.fn(),
@@ -320,6 +321,7 @@ beforeEach(() => {
   api.listGroundTrains.mockResolvedValue({ items: [], total: 0 })
   api.listGroundPingTargets.mockResolvedValue({ items: [], total: 0 })
   api.listGroundDeepCollections.mockResolvedValue({ items: [], total: 0 })
+  api.listGroundDeepCollectionRecords.mockResolvedValue({ collector: {}, records: [], next_cursor: '', has_more: false })
   api.listGroundTimeline.mockResolvedValue({ items: [], total: 0 })
   api.listGroundArchives.mockResolvedValue({ items: [], total: 0 })
   api.getGroundHealth.mockResolvedValue({ site_id: 'line-12', status: 'OK' })

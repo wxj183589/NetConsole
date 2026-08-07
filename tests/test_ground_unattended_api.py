@@ -1158,6 +1158,103 @@ def test_deep_collection_page_reuses_persisted_daily_queue_order(tmp_path) -> No
     assert by_id["train-a"].scheduling_priority == 2
 
 
+def test_deep_collection_running_requires_raw_evidence_and_reads_incrementally(
+    tmp_path,
+) -> None:
+    paths = PathResolver(tmp_path / "app", tmp_path / "data")
+    repository = GroundUnattendedRepository(
+        paths.ground_unattended_db_path("site-a"), site_id="site-a"
+    )
+    query = _DeepCollectionQuery()
+    supervisor = _Supervisor()
+    supervisor.deep_scheduler = SimpleNamespace(query_service=query)
+    service = GroundUnattendedApplicationService(
+        paths,
+        site_id="site-a",
+        repository=repository,
+        supervisor=supervisor,  # type: ignore[arg-type]
+    )
+    run = repository.create_or_get_run(
+        run_id="run-deep-evidence",
+        run_date="2026-07-25",
+        scheduled_start_at="2026-07-25T07:00:00+08:00",
+        scheduled_end_at="2026-07-25T23:00:00+08:00",
+    )
+    repository.upsert_train_state(
+        run["run_id"],
+        run["run_date"],
+        {
+            "train_id": "train-1",
+            "train_no": "01",
+            "deep_collection_eligible": True,
+            "coverage_status": "COLLECTING",
+            "endpoints": [
+                {
+                    "endpoint": "CT",
+                    "mr_id": "mr-ct",
+                    "management_ip": "192.0.2.10",
+                }
+            ],
+        },
+        ap_identity="ap-1",
+        same_ap_since="2026-07-25T08:00:00+08:00",
+    )
+    repository.save_deep_operation(
+        {
+            "operation_id": "operation-ct",
+            "site_id": "site-a",
+            "run_id": run["run_id"],
+            "train_id": "train-1",
+            "mr_id": "mr-ct",
+            "mr_position_code": "CT",
+            "session_id": "session-ct",
+            "state": "RUNNING",
+            "started_at": "2026-07-25T08:00:00+08:00",
+            "ended_at": "",
+            "stop_reason": "",
+            "error_summary": "",
+            "finalization_complete": 0,
+            "package_verified": 0,
+            "updated_at": "2026-07-25T08:00:00+08:00",
+        }
+    )
+
+    starting = service.deep_collections("site-a", run_id=run["run_id"]).items[0]
+    assert starting.deep_state == "STARTING"
+    assert starting.collectors[0].state == "STARTING"
+    assert starting.collectors[0].bytes_written == 0
+
+    query.size_bytes = 256
+    running = service.deep_collections("site-a", run_id=run["run_id"]).items[0]
+    assert running.deep_state == "RUNNING"
+    assert running.collectors[0].state == "RUNNING"
+    assert running.collectors[0].record_count is None
+
+    first = service.deep_collection_records(
+        "site-a",
+        run_id=run["run_id"],
+        train_id="train-1",
+        mr_role="CT",
+        category="RAW_OUTPUT",
+        limit=1,
+    )
+    assert [item.text for item in first.records] == ["first record"]
+    assert first.has_more is True
+    assert first.next_cursor
+
+    second = service.deep_collection_records(
+        "site-a",
+        run_id=run["run_id"],
+        train_id="train-1",
+        mr_role="CT",
+        category="RAW_OUTPUT",
+        cursor=first.next_cursor,
+        limit=1,
+    )
+    assert [item.text for item in second.records] == ["second record"]
+    assert second.has_more is False
+
+
 class _Supervisor:
     def __init__(self) -> None:
         self.requests = []
@@ -1179,6 +1276,42 @@ class _Supervisor:
     ):
         self.config_checks.append(
             (device_uuid, repair_enabled, allow_target_port_change)
+        )
+
+
+class _DeepCollectionQuery:
+    def __init__(self) -> None:
+        self.size_bytes = 0
+        self._lines = ["first record", "second record"]
+
+    @staticmethod
+    def get_session(*_args, **_kwargs):
+        return SimpleNamespace(status="RUNNING", error_message="")
+
+    def list_collectors(self, *_args, **_kwargs):
+        return [
+            SimpleNamespace(
+                name="mesh_link",
+                exists=True,
+                size_bytes=self.size_bytes,
+                updated_at="2026-07-25T08:00:10+08:00" if self.size_bytes else "",
+            )
+        ]
+
+    def read_log_chunk(self, _site_id, _session_id, source, *, cursor, limit):
+        lines = self._lines[cursor : cursor + limit] if source == "collector_output" else []
+        next_cursor = cursor + len(lines)
+        return SimpleNamespace(
+            next_cursor=next_cursor,
+            has_more=next_cursor < len(self._lines) if source == "collector_output" else False,
+            lines=[
+                SimpleNamespace(
+                    sequence=index,
+                    timestamp=f"2026-07-25T08:00:0{index + 1}+08:00",
+                    text=text,
+                )
+                for index, text in enumerate(lines, start=cursor)
+            ],
         )
 
 

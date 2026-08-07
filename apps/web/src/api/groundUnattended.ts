@@ -1,7 +1,7 @@
 import { ApiRequestError, apiRequest, getHealth } from './client'
 import type { BackendDownloadRequest } from '../../../desktop_electron/src/shared/bridge'
 import type {
-  GroundActionResponse, GroundArchive, GroundArchiveDetail, GroundDeepCollection, GroundPage, GroundPingTarget,
+  GroundActionResponse, GroundArchive, GroundArchiveDetail, GroundDeepCollection, GroundDeepCollectionRecordPage, GroundPage, GroundPingTarget,
   GroundProfile, GroundStatus, GroundTimelineEvent, GroundTrain, GroundHealth, GroundInventorySummary, GroundRawFile, GroundTrainPolicy,
   GroundOperation, GroundPingSeries, GroundPingSample, GroundRun, GroundSyslogRecord, GroundPagedResult,
   GroundSyslogDeleteAccepted, GroundSyslogDeletePreview, GroundSyslogDeletePreviewRequest,
@@ -83,6 +83,13 @@ export const deleteGroundRunHistory = (runId: string): Promise<GroundActionRespo
 export const listGroundPingTargets = (runId = '', options: RequestInit = {}): Promise<GroundPage<GroundPingTarget>> => {
   const query = runId ? `?run_id=${encodeURIComponent(runId)}` : ''
   return apiRequest(`${root}/ping-targets${query}`, options)
+}
+export const listGroundDeepCollectionRecords = (params: {
+  run_id?: string; train_id?: string; mr_id?: string; mr_role?: string; category?: string; keyword?: string; cursor?: string; limit?: number
+}, options: RequestInit = {}): Promise<GroundDeepCollectionRecordPage> => {
+  const query = new URLSearchParams()
+  Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== '') query.set(key, String(value)) })
+  return apiRequest(`${root}/deep-collections/records?${query}`, options)
 }
 export function getGroundPingSeries(params: {
   run_id?: string; train_id?: string; mr_id?: string; target_ip?: string; query_identity?: string; start_time?: string; end_time?: string
