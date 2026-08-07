@@ -40,6 +40,7 @@
 - 统一活动运行的 AP 位置、正线、Ping 与深采 Runtime Decision；AP 层 `UNKNOWN` 不再短路为非正线，已匹配且无特殊区域证据的 AP 按 `DEFAULT_MAINLINE` 纳入，车辆段、停车场、存车线和明确非主路径继续排除。列车列表和详情直接展示三类原因码/文案及决策 revision，历史资格快照保持兼容。
 - AP 切换事件只读取持久化的真实 `MESH_ACTIVELINK_SWITCH`，周期 Ping 位置上下文不再制造黄线；重复 provenance 合并，真实 flap 保留并仅在图形层按秒聚合。old/new Peer 在单批 Identity revision 中补齐物理 AP、站点和区间，Peer/Radio MAC 不再冒充物理 AP MAC。
 - 修复 WMESH 主链路切换只暴露新端 AP Identity 状态、导致时间轴显示“未知状态”且 Ping Tooltip 仍拼装另一套切换结果的问题；Timeline 与 Ping 现共用请求级 canonical Switch projector，批量解析 old/new 物理 AP、Radio/BSSID 与 alias，分别返回两端匹配/冲突/无端点状态及统一 revision。原始 Peer 切换事实始终保留，历史事件查询期只读补全，未命中不会猜测或丢弃事件。
+- 2026-08-07 本轮 WMESH 主链路切换人工验收通过：时间轴保留原始 old/new Peer 并显示明确的双端 AP Identity 状态，Ping 曲线黄色切换标记与时间轴使用一致的旧/新 AP、站点和区间结果；本次结论仅覆盖主链路切换双端身份展示，不代表地面无人值守全部现场流程完成验收。
 - 深采筛选改为按记录语义分类：WMESH 排除 `display clock`、时区、prompt 和普通 raw，RSSI 必须包含 MAC 与真实采样，Radio/Status 分别限制为 telemetry 和生命周期记录；筛选条件写入 cursor，切换筛选取消旧请求，暂停恢复从原 cursor 补拉。
 - CT/CW 深采会话按钮复用 Online MR 活动/历史分析页并提供缺失或导航失败反馈；深采表格和 Ping 图形浮窗使用 flex 可用空间与 `ResizeObserver` 响应最大化/恢复。Syslog 默认列顺序升级为 v2，保留用户自定义布局并迁移旧默认布局。
 
