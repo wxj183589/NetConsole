@@ -229,7 +229,53 @@ describe('Ground Ping chart lifecycle', () => {
     expect(markLine.data).toHaveLength(1)
     expect(markLine.data[0].transitions).toHaveLength(3)
     expect(markLine.label.formatter({ data: markLine.data[0] })).toBe('AP 切换 ×3')
-    expect(rttOptions.tooltip.formatter({ data: markLine.data[0] })).toContain('AP 主链路切换 ×3')
+    const tooltip = rttOptions.tooltip.formatter({ data: markLine.data[0] })
+    expect(tooltip).toContain('AP 主链路切换 ×3')
+    expect(tooltip).toContain('AP-A → AP-B')
+    wrapper.unmount()
+  })
+
+  it('shows the shared dual-endpoint identity evidence in switch tooltips', async () => {
+    const transitions = [{
+      event_id: 'switch-resolved',
+      run_id: 'run-1',
+      ts: '2026-07-28T08:00:00.100+08:00',
+      event_time: '2026-07-28T08:00:00.100+08:00',
+      event_type: 'MESH_ACTIVELINK_SWITCH',
+      context: 'wmesh_active_link_switch',
+      train_id: 'train-1',
+      mr_id: 'mr-ct',
+      mr_role: 'CT',
+      management_ip: '192.0.2.10',
+      old_ap_raw: 'bc5a-3457-5d00',
+      new_ap_raw: 'bc5a-3457-5f60',
+      old_ap_name: '象山贤庠-AP01',
+      new_ap_name: '大徐站-AP02',
+      old_ap_mac: 'bc:5a:34:57:5c:f0',
+      new_ap_mac: 'bc:5a:34:57:5f:50',
+      old_station: '象山贤庠',
+      new_station: '大徐站',
+      old_section: '象山贤庠-大徐站',
+      new_section: '大徐站-塘溪站',
+      old_ap_identity_status: 'MATCHED',
+      new_ap_identity_status: 'MATCHED',
+      identity_status: 'BOTH_MATCHED',
+      source: 'MR Syslog / WMESH',
+      source_type: 'SYSLOG',
+    }] as GroundPingSeries['ap_transitions']
+    const wrapper = mount(GroundPingChart, {
+      props: { series: { ...series, ap_transitions: transitions } },
+    })
+    await flushPromises()
+
+    const rttOptions = mocks.setOption.mock.calls[0]?.[0]
+    const content = rttOptions.tooltip.formatter({
+      data: rttOptions.series[0].markLine.data[0],
+    })
+    expect(content).toContain('AP 解析：两端已解析')
+    expect(content).toContain('象山贤庠-AP01 → 大徐站-AP02')
+    expect(content).toContain('bc:5a:34:57:5c:f0')
+    expect(content).toContain('象山贤庠-大徐站')
     wrapper.unmount()
   })
 

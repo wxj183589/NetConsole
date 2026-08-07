@@ -141,6 +141,9 @@ export interface GroundTimelineEvent {
   previous_peer_radio_mac: string; station: string; section: string; previous_station: string; previous_section: string
   rssi: number | null; previous_rssi: number | null; reason_code: string; reason_label: string; resolution_status: string
   ap_display: string; ap_transition_display: string; resolved_ap_name: string; previous_resolved_ap_name: string
+  old_ap_raw: string; new_ap_raw: string; old_ap_identity_status: string; new_ap_identity_status: string
+  old_match_source: string; new_match_source: string; old_match_rule: string; new_match_rule: string
+  old_identity_reason: string; new_identity_reason: string; identity_status: string; identity_source: string; identity_revision: number
   details: Record<string, unknown>
 }
 export interface GroundArchive {
@@ -184,10 +187,13 @@ export interface GroundApTransition {
   old_ap_raw: string; new_ap_raw: string; old_ap_radio_mac: string; new_ap_radio_mac: string
   old_ap_id: string; new_ap_id: string; old_ap_name: string; new_ap_name: string
   old_ap_mac: string; new_ap_mac: string; old_station: string; new_station: string
-  old_section: string; new_section: string; identity_status: string; identity_source: string; identity_revision: number
+  old_section: string; new_section: string; old_ap_identity_status: string; new_ap_identity_status: string
+  old_match_source: string; new_match_source: string; old_match_rule: string; new_match_rule: string
+  old_identity_reason: string; new_identity_reason: string; identity_status: string; identity_source: string; identity_revision: number
   rssi_before: number | null; rssi_before_time: string; rssi_before_delta_ms: number | null; rssi_before_reason: string
   rssi_after: number | null; rssi_after_time: string; rssi_after_delta_ms: number | null; rssi_after_reason: string
   source: string; source_type: string; source_event_id: number | string | null; syslog_event_id: number | string | null; raw_file_id: string; raw_line_number: number | null; source_sequence: number | null
+  details: Record<string, unknown>
 }
 export interface GroundQueryDiagnostics {
   request_id: string; requested_run_id: string; resolved_start_time: string; resolved_end_time: string

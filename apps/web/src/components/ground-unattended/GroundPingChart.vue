@@ -4,7 +4,7 @@ import type { EChartsType } from 'echarts/core'
 
 import type { GroundApTransition, GroundPingSample, GroundPingSeries } from '../../types/groundUnattended'
 import { readNetConsoleChartTokens, subscribeNetConsoleChartTheme } from '../../theme/echarts'
-import { groundTransitionContextLabel } from '../../views/rail-transit/groundUnattendedLabels'
+import { groundStatusLabel, groundTransitionContextLabel } from '../../views/rail-transit/groundUnattendedLabels'
 
 const props = withDefaults(defineProps<{
   series: GroundPingSeries | null
@@ -253,26 +253,37 @@ function tooltip(raw: unknown): string {
 
 function groupedTransitionTooltip(events: GroundApTransition[]): string {
   const rows = events.map((event) => {
-    const oldAp = event.old_ap_name || event.old_ap_raw || event.old_ap_mac || '未知 AP'
-    const newAp = event.new_ap_name || event.new_ap_raw || event.new_ap_mac || '未知 AP'
-    return `${escapeHtml(event.event_time || event.ts)}　${escapeHtml(oldAp)} → ${escapeHtml(newAp)}`
+    const oldAp = transitionEndpointLabel(event, 'old')
+    const newAp = transitionEndpointLabel(event, 'new')
+    return `${escapeHtml(event.event_time || event.ts)}　${escapeHtml(oldAp)} → ${escapeHtml(newAp)}　${escapeHtml(groundStatusLabel(event.identity_status))}`
   })
   return [`AP 主链路切换 ×${events.length}`, ...rows].join('<br/>')
 }
 
 function transitionTooltip(event: GroundApTransition): string {
-  const oldAp = event.old_ap_name || event.old_ap_raw || event.old_ap_mac || '未知 AP'
-  const newAp = event.new_ap_name || event.new_ap_raw || event.new_ap_mac || '未知 AP'
+  const oldAp = transitionEndpointLabel(event, 'old')
+  const newAp = transitionEndpointLabel(event, 'new')
   return [
     'AP 主链路切换',
     `时间：${escapeHtml(event.event_time || event.ts)}`,
     `列车 / MR：${escapeHtml(event.train_id || '未知')} / ${escapeHtml(event.mr_role || event.mr_id || '未知')}`,
     `切换：${escapeHtml(oldAp)} → ${escapeHtml(newAp)}`,
-    `站点：${escapeHtml(event.old_station || '未知')} → ${escapeHtml(event.new_station || '未知')}`,
+    `AP 解析：${escapeHtml(groundStatusLabel(event.identity_status))}`,
+    `原 AP 物理 MAC：${escapeHtml(event.old_ap_mac || '未解析')}`,
+    `当前 AP 物理 MAC：${escapeHtml(event.new_ap_mac || '未解析')}`,
+    `站点 / 区间：${escapeHtml(event.old_station || '未知')} / ${escapeHtml(event.old_section || '未知')} → ${escapeHtml(event.new_station || '未知')} / ${escapeHtml(event.new_section || '未知')}`,
     `切换前 RSSI：${formatRssiEvidence(event.rssi_before, event.rssi_before_delta_ms, event.rssi_before_reason)}`,
     `切换后 RSSI：${formatRssiEvidence(event.rssi_after, event.rssi_after_delta_ms, event.rssi_after_reason)}`,
     `来源：${escapeHtml(event.source || 'MR Syslog / WMESH')}`,
   ].join('<br/>')
+}
+
+function transitionEndpointLabel(event: GroundApTransition, side: 'old' | 'new'): string {
+  const status = side === 'old' ? event.old_ap_identity_status : event.new_ap_identity_status
+  if (status === 'NO_AP_ENDPOINT') return '无主链路'
+  return side === 'old'
+    ? event.old_ap_name || event.old_ap_raw || event.old_ap_radio_mac || event.old_ap_mac || '未解析 AP'
+    : event.new_ap_name || event.new_ap_raw || event.new_ap_radio_mac || event.new_ap_mac || '未解析 AP'
 }
 
 function formatRssiEvidence(value: number | null, deltaMs: number | null, reason: string): string {

@@ -189,8 +189,99 @@ class GroundApDisplayResolver:
                 "previous_resolved_radio_id": previous["resolved_radio_id"],
             }
         )
+        if str(result.get("event_type") or "").upper() == "MESH_ACTIVELINK_SWITCH":
+            details.update(
+                _switch_identity_summary(
+                    previous,
+                    current,
+                    old_endpoint_present=(
+                        not bool(details.get("old_active_link_missing"))
+                        and _has_endpoint(
+                            previous_mac,
+                            previous_radio_mac,
+                        )
+                    ),
+                    new_endpoint_present=_has_endpoint(
+                        current_mac,
+                        current_radio_mac,
+                    ),
+                )
+            )
         result["details"] = details
         return result
+
+    def project_switch(
+        self,
+        parsed: Mapping[str, Any],
+        *,
+        base: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Project one WMESH active-link switch with canonical old/new identity."""
+
+        source = dict(parsed)
+        source_details = dict(source.get("details") or {})
+        old_raw = str(
+            source.get("previous_peer_mac")
+            or source_details.get("old_peer_mac")
+            or ""
+        )
+        new_raw = str(
+            source.get("peer_mac") or source_details.get("new_peer_mac") or ""
+        )
+        enriched = self.enrich_parsed(source)
+        details = dict(enriched.get("details") or {})
+        old_status = str(details.get("old_ap_identity_status") or "NOT_FOUND")
+        new_status = str(details.get("new_ap_identity_status") or "NOT_FOUND")
+        projected = dict(base or {})
+        projected.update(
+            {
+                "old_ap_raw": old_raw,
+                "new_ap_raw": new_raw,
+                "old_ap_radio_mac": str(
+                    details.get("previous_peer_radio_mac") or ""
+                ),
+                "new_ap_radio_mac": str(details.get("peer_radio_mac") or ""),
+                "old_ap_id": str(details.get("previous_peer_ap_id") or ""),
+                "new_ap_id": str(details.get("peer_ap_id") or ""),
+                "old_ap_name": _switch_endpoint_name(
+                    details.get("previous_peer_ap_name"),
+                    old_status,
+                ),
+                "new_ap_name": _switch_endpoint_name(
+                    details.get("peer_ap_name"),
+                    new_status,
+                ),
+                "old_ap_mac": str(details.get("previous_peer_ap_mac") or ""),
+                "new_ap_mac": str(details.get("peer_ap_mac") or ""),
+                "old_station": str(details.get("previous_station") or ""),
+                "new_station": str(enriched.get("station") or ""),
+                "old_section": str(details.get("previous_section") or ""),
+                "new_section": str(enriched.get("section") or ""),
+                "old_ap_identity_status": old_status,
+                "new_ap_identity_status": new_status,
+                "old_match_source": str(details.get("old_match_source") or ""),
+                "new_match_source": str(details.get("new_match_source") or ""),
+                "old_match_rule": str(details.get("old_match_rule") or ""),
+                "new_match_rule": str(details.get("new_match_rule") or ""),
+                "old_identity_reason": str(
+                    details.get("old_identity_reason") or ""
+                ),
+                "new_identity_reason": str(
+                    details.get("new_identity_reason") or ""
+                ),
+                "identity_status": str(
+                    details.get("switch_identity_status") or "BOTH_NOT_FOUND"
+                ),
+                "identity_source": str(
+                    details.get("switch_identity_source") or ""
+                ),
+                "identity_revision": int(
+                    details.get("switch_identity_revision") or 0
+                ),
+                "details": details,
+            }
+        )
+        return projected
 
     def _resolve_keys(self, keys: Iterable[str]) -> dict[str, ApIdentityMatch]:
         compact_keys = tuple(
@@ -276,6 +367,99 @@ def _observed_keys(mac: object, radio_mac: object) -> tuple[str, ...]:
         if key and key not in keys:
             keys.append(key)
     return tuple(keys)
+
+
+def _has_endpoint(*values: object) -> bool:
+    return any(str(value or "").strip() for value in values)
+
+
+def _switch_endpoint_status(
+    endpoint: Mapping[str, object],
+    *,
+    endpoint_present: bool,
+) -> str:
+    if not endpoint_present or endpoint.get("identity_status") == "not_applicable":
+        return "NO_AP_ENDPOINT"
+    status = str(endpoint.get("identity_status") or "").casefold()
+    if status == "matched":
+        return "MATCHED"
+    if status == "ambiguous":
+        return "CONFLICT"
+    if str(endpoint.get("identity_reason") or "") == "invalid_peer_mac":
+        return "INVALID_MAC"
+    return "NOT_FOUND"
+
+
+def _switch_identity_status(old_status: str, new_status: str) -> str:
+    if old_status == "CONFLICT" and new_status == "CONFLICT":
+        return "BOTH_CONFLICT"
+    if old_status == "CONFLICT":
+        return "OLD_CONFLICT"
+    if new_status == "CONFLICT":
+        return "NEW_CONFLICT"
+    if "INVALID_MAC" in {old_status, new_status}:
+        return "INVALID_MAC"
+    if "NO_AP_ENDPOINT" in {old_status, new_status}:
+        return "NO_AP_ENDPOINT"
+    if old_status == "MATCHED" and new_status == "MATCHED":
+        return "BOTH_MATCHED"
+    if old_status == "MATCHED":
+        return "OLD_ONLY_MATCHED"
+    if new_status == "MATCHED":
+        return "NEW_ONLY_MATCHED"
+    return "BOTH_NOT_FOUND"
+
+
+def _switch_identity_summary(
+    previous: Mapping[str, object],
+    current: Mapping[str, object],
+    *,
+    old_endpoint_present: bool,
+    new_endpoint_present: bool,
+) -> dict[str, object]:
+    old_status = _switch_endpoint_status(
+        previous,
+        endpoint_present=old_endpoint_present,
+    )
+    new_status = _switch_endpoint_status(
+        current,
+        endpoint_present=new_endpoint_present,
+    )
+    sources = tuple(
+        dict.fromkeys(
+            str(value or "")
+            for value in (
+                previous.get("identity_source"),
+                current.get("identity_source"),
+            )
+            if str(value or "")
+        )
+    )
+    return {
+        "old_ap_identity_status": old_status,
+        "new_ap_identity_status": new_status,
+        "old_match_source": str(previous.get("identity_source") or ""),
+        "new_match_source": str(current.get("identity_source") or ""),
+        "old_match_rule": str(previous.get("resolution_rule") or ""),
+        "new_match_rule": str(current.get("resolution_rule") or ""),
+        "old_identity_reason": str(previous.get("identity_reason") or ""),
+        "new_identity_reason": str(current.get("identity_reason") or ""),
+        "switch_identity_status": _switch_identity_status(
+            old_status,
+            new_status,
+        ),
+        "switch_identity_source": "/".join(sources),
+        "switch_identity_revision": max(
+            int(previous.get("identity_revision") or 0),
+            int(current.get("identity_revision") or 0),
+        ),
+    }
+
+
+def _switch_endpoint_name(value: object, status: str) -> str:
+    if status == "NO_AP_ENDPOINT":
+        return "无主链路"
+    return str(value or "") if status == "MATCHED" else ""
 
 
 def _match_result(

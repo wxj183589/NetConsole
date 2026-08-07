@@ -1454,58 +1454,10 @@ class GroundUnattendedApplicationService:
         # realtime cache happens to cross a revision boundary.
         resolver = GroundApDisplayResolver(self.ap_identity_query_service)
         resolver.preload_parsed(parsed_rows)
-        projected: list[dict[str, Any]] = []
-        for row, parsed in zip(rows, parsed_rows, strict=True):
-            enriched = resolver.enrich_parsed(parsed)
-            details = dict(enriched.get("details") or {})
-            item = dict(row)
-            item.update(
-                {
-                    "old_ap_id": details.get("previous_peer_ap_id")
-                    or item.get("old_ap_id")
-                    or "",
-                    "new_ap_id": details.get("peer_ap_id")
-                    or item.get("new_ap_id")
-                    or "",
-                    "old_ap_name": details.get("previous_peer_ap_name")
-                    or item.get("old_ap_name")
-                    or "",
-                    "new_ap_name": details.get("peer_ap_name")
-                    or item.get("new_ap_name")
-                    or "",
-                    "old_ap_mac": details.get("previous_peer_ap_mac")
-                    or item.get("old_ap_mac")
-                    or "",
-                    "new_ap_mac": details.get("peer_ap_mac")
-                    or item.get("new_ap_mac")
-                    or "",
-                    "old_station": details.get("previous_station")
-                    or item.get("old_station")
-                    or "",
-                    "new_station": enriched.get("station")
-                    or item.get("new_station")
-                    or "",
-                    "old_section": details.get("previous_section")
-                    or item.get("old_section")
-                    or "",
-                    "new_section": enriched.get("section")
-                    or item.get("new_section")
-                    or "",
-                    "identity_status": details.get("identity_status")
-                    or item.get("identity_status")
-                    or "",
-                    "identity_source": details.get("identity_source")
-                    or item.get("identity_source")
-                    or "",
-                    "identity_revision": max(
-                        int(item.get("identity_revision") or 0),
-                        int(details.get("identity_revision") or 0),
-                        int(details.get("previous_identity_revision") or 0),
-                    ),
-                }
-            )
-            projected.append(item)
-        return projected
+        return [
+            resolver.project_switch(parsed, base=row)
+            for row, parsed in zip(rows, parsed_rows, strict=True)
+        ]
 
     def syslog_records(
         self,
@@ -2216,7 +2168,9 @@ class GroundUnattendedApplicationService:
             for endpoint in train.get("endpoints", [])
         }
         items = []
-        resolver = self._ap_display_resolver()
+        # A page query uses one resolver so every old/new endpoint is loaded
+        # in one batch and projected against one Identity revision.
+        resolver = GroundApDisplayResolver(self.ap_identity_query_service)
         parsed_rows = [
             {
                 "event_type": str(row.get("event_type") or "").upper(),
@@ -2245,23 +2199,65 @@ class GroundUnattendedApplicationService:
             train = train_by_id.get(train_id_value) or {}
             endpoint = endpoint_by_id.get(mr_id) or {}
             suffix = mr_id[-8:] if mr_id else ""
-            ap_display = resolver.enrich_parsed(parsed)
-            details = dict(ap_display.get("details") or details)
-            current_name = str(ap_display.get("peer_name") or "")
-            previous_name = str(
-                ap_display.get("previous_peer_name") or ""
-            )
             message = str(row.get("message") or "")
             event_kind = str(row.get("event_type") or "").casefold()
-            current_mac = str(ap_display.get("peer_mac") or "")
             if event_kind == "mesh_activelink_switch":
-                if details.get("old_active_link_missing"):
-                    previous_name = "无主链路"
-                message = (
-                    f"{previous_name or '未知 AP'} → "
-                    f"{current_name or '未知 AP'}"
+                switch = resolver.project_switch(parsed)
+                details = dict(switch.get("details") or details)
+                current_name = str(switch.get("new_ap_name") or "")
+                previous_name = str(switch.get("old_ap_name") or "")
+                current_mac = str(switch.get("new_ap_raw") or "")
+                current_station = str(switch.get("new_station") or "")
+                current_section = str(switch.get("new_section") or "")
+                previous_station = str(switch.get("old_station") or "")
+                previous_section = str(switch.get("old_section") or "")
+                previous_display = (
+                    previous_name
+                    or str(switch.get("old_ap_raw") or "")
+                    or str(switch.get("old_ap_radio_mac") or "")
+                    or "未知 AP"
                 )
-            elif event_kind in {"mesh_linkup", "mesh_linkdown"}:
+                current_display = (
+                    current_name
+                    or current_mac
+                    or str(switch.get("new_ap_radio_mac") or "")
+                    or "未知 AP"
+                )
+                raw_previous = (
+                    str(switch.get("old_ap_raw") or "")
+                    or str(switch.get("old_ap_radio_mac") or "")
+                    or previous_display
+                )
+                raw_current = (
+                    current_mac
+                    or str(switch.get("new_ap_radio_mac") or "")
+                    or current_display
+                )
+                raw_transition = f"{raw_previous} → {raw_current}"
+                resolved_transition = f"{previous_display} → {current_display}"
+                message_parts = [raw_transition]
+                if resolved_transition != raw_transition:
+                    message_parts.append(resolved_transition)
+                if previous_station or current_station:
+                    message_parts.append(
+                        f"{previous_station or '站点未知'} → "
+                        f"{current_station or '站点未知'}"
+                    )
+                message = " · ".join(message_parts)
+            else:
+                switch = {}
+                ap_display = resolver.enrich_parsed(parsed)
+                details = dict(ap_display.get("details") or details)
+                current_name = str(ap_display.get("peer_name") or "")
+                previous_name = str(ap_display.get("previous_peer_name") or "")
+                current_mac = str(ap_display.get("peer_mac") or "")
+                current_station = str(ap_display.get("station") or "")
+                current_section = str(ap_display.get("section") or "")
+                previous_station = str(details.get("previous_station") or "")
+                previous_section = str(details.get("previous_section") or "")
+                previous_display = previous_name or "未知 AP"
+                current_display = current_name or "未知 AP"
+            if event_kind in {"mesh_linkup", "mesh_linkdown"}:
                 parts = [current_name or current_mac or "未知 AP"]
                 if current_mac and current_mac.casefold() != current_name.casefold():
                     parts.append(current_mac)
@@ -2274,7 +2270,11 @@ class GroundUnattendedApplicationService:
                         f"原因：{details.get('reason_label') or details.get('reason_raw')}"
                     )
                 message = " · ".join(parts)
-            elif not message and current_name:
+            elif (
+                event_kind != "mesh_activelink_switch"
+                and not message
+                and current_name
+            ):
                 message = current_name
             items.append(
                 GroundTimelineEventDTO(
@@ -2300,30 +2300,40 @@ class GroundUnattendedApplicationService:
                     ),
                     title=row["title"],
                     message=message,
-                    peer_ap_id=str(details.get("peer_ap_id") or ""),
+                    peer_ap_id=str(
+                        switch.get("new_ap_id") or details.get("peer_ap_id") or ""
+                    ),
                     peer_ap_name=current_name,
-                    peer_ap_mac=str(details.get("peer_ap_mac") or ""),
+                    peer_ap_mac=str(
+                        switch.get("new_ap_mac")
+                        or details.get("peer_ap_mac")
+                        or ""
+                    ),
                     peer_radio_mac=str(
-                        details.get("peer_radio_mac") or ""
+                        switch.get("new_ap_radio_mac")
+                        or details.get("peer_radio_mac")
+                        or ""
                     ),
                     previous_peer_ap_id=str(
-                        details.get("previous_peer_ap_id") or ""
+                        switch.get("old_ap_id")
+                        or details.get("previous_peer_ap_id")
+                        or ""
                     ),
                     previous_peer_ap_name=previous_name,
                     previous_peer_ap_mac=str(
-                        details.get("previous_peer_ap_mac") or ""
+                        switch.get("old_ap_mac")
+                        or details.get("previous_peer_ap_mac")
+                        or ""
                     ),
                     previous_peer_radio_mac=str(
-                        details.get("previous_peer_radio_mac") or ""
+                        switch.get("old_ap_radio_mac")
+                        or details.get("previous_peer_radio_mac")
+                        or ""
                     ),
-                    station=str(ap_display.get("station") or ""),
-                    section=str(ap_display.get("section") or ""),
-                    previous_station=str(
-                        details.get("previous_station") or ""
-                    ),
-                    previous_section=str(
-                        details.get("previous_section") or ""
-                    ),
+                    station=current_station,
+                    section=current_section,
+                    previous_station=previous_station,
+                    previous_section=previous_section,
                     rssi=details.get("rssi", details.get("new_rssi")),
                     previous_rssi=details.get("old_rssi"),
                     reason_code=str(
@@ -2337,18 +2347,42 @@ class GroundUnattendedApplicationService:
                         or ""
                     ),
                     resolution_status=str(
-                        details.get("resolution_status") or ""
+                        switch.get("identity_status")
+                        or details.get("resolution_status")
+                        or ""
                     ),
                     ap_display=current_name,
                     ap_transition_display=(
-                        f"{previous_name or '未知 AP'} → "
-                        f"{current_name or '未知 AP'}"
+                        f"{previous_display} → {current_display}"
                         if str(row.get("event_type") or "").casefold()
                         == "mesh_activelink_switch"
                         else current_name
                     ),
                     resolved_ap_name=current_name,
                     previous_resolved_ap_name=previous_name,
+                    old_ap_raw=str(switch.get("old_ap_raw") or ""),
+                    new_ap_raw=str(switch.get("new_ap_raw") or ""),
+                    old_ap_identity_status=str(
+                        switch.get("old_ap_identity_status") or ""
+                    ),
+                    new_ap_identity_status=str(
+                        switch.get("new_ap_identity_status") or ""
+                    ),
+                    old_match_source=str(switch.get("old_match_source") or ""),
+                    new_match_source=str(switch.get("new_match_source") or ""),
+                    old_match_rule=str(switch.get("old_match_rule") or ""),
+                    new_match_rule=str(switch.get("new_match_rule") or ""),
+                    old_identity_reason=str(
+                        switch.get("old_identity_reason") or ""
+                    ),
+                    new_identity_reason=str(
+                        switch.get("new_identity_reason") or ""
+                    ),
+                    identity_status=str(switch.get("identity_status") or ""),
+                    identity_source=str(switch.get("identity_source") or ""),
+                    identity_revision=int(
+                        switch.get("identity_revision") or 0
+                    ),
                     details=details,
                 )
             )

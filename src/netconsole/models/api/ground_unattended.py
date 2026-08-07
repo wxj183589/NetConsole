@@ -770,6 +770,19 @@ class GroundTimelineEventDTO(ApiModel):
     ap_transition_display: str = ""
     resolved_ap_name: str = ""
     previous_resolved_ap_name: str = ""
+    old_ap_raw: str = ""
+    new_ap_raw: str = ""
+    old_ap_identity_status: str = ""
+    new_ap_identity_status: str = ""
+    old_match_source: str = ""
+    new_match_source: str = ""
+    old_match_rule: str = ""
+    new_match_rule: str = ""
+    old_identity_reason: str = ""
+    new_identity_reason: str = ""
+    identity_status: str = ""
+    identity_source: str = ""
+    identity_revision: int = 0
     details: dict[str, object] = Field(default_factory=dict)
 
 
@@ -964,6 +977,14 @@ class GroundMeshSwitchEventDTO(ApiModel):
     new_station: str = ""
     old_section: str = ""
     new_section: str = ""
+    old_ap_identity_status: str = ""
+    new_ap_identity_status: str = ""
+    old_match_source: str = ""
+    new_match_source: str = ""
+    old_match_rule: str = ""
+    new_match_rule: str = ""
+    old_identity_reason: str = ""
+    new_identity_reason: str = ""
     identity_status: str = ""
     identity_source: str = ""
     identity_revision: int = 0
@@ -982,6 +1003,7 @@ class GroundMeshSwitchEventDTO(ApiModel):
     raw_file_id: str = ""
     raw_line_number: int | None = None
     source_sequence: int | None = None
+    details: dict[str, object] = Field(default_factory=dict)
 
 
 class GroundPingSeriesDTO(ApiModel):

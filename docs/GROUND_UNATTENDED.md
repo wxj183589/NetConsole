@@ -25,12 +25,13 @@ fping 进程仍由统一 `ShutdownManager` 登记和回收，Online MR Worker �
 功能关闭时不创建无人值守 Repository 或 Supervisor；索引库初始化失败也只让本功能 API 返回结构化
 `GROUND_UNATTENDED_UNAVAILABLE`，不会阻断人工 Online MR 或整个 Backend 启动。
 
-WMESH Syslog 的 AP 展示身份统一通过 `ApIdentityQueryService` 查询。Peer、Radio MAC 和 BSSID
-使用 `resolve_peer_macs(ap_role="trackside")`，物理 AP MAC 本身不能作为 Peer 命中证据。历史查询
-按当前页 distinct MAC 批量预加载；实时 Receiver 缓存已经解析的 MAC，并以 Identity revision 为
-失效边界。实时记录在既有 `parsed_details` 中保存 entity ID、revision、状态、来源和原因；历史原始
-NDJSON 不改写，只在读取投影中补充当前身份。Ground 不再从基础资料和 AC 明细建立第二套
-AP/Radio/Alias 字典。
+WMESH Syslog 的 AP 展示身份统一通过 `ApIdentityQueryService` 查询。Current AP 和 WMESH old/new
+端点都可能是物理 AP MAC、Radio MAC、BSSID 或已登记 alias，统一使用
+`resolve_current_ap_macs(ap_role="trackside")` 做完整 48 位 MAC 精确解析；不使用名称、尾号、前缀、
+SQL `LIKE` 或 MAC 偏移猜测。历史查询按当前页 distinct old/new MAC 单批预加载，并在同一请求内固定
+Identity revision；实时 Receiver 缓存已经解析的 MAC，并以 Identity revision 为失效边界。实时记录
+在既有 `parsed_details` 中保存 entity ID、revision、状态、来源和原因；历史原始 NDJSON 不改写，只在
+读取投影中补充当前身份。Ground 不再从基础资料和 AC 明细建立第二套 AP/Radio/Alias 字典。
 
 ## 运行状态与查看上下文
 
@@ -208,6 +209,13 @@ Ping 曲线的黄色切换标记只来自索引库中持久化的真实
 Radio/BSSID Peer，固定同一 Identity revision，并按同 run、同 MR、同 CT/CW、同 AP、前后各 5 秒
 关联真实 RSSI。RSSI 保留采集源数值语义，不自动补负号或插值。图形仅把同一自然秒的多条真实事件
 聚合成 `AP 切换 xN`，底层事件不删除。
+
+时间轴和 Ping 曲线共用 `GroundApDisplayResolver.project_switch()` 生成 canonical Switch 投影，统一
+返回原始 old/new Peer、解析后的 AP ID/名称/物理 MAC、站点、区间、两端状态/来源/规则/原因和批次
+revision。聚合状态明确区分 `BOTH_MATCHED`、`OLD_ONLY_MATCHED`、`NEW_ONLY_MATCHED`、
+`BOTH_NOT_FOUND`、身份冲突、`INVALID_MAC` 与 `NO_AP_ENDPOINT`；任一端未解析或不存在都只影响展示，
+不会丢弃真实 Switch。时间轴保留原始 Peer 切换并追加解析后的 AP/站点，Ping Tooltip 使用同一投影，
+历史事件在查询时按当前可用 Identity 只读补全。
 
 页面“长 Ping”保留内容自适应、超限内部滚动的汇总表，曲线不再占用列表下方空间。点击“查看曲线”
 打开 Vue 内部非模态浮窗：没有遮罩，不锁定页面滚动，主页面仍可切换页签、筛选和查看其他列车；标题栏
