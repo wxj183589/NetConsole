@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, reactive, ref, watch } from 'vue'
-import { ElMessage } from 'element-plus'
+import { computed, h, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, reactive, ref, watch } from 'vue'
+import { ElMessage, ElTag } from 'element-plus'
 import { ApiRequestError } from '../../api/client'
 
 import {
@@ -269,6 +269,28 @@ const onlineStatusSummary = computed(() => {
     stationCount: status.scope_station_count ?? status.items.length,
   }
 })
+function onlineStatusOverallPresentation(status: TracksideApOnlineStatus): { label: string; tagType: 'success' | 'warning' } {
+  if (status.status === 'anomaly' || status.warning) return { label: '存在告警', tagType: 'warning' }
+  if (status.offline_count > 0) return { label: '存在离线', tagType: 'warning' }
+  return { label: '正常', tagType: 'success' }
+}
+function onlineStatusSummaryMethod({ columns }: { columns: Array<{ property: string }> }) {
+  const status = onlineStatus.value
+  return columns.map((column) => {
+    if (column.property === 'station_name') return '合计'
+    if (!status) return '—'
+    if (column.property === 'planned_ap_count') return String(status.planned_ap_count)
+    if (column.property === 'actual_online_count') return String(status.actual_online_count)
+    if (column.property === 'offline_count') return String(status.offline_count)
+    if (column.property === 'online_rate') return formatOnlineRate(status.online_rate)
+    if (column.property === 'status') {
+      const presentation = onlineStatusOverallPresentation(status)
+      return h(ElTag, { type: presentation.tagType }, presentation.label)
+    }
+    if (column.property === 'warning') return status.warning || '—'
+    return '—'
+  })
+}
 const snapshotStatusLabel = computed(() => {
   if (refreshing.value) return '更新中'
   if (!page.value) return initialLoading.value ? '更新中' : '暂无'
@@ -927,6 +949,8 @@ onBeforeUnmount(() => {
             :columns="onlineStatusColumns"
             :row-key="onlineStatusRowKey"
             height="100%"
+            :show-summary="Boolean(onlineStatus)"
+            :summary-method="onlineStatusSummaryMethod"
             empty-text="暂无站点上线数据"
           >
             <template #cell-online_rate="{ row }">{{ formatOnlineRate(row.online_rate) }}</template>
@@ -978,7 +1002,7 @@ onBeforeUnmount(() => {
 .online-overview{display:flex;min-width:0;flex:none;align-items:center;gap:14px;padding:8px 12px}.online-overview-heading{display:flex;flex:none;align-items:center;gap:8px;white-space:nowrap}.online-overview-heading strong{font-size:14px}.online-overview-heading .el-button{padding:0}.online-overview-metrics{display:flex;min-width:0;flex:1;align-items:center;justify-content:space-between;gap:14px;overflow-x:auto}.online-overview-metrics span{display:flex;align-items:baseline;gap:5px;white-space:nowrap}.online-overview-metrics small{color:var(--el-text-color-secondary);font-size:12px}.online-overview-metrics strong{font-size:16px;line-height:1.2}.online-status-error{max-width:220px;overflow:hidden;color:var(--el-color-danger);font-size:12px;text-overflow:ellipsis;white-space:nowrap}
 .diagnostic-summary{display:flex;min-width:0;flex:none;align-items:center;gap:10px;padding:6px 10px}.diagnostic-title{flex:none;font-size:13px}.diagnostic-items{display:flex;min-width:0;flex:1;align-items:center;gap:4px;overflow:hidden}.diagnostic-item{border:0;background:transparent;color:var(--el-text-color-secondary);cursor:pointer;font:inherit;font-size:12px;line-height:22px;padding:0 6px;white-space:nowrap}.diagnostic-item:not(:last-child)::after{content:'|';margin-left:10px;color:var(--el-border-color)}.diagnostic-item b{font-weight:600}.diagnostic-warning{color:var(--el-color-warning)}.diagnostic-danger{color:var(--el-color-danger)}.diagnostic-toggle{flex:none;padding:0;white-space:nowrap}
 .content-card{display:flex;min-height:0;min-width:0;flex:1;flex-direction:column;padding:10px 12px;overflow:hidden}.business-table-host{min-height:0;min-width:0;flex:1;overflow:hidden}.toolbar{flex:none;margin-bottom:8px}.toolbar .el-input{width:230px}.station-select{width:260px}.refresh-indicator{color:var(--el-color-primary);font-size:13px}.work-scope-filter-hint{color:var(--el-text-color-secondary);font-size:12px}.pagination{flex-wrap:wrap;padding-top:8px}.optical-normal{color:var(--el-color-success)}.optical-notice,.optical-warning{color:var(--el-color-warning)}.optical-alarm,.optical-link-abnormal,.optical-link-down,.optical-no-light,.optical-offline{color:var(--el-color-danger);font-weight:600}.optical-no-module,.optical-missing,.optical-skipped,.optical-not-collected,.optical-unknown{color:var(--el-text-color-secondary)}
-.online-status-dialog-meta{display:flex;flex:none;justify-content:space-between;gap:12px;color:var(--el-text-color-secondary);font-size:12px}.online-status-dialog-content{display:flex;min-width:0;min-height:0;flex:1;flex-direction:column;gap:10px}.online-status-summary{display:flex;min-width:0;flex:none;align-items:center;flex-wrap:wrap;gap:8px 14px;padding:8px 12px;background:var(--el-fill-color-light);border-radius:6px}.online-status-summary-title{font-size:13px}.online-status-summary span{display:flex;align-items:baseline;gap:5px;white-space:nowrap}.online-status-summary small{color:var(--el-text-color-secondary);font-size:12px}.online-status-summary b{font-size:14px}.online-status-summary-offline b{color:var(--el-color-warning)}.online-status-table-host{min-width:0;min-height:0;flex:1;overflow:hidden}:deep(.online-status-dialog){display:flex;box-sizing:border-box;width:min(1100px,94vw);height:min(680px,86vh);min-width:min(760px,94vw);min-height:min(460px,82vh);max-width:96vw;max-height:92vh;flex-direction:column;overflow:hidden;resize:both}:deep(.online-status-dialog .el-dialog__header){flex:none}:deep(.online-status-dialog .el-dialog__body){display:flex;min-width:0;min-height:0;flex:1;overflow:hidden}.source-warning details{display:grid;gap:4px;margin-top:6px}.source-warning summary{cursor:pointer}.source-warning details span{display:block}
+.online-status-dialog-meta{display:flex;flex:none;justify-content:space-between;gap:12px;color:var(--el-text-color-secondary);font-size:12px}.online-status-dialog-content{display:flex;min-width:0;min-height:0;flex:1;flex-direction:column;gap:10px}.online-status-summary{display:flex;min-width:0;flex:none;align-items:center;flex-wrap:wrap;gap:8px 14px;padding:8px 12px;background:var(--el-fill-color-light);border-radius:6px}.online-status-summary-title{font-size:13px}.online-status-summary span{display:flex;align-items:baseline;gap:5px;white-space:nowrap}.online-status-summary small{color:var(--el-text-color-secondary);font-size:12px}.online-status-summary b{font-size:14px}.online-status-summary-offline b{color:var(--el-color-warning)}.online-status-table-host{min-width:0;min-height:0;flex:1;overflow:hidden}:deep(.online-status-table-host .el-table__footer-wrapper){border-top:1px solid var(--el-border-color)}:deep(.online-status-table-host .el-table__footer-wrapper td.el-table__cell){background:var(--el-fill-color-light);font-weight:600}:deep(.online-status-table-host .el-table__footer-wrapper .el-tag){vertical-align:middle}:deep(.online-status-dialog){display:flex;box-sizing:border-box;width:min(1100px,94vw);height:min(680px,86vh);min-width:min(760px,94vw);min-height:min(460px,82vh);max-width:96vw;max-height:92vh;flex-direction:column;overflow:hidden;resize:both}:deep(.online-status-dialog .el-dialog__header){flex:none}:deep(.online-status-dialog .el-dialog__body){display:flex;min-width:0;min-height:0;flex:1;overflow:hidden}.source-warning details{display:grid;gap:4px;margin-top:6px}.source-warning summary{cursor:pointer}.source-warning details span{display:block}
 @media(max-width:1300px){.online-overview{align-items:flex-start;flex-direction:column;gap:6px}.online-overview-heading{width:100%;justify-content:space-between}.online-overview-metrics{width:100%;justify-content:flex-start}.diagnostic-items{overflow-x:auto}}
 @media(max-width:1000px){.page-heading{align-items:flex-start;flex-direction:column}.summary-grid{grid-template-columns:repeat(2,minmax(130px,1fr))}.content-card{padding:8px}.online-status-dialog-meta{align-items:flex-start;flex-direction:column;gap:4px}}
 </style>

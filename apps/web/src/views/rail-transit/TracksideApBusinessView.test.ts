@@ -224,6 +224,18 @@ function onlineStatus() {
   }
 }
 
+function onlineStatusColumnsForTest(): Array<{ property: string }> {
+  return [
+    'station_name',
+    'planned_ap_count',
+    'actual_online_count',
+    'offline_count',
+    'online_rate',
+    'status',
+    'warning',
+  ].map((property) => ({ property }))
+}
+
 function snapshotPage(revision = 'a'.repeat(64), pageNo = 1): TracksideApBusinessPage {
   return {
     ...page(rows.map((row, index) => ({ ...row, row_id: `row-${index + 1}` })), pageNo),
@@ -308,6 +320,8 @@ const NcDataTableStub = defineComponent({
     columns: { type: Array, default: () => [] },
     emptyText: String,
     height: String,
+    showSummary: Boolean,
+    summaryMethod: Function,
     tableId: String,
     rowKey: [String, Function],
     contextMenuItems: { type: Array, default: () => [] },
@@ -326,6 +340,7 @@ const NcDataTableStub = defineComponent({
         <slot name="cell-optical_severity" :row="row" />
         <slot name="cell-actions" :row="row" />
       </div>
+      <div v-if="showSummary" class="table-summary" data-testid="nc-data-table-summary" />
     </div>
   `,
 })
@@ -510,6 +525,8 @@ describe('TracksideApBusinessView mounted behavior', () => {
     )
     expect(detailTable?.props('data')).toEqual(onlineStatus().items)
     expect(detailTable?.props('height')).toBe('100%')
+    expect(detailTable?.props('showSummary')).toBe(true)
+    expect(wrapper.find('[data-table-id="trackside-ap-business-online-status"] [data-testid="nc-data-table-summary"]').exists()).toBe(true)
     expect(detailTable?.props('columns')).toEqual(expect.arrayContaining([
       expect.objectContaining({ key: 'station_name' }),
       expect.objectContaining({ key: 'planned_ap_count' }),
@@ -519,6 +536,64 @@ describe('TracksideApBusinessView mounted behavior', () => {
       expect.objectContaining({ key: 'status' }),
       expect.objectContaining({ key: 'warning' }),
     ]))
+    wrapper.unmount()
+  })
+
+  it('uses API global totals for the fixed station detail footer', async () => {
+    api.getTracksideApOnlineStatus.mockResolvedValue({
+      ...onlineStatus(),
+      planned_ap_count: 945,
+      actual_online_count: 932,
+      offline_count: 13,
+      online_rate: 98.6,
+    })
+    const wrapper = await mountView()
+
+    await button(wrapper, '查看站点明细').trigger('click')
+    await flushPromises()
+    const detailTable = wrapper.findAllComponents(NcDataTableStub).find(
+      (table) => table.props('tableId') === 'trackside-ap-business-online-status',
+    )
+    const summaryMethod = detailTable?.props('summaryMethod') as (input: {
+      columns: Array<{ property: string }>
+      data: unknown[]
+    }) => Array<string | { props?: { type?: string }; children?: string }>
+    const footer = summaryMethod({
+      columns: onlineStatusColumnsForTest(),
+      data: onlineStatus().items,
+    })
+
+    expect(footer.slice(0, 5)).toEqual(['合计', '945', '932', '13', '98.6%'])
+    expect(footer[5]).toMatchObject({ props: { type: 'warning' }, children: '存在离线' })
+    expect(footer[6]).toBe('—')
+    expect(summaryMethod({
+      columns: onlineStatusColumnsForTest().filter((column) => column.property !== 'warning'),
+      data: onlineStatus().items,
+    })).toHaveLength(6)
+    wrapper.unmount()
+  })
+
+  it('marks the station detail footer as normal when the global offline count is zero', async () => {
+    api.getTracksideApOnlineStatus.mockResolvedValue({
+      ...onlineStatus(),
+      actual_online_count: 992,
+      offline_count: 0,
+      online_rate: 100,
+    })
+    const wrapper = await mountView()
+
+    await button(wrapper, '查看站点明细').trigger('click')
+    await flushPromises()
+    const detailTable = wrapper.findAllComponents(NcDataTableStub).find(
+      (table) => table.props('tableId') === 'trackside-ap-business-online-status',
+    )
+    const summaryMethod = detailTable?.props('summaryMethod') as (input: {
+      columns: Array<{ property: string }>
+      data: unknown[]
+    }) => Array<string | { props?: { type?: string }; children?: string }>
+    const footer = summaryMethod({ columns: onlineStatusColumnsForTest(), data: onlineStatus().items })
+
+    expect(footer[5]).toMatchObject({ props: { type: 'success' }, children: '正常' })
     wrapper.unmount()
   })
 
