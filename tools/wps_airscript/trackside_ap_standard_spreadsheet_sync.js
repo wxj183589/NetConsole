@@ -3,8 +3,8 @@
 // The exact workbook API names are kept in these small helpers so a WPS
 // runtime upgrade does not change the NetConsole payload contract.
 const PROTOCOL_VERSION = 2;
-const SCRIPT_VERSION = "2.3.0-standard";
-const DEPLOYMENT_ID = "trackside-ap-standard-2.3.0";
+const SCRIPT_VERSION = "2.4.0-standard";
+const DEPLOYMENT_ID = "trackside-ap-standard-2.4.0";
 const DOCUMENT_ID = "549847228994";
 const TARGET_TYPE = "WPS_STANDARD_SPREADSHEET";
 const TARGET_CODE = "wps_standard_spreadsheet";
@@ -116,7 +116,7 @@ function findSheet(name) {
 function readBinding() {
   const sheet = findSheet(META_SHEET);
   if (!sheet) return null;
-  const values = sheet.Range("A1:B20").Value2;
+  const values = sheet.Range("A1:B30").Value2;
   const meta = {};
   for (const row of values || []) if (row && row[0]) meta[String(row[0])] = row[1];
   return meta.binding_id ? meta : null;
@@ -132,10 +132,32 @@ function writeBinding(args) {
     ["script_version", SCRIPT_VERSION], ["deployment_id", DEPLOYMENT_ID],
     ["first_bound_at", new Date().toISOString()], ["last_sync_at", ""],
     ["last_sync_revision", ""], ["last_target_batch_id", ""],
+    ["last_prepend_target_batch_id", ""],
   ];
   sheet.Range("A1").Resize(values.length, 2).Value2 = values;
   if ("Visible" in sheet) sheet.Visible = false;
   return Object.fromEntries(values);
+}
+
+function updateBindingMetadata(values) {
+  const sheet = findSheet(META_SHEET);
+  if (!sheet) throw new Error("binding metadata sheet not found");
+  const rows = sheet.Range("A1:B30").Value2 || [];
+  const positions = {};
+  for (let index = 0; index < rows.length; index += 1) {
+    const key = String(rows[index] && rows[index][0] || "");
+    if (key) positions[key] = index + 1;
+  }
+  let nextRow = Math.max(
+    1,
+    ...Object.values(positions).map((value) => Number(value) + 1),
+  );
+  for (const [key, value] of Object.entries(values || {})) {
+    const row = positions[key] || nextRow++;
+    if (!positions[key]) sheet.Range(`A${row}`).Value2 = key;
+    sheet.Range(`B${row}`).Value2 = value;
+  }
+  return readBinding();
 }
 
 function assertBinding(args) {
@@ -155,7 +177,7 @@ function assertBinding(args) {
 function updateBindingIdOnly(newBindingId) {
   const sheet = findSheet(META_SHEET);
   if (!sheet) throw new Error("binding metadata sheet not found");
-  const values = sheet.Range("A1:B20").Value2 || [];
+  const values = sheet.Range("A1:B30").Value2 || [];
   for (let index = 0; index < values.length; index += 1) {
     const row = values[index];
     if (!row || String(row[0] || "") !== "binding_id") continue;
@@ -220,6 +242,19 @@ function enumValue(group, name, fallback) {
   return enums && enums[group] && enums[group][name] !== undefined ? enums[group][name] : fallback;
 }
 
+function toWpsColor(value) {
+  const match = String(value || "").trim().match(/^#?([0-9a-f]{6})$/i);
+  if (!match) throw new Error(`invalid RGB color: ${String(value || "")}`);
+  const red = Number.parseInt(match[1].slice(0, 2), 16);
+  const green = Number.parseInt(match[1].slice(2, 4), 16);
+  const blue = Number.parseInt(match[1].slice(4, 6), 16);
+  if (typeof RGB === "function") return RGB(red, green, blue);
+  if (typeof Application !== "undefined" && typeof Application.RGB === "function") {
+    return Application.RGB(red, green, blue);
+  }
+  return red + green * 256 + blue * 65536;
+}
+
 function horizontalAlignment(value) {
   const names = {
     center: ["xlHAlignCenter", -4108],
@@ -281,7 +316,7 @@ function applyBorder(range, sideName, definition) {
   const style = borderDefinition(definition.style);
   border.LineStyle = style.lineStyle;
   border.Weight = style.weight;
-  if (definition.color) border.Color = definition.color;
+  if (definition.color) border.Color = toWpsColor(definition.color);
 }
 
 function applyFormatRun(sheet, run, warnings) {
@@ -295,7 +330,7 @@ function applyFormatRun(sheet, run, warnings) {
   if ("bold" in font) attemptFormat(warnings, sheet.Name, "font_bold", () => { range.Font.Bold = !!font.bold; });
   if ("italic" in font) attemptFormat(warnings, sheet.Name, "font_italic", () => { range.Font.Italic = !!font.italic; });
   if ("strike" in font) attemptFormat(warnings, sheet.Name, "font_strike", () => { range.Font.Strikethrough = !!font.strike; });
-  if (font.color) attemptFormat(warnings, sheet.Name, "font_color", () => { range.Font.Color = font.color; });
+  if (font.color) attemptFormat(warnings, sheet.Name, "font_color", () => { range.Font.Color = toWpsColor(font.color); });
   if (font.underline) {
     const underline = font.underline === "double"
       ? enumValue("XlUnderlineStyle", "xlUnderlineStyleDouble", -4119)
@@ -303,7 +338,7 @@ function applyFormatRun(sheet, run, warnings) {
     attemptFormat(warnings, sheet.Name, "font_underline", () => { range.Font.Underline = underline; });
   }
   const fill = run.fill || {};
-  if (fill.fg_color) attemptFormat(warnings, sheet.Name, "fill", () => { range.Interior.Color = fill.fg_color; });
+  if (fill.fg_color) attemptFormat(warnings, sheet.Name, "fill", () => { range.Interior.Color = toWpsColor(fill.fg_color); });
   if (run.number_format) attemptFormat(warnings, sheet.Name, "number_format", () => { range.NumberFormat = run.number_format; });
   const alignment = run.alignment || {};
   const horizontal = horizontalAlignment(alignment.horizontal);
@@ -375,9 +410,36 @@ function applySheetFormatting(sheet, sheetDto, warnings) {
   }
   for (const run of sheetDto.format_runs || []) applyFormatRun(sheet, run, warnings);
   applyFreezePanes(sheet, sheetDto.freeze_panes, warnings);
-  if (sheetDto.tab_color) attemptFormat(warnings, sheet.Name, "tab_color", () => { sheet.Tab.Color = sheetDto.tab_color; });
+  if (sheetDto.tab_color) attemptFormat(warnings, sheet.Name, "tab_color", () => { sheet.Tab.Color = toWpsColor(sheetDto.tab_color); });
   attemptFormat(warnings, sheet.Name, "sheet_visibility", () => { sheet.Visible = sheetDto.sheet_visible !== false; });
   return verifyKeyFormatting(sheet, sheetDto, warnings);
+}
+
+function shanghaiDateTime(value) {
+  const parsed = value ? new Date(value) : new Date();
+  const timestamp = Number.isNaN(parsed.getTime()) ? Date.now() : parsed.getTime();
+  const shifted = new Date(timestamp + 8 * 60 * 60 * 1000);
+  const pad = (part) => String(part).padStart(2, "0");
+  const date = `${shifted.getUTCFullYear()}-${pad(shifted.getUTCMonth() + 1)}-${pad(shifted.getUTCDate())}`;
+  const time = `${pad(shifted.getUTCHours())}:${pad(shifted.getUTCMinutes())}:${pad(shifted.getUTCSeconds())}`;
+  return { date, dateTime: `${date} ${time}` };
+}
+
+function materializeRuntimeSheet(sheetDto, args, targetSyncTime) {
+  const syncMode = sheetDto.sync_mode === "PREPEND_SNAPSHOT"
+    ? "APPEND_SNAPSHOT"
+    : sheetDto.sync_mode;
+  if (sheetDto.logical_sheet_key !== "ap_online_history_overview") {
+    return syncMode === sheetDto.sync_mode ? sheetDto : { ...sheetDto, sync_mode: syncMode };
+  }
+  const cells = (sheetDto.cells || []).map((row) => Array.isArray(row) ? [...row] : []);
+  while (cells.length < 2) cells.push([]);
+  const width = Math.max(Number(sheetDto.column_count) || 0, cells[0].length, cells[1].length, 1);
+  while (cells[0].length < width) cells[0].push(null);
+  while (cells[1].length < width) cells[1].push(null);
+  cells[0][0] = `日期：${shanghaiDateTime(args.snapshot_generated_at).date}`;
+  cells[1][0] = `更新时间：${targetSyncTime}`;
+  return { ...sheetDto, sync_mode: syncMode, cells };
 }
 
 function writeSheet(sheetDto, warnings) {
@@ -447,6 +509,33 @@ function reorderBusinessSheets(sheetDtos) {
   return verifyBusinessSheetOrder(expected);
 }
 
+function writeAndVerifySheetTabColor(sheet, color) {
+  if (!sheet || !sheet.Tab) throw new Error("Sheet.Tab API unavailable");
+  const expected = toWpsColor(color);
+  sheet.Tab.Color = expected;
+  const actual = sheet.Tab.Color;
+  return {
+    verified: Number(actual) === Number(expected),
+    expected,
+    actual,
+  };
+}
+
+function applyBusinessSheetTabColors(sheetDtos, warnings) {
+  let applied = 0;
+  for (const sheetDto of sheetDtos || []) {
+    if (!sheetDto.tab_color) continue;
+    const sheet = findSheet(sheetDto.sheet_name);
+    if (!sheet) continue;
+    const success = attemptFormat(warnings, sheet.Name, "sheet_tab_color", () => {
+      const verification = writeAndVerifySheetTabColor(sheet, sheetDto.tab_color);
+      if (!verification.verified) throw new Error("Sheet.Tab.Color readback mismatch");
+    });
+    if (success) applied += 1;
+  }
+  return applied;
+}
+
 function manageSystemSheets(expectedBusinessOrder, warnings) {
   const systemNames = sheetNames().filter(isSystemSheetName);
   for (const name of systemNames) {
@@ -481,6 +570,9 @@ function sync(payload) {
   const binding = assertBinding(args);
   if (!binding.ok) return binding.error;
   const sheets = args.workbook && args.workbook.sheets ? args.workbook.sheets : [];
+  const targetSyncTime = shanghaiDateTime(new Date()).dateTime;
+  const repeatedPrependBatch = Boolean(args.target_batch_id)
+    && String(binding.meta.last_prepend_target_batch_id || "") === String(args.target_batch_id);
   let writtenRows = 0;
   let writtenSheets = 0;
   const formatWarnings = [];
@@ -488,12 +580,22 @@ function sync(payload) {
   const formatMirrorEnabled = FORMAT_MIRROR_EXPERIMENTAL && args.format_mirror_experimental === true;
   try {
     for (const sheet of sheets) {
-      const result = formatMirrorEnabled
-        ? writeSheet(sheet, formatWarnings)
-        : writeStableSheet(sheet);
+      const runtimeSheet = materializeRuntimeSheet(sheet, args, targetSyncTime);
+      const skipRepeatedPrepend = repeatedPrependBatch
+        && sheet.sync_mode === "PREPEND_SNAPSHOT";
+      const result = skipRepeatedPrepend
+        ? { written_rows: 0, format_verification: { checked: false }, deduplicated: true }
+        : formatMirrorEnabled
+          ? writeSheet(runtimeSheet, formatWarnings)
+          : writeStableSheet(runtimeSheet);
+      if (!skipRepeatedPrepend && sheet.sync_mode === "PREPEND_SNAPSHOT") {
+        binding.meta = updateBindingMetadata({
+          last_prepend_target_batch_id: String(args.target_batch_id || ""),
+        });
+      }
       writtenRows += result.written_rows;
       writtenSheets += 1;
-      sheetResults.push({ sheet_name: sheet.sheet_name, sync_mode: sheet.sync_mode, success: true, written_rows: result.written_rows, format_verification: result.format_verification });
+      sheetResults.push({ sheet_name: sheet.sheet_name, sync_mode: sheet.sync_mode, success: true, written_rows: result.written_rows, deduplicated: !!result.deduplicated, format_verification: result.format_verification });
     }
   } catch (error) {
     return response({ success: false, error_code: "WPS_SHEET_WRITE_FAILED", failed_sheet: sheets[writtenSheets] && sheets[writtenSheets].sheet_name || "", failed_operation: "WRITE_VALUES", written_sheet_count: writtenSheets, written_row_count: writtenRows, message: String(error && error.message || error).slice(0, 500), runtime_error_name: String(error && error.name || "Error"), runtime_error_stack: String(error && error.stack || "").slice(0, 2048), binding_status: "BOUND" });
@@ -515,8 +617,20 @@ function sync(payload) {
   if (!sheetOrderVerification.verified) {
     return response({ success: false, error_code: "WPS_SHEET_ORDER_VERIFY_FAILED", failed_operation: "VERIFY_BUSINESS_SHEET_ORDER", written_sheet_count: writtenSheets, written_row_count: writtenRows, sheet_order_verified: false, expected_sheet_order: sheetOrderVerification.expected, actual_sheet_order: sheetOrderVerification.actual, message: "WPS 业务 Sheet 顺序与本地导出工作簿不一致", binding_status: "BOUND" });
   }
+  const appliedTabColorCount = args.sheet_tab_color_enabled === true
+    ? applyBusinessSheetTabColors(sheets, formatWarnings)
+    : 0;
+  try {
+    binding.meta = updateBindingMetadata({
+      last_sync_at: new Date().toISOString(),
+      last_sync_revision: String(args.snapshot_revision || ""),
+      last_target_batch_id: String(args.target_batch_id || ""),
+    });
+  } catch (error) {
+    addFormatWarning(formatWarnings, META_SHEET, "sync_metadata", error);
+  }
   const publicWarnings = formatWarnings.map(({ key, ...warning }) => warning);
-  return response({ success: true, status: publicWarnings.length ? "SUCCESS_WITH_WARNINGS" : "SUCCESS", ...bindingDiagnostics(args, binding.meta), parent_batch_id: args.parent_batch_id, target_batch_id: args.target_batch_id, site_id: args.site_id, site_name: args.site_name, business_key: args.business_key, snapshot_revision: args.snapshot_revision, snapshot_sha256: args.snapshot_sha256, written_sheet_count: writtenSheets, written_row_count: writtenRows, written_object_count: sheets.length, sheet_order_verified: true, expected_sheet_order: sheetOrderVerification.expected, actual_sheet_order: sheetOrderVerification.actual, ...systemSheetResult, format_mirror_experimental: formatMirrorEnabled, format_warning_count: publicWarnings.length, format_warnings: publicWarnings, sheets: sheetResults });
+  return response({ success: true, status: publicWarnings.length ? "SUCCESS_WITH_WARNINGS" : "SUCCESS", ...bindingDiagnostics(args, binding.meta), parent_batch_id: args.parent_batch_id, target_batch_id: args.target_batch_id, site_id: args.site_id, site_name: args.site_name, business_key: args.business_key, snapshot_revision: args.snapshot_revision, snapshot_sha256: args.snapshot_sha256, target_sync_executed_at: targetSyncTime, idempotent_prepend_replay: repeatedPrependBatch, written_sheet_count: writtenSheets, written_row_count: writtenRows, written_object_count: sheets.length, sheet_order_verified: true, expected_sheet_order: sheetOrderVerification.expected, actual_sheet_order: sheetOrderVerification.actual, ...systemSheetResult, sheet_tab_color_enabled: args.sheet_tab_color_enabled === true, applied_tab_color_count: appliedTabColorCount, format_mirror_experimental: formatMirrorEnabled, format_warning_count: publicWarnings.length, format_warnings: publicWarnings, sheets: sheetResults });
 }
 
 function sheetIsHidden(value) {
@@ -695,6 +809,31 @@ function sheetOrderProbe(args) {
   }
 }
 
+function sheetTabColorProbe(args) {
+  const sheetName = "_NetConsoleSyncTest";
+  const color = "#C6EFCE";
+  try {
+    const sheet = ensureSheet(sheetName);
+    const verification = writeAndVerifySheetTabColor(sheet, color);
+    if ("Visible" in sheet) sheet.Visible = false;
+    return response({
+      success: verification.verified,
+      status: verification.verified ? "SUCCESS" : "FAILED",
+      error_code: verification.verified ? "" : "WPS_SHEET_TAB_COLOR_VERIFY_FAILED",
+      message: verification.verified ? "Sheet 标签颜色探针通过" : "Sheet 标签颜色写后读回不一致",
+      ...bindingDiagnostics(args),
+      sheet_tab_color_verified: verification.verified,
+      expected_tab_color: color,
+      expected_tab_color_value: verification.expected,
+      actual_tab_color: verification.actual,
+      probe_sheet: sheetName,
+      probe_id: args.probe_id,
+    });
+  } catch (error) {
+    return response({ success: false, status: "FAILED", error_code: "WPS_SHEET_TAB_COLOR_VERIFY_FAILED", failed_operation: "SHEET_TAB_COLOR_PROBE", message: String(error && error.message || error).slice(0, 500), runtime_error_name: String(error && error.name || "Error"), runtime_error_stack: String(error && error.stack || "").slice(0, 2048), ...bindingDiagnostics(args), sheet_tab_color_verified: false, expected_tab_color: color, actual_tab_color: "", probe_sheet: sheetName, probe_id: args.probe_id });
+  }
+}
+
 function syncTestSheet(args) {
   const sheet = ensureSheet("_NetConsoleSyncTest");
   const values = [["operation", "probe_id", "status"], ["sync_test_sheet", String(args.probe_id || ""), "OK"]];
@@ -716,6 +855,7 @@ function main() {
   if (args.operation === "migrate_legacy_binding") return migrateLegacyBinding(args);
   if (args.operation === "runtime_write_probe") return runtimeWriteProbe(args);
   if (args.operation === "sheet_order_probe") return sheetOrderProbe(args);
+  if (args.operation === "sheet_tab_color_probe") return sheetTabColorProbe(args);
   if (args.operation === "sync_test_sheet") return syncTestSheet(args);
   if (args.operation === "sync_trackside_ap_business") return sync(args);
   return response({ success: false, error_code: "OPERATION_UNSUPPORTED", message: "unsupported operation" });

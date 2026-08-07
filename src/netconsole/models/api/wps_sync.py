@@ -36,6 +36,7 @@ class WpsSyncTargetDTO(ApiModel):
     runtime_probe_diagnostic: dict[str, Any] = Field(default_factory=dict)
     sync_test_diagnostic: dict[str, Any] = Field(default_factory=dict)
     sheet_order_probe_diagnostic: dict[str, Any] = Field(default_factory=dict)
+    sheet_tab_color_probe_diagnostic: dict[str, Any] = Field(default_factory=dict)
     remote_script_version: str = ""
     remote_deployment_id: str = ""
     remote_script_id: str = ""

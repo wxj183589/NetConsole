@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from ipaddress import ip_address
 from pathlib import Path
@@ -32,7 +33,10 @@ from netconsole.parsers.h3c.ac.state_mapper import (
     normalize_fit_ap_state_token,
 )
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
-from netconsole.services.ap_online_overview import AP_ONLINE_OVERVIEW_COLUMNS, write_ap_online_overview_sheet
+from netconsole.services.ap_online_overview import (
+    AP_ONLINE_OVERVIEW_COLUMNS,
+    overview_row_fill,
+)
 from netconsole.services.offline_ap_ledger import (
     OFFLINE_AP_LEDGER_COLUMNS,
     OFFLINE_AP_STATS_COLUMNS,
@@ -324,6 +328,101 @@ TRACKSIDE_EXPORT_WARNING_FILL = TRACKSIDE_OPTICAL_COLOR_RGB["warning"]
 TRACKSIDE_EXPORT_ALARM_FILL = TRACKSIDE_OPTICAL_COLOR_RGB["alarm"]
 CURRENT_OPTICAL_ABNORMAL_SHEET_TITLE = "当前异常光衰"
 CURRENT_OPTICAL_ABNORMAL_EMPTY_TEXT = "当前无异常光衰（已排除无 AP 绑定、无光模块和非告警光功率）"
+
+
+@dataclass(frozen=True)
+class TracksideApBusinessSheetDefinition:
+    stable_key: str
+    sheet_name: str
+    order: int
+    sync_mode: str = "FULL_REPLACE"
+    tab_color: str = ""
+
+
+TRACKSIDE_AP_BUSINESS_SHEET_DEFINITIONS = (
+    TracksideApBusinessSheetDefinition(
+        "ap_online_history_overview",
+        "AP上线情况概览",
+        10,
+        sync_mode="PREPEND_SNAPSHOT",
+        tab_color="#C6EFCE",
+    ),
+    TracksideApBusinessSheetDefinition(
+        "trackside_ap_business",
+        "轨旁AP业务",
+        20,
+        tab_color="#C6EFCE",
+    ),
+    TracksideApBusinessSheetDefinition(
+        "current_optical_abnormal",
+        CURRENT_OPTICAL_ABNORMAL_SHEET_TITLE,
+        30,
+        tab_color="#FFEB9C",
+    ),
+    TracksideApBusinessSheetDefinition(
+        "ap_optical_treatment_records",
+        "AP光衰处理记录",
+        40,
+        tab_color="#DDEBF7",
+    ),
+    TracksideApBusinessSheetDefinition(
+        "ap_offline_status",
+        "AP离线情况",
+        50,
+        tab_color="#D9D9D9",
+    ),
+    TracksideApBusinessSheetDefinition(
+        "ap_offline_ledger",
+        "AP离线台账",
+        60,
+        tab_color="#D9D9D9",
+    ),
+    TracksideApBusinessSheetDefinition(
+        "newly_online_ap_overview",
+        "新增上线AP概览",
+        70,
+    ),
+    TracksideApBusinessSheetDefinition(
+        "unmatched_online_ap",
+        "待关联在线AP",
+        80,
+    ),
+    TracksideApBusinessSheetDefinition(
+        "switch_optical_module_summary",
+        "交换机光模块统计",
+        90,
+    ),
+)
+_TRACKSIDE_AP_BUSINESS_SHEETS_BY_NAME = {
+    definition.sheet_name: definition
+    for definition in TRACKSIDE_AP_BUSINESS_SHEET_DEFINITIONS
+}
+
+
+def trackside_ap_business_sheet_definition(
+    sheet_name: str,
+) -> TracksideApBusinessSheetDefinition | None:
+    return _TRACKSIDE_AP_BUSINESS_SHEETS_BY_NAME.get(str(sheet_name or ""))
+
+
+@dataclass(frozen=True)
+class ApOnlineHistoryBlockDTO:
+    snapshot_date: str
+    updated_at: str
+    headers: tuple[str, ...]
+    rows: tuple[tuple[object, ...], ...]
+
+    def cells(self) -> list[list[object | None]]:
+        width = len(self.headers)
+        return [
+            [f"日期：{self.snapshot_date}", *([None] * max(width - 1, 0))],
+            [f"更新时间：{self.updated_at}", *([None] * max(width - 1, 0))],
+            list(self.headers),
+            *[list(row) for row in self.rows],
+            [None] * width,
+        ]
+
+
 class TracksideApExportCancelled(RuntimeError):
     """Raised when a trackside AP export is cancelled."""
 
@@ -2275,6 +2374,59 @@ def _raise_if_trackside_export_cancelled(should_cancel) -> None:
         raise TracksideApExportCancelled("导出已取消")
 
 
+_SHANGHAI_TIMEZONE = timezone(timedelta(hours=8), name="Asia/Shanghai")
+
+
+def _shanghai_datetime(value: str | datetime | None) -> datetime:
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        text = str(value or "").strip().replace("Z", "+00:00")
+        try:
+            parsed = datetime.fromisoformat(text) if text else datetime.now(_SHANGHAI_TIMEZONE)
+        except ValueError:
+            parsed = datetime.now(_SHANGHAI_TIMEZONE)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=_SHANGHAI_TIMEZONE)
+    return parsed.astimezone(_SHANGHAI_TIMEZONE)
+
+
+def build_ap_online_history_block(
+    rows: list[dict[str, object | None]],
+    columns: tuple[tuple[str, str], ...],
+    headers: list[str],
+    *,
+    snapshot_generated_at: str | datetime | None,
+    updated_at: str | datetime | None,
+) -> ApOnlineHistoryBlockDTO:
+    snapshot_time = _shanghai_datetime(snapshot_generated_at)
+    update_time = _shanghai_datetime(updated_at)
+    values = tuple(
+        tuple(
+            str(row.get(field)) if row.get(field) not in (None, "") else "-"
+            for _key, field in columns
+        )
+        for row in rows
+    )
+    return ApOnlineHistoryBlockDTO(
+        snapshot_date=snapshot_time.strftime("%Y-%m-%d"),
+        updated_at=update_time.strftime("%Y-%m-%d %H:%M:%S"),
+        headers=tuple(headers),
+        rows=values,
+    )
+
+
+def _apply_trackside_workbook_registry(workbook) -> None:
+    for target_index, definition in enumerate(TRACKSIDE_AP_BUSINESS_SHEET_DEFINITIONS):
+        if definition.sheet_name not in workbook.sheetnames:
+            continue
+        sheet = workbook[definition.sheet_name]
+        current_index = workbook.worksheets.index(sheet)
+        workbook.move_sheet(sheet, offset=target_index - current_index)
+        if definition.tab_color:
+            sheet.sheet_properties.tabColor = definition.tab_color.lstrip("#")
+
+
 def export_trackside_ap_business_xlsx(
     path: Path,
     rows: list[dict[str, object | None]],
@@ -2302,6 +2454,8 @@ def export_trackside_ap_business_xlsx(
     progress_callback=None,
     should_cancel=None,
     current_optical_abnormal_headers: list[str] | None = None,
+    snapshot_generated_at: str | datetime | None = None,
+    export_updated_at: str | datetime | None = None,
 ) -> None:
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -2378,6 +2532,8 @@ def export_trackside_ap_business_xlsx(
         ap_online_overview_columns,
         ap_online_overview_headers,
         header_fill,
+        snapshot_generated_at=snapshot_generated_at,
+        updated_at=export_updated_at,
     )
     log_write_phase("write_ap_online_overview_sheet", phase_start, rows=len(ap_online_overview_rows or []))
     _raise_if_trackside_export_cancelled(should_cancel)
@@ -2435,7 +2591,7 @@ def export_trackside_ap_business_xlsx(
         phase_start = perf_counter()
         stats_sheet = workbook.create_sheet("AP\u79bb\u7ebf\u60c5\u51b5")
         write_offline_ap_stats_sheet(stats_sheet, offline_ap_stats, offline_ap_stats_headers or [key for key, _field in OFFLINE_AP_STATS_COLUMNS])
-        ledger_sheet = workbook.create_sheet("\u79bb\u7ebfAP\u53f0\u8d26")
+        ledger_sheet = workbook.create_sheet("AP\u79bb\u7ebf\u53f0\u8d26")
         display_ledger_rows = [
             {
                 **row,
@@ -2460,9 +2616,27 @@ def export_trackside_ap_business_xlsx(
     _raise_if_trackside_export_cancelled(should_cancel)
     _emit_trackside_export_progress(progress_callback, "style_autofit", 0, len(workbook.worksheets), "正在设置样式和列宽")
     phase_start = perf_counter()
+    _apply_trackside_workbook_registry(workbook)
     for worksheet in workbook.worksheets:
-        _format_export_sheet(worksheet, alignment, border, header_font, header_fill)
-        worksheet.auto_filter.ref = worksheet.dimensions
+        definition = trackside_ap_business_sheet_definition(worksheet.title)
+        header_row = 3 if definition and definition.stable_key == "ap_online_history_overview" else 1
+        _format_export_sheet(
+            worksheet,
+            alignment,
+            border,
+            header_font,
+            header_fill,
+            header_row=header_row,
+        )
+        if header_row == 1:
+            worksheet.auto_filter.ref = worksheet.dimensions
+        else:
+            from openpyxl.utils import get_column_letter
+
+            last_data_row = max(header_row, worksheet.max_row - 1)
+            worksheet.auto_filter.ref = (
+                f"A{header_row}:{get_column_letter(worksheet.max_column)}{last_data_row}"
+            )
         apply_worksheet_autofit(worksheet, maximum=60)
     _set_switch_optical_summary_widths(workbook)
     log_write_phase("autofit_sheets", phase_start, sheets=len(workbook.worksheets))
@@ -3186,14 +3360,22 @@ def _is_missing_display(value: object) -> bool:
     return str(value or "").strip() in {"", "-"}
 
 
-def _format_export_sheet(sheet, alignment, border, header_font, header_fill=None) -> None:
-    sheet.freeze_panes = "A2"
+def _format_export_sheet(
+    sheet,
+    alignment,
+    border,
+    header_font,
+    header_fill=None,
+    *,
+    header_row: int = 1,
+) -> None:
+    sheet.freeze_panes = f"A{header_row + 1}"
     for row in sheet.iter_rows():
-        sheet.row_dimensions[row[0].row].height = 24 if row[0].row == 1 else 22
+        sheet.row_dimensions[row[0].row].height = 24 if row[0].row == header_row else 22
         for cell in row:
             cell.alignment = alignment
             cell.border = border
-            if cell.row == 1:
+            if cell.row == header_row:
                 cell.font = header_font
                 if header_fill is not None:
                     cell.fill = header_fill
@@ -3505,14 +3687,37 @@ def _append_ap_overview_sheet(
     overview_columns: tuple[tuple[str, str], ...] | None = None,
     overview_headers: list[str] | None = None,
     header_fill=None,
+    *,
+    snapshot_generated_at: str | datetime | None = None,
+    updated_at: str | datetime | None = None,
 ) -> None:
     sheet = workbook.create_sheet("AP上线情况概览")
-    sheet.title = "AP\u4e0a\u7ebf\u60c5\u51b5\u6982\u89c8"
-    if overview_rows is not None and overview_columns is not None and overview_headers is not None:
-        write_ap_online_overview_sheet(sheet, overview_rows, overview_headers)
-        return
-    write_ap_online_overview_sheet(sheet, [], [key for key, _field in AP_ONLINE_OVERVIEW_COLUMNS])
-    return
+    display_rows = overview_rows or []
+    display_columns = overview_columns or AP_ONLINE_OVERVIEW_COLUMNS
+    display_headers = overview_headers or [
+        key for key, _field in AP_ONLINE_OVERVIEW_COLUMNS
+    ]
+    block = build_ap_online_history_block(
+        display_rows,
+        display_columns,
+        display_headers,
+        snapshot_generated_at=snapshot_generated_at,
+        updated_at=updated_at,
+    )
+    for values in block.cells():
+        sheet.append(values)
+    from openpyxl.styles import PatternFill
+
+    for row_index, source_row in enumerate(display_rows, start=4):
+        fill = overview_row_fill(source_row)
+        if fill:
+            for cell in sheet[row_index]:
+                cell.fill = fill
+        if int(source_row.get("offline") or 0) > 0:
+            sheet.cell(row_index, 4).fill = PatternFill(
+                fill_type="solid",
+                fgColor="FEE2E2",
+            )
 
 
 def _append_switch_optical_summary_sheet(workbook, rows: list[dict[str, object | None]], alignment, border, header_font, header_fill=None) -> None:

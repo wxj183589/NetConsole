@@ -338,7 +338,7 @@ def write_ap_online_overview_sheet(sheet, rows: list[dict[str, object | None]], 
     sheet.append(headers)
     for row in rows:
         sheet.append([_display_value(row.get(field)) for _key, field in AP_ONLINE_OVERVIEW_COLUMNS])
-        fill = _overview_row_fill(row)
+        fill = overview_row_fill(row)
         for cell in sheet[sheet.max_row]:
             if fill:
                 cell.fill = fill
@@ -544,7 +544,7 @@ def _site_sort_key(site: str) -> tuple[int, str]:
     return (0, site)
 
 
-def _overview_row_fill(row: dict[str, object | None]):
+def overview_row_fill(row: dict[str, object | None]):
     from openpyxl.styles import PatternFill
 
     if str(row.get("site") or "") == TOTAL_SITE_LABEL:

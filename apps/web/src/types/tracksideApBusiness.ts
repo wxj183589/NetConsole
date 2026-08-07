@@ -288,6 +288,10 @@ export interface WpsTracksideDiagnostic {
   expected_sheet_order?: string[]
   actual_sheet_order?: string[]
   actual_sheet_order_all?: string[]
+  sheet_tab_color_verified?: boolean
+  expected_tab_color?: string
+  actual_tab_color?: string | number
+  probe_sheet?: string
   binding_status?: string
   local_binding_id?: string
   remote_binding_id?: string
@@ -338,6 +342,7 @@ export interface WpsTracksideTarget {
   runtime_probe_diagnostic?: WpsTracksideDiagnostic
   sync_test_diagnostic?: WpsTracksideDiagnostic
   sheet_order_probe_diagnostic?: WpsTracksideDiagnostic
+  sheet_tab_color_probe_diagnostic?: WpsTracksideDiagnostic
   remote_script_version?: string
   remote_deployment_id?: string
   remote_script_id?: string

@@ -14,16 +14,16 @@ const scripts: Array<{
   {
     targetCode: 'wps_standard_spreadsheet',
     kind: 'probe',
-    scriptVersion: '2.3.0-standard',
-    deploymentId: 'trackside-ap-standard-2.3.0',
+    scriptVersion: '2.4.0-standard',
+    deploymentId: 'trackside-ap-standard-2.4.0',
     documentId: '549847228994',
     targetType: 'WPS_STANDARD_SPREADSHEET',
   },
   {
     targetCode: 'wps_standard_spreadsheet',
     kind: 'sync',
-    scriptVersion: '2.3.0-standard',
-    deploymentId: 'trackside-ap-standard-2.3.0',
+    scriptVersion: '2.4.0-standard',
+    deploymentId: 'trackside-ap-standard-2.4.0',
     documentId: '549847228994',
     targetType: 'WPS_STANDARD_SPREADSHEET',
   },
@@ -47,11 +47,14 @@ const scripts: Array<{
 
 function standardSpreadsheetRuntime(
   initialNames: string[],
-  options: { hiddenFailureNames?: string[]; noMoveNames?: string[] } = {},
+  options: { hiddenFailureNames?: string[]; noMoveNames?: string[]; tabColorFailureNames?: string[] } = {},
 ) {
   const hiddenFailureNames = new Set(options.hiddenFailureNames || [])
   const noMoveNames = new Set(options.noMoveNames || [])
+  const tabColorFailureNames = new Set(options.tabColorFailureNames || [])
   const moves: Array<{ sheet: string; before: string; after: string }> = []
+  const inserts: Array<{ sheet: string; address: string }> = []
+  const writes: Array<{ sheet: string; address: string; value: unknown }> = []
   const bindingRows = [
     ['document_id', '549847228994'],
     ['binding_id', 'wpsbind_v1_stable'],
@@ -60,25 +63,45 @@ function standardSpreadsheetRuntime(
     ['business_key', 'rail_transit.trackside_ap_business'],
     ['target_code', 'wps_standard_spreadsheet'],
     ['target_type', 'WPS_STANDARD_SPREADSHEET'],
+    ['last_sync_at', ''],
+    ['last_sync_revision', ''],
+    ['last_target_batch_id', ''],
+    ['last_prepend_target_batch_id', ''],
   ]
   const sheets: Array<Record<string, any>> = []
   let nextId = 1
 
   function makeSheet(name: string): Record<string, any> {
     let visible: unknown = true
+    let tabColor: unknown = null
     const sheet: Record<string, any> = {
       Name: name,
       Id: `sheet-${nextId++}`,
       UsedRange: { ClearContents: vi.fn() },
       Range(address: string) {
-        if (sheet.Name === '_NetConsoleSyncMeta' && address === 'A1:B20') {
+        if (sheet.Name === '_NetConsoleSyncMeta' && address === 'A1:B30') {
           return { Value2: bindingRows }
         }
+        const metaCell = sheet.Name === '_NetConsoleSyncMeta' ? address.match(/^([AB])(\d+)$/) : null
+        if (metaCell) {
+          const rowIndex = Number(metaCell[2]) - 1
+          const columnIndex = metaCell[1] === 'A' ? 0 : 1
+          while (bindingRows.length <= rowIndex) bindingRows.push(['', ''])
+          return {
+            get Value2() { return bindingRows[rowIndex][columnIndex] },
+            set Value2(value: unknown) { bindingRows[rowIndex][columnIndex] = String(value ?? '') },
+          }
+        }
+        let resizedAddress = address
         const range: Record<string, any> = {
-          Value2: [],
+          get Value2() { return [] },
+          set Value2(value: unknown) { writes.push({ sheet: String(sheet.Name), address: resizedAddress, value }) },
           ClearContents: vi.fn(),
-          EntireRow: { Insert: vi.fn() },
-          Resize() { return range },
+          EntireRow: { Insert: vi.fn(() => inserts.push({ sheet: String(sheet.Name), address })) },
+          Resize(rows: number, columns: number) {
+            resizedAddress = `${address}|${rows}x${columns}`
+            return range
+          },
         }
         return range
       },
@@ -109,6 +132,15 @@ function standardSpreadsheetRuntime(
         visible = value
       },
     })
+    sheet.Tab = {}
+    Object.defineProperty(sheet.Tab, 'Color', {
+      enumerable: true,
+      get: () => tabColor,
+      set: (value) => {
+        if (tabColorFailureNames.has(String(sheet.Name))) throw new Error('tab color unsupported')
+        tabColor = value
+      },
+    })
     return sheet
   }
 
@@ -127,7 +159,9 @@ function standardSpreadsheetRuntime(
   }
   return {
     application: { Worksheets: worksheets },
+    inserts,
     moves,
+    writes,
     names: () => sheets.map((sheet) => String(sheet.Name)),
   }
 }
@@ -217,6 +251,7 @@ describe('WPS AirScript deployment sources', () => {
     expect(source).toContain('runtime_write_probe')
     expect(source).toContain('sync_test_sheet')
     expect(source).toContain('sheet_order_probe')
+    expect(source).toContain('sheet_tab_color_probe')
     expect(source).toContain('_NetConsoleSyncTest')
     expect(source).toContain('Application.Worksheets')
     expect(source).not.toContain('ActiveWorkbook')
@@ -228,6 +263,8 @@ describe('WPS AirScript deployment sources', () => {
     expect(source).toContain('optional_capabilities: optionalCapabilities')
     expect(source).toContain('full_replace_ready: fullReplaceReady')
     expect(source).toContain('prepend_snapshot_ready: prependSnapshotReady')
+    expect(source).toContain('sheet.sync_mode === "PREPEND_SNAPSHOT"')
+    expect(source).toContain('function toWpsColor(value)')
     expect(source).toContain('sheet_visibility')
     expect(source).toContain('sheet.Range("A1").Value2 = "OLD"')
     expect(source).toContain('sheet.Range("A1").Value2 = "NEW"')
@@ -315,6 +352,110 @@ describe('WPS AirScript deployment sources', () => {
     ]))
   })
 
+  it('probes Sheet.Tab.Color through RGB conversion on the sync test sheet', () => {
+    const runtime = standardSpreadsheetRuntime([
+      '保留业务页',
+      '_NetConsoleSyncTest',
+      '_NetConsoleSyncMeta',
+    ])
+
+    const result = executeStandardSpreadsheet(runtime, {
+      operation: 'sheet_tab_color_probe',
+      protocol_version: 2,
+      target_type: 'WPS_STANDARD_SPREADSHEET',
+      target_code: 'wps_standard_spreadsheet',
+      site_id: 'hzl10',
+      business_key: 'rail_transit.trackside_ap_business',
+      binding_id: 'wpsbind_v1_stable',
+      probe_id: 'tab-color-one',
+      script_id: 'test',
+    })
+
+    expect(result).toMatchObject({
+      success: true,
+      status: 'SUCCESS',
+      sheet_tab_color_verified: true,
+      expected_tab_color: '#C6EFCE',
+      expected_tab_color_value: 13561798,
+      actual_tab_color: 13561798,
+      probe_sheet: '_NetConsoleSyncTest',
+    })
+  })
+
+  it('keeps formal data sync successful when an enabled tab color is unsupported', () => {
+    const businessNames = ['AP上线情况概览', '轨旁AP业务']
+    const runtime = standardSpreadsheetRuntime(
+      ['轨旁AP业务', '_NetConsoleSyncMeta', 'AP上线情况概览'],
+      { tabColorFailureNames: ['轨旁AP业务'] },
+    )
+    const args = standardSyncArgs(businessNames) as Record<string, any>
+    args.sheet_tab_color_enabled = true
+    args.workbook.sheets[0].tab_color = '#C6EFCE'
+    args.workbook.sheets[1].tab_color = '#C6EFCE'
+
+    const result = executeStandardSpreadsheet(runtime, args)
+
+    expect(result).toMatchObject({
+      success: true,
+      status: 'SUCCESS_WITH_WARNINGS',
+      sheet_tab_color_enabled: true,
+      applied_tab_color_count: 1,
+    })
+    expect(result.format_warnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sheet_name: '轨旁AP业务', feature: 'sheet_tab_color' }),
+    ]))
+  })
+
+  it('prepends one complete history block and deduplicates the same target batch', () => {
+    const runtime = standardSpreadsheetRuntime([
+      'AP上线情况概览',
+      '_NetConsoleSyncMeta',
+    ])
+    const args = standardSyncArgs(['AP上线情况概览']) as Record<string, any>
+    args.snapshot_generated_at = '2026-08-07T01:30:00Z'
+    args.workbook.sheets[0] = {
+      logical_sheet_key: 'ap_online_history_overview',
+      sheet_name: 'AP上线情况概览',
+      sheet_order: 0,
+      sync_mode: 'PREPEND_SNAPSHOT',
+      cells: [
+        ['日期：2026-08-07', null],
+        ['更新时间：2026-08-07 09:30:00', null],
+        ['归属站点', '上线'],
+        ['站点A', 1],
+        ['合计', 1],
+        [null, null],
+      ],
+      row_count: 6,
+      column_count: 2,
+    }
+
+    const first = executeStandardSpreadsheet(runtime, args)
+    const firstBlockWrite = runtime.writes.find((item) => (
+      item.sheet === 'AP上线情况概览' && item.address === 'A1|6x2'
+    ))
+    expect(first).toMatchObject({
+      success: true,
+      written_row_count: 6,
+      idempotent_prepend_replay: false,
+    })
+    expect(runtime.inserts).toHaveLength(1)
+    expect(firstBlockWrite?.value).toEqual(expect.arrayContaining([
+      ['日期：2026-08-07', null],
+      ['归属站点', '上线'],
+      [null, null],
+    ]))
+    expect((firstBlockWrite?.value as unknown[][])[1][0]).toMatch(/^更新时间：\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/)
+
+    const second = executeStandardSpreadsheet(runtime, args)
+    expect(second).toMatchObject({
+      success: true,
+      written_row_count: 0,
+      idempotent_prepend_replay: true,
+    })
+    expect(runtime.inserts).toHaveLength(1)
+  })
+
   it('keeps the field-verified stable writer isolated from ordering and formatting', () => {
     const source = wpsAirScriptSource('wps_standard_spreadsheet', 'sync')
     const stableWriter = source.split('function writeStableSheet(sheetDto)', 2)[1]
@@ -346,7 +487,7 @@ describe('WPS AirScript deployment sources', () => {
     const metaSheet = {
       Name: '_NetConsoleSyncMeta',
       Range(address: string) {
-        if (address === 'A1:B20') return { Value2: rows }
+        if (address === 'A1:B30') return { Value2: rows }
         const match = address.match(/^B(\d+)$/)
         if (!match) throw new Error(`unexpected meta range: ${address}`)
         const index = Number(match[1]) - 1

@@ -30,6 +30,7 @@ class WpsTargetType(StrEnum):
 
 class WpsSyncMode(StrEnum):
     FULL_REPLACE = "FULL_REPLACE"
+    PREPEND_SNAPSHOT = "PREPEND_SNAPSHOT"
     APPEND_SNAPSHOT = "APPEND_SNAPSHOT"
     DISABLED = "DISABLED"
 
@@ -73,6 +74,7 @@ class WpsSyncTarget:
     runtime_probe_diagnostic: dict[str, Any] = field(default_factory=dict)
     sync_test_diagnostic: dict[str, Any] = field(default_factory=dict)
     sheet_order_probe_diagnostic: dict[str, Any] = field(default_factory=dict)
+    sheet_tab_color_probe_diagnostic: dict[str, Any] = field(default_factory=dict)
     remote_script_version: str = ""
     remote_deployment_id: str = ""
     remote_script_id: str = ""
@@ -124,6 +126,7 @@ class WpsSyncTarget:
             "runtime_probe_diagnostic": self.runtime_probe_diagnostic,
             "sync_test_diagnostic": self.sync_test_diagnostic,
             "sheet_order_probe_diagnostic": self.sheet_order_probe_diagnostic,
+            "sheet_tab_color_probe_diagnostic": self.sheet_tab_color_probe_diagnostic,
             "remote_script_version": self.remote_script_version,
             "remote_deployment_id": self.remote_deployment_id,
             "remote_script_id": self.remote_script_id,

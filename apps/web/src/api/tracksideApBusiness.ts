@@ -115,6 +115,15 @@ export function probeTracksideWpsSheetOrder(targetCode: WpsTracksideTargetCode):
   })
 }
 
+export function probeTracksideWpsSheetTabColor(targetCode: WpsTracksideTargetCode): Promise<{
+  target_code: WpsTracksideTargetCode
+  result: Record<string, unknown>
+}> {
+  return apiRequest(`${wpsRoot}/targets/${encodeURIComponent(targetCode)}/sheet-tab-color-probe`, {
+    method: 'POST',
+  })
+}
+
 export function revalidateTracksideWpsDeployment(targetCode: WpsTracksideTargetCode): Promise<{
   target_code: WpsTracksideTargetCode
   result: Record<string, unknown>

@@ -7,7 +7,7 @@ import sqlite3
 import urllib.error
 
 from openpyxl import Workbook
-from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.styles import Alignment, Border, Color, Font, PatternFill, Side
 import pytest
 
 from netconsole.core.paths import PathResolver
@@ -31,7 +31,9 @@ from netconsole.services.wps_trackside_ap_sync import (
     WPS_SCRIPT_VERSIONS,
     WPS_STANDARD_FORMAT_MIRROR_EXPERIMENTAL,
     WPS_SYNC_TASK_TYPE,
+    _openpyxl_color,
     _assert_standard_sync_readiness,
+    _sheet_tab_color_probe_verified,
     workbook_dto_from_xlsx,
 )
 
@@ -594,7 +596,7 @@ def test_wps_http_response_and_request_headers_are_bounded(monkeypatch: pytest.M
     assert int(observed["read_size"]) == 20 * 1024 * 1024 + 1
 
 
-def test_workbook_dto_uses_append_mode_for_overview(tmp_path: Path) -> None:
+def test_workbook_dto_uses_prepend_mode_for_overview(tmp_path: Path) -> None:
     path = tmp_path / "sample.xlsx"
     workbook = Workbook()
     workbook.active.title = "轨旁AP业务"
@@ -609,7 +611,9 @@ def test_workbook_dto_uses_append_mode_for_overview(tmp_path: Path) -> None:
     dto = workbook_dto_from_xlsx(path)
     assert [sheet.sheet_name for sheet in dto.sheets] == ["轨旁AP业务", "AP上线情况概览"]
     assert dto.sheets[0].sync_mode.value == "FULL_REPLACE"
-    assert dto.sheets[1].sync_mode.value == "APPEND_SNAPSHOT"
+    assert dto.sheets[1].sync_mode.value == "PREPEND_SNAPSHOT"
+    assert dto.sheets[1].logical_sheet_key == "ap_online_history_overview"
+    assert dto.sheets[1].tab_color == "#C6EFCE"
     assert dto.sheets[1].row_count == 2
     assert [sheet.sheet_order for sheet in dto.sheets] == [0, 1]
 
@@ -624,11 +628,11 @@ def test_workbook_dto_preserves_sheet_order_and_compresses_format_runs(
     sheet.append(["站点", "上线率", "备注"])
     sheet.append(["A", 0.5, "第一行"])
     sheet.append(["B", 0.75, "第二行"])
-    header_fill = PatternFill(fill_type="solid", fgColor="4472C4")
-    thin = Side(style="thin", color="D1D5DB")
+    header_fill = PatternFill(fill_type="solid", fgColor="FF4472C4")
+    thin = Side(style="thin", color="FFD1D5DB")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
     for cell in sheet[1]:
-        cell.font = Font(name="Microsoft YaHei", size=11, bold=True, color="FFFFFF")
+        cell.font = Font(name="Microsoft YaHei", size=11, bold=True, color="FFFFFFFF")
         cell.fill = header_fill
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
         cell.border = border
@@ -644,7 +648,7 @@ def test_workbook_dto_preserves_sheet_order_and_compresses_format_runs(
     sheet.column_dimensions["A"].width = 18
     sheet.row_dimensions[1].height = 24
     sheet.freeze_panes = "A2"
-    sheet.sheet_properties.tabColor = "70AD47"
+    sheet.sheet_properties.tabColor = "FF70AD47"
     hidden = workbook.create_sheet("隐藏业务页")
     hidden.sheet_state = "hidden"
     workbook.save(path)
@@ -656,7 +660,7 @@ def test_workbook_dto_preserves_sheet_order_and_compresses_format_runs(
     assert second.sheet_order == 1
     assert first.sheet_visible is True
     assert second.sheet_visible is False
-    assert first.tab_color == "#70AD47"
+    assert first.tab_color == "#C6EFCE"
     assert first.merges == ["A4:C4"]
     assert first.column_widths["A"] == 18
     assert first.row_heights["1"] == 24
@@ -685,6 +689,41 @@ def test_workbook_dto_preserves_sheet_order_and_compresses_format_runs(
     assert "borders" not in serialized
 
 
+@pytest.mark.parametrize(
+    ("color", "expected"),
+    [
+        (Color(rgb="00000000"), ""),
+        (Color(rgb="FFFFFFFF"), "#FFFFFF"),
+        (Color(rgb="FFC6EFCE"), "#C6EFCE"),
+        (Color(rgb="FFDDEBF7"), "#DDEBF7"),
+        (Color(theme=1), ""),
+        (Color(indexed=0), ""),
+        (None, ""),
+    ],
+)
+def test_openpyxl_color_only_returns_explicit_opaque_rgb(
+    color: Color | None,
+    expected: str,
+) -> None:
+    assert _openpyxl_color(color) == expected
+
+
+def test_sheet_tab_color_formal_sync_gate_requires_successful_probe() -> None:
+    target = _wps_target()
+    assert _sheet_tab_color_probe_verified(target) is False
+
+    target.sheet_tab_color_probe_diagnostic.update(
+        {
+            "status": "SUCCESS",
+            "sheet_tab_color_verified": True,
+        }
+    )
+    assert _sheet_tab_color_probe_verified(target) is True
+
+    target.sheet_tab_color_probe_diagnostic["sheet_tab_color_verified"] = False
+    assert _sheet_tab_color_probe_verified(target) is False
+
+
 def test_workbook_dto_omits_format_mirror_by_default() -> None:
     assert WPS_STANDARD_FORMAT_MIRROR_EXPERIMENTAL is False
 
@@ -699,8 +738,8 @@ def test_standard_airscript_keeps_format_mirror_disabled_behind_explicit_gate() 
     )
     script = script_path.read_text(encoding="utf-8")
 
-    assert 'const SCRIPT_VERSION = "2.3.0-standard";' in script
-    assert 'const DEPLOYMENT_ID = "trackside-ap-standard-2.3.0";' in script
+    assert 'const SCRIPT_VERSION = "2.4.0-standard";' in script
+    assert 'const DEPLOYMENT_ID = "trackside-ap-standard-2.4.0";' in script
     assert "const FORMAT_MIRROR_EXPERIMENTAL = false;" in script
     assert "function writeStableSheet(sheetDto)" in script
     assert "if (used && used.ClearContents) used.ClearContents();" in script
@@ -726,6 +765,10 @@ def test_standard_airscript_keeps_format_mirror_disabled_behind_explicit_gate() 
     assert "sheet.Move({" not in script
     assert 'error_code: "WPS_SHEET_ORDER_VERIFY_FAILED"' in script
     assert 'if (args.operation === "sheet_order_probe") return sheetOrderProbe(args);' in script
+    assert 'if (args.operation === "sheet_tab_color_probe") return sheetTabColorProbe(args);' in script
+    assert "function toWpsColor(value)" in script
+    assert 'sheet.Tab.Color = expected;' in script
+    assert 'sheet.Name, "sheet_tab_color"' in script
     assert '.startsWith("_NetConsole")' in script
     assert 'status: publicWarnings.length ? "SUCCESS_WITH_WARNINGS" : "SUCCESS"' in script
     assert 'if (args.operation === "migrate_legacy_binding") return migrateLegacyBinding(args);' in script
@@ -840,6 +883,15 @@ def test_dual_sync_reuses_one_snapshot_for_both_adapters(monkeypatch, tmp_path: 
     repository = service._repository("hzl10")
     for target in repository.list_targets(TRACKSIDE_AP_WPS_BUSINESS_KEY):
         repository.set_runtime_capability(target.target_id, "VERIFIED")
+        if target.target_code == STANDARD_TARGET_CODE:
+            repository.update_target_diagnostic(
+                target.target_id,
+                operation="sheet_tab_color_probe",
+                diagnostic={
+                    "status": "SUCCESS",
+                    "sheet_tab_color_verified": True,
+                },
+            )
     monkeypatch.setattr(
         service,
         "_build_snapshot",
@@ -860,6 +912,7 @@ def test_dual_sync_reuses_one_snapshot_for_both_adapters(monkeypatch, tmp_path: 
     assert [payload["snapshot_revision"] for payload in fake.payloads] == ["revision-1", "revision-1"]
     assert [payload["snapshot_sha256"] for payload in fake.payloads] == ["sha-1", "sha-1"]
     assert fake.payloads[0]["target_batch_id"] != fake.payloads[1]["target_batch_id"]
+    assert [payload["sheet_tab_color_enabled"] for payload in fake.payloads] == [True, False]
 
 
 def test_wps_sync_aggregates_noncritical_format_warnings(
@@ -1294,6 +1347,60 @@ def test_wps_sheet_order_probe_is_independent_and_persists_verification(
     assert target.runtime_capability == "DEPLOYMENT_PENDING"
     assert target.runtime_probe_diagnostic == {}
     assert target.sync_test_diagnostic == {}
+    assert target.binding_status == "UNKNOWN"
+
+
+def test_wps_sheet_tab_color_probe_is_independent_and_persists_verification(
+    tmp_path: Path,
+) -> None:
+    operations: list[str] = []
+    body = {
+        "success": True,
+        "status": "SUCCESS",
+        "protocol_version": 2,
+        "script_version": WPS_SCRIPT_VERSIONS[STANDARD_TARGET_CODE],
+        "deployment_id": WPS_DEPLOYMENT_IDS[STANDARD_TARGET_CODE],
+        "script_id": "script-one",
+        "target_type": "WPS_STANDARD_SPREADSHEET",
+        "target_code": STANDARD_TARGET_CODE,
+        "document_id": "standard",
+        "binding_status": "BOUND",
+        "runtime_capability": "VERIFIED",
+        "sheet_tab_color_verified": True,
+        "expected_tab_color": "#C6EFCE",
+        "actual_tab_color": 13561798,
+        "probe_sheet": "_NetConsoleSyncTest",
+        "message": "Sheet 标签颜色探针通过",
+    }
+
+    class FakeClient:
+        def post(self, target, *, token, argv):
+            operations.append(str(argv["operation"]))
+            return WpsHttpResponse(status_code=200, body=body)
+
+    service = TracksideApWpsSyncService(PathResolver(tmp_path), client=FakeClient())
+    service.configure_target(
+        "hzl10",
+        STANDARD_TARGET_CODE,
+        document_open_url="https://www.kdocs.cn/l/standard",
+        webhook_url="https://www.kdocs.cn/api/v3/ide/file/standard/script/script-one/sync_task",
+        token="test-token",
+    )
+
+    result = service.sheet_tab_color_probe("hzl10", STANDARD_TARGET_CODE)
+    target = service._repository("hzl10").get_target(
+        TRACKSIDE_AP_WPS_BUSINESS_KEY,
+        STANDARD_TARGET_CODE,
+    )
+
+    assert operations == ["sheet_tab_color_probe"]
+    assert result["sheet_tab_color_verified"] is True
+    assert target.sheet_tab_color_probe_diagnostic["status"] == "SUCCESS"
+    assert target.sheet_tab_color_probe_diagnostic["expected_tab_color"] == "#C6EFCE"
+    assert target.runtime_capability == "DEPLOYMENT_PENDING"
+    assert target.runtime_probe_diagnostic == {}
+    assert target.sync_test_diagnostic == {}
+    assert target.sheet_order_probe_diagnostic == {}
     assert target.binding_status == "UNKNOWN"
 
 

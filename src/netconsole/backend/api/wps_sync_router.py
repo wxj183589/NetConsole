@@ -168,6 +168,24 @@ def sheet_order_probe(request: Request, target_code: str) -> WpsSyncConnectionTe
 
 
 @router.post(
+    "/targets/{target_code}/sheet-tab-color-probe",
+    response_model=WpsSyncConnectionTestDTO,
+    dependencies=[Depends(require_feature("web.rail_trackside_ap_business_wps_sync"))],
+)
+def sheet_tab_color_probe(
+    request: Request,
+    target_code: str,
+) -> WpsSyncConnectionTestDTO:
+    try:
+        return WpsSyncConnectionTestDTO(
+            target_code=target_code,
+            result=_service(request).sheet_tab_color_probe(_site_id(request), target_code),
+        )
+    except WpsSyncError as exc:
+        _raise(exc)
+
+
+@router.post(
     "/targets/{target_code}/revalidate-deployment",
     response_model=WpsSyncConnectionTestDTO,
     dependencies=[Depends(require_feature("web.rail_trackside_ap_business_wps_sync"))],

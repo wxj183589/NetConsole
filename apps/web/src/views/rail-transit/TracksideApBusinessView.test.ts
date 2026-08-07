@@ -27,6 +27,7 @@ const api = vi.hoisted(() => ({
   testTracksideWpsTarget: vi.fn(),
   migrateTracksideWpsLegacyBinding: vi.fn(),
   probeTracksideWpsSheetOrder: vi.fn(),
+  probeTracksideWpsSheetTabColor: vi.fn(),
   revalidateTracksideWpsDeployment: vi.fn(),
   updateTracksideWpsTarget: vi.fn(),
   tracksideApBusinessDownloadRequest: vi.fn(),
@@ -455,6 +456,10 @@ describe('TracksideApBusinessView mounted behavior', () => {
       target_code: 'wps_standard_spreadsheet',
       result: { sheet_order_verified: true },
     })
+    api.probeTracksideWpsSheetTabColor.mockResolvedValue({
+      target_code: 'wps_standard_spreadsheet',
+      result: { sheet_tab_color_verified: true },
+    })
     confirmMocks.confirm.mockReset()
     confirmMocks.confirm.mockResolvedValue(true)
     api.syncTracksideWpsTargets.mockResolvedValue(task('wps-task', 'RUNNING', 'trackside_ap_wps_sync'))
@@ -647,6 +652,31 @@ describe('TracksideApBusinessView mounted behavior', () => {
     wrapper.unmount()
   })
 
+  it('runs Sheet tab color as an independent ordinary spreadsheet probe', async () => {
+    const targets = wpsTargets(true)
+    targets[0].sheet_tab_color_probe_diagnostic = {
+      status: 'SUCCESS',
+      sheet_tab_color_verified: true,
+      expected_tab_color: '#C6EFCE',
+      actual_tab_color: 13561798,
+    }
+    api.listTracksideWpsTargets.mockResolvedValue(targets)
+    const wrapper = await mountView()
+    await button(wrapper, '配置云文档').trigger('click')
+    await flushPromises()
+    const dialog = wrapper.getComponent(TracksideApWpsConfigDialog)
+    const vm = dialog.vm as unknown as {
+      sheetTabColorProbe: (code: 'wps_standard_spreadsheet') => Promise<void>
+    }
+
+    await vm.sheetTabColorProbe('wps_standard_spreadsheet')
+
+    expect(api.probeTracksideWpsSheetTabColor).toHaveBeenCalledWith('wps_standard_spreadsheet')
+    expect(api.revalidateTracksideWpsDeployment).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('Sheet 标签颜色')
+    wrapper.unmount()
+  })
+
   it('shows binding identity diagnostics and explicitly upgrades only a legacy binding id', async () => {
     const legacyTargets = wpsTargets(true)
     legacyTargets[0] = {
@@ -826,7 +856,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
 
     expect(platformMocks.writeClipboardText).toHaveBeenNthCalledWith(
       1,
-      expect.stringContaining('trackside-ap-standard-2.3.0'),
+      expect.stringContaining('trackside-ap-standard-2.4.0'),
     )
     expect(platformMocks.writeClipboardText).toHaveBeenNthCalledWith(
       2,

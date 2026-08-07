@@ -41,6 +41,9 @@ from netconsole.services.trackside_ap_export_service import (
     _render_trackside_ap_business_export,
     build_trackside_ap_business_export_snapshot,
 )
+from netconsole.services.trackside_ap_business import (
+    trackside_ap_business_sheet_definition,
+)
 
 
 STANDARD_TARGET_CODE = "wps_standard_spreadsheet"
@@ -51,11 +54,11 @@ WPS_SYNC_OWNER = "web_rail_transit"
 # The format mirror remains available for a later, separately verified rollout.
 WPS_STANDARD_FORMAT_MIRROR_EXPERIMENTAL = False
 WPS_SCRIPT_VERSIONS = {
-    STANDARD_TARGET_CODE: "2.3.0-standard",
+    STANDARD_TARGET_CODE: "2.4.0-standard",
     SMART_TARGET_CODE: "2.1.0-smart",
 }
 WPS_DEPLOYMENT_IDS = {
-    STANDARD_TARGET_CODE: "trackside-ap-standard-2.3.0",
+    STANDARD_TARGET_CODE: "trackside-ap-standard-2.4.0",
     SMART_TARGET_CODE: "trackside-ap-smart-2.1.0",
 }
 WPS_RUNTIME_CAPABILITIES = {
@@ -288,6 +291,42 @@ class BaseWpsAdapter:
                     **_target_error_details(target, phase="SHEET_ORDER_PROBE"),
                     "expected_sheet_order": result.get("expected_sheet_order") or [],
                     "actual_sheet_order": result.get("actual_sheet_order") or [],
+                },
+            )
+        return {"http_status": response.status_code, "phase": "SUCCESS", **result}
+
+    def sheet_tab_color_probe(
+        self,
+        target: WpsSyncTarget,
+        token: str,
+    ) -> dict[str, Any]:
+        response = self.client.post(
+            target,
+            token=token,
+            argv={
+                "protocol_version": WPS_SYNC_PROTOCOL_VERSION,
+                "operation": "sheet_tab_color_probe",
+                "target_code": target.target_code,
+                "target_type": target.target_type.value,
+                "site_id": target.site_id,
+                "business_key": target.business_key,
+                "binding_id": target.binding_id,
+                "probe_id": f"wps_sheet_tab_color_{uuid4().hex}",
+                "script_id": _script_id_from_webhook(target.webhook_url),
+            },
+        )
+        result = _unwrap_wps_sync_task_response(response, target, token=token)
+        self._validate_common(target, result)
+        if not bool(result.get("success")):
+            raise _remote_result_error(target, result, token)
+        if not bool(result.get("sheet_tab_color_verified")):
+            raise WpsSyncError(
+                "WPS_SHEET_TAB_COLOR_VERIFY_FAILED",
+                "WPS Sheet 标签颜色探针未通过读回校验",
+                details={
+                    **_target_error_details(target, phase="SHEET_TAB_COLOR_PROBE"),
+                    "expected_tab_color": result.get("expected_tab_color") or "",
+                    "actual_tab_color": result.get("actual_tab_color") or "",
                 },
             )
         return {"http_status": response.status_code, "phase": "SUCCESS", **result}
@@ -865,6 +904,49 @@ class TracksideApWpsSyncService:
         )
         return _sanitize_result(result)
 
+    def sheet_tab_color_probe(self, site_id: str, target_code: str) -> dict[str, Any]:
+        repository = self._repository(site_id)
+        self._ensure_default_targets(repository)
+        target = repository.get_target(TRACKSIDE_AP_WPS_BUSINESS_KEY, target_code)
+        if target.target_type is not WpsTargetType.STANDARD_SPREADSHEET:
+            raise WpsSyncError(
+                "WPS_SHEET_TAB_COLOR_PROBE_UNSUPPORTED",
+                "Sheet 标签颜色探针仅支持普通在线表格",
+            )
+        try:
+            _validate_target_configuration(target)
+            result = self.adapters[target.target_type].sheet_tab_color_probe(
+                target,
+                self._token(repository, target),
+            )
+        except WpsSyncError as exc:
+            details = dict(exc.details) or _target_error_details(
+                target,
+                phase="LOCAL_CONFIGURATION",
+            )
+            repository.update_target_diagnostic(
+                target.target_id,
+                operation="sheet_tab_color_probe",
+                diagnostic=_operation_diagnostic(
+                    "sheet_tab_color_probe",
+                    status="FAILED",
+                    message=str(exc),
+                    values=details,
+                ),
+            )
+            raise
+        repository.update_target_diagnostic(
+            target.target_id,
+            operation="sheet_tab_color_probe",
+            diagnostic=_operation_diagnostic(
+                "sheet_tab_color_probe",
+                status=str(result.get("status") or "SUCCESS"),
+                message=str(result.get("message") or "Sheet 标签颜色探针通过"),
+                values=result,
+            ),
+        )
+        return _sanitize_result(result)
+
     def sync(
         self,
         site_id: str,
@@ -1011,6 +1093,7 @@ class TracksideApWpsSyncService:
                 "snapshot_generated_at": generated_at,
                 "requested_at": _now(),
                 "format_mirror_experimental": WPS_STANDARD_FORMAT_MIRROR_EXPERIMENTAL,
+                "sheet_tab_color_enabled": _sheet_tab_color_probe_verified(target),
                 "workbook": workbook.to_dict(),
             }
             try:
@@ -1316,6 +1399,7 @@ def workbook_dto_from_xlsx(
         for worksheet in workbook.worksheets:
             if worksheet.title in _META_SHEET_NAMES or worksheet.title.startswith("_NetConsole"):
                 continue
+            definition = trackside_ap_business_sheet_definition(worksheet.title)
             max_row = int(worksheet.max_row or 0)
             max_column = int(worksheet.max_column or 0)
             cells = [
@@ -1323,13 +1407,17 @@ def workbook_dto_from_xlsx(
                 for row in range(1, max_row + 1)
             ]
             sync_mode = (
-                WpsSyncMode.APPEND_SNAPSHOT
-                if worksheet.title.replace(" ", "") == "AP上线情况概览"
+                WpsSyncMode(definition.sync_mode)
+                if definition is not None
                 else WpsSyncMode.FULL_REPLACE
             )
             sheets.append(
                 WorkbookSheetDTO(
-                    logical_sheet_key=_logical_sheet_key(worksheet.title),
+                    logical_sheet_key=(
+                        definition.stable_key
+                        if definition is not None
+                        else _logical_sheet_key(worksheet.title)
+                    ),
                     sheet_name=worksheet.title,
                     sync_mode=sync_mode,
                     cells=cells,
@@ -1338,7 +1426,9 @@ def workbook_dto_from_xlsx(
                     sheet_order=len(sheets),
                     sheet_visible=(worksheet.sheet_state == "visible") if include_format_mirror else True,
                     tab_color=(
-                        _openpyxl_color(worksheet.sheet_properties.tabColor)
+                        definition.tab_color
+                        if definition is not None
+                        else _openpyxl_color(worksheet.sheet_properties.tabColor)
                         if include_format_mirror
                         else ""
                     ),
@@ -1513,7 +1603,9 @@ def _openpyxl_color(color: Any) -> str:
         return ""
     value = str(getattr(color, "rgb", "") or "").strip().lstrip("#")
     if len(value) == 8:
-        value = value[-6:]
+        alpha, value = value[:2], value[-6:]
+        if alpha.upper() != "FF":
+            return ""
     if len(value) != 6 or not re.fullmatch(r"[0-9A-Fa-f]{6}", value):
         return ""
     return f"#{value.upper()}"
@@ -1533,9 +1625,19 @@ def _target_format_warning_count(result: Mapping[str, Any]) -> int:
         return 0
 
 
+def _sheet_tab_color_probe_verified(target: WpsSyncTarget) -> bool:
+    diagnostic = target.sheet_tab_color_probe_diagnostic
+    return (
+        str(diagnostic.get("status") or "").upper()
+        in {"SUCCESS", "SUCCESS_WITH_WARNINGS"}
+        and bool(diagnostic.get("sheet_tab_color_verified"))
+    )
+
+
 def _logical_sheet_key(name: str) -> str:
-    if name.replace(" ", "") == "AP上线情况概览":
-        return "ap_online_overview"
+    definition = trackside_ap_business_sheet_definition(name)
+    if definition is not None:
+        return definition.stable_key
     digest = content_sha256({"sheet_name": name})[:12]
     return f"sheet_{digest}"
 
@@ -1750,6 +1852,10 @@ def _operation_diagnostic(
         "expected_sheet_order",
         "actual_sheet_order",
         "actual_sheet_order_all",
+        "sheet_tab_color_verified",
+        "expected_tab_color",
+        "actual_tab_color",
+        "probe_sheet",
         "binding_status",
         "local_binding_id",
         "remote_binding_id",

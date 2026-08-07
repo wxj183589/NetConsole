@@ -1050,6 +1050,8 @@ def _render_trackside_ap_business_export(
         current_optical_abnormal_headers=[
             i18n.t(key) for key, _field in CURRENT_OPTICAL_ABNORMAL_COLUMNS
         ],
+        snapshot_generated_at=str(payload.get("created_at") or ""),
+        export_updated_at=datetime.now().astimezone().isoformat(timespec="seconds"),
     )
     check_cancel()
     from netconsole.services.file_contract import attach_export_metadata
