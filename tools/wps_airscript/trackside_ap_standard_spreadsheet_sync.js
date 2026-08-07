@@ -18,17 +18,19 @@ function argv() {
 }
 
 function response(value) {
-  return JSON.stringify({ protocol_version: PROTOCOL_VERSION, script_version: SCRIPT_VERSION, deployment_id: DEPLOYMENT_ID, document_id: DOCUMENT_ID, target_type: TARGET_TYPE, target_code: TARGET_CODE, runtime_capability: RUNTIME_CAPABILITY, ...value });
+  const contextValue = (typeof Context !== "undefined" && Context.argv) || {};
+  const context = contextValue.Context && contextValue.Context.argv ? contextValue.Context.argv : contextValue;
+  return JSON.stringify({ protocol_version: PROTOCOL_VERSION, script_version: SCRIPT_VERSION, deployment_id: DEPLOYMENT_ID, document_id: DOCUMENT_ID, target_type: TARGET_TYPE, target_code: TARGET_CODE, script_id: String(context.script_id || context.expected_script_id || ""), runtime_capability: RUNTIME_CAPABILITY, ...value });
 }
 
-function workbook() {
+function worksheets() {
   if (typeof Application === "undefined") throw new Error("WPS Application API unavailable");
-  return Application.ActiveWorkbook || Application.Workbook || Application;
+  if (!Application.Worksheets) throw new Error("WPS Application.Worksheets API unavailable");
+  return Application.Worksheets;
 }
 
 function sheetNames() {
-  const book = workbook();
-  const sheets = book.Sheets || book.Worksheets || [];
+  const sheets = worksheets();
   const result = [];
   for (let index = 0; index < sheets.Count; index += 1) result.push(String(sheets.Item(index + 1).Name || ""));
   return result;
@@ -41,8 +43,7 @@ function connectionTest() {
 }
 
 function ensureSheet(name) {
-  const book = workbook();
-  const sheets = book.Sheets || book.Worksheets;
+  const sheets = worksheets();
   for (let index = 0; index < sheets.Count; index += 1) if (String(sheets.Item(index + 1).Name) === name) return sheets.Item(index + 1);
   const sheet = sheets.Add();
   if (sheet && "Name" in sheet) sheet.Name = name;
@@ -50,8 +51,7 @@ function ensureSheet(name) {
 }
 
 function findSheet(name) {
-  const book = workbook();
-  const sheets = book.Worksheets || book.Sheets;
+  const sheets = worksheets();
   for (let index = 0; index < sheets.Count; index += 1) {
     const sheet = sheets.Item(index + 1);
     if (String(sheet.Name || "") === name) return sheet;
@@ -131,14 +131,42 @@ function sync(payload) {
 
 function runtimeWriteProbe(args) {
   const sheet = ensureSheet(PROBE_SHEET);
-  const values = [["NetConsole runtime probe", args.probe_id], [new Date().toISOString(), "2x2"]];
   try {
-    sheet.Range("A1").Resize(2, 2).Value2 = values;
-    const echoed = sheet.Range("A1").Resize(2, 2).Value2;
-    const passed = JSON.stringify(echoed) === JSON.stringify(values);
-    return response({ success: passed, error_code: passed ? "" : "WPS_RUNTIME_PROBE_VERIFY_FAILED", message: passed ? "运行时写入探针通过" : "二维数组写后读取不一致", binding_status: readBinding() ? "BOUND" : "UNBOUND", runtime_capability: passed ? "VERIFIED" : "DEPLOYMENT_PENDING", probe_sheet: PROBE_SHEET, probe_id: args.probe_id });
+    if (sheet.UsedRange && sheet.UsedRange.ClearContents) sheet.UsedRange.ClearContents();
+    const scalarRange = sheet.Range("A1");
+    scalarRange.Value2 = "NetConsole runtime probe";
+    const scalarPassed = String(scalarRange.Value2 || "") === "NetConsole runtime probe";
+    const values = [["probe_id", String(args.probe_id || "")], [new Date().toISOString(), "2x2"]];
+    sheet.Range("A2").Resize(2, 2).Value2 = values;
+    const echoed = sheet.Range("A2").Resize(2, 2).Value2;
+    const matrixPassed = JSON.stringify(echoed) === JSON.stringify(values);
+    const capabilities = { worksheet_enum: true, worksheet_item: true, worksheet_create: true, scalar_value2: scalarPassed, matrix_value2: matrixPassed, used_range: !!sheet.UsedRange, clear_contents: true, entire_row_insert: false, visible: true };
+    sheet.Range("A4").Resize(1, 1).EntireRow.Insert();
+    capabilities.entire_row_insert = true;
+    if ("Visible" in sheet) {
+      sheet.Visible = false;
+      capabilities.visible = sheet.Visible === false;
+      sheet.Visible = true;
+    }
+    if (sheet.UsedRange && sheet.UsedRange.ClearContents) sheet.UsedRange.ClearContents();
+    const passed = Object.values(capabilities).every(Boolean);
+    return response({ success: passed, error_code: passed ? "" : "WPS_RUNTIME_PROBE_VERIFY_FAILED", message: passed ? "运行时能力探针通过" : "运行时能力探针未通过", binding_status: readBinding() ? "BOUND" : "UNBOUND", runtime_capability: passed ? "VERIFIED" : "DEPLOYMENT_PENDING", capabilities: capabilities, probe_sheet: PROBE_SHEET, probe_id: args.probe_id });
   } catch (error) {
     return response({ success: false, error_code: "WPS_RUNTIME_PROBE_FAILED", message: String(error && error.message || error).slice(0, 500), runtime_error_name: String(error && error.name || "Error"), runtime_error_stack: String(error && error.stack || "").slice(0, 2048), binding_status: readBinding() ? "BOUND" : "UNBOUND", runtime_capability: "DEPLOYMENT_PENDING" });
+  }
+}
+
+function syncTestSheet(args) {
+  const sheet = ensureSheet("_NetConsoleSyncTest");
+  const values = [["operation", "probe_id", "status"], ["sync_test_sheet", String(args.probe_id || ""), "OK"]];
+  try {
+    sheet.Range("A1").Resize(2, 3).Value2 = values;
+    const echoed = sheet.Range("A1").Resize(2, 3).Value2;
+    const passed = JSON.stringify(echoed) === JSON.stringify(values);
+    if (sheet.UsedRange && sheet.UsedRange.ClearContents) sheet.UsedRange.ClearContents();
+    return response({ success: passed, error_code: passed ? "" : "WPS_SYNC_TEST_VERIFY_FAILED", message: passed ? "同步测试 Sheet 通过" : "同步测试 Sheet 写后读取不一致", binding_status: readBinding() ? "BOUND" : "UNBOUND", runtime_capability: passed ? "VERIFIED" : "DEPLOYMENT_PENDING", probe_sheet: "_NetConsoleSyncTest", probe_id: args.probe_id });
+  } catch (error) {
+    return response({ success: false, error_code: "WPS_SYNC_TEST_FAILED", message: String(error && error.message || error).slice(0, 500), runtime_error_name: String(error && error.name || "Error"), runtime_error_stack: String(error && error.stack || "").slice(0, 2048), binding_status: readBinding() ? "BOUND" : "UNBOUND", runtime_capability: "DEPLOYMENT_PENDING", probe_sheet: "_NetConsoleSyncTest", probe_id: args.probe_id });
   }
 }
 
@@ -146,6 +174,7 @@ function main() {
   const args = argv();
   if (args.operation === "connection_test") return connectionTest();
   if (args.operation === "runtime_write_probe") return runtimeWriteProbe(args);
+  if (args.operation === "sync_test_sheet") return syncTestSheet(args);
   if (args.operation === "sync_trackside_ap_business") return sync(args);
   return response({ success: false, error_code: "OPERATION_UNSUPPORTED", message: "unsupported operation" });
 }

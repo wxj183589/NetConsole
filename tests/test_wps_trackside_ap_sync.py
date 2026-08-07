@@ -422,3 +422,104 @@ def test_wps_sync_is_registered_as_a_job_center_handler() -> None:
     from netconsole.services.job_center.job_registry import registered_task_types
 
     assert WPS_SYNC_TASK_TYPE in registered_task_types()
+
+
+def test_wps_runtime_probe_identity_is_persisted_and_invalidated_by_webhook_change(
+    tmp_path: Path,
+) -> None:
+    paths = PathResolver(tmp_path)
+    service = TracksideApWpsSyncService(paths)
+    service.configure_target(
+        "hzl10",
+        STANDARD_TARGET_CODE,
+        document_open_url="https://www.kdocs.cn/l/standard",
+        webhook_url="https://www.kdocs.cn/api/v3/ide/file/standard/script/script-old/sync_task",
+    )
+    repository = service._repository("hzl10")
+    target = repository.get_target(TRACKSIDE_AP_WPS_BUSINESS_KEY, STANDARD_TARGET_CODE)
+    repository.update_target_remote_state(
+        target.target_id,
+        binding_status="BOUND",
+        runtime_capability="VERIFIED",
+        result={
+            "document_id": "standard",
+            "script_id": "script-old",
+            "script_version": WPS_SCRIPT_VERSIONS[STANDARD_TARGET_CODE],
+            "deployment_id": WPS_DEPLOYMENT_IDS[STANDARD_TARGET_CODE],
+            "binding_id": target.target_id,
+            "site_id": "hzl10",
+            "business_key": TRACKSIDE_AP_WPS_BUSINESS_KEY,
+        },
+    )
+
+    verified = repository.get_target(TRACKSIDE_AP_WPS_BUSINESS_KEY, STANDARD_TARGET_CODE)
+    assert verified.runtime_probe_document_id == "standard"
+    assert verified.runtime_probe_script_id == "script-old"
+    assert verified.runtime_capability == "VERIFIED"
+    assert verified.binding_status == "BOUND"
+
+    updated = service.configure_target(
+        "hzl10",
+        STANDARD_TARGET_CODE,
+        webhook_url="https://www.kdocs.cn/api/v3/ide/file/standard/script/script-new/sync_task",
+    )
+    assert updated["runtime_capability"] == "DEPLOYMENT_PENDING"
+    assert updated["binding_status"] == "UNKNOWN"
+    assert updated["runtime_probe_script_id"] == ""
+    assert updated["expected_script_id"] == "script-new"
+
+
+def test_wps_sync_rejects_unknown_and_unconfirmed_unbound_binding(tmp_path: Path) -> None:
+    service = TracksideApWpsSyncService(PathResolver(tmp_path))
+    service.configure_target(
+        "hzl10",
+        STANDARD_TARGET_CODE,
+        document_open_url="https://www.kdocs.cn/l/standard",
+        webhook_url="https://www.kdocs.cn/api/v3/ide/file/standard/script/script-one/sync_task",
+        enabled=True,
+    )
+    repository = service._repository("hzl10")
+    target = repository.get_target(TRACKSIDE_AP_WPS_BUSINESS_KEY, STANDARD_TARGET_CODE)
+    repository.set_runtime_capability(target.target_id, "VERIFIED")
+
+    with pytest.raises(WpsSyncError) as unknown:
+        service.sync("hzl10", target_codes=[STANDARD_TARGET_CODE])
+    assert unknown.value.code == "WPS_BINDING_STATUS_UNKNOWN"
+
+    repository.update_target_remote_state(
+        target.target_id,
+        binding_status="UNBOUND",
+        result={
+            "document_id": "standard",
+            "script_id": "script-one",
+            "script_version": WPS_SCRIPT_VERSIONS[STANDARD_TARGET_CODE],
+            "deployment_id": WPS_DEPLOYMENT_IDS[STANDARD_TARGET_CODE],
+        },
+    )
+    with pytest.raises(WpsSyncError) as unbound:
+        service.sync("hzl10", target_codes=[STANDARD_TARGET_CODE])
+    assert unbound.value.code == "WPS_DOCUMENT_UNBOUND"
+
+
+def test_wps_connection_test_rejects_webhook_script_id_mismatch() -> None:
+    body = {
+        "success": True,
+        "protocol_version": 2,
+        "script_version": WPS_SCRIPT_VERSIONS[STANDARD_TARGET_CODE],
+        "deployment_id": WPS_DEPLOYMENT_IDS[STANDARD_TARGET_CODE],
+        "script_id": "other-script",
+        "target_type": "WPS_STANDARD_SPREADSHEET",
+        "target_code": STANDARD_TARGET_CODE,
+        "document_id": "document",
+        "runtime_capability": "DEPLOYMENT_PENDING",
+    }
+
+    class FakeClient:
+        def post(self, target, *, token, argv):
+            return WpsHttpResponse(status_code=200, body=body)
+
+    with pytest.raises(WpsSyncError) as captured:
+        WpsStandardSpreadsheetAdapter(FakeClient()).connection_test(
+            _wps_target(), "test-only-token"
+        )
+    assert captured.value.code == "WPS_SCRIPT_ID_MISMATCH"

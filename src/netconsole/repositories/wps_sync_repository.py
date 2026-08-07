@@ -45,6 +45,10 @@ CREATE TABLE IF NOT EXISTS wps_sync_targets (
     last_sync_revision TEXT NOT NULL DEFAULT '',
     runtime_capability TEXT NOT NULL DEFAULT 'DEPLOYMENT_PENDING',
     last_runtime_probe_at TEXT NOT NULL DEFAULT '',
+    runtime_probe_document_id TEXT NOT NULL DEFAULT '',
+    runtime_probe_script_id TEXT NOT NULL DEFAULT '',
+    runtime_probe_script_version TEXT NOT NULL DEFAULT '',
+    runtime_probe_deployment_id TEXT NOT NULL DEFAULT '',
     binding_status TEXT NOT NULL DEFAULT 'UNKNOWN',
     remote_binding_id TEXT NOT NULL DEFAULT '',
     remote_site_id TEXT NOT NULL DEFAULT '',
@@ -126,6 +130,10 @@ class WpsSyncRepository:
         for name, definition in {
             "runtime_capability": "TEXT NOT NULL DEFAULT 'DEPLOYMENT_PENDING'",
             "last_runtime_probe_at": "TEXT NOT NULL DEFAULT ''",
+            "runtime_probe_document_id": "TEXT NOT NULL DEFAULT ''",
+            "runtime_probe_script_id": "TEXT NOT NULL DEFAULT ''",
+            "runtime_probe_script_version": "TEXT NOT NULL DEFAULT ''",
+            "runtime_probe_deployment_id": "TEXT NOT NULL DEFAULT ''",
             "binding_status": "TEXT NOT NULL DEFAULT 'UNKNOWN'",
             "remote_binding_id": "TEXT NOT NULL DEFAULT ''",
             "remote_site_id": "TEXT NOT NULL DEFAULT ''",
@@ -312,6 +320,21 @@ class WpsSyncRepository:
             str(result.get("site_name") or ""),
             str(result.get("business_key") or ""),
         ]
+        if any(key in result for key in (
+            "document_id", "script_id", "script_version", "deployment_id"
+        )):
+            assignments.extend([
+                "runtime_probe_document_id = ?",
+                "runtime_probe_script_id = ?",
+                "runtime_probe_script_version = ?",
+                "runtime_probe_deployment_id = ?",
+            ])
+            values.extend([
+                str(result.get("document_id") or ""),
+                str(result.get("script_id") or ""),
+                str(result.get("script_version") or ""),
+                str(result.get("deployment_id") or ""),
+            ])
         if runtime_capability is not None:
             assignments.extend(["runtime_capability = ?", "last_runtime_probe_at = ?"])
             values.extend([str(runtime_capability), _now()])
@@ -322,6 +345,17 @@ class WpsSyncRepository:
             target_id,
             "runtime_capability = ?, last_runtime_probe_at = ?",
             (str(value), _now()),
+        )
+
+    def clear_runtime_probe_identity(self, target_id: str) -> None:
+        self._update_target(
+            target_id,
+            "runtime_capability = ?, last_runtime_probe_at = ?, "
+            "runtime_probe_document_id = ?, runtime_probe_script_id = ?, "
+            "runtime_probe_script_version = ?, runtime_probe_deployment_id = ?, "
+            "binding_status = ?, remote_binding_id = ?, remote_site_id = ?, "
+            "remote_site_name = ?, remote_business_key = ?",
+            ("DEPLOYMENT_PENDING", "", "", "", "", "", "UNKNOWN", "", "", "", ""),
         )
 
     def create_batch(
@@ -521,6 +555,10 @@ def _target_from_row(row: sqlite3.Row) -> WpsSyncTarget:
         last_sync_revision=str(row["last_sync_revision"] or ""),
         runtime_capability=str(row["runtime_capability"] or "DEPLOYMENT_PENDING"),
         last_runtime_probe_at=str(row["last_runtime_probe_at"] or ""),
+        runtime_probe_document_id=str(row["runtime_probe_document_id"] or ""),
+        runtime_probe_script_id=str(row["runtime_probe_script_id"] or ""),
+        runtime_probe_script_version=str(row["runtime_probe_script_version"] or ""),
+        runtime_probe_deployment_id=str(row["runtime_probe_deployment_id"] or ""),
         binding_status=str(row["binding_status"] or "UNKNOWN"),
         remote_binding_id=str(row["remote_binding_id"] or ""),
         remote_site_id=str(row["remote_site_id"] or ""),

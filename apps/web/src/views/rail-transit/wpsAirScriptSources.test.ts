@@ -58,6 +58,7 @@ describe('WPS AirScript deployment sources', () => {
       expect(source).toContain(`const DOCUMENT_ID = "${documentId}";`)
       expect(source).toContain(`const TARGET_TYPE = "${targetType}";`)
       expect(source).toContain(`const TARGET_CODE = "${targetCode}";`)
+      expect(source).toContain('script_id')
     },
   )
 
@@ -69,6 +70,11 @@ describe('WPS AirScript deployment sources', () => {
       expect(source).toContain('verification: "CONNECTION_PROBE_ONLY"')
       expect(source).not.toMatch(/\.Add\(|\.Insert\(|\.ClearContents\(|\.Value\s*=|CreateRecords|DeleteRecords|EnsureFields|DeleteWhere|AddRecords/)
       expect(source).not.toContain('sync_trackside_ap_business')
+      if (targetCode === 'wps_standard_spreadsheet') {
+        expect(source).toContain('Application.Worksheets')
+        expect(source).not.toContain('ActiveWorkbook')
+        expect(source).not.toContain('Application.Workbook')
+      }
     },
   )
 
@@ -78,6 +84,11 @@ describe('WPS AirScript deployment sources', () => {
     expect(source).toContain('_NetConsoleSyncMeta')
     expect(source).toContain('WPS_DOCUMENT_BINDING_MISMATCH')
     expect(source).toContain('runtime_write_probe')
+    expect(source).toContain('sync_test_sheet')
+    expect(source).toContain('_NetConsoleSyncTest')
+    expect(source).toContain('Application.Worksheets')
+    expect(source).not.toContain('ActiveWorkbook')
+    expect(source).not.toContain('Application.Workbook')
     expect(source).toContain('.Value2 = values')
     expect(source).toContain('EntireRow.Insert()')
     expect(source).not.toContain('Rows.Insert(1, values.length)')

@@ -88,6 +88,15 @@ export function probeTracksideWpsTarget(targetCode: WpsTracksideTargetCode): Pro
   })
 }
 
+export function syncTestTracksideWpsTarget(targetCode: WpsTracksideTargetCode): Promise<{
+  target_code: WpsTracksideTargetCode
+  result: Record<string, unknown>
+}> {
+  return apiRequest(`${wpsRoot}/targets/${encodeURIComponent(targetCode)}/sync-test-sheet`, {
+    method: 'POST',
+  })
+}
+
 export function syncTracksideWpsTargets(payload: {
   target_codes?: WpsTracksideTargetCode[]
   expected_revision?: string

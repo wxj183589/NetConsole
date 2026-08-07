@@ -8,7 +8,8 @@ const TARGET_CODE = "wps_smart_sheet";
 const RUNTIME_CAPABILITY = "RUNTIME_UNVERIFIED";
 
 function main() {
-  const args = (typeof Context !== "undefined" && Context.argv) || {};
+  const context = (typeof Context !== "undefined" && Context.argv) || {};
+  const args = context.Context && context.Context.argv ? context.Context.argv : context;
   return JSON.stringify({
     success: true,
     protocol_version: PROTOCOL_VERSION,
@@ -17,6 +18,7 @@ function main() {
     document_id: DOCUMENT_ID,
     target_type: TARGET_TYPE,
     target_code: TARGET_CODE,
+    script_id: String(args.script_id || args.expected_script_id || ""),
     runtime_capability: RUNTIME_CAPABILITY,
     operation: String(args.operation || "connection_test"),
     objects: [],

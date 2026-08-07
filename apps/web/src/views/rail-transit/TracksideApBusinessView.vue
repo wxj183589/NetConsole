@@ -7,6 +7,7 @@ import {
   getTracksideApBusinessExportProposal,
   listTracksideWpsTargets,
   listTracksideApBusiness,
+  testTracksideWpsTarget,
   startTracksideApBusinessExport,
   startTracksideApUpdate,
   syncTracksideWpsTargets,
@@ -586,9 +587,23 @@ async function syncWps(command: 'all' | WpsTracksideTargetCode): Promise<void> {
   const targetCodes = command === 'all'
     ? enabledTargets.map((target) => target.target_code)
     : [command]
-  const selectedTargets = targetCodes
+  let selectedTargets = targetCodes
     .map((code) => wpsTargets.value.find((target) => target.target_code === code))
     .filter((target): target is WpsTracksideTarget => Boolean(target))
+  const unknownTargets = selectedTargets.filter((target) => target.binding_status === 'UNKNOWN')
+  if (unknownTargets.length) {
+    try {
+      for (const target of unknownTargets) await testTracksideWpsTarget(target.target_code)
+      await loadWpsTargets()
+      selectedTargets = targetCodes
+        .map((code) => wpsTargets.value.find((target) => target.target_code === code))
+        .filter((target): target is WpsTracksideTarget => Boolean(target))
+    } catch (reason) {
+      actionError.value = failure(reason, 'WPS 文档连接状态未知，请先完成连接测试')
+      wpsConfigVisible.value = true
+      return
+    }
+  }
   if (selectedTargets.some((target) => target.runtime_capability !== 'VERIFIED')) {
     actionError.value = 'WPS 运行时写入能力尚未验证；请先在“配置云文档”执行测试写入能力。'
     wpsConfigVisible.value = true
@@ -636,6 +651,16 @@ async function syncWps(command: 'all' | WpsTracksideTargetCode): Promise<void> {
     } catch {
       return
     }
+  }
+  if (selectedTargets.some((target) => target.binding_status === 'UNKNOWN')) {
+    actionError.value = 'WPS 文档绑定状态仍然未知，请在“配置云文档”中检查连接测试结果。'
+    wpsConfigVisible.value = true
+    return
+  }
+  if (selectedTargets.some((target) => target.binding_status === 'MISMATCH')) {
+    actionError.value = 'WPS 文档已绑定到其他局点或业务，当前同步已阻止。'
+    wpsConfigVisible.value = true
+    return
   }
   wpsSyncing.value = true
   actionError.value = ''

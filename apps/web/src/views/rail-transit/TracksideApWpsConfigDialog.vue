@@ -6,6 +6,7 @@ import { CopyDocument, Document, Guide } from '@element-plus/icons-vue'
 import {
   listTracksideWpsTargets,
   probeTracksideWpsTarget,
+  syncTestTracksideWpsTarget,
   testTracksideWpsTarget,
   updateTracksideWpsTarget,
 } from '../../api/tracksideApBusiness'
@@ -43,6 +44,7 @@ interface ConnectionDiagnostic {
   remote_message?: string
   suggestion?: string
   remote_script_version?: string
+  remote_script_id?: string
   remote_deployment_id?: string
   remote_target_code?: string
 }
@@ -56,6 +58,7 @@ const drafts = ref<TargetDraft[]>([])
 const savingCode = ref<WpsTracksideTargetCode | ''>('')
 const testingCode = ref<WpsTracksideTargetCode | ''>('')
 const probingCode = ref<WpsTracksideTargetCode | ''>('')
+const syncTestingCode = ref<WpsTracksideTargetCode | ''>('')
 const errorMessage = ref('')
 const testMessages = ref<Partial<Record<WpsTracksideTargetCode, string>>>({})
 const testDiagnostics = ref<Partial<Record<WpsTracksideTargetCode, ConnectionDiagnostic>>>({})
@@ -218,6 +221,7 @@ async function testConnection(code: WpsTracksideTargetCode): Promise<void> {
       [code]: {
         phase: 'SUCCESS',
         remote_script_version: String(result.script_version || ''),
+        remote_script_id: String(result.script_id || ''),
         remote_deployment_id: String(result.deployment_id || ''),
         remote_target_code: String(result.target_code || ''),
       },
@@ -239,6 +243,7 @@ async function testConnection(code: WpsTracksideTargetCode): Promise<void> {
         ...(details.remote_message ? { remote_message: String(details.remote_message) } : {}),
         ...(details.suggestion ? { suggestion: String(details.suggestion) } : {}),
         ...(details.remote_script_version ? { remote_script_version: String(details.remote_script_version) } : {}),
+        ...(details.remote_script_id ? { remote_script_id: String(details.remote_script_id) } : {}),
         ...(details.remote_deployment_id ? { remote_deployment_id: String(details.remote_deployment_id) } : {}),
         ...(details.remote_target_code ? { remote_target_code: String(details.remote_target_code) } : {}),
       },
@@ -262,6 +267,22 @@ async function runtimeWriteProbe(code: WpsTracksideTargetCode): Promise<void> {
     errorMessage.value = reason instanceof Error ? reason.message : '运行时写入探针失败'
   } finally {
     probingCode.value = ''
+  }
+}
+
+async function syncTestSheet(code: WpsTracksideTargetCode): Promise<void> {
+  if (syncTestingCode.value || savingCode.value || testingCode.value || probingCode.value) return
+  syncTestingCode.value = code
+  errorMessage.value = ''
+  try {
+    const response = await syncTestTracksideWpsTarget(code)
+    testMessages.value = { ...testMessages.value, [code]: String(response.result.message || '同步测试 Sheet 通过') }
+    await reloadTargets()
+    ElMessage.success('同步测试 Sheet 通过')
+  } catch (reason) {
+    errorMessage.value = reason instanceof Error ? reason.message : '同步测试 Sheet 失败'
+  } finally {
+    syncTestingCode.value = ''
   }
 }
 
@@ -340,7 +361,11 @@ async function openDocument(target: WpsTracksideTarget): Promise<void> {
           <span>本地期望部署 ID <code>{{ row.target.expected_deployment_id || '未返回' }}</code></span>
           <span>远端绑定局点 <code>{{ row.target.remote_site_name || row.target.remote_site_id || '未绑定' }}</code></span>
           <span>webhook 脚本 ID <code>{{ webhookScriptIdSummary(row.draft.webhook_url) }}</code></span>
+          <span v-if="row.target.runtime_probe_script_id">最近探针脚本 ID <code>{{ row.target.runtime_probe_script_id }}</code></span>
+          <span v-if="row.target.runtime_probe_script_version">最近探针脚本版本 <code>{{ row.target.runtime_probe_script_version }}</code></span>
+          <span v-if="row.target.runtime_probe_deployment_id">最近探针部署 ID <code>{{ row.target.runtime_probe_deployment_id }}</code></span>
           <span v-if="testDiagnostics[row.target.target_code]?.remote_script_version">WPS 返回脚本版本 <code>{{ testDiagnostics[row.target.target_code]?.remote_script_version }}</code></span>
+          <span v-if="testDiagnostics[row.target.target_code]?.remote_script_id">WPS 返回脚本 ID <code>{{ testDiagnostics[row.target.target_code]?.remote_script_id }}</code></span>
           <span v-if="testDiagnostics[row.target.target_code]?.remote_deployment_id">WPS 返回部署 ID <code>{{ testDiagnostics[row.target.target_code]?.remote_deployment_id }}</code></span>
           <span v-if="testDiagnostics[row.target.target_code]?.remote_target_code">WPS 返回目标代码 <code>{{ testDiagnostics[row.target.target_code]?.remote_target_code }}</code></span>
         </div>
@@ -367,6 +392,7 @@ async function openDocument(target: WpsTracksideTarget): Promise<void> {
           <el-button :icon="CopyDocument" @click="copyAirScript(row.target.target_code, 'probe')">复制连接测试脚本</el-button>
           <el-button :icon="CopyDocument" @click="copyAirScript(row.target.target_code, 'sync')">复制正式同步脚本</el-button>
           <el-button v-if="row.target.target_type === 'WPS_STANDARD_SPREADSHEET'" :loading="probingCode === row.target.target_code" :disabled="Boolean(probingCode) || Boolean(savingCode) || Boolean(testingCode)" @click="runtimeWriteProbe(row.target.target_code)">测试写入能力</el-button>
+          <el-button v-if="row.target.target_type === 'WPS_STANDARD_SPREADSHEET'" :loading="syncTestingCode === row.target.target_code" :disabled="Boolean(syncTestingCode) || Boolean(probingCode) || Boolean(savingCode) || Boolean(testingCode)" @click="syncTestSheet(row.target.target_code)">测试同步 Sheet</el-button>
           <el-button :icon="Guide" @click="toggleDeploymentSteps(row.target.target_code)">查看部署步骤</el-button>
         </div>
 

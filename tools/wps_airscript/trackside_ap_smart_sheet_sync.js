@@ -22,6 +22,8 @@ function argv() {
 }
 
 function response(value) {
+  const contextValue = (typeof Context !== "undefined" && Context.argv) || {};
+  const context = contextValue.Context && contextValue.Context.argv ? contextValue.Context.argv : contextValue;
   return JSON.stringify({
     protocol_version: PROTOCOL_VERSION,
     script_version: SCRIPT_VERSION,
@@ -29,6 +31,7 @@ function response(value) {
     document_id: DOCUMENT_ID,
     target_type: TARGET_TYPE,
     target_code: TARGET_CODE,
+    script_id: String(context.script_id || context.expected_script_id || ""),
     runtime_capability: RUNTIME_CAPABILITY,
     ...value,
   });

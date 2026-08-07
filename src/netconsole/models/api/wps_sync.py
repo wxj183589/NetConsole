@@ -19,8 +19,13 @@ class WpsSyncTargetDTO(ApiModel):
     expected_document_id: str
     expected_script_version: str = ""
     expected_deployment_id: str = ""
+    expected_script_id: str = ""
     runtime_capability: str = "RUNTIME_UNVERIFIED"
     last_runtime_probe_at: str = ""
+    runtime_probe_document_id: str = ""
+    runtime_probe_script_id: str = ""
+    runtime_probe_script_version: str = ""
+    runtime_probe_deployment_id: str = ""
     binding_status: str = "UNKNOWN"
     binding_id: str = ""
     remote_binding_id: str = ""

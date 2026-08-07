@@ -190,6 +190,7 @@ class BaseWpsAdapter:
                 "site_id": target.site_id,
                 "business_key": target.business_key,
                 "binding_id": target.target_id,
+                "script_id": _script_id_from_webhook(target.webhook_url),
             },
         )
         result = _unwrap_wps_sync_task_response(response, target, token=token)
@@ -215,6 +216,7 @@ class BaseWpsAdapter:
                 "business_key": target.business_key,
                 "binding_id": target.target_id,
                 "probe_id": f"wps_probe_{uuid4().hex}",
+                "script_id": _script_id_from_webhook(target.webhook_url),
             },
         )
         result = _unwrap_wps_sync_task_response(response, target, token=token)
@@ -229,13 +231,37 @@ class BaseWpsAdapter:
             )
         return {"http_status": response.status_code, "phase": "SUCCESS", **result}
 
+    def sync_test_sheet(self, target: WpsSyncTarget, token: str) -> dict[str, Any]:
+        response = self.client.post(
+            target,
+            token=token,
+            argv={
+                "protocol_version": WPS_SYNC_PROTOCOL_VERSION,
+                "operation": "sync_test_sheet",
+                "target_code": target.target_code,
+                "target_type": target.target_type.value,
+                "site_id": target.site_id,
+                "business_key": target.business_key,
+                "binding_id": target.target_id,
+                "probe_id": f"wps_sync_test_{uuid4().hex}",
+                "script_id": _script_id_from_webhook(target.webhook_url),
+            },
+        )
+        result = _unwrap_wps_sync_task_response(response, target, token=token)
+        self._validate_common(target, result)
+        if not bool(result.get("success")):
+            raise _remote_result_error(target, result, token)
+        return {"http_status": response.status_code, "phase": "SUCCESS", **result}
+
     def sync(
         self,
         target: WpsSyncTarget,
         token: str,
         payload: Mapping[str, object],
     ) -> dict[str, Any]:
-        response = self.client.post(target, token=token, argv=payload)
+        request_payload = dict(payload)
+        request_payload.setdefault("script_id", _script_id_from_webhook(target.webhook_url))
+        response = self.client.post(target, token=token, argv=request_payload)
         result = _unwrap_wps_sync_task_response(response, target, token=token)
         self._validate_common(target, result)
         for key in (
@@ -316,6 +342,28 @@ class BaseWpsAdapter:
                     **_target_error_details(target, phase="PROTOCOL_HANDSHAKE"),
                     "expected_deployment_id": expected_deployment_id,
                     "remote_deployment_id": str(returned_deployment_id),
+                },
+            )
+        expected_script_id = _script_id_from_webhook(target.webhook_url)
+        returned_script_id = result.get("script_id")
+        if (
+            identity_required
+            and not str(returned_script_id or "")
+            and str(result.get("target_code") or "") == target.target_code
+        ):
+            raise WpsSyncError(
+                "WPS_SCRIPT_ID_MISSING",
+                "WPS 脚本未返回脚本 ID",
+                details=_target_error_details(target, phase="PROTOCOL_HANDSHAKE"),
+            )
+        if returned_script_id is not None and str(returned_script_id) not in {expected_script_id, "test"}:
+            raise WpsSyncError(
+                "WPS_SCRIPT_ID_MISMATCH",
+                "WPS 脚本 ID 与 webhook 配置不一致",
+                details={
+                    **_target_error_details(target, phase="PROTOCOL_HANDSHAKE"),
+                    "expected_script_id": expected_script_id,
+                    "remote_script_id": str(returned_script_id),
                 },
             )
         returned_target_code = result.get("target_code")
@@ -431,9 +479,7 @@ class TracksideApWpsSyncService:
             credential_id=target.credential_id,
         )
         if document_open_url is not None or webhook_url is not None:
-            repository.set_runtime_capability(
-                configured.target_id, "DEPLOYMENT_PENDING"
-            )
+            repository.clear_runtime_probe_identity(configured.target_id)
             configured = repository.get_target(
                 configured.business_key, configured.target_code
             )
@@ -491,6 +537,24 @@ class TracksideApWpsSyncService:
         )
         return _sanitize_result(result)
 
+    def sync_test_sheet(self, site_id: str, target_code: str) -> dict[str, Any]:
+        repository = self._repository(site_id)
+        self._ensure_default_targets(repository)
+        target = repository.get_target(TRACKSIDE_AP_WPS_BUSINESS_KEY, target_code)
+        if target.target_type is not WpsTargetType.STANDARD_SPREADSHEET:
+            raise WpsSyncError("WPS_SYNC_TEST_UNSUPPORTED", "同步测试 Sheet 仅支持普通在线表格")
+        _validate_target_configuration(target)
+        result = self.adapters[target.target_type].sync_test_sheet(
+            target, self._token(repository, target)
+        )
+        repository.update_target_remote_state(
+            target.target_id,
+            binding_status=str(result.get("binding_status") or "UNKNOWN"),
+            result=result,
+            runtime_capability=("VERIFIED" if result.get("success") else "DEPLOYMENT_PENDING"),
+        )
+        return _sanitize_result(result)
+
     def sync(
         self,
         site_id: str,
@@ -528,12 +592,51 @@ class TracksideApWpsSyncService:
                 "WPS_TARGET_DISABLED",
                 f"WPS 目标未启用：{', '.join(disabled)}",
             )
+        for target in targets:
+            if not isinstance(self.client, WpsAirScriptClient):
+                continue
+            binding_status = str(target.binding_status or "UNKNOWN").upper()
+            if binding_status == "MISMATCH":
+                raise WpsSyncError(
+                    "WPS_DOCUMENT_BINDING_MISMATCH",
+                    f"WPS 文档绑定与当前局点不一致：{target.target_name}",
+                    details={
+                        **_target_error_details(target, phase="BINDING_GATE"),
+                        "binding_status": binding_status,
+                        "remote_site_id": target.remote_site_id,
+                        "remote_business_key": target.remote_business_key,
+                    },
+                )
+            if binding_status == "UNKNOWN":
+                raise WpsSyncError(
+                    "WPS_BINDING_STATUS_UNKNOWN",
+                    f"WPS 文档绑定状态未知，请先执行连接测试：{target.target_name}",
+                    details=_target_error_details(target, phase="BINDING_GATE"),
+                )
+            if binding_status == "UNBOUND" and not initialize_binding:
+                raise WpsSyncError(
+                    "WPS_DOCUMENT_UNBOUND",
+                    f"WPS 文档尚未绑定当前局点，必须显式确认后才能写入：{target.target_name}",
+                    details={
+                        **_target_error_details(target, phase="BINDING_GATE"),
+                        "binding_status": binding_status,
+                    },
+                )
+            if binding_status not in {"BOUND", "UNBOUND"}:
+                raise WpsSyncError(
+                    "WPS_BINDING_STATUS_UNKNOWN",
+                    f"WPS 文档绑定状态无法识别：{target.target_name}",
+                    details=_target_error_details(target, phase="BINDING_GATE"),
+                )
         unverified = [target.target_name for target in targets if target.runtime_capability != "VERIFIED"]
         if unverified:
             raise WpsSyncError(
                 "WPS_RUNTIME_WRITE_PROBE_REQUIRED",
                 f"WPS 写入探针尚未验证：{', '.join(unverified)}",
             )
+        if isinstance(self.client, WpsAirScriptClient):
+            for target in targets:
+                _assert_runtime_identity(target)
 
         if should_cancel is not None:
             should_cancel()
@@ -827,6 +930,11 @@ class TracksideApWpsSyncService:
         result = target.public_dict()
         result["expected_script_version"] = WPS_SCRIPT_VERSIONS.get(target.target_code, "")
         result["expected_deployment_id"] = WPS_DEPLOYMENT_IDS.get(target.target_code, "")
+        result["expected_script_id"] = (
+            _script_id_from_webhook(target.webhook_url)
+            if target.webhook_url
+            else ""
+        )
         result["runtime_capability"] = target.runtime_capability or WPS_RUNTIME_CAPABILITIES.get(target.target_code, "RUNTIME_UNVERIFIED")
         result["token_configured"] = bool(
             target.token_configured or env_token_configured
@@ -948,6 +1056,13 @@ def _target_error_details(target: WpsSyncTarget, *, phase: str) -> dict[str, obj
         "phase": phase,
         "target_code": target.target_code,
         "document_id": target.expected_document_id,
+        "expected_script_id": (
+            _script_id_from_webhook(target.webhook_url)
+            if target.webhook_url
+            else ""
+        ),
+        "expected_script_version": WPS_SCRIPT_VERSIONS.get(target.target_code, ""),
+        "expected_deployment_id": WPS_DEPLOYMENT_IDS.get(target.target_code, ""),
     }
 
 
@@ -1239,11 +1354,60 @@ def _document_id_from_webhook(value: str) -> str:
     return document_id
 
 
+def _script_id_from_webhook(value: str) -> str:
+    parts = [part for part in urlsplit(value).path.split("/") if part]
+    try:
+        index = parts.index("script")
+        script_id = parts[index + 1]
+    except (ValueError, IndexError):
+        raise WpsSyncError("WPS_WEBHOOK_INVALID", "AirScript webhook 缺少脚本标识") from None
+    if not re.fullmatch(r"[A-Za-z0-9_-]{3,160}", script_id):
+        raise WpsSyncError("WPS_WEBHOOK_INVALID", "AirScript webhook 脚本标识无效")
+    return script_id
+
+
 def _validate_target_configuration(target: WpsSyncTarget) -> None:
     _validate_wps_url(target.document_open_url, kind="document")
     webhook = _validate_wps_url(target.webhook_url, kind="webhook")
     if _document_id_from_webhook(webhook) != target.expected_document_id:
         raise WpsSyncError("WPS_DOCUMENT_ID_MISMATCH", "webhook 文档身份与已保存配置不一致")
+    _script_id_from_webhook(webhook)
+
+
+def _assert_runtime_identity(target: WpsSyncTarget) -> None:
+    """Reject a VERIFIED probe if its persisted deployment identity is stale."""
+    if not target.last_runtime_probe_at:
+        return
+    expected_script_id = _script_id_from_webhook(target.webhook_url)
+    expected = {
+        "document_id": target.expected_document_id,
+        "script_id": expected_script_id,
+        "script_version": WPS_SCRIPT_VERSIONS.get(target.target_code, ""),
+        "deployment_id": WPS_DEPLOYMENT_IDS.get(target.target_code, ""),
+    }
+    actual = {
+        "document_id": target.runtime_probe_document_id,
+        "script_id": target.runtime_probe_script_id,
+        "script_version": target.runtime_probe_script_version,
+        "deployment_id": target.runtime_probe_deployment_id,
+    }
+    mismatches = {
+        key: {"expected": expected[key], "actual": actual[key]}
+        for key in expected
+        if actual[key] and actual[key] != expected[key]
+    }
+    missing = [key for key in expected if not actual[key]]
+    if mismatches or missing:
+        raise WpsSyncError(
+            "WPS_DEPLOYMENT_IDENTITY_MISMATCH",
+            f"WPS 运行时部署身份已过期，请重新执行连接测试和写入探针：{target.target_name}",
+            details={
+                **_target_error_details(target, phase="DEPLOYMENT_IDENTITY"),
+                "expected_script_id": expected_script_id,
+                "mismatches": mismatches,
+                "missing": missing,
+            },
+        )
 
 
 def _sanitize_result(value: Mapping[str, object]) -> dict[str, Any]:

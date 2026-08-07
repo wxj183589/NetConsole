@@ -123,6 +123,21 @@ def runtime_write_probe(request: Request, target_code: str) -> WpsSyncConnection
 
 
 @router.post(
+    "/targets/{target_code}/sync-test-sheet",
+    response_model=WpsSyncConnectionTestDTO,
+    dependencies=[Depends(require_feature("web.rail_trackside_ap_business_wps_sync"))],
+)
+def sync_test_sheet(request: Request, target_code: str) -> WpsSyncConnectionTestDTO:
+    try:
+        return WpsSyncConnectionTestDTO(
+            target_code=target_code,
+            result=_service(request).sync_test_sheet(_site_id(request), target_code),
+        )
+    except WpsSyncError as exc:
+        _raise(exc)
+
+
+@router.post(
     "/sync",
     response_model=RailTransitTaskDTO,
     status_code=status.HTTP_202_ACCEPTED,

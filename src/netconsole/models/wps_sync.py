@@ -45,6 +45,10 @@ class WpsSyncTarget:
     last_sync_revision: str = ""
     runtime_capability: str = "DEPLOYMENT_PENDING"
     last_runtime_probe_at: str = ""
+    runtime_probe_document_id: str = ""
+    runtime_probe_script_id: str = ""
+    runtime_probe_script_version: str = ""
+    runtime_probe_deployment_id: str = ""
     binding_status: str = "UNKNOWN"
     remote_binding_id: str = ""
     remote_site_id: str = ""
@@ -75,6 +79,10 @@ class WpsSyncTarget:
             "last_sync_revision": self.last_sync_revision,
             "runtime_capability": self.runtime_capability,
             "last_runtime_probe_at": self.last_runtime_probe_at,
+            "runtime_probe_document_id": self.runtime_probe_document_id,
+            "runtime_probe_script_id": self.runtime_probe_script_id,
+            "runtime_probe_script_version": self.runtime_probe_script_version,
+            "runtime_probe_deployment_id": self.runtime_probe_deployment_id,
             "binding_status": self.binding_status,
             "binding_id": self.target_id,
             "remote_binding_id": self.remote_binding_id,
