@@ -9,7 +9,9 @@
 
 轨旁 AP 页面中的“配置云文档”会分别保存每个目标的“在线文档连接”“webhook地址”和“脚本令牌”。保存 webhook 后，服务端从 webhook 的 `/file/{document_id}/.../script/{script_id}/sync_task` 路径固定文档和脚本身份；同步前会拒绝空地址、非 HTTPS、非 `kdocs.cn` 域名、IP 地址、查询参数和身份不一致的配置。普通在线表格与智能表格不能交叉复用 webhook 或脚本令牌。
 
-连接门禁是：`BOUND` 允许同步；`UNBOUND` 只有在本次请求显式确认初始化绑定时允许；`UNKNOWN` 必须先执行连接测试；`MISMATCH` 直接拒绝。每次连接测试和写入探针都会记录文档 ID、脚本 ID、脚本版本和部署 ID。修改文档连接或 webhook 会清除旧探针身份，并将运行时能力降级为 `DEPLOYMENT_PENDING`，需要重新测试。
+连接门禁是：`BOUND` 允许同步；`UNBOUND` 只有在本次请求显式确认初始化绑定时允许；`UNKNOWN` 必须先执行连接测试；`MISMATCH` 直接拒绝。连接测试、写入能力探针和 `sync_test_sheet` 分别持久化执行时间、状态、操作、文档 ID、脚本 ID、脚本版本、部署 ID 和脱敏消息；只有成功的连接测试更新“当前远端脚本身份”。因此旧版本连接失败可以作为该操作的历史诊断保留，但不会冒充当前远端版本。
+
+修改在线文档连接、webhook、webhook 中的文档 ID 或脚本 ID 会清除旧连接身份、绑定状态和三类验证，并将运行时能力降级为 `DEPLOYMENT_PENDING`。保存完全相同的连接地址和 webhook 是 no-op；修改超时、启用开关或 Token 不会清除远端部署身份、运行时探针或绑定身份。前端仅在草稿真实变化或输入新 Token 时保存，未修改配置时“测试连接”直接执行连接测试。
 
 普通在线表格的数据写入链路已由杭州地铁 10 号线真实 9 Sheet 同步确认，证据等级为 `USER_FIELD_CONFIRMED`。`2.3.0-standard` 新增的格式恢复、Sheet 排序和系统 Sheet 隐藏已完成 DTO/脚本自动化，状态为 `IMPLEMENTED_RUNTIME_PENDING`；在新版脚本部署到 WPS 并完成视觉对比前，不得写成真实格式验收通过。
 
@@ -38,7 +40,7 @@ AirScript `sync_task` 的 HTTP 200 响应按 WPS 执行 envelope 解析：外层
 
 连接探针只读取 `Context.argv` 与既有 `_NetConsoleSyncMeta`，不创建 Sheet、字段或记录，不清空、不删除、不初始化绑定。它返回 `UNBOUND`、`BOUND` 或绑定元数据，供界面显示当前局点、目标文档与远端绑定局点。仓库没有可替代 WPS 编辑器的 AirScript 运行时；四个脚本都必须以顶层 `return main();` 返回 JSON。仅调用 `main();` 或使用 `console.log(main())` 会使 webhook 的 `data.result` 缺少协议结果，即使 WPS 编辑器显示“执行完毕”，也不能视为连接验证通过。
 
-普通表格在正式同步前必须运行运行时能力探针和 `sync_test_sheet`：只操作并隐藏 `_NetConsoleRuntimeProbe` 或 `_NetConsoleSyncTest`，验证 `Application.Worksheets` 的枚举/定位/创建、`Value2` 标量与二维数组读写、`UsedRange`、`ClearContents`、`EntireRow.Insert` 和 `Visible`。成功后目标才标为 `VERIFIED`。正式脚本使用 `Value2` 写二维数组，追加模式通过 N 行 Range 的 `EntireRow.Insert()` 插行；业务写入前严格核验远端 `_NetConsoleSyncMeta` 的 `document_id`、`binding_id`、`site_id`、`business_key`、`target_code` 和 `target_type`。未绑定文档必须在 UI 二次确认后才允许初始化；任一不一致返回 `WPS_DOCUMENT_BINDING_MISMATCH`，不会触碰业务 Sheet。
+普通表格在正式同步前必须依次完成成功连接测试、运行时能力探针和 `sync_test_sheet`：只操作并隐藏 `_NetConsoleRuntimeProbe` 或 `_NetConsoleSyncTest`，验证 `Application.Worksheets` 的枚举/定位/创建、`Value2` 标量与二维数组读写、`UsedRange`、`ClearContents`、`EntireRow.Insert` 和 `Visible`。正式同步门禁要求远端确认身份、运行时探针身份和同步测试身份全部与当前 webhook 的同一 `document_id`、`script_id`、`script_version` 和 `deployment_id` 匹配；旧版本成功状态不能复用。正式脚本使用 `Value2` 写二维数组，追加模式通过 N 行 Range 的 `EntireRow.Insert()` 插行；业务写入前严格核验远端 `_NetConsoleSyncMeta` 的 `document_id`、`binding_id`、`site_id`、`business_key`、`target_code` 和 `target_type`。未绑定文档必须在 UI 二次确认后才允许初始化；任一不一致返回 `WPS_DOCUMENT_BINDING_MISMATCH`，不会触碰业务 Sheet。
 
 智能表格脚本不再使用未验证的 `book.Tables`、`DataTables`、`EnsureFields`、`DeleteWhere` 或 `AddRecords`。正式写入前需要在目标运行时核对官方 `Application.Sheet`、`Application.Field`、`Application.Record.CreateRecords` 和 `Application.Record.DeleteRecords` 的实际参数、分页和限额；未完成前脚本返回 `WPS_SMART_SHEET_RUNTIME_UNVERIFIED`。
 
@@ -51,12 +53,13 @@ AirScript `sync_task` 的 HTTP 200 响应按 WPS 执行 envelope 解析：外层
 3. 回到 NetConsole 更新 webhook，点击“测试连接”，先确认 `sync_task` 的 `data.result` 不是 `[Undefined]`，再核对返回的 `document_id`、`target_type`、`target_code`、`protocol_version`、脚本版本和部署 ID。
 4. 通过“复制正式同步脚本”替换同一个脚本内容并保存；普通表格必须确认脚本身份是 `2.3.0-standard` / `trackside-ap-standard-2.3.0`，再重新测试。不要把普通表格和智能表格 webhook 交叉使用。
 5. 对普通表格点击“测试写入能力”，确认 `_NetConsoleRuntimeProbe` 的二维数组写入与回读通过；未通过时正式同步保持禁用。
-6. 首次同步会显示当前局点与未绑定文档的二次确认；只有确认后才初始化远端绑定。绑定不匹配时停止写入并在任务详情显示错误码、失败 Sheet 和失败操作。
-7. 确认当前局点业务 revision 后，手动点击页面的“同步云文档”。
-8. 将同一次本地 XLSX 与普通在线表格逐 Sheet 对比名称、顺序、行列数、关键值、合并区域、列宽、行高、表头填充/字体、数字和百分比格式、对齐、换行及边框；允许 WPS 与 openpyxl 的颜色表示和列宽单位存在小幅平台差异。
-9. 检查 `AP上线情况概览` 新块位于顶部且旧历史格式未被覆盖，并确认所有 `_NetConsole*` Sheet 已隐藏且位于末尾。
-10. 任务为 `SUCCESS_WITH_WARNINGS` 时检查 `format_warnings` 的 Sheet、能力和原因，确认业务值完整后再判断是否接受平台格式差异；数据不完整必须按 `FAILED` 处理。
-11. 任一目标失败时，只重试失败目标；已成功目标不重复写入。
+6. 点击“测试同步 Sheet”，确认 `_NetConsoleSyncTest` 写入、回读和清理通过；页面中的连接测试、写入能力和同步测试三条诊断必须显示同一个脚本 ID、版本和部署 ID。
+7. 首次同步会显示当前局点与未绑定文档的二次确认；只有确认后才初始化远端绑定。绑定不匹配时停止写入并在任务详情显示错误码、失败 Sheet 和失败操作。
+8. 确认当前局点业务 revision 后，手动点击页面的“同步云文档”。
+9. 将同一次本地 XLSX 与普通在线表格逐 Sheet 对比名称、顺序、行列数、关键值、合并区域、列宽、行高、表头填充/字体、数字和百分比格式、对齐、换行及边框；允许 WPS 与 openpyxl 的颜色表示和列宽单位存在小幅平台差异。
+10. 检查 `AP上线情况概览` 新块位于顶部且旧历史格式未被覆盖，并确认所有 `_NetConsole*` Sheet 已隐藏且位于末尾。
+11. 任务为 `SUCCESS_WITH_WARNINGS` 时检查 `format_warnings` 的 Sheet、能力和原因，确认业务值完整后再判断是否接受平台格式差异；数据不完整必须按 `FAILED` 处理。
+12. 任一目标失败时，只重试失败目标；已成功目标不重复写入。
 
 同步按钮只提交 `trackside_ap_wps_sync` Job Center 任务，不在 FastAPI 请求线程执行工作簿构建或 webhook 网络请求。任务完成后，在统一任务中心查看父任务的 `SUCCESS`、`SUCCESS_WITH_WARNINGS`、`PARTIAL_SUCCESS` 或 `FAILED` 业务结果，以及普通表格和智能表格各自的目标结果与格式告警。
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Callable, Iterable
 from datetime import datetime
@@ -54,6 +55,13 @@ CREATE TABLE IF NOT EXISTS wps_sync_targets (
     remote_site_id TEXT NOT NULL DEFAULT '',
     remote_site_name TEXT NOT NULL DEFAULT '',
     remote_business_key TEXT NOT NULL DEFAULT '',
+    connection_diagnostic TEXT NOT NULL DEFAULT '',
+    runtime_probe_diagnostic TEXT NOT NULL DEFAULT '',
+    sync_test_diagnostic TEXT NOT NULL DEFAULT '',
+    remote_script_version TEXT NOT NULL DEFAULT '',
+    remote_deployment_id TEXT NOT NULL DEFAULT '',
+    remote_script_id TEXT NOT NULL DEFAULT '',
+    remote_identity_verified_at TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     UNIQUE(site_id, business_key, target_code),
@@ -139,6 +147,13 @@ class WpsSyncRepository:
             "remote_site_id": "TEXT NOT NULL DEFAULT ''",
             "remote_site_name": "TEXT NOT NULL DEFAULT ''",
             "remote_business_key": "TEXT NOT NULL DEFAULT ''",
+            "connection_diagnostic": "TEXT NOT NULL DEFAULT ''",
+            "runtime_probe_diagnostic": "TEXT NOT NULL DEFAULT ''",
+            "sync_test_diagnostic": "TEXT NOT NULL DEFAULT ''",
+            "remote_script_version": "TEXT NOT NULL DEFAULT ''",
+            "remote_deployment_id": "TEXT NOT NULL DEFAULT ''",
+            "remote_script_id": "TEXT NOT NULL DEFAULT ''",
+            "remote_identity_verified_at": "TEXT NOT NULL DEFAULT ''",
         }.items():
             if name not in columns:
                 connection.execute(f"ALTER TABLE wps_sync_targets ADD COLUMN {name} {definition}")
@@ -305,22 +320,20 @@ class WpsSyncRepository:
         binding_status: str,
         result: dict[str, object],
         runtime_capability: str | None = None,
+        persist_runtime_identity: bool = True,
     ) -> None:
-        assignments = [
-            "binding_status = ?",
-            "remote_binding_id = ?",
-            "remote_site_id = ?",
-            "remote_site_name = ?",
-            "remote_business_key = ?",
-        ]
-        values: list[object] = [
-            str(binding_status or "UNKNOWN"),
-            str(result.get("binding_id") or ""),
-            str(result.get("site_id") or ""),
-            str(result.get("site_name") or ""),
-            str(result.get("business_key") or ""),
-        ]
-        if any(key in result for key in (
+        assignments = ["binding_status = ?"]
+        values: list[object] = [str(binding_status or "UNKNOWN")]
+        for key, column in (
+            ("binding_id", "remote_binding_id"),
+            ("site_id", "remote_site_id"),
+            ("site_name", "remote_site_name"),
+            ("business_key", "remote_business_key"),
+        ):
+            if key in result:
+                assignments.append(f"{column} = ?")
+                values.append(str(result.get(key) or ""))
+        if persist_runtime_identity and any(key in result for key in (
             "document_id", "script_id", "script_version", "deployment_id"
         )):
             assignments.extend([
@@ -340,6 +353,44 @@ class WpsSyncRepository:
             values.extend([str(runtime_capability), _now()])
         self._update_target(target_id, ", ".join(assignments), values)
 
+    def update_target_remote_identity(
+        self,
+        target_id: str,
+        *,
+        result: dict[str, object],
+    ) -> None:
+        self._update_target(
+            target_id,
+            "remote_script_version = ?, remote_deployment_id = ?, "
+            "remote_script_id = ?, remote_identity_verified_at = ?",
+            (
+                str(result.get("script_version") or ""),
+                str(result.get("deployment_id") or ""),
+                str(result.get("script_id") or ""),
+                _now(),
+            ),
+        )
+
+    def update_target_diagnostic(
+        self,
+        target_id: str,
+        *,
+        operation: str,
+        diagnostic: dict[str, object],
+    ) -> None:
+        column = {
+            "connection_test": "connection_diagnostic",
+            "runtime_write_probe": "runtime_probe_diagnostic",
+            "sync_test_sheet": "sync_test_diagnostic",
+        }.get(str(operation))
+        if not column:
+            raise ValueError(f"unsupported WPS diagnostic operation: {operation}")
+        self._update_target(
+            target_id,
+            f"{column} = ?",
+            (json.dumps(diagnostic, ensure_ascii=False, sort_keys=True),),
+        )
+
     def set_runtime_capability(self, target_id: str, value: str) -> None:
         self._update_target(
             target_id,
@@ -354,8 +405,15 @@ class WpsSyncRepository:
             "runtime_probe_document_id = ?, runtime_probe_script_id = ?, "
             "runtime_probe_script_version = ?, runtime_probe_deployment_id = ?, "
             "binding_status = ?, remote_binding_id = ?, remote_site_id = ?, "
-            "remote_site_name = ?, remote_business_key = ?",
-            ("DEPLOYMENT_PENDING", "", "", "", "", "", "UNKNOWN", "", "", "", ""),
+            "remote_site_name = ?, remote_business_key = ?, "
+            "connection_diagnostic = ?, runtime_probe_diagnostic = ?, "
+            "sync_test_diagnostic = ?, remote_script_version = ?, "
+            "remote_deployment_id = ?, remote_script_id = ?, "
+            "remote_identity_verified_at = ?",
+            (
+                "DEPLOYMENT_PENDING", "", "", "", "", "", "UNKNOWN", "", "", "", "",
+                "", "", "", "", "", "", "",
+            ),
         )
 
     def create_batch(
@@ -564,7 +622,25 @@ def _target_from_row(row: sqlite3.Row) -> WpsSyncTarget:
         remote_site_id=str(row["remote_site_id"] or ""),
         remote_site_name=str(row["remote_site_name"] or ""),
         remote_business_key=str(row["remote_business_key"] or ""),
+        connection_diagnostic=_diagnostic_from_row(row, "connection_diagnostic"),
+        runtime_probe_diagnostic=_diagnostic_from_row(row, "runtime_probe_diagnostic"),
+        sync_test_diagnostic=_diagnostic_from_row(row, "sync_test_diagnostic"),
+        remote_script_version=str(row["remote_script_version"] or ""),
+        remote_deployment_id=str(row["remote_deployment_id"] or ""),
+        remote_script_id=str(row["remote_script_id"] or ""),
+        remote_identity_verified_at=str(row["remote_identity_verified_at"] or ""),
     )
+
+
+def _diagnostic_from_row(row: sqlite3.Row, column: str) -> dict[str, object]:
+    raw = str(row[column] or "")
+    if not raw:
+        return {}
+    try:
+        decoded = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return dict(decoded) if isinstance(decoded, dict) else {}
 
 
 def _now() -> str:

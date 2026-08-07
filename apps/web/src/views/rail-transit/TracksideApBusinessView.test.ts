@@ -554,6 +554,34 @@ describe('TracksideApBusinessView mounted behavior', () => {
     wrapper.unmount()
   })
 
+  it('tests an unchanged WPS target without submitting the same configuration again', async () => {
+    const configuredTargets = wpsTargets(true)
+    api.listTracksideWpsTargets.mockResolvedValue(configuredTargets)
+    api.testTracksideWpsTarget.mockResolvedValue({
+      target_code: 'wps_standard_spreadsheet',
+      result: {
+        document_name: '普通在线表格',
+        script_version: '2.3.0-standard',
+        deployment_id: 'trackside-ap-standard-2.3.0',
+      },
+    })
+    const wrapper = await mountView()
+    await button(wrapper, '配置云文档').trigger('click')
+    await flushPromises()
+    const dialog = wrapper.getComponent(TracksideApWpsConfigDialog)
+    const vm = dialog.vm as unknown as {
+      saveTargetConfiguration: (code: 'wps_standard_spreadsheet') => Promise<boolean>
+      testConnection: (code: 'wps_standard_spreadsheet') => Promise<void>
+    }
+
+    await vm.saveTargetConfiguration('wps_standard_spreadsheet')
+    expect(api.updateTracksideWpsTarget).not.toHaveBeenCalled()
+    await vm.testConnection('wps_standard_spreadsheet')
+    expect(api.updateTracksideWpsTarget).not.toHaveBeenCalled()
+    expect(api.testTracksideWpsTarget).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+
   it('opens each WPS document through the platform adapter without window.open in Electron', async () => {
     platformMocks.hostType = 'electron'
     api.listTracksideWpsTargets.mockResolvedValue(wpsTargets(true))

@@ -11,6 +11,7 @@ import {
   updateTracksideWpsTarget,
 } from '../../api/tracksideApBusiness'
 import type {
+  WpsTracksideDiagnostic,
   WpsTracksideTarget,
   WpsTracksideTargetCode,
 } from '../../types/tracksideApBusiness'
@@ -37,18 +38,6 @@ interface TargetDraft {
   token: string
 }
 
-interface ConnectionDiagnostic {
-  phase: string
-  http_status?: number
-  remote_error_code?: string
-  remote_message?: string
-  suggestion?: string
-  remote_script_version?: string
-  remote_script_id?: string
-  remote_deployment_id?: string
-  remote_target_code?: string
-}
-
 const visible = computed({
   get: () => props.modelValue,
   set: (value: boolean) => emit('update:modelValue', value),
@@ -60,8 +49,6 @@ const testingCode = ref<WpsTracksideTargetCode | ''>('')
 const probingCode = ref<WpsTracksideTargetCode | ''>('')
 const syncTestingCode = ref<WpsTracksideTargetCode | ''>('')
 const errorMessage = ref('')
-const testMessages = ref<Partial<Record<WpsTracksideTargetCode, string>>>({})
-const testDiagnostics = ref<Partial<Record<WpsTracksideTargetCode, ConnectionDiagnostic>>>({})
 const deploymentOpen = ref<Partial<Record<WpsTracksideTargetCode, boolean>>>({})
 const targetRows = computed(() => localTargets.value.flatMap((target) => {
   const draft = targetDraft(target.target_code)
@@ -96,6 +83,40 @@ function applyTargets(value: WpsTracksideTarget[], preserveDrafts = false): void
 
 function targetDraft(code: WpsTracksideTargetCode): TargetDraft | undefined {
   return drafts.value.find((item) => item.target_code === code)
+}
+
+function targetByCode(code: WpsTracksideTargetCode): WpsTracksideTarget | undefined {
+  return localTargets.value.find((item) => item.target_code === code)
+}
+
+function targetDraftDirty(target: WpsTracksideTarget, draft: TargetDraft): boolean {
+  return Boolean(
+    draft.token.trim()
+    || draft.enabled !== target.enabled
+    || draft.timeout_seconds !== target.timeout_seconds
+    || draft.document_open_url.trim() !== target.document_open_url
+    || draft.webhook_url.trim() !== target.webhook_url
+  )
+}
+
+function remoteIdentityMatches(target: WpsTracksideTarget): boolean {
+  return Boolean(
+    target.remote_identity_verified_at
+    && target.remote_script_version === target.expected_script_version
+    && target.remote_deployment_id === target.expected_deployment_id
+    && target.remote_script_id === target.expected_script_id
+  )
+}
+
+function diagnosticItems(target: WpsTracksideTarget): Array<{
+  label: string
+  diagnostic: WpsTracksideDiagnostic
+}> {
+  return [
+    { label: '连接测试', diagnostic: target.connection_diagnostic || {} },
+    { label: '写入能力', diagnostic: target.runtime_probe_diagnostic || {} },
+    { label: '同步测试 Sheet', diagnostic: target.sync_test_diagnostic || {} },
+  ]
 }
 
 function targetTypeLabel(target: WpsTracksideTarget): string {
@@ -172,7 +193,12 @@ async function saveTargetConfiguration(
   silent = false,
 ): Promise<boolean> {
   const draft = targetDraft(code)
-  if (savingCode.value || testingCode.value || !draft) return false
+  const target = targetByCode(code)
+  if (savingCode.value || testingCode.value || !draft || !target) return false
+  if (!targetDraftDirty(target, draft)) {
+    if (!silent) ElMessage.info('当前配置没有变化')
+    return true
+  }
   savingCode.value = code
   errorMessage.value = ''
   try {
@@ -201,7 +227,7 @@ async function testConnection(code: WpsTracksideTargetCode): Promise<void> {
   errorMessage.value = ''
   const saved = await saveTargetConfiguration(code, true)
   if (!saved) return
-  const target = localTargets.value.find((item) => item.target_code === code)
+  const target = targetByCode(code)
   if (!target?.token_configured) {
     errorMessage.value = '请先输入脚本令牌并保存配置'
     return
@@ -212,42 +238,11 @@ async function testConnection(code: WpsTracksideTargetCode): Promise<void> {
     const result = response.result
     const documentName = String(result.document_name || target.target_name)
     const scriptVersion = String(result.script_version || '未知')
-    testMessages.value = {
-      ...testMessages.value,
-      [code]: `连接成功：${documentName}，脚本 ${scriptVersion}`,
-    }
-    testDiagnostics.value = {
-      ...testDiagnostics.value,
-      [code]: {
-        phase: 'SUCCESS',
-        remote_script_version: String(result.script_version || ''),
-        remote_script_id: String(result.script_id || ''),
-        remote_deployment_id: String(result.deployment_id || ''),
-        remote_target_code: String(result.target_code || ''),
-      },
-    }
     await reloadTargets()
-    ElMessage.success(`${targetTypeLabel(target)}连接测试通过`)
+    ElMessage.success(`${targetTypeLabel(target)}连接测试通过：${documentName}，脚本 ${scriptVersion}`)
   } catch (reason) {
     const message = reason instanceof Error ? reason.message : '连接测试失败'
-    testMessages.value = { ...testMessages.value, [code]: message }
-    const details = (reason && typeof reason === 'object' && 'details' in reason)
-      ? (reason as { details?: Record<string, unknown> }).details || {}
-      : {}
-    testDiagnostics.value = {
-      ...testDiagnostics.value,
-      [code]: {
-        phase: String(details.phase || 'HTTP_AUTH'),
-        ...(details.http_status === undefined ? {} : { http_status: Number(details.http_status) }),
-        ...(details.remote_error_code ? { remote_error_code: String(details.remote_error_code) } : {}),
-        ...(details.remote_message ? { remote_message: String(details.remote_message) } : {}),
-        ...(details.suggestion ? { suggestion: String(details.suggestion) } : {}),
-        ...(details.remote_script_version ? { remote_script_version: String(details.remote_script_version) } : {}),
-        ...(details.remote_script_id ? { remote_script_id: String(details.remote_script_id) } : {}),
-        ...(details.remote_deployment_id ? { remote_deployment_id: String(details.remote_deployment_id) } : {}),
-        ...(details.remote_target_code ? { remote_target_code: String(details.remote_target_code) } : {}),
-      },
-    }
+    errorMessage.value = message
     await reloadTargets().catch(() => undefined)
   } finally {
     testingCode.value = ''
@@ -260,11 +255,11 @@ async function runtimeWriteProbe(code: WpsTracksideTargetCode): Promise<void> {
   errorMessage.value = ''
   try {
     const response = await probeTracksideWpsTarget(code)
-    testMessages.value = { ...testMessages.value, [code]: String(response.result.message || '运行时写入探针通过') }
     await reloadTargets()
-    ElMessage.success('运行时写入探针通过')
+    ElMessage.success(String(response.result.message || '运行时写入探针通过'))
   } catch (reason) {
     errorMessage.value = reason instanceof Error ? reason.message : '运行时写入探针失败'
+    await reloadTargets().catch(() => undefined)
   } finally {
     probingCode.value = ''
   }
@@ -276,11 +271,11 @@ async function syncTestSheet(code: WpsTracksideTargetCode): Promise<void> {
   errorMessage.value = ''
   try {
     const response = await syncTestTracksideWpsTarget(code)
-    testMessages.value = { ...testMessages.value, [code]: String(response.result.message || '同步测试 Sheet 通过') }
     await reloadTargets()
-    ElMessage.success('同步测试 Sheet 通过')
+    ElMessage.success(String(response.result.message || '同步测试 Sheet 通过'))
   } catch (reason) {
     errorMessage.value = reason instanceof Error ? reason.message : '同步测试 Sheet 失败'
+    await reloadTargets().catch(() => undefined)
   } finally {
     syncTestingCode.value = ''
   }
@@ -359,15 +354,15 @@ async function openDocument(target: WpsTracksideTarget): Promise<void> {
         <div class="script-identity">
           <span>本地期望脚本版本 <code>{{ row.target.expected_script_version || '未返回' }}</code></span>
           <span>本地期望部署 ID <code>{{ row.target.expected_deployment_id || '未返回' }}</code></span>
+          <span>当前远端脚本版本 <code>{{ row.target.remote_script_version || '未确认' }}</code></span>
+          <span>当前远端部署 ID <code>{{ row.target.remote_deployment_id || '未确认' }}</code></span>
+          <span>当前远端脚本 ID <code>{{ row.target.remote_script_id || '未确认' }}</code></span>
+          <span>部署身份匹配 <el-tag size="small" :type="remoteIdentityMatches(row.target) ? 'success' : 'warning'">{{ remoteIdentityMatches(row.target) ? '是' : '否' }}</el-tag></span>
           <span>远端绑定局点 <code>{{ row.target.remote_site_name || row.target.remote_site_id || '未绑定' }}</code></span>
           <span>webhook 脚本 ID <code>{{ webhookScriptIdSummary(row.draft.webhook_url) }}</code></span>
           <span v-if="row.target.runtime_probe_script_id">最近探针脚本 ID <code>{{ row.target.runtime_probe_script_id }}</code></span>
           <span v-if="row.target.runtime_probe_script_version">最近探针脚本版本 <code>{{ row.target.runtime_probe_script_version }}</code></span>
           <span v-if="row.target.runtime_probe_deployment_id">最近探针部署 ID <code>{{ row.target.runtime_probe_deployment_id }}</code></span>
-          <span v-if="testDiagnostics[row.target.target_code]?.remote_script_version">WPS 返回脚本版本 <code>{{ testDiagnostics[row.target.target_code]?.remote_script_version }}</code></span>
-          <span v-if="testDiagnostics[row.target.target_code]?.remote_script_id">WPS 返回脚本 ID <code>{{ testDiagnostics[row.target.target_code]?.remote_script_id }}</code></span>
-          <span v-if="testDiagnostics[row.target.target_code]?.remote_deployment_id">WPS 返回部署 ID <code>{{ testDiagnostics[row.target.target_code]?.remote_deployment_id }}</code></span>
-          <span v-if="testDiagnostics[row.target.target_code]?.remote_target_code">WPS 返回目标代码 <code>{{ testDiagnostics[row.target.target_code]?.remote_target_code }}</code></span>
         </div>
 
         <el-form label-position="top" class="connection-fields">
@@ -416,13 +411,24 @@ async function openDocument(target: WpsTracksideTarget): Promise<void> {
           <span>最近同步</span>
           <el-tag size="small" :type="statusType(row.target.last_sync_status)">{{ statusLabel(row.target.last_sync_status) }}</el-tag>
         </div>
-        <p v-if="testMessages[row.target.target_code]" class="test-message">{{ testMessages[row.target.target_code] }}</p>
-        <div v-if="testDiagnostics[row.target.target_code]" class="test-diagnostic">
-          <span>阶段：{{ phaseLabel(testDiagnostics[row.target.target_code]?.phase || '') }}</span>
-          <span v-if="testDiagnostics[row.target.target_code]?.http_status">HTTP 状态：{{ testDiagnostics[row.target.target_code]?.http_status }}</span>
-          <span v-if="testDiagnostics[row.target.target_code]?.remote_error_code">WPS 错误码：{{ testDiagnostics[row.target.target_code]?.remote_error_code }}</span>
-          <span v-if="testDiagnostics[row.target.target_code]?.remote_message">原因：{{ testDiagnostics[row.target.target_code]?.remote_message }}</span>
-          <span v-if="testDiagnostics[row.target.target_code]?.suggestion">建议：{{ testDiagnostics[row.target.target_code]?.suggestion }}</span>
+        <div class="operation-diagnostics">
+          <div v-for="item in diagnosticItems(row.target)" :key="item.label" class="operation-diagnostic">
+            <div class="diagnostic-heading">
+              <strong>{{ item.label }}</strong>
+              <el-tag size="small" :type="statusType(item.diagnostic.status || '')">{{ statusLabel(item.diagnostic.status || '') }}</el-tag>
+              <span>{{ item.diagnostic.executed_at || '未执行' }}</span>
+            </div>
+            <span v-if="item.diagnostic.operation">操作：<code>{{ item.diagnostic.operation }}</code></span>
+            <span v-if="item.diagnostic.script_version">脚本版本：<code>{{ item.diagnostic.script_version }}</code></span>
+            <span v-if="item.diagnostic.deployment_id">部署 ID：<code>{{ item.diagnostic.deployment_id }}</code></span>
+            <span v-if="item.diagnostic.script_id">脚本 ID：<code>{{ item.diagnostic.script_id }}</code></span>
+            <span v-if="item.diagnostic.phase">阶段：{{ phaseLabel(item.diagnostic.phase) }}</span>
+            <span v-if="item.diagnostic.http_status">HTTP 状态：{{ item.diagnostic.http_status }}</span>
+            <span v-if="item.diagnostic.remote_error_code">WPS 错误码：{{ item.diagnostic.remote_error_code }}</span>
+            <span v-if="item.diagnostic.message">{{ item.diagnostic.message }}</span>
+            <span v-if="item.diagnostic.remote_message">原因：{{ item.diagnostic.remote_message }}</span>
+            <span v-if="item.diagnostic.suggestion">建议：{{ item.diagnostic.suggestion }}</span>
+          </div>
         </div>
 
         <div class="target-actions">
@@ -449,5 +455,5 @@ async function openDocument(target: WpsTracksideTarget): Promise<void> {
 </template>
 
 <style scoped>
-.wps-config{display:grid;gap:16px;max-height:70vh;overflow:auto;padding-right:4px}.wps-config :deep(.el-form-item){margin-bottom:14px}.wps-target{display:grid;gap:12px;border-top:1px solid var(--el-border-color-lighter);padding-top:16px}.target-heading,.target-actions,.target-status,.deployment-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.target-heading{justify-content:space-between}.target-heading>div{display:grid;gap:4px}.target-heading span,.target-status,.target-fields span,.script-identity{color:var(--el-text-color-secondary);font-size:12px}.target-fields{display:grid;grid-template-columns:150px 220px minmax(180px,1fr);gap:16px}.target-fields>label,.target-fields>div{display:grid;align-content:start;gap:7px}.script-identity{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px 16px}.connection-fields{display:grid;grid-template-columns:1fr;gap:0}.deployment-actions{justify-content:flex-start}.deployment-steps{display:grid;gap:8px;padding:12px;border:1px solid var(--el-border-color-lighter);background:var(--el-fill-color-light);font-size:13px}.deployment-steps ol{margin:0;padding-left:22px}.deployment-steps li{margin:5px 0}.deployment-steps p{margin:0;color:var(--el-text-color-secondary)}.target-status{flex-wrap:wrap}.target-status>span:nth-of-type(2){margin-left:12px}.test-message{margin:0;color:var(--el-text-color-regular);font-size:13px}.test-diagnostic{display:grid;gap:4px;margin:0;padding:8px 10px;background:var(--el-fill-color-light);color:var(--el-text-color-regular);font-size:12px}.target-actions{justify-content:flex-end}code{overflow-wrap:anywhere}@media(max-width:720px){.target-fields,.script-identity{grid-template-columns:1fr}.target-heading{align-items:flex-start;flex-direction:column}.target-actions{justify-content:flex-start}}
+.wps-config{display:grid;gap:16px;max-height:70vh;overflow:auto;padding-right:4px}.wps-config :deep(.el-form-item){margin-bottom:14px}.wps-target{display:grid;gap:12px;border-top:1px solid var(--el-border-color-lighter);padding-top:16px}.target-heading,.target-actions,.target-status,.deployment-actions,.diagnostic-heading{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.target-heading{justify-content:space-between}.target-heading>div{display:grid;gap:4px}.target-heading span,.target-status,.target-fields span,.script-identity{color:var(--el-text-color-secondary);font-size:12px}.target-fields{display:grid;grid-template-columns:150px 220px minmax(180px,1fr);gap:16px}.target-fields>label,.target-fields>div{display:grid;align-content:start;gap:7px}.script-identity{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px 16px}.connection-fields{display:grid;grid-template-columns:1fr;gap:0}.deployment-actions{justify-content:flex-start}.deployment-steps{display:grid;gap:8px;padding:12px;border:1px solid var(--el-border-color-lighter);background:var(--el-fill-color-light);font-size:13px}.deployment-steps ol{margin:0;padding-left:22px}.deployment-steps li{margin:5px 0}.deployment-steps p{margin:0;color:var(--el-text-color-secondary)}.target-status{flex-wrap:wrap}.target-status>span:nth-of-type(2){margin-left:12px}.operation-diagnostics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.operation-diagnostic{display:grid;align-content:start;gap:4px;padding:8px 10px;border:1px solid var(--el-border-color-lighter);color:var(--el-text-color-regular);font-size:12px}.diagnostic-heading>span{color:var(--el-text-color-secondary)}.target-actions{justify-content:flex-end}code{overflow-wrap:anywhere}@media(max-width:720px){.target-fields,.script-identity,.operation-diagnostics{grid-template-columns:1fr}.target-heading{align-items:flex-start;flex-direction:column}.target-actions{justify-content:flex-start}}
 </style>

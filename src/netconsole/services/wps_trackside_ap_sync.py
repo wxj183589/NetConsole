@@ -480,7 +480,14 @@ class TracksideApWpsSyncService:
             token=token,
             credential_id=target.credential_id,
         )
-        if document_open_url is not None or webhook_url is not None:
+        connection_identity_changed = any(
+            (
+                target.document_open_url != configured.document_open_url,
+                target.webhook_url != configured.webhook_url,
+                target.expected_document_id != configured.expected_document_id,
+            )
+        )
+        if connection_identity_changed:
             repository.clear_runtime_probe_identity(configured.target_id)
             configured = repository.get_target(
                 configured.business_key, configured.target_code
@@ -503,6 +510,16 @@ class TracksideApWpsSyncService:
         except WpsSyncError as exc:
             if not exc.details:
                 exc.details.update(_target_error_details(target, phase="LOCAL_CONFIGURATION"))
+            repository.update_target_diagnostic(
+                target.target_id,
+                operation="connection_test",
+                diagnostic=_operation_diagnostic(
+                    "connection_test",
+                    status="FAILED",
+                    message=str(exc),
+                    values=exc.details,
+                ),
+            )
             repository.update_target_test(
                 target.target_id,
                 status="FAILED",
@@ -514,10 +531,22 @@ class TracksideApWpsSyncService:
             status="SUCCESS",
             message="连接测试通过",
         )
+        repository.update_target_diagnostic(
+            target.target_id,
+            operation="connection_test",
+            diagnostic=_operation_diagnostic(
+                "connection_test",
+                status="SUCCESS",
+                message=str(result.get("message") or "连接测试通过"),
+                values=result,
+            ),
+        )
+        repository.update_target_remote_identity(target.target_id, result=result)
         repository.update_target_remote_state(
             target.target_id,
             binding_status=str(result.get("binding_status") or "UNKNOWN"),
             result=result,
+            persist_runtime_identity=False,
         )
         return _sanitize_result(result)
 
@@ -527,9 +556,35 @@ class TracksideApWpsSyncService:
         target = repository.get_target(TRACKSIDE_AP_WPS_BUSINESS_KEY, target_code)
         if target.target_type is not WpsTargetType.STANDARD_SPREADSHEET:
             raise WpsSyncError("WPS_RUNTIME_PROBE_UNSUPPORTED", "当前仅支持普通在线表格写入探针")
-        _validate_target_configuration(target)
-        result = self.adapters[target.target_type].runtime_write_probe(
-            target, self._token(repository, target)
+        try:
+            _validate_target_configuration(target)
+            result = self.adapters[target.target_type].runtime_write_probe(
+                target, self._token(repository, target)
+            )
+        except WpsSyncError as exc:
+            details = dict(exc.details) or _target_error_details(
+                target, phase="LOCAL_CONFIGURATION"
+            )
+            repository.update_target_diagnostic(
+                target.target_id,
+                operation="runtime_write_probe",
+                diagnostic=_operation_diagnostic(
+                    "runtime_write_probe",
+                    status="FAILED",
+                    message=str(exc),
+                    values=details,
+                ),
+            )
+            raise
+        repository.update_target_diagnostic(
+            target.target_id,
+            operation="runtime_write_probe",
+            diagnostic=_operation_diagnostic(
+                "runtime_write_probe",
+                status="SUCCESS",
+                message=str(result.get("message") or "运行时写入探针通过"),
+                values=result,
+            ),
         )
         repository.update_target_remote_state(
             target.target_id,
@@ -545,15 +600,41 @@ class TracksideApWpsSyncService:
         target = repository.get_target(TRACKSIDE_AP_WPS_BUSINESS_KEY, target_code)
         if target.target_type is not WpsTargetType.STANDARD_SPREADSHEET:
             raise WpsSyncError("WPS_SYNC_TEST_UNSUPPORTED", "同步测试 Sheet 仅支持普通在线表格")
-        _validate_target_configuration(target)
-        result = self.adapters[target.target_type].sync_test_sheet(
-            target, self._token(repository, target)
+        try:
+            _validate_target_configuration(target)
+            result = self.adapters[target.target_type].sync_test_sheet(
+                target, self._token(repository, target)
+            )
+        except WpsSyncError as exc:
+            details = dict(exc.details) or _target_error_details(
+                target, phase="LOCAL_CONFIGURATION"
+            )
+            repository.update_target_diagnostic(
+                target.target_id,
+                operation="sync_test_sheet",
+                diagnostic=_operation_diagnostic(
+                    "sync_test_sheet",
+                    status="FAILED",
+                    message=str(exc),
+                    values=details,
+                ),
+            )
+            raise
+        repository.update_target_diagnostic(
+            target.target_id,
+            operation="sync_test_sheet",
+            diagnostic=_operation_diagnostic(
+                "sync_test_sheet",
+                status="SUCCESS",
+                message=str(result.get("message") or "同步测试 Sheet 通过"),
+                values=result,
+            ),
         )
         repository.update_target_remote_state(
             target.target_id,
             binding_status=str(result.get("binding_status") or "UNKNOWN"),
             result=result,
-            runtime_capability=("VERIFIED" if result.get("success") else "DEPLOYMENT_PENDING"),
+            persist_runtime_identity=False,
         )
         return _sanitize_result(result)
 
@@ -638,7 +719,7 @@ class TracksideApWpsSyncService:
             )
         if isinstance(self.client, WpsAirScriptClient):
             for target in targets:
-                _assert_runtime_identity(target)
+                _assert_standard_sync_readiness(target)
 
         if should_cancel is not None:
             should_cancel()
@@ -1216,6 +1297,49 @@ def _target_error_details(target: WpsSyncTarget, *, phase: str) -> dict[str, obj
     }
 
 
+def _operation_diagnostic(
+    operation: str,
+    *,
+    status: str,
+    message: str,
+    values: Mapping[str, object],
+) -> dict[str, object]:
+    sanitized = _sanitize_result(values)
+    diagnostic: dict[str, object] = {
+        "executed_at": _now(),
+        "status": str(status or "FAILED").upper(),
+        "script_version": str(
+            sanitized.get("remote_script_version")
+            or sanitized.get("script_version")
+            or ""
+        ),
+        "deployment_id": str(
+            sanitized.get("remote_deployment_id")
+            or sanitized.get("deployment_id")
+            or ""
+        ),
+        "script_id": str(
+            sanitized.get("remote_script_id")
+            or sanitized.get("script_id")
+            or ""
+        ),
+        "document_id": str(sanitized.get("document_id") or ""),
+        "operation": str(operation),
+        "message": _sanitize_error(message),
+    }
+    for key in (
+        "phase",
+        "http_status",
+        "remote_error_code",
+        "remote_message",
+        "suggestion",
+        "target_code",
+    ):
+        if sanitized.get(key) not in (None, ""):
+            diagnostic[key] = sanitized[key]
+    return diagnostic
+
+
 def _remote_result_error(
     target: WpsSyncTarget,
     result: Mapping[str, object],
@@ -1558,6 +1682,79 @@ def _assert_runtime_identity(target: WpsSyncTarget) -> None:
                 "missing": missing,
             },
         )
+
+
+def _assert_standard_sync_readiness(target: WpsSyncTarget) -> None:
+    if target.target_type is not WpsTargetType.STANDARD_SPREADSHEET:
+        return
+    expected = {
+        "document_id": target.expected_document_id,
+        "script_id": _script_id_from_webhook(target.webhook_url),
+        "script_version": WPS_SCRIPT_VERSIONS.get(target.target_code, ""),
+        "deployment_id": WPS_DEPLOYMENT_IDS.get(target.target_code, ""),
+    }
+    connection_identity = {
+        "script_id": target.remote_script_id,
+        "script_version": target.remote_script_version,
+        "deployment_id": target.remote_deployment_id,
+    }
+    connection_diagnostic_identity = {
+        key: str(target.connection_diagnostic.get(key) or "")
+        for key in ("document_id", "script_id", "script_version", "deployment_id")
+    }
+    connection_mismatch = {
+        key: {"expected": expected[key], "actual": actual}
+        for key, actual in connection_identity.items()
+        if actual != expected[key]
+    }
+    connection_mismatch.update({
+        f"diagnostic_{key}": {"expected": expected[key], "actual": actual}
+        for key, actual in connection_diagnostic_identity.items()
+        if actual != expected[key]
+    })
+    if (
+        not target.remote_identity_verified_at
+        or str(target.connection_diagnostic.get("status") or "").upper() != "SUCCESS"
+        or str(target.connection_diagnostic.get("operation") or "") != "connection_test"
+        or connection_mismatch
+    ):
+        raise WpsSyncError(
+            "WPS_CONNECTION_TEST_REQUIRED",
+            f"WPS 当前远端脚本身份尚未确认，请重新执行连接测试：{target.target_name}",
+            details={
+                **_target_error_details(target, phase="DEPLOYMENT_IDENTITY"),
+                "mismatches": connection_mismatch,
+            },
+        )
+
+    for operation, label, diagnostic in (
+        ("runtime_write_probe", "写入能力探针", target.runtime_probe_diagnostic),
+        ("sync_test_sheet", "同步测试 Sheet", target.sync_test_diagnostic),
+    ):
+        actual = {
+            key: str(diagnostic.get(key) or "")
+            for key in ("document_id", "script_id", "script_version", "deployment_id")
+        }
+        mismatches = {
+            key: {"expected": expected[key], "actual": actual[key]}
+            for key in expected
+            if actual[key] != expected[key]
+        }
+        if (
+            str(diagnostic.get("status") or "").upper() != "SUCCESS"
+            or str(diagnostic.get("operation") or "") != operation
+            or mismatches
+        ):
+            raise WpsSyncError(
+                "WPS_DEPLOYMENT_READINESS_REQUIRED",
+                f"WPS {label}尚未由当前部署验证：{target.target_name}",
+                details={
+                    **_target_error_details(target, phase="DEPLOYMENT_IDENTITY"),
+                    "operation": operation,
+                    "mismatches": mismatches,
+                },
+            )
+    _assert_runtime_identity(target)
 
 
 def _sanitize_result(value: Mapping[str, object]) -> dict[str, Any]:

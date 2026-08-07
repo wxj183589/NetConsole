@@ -54,6 +54,13 @@ class WpsSyncTarget:
     remote_site_id: str = ""
     remote_site_name: str = ""
     remote_business_key: str = ""
+    connection_diagnostic: dict[str, Any] = field(default_factory=dict)
+    runtime_probe_diagnostic: dict[str, Any] = field(default_factory=dict)
+    sync_test_diagnostic: dict[str, Any] = field(default_factory=dict)
+    remote_script_version: str = ""
+    remote_deployment_id: str = ""
+    remote_script_id: str = ""
+    remote_identity_verified_at: str = ""
 
     def public_dict(self) -> dict[str, Any]:
         return {
@@ -89,6 +96,13 @@ class WpsSyncTarget:
             "remote_site_id": self.remote_site_id,
             "remote_site_name": self.remote_site_name,
             "remote_business_key": self.remote_business_key,
+            "connection_diagnostic": self.connection_diagnostic,
+            "runtime_probe_diagnostic": self.runtime_probe_diagnostic,
+            "sync_test_diagnostic": self.sync_test_diagnostic,
+            "remote_script_version": self.remote_script_version,
+            "remote_deployment_id": self.remote_deployment_id,
+            "remote_script_id": self.remote_script_id,
+            "remote_identity_verified_at": self.remote_identity_verified_at,
         }
 
 

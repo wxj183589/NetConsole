@@ -24,6 +24,7 @@ from netconsole.services.wps_trackside_ap_sync import (
     WPS_DEPLOYMENT_IDS,
     WPS_SCRIPT_VERSIONS,
     WPS_SYNC_TASK_TYPE,
+    _assert_standard_sync_readiness,
     workbook_dto_from_xlsx,
 )
 
@@ -655,6 +656,181 @@ def test_wps_runtime_probe_identity_is_persisted_and_invalidated_by_webhook_chan
     assert updated["binding_status"] == "UNKNOWN"
     assert updated["runtime_probe_script_id"] == ""
     assert updated["expected_script_id"] == "script-new"
+
+
+def _seed_verified_wps_target(
+    service: TracksideApWpsSyncService,
+    *,
+    script_id: str = "script-one",
+) -> tuple[WpsSyncRepository, WpsSyncTarget]:
+    service.configure_target(
+        "hzl10",
+        STANDARD_TARGET_CODE,
+        document_open_url="https://www.kdocs.cn/l/standard",
+        webhook_url=(
+            "https://www.kdocs.cn/api/v3/ide/file/standard/"
+            f"script/{script_id}/sync_task"
+        ),
+        token="seed-token",
+        enabled=True,
+    )
+    repository = service._repository("hzl10")
+    target = repository.get_target(TRACKSIDE_AP_WPS_BUSINESS_KEY, STANDARD_TARGET_CODE)
+    identity = {
+        "document_id": "standard",
+        "script_id": script_id,
+        "script_version": WPS_SCRIPT_VERSIONS[STANDARD_TARGET_CODE],
+        "deployment_id": WPS_DEPLOYMENT_IDS[STANDARD_TARGET_CODE],
+        "binding_id": target.target_id,
+        "site_id": "hzl10",
+        "business_key": TRACKSIDE_AP_WPS_BUSINESS_KEY,
+    }
+    repository.update_target_remote_identity(target.target_id, result=identity)
+    repository.update_target_remote_state(
+        target.target_id,
+        binding_status="BOUND",
+        result=identity,
+        runtime_capability="VERIFIED",
+    )
+    for operation in ("connection_test", "runtime_write_probe", "sync_test_sheet"):
+        repository.update_target_diagnostic(
+            target.target_id,
+            operation=operation,
+            diagnostic={
+                "executed_at": "2026-08-07T10:00:00+08:00",
+                "status": "SUCCESS",
+                "script_version": identity["script_version"],
+                "deployment_id": identity["deployment_id"],
+                "script_id": identity["script_id"],
+                "document_id": identity["document_id"],
+                "operation": operation,
+                "message": "ok",
+            },
+        )
+    return repository, repository.get_target(TRACKSIDE_AP_WPS_BUSINESS_KEY, STANDARD_TARGET_CODE)
+
+
+@pytest.mark.parametrize(
+    "update",
+    [
+        {"document_open_url": "https://www.kdocs.cn/l/standard"},
+        {"webhook_url": "https://www.kdocs.cn/api/v3/ide/file/standard/script/script-one/sync_task"},
+        {"timeout_seconds": 60},
+        {"enabled": False},
+        {"token": "rotated-token"},
+    ],
+)
+def test_wps_target_configuration_noop_and_non_identity_changes_keep_deployment(
+    tmp_path: Path,
+    update: dict[str, object],
+) -> None:
+    service = TracksideApWpsSyncService(PathResolver(tmp_path))
+    repository, target = _seed_verified_wps_target(service)
+
+    service.configure_target("hzl10", STANDARD_TARGET_CODE, **update)
+
+    refreshed = repository.get_target(TRACKSIDE_AP_WPS_BUSINESS_KEY, STANDARD_TARGET_CODE)
+    assert refreshed.runtime_capability == "VERIFIED"
+    assert refreshed.binding_status == "BOUND"
+    assert refreshed.runtime_probe_script_id == "script-one"
+    assert refreshed.remote_script_id == "script-one"
+    assert refreshed.remote_deployment_id == WPS_DEPLOYMENT_IDS[STANDARD_TARGET_CODE]
+    if "token" in update:
+        assert repository.resolve_token(target) == "rotated-token"
+
+
+def test_wps_target_configuration_document_identity_change_clears_all_runtime_state(
+    tmp_path: Path,
+) -> None:
+    service = TracksideApWpsSyncService(PathResolver(tmp_path))
+    repository, target = _seed_verified_wps_target(service)
+
+    service.configure_target(
+        "hzl10",
+        STANDARD_TARGET_CODE,
+        webhook_url="https://www.kdocs.cn/api/v3/ide/file/other-document/script/script-one/sync_task",
+    )
+
+    refreshed = repository.get_target(TRACKSIDE_AP_WPS_BUSINESS_KEY, STANDARD_TARGET_CODE)
+    assert refreshed.expected_document_id == "other-document"
+    assert refreshed.runtime_capability == "DEPLOYMENT_PENDING"
+    assert refreshed.binding_status == "UNKNOWN"
+    assert refreshed.remote_script_id == ""
+    assert refreshed.connection_diagnostic == {}
+    assert refreshed.runtime_probe_diagnostic == {}
+    assert refreshed.sync_test_diagnostic == {}
+    assert refreshed.remote_identity_verified_at == ""
+    assert target.remote_script_id == "script-one"
+
+
+def test_wps_operation_diagnostics_keep_old_connection_failure_separate_from_new_probe(
+    tmp_path: Path,
+) -> None:
+    old_result = {
+        "success": True,
+        "protocol_version": 2,
+        "script_version": "2.2.0-standard",
+        "deployment_id": "trackside-ap-standard-2.2",
+        "script_id": "script-one",
+        "target_type": "WPS_STANDARD_SPREADSHEET",
+        "target_code": STANDARD_TARGET_CODE,
+        "document_id": "standard",
+        "runtime_capability": "DEPLOYMENT_PENDING",
+    }
+    current_result = {
+        **old_result,
+        "script_version": WPS_SCRIPT_VERSIONS[STANDARD_TARGET_CODE],
+        "deployment_id": WPS_DEPLOYMENT_IDS[STANDARD_TARGET_CODE],
+        "runtime_capability": "VERIFIED",
+        "binding_status": "BOUND",
+    }
+
+    class FakeClient:
+        def post(self, target, *, token, argv):
+            if argv["operation"] == "connection_test":
+                return WpsHttpResponse(status_code=200, body=old_result)
+            return WpsHttpResponse(status_code=200, body=current_result)
+
+    service = TracksideApWpsSyncService(PathResolver(tmp_path), client=FakeClient())
+    service.configure_target(
+        "hzl10",
+        STANDARD_TARGET_CODE,
+        document_open_url="https://www.kdocs.cn/l/standard",
+        webhook_url="https://www.kdocs.cn/api/v3/ide/file/standard/script/script-one/sync_task",
+        token="test-token",
+    )
+    with pytest.raises(WpsSyncError) as failure:
+        service.connection_test("hzl10", STANDARD_TARGET_CODE)
+    assert failure.value.code == "WPS_SCRIPT_VERSION_MISMATCH"
+    service.runtime_write_probe("hzl10", STANDARD_TARGET_CODE)
+    repository = service._repository("hzl10")
+    target = repository.get_target(TRACKSIDE_AP_WPS_BUSINESS_KEY, STANDARD_TARGET_CODE)
+    assert target.connection_diagnostic["status"] == "FAILED"
+    assert target.connection_diagnostic["script_version"] == "2.2.0-standard"
+    assert target.runtime_probe_diagnostic["status"] == "SUCCESS"
+    assert target.runtime_probe_diagnostic["script_version"] == WPS_SCRIPT_VERSIONS[STANDARD_TARGET_CODE]
+    assert target.remote_script_version == ""
+
+
+def test_wps_formal_sync_gate_requires_same_deployment_for_all_operations(
+    tmp_path: Path,
+) -> None:
+    service = TracksideApWpsSyncService(PathResolver(tmp_path))
+    repository, target = _seed_verified_wps_target(service)
+    _assert_standard_sync_readiness(target)
+
+    stale = dict(target.sync_test_diagnostic)
+    stale["deployment_id"] = "trackside-ap-standard-2.2"
+    repository.update_target_diagnostic(
+        target.target_id,
+        operation="sync_test_sheet",
+        diagnostic=stale,
+    )
+    with pytest.raises(WpsSyncError) as captured:
+        _assert_standard_sync_readiness(
+            repository.get_target(TRACKSIDE_AP_WPS_BUSINESS_KEY, STANDARD_TARGET_CODE)
+        )
+    assert captured.value.code == "WPS_DEPLOYMENT_READINESS_REQUIRED"
 
 
 def test_wps_sync_rejects_unknown_and_unconfirmed_unbound_binding(tmp_path: Path) -> None:

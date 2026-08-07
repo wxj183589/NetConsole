@@ -252,6 +252,23 @@ export interface TracksideApPlanPreview {
 
 export type WpsTracksideTargetCode = 'wps_standard_spreadsheet' | 'wps_smart_sheet'
 
+export interface WpsTracksideDiagnostic {
+  executed_at?: string
+  status?: string
+  script_version?: string
+  deployment_id?: string
+  script_id?: string
+  document_id?: string
+  operation?: string
+  message?: string
+  phase?: string
+  http_status?: number
+  remote_error_code?: string
+  remote_message?: string
+  suggestion?: string
+  target_code?: string
+}
+
 export interface WpsTracksideTarget {
   target_id: string
   site_id: string
@@ -277,6 +294,13 @@ export interface WpsTracksideTarget {
   remote_site_id?: string
   remote_site_name?: string
   remote_business_key?: string
+  connection_diagnostic?: WpsTracksideDiagnostic
+  runtime_probe_diagnostic?: WpsTracksideDiagnostic
+  sync_test_diagnostic?: WpsTracksideDiagnostic
+  remote_script_version?: string
+  remote_deployment_id?: string
+  remote_script_id?: string
+  remote_identity_verified_at?: string
   enabled: boolean
   protocol_version: number
   timeout_seconds: number
