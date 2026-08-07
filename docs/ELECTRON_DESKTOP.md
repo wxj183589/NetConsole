@@ -162,6 +162,10 @@ Electron Builder 目录包/NSIS 与 PyInstaller 受管 Backend 的构建链已�
 9. 只有优雅停止确认超时才对本管理器持有的子进程句柄发送终止信号；不按名称扫描或误杀其他 Python。
 10. 后端意外退出或强制终止后仍未退出时状态变为 `failed`，只向当前受信 Renderer 发送脱敏状态事件，不谎报 `stopped`。
 
+Backend 重启或恢复后，Main 的 `ready` 只表示新进程已通过 supervisor 健康检查。Vue Runtime 收到该事件后必须重新通过受信 preload bridge 读取并校验 Runtime Config，把动态 Origin 和 `X-NetConsole-Session` 令牌作为同一 generation 原子替换；完成前统一显示为重新连接中。根布局随后使用新绑定再次请求 `/api/health`，只有成功后才显示 `Backend Online`。重绑定失败保留上一份受信 Electron 绑定用于诊断，但状态保持失败，绝不回退 Browser 相对 `/api`。
+
+通用 API client 只允许 `GET/HEAD` 对明确的连接中断、Backend 重启和 `502/503/504` 做一次受控恢复：Electron 先重绑定，再从当前 generation 重新构造 URL 与 Header 后重试。`POST/PUT/PATCH/DELETE` 不自动重放，避免响应丢失时重复创建任务或执行写操作。Runtime 重绑定诊断只记录 host、reason、generation、耗时和端口是否变化，不记录 Origin、令牌或请求头。
+
 桌面总退出是单一受管屏障：先等待 Desktop IPC 的下载清理，再完成上述 Python `shutdown_ack -> exit` 握手，最后清空会话路径授权；这些步骤结束后才销毁窗口、释放单实例锁并退出 Electron。Windows 下不依赖可能缺失的 child `exit/close` 事件来判定 Uvicorn 是否已经停止。
 
 ## 本地 API 安全模型

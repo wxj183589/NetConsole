@@ -85,6 +85,76 @@ describe('platform runtime', () => {
     )
   })
 
+  it('rebinds the Electron URL and token together after the backend becomes ready again', async () => {
+    const tokenB = 'electron-restarted-token-abcdefghijklmnopqrstuvwxyz'
+    let backendStatusListener: ((status: { state: 'starting' | 'ready' | 'stopped' | 'failed' }) => void) | undefined
+    let resolveRuntimeB: ((runtime: { apiBaseUrl: string; apiToken: string }) => void) | undefined
+    const bridge = nativeBridge()
+    vi.mocked(bridge.getRuntimeConfig)
+      .mockResolvedValueOnce({ apiBaseUrl: 'http://127.0.0.1:43123', apiToken: TOKEN })
+      .mockReturnValueOnce(new Promise((resolve) => { resolveRuntimeB = resolve }))
+    vi.mocked(bridge.onBackendStatusChanged).mockImplementation((listener) => {
+      backendStatusListener = listener
+      return () => undefined
+    })
+    vi.stubGlobal('window', {
+      netconsoleDesktop: bridge,
+      location: { origin: 'http://127.0.0.1:5173', protocol: 'http:', host: '127.0.0.1:5173' },
+    })
+
+    await initializePlatformRuntime()
+    backendStatusListener?.({ state: 'starting' })
+    backendStatusListener?.({ state: 'ready' })
+
+    expect(backendStatusListener).toBeTypeOf('function')
+    expect(getRuntimeConfig()).toMatchObject({
+      apiBaseUrl: 'http://127.0.0.1:43123',
+      apiToken: TOKEN,
+    })
+    resolveRuntimeB?.({ apiBaseUrl: 'http://127.0.0.1:43124', apiToken: tokenB })
+    await vi.waitFor(() => expect(getRuntimeConfig()).toMatchObject({
+      apiBaseUrl: 'http://127.0.0.1:43124',
+      apiToken: tokenB,
+    }))
+  })
+
+  it('keeps the last trusted Electron binding when a runtime rebind fails', async () => {
+    let backendStatusListener: ((status: { state: 'starting' | 'ready' | 'stopped' | 'failed' }) => void) | undefined
+    const bridge = nativeBridge()
+    vi.mocked(bridge.getRuntimeConfig)
+      .mockResolvedValueOnce({ apiBaseUrl: 'http://127.0.0.1:43123', apiToken: TOKEN })
+      .mockRejectedValueOnce(new Error('runtime unavailable'))
+    vi.mocked(bridge.onBackendStatusChanged).mockImplementation((listener) => {
+      backendStatusListener = listener
+      return () => undefined
+    })
+    const diagnostic = vi.spyOn(console, 'info').mockImplementation(() => undefined)
+    vi.stubGlobal('window', {
+      netconsoleDesktop: bridge,
+      location: { origin: 'http://127.0.0.1:5173', protocol: 'http:', host: '127.0.0.1:5173' },
+    })
+
+    await initializePlatformRuntime()
+    backendStatusListener?.({ state: 'ready' })
+    await vi.waitFor(() => expect(diagnostic).toHaveBeenCalledWith(
+      'PLATFORM_RUNTIME_REBIND_FAILED',
+      expect.any(Object),
+    ))
+
+    expect(getRuntimeConfig()).toEqual({
+      hostType: 'electron',
+      apiBaseUrl: 'http://127.0.0.1:43123',
+      apiToken: TOKEN,
+    })
+    expect(resolveApiUrl('/api/health')).toBe('http://127.0.0.1:43123/api/health')
+    expect(diagnostic).toHaveBeenCalledWith('PLATFORM_RUNTIME_REBIND_FAILED', expect.objectContaining({
+      host: 'electron',
+      old_generation: 1,
+    }))
+    expect(JSON.stringify(diagnostic.mock.calls)).not.toContain(TOKEN)
+    diagnostic.mockRestore()
+  })
+
   it('retains relative browser URLs when no desktop bridge exists', async () => {
     vi.stubGlobal('window', {
       location: { origin: 'http://127.0.0.1:5173', protocol: 'http:', host: '127.0.0.1:5173' },

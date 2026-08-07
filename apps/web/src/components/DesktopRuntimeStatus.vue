@@ -4,19 +4,23 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import type { BackendStatus } from '../../../desktop_electron/src/shared/bridge'
 import { isFeatureEnabled, isFeatureVisible } from '../features'
-import { getPlatformAdapter } from '../platform/runtime'
+import {
+  getPlatformAdapter,
+  getPlatformRuntimeStatus,
+  onPlatformRuntimeStatusChanged,
+} from '../platform/runtime'
 
 const runtime = getPlatformAdapter()
 const visible = computed(() => runtime.hostType === 'electron' && isFeatureVisible('desktop.native_bridge'))
 const bridgeEnabled = computed(() => isFeatureEnabled('desktop.native_bridge'))
-const status = ref<BackendStatus>({ state: 'starting' })
+const status = ref<BackendStatus>(getPlatformRuntimeStatus())
 const lastFile = ref('')
 const lastDirectory = ref('')
 const lastSavePath = ref('')
 let unsubscribe: (() => void) | undefined
 
 const stateText = computed(() => ({
-  starting: '后端启动中',
+  starting: 'Backend 重新连接中',
   ready: 'Electron 后端已就绪',
   stopped: '后端已停止',
   failed: '后端异常',
@@ -29,10 +33,10 @@ const stateType = computed(() => ({
   failed: 'danger',
 })[status.value.state] as 'warning' | 'success' | 'info' | 'danger')
 
-onMounted(async () => {
+onMounted(() => {
   if (!visible.value) return
-  status.value = await runtime.getBackendStatus()
-  unsubscribe = runtime.onBackendStatusChanged((next) => { status.value = next })
+  status.value = getPlatformRuntimeStatus()
+  unsubscribe = onPlatformRuntimeStatusChanged((next) => { status.value = next })
 })
 
 onBeforeUnmount(() => unsubscribe?.())
