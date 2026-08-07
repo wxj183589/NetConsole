@@ -37,6 +37,10 @@
 
 - Current AP 与 WMESH 主链路切换统一复用 AP Identity 的物理 AP、Radio、BSSID 和已登记 alias 精确解析；Ping 曲线从持久化 `MESH_ACTIVELINK_SWITCH` 投影独立事件标记，悬浮信息包含切换双方 AP/站点、同列车同 MR 的真实 RSSI 证据及 Syslog 来源。无匹配采样明确显示，不插值生成 RSSI。
 - 深采页面不再把“符合资格”显示为“正在采集”：只有 Online MR 会话可读取且已有 Collector 原始数据写入时才显示 `RUNNING`。新增受管会话 raw/log 的 cursor 增量查看接口；窗口暂停仅暂停前端刷新，不会停止后台采集或创建新的 SSH 采集路径。
+- 统一活动运行的 AP 位置、正线、Ping 与深采 Runtime Decision；AP 层 `UNKNOWN` 不再短路为非正线，已匹配且无特殊区域证据的 AP 按 `DEFAULT_MAINLINE` 纳入，车辆段、停车场、存车线和明确非主路径继续排除。列车列表和详情直接展示三类原因码/文案及决策 revision，历史资格快照保持兼容。
+- AP 切换事件只读取持久化的真实 `MESH_ACTIVELINK_SWITCH`，周期 Ping 位置上下文不再制造黄线；重复 provenance 合并，真实 flap 保留并仅在图形层按秒聚合。old/new Peer 在单批 Identity revision 中补齐物理 AP、站点和区间，Peer/Radio MAC 不再冒充物理 AP MAC。
+- 深采筛选改为按记录语义分类：WMESH 排除 `display clock`、时区、prompt 和普通 raw，RSSI 必须包含 MAC 与真实采样，Radio/Status 分别限制为 telemetry 和生命周期记录；筛选条件写入 cursor，切换筛选取消旧请求，暂停恢复从原 cursor 补拉。
+- CT/CW 深采会话按钮复用 Online MR 活动/历史分析页并提供缺失或导航失败反馈；深采表格和 Ping 图形浮窗使用 flex 可用空间与 `ResizeObserver` 响应最大化/恢复。Syslog 默认列顺序升级为 v2，保留用户自定义布局并迁移旧默认布局。
 
 ### 双版本打包与发布
 
