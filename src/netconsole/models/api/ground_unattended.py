@@ -30,6 +30,7 @@ GroundEligibilityStatus = Literal[
     "DEPOT_CONNECTION",
     "AC_STALE",
     "AC_UNKNOWN",
+    "LOCATION_UNDETERMINED",
     "AP_UNMATCHED",
     "OFFLINE",
 ]

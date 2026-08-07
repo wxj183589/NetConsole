@@ -404,7 +404,6 @@ class GroundUnattendedEligibilityClassifier:
             "station_name": station,
             "section_name": section,
             "location_desc": match.location,
-            "path_code": "MAIN" if station else "",
         }
         if not station and belong_type.casefold() in {"trackside", "station", "section", "yard"}:
             location_class = "UNKNOWN"
@@ -646,6 +645,14 @@ class GroundUnattendedEligibilityClassifier:
                 ping_exclusion_reason="未启用车辆段长 Ping",
                 deep_exclusion_reason="场段列车不参与深度采集",
             )
+        if location_class == "UNKNOWN":
+            return EligibilityDecision(
+                "LOCATION_UNDETERMINED",
+                location_reason,
+                location_class,
+                ping_exclusion_reason="无法确认当前位置是否属于正线",
+                deep_exclusion_reason="无法确认当前位置是否属于正线",
+            )
         if location_class != "MAINLINE" or not participates:
             status = (
                 "DEPOT_CONNECTION"
@@ -687,7 +694,10 @@ class GroundUnattendedEligibilityClassifier:
         ap = location.ap
         if ap is None:
             return "UNKNOWN", "当前 AP 未匹配轨旁 AP 基础资料", False
-        if location_class_is_explicit(ap.location_class_source):
+        if (
+            ap.location_class != "UNKNOWN"
+            and location_class_is_explicit(ap.location_class_source)
+        ):
             return (
                 ap.location_class,
                 f"当前 AP 基础资料明确标记为 {ap.location_class}",
@@ -719,7 +729,7 @@ class GroundUnattendedEligibilityClassifier:
         if "storage_track" in facilities:
             return "STABLING", "当前 AP 基础资料明确归属于存车线", False
         legacy_class, _, _ = resolve_trackside_ap_location(metadata)
-        if legacy_class != "MAINLINE":
+        if legacy_class not in {"MAINLINE", "UNKNOWN"}:
             return (
                 legacy_class,
                 f"当前 AP 历史基础资料解析为 {legacy_class}",
@@ -750,9 +760,15 @@ class GroundUnattendedEligibilityClassifier:
         ap_path = str(metadata.get("path_code") or "").strip().casefold()
         if ap_path and ap_path != main_path:
             return "NON_MAINLINE", "当前 AP 不属于局点主路径", False
-        if not ap.participates_in_mainline:
+        if ap.location_class == "MAINLINE" and not ap.participates_in_mainline:
             return "MAINLINE", "当前 AP 已设置为不参与正线判断", False
-        return "MAINLINE", "已匹配轨旁 AP，未标记特殊区域，默认正线", True
+        if station is not None or section is not None or ap_path:
+            return "MAINLINE", "站点/区间属于局点主路径", True
+        return (
+            "UNKNOWN",
+            "当前 AP 未提供明确位置类型，且站点/区间基础资料不足以判定正线",
+            False,
+        )
 
     @staticmethod
     def _endpoints(
