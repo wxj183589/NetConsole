@@ -33,7 +33,9 @@ const taskApi = vi.hoisted(() => ({
   getTaskLogs: vi.fn(),
   listTasks: vi.fn(),
 }))
+const siteApi = vi.hoisted(() => ({ getActiveSite: vi.fn() }))
 const platformMocks = vi.hoisted(() => ({
+  chooseSavePath: vi.fn(),
   downloadBackendResource: vi.fn(),
   hostType: 'browser' as 'browser' | 'electron',
 }))
@@ -52,9 +54,13 @@ const terminalMocks = vi.hoisted(() => ({
 
 vi.mock('../../api/tracksideApBusiness', () => api)
 vi.mock('../../api/tasks', () => taskApi)
+vi.mock('../../api/siteStorage', () => siteApi)
 vi.mock('../../platform/runtime', () => ({
   downloadBackendResource: platformMocks.downloadBackendResource,
-  getPlatformAdapter: () => ({ hostType: platformMocks.hostType }),
+  getPlatformAdapter: () => ({
+    hostType: platformMocks.hostType,
+    chooseSavePath: platformMocks.chooseSavePath,
+  }),
 }))
 vi.mock('../../composables/useExternalTerminalLauncher', () => ({
   useExternalTerminalLauncher: () => terminalMocks,
@@ -370,7 +376,14 @@ describe('TracksideApBusinessView mounted behavior', () => {
       suggestedName: artifactName,
     }))
     platformMocks.downloadBackendResource.mockResolvedValue({ status: 'saved', capabilityId: 'cap-1' })
+    platformMocks.chooseSavePath.mockReset()
+    platformMocks.chooseSavePath.mockResolvedValue({
+      cancelled: false,
+      path: 'D:\\operator\\宁波地铁12号线_轨旁AP业务_20260721_234501.xlsx',
+    })
     platformMocks.hostType = 'browser'
+    siteApi.getActiveSite.mockReset()
+    siteApi.getActiveSite.mockResolvedValue({ site_id: 'demo', display_name: '宁波地铁12号线' })
     terminalMocks.preflightDeviceTerminalTargets.mockReset()
     terminalMocks.launchDeviceTerminalTargets.mockReset()
     terminalMocks.requestFitApTerminal.mockReset()
@@ -1132,6 +1145,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
 
   it('exports the current filter and stable selected row ids', async () => {
     const revision = 'a'.repeat(64)
+    platformMocks.hostType = 'electron'
     api.listTracksideApBusiness.mockResolvedValue(snapshotPage(revision))
     const wrapper = await mountView()
     const firstTable = wrapper.findAllComponents(NcDataTableStub)[0]
@@ -1149,6 +1163,68 @@ describe('TracksideApBusinessView mounted behavior', () => {
       query: '',
       optical_anomaly_only: false,
       selected_row_ids: ['row-1'],
+    })
+    expect(api.getTracksideApBusinessExportProposal).toHaveBeenCalledOnce()
+    expect(platformMocks.chooseSavePath).toHaveBeenCalledOnce()
+    expect(api.startTracksideApBusinessExport).toHaveBeenCalledOnce()
+    wrapper.unmount()
+  })
+
+  it('does not create an export task when the user cancels Save As', async () => {
+    platformMocks.hostType = 'electron'
+    platformMocks.chooseSavePath.mockResolvedValueOnce({ cancelled: true })
+    const wrapper = await mountView()
+
+    await button(wrapper, '导出表格').trigger('click')
+    await flushPromises()
+
+    expect(api.getTracksideApBusinessExportProposal).toHaveBeenCalledOnce()
+    expect(platformMocks.chooseSavePath).toHaveBeenCalledOnce()
+    expect(api.startTracksideApBusinessExport).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('reports a proposal outage as an export preparation failure without opening Save As', async () => {
+    platformMocks.hostType = 'electron'
+    api.getTracksideApBusinessExportProposal.mockRejectedValueOnce(
+      new ApiRequestError('Backend 连接中断，请重试。', 0, 'BACKEND_CONNECTION_INTERRUPTED'),
+    )
+    const wrapper = await mountView()
+
+    await button(wrapper, '导出表格').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('导出准备失败：Backend 当前不可用，请稍后重试。')
+    expect(platformMocks.chooseSavePath).not.toHaveBeenCalled()
+    expect(api.startTracksideApBusinessExport).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('clears the selection and reloads page one when export snapshot validation is stale', async () => {
+    const oldRevision = 'a'.repeat(64)
+    const newRevision = 'b'.repeat(64)
+    api.listTracksideApBusiness
+      .mockResolvedValueOnce(snapshotPage(oldRevision))
+      .mockResolvedValueOnce(snapshotPage(newRevision))
+    api.startTracksideApBusinessExport.mockRejectedValueOnce(
+      new ApiRequestError('数据已更新', 409, 'TRACKSIDE_AP_SNAPSHOT_STALE'),
+    )
+    const wrapper = await mountView()
+    wrapper.findAllComponents(NcDataTableStub)[0].vm.$emit('selection-change', [snapshotPage(oldRevision).items[0]])
+    await flushPromises()
+
+    await button(wrapper, '导出表格').trigger('click')
+    await flushPromises()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('轨旁 AP 数据已更新，请在刷新后重新导出。')
+    expect(api.startTracksideApBusinessExport).toHaveBeenCalledOnce()
+    expect(api.listTracksideApBusiness).toHaveBeenLastCalledWith({
+      station: '',
+      query: '',
+      optical_anomaly_only: false,
+      page: 1,
+      page_size: 50,
     })
     wrapper.unmount()
   })

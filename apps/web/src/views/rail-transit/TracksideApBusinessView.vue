@@ -282,6 +282,16 @@ const businessContextMenuItems = computed<NcDataTableContextMenuItem<TracksideAp
 ])
 
 function failure(reason: unknown, fallback: string): string { return reason instanceof Error ? reason.message : fallback }
+function exportStageFailure(reason: unknown, stage: string): string {
+  if (
+    reason instanceof ApiRequestError
+    && (
+      ['CONNECTION_RESET', 'BACKEND_CONNECTION_INTERRUPTED', 'BACKEND_RESTARTED'].includes(reason.code)
+      || [502, 503, 504].includes(reason.status)
+    )
+  ) return `${stage}：Backend 当前不可用，请稍后重试。`
+  return `${stage}：${failure(reason, '请稍后重试。')}`
+}
 function cleanIdentity(value: unknown): string { return String(value || '').trim() }
 function businessRowKey(row: TracksideApBusinessRow): string {
   if (cleanIdentity(row.row_id)) return cleanIdentity(row.row_id)
@@ -499,22 +509,32 @@ async function exportBusiness(): Promise<void> {
   pendingScopeKey.value = scopeKey
   taskSubmitting.value = true
   actionError.value = ''
+  let exportSubmissionStarted = false
   try {
-    const proposal = await getTracksideApBusinessExportProposal()
+    let proposal
+    try {
+      proposal = await getTracksideApBusinessExportProposal()
+    } catch (reason) {
+      actionError.value = exportStageFailure(reason, '导出准备失败')
+      return
+    }
     const result = await userSelectedExport.submitExportAfterDestinationSelected({
       action: 'rail.trackside_business',
       suggestedName: proposal.suggested_name,
-      submit: () => startTracksideApBusinessExport({
-        generated_at: proposal.generated_at,
-        suggested_name: proposal.suggested_name,
-        expected_revision: page.value?.business_revision || '',
-        station: filters.station,
-        query: filters.query,
-        optical_anomaly_only: filters.optical_anomaly_only,
-        selected_row_ids: selectedRows.value
-          .map((row) => row.row_id)
-          .filter((value): value is string => Boolean(value)),
-      }),
+      submit: () => {
+        exportSubmissionStarted = true
+        return startTracksideApBusinessExport({
+          generated_at: proposal.generated_at,
+          suggested_name: proposal.suggested_name,
+          expected_revision: page.value?.business_revision || '',
+          station: filters.station,
+          query: filters.query,
+          optical_anomaly_only: filters.optical_anomaly_only,
+          selected_row_ids: selectedRows.value
+            .map((row) => row.row_id)
+            .filter((value): value is string => Boolean(value)),
+        })
+      },
     })
     if (result.status === 'cancelled') return
     currentTaskId.value = result.task.task_id
@@ -531,7 +551,10 @@ async function exportBusiness(): Promise<void> {
     } else if (reason instanceof ApiRequestError && reason.code === 'TRACKSIDE_AP_SNAPSHOT_UNSTABLE') {
       actionError.value = '轨旁 AP 数据正在刷新，请稍后重试导出。'
     } else {
-      actionError.value = failure(reason, '轨旁 AP 业务导出启动失败')
+      actionError.value = exportStageFailure(
+        reason,
+        exportSubmissionStarted ? '创建导出任务失败' : '选择保存位置失败',
+      )
     }
   } finally {
     taskSubmitting.value = false

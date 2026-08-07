@@ -208,6 +208,118 @@ describe('API client errors', () => {
     diagnostic.mockRestore()
   })
 
+  it('rebinds a failed Electron GET to the new URL and session token before retrying', async () => {
+    const tokenA = 'electron-runtime-a-token-abcdefghijklmnopqrstuvwxyz'
+    const tokenB = 'electron-runtime-b-token-abcdefghijklmnopqrstuvwxyz'
+    const bridge = {
+      getBackendStatus: vi.fn(async () => ({ state: 'ready' as const, baseUrl: 'http://127.0.0.1:43124' })),
+      getRuntimeConfig: vi.fn()
+        .mockResolvedValueOnce({ apiBaseUrl: 'http://127.0.0.1:43123', apiToken: tokenA })
+        .mockResolvedValueOnce({ apiBaseUrl: 'http://127.0.0.1:43124', apiToken: tokenB }),
+      onBackendStatusChanged: vi.fn(() => () => undefined),
+    } as unknown as NetConsoleDesktopBridge
+    vi.stubGlobal('window', {
+      netconsoleDesktop: bridge,
+      location: { origin: 'http://127.0.0.1:5173', protocol: 'http:', host: '127.0.0.1:5173' },
+    })
+    const fetchMock = vi.fn()
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ recovered: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+    vi.stubGlobal('fetch', fetchMock)
+    await initializePlatformRuntime()
+
+    await expect(apiRequest('/api/rail-transit/trackside-ap-business/export/proposal'))
+      .resolves.toEqual({ recovered: true })
+
+    expect(bridge.getRuntimeConfig).toHaveBeenCalledTimes(2)
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      'http://127.0.0.1:43123/api/rail-transit/trackside-ap-business/export/proposal',
+      'http://127.0.0.1:43124/api/rail-transit/trackside-ap-business/export/proposal',
+    ])
+    expect(fetchMock.mock.calls.map((call) => (
+      new Headers((call[1] as RequestInit).headers).get('X-NetConsole-Session')
+    ))).toEqual([tokenA, tokenB])
+  })
+
+  it('waits for supervisor ready before rebinding and retrying an Electron GET', async () => {
+    const tokenA = 'electron-runtime-a-token-abcdefghijklmnopqrstuvwxyz'
+    const tokenB = 'electron-runtime-b-token-abcdefghijklmnopqrstuvwxyz'
+    let backendStatusListener: ((status: { state: 'starting' | 'ready'; baseUrl?: string }) => void) | undefined
+    const bridge = {
+      getBackendStatus: vi.fn(async () => ({ state: 'starting' as const })),
+      getRuntimeConfig: vi.fn()
+        .mockResolvedValueOnce({ apiBaseUrl: 'http://127.0.0.1:43123', apiToken: tokenA })
+        .mockResolvedValueOnce({ apiBaseUrl: 'http://127.0.0.1:43124', apiToken: tokenB }),
+      onBackendStatusChanged: vi.fn((listener) => {
+        backendStatusListener = listener
+        return () => undefined
+      }),
+    } as unknown as NetConsoleDesktopBridge
+    vi.stubGlobal('window', {
+      netconsoleDesktop: bridge,
+      location: { origin: 'http://127.0.0.1:5173', protocol: 'http:', host: '127.0.0.1:5173' },
+    })
+    const fetchMock = vi.fn()
+      .mockRejectedValueOnce(new TypeError('backend restarted while waiting'))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ recovered: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+    vi.stubGlobal('fetch', fetchMock)
+    await initializePlatformRuntime()
+
+    const request = apiRequest('/api/rail-transit/trackside-ap-business/export/proposal')
+    await vi.waitFor(() => expect(bridge.getBackendStatus).toHaveBeenCalledOnce())
+    expect(fetchMock).toHaveBeenCalledOnce()
+
+    backendStatusListener?.({ state: 'ready', baseUrl: 'http://127.0.0.1:43124' })
+    await expect(request).resolves.toEqual({ recovered: true })
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      'http://127.0.0.1:43123/api/rail-transit/trackside-ap-business/export/proposal',
+      'http://127.0.0.1:43124/api/rail-transit/trackside-ap-business/export/proposal',
+    ])
+    expect(fetchMock.mock.calls.map((call) => (
+      new Headers((call[1] as RequestInit).headers).get('X-NetConsole-Session')
+    ))).toEqual([tokenA, tokenB])
+  })
+
+  it('does not rebind and replay an Electron export POST after an interrupted response', async () => {
+    const bridge = {
+      getBackendStatus: vi.fn(async () => ({ state: 'ready' as const, baseUrl: 'http://127.0.0.1:43124' })),
+      getRuntimeConfig: vi.fn()
+        .mockResolvedValueOnce({
+          apiBaseUrl: 'http://127.0.0.1:43123',
+          apiToken: 'electron-runtime-a-token-abcdefghijklmnopqrstuvwxyz',
+        })
+        .mockResolvedValueOnce({
+          apiBaseUrl: 'http://127.0.0.1:43124',
+          apiToken: 'electron-runtime-b-token-abcdefghijklmnopqrstuvwxyz',
+        }),
+      onBackendStatusChanged: vi.fn(() => () => undefined),
+    } as unknown as NetConsoleDesktopBridge
+    vi.stubGlobal('window', {
+      netconsoleDesktop: bridge,
+      location: { origin: 'http://127.0.0.1:5173', protocol: 'http:', host: '127.0.0.1:5173' },
+    })
+    const fetchMock = vi.fn().mockRejectedValue(new TypeError('Failed to fetch'))
+    vi.stubGlobal('fetch', fetchMock)
+    const diagnostic = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    await initializePlatformRuntime()
+
+    await expect(apiRequest('/api/rail-transit/trackside-ap-business/export', {
+      method: 'POST',
+      body: JSON.stringify({ expected_revision: 'a'.repeat(64) }),
+    })).rejects.toMatchObject({ code: 'BACKEND_CONNECTION_INTERRUPTED' })
+
+    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(bridge.getRuntimeConfig).toHaveBeenCalledOnce()
+    diagnostic.mockRestore()
+  })
+
   it('returns REQUEST_TIMEOUT without retrying the timed out GET', async () => {
     vi.useFakeTimers()
     const fetchMock = vi.fn((_url: RequestInfo | URL, request?: RequestInit) => new Promise((_resolve, reject) => {
@@ -283,6 +395,36 @@ describe('API client errors', () => {
 
     await expect(apiRequest('/api/transient-http')).resolves.toEqual({ recovered: true })
     expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('preserves the original HTTP error when Electron rebind fails before a GET retry', async () => {
+    const bridge = {
+      getBackendStatus: vi.fn(async () => ({ state: 'ready' as const, baseUrl: 'http://127.0.0.1:43124' })),
+      getRuntimeConfig: vi.fn()
+        .mockResolvedValueOnce({
+          apiBaseUrl: 'http://127.0.0.1:43123',
+          apiToken: 'electron-runtime-a-token-abcdefghijklmnopqrstuvwxyz',
+        })
+        .mockRejectedValueOnce(new Error('internal runtime path and token details')),
+      onBackendStatusChanged: vi.fn(() => () => undefined),
+    } as unknown as NetConsoleDesktopBridge
+    vi.stubGlobal('window', {
+      netconsoleDesktop: bridge,
+      location: { origin: 'http://127.0.0.1:5173', protocol: 'http:', host: '127.0.0.1:5173' },
+    })
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail: '暂时不可用' }), {
+      status: 503,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    await initializePlatformRuntime()
+
+    await expect(apiRequest('/api/recoverable-query')).rejects.toMatchObject({
+      status: 503,
+      message: '暂时不可用',
+    })
+
+    expect(fetchMock).toHaveBeenCalledOnce()
   })
 
   it.each([
