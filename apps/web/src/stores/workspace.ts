@@ -266,7 +266,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   ): Promise<WorkspaceWindowState> {
     const checkpoint = createSnapshot()
     try {
-      if (!notifyBeforeSiteSwitch(targetSiteId)) throw new SiteSwitchCancelled()
+      if (!await notifyBeforeSiteSwitch(targetSiteId)) throw new SiteSwitchCancelled()
 
       const dashboardCanonical = safeCanonical(WORKSPACE_DEFAULT_ROUTE)
       const settingsCanonical = safeCanonical(settingsRouteFullPath)

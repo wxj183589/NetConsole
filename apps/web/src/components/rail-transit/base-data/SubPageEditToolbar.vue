@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { Refresh } from '@element-plus/icons-vue'
 
-type DraftState = 'READY' | 'DIRTY' | 'VALIDATING' | 'SAVING' | 'SAVE_FAILED' | 'READ_ONLY'
+type DraftState = 'VIEW' | 'EDITING' | 'DIRTY' | 'VALIDATING' | 'SAVING' | 'SAVE_FAILED' | 'READ_ONLY'
 
 const props = withDefaults(defineProps<{
   state: DraftState
@@ -16,6 +16,7 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{
   refresh: []
+  unlock: []
   discard: []
   save: []
 }>()
@@ -34,12 +35,17 @@ function isSaving(): boolean {
       <el-tag v-else-if="state === 'SAVE_FAILED'" type="danger">保存失败，草稿已保留</el-tag>
       <el-tag v-else-if="dirty || state === 'DIRTY'" type="warning">当前子页有未保存修改</el-tag>
       <el-tag v-else-if="state === 'READ_ONLY'" type="info">只读</el-tag>
-      <el-tag v-else type="success">当前子页已保存</el-tag>
+      <el-tag v-else-if="state === 'EDITING'" type="warning">当前子页编辑中</el-tag>
+      <el-tag v-else type="info">当前子页查看中</el-tag>
     </div>
     <div class="subpage-edit-actions">
       <el-button :icon="Refresh" :loading="loading" :disabled="isSaving()" @click="emit('refresh')">刷新</el-button>
-      <template v-if="state !== 'READ_ONLY'">
-        <el-button :disabled="loading || isSaving() || !dirty" @click="emit('discard')">放弃修改</el-button>
+      <template v-if="state === 'VIEW'">
+        <el-button type="primary" :disabled="loading || isSaving()" @click="emit('unlock')">解锁当前子页</el-button>
+        <el-button type="primary" disabled>保存当前子页</el-button>
+      </template>
+      <template v-else-if="state !== 'READ_ONLY'">
+        <el-button :disabled="loading || isSaving()" @click="emit('discard')">放弃修改</el-button>
         <el-button type="primary" :loading="isSaving()" :disabled="loading || !dirty || valid === false" @click="emit('save')">保存当前子页</el-button>
       </template>
     </div>
