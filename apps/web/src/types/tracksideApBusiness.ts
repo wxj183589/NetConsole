@@ -252,6 +252,11 @@ export interface TracksideApPlanPreview {
 
 export type WpsTracksideTargetCode = 'wps_standard_spreadsheet' | 'wps_smart_sheet'
 
+export interface WpsRuntimeCapabilityNotice {
+  capability?: string
+  message?: string
+}
+
 export interface WpsTracksideDiagnostic {
   executed_at?: string
   status?: string
@@ -267,6 +272,41 @@ export interface WpsTracksideDiagnostic {
   remote_message?: string
   suggestion?: string
   target_code?: string
+  runtime_capability?: string
+  core_verified?: boolean
+  full_replace_ready?: boolean
+  prepend_snapshot_ready?: boolean
+  capabilities?: Record<string, boolean>
+  core_capabilities?: Record<string, boolean>
+  optional_capabilities?: Record<string, boolean>
+  capability_failures?: WpsRuntimeCapabilityNotice[]
+  warnings?: WpsRuntimeCapabilityNotice[]
+  sheet_order_verified?: boolean
+  sheet_move_before_verified?: boolean
+  sheet_move_after_verified?: boolean
+  system_sheet_order_verified?: boolean
+  expected_sheet_order?: string[]
+  actual_sheet_order?: string[]
+  actual_sheet_order_all?: string[]
+  binding_status?: string
+  local_binding_id?: string
+  remote_binding_id?: string
+  binding_id_match?: boolean
+  remote_document_id?: string
+  remote_site_id?: string
+  remote_site_name?: string
+  remote_business_key?: string
+  remote_target_code?: string
+  remote_target_type?: string
+  document_match?: boolean
+  document_identity_match?: boolean
+  site_match?: boolean
+  site_identity_match?: boolean
+  business_match?: boolean
+  business_identity_match?: boolean
+  target_code_match?: boolean
+  target_type_match?: boolean
+  target_match?: boolean
 }
 
 export interface WpsTracksideTarget {
@@ -297,6 +337,7 @@ export interface WpsTracksideTarget {
   connection_diagnostic?: WpsTracksideDiagnostic
   runtime_probe_diagnostic?: WpsTracksideDiagnostic
   sync_test_diagnostic?: WpsTracksideDiagnostic
+  sheet_order_probe_diagnostic?: WpsTracksideDiagnostic
   remote_script_version?: string
   remote_deployment_id?: string
   remote_script_id?: string

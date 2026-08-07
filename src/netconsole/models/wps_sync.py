@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from hashlib import sha256
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
@@ -7,6 +8,19 @@ from typing import Any
 
 WPS_SYNC_PROTOCOL_VERSION = 2
 TRACKSIDE_AP_WPS_BUSINESS_KEY = "rail_transit.trackside_ap_business"
+WPS_BINDING_ID_PREFIX = "wpsbind_v1_"
+
+
+def build_wps_binding_id(site_id: str, business_key: str, target_code: str) -> str:
+    canonical = "\n".join(
+        (
+            "wpsbind:v1",
+            str(site_id or "").strip().casefold(),
+            str(business_key or "").strip().casefold(),
+            str(target_code or "").strip().casefold(),
+        )
+    )
+    return f"{WPS_BINDING_ID_PREFIX}{sha256(canonical.encode('utf-8')).hexdigest()}"
 
 
 class WpsTargetType(StrEnum):
@@ -32,6 +46,7 @@ class WpsSyncTarget:
     document_open_url: str
     webhook_url: str
     expected_document_id: str
+    binding_id: str = ""
     enabled: bool = True
     protocol_version: int = WPS_SYNC_PROTOCOL_VERSION
     timeout_seconds: int = 30
@@ -57,10 +72,19 @@ class WpsSyncTarget:
     connection_diagnostic: dict[str, Any] = field(default_factory=dict)
     runtime_probe_diagnostic: dict[str, Any] = field(default_factory=dict)
     sync_test_diagnostic: dict[str, Any] = field(default_factory=dict)
+    sheet_order_probe_diagnostic: dict[str, Any] = field(default_factory=dict)
     remote_script_version: str = ""
     remote_deployment_id: str = ""
     remote_script_id: str = ""
     remote_identity_verified_at: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.binding_id:
+            object.__setattr__(
+                self,
+                "binding_id",
+                build_wps_binding_id(self.site_id, self.business_key, self.target_code),
+            )
 
     def public_dict(self) -> dict[str, Any]:
         return {
@@ -91,7 +115,7 @@ class WpsSyncTarget:
             "runtime_probe_script_version": self.runtime_probe_script_version,
             "runtime_probe_deployment_id": self.runtime_probe_deployment_id,
             "binding_status": self.binding_status,
-            "binding_id": self.target_id,
+            "binding_id": self.binding_id,
             "remote_binding_id": self.remote_binding_id,
             "remote_site_id": self.remote_site_id,
             "remote_site_name": self.remote_site_name,
@@ -99,6 +123,7 @@ class WpsSyncTarget:
             "connection_diagnostic": self.connection_diagnostic,
             "runtime_probe_diagnostic": self.runtime_probe_diagnostic,
             "sync_test_diagnostic": self.sync_test_diagnostic,
+            "sheet_order_probe_diagnostic": self.sheet_order_probe_diagnostic,
             "remote_script_version": self.remote_script_version,
             "remote_deployment_id": self.remote_deployment_id,
             "remote_script_id": self.remote_script_id,
@@ -172,6 +197,7 @@ class WorkbookDTO:
 
 __all__ = [
     "TRACKSIDE_AP_WPS_BUSINESS_KEY",
+    "WPS_BINDING_ID_PREFIX",
     "WPS_SYNC_PROTOCOL_VERSION",
     "WorkbookFormatRunDTO",
     "WorkbookDTO",
@@ -179,4 +205,5 @@ __all__ = [
     "WpsSyncMode",
     "WpsSyncTarget",
     "WpsTargetType",
+    "build_wps_binding_id",
 ]

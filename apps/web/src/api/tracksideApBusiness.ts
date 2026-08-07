@@ -79,6 +79,15 @@ export function testTracksideWpsTarget(targetCode: WpsTracksideTargetCode): Prom
   })
 }
 
+export function migrateTracksideWpsLegacyBinding(targetCode: WpsTracksideTargetCode): Promise<{
+  target_code: WpsTracksideTargetCode
+  result: Record<string, unknown>
+}> {
+  return apiRequest(`${wpsRoot}/targets/${encodeURIComponent(targetCode)}/migrate-legacy-binding`, {
+    method: 'POST',
+  })
+}
+
 export function probeTracksideWpsTarget(targetCode: WpsTracksideTargetCode): Promise<{
   target_code: WpsTracksideTargetCode
   result: Record<string, unknown>
@@ -93,6 +102,24 @@ export function syncTestTracksideWpsTarget(targetCode: WpsTracksideTargetCode): 
   result: Record<string, unknown>
 }> {
   return apiRequest(`${wpsRoot}/targets/${encodeURIComponent(targetCode)}/sync-test-sheet`, {
+    method: 'POST',
+  })
+}
+
+export function probeTracksideWpsSheetOrder(targetCode: WpsTracksideTargetCode): Promise<{
+  target_code: WpsTracksideTargetCode
+  result: Record<string, unknown>
+}> {
+  return apiRequest(`/rail-transit/trackside-ap-business/wps/targets/${encodeURIComponent(targetCode)}/sheet-order-probe`, {
+    method: 'POST',
+  })
+}
+
+export function revalidateTracksideWpsDeployment(targetCode: WpsTracksideTargetCode): Promise<{
+  target_code: WpsTracksideTargetCode
+  result: Record<string, unknown>
+}> {
+  return apiRequest(`${wpsRoot}/targets/${encodeURIComponent(targetCode)}/revalidate-deployment`, {
     method: 'POST',
   })
 }

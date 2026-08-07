@@ -47,6 +47,9 @@ STANDARD_TARGET_CODE = "wps_standard_spreadsheet"
 SMART_TARGET_CODE = "wps_smart_sheet"
 WPS_SYNC_TASK_TYPE = "trackside_ap_wps_sync"
 WPS_SYNC_OWNER = "web_rail_transit"
+# Keep the last field-verified spreadsheet writer as the production default.
+# The format mirror remains available for a later, separately verified rollout.
+WPS_STANDARD_FORMAT_MIRROR_EXPERIMENTAL = False
 WPS_SCRIPT_VERSIONS = {
     STANDARD_TARGET_CODE: "2.3.0-standard",
     SMART_TARGET_CODE: "2.1.0-smart",
@@ -69,6 +72,7 @@ _SAFE_ERROR_RE = re.compile(r"(?i)(airscript-token|authorization|token)\s*[:=]\s
 _MAX_PAYLOAD_BYTES = 20 * 1024 * 1024
 _MAX_ERROR_BODY_BYTES = 64 * 1024
 _MAX_ERROR_TEXT = 500
+_LEGACY_BINDING_ID_RE = re.compile(r"^wst_[0-9a-f]{32}$", re.IGNORECASE)
 
 DEFAULT_TARGETS = (
     {
@@ -191,19 +195,20 @@ class BaseWpsAdapter:
                 "target_type": target.target_type.value,
                 "site_id": target.site_id,
                 "business_key": target.business_key,
-                "binding_id": target.target_id,
+                "binding_id": target.binding_id,
+                "document_id": target.expected_document_id,
                 "script_id": _script_id_from_webhook(target.webhook_url),
             },
         )
         result = _unwrap_wps_sync_task_response(response, target, token=token)
         self._validate_common(target, result)
         if not bool(result.get("success")):
-            raise WpsSyncError(
-                str(result.get("error_code") or "WPS_CONNECTION_TEST_FAILED"),
-                _sanitize_error(str(result.get("message") or "WPS 远端连接测试失败").replace(token, "<redacted>")),
-                details=_target_error_details(target, phase="SCRIPT_EXECUTION"),
-            )
-        return {"http_status": response.status_code, "phase": "SUCCESS", **result}
+            raise _remote_result_error(target, result, token)
+        return {
+            "http_status": response.status_code,
+            "phase": "SUCCESS",
+            **_with_binding_diagnostics(target, result),
+        }
 
     def runtime_write_probe(self, target: WpsSyncTarget, token: str) -> dict[str, Any]:
         response = self.client.post(
@@ -216,7 +221,7 @@ class BaseWpsAdapter:
                 "target_type": target.target_type.value,
                 "site_id": target.site_id,
                 "business_key": target.business_key,
-                "binding_id": target.target_id,
+                "binding_id": target.binding_id,
                 "probe_id": f"wps_probe_{uuid4().hex}",
                 "script_id": _script_id_from_webhook(target.webhook_url),
             },
@@ -244,7 +249,7 @@ class BaseWpsAdapter:
                 "target_type": target.target_type.value,
                 "site_id": target.site_id,
                 "business_key": target.business_key,
-                "binding_id": target.target_id,
+                "binding_id": target.binding_id,
                 "probe_id": f"wps_sync_test_{uuid4().hex}",
                 "script_id": _script_id_from_webhook(target.webhook_url),
             },
@@ -254,6 +259,89 @@ class BaseWpsAdapter:
         if not bool(result.get("success")):
             raise _remote_result_error(target, result, token)
         return {"http_status": response.status_code, "phase": "SUCCESS", **result}
+
+    def sheet_order_probe(self, target: WpsSyncTarget, token: str) -> dict[str, Any]:
+        response = self.client.post(
+            target,
+            token=token,
+            argv={
+                "protocol_version": WPS_SYNC_PROTOCOL_VERSION,
+                "operation": "sheet_order_probe",
+                "target_code": target.target_code,
+                "target_type": target.target_type.value,
+                "site_id": target.site_id,
+                "business_key": target.business_key,
+                "binding_id": target.binding_id,
+                "probe_id": f"wps_sheet_order_{uuid4().hex}",
+                "script_id": _script_id_from_webhook(target.webhook_url),
+            },
+        )
+        result = _unwrap_wps_sync_task_response(response, target, token=token)
+        self._validate_common(target, result)
+        if not bool(result.get("success")):
+            raise _remote_result_error(target, result, token)
+        if not bool(result.get("sheet_order_verified")):
+            raise WpsSyncError(
+                "WPS_SHEET_ORDER_VERIFY_FAILED",
+                "WPS Sheet.Move 排序探针未通过读回校验",
+                details={
+                    **_target_error_details(target, phase="SHEET_ORDER_PROBE"),
+                    "expected_sheet_order": result.get("expected_sheet_order") or [],
+                    "actual_sheet_order": result.get("actual_sheet_order") or [],
+                },
+            )
+        return {"http_status": response.status_code, "phase": "SUCCESS", **result}
+
+    def migrate_legacy_binding(
+        self,
+        target: WpsSyncTarget,
+        token: str,
+        *,
+        expected_old_binding_id: str,
+    ) -> dict[str, Any]:
+        response = self.client.post(
+            target,
+            token=token,
+            argv={
+                "protocol_version": WPS_SYNC_PROTOCOL_VERSION,
+                "operation": "migrate_legacy_binding",
+                "document_id": target.expected_document_id,
+                "target_code": target.target_code,
+                "target_type": target.target_type.value,
+                "site_id": target.site_id,
+                "business_key": target.business_key,
+                "expected_old_binding_id": expected_old_binding_id,
+                "new_binding_id": target.binding_id,
+                "script_id": _script_id_from_webhook(target.webhook_url),
+            },
+        )
+        result = _unwrap_wps_sync_task_response(response, target, token=token)
+        self._validate_common(target, result)
+        if not bool(result.get("success")):
+            raise _remote_result_error(target, result, token)
+        diagnosed = _with_binding_diagnostics(target, result)
+        migrated = bool(diagnosed.get("migrated"))
+        already_migrated = bool(diagnosed.get("already_migrated"))
+        previous_binding_id = str(diagnosed.get("previous_binding_id") or "")
+        if (
+            str(diagnosed.get("binding_status") or "") != "BOUND"
+            or not bool(diagnosed.get("binding_id_match"))
+            or (migrated and previous_binding_id != expected_old_binding_id)
+            or not (migrated or already_migrated)
+        ):
+            raise WpsSyncError(
+                "WPS_BINDING_MIGRATION_VERIFY_FAILED",
+                "WPS 旧版绑定标识迁移结果未通过身份校验",
+                details={
+                    **_target_error_details(target, phase="DOCUMENT_IDENTITY"),
+                    **_binding_error_details(diagnosed),
+                    "expected_old_binding_id": expected_old_binding_id,
+                    "previous_binding_id": previous_binding_id,
+                    "migrated": migrated,
+                    "already_migrated": already_migrated,
+                },
+            )
+        return {"http_status": response.status_code, "phase": "SUCCESS", **diagnosed}
 
     def sync(
         self,
@@ -266,6 +354,9 @@ class BaseWpsAdapter:
         response = self.client.post(target, token=token, argv=request_payload)
         result = _unwrap_wps_sync_task_response(response, target, token=token)
         self._validate_common(target, result)
+        if not bool(result.get("success")):
+            raise _remote_result_error(target, result, token)
+        mismatched = []
         for key in (
             "target_batch_id",
             "site_id",
@@ -274,13 +365,27 @@ class BaseWpsAdapter:
             "snapshot_sha256",
         ):
             if str(result.get(key) or "") != str(payload.get(key) or ""):
-                raise WpsSyncError(
-                    "WPS_RESPONSE_IDENTITY_MISMATCH",
-                    f"WPS 返回的 {key} 与本次同步不一致",
-                    details=_target_error_details(target, phase="DOCUMENT_IDENTITY"),
-                )
-        if not bool(result.get("success")):
-            raise _remote_result_error(target, result, token)
+                mismatched.append(key)
+        if mismatched:
+            details = {
+                **_target_error_details(target, phase="DOCUMENT_IDENTITY"),
+                "mismatched_fields": mismatched,
+                "expected_target_batch_id": str(payload.get("target_batch_id") or ""),
+                "remote_target_batch_id": str(result.get("target_batch_id") or ""),
+                "expected_site_id": str(payload.get("site_id") or ""),
+                "remote_site_id": str(result.get("site_id") or ""),
+                "expected_business_key": str(payload.get("business_key") or ""),
+                "remote_business_key": str(result.get("business_key") or ""),
+                "expected_revision": str(payload.get("snapshot_revision") or ""),
+                "remote_revision": str(result.get("snapshot_revision") or ""),
+                "expected_snapshot_sha256": str(payload.get("snapshot_sha256") or ""),
+                "remote_snapshot_sha256": str(result.get("snapshot_sha256") or ""),
+            }
+            raise WpsSyncError(
+                "WPS_RESPONSE_IDENTITY_MISMATCH",
+                f"WPS 返回的 {mismatched[0]} 与本次同步不一致",
+                details=details,
+            )
         return {"http_status": response.status_code, "phase": "SUCCESS", **result}
 
     @staticmethod
@@ -510,9 +615,9 @@ class TracksideApWpsSyncService:
         except WpsSyncError as exc:
             if not exc.details:
                 exc.details.update(_target_error_details(target, phase="LOCAL_CONFIGURATION"))
-            repository.update_target_diagnostic(
+            repository.record_connection_test(
                 target.target_id,
-                operation="connection_test",
+                result=None,
                 diagnostic=_operation_diagnostic(
                     "connection_test",
                     status="FAILED",
@@ -520,20 +625,10 @@ class TracksideApWpsSyncService:
                     values=exc.details,
                 ),
             )
-            repository.update_target_test(
-                target.target_id,
-                status="FAILED",
-                message=str(exc),
-            )
             raise
-        repository.update_target_test(
+        repository.record_connection_test(
             target.target_id,
-            status="SUCCESS",
-            message="连接测试通过",
-        )
-        repository.update_target_diagnostic(
-            target.target_id,
-            operation="connection_test",
+            result=result,
             diagnostic=_operation_diagnostic(
                 "connection_test",
                 status="SUCCESS",
@@ -541,14 +636,105 @@ class TracksideApWpsSyncService:
                 values=result,
             ),
         )
-        repository.update_target_remote_identity(target.target_id, result=result)
+        return _sanitize_result(result)
+
+    def migrate_legacy_binding(self, site_id: str, target_code: str) -> dict[str, Any]:
+        repository = self._repository(site_id)
+        self._ensure_default_targets(repository)
+        target = repository.get_target(TRACKSIDE_AP_WPS_BUSINESS_KEY, target_code)
+        if target.target_type is not WpsTargetType.STANDARD_SPREADSHEET:
+            raise WpsSyncError(
+                "WPS_BINDING_MIGRATION_UNSUPPORTED",
+                "当前仅支持普通在线表格迁移旧版绑定标识",
+            )
+        _validate_target_configuration(target)
+        preflight = self.connection_test(site_id, target_code)
+        target = repository.get_target(TRACKSIDE_AP_WPS_BUSINESS_KEY, target_code)
+        binding_status = str(preflight.get("binding_status") or "UNKNOWN").upper()
+        remote_binding_id = str(preflight.get("remote_binding_id") or "")
+        already_migrated = (
+            binding_status == "BOUND" and remote_binding_id == target.binding_id
+        )
+        if binding_status != "LEGACY_BINDING_ID_MISMATCH" and not already_migrated:
+            raise WpsSyncError(
+                "WPS_BINDING_MIGRATION_NOT_ALLOWED",
+                "只有业务身份完全一致的旧版绑定标识可以迁移",
+                details={
+                    **_target_error_details(target, phase="BINDING_GATE"),
+                    "binding_status": binding_status,
+                    "local_binding_id": target.binding_id,
+                    "remote_binding_id": remote_binding_id,
+                    **_binding_error_details(preflight),
+                },
+            )
+        result = self.adapters[target.target_type].migrate_legacy_binding(
+            target,
+            self._token(repository, target),
+            expected_old_binding_id=remote_binding_id,
+        )
         repository.update_target_remote_state(
             target.target_id,
-            binding_status=str(result.get("binding_status") or "UNKNOWN"),
+            binding_status="BOUND",
             result=result,
             persist_runtime_identity=False,
         )
-        return _sanitize_result(result)
+        try:
+            verification = self.revalidate_deployment(site_id, target_code)
+        except WpsSyncError as exc:
+            raise WpsSyncError(
+                "WPS_BINDING_MIGRATED_VERIFICATION_FAILED",
+                "远端旧版绑定标识已迁移，但后续部署验证未全部通过",
+                details={
+                    **_target_error_details(target, phase="POST_MIGRATION_VERIFICATION"),
+                    "migrated": bool(result.get("migrated")),
+                    "already_migrated": bool(result.get("already_migrated")),
+                    "previous_binding_id": str(
+                        result.get("previous_binding_id") or remote_binding_id
+                    ),
+                    "verification_error_code": exc.code,
+                    "verification_error_message": _sanitize_error(str(exc)),
+                    "verification_error_details": _sanitize_result(exc.details),
+                },
+            ) from exc
+        connection = verification["connection_test"]
+        return {
+            **connection,
+            "message": str(
+                result.get("message") or "旧版绑定标识已迁移并完成部署验证"
+            ),
+            "migrated": bool(result.get("migrated")),
+            "already_migrated": bool(result.get("already_migrated")),
+            "previous_binding_id": str(
+                result.get("previous_binding_id") or remote_binding_id
+            ),
+            "verification": verification,
+        }
+
+    def revalidate_deployment(self, site_id: str, target_code: str) -> dict[str, Any]:
+        """Re-run the complete ordinary-spreadsheet deployment verification chain."""
+        repository = self._repository(site_id)
+        self._ensure_default_targets(repository)
+        target = repository.get_target(TRACKSIDE_AP_WPS_BUSINESS_KEY, target_code)
+        if target.target_type is not WpsTargetType.STANDARD_SPREADSHEET:
+            raise WpsSyncError(
+                "WPS_REVALIDATE_UNSUPPORTED",
+                "当前仅支持普通在线表格重新验证部署",
+            )
+        repository.clear_runtime_probe_identity(target.target_id)
+        try:
+            connection = self.connection_test(site_id, target_code)
+            probe = self.runtime_write_probe(site_id, target_code)
+            sync_test = self.sync_test_sheet(site_id, target_code)
+        except WpsSyncError:
+            repository.set_runtime_capability(target.target_id, "DEPLOYMENT_PENDING")
+            raise
+        return {
+            "target_code": target_code,
+            "connection_test": connection,
+            "runtime_write_probe": probe,
+            "sync_test_sheet": sync_test,
+            "runtime_capability": "VERIFIED",
+        }
 
     def runtime_write_probe(self, site_id: str, target_code: str) -> dict[str, Any]:
         repository = self._repository(site_id)
@@ -581,7 +767,7 @@ class TracksideApWpsSyncService:
             operation="runtime_write_probe",
             diagnostic=_operation_diagnostic(
                 "runtime_write_probe",
-                status="SUCCESS",
+                status=str(result.get("status") or "SUCCESS"),
                 message=str(result.get("message") or "运行时写入探针通过"),
                 values=result,
             ),
@@ -638,6 +824,47 @@ class TracksideApWpsSyncService:
         )
         return _sanitize_result(result)
 
+    def sheet_order_probe(self, site_id: str, target_code: str) -> dict[str, Any]:
+        repository = self._repository(site_id)
+        self._ensure_default_targets(repository)
+        target = repository.get_target(TRACKSIDE_AP_WPS_BUSINESS_KEY, target_code)
+        if target.target_type is not WpsTargetType.STANDARD_SPREADSHEET:
+            raise WpsSyncError(
+                "WPS_SHEET_ORDER_PROBE_UNSUPPORTED",
+                "Sheet 排序探针仅支持普通在线表格",
+            )
+        try:
+            _validate_target_configuration(target)
+            result = self.adapters[target.target_type].sheet_order_probe(
+                target, self._token(repository, target)
+            )
+        except WpsSyncError as exc:
+            details = dict(exc.details) or _target_error_details(
+                target, phase="LOCAL_CONFIGURATION"
+            )
+            repository.update_target_diagnostic(
+                target.target_id,
+                operation="sheet_order_probe",
+                diagnostic=_operation_diagnostic(
+                    "sheet_order_probe",
+                    status="FAILED",
+                    message=str(exc),
+                    values=details,
+                ),
+            )
+            raise
+        repository.update_target_diagnostic(
+            target.target_id,
+            operation="sheet_order_probe",
+            diagnostic=_operation_diagnostic(
+                "sheet_order_probe",
+                status=str(result.get("status") or "SUCCESS"),
+                message=str(result.get("message") or "Sheet 排序探针通过"),
+                values=result,
+            ),
+        )
+        return _sanitize_result(result)
+
     def sync(
         self,
         site_id: str,
@@ -678,7 +905,7 @@ class TracksideApWpsSyncService:
         for target in targets:
             if not isinstance(self.client, WpsAirScriptClient):
                 continue
-            binding_status = str(target.binding_status or "UNKNOWN").upper()
+            binding_status = _effective_binding_status(target)
             if binding_status == "MISMATCH":
                 raise WpsSyncError(
                     "WPS_DOCUMENT_BINDING_MISMATCH",
@@ -688,6 +915,17 @@ class TracksideApWpsSyncService:
                         "binding_status": binding_status,
                         "remote_site_id": target.remote_site_id,
                         "remote_business_key": target.remote_business_key,
+                    },
+                )
+            if binding_status == "LEGACY_BINDING_ID_MISMATCH":
+                raise WpsSyncError(
+                    "WPS_LEGACY_BINDING_ID_MISMATCH",
+                    f"WPS 文档仍使用旧版绑定标识，请先升级：{target.target_name}",
+                    details={
+                        **_target_error_details(target, phase="BINDING_GATE"),
+                        "binding_status": binding_status,
+                        "local_binding_id": target.binding_id,
+                        "remote_binding_id": target.remote_binding_id,
                     },
                 )
             if binding_status == "UNKNOWN":
@@ -763,7 +1001,7 @@ class TracksideApWpsSyncService:
                 "target_batch_id": target_batch_id,
                 "target_type": target.target_type.value,
                 "target_code": target.target_code,
-                "binding_id": target.target_id,
+                "binding_id": target.binding_id,
                 "initialize_binding": bool(initialize_binding),
                 "site_id": site_id,
                 "site_name": self._site_display_name(site_id),
@@ -772,6 +1010,7 @@ class TracksideApWpsSyncService:
                 "snapshot_sha256": snapshot_sha256,
                 "snapshot_generated_at": generated_at,
                 "requested_at": _now(),
+                "format_mirror_experimental": WPS_STANDARD_FORMAT_MIRROR_EXPERIMENTAL,
                 "workbook": workbook.to_dict(),
             }
             try:
@@ -929,7 +1168,10 @@ class TracksideApWpsSyncService:
                 progress_callback=None,
                 should_cancel=None,
             )
-            workbook = workbook_dto_from_xlsx(output)
+            workbook = workbook_dto_from_xlsx(
+                output,
+                include_format_mirror=WPS_STANDARD_FORMAT_MIRROR_EXPERIMENTAL,
+            )
             digest_payload = {
                 "site_id": site_id,
                 "business_key": TRACKSIDE_AP_WPS_BUSINESS_KEY,
@@ -1000,6 +1242,28 @@ class TracksideApWpsSyncService:
                 repository.set_runtime_capability(
                     created.target_id, "RUNTIME_UNVERIFIED"
                 )
+        for target in repository.list_targets(TRACKSIDE_AP_WPS_BUSINESS_KEY):
+            if (
+                target.target_type is WpsTargetType.STANDARD_SPREADSHEET
+                and target.runtime_capability == "VERIFIED"
+            ):
+                expected_identity = {
+                    "document_id": target.expected_document_id,
+                    "script_id": _script_id_from_webhook(target.webhook_url),
+                    "script_version": WPS_SCRIPT_VERSIONS.get(target.target_code, ""),
+                    "deployment_id": WPS_DEPLOYMENT_IDS.get(target.target_code, ""),
+                }
+                runtime_identity = {
+                    "document_id": target.runtime_probe_document_id,
+                    "script_id": target.runtime_probe_script_id,
+                    "script_version": target.runtime_probe_script_version,
+                    "deployment_id": target.runtime_probe_deployment_id,
+                }
+                if any(
+                    actual and actual != expected_identity[key]
+                    for key, actual in runtime_identity.items()
+                ):
+                    repository.clear_runtime_probe_identity(target.target_id)
 
     def _repository(self, site_id: str) -> WpsSyncRepository:
         selected = SiteManager(self.paths).validate_site_name(site_id)
@@ -1024,6 +1288,7 @@ class TracksideApWpsSyncService:
         env_token_configured: bool,
     ) -> dict[str, Any]:
         result = target.public_dict()
+        result["binding_status"] = _effective_binding_status(target)
         result["expected_script_version"] = WPS_SCRIPT_VERSIONS.get(target.target_code, "")
         result["expected_deployment_id"] = WPS_DEPLOYMENT_IDS.get(target.target_code, "")
         result["expected_script_id"] = (
@@ -1040,7 +1305,11 @@ class TracksideApWpsSyncService:
         return result
 
 
-def workbook_dto_from_xlsx(path: str | Path) -> WorkbookDTO:
+def workbook_dto_from_xlsx(
+    path: str | Path,
+    *,
+    include_format_mirror: bool = WPS_STANDARD_FORMAT_MIRROR_EXPERIMENTAL,
+) -> WorkbookDTO:
     workbook = load_workbook(Path(path), data_only=False, read_only=False)
     try:
         sheets: list[WorkbookSheetDTO] = []
@@ -1067,25 +1336,41 @@ def workbook_dto_from_xlsx(path: str | Path) -> WorkbookDTO:
                     row_count=max_row,
                     column_count=max_column,
                     sheet_order=len(sheets),
-                    sheet_visible=worksheet.sheet_state == "visible",
-                    tab_color=_openpyxl_color(worksheet.sheet_properties.tabColor),
-                    merges=[str(value) for value in worksheet.merged_cells.ranges],
+                    sheet_visible=(worksheet.sheet_state == "visible") if include_format_mirror else True,
+                    tab_color=(
+                        _openpyxl_color(worksheet.sheet_properties.tabColor)
+                        if include_format_mirror
+                        else ""
+                    ),
+                    merges=(
+                        [str(value) for value in worksheet.merged_cells.ranges]
+                        if include_format_mirror
+                        else []
+                    ),
                     row_heights={
                         str(index): float(dimension.height)
                         for index, dimension in worksheet.row_dimensions.items()
                         if dimension.height is not None
-                    },
+                    } if include_format_mirror else {},
                     column_widths={
                         str(index): float(dimension.width)
                         for index, dimension in worksheet.column_dimensions.items()
                         if dimension.width is not None
-                    },
-                    format_runs=_format_runs_from_worksheet(
-                        worksheet,
-                        max_row=max_row,
-                        max_column=max_column,
+                    } if include_format_mirror else {},
+                    format_runs=(
+                        _format_runs_from_worksheet(
+                            worksheet,
+                            max_row=max_row,
+                            max_column=max_column,
+                        )
+                        if include_format_mirror
+                        else ()
                     ),
-                    freeze_panes=str(worksheet.freeze_panes or ""),
+                    freeze_panes=(
+                        str(worksheet.freeze_panes or "")
+                        if include_format_mirror
+                        else ""
+                    ),
                 )
             )
         return WorkbookDTO(sheets=tuple(sheets))
@@ -1287,6 +1572,7 @@ def _target_error_details(target: WpsSyncTarget, *, phase: str) -> dict[str, obj
         "phase": phase,
         "target_code": target.target_code,
         "document_id": target.expected_document_id,
+        "local_binding_id": target.binding_id,
         "expected_script_id": (
             _script_id_from_webhook(target.webhook_url)
             if target.webhook_url
@@ -1295,6 +1581,120 @@ def _target_error_details(target: WpsSyncTarget, *, phase: str) -> dict[str, obj
         "expected_script_version": WPS_SCRIPT_VERSIONS.get(target.target_code, ""),
         "expected_deployment_id": WPS_DEPLOYMENT_IDS.get(target.target_code, ""),
     }
+
+
+def _with_binding_diagnostics(
+    target: WpsSyncTarget,
+    result: Mapping[str, object],
+) -> dict[str, Any]:
+    diagnosed = dict(result)
+    remote_binding_id = str(
+        result.get("remote_binding_id") or result.get("binding_id") or ""
+    )
+    remote_document_id = str(
+        result.get("remote_document_id") or result.get("document_id") or ""
+    )
+    remote_site_id = str(result.get("remote_site_id") or result.get("site_id") or "")
+    remote_site_name = str(
+        result.get("remote_site_name") or result.get("site_name") or ""
+    )
+    remote_business_key = str(
+        result.get("remote_business_key") or result.get("business_key") or ""
+    )
+    remote_target_code = str(
+        result.get("remote_target_code") or result.get("target_code") or ""
+    )
+    remote_target_type = str(
+        result.get("remote_target_type") or result.get("target_type") or ""
+    )
+    returned_status = str(result.get("binding_status") or "UNKNOWN").upper()
+
+    if not remote_binding_id:
+        binding_status = (
+            returned_status
+            if returned_status
+            in {"BOUND", "UNBOUND", "LEGACY_BINDING_ID_MISMATCH", "MISMATCH"}
+            else "UNKNOWN"
+        )
+        if target.target_type is WpsTargetType.STANDARD_SPREADSHEET and returned_status == "UNKNOWN":
+            binding_status = "UNBOUND"
+        binding_match = False
+    else:
+        document_match = remote_document_id == target.expected_document_id
+        site_match = remote_site_id == target.site_id
+        business_match = remote_business_key == target.business_key
+        target_code_match = remote_target_code == target.target_code
+        target_type_match = remote_target_type == target.target_type.value
+        business_identity_matches = all(
+            (
+                document_match,
+                site_match,
+                business_match,
+                target_code_match,
+                target_type_match,
+            )
+        )
+        binding_match = remote_binding_id == target.binding_id
+        if business_identity_matches and binding_match:
+            binding_status = "BOUND"
+        elif business_identity_matches and _LEGACY_BINDING_ID_RE.fullmatch(remote_binding_id):
+            binding_status = "LEGACY_BINDING_ID_MISMATCH"
+        else:
+            binding_status = "MISMATCH"
+
+    document_match = bool(remote_document_id) and remote_document_id == target.expected_document_id
+    site_match = bool(remote_site_id) and remote_site_id == target.site_id
+    business_match = bool(remote_business_key) and remote_business_key == target.business_key
+    target_code_match = bool(remote_target_code) and remote_target_code == target.target_code
+    target_type_match = bool(remote_target_type) and remote_target_type == target.target_type.value
+    diagnosed.update(
+        {
+            "binding_status": binding_status,
+            "local_binding_id": target.binding_id,
+            "remote_binding_id": remote_binding_id,
+            "binding_id_match": binding_match,
+            "remote_document_id": remote_document_id,
+            "remote_site_id": remote_site_id,
+            "remote_site_name": remote_site_name,
+            "remote_business_key": remote_business_key,
+            "remote_target_code": remote_target_code,
+            "remote_target_type": remote_target_type,
+            "document_match": document_match,
+            "document_identity_match": document_match,
+            "site_match": site_match,
+            "site_identity_match": site_match,
+            "business_match": business_match,
+            "business_identity_match": business_match,
+            "target_code_match": target_code_match,
+            "target_type_match": target_type_match,
+            "target_match": target_code_match and target_type_match,
+        }
+    )
+    return diagnosed
+
+
+def _binding_error_details(result: Mapping[str, object]) -> dict[str, object]:
+    keys = (
+        "binding_status",
+        "local_binding_id",
+        "remote_binding_id",
+        "binding_id_match",
+        "remote_document_id",
+        "remote_site_id",
+        "remote_business_key",
+        "remote_target_code",
+        "remote_target_type",
+        "document_match",
+        "document_identity_match",
+        "site_match",
+        "site_identity_match",
+        "business_match",
+        "business_identity_match",
+        "target_code_match",
+        "target_type_match",
+        "target_match",
+    )
+    return {key: result.get(key) for key in keys if key in result}
 
 
 def _operation_diagnostic(
@@ -1334,10 +1734,75 @@ def _operation_diagnostic(
         "remote_message",
         "suggestion",
         "target_code",
+        "runtime_capability",
+        "core_verified",
+        "full_replace_ready",
+        "prepend_snapshot_ready",
+        "capabilities",
+        "core_capabilities",
+        "optional_capabilities",
+        "capability_failures",
+        "warnings",
+        "sheet_order_verified",
+        "sheet_move_before_verified",
+        "sheet_move_after_verified",
+        "system_sheet_order_verified",
+        "expected_sheet_order",
+        "actual_sheet_order",
+        "actual_sheet_order_all",
+        "binding_status",
+        "local_binding_id",
+        "remote_binding_id",
+        "binding_id_match",
+        "remote_document_id",
+        "remote_site_id",
+        "remote_site_name",
+        "remote_business_key",
+        "remote_target_code",
+        "remote_target_type",
+        "document_match",
+        "document_identity_match",
+        "site_match",
+        "site_identity_match",
+        "business_match",
+        "business_identity_match",
+        "target_code_match",
+        "target_type_match",
+        "target_match",
     ):
         if sanitized.get(key) not in (None, ""):
             diagnostic[key] = sanitized[key]
     return diagnostic
+
+
+def _effective_binding_status(target: WpsSyncTarget) -> str:
+    status = str(target.binding_status or "UNKNOWN").upper()
+    remote_binding_id = str(target.remote_binding_id or "")
+    if (
+        status != "BOUND"
+        or not remote_binding_id
+        or remote_binding_id == target.binding_id
+    ):
+        return status
+
+    diagnostic = target.connection_diagnostic or {}
+    identity_matches = (
+        diagnostic.get("document_identity_match", diagnostic.get("document_match")),
+        diagnostic.get("site_identity_match", diagnostic.get("site_match")),
+        diagnostic.get("business_identity_match", diagnostic.get("business_match")),
+        diagnostic.get("target_code_match"),
+        diagnostic.get("target_type_match"),
+    )
+    if all(value is True for value in identity_matches):
+        if _LEGACY_BINDING_ID_RE.fullmatch(remote_binding_id):
+            return "LEGACY_BINDING_ID_MISMATCH"
+        return "MISMATCH"
+    if any(value is False for value in identity_matches):
+        return "MISMATCH"
+    # Historical connection rows may say BOUND because target_id used to be
+    # the binding identity. Require a fresh connection test before trusting
+    # that state after the stable binding ID migration.
+    return "UNKNOWN"
 
 
 def _remote_result_error(
@@ -1345,11 +1810,13 @@ def _remote_result_error(
     result: Mapping[str, object],
     token: str,
 ) -> WpsSyncError:
+    diagnosed = _with_binding_diagnostics(target, result)
     details = {
         **_target_error_details(target, phase="SCRIPT_EXECUTION"),
+        **_binding_error_details(diagnosed),
         **_sanitize_result(
             {
-                key: result.get(key)
+                key: diagnosed.get(key)
                 for key in (
                     "failed_sheet",
                     "failed_operation",
@@ -1358,6 +1825,15 @@ def _remote_result_error(
                     "runtime_error_name",
                     "runtime_error_stack",
                     "binding_status",
+                    "runtime_capability",
+                    "core_verified",
+                    "full_replace_ready",
+                    "prepend_snapshot_ready",
+                    "capabilities",
+                    "core_capabilities",
+                    "optional_capabilities",
+                    "capability_failures",
+                    "warnings",
                 )
             }
         ),
@@ -1685,76 +2161,12 @@ def _assert_runtime_identity(target: WpsSyncTarget) -> None:
 
 
 def _assert_standard_sync_readiness(target: WpsSyncTarget) -> None:
-    if target.target_type is not WpsTargetType.STANDARD_SPREADSHEET:
-        return
-    expected = {
-        "document_id": target.expected_document_id,
-        "script_id": _script_id_from_webhook(target.webhook_url),
-        "script_version": WPS_SCRIPT_VERSIONS.get(target.target_code, ""),
-        "deployment_id": WPS_DEPLOYMENT_IDS.get(target.target_code, ""),
-    }
-    connection_identity = {
-        "script_id": target.remote_script_id,
-        "script_version": target.remote_script_version,
-        "deployment_id": target.remote_deployment_id,
-    }
-    connection_diagnostic_identity = {
-        key: str(target.connection_diagnostic.get(key) or "")
-        for key in ("document_id", "script_id", "script_version", "deployment_id")
-    }
-    connection_mismatch = {
-        key: {"expected": expected[key], "actual": actual}
-        for key, actual in connection_identity.items()
-        if actual != expected[key]
-    }
-    connection_mismatch.update({
-        f"diagnostic_{key}": {"expected": expected[key], "actual": actual}
-        for key, actual in connection_diagnostic_identity.items()
-        if actual != expected[key]
-    })
-    if (
-        not target.remote_identity_verified_at
-        or str(target.connection_diagnostic.get("status") or "").upper() != "SUCCESS"
-        or str(target.connection_diagnostic.get("operation") or "") != "connection_test"
-        or connection_mismatch
-    ):
-        raise WpsSyncError(
-            "WPS_CONNECTION_TEST_REQUIRED",
-            f"WPS 当前远端脚本身份尚未确认，请重新执行连接测试：{target.target_name}",
-            details={
-                **_target_error_details(target, phase="DEPLOYMENT_IDENTITY"),
-                "mismatches": connection_mismatch,
-            },
-        )
-
-    for operation, label, diagnostic in (
-        ("runtime_write_probe", "写入能力探针", target.runtime_probe_diagnostic),
-        ("sync_test_sheet", "同步测试 Sheet", target.sync_test_diagnostic),
-    ):
-        actual = {
-            key: str(diagnostic.get(key) or "")
-            for key in ("document_id", "script_id", "script_version", "deployment_id")
-        }
-        mismatches = {
-            key: {"expected": expected[key], "actual": actual[key]}
-            for key in expected
-            if actual[key] != expected[key]
-        }
-        if (
-            str(diagnostic.get("status") or "").upper() != "SUCCESS"
-            or str(diagnostic.get("operation") or "") != operation
-            or mismatches
-        ):
-            raise WpsSyncError(
-                "WPS_DEPLOYMENT_READINESS_REQUIRED",
-                f"WPS {label}尚未由当前部署验证：{target.target_name}",
-                details={
-                    **_target_error_details(target, phase="DEPLOYMENT_IDENTITY"),
-                    "operation": operation,
-                    "mismatches": mismatches,
-                },
-            )
-    _assert_runtime_identity(target)
+    # Diagnostics and the remote identity snapshot are evidence for the UI and
+    # task history. The actual write gate remains the current runtime probe plus
+    # the document binding checks above; stale historical diagnostics must not
+    # lock a target after a successful probe.
+    if target.target_type is WpsTargetType.STANDARD_SPREADSHEET:
+        _assert_runtime_identity(target)
 
 
 def _sanitize_result(value: Mapping[str, object]) -> dict[str, Any]:
@@ -1789,6 +2201,7 @@ __all__ = [
     "WPS_DEPLOYMENT_IDS",
     "WPS_RUNTIME_CAPABILITIES",
     "WPS_SCRIPT_VERSIONS",
+    "WPS_STANDARD_FORMAT_MIRROR_EXPERIMENTAL",
     "TracksideApWpsSyncService",
     "WpsAirScriptClient",
     "WpsSmartSheetAdapter",

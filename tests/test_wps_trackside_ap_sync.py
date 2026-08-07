@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 from pathlib import Path
+import sqlite3
 import urllib.error
 
 from openpyxl import Workbook
@@ -11,7 +12,12 @@ import pytest
 
 from netconsole.core.paths import PathResolver
 from netconsole.core.sites import SiteManager
-from netconsole.models.wps_sync import TRACKSIDE_AP_WPS_BUSINESS_KEY, WpsSyncTarget, WpsTargetType
+from netconsole.models.wps_sync import (
+    TRACKSIDE_AP_WPS_BUSINESS_KEY,
+    WpsSyncTarget,
+    WpsTargetType,
+    build_wps_binding_id,
+)
 from netconsole.repositories.wps_sync_repository import WpsSyncRepository
 from netconsole.services.wps_trackside_ap_sync import (
     SMART_TARGET_CODE,
@@ -23,6 +29,7 @@ from netconsole.services.wps_trackside_ap_sync import (
     WpsSyncError,
     WPS_DEPLOYMENT_IDS,
     WPS_SCRIPT_VERSIONS,
+    WPS_STANDARD_FORMAT_MIRROR_EXPERIMENTAL,
     WPS_SYNC_TASK_TYPE,
     _assert_standard_sync_readiness,
     workbook_dto_from_xlsx,
@@ -83,6 +90,77 @@ def test_wps_targets_keep_independent_encrypted_credentials(tmp_path: Path) -> N
     assert "secret-token" not in str(public)
 
 
+def test_wps_binding_id_is_stable_across_independent_data_roots(tmp_path: Path) -> None:
+    targets = []
+    for root in (tmp_path / "first", tmp_path / "restored"):
+        repository = WpsSyncRepository(
+            PathResolver(data_root=root), "hzl10", protect=_protect, unprotect=_protect
+        )
+        targets.append(
+            repository.upsert_target(
+                business_key=TRACKSIDE_AP_WPS_BUSINESS_KEY,
+                target_code=STANDARD_TARGET_CODE,
+                target_type=WpsTargetType.STANDARD_SPREADSHEET,
+                target_name="普通表格",
+                document_open_url="https://example.test/standard",
+                webhook_url="https://example.test/standard-hook",
+                expected_document_id="standard",
+            )
+        )
+
+    assert targets[0].target_id != targets[1].target_id
+    assert targets[0].binding_id == targets[1].binding_id
+    assert targets[0].binding_id == build_wps_binding_id(
+        "hzl10", TRACKSIDE_AP_WPS_BUSINESS_KEY, STANDARD_TARGET_CODE
+    )
+    assert build_wps_binding_id(
+        "other-site", TRACKSIDE_AP_WPS_BUSINESS_KEY, STANDARD_TARGET_CODE
+    ) != targets[0].binding_id
+
+
+def test_wps_binding_id_migration_is_additive_repeatable_and_preserves_rows(
+    tmp_path: Path,
+) -> None:
+    repository = WpsSyncRepository(
+        PathResolver(tmp_path), "hzl10", protect=_protect, unprotect=_protect
+    )
+    original = repository.upsert_target(
+        business_key=TRACKSIDE_AP_WPS_BUSINESS_KEY,
+        target_code=STANDARD_TARGET_CODE,
+        target_type=WpsTargetType.STANDARD_SPREADSHEET,
+        target_name="保留的普通表格",
+        document_open_url="https://example.test/standard",
+        webhook_url="https://example.test/standard-hook",
+        expected_document_id="standard",
+        token="preserved-token",
+    )
+    with sqlite3.connect(repository.path) as connection:
+        connection.execute("ALTER TABLE wps_sync_targets DROP COLUMN binding_id")
+        connection.commit()
+
+    repository.initialize()
+    repository.initialize()
+
+    migrated = repository.get_target(TRACKSIDE_AP_WPS_BUSINESS_KEY, STANDARD_TARGET_CODE)
+    with sqlite3.connect(repository.path) as connection:
+        columns = {
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info(wps_sync_targets)")
+        }
+        row_count = connection.execute(
+            "SELECT COUNT(*) FROM wps_sync_targets WHERE target_id = ?",
+            (original.target_id,),
+        ).fetchone()[0]
+    assert "binding_id" in columns
+    assert row_count == 1
+    assert migrated.target_id == original.target_id
+    assert migrated.target_name == "保留的普通表格"
+    assert migrated.binding_id == build_wps_binding_id(
+        "hzl10", TRACKSIDE_AP_WPS_BUSINESS_KEY, STANDARD_TARGET_CODE
+    )
+    assert repository.resolve_token(migrated) == "preserved-token"
+
+
 def test_wps_target_configuration_rejects_non_kdocs_webhook(tmp_path: Path) -> None:
     service = TracksideApWpsSyncService(PathResolver(tmp_path))
     with pytest.raises(WpsSyncError, match="kdocs.cn"):
@@ -103,6 +181,30 @@ def test_wps_public_targets_expose_deployment_identity_and_disable_smart_by_defa
     assert by_code[SMART_TARGET_CODE]["runtime_capability"] == "RUNTIME_UNVERIFIED"
     assert by_code[STANDARD_TARGET_CODE]["expected_script_version"] == WPS_SCRIPT_VERSIONS[STANDARD_TARGET_CODE]
     assert by_code[STANDARD_TARGET_CODE]["expected_deployment_id"] == WPS_DEPLOYMENT_IDS[STANDARD_TARGET_CODE]
+
+
+def test_wps_public_target_does_not_trust_stale_bound_state_after_stable_id_migration(
+    tmp_path: Path,
+) -> None:
+    service = TracksideApWpsSyncService(PathResolver(tmp_path))
+    service.list_targets("hzl10")
+    repository = service._repository("hzl10")
+    target = repository.get_target(TRACKSIDE_AP_WPS_BUSINESS_KEY, STANDARD_TARGET_CODE)
+    repository.update_target_remote_state(
+        target.target_id,
+        binding_status="BOUND",
+        result={
+            "remote_binding_id": f"wst_{'a' * 32}",
+            "remote_site_id": target.site_id,
+            "remote_business_key": target.business_key,
+        },
+        persist_runtime_identity=False,
+    )
+
+    refreshed = {item["target_code"]: item for item in service.list_targets("hzl10")}
+
+    assert refreshed[STANDARD_TARGET_CODE]["binding_status"] == "UNKNOWN"
+    assert refreshed[STANDARD_TARGET_CODE]["remote_binding_id"].startswith("wst_")
 
 
 def test_wps_default_target_name_uses_site_display_name_and_preserves_custom_name(tmp_path: Path) -> None:
@@ -209,6 +311,192 @@ def test_wps_connection_test_unwraps_official_sync_task_envelope(body: dict[str,
     result = WpsStandardSpreadsheetAdapter(FakeClient()).connection_test(_wps_target(), "test-only-token")
     assert result["phase"] == "SUCCESS"
     assert result["document_id"] == "document"
+
+
+def test_wps_connection_test_classifies_only_old_random_binding_as_legacy() -> None:
+    target = _wps_target()
+    legacy_binding_id = f"wst_{'a' * 32}"
+
+    class FakeClient:
+        def post(self, target, *, token, argv):
+            return WpsHttpResponse(
+                status_code=200,
+                body={
+                    "success": True,
+                    "protocol_version": 2,
+                    "target_type": target.target_type.value,
+                    "target_code": target.target_code,
+                    "document_id": target.expected_document_id,
+                    "binding_id": legacy_binding_id,
+                    "site_id": target.site_id,
+                    "business_key": target.business_key,
+                },
+            )
+
+    result = WpsStandardSpreadsheetAdapter(FakeClient()).connection_test(
+        target, "test-only-token"
+    )
+
+    assert result["binding_status"] == "LEGACY_BINDING_ID_MISMATCH"
+    assert result["local_binding_id"] == target.binding_id
+    assert result["remote_binding_id"] == legacy_binding_id
+    assert result["binding_id_match"] is False
+    assert result["document_match"] is True
+    assert result["document_identity_match"] is True
+    assert result["site_match"] is True
+    assert result["site_identity_match"] is True
+    assert result["business_match"] is True
+    assert result["business_identity_match"] is True
+    assert result["target_match"] is True
+
+
+def test_wps_connection_test_rejects_nonlegacy_binding_or_business_identity_as_mismatch() -> None:
+    target = _wps_target()
+
+    class FakeClient:
+        def post(self, target, *, token, argv):
+            return WpsHttpResponse(
+                status_code=200,
+                body={
+                    "success": True,
+                    "protocol_version": 2,
+                    "target_type": target.target_type.value,
+                    "target_code": target.target_code,
+                    "document_id": target.expected_document_id,
+                    "binding_id": "not-a-legacy-random-id",
+                    "site_id": "other-site",
+                    "business_key": target.business_key,
+                },
+            )
+
+    result = WpsStandardSpreadsheetAdapter(FakeClient()).connection_test(
+        target, "test-only-token"
+    )
+
+    assert result["binding_status"] == "MISMATCH"
+    assert result["site_match"] is False
+
+
+def test_wps_legacy_binding_migration_accepts_already_migrated_result() -> None:
+    target = _wps_target()
+    legacy_binding_id = f"wst_{'c' * 32}"
+
+    class FakeClient:
+        def post(self, actual_target, *, token, argv):
+            assert actual_target is target
+            assert argv["operation"] == "migrate_legacy_binding"
+            assert argv["document_id"] == target.expected_document_id
+            assert argv["expected_old_binding_id"] == legacy_binding_id
+            assert argv["new_binding_id"] == target.binding_id
+            return WpsHttpResponse(
+                status_code=200,
+                body={
+                    "success": True,
+                    "protocol_version": 2,
+                    "target_type": target.target_type.value,
+                    "target_code": target.target_code,
+                    "document_id": target.expected_document_id,
+                    "binding_status": "BOUND",
+                    "binding_id": target.binding_id,
+                    "remote_binding_id": target.binding_id,
+                    "remote_document_id": target.expected_document_id,
+                    "remote_site_id": target.site_id,
+                    "remote_business_key": target.business_key,
+                    "remote_target_code": target.target_code,
+                    "remote_target_type": target.target_type.value,
+                    "migrated": False,
+                    "already_migrated": True,
+                },
+            )
+
+    result = WpsStandardSpreadsheetAdapter(FakeClient()).migrate_legacy_binding(
+        target,
+        "test-only-token",
+        expected_old_binding_id=legacy_binding_id,
+    )
+
+    assert result["binding_status"] == "BOUND"
+    assert result["binding_id_match"] is True
+    assert result["already_migrated"] is True
+
+
+def test_wps_formal_sync_preserves_remote_business_error_before_success_identity_checks() -> None:
+    target = _wps_target()
+
+    class FakeClient:
+        def post(self, target, *, token, argv):
+            return WpsHttpResponse(
+                status_code=200,
+                body={
+                    "success": False,
+                    "protocol_version": 2,
+                    "target_type": target.target_type.value,
+                    "document_id": target.expected_document_id,
+                    "error_code": "WPS_DOCUMENT_BINDING_MISMATCH",
+                    "message": "远端文档绑定与当前请求不一致",
+                    "binding_status": "MISMATCH",
+                    "failed_sheet": "_NetConsoleSyncMeta",
+                    "failed_operation": "ASSERT_BINDING",
+                },
+            )
+
+    with pytest.raises(WpsSyncError) as captured:
+        WpsStandardSpreadsheetAdapter(FakeClient()).sync(
+            target,
+            "test-only-token",
+            {
+                "target_batch_id": "batch-expected",
+                "site_id": target.site_id,
+                "business_key": target.business_key,
+                "snapshot_revision": "revision-1",
+                "snapshot_sha256": "sha-1",
+            },
+        )
+
+    assert captured.value.code == "WPS_DOCUMENT_BINDING_MISMATCH"
+    assert captured.value.code != "WPS_RESPONSE_IDENTITY_MISMATCH"
+    assert captured.value.details["binding_status"] == "MISMATCH"
+    assert captured.value.details["failed_operation"] == "ASSERT_BINDING"
+
+
+def test_wps_success_identity_mismatch_reports_expected_and_remote_values() -> None:
+    target = _wps_target()
+
+    class FakeClient:
+        def post(self, target, *, token, argv):
+            return WpsHttpResponse(
+                status_code=200,
+                body={
+                    "success": True,
+                    "protocol_version": 2,
+                    "target_type": target.target_type.value,
+                    "document_id": target.expected_document_id,
+                    "target_batch_id": "batch-remote",
+                    "site_id": target.site_id,
+                    "business_key": target.business_key,
+                    "snapshot_revision": "revision-remote",
+                    "snapshot_sha256": "sha-remote",
+                },
+            )
+
+    with pytest.raises(WpsSyncError) as captured:
+        WpsStandardSpreadsheetAdapter(FakeClient()).sync(
+            target,
+            "test-only-token",
+            {
+                "target_batch_id": "batch-expected",
+                "site_id": target.site_id,
+                "business_key": target.business_key,
+                "snapshot_revision": "revision-expected",
+                "snapshot_sha256": "sha-expected",
+            },
+        )
+
+    assert captured.value.code == "WPS_RESPONSE_IDENTITY_MISMATCH"
+    assert captured.value.details["expected_target_batch_id"] == "batch-expected"
+    assert captured.value.details["remote_target_batch_id"] == "batch-remote"
+    assert captured.value.details["expected_revision"] == "revision-expected"
+    assert captured.value.details["remote_revision"] == "revision-remote"
 
 
 @pytest.mark.parametrize(
@@ -323,6 +611,7 @@ def test_workbook_dto_uses_append_mode_for_overview(tmp_path: Path) -> None:
     assert dto.sheets[0].sync_mode.value == "FULL_REPLACE"
     assert dto.sheets[1].sync_mode.value == "APPEND_SNAPSHOT"
     assert dto.sheets[1].row_count == 2
+    assert [sheet.sheet_order for sheet in dto.sheets] == [0, 1]
 
 
 def test_workbook_dto_preserves_sheet_order_and_compresses_format_runs(
@@ -361,7 +650,7 @@ def test_workbook_dto_preserves_sheet_order_and_compresses_format_runs(
     workbook.save(path)
     workbook.close()
 
-    dto = workbook_dto_from_xlsx(path)
+    dto = workbook_dto_from_xlsx(path, include_format_mirror=True)
     first, second = dto.sheets
     assert first.sheet_order == 0
     assert second.sheet_order == 1
@@ -396,7 +685,12 @@ def test_workbook_dto_preserves_sheet_order_and_compresses_format_runs(
     assert "borders" not in serialized
 
 
-def test_standard_airscript_restores_formatting_and_reorders_sheets() -> None:
+def test_workbook_dto_omits_format_mirror_by_default() -> None:
+    assert WPS_STANDARD_FORMAT_MIRROR_EXPERIMENTAL is False
+
+
+
+def test_standard_airscript_keeps_format_mirror_disabled_behind_explicit_gate() -> None:
     script_path = (
         Path(__file__).parents[1]
         / "tools"
@@ -407,6 +701,11 @@ def test_standard_airscript_restores_formatting_and_reorders_sheets() -> None:
 
     assert 'const SCRIPT_VERSION = "2.3.0-standard";' in script
     assert 'const DEPLOYMENT_ID = "trackside-ap-standard-2.3.0";' in script
+    assert "const FORMAT_MIRROR_EXPERIMENTAL = false;" in script
+    assert "function writeStableSheet(sheetDto)" in script
+    assert "if (used && used.ClearContents) used.ClearContents();" in script
+    assert "FORMAT_MIRROR_EXPERIMENTAL && args.format_mirror_experimental === true" in script
+    assert "sheetOrderVerification = reorderBusinessSheets(sheets);" in script
     assert "const sheet = sheets.Add();" in script
     assert "sheets.Add(null" not in script
     assert "used.UnMerge()" in script
@@ -422,9 +721,26 @@ def test_standard_airscript_restores_formatting_and_reorders_sheets() -> None:
     assert "range.WrapText" in script
     assert "range.Borders.Item" in script
     assert "sheet.Range(merge).Merge()" in script
-    assert "sheet.Move({ Before: first.Id, After: null })" in script
-    assert 'name.startsWith("_NetConsole")' in script
+    assert "sheet.Move(first)" in script
+    assert "sheet.Move(null, last)" in script
+    assert "sheet.Move({" not in script
+    assert 'error_code: "WPS_SHEET_ORDER_VERIFY_FAILED"' in script
+    assert 'if (args.operation === "sheet_order_probe") return sheetOrderProbe(args);' in script
+    assert '.startsWith("_NetConsole")' in script
     assert 'status: publicWarnings.length ? "SUCCESS_WITH_WARNINGS" : "SUCCESS"' in script
+    assert 'if (args.operation === "migrate_legacy_binding") return migrateLegacyBinding(args);' in script
+    assert "function updateBindingIdOnly(newBindingId)" in script
+    assert 'sheet.Range(`B${index + 1}`).Value2 = String(newBindingId || "");' in script
+    assert "LEGACY_BINDING_ID_MISMATCH" in script
+    migration_block = script.split("function migrateLegacyBinding(args)", 1)[1].split(
+        "function addFormatWarning", 1
+    )[0]
+    assert "updateBindingIdOnly(newBindingId)" in migration_block
+    assert "expected_old_binding_id" in migration_block
+    assert "new_binding_id" in migration_block
+    assert "ensureSheet(" not in migration_block
+    assert "writeStableSheet(" not in migration_block
+    assert "args.workbook" not in migration_block
     assert script.rstrip().endswith("return main();")
 
 
@@ -444,6 +760,11 @@ def test_standard_probe_and_sync_scripts_share_deployment_identity() -> None:
         assert expected in probe_script
     assert sync_script.rstrip().endswith("return main();")
     assert probe_script.rstrip().endswith("return main();")
+    assert "LEGACY_BINDING_ID_MISMATCH" in sync_script
+    assert "LEGACY_BINDING_ID_MISMATCH" in probe_script
+    assert "WPS_BINDING_MIGRATION_REQUIRES_SYNC_SCRIPT" in probe_script
+    assert ".Worksheets.Add" not in probe_script
+    assert "ensureSheet(" not in probe_script
 
 
 def test_default_target_initialization_splits_legacy_shared_credential(tmp_path: Path) -> None:
@@ -635,7 +956,7 @@ def test_wps_runtime_probe_identity_is_persisted_and_invalidated_by_webhook_chan
             "script_id": "script-old",
             "script_version": WPS_SCRIPT_VERSIONS[STANDARD_TARGET_CODE],
             "deployment_id": WPS_DEPLOYMENT_IDS[STANDARD_TARGET_CODE],
-            "binding_id": target.target_id,
+            "binding_id": target.binding_id,
             "site_id": "hzl10",
             "business_key": TRACKSIDE_AP_WPS_BUSINESS_KEY,
         },
@@ -653,7 +974,7 @@ def test_wps_runtime_probe_identity_is_persisted_and_invalidated_by_webhook_chan
         webhook_url="https://www.kdocs.cn/api/v3/ide/file/standard/script/script-new/sync_task",
     )
     assert updated["runtime_capability"] == "DEPLOYMENT_PENDING"
-    assert updated["binding_status"] == "UNKNOWN"
+    assert updated["binding_status"] == "BOUND"
     assert updated["runtime_probe_script_id"] == ""
     assert updated["expected_script_id"] == "script-new"
 
@@ -681,7 +1002,7 @@ def _seed_verified_wps_target(
         "script_id": script_id,
         "script_version": WPS_SCRIPT_VERSIONS[STANDARD_TARGET_CODE],
         "deployment_id": WPS_DEPLOYMENT_IDS[STANDARD_TARGET_CODE],
-        "binding_id": target.target_id,
+        "binding_id": target.binding_id,
         "site_id": "hzl10",
         "business_key": TRACKSIDE_AP_WPS_BUSINESS_KEY,
     }
@@ -692,7 +1013,12 @@ def _seed_verified_wps_target(
         result=identity,
         runtime_capability="VERIFIED",
     )
-    for operation in ("connection_test", "runtime_write_probe", "sync_test_sheet"):
+    for operation in (
+        "connection_test",
+        "runtime_write_probe",
+        "sync_test_sheet",
+        "sheet_order_probe",
+    ):
         repository.update_target_diagnostic(
             target.target_id,
             operation=operation,
@@ -735,6 +1061,7 @@ def test_wps_target_configuration_noop_and_non_identity_changes_keep_deployment(
     assert refreshed.runtime_probe_script_id == "script-one"
     assert refreshed.remote_script_id == "script-one"
     assert refreshed.remote_deployment_id == WPS_DEPLOYMENT_IDS[STANDARD_TARGET_CODE]
+    assert refreshed.sheet_order_probe_diagnostic["status"] == "SUCCESS"
     if "token" in update:
         assert repository.resolve_token(target) == "rotated-token"
 
@@ -754,13 +1081,41 @@ def test_wps_target_configuration_document_identity_change_clears_all_runtime_st
     refreshed = repository.get_target(TRACKSIDE_AP_WPS_BUSINESS_KEY, STANDARD_TARGET_CODE)
     assert refreshed.expected_document_id == "other-document"
     assert refreshed.runtime_capability == "DEPLOYMENT_PENDING"
-    assert refreshed.binding_status == "UNKNOWN"
+    assert refreshed.binding_status == "BOUND"
     assert refreshed.remote_script_id == ""
     assert refreshed.connection_diagnostic == {}
     assert refreshed.runtime_probe_diagnostic == {}
     assert refreshed.sync_test_diagnostic == {}
+    assert refreshed.sheet_order_probe_diagnostic == {}
     assert refreshed.remote_identity_verified_at == ""
     assert target.remote_script_id == "script-one"
+
+
+def test_wps_expected_deployment_change_downgrades_verification_but_keeps_binding(
+    tmp_path: Path,
+) -> None:
+    service = TracksideApWpsSyncService(PathResolver(tmp_path))
+    repository, target = _seed_verified_wps_target(service)
+    repository.update_target_remote_state(
+        target.target_id,
+        binding_status="BOUND",
+        runtime_capability="VERIFIED",
+        result={
+            "document_id": "standard",
+            "script_id": "script-one",
+            "script_version": "9.9.9-standard",
+            "deployment_id": "stale-deployment",
+        },
+    )
+
+    listed = {
+        item["target_code"]: item
+        for item in service.list_targets("hzl10")
+    }[STANDARD_TARGET_CODE]
+    assert listed["runtime_capability"] == "DEPLOYMENT_PENDING"
+    assert listed["binding_status"] == "BOUND"
+    assert listed["runtime_probe_deployment_id"] == ""
+    assert listed["connection_diagnostic"] == {}
 
 
 def test_wps_operation_diagnostics_keep_old_connection_failure_separate_from_new_probe(
@@ -769,8 +1124,8 @@ def test_wps_operation_diagnostics_keep_old_connection_failure_separate_from_new
     old_result = {
         "success": True,
         "protocol_version": 2,
-        "script_version": "2.2.0-standard",
-        "deployment_id": "trackside-ap-standard-2.2",
+        "script_version": "2.1.0-standard",
+        "deployment_id": "trackside-ap-standard-2.1.0",
         "script_id": "script-one",
         "target_type": "WPS_STANDARD_SPREADSHEET",
         "target_code": STANDARD_TARGET_CODE,
@@ -806,13 +1161,308 @@ def test_wps_operation_diagnostics_keep_old_connection_failure_separate_from_new
     repository = service._repository("hzl10")
     target = repository.get_target(TRACKSIDE_AP_WPS_BUSINESS_KEY, STANDARD_TARGET_CODE)
     assert target.connection_diagnostic["status"] == "FAILED"
-    assert target.connection_diagnostic["script_version"] == "2.2.0-standard"
+    assert target.connection_diagnostic["script_version"] == "2.1.0-standard"
     assert target.runtime_probe_diagnostic["status"] == "SUCCESS"
     assert target.runtime_probe_diagnostic["script_version"] == WPS_SCRIPT_VERSIONS[STANDARD_TARGET_CODE]
     assert target.remote_script_version == ""
 
 
-def test_wps_formal_sync_gate_requires_same_deployment_for_all_operations(
+def test_wps_runtime_probe_visibility_warning_keeps_core_verified_and_diagnostic(
+    tmp_path: Path,
+) -> None:
+    capabilities = {
+        "worksheet_enum": True,
+        "worksheet_item": True,
+        "worksheet_create": True,
+        "scalar_value2": True,
+        "matrix_value2": True,
+        "used_range": True,
+        "clear_contents": True,
+        "entire_row_insert": True,
+        "sheet_visibility": False,
+    }
+    body = {
+        "success": True,
+        "status": "SUCCESS_WITH_WARNINGS",
+        "protocol_version": 2,
+        "script_version": WPS_SCRIPT_VERSIONS[STANDARD_TARGET_CODE],
+        "deployment_id": WPS_DEPLOYMENT_IDS[STANDARD_TARGET_CODE],
+        "script_id": "script-one",
+        "target_type": "WPS_STANDARD_SPREADSHEET",
+        "target_code": STANDARD_TARGET_CODE,
+        "document_id": "standard",
+        "binding_status": "BOUND",
+        "runtime_capability": "VERIFIED",
+        "core_verified": True,
+        "full_replace_ready": True,
+        "prepend_snapshot_ready": True,
+        "capabilities": capabilities,
+        "core_capabilities": {
+            key: value for key, value in capabilities.items() if key != "sheet_visibility"
+        },
+        "optional_capabilities": {"sheet_visibility": False},
+        "warnings": [
+            {
+                "capability": "sheet_visibility",
+                "message": "WPS 当前运行时无法确认系统 Sheet 隐藏状态",
+            }
+        ],
+    }
+
+    class FakeClient:
+        def post(self, target, *, token, argv):
+            return WpsHttpResponse(status_code=200, body=body)
+
+    service = TracksideApWpsSyncService(PathResolver(tmp_path), client=FakeClient())
+    service.configure_target(
+        "hzl10",
+        STANDARD_TARGET_CODE,
+        document_open_url="https://www.kdocs.cn/l/standard",
+        webhook_url="https://www.kdocs.cn/api/v3/ide/file/standard/script/script-one/sync_task",
+        token="test-token",
+    )
+
+    result = service.runtime_write_probe("hzl10", STANDARD_TARGET_CODE)
+    target = service._repository("hzl10").get_target(
+        TRACKSIDE_AP_WPS_BUSINESS_KEY, STANDARD_TARGET_CODE
+    )
+
+    assert result["runtime_capability"] == "VERIFIED"
+    assert target.runtime_capability == "VERIFIED"
+    assert target.runtime_probe_diagnostic["status"] == "SUCCESS_WITH_WARNINGS"
+    assert target.runtime_probe_diagnostic["core_verified"] is True
+    assert target.runtime_probe_diagnostic["core_capabilities"]["matrix_value2"] is True
+    assert target.runtime_probe_diagnostic["optional_capabilities"]["sheet_visibility"] is False
+    assert target.runtime_probe_diagnostic["warnings"][0]["capability"] == "sheet_visibility"
+
+
+def test_wps_sheet_order_probe_is_independent_and_persists_verification(
+    tmp_path: Path,
+) -> None:
+    operations: list[str] = []
+    body = {
+        "success": True,
+        "status": "SUCCESS_WITH_WARNINGS",
+        "protocol_version": 2,
+        "script_version": WPS_SCRIPT_VERSIONS[STANDARD_TARGET_CODE],
+        "deployment_id": WPS_DEPLOYMENT_IDS[STANDARD_TARGET_CODE],
+        "script_id": "script-one",
+        "target_type": "WPS_STANDARD_SPREADSHEET",
+        "target_code": STANDARD_TARGET_CODE,
+        "document_id": "standard",
+        "binding_status": "BOUND",
+        "runtime_capability": "VERIFIED",
+        "sheet_order_verified": True,
+        "sheet_move_before_verified": True,
+        "sheet_move_after_verified": True,
+        "expected_sheet_order": ["_NetConsoleRuntimeProbe", "_NetConsoleSyncTest"],
+        "actual_sheet_order": ["_NetConsoleRuntimeProbe", "_NetConsoleSyncTest"],
+        "warnings": [
+            {
+                "sheet_name": "_NetConsoleSyncMeta",
+                "feature": "system_sheet_visibility",
+                "reason": "visibility unsupported",
+            }
+        ],
+        "message": "Sheet.Move 排序探针通过",
+    }
+
+    class FakeClient:
+        def post(self, target, *, token, argv):
+            operations.append(str(argv["operation"]))
+            return WpsHttpResponse(status_code=200, body=body)
+
+    service = TracksideApWpsSyncService(PathResolver(tmp_path), client=FakeClient())
+    service.configure_target(
+        "hzl10",
+        STANDARD_TARGET_CODE,
+        document_open_url="https://www.kdocs.cn/l/standard",
+        webhook_url="https://www.kdocs.cn/api/v3/ide/file/standard/script/script-one/sync_task",
+        token="test-token",
+    )
+
+    result = service.sheet_order_probe("hzl10", STANDARD_TARGET_CODE)
+    target = service._repository("hzl10").get_target(
+        TRACKSIDE_AP_WPS_BUSINESS_KEY, STANDARD_TARGET_CODE
+    )
+
+    assert operations == ["sheet_order_probe"]
+    assert result["sheet_order_verified"] is True
+    assert target.sheet_order_probe_diagnostic["status"] == "SUCCESS_WITH_WARNINGS"
+    assert target.sheet_order_probe_diagnostic["sheet_move_before_verified"] is True
+    assert target.sheet_order_probe_diagnostic["actual_sheet_order"] == body["actual_sheet_order"]
+    assert target.runtime_capability == "DEPLOYMENT_PENDING"
+    assert target.runtime_probe_diagnostic == {}
+    assert target.sync_test_diagnostic == {}
+    assert target.binding_status == "UNKNOWN"
+
+
+def test_wps_runtime_probe_core_failure_persists_each_capability(
+    tmp_path: Path,
+) -> None:
+    body = {
+        "success": False,
+        "status": "FAILED",
+        "protocol_version": 2,
+        "script_version": WPS_SCRIPT_VERSIONS[STANDARD_TARGET_CODE],
+        "deployment_id": WPS_DEPLOYMENT_IDS[STANDARD_TARGET_CODE],
+        "script_id": "script-one",
+        "target_type": "WPS_STANDARD_SPREADSHEET",
+        "target_code": STANDARD_TARGET_CODE,
+        "document_id": "standard",
+        "binding_status": "BOUND",
+        "runtime_capability": "DEPLOYMENT_PENDING",
+        "core_verified": False,
+        "full_replace_ready": True,
+        "prepend_snapshot_ready": False,
+        "capabilities": {"matrix_value2": True, "entire_row_insert": False},
+        "core_capabilities": {"matrix_value2": True, "entire_row_insert": False},
+        "optional_capabilities": {"sheet_visibility": True},
+        "capability_failures": [
+            {"capability": "entire_row_insert", "message": "能力验证结果为未通过"}
+        ],
+        "error_code": "WPS_RUNTIME_PROBE_VERIFY_FAILED",
+        "message": "运行时核心能力探针未通过：entire_row_insert",
+    }
+
+    class FakeClient:
+        def post(self, target, *, token, argv):
+            return WpsHttpResponse(status_code=200, body=body)
+
+    service = TracksideApWpsSyncService(PathResolver(tmp_path), client=FakeClient())
+    service.configure_target(
+        "hzl10",
+        STANDARD_TARGET_CODE,
+        document_open_url="https://www.kdocs.cn/l/standard",
+        webhook_url="https://www.kdocs.cn/api/v3/ide/file/standard/script/script-one/sync_task",
+        token="test-token",
+    )
+
+    with pytest.raises(WpsSyncError) as failure:
+        service.runtime_write_probe("hzl10", STANDARD_TARGET_CODE)
+
+    assert failure.value.code == "WPS_RUNTIME_PROBE_VERIFY_FAILED"
+    target = service._repository("hzl10").get_target(
+        TRACKSIDE_AP_WPS_BUSINESS_KEY, STANDARD_TARGET_CODE
+    )
+    assert target.runtime_probe_diagnostic["status"] == "FAILED"
+    assert target.runtime_probe_diagnostic["full_replace_ready"] is True
+    assert target.runtime_probe_diagnostic["prepend_snapshot_ready"] is False
+    assert target.runtime_probe_diagnostic["core_capabilities"]["entire_row_insert"] is False
+
+
+def test_wps_successful_connection_test_persists_identity_and_diagnostic_atomically(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    body = {
+        "success": True,
+        "protocol_version": 2,
+        "script_version": WPS_SCRIPT_VERSIONS[STANDARD_TARGET_CODE],
+        "deployment_id": WPS_DEPLOYMENT_IDS[STANDARD_TARGET_CODE],
+        "script_id": "script-one",
+        "target_type": "WPS_STANDARD_SPREADSHEET",
+        "target_code": STANDARD_TARGET_CODE,
+        "document_id": "standard",
+        "binding_status": "BOUND",
+        "binding_id": "binding-one",
+        "site_id": "hzl10",
+        "site_name": "杭州地铁10号线",
+        "business_key": TRACKSIDE_AP_WPS_BUSINESS_KEY,
+        "runtime_capability": "DEPLOYMENT_PENDING",
+    }
+
+    class FakeClient:
+        def post(self, target, *, token, argv):
+            return WpsHttpResponse(status_code=200, body=body)
+
+    service = TracksideApWpsSyncService(PathResolver(tmp_path), client=FakeClient())
+    service.configure_target(
+        "hzl10",
+        STANDARD_TARGET_CODE,
+        document_open_url="https://www.kdocs.cn/l/standard",
+        webhook_url="https://www.kdocs.cn/api/v3/ide/file/standard/script/script-one/sync_task",
+        token="test-token",
+    )
+    calls: list[str] = []
+    original = WpsSyncRepository._update_target
+
+    def observe(self, target_id, assignment, values):
+        calls.append(str(assignment))
+        return original(self, target_id, assignment, values)
+
+    monkeypatch.setattr(WpsSyncRepository, "_update_target", observe)
+    service.connection_test("hzl10", STANDARD_TARGET_CODE)
+
+    connection_updates = [item for item in calls if "connection_diagnostic" in item]
+    assert len(connection_updates) == 1
+    assert "remote_script_version" in connection_updates[0]
+    assert "remote_deployment_id" in connection_updates[0]
+    assert "remote_script_id" in connection_updates[0]
+    assert "remote_identity_verified_at" in connection_updates[0]
+    target = service._repository("hzl10").get_target(
+        TRACKSIDE_AP_WPS_BUSINESS_KEY, STANDARD_TARGET_CODE
+    )
+    assert target.last_test_status == "SUCCESS"
+    assert target.remote_script_id == "script-one"
+    assert target.connection_diagnostic["status"] == "SUCCESS"
+
+
+def test_wps_revalidate_deployment_runs_all_probes_and_restores_verified(
+    tmp_path: Path,
+) -> None:
+    operations: list[str] = []
+    identity = {
+        "protocol_version": 2,
+        "script_version": WPS_SCRIPT_VERSIONS[STANDARD_TARGET_CODE],
+        "deployment_id": WPS_DEPLOYMENT_IDS[STANDARD_TARGET_CODE],
+        "script_id": "script-one",
+        "target_type": "WPS_STANDARD_SPREADSHEET",
+        "target_code": STANDARD_TARGET_CODE,
+        "document_id": "standard",
+        "binding_status": "BOUND",
+        "binding_id": "binding-one",
+        "site_id": "hzl10",
+        "site_name": "杭州地铁10号线",
+        "business_key": TRACKSIDE_AP_WPS_BUSINESS_KEY,
+        "runtime_capability": "VERIFIED",
+    }
+
+    class FakeClient:
+        def post(self, target, *, token, argv):
+            operations.append(str(argv["operation"]))
+            return WpsHttpResponse(
+                status_code=200,
+                body={
+                    **identity,
+                    "success": True,
+                    "message": f"{argv['operation']} ok",
+                },
+            )
+
+    service = TracksideApWpsSyncService(PathResolver(tmp_path), client=FakeClient())
+    service.configure_target(
+        "hzl10",
+        STANDARD_TARGET_CODE,
+        document_open_url="https://www.kdocs.cn/l/standard",
+        webhook_url="https://www.kdocs.cn/api/v3/ide/file/standard/script/script-one/sync_task",
+        token="test-token",
+    )
+    result = service.revalidate_deployment("hzl10", STANDARD_TARGET_CODE)
+    assert operations == ["connection_test", "runtime_write_probe", "sync_test_sheet"]
+    assert result["runtime_capability"] == "VERIFIED"
+    target = service._repository("hzl10").get_target(
+        TRACKSIDE_AP_WPS_BUSINESS_KEY, STANDARD_TARGET_CODE
+    )
+    assert target.runtime_capability == "VERIFIED"
+    assert target.binding_status == "BOUND"
+    assert target.remote_script_id == "script-one"
+    assert target.connection_diagnostic["status"] == "SUCCESS"
+    assert target.runtime_probe_diagnostic["status"] == "SUCCESS"
+    assert target.sync_test_diagnostic["status"] == "SUCCESS"
+
+
+def test_wps_formal_sync_gate_treats_operation_diagnostics_as_evidence_only(
     tmp_path: Path,
 ) -> None:
     service = TracksideApWpsSyncService(PathResolver(tmp_path))
@@ -826,11 +1476,9 @@ def test_wps_formal_sync_gate_requires_same_deployment_for_all_operations(
         operation="sync_test_sheet",
         diagnostic=stale,
     )
-    with pytest.raises(WpsSyncError) as captured:
-        _assert_standard_sync_readiness(
-            repository.get_target(TRACKSIDE_AP_WPS_BUSINESS_KEY, STANDARD_TARGET_CODE)
-        )
-    assert captured.value.code == "WPS_DEPLOYMENT_READINESS_REQUIRED"
+    _assert_standard_sync_readiness(
+        repository.get_target(TRACKSIDE_AP_WPS_BUSINESS_KEY, STANDARD_TARGET_CODE)
+    )
 
 
 def test_wps_sync_rejects_unknown_and_unconfirmed_unbound_binding(tmp_path: Path) -> None:
@@ -863,6 +1511,115 @@ def test_wps_sync_rejects_unknown_and_unconfirmed_unbound_binding(tmp_path: Path
     with pytest.raises(WpsSyncError) as unbound:
         service.sync("hzl10", target_codes=[STANDARD_TARGET_CODE])
     assert unbound.value.code == "WPS_DOCUMENT_UNBOUND"
+
+    repository.update_target_remote_state(
+        target.target_id,
+        binding_status="LEGACY_BINDING_ID_MISMATCH",
+        result={"remote_binding_id": f"wst_{'a' * 32}"},
+        persist_runtime_identity=False,
+    )
+    with pytest.raises(WpsSyncError) as legacy:
+        service.sync("hzl10", target_codes=[STANDARD_TARGET_CODE])
+    assert legacy.value.code == "WPS_LEGACY_BINDING_ID_MISMATCH"
+
+
+def test_wps_legacy_binding_migration_rechecks_identity_and_runs_verification_chain(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    operations: list[dict[str, object]] = []
+    remote_binding_id = [f"wst_{'b' * 32}"]
+
+    class FakeClient:
+        def post(self, target, *, token, argv):
+            operations.append(dict(argv))
+            assert token == "test-token"
+            operation = str(argv["operation"])
+            base = {
+                "success": True,
+                "protocol_version": 2,
+                "script_version": WPS_SCRIPT_VERSIONS[STANDARD_TARGET_CODE],
+                "deployment_id": WPS_DEPLOYMENT_IDS[STANDARD_TARGET_CODE],
+                "script_id": "test",
+                "runtime_capability": "VERIFIED",
+                "target_type": target.target_type.value,
+                "target_code": target.target_code,
+                "document_id": target.expected_document_id,
+                "binding_status": (
+                    "BOUND"
+                    if remote_binding_id[0] == target.binding_id
+                    else "LEGACY_BINDING_ID_MISMATCH"
+                ),
+                "local_binding_id": target.binding_id,
+                "remote_binding_id": remote_binding_id[0],
+                "remote_document_id": target.expected_document_id,
+                "remote_site_id": target.site_id,
+                "remote_business_key": target.business_key,
+                "remote_target_code": target.target_code,
+                "remote_target_type": target.target_type.value,
+            }
+            if operation == "migrate_legacy_binding":
+                assert argv["document_id"] == target.expected_document_id
+                assert argv["expected_old_binding_id"] == remote_binding_id[0]
+                assert argv["new_binding_id"] == target.binding_id
+                previous_binding_id = remote_binding_id[0]
+                remote_binding_id[0] = target.binding_id
+                base.update(
+                    {
+                        "binding_status": "BOUND",
+                        "binding_id": target.binding_id,
+                        "remote_binding_id": target.binding_id,
+                        "binding_id_match": True,
+                        "migrated": True,
+                        "already_migrated": False,
+                        "previous_binding_id": previous_binding_id,
+                        "message": "旧版绑定标识已迁移",
+                    }
+                )
+            return WpsHttpResponse(
+                status_code=200,
+                body=base,
+            )
+
+    service = TracksideApWpsSyncService(PathResolver(tmp_path), client=FakeClient())
+    service.configure_target(
+        "hzl10",
+        STANDARD_TARGET_CODE,
+        document_open_url="https://www.kdocs.cn/l/standard",
+        webhook_url="https://www.kdocs.cn/api/v3/ide/file/standard/script/test/sync_task",
+    )
+    monkeypatch.setenv("NETCONSOLE_WPS_STANDARD_AIRSCRIPT_TOKEN", "test-token")
+    repository = service._repository("hzl10")
+    target = repository.get_target(TRACKSIDE_AP_WPS_BUSINESS_KEY, STANDARD_TARGET_CODE)
+    legacy_binding_id = remote_binding_id[0]
+    repository.update_target_remote_state(
+        target.target_id,
+        binding_status="LEGACY_BINDING_ID_MISMATCH",
+        result={
+            "remote_binding_id": legacy_binding_id,
+            "remote_site_id": target.site_id,
+            "remote_business_key": target.business_key,
+        },
+        persist_runtime_identity=False,
+    )
+
+    result = service.migrate_legacy_binding("hzl10", STANDARD_TARGET_CODE)
+
+    assert [item["operation"] for item in operations] == [
+        "connection_test",
+        "migrate_legacy_binding",
+        "connection_test",
+        "runtime_write_probe",
+        "sync_test_sheet",
+    ]
+    assert result["migrated"] is True
+    assert result["already_migrated"] is False
+    assert result["previous_binding_id"] == legacy_binding_id
+    assert result["verification"]["runtime_capability"] == "VERIFIED"
+    refreshed = repository.get_target(TRACKSIDE_AP_WPS_BUSINESS_KEY, STANDARD_TARGET_CODE)
+    assert refreshed.binding_status == "BOUND"
+    assert refreshed.remote_binding_id == target.binding_id
+    assert refreshed.connection_diagnostic["binding_id_match"] is True
 
 
 def test_wps_connection_test_rejects_webhook_script_id_mismatch() -> None:

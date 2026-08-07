@@ -25,6 +25,9 @@ const api = vi.hoisted(() => ({
   startTracksideApUpdate: vi.fn(),
   syncTracksideWpsTargets: vi.fn(),
   testTracksideWpsTarget: vi.fn(),
+  migrateTracksideWpsLegacyBinding: vi.fn(),
+  probeTracksideWpsSheetOrder: vi.fn(),
+  revalidateTracksideWpsDeployment: vi.fn(),
   updateTracksideWpsTarget: vi.fn(),
   tracksideApBusinessDownloadRequest: vi.fn(),
 }))
@@ -43,6 +46,10 @@ const platformMocks = vi.hoisted(() => ({
   openExternalUrl: vi.fn(),
   writeClipboardText: vi.fn(),
   hostType: 'browser' as 'browser' | 'electron',
+}))
+const confirmMocks = vi.hoisted(() => ({
+  confirm: vi.fn(async () => true),
+  confirmChoice: vi.fn(),
 }))
 const terminalMocks = vi.hoisted(() => ({
   busy: { __v_isRef: true, value: false },
@@ -66,6 +73,9 @@ vi.mock('../../platform/runtime', () => ({
     openExternalUrl: platformMocks.openExternalUrl,
     writeClipboardText: platformMocks.writeClipboardText,
   }),
+}))
+vi.mock('../../components/feedback/useConfirm', () => ({
+  useConfirm: () => confirmMocks,
 }))
 vi.mock('../../composables/useExternalTerminalLauncher', () => ({
   useExternalTerminalLauncher: () => terminalMocks,
@@ -437,6 +447,16 @@ describe('TracksideApBusinessView mounted behavior', () => {
     api.listTracksideWpsTargets.mockResolvedValue([])
     api.updateTracksideWpsTarget.mockResolvedValue({})
     api.testTracksideWpsTarget.mockResolvedValue({ target_code: 'wps_standard_spreadsheet', result: {} })
+    api.migrateTracksideWpsLegacyBinding.mockResolvedValue({
+      target_code: 'wps_standard_spreadsheet',
+      result: { binding_status: 'BOUND', migrated: true },
+    })
+    api.probeTracksideWpsSheetOrder.mockResolvedValue({
+      target_code: 'wps_standard_spreadsheet',
+      result: { sheet_order_verified: true },
+    })
+    confirmMocks.confirm.mockReset()
+    confirmMocks.confirm.mockResolvedValue(true)
     api.syncTracksideWpsTargets.mockResolvedValue(task('wps-task', 'RUNNING', 'trackside_ap_wps_sync'))
     api.getTracksideApBusinessExportProposal.mockResolvedValue({
       site_id: 'demo',
@@ -579,6 +599,188 @@ describe('TracksideApBusinessView mounted behavior', () => {
     await vm.testConnection('wps_standard_spreadsheet')
     expect(api.updateTracksideWpsTarget).not.toHaveBeenCalled()
     expect(api.testTracksideWpsTarget).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+
+  it('revalidates the current ordinary spreadsheet deployment as one workflow', async () => {
+    api.listTracksideWpsTargets.mockResolvedValue(wpsTargets(true))
+    api.revalidateTracksideWpsDeployment.mockResolvedValue({
+      target_code: 'wps_standard_spreadsheet',
+      result: { runtime_capability: 'VERIFIED' },
+    })
+    const wrapper = await mountView()
+    await button(wrapper, '配置云文档').trigger('click')
+    await flushPromises()
+    const dialog = wrapper.getComponent(TracksideApWpsConfigDialog)
+    const vm = dialog.vm as unknown as {
+      revalidateDeployment: (code: 'wps_standard_spreadsheet') => Promise<void>
+    }
+
+    await vm.revalidateDeployment('wps_standard_spreadsheet')
+    expect(api.revalidateTracksideWpsDeployment).toHaveBeenCalledWith('wps_standard_spreadsheet')
+    wrapper.unmount()
+  })
+
+  it('runs Sheet ordering as an independent ordinary spreadsheet probe', async () => {
+    const targets = wpsTargets(true)
+    targets[0].sheet_order_probe_diagnostic = {
+      status: 'SUCCESS',
+      sheet_order_verified: true,
+      expected_sheet_order: ['轨旁AP业务', 'AP上线情况概览'],
+      actual_sheet_order: ['轨旁AP业务', 'AP上线情况概览'],
+    }
+    api.listTracksideWpsTargets.mockResolvedValue(targets)
+    const wrapper = await mountView()
+    await button(wrapper, '配置云文档').trigger('click')
+    await flushPromises()
+    const dialog = wrapper.getComponent(TracksideApWpsConfigDialog)
+    const vm = dialog.vm as unknown as {
+      sheetOrderProbe: (code: 'wps_standard_spreadsheet') => Promise<void>
+    }
+
+    await vm.sheetOrderProbe('wps_standard_spreadsheet')
+
+    expect(api.probeTracksideWpsSheetOrder).toHaveBeenCalledWith('wps_standard_spreadsheet')
+    expect(api.revalidateTracksideWpsDeployment).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('业务 Sheet 顺序：已验证')
+    expect(wrapper.text()).toContain('轨旁AP业务 → AP上线情况概览')
+    wrapper.unmount()
+  })
+
+  it('shows binding identity diagnostics and explicitly upgrades only a legacy binding id', async () => {
+    const legacyTargets = wpsTargets(true)
+    legacyTargets[0] = {
+      ...legacyTargets[0],
+      binding_status: 'LEGACY_BINDING_ID_MISMATCH',
+      binding_id: 'wpsbind_v1_local',
+      remote_binding_id: `wst_${'a'.repeat(32)}`,
+      remote_site_id: 'hzl10',
+      remote_site_name: '杭州地铁10号线',
+      remote_business_key: 'rail_transit.trackside_ap_business',
+      connection_diagnostic: {
+        status: 'SUCCESS',
+        binding_status: 'LEGACY_BINDING_ID_MISMATCH',
+        binding_id_match: false,
+        remote_document_id: '549847228994',
+        remote_site_id: 'hzl10',
+        remote_site_name: '杭州地铁10号线',
+        remote_business_key: 'rail_transit.trackside_ap_business',
+        remote_target_code: 'wps_standard_spreadsheet',
+        remote_target_type: 'WPS_STANDARD_SPREADSHEET',
+        document_identity_match: true,
+        site_identity_match: true,
+        business_identity_match: true,
+        document_match: true,
+        site_match: true,
+        business_match: true,
+        target_code_match: true,
+        target_type_match: true,
+      },
+    }
+    const upgradedTargets = wpsTargets(true)
+    upgradedTargets[0] = {
+      ...legacyTargets[0],
+      binding_status: 'BOUND',
+      remote_binding_id: 'wpsbind_v1_local',
+      connection_diagnostic: {
+        ...legacyTargets[0].connection_diagnostic,
+        binding_status: 'BOUND',
+        binding_id_match: true,
+      },
+    }
+    api.listTracksideWpsTargets.mockResolvedValue(legacyTargets)
+    const wrapper = await mountView()
+    await button(wrapper, '配置云文档').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('当前 WPS 文档仍使用 NetConsole 旧版绑定标识')
+    expect(wrapper.text()).toContain('本地 Binding ID')
+    expect(wrapper.text()).toContain('wpsbind_v1_local')
+    expect(wrapper.text()).toContain(`wst_${'a'.repeat(32)}`)
+    expect(wrapper.text()).toContain('549847228994')
+    expect(wrapper.text()).toContain('rail_transit.trackside_ap_business')
+    expect(wrapper.text()).toContain('WPS_STANDARD_SPREADSHEET')
+    expect(wrapper.text()).toContain('目标类型匹配')
+
+    const dialog = wrapper.getComponent(TracksideApWpsConfigDialog)
+    const vm = dialog.vm as unknown as {
+      migrateLegacyBinding: (code: 'wps_standard_spreadsheet') => Promise<void>
+    }
+    api.listTracksideWpsTargets.mockResolvedValue(upgradedTargets)
+    await vm.migrateLegacyBinding('wps_standard_spreadsheet')
+
+    expect(confirmMocks.confirm).toHaveBeenCalledWith(expect.objectContaining({
+      title: '升级旧版绑定标识',
+      confirmText: '确认升级绑定标识',
+      detail: expect.stringContaining('不会创建、清空、移动或写入任何业务 Sheet'),
+    }))
+    expect(api.migrateTracksideWpsLegacyBinding).toHaveBeenCalledWith('wps_standard_spreadsheet')
+    expect(wrapper.text()).toContain('已绑定')
+    wrapper.unmount()
+  })
+
+  it('does not migrate a legacy binding when the explicit confirmation is cancelled', async () => {
+    const legacyTargets = wpsTargets(true)
+    legacyTargets[0] = {
+      ...legacyTargets[0],
+      binding_status: 'LEGACY_BINDING_ID_MISMATCH',
+      binding_id: 'wpsbind_v1_local',
+      remote_binding_id: `wst_${'a'.repeat(32)}`,
+      remote_site_name: '杭州地铁10号线',
+    }
+    api.listTracksideWpsTargets.mockResolvedValue(legacyTargets)
+    confirmMocks.confirm.mockResolvedValue(false)
+    const wrapper = await mountView()
+    await button(wrapper, '配置云文档').trigger('click')
+    await flushPromises()
+    const dialog = wrapper.getComponent(TracksideApWpsConfigDialog)
+    const vm = dialog.vm as unknown as {
+      migrateLegacyBinding: (code: 'wps_standard_spreadsheet') => Promise<void>
+    }
+
+    await vm.migrateLegacyBinding('wps_standard_spreadsheet')
+
+    expect(api.migrateTracksideWpsLegacyBinding).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('shows each runtime capability and treats sheet visibility as a warning', async () => {
+    const configuredTargets = wpsTargets(true)
+    configuredTargets[0].runtime_probe_diagnostic = {
+      executed_at: '2026-08-07T18:00:00+08:00',
+      status: 'SUCCESS_WITH_WARNINGS',
+      operation: 'runtime_write_probe',
+      message: '运行时核心能力探针通过，存在可选能力告警',
+      core_verified: true,
+      full_replace_ready: true,
+      prepend_snapshot_ready: true,
+      core_capabilities: {
+        worksheet_enum: true,
+        worksheet_item: true,
+        worksheet_create: true,
+        scalar_value2: true,
+        matrix_value2: true,
+        used_range: true,
+        clear_contents: true,
+        entire_row_insert: true,
+      },
+      optional_capabilities: { sheet_visibility: false },
+      warnings: [{ capability: 'sheet_visibility', message: 'WPS 当前运行时无法确认系统 Sheet 隐藏状态' }],
+    }
+    api.listTracksideWpsTargets.mockResolvedValue(configuredTargets)
+    const wrapper = await mountView()
+
+    await button(wrapper, '配置云文档').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('写入核心能力')
+    expect(wrapper.text()).toContain('通过（有警告）')
+    expect(wrapper.text()).toContain('二维数据写入与读回')
+    expect(wrapper.text()).toContain('顶部整行插入')
+    expect(wrapper.text()).toContain('系统 Sheet 隐藏')
+    expect(wrapper.text()).toContain('全量替换：就绪')
+    expect(wrapper.text()).toContain('顶部追加快照：就绪')
+    expect(wrapper.text()).toContain('WPS 当前运行时无法确认系统 Sheet 隐藏状态')
     wrapper.unmount()
   })
 

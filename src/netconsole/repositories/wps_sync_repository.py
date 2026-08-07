@@ -9,7 +9,7 @@ from uuid import uuid4
 from netconsole.core.paths import PathResolver
 from netconsole.core.sqlite_utils import connect_sqlite, initialize_sqlite_wal
 from netconsole.core.windows_dpapi import protect_windows_data, unprotect_windows_data
-from netconsole.models.wps_sync import WpsSyncTarget, WpsTargetType
+from netconsole.models.wps_sync import WpsSyncTarget, WpsTargetType, build_wps_binding_id
 
 
 WPS_SYNC_SCHEMA = """
@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS wps_credentials (
 );
 CREATE TABLE IF NOT EXISTS wps_sync_targets (
     target_id TEXT PRIMARY KEY,
+    binding_id TEXT NOT NULL,
     site_id TEXT NOT NULL,
     business_key TEXT NOT NULL,
     target_code TEXT NOT NULL,
@@ -58,6 +59,7 @@ CREATE TABLE IF NOT EXISTS wps_sync_targets (
     connection_diagnostic TEXT NOT NULL DEFAULT '',
     runtime_probe_diagnostic TEXT NOT NULL DEFAULT '',
     sync_test_diagnostic TEXT NOT NULL DEFAULT '',
+    sheet_order_probe_diagnostic TEXT NOT NULL DEFAULT '',
     remote_script_version TEXT NOT NULL DEFAULT '',
     remote_deployment_id TEXT NOT NULL DEFAULT '',
     remote_script_id TEXT NOT NULL DEFAULT '',
@@ -136,6 +138,7 @@ class WpsSyncRepository:
             for row in connection.execute("PRAGMA table_info(wps_sync_targets)").fetchall()
         }
         for name, definition in {
+            "binding_id": "TEXT NOT NULL DEFAULT ''",
             "runtime_capability": "TEXT NOT NULL DEFAULT 'DEPLOYMENT_PENDING'",
             "last_runtime_probe_at": "TEXT NOT NULL DEFAULT ''",
             "runtime_probe_document_id": "TEXT NOT NULL DEFAULT ''",
@@ -150,6 +153,7 @@ class WpsSyncRepository:
             "connection_diagnostic": "TEXT NOT NULL DEFAULT ''",
             "runtime_probe_diagnostic": "TEXT NOT NULL DEFAULT ''",
             "sync_test_diagnostic": "TEXT NOT NULL DEFAULT ''",
+            "sheet_order_probe_diagnostic": "TEXT NOT NULL DEFAULT ''",
             "remote_script_version": "TEXT NOT NULL DEFAULT ''",
             "remote_deployment_id": "TEXT NOT NULL DEFAULT ''",
             "remote_script_id": "TEXT NOT NULL DEFAULT ''",
@@ -157,6 +161,24 @@ class WpsSyncRepository:
         }.items():
             if name not in columns:
                 connection.execute(f"ALTER TABLE wps_sync_targets ADD COLUMN {name} {definition}")
+        rows = connection.execute(
+            "SELECT target_id, site_id, business_key, target_code, binding_id "
+            "FROM wps_sync_targets"
+        ).fetchall()
+        for row in rows:
+            if str(row["binding_id"] or "").strip():
+                continue
+            connection.execute(
+                "UPDATE wps_sync_targets SET binding_id = ? WHERE target_id = ?",
+                (
+                    build_wps_binding_id(
+                        str(row["site_id"]),
+                        str(row["business_key"]),
+                        str(row["target_code"]),
+                    ),
+                    str(row["target_id"]),
+                ),
+            )
 
     def upsert_target(
         self,
@@ -177,11 +199,16 @@ class WpsSyncRepository:
         now = _now()
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT target_id, credential_id FROM wps_sync_targets "
+                "SELECT target_id, binding_id, credential_id FROM wps_sync_targets "
                 "WHERE site_id = ? AND business_key = ? AND target_code = ?",
                 (self.site_id, business_key, target_code),
             ).fetchone()
             target_id = str(row["target_id"]) if row else f"wst_{uuid4().hex}"
+            binding_id = (
+                str(row["binding_id"])
+                if row and str(row["binding_id"] or "").strip()
+                else build_wps_binding_id(self.site_id, business_key, target_code)
+            )
             credential_id = (
                 str(credential_id)
                 if credential_id is not None
@@ -216,11 +243,11 @@ class WpsSyncRepository:
             connection.execute(
                 """
                 INSERT INTO wps_sync_targets (
-                    target_id, site_id, business_key, target_code, target_type,
+                    target_id, binding_id, site_id, business_key, target_code, target_type,
                     credential_id, target_name, document_open_url, webhook_url,
                     expected_document_id, enabled, protocol_version,
                     timeout_seconds, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 2, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 2, ?, ?, ?)
                 ON CONFLICT(site_id, business_key, target_code) DO UPDATE SET
                     target_type = excluded.target_type,
                     credential_id = excluded.credential_id,
@@ -234,6 +261,7 @@ class WpsSyncRepository:
                 """,
                 (
                     target_id,
+                    binding_id,
                     self.site_id,
                     business_key,
                     target_code,
@@ -324,15 +352,17 @@ class WpsSyncRepository:
     ) -> None:
         assignments = ["binding_status = ?"]
         values: list[object] = [str(binding_status or "UNKNOWN")]
-        for key, column in (
-            ("binding_id", "remote_binding_id"),
-            ("site_id", "remote_site_id"),
-            ("site_name", "remote_site_name"),
-            ("business_key", "remote_business_key"),
+        for keys, column in (
+            (("remote_binding_id", "binding_id"), "remote_binding_id"),
+            (("remote_site_id", "site_id"), "remote_site_id"),
+            (("remote_site_name", "site_name"), "remote_site_name"),
+            (("remote_business_key", "business_key"), "remote_business_key"),
         ):
-            if key in result:
-                assignments.append(f"{column} = ?")
-                values.append(str(result.get(key) or ""))
+            source = next((key for key in keys if key in result), "")
+            if not source:
+                continue
+            assignments.append(f"{column} = ?")
+            values.append(str(result.get(source) or ""))
         if persist_runtime_identity and any(key in result for key in (
             "document_id", "script_id", "script_version", "deployment_id"
         )):
@@ -371,6 +401,52 @@ class WpsSyncRepository:
             ),
         )
 
+    def record_connection_test(
+        self,
+        target_id: str,
+        *,
+        result: dict[str, object] | None,
+        diagnostic: dict[str, object],
+    ) -> None:
+        """Persist connection status, diagnostic and remote identity in one commit."""
+        result = result or {}
+        assignments = [
+            "last_test_at = ?",
+            "last_test_status = ?",
+            "last_test_message = ?",
+            "connection_diagnostic = ?",
+        ]
+        values: list[object] = [
+            _now(),
+            str(diagnostic.get("status") or "FAILED"),
+            _sanitize(str(diagnostic.get("message") or "")),
+            json.dumps(diagnostic, ensure_ascii=False, sort_keys=True),
+        ]
+        if result:
+            assignments.extend([
+                "binding_status = ?",
+                "remote_binding_id = ?",
+                "remote_site_id = ?",
+                "remote_site_name = ?",
+                "remote_business_key = ?",
+                "remote_script_version = ?",
+                "remote_deployment_id = ?",
+                "remote_script_id = ?",
+                "remote_identity_verified_at = ?",
+            ])
+            values.extend([
+                str(result.get("binding_status") or "UNKNOWN"),
+                str(result.get("remote_binding_id") or result.get("binding_id") or ""),
+                str(result.get("remote_site_id") or result.get("site_id") or ""),
+                str(result.get("remote_site_name") or result.get("site_name") or ""),
+                str(result.get("remote_business_key") or result.get("business_key") or ""),
+                str(result.get("script_version") or ""),
+                str(result.get("deployment_id") or ""),
+                str(result.get("script_id") or ""),
+                _now(),
+            ])
+        self._update_target(target_id, ", ".join(assignments), values)
+
     def update_target_diagnostic(
         self,
         target_id: str,
@@ -382,6 +458,7 @@ class WpsSyncRepository:
             "connection_test": "connection_diagnostic",
             "runtime_write_probe": "runtime_probe_diagnostic",
             "sync_test_sheet": "sync_test_diagnostic",
+            "sheet_order_probe": "sheet_order_probe_diagnostic",
         }.get(str(operation))
         if not column:
             raise ValueError(f"unsupported WPS diagnostic operation: {operation}")
@@ -402,17 +479,17 @@ class WpsSyncRepository:
         self._update_target(
             target_id,
             "runtime_capability = ?, last_runtime_probe_at = ?, "
+            "last_test_at = ?, last_test_status = ?, last_test_message = ?, "
             "runtime_probe_document_id = ?, runtime_probe_script_id = ?, "
             "runtime_probe_script_version = ?, runtime_probe_deployment_id = ?, "
-            "binding_status = ?, remote_binding_id = ?, remote_site_id = ?, "
-            "remote_site_name = ?, remote_business_key = ?, "
             "connection_diagnostic = ?, runtime_probe_diagnostic = ?, "
-            "sync_test_diagnostic = ?, remote_script_version = ?, "
+            "sync_test_diagnostic = ?, sheet_order_probe_diagnostic = ?, "
+            "remote_script_version = ?, "
             "remote_deployment_id = ?, remote_script_id = ?, "
             "remote_identity_verified_at = ?",
             (
-                "DEPLOYMENT_PENDING", "", "", "", "", "", "UNKNOWN", "", "", "", "",
-                "", "", "", "", "", "", "",
+                "DEPLOYMENT_PENDING", "", "", "", "", "", "", "",
+                "", "", "", "", "", "", "", "", "",
             ),
         )
 
@@ -591,6 +668,7 @@ class WpsSyncRepository:
 def _target_from_row(row: sqlite3.Row) -> WpsSyncTarget:
     return WpsSyncTarget(
         target_id=str(row["target_id"]),
+        binding_id=str(row["binding_id"] or ""),
         site_id=str(row["site_id"]),
         business_key=str(row["business_key"]),
         target_code=str(row["target_code"]),
@@ -625,6 +703,9 @@ def _target_from_row(row: sqlite3.Row) -> WpsSyncTarget:
         connection_diagnostic=_diagnostic_from_row(row, "connection_diagnostic"),
         runtime_probe_diagnostic=_diagnostic_from_row(row, "runtime_probe_diagnostic"),
         sync_test_diagnostic=_diagnostic_from_row(row, "sync_test_diagnostic"),
+        sheet_order_probe_diagnostic=_diagnostic_from_row(
+            row, "sheet_order_probe_diagnostic"
+        ),
         remote_script_version=str(row["remote_script_version"] or ""),
         remote_deployment_id=str(row["remote_deployment_id"] or ""),
         remote_script_id=str(row["remote_script_id"] or ""),

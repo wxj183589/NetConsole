@@ -123,6 +123,21 @@ def runtime_write_probe(request: Request, target_code: str) -> WpsSyncConnection
 
 
 @router.post(
+    "/targets/{target_code}/migrate-legacy-binding",
+    response_model=WpsSyncConnectionTestDTO,
+    dependencies=[Depends(require_feature("web.rail_trackside_ap_business_wps_sync"))],
+)
+def migrate_legacy_binding(request: Request, target_code: str) -> WpsSyncConnectionTestDTO:
+    try:
+        return WpsSyncConnectionTestDTO(
+            target_code=target_code,
+            result=_service(request).migrate_legacy_binding(_site_id(request), target_code),
+        )
+    except WpsSyncError as exc:
+        _raise(exc)
+
+
+@router.post(
     "/targets/{target_code}/sync-test-sheet",
     response_model=WpsSyncConnectionTestDTO,
     dependencies=[Depends(require_feature("web.rail_trackside_ap_business_wps_sync"))],
@@ -132,6 +147,36 @@ def sync_test_sheet(request: Request, target_code: str) -> WpsSyncConnectionTest
         return WpsSyncConnectionTestDTO(
             target_code=target_code,
             result=_service(request).sync_test_sheet(_site_id(request), target_code),
+        )
+    except WpsSyncError as exc:
+        _raise(exc)
+
+
+@router.post(
+    "/targets/{target_code}/sheet-order-probe",
+    response_model=WpsSyncConnectionTestDTO,
+    dependencies=[Depends(require_feature("web.rail_trackside_ap_business_wps_sync"))],
+)
+def sheet_order_probe(request: Request, target_code: str) -> WpsSyncConnectionTestDTO:
+    try:
+        return WpsSyncConnectionTestDTO(
+            target_code=target_code,
+            result=_service(request).sheet_order_probe(_site_id(request), target_code),
+        )
+    except WpsSyncError as exc:
+        _raise(exc)
+
+
+@router.post(
+    "/targets/{target_code}/revalidate-deployment",
+    response_model=WpsSyncConnectionTestDTO,
+    dependencies=[Depends(require_feature("web.rail_trackside_ap_business_wps_sync"))],
+)
+def revalidate_deployment(request: Request, target_code: str) -> WpsSyncConnectionTestDTO:
+    try:
+        return WpsSyncConnectionTestDTO(
+            target_code=target_code,
+            result=_service(request).revalidate_deployment(_site_id(request), target_code),
         )
     except WpsSyncError as exc:
         _raise(exc)

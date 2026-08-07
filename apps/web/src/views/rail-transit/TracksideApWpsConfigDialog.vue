@@ -1,15 +1,19 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { CopyDocument, Document, Guide } from '@element-plus/icons-vue'
+import { CopyDocument, Document, Guide, Refresh } from '@element-plus/icons-vue'
 
 import {
   listTracksideWpsTargets,
+  migrateTracksideWpsLegacyBinding,
+  probeTracksideWpsSheetOrder,
   probeTracksideWpsTarget,
+  revalidateTracksideWpsDeployment,
   syncTestTracksideWpsTarget,
   testTracksideWpsTarget,
   updateTracksideWpsTarget,
 } from '../../api/tracksideApBusiness'
+import { useConfirm } from '../../components/feedback/useConfirm'
 import type {
   WpsTracksideDiagnostic,
   WpsTracksideTarget,
@@ -23,6 +27,7 @@ const props = defineProps<{
   modelValue: boolean
   targets: WpsTracksideTarget[]
 }>()
+const { confirm } = useConfirm()
 
 const emit = defineEmits<{
   'update:modelValue': [value: boolean]
@@ -38,6 +43,25 @@ interface TargetDraft {
   token: string
 }
 
+interface RuntimeCapabilityItem {
+  key: string
+  label: string
+  passed: boolean
+  optional: boolean
+}
+
+const runtimeCapabilityLabels: Record<string, string> = {
+  worksheet_enum: 'Sheet 枚举',
+  worksheet_item: 'Sheet 定位',
+  worksheet_create: 'Sheet 创建',
+  scalar_value2: '单值写入与读回',
+  matrix_value2: '二维数据写入与读回',
+  used_range: '已用区域读取',
+  clear_contents: '内容清除',
+  entire_row_insert: '顶部整行插入',
+  sheet_visibility: '系统 Sheet 隐藏',
+}
+
 const visible = computed({
   get: () => props.modelValue,
   set: (value: boolean) => emit('update:modelValue', value),
@@ -48,6 +72,9 @@ const savingCode = ref<WpsTracksideTargetCode | ''>('')
 const testingCode = ref<WpsTracksideTargetCode | ''>('')
 const probingCode = ref<WpsTracksideTargetCode | ''>('')
 const syncTestingCode = ref<WpsTracksideTargetCode | ''>('')
+const sheetOrderProbingCode = ref<WpsTracksideTargetCode | ''>('')
+const revalidatingCode = ref<WpsTracksideTargetCode | ''>('')
+const upgradingBindingCode = ref<WpsTracksideTargetCode | ''>('')
 const errorMessage = ref('')
 const deploymentOpen = ref<Partial<Record<WpsTracksideTargetCode, boolean>>>({})
 const targetRows = computed(() => localTargets.value.flatMap((target) => {
@@ -114,9 +141,36 @@ function diagnosticItems(target: WpsTracksideTarget): Array<{
 }> {
   return [
     { label: '连接测试', diagnostic: target.connection_diagnostic || {} },
-    { label: '写入能力', diagnostic: target.runtime_probe_diagnostic || {} },
+    { label: '写入核心能力', diagnostic: target.runtime_probe_diagnostic || {} },
     { label: '同步测试 Sheet', diagnostic: target.sync_test_diagnostic || {} },
+    { label: 'Sheet 排序', diagnostic: target.sheet_order_probe_diagnostic || {} },
   ]
+}
+
+function runtimeCapabilityItems(diagnostic: WpsTracksideDiagnostic): RuntimeCapabilityItem[] {
+  const core = diagnostic.core_capabilities || {}
+  const optional = diagnostic.optional_capabilities || {}
+  const legacy = Object.keys(core).length || Object.keys(optional).length ? {} : (diagnostic.capabilities || {})
+  return Object.keys(runtimeCapabilityLabels).flatMap((key) => {
+    const source = key in core ? core : key in optional ? optional : legacy
+    if (!(key in source)) return []
+    return [{
+      key,
+      label: runtimeCapabilityLabels[key],
+      passed: Boolean(source[key]),
+      optional: key in optional || key === 'sheet_visibility',
+    }]
+  })
+}
+
+function capabilityStatusType(item: RuntimeCapabilityItem): 'success' | 'warning' | 'danger' {
+  if (item.passed) return 'success'
+  return item.optional ? 'warning' : 'danger'
+}
+
+function capabilityStatusLabel(item: RuntimeCapabilityItem): string {
+  if (item.passed) return '通过'
+  return item.optional ? '告警' : '失败'
 }
 
 function targetTypeLabel(target: WpsTracksideTarget): string {
@@ -125,14 +179,67 @@ function targetTypeLabel(target: WpsTracksideTarget): string {
 
 function statusType(status: string): 'success' | 'warning' | 'danger' | 'info' {
   if (status === 'SUCCESS') return 'success'
+  if (status === 'SUCCESS_WITH_WARNINGS') return 'warning'
   if (status === 'FAILED') return 'danger'
   return 'info'
 }
 
 function statusLabel(status: string): string {
   if (status === 'SUCCESS') return '成功'
+  if (status === 'SUCCESS_WITH_WARNINGS') return '通过（有警告）'
   if (status === 'FAILED') return '失败'
   return '未执行'
+}
+
+function bindingStatusLabel(status: string): string {
+  const labels: Record<string, string> = {
+    UNBOUND: '未绑定',
+    BOUND: '已绑定',
+    LEGACY_BINDING_ID_MISMATCH: '旧版绑定标识',
+    MISMATCH: '身份不一致',
+    UNKNOWN: '未确认',
+  }
+  return labels[status] || status || '未确认'
+}
+
+function bindingStatusType(status: string): 'success' | 'warning' | 'danger' | 'info' {
+  if (status === 'BOUND') return 'success'
+  if (status === 'LEGACY_BINDING_ID_MISMATCH' || status === 'UNBOUND') return 'warning'
+  if (status === 'MISMATCH') return 'danger'
+  return 'info'
+}
+
+function matchStatusType(value: boolean | undefined): 'success' | 'danger' | 'info' {
+  if (value === true) return 'success'
+  if (value === false) return 'danger'
+  return 'info'
+}
+
+function matchStatusLabel(value: boolean | undefined): string {
+  if (value === true) return '是'
+  if (value === false) return '否'
+  return '未确认'
+}
+
+function identityMatch(
+  target: WpsTracksideTarget,
+  currentKey: keyof WpsTracksideDiagnostic,
+  legacyKey?: keyof WpsTracksideDiagnostic,
+): boolean | undefined {
+  const diagnostic = target.connection_diagnostic || {}
+  const current = diagnostic[currentKey]
+  if (typeof current === 'boolean') return current
+  const legacy = legacyKey ? diagnostic[legacyKey] : undefined
+  return typeof legacy === 'boolean' ? legacy : undefined
+}
+
+function remoteIdentityValue(
+  target: WpsTracksideTarget,
+  key: keyof WpsTracksideDiagnostic,
+  fallback = '未确认',
+): string {
+  const value = target.connection_diagnostic?.[key]
+  return typeof value === 'string' && value ? value : fallback
 }
 
 function phaseLabel(phase: string): string {
@@ -194,7 +301,7 @@ async function saveTargetConfiguration(
 ): Promise<boolean> {
   const draft = targetDraft(code)
   const target = targetByCode(code)
-  if (savingCode.value || testingCode.value || !draft || !target) return false
+  if (savingCode.value || testingCode.value || sheetOrderProbingCode.value || revalidatingCode.value || upgradingBindingCode.value || !draft || !target) return false
   if (!targetDraftDirty(target, draft)) {
     if (!silent) ElMessage.info('当前配置没有变化')
     return true
@@ -223,7 +330,7 @@ async function saveTargetConfiguration(
 }
 
 async function testConnection(code: WpsTracksideTargetCode): Promise<void> {
-  if (testingCode.value || savingCode.value) return
+  if (testingCode.value || savingCode.value || sheetOrderProbingCode.value || revalidatingCode.value || upgradingBindingCode.value) return
   errorMessage.value = ''
   const saved = await saveTargetConfiguration(code, true)
   if (!saved) return
@@ -250,7 +357,7 @@ async function testConnection(code: WpsTracksideTargetCode): Promise<void> {
 }
 
 async function runtimeWriteProbe(code: WpsTracksideTargetCode): Promise<void> {
-  if (probingCode.value || savingCode.value || testingCode.value) return
+  if (probingCode.value || savingCode.value || testingCode.value || sheetOrderProbingCode.value || revalidatingCode.value || upgradingBindingCode.value) return
   probingCode.value = code
   errorMessage.value = ''
   try {
@@ -266,7 +373,7 @@ async function runtimeWriteProbe(code: WpsTracksideTargetCode): Promise<void> {
 }
 
 async function syncTestSheet(code: WpsTracksideTargetCode): Promise<void> {
-  if (syncTestingCode.value || savingCode.value || testingCode.value || probingCode.value) return
+  if (syncTestingCode.value || savingCode.value || testingCode.value || probingCode.value || sheetOrderProbingCode.value || revalidatingCode.value || upgradingBindingCode.value) return
   syncTestingCode.value = code
   errorMessage.value = ''
   try {
@@ -278,6 +385,88 @@ async function syncTestSheet(code: WpsTracksideTargetCode): Promise<void> {
     await reloadTargets().catch(() => undefined)
   } finally {
     syncTestingCode.value = ''
+  }
+}
+
+async function sheetOrderProbe(code: WpsTracksideTargetCode): Promise<void> {
+  if (sheetOrderProbingCode.value || savingCode.value || testingCode.value || probingCode.value || syncTestingCode.value || revalidatingCode.value || upgradingBindingCode.value) return
+  sheetOrderProbingCode.value = code
+  errorMessage.value = ''
+  try {
+    const response = await probeTracksideWpsSheetOrder(code)
+    await reloadTargets()
+    ElMessage.success(String(response.result.message || 'Sheet 排序探针通过'))
+  } catch (reason) {
+    errorMessage.value = reason instanceof Error ? reason.message : 'Sheet 排序探针失败'
+    await reloadTargets().catch(() => undefined)
+  } finally {
+    sheetOrderProbingCode.value = ''
+  }
+}
+
+async function revalidateDeployment(code: WpsTracksideTargetCode): Promise<void> {
+  if (revalidatingCode.value || savingCode.value || testingCode.value || probingCode.value || syncTestingCode.value || sheetOrderProbingCode.value || upgradingBindingCode.value) return
+  errorMessage.value = ''
+  const saved = await saveTargetConfiguration(code, true)
+  if (!saved) return
+  const target = targetByCode(code)
+  if (!target?.token_configured) {
+    errorMessage.value = '请先输入脚本令牌并保存配置'
+    return
+  }
+  revalidatingCode.value = code
+  try {
+    await revalidateTracksideWpsDeployment(code)
+    await reloadTargets()
+    ElMessage.success('当前部署已完成连接、写入能力和同步测试验证')
+  } catch (reason) {
+    errorMessage.value = reason instanceof Error ? reason.message : '当前部署重新验证失败'
+    await reloadTargets().catch(() => undefined)
+  } finally {
+    revalidatingCode.value = ''
+  }
+}
+
+async function migrateLegacyBinding(code: WpsTracksideTargetCode): Promise<void> {
+  if (upgradingBindingCode.value || savingCode.value || testingCode.value || probingCode.value || syncTestingCode.value || sheetOrderProbingCode.value || revalidatingCode.value) return
+  errorMessage.value = ''
+  const saved = await saveTargetConfiguration(code, true)
+  if (!saved) return
+  const target = targetByCode(code)
+  if (!target?.token_configured) {
+    errorMessage.value = '请先输入脚本令牌并保存配置'
+    return
+  }
+  if (target.binding_status !== 'LEGACY_BINDING_ID_MISMATCH') {
+    errorMessage.value = '请先执行连接测试，只有业务身份全部一致的旧版 Binding ID 才能迁移'
+    return
+  }
+  const accepted = await confirm({
+    type: 'WARNING',
+    title: '升级旧版绑定标识',
+    message: [
+      `当前文档：${target.target_name}（${target.expected_document_id}）`,
+      `当前局点：${target.remote_site_name || target.remote_site_id || target.site_id}`,
+      '业务：轨旁 AP 业务',
+      `旧 Binding ID：${target.remote_binding_id || '未确认'}`,
+      `新 Binding ID：${target.binding_id || '未生成'}`,
+    ].join('\n'),
+    detail: '仅更新 _NetConsoleSyncMeta.binding_id，不会创建、清空、移动或写入任何业务 Sheet。迁移后会自动执行连接测试、写入核心能力和同步测试 Sheet。',
+    confirmText: '确认升级绑定标识',
+    cancelText: '取消',
+    width: '680px',
+  })
+  if (!accepted) return
+  upgradingBindingCode.value = code
+  try {
+    const response = await migrateTracksideWpsLegacyBinding(code)
+    await reloadTargets()
+    ElMessage.success(String(response.result.message || '旧版绑定标识已迁移并完成三个部署验证'))
+  } catch (reason) {
+    errorMessage.value = reason instanceof Error ? reason.message : '旧版绑定标识迁移失败'
+    await reloadTargets().catch(() => undefined)
+  } finally {
+    upgradingBindingCode.value = ''
   }
 }
 
@@ -313,7 +502,7 @@ async function openDocument(target: WpsTracksideTarget): Promise<void> {
           <div>
             <strong>{{ targetTypeLabel(row.target) }}</strong>
             <span>{{ row.target.target_name }}</span>
-            <span>当前局点：{{ row.target.site_id }} · 远端绑定：{{ row.target.binding_status || 'UNKNOWN' }}</span>
+            <span>当前局点：{{ row.target.site_id }} · 远端绑定：<el-tag size="small" :type="bindingStatusType(row.target.binding_status || 'UNKNOWN')">{{ bindingStatusLabel(row.target.binding_status || 'UNKNOWN') }}</el-tag></span>
           </div>
           <el-tag :type="row.target.token_configured ? 'success' : 'danger'">
             {{ row.target.token_configured ? `令牌已配置 · ${row.target.token_suffix || '已保护'}` : '令牌未配置' }}
@@ -325,6 +514,14 @@ async function openDocument(target: WpsTracksideTarget): Promise<void> {
           :title="row.target.target_type === 'WPS_SMART_SHEET'
             ? '智能表格正式写入接口尚未完成 WPS 运行时验收，默认关闭；只读连接探针可独立验证。'
             : '普通表格正式写入仍需在目标 WPS 文档完成运行时验收；连接探针不会写入文档。'"
+          type="warning"
+          :closable="false"
+          show-icon
+        />
+
+        <el-alert
+          v-if="row.target.binding_status === 'LEGACY_BINDING_ID_MISMATCH'"
+          title="当前 WPS 文档仍使用 NetConsole 旧版绑定标识，业务归属与当前局点一致，可以安全升级绑定标识。"
           type="warning"
           :closable="false"
           show-icon
@@ -360,6 +557,18 @@ async function openDocument(target: WpsTracksideTarget): Promise<void> {
           <span>部署身份匹配 <el-tag size="small" :type="remoteIdentityMatches(row.target) ? 'success' : 'warning'">{{ remoteIdentityMatches(row.target) ? '是' : '否' }}</el-tag></span>
           <span>远端绑定局点 <code>{{ row.target.remote_site_name || row.target.remote_site_id || '未绑定' }}</code></span>
           <span>webhook 脚本 ID <code>{{ webhookScriptIdSummary(row.draft.webhook_url) }}</code></span>
+          <span>本地 Binding ID <code>{{ row.target.binding_id || '未生成' }}</code></span>
+          <span>远端 Binding ID <code>{{ row.target.remote_binding_id || '未绑定' }}</code></span>
+          <span>远端文档 ID <code>{{ remoteIdentityValue(row.target, 'remote_document_id') }}</code></span>
+          <span>远端业务 <code>{{ remoteIdentityValue(row.target, 'remote_business_key') }}</code></span>
+          <span>远端目标代码 <code>{{ remoteIdentityValue(row.target, 'remote_target_code') }}</code></span>
+          <span>远端目标类型 <code>{{ remoteIdentityValue(row.target, 'remote_target_type') }}</code></span>
+          <span>Binding ID 匹配 <el-tag size="small" :type="matchStatusType(identityMatch(row.target, 'binding_id_match'))">{{ matchStatusLabel(identityMatch(row.target, 'binding_id_match')) }}</el-tag></span>
+          <span>文档身份匹配 <el-tag size="small" :type="matchStatusType(identityMatch(row.target, 'document_identity_match', 'document_match'))">{{ matchStatusLabel(identityMatch(row.target, 'document_identity_match', 'document_match')) }}</el-tag></span>
+          <span>局点身份匹配 <el-tag size="small" :type="matchStatusType(identityMatch(row.target, 'site_identity_match', 'site_match'))">{{ matchStatusLabel(identityMatch(row.target, 'site_identity_match', 'site_match')) }}</el-tag></span>
+          <span>业务身份匹配 <el-tag size="small" :type="matchStatusType(identityMatch(row.target, 'business_identity_match', 'business_match'))">{{ matchStatusLabel(identityMatch(row.target, 'business_identity_match', 'business_match')) }}</el-tag></span>
+          <span>目标代码匹配 <el-tag size="small" :type="matchStatusType(identityMatch(row.target, 'target_code_match'))">{{ matchStatusLabel(identityMatch(row.target, 'target_code_match')) }}</el-tag></span>
+          <span>目标类型匹配 <el-tag size="small" :type="matchStatusType(identityMatch(row.target, 'target_type_match'))">{{ matchStatusLabel(identityMatch(row.target, 'target_type_match')) }}</el-tag></span>
           <span v-if="row.target.runtime_probe_script_id">最近探针脚本 ID <code>{{ row.target.runtime_probe_script_id }}</code></span>
           <span v-if="row.target.runtime_probe_script_version">最近探针脚本版本 <code>{{ row.target.runtime_probe_script_version }}</code></span>
           <span v-if="row.target.runtime_probe_deployment_id">最近探针部署 ID <code>{{ row.target.runtime_probe_deployment_id }}</code></span>
@@ -386,8 +595,9 @@ async function openDocument(target: WpsTracksideTarget): Promise<void> {
         <div class="deployment-actions">
           <el-button :icon="CopyDocument" @click="copyAirScript(row.target.target_code, 'probe')">复制连接测试脚本</el-button>
           <el-button :icon="CopyDocument" @click="copyAirScript(row.target.target_code, 'sync')">复制正式同步脚本</el-button>
-          <el-button v-if="row.target.target_type === 'WPS_STANDARD_SPREADSHEET'" :loading="probingCode === row.target.target_code" :disabled="Boolean(probingCode) || Boolean(savingCode) || Boolean(testingCode)" @click="runtimeWriteProbe(row.target.target_code)">测试写入能力</el-button>
-          <el-button v-if="row.target.target_type === 'WPS_STANDARD_SPREADSHEET'" :loading="syncTestingCode === row.target.target_code" :disabled="Boolean(syncTestingCode) || Boolean(probingCode) || Boolean(savingCode) || Boolean(testingCode)" @click="syncTestSheet(row.target.target_code)">测试同步 Sheet</el-button>
+          <el-button v-if="row.target.target_type === 'WPS_STANDARD_SPREADSHEET'" :loading="probingCode === row.target.target_code" :disabled="Boolean(probingCode) || Boolean(sheetOrderProbingCode) || Boolean(savingCode) || Boolean(testingCode) || Boolean(revalidatingCode) || Boolean(upgradingBindingCode)" @click="runtimeWriteProbe(row.target.target_code)">测试写入能力</el-button>
+          <el-button v-if="row.target.target_type === 'WPS_STANDARD_SPREADSHEET'" :loading="syncTestingCode === row.target.target_code" :disabled="Boolean(syncTestingCode) || Boolean(probingCode) || Boolean(sheetOrderProbingCode) || Boolean(savingCode) || Boolean(testingCode) || Boolean(revalidatingCode) || Boolean(upgradingBindingCode)" @click="syncTestSheet(row.target.target_code)">测试同步 Sheet</el-button>
+          <el-button v-if="row.target.target_type === 'WPS_STANDARD_SPREADSHEET'" :loading="sheetOrderProbingCode === row.target.target_code" :disabled="Boolean(sheetOrderProbingCode) || Boolean(syncTestingCode) || Boolean(probingCode) || Boolean(savingCode) || Boolean(testingCode) || Boolean(revalidatingCode) || Boolean(upgradingBindingCode)" @click="sheetOrderProbe(row.target.target_code)">测试 Sheet 排序</el-button>
           <el-button :icon="Guide" @click="toggleDeploymentSteps(row.target.target_code)">查看部署步骤</el-button>
         </div>
 
@@ -428,19 +638,47 @@ async function openDocument(target: WpsTracksideTarget): Promise<void> {
             <span v-if="item.diagnostic.message">{{ item.diagnostic.message }}</span>
             <span v-if="item.diagnostic.remote_message">原因：{{ item.diagnostic.remote_message }}</span>
             <span v-if="item.diagnostic.suggestion">建议：{{ item.diagnostic.suggestion }}</span>
+            <div v-if="runtimeCapabilityItems(item.diagnostic).length" class="runtime-capabilities">
+              <div v-for="capability in runtimeCapabilityItems(item.diagnostic)" :key="capability.key">
+                <span>{{ capability.label }}</span>
+                <el-tag size="small" :type="capabilityStatusType(capability)">{{ capabilityStatusLabel(capability) }}</el-tag>
+              </div>
+            </div>
+            <span v-if="typeof item.diagnostic.full_replace_ready === 'boolean'">全量替换：{{ item.diagnostic.full_replace_ready ? '就绪' : '不可用' }}</span>
+            <span v-if="typeof item.diagnostic.prepend_snapshot_ready === 'boolean'">顶部追加快照：{{ item.diagnostic.prepend_snapshot_ready ? '就绪' : '不可用' }}</span>
+            <span v-if="typeof item.diagnostic.sheet_order_verified === 'boolean'">业务 Sheet 顺序：{{ item.diagnostic.sheet_order_verified ? '已验证' : '未通过' }}</span>
+            <span v-if="item.diagnostic.expected_sheet_order?.length">预期顺序：{{ item.diagnostic.expected_sheet_order.join(' → ') }}</span>
+            <span v-if="item.diagnostic.actual_sheet_order?.length">实际顺序：{{ item.diagnostic.actual_sheet_order.join(' → ') }}</span>
+            <span v-for="warning in item.diagnostic.warnings || []" :key="`${warning.capability || 'warning'}:${warning.message || ''}`" class="capability-warning">
+              告警：{{ warning.message || warning.capability }}
+            </span>
           </div>
         </div>
 
         <div class="target-actions">
           <el-button
+            v-if="row.target.target_type === 'WPS_STANDARD_SPREADSHEET' && row.target.binding_status === 'LEGACY_BINDING_ID_MISMATCH'"
+            type="warning"
+            :loading="upgradingBindingCode === row.target.target_code"
+            :disabled="Boolean(upgradingBindingCode) || Boolean(revalidatingCode) || Boolean(savingCode) || Boolean(testingCode) || Boolean(probingCode) || Boolean(syncTestingCode) || Boolean(sheetOrderProbingCode)"
+            @click="migrateLegacyBinding(row.target.target_code)"
+          >升级旧版绑定标识</el-button>
+          <el-button
+            v-if="row.target.target_type === 'WPS_STANDARD_SPREADSHEET'"
+            :icon="Refresh"
+            :loading="revalidatingCode === row.target.target_code"
+            :disabled="Boolean(revalidatingCode) || Boolean(savingCode) || Boolean(testingCode) || Boolean(probingCode) || Boolean(syncTestingCode) || Boolean(sheetOrderProbingCode) || Boolean(upgradingBindingCode)"
+            @click="revalidateDeployment(row.target.target_code)"
+          >重新验证当前部署</el-button>
+          <el-button
             type="primary"
             :loading="savingCode === row.target.target_code"
-            :disabled="Boolean(savingCode) || Boolean(testingCode)"
+            :disabled="Boolean(savingCode) || Boolean(testingCode) || Boolean(sheetOrderProbingCode) || Boolean(revalidatingCode) || Boolean(upgradingBindingCode)"
             @click="saveTargetConfiguration(row.target.target_code)"
           >保存此目标</el-button>
           <el-button
             :loading="testingCode === row.target.target_code"
-            :disabled="Boolean(testingCode) || Boolean(savingCode)"
+            :disabled="Boolean(testingCode) || Boolean(savingCode) || Boolean(sheetOrderProbingCode) || Boolean(revalidatingCode) || Boolean(upgradingBindingCode)"
             @click="testConnection(row.target.target_code)"
           >测试连接</el-button>
           <el-button link type="primary" :icon="Document" @click="openDocument(row.target)">打开文档</el-button>
@@ -455,5 +693,5 @@ async function openDocument(target: WpsTracksideTarget): Promise<void> {
 </template>
 
 <style scoped>
-.wps-config{display:grid;gap:16px;max-height:70vh;overflow:auto;padding-right:4px}.wps-config :deep(.el-form-item){margin-bottom:14px}.wps-target{display:grid;gap:12px;border-top:1px solid var(--el-border-color-lighter);padding-top:16px}.target-heading,.target-actions,.target-status,.deployment-actions,.diagnostic-heading{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.target-heading{justify-content:space-between}.target-heading>div{display:grid;gap:4px}.target-heading span,.target-status,.target-fields span,.script-identity{color:var(--el-text-color-secondary);font-size:12px}.target-fields{display:grid;grid-template-columns:150px 220px minmax(180px,1fr);gap:16px}.target-fields>label,.target-fields>div{display:grid;align-content:start;gap:7px}.script-identity{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px 16px}.connection-fields{display:grid;grid-template-columns:1fr;gap:0}.deployment-actions{justify-content:flex-start}.deployment-steps{display:grid;gap:8px;padding:12px;border:1px solid var(--el-border-color-lighter);background:var(--el-fill-color-light);font-size:13px}.deployment-steps ol{margin:0;padding-left:22px}.deployment-steps li{margin:5px 0}.deployment-steps p{margin:0;color:var(--el-text-color-secondary)}.target-status{flex-wrap:wrap}.target-status>span:nth-of-type(2){margin-left:12px}.operation-diagnostics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.operation-diagnostic{display:grid;align-content:start;gap:4px;padding:8px 10px;border:1px solid var(--el-border-color-lighter);color:var(--el-text-color-regular);font-size:12px}.diagnostic-heading>span{color:var(--el-text-color-secondary)}.target-actions{justify-content:flex-end}code{overflow-wrap:anywhere}@media(max-width:720px){.target-fields,.script-identity,.operation-diagnostics{grid-template-columns:1fr}.target-heading{align-items:flex-start;flex-direction:column}.target-actions{justify-content:flex-start}}
+.wps-config{display:grid;gap:16px;max-height:70vh;overflow:auto;padding-right:4px}.wps-config :deep(.el-form-item){margin-bottom:14px}.wps-target{display:grid;gap:12px;border-top:1px solid var(--el-border-color-lighter);padding-top:16px}.target-heading,.target-actions,.target-status,.deployment-actions,.diagnostic-heading{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.target-heading{justify-content:space-between}.target-heading>div{display:grid;gap:4px}.target-heading span,.target-status,.target-fields span,.script-identity{color:var(--el-text-color-secondary);font-size:12px}.target-fields{display:grid;grid-template-columns:150px 220px minmax(180px,1fr);gap:16px}.target-fields>label,.target-fields>div{display:grid;align-content:start;gap:7px}.script-identity{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px 16px}.connection-fields{display:grid;grid-template-columns:1fr;gap:0}.deployment-actions{justify-content:flex-start}.deployment-steps{display:grid;gap:8px;padding:12px;border:1px solid var(--el-border-color-lighter);background:var(--el-fill-color-light);font-size:13px}.deployment-steps ol{margin:0;padding-left:22px}.deployment-steps li{margin:5px 0}.deployment-steps p{margin:0;color:var(--el-text-color-secondary)}.target-status{flex-wrap:wrap}.target-status>span:nth-of-type(2){margin-left:12px}.operation-diagnostics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.operation-diagnostic{display:grid;align-content:start;gap:4px;padding:8px 10px;border:1px solid var(--el-border-color-lighter);color:var(--el-text-color-regular);font-size:12px}.diagnostic-heading>span{color:var(--el-text-color-secondary)}.runtime-capabilities{display:grid;gap:4px;margin-top:4px;padding-top:6px;border-top:1px solid var(--el-border-color-lighter)}.runtime-capabilities>div{display:flex;align-items:center;justify-content:space-between;gap:8px}.capability-warning{color:var(--el-color-warning-dark-2)}.target-actions{justify-content:flex-end}code{overflow-wrap:anywhere}@media(max-width:720px){.target-fields,.script-identity,.operation-diagnostics{grid-template-columns:1fr}.target-heading{align-items:flex-start;flex-direction:column}.target-actions{justify-content:flex-start}}
 </style>

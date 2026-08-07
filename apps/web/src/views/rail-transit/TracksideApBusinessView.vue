@@ -123,37 +123,10 @@ const hasReadyWpsTarget = computed(() => wpsTargets.value.some(
   (target) => target.enabled && wpsTargetDeploymentReady(target),
 ))
 
-function wpsDiagnosticMatches(
-  target: WpsTracksideTarget,
-  diagnostic: WpsTracksideTarget['runtime_probe_diagnostic'],
-  operation: string,
-): boolean {
-  return Boolean(
-    diagnostic?.status === 'SUCCESS'
-    && diagnostic.operation === operation
-    && diagnostic.document_id === target.expected_document_id
-    && diagnostic.script_id === target.expected_script_id
-    && diagnostic.script_version === target.expected_script_version
-    && diagnostic.deployment_id === target.expected_deployment_id
-  )
-}
-
-function wpsRemoteIdentityMatches(target: WpsTracksideTarget): boolean {
-  return Boolean(
-    target.remote_identity_verified_at
-    && target.remote_script_id === target.expected_script_id
-    && target.remote_script_version === target.expected_script_version
-    && target.remote_deployment_id === target.expected_deployment_id
-  )
-}
-
 function wpsTargetDeploymentReady(target: WpsTracksideTarget): boolean {
   if (target.target_type !== 'WPS_STANDARD_SPREADSHEET') return false
   return Boolean(
     target.runtime_capability === 'VERIFIED'
-    && wpsRemoteIdentityMatches(target)
-    && wpsDiagnosticMatches(target, target.runtime_probe_diagnostic, 'runtime_write_probe')
-    && wpsDiagnosticMatches(target, target.sync_test_diagnostic, 'sync_test_sheet')
     && ['BOUND', 'UNBOUND'].includes(target.binding_status || '')
   )
 }
@@ -659,6 +632,11 @@ async function syncWps(command: 'all' | WpsTracksideTargetCode): Promise<void> {
     wpsConfigVisible.value = true
     return
   }
+  if (selectedTargets.some((target) => target.binding_status === 'LEGACY_BINDING_ID_MISMATCH')) {
+    actionError.value = 'WPS 文档仍使用旧版绑定标识，请先在“配置云文档”中升级绑定标识。'
+    wpsConfigVisible.value = true
+    return
+  }
   if (!targetCodes.length) {
     actionError.value = '没有已启用的 WPS 同步目标'
     return
@@ -689,21 +667,6 @@ async function syncWps(command: 'all' | WpsTracksideTargetCode): Promise<void> {
   }
   if (selectedTargets.some((target) => target.binding_status === 'UNKNOWN')) {
     actionError.value = 'WPS 文档绑定状态仍然未知，请在“配置云文档”中检查连接测试结果。'
-    wpsConfigVisible.value = true
-    return
-  }
-  if (selectedTargets.some((target) => !wpsRemoteIdentityMatches(target))) {
-    actionError.value = 'WPS 当前远端脚本身份尚未确认或与本地期望不一致；请先重新执行连接测试。'
-    wpsConfigVisible.value = true
-    return
-  }
-  if (selectedTargets.some((target) => !wpsDiagnosticMatches(target, target.runtime_probe_diagnostic, 'runtime_write_probe'))) {
-    actionError.value = 'WPS 写入能力探针不是由当前部署完成；请重新执行测试写入能力。'
-    wpsConfigVisible.value = true
-    return
-  }
-  if (selectedTargets.some((target) => !wpsDiagnosticMatches(target, target.sync_test_diagnostic, 'sync_test_sheet'))) {
-    actionError.value = 'WPS 同步测试 Sheet 不是由当前部署完成；请重新执行测试同步 Sheet。'
     wpsConfigVisible.value = true
     return
   }
