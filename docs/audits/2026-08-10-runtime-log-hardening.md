@@ -56,7 +56,9 @@ runtime cleanup 默认保留期已与 backend log 解耦：日志、cache、temp
 - Housekeeper/cleanup/system maintenance：protected/unknown 故障注入和独立 retention，44 项通过。
 - raw 完整性复用 `test_mesh_storage_service.py` 的 10 KB、64 KB、256 KB、1 MB SHA-256 回归。
 
-完整 Electron/Web/Python 门禁、实际 `win-unpacked` package smoke、正式安装包和 1–2 小时 soak 结果以本分支最终验证记录为准；未执行前不得视为已确认。
+Electron 全量测试 252 项、Web 系统维护/日志相关测试 11 项、Python 本轮定向组合 184 项均通过。合并最新主线后的完整 pytest 为 3729 passed、2 skipped；剩余 6 项是主线新增 Online MR/架构 README/命令审计/图表 token 守卫及既有 BaseData UI Guard，不属于本轮日志改动。
+
+实际 `win-unpacked` 已成功生成，且 package smoke 前置检查确认构建提交、dirty 状态和 frozen `log_policy.json` 资源均正确；smoke 随后在既有冻结设备数据库迁移步骤停止，fixture 缺少 `ac_device_uuid`，因此不能宣称完整 package smoke 或正式安装包验收通过。1–2 小时 soak 未执行。
 
 ## 剩余风险
 
