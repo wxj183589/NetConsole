@@ -362,6 +362,25 @@ def test_base_data_alone_resolves_exact_h3c_radio_alias(tmp_path: Path) -> None:
     assert match.radio_id == 1
 
 
+def test_field_peer_radio_resolves_to_physical_ap(tmp_path: Path) -> None:
+    _database, repository, service = _fixture(tmp_path)
+    _base_ap(
+        repository,
+        name="bc5a-3457-6d40",
+        mac="bc5a-3457-6d40",
+        station="云龙车辆段",
+    )
+
+    service.rebuild_index("field_peer_radio")
+    match = service.resolve_peer_mac("bc5a-3457-6d4f")
+
+    assert match.status == "matched"
+    assert match.effective_ap_mac == "bc5a-3457-6d40"
+    assert match.effective_ap_name == "bc5a-3457-6d40"
+    assert match.station == "云龙车辆段"
+    assert match.radio_id == 1
+
+
 def test_ap_identity_uses_lldp_switch_station_without_base_record(tmp_path: Path) -> None:
     database, repository, service = _fixture(tmp_path)
     repository.replace_fit_ap_resources(

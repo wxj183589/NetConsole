@@ -6,7 +6,7 @@ from typing import Any
 
 # Increment whenever persisted topology projection semantics change. Existing
 # identity rows must then be rebuilt before downstream consumers reuse them.
-AP_TOPOLOGY_PROJECTION_VERSION = 1
+AP_TOPOLOGY_PROJECTION_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -15,6 +15,7 @@ class ApTopologyEvidence:
 
     lldp_valid: bool = False
     lldp_conflict: bool = False
+    lldp_switch_conflict: bool = False
     lldp_switch_uuid: str = ""
     lldp_station_id: str = ""
     lldp_station: str = ""
@@ -149,6 +150,8 @@ def resolve_ap_topology(evidence: ApTopologyEvidence) -> ResolvedApTopology:
     warnings: list[str] = []
     if evidence.lldp_conflict:
         warnings.append("topology_lldp_ambiguous")
+    if evidence.lldp_switch_conflict:
+        warnings.append("topology_lldp_multiple_switches")
     if evidence.lldp_valid and not _text(evidence.lldp_station):
         warnings.append("switch_station_missing")
         if _text(evidence.lldp_station_id):

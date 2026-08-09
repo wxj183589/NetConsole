@@ -165,6 +165,7 @@ function collectorStatusLabel(row: OnlineMrCollectorStatus): string {
   if (row.health_status === 'stale') return '异常'
   if (row.health_status === 'interrupted') return '采集中断'
   if (row.health_status === 'normal') return '采集中'
+  if (row.status.startsWith('failed')) return row.exit_code !== undefined && row.exit_code !== null ? `失败 / Exit ${row.exit_code}` : '失败'
   return ({ starting: '启动中', stopped: '已停止', completed: '已完成', failed: '失败', missing: '无数据' } as Record<string, string>)[row.status] || '等待数据'
 }
 
@@ -173,12 +174,24 @@ function runtimeHealthLabel(row: OnlineMrRuntimeStatusRow): string {
 }
 
 function runtimeIssue(row: OnlineMrCollectorStatus): string {
+  if (row.exit_code !== undefined && row.exit_code !== null && row.exit_code !== 0) {
+    const detail = row.last_error || row.stderr_tail || '进程异常退出'
+    return `FAILED / Exit ${row.exit_code} / ${detail}`
+  }
   if (row.error) return row.error
   if (!row.enabled) return '未启用'
   if (row.health_status === 'stale') return '超过 30 秒未增长'
   if (row.health_status === 'interrupted') return '超过 120 秒未增长'
   if (row.status === 'missing') return '尚未生成数据'
   return ''
+}
+
+function trafficStatus(value: Record<string, unknown>): string {
+  const status = String(value.status || '—')
+  const exitCode = value.exit_code
+  if (exitCode !== undefined && exitCode !== null && Number(exitCode) !== 0) return `${status} / Exit ${exitCode}`
+  const lastData = value.last_data_at
+  return lastData ? `${status} / 最后数据 ${String(lastData)}` : status
 }
 
 function rawFileLabel(name: string): string {
@@ -225,14 +238,6 @@ function showRaw(row: OnlineMrRuntimeStatusRow): void {
 
 function tailText(value: OnlineMrRawTail | null): string {
   return value?.lines.length ? value.lines.join('\n') : value?.message || '暂无数据'
-}
-
-function sourceLabel(value: unknown): string {
-  return ({
-    parsed_sqlite_latest: '结构化实时库',
-    mesh_link_raw_tail: '主链路原始日志尾部',
-    raw_tail: '原始日志尾部',
-  } as Record<string, string>)[String(value || '')] || field({ value }, 'value')
 }
 
 function handleVisibility(): void {
@@ -327,6 +332,17 @@ onBeforeUnmount(() => {
         </el-descriptions>
       </section>
 
+      <section class="content-section realtime-core-status">
+        <div class="section-heading"><div><h3>实时核心状态</h3><p>无线链路、fping 与 iPerf 使用后端实时快照。</p></div></div>
+        <el-alert v-if="previewWarning" :title="previewWarning" type="warning" show-icon :closable="false" />
+        <div v-if="store.preview?.available" class="preview-grid">
+          <div class="preview-block"><h4>当前无线状态</h4><dl><dt>站点</dt><dd>{{ field(displayContext, 'station', 'site') }}</dd><dt>区间</dt><dd>{{ field(displayContext, 'section') }}</dd><dt>主链路 AP</dt><dd>{{ field(link, 'ap_name', 'master_ap', 'master', 'peer_name', 'resolved_peer_name') }}</dd><dt>AP MAC</dt><dd>{{ field(link, 'ap_mac') }}</dd><dt>Peer MAC</dt><dd>{{ field(link, 'peer_mac') }}</dd><dt>RSSI</dt><dd>{{ numberField(link, ['rssi_dbm'], ' dBm') }}</dd><dt>接口</dt><dd>{{ field(link, 'interface') }}</dd><dt>链路状态</dt><dd>{{ field(link, 'link_state', 'status') }}</dd><dt>在线时长</dt><dd>{{ field(link, 'online_time') }}</dd></dl></div>
+          <div class="preview-block"><h4>fping</h4><dl><dt>目标</dt><dd>{{ field(fping, 'target') }}</dd><dt>最新延迟</dt><dd>{{ numberField(fpingSummary, ['last_rtt_ms'], ' ms') }}</dd><dt>丢包</dt><dd>{{ numberField(fpingSummary, ['loss_rate_percent'], '%') }}</dd><dt>平均延迟</dt><dd>{{ numberField(fpingSummary, ['avg_rtt_ms'], ' ms') }}</dd><dt>状态</dt><dd>{{ trafficStatus(fping) }}</dd></dl></div>
+          <div class="preview-block"><h4>iPerf 本地回环</h4><dl><dt>目标</dt><dd>{{ field(iperf, 'server_ip') }}</dd><dt>协议</dt><dd>{{ field(iperf, 'protocol') }}</dd><dt>限速</dt><dd>{{ iperfRateLimit(iperf) }}</dd><dt>当前速率</dt><dd>{{ numberField(iperf, ['bitrate_mbps'], ' Mbps') }}</dd><dt>实际平均</dt><dd>{{ numberField(iperf, ['average_bitrate_mbps'], ' Mbps') }}</dd><dt>状态</dt><dd>{{ trafficStatus(iperf) }}</dd></dl></div>
+        </div>
+        <el-empty v-else description="当前采集尚未产生轻量预览" />
+      </section>
+
       <section class="content-section runtime-status">
         <div class="section-heading"><div><h3>当前采集状态</h3><p>状态、文件大小、最近增长和异常说明统一显示；超过 30 秒标记疑似异常，超过 120 秒标记采集中断。</p></div></div>
         <NcDataTable
@@ -368,17 +384,6 @@ onBeforeUnmount(() => {
             </div>
           </el-collapse-item>
         </el-collapse>
-      </section>
-
-      <section class="content-section">
-        <div class="section-heading"><div><h3>轻量实时预览</h3><p>每 5 秒读取最新快照，不扫描完整原始日志。</p></div></div>
-        <el-alert v-if="previewWarning" :title="previewWarning" type="warning" show-icon :closable="false" />
-        <div v-if="store.preview?.available" class="preview-grid">
-          <div class="preview-block"><h4>当前无线状态</h4><dl><dt>站点</dt><dd>{{ field(displayContext, 'station', 'site') }}</dd><dt>区间</dt><dd>{{ field(displayContext, 'section') }}</dd><dt>主链路 AP</dt><dd>{{ field(link, 'master_ap', 'master', 'peer_name', 'resolved_peer_name') }}</dd><dt>Peer MAC</dt><dd>{{ field(link, 'peer_mac') }}</dd><dt>RSSI</dt><dd>{{ numberField(link, ['rssi_dbm'], ' dBm') }}</dd><dt>接口</dt><dd>{{ field(link, 'interface') }}</dd><dt>链路状态</dt><dd>{{ field(link, 'link_state', 'status') }}</dd><dt>在线时长</dt><dd>{{ field(link, 'online_time') }}</dd><dt>数据来源</dt><dd>{{ sourceLabel(link.source) }}</dd><dt>更新时间</dt><dd>{{ field(link, 'updated_at') }}</dd><dt>识别说明</dt><dd>{{ field(link, 'message') }}</dd></dl></div>
-          <div class="preview-block"><h4>fping</h4><dl><dt>目标</dt><dd>{{ field(fping, 'target') }}</dd><dt>最新延迟</dt><dd>{{ numberField(fpingSummary, ['last_rtt_ms'], ' ms') }}</dd><dt>丢包</dt><dd>{{ numberField(fpingSummary, ['loss_rate_percent'], '%') }}</dd><dt>平均延迟</dt><dd>{{ numberField(fpingSummary, ['avg_rtt_ms'], ' ms') }}</dd><dt>状态</dt><dd>{{ field(fping, 'status') }}</dd></dl></div>
-          <div class="preview-block"><h4>iPerf 本地回环</h4><dl><dt>目标</dt><dd>{{ field(iperf, 'server_ip') }}</dd><dt>协议</dt><dd>{{ field(iperf, 'protocol') }}</dd><dt>限速</dt><dd>{{ iperfRateLimit(iperf) }}</dd><dt>当前速率</dt><dd>{{ numberField(iperf, ['bitrate_mbps'], ' Mbps') }}</dd><dt>状态</dt><dd>{{ field(iperf, 'status') }}</dd></dl></div>
-        </div>
-        <el-empty v-else description="当前采集尚未产生轻量预览" />
       </section>
 
     </template>

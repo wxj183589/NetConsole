@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from netconsole.core.paths import PathResolver
+from netconsole.core.database import Database
 from netconsole.models.api.online_mr import (
     OnlineMrArtifactDTO,
     OnlineMrCollectorStatusDTO,
@@ -44,7 +45,9 @@ from netconsole.services.online_mr.errors import OnlineMrQueryError, OnlineMrQue
 from netconsole.services.online_mr_parser import parse_mesh_link_text
 from netconsole.services.online_mr_session_store import OnlineMrSessionStore
 from netconsole.services.ap_identity.normalizers import normalize_mac
+from netconsole.services.ap_identity.query_service import ApIdentityQueryService
 from netconsole.services.rail_transit.online_mr_diagnosis_parser import PARSER_VERSION
+from netconsole.utils.mac_utils import derive_h3c_r1_mac, derive_h3c_r2_mac
 
 
 LOGGER = logging.getLogger(__name__)
@@ -157,6 +160,7 @@ class OnlineMrQueryService:
     def __init__(self, paths: PathResolver, store: OnlineMrSessionStore | None = None) -> None:
         self.paths = paths
         self.store = store or OnlineMrSessionStore(paths)
+        self._identity_services: dict[str, ApIdentityQueryService] = {}
 
     def list_sessions(
         self,
@@ -296,6 +300,17 @@ class OnlineMrQueryService:
         rows: list[OnlineMrCollectorStatusDTO] = []
         for name, (label, relative_name) in self._COLLECTORS.items():
             item = view_collectors.get(name) if isinstance(view_collectors.get(name), dict) else {}
+            if name == "fping_v5":
+                traffic_view = self._read_view_json(session_dir, "live_fping_status.json")
+            elif name == "iperf_client":
+                traffic_view = self._read_view_json(session_dir, "live_iperf_status.json")
+                traffic_view = self._enrich_legacy_iperf_status(session_dir, traffic_view)
+            else:
+                traffic_view = {}
+            if traffic_view:
+                merged_item = dict(traffic_view)
+                merged_item.update(item)
+                item = merged_item
             path = self._safe_session_file(session_dir, str(item.get("raw_file") or relative_name))
             exists = bool(path and path.is_file() and not path.is_symlink())
             size = path.stat().st_size if exists and path else 0
@@ -306,7 +321,7 @@ class OnlineMrQueryService:
             elif not active and status in {"running", "starting", "stopping", ""}:
                 status = "stopped" if exists else "missing"
             elif not status:
-                status = "running" if active and size else "starting" if active else "stopped" if exists else "missing"
+                status = "starting" if active else "stopped" if exists else "missing"
             updated_at = self._collector_updated_at(
                 session_dir,
                 name=name,
@@ -335,6 +350,19 @@ class OnlineMrQueryService:
                     updated_at=updated_at,
                     health_status=health_status,
                     stale_seconds=stale_seconds,
+                    client_status=str(item.get("client_status") or (status if name == "iperf_client" else "")),
+                    server_status=str(item.get("server_status") or ""),
+                    supervisor_status=str(item.get("supervisor_status") or ""),
+                    pid=self._int_or_none(item.get("pid")),
+                    alive=item.get("alive") if isinstance(item.get("alive"), bool) else None,
+                    exit_code=self._int_or_none(item.get("exit_code")),
+                    last_error=str(item.get("last_error") or item.get("error") or item.get("error_code") or ""),
+                    stderr_tail=str(item.get("stderr_tail") or ""),
+                    last_exit_at=self._text_or_none(item.get("last_exit_at")),
+                    last_data_at=self._text_or_none(item.get("last_data_at") or item.get("updated_at")),
+                    bytes_written=int(item.get("bytes_written") or size or 0),
+                    restart_count=int(item.get("restart_count") or 0),
+                    stop_reason=str(item.get("stop_reason") or ""),
                 )
             )
         return rows
@@ -354,8 +382,10 @@ class OnlineMrQueryService:
         if not link:
             raw_link = raw_link or self._latest_raw_link(session_dir)
             link = raw_link
+        link = self._apply_preview_identity(site_id, link)
         fping = self._read_view_json(session_dir, "live_fping_status.json")
         iperf = self._read_view_json(session_dir, "live_iperf_status.json")
+        iperf = self._enrich_legacy_iperf_status(session_dir, iperf)
         if str(meta.get("status") or "").upper() not in self._ACTIVE_WEB_STATES:
             for item in (fping, iperf):
                 if str(item.get("status") or "").lower() in {"running", "starting", "stopping"}:
@@ -378,6 +408,154 @@ class OnlineMrQueryService:
             fping=fping,
             iperf=iperf,
         )
+
+    def _apply_preview_identity(self, site_id: str, link: dict[str, Any]) -> dict[str, Any]:
+        if not link:
+            return link
+        candidates: list[tuple[str, object]] = []
+        for key in ("peer_radio_mac", "bssid", "peer_mac"):
+            value = link.get(key)
+            if value and value not in [candidate for _, candidate in candidates]:
+                candidates.append((key, value))
+        peer_mac = link.get("peer_mac")
+        if peer_mac:
+            for derive in (derive_h3c_r1_mac, derive_h3c_r2_mac):
+                try:
+                    value = derive(str(peer_mac))
+                except ValueError:
+                    continue
+                if value not in [candidate for _, candidate in candidates]:
+                    candidates.append(("derived_peer_radio_mac", value))
+        if not candidates:
+            return link
+        try:
+            service = self._identity_services.get(site_id)
+            if service is None:
+                service = ApIdentityQueryService(Database(self.paths.site_db_path(site_id)))
+                self._identity_services[site_id] = service
+            match_key, query_mac = candidates[0]
+            match = service.resolve_peer_mac(query_mac)
+            for candidate_key, candidate_mac in candidates[1:]:
+                if match.status == "matched" or match.unresolved_reason.startswith("identity_"):
+                    break
+                candidate_match = service.resolve_peer_mac(candidate_mac)
+                if candidate_match.status in {"matched", "ambiguous"}:
+                    match_key, query_mac, match = candidate_key, candidate_mac, candidate_match
+                    break
+        except Exception:
+            LOGGER.debug("读取 Online MR AP Identity 失败：%s", site_id, exc_info=True)
+            return link
+        enriched = dict(link)
+        context = dict(link.get("display_context") or {}) if isinstance(link.get("display_context"), dict) else {}
+        if match.status == "matched" or match.unresolved_reason != "identity_index_missing":
+            context.update(
+                {
+                    "identity_status": match.status,
+                    "identity_source": match.matched_source,
+                    "identity_revision": match.identity_revision,
+                    "resolution_status": match.status,
+                    "resolution_reason": match.unresolved_reason,
+                }
+            )
+        if match.status == "matched":
+            if not match.station:
+                resolution_status = "partial"
+                resolution_reason = "STATION_MAPPING_NOT_FOUND"
+            elif not match.section:
+                resolution_status = "partial"
+                resolution_reason = "SECTION_MAPPING_NOT_FOUND"
+            else:
+                resolution_status = "resolved"
+                resolution_reason = ""
+            enriched.update(
+                {
+                    "ap_mac": match.effective_ap_mac,
+                    "ap_name": match.effective_ap_name,
+                    "station_id": "",
+                    "station_name": match.station,
+                    "section_id": "",
+                    "section_name": match.section,
+                    "identity_source": match.matched_source,
+                    "identity_revision": match.identity_revision,
+                    "station_source": match.station_source,
+                    "section_source": match.section_source,
+                    "resolution_status": resolution_status,
+                    "resolution_reason": resolution_reason,
+                }
+            )
+            context.update(
+                {
+                    "station": match.station,
+                    "section": match.section,
+                    "match_source": match.matched_source or "identity_index",
+                    "match_key": match_key,
+                    "station_source": match.station_source,
+                    "section_source": match.section_source,
+                    "resolution_status": resolution_status,
+                    "resolution_reason": resolution_reason,
+                }
+            )
+        elif match.unresolved_reason != "identity_index_missing":
+            enriched.update(
+                {
+                    "identity_source": match.matched_source,
+                    "identity_revision": match.identity_revision,
+                    "resolution_status": match.status,
+                    "resolution_reason": match.unresolved_reason or "identity_unresolved",
+                }
+            )
+        enriched["display_context"] = context
+        return enriched
+
+    def _enrich_legacy_iperf_status(self, session_dir: Path, item: dict[str, Any]) -> dict[str, Any]:
+        if not item:
+            return item
+        enriched = dict(item)
+        status = str(enriched.get("client_status") or enriched.get("status") or "").lower()
+        enriched.setdefault("client_status", status)
+        enriched.setdefault("supervisor_status", status)
+        if enriched.get("exit_code") in (None, "") and status.startswith("failed:"):
+            enriched["exit_code"] = self._int_or_none(status.partition(":")[2])
+            enriched.setdefault("alive", False)
+            enriched.setdefault("stop_reason", "process_exit")
+        if (
+            not enriched.get("server_status")
+            and str(enriched.get("server_ip") or "") == "127.0.0.1"
+            and not (session_dir / "raw" / "iperf_server_raw.log").is_file()
+        ):
+            enriched["server_status"] = "external_unmanaged"
+        path = self._safe_session_file(session_dir, self._WEB_RAW_SOURCES["iperf_client"])
+        if path is None or not path.is_file() or path.is_symlink():
+            return enriched
+        try:
+            stat = path.stat()
+            enriched.setdefault("bytes_written", stat.st_size)
+            enriched.setdefault(
+                "last_data_at",
+                datetime.fromtimestamp(stat.st_mtime).isoformat(sep=" ", timespec="milliseconds"),
+            )
+            if status.startswith("failed"):
+                enriched.setdefault(
+                    "last_exit_at",
+                    datetime.fromtimestamp(stat.st_mtime).isoformat(sep=" ", timespec="milliseconds"),
+                )
+            if not enriched.get("last_error") or not enriched.get("stderr_tail"):
+                lines = self._read_tail_text(path, MAX_PREVIEW_RAW_TAIL_BYTES).splitlines()
+                errors = [
+                    line
+                    for line in lines
+                    if " error" in line.casefold()
+                    or "failed:" in line.casefold()
+                    or "exited with code" in line.casefold()
+                ][-20:]
+                if errors:
+                    if not enriched.get("stderr_tail"):
+                        enriched["stderr_tail"] = "\n".join(errors)
+                    if not enriched.get("last_error"):
+                        enriched["last_error"] = errors[-1]
+        except OSError:
+            LOGGER.debug("读取 Online MR iPerf 兼容诊断失败：%s", session_dir.name, exc_info=True)
+        return enriched
 
     def _collector_updated_at(
         self,
@@ -433,7 +611,7 @@ class OnlineMrQueryService:
     ) -> tuple[str, float | None]:
         if not active or not enabled:
             return "unknown", None
-        if status in {"failed", "error", "missing"}:
+        if status.startswith("failed") or status in {"error", "missing"}:
             return "interrupted", None
         stamp = cls._as_datetime(updated_at)
         if stamp is None:
@@ -2458,6 +2636,13 @@ class OnlineMrQueryService:
     def _text_or_none(value: Any) -> str | None:
         text = str(value).strip() if value is not None else ""
         return text or None
+
+    @staticmethod
+    def _int_or_none(value: Any) -> int | None:
+        try:
+            return int(value) if value not in (None, "") else None
+        except (TypeError, ValueError):
+            return None
 
     @staticmethod
     def _count_notes(session_dir: Path) -> int:

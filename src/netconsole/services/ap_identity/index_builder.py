@@ -74,6 +74,7 @@ class _SourceAp:
     raw: Mapping[str, object]
     lldp_valid: bool = False
     lldp_conflict: bool = False
+    lldp_switch_conflict: bool = False
     lldp_switch_uuid: str = ""
     lldp_station_id: str = ""
     lldp_station: str = ""
@@ -277,6 +278,7 @@ def _source_ap(row: Mapping[str, object], *, source: str) -> _SourceAp:
         raw=dict(row),
         lldp_valid=bool(row.get("_lldp_valid")),
         lldp_conflict=bool(row.get("_lldp_conflict")),
+        lldp_switch_conflict=bool(row.get("_lldp_switch_conflict")),
         lldp_switch_uuid=str(row.get("_lldp_switch_uuid") or "").strip(),
         lldp_station_id=str(row.get("_lldp_station_id") or "").strip(),
         lldp_station=str(row.get("_lldp_station") or "").strip(),
@@ -373,6 +375,7 @@ def _entity_projection(
         ApTopologyEvidence(
             lldp_valid=bool(ac and ac.lldp_valid),
             lldp_conflict=bool(ac and ac.lldp_conflict),
+            lldp_switch_conflict=bool(ac and ac.lldp_switch_conflict),
             lldp_switch_uuid=ac.lldp_switch_uuid if ac else "",
             lldp_station_id=ac.lldp_station_id if ac else "",
             lldp_station=ac.lldp_station if ac else "",

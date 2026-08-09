@@ -143,6 +143,19 @@ class OnlineMrCollectorStatusDTO(ApiModel):
     updated_at: str | None = None
     health_status: str = "unknown"
     stale_seconds: float | None = None
+    client_status: str = ""
+    server_status: str = ""
+    supervisor_status: str = ""
+    pid: int | None = None
+    alive: bool | None = None
+    exit_code: int | None = None
+    last_error: str = ""
+    stderr_tail: str = ""
+    last_exit_at: str | None = None
+    last_data_at: str | None = None
+    bytes_written: int = 0
+    restart_count: int = 0
+    stop_reason: str = ""
 
 
 class OnlineMrRealtimePreviewDTO(ApiModel):

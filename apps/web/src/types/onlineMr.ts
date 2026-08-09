@@ -55,6 +55,19 @@ export interface OnlineMrCollectorStatus {
   updated_at: string | null
   health_status: 'normal' | 'stale' | 'interrupted' | 'unknown'
   stale_seconds: number | null
+  client_status?: string
+  server_status?: string
+  supervisor_status?: string
+  pid?: number | null
+  alive?: boolean | null
+  exit_code?: number | null
+  last_error?: string
+  stderr_tail?: string
+  last_exit_at?: string | null
+  last_data_at?: string | null
+  bytes_written?: number
+  restart_count?: number
+  stop_reason?: string
 }
 
 export interface OnlineMrRealtimePreview {

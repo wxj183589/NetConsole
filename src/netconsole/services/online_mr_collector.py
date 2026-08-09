@@ -932,6 +932,28 @@ class OnlineMrCollector:
             payload={"task_type": task_type, "line": line},
             raw=line,
         )
+        # Streaming collectors do not have command-level sample boundaries. A
+        # parsed mesh row is still a durable fact, so persist it immediately;
+        # the raw log remains the authoritative byte-level source.
+        if task_type == TASK_MESH_LINK:
+            try:
+                records, parse_status, error = parse_mesh_link_text(line, timestamp)
+                if records:
+                    raw_path = self.session.session_dir / "raw" / "mesh_link_raw.log"
+                    raw_size = raw_path.stat().st_size if raw_path.exists() else 0
+                    sample_id = self.session.append_sample(
+                        task_type,
+                        timestamp,
+                        "stream",
+                        "raw/mesh_link_raw.log",
+                        raw_size,
+                        raw_size + len(line.encode("utf-8")),
+                        parse_status,
+                        error,
+                    )
+                    self.session.append_mesh_links(sample_id, records)
+            except Exception as exc:
+                self.session.log("WARNING", f"stream mesh persistence failed: {exc}")
         self._enqueue_collector_output_raw(f"[collector=repeat] {task_type} {line}", timestamp)
         if self.realtime_cache:
             self.realtime_cache.append_raw_event(

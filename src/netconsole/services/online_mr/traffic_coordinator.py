@@ -39,6 +39,11 @@ class _TrafficState:
     iperf_server_runner: IperfProcessRunner | None = None
     iperf_server_thread: threading.Thread | None = None
     iperf_status: str = "disabled"
+    iperf_server_status: str = "disabled"
+    restart_count: int = 0
+    restart_reason: str = ""
+    iperf_bitrate_sum: float = 0.0
+    iperf_bitrate_samples: int = 0
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
@@ -122,12 +127,23 @@ class OnlineMrTrafficCoordinator:
         if state is None:
             return {"session_id": session_id, "fping": {"status": "not_managed"}, "iperf": {"status": "not_managed"}, "warnings": []}
         with state.lock:
+            runner = state.iperf_runner
+            if runner is not None and runner.last_status not in {"CREATED", "RUNNING"}:
+                state.iperf_status = str(runner.last_status).lower()
+            server = state.iperf_server_runner
+            if server is not None and server.last_status not in {"CREATED", "RUNNING"}:
+                state.iperf_server_status = str(server.last_status).lower()
             return {
                 "session_id": session_id,
                 "fping": {"status": state.fping_status, **state.fping_stats.as_dict()},
                 "iperf": {
                     "status": state.iperf_status,
-                    "run_id": state.iperf_runner.run_id if state.iperf_runner is not None else "",
+                    "client_status": state.iperf_status,
+                    "server_status": state.iperf_server_status,
+                    "run_id": runner.run_id if runner is not None else "",
+                    **(runner.diagnostics() if runner is not None and hasattr(runner, "diagnostics") else {}),
+                    "restart_count": state.restart_count,
+                    "restart_reason": state.restart_reason,
                 },
                 "warnings": list(state.warnings),
                 "flush_complete": not any(
@@ -229,6 +245,10 @@ class OnlineMrTrafficCoordinator:
 
         client = self._iperf_client_config(traffic)
         def on_line(_line: str, row: dict[str, object] | None, error: dict[str, object] | None = None) -> None:
+            if row is not None and row.get("bitrate_mbps") is not None:
+                with state.lock:
+                    state.iperf_bitrate_sum += float(row["bitrate_mbps"])
+                    state.iperf_bitrate_samples += 1
             self._write_iperf_snapshot(state, traffic, row=row, error=error)
 
         runner = IperfProcessRunner(
@@ -276,6 +296,7 @@ class OnlineMrTrafficCoordinator:
         interval_seconds: int,
     ) -> bool:
         if self._is_tcp_listener("127.0.0.1", port):
+            state.iperf_server_status = "external_unmanaged"
             return True
         config = IperfServerConfig(
             bind_ip="127.0.0.1",
@@ -290,6 +311,7 @@ class OnlineMrTrafficCoordinator:
             context={"source": "online_mr_application", "scope": "loopback_only"},
         )
         state.iperf_server_runner = runner
+        state.iperf_server_status = "starting"
         state.iperf_server_thread = threading.Thread(
             target=runner.start,
             name=f"online-mr-iperf-server-{state.session.meta.session_id}",
@@ -299,11 +321,13 @@ class OnlineMrTrafficCoordinator:
         deadline = time.monotonic() + 3.0
         while time.monotonic() < deadline:
             if self._is_tcp_listener("127.0.0.1", port):
+                state.iperf_server_status = "running"
                 return True
             if state.iperf_server_thread is not None and not state.iperf_server_thread.is_alive():
                 break
             time.sleep(0.05)
         runner.stop("START_FAILED")
+        state.iperf_server_status = "failed"
         return False
 
     @staticmethod
@@ -349,18 +373,31 @@ class OnlineMrTrafficCoordinator:
         error: dict[str, object] | None = None,
     ) -> None:
         normalized = config.normalized()
+        runner = state.iperf_runner
+        diagnostics = runner.diagnostics() if runner is not None and hasattr(runner, "diagnostics") else {}
         state.session.write_view_snapshot(
             "live_iperf_status",
             {
                 "status": state.iperf_status,
+                "client_status": state.iperf_status,
+                "server_status": state.iperf_server_status,
+                "supervisor_status": "running" if state.iperf_status in {"running", "starting"} else state.iperf_status,
                 "updated_at": datetime.now().isoformat(sep=" ", timespec="milliseconds"),
                 "server_ip": normalized.server_ip,
                 "port": normalized.port,
                 "protocol": normalized.protocol,
                 "target_bandwidth": normalized.target_bandwidth,
                 "bitrate_mbps": row.get("bitrate_mbps") if row else None,
+                "average_bitrate_mbps": (
+                    state.iperf_bitrate_sum / state.iperf_bitrate_samples
+                    if state.iperf_bitrate_samples
+                    else None
+                ),
                 "role": row.get("role") if row else None,
                 "error_code": error.get("error_code") if error else "",
+                "restart_count": state.restart_count,
+                "restart_reason": state.restart_reason,
+                **diagnostics,
             },
         )
 

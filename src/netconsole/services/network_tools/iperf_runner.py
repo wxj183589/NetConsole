@@ -515,7 +515,33 @@ class IperfProcessRunner:
         self.stop_status = "STOPPED"
         self.last_status = "CREATED"
         self.last_error_code = ""
+        self.last_error = ""
+        self.stderr_tail = ""
+        self.last_exit_at: datetime | None = None
+        self.last_data_at: datetime | None = None
+        self.heartbeat_at: datetime | None = None
+        self.bytes_written = 0
+        self.stop_reason = ""
         self._log_lock = threading.RLock()
+
+    def diagnostics(self) -> dict[str, object]:
+        process = self.process
+        exit_code = process.poll() if process is not None else None
+        return {
+            "pid": process.pid if process is not None else None,
+            "parent_pid": os.getpid(),
+            "cwd": str(self.iperf_path.parent),
+            "command": list(self.command),
+            "alive": bool(process is not None and exit_code is None),
+            "exit_code": exit_code,
+            "last_exit_at": self.last_exit_at.isoformat(sep=" ", timespec="milliseconds") if self.last_exit_at else None,
+            "heartbeat": self.heartbeat_at.isoformat(sep=" ", timespec="milliseconds") if self.heartbeat_at else None,
+            "last_data_at": self.last_data_at.isoformat(sep=" ", timespec="milliseconds") if self.last_data_at else None,
+            "bytes_written": self.bytes_written,
+            "last_error": self.last_error or self.last_error_code,
+            "stderr_tail": self.stderr_tail,
+            "stop_reason": self.stop_reason,
+        }
 
     def add_mirror_log_file(self, log_file: Path, context: dict[str, object] | None = None) -> None:
         log_file = Path(log_file)
@@ -579,15 +605,22 @@ class IperfProcessRunner:
             )
             shutdown_manager.register_process(self.process, "iperf3", kind="internal_tool", shutdown_policy="terminate")
             assert self.process.stdout is not None
+            self.heartbeat_at = datetime.now()
             for line in self.process.stdout:
                 raw_line = line.rstrip("\r\n")
                 now = datetime.now()
+                self.heartbeat_at = now
+                self.last_data_at = now
                 stamped_line = format_iperf_log_line(now, raw_line, self.context)
                 self._write_line(stamped_line)
                 row = parse_iperf_line(stamped_line, self.started_at, collector_time=now)
                 error = parse_iperf_error_line(stamped_line, self.started_at)
                 if error:
                     self.last_error_code = str(error.get("error_code") or "")
+                    self.last_error = str(error.get("error_message") or self.last_error_code)
+                    self.stderr_tail = "\n".join(
+                        (self.stderr_tail + "\n" + raw_line).strip().splitlines()[-20:]
+                    )
                 if row and self.store:
                     self.store.append_interval(self.run_id, row, self.session_id)
                 self._emit_line(stamped_line, row, error)
@@ -608,9 +641,15 @@ class IperfProcessRunner:
             if return_code is not None and return_code != 0:
                 self._write_line(format_iperf_log_line(datetime.now(), f"iperf process exited with code {return_code}", self.context))
             self._write_footers(status, return_code)
+            try:
+                self.bytes_written = self.log_file.stat().st_size
+            except OSError:
+                pass
             if self.process is not None:
                 shutdown_manager.unregister_process(self.process)
             self.last_status = status
+            self.last_exit_at = datetime.now()
+            self.stop_reason = self.stop_status if self.stop_requested else "process_exit"
             if self.store:
                 self.store.finish_run(self.run_id, status)
 
@@ -618,9 +657,12 @@ class IperfProcessRunner:
         self.stop_requested = True
         self.stop_status = str(status or "STOPPED_BY_USER")
         if self.process is None:
+            self.stop_reason = "not_started"
             return
         if self.process.poll() is not None:
+            self.stop_reason = "already_exited"
             return
+        self.stop_reason = self.stop_status
         self.process.terminate()
         try:
             self.process.wait(timeout=2)

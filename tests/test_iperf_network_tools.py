@@ -22,6 +22,7 @@ from netconsole.services.network_tools.iperf_runner import (
     FOLLOW_COLLECTION_PROTECTION_DURATION_SECONDS,
     IperfClientConfig,
     IperfResultStore,
+    IperfProcessRunner,
     build_iperf_client_args,
     normalize_bandwidth_text,
     run_iperf_client_preflight,
@@ -39,6 +40,30 @@ class FakeWheelEvent:
 
     def ignore(self) -> None:
         self.ignored = True
+
+
+def test_iperf_stop_marks_already_exited_without_terminate(tmp_path: Path) -> None:
+    class ExitedProcess:
+        pid = 1234
+        terminated = False
+
+        def poll(self):
+            return 1
+
+        def terminate(self):
+            self.terminated = True
+
+    tool = tmp_path / "iperf3.exe"
+    tool.touch()
+    runner = IperfProcessRunner(tool, [str(tool), "-c", "127.0.0.1"], tmp_path / "iperf.log")
+    process = ExitedProcess()
+    runner.process = process
+
+    runner.stop("STOPPED_BY_COLLECTION")
+
+    assert runner.stop_reason == "already_exited"
+    assert process.terminated is False
+    assert runner.diagnostics()["exit_code"] == 1
 
 
 def test_iperf_tool_discovery_from_project_tools(tmp_path: Path) -> None:

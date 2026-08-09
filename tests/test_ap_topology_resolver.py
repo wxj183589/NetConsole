@@ -40,6 +40,23 @@ def test_invalid_or_ambiguous_lldp_falls_back_without_name_guessing() -> None:
     assert "topology_lldp_ambiguous" in result.warnings
 
 
+def test_multiple_lldp_switches_at_same_station_keep_station_enrichment() -> None:
+    result = resolve_ap_topology(
+        ApTopologyEvidence(
+            lldp_valid=True,
+            lldp_switch_conflict=True,
+            lldp_switch_uuid="switch-a,switch-b",
+            lldp_station="云龙车辆段",
+            base_station="基础资料站",
+        )
+    )
+
+    assert result.station.value == "云龙车辆段"
+    assert result.station.source == "lldp_switch"
+    assert "topology_lldp_multiple_switches" in result.warnings
+    assert "topology_lldp_ambiguous" not in result.warnings
+
+
 def test_base_only_data_is_valid_and_empty_values_do_not_block_fallback() -> None:
     result = resolve_ap_topology(
         ApTopologyEvidence(

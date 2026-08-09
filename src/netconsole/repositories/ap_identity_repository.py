@@ -565,15 +565,18 @@ class ApIdentityRepository:
         for mac_key, values in candidates.items():
             unique = tuple(dict.fromkeys(values))
             switch_uuids = {item[0] for item in unique}
+            station_ids = {item[1] for item in unique if item[1]}
             stations = {item[2] for item in unique if item[2]}
-            conflict = len(switch_uuids) > 1 or len(stations) > 1
+            station_conflict = len(station_ids) > 1 or len(stations) > 1
+            switch_conflict = len(switch_uuids) > 1
             selected = unique[0]
             result[mac_key] = {
                 "_lldp_valid": bool(switch_uuids),
-                "_lldp_conflict": conflict,
-                "_lldp_switch_uuid": "" if conflict else selected[0],
-                "_lldp_station_id": "" if conflict else selected[1],
-                "_lldp_station": "" if conflict else selected[2],
+                "_lldp_conflict": station_conflict,
+                "_lldp_switch_uuid": selected[0] if not station_conflict else "",
+                "_lldp_station_id": selected[1] if not station_conflict else "",
+                "_lldp_station": selected[2] if not station_conflict else "",
+                "_lldp_switch_conflict": switch_conflict,
             }
         return result
 

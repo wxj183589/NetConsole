@@ -388,6 +388,10 @@ raw 尾部白名单固定为 `terminal_monitor`、`mesh_link`、`channel_busy`�
 
 原始日志动态查看固定并列 tail `mesh_link_raw.log` 与 `fping_v5_raw.log`，现场可同时观察主链路和高频 Ping；终端实时日志、无线状态、空口负载、iPerf 和采集器输出仍通过其他日志选择器查看。fping/iPerf 在采集过程中原子更新 `view/live_fping_status.json` 与 `view/live_iperf_status.json`；主链路 view 缺失时，查询层先只读最新一个 `mesh_link` sample，再降级读取 `mesh_link_raw.log` 最后 128 KiB 并复用既有 parser，不扫描完整日志。H3C 在线 Peer 表支持表格行和 `Peer Name:`、`Peer MAC:`、`RSSI:`、`BSSID:`、`Interface:`、`Link state:`、`Online time:` 字段块两类格式；只选择 `Active/ACTIVE/Active(ax)` 作为当前主链路，`Standby/Standby(ax)` 不覆盖主链路。站点或区间匹配不到时，预览仍返回主链路 AP、Peer MAC、接口、链路状态、RSSI、在线时长、数据来源、更新时间和识别说明；H3C 正数 RSSI 幅值由 Python 规范化为负 dBm，Vue 不猜测转换。
 
+LOCAL streaming collector 会把可解析的 Mesh 行同步写入 `live_samples/live_mesh_links`；raw 文件仍是事实来源，结构化表只用于有界实时查询。实时预览优先用 Peer Radio/BSSID、其次用 Peer MAC 调用统一 `ApIdentityQueryService`，返回物理 `ap_mac/ap_name`、站点/区间、`identity_source/identity_revision` 与 `resolution_status/resolution_reason`；不得从 AP 名称字符串猜身份。动态 LLDP/FIT-AP 拓扑优先于基础资料，同站点多交换机只记录拓扑 warning，不阻断站点 enrichment；未解析或歧义时保留现场原始 Peer。
+
+`live_iperf_status.json` 是 LOCAL iPerf 运行真相，必须区分 `client_status`、`server_status` 和 `supervisor_status`，并保留 `pid/alive/exit_code/last_exit_at/last_data_at/bytes_written/last_error/stderr_tail/stop_reason/restart_count`。Client 非零退出立即保持 `failed:<exit_code>`，不得因 Session 仍活动或 raw 文件非空重新推导为 `running`；停止已退出的 child 直接记录既有终态。本地回环端口若已有外部 listener，server 状态明确为 `external_unmanaged`，不得伪装为本 Session 托管进程。
+
 LOCAL Worker 在创建 Session 后立即记录 `startup_timeline`，并把 fping/iPerf 启动从 SSH 初始化后移到 Session 创建后的异步阶段。Traffic 子任务不改变采集命令语义，仍随采集停止和最终化统一 flush；启动失败时若 Traffic 已开始，也必须停止、flush 并释放。`startup_timeline` 只记录阶段、耗时和状态，不包含密码、Token 或服务器绝对路径。
 
 5C-2 的只读查询接口本身不提供控制 API。5C-10A 另在 Desktop Host 增加 LOCAL start/normal stop 薄入口；轨交 Electron 对等阶段继续增加 LOCAL force-stop/recover 和独立报告入口。Traffic flush、SSH writer、metadata、原子 ZIP 与 Task 终态顺序仍保持第 3 节契约；没有建立第二套采集器或状态机。
