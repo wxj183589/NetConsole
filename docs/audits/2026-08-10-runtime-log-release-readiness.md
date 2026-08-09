@@ -48,8 +48,16 @@
 
 全量 pytest 初次以单命令运行时受 10 分钟终端上限终止，未返回测试结论；随后按文件首字母和测试子目录完整重跑，以上汇总为最终有效基线。
 
-## 发布与 Soak
+## 发布构建与安装器
 
-- 本文创建时：本提交尚未建立干净 Git 基线，因此 PyInstaller、`win-unpacked` package smoke、NSIS 安装器 smoke 与 2 小时 soak 尚未运行。
-- 发布构建要求嵌入 clean commit metadata，因此这些项目将在实现基线提交后执行，并在本审计补充实际结果；未执行前保持 `PENDING`。
-- 未验证项不等同于通过：真实 NTFS 文件锁、杀毒软件竞争、物理磁盘耗尽和 2 小时以上内存趋势仍需要隔离环境中的实际运行证据。
+- 提交 `481b57eea7e2894e4cef49a7e29a91bcde5627ab` 推送到 `github/codex/log-release-readiness` 后，PyInstaller release、Web production build、依赖闭包（71 distributions）、源工具 smoke 和受管 Backend packaged smoke 均通过。
+- `win-unpacked` package smoke 通过：frozen `log_policy.json`、时区资源、旧设备数据库迁移/list HTTP 200、Ground 状态 HTTP 200、Worker 中文协议、MESH 幂等性、重复文件名、Qt 残留、NOTICE/SBOM 均已验证；backend/frontend/self-check commit 全部为 `481b57ee...`，`PACKAGED_DIRTY=false`。
+- Full NSIS 制品 `NetConsole-1.4.8-481b57ee-x64-setup.exe` 已生成，大小 155,910,260 bytes，SHA-256 为 `7398df31e882364388af46ad8c46773839ccf1671821401fb252d802b56baee6`。verifier 已确认 NSIS-3 Unicode、安装器嵌入 manifest、数据根脚本 SHA-256、版本资源、Backend/Frontend commit 和二次哈希读取一致。
+- `build-edition-installer.mjs full` 在当前 isolated worktree 因 `node_modules` junction 被 pnpm 判为需重装、且无 TTY 拒绝删除 junction 而停止。为保护共享依赖，未设置 CI 强制删除；随后复用同一已通过的 `package:prepare` 输出，用项目的 electron-builder、package smoke 与 `build_installer --verify` 完成上述实际 Full NSIS 构建和制品验证。
+- 真实安装、首次启动与卸载仍为 `PENDING`：本会话不是管理员，安装器是 per-machine 且数据根只能在交互页选择，不能安全静默覆盖 HKLM 指针。未尝试 UAC 绕过，也未接触正式 `D:\NetConsoleData`。
+
+## Soak 状态与剩余风险
+
+- 2 小时/8 小时 soak 为 `PENDING`，未伪造 bytes/hour、RSS 起止/峰值、`queuedBytes` 或 dropped counters。
+- 现有故障注入已覆盖 Python EBUSY/PermissionError、1,000 次 rotation backoff、多进程写入及历史清理的单文件占用跳过；这不能替代真实 NTFS 锁、杀毒竞争、物理磁盘耗尽和长时间内存趋势。
+- 真实 soak 应在隔离 `D:\NetConsoleTestData\<run-id>` 运行已签名目录包或安装包，每 5–10 分钟记录 Electron/Python RSS、CPU、`electron.log`/`app.log` 增量、runtime/logs 总量、queue/dropped 指标和 backend/WebSocket/task service 存活状态。正常结束前不得将这些项目改为通过。
