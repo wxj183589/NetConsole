@@ -208,7 +208,7 @@ class RailTransitWebApplicationService:
         "vehicle_mr_ap_mapping_refresh": "轨旁 AP 映射刷新",
         "vehicle_mr_mapping_save": "列车 MR 映射保存",
         "vehicle_mr_online_collection_start": "列车在线连续采集",
-        "trackside_ap_wps_sync": "轨旁 AP 业务 WPS 双目标同步",
+        "trackside_ap_wps_sync": "轨旁 AP 业务 WPS 云文档同步",
         "online_mr_parse": "Online MR 会话解析",
         "online_mr_session_delete": "删除 Online MR 历史会话",
     }

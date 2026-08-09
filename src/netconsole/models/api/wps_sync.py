@@ -35,7 +35,6 @@ class WpsSyncTargetDTO(ApiModel):
     connection_diagnostic: dict[str, Any] = Field(default_factory=dict)
     runtime_probe_diagnostic: dict[str, Any] = Field(default_factory=dict)
     sync_test_diagnostic: dict[str, Any] = Field(default_factory=dict)
-    sheet_order_probe_diagnostic: dict[str, Any] = Field(default_factory=dict)
     sheet_tab_color_probe_diagnostic: dict[str, Any] = Field(default_factory=dict)
     column_width_probe_diagnostic: dict[str, Any] = Field(default_factory=dict)
     remote_script_version: str = ""
@@ -64,7 +63,7 @@ class WpsSyncTargetUpdateDTO(ApiModel):
 
 
 class WpsSyncRequestDTO(ApiModel):
-    target_codes: list[str] = Field(default_factory=list, max_length=2)
+    target_codes: list[str] = Field(default_factory=list, max_length=1)
     expected_revision: str = Field(default="", max_length=128)
     initialize_binding: bool = False
 

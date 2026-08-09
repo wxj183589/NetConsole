@@ -15,12 +15,12 @@ import {
   listTracksideSwitchAdapters,
   listTracksideApBusiness,
   probeTracksideWpsColumnWidth,
-  probeTracksideWpsSheetOrder,
   recoverTracksideApTasks,
   saveTracksideApPlan,
   startTracksideApBusinessExport,
   startTracksideApUpdate,
   startTracksideSwitchSample,
+  syncTracksideWpsDocument,
   testTracksideWpsTarget,
   tracksideApBusinessDownloadRequest,
   tracksideSwitchSampleDownloadRequest,
@@ -122,14 +122,14 @@ describe('trackside AP business API', () => {
     })
     await testTracksideWpsTarget('wps_standard_spreadsheet')
     await probeTracksideWpsColumnWidth('wps_standard_spreadsheet')
-    await probeTracksideWpsSheetOrder('wps_standard_spreadsheet')
+    await syncTracksideWpsDocument({ expected_revision: 'revision-1' })
 
     expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
       '/api/rail-transit/trackside-ap-business/wps/targets',
       '/api/rail-transit/trackside-ap-business/wps/targets/wps_standard_spreadsheet',
       '/api/rail-transit/trackside-ap-business/wps/targets/wps_standard_spreadsheet/connection-test',
       '/api/rail-transit/trackside-ap-business/wps/targets/wps_standard_spreadsheet/column-width-probe',
-      '/api/rail-transit/trackside-ap-business/wps/targets/wps_standard_spreadsheet/sheet-order-probe',
+      '/api/rail-transit/trackside-ap-business/wps/sync',
     ])
     expect(fetchMock.mock.calls[1][1]).toMatchObject({
       method: 'PUT',
@@ -139,6 +139,13 @@ describe('trackside AP business API', () => {
         webhook_url: 'https://www.kdocs.cn/api/v3/ide/file/test/script/test/sync_task',
         enabled: true,
         timeout_seconds: 45,
+      }),
+    })
+    expect(fetchMock.mock.calls[4][1]).toMatchObject({
+      method: 'POST',
+      body: JSON.stringify({
+        expected_revision: 'revision-1',
+        target_codes: ['wps_standard_spreadsheet'],
       }),
     })
   })

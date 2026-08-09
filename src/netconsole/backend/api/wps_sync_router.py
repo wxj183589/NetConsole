@@ -17,6 +17,7 @@ from netconsole.models.api.wps_sync import (
     WpsSyncTargetUpdateDTO,
 )
 from netconsole.services.wps_trackside_ap_sync import (
+    STANDARD_TARGET_CODE,
     TracksideApWpsSyncService,
     WpsSyncError,
 )
@@ -153,21 +154,6 @@ def sync_test_sheet(request: Request, target_code: str) -> WpsSyncConnectionTest
 
 
 @router.post(
-    "/targets/{target_code}/sheet-order-probe",
-    response_model=WpsSyncConnectionTestDTO,
-    dependencies=[Depends(require_feature("web.rail_trackside_ap_business_wps_sync"))],
-)
-def sheet_order_probe(request: Request, target_code: str) -> WpsSyncConnectionTestDTO:
-    try:
-        return WpsSyncConnectionTestDTO(
-            target_code=target_code,
-            result=_service(request).sheet_order_probe(_site_id(request), target_code),
-        )
-    except WpsSyncError as exc:
-        _raise(exc)
-
-
-@router.post(
     "/targets/{target_code}/sheet-tab-color-probe",
     response_model=WpsSyncConnectionTestDTO,
     dependencies=[Depends(require_feature("web.rail_trackside_ap_business_wps_sync"))],
@@ -226,12 +212,19 @@ def revalidate_deployment(request: Request, target_code: str) -> WpsSyncConnecti
 )
 def sync(request: Request, payload: WpsSyncRequestDTO) -> RailTransitTaskDTO:
     try:
+        if any(code != STANDARD_TARGET_CODE for code in payload.target_codes):
+            raise WpsSyncError(
+                "WPS_TARGET_UNSUPPORTED",
+                "当前版本仅支持 WPS 普通在线表格同步",
+            )
         return _rail_service(request).start_trackside_ap_wps_sync(
             _site_id(request),
             target_codes=payload.target_codes,
             expected_revision=payload.expected_revision,
             initialize_binding=payload.initialize_binding,
         )
+    except WpsSyncError as exc:
+        _raise(exc)
     except RailTransitWebError as exc:
         raise HTTPException(
             status_code=(409 if exc.code == "TASK_RESOURCE_BUSY" else 422),

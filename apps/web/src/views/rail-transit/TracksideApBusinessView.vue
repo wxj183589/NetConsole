@@ -10,7 +10,7 @@ import {
   testTracksideWpsTarget,
   startTracksideApBusinessExport,
   startTracksideApUpdate,
-  syncTracksideWpsTargets,
+  syncTracksideWpsDocument,
 } from '../../api/tracksideApBusiness'
 import NcDataTable from '../../components/table/NcDataTable.vue'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
@@ -31,7 +31,6 @@ import type {
   TracksideApTask,
   TracksideApUpdateRequest,
   WpsTracksideTarget,
-  WpsTracksideTargetCode,
 } from '../../types/tracksideApBusiness'
 import { useTaskStore } from '../../stores/tasks'
 import type { TaskItem } from '../../types/task'
@@ -107,20 +106,21 @@ const wpsSyncFeatureEnabled = computed(() => isFeatureEnabled('web.rail_tracksid
 const wpsTaskRunning = computed(() => taskStore.tasks.some(
   (item) => item.type === 'trackside_ap_wps_sync' && activeStates.has(item.status),
 ))
+const wpsDocumentTarget = computed(() => wpsTargets.value.find(
+  (target) => target.target_code === 'wps_standard_spreadsheet',
+))
 const wpsConfigurationMissing = computed(() => (
   wpsSyncFeatureEnabled.value
-  && wpsTargets.value.some((target) => target.enabled && (
-    !target.document_open_url
-    || !target.webhook_url
-    || !target.token_configured
-  ))
+  && Boolean(wpsDocumentTarget.value?.enabled)
+  && (
+    !wpsDocumentTarget.value?.document_open_url
+    || !wpsDocumentTarget.value?.webhook_url
+    || !wpsDocumentTarget.value?.token_configured
+  )
 ))
-function wpsTargetReady(code: WpsTracksideTargetCode): boolean {
-  const target = wpsTargets.value.find((item) => item.target_code === code)
-  return Boolean(target?.enabled && wpsTargetDeploymentReady(target))
-}
-const hasReadyWpsTarget = computed(() => wpsTargets.value.some(
-  (target) => target.enabled && wpsTargetDeploymentReady(target),
+const wpsDocumentReady = computed(() => Boolean(
+  wpsDocumentTarget.value?.enabled
+  && wpsTargetDeploymentReady(wpsDocumentTarget.value),
 ))
 
 function wpsTargetDeploymentReady(target: WpsTracksideTarget): boolean {
@@ -586,64 +586,53 @@ async function loadWpsTargets(): Promise<void> {
   }
 }
 
-async function syncWps(command: 'all' | WpsTracksideTargetCode): Promise<void> {
+async function syncWpsDocument(): Promise<void> {
   if (wpsSyncing.value || wpsTaskRunning.value || !wpsSyncFeatureEnabled.value || !page.value?.business_revision) return
-  const enabledTargets = wpsTargets.value.filter(
-    (target) => target.enabled && target.runtime_capability === 'VERIFIED',
-  )
-  const targetCodes = command === 'all'
-    ? enabledTargets.map((target) => target.target_code)
-    : [command]
-  let selectedTargets = targetCodes
-    .map((code) => wpsTargets.value.find((target) => target.target_code === code))
-    .filter((target): target is WpsTracksideTarget => Boolean(target))
-  const unknownTargets = selectedTargets.filter((target) => target.binding_status === 'UNKNOWN')
-  if (unknownTargets.length) {
+  let target = wpsDocumentTarget.value
+  if (!target) {
+    actionError.value = 'WPS 云文档连接尚未初始化，请打开“配置云文档”'
+    wpsConfigVisible.value = true
+    return
+  }
+  if (target.binding_status === 'UNKNOWN') {
     try {
-      for (const target of unknownTargets) await testTracksideWpsTarget(target.target_code)
+      await testTracksideWpsTarget(target.target_code)
       await loadWpsTargets()
-      selectedTargets = targetCodes
-        .map((code) => wpsTargets.value.find((target) => target.target_code === code))
-        .filter((target): target is WpsTracksideTarget => Boolean(target))
+      target = wpsDocumentTarget.value
     } catch (reason) {
       actionError.value = failure(reason, 'WPS 文档连接状态未知，请先完成连接测试')
       wpsConfigVisible.value = true
       return
     }
   }
-  if (selectedTargets.some((target) => target.runtime_capability !== 'VERIFIED')) {
+  if (!target || target.runtime_capability !== 'VERIFIED') {
     actionError.value = 'WPS 运行时写入能力尚未验证；请先在“配置云文档”执行测试写入能力。'
     wpsConfigVisible.value = true
     return
   }
-  if (selectedTargets.length !== targetCodes.length || selectedTargets.some((target) => !target.enabled)) {
-    actionError.value = '目标未启用，请先在“配置云文档”中启用后再同步'
+  if (!target.enabled) {
+    actionError.value = '云文档同步未启用，请先在“配置云文档”中启用'
     wpsConfigVisible.value = true
     return
   }
-  if (selectedTargets.some((target) => !target.document_open_url || !target.webhook_url)) {
-    actionError.value = 'WPS 在线文档连接或 webhook 尚未配置，请先完成目标连接配置'
+  if (!target.document_open_url || !target.webhook_url) {
+    actionError.value = 'WPS 在线文档连接或 webhook 尚未配置，请先完成连接配置'
     wpsConfigVisible.value = true
     return
   }
-  if (selectedTargets.some((target) => !target.token_configured)) {
+  if (!target.token_configured) {
     actionError.value = 'WPS 脚本令牌尚未配置，请先在“配置云文档”中保存令牌'
     wpsConfigVisible.value = true
     return
   }
-  if (selectedTargets.some((target) => target.binding_status === 'LEGACY_BINDING_ID_MISMATCH')) {
+  if (target.binding_status === 'LEGACY_BINDING_ID_MISMATCH') {
     actionError.value = 'WPS 文档仍使用旧版绑定标识，请先在“配置云文档”中升级绑定标识。'
     wpsConfigVisible.value = true
     return
   }
-  if (!targetCodes.length) {
-    actionError.value = '没有已启用的 WPS 同步目标'
-    return
-  }
-  const labels = targetCodes.map((code) => wpsTargets.value.find((target) => target.target_code === code)?.target_name || code)
   try {
     await ElMessageBox.confirm(
-      `当前局点：${page.value.site_id}\n业务：轨旁 AP 业务\nrevision：${page.value.business_revision}\n同步目标：${labels.join('、')}\nAP 上线情况概览将新增历史批次，旧历史不会删除。`,
+      `当前局点：${page.value.site_id}\n业务：轨旁 AP 业务\nrevision：${page.value.business_revision}\n云文档：${target.target_name}\nAP 上线情况概览将新增历史批次，旧历史不会删除。`,
       '确认同步云文档',
       { type: 'warning', confirmButtonText: '开始同步', cancelButtonText: '取消' },
     )
@@ -651,11 +640,10 @@ async function syncWps(command: 'all' | WpsTracksideTargetCode): Promise<void> {
     return
   }
   let initializeBinding = false
-  const unboundTargets = selectedTargets.filter((target) => target.binding_status === 'UNBOUND')
-  if (unboundTargets.length) {
+  if (target.binding_status === 'UNBOUND') {
     try {
       await ElMessageBox.confirm(
-        `以下文档尚未绑定，将绑定到当前局点 ${page.value.site_id} 的轨旁 AP 业务：${unboundTargets.map((target) => target.target_name).join('、')}。绑定后其他局点请求将被拒绝。`,
+        `当前云文档尚未绑定，将绑定到局点 ${page.value.site_id} 的轨旁 AP 业务。绑定后其他局点请求将被拒绝。`,
         '确认首次绑定',
         { type: 'warning', confirmButtonText: '确认绑定并同步', cancelButtonText: '取消' },
       )
@@ -664,12 +652,12 @@ async function syncWps(command: 'all' | WpsTracksideTargetCode): Promise<void> {
       return
     }
   }
-  if (selectedTargets.some((target) => target.binding_status === 'UNKNOWN')) {
+  if (target.binding_status === 'UNKNOWN') {
     actionError.value = 'WPS 文档绑定状态仍然未知，请在“配置云文档”中检查连接测试结果。'
     wpsConfigVisible.value = true
     return
   }
-  if (selectedTargets.some((target) => target.binding_status === 'MISMATCH')) {
+  if (target.binding_status === 'MISMATCH') {
     actionError.value = 'WPS 文档已绑定到其他局点或业务，当前同步已阻止。'
     wpsConfigVisible.value = true
     return
@@ -677,10 +665,10 @@ async function syncWps(command: 'all' | WpsTracksideTargetCode): Promise<void> {
   wpsSyncing.value = true
   actionError.value = ''
   try {
-    const task = await syncTracksideWpsTargets({ target_codes: targetCodes, expected_revision: page.value.business_revision, initialize_binding: initializeBinding })
+    const task = await syncTracksideWpsDocument({ expected_revision: page.value.business_revision, initialize_binding: initializeBinding })
     currentTaskId.value = task.task_id
     await taskStore.refresh()
-    ElMessage.info('WPS 同步任务已提交，可在任务中心查看两个目标的独立结果')
+    ElMessage.info('WPS 云文档同步任务已提交，可在任务中心查看结果')
     await loadWpsTargets()
   } catch (reason) {
     actionError.value = failure(reason, 'WPS 云文档同步失败')
@@ -689,8 +677,8 @@ async function syncWps(command: 'all' | WpsTracksideTargetCode): Promise<void> {
   }
 }
 
-async function openWpsTarget(command: WpsTracksideTargetCode): Promise<void> {
-  const target = wpsTargets.value.find((item) => item.target_code === command)
+async function openWpsDocument(): Promise<void> {
+  const target = wpsDocumentTarget.value
   if (target?.document_open_url) {
     const result = await openWpsDocumentUrl(target.document_open_url)
     if (!result.success) actionError.value = result.error || '系统浏览器打开失败'
@@ -808,11 +796,8 @@ onBeforeUnmount(() => {
           @click="exportBusiness"
         >导出表格</el-button>
         <template v-if="wpsSyncFeatureEnabled">
-          <el-button type="success" :loading="wpsSyncing" :disabled="wpsSyncing || wpsTaskRunning || updateTaskRunning || !hasReadyWpsTarget" @click="syncWps('all')">同步全部目标</el-button>
-          <el-button link type="success" :disabled="wpsSyncing || wpsTaskRunning || updateTaskRunning || !wpsTargetReady('wps_standard_spreadsheet')" @click="syncWps('wps_standard_spreadsheet')">同步普通表格</el-button>
-          <el-button link type="success" :disabled="wpsSyncing || wpsTaskRunning || updateTaskRunning || !wpsTargetReady('wps_smart_sheet')" @click="syncWps('wps_smart_sheet')">同步智能表格</el-button>
-          <el-button link type="info" :disabled="wpsSyncing || wpsTaskRunning" @click="openWpsTarget('wps_standard_spreadsheet')">打开普通表格</el-button>
-          <el-button link type="info" :disabled="wpsSyncing || wpsTaskRunning" @click="openWpsTarget('wps_smart_sheet')">打开智能表格</el-button>
+          <el-button type="success" :loading="wpsSyncing" :disabled="wpsSyncing || wpsTaskRunning || updateTaskRunning || !wpsDocumentReady" @click="syncWpsDocument">同步云文档</el-button>
+          <el-button link type="info" :disabled="wpsSyncing || wpsTaskRunning" @click="openWpsDocument">打开云文档</el-button>
           <el-button link type="warning" :disabled="wpsSyncing || wpsTaskRunning" @click="openWpsConfiguration">配置云文档</el-button>
         </template>
       </div>
@@ -836,7 +821,7 @@ onBeforeUnmount(() => {
     <el-alert v-if="actionError" :title="actionError" type="error" show-icon closable @close="actionError = ''" />
     <el-alert
       v-if="wpsConfigurationMissing"
-      title="WPS 同步目标已启用，但在线文档连接、webhook 或脚本令牌尚未完整配置。"
+      title="WPS 云文档同步已启用，但在线文档连接、webhook 或脚本令牌尚未完整配置。"
       type="warning"
       show-icon
       :closable="false"

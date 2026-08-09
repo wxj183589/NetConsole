@@ -49,7 +49,7 @@ HANDLERS.update(
 
 
 def trackside_ap_wps_sync(context):
-    """在 Job Center Worker 中冻结一次快照并同步两个 WPS 子目标。"""
+    """在 Job Center Worker 中冻结一次快照并同步 WPS 云文档。"""
 
     context.check_cancelled()
     target_codes = tuple(

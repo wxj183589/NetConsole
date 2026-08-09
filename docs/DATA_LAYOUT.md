@@ -58,7 +58,7 @@ Electron 的 `userData`、`sessionData`、`cache`、`logs`、`crashDumps` 和 `t
 
 `devices.db`、`tasks.db`、`agents.db` 使用各自进程/线程独立的 SQLite 连接，保持 WAL、busy timeout、foreign keys 和幂等初始化。轨旁 AP 逐站规划的唯一事实表为 `ac_trackside_ap_plan(mode='unified')`；空表表示用户已明确清空，维护页、上线概览、PVID 核验和共享范围查询均直接返回空规划。`rail_ap_vlan_plans / groups / group_members / assignments / allocations` 只作为历史留存，不由当前读取链投影，也不再由数据库初始化根据逐站规划生成。当前逐站保存不删除这些历史表。逐站字段和唯一索引升级在数据库初始化事务内幂等执行，失败整体回滚。不可逆 schema 升级必须先备份，并更新 storage manifest；不得以删除或重建真实数据库代替迁移。
 
-每个局点的 `sync/wps_sync.sqlite` 保存 WPS 目标、DPAPI 加密凭据、同步批次和远端异步任务恢复状态。正式 Workbook 请求在提交前以不含 Token 的 JSON 持久化，完整远端 `task_id` 仅保存在该库；API、任务参数和日志只输出脱敏 ID。该库只做幂等增量加列，不删除、重建或覆盖旧目标、凭据和批次。程序重启后以原 `target_batch_id + remote_task_id` 恢复查询，不能因本地 Worker 丢失重复提交已取得 ID 的任务。
+每个局点的 `sync/wps_sync.sqlite` 保存 WPS 云文档配置、DPAPI 加密凭据、同步批次和远端异步任务恢复状态。正式 Workbook 请求在提交前以不含 Token 的 JSON 持久化，完整远端 `task_id` 仅保存在该库；API、任务参数和日志只输出脱敏 ID。常规升级只做幂等增量迁移，不删除、重建或覆盖当前云文档的配置、凭据和历史。产品功能明确退役时允许精确删除对应本地目标及运行状态：必须在同一事务内按稳定旧代码匹配、先处理外键运行记录、保留混合批次中的当前目标历史，并仅在无剩余引用时删除凭据；迁移重复运行必须为 no-op，且不得访问或修改远端文档。程序重启后以原 `target_batch_id + remote_task_id` 恢复查询，不能因本地 Worker 丢失重复提交已取得 ID 的任务。
 
 ## Agent 与 Electron
 

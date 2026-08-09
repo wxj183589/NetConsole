@@ -7,7 +7,6 @@ import {
   listTracksideWpsTargets,
   migrateTracksideWpsLegacyBinding,
   probeTracksideWpsColumnWidth,
-  probeTracksideWpsSheetOrder,
   probeTracksideWpsSheetTabColor,
   probeTracksideWpsTarget,
   revalidateTracksideWpsDeployment,
@@ -62,16 +61,6 @@ const runtimeCapabilityLabels: Record<string, string> = {
   clear_contents: '内容清除',
   entire_row_insert: '顶部整行插入',
   sheet_visibility: '系统 Sheet 隐藏',
-  sheet_enum: '数据表枚举',
-  sheet_create: '数据表创建',
-  field_enum: '字段枚举',
-  field_create: '字段创建',
-  record_create: '记录创建',
-  record_read: '记录读取',
-  record_update: '记录更新',
-  record_delete: '记录删除',
-  sheet_move: '数据表排序',
-  view_enum: '视图枚举',
 }
 
 const visible = computed({
@@ -84,17 +73,20 @@ const savingCode = ref<WpsTracksideTargetCode | ''>('')
 const testingCode = ref<WpsTracksideTargetCode | ''>('')
 const probingCode = ref<WpsTracksideTargetCode | ''>('')
 const syncTestingCode = ref<WpsTracksideTargetCode | ''>('')
-const sheetOrderProbingCode = ref<WpsTracksideTargetCode | ''>('')
 const sheetTabColorProbingCode = ref<WpsTracksideTargetCode | ''>('')
 const columnWidthProbingCode = ref<WpsTracksideTargetCode | ''>('')
 const revalidatingCode = ref<WpsTracksideTargetCode | ''>('')
 const upgradingBindingCode = ref<WpsTracksideTargetCode | ''>('')
 const errorMessage = ref('')
 const deploymentOpen = ref<Partial<Record<WpsTracksideTargetCode, boolean>>>({})
-const targetRows = computed(() => localTargets.value.flatMap((target) => {
+const row = computed(() => {
+  const target = localTargets.value.find(
+    (item) => item.target_code === 'wps_standard_spreadsheet',
+  )
+  if (!target) return undefined
   const draft = targetDraft(target.target_code)
-  return draft ? [{ target, draft }] : []
-}))
+  return draft ? { target, draft } : undefined
+})
 
 watch(
   () => props.targets,
@@ -153,18 +145,10 @@ function diagnosticItems(target: WpsTracksideTarget): Array<{
   label: string
   diagnostic: WpsTracksideDiagnostic
 }> {
-  if (target.target_type === 'WPS_SMART_SHEET') {
-    return [
-      { label: '连接测试', diagnostic: target.connection_diagnostic || {} },
-      { label: 'Sheet / Field / Record 能力', diagnostic: target.runtime_probe_diagnostic || {} },
-      { label: 'Sheet 排序', diagnostic: target.sheet_order_probe_diagnostic || {} },
-    ]
-  }
   return [
     { label: '连接测试', diagnostic: target.connection_diagnostic || {} },
     { label: '写入核心能力', diagnostic: target.runtime_probe_diagnostic || {} },
     { label: '同步测试 Sheet', diagnostic: target.sync_test_diagnostic || {} },
-    { label: 'Sheet 排序', diagnostic: target.sheet_order_probe_diagnostic || {} },
     { label: 'Sheet 标签颜色', diagnostic: target.sheet_tab_color_probe_diagnostic || {} },
     { label: '列宽', diagnostic: target.column_width_probe_diagnostic || {} },
   ]
@@ -198,10 +182,6 @@ function capabilityStatusType(item: RuntimeCapabilityItem): 'success' | 'warning
 function capabilityStatusLabel(item: RuntimeCapabilityItem): string {
   if (item.passed) return '通过'
   return item.optional ? '告警' : '失败'
-}
-
-function targetTypeLabel(target: WpsTracksideTarget): string {
-  return target.target_type === 'WPS_SMART_SHEET' ? '智能表格' : '普通在线表格'
 }
 
 function statusType(status: string): 'success' | 'warning' | 'danger' | 'info' {
@@ -328,7 +308,7 @@ async function saveTargetConfiguration(
 ): Promise<boolean> {
   const draft = targetDraft(code)
   const target = targetByCode(code)
-  if (savingCode.value || testingCode.value || sheetOrderProbingCode.value || sheetTabColorProbingCode.value || columnWidthProbingCode.value || revalidatingCode.value || upgradingBindingCode.value || !draft || !target) return false
+  if (savingCode.value || testingCode.value || sheetTabColorProbingCode.value || columnWidthProbingCode.value || revalidatingCode.value || upgradingBindingCode.value || !draft || !target) return false
   if (!targetDraftDirty(target, draft)) {
     if (!silent) ElMessage.info('当前配置没有变化')
     return true
@@ -357,7 +337,7 @@ async function saveTargetConfiguration(
 }
 
 async function testConnection(code: WpsTracksideTargetCode): Promise<void> {
-  if (testingCode.value || savingCode.value || sheetOrderProbingCode.value || sheetTabColorProbingCode.value || columnWidthProbingCode.value || revalidatingCode.value || upgradingBindingCode.value) return
+  if (testingCode.value || savingCode.value || sheetTabColorProbingCode.value || columnWidthProbingCode.value || revalidatingCode.value || upgradingBindingCode.value) return
   errorMessage.value = ''
   const saved = await saveTargetConfiguration(code, true)
   if (!saved) return
@@ -373,7 +353,7 @@ async function testConnection(code: WpsTracksideTargetCode): Promise<void> {
     const documentName = String(result.document_name || target.target_name)
     const scriptVersion = String(result.script_version || '未知')
     await reloadTargets()
-    ElMessage.success(`${targetTypeLabel(target)}连接测试通过：${documentName}，脚本 ${scriptVersion}`)
+    ElMessage.success(`WPS 云文档连接测试通过：${documentName}，脚本 ${scriptVersion}`)
   } catch (reason) {
     const message = reason instanceof Error ? reason.message : '连接测试失败'
     errorMessage.value = message
@@ -384,7 +364,7 @@ async function testConnection(code: WpsTracksideTargetCode): Promise<void> {
 }
 
 async function runtimeWriteProbe(code: WpsTracksideTargetCode): Promise<void> {
-  if (probingCode.value || savingCode.value || testingCode.value || sheetOrderProbingCode.value || sheetTabColorProbingCode.value || columnWidthProbingCode.value || revalidatingCode.value || upgradingBindingCode.value) return
+  if (probingCode.value || savingCode.value || testingCode.value || sheetTabColorProbingCode.value || columnWidthProbingCode.value || revalidatingCode.value || upgradingBindingCode.value) return
   probingCode.value = code
   errorMessage.value = ''
   try {
@@ -400,7 +380,7 @@ async function runtimeWriteProbe(code: WpsTracksideTargetCode): Promise<void> {
 }
 
 async function syncTestSheet(code: WpsTracksideTargetCode): Promise<void> {
-  if (syncTestingCode.value || savingCode.value || testingCode.value || probingCode.value || sheetOrderProbingCode.value || sheetTabColorProbingCode.value || columnWidthProbingCode.value || revalidatingCode.value || upgradingBindingCode.value) return
+  if (syncTestingCode.value || savingCode.value || testingCode.value || probingCode.value || sheetTabColorProbingCode.value || columnWidthProbingCode.value || revalidatingCode.value || upgradingBindingCode.value) return
   syncTestingCode.value = code
   errorMessage.value = ''
   try {
@@ -415,26 +395,8 @@ async function syncTestSheet(code: WpsTracksideTargetCode): Promise<void> {
   }
 }
 
-async function sheetOrderProbe(code: WpsTracksideTargetCode): Promise<void> {
-  if (sheetOrderProbingCode.value || sheetTabColorProbingCode.value || columnWidthProbingCode.value || savingCode.value || testingCode.value || probingCode.value || syncTestingCode.value || revalidatingCode.value || upgradingBindingCode.value) return
-  sheetOrderProbingCode.value = code
-  errorMessage.value = ''
-  try {
-    const response = await probeTracksideWpsSheetOrder(code)
-    await reloadTargets()
-    ElMessage.success(String(response.result.message || 'Sheet 排序探针通过'))
-  } catch (reason) {
-    const message = reason instanceof Error ? reason.message : 'Sheet 排序探针失败'
-    errorMessage.value = message
-    ElMessage.error(`Sheet 排序测试失败：${message}`)
-    await reloadTargets().catch(() => undefined)
-  } finally {
-    sheetOrderProbingCode.value = ''
-  }
-}
-
 async function sheetTabColorProbe(code: WpsTracksideTargetCode): Promise<void> {
-  if (sheetTabColorProbingCode.value || columnWidthProbingCode.value || sheetOrderProbingCode.value || savingCode.value || testingCode.value || probingCode.value || syncTestingCode.value || revalidatingCode.value || upgradingBindingCode.value) return
+  if (sheetTabColorProbingCode.value || columnWidthProbingCode.value || savingCode.value || testingCode.value || probingCode.value || syncTestingCode.value || revalidatingCode.value || upgradingBindingCode.value) return
   sheetTabColorProbingCode.value = code
   errorMessage.value = ''
   try {
@@ -450,7 +412,7 @@ async function sheetTabColorProbe(code: WpsTracksideTargetCode): Promise<void> {
 }
 
 async function columnWidthProbe(code: WpsTracksideTargetCode): Promise<void> {
-  if (columnWidthProbingCode.value || sheetTabColorProbingCode.value || sheetOrderProbingCode.value || savingCode.value || testingCode.value || probingCode.value || syncTestingCode.value || revalidatingCode.value || upgradingBindingCode.value) return
+  if (columnWidthProbingCode.value || sheetTabColorProbingCode.value || savingCode.value || testingCode.value || probingCode.value || syncTestingCode.value || revalidatingCode.value || upgradingBindingCode.value) return
   columnWidthProbingCode.value = code
   errorMessage.value = ''
   try {
@@ -466,7 +428,7 @@ async function columnWidthProbe(code: WpsTracksideTargetCode): Promise<void> {
 }
 
 async function revalidateDeployment(code: WpsTracksideTargetCode): Promise<void> {
-  if (revalidatingCode.value || savingCode.value || testingCode.value || probingCode.value || syncTestingCode.value || sheetOrderProbingCode.value || sheetTabColorProbingCode.value || columnWidthProbingCode.value || upgradingBindingCode.value) return
+  if (revalidatingCode.value || savingCode.value || testingCode.value || probingCode.value || syncTestingCode.value || sheetTabColorProbingCode.value || columnWidthProbingCode.value || upgradingBindingCode.value) return
   errorMessage.value = ''
   const saved = await saveTargetConfiguration(code, true)
   if (!saved) return
@@ -489,7 +451,7 @@ async function revalidateDeployment(code: WpsTracksideTargetCode): Promise<void>
 }
 
 async function migrateLegacyBinding(code: WpsTracksideTargetCode): Promise<void> {
-  if (upgradingBindingCode.value || savingCode.value || testingCode.value || probingCode.value || syncTestingCode.value || sheetOrderProbingCode.value || sheetTabColorProbingCode.value || columnWidthProbingCode.value || revalidatingCode.value) return
+  if (upgradingBindingCode.value || savingCode.value || testingCode.value || probingCode.value || syncTestingCode.value || sheetTabColorProbingCode.value || columnWidthProbingCode.value || revalidatingCode.value) return
   errorMessage.value = ''
   const saved = await saveTargetConfiguration(code, true)
   if (!saved) return
@@ -547,21 +509,17 @@ async function openDocument(target: WpsTracksideTarget): Promise<void> {
   >
     <div class="wps-config">
       <el-alert
-        title="普通在线表格和智能表格分别保存连接地址、webhook 和受保护令牌。请在各自卡片中单独保存，令牌保存后不会回显。"
+        title="当前局点的轨旁 AP 业务可手动同步到 WPS 在线表格。连接地址、Webhook 和脚本令牌按局点独立保存，令牌保存后不会回显。"
         type="info"
         :closable="false"
         show-icon
       />
       <el-alert v-if="errorMessage" :title="errorMessage" type="error" :closable="false" show-icon />
 
-      <section
-        v-for="row in targetRows"
-        :key="row.target.target_code"
-        class="wps-target"
-      >
+      <section v-if="row" class="wps-target">
         <div class="target-heading">
           <div>
-            <strong>{{ targetTypeLabel(row.target) }}</strong>
+            <strong>WPS 云文档</strong>
             <span>{{ row.target.target_name }}</span>
             <span>当前局点：{{ row.target.site_id }} · 远端绑定：<el-tag size="small" :type="bindingStatusType(row.target.binding_status || 'UNKNOWN')">{{ bindingStatusLabel(row.target.binding_status || 'UNKNOWN') }}</el-tag></span>
           </div>
@@ -572,9 +530,7 @@ async function openDocument(target: WpsTracksideTarget): Promise<void> {
 
         <el-alert
           v-if="row.target.runtime_capability !== 'VERIFIED'"
-          :title="row.target.target_type === 'WPS_SMART_SHEET'
-            ? '智能表格正式写入接口尚未完成 WPS 运行时验收，默认关闭；只读连接探针可独立验证。'
-            : '普通表格正式写入仍需在目标 WPS 文档完成运行时验收；连接探针不会写入文档。'"
+          title="正式写入仍需在 WPS 文档完成运行时验收；连接探针不会写入文档。"
           type="warning"
           :closable="false"
           show-icon
@@ -590,7 +546,7 @@ async function openDocument(target: WpsTracksideTarget): Promise<void> {
 
         <div class="target-fields">
           <label>
-            <span>启用目标</span>
+            <span>启用云文档同步</span>
             <el-switch v-model="row.draft.enabled" />
           </label>
           <label>
@@ -648,7 +604,7 @@ async function openDocument(target: WpsTracksideTarget): Promise<void> {
               type="password"
               show-password
               autocomplete="new-password"
-              placeholder="留空表示保留该目标现有令牌"
+              placeholder="留空表示保留现有令牌"
             />
           </el-form-item>
         </el-form>
@@ -656,25 +612,25 @@ async function openDocument(target: WpsTracksideTarget): Promise<void> {
         <div class="deployment-actions">
           <el-button :icon="CopyDocument" @click="copyAirScript(row.target.target_code, 'probe')">复制连接测试脚本</el-button>
           <el-button :icon="CopyDocument" @click="copyAirScript(row.target.target_code, 'sync')">复制正式同步脚本</el-button>
-          <el-button :loading="probingCode === row.target.target_code" :disabled="Boolean(probingCode) || Boolean(sheetOrderProbingCode) || Boolean(sheetTabColorProbingCode) || Boolean(columnWidthProbingCode) || Boolean(savingCode) || Boolean(testingCode) || Boolean(revalidatingCode) || Boolean(upgradingBindingCode)" @click="runtimeWriteProbe(row.target.target_code)">测试写入能力</el-button>
-          <el-button v-if="row.target.target_type === 'WPS_STANDARD_SPREADSHEET'" :loading="syncTestingCode === row.target.target_code" :disabled="Boolean(syncTestingCode) || Boolean(probingCode) || Boolean(sheetOrderProbingCode) || Boolean(sheetTabColorProbingCode) || Boolean(columnWidthProbingCode) || Boolean(savingCode) || Boolean(testingCode) || Boolean(revalidatingCode) || Boolean(upgradingBindingCode)" @click="syncTestSheet(row.target.target_code)">测试同步 Sheet</el-button>
-          <el-button :loading="sheetOrderProbingCode === row.target.target_code" :disabled="Boolean(sheetOrderProbingCode) || Boolean(sheetTabColorProbingCode) || Boolean(columnWidthProbingCode) || Boolean(syncTestingCode) || Boolean(probingCode) || Boolean(savingCode) || Boolean(testingCode) || Boolean(revalidatingCode) || Boolean(upgradingBindingCode)" @click="sheetOrderProbe(row.target.target_code)">测试 Sheet 排序</el-button>
-          <el-button v-if="row.target.target_type === 'WPS_STANDARD_SPREADSHEET'" :loading="sheetTabColorProbingCode === row.target.target_code" :disabled="Boolean(sheetTabColorProbingCode) || Boolean(sheetOrderProbingCode) || Boolean(columnWidthProbingCode) || Boolean(syncTestingCode) || Boolean(probingCode) || Boolean(savingCode) || Boolean(testingCode) || Boolean(revalidatingCode) || Boolean(upgradingBindingCode)" @click="sheetTabColorProbe(row.target.target_code)">测试标签颜色</el-button>
-          <el-button v-if="row.target.target_type === 'WPS_STANDARD_SPREADSHEET'" :loading="columnWidthProbingCode === row.target.target_code" :disabled="Boolean(columnWidthProbingCode) || Boolean(sheetTabColorProbingCode) || Boolean(sheetOrderProbingCode) || Boolean(syncTestingCode) || Boolean(probingCode) || Boolean(savingCode) || Boolean(testingCode) || Boolean(revalidatingCode) || Boolean(upgradingBindingCode)" @click="columnWidthProbe(row.target.target_code)">复查列宽能力</el-button>
+          <el-button :loading="probingCode === row.target.target_code" :disabled="Boolean(probingCode) || Boolean(sheetTabColorProbingCode) || Boolean(columnWidthProbingCode) || Boolean(savingCode) || Boolean(testingCode) || Boolean(revalidatingCode) || Boolean(upgradingBindingCode)" @click="runtimeWriteProbe(row.target.target_code)">测试写入能力</el-button>
+          <el-button :loading="syncTestingCode === row.target.target_code" :disabled="Boolean(syncTestingCode) || Boolean(probingCode) || Boolean(sheetTabColorProbingCode) || Boolean(columnWidthProbingCode) || Boolean(savingCode) || Boolean(testingCode) || Boolean(revalidatingCode) || Boolean(upgradingBindingCode)" @click="syncTestSheet(row.target.target_code)">测试同步 Sheet</el-button>
+          <el-button :loading="sheetTabColorProbingCode === row.target.target_code" :disabled="Boolean(sheetTabColorProbingCode) || Boolean(columnWidthProbingCode) || Boolean(syncTestingCode) || Boolean(probingCode) || Boolean(savingCode) || Boolean(testingCode) || Boolean(revalidatingCode) || Boolean(upgradingBindingCode)" @click="sheetTabColorProbe(row.target.target_code)">测试标签颜色</el-button>
+          <el-button :loading="columnWidthProbingCode === row.target.target_code" :disabled="Boolean(columnWidthProbingCode) || Boolean(sheetTabColorProbingCode) || Boolean(syncTestingCode) || Boolean(probingCode) || Boolean(savingCode) || Boolean(testingCode) || Boolean(revalidatingCode) || Boolean(upgradingBindingCode)" @click="columnWidthProbe(row.target.target_code)">复查列宽能力</el-button>
           <el-button :icon="Guide" @click="toggleDeploymentSteps(row.target.target_code)">查看部署步骤</el-button>
         </div>
 
         <div v-if="deploymentOpen[row.target.target_code]" class="deployment-steps">
           <strong>部署步骤</strong>
           <ol>
-            <li>打开此目标对应的 WPS 文档和 AirScript 编辑器。</li>
+            <li>打开 WPS 在线表格和文档共享 AirScript 编辑器。</li>
             <li>在“文档共享脚本”中新建 AirScript 2.0 脚本，先粘贴只读连接探针并保存。</li>
-            <li>在编辑器内运行探针，确认返回成功且文档 ID、目标类型、脚本版本和部署 ID 一致。</li>
-            <li>在同一个脚本中换成正式同步脚本并保存；智能表格正式写入仍须等待运行时能力验收。</li>
+            <li>在编辑器内运行探针，确认返回成功且文档 ID、脚本版本和部署 ID 一致。</li>
+            <li>在同一个脚本中全量替换为正式同步脚本并保存。</li>
             <li>从刚才同一个脚本的“...”菜单复制 webhook，返回 NetConsole 替换 webhook 并保存。</li>
-            <li>点击“测试连接”，核对 WPS 返回的脚本版本、部署 ID 和目标代码。</li>
+            <li>点击“测试连接”，再执行“重新验证当前部署”。</li>
+            <li>返回轨旁 AP 业务页面执行“同步云文档”。</li>
           </ol>
-          <p>新建脚本会生成新的 script_id，旧 webhook 随之失效。普通表格与智能表格必须使用各自文档、各自脚本和各自 webhook，不能交叉复用。</p>
+          <p>新建脚本会生成新的 script_id，旧 webhook 随之失效。连接探针和正式同步脚本必须使用同一个文档共享脚本。</p>
         </div>
 
         <div class="target-status">
@@ -709,10 +665,6 @@ async function openDocument(target: WpsTracksideTarget): Promise<void> {
             </div>
             <span v-if="typeof item.diagnostic.full_replace_ready === 'boolean'">全量替换：{{ item.diagnostic.full_replace_ready ? '就绪' : '不可用' }}</span>
             <span v-if="typeof item.diagnostic.prepend_snapshot_ready === 'boolean'">顶部追加快照：{{ item.diagnostic.prepend_snapshot_ready ? '就绪' : '不可用' }}</span>
-            <span v-if="typeof item.diagnostic.append_history_ready === 'boolean'">历史记录追加：{{ item.diagnostic.append_history_ready ? '就绪' : '不可用' }}</span>
-            <span v-if="typeof item.diagnostic.sheet_order_verified === 'boolean'">业务 Sheet 顺序：{{ item.diagnostic.sheet_order_verified ? '已验证' : '未通过' }}</span>
-            <span v-if="item.diagnostic.expected_sheet_order?.length">预期顺序：{{ item.diagnostic.expected_sheet_order.join(' → ') }}</span>
-            <span v-if="item.diagnostic.actual_sheet_order?.length">实际顺序：{{ item.diagnostic.actual_sheet_order.join(' → ') }}</span>
             <span v-if="typeof item.diagnostic.column_width_verified === 'boolean'">列宽写后读回：{{ item.diagnostic.column_width_verified ? '已验证' : '未通过' }}</span>
             <span v-if="item.diagnostic.expected_column_widths">预期列宽：{{ columnWidthSummary(item.diagnostic.expected_column_widths) }}</span>
             <span v-if="item.diagnostic.actual_column_widths">实际列宽：{{ columnWidthSummary(item.diagnostic.actual_column_widths) }}</span>
@@ -724,31 +676,30 @@ async function openDocument(target: WpsTracksideTarget): Promise<void> {
 
         <div class="target-actions">
           <el-button
-            v-if="row.target.target_type === 'WPS_STANDARD_SPREADSHEET' && row.target.binding_status === 'LEGACY_BINDING_ID_MISMATCH'"
+            v-if="row.target.binding_status === 'LEGACY_BINDING_ID_MISMATCH'"
             type="warning"
             :loading="upgradingBindingCode === row.target.target_code"
-            :disabled="Boolean(upgradingBindingCode) || Boolean(revalidatingCode) || Boolean(savingCode) || Boolean(testingCode) || Boolean(probingCode) || Boolean(syncTestingCode) || Boolean(sheetOrderProbingCode) || Boolean(sheetTabColorProbingCode) || Boolean(columnWidthProbingCode)"
+            :disabled="Boolean(upgradingBindingCode) || Boolean(revalidatingCode) || Boolean(savingCode) || Boolean(testingCode) || Boolean(probingCode) || Boolean(syncTestingCode) || Boolean(sheetTabColorProbingCode) || Boolean(columnWidthProbingCode)"
             @click="migrateLegacyBinding(row.target.target_code)"
           >升级旧版绑定标识</el-button>
           <el-button
-            v-if="row.target.target_type === 'WPS_STANDARD_SPREADSHEET'"
             :icon="Refresh"
             :loading="revalidatingCode === row.target.target_code"
-            :disabled="Boolean(revalidatingCode) || Boolean(savingCode) || Boolean(testingCode) || Boolean(probingCode) || Boolean(syncTestingCode) || Boolean(sheetOrderProbingCode) || Boolean(sheetTabColorProbingCode) || Boolean(columnWidthProbingCode) || Boolean(upgradingBindingCode)"
+            :disabled="Boolean(revalidatingCode) || Boolean(savingCode) || Boolean(testingCode) || Boolean(probingCode) || Boolean(syncTestingCode) || Boolean(sheetTabColorProbingCode) || Boolean(columnWidthProbingCode) || Boolean(upgradingBindingCode)"
             @click="revalidateDeployment(row.target.target_code)"
           >重新验证当前部署</el-button>
           <el-button
             type="primary"
             :loading="savingCode === row.target.target_code"
-            :disabled="Boolean(savingCode) || Boolean(testingCode) || Boolean(sheetOrderProbingCode) || Boolean(sheetTabColorProbingCode) || Boolean(columnWidthProbingCode) || Boolean(revalidatingCode) || Boolean(upgradingBindingCode)"
+            :disabled="Boolean(savingCode) || Boolean(testingCode) || Boolean(sheetTabColorProbingCode) || Boolean(columnWidthProbingCode) || Boolean(revalidatingCode) || Boolean(upgradingBindingCode)"
             @click="saveTargetConfiguration(row.target.target_code)"
-          >保存此目标</el-button>
+          >保存</el-button>
           <el-button
             :loading="testingCode === row.target.target_code"
-            :disabled="Boolean(testingCode) || Boolean(savingCode) || Boolean(sheetOrderProbingCode) || Boolean(sheetTabColorProbingCode) || Boolean(columnWidthProbingCode) || Boolean(revalidatingCode) || Boolean(upgradingBindingCode)"
+            :disabled="Boolean(testingCode) || Boolean(savingCode) || Boolean(sheetTabColorProbingCode) || Boolean(columnWidthProbingCode) || Boolean(revalidatingCode) || Boolean(upgradingBindingCode)"
             @click="testConnection(row.target.target_code)"
           >测试连接</el-button>
-          <el-button link type="primary" :icon="Document" @click="openDocument(row.target)">打开文档</el-button>
+          <el-button link type="primary" :icon="Document" @click="openDocument(row.target)">打开云文档</el-button>
         </div>
       </section>
     </div>

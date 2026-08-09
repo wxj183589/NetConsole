@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from collections.abc import Callable, Iterable
 from datetime import datetime
@@ -10,6 +11,12 @@ from netconsole.core.paths import PathResolver
 from netconsole.core.sqlite_utils import connect_sqlite, initialize_sqlite_wal
 from netconsole.core.windows_dpapi import protect_windows_data, unprotect_windows_data
 from netconsole.models.wps_sync import WpsSyncTarget, WpsTargetType, build_wps_binding_id
+
+
+logger = logging.getLogger(__name__)
+_RETIRED_SMART_TARGET_CODE = "wps_smart_sheet"
+_RETIRED_SMART_TARGET_TYPE = "WPS_SMART_SHEET"
+_RETIRED_SHEET_ORDER_DIAGNOSTIC_COLUMN = "sheet_order_probe_diagnostic"
 
 
 WPS_SYNC_SCHEMA = """
@@ -59,7 +66,6 @@ CREATE TABLE IF NOT EXISTS wps_sync_targets (
     connection_diagnostic TEXT NOT NULL DEFAULT '',
     runtime_probe_diagnostic TEXT NOT NULL DEFAULT '',
     sync_test_diagnostic TEXT NOT NULL DEFAULT '',
-    sheet_order_probe_diagnostic TEXT NOT NULL DEFAULT '',
     sheet_tab_color_probe_diagnostic TEXT NOT NULL DEFAULT '',
     column_width_probe_diagnostic TEXT NOT NULL DEFAULT '',
     remote_script_version TEXT NOT NULL DEFAULT '',
@@ -140,6 +146,7 @@ class WpsSyncRepository:
             connection.executescript(WPS_SYNC_SCHEMA)
             self._ensure_target_columns(connection)
             self._ensure_target_run_columns(connection)
+            self._remove_retired_wps_features(connection)
             connection.commit()
 
     @staticmethod
@@ -164,7 +171,6 @@ class WpsSyncRepository:
             "connection_diagnostic": "TEXT NOT NULL DEFAULT ''",
             "runtime_probe_diagnostic": "TEXT NOT NULL DEFAULT ''",
             "sync_test_diagnostic": "TEXT NOT NULL DEFAULT ''",
-            "sheet_order_probe_diagnostic": "TEXT NOT NULL DEFAULT ''",
             "sheet_tab_color_probe_diagnostic": "TEXT NOT NULL DEFAULT ''",
             "column_width_probe_diagnostic": "TEXT NOT NULL DEFAULT ''",
             "remote_script_version": "TEXT NOT NULL DEFAULT ''",
@@ -215,6 +221,162 @@ class WpsSyncRepository:
                 connection.execute(
                     f"ALTER TABLE wps_sync_target_runs ADD COLUMN {name} {definition}"
                 )
+
+    @staticmethod
+    def _remove_retired_wps_features(connection: sqlite3.Connection) -> None:
+        retired_targets = connection.execute(
+            "SELECT target_id, credential_id FROM wps_sync_targets "
+            "WHERE target_code = ? OR target_type = ?",
+            (_RETIRED_SMART_TARGET_CODE, _RETIRED_SMART_TARGET_TYPE),
+        ).fetchall()
+        retired_target_ids = {str(row["target_id"]) for row in retired_targets}
+        retired_credentials = {str(row["credential_id"]) for row in retired_targets}
+        affected_batches = {
+            str(row["batch_id"])
+            for row in connection.execute(
+                "SELECT DISTINCT batch_id FROM wps_sync_target_runs "
+                "WHERE target_code = ? OR target_type = ?",
+                (_RETIRED_SMART_TARGET_CODE, _RETIRED_SMART_TARGET_TYPE),
+            ).fetchall()
+        }
+        if retired_target_ids:
+            placeholders = ",".join("?" for _value in retired_target_ids)
+            affected_batches.update(
+                str(row["batch_id"])
+                for row in connection.execute(
+                    f"SELECT DISTINCT batch_id FROM wps_sync_target_runs "
+                    f"WHERE target_id IN ({placeholders})",
+                    tuple(retired_target_ids),
+                ).fetchall()
+            )
+            connection.execute(
+                f"DELETE FROM wps_sync_target_runs WHERE target_id IN ({placeholders})",
+                tuple(retired_target_ids),
+            )
+        connection.execute(
+            "DELETE FROM wps_sync_target_runs WHERE target_code = ? OR target_type = ?",
+            (_RETIRED_SMART_TARGET_CODE, _RETIRED_SMART_TARGET_TYPE),
+        )
+        for batch_id in affected_batches:
+            WpsSyncRepository._repair_batch_after_target_removal(connection, batch_id)
+        removed_targets = connection.execute(
+            "DELETE FROM wps_sync_targets WHERE target_code = ? OR target_type = ?",
+            (_RETIRED_SMART_TARGET_CODE, _RETIRED_SMART_TARGET_TYPE),
+        ).rowcount
+        removed_credentials = 0
+        for credential_id in retired_credentials:
+            removed_credentials += connection.execute(
+                "DELETE FROM wps_credentials WHERE credential_id = ? "
+                "AND NOT EXISTS ("
+                "SELECT 1 FROM wps_sync_targets WHERE credential_id = ?"
+                ")",
+                (credential_id, credential_id),
+            ).rowcount
+
+        columns = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(wps_sync_targets)").fetchall()
+        }
+        if _RETIRED_SHEET_ORDER_DIAGNOSTIC_COLUMN in columns:
+            connection.execute(
+                f"ALTER TABLE wps_sync_targets "
+                f"DROP COLUMN {_RETIRED_SHEET_ORDER_DIAGNOSTIC_COLUMN}"
+            )
+        if removed_targets or removed_credentials:
+            logger.info(
+                "Removed retired WPS target configuration: targets=%s credentials=%s",
+                removed_targets,
+                removed_credentials,
+            )
+
+    @staticmethod
+    def _repair_batch_after_target_removal(
+        connection: sqlite3.Connection,
+        batch_id: str,
+    ) -> None:
+        runs = connection.execute(
+            "SELECT target_code, target_type, status, result_summary "
+            "FROM wps_sync_target_runs WHERE batch_id = ? ORDER BY target_code",
+            (batch_id,),
+        ).fetchall()
+        if not runs:
+            connection.execute(
+                "DELETE FROM wps_sync_batches WHERE batch_id = ?",
+                (batch_id,),
+            )
+            return
+        batch = connection.execute(
+            "SELECT status, completed_at, result_summary FROM wps_sync_batches "
+            "WHERE batch_id = ?",
+            (batch_id,),
+        ).fetchone()
+        if batch is None:
+            return
+        statuses = [str(run["status"] or "") for run in runs]
+        success_count = sum(
+            status in {"SUCCESS", "SUCCESS_WITH_WARNINGS"} for status in statuses
+        )
+        failed_count = sum(status == "FAILED" for status in statuses)
+        warning_count = sum(status == "SUCCESS_WITH_WARNINGS" for status in statuses)
+        unknown_count = sum(status == "REMOTE_RESULT_UNKNOWN" for status in statuses)
+        unfinished = any(
+            status
+            not in {"SUCCESS", "SUCCESS_WITH_WARNINGS", "FAILED", "REMOTE_RESULT_UNKNOWN"}
+            for status in statuses
+        )
+        status = (
+            "REMOTE_RESULT_UNKNOWN"
+            if unknown_count
+            else "RUNNING"
+            if unfinished
+            else "SUCCESS_WITH_WARNINGS"
+            if failed_count == 0 and warning_count
+            else "SUCCESS"
+            if failed_count == 0
+            else "FAILED"
+            if success_count == 0
+            else "PARTIAL_SUCCESS"
+        )
+        summary = _json_object(batch["result_summary"])
+        raw_targets = summary.get("targets")
+        targets = [
+            dict(item)
+            for item in raw_targets
+            if isinstance(item, dict)
+            and str(item.get("target_code") or "") != _RETIRED_SMART_TARGET_CODE
+            and str(item.get("target_type") or "") != _RETIRED_SMART_TARGET_TYPE
+        ] if isinstance(raw_targets, list) else [
+            _json_object(run["result_summary"]) for run in runs
+        ]
+        summary.update(
+            {
+                "status": status,
+                "target_count": len(runs),
+                "success_count": success_count,
+                "failed_count": failed_count,
+                "unknown_count": unknown_count,
+                "warning_count": warning_count,
+                "partial_success": status == "PARTIAL_SUCCESS",
+                "targets": targets,
+            }
+        )
+        completed_at = str(batch["completed_at"] or "")
+        if not completed_at and not unfinished and not unknown_count:
+            completed_at = _now()
+        connection.execute(
+            "UPDATE wps_sync_batches SET status = ?, target_count = ?, "
+            "success_target_count = ?, failed_target_count = ?, completed_at = ?, "
+            "result_summary = ? WHERE batch_id = ?",
+            (
+                status,
+                len(runs),
+                success_count,
+                failed_count,
+                completed_at,
+                json.dumps(summary, ensure_ascii=False, sort_keys=True),
+                batch_id,
+            ),
+        )
 
     def upsert_target(
         self,
@@ -494,7 +656,6 @@ class WpsSyncRepository:
             "connection_test": "connection_diagnostic",
             "runtime_write_probe": "runtime_probe_diagnostic",
             "sync_test_sheet": "sync_test_diagnostic",
-            "sheet_order_probe": "sheet_order_probe_diagnostic",
             "sheet_tab_color_probe": "sheet_tab_color_probe_diagnostic",
             "column_width_probe": "column_width_probe_diagnostic",
         }.get(str(operation))
@@ -521,14 +682,14 @@ class WpsSyncRepository:
             "runtime_probe_document_id = ?, runtime_probe_script_id = ?, "
             "runtime_probe_script_version = ?, runtime_probe_deployment_id = ?, "
             "connection_diagnostic = ?, runtime_probe_diagnostic = ?, "
-            "sync_test_diagnostic = ?, sheet_order_probe_diagnostic = ?, "
-            "sheet_tab_color_probe_diagnostic = ?, column_width_probe_diagnostic = ?, "
+            "sync_test_diagnostic = ?, sheet_tab_color_probe_diagnostic = ?, "
+            "column_width_probe_diagnostic = ?, "
             "remote_script_version = ?, "
             "remote_deployment_id = ?, remote_script_id = ?, "
             "remote_identity_verified_at = ?",
             (
                 "DEPLOYMENT_PENDING", "", "", "", "", "", "", "",
-                "", "", "", "", "", "", "", "", "", "", "",
+                "", "", "", "", "", "", "", "", "", "",
             ),
         )
 
@@ -860,9 +1021,6 @@ def _target_from_row(row: sqlite3.Row) -> WpsSyncTarget:
         connection_diagnostic=_diagnostic_from_row(row, "connection_diagnostic"),
         runtime_probe_diagnostic=_diagnostic_from_row(row, "runtime_probe_diagnostic"),
         sync_test_diagnostic=_diagnostic_from_row(row, "sync_test_diagnostic"),
-        sheet_order_probe_diagnostic=_diagnostic_from_row(
-            row, "sheet_order_probe_diagnostic"
-        ),
         sheet_tab_color_probe_diagnostic=_diagnostic_from_row(
             row, "sheet_tab_color_probe_diagnostic"
         ),

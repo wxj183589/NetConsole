@@ -25,13 +25,11 @@ def build_wps_binding_id(site_id: str, business_key: str, target_code: str) -> s
 
 class WpsTargetType(StrEnum):
     STANDARD_SPREADSHEET = "WPS_STANDARD_SPREADSHEET"
-    SMART_SHEET = "WPS_SMART_SHEET"
 
 
 class WpsSyncMode(StrEnum):
     FULL_REPLACE = "FULL_REPLACE"
     PREPEND_SNAPSHOT = "PREPEND_SNAPSHOT"
-    APPEND_SNAPSHOT = "APPEND_SNAPSHOT"
     DISABLED = "DISABLED"
 
 
@@ -78,7 +76,6 @@ class WpsSyncTarget:
     connection_diagnostic: dict[str, Any] = field(default_factory=dict)
     runtime_probe_diagnostic: dict[str, Any] = field(default_factory=dict)
     sync_test_diagnostic: dict[str, Any] = field(default_factory=dict)
-    sheet_order_probe_diagnostic: dict[str, Any] = field(default_factory=dict)
     sheet_tab_color_probe_diagnostic: dict[str, Any] = field(default_factory=dict)
     column_width_probe_diagnostic: dict[str, Any] = field(default_factory=dict)
     remote_script_version: str = ""
@@ -131,7 +128,6 @@ class WpsSyncTarget:
             "connection_diagnostic": self.connection_diagnostic,
             "runtime_probe_diagnostic": self.runtime_probe_diagnostic,
             "sync_test_diagnostic": self.sync_test_diagnostic,
-            "sheet_order_probe_diagnostic": self.sheet_order_probe_diagnostic,
             "sheet_tab_color_probe_diagnostic": self.sheet_tab_color_probe_diagnostic,
             "column_width_probe_diagnostic": self.column_width_probe_diagnostic,
             "remote_script_version": self.remote_script_version,
@@ -219,53 +215,6 @@ class WorkbookDTO:
         return {"sheets": [sheet.to_dict() for sheet in self.sheets]}
 
 
-@dataclass(frozen=True)
-class SmartFieldDTO:
-    key: str
-    name: str
-    type: str
-
-    def to_dict(self) -> dict[str, str]:
-        return {"key": self.key, "name": self.name, "type": self.type}
-
-
-@dataclass(frozen=True)
-class SmartRecordDTO:
-    row_key: str
-    fields: dict[str, Any]
-
-    def to_dict(self) -> dict[str, Any]:
-        return {"row_key": self.row_key, "fields": self.fields}
-
-
-@dataclass(frozen=True)
-class SmartSheetDTO:
-    logical_sheet_key: str
-    sheet_name: str
-    sheet_order: int
-    sync_mode: WpsSyncMode
-    fields: tuple[SmartFieldDTO, ...]
-    records: tuple[SmartRecordDTO, ...]
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "logical_sheet_key": self.logical_sheet_key,
-            "sheet_name": self.sheet_name,
-            "sheet_order": self.sheet_order,
-            "sync_mode": self.sync_mode.value,
-            "fields": [field.to_dict() for field in self.fields],
-            "records": [record.to_dict() for record in self.records],
-        }
-
-
-@dataclass(frozen=True)
-class SmartWorkbookDTO:
-    sheets: tuple[SmartSheetDTO, ...]
-
-    def to_dict(self) -> dict[str, Any]:
-        return {"sheets": [sheet.to_dict() for sheet in self.sheets]}
-
-
 __all__ = [
     "TRACKSIDE_AP_WPS_BUSINESS_KEY",
     "WPS_BINDING_ID_PREFIX",
@@ -273,10 +222,6 @@ __all__ = [
     "WorkbookFormatRunDTO",
     "WorkbookDTO",
     "WorkbookSheetDTO",
-    "SmartFieldDTO",
-    "SmartRecordDTO",
-    "SmartSheetDTO",
-    "SmartWorkbookDTO",
     "WpsFreezeMode",
     "WpsSyncMode",
     "WpsSyncTarget",

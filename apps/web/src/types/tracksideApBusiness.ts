@@ -250,7 +250,7 @@ export interface TracksideApPlanPreview {
   legacy_schema: boolean; message: string
 }
 
-export type WpsTracksideTargetCode = 'wps_standard_spreadsheet' | 'wps_smart_sheet'
+export type WpsTracksideTargetCode = 'wps_standard_spreadsheet'
 
 export interface WpsRuntimeCapabilityNotice {
   capability?: string
@@ -276,20 +276,11 @@ export interface WpsTracksideDiagnostic {
   core_verified?: boolean
   full_replace_ready?: boolean
   prepend_snapshot_ready?: boolean
-  append_history_ready?: boolean
-  verified_record_batch_size?: number
   capabilities?: Record<string, boolean>
   core_capabilities?: Record<string, boolean>
   optional_capabilities?: Record<string, boolean>
   capability_failures?: WpsRuntimeCapabilityNotice[]
   warnings?: WpsRuntimeCapabilityNotice[]
-  sheet_order_verified?: boolean
-  sheet_move_before_verified?: boolean
-  sheet_move_after_verified?: boolean
-  system_sheet_order_verified?: boolean
-  expected_sheet_order?: string[]
-  actual_sheet_order?: string[]
-  actual_sheet_order_all?: string[]
   sheet_tab_color_verified?: boolean
   expected_tab_color?: string
   actual_tab_color?: string | number
@@ -324,7 +315,7 @@ export interface WpsTracksideTarget {
   site_id: string
   business_key: string
   target_code: WpsTracksideTargetCode
-  target_type: 'WPS_STANDARD_SPREADSHEET' | 'WPS_SMART_SHEET'
+  target_type: 'WPS_STANDARD_SPREADSHEET'
   target_name: string
   document_open_url: string
   webhook_url: string
@@ -347,7 +338,6 @@ export interface WpsTracksideTarget {
   connection_diagnostic?: WpsTracksideDiagnostic
   runtime_probe_diagnostic?: WpsTracksideDiagnostic
   sync_test_diagnostic?: WpsTracksideDiagnostic
-  sheet_order_probe_diagnostic?: WpsTracksideDiagnostic
   sheet_tab_color_probe_diagnostic?: WpsTracksideDiagnostic
   column_width_probe_diagnostic?: WpsTracksideDiagnostic
   remote_script_version?: string
@@ -407,11 +397,6 @@ export interface WpsTracksideSyncResult {
     remote_task_finished_at?: string
     format_warning_count?: number
     sheet_count?: number
-    field_count?: number
-    records_created?: number
-    records_deleted?: number
-    records_read_back?: number
-    history_appended?: number
     sheet_order_verified?: boolean
     binding_status?: string
     format_warnings?: Array<{

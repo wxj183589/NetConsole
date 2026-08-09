@@ -106,15 +106,6 @@ export function syncTestTracksideWpsTarget(targetCode: WpsTracksideTargetCode): 
   })
 }
 
-export function probeTracksideWpsSheetOrder(targetCode: WpsTracksideTargetCode): Promise<{
-  target_code: WpsTracksideTargetCode
-  result: Record<string, unknown>
-}> {
-  return apiRequest(`${wpsRoot}/targets/${encodeURIComponent(targetCode)}/sheet-order-probe`, {
-    method: 'POST',
-  })
-}
-
 export function probeTracksideWpsSheetTabColor(targetCode: WpsTracksideTargetCode): Promise<{
   target_code: WpsTracksideTargetCode
   result: Record<string, unknown>
@@ -142,14 +133,16 @@ export function revalidateTracksideWpsDeployment(targetCode: WpsTracksideTargetC
   })
 }
 
-export function syncTracksideWpsTargets(payload: {
-  target_codes?: WpsTracksideTargetCode[]
+export function syncTracksideWpsDocument(payload: {
   expected_revision?: string
   initialize_binding?: boolean
 } = {}): Promise<TracksideApTask> {
   return apiRequest(`${wpsRoot}/sync`, {
     method: 'POST',
-    body: JSON.stringify(payload),
+    body: JSON.stringify({
+      ...payload,
+      target_codes: ['wps_standard_spreadsheet'],
+    }),
   })
 }
 

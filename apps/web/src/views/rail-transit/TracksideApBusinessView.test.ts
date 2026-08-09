@@ -23,11 +23,10 @@ const api = vi.hoisted(() => ({
   getTracksideApBusinessExportProposal: vi.fn(),
   startTracksideApBusinessExport: vi.fn(),
   startTracksideApUpdate: vi.fn(),
-  syncTracksideWpsTargets: vi.fn(),
+  syncTracksideWpsDocument: vi.fn(),
   testTracksideWpsTarget: vi.fn(),
   migrateTracksideWpsLegacyBinding: vi.fn(),
   probeTracksideWpsColumnWidth: vi.fn(),
-  probeTracksideWpsSheetOrder: vi.fn(),
   probeTracksideWpsSheetTabColor: vi.fn(),
   revalidateTracksideWpsDeployment: vi.fn(),
   updateTracksideWpsTarget: vi.fn(),
@@ -233,7 +232,7 @@ function wpsTargets(configured = false): WpsTracksideTarget[] {
       business_key: 'rail_transit.trackside_ap_business',
       target_code: 'wps_standard_spreadsheet',
       target_type: 'WPS_STANDARD_SPREADSHEET',
-      target_name: '普通在线表格',
+      target_name: 'WPS 云文档',
       document_open_url: 'https://www.kdocs.cn/l/standard',
       webhook_url: 'https://www.kdocs.cn/api/v3/ide/file/standard/script/test/sync_task',
       expected_document_id: 'standard',
@@ -242,28 +241,6 @@ function wpsTargets(configured = false): WpsTracksideTarget[] {
       timeout_seconds: 30,
       token_configured: configured,
       token_suffix: configured ? '1111' : '',
-      last_test_at: '',
-      last_test_status: '',
-      last_test_message: '',
-      last_sync_at: '',
-      last_sync_status: '',
-      last_sync_revision: '',
-    },
-    {
-      target_id: 'target-smart',
-      site_id: 'demo',
-      business_key: 'rail_transit.trackside_ap_business',
-      target_code: 'wps_smart_sheet',
-      target_type: 'WPS_SMART_SHEET',
-      target_name: '智能表格',
-      document_open_url: 'https://www.kdocs.cn/l/smart',
-      webhook_url: 'https://www.kdocs.cn/api/v3/ide/file/smart/script/test/sync_task',
-      expected_document_id: 'smart',
-      enabled: true,
-      protocol_version: 2,
-      timeout_seconds: 45,
-      token_configured: configured,
-      token_suffix: configured ? '2222' : '',
       last_test_at: '',
       last_test_status: '',
       last_test_message: '',
@@ -453,10 +430,6 @@ describe('TracksideApBusinessView mounted behavior', () => {
       target_code: 'wps_standard_spreadsheet',
       result: { binding_status: 'BOUND', migrated: true },
     })
-    api.probeTracksideWpsSheetOrder.mockResolvedValue({
-      target_code: 'wps_standard_spreadsheet',
-      result: { sheet_order_verified: true },
-    })
     api.probeTracksideWpsSheetTabColor.mockResolvedValue({
       target_code: 'wps_standard_spreadsheet',
       result: { sheet_tab_color_verified: true },
@@ -467,7 +440,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
     })
     confirmMocks.confirm.mockReset()
     confirmMocks.confirm.mockResolvedValue(true)
-    api.syncTracksideWpsTargets.mockResolvedValue(task('wps-task', 'RUNNING', 'trackside_ap_wps_sync'))
+    api.syncTracksideWpsDocument.mockResolvedValue(task('wps-task', 'RUNNING', 'trackside_ap_wps_sync'))
     api.getTracksideApBusinessExportProposal.mockResolvedValue({
       site_id: 'demo',
       site_display_name: '宁波地铁12号线',
@@ -544,7 +517,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
     wrapper.unmount()
   })
 
-  it('opens WPS configuration and saves independent URLs, webhooks and tokens', async () => {
+  it('opens the single WPS cloud document configuration and saves its connection', async () => {
     const initialTargets = wpsTargets(false)
     api.listTracksideWpsTargets.mockResolvedValue(initialTargets)
     const wrapper = await mountView()
@@ -557,30 +530,20 @@ describe('TracksideApBusinessView mounted behavior', () => {
     const dialog = wrapper.getComponent(TracksideApWpsConfigDialog)
     const vm = dialog.vm as unknown as {
       drafts: Array<{ target_code: string; token: string; document_open_url: string; webhook_url: string }>
-      saveTargetConfiguration: (code: 'wps_standard_spreadsheet' | 'wps_smart_sheet') => Promise<boolean>
+      saveTargetConfiguration: (code: 'wps_standard_spreadsheet') => Promise<boolean>
     }
     vm.drafts[0].token = 'standard-test-token'
     vm.drafts[0].document_open_url = 'https://www.kdocs.cn/l/standard-updated'
     vm.drafts[0].webhook_url = 'https://www.kdocs.cn/api/v3/ide/file/standard-updated/script/test/sync_task'
-    vm.drafts[1].token = 'smart-test-token'
-    vm.drafts[1].document_open_url = 'https://www.kdocs.cn/l/smart-updated'
-    vm.drafts[1].webhook_url = 'https://www.kdocs.cn/api/v3/ide/file/smart-updated/script/test/sync_task'
     api.listTracksideWpsTargets.mockResolvedValue(wpsTargets(true))
 
     await vm.saveTargetConfiguration('wps_standard_spreadsheet')
-    await vm.saveTargetConfiguration('wps_smart_sheet')
     expect(api.updateTracksideWpsTarget).toHaveBeenNthCalledWith(1, 'wps_standard_spreadsheet', expect.objectContaining({
       token: 'standard-test-token',
       document_open_url: 'https://www.kdocs.cn/l/standard-updated',
       webhook_url: 'https://www.kdocs.cn/api/v3/ide/file/standard-updated/script/test/sync_task',
     }))
-    expect(api.updateTracksideWpsTarget).toHaveBeenNthCalledWith(2, 'wps_smart_sheet', expect.objectContaining({
-      token: 'smart-test-token',
-      document_open_url: 'https://www.kdocs.cn/l/smart-updated',
-      webhook_url: 'https://www.kdocs.cn/api/v3/ide/file/smart-updated/script/test/sync_task',
-    }))
     expect(vm.drafts[0].token).toBe('')
-    expect(vm.drafts[1].token).toBe('')
     wrapper.unmount()
   })
 
@@ -590,7 +553,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
     api.testTracksideWpsTarget.mockResolvedValue({
       target_code: 'wps_standard_spreadsheet',
       result: {
-        document_name: '普通在线表格',
+        document_name: 'WPS 云文档',
         script_version: '2.3.0-standard',
         deployment_id: 'trackside-ap-standard-2.3.0',
       },
@@ -628,32 +591,6 @@ describe('TracksideApBusinessView mounted behavior', () => {
 
     await vm.revalidateDeployment('wps_standard_spreadsheet')
     expect(api.revalidateTracksideWpsDeployment).toHaveBeenCalledWith('wps_standard_spreadsheet')
-    wrapper.unmount()
-  })
-
-  it('runs Sheet ordering as an independent ordinary spreadsheet probe', async () => {
-    const targets = wpsTargets(true)
-    targets[0].sheet_order_probe_diagnostic = {
-      status: 'SUCCESS',
-      sheet_order_verified: true,
-      expected_sheet_order: ['轨旁AP业务', 'AP上线情况概览'],
-      actual_sheet_order: ['轨旁AP业务', 'AP上线情况概览'],
-    }
-    api.listTracksideWpsTargets.mockResolvedValue(targets)
-    const wrapper = await mountView()
-    await button(wrapper, '配置云文档').trigger('click')
-    await flushPromises()
-    const dialog = wrapper.getComponent(TracksideApWpsConfigDialog)
-    const vm = dialog.vm as unknown as {
-      sheetOrderProbe: (code: 'wps_standard_spreadsheet') => Promise<void>
-    }
-
-    await vm.sheetOrderProbe('wps_standard_spreadsheet')
-
-    expect(api.probeTracksideWpsSheetOrder).toHaveBeenCalledWith('wps_standard_spreadsheet')
-    expect(api.revalidateTracksideWpsDeployment).not.toHaveBeenCalled()
-    expect(wrapper.text()).toContain('业务 Sheet 顺序：已验证')
-    expect(wrapper.text()).toContain('轨旁AP业务 → AP上线情况概览')
     wrapper.unmount()
   })
 
@@ -845,7 +782,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
     wrapper.unmount()
   })
 
-  it('opens each WPS document through the platform adapter without window.open in Electron', async () => {
+  it('opens the WPS cloud document through the platform adapter without window.open in Electron', async () => {
     platformMocks.hostType = 'electron'
     api.listTracksideWpsTargets.mockResolvedValue(wpsTargets(true))
     const nativeOpen = vi.spyOn(window, 'open').mockImplementation(() => null)
@@ -859,10 +796,8 @@ describe('TracksideApBusinessView mounted behavior', () => {
     }
     const targets = wpsTargets(true)
     await vm.openDocument(targets[0])
-    await vm.openDocument(targets[1])
 
-    expect(platformMocks.openExternalUrl).toHaveBeenNthCalledWith(1, targets[0].document_open_url)
-    expect(platformMocks.openExternalUrl).toHaveBeenNthCalledWith(2, targets[1].document_open_url)
+    expect(platformMocks.openExternalUrl).toHaveBeenCalledWith(targets[0].document_open_url)
     expect(nativeOpen).not.toHaveBeenCalled()
     nativeOpen.mockRestore()
     wrapper.unmount()
@@ -878,12 +813,12 @@ describe('TracksideApBusinessView mounted behavior', () => {
     const dialog = wrapper.getComponent(TracksideApWpsConfigDialog)
     const vm = dialog.vm as unknown as {
       copyAirScript: (
-        code: 'wps_standard_spreadsheet' | 'wps_smart_sheet',
+        code: 'wps_standard_spreadsheet',
         kind: 'probe' | 'sync',
       ) => Promise<void>
     }
     await vm.copyAirScript('wps_standard_spreadsheet', 'probe')
-    await vm.copyAirScript('wps_smart_sheet', 'sync')
+    await vm.copyAirScript('wps_standard_spreadsheet', 'sync')
 
     expect(platformMocks.writeClipboardText).toHaveBeenNthCalledWith(
       1,
@@ -891,36 +826,34 @@ describe('TracksideApBusinessView mounted behavior', () => {
     )
     expect(platformMocks.writeClipboardText).toHaveBeenNthCalledWith(
       2,
-      expect.stringContaining('trackside-ap-smart-2.2.0'),
+      expect.stringContaining('trackside-ap-standard-2.8.4'),
     )
     expect(navigator.clipboard.writeText).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 
-  it('enables smart-sheet sync only after its own runtime and binding gates pass', async () => {
+  it('enables cloud document sync only after runtime and binding gates pass', async () => {
     const targets = wpsTargets(true)
-    targets[1].runtime_capability = 'VERIFIED'
-    targets[1].binding_status = 'UNBOUND'
+    targets[0].runtime_capability = 'VERIFIED'
+    targets[0].binding_status = 'UNBOUND'
     api.listTracksideWpsTargets.mockResolvedValue(targets)
     const wrapper = await mountView()
     await flushPromises()
 
-    expect(button(wrapper, '同步智能表格').attributes('disabled')).toBeUndefined()
-    expect(button(wrapper, '同步普通表格').attributes('disabled')).toBeDefined()
+    expect(button(wrapper, '同步云文档').attributes('disabled')).toBeUndefined()
+    expect(wrapper.text()).not.toContain('同步全部目标')
     wrapper.unmount()
   })
 
-  it('opens the page-level ordinary and smart WPS targets independently', async () => {
+  it('opens the page-level WPS cloud document', async () => {
     platformMocks.hostType = 'electron'
     api.listTracksideWpsTargets.mockResolvedValue(wpsTargets(true))
     const wrapper = await mountView()
 
-    await button(wrapper, '打开普通表格').trigger('click')
-    await button(wrapper, '打开智能表格').trigger('click')
+    await button(wrapper, '打开云文档').trigger('click')
     await flushPromises()
 
-    expect(platformMocks.openExternalUrl).toHaveBeenNthCalledWith(1, wpsTargets(true)[0].document_open_url)
-    expect(platformMocks.openExternalUrl).toHaveBeenNthCalledWith(2, wpsTargets(true)[1].document_open_url)
+    expect(platformMocks.openExternalUrl).toHaveBeenCalledWith(wpsTargets(true)[0].document_open_url)
     wrapper.unmount()
   })
 

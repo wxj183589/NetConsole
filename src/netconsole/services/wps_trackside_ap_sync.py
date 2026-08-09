@@ -28,10 +28,6 @@ from netconsole.models.wps_sync import (
     WorkbookFormatRunDTO,
     WorkbookDTO,
     WorkbookSheetDTO,
-    SmartFieldDTO,
-    SmartRecordDTO,
-    SmartSheetDTO,
-    SmartWorkbookDTO,
     WpsFreezeMode,
     WpsSyncMode,
     WpsSyncTarget,
@@ -55,26 +51,21 @@ from netconsole.services.trackside_ap_business import (
 
 
 STANDARD_TARGET_CODE = "wps_standard_spreadsheet"
-SMART_TARGET_CODE = "wps_smart_sheet"
 WPS_SYNC_TASK_TYPE = "trackside_ap_wps_sync"
 WPS_SYNC_OWNER = "web_rail_transit"
 WPS_STANDARD_FORMAT_MIRROR_ENABLED = True
 WPS_SCRIPT_VERSIONS = {
     STANDARD_TARGET_CODE: "2.8.4-standard",
-    SMART_TARGET_CODE: "2.2.0-smart",
 }
 WPS_DEPLOYMENT_IDS = {
     STANDARD_TARGET_CODE: "trackside-ap-standard-2.8.4",
-    SMART_TARGET_CODE: "trackside-ap-smart-2.2.0",
 }
 WPS_RUNTIME_CAPABILITIES = {
     STANDARD_TARGET_CODE: "DEPLOYMENT_PENDING",
-    SMART_TARGET_CODE: "RUNTIME_UNVERIFIED",
 }
-_VALID_TARGET_CODES = {STANDARD_TARGET_CODE, SMART_TARGET_CODE}
+_VALID_TARGET_CODES = {STANDARD_TARGET_CODE}
 _TARGET_TOKEN_ENV = {
     STANDARD_TARGET_CODE: "NETCONSOLE_WPS_STANDARD_AIRSCRIPT_TOKEN",
-    SMART_TARGET_CODE: "NETCONSOLE_WPS_SMART_AIRSCRIPT_TOKEN",
 }
 _META_SHEET_NAMES = {"_netconsole_meta", "_NetConsoleSyncMeta", "_NetConsoleSyncRuns"}
 _SAFE_ERROR_RE = re.compile(r"(?i)(airscript-token|authorization|token)\s*[:=]\s*\S+")
@@ -89,20 +80,6 @@ _WPS_WEBHOOK_PATH_RE = re.compile(
 WPS_REMOTE_TASK_MAX_WAIT_SECONDS = 600.0
 WPS_REMOTE_TASK_POLL_INTERVAL_SECONDS = 1.5
 _REMOTE_TASK_ID_MAX_LENGTH = 4096
-_SMART_OVERVIEW_FIELD_NAMES = (
-    "归属站点",
-    "规划AP总数量",
-    "上线",
-    "未上线",
-    "上线率",
-    "备注",
-)
-_SMART_SYSTEM_FIELD_TYPES = (
-    ("_NC_BATCH_ID", "MultiLineText"),
-    ("_NC_ROW_KEY", "MultiLineText"),
-    ("_NC_REVISION", "MultiLineText"),
-)
-
 DEFAULT_TARGETS = (
     {
         "target_code": STANDARD_TARGET_CODE,
@@ -110,14 +87,6 @@ DEFAULT_TARGETS = (
         "document_open_url": "",
         "webhook_url": "",
         "expected_document_id": "",
-    },
-    {
-        "target_code": SMART_TARGET_CODE,
-        "target_type": WpsTargetType.SMART_SHEET,
-        "document_open_url": "",
-        "webhook_url": "",
-        "expected_document_id": "",
-        "enabled": False,
     },
 )
 
@@ -422,38 +391,6 @@ class BaseWpsAdapter:
             raise _remote_result_error(target, result, token)
         return {"http_status": response.status_code, "phase": "SUCCESS", **result}
 
-    def sheet_order_probe(self, target: WpsSyncTarget, token: str) -> dict[str, Any]:
-        response = self.client.post(
-            target,
-            token=token,
-            argv={
-                "protocol_version": WPS_SYNC_PROTOCOL_VERSION,
-                "operation": "sheet_order_probe",
-                "target_code": target.target_code,
-                "target_type": target.target_type.value,
-                "site_id": target.site_id,
-                "business_key": target.business_key,
-                "binding_id": target.binding_id,
-                "probe_id": f"wps_sheet_order_{uuid4().hex}",
-                "script_id": _script_id_from_webhook(target.webhook_url),
-            },
-        )
-        result = _unwrap_wps_sync_task_response(response, target, token=token)
-        self._validate_common(target, result)
-        if not bool(result.get("success")):
-            raise _remote_result_error(target, result, token)
-        if not bool(result.get("sheet_order_verified")):
-            raise WpsSyncError(
-                "WPS_SHEET_ORDER_VERIFY_FAILED",
-                "WPS Sheet.Move 排序探针未通过读回校验",
-                details={
-                    **_target_error_details(target, phase="SHEET_ORDER_PROBE"),
-                    "expected_sheet_order": result.get("expected_sheet_order") or [],
-                    "actual_sheet_order": result.get("actual_sheet_order") or [],
-                },
-            )
-        return {"http_status": response.status_code, "phase": "SUCCESS", **result}
-
     def sheet_tab_color_probe(
         self,
         target: WpsSyncTarget,
@@ -739,66 +676,6 @@ class WpsStandardSpreadsheetAdapter(BaseWpsAdapter):
     pass
 
 
-class WpsSmartSheetAdapter(BaseWpsAdapter):
-    def runtime_write_probe(self, target: WpsSyncTarget, token: str) -> dict[str, Any]:
-        response = self.client.post(
-            target,
-            token=token,
-            argv={
-                "protocol_version": WPS_SYNC_PROTOCOL_VERSION,
-                "operation": "smart_runtime_write_probe",
-                "target_code": target.target_code,
-                "target_type": target.target_type.value,
-                "site_id": target.site_id,
-                "business_key": target.business_key,
-                "binding_id": target.binding_id,
-                "probe_id": f"wps_smart_probe_{uuid4().hex}",
-                "script_id": _script_id_from_webhook(target.webhook_url),
-            },
-        )
-        result = _unwrap_wps_sync_task_response(response, target, token=token)
-        self._validate_common(target, result)
-        if not bool(result.get("success")):
-            raise _remote_result_error(target, result, token)
-        required = {
-            "sheet_enum",
-            "sheet_create",
-            "field_enum",
-            "field_create",
-            "record_create",
-            "record_read",
-            "record_update",
-            "record_delete",
-            "sheet_move",
-        }
-        capabilities = result.get("core_capabilities")
-        verified = (
-            isinstance(capabilities, Mapping)
-            and required.issubset(capabilities)
-            and all(bool(capabilities[key]) for key in required)
-            and bool(result.get("core_verified"))
-            and _safe_int(result.get("verified_record_batch_size")) > 0
-            and str(result.get("runtime_capability") or "") == "VERIFIED"
-        )
-        if not verified:
-            raise WpsSyncError(
-                "WPS_SMART_RUNTIME_PROBE_UNVERIFIED",
-                "WPS 智能表格运行时核心能力探针未完成验证",
-                details={
-                    **_target_error_details(target, phase="RUNTIME_WRITE_PROBE"),
-                    "runtime_capability": result.get("runtime_capability") or "",
-                    "core_verified": bool(result.get("core_verified")),
-                    "core_capabilities": capabilities if isinstance(capabilities, Mapping) else {},
-                    "verified_record_batch_size": _safe_int(
-                        result.get("verified_record_batch_size")
-                    ),
-                    "capability_failures": result.get("capability_failures") or [],
-                    "warnings": result.get("warnings") or [],
-                },
-            )
-        return {"http_status": response.status_code, "phase": "SUCCESS", **result}
-
-
 class TracksideApWpsSyncService:
     def __init__(
         self,
@@ -822,7 +699,6 @@ class TracksideApWpsSyncService:
             WpsTargetType.STANDARD_SPREADSHEET: WpsStandardSpreadsheetAdapter(
                 self.client
             ),
-            WpsTargetType.SMART_SHEET: WpsSmartSheetAdapter(self.client),
         }
 
     def list_targets(self, site_id: str) -> list[dict[str, Any]]:
@@ -834,6 +710,7 @@ class TracksideApWpsSyncService:
                 env_token_configured=self._env_token(target.target_code) != "",
             )
             for target in repository.list_targets(TRACKSIDE_AP_WPS_BUSINESS_KEY)
+            if target.target_code in _VALID_TARGET_CODES
         ]
 
     def configure_target(
@@ -847,6 +724,7 @@ class TracksideApWpsSyncService:
         enabled: bool | None = None,
         timeout_seconds: int | None = None,
     ) -> dict[str, Any]:
+        _require_standard_target_code(target_code)
         repository = self._repository(site_id)
         self._ensure_default_targets(repository)
         target = repository.get_target(TRACKSIDE_AP_WPS_BUSINESS_KEY, target_code)
@@ -865,18 +743,7 @@ class TracksideApWpsSyncService:
             if webhook_url is None
             else _document_id_from_webhook(selected_webhook_url)
         )
-        # A newly configured smart target may be explicitly enabled by the
-        # deployment call (legacy callers omit `enabled`). UI callers send the
-        # switch value, so the default remains disabled until the user opts in.
         selected_enabled = target.enabled if enabled is None else enabled
-        if (
-            enabled is None
-            and target.target_type is WpsTargetType.SMART_SHEET
-            and not target.enabled
-            and not target.webhook_url
-            and webhook_url
-        ):
-            selected_enabled = True
         configured = repository.upsert_target(
             business_key=target.business_key,
             target_code=target.target_code,
@@ -912,6 +779,7 @@ class TracksideApWpsSyncService:
         )
 
     def connection_test(self, site_id: str, target_code: str) -> dict[str, Any]:
+        _require_standard_target_code(target_code)
         repository = self._repository(site_id)
         self._ensure_default_targets(repository)
         target = repository.get_target(TRACKSIDE_AP_WPS_BUSINESS_KEY, target_code)
@@ -948,6 +816,7 @@ class TracksideApWpsSyncService:
         return _sanitize_result(result)
 
     def migrate_legacy_binding(self, site_id: str, target_code: str) -> dict[str, Any]:
+        _require_standard_target_code(target_code)
         repository = self._repository(site_id)
         self._ensure_default_targets(repository)
         target = repository.get_target(TRACKSIDE_AP_WPS_BUSINESS_KEY, target_code)
@@ -1021,6 +890,7 @@ class TracksideApWpsSyncService:
 
     def revalidate_deployment(self, site_id: str, target_code: str) -> dict[str, Any]:
         """Re-run the complete ordinary-spreadsheet deployment verification chain."""
+        _require_standard_target_code(target_code)
         repository = self._repository(site_id)
         self._ensure_default_targets(repository)
         target = repository.get_target(TRACKSIDE_AP_WPS_BUSINESS_KEY, target_code)
@@ -1046,6 +916,7 @@ class TracksideApWpsSyncService:
         }
 
     def runtime_write_probe(self, site_id: str, target_code: str) -> dict[str, Any]:
+        _require_standard_target_code(target_code)
         repository = self._repository(site_id)
         self._ensure_default_targets(repository)
         target = repository.get_target(TRACKSIDE_AP_WPS_BUSINESS_KEY, target_code)
@@ -1088,6 +959,7 @@ class TracksideApWpsSyncService:
         return _sanitize_result(result)
 
     def sync_test_sheet(self, site_id: str, target_code: str) -> dict[str, Any]:
+        _require_standard_target_code(target_code)
         repository = self._repository(site_id)
         self._ensure_default_targets(repository)
         target = repository.get_target(TRACKSIDE_AP_WPS_BUSINESS_KEY, target_code)
@@ -1131,43 +1003,8 @@ class TracksideApWpsSyncService:
         )
         return _sanitize_result(result)
 
-    def sheet_order_probe(self, site_id: str, target_code: str) -> dict[str, Any]:
-        repository = self._repository(site_id)
-        self._ensure_default_targets(repository)
-        target = repository.get_target(TRACKSIDE_AP_WPS_BUSINESS_KEY, target_code)
-        try:
-            _validate_target_configuration(target)
-            result = self.adapters[target.target_type].sheet_order_probe(
-                target, self._token(repository, target)
-            )
-        except WpsSyncError as exc:
-            details = dict(exc.details) or _target_error_details(
-                target, phase="LOCAL_CONFIGURATION"
-            )
-            repository.update_target_diagnostic(
-                target.target_id,
-                operation="sheet_order_probe",
-                diagnostic=_operation_diagnostic(
-                    "sheet_order_probe",
-                    status="FAILED",
-                    message=str(exc),
-                    values=details,
-                ),
-            )
-            raise
-        repository.update_target_diagnostic(
-            target.target_id,
-            operation="sheet_order_probe",
-            diagnostic=_operation_diagnostic(
-                "sheet_order_probe",
-                status=str(result.get("status") or "SUCCESS"),
-                message=str(result.get("message") or "Sheet 排序探针通过"),
-                values=result,
-            ),
-        )
-        return _sanitize_result(result)
-
     def sheet_tab_color_probe(self, site_id: str, target_code: str) -> dict[str, Any]:
+        _require_standard_target_code(target_code)
         repository = self._repository(site_id)
         self._ensure_default_targets(repository)
         target = repository.get_target(TRACKSIDE_AP_WPS_BUSINESS_KEY, target_code)
@@ -1211,6 +1048,7 @@ class TracksideApWpsSyncService:
         return _sanitize_result(result)
 
     def column_width_probe(self, site_id: str, target_code: str) -> dict[str, Any]:
+        _require_standard_target_code(target_code)
         repository = self._repository(site_id)
         self._ensure_default_targets(repository)
         target = repository.get_target(TRACKSIDE_AP_WPS_BUSINESS_KEY, target_code)
@@ -1265,9 +1103,14 @@ class TracksideApWpsSyncService:
     ) -> dict[str, Any]:
         repository = self._repository(site_id)
         self._ensure_default_targets(repository)
-        requested_codes = tuple(dict.fromkeys(target_codes or _VALID_TARGET_CODES))
+        requested_codes = tuple(
+            dict.fromkeys(target_codes or (STANDARD_TARGET_CODE,))
+        )
         if not requested_codes or any(code not in _VALID_TARGET_CODES for code in requested_codes):
-            raise WpsSyncError("WPS_TARGET_INVALID", "WPS 同步目标无效")
+            raise WpsSyncError(
+                "WPS_TARGET_UNSUPPORTED",
+                "当前版本仅支持 WPS 普通在线表格同步",
+            )
         targets_by_code = {
             target.target_code: target
             for target in repository.list_targets(TRACKSIDE_AP_WPS_BUSINESS_KEY)
@@ -1416,16 +1259,6 @@ class TracksideApWpsSyncService:
         persisted_runs: list[dict[str, Any]] = []
         for target in targets:
             target_batch_id = f"{batch_id}_{target.target_code}"
-            smart_workbook = (
-                smart_workbook_dto_from_workbook(
-                    workbook,
-                    target_batch_id=target_batch_id,
-                    snapshot_revision=revision,
-                    snapshot_generated_at=generated_at,
-                )
-                if target.target_type is WpsTargetType.SMART_SHEET
-                else None
-            )
             request_payload = {
                 "protocol_version": WPS_SYNC_PROTOCOL_VERSION,
                 "operation": "sync_trackside_ap_business",
@@ -1442,24 +1275,12 @@ class TracksideApWpsSyncService:
                 "snapshot_sha256": snapshot_sha256,
                 "snapshot_generated_at": generated_at,
                 "requested_at": _now(),
-                "format_mirror_enabled": (
-                    WPS_STANDARD_FORMAT_MIRROR_ENABLED
-                    and target.target_type is WpsTargetType.STANDARD_SPREADSHEET
-                ),
+                "format_mirror_enabled": WPS_STANDARD_FORMAT_MIRROR_ENABLED,
                 "sheet_tab_color_enabled": _sheet_tab_color_probe_verified(target),
-                "column_width_enabled": target.target_type is WpsTargetType.STANDARD_SPREADSHEET,
+                "column_width_enabled": True,
                 "runtime_capability": target.runtime_capability,
                 "runtime_probe_verified": target.runtime_capability == "VERIFIED",
-                "record_batch_size": (
-                    _smart_record_batch_size(target)
-                    if target.target_type is WpsTargetType.SMART_SHEET
-                    else 0
-                ),
-                **(
-                    {"smart_workbook": smart_workbook.to_dict()}
-                    if smart_workbook is not None
-                    else {"workbook": workbook.to_dict()}
-                ),
+                "workbook": workbook.to_dict(),
                 "script_id": _script_id_from_webhook(target.webhook_url),
             }
             repository.create_target_run(
@@ -1562,21 +1383,20 @@ class TracksideApWpsSyncService:
                         self._token(repository, target),
                         request_payload,
                     )
-                if target.target_type is WpsTargetType.STANDARD_SPREADSHEET:
-                    manifest = (
-                        dict(source_format_manifest)
-                        if isinstance(source_format_manifest, Mapping)
-                        else {}
-                    )
-                    column_width_report = _column_width_verification_report(
-                        manifest=manifest.get("column_widths") or [],
-                        request_payload=request_payload,
-                        remote_result=response,
-                        enabled=True,
-                    )
-                    response["column_width_verification_report"] = column_width_report
-                    response["source_workbook_format_manifest"] = manifest
-                    _append_column_width_report_warning(response, column_width_report)
+                manifest = (
+                    dict(source_format_manifest)
+                    if isinstance(source_format_manifest, Mapping)
+                    else {}
+                )
+                column_width_report = _column_width_verification_report(
+                    manifest=manifest.get("column_widths") or [],
+                    request_payload=request_payload,
+                    remote_result=response,
+                    enabled=True,
+                )
+                response["column_width_verification_report"] = column_width_report
+                response["source_workbook_format_manifest"] = manifest
+                _append_column_width_report_warning(response, column_width_report)
                 format_warnings = response.get("format_warnings")
                 target_status = (
                     "SUCCESS_WITH_WARNINGS"
@@ -1718,7 +1538,7 @@ class TracksideApWpsSyncService:
                 summary=summary,
             )
         if progress is not None:
-            progress("wps_complete", 100, 100, f"WPS 双目标同步完成：{status}")
+            progress("wps_complete", 100, 100, f"WPS 云文档同步完成：{status}")
         return summary
 
     def _execute_async_target(
@@ -2065,11 +1885,6 @@ class TracksideApWpsSyncService:
                 target_name=default_name,
                 credential_id=f"wsc_{uuid4().hex}",
             )
-            if code == SMART_TARGET_CODE:
-                created = repository.get_target(TRACKSIDE_AP_WPS_BUSINESS_KEY, code)
-                repository.set_runtime_capability(
-                    created.target_id, "RUNTIME_UNVERIFIED"
-                )
         for target in repository.list_targets(TRACKSIDE_AP_WPS_BUSINESS_KEY):
             if (
                 target.target_type is WpsTargetType.STANDARD_SPREADSHEET
@@ -2258,240 +2073,6 @@ def workbook_dto_from_xlsx(
         return WorkbookDTO(sheets=tuple(sheets))
     finally:
         workbook.close()
-
-
-def smart_workbook_dto_from_workbook(
-    workbook: WorkbookDTO,
-    *,
-    target_batch_id: str,
-    snapshot_revision: str,
-    snapshot_generated_at: str,
-) -> SmartWorkbookDTO:
-    sheets = tuple(
-        _smart_sheet_dto(
-            sheet,
-            target_batch_id=target_batch_id,
-            snapshot_revision=snapshot_revision,
-            snapshot_generated_at=snapshot_generated_at,
-        )
-        for sheet in sorted(workbook.sheets, key=lambda item: item.sheet_order)
-    )
-    return SmartWorkbookDTO(sheets=sheets)
-
-
-def _smart_sheet_dto(
-    sheet: WorkbookSheetDTO,
-    *,
-    target_batch_id: str,
-    snapshot_revision: str,
-    snapshot_generated_at: str,
-) -> SmartSheetDTO:
-    if sheet.logical_sheet_key == "ap_online_history_overview":
-        return _smart_overview_sheet_dto(
-            sheet,
-            target_batch_id=target_batch_id,
-            snapshot_revision=snapshot_revision,
-            snapshot_generated_at=snapshot_generated_at,
-        )
-    header_values = list(sheet.cells[0]) if sheet.cells else []
-    data_rows = [list(row) for row in sheet.cells[1:] if any(value not in (None, "") for value in row)]
-    column_count = max(
-        [len(header_values), *(len(row) for row in data_rows)],
-        default=0,
-    )
-    headers = _unique_smart_field_names(header_values, column_count)
-    column_values = [
-        [_smart_scalar(row[index] if index < len(row) else None) for row in data_rows]
-        for index in range(column_count)
-    ]
-    field_types = [
-        _smart_field_type(headers[index], column_values[index])
-        for index in range(column_count)
-    ]
-    fields = [
-        SmartFieldDTO(
-            key=f"column_{index + 1:03d}",
-            name=headers[index],
-            type=field_types[index],
-        )
-        for index in range(column_count)
-    ]
-    fields.extend(
-        SmartFieldDTO(key=name.casefold(), name=name, type=field_type)
-        for name, field_type in _SMART_SYSTEM_FIELD_TYPES
-    )
-    records = tuple(
-        _smart_record_dto(
-            sheet.logical_sheet_key,
-            headers,
-            field_types,
-            row,
-            target_batch_id=target_batch_id,
-            snapshot_revision=snapshot_revision,
-        )
-        for row in data_rows
-    )
-    return SmartSheetDTO(
-        logical_sheet_key=sheet.logical_sheet_key,
-        sheet_name=sheet.sheet_name,
-        sheet_order=sheet.sheet_order,
-        sync_mode=WpsSyncMode.FULL_REPLACE,
-        fields=tuple(fields),
-        records=records,
-    )
-
-
-def _smart_overview_sheet_dto(
-    sheet: WorkbookSheetDTO,
-    *,
-    target_batch_id: str,
-    snapshot_revision: str,
-    snapshot_generated_at: str,
-) -> SmartSheetDTO:
-    cells = sheet.cells
-    snapshot_date = _prefixed_cell_value(cells, 0, "日期：") or snapshot_generated_at[:10]
-    updated_at = _prefixed_cell_value(cells, 1, "更新时间：") or snapshot_generated_at
-    source_rows = [
-        list(row)
-        for row in cells[3:]
-        if any(value not in (None, "") for value in row)
-    ]
-    field_names = (
-        "日期",
-        "更新时间",
-        "同步批次",
-        *_SMART_OVERVIEW_FIELD_NAMES,
-        *(name for name, _field_type in _SMART_SYSTEM_FIELD_TYPES),
-    )
-    field_types = (
-        "MultiLineText",
-        "MultiLineText",
-        "MultiLineText",
-        "MultiLineText",
-        "Number",
-        "Number",
-        "Number",
-        "Percentage",
-        "MultiLineText",
-        *(field_type for _name, field_type in _SMART_SYSTEM_FIELD_TYPES),
-    )
-    fields = tuple(
-        SmartFieldDTO(key=f"field_{index + 1:03d}", name=name, type=field_types[index])
-        for index, name in enumerate(field_names)
-    )
-    records: list[SmartRecordDTO] = []
-    business_types = field_types[3:3 + len(_SMART_OVERVIEW_FIELD_NAMES)]
-    for row in source_rows:
-        values = [
-            _smart_typed_value(
-                business_types[index],
-                row[index] if index < len(row) else None,
-            )
-            for index in range(len(_SMART_OVERVIEW_FIELD_NAMES))
-        ]
-        row_key = content_sha256(
-            {"sheet": sheet.logical_sheet_key, "row": values}
-        )
-        record_fields = {
-            "日期": snapshot_date,
-            "更新时间": updated_at,
-            "同步批次": target_batch_id,
-            **dict(zip(_SMART_OVERVIEW_FIELD_NAMES, values, strict=True)),
-            "_NC_BATCH_ID": target_batch_id,
-            "_NC_ROW_KEY": row_key,
-            "_NC_REVISION": snapshot_revision,
-        }
-        records.append(SmartRecordDTO(row_key=row_key, fields=record_fields))
-    return SmartSheetDTO(
-        logical_sheet_key=sheet.logical_sheet_key,
-        sheet_name=sheet.sheet_name,
-        sheet_order=sheet.sheet_order,
-        sync_mode=WpsSyncMode.APPEND_SNAPSHOT,
-        fields=fields,
-        records=tuple(records),
-    )
-
-
-def _smart_record_dto(
-    logical_sheet_key: str,
-    headers: Sequence[str],
-    field_types: Sequence[str],
-    row: Sequence[object],
-    *,
-    target_batch_id: str,
-    snapshot_revision: str,
-) -> SmartRecordDTO:
-    values = [
-        _smart_typed_value(
-            field_types[index],
-            row[index] if index < len(row) else None,
-        )
-        for index in range(len(headers))
-    ]
-    row_key = content_sha256({"sheet": logical_sheet_key, "row": values})
-    fields = dict(zip(headers, values, strict=True))
-    fields.update(
-        {
-            "_NC_BATCH_ID": target_batch_id,
-            "_NC_ROW_KEY": row_key,
-            "_NC_REVISION": snapshot_revision,
-        }
-    )
-    return SmartRecordDTO(row_key=row_key, fields=fields)
-
-
-def _unique_smart_field_names(values: Sequence[object], count: int) -> list[str]:
-    names: list[str] = []
-    used = {name.casefold() for name, _field_type in _SMART_SYSTEM_FIELD_TYPES}
-    for index in range(count):
-        base = str(values[index] if index < len(values) else "").strip() or f"字段{index + 1}"
-        name = base
-        suffix = 2
-        while name.casefold() in used:
-            name = f"{base}_{suffix}"
-            suffix += 1
-        used.add(name.casefold())
-        names.append(name)
-    return names
-
-
-def _smart_field_type(name: str, values: Sequence[object]) -> str:
-    normalized = str(name or "").casefold()
-    if "率" in normalized or "percentage" in normalized or normalized.endswith("rate"):
-        return "Percentage"
-    present = [value for value in values if value not in (None, "")]
-    if present and all(isinstance(value, (int, float)) and not isinstance(value, bool) for value in present):
-        return "Number"
-    return "MultiLineText"
-
-
-def _smart_typed_value(field_type: str, value: object) -> object:
-    scalar = _smart_scalar(value)
-    if scalar in (None, ""):
-        return scalar
-    if field_type == "Percentage" and isinstance(scalar, str):
-        text = scalar.strip()
-        if text.endswith("%"):
-            try:
-                return float(text[:-1].strip()) / 100.0
-            except ValueError:
-                return scalar
-    return scalar
-
-
-def _smart_scalar(value: object) -> object:
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    if isinstance(value, datetime):
-        return value.isoformat(sep=" ")
-    return str(value)
-
-
-def _prefixed_cell_value(cells: Sequence[Sequence[object]], index: int, prefix: str) -> str:
-    if index >= len(cells) or not cells[index]:
-        return ""
-    value = str(cells[index][0] or "").strip()
-    return value[len(prefix):].strip() if value.startswith(prefix) else value
 
 
 def _source_workbook_format_manifest(
@@ -3637,17 +3218,14 @@ def _remote_result_error(
 
 
 def _default_target_name(site_display_name: str, target_code: str) -> str:
-    suffix = "智能表格" if target_code == SMART_TARGET_CODE else "普通在线表格"
-    return f"{site_display_name}轨旁AP业务-{suffix}"
+    del target_code
+    return f"{site_display_name}轨旁AP业务-WPS云文档"
 
 
 def _is_legacy_default_target_name(value: str, target_code: str) -> bool:
-    text = str(value or "").strip()
-    suffix = "智能表格" if target_code == SMART_TARGET_CODE else "普通在线表格"
-    return text in {
-        f"杭州地铁10号线轨旁AP业务-{suffix}",
-        f"杭州地铁10号线轨旁 AP 业务-{suffix}",
-    }
+    del target_code
+    text = str(value or "").replace(" ", "").strip()
+    return text.endswith("轨旁AP业务-普通在线表格")
 
 
 def _unwrap_wps_sync_task_response(
@@ -3911,6 +3489,14 @@ def _script_id_from_webhook(value: str) -> str:
     return parse_wps_webhook(value).script_id
 
 
+def _require_standard_target_code(target_code: str) -> None:
+    if str(target_code or "").strip() != STANDARD_TARGET_CODE:
+        raise WpsSyncError(
+            "WPS_TARGET_UNSUPPORTED",
+            "当前版本仅支持 WPS 普通在线表格同步",
+        )
+
+
 def _validate_target_configuration(target: WpsSyncTarget) -> None:
     _validate_wps_url(target.document_open_url, kind="document")
     webhook = _validate_wps_url(target.webhook_url, kind="webhook")
@@ -3964,15 +3550,6 @@ def _assert_standard_sync_readiness(target: WpsSyncTarget) -> None:
         _assert_runtime_identity(target)
 
 
-def _smart_record_batch_size(target: WpsSyncTarget) -> int:
-    value = target.runtime_probe_diagnostic.get("verified_record_batch_size")
-    try:
-        parsed = int(value or 0)
-    except (TypeError, ValueError):
-        parsed = 0
-    return max(1, min(parsed or 1, 100))
-
-
 def _sanitize_result(value: Mapping[str, object]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, item in value.items():
@@ -4007,7 +3584,6 @@ def _now() -> str:
 
 __all__ = [
     "DEFAULT_TARGETS",
-    "SMART_TARGET_CODE",
     "STANDARD_TARGET_CODE",
     "WPS_SYNC_OWNER",
     "WPS_SYNC_TASK_TYPE",
@@ -4019,7 +3595,6 @@ __all__ = [
     "TracksideApWpsSyncService",
     "WpsAirScriptClient",
     "WpsRemoteTask",
-    "WpsSmartSheetAdapter",
     "WpsStandardSpreadsheetAdapter",
     "WpsSyncError",
     "WpsWebhookEndpoints",

@@ -15,17 +15,13 @@ from netconsole.core.paths import PathResolver
 from netconsole.core.sites import SiteManager
 from netconsole.models.wps_sync import (
     TRACKSIDE_AP_WPS_BUSINESS_KEY,
-    WorkbookDTO,
-    WorkbookSheetDTO,
     WpsFreezeMode,
-    WpsSyncMode,
     WpsSyncTarget,
     WpsTargetType,
     build_wps_binding_id,
 )
 from netconsole.repositories.wps_sync_repository import WpsSyncRepository
 from netconsole.services.wps_trackside_ap_sync import (
-    SMART_TARGET_CODE,
     STANDARD_TARGET_CODE,
     TracksideApWpsSyncService,
     WpsAirScriptClient,
@@ -46,7 +42,6 @@ from netconsole.services.wps_trackside_ap_sync import (
     _assert_standard_sync_readiness,
     _sheet_tab_color_probe_verified,
     parse_wps_webhook,
-    smart_workbook_dto_from_workbook,
     workbook_dto_from_xlsx,
 )
 
@@ -70,7 +65,37 @@ def _wps_target() -> WpsSyncTarget:
     )
 
 
-def test_wps_targets_keep_independent_encrypted_credentials(tmp_path: Path) -> None:
+def _insert_retired_smart_target(
+    repository: WpsSyncRepository,
+    *,
+    credential_id: str,
+    create_credential: bool,
+) -> None:
+    with sqlite3.connect(repository.path) as connection:
+        if create_credential:
+            connection.execute(
+                "INSERT INTO wps_credentials "
+                "(credential_id, name, encrypted_token, token_suffix, created_at, updated_at) "
+                "VALUES (?, 'retired', ?, 'oken', 'old', 'old')",
+                (credential_id, _protect(b"smart-token", repository._entropy(credential_id))),
+            )
+        connection.execute(
+            "INSERT INTO wps_sync_targets "
+            "(target_id, binding_id, site_id, business_key, target_code, target_type, "
+            "credential_id, target_name, document_open_url, webhook_url, "
+            "expected_document_id, created_at, updated_at) "
+            "VALUES ('retired-smart-target', 'retired-binding', ?, ?, "
+            "'wps_smart_sheet', 'WPS_SMART_SHEET', ?, 'retired', "
+            "'https://example.test/retired', 'https://example.test/retired-hook', "
+            "'retired', 'old', 'old')",
+            (repository.site_id, TRACKSIDE_AP_WPS_BUSINESS_KEY, credential_id),
+        )
+        connection.commit()
+
+
+def test_wps_removed_smart_target_migration_preserves_standard_configuration_and_history(
+    tmp_path: Path,
+) -> None:
     paths = PathResolver(tmp_path)
     repository = WpsSyncRepository(paths, "hangzhou10", protect=_protect, unprotect=_protect)
     standard = repository.upsert_target(
@@ -82,27 +107,177 @@ def test_wps_targets_keep_independent_encrypted_credentials(tmp_path: Path) -> N
         webhook_url="https://example.test/standard-hook",
         expected_document_id="standard",
         token="secret-token",
-        credential_id="shared",
+        credential_id="standard-credential",
     )
-    smart = repository.upsert_target(
+    _insert_retired_smart_target(
+        repository,
+        credential_id="retired-credential",
+        create_credential=True,
+    )
+    with sqlite3.connect(repository.path) as connection:
+        connection.execute(
+            "ALTER TABLE wps_sync_targets ADD COLUMN "
+            "sheet_order_probe_diagnostic TEXT NOT NULL DEFAULT ''"
+        )
+        for batch_id in ("mixed-batch", "retired-only-batch"):
+            connection.execute(
+                "INSERT INTO wps_sync_batches "
+                "(batch_id, site_id, business_key, snapshot_revision, snapshot_sha256, "
+                "snapshot_generated_at, requested_at, completed_at, status, target_count, "
+                "success_target_count, failed_target_count, result_summary) "
+                "VALUES (?, ?, ?, 'revision', 'sha', 'old', 'old', 'old', "
+                "'PARTIAL_SUCCESS', 2, 1, 1, ?)",
+                (
+                    batch_id,
+                    repository.site_id,
+                    TRACKSIDE_AP_WPS_BUSINESS_KEY,
+                    json.dumps(
+                        {
+                            "status": "PARTIAL_SUCCESS",
+                            "target_count": 2,
+                            "targets": [
+                                {"target_code": STANDARD_TARGET_CODE, "status": "SUCCESS"},
+                                {"target_code": "wps_smart_sheet", "status": "FAILED"},
+                            ],
+                        }
+                    ),
+                ),
+            )
+        connection.execute(
+            "INSERT INTO wps_sync_target_runs "
+            "(target_batch_id, batch_id, target_id, target_code, target_type, started_at, "
+            "completed_at, status, result_summary) VALUES "
+            "('standard-run', 'mixed-batch', ?, ?, 'WPS_STANDARD_SPREADSHEET', "
+            "'old', 'old', 'SUCCESS', ?)",
+            (
+                standard.target_id,
+                STANDARD_TARGET_CODE,
+                json.dumps({"target_code": STANDARD_TARGET_CODE, "status": "SUCCESS"}),
+            ),
+        )
+        for run_id, batch_id in (
+            ("retired-mixed-run", "mixed-batch"),
+            ("retired-only-run", "retired-only-batch"),
+        ):
+            connection.execute(
+                "INSERT INTO wps_sync_target_runs "
+                "(target_batch_id, batch_id, target_id, target_code, target_type, "
+                "started_at, completed_at, status, result_summary) VALUES "
+                "(?, ?, 'retired-smart-target', 'wps_smart_sheet', 'WPS_SMART_SHEET', "
+                "'old', 'old', 'FAILED', ?)",
+                (
+                    run_id,
+                    batch_id,
+                    json.dumps({"target_code": "wps_smart_sheet", "status": "FAILED"}),
+                ),
+            )
+        connection.commit()
+
+    repository.initialize()
+    repository.initialize()
+
+    preserved = repository.get_target(
+        TRACKSIDE_AP_WPS_BUSINESS_KEY, STANDARD_TARGET_CODE
+    )
+    assert preserved.target_id == standard.target_id
+    assert preserved.document_open_url == "https://example.test/standard"
+    assert preserved.webhook_url == "https://example.test/standard-hook"
+    assert preserved.binding_id == standard.binding_id
+    assert repository.resolve_token(preserved) == "secret-token"
+    with sqlite3.connect(repository.path) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM wps_sync_targets WHERE target_code = 'wps_smart_sheet'"
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT COUNT(*) FROM wps_sync_target_runs WHERE target_type = 'WPS_SMART_SHEET'"
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT COUNT(*) FROM wps_credentials WHERE credential_id = 'retired-credential'"
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT COUNT(*) FROM wps_sync_batches WHERE batch_id = 'retired-only-batch'"
+        ).fetchone()[0] == 0
+        batch = connection.execute(
+            "SELECT status, target_count, success_target_count, failed_target_count, "
+            "result_summary FROM wps_sync_batches WHERE batch_id = 'mixed-batch'"
+        ).fetchone()
+        columns = {
+            str(row[1]) for row in connection.execute("PRAGMA table_info(wps_sync_targets)")
+        }
+    assert batch[:4] == ("SUCCESS", 1, 1, 0)
+    assert "wps_smart_sheet" not in str(json.loads(batch[4]))
+    assert "sheet_order_probe_diagnostic" not in columns
+
+
+def test_wps_removed_smart_target_migration_keeps_shared_standard_credential(
+    tmp_path: Path,
+) -> None:
+    repository = WpsSyncRepository(
+        PathResolver(tmp_path), "hangzhou10", protect=_protect, unprotect=_protect
+    )
+    standard = repository.upsert_target(
         business_key=TRACKSIDE_AP_WPS_BUSINESS_KEY,
-        target_code=SMART_TARGET_CODE,
-        target_type=WpsTargetType.SMART_SHEET,
-        target_name="智能表格",
-        document_open_url="https://example.test/smart",
-        webhook_url="https://example.test/smart-hook",
-        expected_document_id="smart",
-        token="smart-token",
-        credential_id="smart-credential",
+        target_code=STANDARD_TARGET_CODE,
+        target_type=WpsTargetType.STANDARD_SPREADSHEET,
+        target_name="WPS 云文档",
+        document_open_url="https://example.test/standard",
+        webhook_url="https://example.test/standard-hook",
+        expected_document_id="standard",
+        token="shared-token",
+        credential_id="shared-credential",
     )
-    assert standard.target_code != smart.target_code
-    assert standard.credential_id == "shared"
-    assert smart.credential_id == "smart-credential"
-    assert repository.resolve_token(standard) == "secret-token"
-    assert repository.resolve_token(smart) == "smart-token"
-    public = standard.public_dict()
-    assert public["webhook_url"] == "https://example.test/standard-hook"
-    assert "secret-token" not in str(public)
+    _insert_retired_smart_target(
+        repository,
+        credential_id=standard.credential_id,
+        create_credential=False,
+    )
+
+    repository.initialize()
+
+    preserved = repository.get_target(
+        TRACKSIDE_AP_WPS_BUSINESS_KEY, STANDARD_TARGET_CODE
+    )
+    assert repository.resolve_token(preserved) == "shared-token"
+    with sqlite3.connect(repository.path) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM wps_credentials WHERE credential_id = 'shared-credential'"
+        ).fetchone()[0] == 1
+
+
+def test_retired_wps_product_surface_has_no_implementation_references() -> None:
+    root = Path(__file__).parents[1]
+    migration = root / "src" / "netconsole" / "repositories" / "wps_sync_repository.py"
+    product_files = [
+        path
+        for base in (root / "src", root / "apps" / "web" / "src", root / "tools")
+        for path in base.rglob("*")
+        if path.is_file() and path.suffix in {".py", ".ts", ".vue", ".js"}
+    ]
+    retired_tokens = {
+        "WPS_SMART_SHEET",
+        "wps_smart_sheet",
+        "SmartSheetDTO",
+        "SmartFieldDTO",
+        "SmartRecordDTO",
+        "trackside_ap_smart_sheet_sync.js",
+        "trackside_ap_smart_sheet_connection_probe.js",
+    }
+    for path in product_files:
+        if path == migration:
+            continue
+        source = path.read_text(encoding="utf-8")
+        assert not retired_tokens.intersection(source.split()), path
+        for token in retired_tokens:
+            assert token not in source, f"{path}: {token}"
+    for base in (root / "src", root / "apps" / "web" / "src"):
+        for path in base.rglob("*"):
+            if not path.is_file() or path.suffix not in {".py", ".ts", ".vue"}:
+                continue
+            if path == migration:
+                continue
+            source = path.read_text(encoding="utf-8")
+            assert "sheet-order-probe" not in source, path
+            assert "sheet_order_probe_diagnostic" not in source, path
 
 
 def test_wps_binding_id_is_stable_across_independent_data_roots(tmp_path: Path) -> None:
@@ -242,16 +417,27 @@ def test_wps_target_configuration_rejects_non_kdocs_webhook(tmp_path: Path) -> N
         )
 
 
-def test_wps_public_targets_expose_deployment_identity_and_disable_smart_by_default(
+def test_wps_public_targets_expose_only_cloud_document_deployment_identity(
     tmp_path: Path,
 ) -> None:
     targets = TracksideApWpsSyncService(PathResolver(tmp_path)).list_targets("hangzhou10")
     by_code = {target["target_code"]: target for target in targets}
 
-    assert by_code[SMART_TARGET_CODE]["enabled"] is False
-    assert by_code[SMART_TARGET_CODE]["runtime_capability"] == "RUNTIME_UNVERIFIED"
+    assert list(by_code) == [STANDARD_TARGET_CODE]
     assert by_code[STANDARD_TARGET_CODE]["expected_script_version"] == WPS_SCRIPT_VERSIONS[STANDARD_TARGET_CODE]
     assert by_code[STANDARD_TARGET_CODE]["expected_deployment_id"] == WPS_DEPLOYMENT_IDS[STANDARD_TARGET_CODE]
+
+
+def test_wps_service_rejects_every_nonstandard_target_code(tmp_path: Path) -> None:
+    service = TracksideApWpsSyncService(PathResolver(tmp_path))
+
+    with pytest.raises(WpsSyncError) as configured:
+        service.configure_target("hangzhou10", "unsupported-target")
+    with pytest.raises(WpsSyncError) as synced:
+        service.sync("hangzhou10", target_codes=("unsupported-target",))
+
+    assert configured.value.code == "WPS_TARGET_UNSUPPORTED"
+    assert synced.value.code == "WPS_TARGET_UNSUPPORTED"
 
 
 def test_wps_public_target_does_not_trust_stale_bound_state_after_stable_id_migration(
@@ -287,8 +473,8 @@ def test_wps_default_target_name_uses_site_display_name_and_preserves_custom_nam
 
     hzl10 = {item["target_code"]: item for item in service.list_targets("hzl10")}
     nbl12 = {item["target_code"]: item for item in service.list_targets("nbl12")}
-    assert hzl10[STANDARD_TARGET_CODE]["target_name"] == "杭州地铁10号线轨旁AP业务-普通在线表格"
-    assert nbl12[STANDARD_TARGET_CODE]["target_name"] == "宁波地铁12号线轨旁AP业务-普通在线表格"
+    assert hzl10[STANDARD_TARGET_CODE]["target_name"] == "杭州地铁10号线轨旁AP业务-WPS云文档"
+    assert nbl12[STANDARD_TARGET_CODE]["target_name"] == "宁波地铁12号线轨旁AP业务-WPS云文档"
 
     service.configure_target("hzl10", STANDARD_TARGET_CODE, document_open_url="https://www.kdocs.cn/l/custom")
     repository = service._repository("hzl10")
@@ -312,7 +498,7 @@ def test_wps_default_target_name_uses_site_display_name_and_preserves_custom_nam
     [
         ({"script_version": "old-standard"}, "WPS_SCRIPT_VERSION_MISMATCH"),
         ({"deployment_id": "stale-deployment"}, "WPS_DEPLOYMENT_ID_MISMATCH"),
-        ({"target_code": SMART_TARGET_CODE}, "WPS_TARGET_CODE_MISMATCH"),
+        ({"target_code": "another_target"}, "WPS_TARGET_CODE_MISMATCH"),
     ],
 )
 def test_wps_connection_test_rejects_stale_or_cross_target_script_identity(
@@ -756,60 +942,6 @@ def test_workbook_dto_uses_prepend_mode_for_overview(tmp_path: Path) -> None:
     assert dto.sheets[1].tab_color == ""
     assert dto.sheets[1].row_count == 2
     assert [sheet.sheet_order for sheet in dto.sheets] == [0, 1]
-
-
-def test_smart_workbook_dto_uses_records_and_keeps_overview_history_semantics() -> None:
-    workbook = WorkbookDTO(
-        sheets=(
-            WorkbookSheetDTO(
-                logical_sheet_key="ap_online_history_overview",
-                sheet_name="AP上线情况概览",
-                sync_mode=WpsSyncMode.PREPEND_SNAPSHOT,
-                cells=[
-                    ["日期：2026-08-10", None, None, None, None, None],
-                    ["更新时间：2026-08-10 10:30:00", None, None, None, None, None],
-                    ["归属站点", "规划AP总数量", "上线", "未上线", "上线率", "备注"],
-                    ["站点A", 100, 81, 19, 0.81, ""],
-                    ["合计", 100, 81, 19, 0.81, ""],
-                    [None, None, None, None, None, None],
-                ],
-                row_count=6,
-                column_count=6,
-                sheet_order=0,
-            ),
-            WorkbookSheetDTO(
-                logical_sheet_key="trackside_ap_business",
-                sheet_name="轨旁AP业务",
-                sync_mode=WpsSyncMode.FULL_REPLACE,
-                cells=[["归属站点", "AP MAC", "AP Rx"], ["站点A", "0000-0000-0001", -18.2]],
-                row_count=2,
-                column_count=3,
-                sheet_order=1,
-            ),
-        )
-    )
-
-    smart = smart_workbook_dto_from_workbook(
-        workbook,
-        target_batch_id="batch-smart",
-        snapshot_revision="revision-1",
-        snapshot_generated_at="2026-08-10T10:30:00+08:00",
-    )
-
-    overview, business = smart.sheets
-    assert overview.sync_mode is WpsSyncMode.APPEND_SNAPSHOT
-    assert [field.name for field in overview.fields] == [
-        "日期", "更新时间", "同步批次", "归属站点", "规划AP总数量",
-        "上线", "未上线", "上线率", "备注", "_NC_BATCH_ID", "_NC_ROW_KEY", "_NC_REVISION",
-    ]
-    assert next(field for field in overview.fields if field.name == "上线率").type == "Percentage"
-    assert overview.records[0].fields["上线率"] == 0.81
-    assert overview.records[0].fields["_NC_BATCH_ID"] == "batch-smart"
-    assert len(overview.records) == 2
-    assert business.sync_mode is WpsSyncMode.FULL_REPLACE
-    assert next(field for field in business.fields if field.name == "AP Rx").type == "Number"
-    assert business.records[0].fields["AP MAC"] == "0000-0000-0001"
-    assert business.records[0].fields["_NC_REVISION"] == "revision-1"
 
 
 def test_workbook_dto_preserves_sheet_order_and_compresses_format_runs(
@@ -1484,70 +1616,9 @@ def test_standard_probe_and_sync_scripts_share_deployment_identity() -> None:
     assert "ensureSheet(" not in probe_script
 
 
-def test_smart_sync_script_exposes_fail_closed_runtime_capability_probe() -> None:
-    script = (
-        Path(__file__).parents[1]
-        / "tools"
-        / "wps_airscript"
-        / "trackside_ap_smart_sheet_sync.js"
-    ).read_text(encoding="utf-8")
-
-    assert f'const SCRIPT_VERSION = "{WPS_SCRIPT_VERSIONS[SMART_TARGET_CODE]}";' in script
-    assert f'const DEPLOYMENT_ID = "{WPS_DEPLOYMENT_IDS[SMART_TARGET_CODE]}";' in script
-    for api in (
-        "Application.Sheet.GetSheets()",
-        "Application.Sheet.CreateSheet",
-        "Field.GetFields",
-        "Field.CreateFields",
-        "Record.GetRecords",
-        "Record.CreateRecords",
-        "Record.UpdateRecords",
-        "Record.DeleteRecords",
-        "probeSheet.Move({ Before:",
-    ):
-        assert api in script
-    assert 'operation === "smart_runtime_write_probe"' in script
-    assert 'runtime_capability: coreVerified ? "VERIFIED" : "DEPLOYMENT_PENDING"' in script
-    assert "supports_hidden_fields" not in script
-    assert "max_records_per_request" not in script
-    assert "payload.smart_workbook" in script
-    assert 'sheetDto.sync_mode === "APPEND_SNAPSHOT"' in script
-    assert "createRecordsBatched(sheet, expectedRecords, batchSize)" in script
-    assert "function updateRecordsBatched(" in script
-    assert "deleteRecordsBatched(sheet, oldIds, batchSize)" in script
-    assert script.index("createRecordsBatched(sheet, expectedRecords, batchSize)") < script.rindex("deleteRecordsBatched(sheet, oldIds, batchSize)")
-    assert "current.Move({ Before: null, After: sheetId(previous) })" in script
-    assert "WPS_DOCUMENT_BINDING_MISMATCH" in script
-    assert script.rstrip().endswith("return main();")
-
-
-def test_default_target_initialization_splits_legacy_shared_credential(tmp_path: Path) -> None:
-    paths = PathResolver(tmp_path)
-    repository = WpsSyncRepository(paths, "hangzhou10", protect=_protect, unprotect=_protect)
-    for code, target_type in (
-        (STANDARD_TARGET_CODE, WpsTargetType.STANDARD_SPREADSHEET),
-        (SMART_TARGET_CODE, WpsTargetType.SMART_SHEET),
-    ):
-        repository.upsert_target(
-            business_key=TRACKSIDE_AP_WPS_BUSINESS_KEY,
-            target_code=code,
-            target_type=target_type,
-            target_name=code,
-            document_open_url=f"https://www.kdocs.cn/l/{code}",
-            webhook_url=f"https://www.kdocs.cn/api/{code}/sync_task",
-            expected_document_id=code,
-            token="legacy-token" if code == STANDARD_TARGET_CODE else None,
-            credential_id="legacy-shared",
-        )
-
-    TracksideApWpsSyncService(paths)._ensure_default_targets(repository)
-
-    targets = repository.list_targets(TRACKSIDE_AP_WPS_BUSINESS_KEY)
-    assert len({target.credential_id for target in targets}) == 2
-    assert {repository.resolve_token(target) for target in targets} == {"legacy-token"}
-
-
-def test_dual_sync_reuses_one_snapshot_for_both_adapters(monkeypatch, tmp_path: Path) -> None:
+def test_cloud_document_sync_uses_single_standard_workbook_payload(
+    monkeypatch, tmp_path: Path
+) -> None:
     class FakeClient:
         def __init__(self) -> None:
             self.payloads: list[dict[str, object]] = []
@@ -1567,9 +1638,8 @@ def test_dual_sync_reuses_one_snapshot_for_both_adapters(monkeypatch, tmp_path: 
                 "snapshot_revision": argv.get("snapshot_revision"),
                 "snapshot_sha256": argv.get("snapshot_sha256"),
             }
-            if target.target_code == STANDARD_TARGET_CODE:
-                body.update(
-                    {
+            body.update(
+                {
                         "column_width_result": {
                             "attempted_count": 1,
                             "items": [
@@ -1594,8 +1664,8 @@ def test_dual_sync_reuses_one_snapshot_for_both_adapters(monkeypatch, tmp_path: 
                             "row_height": {"status": "SUCCESS"},
                         },
                         "format_warnings": [],
-                    }
-                )
+                }
+            )
             return type(
                 "Response",
                 (),
@@ -1613,26 +1683,18 @@ def test_dual_sync_reuses_one_snapshot_for_both_adapters(monkeypatch, tmp_path: 
         document_open_url="https://www.kdocs.cn/l/standard",
         webhook_url="https://www.kdocs.cn/api/v3/ide/file/standard/script/test/sync_task",
     )
-    service.configure_target(
-        "hzl10",
-        SMART_TARGET_CODE,
-        document_open_url="https://www.kdocs.cn/l/smart",
-        webhook_url="https://www.kdocs.cn/api/v3/ide/file/smart/script/test/sync_task",
-    )
     monkeypatch.setenv("NETCONSOLE_WPS_STANDARD_AIRSCRIPT_TOKEN", "test-token")
-    monkeypatch.setenv("NETCONSOLE_WPS_SMART_AIRSCRIPT_TOKEN", "test-token")
     repository = service._repository("hzl10")
     for target in repository.list_targets(TRACKSIDE_AP_WPS_BUSINESS_KEY):
         repository.set_runtime_capability(target.target_id, "VERIFIED")
-        if target.target_code == STANDARD_TARGET_CODE:
-            repository.update_target_diagnostic(
-                target.target_id,
-                operation="sheet_tab_color_probe",
-                diagnostic={
-                    "status": "SUCCESS",
-                    "sheet_tab_color_verified": True,
-                },
-            )
+        repository.update_target_diagnostic(
+            target.target_id,
+            operation="sheet_tab_color_probe",
+            diagnostic={
+                "status": "SUCCESS",
+                "sheet_tab_color_verified": True,
+            },
+        )
     monkeypatch.setattr(
         service,
         "_build_snapshot",
@@ -1682,32 +1744,17 @@ def test_dual_sync_reuses_one_snapshot_for_both_adapters(monkeypatch, tmp_path: 
     )
     result = service.sync("hzl10")
     assert result["status"] == "SUCCESS"
-    assert [payload["snapshot_revision"] for payload in fake.payloads] == ["revision-1", "revision-1"]
-    assert [payload["snapshot_sha256"] for payload in fake.payloads] == ["sha-1", "sha-1"]
-    assert fake.payloads[0]["target_batch_id"] != fake.payloads[1]["target_batch_id"]
-    payload_by_code = {
-        payload["target_code"]: payload
-        for payload in fake.payloads
-    }
-    assert payload_by_code[STANDARD_TARGET_CODE]["sheet_tab_color_enabled"] is True
-    assert payload_by_code[SMART_TARGET_CODE]["sheet_tab_color_enabled"] is False
-    assert payload_by_code[STANDARD_TARGET_CODE]["column_width_enabled"] is True
-    assert payload_by_code[SMART_TARGET_CODE]["column_width_enabled"] is False
-    assert payload_by_code[STANDARD_TARGET_CODE]["format_mirror_enabled"] is True
-    assert payload_by_code[SMART_TARGET_CODE]["format_mirror_enabled"] is False
-    assert "workbook" in payload_by_code[STANDARD_TARGET_CODE]
-    assert "smart_workbook" not in payload_by_code[STANDARD_TARGET_CODE]
-    assert "smart_workbook" in payload_by_code[SMART_TARGET_CODE]
-    assert "workbook" not in payload_by_code[SMART_TARGET_CODE]
-    assert payload_by_code[SMART_TARGET_CODE]["runtime_probe_verified"] is True
-    assert payload_by_code[SMART_TARGET_CODE]["record_batch_size"] == 1
-    assert "row_height_enabled" not in payload_by_code[STANDARD_TARGET_CODE]
-    assert "row_height_enabled" not in payload_by_code[SMART_TARGET_CODE]
-    standard_result = next(
-        target
-        for target in result["targets"]
-        if target["target_code"] == STANDARD_TARGET_CODE
-    )
+    assert len(fake.payloads) == 1
+    payload = fake.payloads[0]
+    assert payload["snapshot_revision"] == "revision-1"
+    assert payload["snapshot_sha256"] == "sha-1"
+    assert payload["target_code"] == STANDARD_TARGET_CODE
+    assert payload["sheet_tab_color_enabled"] is True
+    assert payload["column_width_enabled"] is True
+    assert payload["format_mirror_enabled"] is True
+    assert "workbook" in payload
+    assert "row_height_enabled" not in payload
+    standard_result = result["targets"][0]
     report = standard_result["column_width_verification_report"]
     assert report["status"] == "SUCCESS"
     assert report["local_explicit_width_count"] == 1
@@ -1719,13 +1766,6 @@ def test_dual_sync_reuses_one_snapshot_for_both_adapters(monkeypatch, tmp_path: 
     assert report["verified_count"] == 1
     assert report["failed_count"] == 0
     assert report["representative_columns"][0]["column_label"] == "归属站点"
-    smart_result = next(
-        target
-        for target in result["targets"]
-        if target["target_code"] == SMART_TARGET_CODE
-    )
-    assert "column_width_verification_report" not in smart_result
-    assert "source_workbook_format_manifest" not in smart_result
 
 
 def test_wps_sync_aggregates_noncritical_format_warnings(
@@ -1888,7 +1928,6 @@ def _seed_verified_wps_target(
         "connection_test",
         "runtime_write_probe",
         "sync_test_sheet",
-        "sheet_order_probe",
         "sheet_tab_color_probe",
         "column_width_probe",
     ):
@@ -2182,7 +2221,6 @@ def test_wps_target_configuration_noop_and_non_identity_changes_keep_deployment(
     assert refreshed.runtime_probe_script_id == "script-one"
     assert refreshed.remote_script_id == "script-one"
     assert refreshed.remote_deployment_id == WPS_DEPLOYMENT_IDS[STANDARD_TARGET_CODE]
-    assert refreshed.sheet_order_probe_diagnostic["status"] == "SUCCESS"
     assert refreshed.column_width_probe_diagnostic["status"] == "SUCCESS"
     if "token" in update:
         assert repository.resolve_token(target) == "rotated-token"
@@ -2208,7 +2246,6 @@ def test_wps_target_configuration_document_identity_change_clears_all_runtime_st
     assert refreshed.connection_diagnostic == {}
     assert refreshed.runtime_probe_diagnostic == {}
     assert refreshed.sync_test_diagnostic == {}
-    assert refreshed.sheet_order_probe_diagnostic == {}
     assert refreshed.sheet_tab_color_probe_diagnostic == {}
     assert refreshed.column_width_probe_diagnostic == {}
     assert refreshed.remote_identity_verified_at == ""
@@ -2360,134 +2397,6 @@ def test_wps_runtime_probe_visibility_warning_keeps_core_verified_and_diagnostic
     assert target.runtime_probe_diagnostic["warnings"][0]["capability"] == "sheet_visibility"
 
 
-def test_wps_smart_runtime_probe_uses_smart_operation_and_persists_capabilities(
-    tmp_path: Path,
-) -> None:
-    operations: list[str] = []
-    core = {
-        key: True
-        for key in (
-            "sheet_enum",
-            "sheet_create",
-            "field_enum",
-            "field_create",
-            "record_create",
-            "record_read",
-            "record_update",
-            "record_delete",
-            "sheet_move",
-        )
-    }
-    body = {
-        "success": True,
-        "status": "SUCCESS_WITH_WARNINGS",
-        "protocol_version": 2,
-        "script_version": WPS_SCRIPT_VERSIONS[SMART_TARGET_CODE],
-        "deployment_id": WPS_DEPLOYMENT_IDS[SMART_TARGET_CODE],
-        "script_id": "smart-script",
-        "target_type": "WPS_SMART_SHEET",
-        "target_code": SMART_TARGET_CODE,
-        "document_id": "smart",
-        "binding_status": "UNBOUND",
-        "runtime_capability": "VERIFIED",
-        "core_verified": True,
-        "full_replace_ready": True,
-        "append_history_ready": True,
-        "core_capabilities": core,
-        "optional_capabilities": {"view_enum": False},
-        "verified_record_batch_size": 20,
-        "warnings": [{"capability": "view_enum", "message": "View.GetViews unavailable"}],
-    }
-
-    class FakeClient:
-        def post(self, target, *, token, argv):
-            operations.append(str(argv["operation"]))
-            return WpsHttpResponse(status_code=200, body=body)
-
-    service = TracksideApWpsSyncService(PathResolver(tmp_path), client=FakeClient())
-    service.configure_target(
-        "hzl10",
-        SMART_TARGET_CODE,
-        document_open_url="https://www.kdocs.cn/l/smart",
-        webhook_url="https://www.kdocs.cn/api/v3/ide/file/smart/script/smart-script/sync_task",
-        token="test-token",
-        enabled=True,
-    )
-
-    result = service.runtime_write_probe("hzl10", SMART_TARGET_CODE)
-    target = service._repository("hzl10").get_target(
-        TRACKSIDE_AP_WPS_BUSINESS_KEY, SMART_TARGET_CODE
-    )
-
-    assert operations == ["smart_runtime_write_probe"]
-    assert result["runtime_capability"] == "VERIFIED"
-    assert target.runtime_capability == "VERIFIED"
-    assert target.runtime_probe_diagnostic["core_capabilities"] == core
-    assert target.runtime_probe_diagnostic["optional_capabilities"]["view_enum"] is False
-    assert target.runtime_probe_diagnostic["verified_record_batch_size"] == 20
-
-
-def test_wps_sheet_order_probe_is_independent_and_persists_verification(
-    tmp_path: Path,
-) -> None:
-    operations: list[str] = []
-    body = {
-        "success": True,
-        "status": "SUCCESS_WITH_WARNINGS",
-        "protocol_version": 2,
-        "script_version": WPS_SCRIPT_VERSIONS[STANDARD_TARGET_CODE],
-        "deployment_id": WPS_DEPLOYMENT_IDS[STANDARD_TARGET_CODE],
-        "script_id": "script-one",
-        "target_type": "WPS_STANDARD_SPREADSHEET",
-        "target_code": STANDARD_TARGET_CODE,
-        "document_id": "standard",
-        "binding_status": "BOUND",
-        "runtime_capability": "VERIFIED",
-        "sheet_order_verified": True,
-        "sheet_move_before_verified": True,
-        "sheet_move_after_verified": True,
-        "expected_sheet_order": ["_NetConsoleRuntimeProbe", "_NetConsoleSyncTest"],
-        "actual_sheet_order": ["_NetConsoleRuntimeProbe", "_NetConsoleSyncTest"],
-        "warnings": [
-            {
-                "sheet_name": "_NetConsoleSyncMeta",
-                "feature": "system_sheet_visibility",
-                "reason": "visibility unsupported",
-            }
-        ],
-        "message": "Sheet.Move 排序探针通过",
-    }
-
-    class FakeClient:
-        def post(self, target, *, token, argv):
-            operations.append(str(argv["operation"]))
-            return WpsHttpResponse(status_code=200, body=body)
-
-    service = TracksideApWpsSyncService(PathResolver(tmp_path), client=FakeClient())
-    service.configure_target(
-        "hzl10",
-        STANDARD_TARGET_CODE,
-        document_open_url="https://www.kdocs.cn/l/standard",
-        webhook_url="https://www.kdocs.cn/api/v3/ide/file/standard/script/script-one/sync_task",
-        token="test-token",
-    )
-
-    result = service.sheet_order_probe("hzl10", STANDARD_TARGET_CODE)
-    target = service._repository("hzl10").get_target(
-        TRACKSIDE_AP_WPS_BUSINESS_KEY, STANDARD_TARGET_CODE
-    )
-
-    assert operations == ["sheet_order_probe"]
-    assert result["sheet_order_verified"] is True
-    assert target.sheet_order_probe_diagnostic["status"] == "SUCCESS_WITH_WARNINGS"
-    assert target.sheet_order_probe_diagnostic["sheet_move_before_verified"] is True
-    assert target.sheet_order_probe_diagnostic["actual_sheet_order"] == body["actual_sheet_order"]
-    assert target.runtime_capability == "DEPLOYMENT_PENDING"
-    assert target.runtime_probe_diagnostic == {}
-    assert target.sync_test_diagnostic == {}
-    assert target.binding_status == "UNKNOWN"
-
-
 def test_wps_sheet_tab_color_probe_is_independent_and_persists_verification(
     tmp_path: Path,
 ) -> None:
@@ -2538,7 +2447,6 @@ def test_wps_sheet_tab_color_probe_is_independent_and_persists_verification(
     assert target.runtime_capability == "DEPLOYMENT_PENDING"
     assert target.runtime_probe_diagnostic == {}
     assert target.sync_test_diagnostic == {}
-    assert target.sheet_order_probe_diagnostic == {}
     assert target.binding_status == "UNKNOWN"
 
 
@@ -2592,7 +2500,6 @@ def test_wps_column_width_probe_is_independent_and_persists_verification(
     assert target.runtime_capability == "DEPLOYMENT_PENDING"
     assert target.runtime_probe_diagnostic == {}
     assert target.sync_test_diagnostic == {}
-    assert target.sheet_order_probe_diagnostic == {}
     assert target.sheet_tab_color_probe_diagnostic == {}
     assert target.binding_status == "UNKNOWN"
 
