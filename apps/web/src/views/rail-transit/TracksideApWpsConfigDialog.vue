@@ -407,7 +407,9 @@ async function sheetOrderProbe(code: WpsTracksideTargetCode): Promise<void> {
     await reloadTargets()
     ElMessage.success(String(response.result.message || 'Sheet 排序探针通过'))
   } catch (reason) {
-    errorMessage.value = reason instanceof Error ? reason.message : 'Sheet 排序探针失败'
+    const message = reason instanceof Error ? reason.message : 'Sheet 排序探针失败'
+    errorMessage.value = message
+    ElMessage.error(`Sheet 排序测试失败：${message}`)
     await reloadTargets().catch(() => undefined)
   } finally {
     sheetOrderProbingCode.value = ''
