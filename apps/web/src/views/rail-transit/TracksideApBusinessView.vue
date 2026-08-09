@@ -124,7 +124,6 @@ const hasReadyWpsTarget = computed(() => wpsTargets.value.some(
 ))
 
 function wpsTargetDeploymentReady(target: WpsTracksideTarget): boolean {
-  if (target.target_type !== 'WPS_STANDARD_SPREADSHEET') return false
   return Boolean(
     target.runtime_capability === 'VERIFIED'
     && ['BOUND', 'UNBOUND'].includes(target.binding_status || '')

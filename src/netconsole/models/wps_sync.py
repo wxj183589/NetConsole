@@ -219,6 +219,53 @@ class WorkbookDTO:
         return {"sheets": [sheet.to_dict() for sheet in self.sheets]}
 
 
+@dataclass(frozen=True)
+class SmartFieldDTO:
+    key: str
+    name: str
+    type: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {"key": self.key, "name": self.name, "type": self.type}
+
+
+@dataclass(frozen=True)
+class SmartRecordDTO:
+    row_key: str
+    fields: dict[str, Any]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"row_key": self.row_key, "fields": self.fields}
+
+
+@dataclass(frozen=True)
+class SmartSheetDTO:
+    logical_sheet_key: str
+    sheet_name: str
+    sheet_order: int
+    sync_mode: WpsSyncMode
+    fields: tuple[SmartFieldDTO, ...]
+    records: tuple[SmartRecordDTO, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "logical_sheet_key": self.logical_sheet_key,
+            "sheet_name": self.sheet_name,
+            "sheet_order": self.sheet_order,
+            "sync_mode": self.sync_mode.value,
+            "fields": [field.to_dict() for field in self.fields],
+            "records": [record.to_dict() for record in self.records],
+        }
+
+
+@dataclass(frozen=True)
+class SmartWorkbookDTO:
+    sheets: tuple[SmartSheetDTO, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"sheets": [sheet.to_dict() for sheet in self.sheets]}
+
+
 __all__ = [
     "TRACKSIDE_AP_WPS_BUSINESS_KEY",
     "WPS_BINDING_ID_PREFIX",
@@ -226,6 +273,10 @@ __all__ = [
     "WorkbookFormatRunDTO",
     "WorkbookDTO",
     "WorkbookSheetDTO",
+    "SmartFieldDTO",
+    "SmartRecordDTO",
+    "SmartSheetDTO",
+    "SmartWorkbookDTO",
     "WpsFreezeMode",
     "WpsSyncMode",
     "WpsSyncTarget",

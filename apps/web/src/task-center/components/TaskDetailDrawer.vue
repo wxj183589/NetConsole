@@ -167,6 +167,19 @@ function sourceWorkbookFormatRow(target: Record<string, unknown>): { key: string
     examples: '',
   }
 }
+function smartResultRows(target: Record<string, unknown>): Array<{ key: string; label: string; value: string }> {
+  if (target.target_type !== 'WPS_SMART_SHEET') return []
+  return [
+    { key: 'smart-sheet-count', label: 'Data Sheet', value: `${Number(target.sheet_count || 0)}/9` },
+    { key: 'smart-field-count', label: '字段校验', value: String(target.field_count ?? '--') },
+    { key: 'smart-record-created', label: '记录创建', value: String(target.records_created ?? '--') },
+    { key: 'smart-record-deleted', label: '记录删除', value: String(target.records_deleted ?? '--') },
+    { key: 'smart-record-read', label: '记录读回', value: String(target.records_read_back ?? '--') },
+    { key: 'smart-history', label: '历史追加', value: String(target.history_appended ?? '--') },
+    { key: 'smart-order', label: 'Sheet 顺序', value: target.sheet_order_verified === true ? 'PASS' : '未验证' },
+    { key: 'smart-binding', label: 'Binding', value: String(target.binding_status || '--') },
+  ]
+}
 function formatResultRows(target: Record<string, unknown>): Array<{ key: string; label: string; value: string; examples: string }> {
   if (!target.format_results || typeof target.format_results !== 'object') return []
   const results = target.format_results as Record<string, unknown>
@@ -769,14 +782,18 @@ function handleClosed(): void {
             <article><span>状态</span><strong>{{ target.status || '--' }}</strong></article>
             <article><span>错误码</span><strong>{{ target.error_code || '--' }}</strong></article>
             <article><span>失败操作</span><strong>{{ target.failed_operation || '--' }}</strong></article>
-            <article><span>格式告警</span><strong>{{ target.format_warning_count || 0 }}</strong></article>
+            <article v-if="target.target_type !== 'WPS_SMART_SHEET'"><span>格式告警</span><strong>{{ target.format_warning_count || 0 }}</strong></article>
             <article><span>远端任务</span><strong>{{ target.remote_task_id_masked || '--' }}</strong></article>
             <article><span>远端状态</span><strong>{{ target.remote_task_status || '--' }}</strong></article>
             <article><span>提交时间</span><strong>{{ formatTaskDateTime(String(target.remote_task_submitted_at || '')) }}</strong></article>
             <article><span>最近查询</span><strong>{{ formatTaskDateTime(String(target.remote_task_last_polled_at || '')) }}</strong></article>
             <article class="wide"><span>消息</span><strong>{{ target.message || '--' }}</strong></article>
-            <article v-if="formatWarningSummary(target)" class="wide"><span>格式告警详情</span><strong>{{ formatWarningSummary(target) }}</strong></article>
-            <article v-for="item in formatResultRows(target)" :key="item.key" :class="{ wide: Boolean(item.examples) }">
+            <article v-if="target.target_type !== 'WPS_SMART_SHEET' && formatWarningSummary(target)" class="wide"><span>格式告警详情</span><strong>{{ formatWarningSummary(target) }}</strong></article>
+            <article v-for="item in smartResultRows(target)" :key="item.key">
+              <span>{{ item.label }}</span>
+              <strong>{{ item.value }}</strong>
+            </article>
+            <article v-for="item in target.target_type !== 'WPS_SMART_SHEET' ? formatResultRows(target) : []" :key="item.key" :class="{ wide: Boolean(item.examples) }">
               <span>{{ item.label }}</span>
               <strong>{{ item.value }}<small v-if="item.examples">{{ item.examples }}</small></strong>
             </article>

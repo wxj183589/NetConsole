@@ -15,7 +15,10 @@ from netconsole.core.paths import PathResolver
 from netconsole.core.sites import SiteManager
 from netconsole.models.wps_sync import (
     TRACKSIDE_AP_WPS_BUSINESS_KEY,
+    WorkbookDTO,
+    WorkbookSheetDTO,
     WpsFreezeMode,
+    WpsSyncMode,
     WpsSyncTarget,
     WpsTargetType,
     build_wps_binding_id,
@@ -43,6 +46,7 @@ from netconsole.services.wps_trackside_ap_sync import (
     _assert_standard_sync_readiness,
     _sheet_tab_color_probe_verified,
     parse_wps_webhook,
+    smart_workbook_dto_from_workbook,
     workbook_dto_from_xlsx,
 )
 
@@ -754,6 +758,60 @@ def test_workbook_dto_uses_prepend_mode_for_overview(tmp_path: Path) -> None:
     assert [sheet.sheet_order for sheet in dto.sheets] == [0, 1]
 
 
+def test_smart_workbook_dto_uses_records_and_keeps_overview_history_semantics() -> None:
+    workbook = WorkbookDTO(
+        sheets=(
+            WorkbookSheetDTO(
+                logical_sheet_key="ap_online_history_overview",
+                sheet_name="AP上线情况概览",
+                sync_mode=WpsSyncMode.PREPEND_SNAPSHOT,
+                cells=[
+                    ["日期：2026-08-10", None, None, None, None, None],
+                    ["更新时间：2026-08-10 10:30:00", None, None, None, None, None],
+                    ["归属站点", "规划AP总数量", "上线", "未上线", "上线率", "备注"],
+                    ["站点A", 100, 81, 19, 0.81, ""],
+                    ["合计", 100, 81, 19, 0.81, ""],
+                    [None, None, None, None, None, None],
+                ],
+                row_count=6,
+                column_count=6,
+                sheet_order=0,
+            ),
+            WorkbookSheetDTO(
+                logical_sheet_key="trackside_ap_business",
+                sheet_name="轨旁AP业务",
+                sync_mode=WpsSyncMode.FULL_REPLACE,
+                cells=[["归属站点", "AP MAC", "AP Rx"], ["站点A", "0000-0000-0001", -18.2]],
+                row_count=2,
+                column_count=3,
+                sheet_order=1,
+            ),
+        )
+    )
+
+    smart = smart_workbook_dto_from_workbook(
+        workbook,
+        target_batch_id="batch-smart",
+        snapshot_revision="revision-1",
+        snapshot_generated_at="2026-08-10T10:30:00+08:00",
+    )
+
+    overview, business = smart.sheets
+    assert overview.sync_mode is WpsSyncMode.APPEND_SNAPSHOT
+    assert [field.name for field in overview.fields] == [
+        "日期", "更新时间", "同步批次", "归属站点", "规划AP总数量",
+        "上线", "未上线", "上线率", "备注", "_NC_BATCH_ID", "_NC_ROW_KEY", "_NC_REVISION",
+    ]
+    assert next(field for field in overview.fields if field.name == "上线率").type == "Percentage"
+    assert overview.records[0].fields["上线率"] == 0.81
+    assert overview.records[0].fields["_NC_BATCH_ID"] == "batch-smart"
+    assert len(overview.records) == 2
+    assert business.sync_mode is WpsSyncMode.FULL_REPLACE
+    assert next(field for field in business.fields if field.name == "AP Rx").type == "Number"
+    assert business.records[0].fields["AP MAC"] == "0000-0000-0001"
+    assert business.records[0].fields["_NC_REVISION"] == "revision-1"
+
+
 def test_workbook_dto_preserves_sheet_order_and_compresses_format_runs(
     tmp_path: Path,
 ) -> None:
@@ -1452,6 +1510,14 @@ def test_smart_sync_script_exposes_fail_closed_runtime_capability_probe() -> Non
     assert 'runtime_capability: coreVerified ? "VERIFIED" : "DEPLOYMENT_PENDING"' in script
     assert "supports_hidden_fields" not in script
     assert "max_records_per_request" not in script
+    assert "payload.smart_workbook" in script
+    assert 'sheetDto.sync_mode === "APPEND_SNAPSHOT"' in script
+    assert "createRecordsBatched(sheet, expectedRecords, batchSize)" in script
+    assert "function updateRecordsBatched(" in script
+    assert "deleteRecordsBatched(sheet, oldIds, batchSize)" in script
+    assert script.index("createRecordsBatched(sheet, expectedRecords, batchSize)") < script.rindex("deleteRecordsBatched(sheet, oldIds, batchSize)")
+    assert "current.Move({ Before: null, After: sheetId(previous) })" in script
+    assert "WPS_DOCUMENT_BINDING_MISMATCH" in script
     assert script.rstrip().endswith("return main();")
 
 
@@ -1629,6 +1695,12 @@ def test_dual_sync_reuses_one_snapshot_for_both_adapters(monkeypatch, tmp_path: 
     assert payload_by_code[SMART_TARGET_CODE]["column_width_enabled"] is False
     assert payload_by_code[STANDARD_TARGET_CODE]["format_mirror_enabled"] is True
     assert payload_by_code[SMART_TARGET_CODE]["format_mirror_enabled"] is False
+    assert "workbook" in payload_by_code[STANDARD_TARGET_CODE]
+    assert "smart_workbook" not in payload_by_code[STANDARD_TARGET_CODE]
+    assert "smart_workbook" in payload_by_code[SMART_TARGET_CODE]
+    assert "workbook" not in payload_by_code[SMART_TARGET_CODE]
+    assert payload_by_code[SMART_TARGET_CODE]["runtime_probe_verified"] is True
+    assert payload_by_code[SMART_TARGET_CODE]["record_batch_size"] == 1
     assert "row_height_enabled" not in payload_by_code[STANDARD_TARGET_CODE]
     assert "row_height_enabled" not in payload_by_code[SMART_TARGET_CODE]
     standard_result = next(
@@ -1647,6 +1719,13 @@ def test_dual_sync_reuses_one_snapshot_for_both_adapters(monkeypatch, tmp_path: 
     assert report["verified_count"] == 1
     assert report["failed_count"] == 0
     assert report["representative_columns"][0]["column_label"] == "归属站点"
+    smart_result = next(
+        target
+        for target in result["targets"]
+        if target["target_code"] == SMART_TARGET_CODE
+    )
+    assert "column_width_verification_report" not in smart_result
+    assert "source_workbook_format_manifest" not in smart_result
 
 
 def test_wps_sync_aggregates_noncritical_format_warnings(
@@ -2316,6 +2395,7 @@ def test_wps_smart_runtime_probe_uses_smart_operation_and_persists_capabilities(
         "append_history_ready": True,
         "core_capabilities": core,
         "optional_capabilities": {"view_enum": False},
+        "verified_record_batch_size": 20,
         "warnings": [{"capability": "view_enum", "message": "View.GetViews unavailable"}],
     }
 
@@ -2344,6 +2424,7 @@ def test_wps_smart_runtime_probe_uses_smart_operation_and_persists_capabilities(
     assert target.runtime_capability == "VERIFIED"
     assert target.runtime_probe_diagnostic["core_capabilities"] == core
     assert target.runtime_probe_diagnostic["optional_capabilities"]["view_enum"] is False
+    assert target.runtime_probe_diagnostic["verified_record_batch_size"] == 20
 
 
 def test_wps_sheet_order_probe_is_independent_and_persists_verification(

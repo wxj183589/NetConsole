@@ -350,6 +350,54 @@ describe('TaskDetailDrawer', () => {
     wrapper.unmount()
   })
 
+  it('renders smart-sheet schema and record results without spreadsheet format rows', async () => {
+    mocks.getTask.mockResolvedValue({
+      ...task('wps-smart-success'),
+      type: 'trackside_ap_wps_sync',
+      status: 'COMPLETED',
+      business_status: 'SUCCESS',
+      error_code: '',
+      error_summary: '',
+      details: {
+        status: 'SUCCESS',
+        targets: [{
+          target_code: 'wps_smart_sheet',
+          target_type: 'WPS_SMART_SHEET',
+          target_name: '杭州地铁10号线轨旁AP业务-智能表格',
+          target_batch_id: 'target-smart-1',
+          status: 'SUCCESS',
+          sheet_count: 9,
+          field_count: 146,
+          records_created: 900,
+          records_deleted: 880,
+          records_read_back: 900,
+          history_appended: 20,
+          sheet_order_verified: true,
+          binding_status: 'BOUND',
+          format_warning_count: 0,
+        }],
+      },
+    })
+    const wrapper = mount(TaskDetailDrawer, {
+      props: { modelValue: true, taskId: 'wps-smart-success' },
+      global: { plugins: [createPinia()] },
+    })
+
+    await flushPromises()
+    const rendered = document.body.textContent || ''
+    expect(rendered).toContain('Data Sheet9/9')
+    expect(rendered).toContain('字段校验146')
+    expect(rendered).toContain('记录创建900')
+    expect(rendered).toContain('记录删除880')
+    expect(rendered).toContain('记录读回900')
+    expect(rendered).toContain('历史追加20')
+    expect(rendered).toContain('Sheet 顺序PASS')
+    expect(rendered).toContain('BindingBOUND')
+    expect(rendered).not.toContain('格式告警')
+    expect(rendered).not.toContain('列宽自动验收')
+    wrapper.unmount()
+  })
+
   it('keeps COMPLETED visible while hiding Artifact actions for a missing output', async () => {
     mocks.getTask.mockResolvedValue({
       ...task('task-missing'),

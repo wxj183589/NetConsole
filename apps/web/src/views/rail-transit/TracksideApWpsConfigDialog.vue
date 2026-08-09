@@ -153,6 +153,13 @@ function diagnosticItems(target: WpsTracksideTarget): Array<{
   label: string
   diagnostic: WpsTracksideDiagnostic
 }> {
+  if (target.target_type === 'WPS_SMART_SHEET') {
+    return [
+      { label: '连接测试', diagnostic: target.connection_diagnostic || {} },
+      { label: 'Sheet / Field / Record 能力', diagnostic: target.runtime_probe_diagnostic || {} },
+      { label: 'Sheet 排序', diagnostic: target.sheet_order_probe_diagnostic || {} },
+    ]
+  }
   return [
     { label: '连接测试', diagnostic: target.connection_diagnostic || {} },
     { label: '写入核心能力', diagnostic: target.runtime_probe_diagnostic || {} },
@@ -651,7 +658,7 @@ async function openDocument(target: WpsTracksideTarget): Promise<void> {
           <el-button :icon="CopyDocument" @click="copyAirScript(row.target.target_code, 'sync')">复制正式同步脚本</el-button>
           <el-button :loading="probingCode === row.target.target_code" :disabled="Boolean(probingCode) || Boolean(sheetOrderProbingCode) || Boolean(sheetTabColorProbingCode) || Boolean(columnWidthProbingCode) || Boolean(savingCode) || Boolean(testingCode) || Boolean(revalidatingCode) || Boolean(upgradingBindingCode)" @click="runtimeWriteProbe(row.target.target_code)">测试写入能力</el-button>
           <el-button v-if="row.target.target_type === 'WPS_STANDARD_SPREADSHEET'" :loading="syncTestingCode === row.target.target_code" :disabled="Boolean(syncTestingCode) || Boolean(probingCode) || Boolean(sheetOrderProbingCode) || Boolean(sheetTabColorProbingCode) || Boolean(columnWidthProbingCode) || Boolean(savingCode) || Boolean(testingCode) || Boolean(revalidatingCode) || Boolean(upgradingBindingCode)" @click="syncTestSheet(row.target.target_code)">测试同步 Sheet</el-button>
-          <el-button v-if="row.target.target_type === 'WPS_STANDARD_SPREADSHEET'" :loading="sheetOrderProbingCode === row.target.target_code" :disabled="Boolean(sheetOrderProbingCode) || Boolean(sheetTabColorProbingCode) || Boolean(columnWidthProbingCode) || Boolean(syncTestingCode) || Boolean(probingCode) || Boolean(savingCode) || Boolean(testingCode) || Boolean(revalidatingCode) || Boolean(upgradingBindingCode)" @click="sheetOrderProbe(row.target.target_code)">测试 Sheet 排序</el-button>
+          <el-button :loading="sheetOrderProbingCode === row.target.target_code" :disabled="Boolean(sheetOrderProbingCode) || Boolean(sheetTabColorProbingCode) || Boolean(columnWidthProbingCode) || Boolean(syncTestingCode) || Boolean(probingCode) || Boolean(savingCode) || Boolean(testingCode) || Boolean(revalidatingCode) || Boolean(upgradingBindingCode)" @click="sheetOrderProbe(row.target.target_code)">测试 Sheet 排序</el-button>
           <el-button v-if="row.target.target_type === 'WPS_STANDARD_SPREADSHEET'" :loading="sheetTabColorProbingCode === row.target.target_code" :disabled="Boolean(sheetTabColorProbingCode) || Boolean(sheetOrderProbingCode) || Boolean(columnWidthProbingCode) || Boolean(syncTestingCode) || Boolean(probingCode) || Boolean(savingCode) || Boolean(testingCode) || Boolean(revalidatingCode) || Boolean(upgradingBindingCode)" @click="sheetTabColorProbe(row.target.target_code)">测试标签颜色</el-button>
           <el-button v-if="row.target.target_type === 'WPS_STANDARD_SPREADSHEET'" :loading="columnWidthProbingCode === row.target.target_code" :disabled="Boolean(columnWidthProbingCode) || Boolean(sheetTabColorProbingCode) || Boolean(sheetOrderProbingCode) || Boolean(syncTestingCode) || Boolean(probingCode) || Boolean(savingCode) || Boolean(testingCode) || Boolean(revalidatingCode) || Boolean(upgradingBindingCode)" @click="columnWidthProbe(row.target.target_code)">复查列宽能力</el-button>
           <el-button :icon="Guide" @click="toggleDeploymentSteps(row.target.target_code)">查看部署步骤</el-button>
@@ -702,6 +709,7 @@ async function openDocument(target: WpsTracksideTarget): Promise<void> {
             </div>
             <span v-if="typeof item.diagnostic.full_replace_ready === 'boolean'">全量替换：{{ item.diagnostic.full_replace_ready ? '就绪' : '不可用' }}</span>
             <span v-if="typeof item.diagnostic.prepend_snapshot_ready === 'boolean'">顶部追加快照：{{ item.diagnostic.prepend_snapshot_ready ? '就绪' : '不可用' }}</span>
+            <span v-if="typeof item.diagnostic.append_history_ready === 'boolean'">历史记录追加：{{ item.diagnostic.append_history_ready ? '就绪' : '不可用' }}</span>
             <span v-if="typeof item.diagnostic.sheet_order_verified === 'boolean'">业务 Sheet 顺序：{{ item.diagnostic.sheet_order_verified ? '已验证' : '未通过' }}</span>
             <span v-if="item.diagnostic.expected_sheet_order?.length">预期顺序：{{ item.diagnostic.expected_sheet_order.join(' → ') }}</span>
             <span v-if="item.diagnostic.actual_sheet_order?.length">实际顺序：{{ item.diagnostic.actual_sheet_order.join(' → ') }}</span>

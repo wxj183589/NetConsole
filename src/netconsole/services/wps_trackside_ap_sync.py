@@ -28,6 +28,10 @@ from netconsole.models.wps_sync import (
     WorkbookFormatRunDTO,
     WorkbookDTO,
     WorkbookSheetDTO,
+    SmartFieldDTO,
+    SmartRecordDTO,
+    SmartSheetDTO,
+    SmartWorkbookDTO,
     WpsFreezeMode,
     WpsSyncMode,
     WpsSyncTarget,
@@ -85,6 +89,19 @@ _WPS_WEBHOOK_PATH_RE = re.compile(
 WPS_REMOTE_TASK_MAX_WAIT_SECONDS = 600.0
 WPS_REMOTE_TASK_POLL_INTERVAL_SECONDS = 1.5
 _REMOTE_TASK_ID_MAX_LENGTH = 4096
+_SMART_OVERVIEW_FIELD_NAMES = (
+    "归属站点",
+    "规划AP总数量",
+    "上线",
+    "未上线",
+    "上线率",
+    "备注",
+)
+_SMART_SYSTEM_FIELD_TYPES = (
+    ("_NC_BATCH_ID", "MultiLineText"),
+    ("_NC_ROW_KEY", "MultiLineText"),
+    ("_NC_REVISION", "MultiLineText"),
+)
 
 DEFAULT_TARGETS = (
     {
@@ -760,6 +777,7 @@ class WpsSmartSheetAdapter(BaseWpsAdapter):
             and required.issubset(capabilities)
             and all(bool(capabilities[key]) for key in required)
             and bool(result.get("core_verified"))
+            and _safe_int(result.get("verified_record_batch_size")) > 0
             and str(result.get("runtime_capability") or "") == "VERIFIED"
         )
         if not verified:
@@ -771,6 +789,9 @@ class WpsSmartSheetAdapter(BaseWpsAdapter):
                     "runtime_capability": result.get("runtime_capability") or "",
                     "core_verified": bool(result.get("core_verified")),
                     "core_capabilities": capabilities if isinstance(capabilities, Mapping) else {},
+                    "verified_record_batch_size": _safe_int(
+                        result.get("verified_record_batch_size")
+                    ),
                     "capability_failures": result.get("capability_failures") or [],
                     "warnings": result.get("warnings") or [],
                 },
@@ -1114,11 +1135,6 @@ class TracksideApWpsSyncService:
         repository = self._repository(site_id)
         self._ensure_default_targets(repository)
         target = repository.get_target(TRACKSIDE_AP_WPS_BUSINESS_KEY, target_code)
-        if target.target_type is not WpsTargetType.STANDARD_SPREADSHEET:
-            raise WpsSyncError(
-                "WPS_SHEET_ORDER_PROBE_UNSUPPORTED",
-                "Sheet 排序探针仅支持普通在线表格",
-            )
         try:
             _validate_target_configuration(target)
             result = self.adapters[target.target_type].sheet_order_probe(
@@ -1257,17 +1273,6 @@ class TracksideApWpsSyncService:
             for target in repository.list_targets(TRACKSIDE_AP_WPS_BUSINESS_KEY)
         }
         targets = [targets_by_code[code] for code in requested_codes]
-        if isinstance(self.client, WpsAirScriptClient) and any(
-            target.target_code == SMART_TARGET_CODE for target in targets
-        ):
-            raise WpsSyncError(
-                "WPS_SMART_SHEET_RUNTIME_UNVERIFIED",
-                "智能表格 AirScript 多维表写入接口尚未完成 WPS 运行时验收",
-                details={
-                    "phase": "LOCAL_CONFIGURATION",
-                    "target_code": SMART_TARGET_CODE,
-                },
-            )
         disabled = [target.target_name for target in targets if not target.enabled]
         if disabled:
             raise WpsSyncError(
@@ -1329,7 +1334,7 @@ class TracksideApWpsSyncService:
             )
         if isinstance(self.client, WpsAirScriptClient):
             for target in targets:
-                _assert_standard_sync_readiness(target)
+                _assert_runtime_identity(target)
 
         resumable = repository.find_resumable_batch(
             TRACKSIDE_AP_WPS_BUSINESS_KEY,
@@ -1411,6 +1416,16 @@ class TracksideApWpsSyncService:
         persisted_runs: list[dict[str, Any]] = []
         for target in targets:
             target_batch_id = f"{batch_id}_{target.target_code}"
+            smart_workbook = (
+                smart_workbook_dto_from_workbook(
+                    workbook,
+                    target_batch_id=target_batch_id,
+                    snapshot_revision=revision,
+                    snapshot_generated_at=generated_at,
+                )
+                if target.target_type is WpsTargetType.SMART_SHEET
+                else None
+            )
             request_payload = {
                 "protocol_version": WPS_SYNC_PROTOCOL_VERSION,
                 "operation": "sync_trackside_ap_business",
@@ -1433,7 +1448,18 @@ class TracksideApWpsSyncService:
                 ),
                 "sheet_tab_color_enabled": _sheet_tab_color_probe_verified(target),
                 "column_width_enabled": target.target_type is WpsTargetType.STANDARD_SPREADSHEET,
-                "workbook": workbook.to_dict(),
+                "runtime_capability": target.runtime_capability,
+                "runtime_probe_verified": target.runtime_capability == "VERIFIED",
+                "record_batch_size": (
+                    _smart_record_batch_size(target)
+                    if target.target_type is WpsTargetType.SMART_SHEET
+                    else 0
+                ),
+                **(
+                    {"smart_workbook": smart_workbook.to_dict()}
+                    if smart_workbook is not None
+                    else {"workbook": workbook.to_dict()}
+                ),
                 "script_id": _script_id_from_webhook(target.webhook_url),
             }
             repository.create_target_run(
@@ -1536,20 +1562,21 @@ class TracksideApWpsSyncService:
                         self._token(repository, target),
                         request_payload,
                     )
-                manifest = (
-                    dict(source_format_manifest)
-                    if isinstance(source_format_manifest, Mapping)
-                    else {}
-                )
-                column_width_report = _column_width_verification_report(
-                    manifest=manifest.get("column_widths") or [],
-                    request_payload=request_payload,
-                    remote_result=response,
-                    enabled=target.target_type is WpsTargetType.STANDARD_SPREADSHEET,
-                )
-                response["column_width_verification_report"] = column_width_report
-                response["source_workbook_format_manifest"] = manifest
-                _append_column_width_report_warning(response, column_width_report)
+                if target.target_type is WpsTargetType.STANDARD_SPREADSHEET:
+                    manifest = (
+                        dict(source_format_manifest)
+                        if isinstance(source_format_manifest, Mapping)
+                        else {}
+                    )
+                    column_width_report = _column_width_verification_report(
+                        manifest=manifest.get("column_widths") or [],
+                        request_payload=request_payload,
+                        remote_result=response,
+                        enabled=True,
+                    )
+                    response["column_width_verification_report"] = column_width_report
+                    response["source_workbook_format_manifest"] = manifest
+                    _append_column_width_report_warning(response, column_width_report)
                 format_warnings = response.get("format_warnings")
                 target_status = (
                     "SUCCESS_WITH_WARNINGS"
@@ -2231,6 +2258,240 @@ def workbook_dto_from_xlsx(
         return WorkbookDTO(sheets=tuple(sheets))
     finally:
         workbook.close()
+
+
+def smart_workbook_dto_from_workbook(
+    workbook: WorkbookDTO,
+    *,
+    target_batch_id: str,
+    snapshot_revision: str,
+    snapshot_generated_at: str,
+) -> SmartWorkbookDTO:
+    sheets = tuple(
+        _smart_sheet_dto(
+            sheet,
+            target_batch_id=target_batch_id,
+            snapshot_revision=snapshot_revision,
+            snapshot_generated_at=snapshot_generated_at,
+        )
+        for sheet in sorted(workbook.sheets, key=lambda item: item.sheet_order)
+    )
+    return SmartWorkbookDTO(sheets=sheets)
+
+
+def _smart_sheet_dto(
+    sheet: WorkbookSheetDTO,
+    *,
+    target_batch_id: str,
+    snapshot_revision: str,
+    snapshot_generated_at: str,
+) -> SmartSheetDTO:
+    if sheet.logical_sheet_key == "ap_online_history_overview":
+        return _smart_overview_sheet_dto(
+            sheet,
+            target_batch_id=target_batch_id,
+            snapshot_revision=snapshot_revision,
+            snapshot_generated_at=snapshot_generated_at,
+        )
+    header_values = list(sheet.cells[0]) if sheet.cells else []
+    data_rows = [list(row) for row in sheet.cells[1:] if any(value not in (None, "") for value in row)]
+    column_count = max(
+        [len(header_values), *(len(row) for row in data_rows)],
+        default=0,
+    )
+    headers = _unique_smart_field_names(header_values, column_count)
+    column_values = [
+        [_smart_scalar(row[index] if index < len(row) else None) for row in data_rows]
+        for index in range(column_count)
+    ]
+    field_types = [
+        _smart_field_type(headers[index], column_values[index])
+        for index in range(column_count)
+    ]
+    fields = [
+        SmartFieldDTO(
+            key=f"column_{index + 1:03d}",
+            name=headers[index],
+            type=field_types[index],
+        )
+        for index in range(column_count)
+    ]
+    fields.extend(
+        SmartFieldDTO(key=name.casefold(), name=name, type=field_type)
+        for name, field_type in _SMART_SYSTEM_FIELD_TYPES
+    )
+    records = tuple(
+        _smart_record_dto(
+            sheet.logical_sheet_key,
+            headers,
+            field_types,
+            row,
+            target_batch_id=target_batch_id,
+            snapshot_revision=snapshot_revision,
+        )
+        for row in data_rows
+    )
+    return SmartSheetDTO(
+        logical_sheet_key=sheet.logical_sheet_key,
+        sheet_name=sheet.sheet_name,
+        sheet_order=sheet.sheet_order,
+        sync_mode=WpsSyncMode.FULL_REPLACE,
+        fields=tuple(fields),
+        records=records,
+    )
+
+
+def _smart_overview_sheet_dto(
+    sheet: WorkbookSheetDTO,
+    *,
+    target_batch_id: str,
+    snapshot_revision: str,
+    snapshot_generated_at: str,
+) -> SmartSheetDTO:
+    cells = sheet.cells
+    snapshot_date = _prefixed_cell_value(cells, 0, "日期：") or snapshot_generated_at[:10]
+    updated_at = _prefixed_cell_value(cells, 1, "更新时间：") or snapshot_generated_at
+    source_rows = [
+        list(row)
+        for row in cells[3:]
+        if any(value not in (None, "") for value in row)
+    ]
+    field_names = (
+        "日期",
+        "更新时间",
+        "同步批次",
+        *_SMART_OVERVIEW_FIELD_NAMES,
+        *(name for name, _field_type in _SMART_SYSTEM_FIELD_TYPES),
+    )
+    field_types = (
+        "MultiLineText",
+        "MultiLineText",
+        "MultiLineText",
+        "MultiLineText",
+        "Number",
+        "Number",
+        "Number",
+        "Percentage",
+        "MultiLineText",
+        *(field_type for _name, field_type in _SMART_SYSTEM_FIELD_TYPES),
+    )
+    fields = tuple(
+        SmartFieldDTO(key=f"field_{index + 1:03d}", name=name, type=field_types[index])
+        for index, name in enumerate(field_names)
+    )
+    records: list[SmartRecordDTO] = []
+    business_types = field_types[3:3 + len(_SMART_OVERVIEW_FIELD_NAMES)]
+    for row in source_rows:
+        values = [
+            _smart_typed_value(
+                business_types[index],
+                row[index] if index < len(row) else None,
+            )
+            for index in range(len(_SMART_OVERVIEW_FIELD_NAMES))
+        ]
+        row_key = content_sha256(
+            {"sheet": sheet.logical_sheet_key, "row": values}
+        )
+        record_fields = {
+            "日期": snapshot_date,
+            "更新时间": updated_at,
+            "同步批次": target_batch_id,
+            **dict(zip(_SMART_OVERVIEW_FIELD_NAMES, values, strict=True)),
+            "_NC_BATCH_ID": target_batch_id,
+            "_NC_ROW_KEY": row_key,
+            "_NC_REVISION": snapshot_revision,
+        }
+        records.append(SmartRecordDTO(row_key=row_key, fields=record_fields))
+    return SmartSheetDTO(
+        logical_sheet_key=sheet.logical_sheet_key,
+        sheet_name=sheet.sheet_name,
+        sheet_order=sheet.sheet_order,
+        sync_mode=WpsSyncMode.APPEND_SNAPSHOT,
+        fields=fields,
+        records=tuple(records),
+    )
+
+
+def _smart_record_dto(
+    logical_sheet_key: str,
+    headers: Sequence[str],
+    field_types: Sequence[str],
+    row: Sequence[object],
+    *,
+    target_batch_id: str,
+    snapshot_revision: str,
+) -> SmartRecordDTO:
+    values = [
+        _smart_typed_value(
+            field_types[index],
+            row[index] if index < len(row) else None,
+        )
+        for index in range(len(headers))
+    ]
+    row_key = content_sha256({"sheet": logical_sheet_key, "row": values})
+    fields = dict(zip(headers, values, strict=True))
+    fields.update(
+        {
+            "_NC_BATCH_ID": target_batch_id,
+            "_NC_ROW_KEY": row_key,
+            "_NC_REVISION": snapshot_revision,
+        }
+    )
+    return SmartRecordDTO(row_key=row_key, fields=fields)
+
+
+def _unique_smart_field_names(values: Sequence[object], count: int) -> list[str]:
+    names: list[str] = []
+    used = {name.casefold() for name, _field_type in _SMART_SYSTEM_FIELD_TYPES}
+    for index in range(count):
+        base = str(values[index] if index < len(values) else "").strip() or f"字段{index + 1}"
+        name = base
+        suffix = 2
+        while name.casefold() in used:
+            name = f"{base}_{suffix}"
+            suffix += 1
+        used.add(name.casefold())
+        names.append(name)
+    return names
+
+
+def _smart_field_type(name: str, values: Sequence[object]) -> str:
+    normalized = str(name or "").casefold()
+    if "率" in normalized or "percentage" in normalized or normalized.endswith("rate"):
+        return "Percentage"
+    present = [value for value in values if value not in (None, "")]
+    if present and all(isinstance(value, (int, float)) and not isinstance(value, bool) for value in present):
+        return "Number"
+    return "MultiLineText"
+
+
+def _smart_typed_value(field_type: str, value: object) -> object:
+    scalar = _smart_scalar(value)
+    if scalar in (None, ""):
+        return scalar
+    if field_type == "Percentage" and isinstance(scalar, str):
+        text = scalar.strip()
+        if text.endswith("%"):
+            try:
+                return float(text[:-1].strip()) / 100.0
+            except ValueError:
+                return scalar
+    return scalar
+
+
+def _smart_scalar(value: object) -> object:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, datetime):
+        return value.isoformat(sep=" ")
+    return str(value)
+
+
+def _prefixed_cell_value(cells: Sequence[Sequence[object]], index: int, prefix: str) -> str:
+    if index >= len(cells) or not cells[index]:
+        return ""
+    value = str(cells[index][0] or "").strip()
+    return value[len(prefix):].strip() if value.startswith(prefix) else value
 
 
 def _source_workbook_format_manifest(
@@ -3253,6 +3514,8 @@ def _operation_diagnostic(
         "core_verified",
         "full_replace_ready",
         "prepend_snapshot_ready",
+        "append_history_ready",
+        "verified_record_batch_size",
         "capabilities",
         "core_capabilities",
         "optional_capabilities",
@@ -3273,6 +3536,7 @@ def _operation_diagnostic(
         "actual_column_widths",
         "probe_sheet_visible",
         "probe_sheet",
+        "probe_cleanup",
         "binding_status",
         "local_binding_id",
         "remote_binding_id",
@@ -3698,6 +3962,15 @@ def _assert_standard_sync_readiness(target: WpsSyncTarget) -> None:
     # lock a target after a successful probe.
     if target.target_type is WpsTargetType.STANDARD_SPREADSHEET:
         _assert_runtime_identity(target)
+
+
+def _smart_record_batch_size(target: WpsSyncTarget) -> int:
+    value = target.runtime_probe_diagnostic.get("verified_record_batch_size")
+    try:
+        parsed = int(value or 0)
+    except (TypeError, ValueError):
+        parsed = 0
+    return max(1, min(parsed or 1, 100))
 
 
 def _sanitize_result(value: Mapping[str, object]) -> dict[str, Any]:

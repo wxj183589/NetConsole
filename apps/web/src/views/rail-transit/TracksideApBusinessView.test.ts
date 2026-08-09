@@ -891,9 +891,22 @@ describe('TracksideApBusinessView mounted behavior', () => {
     )
     expect(platformMocks.writeClipboardText).toHaveBeenNthCalledWith(
       2,
-      expect.stringContaining('WPS_SMART_SHEET_RUNTIME_UNVERIFIED'),
+      expect.stringContaining('trackside-ap-smart-2.2.0'),
     )
     expect(navigator.clipboard.writeText).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('enables smart-sheet sync only after its own runtime and binding gates pass', async () => {
+    const targets = wpsTargets(true)
+    targets[1].runtime_capability = 'VERIFIED'
+    targets[1].binding_status = 'UNBOUND'
+    api.listTracksideWpsTargets.mockResolvedValue(targets)
+    const wrapper = await mountView()
+    await flushPromises()
+
+    expect(button(wrapper, '同步智能表格').attributes('disabled')).toBeUndefined()
+    expect(button(wrapper, '同步普通表格').attributes('disabled')).toBeDefined()
     wrapper.unmount()
   })
 

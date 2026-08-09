@@ -276,6 +276,8 @@ export interface WpsTracksideDiagnostic {
   core_verified?: boolean
   full_replace_ready?: boolean
   prepend_snapshot_ready?: boolean
+  append_history_ready?: boolean
+  verified_record_batch_size?: number
   capabilities?: Record<string, boolean>
   core_capabilities?: Record<string, boolean>
   optional_capabilities?: Record<string, boolean>
@@ -404,6 +406,14 @@ export interface WpsTracksideSyncResult {
     remote_task_last_polled_at?: string
     remote_task_finished_at?: string
     format_warning_count?: number
+    sheet_count?: number
+    field_count?: number
+    records_created?: number
+    records_deleted?: number
+    records_read_back?: number
+    history_appended?: number
+    sheet_order_verified?: boolean
+    binding_status?: string
     format_warnings?: Array<{
       sheet_name: string
       feature: string
