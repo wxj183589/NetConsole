@@ -319,6 +319,7 @@ def test_three_job_results_append_shadow_without_changing_old_fields(
 
     from netconsole.services import mesh_import_service
     from netconsole.services import vehicle_mr_online
+    from netconsole.services.online_mr import parsed_database_upgrade
     from netconsole.services.rail_transit import online_mr_diagnosis_parser
 
     monkeypatch.setattr(
@@ -340,6 +341,11 @@ def test_three_job_results_append_shadow_without_changing_old_fields(
 
     monkeypatch.setattr(
         online_mr_diagnosis_parser, "OnlineMrDiagnosisParser", FakeParser
+    )
+    monkeypatch.setattr(
+        parsed_database_upgrade.OnlineMrParsedDatabaseUpgradeService,
+        "rebuild",
+        lambda *_args, **_kwargs: {"mesh_samples": 1, "active_segments": 1},
     )
     monkeypatch.setattr(
         vehicle_mr_online.VehicleMrOnlineStore,
@@ -433,6 +439,7 @@ def test_shadow_failure_keeps_all_three_jobs_finished(
     from netconsole.services import mesh_import_service
     from netconsole.services import vehicle_mr_online
     from netconsole.services.mr_mesh_identity_shadow import MrMeshIdentityShadowService
+    from netconsole.services.online_mr import parsed_database_upgrade
     from netconsole.services.rail_transit import online_mr_diagnosis_parser
 
     monkeypatch.setattr(
@@ -458,6 +465,11 @@ def test_shadow_failure_keeps_all_three_jobs_finished(
 
     monkeypatch.setattr(
         online_mr_diagnosis_parser, "OnlineMrDiagnosisParser", FakeParser
+    )
+    monkeypatch.setattr(
+        parsed_database_upgrade.OnlineMrParsedDatabaseUpgradeService,
+        "rebuild",
+        lambda *_args, **_kwargs: {"mesh_samples": 3, "active_segments": 0},
     )
 
     def fail(*_args, **_kwargs):

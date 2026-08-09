@@ -88,8 +88,9 @@ def test_status_api_returns_current_recent_and_readonly_mapping_state(
     }
     assert post_paths == {
         "/online-mr/sessions/{session_id}/notes",
-        "/online-mr/sessions/{session_id}/desktop-location",
-        "/online-mr/sessions/{session_id}/parse",
+            "/online-mr/sessions/{session_id}/desktop-location",
+            "/online-mr/sessions/{session_id}/ensure-current",
+            "/online-mr/sessions/{session_id}/parse",
         "/online-mr/sessions/{session_id}/report",
         "/online-mr/mesh-analysis/import",
         "/online-mr/tasks/{task_id}/cancel",
