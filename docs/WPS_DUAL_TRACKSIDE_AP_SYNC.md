@@ -19,11 +19,11 @@
 
 修改在线文档连接、webhook、webhook 中的文档 ID 或脚本 ID 会清除旧远端身份、六类诊断和运行时探针状态，并将运行时能力降级为 `DEPLOYMENT_PENDING`；已有绑定记录保留，待新的连接测试重新确认。保存完全相同的连接地址和 webhook 是 no-op；修改超时、启用开关或 Token 不会清除远端部署身份、运行时探针或绑定身份。前端仅在草稿真实变化或输入新 Token 时保存，未修改配置时“测试连接”直接执行连接测试。
 
-普通在线表格的数据写入链路已由杭州地铁 10 号线真实 9 Sheet 同步确认，证据等级为 `USER_FIELD_CONFIRMED`。该 `2.2.0-standard` / `trackside-ap-standard-2.2.0` 状态固定标记为 `WPS_STANDARD_DATA_SYNC_LAST_KNOWN_GOOD`。Phase A 的 Sheet 排序、统一 registry、上线历史块和六个标签色也已由用户现场确认。`2.4.1-standard` 的独立列宽探针已确认 A-D 列写后读回和视觉递增，不能重复要求用户验证能力探针。`2.5.0-standard` 增加了正式 143 列的 XLSX、DTO、payload、`ColumnWidth` 和 `Width(points)` 全链路报告。当前候选 `2.8.3-standard` / `trackside-ap-standard-2.8.3` 增加真实业务列 AutoFit、本地宽度下限、按字段布局 Clamp、FULL_REPLACE 受管区域清理、百分比显示读回和确定性空表 Freeze；本地模拟与杭州 10 号线源 Workbook 审计完成后，真实 WPS 格式报告仍必须标记为 `UNVERIFIED`，发布前不得写成现场已验收。
+普通在线表格的数据写入链路已由杭州地铁 10 号线真实 9 Sheet 同步确认，证据等级为 `USER_FIELD_CONFIRMED`。该 `2.2.0-standard` / `trackside-ap-standard-2.2.0` 状态固定标记为 `WPS_STANDARD_DATA_SYNC_LAST_KNOWN_GOOD`。Phase A 的 Sheet 排序、统一 registry、上线历史块和六个标签色也已由用户现场确认。`2.4.1-standard` 的独立列宽探针已确认 A-D 列写后读回和视觉递增，不能重复要求用户验证能力探针。`2.5.0-standard` 增加了正式 143 列的 XLSX、DTO、payload、`ColumnWidth` 和 `Width(points)` 全链路报告。当前候选 `2.8.4-standard` / `trackside-ap-standard-2.8.4` 保留 `2.8.3` 的真实业务列 AutoFit、本地宽度下限、按字段布局 Clamp、FULL_REPLACE 受管区域清理和百分比显示读回，并将 WPS 冻结契约收敛为 `NONE / FIRST_ROW_ONLY`，增加窗格彻底复位、固定 `A2` 选区以及切出切回二次读回。本地 9 Sheet 模拟与杭州 10 号线源 Workbook 审计完成后，真实 WPS 格式报告仍必须标记为 `UNVERIFIED`，发布前不得写成现场已验收。
 
 ## Phase A：Sheet 顺序（现场已验证）
 
-普通在线表格复用轨旁 AP 本地 XLSX 的同一次冻结快照和同一个 workbook builder，不维护第二套样式。`TRACKSIDE_AP_BUSINESS_SHEET_DEFINITIONS` 是业务 Sheet 身份、名称、顺序、同步模式和标签色的唯一真源；`WorkbookDTO.sheet_order` 无条件按 `openpyxl workbook.worksheets` 的实际枚举顺序从零递增，且排除 `_NetConsole*` 系统 Sheet。固定业务顺序为：`AP上线情况概览`、`轨旁AP业务`、`当前异常光衰`、`AP光衰处理记录`、`AP离线情况`、`AP离线台账`、`新增上线AP概览`、`待关联在线AP`、`交换机光模块统计`。`AP上线情况概览` 与 `新增上线AP概览` 分别使用 `ap_online_history_overview` 和 `newly_online_ap_overview`，不得按中文相似名称混用。
+普通在线表格复用轨旁 AP 本地 XLSX 的同一次冻结快照和同一个 workbook builder，不维护第二套样式。`TRACKSIDE_AP_BUSINESS_SHEET_DEFINITIONS` 是业务 Sheet 身份、名称、顺序、同步模式、标签色和 WPS `freeze_mode` 的唯一真源；`WorkbookDTO.sheet_order` 无条件按 `openpyxl workbook.worksheets` 的实际枚举顺序从零递增，且排除 `_NetConsole*` 系统 Sheet。固定业务顺序为：`AP上线情况概览`、`轨旁AP业务`、`当前异常光衰`、`AP光衰处理记录`、`AP离线情况`、`AP离线台账`、`新增上线AP概览`、`待关联在线AP`、`交换机光模块统计`。`AP上线情况概览` 与 `新增上线AP概览` 分别使用 `ap_online_history_overview` 和 `newly_online_ap_overview`，不得按中文相似名称混用。
 
 `FULL_REPLACE` 和 `PREPEND_SNAPSHOT` 继续使用 `WPS_STANDARD_DATA_SYNC_LAST_KNOWN_GOOD` 的二维 `Value2` 写入和顶部插行协议。`FULL_REPLACE` 在写值前按 `_NetConsoleSyncMeta.managed_ranges_json` 清除上一轮与本轮最大受管区域的值、格式和 Merge；首次升级没有受管元数据时只用 `UsedRange` 做一次兼容清理。全部业务值写完后才进入独立 `reorderBusinessSheets()`：按 DTO 的 `sheet_order` 排序，使用 AirScript 2.0 官方 `Worksheet.Move(Before, After)` 位置参数显式移动，再重新枚举 `Application.Worksheets.Item(1..Count)`。业务 Sheet 读回顺序与 DTO 不完全一致时返回 `WPS_SHEET_ORDER_VERIFY_FAILED`，正式同步失败，但不会改变值写入协议。
 
@@ -49,7 +49,9 @@ Python 从同一次本地导出 Workbook 提取 `column_widths`，并把每个�
 
 `FULL_REPLACE` 按上一轮与本轮最大受管范围清理后重建，因此 `100 -> 0/20` 行不会残留旧 Value、Fill、Border、NumberFormat、Alignment、Merge 或 Filter；空数据 `当前异常光衰` 只保留本地定义的表头/占位内容，不允许残留大片红色。`AP上线情况概览` 的 `PREPEND_SNAPSHOT` 只清理并格式化本次顶部新插入块，旧历史值、旧历史格式和旧 Merge 不处理。同批次去重跳过的新块也不重新格式化。每个格式组执行 `WRITE -> READ BACK -> COMPARE`，记录 attempted、applied、read_back、verified、failed 和失败 Range；颜色和对齐可附带 `DisplayFormat` 作为只读辅助证据。代表样本覆盖表头、首行、中间行、末行以及最多四种不同填充行。
 
-冻结窗格在所有数据、格式、AutoFit、筛选、Sheet 排序和标签色操作完成后统一执行最终化。脚本先直接写入并立即读回 `SplitRow`/`SplitColumn`/`FreezePanes`；若 WPS runtime 仍返回当前 ActiveCell 导致的旧行号，则清除旧状态，Activate 目标 Sheet，严格选择 `A2` 并验证 `ActiveCell`，随后再次明确写入 `SplitRow=1`、`SplitColumn=0` 才启用冻结。任何实际读回不等于期望值都会记录 `WPS_FREEZE_READBACK_FAILED` 或 `WPS_FREEZE_SELECTION_FAILED`，作为格式 warning，不得显示为冻结成功。
+冻结窗格在所有数据、格式、AutoFit、筛选、Sheet 排序、系统 Sheet 管理和标签色操作完成后统一执行最终化。WPS DTO 不再透传本地 XLSX 的 `freeze_panes` 地址，只发送 `NONE / FIRST_ROW_ONLY`：`ap_online_history_overview` 固定为 `NONE`，其余八个业务 Sheet 固定为 `FIRST_ROW_ONLY`；旧 `A12 / D20` 等地址即使出现在兼容载荷中也不能控制远端窗格。每页先 Activate 并确认 `ActiveSheet`，关闭 `FreezePanes`，将 `SplitRow / SplitColumn` 归零；运行时存在 `SplitHorizontal / SplitVertical / ScrollRow / ScrollColumn` 时同步归零分割并把视口恢复到左上角。`FIRST_ROW_ONLY` 只选择固定 `A2`、核对 `ActiveCell=2/1`，再设置 `FreezePanes=true`，严禁写入非零 `SplitRow` 或混用两套模型。
+
+每个 Sheet 在设置后立即读回一次，再激活下一个业务 Sheet、切回当前 Sheet 后第二次读回。两次都必须符合目标行数与零冻结列，且可用的 `SplitVertical` 必须为零，才计入 `freeze_panes.verified_count`；报告保留 `before / after_reset / after_select / immediate / reactivated` 的活动 Sheet、活动单元格、Split、Scroll 和可选属性诊断。选择失败、复位失败、立即读回不一致或重新激活后漂移分别记录明确错误码，并返回 `SUCCESS_WITH_WARNINGS`，不得用当场一次读回掩盖真实 UI 错误。Freeze 最终化之后，正式同步只允许写绑定元数据和构造 JSON 结果，不再执行 `Select / Activate / AutoFit / Filter / Move` 或其他 Workbook UI 操作。
 
 默认无填充、透明、Theme 或 Indexed 颜色不进入 DTO；只有显式不透明 ARGB 才规范化为 `#RRGGBB`。共享 Builder 用 `FFRRGGBB` 写入 openpyxl，AirScript 统一通过 `toWpsColor()` 转为 WPS RGB 数值，禁止把字符串直接赋给 `Color`，也禁止把无填充转换成黑色。
 
@@ -95,7 +97,7 @@ AirScript 的同步探针响应和正式异步查询终态使用同一执行 env
 1. 在“配置云文档”中为每个目标独立保存在线文档地址、webhook 和脚本令牌；智能表格默认关闭。
 2. 使用界面的“复制连接测试脚本”，在对应文档新建 AirScript 2.0 脚本，确认末尾是 `return main();`，运行只读探针后再复制同一个脚本的 webhook。
 3. 回到 NetConsole 更新 webhook，点击“测试连接”，先确认 `sync_task` 的 `data.result` 不是 `[Undefined]`，再核对返回的 `document_id`、`target_type`、`target_code`、`protocol_version`、脚本版本和部署 ID。
-4. 通过“复制正式同步脚本”手工替换同一个 WPS 文档共享脚本内容并保存、发布；当前普通表格候选脚本身份必须是 `2.8.3-standard` / `trackside-ap-standard-2.8.3`，再重新测试。NetConsole 不能远程替用户编辑 WPS 脚本，不要把普通表格和智能表格 webhook 交叉使用。
+4. 通过“复制正式同步脚本”手工替换同一个 WPS 文档共享脚本内容并保存、发布；当前普通表格候选脚本身份必须是 `2.8.4-standard` / `trackside-ap-standard-2.8.4`，再重新测试。NetConsole 不能远程替用户编辑 WPS 脚本，不要把普通表格和智能表格 webhook 交叉使用。
 5. 对普通表格点击“测试写入能力”，确认 `_NetConsoleRuntimeProbe` 的二维数组写入与回读通过；未通过时正式同步保持禁用。
 6. 点击“测试同步 Sheet”，确认 `_NetConsoleSyncTest` 写入、回读和清理通过；若更换脚本或部署，使用“重新验证当前部署”自动清理旧验证状态并依次重跑三项测试。
 7. 点击“测试 Sheet 排序”，确认返回 `sheet_order_verified=true`、`sheet_move_before_verified=true`、`sheet_move_after_verified=true`；系统 Sheet 隐藏不兼容可以是 warning。该探针不并入“重新验证当前部署”。
@@ -103,7 +105,7 @@ AirScript 的同步探针响应和正式异步查询终态使用同一执行 env
 9. 列宽能力探针已经现场确认，不重复运行，也不要求用户再次查看 `_NetConsoleSyncTest`。连接测试若显示 `LEGACY_BINDING_ID_MISMATCH`，先核对本地/远端 Binding ID 和五类业务身份均匹配，再点击“升级旧版绑定标识”；在确认框复核文档、局点、业务和新旧 ID。完成后系统会自动重跑连接、写入能力和同步测试，Binding 状态必须变为 `BOUND`。`MISMATCH` 不允许迁移。
 10. 首次同步会显示当前局点与未绑定文档的二次确认；只有确认后才初始化远端绑定。绑定不匹配时停止写入并在任务详情显示原始错误码、失败 Sheet 和失败操作。
 11. 确认当前局点业务 revision 后，手动点击页面的“同步云文档”；任务详情应先显示脱敏 Remote Task ID 和 `submitted/running`，不能继续保持一个约 20 秒的 `/sync_task` HTTP 等待。
-12. 远端状态进入 `finished` 后，在任务详情核对列宽的本地值、AutoFit 值、最终请求值、Clamp、远端读回、验证、告警和失败数量，以及 RowHeight、Font、Fill、NumberFormat、Alignment、Wrap、Merge、Border、FreezePane、Filter 和业务样本的写后读回结果。杭州 10 号线当前源应报告 143 个真实 AutoFit 请求；重点查看 `轨旁AP业务` 的 A/B/C/G/H/P 代表列，以及 `AP上线情况概览` 的 `0.81 / 0.0% / 81.0%` 样本。不能只依据 API 未抛异常判断格式成功。
+12. 远端状态进入 `finished` 后，在任务详情核对列宽的本地值、AutoFit 值、最终请求值、Clamp、远端读回、验证、告警和失败数量，以及 RowHeight、Font、Fill、NumberFormat、Alignment、Wrap、Merge、Border、FreezePane、Filter 和业务样本的写后读回结果。杭州 10 号线当前源应报告 143 个真实 AutoFit 请求；Freeze 必须报告 9/9，且每项的 `immediate` 与 `reactivated` 同时通过：概览为 `0/0`，其余八页为 `1/0`。重点查看 `轨旁AP业务` 的 A/B/C/G/H/P 代表列，以及 `AP上线情况概览` 的 `0.81 / 0.0% / 81.0%` 样本。不能只依据 API 未抛异常判断格式成功。
 13. 只有自动报告完成后，用户才做一次整体视觉抽查；不要求用户逐列测量宽度或逐项确认颜色。`Width(points)` 和 `DisplayFormat` 用于辅助判断平台单位或渲染差异，在形成稳定证据前不加入换算系数。
 14. 检查 `AP上线情况概览` 新块依次为日期、更新时间、表头、数据、合计和恰好一行空白，且旧历史值与旧历史格式未被覆盖。
 15. 使用相同 `target_batch_id` 重放脚本，确认不会再次插入历史块；使用新的批次再次同步，确认新块位于顶部、旧块完整下移。

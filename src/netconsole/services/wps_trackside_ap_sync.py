@@ -28,6 +28,7 @@ from netconsole.models.wps_sync import (
     WorkbookFormatRunDTO,
     WorkbookDTO,
     WorkbookSheetDTO,
+    WpsFreezeMode,
     WpsSyncMode,
     WpsSyncTarget,
     WpsTargetType,
@@ -55,11 +56,11 @@ WPS_SYNC_TASK_TYPE = "trackside_ap_wps_sync"
 WPS_SYNC_OWNER = "web_rail_transit"
 WPS_STANDARD_FORMAT_MIRROR_ENABLED = True
 WPS_SCRIPT_VERSIONS = {
-    STANDARD_TARGET_CODE: "2.8.3-standard",
+    STANDARD_TARGET_CODE: "2.8.4-standard",
     SMART_TARGET_CODE: "2.1.0-smart",
 }
 WPS_DEPLOYMENT_IDS = {
-    STANDARD_TARGET_CODE: "trackside-ap-standard-2.8.3",
+    STANDARD_TARGET_CODE: "trackside-ap-standard-2.8.4",
     SMART_TARGET_CODE: "trackside-ap-smart-2.1.0",
 }
 WPS_RUNTIME_CAPABILITIES = {
@@ -2147,13 +2148,12 @@ def workbook_dto_from_xlsx(
                         if include_format_mirror
                         else ()
                     ),
-                    freeze_panes=(
-                        ""
-                        if definition is not None
-                        and definition.stable_key == "ap_online_history_overview"
-                        else "A2"
+                    freeze_mode=(
+                        WpsFreezeMode(definition.freeze_mode)
+                        if include_format_mirror and definition is not None
+                        else WpsFreezeMode.FIRST_ROW_ONLY
                         if include_format_mirror
-                        else ""
+                        else WpsFreezeMode.NONE
                     ),
                     auto_filter=(
                         str(worksheet.auto_filter.ref or "")
@@ -2305,7 +2305,7 @@ def _source_workbook_format_manifest(
                     "number_format_count": len(number_formats),
                     "merge_range_count": len(dto_sheet.merges),
                     "border_style_count": len(border_styles),
-                    "freeze_panes": dto_sheet.freeze_panes,
+                    "freeze_mode": dto_sheet.freeze_mode.value,
                     "auto_filter": dto_sheet.auto_filter,
                     "verification_sample_count": len(dto_sheet.verification_samples),
                 }

@@ -3,8 +3,8 @@
 // The exact workbook API names are kept in these small helpers so a WPS
 // runtime upgrade does not change the NetConsole payload contract.
 const PROTOCOL_VERSION = 2;
-const SCRIPT_VERSION = "2.8.3-standard";
-const DEPLOYMENT_ID = "trackside-ap-standard-2.8.3";
+const SCRIPT_VERSION = "2.8.4-standard";
+const DEPLOYMENT_ID = "trackside-ap-standard-2.8.4";
 const DOCUMENT_ID = "549847228994";
 const TARGET_TYPE = "WPS_STANDARD_SPREADSHEET";
 const TARGET_CODE = "wps_standard_spreadsheet";
@@ -15,6 +15,8 @@ const FORMAT_MIRROR_ENABLED = true;
 const COLUMN_WIDTH_TOLERANCE = 0.5;
 const ROW_HEIGHT_TOLERANCE = 0.5;
 const MAX_FORMAT_RUNS_PER_SHEET = 1000;
+const FREEZE_MODE_NONE = "NONE";
+const FREEZE_MODE_FIRST_ROW_ONLY = "FIRST_ROW_ONLY";
 
 function argv() {
   const value = (typeof Context !== "undefined" && Context.argv) || {};
@@ -799,98 +801,225 @@ function applyMerges(sheet, sheetDto, warnings, report) {
   }
 }
 
+function optionalWindowNumber(window, propertyName) {
+  try {
+    if (!(propertyName in window)) return null;
+    const value = Number(window[propertyName]);
+    return Number.isFinite(value) ? value : null;
+  } catch (_error) {
+    return null;
+  }
+}
+
+function activeSheetName() {
+  try {
+    return String(Application.ActiveSheet && Application.ActiveSheet.Name || "");
+  } catch (_error) {
+    return "";
+  }
+}
+
+function activeCellState() {
+  try {
+    const cell = Application.ActiveCell;
+    return {
+      row: Number(cell && cell.Row) || 0,
+      column: Number(cell && cell.Column) || 0,
+    };
+  } catch (_error) {
+    return { row: 0, column: 0 };
+  }
+}
+
 function freezeState(window) {
   return {
     freeze: !!window.FreezePanes,
-    split_row: Number(window.SplitRow),
-    split_column: Number(window.SplitColumn),
+    split_row: optionalWindowNumber(window, "SplitRow"),
+    split_column: optionalWindowNumber(window, "SplitColumn"),
+    split_horizontal: optionalWindowNumber(window, "SplitHorizontal"),
+    split_vertical: optionalWindowNumber(window, "SplitVertical"),
+    scroll_row: optionalWindowNumber(window, "ScrollRow"),
+    scroll_column: optionalWindowNumber(window, "ScrollColumn"),
+  };
+}
+
+function paneDiagnostics(window) {
+  return {
+    active_sheet: activeSheetName(),
+    active_cell: activeCellState(),
+    ...freezeState(window),
+  };
+}
+
+function expectedFreezeState(sheetDto) {
+  const mode = sheetDto.logical_sheet_key === "ap_online_history_overview"
+    ? FREEZE_MODE_NONE
+    : FREEZE_MODE_FIRST_ROW_ONLY;
+  return {
+    mode,
+    freeze: mode === FREEZE_MODE_FIRST_ROW_ONLY,
+    split_row: mode === FREEZE_MODE_FIRST_ROW_ONLY ? 1 : 0,
+    split_column: 0,
   };
 }
 
 function freezeStateMatches(actual, expected) {
-  return actual.freeze === expected.freeze
-    && actual.split_row === expected.split_row
-    && actual.split_column === expected.split_column;
+  if (actual.freeze !== expected.freeze
+      || actual.split_row !== expected.split_row
+      || actual.split_column !== expected.split_column) return false;
+  if (actual.split_vertical !== null && actual.split_vertical !== 0) return false;
+  if (!expected.freeze && actual.split_horizontal !== null && actual.split_horizontal !== 0) return false;
+  return true;
 }
 
-function columnNumber(columnLetters) {
-  return [...String(columnLetters || "")].reduce(
-    (value, character) => value * 26 + character.charCodeAt(0) - 64,
-    0,
-  );
-}
-
-function selectFreezeAnchor(sheet, address, match) {
-  if (!sheet || typeof sheet.Activate !== "function") throw new Error("worksheet activate API unavailable");
-  sheet.Activate();
-  const anchor = sheet.Range(address);
-  if (!anchor || typeof anchor.Select !== "function") throw new Error("freeze selection API unavailable");
-  anchor.Select();
-  const activeCell = Application.ActiveCell;
-  const actualRow = Number(activeCell && activeCell.Row);
-  const actualColumn = Number(activeCell && activeCell.Column);
-  const expectedRow = Number(match[2]);
-  const expectedColumn = columnNumber(match[1]);
-  if (actualRow !== expectedRow || actualColumn !== expectedColumn) {
-    throw new Error(`WPS_FREEZE_SELECTION_FAILED: expected ${address}, actual ${actualColumn || "?"}:${actualRow || "?"}`);
+function setOptionalWindowNumber(window, propertyName, expectedValue) {
+  let supported = false;
+  try {
+    supported = propertyName in window;
+  } catch (_error) {
+    return { supported: false, actual: null };
+  }
+  if (!supported) return { supported: false, actual: null };
+  try {
+    window[propertyName] = expectedValue;
+    const actual = Number(window[propertyName]);
+    if (!Number.isFinite(actual) || actual !== expectedValue) {
+      throw new Error(`expected ${expectedValue}, actual ${actual}`);
+    }
+    return { supported: true, actual };
+  } catch (error) {
+    throw new Error(`WPS_FREEZE_RESET_FAILED: ${propertyName}: ${String(error && error.message || error)}`);
   }
 }
 
-function applyFreezePanes(sheet, address, warnings, report) {
-  const normalized = String(address || "").trim().toUpperCase();
-  const match = normalized.match(/^([A-Z]+)(\d+)$/);
-  const expectedFrozenRows = match ? Math.max(Number(match[2]) - 1, 0) : 0;
+function resetWindowPaneState(sheet) {
+  if (!sheet || typeof sheet.Activate !== "function") {
+    throw new Error("WPS_FREEZE_RESET_FAILED: worksheet activate API unavailable");
+  }
+  sheet.Activate();
+  if (activeSheetName() !== String(sheet.Name || "")) {
+    throw new Error(`WPS_FREEZE_RESET_FAILED: expected active sheet ${sheet.Name}, actual ${activeSheetName() || "?"}`);
+  }
+  const window = Application.ActiveWindow;
+  if (!window) throw new Error("WPS_FREEZE_RESET_FAILED: active window unavailable");
+  const before = paneDiagnostics(window);
+  window.FreezePanes = false;
+  window.SplitRow = 0;
+  window.SplitColumn = 0;
+  const optional_reset = {
+    split_horizontal: setOptionalWindowNumber(window, "SplitHorizontal", 0),
+    split_vertical: setOptionalWindowNumber(window, "SplitVertical", 0),
+    scroll_row: setOptionalWindowNumber(window, "ScrollRow", 1),
+    scroll_column: setOptionalWindowNumber(window, "ScrollColumn", 1),
+  };
+  const after_reset = paneDiagnostics(window);
+  if (after_reset.freeze || after_reset.split_row !== 0 || after_reset.split_column !== 0) {
+    throw new Error(`WPS_FREEZE_RESET_FAILED: split_row=${after_reset.split_row}, split_column=${after_reset.split_column}, freeze=${after_reset.freeze}`);
+  }
+  return { window, before, after_reset, optional_reset };
+}
+
+function selectFirstRowFreezeAnchor(sheet) {
+  const anchor = sheet.Range("A2");
+  if (!anchor || typeof anchor.Select !== "function") {
+    throw new Error("WPS_FREEZE_SELECTION_FAILED: A2 selection API unavailable");
+  }
+  try {
+    anchor.Select();
+  } catch (error) {
+    throw new Error(`WPS_FREEZE_SELECTION_FAILED: ${String(error && error.message || error)}`);
+  }
+  const activeSheet = activeSheetName();
+  const activeCell = activeCellState();
+  if (activeSheet !== String(sheet.Name || "") || activeCell.row !== 2 || activeCell.column !== 1) {
+    throw new Error(`WPS_FREEZE_SELECTION_FAILED: expected ${sheet.Name}!A2, actual ${activeSheet || "?"}!${activeCell.column || "?"}:${activeCell.row || "?"}`);
+  }
+  return paneDiagnostics(Application.ActiveWindow);
+}
+
+function applyFreezeMode(sheet, sheetDto, reactivationSheet, warnings, report) {
+  const expected = expectedFreezeState(sheetDto);
+  const requestedMode = String(sheetDto.freeze_mode || "").trim().toUpperCase();
+  const diagnostics = {
+    requested_mode: requestedMode,
+    contract_mode: expected.mode,
+    before: null,
+    after_reset: null,
+    after_select: null,
+    immediate: null,
+    reactivated: null,
+    reactivation_switch_sheet: reactivationSheet ? String(reactivationSheet.Name || "") : "",
+    optional_reset: null,
+  };
   let failureCode = "";
   let failureMessage = "";
-  verifiedFormatOperation(report, warnings, sheet.Name, "freeze_panes", normalized || "NONE", () => {
-    if (!Application.ActiveWindow) throw new Error("freeze panes API unavailable");
-    sheet.Activate();
-    let window = Application.ActiveWindow;
-    window.FreezePanes = false;
-    window.SplitRow = 0;
-    window.SplitColumn = 0;
-    if (!match) return;
-
-    window.SplitColumn = 0;
-    window.SplitRow = expectedFrozenRows;
-    window.FreezePanes = true;
-    let actual = freezeState(window);
-    if (freezeStateMatches(actual, { freeze: true, split_row: expectedFrozenRows, split_column: 0 })) return;
-
-    // Some WPS runtimes derive FreezePanes from the current ActiveCell and
-    // ignore a direct SplitRow assignment. Re-select the exact anchor only
-    // after the direct write/readback path fails.
-    window.FreezePanes = false;
-    window.SplitRow = 0;
-    window.SplitColumn = 0;
+  const fail = (code, message) => {
+    if (failureCode) return;
+    failureCode = code;
+    failureMessage = `${code}: ${message}`;
+  };
+  verifiedFormatOperation(report, warnings, sheet.Name, "freeze_panes", expected.mode, () => {
     try {
-      selectFreezeAnchor(sheet, normalized, match);
+      const reset = resetWindowPaneState(sheet);
+      diagnostics.before = reset.before;
+      diagnostics.after_reset = reset.after_reset;
+      diagnostics.optional_reset = reset.optional_reset;
+      if (expected.mode === FREEZE_MODE_FIRST_ROW_ONLY) {
+        diagnostics.after_select = selectFirstRowFreezeAnchor(sheet);
+        reset.window.FreezePanes = true;
+      }
+      diagnostics.immediate = paneDiagnostics(Application.ActiveWindow);
+      if (!freezeStateMatches(diagnostics.immediate, expected)) {
+        fail(
+          "WPS_FREEZE_IMMEDIATE_READBACK_FAILED",
+          `expected ${expected.mode}, actual split_row=${diagnostics.immediate.split_row}, split_column=${diagnostics.immediate.split_column}, freeze=${diagnostics.immediate.freeze}`,
+        );
+      }
     } catch (error) {
       const reason = String(error && error.message || error);
-      failureCode = "WPS_FREEZE_SELECTION_FAILED";
-      failureMessage = reason.startsWith(failureCode)
-        ? reason
-        : `${failureCode}: ${reason}`;
-      return;
-    }
-    window = Application.ActiveWindow;
-    window.SplitColumn = 0;
-    window.SplitRow = expectedFrozenRows;
-    window.FreezePanes = true;
-    actual = freezeState(window);
-    if (!freezeStateMatches(actual, { freeze: true, split_row: expectedFrozenRows, split_column: 0 })) {
-      failureCode = "WPS_FREEZE_READBACK_FAILED";
-      failureMessage = `${failureCode}: expected ${normalized}, actual split_row=${actual.split_row}, split_column=${actual.split_column}, freeze=${actual.freeze}`;
+      const code = reason.startsWith("WPS_FREEZE_SELECTION_FAILED")
+        ? "WPS_FREEZE_SELECTION_FAILED"
+        : reason.startsWith("WPS_FREEZE_RESET_FAILED")
+        ? "WPS_FREEZE_RESET_FAILED"
+        : "WPS_FREEZE_APPLY_FAILED";
+      fail(code, reason.startsWith(code) ? reason.slice(code.length + 1).trim() : reason);
     }
   }, () => {
-    const expected = match
-      ? { freeze: true, split_row: expectedFrozenRows, split_column: 0 }
-      : { freeze: false, split_row: 0, split_column: 0 };
-    const actual = freezeState(Application.ActiveWindow);
+    try {
+      if (reactivationSheet && String(reactivationSheet.Name || "") !== String(sheet.Name || "")) {
+        reactivationSheet.Activate();
+      }
+      sheet.Activate();
+      if (activeSheetName() !== String(sheet.Name || "")) {
+        throw new Error(`expected active sheet ${sheet.Name}, actual ${activeSheetName() || "?"}`);
+      }
+      diagnostics.reactivated = paneDiagnostics(Application.ActiveWindow);
+      if (!freezeStateMatches(diagnostics.reactivated, expected)) {
+        fail(
+          "WPS_FREEZE_REACTIVATION_READBACK_FAILED",
+          `expected ${expected.mode}, actual split_row=${diagnostics.reactivated.split_row}, split_column=${diagnostics.reactivated.split_column}, freeze=${diagnostics.reactivated.freeze}`,
+        );
+      }
+    } catch (error) {
+      fail("WPS_FREEZE_REACTIVATION_FAILED", String(error && error.message || error));
+    }
+    const actual = diagnostics.reactivated || diagnostics.immediate || paneDiagnostics(Application.ActiveWindow);
+    const verified = !failureCode
+      && freezeStateMatches(diagnostics.immediate || {}, expected)
+      && freezeStateMatches(diagnostics.reactivated || {}, expected);
     return {
-      verified: freezeStateMatches(actual, expected),
+      verified,
       expected,
       actual,
+      requested_mode: requestedMode,
+      mode: expected.mode,
+      before: diagnostics.before,
+      after_reset: diagnostics.after_reset,
+      after_select: diagnostics.after_select,
+      immediate: diagnostics.immediate,
+      reactivated: diagnostics.reactivated,
+      reactivation_switch_sheet: diagnostics.reactivation_switch_sheet,
+      optional_reset: diagnostics.optional_reset,
       expected_frozen_rows: expected.split_row,
       actual_frozen_rows: actual.split_row,
       expected_frozen_columns: 0,
@@ -1020,13 +1149,21 @@ function applyBusinessFormatting(sheetDtos, warnings, beforeLayout) {
 }
 
 function applyWorkbookFreezeLayout(sheetDtos, warnings, report) {
+  const targets = [];
   for (const sheetDto of sheetDtos || []) {
     const sheet = findSheet(sheetDto.sheet_name);
     if (!sheet) {
       addFormatWarning(warnings, sheetDto.sheet_name, "freeze_panes", new Error("worksheet unavailable"));
       continue;
     }
-    applyFreezePanes(sheet, sheetDto.freeze_panes, warnings, report);
+    targets.push({ sheet, sheetDto });
+  }
+  for (let index = 0; index < targets.length; index += 1) {
+    const target = targets[index];
+    const reactivationSheet = targets.length > 1
+      ? targets[(index + 1) % targets.length].sheet
+      : null;
+    applyFreezeMode(target.sheet, target.sheetDto, reactivationSheet, warnings, report);
   }
   const result = report.freeze_panes;
   result.status = result.failed_count || result.warning_count
@@ -1536,7 +1673,7 @@ function sync(payload) {
       ? "SUCCESS_WITH_WARNINGS"
       : "SUCCESS";
   }
-  if (formatMirrorEnabled) applyWorkbookFreezeLayout(formatSheets, formatWarnings, mirroredFormatResults);
+  if (formatMirrorEnabled) applyWorkbookFreezeLayout(sheets, formatWarnings, mirroredFormatResults);
   try {
     binding.meta = updateBindingMetadata({
       last_sync_at: new Date().toISOString(),

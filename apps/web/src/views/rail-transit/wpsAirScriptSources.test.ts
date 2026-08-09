@@ -14,16 +14,16 @@ const scripts: Array<{
   {
     targetCode: 'wps_standard_spreadsheet',
     kind: 'probe',
-    scriptVersion: '2.8.3-standard',
-    deploymentId: 'trackside-ap-standard-2.8.3',
+    scriptVersion: '2.8.4-standard',
+    deploymentId: 'trackside-ap-standard-2.8.4',
     documentId: '549847228994',
     targetType: 'WPS_STANDARD_SPREADSHEET',
   },
   {
     targetCode: 'wps_standard_spreadsheet',
     kind: 'sync',
-    scriptVersion: '2.8.3-standard',
-    deploymentId: 'trackside-ap-standard-2.8.3',
+    scriptVersion: '2.8.4-standard',
+    deploymentId: 'trackside-ap-standard-2.8.4',
     documentId: '549847228994',
     targetType: 'WPS_STANDARD_SPREADSHEET',
   },
@@ -53,8 +53,18 @@ function standardSpreadsheetRuntime(
     tabColorFailureNames?: string[]
     columnWidthFailureNames?: string[]
     columnWidthMismatchNames?: string[]
-    freezeDirectMismatchNames?: string[]
     freezeSelectionFailureNames?: string[]
+    freezeSelectionApplyMismatchNames?: string[]
+    freezeReactivationMismatchNames?: string[]
+    initialPaneStates?: Record<string, Partial<{
+      freezePanes: boolean
+      splitRow: number
+      splitColumn: number
+      splitHorizontal: number
+      splitVertical: number
+      scrollRow: number
+      scrollColumn: number
+    }>>
   } = {},
 ) {
   const hiddenFailureNames = new Set(options.hiddenFailureNames || [])
@@ -62,8 +72,9 @@ function standardSpreadsheetRuntime(
   const tabColorFailureNames = new Set(options.tabColorFailureNames || [])
   const columnWidthFailureNames = new Set(options.columnWidthFailureNames || [])
   const columnWidthMismatchNames = new Set(options.columnWidthMismatchNames || [])
-  const freezeDirectMismatchNames = new Set(options.freezeDirectMismatchNames || [])
   const freezeSelectionFailureNames = new Set(options.freezeSelectionFailureNames || [])
+  const freezeSelectionApplyMismatchNames = new Set(options.freezeSelectionApplyMismatchNames || [])
+  const freezeReactivationMismatchNames = new Set(options.freezeReactivationMismatchNames || [])
   const moves: Array<{ sheet: string; before: string; after: string }> = []
   const inserts: Array<{ sheet: string; address: string }> = []
   const writes: Array<{ sheet: string; address: string; value: unknown }> = []
@@ -73,35 +84,73 @@ function standardSpreadsheetRuntime(
   const formatClears: Array<{ sheet: string; address: string }> = []
   const unmerges: Array<{ sheet: string; address: string }> = []
   const autoFilterChanges: Array<{ sheet: string; address: string }> = []
+  const activations: string[] = []
   let activeSheetName = initialNames[0] || ''
   let activeCell = { Row: 1, Column: 1 }
   let explicitFreezeSelection = false
-  let freezePanes = false
-  let splitRow = 0
-  let splitColumn = 0
+  type PaneState = {
+    freezePanes: boolean
+    splitRow: number
+    splitColumn: number
+    splitHorizontal: number
+    splitVertical: number
+    scrollRow: number
+    scrollColumn: number
+  }
+  const paneStates = new Map<string, PaneState>()
+  const paneState = (sheetName = activeSheetName): PaneState => {
+    if (!paneStates.has(sheetName)) {
+      const initial = options.initialPaneStates?.[sheetName] || {}
+      paneStates.set(sheetName, {
+        freezePanes: initial.freezePanes ?? false,
+        splitRow: initial.splitRow ?? 0,
+        splitColumn: initial.splitColumn ?? 0,
+        splitHorizontal: initial.splitHorizontal ?? 0,
+        splitVertical: initial.splitVertical ?? 0,
+        scrollRow: initial.scrollRow ?? 1,
+        scrollColumn: initial.scrollColumn ?? 1,
+      })
+    }
+    return paneStates.get(sheetName)!
+  }
   const activeWindow: Record<string, unknown> = {}
   Object.defineProperties(activeWindow, {
     FreezePanes: {
-      get: () => freezePanes,
+      get: () => paneState().freezePanes,
       set: (value) => {
-        freezePanes = Boolean(value)
-        if (freezePanes && freezeDirectMismatchNames.has(activeSheetName)) {
-          splitRow = explicitFreezeSelection ? Math.max(activeCell.Row - 1, 0) : 11
-          splitColumn = explicitFreezeSelection ? Math.max(activeCell.Column - 1, 0) : 0
+        const state = paneState()
+        state.freezePanes = Boolean(value)
+        if (state.freezePanes && explicitFreezeSelection) {
+          state.splitRow = freezeSelectionApplyMismatchNames.has(activeSheetName)
+            ? 11
+            : Math.max(activeCell.Row - 1, 0)
+          state.splitColumn = Math.max(activeCell.Column - 1, 0)
         }
       },
     },
     SplitRow: {
-      get: () => splitRow,
-      set: (value) => {
-        splitRow = freezeDirectMismatchNames.has(activeSheetName) && !explicitFreezeSelection
-          ? 11
-          : Number(value)
-      },
+      get: () => paneState().splitRow,
+      set: (value) => { paneState().splitRow = Number(value) },
     },
     SplitColumn: {
-      get: () => splitColumn,
-      set: (value) => { splitColumn = Number(value) },
+      get: () => paneState().splitColumn,
+      set: (value) => { paneState().splitColumn = Number(value) },
+    },
+    SplitHorizontal: {
+      get: () => paneState().splitHorizontal,
+      set: (value) => { paneState().splitHorizontal = Number(value) },
+    },
+    SplitVertical: {
+      get: () => paneState().splitVertical,
+      set: (value) => { paneState().splitVertical = Number(value) },
+    },
+    ScrollRow: {
+      get: () => paneState().scrollRow,
+      set: (value) => { paneState().scrollRow = Number(value) },
+    },
+    ScrollColumn: {
+      get: () => paneState().scrollColumn,
+      set: (value) => { paneState().scrollColumn = Number(value) },
     },
   })
   const bindingRows = [
@@ -153,8 +202,18 @@ function standardSpreadsheetRuntime(
         UnMerge: vi.fn(() => unmerges.push({ sheet: String(sheet.Name), address: 'UsedRange' })),
       },
       Activate: vi.fn(() => {
+        const previousSheetName = activeSheetName
         activeSheetName = String(sheet.Name)
         explicitFreezeSelection = false
+        activations.push(activeSheetName)
+        const state = paneState(activeSheetName)
+        if (
+          previousSheetName !== activeSheetName
+          && state.freezePanes
+          && freezeReactivationMismatchNames.has(activeSheetName)
+        ) {
+          state.splitRow = 20
+        }
       }),
       AutoFilter: {
         get Range() { return autoFilterAddress ? { Address: autoFilterAddress } : null },
@@ -424,6 +483,7 @@ function standardSpreadsheetRuntime(
     application: {
       Worksheets: worksheets,
       ActiveWindow: activeWindow,
+      get ActiveSheet() { return sheets.find((sheet) => sheet.Name === activeSheetName) },
       get ActiveCell() { return activeCell },
       RGB: (red: number, green: number, blue: number) => red + green * 256 + blue * 65536,
     },
@@ -436,6 +496,8 @@ function standardSpreadsheetRuntime(
     formatClears,
     unmerges,
     autoFilterChanges,
+    activations,
+    paneState: (sheetName: string) => ({ ...paneState(sheetName) }),
     names: () => sheets.map((sheet) => String(sheet.Name)),
   }
 }
@@ -450,6 +512,17 @@ function executeStandardSpreadsheet(
 }
 
 function standardSyncArgs(sheetNames: string[]): Record<string, unknown> {
+  const logicalSheetKeys: Record<string, string> = {
+    AP上线情况概览: 'ap_online_history_overview',
+    轨旁AP业务: 'trackside_ap_business',
+    当前异常光衰: 'current_optical_abnormal',
+    AP光衰处理记录: 'ap_optical_treatment_records',
+    AP离线情况: 'ap_offline_status',
+    AP离线台账: 'ap_offline_ledger',
+    新增上线AP概览: 'newly_online_ap_overview',
+    待关联在线AP: 'unmatched_online_ap',
+    交换机光模块统计: 'switch_optical_module_summary',
+  }
   return {
     operation: 'sync_trackside_ap_business',
     protocol_version: 2,
@@ -467,13 +540,14 @@ function standardSyncArgs(sheetNames: string[]): Record<string, unknown> {
     script_id: 'test',
     workbook: {
       sheets: sheetNames.map((sheetName, sheetOrder) => ({
-        logical_sheet_key: `sheet-${sheetOrder}`,
+        logical_sheet_key: logicalSheetKeys[sheetName] || `sheet-${sheetOrder}`,
         sheet_name: sheetName,
         sheet_order: sheetOrder,
         sync_mode: 'FULL_REPLACE',
         cells: [[sheetName]],
         row_count: 1,
         column_count: 1,
+        freeze_mode: sheetName === 'AP上线情况概览' ? 'NONE' : 'FIRST_ROW_ONLY',
       })),
     },
   }
@@ -547,6 +621,21 @@ describe('WPS AirScript deployment sources', () => {
     expect(source).not.toContain('sheet.Visible === false')
     expect(source).not.toContain('Rows.Insert(1, values.length)')
     expect(source).not.toContain('.Value = values')
+    expect(source).toContain('function expectedFreezeState(sheetDto)')
+    expect(source).toContain('function resetWindowPaneState(sheet)')
+    expect(source).toContain('function selectFirstRowFreezeAnchor(sheet)')
+    expect(source).not.toContain('sheetDto.freeze_panes')
+    expect(source).not.toContain('function columnNumber(')
+    expect(source).not.toContain('function selectFreezeAnchor(')
+    const splitRowAssignments = [...source.matchAll(/\.SplitRow\s*=\s*([^;]+);/g)]
+    expect(splitRowAssignments.map((match) => match[1].trim())).toEqual(['0'])
+    const syncBody = source.split('function sync(payload)', 2)[1].split('function sheetIsHidden', 1)[0]
+    const afterFreezeFinalize = syncBody.split(
+      'if (formatMirrorEnabled) applyWorkbookFreezeLayout(sheets, formatWarnings, mirroredFormatResults);',
+      2,
+    )[1]
+    expect(afterFreezeFinalize).toBeTruthy()
+    expect(afterFreezeFinalize).not.toMatch(/\.Activate\(|\.Select\(|\.AutoFit\(|\.Move\(|\.AutoFilter\(/)
   })
 
   it('reorders dynamic business sheets after stable writes and keeps system sheets behind them', () => {
@@ -812,7 +901,7 @@ describe('WPS AirScript deployment sources', () => {
       auto_fit_rows: true,
       row_heights: { 1: 24, 2: 24 },
       merges: ['A2:B2'],
-      freeze_panes: 'A2',
+      freeze_mode: 'FIRST_ROW_ONLY',
       auto_filter: 'A1:B2',
       verification_samples: [{
         label: 'header',
@@ -883,9 +972,12 @@ describe('WPS AirScript deployment sources', () => {
       expect.objectContaining({ range: 'A1:B2', all_borders: true, verified: true }),
     ]))
     expect(source).toContain('function applyWorkbookFreezeLayout')
-    expect(source).toContain('function selectFreezeAnchor')
+    expect(source).toContain('function resetWindowPaneState')
+    expect(source).toContain('function selectFirstRowFreezeAnchor')
+    expect(source).not.toContain('function selectFreezeAnchor')
+    expect(source).not.toContain('sheetDto.freeze_panes')
     expect(source).toContain('WPS_FREEZE_SELECTION_FAILED')
-    expect(source).toContain('applyWorkbookFreezeLayout(formatSheets')
+    expect(source).toContain('applyWorkbookFreezeLayout(sheets')
     expect(runtime.columnWidths).toEqual(expect.arrayContaining([
       { sheet: '轨旁AP业务', column: 'A', width: 20 },
       { sheet: '轨旁AP业务', column: 'B', width: 20 },
@@ -907,7 +999,7 @@ describe('WPS AirScript deployment sources', () => {
       row_heights: {},
       auto_fit_rows: false,
       merges: [],
-      freeze_panes: 'A2',
+      freeze_mode: 'FIRST_ROW_ONLY',
       auto_filter: 'A1:A100',
       verification_samples: [],
     }
@@ -925,7 +1017,7 @@ describe('WPS AirScript deployment sources', () => {
       row_heights: {},
       auto_fit_rows: false,
       merges: [],
-      freeze_panes: 'A2',
+      freeze_mode: 'FIRST_ROW_ONLY',
       auto_filter: 'A1:A1',
       verification_samples: [],
     }
@@ -948,7 +1040,19 @@ describe('WPS AirScript deployment sources', () => {
     const emptySheets = ['当前异常光衰', '新增上线AP概览', '待关联在线AP']
     const runtime = standardSpreadsheetRuntime(
       ['AP上线情况概览', ...emptySheets, '_NetConsoleSyncMeta'],
-      { freezeDirectMismatchNames: ['新增上线AP概览'] },
+      {
+        initialPaneStates: {
+          新增上线AP概览: {
+            freezePanes: true,
+            splitRow: 20,
+            splitColumn: 4,
+            splitHorizontal: 420,
+            splitVertical: 180,
+            scrollRow: 20,
+            scrollColumn: 4,
+          },
+        },
+      },
     )
     const args = standardSyncArgs(['AP上线情况概览', ...emptySheets]) as Record<string, any>
     args.format_mirror_enabled = true
@@ -969,7 +1073,7 @@ describe('WPS AirScript deployment sources', () => {
         row_heights: { 1: 24, 2: 24, 3: 24, 4: 24 },
         auto_fit_rows: true,
         merges: [],
-        freeze_panes: '',
+        freeze_mode: 'NONE',
         auto_filter: '',
         verification_samples: [{
           label: 'first_data',
@@ -994,7 +1098,7 @@ describe('WPS AirScript deployment sources', () => {
         row_heights: { 1: 24 },
         auto_fit_rows: true,
         merges: [],
-        freeze_panes: 'A2',
+        freeze_mode: 'FIRST_ROW_ONLY',
         auto_filter: 'A1:A1',
         verification_samples: [],
       })),
@@ -1017,18 +1121,43 @@ describe('WPS AirScript deployment sources', () => {
       }),
     ]))
     expect(runtime.freezeSelections).toContainEqual({ sheet: '新增上线AP概览', address: 'A2' })
+    const newOnlineFreeze = result.format_results.freeze_panes.items.find(
+      (item: Record<string, any>) => item.sheet_name === '新增上线AP概览',
+    )
+    expect(newOnlineFreeze).toMatchObject({
+      mode: 'FIRST_ROW_ONLY',
+      before: {
+        split_row: 20,
+        split_column: 4,
+        split_horizontal: 420,
+        split_vertical: 180,
+        scroll_row: 20,
+        scroll_column: 4,
+      },
+      after_reset: {
+        freeze: false,
+        split_row: 0,
+        split_column: 0,
+        split_horizontal: 0,
+        split_vertical: 0,
+        scroll_row: 1,
+        scroll_column: 1,
+      },
+      after_select: { active_cell: { row: 2, column: 1 } },
+      immediate: { freeze: true, split_row: 1, split_column: 0 },
+      reactivated: { freeze: true, split_row: 1, split_column: 0 },
+      verified: true,
+    })
   })
 
-  it('falls back to a verified A2 selection when WPS ignores direct SplitRow', () => {
-    const runtime = standardSpreadsheetRuntime(
-      ['轨旁AP业务', '_NetConsoleSyncMeta'],
-      { freezeDirectMismatchNames: ['轨旁AP业务'] },
-    )
+  it('ignores legacy arbitrary freeze addresses and uses the verified A2 selection model', () => {
+    const runtime = standardSpreadsheetRuntime(['轨旁AP业务', '_NetConsoleSyncMeta'])
     const args = standardSyncArgs(['轨旁AP业务']) as Record<string, any>
     args.format_mirror_enabled = true
     args.workbook.sheets[0] = {
       ...args.workbook.sheets[0],
-      freeze_panes: 'A2',
+      freeze_mode: 'FIRST_ROW_ONLY',
+      freeze_panes: 'D20',
       format_runs: [],
       verification_samples: [],
       merges: [],
@@ -1054,6 +1183,11 @@ describe('WPS AirScript deployment sources', () => {
             actual_frozen_rows: 1,
             expected_frozen_columns: 0,
             actual_frozen_columns: 0,
+            requested_mode: 'FIRST_ROW_ONLY',
+            mode: 'FIRST_ROW_ONLY',
+            after_select: expect.objectContaining({ active_cell: { row: 2, column: 1 } }),
+            immediate: expect.objectContaining({ freeze: true, split_row: 1, split_column: 0 }),
+            reactivated: expect.objectContaining({ freeze: true, split_row: 1, split_column: 0 }),
             verified: true,
           })],
         },
@@ -1062,19 +1196,106 @@ describe('WPS AirScript deployment sources', () => {
     expect(runtime.freezeSelections).toEqual([{ sheet: '轨旁AP业务', address: 'A2' }])
   })
 
-  it('reports final freeze readback failure instead of leaving SUCCESS', () => {
+  it('verifies the complete nine-sheet freeze matrix after switching out and back', () => {
+    const businessSheets = [
+      'AP上线情况概览',
+      '轨旁AP业务',
+      '当前异常光衰',
+      'AP光衰处理记录',
+      'AP离线情况',
+      'AP离线台账',
+      '新增上线AP概览',
+      '待关联在线AP',
+      '交换机光模块统计',
+    ]
     const runtime = standardSpreadsheetRuntime(
-      ['轨旁AP业务', '_NetConsoleSyncMeta'],
+      [...businessSheets, '_NetConsoleSyncMeta'],
       {
-        freezeDirectMismatchNames: ['轨旁AP业务'],
-        freezeSelectionFailureNames: ['轨旁AP业务'],
+        initialPaneStates: {
+          新增上线AP概览: {
+            freezePanes: true,
+            splitRow: 20,
+            splitColumn: 4,
+            splitHorizontal: 420,
+            splitVertical: 180,
+            scrollRow: 20,
+            scrollColumn: 4,
+          },
+        },
       },
     )
-    const args = standardSyncArgs(['轨旁AP业务']) as Record<string, any>
+    const args = standardSyncArgs(businessSheets) as Record<string, any>
+    args.format_mirror_enabled = true
+    args.workbook.sheets[1].cells = [
+      ['归属站点'],
+      ...Array.from({ length: 820 }, (_, index) => [`站点-${index + 1}`]),
+    ]
+    args.workbook.sheets[1].row_count = 821
+    args.workbook.sheets[2].cells = [['表头']]
+    args.workbook.sheets[2].row_count = 1
+    args.workbook.sheets[6].cells = [['表头']]
+    args.workbook.sheets[6].row_count = 1
+    args.workbook.sheets[8].cells = [['表头'], ['长文本内容']]
+    args.workbook.sheets[8].row_count = 2
+
+    const result = executeStandardSpreadsheet(runtime, args)
+
+    expect(result).toMatchObject({
+      success: true,
+      format_results: {
+        freeze_panes: {
+          status: 'SUCCESS',
+          attempted_count: 9,
+          read_back_count: 9,
+          verified_count: 9,
+          failed_count: 0,
+          warning_count: 0,
+        },
+      },
+    })
+    const items = result.format_results.freeze_panes.items as Array<Record<string, any>>
+    expect(items).toHaveLength(9)
+    for (const sheetName of businessSheets) {
+      const expectedMode = sheetName === 'AP上线情况概览' ? 'NONE' : 'FIRST_ROW_ONLY'
+      const expectedRows = expectedMode === 'NONE' ? 0 : 1
+      const item = items.find((entry) => entry.sheet_name === sheetName)
+      if (!item) throw new Error(`missing freeze verification item: ${sheetName}`)
+      expect(item).toMatchObject({
+        sheet_name: sheetName,
+        mode: expectedMode,
+        immediate: { freeze: expectedMode !== 'NONE', split_row: expectedRows, split_column: 0 },
+        reactivated: { freeze: expectedMode !== 'NONE', split_row: expectedRows, split_column: 0 },
+        expected_frozen_rows: expectedRows,
+        actual_frozen_rows: expectedRows,
+        expected_frozen_columns: 0,
+        actual_frozen_columns: 0,
+        verified: true,
+      })
+      expect(item.reactivation_switch_sheet).not.toBe('')
+      expect(runtime.paneState(sheetName)).toMatchObject({
+        freezePanes: expectedMode !== 'NONE',
+        splitRow: expectedRows,
+        splitColumn: 0,
+        splitVertical: 0,
+        scrollRow: 1,
+        scrollColumn: 1,
+      })
+    }
+    expect(runtime.freezeSelections).toHaveLength(8)
+    expect(runtime.freezeSelections.every(({ address }) => address === 'A2')).toBe(true)
+    expect(runtime.freezeSelections.some(({ sheet }) => sheet === 'AP上线情况概览')).toBe(false)
+  })
+
+  it('reports a reactivation readback mismatch instead of leaving freeze SUCCESS', () => {
+    const runtime = standardSpreadsheetRuntime(
+      ['轨旁AP业务', '当前异常光衰', '_NetConsoleSyncMeta'],
+      { freezeReactivationMismatchNames: ['轨旁AP业务'] },
+    )
+    const args = standardSyncArgs(['轨旁AP业务', '当前异常光衰']) as Record<string, any>
     args.format_mirror_enabled = true
     args.workbook.sheets[0] = {
       ...args.workbook.sheets[0],
-      freeze_panes: 'A2',
+      freeze_mode: 'FIRST_ROW_ONLY',
       format_runs: [],
       verification_samples: [],
       merges: [],
@@ -1091,24 +1312,54 @@ describe('WPS AirScript deployment sources', () => {
       format_results: {
         freeze_panes: {
           status: 'SUCCESS_WITH_WARNINGS',
-          attempted_count: 1,
-          verified_count: 0,
+          attempted_count: 2,
+          verified_count: 1,
           failed_count: 1,
           warning_count: 1,
-          items: [expect.objectContaining({
-            sheet_name: '轨旁AP业务',
-            expected_frozen_rows: 1,
-            actual_frozen_rows: 11,
-            error_code: 'WPS_FREEZE_SELECTION_FAILED',
-            verified: false,
-          })],
+          items: expect.arrayContaining([expect.objectContaining({
+              sheet_name: '轨旁AP业务',
+              expected_frozen_rows: 1,
+              actual_frozen_rows: 20,
+              immediate: expect.objectContaining({ split_row: 1 }),
+              reactivated: expect.objectContaining({ split_row: 20 }),
+              error_code: 'WPS_FREEZE_REACTIVATION_READBACK_FAILED',
+              verified: false,
+            })]),
         },
       },
       format_warnings: [expect.objectContaining({
         sheet_name: '轨旁AP业务',
         feature: 'freeze_panes',
-        reason: expect.stringContaining('WPS_FREEZE_SELECTION_FAILED'),
+        reason: expect.stringContaining('WPS_FREEZE_REACTIVATION_READBACK_FAILED'),
       })],
+    })
+  })
+
+  it('fails freeze verification when the fixed A2 selection cannot be established', () => {
+    const runtime = standardSpreadsheetRuntime(
+      ['轨旁AP业务', '_NetConsoleSyncMeta'],
+      { freezeSelectionFailureNames: ['轨旁AP业务'] },
+    )
+    const args = standardSyncArgs(['轨旁AP业务']) as Record<string, any>
+    args.format_mirror_enabled = true
+
+    const result = executeStandardSpreadsheet(runtime, args)
+
+    expect(result).toMatchObject({
+      success: true,
+      status: 'SUCCESS_WITH_WARNINGS',
+      format_results: {
+        freeze_panes: {
+          status: 'SUCCESS_WITH_WARNINGS',
+          verified_count: 0,
+          failed_count: 1,
+          items: [expect.objectContaining({
+            sheet_name: '轨旁AP业务',
+            error_code: 'WPS_FREEZE_SELECTION_FAILED',
+            verified: false,
+          })],
+        },
+      },
     })
   })
 
@@ -1181,6 +1432,7 @@ describe('WPS AirScript deployment sources', () => {
     ])
     const args = standardSyncArgs(['AP上线情况概览']) as Record<string, any>
     args.snapshot_generated_at = '2026-08-07T01:30:00Z'
+    args.format_mirror_enabled = true
     args.workbook.sheets[0] = {
       logical_sheet_key: 'ap_online_history_overview',
       sheet_name: 'AP上线情况概览',
@@ -1196,6 +1448,7 @@ describe('WPS AirScript deployment sources', () => {
       ],
       row_count: 6,
       column_count: 2,
+      freeze_mode: 'NONE',
     }
 
     const first = executeStandardSpreadsheet(runtime, args)
@@ -1206,6 +1459,9 @@ describe('WPS AirScript deployment sources', () => {
       success: true,
       written_row_count: 6,
       idempotent_prepend_replay: false,
+      format_results: {
+        freeze_panes: { attempted_count: 1, verified_count: 1, failed_count: 0 },
+      },
     })
     expect(runtime.inserts).toHaveLength(1)
     expect(firstBlockWrite?.value).toEqual(expect.arrayContaining([
@@ -1220,8 +1476,12 @@ describe('WPS AirScript deployment sources', () => {
       success: true,
       written_row_count: 0,
       idempotent_prepend_replay: true,
+      format_results: {
+        freeze_panes: { attempted_count: 1, verified_count: 1, failed_count: 0 },
+      },
     })
     expect(runtime.inserts).toHaveLength(1)
+    expect(runtime.freezeSelections).toEqual([])
   })
 
   it('keeps the field-verified stable writer isolated from ordering and formatting', () => {

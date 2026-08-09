@@ -666,8 +666,15 @@ def test_trackside_business_sheet_registry_keeps_overview_identities_distinct() 
     new_online = definitions["新增上线AP概览"]
     assert history.stable_key == "ap_online_history_overview"
     assert history.sync_mode == "PREPEND_SNAPSHOT"
+    assert history.freeze_mode == "NONE"
     assert new_online.stable_key == "newly_online_ap_overview"
     assert new_online.sync_mode == "FULL_REPLACE"
+    assert new_online.freeze_mode == "FIRST_ROW_ONLY"
+    assert all(
+        item.freeze_mode == "FIRST_ROW_ONLY"
+        for item in TRACKSIDE_AP_BUSINESS_SHEET_DEFINITIONS
+        if item.stable_key != "ap_online_history_overview"
+    )
     assert history.stable_key != new_online.stable_key
 
 

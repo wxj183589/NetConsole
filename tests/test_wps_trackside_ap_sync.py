@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 from pathlib import Path
+import re
 import sqlite3
 import urllib.error
 
@@ -14,6 +15,7 @@ from netconsole.core.paths import PathResolver
 from netconsole.core.sites import SiteManager
 from netconsole.models.wps_sync import (
     TRACKSIDE_AP_WPS_BUSINESS_KEY,
+    WpsFreezeMode,
     WpsSyncTarget,
     WpsTargetType,
     build_wps_binding_id,
@@ -801,7 +803,7 @@ def test_workbook_dto_preserves_sheet_order_and_compresses_format_runs(
     assert first.auto_fit_columns == ("A", "B", "C")
     assert first.column_layouts["A"]["layout_type"] == "normal"
     assert first.auto_fit_rows is True
-    assert first.freeze_panes == "A2"
+    assert first.freeze_mode is WpsFreezeMode.FIRST_ROW_ONLY
     assert first.auto_filter == ""
     assert {sample["label"] for sample in first.verification_samples} >= {
         "header",
@@ -895,7 +897,16 @@ def test_workbook_dto_enforces_final_freeze_contract(tmp_path: Path) -> None:
     workbook.close()
 
     dto = workbook_dto_from_xlsx(path, include_format_mirror=True)
-    assert [sheet.freeze_panes for sheet in dto.sheets] == ["A2", ""]
+    assert [sheet.freeze_mode for sheet in dto.sheets] == [
+        WpsFreezeMode.FIRST_ROW_ONLY,
+        WpsFreezeMode.NONE,
+    ]
+    serialized_sheets = dto.to_dict()["sheets"]
+    assert [sheet["freeze_mode"] for sheet in serialized_sheets] == [
+        "FIRST_ROW_ONLY",
+        "NONE",
+    ]
+    assert all("freeze_panes" not in sheet for sheet in serialized_sheets)
 
 
 def test_workbook_dto_can_include_only_explicit_column_widths(tmp_path: Path) -> None:
@@ -1295,21 +1306,29 @@ def test_standard_airscript_applies_formats_after_the_stable_writer() -> None:
     assert "targetRange.Rows.AutoFit()" in script
     assert "window.FreezePanes = false" in script
     assert "function applyWorkbookFreezeLayout" in script
-    assert "function selectFreezeAnchor" in script
+    assert "function expectedFreezeState(sheetDto)" in script
+    assert "function resetWindowPaneState(sheet)" in script
+    assert "function selectFirstRowFreezeAnchor(sheet)" in script
     assert "Application.ActiveCell" in script
     assert "WPS_FREEZE_SELECTION_FAILED" in script
-    assert "applyWorkbookFreezeLayout(formatSheets" in script
-    assert 'freeze_panes", normalized || "NONE"' in script
+    assert "WPS_FREEZE_REACTIVATION_READBACK_FAILED" in script
+    assert "applyWorkbookFreezeLayout(sheets" in script
+    assert 'sheet.Name, "freeze_panes", expected.mode' in script
+    assert "sheetDto.freeze_panes" not in script
+    assert "function columnNumber(" not in script
+    assert "function selectFreezeAnchor(" not in script
     sheet_formatting = script.split("function applySheetFormatting", 1)[1].split(
         "function applyBusinessFormatting", 1
     )[0]
     assert "applyFreezePanes" not in sheet_formatting
-    sync_body = script.split("function sync(payload)", 1)[1]
+    sync_body = script.split("function sync(payload)", 1)[1].split(
+        "function sheetIsHidden", 1
+    )[0]
     assert sync_body.index("applyBusinessFormatting(formatSheets") < sync_body.index(
         "sheetOrderVerification = reorderBusinessSheets(sheets)"
     )
     assert sync_body.index("applyBusinessSheetTabColors(sheets") < sync_body.index(
-        "applyWorkbookFreezeLayout(formatSheets"
+        "applyWorkbookFreezeLayout(sheets"
     )
     assert "row.RowHeight = entry.height" in script
     assert "Columns.AutoFit API unavailable" in script
@@ -1331,6 +1350,7 @@ def test_standard_airscript_applies_formats_after_the_stable_writer() -> None:
     assert "xlInsideVertical" in script
     assert "all_borders: true" in script
     assert "window.SplitColumn = 0" in script
+    assert re.findall(r"window\.SplitRow\s*=\s*([^;]+);", script) == ["0"]
     assert "expected_frozen_columns" in script
     assert "sheet.Range(merge).Merge()" in script
     assert "range.MergeArea && range.MergeArea.Address" in script
@@ -1361,6 +1381,12 @@ def test_standard_airscript_applies_formats_after_the_stable_writer() -> None:
     assert "applyBusinessSheetTabColors(sheets, formatWarnings, mirroredFormatResults)" in script
     assert '.startsWith("_NetConsole")' in script
     assert 'status: publicWarnings.length ? "SUCCESS_WITH_WARNINGS" : "SUCCESS"' in script
+    freeze_finalize_tail = sync_body.split(
+        "if (formatMirrorEnabled) applyWorkbookFreezeLayout(sheets, formatWarnings, mirroredFormatResults);",
+        1,
+    )[1]
+    for forbidden in (".Activate(", ".Select(", ".AutoFit(", ".Move(", ".AutoFilter("):
+        assert forbidden not in freeze_finalize_tail
     assert 'if (args.operation === "migrate_legacy_binding") return migrateLegacyBinding(args);' in script
     assert "function updateBindingIdOnly(newBindingId)" in script
     assert 'sheet.Range(`B${index + 1}`).Value2 = String(newBindingId || "");' in script

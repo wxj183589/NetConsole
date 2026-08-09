@@ -351,6 +351,7 @@ class TracksideApBusinessSheetDefinition:
     order: int
     sync_mode: str = "FULL_REPLACE"
     tab_color: str = ""
+    freeze_mode: str = "FIRST_ROW_ONLY"
 
 
 TRACKSIDE_AP_BUSINESS_SHEET_DEFINITIONS = (
@@ -360,6 +361,7 @@ TRACKSIDE_AP_BUSINESS_SHEET_DEFINITIONS = (
         10,
         sync_mode="PREPEND_SNAPSHOT",
         tab_color="#C6EFCE",
+        freeze_mode="NONE",
     ),
     TracksideApBusinessSheetDefinition(
         "trackside_ap_business",

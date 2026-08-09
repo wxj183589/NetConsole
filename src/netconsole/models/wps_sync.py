@@ -35,6 +35,11 @@ class WpsSyncMode(StrEnum):
     DISABLED = "DISABLED"
 
 
+class WpsFreezeMode(StrEnum):
+    NONE = "NONE"
+    FIRST_ROW_ONLY = "FIRST_ROW_ONLY"
+
+
 @dataclass(frozen=True)
 class WpsSyncTarget:
     target_id: str
@@ -176,7 +181,7 @@ class WorkbookSheetDTO:
     auto_fit_max_width: float = 60.0
     auto_fit_rows: bool = False
     format_runs: tuple[WorkbookFormatRunDTO, ...] = ()
-    freeze_panes: str = ""
+    freeze_mode: WpsFreezeMode = WpsFreezeMode.NONE
     auto_filter: str = ""
     verification_samples: tuple[dict[str, Any], ...] = ()
 
@@ -200,7 +205,7 @@ class WorkbookSheetDTO:
             "auto_fit_max_width": self.auto_fit_max_width,
             "auto_fit_rows": self.auto_fit_rows,
             "format_runs": [run.to_dict() for run in self.format_runs],
-            "freeze_panes": self.freeze_panes,
+            "freeze_mode": self.freeze_mode.value,
             "auto_filter": self.auto_filter,
             "verification_samples": list(self.verification_samples),
         }
@@ -221,6 +226,7 @@ __all__ = [
     "WorkbookFormatRunDTO",
     "WorkbookDTO",
     "WorkbookSheetDTO",
+    "WpsFreezeMode",
     "WpsSyncMode",
     "WpsSyncTarget",
     "WpsTargetType",
