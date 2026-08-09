@@ -16,6 +16,21 @@ describe('browser platform adapter', () => {
     await expect(adapter.openPath('C:\\report.xlsx')).resolves.toMatchObject({ success: false })
   })
 
+  it('uses the browser clipboard capability and reports permission failures', async () => {
+    const writeText = vi.fn(async () => undefined)
+    vi.stubGlobal('navigator', { clipboard: { writeText } })
+    const adapter = createBrowserAdapter()
+
+    await expect(adapter.writeClipboardText('AirScript source')).resolves.toEqual({ success: true })
+    expect(writeText).toHaveBeenCalledWith('AirScript source')
+
+    writeText.mockRejectedValueOnce(new Error('denied'))
+    await expect(adapter.writeClipboardText('AirScript source')).resolves.toEqual({
+      success: false,
+      error: '浏览器剪贴板权限不可用',
+    })
+  })
+
   it('establishes an authenticated loopback development session without logging the token', async () => {
     const token = 'browser-development-token-abcdefghijklmnopqrstuvwxyz'
     const calls: Array<[RequestInfo | URL, RequestInit | undefined]> = []

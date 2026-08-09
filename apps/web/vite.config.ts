@@ -124,6 +124,7 @@ export default defineConfig({
   server: {
     host: '127.0.0.1',
     port: 5173,
+    fs: { allow: [projectRoot] },
     proxy: {
       '/api': 'http://127.0.0.1:8000',
       '/ws': {

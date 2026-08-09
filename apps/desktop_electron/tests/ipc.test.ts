@@ -49,6 +49,7 @@ function createHarness(overrides: {
   windowForEvent?: (event: { sender: unknown }) => unknown
   fetchImpl?: typeof fetch
   externalToolService?: ExternalToolServiceLike
+  clipboardWriteText?: (text: string) => void
   artifactLstat?: (path: string) => Promise<{
     isFile(): boolean
     isDirectory?(): boolean
@@ -66,6 +67,7 @@ function createHarness(overrides: {
     showItemInFolder: vi.fn(),
     openExternal: vi.fn(async () => undefined),
   }
+  const clipboard = { writeText: vi.fn(overrides.clipboardWriteText ?? (() => undefined)) }
   const dialog = {
     showOpenDialog: vi.fn(async (_window, options) => options.properties.includes('openDirectory')
       ? { canceled: false, filePaths: [selectedDirectory] }
@@ -77,6 +79,7 @@ function createHarness(overrides: {
     ipcMain,
     dialog,
     shell,
+    clipboard,
     window: {},
     windowForEvent: overrides.windowForEvent,
     appInfo: { version: '1.3.8', platform: 'win32', isPackaged: false },
@@ -106,7 +109,7 @@ function createHarness(overrides: {
       isSymbolicLink: () => false,
     })),
   })
-  return { ipcMain, sender, selectedFile, selectedDirectory, savedFile, shell, pathRegistry, dialog }
+  return { ipcMain, sender, selectedFile, selectedDirectory, savedFile, shell, clipboard, pathRegistry, dialog }
 }
 
 function externalToolService(): ExternalToolServiceLike {
@@ -143,6 +146,17 @@ describe('desktop IPC', () => {
     const handler = ipcMain.handlers.get(DESKTOP_IPC.getRuntimeConfig)!
 
     expect(() => handler({ sender: {} })).toThrow('未知渲染进程')
+  })
+
+  it('writes validated text through the trusted clipboard handler', async () => {
+    const { ipcMain, sender, clipboard } = createHarness()
+    const handler = ipcMain.handlers.get(DESKTOP_IPC.writeClipboardText)!
+
+    expect(handler({ sender }, 'AirScript source')).toEqual({ success: true })
+    expect(clipboard.writeText).toHaveBeenCalledWith('AirScript source')
+    expect(() => handler({ sender: {} }, 'blocked')).toThrow('未知渲染进程')
+    expect(handler({ sender }, '')).toMatchObject({ success: false })
+    expect(clipboard.writeText).toHaveBeenCalledOnce()
   })
 
   it('opens workspace windows only through validated trusted requests', async () => {

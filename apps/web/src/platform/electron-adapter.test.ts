@@ -47,6 +47,7 @@ function bridge(runtime = {
     openPath: vi.fn(async () => ({ success: true })),
     showItemInFolder: vi.fn(async () => ({ success: true })),
     openExternalUrl: vi.fn(async () => ({ success: true })),
+    writeClipboardText: vi.fn(async () => ({ success: true })),
     onBackendStatusChanged: vi.fn(() => () => undefined),
     reportRendererReady: vi.fn(),
   }
@@ -75,6 +76,8 @@ describe('Electron platform adapter', () => {
     expect(nativeBridge.openTaskWindow).not.toHaveBeenCalled()
     await adapter.openExternalUrl('https://192.0.2.10/')
     expect(nativeBridge.openExternalUrl).toHaveBeenCalledWith('https://192.0.2.10/')
+    await adapter.writeClipboardText('AirScript source')
+    expect(nativeBridge.writeClipboardText).toHaveBeenCalledWith('AirScript source')
   })
 
   it.each([

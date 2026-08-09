@@ -39,6 +39,7 @@ const SENSITIVE_QUERY_KEY_RE = /(?:token|password|secret|authorization|community
 const MAX_QUERY_FIELDS = 32
 const MAX_QUERY_VALUE_LENGTH = 2_000
 const MAX_API_PATH_LENGTH = 4_096
+const MAX_CLIPBOARD_TEXT_LENGTH = 1_000_000
 const MAX_WORKSPACE_ROUTE_LENGTH = 2_048
 const MAX_WORKSPACE_TITLE_LENGTH = 80
 const MAX_WORKSPACE_TABS = 40
@@ -771,6 +772,18 @@ export function validateExternalUrl(value: unknown): string {
     throw new TypeError('desktop bridge only allows credential-free HTTPS urls')
   }
   return parsed.href
+}
+
+export function validateClipboardText(value: unknown): string {
+  if (
+    typeof value !== 'string'
+    || value.length === 0
+    || value.length > MAX_CLIPBOARD_TEXT_LENGTH
+    || value.includes('\u0000')
+  ) {
+    throw new TypeError('clipboard text is invalid')
+  }
+  return value
 }
 
 export function validateRendererReadyReport(value: unknown): RendererHostReport {

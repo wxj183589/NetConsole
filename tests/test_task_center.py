@@ -88,9 +88,19 @@ def _complete_task(service: TaskApplicationService, task_id: str = "task-complet
             ("WARNING", 0, 0, 0, 2, False),
         ),
         (
+            {"status": "SUCCESS_WITH_WARNINGS", "success_count": 1, "warning_count": 2},
+            "COMPLETED",
+            ("SUCCESS_WITH_WARNINGS", 1, 0, 0, 2, False),
+        ),
+        (
             {"status": "NO_TARGET", "skipped_count": 5},
             "COMPLETED",
             ("NO_EFFECTIVE_TARGET", 0, 0, 5, 0, False),
+        ),
+        (
+            {"status": "REMOTE_RESULT_UNKNOWN"},
+            "COMPLETED",
+            ("REMOTE_RESULT_UNKNOWN", 0, 0, 0, 0, False),
         ),
         (
             {

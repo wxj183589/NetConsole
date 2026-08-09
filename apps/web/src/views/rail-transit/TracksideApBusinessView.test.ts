@@ -13,15 +13,24 @@ import type {
   TracksideApBusinessPage,
   TracksideApBusinessRow,
   TracksideApTask,
+  WpsTracksideTarget,
 } from '../../types/tracksideApBusiness'
 import type { TaskItem } from '../../types/task'
 
 const api = vi.hoisted(() => ({
   listTracksideApBusiness: vi.fn(),
+  listTracksideWpsTargets: vi.fn(),
   getTracksideApOnlineStatus: vi.fn(),
   getTracksideApBusinessExportProposal: vi.fn(),
   startTracksideApBusinessExport: vi.fn(),
   startTracksideApUpdate: vi.fn(),
+  syncTracksideWpsDocument: vi.fn(),
+  testTracksideWpsTarget: vi.fn(),
+  migrateTracksideWpsLegacyBinding: vi.fn(),
+  probeTracksideWpsColumnWidth: vi.fn(),
+  probeTracksideWpsSheetTabColor: vi.fn(),
+  revalidateTracksideWpsDeployment: vi.fn(),
+  updateTracksideWpsTarget: vi.fn(),
   tracksideApBusinessDownloadRequest: vi.fn(),
 }))
 const taskApi = vi.hoisted(() => ({
@@ -38,7 +47,13 @@ const siteApi = vi.hoisted(() => ({ getActiveSite: vi.fn() }))
 const platformMocks = vi.hoisted(() => ({
   chooseSavePath: vi.fn(),
   downloadBackendResource: vi.fn(),
+  openExternalUrl: vi.fn(),
+  writeClipboardText: vi.fn(),
   hostType: 'browser' as 'browser' | 'electron',
+}))
+const confirmMocks = vi.hoisted(() => ({
+  confirm: vi.fn(async () => true),
+  confirmChoice: vi.fn(),
 }))
 const terminalMocks = vi.hoisted(() => ({
   busy: { __v_isRef: true, value: false },
@@ -61,13 +76,19 @@ vi.mock('../../platform/runtime', () => ({
   getPlatformAdapter: () => ({
     hostType: platformMocks.hostType,
     chooseSavePath: platformMocks.chooseSavePath,
+    openExternalUrl: platformMocks.openExternalUrl,
+    writeClipboardText: platformMocks.writeClipboardText,
   }),
+}))
+vi.mock('../../components/feedback/useConfirm', () => ({
+  useConfirm: () => confirmMocks,
 }))
 vi.mock('../../composables/useExternalTerminalLauncher', () => ({
   useExternalTerminalLauncher: () => terminalMocks,
 }))
 
 import TracksideApBusinessView from './TracksideApBusinessView.vue'
+import TracksideApWpsConfigDialog from './TracksideApWpsConfigDialog.vue'
 
 const extendedRowDefaults = {
   switch_vendor: 'H3C',
@@ -254,6 +275,33 @@ function snapshotPage(revision = 'a'.repeat(64), pageNo = 1): TracksideApBusines
   }
 }
 
+function wpsTargets(configured = false): WpsTracksideTarget[] {
+  return [
+    {
+      target_id: 'target-standard',
+      site_id: 'demo',
+      business_key: 'rail_transit.trackside_ap_business',
+      target_code: 'wps_standard_spreadsheet',
+      target_type: 'WPS_STANDARD_SPREADSHEET',
+      target_name: 'WPS 云文档',
+      document_open_url: 'https://www.kdocs.cn/l/standard',
+      webhook_url: 'https://www.kdocs.cn/api/v3/ide/file/standard/script/test/sync_task',
+      expected_document_id: 'standard',
+      enabled: true,
+      protocol_version: 2,
+      timeout_seconds: 30,
+      token_configured: configured,
+      token_suffix: configured ? '1111' : '',
+      last_test_at: '',
+      last_test_status: '',
+      last_test_message: '',
+      last_sync_at: '',
+      last_sync_status: '',
+      last_sync_revision: '',
+    },
+  ]
+}
+
 function task(
   taskId: string,
   status = 'RUNNING',
@@ -346,6 +394,8 @@ const NcDataTableStub = defineComponent({
 })
 
 const ElementStubs = {
+  ElForm: defineComponent({ template: '<form><slot /></form>' }),
+  ElFormItem: defineComponent({ props: { label: String }, template: '<label>{{ label }}<slot /></label>' }),
   ElAlert: defineComponent({
     props: { title: String, type: String },
     template: '<div class="el-alert" :data-type="type"><span>{{ title }}</span><slot /></div>',
@@ -369,6 +419,16 @@ const ElementStubs = {
     props: { modelValue: Boolean },
     emits: ['update:modelValue'],
     template: '<label><input type="checkbox" :checked="modelValue" @change="$emit(\'update:modelValue\', $event.target.checked)" /><slot /></label>',
+  }),
+  ElSwitch: defineComponent({
+    props: { modelValue: Boolean },
+    emits: ['update:modelValue'],
+    template: '<input type="checkbox" :checked="modelValue" @change="$emit(\'update:modelValue\', $event.target.checked)" />',
+  }),
+  ElInputNumber: defineComponent({
+    props: { modelValue: Number },
+    emits: ['update:modelValue'],
+    template: '<input type="number" :value="modelValue" @input="$emit(\'update:modelValue\', Number($event.target.value))" />',
   }),
   ElOption: defineComponent({
     props: { label: String, value: String, title: String },
@@ -414,8 +474,27 @@ describe('TracksideApBusinessView mounted behavior', () => {
       'web.ac_fit_ap_external_terminal': { visible: true, enabled: true },
       'desktop.native_bridge': { visible: true, enabled: true },
       'rail.zte_trackside_switch_adapter': { visible: true, enabled: true },
+      'web.rail_trackside_ap_business_wps_sync': { visible: true, enabled: true },
     })
     api.listTracksideApBusiness.mockResolvedValue(page())
+    api.listTracksideWpsTargets.mockResolvedValue([])
+    api.updateTracksideWpsTarget.mockResolvedValue({})
+    api.testTracksideWpsTarget.mockResolvedValue({ target_code: 'wps_standard_spreadsheet', result: {} })
+    api.migrateTracksideWpsLegacyBinding.mockResolvedValue({
+      target_code: 'wps_standard_spreadsheet',
+      result: { binding_status: 'BOUND', migrated: true },
+    })
+    api.probeTracksideWpsSheetTabColor.mockResolvedValue({
+      target_code: 'wps_standard_spreadsheet',
+      result: { sheet_tab_color_verified: true },
+    })
+    api.probeTracksideWpsColumnWidth.mockResolvedValue({
+      target_code: 'wps_standard_spreadsheet',
+      result: { column_width_verified: true },
+    })
+    confirmMocks.confirm.mockReset()
+    confirmMocks.confirm.mockResolvedValue(true)
+    api.syncTracksideWpsDocument.mockResolvedValue(task('wps-task', 'RUNNING', 'trackside_ap_wps_sync'))
     api.getTracksideApOnlineStatus.mockResolvedValue(onlineStatus())
     api.getTracksideApBusinessExportProposal.mockResolvedValue({
       site_id: 'demo',
@@ -432,6 +511,10 @@ describe('TracksideApBusinessView mounted behavior', () => {
       suggestedName: artifactName,
     }))
     platformMocks.downloadBackendResource.mockResolvedValue({ status: 'saved', capabilityId: 'cap-1' })
+    platformMocks.openExternalUrl.mockReset()
+    platformMocks.openExternalUrl.mockResolvedValue({ success: true })
+    platformMocks.writeClipboardText.mockReset()
+    platformMocks.writeClipboardText.mockResolvedValue({ success: true })
     platformMocks.chooseSavePath.mockReset()
     platformMocks.chooseSavePath.mockResolvedValue({
       cancelled: false,
@@ -497,6 +580,362 @@ describe('TracksideApBusinessView mounted behavior', () => {
     expect(wrapper.find('[data-table-id="trackside-ap-business-task-result"]').exists()).toBe(false)
     expect(wrapper.find('input[placeholder="站点"]').exists()).toBe(false)
     expect(wrapper.find('select').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('opens the single WPS cloud document configuration and saves its connection', async () => {
+    const initialTargets = wpsTargets(false)
+    api.listTracksideWpsTargets.mockResolvedValue(initialTargets)
+    const wrapper = await mountView()
+
+    expect(wrapper.text()).toContain('在线文档连接、webhook 或脚本令牌尚未完整配置')
+    await button(wrapper, '配置云文档').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('令牌未配置')
+
+    const dialog = wrapper.getComponent(TracksideApWpsConfigDialog)
+    const vm = dialog.vm as unknown as {
+      drafts: Array<{ target_code: string; token: string; document_open_url: string; webhook_url: string }>
+      saveTargetConfiguration: (code: 'wps_standard_spreadsheet') => Promise<boolean>
+    }
+    vm.drafts[0].token = 'standard-test-token'
+    vm.drafts[0].document_open_url = 'https://www.kdocs.cn/l/standard-updated'
+    vm.drafts[0].webhook_url = 'https://www.kdocs.cn/api/v3/ide/file/standard-updated/script/test/sync_task'
+    api.listTracksideWpsTargets.mockResolvedValue(wpsTargets(true))
+
+    await vm.saveTargetConfiguration('wps_standard_spreadsheet')
+    expect(api.updateTracksideWpsTarget).toHaveBeenNthCalledWith(1, 'wps_standard_spreadsheet', expect.objectContaining({
+      token: 'standard-test-token',
+      document_open_url: 'https://www.kdocs.cn/l/standard-updated',
+      webhook_url: 'https://www.kdocs.cn/api/v3/ide/file/standard-updated/script/test/sync_task',
+    }))
+    expect(vm.drafts[0].token).toBe('')
+    wrapper.unmount()
+  })
+
+  it('tests an unchanged WPS target without submitting the same configuration again', async () => {
+    const configuredTargets = wpsTargets(true)
+    api.listTracksideWpsTargets.mockResolvedValue(configuredTargets)
+    api.testTracksideWpsTarget.mockResolvedValue({
+      target_code: 'wps_standard_spreadsheet',
+      result: {
+        document_name: 'WPS 云文档',
+        script_version: '2.3.0-standard',
+        deployment_id: 'trackside-ap-standard-2.3.0',
+      },
+    })
+    const wrapper = await mountView()
+    await button(wrapper, '配置云文档').trigger('click')
+    await flushPromises()
+    const dialog = wrapper.getComponent(TracksideApWpsConfigDialog)
+    const vm = dialog.vm as unknown as {
+      saveTargetConfiguration: (code: 'wps_standard_spreadsheet') => Promise<boolean>
+      testConnection: (code: 'wps_standard_spreadsheet') => Promise<void>
+    }
+
+    await vm.saveTargetConfiguration('wps_standard_spreadsheet')
+    expect(api.updateTracksideWpsTarget).not.toHaveBeenCalled()
+    await vm.testConnection('wps_standard_spreadsheet')
+    expect(api.updateTracksideWpsTarget).not.toHaveBeenCalled()
+    expect(api.testTracksideWpsTarget).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+
+  it('revalidates the current ordinary spreadsheet deployment as one workflow', async () => {
+    api.listTracksideWpsTargets.mockResolvedValue(wpsTargets(true))
+    api.revalidateTracksideWpsDeployment.mockResolvedValue({
+      target_code: 'wps_standard_spreadsheet',
+      result: { runtime_capability: 'VERIFIED' },
+    })
+    const wrapper = await mountView()
+    await button(wrapper, '配置云文档').trigger('click')
+    await flushPromises()
+    const dialog = wrapper.getComponent(TracksideApWpsConfigDialog)
+    const vm = dialog.vm as unknown as {
+      revalidateDeployment: (code: 'wps_standard_spreadsheet') => Promise<void>
+    }
+
+    await vm.revalidateDeployment('wps_standard_spreadsheet')
+    expect(api.revalidateTracksideWpsDeployment).toHaveBeenCalledWith('wps_standard_spreadsheet')
+    wrapper.unmount()
+  })
+
+  it('runs Sheet tab color as an independent ordinary spreadsheet probe', async () => {
+    const targets = wpsTargets(true)
+    targets[0].sheet_tab_color_probe_diagnostic = {
+      status: 'SUCCESS',
+      sheet_tab_color_verified: true,
+      expected_tab_color: '#C6EFCE',
+      actual_tab_color: 13561798,
+    }
+    api.listTracksideWpsTargets.mockResolvedValue(targets)
+    const wrapper = await mountView()
+    await button(wrapper, '配置云文档').trigger('click')
+    await flushPromises()
+    const dialog = wrapper.getComponent(TracksideApWpsConfigDialog)
+    const vm = dialog.vm as unknown as {
+      sheetTabColorProbe: (code: 'wps_standard_spreadsheet') => Promise<void>
+    }
+
+    await vm.sheetTabColorProbe('wps_standard_spreadsheet')
+
+    expect(api.probeTracksideWpsSheetTabColor).toHaveBeenCalledWith('wps_standard_spreadsheet')
+    expect(api.revalidateTracksideWpsDeployment).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('Sheet 标签颜色')
+    wrapper.unmount()
+  })
+
+  it('runs column width as an independent ordinary spreadsheet probe', async () => {
+    const targets = wpsTargets(true)
+    targets[0].column_width_probe_diagnostic = {
+      status: 'SUCCESS',
+      column_width_verified: true,
+      expected_column_widths: { A: 8, B: 15, C: 25, D: 40 },
+      actual_column_widths: { A: 8, B: 15, C: 25, D: 40 },
+    }
+    api.listTracksideWpsTargets.mockResolvedValue(targets)
+    const wrapper = await mountView()
+    await button(wrapper, '配置云文档').trigger('click')
+    await flushPromises()
+    const dialog = wrapper.getComponent(TracksideApWpsConfigDialog)
+    const vm = dialog.vm as unknown as {
+      columnWidthProbe: (code: 'wps_standard_spreadsheet') => Promise<void>
+    }
+
+    await vm.columnWidthProbe('wps_standard_spreadsheet')
+
+    expect(api.probeTracksideWpsColumnWidth).toHaveBeenCalledWith('wps_standard_spreadsheet')
+    expect(api.revalidateTracksideWpsDeployment).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('列宽写后读回：已验证')
+    expect(wrapper.text()).toContain('A=8，B=15，C=25，D=40')
+    wrapper.unmount()
+  })
+
+  it('shows binding identity diagnostics and explicitly upgrades only a legacy binding id', async () => {
+    const legacyTargets = wpsTargets(true)
+    legacyTargets[0] = {
+      ...legacyTargets[0],
+      binding_status: 'LEGACY_BINDING_ID_MISMATCH',
+      binding_id: 'wpsbind_v1_local',
+      remote_binding_id: `wst_${'a'.repeat(32)}`,
+      remote_site_id: 'hzl10',
+      remote_site_name: '杭州地铁10号线',
+      remote_business_key: 'rail_transit.trackside_ap_business',
+      connection_diagnostic: {
+        status: 'SUCCESS',
+        binding_status: 'LEGACY_BINDING_ID_MISMATCH',
+        binding_id_match: false,
+        remote_document_id: '549847228994',
+        remote_site_id: 'hzl10',
+        remote_site_name: '杭州地铁10号线',
+        remote_business_key: 'rail_transit.trackside_ap_business',
+        remote_target_code: 'wps_standard_spreadsheet',
+        remote_target_type: 'WPS_STANDARD_SPREADSHEET',
+        document_identity_match: true,
+        site_identity_match: true,
+        business_identity_match: true,
+        document_match: true,
+        site_match: true,
+        business_match: true,
+        target_code_match: true,
+        target_type_match: true,
+      },
+    }
+    const upgradedTargets = wpsTargets(true)
+    upgradedTargets[0] = {
+      ...legacyTargets[0],
+      binding_status: 'BOUND',
+      remote_binding_id: 'wpsbind_v1_local',
+      connection_diagnostic: {
+        ...legacyTargets[0].connection_diagnostic,
+        binding_status: 'BOUND',
+        binding_id_match: true,
+      },
+    }
+    api.listTracksideWpsTargets.mockResolvedValue(legacyTargets)
+    const wrapper = await mountView()
+    await button(wrapper, '配置云文档').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('当前 WPS 文档仍使用 NetConsole 旧版绑定标识')
+    expect(wrapper.text()).toContain('本地 Binding ID')
+    expect(wrapper.text()).toContain('wpsbind_v1_local')
+    expect(wrapper.text()).toContain(`wst_${'a'.repeat(32)}`)
+    expect(wrapper.text()).toContain('549847228994')
+    expect(wrapper.text()).toContain('rail_transit.trackside_ap_business')
+    expect(wrapper.text()).toContain('WPS_STANDARD_SPREADSHEET')
+    expect(wrapper.text()).toContain('目标类型匹配')
+
+    const dialog = wrapper.getComponent(TracksideApWpsConfigDialog)
+    const vm = dialog.vm as unknown as {
+      migrateLegacyBinding: (code: 'wps_standard_spreadsheet') => Promise<void>
+    }
+    api.listTracksideWpsTargets.mockResolvedValue(upgradedTargets)
+    await vm.migrateLegacyBinding('wps_standard_spreadsheet')
+
+    expect(confirmMocks.confirm).toHaveBeenCalledWith(expect.objectContaining({
+      title: '升级旧版绑定标识',
+      confirmText: '确认升级绑定标识',
+      detail: expect.stringContaining('不会创建、清空、移动或写入任何业务 Sheet'),
+    }))
+    expect(api.migrateTracksideWpsLegacyBinding).toHaveBeenCalledWith('wps_standard_spreadsheet')
+    expect(wrapper.text()).toContain('已绑定')
+    wrapper.unmount()
+  })
+
+  it('does not migrate a legacy binding when the explicit confirmation is cancelled', async () => {
+    const legacyTargets = wpsTargets(true)
+    legacyTargets[0] = {
+      ...legacyTargets[0],
+      binding_status: 'LEGACY_BINDING_ID_MISMATCH',
+      binding_id: 'wpsbind_v1_local',
+      remote_binding_id: `wst_${'a'.repeat(32)}`,
+      remote_site_name: '杭州地铁10号线',
+    }
+    api.listTracksideWpsTargets.mockResolvedValue(legacyTargets)
+    confirmMocks.confirm.mockResolvedValue(false)
+    const wrapper = await mountView()
+    await button(wrapper, '配置云文档').trigger('click')
+    await flushPromises()
+    const dialog = wrapper.getComponent(TracksideApWpsConfigDialog)
+    const vm = dialog.vm as unknown as {
+      migrateLegacyBinding: (code: 'wps_standard_spreadsheet') => Promise<void>
+    }
+
+    await vm.migrateLegacyBinding('wps_standard_spreadsheet')
+
+    expect(api.migrateTracksideWpsLegacyBinding).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('shows each runtime capability and treats sheet visibility as a warning', async () => {
+    const configuredTargets = wpsTargets(true)
+    configuredTargets[0].runtime_probe_diagnostic = {
+      executed_at: '2026-08-07T18:00:00+08:00',
+      status: 'SUCCESS_WITH_WARNINGS',
+      operation: 'runtime_write_probe',
+      message: '运行时核心能力探针通过，存在可选能力告警',
+      core_verified: true,
+      full_replace_ready: true,
+      prepend_snapshot_ready: true,
+      core_capabilities: {
+        worksheet_enum: true,
+        worksheet_item: true,
+        worksheet_create: true,
+        scalar_value2: true,
+        matrix_value2: true,
+        used_range: true,
+        clear_contents: true,
+        entire_row_insert: true,
+      },
+      optional_capabilities: { sheet_visibility: false },
+      warnings: [{ capability: 'sheet_visibility', message: 'WPS 当前运行时无法确认系统 Sheet 隐藏状态' }],
+    }
+    api.listTracksideWpsTargets.mockResolvedValue(configuredTargets)
+    const wrapper = await mountView()
+
+    await button(wrapper, '配置云文档').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('写入核心能力')
+    expect(wrapper.text()).toContain('通过（有警告）')
+    expect(wrapper.text()).toContain('二维数据写入与读回')
+    expect(wrapper.text()).toContain('顶部整行插入')
+    expect(wrapper.text()).toContain('系统 Sheet 隐藏')
+    expect(wrapper.text()).toContain('全量替换：就绪')
+    expect(wrapper.text()).toContain('顶部追加快照：就绪')
+    expect(wrapper.text()).toContain('WPS 当前运行时无法确认系统 Sheet 隐藏状态')
+    wrapper.unmount()
+  })
+
+  it('opens the WPS cloud document through the platform adapter without window.open in Electron', async () => {
+    platformMocks.hostType = 'electron'
+    api.listTracksideWpsTargets.mockResolvedValue(wpsTargets(true))
+    const nativeOpen = vi.spyOn(window, 'open').mockImplementation(() => null)
+    const wrapper = await mountView()
+    await button(wrapper, '配置云文档').trigger('click')
+    await flushPromises()
+
+    const dialog = wrapper.getComponent(TracksideApWpsConfigDialog)
+    const vm = dialog.vm as unknown as {
+      openDocument: (target: WpsTracksideTarget) => Promise<void>
+    }
+    const targets = wpsTargets(true)
+    await vm.openDocument(targets[0])
+
+    expect(platformMocks.openExternalUrl).toHaveBeenCalledWith(targets[0].document_open_url)
+    expect(nativeOpen).not.toHaveBeenCalled()
+    nativeOpen.mockRestore()
+    wrapper.unmount()
+  })
+
+  it('copies WPS deployment scripts through the controlled platform clipboard', async () => {
+    platformMocks.hostType = 'electron'
+    api.listTracksideWpsTargets.mockResolvedValue(wpsTargets(true))
+    const wrapper = await mountView()
+    await button(wrapper, '配置云文档').trigger('click')
+    await flushPromises()
+
+    const dialog = wrapper.getComponent(TracksideApWpsConfigDialog)
+    const vm = dialog.vm as unknown as {
+      copyAirScript: (
+        code: 'wps_standard_spreadsheet',
+        kind: 'probe' | 'sync',
+      ) => Promise<void>
+    }
+    await vm.copyAirScript('wps_standard_spreadsheet', 'probe')
+    await vm.copyAirScript('wps_standard_spreadsheet', 'sync')
+
+    expect(platformMocks.writeClipboardText).toHaveBeenNthCalledWith(
+      1,
+      expect.stringContaining('trackside-ap-standard-2.8.4'),
+    )
+    expect(platformMocks.writeClipboardText).toHaveBeenNthCalledWith(
+      2,
+      expect.stringContaining('trackside-ap-standard-2.8.4'),
+    )
+    expect(navigator.clipboard.writeText).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('enables cloud document sync only after runtime and binding gates pass', async () => {
+    const targets = wpsTargets(true)
+    targets[0].runtime_capability = 'VERIFIED'
+    targets[0].binding_status = 'UNBOUND'
+    api.listTracksideWpsTargets.mockResolvedValue(targets)
+    const wrapper = await mountView()
+    await flushPromises()
+
+    expect(button(wrapper, '同步云文档').attributes('disabled')).toBeUndefined()
+    expect(wrapper.text()).not.toContain('同步全部目标')
+    wrapper.unmount()
+  })
+
+  it('opens the page-level WPS cloud document', async () => {
+    platformMocks.hostType = 'electron'
+    api.listTracksideWpsTargets.mockResolvedValue(wpsTargets(true))
+    const wrapper = await mountView()
+
+    await button(wrapper, '打开云文档').trigger('click')
+    await flushPromises()
+
+    expect(platformMocks.openExternalUrl).toHaveBeenCalledWith(wpsTargets(true)[0].document_open_url)
+    wrapper.unmount()
+  })
+
+  it('shows a failure when the desktop external link capability rejects the WPS document', async () => {
+    platformMocks.hostType = 'electron'
+    platformMocks.openExternalUrl.mockResolvedValue({ success: false, error: '系统浏览器不可用' })
+    api.listTracksideWpsTargets.mockResolvedValue(wpsTargets(true))
+    const wrapper = await mountView()
+    await button(wrapper, '配置云文档').trigger('click')
+    await flushPromises()
+
+    const dialog = wrapper.getComponent(TracksideApWpsConfigDialog)
+    const vm = dialog.vm as unknown as { openDocument: (target: WpsTracksideTarget) => Promise<void> }
+    await vm.openDocument(wpsTargets(true)[0])
+
+    expect(wrapper.text()).toContain('系统浏览器不可用')
     wrapper.unmount()
   })
 

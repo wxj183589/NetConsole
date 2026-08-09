@@ -8,6 +8,7 @@ from netconsole.services.rail_transit.switch_vendor_sample_job import (
 )
 from netconsole.services.rail_transit.trackside_ap_update_job import run_trackside_ap_optical_update
 from netconsole.services.rail_transit.vehicle_mr_online_collection_job import run_vehicle_mr_online_collection
+from netconsole.services.wps_trackside_ap_sync import TracksideApWpsSyncService, WPS_SYNC_TASK_TYPE
 
 trackside_interface_history_page = legacy_handler(legacy_tasks._trackside_interface_history_page)
 car_network_point_table_import = legacy_handler(legacy_tasks._car_network_point_table_import)
@@ -45,3 +46,28 @@ HANDLERS.update(
         "vehicle_mr_online_collection_start": run_vehicle_mr_online_collection,
     }
 )
+
+
+def trackside_ap_wps_sync(context):
+    """在 Job Center Worker 中冻结一次快照并同步 WPS 云文档。"""
+
+    context.check_cancelled()
+    target_codes = tuple(
+        str(value)
+        for value in (context.params.get("target_codes") or ())
+        if str(value).strip()
+    )
+    service = TracksideApWpsSyncService(context.paths)
+    result = service.sync(
+        str(context.params.get("site_name") or ""),
+        target_codes=target_codes,
+        expected_revision=str(context.params.get("expected_revision") or ""),
+        initialize_binding=bool(context.params.get("initialize_binding")),
+        progress=context.progress,
+        should_cancel=context.check_cancelled,
+    )
+    context.check_cancelled()
+    return result
+
+
+HANDLERS[WPS_SYNC_TASK_TYPE] = trackside_ap_wps_sync

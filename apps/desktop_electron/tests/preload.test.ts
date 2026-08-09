@@ -75,6 +75,7 @@ describe('preload bridge', () => {
       'showItemInFolder',
       'showTaskNotification',
       'updateExternalTool',
+      'writeClipboardText',
     ])
     expect('ipcRenderer' in bridge).toBe(false)
     expect('process' in bridge).toBe(false)
@@ -110,6 +111,8 @@ describe('preload bridge', () => {
     expect(invocations).toContainEqual([DESKTOP_IPC.refreshSiteContext, undefined])
     bridge.reportSiteSwitchState?.(true)
     expect(ipcRenderer.send).toHaveBeenCalledWith(DESKTOP_IPC.siteSwitchState, true)
+    await bridge.writeClipboardText?.('AirScript source')
+    expect(invocations).toContainEqual([DESKTOP_IPC.writeClipboardText, 'AirScript source'])
   })
 
   it('validates arguments before sending IPC', async () => {
@@ -148,6 +151,8 @@ describe('preload bridge', () => {
     )
     vi.mocked(ipcRenderer.invoke).mockClear()
     expect(() => bridge.openExternalUrl('http://192.0.2.10/')).toThrow()
+    expect(() => bridge.writeClipboardText?.('')).toThrow('clipboard text is invalid')
+    expect(() => bridge.writeClipboardText?.('x'.repeat(1_000_001))).toThrow('clipboard text is invalid')
     expect(() => bridge.openPath('C:\\private\\report.xlsx')).toThrow('capabilityId is invalid')
     expect(() => bridge.showItemInFolder('C:\\private')).toThrow('capabilityId is invalid')
     expect(() => bridge.executeFileDesktopAction('C:\\private')).toThrow('file desktop action reference is invalid')

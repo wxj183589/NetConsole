@@ -50,6 +50,8 @@ _BUSINESS_STATUS_ALIASES = {
     "PARTIAL_FAILED": "PARTIAL_SUCCESS",
     "PARTIAL_SUCCESS": "PARTIAL_SUCCESS",
     "SUCCESS": "SUCCESS",
+    "SUCCESS_WITH_WARNINGS": "SUCCESS_WITH_WARNINGS",
+    "REMOTE_RESULT_UNKNOWN": "REMOTE_RESULT_UNKNOWN",
     "WARNING": "WARNING",
     "ERROR": "FAILED",
     "FAILED": "FAILED",
@@ -193,7 +195,7 @@ def business_result_has_warning(result: dict[str, Any]) -> bool:
         or result.get("outcome")
         or ""
     ).upper()
-    if outcome in {"PARTIAL_SUCCESS", "WARNING"}:
+    if outcome in {"PARTIAL_SUCCESS", "SUCCESS_WITH_WARNINGS", "WARNING"}:
         return True
     if result.get("partial_success") is True:
         return True

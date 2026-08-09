@@ -206,6 +206,7 @@ class RailTransitWebApplicationService:
         "vehicle_mr_ap_mapping_refresh": "轨旁 AP 映射刷新",
         "vehicle_mr_mapping_save": "列车 MR 映射保存",
         "vehicle_mr_online_collection_start": "列车在线连续采集",
+        "trackside_ap_wps_sync": "轨旁 AP 业务 WPS 云文档同步",
         "online_mr_parse": "Online MR 会话解析",
         "online_mr_session_delete": "删除 Online MR 历史会话",
     }
@@ -3602,6 +3603,29 @@ class RailTransitWebApplicationService:
             code = "TRACKSIDE_AP_OPTICAL_UPDATE_RUNNING" if task_type == "trackside_ap_optical_update" else "TASK_RESOURCE_BUSY"
             raise RailTransitWebError(code, str(exc)) from exc
         return self.get_task(site_id, task_id)
+
+    def start_trackside_ap_wps_sync(
+        self,
+        site_id: str,
+        *,
+        target_codes: Sequence[str] = (),
+        expected_revision: str = "",
+        initialize_binding: bool = False,
+    ) -> RailTransitTaskDTO:
+        """提交 WPS 同步到 Job Center，避免在 FastAPI 请求线程执行网络和工作簿 IO。"""
+
+        selected_codes = tuple(dict.fromkeys(str(value) for value in target_codes if str(value).strip()))
+        return self._start_task(
+            site_id,
+            "trackside_ap_wps_sync",
+            {
+                "target_codes": list(selected_codes),
+                "expected_revision": str(expected_revision or ""),
+                "initialize_binding": bool(initialize_binding),
+                "resource_keys": [f"wps:{self._site(site_id)}:rail_transit.trackside_ap_business"],
+                "reuse_equivalent_task": True,
+            },
+        )
 
     def _start_artifact_task(
         self,
