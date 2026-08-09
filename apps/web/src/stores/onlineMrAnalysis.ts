@@ -221,6 +221,7 @@ export const useOnlineMrAnalysisStore = defineStore('online-mr-analysis', () => 
   const sessionsLoaded = ref(false)
   const sessionCaches = reactive(new Map<string, OnlineMrAnalysisSessionCache>())
   const deletedSessionIds = new Set<string>()
+  const upgradeNoticeKeys = new Set<string>()
   const inFlightRequests = new Map<string, Promise<unknown>>()
 
   let siteGeneration = 0
@@ -329,6 +330,12 @@ export const useOnlineMrAnalysisStore = defineStore('online-mr-analysis', () => 
     if (value.siteKey === siteKey.value && value.sessionId === selectedSessionId.value) {
       selectedSessionDetail.value = value.detail
     }
+  }
+
+  function markUpgradeNotice(key: string): boolean {
+    if (!key || upgradeNoticeKeys.has(key)) return false
+    upgradeNoticeKeys.add(key)
+    return true
   }
 
   function invalidateSessionAnalysis(requestSiteKey: string, sessionId: string): void {
@@ -534,6 +541,7 @@ export const useOnlineMrAnalysisStore = defineStore('online-mr-analysis', () => 
     sessionById,
     getSessionCache,
     saveSessionCache,
+    markUpgradeNotice,
     invalidateSessionAnalysis,
     invalidateSession,
     removeSessionCache,

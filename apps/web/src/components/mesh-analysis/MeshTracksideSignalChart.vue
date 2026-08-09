@@ -78,6 +78,7 @@ const props = withDefaults(defineProps<{
   syncPointerTime?: string | null
   syncPointerSource?: MeshRssiChartSource | null
   selectedTime?: string | null
+  quickTooltip?: boolean
 }>(), {
   series: () => [],
   seriesCache: null,
@@ -98,6 +99,7 @@ const props = withDefaults(defineProps<{
   syncPointerTime: null,
   syncPointerSource: null,
   selectedTime: null,
+  quickTooltip: false,
 })
 const emit = defineEmits<{
   selectSwitch: [event: MeshChartEvent]
@@ -1183,6 +1185,7 @@ defineExpose({
       :entries="tracksideTooltip.entries"
       :side="tracksideTooltip.side"
       :available-height="tooltipAvailableHeight"
+      :compact="quickTooltip"
       @pin="pinCurrentTracksideFrame"
       @pointerenter="handleTooltipPointerEnter"
       @pointerleave="handleTooltipPointerLeave"

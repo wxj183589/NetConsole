@@ -2980,7 +2980,101 @@ class RailTransitWebApplicationService:
                 "audit": {"source": "electron_online_mr", "action": "force_reparse" if force_reparse else "parse"},
                 "resource_keys": [online_mr_session_resource_key(site_id, session_id)],
                 "resource_conflict_message": "当前会话已有解析、报告或删除任务正在执行，请等待任务完成。",
+                "reuse_equivalent_task": True,
             },
+        )
+
+    def ensure_online_mr_parsed_database_current(self, site_id: str, session_id: str):
+        from netconsole.models.api.rail_transit_web import OnlineMrParsedDatabaseEnsureDTO
+        from netconsole.services.online_mr.parsed_database_contract import (
+            PARSER_SCHEMA_VERSION,
+            inspect_parsed_database,
+        )
+        from netconsole.services.online_mr.parsed_database_upgrade import (
+            OnlineMrParsedDatabaseUpgradeService,
+            UPGRADE_CURRENT,
+            UPGRADE_FAILED,
+            UPGRADE_RAW_DATA_MISSING,
+            UPGRADE_UPGRADING,
+        )
+
+        site_id = self._site(site_id)
+        _detail, session_dir = self._online_mr_session_dir(site_id, session_id)
+        upgrade = OnlineMrParsedDatabaseUpgradeService(session_dir)
+        inspected = inspect_parsed_database(upgrade.database_path)
+        missing = sorted(inspected.missing_capabilities)
+        database_summary = self.query_service.get_database_summary(site_id, session_id)
+        if inspected.current and str(database_summary.status) == "ready":
+            return OnlineMrParsedDatabaseEnsureDTO(
+                status=UPGRADE_CURRENT,
+                current_schema_version=inspected.schema_version,
+                target_schema_version=PARSER_SCHEMA_VERSION,
+                message="解析数据库已是当前版本。",
+            )
+        fingerprint = upgrade.current_raw_fingerprint()
+        state = upgrade.read_state()
+        state_status = str(state.get("status") or "")
+        if (
+            state_status in {UPGRADE_FAILED, UPGRADE_RAW_DATA_MISSING}
+            and str(state.get("raw_fingerprint") or "") == fingerprint
+        ):
+            return OnlineMrParsedDatabaseEnsureDTO(
+                status=state_status,
+                current_schema_version=inspected.schema_version,
+                target_schema_version=PARSER_SCHEMA_VERSION,
+                missing_capabilities=missing,
+                message=str(state.get("message") or "解析数据库自动升级失败。"),
+                retry_suppressed=True,
+            )
+        available, reason = upgrade.raw_sources_available()
+        if not available:
+            upgrade.write_state(
+                UPGRADE_RAW_DATA_MISSING,
+                from_schema=inspected.schema_version,
+                raw_fingerprint=fingerprint,
+                missing_capabilities=missing,
+                message=reason,
+            )
+            return OnlineMrParsedDatabaseEnsureDTO(
+                status=UPGRADE_RAW_DATA_MISSING,
+                current_schema_version=inspected.schema_version,
+                target_schema_version=PARSER_SCHEMA_VERSION,
+                missing_capabilities=missing,
+                message=reason,
+                retry_suppressed=True,
+            )
+        task = self._start_task(
+            site_id,
+            "online_mr_parse",
+            {
+                "session_dir": str(session_dir),
+                "force_reparse": False,
+                "upgrade_mode": "auto",
+                "from_schema": inspected.schema_version,
+                "expected_missing_capabilities": missing,
+                "audit": {"source": "electron_online_mr", "action": "auto_upgrade"},
+                "resource_keys": [online_mr_session_resource_key(site_id, session_id)],
+                "resource_conflict_message": "当前会话已有解析、报告或删除任务正在执行，请等待任务完成。",
+                "reuse_equivalent_task": True,
+            },
+        )
+        latest_status = str(upgrade.read_state().get("status") or "")
+        if latest_status not in {UPGRADE_CURRENT, UPGRADE_FAILED, UPGRADE_RAW_DATA_MISSING}:
+            upgrade.write_state(
+                UPGRADE_UPGRADING,
+                from_schema=inspected.schema_version,
+                raw_fingerprint=fingerprint,
+                missing_capabilities=missing,
+                task_id=task.task_id,
+                message="正在从原始采集数据升级解析数据库。",
+            )
+        return OnlineMrParsedDatabaseEnsureDTO(
+            status=UPGRADE_UPGRADING,
+            current_schema_version=inspected.schema_version,
+            target_schema_version=PARSER_SCHEMA_VERSION,
+            missing_capabilities=missing,
+            message="正在从原始采集数据升级解析数据库。",
+            task=task,
         )
 
     def online_mr_desktop_location(self, site_id: str, session_id: str) -> dict[str, str]:

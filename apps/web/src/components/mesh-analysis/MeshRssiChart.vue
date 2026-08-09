@@ -27,7 +27,7 @@ import {
   type MeshSharedPointerChange,
   type MeshSharedTimeDomain,
 } from './meshChartViewport'
-import { buildMeshRssiTooltip, buildMeshRssiZeroRunTooltip } from './meshRssiTooltip'
+import { buildMeshRssiQuickTooltip, buildMeshRssiTooltip, buildMeshRssiZeroRunTooltip } from './meshRssiTooltip'
 
 const props = withDefaults(defineProps<{
   points: MeshChartPoint[]
@@ -49,7 +49,8 @@ const props = withDefaults(defineProps<{
   syncPointerTime?: string | null
   syncPointerSource?: MeshRssiChartSource | null
   selectedTime?: string | null
-}>(), { events: () => [], locationSegments: () => [], showPeer: false, showSwitchLines: false, showSwitchPoints: true, showLocationBand: true, scope: 'active', active: true, focusTimestamp: '', initialViewport: null, syncViewport: null, lockedViewport: null, preserveViewport: true, sharedTimeDomain: null, chartId: 'active-rssi', syncPointerTime: null, syncPointerSource: null, selectedTime: null })
+  quickTooltip?: boolean
+}>(), { events: () => [], locationSegments: () => [], showPeer: false, showSwitchLines: false, showSwitchPoints: true, showLocationBand: true, scope: 'active', active: true, focusTimestamp: '', initialViewport: null, syncViewport: null, lockedViewport: null, preserveViewport: true, sharedTimeDomain: null, chartId: 'active-rssi', syncPointerTime: null, syncPointerSource: null, selectedTime: null, quickTooltip: false })
 const emit = defineEmits<{
   selectSwitch: [event: MeshChartEvent]
   'viewport-change': [viewport: MeshChartViewport]
@@ -451,7 +452,7 @@ function render(reason: 'data' | 'display' | 'theme' | 'reset'): void {
         const event = eventParam?.data?.meshEvent
         const zeroRun = zeroParam?.data?.zeroRun
         const zeroPoint = zeroParam?.data?.meta
-        if (zeroRun && zeroPoint) {
+        if (!props.quickTooltip && zeroRun && zeroPoint) {
           return buildMeshRssiZeroRunTooltip(zeroPoint, zeroRun, pointerTime, zeroParam.seriesName)
         }
         const point = pointParam?.data?.meta
@@ -460,7 +461,9 @@ function render(reason: 'data' | 'display' | 'theme' | 'reset'): void {
         const exactPoint = point && (pointerMillis === null || meshTimestampMillis(point.timestamp) === pointerMillis)
           ? point
           : undefined
-        return buildMeshRssiTooltip(exactPoint, event, pointerTime)
+        return props.quickTooltip
+          ? buildMeshRssiQuickTooltip(exactPoint, event, pointerTime)
+          : buildMeshRssiTooltip(exactPoint, event, pointerTime)
       },
     },
     yAxis: { ...(baseOption.yAxis as Record<string, unknown>), min: 'dataMin' },

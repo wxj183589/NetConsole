@@ -14,6 +14,18 @@ export interface RailTransitTask {
   result_summary: Record<string, unknown>
 }
 
+export type OnlineMrParsedDatabaseUpgradeStatus = 'CURRENT' | 'REQUIRED' | 'UPGRADING' | 'FAILED' | 'RAW_DATA_MISSING'
+
+export interface OnlineMrParsedDatabaseEnsureResult {
+  status: OnlineMrParsedDatabaseUpgradeStatus
+  current_schema_version: number | null
+  target_schema_version: number
+  missing_capabilities: string[]
+  message: string
+  retry_suppressed: boolean
+  task: RailTransitTask | null
+}
+
 export interface OnlineMrMetricPoint {
   timestamp: string | null
   value: number | null

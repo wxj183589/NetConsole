@@ -53,7 +53,18 @@ from netconsole.services.online_mr_session_store import OnlineMrSessionStore
 from netconsole.services.online_mr.traffic_analysis import build_iperf_traffic_overview
 from netconsole.services.ap_identity.normalizers import normalize_mac
 from netconsole.services.ap_identity.query_service import ApIdentityQueryService
-from netconsole.services.rail_transit.online_mr_diagnosis_parser import PARSER_VERSION
+from netconsole.services.online_mr.parsed_database_contract import (
+    CURRENT_PARSED_TABLES,
+    ONLINE_MR_REQUIRED_CAPABILITIES,
+    PARSER_SCHEMA_VERSION,
+    inspect_parsed_database,
+)
+from netconsole.services.online_mr.parsed_database_upgrade import (
+    OnlineMrParsedDatabaseUpgradeService,
+    UPGRADE_FAILED,
+    UPGRADE_RAW_DATA_MISSING,
+    UPGRADE_UPGRADING,
+)
 from netconsole.utils.mac_utils import derive_h3c_r1_mac, derive_h3c_r2_mac
 
 
@@ -81,30 +92,6 @@ _IPERF_RUNTIME_TRUTH_FIELDS = frozenset(
 _TIMESTAMP_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?)")
 _LEVEL_RE = re.compile(r"\[(DEBUG|INFO|WARNING|ERROR|CRITICAL)\]", re.IGNORECASE)
 
-_PARSED_CAPABILITY_TABLES = {
-    "main_link": frozenset({"main_link_samples"}),
-    "link_detail": frozenset({"main_link_samples"}),
-    "channel_busy": frozenset({"channel_busy_records"}),
-    "interface_rate": frozenset({"interface_rate_samples"}),
-    "switch_history": frozenset({"switch_history_events"}),
-    "switch_realtime": frozenset({"switch_realtime_events"}),
-    "fping_rtt": frozenset({"fping_samples"}),
-    "fping_loss": frozenset({"fping_1s_summary"}),
-    "iperf": frozenset({"iperf_runs", "iperf_intervals"}),
-    "timeline": frozenset({"analysis_events"}),
-}
-_CURRENT_PARSED_TABLES = frozenset().union(
-    *_PARSED_CAPABILITY_TABLES.values(),
-    {
-        "online_parse_metadata",
-        "online_parse_issues",
-        "online_schema_meta",
-        "time_sync_samples",
-        "radio_statistics_samples",
-        "active_segments",
-        "active_segment_metrics",
-    },
-)
 _DEPRECATED_BUSINESS_TABLE_ALIASES = {
     OnlineMrBusinessTable.MESH_LINK: OnlineMrBusinessTable.MAIN_LINK,
     OnlineMrBusinessTable.MESH_DETAIL: OnlineMrBusinessTable.LINK_DETAIL,
@@ -1010,24 +997,33 @@ class OnlineMrQueryService:
     def get_database_summary(self, site_id: str, session_id: str) -> OnlineMrDatabaseSummaryDTO:
         session_dir = self._find_session(site_id, session_id)
         path = session_dir / "parsed" / "online_diagnosis.sqlite"
+        upgrade = OnlineMrParsedDatabaseUpgradeService(session_dir)
+        upgrade_state = upgrade.read_state()
+        upgrade_status = str(upgrade_state.get("status") or "")
+        upgrade_task_id = str(upgrade_state.get("task_id") or "")
+        upgrade_message = str(upgrade_state.get("message") or "")
         if not path.is_file():
+            parsing = upgrade_status == UPGRADE_UPGRADING
             return OnlineMrDatabaseSummaryDTO(
-                status=OnlineMrParsedStatus.MISSING,
+                status=OnlineMrParsedStatus.PARSING if parsing else OnlineMrParsedStatus.MISSING,
                 compatible=False,
                 error_code=OnlineMrQueryErrorCode.DATABASE_NOT_FOUND,
-                message="当前会话尚未生成解析数据库，原始日志仍可查看。",
-                action="parse_session",
-                missing_capabilities=sorted(_PARSED_CAPABILITY_TABLES),
-                missing_tables=sorted(_CURRENT_PARSED_TABLES),
+                message="正在从原始采集数据生成解析数据库。" if parsing else "当前会话尚未生成解析数据库，原始日志仍可查看。",
+                action="open_task_center" if parsing else "ensure_current",
+                missing_capabilities=sorted(ONLINE_MR_REQUIRED_CAPABILITIES),
+                missing_tables=sorted(CURRENT_PARSED_TABLES),
+                target_schema_version=PARSER_SCHEMA_VERSION,
+                upgrade_status=upgrade_status,
+                upgrade_task_id=upgrade_task_id,
+                upgrade_message=upgrade_message,
             )
         stat = path.stat()
         try:
+            contract = inspect_parsed_database(path)
+            if not contract.readable:
+                raise sqlite3.DatabaseError(contract.error or "parsed database unreadable")
             with closing(self._connect_readonly(path)) as conn:
-                tables = [
-                    str(row[0])
-                    for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
-                ]
-                table_set = set(tables)
+                tables = sorted(name for name in contract.tables if not name.startswith("sqlite_"))
                 row_counts: dict[str, int] = {}
                 parser_version: str | None = None
                 parse_status = ""
@@ -1043,35 +1039,39 @@ class OnlineMrQueryService:
                     raw_fingerprint = str(values.get("raw_fingerprint") or "")
                     parsed_counts = self._json_object(values.get("row_counts"))
                     row_counts = {str(key): int(value) for key, value in parsed_counts.items() if isinstance(value, int)}
-                capabilities = sorted(
-                    name for name, required in _PARSED_CAPABILITY_TABLES.items() if required.issubset(table_set)
-                )
-                missing_capabilities = sorted(set(_PARSED_CAPABILITY_TABLES) - set(capabilities))
-                missing_tables = sorted(_CURRENT_PARSED_TABLES - table_set)
-                schema_version = self._database_schema_version(conn) or parser_version
+                capabilities = sorted(contract.compatible_capabilities)
+                missing_capabilities = sorted(contract.missing_capabilities)
+                missing_tables = sorted(CURRENT_PARSED_TABLES - contract.tables)
+                schema_version = str(contract.schema_version) if contract.schema_version is not None else self._database_schema_version(conn) or parser_version
+                parser_version = contract.parser_version or parser_version
             status = OnlineMrParsedStatus.READY
             error_code: str | None = None
             action: str | None = None
             message = "解析数据库可用。"
-            if parse_status in {"RUNNING", "PARSING", "REBUILDING"}:
+            fingerprint = upgrade.current_raw_fingerprint()
+            same_failed_input = (
+                upgrade_status in {UPGRADE_FAILED, UPGRADE_RAW_DATA_MISSING}
+                and str(upgrade_state.get("raw_fingerprint") or "") == fingerprint
+            )
+            if upgrade_status == UPGRADE_UPGRADING or parse_status in {"RUNNING", "PARSING", "REBUILDING"}:
                 status = OnlineMrParsedStatus.PARSING
                 error_code = OnlineMrQueryErrorCode.PARSE_REQUIRED
                 action = "open_task_center"
-                message = "当前会话正在解析，原始日志仍可查看。"
-            elif missing_tables or not parser_version or parser_version != PARSER_VERSION:
+                message = "解析库正在后台升级，当前兼容数据仍可查看。"
+            elif not contract.current:
                 status = OnlineMrParsedStatus.LEGACY
                 error_code = OnlineMrQueryErrorCode.SCHEMA_INCOMPLETE if missing_tables else OnlineMrQueryErrorCode.SCHEMA_LEGACY
-                action = "force_reparse"
-                message = "当前解析数据库为旧版本，兼容能力之外的指标不可用。"
+                action = "view_diagnostics" if same_failed_input else "ensure_current"
+                message = upgrade_message if same_failed_input else "当前解析数据库为旧版本，系统将从原始采集数据自动升级。"
             elif parse_status and parse_status != "OK":
                 status = OnlineMrParsedStatus.STALE
                 error_code = OnlineMrQueryErrorCode.PARSE_REQUIRED
-                action = "force_reparse"
+                action = "ensure_current"
                 message = "当前解析结果未完成，需要重新解析。"
             elif raw_fingerprint and raw_fingerprint != self._raw_fingerprint(session_dir / "raw"):
                 status = OnlineMrParsedStatus.STALE
                 error_code = OnlineMrQueryErrorCode.PARSE_REQUIRED
-                action = "force_reparse"
+                action = "ensure_current"
                 message = "原始日志已变化，当前解析结果已过期。"
             return OnlineMrDatabaseSummaryDTO(
                 status=status,
@@ -1089,6 +1089,10 @@ class OnlineMrQueryService:
                 error_code=error_code,
                 message=message,
                 action=action,
+                target_schema_version=PARSER_SCHEMA_VERSION,
+                upgrade_status=upgrade_status,
+                upgrade_task_id=upgrade_task_id,
+                upgrade_message=upgrade_message,
             )
         except OnlineMrQueryError as exc:
             return OnlineMrDatabaseSummaryDTO(
@@ -1099,8 +1103,12 @@ class OnlineMrQueryService:
                 modified_at=datetime.fromtimestamp(stat.st_mtime).isoformat(sep=" ", timespec="seconds"),
                 error_code=exc.code,
                 message=exc.message,
-                action="force_reparse",
-                missing_capabilities=sorted(_PARSED_CAPABILITY_TABLES),
+                action="ensure_current",
+                missing_capabilities=sorted(ONLINE_MR_REQUIRED_CAPABILITIES),
+                target_schema_version=PARSER_SCHEMA_VERSION,
+                upgrade_status=upgrade_status,
+                upgrade_task_id=upgrade_task_id,
+                upgrade_message=upgrade_message,
             )
         except sqlite3.Error as exc:
             error = self._database_error(exc)
@@ -1112,8 +1120,12 @@ class OnlineMrQueryService:
                 modified_at=datetime.fromtimestamp(stat.st_mtime).isoformat(sep=" ", timespec="seconds"),
                 error_code=error.code,
                 message=error.message,
-                action="force_reparse",
-                missing_capabilities=sorted(_PARSED_CAPABILITY_TABLES),
+                action="ensure_current",
+                missing_capabilities=sorted(ONLINE_MR_REQUIRED_CAPABILITIES),
+                target_schema_version=PARSER_SCHEMA_VERSION,
+                upgrade_status=upgrade_status,
+                upgrade_task_id=upgrade_task_id,
+                upgrade_message=upgrade_message,
             )
 
     def query_metrics(

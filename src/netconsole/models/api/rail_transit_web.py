@@ -103,6 +103,16 @@ class OnlineMrParseRequestDTO(ApiModel):
     force_reparse: bool = False
 
 
+class OnlineMrParsedDatabaseEnsureDTO(ApiModel):
+    status: Literal["CURRENT", "REQUIRED", "UPGRADING", "FAILED", "RAW_DATA_MISSING"]
+    current_schema_version: int | None = None
+    target_schema_version: int
+    missing_capabilities: list[str] = Field(default_factory=list)
+    message: str = ""
+    retry_suppressed: bool = False
+    task: RailTransitTaskDTO | None = None
+
+
 class OnlineMrDeleteRequestDTO(ApiModel):
     expected_session_id: str = Field(min_length=1, max_length=160)
     explicit_confirmation: bool = False

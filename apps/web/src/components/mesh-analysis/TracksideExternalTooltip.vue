@@ -16,12 +16,14 @@ const props = withDefaults(defineProps<{
   entries?: TracksideTooltipEntry[]
   side?: 'left' | 'right'
   availableHeight?: number
+  compact?: boolean
 }>(), {
   visible: false,
   timestamp: null,
   entries: () => [],
   side: 'right',
   availableHeight: 640,
+  compact: false,
 })
 
 const emit = defineEmits<{
@@ -62,7 +64,7 @@ function hasActiveDuration(entry: TracksideTooltipEntry): boolean {
   <div
     v-if="visible && sortedEntries.length"
     class="trackside-external-tooltip"
-    :class="`is-${side}`"
+    :class="[`is-${side}`, { 'is-compact': compact }]"
     :style="tooltipStyle"
     data-trackside-external-tooltip
     @pointerenter="emit('pointerenter')"
@@ -72,8 +74,9 @@ function hasActiveDuration(entry: TracksideTooltipEntry): boolean {
     @wheel.stop
   >
     <div class="trackside-external-tooltip__header">
-      <span>采样时间：{{ timestamp || '—' }}</span>
+      <span>{{ compact ? (timestamp || '—') : `采样时间：${timestamp || '—'}` }}</span>
       <button
+        v-if="!compact"
         type="button"
         class="trackside-external-tooltip__pin"
         @click="emit('pin')"
@@ -83,11 +86,12 @@ function hasActiveDuration(entry: TracksideTooltipEntry): boolean {
     </div>
     <div ref="body" class="trackside-external-tooltip__body">
       <section
-        v-for="entry in sortedEntries"
+        v-for="entry in compact ? sortedEntries.slice(0, 1) : sortedEntries"
         :key="`${entry.seriesId}:${entry.metaId}`"
         class="trackside-tooltip-entry"
       >
         <div
+          v-if="!compact"
           class="trackside-tooltip-entry__role"
           :class="entry.role === 'ACTIVE' ? 'is-active' : 'is-standby'"
         >
@@ -100,7 +104,7 @@ function hasActiveDuration(entry: TracksideTooltipEntry): boolean {
         <div class="trackside-tooltip-entry__ap">
           AP：{{ tracksideTooltipApLabel(entry) }} · Radio {{ displayTracksideTooltipMetric(entry.radio) }}
         </div>
-        <div v-if="entry.rssiZeroRun?.state === 'sustained'" class="trackside-tooltip-entry__zero-run">
+        <div v-if="!compact && entry.rssiZeroRun?.state === 'sustained'" class="trackside-tooltip-entry__zero-run">
           <strong>{{ t('mesh.rssi.zero.status', '状态：持续无有效 RSSI') }}</strong><br>
           {{ t('mesh.rssi.zero.start', '开始时间') }}：{{ entry.rssiZeroRun.start_time }}<br>
           {{ t('mesh.rssi.zero.end', '结束时间') }}：{{ entry.rssiZeroRun.end_time }}<br>
@@ -109,15 +113,15 @@ function hasActiveDuration(entry: TracksideTooltipEntry): boolean {
         <div v-else>
           轨旁 / MR RSSI：{{ displayTracksideTooltipMetric(entry.tracksideRssi) }} / {{ displayTracksideTooltipMetric(entry.mrRssi) }}
         </div>
-        <div>
+        <div v-if="!compact">
           站点 / 区间：{{ entry.station || '—' }} / {{ entry.section || '—' }}
         </div>
-        <div v-if="hasActiveDuration(entry)">
+        <div v-if="!compact && hasActiveDuration(entry)">
           主链持续：{{ displayTracksideTooltipMetric(entry.activeDurationSeconds) }} s
         </div>
       </section>
     </div>
-    <div v-if="overflowing" class="trackside-external-tooltip__overflow-hint">
+    <div v-if="!compact && overflowing" class="trackside-external-tooltip__overflow-hint">
       内容较多，可固定查看完整内容
     </div>
   </div>
@@ -146,6 +150,9 @@ function hasActiveDuration(entry: TracksideTooltipEntry): boolean {
 
 .trackside-external-tooltip.is-left { left: 12px; }
 .trackside-external-tooltip.is-right { right: 12px; }
+.trackside-external-tooltip.is-compact { width:fit-content;min-width:180px;max-width:min(240px,calc(100% - 24px)); }
+.trackside-external-tooltip.is-compact .trackside-external-tooltip__header { min-height:28px;padding:5px 8px; }
+.trackside-external-tooltip.is-compact .trackside-external-tooltip__body { padding:6px 8px;overflow:hidden; }
 .trackside-external-tooltip__header {
   display: flex;
   min-height: 36px;

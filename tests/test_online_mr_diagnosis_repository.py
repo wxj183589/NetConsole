@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from netconsole.models.ap_identity_index import ApIdentityBatchResult, ApIdentityMatch
+from netconsole.repositories import online_mr_diagnosis_repository as diagnosis_repository_module
 from netconsole.repositories.online_mr_diagnosis_repository import OnlineMrDiagnosisRepository
 from netconsole.services.ap_identity.normalizers import normalize_mac_key
 from netconsole.services.rail_transit.online_mr_identity_remap_service import OnlineMrIdentityRemapService
@@ -133,7 +134,7 @@ def test_online_mr_diagnosis_repository_additively_upgrades_main_link_identity_c
         "identity_match_confidence",
     }.issubset(columns)
     assert count == 1
-    assert schema_version == "online_mr_business_tables_v12_identity_channel_busy"
+    assert schema_version == "12"
 
 
 def test_online_mr_identity_remap_batches_all_fact_endpoints_and_preserves_facts(
@@ -709,3 +710,51 @@ def test_online_mr_diagnosis_repository_preserves_iperf_wal_and_run_contract(
         "idx_iperf_intervals_run",
         "idx_iperf_intervals_source_event",
     }.issubset(indexes)
+
+
+def test_online_mr_diagnosis_repository_closes_every_iperf_connection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    opened: list[sqlite3.Connection] = []
+    closed: list[sqlite3.Connection] = []
+
+    class TrackingConnection(sqlite3.Connection):
+        def close(self) -> None:
+            closed.append(self)
+            super().close()
+
+    def connect_tracking(path: str | Path, **_kwargs: object) -> sqlite3.Connection:
+        connection = sqlite3.connect(path, factory=TrackingConnection)
+        connection.row_factory = sqlite3.Row
+        opened.append(connection)
+        return connection
+
+    monkeypatch.setattr(diagnosis_repository_module, "connect_sqlite", connect_tracking)
+    db_path = tmp_path / "parsed" / "online_diagnosis.sqlite"
+    repository = OnlineMrDiagnosisRepository(db_path)
+    repository.initialize()
+
+    repository.start_iperf_run(
+        "run-1",
+        mode="client",
+        command=["iperf3"],
+        log_file=tmp_path / "raw" / "iperf.log",
+        started_at=datetime(2026, 8, 10, 3, 0, 0),
+        session_id="session-1",
+        device_id=7,
+    )
+    repository.append_iperf_interval(
+        "run-1",
+        {
+            "collector_time": "2026-08-10 03:00:00.500",
+            "interval_start_sec": 0.0,
+            "interval_end_sec": 1.0,
+            "bitrate_mbps": 8.0,
+        },
+        "session-1",
+    )
+    repository.finish_iperf_run("run-1", "PARSED")
+
+    assert len(opened) == 4
+    assert closed == opened

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from threading import RLock
+from typing import Iterator
 
 from netconsole.core.paths import PathResolver
 from netconsole.models.mesh_log_models import MeshLogRecord
@@ -713,9 +715,14 @@ class OnlineMrSession:
             file.write(f"{datetime.now().isoformat(sep=' ', timespec='seconds')} {message}\n")
             file.flush()
 
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
-        return conn
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        connection = sqlite3.connect(self.db_path)
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
 
     def _mesh_values(self, sample_id: int, record: MeshLogRecord) -> tuple[object, ...]:
         metrics = record.metrics
