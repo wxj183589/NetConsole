@@ -44,15 +44,15 @@
 | Web production build | passed |
 | Electron typecheck | passed |
 | Electron test | 253 passed (32 files) |
-| 完整 pytest（按六段运行） | 3830 passed, 2 skipped, 0 failed |
+| 完整 pytest（合并最新 main 后按六段运行） | 3852 passed, 2 skipped, 0 failed |
 
 全量 pytest 初次以单命令运行时受 10 分钟终端上限终止，未返回测试结论；随后按文件首字母和测试子目录完整重跑，以上汇总为最终有效基线。
 
 ## 发布构建与安装器
 
-- 提交 `481b57eea7e2894e4cef49a7e29a91bcde5627ab` 推送到 `github/codex/log-release-readiness` 后，PyInstaller release、Web production build、依赖闭包（71 distributions）、源工具 smoke 和受管 Backend packaged smoke 均通过。
-- `win-unpacked` package smoke 通过：frozen `log_policy.json`、时区资源、旧设备数据库迁移/list HTTP 200、Ground 状态 HTTP 200、Worker 中文协议、MESH 幂等性、重复文件名、Qt 残留、NOTICE/SBOM 均已验证；backend/frontend/self-check commit 全部为 `481b57ee...`，`PACKAGED_DIRTY=false`。
-- Full NSIS 制品 `NetConsole-1.4.8-481b57ee-x64-setup.exe` 已生成，大小 155,910,260 bytes，SHA-256 为 `7398df31e882364388af46ad8c46773839ccf1671821401fb252d802b56baee6`。verifier 已确认 NSIS-3 Unicode、安装器嵌入 manifest、数据根脚本 SHA-256、版本资源、Backend/Frontend commit 和二次哈希读取一致。
+- 提交 `a7d112e94d565dc6f993d7cc4e34ab49d877d58a` 推送到 `github/codex/log-release-readiness` 后，PyInstaller release、Web production build、依赖闭包（71 distributions）、源工具 smoke 和受管 Backend packaged smoke 均通过。
+- `win-unpacked` package smoke 通过：frozen `log_policy.json`、时区资源、旧设备数据库迁移/list HTTP 200、Ground 状态 HTTP 200、Worker 中文协议、MESH 幂等性、重复文件名、Qt 残留、NOTICE/SBOM 均已验证；backend/frontend/self-check commit 全部为 `a7d112e9...`，`PACKAGED_DIRTY=false`。
+- Full NSIS 制品 `NetConsole-1.4.8-a7d112e9-x64-setup.exe` 已生成，大小 155,945,538 bytes，SHA-256 为 `dcaf6c04bbba38f3cdcf299596f199cb3b68ff1515fd1a5dc4004156aa129e45`。verifier 已确认 NSIS-3 Unicode、安装器嵌入 manifest、数据根脚本 SHA-256、版本资源、Backend/Frontend commit 和二次哈希读取一致。
 - `build-edition-installer.mjs full` 在当前 isolated worktree 因 `node_modules` junction 被 pnpm 判为需重装、且无 TTY 拒绝删除 junction 而停止。为保护共享依赖，未设置 CI 强制删除；随后复用同一已通过的 `package:prepare` 输出，用项目的 electron-builder、package smoke 与 `build_installer --verify` 完成上述实际 Full NSIS 构建和制品验证。
 - 真实安装、首次启动与卸载仍为 `PENDING`：本会话不是管理员，安装器是 per-machine 且数据根只能在交互页选择，不能安全静默覆盖 HKLM 指针。未尝试 UAC 绕过，也未接触正式 `D:\NetConsoleData`。
 
