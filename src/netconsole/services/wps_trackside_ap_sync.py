@@ -57,11 +57,11 @@ WPS_SYNC_OWNER = "web_rail_transit"
 WPS_STANDARD_FORMAT_MIRROR_ENABLED = True
 WPS_SCRIPT_VERSIONS = {
     STANDARD_TARGET_CODE: "2.8.4-standard",
-    SMART_TARGET_CODE: "2.1.0-smart",
+    SMART_TARGET_CODE: "2.2.0-smart",
 }
 WPS_DEPLOYMENT_IDS = {
     STANDARD_TARGET_CODE: "trackside-ap-standard-2.8.4",
-    SMART_TARGET_CODE: "trackside-ap-smart-2.1.0",
+    SMART_TARGET_CODE: "trackside-ap-smart-2.2.0",
 }
 WPS_RUNTIME_CAPABILITIES = {
     STANDARD_TARGET_CODE: "DEPLOYMENT_PENDING",
@@ -723,7 +723,59 @@ class WpsStandardSpreadsheetAdapter(BaseWpsAdapter):
 
 
 class WpsSmartSheetAdapter(BaseWpsAdapter):
-    pass
+    def runtime_write_probe(self, target: WpsSyncTarget, token: str) -> dict[str, Any]:
+        response = self.client.post(
+            target,
+            token=token,
+            argv={
+                "protocol_version": WPS_SYNC_PROTOCOL_VERSION,
+                "operation": "smart_runtime_write_probe",
+                "target_code": target.target_code,
+                "target_type": target.target_type.value,
+                "site_id": target.site_id,
+                "business_key": target.business_key,
+                "binding_id": target.binding_id,
+                "probe_id": f"wps_smart_probe_{uuid4().hex}",
+                "script_id": _script_id_from_webhook(target.webhook_url),
+            },
+        )
+        result = _unwrap_wps_sync_task_response(response, target, token=token)
+        self._validate_common(target, result)
+        if not bool(result.get("success")):
+            raise _remote_result_error(target, result, token)
+        required = {
+            "sheet_enum",
+            "sheet_create",
+            "field_enum",
+            "field_create",
+            "record_create",
+            "record_read",
+            "record_update",
+            "record_delete",
+            "sheet_move",
+        }
+        capabilities = result.get("core_capabilities")
+        verified = (
+            isinstance(capabilities, Mapping)
+            and required.issubset(capabilities)
+            and all(bool(capabilities[key]) for key in required)
+            and bool(result.get("core_verified"))
+            and str(result.get("runtime_capability") or "") == "VERIFIED"
+        )
+        if not verified:
+            raise WpsSyncError(
+                "WPS_SMART_RUNTIME_PROBE_UNVERIFIED",
+                "WPS 智能表格运行时核心能力探针未完成验证",
+                details={
+                    **_target_error_details(target, phase="RUNTIME_WRITE_PROBE"),
+                    "runtime_capability": result.get("runtime_capability") or "",
+                    "core_verified": bool(result.get("core_verified")),
+                    "core_capabilities": capabilities if isinstance(capabilities, Mapping) else {},
+                    "capability_failures": result.get("capability_failures") or [],
+                    "warnings": result.get("warnings") or [],
+                },
+            )
+        return {"http_status": response.status_code, "phase": "SUCCESS", **result}
 
 
 class TracksideApWpsSyncService:
@@ -976,8 +1028,6 @@ class TracksideApWpsSyncService:
         repository = self._repository(site_id)
         self._ensure_default_targets(repository)
         target = repository.get_target(TRACKSIDE_AP_WPS_BUSINESS_KEY, target_code)
-        if target.target_type is not WpsTargetType.STANDARD_SPREADSHEET:
-            raise WpsSyncError("WPS_RUNTIME_PROBE_UNSUPPORTED", "当前仅支持普通在线表格写入探针")
         try:
             _validate_target_configuration(target)
             result = self.adapters[target.target_type].runtime_write_probe(

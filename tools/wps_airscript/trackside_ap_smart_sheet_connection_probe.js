@@ -1,7 +1,7 @@
 // NetConsole read-only WPS_SMART_SHEET connection probe.
 const PROTOCOL_VERSION = 2;
-const SCRIPT_VERSION = "2.1.0-smart";
-const DEPLOYMENT_ID = "trackside-ap-smart-2.1.0";
+const SCRIPT_VERSION = "2.2.0-smart";
+const DEPLOYMENT_ID = "trackside-ap-smart-2.2.0";
 const DOCUMENT_ID = "cbRdGQdb10R9";
 const TARGET_TYPE = "WPS_SMART_SHEET";
 const TARGET_CODE = "wps_smart_sheet";

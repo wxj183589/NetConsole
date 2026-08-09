@@ -3,7 +3,7 @@
 本功能将当前局点、`rail_transit.trackside_ap_business` 的一次冻结快照同时发送到两个独立目标：
 
 - 普通在线表格：`wps_standard_spreadsheet`，按 Sheet 执行 `FULL_REPLACE` 或 `PREPEND_SNAPSHOT`。
-- 智能表格：`wps_smart_sheet`，目标配置默认关闭。当前仅提供只读连接探针；多维表正式写入标记为 `RUNTIME_UNVERIFIED`，在 WPS 运行时完成 API 验收前不会宣称同步成功。
+- 智能表格：`wps_smart_sheet`，目标配置默认关闭。`2.2.0-smart` 已加入独立 `Sheet / Field / Record` 运行时探针；多维表正式写入仍由核心 CRUD 探针 `VERIFIED` 作为门禁，在探针通过前不会宣称同步成功。
 
 两个目标共享同一个 `snapshot_revision`、`snapshot_sha256`、工作簿数据和父批次，但每个目标拥有独立的在线文档地址、webhook、DPAPI 凭据、`target_batch_id`、稳定 `binding_id`、身份校验、状态和重试记录。默认目标名称从当前局点的 `display_name` 动态生成；仅历史硬编码默认名会自动纠正，用户自定义名绝不覆盖。普通数据库不保存明文 Token；Windows 使用 DPAPI 加密保存凭据，开发连接验证可以临时使用目标专属环境变量 `NETCONSOLE_WPS_STANDARD_AIRSCRIPT_TOKEN` 或 `NETCONSOLE_WPS_SMART_AIRSCRIPT_TOKEN`。
 
@@ -88,7 +88,7 @@ AirScript 的同步探针响应和正式异步查询终态使用同一执行 env
 
 普通表格在正式同步前建议依次完成连接测试、运行时能力探针和 `sync_test_sheet`；其中运行时能力探针成功后目标才标为 `VERIFIED`。核心能力包括 Sheet 枚举、定位、创建、单值和二维 `Value2` 写后读回、`UsedRange`、`ClearContents` 和 `EntireRow.Insert()`；系统 Sheet 隐藏属于可选能力。`Worksheet.Visible` 按布尔值、数值或 `XlSheetVisibility` 文本兼容判断，无法确认隐藏状态时返回 `SUCCESS_WITH_WARNINGS`，不会把已经通过的核心数据写入能力降级。连接测试和同步测试的历史诊断用于页面和任务中心定位问题，不会因旧部署记录单独锁死正式同步。正式脚本使用 `Value2` 写二维数组，追加模式通过 N 行 Range 的 `EntireRow.Insert()` 插行；业务写入前严格核验远端 `_NetConsoleSyncMeta` 的 `document_id`、`binding_id`、`site_id`、`business_key`、`target_code` 和 `target_type`。未绑定文档必须在 UI 二次确认后才允许初始化；任一不一致返回 `WPS_DOCUMENT_BINDING_MISMATCH`，不会触碰业务 Sheet。
 
-智能表格脚本不再使用未验证的 `book.Tables`、`DataTables`、`EnsureFields`、`DeleteWhere` 或 `AddRecords`。正式写入前需要在目标运行时核对官方 `Application.Sheet`、`Application.Field`、`Application.Record.CreateRecords` 和 `Application.Record.DeleteRecords` 的实际参数、分页和限额；未完成前脚本返回 `WPS_SMART_SHEET_RUNTIME_UNVERIFIED`。
+智能表格脚本不使用未验证的 `book.Tables`、`DataTables`、`EnsureFields`、`DeleteWhere` 或 `AddRecords`。`2.2.0-smart` 的专用运行时探针只操作 `_NetConsoleSmartProbe`，实际调用并读回 `Application.Sheet.GetSheets/CreateSheet`、`sheet.Field.GetFields/CreateFields`、`sheet.Record.GetRecords/CreateRecords/UpdateRecords/DeleteRecords` 和 `sheet.Move({Before, After})`；`GetRecords` 使用 `Offset` 分页。`View.GetViews` 是可选能力，失败只记录 warning。核心能力全部 PASS 才返回 `runtime_capability=VERIFIED`，否则返回 `WPS_SMART_RUNTIME_PROBE_UNVERIFIED` 并保持正式同步 fail-closed。探针不报告未经验证的隐藏字段支持或批量上限。
 
 连接测试失败会返回阶段化脱敏诊断：`LOCAL_CONFIGURATION`、`HTTP_AUTH`、`SCRIPT_EXECUTION`、`PROTOCOL_HANDSHAKE`、`DOCUMENT_IDENTITY` 或 `SUCCESS`，并在适用时包含 HTTP 状态、WPS 错误码、原因和建议。HTTP 错误正文最多读取 64 KiB，不保存令牌、请求头、完整 webhook 或业务 payload；真实 403 原因仍取决于 WPS 返回内容和远端账号/脚本权限。
 
@@ -98,7 +98,7 @@ AirScript 的同步探针响应和正式异步查询终态使用同一执行 env
 2. 使用界面的“复制连接测试脚本”，在对应文档新建 AirScript 2.0 脚本，确认末尾是 `return main();`，运行只读探针后再复制同一个脚本的 webhook。
 3. 回到 NetConsole 更新 webhook，点击“测试连接”，先确认 `sync_task` 的 `data.result` 不是 `[Undefined]`，再核对返回的 `document_id`、`target_type`、`target_code`、`protocol_version`、脚本版本和部署 ID。
 4. 通过“复制正式同步脚本”手工替换同一个 WPS 文档共享脚本内容并保存、发布；当前普通表格候选脚本身份必须是 `2.8.4-standard` / `trackside-ap-standard-2.8.4`，再重新测试。NetConsole 不能远程替用户编辑 WPS 脚本，不要把普通表格和智能表格 webhook 交叉使用。
-5. 对普通表格点击“测试写入能力”，确认 `_NetConsoleRuntimeProbe` 的二维数组写入与回读通过；未通过时正式同步保持禁用。
+5. 对普通表格点击“测试写入能力”，确认 `_NetConsoleRuntimeProbe` 的二维数组写入与回读通过；对智能表格点击同一按钮，确认 `_NetConsoleSmartProbe` 的 Sheet、Field、Record CRUD 和 Sheet.Move 全部通过；任一目标未通过时该目标正式同步保持禁用。
 6. 点击“测试同步 Sheet”，确认 `_NetConsoleSyncTest` 写入、回读和清理通过；若更换脚本或部署，使用“重新验证当前部署”自动清理旧验证状态并依次重跑三项测试。
 7. 点击“测试 Sheet 排序”，确认返回 `sheet_order_verified=true`、`sheet_move_before_verified=true`、`sheet_move_after_verified=true`；系统 Sheet 隐藏不兼容可以是 warning。该探针不并入“重新验证当前部署”。
 8. 点击“测试标签颜色”，确认 `_NetConsoleSyncTest` 返回 `sheet_tab_color_verified=true`、期望颜色 `#C6EFCE`，且写后读回的 RGB 数值一致。该探针不并入“重新验证当前部署”；失败时仍可执行数据同步，但正式同步不会启用业务标签色。

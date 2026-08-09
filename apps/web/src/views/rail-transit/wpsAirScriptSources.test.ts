@@ -30,16 +30,16 @@ const scripts: Array<{
   {
     targetCode: 'wps_smart_sheet',
     kind: 'probe',
-    scriptVersion: '2.1.0-smart',
-    deploymentId: 'trackside-ap-smart-2.1.0',
+    scriptVersion: '2.2.0-smart',
+    deploymentId: 'trackside-ap-smart-2.2.0',
     documentId: 'cbRdGQdb10R9',
     targetType: 'WPS_SMART_SHEET',
   },
   {
     targetCode: 'wps_smart_sheet',
     kind: 'sync',
-    scriptVersion: '2.1.0-smart',
-    deploymentId: 'trackside-ap-smart-2.1.0',
+    scriptVersion: '2.2.0-smart',
+    deploymentId: 'trackside-ap-smart-2.2.0',
     documentId: 'cbRdGQdb10R9',
     targetType: 'WPS_SMART_SHEET',
   },
@@ -636,6 +636,21 @@ describe('WPS AirScript deployment sources', () => {
     )[1]
     expect(afterFreezeFinalize).toBeTruthy()
     expect(afterFreezeFinalize).not.toMatch(/\.Activate\(|\.Select\(|\.AutoFit\(|\.Move\(|\.AutoFilter\(/)
+  })
+
+  it('keeps smart-sheet writes behind the verified runtime capability probe', () => {
+    const source = wpsAirScriptSource('wps_smart_sheet', 'sync')
+
+    expect(source).toContain('smart_runtime_write_probe')
+    expect(source).toContain('Application.Sheet.GetSheets()')
+    expect(source).toContain('Application.Sheet.CreateSheet')
+    expect(source).toContain('probeSheet.Field.CreateFields')
+    expect(source).toContain('probeSheet.Record.CreateRecords')
+    expect(source).toContain('probeSheet.Record.UpdateRecords')
+    expect(source).toContain('probeSheet.Record.DeleteRecords')
+    expect(source).toContain('runtime_capability: coreVerified ? "VERIFIED" : "DEPLOYMENT_PENDING"')
+    expect(source).not.toContain('supports_hidden_fields')
+    expect(source).not.toContain('max_records_per_request')
   })
 
   it('reorders dynamic business sheets after stable writes and keeps system sheets behind them', () => {

@@ -1426,6 +1426,35 @@ def test_standard_probe_and_sync_scripts_share_deployment_identity() -> None:
     assert "ensureSheet(" not in probe_script
 
 
+def test_smart_sync_script_exposes_fail_closed_runtime_capability_probe() -> None:
+    script = (
+        Path(__file__).parents[1]
+        / "tools"
+        / "wps_airscript"
+        / "trackside_ap_smart_sheet_sync.js"
+    ).read_text(encoding="utf-8")
+
+    assert f'const SCRIPT_VERSION = "{WPS_SCRIPT_VERSIONS[SMART_TARGET_CODE]}";' in script
+    assert f'const DEPLOYMENT_ID = "{WPS_DEPLOYMENT_IDS[SMART_TARGET_CODE]}";' in script
+    for api in (
+        "Application.Sheet.GetSheets()",
+        "Application.Sheet.CreateSheet",
+        "Field.GetFields",
+        "Field.CreateFields",
+        "Record.GetRecords",
+        "Record.CreateRecords",
+        "Record.UpdateRecords",
+        "Record.DeleteRecords",
+        "probeSheet.Move({ Before:",
+    ):
+        assert api in script
+    assert 'operation === "smart_runtime_write_probe"' in script
+    assert 'runtime_capability: coreVerified ? "VERIFIED" : "DEPLOYMENT_PENDING"' in script
+    assert "supports_hidden_fields" not in script
+    assert "max_records_per_request" not in script
+    assert script.rstrip().endswith("return main();")
+
+
 def test_default_target_initialization_splits_legacy_shared_credential(tmp_path: Path) -> None:
     paths = PathResolver(tmp_path)
     repository = WpsSyncRepository(paths, "hangzhou10", protect=_protect, unprotect=_protect)
@@ -2250,6 +2279,71 @@ def test_wps_runtime_probe_visibility_warning_keeps_core_verified_and_diagnostic
     assert target.runtime_probe_diagnostic["core_capabilities"]["matrix_value2"] is True
     assert target.runtime_probe_diagnostic["optional_capabilities"]["sheet_visibility"] is False
     assert target.runtime_probe_diagnostic["warnings"][0]["capability"] == "sheet_visibility"
+
+
+def test_wps_smart_runtime_probe_uses_smart_operation_and_persists_capabilities(
+    tmp_path: Path,
+) -> None:
+    operations: list[str] = []
+    core = {
+        key: True
+        for key in (
+            "sheet_enum",
+            "sheet_create",
+            "field_enum",
+            "field_create",
+            "record_create",
+            "record_read",
+            "record_update",
+            "record_delete",
+            "sheet_move",
+        )
+    }
+    body = {
+        "success": True,
+        "status": "SUCCESS_WITH_WARNINGS",
+        "protocol_version": 2,
+        "script_version": WPS_SCRIPT_VERSIONS[SMART_TARGET_CODE],
+        "deployment_id": WPS_DEPLOYMENT_IDS[SMART_TARGET_CODE],
+        "script_id": "smart-script",
+        "target_type": "WPS_SMART_SHEET",
+        "target_code": SMART_TARGET_CODE,
+        "document_id": "smart",
+        "binding_status": "UNBOUND",
+        "runtime_capability": "VERIFIED",
+        "core_verified": True,
+        "full_replace_ready": True,
+        "append_history_ready": True,
+        "core_capabilities": core,
+        "optional_capabilities": {"view_enum": False},
+        "warnings": [{"capability": "view_enum", "message": "View.GetViews unavailable"}],
+    }
+
+    class FakeClient:
+        def post(self, target, *, token, argv):
+            operations.append(str(argv["operation"]))
+            return WpsHttpResponse(status_code=200, body=body)
+
+    service = TracksideApWpsSyncService(PathResolver(tmp_path), client=FakeClient())
+    service.configure_target(
+        "hzl10",
+        SMART_TARGET_CODE,
+        document_open_url="https://www.kdocs.cn/l/smart",
+        webhook_url="https://www.kdocs.cn/api/v3/ide/file/smart/script/smart-script/sync_task",
+        token="test-token",
+        enabled=True,
+    )
+
+    result = service.runtime_write_probe("hzl10", SMART_TARGET_CODE)
+    target = service._repository("hzl10").get_target(
+        TRACKSIDE_AP_WPS_BUSINESS_KEY, SMART_TARGET_CODE
+    )
+
+    assert operations == ["smart_runtime_write_probe"]
+    assert result["runtime_capability"] == "VERIFIED"
+    assert target.runtime_capability == "VERIFIED"
+    assert target.runtime_probe_diagnostic["core_capabilities"] == core
+    assert target.runtime_probe_diagnostic["optional_capabilities"]["view_enum"] is False
 
 
 def test_wps_sheet_order_probe_is_independent_and_persists_verification(

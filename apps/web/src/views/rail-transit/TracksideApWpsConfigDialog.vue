@@ -62,6 +62,16 @@ const runtimeCapabilityLabels: Record<string, string> = {
   clear_contents: '内容清除',
   entire_row_insert: '顶部整行插入',
   sheet_visibility: '系统 Sheet 隐藏',
+  sheet_enum: '数据表枚举',
+  sheet_create: '数据表创建',
+  field_enum: '字段枚举',
+  field_create: '字段创建',
+  record_create: '记录创建',
+  record_read: '记录读取',
+  record_update: '记录更新',
+  record_delete: '记录删除',
+  sheet_move: '数据表排序',
+  view_enum: '视图枚举',
 }
 
 const visible = computed({
@@ -639,7 +649,7 @@ async function openDocument(target: WpsTracksideTarget): Promise<void> {
         <div class="deployment-actions">
           <el-button :icon="CopyDocument" @click="copyAirScript(row.target.target_code, 'probe')">复制连接测试脚本</el-button>
           <el-button :icon="CopyDocument" @click="copyAirScript(row.target.target_code, 'sync')">复制正式同步脚本</el-button>
-          <el-button v-if="row.target.target_type === 'WPS_STANDARD_SPREADSHEET'" :loading="probingCode === row.target.target_code" :disabled="Boolean(probingCode) || Boolean(sheetOrderProbingCode) || Boolean(sheetTabColorProbingCode) || Boolean(columnWidthProbingCode) || Boolean(savingCode) || Boolean(testingCode) || Boolean(revalidatingCode) || Boolean(upgradingBindingCode)" @click="runtimeWriteProbe(row.target.target_code)">测试写入能力</el-button>
+          <el-button :loading="probingCode === row.target.target_code" :disabled="Boolean(probingCode) || Boolean(sheetOrderProbingCode) || Boolean(sheetTabColorProbingCode) || Boolean(columnWidthProbingCode) || Boolean(savingCode) || Boolean(testingCode) || Boolean(revalidatingCode) || Boolean(upgradingBindingCode)" @click="runtimeWriteProbe(row.target.target_code)">测试写入能力</el-button>
           <el-button v-if="row.target.target_type === 'WPS_STANDARD_SPREADSHEET'" :loading="syncTestingCode === row.target.target_code" :disabled="Boolean(syncTestingCode) || Boolean(probingCode) || Boolean(sheetOrderProbingCode) || Boolean(sheetTabColorProbingCode) || Boolean(columnWidthProbingCode) || Boolean(savingCode) || Boolean(testingCode) || Boolean(revalidatingCode) || Boolean(upgradingBindingCode)" @click="syncTestSheet(row.target.target_code)">测试同步 Sheet</el-button>
           <el-button v-if="row.target.target_type === 'WPS_STANDARD_SPREADSHEET'" :loading="sheetOrderProbingCode === row.target.target_code" :disabled="Boolean(sheetOrderProbingCode) || Boolean(sheetTabColorProbingCode) || Boolean(columnWidthProbingCode) || Boolean(syncTestingCode) || Boolean(probingCode) || Boolean(savingCode) || Boolean(testingCode) || Boolean(revalidatingCode) || Boolean(upgradingBindingCode)" @click="sheetOrderProbe(row.target.target_code)">测试 Sheet 排序</el-button>
           <el-button v-if="row.target.target_type === 'WPS_STANDARD_SPREADSHEET'" :loading="sheetTabColorProbingCode === row.target.target_code" :disabled="Boolean(sheetTabColorProbingCode) || Boolean(sheetOrderProbingCode) || Boolean(columnWidthProbingCode) || Boolean(syncTestingCode) || Boolean(probingCode) || Boolean(savingCode) || Boolean(testingCode) || Boolean(revalidatingCode) || Boolean(upgradingBindingCode)" @click="sheetTabColorProbe(row.target.target_code)">测试标签颜色</el-button>
