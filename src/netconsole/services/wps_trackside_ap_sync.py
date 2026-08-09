@@ -5,9 +5,10 @@ import json
 import os
 import re
 import shutil
+import time
 import urllib.error
 import urllib.request
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit, urlunsplit
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -50,15 +51,13 @@ STANDARD_TARGET_CODE = "wps_standard_spreadsheet"
 SMART_TARGET_CODE = "wps_smart_sheet"
 WPS_SYNC_TASK_TYPE = "trackside_ap_wps_sync"
 WPS_SYNC_OWNER = "web_rail_transit"
-# Keep the last field-verified spreadsheet writer as the production default.
-# The format mirror remains available for a later, separately verified rollout.
-WPS_STANDARD_FORMAT_MIRROR_EXPERIMENTAL = False
+WPS_STANDARD_FORMAT_MIRROR_ENABLED = True
 WPS_SCRIPT_VERSIONS = {
-    STANDARD_TARGET_CODE: "2.5.0-standard",
+    STANDARD_TARGET_CODE: "2.8.2-standard",
     SMART_TARGET_CODE: "2.1.0-smart",
 }
 WPS_DEPLOYMENT_IDS = {
-    STANDARD_TARGET_CODE: "trackside-ap-standard-2.5.0",
+    STANDARD_TARGET_CODE: "trackside-ap-standard-2.8.2",
     SMART_TARGET_CODE: "trackside-ap-smart-2.1.0",
 }
 WPS_RUNTIME_CAPABILITIES = {
@@ -76,6 +75,13 @@ _MAX_PAYLOAD_BYTES = 20 * 1024 * 1024
 _MAX_ERROR_BODY_BYTES = 64 * 1024
 _MAX_ERROR_TEXT = 500
 _LEGACY_BINDING_ID_RE = re.compile(r"^wst_[0-9a-f]{32}$", re.IGNORECASE)
+_WPS_WEBHOOK_PATH_RE = re.compile(
+    r"^/api/v3/ide/file/(?P<file_id>[A-Za-z0-9_-]{3,160})/"
+    r"script/(?P<script_id>[A-Za-z0-9_-]{3,160})/sync_task$"
+)
+WPS_REMOTE_TASK_MAX_WAIT_SECONDS = 600.0
+WPS_REMOTE_TASK_POLL_INTERVAL_SECONDS = 1.5
+_REMOTE_TASK_ID_MAX_LENGTH = 4096
 
 DEFAULT_TARGETS = (
     {
@@ -115,6 +121,23 @@ class WpsHttpResponse:
     body: object
 
 
+@dataclass(frozen=True)
+class WpsWebhookEndpoints:
+    host: str
+    file_id: str
+    script_id: str
+    sync_task_url: str
+    async_task_url: str
+    task_status_url: str
+
+
+@dataclass(frozen=True)
+class WpsRemoteTask:
+    task_id: str
+    task_type: str
+    status: str = "submitted"
+
+
 class WpsAirScriptClient:
     def post(
         self,
@@ -139,10 +162,111 @@ class WpsAirScriptClient:
                 "WPS_PAYLOAD_TOO_LARGE",
                 f"WPS 同步请求超过 {_MAX_PAYLOAD_BYTES} 字节限制",
             )
-        request = urllib.request.Request(
-            target.webhook_url,
-            data=body,
+        return self._request_json(
+            target,
+            token=token,
+            url=target.webhook_url,
             method="POST",
+            body=body,
+            connection_error_code="WPS_CONNECTION_FAILED",
+            connection_error_prefix="WPS 连接失败",
+        )
+
+    def submit_async(
+        self,
+        target: WpsSyncTarget,
+        *,
+        token: str,
+        argv: Mapping[str, object],
+    ) -> WpsRemoteTask:
+        if not token:
+            raise WpsSyncError(
+                "WPS_TOKEN_MISSING",
+                "WPS 脚本凭据未配置",
+                details=_target_error_details(target, phase="LOCAL_CONFIGURATION"),
+            )
+        endpoints = parse_wps_webhook(target.webhook_url)
+        body = json.dumps(
+            {"Context": {"argv": dict(argv)}},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        if len(body) > _MAX_PAYLOAD_BYTES:
+            raise WpsSyncError(
+                "WPS_PAYLOAD_TOO_LARGE",
+                f"WPS 同步请求超过 {_MAX_PAYLOAD_BYTES} 字节限制",
+            )
+        response = self._request_json(
+            target,
+            token=token,
+            url=endpoints.async_task_url,
+            method="POST",
+            body=body,
+            connection_error_code="ASYNC_SUBMIT_FAILED",
+            connection_error_prefix="WPS 异步任务提交失败",
+        )
+        payload = response.body
+        if not isinstance(payload, Mapping):
+            raise WpsSyncError(
+                "WPS_ASYNC_SUBMIT_RESPONSE_INVALID",
+                "WPS 异步任务提交返回结构无效",
+                details=_target_error_details(target, phase="ASYNC_SUBMIT"),
+            )
+        nested = payload.get("data")
+        nested_data = nested if isinstance(nested, Mapping) else {}
+        task_id = str(payload.get("task_id") or nested_data.get("task_id") or "").strip()
+        task_type = str(payload.get("task_type") or nested_data.get("task_type") or "").strip()
+        if not task_id or len(task_id) > _REMOTE_TASK_ID_MAX_LENGTH:
+            raise WpsSyncError(
+                "WPS_ASYNC_TASK_ID_MISSING",
+                "WPS 异步任务提交未返回有效 task_id",
+                details=_target_error_details(target, phase="ASYNC_SUBMIT"),
+            )
+        return WpsRemoteTask(task_id=task_id, task_type=task_type or "open_air_script")
+
+    def poll_async_task(
+        self,
+        target: WpsSyncTarget,
+        *,
+        token: str,
+        task_id: str,
+    ) -> WpsHttpResponse:
+        if not token:
+            raise WpsSyncError(
+                "WPS_TOKEN_MISSING",
+                "WPS 脚本凭据未配置",
+                details=_target_error_details(target, phase="LOCAL_CONFIGURATION"),
+            )
+        normalized_task_id = str(task_id or "").strip()
+        if not normalized_task_id or len(normalized_task_id) > _REMOTE_TASK_ID_MAX_LENGTH:
+            raise WpsSyncError("WPS_ASYNC_TASK_ID_INVALID", "WPS 远端 task_id 无效")
+        endpoints = parse_wps_webhook(target.webhook_url)
+        query = urlencode({"task_id": normalized_task_id})
+        return self._request_json(
+            target,
+            token=token,
+            url=f"{endpoints.task_status_url}?{query}",
+            method="GET",
+            body=None,
+            connection_error_code="REMOTE_POLL_TEMPORARY_FAILED",
+            connection_error_prefix="WPS 远端任务查询暂时失败",
+        )
+
+    @staticmethod
+    def _request_json(
+        target: WpsSyncTarget,
+        *,
+        token: str,
+        url: str,
+        method: str,
+        body: bytes | None,
+        connection_error_code: str,
+        connection_error_prefix: str,
+    ) -> WpsHttpResponse:
+        request = urllib.request.Request(
+            url,
+            data=body,
+            method=method,
             headers={
                 "Content-Type": "application/json",
                 "Accept": "application/json",
@@ -161,8 +285,23 @@ class WpsAirScriptClient:
             raise _http_error_from_response(exc, target, token) from None
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             raise WpsSyncError(
-                "WPS_CONNECTION_FAILED",
-                f"WPS 连接失败：{_sanitize_error(str(exc))}",
+                connection_error_code,
+                f"{connection_error_prefix}：{_sanitize_error(str(exc))}",
+                details={
+                    **_target_error_details(
+                        target,
+                        phase=(
+                            "ASYNC_SUBMIT"
+                            if connection_error_code == "ASYNC_SUBMIT_FAILED"
+                            else "REMOTE_POLL"
+                            if connection_error_code == "REMOTE_POLL_TEMPORARY_FAILED"
+                            else "HTTP_REQUEST"
+                        ),
+                    ),
+                    "submission_outcome": (
+                        "UNKNOWN" if connection_error_code == "ASYNC_SUBMIT_FAILED" else ""
+                    ),
+                },
             ) from None
         if len(raw) > _MAX_PAYLOAD_BYTES:
             raise WpsSyncError("WPS_RESPONSE_TOO_LARGE", "WPS 返回内容超过安全限制")
@@ -427,6 +566,15 @@ class BaseWpsAdapter:
         request_payload = dict(payload)
         request_payload.setdefault("script_id", _script_id_from_webhook(target.webhook_url))
         response = self.client.post(target, token=token, argv=request_payload)
+        return self.validate_sync_response(target, token, payload, response)
+
+    def validate_sync_response(
+        self,
+        target: WpsSyncTarget,
+        token: str,
+        payload: Mapping[str, object],
+        response: WpsHttpResponse,
+    ) -> dict[str, Any]:
         result = _unwrap_wps_sync_task_response(response, target, token=token)
         self._validate_common(target, result)
         if not bool(result.get("success")):
@@ -581,9 +729,19 @@ class TracksideApWpsSyncService:
         paths: PathResolver,
         *,
         client: WpsAirScriptClient | None = None,
+        remote_task_max_wait_seconds: float = WPS_REMOTE_TASK_MAX_WAIT_SECONDS,
+        remote_task_poll_interval_seconds: float = WPS_REMOTE_TASK_POLL_INTERVAL_SECONDS,
+        sleep: Callable[[float], None] = time.sleep,
+        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         self.paths = paths
         self.client = client or WpsAirScriptClient()
+        self.remote_task_max_wait_seconds = max(1.0, float(remote_task_max_wait_seconds))
+        self.remote_task_poll_interval_seconds = max(
+            0.0, float(remote_task_poll_interval_seconds)
+        )
+        self._sleep = sleep
+        self._monotonic = monotonic
         self.adapters = {
             WpsTargetType.STANDARD_SPREADSHEET: WpsStandardSpreadsheetAdapter(
                 self.client
@@ -1120,6 +1278,26 @@ class TracksideApWpsSyncService:
             for target in targets:
                 _assert_standard_sync_readiness(target)
 
+        resumable = repository.find_resumable_batch(
+            TRACKSIDE_AP_WPS_BUSINESS_KEY,
+            requested_codes,
+        )
+        if resumable is not None:
+            if progress is not None:
+                progress(
+                    "wps_remote_resume",
+                    30,
+                    100,
+                    "发现未完成的 WPS 远端任务，正在恢复查询",
+                )
+            return self._execute_persisted_batch(
+                repository,
+                targets,
+                resumable,
+                progress=progress,
+                should_cancel=should_cancel,
+            )
+
         if should_cancel is not None:
             should_cancel()
         if progress is not None:
@@ -1129,7 +1307,7 @@ class TracksideApWpsSyncService:
         if expected_revision and revision != expected_revision:
             raise WpsSyncError("TRACKSIDE_AP_SNAPSHOT_STALE", "轨旁 AP 数据已更新，请刷新后重试")
         batch_id = f"wps_{uuid4().hex}"
-        workbook, snapshot_sha256, payload_size, column_width_manifest = self._build_workbook_dto(
+        workbook, snapshot_sha256, payload_size, source_format_manifest = self._build_workbook_dto(
             site_id,
             batch_id,
             snapshot,
@@ -1155,16 +1333,31 @@ class TracksideApWpsSyncService:
             snapshot_generated_at=generated_at,
             target_count=len(targets),
         )
-        results: list[dict[str, Any]] = []
-        for target_index, target in enumerate(targets, start=1):
-            if should_cancel is not None:
-                should_cancel()
+        initial_summary = {
+            "batch_id": batch_id,
+            "site_id": site_id,
+            "business_key": TRACKSIDE_AP_WPS_BUSINESS_KEY,
+            "snapshot_revision": revision,
+            "snapshot_sha256": snapshot_sha256,
+            "snapshot_generated_at": generated_at,
+            "payload_bytes": payload_size,
+            "sheet_count": len(workbook.sheets),
+            "status": "RUNNING",
+            "target_count": len(targets),
+            "success_count": 0,
+            "failed_count": 0,
+            "warning_count": 0,
+            "partial_success": False,
+            "targets": [],
+        }
+        repository.update_batch_state(
+            batch_id,
+            status="RUNNING",
+            summary=initial_summary,
+        )
+        persisted_runs: list[dict[str, Any]] = []
+        for target in targets:
             target_batch_id = f"{batch_id}_{target.target_code}"
-            repository.create_target_run(
-                target_batch_id=target_batch_id,
-                batch_id=batch_id,
-                target=target,
-            )
             request_payload = {
                 "protocol_version": WPS_SYNC_PROTOCOL_VERSION,
                 "operation": "sync_trackside_ap_business",
@@ -1181,32 +1374,128 @@ class TracksideApWpsSyncService:
                 "snapshot_sha256": snapshot_sha256,
                 "snapshot_generated_at": generated_at,
                 "requested_at": _now(),
-                "format_mirror_experimental": WPS_STANDARD_FORMAT_MIRROR_EXPERIMENTAL,
+                "format_mirror_enabled": (
+                    WPS_STANDARD_FORMAT_MIRROR_ENABLED
+                    and target.target_type is WpsTargetType.STANDARD_SPREADSHEET
+                ),
                 "sheet_tab_color_enabled": _sheet_tab_color_probe_verified(target),
                 "column_width_enabled": target.target_type is WpsTargetType.STANDARD_SPREADSHEET,
                 "workbook": workbook.to_dict(),
+                "script_id": _script_id_from_webhook(target.webhook_url),
             }
+            repository.create_target_run(
+                target_batch_id=target_batch_id,
+                batch_id=batch_id,
+                target=target,
+                request_payload=request_payload,
+                source_format_manifest=source_format_manifest,
+            )
+            persisted_runs.append(
+                {
+                    "target_batch_id": target_batch_id,
+                    "batch_id": batch_id,
+                    "target_id": target.target_id,
+                    "target_code": target.target_code,
+                    "target_type": target.target_type.value,
+                    "status": "REMOTE_SUBMITTING",
+                    "remote_task_id": "",
+                    "remote_task_id_masked": "",
+                    "remote_task_type": "",
+                    "remote_task_status": "",
+                    "remote_task_submitted_at": "",
+                    "remote_task_last_polled_at": "",
+                    "remote_task_finished_at": "",
+                    "request_payload": request_payload,
+                    "source_format_manifest": source_format_manifest,
+                    "result_summary": {},
+                }
+            )
+        batch = {**initial_summary, "targets": persisted_runs}
+        return self._execute_persisted_batch(
+            repository,
+            targets,
+            batch,
+            progress=progress,
+            should_cancel=should_cancel,
+        )
+
+    def _execute_persisted_batch(
+        self,
+        repository: WpsSyncRepository,
+        targets: Sequence[WpsSyncTarget],
+        batch: Mapping[str, object],
+        *,
+        progress: Callable[[str, int, int, object], None] | None,
+        should_cancel: Callable[[], None] | None,
+    ) -> dict[str, Any]:
+        target_by_code = {target.target_code: target for target in targets}
+        raw_runs = batch.get("targets")
+        runs = [dict(run) for run in raw_runs if isinstance(run, Mapping)] if isinstance(raw_runs, list) else []
+        batch_id = str(batch.get("batch_id") or "")
+        revision = str(batch.get("snapshot_revision") or "")
+        results: list[dict[str, Any]] = []
+        for target_index, run in enumerate(runs, start=1):
+            if should_cancel is not None:
+                should_cancel()
+            target = target_by_code.get(str(run.get("target_code") or ""))
+            if target is None:
+                raise WpsSyncError(
+                    "WPS_TARGET_INVALID",
+                    "未完成批次包含当前请求之外的 WPS 目标",
+                )
+            stored_result = run.get("result_summary")
+            if (
+                str(run.get("status") or "")
+                in {"SUCCESS", "SUCCESS_WITH_WARNINGS", "FAILED"}
+                and isinstance(stored_result, Mapping)
+                and stored_result
+            ):
+                results.append(dict(stored_result))
+                continue
+            request_payload = run.get("request_payload")
+            source_format_manifest = run.get("source_format_manifest")
+            if not isinstance(request_payload, Mapping):
+                raise WpsSyncError(
+                    "WPS_REMOTE_RESUME_CONTEXT_MISSING",
+                    "WPS 未完成任务缺少可恢复请求上下文",
+                )
             try:
                 _validate_target_configuration(target)
                 if progress is not None:
                     progress(
                         "wps_target_sync",
-                        30 + int((target_index - 1) * 65 / max(len(targets), 1)),
+                        30 + int((target_index - 1) * 65 / max(len(runs), 1)),
                         100,
-                        f"正在同步 {target.target_name}",
+                        f"正在处理 {target.target_name}",
                     )
-                response = self.adapters[target.target_type].sync(
-                    target,
-                    self._token(repository, target),
-                    request_payload,
+                if isinstance(self.client, WpsAirScriptClient):
+                    response = self._execute_async_target(
+                        repository,
+                        target,
+                        run,
+                        dict(request_payload),
+                        progress=progress,
+                        should_cancel=should_cancel,
+                    )
+                else:
+                    response = self.adapters[target.target_type].sync(
+                        target,
+                        self._token(repository, target),
+                        request_payload,
+                    )
+                manifest = (
+                    dict(source_format_manifest)
+                    if isinstance(source_format_manifest, Mapping)
+                    else {}
                 )
                 column_width_report = _column_width_verification_report(
-                    manifest=column_width_manifest,
+                    manifest=manifest.get("column_widths") or [],
                     request_payload=request_payload,
                     remote_result=response,
                     enabled=target.target_type is WpsTargetType.STANDARD_SPREADSHEET,
                 )
                 response["column_width_verification_report"] = column_width_report
+                response["source_workbook_format_manifest"] = manifest
                 _append_column_width_report_warning(response, column_width_report)
                 format_warnings = response.get("format_warnings")
                 target_status = (
@@ -1218,7 +1507,7 @@ class TracksideApWpsSyncService:
                     "target_code": target.target_code,
                     "target_name": target.target_name,
                     "target_type": target.target_type.value,
-                    "target_batch_id": target_batch_id,
+                    "target_batch_id": str(run.get("target_batch_id") or ""),
                     **_sanitize_result(response),
                     "status": target_status,
                 }
@@ -1228,7 +1517,7 @@ class TracksideApWpsSyncService:
                     result=response,
                 )
                 repository.complete_target_run(
-                    target_batch_id,
+                    str(run.get("target_batch_id") or ""),
                     status=target_status,
                     result=public,
                 )
@@ -1238,44 +1527,70 @@ class TracksideApWpsSyncService:
                     revision=revision,
                 )
             except WpsSyncError as exc:
+                recoverable = exc.code in {
+                    "ASYNC_SUBMIT_FAILED",
+                    "WPS_ASYNC_TASK_ID_MISSING",
+                    "REMOTE_POLL_TEMPORARY_FAILED",
+                    "REMOTE_RESULT_UNKNOWN",
+                }
                 public = {
                     "target_code": target.target_code,
                     "target_name": target.target_name,
                     "target_type": target.target_type.value,
-                    "target_batch_id": target_batch_id,
-                    "status": "FAILED",
+                    "target_batch_id": str(run.get("target_batch_id") or ""),
+                    "status": "REMOTE_RESULT_UNKNOWN" if recoverable else "FAILED",
                     "error_code": exc.code,
                     "message": str(exc),
                     **_sanitize_result(dict(exc.details)),
                 }
-                repository.complete_target_run(
-                    target_batch_id,
-                    status="FAILED",
-                    result=public,
-                    error_code=exc.code,
-                    error_message=str(exc),
-                )
+                if recoverable:
+                    repository.update_remote_task_poll(
+                        str(run.get("target_batch_id") or ""),
+                        status="REMOTE_RESULT_UNKNOWN",
+                        remote_status="unknown",
+                        error_code=exc.code,
+                        error_message=str(exc),
+                    )
+                else:
+                    repository.complete_target_run(
+                        str(run.get("target_batch_id") or ""),
+                        status="FAILED",
+                        result=public,
+                        error_code=exc.code,
+                        error_message=str(exc),
+                        remote_task_status=(
+                            "failed"
+                            if exc.code == "WPS_REMOTE_EXECUTION_FAILED"
+                            else "finished"
+                        ),
+                    )
                 repository.update_target_sync(
                     target.target_id,
-                    status="FAILED",
+                    status=str(public["status"]),
                     revision=revision,
                 )
             results.append(public)
             if progress is not None:
                 progress(
                     "wps_target_sync",
-                    30 + int(target_index * 65 / max(len(targets), 1)),
+                    30 + int(target_index * 65 / max(len(runs), 1)),
                     100,
-                    f"{target.target_name}同步完成：{public['status']}",
+                    f"{target.target_name}同步状态：{public['status']}",
                 )
+
         success_count = sum(
             result["status"] in {"SUCCESS", "SUCCESS_WITH_WARNINGS"}
             for result in results
         )
-        failed_count = len(results) - success_count
+        unknown_count = sum(
+            result["status"] == "REMOTE_RESULT_UNKNOWN" for result in results
+        )
+        failed_count = sum(result["status"] == "FAILED" for result in results)
         warning_count = sum(_target_format_warning_count(result) for result in results)
         status = (
-            "SUCCESS_WITH_WARNINGS"
+            "REMOTE_RESULT_UNKNOWN"
+            if unknown_count > 0
+            else "SUCCESS_WITH_WARNINGS"
             if failed_count == 0 and warning_count > 0
             else "SUCCESS"
             if failed_count == 0
@@ -1283,33 +1598,278 @@ class TracksideApWpsSyncService:
             if success_count == 0
             else "PARTIAL_SUCCESS"
         )
+        initial_summary = batch.get("result_summary")
+        persisted_summary = (
+            dict(initial_summary) if isinstance(initial_summary, Mapping) else {}
+        )
         summary = {
+            **persisted_summary,
             "batch_id": batch_id,
-            "site_id": site_id,
-            "business_key": TRACKSIDE_AP_WPS_BUSINESS_KEY,
+            "site_id": str(batch.get("site_id") or repository.site_id),
+            "business_key": str(
+                batch.get("business_key") or TRACKSIDE_AP_WPS_BUSINESS_KEY
+            ),
             "snapshot_revision": revision,
-            "snapshot_sha256": snapshot_sha256,
-            "snapshot_generated_at": generated_at,
-            "payload_bytes": payload_size,
-            "sheet_count": len(workbook.sheets),
+            "snapshot_sha256": str(batch.get("snapshot_sha256") or ""),
+            "snapshot_generated_at": str(batch.get("snapshot_generated_at") or ""),
+            "payload_bytes": int(persisted_summary.get("payload_bytes") or batch.get("payload_bytes") or 0),
+            "sheet_count": int(persisted_summary.get("sheet_count") or batch.get("sheet_count") or 0),
             "status": status,
             "target_count": len(results),
             "success_count": success_count,
             "failed_count": failed_count,
+            "unknown_count": unknown_count,
             "warning_count": warning_count,
             "partial_success": status == "PARTIAL_SUCCESS",
             "targets": results,
         }
-        repository.complete_batch(
-            batch_id,
-            status=status,
-            success_count=success_count,
-            failed_count=failed_count,
-            summary=summary,
-        )
+        if unknown_count:
+            repository.update_batch_state(
+                batch_id,
+                status="REMOTE_RESULT_UNKNOWN",
+                summary=summary,
+            )
+        else:
+            repository.complete_batch(
+                batch_id,
+                status=status,
+                success_count=success_count,
+                failed_count=failed_count,
+                summary=summary,
+            )
         if progress is not None:
             progress("wps_complete", 100, 100, f"WPS 双目标同步完成：{status}")
         return summary
+
+    def _execute_async_target(
+        self,
+        repository: WpsSyncRepository,
+        target: WpsSyncTarget,
+        run: Mapping[str, object],
+        request_payload: dict[str, object],
+        *,
+        progress: Callable[[str, int, int, object], None] | None,
+        should_cancel: Callable[[], None] | None,
+    ) -> dict[str, Any]:
+        target_batch_id = str(run.get("target_batch_id") or "")
+        task_id = str(run.get("remote_task_id") or "")
+        task_type = str(run.get("remote_task_type") or "")
+        submitted_at = str(run.get("remote_task_submitted_at") or "")
+        token = self._token(repository, target)
+        if not task_id:
+            if progress is not None:
+                progress("wps_remote_submit", 35, 100, "正在提交 WPS 远端任务")
+            remote = self.client.submit_async(
+                target,
+                token=token,
+                argv=request_payload,
+            )
+            task_id = remote.task_id
+            task_type = remote.task_type
+            submitted_at = _now()
+            repository.update_remote_task_submitted(
+                target_batch_id,
+                task_id=task_id,
+                task_type=task_type,
+                remote_status=remote.status,
+            )
+            if progress is not None:
+                progress(
+                    "wps_remote_submitted",
+                    40,
+                    100,
+                    {
+                        "message": "WPS 远端任务已提交",
+                        "remote_task_id_masked": _mask_remote_task_id(task_id),
+                        "remote_task_type": task_type,
+                        "remote_task_status": remote.status,
+                        "remote_task_submitted_at": submitted_at,
+                    },
+                )
+        elif progress is not None:
+            progress(
+                "wps_remote_resume",
+                40,
+                100,
+                {
+                    "message": "正在恢复 WPS 远端任务查询",
+                    "remote_task_id_masked": _mask_remote_task_id(task_id),
+                    "remote_task_type": task_type,
+                    "remote_task_status": str(run.get("remote_task_status") or "unknown"),
+                    "remote_task_submitted_at": submitted_at,
+                    "remote_task_last_polled_at": str(
+                        run.get("remote_task_last_polled_at") or ""
+                    ),
+                },
+            )
+
+        deadline = self._monotonic() + self.remote_task_max_wait_seconds
+        while True:
+            if should_cancel is not None:
+                should_cancel()
+            if self._monotonic() >= deadline:
+                raise WpsSyncError(
+                    "REMOTE_RESULT_UNKNOWN",
+                    "WPS 任务已经提交，但在总等待时间内未能确认远端执行结果",
+                    details={
+                        **_target_error_details(target, phase="REMOTE_POLL"),
+                        "remote_task_id_masked": _mask_remote_task_id(task_id),
+                        "remote_task_status": "unknown",
+                        "remote_task_submitted_at": submitted_at,
+                    },
+                )
+            try:
+                polled = self.client.poll_async_task(
+                    target,
+                    token=token,
+                    task_id=task_id,
+                )
+            except WpsSyncError as exc:
+                repository.update_remote_task_poll(
+                    target_batch_id,
+                    status="REMOTE_RESULT_UNKNOWN",
+                    remote_status="unknown",
+                    error_code=exc.code,
+                    error_message=str(exc),
+                )
+                if exc.code in {
+                    "REMOTE_POLL_TEMPORARY_FAILED",
+                    "WPS_REMOTE_UNAVAILABLE",
+                    "WPS_REMOTE_RATE_LIMITED",
+                }:
+                    if progress is not None:
+                        progress(
+                            "wps_remote_poll_retry",
+                            45,
+                            100,
+                            {
+                                "message": "WPS 远端任务查询暂时失败，正在继续查询",
+                                "remote_task_id_masked": _mask_remote_task_id(task_id),
+                                "remote_task_status": "unknown",
+                                "remote_task_last_polled_at": _now(),
+                                "remote_error_code": exc.code,
+                            },
+                        )
+                    self._wait_for_next_poll(deadline)
+                    continue
+                raise WpsSyncError(
+                    "REMOTE_RESULT_UNKNOWN",
+                    "WPS 任务已经提交，当前无法确认远端执行结果",
+                    details={
+                        **_target_error_details(target, phase="REMOTE_POLL"),
+                        "remote_task_id_masked": _mask_remote_task_id(task_id),
+                        "remote_task_status": "unknown",
+                        "poll_error_code": exc.code,
+                        "poll_error_message": str(exc),
+                    },
+                ) from exc
+            body = polled.body
+            if not isinstance(body, Mapping):
+                raise WpsSyncError(
+                    "REMOTE_RESULT_UNKNOWN",
+                    "WPS 远端任务查询返回结构无效",
+                    details={
+                        **_target_error_details(target, phase="REMOTE_POLL"),
+                        "remote_task_id_masked": _mask_remote_task_id(task_id),
+                    },
+                )
+            remote_status = str(body.get("status") or "").strip().casefold()
+            polled_at = _now()
+            if remote_status in {"pending", "queued", "starting", "running"}:
+                repository.update_remote_task_poll(
+                    target_batch_id,
+                    status="REMOTE_RUNNING",
+                    remote_status=remote_status,
+                )
+                if progress is not None:
+                    progress(
+                        "wps_remote_running",
+                        50,
+                        100,
+                        {
+                            "message": "WPS 远端任务执行中",
+                            "remote_task_id_masked": _mask_remote_task_id(task_id),
+                            "remote_task_type": task_type,
+                            "remote_task_status": remote_status,
+                            "remote_task_submitted_at": submitted_at,
+                            "remote_task_last_polled_at": polled_at,
+                        },
+                    )
+                self._wait_for_next_poll(deadline)
+                continue
+            if remote_status not in {"finished", "success", "completed"}:
+                repository.update_remote_task_poll(
+                    target_batch_id,
+                    status="REMOTE_RESULT_UNKNOWN",
+                    remote_status=remote_status or "unknown",
+                    error_code="WPS_REMOTE_TASK_STATUS_INVALID",
+                    error_message="WPS 远端任务状态无法识别",
+                )
+                raise WpsSyncError(
+                    "REMOTE_RESULT_UNKNOWN",
+                    f"WPS 远端任务状态无法识别：{remote_status or '未知'}",
+                    details={
+                        **_target_error_details(target, phase="REMOTE_POLL"),
+                        "remote_task_id_masked": _mask_remote_task_id(task_id),
+                        "remote_task_status": remote_status or "unknown",
+                    },
+                )
+            repository.update_remote_task_poll(
+                target_batch_id,
+                status="REMOTE_FINISHED",
+                remote_status=remote_status,
+            )
+            if progress is not None:
+                progress(
+                    "wps_remote_finished",
+                    90,
+                    100,
+                    {
+                        "message": "WPS 远端执行完成，正在解析结果",
+                        "remote_task_id_masked": _mask_remote_task_id(task_id),
+                        "remote_task_type": task_type,
+                        "remote_task_status": remote_status,
+                        "remote_task_submitted_at": submitted_at,
+                        "remote_task_last_polled_at": polled_at,
+                        "remote_task_finished_at": polled_at,
+                    },
+                )
+            try:
+                result = self.adapters[target.target_type].validate_sync_response(
+                    target,
+                    token,
+                    request_payload,
+                    polled,
+                )
+            except WpsSyncError as exc:
+                if exc.code != "WPS_SCRIPT_EXECUTION_FAILED":
+                    raise
+                raise WpsSyncError(
+                    "WPS_REMOTE_EXECUTION_FAILED",
+                    str(exc),
+                    details={
+                        **dict(exc.details),
+                        "remote_task_id_masked": _mask_remote_task_id(task_id),
+                        "remote_task_status": remote_status,
+                    },
+                ) from exc
+            result.update(
+                {
+                    "remote_task_id_masked": _mask_remote_task_id(task_id),
+                    "remote_task_type": task_type,
+                    "remote_task_status": remote_status,
+                    "remote_task_submitted_at": submitted_at,
+                    "remote_task_last_polled_at": polled_at,
+                    "remote_task_finished_at": polled_at,
+                }
+            )
+            return result
+
+    def _wait_for_next_poll(self, deadline: float) -> None:
+        remaining = max(0.0, deadline - self._monotonic())
+        delay = min(self.remote_task_poll_interval_seconds, remaining)
+        if delay > 0:
+            self._sleep(delay)
 
     def recent_batches(self, site_id: str, limit: int = 10) -> list[dict[str, object]]:
         repository = self._repository(site_id)
@@ -1335,7 +1895,7 @@ class TracksideApWpsSyncService:
         site_id: str,
         batch_id: str,
         snapshot: Mapping[str, object],
-    ) -> tuple[WorkbookDTO, str, int, list[dict[str, Any]]]:
+    ) -> tuple[WorkbookDTO, str, int, dict[str, Any]]:
         root = (self.paths.temp_dir / "wps_trackside_ap" / site_id / batch_id).resolve()
         root.mkdir(parents=True, exist_ok=False)
         output = root / "trackside-ap-business.xlsx"
@@ -1351,10 +1911,10 @@ class TracksideApWpsSyncService:
             )
             workbook = workbook_dto_from_xlsx(
                 output,
-                include_format_mirror=WPS_STANDARD_FORMAT_MIRROR_EXPERIMENTAL,
+                include_format_mirror=WPS_STANDARD_FORMAT_MIRROR_ENABLED,
                 include_column_widths=True,
             )
-            column_width_manifest = _column_width_manifest_from_xlsx(output, workbook)
+            source_format_manifest = _source_workbook_format_manifest(output, workbook)
             digest_payload = {
                 "site_id": site_id,
                 "business_key": TRACKSIDE_AP_WPS_BUSINESS_KEY,
@@ -1371,7 +1931,7 @@ class TracksideApWpsSyncService:
                 workbook,
                 content_sha256(digest_payload),
                 len(serialized),
-                column_width_manifest,
+                source_format_manifest,
             )
         finally:
             shutil.rmtree(root, ignore_errors=True)
@@ -1496,7 +2056,7 @@ class TracksideApWpsSyncService:
 def workbook_dto_from_xlsx(
     path: str | Path,
     *,
-    include_format_mirror: bool = WPS_STANDARD_FORMAT_MIRROR_EXPERIMENTAL,
+    include_format_mirror: bool = False,
     include_column_widths: bool = False,
 ) -> WorkbookDTO:
     workbook = load_workbook(Path(path), data_only=False, read_only=False)
@@ -1532,9 +2092,7 @@ def workbook_dto_from_xlsx(
                     sheet_order=len(sheets),
                     sheet_visible=(worksheet.sheet_state == "visible") if include_format_mirror else True,
                     tab_color=(
-                        definition.tab_color
-                        if definition is not None
-                        else _openpyxl_color(worksheet.sheet_properties.tabColor)
+                        _openpyxl_color(worksheet.sheet_properties.tabColor)
                         if include_format_mirror
                         else ""
                     ),
@@ -1553,6 +2111,17 @@ def workbook_dto_from_xlsx(
                         for index, dimension in worksheet.column_dimensions.items()
                         if dimension.width is not None
                     } if include_format_mirror or include_column_widths else {},
+                    auto_fit_columns=(
+                        tuple(
+                            get_column_letter(column)
+                            for column in range(1, max_column + 1)
+                            if get_column_letter(column)
+                            not in worksheet.column_dimensions
+                        )
+                        if include_format_mirror
+                        else ()
+                    ),
+                    auto_fit_rows=bool(include_format_mirror and max_row),
                     format_runs=(
                         _format_runs_from_worksheet(
                             worksheet,
@@ -1563,9 +2132,33 @@ def workbook_dto_from_xlsx(
                         else ()
                     ),
                     freeze_panes=(
-                        str(worksheet.freeze_panes or "")
+                        ""
+                        if definition is not None
+                        and definition.stable_key == "ap_online_history_overview"
+                        else "A2"
                         if include_format_mirror
                         else ""
+                    ),
+                    auto_filter=(
+                        str(worksheet.auto_filter.ref or "")
+                        if include_format_mirror
+                        else ""
+                    ),
+                    verification_samples=(
+                        _verification_samples_from_worksheet(
+                            worksheet,
+                            max_row=max_row,
+                            max_column=max_column,
+                            header_row=(
+                                3
+                                if definition is not None
+                                and definition.stable_key
+                                == "ap_online_history_overview"
+                                else 1
+                            ),
+                        )
+                        if include_format_mirror
+                        else ()
                     ),
                 )
             )
@@ -1574,24 +2167,58 @@ def workbook_dto_from_xlsx(
         workbook.close()
 
 
-def _column_width_manifest_from_xlsx(
+def _source_workbook_format_manifest(
     path: str | Path,
     workbook_dto: WorkbookDTO,
-) -> list[dict[str, Any]]:
+) -> dict[str, Any]:
     dto_sheets = {sheet.sheet_name: sheet for sheet in workbook_dto.sheets}
     workbook = load_workbook(Path(path), data_only=False, read_only=False)
     try:
-        manifest: list[dict[str, Any]] = []
+        column_manifest: list[dict[str, Any]] = []
+        sheet_manifest: list[dict[str, Any]] = []
         for worksheet in workbook.worksheets:
             dto_sheet = dto_sheets.get(worksheet.title)
             if dto_sheet is None:
                 continue
-            for column, dimension in worksheet.column_dimensions.items():
-                if dimension.width is None:
-                    continue
-                column_name = str(column).upper()
-                header_value = worksheet[f"{column_name}1"].value
-                manifest.append(
+            definition = trackside_ap_business_sheet_definition(worksheet.title)
+            header_row = (
+                3
+                if definition is not None
+                and definition.stable_key == "ap_online_history_overview"
+                else 1
+            )
+            font_styles: set[str] = set()
+            fill_styles: set[str] = set()
+            alignment_styles: set[str] = set()
+            number_formats: set[str] = set()
+            border_styles: set[str] = set()
+            for row in worksheet.iter_rows():
+                for cell in row:
+                    payload = _cell_format_payload(cell)
+                    font_styles.add(_format_signature({"font": payload.get("font") or {}}))
+                    if payload.get("fill"):
+                        fill_styles.add(_format_signature({"fill": payload["fill"]}))
+                    if payload.get("alignment"):
+                        alignment_styles.add(
+                            _format_signature({"alignment": payload["alignment"]})
+                        )
+                    if payload.get("number_format"):
+                        number_formats.add(str(payload["number_format"]))
+                    if payload.get("border"):
+                        border_styles.add(
+                            _format_signature({"border": payload["border"]})
+                        )
+            for column_index in range(1, int(worksheet.max_column or 0) + 1):
+                column_name = get_column_letter(column_index)
+                dimension = worksheet.column_dimensions.get(column_name)
+                explicit_width = (
+                    float(dimension.width)
+                    if dimension is not None and dimension.width is not None
+                    else None
+                )
+                source_mode = "EXPLICIT" if explicit_width is not None else "AUTO_FIT"
+                header_value = worksheet.cell(row=header_row, column=column_index).value
+                column_manifest.append(
                     {
                         "sheet_name": worksheet.title,
                         "column": column_name,
@@ -1601,15 +2228,133 @@ def _column_width_manifest_from_xlsx(
                             if header_value is not None
                             else ""
                         ),
-                        "local_workbook_width": float(dimension.width),
+                        "source_mode": source_mode,
+                        "local_workbook_width": explicit_width,
                         "sheet_dto_width": _safe_float(
                             dto_sheet.column_widths.get(column_name)
                         ),
+                        "sheet_dto_mode": (
+                            "EXPLICIT"
+                            if column_name in dto_sheet.column_widths
+                            else "AUTO_FIT"
+                            if column_name in dto_sheet.auto_fit_columns
+                            else "MISSING"
+                        ),
+                        "auto_fit_min_width": dto_sheet.auto_fit_min_width,
+                        "auto_fit_max_width": dto_sheet.auto_fit_max_width,
                     }
                 )
-        return manifest
+            sheet_manifest.append(
+                {
+                    "sheet_name": worksheet.title,
+                    "row_count": int(worksheet.max_row or 0),
+                    "column_count": int(worksheet.max_column or 0),
+                    "explicit_width_count": len(dto_sheet.column_widths),
+                    "auto_fit_column_count": len(dto_sheet.auto_fit_columns),
+                    "explicit_row_height_count": len(dto_sheet.row_heights),
+                    "row_auto_fit": dto_sheet.auto_fit_rows,
+                    "format_run_count": len(dto_sheet.format_runs),
+                    "font_style_count": len(font_styles),
+                    "fill_style_count": len(fill_styles),
+                    "alignment_style_count": len(alignment_styles),
+                    "number_format_count": len(number_formats),
+                    "merge_range_count": len(dto_sheet.merges),
+                    "border_style_count": len(border_styles),
+                    "freeze_panes": dto_sheet.freeze_panes,
+                    "auto_filter": dto_sheet.auto_filter,
+                    "verification_sample_count": len(dto_sheet.verification_samples),
+                }
+            )
+        return {
+            "sheets": sheet_manifest,
+            "column_widths": column_manifest,
+            "totals": {
+                "sheet_count": len(sheet_manifest),
+                "column_count": len(column_manifest),
+                "explicit_width_count": sum(
+                    int(item["explicit_width_count"]) for item in sheet_manifest
+                ),
+                "auto_fit_column_count": sum(
+                    int(item["auto_fit_column_count"]) for item in sheet_manifest
+                ),
+                "explicit_row_height_count": sum(
+                    int(item["explicit_row_height_count"]) for item in sheet_manifest
+                ),
+                "format_run_count": sum(
+                    int(item["format_run_count"]) for item in sheet_manifest
+                ),
+            },
+        }
     finally:
         workbook.close()
+
+
+def _verification_samples_from_worksheet(
+    worksheet: Any,
+    *,
+    max_row: int,
+    max_column: int,
+    header_row: int,
+) -> tuple[dict[str, Any], ...]:
+    if max_row <= 0 or max_column <= 0:
+        return ()
+    data_start = min(header_row + 1, max_row)
+    data_end = max_row
+    while data_end > header_row and all(
+        worksheet.cell(row=data_end, column=column).value in (None, "")
+        for column in range(1, max_column + 1)
+    ):
+        data_end -= 1
+    candidates: dict[int, set[str]] = {header_row: {"header"}}
+    if data_end >= data_start:
+        candidates.setdefault(data_start, set()).add("first_data")
+        candidates.setdefault((data_start + data_end) // 2, set()).add("middle_data")
+        candidates.setdefault(data_end, set()).add("last_data")
+
+    fill_rows: dict[str, int] = {}
+    for row_index in range(data_start, data_end + 1):
+        colors = {
+            str((_cell_format_payload(worksheet.cell(row=row_index, column=column)).get("fill") or {}).get("fg_color") or "")
+            for column in range(1, max_column + 1)
+        }
+        for color in sorted(value for value in colors if value):
+            fill_rows.setdefault(color, row_index)
+    for color, row_index in list(fill_rows.items())[:4]:
+        candidates.setdefault(row_index, set()).add(f"fill_{color}")
+
+    last_column = get_column_letter(max_column)
+    samples: list[dict[str, Any]] = []
+    for row_index in sorted(candidates):
+        format_cells: list[dict[str, Any]] = []
+        previous_signature = ""
+        for column in range(1, max_column + 1):
+            cell = worksheet.cell(row=row_index, column=column)
+            payload = _cell_format_payload(cell)
+            signature = _format_signature(payload)
+            if signature == previous_signature:
+                continue
+            previous_signature = signature
+            format_cells.append(
+                {
+                    "range": cell.coordinate,
+                    "expected": payload,
+                }
+            )
+            if len(format_cells) >= 8:
+                break
+        samples.append(
+            {
+                "label": ",".join(sorted(candidates[row_index])),
+                "row": row_index,
+                "range": f"A{row_index}:{last_column}{row_index}",
+                "expected_values": [
+                    worksheet.cell(row=row_index, column=column).value
+                    for column in range(1, max_column + 1)
+                ],
+                "format_cells": format_cells,
+            }
+        )
+    return tuple(samples)
 
 
 def _format_runs_from_worksheet(
@@ -1618,17 +2363,61 @@ def _format_runs_from_worksheet(
     max_row: int,
     max_column: int,
 ) -> tuple[WorkbookFormatRunDTO, ...]:
+    completed: list[dict[str, Any]] = []
+    for feature in ("font", "fill", "number_format", "alignment", "border"):
+        completed.extend(
+            _format_runs_for_feature(
+                worksheet,
+                feature=feature,
+                max_row=max_row,
+                max_column=max_column,
+            )
+        )
+    completed.sort(
+        key=lambda item: (
+            int(item["start_row"]),
+            int(item["start_column"]),
+            int(item["end_row"]),
+            int(item["end_column"]),
+        )
+    )
+    return tuple(_format_run_dto(item) for item in completed)
+
+
+def _format_runs_for_feature(
+    worksheet: Any,
+    *,
+    feature: str,
+    max_row: int,
+    max_column: int,
+) -> list[dict[str, Any]]:
     active: dict[tuple[int, int, str], dict[str, Any]] = {}
     completed: list[dict[str, Any]] = []
 
     for row_index in range(1, max_row + 1):
         segments: list[tuple[int, int, str, dict[str, Any]]] = []
         start_column = 1
-        first_payload = _cell_format_payload(worksheet.cell(row=row_index, column=1))
+        blank_border_row = feature == "border" and all(
+            worksheet.cell(row=row_index, column=column).value in (None, "")
+            for column in range(1, max_column + 1)
+        )
+        first_payload = (
+            {}
+            if blank_border_row
+            else _feature_format_payload(
+                worksheet.cell(row=row_index, column=1),
+                feature,
+            )
+        )
         signature = _format_signature(first_payload)
         for column_index in range(2, max_column + 2):
             payload = (
-                _cell_format_payload(worksheet.cell(row=row_index, column=column_index))
+                {}
+                if blank_border_row
+                else _feature_format_payload(
+                    worksheet.cell(row=row_index, column=column_index),
+                    feature,
+                )
                 if column_index <= max_column
                 else None
             )
@@ -1663,15 +2452,12 @@ def _format_runs_from_worksheet(
                 completed.append(active.pop(key))
 
     completed.extend(active.values())
-    completed.sort(
-        key=lambda item: (
-            int(item["start_row"]),
-            int(item["start_column"]),
-            int(item["end_row"]),
-            int(item["end_column"]),
-        )
-    )
-    return tuple(_format_run_dto(item) for item in completed)
+    return completed
+
+
+def _feature_format_payload(cell: Any, feature: str) -> dict[str, Any]:
+    value = _cell_format_payload(cell).get(feature)
+    return {feature: value} if value not in (None, "", {}, []) else {}
 
 
 def _format_run_dto(value: Mapping[str, Any]) -> WorkbookFormatRunDTO:
@@ -1719,10 +2505,9 @@ def _cell_format_payload(cell: Any) -> dict[str, Any]:
         border["diagonal"]["up"] = bool(cell.border.diagonalUp)
         border["diagonal"]["down"] = bool(cell.border.diagonalDown)
     payload: dict[str, Any] = {"font": font}
-    if fill["fill_type"]:
+    if fill["fill_type"] and fill["fg_color"]:
         payload["fill"] = fill
-    if cell.number_format and cell.number_format != "General":
-        payload["number_format"] = str(cell.number_format)
+    payload["number_format"] = str(cell.number_format or "General")
     if any(
         value not in {"", False, 0}
         for value in alignment.values()
@@ -1747,8 +2532,12 @@ def _openpyxl_color(color: Any) -> str:
         return ""
     value = str(getattr(color, "rgb", "") or "").strip().lstrip("#")
     if len(value) == 8:
-        alpha, value = value[:2], value[-6:]
-        if alpha.upper() != "FF":
+        alpha, value = value[:2].upper(), value[-6:].upper()
+        # Excel/openpyxl commonly serializes explicit fills and borders as
+        # 00RRGGBB even though the color is visibly opaque. Treat that legacy
+        # alpha as opaque for non-black RGB values, while preserving a true
+        # transparent black (00000000) as no color.
+        if alpha not in {"00", "FF"} or (alpha == "00" and value == "000000"):
             return ""
     if len(value) != 6 or not re.fullmatch(r"[0-9A-Fa-f]{6}", value):
         return ""
@@ -1781,6 +2570,10 @@ def _column_width_verification_report(
             "status": "NOT_ENABLED",
             "total_columns": 0,
             "local_explicit_width_count": 0,
+            "auto_fit_requested_count": 0,
+            "explicit_applied_count": 0,
+            "auto_fit_applied_count": 0,
+            "clamped_count": 0,
             "dto_match_count": 0,
             "payload_match_count": 0,
             "attempted_count": 0,
@@ -1797,6 +2590,7 @@ def _column_width_verification_report(
         }
 
     payload_widths: dict[tuple[str, str], float | None] = {}
+    payload_modes: dict[tuple[str, str], str] = {}
     workbook_payload = request_payload.get("workbook")
     if isinstance(workbook_payload, Mapping):
         payload_sheets = workbook_payload.get("sheets")
@@ -1809,7 +2603,13 @@ def _column_width_verification_report(
                 if not isinstance(widths, Mapping):
                     continue
                 for column, width in widths.items():
-                    payload_widths[(sheet_name, str(column).upper())] = _safe_float(width)
+                    key = (sheet_name, str(column).upper())
+                    payload_widths[key] = _safe_float(width)
+                    payload_modes[key] = "EXPLICIT"
+                auto_fit_columns = sheet.get("auto_fit_columns")
+                if isinstance(auto_fit_columns, list):
+                    for column in auto_fit_columns:
+                        payload_modes[(sheet_name, str(column).upper())] = "AUTO_FIT"
 
     remote_items: dict[tuple[str, str], Mapping[str, Any]] = {}
     raw_column_result = remote_result.get("column_width_result")
@@ -1835,15 +2635,24 @@ def _column_width_verification_report(
     verified_count = 0
     warning_count = 0
     failed_count = 0
+    explicit_applied_count = 0
+    auto_fit_applied_count = 0
+    clamped_count = 0
     for source in manifest:
         sheet_name = str(source.get("sheet_name") or "")
         column = str(source.get("column") or "").upper()
         key = (sheet_name, column)
+        source_mode = str(source.get("source_mode") or "EXPLICIT").upper()
+        dto_mode = str(source.get("sheet_dto_mode") or "").upper()
+        payload_mode = payload_modes.get(key, "MISSING")
         local_width = _safe_float(source.get("local_workbook_width"))
         dto_width = _safe_float(source.get("sheet_dto_width"))
+        if not dto_mode:
+            dto_mode = "EXPLICIT" if dto_width is not None else "MISSING"
         payload_width = payload_widths.get(key)
         remote = remote_items.get(key, {})
         remote_present = bool(remote)
+        remote_mode = str(remote.get("mode") or "EXPLICIT").upper()
         wps_requested_width = _safe_float(remote.get("requested_width"))
         before_column_width = _safe_float(remote.get("before_column_width"))
         remote_column_width = _safe_float(remote.get("remote_column_width"))
@@ -1854,18 +2663,33 @@ def _column_width_verification_report(
             if remote_column_width is not None and payload_width is not None
             else None
         )
-        dto_matches = _width_matches(local_width, dto_width, tolerance=0.01)
-        payload_matches = _width_matches(dto_width, payload_width, tolerance=0.01)
-        remote_request_matches = _width_matches(
-            payload_width,
-            wps_requested_width,
-            tolerance=0.01,
-        )
-        remote_matches = _width_matches(
-            payload_width,
-            remote_column_width,
-            tolerance=0.5,
-        )
+        if source_mode == "AUTO_FIT":
+            dto_matches = dto_mode == "AUTO_FIT"
+            payload_matches = payload_mode == "AUTO_FIT"
+            remote_request_matches = remote_mode == "AUTO_FIT"
+            remote_matches = bool(remote.get("verified")) and remote_column_width is not None
+        else:
+            dto_matches = (
+                dto_mode == "EXPLICIT"
+                and _width_matches(local_width, dto_width, tolerance=0.01)
+            )
+            payload_matches = (
+                payload_mode == "EXPLICIT"
+                and _width_matches(dto_width, payload_width, tolerance=0.01)
+            )
+            remote_request_matches = (
+                remote_mode == "EXPLICIT"
+                and _width_matches(
+                    payload_width,
+                    wps_requested_width,
+                    tolerance=0.01,
+                )
+            )
+            remote_matches = _width_matches(
+                payload_width,
+                remote_column_width,
+                tolerance=0.5,
+            )
         if dto_matches:
             dto_match_count += 1
         if payload_matches:
@@ -1877,23 +2701,36 @@ def _column_width_verification_report(
 
         if not dto_matches:
             classification = "WORKBOOK_DTO_WIDTH_MISMATCH"
-            reason = "本地 XLSX 列宽与 SheetDTO 不一致"
+            reason = "本地 XLSX 列宽模式或数值与 SheetDTO 不一致"
         elif not payload_matches or (remote_present and not remote_request_matches):
             classification = "WPS_PAYLOAD_WIDTH_MISMATCH"
             reason = "SheetDTO、序列化 payload 或 WPS 接收值不一致"
         elif not remote_present or not remote_matches:
             classification = "WPS_COLUMN_WIDTH_APPLY_MISMATCH"
             reason = str(remote.get("reason") or "WPS ColumnWidth 写后读回不一致")
+        elif source_mode == "AUTO_FIT":
+            classification = "WPS_COLUMN_WIDTH_AUTOFIT_VERIFIED"
+            reason = "本地未指定列宽，WPS AutoFit 写后读回并通过边界校验"
         else:
             classification = "WPS_COLUMN_WIDTH_VALUE_VERIFIED"
             reason = "本地 XLSX、SheetDTO、payload 与 WPS ColumnWidth 读回一致"
 
-        verified = classification == "WPS_COLUMN_WIDTH_VALUE_VERIFIED"
+        verified = classification in {
+            "WPS_COLUMN_WIDTH_VALUE_VERIFIED",
+            "WPS_COLUMN_WIDTH_AUTOFIT_VERIFIED",
+        }
         if verified:
             verified_count += 1
         else:
             failed_count += 1
         stage_counts[classification] = stage_counts.get(classification, 0) + 1
+        if bool(remote.get("applied")):
+            if remote_mode == "AUTO_FIT":
+                auto_fit_applied_count += 1
+            else:
+                explicit_applied_count += 1
+        if bool(remote.get("clamped")):
+            clamped_count += 1
 
         physical_width_status = "READ_BACK"
         if remote_width_points is None:
@@ -1912,6 +2749,8 @@ def _column_width_verification_report(
         items.append(
             {
                 **dict(source),
+                "payload_mode": payload_mode,
+                "remote_mode": remote_mode,
                 "payload_requested_width": payload_width,
                 "wps_requested_width": wps_requested_width,
                 "before_column_width": before_column_width,
@@ -1924,6 +2763,7 @@ def _column_width_verification_report(
                 ),
                 "read_back": remote_column_width is not None,
                 "physical_width_status": physical_width_status,
+                "clamped": bool(remote.get("clamped")),
                 "verified": verified,
                 "classification": classification,
                 "reason": reason,
@@ -1957,7 +2797,15 @@ def _column_width_verification_report(
         "status": status,
         "tolerance": 0.5,
         "total_columns": total,
-        "local_explicit_width_count": total,
+        "local_explicit_width_count": sum(
+            1 for item in items if item.get("source_mode") == "EXPLICIT"
+        ),
+        "auto_fit_requested_count": sum(
+            1 for item in items if item.get("source_mode") == "AUTO_FIT"
+        ),
+        "explicit_applied_count": explicit_applied_count,
+        "auto_fit_applied_count": auto_fit_applied_count,
+        "clamped_count": clamped_count,
         "dto_match_count": dto_match_count,
         "payload_match_count": payload_match_count,
         "attempted_count": _safe_int(
@@ -1992,6 +2840,11 @@ def _append_column_width_report_warning(
         format_results["column_width"] = column_result
     for key in (
         "status",
+        "local_explicit_width_count",
+        "auto_fit_requested_count",
+        "explicit_applied_count",
+        "auto_fit_applied_count",
+        "clamped_count",
         "attempted_count",
         "read_back_count",
         "physical_read_back_count",
@@ -2628,35 +3481,43 @@ def _validate_wps_url(value: str, *, kind: str) -> str:
         raise WpsSyncError("WPS_URL_INVALID", "WPS 地址端口无效") from None
     if port not in (None, 443):
         raise WpsSyncError("WPS_URL_INVALID", "WPS 地址仅允许标准 HTTPS 端口")
-    if kind == "webhook" and not parsed.path.endswith("/sync_task"):
-        raise WpsSyncError("WPS_WEBHOOK_INVALID", "AirScript webhook 必须以 /sync_task 结尾")
+    if kind == "webhook" and not _WPS_WEBHOOK_PATH_RE.fullmatch(parsed.path):
+        raise WpsSyncError(
+            "WPS_WEBHOOK_INVALID",
+            "AirScript webhook 路径必须包含有效的文档 ID、脚本 ID 和 /sync_task",
+        )
     if kind == "document" and not parsed.path.startswith("/l/"):
         raise WpsSyncError("WPS_DOCUMENT_URL_INVALID", "在线文档地址必须使用 kdocs.cn/l/ 链接")
     return normalized
 
 
+def parse_wps_webhook(value: str) -> WpsWebhookEndpoints:
+    normalized = _validate_wps_url(value, kind="webhook")
+    parsed = urlsplit(normalized)
+    matched = _WPS_WEBHOOK_PATH_RE.fullmatch(parsed.path)
+    if matched is None:
+        raise WpsSyncError("WPS_WEBHOOK_INVALID", "AirScript webhook 路径无效")
+    file_id = matched.group("file_id")
+    script_id = matched.group("script_id")
+    base = (parsed.scheme, parsed.netloc)
+    return WpsWebhookEndpoints(
+        host=str(parsed.hostname or ""),
+        file_id=file_id,
+        script_id=script_id,
+        sync_task_url=normalized,
+        async_task_url=urlunsplit(
+            (*base, f"/api/v3/ide/file/{file_id}/script/{script_id}/task", "", "")
+        ),
+        task_status_url=urlunsplit((*base, "/api/v3/script/task", "", "")),
+    )
+
+
 def _document_id_from_webhook(value: str) -> str:
-    parts = [part for part in urlsplit(value).path.split("/") if part]
-    try:
-        index = parts.index("file")
-        document_id = parts[index + 1]
-    except (ValueError, IndexError):
-        raise WpsSyncError("WPS_WEBHOOK_INVALID", "AirScript webhook 缺少文档标识") from None
-    if not re.fullmatch(r"[A-Za-z0-9_-]{3,160}", document_id):
-        raise WpsSyncError("WPS_WEBHOOK_INVALID", "AirScript webhook 文档标识无效")
-    return document_id
+    return parse_wps_webhook(value).file_id
 
 
 def _script_id_from_webhook(value: str) -> str:
-    parts = [part for part in urlsplit(value).path.split("/") if part]
-    try:
-        index = parts.index("script")
-        script_id = parts[index + 1]
-    except (ValueError, IndexError):
-        raise WpsSyncError("WPS_WEBHOOK_INVALID", "AirScript webhook 缺少脚本标识") from None
-    if not re.fullmatch(r"[A-Za-z0-9_-]{3,160}", script_id):
-        raise WpsSyncError("WPS_WEBHOOK_INVALID", "AirScript webhook 脚本标识无效")
-    return script_id
+    return parse_wps_webhook(value).script_id
 
 
 def _validate_target_configuration(target: WpsSyncTarget) -> None:
@@ -2731,6 +3592,15 @@ def _sanitize_result(value: Mapping[str, object]) -> dict[str, Any]:
     return result
 
 
+def _mask_remote_task_id(value: str) -> str:
+    normalized = str(value or "").strip()
+    if not normalized:
+        return ""
+    if len(normalized) <= 12:
+        return f"{normalized[:4]}...{normalized[-2:]}"
+    return f"{normalized[:8]}...{normalized[-4:]}"
+
+
 def _now() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
 
@@ -2744,11 +3614,15 @@ __all__ = [
     "WPS_DEPLOYMENT_IDS",
     "WPS_RUNTIME_CAPABILITIES",
     "WPS_SCRIPT_VERSIONS",
-    "WPS_STANDARD_FORMAT_MIRROR_EXPERIMENTAL",
+    "WPS_STANDARD_FORMAT_MIRROR_ENABLED",
+    "WPS_REMOTE_TASK_MAX_WAIT_SECONDS",
     "TracksideApWpsSyncService",
     "WpsAirScriptClient",
+    "WpsRemoteTask",
     "WpsSmartSheetAdapter",
     "WpsStandardSpreadsheetAdapter",
     "WpsSyncError",
+    "WpsWebhookEndpoints",
+    "parse_wps_webhook",
     "workbook_dto_from_xlsx",
 ]

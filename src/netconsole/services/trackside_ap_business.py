@@ -326,8 +326,22 @@ TRACKSIDE_EXPORT_HEADER_FILL = "DBEAFE"
 TRACKSIDE_EXPORT_NORMAL_FILL = TRACKSIDE_OPTICAL_COLOR_RGB["normal"]
 TRACKSIDE_EXPORT_WARNING_FILL = TRACKSIDE_OPTICAL_COLOR_RGB["warning"]
 TRACKSIDE_EXPORT_ALARM_FILL = TRACKSIDE_OPTICAL_COLOR_RGB["alarm"]
+_TRACKSIDE_LONG_TEXT_HEADER_TOKENS = (
+    "原因",
+    "备注",
+    "说明",
+    "建议",
+    "详情",
+    "未插光模块端口",
+    "reason",
+    "remark",
+    "description",
+    "note",
+)
 CURRENT_OPTICAL_ABNORMAL_SHEET_TITLE = "当前异常光衰"
 CURRENT_OPTICAL_ABNORMAL_EMPTY_TEXT = "当前无异常光衰（已排除无 AP 绑定、无光模块和非告警光功率）"
+TRACKSIDE_EXPORT_ROW_HEIGHT = 24.0
+TRACKSIDE_OVERVIEW_SEPARATOR_ROW_HEIGHT = 16.0
 
 
 @dataclass(frozen=True)
@@ -2424,7 +2438,16 @@ def _apply_trackside_workbook_registry(workbook) -> None:
         current_index = workbook.worksheets.index(sheet)
         workbook.move_sheet(sheet, offset=target_index - current_index)
         if definition.tab_color:
-            sheet.sheet_properties.tabColor = definition.tab_color.lstrip("#")
+            sheet.sheet_properties.tabColor = _opaque_argb(definition.tab_color)
+
+
+def _opaque_argb(value: object) -> str:
+    color = str(value or "").strip().lstrip("#").upper()
+    if re.fullmatch(r"[0-9A-F]{6}", color):
+        return f"FF{color}"
+    if re.fullmatch(r"[0-9A-F]{8}", color) and color.startswith("FF"):
+        return color
+    raise ValueError(f"invalid opaque RGB color: {value!r}")
 
 
 def export_trackside_ap_business_xlsx(
@@ -2477,11 +2500,14 @@ def export_trackside_ap_business_xlsx(
     phase_start = perf_counter()
     sheet.append(headers)
     fills = {
-        status: PatternFill(fill_type="solid", fgColor=color)
+        status: PatternFill(fill_type="solid", fgColor=_opaque_argb(color))
         for status, color in TRACKSIDE_OPTICAL_COLOR_RGB.items()
         if color
     }
-    header_fill = PatternFill(fill_type="solid", fgColor=TRACKSIDE_EXPORT_HEADER_FILL)
+    header_fill = PatternFill(
+        fill_type="solid",
+        fgColor=_opaque_argb(TRACKSIDE_EXPORT_HEADER_FILL),
+    )
     for row_index, row in enumerate(rows, start=1):
         sheet.append([_export_value(field, row) for _key, field in columns])
         fill = fills.get(trackside_export_fill_status(row))
@@ -2499,10 +2525,10 @@ def export_trackside_ap_business_xlsx(
             _raise_if_trackside_export_cancelled(should_cancel)
     alignment = Alignment(horizontal="center", vertical="center")
     border = Border(
-        left=Side(style="thin", color="D1D5DB"),
-        right=Side(style="thin", color="D1D5DB"),
-        top=Side(style="thin", color="D1D5DB"),
-        bottom=Side(style="thin", color="D1D5DB"),
+        left=Side(style="thin", color=_opaque_argb("D1D5DB")),
+        right=Side(style="thin", color=_opaque_argb("D1D5DB")),
+        top=Side(style="thin", color=_opaque_argb("D1D5DB")),
+        bottom=Side(style="thin", color=_opaque_argb("D1D5DB")),
     )
     header_font = Font(bold=True)
     _format_export_sheet(sheet, alignment, border, header_font, header_fill)
@@ -3369,12 +3395,45 @@ def _format_export_sheet(
     *,
     header_row: int = 1,
 ) -> None:
-    sheet.freeze_panes = f"A{header_row + 1}"
+    from openpyxl.styles import Alignment, Border
+
+    # The history sheet is intentionally scrollable; other business sheets keep
+    # only the header row visible for large AP datasets.
+    is_history_sheet = sheet.title == "AP上线情况概览" or header_row > 1
+    sheet.freeze_panes = None if is_history_sheet else "A2"
+    long_text_columns = {
+        cell.column
+        for cell in sheet[header_row]
+        if any(
+            token in str(cell.value or "").strip().casefold()
+            for token in _TRACKSIDE_LONG_TEXT_HEADER_TOKENS
+        )
+    }
     for row in sheet.iter_rows():
-        sheet.row_dimensions[row[0].row].height = 24 if row[0].row == header_row else 22
+        row_is_blank = all(cell.value in (None, "") for cell in row)
+        sheet.row_dimensions[row[0].row].height = (
+            TRACKSIDE_OVERVIEW_SEPARATOR_ROW_HEIGHT
+            if is_history_sheet and row_is_blank
+            else TRACKSIDE_EXPORT_ROW_HEIGHT
+        )
         for cell in row:
-            cell.alignment = alignment
-            cell.border = border
+            if cell.row == header_row:
+                cell.alignment = Alignment(
+                    horizontal="center",
+                    vertical="center",
+                    wrap_text=True,
+                )
+            elif cell.column in long_text_columns:
+                cell.alignment = Alignment(
+                    horizontal="left",
+                    vertical="center",
+                    wrap_text=True,
+                )
+            else:
+                cell.alignment = alignment
+            # The trailing blank row separates history blocks and must remain
+            # visually empty instead of receiving table borders.
+            cell.border = Border() if is_history_sheet and row_is_blank else border
             if cell.row == header_row:
                 cell.font = header_font
                 if header_fill is not None:
@@ -3581,7 +3640,7 @@ def build_current_optical_abnormal_sheet(
         _copy_cell_style(source_sheet.cell(row=1, column=1), sheet.cell(row=1, column=index))
 
     fills = {
-        status: PatternFill(fill_type="solid", fgColor=color)
+        status: PatternFill(fill_type="solid", fgColor=_opaque_argb(color))
         for status, color in TRACKSIDE_OPTICAL_COLOR_RGB.items()
         if color
     }
@@ -3716,7 +3775,7 @@ def _append_ap_overview_sheet(
         if int(source_row.get("offline") or 0) > 0:
             sheet.cell(row_index, 4).fill = PatternFill(
                 fill_type="solid",
-                fgColor="FEE2E2",
+                fgColor=_opaque_argb("FEE2E2"),
             )
 
 

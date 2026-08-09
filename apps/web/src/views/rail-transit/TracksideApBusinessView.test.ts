@@ -887,7 +887,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
 
     expect(platformMocks.writeClipboardText).toHaveBeenNthCalledWith(
       1,
-      expect.stringContaining('trackside-ap-standard-2.5.0'),
+      expect.stringContaining('trackside-ap-standard-2.8.2'),
     )
     expect(platformMocks.writeClipboardText).toHaveBeenNthCalledWith(
       2,

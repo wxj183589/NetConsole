@@ -81,6 +81,8 @@ Worker 写帧前使用固定的 `1,048,576 bytes`（1 MiB）上限执行 JSON �
 
 当前 Job Center 查询层已把结构化业务结果投影为统一字段：`lifecycle_status`、`business_status`、成功/失败/跳过/告警计数、`partial_success` 和 `primary_failure_reason`。列表、详情和顶部告警使用同一投影；历史 `NO_TARGET` 仅在读取时显示为 `NO_EFFECTIVE_TARGET`，不改写历史记录。仍有部分异构 legacy handler 只提供旧 `details` 结构，后续按领域继续收敛。
 
+轨旁 AP 的 WPS 正式同步仍是一个本地 `trackside_ap_wps_sync` Worker，但内部正式 Workbook 执行使用 WPS 官方异步任务。WPS 的 `REMOTE_SUBMITTING / REMOTE_RUNNING / REMOTE_RESULT_UNKNOWN` 是业务执行/同步健康状态，不是第八个 Job Center 生命周期状态。Worker 通过结构化 progress 提供脱敏 Remote Task ID、提交时间、最近轮询和远端状态；完整 ID 与恢复载荷只在局点 `sync/wps_sync.sqlite` 中持久化。已有远端 ID 的网络异常和程序重启只恢复轮询，不能创建第二个远端任务。
+
 后续代码收口应满足：
 
 1. 剩余 legacy handler 逐域补齐稳定的业务结果、成功/失败/跳过/警告计数；

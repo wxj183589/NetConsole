@@ -170,8 +170,14 @@ class WorkbookSheetDTO:
     merges: list[str] = field(default_factory=list)
     row_heights: dict[str, float] = field(default_factory=dict)
     column_widths: dict[str, float] = field(default_factory=dict)
+    auto_fit_columns: tuple[str, ...] = ()
+    auto_fit_min_width: float = 8.0
+    auto_fit_max_width: float = 60.0
+    auto_fit_rows: bool = False
     format_runs: tuple[WorkbookFormatRunDTO, ...] = ()
     freeze_panes: str = ""
+    auto_filter: str = ""
+    verification_samples: tuple[dict[str, Any], ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -187,8 +193,14 @@ class WorkbookSheetDTO:
             "merges": self.merges,
             "row_heights": self.row_heights,
             "column_widths": self.column_widths,
+            "auto_fit_columns": list(self.auto_fit_columns),
+            "auto_fit_min_width": self.auto_fit_min_width,
+            "auto_fit_max_width": self.auto_fit_max_width,
+            "auto_fit_rows": self.auto_fit_rows,
             "format_runs": [run.to_dict() for run in self.format_runs],
             "freeze_panes": self.freeze_panes,
+            "auto_filter": self.auto_filter,
+            "verification_samples": list(self.verification_samples),
         }
 
 

@@ -105,6 +105,7 @@ WPS_SYNC_RESULT_DETAIL_KEYS = (
     "target_count",
     "success_count",
     "failed_count",
+    "unknown_count",
     "warning_count",
     "partial_success",
     "targets",

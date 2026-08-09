@@ -14,16 +14,16 @@ const scripts: Array<{
   {
     targetCode: 'wps_standard_spreadsheet',
     kind: 'probe',
-    scriptVersion: '2.5.0-standard',
-    deploymentId: 'trackside-ap-standard-2.5.0',
+    scriptVersion: '2.8.2-standard',
+    deploymentId: 'trackside-ap-standard-2.8.2',
     documentId: '549847228994',
     targetType: 'WPS_STANDARD_SPREADSHEET',
   },
   {
     targetCode: 'wps_standard_spreadsheet',
     kind: 'sync',
-    scriptVersion: '2.5.0-standard',
-    deploymentId: 'trackside-ap-standard-2.5.0',
+    scriptVersion: '2.8.2-standard',
+    deploymentId: 'trackside-ap-standard-2.8.2',
     documentId: '549847228994',
     targetType: 'WPS_STANDARD_SPREADSHEET',
   },
@@ -53,6 +53,8 @@ function standardSpreadsheetRuntime(
     tabColorFailureNames?: string[]
     columnWidthFailureNames?: string[]
     columnWidthMismatchNames?: string[]
+    freezeDirectMismatchNames?: string[]
+    freezeSelectionFailureNames?: string[]
   } = {},
 ) {
   const hiddenFailureNames = new Set(options.hiddenFailureNames || [])
@@ -60,10 +62,44 @@ function standardSpreadsheetRuntime(
   const tabColorFailureNames = new Set(options.tabColorFailureNames || [])
   const columnWidthFailureNames = new Set(options.columnWidthFailureNames || [])
   const columnWidthMismatchNames = new Set(options.columnWidthMismatchNames || [])
+  const freezeDirectMismatchNames = new Set(options.freezeDirectMismatchNames || [])
+  const freezeSelectionFailureNames = new Set(options.freezeSelectionFailureNames || [])
   const moves: Array<{ sheet: string; before: string; after: string }> = []
   const inserts: Array<{ sheet: string; address: string }> = []
   const writes: Array<{ sheet: string; address: string; value: unknown }> = []
   const columnWidths: Array<{ sheet: string; column: string; width: number }> = []
+  const freezeSelections: Array<{ sheet: string; address: string }> = []
+  let activeSheetName = initialNames[0] || ''
+  let activeCell = { Row: 1, Column: 1 }
+  let explicitFreezeSelection = false
+  let freezePanes = false
+  let splitRow = 0
+  let splitColumn = 0
+  const activeWindow: Record<string, unknown> = {}
+  Object.defineProperties(activeWindow, {
+    FreezePanes: {
+      get: () => freezePanes,
+      set: (value) => {
+        freezePanes = Boolean(value)
+        if (freezePanes && freezeDirectMismatchNames.has(activeSheetName)) {
+          splitRow = explicitFreezeSelection ? Math.max(activeCell.Row - 1, 0) : 11
+          splitColumn = explicitFreezeSelection ? Math.max(activeCell.Column - 1, 0) : 0
+        }
+      },
+    },
+    SplitRow: {
+      get: () => splitRow,
+      set: (value) => {
+        splitRow = freezeDirectMismatchNames.has(activeSheetName) && !explicitFreezeSelection
+          ? 11
+          : Number(value)
+      },
+    },
+    SplitColumn: {
+      get: () => splitColumn,
+      set: (value) => { splitColumn = Number(value) },
+    },
+  })
   const bindingRows = [
     ['document_id', '549847228994'],
     ['binding_id', 'wpsbind_v1_stable'],
@@ -83,10 +119,38 @@ function standardSpreadsheetRuntime(
   function makeSheet(name: string): Record<string, any> {
     let visible: unknown = true
     let tabColor: unknown = null
+    let autoFilterAddress = ''
+    const cellValues: unknown[][] = []
+    const rangeFormats = new Map<string, Record<string, any>>()
+    const rowHeights = new Map<number, number>()
+    const mergedRanges = new Set<string>()
+    const formatState = (address: string) => {
+      if (!rangeFormats.has(address)) {
+        rangeFormats.set(address, {
+          font: { Name: 'Calibri', Size: 11, Bold: false, Italic: false, Strikethrough: false, Underline: 0, Color: 0 },
+          interior: { Color: 0 },
+          numberFormat: 'General',
+          horizontalAlignment: 1,
+          verticalAlignment: -4107,
+          wrapText: false,
+          shrinkToFit: false,
+          orientation: 0,
+          borders: new Map<number, Record<string, any>>(),
+        })
+      }
+      return rangeFormats.get(address)!
+    }
     const sheet: Record<string, any> = {
       Name: name,
       Id: `sheet-${nextId++}`,
       UsedRange: { ClearContents: vi.fn() },
+      Activate: vi.fn(() => {
+        activeSheetName = String(sheet.Name)
+        explicitFreezeSelection = false
+      }),
+      AutoFilter: {
+        get Range() { return autoFilterAddress ? { Address: autoFilterAddress } : null },
+      },
       Range(address: string) {
         if (sheet.Name === '_NetConsoleSyncMeta' && address === 'A1:B30') {
           return { Value2: bindingRows }
@@ -102,17 +166,138 @@ function standardSpreadsheetRuntime(
           }
         }
         let resizedAddress = address
+        let resizedRows = 1
+        let resizedColumns = 1
+        const state = formatState(address)
         const range: Record<string, any> = {
-          get Value2() { return [] },
-          set Value2(value: unknown) { writes.push({ sheet: String(sheet.Name), address: resizedAddress, value }) },
+          Address: address,
+          get Value2() {
+            const match = address.match(/^([A-Z]+)(\d+)(?::([A-Z]+)(\d+))?$/)
+            if (!match) return []
+            const columnNumber = (letters: string) => [...letters].reduce(
+              (total, character) => total * 26 + character.charCodeAt(0) - 64,
+              0,
+            )
+            const startColumn = columnNumber(match[1])
+            const startRow = Number(match[2])
+            const endColumn = match[3] ? columnNumber(match[3]) : startColumn
+            const endRow = match[4] ? Number(match[4]) : startRow
+            const values = Array.from({ length: endRow - startRow + 1 }, (_, rowOffset) => (
+              Array.from({ length: endColumn - startColumn + 1 }, (_, columnOffset) => (
+                cellValues[startRow - 1 + rowOffset]?.[startColumn - 1 + columnOffset] ?? null
+              ))
+            ))
+            return startRow === endRow && startColumn === endColumn ? values[0][0] : values
+          },
+          set Value2(value: unknown) {
+            writes.push({ sheet: String(sheet.Name), address: resizedAddress, value })
+            const match = address.match(/^([A-Z]+)(\d+)$/)
+            if (!match || !Array.isArray(value)) return
+            const startColumn = [...match[1]].reduce(
+              (total, character) => total * 26 + character.charCodeAt(0) - 64,
+              0,
+            )
+            const startRow = Number(match[2])
+            const rows = Array.isArray(value[0]) ? value as unknown[][] : [value]
+            for (let rowOffset = 0; rowOffset < Math.min(rows.length, resizedRows); rowOffset += 1) {
+              const rowIndex = startRow - 1 + rowOffset
+              while (cellValues.length <= rowIndex) cellValues.push([])
+              for (let columnOffset = 0; columnOffset < Math.min(rows[rowOffset].length, resizedColumns); columnOffset += 1) {
+                cellValues[rowIndex][startColumn - 1 + columnOffset] = rows[rowOffset][columnOffset]
+              }
+            }
+          },
           ClearContents: vi.fn(),
+          ClearFormats: vi.fn(() => rangeFormats.delete(resizedAddress)),
+          UnMerge: vi.fn(() => mergedRanges.delete(resizedAddress)),
+          Merge: vi.fn(() => mergedRanges.add(resizedAddress)),
+          Select: vi.fn(() => {
+            if (freezeSelectionFailureNames.has(String(sheet.Name))) throw new Error('selection unsupported')
+            const selected = address.match(/^([A-Z]+)(\d+)$/)
+            if (!selected) throw new Error(`invalid selection: ${address}`)
+            activeSheetName = String(sheet.Name)
+            activeCell = {
+              Row: Number(selected[2]),
+              Column: [...selected[1]].reduce(
+                (total, character) => total * 26 + character.charCodeAt(0) - 64,
+                0,
+              ),
+            }
+            explicitFreezeSelection = true
+            freezeSelections.push({ sheet: String(sheet.Name), address })
+          }),
+          get MergeCells() { return mergedRanges.has(resizedAddress) },
+          get MergeArea() { return { Address: mergedRanges.has(resizedAddress) ? resizedAddress : address } },
           EntireRow: { Insert: vi.fn(() => inserts.push({ sheet: String(sheet.Name), address })) },
+          Font: state.font,
+          Interior: state.interior,
+          DisplayFormat: {
+            Interior: state.interior,
+            get HorizontalAlignment() { return state.horizontalAlignment },
+          },
+          Borders: {
+            Item(index: number) {
+              if (!state.borders.has(index)) state.borders.set(index, { LineStyle: 0, Weight: 0, Color: 0 })
+              return state.borders.get(index)
+            },
+          },
+          Rows: {
+            AutoFit: vi.fn(() => {
+              const size = resizedAddress.match(/\|(\d+)x/)
+              const rowCount = Number(size?.[1] || 1)
+              for (let row = 1; row <= rowCount; row += 1) rowHeights.set(row, 22)
+            }),
+          },
+          Columns: {
+            AutoFit: vi.fn(() => {
+              if (!columnMatch) throw new Error(`invalid AutoFit column: ${address}`)
+              columnWidths.push({ sheet: String(sheet.Name), column: columnMatch[1], width: 20 })
+            }),
+          },
+          AutoFilter: vi.fn(() => { autoFilterAddress = address }),
           Resize(rows: number, columns: number) {
+            resizedRows = rows
+            resizedColumns = columns
             resizedAddress = `${address}|${rows}x${columns}`
+            range.Address = resizedAddress
             return range
           },
         }
         const columnMatch = address.match(/^([A-Z]+):\1$/)
+        const rowMatch = address.match(/^(\d+):\1$/)
+        Object.defineProperties(range, {
+          NumberFormat: {
+            get: () => state.numberFormat,
+            set: (value) => { state.numberFormat = String(value) },
+          },
+          HorizontalAlignment: {
+            get: () => state.horizontalAlignment,
+            set: (value) => { state.horizontalAlignment = value },
+          },
+          VerticalAlignment: {
+            get: () => state.verticalAlignment,
+            set: (value) => { state.verticalAlignment = value },
+          },
+          WrapText: {
+            get: () => state.wrapText,
+            set: (value) => { state.wrapText = Boolean(value) },
+          },
+          ShrinkToFit: {
+            get: () => state.shrinkToFit,
+            set: (value) => { state.shrinkToFit = Boolean(value) },
+          },
+          Orientation: {
+            get: () => state.orientation,
+            set: (value) => { state.orientation = Number(value) },
+          },
+          RowHeight: {
+            get: () => rowMatch ? (rowHeights.get(Number(rowMatch[1])) ?? 22) : undefined,
+            set: (value) => {
+              if (!rowMatch) throw new Error(`invalid row range: ${address}`)
+              rowHeights.set(Number(rowMatch[1]), Number(value))
+            },
+          },
+        })
         Object.defineProperty(range, 'ColumnWidth', {
           enumerable: true,
           get: () => {
@@ -199,11 +384,17 @@ function standardSpreadsheetRuntime(
     },
   }
   return {
-    application: { Worksheets: worksheets },
+    application: {
+      Worksheets: worksheets,
+      ActiveWindow: activeWindow,
+      get ActiveCell() { return activeCell },
+      RGB: (red: number, green: number, blue: number) => red + green * 256 + blue * 65536,
+    },
     inserts,
     moves,
     writes,
     columnWidths,
+    freezeSelections,
     names: () => sheets.map((sheet) => String(sheet.Name)),
   }
 }
@@ -556,6 +747,197 @@ describe('WPS AirScript deployment sources', () => {
         range: 'A:A',
       }),
     ]))
+  })
+
+  it('writes and reads back the real workbook format without changing the stable data writer', () => {
+    const source = wpsAirScriptSource('wps_standard_spreadsheet', 'sync')
+    const runtime = standardSpreadsheetRuntime(['轨旁AP业务', '_NetConsoleSyncMeta'])
+    const args = standardSyncArgs(['轨旁AP业务']) as Record<string, any>
+    args.column_width_enabled = true
+    args.format_mirror_enabled = true
+    args.workbook.sheets[0] = {
+      ...args.workbook.sheets[0],
+      cells: [['归属站点', 'AP业务判定原因'], ['站点A', '光衰正常']],
+      row_count: 2,
+      column_count: 2,
+      column_widths: { A: 18 },
+      auto_fit_columns: ['B'],
+      auto_fit_min_width: 8,
+      auto_fit_max_width: 40,
+      auto_fit_rows: true,
+      row_heights: { 1: 24 },
+      merges: ['A2:B2'],
+      freeze_panes: 'A2',
+      auto_filter: 'A1:B2',
+      verification_samples: [{
+        label: 'header',
+        row: 1,
+        range: 'A1:B1',
+        expected_values: ['归属站点', 'AP业务判定原因'],
+        format_cells: [{
+          range: 'A1:B1',
+          expected: {
+            font: { name: 'Microsoft YaHei', size: 11, bold: true, italic: false },
+            fill: { fill_type: 'solid', fg_color: '#DBEAFE' },
+            number_format: 'General',
+            alignment: { horizontal: 'center', vertical: 'center', wrap_text: true },
+          },
+        }],
+      }],
+      format_runs: [
+        {
+          range: 'A1:B1',
+          font: { name: 'Microsoft YaHei', size: 11, bold: true, italic: false },
+          fill: { fill_type: 'solid', fg_color: '#DBEAFE' },
+          number_format: 'General',
+          alignment: { horizontal: 'center', vertical: 'center', wrap_text: true },
+          border: {
+            left: { style: 'thin', color: '#D1D5DB' },
+            right: { style: 'thin', color: '#D1D5DB' },
+            top: { style: 'thin', color: '#D1D5DB' },
+            bottom: { style: 'thin', color: '#D1D5DB' },
+          },
+        },
+        {
+          range: 'A2:B2',
+          font: { name: 'Microsoft YaHei', size: 10, bold: false, italic: false },
+          number_format: 'General',
+          alignment: { horizontal: 'left', vertical: 'center', wrap_text: true },
+          border: {},
+        },
+      ],
+    }
+
+    const result = executeStandardSpreadsheet(runtime, args)
+
+    expect(result).toMatchObject({
+      success: true,
+      status: 'SUCCESS',
+      format_mirror_enabled: true,
+      format_warning_count: 0,
+      column_width_result: {
+        explicit_applied_count: 1,
+        auto_fit_applied_count: 1,
+        clamped_count: 0,
+        verified_count: 2,
+      },
+      format_results: {
+        row_height: { status: 'SUCCESS', failed_count: 0 },
+        font: { status: 'SUCCESS', verified_count: 2, format_run_count: 2 },
+        fill: { status: 'SUCCESS', verified_count: 1, format_run_count: 1 },
+        number_format: { status: 'SUCCESS', verified_count: 2, format_run_count: 2 },
+        alignment: { status: 'SUCCESS', verified_count: 2, format_run_count: 2 },
+        merge: { status: 'SUCCESS', verified_count: 1 },
+        border: { status: 'SUCCESS', verified_count: 5, format_run_count: 1 },
+        freeze_panes: { status: 'SUCCESS', verified_count: 1 },
+        auto_filter: { status: 'SUCCESS', verified_count: 1 },
+        sample_data: { status: 'SUCCESS', attempted_count: 2, verified_count: 2 },
+      },
+    })
+    expect(result.format_results.border.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ range: 'A1:B2', all_borders: true, verified: true }),
+    ]))
+    expect(source).toContain('function applyWorkbookFreezeLayout')
+    expect(source).toContain('function selectFreezeAnchor')
+    expect(source).toContain('WPS_FREEZE_SELECTION_FAILED')
+    expect(source).toContain('applyWorkbookFreezeLayout(formatSheets')
+    expect(runtime.columnWidths).toEqual(expect.arrayContaining([
+      { sheet: '轨旁AP业务', column: 'A', width: 18 },
+      { sheet: '轨旁AP业务', column: 'B', width: 20 },
+    ]))
+  })
+
+  it('falls back to a verified A2 selection when WPS ignores direct SplitRow', () => {
+    const runtime = standardSpreadsheetRuntime(
+      ['轨旁AP业务', '_NetConsoleSyncMeta'],
+      { freezeDirectMismatchNames: ['轨旁AP业务'] },
+    )
+    const args = standardSyncArgs(['轨旁AP业务']) as Record<string, any>
+    args.format_mirror_enabled = true
+    args.workbook.sheets[0] = {
+      ...args.workbook.sheets[0],
+      freeze_panes: 'A2',
+      format_runs: [],
+      verification_samples: [],
+      merges: [],
+      row_heights: {},
+      auto_fit_rows: false,
+      auto_filter: '',
+    }
+
+    const result = executeStandardSpreadsheet(runtime, args)
+
+    expect(result).toMatchObject({
+      success: true,
+      status: 'SUCCESS',
+      format_results: {
+        freeze_panes: {
+          status: 'SUCCESS',
+          attempted_count: 1,
+          verified_count: 1,
+          failed_count: 0,
+          items: [expect.objectContaining({
+            sheet_name: '轨旁AP业务',
+            expected_frozen_rows: 1,
+            actual_frozen_rows: 1,
+            expected_frozen_columns: 0,
+            actual_frozen_columns: 0,
+            verified: true,
+          })],
+        },
+      },
+    })
+    expect(runtime.freezeSelections).toEqual([{ sheet: '轨旁AP业务', address: 'A2' }])
+  })
+
+  it('reports final freeze readback failure instead of leaving SUCCESS', () => {
+    const runtime = standardSpreadsheetRuntime(
+      ['轨旁AP业务', '_NetConsoleSyncMeta'],
+      {
+        freezeDirectMismatchNames: ['轨旁AP业务'],
+        freezeSelectionFailureNames: ['轨旁AP业务'],
+      },
+    )
+    const args = standardSyncArgs(['轨旁AP业务']) as Record<string, any>
+    args.format_mirror_enabled = true
+    args.workbook.sheets[0] = {
+      ...args.workbook.sheets[0],
+      freeze_panes: 'A2',
+      format_runs: [],
+      verification_samples: [],
+      merges: [],
+      row_heights: {},
+      auto_fit_rows: false,
+      auto_filter: '',
+    }
+
+    const result = executeStandardSpreadsheet(runtime, args)
+
+    expect(result).toMatchObject({
+      success: true,
+      status: 'SUCCESS_WITH_WARNINGS',
+      format_results: {
+        freeze_panes: {
+          status: 'SUCCESS_WITH_WARNINGS',
+          attempted_count: 1,
+          verified_count: 0,
+          failed_count: 1,
+          warning_count: 1,
+          items: [expect.objectContaining({
+            sheet_name: '轨旁AP业务',
+            expected_frozen_rows: 1,
+            actual_frozen_rows: 11,
+            error_code: 'WPS_FREEZE_SELECTION_FAILED',
+            verified: false,
+          })],
+        },
+      },
+      format_warnings: [expect.objectContaining({
+        sheet_name: '轨旁AP业务',
+        feature: 'freeze_panes',
+        reason: expect.stringContaining('WPS_FREEZE_SELECTION_FAILED'),
+      })],
+    })
   })
 
   it('reports a column width mismatch when assignment succeeds but readback differs', () => {

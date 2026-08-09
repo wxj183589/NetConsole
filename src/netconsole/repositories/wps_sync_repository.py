@@ -102,6 +102,14 @@ CREATE TABLE IF NOT EXISTS wps_sync_target_runs (
     error_code TEXT NOT NULL DEFAULT '',
     sanitized_error_message TEXT NOT NULL DEFAULT '',
     result_summary TEXT NOT NULL DEFAULT '',
+    remote_task_id TEXT NOT NULL DEFAULT '',
+    remote_task_type TEXT NOT NULL DEFAULT '',
+    remote_task_status TEXT NOT NULL DEFAULT '',
+    remote_task_submitted_at TEXT NOT NULL DEFAULT '',
+    remote_task_last_polled_at TEXT NOT NULL DEFAULT '',
+    remote_task_finished_at TEXT NOT NULL DEFAULT '',
+    request_payload_json TEXT NOT NULL DEFAULT '',
+    source_format_manifest_json TEXT NOT NULL DEFAULT '',
     FOREIGN KEY (batch_id) REFERENCES wps_sync_batches(batch_id),
     FOREIGN KEY (target_id) REFERENCES wps_sync_targets(target_id)
 );
@@ -131,6 +139,7 @@ class WpsSyncRepository:
             initialize_sqlite_wal(connection)
             connection.executescript(WPS_SYNC_SCHEMA)
             self._ensure_target_columns(connection)
+            self._ensure_target_run_columns(connection)
             connection.commit()
 
     @staticmethod
@@ -183,6 +192,29 @@ class WpsSyncRepository:
                     str(row["target_id"]),
                 ),
             )
+
+    @staticmethod
+    def _ensure_target_run_columns(connection: sqlite3.Connection) -> None:
+        columns = {
+            str(row["name"])
+            for row in connection.execute(
+                "PRAGMA table_info(wps_sync_target_runs)"
+            ).fetchall()
+        }
+        for name, definition in {
+            "remote_task_id": "TEXT NOT NULL DEFAULT ''",
+            "remote_task_type": "TEXT NOT NULL DEFAULT ''",
+            "remote_task_status": "TEXT NOT NULL DEFAULT ''",
+            "remote_task_submitted_at": "TEXT NOT NULL DEFAULT ''",
+            "remote_task_last_polled_at": "TEXT NOT NULL DEFAULT ''",
+            "remote_task_finished_at": "TEXT NOT NULL DEFAULT ''",
+            "request_payload_json": "TEXT NOT NULL DEFAULT ''",
+            "source_format_manifest_json": "TEXT NOT NULL DEFAULT ''",
+        }.items():
+            if name not in columns:
+                connection.execute(
+                    f"ALTER TABLE wps_sync_target_runs ADD COLUMN {name} {definition}"
+                )
 
     def upsert_target(
         self,
@@ -539,14 +571,17 @@ class WpsSyncRepository:
         target_batch_id: str,
         batch_id: str,
         target: WpsSyncTarget,
+        request_payload: dict[str, object] | None = None,
+        source_format_manifest: dict[str, object] | None = None,
     ) -> None:
         with self._connect() as connection:
             connection.execute(
                 """
                 INSERT INTO wps_sync_target_runs (
                     target_batch_id, batch_id, target_id, target_code,
-                    target_type, started_at, status
-                ) VALUES (?, ?, ?, ?, ?, ?, 'RUNNING')
+                    target_type, started_at, status, request_payload_json,
+                    source_format_manifest_json
+                ) VALUES (?, ?, ?, ?, ?, ?, 'REMOTE_SUBMITTING', ?, ?)
                 """,
                 (
                     target_batch_id,
@@ -555,9 +590,107 @@ class WpsSyncRepository:
                     target.target_code,
                     target.target_type.value,
                     _now(),
+                    json.dumps(
+                        request_payload or {}, ensure_ascii=False, separators=(",", ":")
+                    ),
+                    json.dumps(
+                        source_format_manifest or {},
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
                 ),
             )
             connection.commit()
+
+    def update_remote_task_submitted(
+        self,
+        target_batch_id: str,
+        *,
+        task_id: str,
+        task_type: str,
+        remote_status: str,
+    ) -> None:
+        now = _now()
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE wps_sync_target_runs SET
+                    status = 'REMOTE_SUBMITTED', remote_task_id = ?,
+                    remote_task_type = ?, remote_task_status = ?,
+                    remote_task_submitted_at = CASE
+                        WHEN remote_task_submitted_at = '' THEN ?
+                        ELSE remote_task_submitted_at
+                    END,
+                    error_code = '', sanitized_error_message = ''
+                WHERE target_batch_id = ?
+                """,
+                (task_id, task_type, remote_status, now, target_batch_id),
+            )
+            connection.commit()
+
+    def update_remote_task_poll(
+        self,
+        target_batch_id: str,
+        *,
+        status: str,
+        remote_status: str,
+        error_code: str = "",
+        error_message: str = "",
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE wps_sync_target_runs SET
+                    status = ?, remote_task_status = ?,
+                    remote_task_last_polled_at = ?, error_code = ?,
+                    sanitized_error_message = ?
+                WHERE target_batch_id = ?
+                """,
+                (
+                    status,
+                    remote_status,
+                    _now(),
+                    error_code,
+                    _sanitize(error_message),
+                    target_batch_id,
+                ),
+            )
+            connection.commit()
+
+    def find_resumable_batch(
+        self,
+        business_key: str,
+        target_codes: Iterable[str],
+    ) -> dict[str, object] | None:
+        self.initialize()
+        requested = {str(code) for code in target_codes}
+        with self._connect() as connection:
+            batches = connection.execute(
+                """
+                SELECT * FROM wps_sync_batches
+                WHERE site_id = ? AND business_key = ?
+                  AND completed_at = ''
+                  AND status IN ('RUNNING', 'REMOTE_RESULT_UNKNOWN')
+                ORDER BY requested_at DESC
+                """,
+                (self.site_id, business_key),
+            ).fetchall()
+            for batch in batches:
+                runs = connection.execute(
+                    "SELECT * FROM wps_sync_target_runs WHERE batch_id = ? ORDER BY target_code",
+                    (batch["batch_id"],),
+                ).fetchall()
+                if {str(run["target_code"]) for run in runs} != requested:
+                    continue
+                if len(runs) != int(batch["target_count"] or 0):
+                    continue
+                if any(not str(run["request_payload_json"] or "") for run in runs):
+                    continue
+                item = dict(batch)
+                item["result_summary"] = _json_object(item.get("result_summary"))
+                item["targets"] = [_target_run_from_row(run, include_private=True) for run in runs]
+                return item
+        return None
 
     def complete_target_run(
         self,
@@ -567,9 +700,8 @@ class WpsSyncRepository:
         result: dict[str, object],
         error_code: str = "",
         error_message: str = "",
+        remote_task_status: str = "finished",
     ) -> None:
-        import json
-
         with self._connect() as connection:
             connection.execute(
                 """
@@ -577,7 +709,8 @@ class WpsSyncRepository:
                     completed_at = ?, status = ?, remote_document_id = ?,
                     remote_script_version = ?, written_object_count = ?,
                     written_row_count = ?, error_code = ?,
-                    sanitized_error_message = ?, result_summary = ?
+                    sanitized_error_message = ?, result_summary = ?,
+                    remote_task_status = ?, remote_task_finished_at = ?
                 WHERE target_batch_id = ?
                 """,
                 (
@@ -590,7 +723,27 @@ class WpsSyncRepository:
                     error_code,
                     _sanitize(error_message),
                     json.dumps(result, ensure_ascii=False, sort_keys=True),
+                    remote_task_status,
+                    _now(),
                     target_batch_id,
+                ),
+            )
+            connection.commit()
+
+    def update_batch_state(
+        self,
+        batch_id: str,
+        *,
+        status: str,
+        summary: dict[str, object],
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE wps_sync_batches SET status = ?, result_summary = ? WHERE batch_id = ?",
+                (
+                    status,
+                    json.dumps(summary, ensure_ascii=False, sort_keys=True),
+                    batch_id,
                 ),
             )
             connection.commit()
@@ -604,8 +757,6 @@ class WpsSyncRepository:
         failed_count: int,
         summary: dict[str, object],
     ) -> None:
-        import json
-
         with self._connect() as connection:
             connection.execute(
                 """
@@ -643,10 +794,9 @@ class WpsSyncRepository:
                     "SELECT * FROM wps_sync_target_runs WHERE batch_id = ? ORDER BY target_code",
                     (item["batch_id"],),
                 ).fetchall()
-                item["targets"] = [dict(row) for row in runs]
-                for run in item["targets"]:
-                    raw = str(run.pop("result_summary", "") or "")
-                    run["result_summary"] = json.loads(raw) if raw else {}
+                item["targets"] = [
+                    _target_run_from_row(row, include_private=False) for row in runs
+                ]
                 result.append(item)
         return result
 
@@ -735,6 +885,48 @@ def _diagnostic_from_row(row: sqlite3.Row, column: str) -> dict[str, object]:
     except json.JSONDecodeError:
         return {}
     return dict(decoded) if isinstance(decoded, dict) else {}
+
+
+def _target_run_from_row(
+    row: sqlite3.Row,
+    *,
+    include_private: bool,
+) -> dict[str, object]:
+    item = dict(row)
+    item["result_summary"] = _json_object(item.get("result_summary"))
+    task_id = str(item.pop("remote_task_id", "") or "")
+    item["remote_task_id_masked"] = _mask_remote_task_id(task_id)
+    request_payload = _json_object(item.pop("request_payload_json", ""))
+    source_format_manifest = _json_object(
+        item.pop("source_format_manifest_json", "")
+    )
+    if include_private:
+        item["remote_task_id"] = task_id
+        item["request_payload"] = request_payload
+        item["source_format_manifest"] = source_format_manifest
+    return item
+
+
+def _json_object(value: object) -> dict[str, object]:
+    if isinstance(value, dict):
+        return dict(value)
+    raw = str(value or "")
+    if not raw:
+        return {}
+    try:
+        decoded = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return dict(decoded) if isinstance(decoded, dict) else {}
+
+
+def _mask_remote_task_id(value: str) -> str:
+    normalized = str(value or "").strip()
+    if not normalized:
+        return ""
+    if len(normalized) <= 12:
+        return f"{normalized[:4]}...{normalized[-2:]}"
+    return f"{normalized[:8]}...{normalized[-4:]}"
 
 
 def _now() -> str:

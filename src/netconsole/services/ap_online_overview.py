@@ -343,7 +343,10 @@ def write_ap_online_overview_sheet(sheet, rows: list[dict[str, object | None]], 
             if fill:
                 cell.fill = fill
         if int(row.get("offline") or 0) > 0:
-            sheet.cell(sheet.max_row, 4).fill = PatternFill(fill_type="solid", fgColor="FEE2E2")
+            sheet.cell(sheet.max_row, 4).fill = PatternFill(
+                fill_type="solid",
+                fgColor="FFFEE2E2",
+            )
     _format_export_sheet(sheet)
 
 
@@ -548,13 +551,13 @@ def overview_row_fill(row: dict[str, object | None]):
     from openpyxl.styles import PatternFill
 
     if str(row.get("site") or "") == TOTAL_SITE_LABEL:
-        return PatternFill(fill_type="solid", fgColor="DBEAFE")
+        return PatternFill(fill_type="solid", fgColor="FFDBEAFE")
     total = int(row.get("total") or 0)
     online = int(row.get("online") or 0)
     if total and online == total:
-        return PatternFill(fill_type="solid", fgColor="DCFCE7")
+        return PatternFill(fill_type="solid", fgColor="FFDCFCE7")
     if total and online / total < 0.8:
-        return PatternFill(fill_type="solid", fgColor="FEF9C3")
+        return PatternFill(fill_type="solid", fgColor="FFFEF9C3")
     return None
 
 
@@ -571,9 +574,11 @@ def _format_export_sheet(sheet) -> None:
         bottom=Side(style="thin", color="D1D5DB"),
     )
     header_font = Font(bold=True)
+    # This standalone AC overview is not the trackside history sheet; keep
+    # its existing header freeze behavior.
     sheet.freeze_panes = "A2"
     for row in sheet.iter_rows():
-        sheet.row_dimensions[row[0].row].height = 24 if row[0].row == 1 else 22
+        sheet.row_dimensions[row[0].row].height = 24
         for cell in row:
             cell.alignment = alignment
             cell.border = border

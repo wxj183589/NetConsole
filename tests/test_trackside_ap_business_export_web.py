@@ -179,7 +179,7 @@ def test_trackside_export_contract_and_fill_matrix(tmp_path: Path) -> None:
         for index in range(2, main.max_row + 1)
     }
     assert fills["gei-0/3/0/41"].fill_type == "solid"
-    assert fills["gei-0/3/0/41"].fgColor.rgb == "00DCFCE7"
+    assert fills["gei-0/3/0/41"].fgColor.rgb == "FFDCFCE7"
     assert fills["gei-0/3/0/42"].fill_type is None
     assert fills["gei-0/4/0/42"].fill_type is None
     assert fills["gei-0/4/0/43"].fill_type == "solid"
@@ -550,17 +550,16 @@ def test_trackside_business_workbook_preserves_sheets_and_export_style(
     assert workbook.sheetnames == [*business_sheets, "_netconsole_meta"]
     for name in business_sheets:
         sheet = workbook[name]
-        assert sheet.freeze_panes == (
-            "A4" if name == "AP上线情况概览" else "A2"
-        )
+        assert sheet.freeze_panes == (None if name == "AP上线情况概览" else "A2")
         assert sheet.auto_filter.ref == (
             "A3:F3" if name == "AP上线情况概览" else sheet.dimensions
         )
+        header_row = 3 if name == "AP上线情况概览" else 1
         assert all(
             cell.alignment.horizontal == "center"
             and cell.alignment.vertical == "center"
-            for row in sheet.iter_rows()
-            for cell in row
+            and cell.alignment.wrap_text is True
+            for cell in sheet[header_row]
         )
         assert all(
             dimension.width is not None and dimension.width > 0
@@ -571,6 +570,16 @@ def test_trackside_business_workbook_preserves_sheets_and_export_style(
     main_headers = [cell.value for cell in main[1]]
     interface_column = main_headers.index("接口名称") + 1
     assert main.cell(2, interface_column).value == "GE2/0/1"
+    reason_column = main_headers.index("AP业务判定原因") + 1
+    assert main.cell(2, reason_column).alignment.horizontal == "left"
+    assert main.cell(2, reason_column).alignment.vertical == "center"
+    assert main.cell(2, reason_column).alignment.wrap_text is True
+    assert main.cell(2, 1).alignment.horizontal == "center"
+    assert main.row_dimensions[1].height == 24
+    assert main.row_dimensions[2].height == 24
+    assert main["A1"].fill.fgColor.rgb == "FFDBEAFE"
+    assert main["A2"].fill.fgColor.rgb == "FFDCFCE7"
+    assert main["A1"].border.left.color.rgb == "FFD1D5DB"
 
     treatment = workbook["AP光衰处理记录"]
     treatment_headers = [cell.value for cell in treatment[1]]
@@ -584,6 +593,19 @@ def test_trackside_business_workbook_preserves_sheets_and_export_style(
         i18n.t(key) for key, _field in AP_ONLINE_OVERVIEW_COLUMNS
     ]
     assert all(cell.value is None for cell in overview[overview.max_row])
+    assert overview.row_dimensions[overview.max_row].height == 16
+    assert all(
+        all(
+            side is None or side.style is None
+            for side in (
+                cell.border.left,
+                cell.border.right,
+                cell.border.top,
+                cell.border.bottom,
+            )
+        )
+        for cell in overview[overview.max_row]
+    )
 
     colors = {
         definition.sheet_name: definition.tab_color
@@ -599,7 +621,7 @@ def test_trackside_business_workbook_preserves_sheets_and_export_style(
         "AP离线台账": "#D9D9D9",
     }
     for name, color in colors.items():
-        assert workbook[name].sheet_properties.tabColor.rgb[-6:] == color[1:]
+        assert workbook[name].sheet_properties.tabColor.rgb == f"FF{color[1:]}"
     for name in ("新增上线AP概览", "待关联在线AP", "交换机光模块统计"):
         assert workbook[name].sheet_properties.tabColor is None
 

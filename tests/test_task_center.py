@@ -98,6 +98,11 @@ def _complete_task(service: TaskApplicationService, task_id: str = "task-complet
             ("NO_EFFECTIVE_TARGET", 0, 0, 5, 0, False),
         ),
         (
+            {"status": "REMOTE_RESULT_UNKNOWN"},
+            "COMPLETED",
+            ("REMOTE_RESULT_UNKNOWN", 0, 0, 0, 0, False),
+        ),
+        (
             {
                 "collection": {
                     "partial_success": True,

@@ -25,19 +25,22 @@ from netconsole.services.wps_trackside_ap_sync import (
     TracksideApWpsSyncService,
     WpsAirScriptClient,
     WpsHttpResponse,
+    WpsRemoteTask,
     WpsStandardSpreadsheetAdapter,
     WpsSyncError,
     WPS_DEPLOYMENT_IDS,
     WPS_SCRIPT_VERSIONS,
-    WPS_STANDARD_FORMAT_MIRROR_EXPERIMENTAL,
+    WPS_STANDARD_FORMAT_MIRROR_ENABLED,
     WPS_SYNC_TASK_TYPE,
     _append_column_width_report_warning,
-    _column_width_manifest_from_xlsx,
+    _cell_format_payload,
+    _source_workbook_format_manifest,
     _column_width_probe_verified,
     _column_width_verification_report,
     _openpyxl_color,
     _assert_standard_sync_readiness,
     _sheet_tab_color_probe_verified,
+    parse_wps_webhook,
     workbook_dto_from_xlsx,
 )
 
@@ -166,6 +169,61 @@ def test_wps_binding_id_migration_is_additive_repeatable_and_preserves_rows(
         "hzl10", TRACKSIDE_AP_WPS_BUSINESS_KEY, STANDARD_TARGET_CODE
     )
     assert repository.resolve_token(migrated) == "preserved-token"
+
+
+def test_wps_target_run_migration_adds_async_recovery_columns_repeatably(
+    tmp_path: Path,
+) -> None:
+    repository = WpsSyncRepository(
+        PathResolver(tmp_path), "hzl10", protect=_protect, unprotect=_protect
+    )
+    repository.initialize()
+    with sqlite3.connect(repository.path) as connection:
+        for column in (
+            "remote_task_id",
+            "remote_task_type",
+            "remote_task_status",
+            "remote_task_submitted_at",
+            "remote_task_last_polled_at",
+            "remote_task_finished_at",
+            "request_payload_json",
+            "source_format_manifest_json",
+        ):
+            connection.execute(f"ALTER TABLE wps_sync_target_runs DROP COLUMN {column}")
+        connection.commit()
+
+    repository.initialize()
+    repository.initialize()
+
+    with sqlite3.connect(repository.path) as connection:
+        columns = {
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info(wps_sync_target_runs)")
+        }
+    assert {
+        "remote_task_id",
+        "remote_task_type",
+        "remote_task_status",
+        "remote_task_submitted_at",
+        "remote_task_last_polled_at",
+        "remote_task_finished_at",
+        "request_payload_json",
+        "source_format_manifest_json",
+    } <= columns
+
+
+def test_wps_webhook_parser_derives_sync_submit_and_poll_endpoints() -> None:
+    endpoints = parse_wps_webhook(
+        "https://www.kdocs.cn/api/v3/ide/file/549847228994/"
+        "script/V2-2o35ebQ25Bb3Uyrnii2U3o/sync_task"
+    )
+
+    assert endpoints.host == "www.kdocs.cn"
+    assert endpoints.file_id == "549847228994"
+    assert endpoints.script_id == "V2-2o35ebQ25Bb3Uyrnii2U3o"
+    assert endpoints.sync_task_url.endswith("/sync_task")
+    assert endpoints.async_task_url.endswith("/task")
+    assert endpoints.task_status_url == "https://www.kdocs.cn/api/v3/script/task"
 
 
 def test_wps_target_configuration_rejects_non_kdocs_webhook(tmp_path: Path) -> None:
@@ -601,6 +659,77 @@ def test_wps_http_response_and_request_headers_are_bounded(monkeypatch: pytest.M
     assert int(observed["read_size"]) == 20 * 1024 * 1024 + 1
 
 
+def test_wps_async_client_submits_and_url_encodes_task_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: list[tuple[str, str, bytes | None, str]] = []
+    responses = [
+        {
+            "data": {"task_id": "GN/KU3+task=="},
+            "task_id": "GN/KU3+task==",
+            "task_type": "open_air_script",
+        },
+        {"status": "running", "error": "", "data": {"result": None, "logs": []}},
+    ]
+
+    class FakeResponse:
+        status = 200
+
+        def __init__(self, body: dict[str, object]) -> None:
+            self.body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self, size):
+            return json.dumps(self.body).encode("utf-8")
+
+    def open_request(request, *, timeout):
+        observed.append(
+            (
+                request.method,
+                request.full_url,
+                request.data,
+                request.headers.get("Airscript-token", ""),
+            )
+        )
+        return FakeResponse(responses.pop(0))
+
+    monkeypatch.setattr("urllib.request.urlopen", open_request)
+    client = WpsAirScriptClient()
+    remote = client.submit_async(
+        _wps_target(),
+        token="test-only-token",
+        argv={"operation": "sync_trackside_ap_business"},
+    )
+    polled = client.poll_async_task(
+        _wps_target(),
+        token="test-only-token",
+        task_id=remote.task_id,
+    )
+
+    assert remote == WpsRemoteTask(
+        task_id="GN/KU3+task==",
+        task_type="open_air_script",
+    )
+    assert observed[0][0] == "POST"
+    assert observed[0][1].endswith("/script/test/task")
+    assert json.loads(observed[0][2].decode("utf-8"))["Context"]["argv"]["operation"] == "sync_trackside_ap_business"
+    assert observed[1][0] == "GET"
+    assert observed[1][1].endswith(
+        "/api/v3/script/task?task_id=GN%2FKU3%2Btask%3D%3D"
+    )
+    assert observed[0][3] == observed[1][3] == "test-only-token"
+    assert polled.body == {
+        "status": "running",
+        "error": "",
+        "data": {"result": None, "logs": []},
+    }
+
+
 def test_workbook_dto_uses_prepend_mode_for_overview(tmp_path: Path) -> None:
     path = tmp_path / "sample.xlsx"
     workbook = Workbook()
@@ -618,7 +747,7 @@ def test_workbook_dto_uses_prepend_mode_for_overview(tmp_path: Path) -> None:
     assert dto.sheets[0].sync_mode.value == "FULL_REPLACE"
     assert dto.sheets[1].sync_mode.value == "PREPEND_SNAPSHOT"
     assert dto.sheets[1].logical_sheet_key == "ap_online_history_overview"
-    assert dto.sheets[1].tab_color == "#C6EFCE"
+    assert dto.sheets[1].tab_color == ""
     assert dto.sheets[1].row_count == 2
     assert [sheet.sheet_order for sheet in dto.sheets] == [0, 1]
 
@@ -652,7 +781,7 @@ def test_workbook_dto_preserves_sheet_order_and_compresses_format_runs(
     sheet["A4"] = "合并说明"
     sheet.column_dimensions["A"].width = 18
     sheet.row_dimensions[1].height = 24
-    sheet.freeze_panes = "A2"
+    sheet.freeze_panes = "B2"
     sheet.sheet_properties.tabColor = "FF70AD47"
     hidden = workbook.create_sheet("隐藏业务页")
     hidden.sheet_state = "hidden"
@@ -665,13 +794,35 @@ def test_workbook_dto_preserves_sheet_order_and_compresses_format_runs(
     assert second.sheet_order == 1
     assert first.sheet_visible is True
     assert second.sheet_visible is False
-    assert first.tab_color == "#C6EFCE"
+    assert first.tab_color == "#70AD47"
     assert first.merges == ["A4:C4"]
     assert first.column_widths["A"] == 18
     assert first.row_heights["1"] == 24
+    assert first.auto_fit_columns == ("B", "C")
+    assert first.auto_fit_rows is True
     assert first.freeze_panes == "A2"
-    runs = {run.range: run for run in first.format_runs}
-    assert runs["A1:C1"].font == {
+    assert first.auto_filter == ""
+    assert {sample["label"] for sample in first.verification_samples} >= {
+        "header",
+        "first_data",
+        "last_data",
+    }
+    header_font_run = next(
+        run for run in first.format_runs if run.range == "A1:C1" and run.font
+    )
+    header_fill_run = next(
+        run for run in first.format_runs if run.range == "A1:C1" and run.fill
+    )
+    header_alignment_run = next(
+        run for run in first.format_runs if run.range == "A1:C1" and run.alignment
+    )
+    percentage_run = next(
+        run
+        for run in first.format_runs
+        if run.range == "B2:B3" and run.number_format == "0.00%"
+    )
+    border_run = next(run for run in first.format_runs if run.border)
+    assert header_font_run.font == {
         "name": "Microsoft YaHei",
         "size": 11.0,
         "bold": True,
@@ -680,18 +831,36 @@ def test_workbook_dto_preserves_sheet_order_and_compresses_format_runs(
         "strike": False,
         "color": "#FFFFFF",
     }
-    assert runs["A1:C1"].fill["fg_color"] == "#4472C4"
-    assert runs["A1:C1"].alignment["wrap_text"] is True
-    assert runs["B2:B3"].number_format == "0.00%"
-    assert runs["B2:B3"].border["left"] == {
+    assert header_fill_run.fill["fg_color"] == "#4472C4"
+    assert header_alignment_run.alignment["wrap_text"] is True
+    assert percentage_run.number_format == "0.00%"
+    assert border_run.border["left"] == {
         "style": "thin",
         "color": "#D1D5DB",
     }
-    assert len(first.format_runs) < first.row_count * first.column_count
+    assert len(first.format_runs) < first.row_count * first.column_count * 5
     serialized = first.to_dict()
     assert "format_runs" in serialized
     assert "fonts" not in serialized
     assert "borders" not in serialized
+
+
+def test_workbook_dto_enforces_final_freeze_contract(tmp_path: Path) -> None:
+    path = tmp_path / "freeze-contract.xlsx"
+    workbook = Workbook()
+    business = workbook.active
+    business.title = "轨旁AP业务"
+    business.append(["站点", "AP"])
+    business.append(["A", "AP-1"])
+    business.freeze_panes = "B2"
+    overview = workbook.create_sheet("AP上线情况概览")
+    overview.append(["日期", "上线率"])
+    overview.freeze_panes = "B2"
+    workbook.save(path)
+    workbook.close()
+
+    dto = workbook_dto_from_xlsx(path, include_format_mirror=True)
+    assert [sheet.freeze_panes for sheet in dto.sheets] == ["A2", ""]
 
 
 def test_workbook_dto_can_include_only_explicit_column_widths(tmp_path: Path) -> None:
@@ -729,26 +898,36 @@ def test_column_width_manifest_preserves_source_dto_widths_and_headers(
     workbook.close()
     dto = workbook_dto_from_xlsx(path, include_column_widths=True)
 
-    manifest = _column_width_manifest_from_xlsx(path, dto)
+    manifest = _source_workbook_format_manifest(path, dto)
 
-    assert manifest == [
+    assert manifest["column_widths"] == [
         {
             "sheet_name": "轨旁AP业务",
             "column": "A",
             "range": "A:A",
             "column_label": "归属站点",
+            "source_mode": "EXPLICIT",
             "local_workbook_width": 22.55,
             "sheet_dto_width": 22.55,
+            "sheet_dto_mode": "EXPLICIT",
+            "auto_fit_min_width": 8.0,
+            "auto_fit_max_width": 60.0,
         },
         {
             "sheet_name": "轨旁AP业务",
             "column": "B",
             "range": "B:B",
             "column_label": "室内交换机",
+            "source_mode": "EXPLICIT",
             "local_workbook_width": 40.0,
             "sheet_dto_width": 40.0,
+            "sheet_dto_mode": "EXPLICIT",
+            "auto_fit_min_width": 8.0,
+            "auto_fit_max_width": 60.0,
         },
     ]
+    assert manifest["totals"]["column_count"] == 2
+    assert manifest["totals"]["explicit_width_count"] == 2
 
 
 def test_column_width_verification_report_classifies_all_pipeline_stages() -> None:
@@ -871,6 +1050,9 @@ def test_column_width_report_failure_becomes_noncritical_format_warning() -> Non
     ("color", "expected"),
     [
         (Color(rgb="00000000"), ""),
+        (Color(rgb="00DBEAFE"), "#DBEAFE"),
+        (Color(rgb="00DCFCE7"), "#DCFCE7"),
+        (Color(rgb="00D1D5DB"), "#D1D5DB"),
         (Color(rgb="FFFFFFFF"), "#FFFFFF"),
         (Color(rgb="FFC6EFCE"), "#C6EFCE"),
         (Color(rgb="FFDDEBF7"), "#DDEBF7"),
@@ -884,6 +1066,75 @@ def test_openpyxl_color_only_returns_explicit_opaque_rgb(
     expected: str,
 ) -> None:
     assert _openpyxl_color(color) == expected
+
+
+def test_format_payload_does_not_turn_missing_or_transparent_fill_black() -> None:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet["A1"] = "no fill"
+    sheet["A2"] = "transparent"
+    sheet["A2"].fill = PatternFill(fill_type="solid", fgColor="00000000")
+    sheet["A3"] = "opaque"
+    sheet["A3"].fill = PatternFill(fill_type="solid", fgColor="FFC6EFCE")
+
+    assert "fill" not in _cell_format_payload(sheet["A1"])
+    assert "fill" not in _cell_format_payload(sheet["A2"])
+    assert _cell_format_payload(sheet["A3"])["fill"]["fg_color"] == "#C6EFCE"
+    workbook.close()
+
+
+def test_column_width_report_accepts_autofit_readback_with_clamp() -> None:
+    report = _column_width_verification_report(
+        manifest=[
+            {
+                "sheet_name": "轨旁AP业务",
+                "column": "P",
+                "range": "P:P",
+                "column_label": "AP业务判定原因",
+                "source_mode": "AUTO_FIT",
+                "local_workbook_width": None,
+                "sheet_dto_width": None,
+                "sheet_dto_mode": "AUTO_FIT",
+                "auto_fit_min_width": 8.0,
+                "auto_fit_max_width": 40.0,
+            }
+        ],
+        request_payload={
+            "workbook": {
+                "sheets": [
+                    {
+                        "sheet_name": "轨旁AP业务",
+                        "column_widths": {},
+                        "auto_fit_columns": ["P"],
+                    }
+                ]
+            }
+        },
+        remote_result={
+            "column_width_result": {
+                "attempted_count": 1,
+                "items": [
+                    {
+                        "sheet_name": "轨旁AP业务",
+                        "column": "P",
+                        "mode": "AUTO_FIT",
+                        "applied": True,
+                        "clamped": True,
+                        "remote_column_width": 40.0,
+                        "remote_width_points": 280.0,
+                        "verified": True,
+                    }
+                ],
+            }
+        },
+        enabled=True,
+    )
+
+    assert report["status"] == "SUCCESS"
+    assert report["auto_fit_requested_count"] == 1
+    assert report["auto_fit_applied_count"] == 1
+    assert report["clamped_count"] == 1
+    assert report["stage_counts"] == {"WPS_COLUMN_WIDTH_AUTOFIT_VERIFIED": 1}
 
 
 def test_sheet_tab_color_formal_sync_gate_requires_successful_probe() -> None:
@@ -918,12 +1169,12 @@ def test_column_width_probe_diagnostic_recognizes_successful_readback() -> None:
     assert _column_width_probe_verified(target) is False
 
 
-def test_workbook_dto_omits_format_mirror_by_default() -> None:
-    assert WPS_STANDARD_FORMAT_MIRROR_EXPERIMENTAL is False
+def test_standard_workbook_format_mirror_is_enabled() -> None:
+    assert WPS_STANDARD_FORMAT_MIRROR_ENABLED is True
 
 
 
-def test_standard_airscript_keeps_format_mirror_disabled_behind_explicit_gate() -> None:
+def test_standard_airscript_applies_formats_after_the_stable_writer() -> None:
     script_path = (
         Path(__file__).parents[1]
         / "tools"
@@ -932,20 +1183,42 @@ def test_standard_airscript_keeps_format_mirror_disabled_behind_explicit_gate() 
     )
     script = script_path.read_text(encoding="utf-8")
 
-    assert 'const SCRIPT_VERSION = "2.5.0-standard";' in script
-    assert 'const DEPLOYMENT_ID = "trackside-ap-standard-2.5.0";' in script
-    assert "const FORMAT_MIRROR_EXPERIMENTAL = false;" in script
+    assert 'const SCRIPT_VERSION = "2.8.2-standard";' in script
+    assert 'const DEPLOYMENT_ID = "trackside-ap-standard-2.8.2";' in script
+    assert "const FORMAT_MIRROR_ENABLED = true;" in script
     assert "function writeStableSheet(sheetDto)" in script
     assert "if (used && used.ClearContents) used.ClearContents();" in script
-    assert "FORMAT_MIRROR_EXPERIMENTAL && args.format_mirror_experimental === true" in script
+    assert "FORMAT_MIRROR_ENABLED && args.format_mirror_enabled === true" in script
+    assert "const result = skipRepeatedPrepend" in script
+    assert ": writeStableSheet(runtimeSheet);" in script
+    assert "applyBusinessFormatting(formatSheets, formatWarnings)" in script
     assert "sheetOrderVerification = reorderBusinessSheets(sheets);" in script
     assert "const sheet = sheets.Add();" in script
     assert "sheets.Add(null" not in script
-    assert "used.UnMerge()" in script
-    assert "used.Clear()" in script
-    assert 'attemptFormat(warnings, sheet.Name, "append_clear_values_and_formats"' in script
+    assert "range.ClearFormats()" in script
+    assert "targetRange.Rows.AutoFit()" in script
+    assert "window.FreezePanes = false" in script
+    assert "function applyWorkbookFreezeLayout" in script
+    assert "function selectFreezeAnchor" in script
+    assert "Application.ActiveCell" in script
+    assert "WPS_FREEZE_SELECTION_FAILED" in script
+    assert "applyWorkbookFreezeLayout(formatSheets" in script
+    assert 'freeze_panes", normalized || "NONE"' in script
+    sheet_formatting = script.split("function applySheetFormatting", 1)[1].split(
+        "function applyBusinessFormatting", 1
+    )[0]
+    assert "applyFreezePanes" not in sheet_formatting
+    sync_body = script.split("function sync(payload)", 1)[1]
+    assert sync_body.index("applyBusinessFormatting(formatSheets") < sync_body.index(
+        "sheetOrderVerification = reorderBusinessSheets(sheets)"
+    )
+    assert sync_body.index("applyBusinessSheetTabColors(sheets") < sync_body.index(
+        "applyWorkbookFreezeLayout(formatSheets"
+    )
+    assert "sheet.Range(rangeAddress).RowHeight = expected" in script
+    assert "Columns.AutoFit API unavailable" in script
     assert "sheetDto.format_runs" in script
-    assert 'attemptFormat(warnings, sheet.Name, "format_range"' in script
+    assert "verifiedFormatOperation" in script
     assert "range.Interior.Color" in script
     assert "range.Font.Bold" in script
     assert "range.NumberFormat" in script
@@ -953,7 +1226,15 @@ def test_standard_airscript_keeps_format_mirror_disabled_behind_explicit_gate() 
     assert "range.VerticalAlignment" in script
     assert "range.WrapText" in script
     assert "range.Borders.Item" in script
+    assert "applyAllBorders" in script
+    assert "xlInsideHorizontal" in script
+    assert "xlInsideVertical" in script
+    assert "all_borders: true" in script
+    assert "window.SplitColumn = 0" in script
+    assert "expected_frozen_columns" in script
     assert "sheet.Range(merge).Merge()" in script
+    assert "range.MergeArea && range.MergeArea.Address" in script
+    assert "expected_values: cells[row - 1].slice" in script
     assert "sheet.Move(first)" in script
     assert "sheet.Move(null, last)" in script
     assert "sheet.Move({" not in script
@@ -969,13 +1250,15 @@ def test_standard_airscript_keeps_format_mirror_disabled_behind_explicit_gate() 
     assert "remote_width_points" in script
     assert "physical_width_change_points" in script
     assert "WPS_COLUMN_WIDTH_VALUE_VERIFIED" in script
-    assert "const rowHeightEnabled" not in script
     assert "function rowHeightProbe" not in script
-    assert 'row_height: {' in script
-    assert 'status: "NOT_ENABLED"' in script
+    assert "applyRowHeights" in script
+    assert "format_mirror_enabled: formatMirrorEnabled" in script
     assert "function toWpsColor(value)" in script
     assert 'sheet.Tab.Color = expected;' in script
-    assert 'sheet.Name, "sheet_tab_color"' in script
+    assert '"sheet_tab_color"' in script
+    assert "sheet_order:" in script
+    assert '"sheet_tab_color",\n      "Tab.Color"' in script
+    assert "applyBusinessSheetTabColors(sheets, formatWarnings, mirroredFormatResults)" in script
     assert '.startsWith("_NetConsole")' in script
     assert 'status: publicWarnings.length ? "SUCCESS_WITH_WARNINGS" : "SUCCESS"' in script
     assert 'if (args.operation === "migrate_legacy_binding") return migrateLegacyBinding(args);' in script
@@ -1072,6 +1355,7 @@ def test_dual_sync_reuses_one_snapshot_for_both_adapters(monkeypatch, tmp_path: 
                                 {
                                     "sheet_name": "轨旁AP业务",
                                     "column": "A",
+                                    "mode": "EXPLICIT",
                                     "requested_width": 22.55,
                                     "before_column_width": 8.43,
                                     "remote_column_width": 22.55,
@@ -1079,13 +1363,14 @@ def test_dual_sync_reuses_one_snapshot_for_both_adapters(monkeypatch, tmp_path: 
                                     "remote_width_points": 157.85,
                                     "physical_width_change_points": 98.84,
                                     "read_back": True,
+                                    "applied": True,
                                     "verified": True,
                                 }
                             ],
                         },
                         "format_results": {
                             "column_width": {"status": "SUCCESS"},
-                            "row_height": {"status": "NOT_ENABLED"},
+                            "row_height": {"status": "SUCCESS"},
                         },
                         "format_warnings": [],
                     }
@@ -1156,14 +1441,23 @@ def test_dual_sync_reuses_one_snapshot_for_both_adapters(monkeypatch, tmp_path: 
             "column": "A",
             "range": "A:A",
             "column_label": "归属站点",
+            "source_mode": "EXPLICIT",
             "local_workbook_width": 22.55,
             "sheet_dto_width": 22.55,
+            "sheet_dto_mode": "EXPLICIT",
+            "auto_fit_min_width": 8.0,
+            "auto_fit_max_width": 60.0,
         }
     ]
     monkeypatch.setattr(
         service,
         "_build_workbook_dto",
-        lambda site_id, batch_id, snapshot: (workbook, "sha-1", 10, manifest),
+        lambda site_id, batch_id, snapshot: (
+            workbook,
+            "sha-1",
+            10,
+            {"column_widths": manifest, "sheets": [], "totals": {}},
+        ),
     )
     result = service.sync("hzl10")
     assert result["status"] == "SUCCESS"
@@ -1178,6 +1472,8 @@ def test_dual_sync_reuses_one_snapshot_for_both_adapters(monkeypatch, tmp_path: 
     assert payload_by_code[SMART_TARGET_CODE]["sheet_tab_color_enabled"] is False
     assert payload_by_code[STANDARD_TARGET_CODE]["column_width_enabled"] is True
     assert payload_by_code[SMART_TARGET_CODE]["column_width_enabled"] is False
+    assert payload_by_code[STANDARD_TARGET_CODE]["format_mirror_enabled"] is True
+    assert payload_by_code[SMART_TARGET_CODE]["format_mirror_enabled"] is False
     assert "row_height_enabled" not in payload_by_code[STANDARD_TARGET_CODE]
     assert "row_height_enabled" not in payload_by_code[SMART_TARGET_CODE]
     standard_result = next(
@@ -1251,7 +1547,12 @@ def test_wps_sync_aggregates_noncritical_format_warnings(
     monkeypatch.setattr(
         service,
         "_build_workbook_dto",
-        lambda site_id, batch_id, snapshot: (WorkbookDTO(sheets=()), "sha-1", 10, []),
+        lambda site_id, batch_id, snapshot: (
+            WorkbookDTO(sheets=()),
+            "sha-1",
+            10,
+            {"column_widths": [], "sheets": [], "totals": {}},
+        ),
     )
 
     result = service.sync("hzl10", target_codes=[STANDARD_TARGET_CODE])
@@ -1372,6 +1673,254 @@ def _seed_verified_wps_target(
             },
         )
     return repository, repository.get_target(TRACKSIDE_AP_WPS_BUSINESS_KEY, STANDARD_TARGET_CODE)
+
+
+def _stub_wps_sync_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+    service: TracksideApWpsSyncService,
+) -> None:
+    from netconsole.models.wps_sync import WorkbookDTO
+
+    monkeypatch.setattr(
+        service,
+        "_build_snapshot",
+        lambda site_id: {
+            "business_revision": "revision-async",
+            "created_at": "2026-08-09T10:00:00+08:00",
+        },
+    )
+    monkeypatch.setattr(
+        service,
+        "_build_workbook_dto",
+        lambda site_id, batch_id, snapshot: (
+            WorkbookDTO(sheets=()),
+            "sha-async",
+            128,
+            {"column_widths": [], "sheets": [], "totals": {"sheet_count": 0}},
+        ),
+    )
+
+
+class _AsyncSyncClient(WpsAirScriptClient):
+    def __init__(self, effects: list[object]) -> None:
+        self.effects = effects
+        self.submit_count = 0
+        self.poll_count = 0
+        self.submitted_batch_ids: list[str] = []
+        self.last_payload: dict[str, object] = {}
+
+    def submit_async(self, target, *, token, argv):
+        self.submit_count += 1
+        self.last_payload = dict(argv)
+        self.submitted_batch_ids.append(str(argv.get("target_batch_id") or ""))
+        return WpsRemoteTask(
+            task_id="GN/KU3B3+remote-task==",
+            task_type="open_air_script",
+        )
+
+    def poll_async_task(self, target, *, token, task_id):
+        self.poll_count += 1
+        effect = self.effects.pop(0)
+        if isinstance(effect, BaseException):
+            raise effect
+        if effect == "running":
+            return WpsHttpResponse(
+                status_code=200,
+                body={"status": "running", "error": "", "data": {"result": None}},
+            )
+        if effect == "remote_error":
+            return WpsHttpResponse(
+                status_code=200,
+                body={
+                    "status": "finished",
+                    "error": "script failed",
+                    "error_details": {"name": "Error", "msg": "write failed"},
+                    "data": {"result": None},
+                },
+            )
+        payload = self.last_payload
+        result = {
+            "success": True,
+            "protocol_version": 2,
+            "script_version": WPS_SCRIPT_VERSIONS[STANDARD_TARGET_CODE],
+            "deployment_id": WPS_DEPLOYMENT_IDS[STANDARD_TARGET_CODE],
+            "script_id": "script-one",
+            "runtime_capability": "VERIFIED",
+            "target_type": target.target_type.value,
+            "target_code": target.target_code,
+            "document_id": target.expected_document_id,
+            "binding_id": target.binding_id,
+            "binding_status": "BOUND",
+            "target_batch_id": payload.get("target_batch_id"),
+            "site_id": payload.get("site_id"),
+            "business_key": payload.get("business_key"),
+            "snapshot_revision": payload.get("snapshot_revision"),
+            "snapshot_sha256": payload.get("snapshot_sha256"),
+            "format_warnings": [],
+        }
+        return WpsHttpResponse(
+            status_code=200,
+            body={
+                "status": "finished",
+                "error": "",
+                "data": {"result": json.dumps(result, ensure_ascii=False)},
+            },
+        )
+
+
+def test_wps_full_sync_uses_async_submit_poll_and_persists_masked_remote_task(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client = _AsyncSyncClient(["running", "finished"])
+    service = TracksideApWpsSyncService(
+        PathResolver(tmp_path),
+        client=client,
+        remote_task_poll_interval_seconds=0,
+    )
+    repository, _ = _seed_verified_wps_target(service)
+    _stub_wps_sync_snapshot(monkeypatch, service)
+    progress_messages: list[object] = []
+
+    result = service.sync(
+        "hzl10",
+        target_codes=[STANDARD_TARGET_CODE],
+        progress=lambda stage, current, total, message: progress_messages.append(message),
+    )
+
+    assert result["status"] == "SUCCESS"
+    assert client.submit_count == 1
+    assert client.poll_count == 2
+    assert result["targets"][0]["remote_task_id_masked"] == "GN/KU3B3...sk=="
+    assert all("GN/KU3B3+remote-task==" not in str(item) for item in progress_messages)
+    with sqlite3.connect(repository.path) as connection:
+        row = connection.execute(
+            "SELECT remote_task_id, remote_task_type, remote_task_status, "
+            "remote_task_submitted_at, remote_task_last_polled_at, remote_task_finished_at "
+            "FROM wps_sync_target_runs"
+        ).fetchone()
+    assert row[0] == "GN/KU3B3+remote-task=="
+    assert row[1] == "open_air_script"
+    assert row[2] == "finished"
+    assert all(row[index] for index in (3, 4, 5))
+    recent = repository.recent_batches(TRACKSIDE_AP_WPS_BUSINESS_KEY)
+    assert recent[0]["targets"][0]["remote_task_id_masked"] == "GN/KU3B3...sk=="
+    assert "GN/KU3B3+remote-task==" not in str(recent)
+    assert "request_payload_json" not in str(recent)
+
+
+def test_wps_poll_connection_reset_keeps_task_id_and_restart_resumes_without_submit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    clock = [0.0]
+    client = _AsyncSyncClient(
+        [WpsSyncError("REMOTE_POLL_TEMPORARY_FAILED", "[WinError 10054]")]
+    )
+    paths = PathResolver(tmp_path)
+    first = TracksideApWpsSyncService(
+        paths,
+        client=client,
+        remote_task_max_wait_seconds=1,
+        remote_task_poll_interval_seconds=1,
+        sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+        monotonic=lambda: clock[0],
+    )
+    repository, _ = _seed_verified_wps_target(first)
+    _stub_wps_sync_snapshot(monkeypatch, first)
+
+    unknown = first.sync("hzl10", target_codes=[STANDARD_TARGET_CODE])
+
+    assert unknown["status"] == "REMOTE_RESULT_UNKNOWN"
+    assert unknown["targets"][0]["status"] == "REMOTE_RESULT_UNKNOWN"
+    with sqlite3.connect(repository.path) as connection:
+        pending = connection.execute(
+            "SELECT status, remote_task_id, completed_at FROM wps_sync_target_runs"
+        ).fetchone()
+    assert pending == (
+        "REMOTE_RESULT_UNKNOWN",
+        "GN/KU3B3+remote-task==",
+        "",
+    )
+
+    client.effects.append("finished")
+    resumed = TracksideApWpsSyncService(
+        paths,
+        client=client,
+        remote_task_poll_interval_seconds=0,
+    ).sync("hzl10", target_codes=[STANDARD_TARGET_CODE])
+
+    assert resumed["status"] == "SUCCESS"
+    assert client.submit_count == 1
+    assert client.submitted_batch_ids == [resumed["targets"][0]["target_batch_id"]]
+
+
+def test_wps_submit_timeout_retries_same_target_batch_id(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class SubmitTimeoutClient(_AsyncSyncClient):
+        def submit_async(self, target, *, token, argv):
+            self.submit_count += 1
+            self.last_payload = dict(argv)
+            self.submitted_batch_ids.append(str(argv.get("target_batch_id") or ""))
+            if self.submit_count == 1:
+                raise WpsSyncError(
+                    "ASYNC_SUBMIT_FAILED",
+                    "The read operation timed out",
+                    details={"submission_outcome": "UNKNOWN"},
+                )
+            return WpsRemoteTask(
+                task_id="GN/KU3B3+remote-task==",
+                task_type="open_air_script",
+            )
+
+    client = SubmitTimeoutClient(["finished"])
+    paths = PathResolver(tmp_path)
+    first = TracksideApWpsSyncService(paths, client=client)
+    _seed_verified_wps_target(first)
+    _stub_wps_sync_snapshot(monkeypatch, first)
+
+    unknown = first.sync("hzl10", target_codes=[STANDARD_TARGET_CODE])
+    resumed = TracksideApWpsSyncService(
+        paths,
+        client=client,
+        remote_task_poll_interval_seconds=0,
+    ).sync("hzl10", target_codes=[STANDARD_TARGET_CODE])
+
+    assert unknown["status"] == "REMOTE_RESULT_UNKNOWN"
+    assert unknown["targets"][0]["error_code"] == "ASYNC_SUBMIT_FAILED"
+    assert resumed["status"] == "SUCCESS"
+    assert client.submit_count == 2
+    assert len(set(client.submitted_batch_ids)) == 1
+
+
+def test_wps_remote_execution_error_is_terminal_and_keeps_remote_identity(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client = _AsyncSyncClient(["remote_error"])
+    service = TracksideApWpsSyncService(
+        PathResolver(tmp_path),
+        client=client,
+        remote_task_poll_interval_seconds=0,
+    )
+    repository, _ = _seed_verified_wps_target(service)
+    _stub_wps_sync_snapshot(monkeypatch, service)
+
+    result = service.sync("hzl10", target_codes=[STANDARD_TARGET_CODE])
+
+    assert result["status"] == "FAILED"
+    assert result["targets"][0]["error_code"] == "WPS_REMOTE_EXECUTION_FAILED"
+    with sqlite3.connect(repository.path) as connection:
+        row = connection.execute(
+            "SELECT status, remote_task_status, remote_task_id FROM wps_sync_target_runs"
+        ).fetchone()
+    assert row == (
+        "FAILED",
+        "failed",
+        "GN/KU3B3+remote-task==",
+    )
 
 
 @pytest.mark.parametrize(

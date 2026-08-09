@@ -385,17 +385,24 @@ export interface WpsTracksideSyncResult {
   target_count: number
   success_count: number
   failed_count: number
+  unknown_count?: number
   warning_count: number
   partial_success: boolean
-  status: 'SUCCESS' | 'SUCCESS_WITH_WARNINGS' | 'PARTIAL_SUCCESS' | 'FAILED'
+  status: 'SUCCESS' | 'SUCCESS_WITH_WARNINGS' | 'PARTIAL_SUCCESS' | 'FAILED' | 'REMOTE_RESULT_UNKNOWN'
   targets: Array<{
     target_code: WpsTracksideTargetCode
     target_name: string
     target_type: string
     target_batch_id: string
-    status: 'SUCCESS' | 'SUCCESS_WITH_WARNINGS' | 'FAILED'
+    status: 'SUCCESS' | 'SUCCESS_WITH_WARNINGS' | 'FAILED' | 'REMOTE_RESULT_UNKNOWN'
     error_code?: string
     message?: string
+    remote_task_id_masked?: string
+    remote_task_type?: string
+    remote_task_status?: string
+    remote_task_submitted_at?: string
+    remote_task_last_polled_at?: string
+    remote_task_finished_at?: string
     format_warning_count?: number
     format_warnings?: Array<{
       sheet_name: string
@@ -407,6 +414,10 @@ export interface WpsTracksideSyncResult {
       status?: 'SUCCESS' | 'SUCCESS_WITH_WARNINGS' | 'FAILED' | 'NOT_ENABLED'
       total_columns?: number
       local_explicit_width_count?: number
+      auto_fit_requested_count?: number
+      explicit_applied_count?: number
+      auto_fit_applied_count?: number
+      clamped_count?: number
       dto_match_count?: number
       payload_match_count?: number
       attempted_count?: number
@@ -424,20 +435,28 @@ export interface WpsTracksideSyncResult {
     format_results?: Record<string, {
       status?: 'SUCCESS' | 'SUCCESS_WITH_WARNINGS' | 'FAILED' | 'WARN' | 'NOT_ENABLED'
       attempted_count?: number
+      read_back_count?: number
       verified_count?: number
       failed_count?: number
       applied_count?: number
       expected_count?: number
       warning_count?: number
+      format_run_count?: number
       duration_ms?: number
+      items?: Array<Record<string, unknown>>
       examples?: Array<{
         sheet_name?: string
         range?: string
-        expected?: number | null
+        expected?: unknown
         before?: number | null
-        actual?: number | null
+        actual?: unknown
         verified?: boolean
       }>
     }>
+    source_workbook_format_manifest?: {
+      totals?: Record<string, number>
+      sheets?: Array<Record<string, unknown>>
+      column_widths?: Array<Record<string, unknown>>
+    }
   }>
 }
