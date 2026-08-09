@@ -264,7 +264,7 @@ function seriesDisplayName(item: OnlineMrMetricSeries, index: number): string {
 </template>
 
 <style scoped>
-.chart-shell{position:relative;min-width:0;min-height:240px;width:100%;height:100%}
+.chart-shell{position:relative;min-width:0;min-height:0;width:100%;height:100%}
 .chart{width:100%;height:100%;min-width:0;min-height:0}
 .empty{position:absolute;inset:0;pointer-events:none}
 </style>

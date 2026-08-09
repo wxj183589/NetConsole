@@ -118,6 +118,10 @@ class OnlineMrDatabaseSummaryDTO(ApiModel):
     message: str = ""
     recoverable: bool = True
     action: str | None = None
+    target_schema_version: int | None = None
+    upgrade_status: str = ""
+    upgrade_task_id: str = ""
+    upgrade_message: str = ""
 
 
 class OnlineMrSessionDetailDTO(OnlineMrSessionSummaryDTO):

@@ -3,13 +3,14 @@ import { describe, expect, it } from 'vitest'
 import {
   buildTimelineTooltip,
   formatTimelineTime,
+  type TimelineTooltipRow,
 } from './timelineTooltip'
 
 describe('timeline tooltip', () => {
-  it('shows business fields without leaking internal dimensions', () => {
-    const html = buildTimelineTooltip('traffic', [{
+  it('uses a compact tooltip by default and keeps detailed formatting available', () => {
+    const rows: TimelineTooltipRow[] = [{
       seriesName: '上行',
-      value: ['2026-07-21 15:00:00.123', 3],
+      value: ['2026-07-21 15:00:00.123', 3] as [string, number],
       data: {
         metricType: 'iperf_bitrate',
         point: {
@@ -33,7 +34,16 @@ describe('timeline tooltip', () => {
           },
         },
       },
-    }])
+    }]
+
+    const quick = buildTimelineTooltip('traffic', rows)
+    expect(quick).toContain('timeline-tooltip--quick')
+    expect(quick).toContain('15:00:00.123')
+    expect(quick).toContain('上行')
+    expect(quick).toContain('3 Mbps')
+    expect(quick).not.toContain('测试方向')
+
+    const html = buildTimelineTooltip('traffic', rows, true)
 
     expect(html).toContain('时间：2026-07-21 15:00:00.123')
     expect(html).toContain('测试方向')

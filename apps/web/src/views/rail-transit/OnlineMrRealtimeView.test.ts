@@ -17,8 +17,9 @@ const onlineMrApi = vi.hoisted(() => ({
   listOnlineMrRawFiles: vi.fn(),
   listRecentOnlineMrSessions: vi.fn(),
 }))
+const routeState = vi.hoisted(() => ({ query: {} as Record<string, string> }))
 
-vi.mock('vue-router', () => ({ useRoute: () => ({ query: {} }) }))
+vi.mock('vue-router', () => ({ useRoute: () => routeState }))
 vi.mock('../../api/trainCommunication', () => trainApi)
 vi.mock('../../api/onlineMr', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../api/onlineMr')>(),
@@ -101,6 +102,7 @@ const DataTableStub = defineComponent({
 describe('Online MR realtime mounted behavior', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    routeState.query = {}
     trainApi.getTrainCommunicationSummary.mockResolvedValue({ site_id: 'site-a' })
     trainApi.listTrainCommunications.mockResolvedValue({ items: [] })
     onlineMrApi.getCurrentOnlineMrSession.mockResolvedValue({
@@ -164,5 +166,123 @@ describe('Online MR realtime mounted behavior', () => {
     const rawValues = wrapper.findAll('.option-stub').map((item) => item.attributes('data-value'))
     expect(rawValues).toEqual(expect.arrayContaining(['terminal_monitor', 'wireless_status', 'channel_busy', 'switch_history', 'iperf_client', 'fping_samples', 'fping_summary', 'collector_output']))
     wrapper.unmount()
+  })
+
+  function controlMr(id: string, deviceId: number, name: string) {
+    return {
+      mr_id: id, device_id: deviceId, mr_name: name, train_id: `train-${deviceId}`,
+      train_name: `列车${deviceId}`, mr_role: 'CT', management_ip: `192.0.2.${deviceId}`,
+    }
+  }
+
+  function configureMrs() {
+    trainApi.listTrainCommunications.mockResolvedValue({
+      items: [{ mrs: [controlMr('mr-01', 1, '列车01-MR-CT'), controlMr('mr-02', 2, '列车02-MR-CT'), controlMr('mr-03', 3, '列车03-MR-CT')] }],
+    })
+  }
+
+  function mountOptions() {
+    const localControl = defineComponent({
+      name: 'OnlineMrLocalControl',
+      props: { mr: { type: Object, default: null } },
+      setup(props) {
+        return () => h('div', { 'data-testid': 'local-control-mr', 'data-mr-id': props.mr?.mr_id || '' })
+      },
+    })
+    const select = defineComponent({
+      name: 'ElSelect',
+      inheritAttrs: false,
+      props: { modelValue: { type: String, default: '' } },
+      setup(props, { slots }) {
+        return () => h('div', { 'data-testid': 'control-mr-select', 'data-selected': props.modelValue }, slots.default?.())
+      },
+    })
+    return {
+      global: {
+        plugins: [createPinia()],
+        directives: { loading: () => undefined },
+        stubs: {
+          NcDataTable: DataTableStub,
+          NcStatusTag: SlotStub,
+          OnlineMrLocalControl: localControl,
+          OnlineMrAgentControlPanel: SlotStub,
+          ElAlert: SlotStub,
+          ElButton: SlotStub,
+          ElCollapse: CollapseStub,
+          ElCollapseItem: CollapseItemStub,
+          ElDescriptions: SlotStub,
+          ElDescriptionsItem: SlotStub,
+          ElEmpty: SlotStub,
+          ElOption: OptionStub,
+          ElSelect: select,
+          ElTabPane: SlotStub,
+          ElTabs: SlotStub,
+        },
+      },
+    }
+  }
+
+  it('aligns the control MR with the active session instead of the first list item', async () => {
+    configureMrs()
+    onlineMrApi.getCurrentOnlineMrSession.mockResolvedValue({
+      session_id: 'session-2', site_id: 'site-a', mr_name: '列车02-MR-CT', device_id: 2, device_name: '列车02',
+      status: 'COLLECTING', phase: 'COLLECTING', task_status: 'RUNNING',
+    })
+    const wrapper = mount(OnlineMrRealtimeView, mountOptions())
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="control-mr-select"]').attributes('data-selected')).toBe('mr-02')
+    expect(wrapper.get('[data-testid="local-control-mr"]').attributes('data-mr-id')).toBe('mr-02')
+    wrapper.unmount()
+  })
+
+  it('lets an active session win over route query and preserves it after the session ends', async () => {
+    configureMrs()
+    routeState.query = { mr_id: 'mr-01' }
+    const activeSession = {
+      session_id: 'session-2', site_id: 'site-a', mr_name: '列车02-MR-CT', device_id: 2, device_name: '列车02',
+      status: 'COLLECTING', phase: 'COLLECTING', created_at: null, started_at: null, stopped_at: null,
+      duration_seconds: 0, duration_minutes: 0, controller_task_id: null, executor_kind: 'LOCAL', agent_id: null,
+      has_raw_data: true, has_parsed_data: false, has_package: false, package_name: null, package_reference: null,
+      force_stopped: false, finalization_complete: false, stop_reason: null, task_status: 'RUNNING', mapping_state: 'LINKED',
+      error_code: null, error_message: null, session_path_reference: '', connection_summary: {}, collection_config: {},
+      enabled_collectors: [], traffic_summary: {}, file_summary: {}, database_summary: { status: 'missing', available: false,
+        compatible: false, size_bytes: 0, modified_at: null, schema_version: null, parser_version: null, tables: [], row_counts: {},
+        available_capabilities: [], missing_capabilities: [], missing_tables: [], error_code: null, message: '', recoverable: true, action: 'parse_session' },
+      notes_count: 0, latest_metric_time: null, data_integrity: 'unknown',
+    }
+    onlineMrApi.getCurrentOnlineMrSession.mockResolvedValue(activeSession)
+    const pinia = createPinia()
+    const wrapper = mount(OnlineMrRealtimeView, { ...mountOptions(), global: { ...mountOptions().global, plugins: [pinia] } })
+    await flushPromises()
+    expect(wrapper.get('[data-testid="control-mr-select"]').attributes('data-selected')).toBe('mr-02')
+
+    onlineMrApi.getCurrentOnlineMrSession.mockResolvedValue(null)
+    const store = (await import('../../stores/onlineMr')).useOnlineMrStore(pinia)
+    await store.refreshOverview()
+    await store.refreshOverview()
+    await store.refreshOverview()
+    await nextTick()
+    expect(wrapper.get('[data-testid="control-mr-select"]').attributes('data-selected')).toBe('mr-02')
+    wrapper.unmount()
+  })
+
+  it('uses route query and persisted selection only when there is no active session', async () => {
+    configureMrs()
+    onlineMrApi.getCurrentOnlineMrSession.mockResolvedValue(null)
+    routeState.query = { mr_id: 'mr-03' }
+    const wrapper = mount(OnlineMrRealtimeView, mountOptions())
+    await flushPromises()
+    expect(wrapper.get('[data-testid="control-mr-select"]').attributes('data-selected')).toBe('mr-03')
+    wrapper.unmount()
+
+    routeState.query = {}
+    const pinia = createPinia()
+    const store = (await import('../../stores/onlineMr')).useOnlineMrStore(pinia)
+    store.setSelectedControlMrId('mr-02')
+    const persistedWrapper = mount(OnlineMrRealtimeView, { ...mountOptions(), global: { ...mountOptions().global, plugins: [pinia] } })
+    await flushPromises()
+    expect(persistedWrapper.get('[data-testid="control-mr-select"]').attributes('data-selected')).toBe('mr-02')
+    persistedWrapper.unmount()
   })
 })

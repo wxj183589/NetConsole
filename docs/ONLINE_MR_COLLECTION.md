@@ -155,6 +155,8 @@ python -m scripts.maintenance.check_online_mr_session_state --task-id "<controll
 
 当前解析库 schema version 为 `online_mr_business_tables_v12_identity_channel_busy`。公开业务表 key 固定为 `main_link`、`link_detail`、`channel_busy`、`switch_history`、`switch_realtime`、`interface_rate`、`fping_1s`、`iperf`、`diagnostics`；旧 `mesh_link`/`mesh_detail` 只作为 API 入参短期兼容别名并规范化返回新 key，`radio_statistics` 不再作为独立业务表公开。`main_link_samples` 额外保存 `peer_ap_mac`、`canonical_ap_mac`、`peer_radio_mac`、`identity_status`、`identity_source`、`identity_reason`、`identity_match_rule` 和 `identity_match_confidence`，这些字段来自统一 AP Identity 对 Peer MAC/Radio MAC 的精确解析；原始 `peer_mac`、`peer_mac_normalized` 和 `bssid` 仍作为观测事实保留，不能被 AP MAC 覆盖。`channel_busy_records` 同时保存 `channel_band_raw`、规范化的 `bandwidth_mhz` 和兼容字段 `bandwidth`；`Channel Band: 20M/40MHz/80M/160MHz` 均可解析，一个 ChannelBusy block 的全部样本行都会进入业务表、指标、图表和报告统计，不再只保留 `row_index=1`。新生成的业务记录表不保存 `raw_file`、`source_file`、`raw_line_start`、`raw_line_end`、`raw_line` 等来源文件或行号字段；解析问题和诊断事件仍可保留定位信息。原始日志文件继续完整保存在会话 `raw/` 目录，原始日志页和打包功能不得删除或绕过这些事实文件。
 
+解析库当前契约同时保存独立的 `schema_version=12` 与 capability 集合；最低能力包括 `main_link`、`link_detail`、`channel_busy`、`interface_rate`、`switch_history`、`switch_realtime`、`fping_rtt`、`fping_loss`、`iperf` 和 `timeline`，业务层不再用 parser 名称字符串判断兼容性。终态历史 Session 打开时调用 `POST /api/online-mr/sessions/{session_id}/ensure-current`：能力完整时直接返回 `CURRENT`；能力缺失时复用同一会话资源锁下的 `online_mr_parse` Job，从本地 raw 重建 `parsed/online_diagnosis.sqlite.upgrading`。候选库通过 SQLite 完整性、metadata/raw fingerprint、表/capability、row count 和关键投影校验后才原子替换活动库，并只保留一个 `parsed/retired/online_diagnosis.previous.sqlite` 回滚副本。失败继续读取旧兼容库；原始数据缺失或相同 raw fingerprint 已失败时返回 `RAW_DATA_MISSING/FAILED` 并抑制重复任务。有效的中断候选可在下次运行直接恢复发布，无效候选不会替换旧库。
+
 `/rail-transit/online-mr-analysis` 的会话动作统一收敛到当前会话顶部动作和会话记录行操作：顶部保留刷新、解析/强制解析、打开当前会话位置、生成 XLSX 和删除当前会话；会话记录表末列提供“打开本地目录”和“删除”。报告按钮只提交一次 Export Process 任务，进度、错误和 Artifact 继续在全局任务中心查看；会话记录表与顶部选择器共享 `session_id`，切换任一入口都同步当前行高亮。底部不再保留第二套报告卡片。
 
 分析页将详情选择与行级动作目标严格分离：`selectedSessionId` 只表示当前详情，打开和删除分别使用目标 `session_id`。打开未选中行不会切换详情或路由；删除非当前行只移除目标行，删除当前行优先选择原列表后一项、否则前一项，并同步 `query.session_id`。列表刷新保留仍存在的当前选择，不再每次无条件选择第一项。
@@ -402,11 +404,15 @@ LOCAL Worker 在创建 Session 后立即记录 `startup_timeline`，并把 fping
 
 动态图通过 `useRailTimelineController()` 共享 `visibleStart/visibleEnd`、游标、锁定分析时刻和两种独立锁状态。主用链路、轨旁 AP 及同期关联指标的 inside/slider DataZoom 都消费同一个带 revision 的绝对 viewport；切换指标、沉浸模式或 KeepAlive 往返不重置 Zoom/selectedTime。切换导航只使用当前统一时间域内的事件，设备历史快照中早于本 Session 的记录不能被当作当前时刻。实时切换存在时优先作为双图标记，历史切换只作范围内回退。
 
+动态图工作台使用“左侧固定分析信息栏 + 右侧图表区”，所有动态图 Tab 共用时间校正、当前时刻、主链路、当前悬停指标、附近切换和解析状态。图上 Tooltip 只保留时间、指标值和必要对象，完整 AP/Radio/ACTIVE-STANDBY/RSSI/站点/区间、Ping、Channel Busy、接口或打流详情进入固定栏。Hover 跟随游标，单击锁定 `selectedTime`，解除按钮或 `Esc` 恢复跟随；小于 1400px 时信息栏变成覆盖式可折叠抽屉。主链路/轨旁双图和关联指标按剩余高度分配，容器不足时只在图表区内部纵向滚动，不裁剪 X 轴或 DataZoom；沉浸模式占满 Electron 内容 viewport 并保留紧凑工具栏。各 ECharts 实例和双图分配器使用 `ResizeObserver` 响应真实容器尺寸变化。
+
 业务打流整场概览和当前 DataZoom 窗口统计统一由 `src/netconsole/services/online_mr/traffic_analysis.py` 生成，页面与 XLSX 不重复计算。TCP 只展示吞吐、发送/接收数据和 Retransmits；UDP 只展示吞吐、丢包包数/丢包率和 Jitter。One-Way Delay、连续丢包、TCP 丢包率和 UDP 字节丢失率在原始结果未提供时保持无可靠统计，不用 0 或推算值填充；iPerf 原始采集时间继续按 `SessionTimeAlignment` 映射到 MR 设备时间。
 
 历史切换与实时切换 RSSI 分别读取 `switch_history_events` 和 `switch_realtime_events`，返回事件前后 RSSI、Peer、AP Identity 和位置；实时切换表没有 `radio` 列时返回 `NULL`，不能丢弃整批事件。二者是事件快照，不伪装为连续趋势，也不复用普通主链路 RSSI 序列。指标和时间轴查询只读 `parsed/online_diagnosis.sqlite`，分页限制下推到 SQLite；页面卸载时释放轮询、ECharts、ResizeObserver 和主题订阅。缺表、缺字段或空值保持空态，不回写、迁移或伪造数据。
 
 分析页由应用级 `KeepAlive` 和 Pinia 内存缓存共同保留同一局点、同一会话的选择、活动 Tab、筛选、已加载业务表、分页批次、统一时间视口、锁定时刻、Radio、目标点数、关联指标和双图布局；缓存键由局点与 `session_id` 共同组成，A -> B -> A 会恢复 A 的独立状态。切到其他模块再返回时不重新获取会话详情或整批业务表，已加载的空结果也不会重复请求；停用期间图表进入 inactive，并停止轮询和可见更新。只有用户显式刷新、重新解析/强制解析、确认 revision 变化、删除会话或切换局点才失效对应缓存；未缓存的目标会话首次打开时才读取详情和当前活动区域。所有重新加载继续受 generation、AbortController 和同资源 in-flight 去重保护，不能复用旧局点或其他会话数据；目标点数连续切换同样遵守 last-wins。
+
+自动升级完成只失效当前 Session 的解析数据缓存并重新读取新 revision；`activeTab`、动态图 Tab、DataZoom viewport、游标/锁定时刻、沉浸模式和分析栏状态继续保留，不执行 `window.location.reload()`。初始化期间的任务恢复不得用空恢复结果覆盖刚创建的自动升级任务；同一活动 task 继续轮询到终态。
 
 ## 18. 在线列车通信统一展示（5C-7A，只读）
 

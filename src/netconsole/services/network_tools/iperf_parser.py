@@ -43,6 +43,15 @@ UDP_RE = re.compile(
     r"(?P<lost>\d+)\s*/\s*(?P<total>\d+)\s+\((?P<loss>\d+(?:\.\d+)?)%\)",
     re.IGNORECASE,
 )
+DEBUG_TRANSFER_RE = re.compile(r"^\s*(?:sent|received)\s+(?P<bytes>\d+)\s+bytes\b", re.IGNORECASE)
+DEBUG_INTERNAL_TOKENS = (
+    "interval_len",
+    "interval forces",
+    "debug",
+    "selecting",
+    "setting",
+    "socket",
+)
 
 
 def read_iperf_text(path: Path) -> str:
@@ -236,6 +245,38 @@ def parse_iperf_line(line: str, started_at: datetime | None = None, collector_ti
         center = started_at + timedelta(seconds=(start + end) / 2)
         row["interval_center_time"] = center.isoformat(sep=" ", timespec="milliseconds")
     return row
+
+
+def classify_iperf_line(
+    line: str,
+    *,
+    row: dict[str, object] | None = None,
+    error: dict[str, object] | None = None,
+) -> str:
+    """Classify raw stdout without treating iPerf debug chatter as result rows."""
+
+    _collector_time, payload_line = split_iperf_log_prefix(line)
+    payload = str(payload_line or "").strip()
+    lowered = payload.casefold()
+    if error is not None or _iperf_error_code(payload):
+        return "ERROR"
+    if not payload:
+        return "LIFECYCLE"
+    if payload.startswith("#") or any(
+        token in lowered
+        for token in ("iperf run finished", "stopped by collection", "iperf process exited")
+    ):
+        return "LIFECYCLE"
+    if "[sum]" in lowered or re.search(r"\b(?:sender|receiver)\s*$", payload, re.IGNORECASE):
+        return "SUMMARY"
+    parsed_row = row if row is not None else parse_iperf_line(line)
+    if parsed_row is not None:
+        return "INTERVAL_RESULT"
+    if DEBUG_TRANSFER_RE.match(payload):
+        return "DEBUG_TRANSFER"
+    if any(token in lowered for token in DEBUG_INTERNAL_TOKENS):
+        return "DEBUG_INTERNAL"
+    return "OTHER"
 
 
 def parse_iperf_lines(lines: list[str], started_at: datetime | None = None) -> list[dict[str, object]]:

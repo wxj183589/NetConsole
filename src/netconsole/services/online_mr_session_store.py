@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import time
 import uuid
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from threading import RLock
+from typing import Iterator
 
 from netconsole.core.paths import PathResolver
 from netconsole.models.mesh_log_models import MeshLogRecord
@@ -24,6 +28,22 @@ from netconsole.models.online_mr_models import (
     OnlineMrSessionMeta,
 )
 from netconsole.services.online_mr_parser import parse_interface_rate_text
+
+
+class OnlineMrSnapshotWriteError(PermissionError):
+    """Atomic view snapshot replacement failed after bounded lock retries."""
+
+    def __init__(self, *, target: str, temporary: str, attempts: int, cause: BaseException) -> None:
+        self.operation = "atomic_replace_failed"
+        self.target = target
+        self.temporary = temporary
+        self.attempts = attempts
+        self.cause_type = type(cause).__name__
+        self.cause_message = str(cause)
+        super().__init__(
+            f"operation={self.operation} target={target} temp={temporary} attempts={attempts} "
+            f"exception_type={self.cause_type} exception_message={self.cause_message}"
+        )
 
 
 DEVICE_TERMINAL_MONITOR_RAW_FILE = "terminal_monitor_raw.log"
@@ -393,11 +413,40 @@ class OnlineMrSession:
                     json.dumps(payload, ensure_ascii=False, indent=2),
                     encoding="utf-8",
                 )
-                temporary.replace(path)
+                replace_delays = (0.01, 0.03, 0.08, 0.15)
+                attempts = 0
+                for attempt, delay in enumerate((*replace_delays, None), start=1):
+                    attempts = attempt
+                    try:
+                        os.replace(temporary, path)
+                        break
+                    except OSError as exc:
+                        is_access_denied = isinstance(exc, PermissionError) or getattr(exc, "winerror", None) == 5 or exc.errno == 5
+                        if not is_access_denied:
+                            raise
+                        if delay is None:
+                            target = self._snapshot_relative_path(path)
+                            temporary_name = self._snapshot_relative_path(temporary)
+                            raise OnlineMrSnapshotWriteError(
+                                target=target,
+                                temporary=temporary_name,
+                                attempts=attempts,
+                                cause=exc,
+                            ) from exc
+                        time.sleep(delay)
             finally:
                 if temporary.exists():
-                    temporary.unlink()
+                    try:
+                        temporary.unlink()
+                    except OSError:
+                        pass
         return path
+
+    def _snapshot_relative_path(self, path: Path) -> str:
+        try:
+            return path.relative_to(self.session_dir).as_posix()
+        except ValueError:
+            return path.name
 
     def update_config_collect(
         self,
@@ -716,9 +765,14 @@ class OnlineMrSession:
             file.write(f"{datetime.now().isoformat(sep=' ', timespec='seconds')} {message}\n")
             file.flush()
 
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
-        return conn
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        connection = sqlite3.connect(self.db_path)
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
 
     def _mesh_values(self, sample_id: int, record: MeshLogRecord) -> tuple[object, ...]:
         metrics = record.metrics

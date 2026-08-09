@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   queryOnlineMrTimeline: vi.fn(),
   deleteOnlineMrSession: vi.fn(),
   exportOnlineMrReport: vi.fn(),
+  ensureOnlineMrParsedDatabaseCurrent: vi.fn(),
   getRailTransitTask: vi.fn(),
   recoverRailTransitTasks: vi.fn(),
   parseOnlineMrSession: vi.fn(),
@@ -43,6 +44,7 @@ vi.mock('../../api/onlineMr', () => ({
 vi.mock('../../api/railTransitWeb', () => ({
   deleteOnlineMrSession: mocks.deleteOnlineMrSession,
   exportOnlineMrReport: mocks.exportOnlineMrReport,
+  ensureOnlineMrParsedDatabaseCurrent: mocks.ensureOnlineMrParsedDatabaseCurrent,
   getRailTransitTask: mocks.getRailTransitTask,
   parseOnlineMrSession: mocks.parseOnlineMrSession,
   recoverRailTransitTasks: mocks.recoverRailTransitTasks,
@@ -88,6 +90,8 @@ const tabsStub = defineComponent({
           slots.default?.(),
         ]
       : [
+          h('button', { 'data-testid': 'ping-quality-chart', onClick: () => emit('tab-change', 'ping-quality') }, 'Ping 质量'),
+          h('button', { 'data-testid': 'channel-busy-chart', onClick: () => emit('tab-change', 'busy') }, '信道繁忙度'),
           h('button', { 'data-testid': 'switch-history-chart', onClick: () => emit('tab-change', 'switch-rssi') }, '切换历史图'),
           h('button', { 'data-testid': 'switch-realtime-chart', onClick: () => emit('tab-change', 'switch-log-rssi') }, '实时切换图'),
           slots.default?.(),
@@ -137,7 +141,7 @@ const rssiChartStub = defineComponent({
     selectedTime: { type: String, default: '' },
     viewport: { type: Object, default: null },
   },
-  emits: ['update:viewport'],
+  emits: ['update:viewport', 'pointer-change', 'select-time'],
   setup(props) {
     return () => h('div', { 'data-testid': 'rssi-chart-series' }, JSON.stringify({
       rows: props.rows,
@@ -167,7 +171,8 @@ const stubs: Record<string, Component | boolean> = {
 }
 
 beforeEach(() => {
-  vi.clearAllMocks()
+  vi.resetAllMocks()
+  localStorage.clear()
   for (const key of Object.keys(mocks.routeQuery)) delete mocks.routeQuery[key]
   Reflect.deleteProperty(window, 'netconsoleDesktop')
   mocks.confirm.mockResolvedValue(true)
@@ -181,6 +186,7 @@ beforeEach(() => {
   mocks.queryOnlineMrTimeline.mockResolvedValue([])
   mocks.recoverRailTransitTasks.mockResolvedValue([])
   mocks.parseOnlineMrSession.mockResolvedValue({ task_id: 'parse-1', action: 'online_mr_parse', status: 'COMPLETED' })
+  mocks.ensureOnlineMrParsedDatabaseCurrent.mockResolvedValue({ status: 'CURRENT', current_schema_version: 12, target_schema_version: 12, missing_capabilities: [], message: '解析数据库已是当前版本。', retry_suppressed: false, task: null })
   mocks.exportOnlineMrReport.mockResolvedValue({ task_id: 'report-1', action: 'online_mr_report', status: 'PENDING', result_summary: {} })
   mocks.deleteOnlineMrSession.mockResolvedValue({ task_id: 'delete-1', action: 'online_mr_session_delete', status: 'PENDING', result_summary: {} })
   mocks.routerPush.mockResolvedValue(undefined)
@@ -303,6 +309,131 @@ describe('Online MR analysis view behavior', () => {
     expect(source).not.toContain('raw_file')
     expect(source).not.toContain('raw_line')
     expect(source).not.toContain('TCP 限速')
+    expect(source).toContain("item.key === 'rssi' ? 'timeline-chart-stack' : 'timeline-chart-pane'")
+    expect(source).toContain('@media(max-height:1080px)')
+    expect(source).toContain('height:100dvh')
+    expect(source).toContain('overflow-y:auto')
+    expect(source).toContain("addEventListener('keydown', handleTimelineEscape, true)")
+    expect(source).toContain("removeEventListener('keydown', handleTimelineEscape, true)")
+  })
+
+  it('keeps one fixed analysis panel across RSSI, Ping, and Channel Busy tabs', async () => {
+    mocks.queryOnlineMrTimelineMetrics.mockResolvedValueOnce(timelineRssiSeries('AP-A', [-51]))
+    const wrapper = await renderView()
+    await wrapper.get('[data-testid="charts-tab"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="online-mr-analysis-info-panel"]').exists()).toBe(true)
+    await wrapper.get('[data-testid="ping-quality-chart"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="online-mr-analysis-info-panel"]').exists()).toBe(true)
+    await wrapper.get('[data-testid="channel-busy-chart"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="online-mr-analysis-info-panel"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('follows chart hover, locks on click, and unlocks with Escape', async () => {
+    const series = timelineRssiSeries('AP-Hover', [-48])
+    Object.assign(series[1].points[0].dimensions, {
+      radio: 2,
+      link_state: 'ACTIVE',
+      peer_name: 'AP-Hover',
+      station: '高桥西站',
+      section: '高桥西至芦港',
+    })
+    mocks.queryOnlineMrTimelineMetrics.mockResolvedValueOnce(series)
+    const wrapper = await renderView()
+    await wrapper.get('[data-testid="charts-tab"]').trigger('click')
+    await flushPromises()
+    const chart = wrapper.findComponent(rssiChartStub)
+
+    await chart.vm.$emit('pointer-change', { time: '2026-07-21 16:00:00', source_chart: 'trackside-rssi' })
+    await nextTick()
+    expect(wrapper.text()).toContain('轨旁 AP RSSI')
+    expect(wrapper.text()).toContain('AP-Hover')
+    expect(wrapper.text()).toContain('高桥西站')
+    expect(wrapper.text()).toContain('高桥西至芦港')
+
+    await chart.vm.$emit('select-time', '2026-07-21 16:00:00')
+    await nextTick()
+    expect(chart.props('selectedTime')).toBe('2026-07-21 16:00:00')
+    expect(wrapper.text()).toContain('已锁定')
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await nextTick()
+    expect(wrapper.text()).toContain('跟随指针')
+    wrapper.unmount()
+  })
+
+  it('shows upgrading and preserves chart state when automatic upgrade completes', async () => {
+    const legacy = {
+      ...sessionDetail('session-1'),
+      database_summary: { status: 'legacy', compatible: true, parser_version: 'v9', missing_capabilities: ['channel_busy'], message: '旧版解析结果。' },
+    }
+    const current = {
+      ...sessionDetail('session-1'),
+      database_summary: { status: 'ready', compatible: true, parser_version: 'v12', revision: 'revision-v12', missing_capabilities: [], message: '解析数据库可用。' },
+    }
+    mocks.getOnlineMrSession.mockResolvedValueOnce(legacy).mockResolvedValueOnce(current)
+    mocks.ensureOnlineMrParsedDatabaseCurrent.mockResolvedValueOnce({
+      status: 'UPGRADING', current_schema_version: 9, target_schema_version: 12,
+      missing_capabilities: ['channel_busy'], message: '正在升级解析库。', retry_suppressed: false,
+      task: { task_id: 'upgrade-1', action: 'online_mr_parse', status: 'RUNNING' },
+    })
+    mocks.getRailTransitTask.mockResolvedValueOnce({ task_id: 'upgrade-1', action: 'online_mr_parse', status: 'COMPLETED', result_summary: {} })
+    mocks.queryOnlineMrTimelineMetrics.mockResolvedValue(timelineRssiSeries('AP-A', [-51, -52]))
+    const wrapper = await renderView()
+    expect(wrapper.text()).toContain('解析库升级中')
+    await wrapper.get('[data-testid="charts-tab"]').trigger('click')
+    await flushPromises()
+    const viewport = {
+      start_time: '2026-07-21 16:00:10', end_time: '2026-07-21 16:00:50',
+      start_percent: 20, end_percent: 80,
+      full_start_time: '2026-07-21 16:00:00', full_end_time: '2026-07-21 16:01:00',
+      source: 'user_zoom' as const,
+    }
+    let chart = wrapper.findComponent(rssiChartStub)
+    await chart.vm.$emit('update:viewport', viewport)
+    await chart.vm.$emit('select-time', '2026-07-21 16:00:30')
+    await wrapper.get('[data-testid="toggle-immersive"]').trigger('click')
+
+    await new Promise((resolve) => window.setTimeout(resolve, 1100))
+    await flushPromises()
+
+    chart = wrapper.findComponent(rssiChartStub)
+    expect(mocks.getRailTransitTask).toHaveBeenCalledOnce()
+    expect(mocks.getOnlineMrSession).toHaveBeenCalledTimes(2)
+    expect(wrapper.find('[data-tabs-model="charts"]').exists()).toBe(true)
+    expect(wrapper.get('.timeline-workbench').classes()).toContain('is-immersive')
+    expect(chart.props('viewport')).toEqual(viewport)
+    expect(chart.props('selectedTime')).toBe('2026-07-21 16:00:30')
+    expect(wrapper.text()).toContain('已锁定')
+    expect(wrapper.text()).toContain('解析可用')
+    expect(mocks.ensureOnlineMrParsedDatabaseCurrent).toHaveBeenCalledOnce()
+    wrapper.unmount()
+  })
+
+  it('shows one suppressed automatic-upgrade failure notice without starting a task', async () => {
+    const legacy = {
+      ...sessionDetail('session-1'),
+      database_summary: { status: 'legacy', compatible: true, parser_version: 'v9', missing_capabilities: ['main_link'], message: '旧版解析结果。' },
+    }
+    mocks.getOnlineMrSession.mockResolvedValue(legacy)
+    mocks.ensureOnlineMrParsedDatabaseCurrent.mockResolvedValue({
+      status: 'RAW_DATA_MISSING', current_schema_version: 9, target_schema_version: 12,
+      missing_capabilities: ['main_link'], message: '缺少原始采集数据，无法自动升级。', retry_suppressed: true, task: null,
+    })
+    const pinia = createPinia()
+    let wrapper = await renderView(pinia)
+    expect(wrapper.text()).toContain('解析库无法自动升级')
+    expect(mocks.messageWarning).toHaveBeenCalledOnce()
+    expect(mocks.getRailTransitTask).not.toHaveBeenCalled()
+    wrapper.unmount()
+
+    wrapper = await renderView(pinia)
+    expect(mocks.messageWarning).toHaveBeenCalledOnce()
+    expect(mocks.getRailTransitTask).not.toHaveBeenCalled()
+    wrapper.unmount()
   })
 
   it('keeps only the bounded Search icon and moves report creation into the top action row', async () => {

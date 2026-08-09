@@ -198,8 +198,20 @@ function switchRssi(rows: TimelineTooltipRow[]): string {
   return shell(timeOf(rows), `<section>${field('切出 AP', event.old_peer_name)}${field('切出 RSSI', formatRssi(number(event.old_rssi_dbm)))}${field('切入 AP', event.new_peer_name)}${field('切入 RSSI', formatRssi(number(event.new_rssi_dbm)))}${field('切出站点', event.old_station)}${field('切入站点', event.new_station)}${field('Radio', event.radio == null ? null : `Radio ${event.radio}`)}${field('原因', reason)}</section>`, pointOf(rows[0]))
 }
 
-export function buildTimelineTooltip(kind: TimelineTooltipKind, rows: TimelineTooltipRow[]): string {
+export function buildTimelineTooltip(kind: TimelineTooltipKind, rows: TimelineTooltipRow[], detailed = false): string {
   if (!rows.length) return shell(null, '')
+  if (!detailed) {
+    const values = rows.slice(0, 3).map((row) => {
+      const value = valueOf(row)
+      const unit = kind.includes('loss') || kind === 'channel-busy' ? '%'
+        : kind.includes('jitter') || kind === 'ping-rtt' ? ' ms'
+          : kind === 'traffic' ? ' Mbps'
+            : kind === 'interface' ? ' pps'
+              : ''
+      return field(row.seriesName || '指标', value === null ? EMPTY : `${trimNumber(value)}${unit}`)
+    }).join('')
+    return `<div class="timeline-tooltip timeline-tooltip--quick"><div class="timeline-tooltip__time">${escapeHtml(formatTimelineTime(timeOf(rows)).split(' ').at(-1) || EMPTY)}</div>${values}</div>`
+  }
   if (kind === 'ping-loss') return pingLoss(rows)
   if (kind === 'ping-rtt') return pingRtt(rows)
   if (kind === 'interface') return interfaceRate(rows)

@@ -19,7 +19,13 @@ const expanded = ref<string[]>([])
 const runtimeExpanded = ref<string[]>([])
 const rawSource = ref('terminal_monitor')
 const controlMrs = ref<MrCommunicationStatus[]>([])
-const controlMrId = ref('')
+const controlMrId = computed({
+  get: () => exactSessionMrId() || store.selectedControlMrId,
+  set: (value: string) => {
+    const sessionMrId = exactSessionMrId()
+    store.setSelectedControlMrId(sessionMrId || value, sessionMrId ? 'session' : 'manual')
+  },
+})
 const controlError = ref('')
 const controlSiteId = ref('')
 const executorTab = ref('local')
@@ -300,18 +306,76 @@ async function loadControlMrs(): Promise<void> {
     ])
     controlSiteId.value = summary.site_id
     controlMrs.value = page.items.flatMap((train) => train.mrs)
-    const requestedMr = typeof route.query.mr_id === 'string' ? route.query.mr_id : ''
-    const requestedDevice = typeof route.query.device_id === 'string' ? route.query.device_id : ''
-    controlMrId.value = controlMrs.value.find((item) => item.mr_id === requestedMr)?.mr_id
-      || controlMrs.value.find((item) => String(item.device_id) === requestedDevice)?.mr_id
-      || controlMrId.value
-      || controlMrs.value[0]?.mr_id
-      || ''
+    syncControlMrWithSession()
     controlError.value = ''
   } catch (cause) {
     controlError.value = cause instanceof Error ? cause.message : '正式 MR 列表加载失败'
   }
 }
+
+function exactSessionMrId(): string {
+  const session = store.current
+  if (!session) return ''
+  const sessionMrId = (session as typeof session & { mr_id?: string }).mr_id
+  if (sessionMrId) {
+    const byMrId = controlMrs.value.find((item) => item.mr_id === sessionMrId)
+    if (byMrId) return byMrId.mr_id
+  }
+  const deviceId = session.device_id
+  if (deviceId !== undefined && deviceId !== null && String(deviceId) !== '') {
+    const byDevice = controlMrs.value.find((item) => String(item.device_id) === String(deviceId))
+    if (byDevice) return byDevice.mr_id
+  }
+  return controlMrs.value.find((item) => item.mr_name === session.mr_name)?.mr_id || ''
+}
+
+function routeMrId(): string {
+  const requestedMr = typeof route.query.mr_id === 'string' ? route.query.mr_id : ''
+  const requestedDevice = typeof route.query.device_id === 'string' ? route.query.device_id : ''
+  return controlMrs.value.find((item) => item.mr_id === requestedMr)?.mr_id
+    || controlMrs.value.find((item) => String(item.device_id) === requestedDevice)?.mr_id
+    || ''
+}
+
+function syncControlMrWithSession(): void {
+  if (!controlMrs.value.length) return
+  const sessionMrId = exactSessionMrId()
+  if (sessionMrId) {
+    store.setSelectedControlMrId(sessionMrId, 'session')
+    return
+  }
+
+  if (store.current) {
+    store.setSelectedControlMrId('', 'session')
+    return
+  }
+
+  const persisted = controlMrs.value.find((item) => item.mr_id === store.selectedControlMrId)?.mr_id || ''
+  if (persisted && store.selectedControlMrSource === 'session') return
+
+  const requested = routeMrId()
+  if (requested) {
+    store.setSelectedControlMrId(requested, 'route')
+    return
+  }
+  if (persisted) {
+    store.setSelectedControlMrId(persisted, store.selectedControlMrSource || 'manual')
+    return
+  }
+  store.setSelectedControlMrId(controlMrs.value[0]?.mr_id || '', 'fallback')
+}
+
+watch(
+  [
+    controlMrs,
+    () => store.current,
+    () => store.current?.session_id,
+    () => store.current?.device_id,
+    () => store.current?.mr_name,
+  ],
+  syncControlMrWithSession,
+  { immediate: true },
+)
 
 onMounted(async () => {
   document.addEventListener('visibilitychange', handleVisibility)

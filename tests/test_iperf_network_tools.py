@@ -10,6 +10,7 @@ from netconsole.core.paths import PathResolver
 from netconsole.models.online_mr_models import IperfTrafficConfig
 from netconsole.services.network_tools.iperf_parser import (
     aggregate_iperf_for_segment,
+    classify_iperf_line,
     format_iperf_log_header,
     format_iperf_log_line,
     parse_iperf_error_line,
@@ -18,6 +19,8 @@ from netconsole.services.network_tools.iperf_parser import (
     split_iperf_log_prefix,
     summarize_iperf_zero_samples,
 )
+from netconsole.models.online_mr_models import OnlineMrSessionMeta
+from netconsole.services.online_mr_session_store import OnlineMrSession, OnlineMrSnapshotWriteError
 from netconsole.services.network_tools.iperf_runner import (
     FOLLOW_COLLECTION_PROTECTION_DURATION_SECONDS,
     IperfClientConfig,
@@ -123,6 +126,148 @@ def test_tcp_auto_max_bandwidth_omits_bandwidth_arg(tmp_path: Path) -> None:
     args = build_iperf_client_args(tmp_path / "iperf3.exe", IperfClientConfig("10.0.0.1", protocol="TCP", target_bandwidth=None))
     assert "-b" not in args
     assert "-d" not in args
+
+
+def test_iperf_debug_lines_are_classified_without_becoming_intervals() -> None:
+    assert classify_iperf_line("IPERF [2026-08-10 03:12:31.582] [client] sent 131072 bytes of 131072, pending 0, total 1118961664") == "DEBUG_TRANSFER"
+    assert classify_iperf_line("IPERF [2026-08-10 03:12:31.584] [client] interval_len 1.003977 bytes_transferred 1572864") == "DEBUG_INTERNAL"
+    assert classify_iperf_line("IPERF [2026-08-10 03:12:31.584] [client] interval forces keep") == "DEBUG_INTERNAL"
+    assert classify_iperf_line("[  5] 688.00-689.01 sec  1.50 MBytes  12.5 Mbits/sec") == "INTERVAL_RESULT"
+    assert classify_iperf_line("[  5] 0.00-10.00 sec  1.50 MBytes  12.5 Mbits/sec  sender") == "SUMMARY"
+
+
+def test_iperf_runner_keeps_high_frequency_debug_raw_and_aggregates_in_memory(tmp_path: Path, monkeypatch) -> None:
+    count = 100_000
+    debug_lines = [
+        f"sent 131072 bytes of 131072, pending 0, total {(index + 1) * 131072}"
+        for index in range(count)
+    ]
+
+    class FakeProcess:
+        pid = 321
+
+        def __init__(self) -> None:
+            self.stdout = debug_lines
+
+        def wait(self):
+            return 0
+
+        def poll(self):
+            return 0
+
+    monkeypatch.setattr("netconsole.services.network_tools.iperf_runner.subprocess.Popen", lambda *_args, **_kwargs: FakeProcess())
+    monkeypatch.setattr("netconsole.services.network_tools.iperf_runner.shutdown_manager.register_process", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("netconsole.services.network_tools.iperf_runner.shutdown_manager.unregister_process", lambda *_args, **_kwargs: None)
+
+    raw_path = tmp_path / "iperf_client_raw.log"
+    runner = IperfProcessRunner(tmp_path / "iperf3.exe", ["iperf3", "-c", "127.0.0.1", "-d"], raw_path)
+    runner.start()
+
+    text = raw_path.read_text(encoding="utf-8")
+    assert text.count("sent 131072 bytes") == count
+    assert runner.last_status == "DONE"
+    assert runner.debug_line_count == count
+    assert runner.debug_total_sent == count * 131072
+    assert runner.diagnostics()["degraded"] is False
+
+
+def test_iperf_callback_failure_does_not_become_runner_exception(tmp_path: Path, monkeypatch) -> None:
+    class FakeProcess:
+        pid = 322
+        stdout = ["sent 131072 bytes, total 131072", "interval_len 1.0 bytes_transferred 131072"]
+
+        def wait(self):
+            return 0
+
+        def poll(self):
+            return 0
+
+    monkeypatch.setattr("netconsole.services.network_tools.iperf_runner.subprocess.Popen", lambda *_args, **_kwargs: FakeProcess())
+    monkeypatch.setattr("netconsole.services.network_tools.iperf_runner.shutdown_manager.register_process", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("netconsole.services.network_tools.iperf_runner.shutdown_manager.unregister_process", lambda *_args, **_kwargs: None)
+
+    runner = IperfProcessRunner(
+        tmp_path / "iperf3.exe",
+        ["iperf3", "-c", "127.0.0.1", "-d"],
+        tmp_path / "iperf.log",
+        line_callback=lambda *_args: (_ for _ in ()).throw(PermissionError("snapshot denied")),
+    )
+    runner.start()
+
+    assert runner.last_status == "DONE"
+    assert runner.exception_stage == ""
+    assert any("callback" in warning for warning in runner.degraded_warnings)
+
+
+def test_iperf_exit_one_is_not_runner_exception(tmp_path: Path, monkeypatch) -> None:
+    class FailedProcess:
+        pid = 323
+        stdout = []
+
+        def wait(self):
+            return 1
+
+        def poll(self):
+            return 1
+
+    monkeypatch.setattr("netconsole.services.network_tools.iperf_runner.subprocess.Popen", lambda *_args, **_kwargs: FailedProcess())
+    monkeypatch.setattr("netconsole.services.network_tools.iperf_runner.shutdown_manager.register_process", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("netconsole.services.network_tools.iperf_runner.shutdown_manager.unregister_process", lambda *_args, **_kwargs: None)
+
+    runner = IperfProcessRunner(tmp_path / "iperf3.exe", ["iperf3", "-c", "127.0.0.1"], tmp_path / "iperf.log")
+    runner.start()
+
+    assert runner.last_status == "FAILED:1"
+    assert runner.exception_stage == ""
+
+
+def test_snapshot_replace_retries_permission_error(tmp_path: Path, monkeypatch) -> None:
+    session = OnlineMrSession(
+        tmp_path / "session",
+        OnlineMrSessionMeta(
+            session_id="session-1", site="demo", mr_id="mr-1", mr_name="MR-1", device_id=1,
+            device_name="MR-1", host="127.0.0.1", protocol="ssh", port=22, started_at=datetime.now(),
+        ),
+    )
+    session.session_dir.mkdir(parents=True)
+    replace_calls = 0
+    real_replace = __import__("os").replace
+
+    def flaky_replace(source, target):
+        nonlocal replace_calls
+        replace_calls += 1
+        if replace_calls == 1:
+            raise PermissionError(5, "Access is denied")
+        return real_replace(source, target)
+
+    monkeypatch.setattr("netconsole.services.online_mr_session_store.os.replace", flaky_replace)
+    path = session.write_view_snapshot("live_iperf_status", {"status": "running"})
+
+    assert replace_calls == 2
+    assert path.read_text(encoding="utf-8") == '{\n  "status": "running"\n}'
+
+
+def test_snapshot_replace_failure_has_relative_diagnostics(tmp_path: Path, monkeypatch) -> None:
+    session = OnlineMrSession(
+        tmp_path / "session",
+        OnlineMrSessionMeta(
+            session_id="session-1", site="demo", mr_id="mr-1", mr_name="MR-1", device_id=1,
+            device_name="MR-1", host="127.0.0.1", protocol="ssh", port=22, started_at=datetime.now(),
+        ),
+    )
+    session.session_dir.mkdir(parents=True)
+    monkeypatch.setattr("netconsole.services.online_mr_session_store.time.sleep", lambda _seconds: None)
+    monkeypatch.setattr("netconsole.services.online_mr_session_store.os.replace", lambda *_args: (_ for _ in ()).throw(PermissionError(5, "Access is denied")))
+
+    try:
+        session.write_view_snapshot("live_iperf_status", {"status": "running"})
+    except OnlineMrSnapshotWriteError as exc:
+        assert exc.operation == "atomic_replace_failed"
+        assert exc.target == "view/live_iperf_status.json"
+        assert exc.temporary.startswith("view/.live_iperf_status.")
+        assert "exception_type=PermissionError" in str(exc)
+    else:
+        raise AssertionError("expected snapshot replace failure")
 
 
 def test_tcp_target_bandwidth_includes_bandwidth_arg(tmp_path: Path) -> None:

@@ -131,6 +131,10 @@ export interface OnlineMrDatabaseSummary {
   message: string
   recoverable: boolean
   action: string | null
+  target_schema_version?: number | null
+  upgrade_status?: string
+  upgrade_task_id?: string
+  upgrade_message?: string
 }
 
 export interface OnlineMrMetricPoint {

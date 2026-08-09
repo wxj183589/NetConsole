@@ -1,7 +1,7 @@
 import { apiRequest } from './client'
 import type {
   CarNetworkPointPreview, CarNetworkPointRow, CarNetworkPointTable,
-  OnlineMrMetricSeries, OnlineMrTimelineEvent, MeshImportProfile, OnlineTrainPage, RailTransitTask,
+  OnlineMrMetricSeries, OnlineMrParsedDatabaseEnsureResult, OnlineMrTimelineEvent, MeshImportProfile, OnlineTrainPage, RailTransitTask,
 } from '../types/railTransitWeb'
 import type { BackendDownloadRequest } from '../../../desktop_electron/src/shared/bridge'
 import type { MeshAnalysisParams } from '../types/meshAnalysis'
@@ -113,6 +113,13 @@ export function parseOnlineMrSession(sessionId: string, forceReparse = false): P
   return apiRequest<RailTransitTask>(`${onlineMrRoot}/sessions/${encodeURIComponent(sessionId)}/parse`, {
     method: 'POST', body: JSON.stringify({ force_reparse: forceReparse }),
   })
+}
+
+export function ensureOnlineMrParsedDatabaseCurrent(sessionId: string): Promise<OnlineMrParsedDatabaseEnsureResult> {
+  return apiRequest<OnlineMrParsedDatabaseEnsureResult>(
+    `${onlineMrRoot}/sessions/${encodeURIComponent(sessionId)}/ensure-current`,
+    { method: 'POST' },
+  )
 }
 
 export function exportMeshAnalysisReport(sessionId: string, override?: MeshAnalysisParamsOverride): Promise<RailTransitTask> {
