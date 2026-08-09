@@ -43,8 +43,8 @@ export function loadDesktopLogPolicy(): DesktopLogPolicy {
       queueHardLimitBytes: positiveInteger(policyDocument.electron.queue_hard_limit_bytes, 'electron.queue_hard_limit_bytes'),
       flushTimeoutMs: positiveInteger(policyDocument.electron.flush_timeout_ms, 'electron.flush_timeout_ms'),
       fallbackMaxBytes: positiveInteger(policyDocument.electron.fallback_max_bytes, 'electron.fallback_max_bytes'),
-      rotationRetryMs: policyDocument.electron.rotation_retry_seconds.map((value, index) => (
-        positiveInteger(value, `electron.rotation_retry_seconds[${index}]`) * 1_000
+      rotationRetryMs: policyDocument.rotation_retry_seconds.map((value, index) => (
+        positiveInteger(value, `rotation_retry_seconds[${index}]`) * 1_000
       )),
     },
     duplicateSuppression: {

@@ -25,6 +25,20 @@ class LogPageDTO(ApiModel):
     total_pages: int
 
 
+class RuntimeLogSummaryDTO(ApiModel):
+    directory: str
+    total_bytes: int
+    protected_bytes: int
+    unknown_bytes: int
+    candidate_bytes: int
+    protected_files: int
+    unknown_files: int
+    candidate_files: int
+    max_total_bytes: int
+    target_total_bytes: int
+    retention_days: int
+
+
 class CleanupItemDTO(ApiModel):
     item_id: str
     title: str
@@ -72,7 +86,7 @@ class MaintenanceTaskDTO(ApiModel):
 
 
 class CleanupStartRequest(ApiModel):
-    mode: Literal["scan", "clean"] = "scan"
+    mode: Literal["scan", "clean", "manual_history_cleanup"] = "scan"
     retention_days: int = Field(default=3, ge=1, le=365)
     selected_item_ids: list[Literal["runtime_logs", "runtime_cache", "temporary_files"]] = Field(
         default_factory=list,
@@ -88,6 +102,8 @@ class CleanupStartRequest(ApiModel):
             if self.selected_item_ids or self.confirmed:
                 raise ValueError("扫描请求只能包含保留天数")
             return self
+        if self.mode == "manual_history_cleanup" and self.selected_item_ids != ["runtime_logs"]:
+            raise ValueError("历史日志清理只允许选择 runtime_logs")
         if not self.selected_item_ids:
             raise ValueError("正式清理至少选择一个项目")
         if not self.confirmed:
@@ -147,6 +163,7 @@ __all__ = [
     "LogEntryDTO",
     "LogExportRequest",
     "LogPageDTO",
+    "RuntimeLogSummaryDTO",
     "MaintenanceTaskDTO",
     "OpenSourceComponentDTO",
     "OpenSourceExportRequest",

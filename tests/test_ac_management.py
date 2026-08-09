@@ -6186,8 +6186,11 @@ def test_database_runtime_has_no_legacy_migration_chain():
         "ALTER TABLE rail_ap_vlan_allocations_reference_migration\n"
         "            RENAME TO rail_ap_vlan_allocations"
     ) in text
-    assert text.count("DROP TABLE") == 1
+    assert text.count("DROP TABLE") == 2
     assert 'conn.execute("DROP TABLE rail_ap_vlan_allocations")' in text
+    assert 'conn.execute("DROP TABLE ac_fit_ap_resources")' in text
+    assert 'SELECT COUNT(*) AS count FROM ac_fit_ap_resources' in text
+    assert "旧 ac_fit_ap_resources 表缺少身份字段，且包含数据，拒绝无损迁移" in text
     assert "migrate_old_" not in text
     assert "legacy_table_adapter" not in text
 

@@ -14,6 +14,7 @@ from netconsole.models.api.system_maintenance import (
     ExternalLinkDTO,
     LogExportRequest,
     LogPageDTO,
+    RuntimeLogSummaryDTO,
     MaintenanceTaskDTO,
     OpenSourceExportRequest,
 )
@@ -58,6 +59,11 @@ def list_logs(
     return _run(lambda: _service(request).list_logs(page=page, page_size=page_size, keyword=keyword, level=level))
 
 
+@router.get("/logs/summary", response_model=RuntimeLogSummaryDTO)
+def runtime_log_summary(request: Request) -> RuntimeLogSummaryDTO:
+    return _run(lambda: _service(request).runtime_log_summary())
+
+
 @router.delete("/logs", response_model=DesktopActionDTO)
 def clear_logs(request: Request) -> DesktopActionDTO:
     return _run(lambda: _service(request).clear_logs())
@@ -76,6 +82,7 @@ def start_cleanup(request: Request, payload: CleanupStartRequest) -> Maintenance
             retention_days=payload.retention_days,
             selected_item_ids=payload.selected_item_ids,
             confirmed=payload.confirmed,
+            manual_history=payload.mode == "manual_history_cleanup",
         )
     )
 

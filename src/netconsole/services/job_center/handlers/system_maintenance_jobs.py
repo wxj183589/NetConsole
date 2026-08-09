@@ -13,6 +13,7 @@ from netconsole.services.open_source_notice_service import OpenSourceNoticeServi
 
 def system_maintenance_cleanup(context: JobContext) -> dict[str, object]:
     automatic = bool(context.params.get("automatic"))
+    manual_history = bool(context.params.get("manual_history"))
     retention_value = context.params.get("retention_days", APP_CLEANUP_RETENTION_DAYS)
     days = int(retention_value)
     if not 1 <= days <= 365:
@@ -23,6 +24,8 @@ def system_maintenance_cleanup(context: JobContext) -> dict[str, object]:
         raise ValueError("清理项目格式无效")
     if automatic and selected_item_ids != list(AUTO_CLEANUP_ITEM_IDS):
         raise ValueError("自动清理只允许软件运行日志")
+    if manual_history and (automatic or selected_item_ids != ["runtime_logs"]):
+        raise ValueError("manual history cleanup only permits runtime_logs")
     if dry_run:
         if selected_item_ids or bool(context.params.get("confirmed")):
             raise ValueError("扫描请求不能包含清理选择或确认")
@@ -32,7 +35,7 @@ def system_maintenance_cleanup(context: JobContext) -> dict[str, object]:
     context.check_cancelled()
     context.progress("scan", 0, 1, "正在扫描受控日志与缓存")
     service = AppCleanupService(context.paths)
-    items = service.scan_cleanup_items(days)
+    items = service.scan_cleanup_items(days, manual_history=manual_history)
     result: dict[str, object] = {
         "cleanup_items": [
             {
@@ -79,6 +82,7 @@ def system_maintenance_cleanup(context: JobContext) -> dict[str, object]:
             days,
             should_cancel=context.check_cancelled,
             progress_callback=report_progress,
+            manual_history=manual_history,
         )
     except Exception:
         if automatic:

@@ -105,7 +105,7 @@ class AppCleanupService:
         self.paths = paths
 
     def scan_cleanup_items(
-        self, retention_days: int | None = None
+        self, retention_days: int | None = None, *, manual_history: bool = False
     ) -> list[CleanupItem]:
         days_by_item = _retention_days_by_item(retention_days)
         cutoffs = {
@@ -119,7 +119,7 @@ class AppCleanupService:
                 "NetConsole 软件自身运行日志文件",
                 _retention_policy(days_by_item["runtime_logs"]),
                 "待清理",
-                self._log_candidates(days_by_item["runtime_logs"]),
+                    self._log_candidates(days_by_item["runtime_logs"], include_all_history=manual_history),
             ),
             CleanupItem(
                 "runtime_cache",
@@ -153,6 +153,7 @@ class AppCleanupService:
         *,
         should_cancel: Callable[[], None] | None = None,
         progress_callback: Callable[[int, int, AppCleanupResult], None] | None = None,
+        manual_history: bool = False,
     ) -> AppCleanupResult:
         with interprocess_file_lock(_cleanup_operation_lock_path(self.paths)):
             days_by_item = _retention_days_by_item(retention_days)
@@ -174,7 +175,9 @@ class AppCleanupService:
             seen: set[Path] = set()
             current_log_candidates = {
                 candidate.path: candidate
-                for candidate in self._log_candidates(days_by_item["runtime_logs"])
+                for candidate in self._log_candidates(
+                    days_by_item["runtime_logs"], include_all_history=manual_history
+                )
             }
             for item in items:
                 allowed_dirs = allowed_dirs_by_item[item.item_id]
@@ -214,15 +217,17 @@ class AppCleanupService:
         *,
         should_cancel: Callable[[], None] | None = None,
         progress_callback: Callable[[int, int, AppCleanupResult], None] | None = None,
+        manual_history: bool = False,
     ) -> tuple[list[CleanupItem], AppCleanupResult]:
         selected = self.validate_item_ids(item_ids)
-        rescanned = self.scan_cleanup_items(retention_days)
+        rescanned = self.scan_cleanup_items(retention_days, manual_history=manual_history)
         items = [item for item in rescanned if item.item_id in selected]
         return items, self.cleanup_items(
             items,
             retention_days,
             should_cancel=should_cancel,
             progress_callback=progress_callback,
+            manual_history=manual_history,
         )
 
     @staticmethod
@@ -242,9 +247,10 @@ class AppCleanupService:
         _emit_cleanup_log(result)
         return result
 
-    def _log_candidates(self, retention_days: int) -> list[CleanupCandidate]:
+    def _log_candidates(self, retention_days: int, *, include_all_history: bool = False) -> list[CleanupCandidate]:
         scan = LogHousekeeper(self.paths).scan(
             application_retention_days=retention_days,
+            include_all_history=include_all_history,
         )
         return [
             CleanupCandidate(candidate.path, candidate.size, True)

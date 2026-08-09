@@ -1,5 +1,6 @@
 {
   "schema_version": 1,
+  "rotation_retry_seconds": [30, 60, 120, 300],
   "application_log": {
     "max_event_bytes": 16384,
     "max_context_bytes": 32768,
@@ -13,8 +14,7 @@
     "queue_soft_limit_bytes": 4194304,
     "queue_hard_limit_bytes": 8388608,
     "flush_timeout_ms": 5000,
-    "fallback_max_bytes": 2097152,
-    "rotation_retry_seconds": [30, 60, 120, 300]
+    "fallback_max_bytes": 2097152
   },
   "backend": {
     "max_file_bytes": 20971520,

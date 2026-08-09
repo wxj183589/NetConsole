@@ -82,4 +82,11 @@
   {"path":"apps/web/src/workspace/route-identity.ts","symbol":"resolveWorkspacePolicy","classification":"FALSE_POSITIVE","reason":"解析路由元数据中的工作区基础设施策略。","test":"apps/web/src/workspace/route-identity.test.ts"},
   {"path":"apps/web/src/workspace/route-identity.ts","symbol":"normalizeParam","classification":"FALSE_POSITIVE","reason":"规范化路由参数以生成稳定的工作区标识。","test":"apps/web/src/workspace/route-identity.test.ts"},
   {"path":"apps/web/src/api/client.ts","symbol":"normalizeQueryTimeout","classification":"FALSE_POSITIVE","reason":"仅规范化客户端请求超时参数，属于传输层边界校验，不计算业务事实。","test":"apps/web/src/api/client.test.ts"}
+,
+  {"path":"apps/web/src/stores/onlineMrAnalysis.ts","symbol":"runDeduped","classification":"DISPLAY_ONLY","reason":"仅协调去重请求与前端状态，不计算或持久化业务事实。","test":"apps/web/src/stores/onlineMrAnalysis.test.ts"},
+  {"path":"apps/web/src/views/rail-transit/RailTransitBaseDataView.vue","symbol":"resolveDirtyBeforeLeaving","classification":"DISPLAY_ONLY","reason":"仅处理页面离开前的编辑确认。","test":"apps/web/src/views/rail-transit/RailTransitBaseDataView.behavior.test.ts"},
+  {"path":"apps/web/src/views/rail-transit/TracksideApWpsConfigDialog.vue","symbol":"remoteIdentityMatches","classification":"DISPLAY_ONLY","reason":"仅比较后端返回的远程身份展示状态。","test":"apps/web/src/views/rail-transit/wpsAirScriptSources.test.ts"},
+  {"path":"apps/web/src/views/rail-transit/TracksideApWpsConfigDialog.vue","symbol":"matchStatusType","classification":"DISPLAY_ONLY","reason":"将后端匹配状态映射为 UI 标签类型。","test":"apps/web/src/views/rail-transit/wpsAirScriptSources.test.ts"},
+  {"path":"apps/web/src/views/rail-transit/TracksideApWpsConfigDialog.vue","symbol":"matchStatusLabel","classification":"DISPLAY_ONLY","reason":"将后端匹配状态映射为 UI 标签文本。","test":"apps/web/src/views/rail-transit/wpsAirScriptSources.test.ts"},
+  {"path":"apps/web/src/views/rail-transit/TracksideApWpsConfigDialog.vue","symbol":"identityMatch","classification":"DISPLAY_ONLY","reason":"仅展示后端身份匹配结果。","test":"apps/web/src/views/rail-transit/wpsAirScriptSources.test.ts"}
 ]

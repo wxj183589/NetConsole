@@ -20,6 +20,20 @@ export interface LogPage {
   total_pages: number
 }
 
+export interface RuntimeLogSummary {
+  directory: string
+  total_bytes: number
+  protected_bytes: number
+  unknown_bytes: number
+  candidate_bytes: number
+  protected_files: number
+  unknown_files: number
+  candidate_files: number
+  max_total_bytes: number
+  target_total_bytes: number
+  retention_days: number
+}
+
 export type CleanupItemId = 'runtime_logs' | 'runtime_cache' | 'temporary_files'
 
 export interface CleanupItem {
@@ -86,12 +100,16 @@ export function getLogs(query: { page: number; page_size: number; keyword: strin
   return apiRequest<LogPage>(`${root}/logs?${new URLSearchParams(Object.entries(query).map(([key, value]) => [key, String(value)]))}`)
 }
 
+export function getRuntimeLogSummary(): Promise<RuntimeLogSummary> {
+  return apiRequest(`${root}/logs/summary`)
+}
+
 export function clearLogs(): Promise<{ success: boolean; code: string; message: string }> {
   return apiRequest(`${root}/logs`, { method: 'DELETE' })
 }
 
 export function startCleanup(payload: {
-  mode: 'scan' | 'clean'
+  mode: 'scan' | 'clean' | 'manual_history_cleanup'
   retention_days: number
   selected_item_ids?: CleanupItemId[]
   confirmed?: boolean

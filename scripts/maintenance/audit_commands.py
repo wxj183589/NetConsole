@@ -39,6 +39,9 @@ EXPECTED_NON_COMMAND_LITERALS = {
         "src/netconsole/services/command_guard.py",
         "display wlan ap name",
     ),
+    ("src/netconsole/services/online_mr/traffic_analysis.py", "iperf3 interval packets"),
+    ("src/netconsole/services/online_mr/traffic_analysis.py", "iperf3 interval jitter"),
+    ("src/netconsole/services/online_mr/traffic_analysis.py", "iperf3 interval retransmits"),
 }
 
 COMMAND_PATTERNS = (

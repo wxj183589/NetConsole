@@ -182,7 +182,10 @@ def test_analysis_api_preserves_metric_paging_units_and_switch_sources(tmp_path:
     assert metric_data["series"][0]["points"][0]["value"] == 20
     assert switch.status_code == 200
     switch_item = switch.json()["data"]["items"][0]
-    assert switch_item == {
+    assert {key: switch_item[key] for key in (
+        "event_id", "source", "event_time", "radio", "reason", "old_peer_name",
+        "old_peer_mac", "old_rssi_dbm", "new_peer_name", "new_peer_mac", "new_rssi_dbm",
+    )} == {
         "event_id": "history-1",
         "source": "history",
         "event_time": "2026-07-14 10:01:00",

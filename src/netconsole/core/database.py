@@ -1999,6 +1999,7 @@ class Database:
                     if existed
                     else self._all_schema_scripts()
                 )
+                self._prepare_legacy_schema_compatibility(conn)
                 conn.executescript(
                     "BEGIN IMMEDIATE;\n" + "\n".join(schema_scripts)
                 )
@@ -2101,6 +2102,26 @@ class Database:
         missing = sorted(table for table in required_tables if not self._table_exists(conn, table))
         if missing:
             raise DatabaseSchemaMismatchError(self._schema_mismatch_message())
+
+    def _prepare_legacy_schema_compatibility(self, conn: sqlite3.Connection) -> None:
+        """Repair only empty, clearly incomplete legacy tables before triggers/indexes run."""
+
+        if not self._table_exists(conn, "ac_fit_ap_resources"):
+            return
+        columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(ac_fit_ap_resources)").fetchall()
+        }
+        required = {"ac_device_uuid", "ap_uuid"}
+        if required.issubset(columns):
+            return
+        row = conn.execute("SELECT COUNT(*) AS count FROM ac_fit_ap_resources").fetchone()
+        if row is None or int(row["count"] or 0) != 0:
+            raise DatabaseSchemaMismatchError(
+                "旧 ac_fit_ap_resources 表缺少身份字段，且包含数据，拒绝无损迁移"
+            )
+        conn.execute("DROP TABLE ac_fit_ap_resources")
+        conn.executescript(AC_FIT_AP_RESOURCES_SCHEMA)
 
     def _apply_additive_schema_updates(self, conn: sqlite3.Connection) -> None:
         if self._requires_device_address_migration(conn):

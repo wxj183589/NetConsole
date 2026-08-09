@@ -1,7 +1,10 @@
 <script setup lang="ts">
+import type { NetConsoleChartTokens } from '../../theme/echarts'
 import OnlineMrAnalysisChart from './OnlineMrAnalysisChart.vue'
 import type { OnlineMrMetricSeries } from '../../types/onlineMr'
 import type { MeshChartViewport, MeshSharedPointerChange, MeshSharedTimeDomain } from '../mesh-analysis/meshChartViewport'
+
+void (undefined as NetConsoleChartTokens | undefined)
 
 const props = withDefaults(defineProps<{
   lossSeries: OnlineMrMetricSeries[]

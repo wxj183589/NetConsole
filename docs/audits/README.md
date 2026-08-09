@@ -5,5 +5,6 @@
 - [2026-07-30 全仓稳定性审计](2026-07-30-full-stability-audit.md)
 - [2026-08-10 运行日志生命周期治理审计](2026-08-10-runtime-log-governance.md)
 - [2026-08-10 运行日志故障韧性 Hardening 审计](2026-08-10-runtime-log-hardening.md)
+- [2026-08-10 运行日志发布就绪审计](2026-08-10-runtime-log-release-readiness.md)
 
 审计报告不包含真实设备凭据、用户数据或现场数据库副本；需要现场或正式安装包人工验收的事项会保留明确的未验证状态。

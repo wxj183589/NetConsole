@@ -312,6 +312,48 @@ def test_database_initialize_auto_updates_additive_schema(tmp_path):
     assert "idx_fit_ap_radio_history_ap_time" in radio_history_indexes
 
 
+def test_database_initialize_recreates_empty_legacy_fit_ap_resource_table(tmp_path):
+    db = Database(tmp_path / "devices.db")
+    db.initialize()
+    with db.connect() as conn:
+        conn.execute("DROP TABLE ac_fit_ap_resources")
+        conn.execute("CREATE TABLE ac_fit_ap_resources (id INTEGER PRIMARY KEY AUTOINCREMENT)")
+        conn.commit()
+
+    db.initialize()
+
+    with db.connect() as conn:
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(ac_fit_ap_resources)").fetchall()
+        }
+
+    assert {"ac_device_uuid", "ap_uuid"}.issubset(columns)
+
+
+def test_database_initialize_rejects_nonempty_legacy_fit_ap_resource_table(tmp_path):
+    db = Database(tmp_path / "devices.db")
+    db.initialize()
+    with db.connect() as conn:
+        conn.execute("DROP TABLE ac_fit_ap_resources")
+        conn.execute("CREATE TABLE ac_fit_ap_resources (id INTEGER PRIMARY KEY AUTOINCREMENT)")
+        conn.execute("INSERT INTO ac_fit_ap_resources DEFAULT VALUES")
+        conn.commit()
+
+    with pytest.raises(DatabaseSchemaMismatchError, match="缺少身份字段，且包含数据"):
+        db.initialize()
+
+    with db.connect() as conn:
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(ac_fit_ap_resources)").fetchall()
+        }
+        count = conn.execute("SELECT COUNT(*) AS count FROM ac_fit_ap_resources").fetchone()["count"]
+
+    assert columns == {"id"}
+    assert count == 1
+
+
 def test_trackside_ap_location_migration_defaults_mainline_and_preserves_special_rows(
     tmp_path,
 ):
