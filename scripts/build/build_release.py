@@ -120,6 +120,7 @@ def validate_config(config: BuildConfig, *, editions: tuple[str, ...] = ()) -> N
             config.root / "src" / "netconsole" / "assets" / "open_source_notices.json",
             config.root / "src" / "netconsole" / "assets" / "THIRD_PARTY_COMPONENTS.md",
             config.root / "src" / "netconsole" / "assets" / "IPOP_v4.1_notice.md",
+            config.root / "resources" / "device_compatibility_profiles.json",
             *config.required_tool_files,
         )
         if not path.exists()

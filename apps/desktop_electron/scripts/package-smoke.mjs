@@ -342,6 +342,7 @@ const residue = walk(unpackedRoot).filter((path) => {
 if (residue.length) throw new Error(`Electron 包检测到 Qt 残留：${residue.slice(0, 20).join(', ')}`)
 
 validateDeviceCommandProfiles()
+validateDeviceCompatibilityProfiles()
 validateFrozenLogPolicy()
 validatePackagedRuntimeFeaturePolicy()
 validatePackagedBuildMetadata()
@@ -390,7 +391,7 @@ const smokeEdition = String(process.env.NETCONSOLE_BUILD_EDITION || '').trim().t
 const editionSmokeScope = smokeEdition === 'customer'
   ? 'customer feature policy and core Backend smoke'
   : 'ground unattended status HTTP 200'
-console.log(`Electron packaged smoke passed with frozen timezone data, device database migration/list HTTP 200, ${editionSmokeScope}, MESH import context idempotency, four duplicate basenames, duplicate-safe archive naming, frozen Worker Chinese protocol, no Qt residue, and NOTICE/SBOM metadata.`)
+console.log(`Electron packaged smoke passed with frozen timezone data, device compatibility profiles, device database migration/list HTTP 200, ${editionSmokeScope}, MESH import context idempotency, four duplicate basenames, duplicate-safe archive naming, frozen Worker Chinese protocol, no Qt residue, and NOTICE/SBOM metadata.`)
 
 function validateFrozenWorkerTextProtocol(dataRoot) {
   const backend = resolve(unpackedRoot, 'resources', 'backend', 'NetConsoleBackend.exe')
@@ -1438,6 +1439,29 @@ function validateDeviceCommandProfiles() {
     if (!isDeepStrictEqual(commands, expectedCommands)) {
       throw new Error(`Electron 包命令 Profile 命令序列不匹配：${profile.profile_id ?? '<unknown>'}`)
     }
+  }
+}
+
+function validateDeviceCompatibilityProfiles() {
+  const path = resolve(
+    unpackedRoot,
+    'resources',
+    'backend',
+    '_internal',
+    'netconsole',
+    'assets',
+    'device_compatibility_profiles.json',
+  )
+  const payload = JSON.parse(readFileSync(path, 'utf8'))
+  if (payload.schema_version !== '2026.07.device-compatibility-profiles.v1') {
+    throw new Error('Electron 包设备兼容性 Profile schema_version 不受支持。')
+  }
+  if (!Array.isArray(payload.profiles) || !payload.profiles.length) {
+    throw new Error('Electron 包设备兼容性 Profile 不能为空。')
+  }
+  const profileIds = payload.profiles.map((profile) => String(profile?.profile_id ?? '').trim())
+  if (profileIds.some((profileId) => !profileId) || new Set(profileIds).size !== profileIds.length) {
+    throw new Error('Electron 包设备兼容性 Profile ID 缺失或重复。')
   }
 }
 

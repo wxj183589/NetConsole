@@ -54,10 +54,18 @@
 - `win-unpacked` package smoke 通过：frozen `log_policy.json`、时区资源、旧设备数据库迁移/list HTTP 200、Ground 状态 HTTP 200、Worker 中文协议、MESH 幂等性、重复文件名、Qt 残留、NOTICE/SBOM 均已验证；backend/frontend/self-check commit 全部为 `a7d112e9...`，`PACKAGED_DIRTY=false`。
 - Full NSIS 制品 `NetConsole-1.4.8-a7d112e9-x64-setup.exe` 已生成，大小 155,945,538 bytes，SHA-256 为 `dcaf6c04bbba38f3cdcf299596f199cb3b68ff1515fd1a5dc4004156aa129e45`。verifier 已确认 NSIS-3 Unicode、安装器嵌入 manifest、数据根脚本 SHA-256、版本资源、Backend/Frontend commit 和二次哈希读取一致。
 - `build-edition-installer.mjs full` 在当前 isolated worktree 因 `node_modules` junction 被 pnpm 判为需重装、且无 TTY 拒绝删除 junction 而停止。为保护共享依赖，未设置 CI 强制删除；随后复用同一已通过的 `package:prepare` 输出，用项目的 electron-builder、package smoke 与 `build_installer --verify` 完成上述实际 Full NSIS 构建和制品验证。
+- 2 小时 packaged soak 发现该制品缺少 `device_compatibility_profiles.json`，设备兼容性 API 在首次加载时返回 503 并记录两次 `DEVICE_COMPATIBILITY_RESOURCE_FAILED`，但 Backend、Renderer 和本轮日志链路持续存活。根因是资源读取端使用 `netconsole/assets/device_compatibility_profiles.json`，而 clean build 白名单只包含命令 Profile；本轮已将既有兼容性 Profile 加入 PyInstaller 明确白名单、CleanBuildLock 和 package smoke。修复后的制品重建结果在下方继续登记，不用旧 smoke 结果替代。
 - 真实安装、首次启动与卸载仍为 `PENDING`：本会话不是管理员，安装器是 per-machine 且数据根只能在交互页选择，不能安全静默覆盖 HKLM 指针。未尝试 UAC 绕过，也未接触正式 `D:\NetConsoleData`。
 
-## Soak 状态与剩余风险
+## 2 小时 Packaged Soak
 
-- 2 小时/8 小时 soak 为 `PENDING`，未伪造 bytes/hour、RSS 起止/峰值、`queuedBytes` 或 dropped counters。
+- 对提交 `a7d112e94d565dc6f993d7cc4e34ab49d877d58a` 的 `win-unpacked/NetConsole.exe` 执行 7,203.549 秒 soak；测试根为 `D:\NetConsoleTestData\packaged-log-soak-20260810-052300`，每 5 分钟采样，共 25 个样本。Electron 主进程和 3 个子进程、1 个 Python Backend 在全部样本中存活，runner stderr 为 0。
+- 剔除启动尚未完成的 0 秒样本，以 5 分钟样本至 120 分钟样本计算：`electron.log` 从 2,659 bytes 增至 2,723 bytes，约 33.377 bytes/hour；`app.log` 从 2,798 bytes 增至 3,333 bytes，约 279.007 bytes/hour。新增内容是每小时 tray/自动清理状态，不是 traceback 或 payload 风暴。
+- Electron 合计 RSS 的起始/峰值/结束值为 374.578/394.242/391.133 MiB，线性回归斜率为 +8.396 MiB/hour；Python RSS 为 194.566/204.863/204.863 MiB，斜率为 +4.797 MiB/hour。2 小时内没有高速或失控增长，但两条斜率仍为正，不能据此宣称长期无增长；8 小时 soak 仍为 `PENDING`。
+- `LOG_BACKPRESSURE` 和 `LOG_BACKPRESSURE_RECOVERED` 事件均为 0。当前 queue metrics 只存在 Electron Main 内存中，没有跨进程只读接口，因此 `queuedBytes/peakQueuedBytes/dropped*` 不能直接采样；本审计不把不可见 counters 伪报为 0。现有实现只要发生任一等级 drop 就会启动 incident 并写 backpressure/recovered 控制事件，本次没有观察到该间接证据。
+- soak 结束前的最后一个样本仍确认全部进程存活；随后测试夹具主动终止隔离进程树。`ELECTRON_UTILITY_PROCESS_GONE exit_code=-1` 发生在该夹具收口之后，不属于运行窗口内崩溃。
+
+## 剩余风险
+
 - 现有故障注入已覆盖 Python EBUSY/PermissionError、1,000 次 rotation backoff、多进程写入及历史清理的单文件占用跳过；这不能替代真实 NTFS 锁、杀毒竞争、物理磁盘耗尽和长时间内存趋势。
-- 真实 soak 应在隔离 `D:\NetConsoleTestData\<run-id>` 运行已签名目录包或安装包，每 5–10 分钟记录 Electron/Python RSS、CPU、`electron.log`/`app.log` 增量、runtime/logs 总量、queue/dropped 指标和 backend/WebSocket/task service 存活状态。正常结束前不得将这些项目改为通过。
+- 真实 NSIS 安装/首次启动/卸载、直接 dropped counters、WebSocket/task service 主动业务负载和 8 小时趋势仍未完成。所有强制验收通过前不得 fast-forward `main`。
