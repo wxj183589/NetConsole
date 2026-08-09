@@ -610,10 +610,14 @@ class OnlineMrTrafficCoordinator:
         try:
             OnlineMrTrafficCoordinator._write_iperf_snapshot(state, config, row=row, error=error)
         except Exception as exc:
-            OnlineMrTrafficCoordinator._warn(
-                state,
-                f"iPerf 状态快照写入失败，已降级继续运行：{type(exc).__name__}: {exc}",
-            )
+            operation = getattr(exc, "operation", "snapshot_write")
+            target = getattr(exc, "target", "view/live_iperf_status.json")
+            temporary = getattr(exc, "temporary", "")
+            details = f"operation={operation} target={target}"
+            if temporary:
+                details += f" temp={temporary}"
+            details += f" exception_type={type(exc).__name__} exception_message={exc}"
+            OnlineMrTrafficCoordinator._warn(state, f"iPerf 状态快照写入失败，已降级继续运行：{details}")
 
     @staticmethod
     def _iperf_client_config(config: IperfTrafficConfig) -> IperfClientConfig:

@@ -11,11 +11,21 @@ import traceback
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Callable
+from typing import Callable, TextIO
 
 from netconsole.core.shutdown_manager import shutdown_manager
 from netconsole.core.sqlite_utils import connect_sqlite, initialize_sqlite_wal, run_sqlite_with_retry
-from netconsole.services.network_tools.iperf_parser import format_iperf_log_footer, format_iperf_log_header, format_iperf_log_line, parse_iperf_error_line, parse_iperf_error_lines, parse_iperf_line
+from netconsole.services.network_tools.iperf_parser import (
+    DEBUG_TRANSFER_RE,
+    classify_iperf_line,
+    format_iperf_log_footer,
+    format_iperf_log_header,
+    format_iperf_log_line,
+    parse_iperf_error_line,
+    parse_iperf_error_lines,
+    parse_iperf_line,
+    split_iperf_log_prefix,
+)
 
 
 FOLLOW_COLLECTION_PROTECTION_DURATION_SECONDS = 86400
@@ -522,6 +532,11 @@ class IperfProcessRunner:
         self.last_data_at: datetime | None = None
         self.heartbeat_at: datetime | None = None
         self.bytes_written = 0
+        self.debug_line_count = 0
+        self.debug_bytes = 0
+        self.last_debug_at: datetime | None = None
+        self.last_sent_bytes: int | None = None
+        self.debug_total_sent = 0
         self.stop_reason = ""
         self.exception_stage = ""
         self.exception_type = ""
@@ -530,6 +545,9 @@ class IperfProcessRunner:
         self.degraded = False
         self.degraded_warnings: list[str] = []
         self._log_lock = threading.RLock()
+        self._primary_log_handle: TextIO | None = None
+        self._mirror_log_handles: dict[Path, TextIO] = {}
+        self._mirror_open_failed: set[Path] = set()
 
     def diagnostics(self) -> dict[str, object]:
         process = self.process
@@ -545,6 +563,11 @@ class IperfProcessRunner:
             "heartbeat": self.heartbeat_at.isoformat(sep=" ", timespec="milliseconds") if self.heartbeat_at else None,
             "last_data_at": self.last_data_at.isoformat(sep=" ", timespec="milliseconds") if self.last_data_at else None,
             "bytes_written": self.bytes_written,
+            "debug_line_count": self.debug_line_count,
+            "debug_bytes": self.debug_bytes,
+            "last_debug_at": self.last_debug_at.isoformat(sep=" ", timespec="milliseconds") if self.last_debug_at else None,
+            "last_sent_bytes": self.last_sent_bytes,
+            "debug_total_sent": self.debug_total_sent,
             "last_error": self.last_error or self.last_error_code,
             "stderr_tail": self.stderr_tail,
             "stop_reason": self.stop_reason,
@@ -561,7 +584,7 @@ class IperfProcessRunner:
         if log_file == self.log_file:
             return
         with self._log_lock:
-            if log_file in self.mirror_contexts:
+            if log_file in self.mirror_contexts and log_file in self._mirror_log_handles:
                 return
             log_file.parent.mkdir(parents=True, exist_ok=True)
             mirror_context = dict(self.context)
@@ -576,12 +599,21 @@ class IperfProcessRunner:
                     for line in self.log_file.read_text(encoding="utf-8").splitlines()
                     if line and not line.startswith("#")
                 ]
-            with log_file.open("w", encoding="utf-8") as file:
-                for line in self._start_header_lines(self.started_at, mirror_context):
-                    file.write(line + "\n")
-                for line in prior_lines:
-                    file.write(line + "\n")
             self.mirror_contexts[log_file] = mirror_context
+            if self._primary_log_handle is None:
+                return
+            try:
+                handle = log_file.open("w", encoding="utf-8")
+                for line in self._start_header_lines(self.started_at, mirror_context):
+                    handle.write(line + "\n")
+                for line in prior_lines:
+                    handle.write(line + "\n")
+                handle.flush()
+                self._mirror_log_handles[log_file] = handle
+                self._mirror_open_failed.discard(log_file)
+            except Exception as exc:
+                self._mirror_open_failed.add(log_file)
+                self._record_degraded("mirror_write", exc)
 
     def start(self) -> None:
         self.log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -623,7 +655,9 @@ class IperfProcessRunner:
             shutdown_manager.register_process(self.process, "iperf3", kind="internal_tool", shutdown_policy="terminate")
             assert self.process.stdout is not None
             self.heartbeat_at = datetime.now()
+            stage = "stdout_read"
             for line in self.process.stdout:
+                stage = "stdout_read"
                 raw_line = line.rstrip("\r\n")
                 now = datetime.now()
                 self.heartbeat_at = now
@@ -635,19 +669,23 @@ class IperfProcessRunner:
                     stage = "parse"
                     row = parse_iperf_line(stamped_line, self.started_at, collector_time=now)
                     error = parse_iperf_error_line(stamped_line, self.started_at)
+                    line_kind = classify_iperf_line(stamped_line, row=row, error=error)
                 except Exception as exc:
                     self._record_degraded(stage, exc)
                     row = None
                     error = None
+                    line_kind = "OTHER"
+                if line_kind.startswith("DEBUG_"):
+                    self._record_debug_line(stamped_line, now)
                 if error:
                     self.last_error_code = str(error.get("error_code") or "")
                     self.last_error = str(error.get("error_message") or self.last_error_code)
                     self.stderr_tail = "\n".join(
                         (self.stderr_tail + "\n" + raw_line).strip().splitlines()[-20:]
                     )
-                if row and self.store:
+                if line_kind == "INTERVAL_RESULT" and row and self.store:
                     try:
-                        stage = "sqlite_append"
+                        stage = "sqlite_write"
                         self.store.append_interval(self.run_id, row, self.session_id)
                     except Exception as exc:
                         self._record_degraded(stage, exc)
@@ -671,12 +709,25 @@ class IperfProcessRunner:
             )
             raise
         finally:
-            if self.stop_requested:
-                self._write_line(format_iperf_log_line(datetime.now(), "stopped by collection stop", self.context))
-            if return_code is not None and return_code != 0:
-                self._write_line(format_iperf_log_line(datetime.now(), f"iperf process exited with code {return_code}", self.context))
-            stage = "footer_write"
-            self._write_footers(status, return_code)
+            try:
+                stage = "footer_write"
+                if self.stop_requested:
+                    self._write_line(format_iperf_log_line(datetime.now(), "stopped by collection stop", self.context))
+                if return_code is not None and return_code != 0:
+                    self._write_line(format_iperf_log_line(datetime.now(), f"iperf process exited with code {return_code}", self.context))
+                try:
+                    self._write_footers(status, return_code)
+                except Exception as exc:
+                    if not self.exception_stage:
+                        self._record_exception(stage, exc)
+                    raise
+            finally:
+                try:
+                    self._close_log_files()
+                except Exception as exc:
+                    if not self.exception_stage:
+                        self._record_exception("finalize", exc)
+                    raise
             try:
                 self.bytes_written = self.log_file.stat().st_size
             except OSError:
@@ -711,22 +762,27 @@ class IperfProcessRunner:
 
     def _write_headers(self) -> None:
         with self._log_lock:
-            targets = [(self.log_file, self.context), *sorted(self.mirror_contexts.items())]
-            for path, context in targets:
-                path.parent.mkdir(parents=True, exist_ok=True)
-                with path.open("w", encoding="utf-8") as file:
+            self.log_file.parent.mkdir(parents=True, exist_ok=True)
+            self._primary_log_handle = self.log_file.open("w", encoding="utf-8")
+            for line in self._start_header_lines(self.started_at, self.context):
+                self._primary_log_handle.write(line + "\n")
+            self._primary_log_handle.flush()
+            for path, context in sorted(self.mirror_contexts.items()):
+                try:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    handle = path.open("w", encoding="utf-8")
                     for line in self._start_header_lines(self.started_at, context):
-                        file.write(line + "\n")
+                        handle.write(line + "\n")
+                    handle.flush()
+                    self._mirror_log_handles[path] = handle
+                    self._mirror_open_failed.discard(path)
+                except Exception as exc:
+                    self._mirror_open_failed.add(path)
+                    self._record_degraded("mirror_write", exc)
 
     def _write_footers(self, status: str, return_code: int | None) -> None:
         lines = format_iperf_log_footer(datetime.now(), status, return_code, self.last_error_code)
-        with self._log_lock:
-            for path in [self.log_file, *sorted(self.mirror_contexts)]:
-                path.parent.mkdir(parents=True, exist_ok=True)
-                with path.open("a", encoding="utf-8") as file:
-                    for line in lines:
-                        file.write(line + "\n")
-                    file.flush()
+        self._write_lines(lines)
 
     def _write_lines(self, lines: list[str]) -> None:
         for line in lines:
@@ -734,18 +790,65 @@ class IperfProcessRunner:
 
     def _write_line(self, line: str) -> None:
         with self._log_lock:
-            self.log_file.parent.mkdir(parents=True, exist_ok=True)
-            with self.log_file.open("a", encoding="utf-8") as file:
-                file.write(line + "\n")
-                file.flush()
+            if self._primary_log_handle is None:
+                self.log_file.parent.mkdir(parents=True, exist_ok=True)
+                self._primary_log_handle = self.log_file.open("a", encoding="utf-8")
+            self._primary_log_handle.write(line + "\n")
+            self._primary_log_handle.flush()
             for path in sorted(self.mirror_contexts):
+                handle = self._mirror_log_handles.get(path)
+                if handle is None:
+                    if path in self._mirror_open_failed:
+                        continue
+                    try:
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        handle = path.open("a", encoding="utf-8")
+                        self._mirror_log_handles[path] = handle
+                    except Exception as exc:
+                        self._mirror_open_failed.add(path)
+                        self._record_degraded("mirror_write", exc)
+                        continue
                 try:
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                    with path.open("a", encoding="utf-8") as file:
-                        file.write(line + "\n")
-                        file.flush()
+                    handle.write(line + "\n")
+                    handle.flush()
                 except Exception as exc:
                     self._record_degraded("mirror_write", exc)
+                    try:
+                        handle.close()
+                    except Exception:
+                        pass
+                    self._mirror_log_handles.pop(path, None)
+                    self._mirror_open_failed.add(path)
+
+    def _close_log_files(self) -> None:
+        with self._log_lock:
+            primary = self._primary_log_handle
+            self._primary_log_handle = None
+            if primary is not None:
+                try:
+                    primary.flush()
+                finally:
+                    primary.close()
+            for path, handle in list(self._mirror_log_handles.items()):
+                try:
+                    handle.flush()
+                    handle.close()
+                except Exception as exc:
+                    self._record_degraded("mirror_write", exc)
+                finally:
+                    self._mirror_log_handles.pop(path, None)
+
+    def _record_debug_line(self, line: str, timestamp: datetime) -> None:
+        self.debug_line_count += 1
+        self.debug_bytes += len(line.encode("utf-8", errors="replace")) + 1
+        self.last_debug_at = timestamp
+        _collector_time, payload = split_iperf_log_prefix(line)
+        match = DEBUG_TRANSFER_RE.match(str(payload or "").strip())
+        if match is None:
+            return
+        sent_bytes = int(match.group("bytes"))
+        self.last_sent_bytes = sent_bytes
+        self.debug_total_sent += sent_bytes
 
     def _emit_line(self, line: str, row: dict[str, object] | None, error: dict[str, object] | None) -> None:
         if self.line_callback is None:

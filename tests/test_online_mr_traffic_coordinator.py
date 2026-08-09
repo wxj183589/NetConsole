@@ -241,6 +241,46 @@ def test_failed_client_does_not_stop_managed_server_until_session_stop(tmp_path:
     assert _FakeFailingClientIperfRunner.instances[0].last_status == "STOPPED_BY_COLLECTION"
 
 
+def test_debug_stdout_is_snapshot_throttled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = _config()
+    config.fping = FpingConfig(enabled=False)
+    config.iperf = IperfTrafficConfig(enabled=True, server_ip="192.0.2.3", follow_collection=False)
+    paths = PathResolver(tmp_path)
+    session = OnlineMrSessionStore(paths).create_session(config)
+    tool = tmp_path / "iperf3.exe"
+    tool.touch()
+    snapshot_calls = 0
+
+    class FakeDebugRunner:
+        def __init__(self, _tool, _command, _log_file, *, line_callback=None, **_kwargs) -> None:
+            self.line_callback = line_callback
+            self.last_status = "CREATED"
+            self.run_id = "debug-run"
+
+        def start(self) -> None:
+            self.last_status = "RUNNING"
+            for index in range(5_000):
+                self.line_callback(f"sent 131072 bytes, total {index}", None, None)
+            self.last_status = "DONE"
+
+        def stop(self, _status: str = "STOPPED_BY_USER") -> None:
+            self.last_status = "STOPPED_BY_USER"
+
+    def count_snapshot(*_args, **_kwargs) -> None:
+        nonlocal snapshot_calls
+        snapshot_calls += 1
+
+    monkeypatch.setattr("netconsole.services.online_mr.traffic_coordinator.find_iperf_tool", lambda _paths: tool)
+    monkeypatch.setattr("netconsole.services.online_mr.traffic_coordinator.IperfProcessRunner", FakeDebugRunner)
+    monkeypatch.setattr(OnlineMrTrafficCoordinator, "_safe_write_iperf_snapshot", staticmethod(count_snapshot))
+
+    coordinator = OnlineMrTrafficCoordinator(paths)
+    coordinator.start_for_session(session, config)
+    coordinator.flush_traffic_outputs(session.meta.session_id, timeout_seconds=2)
+
+    assert snapshot_calls <= 3
+
+
 def test_non_iperf_listener_is_reported_as_port_conflict(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config = _config()
     config.fping = FpingConfig(enabled=False)

@@ -29,6 +29,8 @@ export const useOnlineMrStore = defineStore('online-mr', () => {
   const fpingRawTail = ref<OnlineMrRawTail | null>(null)
   const otherRawTail = ref<OnlineMrRawTail | null>(null)
   const rawSource = ref('terminal_monitor')
+  const selectedControlMrId = ref('')
+  const selectedControlMrSource = ref<'manual' | 'session' | 'route' | 'fallback' | ''>('')
   const loading = ref(false)
   const connectionError = ref('')
   const overviewErrors = ref<Record<string, string>>({})
@@ -175,6 +177,14 @@ export const useOnlineMrStore = defineStore('online-mr', () => {
     if (rawExpanded) void refreshRawTail()
   }
 
+  function setSelectedControlMrId(
+    mrId: string,
+    source: 'manual' | 'session' | 'route' | 'fallback' = 'manual',
+  ): void {
+    selectedControlMrId.value = String(mrId || '')
+    selectedControlMrSource.value = selectedControlMrId.value ? source : ''
+  }
+
   function setRawExpanded(value: boolean): void {
     rawExpanded = value
     if (rawTimer !== null) window.clearInterval(rawTimer)
@@ -246,6 +256,8 @@ export const useOnlineMrStore = defineStore('online-mr', () => {
     fpingRawTail,
     otherRawTail,
     rawSource,
+    selectedControlMrId,
+    selectedControlMrSource,
     loading,
     error,
     failures,
@@ -254,6 +266,7 @@ export const useOnlineMrStore = defineStore('online-mr', () => {
     refreshActive,
     refreshRawTail,
     setRawSource,
+    setSelectedControlMrId,
     setRawExpanded,
     startPolling,
     stopPolling,
