@@ -10,6 +10,7 @@ from netconsole.application.desktop import DesktopActionService
 from netconsole.application.web_artifacts import ReservedWebArtifact, WebArtifactError, WebArtifactStore
 from netconsole.application.web_export_process_adapter import WebExportProcessAdapter
 from netconsole.core import app_logger
+from netconsole.core.log_policy import LOG_POLICY
 from netconsole.core.paths import PathResolver
 from netconsole.core.resources import changelog_path
 from netconsole.core.sites import SiteManager
@@ -172,7 +173,7 @@ class SystemMaintenanceApplicationService:
         automatic: bool = False,
     ) -> MaintenanceTaskDTO | None:
         site_id = self._site(site_id)
-        days = int(retention_days)
+        days = LOG_POLICY.backend.retention_days if automatic else int(retention_days)
         if not 1 <= days <= 365:
             raise SystemMaintenanceError("RETENTION_DAYS_INVALID", "保留天数必须在 1 到 365 之间")
         selected = [str(value).strip() for value in selected_item_ids]

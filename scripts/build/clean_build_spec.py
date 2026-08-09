@@ -62,6 +62,7 @@ CLEAN_BUILD = True
 ROOT = PROJECT_ROOT
 SRC_ROOT = ROOT / "src"
 DEVICE_COMMAND_PROFILES_SOURCE = "resources/device_command_profiles.json"
+LOG_POLICY_SOURCE = "src/netconsole/resources/log_policy.json"
 PACKAGED_DEVICE_COMMAND_PROFILES = BUILD_ROOT / "packaged_assets" / "device_command_profiles.json"
 PACKAGED_RUNTIME_ROOT = BUILD_ROOT / "packaged_assets" / "runtime"
 PACKAGED_BUILD_INFO_SOURCE = "resources/runtime/build_info.json"
@@ -75,6 +76,7 @@ ANALYSIS_TOC = BUILD_ROOT / "NetConsoleBackend" / "Analysis-00.toc"
 
 ALLOWED_DATA = [
     ("src/netconsole", "netconsole"),
+    (LOG_POLICY_SOURCE, "netconsole/resources"),
     ("apps/web/dist", "netconsole/assets/web"),
     ("src/netconsole/assets/open_source_notices.json", "netconsole/assets"),
     ("src/netconsole/assets/THIRD_PARTY_COMPONENTS.md", "netconsole/assets"),

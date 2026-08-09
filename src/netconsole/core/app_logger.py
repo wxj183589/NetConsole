@@ -5,7 +5,9 @@ import re
 import shutil
 import sys
 import threading
+import time
 import traceback
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Iterator
@@ -26,6 +28,19 @@ APPLICATION_LOG_MAX_BYTES = LOG_POLICY.application_log.max_event_bytes
 _ROTATED_LOG_PATTERN = "app-*.log"
 _LOG_FAILURE_GUARD = threading.Lock()
 _LOG_FAILURE_COUNT = 0
+
+
+@dataclass
+class _LogWriteFailureIncident:
+    fingerprint: str = ""
+    started_at: float = 0.0
+    last_at: float = 0.0
+    last_summary_at: float = 0.0
+    repeated_since_summary: int = 0
+    total_failures: int = 0
+
+
+_LOG_FAILURE_INCIDENT = _LogWriteFailureIncident()
 _SENSITIVE_KEYS = (
     "password",
     "ssh_password",
@@ -44,6 +59,7 @@ _SENSITIVE_KEYS = (
 def configure_path_resolver(paths: PathResolver) -> None:
     global _paths
     _paths = paths
+    _reset_log_failure_incident()
 
 
 def log_info(event: str, detail: str = "", *, log_path: Path | None = None) -> None:
@@ -136,6 +152,7 @@ def _write_log(level: str, event: str, detail: str = "", *, log_path: Path | Non
             _rotate_if_needed(path, now, len(line.encode("utf-8")))
             with path.open("a", encoding="utf-8") as file:
                 file.write(line)
+        _report_log_write_recovery()
     except Exception as exc:
         _report_log_write_failure(level, safe_event or event, safe_detail or detail, path, exc)
 
@@ -185,23 +202,106 @@ def _report_log_write_failure(
     exc: Exception,
 ) -> None:
     global _LOG_FAILURE_COUNT
+    now = time.monotonic()
+    fingerprint = _log_failure_fingerprint(path, exc)
+    action = ""
+    repeated = 0
+    window_seconds = 0
     with _LOG_FAILURE_GUARD:
         _LOG_FAILURE_COUNT += 1
         count = _LOG_FAILURE_COUNT
-    try:
-        trace = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
-    except Exception:
-        trace = f"{type(exc).__name__}: {exc}"
-    message = _sanitize_detail(
-        "log_write_failed "
-        f"count={count} level={level} event={event} path={path} detail={detail} "
-        f"error_type={type(exc).__name__} error={exc} traceback={trace}"
+        incident = _LOG_FAILURE_INCIDENT
+        same_incident = (
+            incident.fingerprint == fingerprint
+            and now - incident.last_at
+            <= LOG_POLICY.duplicate_suppression.window_seconds
+        )
+        if not same_incident:
+            incident.fingerprint = fingerprint
+            incident.started_at = now
+            incident.last_at = now
+            incident.last_summary_at = now
+            incident.repeated_since_summary = 0
+            incident.total_failures = 1
+            action = "first"
+        else:
+            incident.last_at = now
+            incident.repeated_since_summary += 1
+            incident.total_failures += 1
+            if (
+                now - incident.last_summary_at
+                >= LOG_POLICY.duplicate_suppression.summary_interval_seconds
+            ):
+                action = "summary"
+                repeated = incident.repeated_since_summary
+                window_seconds = int(max(0.0, now - incident.last_summary_at))
+                incident.repeated_since_summary = 0
+                incident.last_summary_at = now
+    if not action:
+        return
+    if action == "summary":
+        message = (
+            "LOG_WRITE_FAILED "
+            f"repeated={repeated} window_seconds={window_seconds} "
+            f"error_type={type(exc).__name__} errno={_error_code(exc)}"
+        )
+    else:
+        diagnostic = format_diagnostic_traceback(exc)
+        message = (
+            "LOG_WRITE_FAILED "
+            f"count={count} level={level} event={event} path={path} "
+            f"detail={detail} error_type={type(exc).__name__} "
+            f"errno={_error_code(exc)} traceback={diagnostic}"
+        )
+    _write_bounded_stderr(message)
+
+
+def _report_log_write_recovery() -> None:
+    now = time.monotonic()
+    with _LOG_FAILURE_GUARD:
+        incident = _LOG_FAILURE_INCIDENT
+        if not incident.fingerprint:
+            return
+        downtime = max(0.0, now - incident.started_at)
+        repeated = max(0, incident.total_failures - 1)
+        _clear_log_failure_incident(incident)
+    _write_bounded_stderr(
+        "LOG_WRITE_RECOVERED "
+        f"downtime_seconds={downtime:.1f} repeated_failures={repeated}"
     )
+
+
+def _write_bounded_stderr(value: object) -> None:
     try:
+        message = truncate_application_context(_sanitize_detail(value))
         sys.stderr.write(message + "\n")
         sys.stderr.flush()
     except Exception:
         pass
+
+
+def _log_failure_fingerprint(path: Path, exc: Exception) -> str:
+    message = re.sub(r"\b\d{2,}\b", "{n}", str(exc))
+    message = " ".join(message.split())[:256]
+    return f"{type(exc).__name__}|{_error_code(exc)}|{path.resolve()}|{message}"
+
+
+def _error_code(exc: Exception) -> object:
+    return getattr(exc, "errno", None) or getattr(exc, "winerror", None) or "unknown"
+
+
+def _reset_log_failure_incident() -> None:
+    with _LOG_FAILURE_GUARD:
+        _clear_log_failure_incident(_LOG_FAILURE_INCIDENT)
+
+
+def _clear_log_failure_incident(incident: _LogWriteFailureIncident) -> None:
+    incident.fingerprint = ""
+    incident.started_at = 0.0
+    incident.last_at = 0.0
+    incident.last_summary_at = 0.0
+    incident.repeated_since_summary = 0
+    incident.total_failures = 0
 
 
 def _parse_line(line: str) -> dict[str, str] | None:
@@ -229,11 +329,35 @@ def _clean_cell(value: str) -> str:
 
 
 def _truncate_detail(value: str) -> str:
+    return _truncate_text(value, APPLICATION_LOG_MAX_BYTES)
+
+
+def truncate_application_context(value: str) -> str:
+    """Bound structured application context; raw artifacts never call this helper."""
+
+    return _truncate_text(value, LOG_POLICY.application_log.max_context_bytes)
+
+
+def format_diagnostic_traceback(exc: BaseException) -> str:
+    """Format one explicitly requested diagnostic traceback under its dedicated cap."""
+
+    try:
+        value = "".join(
+            traceback.format_exception(type(exc), exc, exc.__traceback__)
+        )
+    except Exception:
+        value = f"{type(exc).__name__}: {exc}"
+    return _truncate_text(
+        _sanitize_detail(value), LOG_POLICY.application_log.max_traceback_bytes
+    )
+
+
+def _truncate_text(value: str, max_bytes: int) -> str:
     original_bytes = len(value.encode("utf-8"))
-    if original_bytes <= APPLICATION_LOG_MAX_BYTES:
+    if original_bytes <= max_bytes:
         return value
     marker = f" payload_truncated=true original_bytes={original_bytes}"
-    preview_bytes = max(0, APPLICATION_LOG_MAX_BYTES - len(marker.encode("utf-8")))
+    preview_bytes = max(0, max_bytes - len(marker.encode("utf-8")))
     preview = value.encode("utf-8")[:preview_bytes].decode("utf-8", errors="ignore")
     return f"{preview}{marker}"
 

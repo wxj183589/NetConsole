@@ -9,6 +9,7 @@ from pathlib import Path
 
 from netconsole.core import app_logger
 from netconsole.core.paths import PathResolver
+import pytest
 
 
 def configure(tmp_path):
@@ -180,10 +181,57 @@ def test_app_logger_write_failure_does_not_escape_to_caller(tmp_path, monkeypatc
     app_logger.log_info("LOCK_FAILED", "password=secret")
 
     captured = capsys.readouterr()
-    assert "log_write_failed" in captured.err
+    assert "LOG_WRITE_FAILED" in captured.err
     assert "Resource deadlock avoided" in captured.err
     assert "secret" not in captured.err
     assert not paths.app_log_path.exists()
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        PermissionError(errno.EACCES, "permission denied"),
+        OSError(errno.ENOSPC, "no space left on device"),
+        OSError(errno.EBUSY, "resource busy"),
+    ],
+)
+def test_app_logger_self_failure_is_suppressed_and_recovers_once(
+    tmp_path, monkeypatch, capsys, failure
+):
+    paths = configure(tmp_path)
+    original_lock = app_logger.interprocess_file_lock
+
+    @contextmanager
+    def failing_lock(_path):
+        raise failure
+        yield
+
+    clock = [100.0]
+    traceback_calls = 0
+    original_format = app_logger.traceback.format_exception
+
+    def counted_format(*args, **kwargs):
+        nonlocal traceback_calls
+        traceback_calls += 1
+        return original_format(*args, **kwargs)
+
+    monkeypatch.setattr(app_logger.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(app_logger.traceback, "format_exception", counted_format)
+    monkeypatch.setattr(app_logger, "interprocess_file_lock", failing_lock)
+    for _index in range(1_000):
+        app_logger.log_info("WRITE_FAILURE", "password=must-not-leak")
+        clock[0] += 0.061
+
+    monkeypatch.setattr(app_logger, "interprocess_file_lock", original_lock)
+    app_logger.log_info("WRITE_RECOVERY", "ready")
+
+    lines = capsys.readouterr().err.splitlines()
+    assert sum("LOG_WRITE_FAILED" in line for line in lines) == 2
+    assert sum("LOG_WRITE_RECOVERED" in line for line in lines) == 1
+    assert any("repeated=" in line for line in lines)
+    assert "must-not-leak" not in "\n".join(lines)
+    assert traceback_calls == 1
+    assert paths.app_log_path.exists()
 
 
 def test_application_log_summarizes_one_megabyte_payload(tmp_path):

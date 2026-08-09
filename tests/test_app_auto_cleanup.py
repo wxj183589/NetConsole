@@ -7,6 +7,7 @@ from pathlib import Path
 
 from netconsole.core import app_logger
 from netconsole.core.paths import PathResolver
+from netconsole.services import app_auto_cleanup as cleanup_module
 from netconsole.services.app_auto_cleanup import (
     APP_CLEANUP_RETENTION_DAYS,
     AppCleanupService,
@@ -84,6 +85,35 @@ def test_app_cleanup_service_scans_items_without_touching_site_data(tmp_path: Pa
     assert item_map["runtime_logs"].file_count == 1
     assert item_map["temporary_files"].file_count == 1
     assert str(protected_log) not in "\n".join(str(candidate.path) for item in items for candidate in item.candidates)
+
+
+def test_default_cleanup_retention_is_independent_by_item(
+    tmp_path: Path, monkeypatch
+) -> None:
+    paths = PathResolver(tmp_path)
+    old_log = paths.logs_dir / "app_20260801.log"
+    old_cache = paths.runtime_cache_dir / "chart_cache" / "chart.json"
+    old_temp = paths.runtime_dir / "tmp" / "working.tmp"
+    for path in (old_log, old_cache, old_temp):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(path.name, encoding="utf-8")
+        _set_mtime_days_ago(path, 5)
+    monkeypatch.setattr(cleanup_module, "APP_CLEANUP_RETENTION_DAYS", 7)
+    monkeypatch.setattr(cleanup_module, "RUNTIME_CACHE_RETENTION_DAYS", 3)
+    monkeypatch.setattr(cleanup_module, "TEMPORARY_RETENTION_DAYS", 9)
+
+    default_items = {
+        item.item_id: item for item in AppCleanupService(paths).scan_cleanup_items()
+    }
+    override_items = {
+        item.item_id: item
+        for item in AppCleanupService(paths).scan_cleanup_items(4)
+    }
+
+    assert default_items["runtime_logs"].file_count == 0
+    assert default_items["runtime_cache"].file_count == 1
+    assert default_items["temporary_files"].file_count == 0
+    assert all(item.file_count == 1 for item in override_items.values())
 
 
 def test_app_cleanup_excludes_task_protocol_and_preview_roots(tmp_path: Path) -> None:

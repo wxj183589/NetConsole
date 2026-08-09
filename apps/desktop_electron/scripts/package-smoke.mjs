@@ -342,6 +342,7 @@ const residue = walk(unpackedRoot).filter((path) => {
 if (residue.length) throw new Error(`Electron 包检测到 Qt 残留：${residue.slice(0, 20).join(', ')}`)
 
 validateDeviceCommandProfiles()
+validateFrozenLogPolicy()
 validatePackagedRuntimeFeaturePolicy()
 validatePackagedBuildMetadata()
 validateElevatedLauncher()
@@ -1008,6 +1009,31 @@ function validatePackagedRuntimeFeaturePolicy() {
       if (cause instanceof Error && cause.message === 'Electron 包不得包含本地功能 override。') throw cause
       if (!cause || typeof cause !== 'object' || cause.code !== 'ENOENT') throw cause
     }
+  }
+}
+
+function validateFrozenLogPolicy() {
+  const policyPath = resolve(
+    unpackedRoot,
+    'resources',
+    'backend',
+    '_internal',
+    'netconsole',
+    'resources',
+    'log_policy.json',
+  )
+  const policy = JSON.parse(readFileSync(policyPath, 'utf8'))
+  if (
+    policy.schema_version !== 1
+    || policy.electron?.max_file_bytes !== 20 * 1024 * 1024
+    || policy.backend?.max_file_bytes !== 20 * 1024 * 1024
+    || policy.electron?.retention_days !== 7
+    || policy.backend?.retention_days !== 7
+    || policy.electron?.queue_soft_limit_bytes !== 4 * 1024 * 1024
+    || policy.electron?.queue_hard_limit_bytes !== 8 * 1024 * 1024
+    || policy.raw_collection?.truncate !== false
+  ) {
+    throw new Error('Electron 包 frozen backend 日志策略资源缺失或内容不符合基线。')
   }
 }
 

@@ -542,9 +542,11 @@ function logBackendOutput(
     )
     return
   }
-  const level = /(?:^|\s)(?:ERROR|CRITICAL|Traceback|Exception|Error:)/i.test(safe)
-    ? 'ERROR'
-    : 'WARNING'
+  const level = /^LOG_WRITE_RECOVERED\b/.test(safe)
+    ? 'INFO'
+    : /(?:^|\s)(?:ERROR|CRITICAL|Traceback|Exception|Error:)/i.test(safe)
+      ? 'ERROR'
+      : 'WARNING'
   logger('ELECTRON_BACKEND_STDERR', safe, level)
 }
 

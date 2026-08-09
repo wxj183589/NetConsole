@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from netconsole.core.database import Database
+from netconsole.core.model_projection import project_row_for_model
 from netconsole.core.paths import PathResolver
 from netconsole.core.sites import SiteManager
 from netconsole.models.api.ground_unattended import (
@@ -1075,7 +1076,12 @@ class GroundUnattendedApplicationService:
             data_type=data_type, status=status, limit=limit, offset=offset
         )
         return GroundRawFilePageDTO(
-            items=[GroundRawFileDTO.model_validate(row) for row in rows],
+            items=[
+                GroundRawFileDTO.model_validate(
+                    project_row_for_model(row, GroundRawFileDTO)
+                )
+                for row in rows
+            ],
             total=self.repository.count_raw_files(data_type=data_type, status=status),
         )
 
@@ -2410,12 +2416,20 @@ class GroundUnattendedApplicationService:
             raise GroundUnattendedError(
                 "OPERATION_NOT_FOUND", "运行控制操作不存在", status_code=404
             )
-        return GroundOperationDTO.model_validate(row)
+        return GroundOperationDTO.model_validate(
+            project_row_for_model(row, GroundOperationDTO)
+        )
 
     def latest_operation(self, site_id: str) -> GroundOperationDTO | None:
         self._require_site(site_id)
         row = self.repository.latest_terminal_operation()
-        return GroundOperationDTO.model_validate(row) if row else None
+        return (
+            GroundOperationDTO.model_validate(
+                project_row_for_model(row, GroundOperationDTO)
+            )
+            if row
+            else None
+        )
 
     def active_operation(self, site_id: str) -> GroundOperationDTO | None:
         self._require_site(site_id)
@@ -2425,7 +2439,13 @@ class GroundUnattendedApplicationService:
         row = self.repository.latest_operation(
             run_id=str(active_run["run_id"]), active_only=True
         )
-        return GroundOperationDTO.model_validate(row) if row else None
+        return (
+            GroundOperationDTO.model_validate(
+                project_row_for_model(row, GroundOperationDTO)
+            )
+            if row
+            else None
+        )
 
     def archives(self, site_id: str) -> GroundArchivePageDTO:
         self._require_site(site_id)

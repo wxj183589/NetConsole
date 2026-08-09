@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterator
 
+from netconsole.core.model_projection import project_row_for_model
 from netconsole.models.api.ground_unattended import GroundUnattendedProfileDTO
 from netconsole.core.database import Database
 from netconsole.core.sqlite_utils import configure_sqlite_connection, initialize_sqlite_wal
@@ -977,13 +978,8 @@ class GroundUnattendedRepository:
                 ).fetchone()
             if row is None:
                 raise RuntimeError("ground unattended profile was not created")
-        payload = dict(row)
         return GroundUnattendedProfileDTO.model_validate(
-            {
-                field: payload[field]
-                for field in GroundUnattendedProfileDTO.model_fields
-                if field in payload
-            }
+            project_row_for_model(row, GroundUnattendedProfileDTO)
         )
 
     def save_profile(

@@ -56,12 +56,21 @@ class LogHousekeepingScan:
     total_bytes: int
     candidates: tuple[LogHousekeepingCandidate, ...]
     protected_files: tuple[Path, ...]
+    protected_bytes: int = 0
+    unknown_bytes: int = 0
+    candidate_bytes: int = 0
 
 
 @dataclass
 class LogHousekeepingResult:
     total_bytes_before: int
     total_bytes_after: int
+    target_bytes: int = LOG_POLICY.housekeeper.target_total_bytes
+    protected_bytes: int = 0
+    unknown_bytes: int = 0
+    candidate_bytes: int = 0
+    deleted_bytes: int = 0
+    target_not_reached: bool = False
     deleted_files: int = 0
     freed_bytes: int = 0
     failures: list[tuple[Path, str]] | None = None
@@ -90,6 +99,8 @@ class LogHousekeeper:
         files: list[tuple[Path, int, datetime, LogCategory | None, bool]] = []
         protected: list[Path] = []
         total_bytes = 0
+        protected_bytes = 0
+        unknown_bytes = 0
         if not self.root.is_dir():
             return LogHousekeepingScan(0, (), ())
         for item in self.root.rglob("*"):
@@ -107,6 +118,9 @@ class LogHousekeeper:
             category, is_protected = self._classify(resolved, current)
             if is_protected:
                 protected.append(resolved)
+                protected_bytes += metadata.st_size
+            elif category is None:
+                unknown_bytes += metadata.st_size
             files.append(
                 (
                     resolved,
@@ -154,7 +168,14 @@ class LogHousekeeper:
                 item.path.name.casefold(),
             ),
         )
-        return LogHousekeepingScan(total_bytes, tuple(ordered), tuple(sorted(protected)))
+        return LogHousekeepingScan(
+            total_bytes,
+            tuple(ordered),
+            tuple(sorted(protected)),
+            protected_bytes=protected_bytes,
+            unknown_bytes=unknown_bytes,
+            candidate_bytes=sum(candidate.size for candidate in ordered),
+        )
 
     def clean(
         self,
@@ -179,7 +200,13 @@ class LogHousekeeper:
             for candidate in scan.candidates
             if selected is None or candidate.path in selected
         ]
-        result = LogHousekeepingResult(scan.total_bytes, scan.total_bytes)
+        result = LogHousekeepingResult(
+            scan.total_bytes,
+            scan.total_bytes,
+            protected_bytes=scan.protected_bytes,
+            unknown_bytes=scan.unknown_bytes,
+            candidate_bytes=sum(candidate.size for candidate in candidates),
+        )
         for index, candidate in enumerate(candidates, start=1):
             if should_cancel is not None:
                 should_cancel()
@@ -188,12 +215,19 @@ class LogHousekeeper:
                 candidate.path.unlink()
                 result.deleted_files += 1
                 result.freed_bytes += size
+                result.deleted_bytes += size
                 result.total_bytes_after = max(0, result.total_bytes_after - size)
             except OSError as exc:
                 assert result.failures is not None
                 result.failures.append((candidate.path, str(exc)))
             if progress_callback is not None:
                 progress_callback(index, len(candidates), result)
+        result.target_not_reached = (
+            result.total_bytes_before > LOG_POLICY.housekeeper.max_total_bytes
+            and result.total_bytes_after > result.target_bytes
+        )
+        if result.target_not_reached:
+            _emit_target_not_reached(result)
         return result
 
     def _classify(self, path: Path, now: datetime) -> tuple[LogCategory | None, bool]:
@@ -238,3 +272,20 @@ def _safe_resolve(path: Path) -> Path | None:
         return Path(path).resolve()
     except OSError:
         return None
+
+
+def _emit_target_not_reached(result: LogHousekeepingResult) -> None:
+    from netconsole.core import app_logger
+
+    app_logger.log_warning(
+        "LOG_HOUSEKEEPING_TARGET_NOT_REACHED",
+        (
+            f"total_before_bytes={result.total_bytes_before} "
+            f"total_after_bytes={result.total_bytes_after} "
+            f"target_bytes={result.target_bytes} "
+            f"protected_bytes={result.protected_bytes} "
+            f"unknown_bytes={result.unknown_bytes} "
+            f"candidate_bytes={result.candidate_bytes} "
+            f"deleted_bytes={result.deleted_bytes}"
+        ),
+    )

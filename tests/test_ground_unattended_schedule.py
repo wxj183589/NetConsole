@@ -69,6 +69,38 @@ def test_profile_persists_updated_schedule(tmp_path) -> None:
     assert loaded.ping_depot_trains_enabled is True
 
 
+def test_supervisor_repeated_ticks_tolerate_future_profile_columns(tmp_path) -> None:
+    paths = PathResolver(tmp_path / "app", tmp_path / "data")
+    paths.site_dir("site-a").mkdir(parents=True)
+    repo = GroundUnattendedRepository(
+        paths.ground_unattended_db_path("site-a"), site_id="site-a"
+    )
+    repo.get_profile()
+    with repo._connection() as connection:
+        connection.execute(
+            "ALTER TABLE ground_unattended_profiles "
+            "ADD COLUMN future_schema_test_column TEXT"
+        )
+        connection.execute(
+            "UPDATE ground_unattended_profiles "
+            "SET future_schema_test_column='newer-runtime'"
+        )
+    supervisor = GroundUnattendedSupervisor(
+        paths,
+        site_id="site-a",
+        repository=repo,
+        base_query=_BaseQuery(),  # type: ignore[arg-type]
+        mesh_query=_MeshQuery(),  # type: ignore[arg-type]
+        vehicle_query=_VehicleQuery(),  # type: ignore[arg-type]
+        now_provider=lambda: datetime.fromisoformat("2026-07-25T06:00:00+08:00"),
+    )
+
+    for _index in range(3):
+        supervisor._tick()
+
+    assert supervisor._tick_error_fingerprint == ""
+
+
 def test_train_run_schema_migration_backfills_historical_location_decisions(
     tmp_path,
 ) -> None:

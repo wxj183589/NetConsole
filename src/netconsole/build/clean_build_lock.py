@@ -38,6 +38,7 @@ ALLOWED_RUNTIME = (
     "src/netconsole/assets/ipop_v4.1_notice.md",
     "src/netconsole/assets/licenses/pyinstaller_copying.txt",
     "src/netconsole/assets/licenses/pyinstaller_hooks_contrib_license.txt",
+    "src/netconsole/resources/log_policy.json",
     "apps/web/dist",
     "resources/device_command_profiles.json",
     "resources/runtime/build_info.json",
@@ -72,6 +73,8 @@ ALLOWED_RUNTIME = (
     "netconsole/assets/device_command_profiles.json",
     "netconsole/assets/runtime",
     "netconsole/assets/web",
+    "netconsole/resources",
+    "netconsole/resources/log_policy.json",
 )
 ALLOWED_DIST_ROOT = (EXE_NAME, INTERNAL_DIR, "tools")
 REQUIRED_PYINSTALLER_ARGS = (

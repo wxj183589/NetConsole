@@ -1,4 +1,4 @@
-import { mkdir, readFile, readdir, rm, utimes, writeFile } from 'node:fs/promises'
+import { appendFile, mkdir, readFile, readdir, rename, rm, utimes, writeFile } from 'node:fs/promises'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -145,6 +145,113 @@ describe('desktop file logger lifecycle', () => {
       await logger.flush()
       expect((await readFile(active, 'utf8')).includes('AFTER_EBUSY')).toBe(true)
       expect((await readFile(join(root, 'electron-log-fallback.log'), 'utf8')).includes('ELECTRON_LOG_ROTATION_FAILED')).toBe(true)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('bounds a 10000-event slow-disk burst and emits one recovery', async () => {
+    const root = await temporaryDirectory()
+    let releaseDisk: (() => void) | undefined
+    const diskGate = new Promise<void>((resolvePromise) => { releaseDisk = resolvePromise })
+    try {
+      const active = join(root, 'electron.log')
+      const logger = createFileLogger(active, {
+        minimumLevel: 'DEBUG',
+        queueSoftLimitBytes: 4 * 1024,
+        queueHardLimitBytes: 8 * 1024,
+        flushTimeoutMs: 30_000,
+        appendLine: async (path, line) => {
+          await diskGate
+          await appendFile(path, line, { encoding: 'utf8' })
+        },
+      })
+      const started = performance.now()
+      for (let index = 0; index < 10_000; index += 1) {
+        const level = index % 500 === 0 ? 'ERROR' : index % 2 === 0 ? 'DEBUG' : 'INFO'
+        logger(`BURST_${index}`, 'x'.repeat(256), level)
+      }
+      const enqueueMs = performance.now() - started
+      const pressured = logger.getQueueMetrics()
+      expect(enqueueMs).toBeLessThan(500)
+      expect(pressured.queuedBytes).toBeLessThanOrEqual(8 * 1024)
+      expect(pressured.peakQueuedBytes).toBeLessThanOrEqual(8 * 1024)
+      expect(pressured.droppedDebug + pressured.droppedInfo).toBeGreaterThan(0)
+      expect(pressured.droppedError).toBe(0)
+
+      releaseDisk?.()
+      await logger.flush(30_000)
+      const content = await readFile(active, 'utf8')
+      expect(content.match(/\| LOG_BACKPRESSURE \|/g)).toHaveLength(1)
+      expect(content.match(/\| LOG_BACKPRESSURE_RECOVERED \|/g)).toHaveLength(1)
+      expect(logger.getQueueMetrics().queuedBytes).toBe(0)
+    } finally {
+      releaseDisk?.()
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('backs off repeated EBUSY rotation failures and recovers rolling', async () => {
+    const root = await temporaryDirectory()
+    try {
+      const active = join(root, 'electron.log')
+      await writeFile(active, Buffer.alloc(64, 0x78))
+      let clock = new Date('2026-08-10T01:00:00.000').getTime()
+      let renameCalls = 0
+      const logger = createFileLogger(active, {
+        maxFileBytes: 64,
+        now: () => new Date(clock),
+        renameFile: async (source, target) => {
+          renameCalls += 1
+          if (renameCalls <= 3) throw Object.assign(new Error('locked'), { code: 'EBUSY' })
+          await rename(source, target)
+        },
+      })
+      for (let index = 0; index < 1_000; index += 1) logger(`EBUSY_${index}`, 'task continues')
+      await logger.flush(30_000)
+      expect(renameCalls).toBe(1)
+
+      clock += 31_000
+      logger('RETRY_2', 'after first backoff')
+      await logger.flush()
+      expect(renameCalls).toBe(2)
+      clock += 61_000
+      logger('RETRY_3', 'after second backoff')
+      await logger.flush()
+      expect(renameCalls).toBe(3)
+      clock += 121_000
+      logger('ROTATION_RECOVERED', 'after third backoff')
+      await logger.flush()
+
+      expect(renameCalls).toBe(4)
+      expect((await readdir(root)).some((name) => name.startsWith('electron-20260810-'))).toBe(true)
+      expect(await readFile(active, 'utf8')).toContain('ELECTRON_LOG_ROTATION_RECOVERED')
+      const fallback = await readFile(join(root, 'electron-log-fallback.log'), 'utf8')
+      expect(fallback.trim().split('\n').length).toBeLessThanOrEqual(2)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('rate-limits and caps fallback diagnostics when the primary writer fails', async () => {
+    const root = await temporaryDirectory()
+    try {
+      let writeNumber = 0
+      const logger = createFileLogger(join(root, 'electron.log'), {
+        fallbackMaxBytes: 512,
+        appendLine: async () => {
+          writeNumber += 1
+          throw Object.assign(new Error(`disk failure ${writeNumber}`), { code: 'ENOSPC' })
+        },
+      })
+      for (let index = 0; index < 100; index += 1) {
+        logger(`PRIMARY_WRITE_${index}`, 'password=must-not-leak')
+        await logger.flush()
+      }
+      const fallback = await readFile(join(root, 'electron-log-fallback.log'), 'utf8')
+      expect(Buffer.byteLength(fallback, 'utf8')).toBeLessThanOrEqual(512)
+      expect(fallback).not.toContain('must-not-leak')
+      expect(fallback).toContain('ENOSPC')
     } finally {
       await rm(root, { recursive: true, force: true })
     }

@@ -176,6 +176,7 @@ class GroundUnattendedSupervisor:
         self._last_profile_network_error = ""
         self._last_processed_snapshot_id_by_controller: dict[str, int] = {}
         self._tick_error_fingerprint = ""
+        self._tick_error_started_at = 0.0
         self._tick_error_last_at = 0.0
         self._tick_error_summary_at = 0.0
         self._tick_error_count = 0
@@ -294,6 +295,7 @@ class GroundUnattendedSupervisor:
         self._tick_error_last_at = now
         if not same_incident:
             self._tick_error_fingerprint = fingerprint
+            self._tick_error_started_at = now
             self._tick_error_summary_at = now
             self._tick_error_count = 0
             LOGGER.exception("地面无人值守调度周期失败：site=%s", self.site_id)
@@ -317,13 +319,16 @@ class GroundUnattendedSupervisor:
     def _record_tick_recovery(self) -> None:
         if not self._tick_error_fingerprint:
             return
-        downtime = max(0.0, time.monotonic() - self._tick_error_last_at)
+        downtime = max(0.0, time.monotonic() - self._tick_error_started_at)
         LOGGER.info(
             "地面无人值守调度周期已恢复：site=%s downtime_seconds=%.1f",
             self.site_id,
             downtime,
         )
         self._tick_error_fingerprint = ""
+        self._tick_error_started_at = 0.0
+        self._tick_error_last_at = 0.0
+        self._tick_error_summary_at = 0.0
         self._tick_error_count = 0
 
     def _recover_on_start(self) -> None:

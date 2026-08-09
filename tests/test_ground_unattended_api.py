@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from netconsole.backend.api import main as api_main
 from netconsole.backend.api import ground_unattended_router
@@ -37,12 +38,77 @@ def test_ground_profile_reader_ignores_future_additive_columns(tmp_path) -> None
             "ALTER TABLE ground_unattended_profiles ADD COLUMN future_runtime_field TEXT"
         )
         connection.execute(
-            "UPDATE ground_unattended_profiles SET future_runtime_field='newer-runtime'"
+            "UPDATE ground_unattended_profiles "
+            "SET enabled=1, future_runtime_field='newer-runtime'"
         )
 
     profile = repository.get_profile()
 
     assert profile.site_id == "demo"
+    assert profile.enabled is True
+
+
+def test_ground_profile_reader_still_rejects_invalid_known_field_type(tmp_path) -> None:
+    repository = GroundUnattendedRepository(
+        tmp_path / "ground-unattended.sqlite", site_id="demo"
+    )
+    repository.get_profile()
+    with repository._connection() as connection:
+        connection.execute(
+            "UPDATE ground_unattended_profiles SET max_active_trains='invalid'"
+        )
+
+    with pytest.raises(ValidationError):
+        repository.get_profile()
+
+
+def test_ground_raw_file_and_operation_ignore_future_additive_columns(tmp_path) -> None:
+    paths = PathResolver(tmp_path / "app", tmp_path / "data")
+    app = create_app(paths=paths)
+    repository = app.state.ground_unattended_repository
+    service = app.state.ground_unattended_application_service
+    repository.upsert_raw_file(
+        {
+            "file_id": "raw-future-column",
+            "data_type": "ping",
+            "relative_path": "rail_transit/ground_unattended/test.ndjson",
+        }
+    )
+    repository.save_operation(
+        {
+            "operation_id": "operation-future-column",
+            "run_id": "run-future-column",
+            "operation_type": "STOP",
+            "operation_state": "COMPLETED",
+            "operation_stage": "DONE",
+        }
+    )
+    with repository._connection() as connection:
+        connection.execute(
+            "ALTER TABLE ground_unattended_raw_files "
+            "ADD COLUMN future_raw_file_field TEXT"
+        )
+        connection.execute(
+            "ALTER TABLE ground_unattended_operations "
+            "ADD COLUMN future_operation_field TEXT"
+        )
+        connection.execute(
+            "UPDATE ground_unattended_raw_files "
+            "SET future_raw_file_field='newer-runtime'"
+        )
+        connection.execute(
+            "UPDATE ground_unattended_operations "
+            "SET future_operation_field='newer-runtime'"
+        )
+
+    raw_page = service.raw_files("demo")
+    operation = service.operation("demo", "operation-future-column")
+    latest = service.latest_operation("demo")
+
+    assert [item.file_id for item in raw_page.items] == ["raw-future-column"]
+    assert operation.operation_id == "operation-future-column"
+    assert latest is not None
+    assert latest.operation_id == "operation-future-column"
 
 
 def test_ground_unattended_default_profile_does_not_overwrite_concurrent_save(

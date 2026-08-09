@@ -10,6 +10,7 @@ def test_repeated_tick_error_emits_first_summary_and_recovery(monkeypatch, caplo
     supervisor = object.__new__(GroundUnattendedSupervisor)
     supervisor.site_id = "test-site"
     supervisor._tick_error_fingerprint = ""
+    supervisor._tick_error_started_at = 0.0
     supervisor._tick_error_last_at = 0.0
     supervisor._tick_error_summary_at = 0.0
     supervisor._tick_error_count = 0
@@ -37,6 +38,7 @@ def test_same_tick_error_logs_again_after_suppression_window(monkeypatch, caplog
     supervisor = object.__new__(GroundUnattendedSupervisor)
     supervisor.site_id = "test-site"
     supervisor._tick_error_fingerprint = ""
+    supervisor._tick_error_started_at = 0.0
     supervisor._tick_error_last_at = 0.0
     supervisor._tick_error_summary_at = 0.0
     supervisor._tick_error_count = 0
@@ -49,3 +51,27 @@ def test_same_tick_error_logs_again_after_suppression_window(monkeypatch, caplog
 
     messages = [record.getMessage() for record in caplog.records]
     assert sum("调度周期失败：" in message for message in messages) == 2
+
+
+def test_tick_recovery_uses_entire_incident_duration(monkeypatch, caplog) -> None:
+    supervisor = object.__new__(GroundUnattendedSupervisor)
+    supervisor.site_id = "test-site"
+    supervisor._tick_error_fingerprint = ""
+    supervisor._tick_error_started_at = 0.0
+    supervisor._tick_error_last_at = 0.0
+    supervisor._tick_error_summary_at = 0.0
+    supervisor._tick_error_count = 0
+    clock = iter([*range(100, 161, 5), 161.0])
+    monkeypatch.setattr(supervisor_module.time, "monotonic", lambda: next(clock))
+    caplog.set_level(logging.INFO, logger=supervisor_module.LOGGER.name)
+
+    for _index in range(13):
+        supervisor._record_tick_failure(RuntimeError("offline"))
+    supervisor._record_tick_recovery()
+
+    recovered = [
+        record.getMessage()
+        for record in caplog.records
+        if "调度周期已恢复" in record.getMessage()
+    ]
+    assert recovered == ["地面无人值守调度周期已恢复：site=test-site downtime_seconds=61.0"]

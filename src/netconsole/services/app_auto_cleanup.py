@@ -15,6 +15,8 @@ from netconsole.services.log_housekeeper import LogHousekeeper
 
 
 APP_CLEANUP_RETENTION_DAYS = LOG_POLICY.backend.retention_days
+RUNTIME_CACHE_RETENTION_DAYS = LOG_POLICY.runtime_cleanup.cache_retention_days
+TEMPORARY_RETENTION_DAYS = LOG_POLICY.runtime_cleanup.temporary_retention_days
 AUTO_CLEANUP_INTERVAL = timedelta(seconds=LOG_POLICY.housekeeper.interval_seconds)
 AUTO_CLEANUP_RUNNING_TIMEOUT = timedelta(hours=6)
 CLEANUP_ITEM_IDS = ("runtime_logs", "runtime_cache", "temporary_files")
@@ -102,34 +104,42 @@ class AppCleanupService:
     def __init__(self, paths: PathResolver) -> None:
         self.paths = paths
 
-    def scan_cleanup_items(self, retention_days: int = APP_CLEANUP_RETENTION_DAYS) -> list[CleanupItem]:
-        days = max(1, int(retention_days or APP_CLEANUP_RETENTION_DAYS))
-        cutoff = datetime.now() - timedelta(days=days)
-        policy = f"保留最近 {days} 天"
+    def scan_cleanup_items(
+        self, retention_days: int | None = None
+    ) -> list[CleanupItem]:
+        days_by_item = _retention_days_by_item(retention_days)
+        cutoffs = {
+            item_id: datetime.now() - timedelta(days=days)
+            for item_id, days in days_by_item.items()
+        }
         items = [
             CleanupItem(
                 "runtime_logs",
                 "软件运行日志",
                 "NetConsole 软件自身运行日志文件",
-                policy,
+                _retention_policy(days_by_item["runtime_logs"]),
                 "待清理",
-                self._log_candidates(days),
+                self._log_candidates(days_by_item["runtime_logs"]),
             ),
             CleanupItem(
                 "runtime_cache",
                 "页面/图表缓存",
                 "页面渲染、图表预览、运行时缓存文件",
-                policy,
+                _retention_policy(days_by_item["runtime_cache"]),
                 "待清理",
-                self._cache_candidates(cutoff, self._runtime_cache_dirs()),
+                self._cache_candidates(
+                    cutoffs["runtime_cache"], self._runtime_cache_dirs()
+                ),
             ),
             CleanupItem(
                 "temporary_files",
                 "临时文件",
                 "临时目录、导出缓存、下载缓存中的过期文件",
-                policy,
+                _retention_policy(days_by_item["temporary_files"]),
                 "待清理",
-                self._cache_candidates(cutoff, self._temporary_dirs()),
+                self._cache_candidates(
+                    cutoffs["temporary_files"], self._temporary_dirs()
+                ),
             ),
         ]
         for item in items:
@@ -139,15 +149,21 @@ class AppCleanupService:
     def cleanup_items(
         self,
         items: list[CleanupItem],
-        retention_days: int = APP_CLEANUP_RETENTION_DAYS,
+        retention_days: int | None = None,
         *,
         should_cancel: Callable[[], None] | None = None,
         progress_callback: Callable[[int, int, AppCleanupResult], None] | None = None,
     ) -> AppCleanupResult:
         with interprocess_file_lock(_cleanup_operation_lock_path(self.paths)):
-            days = max(1, int(retention_days or APP_CLEANUP_RETENTION_DAYS))
-            cutoff = datetime.now() - timedelta(days=days)
-            result = AppCleanupResult(retention_days=days, cutoff=cutoff)
+            days_by_item = _retention_days_by_item(retention_days)
+            cutoffs = {
+                item_id: datetime.now() - timedelta(days=days)
+                for item_id, days in days_by_item.items()
+            }
+            result = AppCleanupResult(
+                retention_days=days_by_item["runtime_logs"],
+                cutoff=cutoffs["runtime_logs"],
+            )
             self.validate_item_ids(item.item_id for item in items)
             allowed_dirs_by_item = {
                 "runtime_logs": _existing_dirs([self.paths.logs_dir]),
@@ -158,7 +174,7 @@ class AppCleanupService:
             seen: set[Path] = set()
             current_log_candidates = {
                 candidate.path: candidate
-                for candidate in self._log_candidates(days)
+                for candidate in self._log_candidates(days_by_item["runtime_logs"])
             }
             for item in items:
                 allowed_dirs = allowed_dirs_by_item[item.item_id]
@@ -169,8 +185,15 @@ class AppCleanupService:
                     if resolved is None or resolved in seen:
                         continue
                     seen.add(resolved)
-                    refreshed = current_log_candidates.get(resolved) if candidate.is_log else _candidate_for_file(
-                        resolved, cutoff, allowed_dirs, is_log=False
+                    refreshed = (
+                        current_log_candidates.get(resolved)
+                        if candidate.is_log
+                        else _candidate_for_file(
+                            resolved,
+                            cutoffs[item.item_id],
+                            allowed_dirs,
+                            is_log=False,
+                        )
                     )
                     if refreshed is None:
                         continue
@@ -187,7 +210,7 @@ class AppCleanupService:
     def cleanup_selected(
         self,
         item_ids: Iterable[str],
-        retention_days: int = APP_CLEANUP_RETENTION_DAYS,
+        retention_days: int | None = None,
         *,
         should_cancel: Callable[[], None] | None = None,
         progress_callback: Callable[[int, int, AppCleanupResult], None] | None = None,
@@ -214,7 +237,7 @@ class AppCleanupService:
             raise ValueError("清理项目不在白名单")
         return values
 
-    def auto_cleanup(self, retention_days: int = APP_CLEANUP_RETENTION_DAYS) -> AppCleanupResult:
+    def auto_cleanup(self, retention_days: int | None = None) -> AppCleanupResult:
         _items, result = self.cleanup_selected(AUTO_CLEANUP_ITEM_IDS, retention_days)
         _emit_cleanup_log(result)
         return result
@@ -256,7 +279,12 @@ class AppCleanupService:
         ]
 
 
-def run_app_auto_cleanup(paths: PathResolver, retention_days: int = APP_CLEANUP_RETENTION_DAYS, *, emit_log: bool = True) -> AppCleanupResult:
+def run_app_auto_cleanup(
+    paths: PathResolver,
+    retention_days: int | None = None,
+    *,
+    emit_log: bool = True,
+) -> AppCleanupResult:
     service = AppCleanupService(paths)
     _items, result = service.cleanup_selected(AUTO_CLEANUP_ITEM_IDS, retention_days)
     if emit_log:
@@ -347,6 +375,21 @@ def _parse_state_time(value: object) -> datetime | None:
         return datetime.fromisoformat(str(value or ""))
     except ValueError:
         return None
+
+
+def _retention_days_by_item(retention_days: int | None) -> dict[str, int]:
+    if retention_days is not None:
+        days = max(1, int(retention_days))
+        return {item_id: days for item_id in CLEANUP_ITEM_IDS}
+    return {
+        "runtime_logs": APP_CLEANUP_RETENTION_DAYS,
+        "runtime_cache": RUNTIME_CACHE_RETENTION_DAYS,
+        "temporary_files": TEMPORARY_RETENTION_DAYS,
+    }
+
+
+def _retention_policy(days: int) -> str:
+    return f"保留最近 {days} 天"
 
 
 def _auto_cleanup_state_path(paths: PathResolver) -> Path:

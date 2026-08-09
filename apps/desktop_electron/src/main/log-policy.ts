@@ -9,6 +9,11 @@ export interface DesktopLogPolicy {
   electron: {
     maxFileBytes: number
     retentionDays: number
+    queueSoftLimitBytes: number
+    queueHardLimitBytes: number
+    flushTimeoutMs: number
+    fallbackMaxBytes: number
+    rotationRetryMs: readonly number[]
   }
   duplicateSuppression: {
     windowMs: number
@@ -34,6 +39,13 @@ export function loadDesktopLogPolicy(): DesktopLogPolicy {
     electron: {
       maxFileBytes: positiveInteger(policyDocument.electron.max_file_bytes, 'electron.max_file_bytes'),
       retentionDays: positiveInteger(policyDocument.electron.retention_days, 'electron.retention_days'),
+      queueSoftLimitBytes: positiveInteger(policyDocument.electron.queue_soft_limit_bytes, 'electron.queue_soft_limit_bytes'),
+      queueHardLimitBytes: positiveInteger(policyDocument.electron.queue_hard_limit_bytes, 'electron.queue_hard_limit_bytes'),
+      flushTimeoutMs: positiveInteger(policyDocument.electron.flush_timeout_ms, 'electron.flush_timeout_ms'),
+      fallbackMaxBytes: positiveInteger(policyDocument.electron.fallback_max_bytes, 'electron.fallback_max_bytes'),
+      rotationRetryMs: policyDocument.electron.rotation_retry_seconds.map((value, index) => (
+        positiveInteger(value, `electron.rotation_retry_seconds[${index}]`) * 1_000
+      )),
     },
     duplicateSuppression: {
       windowMs: positiveInteger(policyDocument.duplicate_suppression.window_seconds, 'window_seconds') * 1_000,

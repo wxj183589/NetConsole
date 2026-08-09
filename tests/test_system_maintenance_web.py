@@ -16,6 +16,7 @@ from netconsole.application.system_maintenance import (
 from netconsole.application.web_artifacts import WebArtifactStore
 from netconsole.backend.api.main import create_app
 from netconsole.core.database import Database
+from netconsole.core.log_policy import LOG_POLICY
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.infrastructure.desktop import UnavailableDesktopAdapter
@@ -315,6 +316,7 @@ def test_automatic_cleanup_selects_only_software_runtime_logs(tmp_path: Path) ->
     job = process.jobs[task.task_id]
     assert job.params["selected_item_ids"] == ["runtime_logs"]
     assert job.params["confirmed"] is True
+    assert job.params["retention_days"] == LOG_POLICY.backend.retention_days
 
 
 def test_tasks_reuse_shared_service_and_real_artifact_store(tmp_path: Path) -> None:

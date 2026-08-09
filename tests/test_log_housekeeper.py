@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from netconsole.core.log_policy import LOG_POLICY
+from netconsole.core import app_logger
 from netconsole.core.paths import PathResolver
 from netconsole.services.log_housekeeper import LogHousekeeper
 
@@ -85,6 +86,44 @@ def test_housekeeper_permission_error_is_best_effort(tmp_path: Path, monkeypatch
     assert rotated.exists()
     assert result.deleted_files == 0
     assert result.failures and result.failures[0][0] == rotated
+
+
+def test_housekeeper_reports_when_protected_and_unknown_files_prevent_target(
+    tmp_path: Path, monkeypatch
+) -> None:
+    paths = PathResolver(tmp_path)
+    now = datetime(2026, 8, 10, 12, 0, 0)
+    protected = _write_sparse(paths.logs_dir / "electron.log", 200 * 1024 * 1024)
+    unknown = _write_sparse(paths.logs_dir / "future-diagnostic.bin", 150 * 1024 * 1024)
+    removable = _write_sparse(
+        paths.logs_dir / "electron-20260810-010000-0001.log",
+        100 * 1024 * 1024,
+    )
+    events: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        app_logger,
+        "log_warning",
+        lambda event, detail="": events.append((event, detail)),
+    )
+
+    result = LogHousekeeper(paths).clean(now=now)
+
+    assert protected.exists()
+    assert unknown.exists()
+    assert not removable.exists()
+    assert result.protected_bytes == 200 * 1024 * 1024
+    assert result.unknown_bytes == 150 * 1024 * 1024
+    assert result.candidate_bytes == 100 * 1024 * 1024
+    assert result.deleted_bytes == 100 * 1024 * 1024
+    assert result.total_bytes_after == 350 * 1024 * 1024
+    assert result.target_not_reached is True
+    assert [event for event, _detail in events] == [
+        "LOG_HOUSEKEEPING_TARGET_NOT_REACHED"
+    ]
+    detail = events[0][1]
+    assert "protected_bytes=209715200" in detail
+    assert "unknown_bytes=157286400" in detail
+    assert "deleted_bytes=104857600" in detail
 
 
 def test_log_policy_keeps_raw_collection_outside_application_truncation() -> None:

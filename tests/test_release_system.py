@@ -235,6 +235,10 @@ def test_clean_build_spec_uses_strict_whitelist_and_excludes():
     assert ("tests", "tests") in clean_build_spec.FORBIDDEN_DATA
     assert ("docs", "docs") in clean_build_spec.FORBIDDEN_DATA
     assert ("src/netconsole", "netconsole") in clean_build_spec.ALLOWED_DATA
+    assert (
+        "src/netconsole/resources/log_policy.json",
+        "netconsole/resources",
+    ) in clean_build_spec.ALLOWED_DATA
     assert ("data", "data") not in clean_build_spec.ALLOWED_DATA
     assert (
         "resources/tools/windows-x64/fping",
@@ -509,6 +513,17 @@ def test_clean_build_runtime_subset_copies_only_imported_modules_and_assets(
         and Path(source).name == "device_command_profiles.json"
         for source, destination in datas
     )
+    log_policy_source = next(
+        Path(source)
+        for source, destination in datas
+        if destination == "netconsole/resources"
+        and Path(source).name == "log_policy.json"
+    )
+    log_policy = json.loads(log_policy_source.read_text(encoding="utf-8"))
+    assert log_policy["electron"]["max_file_bytes"] == 20 * 1024 * 1024
+    assert log_policy["backend"]["max_file_bytes"] == 20 * 1024 * 1024
+    assert log_policy["backend"]["retention_days"] == 7
+    assert log_policy["raw_collection"]["truncate"] is False
     profile_source = next(
         Path(source)
         for source, destination in datas

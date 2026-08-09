@@ -9,7 +9,12 @@
   },
   "electron": {
     "max_file_bytes": 20971520,
-    "retention_days": 7
+    "retention_days": 7,
+    "queue_soft_limit_bytes": 4194304,
+    "queue_hard_limit_bytes": 8388608,
+    "flush_timeout_ms": 5000,
+    "fallback_max_bytes": 2097152,
+    "rotation_retry_seconds": [30, 60, 120, 300]
   },
   "backend": {
     "max_file_bytes": 20971520,
@@ -33,6 +38,10 @@
     "max_total_bytes": 314572800,
     "target_total_bytes": 262144000,
     "interval_seconds": 3600
+  },
+  "runtime_cleanup": {
+    "cache_retention_days": 7,
+    "temporary_retention_days": 7
   },
   "raw_collection": {
     "truncate": false
