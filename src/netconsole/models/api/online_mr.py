@@ -160,6 +160,24 @@ class OnlineMrCollectorStatusDTO(ApiModel):
     bytes_written: int = 0
     restart_count: int = 0
     stop_reason: str = ""
+    server_ownership: str = ""
+    server_error_code: str = ""
+    server_pid: int | None = None
+    server_parent_pid: int | None = None
+    server_alive: bool | None = None
+    server_exit_code: int | None = None
+    server_last_error: str = ""
+    server_stderr_tail: str = ""
+    server_last_exit_at: str | None = None
+    server_last_data_at: str | None = None
+    server_bytes_written: int = 0
+    server_stop_reason: str = ""
+    listener_pid: int | None = None
+    listener_process_name: str = ""
+    listener_executable: str = ""
+    listener_command_line: str = ""
+    listener_owner: str = ""
+    listener_started_at: str | None = None
 
 
 class OnlineMrRealtimePreviewDTO(ApiModel):

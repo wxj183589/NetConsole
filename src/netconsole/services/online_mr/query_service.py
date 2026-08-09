@@ -64,6 +64,20 @@ MAX_LOG_LINE_BYTES = 1024 * 1024
 MAX_WEB_TAIL_LIMIT = 500
 MAX_WEB_TAIL_BYTES = 4 * 1024 * 1024
 MAX_PREVIEW_RAW_TAIL_BYTES = 128 * 1024
+_IPERF_RUNTIME_TRUTH_FIELDS = frozenset(
+    {
+        "status", "client_status", "server_status", "supervisor_status",
+        "pid", "alive", "exit_code", "last_error", "stderr_tail",
+        "last_exit_at", "last_data_at", "bytes_written", "restart_count",
+        "restart_reason", "stop_reason", "server_pid", "server_parent_pid",
+        "server_alive", "server_exit_code", "server_last_error",
+        "server_stderr_tail", "server_last_exit_at", "server_last_data_at",
+        "server_bytes_written", "server_stop_reason", "server_ownership", "server_error_code",
+        "listener_pid", "listener_process_name", "listener_executable",
+        "listener_command_line", "listener_owner", "listener_started_at",
+        "error_code", "updated_at",
+    }
+)
 _TIMESTAMP_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?)")
 _LEVEL_RE = re.compile(r"\[(DEBUG|INFO|WARNING|ERROR|CRITICAL)\]", re.IGNORECASE)
 
@@ -315,8 +329,17 @@ class OnlineMrQueryService:
             else:
                 traffic_view = {}
             if traffic_view:
-                merged_item = dict(traffic_view)
-                merged_item.update(item)
+                # live_iperf_status.json is the runtime fact source. The legacy
+                # collector view may provide labels/raw paths, but must never
+                # overwrite a failed child or server diagnostic.
+                merged_item = dict(item)
+                merged_item.update(
+                    {
+                        key: value
+                        for key, value in traffic_view.items()
+                        if key in _IPERF_RUNTIME_TRUTH_FIELDS
+                    }
+                )
                 item = merged_item
             path = self._safe_session_file(session_dir, str(item.get("raw_file") or relative_name))
             exists = bool(path and path.is_file() and not path.is_symlink())
@@ -370,6 +393,24 @@ class OnlineMrQueryService:
                     bytes_written=int(item.get("bytes_written") or size or 0),
                     restart_count=int(item.get("restart_count") or 0),
                     stop_reason=str(item.get("stop_reason") or ""),
+                    server_ownership=str(item.get("server_ownership") or ""),
+                    server_error_code=str(item.get("server_error_code") or ""),
+                    server_pid=self._int_or_none(item.get("server_pid")),
+                    server_parent_pid=self._int_or_none(item.get("server_parent_pid")),
+                    server_alive=item.get("server_alive") if isinstance(item.get("server_alive"), bool) else None,
+                    server_exit_code=self._int_or_none(item.get("server_exit_code")),
+                    server_last_error=str(item.get("server_last_error") or ""),
+                    server_stderr_tail=str(item.get("server_stderr_tail") or ""),
+                    server_last_exit_at=self._text_or_none(item.get("server_last_exit_at")),
+                    server_last_data_at=self._text_or_none(item.get("server_last_data_at")),
+                    server_bytes_written=int(item.get("server_bytes_written") or 0),
+                    server_stop_reason=str(item.get("server_stop_reason") or ""),
+                    listener_pid=self._int_or_none(item.get("listener_pid")),
+                    listener_process_name=str(item.get("listener_process_name") or ""),
+                    listener_executable=str(item.get("listener_executable") or ""),
+                    listener_command_line=str(item.get("listener_command_line") or ""),
+                    listener_owner=str(item.get("listener_owner") or ""),
+                    listener_started_at=self._text_or_none(item.get("listener_started_at")),
                 )
             )
         return rows
@@ -478,9 +519,12 @@ class OnlineMrQueryService:
                 {
                     "ap_mac": match.effective_ap_mac,
                     "ap_name": match.effective_ap_name,
-                    "station_id": "",
+                    # AP Identity currently exposes station/section names but
+                    # not stable topology IDs. Preserve IDs supplied by a
+                    # structured upstream topology payload when present.
+                    "station_id": str(link.get("station_id") or ""),
                     "station_name": match.station,
-                    "section_id": "",
+                    "section_id": str(link.get("section_id") or ""),
                     "section_name": match.section,
                     "identity_source": match.matched_source,
                     "identity_revision": match.identity_revision,

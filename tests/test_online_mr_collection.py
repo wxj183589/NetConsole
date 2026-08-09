@@ -1421,6 +1421,31 @@ def test_online_mesh_parser_accepts_empty_peer_name_table_format() -> None:
     assert records[0].link_state == "ACTIVE"
 
 
+def test_mesh_stream_field_block_is_buffered_until_complete(tmp_path: Path) -> None:
+    paths, config = _config(tmp_path)
+    store = OnlineMrSessionStore(paths)
+    collector = OnlineMrCollector(config, store, connection_factory=lambda _: FakeConnection())
+    collector.session = store.create_session(config)
+    timestamp = datetime(2026, 8, 10, 10, 0, 0)
+
+    for line in (
+        "Peer Name: AP-FIELD",
+        "Peer MAC: aaaa-bbbb-cccc",
+        "RSSI: 52",
+        "BSSID: 1111-2222-3333",
+        "Interface: WLAN-MeshLink1",
+        "Link state: Active(a)",
+        "Online time: 00h 01m 00s",
+    ):
+        collector._publish_stream_line(TASK_MESH_LINK, timestamp, line)
+
+    with collector.session._connect() as conn:
+        sample_count = conn.execute("SELECT COUNT(*) FROM live_samples WHERE task_type = ?", (TASK_MESH_LINK,)).fetchone()[0]
+        link_count = conn.execute("SELECT COUNT(*) FROM live_mesh_links").fetchone()[0]
+    assert sample_count == 1
+    assert link_count == 1
+
+
 def test_online_mesh_parser_accepts_empty_peer_name_standby_online_time() -> None:
     records, status, error = parse_mesh_link_text(
         " Peer Name              Peer MAC       RSSI BSSID          Interface         Link state       Online time\n"

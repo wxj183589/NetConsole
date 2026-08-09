@@ -242,6 +242,27 @@ def test_collectors_report_fresh_stale_and_interrupted_from_fact_timestamps(tmp_
     assert interrupted.stale_seconds is not None and interrupted.stale_seconds >= 179
 
 
+def test_iperf_runtime_snapshot_overrides_legacy_running_collector(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    session = _session(service, "iperf-runtime-priority", status="COLLECTING")
+    (session / "raw" / "iperf_client_raw.log").write_text("interval\n", encoding="utf-8")
+    (session / "view" / "live_mr_status.json").write_text(
+        json.dumps({"collectors": {"iperf_client": {"status": "running", "raw_file": "raw/iperf_client_raw.log"}}}),
+        encoding="utf-8",
+    )
+    (session / "view" / "live_iperf_status.json").write_text(
+        json.dumps({"status": "failed:1", "client_status": "failed:1", "alive": False, "exit_code": 1, "last_error": "connection_reset"}),
+        encoding="utf-8",
+    )
+
+    row = next(item for item in service.list_collectors("site-a", "iperf-runtime-priority") if item.name == "iperf_client")
+
+    assert row.status == "failed:1"
+    assert row.alive is False
+    assert row.exit_code == 1
+    assert row.last_error == "connection_reset"
+
+
 def test_missing_and_invalid_metadata_have_domain_errors(tmp_path: Path) -> None:
     service = _service(tmp_path)
     missing = service.paths.online_mr_session_dir("site-a", "MR-01", "missing")

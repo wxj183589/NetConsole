@@ -162,10 +162,10 @@ function formatBytes(value: number): string {
 
 function collectorStatusLabel(row: OnlineMrCollectorStatus): string {
   if (!row.enabled) return '未启用'
+  if (row.status.startsWith('failed') || row.status === 'error') return row.exit_code !== undefined && row.exit_code !== null ? `失败 / Exit ${row.exit_code}` : '失败'
   if (row.health_status === 'stale') return '异常'
   if (row.health_status === 'interrupted') return '采集中断'
   if (row.health_status === 'normal') return '采集中'
-  if (row.status.startsWith('failed')) return row.exit_code !== undefined && row.exit_code !== null ? `失败 / Exit ${row.exit_code}` : '失败'
   return ({ starting: '启动中', stopped: '已停止', completed: '已完成', failed: '失败', missing: '无数据' } as Record<string, string>)[row.status] || '等待数据'
 }
 

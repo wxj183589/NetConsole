@@ -57,6 +57,7 @@ describe('Online MR realtime collection view', () => {
     expect(source).not.toContain('TCP 总限速')
     expect(source).not.toContain('<el-table')
     expect(source).not.toContain('<el-table-column')
+    expect(source.indexOf("row.status.startsWith('failed')")).toBeLessThan(source.indexOf("row.health_status === 'stale'"))
   })
 })
 
