@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
-import { Delete, Download, Files, FolderOpened, Refresh, Search } from '@element-plus/icons-vue'
+import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
+import { Delete, Download, Files, FolderOpened, FullScreen, Hide, Lock, Refresh, Search, Unlock, View } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { storeToRefs } from 'pinia'
 import { useRoute, useRouter } from 'vue-router'
@@ -8,14 +8,22 @@ import { useRoute, useRouter } from 'vue-router'
 import { ApiRequestError } from '../../api/client'
 import {
   getOnlineMrBusinessSummary,
+  getOnlineMrTrafficOverview,
   getOnlineMrRawTail,
   listOnlineMrRawFiles,
   queryOnlineMrBusinessTable,
   queryOnlineMrMetrics,
+  queryOnlineMrTimelineMetrics,
   queryOnlineMrSwitchRssiWindows,
 } from '../../api/onlineMr'
 import { deleteOnlineMrSession, exportOnlineMrReport, getRailTransitTask, parseOnlineMrSession, recoverRailTransitTasks } from '../../api/railTransitWeb'
 import OnlineMrAnalysisChart from '../../components/online-mr-analysis/OnlineMrAnalysisChart.vue'
+import OnlineMrPingQualityChart from '../../components/online-mr-analysis/OnlineMrPingQualityChart.vue'
+import OnlineMrRssiChart from '../../components/online-mr-analysis/OnlineMrRssiChart.vue'
+import {
+  nearestRailTimelineSample,
+  useRailTimelineController,
+} from '../../components/rail-timeline/railTimeline'
 import { useConfirm } from '../../components/feedback/useConfirm'
 import { useAvailablePanelHeight } from '../../composables/useAvailablePanelHeight'
 import { useUserSelectedExport } from '../../composables/useUserSelectedExport'
@@ -23,21 +31,30 @@ import NcDataTable from '../../components/table/NcDataTable.vue'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import { isFeatureEnabled } from '../../features'
 import {
+  createOnlineMrAnalysisSessionCache,
+  onlineMrAnalysisCacheKey,
+  onlineMrSessionRevision,
   onlineMrSessionDeleteBlockReason,
   useOnlineMrAnalysisStore,
+  type OnlineMrAnalysisSessionCache,
 } from '../../stores/onlineMrAnalysis'
 import type {
   OnlineMrBusinessSummary,
   OnlineMrBusinessRow,
   OnlineMrBusinessTable,
+  OnlineMrMainLinkRow,
   OnlineMrMetricPoint,
   OnlineMrMetricSeries,
+  OnlineMrTrafficOverview,
   OnlineMrRawFile,
   OnlineMrSessionDetail,
   OnlineMrSessionSummary,
   OnlineMrSwitchRssiSource,
   OnlineMrSwitchRssiWindow,
 } from '../../types/onlineMr'
+import { createFullMeshViewportFromDomain, type MeshChartViewport, type MeshSharedPointerChange } from '../../components/mesh-analysis/meshChartViewport'
+import type { MeshChartEvent } from '../../types/meshAnalysis'
+import type { MeshRssiLayoutMode } from '../../components/mesh-analysis/meshRssiLayout'
 import type { RailTransitTask } from '../../types/railTransitWeb'
 import { BEFORE_SITE_SWITCH_EVENT } from '../../workspace/site-switch'
 
@@ -59,15 +76,36 @@ type ChartDefinition = { key: string; title: string; unit: string; metric?: read
 
 const terminalStates = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
 const chartDefinitions: readonly ChartDefinition[] = [
-  { key: 'rssi', title: '主链路 RSSI', metric: ['rssi'], unit: 'dBm' },
-  { key: 'ping-loss', title: 'Ping 丢包率', metric: ['ping_loss'], unit: '%' },
-  { key: 'ping-rtt', title: 'Ping 延迟（fping RTT）', metric: ['ping_rtt'], unit: 'ms' },
+  { key: 'rssi', title: '主链路 RSSI', unit: 'dBm' },
+  { key: 'switch-log-rssi', title: '实时切换日志 RSSI 快照', switchSource: 'realtime', unit: 'dBm' },
+  { key: 'ping-quality', title: 'Ping 质量', metric: ['ping_loss', 'ping_rtt'], unit: '' },
   { key: 'interface', title: '接口速率', metric: ['interface_in_pps', 'interface_out_pps'], unit: 'pps' },
   { key: 'traffic', title: '业务打流', metric: ['iperf_bitrate'], unit: 'Mbps' },
   { key: 'busy', title: '信道繁忙度（Channel Busy）', metric: ['ctl_busy', 'tx_busy', 'rx_busy'], unit: '%' },
   { key: 'switch-rssi', title: '切换历史 RSSI 快照', switchSource: 'history', unit: 'dBm' },
-  { key: 'switch-log-rssi', title: '实时切换日志 RSSI 快照', switchSource: 'realtime', unit: 'dBm' },
 ]
+const trafficMetricDefinitions = [
+  { key: 'throughput', title: '吞吐率', metric: ['iperf_bitrate'], unit: 'Mbps', tooltipKind: 'traffic' as const },
+  { key: 'loss', title: '流量丢失', metric: ['iperf_loss'], unit: '%', tooltipKind: 'traffic-loss' as const },
+  { key: 'jitter', title: 'Jitter', metric: ['iperf_jitter'], unit: 'ms', tooltipKind: 'traffic-jitter' as const },
+  { key: 'retransmits', title: 'TCP 重传', metric: ['iperf_retransmits'], unit: '次', tooltipKind: 'traffic-retransmits' as const },
+] as const
+const timelineMetricTypes = [
+  'rssi',
+  'trackside_rssi',
+  'ping_loss',
+  'ping_rtt',
+  'interface_in_pps',
+  'interface_out_pps',
+  'iperf_bitrate',
+  'iperf_loss',
+  'iperf_jitter',
+  'iperf_retransmits',
+  'ctl_busy',
+  'tx_busy',
+  'rx_busy',
+] as const
+const relatedMetricDefinitions = chartDefinitions.filter((item) => item.metric)
 
 const businessTabToTable: Record<string, OnlineMrBusinessTable> = {
   'mesh-link': 'main_link',
@@ -94,14 +132,20 @@ const businessTableLabels: Record<OnlineMrBusinessTable, string> = {
 }
 
 const businessSummary = ref<OnlineMrBusinessSummary | null>(null)
+const trafficOverview = ref<OnlineMrTrafficOverview | null>(null)
+const trafficWindowOverview = ref<OnlineMrTrafficOverview | null>(null)
+const trafficMetricKey = ref('throughput')
+const businessSummaryLoaded = ref(false)
 const activeTab = ref('session-history')
 const chartTab = ref('rssi')
 const metrics = ref<Record<string, OnlineMrMetricSeries[]>>({})
 const metricOffsets = ref<Record<string, number>>({})
 const metricHasMore = ref<Record<string, boolean>>({})
+const metricLoaded = ref<Record<string, boolean>>({})
 const switchWindows = ref<Record<OnlineMrSwitchRssiSource, OnlineMrSwitchRssiWindow[]>>({ history: [], realtime: [] })
 const switchOffsets = ref<Record<OnlineMrSwitchRssiSource, number>>({ history: 0, realtime: 0 })
 const switchHasMore = ref<Record<OnlineMrSwitchRssiSource, boolean>>({ history: false, realtime: false })
+const switchLoaded = ref<Record<OnlineMrSwitchRssiSource, boolean>>({ history: false, realtime: false })
 const businessRows = ref<Record<OnlineMrBusinessTable, BusinessRow[]>>({
   main_link: [],
   link_detail: [],
@@ -135,9 +179,38 @@ const businessHasMore = ref<Record<OnlineMrBusinessTable, boolean>>({
   iperf: false,
   diagnostics: false,
 })
+const businessLoaded = ref<Record<OnlineMrBusinessTable, boolean>>({
+  main_link: false,
+  link_detail: false,
+  channel_busy: false,
+  switch_history: false,
+  switch_realtime: false,
+  interface_rate: false,
+  fping_1s: false,
+  iperf: false,
+  diagnostics: false,
+})
 const rawFiles = ref<OnlineMrRawFile[]>([])
+const rawFilesLoaded = ref(false)
 const rawTail = ref<string[]>([])
 const rawName = ref('')
+const railTimeline = useRailTimelineController()
+const rssiViewport = railTimeline.viewport
+const timelineCursorTime = railTimeline.cursorTime
+const timelineCursorSource = railTimeline.cursorSource
+const selectedTime = railTimeline.selectedTime
+const timeRangeLocked = railTimeline.timeRangeLocked
+const selectedTimeLocked = railTimeline.selectedTimeLocked
+const rssiLayoutMode = ref<MeshRssiLayoutMode>('compare')
+const rssiSplitRatio = ref(0.5)
+const selectedRadio = ref<number | null>(null)
+const pointLimit = ref(600)
+const showPeerRssi = ref(false)
+const showSwitchLines = ref(true)
+const showSwitchPoints = ref(true)
+const showLocationBand = ref(true)
+const rssiImmersive = ref(false)
+const relatedMetricKey = ref('ping-quality')
 const task = ref<RailTransitTask | null>(null)
 const detailLoading = ref(false)
 const parseSubmitting = ref(false)
@@ -167,9 +240,14 @@ let requestGeneration = 0
 let requestController: AbortController | null = null
 let viewGeneration = 0
 let viewActive = true
+let initialized = false
+let restoringCache = false
+let boundSiteKey = ''
+let boundSessionId = ''
+const chartActive = ref(true)
 const deleteRequests = new Set<string>()
 
-const mainLinkRows = computed(() => businessRows.value.main_link)
+const mainLinkRows = computed<OnlineMrMainLinkRow[]>(() => businessRows.value.main_link as OnlineMrMainLinkRow[])
 const linkDetailRows = computed(() => businessRows.value.link_detail)
 const channelBusyRows = computed(() => businessRows.value.channel_busy)
 const switchHistoryRows = computed(() => businessRows.value.switch_history)
@@ -182,8 +260,93 @@ const currentBusinessTable = computed<OnlineMrBusinessTable | null>(() => busine
 const currentBusinessRows = computed(() => currentBusinessTable.value ? businessRows.value[currentBusinessTable.value] : [])
 const currentBusinessHasMore = computed(() => currentBusinessTable.value ? businessHasMore.value[currentBusinessTable.value] : false)
 const selectedChart = computed(() => chartDefinitions.find((item) => item.key === chartTab.value) || chartDefinitions[0])
-const chartSeries = computed(() => selectedChart.value.switchSource ? switchRssiSeries(selectedChart.value.switchSource) : metrics.value[selectedChart.value.key] || [])
-const chartHasMore = computed(() => selectedChart.value.switchSource ? switchHasMore.value[selectedChart.value.switchSource] : Boolean(metricHasMore.value[selectedChart.value.key]))
+const timelineSeries = computed(() => metrics.value['rail-timeline'] || [])
+const timelineMainSeries = computed(() => timelineSeries.value.filter((item) => item.metric_type === 'rssi'))
+const timelineTracksideSeries = computed(() => timelineSeries.value.filter((item) => item.metric_type === 'trackside_rssi'))
+function metricSeries(types: readonly string[]): OnlineMrMetricSeries[] {
+  const requested = new Set(types)
+  return timelineSeries.value.filter((item) => requested.has(item.metric_type))
+}
+const trafficMetricDefinition = computed(() => trafficMetricDefinitions.find((item) => item.key === trafficMetricKey.value) || trafficMetricDefinitions[0])
+const chartSeries = computed(() => {
+  if (selectedChart.value.key === 'ping-quality') return []
+  if (selectedChart.value.key === 'traffic') return metricSeries(trafficMetricDefinition.value.metric)
+  if (selectedChart.value.switchSource) return switchRssiSeries(selectedChart.value.switchSource)
+  const shared = metricSeries(selectedChart.value.metric || [])
+  return shared.length ? shared : metrics.value[selectedChart.value.key] || []
+})
+const relatedMetric = computed(() => relatedMetricDefinitions.find((item) => item.key === relatedMetricKey.value) || relatedMetricDefinitions[0])
+const relatedMetricSeries = computed(() => metricSeries(relatedMetric.value?.metric || []))
+const availableTimelineRadios = computed(() => {
+  const values = new Set<number>()
+  for (const series of [...timelineMainSeries.value, ...timelineTracksideSeries.value]) {
+    for (const point of series.points) {
+      const value = Number(point.dimensions.radio)
+      if (Number.isFinite(value)) values.add(value)
+    }
+  }
+  return [...values].sort((left, right) => left - right)
+})
+const timelineTimeDomain = computed(() => {
+  const timestamps = timelineSeries.value.flatMap((series) => series.points.flatMap((point) => point.timestamp ? [point.timestamp] : [])).sort()
+  return timestamps.length > 1 ? { full_start_time: timestamps[0], full_end_time: timestamps.at(-1)! } : null
+})
+const timelineSwitchWindows = computed<Record<OnlineMrSwitchRssiSource, OnlineMrSwitchRssiWindow[]>>(() => {
+  const domain = timelineTimeDomain.value
+  if (!domain) return switchWindows.value
+  const withinDomain = (item: OnlineMrSwitchRssiWindow) => Boolean(
+    item.event_time
+    && item.event_time >= domain.full_start_time
+    && item.event_time <= domain.full_end_time,
+  )
+  return {
+    history: switchWindows.value.history.filter(withinDomain),
+    realtime: switchWindows.value.realtime.filter(withinDomain),
+  }
+})
+const timelineWorkspaceHeight = computed(() => rssiImmersive.value
+  ? Math.max(420, window.innerHeight - 190)
+  : Math.max(420, panel.height.value - 32))
+const fullTrafficOverview = computed(() => trafficOverview.value || businessSummary.value?.traffic_overview || null)
+const visibleTrafficMetricDefinitions = computed(() => fullTrafficOverview.value?.protocol === 'TCP'
+  ? trafficMetricDefinitions.filter((item) => item.key === 'throughput' || item.key === 'retransmits')
+  : trafficMetricDefinitions.filter((item) => item.key !== 'retransmits'))
+
+function nearestMetric(types: readonly string[]): { series: OnlineMrMetricSeries; point: OnlineMrMetricPoint } | null {
+  const rows = metricSeries(types).flatMap((series) => series.points.map((point) => ({ series, point })))
+  return nearestRailTimelineSample(rows, selectedTime.value, (row) => row.point.timestamp)
+}
+
+const selectedTimelineDiagnosis = computed(() => {
+  if (!selectedTime.value) return null
+  const main = nearestMetric(['rssi'])
+  const trackside = timelineTracksideSeries.value.flatMap((series) => {
+    const point = nearestRailTimelineSample(series.points, selectedTime.value, (row) => row.timestamp)
+    return point ? [{ series, point }] : []
+  }).sort((left, right) => Number(right.point.value ?? -Infinity) - Number(left.point.value ?? -Infinity)).slice(0, 6)
+  const switchEvent = nearestRailTimelineSample(
+    [...timelineSwitchWindows.value.realtime, ...timelineSwitchWindows.value.history].filter((item) => item.event_time),
+    selectedTime.value,
+    (item) => item.event_time,
+    10_000,
+  )
+  return {
+    main,
+    trackside,
+    busy: nearestMetric(['ctl_busy', 'tx_busy', 'rx_busy']),
+    pingLoss: nearestMetric(['ping_loss']),
+    pingRtt: nearestMetric(['ping_rtt']),
+    traffic: nearestMetric(['iperf_bitrate']),
+    interfaceRate: nearestMetric(['interface_in_pps', 'interface_out_pps']),
+    switchEvent,
+  }
+})
+const chartHasMore = computed(() => {
+  if (selectedChart.value.key === 'rssi' || selectedChart.value.metric) return false
+  return selectedChart.value.switchSource
+    ? switchHasMore.value[selectedChart.value.switchSource]
+    : Boolean(metricHasMore.value[selectedChart.value.key])
+})
 const parsedStatus = computed(() => detail.value?.database_summary.status || 'missing')
 const parsedReadable = computed(() => ['ready', 'legacy', 'stale'].includes(parsedStatus.value) && detail.value?.database_summary.compatible !== false)
 const parsedReady = computed(() => parsedStatus.value === 'ready')
@@ -271,7 +434,7 @@ const channelBusyColumns: NcTableColumn<BusinessRow>[] = [
   { key: 'device_time', label: '设备时间', valueType: 'datetime', widthMode: 'content', minWidth: 220 },
   { key: 'radio', label: '射频ID', valueType: 'number' },
   { key: 'ctl_channel', label: '控制信道', valueType: 'number' },
-  { key: 'bandwidth', label: '频宽', valueType: 'number' },
+  { key: 'bandwidth_mhz', label: '频宽', valueType: 'number', displayValue: (row) => row.bandwidth_mhz == null ? '-' : `${row.bandwidth_mhz} MHz` },
   { key: 'record_interval', label: '记录间隔', valueType: 'duration' },
   { key: 'ctl_busy', label: '控制信道繁忙度', valueType: 'percentage' },
   { key: 'tx_busy', label: '发送繁忙度', valueType: 'percentage' },
@@ -370,15 +533,36 @@ function message(cause: unknown, fallback: string): string {
 function display(value: unknown): string {
   return value === null || value === undefined || value === '' ? '无数据' : String(value)
 }
-function formatBytes(value: number): string {
-  if (value < 1024) return `${value} B`
-  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KiB`
-  return `${(value / 1024 / 1024).toFixed(1)} MiB`
+function formatBytes(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return '暂无可靠统计'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let current = value
+  let index = 0
+  while (Math.abs(current) >= 1024 && index < units.length - 1) { current /= 1024; index += 1 }
+  return `${formatNumber(current, index ? 2 : 0)} ${units[index]}`
+}
+function formatDurationSeconds(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return '暂无可靠统计'
+  if (value < 60) return `${formatNumber(value, 2)} s`
+  return `${Math.floor(value / 60)} min ${Math.round(value % 60)} s`
+}
+function trafficValue(value: number | null | undefined, unit: string): string {
+  return value == null ? '暂无可靠统计' : `${formatNumber(value, 2)} ${unit}`
 }
 function formatNumber(value: number | null | undefined, digits = 2): string {
   if (value === null || value === undefined || Number.isNaN(value)) return '无数据'
   const formatted = Number.isInteger(value) ? String(value) : value.toFixed(digits)
   return formatted.replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '$1')
+}
+function timelineMetricValue(value: { point: OnlineMrMetricPoint; series: OnlineMrMetricSeries } | null, unit = ''): string {
+  if (!value || value.point.value == null) return '无数据'
+  return `${formatNumber(value.point.value, 2)}${unit ? ` ${unit}` : ''}`
+}
+function timeAlignmentConfidenceLabel(value: string | undefined): string {
+  return ({ high: '高', medium: '中', low: '低' } as Record<string, string>)[value || ''] || '低'
+}
+function timeAlignmentMethodLabel(value: string | undefined): string {
+  return ({ 'fixed-offset': '固定偏差', 'linear-drift': '线性漂移', 'piecewise-offset': '分段偏差', none: '未校正' } as Record<string, string>)[value || 'none'] || value || '未校正'
 }
 function sampleKey(row: BusinessRow, index: number): string {
   return String(row.sample_time || row.start_time || row.event_time || row.device_time || row.collector_time || row.time || index)
@@ -429,13 +613,9 @@ function switchRssiSeries(source: OnlineMrSwitchRssiSource): OnlineMrMetricSerie
     timestamp: event.event_time,
     value: role === 'old' ? event.old_rssi_dbm : event.new_rssi_dbm,
     text_value: role === 'old' ? event.old_peer_name : event.new_peer_name,
-    dimensions: {
-      role,
-      radio: event.radio,
-      peer_name: role === 'old' ? event.old_peer_name : event.new_peer_name,
-      peer_mac: role === 'old' ? event.old_peer_mac : event.new_peer_mac,
-      reason: event.reason,
-    },
+      dimensions: {
+        switch_event: event,
+      },
   }))
   return (['old', 'new'] as const).map((role) => {
     const rows = points(role)
@@ -444,7 +624,12 @@ function switchRssiSeries(source: OnlineMrSwitchRssiSource): OnlineMrMetricSerie
 }
 function chartEvents(): Array<{ time: string; label: string }> {
   const source = selectedChart.value.switchSource
-  return source ? switchWindows.value[source].filter((event) => event.event_time).map((event) => ({ time: event.event_time!, label: event.reason || '主链路切换' })) : []
+  const events = source
+    ? switchWindows.value[source]
+    : switchWindows.value.realtime.length
+      ? switchWindows.value.realtime
+      : switchWindows.value.history
+  return events.filter((event) => event.event_time).map((event) => ({ time: event.event_time!, label: event.reason || '主链路切换' }))
 }
 function rememberTask(value: RailTransitTask | null): void {
   task.value = value
@@ -466,7 +651,11 @@ function poll(expectedViewGeneration = viewGeneration): void {
       rememberTask(updated)
       if (terminalStates.has(updated.status)) {
         if (updated.action === 'online_mr_parse') {
-          if (updated.status === 'COMPLETED') await loadAnalysis()
+          if (updated.status === 'COMPLETED' && sessionId.value) {
+            analysisStore.invalidateSession(currentSiteKey(), sessionId.value)
+            clearSessionData()
+            await loadAnalysis({ forceDetail: true, reset: true })
+          }
           task.value = updated
         } else if (updated.action === 'online_mr_report' && updated.status === 'FAILED') {
           ElMessage.error(updated.error_message || updated.message || '分析报告生成失败')
@@ -503,22 +692,225 @@ function emptyOffsetState(): Record<OnlineMrBusinessTable, number> {
 function emptyMoreState(): Record<OnlineMrBusinessTable, boolean> {
   return { main_link: false, link_detail: false, channel_busy: false, switch_history: false, switch_realtime: false, interface_rate: false, fping_1s: false, iperf: false, diagnostics: false }
 }
+function emptyLoadedState(): Record<OnlineMrBusinessTable, boolean> {
+  return { main_link: false, link_detail: false, channel_busy: false, switch_history: false, switch_realtime: false, interface_rate: false, fping_1s: false, iperf: false, diagnostics: false }
+}
+function saveCurrentSessionCache(): void {
+  if (!boundSiteKey || !boundSessionId || analysisStore.isDeleted(boundSessionId)) return
+  const existing = analysisStore.getSessionCache(boundSiteKey, boundSessionId)
+  const cache = createOnlineMrAnalysisSessionCache(boundSiteKey, boundSessionId)
+  const currentDetail = detail.value?.session_id === boundSessionId ? detail.value : existing?.detail || null
+  Object.assign(cache, {
+    revision: currentDetail ? onlineMrSessionRevision(currentDetail) : existing?.revision || null,
+    detail: currentDetail,
+    detailLoaded: Boolean(currentDetail) || existing?.detailLoaded || false,
+    activeTab: activeTab.value,
+    chartTab: chartTab.value,
+    startTime: startTime.value,
+    endTime: endTime.value,
+    downsample: downsample.value,
+    bucketSeconds: bucketSeconds.value,
+    businessSummary: businessSummary.value,
+    businessSummaryLoaded: businessSummaryLoaded.value,
+    businessRows: businessRows.value,
+    businessOffsets: businessOffsets.value,
+    businessHasMore: businessHasMore.value,
+    businessLoaded: businessLoaded.value,
+    metrics: metrics.value,
+    metricOffsets: metricOffsets.value,
+    metricHasMore: metricHasMore.value,
+    metricLoaded: metricLoaded.value,
+    switchWindows: switchWindows.value,
+    switchOffsets: switchOffsets.value,
+    switchHasMore: switchHasMore.value,
+    switchLoaded: switchLoaded.value,
+    rawFiles: rawFiles.value,
+    rawFilesLoaded: rawFilesLoaded.value,
+    rawTail: rawTail.value,
+    rawName: rawName.value,
+    rssiViewport: rssiViewport.value,
+    rssiLayoutMode: rssiLayoutMode.value,
+    rssiSplitRatio: rssiSplitRatio.value,
+    selectedRadio: selectedRadio.value,
+    pointLimit: pointLimit.value,
+    showPeerRssi: showPeerRssi.value,
+    showSwitchLines: showSwitchLines.value,
+    showSwitchPoints: showSwitchPoints.value,
+    showLocationBand: showLocationBand.value,
+    cursorTime: timelineCursorTime.value,
+    cursorSource: timelineCursorSource.value,
+    selectedTime: selectedTime.value,
+    timeRangeLocked: timeRangeLocked.value,
+    selectedTimeLocked: selectedTimeLocked.value,
+    immersiveMode: rssiImmersive.value,
+    relatedMetricKey: relatedMetricKey.value,
+    loadedAt: existing?.loadedAt || Date.now(),
+  })
+  analysisStore.saveSessionCache(cache)
+}
+function restoreSessionCache(cache: OnlineMrAnalysisSessionCache): void {
+  restoringCache = true
+  boundSiteKey = cache.siteKey
+  boundSessionId = cache.sessionId
+  detail.value = cache.detail
+  activeTab.value = cache.activeTab
+  chartTab.value = cache.chartTab
+  startTime.value = cache.startTime
+  endTime.value = cache.endTime
+  downsample.value = cache.downsample
+  bucketSeconds.value = cache.bucketSeconds
+  businessSummary.value = cache.businessSummary
+  trafficOverview.value = cache.businessSummary?.traffic_overview || null
+  trafficWindowOverview.value = null
+  businessSummaryLoaded.value = cache.businessSummaryLoaded
+  businessRows.value = cache.businessRows
+  businessOffsets.value = cache.businessOffsets
+  businessHasMore.value = cache.businessHasMore
+  businessLoaded.value = cache.businessLoaded
+  metrics.value = cache.metrics
+  metricOffsets.value = cache.metricOffsets
+  metricHasMore.value = cache.metricHasMore
+  metricLoaded.value = cache.metricLoaded
+  switchWindows.value = cache.switchWindows
+  switchOffsets.value = cache.switchOffsets
+  switchHasMore.value = cache.switchHasMore
+  switchLoaded.value = cache.switchLoaded
+  rawFiles.value = cache.rawFiles
+  rawFilesLoaded.value = cache.rawFilesLoaded
+  rawTail.value = cache.rawTail
+  rawName.value = cache.rawName
+  railTimeline.restore({
+    viewport: cache.rssiViewport,
+    cursorTime: cache.cursorTime,
+    cursorSource: cache.cursorSource,
+    selectedTime: cache.selectedTime,
+    timeRangeLocked: cache.timeRangeLocked,
+    selectedTimeLocked: cache.selectedTimeLocked,
+  })
+  rssiLayoutMode.value = cache.rssiLayoutMode
+  rssiSplitRatio.value = cache.rssiSplitRatio
+  selectedRadio.value = cache.selectedRadio
+  pointLimit.value = cache.pointLimit
+  showPeerRssi.value = cache.showPeerRssi
+  showSwitchLines.value = cache.showSwitchLines
+  showSwitchPoints.value = cache.showSwitchPoints
+  showLocationBand.value = cache.showLocationBand
+  rssiImmersive.value = cache.immersiveMode
+  relatedMetricKey.value = cache.relatedMetricKey
+  void nextTick(() => { restoringCache = false })
+}
+function resetSessionUi(): void {
+  restoringCache = true
+  activeTab.value = 'session-history'
+  chartTab.value = 'rssi'
+  startTime.value = ''
+  endTime.value = ''
+  downsample.value = 'LATEST_PER_BUCKET'
+  bucketSeconds.value = 1
+  railTimeline.reset()
+  rssiLayoutMode.value = 'compare'
+  rssiSplitRatio.value = 0.5
+  selectedRadio.value = null
+  pointLimit.value = 600
+  showPeerRssi.value = false
+  showSwitchLines.value = true
+  showSwitchPoints.value = true
+  showLocationBand.value = true
+  rssiImmersive.value = false
+  relatedMetricKey.value = 'ping-quality'
+  void nextTick(() => { restoringCache = false })
+}
+function requestCacheKey(context: RequestContext, resource: string, offset = 0): string {
+  const revision = analysisStore.getSessionCache(context.siteKey, context.sessionId)?.revision || 'unversioned'
+  const filters = JSON.stringify([startTime.value, endTime.value, downsample.value, bucketSeconds.value, pointLimit.value])
+  return `${onlineMrAnalysisCacheKey(context.siteKey, context.sessionId)}\0${revision}\0${resource}\0${filters}\0${offset}\0${context.generation}`
+}
+function updateRssiViewport(viewport: MeshChartViewport): void {
+  railTimeline.setViewport(viewport)
+  if (chartTab.value === 'traffic') void loadTrafficWindowOverview()
+  saveCurrentSessionCache()
+}
+function updateTimelinePointer(pointer: MeshSharedPointerChange): void {
+  railTimeline.setCursor(pointer)
+}
+function selectTimelineTime(time: string): void {
+  railTimeline.selectTime(time, false)
+  saveCurrentSessionCache()
+}
+function locateMainLink(): void {
+  if (!selectedTime.value) return
+  railTimeline.focusTime(selectedTime.value, timelineTimeDomain.value)
+  chartTab.value = 'rssi'
+  saveCurrentSessionCache()
+}
+function selectTimelineSwitch(event: MeshChartEvent): void {
+  selectTimelineTime(event.timestamp)
+}
+function resetTimelineViewport(): void {
+  const domain = timelineTimeDomain.value
+  railTimeline.setViewport(domain ? createFullMeshViewportFromDomain(domain, 'programmatic') : null)
+  timeRangeLocked.value = false
+  saveCurrentSessionCache()
+}
+function toggleTimeRangeLock(): void {
+  if (!rssiViewport.value) return
+  timeRangeLocked.value = !timeRangeLocked.value
+  saveCurrentSessionCache()
+}
+function toggleSelectedTimeLock(): void {
+  if (!selectedTime.value) return
+  selectedTimeLocked.value = !selectedTimeLocked.value
+  saveCurrentSessionCache()
+}
+function toggleImmersive(): void {
+  rssiImmersive.value = !rssiImmersive.value
+  saveCurrentSessionCache()
+}
+function moveToSwitch(direction: -1 | 1): void {
+  const viewport = rssiViewport.value
+  const events = [...timelineSwitchWindows.value.realtime, ...timelineSwitchWindows.value.history]
+    .filter((item) => Boolean(
+      item.event_time
+      && (!viewport || (item.event_time >= viewport.start_time && item.event_time <= viewport.end_time)),
+    ))
+    .sort((left, right) => left.event_time!.localeCompare(right.event_time!))
+  if (!events.length) return
+  const current = selectedTime.value || (direction > 0 ? '' : '9999')
+  const ordered = direction > 0 ? events : [...events].reverse()
+  const target = ordered.find((event) => direction > 0 ? event.event_time! > current : event.event_time! < current)
+    || ordered[0]
+  if (target.event_time) selectTimelineTime(target.event_time)
+}
+function reloadTimelineForPointLimit(): void {
+  metricLoaded.value['rail-timeline'] = false
+  delete metrics.value['rail-timeline']
+  saveCurrentSessionCache()
+  void loadRailTimeline(nextRequestContext(), true)
+}
 function clearAnalysisData(): void {
   businessSummary.value = null
+  trafficOverview.value = null
+  trafficWindowOverview.value = null
+  businessSummaryLoaded.value = false
   businessRows.value = emptyBusinessState()
   businessOffsets.value = emptyOffsetState()
   businessHasMore.value = emptyMoreState()
+  businessLoaded.value = emptyLoadedState()
   metrics.value = {}
   metricOffsets.value = {}
   metricHasMore.value = {}
+  metricLoaded.value = {}
   switchWindows.value = { history: [], realtime: [] }
   switchOffsets.value = { history: 0, realtime: 0 }
   switchHasMore.value = { history: false, realtime: false }
+  switchLoaded.value = { history: false, realtime: false }
+  railTimeline.reset()
   analysisError.value = ''
 }
 function clearSessionData(): void {
   clearAnalysisData()
   rawFiles.value = []
+  rawFilesLoaded.value = false
   rawTail.value = []
   rawName.value = ''
 }
@@ -546,6 +938,9 @@ function isAbort(cause: unknown): boolean {
 function currentSiteKey(): string {
   return typeof route.query.site_id === 'string' ? route.query.site_id : '__current_site__'
 }
+function isOnlineMrRoute(): boolean {
+  return route.name == null || route.name === 'online-mr-analysis'
+}
 function disposeForSiteSwitch(): void {
   viewActive = false
   viewGeneration += 1
@@ -557,6 +952,8 @@ function disposeForSiteSwitch(): void {
   deletingSessionId.value = null
   pendingDeleteTarget.value = null
   deleteRequests.clear()
+  boundSiteKey = ''
+  boundSessionId = ''
   stopPolling()
 }
 function requestedRouteSessionId(): string | null {
@@ -575,6 +972,7 @@ async function loadSessions(options: {
   preferredSessionId?: string | null
   selectFirstWhenEmpty?: boolean
   preserveDetail?: boolean
+  force?: boolean
 } = {}): Promise<boolean> {
   error.value = ''
   try {
@@ -584,6 +982,7 @@ async function loadSessions(options: {
       requestedSessionId: requestedRouteSessionId(),
       preferredSessionId: options.preferredSessionId,
       selectFirstWhenEmpty: options.selectFirstWhenEmpty ?? previousSessionId == null,
+      force: options.force,
     })
     if (!result.applied) return false
     await syncRouteSessionId(result.selectedSessionId)
@@ -600,7 +999,22 @@ async function loadSessions(options: {
     return false
   }
 }
-async function loadAnalysis(): Promise<void> {
+async function refreshCurrentSession(): Promise<void> {
+  const targetSessionId = sessionId.value
+  if (targetSessionId) {
+    analysisStore.invalidateSession(currentSiteKey(), targetSessionId)
+    boundSiteKey = currentSiteKey()
+    boundSessionId = targetSessionId
+    detail.value = null
+    clearSessionData()
+  }
+  await loadSessions({
+    preferredSessionId: targetSessionId,
+    selectFirstWhenEmpty: true,
+    force: true,
+  })
+}
+async function loadAnalysis(options: { forceDetail?: boolean; reset?: boolean } = {}): Promise<void> {
   if (!sessionId.value) return
   const context = nextRequestContext()
   const deletingTaskActive = taskActive.value && task.value?.action === 'online_mr_session_delete'
@@ -608,14 +1022,28 @@ async function loadAnalysis(): Promise<void> {
     stopPolling()
     task.value = null
   }
+  const cached = options.reset ? null : analysisStore.getSessionCache(context.siteKey, context.sessionId)
+  if (cached) restoreSessionCache(cached)
+  if (cached?.detailLoaded) {
+    detailLoading.value = false
+    error.value = ''
+    if (cached.detail) await loadActiveTab(activeTab.value, context)
+    return
+  }
+  if (!cached && boundSessionId && boundSessionId !== context.sessionId) resetSessionUi()
+  boundSiteKey = context.siteKey
+  boundSessionId = context.sessionId
   detail.value = null
-  clearSessionData()
+  if (!cached) clearSessionData()
   detailLoading.value = true
   error.value = ''
   try {
-    const nextDetail = await analysisStore.loadSelectedSession(context.siteKey)
+    const nextDetail = await analysisStore.loadSelectedSession(context.siteKey, options.forceDetail)
     if (!isCurrent(context)) return
-    if (nextDetail) await loadActiveTab(activeTab.value, context)
+    if (nextDetail) {
+      await loadActiveTab(activeTab.value, context)
+      saveCurrentSessionCache()
+    }
   } catch (cause) {
     if (!isAbort(cause) && isCurrent(context)) error.value = message(cause, 'Online MR 会话详情加载失败')
   } finally {
@@ -623,41 +1051,116 @@ async function loadAnalysis(): Promise<void> {
   }
 }
 async function loadBusinessSummary(context = currentRequestContext()): Promise<void> {
-  if (!context.sessionId || !isCurrent(context) || businessSummary.value) return
-  const value = await getOnlineMrBusinessSummary(context.sessionId)
-  if (isCurrent(context)) businessSummary.value = value
+  if (!context.sessionId || !isCurrent(context) || businessSummaryLoaded.value) return
+  const value = await analysisStore.runDeduped(
+    requestCacheKey(context, 'business-summary'),
+    () => getOnlineMrBusinessSummary(context.sessionId),
+  )
+  if (isCurrent(context)) {
+    businessSummary.value = value
+    trafficOverview.value = value.traffic_overview || null
+    businessSummaryLoaded.value = true
+    saveCurrentSessionCache()
+  }
+}
+async function loadTrafficWindowOverview(context = currentRequestContext()): Promise<void> {
+  if (!context.sessionId || !isCurrent(context)) return
+  const viewport = rssiViewport.value
+  const key = `${requestCacheKey(context, 'traffic-overview-window')}\0${viewport?.start_time || ''}\0${viewport?.end_time || ''}`
+  const value = await analysisStore.runDeduped(
+    key,
+    () => getOnlineMrTrafficOverview(context.sessionId, {
+      startTime: viewport?.start_time || startTime.value,
+      endTime: viewport?.end_time || endTime.value,
+      signal: context.signal,
+    }),
+  )
+  if (isCurrent(context)) trafficWindowOverview.value = value
 }
 async function loadBusinessTable(table: OnlineMrBusinessTable, append = false, context = currentRequestContext()): Promise<void> {
-  if (!context.sessionId || !isCurrent(context) || (!append && businessRows.value[table].length)) return
+  if (!context.sessionId || !isCurrent(context) || (!append && businessLoaded.value[table])) return
+  if (append && (!businessLoaded.value[table] || !businessHasMore.value[table])) return
   const offset = append ? businessOffsets.value[table] : 0
-  const page = await queryOnlineMrBusinessTable(context.sessionId, table, { startTime: startTime.value, endTime: endTime.value, limit: businessLimit, offset, signal: context.signal })
+  const page = await analysisStore.runDeduped(
+    requestCacheKey(context, `business-table:${table}`, offset),
+    () => queryOnlineMrBusinessTable(context.sessionId, table, { startTime: startTime.value, endTime: endTime.value, limit: businessLimit, offset, signal: context.signal }),
+  )
   if (!isCurrent(context)) return
+  if ((!append && businessLoaded.value[table]) || (append && businessOffsets.value[table] !== offset)) return
   businessRows.value[table] = append ? [...businessRows.value[table], ...page.rows] : page.rows
   businessOffsets.value[table] = page.next_offset
   businessHasMore.value[table] = page.has_more
+  businessLoaded.value[table] = true
+  saveCurrentSessionCache()
 }
 async function loadMetric(name: string, types: string[], append = false, context = currentRequestContext()): Promise<void> {
-  if (!context.sessionId || !isCurrent(context) || (!append && metrics.value[name])) return
+  if (!context.sessionId || !isCurrent(context) || (!append && metricLoaded.value[name])) return
+  if (append && (!metricLoaded.value[name] || !metricHasMore.value[name])) return
   const offset = append ? metricOffsets.value[name] || 0 : 0
-  const page = await queryOnlineMrMetrics(context.sessionId, types, { startTime: startTime.value, endTime: endTime.value, limit: metricLimit, offset, downsample: downsample.value, bucketSeconds: bucketSeconds.value, signal: context.signal })
+  const page = await analysisStore.runDeduped(
+    requestCacheKey(context, `metric:${name}:${types.join(',')}`, offset),
+    () => queryOnlineMrMetrics(context.sessionId, types, { startTime: startTime.value, endTime: endTime.value, limit: metricLimit, offset, downsample: downsample.value, bucketSeconds: bucketSeconds.value, signal: context.signal }),
+  )
   if (!isCurrent(context)) return
+  if ((!append && metricLoaded.value[name]) || (append && (metricOffsets.value[name] || 0) !== offset)) return
   metrics.value[name] = append ? appendMetricPage(metrics.value[name] || [], page.series) : page.series
   metricOffsets.value[name] = page.next_offset
   metricHasMore.value[name] = page.has_more
+  metricLoaded.value[name] = true
+  saveCurrentSessionCache()
+}
+async function loadRailTimeline(context = currentRequestContext(), force = false): Promise<void> {
+  const cacheKey = 'rail-timeline'
+  if (!context.sessionId || !isCurrent(context) || (!force && metricLoaded.value[cacheKey])) return
+  const first = businessSummary.value?.first_sample_time ? Date.parse(businessSummary.value.first_sample_time.replace(' ', 'T')) : Number.NaN
+  const last = businessSummary.value?.last_sample_time ? Date.parse(businessSummary.value.last_sample_time.replace(' ', 'T')) : Number.NaN
+  const durationSeconds = Number.isFinite(first) && Number.isFinite(last) ? Math.max(1, (last - first) / 1_000) : pointLimit.value
+  const timelineBucketSeconds = Math.max(1, Math.ceil(durationSeconds / Math.max(120, pointLimit.value)))
+  const rows = await analysisStore.runDeduped(
+    requestCacheKey(context, `metrics:${cacheKey}:${timelineBucketSeconds}`),
+    () => queryOnlineMrTimelineMetrics(context.sessionId, [...timelineMetricTypes], {
+      startTime: startTime.value,
+      endTime: endTime.value,
+      limit: 10_000,
+      downsample: 'MIN_MAX',
+      bucketSeconds: timelineBucketSeconds,
+      signal: context.signal,
+    }),
+  )
+  if (!isCurrent(context)) return
+  metrics.value[cacheKey] = rows
+  metricLoaded.value[cacheKey] = true
+  metricOffsets.value[cacheKey] = rows.reduce((count, series) => count + series.points.length, 0)
+  metricHasMore.value[cacheKey] = false
+  saveCurrentSessionCache()
 }
 async function loadSwitchWindows(source: OnlineMrSwitchRssiSource, append = false, context = currentRequestContext()): Promise<void> {
-  if (!context.sessionId || !isCurrent(context) || (!append && switchWindows.value[source].length)) return
+  if (!context.sessionId || !isCurrent(context) || (!append && switchLoaded.value[source])) return
+  if (append && (!switchLoaded.value[source] || !switchHasMore.value[source])) return
   const offset = append ? switchOffsets.value[source] : 0
-  const page = await queryOnlineMrSwitchRssiWindows(context.sessionId, source, { startTime: startTime.value, endTime: endTime.value, limit: switchLimit, offset, signal: context.signal })
+  const page = await analysisStore.runDeduped(
+    requestCacheKey(context, `switch-rssi:${source}`, offset),
+    () => queryOnlineMrSwitchRssiWindows(context.sessionId, source, { startTime: startTime.value, endTime: endTime.value, limit: switchLimit, offset, signal: context.signal }),
+  )
   if (!isCurrent(context)) return
+  if ((!append && switchLoaded.value[source]) || (append && switchOffsets.value[source] !== offset)) return
   switchWindows.value[source] = append ? [...switchWindows.value[source], ...page.items] : page.items
   switchOffsets.value[source] = offset + page.limit
   switchHasMore.value[source] = page.has_more
+  switchLoaded.value[source] = true
+  saveCurrentSessionCache()
 }
 async function loadRaw(context = currentRequestContext()): Promise<void> {
-  if (!rawFiles.value.length) {
-    const rows = await listOnlineMrRawFiles(context.sessionId, context.signal)
-    if (isCurrent(context)) rawFiles.value = rows
+  if (!rawFilesLoaded.value) {
+    const rows = await analysisStore.runDeduped(
+      requestCacheKey(context, 'raw-files'),
+      () => listOnlineMrRawFiles(context.sessionId, context.signal),
+    )
+    if (isCurrent(context)) {
+      rawFiles.value = rows
+      rawFilesLoaded.value = true
+      saveCurrentSessionCache()
+    }
   }
 }
 async function loadCollectorLog(context = currentRequestContext()): Promise<void> {
@@ -665,6 +1168,7 @@ async function loadCollectorLog(context = currentRequestContext()): Promise<void
   if (isCurrent(context)) {
     rawName.value = 'collector_output'
     rawTail.value = result.lines
+    saveCurrentSessionCache()
   }
 }
 async function loadActiveTab(tab: string, context = currentRequestContext()): Promise<void> {
@@ -679,9 +1183,15 @@ async function loadActiveTab(tab: string, context = currentRequestContext()): Pr
   try {
     if (tab === 'mesh-link') await Promise.all([loadBusinessSummary(context), loadBusinessTable('main_link', false, context)])
     else if (businessTable) await loadBusinessTable(businessTable, false, context)
-    else if (tab === 'charts') {
+      else if (tab === 'charts') {
+        await loadBusinessSummary(context)
       if (selectedChart.value.switchSource) await loadSwitchWindows(selectedChart.value.switchSource, false, context)
-      else await loadMetric(selectedChart.value.key, [...(selectedChart.value.metric || [])], false, context)
+      else await Promise.all([
+        loadRailTimeline(context),
+        loadSwitchWindows('history', false, context),
+        loadSwitchWindows('realtime', false, context),
+        ...(selectedChart.value.key === 'traffic' ? [loadTrafficWindowOverview(context)] : []),
+      ])
     } else if (tab === 'raw') await loadRaw(context)
     else if (tab === 'logs') await loadCollectorLog(context)
   } catch (cause) {
@@ -694,7 +1204,10 @@ async function openRaw(row: OnlineMrRawFile): Promise<void> {
   rawTail.value = []
   try {
     const result = await getOnlineMrRawTail(context.sessionId, row.name, 250, context.signal)
-    if (isCurrent(context)) rawTail.value = result.lines
+    if (isCurrent(context)) {
+      rawTail.value = result.lines
+      saveCurrentSessionCache()
+    }
   } catch (cause) {
     if (!isAbort(cause) && isCurrent(context)) analysisError.value = message(cause, '原始日志读取失败')
   }
@@ -709,12 +1222,14 @@ function openTaskWindow(): void {
 }
 function selectSession(row: OnlineMrSessionSummary): void {
   if (row.session_id === deletingSessionId.value || row.session_id === sessionId.value) return
+  saveCurrentSessionCache()
   analysisStore.selectSession(row.session_id)
   void syncRouteSessionId(row.session_id)
   void loadAnalysis()
 }
 function selectSessionId(value: string): void {
   if (!value || value === deletingSessionId.value || value === sessionId.value || !analysisStore.sessionById(value)) return
+  saveCurrentSessionCache()
   analysisStore.selectSession(value)
   void syncRouteSessionId(value)
   void loadAnalysis()
@@ -753,8 +1268,17 @@ async function startParse(forceReparse: boolean): Promise<void> {
   parseSubmitting.value = true
   error.value = ''
   try {
+    analysisStore.invalidateSessionAnalysis(currentSiteKey(), detail.value.session_id)
+    clearAnalysisData()
+    saveCurrentSessionCache()
     rememberTask(await parseOnlineMrSession(detail.value.session_id, forceReparse))
-    poll()
+    if (task.value?.status === 'COMPLETED' && sessionId.value) {
+      analysisStore.invalidateSession(currentSiteKey(), sessionId.value)
+      clearSessionData()
+      await loadAnalysis({ forceDetail: true, reset: true })
+    } else {
+      poll()
+    }
     openTaskWindow()
   } catch (cause) {
     error.value = message(cause, forceReparse ? '强制重新解析启动失败' : '会话解析启动失败')
@@ -831,7 +1355,7 @@ async function finishDeleteTask(updated: RailTransitTask): Promise<void> {
       await syncRouteSessionId(adjacent)
       if (adjacent) await loadAnalysis()
     }
-    const refreshed = await loadSessions({ preserveDetail: true, selectFirstWhenEmpty: false })
+    const refreshed = await loadSessions({ preserveDetail: true, selectFirstWhenEmpty: false, force: true })
     if (!refreshed) {
       ElMessage.warning('会话已删除，但会话列表刷新失败，可手动刷新。')
     } else if (updated.status === 'COMPLETED' && issues.length === 0) {
@@ -926,38 +1450,46 @@ async function recoverTask(): Promise<void> {
 }
 function changeTab(tab: string): void {
   activeTab.value = tab
-  const context = nextRequestContext()
+  saveCurrentSessionCache()
+  const context = currentRequestContext()
   void loadActiveTab(tab, context)
 }
 function changeChartTab(tab: string): void {
   chartTab.value = tab
-  const context = nextRequestContext()
+  saveCurrentSessionCache()
+  const context = currentRequestContext()
   const definition = chartDefinitions.find((item) => item.key === tab)
   if (definition?.switchSource) void loadSwitchWindows(definition.switchSource, false, context)
-  else void loadMetric(tab, [...(definition?.metric || [])], false, context)
+  else void Promise.all([
+    loadRailTimeline(context),
+    loadSwitchWindows('history', false, context),
+    loadSwitchWindows('realtime', false, context),
+    ...(definition?.key === 'traffic' ? [loadTrafficWindowOverview(context)] : []),
+  ])
 }
 function loadMoreChart(): void {
   const definition = selectedChart.value
-  if (definition.switchSource) void loadSwitchWindows(definition.switchSource, true)
-  else void loadMetric(definition.key, [...(definition.metric || [])], true)
+  if (definition.key === 'rssi') {
+    return
+  } else if (definition.switchSource) void loadSwitchWindows(definition.switchSource, true)
 }
 function loadMoreActiveTab(): void {
   if (currentBusinessTable.value) void loadBusinessTable(currentBusinessTable.value, true)
   else if (activeTab.value === 'charts') loadMoreChart()
 }
-watch([startTime, endTime], () => {
-  if (!currentBusinessTable.value && activeTab.value !== 'charts') return
+watch([startTime, endTime, downsample, bucketSeconds], (current, previous) => {
+  if (restoringCache) return
+  const timeChanged = current[0] !== previous[0] || current[1] !== previous[1]
+  const chartSettingsChanged = current[2] !== previous[2] || current[3] !== previous[3]
+  const needsReload = (timeChanged && Boolean(currentBusinessTable.value || activeTab.value === 'charts'))
+    || (chartSettingsChanged && activeTab.value === 'charts')
+  if (!needsReload) return
   clearAnalysisData()
   const context = nextRequestContext()
   void loadActiveTab(activeTab.value, context)
 })
-watch([downsample, bucketSeconds], () => {
-  if (activeTab.value !== 'charts') return
-  clearAnalysisData()
-  const context = nextRequestContext()
-  void loadActiveTab('charts', context)
-})
 watch(() => route.query.site_id, () => {
+  if (!viewActive || !isOnlineMrRoute()) return
   viewGeneration += 1
   stopPolling()
   requestController?.abort()
@@ -971,12 +1503,16 @@ watch(() => route.query.site_id, () => {
   deletingSessionId.value = null
   pendingDeleteTarget.value = null
   deleteRequests.clear()
+  boundSiteKey = ''
+  boundSessionId = ''
   void loadSessions({ selectFirstWhenEmpty: true })
 })
 watch(() => route.query.session_id, (next) => {
+  if (!viewActive || !isOnlineMrRoute()) return
   const target = typeof next === 'string' && next ? next : null
   if (target === sessionId.value) return
   if (target && analysisStore.sessionById(target) && !analysisStore.isDeleted(target)) {
+    saveCurrentSessionCache()
     analysisStore.selectSession(target)
     void loadAnalysis()
     return
@@ -993,26 +1529,43 @@ onMounted(async () => {
   window.addEventListener(BEFORE_SITE_SWITCH_EVENT, disposeForSiteSwitch)
   await loadSessions({ selectFirstWhenEmpty: true })
   await recoverTask()
+  initialized = true
 })
 onActivated(() => {
   viewActive = true
+  chartActive.value = true
+  if (initialized && isOnlineMrRoute()) {
+    if (!analysisStore.sessionsLoaded || analysisStore.siteKey !== currentSiteKey()) {
+      void loadSessions({ selectFirstWhenEmpty: true })
+      return
+    }
+    const target = requestedRouteSessionId()
+    if (target && target !== sessionId.value && analysisStore.sessionById(target)) {
+      analysisStore.selectSession(target)
+    }
+    if (sessionId.value && (boundSessionId !== sessionId.value || boundSiteKey !== currentSiteKey())) {
+      void loadAnalysis()
+    }
+  }
   if (task.value && !terminalStates.has(task.value.status)) poll()
 })
 onDeactivated(() => {
+  saveCurrentSessionCache()
   viewActive = false
+  chartActive.value = false
   viewGeneration += 1
   requestController?.abort()
-  analysisStore.invalidateRequests()
   detailLoading.value = false
   openingSessionId.value = null
   deletingSessionId.value = null
   stopPolling()
 })
 onBeforeUnmount(() => {
+  saveCurrentSessionCache()
   viewActive = false
+  chartActive.value = false
   viewGeneration += 1
   requestController?.abort()
-  analysisStore.dispose()
   detailLoading.value = false
   openingSessionId.value = null
   deletingSessionId.value = null
@@ -1037,13 +1590,13 @@ function linkDetailRowClass({ rowIndex }: { rowIndex: number }): string {
       <div>
         <p class="eyebrow">RAIL TRANSIT · ONLINE MR ANALYSIS</p>
         <h1>车载 MR 收集分析</h1>
-        <p>会话、原始日志与采集记录不依赖 parsed 数据库；业务表按解析结果结构化展示，动态图继续复用现有指标接口。</p>
+        <p>会话、原始日志与采集记录不依赖 parsed 数据库；业务表按解析结果结构化展示，主链路 RSSI 复用 MESH 动态图。</p>
       </div>
       <div class="actions">
         <el-select :model-value="sessionId || ''" class="session-selector" filterable placeholder="选择 Online MR 会话" @change="selectSessionId">
           <el-option v-for="item in sessions" :key="item.session_id" :label="`${item.device_name || item.mr_name} · ${item.status} · ${item.started_at || item.session_id}`" :value="item.session_id" />
         </el-select>
-        <el-button :icon="Refresh" :loading="loading" :disabled="deleteBusy" @click="loadSessions()">刷新</el-button>
+        <el-button data-testid="refresh-session" :icon="Refresh" :loading="loading" :disabled="deleteBusy" @click="refreshCurrentSession">刷新</el-button>
         <el-button data-testid="parse-session" :disabled="!canParse || parsedStatus === 'parsing' || sessionActionsDisabled || reportBusy || parseBusy" :loading="parseBusy" @click="startParse(false)">{{ parsedStatus === 'missing' ? '解析当前会话' : '重新解析' }}</el-button>
         <el-button data-testid="force-reparse-session" :disabled="!canParse || parsedStatus === 'parsing' || sessionActionsDisabled || reportBusy || parseBusy" :loading="parseBusy" @click="startParse(true)">强制重新解析</el-button>
         <el-button data-testid="open-session-location" :icon="FolderOpened" :loading="openingSessionId === sessionId" :disabled="sessionActionsDisabled || Boolean(openingSessionId) || !desktopLocationAvailable" :title="openLocationTitle" @click="openSessionLocation()">打开本地目录</el-button>
@@ -1064,12 +1617,20 @@ function linkDetailRowClass({ rowIndex }: { rowIndex: number }): string {
         <article><span>采集时长</span><strong>{{ display(detail.duration_minutes) }} min</strong></article>
       </div>
 
-      <el-alert class="parsed-status" :type="parsedAlertType" :title="`${parsedStatusLabel} · ${parsedMessage}`" show-icon :closable="false">
-        <template #default>
-          <span v-if="detail.database_summary.parser_version">Parser：{{ detail.database_summary.parser_version }}</span>
-          <span v-if="detail.database_summary.missing_capabilities.length">；缺少能力：{{ detail.database_summary.missing_capabilities.join('、') }}</span>
-        </template>
-      </el-alert>
+      <div class="analysis-status-row">
+        <el-popover placement="bottom-end" trigger="hover" :width="360">
+          <dl class="parser-status-details">
+            <dt>解析结果</dt><dd>{{ parsedStatusLabel }}</dd>
+            <dt>解析数据库</dt><dd>{{ detail.database_summary.compatible === false ? '不可用' : parsedReadable ? '可用' : '待处理' }}</dd>
+            <dt>说明</dt><dd>{{ parsedMessage }}</dd>
+            <dt v-if="detail.database_summary.parser_version">Parser</dt><dd v-if="detail.database_summary.parser_version">{{ detail.database_summary.parser_version }}</dd>
+            <dt v-if="detail.database_summary.missing_capabilities.length">缺少能力</dt><dd v-if="detail.database_summary.missing_capabilities.length">{{ detail.database_summary.missing_capabilities.join('、') }}</dd>
+          </dl>
+          <template #reference>
+            <el-tag class="parser-status-tag" :type="parsedAlertType" effect="plain" round :title="parsedMessage">{{ parsedStatusLabel }}</el-tag>
+          </template>
+        </el-popover>
+      </div>
 
       <el-alert v-if="analysisError" class="analysis-error" :title="analysisError" type="warning" show-icon :closable="false" />
 
@@ -1138,11 +1699,221 @@ function linkDetailRowClass({ rowIndex }: { rowIndex: number }): string {
         </el-tab-pane>
 
         <el-tab-pane name="charts" label="动态图">
-          <el-tabs :model-value="chartTab" type="card" @tab-change="changeChartTab">
-            <el-tab-pane v-for="item in chartDefinitions" :key="item.key" :name="item.key" :label="item.title">
-              <OnlineMrAnalysisChart :series="chartTab === item.key ? chartSeries : (metrics[item.key] || [])" :title="item.title" :unit="item.unit" :events="chartTab === item.key ? chartEvents() : []" />
-            </el-tab-pane>
-          </el-tabs>
+          <div class="timeline-workbench" :class="{ 'is-immersive': rssiImmersive }">
+            <div class="timeline-toolbar">
+              <el-radio-group v-model="rssiLayoutMode" size="small" @change="saveCurrentSessionCache">
+                <el-radio-button value="compare">对比</el-radio-button>
+                <el-radio-button value="active-focus">主链</el-radio-button>
+                <el-radio-button value="trackside-focus">轨旁</el-radio-button>
+              </el-radio-group>
+              <el-select v-model="selectedRadio" clearable placeholder="全部 Radio" style="width:132px" @change="saveCurrentSessionCache">
+                <el-option v-for="radio in availableTimelineRadios" :key="radio" :label="`Radio ${radio}`" :value="radio" />
+              </el-select>
+              <el-select v-model="pointLimit" style="width:132px" @change="reloadTimelineForPointLimit">
+                <el-option label="目标 300 点" :value="300" />
+                <el-option label="目标 600 点" :value="600" />
+                <el-option label="目标 1200 点" :value="1200" />
+                <el-option label="目标 2000 点" :value="2000" />
+              </el-select>
+              <el-checkbox v-model="showPeerRssi" @change="saveCurrentSessionCache">显示 Peer RSSI</el-checkbox>
+              <el-button :icon="showSwitchLines ? View : Hide" @click="showSwitchLines = !showSwitchLines; saveCurrentSessionCache()">切换时刻线</el-button>
+              <el-button :icon="showSwitchPoints ? View : Hide" @click="showSwitchPoints = !showSwitchPoints; saveCurrentSessionCache()">切换节点</el-button>
+              <el-button :icon="showLocationBand ? View : Hide" @click="showLocationBand = !showLocationBand; saveCurrentSessionCache()">站点/区间</el-button>
+              <el-button @click="resetTimelineViewport">重置视图</el-button>
+              <el-button :icon="timeRangeLocked ? Unlock : Lock" :type="timeRangeLocked ? 'primary' : undefined" :disabled="!rssiViewport" @click="toggleTimeRangeLock">
+                {{ timeRangeLocked ? '解除范围锁定' : '锁定当前范围' }}
+              </el-button>
+              <el-button v-if="selectedTime" :icon="selectedTimeLocked ? Unlock : Lock" :type="selectedTimeLocked ? 'primary' : undefined" @click="toggleSelectedTimeLock">
+                {{ selectedTimeLocked ? '解除时刻锁定' : '锁定分析时刻' }}
+              </el-button>
+              <el-button v-if="selectedTime && chartTab !== 'rssi'" size="small" @click="locateMainLink">定位主链路</el-button>
+              <el-button v-if="chartHasMore" size="small" @click="loadMoreChart">加载更多数据</el-button>
+              <el-button :icon="FullScreen" :type="rssiImmersive ? 'primary' : undefined" @click="toggleImmersive">
+                {{ rssiImmersive ? '退出沉浸' : '沉浸式对比' }}
+              </el-button>
+            </div>
+
+            <el-tabs :model-value="chartTab" type="card" @tab-change="changeChartTab">
+              <el-tab-pane v-for="item in chartDefinitions" :key="item.key" :name="item.key" :label="item.title">
+                <template v-if="chartTab === item.key">
+                  <div v-if="item.key === 'rssi'" class="timeline-analysis-layout">
+                    <main class="timeline-chart-stack">
+                      <OnlineMrRssiChart
+                        :main-series="timelineMainSeries"
+                        :trackside-series="timelineTracksideSeries"
+                        :history-events="timelineSwitchWindows.history"
+                        :realtime-events="timelineSwitchWindows.realtime"
+                        :active="chartActive && activeTab === 'charts'"
+                        :viewport="rssiViewport"
+                        :cursor-time="timelineCursorTime"
+                        :cursor-source="timelineCursorSource"
+                        :selected-time="selectedTime"
+                        :layout-mode="rssiLayoutMode"
+                        :split-ratio="rssiSplitRatio"
+                        :workspace-height="timelineWorkspaceHeight"
+                        :radio="selectedRadio"
+                        :show-peer="showPeerRssi"
+                        :show-switch-lines="showSwitchLines"
+                        :show-switch-points="showSwitchPoints"
+                        :show-location-band="showLocationBand"
+                        @update:viewport="updateRssiViewport"
+                        @update:split-ratio="rssiSplitRatio = $event; saveCurrentSessionCache()"
+                        @pointer-change="updateTimelinePointer"
+                        @select-time="selectTimelineTime"
+                        @select-switch="selectTimelineSwitch"
+                      />
+                      <section class="related-metric-panel">
+                        <header>
+                          <strong>同期关联指标</strong>
+                          <el-select v-model="relatedMetricKey" style="width:220px" @change="saveCurrentSessionCache">
+                            <el-option v-for="metric in relatedMetricDefinitions" :key="metric.key" :label="metric.title" :value="metric.key" />
+                          </el-select>
+                        </header>
+                        <OnlineMrAnalysisChart
+                          :series="relatedMetricSeries"
+                          :title="relatedMetric?.title"
+                          :unit="relatedMetric?.unit"
+                          :tooltip-kind="relatedMetric?.key === 'ping-quality' ? 'ping-loss' : relatedMetric?.key === 'interface' ? 'interface' : relatedMetric?.key === 'busy' ? 'channel-busy' : relatedMetric?.key === 'traffic' ? 'traffic' : 'generic'"
+                          :viewport="rssiViewport"
+                          :cursor-time="timelineCursorTime"
+                          :selected-time="selectedTime"
+                          :shared-time-domain="timelineTimeDomain"
+                          :active="chartActive && activeTab === 'charts'"
+                          @update:viewport="updateRssiViewport"
+                          @pointer-change="updateTimelinePointer"
+                          @select-time="selectTimelineTime"
+                        />
+                      </section>
+                    </main>
+
+                    <aside class="timeline-diagnosis-panel">
+                      <section class="alignment-diagnostics" :class="`is-${businessSummary?.time_alignment?.confidence || 'low'}`">
+                        <header><strong>时间轴校正</strong><el-tag size="small">MR 设备时间</el-tag></header>
+                        <dl>
+                          <dt>采集端 → MR设备</dt><dd>{{ businessSummary?.time_alignment?.offset_median_ms == null ? '无数据' : `已校正 ${formatNumber(Math.abs(businessSummary.time_alignment.offset_median_ms / 1000), 3)} s` }}</dd>
+                          <dt>漂移</dt><dd>{{ formatNumber(businessSummary?.time_alignment?.drift_ms_per_minute, 3) }} ms/min</dd>
+                          <dt>锚点</dt><dd>{{ businessSummary?.time_alignment?.inlier_count || 0 }} / {{ businessSummary?.time_alignment?.anchor_count || 0 }}</dd>
+                          <dt>方法</dt><dd>{{ timeAlignmentMethodLabel(businessSummary?.time_alignment?.method) }}</dd>
+                          <dt>置信度</dt><dd>{{ timeAlignmentConfidenceLabel(businessSummary?.time_alignment?.confidence) }}</dd>
+                          <dt>fping / 打流</dt><dd>{{ businessSummary?.time_alignment?.fping_status?.startsWith('aligned') ? '已校正' : '采集端时间' }} / {{ businessSummary?.time_alignment?.traffic_status?.startsWith('aligned') ? '已校正' : '采集端时间' }}</dd>
+                        </dl>
+                        <el-alert v-if="businessSummary?.time_alignment?.warning" :title="businessSummary.time_alignment.warning" type="warning" :closable="false" show-icon />
+                      </section>
+
+                      <section class="selected-time-diagnostics">
+                        <header><strong>当前分析时刻</strong><span>{{ selectedTime || '点击任一图表选择时刻' }}</span></header>
+                        <template v-if="selectedTimelineDiagnosis">
+                          <dl>
+                            <dt>主链路</dt><dd>{{ display(selectedTimelineDiagnosis.main?.point.dimensions.peer_name) }} · {{ timelineMetricValue(selectedTimelineDiagnosis.main, 'dBm') }}</dd>
+                            <dt>Channel Busy</dt><dd>{{ timelineMetricValue(selectedTimelineDiagnosis.busy, '%') }}</dd>
+                            <dt>fping RTT</dt><dd>{{ timelineMetricValue(selectedTimelineDiagnosis.pingRtt, 'ms') }}</dd>
+                            <dt>fping 丢包</dt><dd>{{ timelineMetricValue(selectedTimelineDiagnosis.pingLoss, '%') }}</dd>
+                            <dt>业务打流</dt><dd>{{ timelineMetricValue(selectedTimelineDiagnosis.traffic, 'Mbps') }}</dd>
+                            <dt>接口速率</dt><dd>{{ timelineMetricValue(selectedTimelineDiagnosis.interfaceRate, 'pps') }}</dd>
+                            <dt>站点 / 区间</dt><dd>{{ display(selectedTimelineDiagnosis.main?.point.dimensions.station) }} / {{ display(selectedTimelineDiagnosis.main?.point.dimensions.section) }}</dd>
+                            <dt>切换事件</dt><dd>{{ selectedTimelineDiagnosis.switchEvent ? `${selectedTimelineDiagnosis.switchEvent.old_peer_name || '—'} → ${selectedTimelineDiagnosis.switchEvent.new_peer_name || '—'}` : '附近无切换' }}</dd>
+                          </dl>
+                          <div class="trackside-at-time">
+                            <strong>轨旁 AP</strong>
+                            <span v-for="row in selectedTimelineDiagnosis.trackside" :key="row.series.series_key">{{ row.point.dimensions.peer_name || row.series.series_key }}：{{ formatNumber(row.point.value, 0) }} dBm</span>
+                          </div>
+                        </template>
+                        <div class="switch-navigation">
+                          <el-button data-testid="previous-timeline-switch" size="small" @click="moveToSwitch(-1)">前一切换</el-button>
+                          <el-button data-testid="next-timeline-switch" size="small" @click="moveToSwitch(1)">后一切换</el-button>
+                        </div>
+                      </section>
+                    </aside>
+                  </div>
+
+                  <OnlineMrPingQualityChart
+                    v-else-if="item.key === 'ping-quality'"
+                    class="metric-chart-panel metric-chart-panel--dual"
+                    :loss-series="metricSeries(['ping_loss'])"
+                    :rtt-series="metricSeries(['ping_rtt'])"
+                    :events="chartEvents()"
+                    :viewport="rssiViewport"
+                    :cursor-time="timelineCursorTime"
+                    :selected-time="selectedTime"
+                    :shared-time-domain="timelineTimeDomain"
+                    :active="chartActive && activeTab === 'charts'"
+                    @update:viewport="updateRssiViewport"
+                    @pointer-change="updateTimelinePointer"
+                    @select-time="selectTimelineTime"
+                  />
+
+                  <template v-else-if="item.key === 'traffic'">
+                    <section v-if="fullTrafficOverview" class="traffic-overview">
+                      <header><strong>打流测试概览</strong><el-tag size="small" effect="plain">整场测试</el-tag></header>
+                      <dl class="traffic-overview__meta">
+                        <div><dt>状态</dt><dd>{{ fullTrafficOverview.status || '无数据' }}</dd></div>
+                        <div><dt>协议</dt><dd>{{ fullTrafficOverview.protocol || '无数据' }}</dd></div>
+                        <div><dt>方向</dt><dd>{{ fullTrafficOverview.direction || '无数据' }}</dd></div>
+                        <div><dt>服务端</dt><dd>{{ fullTrafficOverview.server_ip || '无数据' }}{{ fullTrafficOverview.port == null ? '' : `:${fullTrafficOverview.port}` }}</dd></div>
+                        <div><dt>并发流</dt><dd>{{ fullTrafficOverview.parallel == null ? '无数据' : fullTrafficOverview.parallel }}</dd></div>
+                        <div><dt>测试时长</dt><dd>{{ formatDurationSeconds(fullTrafficOverview.overall.duration_seconds) }}</dd></div>
+                      </dl>
+                      <div class="traffic-overview__stats">
+                        <article><span>平均吞吐</span><strong>{{ trafficValue(fullTrafficOverview.overall.average_mbps, 'Mbps') }}</strong></article>
+                        <article><span>最小吞吐</span><strong>{{ trafficValue(fullTrafficOverview.overall.minimum_mbps, 'Mbps') }}</strong></article>
+                        <article><span>最大吞吐</span><strong>{{ trafficValue(fullTrafficOverview.overall.maximum_mbps, 'Mbps') }}</strong></article>
+                        <article><span>发送数据</span><strong>{{ formatBytes(fullTrafficOverview.overall.sent_bytes) }}</strong></article>
+                        <article><span>接收数据</span><strong>{{ formatBytes(fullTrafficOverview.overall.received_bytes) }}</strong></article>
+                        <article v-if="fullTrafficOverview.protocol === 'UDP'"><span>流量丢失率</span><strong>{{ fullTrafficOverview.overall.loss_percent == null ? '暂无可靠统计' : `${formatNumber(fullTrafficOverview.overall.loss_percent, 3)}%` }}</strong></article>
+                        <article v-if="fullTrafficOverview.protocol === 'UDP'"><span>平均 Jitter</span><strong>{{ trafficValue(fullTrafficOverview.overall.average_jitter_ms, 'ms') }}</strong></article>
+                        <article v-else><span>TCP 重传</span><strong>{{ fullTrafficOverview.overall.retransmits == null ? '暂无可靠统计' : fullTrafficOverview.overall.retransmits }}</strong></article>
+                        <article><span>记录数</span><strong>{{ fullTrafficOverview.overall.record_count }}</strong></article>
+                      </div>
+                      <p v-if="fullTrafficOverview.data_quality_note" class="traffic-overview__note">{{ fullTrafficOverview.data_quality_note }}</p>
+                      <div v-if="fullTrafficOverview.directions.length > 1" class="traffic-overview__rows">
+                        <span v-for="row in fullTrafficOverview.directions" :key="row.run_id">{{ row.label }} · {{ trafficValue(row.average_mbps, 'Mbps') }} · {{ formatDurationSeconds(row.duration_seconds) }}</span>
+                      </div>
+                    </section>
+                    <section v-if="trafficWindowOverview" class="traffic-window-summary">
+                      <strong>当前窗口</strong><span>{{ rssiViewport?.start_time || '全部时间' }} ~ {{ rssiViewport?.end_time || '全部时间' }}</span><span>平均 {{ trafficValue(trafficWindowOverview.overall.average_mbps, 'Mbps') }}</span><span v-if="fullTrafficOverview?.protocol === 'UDP'">丢失 {{ trafficWindowOverview.overall.loss_percent == null ? '暂无可靠统计' : `${formatNumber(trafficWindowOverview.overall.loss_percent, 3)}%` }}</span>
+                    </section>
+                    <el-radio-group v-model="trafficMetricKey" class="traffic-metric-tabs" size="small">
+                      <el-radio-button v-for="definition in visibleTrafficMetricDefinitions" :key="definition.key" :value="definition.key">{{ definition.title }}</el-radio-button>
+                    </el-radio-group>
+                    <OnlineMrAnalysisChart
+                      class="metric-chart-panel"
+                      :series="chartSeries"
+                      :title="trafficMetricDefinition.title"
+                      :unit="trafficMetricDefinition.unit"
+                      :tooltip-kind="trafficMetricDefinition.tooltipKind"
+                      :events="chartEvents()"
+                      :viewport="rssiViewport"
+                      :cursor-time="timelineCursorTime"
+                      :selected-time="selectedTime"
+                      :shared-time-domain="timelineTimeDomain"
+                      :active="chartActive && activeTab === 'charts'"
+                      @update:viewport="updateRssiViewport"
+                      @pointer-change="updateTimelinePointer"
+                      @select-time="selectTimelineTime"
+                    />
+                  </template>
+
+                  <OnlineMrAnalysisChart
+                    v-else
+                    class="metric-chart-panel"
+                    :series="chartSeries"
+                    :title="item.title"
+                    :unit="item.unit"
+                    :tooltip-kind="item.key === 'interface' ? 'interface' : item.key === 'busy' ? 'channel-busy' : item.switchSource ? 'switch-rssi' : 'generic'"
+                    :events="chartEvents()"
+                    :viewport="rssiViewport"
+                    :cursor-time="timelineCursorTime"
+                    :selected-time="selectedTime"
+                    :shared-time-domain="timelineTimeDomain"
+                    :active="chartActive && activeTab === 'charts'"
+                    @update:viewport="updateRssiViewport"
+                    @pointer-change="updateTimelinePointer"
+                    @select-time="selectTimelineTime"
+                  />
+                </template>
+              </el-tab-pane>
+            </el-tabs>
+          </div>
         </el-tab-pane>
 
         <el-tab-pane name="fping" label="fping 1s 聚合">
@@ -1173,11 +1944,9 @@ function linkDetailRowClass({ rowIndex }: { rowIndex: number }): string {
         </el-tab-pane>
       </el-tabs>
 
-      <div v-if="currentBusinessTable || activeTab === 'charts'" class="timeline-actions">
-        <el-button v-if="currentBusinessTable" :disabled="!currentBusinessHasMore" @click="loadMoreActiveTab">加载更多业务数据</el-button>
-        <el-button v-else :disabled="!chartHasMore" @click="loadMoreChart">加载更多图表数据</el-button>
-        <span v-if="currentBusinessTable">当前 {{ currentBusinessRows.length }} 条 {{ businessTableLabel(currentBusinessTable) }}</span>
-        <span v-else>图表数据按当前时间范围分批加载</span>
+      <div v-if="currentBusinessTable" class="timeline-actions">
+        <el-button :disabled="!currentBusinessHasMore" @click="loadMoreActiveTab">加载更多业务数据</el-button>
+        <span>当前 {{ currentBusinessRows.length }} 条 {{ businessTableLabel(currentBusinessTable) }}</span>
       </div>
       </div>
     </template>
@@ -1185,7 +1954,7 @@ function linkDetailRowClass({ rowIndex }: { rowIndex: number }): string {
 </template>
 
 <style scoped>
-.analysis-page{display:flex;flex-direction:column;gap:16px;min-width:0}
+.analysis-page{display:flex;min-width:0;min-height:0;height:100%;flex-direction:column;gap:12px}
 .page-heading,.actions,.query-bar,.logs-toolbar{display:flex;align-items:center;gap:12px}
 .page-heading{justify-content:space-between;align-items:flex-start}
 .page-heading h1{margin:2px 0 6px}
@@ -1194,7 +1963,7 @@ function linkDetailRowClass({ rowIndex }: { rowIndex: number }): string {
 .session-selector{flex:1 1 340px;max-width:430px;min-width:260px}
 .eyebrow{color:var(--el-color-primary)!important;font-size:12px;font-weight:700;letter-spacing:.08em}
 .summary-grid{display:grid;grid-template-columns:repeat(5,minmax(140px,1fr));gap:10px}
-.summary-grid article,.business-summary article{background:var(--el-bg-color);border:1px solid var(--el-border-color-lighter);border-radius:10px}
+.summary-grid article,.business-summary article{background:var(--el-bg-color);border:1px solid var(--el-border-color-lighter);border-radius:8px}
 .summary-grid article{padding:13px}
 .summary-grid span,.business-summary span{color:var(--el-text-color-secondary);font-size:12px}
 .summary-grid strong,.business-summary strong{display:block;margin-top:6px;font-size:18px}
@@ -1204,10 +1973,49 @@ function linkDetailRowClass({ rowIndex }: { rowIndex: number }): string {
 .query-hint{display:inline-flex;align-items:center;gap:4px;font-size:12px}
 .inline-icon{width:16px!important;height:16px!important;max-width:16px!important;max-height:16px!important;flex:0 0 16px!important;flex-shrink:0!important}
 .inline-icon :deep(svg){width:100%!important;height:100%!important;max-width:100%!important;max-height:100%!important}
-.analysis-tabs-host,.analysis-tabs{min-width:0}
+.analysis-status-row{display:flex;min-height:0;justify-content:flex-end}
+.parser-status-tag{cursor:help}
+.parser-status-details{display:grid;grid-template-columns:88px minmax(0,1fr);gap:7px 10px;margin:0;font-size:12px}
+.parser-status-details dt{color:var(--el-text-color-secondary)}
+.parser-status-details dd{min-width:0;margin:0;overflow-wrap:anywhere}
+.analysis-tabs-host,.analysis-tabs{min-width:0;min-height:0}
+.analysis-tabs-host{display:flex;flex:1 1 auto;flex-direction:column}
+.analysis-tabs{display:flex;min-height:0;flex:1 1 auto;flex-direction:column}
+.analysis-tabs:deep(.el-tabs__content){min-height:0;flex:1 1 auto}
+.analysis-tabs:deep(.el-tab-pane){height:100%;min-height:0}
 .raw-layout{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(320px,.85fr);gap:12px}
 .raw-preview{margin:0;min-height:360px;max-height:480px;overflow:auto;padding:12px;border:1px solid var(--el-border-color-lighter);border-radius:8px;background:var(--el-fill-color-light);font:12px/1.6 Consolas,monospace;white-space:pre-wrap}
 .timeline-actions{display:flex;align-items:center;gap:8px}
+.timeline-workbench{display:flex;min-width:0;min-height:max(440px,calc(100dvh - 400px));height:max(440px,calc(100dvh - 400px));flex-direction:column;background:var(--el-bg-color)}
+.timeline-workbench.is-immersive{position:fixed;inset:0;z-index:2000;min-height:0;height:100dvh;overflow:hidden;padding:8px;border:0;background:var(--el-bg-color);box-shadow:var(--el-box-shadow-dark)}
+.timeline-toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:0 0 10px}
+.timeline-workbench>:deep(.el-tabs){display:flex;min-height:0;flex:1 1 auto;flex-direction:column}
+.timeline-workbench>:deep(.el-tabs .el-tabs__content){min-height:0;flex:1 1 auto}
+.timeline-workbench>:deep(.el-tabs .el-tab-pane){height:100%;min-height:0}
+.timeline-analysis-layout{display:grid;min-width:0;min-height:0;height:100%;grid-template-columns:minmax(0,1fr) 320px;gap:12px}
+.timeline-chart-stack{display:flex;min-width:0;min-height:0;flex-direction:column}
+.timeline-chart-stack>:first-child{min-height:0;flex:1 1 auto}
+.related-metric-panel{margin-top:12px;border-top:1px solid var(--el-border-color-lighter);padding-top:10px}
+.related-metric-panel>header,.timeline-diagnosis-panel header{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:32px}
+.timeline-diagnosis-panel{display:flex;flex-direction:column;gap:12px;min-width:0}
+.timeline-diagnosis-panel>section{border:1px solid var(--el-border-color-lighter);border-radius:6px;padding:12px;background:var(--el-fill-color-extra-light)}
+.timeline-diagnosis-panel dl{display:grid;grid-template-columns:112px minmax(0,1fr);gap:7px 10px;margin:10px 0 0;font-size:12px}
+.timeline-diagnosis-panel dt{color:var(--el-text-color-secondary)}
+.timeline-diagnosis-panel dd{min-width:0;margin:0;overflow-wrap:anywhere}
+.alignment-diagnostics.is-low{border-color:var(--el-color-warning-light-5)}
+.alignment-diagnostics .el-alert{margin-top:10px}
+.selected-time-diagnostics header{align-items:flex-start;flex-direction:column}
+.selected-time-diagnostics header span{color:var(--el-color-primary);font:12px/1.4 Consolas,monospace}
+.trackside-at-time{display:flex;flex-direction:column;gap:4px;margin-top:12px;padding-top:10px;border-top:1px solid var(--el-border-color-lighter);font-size:12px}
+.switch-navigation{display:flex;gap:8px;margin-top:12px}
+.metric-chart-panel{display:flex;min-width:0;min-height:0;height:100%;flex:1 1 auto;overflow:hidden}
+.metric-chart-panel--dual{height:100%}
+.traffic-overview{display:flex;flex:none;flex-direction:column;gap:10px;margin-bottom:8px;padding:10px;border:1px solid var(--el-border-color-lighter);border-radius:8px;background:var(--el-fill-color-extra-light)}
+.traffic-overview>header{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:14px}
+.traffic-overview__meta{display:grid;grid-template-columns:repeat(6,minmax(110px,1fr));gap:6px 10px;margin:0}
+.traffic-overview__meta div{min-width:0}.traffic-overview__meta dt{color:var(--el-text-color-secondary);font-size:12px}.traffic-overview__meta dd{margin:2px 0 0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
+.traffic-overview__stats{display:grid;grid-template-columns:repeat(9,minmax(120px,1fr));gap:6px}.traffic-overview__stats article{min-width:0;padding:7px 8px;border:1px solid var(--el-border-color-lighter);border-radius:6px;background:var(--el-bg-color)}.traffic-overview__stats span{display:block;color:var(--el-text-color-secondary);font-size:12px}.traffic-overview__stats strong{display:block;min-width:0;margin-top:3px;overflow:hidden;font-size:14px;text-overflow:ellipsis;white-space:nowrap}
+.traffic-overview__note{margin:0;color:var(--el-text-color-secondary);font-size:12px}.traffic-overview__rows{display:flex;gap:10px;overflow-x:auto;color:var(--el-text-color-secondary);font-size:12px;white-space:nowrap}.traffic-window-summary{display:flex;flex:none;align-items:center;gap:10px;overflow-x:auto;padding:6px 8px;color:var(--el-text-color-secondary);font-size:12px;white-space:nowrap}.traffic-window-summary strong{color:var(--el-text-color-primary)}.traffic-metric-tabs{flex:none;margin:0 0 8px}
 :deep(.online-mr-row--group-a > td.el-table__cell){background:color-mix(in srgb, var(--nc-primary), transparent 96%)}
 :deep(.online-mr-row--group-b > td.el-table__cell){background:color-mix(in srgb, var(--nc-success), transparent 96%)}
 :deep(.online-mr-row--active .nc-table-cell){color:var(--el-color-success);font-weight:600}
@@ -1216,6 +2024,8 @@ function linkDetailRowClass({ rowIndex }: { rowIndex: number }): string {
   .summary-grid{grid-template-columns:repeat(3,minmax(140px,1fr))}
   .business-summary{grid-template-columns:repeat(2,minmax(140px,1fr))}
   .raw-layout{grid-template-columns:1fr}
+  .timeline-analysis-layout{grid-template-columns:1fr}
+  .timeline-diagnosis-panel{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}
 }
 @media(max-width:800px){
   .page-heading{align-items:flex-start;flex-direction:column}
@@ -1223,5 +2033,8 @@ function linkDetailRowClass({ rowIndex }: { rowIndex: number }): string {
   .session-selector{max-width:none;width:100%}
   .summary-grid{grid-template-columns:repeat(2,minmax(140px,1fr))}
   .query-bar>*{max-width:100%;width:100%!important}
+  .timeline-workbench.is-immersive{inset:48px 0 0}
+  .timeline-workbench.is-immersive{inset:0}
+  .timeline-diagnosis-panel{display:flex}
 }
 </style>

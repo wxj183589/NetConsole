@@ -430,6 +430,66 @@ def test_ap_identity_uses_lldp_switch_station_without_base_record(tmp_path: Path
     assert match.topology_warning == ""
 
 
+def test_ap_identity_keeps_same_station_lldp_evidence_from_multiple_switches(
+    tmp_path: Path,
+) -> None:
+    database, repository, service = _fixture(tmp_path)
+    repository.replace_fit_ap_resources(
+        "ac-1",
+        [
+            {
+                "ap_uuid": "ap-live",
+                "ap_name": "bc5a-3457-61e0",
+                "ap_mac": "bc5a-3457-61e0",
+                "site": "",
+            }
+        ],
+    )
+    with database.connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO devices (
+                device_uuid, name, device_vendor, device_type, primary_address,
+                created_at, updated_at
+            ) VALUES ('ac-1', 'AC-1', 'H3C', 'AC', '10.0.0.1', '', '')
+            """
+        )
+        connection.executemany(
+            """
+            INSERT INTO devices (
+                device_uuid, name, station, station_id, device_type,
+                primary_address, created_at, updated_at
+            ) VALUES (?, ?, '横溪站', 'station:hengxi', 'SWITCH', ?, '', '')
+            """,
+            [
+                ("switch-hx-1", "HX_1", "10.0.0.11"),
+                ("switch-hx-2", "HX_2", "10.0.0.12"),
+            ],
+        )
+        connection.executemany(
+            """
+            INSERT INTO device_lldp_neighbors (
+                device_uuid, local_interface, neighbor_mac, collected_at,
+                collect_run_uuid, updated_at
+            ) VALUES (?, ?, 'bc5a-3457-61e0', '', ?, '')
+            """,
+            [
+                ("switch-hx-1", "GigabitEthernet1/0/1", "run-old"),
+                ("switch-hx-2", "GigabitEthernet1/0/2", "run-current"),
+            ],
+        )
+        connection.commit()
+
+    service.rebuild_index("same_station_multiple_switches")
+    match = service.resolve_peer_mac("bc5a-3457-61ff", ap_role="trackside")
+
+    assert match.status == "matched"
+    assert match.effective_ap_name == "bc5a-3457-61e0"
+    assert match.station == "横溪站"
+    assert match.station_source == "lldp_switch"
+    assert match.topology_warning == "topology_lldp_multiple_switches"
+
+
 def test_offline_fit_ap_keeps_exact_h3c_radio2_alias(tmp_path: Path) -> None:
     database, repository, service = _fixture(tmp_path)
     with database.connect() as connection:

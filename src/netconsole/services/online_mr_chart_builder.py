@@ -86,7 +86,7 @@ class OnlineMrChartBuilder:
             "switch": self._scalar("SELECT COUNT(*) FROM switch_realtime_events"),
             "fping": self._scalar("SELECT COUNT(*) FROM fping_1s_summary"),
             "iperf": self._scalar("SELECT COUNT(*) FROM iperf_intervals"),
-            "channel_busy": self._scalar("SELECT COUNT(*) FROM channel_busy_records WHERE COALESCE(row_index, 1) = 1"),
+            "channel_busy": self._scalar("SELECT COUNT(*) FROM channel_busy_records"),
             "interface_rate": self._scalar("SELECT COUNT(*) FROM interface_rate_samples"),
         }
         first_last = self._query(
@@ -289,7 +289,6 @@ class OnlineMrChartBuilder:
             """
             SELECT device_time, radio, ctl_busy, tx_busy, rx_busy
             FROM channel_busy_records
-            WHERE COALESCE(row_index, 1) = 1
             ORDER BY device_time ASC
             LIMIT 5000
             """
@@ -488,19 +487,7 @@ class OnlineMrChartBuilder:
         )
 
     def build_traffic_rate_series(self) -> ChartData:
-        rows = self._query(
-            """
-            SELECT COALESCE(NULLIF(i.device_interval_center_time, ''), NULLIF(i.device_aligned_time, ''), i.interval_center_time, i.collector_time),
-                   i.collector_time, i.bitrate_mbps, i.retransmits, i.jitter_ms,
-                   i.loss_percent, i.transfer_bytes, i.role, i.raw_line, r.protocol, r.direction,
-                   r.server_ip, r.port
-            FROM iperf_intervals i
-            LEFT JOIN iperf_runs r ON r.run_id = i.run_id
-            WHERE i.bitrate_mbps IS NOT NULL
-            ORDER BY COALESCE(NULLIF(i.device_interval_center_time, ''), NULLIF(i.device_aligned_time, ''), i.interval_center_time, i.collector_time) ASC, i.id ASC
-            LIMIT 20000
-            """
-        )
+        rows = self._iperf_traffic_rows()
         upload: list[tuple[object, object]] = []
         download: list[tuple[object, object]] = []
         total_by_time: dict[object, float] = {}
@@ -539,6 +526,61 @@ class OnlineMrChartBuilder:
             tooltip_rows=tooltips,
             empty_message="当前会话无打流数据",
         )
+
+    def _iperf_traffic_rows(self) -> list[tuple[object, ...]]:
+        """Read the stable traffic columns while tolerating older parsed schemas."""
+        if not self.db_path.exists():
+            return []
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                interval_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(iperf_intervals)")}
+                if "bitrate_mbps" not in interval_columns:
+                    return []
+                run_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(iperf_runs)")}
+
+                def interval_expr(name: str, alias: str | None = None) -> str:
+                    label = alias or name
+                    return f"i.{name} AS {label}" if name in interval_columns else f"NULL AS {label}"
+
+                def run_or_interval_expr(name: str) -> str:
+                    if name in run_columns:
+                        return f"r.{name}"
+                    return f"i.{name}" if name in interval_columns else "NULL"
+
+                time_candidates = [
+                    f"NULLIF(i.{name}, '')"
+                    for name in ("device_interval_center_time", "device_aligned_time", "interval_center_time", "collector_time")
+                    if name in interval_columns
+                ]
+                if not time_candidates:
+                    return []
+                time_expr = time_candidates[0] if len(time_candidates) == 1 else f"COALESCE({', '.join(time_candidates)})"
+                select = [
+                    f"{time_expr} AS metric_time",
+                    interval_expr("collector_time"),
+                    interval_expr("bitrate_mbps"),
+                    interval_expr("retransmits"),
+                    interval_expr("jitter_ms"),
+                    interval_expr("loss_percent"),
+                    interval_expr("transfer_bytes"),
+                    interval_expr("role"),
+                    interval_expr("raw_line"),
+                    f"{run_or_interval_expr('protocol')} AS protocol",
+                    f"{run_or_interval_expr('direction')} AS direction",
+                    f"{run_or_interval_expr('server_ip')} AS server_ip",
+                    f"{run_or_interval_expr('port')} AS port",
+                ]
+                where = ["i.bitrate_mbps IS NOT NULL"]
+                if "role" in interval_columns:
+                    where.append("(i.role IS NULL OR LOWER(i.role) NOT IN ('sum', 'sum_sent', 'sum_received', 'sender', 'receiver'))")
+                from_clause = "iperf_intervals i LEFT JOIN iperf_runs r ON r.run_id = i.run_id" if run_columns else "iperf_intervals i"
+                order_id = "i.id" if "id" in interval_columns else "i.rowid"
+                return conn.execute(
+                    f"SELECT {', '.join(select)} FROM {from_clause} WHERE {' AND '.join(where)} "
+                    f"ORDER BY metric_time ASC, {order_id} ASC LIMIT 20000"
+                ).fetchall()
+        except sqlite3.Error:
+            return []
 
     def build_switch_rssi_series(self) -> ChartData:
         switch_rows = self._query(
@@ -743,7 +785,6 @@ class OnlineMrChartBuilder:
             """
             SELECT device_time, radio, ctl_busy, tx_busy, rx_busy
             FROM channel_busy_records
-            WHERE COALESCE(row_index, 1) = 1
             ORDER BY device_time ASC
             LIMIT 10000
             """

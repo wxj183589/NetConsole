@@ -2,7 +2,7 @@
 
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia } from 'pinia'
-import { defineComponent, h, useAttrs, type Component } from 'vue'
+import { defineComponent, h, KeepAlive, nextTick, ref, useAttrs, type Component } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   getOnlineMrSession: vi.fn(),
   listRecentOnlineMrSessions: vi.fn(),
   queryOnlineMrMetrics: vi.fn(),
+  queryOnlineMrTimelineMetrics: vi.fn(),
   queryOnlineMrBusinessTable: vi.fn(),
   queryOnlineMrSwitchRssiWindows: vi.fn(),
   queryOnlineMrTimeline: vi.fn(),
@@ -34,6 +35,7 @@ vi.mock('../../api/onlineMr', () => ({
   listOnlineMrRawFiles: vi.fn(),
   listRecentOnlineMrSessions: mocks.listRecentOnlineMrSessions,
   queryOnlineMrMetrics: mocks.queryOnlineMrMetrics,
+  queryOnlineMrTimelineMetrics: mocks.queryOnlineMrTimelineMetrics,
   queryOnlineMrBusinessTable: mocks.queryOnlineMrBusinessTable,
   queryOnlineMrSwitchRssiWindows: mocks.queryOnlineMrSwitchRssiWindows,
   queryOnlineMrTimeline: mocks.queryOnlineMrTimeline,
@@ -78,7 +80,7 @@ const tabsStub = defineComponent({
   emits: ['tab-change'],
   setup(props, { emit, slots }) {
     const mainTabs = new Set(['session-history', 'mesh-link', 'mesh-detail', 'channel-busy', 'switch-history', 'active-switch', 'interface-rate', 'fping', 'iperf', 'diagnosis', 'raw', 'logs', 'charts'])
-    return () => h('div', mainTabs.has(props.modelValue)
+    return () => h('div', { 'data-tabs-model': props.modelValue }, mainTabs.has(props.modelValue)
       ? [
           h('button', { 'data-testid': 'main-link-tab', onClick: () => emit('tab-change', 'mesh-link') }, '主链路信息'),
           h('button', { 'data-testid': 'link-detail-tab', onClick: () => emit('tab-change', 'mesh-detail') }, '链路明细'),
@@ -117,13 +119,35 @@ const tableStub = defineComponent({
   },
 })
 const selectStub = defineComponent({
-  props: { modelValue: { type: String, default: '' }, placeholder: { type: String, default: '' } },
+  props: { modelValue: { type: [String, Number], default: '' }, placeholder: { type: String, default: '' } },
   emits: ['update:modelValue', 'change'],
   setup(props, { emit, slots }) { return () => h('div', [slots.default?.(), props.placeholder === '选择 Online MR 会话' ? h('button', { 'data-testid': 'session-b', onClick: () => { emit('update:modelValue', 'session-2'); emit('change', 'session-2') } }, '切换会话') : null]) },
 })
 const chartStub = defineComponent({
   props: { series: { type: Array, default: () => [] } },
   setup(props) { return () => h('div', { 'data-testid': 'chart-series' }, JSON.stringify(props.series)) },
+})
+const rssiChartStub = defineComponent({
+  props: {
+    rows: { type: Array, default: () => [] },
+    mainSeries: { type: Array, default: () => [] },
+    tracksideSeries: { type: Array, default: () => [] },
+    historyEvents: { type: Array, default: () => [] },
+    realtimeEvents: { type: Array, default: () => [] },
+    selectedTime: { type: String, default: '' },
+    viewport: { type: Object, default: null },
+  },
+  emits: ['update:viewport'],
+  setup(props) {
+    return () => h('div', { 'data-testid': 'rssi-chart-series' }, JSON.stringify({
+      rows: props.rows,
+      main: props.mainSeries,
+      trackside: props.tracksideSeries,
+      historyEvents: props.historyEvents,
+      realtimeEvents: props.realtimeEvents,
+      selectedTime: props.selectedTime,
+    }))
+  },
 })
 const stubs: Record<string, Component | boolean> = {
   ElAlert: passthrough,
@@ -139,6 +163,7 @@ const stubs: Record<string, Component | boolean> = {
   ElTabs: tabsStub,
   NcDataTable: tableStub,
   OnlineMrAnalysisChart: chartStub,
+  OnlineMrRssiChart: rssiChartStub,
 }
 
 beforeEach(() => {
@@ -150,6 +175,7 @@ beforeEach(() => {
   mocks.getOnlineMrSession.mockResolvedValue({ session_id: 'session-1', device_name: 'MR-1', mr_name: 'MR-1', status: 'COMPLETED', started_at: '2026-07-20 10:00:00', duration_minutes: 18.5, data_integrity: 'complete', has_raw_data: true, database_summary: { status: 'ready', compatible: true, parser_version: 'online_mr_business_tables_v9_no_source_fields', missing_capabilities: [], message: '解析数据库可用。' } })
   mocks.getOnlineMrBusinessSummary.mockResolvedValue({ session_id: 'session-1', sample_count: 0, active_count: 0, standby_count: 0, active_segment_count: 0, switch_count: 0, fping_point_count: 0, iperf_point_count: 0, channel_busy_count: 0, interface_pps_count: 0, diagnosis_count: 0, first_sample_time: null, last_sample_time: null, estimated_interval_seconds: null, time_sync_status: 'unknown', time_sync_avg_offset_ms: null, current_radio: null, current_link_state: '', current_peer_mac: '', current_peer_name: '', current_ap_mac: '', current_peer_radio_mac: '', current_station: '', current_section: '', current_rssi: null, current_segment_start: null, current_segment_end: null, current_segment_duration_seconds: null })
   mocks.queryOnlineMrMetrics.mockResolvedValue({ series: [], limit: 1000, offset: 0, page_size_per_metric: 1000, next_offset: 1000, returned_points: 0, has_more: false })
+  mocks.queryOnlineMrTimelineMetrics.mockResolvedValue([])
   mocks.queryOnlineMrBusinessTable.mockResolvedValue({ table: 'main_link', rows: [], limit: 500, offset: 0, returned_count: 0, next_offset: 500, has_more: false })
   mocks.queryOnlineMrSwitchRssiWindows.mockResolvedValue({ items: [], limit: 200, offset: 0, has_more: false })
   mocks.queryOnlineMrTimeline.mockResolvedValue([])
@@ -169,8 +195,8 @@ afterEach(() => {
   Reflect.deleteProperty(window, 'netconsoleDesktop')
 })
 
-async function renderView() {
-  const wrapper = mount(OnlineMrAnalysisView, { global: { plugins: [createPinia()], stubs, directives: { loading: () => undefined } } })
+async function renderView(pinia = createPinia()) {
+  const wrapper = mount(OnlineMrAnalysisView, { global: { plugins: [pinia], stubs, directives: { loading: () => undefined } } })
   await flushPromises()
   return wrapper
 }
@@ -180,6 +206,54 @@ function deferred<T>() {
   let reject!: (reason?: unknown) => void
   const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail })
   return { promise, resolve, reject }
+}
+
+function timelineRssiSeries(sessionId: string, values: number[]) {
+  return [{
+    metric_type: 'rssi',
+    series_key: `radio=1|${sessionId}`,
+    unit: 'dBm',
+    points: values.map((value, index) => ({
+      timestamp: `2026-07-21 16:0${index}:00`,
+      raw_timestamp: `2026-07-21 16:0${index}:00`,
+      normalized_timestamp: `2026-07-21 16:0${index}:00`,
+      timestamp_source: 'device',
+      correction_ms: 0,
+      correction_method: 'none',
+      correction_confidence: 'high',
+      value,
+      text_value: null,
+      dimensions: { radio: 1, link_state: 'ACTIVE', peer_name: sessionId },
+    })),
+    summary: {
+      count: values.length,
+      minimum: Math.min(...values),
+      maximum: Math.max(...values),
+      average: values.reduce((total, value) => total + value, 0) / values.length,
+    },
+  }, {
+    metric_type: 'trackside_rssi',
+    series_key: `radio=1|ap=${sessionId}`,
+    unit: 'dBm',
+    points: values.slice(0, 1).map((value) => ({
+      timestamp: '2026-07-21 16:00:00',
+      raw_timestamp: '2026-07-21 16:00:00',
+      normalized_timestamp: '2026-07-21 16:00:00',
+      timestamp_source: 'device',
+      correction_ms: 0,
+      correction_method: 'none',
+      correction_confidence: 'high',
+      value,
+      text_value: null,
+      dimensions: { radio: 1, link_state: 'ACTIVE', peer_name: sessionId },
+    })),
+    summary: {
+      count: values.length ? 1 : 0,
+      minimum: values[0] ?? null,
+      maximum: values[0] ?? null,
+      average: values[0] ?? null,
+    },
+  }]
 }
 
 function sessionRow(sessionId: string, status = 'STOPPED') {
@@ -615,20 +689,230 @@ describe('Online MR analysis view behavior', () => {
     wrapper.unmount()
   })
 
-  it('uses source-specific switch snapshots and clears report polling on unmount', async () => {
+  it('keeps the selected session, active tab, and loaded tables across KeepAlive navigation', async () => {
+    const active = ref(true)
+    const host = mount(defineComponent({
+      setup: () => () => h(KeepAlive, null, {
+        default: () => active.value ? h(OnlineMrAnalysisView) : h('div', 'FIT-AP'),
+      }),
+    }), { global: { plugins: [createPinia()], stubs, directives: { loading: () => undefined } } })
+    await flushPromises()
+    await host.get('[data-testid="main-link-tab"]').trigger('click')
+    await flushPromises()
+    await host.get('[data-testid="link-detail-tab"]').trigger('click')
+    await flushPromises()
+    const sessionCalls = mocks.getOnlineMrSession.mock.calls.length
+    const tableCalls = mocks.queryOnlineMrBusinessTable.mock.calls.length
+
+    active.value = false
+    await nextTick()
+    active.value = true
+    await nextTick()
+    await flushPromises()
+
+    expect(mocks.getOnlineMrSession).toHaveBeenCalledTimes(sessionCalls)
+    expect(mocks.queryOnlineMrBusinessTable).toHaveBeenCalledTimes(tableCalls)
+    expect(host.find('[data-tabs-model="mesh-detail"]').exists()).toBe(true)
+    host.unmount()
+  })
+
+  it('restores a cached tab and empty business result after a real unmount without refetching', async () => {
+    const pinia = createPinia()
+    let wrapper = await renderView(pinia)
+    await wrapper.get('[data-testid="link-detail-tab"]').trigger('click')
+    await flushPromises()
+    const listCalls = mocks.listRecentOnlineMrSessions.mock.calls.length
+    const detailCalls = mocks.getOnlineMrSession.mock.calls.length
+    const tableCalls = mocks.queryOnlineMrBusinessTable.mock.calls.length
+    wrapper.unmount()
+
+    wrapper = await renderView(pinia)
+
+    expect(wrapper.find('[data-tabs-model="mesh-detail"]').exists()).toBe(true)
+    expect(mocks.listRecentOnlineMrSessions).toHaveBeenCalledTimes(listCalls)
+    expect(mocks.getOnlineMrSession).toHaveBeenCalledTimes(detailCalls)
+    expect(mocks.queryOnlineMrBusinessTable).toHaveBeenCalledTimes(tableCalls)
+    wrapper.unmount()
+  })
+
+  it('invalidates and reloads the selected session only on manual refresh', async () => {
+    const wrapper = await renderView()
+    await wrapper.get('[data-testid="main-link-tab"]').trigger('click')
+    await flushPromises()
+    expect(mocks.listRecentOnlineMrSessions).toHaveBeenCalledOnce()
+    expect(mocks.getOnlineMrSession).toHaveBeenCalledOnce()
+    expect(mocks.queryOnlineMrBusinessTable).toHaveBeenCalledOnce()
+
+    await wrapper.get('[data-testid="refresh-session"]').trigger('click')
+    await flushPromises()
+
+    expect(mocks.listRecentOnlineMrSessions).toHaveBeenCalledTimes(2)
+    expect(mocks.getOnlineMrSession).toHaveBeenCalledTimes(2)
+    expect(mocks.queryOnlineMrBusinessTable).toHaveBeenCalledTimes(2)
+    expect(wrapper.find('[data-tabs-model="mesh-link"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('clears cached analysis before reparsing and reloads it after immediate completion', async () => {
+    const wrapper = await renderView()
+    await wrapper.get('[data-testid="main-link-tab"]').trigger('click')
+    await flushPromises()
+
+    await wrapper.get('[data-testid="parse-session"]').trigger('click')
+    await flushPromises()
+
+    expect(mocks.parseOnlineMrSession).toHaveBeenCalledWith('session-1', false)
+    expect(mocks.getOnlineMrSession).toHaveBeenCalledTimes(2)
+    expect(mocks.queryOnlineMrBusinessTable).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
+  })
+
+  it('restores the unified RSSI timeline and DataZoom from the session cache after remount', async () => {
+    mocks.queryOnlineMrTimelineMetrics.mockResolvedValueOnce(timelineRssiSeries('AP-A', [-51, -52]))
+    const viewport = {
+      start_time: '2026-07-21 16:00:10', end_time: '2026-07-21 16:00:50',
+      start_percent: 20, end_percent: 60,
+      full_start_time: '2026-07-21 16:00:00', full_end_time: '2026-07-21 16:01:00',
+      source: 'user_zoom' as const,
+    }
+    const pinia = createPinia()
+    let wrapper = await renderView(pinia)
+    await wrapper.get('[data-testid="charts-tab"]').trigger('click')
+    await flushPromises()
+    expect(mocks.queryOnlineMrTimelineMetrics).toHaveBeenCalledOnce()
+    expect(mocks.queryOnlineMrTimelineMetrics).toHaveBeenCalledWith(
+      'session-1',
+      expect.arrayContaining(['rssi', 'trackside_rssi', 'ping_loss', 'iperf_bitrate']),
+      expect.objectContaining({ limit: 10_000, downsample: 'MIN_MAX' }),
+    )
+    expect(wrapper.text()).toContain('-51')
+    expect(wrapper.text()).toContain('-52')
+    const rssiChart = wrapper.findComponent(rssiChartStub)
+    expect(rssiChart.props('mainSeries')).toHaveLength(1)
+    expect((rssiChart.props('mainSeries') as Array<{ points: unknown[] }>)[0].points).toHaveLength(2)
+    expect(rssiChart.props('tracksideSeries')).toHaveLength(1)
+    await rssiChart.vm.$emit('update:viewport', viewport)
+    const timelineCalls = mocks.queryOnlineMrTimelineMetrics.mock.calls.length
+    const detailCalls = mocks.getOnlineMrSession.mock.calls.length
+    wrapper.unmount()
+
+    wrapper = await renderView(pinia)
+
+    const restored = wrapper.findComponent(rssiChartStub)
+    expect(wrapper.find('[data-tabs-model="charts"]').exists()).toBe(true)
+    expect((restored.props('mainSeries') as Array<{ points: unknown[] }>)[0].points).toHaveLength(2)
+    expect(restored.props('viewport')).toEqual(viewport)
+    expect(mocks.queryOnlineMrTimelineMetrics).toHaveBeenCalledTimes(timelineCalls)
+    expect(mocks.getOnlineMrSession).toHaveBeenCalledTimes(detailCalls)
+    wrapper.unmount()
+  })
+
+  it('keeps the newest target-point request when older timeline data resolves last', async () => {
+    mocks.queryOnlineMrTimelineMetrics.mockResolvedValueOnce(timelineRssiSeries('initial', [-60]))
+    const wrapper = await renderView()
+    await wrapper.get('[data-testid="charts-tab"]').trigger('click')
+    await flushPromises()
+
+    const older = deferred<ReturnType<typeof timelineRssiSeries>>()
+    const newer = deferred<ReturnType<typeof timelineRssiSeries>>()
+    mocks.queryOnlineMrTimelineMetrics
+      .mockReturnValueOnce(older.promise)
+      .mockReturnValueOnce(newer.promise)
+
+    const pointSelect = wrapper.findAllComponents(selectStub).find((item) => item.props('modelValue') === 600)!
+    await pointSelect.vm.$emit('update:modelValue', 300)
+    await pointSelect.vm.$emit('change', 300)
+    await nextTick()
+    const updatedPointSelect = wrapper.findAllComponents(selectStub).find((item) => item.props('modelValue') === 300)!
+    await updatedPointSelect.vm.$emit('update:modelValue', 1200)
+    await updatedPointSelect.vm.$emit('change', 1200)
+    await nextTick()
+
+    newer.resolve(timelineRssiSeries('newest', [-42]))
+    await flushPromises()
+    older.resolve(timelineRssiSeries('older', [-81]))
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('-42')
+    expect(wrapper.text()).not.toContain('-81')
+    expect(mocks.queryOnlineMrTimelineMetrics).toHaveBeenCalledTimes(3)
+    wrapper.unmount()
+  })
+
+  it('excludes switch-history snapshots outside the unified Session time domain', async () => {
+    mocks.queryOnlineMrTimelineMetrics.mockResolvedValueOnce(timelineRssiSeries('AP-A', [-51, -52]))
+    mocks.queryOnlineMrSwitchRssiWindows.mockImplementation(async (_sessionId: string, source: string) => ({
+      items: source === 'history'
+        ? [{ source: 'history', event_id: 'history-old', event_time: '2026-07-21 11:36:06' }]
+        : [
+            { source: 'realtime', event_id: 'realtime-before-range', event_time: '2026-07-21 16:00:00' },
+            { source: 'realtime', event_id: 'realtime-current', event_time: '2026-07-21 16:00:30' },
+          ],
+      limit: 200,
+      offset: 0,
+      has_more: false,
+    }))
+    const wrapper = await renderView()
+    await wrapper.get('[data-testid="charts-tab"]').trigger('click')
+    await flushPromises()
+
+    const chart = wrapper.findComponent(rssiChartStub)
+    expect(chart.props('historyEvents')).toEqual([])
+    expect(chart.props('realtimeEvents')).toEqual([
+      expect.objectContaining({ event_id: 'realtime-before-range' }),
+      expect.objectContaining({ event_id: 'realtime-current' }),
+    ])
+    await chart.vm.$emit('update:viewport', {
+      start_time: '2026-07-21 16:00:10', end_time: '2026-07-21 16:00:50',
+      start_percent: 20, end_percent: 80,
+      full_start_time: '2026-07-21 16:00:00', full_end_time: '2026-07-21 16:01:00',
+      source: 'user_zoom',
+    })
+    await wrapper.get('[data-testid="next-timeline-switch"]').trigger('click')
+    expect(chart.props('selectedTime')).toBe('2026-07-21 16:00:30')
+    wrapper.unmount()
+  })
+
+  it('keeps A and B table caches isolated and restores A without refetching', async () => {
+    mocks.listRecentOnlineMrSessions.mockResolvedValueOnce([sessionRow('session-1'), sessionRow('session-2')])
+    mocks.getOnlineMrSession.mockImplementation(async (sessionId: string) => sessionDetail(sessionId))
+    mocks.queryOnlineMrTimelineMetrics.mockImplementation(async (sessionId: string) => timelineRssiSeries(
+      sessionId,
+      [sessionId === 'session-1' ? -51 : -71],
+    ))
+    const wrapper = await renderView()
+    await wrapper.get('[data-testid="charts-tab"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-testid="session-b"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-tabs-model="session-history"]').exists()).toBe(true)
+    await wrapper.get('[data-testid="charts-tab"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-testid="table-row-session-1"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-tabs-model="charts"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('-51')
+    expect(wrapper.text()).not.toContain('-71')
+    expect(mocks.queryOnlineMrTimelineMetrics).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
+  })
+
+  it('loads source-specific switch snapshots once and treats empty pages as cached', async () => {
     const clearTimeoutSpy = vi.spyOn(window, 'clearTimeout')
     mocks.recoverRailTransitTasks.mockResolvedValueOnce([{ task_id: 'report-1', action: 'online_mr_report', status: 'RUNNING' }])
     const wrapper = await renderView()
     await wrapper.get('[data-testid="charts-tab"]').trigger('click')
     await flushPromises()
+    expect(mocks.queryOnlineMrSwitchRssiWindows).toHaveBeenCalledWith('session-1', 'history', expect.objectContaining({ limit: 200, offset: 0 }))
+    expect(mocks.queryOnlineMrSwitchRssiWindows).toHaveBeenCalledWith('session-1', 'realtime', expect.objectContaining({ limit: 200, offset: 0 }))
     mocks.queryOnlineMrMetrics.mockClear()
     mocks.queryOnlineMrSwitchRssiWindows.mockClear()
     await wrapper.get('[data-testid="switch-history-chart"]').trigger('click')
     await wrapper.get('[data-testid="switch-realtime-chart"]').trigger('click')
     await flushPromises()
 
-    expect(mocks.queryOnlineMrSwitchRssiWindows).toHaveBeenCalledWith('session-1', 'history', expect.objectContaining({ limit: 200, offset: 0 }))
-    expect(mocks.queryOnlineMrSwitchRssiWindows).toHaveBeenCalledWith('session-1', 'realtime', expect.objectContaining({ limit: 200, offset: 0 }))
+    expect(mocks.queryOnlineMrSwitchRssiWindows).not.toHaveBeenCalled()
     expect(mocks.queryOnlineMrMetrics).not.toHaveBeenCalledWith('session-1', ['rssi'], expect.anything())
     wrapper.unmount()
     expect(clearTimeoutSpy).toHaveBeenCalled()
@@ -642,7 +926,7 @@ describe('Online MR analysis view behavior', () => {
     mocks.getOnlineMrSession.mockImplementation(async (sessionId: string) => sessionId === 'session-1'
       ? { session_id: sessionId, device_name: 'MR-1', status: 'STOPPED', has_raw_data: true, data_integrity: 'partial', database_summary: { status: 'ready', compatible: true, parser_version: 'online_mr_business_tables_v9_no_source_fields', missing_capabilities: [], message: '解析数据库可用。' } }
       : { session_id: sessionId, device_name: 'MR-2', status: 'ABORTED', has_raw_data: true, data_integrity: 'partial', database_summary: { status: 'missing', compatible: false, parser_version: null, missing_capabilities: ['main_link'], message: '当前会话尚未生成解析数据库，原始日志仍可查看。' } })
-    mocks.queryOnlineMrMetrics.mockResolvedValueOnce({ series: [{ metric_type: 'rssi', series_key: 'AP-A', unit: 'dBm', points: [{ timestamp: 't', value: -61, text_value: null, dimensions: {} }], summary: { count: 1, minimum: -61, maximum: -61, average: -61 } }], limit: 1000, offset: 0, page_size_per_metric: 1000, next_offset: 1000, returned_points: 1, has_more: false })
+    mocks.queryOnlineMrTimelineMetrics.mockResolvedValueOnce(timelineRssiSeries('AP-A', [-61]))
     const wrapper = await renderView()
     await wrapper.get('[data-testid="charts-tab"]').trigger('click')
     await flushPromises()
@@ -652,9 +936,9 @@ describe('Online MR analysis view behavior', () => {
     await flushPromises()
 
     expect(wrapper.text()).not.toContain('-61')
-    expect(wrapper.get('.parsed-status').attributes('title')).toContain('当前会话尚未生成解析数据库')
+    expect(wrapper.get('.parser-status-tag').attributes('title')).toContain('当前会话尚未生成解析数据库')
     expect(wrapper.text()).toContain('解析当前会话')
-    expect(mocks.queryOnlineMrMetrics).toHaveBeenCalledTimes(1)
+    expect(mocks.queryOnlineMrMetrics).not.toHaveBeenCalledWith('session-1', ['rssi'], expect.anything())
     await wrapper.get('[data-testid="parse-session"]').trigger('click')
     await flushPromises()
     expect(mocks.parseOnlineMrSession).toHaveBeenCalledWith('session-2', false)

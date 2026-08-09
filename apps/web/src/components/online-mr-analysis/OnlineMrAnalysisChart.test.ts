@@ -7,16 +7,29 @@ const mocks = vi.hoisted(() => ({
   dispose: vi.fn(),
   resize: vi.fn(),
   setOption: vi.fn(),
+  on: vi.fn(),
+  off: vi.fn(),
+  dispatchAction: vi.fn(),
+  zrOn: vi.fn(),
+  zrOff: vi.fn(),
   disconnect: vi.fn(),
   unsubscribe: vi.fn(),
   use: vi.fn(),
   init: vi.fn(),
 }))
-mocks.init.mockReturnValue({ dispose: mocks.dispose, resize: mocks.resize, setOption: mocks.setOption })
+mocks.init.mockReturnValue({
+  dispose: mocks.dispose,
+  resize: mocks.resize,
+  setOption: mocks.setOption,
+  on: mocks.on,
+  off: mocks.off,
+  dispatchAction: mocks.dispatchAction,
+  getZr: () => ({ on: mocks.zrOn, off: mocks.zrOff }),
+})
 
 vi.mock('echarts/core', () => ({ use: mocks.use, init: mocks.init }))
 vi.mock('echarts/charts', () => ({ LineChart: {} }))
-vi.mock('echarts/components', () => ({ GridComponent: {}, LegendComponent: {}, TooltipComponent: {}, DataZoomComponent: {}, MarkLineComponent: {}, ToolboxComponent: {} }))
+vi.mock('echarts/components', () => ({ GridComponent: {}, LegendComponent: {}, TooltipComponent: {}, DataZoomComponent: {}, MarkLineComponent: {}, MarkPointComponent: {}, ToolboxComponent: {}, TitleComponent: {} }))
 vi.mock('echarts/renderers', () => ({ CanvasRenderer: {} }))
 vi.mock('../../theme/echarts', () => ({
   createNetConsoleAxisStyle: () => ({}),
@@ -31,7 +44,15 @@ import OnlineMrAnalysisChart from './OnlineMrAnalysisChart.vue'
 
 beforeEach(() => {
   vi.clearAllMocks()
-  mocks.init.mockReturnValue({ dispose: mocks.dispose, resize: mocks.resize, setOption: mocks.setOption })
+  mocks.init.mockReturnValue({
+    dispose: mocks.dispose,
+    resize: mocks.resize,
+    setOption: mocks.setOption,
+    on: mocks.on,
+    off: mocks.off,
+    dispatchAction: mocks.dispatchAction,
+    getZr: () => ({ on: mocks.zrOn, off: mocks.zrOff }),
+  })
   vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() { mocks.disconnect() } })
 })
 
@@ -67,6 +88,8 @@ describe('Online MR analysis chart behavior', () => {
     expect(option.series[0].markLine).toBeDefined()
 
     wrapper.unmount()
+    expect(mocks.off).toHaveBeenCalledTimes(3)
+    expect(mocks.zrOff).toHaveBeenCalledOnce()
     expect(mocks.disconnect).toHaveBeenCalledOnce()
     expect(mocks.unsubscribe).toHaveBeenCalledOnce()
     expect(mocks.dispose).toHaveBeenCalledOnce()

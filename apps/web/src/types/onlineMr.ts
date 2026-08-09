@@ -135,6 +135,12 @@ export interface OnlineMrDatabaseSummary {
 
 export interface OnlineMrMetricPoint {
   timestamp: string | null
+  raw_timestamp?: string | null
+  normalized_timestamp?: string | null
+  timestamp_source?: string
+  correction_ms?: number | null
+  correction_method?: 'none' | 'fixed-offset' | 'piecewise-offset' | 'linear-drift'
+  correction_confidence?: 'high' | 'medium' | 'low'
   value: number | null
   text_value: string | null
   dimensions: Record<string, unknown>
@@ -172,6 +178,10 @@ export interface OnlineMrMainLinkRow extends OnlineMrBusinessRowBase {
   link_state: string | null
   peer_name: string | null
   peer_mac: string | null
+  canonical_ap_mac?: string | null
+  identity_status?: string | null
+  identity_source?: string | null
+  identity_reason?: string | null
   mr_rssi: number | null
   bssid: string | null
   belong_station: string | null
@@ -198,6 +208,8 @@ export interface OnlineMrChannelBusyRow extends OnlineMrBusinessRowBase {
   device_time: string | null
   radio: number | null
   ctl_channel: number | null
+  channel_band_raw: string | null
+  bandwidth_mhz: number | null
   bandwidth: number | null
   record_interval: number | null
   ctl_busy: number | null
@@ -318,6 +330,8 @@ export interface OnlineMrBusinessSummary {
   estimated_interval_seconds: number | null
   time_sync_status: string
   time_sync_avg_offset_ms: number | null
+  time_alignment?: OnlineMrTimeAlignment
+  traffic_overview?: OnlineMrTrafficOverview
   current_radio: number | null
   current_link_state: string
   current_peer_mac: string
@@ -330,6 +344,71 @@ export interface OnlineMrBusinessSummary {
   current_segment_start: string | null
   current_segment_end: string | null
   current_segment_duration_seconds: number | null
+}
+
+export interface OnlineMrTrafficStats {
+  record_count: number
+  duration_seconds: number | null
+  average_mbps: number | null
+  minimum_mbps: number | null
+  maximum_mbps: number | null
+  sent_bytes: number | null
+  received_bytes: number | null
+  lost_bytes: number | null
+  sent_packets: number | null
+  received_packets: number | null
+  lost_packets: number | null
+  loss_percent: number | null
+  average_jitter_ms: number | null
+  minimum_jitter_ms: number | null
+  maximum_jitter_ms: number | null
+  retransmits: number | null
+  loss_source: string | null
+  jitter_source: string | null
+  retransmit_source: string | null
+}
+
+export interface OnlineMrTrafficDirection extends OnlineMrTrafficStats {
+  run_id: string
+  label: string
+  protocol: string
+  direction: string
+  status: string
+  server_ip: string
+  port: number | null
+  parallel: number | null
+  target_bandwidth: string | null
+  started_at: string | null
+  ended_at: string | null
+}
+
+export interface OnlineMrTrafficOverview {
+  protocol: string
+  direction: string
+  status: string
+  server_ip: string
+  port: number | null
+  parallel: number | null
+  started_at: string | null
+  ended_at: string | null
+  overall: OnlineMrTrafficStats
+  directions: OnlineMrTrafficDirection[]
+  data_quality_note: string
+}
+
+export interface OnlineMrTimeAlignment {
+  base_time_source: 'mr-device'
+  anchor_count: number
+  inlier_count: number
+  offset_median_ms: number | null
+  offset_p05_ms: number | null
+  offset_p95_ms: number | null
+  drift_ms_per_minute: number | null
+  method: 'none' | 'fixed-offset' | 'piecewise-offset' | 'linear-drift'
+  confidence: 'high' | 'medium' | 'low'
+  warning: string
+  fping_status: 'aligned' | 'aligned-low-confidence' | 'collector-time'
+  traffic_status: 'aligned' | 'aligned-low-confidence' | 'collector-time'
 }
 
 export interface OnlineMrBusinessTablePage<Table extends OnlineMrBusinessTable = OnlineMrBusinessTable> {
@@ -350,9 +429,15 @@ export interface OnlineMrSwitchRssiWindow {
   reason: string
   old_peer_name: string
   old_peer_mac: string
+  old_ap_mac: string
+  old_station: string
+  old_section: string
   old_rssi_dbm: number | null
   new_peer_name: string
   new_peer_mac: string
+  new_ap_mac: string
+  new_station: string
+  new_section: string
   new_rssi_dbm: number | null
 }
 

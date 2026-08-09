@@ -151,9 +151,9 @@ python -m scripts.maintenance.check_online_mr_session_state --task-id "<controll
 - 实时 parser/cache：为运行中图表和状态服务，可因 stale、时间轴或样本塌缩检测而重建。
 - 离线 parser：`online_mr_parse` Job 从 raw 重建 `parsed/online_diagnosis.sqlite`，融合主链路、信道、射频、接口、fping、iPerf 和切换事件。
 - 报告：页面当前正式路径使用 Export Process 和车载 MR 离线 Excel exporter。
-- AP Identity：只在 `online_mr_parse` 旧结果后附加只读 `identity_shadow`；不改变实时生产匹配、parsed schema 或报告业务统计。
+- AP Identity：`online_mr_parse` 通过共享 `ApIdentityQueryService.resolve_peer_macs()` 和 `OnlineMrIdentityRemapService` 批量投影主链路及切换两端的 AP 名称、物理 AP MAC、站点和区间；原始 Peer Radio MAC 保持不变。空切换端点记为 `empty`，未知位置写数据库 `NULL`，不会写入展示占位符 `-`。任务结果中的 `identity_shadow` 继续作为附加诊断，不替代正式投影或改变任务终态。
 
-当前解析库 schema version 为 `online_mr_business_tables_v10_peer_identity_fields`。公开业务表 key 固定为 `main_link`、`link_detail`、`channel_busy`、`switch_history`、`switch_realtime`、`interface_rate`、`fping_1s`、`iperf`、`diagnostics`；旧 `mesh_link`/`mesh_detail` 只作为 API 入参短期兼容别名并规范化返回新 key，`radio_statistics` 不再作为独立业务表公开。`main_link_samples` 额外保存 `peer_ap_mac`、`canonical_ap_mac`、`peer_radio_mac`、`identity_status`、`identity_source`、`identity_reason`、`identity_match_rule` 和 `identity_match_confidence`，这些字段来自统一 AP Identity 对 Peer MAC/BSSID 的精确解析；原始 `peer_mac`、`peer_mac_normalized` 和 `bssid` 仍作为观测事实保留，不能被 AP MAC 覆盖。新生成的业务记录表不保存 `raw_file`、`source_file`、`raw_line_start`、`raw_line_end`、`raw_line` 等来源文件或行号字段；解析问题和诊断事件仍可保留定位信息。原始日志文件继续完整保存在会话 `raw/` 目录，原始日志页和打包功能不得删除或绕过这些事实文件。
+当前解析库 schema version 为 `online_mr_business_tables_v12_identity_channel_busy`。公开业务表 key 固定为 `main_link`、`link_detail`、`channel_busy`、`switch_history`、`switch_realtime`、`interface_rate`、`fping_1s`、`iperf`、`diagnostics`；旧 `mesh_link`/`mesh_detail` 只作为 API 入参短期兼容别名并规范化返回新 key，`radio_statistics` 不再作为独立业务表公开。`main_link_samples` 额外保存 `peer_ap_mac`、`canonical_ap_mac`、`peer_radio_mac`、`identity_status`、`identity_source`、`identity_reason`、`identity_match_rule` 和 `identity_match_confidence`，这些字段来自统一 AP Identity 对 Peer MAC/Radio MAC 的精确解析；原始 `peer_mac`、`peer_mac_normalized` 和 `bssid` 仍作为观测事实保留，不能被 AP MAC 覆盖。`channel_busy_records` 同时保存 `channel_band_raw`、规范化的 `bandwidth_mhz` 和兼容字段 `bandwidth`；`Channel Band: 20M/40MHz/80M/160MHz` 均可解析，一个 ChannelBusy block 的全部样本行都会进入业务表、指标、图表和报告统计，不再只保留 `row_index=1`。新生成的业务记录表不保存 `raw_file`、`source_file`、`raw_line_start`、`raw_line_end`、`raw_line` 等来源文件或行号字段；解析问题和诊断事件仍可保留定位信息。原始日志文件继续完整保存在会话 `raw/` 目录，原始日志页和打包功能不得删除或绕过这些事实文件。
 
 `/rail-transit/online-mr-analysis` 的会话动作统一收敛到当前会话顶部动作和会话记录行操作：顶部保留刷新、解析/强制解析、打开当前会话位置、生成 XLSX 和删除当前会话；会话记录表末列提供“打开本地目录”和“删除”。报告按钮只提交一次 Export Process 任务，进度、错误和 Artifact 继续在全局任务中心查看；会话记录表与顶部选择器共享 `session_id`，切换任一入口都同步当前行高亮。底部不再保留第二套报告卡片。
 
@@ -396,9 +396,17 @@ LOCAL Worker 在创建 Session 后立即记录 `startup_timeline`，并把 fping
 
 5C-2 的只读查询接口本身不提供控制 API。5C-10A 另在 Desktop Host 增加 LOCAL start/normal stop 薄入口；轨交 Electron 对等阶段继续增加 LOCAL force-stop/recover 和独立报告入口。Traffic flush、SSH writer、metadata、原子 ZIP 与 Task 终态顺序仍保持第 3 节契约；没有建立第二套采集器或状态机。
 
-分析页继续复用同一个只读 `OnlineMrQueryService`：既有 `/metrics` 列表契约保持兼容，新 `/metric-page` 对动态图提供总点数封顶的分页查询，`limit` 在去重后的指标间均分并显式返回 `page_size_per_metric`、`next_offset` 和 `has_more`。RSSI、Channel Busy、接口速率、fping RTT/丢包与打流吞吐读取各自正式表；`radio_statistics_samples` 仅作为内部指标/报告数据来源，不再进入 Web 独立业务页签或业务表 API。
+分析页继续复用同一个只读 `OnlineMrQueryService`：既有 `/metrics` 列表契约保持兼容，新 `/timeline-metrics` 一次查询 `rssi`、`trackside_rssi`、Channel Busy、接口速率、fping RTT/丢包与打流吞吐，按指标保留目标点数和关键事件。主用链路只读取 `main_link_samples` 中的 ACTIVE `mr_rssi`；轨旁序列读取同表的 ACTIVE/STANDBY 观测，并按 AP Identity、Radio 分组。页面不调用 MESH API，也不从 `main_link` 表格页的分页结果拼曲线；`OnlineMrRssiChart` 只负责把统一指标 DTO 适配到共享 `MeshRssiChart`、`MeshTracksideSignalChart` 和 `RailRssiComparison`。`radio_statistics_samples` 仅作为内部指标/报告数据来源，不再进入 Web 独立业务页签或业务表 API。
 
-历史切换与实时切换 RSSI 分别读取 `switch_history_events` 和 `switch_realtime_events`，返回事件前后 RSSI、Peer 和 Radio。二者是事件快照，不伪装为连续趋势，也不复用普通主链路 RSSI 序列。指标和时间轴查询只读 `parsed/online_diagnosis.sqlite`，分页限制下推到 SQLite；页面卸载时释放轮询、ECharts、ResizeObserver 和主题订阅。缺表、缺字段或空值保持空态，不回写、迁移或伪造数据。
+`SessionTimeAlignment` 以同一 Session 的 `collector_time/device_time` 对为锚点，先使用 MAD 窗口剔除异常值，再按跨度、漂移量和残差选择 `fixed-offset` 或 `linear-drift`；fping 与 iPerf 共用同一个 Collector -> MR Device 映射。DTO 同时保留 `raw_timestamp`、`normalized_timestamp`、来源、校正量、方法和置信度，SQLite 原字段不覆盖，旧 Session 不要求重解析。锚点不足或波动过大时返回 `low` 和明确警告，外部指标保留采集端时间；UI 可以显示曲线，但不能宣称已经可靠对齐。时间范围过滤对外部指标先逆算到 Collector 边界，查询结果再映射回 MR 设备时间；缺口保持 `null/gap`，不得跨采集覆盖范围向前填充。
+
+动态图通过 `useRailTimelineController()` 共享 `visibleStart/visibleEnd`、游标、锁定分析时刻和两种独立锁状态。主用链路、轨旁 AP 及同期关联指标的 inside/slider DataZoom 都消费同一个带 revision 的绝对 viewport；切换指标、沉浸模式或 KeepAlive 往返不重置 Zoom/selectedTime。切换导航只使用当前统一时间域内的事件，设备历史快照中早于本 Session 的记录不能被当作当前时刻。实时切换存在时优先作为双图标记，历史切换只作范围内回退。
+
+业务打流整场概览和当前 DataZoom 窗口统计统一由 `src/netconsole/services/online_mr/traffic_analysis.py` 生成，页面与 XLSX 不重复计算。TCP 只展示吞吐、发送/接收数据和 Retransmits；UDP 只展示吞吐、丢包包数/丢包率和 Jitter。One-Way Delay、连续丢包、TCP 丢包率和 UDP 字节丢失率在原始结果未提供时保持无可靠统计，不用 0 或推算值填充；iPerf 原始采集时间继续按 `SessionTimeAlignment` 映射到 MR 设备时间。
+
+历史切换与实时切换 RSSI 分别读取 `switch_history_events` 和 `switch_realtime_events`，返回事件前后 RSSI、Peer、AP Identity 和位置；实时切换表没有 `radio` 列时返回 `NULL`，不能丢弃整批事件。二者是事件快照，不伪装为连续趋势，也不复用普通主链路 RSSI 序列。指标和时间轴查询只读 `parsed/online_diagnosis.sqlite`，分页限制下推到 SQLite；页面卸载时释放轮询、ECharts、ResizeObserver 和主题订阅。缺表、缺字段或空值保持空态，不回写、迁移或伪造数据。
+
+分析页由应用级 `KeepAlive` 和 Pinia 内存缓存共同保留同一局点、同一会话的选择、活动 Tab、筛选、已加载业务表、分页批次、统一时间视口、锁定时刻、Radio、目标点数、关联指标和双图布局；缓存键由局点与 `session_id` 共同组成，A -> B -> A 会恢复 A 的独立状态。切到其他模块再返回时不重新获取会话详情或整批业务表，已加载的空结果也不会重复请求；停用期间图表进入 inactive，并停止轮询和可见更新。只有用户显式刷新、重新解析/强制解析、确认 revision 变化、删除会话或切换局点才失效对应缓存；未缓存的目标会话首次打开时才读取详情和当前活动区域。所有重新加载继续受 generation、AbortController 和同资源 in-flight 去重保护，不能复用旧局点或其他会话数据；目标点数连续切换同样遵守 last-wins。
 
 ## 18. 在线列车通信统一展示（5C-7A，只读）
 

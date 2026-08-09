@@ -202,7 +202,6 @@ class _VehicleMrReportData:
                 """
                 SELECT substr(replace(device_time, 'T', ' '), 1, 16), MAX(tx_busy), MAX(rx_busy)
                 FROM channel_busy_records
-                WHERE COALESCE(row_index, 1) = 1
                 GROUP BY 1
                 ORDER BY 1 ASC
                 LIMIT ?
@@ -306,7 +305,7 @@ class _VehicleMrReportData:
             (self.row_limit,),
         )
         switch_points = self._timed_rows("SELECT device_time, switch_reason_text FROM switch_realtime_events ORDER BY device_time ASC LIMIT ?", (self.row_limit,))
-        busy_points = self._timed_rows("SELECT device_time, tx_busy, rx_busy FROM channel_busy_records WHERE COALESCE(row_index, 1) = 1 ORDER BY device_time ASC LIMIT ?", (self.row_limit,))
+        busy_points = self._timed_rows("SELECT device_time, tx_busy, rx_busy FROM channel_busy_records ORDER BY device_time ASC LIMIT ?", (self.row_limit,))
         losses = self._query(
             """
             SELECT COALESCE(NULLIF(device_bucket_time, ''), NULLIF(bucket_time, ''), local_bucket_time),
@@ -352,7 +351,6 @@ class _VehicleMrReportData:
             SELECT radio, COUNT(*), ROUND(AVG(ctl_busy), 2), MAX(ctl_busy),
                    ROUND(AVG(tx_busy), 2), MAX(tx_busy), ROUND(AVG(rx_busy), 2), MAX(rx_busy)
             FROM channel_busy_records
-            WHERE COALESCE(row_index, 1) = 1
             GROUP BY radio
             ORDER BY radio ASC
             """
@@ -540,7 +538,7 @@ class _VehicleMrReportData:
             if segment_row and segment_row[2] is not None:
                 row = segment_row
         ping = self._one("SELECT ROUND(AVG(loss_percent), 2), ROUND(MAX(loss_percent), 2), ROUND(AVG(avg_latency_ms), 2), ROUND(MAX(avg_latency_ms), 2) FROM fping_1s_summary")
-        busy = self._one("SELECT ROUND(AVG(tx_busy), 2), MAX(tx_busy), ROUND(AVG(rx_busy), 2), MAX(rx_busy) FROM channel_busy_records WHERE COALESCE(row_index, 1) = 1")
+        busy = self._one("SELECT ROUND(AVG(tx_busy), 2), MAX(tx_busy), ROUND(AVG(rx_busy), 2), MAX(rx_busy) FROM channel_busy_records")
         return {
             "start_time": row[0] if row else None,
             "end_time": row[1] if row else None,
