@@ -499,7 +499,24 @@ def test_trackside_business_workbook_preserves_sheets_and_export_style(
         rows,
         TRACKSIDE_AP_BUSINESS_EXPORT_COLUMNS,
         [i18n.t(key) for key, _field in TRACKSIDE_AP_BUSINESS_EXPORT_COLUMNS],
-        [],
+        [
+            {
+                "site": "站点A",
+                "total": 2,
+                "online": 1,
+                "offline": 1,
+                "online_rate": "50.0%",
+                "remark": "",
+            },
+            {
+                "site": "合计",
+                "total": 2,
+                "online": 1,
+                "offline": 1,
+                "online_rate": "50.0%",
+                "remark": "",
+            },
+        ],
         AP_ONLINE_OVERVIEW_COLUMNS,
         [i18n.t(key) for key, _field in AP_ONLINE_OVERVIEW_COLUMNS],
         [],
@@ -552,7 +569,7 @@ def test_trackside_business_workbook_preserves_sheets_and_export_style(
         sheet = workbook[name]
         assert sheet.freeze_panes == (None if name == "AP上线情况概览" else "A2")
         assert sheet.auto_filter.ref == (
-            "A3:F3" if name == "AP上线情况概览" else sheet.dimensions
+            None if name == "AP上线情况概览" else sheet.dimensions
         )
         header_row = 3 if name == "AP上线情况概览" else 1
         assert all(
@@ -581,6 +598,11 @@ def test_trackside_business_workbook_preserves_sheets_and_export_style(
     assert main["A2"].fill.fgColor.rgb == "FFDCFCE7"
     assert main["A1"].border.left.color.rgb == "FFD1D5DB"
 
+    current_abnormal = workbook["当前异常光衰"]
+    assert current_abnormal.max_row == 2
+    assert str(current_abnormal["A2"].value).startswith("当前无异常光衰")
+    assert current_abnormal["A2"].fill.fgColor.rgb != "FFFEE2E2"
+
     treatment = workbook["AP光衰处理记录"]
     treatment_headers = [cell.value for cell in treatment[1]]
     treatment_interface_column = treatment_headers.index("接口名称") + 1
@@ -592,6 +614,10 @@ def test_trackside_business_workbook_preserves_sheets_and_export_style(
     assert [cell.value for cell in overview[3]] == [
         i18n.t(key) for key, _field in AP_ONLINE_OVERVIEW_COLUMNS
     ]
+    assert overview["E4"].value == 0.5
+    assert overview["E4"].number_format == "0.0%"
+    assert overview["E5"].value == 0.5
+    assert overview["E5"].number_format == "0.0%"
     assert all(cell.value is None for cell in overview[overview.max_row])
     assert overview.row_dimensions[overview.max_row].height == 16
     assert all(
@@ -678,8 +704,8 @@ def test_ap_online_history_block_has_dynamic_blank_separator() -> None:
         ["日期：2026-08-07", None, None, None, None, None],
         ["更新时间：2026-08-07 20:15:38", None, None, None, None, None],
         headers,
-        ["站点A", "2", "1", "1", "50.0%", "-"],
-        ["合计", "2", "1", "1", "50.0%", "-"],
+        ["站点A", "2", "1", "1", 0.5, "-"],
+        ["合计", "2", "1", "1", 0.5, "-"],
         [None, None, None, None, None, None],
     ]
 

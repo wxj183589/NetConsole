@@ -1,7 +1,7 @@
 // NetConsole read-only WPS_STANDARD_SPREADSHEET connection probe.
 const PROTOCOL_VERSION = 2;
-const SCRIPT_VERSION = "2.8.2-standard";
-const DEPLOYMENT_ID = "trackside-ap-standard-2.8.2";
+const SCRIPT_VERSION = "2.8.3-standard";
+const DEPLOYMENT_ID = "trackside-ap-standard-2.8.3";
 const DOCUMENT_ID = "549847228994";
 const TARGET_TYPE = "WPS_STANDARD_SPREADSHEET";
 const TARGET_CODE = "wps_standard_spreadsheet";

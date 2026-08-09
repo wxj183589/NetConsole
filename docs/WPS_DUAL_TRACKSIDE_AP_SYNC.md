@@ -19,15 +19,15 @@
 
 修改在线文档连接、webhook、webhook 中的文档 ID 或脚本 ID 会清除旧远端身份、六类诊断和运行时探针状态，并将运行时能力降级为 `DEPLOYMENT_PENDING`；已有绑定记录保留，待新的连接测试重新确认。保存完全相同的连接地址和 webhook 是 no-op；修改超时、启用开关或 Token 不会清除远端部署身份、运行时探针或绑定身份。前端仅在草稿真实变化或输入新 Token 时保存，未修改配置时“测试连接”直接执行连接测试。
 
-普通在线表格的数据写入链路已由杭州地铁 10 号线真实 9 Sheet 同步确认，证据等级为 `USER_FIELD_CONFIRMED`。该 `2.2.0-standard` / `trackside-ap-standard-2.2.0` 状态固定标记为 `WPS_STANDARD_DATA_SYNC_LAST_KNOWN_GOOD`。Phase A 的 Sheet 排序、统一 registry、上线历史块和六个标签色也已由用户现场确认。`2.4.1-standard` 的独立列宽探针已确认 A-D 列写后读回和视觉递增，不能重复要求用户验证能力探针。`2.5.0-standard` 增加了正式 143 列的 XLSX、DTO、payload、`ColumnWidth` 和 `Width(points)` 全链路报告。当前候选 `2.8.2-standard` / `trackside-ap-standard-2.8.2` 在不修改 `writeStableSheet()` 的前提下启用正式格式写入和读回，并固定为 `AP上线情况概览` 无冻结、其余 8 个业务 Sheet 仅冻结首行（`A2`，不冻结列）、所有非空业务块使用 All Borders；本地模拟与杭州 10 号线源 Workbook 审计已通过，真实 WPS 格式报告仍为 `UNVERIFIED`，发布前不得写成现场已验收。
+普通在线表格的数据写入链路已由杭州地铁 10 号线真实 9 Sheet 同步确认，证据等级为 `USER_FIELD_CONFIRMED`。该 `2.2.0-standard` / `trackside-ap-standard-2.2.0` 状态固定标记为 `WPS_STANDARD_DATA_SYNC_LAST_KNOWN_GOOD`。Phase A 的 Sheet 排序、统一 registry、上线历史块和六个标签色也已由用户现场确认。`2.4.1-standard` 的独立列宽探针已确认 A-D 列写后读回和视觉递增，不能重复要求用户验证能力探针。`2.5.0-standard` 增加了正式 143 列的 XLSX、DTO、payload、`ColumnWidth` 和 `Width(points)` 全链路报告。当前候选 `2.8.3-standard` / `trackside-ap-standard-2.8.3` 增加真实业务列 AutoFit、本地宽度下限、按字段布局 Clamp、FULL_REPLACE 受管区域清理、百分比显示读回和确定性空表 Freeze；本地模拟与杭州 10 号线源 Workbook 审计完成后，真实 WPS 格式报告仍必须标记为 `UNVERIFIED`，发布前不得写成现场已验收。
 
 ## Phase A：Sheet 顺序（现场已验证）
 
 普通在线表格复用轨旁 AP 本地 XLSX 的同一次冻结快照和同一个 workbook builder，不维护第二套样式。`TRACKSIDE_AP_BUSINESS_SHEET_DEFINITIONS` 是业务 Sheet 身份、名称、顺序、同步模式和标签色的唯一真源；`WorkbookDTO.sheet_order` 无条件按 `openpyxl workbook.worksheets` 的实际枚举顺序从零递增，且排除 `_NetConsole*` 系统 Sheet。固定业务顺序为：`AP上线情况概览`、`轨旁AP业务`、`当前异常光衰`、`AP光衰处理记录`、`AP离线情况`、`AP离线台账`、`新增上线AP概览`、`待关联在线AP`、`交换机光模块统计`。`AP上线情况概览` 与 `新增上线AP概览` 分别使用 `ap_online_history_overview` 和 `newly_online_ap_overview`，不得按中文相似名称混用。
 
-`FULL_REPLACE` 和 `PREPEND_SNAPSHOT` 继续使用 `WPS_STANDARD_DATA_SYNC_LAST_KNOWN_GOOD` 的 `writeStableSheet()`，函数内的清理、插行和二维 `Value2` 写入顺序不变；AirScript 在调用该函数前只把新的 DTO 模式映射到既有顶部插行分支。全部业务值写完后才进入独立 `reorderBusinessSheets()`：按 DTO 的 `sheet_order` 排序，使用 AirScript 2.0 官方 `Worksheet.Move(Before, After)` 位置参数显式移动，再重新枚举 `Application.Worksheets.Item(1..Count)`。业务 Sheet 读回顺序与 DTO 不完全一致时返回 `WPS_SHEET_ORDER_VERIFY_FAILED`，正式同步失败，但不会改变值写入协议。
+`FULL_REPLACE` 和 `PREPEND_SNAPSHOT` 继续使用 `WPS_STANDARD_DATA_SYNC_LAST_KNOWN_GOOD` 的二维 `Value2` 写入和顶部插行协议。`FULL_REPLACE` 在写值前按 `_NetConsoleSyncMeta.managed_ranges_json` 清除上一轮与本轮最大受管区域的值、格式和 Merge；首次升级没有受管元数据时只用 `UsedRange` 做一次兼容清理。全部业务值写完后才进入独立 `reorderBusinessSheets()`：按 DTO 的 `sheet_order` 排序，使用 AirScript 2.0 官方 `Worksheet.Move(Before, After)` 位置参数显式移动，再重新枚举 `Application.Worksheets.Item(1..Count)`。业务 Sheet 读回顺序与 DTO 不完全一致时返回 `WPS_SHEET_ORDER_VERIFY_FAILED`，正式同步失败，但不会改变值写入协议。
 
-`AP上线情况概览` 使用 `PREPEND_SNAPSHOT`。每个动态长度块依次包含北京时间日期、目标实际执行的北京时间、表头、站点数据、合计和一行全空分隔行；旧历史块不执行清理，不覆盖历史值或人工格式。同一 `target_batch_id` 成功写入后记录在 `_NetConsoleSyncMeta`，重试时跳过该历史块，其他 `FULL_REPLACE` Sheet 仍可安全重放。本地 XLSX 使用相同块 DTO，更新时间取本地导出实际执行时间。
+`AP上线情况概览` 使用 `PREPEND_SNAPSHOT`。每个动态长度块依次包含北京时间日期、目标实际执行的北京时间、表头、站点数据、合计和一行全空分隔行；上线率保持 `0..1` 数值，数据区和合计行精确使用 `0.0%`，远端样本同时读回 Value、NumberFormat 和显示文本。旧历史块不执行清理，不覆盖历史值或人工格式。同一 `target_batch_id` 成功写入后记录在 `_NetConsoleSyncMeta`，重试时跳过该历史块，其他 `FULL_REPLACE` Sheet 仍可安全重放。本地 XLSX 使用相同块 DTO，更新时间取本地导出实际执行时间；该历史 Sheet 不启用跨块 AutoFilter。
 
 `_NetConsoleSyncMeta`、`_NetConsoleRuntimeProbe`、`_NetConsoleSyncTest` 及其他 `_NetConsole*` 系统 Sheet 不参与业务顺序，排序后尽量移动到业务 Sheet 后方并隐藏。系统 Sheet 移动或隐藏不兼容只记录 warning，返回 `SUCCESS_WITH_WARNINGS`，不会把已成功的数据写入降为失败。独立 `sheet_order_probe` 只创建或移动两个系统探针 Sheet，分别真实执行 `Move(Before)` 和 `Move(null, After)` 并读回校验，不清理或写入业务 Sheet 值。
 
@@ -35,9 +35,9 @@
 
 ## Phase B1：列宽与 AutoFit（探针现场已验证，正式读回待验证）
 
-Python 从同一次本地导出 Workbook 提取列宽模式：有显式 `column_dimensions` 时写入 `WorkbookSheetDTO.column_widths`；没有显式宽度的已用列进入 `auto_fit_columns`。AirScript 对前者设置 `ColumnWidth`，对后者执行 `Columns.AutoFit()`，再使用共享列宽规则的 `8..60` 全局边界限制异常超宽或过窄结果。两种模式都读回 `ColumnWidth` 与 `Width(points)`；不换算像素，不维护按 Sheet 或杭州 10 号线专属倍率。
+Python 从同一次本地导出 Workbook 提取 `column_widths`，并把每个真实业务列都加入 `auto_fit_columns`。共享字段定义同时下发 `compact / normal / identifier / datetime / long_text` 布局及各自 Min/Max，AirScript 不按中文表头猜类型。每列先对真实 `Columns` 执行 `AutoFit()`，再计算 `max(local_width, auto_width)` 并按布局边界 Clamp；长文本列上限为 48、保持 WrapText。每列都读回最终 `ColumnWidth` 与 `Width(points)`，报告同时保留本地宽度、AutoFit 宽度、最终请求值和远端读回；不换算像素，不维护按 Sheet 或杭州 10 号线专属倍率。
 
-独立 `column_width_probe` 只操作 `_NetConsoleSyncTest`：写入 A-D 列可视标签，通过 `Worksheet.Columns.Item(column).ColumnWidth` 将列宽依次设置为 `8 / 15 / 25 / 40`，再读回并按 `0.5` 容差校验。该能力已现场确认，不再作为每次正式同步的本地状态门禁；普通在线表格正式同步始终发送 `column_width_enabled=true`，避免重新部署脚本后因清空历史诊断而要求用户重复探针。AirScript 继续先调用未改动的 `writeStableSheet()` 完成全部业务值，再逐列通过同一 API 设置业务列宽并同时读回 `ColumnWidth` 与 `Width(points)`；`AP上线情况概览` 只更新 Sheet 级列宽，不格式化旧历史块。
+独立 `column_width_probe` 只操作 `_NetConsoleSyncTest`：写入 A-D 列可视标签，通过 `Worksheet.Columns.Item(column).ColumnWidth` 将列宽依次设置为 `8 / 15 / 25 / 40`，再读回并按 `0.5` 容差校验。该能力已现场确认，不再作为每次正式同步的本地状态门禁；普通在线表格正式同步始终发送 `column_width_enabled=true`，避免重新部署脚本后因清空历史诊断而要求用户重复探针。正式流程在数据和基础格式写完后执行真实业务列 AutoFit，随后才执行行 AutoFit、最小行高、Filter、排序、TabColor 和 Freeze；`AP上线情况概览` 只更新新插入块的格式，旧历史块保持不变。
 
 每个正式业务列保留完整远端项目：模式、Sheet、列、Range、请求宽度、写入前后 `ColumnWidth`、写入前后 `Width(points)`、差异、物理宽度变化、Clamp、读回状态、验证状态、分类和原因。Python 在临时 XLSX 删除前建立源清单，再与 `SheetDTO`、序列化 payload 和远端项目合并成 `column_width_verification_report`。分类包括 `WORKBOOK_DTO_WIDTH_MISMATCH`、`WPS_PAYLOAD_WIDTH_MISMATCH`、`WPS_COLUMN_WIDTH_APPLY_MISMATCH`、`WPS_COLUMN_WIDTH_VALUE_VERIFIED` 和 `WPS_COLUMN_WIDTH_AUTOFIT_VERIFIED`；不在没有证据时引入宽度换算系数。
 
@@ -45,15 +45,15 @@ Python 从同一次本地导出 Workbook 提取列宽模式：有显式 `column_
 
 ## Phase B2：正式格式镜像（本地规则已固定，WPS 读回待现场验证）
 
-本地 XLSX 是样式唯一真源。共享 Workbook Builder 设置表头加粗/居中/换行、普通短字段居中、原因/备注/说明等长文本左对齐并换行、状态行填充、数字格式、边框、冻结窗格和筛选；WPS 不按业务值再次判断颜色。冻结规则固定为：`AP上线情况概览` 不冻结，其余 8 个业务 Sheet 只冻结首行（`A2`），所有 Sheet 均不冻结列。实际非空业务块使用 All Borders（外框、内部横线、内部竖线），历史概览块末尾的单独空白分隔行保持空白且不加边框。有数据行和表头的基础行高固定为 `24`。Python 将连续相同样式压缩为 `FormatRun`，单 Sheet 超过 1000 个 run 时停止该 Sheet 格式阶段并告警。AirScript 始终先用未改动的 `writeStableSheet()` 完成全部业务值，再单独执行列宽、Font、Fill、NumberFormat、Alignment、WrapText、Merge、All Borders、行 AutoFit、显式行高、FreezePane 和 AutoFilter；连续相同的行高合并为一个 Range 写入。格式失败只返回 `SUCCESS_WITH_WARNINGS`，不会把已成功的数据同步降为失败。
+本地 XLSX 是样式唯一真源。共享 Workbook Builder 设置表头加粗/居中/换行、普通短字段居中、原因/备注/说明等长文本左对齐并换行、状态行填充、数字格式、边框、冻结窗格和筛选；WPS 不按业务值再次判断颜色。冻结规则固定为：`AP上线情况概览` 不冻结，其余 8 个业务 Sheet 只冻结首行（`A2`），所有 Sheet 均不冻结列，包括只有表头的空数据 Sheet。实际非空业务块使用 All Borders（外框、内部横线、内部竖线），历史概览块末尾的单独空白分隔行保持空白且不加边框。行高以本地显式值为下限：先写基线、执行 `Rows.AutoFit()`，再只抬高低于本地下限的行，长文本换行后的更高行不得压回 `24`。Python 将连续相同样式压缩为 `FormatRun`，单 Sheet 超过 1000 个 run 时停止该 Sheet 格式阶段并告警。格式失败只返回 `SUCCESS_WITH_WARNINGS`，不会把已经成功的数据同步降为失败。
 
-`FULL_REPLACE` 只对本次业务区域清理旧格式后重建；`AP上线情况概览` 的 `PREPEND_SNAPSHOT` 只清理并格式化本次顶部新插入块，旧历史值、旧历史格式和旧 Merge 不处理。同批次去重跳过的新块也不重新格式化。每个格式组执行 `WRITE -> READ BACK -> COMPARE`，记录 attempted、applied、read_back、verified、failed 和失败 Range；颜色和对齐可附带 `DisplayFormat` 作为只读辅助证据。代表样本覆盖表头、首行、中间行、末行以及最多四种不同填充行。
+`FULL_REPLACE` 按上一轮与本轮最大受管范围清理后重建，因此 `100 -> 0/20` 行不会残留旧 Value、Fill、Border、NumberFormat、Alignment、Merge 或 Filter；空数据 `当前异常光衰` 只保留本地定义的表头/占位内容，不允许残留大片红色。`AP上线情况概览` 的 `PREPEND_SNAPSHOT` 只清理并格式化本次顶部新插入块，旧历史值、旧历史格式和旧 Merge 不处理。同批次去重跳过的新块也不重新格式化。每个格式组执行 `WRITE -> READ BACK -> COMPARE`，记录 attempted、applied、read_back、verified、failed 和失败 Range；颜色和对齐可附带 `DisplayFormat` 作为只读辅助证据。代表样本覆盖表头、首行、中间行、末行以及最多四种不同填充行。
 
-冻结窗格在所有数据、格式、筛选、Sheet 排序和标签色操作完成后统一执行最终化。脚本先直接写入并立即读回 `SplitRow`/`SplitColumn`/`FreezePanes`；若 WPS runtime 仍返回当前 ActiveCell 导致的旧行号，则清除旧状态，Activate 目标 Sheet，严格选择 `A2` 并验证 `ActiveCell`，再启用冻结。任何实际读回不等于期望值都会记录 `WPS_FREEZE_READBACK_FAILED` 或 `WPS_FREEZE_SELECTION_FAILED`，作为格式 warning，不得显示为冻结成功。
+冻结窗格在所有数据、格式、AutoFit、筛选、Sheet 排序和标签色操作完成后统一执行最终化。脚本先直接写入并立即读回 `SplitRow`/`SplitColumn`/`FreezePanes`；若 WPS runtime 仍返回当前 ActiveCell 导致的旧行号，则清除旧状态，Activate 目标 Sheet，严格选择 `A2` 并验证 `ActiveCell`，随后再次明确写入 `SplitRow=1`、`SplitColumn=0` 才启用冻结。任何实际读回不等于期望值都会记录 `WPS_FREEZE_READBACK_FAILED` 或 `WPS_FREEZE_SELECTION_FAILED`，作为格式 warning，不得显示为冻结成功。
 
 默认无填充、透明、Theme 或 Indexed 颜色不进入 DTO；只有显式不透明 ARGB 才规范化为 `#RRGGBB`。共享 Builder 用 `FFRRGGBB` 写入 openpyxl，AirScript 统一通过 `toWpsColor()` 转为 WPS RGB 数值，禁止把字符串直接赋给 `Color`，也禁止把无填充转换成黑色。
 
-2026-08-08 杭州 10 号线本地源审计为 `LOCAL_DATASET_VERIFIED`：9 个 Sheet、143 个已用列全部有共享 Builder 计算出的显式宽度，因此该数据集的列 `AutoFit fallback` 为 0；共享 Builder 为业务区域生成统一行高规则（普通行 `24`，概览末尾分隔行 `16`），并由 DTO/AirScript 合并连续行高 Range。每次批次的 FormatRun、行高和 payload 数量写入 `source_workbook_format_manifest`，不能用历史固定数字代替当前快照。该统计只能证明本地源和 payload，不替代远端 WPS 读回。
+2026-08-08 杭州 10 号线本地源审计为 `LOCAL_DATASET_VERIFIED`：9 个 Sheet、143 个已用列全部有共享 Builder 计算出的显式宽度；从 `2.8.3-standard` 起这些列仍全部执行真实 AutoFit，显式宽度作为下限而不是跳过 AutoFit。共享 Builder 为业务区域生成统一行高规则（普通行最小 `24`，概览末尾分隔行最小 `16`），每次批次的 FormatRun、布局类型、行高和 payload 数量写入 `source_workbook_format_manifest`，不能用历史固定数字代替当前快照。该统计只能证明本地源和 payload，不替代远端 WPS 读回。
 
 默认、真正透明、Theme 或 Indexed 颜色不进入 DTO；OpenXML 常见的 `00RRGGBB` 非黑色值视为显式颜色，和 `FFRRGGBB` 一样规范化为 `#RRGGBB`。后续所有 WPS 颜色写入必须继续通过唯一 `toWpsColor()` 转换，不能直接把 `#RRGGBB` 字符串赋给 `Color`。
 
@@ -95,7 +95,7 @@ AirScript 的同步探针响应和正式异步查询终态使用同一执行 env
 1. 在“配置云文档”中为每个目标独立保存在线文档地址、webhook 和脚本令牌；智能表格默认关闭。
 2. 使用界面的“复制连接测试脚本”，在对应文档新建 AirScript 2.0 脚本，确认末尾是 `return main();`，运行只读探针后再复制同一个脚本的 webhook。
 3. 回到 NetConsole 更新 webhook，点击“测试连接”，先确认 `sync_task` 的 `data.result` 不是 `[Undefined]`，再核对返回的 `document_id`、`target_type`、`target_code`、`protocol_version`、脚本版本和部署 ID。
-4. 通过“复制正式同步脚本”替换同一个脚本内容并保存；当前普通表格候选脚本身份必须是 `2.8.2-standard` / `trackside-ap-standard-2.8.2`，再重新测试。不要把普通表格和智能表格 webhook 交叉使用。
+4. 通过“复制正式同步脚本”手工替换同一个 WPS 文档共享脚本内容并保存、发布；当前普通表格候选脚本身份必须是 `2.8.3-standard` / `trackside-ap-standard-2.8.3`，再重新测试。NetConsole 不能远程替用户编辑 WPS 脚本，不要把普通表格和智能表格 webhook 交叉使用。
 5. 对普通表格点击“测试写入能力”，确认 `_NetConsoleRuntimeProbe` 的二维数组写入与回读通过；未通过时正式同步保持禁用。
 6. 点击“测试同步 Sheet”，确认 `_NetConsoleSyncTest` 写入、回读和清理通过；若更换脚本或部署，使用“重新验证当前部署”自动清理旧验证状态并依次重跑三项测试。
 7. 点击“测试 Sheet 排序”，确认返回 `sheet_order_verified=true`、`sheet_move_before_verified=true`、`sheet_move_after_verified=true`；系统 Sheet 隐藏不兼容可以是 warning。该探针不并入“重新验证当前部署”。
@@ -103,7 +103,7 @@ AirScript 的同步探针响应和正式异步查询终态使用同一执行 env
 9. 列宽能力探针已经现场确认，不重复运行，也不要求用户再次查看 `_NetConsoleSyncTest`。连接测试若显示 `LEGACY_BINDING_ID_MISMATCH`，先核对本地/远端 Binding ID 和五类业务身份均匹配，再点击“升级旧版绑定标识”；在确认框复核文档、局点、业务和新旧 ID。完成后系统会自动重跑连接、写入能力和同步测试，Binding 状态必须变为 `BOUND`。`MISMATCH` 不允许迁移。
 10. 首次同步会显示当前局点与未绑定文档的二次确认；只有确认后才初始化远端绑定。绑定不匹配时停止写入并在任务详情显示原始错误码、失败 Sheet 和失败操作。
 11. 确认当前局点业务 revision 后，手动点击页面的“同步云文档”；任务详情应先显示脱敏 Remote Task ID 和 `submitted/running`，不能继续保持一个约 20 秒的 `/sync_task` HTTP 等待。
-12. 远端状态进入 `finished` 后，在任务详情核对列宽的显式、AutoFit、Clamp、远端读回、验证、告警和失败数量，以及 RowHeight、Font、Fill、NumberFormat、Alignment、Wrap、Merge、Border、FreezePane、Filter 和业务样本的写后读回结果。杭州 10 号线当前源应报告 143 个显式宽度、0 个 AutoFit fallback；重点查看 `轨旁AP业务` 的 A/B/C/G/H/P 代表列。不能只依据 API 未抛异常判断格式成功。
+12. 远端状态进入 `finished` 后，在任务详情核对列宽的本地值、AutoFit 值、最终请求值、Clamp、远端读回、验证、告警和失败数量，以及 RowHeight、Font、Fill、NumberFormat、Alignment、Wrap、Merge、Border、FreezePane、Filter 和业务样本的写后读回结果。杭州 10 号线当前源应报告 143 个真实 AutoFit 请求；重点查看 `轨旁AP业务` 的 A/B/C/G/H/P 代表列，以及 `AP上线情况概览` 的 `0.81 / 0.0% / 81.0%` 样本。不能只依据 API 未抛异常判断格式成功。
 13. 只有自动报告完成后，用户才做一次整体视觉抽查；不要求用户逐列测量宽度或逐项确认颜色。`Width(points)` 和 `DisplayFormat` 用于辅助判断平台单位或渲染差异，在形成稳定证据前不加入换算系数。
 14. 检查 `AP上线情况概览` 新块依次为日期、更新时间、表头、数据、合计和恰好一行空白，且旧历史值与旧历史格式未被覆盖。
 15. 使用相同 `target_batch_id` 重放脚本，确认不会再次插入历史块；使用新的批次再次同步，确认新块位于顶部、旧块完整下移。

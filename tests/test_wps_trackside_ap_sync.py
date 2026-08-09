@@ -798,7 +798,8 @@ def test_workbook_dto_preserves_sheet_order_and_compresses_format_runs(
     assert first.merges == ["A4:C4"]
     assert first.column_widths["A"] == 18
     assert first.row_heights["1"] == 24
-    assert first.auto_fit_columns == ("B", "C")
+    assert first.auto_fit_columns == ("A", "B", "C")
+    assert first.column_layouts["A"]["layout_type"] == "normal"
     assert first.auto_fit_rows is True
     assert first.freeze_panes == "A2"
     assert first.auto_filter == ""
@@ -807,6 +808,13 @@ def test_workbook_dto_preserves_sheet_order_and_compresses_format_runs(
         "first_data",
         "last_data",
     }
+    first_data_sample = next(
+        sample for sample in first.verification_samples if "first_data" in sample["label"]
+    )
+    percentage_sample = next(
+        item for item in first_data_sample["format_cells"] if item["range"] == "B2"
+    )
+    assert percentage_sample["expected_display_text"] == "50.00%"
     header_font_run = next(
         run for run in first.format_runs if run.range == "A1:C1" and run.font
     )
@@ -843,6 +851,33 @@ def test_workbook_dto_preserves_sheet_order_and_compresses_format_runs(
     assert "format_runs" in serialized
     assert "fonts" not in serialized
     assert "borders" not in serialized
+
+
+def test_workbook_dto_emits_stable_layout_types_for_real_business_columns(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "column-layouts.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "轨旁AP业务"
+    sheet.append([f"字段{index}" for index in range(1, 17)])
+    sheet.append([f"值{index}" for index in range(1, 17)])
+    for column in range(1, 17):
+        sheet.column_dimensions[chr(64 + column)].width = 18
+    workbook.save(path)
+    workbook.close()
+
+    dto = workbook_dto_from_xlsx(path, include_format_mirror=True).sheets[0]
+
+    assert dto.auto_fit_columns == tuple(chr(64 + column) for column in range(1, 17))
+    assert dto.column_layouts["G"]["layout_type"] == "identifier"
+    assert dto.column_layouts["L"]["layout_type"] == "datetime"
+    assert dto.column_layouts["P"] == {
+        "layout_type": "long_text",
+        "min_width": 16.0,
+        "max_width": 48.0,
+        "wrap_text": True,
+    }
 
 
 def test_workbook_dto_enforces_final_freeze_contract(tmp_path: Path) -> None:
@@ -1137,6 +1172,63 @@ def test_column_width_report_accepts_autofit_readback_with_clamp() -> None:
     assert report["stage_counts"] == {"WPS_COLUMN_WIDTH_AUTOFIT_VERIFIED": 1}
 
 
+def test_column_width_report_accepts_autofit_with_local_minimum() -> None:
+    report = _column_width_verification_report(
+        manifest=[
+            {
+                "sheet_name": "轨旁AP业务",
+                "column": "P",
+                "range": "P:P",
+                "column_label": "AP业务判定原因",
+                "source_mode": "AUTO_FIT_WITH_LOCAL_MIN",
+                "local_workbook_width": 42.0,
+                "sheet_dto_width": 42.0,
+                "sheet_dto_mode": "AUTO_FIT_WITH_LOCAL_MIN",
+                "layout_type": "long_text",
+                "layout_min_width": 16.0,
+                "layout_max_width": 48.0,
+            }
+        ],
+        request_payload={
+            "workbook": {
+                "sheets": [
+                    {
+                        "sheet_name": "轨旁AP业务",
+                        "column_widths": {"P": 42.0},
+                        "auto_fit_columns": ["P"],
+                    }
+                ]
+            }
+        },
+        remote_result={
+            "column_width_result": {
+                "attempted_count": 1,
+                "items": [
+                    {
+                        "sheet_name": "轨旁AP业务",
+                        "column": "P",
+                        "mode": "AUTO_FIT_WITH_LOCAL_MIN",
+                        "local_workbook_width": 42.0,
+                        "auto_fit_width": 35.0,
+                        "requested_width": 42.0,
+                        "remote_column_width": 42.0,
+                        "remote_width_points": 294.0,
+                        "applied": True,
+                        "verified": True,
+                    }
+                ],
+            }
+        },
+        enabled=True,
+    )
+
+    assert report["status"] == "SUCCESS"
+    assert report["auto_fit_requested_count"] == 1
+    assert report["auto_fit_applied_count"] == 1
+    assert report["verified_count"] == 1
+    assert report["items"][0]["wps_auto_fit_width"] == 35.0
+
+
 def test_sheet_tab_color_formal_sync_gate_requires_successful_probe() -> None:
     target = _wps_target()
     assert _sheet_tab_color_probe_verified(target) is False
@@ -1183,15 +1275,19 @@ def test_standard_airscript_applies_formats_after_the_stable_writer() -> None:
     )
     script = script_path.read_text(encoding="utf-8")
 
-    assert 'const SCRIPT_VERSION = "2.8.2-standard";' in script
-    assert 'const DEPLOYMENT_ID = "trackside-ap-standard-2.8.2";' in script
+    assert f'const SCRIPT_VERSION = "{WPS_SCRIPT_VERSIONS[STANDARD_TARGET_CODE]}";' in script
+    assert f'const DEPLOYMENT_ID = "{WPS_DEPLOYMENT_IDS[STANDARD_TARGET_CODE]}";' in script
     assert "const FORMAT_MIRROR_ENABLED = true;" in script
-    assert "function writeStableSheet(sheetDto)" in script
-    assert "if (used && used.ClearContents) used.ClearContents();" in script
+    assert "function writeStableSheet(sheetDto, previousManaged)" in script
+    assert "function clearFullReplaceTarget" in script
+    assert "target.ClearContents();" in script
+    assert "target.ClearFormats();" in script
+    assert "target.UnMerge();" in script
+    assert "managed_ranges_json" in script
     assert "FORMAT_MIRROR_ENABLED && args.format_mirror_enabled === true" in script
     assert "const result = skipRepeatedPrepend" in script
-    assert ": writeStableSheet(runtimeSheet);" in script
-    assert "applyBusinessFormatting(formatSheets, formatWarnings)" in script
+    assert ": writeStableSheet(runtimeSheet, managedRanges" in script
+    assert "applyBusinessFormatting(formatSheets, formatWarnings, () =>" in script
     assert "sheetOrderVerification = reorderBusinessSheets(sheets);" in script
     assert "const sheet = sheets.Add();" in script
     assert "sheets.Add(null" not in script
@@ -1215,8 +1311,12 @@ def test_standard_airscript_applies_formats_after_the_stable_writer() -> None:
     assert sync_body.index("applyBusinessSheetTabColors(sheets") < sync_body.index(
         "applyWorkbookFreezeLayout(formatSheets"
     )
-    assert "sheet.Range(rangeAddress).RowHeight = expected" in script
+    assert "row.RowHeight = entry.height" in script
     assert "Columns.AutoFit API unavailable" in script
+    assert "AUTO_FIT_WITH_LOCAL_MIN" in script
+    assert "Math.max(" in script
+    assert "layout.max_width" in script
+    assert 'sheet.AutoFilterMode = false' in script
     assert "sheetDto.format_runs" in script
     assert "verifiedFormatOperation" in script
     assert "range.Interior.Color" in script

@@ -14,16 +14,16 @@ const scripts: Array<{
   {
     targetCode: 'wps_standard_spreadsheet',
     kind: 'probe',
-    scriptVersion: '2.8.2-standard',
-    deploymentId: 'trackside-ap-standard-2.8.2',
+    scriptVersion: '2.8.3-standard',
+    deploymentId: 'trackside-ap-standard-2.8.3',
     documentId: '549847228994',
     targetType: 'WPS_STANDARD_SPREADSHEET',
   },
   {
     targetCode: 'wps_standard_spreadsheet',
     kind: 'sync',
-    scriptVersion: '2.8.2-standard',
-    deploymentId: 'trackside-ap-standard-2.8.2',
+    scriptVersion: '2.8.3-standard',
+    deploymentId: 'trackside-ap-standard-2.8.3',
     documentId: '549847228994',
     targetType: 'WPS_STANDARD_SPREADSHEET',
   },
@@ -69,6 +69,10 @@ function standardSpreadsheetRuntime(
   const writes: Array<{ sheet: string; address: string; value: unknown }> = []
   const columnWidths: Array<{ sheet: string; column: string; width: number }> = []
   const freezeSelections: Array<{ sheet: string; address: string }> = []
+  const contentClears: Array<{ sheet: string; address: string }> = []
+  const formatClears: Array<{ sheet: string; address: string }> = []
+  const unmerges: Array<{ sheet: string; address: string }> = []
+  const autoFilterChanges: Array<{ sheet: string; address: string }> = []
   let activeSheetName = initialNames[0] || ''
   let activeCell = { Row: 1, Column: 1 }
   let explicitFreezeSelection = false
@@ -143,7 +147,11 @@ function standardSpreadsheetRuntime(
     const sheet: Record<string, any> = {
       Name: name,
       Id: `sheet-${nextId++}`,
-      UsedRange: { ClearContents: vi.fn() },
+      UsedRange: {
+        ClearContents: vi.fn(() => contentClears.push({ sheet: String(sheet.Name), address: 'UsedRange' })),
+        ClearFormats: vi.fn(() => formatClears.push({ sheet: String(sheet.Name), address: 'UsedRange' })),
+        UnMerge: vi.fn(() => unmerges.push({ sheet: String(sheet.Name), address: 'UsedRange' })),
+      },
       Activate: vi.fn(() => {
         activeSheetName = String(sheet.Name)
         explicitFreezeSelection = false
@@ -207,9 +215,15 @@ function standardSpreadsheetRuntime(
               }
             }
           },
-          ClearContents: vi.fn(),
-          ClearFormats: vi.fn(() => rangeFormats.delete(resizedAddress)),
-          UnMerge: vi.fn(() => mergedRanges.delete(resizedAddress)),
+          ClearContents: vi.fn(() => contentClears.push({ sheet: String(sheet.Name), address: resizedAddress })),
+          ClearFormats: vi.fn(() => {
+            formatClears.push({ sheet: String(sheet.Name), address: resizedAddress })
+            rangeFormats.delete(resizedAddress)
+          }),
+          UnMerge: vi.fn(() => {
+            unmerges.push({ sheet: String(sheet.Name), address: resizedAddress })
+            mergedRanges.delete(resizedAddress)
+          }),
           Merge: vi.fn(() => mergedRanges.add(resizedAddress)),
           Select: vi.fn(() => {
             if (freezeSelectionFailureNames.has(String(sheet.Name))) throw new Error('selection unsupported')
@@ -254,7 +268,10 @@ function standardSpreadsheetRuntime(
               columnWidths.push({ sheet: String(sheet.Name), column: columnMatch[1], width: 20 })
             }),
           },
-          AutoFilter: vi.fn(() => { autoFilterAddress = address }),
+          AutoFilter: vi.fn(() => {
+            autoFilterAddress = autoFilterAddress === address ? '' : address
+            autoFilterChanges.push({ sheet: String(sheet.Name), address: autoFilterAddress })
+          }),
           Resize(rows: number, columns: number) {
             resizedRows = rows
             resizedColumns = columns
@@ -264,7 +281,7 @@ function standardSpreadsheetRuntime(
           },
         }
         const columnMatch = address.match(/^([A-Z]+):\1$/)
-        const rowMatch = address.match(/^(\d+):\1$/)
+        const rowMatch = address.match(/^(\d+):(\d+)$/)
         Object.defineProperties(range, {
           NumberFormat: {
             get: () => state.numberFormat,
@@ -294,7 +311,19 @@ function standardSpreadsheetRuntime(
             get: () => rowMatch ? (rowHeights.get(Number(rowMatch[1])) ?? 22) : undefined,
             set: (value) => {
               if (!rowMatch) throw new Error(`invalid row range: ${address}`)
-              rowHeights.set(Number(rowMatch[1]), Number(value))
+              for (let row = Number(rowMatch[1]); row <= Number(rowMatch[2]); row += 1) {
+                rowHeights.set(row, Number(value))
+              }
+            },
+          },
+          Text: {
+            get: () => {
+              const value = range.Value2
+              const percentage = state.numberFormat.match(/^0(?:\.(0+))?%$/)
+              if (percentage && typeof value === 'number') {
+                return `${(value * 100).toFixed(percentage[1]?.length || 0)}%`
+              }
+              return value == null ? '' : String(value)
             },
           },
         })
@@ -339,6 +368,14 @@ function standardSpreadsheetRuntime(
       set: (value) => {
         if (hiddenFailureNames.has(String(sheet.Name))) throw new Error('visibility unsupported')
         visible = value
+      },
+    })
+    Object.defineProperty(sheet, 'AutoFilterMode', {
+      enumerable: true,
+      get: () => Boolean(autoFilterAddress),
+      set: (value) => {
+        if (!value) autoFilterAddress = ''
+        autoFilterChanges.push({ sheet: String(sheet.Name), address: autoFilterAddress })
       },
     })
     sheet.Tab = {}
@@ -395,6 +432,10 @@ function standardSpreadsheetRuntime(
     writes,
     columnWidths,
     freezeSelections,
+    contentClears,
+    formatClears,
+    unmerges,
+    autoFilterChanges,
     names: () => sheets.map((sheet) => String(sheet.Name)),
   }
 }
@@ -760,12 +801,16 @@ describe('WPS AirScript deployment sources', () => {
       cells: [['归属站点', 'AP业务判定原因'], ['站点A', '光衰正常']],
       row_count: 2,
       column_count: 2,
-      column_widths: { A: 18 },
-      auto_fit_columns: ['B'],
+      column_widths: { A: 18, B: 55 },
+      auto_fit_columns: ['A', 'B'],
+      column_layouts: {
+        A: { layout_type: 'normal', min_width: 8, max_width: 24, wrap_text: false },
+        B: { layout_type: 'long_text', min_width: 16, max_width: 40, wrap_text: true },
+      },
       auto_fit_min_width: 8,
       auto_fit_max_width: 40,
       auto_fit_rows: true,
-      row_heights: { 1: 24 },
+      row_heights: { 1: 24, 2: 24 },
       merges: ['A2:B2'],
       freeze_panes: 'A2',
       auto_filter: 'A1:B2',
@@ -816,9 +861,9 @@ describe('WPS AirScript deployment sources', () => {
       format_mirror_enabled: true,
       format_warning_count: 0,
       column_width_result: {
-        explicit_applied_count: 1,
-        auto_fit_applied_count: 1,
-        clamped_count: 0,
+        explicit_applied_count: 0,
+        auto_fit_applied_count: 2,
+        clamped_count: 1,
         verified_count: 2,
       },
       format_results: {
@@ -842,9 +887,136 @@ describe('WPS AirScript deployment sources', () => {
     expect(source).toContain('WPS_FREEZE_SELECTION_FAILED')
     expect(source).toContain('applyWorkbookFreezeLayout(formatSheets')
     expect(runtime.columnWidths).toEqual(expect.arrayContaining([
-      { sheet: '轨旁AP业务', column: 'A', width: 18 },
+      { sheet: '轨旁AP业务', column: 'A', width: 20 },
       { sheet: '轨旁AP业务', column: 'B', width: 20 },
+      { sheet: '轨旁AP业务', column: 'B', width: 40 },
     ]))
+  })
+
+  it('clears the previous managed range and rebuilds the filter when a sheet shrinks', () => {
+    const runtime = standardSpreadsheetRuntime(['当前异常光衰', '_NetConsoleSyncMeta'])
+    const firstArgs = standardSyncArgs(['当前异常光衰']) as Record<string, any>
+    firstArgs.format_mirror_enabled = true
+    firstArgs.target_batch_id = 'full-100'
+    firstArgs.workbook.sheets[0] = {
+      ...firstArgs.workbook.sheets[0],
+      cells: Array.from({ length: 100 }, (_, index) => [index === 0 ? '表头' : `旧数据${index}`]),
+      row_count: 100,
+      column_count: 1,
+      format_runs: [],
+      row_heights: {},
+      auto_fit_rows: false,
+      merges: [],
+      freeze_panes: 'A2',
+      auto_filter: 'A1:A100',
+      verification_samples: [],
+    }
+    expect(executeStandardSpreadsheet(runtime, firstArgs)).toMatchObject({ success: true })
+
+    const secondArgs = standardSyncArgs(['当前异常光衰']) as Record<string, any>
+    secondArgs.format_mirror_enabled = true
+    secondArgs.target_batch_id = 'full-1'
+    secondArgs.workbook.sheets[0] = {
+      ...secondArgs.workbook.sheets[0],
+      cells: [['表头']],
+      row_count: 1,
+      column_count: 1,
+      format_runs: [],
+      row_heights: {},
+      auto_fit_rows: false,
+      merges: [],
+      freeze_panes: 'A2',
+      auto_filter: 'A1:A1',
+      verification_samples: [],
+    }
+    const result = executeStandardSpreadsheet(runtime, secondArgs)
+
+    expect(result).toMatchObject({
+      success: true,
+      format_results: {
+        auto_filter: { status: 'SUCCESS', failed_count: 0 },
+        freeze_panes: { status: 'SUCCESS', failed_count: 0 },
+      },
+    })
+    expect(runtime.contentClears).toContainEqual({ sheet: '当前异常光衰', address: 'A1|100x1' })
+    expect(runtime.formatClears).toContainEqual({ sheet: '当前异常光衰', address: 'A1|100x1' })
+    expect(runtime.unmerges).toContainEqual({ sheet: '当前异常光衰', address: 'A1|100x1' })
+    expect(runtime.autoFilterChanges.at(-1)).toEqual({ sheet: '当前异常光衰', address: 'A1:A1' })
+  })
+
+  it('reads back percentage display text and freezes all empty business sheets at one row', () => {
+    const emptySheets = ['当前异常光衰', '新增上线AP概览', '待关联在线AP']
+    const runtime = standardSpreadsheetRuntime(
+      ['AP上线情况概览', ...emptySheets, '_NetConsoleSyncMeta'],
+      { freezeDirectMismatchNames: ['新增上线AP概览'] },
+    )
+    const args = standardSyncArgs(['AP上线情况概览', ...emptySheets]) as Record<string, any>
+    args.format_mirror_enabled = true
+    args.workbook.sheets = [
+      {
+        ...args.workbook.sheets[0],
+        logical_sheet_key: 'ap_online_history_overview',
+        sync_mode: 'PREPEND_SNAPSHOT',
+        cells: [
+          ['日期：2026-08-09', null, null, null, null],
+          ['更新时间：2026-08-09 10:00:00', null, null, null, null],
+          ['站点', '总数', '上线', '离线', '上线率'],
+          ['站点A', 100, 81, 19, 0.81],
+        ],
+        row_count: 4,
+        column_count: 5,
+        format_runs: [{ range: 'E4', number_format: '0.0%' }],
+        row_heights: { 1: 24, 2: 24, 3: 24, 4: 24 },
+        auto_fit_rows: true,
+        merges: [],
+        freeze_panes: '',
+        auto_filter: '',
+        verification_samples: [{
+          label: 'first_data',
+          row: 4,
+          range: 'A4:E4',
+          expected_values: ['站点A', 100, 81, 19, 0.81],
+          format_cells: [{
+            range: 'E4',
+            expected: { number_format: '0.0%' },
+            expected_display_text: '81.0%',
+          }],
+        }],
+      },
+      ...emptySheets.map((sheetName, sheetOrder) => ({
+        ...args.workbook.sheets[sheetOrder + 1],
+        sheet_name: sheetName,
+        sheet_order: sheetOrder + 1,
+        cells: [['表头']],
+        row_count: 1,
+        column_count: 1,
+        format_runs: [],
+        row_heights: { 1: 24 },
+        auto_fit_rows: true,
+        merges: [],
+        freeze_panes: 'A2',
+        auto_filter: 'A1:A1',
+        verification_samples: [],
+      })),
+    ]
+
+    const result = executeStandardSpreadsheet(runtime, args)
+
+    expect(result).toMatchObject({
+      success: true,
+      format_results: {
+        sample_data: { status: 'SUCCESS', failed_count: 0 },
+        freeze_panes: { status: 'SUCCESS', verified_count: 4, failed_count: 0 },
+      },
+    })
+    expect(result.format_results.sample_data.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        range: 'E4',
+        actual: expect.objectContaining({ display_text: '81.0%' }),
+        verified: true,
+      }),
+    ]))
+    expect(runtime.freezeSelections).toContainEqual({ sheet: '新增上线AP概览', address: 'A2' })
   })
 
   it('falls back to a verified A2 selection when WPS ignores direct SplitRow', () => {
@@ -1054,10 +1226,10 @@ describe('WPS AirScript deployment sources', () => {
 
   it('keeps the field-verified stable writer isolated from ordering and formatting', () => {
     const source = wpsAirScriptSource('wps_standard_spreadsheet', 'sync')
-    const stableWriter = source.split('function writeStableSheet(sheetDto)', 2)[1]
+    const stableWriter = source.split('function writeStableSheet(sheetDto, previousManaged)', 2)[1]
       .split('function isSystemSheetName(name)', 1)[0]
 
-    expect(stableWriter).toContain('if (used && used.ClearContents) used.ClearContents();')
+    expect(stableWriter).toContain('clearFullReplaceTarget(sheet, sheetDto, previousManaged)')
     expect(stableWriter).toContain('sheet.Range("A1").Resize(values.length, sheetDto.column_count).Value2 = values;')
     expect(stableWriter).not.toContain('.Move(')
     expect(stableWriter).not.toContain('applySheetFormatting')

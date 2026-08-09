@@ -43,6 +43,8 @@ from netconsole.services.trackside_ap_export_service import (
     build_trackside_ap_business_export_snapshot,
 )
 from netconsole.services.trackside_ap_business import (
+    TRACKSIDE_COLUMN_LAYOUT_LIMITS,
+    trackside_ap_business_column_layout_types,
     trackside_ap_business_sheet_definition,
 )
 
@@ -53,11 +55,11 @@ WPS_SYNC_TASK_TYPE = "trackside_ap_wps_sync"
 WPS_SYNC_OWNER = "web_rail_transit"
 WPS_STANDARD_FORMAT_MIRROR_ENABLED = True
 WPS_SCRIPT_VERSIONS = {
-    STANDARD_TARGET_CODE: "2.8.2-standard",
+    STANDARD_TARGET_CODE: "2.8.3-standard",
     SMART_TARGET_CODE: "2.1.0-smart",
 }
 WPS_DEPLOYMENT_IDS = {
-    STANDARD_TARGET_CODE: "trackside-ap-standard-2.8.2",
+    STANDARD_TARGET_CODE: "trackside-ap-standard-2.8.3",
     SMART_TARGET_CODE: "trackside-ap-smart-2.1.0",
 }
 WPS_RUNTIME_CAPABILITIES = {
@@ -2112,14 +2114,28 @@ def workbook_dto_from_xlsx(
                         if dimension.width is not None
                     } if include_format_mirror or include_column_widths else {},
                     auto_fit_columns=(
-                        tuple(
-                            get_column_letter(column)
-                            for column in range(1, max_column + 1)
-                            if get_column_letter(column)
-                            not in worksheet.column_dimensions
-                        )
+                        tuple(get_column_letter(column) for column in range(1, max_column + 1))
                         if include_format_mirror
                         else ()
+                    ),
+                    column_layouts=(
+                        {
+                            get_column_letter(column): {
+                                "layout_type": layout_type,
+                                "min_width": TRACKSIDE_COLUMN_LAYOUT_LIMITS[layout_type][0],
+                                "max_width": TRACKSIDE_COLUMN_LAYOUT_LIMITS[layout_type][1],
+                                "wrap_text": layout_type == "long_text",
+                            }
+                            for column, layout_type in enumerate(
+                                trackside_ap_business_column_layout_types(
+                                    worksheet.title,
+                                    max_column,
+                                ),
+                                start=1,
+                            )
+                        }
+                        if include_format_mirror
+                        else {}
                     ),
                     auto_fit_rows=bool(include_format_mirror and max_row),
                     format_runs=(
@@ -2216,7 +2232,17 @@ def _source_workbook_format_manifest(
                     if dimension is not None and dimension.width is not None
                     else None
                 )
-                source_mode = "EXPLICIT" if explicit_width is not None else "AUTO_FIT"
+                auto_fit_enabled = column_name in dto_sheet.auto_fit_columns
+                source_mode = (
+                    "AUTO_FIT_WITH_LOCAL_MIN"
+                    if auto_fit_enabled and explicit_width is not None
+                    else "AUTO_FIT"
+                    if auto_fit_enabled
+                    else "EXPLICIT"
+                    if explicit_width is not None
+                    else "AUTO_FIT"
+                )
+                layout = dict(dto_sheet.column_layouts.get(column_name) or {})
                 header_value = worksheet.cell(row=header_row, column=column_index).value
                 column_manifest.append(
                     {
@@ -2234,7 +2260,11 @@ def _source_workbook_format_manifest(
                             dto_sheet.column_widths.get(column_name)
                         ),
                         "sheet_dto_mode": (
-                            "EXPLICIT"
+                            "AUTO_FIT_WITH_LOCAL_MIN"
+                            if auto_fit_enabled and column_name in dto_sheet.column_widths
+                            else "AUTO_FIT"
+                            if auto_fit_enabled
+                            else "EXPLICIT"
                             if column_name in dto_sheet.column_widths
                             else "AUTO_FIT"
                             if column_name in dto_sheet.auto_fit_columns
@@ -2242,6 +2272,21 @@ def _source_workbook_format_manifest(
                         ),
                         "auto_fit_min_width": dto_sheet.auto_fit_min_width,
                         "auto_fit_max_width": dto_sheet.auto_fit_max_width,
+                        **(
+                            {
+                                "layout_type": str(
+                                    layout.get("layout_type") or "normal"
+                                ),
+                                "layout_min_width": _safe_float(
+                                    layout.get("min_width")
+                                ),
+                                "layout_max_width": _safe_float(
+                                    layout.get("max_width")
+                                ),
+                            }
+                            if layout
+                            else {}
+                        ),
                     }
                 )
             sheet_manifest.append(
@@ -2334,12 +2379,14 @@ def _verification_samples_from_worksheet(
             if signature == previous_signature:
                 continue
             previous_signature = signature
-            format_cells.append(
-                {
-                    "range": cell.coordinate,
-                    "expected": payload,
-                }
-            )
+            format_cell = {
+                "range": cell.coordinate,
+                "expected": payload,
+            }
+            expected_display_text = _expected_display_text(cell)
+            if expected_display_text is not None:
+                format_cell["expected_display_text"] = expected_display_text
+            format_cells.append(format_cell)
             if len(format_cells) >= 8:
                 break
         samples.append(
@@ -2355,6 +2402,17 @@ def _verification_samples_from_worksheet(
             }
         )
     return tuple(samples)
+
+
+def _expected_display_text(cell: Any) -> str | None:
+    value = cell.value
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return None
+    match = re.fullmatch(r"0(?:\.(0+))?%", str(cell.number_format or "").strip())
+    if not match:
+        return None
+    decimal_places = len(match.group(1) or "")
+    return f"{float(value) * 100:.{decimal_places}f}%"
 
 
 def _format_runs_from_worksheet(
@@ -2609,7 +2667,12 @@ def _column_width_verification_report(
                 auto_fit_columns = sheet.get("auto_fit_columns")
                 if isinstance(auto_fit_columns, list):
                     for column in auto_fit_columns:
-                        payload_modes[(sheet_name, str(column).upper())] = "AUTO_FIT"
+                        key = (sheet_name, str(column).upper())
+                        payload_modes[key] = (
+                            "AUTO_FIT_WITH_LOCAL_MIN"
+                            if key in payload_widths
+                            else "AUTO_FIT"
+                        )
 
     remote_items: dict[tuple[str, str], Mapping[str, Any]] = {}
     raw_column_result = remote_result.get("column_width_result")
@@ -2659,14 +2722,27 @@ def _column_width_verification_report(
         before_width_points = _safe_float(remote.get("before_width_points"))
         remote_width_points = _safe_float(remote.get("remote_width_points"))
         difference = (
-            abs(remote_column_width - payload_width)
-            if remote_column_width is not None and payload_width is not None
+            abs(remote_column_width - wps_requested_width)
+            if remote_column_width is not None and wps_requested_width is not None
             else None
         )
-        if source_mode == "AUTO_FIT":
-            dto_matches = dto_mode == "AUTO_FIT"
-            payload_matches = payload_mode == "AUTO_FIT"
-            remote_request_matches = remote_mode == "AUTO_FIT"
+        if source_mode.startswith("AUTO_FIT"):
+            dto_matches = dto_mode == source_mode and (
+                local_width is None
+                or _width_matches(local_width, dto_width, tolerance=0.01)
+            )
+            payload_matches = payload_mode == source_mode and (
+                dto_width is None
+                or _width_matches(dto_width, payload_width, tolerance=0.01)
+            )
+            remote_request_matches = remote_mode == source_mode and (
+                payload_width is None
+                or _width_matches(
+                    payload_width,
+                    _safe_float(remote.get("local_workbook_width")),
+                    tolerance=0.01,
+                )
+            )
             remote_matches = bool(remote.get("verified")) and remote_column_width is not None
         else:
             dto_matches = (
@@ -2708,9 +2784,9 @@ def _column_width_verification_report(
         elif not remote_present or not remote_matches:
             classification = "WPS_COLUMN_WIDTH_APPLY_MISMATCH"
             reason = str(remote.get("reason") or "WPS ColumnWidth 写后读回不一致")
-        elif source_mode == "AUTO_FIT":
+        elif source_mode.startswith("AUTO_FIT"):
             classification = "WPS_COLUMN_WIDTH_AUTOFIT_VERIFIED"
-            reason = "本地未指定列宽，WPS AutoFit 写后读回并通过边界校验"
+            reason = "WPS AutoFit、本地宽度下限和布局边界计算后读回一致"
         else:
             classification = "WPS_COLUMN_WIDTH_VALUE_VERIFIED"
             reason = "本地 XLSX、SheetDTO、payload 与 WPS ColumnWidth 读回一致"
@@ -2725,7 +2801,7 @@ def _column_width_verification_report(
             failed_count += 1
         stage_counts[classification] = stage_counts.get(classification, 0) + 1
         if bool(remote.get("applied")):
-            if remote_mode == "AUTO_FIT":
+            if remote_mode.startswith("AUTO_FIT"):
                 auto_fit_applied_count += 1
             else:
                 explicit_applied_count += 1
@@ -2739,8 +2815,8 @@ def _column_width_verification_report(
         elif (
             before_column_width is not None
             and before_width_points is not None
-            and payload_width is not None
-            and abs(before_column_width - payload_width) > 0.5
+            and wps_requested_width is not None
+            and abs(before_column_width - wps_requested_width) > 0.5
             and abs(remote_width_points - before_width_points) <= 0.01
         ):
             physical_width_status = "APPLY_MISMATCH"
@@ -2753,6 +2829,7 @@ def _column_width_verification_report(
                 "remote_mode": remote_mode,
                 "payload_requested_width": payload_width,
                 "wps_requested_width": wps_requested_width,
+                "wps_auto_fit_width": _safe_float(remote.get("auto_fit_width")),
                 "before_column_width": before_column_width,
                 "remote_column_width": remote_column_width,
                 "before_width_points": before_width_points,
@@ -2798,10 +2875,10 @@ def _column_width_verification_report(
         "tolerance": 0.5,
         "total_columns": total,
         "local_explicit_width_count": sum(
-            1 for item in items if item.get("source_mode") == "EXPLICIT"
+            1 for item in items if item.get("local_workbook_width") is not None
         ),
         "auto_fit_requested_count": sum(
-            1 for item in items if item.get("source_mode") == "AUTO_FIT"
+            1 for item in items if str(item.get("source_mode") or "").startswith("AUTO_FIT")
         ),
         "explicit_applied_count": explicit_applied_count,
         "auto_fit_applied_count": auto_fit_applied_count,

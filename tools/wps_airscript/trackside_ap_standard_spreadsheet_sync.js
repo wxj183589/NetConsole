@@ -3,8 +3,8 @@
 // The exact workbook API names are kept in these small helpers so a WPS
 // runtime upgrade does not change the NetConsole payload contract.
 const PROTOCOL_VERSION = 2;
-const SCRIPT_VERSION = "2.8.2-standard";
-const DEPLOYMENT_ID = "trackside-ap-standard-2.8.2";
+const SCRIPT_VERSION = "2.8.3-standard";
+const DEPLOYMENT_ID = "trackside-ap-standard-2.8.3";
 const DOCUMENT_ID = "549847228994";
 const TARGET_TYPE = "WPS_STANDARD_SPREADSHEET";
 const TARGET_CODE = "wps_standard_spreadsheet";
@@ -161,6 +161,49 @@ function updateBindingMetadata(values) {
     sheet.Range(`B${row}`).Value2 = value;
   }
   return readBinding();
+}
+
+function readManagedRanges(meta) {
+  try {
+    const parsed = JSON.parse(String(meta && meta.managed_ranges_json || "{}"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch (_error) {
+    return {};
+  }
+}
+
+function managedRangeSize(sheetDto) {
+  const values = Array.isArray(sheetDto.cells) ? sheetDto.cells : [];
+  const rowCount = Math.max(Number(sheetDto.row_count) || 0, values.length, 1);
+  const valueColumns = values.reduce(
+    (maximum, row) => Math.max(maximum, Array.isArray(row) ? row.length : 0),
+    0,
+  );
+  const columnCount = Math.max(Number(sheetDto.column_count) || 0, valueColumns, 1);
+  return { row_count: rowCount, column_count: columnCount };
+}
+
+function clearFullReplaceTarget(sheet, sheetDto, previousManaged) {
+  const current = managedRangeSize(sheetDto);
+  const previousRows = Math.max(Number(previousManaged && previousManaged.row_count) || 0, 0);
+  const previousColumns = Math.max(Number(previousManaged && previousManaged.column_count) || 0, 0);
+  if (!previousRows && !previousColumns) {
+    const used = sheet.UsedRange;
+    if (used) {
+      if (used.UnMerge) used.UnMerge();
+      if (used.ClearContents) used.ClearContents();
+      if (used.ClearFormats) used.ClearFormats();
+    }
+  }
+  const clearRows = Math.max(previousRows, current.row_count, 1);
+  const clearColumns = Math.max(previousColumns, current.column_count, 1);
+  const target = sheet.Range("A1").Resize(clearRows, clearColumns);
+  if (target.UnMerge) target.UnMerge();
+  if (!target.ClearContents) throw new Error("Range.ClearContents API unavailable");
+  if (!target.ClearFormats) throw new Error("Range.ClearFormats API unavailable");
+  target.ClearContents();
+  target.ClearFormats();
+  return current;
 }
 
 function assertBinding(args) {
@@ -486,7 +529,7 @@ function verifiedFormatOperation(report, warnings, sheetName, featureName, range
     const result = readBack();
     feature.read_back_count += 1;
     const verified = !!result.verified;
-    if (featureName === "freeze_panes" || featureName === "border") {
+    if (["freeze_panes", "border", "sample_data"].includes(featureName)) {
       feature.items.push({ sheet_name: sheetName, range, verified, ...metadata, ...result });
     }
     if (verified) feature.verified_count += 1;
@@ -569,7 +612,7 @@ function alignmentReadback(range, alignment) {
   return { verified, expected, actual };
 }
 
-function sampleFormatReadback(range, expectedFormat) {
+function sampleFormatReadback(range, expectedFormat, expectedDisplayText) {
   const expected = {};
   const actual = {};
   let verified = true;
@@ -597,6 +640,11 @@ function sampleFormatReadback(range, expectedFormat) {
     expected.alignment = result.expected;
     actual.alignment = result.actual;
     verified = verified && result.verified;
+  }
+  if (expectedDisplayText !== undefined && expectedDisplayText !== null) {
+    expected.display_text = String(expectedDisplayText);
+    actual.display_text = String(range.Text || "");
+    verified = verified && actual.display_text === expected.display_text;
   }
   return { verified, expected, actual };
 }
@@ -680,16 +728,6 @@ function prepareFormatTarget(sheet, sheetDto, warnings) {
 }
 
 function applyRowHeights(sheet, sheetDto, targetRange, warnings, report) {
-  if (sheetDto.auto_fit_rows) {
-    verifiedFormatOperation(report, warnings, sheet.Name, "row_height", targetRange.Address || `A1:${sheetDto.row_count}`, () => {
-      if (!targetRange.Rows || !targetRange.Rows.AutoFit) throw new Error("Range.Rows.AutoFit API unavailable");
-      targetRange.Rows.AutoFit();
-    }, () => {
-      const sampleRows = [...new Set([1, Math.max(1, Math.ceil(Number(sheetDto.row_count || 1) / 2)), Math.max(1, Number(sheetDto.row_count || 1))])];
-      const actual = sampleRows.map((row) => dimensionValue(sheet.Range(`${row}:${row}`).RowHeight));
-      return { verified: actual.every((height) => height !== null && height > 0), expected: "Rows.AutoFit", actual };
-    });
-  }
   const entries = Object.entries(sheetDto.row_heights || {})
     .map(([row, heightValue]) => ({ row: Number(row), height: Number(heightValue) }))
     .filter((item) => Number.isInteger(item.row) && item.row > 0 && Number.isFinite(item.height))
@@ -706,15 +744,43 @@ function applyRowHeights(sheet, sheetDto, targetRange, warnings, report) {
     const end = entries[endIndex];
     const rangeAddress = start.row === end.row ? `${start.row}:${start.row}` : `${start.row}:${end.row}`;
     const expected = start.height;
-    verifiedFormatOperation(report, warnings, sheet.Name, "row_height", rangeAddress, () => {
+    attemptFormat(warnings, sheet.Name, "row_height_baseline", () => {
       sheet.Range(rangeAddress).RowHeight = expected;
-    }, () => {
-      const samples = [start.row, end.row];
-      const actual = samples.map((row) => dimensionValue(sheet.Range(`${row}:${row}`).RowHeight));
-      return { verified: actual.every((height) => height !== null && Math.abs(height - expected) <= ROW_HEIGHT_TOLERANCE), expected, actual };
-    });
+    }, rangeAddress);
     index = endIndex + 1;
   }
+  if (sheetDto.auto_fit_rows) {
+    verifiedFormatOperation(report, warnings, sheet.Name, "row_height", targetRange.Address || `A1:${sheetDto.row_count}`, () => {
+      if (!targetRange.Rows || !targetRange.Rows.AutoFit) throw new Error("Range.Rows.AutoFit API unavailable");
+      targetRange.Rows.AutoFit();
+    }, () => {
+      const sampleRows = [...new Set([1, Math.max(1, Math.ceil(Number(sheetDto.row_count || 1) / 2)), Math.max(1, Number(sheetDto.row_count || 1))])];
+      const actual = sampleRows.map((row) => dimensionValue(sheet.Range(`${row}:${row}`).RowHeight));
+      return { verified: actual.every((height) => height !== null && height > 0), expected: "Rows.AutoFit", actual };
+    });
+  }
+  if (!entries.length) return;
+  verifiedFormatOperation(report, warnings, sheet.Name, "row_height", "minimum_row_heights", () => {
+    for (const entry of entries) {
+      const row = sheet.Range(`${entry.row}:${entry.row}`);
+      const actual = Number(row.RowHeight);
+      if (!Number.isFinite(actual) || actual < entry.height) row.RowHeight = entry.height;
+    }
+  }, () => {
+    const failedRows = [];
+    for (const entry of entries) {
+      const actual = dimensionValue(sheet.Range(`${entry.row}:${entry.row}`).RowHeight);
+      if (actual === null || actual + ROW_HEIGHT_TOLERANCE < entry.height) {
+        failedRows.push({ row: entry.row, minimum: entry.height, actual });
+        if (failedRows.length >= 10) break;
+      }
+    }
+    return {
+      verified: !failedRows.length,
+      expected: { minimum_count: entries.length },
+      actual: { failed_rows: failedRows },
+    };
+  });
 }
 
 function applyMerges(sheet, sheetDto, warnings, report) {
@@ -809,6 +875,7 @@ function applyFreezePanes(sheet, address, warnings, report) {
     }
     window = Application.ActiveWindow;
     window.SplitColumn = 0;
+    window.SplitRow = expectedFrozenRows;
     window.FreezePanes = true;
     actual = freezeState(window);
     if (!freezeStateMatches(actual, { freeze: true, split_row: expectedFrozenRows, split_column: 0 })) {
@@ -839,17 +906,26 @@ function normalizeAddress(value) {
 }
 
 function applyAutoFilter(sheet, address, warnings, report) {
-  if (!address) return;
-  verifiedFormatOperation(report, warnings, sheet.Name, "auto_filter", address, () => {
+  const expectedAddress = normalizeAddress(address);
+  verifiedFormatOperation(report, warnings, sheet.Name, "auto_filter", expectedAddress || "NONE", () => {
     let current = "";
     try { current = normalizeAddress(sheet.AutoFilter && sheet.AutoFilter.Range && sheet.AutoFilter.Range.Address); } catch (_error) { current = ""; }
-    if (current === normalizeAddress(address)) return;
+    if (current) {
+      if ("AutoFilterMode" in sheet) sheet.AutoFilterMode = false;
+      else {
+        const currentRange = sheet.Range(current);
+        if (!currentRange.AutoFilter) throw new Error("Worksheet AutoFilter clear API unavailable");
+        currentRange.AutoFilter();
+      }
+    }
+    if (!expectedAddress) return;
     const range = sheet.Range(address);
     if (!range.AutoFilter) throw new Error("Range.AutoFilter API unavailable");
     range.AutoFilter();
   }, () => {
-    const actual = normalizeAddress(sheet.AutoFilter && sheet.AutoFilter.Range && sheet.AutoFilter.Range.Address);
-    return { verified: actual === normalizeAddress(address), expected: normalizeAddress(address), actual };
+    let actual = "";
+    try { actual = normalizeAddress(sheet.AutoFilter && sheet.AutoFilter.Range && sheet.AutoFilter.Range.Address); } catch (_error) { actual = ""; }
+    return { verified: actual === expectedAddress, expected: expectedAddress, actual };
   });
 }
 
@@ -874,7 +950,11 @@ function verifySheetSamples(sheet, sheetDto, warnings, report) {
         "sample_data",
         formatCell.range,
         () => {},
-        () => sampleFormatReadback(sheet.Range(formatCell.range), formatCell.expected),
+        () => sampleFormatReadback(
+          sheet.Range(formatCell.range),
+          formatCell.expected,
+          formatCell.expected_display_text,
+        ),
       );
     }
   }
@@ -890,14 +970,19 @@ function applySheetFormatting(sheet, sheetDto, warnings, report) {
   applyAllBorders(sheet, sheetDto, warnings, report);
   for (const run of runs) applyFormatRun(sheet, run, warnings, report);
   applyMerges(sheet, sheetDto, warnings, report);
+  return targetRange;
+}
+
+function applySheetLayout(sheet, sheetDto, targetRange, warnings, report) {
   applyRowHeights(sheet, sheetDto, targetRange, warnings, report);
   applyAutoFilter(sheet, sheetDto.auto_filter, warnings, report);
   verifySheetSamples(sheet, sheetDto, warnings, report);
 }
 
-function applyBusinessFormatting(sheetDtos, warnings) {
+function applyBusinessFormatting(sheetDtos, warnings, beforeLayout) {
   const report = createFormatResults();
   const formatRunCounts = { font: 0, fill: 0, number_format: 0, alignment: 0, border: 0 };
+  const targets = [];
   for (const sheetDto of sheetDtos || []) {
     const sheet = findSheet(sheetDto.sheet_name);
     if (!sheet) {
@@ -913,9 +998,18 @@ function applyBusinessFormatting(sheetDtos, warnings) {
       }
     }
     try {
-      applySheetFormatting(sheet, sheetDto, warnings, report);
+      const targetRange = applySheetFormatting(sheet, sheetDto, warnings, report);
+      targets.push({ sheet, sheetDto, targetRange });
     } catch (error) {
       addFormatWarning(warnings, sheet.Name, "format_sheet", error);
+    }
+  }
+  if (typeof beforeLayout === "function") beforeLayout();
+  for (const target of targets) {
+    try {
+      applySheetLayout(target.sheet, target.sheetDto, target.targetRange, warnings, report);
+    } catch (error) {
+      addFormatWarning(warnings, target.sheet.Name, "format_layout", error);
     }
   }
   const finalized = finalizeFormatResults(report);
@@ -975,18 +1069,18 @@ function materializeRuntimeSheet(sheetDto, args, targetSyncTime) {
   return { ...sheetDto, sync_mode: syncMode, cells, verification_samples };
 }
 
-function writeStableSheet(sheetDto) {
+function writeStableSheet(sheetDto, previousManaged) {
   const sheet = ensureSheet(sheetDto.sheet_name);
   const values = sheetDto.cells || [];
+  let managedRange = null;
   if (sheetDto.sync_mode === "APPEND_SNAPSHOT") {
     if (values.length) sheet.Range(`A1:A${values.length}`).EntireRow.Insert();
     if (values.length) sheet.Range("A1").Resize(values.length, sheetDto.column_count).Value2 = values;
   } else if (sheetDto.sync_mode === "FULL_REPLACE") {
-    const used = sheet.UsedRange;
-    if (used && used.ClearContents) used.ClearContents();
+    managedRange = clearFullReplaceTarget(sheet, sheetDto, previousManaged);
     if (values.length) sheet.Range("A1").Resize(values.length, sheetDto.column_count).Value2 = values;
   }
-  return { written_rows: values.length, format_verification: { checked: false } };
+  return { written_rows: values.length, managed_range: managedRange, format_verification: { checked: false } };
 }
 
 function isSystemSheetName(name) {
@@ -1097,12 +1191,20 @@ function applyBusinessColumnWidths(sheetDtos, warnings) {
   let durationMs = 0;
   for (const sheetDto of sheetDtos || []) {
     const widths = Object.entries(sheetDto.column_widths || {});
-    const explicitColumns = new Set(widths.map(([column]) => String(column)));
-    const autoFitColumns = (sheetDto.auto_fit_columns || []).filter((column) => !explicitColumns.has(String(column)));
-    const operations = [
-      ...widths.map(([column, width]) => ({ column: String(column), mode: "EXPLICIT", width })),
-      ...autoFitColumns.map((column) => ({ column: String(column), mode: "AUTO_FIT", width: null })),
-    ];
+    const widthsByColumn = Object.fromEntries(widths.map(([column, width]) => [String(column), width]));
+    const autoFitColumns = [...new Set((sheetDto.auto_fit_columns || []).map((column) => String(column)))];
+    const autoFitSet = new Set(autoFitColumns);
+    const operationColumns = [...new Set([...Object.keys(widthsByColumn), ...autoFitColumns])];
+    const operations = operationColumns.map((column) => ({
+      column,
+      mode: autoFitSet.has(column)
+        ? widthsByColumn[column] === undefined
+          ? "AUTO_FIT"
+          : "AUTO_FIT_WITH_LOCAL_MIN"
+        : "EXPLICIT",
+      width: widthsByColumn[column] === undefined ? null : widthsByColumn[column],
+      layout: (sheetDto.column_layouts || {})[column] || {},
+    }));
     const startedAt = Date.now();
     const sheetName = String(sheetDto.sheet_name || "");
     const sheetExamples = [];
@@ -1118,14 +1220,17 @@ function applyBusinessColumnWidths(sheetDtos, warnings) {
       failed += operations.length;
       addFormatWarning(warnings, sheetName, "column_width", new Error("worksheet unavailable"));
       for (const operation of operations) {
-        const { column, mode, width: widthValue } = operation;
+        const { column, mode, width: widthValue, layout } = operation;
         const range = `${column}:${column}`;
         const item = {
           sheet_name: sheetName,
           column: String(column),
           range,
           mode,
-          requested_width: dimensionValue(widthValue),
+          layout_type: String(layout.layout_type || "normal"),
+          local_workbook_width: dimensionValue(widthValue),
+          auto_fit_width: null,
+          requested_width: null,
           before_column_width: null,
           remote_column_width: null,
           before_width_points: null,
@@ -1145,14 +1250,20 @@ function applyBusinessColumnWidths(sheetDtos, warnings) {
       }
     } else if (sheet) {
       for (const operation of operations) {
-        const { column, mode, width: widthValue } = operation;
-        const expected = mode === "EXPLICIT" ? Number(widthValue) : null;
+        const { column, mode, width: widthValue, layout } = operation;
+        const localWidth = widthValue === null || widthValue === undefined ? null : Number(widthValue);
+        const expected = mode === "EXPLICIT" ? localWidth : null;
         const range = `${column}:${column}`;
         const item = {
           sheet_name: sheet.Name,
           column: String(column),
           range,
           mode,
+          layout_type: String(layout.layout_type || "normal"),
+          layout_min_width: dimensionValue(layout.min_width),
+          layout_max_width: dimensionValue(layout.max_width),
+          local_workbook_width: dimensionValue(localWidth),
+          auto_fit_width: null,
           requested_width: dimensionValue(expected),
           before_column_width: null,
           remote_column_width: null,
@@ -1183,48 +1294,59 @@ function applyBusinessColumnWidths(sheetDtos, warnings) {
           const targetColumn = sheet.Columns.Item(String(column));
           item.before_column_width = dimensionValue(targetColumn.ColumnWidth);
           item.before_width_points = readWidthPoints(targetColumn);
-          if (mode === "AUTO_FIT") {
+          if (mode.startsWith("AUTO_FIT")) {
             const columnRange = sheet.Range(range);
             if (columnRange.Columns && columnRange.Columns.AutoFit) columnRange.Columns.AutoFit();
             else if (targetColumn.AutoFit) targetColumn.AutoFit();
             else throw new Error("Columns.AutoFit API unavailable");
-            const minimum = Number(sheetDto.auto_fit_min_width || 8);
-            const maximum = Number(sheetDto.auto_fit_max_width || 60);
             const fitted = Number(targetColumn.ColumnWidth);
-            if (Number.isFinite(fitted) && fitted > maximum) { targetColumn.ColumnWidth = maximum; item.clamped = true; }
-            else if (Number.isFinite(fitted) && fitted < minimum) { targetColumn.ColumnWidth = minimum; item.clamped = true; }
+            if (!Number.isFinite(fitted) || fitted <= 0) throw new Error("Columns.AutoFit readback unavailable");
+            item.auto_fit_width = dimensionValue(fitted);
+            const minimum = Number(layout.min_width || sheetDto.auto_fit_min_width || 8);
+            const maximum = Number(layout.max_width || sheetDto.auto_fit_max_width || 60);
+            const desiredBeforeClamp = Math.max(
+              Number.isFinite(localWidth) && localWidth > 0 ? localWidth : 0,
+              fitted,
+              minimum,
+            );
+            const desired = Math.min(Math.max(desiredBeforeClamp, minimum), maximum);
+            item.clamped = Math.abs(desired - desiredBeforeClamp) > COLUMN_WIDTH_TOLERANCE;
+            item.requested_width = dimensionValue(desired);
+            targetColumn.ColumnWidth = desired;
+            if (layout.wrap_text) {
+              const dataStartRow = sheetDto.logical_sheet_key === "ap_online_history_overview" ? 4 : 2;
+              const dataEndRow = Math.max(Number(sheetDto.row_count) || 0, dataStartRow);
+              if (dataEndRow >= dataStartRow) sheet.Range(`${column}${dataStartRow}:${column}${dataEndRow}`).WrapText = true;
+            }
           } else {
             targetColumn.ColumnWidth = expected;
           }
           item.applied = true;
           sheetApplied += 1;
           applied += 1;
-          if (mode === "AUTO_FIT") autoFitApplied += 1;
+          if (mode.startsWith("AUTO_FIT")) autoFitApplied += 1;
           else explicitApplied += 1;
           if (item.clamped) { sheetClamped += 1; clamped += 1; }
           item.remote_column_width = dimensionValue(targetColumn.ColumnWidth);
           item.remote_width_points = readWidthPoints(targetColumn);
           item.read_back = item.remote_column_width !== null;
-          item.difference = item.remote_column_width === null || expected === null
+          const requestedWidth = Number(item.requested_width);
+          item.difference = item.remote_column_width === null || !Number.isFinite(requestedWidth)
             ? null
-            : dimensionValue(Math.abs(item.remote_column_width - expected));
+            : dimensionValue(Math.abs(item.remote_column_width - requestedWidth));
           item.physical_width_change_points = item.before_width_points === null || item.remote_width_points === null
             ? null
             : dimensionValue(item.remote_width_points - item.before_width_points);
-          const minimum = Number(sheetDto.auto_fit_min_width || 8);
-          const maximum = Number(sheetDto.auto_fit_max_width || 60);
-          const matches = item.remote_column_width !== null && (
-            mode === "AUTO_FIT"
-              ? item.remote_column_width >= minimum - COLUMN_WIDTH_TOLERANCE && item.remote_column_width <= maximum + COLUMN_WIDTH_TOLERANCE
-              : Math.abs(item.remote_column_width - expected) <= COLUMN_WIDTH_TOLERANCE
-          );
+          const matches = item.remote_column_width !== null
+            && Number.isFinite(requestedWidth)
+            && Math.abs(item.remote_column_width - requestedWidth) <= COLUMN_WIDTH_TOLERANCE;
           item.verified = matches;
           item.classification = matches
-            ? mode === "AUTO_FIT" ? "WPS_COLUMN_WIDTH_AUTOFIT_VERIFIED" : "WPS_COLUMN_WIDTH_VALUE_VERIFIED"
+            ? mode.startsWith("AUTO_FIT") ? "WPS_COLUMN_WIDTH_AUTOFIT_VERIFIED" : "WPS_COLUMN_WIDTH_VALUE_VERIFIED"
             : "WPS_COLUMN_WIDTH_APPLY_MISMATCH";
           item.reason = matches
-            ? mode === "AUTO_FIT" ? "Columns.AutoFit readback is within bounds" : "ColumnWidth write/readback matched"
-            : `readback mismatch: mode=${mode}, expected=${String(expected)}, actual=${String(item.remote_column_width)}`;
+            ? mode.startsWith("AUTO_FIT") ? "Columns.AutoFit plus local minimum readback matched" : "ColumnWidth write/readback matched"
+            : `readback mismatch: mode=${mode}, expected=${String(item.requested_width)}, actual=${String(item.remote_column_width)}`;
           if (matches) {
             sheetVerified += 1;
             verified += 1;
@@ -1306,6 +1428,7 @@ function sync(payload) {
   const formatWarnings = [];
   const sheetResults = [];
   const formatSheets = [];
+  const managedRanges = readManagedRanges(binding.meta);
   const formatMirrorEnabled = FORMAT_MIRROR_ENABLED && args.format_mirror_enabled === true;
   try {
     for (const sheet of sheets) {
@@ -1315,7 +1438,8 @@ function sync(payload) {
       const dataWriteStartedAt = Date.now();
       const result = skipRepeatedPrepend
         ? { written_rows: 0, format_verification: { checked: false }, deduplicated: true }
-        : writeStableSheet(runtimeSheet);
+        : writeStableSheet(runtimeSheet, managedRanges[String(sheet.sheet_name || "")]);
+      if (result.managed_range) managedRanges[String(sheet.sheet_name || "")] = result.managed_range;
       if (formatMirrorEnabled && !skipRepeatedPrepend) formatSheets.push(runtimeSheet);
       if (!skipRepeatedPrepend && sheet.sync_mode === "PREPEND_SNAPSHOT") {
         binding.meta = updateBindingMetadata({
@@ -1327,26 +1451,41 @@ function sync(payload) {
       sheetResults.push({ sheet_name: sheet.sheet_name, sync_mode: sheet.sync_mode, success: true, written_rows: result.written_rows, deduplicated: !!result.deduplicated, column_count: Number(sheet.column_count) || 0, column_width_count: Object.keys(sheet.column_widths || {}).length, auto_fit_column_count: (sheet.auto_fit_columns || []).length, data_write_ms: Date.now() - dataWriteStartedAt, dimension_ms: 0, format_ms: 0, format_run_count: (sheet.format_runs || []).length, format_verification: result.format_verification });
     }
   } catch (error) {
+    try {
+      binding.meta = updateBindingMetadata({ managed_ranges_json: JSON.stringify(managedRanges) });
+    } catch (_metadataError) { /* Preserve the original sheet write failure. */ }
     return response({ success: false, error_code: "WPS_SHEET_WRITE_FAILED", failed_sheet: sheets[writtenSheets] && sheets[writtenSheets].sheet_name || "", failed_operation: "WRITE_VALUES", written_sheet_count: writtenSheets, written_row_count: writtenRows, message: String(error && error.message || error).slice(0, 500), runtime_error_name: String(error && error.name || "Error"), runtime_error_stack: String(error && error.stack || "").slice(0, 2048), binding_status: "BOUND" });
+  }
+  try {
+    binding.meta = updateBindingMetadata({ managed_ranges_json: JSON.stringify(managedRanges) });
+  } catch (error) {
+    addFormatWarning(formatWarnings, META_SHEET, "managed_ranges", error);
   }
   const columnWidthEnabled = args.column_width_enabled === true;
   let columnWidthResult = { attempted_count: 0, verified_count: 0, failed_count: 0, applied_count: 0, expected_count: 0, dimension_ms: 0, examples: [], items: [], sheets: {} };
-  if (columnWidthEnabled) {
-    try {
-      columnWidthResult = applyBusinessColumnWidths(sheets, formatWarnings);
-    } catch (error) {
-      addFormatWarning(formatWarnings, "_NetConsoleColumnWidths", "column_width", error);
-    }
-  }
   let mirroredFormatResults = createFormatResults();
   if (formatMirrorEnabled) {
     try {
-      mirroredFormatResults = applyBusinessFormatting(formatSheets, formatWarnings);
+      mirroredFormatResults = applyBusinessFormatting(formatSheets, formatWarnings, () => {
+        if (!columnWidthEnabled) return;
+        try {
+          columnWidthResult = applyBusinessColumnWidths(sheets, formatWarnings);
+        } catch (error) {
+          addFormatWarning(formatWarnings, "_NetConsoleColumnWidths", "column_width", error);
+        }
+      });
     } catch (error) {
       addFormatWarning(formatWarnings, "_NetConsoleFormats", "format_mirror", error);
       mirroredFormatResults = finalizeFormatResults(mirroredFormatResults);
     }
   } else {
+    if (columnWidthEnabled) {
+      try {
+        columnWidthResult = applyBusinessColumnWidths(sheets, formatWarnings);
+      } catch (error) {
+        addFormatWarning(formatWarnings, "_NetConsoleColumnWidths", "column_width", error);
+      }
+    }
     for (const feature of Object.values(mirroredFormatResults)) feature.status = "NOT_ENABLED";
   }
   for (const sheetResult of sheetResults) {
@@ -1403,6 +1542,7 @@ function sync(payload) {
       last_sync_at: new Date().toISOString(),
       last_sync_revision: String(args.snapshot_revision || ""),
       last_target_batch_id: String(args.target_batch_id || ""),
+      managed_ranges_json: JSON.stringify(managedRanges),
     });
   } catch (error) {
     addFormatWarning(formatWarnings, META_SHEET, "sync_metadata", error);

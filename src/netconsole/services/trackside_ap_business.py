@@ -407,6 +407,73 @@ TRACKSIDE_AP_BUSINESS_SHEET_DEFINITIONS = (
         90,
     ),
 )
+
+TRACKSIDE_COLUMN_LAYOUT_LIMITS = {
+    "compact": (8.0, 16.0),
+    "normal": (8.0, 24.0),
+    "identifier": (10.0, 28.0),
+    "datetime": (12.0, 24.0),
+    "long_text": (16.0, 48.0),
+}
+_TRACKSIDE_LONG_TEXT_FIELDS = {
+    "ap_business_reason",
+    "description",
+    "detail",
+    "reason",
+    "remark",
+    "source_revisions",
+    "suggestion",
+    "suggested_action",
+    "missing_ports",
+}
+_TRACKSIDE_IDENTIFIER_FIELDS = {
+    "ap_ip",
+    "ap_mac",
+    "apid",
+    "identity_entity_id",
+    "matched_switch_device_id",
+    "plan_station_id",
+    "planning_record_id",
+    "serial_number",
+}
+_TRACKSIDE_COMPACT_FIELDS = {
+    "ap_rx_power",
+    "fixed_rx_power",
+    "first_rx_power",
+    "current_rx_power",
+    "lldp_candidate_count",
+    "module_count",
+    "offline_aps",
+    "offline_locatable",
+    "offline_rate",
+    "offline_unlocatable",
+    "offline_with_lldp",
+    "offline_without_lldp",
+    "online",
+    "online_aps",
+    "online_rate",
+    "pvid",
+    "switch_rx_power",
+    "total",
+    "total_aps",
+    "vlan",
+}
+_TRACKSIDE_SHEET_COLUMNS = {
+    "ap_online_history_overview": AP_ONLINE_OVERVIEW_COLUMNS,
+    "trackside_ap_business": TRACKSIDE_AP_BUSINESS_EXPORT_COLUMNS,
+    "current_optical_abnormal": CURRENT_OPTICAL_ABNORMAL_COLUMNS,
+    "ap_optical_treatment_records": AP_OPTICAL_TREATMENT_RECORD_COLUMNS,
+    "ap_offline_status": OFFLINE_AP_STATS_COLUMNS,
+    "ap_offline_ledger": OFFLINE_AP_LEDGER_COLUMNS,
+    "newly_online_ap_overview": NEW_ONLINE_AP_OVERVIEW_COLUMNS,
+    "unmatched_online_ap": TRACKSIDE_AP_UNMATCHED_ONLINE_COLUMNS,
+    "switch_optical_module_summary": (
+        ("switch", "device_name"),
+        ("module_count", "module_count"),
+        ("missing_port_count", "missing_port_count"),
+        ("missing_ports", "missing_ports"),
+    ),
+}
 _TRACKSIDE_AP_BUSINESS_SHEETS_BY_NAME = {
     definition.sheet_name: definition
     for definition in TRACKSIDE_AP_BUSINESS_SHEET_DEFINITIONS
@@ -417,6 +484,35 @@ def trackside_ap_business_sheet_definition(
     sheet_name: str,
 ) -> TracksideApBusinessSheetDefinition | None:
     return _TRACKSIDE_AP_BUSINESS_SHEETS_BY_NAME.get(str(sheet_name or ""))
+
+
+def trackside_ap_business_column_layout_types(
+    sheet_name: str,
+    column_count: int,
+) -> tuple[str, ...]:
+    definition = trackside_ap_business_sheet_definition(sheet_name)
+    columns = _TRACKSIDE_SHEET_COLUMNS.get(
+        definition.stable_key if definition is not None else "",
+        (),
+    )
+    layouts = [
+        _trackside_column_layout_type(field)
+        for _key, field in columns[: max(0, column_count)]
+    ]
+    layouts.extend(["normal"] * max(0, column_count - len(layouts)))
+    return tuple(layouts)
+
+
+def _trackside_column_layout_type(field: str) -> str:
+    if field in _TRACKSIDE_LONG_TEXT_FIELDS:
+        return "long_text"
+    if field in _TRACKSIDE_IDENTIFIER_FIELDS:
+        return "identifier"
+    if field.endswith("_at") or field.endswith("_time"):
+        return "datetime"
+    if field in _TRACKSIDE_COMPACT_FIELDS:
+        return "compact"
+    return "normal"
 
 
 @dataclass(frozen=True)
@@ -2416,10 +2512,7 @@ def build_ap_online_history_block(
     snapshot_time = _shanghai_datetime(snapshot_generated_at)
     update_time = _shanghai_datetime(updated_at)
     values = tuple(
-        tuple(
-            str(row.get(field)) if row.get(field) not in (None, "") else "-"
-            for _key, field in columns
-        )
+        tuple(_ap_online_history_value(field, row.get(field)) for _key, field in columns)
         for row in rows
     )
     return ApOnlineHistoryBlockDTO(
@@ -2428,6 +2521,28 @@ def build_ap_online_history_block(
         headers=tuple(headers),
         rows=values,
     )
+
+
+def _ap_online_history_value(field: str, value: object | None) -> object:
+    if value in (None, ""):
+        return "-"
+    if field != "online_rate":
+        return str(value)
+    if isinstance(value, str):
+        text = value.strip()
+        is_percentage = text.endswith("%")
+        if is_percentage:
+            text = text[:-1].strip()
+        try:
+            number = float(text)
+        except ValueError:
+            return value
+        return number / 100.0 if is_percentage or number > 1 else number
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return value
+    return number / 100.0 if number > 1 else number
 
 
 def _apply_trackside_workbook_registry(workbook) -> None:
@@ -2654,15 +2769,10 @@ def export_trackside_ap_business_xlsx(
             header_fill,
             header_row=header_row,
         )
-        if header_row == 1:
+        if definition and definition.stable_key == "ap_online_history_overview":
+            worksheet.auto_filter.ref = None
+        elif header_row == 1:
             worksheet.auto_filter.ref = worksheet.dimensions
-        else:
-            from openpyxl.utils import get_column_letter
-
-            last_data_row = max(header_row, worksheet.max_row - 1)
-            worksheet.auto_filter.ref = (
-                f"A{header_row}:{get_column_letter(worksheet.max_column)}{last_data_row}"
-            )
         apply_worksheet_autofit(worksheet, maximum=60)
     _set_switch_optical_summary_widths(workbook)
     log_write_phase("autofit_sheets", phase_start, sheets=len(workbook.worksheets))
@@ -3765,6 +3875,17 @@ def _append_ap_overview_sheet(
     )
     for values in block.cells():
         sheet.append(values)
+    online_rate_column = next(
+        (
+            column_index
+            for column_index, (_key, field) in enumerate(display_columns, start=1)
+            if field == "online_rate"
+        ),
+        None,
+    )
+    if online_rate_column is not None:
+        for row_index in range(4, 4 + len(display_rows)):
+            sheet.cell(row=row_index, column=online_rate_column).number_format = "0.0%"
     from openpyxl.styles import PatternFill
 
     for row_index, source_row in enumerate(display_rows, start=4):

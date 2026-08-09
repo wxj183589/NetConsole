@@ -171,6 +171,7 @@ class WorkbookSheetDTO:
     row_heights: dict[str, float] = field(default_factory=dict)
     column_widths: dict[str, float] = field(default_factory=dict)
     auto_fit_columns: tuple[str, ...] = ()
+    column_layouts: dict[str, dict[str, Any]] = field(default_factory=dict)
     auto_fit_min_width: float = 8.0
     auto_fit_max_width: float = 60.0
     auto_fit_rows: bool = False
@@ -194,6 +195,7 @@ class WorkbookSheetDTO:
             "row_heights": self.row_heights,
             "column_widths": self.column_widths,
             "auto_fit_columns": list(self.auto_fit_columns),
+            "column_layouts": self.column_layouts,
             "auto_fit_min_width": self.auto_fit_min_width,
             "auto_fit_max_width": self.auto_fit_max_width,
             "auto_fit_rows": self.auto_fit_rows,
