@@ -31,6 +31,7 @@ from netconsole.models.api.rail_transit_web import (
     OnlineMrNoteCreateRequestDTO,
     OnlineMrDeleteRequestDTO,
     OnlineMrDesktopLocationDTO,
+    OnlineMrParsedDatabaseEnsureDTO,
     OnlineMrParseRequestDTO,
     OnlineMrReportRequestDTO,
     RailTransitTaskDTO,
@@ -287,6 +288,23 @@ def parse_session(request: Request, session_id: str, payload: OnlineMrParseReque
     try:
         return _rail_service(request).start_online_mr_parse(
             _facade(request).current_site_id(), session_id, force_reparse=payload.force_reparse
+        )
+    except RailTransitWebError as exc:
+        _raise_rail_error(exc)
+
+
+@router.post(
+    "/sessions/{session_id}/ensure-current",
+    response_model=OnlineMrParsedDatabaseEnsureDTO,
+    dependencies=[
+        Depends(require_feature("web.online_mr_parse")),
+        Depends(require_feature("web.rail_task_control")),
+    ],
+)
+def ensure_current(request: Request, session_id: str) -> OnlineMrParsedDatabaseEnsureDTO:
+    try:
+        return _rail_service(request).ensure_online_mr_parsed_database_current(
+            _facade(request).current_site_id(), session_id
         )
     except RailTransitWebError as exc:
         _raise_rail_error(exc)

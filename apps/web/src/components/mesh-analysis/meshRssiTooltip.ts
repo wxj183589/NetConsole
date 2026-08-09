@@ -74,6 +74,24 @@ export function buildMeshRssiTooltip(point?: MeshChartPoint, event?: MeshChartEv
   ].join('<br>')
 }
 
+export function buildMeshRssiQuickTooltip(point?: MeshChartPoint, event?: MeshChartEvent, pointerTime?: string): string {
+  const time = pointerTime || point?.timestamp || event?.render_point_timestamp || event?.timestamp
+  const rows = [
+    `<div class="mesh-rssi-tooltip mesh-rssi-tooltip--quick" style="max-width:220px;white-space:normal;line-height:1.45">`,
+    escapeMeshTooltipHtml(time),
+  ]
+  if (point) {
+    rows.push(`RSSI ${metric(point.local_rssi, ' dBm')}`)
+    rows.push(`AP ${escapeMeshTooltipHtml(point.peer_ap_name || point.peer_mac)}`)
+  } else if (event) {
+    rows.push(escapeMeshTooltipHtml(event.to_ap_name || event.to_peer_mac || '切换事件'))
+  } else {
+    rows.push('当前时刻无有效采样')
+  }
+  rows.push('</div>')
+  return rows.join('<br>')
+}
+
 export function buildMeshRssiZeroRunTooltip(
   point: MeshChartPoint,
   zeroRun: MeshRssiZeroRun,

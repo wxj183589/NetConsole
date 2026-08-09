@@ -294,6 +294,55 @@ def test_online_mr_note_and_parse_use_real_session_and_task(tmp_path: Path) -> N
     ]
 
 
+def test_online_mr_ensure_current_reuses_one_inflight_upgrade_task(tmp_path: Path) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    service, _normal, _export, tasks = _service(paths)
+    _online_mr_session(paths, "session-auto-upgrade")
+
+    first = service.ensure_online_mr_parsed_database_current("demo", "session-auto-upgrade")
+    second = service.ensure_online_mr_parsed_database_current("demo", "session-auto-upgrade")
+
+    assert first.status == "UPGRADING"
+    assert first.task is not None
+    assert second.status == "UPGRADING"
+    assert second.task is not None
+    assert second.task.task_id == first.task.task_id
+    active = tasks.repository("demo").list(
+        statuses={TaskState.PENDING, TaskState.STARTING, TaskState.RUNNING, TaskState.STOPPING},
+        limit=20,
+    )
+    assert [item.task_id for item in active if item.task_type == "online_mr_parse"] == [first.task.task_id]
+
+
+def test_online_mr_ensure_current_is_noop_for_current_contract(tmp_path: Path) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    service, normal, _export, _tasks = _service(paths)
+    session = _online_mr_session(paths, "session-current")
+    _mark_online_mr_parsed_ready(session, "session-current")
+
+    result = service.ensure_online_mr_parsed_database_current("demo", "session-current")
+
+    assert result.status == "CURRENT"
+    assert result.missing_capabilities == []
+    assert result.task is None
+    assert normal.jobs == {}
+
+
+def test_online_mr_ensure_current_persists_missing_raw_without_starting_task(tmp_path: Path) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    service, normal, _export, _tasks = _service(paths)
+    session = _online_mr_session(paths, "session-no-raw")
+    (session / "raw" / "mesh_link_raw.log").write_text("", encoding="utf-8")
+
+    first = service.ensure_online_mr_parsed_database_current("demo", "session-no-raw")
+    second = service.ensure_online_mr_parsed_database_current("demo", "session-no-raw")
+
+    assert first.status == "RAW_DATA_MISSING"
+    assert second.status == "RAW_DATA_MISSING"
+    assert second.retry_suppressed is True
+    assert normal.jobs == {}
+
+
 def test_online_mr_location_report_and_delete_share_session_resource(
     tmp_path: Path,
 ) -> None:

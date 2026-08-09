@@ -4,15 +4,21 @@ import json
 import hashlib
 import sqlite3
 import time
+from contextlib import closing, contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable, Mapping, Sequence
+from typing import Iterable, Iterator, Mapping, Sequence
 
 from netconsole.core.sqlite_utils import connect_sqlite, initialize_sqlite_wal, run_sqlite_with_retry
+from netconsole.services.online_mr.parsed_database_contract import (
+    PARSER_CAPABILITIES,
+    PARSER_SCHEMA_VERSION,
+    PARSER_VERSION,
+)
 
 
 OnlineMrDatabaseError = sqlite3.Error
-ONLINE_MR_DIAGNOSIS_SCHEMA_VERSION = "online_mr_business_tables_v12_identity_channel_busy"
+ONLINE_MR_DIAGNOSIS_SCHEMA_VERSION = str(PARSER_SCHEMA_VERSION)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS main_link_samples (
@@ -548,18 +554,30 @@ class OnlineMrDiagnosisRepository:
     def __init__(self, db_path: str | Path) -> None:
         self.db_path = Path(db_path)
 
-    def _connect(self, *, timeout: float = 5.0) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self, *, timeout: float = 5.0) -> Iterator[sqlite3.Connection]:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        return sqlite3.connect(self.db_path, timeout=timeout)
+        connection = sqlite3.connect(self.db_path, timeout=timeout)
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
 
     def initialize(self) -> None:
         with self._connect() as conn:
             conn.executescript(SCHEMA)
+            conn.executescript(IPERF_SCHEMA)
             self._ensure_identity_columns(conn)
-            conn.execute(
-                "INSERT OR REPLACE INTO online_schema_meta (key, value) VALUES ('schema_version', ?)",
-                (ONLINE_MR_DIAGNOSIS_SCHEMA_VERSION,),
+            conn.executemany(
+                "INSERT OR REPLACE INTO online_schema_meta (key, value) VALUES (?, ?)",
+                (
+                    ("schema_version", ONLINE_MR_DIAGNOSIS_SCHEMA_VERSION),
+                    ("parser_version", PARSER_VERSION),
+                    ("capabilities", json.dumps(PARSER_CAPABILITIES, ensure_ascii=False)),
+                ),
             )
+            conn.execute(f"PRAGMA user_version={PARSER_SCHEMA_VERSION}")
 
     def discard_existing_database(self) -> None:
         for _ in range(3):
@@ -1403,7 +1421,7 @@ class OnlineMrDiagnosisRepository:
         self._initialize_iperf_store()
 
         def operation() -> None:
-            with connect_sqlite(self.db_path) as conn:
+            with closing(connect_sqlite(self.db_path)) as conn:
                 conn.execute("BEGIN IMMEDIATE")
                 conn.execute(
                     """
@@ -1439,7 +1457,7 @@ class OnlineMrDiagnosisRepository:
         session_id: str,
     ) -> None:
         def operation() -> None:
-            with connect_sqlite(self.db_path) as conn:
+            with closing(connect_sqlite(self.db_path)) as conn:
                 conn.execute("BEGIN IMMEDIATE")
                 conn.execute(
                     """
@@ -1486,7 +1504,7 @@ class OnlineMrDiagnosisRepository:
         ended_at: datetime | None = None,
     ) -> None:
         def operation() -> None:
-            with connect_sqlite(self.db_path) as conn:
+            with closing(connect_sqlite(self.db_path)) as conn:
                 conn.execute("BEGIN IMMEDIATE")
                 conn.execute(
                     "UPDATE iperf_runs SET status = ?, ended_at = ? WHERE run_id = ?",
@@ -1502,7 +1520,7 @@ class OnlineMrDiagnosisRepository:
 
     def _initialize_iperf_store(self) -> None:
         def operation() -> None:
-            with connect_sqlite(self.db_path) as conn:
+            with closing(connect_sqlite(self.db_path)) as conn:
                 initialize_sqlite_wal(conn)
                 conn.executescript(IPERF_SCHEMA)
                 columns = {

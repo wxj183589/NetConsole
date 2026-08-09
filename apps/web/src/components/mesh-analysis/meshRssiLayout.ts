@@ -47,13 +47,16 @@ export function normalizeMeshRssiSplitRatio(value: unknown): number {
 export function resolveMeshRssiCompareLayout(
   workspaceHeight: number,
   requestedRatio: unknown,
+  minimumPaneHeightOverride?: number,
 ): MeshRssiCompareLayout {
   const height = Number.isFinite(workspaceHeight)
     ? Math.max(0, Math.floor(workspaceHeight))
     : 0
-  const minimumPaneHeight = height >= LARGE_MESH_RSSI_WORKSPACE_HEIGHT
-    ? MIN_LARGE_MESH_RSSI_PANE_HEIGHT
-    : MIN_MESH_RSSI_PANE_HEIGHT
+  const minimumPaneHeight = Number.isFinite(minimumPaneHeightOverride)
+    ? Math.max(160, Math.floor(minimumPaneHeightOverride!))
+    : height >= LARGE_MESH_RSSI_WORKSPACE_HEIGHT
+      ? MIN_LARGE_MESH_RSSI_PANE_HEIGHT
+      : MIN_MESH_RSSI_PANE_HEIGHT
   const minimumInnerHeight = minimumPaneHeight * 2 + MESH_RSSI_SPLITTER_SIZE
   const innerHeight = Math.max(height, minimumInnerHeight)
   const paneSpace = innerHeight - MESH_RSSI_SPLITTER_SIZE

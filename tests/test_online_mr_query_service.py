@@ -167,7 +167,7 @@ def test_get_session_handles_old_metadata_raw_only_and_safe_reference(tmp_path: 
     assert detail.finalization_complete is None
     assert detail.data_integrity == "unknown"
     assert detail.database_summary.status == "missing"
-    assert detail.database_summary.action == "parse_session"
+    assert detail.database_summary.action == "ensure_current"
     assert detail.session_path_reference == "MR-01/sessions/raw-only"
     assert str(tmp_path) not in detail.model_dump_json()
 
@@ -930,7 +930,7 @@ def test_session_detail_keeps_metadata_when_parsed_database_is_corrupt(tmp_path:
     assert detail.status == "ABORTED"
     assert detail.has_raw_data is True
     assert detail.database_summary.status == "unreadable"
-    assert detail.database_summary.action == "force_reparse"
+    assert detail.database_summary.action == "ensure_current"
     assert detail.latest_metric_time is None
 
 

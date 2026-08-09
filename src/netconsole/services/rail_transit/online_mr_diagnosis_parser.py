@@ -23,6 +23,7 @@ from netconsole.services.online_mr.session_time_alignment import (
     SessionTimeAlignment,
     TimeAlignmentAnchor,
 )
+from netconsole.services.online_mr.parsed_database_contract import PARSER_VERSION
 from netconsole.services.rail_transit.online_mr_identity_remap_service import (
     OnlineMrIdentityRemapService,
 )
@@ -38,7 +39,6 @@ RX_COMMAND_RE = re.compile(
     re.IGNORECASE,
 )
 DEVICE_CLOCK_RE = re.compile(r"\b\d{2}:\d{2}:\d{2}\s+\S+\s+\w+\s+\d{1,2}/\d{1,2}/\d{4}\b", re.IGNORECASE)
-PARSER_VERSION = "online_mr_business_tables_v12_identity_channel_busy"
 ProgressCallback = Callable[[str, int, int, str], None]
 CancelCallback = Callable[[], bool]
 
@@ -246,11 +246,12 @@ class OnlineMrDiagnosisParser:
         self,
         session_dir: Path,
         *,
+        db_path: Path | None = None,
         identity_query_service: ApIdentityQueryService | None = None,
     ) -> None:
         self.session_dir = Path(session_dir)
         self.raw_dir = self.session_dir / "raw"
-        self.db_path = self.session_dir / "parsed" / "online_diagnosis.sqlite"
+        self.db_path = Path(db_path) if db_path is not None else self.session_dir / "parsed" / "online_diagnosis.sqlite"
         self.repository = OnlineMrDiagnosisRepository(self.db_path)
         self.meta = self._load_meta()
         self.splitter = OnlineMrRawBlockSplitter()
@@ -440,14 +441,11 @@ class OnlineMrDiagnosisParser:
         )
 
     def _load_meta(self):
-        from netconsole.models.online_mr_models import OnlineMrSessionMeta
+        from netconsole.services.online_mr.collection_models import session_meta_from_payload
 
         data = json.loads((self.session_dir / "session_meta.json").read_text(encoding="utf-8"))
-        data["started_at"] = datetime.fromisoformat(data["started_at"])
-        if data.get("ended_at"):
-            data["ended_at"] = datetime.fromisoformat(data["ended_at"])
         data["session_dir"] = self.session_dir
-        return OnlineMrSessionMeta(**data)
+        return session_meta_from_payload(data)
 
     def _parse_mesh(self) -> int:
         count = 0

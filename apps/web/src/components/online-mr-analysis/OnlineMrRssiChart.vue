@@ -315,6 +315,7 @@ function resize(): void {
     :mode="layoutMode"
     :split-ratio="splitRatio"
     :workspace-height="workspaceHeight"
+    :minimum-pane-height="210"
     @update:split-ratio="emit('update:splitRatio', $event)"
     @resize="resize"
   >
@@ -338,6 +339,7 @@ function resize(): void {
             :sync-pointer-time="cursorTime || selectedTime"
             :sync-pointer-source="cursorTime ? cursorSource : 'programmatic'"
             :selected-time="selectedTime"
+            quick-tooltip
             preserve-viewport
             @viewport-change="emit('update:viewport', $event)"
             @pointer-change="emit('pointer-change', $event)"
@@ -367,6 +369,7 @@ function resize(): void {
             :sync-pointer-time="cursorTime || selectedTime"
             :sync-pointer-source="cursorTime ? cursorSource : 'programmatic'"
             :selected-time="selectedTime"
+            quick-tooltip
             preserve-viewport
             @viewport-change="emit('update:viewport', $event)"
             @pointer-change="emit('pointer-change', $event)"

@@ -14,10 +14,12 @@ const props = withDefaults(defineProps<{
   mode: MeshRssiLayoutMode
   splitRatio: number
   workspaceHeight: number
+  minimumPaneHeight?: number
 }>(), {
   mode: 'compare',
   splitRatio: DEFAULT_MESH_RSSI_SPLIT_RATIO,
   workspaceHeight: 0,
+  minimumPaneHeight: MIN_MESH_RSSI_PANE_HEIGHT,
 })
 
 const emit = defineEmits<{
@@ -28,11 +30,13 @@ const emit = defineEmits<{
 const root = ref<HTMLElement | null>(null)
 const canvas = ref<HTMLElement | null>(null)
 const dragging = ref(false)
-const compareLayout = computed(() => resolveMeshRssiCompareLayout(props.workspaceHeight, props.splitRatio))
+const observedHeight = ref(0)
+const effectiveHeight = computed(() => observedHeight.value || props.workspaceHeight)
+const compareLayout = computed(() => resolveMeshRssiCompareLayout(effectiveHeight.value, props.splitRatio, props.minimumPaneHeight))
 const canvasStyle = computed(() => {
   if (props.mode !== 'compare') {
     return {
-      height: `${Math.max(MIN_MESH_RSSI_PANE_HEIGHT, Math.floor(props.workspaceHeight))}px`,
+      height: `${Math.max(props.minimumPaneHeight, Math.floor(effectiveHeight.value))}px`,
       gridTemplateRows: 'minmax(0, 1fr)',
     }
   }
@@ -126,14 +130,18 @@ function handleSplitterKeydown(event: KeyboardEvent): void {
   scheduleResize()
 }
 
-watch(() => [props.mode, props.workspaceHeight] as const, ([mode]) => {
+watch(() => [props.mode, props.workspaceHeight, props.minimumPaneHeight] as const, ([mode]) => {
   if (mode !== 'compare' && dragging.value) finishResize()
   scheduleResize()
 })
 
 onMounted(() => {
   disposed = false
-  resizeObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(scheduleResize)
+  resizeObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver((entries) => {
+    const height = Math.floor(entries[0]?.contentRect.height || 0)
+    if (height > 0 && height !== observedHeight.value) observedHeight.value = height
+    scheduleResize()
+  })
   if (root.value) resizeObserver?.observe(root.value)
   scheduleResize()
 })

@@ -1588,15 +1588,17 @@ def _device_by_uuid(database: Any, device_uuid: str):
 
 
 def _online_mr_parse(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    from netconsole.services.online_mr.parsed_database_upgrade import OnlineMrParsedDatabaseUpgradeService
     from netconsole.services.rail_transit.online_mr_diagnosis_parser import OnlineMrDiagnosisParser
 
-    parser = OnlineMrDiagnosisParser(Path(str(params.get("session_dir") or "")))
-    summary = parser.parse(
+    session_dir = Path(str(params.get("session_dir") or ""))
+    upgrade = OnlineMrParsedDatabaseUpgradeService(session_dir)
+    result = upgrade.rebuild(
         force=bool(params.get("force_reparse", True)),
         progress=progress,
         should_cancel=should_cancel,
     )
-    result = asdict(summary)
+    parser = OnlineMrDiagnosisParser(session_dir)
     try:
         from netconsole.services.mr_mesh_identity_shadow import MrMeshIdentityShadowService
 
