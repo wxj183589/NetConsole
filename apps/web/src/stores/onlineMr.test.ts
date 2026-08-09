@@ -94,7 +94,7 @@ describe('Online MR polling store', () => {
     expect(store.error).toBe('状态刷新失败，请检查主程序服务或当前采集任务。')
   })
 
-  it('clears realtime state when there is no active session and never loads history', async () => {
+  it('keeps the last valid session during transient null responses and clears after confirmation', async () => {
     const store = useOnlineMrStore()
     await store.refreshOverview()
     expect(store.current?.session_id).toBe('session-1')
@@ -102,6 +102,12 @@ describe('Online MR polling store', () => {
     vi.mocked(getCurrentOnlineMrSession).mockResolvedValue(null)
     await store.refreshOverview()
 
+    expect(store.current?.session_id).toBe('session-1')
+    expect(store.error).toContain('保留最后一次有效 Session')
+
+    await store.refreshOverview()
+    expect(store.current?.session_id).toBe('session-1')
+    await store.refreshOverview()
     expect(store.current).toBeNull()
     expect(store.selected).toBeNull()
     expect(store.collectors).toEqual([])

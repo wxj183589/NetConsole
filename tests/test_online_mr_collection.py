@@ -1421,6 +1421,31 @@ def test_online_mesh_parser_accepts_empty_peer_name_table_format() -> None:
     assert records[0].link_state == "ACTIVE"
 
 
+def test_mesh_stream_field_block_is_buffered_until_complete(tmp_path: Path) -> None:
+    paths, config = _config(tmp_path)
+    store = OnlineMrSessionStore(paths)
+    collector = OnlineMrCollector(config, store, connection_factory=lambda _: FakeConnection())
+    collector.session = store.create_session(config)
+    timestamp = datetime(2026, 8, 10, 10, 0, 0)
+
+    for line in (
+        "Peer Name: AP-FIELD",
+        "Peer MAC: aaaa-bbbb-cccc",
+        "RSSI: 52",
+        "BSSID: 1111-2222-3333",
+        "Interface: WLAN-MeshLink1",
+        "Link state: Active(a)",
+        "Online time: 00h 01m 00s",
+    ):
+        collector._publish_stream_line(TASK_MESH_LINK, timestamp, line)
+
+    with collector.session._connect() as conn:
+        sample_count = conn.execute("SELECT COUNT(*) FROM live_samples WHERE task_type = ?", (TASK_MESH_LINK,)).fetchone()[0]
+        link_count = conn.execute("SELECT COUNT(*) FROM live_mesh_links").fetchone()[0]
+    assert sample_count == 1
+    assert link_count == 1
+
+
 def test_online_mesh_parser_accepts_empty_peer_name_standby_online_time() -> None:
     records, status, error = parse_mesh_link_text(
         " Peer Name              Peer MAC       RSSI BSSID          Interface         Link state       Online time\n"
@@ -1470,6 +1495,8 @@ def test_channel_busy_parser_keeps_table_rows_with_structured_fields() -> None:
     assert rows[0]["channel_busy_sample_time"] == "2026-06-26 22:08:24"
     assert rows[0]["channel_busy_total"] == 4
     assert rows[0]["ctl_channel"] == 165
+    assert rows[0]["channel_band_raw"] == "1"
+    assert rows[0]["bandwidth_mhz"] == 1
     assert rows[0]["bandwidth"] == 1
     assert rows[0]["record_interval"] == 9
     assert rows[0]["ctl_busy"] == 4
@@ -1492,6 +1519,31 @@ def test_channel_busy_parser_strips_collector_prefix_and_does_not_map_bandwidth_
     assert rows[0]["ctl_busy"] == 81
     assert rows[0]["tx_busy"] == 2
     assert rows[0]["rx_busy"] == 77
+
+
+@pytest.mark.parametrize(
+    ("raw_band", "bandwidth_mhz"),
+    [("20M", 20), ("40MHz", 40), ("80M", 80), ("160MHz", 160)],
+)
+def test_channel_busy_parser_accepts_channel_band_units(
+    raw_band: str,
+    bandwidth_mhz: int,
+) -> None:
+    rows = parse_channel_busy_text(
+        "Ctl Channel:    149            Channel Band:   "
+        f"{raw_band}\n"
+        "Record Interval(s):  9\n"
+        "Date/Month/Year: 21/07/2026\n"
+        "      Time(h/m/s):   CtlBusy(%) TxBusy(%)  RxBusy(%) ExtBusy(%)\n"
+        "01     15:58:19          7          5          1          -\n"
+        "02     15:58:10          8          6          2          -\n"
+        "03     15:58:01          9          7          3          -\n"
+    )
+
+    assert len(rows) == 3
+    assert {row["ctl_channel"] for row in rows} == {149}
+    assert {row["channel_band_raw"] for row in rows} == {raw_band.upper()}
+    assert {row["bandwidth_mhz"] for row in rows} == {bandwidth_mhz}
 
 
 def test_switch_history_parser_accepts_h3c_rows() -> None:
@@ -2180,6 +2232,9 @@ def test_online_mr_chart_builder_active_rssi_switch_empty_link_and_export(tmp_pa
         "信道繁忙度趋势图",
         "Ping丢包率趋势表",
         "Ping丢包率趋势图",
+        "业务打流概览",
+        "业务打流趋势表",
+        "业务打流趋势图",
         "主链路切换原因统计表",
     }.issubset(set(workbook.sheetnames))
 
@@ -2608,44 +2663,38 @@ def test_online_mr_diagnosis_parser_splits_prompted_mesh_stream_into_samples(tmp
     assert row_counts["analysis_end"] == "2026-07-06 21:00:01.200"
 
 
-def test_online_mr_diagnosis_parser_enriches_peer_identity_from_bssid(tmp_path: Path) -> None:
+def test_online_mr_diagnosis_parser_enriches_peer_identity_from_peer_radio_mac(tmp_path: Path) -> None:
     paths, config = _config(tmp_path)
     session = OnlineMrSessionStore(paths).create_session(config)
 
     class FakeQueryService:
         def resolve_peer_macs(self, values, *, ap_role=None):
-            assert list(values) == ["30f5277a1680", "74adcb9d318f"]
+            assert list(values) == ["30f5277a1680"]
             assert ap_role == "trackside"
             return ApIdentityBatchResult(
                 revision=12,
                 index_status="ready",
-                requested_count=2,
-                normalized_count=2,
-                distinct_count=2,
+                requested_count=1,
+                normalized_count=1,
+                distinct_count=1,
                 matched_count=1,
-                unresolved_count=1,
+                unresolved_count=0,
                 ambiguous_count=0,
                 invalid_count=0,
                 matches={
                     "30f5277a1680": ApIdentityMatch(
-                        status="unresolved",
-                        identity_revision=12,
-                        query_mac="30f5277a1680",
-                        unresolved_reason="exact_alias_not_found",
-                    ),
-                    "74adcb9d318f": ApIdentityMatch(
                         status="matched",
                         identity_revision=12,
-                        query_mac="74adcb9d318f",
+                        query_mac="30f5277a1680",
                         matched_entity_id="entity-1",
                         effective_ap_name="轨旁AP-01",
                         effective_ap_mac="30f5277a1680",
                         station="站点A",
                         section="区间A",
                         belong_type="station",
-                        matched_alias_type="ac_bssid",
+                        matched_alias_type="ac_radio_mac",
                         matched_source="ac_runtime",
-                        match_rule="ac_bssid",
+                        match_rule="ac_radio_mac",
                         match_confidence=100,
                     ),
                 },
@@ -2682,10 +2731,10 @@ def test_online_mr_diagnosis_parser_enriches_peer_identity_from_bssid(tmp_path: 
     assert row == (
         "轨旁AP-01",
         "30f5277a1680",
-        "74adcb9d318f",
+        "30f5277a1680",
         "matched",
         "ac_runtime",
-        "ac_bssid",
+        "ac_radio_mac",
         "站点A",
         12,
     )
@@ -2773,6 +2822,8 @@ def test_online_mr_diagnosis_parser_accepts_stream_channel_busy_table(tmp_path: 
         "2025-12-03 10:12:31.001 [collector=repeat] RX 03:05:13 BeiJing Tue 07/07/2026\n"
         "2025-12-03 10:12:31.001 [collector=repeat] RX [MR-probe]display ar5drv 1 channelbusy\n"
         "2025-12-03 10:12:31.001 [collector=repeat] RX ChannelBusy information\n"
+        "2025-12-03 10:12:31.001 [collector=repeat] RX  Ctl Channel: 149 Channel Band: 80M\n"
+        "2025-12-03 10:12:31.001 [collector=repeat] RX  Record Interval(s): 9\n"
         "2025-12-03 10:12:31.001 [collector=repeat] RX        Time(h/m/s):   CtlBusy(%) TxBusy(%)  RxBusy(%)  ExtBusy(%)\n"
         "2025-12-03 10:12:31.001 [collector=repeat] RX  01     03:05:07         81          2         77          -\n"
         "2025-12-03 10:12:31.001 [collector=repeat] RX  02     03:04:58         82          3         78          -\n",
@@ -2781,12 +2832,18 @@ def test_online_mr_diagnosis_parser_accepts_stream_channel_busy_table(tmp_path: 
 
     summary = OnlineMrDiagnosisParser(session.session_dir).parse()
 
-    assert summary.channel_samples == 1
+    assert summary.channel_samples == 2
     with sqlite3.connect(session.db_path) as conn:
-        row = conn.execute("SELECT device_time, ctl_busy, tx_busy, rx_busy FROM channel_busy_records").fetchone()
+        rows = conn.execute(
+            "SELECT device_time, ctl_channel, channel_band_raw, bandwidth_mhz, "
+            "row_index, ctl_busy, tx_busy, rx_busy FROM channel_busy_records ORDER BY row_index"
+        ).fetchall()
         count = conn.execute("SELECT COUNT(*) FROM channel_busy_records").fetchone()[0]
-    assert row == ("2026-07-07 03:05:07", 81, 2, 77)
-    assert count == 1
+    assert rows == [
+        ("2026-07-07 03:05:07", 149, "80M", 80.0, 1, 81, 2, 77),
+        ("2026-07-07 03:04:58", 149, "80M", 80.0, 2, 82, 3, 78),
+    ]
+    assert count == 2
 
 
 def test_online_mr_diagnosis_parser_groups_fping_v5_by_target(tmp_path: Path) -> None:
@@ -2865,7 +2922,7 @@ def test_online_mr_estimates_device_time_from_local_offset() -> None:
 
     assert aligned == datetime(2026, 7, 7, 2, 33, 0)
     assert offset_ms == 1468.0
-    assert source == "first_sample"
+    assert source == "fixed-offset"
 
 
 def test_online_mr_diagnosis_parser_aligns_fping_raw_with_mesh_clock(tmp_path: Path) -> None:
@@ -2890,7 +2947,7 @@ def test_online_mr_diagnosis_parser_aligns_fping_raw_with_mesh_clock(tmp_path: P
             "SELECT local_time, device_aligned_time, clock_offset_ms, offset_source FROM fping_samples"
         ).fetchone()
     assert sync_row == ("2026-07-07 01:29:17.532", "2026-07-07 01:29:19.000", 1468.0, "mesh_link_display_clock")
-    assert fping_row == ("2026-07-07 01:29:19.341", "2026-07-07 01:29:20.809", 1468.0, "last_sample")
+    assert fping_row == ("2026-07-07 01:29:19.341", "2026-07-07 01:29:20.809", 1468.0, "fixed-offset")
 
 
 def test_online_mr_diagnosis_parser_aligns_iperf_with_mesh_clock(tmp_path: Path) -> None:
@@ -2926,7 +2983,7 @@ def test_online_mr_diagnosis_parser_aligns_iperf_with_mesh_clock(tmp_path: Path)
         "2026-07-07 01:29:20.968",
         "2026-07-07 01:29:20.968",
         1468.0,
-        "last_sample",
+        "fixed-offset",
         "mr_device_clock_aligned",
     )
 

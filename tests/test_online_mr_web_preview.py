@@ -38,6 +38,8 @@ def test_preview_resolves_field_peer_to_physical_ap_and_station(tmp_path: Path) 
         {
             "peer_mac": "bc5a-3457-6d40",
             "bssid": "78a1-3e52-52cf",
+            "station_id": "station:field",
+            "section_id": "section:field",
             "display_context": {},
         },
     )
@@ -45,6 +47,8 @@ def test_preview_resolves_field_peer_to_physical_ap_and_station(tmp_path: Path) 
     assert link["ap_mac"] == "bc5a-3457-6d40"
     assert link["ap_name"] == "bc5a-3457-6d40"
     assert link["station_name"] == "云龙车辆段"
+    assert link["station_id"] == "station:field"
+    assert link["section_id"] == "section:field"
     assert link["identity_revision"] > 0
     assert link["resolution_status"] == "partial"
     assert link["resolution_reason"] == "SECTION_MAPPING_NOT_FOUND"

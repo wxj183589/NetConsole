@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { Refresh } from '@element-plus/icons-vue'
 
@@ -16,12 +16,18 @@ import type { MrCommunicationStatus } from '../../types/trainCommunication'
 const store = useOnlineMrStore()
 const route = useRoute()
 const expanded = ref<string[]>([])
+const runtimeExpanded = ref<string[]>([])
 const rawSource = ref('terminal_monitor')
 const controlMrs = ref<MrCommunicationStatus[]>([])
 const controlMrId = ref('')
 const controlError = ref('')
 const controlSiteId = ref('')
 const executorTab = ref('local')
+const meshRawOutput = ref<HTMLElement | null>(null)
+const fpingRawOutput = ref<HTMLElement | null>(null)
+const otherRawOutput = ref<HTMLElement | null>(null)
+const rawFollow = ref<Record<string, boolean>>({ mesh_link: true, fping_raw: true, other: true })
+const rawHasNew = ref<Record<string, boolean>>({ mesh_link: false, fping_raw: false, other: false })
 
 interface OnlineMrRuntimeStatusRow extends OnlineMrCollectorStatus {
   current_size_bytes: number
@@ -119,6 +125,12 @@ const runtimeRows = computed<OnlineMrRuntimeStatusRow[]>(() => {
   }
   return rows
 })
+const runtimeIssueCount = computed(() => runtimeRows.value.filter((row) => {
+  return row.status.startsWith('failed') || row.status === 'error' || row.health_status === 'stale' || row.health_status === 'interrupted'
+}).length)
+const runtimeTitle = computed(() => runtimeIssueCount.value
+  ? `${'当前采集' + '状态'}（${runtimeRows.value.length} 项 / ${runtimeIssueCount.value} 异常）`
+  : `${'当前采集' + '状态'}（${runtimeRows.value.length} 项正常）`)
 
 watch(expanded, (sections) => {
   const logsExpanded = sections.includes('logs')
@@ -127,6 +139,22 @@ watch(expanded, (sections) => {
 })
 watch(rawSource, (source) => {
   if (expanded.value.includes('logs')) store.setRawSource(source)
+})
+watch([() => store.meshRawTail, () => store.fpingRawTail, () => store.otherRawTail], () => {
+  const outputs: Record<string, HTMLElement | null> = {
+    mesh_link: meshRawOutput.value,
+    fping_raw: fpingRawOutput.value,
+    other: otherRawOutput.value,
+  }
+  for (const [name, output] of Object.entries(outputs)) {
+    if (rawFollow.value[name]) {
+      void nextTick(() => {
+        if (output) output.scrollTop = output.scrollHeight
+      })
+    } else {
+      rawHasNew.value = { ...rawHasNew.value, [name]: true }
+    }
+  }
 })
 
 function field(value: Record<string, unknown>, ...names: string[]): string {
@@ -162,10 +190,10 @@ function formatBytes(value: number): string {
 
 function collectorStatusLabel(row: OnlineMrCollectorStatus): string {
   if (!row.enabled) return '未启用'
+  if (row.status.startsWith('failed') || row.status === 'error') return row.exit_code !== undefined && row.exit_code !== null ? `失败 / Exit ${row.exit_code}` : '失败'
   if (row.health_status === 'stale') return '异常'
   if (row.health_status === 'interrupted') return '采集中断'
   if (row.health_status === 'normal') return '采集中'
-  if (row.status.startsWith('failed')) return row.exit_code !== undefined && row.exit_code !== null ? `失败 / Exit ${row.exit_code}` : '失败'
   return ({ starting: '启动中', stopped: '已停止', completed: '已完成', failed: '失败', missing: '无数据' } as Record<string, string>)[row.status] || '等待数据'
 }
 
@@ -180,8 +208,10 @@ function runtimeIssue(row: OnlineMrCollectorStatus): string {
   }
   if (row.error) return row.error
   if (!row.enabled) return '未启用'
-  if (row.health_status === 'stale') return '超过 30 秒未增长'
-  if (row.health_status === 'interrupted') return '超过 120 秒未增长'
+  if (['COLLECTING', 'RUNNING', 'RECONNECTING'].includes(String(store.current?.status || '').toUpperCase())) {
+    if (row.health_status === 'stale') return '超过 30 秒未增长'
+    if (row.health_status === 'interrupted') return '超过 120 秒未增长'
+  }
   if (row.status === 'missing') return '尚未生成数据'
   return ''
 }
@@ -203,7 +233,7 @@ function rawFileLabel(name: string): string {
 }
 
 function rawHealth(raw: OnlineMrRawFile): OnlineMrRuntimeStatusRow['health_status'] {
-  if (!store.active || !raw.exists) return 'unknown'
+  if (!store.active || !raw.exists || !['COLLECTING', 'RUNNING', 'RECONNECTING'].includes(String(store.current?.status || '').toUpperCase())) return 'unknown'
   const seconds = staleSeconds(raw.modified_at)
   if (seconds === null) return 'unknown'
   if (seconds > 120) return 'interrupted'
@@ -213,6 +243,7 @@ function rawHealth(raw: OnlineMrRawFile): OnlineMrRuntimeStatusRow['health_statu
 
 function rawIssue(raw: OnlineMrRawFile, health: string): string {
   if (!raw.exists) return '尚未生成数据'
+  if (!['COLLECTING', 'RUNNING', 'RECONNECTING'].includes(String(store.current?.status || '').toUpperCase())) return ''
   if (health === 'stale') return '超过 30 秒未增长'
   if (health === 'interrupted') return '超过 120 秒未增长'
   return ''
@@ -238,6 +269,22 @@ function showRaw(row: OnlineMrRuntimeStatusRow): void {
 
 function tailText(value: OnlineMrRawTail | null): string {
   return value?.lines.length ? value.lines.join('\n') : value?.message || '暂无数据'
+}
+
+function handleRawScroll(name: string, event: Event): void {
+  const element = event.target as HTMLElement
+  const atBottom = element.scrollHeight - element.scrollTop - element.clientHeight < 24
+  rawFollow.value = { ...rawFollow.value, [name]: atBottom }
+  if (atBottom) rawHasNew.value = { ...rawHasNew.value, [name]: false }
+}
+
+function followRaw(name: string): void {
+  rawFollow.value = { ...rawFollow.value, [name]: true }
+  rawHasNew.value = { ...rawHasNew.value, [name]: false }
+  void nextTick(() => {
+    const output = ({ mesh_link: meshRawOutput, fping_raw: fpingRawOutput, other: otherRawOutput }[name] as typeof meshRawOutput | undefined)?.value
+    if (output) output.scrollTop = output.scrollHeight
+  })
 }
 
 function handleVisibility(): void {
@@ -268,8 +315,8 @@ async function loadControlMrs(): Promise<void> {
 
 onMounted(async () => {
   document.addEventListener('visibilitychange', handleVisibility)
-  await loadControlMrs()
   store.startPolling()
+  void loadControlMrs()
 })
 
 onBeforeUnmount(() => {
@@ -343,25 +390,6 @@ onBeforeUnmount(() => {
         <el-empty v-else description="当前采集尚未产生轻量预览" />
       </section>
 
-      <section class="content-section runtime-status">
-        <div class="section-heading"><div><h3>当前采集状态</h3><p>状态、文件大小、最近增长和异常说明统一显示；超过 30 秒标记疑似异常，超过 120 秒标记采集中断。</p></div></div>
-        <NcDataTable
-          table-id="online-mr-collectors"
-          route-key="/rail-transit/online-mr"
-          :preference-scope="store.current.session_id"
-          :data="runtimeRows"
-          :columns="collectorColumns"
-          row-key="name"
-          max-height="420"
-          empty-text="采集项尚未初始化"
-        >
-          <template #cell-action="{ row }">
-            <el-button v-if="row.action_source" link type="primary" size="small" @click="showRaw(row)">查看日志</el-button>
-            <span v-else>—</span>
-          </template>
-        </NcDataTable>
-      </section>
-
       <section class="content-section runtime-log-viewer">
         <div class="section-heading"><div><h3>原始日志动态查看</h3><p>主链路和 fping v5 原始输出固定并列 tail；其他日志可单独切换查看。</p></div></div>
         <el-collapse v-model="expanded" class="raw-log-collapse">
@@ -369,19 +397,46 @@ onBeforeUnmount(() => {
             <div class="raw-compare-grid">
               <div class="raw-panel">
                 <div class="raw-panel-heading"><h4>主链路原始日志</h4><el-button link type="primary" @click="store.refreshRawTail">刷新</el-button></div>
-                <pre class="raw-output">{{ tailText(store.meshRawTail) }}</pre>
+                <pre ref="meshRawOutput" class="raw-output" @scroll="handleRawScroll('mesh_link', $event)">{{ tailText(store.meshRawTail) }}</pre>
+                <el-button v-if="!rawFollow.mesh_link && rawHasNew.mesh_link" link type="primary" @click="followRaw('mesh_link')">有新日志 · 回到底部</el-button>
               </div>
               <div class="raw-panel">
                 <div class="raw-panel-heading"><h4>fping v5 原始输出</h4><el-button link type="primary" @click="store.refreshRawTail">刷新</el-button></div>
-                <pre class="raw-output">{{ tailText(store.fpingRawTail) }}</pre>
+                <pre ref="fpingRawOutput" class="raw-output" @scroll="handleRawScroll('fping_raw', $event)">{{ tailText(store.fpingRawTail) }}</pre>
+                <el-button v-if="!rawFollow.fping_raw && rawHasNew.fping_raw" link type="primary" @click="followRaw('fping_raw')">有新日志 · 回到底部</el-button>
               </div>
             </div>
             <div class="other-log-viewer">
               <el-select v-model="rawSource" data-testid="raw-source" style="width: 240px">
                 <el-option v-for="item in otherRawSourceOptions" :key="item.value" :label="item.label" :value="item.value" />
               </el-select>
-              <pre class="raw-output other-raw-output">{{ tailText(store.otherRawTail || store.rawTail) }}</pre>
+              <pre ref="otherRawOutput" class="raw-output other-raw-output" @scroll="handleRawScroll('other', $event)">{{ tailText(store.otherRawTail || store.rawTail) }}</pre>
+              <el-button v-if="!rawFollow.other && rawHasNew.other" link type="primary" @click="followRaw('other')">有新日志 · 回到底部</el-button>
             </div>
+          </el-collapse-item>
+        </el-collapse>
+      </section>
+
+      <!-- 当前采集状态 -->
+      <section class="content-section runtime-status">
+        <el-collapse v-model="runtimeExpanded">
+          <el-collapse-item :title="runtimeTitle" name="runtime">
+            <p class="runtime-hint">状态、文件大小、最近增长和异常说明统一显示；停止中的 Session 不再按日志停止增长判定异常。</p>
+            <NcDataTable
+              table-id="online-mr-collectors"
+              route-key="/rail-transit/online-mr"
+              :preference-scope="store.current.session_id"
+              :data="runtimeRows"
+              :columns="collectorColumns"
+              row-key="name"
+              max-height="420"
+              empty-text="采集项尚未初始化"
+            >
+              <template #cell-action="{ row }">
+                <el-button v-if="row.action_source" link type="primary" size="small" @click="showRaw(row)">查看日志</el-button>
+                <span v-else>—</span>
+              </template>
+            </NcDataTable>
           </el-collapse-item>
         </el-collapse>
       </section>
@@ -413,6 +468,7 @@ onBeforeUnmount(() => {
 .raw-panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .raw-panel-heading h4 { margin: 0; font-size: 14px; }
 .other-log-viewer { margin-top: 12px; }
+.runtime-hint { margin: 0 0 12px; color: var(--el-text-color-secondary); }
 .raw-output { min-height: 140px; max-height: 260px; margin: 10px 0 0; padding: 12px; overflow: auto; background: var(--el-fill-color-darker); color: var(--el-text-color-primary); white-space: pre-wrap; }
 .other-raw-output { max-height: 220px; }
 @media (max-width: 1100px) { .preview-grid,.raw-compare-grid { grid-template-columns: 1fr; }.page-heading,.section-heading { align-items: flex-start; flex-direction: column; }.control-selector { flex-wrap: wrap; } }

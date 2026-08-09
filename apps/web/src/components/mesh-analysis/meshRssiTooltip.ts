@@ -38,6 +38,14 @@ export function buildSwitchSection(event?: MeshChartEvent): string {
     `切出：${escapeMeshTooltipHtml(event.from_ap_name)} / ${escapeMeshTooltipHtml(event.from_peer_mac)}`,
     `切入：${escapeMeshTooltipHtml(event.to_ap_name)} / ${escapeMeshTooltipHtml(event.to_peer_mac)}`,
   ]
+  if (event.before_rssi != null || event.after_rssi != null) {
+    rows.push(`切出 / 切入 RSSI：${metric(event.before_rssi)} / ${metric(event.after_rssi)}`)
+  }
+  if (event.from_station || event.from_section || event.to_station || event.to_section) {
+    rows.push(`切出归属：${escapeMeshTooltipHtml(event.from_station)} / ${escapeMeshTooltipHtml(event.from_section)}`)
+    rows.push(`切入归属：${escapeMeshTooltipHtml(event.to_station)} / ${escapeMeshTooltipHtml(event.to_section)}`)
+  }
+  if (event.reason) rows.push(`切换原因：${escapeMeshTooltipHtml(event.reason)}`)
   if (event.render_aligned && event.render_point_timestamp) {
     rows.push(`对齐采样时间：${escapeMeshTooltipHtml(event.render_point_timestamp)}`)
   } else {

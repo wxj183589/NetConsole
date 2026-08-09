@@ -92,10 +92,8 @@ class OnlineMrIdentityRemapService:
         candidates: list[object] = []
         for row in observations.get("main_link_samples", ()):
             peer_mac = row.get("peer_mac") or row.get("peer_mac_normalized") or ""
-            candidates.append(peer_mac)
-            bssid = row.get("bssid") or ""
-            if bssid and normalize_mac_key(bssid) != normalize_mac_key(peer_mac):
-                candidates.append(bssid)
+            if peer_mac:
+                candidates.append(peer_mac)
         for dataset in ("switch_history_events", "switch_realtime_events"):
             for row in observations.get(dataset, ()):
                 for prefix in ("old", "new"):
@@ -133,10 +131,7 @@ class OnlineMrIdentityRemapService:
         }
         matched_updated_rows = 0
         for row in observations.get("main_link_samples", ()):
-            candidates = (
-                row.get("peer_mac") or row.get("peer_mac_normalized") or "",
-                row.get("bssid") or "",
-            )
+            candidates = (row.get("peer_mac") or row.get("peer_mac_normalized") or "",)
             match = _select_match(batch, candidates)
             projection = _projection(match)
             if match.matched:
@@ -245,8 +240,8 @@ def _projection(match: ApIdentityMatch) -> dict[str, object]:
         "radio_id": match.radio_id if matched else None,
         "match_rule": match.match_rule if matched else "",
         "confidence": match.match_confidence if matched else 0,
-        "station": (match.station or "-") if matched else "-",
-        "section": (match.section or "-") if matched else "-",
+        "station": (match.station or None) if matched else None,
+        "section": (match.section or None) if matched else None,
         "belong_type": (match.belong_type or "unknown") if matched else "unknown",
     }
 
@@ -264,8 +259,8 @@ def _empty_projection(revision: int) -> dict[str, object]:
         "radio_id": None,
         "match_rule": "empty_link",
         "confidence": 0,
-        "station": "-",
-        "section": "-",
+        "station": None,
+        "section": None,
         "belong_type": "empty",
         "identity_revision": revision,
     }
@@ -274,6 +269,9 @@ def _empty_projection(revision: int) -> dict[str, object]:
 def _is_empty_link(peer_name: object, peer_mac: object) -> bool:
     name = str(peer_name or "").strip().casefold()
     mac = str(peer_mac or "").strip().casefold()
+    placeholders = {"", "-", "--", "none", "null", "n/a"}
+    if name in placeholders and mac in placeholders:
+        return True
     return name in {"空链路", "empty", "empty link"} or mac in {
         "0000-0000-0000",
         "00:00:00:00:00:00",

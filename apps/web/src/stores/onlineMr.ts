@@ -40,6 +40,8 @@ export const useOnlineMrStore = defineStore('online-mr', () => {
   let rawBusy = false
   let polling = false
   let rawExpanded = false
+  let missingSessionConfirmations = 0
+  const MAX_TRANSIENT_MISSING_CONFIRMATIONS = 3
 
   const active = computed(() => Boolean(current.value && ACTIVE_STATES.includes(current.value.status.toUpperCase())))
   const error = computed(() => {
@@ -71,7 +73,22 @@ export const useOnlineMrStore = defineStore('online-mr', () => {
     loading.value = !current.value
     try {
       const activeSession = await getCurrentOnlineMrSession()
-      if (!activeSession || !ACTIVE_STATES.includes(activeSession.status.toUpperCase())) {
+      if (!activeSession) {
+        if (current.value && ACTIVE_STATES.includes(current.value.status.toUpperCase())) {
+          missingSessionConfirmations += 1
+          connectionError.value = missingSessionConfirmations >= MAX_TRANSIENT_MISSING_CONFIRMATIONS
+            ? '当前实时 Session 已结束或不可用。'
+            : '当前实时状态刷新中，已保留最后一次有效 Session。'
+          if (missingSessionConfirmations < MAX_TRANSIENT_MISSING_CONFIRMATIONS) return
+        }
+        clearRealtimeState()
+        overviewErrors.value = {}
+        rawErrors.value = {}
+        recordSuccess()
+        return
+      }
+      missingSessionConfirmations = 0
+      if (!ACTIVE_STATES.includes(activeSession.status.toUpperCase())) {
         clearRealtimeState()
         overviewErrors.value = {}
         rawErrors.value = {}

@@ -11,6 +11,8 @@ import type {
   OnlineMrSessionDetail,
   OnlineMrSessionSummary,
   OnlineMrMetricPage,
+  OnlineMrMetricSeries,
+  OnlineMrTrafficOverview,
   OnlineMrSwitchRssiPage,
   OnlineMrSwitchRssiSource,
   OnlineMrTimelineEvent,
@@ -57,6 +59,19 @@ export async function getOnlineMrBusinessSummary(sessionId: string): Promise<Onl
   return (await apiRequest<ApiResponse<OnlineMrBusinessSummary>>(`${root}/${encodeURIComponent(sessionId)}/business-summary`)).data
 }
 
+export async function getOnlineMrTrafficOverview(
+  sessionId: string,
+  options: Pick<OnlineMrMetricQuery, 'startTime' | 'endTime' | 'signal'> = {},
+): Promise<OnlineMrTrafficOverview> {
+  const query = new URLSearchParams()
+  if (options.startTime) query.set('start_time', options.startTime)
+  if (options.endTime) query.set('end_time', options.endTime)
+  return (await apiRequest<ApiResponse<OnlineMrTrafficOverview>>(
+    `${root}/${encodeURIComponent(sessionId)}/traffic-overview?${query}`,
+    { signal: options.signal },
+  )).data
+}
+
 export interface OnlineMrMetricQuery {
   startTime?: string
   endTime?: string
@@ -78,6 +93,23 @@ export async function queryOnlineMrMetrics(sessionId: string, metricTypes: strin
   if (options.downsample) query.set('downsample', options.downsample)
   if (options.bucketSeconds) query.set('bucket_seconds', String(options.bucketSeconds))
   return (await apiRequest<ApiResponse<OnlineMrMetricPage>>(`${root}/${encodeURIComponent(sessionId)}/metric-page?${query}`, { signal: options.signal })).data
+}
+
+export async function queryOnlineMrTimelineMetrics(
+  sessionId: string,
+  metricTypes: string[],
+  options: Omit<OnlineMrMetricQuery, 'offset'> = {},
+): Promise<OnlineMrMetricSeries[]> {
+  const query = new URLSearchParams({ metric_types: metricTypes.join(',') })
+  if (options.startTime) query.set('start_time', options.startTime)
+  if (options.endTime) query.set('end_time', options.endTime)
+  query.set('limit', String(options.limit || 10_000))
+  if (options.downsample) query.set('downsample', options.downsample)
+  if (options.bucketSeconds) query.set('bucket_seconds', String(options.bucketSeconds))
+  return (await apiRequest<ApiResponse<OnlineMrMetricSeries[]>>(
+    `${root}/${encodeURIComponent(sessionId)}/metrics?${query}`,
+    { signal: options.signal },
+  )).data
 }
 
 export async function queryOnlineMrBusinessTable<Table extends OnlineMrBusinessTable>(

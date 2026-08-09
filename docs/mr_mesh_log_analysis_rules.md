@@ -106,6 +106,7 @@ RSSI 数值按规则文件既定口径比较。两套 profile 当前 fping 平�
 
 ## 6. 大数据与图表
 
+- `apps/web/src/components/rail-timeline/RailRssiComparison.vue` 是轨道交通 RSSI 双图公共布局，`railTimeline.ts` 是 viewport/cursor/selectedTime 控制器；离线 MESH 与 Online MR 都复用它们。共享层只理解标准时间域、图表状态和 slot，不依赖 MESH/Online MR API、parser 或数据库 DTO。`MeshRssiChart` 与 `MeshTracksideSignalChart` 仍保留既有 MESH 数据语义，抽取公共框架不得改变原页面查询、降采样、切换映射或缓存边界。
 - 页面按源文件解析到实际的 compact v3 tagged samples 明细库，直接读取版本化标量列；不在正式查询路径回退旧 JSON 指标列。
 - 主链 RSSI 图按 Radio 和可选时间窗口查询。服务端采样严格分为三级：一级为首尾、有效切换、NO_ACTIVE/MULTI_ACTIVE、真实缺口、持续 0 边界和短时 0 后恢复点；二级为链路/角色/区段边界及 RSSI/Busy 极值；三级为自然秒真实代表点。一级点无条件优先，二/三级只使用剩余预算，自然秒不得扩大用户目标点数或挤占一级点。一级点超过 20,000 点安全上限时返回 413 并要求缩小时间窗口，不再静默抽样关键点。DTO 返回 `total_points/returned_points/downsampled`、请求/有效点数、`payload_bytes`、`query_duration_ms` 和必要的 `downsample_warning`；单个响应 JSON 不得超过 16 MiB。
 - RSSI 明确数值 `0` 使用统一的连续区间规则，并且必须在服务端降采样前识别。同一自然秒内出现一条或多条连续 0 均标记为 `suppressed`；同一逻辑 series 的连续 0 覆盖至少两个不同自然秒才标记为 `sustained`。原始 `sample_count` 仍保留全部记录数，不按行数把同秒重复上报误判为持续 0。持续时长仍从第一条 0 的时间算到下一条有效非 0 采样；序列尾部没有恢复点时，使用同一逻辑 series 相邻有效时间差的中位数估算一个采样周期，估算值限制在 100～5,000 ms，样本不足回退 1,000 ms。普通空值、非法值、来源/series/run 边界和明显日志时间缺口结束当前区间，不得归入连续 0。

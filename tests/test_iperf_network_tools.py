@@ -66,6 +66,33 @@ def test_iperf_stop_marks_already_exited_without_terminate(tmp_path: Path) -> No
     assert runner.diagnostics()["exit_code"] == 1
 
 
+def test_iperf_callback_failure_is_degraded_and_keeps_runtime_diagnostics(tmp_path: Path) -> None:
+    tool = tmp_path / "iperf3.exe"
+    tool.touch()
+
+    def callback(*_args):
+        raise PermissionError("snapshot denied")
+
+    runner = IperfProcessRunner(
+        tool,
+        [str(tool), "-c", "127.0.0.1"],
+        tmp_path / "iperf.log",
+        line_callback=callback,
+    )
+    runner._emit_line("debug", None, None)
+
+    diagnostics = runner.diagnostics()
+    assert diagnostics["degraded"] is True
+    assert "callback" in diagnostics["degraded_warnings"][0]
+
+    runner._record_exception("snapshot_write", PermissionError("access denied"))
+    diagnostics = runner.diagnostics()
+    assert diagnostics["exception_stage"] == "snapshot_write"
+    assert diagnostics["exception_type"] == "PermissionError"
+    assert diagnostics["exception_message"] == "access denied"
+    assert "PermissionError" in diagnostics["traceback_tail"]
+
+
 def test_iperf_tool_discovery_from_project_tools(tmp_path: Path) -> None:
     exe = tmp_path / "tools" / "windows-x64" / "iperf3" / "iperf3.exe"
     exe.parent.mkdir(parents=True)
