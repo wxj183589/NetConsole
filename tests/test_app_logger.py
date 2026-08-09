@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import errno
+import os
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from netconsole.core import app_logger
@@ -62,6 +64,19 @@ def test_app_logger_rotates_and_reads_across_runtime_log_files(tmp_path, monkeyp
     app_logger.clear_logs()
     assert app_logger.read_logs() == []
     assert not list(paths.logs_dir.glob("app-*.log"))
+
+
+def test_app_logger_rotates_across_local_date_boundary(tmp_path):
+    paths = configure(tmp_path)
+    paths.app_log_path.parent.mkdir(parents=True, exist_ok=True)
+    paths.app_log_path.write_text("previous day\n", encoding="utf-8")
+    previous = (datetime.now() - timedelta(days=1)).timestamp()
+    os.utime(paths.app_log_path, (previous, previous))
+
+    app_logger.log_info("NEW_DAY", "ready")
+
+    assert "NEW_DAY" in paths.app_log_path.read_text(encoding="utf-8")
+    assert len(list(paths.logs_dir.glob("app-*.log"))) == 1
 
 
 def test_app_logger_sanitizes_sensitive_detail(tmp_path):
@@ -169,3 +184,27 @@ def test_app_logger_write_failure_does_not_escape_to_caller(tmp_path, monkeypatc
     assert "Resource deadlock avoided" in captured.err
     assert "secret" not in captured.err
     assert not paths.app_log_path.exists()
+
+
+def test_application_log_summarizes_one_megabyte_payload(tmp_path):
+    paths = configure(tmp_path)
+    payload = "CLI-OUTPUT:" + "x" * (1024 * 1024)
+
+    app_logger.log_info("DEVICE_COMMAND_COMPLETED", payload)
+
+    content = paths.app_log_path.read_text(encoding="utf-8")
+    assert len(content.encode("utf-8")) <= app_logger.APPLICATION_LOG_MAX_BYTES + 128
+    assert "payload_truncated=true" in content
+    assert "original_bytes=" in content
+    assert payload not in content
+
+
+def test_debug_log_is_disabled_by_default_and_explicitly_enabled(tmp_path, monkeypatch):
+    paths = configure(tmp_path)
+    monkeypatch.delenv("NETCONSOLE_LOG_LEVEL", raising=False)
+    app_logger.log_debug("DEBUG_HIDDEN", "detail")
+    assert not paths.app_log_path.exists()
+
+    monkeypatch.setenv("NETCONSOLE_LOG_LEVEL", "DEBUG")
+    app_logger.log_debug("DEBUG_VISIBLE", "detail")
+    assert "DEBUG_VISIBLE" in paths.app_log_path.read_text(encoding="utf-8")

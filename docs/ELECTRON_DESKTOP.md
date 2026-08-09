@@ -156,11 +156,17 @@ Electron Builder 目录包/NSIS 与 PyInstaller 受管 Backend 的构建链已�
 3. 使用可执行文件和参数数组启动 `netconsole.backend.electron_runtime`，固定 `shell: false`、`windowsHide: true`、`127.0.0.1` 和端口 `0`。
 4. 令牌只通过已持有子进程的 stdin 首行 JSON 传递；不进入参数、环境变量、URL 或配置。
 5. Electron 先校验受管子进程管道返回的 `127.0.0.1:<port>`，再使用临时请求头轮询真实 `/api/health`，成功后才加载正式 Vue 页面。
-6. stdout/stderr 按行写入 Electron 日志，先移除令牌和常见敏感字段。
+6. stdout 只消费受管启动/退出协议，生产默认不落文件；stderr 先移除令牌和常见敏感字段，再按受控警告/错误事件写入 Electron 日志。
 7. 正常退出时 Main 通过同一 stdin 控制管道发送 `shutdown`，Python 控制线程据此请求 Uvicorn 优雅退出；父进程异常导致管道 EOF 时，Python 同样请求退出。
 8. Python 只在 `uvicorn.Server.run()` 完全返回后发送 `netconsole.electron_backend.shutdown_ack`，随后等待 Main 的 `exit`；Main 收到该确认后才发送 `exit` 并关闭控制管道。
 9. 只有优雅停止确认超时才对本管理器持有的子进程句柄发送终止信号；不按名称扫描或误杀其他 Python。
 10. 后端意外退出或强制终止后仍未退出时状态变为 `failed`，只向当前受信 Renderer 发送脱敏状态事件，不谎报 `stopped`。
+
+### 运行日志生命周期
+
+Electron Main 的应用日志由异步队列写入 `<data_root>/runtime/logs/electron.log`，达到 20 MB 或跨本地日期时滚动为 `electron-YYYYMMDD-HHmmss-NNNN.log`，旧文件保留 7 天。生产默认只落盘 `INFO` 及以上；Backend stdout 仅用于协议控制，stderr 作为受控错误/警告事件记录，重复 fingerprint 在 10 秒窗口内抑制并每 60 秒输出摘要。大对象只写有限摘要，不改变局点 raw/artifact 的完整内容。
+
+Python `app.log` 使用相同的 20 MB + 日期滚动与 7 天保留。启动后异步执行一次轻量 Housekeeper，运行期间每小时 best-effort 检查日志目录；总量上限 300 MB，清理目标 250 MB，活动日志和数据库升级审计始终保护。WPS writer 不属于 Electron 仓库，本边界只治理其外部 stdout/stderr 文件的识别、保留和总容量清理。
 
 Backend 重启或恢复后，Main 的 `ready` 只表示新进程已通过 supervisor 健康检查。Vue Runtime 收到该事件后必须重新通过受信 preload bridge 读取并校验 Runtime Config，把动态 Origin 和 `X-NetConsole-Session` 令牌作为同一 generation 原子替换；完成前统一显示为重新连接中。根布局随后使用新绑定再次请求 `/api/health`，只有成功后才显示 `Backend Online`。重绑定失败保留上一份受信 Electron 绑定用于诊断，但状态保持失败，绝不回退 Browser 相对 `/api`。
 

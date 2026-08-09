@@ -977,7 +977,14 @@ class GroundUnattendedRepository:
                 ).fetchone()
             if row is None:
                 raise RuntimeError("ground unattended profile was not created")
-        return GroundUnattendedProfileDTO.model_validate(dict(row))
+        payload = dict(row)
+        return GroundUnattendedProfileDTO.model_validate(
+            {
+                field: payload[field]
+                for field in GroundUnattendedProfileDTO.model_fields
+                if field in payload
+            }
+        )
 
     def save_profile(
         self, profile: GroundUnattendedProfileDTO

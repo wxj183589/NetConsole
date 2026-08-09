@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import sys
@@ -10,6 +11,7 @@ from pathlib import Path
 from typing import Iterator
 
 from netconsole.core.interprocess_lock import interprocess_file_lock
+from netconsole.core.log_policy import LOG_POLICY
 from netconsole.core.paths import PathResolver
 from netconsole.core.log_pagination import (
     LogPage,
@@ -19,7 +21,8 @@ from netconsole.core.log_pagination import (
 
 
 _paths = PathResolver()
-APP_LOG_MAX_BYTES = 25 * 1024 * 1024
+APP_LOG_MAX_BYTES = LOG_POLICY.backend.max_file_bytes
+APPLICATION_LOG_MAX_BYTES = LOG_POLICY.application_log.max_event_bytes
 _ROTATED_LOG_PATTERN = "app-*.log"
 _LOG_FAILURE_GUARD = threading.Lock()
 _LOG_FAILURE_COUNT = 0
@@ -117,6 +120,8 @@ def sanitize_detail(detail: object) -> str:
 
 
 def _write_log(level: str, event: str, detail: str = "", *, log_path: Path | None = None) -> None:
+    if level == "DEBUG" and not _debug_logging_enabled():
+        return
     path = log_path or _log_path()
     safe_event = ""
     safe_detail = ""
@@ -125,7 +130,7 @@ def _write_log(level: str, event: str, detail: str = "", *, log_path: Path | Non
         now = datetime.now()
         timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
         safe_event = _clean_cell(event).upper()
-        safe_detail = _sanitize_detail(detail)
+        safe_detail = _truncate_detail(_sanitize_detail(detail))
         line = f"{timestamp} | {level} | {safe_event} | {safe_detail}\n"
         with interprocess_file_lock(log_lock_path(path)):
             _rotate_if_needed(path, now, len(line.encode("utf-8")))
@@ -221,3 +226,17 @@ def _sanitize_detail(detail: object) -> str:
 
 def _clean_cell(value: str) -> str:
     return value.replace("\r", " ").replace("\n", " ").replace(" | ", " / ").strip()
+
+
+def _truncate_detail(value: str) -> str:
+    original_bytes = len(value.encode("utf-8"))
+    if original_bytes <= APPLICATION_LOG_MAX_BYTES:
+        return value
+    marker = f" payload_truncated=true original_bytes={original_bytes}"
+    preview_bytes = max(0, APPLICATION_LOG_MAX_BYTES - len(marker.encode("utf-8")))
+    preview = value.encode("utf-8")[:preview_bytes].decode("utf-8", errors="ignore")
+    return f"{preview}{marker}"
+
+
+def _debug_logging_enabled() -> bool:
+    return str(os.environ.get("NETCONSOLE_LOG_LEVEL", "")).strip().upper() == "DEBUG"

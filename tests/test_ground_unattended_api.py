@@ -27,6 +27,24 @@ from netconsole.services.ground_unattended.application_service import (
 from netconsole.services.ground_unattended.schedule import schedule_window
 
 
+def test_ground_profile_reader_ignores_future_additive_columns(tmp_path) -> None:
+    repository = GroundUnattendedRepository(
+        tmp_path / "ground-unattended.sqlite", site_id="demo"
+    )
+    repository.get_profile()
+    with repository._connection() as connection:
+        connection.execute(
+            "ALTER TABLE ground_unattended_profiles ADD COLUMN future_runtime_field TEXT"
+        )
+        connection.execute(
+            "UPDATE ground_unattended_profiles SET future_runtime_field='newer-runtime'"
+        )
+
+    profile = repository.get_profile()
+
+    assert profile.site_id == "demo"
+
+
 def test_ground_unattended_default_profile_does_not_overwrite_concurrent_save(
     tmp_path, monkeypatch
 ) -> None:

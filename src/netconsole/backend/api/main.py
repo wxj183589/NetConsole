@@ -27,6 +27,7 @@ from netconsole.application.web_artifacts import WebArtifactStore
 from netconsole.application.web_export_process_adapter import WebExportProcessAdapter
 from netconsole.backend.api.router import api_router, ws_router
 from netconsole.core import app_logger
+from netconsole.core.log_policy import LOG_POLICY
 from netconsole.backend.web_build import (
     FRONTEND_MISMATCH_MESSAGE,
     backend_build_id,
@@ -379,7 +380,7 @@ def create_app(
                     )
                 except Exception as exc:
                     app_logger.log_warning("APP_AUTO_CLEANUP_FAILED", _safe_error_message(str(exc)))
-                await asyncio.sleep(24 * 60 * 60)
+                await asyncio.sleep(LOG_POLICY.housekeeper.interval_seconds)
 
         auto_cleanup_task = (
             asyncio.create_task(schedule_auto_cleanup())

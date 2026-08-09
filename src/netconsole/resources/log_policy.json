@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "application_log": {
+    "max_event_bytes": 16384,
+    "max_context_bytes": 32768,
+    "max_traceback_bytes": 262144,
+    "production_level": "INFO",
+    "development_level": "DEBUG"
+  },
+  "electron": {
+    "max_file_bytes": 20971520,
+    "retention_days": 7
+  },
+  "backend": {
+    "max_file_bytes": 20971520,
+    "retention_days": 7
+  },
+  "wps": {
+    "max_file_bytes": 5242880,
+    "retention_days": 3
+  },
+  "startup_error": {
+    "retention_days": 30
+  },
+  "faulthandler": {
+    "retention_days": 30
+  },
+  "duplicate_suppression": {
+    "window_seconds": 10,
+    "summary_interval_seconds": 60
+  },
+  "housekeeper": {
+    "max_total_bytes": 314572800,
+    "target_total_bytes": 262144000,
+    "interval_seconds": 3600
+  },
+  "raw_collection": {
+    "truncate": false
+  }
+}

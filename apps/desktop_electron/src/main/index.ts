@@ -8,7 +8,7 @@ import { PythonBackendManager, type BackendRuntimeInfo } from './backend-manager
 import { DesktopBootstrapStore } from './bootstrap'
 import { DESKTOP_SAFE_BACKGROUND_COLOR, isDevelopmentMenuEnabled, loadDesktopConfig, resolveDesktopBackgroundColor } from './config'
 import { registerDesktopIpc, type DesktopIpcRegistration } from './ipc'
-import { createFileLogger, type DesktopLogger } from './logger'
+import { createFileLogger, type DesktopLogger, type ManagedDesktopLogger } from './logger'
 import { buildChildProcessGoneDiagnostic, logDevelopmentGpuFeatureStatus } from './gpu-diagnostics'
 import { ensureDesktopRuntimePaths, resolveDesktopStorageContext } from './development-data-root'
 import { resolveDesktopDataRootConfiguration } from './data-root-configuration'
@@ -92,6 +92,7 @@ const pathRegistry = new GrantedPathRegistry()
 let rendererUrl = ''
 let rendererDevelopment = false
 let logger: DesktopLogger = () => undefined
+let managedLogger: ManagedDesktopLogger | undefined
 let desktopIpc: DesktopIpcRegistration | undefined
 const startupStartedAt = process.hrtime.bigint()
 let startupTimeline: StartupTimeline | undefined
@@ -156,7 +157,10 @@ async function startDesktop(): Promise<void> {
   }
   desktopDataRoot = config.dataRoot
   desktopActiveSiteId = config.activeSiteId ?? ''
-  logger = createFileLogger(resolve(app.getPath('logs'), 'electron.log'))
+  managedLogger = createFileLogger(resolve(app.getPath('logs'), 'electron.log'), {
+    minimumLevel: config.runtimeMode === 'desktop-development' ? 'DEBUG' : 'INFO',
+  })
+  logger = managedLogger
   logger('ELECTRON_STORAGE_MODE', `mode=${desktopStorageContext.mode}`)
   logger('NETCONSOLE_STORAGE_ROOT_SELECTED', `data_root=${config.dataRoot} source=${desktopDataRootResolution.source} fallback_used=false`)
   if (bootstrapResult.rejectedEphemeralRoot) logger('ELECTRON_BOOTSTRAP_EPHEMERAL_ROOT_REJECTED')
@@ -1209,6 +1213,7 @@ async function shutdown(): Promise<void> {
     // BackendManager has already moved to the failed state and logged the reason.
     requestedExitCode = Math.max(requestedExitCode, 1)
   } finally {
+    await managedLogger?.flush()
     workspaceWindowController?.dispose()
     workspaceWindowController = undefined
     trayController = undefined
