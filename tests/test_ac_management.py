@@ -3288,7 +3288,7 @@ def test_trackside_ap_business_export_adds_current_optical_abnormal_sheet(tmp_pa
     )
 
     workbook = load_workbook(export_path)
-    assert workbook.sheetnames[:2] == ["轨旁AP业务", "当前异常光衰"]
+    assert workbook.sheetnames[:3] == ["AP上线情况概览", "轨旁AP业务", "当前异常光衰"]
     source_sheet = workbook["轨旁AP业务"]
     abnormal_sheet = workbook["当前异常光衰"]
     abnormal_headers = [cell.value for cell in abnormal_sheet[1]]
@@ -3321,7 +3321,7 @@ def test_trackside_ap_business_export_adds_current_optical_abnormal_sheet(tmp_pa
     assert (
         abnormal_sheet["A2"].fill.fgColor.rgb
         == source_sheet["A3"].fill.fgColor.rgb
-        == "00FEE2E2"
+        == "FFFEE2E2"
     )
     assert abnormal_sheet["A1"].font.bold
     assert abnormal_sheet.freeze_panes == "A2"
@@ -4099,8 +4099,8 @@ def test_export_ap_online_overview_xlsx_contains_colors_and_alignment(tmp_path):
     assert sheet["A1"].alignment.horizontal == "center"
     assert sheet["A2"].alignment.horizontal == "center"
     assert sheet.column_dimensions["A"].width > len("车站")
-    assert sheet["A2"].fill.fgColor.rgb == "00DCFCE7"
-    assert sheet["D3"].fill.fgColor.rgb == "00FEE2E2"
+    assert sheet["A2"].fill.fgColor.rgb == "FFDCFCE7"
+    assert sheet["D3"].fill.fgColor.rgb == "FFFEE2E2"
     assert sheet["F3"].value == "Need check"
 
 
@@ -5556,7 +5556,7 @@ def test_trackside_ap_business_export_excludes_internal_fields(tmp_path):
         [i18n.t(key) for key, _field in TRACKSIDE_AP_BUSINESS_COLUMNS],
     )
 
-    sheet = load_workbook(export_path).active
+    sheet = load_workbook(export_path)["轨旁AP业务"]
     headers = [cell.value for cell in sheet[1]]
     assert "TX功率" not in headers
     assert "IP Address" not in headers
@@ -5612,7 +5612,7 @@ def test_trackside_ap_business_export_formats_missing_ap_side_as_dash(tmp_path):
         [i18n.t(key) for key, _field in TRACKSIDE_AP_BUSINESS_COLUMNS],
     )
 
-    sheet = load_workbook(export_path).active
+    sheet = load_workbook(export_path)["轨旁AP业务"]
     headers = [cell.value for cell in sheet[1]]
     alarm_column = headers.index("AP业务光衰") + 1
     ap_mac_column = headers.index("AP_MAC") + 1

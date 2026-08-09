@@ -36,8 +36,10 @@ from netconsole.services.trackside_ap_business import (
     AP_OPTICAL_TREATMENT_RECORD_COLUMNS,
     CURRENT_OPTICAL_ABNORMAL_COLUMNS,
     NEW_ONLINE_AP_OVERVIEW_COLUMNS,
+    TRACKSIDE_AP_BUSINESS_SHEET_DEFINITIONS,
     TRACKSIDE_AP_BUSINESS_EXPORT_COLUMNS,
     TracksideApExportCancelled,
+    build_ap_online_history_block,
     export_trackside_ap_business_xlsx,
     trackside_export_fill_status,
 )
@@ -180,7 +182,7 @@ def test_trackside_export_contract_and_fill_matrix(tmp_path: Path) -> None:
         for index in range(2, main.max_row + 1)
     }
     assert fills["gei-0/3/0/41"].fill_type == "solid"
-    assert fills["gei-0/3/0/41"].fgColor.rgb == "00DCFCE7"
+    assert fills["gei-0/3/0/41"].fgColor.rgb == "FFDCFCE7"
     assert fills["gei-0/3/0/42"].fill_type is None
     assert fills["gei-0/4/0/42"].fill_type is None
     assert fills["gei-0/4/0/43"].fill_type == "solid"
@@ -509,7 +511,24 @@ def test_trackside_business_workbook_preserves_sheets_and_export_style(
         rows,
         TRACKSIDE_AP_BUSINESS_EXPORT_COLUMNS,
         [i18n.t(key) for key, _field in TRACKSIDE_AP_BUSINESS_EXPORT_COLUMNS],
-        [],
+        [
+            {
+                "site": "站点A",
+                "total": 2,
+                "online": 1,
+                "offline": 1,
+                "online_rate": "50.0%",
+                "remark": "",
+            },
+            {
+                "site": "合计",
+                "total": 2,
+                "online": 1,
+                "offline": 1,
+                "online_rate": "50.0%",
+                "remark": "",
+            },
+        ],
         AP_ONLINE_OVERVIEW_COLUMNS,
         [i18n.t(key) for key, _field in AP_ONLINE_OVERVIEW_COLUMNS],
         [],
@@ -535,6 +554,8 @@ def test_trackside_business_workbook_preserves_sheets_and_export_style(
         ],
         offline_ap_headers(OFFLINE_AP_STATS_COLUMNS),
         offline_ap_headers(OFFLINE_AP_LEDGER_COLUMNS),
+        snapshot_generated_at="2026-08-07T01:30:00Z",
+        export_updated_at="2026-08-07T12:15:38+00:00",
     )
     attach_export_metadata(
         output,
@@ -545,26 +566,29 @@ def test_trackside_business_workbook_preserves_sheets_and_export_style(
 
     workbook = load_workbook(output)
     business_sheets = [
+        "AP上线情况概览",
         "轨旁AP业务",
         "当前异常光衰",
-        "AP上线情况概览",
-        "新增上线AP概览",
-        "待关联在线AP",
         "AP光衰处理记录",
         "AP离线情况",
-        "离线AP台账",
+        "AP离线台账",
+        "新增上线AP概览",
+        "待关联在线AP",
         "交换机光模块统计",
     ]
     assert workbook.sheetnames == [*business_sheets, "_netconsole_meta"]
     for name in business_sheets:
         sheet = workbook[name]
-        assert sheet.freeze_panes == "A2"
-        assert sheet.auto_filter.ref == sheet.dimensions
+        assert sheet.freeze_panes == (None if name == "AP上线情况概览" else "A2")
+        assert sheet.auto_filter.ref == (
+            None if name == "AP上线情况概览" else sheet.dimensions
+        )
+        header_row = 3 if name == "AP上线情况概览" else 1
         assert all(
             cell.alignment.horizontal == "center"
             and cell.alignment.vertical == "center"
-            for row in sheet.iter_rows()
-            for cell in row
+            and cell.alignment.wrap_text is True
+            for cell in sheet[header_row]
         )
         assert all(
             dimension.width is not None and dimension.width > 0
@@ -575,16 +599,134 @@ def test_trackside_business_workbook_preserves_sheets_and_export_style(
     main_headers = [cell.value for cell in main[1]]
     interface_column = main_headers.index("接口名称") + 1
     assert main.cell(2, interface_column).value == "GE2/0/1"
+    reason_column = main_headers.index("AP业务判定原因") + 1
+    assert main.cell(2, reason_column).alignment.horizontal == "left"
+    assert main.cell(2, reason_column).alignment.vertical == "center"
+    assert main.cell(2, reason_column).alignment.wrap_text is True
+    assert main.cell(2, 1).alignment.horizontal == "center"
+    assert main.row_dimensions[1].height == 24
+    assert main.row_dimensions[2].height == 24
+    assert main["A1"].fill.fgColor.rgb == "FFDBEAFE"
+    assert main["A2"].fill.fgColor.rgb == "FFDCFCE7"
+    assert main["A1"].border.left.color.rgb == "FFD1D5DB"
+
+    current_abnormal = workbook["当前异常光衰"]
+    assert current_abnormal.max_row == 2
+    assert str(current_abnormal["A2"].value).startswith("当前无异常光衰")
+    assert current_abnormal["A2"].fill.fgColor.rgb != "FFFEE2E2"
 
     treatment = workbook["AP光衰处理记录"]
     treatment_headers = [cell.value for cell in treatment[1]]
     treatment_interface_column = treatment_headers.index("接口名称") + 1
     assert treatment.cell(2, treatment_interface_column).value == "XGE1/0/1"
 
-    ledger = workbook["离线AP台账"]
+    overview = workbook["AP上线情况概览"]
+    assert overview["A1"].value == "日期：2026-08-07"
+    assert overview["A2"].value == "更新时间：2026-08-07 20:15:38"
+    assert [cell.value for cell in overview[3]] == [
+        i18n.t(key) for key, _field in AP_ONLINE_OVERVIEW_COLUMNS
+    ]
+    assert overview["E4"].value == 0.5
+    assert overview["E4"].number_format == "0.0%"
+    assert overview["E5"].value == 0.5
+    assert overview["E5"].number_format == "0.0%"
+    assert all(cell.value is None for cell in overview[overview.max_row])
+    assert overview.row_dimensions[overview.max_row].height == 16
+    assert all(
+        all(
+            side is None or side.style is None
+            for side in (
+                cell.border.left,
+                cell.border.right,
+                cell.border.top,
+                cell.border.bottom,
+            )
+        )
+        for cell in overview[overview.max_row]
+    )
+
+    colors = {
+        definition.sheet_name: definition.tab_color
+        for definition in TRACKSIDE_AP_BUSINESS_SHEET_DEFINITIONS
+        if definition.tab_color
+    }
+    assert colors == {
+        "AP上线情况概览": "#C6EFCE",
+        "轨旁AP业务": "#C6EFCE",
+        "当前异常光衰": "#FFEB9C",
+        "AP光衰处理记录": "#DDEBF7",
+        "AP离线情况": "#D9D9D9",
+        "AP离线台账": "#D9D9D9",
+    }
+    for name, color in colors.items():
+        assert workbook[name].sheet_properties.tabColor.rgb == f"FF{color[1:]}"
+    for name in ("新增上线AP概览", "待关联在线AP", "交换机光模块统计"):
+        assert workbook[name].sheet_properties.tabColor is None
+
+    ledger = workbook["AP离线台账"]
     ledger_headers = [cell.value for cell in ledger[1]]
     historical_interface_column = ledger_headers.index("历史邻居接口") + 1
     assert ledger.cell(2, historical_interface_column).value == "25GE1/0/2"
+
+
+def test_trackside_business_sheet_registry_keeps_overview_identities_distinct() -> None:
+    definitions = {
+        item.sheet_name: item for item in TRACKSIDE_AP_BUSINESS_SHEET_DEFINITIONS
+    }
+
+    history = definitions["AP上线情况概览"]
+    new_online = definitions["新增上线AP概览"]
+    assert history.stable_key == "ap_online_history_overview"
+    assert history.sync_mode == "PREPEND_SNAPSHOT"
+    assert history.freeze_mode == "NONE"
+    assert new_online.stable_key == "newly_online_ap_overview"
+    assert new_online.sync_mode == "FULL_REPLACE"
+    assert new_online.freeze_mode == "FIRST_ROW_ONLY"
+    assert all(
+        item.freeze_mode == "FIRST_ROW_ONLY"
+        for item in TRACKSIDE_AP_BUSINESS_SHEET_DEFINITIONS
+        if item.stable_key != "ap_online_history_overview"
+    )
+    assert history.stable_key != new_online.stable_key
+
+
+def test_ap_online_history_block_has_dynamic_blank_separator() -> None:
+    rows = [
+        {
+            "site": "站点A",
+            "total": 2,
+            "online": 1,
+            "offline": 1,
+            "online_rate": "50.0%",
+            "remark": "",
+        },
+        {
+            "site": "合计",
+            "total": 2,
+            "online": 1,
+            "offline": 1,
+            "online_rate": "50.0%",
+            "remark": "",
+        },
+    ]
+    headers = ["归属站点", "规划AP总数量", "上线", "未上线", "上线率", "备注"]
+
+    block = build_ap_online_history_block(
+        rows,
+        AP_ONLINE_OVERVIEW_COLUMNS,
+        headers,
+        snapshot_generated_at="2026-08-07T01:30:00Z",
+        updated_at="2026-08-07T12:15:38Z",
+    )
+
+    assert block.cells() == [
+        ["日期：2026-08-07", None, None, None, None, None],
+        ["更新时间：2026-08-07 20:15:38", None, None, None, None, None],
+        headers,
+        ["站点A", "2", "1", "1", 0.5, "-"],
+        ["合计", "2", "1", "1", 0.5, "-"],
+        [None, None, None, None, None, None],
+    ]
 
 
 @pytest.mark.parametrize(

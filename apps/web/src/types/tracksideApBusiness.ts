@@ -253,3 +253,209 @@ export interface TracksideApPlanPreview {
   rows: TracksideApPlanPreviewRow[]; result_rows: TracksideApPlanRow[]; result_plan: TracksideApPlan | null
   legacy_schema: boolean; message: string
 }
+
+export type WpsTracksideTargetCode = 'wps_standard_spreadsheet'
+
+export interface WpsRuntimeCapabilityNotice {
+  capability?: string
+  message?: string
+}
+
+export interface WpsTracksideDiagnostic {
+  executed_at?: string
+  status?: string
+  script_version?: string
+  deployment_id?: string
+  script_id?: string
+  document_id?: string
+  operation?: string
+  message?: string
+  phase?: string
+  http_status?: number
+  remote_error_code?: string
+  remote_message?: string
+  suggestion?: string
+  target_code?: string
+  runtime_capability?: string
+  core_verified?: boolean
+  full_replace_ready?: boolean
+  prepend_snapshot_ready?: boolean
+  capabilities?: Record<string, boolean>
+  core_capabilities?: Record<string, boolean>
+  optional_capabilities?: Record<string, boolean>
+  capability_failures?: WpsRuntimeCapabilityNotice[]
+  warnings?: WpsRuntimeCapabilityNotice[]
+  sheet_tab_color_verified?: boolean
+  expected_tab_color?: string
+  actual_tab_color?: string | number
+  column_width_verified?: boolean
+  expected_column_widths?: Record<string, number>
+  actual_column_widths?: Record<string, number | null>
+  probe_sheet_visible?: boolean
+  probe_sheet?: string
+  binding_status?: string
+  local_binding_id?: string
+  remote_binding_id?: string
+  binding_id_match?: boolean
+  remote_document_id?: string
+  remote_site_id?: string
+  remote_site_name?: string
+  remote_business_key?: string
+  remote_target_code?: string
+  remote_target_type?: string
+  document_match?: boolean
+  document_identity_match?: boolean
+  site_match?: boolean
+  site_identity_match?: boolean
+  business_match?: boolean
+  business_identity_match?: boolean
+  target_code_match?: boolean
+  target_type_match?: boolean
+  target_match?: boolean
+}
+
+export interface WpsTracksideTarget {
+  target_id: string
+  site_id: string
+  business_key: string
+  target_code: WpsTracksideTargetCode
+  target_type: 'WPS_STANDARD_SPREADSHEET'
+  target_name: string
+  document_open_url: string
+  webhook_url: string
+  expected_document_id: string
+  expected_script_version?: string
+  expected_deployment_id?: string
+  expected_script_id?: string
+  runtime_capability?: string
+  last_runtime_probe_at?: string
+  runtime_probe_document_id?: string
+  runtime_probe_script_id?: string
+  runtime_probe_script_version?: string
+  runtime_probe_deployment_id?: string
+  binding_status?: string
+  binding_id?: string
+  remote_binding_id?: string
+  remote_site_id?: string
+  remote_site_name?: string
+  remote_business_key?: string
+  connection_diagnostic?: WpsTracksideDiagnostic
+  runtime_probe_diagnostic?: WpsTracksideDiagnostic
+  sync_test_diagnostic?: WpsTracksideDiagnostic
+  sheet_tab_color_probe_diagnostic?: WpsTracksideDiagnostic
+  column_width_probe_diagnostic?: WpsTracksideDiagnostic
+  remote_script_version?: string
+  remote_deployment_id?: string
+  remote_script_id?: string
+  remote_identity_verified_at?: string
+  enabled: boolean
+  protocol_version: number
+  timeout_seconds: number
+  token_configured: boolean
+  token_suffix: string
+  last_test_at: string
+  last_test_status: string
+  last_test_message: string
+  last_sync_at: string
+  last_sync_status: string
+  last_sync_revision: string
+}
+
+export interface WpsTracksideTargetUpdate {
+  token?: string
+  document_open_url?: string
+  webhook_url?: string
+  enabled?: boolean
+  timeout_seconds?: number
+}
+
+export interface WpsTracksideSyncResult {
+  batch_id: string
+  site_id: string
+  business_key: string
+  snapshot_revision: string
+  snapshot_sha256: string
+  snapshot_generated_at: string
+  payload_bytes: number
+  sheet_count: number
+  target_count: number
+  success_count: number
+  failed_count: number
+  unknown_count?: number
+  warning_count: number
+  partial_success: boolean
+  status: 'SUCCESS' | 'SUCCESS_WITH_WARNINGS' | 'PARTIAL_SUCCESS' | 'FAILED' | 'REMOTE_RESULT_UNKNOWN'
+  targets: Array<{
+    target_code: WpsTracksideTargetCode
+    target_name: string
+    target_type: string
+    target_batch_id: string
+    status: 'SUCCESS' | 'SUCCESS_WITH_WARNINGS' | 'FAILED' | 'REMOTE_RESULT_UNKNOWN'
+    error_code?: string
+    message?: string
+    remote_task_id_masked?: string
+    remote_task_type?: string
+    remote_task_status?: string
+    remote_task_submitted_at?: string
+    remote_task_last_polled_at?: string
+    remote_task_finished_at?: string
+    format_warning_count?: number
+    sheet_count?: number
+    sheet_order_verified?: boolean
+    binding_status?: string
+    format_warnings?: Array<{
+      sheet_name: string
+      feature: string
+      range?: string
+      reason: string
+    }>
+    column_width_verification_report?: {
+      status?: 'SUCCESS' | 'SUCCESS_WITH_WARNINGS' | 'FAILED' | 'NOT_ENABLED'
+      total_columns?: number
+      local_explicit_width_count?: number
+      auto_fit_requested_count?: number
+      explicit_applied_count?: number
+      auto_fit_applied_count?: number
+      clamped_count?: number
+      dto_match_count?: number
+      payload_match_count?: number
+      attempted_count?: number
+      read_back_count?: number
+      physical_read_back_count?: number
+      verified_count?: number
+      warning_count?: number
+      failed_count?: number
+      verified_ratio?: number
+      stage_counts?: Record<string, number>
+      largest_differences?: Array<Record<string, unknown>>
+      representative_columns?: Array<Record<string, unknown>>
+      items?: Array<Record<string, unknown>>
+    }
+    format_results?: Record<string, {
+      status?: 'SUCCESS' | 'SUCCESS_WITH_WARNINGS' | 'FAILED' | 'WARN' | 'NOT_ENABLED'
+      attempted_count?: number
+      read_back_count?: number
+      verified_count?: number
+      failed_count?: number
+      applied_count?: number
+      expected_count?: number
+      warning_count?: number
+      format_run_count?: number
+      duration_ms?: number
+      items?: Array<Record<string, unknown>>
+      examples?: Array<{
+        sheet_name?: string
+        range?: string
+        expected?: unknown
+        before?: number | null
+        actual?: unknown
+        verified?: boolean
+      }>
+    }>
+    source_workbook_format_manifest?: {
+      totals?: Record<string, number>
+      sheets?: Array<Record<string, unknown>>
+      column_widths?: Array<Record<string, unknown>>
+    }
+  }>
+}

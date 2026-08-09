@@ -45,6 +45,7 @@ export interface PlatformAdapter {
   openPath(capabilityId: string): Promise<NativeActionResult>
   showItemInFolder(capabilityId: string): Promise<NativeActionResult>
   openExternalUrl(url: string): Promise<NativeActionResult>
+  writeClipboardText(text: string): Promise<NativeActionResult>
   onBackendStatusChanged(listener: (status: BackendStatus) => void): () => void
   onTraySiteSwitchRequested(listener: (siteId: string) => void): () => void
   reportSiteSwitchState(switching: boolean): void

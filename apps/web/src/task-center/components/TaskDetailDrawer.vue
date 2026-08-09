@@ -116,8 +116,130 @@ const showPointTablePreviewResult = computed(() => (
   && store.selected.status === 'COMPLETED'
   && Number.isFinite(Number(selectedDetails.value.nodes_count))
 ))
+const wpsTargetResults = computed(() => {
+  if (store.selected?.type !== 'trackside_ap_wps_sync') return []
+  const targets = selectedDetails.value.targets
+  return Array.isArray(targets) ? targets.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object') : []
+})
+const showWpsRemoteTask = computed(() => (
+  store.selected?.type === 'trackside_ap_wps_sync'
+  && Boolean(selectedDetails.value.remote_task_id_masked)
+))
+function formatWarningSummary(target: Record<string, unknown>): string {
+  const warnings = Array.isArray(target.format_warnings) ? target.format_warnings : []
+  return warnings.slice(0, 3).map((item) => {
+    if (!item || typeof item !== 'object') return ''
+    const warning = item as Record<string, unknown>
+    return [warning.sheet_name, warning.range, warning.feature, warning.reason].filter(Boolean).join(' / ')
+  }).filter(Boolean).join('；')
+}
+function columnWidthVerificationRow(target: Record<string, unknown>): { key: string; label: string; value: string; examples: string } | null {
+  if (!target.column_width_verification_report || typeof target.column_width_verification_report !== 'object') return null
+  const report = target.column_width_verification_report as Record<string, unknown>
+  const stages = report.stage_counts && typeof report.stage_counts === 'object'
+    ? Object.entries(report.stage_counts as Record<string, unknown>)
+      .filter(([, count]) => Number(count) > 0)
+      .map(([stage, count]) => `${stage} ${Number(count)}`)
+      .join('，')
+    : ''
+  const differences = Array.isArray(report.largest_differences) ? report.largest_differences : []
+  const largest = differences.find((entry) => entry && typeof entry === 'object') as Record<string, unknown> | undefined
+  const largestText = largest
+    ? `最大差异 ${largest.sheet_name || '--'} / ${largest.range || '--'}：${largest.difference ?? '--'}（本地 ${largest.local_workbook_width ?? '--'}，WPS ${largest.remote_column_width ?? '--'}，物理宽度 ${largest.remote_width_points ?? '--'} pt）`
+    : ''
+  return {
+    key: 'column_width_verification_report',
+    label: '列宽自动验收',
+    value: `${String(report.status || 'UNVERIFIED')}；显式 ${Number(report.explicit_applied_count || 0)}，AutoFit ${Number(report.auto_fit_applied_count || 0)}，Clamp ${Number(report.clamped_count || 0)}，远端读回 ${Number(report.read_back_count || 0)}，验证通过 ${Number(report.verified_count || 0)}/${Number(report.total_columns || 0)}，告警 ${Number(report.warning_count || 0)}，失败 ${Number(report.failed_count || 0)}`,
+    examples: [stages ? `故障层级：${stages}` : '', largestText].filter(Boolean).join('；'),
+  }
+}
+function sourceWorkbookFormatRow(target: Record<string, unknown>): { key: string; label: string; value: string; examples: string } | null {
+  if (!target.source_workbook_format_manifest || typeof target.source_workbook_format_manifest !== 'object') return null
+  const manifest = target.source_workbook_format_manifest as Record<string, unknown>
+  const totals = manifest.totals && typeof manifest.totals === 'object'
+    ? manifest.totals as Record<string, unknown>
+    : {}
+  return {
+    key: 'source_workbook_format_manifest',
+    label: '源 Workbook 格式',
+    value: `Sheet ${Number(totals.sheet_count || 0)}；列 ${Number(totals.column_count || 0)}，显式宽度 ${Number(totals.explicit_width_count || 0)}，AutoFit fallback ${Number(totals.auto_fit_column_count || 0)}，显式行高 ${Number(totals.explicit_row_height_count || 0)}，FormatRun ${Number(totals.format_run_count || 0)}`,
+    examples: '',
+  }
+}
+function formatResultRows(target: Record<string, unknown>): Array<{ key: string; label: string; value: string; examples: string }> {
+  if (!target.format_results || typeof target.format_results !== 'object') return []
+  const results = target.format_results as Record<string, unknown>
+  const sourceRow = sourceWorkbookFormatRow(target)
+  const columnWidthRow = columnWidthVerificationRow(target)
+  const definitions = [
+    ...(columnWidthRow ? [] : [['column_width', '列宽']]),
+    ['row_height', '行高'],
+    ['font', '字体'],
+    ['fill', '填充'],
+    ['number_format', '数字格式'],
+    ['alignment', '对齐'],
+    ['merge', 'Merge'],
+    ['border', 'Border'],
+    ['freeze_panes', '冻结窗格'],
+    ['auto_filter', '筛选'],
+    ['sheet_order', 'Sheet 顺序'],
+    ['sheet_tab_color', 'Sheet 标签颜色'],
+    ['sample_data', '业务抽样'],
+  ]
+  const rows = definitions.map(([key, label]) => {
+    const item = results[key]
+    const value = item && typeof item === 'object' ? item as Record<string, unknown> : {}
+    const status = String(value.status || 'NOT_ENABLED')
+    const hasVerificationCounts = Number.isFinite(Number(value.attempted_count))
+    const counts = hasVerificationCounts
+      ? `；设置 ${Number(value.attempted_count || 0)}，读回 ${Number(value.read_back_count || 0)}，验证通过 ${Number(value.verified_count || 0)}，差异 ${Number(value.failed_count || 0)}${Number(value.format_run_count || 0) ? `，FormatRun ${Number(value.format_run_count || 0)}` : ''}`
+      : Number.isFinite(Number(value.expected_count))
+        ? ` ${Number(value.applied_count || 0)}/${Number(value.expected_count || 0)}`
+        : ''
+    const warnings = Number(value.warning_count || 0)
+    const items = Array.isArray(value.items) ? value.items : []
+    const allBorderItems = key === 'border'
+      ? items.filter((entry) => entry && typeof entry === 'object' && (entry as Record<string, unknown>).all_borders === true)
+      : []
+    const allBorderText = allBorderItems.length
+      ? `；All Borders ${allBorderItems.filter((entry) => (entry as Record<string, unknown>).verified === true).length}/${allBorderItems.length}`
+      : ''
+    const freezeItems = key === 'freeze_panes'
+      ? items.filter((entry) => entry && typeof entry === 'object' && (entry as Record<string, unknown>).freeze_summary === true)
+      : []
+    const freezeModes = new Map<string, number>()
+    for (const entry of freezeItems) {
+      const record = entry as Record<string, unknown>
+      const mode = `${Number(record.actual_frozen_rows || 0)} row / ${Number(record.actual_frozen_columns || 0)} column`
+      freezeModes.set(mode, (freezeModes.get(mode) || 0) + 1)
+    }
+    const freezeModesText = Array.from(freezeModes.entries())
+      .map(([mode, count]) => `${mode} x${count}`)
+      .join('；')
+    const freezeText = freezeItems.length
+      ? `；读回 ${freezeItems.filter((entry) => (entry as Record<string, unknown>).verified === true).length}/${freezeItems.length}，${freezeModesText}`
+      : ''
+    const examples = Array.isArray(value.examples) ? value.examples : []
+    const exampleText = key === 'freeze_panes' && freezeItems.length
+      ? freezeItems.map((entry) => {
+        const record = entry as Record<string, unknown>
+        const expected = `${Number(record.expected_frozen_rows || 0)} row / ${Number(record.expected_frozen_columns || 0)} column`
+        const actual = `${Number(record.actual_frozen_rows || 0)} row / ${Number(record.actual_frozen_columns || 0)} column`
+        return `${record.sheet_name || '--'}：期望 ${expected}，实际 ${actual}，${record.verified === true ? 'PASS' : 'FAIL'}`
+      }).join('；')
+      : examples.slice(0, 3).map((entry) => {
+        if (!entry || typeof entry !== 'object') return ''
+        const example = entry as Record<string, unknown>
+        return `${example.sheet_name || '--'} / ${example.range || '--'}：本地 ${example.expected ?? '--'}，WPS ${example.actual ?? '--'}`
+      }).filter(Boolean).join('；')
+    return { key, label, value: `${status}${counts}${allBorderText}${freezeText}${warnings ? `，告警 ${warnings}` : ''}`, examples: exampleText }
+  })
+  return [sourceRow, columnWidthRow, ...rows].filter((row): row is { key: string; label: string; value: string; examples: string } => row !== null)
+}
 const businessStatusLabel = computed(() => ({
   SUCCESS: t('job_center.business_result.success', '成功'),
+  SUCCESS_WITH_WARNINGS: t('job_center.business_result.warning', '成功（含格式告警）'),
   PARTIAL_SUCCESS: t('job_center.business_result.partial_success', '部分成功'),
   FAILED: t('job_center.business_result.failed', '失败'),
   WARNING: t('job_center.business_result.warning', '告警'),
@@ -630,6 +752,37 @@ function handleClosed(): void {
           </ul>
         </section>
 
+        <section v-if="showWpsRemoteTask" class="business-result">
+          <div class="current-heading"><h3>WPS 远端任务</h3><strong>{{ selectedDetails.remote_task_status || 'UNKNOWN' }}</strong></div>
+          <div class="current-grid">
+            <article><span>Remote Task ID</span><strong>{{ selectedDetails.remote_task_id_masked }}</strong></article>
+            <article><span>任务类型</span><strong>{{ selectedDetails.remote_task_type || '--' }}</strong></article>
+            <article><span>提交时间</span><strong>{{ formatTaskDateTime(String(selectedDetails.remote_task_submitted_at || '')) }}</strong></article>
+            <article><span>最近查询</span><strong>{{ formatTaskDateTime(String(selectedDetails.remote_task_last_polled_at || '')) }}</strong></article>
+          </div>
+        </section>
+
+        <section v-if="wpsTargetResults.length" class="business-result">
+          <div class="current-heading"><h3>WPS 子目标结果</h3><strong>{{ selectedBusinessStatus || store.selected.status }}</strong></div>
+          <div v-for="target in wpsTargetResults" :key="String(target.target_batch_id || target.target_code)" class="current-grid">
+            <article><span>目标</span><strong>{{ target.target_name || target.target_code }}</strong></article>
+            <article><span>状态</span><strong>{{ target.status || '--' }}</strong></article>
+            <article><span>错误码</span><strong>{{ target.error_code || '--' }}</strong></article>
+            <article><span>失败操作</span><strong>{{ target.failed_operation || '--' }}</strong></article>
+            <article><span>格式告警</span><strong>{{ target.format_warning_count || 0 }}</strong></article>
+            <article><span>远端任务</span><strong>{{ target.remote_task_id_masked || '--' }}</strong></article>
+            <article><span>远端状态</span><strong>{{ target.remote_task_status || '--' }}</strong></article>
+            <article><span>提交时间</span><strong>{{ formatTaskDateTime(String(target.remote_task_submitted_at || '')) }}</strong></article>
+            <article><span>最近查询</span><strong>{{ formatTaskDateTime(String(target.remote_task_last_polled_at || '')) }}</strong></article>
+            <article class="wide"><span>消息</span><strong>{{ target.message || '--' }}</strong></article>
+            <article v-if="formatWarningSummary(target)" class="wide"><span>格式告警详情</span><strong>{{ formatWarningSummary(target) }}</strong></article>
+            <article v-for="item in formatResultRows(target)" :key="item.key" :class="{ wide: Boolean(item.examples) }">
+              <span>{{ item.label }}</span>
+              <strong>{{ item.value }}<small v-if="item.examples">{{ item.examples }}</small></strong>
+            </article>
+          </div>
+        </section>
+
         <section v-if="showCurrentProcessing" class="current-processing">
           <div class="current-heading">
             <h3>当前处理</h3>
@@ -755,6 +908,7 @@ function handleClosed(): void {
 .current-grid article.danger { border-color: var(--nc-danger); }
 .current-grid span { display: block; color: var(--nc-text-secondary); font-size: 12px; }
 .current-grid strong { display: block; margin-top: 5px; overflow-wrap: anywhere; color: var(--nc-text-primary); font-size: 13px; font-weight: 600; }
+.current-grid strong small { display: block; margin-top: 5px; color: var(--nc-text-secondary); font-size: 12px; font-weight: 400; }
 .business-reasons { display: grid; gap: 8px; margin: 12px 0 0; padding: 0; list-style: none; }
 .business-reasons li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 12px; background: var(--nc-bg-muted); border: 1px solid var(--nc-border); border-radius: 8px; }
 .business-reasons span { color: var(--nc-text-secondary); font-size: 12px; }

@@ -319,6 +319,14 @@ FEATURES: tuple[FeatureItem, ...] = (
     FeatureItem("web.rail_trackside_ap_business_update", "轨旁 AP 光衰更新（Web）", "web.rail_trackside_ap_business", "action"),
     FeatureItem("web.rail_trackside_ap_business_export", "轨旁 AP 业务导出（Web）", "web.rail_trackside_ap_business", "action"),
     FeatureItem(
+        "web.rail_trackside_ap_business_wps_sync",
+        "轨旁 AP 业务 WPS 云同步（Web）",
+        "web.rail_trackside_ap_business",
+        "action",
+        default_client_package=False,
+        status=FeatureStatus.DEVELOPMENT,
+    ),
+    FeatureItem(
         "rail.zte_trackside_switch_adapter",
         "ZTE 轨旁交换机适配",
         "web.rail_trackside_ap_business",

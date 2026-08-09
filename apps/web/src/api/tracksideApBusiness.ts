@@ -5,11 +5,13 @@ import type {
   TracksideApBusinessExportProposal, TracksideApBusinessExportRequest, TracksideApOnlineStatus, TracksideApPlan, TracksideApPlanDraft, TracksideApPlanPreview, TracksideApPlanRow,
   TracksideApScopeExcludedPage, TracksideApUnmatchedOnlinePage,
   TracksideApTask, TracksideApUpdateRequest, TracksideSwitchAdapterCatalog,
-  TracksideSwitchSampleRequest,
+  TracksideSwitchSampleRequest, WpsTracksideTarget,
+  WpsTracksideTargetCode, WpsTracksideTargetUpdate,
 } from '../types/tracksideApBusiness'
 import type { TracksideAp } from '../types/railTransitBaseData'
 
 const root = '/api/rail-transit/trackside-ap-business'
+const wpsRoot = `${root}/wps`
 const invalidArtifactNamePattern = /[\u0000-\u001f\u007f<>:"/\\|?*]/
 const tracksideBusinessArtifactNamePattern = /^.+_轨旁AP业务_\d{8}_\d{6}\.xlsx$/
 const switchSampleArtifactNamePattern = /^[a-z0-9._-]+-adapter-sample-[a-z0-9._-]+-\d{8}_\d{6}\.zip$/i
@@ -50,6 +52,96 @@ export function startTracksideApBusinessExport(
           body: JSON.stringify(payload),
         }
       : {}),
+  })
+}
+
+export function listTracksideWpsTargets(): Promise<WpsTracksideTarget[]> {
+  return apiRequest(`${wpsRoot}/targets`)
+}
+
+export function updateTracksideWpsTarget(
+  targetCode: WpsTracksideTargetCode,
+  payload: WpsTracksideTargetUpdate,
+): Promise<WpsTracksideTarget> {
+  return apiRequest(`${wpsRoot}/targets/${encodeURIComponent(targetCode)}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function testTracksideWpsTarget(targetCode: WpsTracksideTargetCode): Promise<{
+  target_code: WpsTracksideTargetCode
+  result: Record<string, unknown>
+}> {
+  return apiRequest(`${wpsRoot}/targets/${encodeURIComponent(targetCode)}/connection-test`, {
+    method: 'POST',
+  })
+}
+
+export function migrateTracksideWpsLegacyBinding(targetCode: WpsTracksideTargetCode): Promise<{
+  target_code: WpsTracksideTargetCode
+  result: Record<string, unknown>
+}> {
+  return apiRequest(`${wpsRoot}/targets/${encodeURIComponent(targetCode)}/migrate-legacy-binding`, {
+    method: 'POST',
+  })
+}
+
+export function probeTracksideWpsTarget(targetCode: WpsTracksideTargetCode): Promise<{
+  target_code: WpsTracksideTargetCode
+  result: Record<string, unknown>
+}> {
+  return apiRequest(`${wpsRoot}/targets/${encodeURIComponent(targetCode)}/runtime-write-probe`, {
+    method: 'POST',
+  })
+}
+
+export function syncTestTracksideWpsTarget(targetCode: WpsTracksideTargetCode): Promise<{
+  target_code: WpsTracksideTargetCode
+  result: Record<string, unknown>
+}> {
+  return apiRequest(`${wpsRoot}/targets/${encodeURIComponent(targetCode)}/sync-test-sheet`, {
+    method: 'POST',
+  })
+}
+
+export function probeTracksideWpsSheetTabColor(targetCode: WpsTracksideTargetCode): Promise<{
+  target_code: WpsTracksideTargetCode
+  result: Record<string, unknown>
+}> {
+  return apiRequest(`${wpsRoot}/targets/${encodeURIComponent(targetCode)}/sheet-tab-color-probe`, {
+    method: 'POST',
+  })
+}
+
+export function probeTracksideWpsColumnWidth(targetCode: WpsTracksideTargetCode): Promise<{
+  target_code: WpsTracksideTargetCode
+  result: Record<string, unknown>
+}> {
+  return apiRequest(`${wpsRoot}/targets/${encodeURIComponent(targetCode)}/column-width-probe`, {
+    method: 'POST',
+  })
+}
+
+export function revalidateTracksideWpsDeployment(targetCode: WpsTracksideTargetCode): Promise<{
+  target_code: WpsTracksideTargetCode
+  result: Record<string, unknown>
+}> {
+  return apiRequest(`${wpsRoot}/targets/${encodeURIComponent(targetCode)}/revalidate-deployment`, {
+    method: 'POST',
+  })
+}
+
+export function syncTracksideWpsDocument(payload: {
+  expected_revision?: string
+  initialize_binding?: boolean
+} = {}): Promise<TracksideApTask> {
+  return apiRequest(`${wpsRoot}/sync`, {
+    method: 'POST',
+    body: JSON.stringify({
+      ...payload,
+      target_codes: ['wps_standard_spreadsheet'],
+    }),
   })
 }
 
