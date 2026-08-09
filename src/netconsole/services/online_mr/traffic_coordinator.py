@@ -53,6 +53,8 @@ class _TrafficState:
     restart_reason: str = ""
     iperf_bitrate_sum: float = 0.0
     iperf_bitrate_samples: int = 0
+    iperf_snapshot_at: float = 0.0
+    iperf_last_snapshot_status: str = ""
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
@@ -259,7 +261,7 @@ class OnlineMrTrafficCoordinator:
         ):
             state.iperf_status = "failed"
             self._warn(state, "本地回环 iPerf 服务端启动失败")
-            self._write_iperf_snapshot(state, traffic)
+            self._safe_write_iperf_snapshot(state, traffic)
             return
 
         client = self._iperf_client_config(traffic)
@@ -268,7 +270,12 @@ class OnlineMrTrafficCoordinator:
                 with state.lock:
                     state.iperf_bitrate_sum += float(row["bitrate_mbps"])
                     state.iperf_bitrate_samples += 1
-            self._write_iperf_snapshot(state, traffic, row=row, error=error)
+            now = time.monotonic()
+            status_changed = state.iperf_status != state.iperf_last_snapshot_status
+            if row is not None or error is not None or status_changed or now - state.iperf_snapshot_at >= 1.0:
+                self._safe_write_iperf_snapshot(state, traffic, row=row, error=error)
+                state.iperf_snapshot_at = now
+                state.iperf_last_snapshot_status = state.iperf_status
 
         runner = IperfProcessRunner(
             tool,
@@ -284,7 +291,7 @@ class OnlineMrTrafficCoordinator:
         )
         state.iperf_runner = runner
         state.iperf_status = "running"
-        self._write_iperf_snapshot(state, traffic)
+        self._safe_write_iperf_snapshot(state, traffic)
 
         def run() -> None:
             try:
@@ -297,7 +304,7 @@ class OnlineMrTrafficCoordinator:
                 state.iperf_status = "failed"
                 self._warn(state, f"iPerf 运行失败：{exc}")
             finally:
-                self._write_iperf_snapshot(state, traffic)
+                self._safe_write_iperf_snapshot(state, traffic)
 
         state.iperf_thread = threading.Thread(
             target=run,
@@ -591,6 +598,22 @@ class OnlineMrTrafficCoordinator:
                 **diagnostics,
             },
         )
+
+    @staticmethod
+    def _safe_write_iperf_snapshot(
+        state: _TrafficState,
+        config: IperfTrafficConfig,
+        *,
+        row: dict[str, object] | None = None,
+        error: dict[str, object] | None = None,
+    ) -> None:
+        try:
+            OnlineMrTrafficCoordinator._write_iperf_snapshot(state, config, row=row, error=error)
+        except Exception as exc:
+            OnlineMrTrafficCoordinator._warn(
+                state,
+                f"iPerf 状态快照写入失败，已降级继续运行：{type(exc).__name__}: {exc}",
+            )
 
     @staticmethod
     def _iperf_client_config(config: IperfTrafficConfig) -> IperfClientConfig:

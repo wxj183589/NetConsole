@@ -7,6 +7,7 @@ import re
 import sqlite3
 import subprocess
 import threading
+import traceback
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -522,6 +523,12 @@ class IperfProcessRunner:
         self.heartbeat_at: datetime | None = None
         self.bytes_written = 0
         self.stop_reason = ""
+        self.exception_stage = ""
+        self.exception_type = ""
+        self.exception_message = ""
+        self.traceback_tail = ""
+        self.degraded = False
+        self.degraded_warnings: list[str] = []
         self._log_lock = threading.RLock()
 
     def diagnostics(self) -> dict[str, object]:
@@ -541,6 +548,12 @@ class IperfProcessRunner:
             "last_error": self.last_error or self.last_error_code,
             "stderr_tail": self.stderr_tail,
             "stop_reason": self.stop_reason,
+            "exception_stage": self.exception_stage,
+            "exception_type": self.exception_type,
+            "exception_message": self.exception_message,
+            "traceback_tail": self.traceback_tail,
+            "degraded": self.degraded,
+            "degraded_warnings": list(self.degraded_warnings),
         }
 
     def add_mirror_log_file(self, log_file: Path, context: dict[str, object] | None = None) -> None:
@@ -572,26 +585,30 @@ class IperfProcessRunner:
 
     def start(self) -> None:
         self.log_file.parent.mkdir(parents=True, exist_ok=True)
-        if self.store:
-            self.store.start_run(
-                self.run_id,
-                mode=self.mode,
-                command=self.command,
-                log_file=self.log_file,
-                started_at=self.started_at,
-                session_id=self.session_id,
-                device_id=self.device_id,
-                config=self.config,
-            )
         self.last_status = "RUNNING"
-        self._write_headers()
         creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
         return_code: int | None = None
         status = "DONE"
+        stage = "startup"
         try:
+            stage = "sqlite_start_run"
+            if self.store:
+                self.store.start_run(
+                    self.run_id,
+                    mode=self.mode,
+                    command=self.command,
+                    log_file=self.log_file,
+                    started_at=self.started_at,
+                    session_id=self.session_id,
+                    device_id=self.device_id,
+                    config=self.config,
+                )
+            stage = "header_write"
+            self._write_headers()
             if self.stop_requested:
                 status = self.stop_status
                 return
+            stage = "spawn"
             self.process = subprocess.Popen(
                 self.command,
                 stdout=subprocess.PIPE,
@@ -612,9 +629,16 @@ class IperfProcessRunner:
                 self.heartbeat_at = now
                 self.last_data_at = now
                 stamped_line = format_iperf_log_line(now, raw_line, self.context)
+                stage = "raw_write"
                 self._write_line(stamped_line)
-                row = parse_iperf_line(stamped_line, self.started_at, collector_time=now)
-                error = parse_iperf_error_line(stamped_line, self.started_at)
+                try:
+                    stage = "parse"
+                    row = parse_iperf_line(stamped_line, self.started_at, collector_time=now)
+                    error = parse_iperf_error_line(stamped_line, self.started_at)
+                except Exception as exc:
+                    self._record_degraded(stage, exc)
+                    row = None
+                    error = None
                 if error:
                     self.last_error_code = str(error.get("error_code") or "")
                     self.last_error = str(error.get("error_message") or self.last_error_code)
@@ -622,17 +646,28 @@ class IperfProcessRunner:
                         (self.stderr_tail + "\n" + raw_line).strip().splitlines()[-20:]
                     )
                 if row and self.store:
-                    self.store.append_interval(self.run_id, row, self.session_id)
+                    try:
+                        stage = "sqlite_append"
+                        self.store.append_interval(self.run_id, row, self.session_id)
+                    except Exception as exc:
+                        self._record_degraded(stage, exc)
+                stage = "callback"
                 self._emit_line(stamped_line, row, error)
             return_code = self.process.wait()
             if self.stop_requested:
                 status = self.stop_status
             elif return_code != 0:
                 status = f"FAILED:{return_code}"
-        except Exception:
+        except Exception as exc:
             status = "FAILED"
+            self._record_exception(stage, exc)
             self._write_line(
-                format_iperf_log_line(datetime.now(), "iperf run finished, status=FAILED, error=runner_exception", self.context)
+                format_iperf_log_line(
+                    datetime.now(),
+                    f"iperf run finished, status=FAILED, error=runner_exception, stage={self.exception_stage}, "
+                    f"type={self.exception_type}, message={self.exception_message}",
+                    self.context,
+                )
             )
             raise
         finally:
@@ -640,6 +675,7 @@ class IperfProcessRunner:
                 self._write_line(format_iperf_log_line(datetime.now(), "stopped by collection stop", self.context))
             if return_code is not None and return_code != 0:
                 self._write_line(format_iperf_log_line(datetime.now(), f"iperf process exited with code {return_code}", self.context))
+            stage = "footer_write"
             self._write_footers(status, return_code)
             try:
                 self.bytes_written = self.log_file.stat().st_size
@@ -698,11 +734,18 @@ class IperfProcessRunner:
 
     def _write_line(self, line: str) -> None:
         with self._log_lock:
-            for path in [self.log_file, *sorted(self.mirror_contexts)]:
-                path.parent.mkdir(parents=True, exist_ok=True)
-                with path.open("a", encoding="utf-8") as file:
-                    file.write(line + "\n")
-                    file.flush()
+            self.log_file.parent.mkdir(parents=True, exist_ok=True)
+            with self.log_file.open("a", encoding="utf-8") as file:
+                file.write(line + "\n")
+                file.flush()
+            for path in sorted(self.mirror_contexts):
+                try:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    with path.open("a", encoding="utf-8") as file:
+                        file.write(line + "\n")
+                        file.flush()
+                except Exception as exc:
+                    self._record_degraded("mirror_write", exc)
 
     def _emit_line(self, line: str, row: dict[str, object] | None, error: dict[str, object] | None) -> None:
         if self.line_callback is None:
@@ -710,4 +753,22 @@ class IperfProcessRunner:
         try:
             self.line_callback(line, row, error)
         except TypeError:
-            self.line_callback(line, row)
+            try:
+                self.line_callback(line, row)
+            except Exception as exc:
+                self._record_degraded("callback", exc)
+        except Exception as exc:
+            self._record_degraded("callback", exc)
+
+    def _record_degraded(self, stage: str, exc: BaseException) -> None:
+        self.degraded = True
+        warning = f"{stage}: {type(exc).__name__}: {exc}"
+        if warning not in self.degraded_warnings:
+            self.degraded_warnings.append(warning)
+
+    def _record_exception(self, stage: str, exc: BaseException) -> None:
+        self.exception_stage = str(stage or "unknown")
+        self.exception_type = type(exc).__name__
+        self.exception_message = str(exc)
+        self.traceback_tail = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)).splitlines()[-20:]
+        self.traceback_tail = "\n".join(self.traceback_tail)

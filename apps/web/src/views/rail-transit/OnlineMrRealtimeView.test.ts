@@ -38,7 +38,7 @@ describe('Online MR realtime collection view', () => {
     expect(source).toContain('当前采集状态')
     expect(source).toContain('原始日志动态查看')
     expect(source.indexOf('实时核心状态')).toBeLessThan(source.indexOf('当前采集状态'))
-    expect(source.indexOf('当前采集状态')).toBeLessThan(source.indexOf('原始日志动态查看'))
+    expect(source.indexOf('原始日志动态查看')).toBeLessThan(source.indexOf('当前采集状态'))
     expect(source).toContain("rawSource = ref('terminal_monitor')")
     expect(source).toContain('data-testid="raw-source"')
     expect(source).not.toContain('table-id="online-mr-raw-growth"')

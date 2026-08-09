@@ -382,7 +382,7 @@ FastAPI 的 `/api/online-mr/sessions/...` 继续提供只读详情、采集器�
 
 raw 尾部白名单固定为 `terminal_monitor`、`mesh_link`、`channel_busy`、`fping_samples`、`fping_summary`、`fping_raw`、`iperf_client`、`switch_history`、`collector_output` 和 `wireless_status`。响应只包含相对引用；`tasks.db` 使用 SQLite `mode=ro` 读取 Task/Mapping，不实例化会执行 schema 初始化的 Repository。
 
-当前 Session、采集器、轻量预览和 raw 摘要每 5 秒刷新；原始日志只有展开后才每 3 秒读取一次。页面隐藏或卸载时停止定时器，同类请求未完成时不重复发起，连续三次失败后才显示错误。当前 operation 进入终态后页面立即清空实时状态，历史数据仍由分析页读取。
+当前 Session、采集器、轻量预览和 raw 摘要每 5 秒刷新；原始日志只有展开后才每 3 秒读取一次。页面隐藏或卸载时停止定时器，同类请求未完成时不重复发起，连续三次失败后才显示错误。页面返回时保留最后一次有效实时快照；单次空 Session 响应按 transient consistency window 处理，连续确认或 Backend 明确终态后才清空，历史数据仍由分析页读取。
 
 采集项更新时间综合使用采集器 view、`live_samples` 最新事实时间和 raw 文件 mtime。活动 Session 中更新时间不超过 30 秒为 `normal`，超过 30 秒为 `stale`，超过 120 秒为 `interrupted`；判定由 Python Query Service 返回，Vue 不自行推导。实时页将采集项状态、当前文件大小、最近增长、更新时间、健康状态和异常说明合并到一张表，不再单独展示重复的文件增长表；额外的 fping samples、fping summary 和采集器输出只作为同一状态表中的 raw 行显示。
 
@@ -390,7 +390,7 @@ raw 尾部白名单固定为 `terminal_monitor`、`mesh_link`、`channel_busy`�
 
 LOCAL streaming collector 会把可解析的 Mesh 行同步写入 `live_samples/live_mesh_links`；raw 文件仍是事实来源，结构化表只用于有界实时查询。实时预览优先用 Peer Radio/BSSID、其次用 Peer MAC 调用统一 `ApIdentityQueryService`，返回物理 `ap_mac/ap_name`、站点/区间、`identity_source/identity_revision` 与 `resolution_status/resolution_reason`；不得从 AP 名称字符串猜身份。动态 LLDP/FIT-AP 拓扑优先于基础资料，同站点多交换机只记录拓扑 warning，不阻断站点 enrichment；未解析或歧义时保留现场原始 Peer。
 
-`live_iperf_status.json` 是 LOCAL iPerf 运行真相，必须区分 `client_status`、`server_status` 和 `supervisor_status`，并保留 `pid/alive/exit_code/last_exit_at/last_data_at/bytes_written/last_error/stderr_tail/stop_reason/restart_count` 以及 Server 的对应字段。Client 非零退出立即保持 `failed:<exit_code>`，不得因 Session 仍活动或 raw 文件非空重新推导为 `running`；停止已退出的 child 直接记录既有终态。本地回环 Server 由 Backend 级共享 lease 管理：首次启动为 `managed`，多个 Online MR 共享时为 `managed_shared`；已有 listener 必须先做 iPerf 协议验证，成功为 `external_verified`，其他程序或验证失败为 `port_conflict` 并返回 `IPERF_PORT_OCCUPIED_BY_NON_IPERF`。快照必须记录 `listener_pid`、`listener_process_name`、`listener_executable`、`listener_command_line`、`listener_owner`、`listener_started_at`，最终现场报告不得只写“端口已有 listener”。Server 不因页面切换、Vue 卸载、轮询停止、Pinia 重建或 Client 结束/失败而停止，只能在当前 Session 正常/强制停止、明确结束、Backend/Electron shutdown 或受控 recovery 替换时释放。
+`live_iperf_status.json` 是 LOCAL iPerf 运行真相，必须区分 `client_status`、`server_status` 和 `supervisor_status`，并保留 `pid/alive/exit_code/last_exit_at/last_data_at/bytes_written/last_error/stderr_tail/stop_reason/restart_count` 以及 Server 的对应字段。Client 非零退出立即保持 `failed:<exit_code>`，不得因 Session 仍活动或 raw 文件非空重新推导为 `running`；停止已退出的 child 直接记录既有终态。`-d` debug 原始输出继续完整写入 raw，但 interval/error/lifecycle 快照按事件和约 1 Hz heartbeat 限频；callback、SQLite 附属写入和快照写入异常记录为 degraded，runner exception 必须带阶段、异常类型、消息和 traceback tail。本地回环 Server 由 Backend 级共享 lease 管理：首次启动为 `managed`，多个 Online MR 共享时为 `managed_shared`；已有 listener 必须先做 iPerf 协议验证，成功为 `external_verified`，其他程序或验证失败为 `port_conflict` 并返回 `IPERF_PORT_OCCUPIED_BY_NON_IPERF`。快照必须记录 `listener_pid`、`listener_process_name`、`listener_executable`、`listener_command_line`、`listener_owner`、`listener_started_at`，最终现场报告不得只写“端口已有 listener”。Server 不因页面切换、Vue 卸载、轮询停止、Pinia 重建或 Client 结束/失败而停止，只能在当前 Session 正常/强制停止、明确结束、Backend/Electron shutdown 或受控 recovery 替换时释放。
 
 LOCAL Worker 在创建 Session 后立即记录 `startup_timeline`，并把 fping/iPerf 启动从 SSH 初始化后移到 Session 创建后的异步阶段。Traffic 子任务不改变采集命令语义，仍随采集停止和最终化统一 flush；启动失败时若 Traffic 已开始，也必须停止、flush 并释放。`startup_timeline` 只记录阶段、耗时和状态，不包含密码、Token 或服务器绝对路径。
 
