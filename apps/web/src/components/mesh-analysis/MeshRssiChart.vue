@@ -48,7 +48,8 @@ const props = withDefaults(defineProps<{
   chartId?: Exclude<MeshRssiChartSource, 'trackside-rssi' | 'programmatic'>
   syncPointerTime?: string | null
   syncPointerSource?: MeshRssiChartSource | null
-}>(), { events: () => [], locationSegments: () => [], showPeer: false, showSwitchLines: false, showSwitchPoints: true, showLocationBand: true, scope: 'active', active: true, focusTimestamp: '', initialViewport: null, syncViewport: null, lockedViewport: null, preserveViewport: true, sharedTimeDomain: null, chartId: 'active-rssi', syncPointerTime: null, syncPointerSource: null })
+  selectedTime?: string | null
+}>(), { events: () => [], locationSegments: () => [], showPeer: false, showSwitchLines: false, showSwitchPoints: true, showLocationBand: true, scope: 'active', active: true, focusTimestamp: '', initialViewport: null, syncViewport: null, lockedViewport: null, preserveViewport: true, sharedTimeDomain: null, chartId: 'active-rssi', syncPointerTime: null, syncPointerSource: null, selectedTime: null })
 const emit = defineEmits<{
   selectSwitch: [event: MeshChartEvent]
   'viewport-change': [viewport: MeshChartViewport]
@@ -56,6 +57,7 @@ const emit = defineEmits<{
   'pointer-change': [pointer: MeshSharedPointerChange]
   'viewport-interaction-start': []
   'viewport-interaction-end': []
+  'select-time': [time: string]
 }>()
 
 const container = ref<HTMLDivElement | null>(null)
@@ -254,15 +256,18 @@ watch(() => props.sharedTimeDomain, () => scheduleChartUpdate('display'), { deep
 watch(() => [props.syncPointerTime, props.syncPointerSource] as const, ([time, source]) => {
   if (source !== props.chartId) void nextTick(() => applySharedPointer(time))
 })
+watch(() => props.selectedTime, () => scheduleChartUpdate('display'))
 
 function handleChartClick(raw: unknown): void {
   if (!props.active) return
-  const data = (raw as { data?: { meshEvent?: MeshChartEvent; meta?: MeshChartPoint } }).data
+  const data = (raw as { data?: { meshEvent?: MeshChartEvent; meta?: MeshChartPoint; value?: [string, number | null] } }).data
   const event = data?.meshEvent || props.events.find((item) => (
     (item.render_point_timestamp || item.point_timestamp) === data?.meta?.timestamp
     || item.timestamp === data?.meta?.timestamp
   ))
   if (event) emit('selectSwitch', event)
+  const timestamp = data?.meta?.timestamp || data?.value?.[0]
+  if (timestamp) emit('select-time', timestamp)
 }
 
 function focusCurrentPoint(): void {
@@ -468,16 +473,23 @@ function render(reason: 'data' | 'display' | 'theme' | 'reset'): void {
       connectNulls: false,
       data: item.data,
       markArea: index === 0 ? markArea : undefined,
-      markLine: index === 0 && props.showSwitchLines && switchEvents.length ? {
+      markLine: index === 0 && (props.selectedTime || (props.showSwitchLines && switchEvents.length)) ? {
         silent: false,
         symbol: 'none',
         label: { show: false },
-        lineStyle: { color: theme.warning, type: 'dashed' },
-        data: switchEvents.map((event) => ({
-          name: renderedSwitchTimestamp(event),
-          xAxis: renderedSwitchTimestamp(event),
-          meshEvent: event,
-        })),
+        data: [
+          ...(props.selectedTime ? [{
+            name: '当前分析时刻',
+            xAxis: props.selectedTime,
+            lineStyle: { color: theme.primary, type: 'solid', width: 2 },
+          }] : []),
+          ...(props.showSwitchLines ? switchEvents.map((event) => ({
+            name: renderedSwitchTimestamp(event),
+            xAxis: renderedSwitchTimestamp(event),
+            lineStyle: { color: theme.warning, type: 'dashed' },
+            meshEvent: event,
+          })) : []),
+        ],
       } : undefined,
       })),
       ...(nodes.length ? [{

@@ -510,15 +510,42 @@ function attachLineLogger(
     pending = lines.pop() ?? ''
     for (const line of lines) {
       onLine?.(line)
-      const safe = redactSensitiveText(line, [secret])
-      if (safe) logger('ELECTRON_BACKEND_OUTPUT', `${source}: ${safe}`)
+      logBackendOutput(source, line, secret, logger)
     }
   })
   stream.on('end', () => {
     if (pending) onLine?.(pending)
-    const safe = redactSensitiveText(pending, [secret])
-    if (safe) logger('ELECTRON_BACKEND_OUTPUT', `${source}: ${safe}`)
+    logBackendOutput(source, pending, secret, logger)
   })
+}
+
+function logBackendOutput(
+  source: string,
+  line: string,
+  secret: string,
+  logger: DesktopLogger,
+): void {
+  const safe = redactSensitiveText(line, [secret])
+  if (!safe) return
+  if (source === 'stdout') {
+    let event = ''
+    try {
+      const payload = JSON.parse(safe) as { event?: unknown }
+      event = typeof payload.event === 'string' ? payload.event : ''
+    } catch {
+      // Non-JSON stdout is useful only in explicitly enabled development logging.
+    }
+    logger(
+      'ELECTRON_BACKEND_STDOUT',
+      event ? `event=${event}` : safe,
+      'DEBUG',
+    )
+    return
+  }
+  const level = /(?:^|\s)(?:ERROR|CRITICAL|Traceback|Exception|Error:)/i.test(safe)
+    ? 'ERROR'
+    : 'WARNING'
+  logger('ELECTRON_BACKEND_STDERR', safe, level)
 }
 
 function isRuntimeAnnouncement(value: unknown): value is {

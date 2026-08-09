@@ -137,6 +137,10 @@ export async function submitExportAfterDestinationSelected<T>(
     options.directoryPath,
   )
   if (!destination) return { status: 'cancelled' }
+  console.info('EXPORT_DESTINATION_SELECTED', {
+    action: options.action,
+    mode: destination.mode,
+  })
   const task = await options.submit()
   const taskId = (options.taskId ?? taskIdFrom)(task)
   const binding = bindExportTaskDestination(taskId, options.action, destination, options.context)
@@ -187,6 +191,12 @@ export async function saveReadyArtifact(
   binding.state = 'saving'
   binding.error = ''
   persistBindings()
+  if (binding.action === 'rail.trackside_business') {
+    console.info('TRACKSIDE_EXPORT_LOCAL_SAVE_STARTED', {
+      taskId,
+      mode: binding.destinationMode,
+    })
+  }
   let result
   try {
     result = await downloadBackendResource({
@@ -210,6 +220,12 @@ export async function saveReadyArtifact(
     binding.capabilityId = result.capabilityId || ''
     binding.error = ''
     persistBindings()
+    if (binding.action === 'rail.trackside_business') {
+      console.info('TRACKSIDE_EXPORT_LOCAL_SAVE_COMPLETED', {
+        taskId,
+        mode: binding.destinationMode,
+      })
+    }
     ElMessage.success(`${definition.label}已保存：${binding.fileName}（用户选择的目录）`)
     return
   }
@@ -219,6 +235,12 @@ export async function saveReadyArtifact(
     persistBindings()
     ElMessage.info(`${definition.label}已交由浏览器下载；开发模式无法验证具体本地落盘位置。`)
     return
+  }
+  if (binding.action === 'rail.trackside_business') {
+    console.info('TRACKSIDE_EXPORT_LOCAL_SAVE_FAILED', {
+      taskId,
+      mode: binding.destinationMode,
+    })
   }
   markSaveFailed(
     binding,

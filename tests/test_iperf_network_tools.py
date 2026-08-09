@@ -22,6 +22,7 @@ from netconsole.services.network_tools.iperf_runner import (
     FOLLOW_COLLECTION_PROTECTION_DURATION_SECONDS,
     IperfClientConfig,
     IperfResultStore,
+    IperfProcessRunner,
     build_iperf_client_args,
     normalize_bandwidth_text,
     run_iperf_client_preflight,
@@ -39,6 +40,57 @@ class FakeWheelEvent:
 
     def ignore(self) -> None:
         self.ignored = True
+
+
+def test_iperf_stop_marks_already_exited_without_terminate(tmp_path: Path) -> None:
+    class ExitedProcess:
+        pid = 1234
+        terminated = False
+
+        def poll(self):
+            return 1
+
+        def terminate(self):
+            self.terminated = True
+
+    tool = tmp_path / "iperf3.exe"
+    tool.touch()
+    runner = IperfProcessRunner(tool, [str(tool), "-c", "127.0.0.1"], tmp_path / "iperf.log")
+    process = ExitedProcess()
+    runner.process = process
+
+    runner.stop("STOPPED_BY_COLLECTION")
+
+    assert runner.stop_reason == "already_exited"
+    assert process.terminated is False
+    assert runner.diagnostics()["exit_code"] == 1
+
+
+def test_iperf_callback_failure_is_degraded_and_keeps_runtime_diagnostics(tmp_path: Path) -> None:
+    tool = tmp_path / "iperf3.exe"
+    tool.touch()
+
+    def callback(*_args):
+        raise PermissionError("snapshot denied")
+
+    runner = IperfProcessRunner(
+        tool,
+        [str(tool), "-c", "127.0.0.1"],
+        tmp_path / "iperf.log",
+        line_callback=callback,
+    )
+    runner._emit_line("debug", None, None)
+
+    diagnostics = runner.diagnostics()
+    assert diagnostics["degraded"] is True
+    assert "callback" in diagnostics["degraded_warnings"][0]
+
+    runner._record_exception("snapshot_write", PermissionError("access denied"))
+    diagnostics = runner.diagnostics()
+    assert diagnostics["exception_stage"] == "snapshot_write"
+    assert diagnostics["exception_type"] == "PermissionError"
+    assert diagnostics["exception_message"] == "access denied"
+    assert "PermissionError" in diagnostics["traceback_tail"]
 
 
 def test_iperf_tool_discovery_from_project_tools(tmp_path: Path) -> None:

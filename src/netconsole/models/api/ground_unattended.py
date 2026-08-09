@@ -30,6 +30,7 @@ GroundEligibilityStatus = Literal[
     "DEPOT_CONNECTION",
     "AC_STALE",
     "AC_UNKNOWN",
+    "LOCATION_UNDETERMINED",
     "AP_UNMATCHED",
     "OFFLINE",
 ]
@@ -52,6 +53,17 @@ GroundCoverageStatus = Literal[
     "COVERED",
     "EXCLUDED",
     "OFFLINE",
+    "FAILED",
+]
+GroundDeepCollectionState = Literal[
+    "INELIGIBLE",
+    "ELIGIBLE",
+    "QUEUED",
+    "STARTING",
+    "RUNNING",
+    "PAUSED",
+    "STOPPING",
+    "STOPPED",
     "FAILED",
 ]
 GroundDataAvailability = Literal[
@@ -332,14 +344,57 @@ class GroundUnattendedEndpointDTO(ApiModel):
     )
 
 
+class GroundApIdentityDiagnosticsDTO(ApiModel):
+    """Current-AP identity evidence retained with the live train state."""
+
+    train_id: str = ""
+    mr_id: str = ""
+    site_id: str = ""
+    line_id: str = ""
+    raw_current_ap: str = ""
+    canonical_current_ap: str = ""
+    identity_revision: int = 0
+    identity_generated_at: str = ""
+    candidate_count: int = 0
+    matched_by: str = "none"
+    ap_identity_status: str = "NOT_FOUND"
+    station_match_status: str = "UNMATCHED"
+    ap_identity_match_status: str = "NOT_FOUND"
+    resolved_ap_id: str = ""
+    resolved_ap_name: str = ""
+    resolved_ap_physical_mac: str = ""
+    resolved_station_id: str = ""
+    resolved_station_name: str = ""
+    resolved_section_id: str = ""
+    resolved_section_name: str = ""
+    position_type: str = "UNKNOWN"
+    mainline_eligible: bool = False
+    mainline_exclusion_code: str = ""
+    mainline_exclusion_reason: str = ""
+    ping_eligible: bool = False
+    ping_exclusion_code: str = ""
+    ping_exclusion_reason: str = ""
+    result_code: str = ""
+
+
 class GroundUnattendedTrainDTO(ApiModel):
     train_id: str
     train_no: str = ""
     train_name: str = ""
     location_class: GroundLocationClass = "UNKNOWN"
+    location_class_source: str = "UNDETERMINED"
+    participates_in_mainline: bool = False
     mainline_eligible: bool = False
+    mainline_reason_code: str = "NOT_EVALUATED"
+    mainline_reason_text: str = "未评估"
     ping_eligible: bool = False
+    ping_reason_code: str = "NOT_EVALUATED"
+    ping_reason_text: str = "未评估"
     deep_collection_eligible: bool = False
+    deep_collection_reason_code: str = "NOT_EVALUATED"
+    deep_collection_reason_text: str = "未评估"
+    decision_revision: int = 0
+    decision_source: str = "NOT_EVALUATED"
     ping_inclusion_reason: str = ""
     ping_exclusion_reason: str = ""
     deep_exclusion_reason: str = ""
@@ -381,6 +436,9 @@ class GroundUnattendedTrainDTO(ApiModel):
     selection_reason: str = ""
     failure_reason: str = ""
     endpoints: list[GroundUnattendedEndpointDTO] = Field(default_factory=list)
+    ap_identity_diagnostics: GroundApIdentityDiagnosticsDTO = Field(
+        default_factory=GroundApIdentityDiagnosticsDTO
+    )
     updated_at: str = ""
 
 
@@ -632,6 +690,45 @@ class GroundDeepCollectionDTO(ApiModel):
     covered_rounds: int = 0
     failure_reason: str = ""
     updated_at: str = ""
+    deep_state: GroundDeepCollectionState = "INELIGIBLE"
+    deep_state_reason: str = ""
+    collectors: list["GroundDeepCollectorDTO"] = Field(default_factory=list)
+
+
+class GroundDeepCollectorDTO(ApiModel):
+    run_id: str = ""
+    train_id: str = ""
+    mr_id: str = ""
+    mr_role: str = ""
+    management_ip: str = ""
+    operation_id: str = ""
+    collector_session_id: str = ""
+    state: GroundDeepCollectionState = "INELIGIBLE"
+    state_reason: str = ""
+    started_at: str = ""
+    last_record_at: str = ""
+    record_count: int | None = None
+    bytes_written: int = 0
+    current_ap: str = ""
+    station: str = ""
+    section: str = ""
+    last_error: str = ""
+    retry_count: int = 0
+
+
+class GroundDeepCollectionRecordDTO(ApiModel):
+    sequence: int
+    timestamp: str = ""
+    category: str = "RAW_OUTPUT"
+    source: str = ""
+    text: str
+
+
+class GroundDeepCollectionRecordPageDTO(ApiModel):
+    collector: GroundDeepCollectorDTO
+    records: list[GroundDeepCollectionRecordDTO] = Field(default_factory=list)
+    next_cursor: str = ""
+    has_more: bool = False
 
 
 class GroundDeepCollectionPageDTO(ApiModel):
@@ -673,6 +770,19 @@ class GroundTimelineEventDTO(ApiModel):
     ap_transition_display: str = ""
     resolved_ap_name: str = ""
     previous_resolved_ap_name: str = ""
+    old_ap_raw: str = ""
+    new_ap_raw: str = ""
+    old_ap_identity_status: str = ""
+    new_ap_identity_status: str = ""
+    old_match_source: str = ""
+    new_match_source: str = ""
+    old_match_rule: str = ""
+    new_match_rule: str = ""
+    old_identity_reason: str = ""
+    new_identity_reason: str = ""
+    identity_status: str = ""
+    identity_source: str = ""
+    identity_revision: int = 0
     details: dict[str, object] = Field(default_factory=dict)
 
 
@@ -842,6 +952,60 @@ class GroundPingSamplePageDTO(ApiModel):
     )
 
 
+class GroundMeshSwitchEventDTO(ApiModel):
+    event_id: str = ""
+    run_id: str = ""
+    ts: str
+    event_time: str
+    event_type: Literal["MESH_ACTIVELINK_SWITCH"] = "MESH_ACTIVELINK_SWITCH"
+    context: str = "wmesh_active_link_switch"
+    train_id: str = ""
+    mr_id: str = ""
+    mr_role: str = ""
+    management_ip: str = ""
+    old_ap_raw: str = ""
+    new_ap_raw: str = ""
+    old_ap_radio_mac: str = ""
+    new_ap_radio_mac: str = ""
+    old_ap_id: str = ""
+    new_ap_id: str = ""
+    old_ap_name: str = ""
+    new_ap_name: str = ""
+    old_ap_mac: str = ""
+    new_ap_mac: str = ""
+    old_station: str = ""
+    new_station: str = ""
+    old_section: str = ""
+    new_section: str = ""
+    old_ap_identity_status: str = ""
+    new_ap_identity_status: str = ""
+    old_match_source: str = ""
+    new_match_source: str = ""
+    old_match_rule: str = ""
+    new_match_rule: str = ""
+    old_identity_reason: str = ""
+    new_identity_reason: str = ""
+    identity_status: str = ""
+    identity_source: str = ""
+    identity_revision: int = 0
+    rssi_before: float | None = None
+    rssi_before_time: str = ""
+    rssi_before_delta_ms: int | None = None
+    rssi_before_reason: str = ""
+    rssi_after: float | None = None
+    rssi_after_time: str = ""
+    rssi_after_delta_ms: int | None = None
+    rssi_after_reason: str = ""
+    source: str = "MR Syslog / WMESH"
+    source_type: str = "SYSLOG"
+    source_event_id: int | str | None = None
+    syslog_event_id: int | str | None = None
+    raw_file_id: str = ""
+    raw_line_number: int | None = None
+    source_sequence: int | None = None
+    details: dict[str, object] = Field(default_factory=dict)
+
+
 class GroundPingSeriesDTO(ApiModel):
     raw_sample_count: int = 0
     effective_sample_count: int = 0
@@ -855,7 +1019,7 @@ class GroundPingSeriesDTO(ApiModel):
     max_rtt_ms: float | None = None
     points: list[GroundPingSampleDTO] = Field(default_factory=list)
     loss_windows: list[dict[str, object]] = Field(default_factory=list)
-    ap_transitions: list[dict[str, object]] = Field(default_factory=list)
+    ap_transitions: list[GroundMeshSwitchEventDTO] = Field(default_factory=list)
     position_segments: list[dict[str, object]] = Field(default_factory=list)
     diagnostics: GroundQueryDiagnosticsDTO = Field(
         default_factory=GroundQueryDiagnosticsDTO

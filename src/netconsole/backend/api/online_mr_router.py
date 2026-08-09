@@ -14,6 +14,7 @@ from netconsole.models.api.online_mr import (
     OnlineMrBusinessSummaryDTO,
     OnlineMrBusinessTable,
     OnlineMrBusinessTablePageDTO,
+    OnlineMrTrafficOverviewDTO,
     OnlineMrMetricPageDTO,
     OnlineMrMetricSeriesDTO,
     OnlineMrManualNoteDTO,
@@ -108,6 +109,16 @@ def raw_summary(request: Request, session_id: str) -> ApiResponse[list[OnlineMrR
 @router.get("/sessions/{session_id}/business-summary", response_model=ApiResponse[OnlineMrBusinessSummaryDTO])
 def business_summary(request: Request, session_id: str) -> ApiResponse[OnlineMrBusinessSummaryDTO]:
     return ApiResponse(data=_facade(request).business_summary(session_id))
+
+
+@router.get("/sessions/{session_id}/traffic-overview", response_model=ApiResponse[OnlineMrTrafficOverviewDTO])
+def traffic_overview(
+    request: Request,
+    session_id: str,
+    start_time: str = Query(default="", max_length=40),
+    end_time: str = Query(default="", max_length=40),
+) -> ApiResponse[OnlineMrTrafficOverviewDTO]:
+    return ApiResponse(data=_facade(request).traffic_overview(session_id, start_time=start_time, end_time=end_time))
 
 
 @router.get("/sessions/{session_id}/business-table", response_model=ApiResponse[OnlineMrBusinessTablePageDTO])

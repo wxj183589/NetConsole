@@ -133,7 +133,7 @@ def test_online_mr_diagnosis_repository_additively_upgrades_main_link_identity_c
         "identity_match_confidence",
     }.issubset(columns)
     assert count == 1
-    assert schema_version == "online_mr_business_tables_v11_identity_projection"
+    assert schema_version == "online_mr_business_tables_v12_identity_channel_busy"
 
 
 def test_online_mr_identity_remap_batches_all_fact_endpoints_and_preserves_facts(
@@ -247,6 +247,64 @@ def test_online_mr_identity_remap_batches_all_fact_endpoints_and_preserves_facts
     assert len(query.calls) == 2
     assert second.revision == 81
     assert second.fact_fingerprint_before == before == second.fact_fingerprint_after
+
+
+def test_online_mr_identity_remap_skips_empty_switch_endpoint_and_persists_null_location(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "parsed" / "online_diagnosis.sqlite"
+    repository = OnlineMrDiagnosisRepository(db_path)
+    repository.initialize()
+    session_id = "session-empty-endpoint"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO switch_history_events (
+                session_id, event_time_device, old_peer_name, old_peer_mac,
+                new_peer_name, new_peer_mac
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (session_id, "2026-07-19 10:00:00", "", "", "bc5a-3457-61e0", "bc5a-3457-61ff"),
+        )
+
+    class QueryService:
+        def resolve_peer_macs(self, values, *, ap_role=None):
+            assert list(values) == ["bc5a345761ff"]
+            match = ApIdentityMatch(
+                status="matched",
+                identity_revision=82,
+                query_mac="bc5a345761ff",
+                matched_entity_id="entity-61e0",
+                effective_ap_name="bc5a-3457-61e0",
+                effective_ap_mac="bc5a345761e0",
+                matched_alias_type="h3c_r2_derived",
+                matched_source="ac_runtime",
+                match_rule="h3c_physical_mac_to_r2_exact_v1",
+                match_confidence=95,
+            )
+            return ApIdentityBatchResult(
+                revision=82,
+                index_status="ready",
+                requested_count=1,
+                normalized_count=1,
+                distinct_count=1,
+                matched_count=1,
+                unresolved_count=0,
+                ambiguous_count=0,
+                invalid_count=0,
+                matches={"bc5a345761ff": match},
+            )
+
+    result = OnlineMrIdentityRemapService(repository, QueryService()).remap(session_id)  # type: ignore[arg-type]
+
+    assert result.invalid_count == 0
+    assert result.unresolved_count == 0
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT old_identity_status, old_belong_station, new_identity_status, "
+            "new_matched_ap_name, new_belong_station FROM switch_history_events"
+        ).fetchone()
+    assert row == ("empty", None, "matched", "bc5a-3457-61e0", None)
 
 
 def test_online_mr_identity_remap_rejects_zero_matched_writeback_and_rolls_back(

@@ -40,6 +40,10 @@
 | 设备管理与 LLDP topology binding | 设备事实、LLDP 与轨旁绑定服务 | 物理设备 / Chassis / 邻居 MAC | 未统一 | 存在领域索引 | 部分 | 否 | 不适用 | 中 | 第二阶段 / P2 | 只统一身份解析段，拓扑关系仍由本领域负责 |
 | FIT-AP / AC 搜索 | `src/netconsole/services/ac/query_service.py` | AP MAC / 名称 | `search_aps()` | 否 | 否 | 否 | 不适用 | 低 | 已有入口 / 持续收敛 | 已使用统一搜索；详情按 entity 接口继续收敛 |
 
+Ground unattended 当前 Current AP 已使用独立的 `resolve_current_ap_macs(ap_role="trackside")` 批量语义。
+该入口允许物理 AP MAC、Radio/BSSID alias，结果以 `ap_identity_diagnostics_json` 持久化 raw/canonical MAC、
+Identity revision、AP/站点状态和主线/Ping 原因码；它不把 MESH peer 的受限 resolver 扩展为 Current AP。
+
 ## 批量契约
 
 `ApIdentityQueryService` 正式提供：

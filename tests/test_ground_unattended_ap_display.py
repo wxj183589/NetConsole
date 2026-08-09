@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.models.ap_identity_index import ApIdentityMatch
@@ -44,12 +46,15 @@ class FakeIdentityQuery:
             for key in keys
         }
 
+    def resolve_current_ap_macs(self, macs, *, ap_role=None):
+        return self.resolve_peer_macs(macs, ap_role=ap_role)
+
     def index_state(self) -> dict[str, object]:
         self.state_calls += 1
         return {"revision": self.revision}
 
 
-def test_ap_display_resolver_uses_strict_peer_semantics_and_identity_fields() -> None:
+def test_ap_display_resolver_resolves_registered_current_ap_aliases_and_identity_fields() -> None:
     radio_key = "101122334455"
     query = FakeIdentityQuery(
         {
@@ -108,8 +113,9 @@ def test_ap_display_resolver_uses_real_base_identity_for_yard_radio_alias(
     assert radio["peer_ap_mac"] == "74:ad:cb:9d:33:20"
     assert radio["station"] == "车辆段"
     assert radio["identity_source"] == "base_data"
-    assert physical["resolution_status"] == "UNRESOLVED"
-    assert physical["peer_ap_id"] == ""
+    assert physical["resolution_status"] == "PHYSICAL_AP"
+    assert physical["peer_ap_name"] == "车辆段-AP01"
+    assert physical["peer_ap_mac"] == "74:ad:cb:9d:33:20"
 
 
 def test_ap_display_resolver_batches_distinct_current_and_previous_peers() -> None:
@@ -223,6 +229,193 @@ def test_application_service_uses_injected_identity_query_without_base_alias_cac
     assert service._ap_display_resolver().query_service is query
 
 
+def test_ping_switch_projection_resolves_radio_aliases_in_one_identity_batch(
+    tmp_path,
+) -> None:
+    paths = PathResolver(tmp_path / "app", tmp_path / "data")
+    repository = GroundUnattendedRepository(
+        paths.ground_unattended_db_path("site-a"), site_id="site-a"
+    )
+    query = FakeIdentityQuery(
+        {
+            "101122334455": _match(
+                "101122334455",
+                entity_id="old-ap",
+                name="站点A-AP01",
+                ap_mac="0011-2233-4455",
+                station="站点A",
+                section="站点A-站点B",
+                revision=9,
+            ),
+            "102233445566": _match(
+                "102233445566",
+                entity_id="new-ap",
+                name="站点B-AP01",
+                ap_mac="0022-3344-5566",
+                station="站点B",
+                section="站点B-站点C",
+                revision=9,
+            ),
+        },
+        revision=9,
+    )
+    service = GroundUnattendedApplicationService(
+        paths,
+        site_id="site-a",
+        repository=repository,
+        supervisor=SimpleNamespace(),
+        ap_identity_query_service=query,
+    )
+
+    projected = service._project_ping_transitions(
+        [
+            {
+                "ts": "2026-08-07T20:29:21.840+08:00",
+                "event_time": "2026-08-07T20:29:21.840+08:00",
+                "old_ap_raw": "1011-2233-4455",
+                "new_ap_raw": "1022-3344-5566",
+                "old_ap_mac": "",
+                "new_ap_mac": "",
+            }
+        ]
+    )
+
+    assert query.batch_calls == [
+        (("102233445566", "101122334455"), "trackside")
+    ]
+    assert projected[0]["old_ap_id"] == "old-ap"
+    assert projected[0]["new_ap_id"] == "new-ap"
+    assert projected[0]["old_ap_mac"] == "00:11:22:33:44:55"
+    assert projected[0]["new_ap_mac"] == "00:22:33:44:55:66"
+    assert projected[0]["old_station"] == "站点A"
+    assert projected[0]["new_station"] == "站点B"
+    assert projected[0]["old_ap_identity_status"] == "MATCHED"
+    assert projected[0]["new_ap_identity_status"] == "MATCHED"
+    assert projected[0]["identity_status"] == "BOTH_MATCHED"
+    assert projected[0]["old_match_source"] == "ac_runtime"
+    assert projected[0]["new_match_source"] == "ac_runtime"
+    assert projected[0]["old_match_rule"] == "actual_bssid_exact"
+    assert projected[0]["new_match_rule"] == "actual_bssid_exact"
+    assert projected[0]["identity_revision"] == 9
+
+
+@pytest.mark.parametrize(
+    ("old_match", "new_match", "old_raw", "new_raw", "expected"),
+    [
+        ("matched", "unresolved", "1011-2233-4455", "1022-3344-5566", "OLD_ONLY_MATCHED"),
+        ("unresolved", "matched", "1011-2233-4455", "1022-3344-5566", "NEW_ONLY_MATCHED"),
+        ("unresolved", "unresolved", "1011-2233-4455", "1022-3344-5566", "BOTH_NOT_FOUND"),
+        ("ambiguous", "matched", "1011-2233-4455", "1022-3344-5566", "OLD_CONFLICT"),
+        ("matched", "ambiguous", "1011-2233-4455", "1022-3344-5566", "NEW_CONFLICT"),
+        ("ambiguous", "ambiguous", "1011-2233-4455", "1022-3344-5566", "BOTH_CONFLICT"),
+        ("matched", "matched", "bad-old-mac", "1022-3344-5566", "INVALID_MAC"),
+        ("matched", "matched", "", "1022-3344-5566", "NO_AP_ENDPOINT"),
+        ("matched", "matched", "1011-2233-4455", "", "NO_AP_ENDPOINT"),
+    ],
+)
+def test_switch_projector_reports_explicit_dual_endpoint_statuses(
+    old_match: str,
+    new_match: str,
+    old_raw: str,
+    new_raw: str,
+    expected: str,
+) -> None:
+    matches: dict[str, ApIdentityMatch] = {}
+    for key, status, entity_id, name in (
+        ("101122334455", old_match, "old-ap", "AP-A"),
+        ("102233445566", new_match, "new-ap", "AP-B"),
+    ):
+        if status == "matched":
+            matches[key] = _match(
+                key,
+                entity_id=entity_id,
+                name=name,
+                revision=11,
+            )
+        elif status == "ambiguous":
+            matches[key] = ApIdentityMatch(
+                status="ambiguous",
+                identity_revision=11,
+                query_mac=key,
+                candidates=({"entity_id": "a"}, {"entity_id": "b"}),
+                unresolved_reason="duplicate_exact_alias",
+            )
+    query = FakeIdentityQuery(matches, revision=11)
+    resolver = GroundApDisplayResolver(query)
+    parsed = {
+        "event_type": "MESH_ACTIVELINK_SWITCH",
+        "previous_peer_mac": old_raw,
+        "peer_mac": new_raw,
+        "details": {
+            "old_peer_mac": old_raw,
+            "new_peer_mac": new_raw,
+        },
+    }
+
+    resolver.preload_parsed([parsed])
+    projected = resolver.project_switch(parsed)
+
+    assert projected["identity_status"] == expected
+    assert projected["identity_revision"] == 11
+    assert projected["old_ap_raw"] == old_raw
+    assert projected["new_ap_raw"] == new_raw
+    assert len(query.batch_calls) <= 1
+    if expected == "OLD_ONLY_MATCHED":
+        assert projected["old_ap_identity_status"] == "MATCHED"
+        assert projected["new_ap_identity_status"] == "NOT_FOUND"
+        assert projected["old_ap_name"] == "AP-A"
+        assert projected["new_ap_name"] == ""
+    elif expected == "NEW_ONLY_MATCHED":
+        assert projected["old_ap_identity_status"] == "NOT_FOUND"
+        assert projected["new_ap_identity_status"] == "MATCHED"
+        assert projected["old_ap_name"] == ""
+        assert projected["new_ap_name"] == "AP-B"
+    elif expected == "OLD_CONFLICT":
+        assert projected["old_ap_identity_status"] == "CONFLICT"
+        assert projected["old_ap_name"] == ""
+    elif expected == "NEW_CONFLICT":
+        assert projected["new_ap_identity_status"] == "CONFLICT"
+        assert projected["new_ap_name"] == ""
+    elif expected == "INVALID_MAC":
+        assert projected["old_ap_identity_status"] == "INVALID_MAC"
+    elif expected == "NO_AP_ENDPOINT":
+        assert "NO_AP_ENDPOINT" in {
+            projected["old_ap_identity_status"],
+            projected["new_ap_identity_status"],
+        }
+
+
+def test_switch_projector_normalizes_supported_mac_formats_in_one_batch() -> None:
+    key = "bc5a34575d00"
+    query = FakeIdentityQuery(
+        {key: _match(key, entity_id="ap-a", name="AP-A", revision=13)},
+        revision=13,
+    )
+    rows = [
+        {
+            "event_type": "MESH_ACTIVELINK_SWITCH",
+            "previous_peer_mac": value,
+            "peer_mac": "BC5A34575D00",
+            "details": {},
+        }
+        for value in (
+            "bc:5a:34:57:5d:00",
+            "bc5a-3457-5d00",
+            "bc5a.3457.5d00",
+            "bc5a34575d00",
+        )
+    ]
+    resolver = GroundApDisplayResolver(query)
+
+    resolver.preload_parsed(rows)
+    projected = [resolver.project_switch(row) for row in rows]
+
+    assert query.batch_calls == [((key,), "trackside")]
+    assert {item["identity_status"] for item in projected} == {"BOTH_MATCHED"}
+    assert {item["old_ap_id"] for item in projected} == {"ap-a"}
+    assert {item["new_ap_id"] for item in projected} == {"ap-a"}
+
+
 def test_timeline_enriches_link_events_and_no_active_link_switch(tmp_path) -> None:
     paths = PathResolver(tmp_path / "app", tmp_path / "data")
     repository = GroundUnattendedRepository(
@@ -318,9 +511,39 @@ def test_timeline_enriches_link_events_and_no_active_link_switch(tmp_path) -> No
     assert linkdown.resolved_ap_name == "横溪站-AP02"
     assert "弱信号（本端）" in linkdown.message
     assert switch.ap_transition_display == "横溪站-AP02 → 横溪站-AP03"
+    assert "1011-2233-4455 → 1022-3344-5566" in switch.message
+    assert "横溪站-AP02 → 横溪站-AP03" in switch.message
+    assert switch.resolution_status == "BOTH_MATCHED"
+    assert switch.identity_status == "BOTH_MATCHED"
+    assert switch.old_ap_identity_status == "MATCHED"
+    assert switch.new_ap_identity_status == "MATCHED"
+    assert switch.old_ap_raw == "1011-2233-4455"
+    assert switch.new_ap_raw == "1022-3344-5566"
     assert no_active.ap_transition_display == "无主链路 → 横溪站-AP03"
     assert lost_active.ap_transition_display == "横溪站-AP02 → 无主链路"
-    assert lost_active.resolution_status == "NO_ACTIVE_LINK"
+    assert no_active.resolution_status == "NO_AP_ENDPOINT"
+    assert lost_active.resolution_status == "NO_AP_ENDPOINT"
+
+    ping_switch = service._project_ping_transitions(
+        [
+            {
+                "ts": switch.ts,
+                "event_time": switch.ts,
+                "old_ap_raw": switch.old_ap_raw,
+                "new_ap_raw": switch.new_ap_raw,
+            }
+        ]
+    )[0]
+    assert query.batch_calls == [
+        (("101122334455", "102233445566"), "trackside"),
+        (("102233445566", "101122334455"), "trackside"),
+    ]
+    assert ping_switch["identity_status"] == switch.identity_status
+    assert ping_switch["old_ap_id"] == switch.previous_peer_ap_id
+    assert ping_switch["new_ap_id"] == switch.peer_ap_id
+    assert ping_switch["old_station"] == switch.previous_station
+    assert ping_switch["new_station"] == switch.station
+    assert ping_switch["identity_revision"] == switch.identity_revision
 
 
 def _match(
@@ -329,6 +552,8 @@ def _match(
     entity_id: str,
     name: str,
     ap_mac: str = "0011-2233-4455",
+    station: str = "横溪站",
+    section: str = "横溪站-站点B",
     revision: int = 1,
 ) -> ApIdentityMatch:
     return ApIdentityMatch(
@@ -338,8 +563,8 @@ def _match(
         matched_entity_id=entity_id,
         effective_ap_name=name,
         effective_ap_mac=ap_mac,
-        station="横溪站",
-        section="横溪站-站点B",
+        station=station,
+        section=section,
         matched_alias_type="ac_bssid",
         matched_source="ac_runtime",
         match_rule="actual_bssid_exact",

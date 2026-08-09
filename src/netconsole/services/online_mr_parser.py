@@ -27,7 +27,11 @@ CHANNEL_BUSY_ROW_RE = re.compile(
 )
 CHANNEL_BUSY_DATE_RE = re.compile(r"Date/Month/Year:\s*(?P<day>\d{1,2})/(?P<month>\d{1,2})/(?P<year>\d{4})", re.IGNORECASE)
 CHANNEL_BUSY_CTL_CHANNEL_RE = re.compile(r"\bCtl\s+Channel\s*:\s*(?P<value>\d+)", re.IGNORECASE)
-CHANNEL_BUSY_BANDWIDTH_RE = re.compile(r"\bBandWidth\s*:\s*(?P<value>\d+)", re.IGNORECASE)
+CHANNEL_BUSY_BANDWIDTH_RE = re.compile(
+    r"\b(?:Channel\s+Band|BandWidth)\s*:\s*"
+    r"(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>[MG](?:Hz)?)?",
+    re.IGNORECASE,
+)
 CHANNEL_BUSY_INTERVAL_RE = re.compile(r"\bRecord\s+Interval\(s\)\s*:\s*(?P<value>\d+)", re.IGNORECASE)
 CHANNEL_BUSY_CURRENT_TIME_RE = re.compile(r"\bCurrentTime\s*:\s*(?P<value>\d{2}:\d{2}:\d{2})", re.IGNORECASE)
 INTERFACE_RATE_ROW_RE = re.compile(
@@ -297,10 +301,13 @@ def parse_mesh_link_row(line: str) -> dict[str, object] | None:
     }
 
 
-def parse_channel_busy_text(raw_text: str, collected_at: datetime | None = None) -> list[dict[str, int | str | None]]:
+def parse_channel_busy_text(
+    raw_text: str,
+    collected_at: datetime | None = None,
+) -> list[dict[str, int | float | str | None]]:
     raw_text, collector_time = _clean_collector_text(raw_text)
     collected_at = collected_at or collector_time
-    table_rows: list[dict[str, int | str | None]] = []
+    table_rows: list[dict[str, int | float | str | None]] = []
     sample_date = ""
     date_match = CHANNEL_BUSY_DATE_RE.search(raw_text)
     if date_match:
@@ -308,7 +315,7 @@ def parse_channel_busy_text(raw_text: str, collected_at: datetime | None = None)
     elif collected_at is not None:
         sample_date = collected_at.date().isoformat()
     ctl_channel = _first_int_match(CHANNEL_BUSY_CTL_CHANNEL_RE, raw_text)
-    bandwidth = _first_int_match(CHANNEL_BUSY_BANDWIDTH_RE, raw_text)
+    channel_band_raw, bandwidth_mhz = _channel_band(raw_text)
     record_interval = _first_int_match(CHANNEL_BUSY_INTERVAL_RE, raw_text)
     current_time = _first_text_match(CHANNEL_BUSY_CURRENT_TIME_RE, raw_text)
     for line in raw_text.splitlines():
@@ -334,7 +341,9 @@ def parse_channel_busy_text(raw_text: str, collected_at: datetime | None = None)
                 "collector_time": collected_at.isoformat(sep=" ", timespec="milliseconds") if collected_at else None,
                 "ctl_busy": ctl_busy,
                 "ctl_channel": ctl_channel,
-                "bandwidth": bandwidth,
+                "channel_band_raw": channel_band_raw,
+                "bandwidth_mhz": bandwidth_mhz,
+                "bandwidth": bandwidth_mhz,
                 "record_interval": record_interval,
                 "row_index": int(row.group("idx")),
                 "idx": int(row.group("idx")),
@@ -351,7 +360,9 @@ def parse_channel_busy_text(raw_text: str, collected_at: datetime | None = None)
             "rx_busy": values.get("rx_busy"),
             "ctl_busy": values.get("ctl_busy"),
             "ctl_channel": ctl_channel,
-            "bandwidth": bandwidth,
+            "channel_band_raw": channel_band_raw,
+            "bandwidth_mhz": bandwidth_mhz,
+            "bandwidth": bandwidth_mhz,
             "record_interval": record_interval,
             "row_index": 1,
             "sample_time": collected_at.isoformat(sep=" ", timespec="seconds") if collected_at else "",
@@ -370,6 +381,20 @@ def _first_int_match(pattern: re.Pattern[str], text: str) -> int | None:
 def _first_text_match(pattern: re.Pattern[str], text: str) -> str:
     match = pattern.search(text)
     return match.group("value") if match else ""
+
+
+def _channel_band(text: str) -> tuple[str, int | float | None]:
+    match = CHANNEL_BUSY_BANDWIDTH_RE.search(text)
+    if not match:
+        return "", None
+    value_text = match.group("value")
+    unit = (match.group("unit") or "").upper()
+    raw = f"{value_text}{unit}"
+    value = float(value_text)
+    if unit.startswith("G"):
+        value *= 1_000
+    normalized = int(value) if value.is_integer() else value
+    return raw, normalized
 
 
 def _extract_busy_values(raw_text: str) -> dict[str, int]:

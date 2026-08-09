@@ -318,7 +318,7 @@ defineExpose({ rect, maximized, startDrag, startResize, toggleMaximize })
 .nc-floating-window__heading strong { font-size: 15px; letter-spacing: 0; }
 .nc-floating-window__heading small { color: var(--nc-text-secondary); font-size: 12px; }
 .nc-floating-window__controls { display: flex; flex: none; align-items: center; }
-.nc-floating-window__body { min-width: 0; min-height: 0; flex: 1; overflow: auto; overscroll-behavior: contain; padding: 12px 14px 16px; }
+.nc-floating-window__body { display:flex; min-width: 0; min-height: 0; flex: 1; overflow: hidden; overscroll-behavior: contain; padding: 12px 14px 16px; }
 .nc-floating-window__resize { position: absolute; z-index: 2; }
 .nc-floating-window__resize.is-n,.nc-floating-window__resize.is-s { right: 10px; left: 10px; height: 8px; cursor: ns-resize; }
 .nc-floating-window__resize.is-n { top: -4px; }

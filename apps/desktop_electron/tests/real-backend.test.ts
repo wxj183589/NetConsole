@@ -23,6 +23,7 @@ import {
 import { stationTemplateDownloadRequest } from '../../web/src/api/railTransitBaseData'
 import {
   initializePlatformRuntime,
+  getRuntimeConfig,
   resetPlatformRuntimeForTests,
   resolveWebSocketUrl,
 } from '../../web/src/platform/runtime'
@@ -86,7 +87,7 @@ describe('real Python backend integration', () => {
       expect(authorized.status).toBe(200)
       await expect(authorized.json()).resolves.toMatchObject({ status: 'ok' })
       vi.stubGlobal('window', {
-        netconsoleDesktop: runtimeBridge(runtime.baseUrl, runtime.apiToken),
+        netconsoleDesktop: runtimeBridge(manager),
         location: { origin: 'http://127.0.0.1:5173', protocol: 'http:', host: '127.0.0.1:5173' },
       })
       await initializePlatformRuntime()
@@ -138,6 +139,17 @@ describe('real Python backend integration', () => {
       expect(sheetNames).toEqual(['01_线路参数', '02_线路节点', '03_区间配置', '字段说明'])
       expect(new URL(runtime.baseUrl).port).not.toBe('8000')
       expect(logs.join('\n')).not.toContain(runtime.apiToken)
+
+      await manager.stop()
+      const restartedRuntime = await manager.start()
+      expect(restartedRuntime.apiToken).not.toBe(runtime.apiToken)
+      await vi.waitFor(() => expect(getRuntimeConfig()).toMatchObject({
+        hostType: 'electron',
+        apiBaseUrl: restartedRuntime.baseUrl,
+        apiToken: restartedRuntime.apiToken,
+      }))
+      await expect(getHealth()).resolves.toMatchObject({ status: 'ok' })
+      expect(logs.join('\n')).not.toContain(restartedRuntime.apiToken)
     } finally {
       await manager.stop()
     }
@@ -146,11 +158,14 @@ describe('real Python backend integration', () => {
   })
 })
 
-function runtimeBridge(apiBaseUrl: string, apiToken: string): NetConsoleDesktopBridge {
+function runtimeBridge(manager: PythonBackendManager): NetConsoleDesktopBridge {
   return {
     getAppInfo: vi.fn(async () => ({ version: '1.3.8', platform: 'win32', isPackaged: false })),
-    getBackendStatus: vi.fn(async () => ({ state: 'ready' as const, baseUrl: apiBaseUrl })),
-    getRuntimeConfig: vi.fn(async () => ({ apiBaseUrl, apiToken })),
+    getBackendStatus: vi.fn(async () => manager.getStatus()),
+    getRuntimeConfig: vi.fn(async () => {
+      const runtime = manager.getRuntimeInfo()
+      return { apiBaseUrl: runtime.baseUrl, apiToken: runtime.apiToken }
+    }),
     openTaskWindow: vi.fn(async () => ({ success: true })),
     showTaskNotification: vi.fn(async () => ({ success: true })),
     setTaskTrayStatus: vi.fn(),
@@ -187,7 +202,7 @@ function runtimeBridge(apiBaseUrl: string, apiToken: string): NetConsoleDesktopB
     openPath: vi.fn(async () => ({ success: true })),
     showItemInFolder: vi.fn(async () => ({ success: true })),
     openExternalUrl: vi.fn(async () => ({ success: true })),
-    onBackendStatusChanged: vi.fn(() => () => undefined),
+    onBackendStatusChanged: vi.fn((listener) => manager.onStatusChange(listener)),
     reportRendererReady: vi.fn(),
   }
 }

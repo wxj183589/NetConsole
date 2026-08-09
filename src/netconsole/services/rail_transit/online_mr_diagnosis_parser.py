@@ -19,6 +19,10 @@ from netconsole.services.network_tools.iperf_parser import parse_iperf_error_lin
 from netconsole.services.ap_identity import ApIdentityQueryService
 from netconsole.services.online_mr_parser import parse_ap_radio_statistics_text, parse_channel_busy_text, parse_interface_rate_text, parse_mesh_link_text, parse_switch_history_text
 from netconsole.services.online_mr_terminal_log_parser import ActiveLinkSwitchLog, parse_active_link_switch_logs
+from netconsole.services.online_mr.session_time_alignment import (
+    SessionTimeAlignment,
+    TimeAlignmentAnchor,
+)
 from netconsole.services.rail_transit.online_mr_identity_remap_service import (
     OnlineMrIdentityRemapService,
 )
@@ -34,7 +38,7 @@ RX_COMMAND_RE = re.compile(
     re.IGNORECASE,
 )
 DEVICE_CLOCK_RE = re.compile(r"\b\d{2}:\d{2}:\d{2}\s+\S+\s+\w+\s+\d{1,2}/\d{1,2}/\d{4}\b", re.IGNORECASE)
-PARSER_VERSION = "online_mr_business_tables_v11_identity_projection"
+PARSER_VERSION = "online_mr_business_tables_v12_identity_channel_busy"
 ProgressCallback = Callable[[str, int, int, str], None]
 CancelCallback = Callable[[], bool]
 
@@ -97,19 +101,12 @@ class OnlineMrParseSummary:
 
 
 def estimate_device_time_from_local(local_time: datetime, sync_samples: list[TimeSyncSample]) -> tuple[datetime | None, float | None, str]:
-    if not sync_samples:
-        return None, None, "none"
-    samples = sorted(sync_samples, key=lambda item: item.collector_time)
-    if local_time <= samples[0].collector_time:
-        sample = samples[0]
-        source = "first_sample"
-    elif local_time >= samples[-1].collector_time:
-        sample = samples[-1]
-        source = "last_sample"
-    else:
-        sample = min(samples, key=lambda item: abs((item.collector_time - local_time).total_seconds()))
-        source = "nearest_sample"
-    return local_time + timedelta(milliseconds=float(sample.offset_ms)), float(sample.offset_ms), source
+    alignment = SessionTimeAlignment.from_anchors(
+        TimeAlignmentAnchor(item.collector_time, item.device_time, item.source)
+        for item in sync_samples
+    )
+    result = alignment.collector_to_device(local_time)
+    return result.normalized_time, result.correction_ms, result.method
 
 
 def _float_or_none(*values: object) -> float | None:
@@ -604,6 +601,8 @@ class OnlineMrDiagnosisParser:
                     row.get("radio"),
                     row.get("ctl_channel"),
                     row.get("bandwidth"),
+                    row.get("channel_band_raw"),
+                    row.get("bandwidth_mhz"),
                     row.get("record_interval"),
                     row.get("row_index") or row.get("idx") or 1,
                     row.get("ctl_busy"),
@@ -667,11 +666,7 @@ class OnlineMrDiagnosisParser:
         seen: set[tuple[object, ...]] = set()
         count = 0
         for block in self.splitter.split(self.raw_dir / "channel_busy_raw.log"):
-            rows = [
-                row
-                for row in parse_channel_busy_text(block.text, collected_at=block.collected_at)
-                if int(row.get("row_index") or row.get("idx") or 1) == 1
-            ]
+            rows = parse_channel_busy_text(block.text, collected_at=block.collected_at)
             device_clock = self._extract_device_clock(block.text)
             unique = []
             for row in rows:
@@ -961,7 +956,7 @@ class OnlineMrDiagnosisParser:
     def _write_fping_sampling_tables(self, rows: list[dict[str, object]]) -> None:
         sample_values: list[tuple[object, ...]] = []
         buckets: dict[tuple[str, str], dict[str, object]] = {}
-        sync_samples = self._load_time_sync_samples()
+        alignment = self._load_time_alignment()
         for row in rows:
             local_time = str(row.get("collected_at") or "")
             target_ip = str(row.get("target_ip") or "")
@@ -969,7 +964,10 @@ class OnlineMrDiagnosisParser:
             latency = row.get("latency_ms")
             loss_percent = 0.0 if success else 100.0
             local_dt = self._parse_iso_datetime(local_time) or self.meta.started_at
-            device_dt, clock_offset_ms, offset_source = estimate_device_time_from_local(local_dt, sync_samples)
+            aligned = alignment.collector_to_device(local_dt)
+            device_dt = aligned.normalized_time
+            clock_offset_ms = aligned.correction_ms
+            offset_source = aligned.method
             device_time = device_dt.isoformat(sep=" ", timespec="milliseconds") if device_dt is not None else None
             local_time = local_dt.isoformat(sep=" ", timespec="milliseconds")
             sample_values.append(
@@ -1064,6 +1062,12 @@ class OnlineMrDiagnosisParser:
                 offset = (device_dt - collector_dt).total_seconds() * 1000.0
             samples.append(TimeSyncSample(collector_dt, device_dt, offset, str(source or "mesh_link_display_clock")))
         return samples
+
+    def _load_time_alignment(self) -> SessionTimeAlignment:
+        return SessionTimeAlignment.from_anchors(
+            TimeAlignmentAnchor(item.collector_time, item.device_time, item.source)
+            for item in self._load_time_sync_samples()
+        )
 
     def _iperf_run_metadata(self) -> dict[str, object]:
         config = self.meta.iperf if isinstance(self.meta.iperf, dict) else {}
@@ -1171,10 +1175,13 @@ class OnlineMrDiagnosisParser:
             device_id=self.meta.device_id,
             **run_metadata,
         )
-        sync_samples = self._load_time_sync_samples()
+        alignment = self._load_time_alignment()
         for row in rows:
             local_time = self._parse_iso_datetime(row.get("interval_center_time") or row.get("collector_time")) or self.meta.started_at
-            device_dt, clock_offset_ms, offset_source = estimate_device_time_from_local(local_time, sync_samples)
+            aligned = alignment.collector_to_device(local_time)
+            device_dt = aligned.normalized_time
+            clock_offset_ms = aligned.correction_ms
+            offset_source = aligned.method
             device_time = device_dt.isoformat(sep=" ", timespec="milliseconds") if device_dt is not None else None
             row["device_interval_center_time"] = device_time
             row["device_aligned_time"] = device_time

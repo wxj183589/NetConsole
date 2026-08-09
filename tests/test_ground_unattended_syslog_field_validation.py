@@ -844,6 +844,10 @@ def test_repository_additively_migrates_syslog_runtime_columns(tmp_path: Path) -
             row[1] for row in conn.execute("PRAGMA table_info(ground_unattended_ping_summaries)")
         }
         endpoint_columns = {row[1] for row in conn.execute("PRAGMA table_info(ground_unattended_train_endpoints)")}
+        train_columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(ground_unattended_train_runs)")
+        }
         boot_columns = {row[1] for row in conn.execute("PRAGMA table_info(ground_unattended_boot_sessions)")}
         event_columns = {row[1] for row in conn.execute("PRAGMA table_info(ground_unattended_wmesh_events)")}
         table_names = {
@@ -893,7 +897,19 @@ def test_repository_additively_migrates_syslog_runtime_columns(tmp_path: Path) -
         "cfg_command_source",
         "expected_internal_change",
     } <= event_columns
-    assert schema_version == "9"
+    assert {
+        "location_class_source",
+        "participates_in_mainline",
+        "mainline_reason_code",
+        "mainline_reason_text",
+        "ping_reason_code",
+        "ping_reason_text",
+        "deep_collection_reason_code",
+        "deep_collection_reason_text",
+        "decision_revision",
+        "decision_source",
+    } <= train_columns
+    assert schema_version == "10"
 
 
 def test_real_syslog_shapes_keep_parser_fields_and_clock_semantics(tmp_path: Path) -> None:

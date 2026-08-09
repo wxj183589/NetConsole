@@ -100,6 +100,200 @@ def test_ready_archive_is_queryable_and_mixed_sources_are_deduplicated(
     }
 
 
+def test_ping_transition_marker_projects_wmesh_event_and_real_rssi_evidence(
+    tmp_path: Path,
+) -> None:
+    paths, repository, run_id = _setup_run(tmp_path)
+    raw_path = paths.ground_unattended_active_dir("site-a", "2026-07-25") / "fleet_ping" / "ping.jsonl"
+    _register_ping_file(
+        repository,
+        raw_path,
+        file_id="raw-ping",
+        run_id=run_id,
+        sample_id="sample-ping",
+        ts="2026-07-25T08:00:00+08:00",
+    )
+    repository.record_control_syslog_event(
+        {
+            "run_id": run_id,
+            "device_uuid": "mr-ct",
+            "train_id": "train-1",
+            "mr_role": "CT",
+            "event_type": "MESH_ACTIVELINK_SWITCH",
+            "event_family": "WMESH",
+            "receive_time": "2026-07-25T08:00:00.500+08:00",
+            "event_time": "2026-07-25T08:00:00.500+08:00",
+            "peer_mac": "bc5a-3457-a0cf",
+            "previous_peer_mac": "bc5a.3457.655f",
+            "station": "大徐站",
+            "section": "大徐-下一站",
+            "raw_file_id": "syslog-raw",
+            "raw_line_number": 18,
+            "dedup_key": "switch-evidence",
+            "details": {
+                "old_peer_mac": "bc5a.3457.655f",
+                "new_peer_mac": "bc5a-3457-a0cf",
+                "old_rssi": -67,
+                "new_rssi": -72,
+                "previous_peer_ap_id": "old-ap",
+                "previous_peer_ap_name": "AP-OLD",
+                "previous_peer_ap_mac": "bc:5a:34:57:65:50",
+                "previous_station": "大徐站",
+                "peer_ap_id": "new-ap",
+                "peer_ap_name": "AP-NEW",
+                "peer_ap_mac": "bc:5a:34:57:a0:c0",
+                "identity_status": "matched",
+                "identity_source": "base_data",
+                "identity_revision": 7,
+                "source_receive_sequence": 42,
+            },
+        }
+    )
+
+    result = GroundRawStreamQueryService(repository).ping_series(run_id=run_id)
+
+    assert len(result["ap_transitions"]) == 1
+    marker = result["ap_transitions"][0]
+    assert marker["event_type"] == "MESH_ACTIVELINK_SWITCH"
+    assert marker["old_ap_name"] == "AP-OLD"
+    assert marker["new_ap_name"] == "AP-NEW"
+    assert marker["old_ap_raw"] == "bc5a.3457.655f"
+    assert marker["new_ap_mac"] == "bc:5a:34:57:a0:c0"
+    assert marker["rssi_before"] == -67
+    assert marker["rssi_before_delta_ms"] == 0
+    assert marker["rssi_after"] == -72
+    assert marker["raw_file_id"] == "syslog-raw"
+    assert marker["source_sequence"] == 42
+
+
+def test_ping_sample_position_context_does_not_emit_switch_marker(
+    tmp_path: Path,
+) -> None:
+    paths, repository, run_id = _setup_run(tmp_path)
+    raw_path = (
+        paths.ground_unattended_active_dir("site-a", "2026-07-25")
+        / "fleet_ping"
+        / "ping-context.jsonl"
+    )
+    _register_ping_file(
+        repository,
+        raw_path,
+        file_id="raw-context",
+        run_id=run_id,
+        sample_id="sample-context",
+        ts="2026-07-25T08:00:00+08:00",
+        ap_transition_context="same_ap",
+    )
+
+    result = GroundRawStreamQueryService(repository).ping_series(run_id=run_id)
+
+    assert result["ap_transitions"] == []
+
+
+def test_switch_provenance_dedup_keeps_real_flap_and_fills_mr_identity(
+    tmp_path: Path,
+) -> None:
+    paths, repository, run_id = _setup_run(tmp_path)
+    raw_path = (
+        paths.ground_unattended_active_dir("site-a", "2026-07-25")
+        / "fleet_ping"
+        / "ping-flap.jsonl"
+    )
+    _register_ping_file(
+        repository,
+        raw_path,
+        file_id="raw-flap-ping",
+        run_id=run_id,
+        sample_id="sample-flap",
+        ts="2026-07-25T08:00:00+08:00",
+    )
+    repository.sync_inventory(
+        trains=[{"train_id": "train-1", "train_no": "01"}],
+        endpoints=[
+            {
+                "device_uuid": "mr-ct",
+                "train_id": "train-1",
+                "mr_role": "CT",
+                "management_ip": "192.0.2.10",
+            }
+        ],
+    )
+
+    def event(
+        *,
+        at: str,
+        old: str,
+        new: str,
+        line: int,
+        device_uuid: str = "mr-ct",
+    ) -> dict[str, object]:
+        return {
+            "run_id": run_id,
+            "device_uuid": device_uuid,
+            "train_id": "train-1",
+            "mr_role": "CT",
+            "event_type": "MESH_ACTIVELINK_SWITCH",
+            "event_family": "WMESH",
+            "receive_time": at,
+            "event_time": at,
+            "source_ip": "192.0.2.10",
+            "previous_peer_mac": old,
+            "peer_mac": new,
+            "raw_file_id": "syslog-flap",
+            "raw_line_number": line,
+            "details": {"old_peer_mac": old, "new_peer_mac": new},
+        }
+
+    inserted = repository.insert_wmesh_events(
+        [
+            event(
+                at="2026-07-25T08:00:00.100+08:00",
+                old="0000-0000-000a",
+                new="0000-0000-000b",
+                line=10,
+                device_uuid="",
+            ),
+            event(
+                at="2026-07-25T08:00:00.100+08:00",
+                old="0000-0000-000a",
+                new="0000-0000-000b",
+                line=10,
+                device_uuid="",
+            ),
+            event(
+                at="2026-07-25T08:00:00.200+08:00",
+                old="0000-0000-000b",
+                new="0000-0000-000a",
+                line=11,
+            ),
+            event(
+                at="2026-07-25T08:00:00.300+08:00",
+                old="0000-0000-000a",
+                new="0000-0000-000b",
+                line=12,
+            ),
+        ]
+    )
+
+    result = GroundRawStreamQueryService(repository).ping_series(
+        run_id=run_id,
+        target_ip="192.0.2.10",
+    )
+
+    assert inserted == 3
+    assert len(result["ap_transitions"]) == 3
+    assert [
+        (row["old_ap_raw"], row["new_ap_raw"])
+        for row in result["ap_transitions"]
+    ] == [
+        ("0000-0000-000a", "0000-0000-000b"),
+        ("0000-0000-000b", "0000-0000-000a"),
+        ("0000-0000-000a", "0000-0000-000b"),
+    ]
+    assert result["ap_transitions"][0]["mr_id"] == "mr-ct"
+    assert result["ap_transitions"][0]["management_ip"] == "192.0.2.10"
+
+
 def test_ping_query_normalizes_registry_train_id_and_incrementally_reads_appends(
     tmp_path: Path,
 ) -> None:
@@ -1081,6 +1275,7 @@ def _register_ping_file(
     run_id: str,
     sample_id: str,
     ts: str,
+    ap_transition_context: str = "",
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -1091,6 +1286,7 @@ def _register_ping_file(
         "mr_id": "mr-ct",
         "ok": True,
         "rtt_ms": 2.0,
+        "ap_transition_context": ap_transition_context,
     }
     path.write_text(
         json.dumps(payload, ensure_ascii=False) + "\n", encoding="utf-8"

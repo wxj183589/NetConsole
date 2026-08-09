@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import re
+import sqlite3
 import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
@@ -13,12 +14,15 @@ from netconsole.models.api.ground_unattended import (
     GroundUnattendedTrainDTO,
 )
 from netconsole.models.api.rail_transit_base_data import (
+    MileageDTO,
     RailTransitSummaryDTO,
     SectionDTO,
     StationDTO,
     TracksideApDTO,
     VehicleMrDTO,
 )
+from netconsole.models.ap_identity_index import ApIdentityMatch
+from netconsole.services.ap_identity import ApIdentityQueryService
 from netconsole.services.ap_identity.normalizers import normalize_mac
 from netconsole.services.rail_transit.station_source_utils import (
     canonical_station_name,
@@ -64,10 +68,17 @@ class LocationResolution:
     match_level: str = "UNMATCHED"
     match_reason: str = "当前 AP 和站点均无法与基础资料匹配"
     canonical_station_name: str = ""
+    identity_match: ApIdentityMatch | None = None
 
 
 class GroundUnattendedEligibilityClassifier:
     """分开表达正线资格和位置匹配质量，所有降级均保留明确证据。"""
+
+    def __init__(
+        self,
+        ap_identity_query_service: ApIdentityQueryService | None = None,
+    ) -> None:
+        self.ap_identity_query_service = ap_identity_query_service
 
     def classify_all(
         self,
@@ -86,6 +97,7 @@ class GroundUnattendedEligibilityClassifier:
         station_rows = list(stations)
         section_rows = list(sections)
         ap_rows = list(aps)
+        ac_row_list = list(ac_rows)
         station_by_name = _unique_by_value(
             station_rows, lambda item: canonical_station_name(item.name).casefold()
         )
@@ -107,8 +119,26 @@ class GroundUnattendedEligibilityClassifier:
             key = _train_key(mr.train_id or mr.train_no)
             if key:
                 mr_groups.setdefault(key, []).append(mr)
+        identity_matches: dict[str, ApIdentityMatch] = {}
+        if self.ap_identity_query_service is not None:
+            raw_macs = [row.peer_ap_mac for row in ac_row_list]
+            if raw_macs:
+                try:
+                    batch = self.ap_identity_query_service.resolve_current_ap_macs(
+                        raw_macs,
+                        ap_role="trackside",
+                    )
+                except (sqlite3.Error, OSError, RuntimeError):
+                    batch = None
+                if batch is not None:
+                    identity_matches = {
+                        _mac_key(raw): batch.matches.get(_mac_key(raw))
+                        for raw in raw_macs
+                        if _mac_key(raw)
+                        and batch.matches.get(_mac_key(raw)) is not None
+                    }
         ac_groups: dict[str, list[AcMeshMrStatusDTO]] = {}
-        for row in ac_rows:
+        for row in ac_row_list:
             key = _train_key(row.train_no)
             if key:
                 ac_groups.setdefault(key, []).append(row)
@@ -130,6 +160,11 @@ class GroundUnattendedEligibilityClassifier:
                 ap_by_id=ap_by_id,
                 ap_by_mac=ap_by_mac,
                 ap_by_registry_mac=ap_by_registry_mac,
+                identity_match=(
+                    identity_matches.get(_mac_key(representative.peer_ap_mac))
+                    if representative
+                    else None
+                ),
             )
             previous = trackers.get(train_id, StationaryTracker())
             tracker, same_ap_seconds = self._stationary_tracker(
@@ -188,6 +223,17 @@ class GroundUnattendedEligibilityClassifier:
                     ping_exclusion_reason=address_reason,
                     deep_exclusion_reason=address_reason,
                 )
+            (
+                _resolved_class,
+                location_reason,
+                participates_in_mainline,
+                location_class_source,
+            ) = self._resolved_location_class(summary, location)
+            reason_contract = _decision_reason_contract(
+                decision,
+                location_reason=location_reason,
+                location_class_source=location_class_source,
+            )
             raw_ap_name = representative.peer_ap_name if representative else ""
             raw_ap_mac = representative.peer_ap_mac if representative else ""
             results.append(
@@ -197,11 +243,24 @@ class GroundUnattendedEligibilityClassifier:
                         train_no=train_no,
                         train_name=train_id,
                         location_class=decision.location_class,  # type: ignore[arg-type]
+                        location_class_source=location_class_source,
+                        participates_in_mainline=(
+                            participates_in_mainline
+                            and decision.location_class == "MAINLINE"
+                        ),
                         mainline_eligible=decision.mainline_eligible,
+                        mainline_reason_code=reason_contract[0],
+                        mainline_reason_text=reason_contract[1],
                         ping_eligible=decision.ping_eligible,
+                        ping_reason_code=reason_contract[2],
+                        ping_reason_text=reason_contract[3],
                         deep_collection_eligible=(
                             decision.deep_collection_eligible
                         ),
+                        deep_collection_reason_code=reason_contract[4],
+                        deep_collection_reason_text=reason_contract[5],
+                        decision_revision=2,
+                        decision_source="RUNTIME_AP_IDENTITY",
                         ping_inclusion_reason=decision.ping_inclusion_reason,
                         ping_exclusion_reason=decision.ping_exclusion_reason,
                         deep_exclusion_reason=decision.deep_exclusion_reason,
@@ -219,23 +278,35 @@ class GroundUnattendedEligibilityClassifier:
                         station=(
                             location.station.name
                             if location.station
-                            else representative.station
-                            if representative
-                            else ""
+                            else (
+                                representative.station
+                                if representative and representative.station
+                                else location.identity_match.station
+                                if location.identity_match
+                                else ""
+                            )
                         ),
                         section=(
                             location.section.name
                             if location.section
-                            else representative.section
-                            if representative
-                            else ""
+                            else (
+                                representative.section
+                                if representative and representative.section
+                                else location.identity_match.section
+                                if location.identity_match
+                                else ""
+                            )
                         ),
                         mileage=(
                             location.ap.mileage.normalized
                             if location.ap
-                            else representative.mileage
-                            if representative
-                            else ""
+                            else (
+                                representative.mileage
+                                if representative and representative.mileage
+                                else location.identity_match.mileage
+                                if location.identity_match
+                                else ""
+                            )
                         ),
                         rssi=representative.rssi if representative else None,
                         same_ap_duration_seconds=same_ap_seconds,
@@ -243,6 +314,18 @@ class GroundUnattendedEligibilityClassifier:
                             representative.last_seen_at if representative else ""
                         ),
                         endpoints=endpoints,
+                        ap_identity_diagnostics=self._identity_diagnostics(
+                            representative,
+                            location,
+                            decision,
+                            identity_matches.get(
+                                _mac_key(representative.peer_ap_mac)
+                            )
+                            if representative
+                            else None,
+                            train_id=train_id,
+                            now=now,
+                        ),
                         updated_at=now.isoformat(timespec="milliseconds"),
                     ),
                     tracker=tracker,
@@ -268,6 +351,7 @@ class GroundUnattendedEligibilityClassifier:
         ap_by_id: dict[str, TracksideApDTO],
         ap_by_mac: dict[str, TracksideApDTO],
         ap_by_registry_mac: dict[str, TracksideApDTO],
+        identity_match: ApIdentityMatch | None = None,
     ) -> LocationResolution:
         if row is None:
             return LocationResolution(match_reason="暂无 AC 位置数据")
@@ -297,6 +381,18 @@ class GroundUnattendedEligibilityClassifier:
             by_mac=ap_by_mac,
             by_registry_mac=ap_by_registry_mac,
         )
+        if ap is None and identity_match is not None and identity_match.status == "matched":
+            ap = cls._runtime_ap_from_identity(identity_match)
+            ap_level = "AP_EXACT"
+            ap_reason = "通过 AP Identity 精确解析 Current AP"
+            identity_station_key = canonical_station_name(identity_match.station).casefold()
+            if identity_station_key:
+                station = station_by_name.get(identity_station_key) or station_by_alias.get(
+                    identity_station_key
+                )
+            identity_section_key = _location_key(identity_match.section)
+            if identity_section_key:
+                section = section_by_name.get(identity_section_key)
         if station is None and ap is not None and ap.station:
             ap_station_key = canonical_station_name(ap.station).casefold()
             station = station_by_name.get(ap_station_key)
@@ -313,7 +409,9 @@ class GroundUnattendedEligibilityClassifier:
         canonical_name = (
             canonical_station_name(station.name)
             if station is not None
-            else canonical_station_name(row.station)
+            else canonical_station_name(
+                identity_match.station if identity_match and identity_match.station else row.station
+            )
         )
         return LocationResolution(
             ap=ap,
@@ -323,6 +421,130 @@ class GroundUnattendedEligibilityClassifier:
             match_reason=reason
             or "当前 AP 和站点均无法与基础资料匹配",
             canonical_station_name=canonical_name,
+            identity_match=identity_match,
+        )
+
+    @staticmethod
+    def _runtime_ap_from_identity(match: ApIdentityMatch) -> TracksideApDTO:
+        station = str(match.station or "").strip()
+        section = str(match.section or "").strip()
+        belong_type = str(match.belong_type or "unknown").strip()
+        base_metadata: dict[str, object] = {
+            "belong_type": belong_type,
+            "station_name": station,
+            "section_name": section,
+            "location_desc": match.location,
+        }
+        if not station and belong_type.casefold() in {"trackside", "station", "section", "yard"}:
+            location_class = "UNKNOWN"
+            participates = False
+            location_source = "AP_IDENTITY_LOCATION_INCOMPLETE"
+        else:
+            location_class, participates, _ = resolve_trackside_ap_location(base_metadata)
+            location_source = "AP_IDENTITY"
+        mileage = str(match.mileage or "").strip()
+        return TracksideApDTO(
+            id=str(match.matched_entity_id or match.effective_ap_mac),
+            site_id="",
+            name=str(match.effective_ap_name or match.effective_ap_mac),
+            mac=str(match.effective_ap_mac or ""),
+            station=station,
+            section=section,
+            station_id="",
+            section_id="",
+            mileage=MileageDTO(raw=mileage, normalized=mileage, valid=bool(mileage)),
+            identity_entity_id=str(match.matched_entity_id or ""),
+            identity_match_status="matched",
+            identity_match_source=str(match.matched_source or "ap_identity"),
+            location_class=location_class,
+            participates_in_mainline=participates,
+            location_class_source=location_source,
+            base_metadata=base_metadata,
+            record_kind="ap_identity_runtime",
+        )
+
+    @staticmethod
+    def _identity_diagnostics(
+        row: AcMeshMrStatusDTO | None,
+        location: LocationResolution,
+        decision: EligibilityDecision,
+        match: ApIdentityMatch | None,
+        *,
+        train_id: str,
+        now: datetime,
+    ):
+        from netconsole.models.api.ground_unattended import GroundApIdentityDiagnosticsDTO
+
+        raw = str(row.peer_ap_mac or "") if row else ""
+        canonical = str(match.query_mac_display or "") if match else str(normalize_mac(raw) or "")
+        if not raw:
+            identity_status = "NOT_FOUND"
+        elif not canonical:
+            identity_status = "INVALID_MAC"
+        elif match is None:
+            identity_status = "NOT_CHECKED"
+        elif match.status == "matched":
+            identity_status = "MATCHED"
+        elif match.status == "ambiguous":
+            identity_status = "CONFLICT"
+        elif match.unresolved_reason == "exact_alias_not_collected":
+            identity_status = "ALIAS_DATA_MISSING"
+        else:
+            identity_status = "NOT_FOUND"
+        station_status = (
+            "MATCHED"
+            if location.station is not None
+            else "IDENTITY_ONLY"
+            if match is not None and match.status == "matched" and match.station
+            else "UNMATCHED"
+        )
+        return GroundApIdentityDiagnosticsDTO(
+            train_id=train_id,
+            mr_id=str(row.mr_id or "") if row else "",
+            raw_current_ap=raw,
+            canonical_current_ap=canonical,
+            identity_revision=int(match.identity_revision if match else 0),
+            candidate_count=len(match.candidates) if match else 0,
+            matched_by=(
+                str(match.matched_alias_type or match.match_rule or "")
+                if match and match.status == "matched"
+                else "none"
+            ),
+            ap_identity_status=identity_status,
+            station_match_status=station_status,
+            ap_identity_match_status=identity_status,
+            resolved_ap_id=location.ap.id if location.ap else "",
+            resolved_ap_name=location.ap.name if location.ap else "",
+            resolved_ap_physical_mac=location.ap.mac if location.ap else "",
+            resolved_station_id=location.station.id if location.station else "",
+            resolved_station_name=(
+                location.station.name
+                if location.station
+                else str(match.station or "")
+                if match and match.status == "matched"
+                else ""
+            ),
+            resolved_section_id=location.section.id if location.section else "",
+            resolved_section_name=(
+                location.section.name
+                if location.section
+                else str(match.section or "")
+                if match and match.status == "matched"
+                else ""
+            ),
+            position_type=decision.location_class,
+            mainline_eligible=decision.mainline_eligible,
+            mainline_exclusion_code="" if decision.mainline_eligible else decision.status,
+            mainline_exclusion_reason=(
+                "" if decision.mainline_eligible else decision.reason
+            ),
+            ping_eligible=decision.ping_eligible,
+            ping_exclusion_code="" if decision.ping_eligible else decision.status,
+            ping_exclusion_reason=(
+                "" if decision.ping_eligible else decision.ping_exclusion_reason
+            ),
+            result_code=decision.status,
+            identity_generated_at=now.isoformat(timespec="milliseconds"),
         )
 
     @staticmethod
@@ -396,7 +618,7 @@ class GroundUnattendedEligibilityClassifier:
         stationary_seconds: int,
         ping_depot_trains_enabled: bool,
     ) -> EligibilityDecision:
-        location_class, location_reason, participates = (
+        location_class, location_reason, participates, _location_source = (
             cls._resolved_location_class(summary, location)
         )
         if row is None or row.data_status in {"no_data", "error"}:
@@ -453,6 +675,14 @@ class GroundUnattendedEligibilityClassifier:
                 ping_exclusion_reason="未启用车辆段长 Ping",
                 deep_exclusion_reason="场段列车不参与深度采集",
             )
+        if location_class == "UNKNOWN":
+            return EligibilityDecision(
+                "LOCATION_UNDETERMINED",
+                location_reason,
+                location_class,
+                ping_exclusion_reason="无法确认当前位置是否属于正线",
+                deep_exclusion_reason="无法确认当前位置是否属于正线",
+            )
         if location_class != "MAINLINE" or not participates:
             status = (
                 "DEPOT_CONNECTION"
@@ -490,15 +720,19 @@ class GroundUnattendedEligibilityClassifier:
     def _resolved_location_class(
         summary: RailTransitSummaryDTO,
         location: LocationResolution,
-    ) -> tuple[str, str, bool]:
+    ) -> tuple[str, str, bool, str]:
         ap = location.ap
         if ap is None:
-            return "UNKNOWN", "当前 AP 未匹配轨旁 AP 基础资料", False
-        if location_class_is_explicit(ap.location_class_source):
+            return "UNKNOWN", "当前 AP 未匹配轨旁 AP 基础资料", False, "UNDETERMINED"
+        if (
+            ap.location_class != "UNKNOWN"
+            and location_class_is_explicit(ap.location_class_source)
+        ):
             return (
                 ap.location_class,
                 f"当前 AP 基础资料明确标记为 {ap.location_class}",
                 ap.participates_in_mainline,
+                ap.location_class_source,
             )
 
         metadata = {
@@ -524,42 +758,55 @@ class GroundUnattendedEligibilityClassifier:
             metadata.get("facility_type"),
         )
         if "storage_track" in facilities:
-            return "STABLING", "当前 AP 基础资料明确归属于存车线", False
+            return "STABLING", "当前 AP 基础资料明确归属于存车线", False, "AP_METADATA"
         legacy_class, _, _ = resolve_trackside_ap_location(metadata)
-        if legacy_class != "MAINLINE":
+        if legacy_class not in {"MAINLINE", "UNKNOWN"}:
             return (
                 legacy_class,
                 f"当前 AP 历史基础资料解析为 {legacy_class}",
                 False,
+                "AP_METADATA",
             )
 
         station = location.station
         if station is not None:
             station_name = canonical_station_name(station.name)
             if station.node_type == "depot":
-                return "DEPOT", f"当前车辆位于{station_name}", False
+                return "DEPOT", f"当前车辆位于{station_name}", False, "STATION_TOPOLOGY"
             if station.node_type == "parking_lot":
-                return "PARKING_YARD", f"当前车辆位于{station_name}", False
+                return "PARKING_YARD", f"当前车辆位于{station_name}", False, "STATION_TOPOLOGY"
             if "storage_track" in station.track_facilities:
-                return "STABLING", "当前站点设施为存车线", False
+                return "STABLING", "当前站点设施为存车线", False, "STATION_TOPOLOGY"
         section = location.section
         if section is not None and section.section_kind == "depot_connection":
-            return "DEPOT_CONNECTION", "当前区间为出入段连接线", False
+            return "DEPOT_CONNECTION", "当前区间为出入段连接线", False, "SECTION_TOPOLOGY"
 
         main_path = summary.main_path_code.strip().casefold()
         if station is not None and (
             not station.participates_in_direction
             or station.path_code.strip().casefold() != main_path
         ):
-            return "NON_MAINLINE", "当前站点不参与局点正线判断", False
+            return "NON_MAINLINE", "当前站点不参与局点正线判断", False, "STATION_TOPOLOGY"
         if section is not None and section.path_code.strip().casefold() != main_path:
-            return "NON_MAINLINE", "当前区间不属于局点主路径", False
+            return "NON_MAINLINE", "当前区间不属于局点主路径", False, "SECTION_TOPOLOGY"
         ap_path = str(metadata.get("path_code") or "").strip().casefold()
         if ap_path and ap_path != main_path:
-            return "NON_MAINLINE", "当前 AP 不属于局点主路径", False
-        if not ap.participates_in_mainline:
-            return "MAINLINE", "当前 AP 已设置为不参与正线判断", False
-        return "MAINLINE", "已匹配轨旁 AP，未标记特殊区域，默认正线", True
+            return "NON_MAINLINE", "当前 AP 不属于局点主路径", False, "AP_TOPOLOGY"
+        if ap.location_class == "MAINLINE" and not ap.participates_in_mainline:
+            return (
+                "MAINLINE",
+                "当前 AP 已设置为不参与正线判断",
+                False,
+                ap.location_class_source,
+            )
+        if station is not None or section is not None or ap_path:
+            return "MAINLINE", "站点/区间属于局点主路径", True, "SITE_TOPOLOGY"
+        return (
+            "MAINLINE",
+            "AP 已匹配且没有特殊区域标记，按默认正线纳入",
+            True,
+            "DEFAULT_MAINLINE",
+        )
 
     @staticmethod
     def _endpoints(
@@ -623,6 +870,64 @@ class GroundUnattendedEligibilityClassifier:
                 )
             )
         return result
+
+
+def _decision_reason_contract(
+    decision: EligibilityDecision,
+    *,
+    location_reason: str,
+    location_class_source: str,
+) -> tuple[str, str, str, str, str, str]:
+    status = decision.status
+    if decision.mainline_eligible:
+        mainline_code = (
+            "MAINLINE_DEFAULT_CLASSIFICATION"
+            if location_class_source == "DEFAULT_MAINLINE"
+            else "MAINLINE_AP_MATCHED"
+        )
+        mainline_text = location_reason or "正线 AP 已匹配"
+    else:
+        mainline_code = status or "NOT_EVALUATED"
+        mainline_text = location_reason or decision.reason or "未评估"
+
+    if decision.ping_eligible:
+        ping_code = (
+            "DEPOT_PING_ENABLED"
+            if decision.location_class in DEPOT_PING_LOCATION_CLASSES
+            else mainline_code
+        )
+        ping_text = decision.ping_inclusion_reason or mainline_text
+    else:
+        ping_code = {
+            "AP_UNMATCHED": "AP_UNMATCHED",
+            "OFFLINE": "TRAIN_OFFLINE",
+            "AC_UNKNOWN": "AC_UNKNOWN",
+            "AC_STALE": "AC_STALE",
+            "LOCATION_UNDETERMINED": "LOCATION_UNDETERMINED",
+            "DEPOT": "DEPOT_PING_DISABLED",
+            "PARKING_LOT": "DEPOT_PING_DISABLED",
+            "STORAGE_TRACK": "DEPOT_PING_DISABLED",
+        }.get(status, status or "NOT_EVALUATED")
+        if "管理 IP" in decision.ping_exclusion_reason:
+            ping_code = "NO_MANAGEMENT_IP"
+        ping_text = decision.ping_exclusion_reason or decision.reason or "未评估"
+
+    if decision.deep_collection_eligible:
+        deep_code = "ELIGIBLE"
+        deep_text = "正线在线，符合深度采集资格"
+    else:
+        deep_code = (
+            "LONG_STAY" if status == "MAINLINE_STATIONARY" else status
+        ) or "NOT_EVALUATED"
+        deep_text = decision.deep_exclusion_reason or decision.reason or "未评估"
+    return (
+        mainline_code,
+        mainline_text,
+        ping_code,
+        ping_text,
+        deep_code,
+        deep_text,
+    )
 
 
 def _train_key(value: str) -> str:

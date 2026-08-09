@@ -10,6 +10,7 @@ from netconsole.models.ap_identity_index import (
     ApIdentityRevisionState,
 )
 from netconsole.repositories.ap_identity_repository import ApIdentityRepository
+from netconsole.services.ap_topology import AP_TOPOLOGY_PROJECTION_VERSION
 from netconsole.services.ap_identity.index_builder import build_ap_identity_index
 from netconsole.services.ap_identity.normalizers import format_mac, normalize_mac_key
 
@@ -66,9 +67,9 @@ class ApIdentityQueryService:
         status = (
             "missing"
             if state is None or revision <= 0
-            else "ready"
-            if indexed_source_revision == current_source_revision
             else "stale"
+            if _index_health_reason(state, current_source_revision)
+            else "ready"
         )
         revision_token = ":".join(
             (
@@ -101,6 +102,7 @@ class ApIdentityQueryService:
             state is not None
             and int(state.get("revision") or 0) > 0
             and indexed_source_revision == source_revision
+            and _index_health_reason(state, source_revision) == ""
         ):
             return None
         if not self.repository.has_source_rows() and state is not None:
@@ -121,6 +123,16 @@ class ApIdentityQueryService:
     def resolve_ap_mac(self, mac: object) -> ApIdentityMatch:
         return self._resolve_exact_aliases(mac, alias_order=_EXACT_ALIAS_ORDER)
 
+    def resolve_current_ap_mac(self, mac: object) -> ApIdentityMatch:
+        """Resolve a live Current AP observation.
+
+        Current AP fields can carry either an AP physical MAC or a radio/BSSID
+        address.  Unlike a MESH peer-only observation, an exact physical AP
+        identity is therefore valid evidence here.
+        """
+
+        return self.resolve_ap_mac(mac)
+
     def resolve_ap_macs(
         self,
         macs: Sequence[object],
@@ -132,6 +144,14 @@ class ApIdentityQueryService:
             alias_order=_EXACT_ALIAS_ORDER,
             ap_role=ap_role,
         )
+
+    def resolve_current_ap_macs(
+        self,
+        macs: Sequence[object],
+        *,
+        ap_role: str | None = None,
+    ) -> ApIdentityBatchResult:
+        return self.resolve_ap_macs(macs, ap_role=ap_role)
 
     def resolve_peer_mac(
         self,
@@ -386,6 +406,9 @@ class ApIdentityQueryService:
             for row in self.repository.list_entity_rows(site_id=self.site_id)
         ]
 
+    def list_alias_entities(self) -> list[dict[str, object]]:
+        return self.repository.list_alias_entity_rows(site_id=self.site_id)
+
     def list_conflicts(self) -> list[dict[str, object]]:
         return self.repository.conflict_rows(site_id=self.site_id)
 
@@ -443,6 +466,13 @@ class ApIdentityQueryService:
             mileage=str(row.get("effective_mileage") or ""),
             direction=str(row.get("effective_direction") or ""),
             belong_type=str(row.get("effective_belong_type") or "unknown"),
+            station_source=str(row.get("station_source") or row.get("effective_source") or "unresolved"),
+            section_source=str(row.get("section_source") or row.get("effective_source") or "unresolved"),
+            location_source=str(row.get("location_source") or row.get("effective_source") or "unresolved"),
+            mileage_source=str(row.get("mileage_source") or row.get("effective_source") or "unresolved"),
+            direction_source=str(row.get("direction_source") or row.get("effective_source") or "unresolved"),
+            belong_type_source=str(row.get("belong_type_source") or row.get("effective_source") or "unresolved"),
+            topology_warning=str(row.get("topology_warning") or ""),
             matched_alias_type=str(row.get("alias_type") or ""),
             matched_source=str(row.get("source") or row.get("effective_source") or ""),
             match_rule=str(row.get("derivation_rule") or ""),
@@ -482,6 +512,9 @@ def _candidate_payload(
         "base_ap_mac": format_mac(row.get("base_ap_mac_key")),
         "base_record_id": str(row.get("base_record_id") or ""),
         "data_quality_warning": str(row.get("data_quality_warning") or ""),
+        "station_source": str(row.get("station_source") or "unresolved"),
+        "section_source": str(row.get("section_source") or "unresolved"),
+        "topology_warning": str(row.get("topology_warning") or ""),
     }
 
 
@@ -501,6 +534,13 @@ def _search_payload(match: ApIdentityMatch) -> dict[str, object]:
         "base_ap_mac": match.base_ap_mac,
         "base_record_id": match.base_record_id,
         "data_quality_warning": match.data_quality_warning,
+        "station_source": match.station_source,
+        "section_source": match.section_source,
+        "location_source": match.location_source,
+        "mileage_source": match.mileage_source,
+        "direction_source": match.direction_source,
+        "belong_type_source": match.belong_type_source,
+        "topology_warning": match.topology_warning,
     }
 
 
@@ -527,6 +567,9 @@ def _entity_search_payload(row: Mapping[str, object]) -> dict[str, object]:
         "base_record_id": str(row.get("base_record_id") or ""),
         "identity_status": str(row.get("identity_status") or "matched"),
         "data_quality_warning": str(row.get("data_quality_warning") or ""),
+        "station_source": str(row.get("station_source") or "unresolved"),
+        "section_source": str(row.get("section_source") or "unresolved"),
+        "topology_warning": str(row.get("topology_warning") or ""),
     }
 
 
@@ -551,6 +594,8 @@ def _index_health_reason(
     )
     if indexed_source_revision != source_revision:
         return "identity_index_stale"
+    if int(state.get("topology_projection_version") or 0) != AP_TOPOLOGY_PROJECTION_VERSION:
+        return "identity_topology_projection_stale"
     return ""
 
 

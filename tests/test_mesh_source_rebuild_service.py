@@ -198,6 +198,7 @@ def test_identity_only_remap_rebuilds_stale_base_only_index_and_projects_locatio
     assert rebuilt["message"] == (
         "AP 身份重映射完成：1 个 Peer 已映射，"
         "1 条链路身份投影已更新，Identity revision 1。"
+        "站点已解析 1，未解析 0（来源：base_data=1）。"
     )
     assert sha256_file(raw) == raw_before
     with sqlite3.connect(detail) as connection:

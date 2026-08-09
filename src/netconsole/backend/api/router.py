@@ -10,6 +10,7 @@ from netconsole.backend.api.config_collection_router import router as config_col
 from netconsole.backend.api.command_reference_router import router as command_reference_router
 from netconsole.backend.api.device_compatibility_router import router as device_compatibility_router
 from netconsole.backend.api.device_management_router import router as device_management_router
+from netconsole.backend.api.database_upgrade_router import router as database_upgrade_router
 from netconsole.backend.api.file_management_router import router as file_management_router
 from netconsole.backend.api.feature_access import require_feature
 from netconsole.backend.api.feature_router import router as feature_router
@@ -41,6 +42,10 @@ api_router = APIRouter(prefix="/api")
 api_router.include_router(health_router)
 api_router.include_router(feature_router)
 api_router.include_router(system_settings_router)
+api_router.include_router(
+    database_upgrade_router,
+    dependencies=[Depends(require_feature("web.database_upgrade"))],
+)
 api_router.include_router(
     system_network_router,
     dependencies=[Depends(require_feature("web.ground_unattended"))],

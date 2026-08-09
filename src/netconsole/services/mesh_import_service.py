@@ -10,6 +10,7 @@ from netconsole.core.paths import PathResolver
 from netconsole.models.mesh_log_models import ImportedLogFile, MeshMrProfile, MeshSwitchEvent, ParseIssue
 from netconsole.parsers.mesh_log_parser import MeshLogParser, inspect_mesh_log_path, make_imported_file
 from netconsole.models.mesh_analysis_params import mesh_analysis_params_to_json
+from netconsole.repositories.mesh_mr_repository import MeshMrRepository
 from netconsole.services.mesh_log_analysis_service import (
     PARSER_VERSION,
 )
@@ -36,11 +37,22 @@ class MeshImportResult:
 
 
 class MeshImportService:
-    def __init__(self, site_name: str, paths: PathResolver) -> None:
+    def __init__(
+        self,
+        site_name: str,
+        paths: PathResolver,
+        *,
+        database_path: Path | None = None,
+        parsed_dir: Path | None = None,
+        refresh_catalog: bool = True,
+    ) -> None:
         self.site_name = site_name
         self.paths = paths
         self.storage = MeshStorageService(site_name, paths)
         self.parser = MeshLogParser()
+        self.database_path = database_path
+        self.parsed_dir = parsed_dir
+        self.refresh_catalog = refresh_catalog
 
     def import_files(
         self,
@@ -57,7 +69,15 @@ class MeshImportService:
         if source_type not in MESH_SOURCE_TYPES:
             raise ImportValidationError(f"不支持的 MESH 来源类型：{source_type}")
         self._validate_files(files)
-        repo = self.storage.mr_repository(profile)
+        repo = (
+            MeshMrRepository(
+                self.database_path,
+                parsed_dir=self.parsed_dir,
+                index_database=True,
+            )
+            if self.database_path is not None
+            else self.storage.mr_repository(profile)
+        )
         analysis_params = load_site_mesh_analysis_params(self.paths, self.site_name)
         analysis_params_json = mesh_analysis_params_to_json(analysis_params)
         app_logger.log_info("MESH_IMPORT_ANALYSIS_PARAMS_SNAPSHOT", f"site={self.site_name} params={analysis_params_json}")
@@ -217,7 +237,8 @@ class MeshImportService:
             except Exception as exc:
                 app_logger.log_error("MESH_PEER_MAPPING_REFRESH_FAILED", str(exc))
             repo.rebuild_derived_analysis(should_cancel=should_cancel)
-            self.storage.refresh_catalog_summary(profile)
+            if self.refresh_catalog:
+                self.storage.refresh_catalog_summary(profile)
         return result
 
     def _validate_files(self, files: list[Path]) -> None:

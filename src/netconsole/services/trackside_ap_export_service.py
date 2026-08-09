@@ -69,8 +69,10 @@ from netconsole.services.rail_transit.trackside_ap_business_snapshot import (
     build_business_revision,
     business_row_id,
     content_sha256,
+    cleanup_export_snapshot,
     read_export_snapshot,
     read_trackside_ap_source_revisions,
+    write_export_snapshot,
 )
 
 ProgressCallback = Callable[[str, int, int, str], None]
@@ -79,6 +81,13 @@ _WINDOWS_INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f\x7f\u202a-\u
 _TRACKSIDE_AP_BUSINESS_SUFFIX = ".xlsx"
 _TRACKSIDE_AP_BUSINESS_MARK = "_轨旁AP业务_"
 _MAX_TRACKSIDE_AP_BUSINESS_NAME_LENGTH = 180
+
+
+class _ReadOnlyDatabase(Database):
+    """Prevent export preparation from changing the source site database."""
+
+    def connect(self):
+        return self.connect_readonly()
 
 
 @dataclass(frozen=True)
@@ -732,7 +741,7 @@ def build_trackside_ap_business_export_snapshot(
             scope_context=scope_context,
             station=station,
             query=query,
-            optical_anomaly_only=optical_anomaly_only,
+            optical_anomaly_only=False,
             selected_row_ids=selected_row_ids,
         )
         confirmed = read_trackside_ap_source_revisions(
@@ -834,7 +843,7 @@ def _build_trackside_ap_business_export_snapshot_once(
         snapshot.rows,
         station=station,
         query=query,
-        optical_anomaly_only=optical_anomaly_only,
+        optical_anomaly_only=False,
         selected_row_ids=selected_row_ids,
         identity_query_entities=snapshot.identity_query_entities,
     )
@@ -892,7 +901,6 @@ def _build_trackside_ap_business_export_snapshot_once(
         "filters": {
             "station": station,
             "query": query,
-            "optical_anomaly_only": bool(optical_anomaly_only),
         },
         "selected_row_ids": list(requested_ids),
         "sort_contract": list(TRACKSIDE_AP_SORT_CONTRACT),
@@ -959,6 +967,97 @@ def export_trackside_ap_business_from_database(
         progress_callback=progress_callback,
         should_cancel=should_cancel,
     )
+
+
+def export_trackside_ap_business_prepare_and_render(
+    *,
+    database_path: str | Path,
+    site_name: str,
+    task_id: str,
+    snapshot_staging_root: str | Path,
+    output_path: str | Path,
+    tmp_path: str | Path,
+    language: str = "zh_CN",
+    expected_revision: str = "",
+    scope_context: Mapping[str, object] | None = None,
+    station: str = "",
+    query: str = "",
+    optical_anomaly_only: bool = False,
+    selected_row_ids: Sequence[str] = (),
+    progress_callback: ProgressCallback | None = None,
+    should_cancel: CancelCheck | None = None,
+) -> dict[str, object]:
+    """Prepare a frozen snapshot and render it in one isolated Export Worker."""
+
+    def emit(stage: str, message: str) -> None:
+        if progress_callback:
+            progress_callback(stage, 0, 0, message)
+
+    if should_cancel and should_cancel():
+        raise TracksideApExportCancelled("导出已取消")
+    app_logger.log_info(
+        "TRACKSIDE_EXPORT_SNAPSHOT_STARTED",
+        f"site={site_name} task_id={task_id}",
+    )
+    emit("TRACKSIDE_EXPORT_SNAPSHOT_STARTED", "正在准备轨旁 AP 导出快照")
+    snapshot_path: Path | None = None
+    try:
+        database = _ReadOnlyDatabase(Path(database_path))
+        payload = build_trackside_ap_business_export_snapshot(
+            DeviceRepository(database),
+            site_name,
+            scope_context=scope_context,
+            station=station,
+            query=query,
+            optical_anomaly_only=False,
+            selected_row_ids=selected_row_ids,
+        )
+        current_revision = str(payload.get("business_revision") or "")
+        if expected_revision and expected_revision != current_revision:
+            raise TracksideApBusinessSnapshotError(
+                "TRACKSIDE_AP_SNAPSHOT_STALE",
+                "轨旁 AP 数据已更新，请刷新后重新导出。",
+            )
+        snapshot_path, snapshot_sha256 = write_export_snapshot(
+            Path(snapshot_staging_root),
+            site_id=site_name,
+            task_id=task_id,
+            payload=payload,
+        )
+        app_logger.log_info(
+            "TRACKSIDE_EXPORT_SNAPSHOT_COMPLETED",
+            f"site={site_name} task_id={task_id}",
+        )
+        emit("TRACKSIDE_EXPORT_SNAPSHOT_COMPLETED", "轨旁 AP 导出快照已冻结")
+        return export_trackside_ap_business_from_snapshot(
+            snapshot_path=snapshot_path,
+            snapshot_sha256=snapshot_sha256,
+            output_path=output_path,
+            tmp_path=tmp_path,
+            language=language,
+            progress_callback=progress_callback,
+            should_cancel=should_cancel,
+        )
+    except Exception as exc:
+        app_logger.log_error(
+            "TRACKSIDE_EXPORT_PREPARE_FAILED",
+            (
+                f"site={site_name} task_id={task_id} "
+                f"exception_type={type(exc).__name__} "
+                f"error_code={getattr(exc, 'code', '')}"
+            ),
+        )
+        raise
+    finally:
+        if snapshot_path is not None:
+            try:
+                cleanup_export_snapshot(
+                    Path(snapshot_staging_root),
+                    site_id=site_name,
+                    task_id=task_id,
+                )
+            except (OSError, ValueError):
+                pass
 
 
 def _render_trackside_ap_business_export(

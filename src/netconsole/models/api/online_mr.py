@@ -12,6 +12,7 @@ from netconsole.models.task_state import TaskState
 
 class OnlineMrMetricType(StrEnum):
     RSSI = "rssi"
+    TRACKSIDE_RSSI = "trackside_rssi"
     CTL_BUSY = "ctl_busy"
     TX_BUSY = "tx_busy"
     RX_BUSY = "rx_busy"
@@ -20,6 +21,9 @@ class OnlineMrMetricType(StrEnum):
     PING_RTT = "ping_rtt"
     PING_LOSS = "ping_loss"
     IPERF_BITRATE = "iperf_bitrate"
+    IPERF_LOSS = "iperf_loss"
+    IPERF_JITTER = "iperf_jitter"
+    IPERF_RETRANSMITS = "iperf_retransmits"
     MAIN_LINK = "main_link"
     RADIO_STATISTICS = "radio_statistics"
 
@@ -143,6 +147,37 @@ class OnlineMrCollectorStatusDTO(ApiModel):
     updated_at: str | None = None
     health_status: str = "unknown"
     stale_seconds: float | None = None
+    client_status: str = ""
+    server_status: str = ""
+    supervisor_status: str = ""
+    pid: int | None = None
+    alive: bool | None = None
+    exit_code: int | None = None
+    last_error: str = ""
+    stderr_tail: str = ""
+    last_exit_at: str | None = None
+    last_data_at: str | None = None
+    bytes_written: int = 0
+    restart_count: int = 0
+    stop_reason: str = ""
+    server_ownership: str = ""
+    server_error_code: str = ""
+    server_pid: int | None = None
+    server_parent_pid: int | None = None
+    server_alive: bool | None = None
+    server_exit_code: int | None = None
+    server_last_error: str = ""
+    server_stderr_tail: str = ""
+    server_last_exit_at: str | None = None
+    server_last_data_at: str | None = None
+    server_bytes_written: int = 0
+    server_stop_reason: str = ""
+    listener_pid: int | None = None
+    listener_process_name: str = ""
+    listener_executable: str = ""
+    listener_command_line: str = ""
+    listener_owner: str = ""
+    listener_started_at: str | None = None
 
 
 class OnlineMrRealtimePreviewDTO(ApiModel):
@@ -205,6 +240,12 @@ class OnlineMrLogChunkDTO(ApiModel):
 
 class OnlineMrMetricPointDTO(ApiModel):
     timestamp: str | None = None
+    raw_timestamp: str | None = None
+    normalized_timestamp: str | None = None
+    timestamp_source: str = "device"
+    correction_ms: float | None = None
+    correction_method: str = "none"
+    correction_confidence: str = "high"
     value: float | None = None
     text_value: str | None = None
     dimensions: dict[str, Any] = Field(default_factory=dict)
@@ -243,9 +284,15 @@ class OnlineMrSwitchRssiWindowDTO(ApiModel):
     reason: str = ""
     old_peer_name: str = ""
     old_peer_mac: str = ""
+    old_ap_mac: str = ""
+    old_station: str = ""
+    old_section: str = ""
     old_rssi_dbm: float | None = None
     new_peer_name: str = ""
     new_peer_mac: str = ""
+    new_ap_mac: str = ""
+    new_station: str = ""
+    new_section: str = ""
     new_rssi_dbm: float | None = None
 
 
@@ -254,6 +301,71 @@ class OnlineMrSwitchRssiPageDTO(ApiModel):
     limit: int
     offset: int
     has_more: bool = False
+
+
+class OnlineMrTimeAlignmentDTO(ApiModel):
+    base_time_source: str = "mr-device"
+    anchor_count: int = 0
+    inlier_count: int = 0
+    offset_median_ms: float | None = None
+    offset_p05_ms: float | None = None
+    offset_p95_ms: float | None = None
+    drift_ms_per_minute: float | None = None
+    method: str = "none"
+    confidence: str = "low"
+    warning: str = ""
+    fping_status: str = "collector-time"
+    traffic_status: str = "collector-time"
+
+
+class OnlineMrTrafficStatsDTO(ApiModel):
+    record_count: int = 0
+    duration_seconds: float | None = None
+    average_mbps: float | None = None
+    minimum_mbps: float | None = None
+    maximum_mbps: float | None = None
+    sent_bytes: float | None = None
+    received_bytes: float | None = None
+    lost_bytes: float | None = None
+    sent_packets: int | None = None
+    received_packets: int | None = None
+    lost_packets: int | None = None
+    loss_percent: float | None = None
+    average_jitter_ms: float | None = None
+    minimum_jitter_ms: float | None = None
+    maximum_jitter_ms: float | None = None
+    retransmits: int | None = None
+    loss_source: str | None = None
+    jitter_source: str | None = None
+    retransmit_source: str | None = None
+
+
+class OnlineMrTrafficDirectionDTO(OnlineMrTrafficStatsDTO):
+    run_id: str = ""
+    label: str = ""
+    protocol: str = ""
+    direction: str = ""
+    status: str = ""
+    server_ip: str = ""
+    port: int | None = None
+    parallel: int | None = None
+    target_bandwidth: str | None = None
+    started_at: str | None = None
+    ended_at: str | None = None
+
+
+class OnlineMrTrafficOverviewDTO(ApiModel):
+    protocol: str = ""
+    direction: str = ""
+    status: str = ""
+    server_ip: str = ""
+    port: int | None = None
+    parallel: int | None = None
+    started_at: str | None = None
+    ended_at: str | None = None
+    overall: OnlineMrTrafficStatsDTO = Field(default_factory=OnlineMrTrafficStatsDTO)
+    directions: list[OnlineMrTrafficDirectionDTO] = Field(default_factory=list)
+    data_quality_note: str = ""
 
 
 class OnlineMrBusinessSummaryDTO(ApiModel):
@@ -273,6 +385,8 @@ class OnlineMrBusinessSummaryDTO(ApiModel):
     estimated_interval_seconds: float | None = None
     time_sync_status: str = "unknown"
     time_sync_avg_offset_ms: float | None = None
+    time_alignment: OnlineMrTimeAlignmentDTO = Field(default_factory=OnlineMrTimeAlignmentDTO)
+    traffic_overview: OnlineMrTrafficOverviewDTO = Field(default_factory=OnlineMrTrafficOverviewDTO)
     current_radio: int | None = None
     current_link_state: str = ""
     current_peer_mac: str = ""

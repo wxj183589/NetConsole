@@ -187,8 +187,14 @@ class MeshSourceDeleteService:
             "delete_raw_archive": bool(delete_raw_archive),
             "delete_parsed_data": True,
             "delete_generated_reports": delete_generated_reports,
-            "deleted_files": len(moved),
-            "deleted_file_count": len(moved),
+            "deleted_files": sum(
+                not self._is_sqlite_sidecar(original, parsed_path)
+                for original, _quarantined in moved
+            ),
+            "deleted_file_count": sum(
+                not self._is_sqlite_sidecar(original, parsed_path)
+                for original, _quarantined in moved
+            ),
             "missing_file_count": missing_file_count,
             "deleted_reports": report_count,
             "parsed_links": counts["links"],
@@ -197,6 +203,13 @@ class MeshSourceDeleteService:
             "source_file_id": source_id,
             "cleanup_pending": cleanup_pending,
             "cleanup_warning": cleanup_warning,
+        }
+
+    @staticmethod
+    def _is_sqlite_sidecar(path: Path, parsed_path: Path | None) -> bool:
+        return parsed_path is not None and path in {
+            parsed_path.with_name(parsed_path.name + "-wal"),
+            parsed_path.with_name(parsed_path.name + "-shm"),
         }
 
     def _report_paths(

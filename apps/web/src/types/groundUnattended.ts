@@ -56,6 +56,16 @@ export interface GroundEndpoint {
   last_radio_event_at: string; last_cfg_event_at: string; cfg_command_source: string; cfg_event_index: string
   correlation_confidence: 'HIGH' | 'MEDIUM' | 'UNCONFIRMED'
 }
+export interface GroundApIdentityDiagnostics {
+  train_id: string; mr_id: string; site_id: string; line_id: string
+  raw_current_ap: string; canonical_current_ap: string; identity_revision: number
+  identity_generated_at: string; candidate_count: number; matched_by: string
+  ap_identity_status: string; station_match_status: string; ap_identity_match_status: string
+  resolved_ap_id: string; resolved_ap_name: string; resolved_ap_physical_mac: string
+  resolved_station_id: string; resolved_station_name: string; resolved_section_id: string; resolved_section_name: string
+  position_type: string; mainline_eligible: boolean; mainline_exclusion_code: string; mainline_exclusion_reason: string
+  ping_eligible: boolean; ping_exclusion_code: string; ping_exclusion_reason: string; result_code: string
+}
 export interface GroundRadioInterfaceState {
   interface_name: string; current_state: string; previous_state: string; last_changed_at: string; down_since: string
   last_up_at: string; last_down_at: string; latest_outage_duration_ms: number | null; transition_count_5m: number
@@ -77,7 +87,11 @@ export interface GroundSyslogHost {
 export interface GroundTrain {
   train_id: string; train_no: string; train_name: string
   location_class: 'MAINLINE' | 'DEPOT' | 'PARKING_YARD' | 'STABLING' | 'DEPOT_CONNECTION' | 'TEST_TRACK' | 'NON_MAINLINE' | 'OFFLINE' | 'UNKNOWN'
-  mainline_eligible: boolean; ping_eligible: boolean; deep_collection_eligible: boolean
+  location_class_source: string; participates_in_mainline: boolean
+  mainline_eligible: boolean; mainline_reason_code: string; mainline_reason_text: string
+  ping_eligible: boolean; ping_reason_code: string; ping_reason_text: string
+  deep_collection_eligible: boolean; deep_collection_reason_code: string; deep_collection_reason_text: string
+  decision_revision: number; decision_source: string
   ping_inclusion_reason: string; ping_exclusion_reason: string; deep_exclusion_reason: string
   eligibility_status: string; exclusion_reason: string; current_ap_name: string; current_ap_mac: string
   location_match_level: 'AP_EXACT' | 'AP_REGISTRY' | 'AP_ALIAS' | 'STATION_EXACT' | 'STATION_ALIAS' | 'UNMATCHED'
@@ -85,7 +99,8 @@ export interface GroundTrain {
   station: string; section: string; mileage: string; rssi: number | null; same_ap_duration_seconds: number
   ac_snapshot_id: number | null; ac_received_at: string; coverage_status: GroundCoverageStatus; priority: boolean
   enabled: boolean; scheduling_priority: number; deep_collection_enabled: boolean; monitor_only: boolean; remark: string; inventory_status: string
-  attempt_count: number; covered_rounds: number; selection_reason: string; failure_reason: string; endpoints: GroundEndpoint[]; updated_at: string
+  attempt_count: number; covered_rounds: number; selection_reason: string; failure_reason: string; endpoints: GroundEndpoint[]
+  ap_identity_diagnostics?: GroundApIdentityDiagnostics; updated_at: string
 }
 export interface GroundPingTarget {
   run_id: string; run_date: string; target_ip: string; train_id: string; train_no: string; mr_id: string; mr_name: string; mr_position_code: string; started_at: string; updated_at: string
@@ -104,6 +119,19 @@ export interface GroundDeepCollection {
   train_id: string; train_no: string; status: GroundCoverageStatus; queue_position: number | null; scheduling_priority: number
   selection_reason: string; started_at: string; valid_duration_minutes: number; ct_operation_id: string; cw_operation_id: string
   ct_session_id: string; cw_session_id: string; attempt_count: number; covered_rounds: number; failure_reason: string; updated_at: string
+  deep_state: GroundDeepCollectionState; deep_state_reason: string; collectors: GroundDeepCollector[]
+}
+export type GroundDeepCollectionState = 'INELIGIBLE' | 'ELIGIBLE' | 'QUEUED' | 'STARTING' | 'RUNNING' | 'PAUSED' | 'STOPPING' | 'STOPPED' | 'FAILED'
+export interface GroundDeepCollector {
+  run_id: string; train_id: string; mr_id: string; mr_role: string; management_ip: string; operation_id: string; collector_session_id: string
+  state: GroundDeepCollectionState; state_reason: string; started_at: string; last_record_at: string; record_count: number | null; bytes_written: number
+  current_ap: string; station: string; section: string; last_error: string; retry_count: number
+}
+export interface GroundDeepCollectionRecord {
+  sequence: number; timestamp: string; category: string; source: string; text: string
+}
+export interface GroundDeepCollectionRecordPage {
+  collector: GroundDeepCollector; records: GroundDeepCollectionRecord[]; next_cursor: string; has_more: boolean
 }
 export interface GroundTimelineEvent {
   event_id: number | string; ts: string; event_type: string; severity: string; train_id: string; train_no: string; train_name: string; mr_id: string
@@ -113,6 +141,9 @@ export interface GroundTimelineEvent {
   previous_peer_radio_mac: string; station: string; section: string; previous_station: string; previous_section: string
   rssi: number | null; previous_rssi: number | null; reason_code: string; reason_label: string; resolution_status: string
   ap_display: string; ap_transition_display: string; resolved_ap_name: string; previous_resolved_ap_name: string
+  old_ap_raw: string; new_ap_raw: string; old_ap_identity_status: string; new_ap_identity_status: string
+  old_match_source: string; new_match_source: string; old_match_rule: string; new_match_rule: string
+  old_identity_reason: string; new_identity_reason: string; identity_status: string; identity_source: string; identity_revision: number
   details: Record<string, unknown>
 }
 export interface GroundArchive {
@@ -149,6 +180,21 @@ export interface GroundPingSample {
   ap_transition_context: string; warmup_ignored: boolean; target_activation_started_at: string
   archive_entry: string; data_source: 'ACTIVE' | 'ARCHIVE'
 }
+export interface GroundApTransition {
+  event_id: string; run_id: string
+  ts: string; event_time: string; event_type: string; context: string
+  train_id: string; mr_id: string; mr_role: string; management_ip: string
+  old_ap_raw: string; new_ap_raw: string; old_ap_radio_mac: string; new_ap_radio_mac: string
+  old_ap_id: string; new_ap_id: string; old_ap_name: string; new_ap_name: string
+  old_ap_mac: string; new_ap_mac: string; old_station: string; new_station: string
+  old_section: string; new_section: string; old_ap_identity_status: string; new_ap_identity_status: string
+  old_match_source: string; new_match_source: string; old_match_rule: string; new_match_rule: string
+  old_identity_reason: string; new_identity_reason: string; identity_status: string; identity_source: string; identity_revision: number
+  rssi_before: number | null; rssi_before_time: string; rssi_before_delta_ms: number | null; rssi_before_reason: string
+  rssi_after: number | null; rssi_after_time: string; rssi_after_delta_ms: number | null; rssi_after_reason: string
+  source: string; source_type: string; source_event_id: number | string | null; syslog_event_id: number | string | null; raw_file_id: string; raw_line_number: number | null; source_sequence: number | null
+  details: Record<string, unknown>
+}
 export interface GroundQueryDiagnostics {
   request_id: string; requested_run_id: string; resolved_start_time: string; resolved_end_time: string
   source_kind: 'ACTIVE' | 'ARCHIVE' | 'MIXED' | 'NONE'; data_availability: GroundDataAvailability
@@ -161,7 +207,7 @@ export interface GroundPingSeries {
   success_count: number; loss_count: number; rtt_sample_count: number; rtt_sum_ms: number
   current_rtt_ms: number | null; average_rtt_ms: number | null; max_rtt_ms: number | null
   points: GroundPingSample[]
-  loss_windows: Array<Record<string, unknown>>; ap_transitions: Array<Record<string, unknown>>; position_segments: Array<Record<string, unknown>>
+  loss_windows: Array<Record<string, unknown>>; ap_transitions: GroundApTransition[]; position_segments: Array<Record<string, unknown>>
   diagnostics: GroundQueryDiagnostics
   next_cursor: string; latest_sequence: number | null; latest_timestamp: string; server_time: string
   active: boolean; target_state: string; has_more: boolean; query_identity: string

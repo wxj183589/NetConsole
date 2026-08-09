@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import fnmatch
 import json
 import os
 import uuid
@@ -10,25 +9,14 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 from netconsole.core.paths import PathResolver
-from netconsole.core import app_logger
 from netconsole.core.interprocess_lock import interprocess_file_lock
+from netconsole.core.log_policy import LOG_POLICY
+from netconsole.services.log_housekeeper import LogHousekeeper
 
 
-APP_CLEANUP_RETENTION_DAYS = 3
-AUTO_CLEANUP_INTERVAL = timedelta(hours=24)
+APP_CLEANUP_RETENTION_DAYS = LOG_POLICY.backend.retention_days
+AUTO_CLEANUP_INTERVAL = timedelta(seconds=LOG_POLICY.housekeeper.interval_seconds)
 AUTO_CLEANUP_RUNNING_TIMEOUT = timedelta(hours=6)
-APP_LOG_PATTERNS = (
-    "app.log",
-    "app-*.log",
-    "app_*.log",
-    "app.log.*",
-    "netconsole_*.log",
-    "runtime_*.log",
-    "ui_*.log",
-    "electron_*.log",
-    "backend_*.log",
-    "renderer_*.log",
-)
 CLEANUP_ITEM_IDS = ("runtime_logs", "runtime_cache", "temporary_files")
 AUTO_CLEANUP_ITEM_IDS = ("runtime_logs",)
 _RUNTIME_CACHE_SUBDIRS = ("thumbnails", "chart_cache", "preview_cache")
@@ -125,7 +113,7 @@ class AppCleanupService:
                 "NetConsole 软件自身运行日志文件",
                 policy,
                 "待清理",
-                self._log_candidates(cutoff),
+                self._log_candidates(days),
             ),
             CleanupItem(
                 "runtime_cache",
@@ -168,6 +156,10 @@ class AppCleanupService:
             }
             total = sum(item.file_count for item in items)
             seen: set[Path] = set()
+            current_log_candidates = {
+                candidate.path: candidate
+                for candidate in self._log_candidates(days)
+            }
             for item in items:
                 allowed_dirs = allowed_dirs_by_item[item.item_id]
                 for candidate in item.candidates:
@@ -177,15 +169,13 @@ class AppCleanupService:
                     if resolved is None or resolved in seen:
                         continue
                     seen.add(resolved)
-                    refreshed = (
-                        _log_candidate_for_file(resolved, cutoff, allowed_dirs)
-                        if candidate.is_log
-                        else _candidate_for_file(resolved, cutoff, allowed_dirs, is_log=False)
+                    refreshed = current_log_candidates.get(resolved) if candidate.is_log else _candidate_for_file(
+                        resolved, cutoff, allowed_dirs, is_log=False
                     )
                     if refreshed is None:
                         continue
                     if refreshed.is_log:
-                        _cleanup_log_file(refreshed.path, cutoff, result, active_log=self.paths.app_log_path)
+                        _delete_file(refreshed.path, result, is_log=True)
                     else:
                         _delete_file(refreshed.path, result, is_log=False)
                     result.processed_files += 1
@@ -229,19 +219,14 @@ class AppCleanupService:
         _emit_cleanup_log(result)
         return result
 
-    def _log_candidates(self, cutoff: datetime) -> list[CleanupCandidate]:
-        candidates: list[CleanupCandidate] = []
-        seen: set[Path] = set()
-        allowed_dirs = _existing_dirs([self.paths.logs_dir])
-        for directory in allowed_dirs:
-            for pattern in APP_LOG_PATTERNS:
-                for file_path in directory.glob(pattern):
-                    candidate = _log_candidate_for_file(file_path, cutoff, allowed_dirs)
-                    if candidate is None or candidate.path in seen:
-                        continue
-                    seen.add(candidate.path)
-                    candidates.append(candidate)
-        return candidates
+    def _log_candidates(self, retention_days: int) -> list[CleanupCandidate]:
+        scan = LogHousekeeper(self.paths).scan(
+            application_retention_days=retention_days,
+        )
+        return [
+            CleanupCandidate(candidate.path, candidate.size, True)
+            for candidate in scan.candidates
+        ]
 
     def _cache_candidates(
         self,
@@ -388,31 +373,6 @@ def _existing_dirs(paths: list[Path]) -> list[Path]:
     return result
 
 
-def _delete_old_logs(allowed_dirs: list[Path], cutoff: datetime, result: AppCleanupResult) -> None:
-    seen: set[Path] = set()
-    for directory in allowed_dirs:
-        for pattern in APP_LOG_PATTERNS:
-            for file_path in directory.glob(pattern):
-                resolved = _safe_resolve(file_path)
-                if resolved is None or resolved in seen:
-                    continue
-                seen.add(resolved)
-                if not resolved.is_file() or not _is_relative_to_any(resolved, allowed_dirs):
-                    continue
-                if _is_old_file(resolved, cutoff):
-                    _delete_file(resolved, result, is_log=True)
-
-
-def _delete_old_cache_files(allowed_dirs: list[Path], cutoff: datetime, result: AppCleanupResult) -> None:
-    for directory in allowed_dirs:
-        for file_path in directory.rglob("*"):
-            resolved = _safe_resolve(file_path)
-            if resolved is None or not resolved.is_file() or not _is_relative_to_any(resolved, allowed_dirs):
-                continue
-            if _is_old_file(resolved, cutoff):
-                _delete_file(resolved, result, is_log=False)
-
-
 def _candidate_for_file(path: Path, cutoff: datetime, allowed_dirs: list[Path], *, is_log: bool) -> CleanupCandidate | None:
     resolved = _safe_resolve(path)
     if resolved is None or not resolved.is_file() or not _is_relative_to_any(resolved, allowed_dirs):
@@ -428,107 +388,6 @@ def _candidate_for_file(path: Path, cutoff: datetime, allowed_dirs: list[Path], 
     except OSError:
         size = 0
     return CleanupCandidate(path=resolved, size=size, is_log=is_log)
-
-
-def _log_candidate_for_file(path: Path, cutoff: datetime, allowed_dirs: list[Path]) -> CleanupCandidate | None:
-    resolved = _safe_resolve(path)
-    if (
-        resolved is None
-        or not resolved.is_file()
-        or not _is_relative_to_any(resolved, allowed_dirs)
-        or not _is_allowed_runtime_log_name(resolved.name)
-    ):
-        return None
-    scanned, expired, malformed = _scan_log_records(resolved, cutoff)
-    if expired == 0:
-        return None
-    try:
-        size = resolved.stat().st_size
-    except OSError:
-        size = 0
-    return CleanupCandidate(
-        path=resolved,
-        size=size,
-        is_log=True,
-        expired_records=expired,
-        malformed_records=malformed,
-    )
-
-
-def _scan_log_records(path: Path, cutoff: datetime) -> tuple[int, int, int]:
-    scanned = 0
-    expired = 0
-    malformed = 0
-    try:
-        with path.open("rb") as handle:
-            for raw_line in handle:
-                scanned += 1
-                timestamp = _record_time(raw_line)
-                if timestamp is None:
-                    malformed += 1
-                elif timestamp < cutoff:
-                    expired += 1
-    except OSError:
-        return 0, 0, 1
-    return scanned, expired, malformed
-
-
-def _cleanup_log_file(path: Path, cutoff: datetime, result: AppCleanupResult, *, active_log: Path) -> None:
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    old_size = path.stat().st_size
-    scanned = 0
-    deleted = 0
-    malformed = 0
-    retained = 0
-    lock_path = app_logger.log_lock_path(active_log)
-    try:
-        with interprocess_file_lock(lock_path):
-            with path.open("rb") as source, temporary.open("wb") as target:
-                for raw_line in source:
-                    scanned += 1
-                    timestamp = _record_time(raw_line)
-                    if timestamp is None:
-                        malformed += 1
-                        target.write(raw_line)
-                        retained += len(raw_line)
-                    elif timestamp < cutoff:
-                        deleted += 1
-                    else:
-                        target.write(raw_line)
-                        retained += len(raw_line)
-                target.flush()
-                os.fsync(target.fileno())
-            if deleted == 0:
-                temporary.unlink(missing_ok=True)
-                result.scanned_log_records += scanned
-                result.malformed_log_records += malformed
-                return
-            if path.resolve() != active_log.resolve() and retained == 0:
-                path.unlink()
-                temporary.unlink(missing_ok=True)
-                result.deleted_log_files += 1
-            else:
-                os.replace(temporary, path)
-                result.rewritten_log_files += 1
-            result.scanned_log_records += scanned
-            result.deleted_log_records += deleted
-            result.malformed_log_records += malformed
-            result.freed_bytes += max(0, old_size - retained)
-    except OSError as exc:
-        temporary.unlink(missing_ok=True)
-        result.failures.append(CleanupFailure(str(path), str(exc)))
-
-
-def _record_time(raw_line: bytes) -> datetime | None:
-    try:
-        return datetime.strptime(raw_line[:19].decode("ascii"), "%Y-%m-%d %H:%M:%S")
-    except (UnicodeDecodeError, ValueError):
-        return None
-
-
-def _is_allowed_runtime_log_name(name: str) -> bool:
-    value = name.casefold()
-    return any(fnmatch.fnmatchcase(value, pattern.casefold()) for pattern in APP_LOG_PATTERNS)
 
 
 def _delete_file(path: Path, result: AppCleanupResult, *, is_log: bool) -> None:

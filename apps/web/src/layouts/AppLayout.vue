@@ -32,7 +32,10 @@ import CurrentSiteIndicator from '../components/CurrentSiteIndicator.vue'
 import WorkspaceTabBar from '../components/workspace/WorkspaceTabBar.vue'
 import GlobalTaskCenter from '../task-center/components/GlobalTaskCenter.vue'
 import { navigationTitle, t } from '../i18n/runtime'
-import { getPlatformAdapter } from '../platform/runtime'
+import {
+  getPlatformAdapter,
+  onPlatformRuntimeStatusChanged,
+} from '../platform/runtime'
 import {
   startExportSaveCoordinator,
   stopExportSaveCoordinator,
@@ -59,6 +62,8 @@ const drawerOpen = ref(false)
 const openGroups = ref<string[]>(loadOpenGroups())
 const editionActionBusy = ref(false)
 let removeTraySiteSwitchListener: (() => void) | undefined
+let removeRuntimeStatusListener: (() => void) | undefined
+let backendHealthGeneration = 0
 
 const iconComponents = {
   dashboard: DataBoard,
@@ -194,6 +199,22 @@ function updateViewport(): void {
   if (!mobile.value) drawerOpen.value = false
 }
 
+async function refreshBackendHealth(): Promise<void> {
+  const generation = ++backendHealthGeneration
+  try {
+    const health = await getHealth()
+    if (generation !== backendHealthGeneration) return
+    const developmentIdentity = health.build_id.match(/^[^+]+\+([0-9a-f]{8})[0-9a-f]*(?:-(dirty))?$/i)
+    version.value = import.meta.env.DEV && developmentIdentity
+      ? `${health.version}-<${developmentIdentity[1]}${developmentIdentity[2] ? '-dirty' : ''}>`
+      : health.version
+    backendBuildId.value = health.build_id
+    backendOnline.value = health.status === 'ok'
+  } catch {
+    if (generation === backendHealthGeneration) backendOnline.value = false
+  }
+}
+
 async function handleTraySiteSwitchRequested(siteId: string): Promise<void> {
   const query = new URLSearchParams({
     section: 'site-storage',
@@ -221,6 +242,14 @@ watch(
 onMounted(async () => {
   window.addEventListener('resize', updateViewport)
   startExportSaveCoordinator()
+  removeRuntimeStatusListener = onPlatformRuntimeStatusChanged((status) => {
+    if (status.state === 'ready') {
+      void refreshBackendHealth()
+      return
+    }
+    backendHealthGeneration += 1
+    backendOnline.value = false
+  })
   removeTraySiteSwitchListener = getPlatformAdapter().onTraySiteSwitchRequested((siteId) => {
     void handleTraySiteSwitchRequested(siteId)
   })
@@ -229,17 +258,7 @@ onMounted(async () => {
   } catch {
     // 后端 Feature Gate 仍会拒绝禁用能力；离线时保留导航用于展示连接状态。
   }
-  try {
-    const health = await getHealth()
-    const developmentIdentity = health.build_id.match(/^[^+]+\+([0-9a-f]{8})[0-9a-f]*(?:-(dirty))?$/i)
-    version.value = import.meta.env.DEV && developmentIdentity
-      ? `${health.version}-<${developmentIdentity[1]}${developmentIdentity[2] ? '-dirty' : ''}>`
-      : health.version
-    backendBuildId.value = health.build_id
-    backendOnline.value = health.status === 'ok'
-  } catch {
-    backendOnline.value = false
-  }
+  await refreshBackendHealth()
   if (!import.meta.env.DEV) {
     try {
       const metadata = await getWebBuildMeta()
@@ -255,6 +274,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('resize', updateViewport)
   stopExportSaveCoordinator()
   removeTraySiteSwitchListener?.()
+  removeRuntimeStatusListener?.()
 })
 </script>
 

@@ -1,7 +1,7 @@
 export type DeviceConnectionStatus = 'UNKNOWN' | 'TESTING' | 'REACHABLE' | 'UNREACHABLE' | 'AUTH_FAILED' | 'ERROR'
 export type DeviceConnectionProtocol = 'SSH' | 'TELNET' | 'SNMP'
-export type DeviceVendor = 'H3C' | 'ZTE' | 'Huawei' | 'Ruijie' | 'Cisco' | 'Other'
-export const DEVICE_VENDOR_OPTIONS: ReadonlyArray<{ value: DeviceVendor; label: string }> = [
+export type DeviceVendor = string
+export const DEVICE_VENDOR_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
   { value: 'H3C', label: '新华三 H3C' },
   { value: 'ZTE', label: '中兴 ZTE' },
   { value: 'Huawei', label: '华为 Huawei' },
@@ -52,7 +52,15 @@ export interface DeviceListItem {
   station: string
   group_id: number | null
   group_name: string
-  device_vendor: DeviceVendor
+  device_vendor: string
+  vendor_key: string
+  collection_support: {
+    supported: boolean
+    driver_key?: string | null
+    vendor_key: string
+    reason_code?: string | null
+    reason_message?: string | null
+  }
   device_type: string
   project_phase: ProjectPhase
   work_scope_status: WorkScopeStatus
@@ -666,6 +674,7 @@ export type DeviceBatchRefreshStatus =
   | 'ACCEPTED'
   | 'REUSED'
   | 'REJECTED'
+  | 'SKIPPED'
   | 'RUNNING'
   | 'COMPLETED'
   | 'PARTIAL_SUCCESS'
@@ -680,7 +689,7 @@ export interface DeviceBatchRefreshItem {
   device_type: string
   profile_id: string
   profile_version: number | null
-  submission_status: 'ACCEPTED' | 'REUSED' | 'REJECTED'
+  submission_status: 'ACCEPTED' | 'REUSED' | 'REJECTED' | 'SKIPPED'
   status: DeviceBatchRefreshStatus
   task_id: string
   task_status: string
@@ -693,6 +702,7 @@ export interface DeviceBatchRefreshItem {
   finished_at: string
   last_collected_at: string
   error_message: string
+  reason_code: string
 }
 
 export interface DeviceBatchRefreshSummary {
@@ -700,6 +710,7 @@ export interface DeviceBatchRefreshSummary {
   accepted: number
   reused: number
   rejected: number
+  skipped: number
   running: number
   completed: number
   partial_success: number
@@ -725,6 +736,8 @@ export interface DeviceImportPreview {
   total_rows: number
   valid_rows: number
   invalid_rows: number
+  collection_supported_rows: number
+  collection_unsupported_rows: number
   vendor_summary: Record<string, number>
   device_type_summary: Record<string, number>
   create_count: number

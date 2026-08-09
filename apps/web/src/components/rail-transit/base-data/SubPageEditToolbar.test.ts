@@ -6,18 +6,24 @@ import { describe, expect, it } from 'vitest'
 import SubPageEditToolbar from './SubPageEditToolbar.vue'
 
 describe('subpage edit toolbar', () => {
-  it('keeps ready, dirty and failed draft actions local to the rendered subpage', async () => {
+  it('requires the rendered subpage to unlock before draft actions are available', async () => {
     const wrapper = mount(SubPageEditToolbar, {
-      props: { state: 'READY', dirty: false },
+      props: { state: 'VIEW', dirty: false },
     })
 
-    expect(wrapper.text()).toContain('当前子页已保存')
+    expect(wrapper.text()).toContain('当前子页查看中')
+    const unlock = wrapper.findAll('button').find((item) => item.text().includes('解锁当前子页'))!
+    expect(unlock.attributes('disabled')).toBeUndefined()
+    await unlock.trigger('click')
+    expect(wrapper.emitted('unlock')).toHaveLength(1)
     expect(wrapper.text()).toContain('保存当前子页')
-    expect(wrapper.findAll('button').filter((item) => ['放弃修改', '保存当前子页'].includes(item.text())).every((item) => item.attributes('disabled') !== undefined)).toBe(true)
+    expect(wrapper.findAll('button').find((item) => item.text().includes('保存当前子页'))?.attributes('disabled')).toBeDefined()
 
+    await wrapper.setProps({ state: 'EDITING', dirty: false })
+    expect(wrapper.text()).toContain('当前子页编辑中')
+    expect(wrapper.text()).toContain('放弃修改')
     await wrapper.setProps({ state: 'DIRTY', dirty: true })
     expect(wrapper.text()).toContain('当前子页有未保存修改')
-    expect(wrapper.text()).toContain('放弃修改')
     const save = wrapper.findAll('button').find((item) => item.text().includes('保存当前子页'))!
     expect(save.attributes('disabled')).toBeUndefined()
     await save.trigger('click')

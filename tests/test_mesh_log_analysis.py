@@ -251,7 +251,7 @@ def test_mesh_repository_requires_external_rebuild_for_incompatible_schema(tmp_p
     conn.commit()
     conn.close()
 
-    with pytest.raises(MeshSchemaRebuildRequired, match="rebuild_mesh_parsed_data"):
+    with pytest.raises(MeshSchemaRebuildRequired, match="自动修复"):
         MeshMrRepository(db_path)
     with sqlite3.connect(db_path) as conn:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(mesh_links)").fetchall()}

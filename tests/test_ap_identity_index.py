@@ -115,6 +115,32 @@ def test_revision_state_reports_missing_ready_and_stale_without_exposing_rows(
     )
 
 
+def test_topology_projection_version_marks_legacy_index_stale_and_rebuilds(
+    tmp_path: Path,
+) -> None:
+    database, repository, service = _fixture(tmp_path)
+    _base_ap(repository, name="AP-A", mac="74ad-cb9d-3320")
+    built = service.rebuild_index("initial")
+
+    with database.connect() as connection:
+        connection.execute(
+            "UPDATE ap_identity_index_state SET diagnostics_json = '{}' WHERE site_id = 'current'"
+        )
+        connection.commit()
+
+    stale = service.revision_state()
+    match = service.resolve_peer_mac("74ad-cb9d-332f")
+    rebuilt = service.ensure_index("topology_projection_upgrade")
+
+    assert stale.status == "stale"
+    assert match.status == "unresolved"
+    assert match.unresolved_reason == "identity_topology_projection_stale"
+    assert rebuilt is not None
+    assert rebuilt.revision == built.revision + 1
+    assert service.revision_state().status == "ready"
+    assert service.resolve_peer_mac("74ad-cb9d-332f").status == "matched"
+
+
 def test_legacy_identity_state_schema_is_upgraded_before_new_columns_are_used(
     tmp_path: Path,
 ) -> None:
@@ -334,6 +360,134 @@ def test_base_data_alone_resolves_exact_h3c_radio_alias(tmp_path: Path) -> None:
     assert match.matched_source == "base_data"
     assert match.match_rule == "h3c_physical_mac_to_r1_exact_v1"
     assert match.radio_id == 1
+
+
+def test_field_peer_radio_resolves_to_physical_ap(tmp_path: Path) -> None:
+    _database, repository, service = _fixture(tmp_path)
+    _base_ap(
+        repository,
+        name="bc5a-3457-6d40",
+        mac="bc5a-3457-6d40",
+        station="云龙车辆段",
+    )
+
+    service.rebuild_index("field_peer_radio")
+    match = service.resolve_peer_mac("bc5a-3457-6d4f")
+
+    assert match.status == "matched"
+    assert match.effective_ap_mac == "bc5a-3457-6d40"
+    assert match.effective_ap_name == "bc5a-3457-6d40"
+    assert match.station == "云龙车辆段"
+    assert match.radio_id == 1
+
+
+def test_ap_identity_uses_lldp_switch_station_without_base_record(tmp_path: Path) -> None:
+    database, repository, service = _fixture(tmp_path)
+    repository.replace_fit_ap_resources(
+        "ac-1",
+        [
+            {
+                "ap_uuid": "ap-live",
+                "ap_name": "AP-LIVE",
+                "ap_mac": "74ad-cb9d-3320",
+                "site": "",
+            }
+        ],
+    )
+    with database.connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO devices (
+                device_uuid, name, device_vendor, device_type, primary_address,
+                created_at, updated_at
+            ) VALUES ('ac-1', 'AC-1', 'H3C', 'AC', '10.0.0.1', '', '')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO devices (
+                device_uuid, name, station, station_id, device_type,
+                primary_address, created_at, updated_at
+            ) VALUES ('switch-live', 'SW-LIVE', '现场站', 'station:live', 'SWITCH', '10.0.0.10', '', '')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO device_lldp_neighbors (
+                device_uuid, local_interface, neighbor_mac, collected_at,
+                collect_run_uuid, updated_at
+            ) VALUES ('switch-live', 'GigabitEthernet1/0/1', '74ad-cb9d-3320', '', 'run-1', '')
+            """
+        )
+        connection.commit()
+
+    service.rebuild_index("lldp_topology")
+    match = service.resolve_peer_mac("74ad-cb9d-332f", ap_role="trackside")
+
+    assert match.status == "matched"
+    assert match.station == "现场站"
+    assert match.station_source == "lldp_switch"
+    assert match.topology_warning == ""
+
+
+def test_ap_identity_keeps_same_station_lldp_evidence_from_multiple_switches(
+    tmp_path: Path,
+) -> None:
+    database, repository, service = _fixture(tmp_path)
+    repository.replace_fit_ap_resources(
+        "ac-1",
+        [
+            {
+                "ap_uuid": "ap-live",
+                "ap_name": "bc5a-3457-61e0",
+                "ap_mac": "bc5a-3457-61e0",
+                "site": "",
+            }
+        ],
+    )
+    with database.connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO devices (
+                device_uuid, name, device_vendor, device_type, primary_address,
+                created_at, updated_at
+            ) VALUES ('ac-1', 'AC-1', 'H3C', 'AC', '10.0.0.1', '', '')
+            """
+        )
+        connection.executemany(
+            """
+            INSERT INTO devices (
+                device_uuid, name, station, station_id, device_type,
+                primary_address, created_at, updated_at
+            ) VALUES (?, ?, '横溪站', 'station:hengxi', 'SWITCH', ?, '', '')
+            """,
+            [
+                ("switch-hx-1", "HX_1", "10.0.0.11"),
+                ("switch-hx-2", "HX_2", "10.0.0.12"),
+            ],
+        )
+        connection.executemany(
+            """
+            INSERT INTO device_lldp_neighbors (
+                device_uuid, local_interface, neighbor_mac, collected_at,
+                collect_run_uuid, updated_at
+            ) VALUES (?, ?, 'bc5a-3457-61e0', '', ?, '')
+            """,
+            [
+                ("switch-hx-1", "GigabitEthernet1/0/1", "run-old"),
+                ("switch-hx-2", "GigabitEthernet1/0/2", "run-current"),
+            ],
+        )
+        connection.commit()
+
+    service.rebuild_index("same_station_multiple_switches")
+    match = service.resolve_peer_mac("bc5a-3457-61ff", ap_role="trackside")
+
+    assert match.status == "matched"
+    assert match.effective_ap_name == "bc5a-3457-61e0"
+    assert match.station == "横溪站"
+    assert match.station_source == "lldp_switch"
+    assert match.topology_warning == "topology_lldp_multiple_switches"
 
 
 def test_offline_fit_ap_keeps_exact_h3c_radio2_alias(tmp_path: Path) -> None:

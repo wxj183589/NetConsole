@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 from netconsole.core.paths import PathResolver
@@ -33,9 +34,10 @@ def _paths(tmp_path: Path) -> PathResolver:
 def _make_old_empty_index(paths: PathResolver, profile) -> Path:
     index = paths.mesh_mr_db_path("demo", profile.safe_folder_name)
     MeshMrRepository(index)
-    with sqlite3.connect(index) as connection:
+    with closing(sqlite3.connect(index)) as connection:
         connection.execute("UPDATE schema_meta SET value = 'old' WHERE key = 'schema_version'")
         connection.execute("UPDATE meta SET value = 'old' WHERE key = 'schema_version'")
+        connection.commit()
     return index
 
 
@@ -61,6 +63,30 @@ def test_profiles_without_sources_do_not_block_empty_database_recreate(tmp_path:
     assert raw.is_file()
     assert MeshMrRepository(index).list_source_files() == []
     assert MeshDerivedDataMaintenanceService(paths).inspect("demo")["compatible"] is True
+
+
+def test_repair_with_profile_scope_does_not_rebuild_other_profiles(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    storage = MeshStorageService("demo", paths)
+    selected, untouched = (
+        storage.create_mr_profile("列车07-MR-CT"),
+        storage.create_mr_profile("列车07-MR-CW"),
+    )
+    _make_old_empty_index(paths, selected)
+    _make_old_empty_index(paths, untouched)
+
+    result = MeshDerivedDataMaintenanceService(paths).repair(
+        "demo",
+        profile_ids=[selected.mr_id],
+    )
+
+    assert len(result["repaired_profiles"]) == 1
+    assert MeshDerivedDataMaintenanceService(paths).inspect(
+        "demo", profile_ids=[selected.mr_id]
+    )["compatible"] is True
+    assert MeshDerivedDataMaintenanceService(paths).inspect(
+        "demo", profile_ids=[untouched.mr_id]
+    )["compatible"] is False
 
 
 def test_empty_recreate_resumes_selected_local_scan_candidate(tmp_path: Path) -> None:
@@ -141,3 +167,26 @@ def test_partial_rebuild_skips_missing_registered_source_and_preserves_metadata(
     assert row["parse_status"] == "missing"
     assert row["file_exists"] == 0
     assert row["original_filename"] == missing_name
+
+
+def test_partial_rebuild_preserves_existing_source_provenance(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    profile = MeshStorageService("demo", paths).create_mr_profile("列车07-MR-CT")
+    source = tmp_path / "downloaded.log"
+    source.write_text("[1] 2026/08/03 10:12:33.579 (3)\n" + LINE + "\n", encoding="utf-8")
+    MeshImportService("demo", paths).import_files(
+        profile,
+        [source],
+        source_type="device_download",
+        source_device_id="device-07",
+        parse_task_id="download-task-1",
+    )
+    index = _make_old_empty_index(paths, profile)
+
+    MeshDerivedDataMaintenanceService(paths).repair("demo")
+
+    with sqlite3.connect(index) as connection:
+        row = connection.execute(
+            "SELECT source_type, source_device_id, parse_task_id FROM source_files"
+        ).fetchone()
+    assert row == ("device_download", "device-07", "download-task-1")

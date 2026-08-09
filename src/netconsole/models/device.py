@@ -24,19 +24,21 @@ DEVICE_VENDOR_LABELS = {
     DeviceVendor.OTHER.value: "其他",
 }
 _DEVICE_VENDOR_ALIASES = {
-    "h3c": DeviceVendor.H3C.value,
-    "新华三": DeviceVendor.H3C.value,
-    "zte": DeviceVendor.ZTE.value,
-    "中兴": DeviceVendor.ZTE.value,
-    "中兴通讯": DeviceVendor.ZTE.value,
-    "huawei": DeviceVendor.HUAWEI.value,
-    "华为": DeviceVendor.HUAWEI.value,
-    "ruijie": DeviceVendor.RUIJIE.value,
-    "锐捷": DeviceVendor.RUIJIE.value,
-    "cisco": DeviceVendor.CISCO.value,
-    "思科": DeviceVendor.CISCO.value,
-    "other": DeviceVendor.OTHER.value,
-    "其他": DeviceVendor.OTHER.value,
+    "h3c": "h3c",
+    "新华三": "h3c",
+    "zte": "zte",
+    "中兴": "zte",
+    "中兴通讯": "zte",
+    "huawei": "huawei",
+    "华为": "huawei",
+    "mexon": "mexon",
+    "兆越": "mexon",
+    "ruijie": "ruijie",
+    "锐捷": "ruijie",
+    "cisco": "cisco",
+    "思科": "cisco",
+    "other": "other",
+    "其他": "other",
 }
 DEVICE_TYPES = ("AC", "SW", "FW", "Route", "Cloud-AP", "FAT-AP", "MR", "Other")
 
@@ -133,22 +135,50 @@ def is_device_eligible_for_automatic_collection(device: "Device") -> bool:
 
 
 def normalize_device_vendor(value: object) -> str:
-    text = str(value or "").strip()
+    """Legacy canonical form retained for existing callers."""
+
+    text = normalize_device_vendor_text(value)
     normalized = _DEVICE_VENDOR_ALIASES.get(text.casefold())
     if normalized is None:
-        raise ValueError(f"不支持的设备厂商：{text or '空值'}")
-    return normalized
+        raise ValueError(f"不支持的设备厂商：{text}")
+    return {
+        "h3c": DeviceVendor.H3C.value,
+        "zte": DeviceVendor.ZTE.value,
+        "huawei": DeviceVendor.HUAWEI.value,
+        "ruijie": DeviceVendor.RUIJIE.value,
+        "cisco": DeviceVendor.CISCO.value,
+        "other": DeviceVendor.OTHER.value,
+    }[normalized]
+
+
+def normalize_device_vendor_text(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError("设备厂商不能为空")
+    if len(text) > 40:
+        raise ValueError("设备厂商长度不能超过 40 个字符")
+    if any(ord(char) < 32 or ord(char) == 127 for char in text):
+        raise ValueError("设备厂商不能包含控制字符")
+    return text
+
+
+def normalize_device_vendor_key(value: object) -> str:
+    """Return the stable key used exclusively for driver matching.
+
+    ``device_vendor`` remains the user supplied value so imports and exports do
+    not lose spelling or language. Unknown values deliberately resolve to the
+    non-driver key ``unknown``; callers must never select a fallback driver.
+    """
+
+    text = normalize_device_vendor_text(value)
+    return _DEVICE_VENDOR_ALIASES.get(text.casefold(), "unknown")
 
 
 def validate_device_vendor_type(vendor: object, device_type: object) -> tuple[str, str]:
-    normalized_vendor = normalize_device_vendor(vendor)
+    normalized_vendor = normalize_device_vendor_text(vendor)
     normalized_type = str(device_type or "").strip()
     if normalized_type not in DEVICE_TYPES:
         raise ValueError(f"不支持的设备类型：{normalized_type or '空值'}")
-    if normalized_vendor == DeviceVendor.ZTE.value and normalized_type != "SW":
-        if normalized_type == "AC":
-            raise ValueError("当前版本尚未适配 ZTE 无线控制器")
-        raise ValueError("当前版本仅适配 ZTE 交换机")
     return normalized_vendor, normalized_type
 
 
@@ -226,7 +256,7 @@ class Device:
         if kwargs.get("device_type") == "FIT-AP":
             kwargs["device_type"] = "Cloud-AP"
         if "device_vendor" in kwargs:
-            kwargs["device_vendor"] = normalize_device_vendor(kwargs["device_vendor"])
+            kwargs["device_vendor"] = normalize_device_vendor_text(kwargs["device_vendor"])
         if "project_phase" in kwargs:
             kwargs["project_phase"] = normalize_project_phase(kwargs["project_phase"])
         if "work_scope_status" in kwargs:
@@ -304,6 +334,10 @@ class Device:
 
     def to_record(self) -> dict[str, object | None]:
         return {name: getattr(self, name) for name in self.field_names()}
+
+    @property
+    def vendor_key(self) -> str:
+        return normalize_device_vendor_key(self.device_vendor)
 
     @property
     def ip_address(self) -> str:

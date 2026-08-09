@@ -1,6 +1,11 @@
 export const BEFORE_SITE_SWITCH_EVENT = 'netconsole:before-site-switch'
 export const SITE_CONTEXT_CHANGED_EVENT = 'netconsole:site-context-changed'
 
+export interface BeforeSiteSwitchDetail {
+  targetSiteId: string
+  waitUntil(promise: Promise<boolean>): void
+}
+
 export function notifySiteContextChanged(): void {
   window.dispatchEvent(new CustomEvent(SITE_CONTEXT_CHANGED_EVENT))
 }
@@ -12,11 +17,17 @@ export class SiteSwitchCancelled extends Error {
   }
 }
 
-export function notifyBeforeSiteSwitch(targetSiteId: string): boolean {
-  return window.dispatchEvent(new CustomEvent(BEFORE_SITE_SWITCH_EVENT, {
-    detail: { targetSiteId },
+export async function notifyBeforeSiteSwitch(targetSiteId: string): Promise<boolean> {
+  const deferredChecks: Promise<boolean>[] = []
+  const event = new CustomEvent<BeforeSiteSwitchDetail>(BEFORE_SITE_SWITCH_EVENT, {
+    detail: {
+      targetSiteId,
+      waitUntil: (promise) => { deferredChecks.push(Promise.resolve(promise)) },
+    },
     cancelable: true,
-  }))
+  })
+  if (!window.dispatchEvent(event)) return false
+  return (await Promise.all(deferredChecks)).every(Boolean)
 }
 
 export interface SiteSwitchTarget {

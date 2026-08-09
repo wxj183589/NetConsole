@@ -112,6 +112,22 @@ class PathResolver:
         return self.runtime_dir / "locks"
 
     @property
+    def database_upgrade_backups_dir(self) -> Path:
+        """统一数据库升级备份中心；与局点/Profile 业务目录分离。"""
+
+        return self.data_root / "backups" / "database_upgrade"
+
+    @property
+    def database_upgrade_journal_dir(self) -> Path:
+        return self.runtime_dir / "database_upgrade"
+
+    @property
+    def database_upgrade_locks_dir(self) -> Path:
+        """数据库升级跨进程维护锁；只保存短期锁文件。"""
+
+        return self.database_upgrade_journal_dir / "locks"
+
+    @property
     def storage_manifest_path(self) -> Path:
         return self.config_dir / "storage-manifest.json"
 
@@ -424,6 +440,9 @@ class PathResolver:
             self.agents_dir,
             self.electron_dir,
             self.locks_dir,
+            self.database_upgrade_backups_dir,
+            self.database_upgrade_journal_dir,
+            self.database_upgrade_locks_dir,
         )
         for path in runtime_paths:
             ensure_runtime_dir(path)

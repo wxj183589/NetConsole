@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import gc
-import hashlib
 import json
 import os
 import shutil
@@ -114,12 +112,12 @@ class MeshDerivedDataMaintenanceService:
         profile_ids: Iterable[str] | None = None,
     ) -> dict[str, object]:
         site = str(site_id)
-        selected = {str(value) for value in profile_ids or () if str(value)}
+        selected = None if profile_ids is None else {str(value) for value in profile_ids if str(value)}
         entries: list[MeshDerivedProfileInspection] = []
         catalog_path = self.paths.mesh_catalog_path(site)
         profiles = MeshCatalogRepository(catalog_path).list_profiles() if catalog_path.is_file() else []
         for profile in profiles:
-            if selected and profile.mr_id not in selected:
+            if selected is not None and profile.mr_id not in selected:
                 continue
             index_path = self.paths.mesh_mr_db_path(site, profile.safe_folder_name).resolve()
             raw_root = self.paths.mesh_mr_raw_dir(site, profile.safe_folder_name).resolve()
@@ -216,7 +214,12 @@ class MeshDerivedDataMaintenanceService:
         progress: ProgressCallback | None = None,
         should_cancel: CancelCallback | None = None,
     ) -> dict[str, object]:
-        inspection = self.inspect(site_id, profile_ids=profile_ids)
+        normalized_profile_ids = (
+            None
+            if profile_ids is None
+            else tuple(str(value) for value in profile_ids if str(value))
+        )
+        inspection = self.inspect(site_id, profile_ids=normalized_profile_ids)
         entries = [dict(item) for item in inspection["incompatible_profiles"]]
         if include_missing:
             entries.extend(
@@ -231,7 +234,7 @@ class MeshDerivedDataMaintenanceService:
                 "compatible": True,
                 "repair_mode": "",
                 "repaired_profiles": [],
-                "validation": self.validate(site_id),
+                "validation": self.validate(site_id, profile_ids=normalized_profile_ids),
             }
         self._set_journal_stage(site_id, "repairing")
         total = len(entries)
@@ -239,7 +242,6 @@ class MeshDerivedDataMaintenanceService:
         if progress:
             progress("mesh_derived_repair_inspect", 5, 100, "正在检查 MESH 分析数据库版本")
             progress("mesh_derived_repair_prepare", 15, 100, "正在释放当前局点的 MESH 数据库资源")
-        gc.collect()
         for index, entry in enumerate(entries, start=1):
             self._check_cancel(should_cancel)
             mr_id = str(entry["mr_id"])
@@ -276,20 +278,16 @@ class MeshDerivedDataMaintenanceService:
                 should_cancel=should_cancel,
                 allow_empty_raw=True,
                 raw_files=registered_raw_files,
+                source_metadata=registered_sources,
             )
             missing_sources = [
                 dict(item)
                 for item in entry.get("missing_sources") or ()
                 if isinstance(item, dict)
             ]
-            preserved_missing_count = self._preserve_missing_source_metadata(
-                self.paths.mesh_mr_db_path(site_id, str(entry["safe_folder_name"])).resolve(),
-                mr_id=mr_id,
-                missing_sources=missing_sources,
-            )
             result["skipped_missing_source_count"] = max(
                 int(entry.get("missing_source_count") or 0),
-                preserved_missing_count,
+                int(result.get("preserved_missing_count") or 0),
             )
             result["skipped_missing_sources"] = missing_sources[:50]
             repaired.append(result)
@@ -684,94 +682,6 @@ class MeshDerivedDataMaintenanceService:
             )
             sources.append(source)
         return sources
-
-    @staticmethod
-    def _preserve_missing_source_metadata(
-        index_path: Path,
-        *,
-        mr_id: str,
-        missing_sources: Iterable[Mapping[str, object]],
-    ) -> int:
-        """将无 raw 的旧来源作为不可恢复元数据保留在新派生库中。"""
-
-        records = [dict(item) for item in missing_sources]
-        if not records or not index_path.is_file():
-            return 0
-        now = datetime.now(UTC).isoformat()
-        inserted = 0
-        with sqlite3.connect(index_path) as connection:
-            columns = {
-                str(row[1]) for row in connection.execute("PRAGMA table_info(source_files)").fetchall()
-            }
-            for source in records:
-                source_id = str(source.get("source_file_id") or source.get("id") or "")
-                file_name = str(source.get("file_name") or source.get("original_filename") or "历史来源")
-                digest = str(source.get("sha256") or "").strip().casefold()
-                if not digest:
-                    digest = hashlib.sha256(
-                        f"mesh-missing-source\0{mr_id}\0{source_id}\0{file_name}".encode("utf-8")
-                    ).hexdigest()
-                values: dict[str, object] = {
-                    "mr_id": str(source.get("mr_id") or mr_id),
-                    "original_path": str(source.get("original_path") or source.get("archived_path") or file_name),
-                    "archived_path": str(source.get("archived_path") or source.get("original_path") or file_name),
-                    "parsed_db_path": "",
-                    "parsed_db_size": 0,
-                    "db_schema_version": SCHEMA_VERSION,
-                    "original_filename": str(source.get("original_filename") or file_name),
-                    "archived_filename": str(source.get("archived_filename") or source.get("stored_filename") or file_name),
-                    "stored_filename": str(source.get("stored_filename") or ""),
-                    "sha256": digest,
-                    "raw_sha256": str(source.get("raw_sha256") or digest),
-                    "content_sha256": str(source.get("content_sha256") or ""),
-                    "profile_id": str(source.get("profile_id") or mr_id),
-                    "linked_mr_id": str(source.get("linked_mr_id") or ""),
-                    "file_size": int(source.get("file_size") or 0),
-                    "file_mtime": source.get("file_mtime"),
-                    "imported_at": str(source.get("imported_at") or now),
-                    "parser_version": str(source.get("parser_version") or "legacy"),
-                    "parse_status": "missing",
-                    "encoding": str(source.get("encoding") or ""),
-                    "is_gzip": int(source.get("is_gzip") or 0),
-                    "first_sample_time": source.get("first_sample_time"),
-                    "last_sample_time": source.get("last_sample_time"),
-                    "first_log_timestamp": source.get("first_log_timestamp"),
-                    "last_log_timestamp": source.get("last_log_timestamp"),
-                    "log_date": source.get("log_date"),
-                    "daily_sequence": source.get("daily_sequence"),
-                    "rename_status": str(source.get("rename_status") or ""),
-                    "rename_warning": str(source.get("rename_warning") or ""),
-                    "source_status": "RAW_FILE_MISSING",
-                    "source_type": str(source.get("source_type") or "manual_upload"),
-                    "source_device_id": str(source.get("source_device_id") or ""),
-                    "parse_task_id": str(source.get("parse_task_id") or ""),
-                    "lines_read": 0,
-                    "records_parsed": 0,
-                    "records_skipped": 0,
-                    "duplicate_records": 0,
-                    "issue_count": 0,
-                    "error_message": "原始日志缺失，数据库升级时未恢复明细。",
-                    "file_exists": 0,
-                    "file_status": "raw_file_missing",
-                    "parsed_deleted_at": "",
-                    "parsed_delete_error": "",
-                    "source_file_order": int(source.get("source_file_order") or 0),
-                    "analysis_params_json": str(source.get("analysis_params_json") or ""),
-                    "raw_relative_path": str(source.get("raw_relative_path") or ""),
-                    "parsed_relative_path": "",
-                    "archive_sha256": str(source.get("archive_sha256") or ""),
-                    "bundle_member_id": str(source.get("bundle_member_id") or ""),
-                    "bundle_member_sha256": str(source.get("bundle_member_sha256") or ""),
-                }
-                names = [name for name in values if name in columns]
-                placeholders = ", ".join("?" for _ in names)
-                cursor = connection.execute(
-                    f"INSERT OR IGNORE INTO source_files ({', '.join(names)}) VALUES ({placeholders})",
-                    [values[name] for name in names],
-                )
-                inserted += int(cursor.rowcount > 0)
-            connection.commit()
-        return inserted
 
     @staticmethod
     def _raw_files(raw_root: Path) -> list[Path]:

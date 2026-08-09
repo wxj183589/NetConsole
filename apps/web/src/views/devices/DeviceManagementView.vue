@@ -206,6 +206,7 @@ const deviceColumns: NcTableColumn<DeviceListItem>[] = [
   { key: 'name', label: '名称', valueType: 'name', fixed: 'left', stretch: 'priority', stretchWeight: 4 },
   { key: 'group_name', label: '分组', valueType: 'text', stretch: 'normal' },
   { key: 'device_vendor', label: '厂商', valueType: 'text', stretch: 'normal', displayValue: (row) => formatDeviceVendor(row.device_vendor) },
+  { key: 'collection_support', label: '采集支持', valueType: 'status', cellKind: 'tag', stretch: 'none', displayValue: (row) => collectionSupportLabel(row.collection_support) },
   { key: 'project_phase', label: '建设阶段', valueType: 'status', cellKind: 'tag', stretch: 'none' },
   { key: 'work_scope_status', label: '当前工作状态', valueType: 'status', cellKind: 'tag', stretch: 'none' },
   { key: 'system_name', label: '系统名', valueType: 'name', stretch: 'normal' },
@@ -460,11 +461,11 @@ const batchRefreshProgressText = computed(() => {
   const current = batchRefresh.value
   if (!current) return ''
   const summary = current.summary
-  const finished = summary.completed + summary.partial_success + summary.failed + summary.cancelled + summary.rejected
+  const finished = summary.completed + summary.partial_success + summary.failed + summary.cancelled + summary.rejected + summary.skipped
   if (!current.terminal) {
-    return `正在更新 ${finished}/${summary.total} 台设备（运行中 ${summary.running}，成功 ${summary.completed}，部分成功 ${summary.partial_success}，失败 ${summary.failed}，拒绝 ${summary.rejected}）`
+    return `正在更新 ${finished}/${summary.total} 台设备（运行中 ${summary.running}，成功 ${summary.completed}，部分成功 ${summary.partial_success}，失败 ${summary.failed}，跳过 ${summary.skipped}）`
   }
-  return `批量更新完成：成功 ${summary.completed}，部分成功 ${summary.partial_success}，失败 ${summary.failed}，取消 ${summary.cancelled}，拒绝 ${summary.rejected}`
+  return `批量更新完成：成功 ${summary.completed}，部分成功 ${summary.partial_success}，失败 ${summary.failed}，跳过 ${summary.skipped}，取消 ${summary.cancelled}`
 })
 onMounted(async () => {
   window.addEventListener('resize', resizeDetailDrawer)
@@ -1689,7 +1690,7 @@ async function finishBatchRefresh(result: DeviceTaskBatch, generation: number): 
   if (!componentActive || generation !== batchRefreshGeneration) return
   const summary = result.summary
   const problemCount = summary.partial_success + summary.failed + summary.cancelled + summary.rejected
-  const message = `批量更新完成：成功 ${summary.completed}，部分成功 ${summary.partial_success}，失败 ${summary.failed}，取消 ${summary.cancelled}，拒绝 ${summary.rejected}`
+  const message = `批量更新完成：成功 ${summary.completed}，部分成功 ${summary.partial_success}，失败 ${summary.failed}，跳过 ${summary.skipped}，取消 ${summary.cancelled}`
   if (problemCount) ElMessage.warning(message)
   else ElMessage.success(message)
 }
@@ -1846,6 +1847,7 @@ function collectStatusType(status: string): 'success' | 'warning' | 'danger' | '
   const normalized = String(status || '').toUpperCase()
   if (normalized === 'COMPLETED' || normalized === 'SUCCESS') return 'success'
   if (['ACCEPTED', 'REUSED', 'RUNNING', 'PARTIAL_SUCCESS'].includes(normalized)) return 'warning'
+  if (normalized === 'SKIPPED') return 'warning'
   if (['FAILED', 'REJECTED', 'CANCELLED'].includes(normalized)) return 'danger'
   return 'info'
 }
@@ -1856,6 +1858,7 @@ function collectStatusLabel(status: string): string {
     ACCEPTED: '已受理',
     REUSED: '复用任务',
     REJECTED: '已拒绝',
+    SKIPPED: '暂未适配采集',
     RUNNING: '运行中',
     COMPLETED: '成功',
     SUCCESS: '成功',
@@ -1863,6 +1866,13 @@ function collectStatusLabel(status: string): string {
     FAILED: '失败',
     CANCELLED: '已取消',
   }[normalized] || '未采集'
+}
+
+function collectionSupportLabel(value: DeviceListItem['collection_support']): string {
+  if (value?.supported) return '已支持'
+  if (value?.reason_code === 'UNSUPPORTED_DEVICE_TYPE') return '设备类型未适配'
+  if (value?.reason_code === 'UNSUPPORTED_COMMAND_PROFILE') return '命令模板未适配'
+  return '暂未适配'
 }
 
 function projectPhaseLabel(value: ProjectPhase): string {
@@ -1903,7 +1913,7 @@ function errorMessage(cause: unknown, fallback: string): string {
       <el-select v-model="filters.device_type" clearable placeholder="全部类型" @change="loadDevices(true)">
         <el-option v-for="type in DEVICE_TYPE_OPTIONS" :key="type" :label="type" :value="type" />
       </el-select>
-      <el-select v-model="filters.vendor" clearable placeholder="全部厂商" @change="loadDevices(true)">
+      <el-select v-model="filters.vendor" clearable filterable allow-create default-first-option placeholder="全部厂商" @change="loadDevices(true)">
         <el-option v-for="vendor in DEVICE_VENDOR_OPTIONS" :key="vendor.value" :label="vendor.label" :value="vendor.value" />
       </el-select>
       <el-select v-model="filters.project_phase" placeholder="建设阶段" @change="loadDevices(true)">
@@ -2129,7 +2139,7 @@ function errorMessage(cause: unknown, fallback: string): string {
             <el-form-item label="设备名称 *"><el-input v-model="writeForm.name" data-testid="device-name" /></el-form-item>
             <el-form-item label="系统名"><el-input v-model="writeForm.system_name" /></el-form-item>
             <el-form-item label="分组"><el-select v-model="writeForm.group_id" clearable style="width:100%"><el-option v-for="group in pageData.groups" :key="group.id" :label="group.name" :value="group.id" /></el-select></el-form-item>
-            <el-form-item label="厂商"><el-select v-model="writeForm.device_vendor" style="width:100%"><el-option v-for="vendor in DEVICE_VENDOR_OPTIONS" :key="vendor.value" :label="vendor.label" :value="vendor.value" /></el-select></el-form-item>
+            <el-form-item label="厂商"><el-select v-model="writeForm.device_vendor" filterable allow-create default-first-option style="width:100%"><el-option v-for="vendor in DEVICE_VENDOR_OPTIONS" :key="vendor.value" :label="vendor.label" :value="vendor.value" /></el-select></el-form-item>
             <el-form-item label="类型"><el-select v-model="writeForm.device_type" style="width:100%"><el-option v-for="type in DEVICE_TYPE_OPTIONS" :key="type" :label="type" :value="type" /></el-select></el-form-item>
             <el-form-item label="建设阶段"><el-select v-model="writeForm.project_phase" style="width:100%"><el-option label="一期" value="phase_1" /><el-option label="二期" value="phase_2" /><el-option label="三期" value="phase_3" /><el-option label="其他" value="other" /><el-option label="未指定" value="unspecified" /></el-select></el-form-item>
             <el-form-item label="当前工作状态"><el-select v-model="writeForm.work_scope_status" style="width:100%"><el-option label="参与当前调试" value="included" /><el-option label="暂不参与" value="excluded" /></el-select></el-form-item>
@@ -2234,8 +2244,9 @@ function errorMessage(cause: unknown, fallback: string): string {
           <el-descriptions-item label="总行数">{{ importPreview.total_rows }}</el-descriptions-item>
           <el-descriptions-item label="有效">{{ importPreview.valid_rows }}</el-descriptions-item>
           <el-descriptions-item label="无效">{{ importPreview.invalid_rows }}</el-descriptions-item>
-          <el-descriptions-item label="新华三 H3C">{{ importPreview.vendor_summary.H3C || 0 }}</el-descriptions-item>
-          <el-descriptions-item label="中兴 ZTE">{{ importPreview.vendor_summary.ZTE || 0 }}</el-descriptions-item>
+          <el-descriptions-item v-for="(count, vendor) in importPreview.vendor_summary" :key="vendor" :label="`厂商：${vendor}`">{{ count }}</el-descriptions-item>
+          <el-descriptions-item label="可采集设备">{{ importPreview.collection_supported_rows }}</el-descriptions-item>
+          <el-descriptions-item label="暂未适配采集">{{ importPreview.collection_unsupported_rows }}</el-descriptions-item>
           <el-descriptions-item label="新增">{{ importPreview.create_count }}</el-descriptions-item>
           <el-descriptions-item label="更新">{{ importPreview.update_count }}</el-descriptions-item>
           <el-descriptions-item label="无变化">{{ importPreview.unchanged_count }}</el-descriptions-item>

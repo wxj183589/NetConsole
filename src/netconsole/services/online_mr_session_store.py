@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import uuid
 from datetime import datetime
 from pathlib import Path
 from threading import RLock
@@ -140,6 +141,7 @@ class OnlineMrSession:
         self.meta = meta
         self.db_path = session_dir / "parsed" / "online_diagnosis.sqlite"
         self._meta_lock = RLock()
+        self._snapshot_lock = RLock()
 
     def initialize_database(self) -> None:
         with self._connect() as conn:
@@ -383,17 +385,18 @@ class OnlineMrSession:
         if name not in {"live_fping_status", "live_iperf_status"}:
             raise ValueError("unsupported Online MR view snapshot")
         path = self.session_dir / "view" / f"{name}.json"
-        temporary = path.with_suffix(".json.tmp")
         path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            temporary.write_text(
-                json.dumps(payload, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-            temporary.replace(path)
-        finally:
-            if temporary.exists():
-                temporary.unlink()
+        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        with self._snapshot_lock:
+            try:
+                temporary.write_text(
+                    json.dumps(payload, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                temporary.replace(path)
+            finally:
+                if temporary.exists():
+                    temporary.unlink()
         return path
 
     def update_config_collect(

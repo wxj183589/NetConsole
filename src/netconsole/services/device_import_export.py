@@ -10,7 +10,8 @@ from typing import Callable, Iterable
 from netconsole.models.device import (
     Device,
     legacy_operation_status_to_work_scope_status,
-    normalize_device_vendor,
+    normalize_device_vendor_text,
+    normalize_device_vendor_key,
     normalize_project_phase,
     normalize_work_scope_status,
     validate_device_vendor_type,
@@ -216,6 +217,8 @@ class ImportPreviewResult:
     not_found_count: int = 0
     row_results: tuple[ImportPreviewRowResult, ...] = ()
     has_hard_errors: bool = False
+    collection_supported_rows: int = 0
+    collection_unsupported_rows: int = 0
 
 
 class DeviceImportExportService:
@@ -419,13 +422,15 @@ class DeviceImportExportService:
         vendor_summary: dict[str, int] = {}
         device_type_summary: dict[str, int] = {}
         valid_rows = 0
+        collection_supported_rows = 0
+        collection_unsupported_rows = 0
 
         for line, values in source_rows:
             mapped = self._map_row(list(columns), values, mode)
             device_name = str(mapped.get("name") or "")
             vendor_raw = str(mapped.get("device_vendor") or "H3C").strip()
             try:
-                summarized_vendor = normalize_device_vendor(vendor_raw)
+                summarized_vendor = normalize_device_vendor_text(vendor_raw)
             except ValueError:
                 summarized_vendor = ""
             summarized_type = str(mapped.get("device_type") or "SW").strip()
@@ -453,6 +458,15 @@ class DeviceImportExportService:
                 errors.append(error)
                 continue
             valid_rows += 1
+            vendor_key = normalize_device_vendor_key(mapped.get("device_vendor"))
+            device_type = str(mapped.get("device_type") or "SW").strip()
+            supported = (
+                vendor_key == "h3c" and device_type in {"SW", "AC", "MR"}
+            ) or (vendor_key == "zte" and device_type == "SW")
+            if supported:
+                collection_supported_rows += 1
+            else:
+                collection_unsupported_rows += 1
             address = str(mapped.get("normalized_primary_address") or "")
             if address in existing_addresses:
                 duplicate_rows.append(line)
@@ -471,6 +485,8 @@ class DeviceImportExportService:
             columns=columns,
             duplicate_rows=tuple(duplicate_rows),
             detected_encoding=detected_encoding,
+            collection_supported_rows=collection_supported_rows,
+            collection_unsupported_rows=collection_unsupported_rows,
         )
 
     def _preview_row_error(
@@ -506,7 +522,7 @@ class DeviceImportExportService:
             )
         vendor_raw = str(payload.get("device_vendor") or "H3C").strip()
         try:
-            vendor = normalize_device_vendor(vendor_raw)
+            vendor = normalize_device_vendor_text(vendor_raw)
         except ValueError as exc:
             return ImportPreviewError(
                 line, device_name, "厂商", vendor_raw, str(exc)

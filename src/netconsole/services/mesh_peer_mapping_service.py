@@ -145,7 +145,9 @@ def _mapping_from_match(
         "peer_radio_label": f"radio{radio_id}" if radio_id else "",
         "peer_radio_mac": peer_radio_mac,
         "peer_site": match.station,
+        "station_source": match.station_source,
         "peer_section": match.section,
+        "section_source": match.section_source,
         "belong_type": match.belong_type,
         "belonging_source": match.matched_source,
         "peer_serial_number": match.serial_number,
@@ -164,6 +166,7 @@ def _mapping_from_match(
         "ac_ap_mac": match.ac_ap_mac,
         "base_ap_mac": match.base_ap_mac,
         "data_quality_warning": match.data_quality_warning,
+        "topology_warning": match.topology_warning,
     }
 
 
@@ -181,7 +184,9 @@ def _unresolved(
         "peer_radio_label": "",
         "peer_radio_mac": peer_mac,
         "peer_site": "",
+        "station_source": "unresolved",
         "peer_section": "",
+        "section_source": "unresolved",
         "belong_type": "unknown",
         "belonging_source": "",
         "peer_serial_number": "",
@@ -194,4 +199,5 @@ def _unresolved(
         "identity_status": status,
         "identity_source": "",
         "identity_reason": reason,
+        "topology_warning": "",
     }

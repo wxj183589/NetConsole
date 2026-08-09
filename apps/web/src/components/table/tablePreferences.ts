@@ -54,6 +54,7 @@ const BRIDGE_TABLE_KEYS: Record<string, UiPreferenceKey> = {
 }
 
 const PREVIOUS_TABLE_IDS: Record<string, string> = {
+  'ground-syslog:v2': 'ground-syslog',
   'mesh-analysis-link-details:v3': 'mesh-analysis-link-details:v2',
   'mesh-analysis-switch-events:v3': 'mesh-analysis-switch-events:v2',
 }
@@ -75,6 +76,13 @@ export const MESH_LINK_DETAILS_V2_DEFAULT_ORDER = Object.freeze([
 ])
 
 const V2_DEFAULT_ORDERS: Record<string, readonly string[]> = {
+  'ground-syslog:v2': [
+    'selection', 'receive_time', 'device_time', 'train_no', 'mr_name', 'mr_role', 'source_ip', 'system_name',
+    'facility', 'severity', 'event_family', 'event_type', 'interface_name', 'physical_state', 'cfg_event_index',
+    'cfg_command_source', 'correlation_confidence', 'correlation_delta_ms', 'composite_event_type', 'peer_name',
+    'peer_mac', 'previous_peer_name', 'rssi', 'reason_text', 'data_source', 'identity_status', 'resolution_status',
+    'clock_offset_ms', 'raw_file_status', 'raw_text', 'actions',
+  ],
   'mesh-analysis-link-details:v3': MESH_LINK_DETAILS_V2_DEFAULT_ORDER,
   'mesh-analysis-switch-events:v3': [
     'timestamp', 'event_type', 'from_ap_name', 'to_ap_name', 'rssi_change', 'duration_ms', 'is_short_link', 'is_pingpong', 'station',

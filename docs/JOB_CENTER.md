@@ -30,7 +30,15 @@ Job Center 是普通后台任务的统一调度层；Export Process 是共享同
 - `repositories/online_mr_task_session_repository.py`：复用同一局点 `tasks.db` 保存 Online MR Controller Task 与 Session 的最小映射，不保存连接配置或凭据。
 - 历史 `src/netconsole/ui/job_process_manager.py` 已删除；其状态、取消和事件职责分别由永久 Service/Runtime/Adapter 承担，旧路径只在最终迁移矩阵中追溯。
 - `local_process_adapter.py`：纯 Python Worker 进程宿主，复用同一 `TaskApplicationService/TaskRuntime`，供非 Qt 应用层启动本地 Job；stdout/stderr 使用可用字节增量读取，不能等到 64 KiB 缓冲区填满或进程退出后才发布 JSONL 事件。Windows 下使用 Job Object 回收子进程树，并通过完成回调同步外部业务 Run 终态。`force_stop_job()` 只在业务层有界协作停止失败后立即 terminate/kill 进程树，不替代普通取消。
-- `handlers/`：AC、配置、设备、文件、Mesh、网络、在线 MR、轨道交通、Traffic 领域分区；网络工具无线扫描的既有任务由独立兼容 handler 承接。
+- `handlers/`：AC、配置、数据库升级、设备、文件、Mesh、网络、在线 MR、轨道交通、Traffic 领域分区；网络工具无线扫描的既有任务由独立兼容 handler 承接。
+
+### 数据库升级任务
+
+数据库维护统一使用 `database_upgrade`、`database_backup_validation`、`database_backup_restore`、`legacy_database_archive_migration` 和 `database_backup_delete`。Worker 只接收 `database_kind/scope/profile/backup_id` 等语义标识，不接收 Renderer 路径、SQLite connection 或 Repository。第一阶段 `database_upgrade` 仅允许 `mesh_derived`；其他数据库必须先实现独立 Adapter，不能借通用 handler 直接删除重建。
+
+升级和恢复任务通过 `resource_keys` 与当前局点的 `mesh-import:<site>` 冲突控制联动，并在 Worker 内再获取数据库范围的跨进程维护锁。进度阶段固定覆盖维护锁、暂停写入、WAL checkpoint、已验证旧库备份、影子构建、影子校验、原子切换、smoke 和完成。任务 `COMPLETED` 只表示维护流程正常收口；缺失 raw 等可恢复问题通过结构化 warning/result 字段表达。
+
+备份删除在提交后不可取消，避免目录处于部分删除状态；验证、恢复和删除同时持有备份级锁。恢复和删除必须由 GUI 二次确认，恢复前先为当前活动库创建新的安全备份，删除还要拒绝非终态 journal 正在引用的备份。历史归档整理与 MESH 导入互斥，避免把正在切换中的 `rollback` 文件误识别为历史文件。所有操作写入 `runtime/logs/database_upgrade_audit.jsonl`，任务中心清理不会删除数据库备份或升级 journal。
 
 文件管理下载仍以 `tasks.db` 为状态 SSOT。文件页面恢复时由 `TaskRepository` 在 SQL 层按
 `file_management_download + web_file_management + local + site/status` 组合过滤，活动任务优先；本批任务

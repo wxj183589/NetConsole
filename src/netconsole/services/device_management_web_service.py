@@ -105,6 +105,7 @@ from netconsole.services.device_import_export import (
     make_device_export_filename,
     make_device_template_filename,
 )
+from netconsole.services.device_collection_support import resolve_device_collection_support
 from netconsole.services.device_connection_preflight import (
     DeviceConnectionPreflightError,
     credential_status_message,
@@ -840,11 +841,26 @@ class DeviceManagementWebService:
                 "profile_id": "",
                 "profile_version": None,
                 "submission_status": "REJECTED",
+                "status": "REJECTED",
                 "task_id": "",
                 "task_status": "",
                 "message": "",
             }
             try:
+                support = resolve_device_collection_support(
+                    device, operation_id, paths=self.paths
+                ) if device is not None else None
+                if support is not None and not support.supported:
+                    base.update(
+                        {
+                            "submission_status": "SKIPPED",
+                            "status": "SKIPPED",
+                            "reason_code": support.reason_code or "UNSUPPORTED_VENDOR",
+                            "message": support.reason_message or "当前设备暂未适配采集命令，本次已跳过。",
+                        }
+                    )
+                    batch_items.append(base)
+                    continue
                 task = self.device_operation_service.start(
                     device_uuid,
                     operation_id,
@@ -860,6 +876,7 @@ class DeviceManagementWebService:
                         "task_id": task.task_id,
                         "task_status": task.status,
                         "message": task.message or "",
+                        "reason_code": task.reason_code or "",
                     }
                 )
             except Exception as exc:
@@ -902,6 +919,7 @@ class DeviceManagementWebService:
             ),
             reused=sum(1 for item in items if item.submission_status == "REUSED"),
             rejected=sum(1 for item in items if item.status == "REJECTED"),
+            skipped=sum(1 for item in items if item.status == "SKIPPED"),
             running=sum(
                 1 for item in items if item.status in {"ACCEPTED", "REUSED", "RUNNING"}
             ),
@@ -983,16 +1001,19 @@ class DeviceManagementWebService:
         submission_status = str(stored.get("submission_status") or "REJECTED")
         task_id = str(stored.get("task_id") or "")
         error_message = sanitize_sensitive_text(str(stored.get("message") or ""))
-        if submission_status == "REJECTED" or not task_id:
+        if submission_status in {"REJECTED", "SKIPPED"} or not task_id:
             return DeviceBatchRefreshItemDTO(
                 device_uuid=str(stored.get("device_uuid") or ""),
                 device_name=str(stored.get("device_name") or ""),
                 primary_address=str(stored.get("primary_address") or ""),
                 vendor=str(stored.get("vendor") or ""),
                 device_type=str(stored.get("device_type") or ""),
-                submission_status="REJECTED",
-                status="REJECTED",
+                submission_status=(
+                    "SKIPPED" if submission_status == "SKIPPED" else "REJECTED"
+                ),
+                status="SKIPPED" if submission_status == "SKIPPED" else "REJECTED",
                 error_message=error_message,
+                reason_code=str(stored.get("reason_code") or ""),
             )
         snapshot = task_repository.get(task_id)
         if snapshot is None:
@@ -1012,6 +1033,7 @@ class DeviceManagementWebService:
                 status="FAILED",
                 task_status="FAILED",
                 error_message="任务状态不存在",
+                reason_code=str(stored.get("reason_code") or ""),
             )
         summary_results = list(snapshot.result.get("results") or [])
         result = next(
@@ -1084,6 +1106,7 @@ class DeviceManagementWebService:
                 or ""
             ),
             error_message=safe_error,
+            reason_code=str(result.get("reason_code") or stored.get("reason_code") or ""),
         )
 
     def start_optical_refresh(self, device_uuid: str) -> DeviceTaskReferenceDTO:
@@ -1128,6 +1151,8 @@ class DeviceManagementWebService:
         create_count = 0
         update_count = 0
         conflict_count = 0
+        collection_supported_rows = 0
+        collection_unsupported_rows = 0
         unchanged_count = 0
         not_found_count = 0
         row_results: list[DeviceImportRowResultDTO] = []
@@ -1151,6 +1176,8 @@ class DeviceManagementWebService:
             create_count = preview.create_count
             update_count = preview.update_count
             conflict_count = preview.conflict_count
+            collection_supported_rows = preview.collection_supported_rows
+            collection_unsupported_rows = preview.collection_unsupported_rows
             unchanged_count = preview.unchanged_count
             not_found_count = preview.not_found_count
             has_hard_errors = preview.has_hard_errors
@@ -1219,6 +1246,8 @@ class DeviceManagementWebService:
                 "valid_rows": valid_rows,
                 "invalid_rows": invalid_rows,
                 "vendor_summary": vendor_summary,
+                "collection_supported_rows": collection_supported_rows,
+                "collection_unsupported_rows": collection_unsupported_rows,
                 "device_type_summary": device_type_summary,
                 "create_count": create_count,
                 "update_count": update_count,
@@ -1240,6 +1269,8 @@ class DeviceManagementWebService:
             total_rows=total_rows,
             valid_rows=valid_rows,
             invalid_rows=invalid_rows,
+            collection_supported_rows=collection_supported_rows,
+            collection_unsupported_rows=collection_unsupported_rows,
             vendor_summary=vendor_summary,
             device_type_summary=device_type_summary,
             create_count=create_count,
@@ -3571,6 +3602,9 @@ class DeviceManagementWebService:
         station_display_names: dict[str, str] | None = None,
     ) -> DeviceListItemDTO:
         collect_status = self._last_collect_status(latest_collect, fact)
+        collection_support = resolve_device_collection_support(
+            device, "device.inventory.collect", paths=self.paths
+        )
         station_id = str(getattr(device, "station_id", "") or "").strip()
         return DeviceListItemDTO(
             id=int(device.id or 0),
@@ -3587,6 +3621,14 @@ class DeviceManagementWebService:
             if device.group_id is not None
             else "未分组",
             device_vendor=str(device.device_vendor or ""),
+            vendor_key=device.vendor_key,
+            collection_support={
+                "supported": collection_support.supported,
+                "driver_key": collection_support.driver_key,
+                "vendor_key": collection_support.vendor_key,
+                "reason_code": collection_support.reason_code,
+                "reason_message": collection_support.reason_message,
+            },
             device_type=str(device.device_type or ""),
             project_phase=str(device.project_phase or "unspecified"),
             work_scope_status=str(device.work_scope_status or "included"),

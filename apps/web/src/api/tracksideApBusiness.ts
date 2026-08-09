@@ -42,7 +42,6 @@ export function startTracksideApBusinessExport(
         expected_revision: request.expected_revision,
         station: request.station,
         query: request.query,
-        optical_anomaly_only: request.optical_anomaly_only,
         selected_row_ids: request.selected_row_ids,
       }
     : undefined

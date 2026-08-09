@@ -835,7 +835,7 @@ describe('DeviceManagementView mounted interactions', () => {
       created_at: '2026-07-28T00:00:00Z',
       finished_at: '2026-07-28T00:00:01Z',
       terminal: true,
-      summary: { total: 1, accepted: 1, reused: 0, rejected: 0, running: 0, completed: 1, partial_success: 0, failed: 0, cancelled: 0 },
+      summary: { total: 1, accepted: 1, reused: 0, rejected: 0, skipped: 0, running: 0, completed: 1, partial_success: 0, failed: 0, cancelled: 0 },
       items: [{ device_uuid: 'device-1', device_name: 'MR2', primary_address: '192.0.2.12', vendor: 'H3C', device_type: 'AC', profile_id: 'h3c', profile_version: 1, submission_status: 'ACCEPTED', status: 'COMPLETED', task_id: 'task-batch-1', task_status: 'COMPLETED', collect_run_uuid: 'run-1', facts_updated: true, interfaces_updated: 2, optical_modules_updated: 1, lldp_neighbors_updated: 0, started_at: '', finished_at: '', last_collected_at: '2026-07-28T00:00:01Z', error_message: '' }],
     })
     const secondRow = { ...listItem, device_uuid: 'device-2', name: 'MR3' }
@@ -874,7 +874,7 @@ describe('DeviceManagementView mounted interactions', () => {
     await flushPromises()
 
     expect(mocks.getBatchRefresh).toHaveBeenCalledWith('batch-1')
-    expect(mocks.messages.success).toHaveBeenCalledWith('批量更新完成：成功 1，部分成功 0，失败 0，取消 0，拒绝 0')
+    expect(mocks.messages.success).toHaveBeenCalledWith('批量更新完成：成功 1，部分成功 0，失败 0，跳过 0，取消 0')
     expect(mocks.messages.success).toHaveBeenCalledTimes(1)
     const batchNotification = notificationOptions('批量更新详情已结束')
     expect(batchNotification.message.props?.['data-description']).toContain('批量更新完成')
@@ -897,7 +897,7 @@ describe('DeviceManagementView mounted interactions', () => {
       created_at: '2026-07-28T00:00:00Z',
       finished_at: '',
       terminal: false,
-      summary: { total: 1, accepted: 1, reused: 0, rejected: 0, running: 1, completed: 0, partial_success: 0, failed: 0, cancelled: 0 },
+      summary: { total: 1, accepted: 1, reused: 0, rejected: 0, skipped: 0, running: 1, completed: 0, partial_success: 0, failed: 0, cancelled: 0 },
       items: [{ device_uuid: 'device-1', device_name: 'MR2', primary_address: '192.0.2.12', vendor: 'H3C', device_type: 'AC', profile_id: 'h3c', profile_version: 1, submission_status: 'ACCEPTED', status: 'ACCEPTED', task_id: 'task-batch-1', task_status: 'PENDING', collect_run_uuid: '', facts_updated: false, interfaces_updated: 0, optical_modules_updated: 0, lldp_neighbors_updated: 0, started_at: '', finished_at: '', last_collected_at: '', error_message: '' }],
     })
     const wrapper = await renderView()

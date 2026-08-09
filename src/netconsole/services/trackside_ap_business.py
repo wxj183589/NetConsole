@@ -1089,7 +1089,7 @@ def build_trackside_ap_business_rows(
                 current_interface,
                 optical,
             )
-            if str(device.device_vendor or "").strip().casefold() == "zte":
+            if device.vendor_key == "zte":
                 optical = normalize_zte_optical_record(optical)
                 switch_result = compute_zte_optical_severity(optical)
             else:
@@ -1193,7 +1193,7 @@ def build_trackside_ap_business_rows(
                     capability_statuses.get("lldp")
                     == CommandCapabilityState.SAMPLE_REQUIRED.value
                     or (
-                        str(device.device_vendor or "").strip().casefold()
+                        device.vendor_key
                         == "zte"
                         and not lldp_snapshot_present
                     )

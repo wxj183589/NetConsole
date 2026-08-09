@@ -224,6 +224,28 @@ describe('table preferences', () => {
       .toEqual(customOrder)
   })
 
+  it('moves the unchanged Ground Syslog layout to the v2 default order', () => {
+    const previous = {
+      version: 1 as const,
+      order: [
+        'selection', 'receive_time', 'device_time', 'train_no', 'mr_name', 'mr_role', 'source_ip', 'system_name',
+        'facility', 'severity', 'event_family', 'event_type', 'interface_name', 'physical_state', 'cfg_event_index',
+        'cfg_command_source', 'correlation_confidence', 'correlation_delta_ms', 'composite_event_type', 'peer_name',
+        'peer_mac', 'previous_peer_name', 'rssi', 'reason_text', 'data_source', 'identity_status', 'resolution_status',
+        'clock_offset_ms', 'raw_file_status', 'raw_text', 'actions',
+      ],
+      columns: [],
+    }
+
+    const migrated = migrateVersionedPreference({
+      routeKey: 'rail-ground-unattended',
+      tableId: 'ground-syslog:v2',
+      language: 'zh-CN',
+    }, previous)
+
+    expect(migrated.order).toEqual([])
+  })
+
   it('hydrates the v3 Electron key from the v2 bridge preference', async () => {
     const oldValue: NcTablePreferences = {
       version: 1,

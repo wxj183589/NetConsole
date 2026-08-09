@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-import logging
 import json
+import logging
 import shutil
+import sqlite3
 import threading
+import time
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
@@ -11,6 +13,7 @@ from datetime import datetime
 from typing import Any, Callable
 
 from netconsole.core.database import Database
+from netconsole.core.log_policy import LOG_POLICY
 from netconsole.core.paths import PathResolver
 from netconsole.models.api.ground_unattended import GroundUnattendedProfileDTO
 from netconsole.repositories.ground_unattended_repository import (
@@ -106,7 +109,6 @@ class GroundUnattendedSupervisor:
         self.ac_resident_service = ac_resident_service
         self.now_provider = now_provider or (lambda: datetime.now().astimezone())
         self.tick_seconds = max(0.05, float(tick_seconds))
-        self.classifier = GroundUnattendedEligibilityClassifier()
         self.fleet_ping = FleetPingSupervisor(repository=repository, site_id=site_id)
         self.deep_scheduler = (
             DeepMrCollectionScheduler(
@@ -137,6 +139,13 @@ class GroundUnattendedSupervisor:
             ap_identity_query_service
             or ApIdentityQueryService(Database(paths.site_db_path(site_id)))
         )
+        try:
+            self.ap_identity_query_service.ensure_index("ground_unattended_startup")
+        except (sqlite3.Error, OSError, RuntimeError) as exc:
+            LOGGER.warning("Ground AP Identity 索引暂不可用，按未解析状态继续启动: %s", exc)
+        self.classifier = GroundUnattendedEligibilityClassifier(
+            self.ap_identity_query_service
+        )
         self.syslog_receiver = SyslogUdpReceiver(
             repository=repository,
             site_id=site_id,
@@ -166,6 +175,10 @@ class GroundUnattendedSupervisor:
         self._archive_delete_requests: list[str] = []
         self._last_profile_network_error = ""
         self._last_processed_snapshot_id_by_controller: dict[str, int] = {}
+        self._tick_error_fingerprint = ""
+        self._tick_error_last_at = 0.0
+        self._tick_error_summary_at = 0.0
+        self._tick_error_count = 0
 
     def start(self) -> None:
         with self._lock:
@@ -244,8 +257,12 @@ class GroundUnattendedSupervisor:
             while not self._stop_event.is_set():
                 try:
                     self._tick()
+                    self._record_tick_recovery()
                 except Exception as exc:
-                    LOGGER.exception("地面无人值守调度周期失败：site=%s", self.site_id)
+                    if not self._record_tick_failure(exc):
+                        self._wake_event.wait(self.tick_seconds)
+                        self._wake_event.clear()
+                        continue
                     run = self.repository.get_active_run()
                     self.repository.add_event(
                         run_id=str((run or {}).get("run_id") or ""),
@@ -265,6 +282,49 @@ class GroundUnattendedSupervisor:
                 self._wake_event.clear()
         finally:
             self._shutdown_active_run()
+
+    def _record_tick_failure(self, exc: Exception) -> bool:
+        now = time.monotonic()
+        fingerprint = f"{exc.__class__.__name__}:{_normalize_error(str(exc))}"
+        same_incident = (
+            fingerprint == self._tick_error_fingerprint
+            and now - self._tick_error_last_at
+            <= LOG_POLICY.duplicate_suppression.window_seconds
+        )
+        self._tick_error_last_at = now
+        if not same_incident:
+            self._tick_error_fingerprint = fingerprint
+            self._tick_error_summary_at = now
+            self._tick_error_count = 0
+            LOGGER.exception("地面无人值守调度周期失败：site=%s", self.site_id)
+            return True
+        self._tick_error_count += 1
+        if now - self._tick_error_summary_at < LOG_POLICY.duplicate_suppression.summary_interval_seconds:
+            return False
+        window_seconds = int(max(0.0, now - self._tick_error_summary_at))
+        self._tick_error_summary_at = now
+        repeated = self._tick_error_count
+        self._tick_error_count = 0
+        LOGGER.warning(
+            "地面无人值守调度周期失败重复：site=%s repeated=%s window_seconds=%s error=%s",
+            self.site_id,
+            repeated,
+            window_seconds,
+            exc.__class__.__name__,
+        )
+        return True
+
+    def _record_tick_recovery(self) -> None:
+        if not self._tick_error_fingerprint:
+            return
+        downtime = max(0.0, time.monotonic() - self._tick_error_last_at)
+        LOGGER.info(
+            "地面无人值守调度周期已恢复：site=%s downtime_seconds=%.1f",
+            self.site_id,
+            downtime,
+        )
+        self._tick_error_fingerprint = ""
+        self._tick_error_count = 0
 
     def _recover_on_start(self) -> None:
         run = self.repository.get_active_run()
@@ -1070,6 +1130,7 @@ class GroundUnattendedSupervisor:
             "STORAGE_TRACK",
             "NON_MAIN_PATH",
             "DEPOT_CONNECTION",
+            "LOCATION_UNDETERMINED",
             "MAINLINE_STATIONARY",
         }:
             return "EXCLUDED"
@@ -1791,6 +1852,10 @@ class GroundUnattendedSupervisor:
                 tzinfo=resolve_timezone(self.repository.get_profile().timezone)
             )
         return value
+
+
+def _normalize_error(value: str) -> str:
+    return " ".join(value.split())[:256]
 
 
 __all__ = ["GroundUnattendedSupervisor"]

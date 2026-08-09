@@ -442,12 +442,15 @@ class OnlineMrApplicationService:
         result = dict(event.get("result") or payload.get("result") or {})
         result_warnings = [str(item) for item in list(result.get("warnings") or []) if str(item)]
         cancelled_with_session = event_type == "cancelled" and bool(mapping.session_id)
-        forced = bool(mapping.force_stopped or cancelled_with_session)
+        # A bare cancellation event without an explicit stop request means the
+        # worker disappeared before finalization; an acknowledged user stop is
+        # already marked with stop_reason and remains a normal STOPPED result.
+        forced = bool(mapping.force_stopped or (cancelled_with_session and not mapping.stop_reason))
         terminal_summary = (
             error_message
             if event_type == "error"
             else "Worker 在完成最终化前退出，原始会话目录已保留"
-            if cancelled_with_session
+            if cancelled_with_session and forced
             else "; ".join(result_warnings) or mapping.error_summary
         )
         self.finalize_operation(
@@ -466,7 +469,7 @@ class OnlineMrApplicationService:
             force_stopped=forced,
             error_summary=terminal_summary,
             error_code=error_code,
-            finalization_complete=False if cancelled_with_session else None,
+            finalization_complete=False if cancelled_with_session and forced else None,
             mapping_state=state,
         )
 

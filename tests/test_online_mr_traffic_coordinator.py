@@ -67,6 +67,22 @@ class _FakeIperfRunner:
         self.stop_event.set()
 
 
+class _FakeFailingClientIperfRunner(_FakeIperfRunner):
+    def __init__(self, _tool, _command, log_file, **kwargs) -> None:
+        super().__init__(_tool, _command, log_file, **kwargs)
+        self.mode = kwargs.get("mode", "client")
+
+    def start(self) -> None:
+        self.log_file.parent.mkdir(parents=True, exist_ok=True)
+        if self.mode == "server":
+            self.last_status = "RUNNING"
+            self.stop_event.wait(2)
+            self.last_status = "STOPPED_BY_COLLECTION" if self.stop_event.is_set() else "RUNNING"
+            return
+        self.last_status = "FAILED:1"
+        self.log_file.write_text("client failed\n", encoding="utf-8")
+
+
 def test_traffic_coordinator_stops_and_flushes_fping_and_iperf(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -196,3 +212,61 @@ def test_loopback_iperf_starts_and_stops_managed_server(tmp_path: Path, monkeypa
     assert view["server_ip"] == "127.0.0.1"
     assert view["protocol"] == "TCP"
     assert view["target_bandwidth"] == "2M"
+
+
+def test_failed_client_does_not_stop_managed_server_until_session_stop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = _config()
+    config.fping = FpingConfig(enabled=False)
+    config.iperf = IperfTrafficConfig(enabled=True, server_ip="127.0.0.1", follow_collection=True)
+    paths = PathResolver(tmp_path)
+    session = OnlineMrSessionStore(paths).create_session(config)
+    tool = tmp_path / "iperf3.exe"
+    tool.touch()
+    _FakeFailingClientIperfRunner.instances.clear()
+    listener_checks = iter([False, True])
+    monkeypatch.setattr("netconsole.services.online_mr.traffic_coordinator.find_iperf_tool", lambda _paths: tool)
+    monkeypatch.setattr("netconsole.services.online_mr.traffic_coordinator.IperfProcessRunner", _FakeFailingClientIperfRunner)
+    monkeypatch.setattr(OnlineMrTrafficCoordinator, "_is_tcp_listener", staticmethod(lambda _host, _port: next(listener_checks, True)))
+
+    coordinator = OnlineMrTrafficCoordinator(paths)
+    coordinator.start_for_session(session, config)
+    time.sleep(0.05)
+    assert coordinator.get_traffic_summary(session.meta.session_id)["iperf"]["status"] == "failed:1"
+    assert coordinator.get_traffic_summary(session.meta.session_id)["iperf"]["server_status"] == "running"
+    assert coordinator.get_traffic_summary(session.meta.session_id)["iperf"]["server_ownership"] == "managed"
+    assert _FakeFailingClientIperfRunner.instances[0].last_status == "RUNNING"
+
+    coordinator.stop_traffic_for_session(session.meta.session_id)
+    coordinator.flush_traffic_outputs(session.meta.session_id, timeout_seconds=2)
+    assert _FakeFailingClientIperfRunner.instances[0].last_status == "STOPPED_BY_COLLECTION"
+
+
+def test_non_iperf_listener_is_reported_as_port_conflict(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = _config()
+    config.fping = FpingConfig(enabled=False)
+    config.iperf = IperfTrafficConfig(enabled=True, server_ip="127.0.0.1", follow_collection=True)
+    paths = PathResolver(tmp_path)
+    session = OnlineMrSessionStore(paths).create_session(config)
+    tool = tmp_path / "iperf3.exe"
+    tool.touch()
+    monkeypatch.setattr("netconsole.services.online_mr.traffic_coordinator.find_iperf_tool", lambda _paths: tool)
+    monkeypatch.setattr(OnlineMrTrafficCoordinator, "_is_tcp_listener", staticmethod(lambda _host, _port: True))
+    monkeypatch.setattr(OnlineMrTrafficCoordinator, "_listener_metadata", staticmethod(lambda _host, _port: {
+        "listener_pid": 4321,
+        "listener_process_name": "other.exe",
+        "listener_executable": "C:/other.exe",
+        "listener_command_line": "other.exe --listen",
+        "listener_owner": "external",
+        "listener_started_at": "2026-08-10 10:00:00",
+    }))
+    monkeypatch.setattr(OnlineMrTrafficCoordinator, "_verify_external_iperf_server", staticmethod(lambda _tool, _port: False))
+
+    coordinator = OnlineMrTrafficCoordinator(paths)
+    coordinator.start_for_session(session, config)
+    view = json.loads((session.session_dir / "view" / "live_iperf_status.json").read_text(encoding="utf-8"))
+
+    assert view["server_status"] == "port_conflict"
+    assert view["server_ownership"] == "port_conflict"
+    assert view["server_error_code"] == "IPERF_PORT_OCCUPIED_BY_NON_IPERF"
+    assert view["listener_pid"] == 4321
+    assert view["listener_process_name"] == "other.exe"

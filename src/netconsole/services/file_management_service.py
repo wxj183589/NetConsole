@@ -1756,6 +1756,7 @@ class FileManagementApplicationService:
                 try:
                     MeshDerivedDataMaintenanceService(context.paths).repair(
                         site,
+                        profile_ids=[profile.mr_id],
                         progress=lambda stage, current, total, message: context.progress(
                             stage,
                             current,

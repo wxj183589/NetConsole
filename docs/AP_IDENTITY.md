@@ -191,7 +191,9 @@ Radio/LLDP 历史、FIT-AP metadata、兼容 AP entity/光衰/轨旁缓存，以
 `source_revision=0` 是“当前来源 revision 合法为零”，不是缺失或过期。
 只有索引状态不存在/索引 revision 无效时返回 `identity_index_missing`，
 索引记录的来源 revision 与当前来源 revision 不等时返回
-`identity_index_stale`。来源写任务在独立短事务内构建并原子替换实体、
+`identity_index_stale`。索引 diagnostics 同时保存拓扑投影版本；版本低于
+当前 resolver 时返回 `identity_topology_projection_stale`，由 MESH 来源重建等
+受控写任务重建索引后再投影，普通 GET 不执行补写。来源写任务在独立短事务内构建并原子替换实体、
 alias、冲突和状态；构建失败保留旧索引，不在普通 GET 中执行重建、
 checkpoint 或其他补写。
 
@@ -216,13 +218,25 @@ MESH DTO、页面和导出必须同时保留原始 Peer、规范化 Peer Radio �
 名称、物理 AP MAC、站点、区间和里程保持空值，并携带状态、规则、
 来源、置信度和原因。
 
+Online MR 离线解析同样批量消费 `resolve_peer_macs()`：主链路和切换事件
+保留原始 Peer Radio MAC，并把有效 AP 名称、物理 AP MAC、站点和区间
+投影到 `parsed/online_diagnosis.sqlite`。本机 BSSID 不作为 Peer 缺失时的
+替代查询证据；空切换端点标记为 `empty`，不计入 `unresolved/invalid`。
+主链路信息、链路明细、切换历史和实时切换 DTO 只能读取这套投影，不得
+各自实现 MAC 推导或位置关联。
+
+LLDP 历史或当前事实可能记录同一 AP 连接过多台交换机。多台交换机均指向
+同一个非空 `station_id`/站点时，位置投影保留该站点并附加
+`topology_lldp_multiple_switches`；只有站点证据相互冲突时才按歧义处理，
+不得因为正常换机历史清空已确认站点。
+
 例如离线物理 AP `bc5a-3457-b5e0` 的合法 H3C Radio 2 alias
 `bc5a-3457-b5ff` 仍通过完整 MAC 等值解析。来源 revision 改变后继续复用
 现有 identity-only remap：更新 distinct Peer 的身份投影，不重新解析或
 修改 raw MESH 日志。
 
 未匹配原因按事实区分为 `invalid_peer_mac`、`identity_index_missing`、
-`identity_index_stale`、`exact_alias_not_collected`、
+`identity_index_stale`、`identity_topology_projection_stale`、`exact_alias_not_collected`、
 `exact_alias_not_found`、`duplicate_exact_alias`、
 `physical_ap_missing` 和 `station_topology_missing`，页面和报告不得把这些
 原因重新折叠成无法诊断的单一“未关联”。

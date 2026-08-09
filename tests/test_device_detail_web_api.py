@@ -31,6 +31,7 @@ def _client(
     *,
     device_type: str = "SW",
     device_name: str = "SW-API",
+    device_vendor: str = "H3C",
 ):
     project_root = Path(__file__).parents[1]
     paths = PathResolver(app_root=project_root, data_root=tmp_path / "runtime")
@@ -40,7 +41,7 @@ def _client(
         Device(
             name=device_name,
             primary_address="192.0.2.50",
-            device_vendor="H3C",
+            device_vendor=device_vendor,
             device_type=device_type,
             ssh_password="api-secret",
         )
@@ -250,6 +251,32 @@ def test_device_detail_lazy_api_contract_and_refresh(tmp_path: Path) -> None:
     )
     assert "api-secret" not in combined
     assert "C:\\private" not in combined
+
+
+def test_unsupported_vendor_refresh_is_skipped_without_submitting_a_job(
+    tmp_path: Path,
+) -> None:
+    client, _app, adapter, device = _client(
+        tmp_path,
+        device_vendor="华为",
+        device_name="Huawei-SW",
+    )
+    prefix = f"/api/device-management/devices/{device.device_uuid}"
+
+    overview = client.get(f"{prefix}/overview")
+    refreshed = client.post(
+        f"{prefix}/refresh",
+        json={"operation_id": "device.inventory.collect"},
+    )
+
+    assert overview.status_code == 200
+    assert overview.json()["command_profile"]["executable"] is False
+    assert "暂未适配采集命令" in overview.json()["command_profile"]["reason"]
+    assert refreshed.status_code == 202, refreshed.text
+    assert refreshed.json()["status"] == "SKIPPED"
+    assert refreshed.json()["reason_code"] == "UNSUPPORTED_VENDOR"
+    assert refreshed.json()["task_id"] == ""
+    assert len(adapter.jobs) == 0
 
 
 def test_wireless_controller_overview_and_refresh_api_use_comware_profile(

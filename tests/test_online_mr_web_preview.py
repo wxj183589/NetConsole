@@ -8,7 +8,100 @@ from fastapi.testclient import TestClient
 from netconsole.backend.api.main import create_app
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
+from netconsole.repositories.ac_repository import AcRepository
+from netconsole.services.ap_identity.query_service import ApIdentityQueryService
+from netconsole.services.online_mr.query_service import OnlineMrQueryService
 from support.online_mr_api import wire_online_mr_api_facade
+
+
+def test_preview_resolves_field_peer_to_physical_ap_and_station(tmp_path: Path) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    database = Database(paths.site_db_path("demo"))
+    database.initialize()
+    AcRepository(database).upsert_ap_extension_point(
+        {
+            "ap_name": "bc5a-3457-6d40",
+            "ap_point_code": "AP-FIELD",
+            "ap_vendor": "H3C",
+            "ap_mac_display": "bc5a-3457-6d40",
+            "station_name": "云龙车辆段",
+            "belong_type": "station",
+        }
+    )
+    identity = ApIdentityQueryService(database)
+    identity.rebuild_index("preview_field_peer")
+    service = OnlineMrQueryService(paths)
+    service._identity_services["demo"] = identity
+
+    link = service._apply_preview_identity(
+        "demo",
+        {
+            "peer_mac": "bc5a-3457-6d40",
+            "bssid": "78a1-3e52-52cf",
+            "station_id": "station:field",
+            "section_id": "section:field",
+            "display_context": {},
+        },
+    )
+
+    assert link["ap_mac"] == "bc5a-3457-6d40"
+    assert link["ap_name"] == "bc5a-3457-6d40"
+    assert link["station_name"] == "云龙车辆段"
+    assert link["station_id"] == "station:field"
+    assert link["section_id"] == "section:field"
+    assert link["identity_revision"] > 0
+    assert link["resolution_status"] == "partial"
+    assert link["resolution_reason"] == "SECTION_MAPPING_NOT_FOUND"
+    assert link["display_context"]["match_key"] == "derived_peer_radio_mac"
+
+
+def test_active_session_keeps_failed_iperf_process_truth(tmp_path: Path) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    Database(paths.site_db_path("demo")).initialize()
+    session = paths.online_mr_session_dir("demo", "MR-02", "session-iperf-failed")
+    for name in ("raw", "parsed", "view", "logs", "outputs"):
+        (session / name).mkdir(parents=True, exist_ok=True)
+    (session / "session_meta.json").write_text(
+        json.dumps(
+            {
+                "session_id": "session-iperf-failed",
+                "site": "demo",
+                "mr_name": "MR-02",
+                "status": "COLLECTING",
+                "iperf": {"enabled": True},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (session / "raw" / "iperf_client_raw.log").write_text("interval data\n", encoding="utf-8")
+    (session / "view" / "live_iperf_status.json").write_text(
+        json.dumps(
+            {
+                "status": "failed:1",
+                "client_status": "failed:1",
+                "server_status": "external_unmanaged",
+                "supervisor_status": "failed:1",
+                "alive": False,
+                "exit_code": 1,
+                "last_error": "connection reset by peer",
+                "last_data_at": "2026-08-09 23:21:40.000",
+                "bytes_written": 4096,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    app = create_app(paths=paths, frontend_dist=tmp_path / "missing-dist")
+    wire_online_mr_api_facade(app, paths)
+    rows = app.state.online_mr_query_service.list_collectors("demo", "session-iperf-failed")
+    iperf = next(row for row in rows if row.name == "iperf_client")
+
+    assert iperf.status == "failed:1"
+    assert iperf.health_status == "interrupted"
+    assert iperf.exit_code == 1
+    assert iperf.alive is False
+    assert iperf.last_error == "connection reset by peer"
+    assert iperf.server_status == "external_unmanaged"
 
 
 def test_preview_and_collectors_use_bounded_view_files(tmp_path: Path) -> None:

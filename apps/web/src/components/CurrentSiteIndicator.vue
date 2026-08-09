@@ -5,7 +5,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 import { getActiveSite, type SiteRecord } from '../api/siteStorage'
-import { getPlatformAdapter } from '../platform/runtime'
+import { onPlatformRuntimeStatusChanged } from '../platform/runtime'
 import { useWorkspaceStore } from '../stores/workspace'
 import { SITE_CONTEXT_CHANGED_EVENT } from '../workspace/site-switch'
 
@@ -13,7 +13,6 @@ type LoadState = 'loading' | 'ready' | 'error'
 
 const router = useRouter()
 const workspace = useWorkspaceStore()
-const runtime = getPlatformAdapter()
 const activeSite = ref<Pick<SiteRecord, 'site_id' | 'display_name'> | null>(null)
 const loadState = ref<LoadState>('loading')
 let loadSequence = 0
@@ -65,7 +64,7 @@ async function openSiteStorage(): Promise<void> {
 
 onMounted(() => {
   window.addEventListener(SITE_CONTEXT_CHANGED_EVENT, handleSiteContextChanged)
-  unsubscribe = runtime.onBackendStatusChanged((status) => {
+  unsubscribe = onPlatformRuntimeStatusChanged((status) => {
     if (status.state === 'ready') {
       void loadCurrentSite()
       return

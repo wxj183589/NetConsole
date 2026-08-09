@@ -22,10 +22,7 @@ const runtime = vi.hoisted(() => ({
 }))
 
 vi.mock('../platform/runtime', () => ({
-  getPlatformAdapter: () => ({
-    hostType: 'electron',
-    onBackendStatusChanged: runtime.onBackendStatusChanged,
-  }),
+  onPlatformRuntimeStatusChanged: runtime.onBackendStatusChanged,
 }))
 
 function activeSite(displayName = '测试局点-A网', siteId = 'legacy-123456789abc') {

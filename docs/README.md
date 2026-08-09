@@ -48,6 +48,7 @@
 | [API / Application 边界审计](API_APPLICATION_BOUNDARY_AUDIT.md) | 18 个 FastAPI Router 的分层证据、判级和治理顺序 | Web/API/Core 开发 | Router、组合根、Application/Query Service | Router 依赖、用例编排或存储错误边界变化 |
 | [项目级 Codex Skills](CODEX_SKILLS.md) | Skill 清单、路由、组合和维护 | Codex/Skill 维护者 | `.agents/skills`、`AGENTS.md` | Skill 新增、升级、改名或边界变化 |
 | [Job Center](JOB_CENTER.md) | 普通后台任务协议、生命周期、取消和迁移规则 | 后台任务开发 | `job_models.py`、`job_runner.py`、`job_registry.py`、`background_*` | Job 协议、事件、handler 或 manager 变化 |
+| [数据库与升级](04-database.md) | SQLite 分类、迁移边界、统一升级编排与 Adapter 接入状态 | Repository/数据库开发 | `core/database.py`、`services/database_upgrade/`、各数据库 Adapter | schema、备份、切换、回滚或恢复规则变化 |
 | [导出进程规范](export_process_policy.md) | Export Process、临时文件、取消和 writer 约束 | 报告/导出开发 | `services/export`、`export_worker.py`、export UI helper | 导出类型、协议或文件提交策略变化 |
 | [重构地图](REFACTOR_MAP.md) | 当前接管状态、遗留入口和下一步 | 架构维护者 | Registry、domain handlers、生产调用点 | 任务迁移、兼容层或 legacy 收口 |
 | [CBTC 旧 Wireshark DLL 逆向状态](reverse-engineering/CBTC_WIRESHARK_DLL.md) | RE 证据清单、结论等级、复现要求和当前缺口 | 协议分析与维护人员 | 仓库样本、脚本、CSV、测试包和 Git 历史 | 新增样本、探针、算法证据或结论等级变化 |
@@ -97,6 +98,7 @@
 
 | 文档 | 用途 | 主要维护对象 | 事实来源 | 必须更新时机 |
 | --- | --- | --- | --- | --- |
+| [设备厂商导入与采集能力](DEVICE_VENDOR_IMPORT_AND_COLLECTION.md) | 原始厂商、规范化 key、驱动解析、SKIPPED 任务状态和新增驱动接入边界 | 设备管理与采集维护 | `src/netconsole/models/device.py`、`src/netconsole/services/device_collection_support.py` | 厂商导入、驱动注册或跳过状态变化 |
 | [Online MR 实时采集](ONLINE_MR_COLLECTION.md) | 多 MR、命令、fping/iPerf、会话、只读查询、最终化与恢复 | 轨道交通采集开发 | `online_mr_*`、`vehicle_mr_online.py`、UI/测试 | 命令、状态、查询、周期、目录、最终化或交互变化 |
 | [Online MR Agent 远程执行器](ONLINE_MR_AGENT_EXECUTOR.md) | 单 Agent start/status/normal stop、包导入、截止时间与恢复安全边界 | Online MR Agent 执行开发 | `agent_executor.py`、Agent Client/Controller、Mapping/测试 | Agent 开关、路由、状态、恢复、身份或包收敛变化 |
 | [Online MR Agent Fake 验收](ONLINE_MR_AGENT_FAKE_ACCEPTANCE.md) | Web Agent 控制与回环 Fake Agent 的全链路验收、冻结项和复现步骤 | Online MR Web/Agent 联调 | Agent Web Router/Service、Fake Agent、正式 Client/Importer 测试 | Web Agent 契约、Fake 状态机或验收边界变化 |

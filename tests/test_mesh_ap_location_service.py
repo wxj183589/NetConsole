@@ -157,6 +157,135 @@ def test_location_snapshot_uses_point_code_when_base_ap_name_is_empty() -> None:
     assert location.direction == "下行"
 
 
+def test_location_snapshot_resolves_radio_alias_from_identity_without_remap() -> None:
+    snapshot = MeshApLocationSnapshot().with_identity_aliases(
+        (
+            {
+                "mac_key": "74adcb9d332f",
+                "effective_ap_mac_display": "74ad-cb9d-3320",
+                "effective_ap_name": "AP0208",
+                "effective_station": "明珠广场",
+                "effective_section": "明珠广场-区间",
+                "effective_mileage": "K1+200",
+                "effective_direction": "上行",
+                "source": "base_data",
+            },
+        )
+    )
+
+    location = snapshot.resolve({"peer_mac_normalized": "74:ad:cb:9d:33:2f"})
+
+    assert location.identity_status == "matched"
+    assert location.identity_source == "base_data"
+    assert location.mac == "74ad-cb9d-3320"
+    assert location.station == "明珠广场"
+    assert location.section == "明珠广场-区间"
+
+
+def test_location_snapshot_keeps_duplicate_alias_ambiguous() -> None:
+    snapshot = MeshApLocationSnapshot().with_identity_aliases(
+        (
+            {
+                "mac_key": "74adcb9d332f",
+                "effective_ap_mac_display": "74ad-cb9d-3320",
+                "effective_ap_name": "AP-A",
+                "source": "base_data",
+            },
+            {
+                "mac_key": "74adcb9d332f",
+                "effective_ap_mac_display": "74ad-cb9d-3340",
+                "effective_ap_name": "AP-B",
+                "source": "base_data",
+            },
+        )
+    )
+
+    location = snapshot.resolve({"peer_mac_normalized": "74ad-cb9d-332f"})
+
+    assert location.identity_status == "ambiguous"
+    assert location.identity_reason == "duplicate_alias"
+
+
+def _base_item(name: str, mac: str, station: str = "车站A") -> SimpleNamespace:
+    return SimpleNamespace(
+        name=name,
+        point_code=name,
+        mac=mac,
+        station=station,
+        section=f"{station}-区间",
+        mileage=SimpleNamespace(raw="K1+000"),
+        line_side="上行",
+        direction="上行",
+    )
+
+
+def test_base_only_known_peer_is_matched() -> None:
+    snapshot = MeshApLocationSnapshot.from_base_data_items(
+        (_base_item("AP-A", "74ad-cb9d-3320"),)
+    ).with_base_radio_aliases()
+
+    location = snapshot.resolve({"peer_mac_normalized": "74ad-cb9d-332f"})
+
+    assert location.identity_status == "matched"
+    assert location.name == "AP-A"
+    assert location.mac == "74ad-cb9d-3320"
+
+
+def test_base_only_unknown_peer_stays_unresolved() -> None:
+    snapshot = MeshApLocationSnapshot.from_base_data_items(
+        (_base_item("AP-A", "74ad-cb9d-3320"),)
+    ).with_base_radio_aliases()
+
+    location = snapshot.resolve({"peer_mac_normalized": "0011-2233-445f"})
+
+    assert location.identity_status == "unresolved"
+    assert location.mac == ""
+
+
+def test_base_only_missing_physical_mac_stays_unresolved() -> None:
+    snapshot = MeshApLocationSnapshot.from_base_data_items(
+        (_base_item("AP-A", ""),)
+    ).with_base_radio_aliases()
+
+    location = snapshot.resolve(
+        {"peer_mac_normalized": "74ad-cb9d-332f", "peer_ap_name": "AP-A"}
+    )
+
+    assert location.identity_status == "unresolved"
+    assert location.name == "AP-A"
+
+
+def test_base_only_alias_collision_is_ambiguous() -> None:
+    snapshot = MeshApLocationSnapshot.from_base_data_items(
+        (
+            _base_item("AP-A", "74ad-cb9d-3320"),
+            _base_item("AP-B", "74ad-cb9d-3320"),
+        )
+    ).with_base_radio_aliases()
+
+    location = snapshot.resolve({"peer_mac_normalized": "74ad-cb9d-332f"})
+
+    assert location.identity_status == "ambiguous"
+    assert location.identity_reason == "duplicate_alias"
+
+
+def test_base_only_partial_coverage_is_valid() -> None:
+    snapshot = MeshApLocationSnapshot.from_base_data_items(
+        (
+            _base_item("AP-A", "74ad-cb9d-3320"),
+            _base_item("AP-B1", "74ad-cb9d-3340"),
+            _base_item("AP-B2", "74ad-cb9d-3340"),
+        )
+    ).with_base_radio_aliases()
+
+    statuses = [
+        snapshot.resolve({"peer_mac_normalized": peer}).identity_status
+        for peer in ("74ad-cb9d-332f", "0011-2233-445f", "74ad-cb9d-334f")
+    ]
+
+    assert statuses == ["matched", "unresolved", "ambiguous"]
+
+
 def test_location_service_prefers_the_unpaged_location_source() -> None:
     item = SimpleNamespace(
         name="AP-05",

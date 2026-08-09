@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import base64
 import ipaddress
+import json
+import re
 import shutil
 import uuid
 from collections.abc import Mapping
@@ -12,6 +15,7 @@ from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.core.sites import SiteManager
 from netconsole.models.api.ground_unattended import (
+    GroundApIdentityDiagnosticsDTO,
     GroundActionResponseDTO,
     GroundArchiveDTO,
     GroundArchiveDetailDTO,
@@ -19,6 +23,9 @@ from netconsole.models.api.ground_unattended import (
     GroundArchivePageDTO,
     GroundArchiveValidationDTO,
     GroundDeepCollectionDTO,
+    GroundDeepCollectorDTO,
+    GroundDeepCollectionRecordDTO,
+    GroundDeepCollectionRecordPageDTO,
     GroundDeepCollectionPageDTO,
     GroundPingSummaryPageDTO,
     GroundPingSampleDTO,
@@ -94,6 +101,8 @@ from netconsole.services.system_network_application_service import (
     SystemNetworkApplicationService,
     SystemNetworkError,
 )
+from netconsole.services.online_mr.errors import OnlineMrQueryError
+from netconsole.services.online_mr.query_service import OnlineMrQueryService
 
 
 class DesktopActionResultPort(Protocol):
@@ -1342,6 +1351,9 @@ class GroundUnattendedApplicationService:
             result["points"] = self._project_ping_samples(
                 list(result.get("points") or [])
             )
+            result["ap_transitions"] = self._project_ping_transitions(
+                list(result.get("ap_transitions") or [])
+            )
             return GroundPingSeriesDTO.model_validate(result)
         except GroundRawQueryError as exc:
             raise GroundUnattendedError(
@@ -1364,6 +1376,9 @@ class GroundUnattendedApplicationService:
             result = self.raw_query.ping_series_incremental(**filters)
             result["points"] = self._project_ping_samples(
                 list(result.get("points") or [])
+            )
+            result["ap_transitions"] = self._project_ping_transitions(
+                list(result.get("ap_transitions") or [])
             )
             return GroundPingSeriesDTO.model_validate(result)
         except GroundRawQueryError as exc:
@@ -1410,6 +1425,38 @@ class GroundUnattendedApplicationService:
                 {key: value for key, value in row.items() if key in fields}
             ).model_dump(mode="json")
             for row in rows
+        ]
+
+    def _project_ping_transitions(
+        self,
+        rows: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        if not rows:
+            return []
+        parsed_rows = [
+            {
+                "event_type": "MESH_ACTIVELINK_SWITCH",
+                "peer_name": row.get("new_ap_name") or "",
+                "peer_mac": row.get("new_ap_raw") or "",
+                "previous_peer_name": row.get("old_ap_name") or "",
+                "previous_peer_mac": row.get("old_ap_raw") or "",
+                "details": {
+                    "new_peer_mac": row.get("new_ap_raw") or "",
+                    "new_peer_radio_mac": row.get("new_ap_radio_mac") or "",
+                    "old_peer_mac": row.get("old_ap_raw") or "",
+                    "old_peer_radio_mac": row.get("old_ap_radio_mac") or "",
+                },
+            }
+            for row in rows
+        ]
+        # Bind every old/new peer in this chart query to one Identity batch.
+        # A request-scoped resolver avoids a second lookup if the shared
+        # realtime cache happens to cross a revision boundary.
+        resolver = GroundApDisplayResolver(self.ap_identity_query_service)
+        resolver.preload_parsed(parsed_rows)
+        return [
+            resolver.project_switch(parsed, base=row)
+            for row, parsed in zip(rows, parsed_rows, strict=True)
         ]
 
     def syslog_records(
@@ -1717,6 +1764,8 @@ class GroundUnattendedApplicationService:
                 latest_operations.setdefault(str(operation["train_id"]), {})[
                     str(operation["mr_position_code"])
                 ] = operation
+        query = self._deep_query_service()
+        session_cache: dict[str, tuple[object | None, list[object], str]] = {}
         items = []
         for row in rows:
             train_id = str(row["train_id"])
@@ -1724,6 +1773,38 @@ class GroundUnattendedApplicationService:
             operations = row.get("operations") or {}
             sessions = row.get("sessions") or {}
             latest = latest_operations.get(train_id, {})
+            endpoint_by_role = {
+                str(endpoint.get("endpoint") or ""): endpoint
+                for endpoint in row.get("endpoints", [])
+            }
+            collectors = [
+                self._project_deep_collector(
+                    run_id=str(run["run_id"]) if run else "",
+                    train=row,
+                    operation=operation,
+                    endpoint=endpoint_by_role.get(role, {}),
+                    query=query,
+                    session_cache=session_cache,
+                )
+                for role, operation in latest.items()
+            ]
+            if not collectors:
+                collectors = [
+                    self._project_deep_collector(
+                        run_id=str(run["run_id"]) if run else "",
+                        train=row,
+                        operation=None,
+                        endpoint=endpoint,
+                        query=query,
+                        session_cache=session_cache,
+                    )
+                    for endpoint in endpoint_by_role.values()
+                ]
+            deep_state, deep_reason = self._collection_deep_state(
+                row,
+                collectors,
+                queue_position=queue_positions.get(train_id),
+            )
             items.append(
                 GroundDeepCollectionDTO(
                     train_id=train_id,
@@ -1760,9 +1841,297 @@ class GroundUnattendedApplicationService:
                     covered_rounds=int(row.get("covered_rounds") or 0),
                     failure_reason=row.get("failure_reason", ""),
                     updated_at=row.get("updated_at", ""),
+                    deep_state=deep_state,
+                    deep_state_reason=deep_reason,
+                    collectors=collectors,
                 )
             )
         return GroundDeepCollectionPageDTO(items=items, total=len(items))
+
+    def deep_collection_records(
+        self,
+        site_id: str,
+        *,
+        run_id: str = "",
+        train_id: str = "",
+        mr_id: str = "",
+        mr_role: str = "",
+        category: str = "ALL",
+        keyword: str = "",
+        cursor: str = "",
+        limit: int = 200,
+    ) -> GroundDeepCollectionRecordPageDTO:
+        """Read a bounded increment of the existing Online MR raw logs."""
+
+        self._require_site(site_id)
+        collections = self.deep_collections(site_id, run_id=run_id).items
+        selected = next(
+            (
+                collector
+                for collection in collections
+                if not train_id or collection.train_id == train_id
+                for collector in collection.collectors
+                if (not mr_id or collector.mr_id == mr_id)
+                and (not mr_role or collector.mr_role.upper() == mr_role.upper())
+            ),
+            None,
+        )
+        if selected is None:
+            raise GroundUnattendedError(
+                "DEEP_COLLECTOR_NOT_FOUND", "未找到匹配的深度采集 MR", status_code=404
+            )
+        if not selected.collector_session_id:
+            return GroundDeepCollectionRecordPageDTO(collector=selected)
+        query = self._deep_query_service()
+        if query is None:
+            return GroundDeepCollectionRecordPageDTO(
+                collector=selected.model_copy(
+                    update={"state_reason": "Online MR 查询服务当前不可用"}
+                )
+            )
+        category_key = str(category or "ALL").upper()
+        sources = _DEEP_RECORD_SOURCES.get(category_key)
+        if sources is None:
+            raise GroundUnattendedError(
+                "DEEP_RECORD_CATEGORY_INVALID", "不支持的深采记录分类", status_code=422
+            )
+        cursor_state = _decode_deep_cursor(cursor)
+        if cursor_state.get("session_id") not in {None, "", selected.collector_session_id}:
+            raise GroundUnattendedError(
+                "DEEP_RECORD_CURSOR_INVALID", "深采记录游标与当前会话不匹配", status_code=409
+            )
+        normalized_keyword = keyword.strip().casefold()
+        if cursor and (
+            cursor_state.get("category") != category_key
+            or cursor_state.get("keyword") != normalized_keyword
+        ):
+            raise GroundUnattendedError(
+                "DEEP_RECORD_CURSOR_FILTER_MISMATCH",
+                "深采记录游标与当前筛选条件不匹配",
+                status_code=409,
+            )
+        offsets = {
+            str(key): max(0, int(value))
+            for key, value in dict(cursor_state.get("offsets") or {}).items()
+        }
+        page_limit = max(1, min(500, int(limit)))
+        chunk_limit = max(50, min(500, page_limit * 2))
+        candidates: list[
+            tuple[str, GroundDeepCollectionRecordDTO, int]
+        ] = []
+        candidates_by_source: dict[
+            str, list[tuple[str, GroundDeepCollectionRecordDTO, int]]
+        ] = {}
+        scan_end_by_source: dict[str, int] = {}
+        source_has_more: dict[str, bool] = {}
+        for source in sources:
+            source_candidates: list[
+                tuple[str, GroundDeepCollectionRecordDTO, int]
+            ] = []
+            next_offset = offsets.get(source, 0)
+            scanned = 0
+            try:
+                while len(source_candidates) < page_limit:
+                    chunk = query.read_log_chunk(
+                        self.site_id,
+                        selected.collector_session_id,
+                        source,
+                        cursor=next_offset,
+                        limit=chunk_limit,
+                    )
+                    next_offset = chunk.next_cursor
+                    scanned += len(chunk.lines)
+                    for index, line in enumerate(chunk.lines):
+                        categories = _deep_record_categories(source, line.text)
+                        included = (
+                            category_key in {"ALL", "RAW_OUTPUT"}
+                            or category_key in categories
+                        )
+                        if not included or (
+                            normalized_keyword
+                            and normalized_keyword not in line.text.casefold()
+                        ):
+                            continue
+                        after_cursor = (
+                            int(chunk.lines[index + 1].sequence)
+                            if index + 1 < len(chunk.lines)
+                            else int(chunk.next_cursor)
+                        )
+                        primary_category = (
+                            category_key
+                            if category_key not in {"ALL", "RAW_OUTPUT"}
+                            else _deep_primary_category(categories)
+                            if category_key == "ALL"
+                            else "RAW_OUTPUT"
+                        )
+                        source_candidates.append(
+                            (
+                                source,
+                                GroundDeepCollectionRecordDTO(
+                                    sequence=line.sequence,
+                                    timestamp=line.timestamp or "",
+                                    category=primary_category,
+                                    source=source,
+                                    text=line.text,
+                                ),
+                                after_cursor,
+                            )
+                        )
+                    if not chunk.has_more or not chunk.lines or scanned >= 50_000:
+                        break
+            except OnlineMrQueryError:
+                continue
+            candidates.extend(source_candidates)
+            candidates_by_source[source] = source_candidates
+            scan_end_by_source[source] = next_offset
+            source_has_more[source] = bool(chunk.has_more) or scanned >= 50_000
+        candidates.sort(
+            key=lambda item: (
+                item[1].timestamp or "9999",
+                item[0],
+                item[1].sequence,
+            )
+        )
+        returned = candidates[:page_limit]
+        returned_keys = {
+            (source, row.sequence) for source, row, _after_cursor in returned
+        }
+        has_more = False
+        for source in sources:
+            pending = [
+                item
+                for item in candidates_by_source.get(source, [])
+                if (item[0], item[1].sequence) not in returned_keys
+            ]
+            if pending:
+                offsets[source] = pending[0][1].sequence
+                has_more = True
+            elif source in scan_end_by_source:
+                offsets[source] = scan_end_by_source[source]
+                has_more = has_more or source_has_more.get(source, False)
+        return GroundDeepCollectionRecordPageDTO(
+            collector=selected,
+            records=[row for _source, row, _after_cursor in returned],
+            next_cursor=_encode_deep_cursor(
+                {
+                    "v": 2,
+                    "session_id": selected.collector_session_id,
+                    "category": category_key,
+                    "keyword": normalized_keyword,
+                    "offsets": offsets,
+                }
+            ),
+            has_more=has_more,
+        )
+
+    def _deep_query_service(self) -> OnlineMrQueryService | None:
+        scheduler = getattr(self.supervisor, "deep_scheduler", None)
+        query = getattr(scheduler, "query_service", None)
+        return (
+            query
+            if query is not None
+            and all(
+                callable(getattr(query, name, None))
+                for name in ("get_session", "list_collectors", "read_log_chunk")
+            )
+            else None
+        )
+
+    def _project_deep_collector(
+        self,
+        *,
+        run_id: str,
+        train: Mapping[str, Any],
+        operation: Mapping[str, Any] | None,
+        endpoint: Mapping[str, Any],
+        query: OnlineMrQueryService | None,
+        session_cache: dict[str, tuple[object | None, list[object], str]],
+    ) -> GroundDeepCollectorDTO:
+        operation = operation or {}
+        session_id = str(operation.get("session_id") or "")
+        state, reason = _deep_operation_state(operation, train)
+        bytes_written = 0
+        last_record_at = ""
+        session_error = ""
+        if session_id and query is not None:
+            cached = session_cache.get(session_id)
+            if cached is None:
+                try:
+                    detail = query.get_session(self.site_id, session_id)
+                    status_rows = query.list_collectors(self.site_id, session_id)
+                    cached = (detail, status_rows, "")
+                except OnlineMrQueryError as exc:
+                    cached = (None, [], str(exc))
+                session_cache[session_id] = cached
+            detail, status_rows, session_error = cached
+            for status in status_rows:
+                bytes_written += int(getattr(status, "size_bytes", 0) or 0)
+                updated_at = str(getattr(status, "updated_at", "") or "")
+                if updated_at > last_record_at:
+                    last_record_at = updated_at
+            # Online MR may report an operation as RUNNING immediately after the
+            # session is created.  The ground-unattended view must not present
+            # that as a deep collector that is already producing evidence.
+            if state == "RUNNING" and bytes_written <= 0:
+                state, reason = "STARTING", "Online MR 会话已建立，等待 Collector 写入原始数据"
+            elif bytes_written > 0 and state == "STARTING":
+                state, reason = "RUNNING", "Collector 已写入原始数据"
+            elif session_error and state in {"STARTING", "RUNNING"}:
+                reason = f"{reason}；会话状态暂不可读"
+            elif detail is not None:
+                session_status = str(getattr(detail, "status", "") or "").upper()
+                if session_status in {"FAILED", "ERROR"}:
+                    state, reason = "FAILED", str(
+                        getattr(detail, "error_message", "") or "Online MR 会话失败"
+                    )
+        return GroundDeepCollectorDTO(
+            run_id=run_id,
+            train_id=str(train.get("train_id") or ""),
+            mr_id=str(operation.get("mr_id") or endpoint.get("mr_id") or ""),
+            mr_role=str(operation.get("mr_position_code") or endpoint.get("endpoint") or ""),
+            management_ip=str(endpoint.get("management_ip") or ""),
+            operation_id=str(operation.get("operation_id") or ""),
+            collector_session_id=session_id,
+            state=state,
+            state_reason=reason,
+            started_at=str(operation.get("started_at") or ""),
+            last_record_at=last_record_at,
+            record_count=None,
+            bytes_written=bytes_written,
+            current_ap=str(train.get("current_ap_name") or ""),
+            station=str(train.get("station") or ""),
+            section=str(train.get("section") or ""),
+            last_error=str(operation.get("error_summary") or session_error or ""),
+            retry_count=max(0, int(train.get("attempt_count") or 0) - 1),
+        )
+
+    @staticmethod
+    def _collection_deep_state(
+        train: Mapping[str, Any],
+        collectors: list[GroundDeepCollectorDTO],
+        *,
+        queue_position: int | None,
+    ) -> tuple[str, str]:
+        active_collectors = [item for item in collectors if item.operation_id]
+        if active_collectors:
+            priority = {
+                "FAILED": 8,
+                "RUNNING": 7,
+                "STARTING": 6,
+                "STOPPING": 5,
+                "PAUSED": 4,
+                "QUEUED": 3,
+                "STOPPED": 2,
+                "ELIGIBLE": 1,
+                "INELIGIBLE": 0,
+            }
+            current = max(active_collectors, key=lambda item: priority[item.state])
+            return current.state, current.state_reason
+        if not train.get("deep_collection_eligible"):
+            return "INELIGIBLE", str(train.get("deep_exclusion_reason") or "不具备深度采集资格")
+        if queue_position is not None:
+            return "QUEUED", "已进入深度采集调度队列"
+        return "ELIGIBLE", "符合深度采集资格，等待调度"
 
     def timeline(
         self,
@@ -1799,7 +2168,9 @@ class GroundUnattendedApplicationService:
             for endpoint in train.get("endpoints", [])
         }
         items = []
-        resolver = self._ap_display_resolver()
+        # A page query uses one resolver so every old/new endpoint is loaded
+        # in one batch and projected against one Identity revision.
+        resolver = GroundApDisplayResolver(self.ap_identity_query_service)
         parsed_rows = [
             {
                 "event_type": str(row.get("event_type") or "").upper(),
@@ -1828,23 +2199,65 @@ class GroundUnattendedApplicationService:
             train = train_by_id.get(train_id_value) or {}
             endpoint = endpoint_by_id.get(mr_id) or {}
             suffix = mr_id[-8:] if mr_id else ""
-            ap_display = resolver.enrich_parsed(parsed)
-            details = dict(ap_display.get("details") or details)
-            current_name = str(ap_display.get("peer_name") or "")
-            previous_name = str(
-                ap_display.get("previous_peer_name") or ""
-            )
             message = str(row.get("message") or "")
             event_kind = str(row.get("event_type") or "").casefold()
-            current_mac = str(ap_display.get("peer_mac") or "")
             if event_kind == "mesh_activelink_switch":
-                if details.get("old_active_link_missing"):
-                    previous_name = "无主链路"
-                message = (
-                    f"{previous_name or '未知 AP'} → "
-                    f"{current_name or '未知 AP'}"
+                switch = resolver.project_switch(parsed)
+                details = dict(switch.get("details") or details)
+                current_name = str(switch.get("new_ap_name") or "")
+                previous_name = str(switch.get("old_ap_name") or "")
+                current_mac = str(switch.get("new_ap_raw") or "")
+                current_station = str(switch.get("new_station") or "")
+                current_section = str(switch.get("new_section") or "")
+                previous_station = str(switch.get("old_station") or "")
+                previous_section = str(switch.get("old_section") or "")
+                previous_display = (
+                    previous_name
+                    or str(switch.get("old_ap_raw") or "")
+                    or str(switch.get("old_ap_radio_mac") or "")
+                    or "未知 AP"
                 )
-            elif event_kind in {"mesh_linkup", "mesh_linkdown"}:
+                current_display = (
+                    current_name
+                    or current_mac
+                    or str(switch.get("new_ap_radio_mac") or "")
+                    or "未知 AP"
+                )
+                raw_previous = (
+                    str(switch.get("old_ap_raw") or "")
+                    or str(switch.get("old_ap_radio_mac") or "")
+                    or previous_display
+                )
+                raw_current = (
+                    current_mac
+                    or str(switch.get("new_ap_radio_mac") or "")
+                    or current_display
+                )
+                raw_transition = f"{raw_previous} → {raw_current}"
+                resolved_transition = f"{previous_display} → {current_display}"
+                message_parts = [raw_transition]
+                if resolved_transition != raw_transition:
+                    message_parts.append(resolved_transition)
+                if previous_station or current_station:
+                    message_parts.append(
+                        f"{previous_station or '站点未知'} → "
+                        f"{current_station or '站点未知'}"
+                    )
+                message = " · ".join(message_parts)
+            else:
+                switch = {}
+                ap_display = resolver.enrich_parsed(parsed)
+                details = dict(ap_display.get("details") or details)
+                current_name = str(ap_display.get("peer_name") or "")
+                previous_name = str(ap_display.get("previous_peer_name") or "")
+                current_mac = str(ap_display.get("peer_mac") or "")
+                current_station = str(ap_display.get("station") or "")
+                current_section = str(ap_display.get("section") or "")
+                previous_station = str(details.get("previous_station") or "")
+                previous_section = str(details.get("previous_section") or "")
+                previous_display = previous_name or "未知 AP"
+                current_display = current_name or "未知 AP"
+            if event_kind in {"mesh_linkup", "mesh_linkdown"}:
                 parts = [current_name or current_mac or "未知 AP"]
                 if current_mac and current_mac.casefold() != current_name.casefold():
                     parts.append(current_mac)
@@ -1857,7 +2270,11 @@ class GroundUnattendedApplicationService:
                         f"原因：{details.get('reason_label') or details.get('reason_raw')}"
                     )
                 message = " · ".join(parts)
-            elif not message and current_name:
+            elif (
+                event_kind != "mesh_activelink_switch"
+                and not message
+                and current_name
+            ):
                 message = current_name
             items.append(
                 GroundTimelineEventDTO(
@@ -1883,30 +2300,40 @@ class GroundUnattendedApplicationService:
                     ),
                     title=row["title"],
                     message=message,
-                    peer_ap_id=str(details.get("peer_ap_id") or ""),
+                    peer_ap_id=str(
+                        switch.get("new_ap_id") or details.get("peer_ap_id") or ""
+                    ),
                     peer_ap_name=current_name,
-                    peer_ap_mac=str(details.get("peer_ap_mac") or ""),
+                    peer_ap_mac=str(
+                        switch.get("new_ap_mac")
+                        or details.get("peer_ap_mac")
+                        or ""
+                    ),
                     peer_radio_mac=str(
-                        details.get("peer_radio_mac") or ""
+                        switch.get("new_ap_radio_mac")
+                        or details.get("peer_radio_mac")
+                        or ""
                     ),
                     previous_peer_ap_id=str(
-                        details.get("previous_peer_ap_id") or ""
+                        switch.get("old_ap_id")
+                        or details.get("previous_peer_ap_id")
+                        or ""
                     ),
                     previous_peer_ap_name=previous_name,
                     previous_peer_ap_mac=str(
-                        details.get("previous_peer_ap_mac") or ""
+                        switch.get("old_ap_mac")
+                        or details.get("previous_peer_ap_mac")
+                        or ""
                     ),
                     previous_peer_radio_mac=str(
-                        details.get("previous_peer_radio_mac") or ""
+                        switch.get("old_ap_radio_mac")
+                        or details.get("previous_peer_radio_mac")
+                        or ""
                     ),
-                    station=str(ap_display.get("station") or ""),
-                    section=str(ap_display.get("section") or ""),
-                    previous_station=str(
-                        details.get("previous_station") or ""
-                    ),
-                    previous_section=str(
-                        details.get("previous_section") or ""
-                    ),
+                    station=current_station,
+                    section=current_section,
+                    previous_station=previous_station,
+                    previous_section=previous_section,
                     rssi=details.get("rssi", details.get("new_rssi")),
                     previous_rssi=details.get("old_rssi"),
                     reason_code=str(
@@ -1920,18 +2347,42 @@ class GroundUnattendedApplicationService:
                         or ""
                     ),
                     resolution_status=str(
-                        details.get("resolution_status") or ""
+                        switch.get("identity_status")
+                        or details.get("resolution_status")
+                        or ""
                     ),
                     ap_display=current_name,
                     ap_transition_display=(
-                        f"{previous_name or '未知 AP'} → "
-                        f"{current_name or '未知 AP'}"
+                        f"{previous_display} → {current_display}"
                         if str(row.get("event_type") or "").casefold()
                         == "mesh_activelink_switch"
                         else current_name
                     ),
                     resolved_ap_name=current_name,
                     previous_resolved_ap_name=previous_name,
+                    old_ap_raw=str(switch.get("old_ap_raw") or ""),
+                    new_ap_raw=str(switch.get("new_ap_raw") or ""),
+                    old_ap_identity_status=str(
+                        switch.get("old_ap_identity_status") or ""
+                    ),
+                    new_ap_identity_status=str(
+                        switch.get("new_ap_identity_status") or ""
+                    ),
+                    old_match_source=str(switch.get("old_match_source") or ""),
+                    new_match_source=str(switch.get("new_match_source") or ""),
+                    old_match_rule=str(switch.get("old_match_rule") or ""),
+                    new_match_rule=str(switch.get("new_match_rule") or ""),
+                    old_identity_reason=str(
+                        switch.get("old_identity_reason") or ""
+                    ),
+                    new_identity_reason=str(
+                        switch.get("new_identity_reason") or ""
+                    ),
+                    identity_status=str(switch.get("identity_status") or ""),
+                    identity_source=str(switch.get("identity_source") or ""),
+                    identity_revision=int(
+                        switch.get("identity_revision") or 0
+                    ),
                     details=details,
                 )
             )
@@ -2098,8 +2549,35 @@ class GroundUnattendedApplicationService:
             train_id=row["train_id"],
             train_no=row.get("train_no", ""),
             train_name=row.get("train_name", ""),
+            location_class=row.get("location_class", "UNKNOWN"),
+            location_class_source=row.get(
+                "location_class_source", "UNDETERMINED"
+            ),
+            participates_in_mainline=bool(
+                row.get("participates_in_mainline")
+            ),
+            mainline_eligible=bool(row.get("mainline_eligible")),
+            mainline_reason_code=row.get(
+                "mainline_reason_code", "NOT_EVALUATED"
+            ),
+            mainline_reason_text=row.get(
+                "mainline_reason_text", "未评估"
+            ),
             ping_eligible=bool(row.get("ping_eligible")),
+            ping_reason_code=row.get("ping_reason_code", "NOT_EVALUATED"),
+            ping_reason_text=row.get("ping_reason_text", "未评估"),
             deep_collection_eligible=bool(row.get("deep_collection_eligible")),
+            deep_collection_reason_code=row.get(
+                "deep_collection_reason_code", "NOT_EVALUATED"
+            ),
+            deep_collection_reason_text=row.get(
+                "deep_collection_reason_text", "未评估"
+            ),
+            decision_revision=int(row.get("decision_revision") or 0),
+            decision_source=row.get("decision_source", "NOT_EVALUATED"),
+            ping_inclusion_reason=row.get("ping_inclusion_reason", ""),
+            ping_exclusion_reason=row.get("ping_exclusion_reason", ""),
+            deep_exclusion_reason=row.get("deep_exclusion_reason", ""),
             eligibility_status=row.get("eligibility_status", "AC_UNKNOWN"),
             exclusion_reason=row.get("exclusion_reason", ""),
             location_match_level=row.get("location_match_level", "UNMATCHED"),
@@ -2128,6 +2606,9 @@ class GroundUnattendedApplicationService:
                 GroundUnattendedEndpointDTO.model_validate(item)
                 for item in row.get("endpoints", [])
             ],
+            ap_identity_diagnostics=GroundApIdentityDiagnosticsDTO.model_validate(
+                row.get("ap_identity_diagnostics") or {}
+            ),
             updated_at=row.get("updated_at", ""),
         )
 
@@ -2756,6 +3237,172 @@ class GroundUnattendedApplicationService:
             raise GroundUnattendedError(
                 "SITE_MISMATCH", "请求局点必须与当前局点一致", status_code=409
             )
+
+
+_ALL_DEEP_RECORD_SOURCES = (
+    "init",
+    "collector",
+    "collector_output",
+    "terminal_monitor",
+    "reconnect",
+    "mesh_link",
+    "switch_history",
+    "ap_radio_statistics",
+    "channel_busy",
+    "wireless_status",
+    "interface_rate",
+)
+_DEEP_RECORD_SOURCES = {
+    "ALL": _ALL_DEEP_RECORD_SOURCES,
+    "WMESH": ("mesh_link", "switch_history", "terminal_monitor"),
+    "RSSI": (
+        "mesh_link",
+        "switch_history",
+        "ap_radio_statistics",
+        "terminal_monitor",
+    ),
+    "RADIO": (
+        "ap_radio_statistics",
+        "channel_busy",
+        "wireless_status",
+        "interface_rate",
+        "terminal_monitor",
+    ),
+    "STATUS": ("init", "collector", "terminal_monitor", "reconnect"),
+    "RAW_OUTPUT": _ALL_DEEP_RECORD_SOURCES,
+}
+
+
+def _deep_operation_state(
+    operation: Mapping[str, Any], train: Mapping[str, Any]
+) -> tuple[str, str]:
+    if not operation:
+        if not train.get("deep_collection_eligible"):
+            return "INELIGIBLE", str(
+                train.get("deep_exclusion_reason") or "不具备深度采集资格"
+            )
+        return "ELIGIBLE", "符合深度采集资格，等待调度"
+    state = str(operation.get("state") or "STARTING").upper()
+    reason = str(operation.get("error_summary") or "")
+    mapping = {
+        "STARTING": ("STARTING", "正在建立 Online MR 会话"),
+        "RUNNING": ("RUNNING", "Collector 正在运行，等待写入证据"),
+        "FINALIZING": ("STOPPING", "正在停止并归集采集结果"),
+        "COMPLETED": ("STOPPED", "深度采集已正常结束"),
+        "PARTIAL": ("FAILED", "深度采集仅产生部分结果"),
+        "FAILED": ("FAILED", "深度采集失败"),
+    }
+    resolved, default_reason = mapping.get(state, ("STARTING", "正在建立 Online MR 会话"))
+    return resolved, reason or default_reason
+
+
+_DEEP_MAC_RE = re.compile(
+    r"(?i)(?:[0-9a-f]{4}[-.:]){2}[0-9a-f]{4}|(?:[0-9a-f]{2}:){5}[0-9a-f]{2}"
+)
+_DEEP_RSSI_RE = re.compile(
+    r"(?i)\bRSSI\b\s*(?::|=|\s)\s*-?\d+(?:\s*/\s*-?\d+)?"
+)
+_DEEP_SWITCH_RSSI_RE = re.compile(r"\b-?\d{1,3}\s*/\s*-?\d{1,3}\b")
+_DEEP_RAW_CONTROL_RE = re.compile(
+    r"(?i)(?:\bdisplay\s+clock\b|\btime\s+zone\b|^\s*[<>\[][^\r\n]*[>#]\s*$|\bRX\s+<[^>]+>\s*display\b|>>>\s*display\b)"
+)
+
+
+def _deep_record_categories(source: str, text: str) -> frozenset[str]:
+    value = str(text or "").strip()
+    folded = value.casefold()
+    categories = {"RAW_OUTPUT"}
+    if not value or _DEEP_RAW_CONTROL_RE.search(value):
+        return frozenset(categories)
+    if re.search(r"(?i)\bdisplay\s+(?:wlan\s+mesh-link|ar5drv|counters)\b", value):
+        return frozenset(categories)
+
+    has_mac = bool(_DEEP_MAC_RE.search(value))
+    has_rssi = has_mac and bool(
+        _DEEP_RSSI_RE.search(value) or _DEEP_SWITCH_RSSI_RE.search(value)
+    )
+    has_wmesh_event = any(
+        token in folded
+        for token in (
+            "mesh_linkup",
+            "mesh_linkdown",
+            "mesh_activelink_switch",
+            "active link transition",
+        )
+    )
+    has_mesh_state = has_mac and any(
+        token in folded
+        for token in (
+            " active",
+            " standby",
+            " link state",
+            " linkup",
+            " linkdown",
+            "better rssi",
+            "peer name",
+        )
+    )
+    if has_wmesh_event or (
+        source in {"mesh_link", "switch_history"} and has_mesh_state
+    ):
+        categories.add("WMESH")
+    if has_rssi:
+        categories.add("RSSI")
+
+    radio_value = bool(
+        re.search(
+            r"(?i)(?:channel\s*busy|txbusy|rxbusy|radio\s+statistics|"
+            r"txframe|rxframe|txretry|txerr|discard|packets?/s|\bpps\b|"
+            r"interface\s+rate|wlan-radio\S*\s+(?:up|down))",
+            value,
+        )
+    )
+    if radio_value:
+        categories.add("RADIO")
+
+    status_value = bool(
+        re.search(
+            r"(?i)(?:\b(?:session|collector)\b[^\r\n]{0,80}\b(?:start(?:ed|ing)?|"
+            r"stop(?:ped|ping)?|running|completed|failed|error)\b|"
+            r"\b(?:retry|reconnect(?:ed|ing)?|disconnected|heartbeat|device\s+status)\b|"
+            r"\b(?:start(?:ed|ing)?|stop(?:ped|ping)?)\b[^\r\n]{0,80}"
+            r"\b(?:session|collector)\b)",
+            value,
+        )
+    )
+    if (
+        source in {"init", "collector", "terminal_monitor", "reconnect"}
+        and not ({"WMESH", "RSSI", "RADIO"} & categories)
+        and status_value
+    ):
+        categories.add("STATUS")
+    return frozenset(categories)
+
+
+def _deep_primary_category(categories: frozenset[str]) -> str:
+    for category in ("WMESH", "RSSI", "RADIO", "STATUS"):
+        if category in categories:
+            return category
+    return "RAW_OUTPUT"
+
+
+def _decode_deep_cursor(value: str) -> dict[str, Any]:
+    if not value:
+        return {}
+    try:
+        padded = value + "=" * (-len(value) % 4)
+        decoded = base64.urlsafe_b64decode(padded.encode("ascii"))
+        payload = json.loads(decoded.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+        raise GroundUnattendedError(
+            "DEEP_RECORD_CURSOR_INVALID", "深采记录游标无效", status_code=409
+        ) from None
+    return payload if isinstance(payload, dict) else {}
+
+
+def _encode_deep_cursor(payload: dict[str, Any]) -> str:
+    raw = json.dumps(payload, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
 
 def _listen_address_matches(actual: str, configured_host: str, configured_port: int) -> bool:

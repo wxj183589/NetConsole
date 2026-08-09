@@ -27,6 +27,7 @@ from netconsole.application.web_artifacts import WebArtifactStore
 from netconsole.application.web_export_process_adapter import WebExportProcessAdapter
 from netconsole.backend.api.router import api_router, ws_router
 from netconsole.core import app_logger
+from netconsole.core.log_policy import LOG_POLICY
 from netconsole.backend.web_build import (
     FRONTEND_MISMATCH_MESSAGE,
     backend_build_id,
@@ -93,6 +94,8 @@ from netconsole.services.traffic.application_service import TrafficTestApplicati
 from netconsole.services.traffic.errors import TrafficErrorCode, TrafficTestError
 from netconsole.services.traffic.web_application_service import TrafficWebApplicationService
 from netconsole.services.settings_application_service import SettingsApplicationService
+from netconsole.services.database_upgrade.management_service import DatabaseUpgradeManagementService
+from netconsole.services.database_upgrade.journal import recover_incomplete_upgrades
 from netconsole.services.runtime_self_check_service import RuntimeSelfCheckService
 from netconsole.services.system_network_application_service import (
     SystemNetworkApplicationService,
@@ -191,6 +194,11 @@ def create_app(
     development_frontend_mode: str = "dist",
 ) -> FastAPI:
     paths = paths or PathResolver()
+    for recovered_upgrade in recover_incomplete_upgrades(paths):
+        app_logger.log_warning(
+            "DATABASE_UPGRADE_RECOVERED",
+            f"operation={recovered_upgrade.get('operation_id')} stage={recovered_upgrade.get('stage')}",
+        )
     site_name = _current_site_name(paths)
     defer_runtime_start = bool(runtime_mode is RuntimeMode.DESKTOP and desktop_session_token)
     if online_mr_web_control_enabled is None:
@@ -374,7 +382,7 @@ def create_app(
                     )
                 except Exception as exc:
                     app_logger.log_warning("APP_AUTO_CLEANUP_FAILED", _safe_error_message(str(exc)))
-                await asyncio.sleep(24 * 60 * 60)
+                await asyncio.sleep(LOG_POLICY.housekeeper.interval_seconds)
 
         auto_cleanup_task = (
             asyncio.create_task(schedule_auto_cleanup())
@@ -494,6 +502,7 @@ def create_app(
     app.state.site_process_adapter = web_process_adapter
     app.state.web_artifact_store = web_artifact_store
     app.state.desktop_action_service = desktop_action_service
+    app.state.database_upgrade_management_service = DatabaseUpgradeManagementService(paths)
     app.state.feature_gate = feature_gate
     app.state.settings_application_service = SettingsApplicationService(paths, feature_gate, site_name)
     app.state.runtime_self_check_service = RuntimeSelfCheckService(

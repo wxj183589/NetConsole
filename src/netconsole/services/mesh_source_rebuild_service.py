@@ -399,11 +399,22 @@ def _require_verified_identity_remap(
 
 
 def _identity_remap_completion_message(remap: Mapping[str, object]) -> str:
+    station_sources = remap.get("station_source_counts") or {}
+    station_source_text = "、".join(
+        f"{source}={int(count or 0)}"
+        for source, count in sorted(station_sources.items())
+    )
+    station_summary = (
+        f"站点已解析 {int(remap.get('station_resolved_mapping_count') or 0)}，"
+        f"未解析 {int(remap.get('station_unresolved_mapping_count') or 0)}"
+    )
+    if station_source_text:
+        station_summary += f"（来源：{station_source_text}）"
     return (
         "AP 身份重映射完成："
         f"{int(remap.get('matched_mapping_count') or 0)} 个 Peer 已映射，"
         f"{int(remap.get('updated_link_row_count') or 0)} 条链路身份投影已更新，"
-        f"Identity revision {int(remap.get('identity_index_revision') or 0)}。"
+        f"Identity revision {int(remap.get('identity_index_revision') or 0)}。{station_summary}。"
     )
 
 

@@ -26,6 +26,13 @@ describe('App layout foundation', () => {
     expect(source).toContain("document.querySelector('[data-netconsole-build-warning]')")
   })
 
+  it('marks Backend Online only after a rebound runtime passes health again', () => {
+    expect(source).toContain('onPlatformRuntimeStatusChanged((status) =>')
+    expect(source).toContain("if (status.state === 'ready')")
+    expect(source).toContain('void refreshBackendHealth()')
+    expect(source).toContain('backendOnline.value = false')
+  })
+
   it('keeps sidebar state and responds at collapse and drawer breakpoints', () => {
     expect(source).toContain('sessionStorage.setItem(COLLAPSED_KEY')
     expect(source).toContain('sessionStorage.setItem(OPEN_GROUPS_KEY')

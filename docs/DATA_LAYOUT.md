@@ -20,11 +20,14 @@ D:\NetConsoleData
 │  ├─ bootstrap/                # 受控 bootstrap 材料
 │  └─ storage-manifest.json     # schema 与最低版本兼容门
 ├─ sites/
+├─ backups/
+│  └─ database_upgrade/          # 统一数据库升级备份中心，默认永久保留
 ├─ runtime/
 │  ├─ electron/
 │  ├─ logs/
 │  ├─ cache/
 │  ├─ temp/
+│  ├─ database_upgrade/          # 升级 journal 与跨进程维护锁
 │  └─ locks/netconsole-backend.lock
 ├─ agents/
 ├─ migrations/
@@ -32,7 +35,15 @@ D:\NetConsoleData
 └─ .trash/                       # 普通局点安全删除时按需创建
 ```
 
-Electron 的 `userData`、`sessionData`、`cache`、`logs`、`crashDumps` 和 `temp` 都在 `runtime/`；Backend 日志位于 `runtime/logs/`。`staging/` 只用于正在进行且可恢复的迁移，完成后应为空。迁移报告、冲突保留文件、备份和中断 staging 回收记录写入 `migrations/`，不是普通缓存。`.trash/` 只保存普通局点安全删除后移入的完整目录，目标名为 `<site-id>-<UTC timestamp>`；它与空壳 cleanup 的 `migrations/archive/site-recycle/` 各自保留独立语义。
+Electron 的 `userData`、`sessionData`、`cache`、`logs`、`crashDumps` 和 `temp` 都在 `runtime/`；Backend 日志位于 `runtime/logs/`。应用日志与设备 raw/artifact 分离：`runtime/logs/` 只保存受控事件、诊断和外部 WPS 输出，设备原始回显、MESH/Syslog、配置和 iperf 结果继续写入所属局点的 raw/artifact 目录，不受应用日志 16 KB 摘要限制。`staging/` 只用于正在进行且可恢复的迁移，完成后应为空。迁移报告、冲突保留文件、备份和中断 staging 回收记录写入 `migrations/`，不是普通缓存。`.trash/` 只保存普通局点安全删除后移入的完整目录，目标名为 `<site-id>-<UTC timestamp>`；它与空壳 cleanup 的 `migrations/archive/site-recycle/` 各自保留独立语义。
+
+## 数据库升级备份中心
+
+数据库升级框架只通过 `PathResolver.database_upgrade_backups_dir` 写入 `<data_root>/backups/database_upgrade/`。目录按 `scope_type/scope_id/database_kind/backup_id/` 分区，每个可管理备份包含 `database.sqlite`、`manifest.json`、`validation.json` 和 `migration.log`；成功切换时保留的原始 rollback 文件及 MESH `parsed/` 目录也进入同一 `backup_id`，不得留在业务目录中被后续升级覆盖。
+
+升级前必须先暂停相关写入、完成 WAL checkpoint，并用 SQLite Backup API 创建可独立打开的旧库副本。只有大小、SHA-256、`quick_check` 和 `integrity_check` 均通过后才允许构建影子库和原子切换。`runtime/database_upgrade/*.json` 记录 active、shadow、rollback、备份和切换阶段；Backend 启动时只恢复未到终态的 journal，不删除失败影子库或诊断文件。`runtime/database_upgrade/locks/` 只保存短期跨进程锁文件，不是业务备份。
+
+数据库升级备份不属于缓存，默认不按时间、数量或磁盘空间自动删除。用户只能在“系统设置 / 数据库升级与备份”中查看、重新验证、恢复、打开目录或二次确认后删除；恢复前还会为当前活动库创建新的安全备份。历史 `mesh.sqlite.legacy_*`、`mesh.sqlite.schema_archive_*` 和 `mesh.sqlite.rollback_*` 由显式整理任务迁入该中心，并标记为 `VALID_BACKUP / DUPLICATE_BACKUP / ZERO_BYTE_ARCHIVE / INVALID_DATABASE / UNREADABLE_DATABASE`；0 KB 和损坏文件仍保留在 `_invalid/`，不会被自动清理。
 
 ## 局点布局
 
@@ -143,7 +154,7 @@ API 调用方内存/Renderer 状态中流转，不写 SQLite、不修改 NDJSON�
 
 ## 清理边界
 
-自动和手动缓存清理只能处理已白名单的 `runtime/cache/`、`runtime/temp/` 与受认可的运行日志；不触及局点数据库、配置、raw、会话业务日志、正式 outputs、报告、备份、Agent 包、迁移材料或 `.trash/`。普通局点删除只允许把 Registry 中的一级 `sites/<site>/` 普通目录原子移动到 `.trash/`，不递归永久删除；移动和 Registry 更新任一阶段失败都必须回滚。执行前必须重新确认规范化路径位于数据根允许子树，并拒绝符号链接和路径逃逸。
+自动和手动缓存清理只能处理已白名单的 `runtime/cache/`、`runtime/temp/` 与受认可的运行日志；日志 Housekeeper 每小时 best-effort 检查 `runtime/logs/`，总量超过 300 MB 时按最旧 rotated electron、app、WPS、diagnostic、archive 顺序清到 250 MB。活动 `electron.log`/`app.log`、启动/崩溃诊断、`database_upgrade_audit.jsonl`、最近 5 分钟仍可能被 WPS 占用的文件和未识别文件均受保护；不能因单个文件锁定或删除失败阻断启动。该清理不触及局点数据库、配置、raw、会话业务日志、正式 outputs、报告、备份、Agent 包、迁移材料或 `.trash/`。普通局点删除只允许把 Registry 中的一级 `sites/<site>/` 普通目录原子移动到 `.trash/`，不递归永久删除；移动和 Registry 更新任一阶段失败都必须回滚。执行前必须重新确认规范化路径位于数据根允许子树，并拒绝符号链接和路径逃逸。
 
 任务中心的“清理”不是磁盘清理。它只在当前局点 `tasks.db` 的任务快照上写入 `dismissed_at / dismissed_by / dismiss_reason`，隐藏已结束的历史记录；任务事件、日志、采集结果、会话文件、正式导出和 Artifact 均保留。真正的物理清理只能由独立数据库维护或文件管理用例按白名单、保留期和路径边界执行。
 

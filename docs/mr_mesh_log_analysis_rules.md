@@ -27,7 +27,9 @@
 - `raw/` 永不因解析失败而删除；`parsed/` 和 `outputs/` 可重建。
 - 解析保留源文件、源行号和必要原始证据，便于从报表回溯。
 - 当前派生库 schema/parser 版本为 `meshlog_compact_v3_tagged_samples`。同一毫秒内日志携带的 `(2)`、`(4)` 等 `timestamp_tag` 属于采样身份的一部分，解析、唯一键、链路分组、质量分析和报告不得把它们合并。
-- 正式启动和查询不兼容旧派生 schema，也不自动移动、删除或清空用户数据。检测到旧版或损坏的 `mesh.sqlite` 时，统一入口会登记等待操作并由当前局点唯一的 `mesh_derived_data_repair` Job 自动维护。维护服务按 `SCHEMA_MIGRATION`、`EMPTY_DATABASE_RECREATE`、`PARTIAL_SOURCE_REBUILD` 区分模式；当前 compact v3 解析结果没有可证明安全的跨版本迁移规则时，空库场景创建空派生库，历史来源场景只重建真实登记且仍有 raw 的来源，缺失 raw 的来源保留元数据并记录警告。重建只归档派生数据库和 `parsed/`，不移动或删除 `raw/`、`outputs/` 与 catalog，失败时恢复旧派生数据。`scripts/maintenance/rebuild_mesh_parsed_data.py` 仅保留为开发/运维包装层，普通用户流程不会显示或执行 Python 命令。
+- 正式启动和查询不兼容旧派生 schema，也不自动移动、删除或清空用户数据。检测到旧版或损坏的 `mesh.sqlite` 时，统一入口会登记等待操作并由当前局点唯一的 `mesh_derived_data_repair` Job 自动维护；设备下载完成后的精确导入只修复该设备对应的 Profile，本地扫描/ZIP/手工导入只合并当前等待请求中明确映射的 Profile，不遍历局点内全部 Profile。维护服务按 `SCHEMA_MIGRATION`、`EMPTY_DATABASE_RECREATE`、`PARTIAL_SOURCE_REBUILD` 区分模式；当前 compact v3 解析结果没有可证明安全的跨版本迁移规则时，空库场景创建空派生库，历史来源场景只重建旧库中真实登记且仍有 raw 的来源，未登记的 raw 文件只能由当前导入请求或用户显式扫描进入，缺失 raw 的来源保留元数据并记录警告。
+- MESH 派生库已作为第一类 Adapter 接入共用 `DatabaseUpgradeCoordinator`。升级先完成 Profile 级维护锁、WAL checkpoint 和统一备份中心的大小/SHA-256/SQLite 完整性校验，再在独立 `mesh.sqlite.new.<operation-id>` 和 `parsed.new.<operation-id>` 中重建；影子校验通过后才原子切换并执行 smoke test。切换任一阶段失败时恢复 rollback 或已验证备份，失败新库/parsed 保留在对应 `backup_id` 目录诊断。成功后的旧库、旧 parsed、manifest、validation 和 migration log 位于 `<data_root>/backups/database_upgrade/`，默认永久保留，只能通过 GUI 显式验证、恢复或删除。
+- 历史 `mesh.sqlite.legacy_* / schema_archive_* / rollback_*` 只由“数据库升级与备份”中的显式整理任务处理。整理任务与 MESH 导入互斥，按内容 SHA-256 区分有效、重复、0 KB、损坏和不可读文件；所有类别均进入受控备份中心，0 KB/损坏文件进入 `_invalid/`，不自动删除。`scripts/maintenance/rebuild_mesh_parsed_data.py` 仅保留为开发/运维包装层，普通用户流程不会显示或执行 Python 命令。
 - 设备文件下载链路不得为归档原始 `meshlog` 而初始化派生 SQLite；旧 schema 只能影响后续导入/查询状态，不能阻止 raw 文件落盘。
 - 正式资产来源是当前局点基础资料/设备管理中的车载 MR。打开导入时由显式 ApplicationService POST 按 `linked_device_id → device_uuid → 规范化名称` 幂等准备内部 Profile；设备改名只更新显示名，稳定 `safe_folder_name` 和已有数据目录不变，普通 GET 不隐式写库。
 - 导入弹窗首次打开只请求轻量 `GET /api/rail-transit/mesh-analysis/import-context`，一次返回当前 Profile 与不拼接运行态的车载 MR 身份；不得因此启动全量同步。`POST /api/rail-transit/mesh-analysis/import-context/prepare` 只用于用户显式重新准备，且仅写入新增或身份确有变化的 Profile；全局异常必须记录完整 Backend 堆栈，并返回 `MESH_IMPORT_CONTEXT_PREPARE_FAILED`/`MESH_IMPORT_CONTEXT_SERVICE_UNAVAILABLE` 结构化 JSON。单条基础资料 MR 同步失败只计入 `skipped_count`/`warnings`，不得清空已有 Profile 或使 Backend 连接中断；重复 prepare 的 `created_count` 必须为 0。
@@ -104,6 +106,7 @@ RSSI 数值按规则文件既定口径比较。两套 profile 当前 fping 平�
 
 ## 6. 大数据与图表
 
+- `apps/web/src/components/rail-timeline/RailRssiComparison.vue` 是轨道交通 RSSI 双图公共布局，`railTimeline.ts` 是 viewport/cursor/selectedTime 控制器；离线 MESH 与 Online MR 都复用它们。共享层只理解标准时间域、图表状态和 slot，不依赖 MESH/Online MR API、parser 或数据库 DTO。`MeshRssiChart` 与 `MeshTracksideSignalChart` 仍保留既有 MESH 数据语义，抽取公共框架不得改变原页面查询、降采样、切换映射或缓存边界。
 - 页面按源文件解析到实际的 compact v3 tagged samples 明细库，直接读取版本化标量列；不在正式查询路径回退旧 JSON 指标列。
 - 主链 RSSI 图按 Radio 和可选时间窗口查询。服务端采样严格分为三级：一级为首尾、有效切换、NO_ACTIVE/MULTI_ACTIVE、真实缺口、持续 0 边界和短时 0 后恢复点；二级为链路/角色/区段边界及 RSSI/Busy 极值；三级为自然秒真实代表点。一级点无条件优先，二/三级只使用剩余预算，自然秒不得扩大用户目标点数或挤占一级点。一级点超过 20,000 点安全上限时返回 413 并要求缩小时间窗口，不再静默抽样关键点。DTO 返回 `total_points/returned_points/downsampled`、请求/有效点数、`payload_bytes`、`query_duration_ms` 和必要的 `downsample_warning`；单个响应 JSON 不得超过 16 MiB。
 - RSSI 明确数值 `0` 使用统一的连续区间规则，并且必须在服务端降采样前识别。同一自然秒内出现一条或多条连续 0 均标记为 `suppressed`；同一逻辑 series 的连续 0 覆盖至少两个不同自然秒才标记为 `sustained`。原始 `sample_count` 仍保留全部记录数，不按行数把同秒重复上报误判为持续 0。持续时长仍从第一条 0 的时间算到下一条有效非 0 采样；序列尾部没有恢复点时，使用同一逻辑 series 相邻有效时间差的中位数估算一个采样周期，估算值限制在 100～5,000 ms，样本不足回退 1,000 ms。普通空值、非法值、来源/series/run 边界和明显日志时间缺口结束当前区间，不得归入连续 0。

@@ -839,6 +839,12 @@ class MeshSwitchEventDTO(ApiModel):
     is_pingpong: bool = False
     station: str | None = None
     section: str | None = None
+    from_identity_status: str = "unresolved"
+    from_identity_source: str | None = None
+    from_identity_reason: str | None = None
+    to_identity_status: str = "unresolved"
+    to_identity_source: str | None = None
+    to_identity_reason: str | None = None
     warning: str | None = None
 
 
@@ -889,8 +895,14 @@ class MeshChannelBusyDTO(ApiModel):
     rx_busy: float | None = None
     total_busy: float | None = None
     peer_ap_name: str | None = None
+    peer_ap_mac: str | None = None
     station: str | None = None
     section: str | None = None
+    identity_status: str = "unresolved"
+    identity_source: str | None = None
+    identity_rule: str | None = None
+    identity_confidence: int = 0
+    identity_reason: str | None = None
     source_type: str = "mesh_link_metrics"
     warning: str | None = None
 

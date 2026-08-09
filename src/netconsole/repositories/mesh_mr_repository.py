@@ -10,9 +10,10 @@ from datetime import datetime
 from datetime import timedelta
 from pathlib import Path
 from statistics import median
+from typing import Iterable, Mapping
 
 from netconsole.core import app_logger
-from netconsole.core.sqlite_utils import connect_sqlite, initialize_sqlite_wal
+from netconsole.core.sqlite_utils import configure_sqlite_connection, initialize_sqlite_wal
 from netconsole.models.mesh_log_models import (
     EVENT_ACTIVE_SWITCH,
     EVENT_COUNTER_RESET,
@@ -183,7 +184,7 @@ class MeshIdentityRemapValidationError(RuntimeError):
         super().__init__(f"{code}: {fields}")
 
 
-class _ReadOnlyConnection(sqlite3.Connection):
+class _ManagedConnection(sqlite3.Connection):
     def __exit__(self, exc_type, exc_value, traceback) -> bool:
         try:
             return bool(super().__exit__(exc_type, exc_value, traceback))
@@ -191,10 +192,33 @@ class _ReadOnlyConnection(sqlite3.Connection):
             self.close()
 
 
+class _ReadOnlyConnection(_ManagedConnection):
+    pass
+
+
+def _read_only_uri(path: Path) -> str:
+    """无 WAL 数据时使用 immutable URI，避免只读查询创建运行侧车。"""
+
+    uri = f"{path.resolve().as_uri()}?mode=ro"
+    wal_path = path.with_name(path.name + "-wal")
+    if not wal_path.is_file() or wal_path.stat().st_size == 0:
+        uri += "&immutable=1"
+    return uri
+
+
 class MeshMrRepository:
-    def __init__(self, path: Path, *, read_only: bool = False) -> None:
+    def __init__(
+        self,
+        path: Path,
+        *,
+        read_only: bool = False,
+        parsed_dir: Path | None = None,
+        index_database: bool | None = None,
+    ) -> None:
         self.path = path
         self.read_only = read_only
+        self.parsed_dir = Path(parsed_dir) if parsed_dir is not None else self.path.parent / "parsed"
+        self._index_database = index_database
         if read_only:
             if not self.path.is_file() or not self._is_compact_schema(self.path):
                 raise MeshSchemaRebuildRequired("MESH 派生数据库不存在或版本不兼容")
@@ -627,7 +651,7 @@ class MeshMrRepository:
     def _is_compact_schema(path: Path) -> bool:
         conn: sqlite3.Connection | None = None
         try:
-            conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=5)
+            conn = sqlite3.connect(_read_only_uri(path), uri=True, timeout=5)
             conn.execute("PRAGMA query_only = ON")
             row = conn.execute("SELECT value FROM schema_meta WHERE key = ?", (SCHEMA_KEY,)).fetchone()
             if row is not None:
@@ -641,10 +665,12 @@ class MeshMrRepository:
                 conn.close()
 
     def _is_index_database(self) -> bool:
+        if self._index_database is not None:
+            return self._index_database
         return self.path.name == "mesh.sqlite" and self.path.parent.name != "parsed"
 
     def _single_log_db_path(self, archived_path: Path, sha256: str) -> Path:
-        parsed_dir = self.path.parent / "parsed"
+        parsed_dir = self.parsed_dir
         parsed_dir.mkdir(parents=True, exist_ok=True)
         stem = _safe_mesh_db_stem(archived_path.name)
         candidate = parsed_dir / f"{stem}.mesh.sqlite"
@@ -2717,10 +2743,12 @@ class MeshMrRepository:
 
         now = dt_text(datetime.now()) or ""
         values_by_key: dict[str, tuple[object, ...]] = {}
+        rows_by_key: dict[str, dict[str, object]] = {}
         for row in rows:
             peer_key = normalize_mac_key(row.get("peer_mac_normalized"))
             if not peer_key:
                 continue
+            rows_by_key[peer_key] = dict(row)
             values_by_key[peer_key] = (
                 peer_key,
                 row.get("peer_ap_name") or "",
@@ -2805,6 +2833,7 @@ class MeshMrRepository:
             source = str(value[13] or value[12] or "unresolved")
             source_counts[source] = source_counts.get(source, 0) + 1
         summary["source_counts"] = source_counts
+        summary.update(_topology_projection_diagnostics(rows_by_key.values()))
         return summary
 
     @staticmethod
@@ -2891,7 +2920,7 @@ class MeshMrRepository:
     def _connect(self) -> sqlite3.Connection:
         if self.read_only:
             conn = sqlite3.connect(
-                f"{self.path.resolve().as_uri()}?mode=ro",
+                _read_only_uri(self.path),
                 uri=True,
                 timeout=5,
                 factory=_ReadOnlyConnection,
@@ -2900,7 +2929,14 @@ class MeshMrRepository:
             conn.execute("PRAGMA query_only = ON")
             conn.execute("PRAGMA busy_timeout = 5000")
             return conn
-        return connect_sqlite(self.path, foreign_keys=True, temp_store_memory=True)
+        conn = sqlite3.connect(self.path, timeout=30, factory=_ManagedConnection)
+        conn.row_factory = sqlite3.Row
+        configure_sqlite_connection(
+            conn,
+            foreign_keys=True,
+            temp_store_memory=True,
+        )
+        return conn
 
     @staticmethod
     def _update_meta_counts(conn: sqlite3.Connection) -> None:
@@ -4359,6 +4395,41 @@ def _validate_peer_identity_remap(summary: dict[str, object]) -> None:
         )
 
 
+def _topology_projection_diagnostics(
+    rows: Iterable[Mapping[str, object]],
+) -> dict[str, object]:
+    station_source_counts: dict[str, int] = {}
+    section_source_counts: dict[str, int] = {}
+    warning_counts: dict[str, int] = {}
+    station_resolved = 0
+    section_resolved = 0
+    total = 0
+    for row in rows:
+        total += 1
+        station = str(row.get("peer_site") or "").strip()
+        section = str(row.get("peer_section") or row.get("belong_section") or "").strip()
+        station_source = str(row.get("station_source") or "unresolved") if station else "unresolved"
+        section_source = str(row.get("section_source") or "unresolved") if section else "unresolved"
+        station_source_counts[station_source] = station_source_counts.get(station_source, 0) + 1
+        section_source_counts[section_source] = section_source_counts.get(section_source, 0) + 1
+        station_resolved += int(bool(station))
+        section_resolved += int(bool(section))
+        for warning in str(row.get("topology_warning") or "").split(";"):
+            code = warning.strip()
+            if code:
+                warning_counts[code] = warning_counts.get(code, 0) + 1
+    return {
+        "peer_total_count": total,
+        "station_resolved_mapping_count": station_resolved,
+        "station_unresolved_mapping_count": total - station_resolved,
+        "section_resolved_mapping_count": section_resolved,
+        "section_unresolved_mapping_count": total - section_resolved,
+        "station_source_counts": station_source_counts,
+        "section_source_counts": section_source_counts,
+        "topology_warning_counts": warning_counts,
+    }
+
+
 def _merge_peer_identity_remap_summaries(
     summaries: list[dict[str, object]],
 ) -> dict[str, object]:
@@ -4367,6 +4438,14 @@ def _merge_peer_identity_remap_summaries(
         "after": {"matched": 0, "unresolved": 0, "ambiguous": 0},
         "mapping_count": 0,
         "source_counts": {},
+        "peer_total_count": 0,
+        "station_resolved_mapping_count": 0,
+        "station_unresolved_mapping_count": 0,
+        "section_resolved_mapping_count": 0,
+        "section_unresolved_mapping_count": 0,
+        "station_source_counts": {},
+        "section_source_counts": {},
+        "topology_warning_counts": {},
         "facts_unchanged": True,
         "validation_status": "passed",
     }
@@ -4397,6 +4476,11 @@ def _merge_peer_identity_remap_summaries(
         "ambiguous_active_point_row_count",
         "switch_event_row_count_before",
         "switch_event_row_count",
+        "peer_total_count",
+        "station_resolved_mapping_count",
+        "station_unresolved_mapping_count",
+        "section_resolved_mapping_count",
+        "section_unresolved_mapping_count",
     )
     before_fingerprints: list[str] = []
     after_fingerprints: list[str] = []
@@ -4435,6 +4519,16 @@ def _merge_peer_identity_remap_summaries(
                 target_sources[str(source)] = int(
                     target_sources.get(str(source), 0)
                 ) + int(count or 0)
+        for field in (
+            "station_source_counts",
+            "section_source_counts",
+            "topology_warning_counts",
+        ):
+            target = result[field]
+            source = summary.get(field) or {}
+            if isinstance(target, dict) and isinstance(source, dict):
+                for key, count in source.items():
+                    target[str(key)] = int(target.get(str(key), 0)) + int(count or 0)
     result["fact_fingerprint_before"] = hashlib.sha256(
         "\n".join(before_fingerprints).encode("ascii")
     ).hexdigest()

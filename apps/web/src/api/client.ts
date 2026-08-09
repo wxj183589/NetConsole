@@ -14,6 +14,7 @@ export interface WebBuildMeta {
 
 import {
   getRuntimeConfig,
+  refreshPlatformRuntimeConfig,
   resolveApiUrl,
   resolveFrontendAssetUrl,
 } from '../platform/runtime'
@@ -228,8 +229,20 @@ function normalizeQueryTimeout(value: number | undefined): number {
 function isRetryableQueryError(reason: unknown): boolean {
   return (
     reason instanceof ApiRequestError
-    && reason.code === 'CONNECTION_RESET'
+    && ['CONNECTION_RESET', 'BACKEND_CONNECTION_INTERRUPTED', 'BACKEND_RESTARTED'].includes(reason.code)
   )
+}
+
+async function prepareQueryRetry(
+  path: string,
+  attempt: number,
+  reason: string,
+  signal?: AbortSignal | null,
+): Promise<void> {
+  if (getRuntimeConfig().hostType === 'electron') {
+    await refreshPlatformRuntimeConfig(reason)
+  }
+  await waitForQueryRetry(path, attempt, signal)
 }
 
 function waitForQueryRetry(path: string, attempt: number, signal?: AbortSignal | null): Promise<void> {
@@ -250,23 +263,24 @@ function waitForQueryRetry(path: string, attempt: number, signal?: AbortSignal |
 }
 
 async function apiRequestInternal<T>(path: string, options: ApiRequestOptions = {}): Promise<T> {
-  const headers = new Headers(options.headers)
-  const runtime = getRuntimeConfig()
+  const baseHeaders = new Headers(options.headers)
   const formData = typeof FormData !== 'undefined' && options.body instanceof FormData
-  if (!formData && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
-  if (runtime.apiToken) headers.set(DESKTOP_SESSION_HEADER, runtime.apiToken)
-  const url = resolveApiUrl(path)
+  if (!formData && !baseHeaders.has('Content-Type')) baseHeaders.set('Content-Type', 'application/json')
   const method = (options.method || 'GET').toUpperCase()
   const queryRequest = method === 'GET' || method === 'HEAD'
   const attempts = queryRequest ? QUERY_MAX_ATTEMPTS : 1
-  const requestOptions: RequestInit = {
-    ...options,
-    headers,
-    credentials: options.credentials ?? (runtime.hostType === 'electron' ? 'include' : 'same-origin'),
-  }
   let response: Response | undefined
 
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const runtime = getRuntimeConfig()
+    const headers = new Headers(baseHeaders)
+    if (runtime.apiToken) headers.set(DESKTOP_SESSION_HEADER, runtime.apiToken)
+    const requestOptions: RequestInit = {
+      ...options,
+      headers,
+      credentials: options.credentials ?? (runtime.hostType === 'electron' ? 'include' : 'same-origin'),
+    }
+    const url = resolveApiUrl(path)
     try {
       response = await fetchWithQueryTimeout(url, path, requestOptions, queryRequest)
     } catch (reason) {
@@ -275,7 +289,12 @@ async function apiRequestInternal<T>(path: string, options: ApiRequestOptions = 
         && attempt < attempts
         && isRetryableQueryError(reason)
       ) {
-        await waitForQueryRetry(path, attempt, options.signal)
+        try {
+          const retryReason = reason instanceof ApiRequestError ? reason.code : 'network_interrupted'
+          await prepareQueryRetry(path, attempt, retryReason, options.signal)
+        } catch {
+          throw reason
+        }
         continue
       }
       if (reason instanceof ApiRequestError && !['REQUEST_ABORTED', 'REQUEST_TIMEOUT'].includes(reason.code)) {
@@ -287,7 +306,11 @@ async function apiRequestInternal<T>(path: string, options: ApiRequestOptions = 
       throw reason
     }
     if (!RETRYABLE_QUERY_STATUSES.has(response.status) || attempt === attempts) break
-    await waitForQueryRetry(path, attempt, options.signal)
+    try {
+      await prepareQueryRetry(path, attempt, `http_${response.status}`, options.signal)
+    } catch {
+      break
+    }
   }
 
   if (!response) throw networkRequestError(path, 'Request failed without a response')

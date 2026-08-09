@@ -72,10 +72,13 @@ describe('NcFloatingWindow', () => {
     expect(view.rect.top).toBeGreaterThanOrEqual(56)
 
     const normal = { ...view.rect }
-    view.toggleMaximize()
-    expect(view.maximized).toBe(true)
-    expect(view.rect.top).toBe(56)
-    view.toggleMaximize()
+    for (let cycle = 0; cycle < 5; cycle += 1) {
+      view.toggleMaximize()
+      expect(view.maximized).toBe(true)
+      expect(view.rect.top).toBe(56)
+      view.toggleMaximize()
+      expect(view.maximized).toBe(false)
+    }
     expect(view.maximized).toBe(false)
     expect(view.rect).toMatchObject(normal)
     expect(localStorage.length).toBe(1)

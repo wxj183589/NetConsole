@@ -12,7 +12,7 @@ from netconsole.core.sqlite_utils import connect_sqlite, initialize_sqlite_wal, 
 
 
 OnlineMrDatabaseError = sqlite3.Error
-ONLINE_MR_DIAGNOSIS_SCHEMA_VERSION = "online_mr_business_tables_v11_identity_projection"
+ONLINE_MR_DIAGNOSIS_SCHEMA_VERSION = "online_mr_business_tables_v12_identity_channel_busy"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS main_link_samples (
@@ -58,7 +58,9 @@ CREATE TABLE IF NOT EXISTS channel_busy_records (
     time_source TEXT,
     radio INTEGER,
     ctl_channel INTEGER,
-    bandwidth INTEGER,
+    bandwidth REAL,
+    channel_band_raw TEXT,
+    bandwidth_mhz REAL,
     record_interval INTEGER,
     row_index INTEGER,
     ctl_busy INTEGER,
@@ -461,8 +463,8 @@ INSERT_SQL = {
     "channel_busy_records": """
         INSERT INTO channel_busy_records (
             session_id, device_time, device_clock, time_source, radio, ctl_channel, bandwidth,
-            record_interval, row_index, ctl_busy, tx_busy, rx_busy
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            channel_band_raw, bandwidth_mhz, record_interval, row_index, ctl_busy, tx_busy, rx_busy
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """,
     "radio_statistics_samples": """
         INSERT INTO radio_statistics_samples (
@@ -1113,7 +1115,7 @@ class OnlineMrDiagnosisRepository:
                 metrics["avg_latency_ms"] = ping[2]
                 metrics["max_latency_ms"] = ping[3]
             busy = conn.execute(
-                "SELECT AVG(tx_busy), MAX(tx_busy), AVG(rx_busy), MAX(rx_busy) FROM channel_busy_records WHERE COALESCE(row_index, 1) = 1"
+                "SELECT AVG(tx_busy), MAX(tx_busy), AVG(rx_busy), MAX(rx_busy) FROM channel_busy_records"
             ).fetchone()
             if busy:
                 metrics["avg_tx_busy"] = busy[0]
@@ -1317,7 +1319,6 @@ class OnlineMrDiagnosisRepository:
             SELECT AVG(tx_busy), MAX(tx_busy), AVG(rx_busy), MAX(rx_busy)
             FROM channel_busy_records
             WHERE device_time >= ? AND device_time < ?
-              AND COALESCE(row_index, 1) = 1
             """,
             (start_time, end_time),
         ).fetchone()
@@ -1351,7 +1352,7 @@ class OnlineMrDiagnosisRepository:
             ).fetchone()
         if not busy or all(value is None for value in busy):
             busy = conn.execute(
-                "SELECT AVG(tx_busy), MAX(tx_busy), AVG(rx_busy), MAX(rx_busy) FROM channel_busy_records WHERE COALESCE(row_index, 1) = 1"
+                "SELECT AVG(tx_busy), MAX(tx_busy), AVG(rx_busy), MAX(rx_busy) FROM channel_busy_records"
             ).fetchone()
         conn.execute(
             """

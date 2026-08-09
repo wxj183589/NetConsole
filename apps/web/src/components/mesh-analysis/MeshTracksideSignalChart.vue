@@ -77,6 +77,7 @@ const props = withDefaults(defineProps<{
   chartId?: Exclude<MeshRssiChartSource, 'active-rssi' | 'programmatic'>
   syncPointerTime?: string | null
   syncPointerSource?: MeshRssiChartSource | null
+  selectedTime?: string | null
 }>(), {
   series: () => [],
   seriesCache: null,
@@ -96,6 +97,7 @@ const props = withDefaults(defineProps<{
   chartId: 'trackside-rssi',
   syncPointerTime: null,
   syncPointerSource: null,
+  selectedTime: null,
 })
 const emit = defineEmits<{
   selectSwitch: [event: MeshChartEvent]
@@ -104,6 +106,7 @@ const emit = defineEmits<{
   'pointer-change': [pointer: MeshSharedPointerChange]
   'viewport-interaction-start': []
   'viewport-interaction-end': []
+  'select-time': [time: string]
   'workload-phase': [phase: 'echarts-init' | 'echarts-set-option' | 'echarts-interactive' | 'chart-disposed']
   'workload-profile': [profile: { conflictEdgeCount: number }]
 }>()
@@ -806,6 +809,7 @@ watch(() => props.sharedTimeDomain, () => scheduleChartUpdate('theme'), { deep: 
 watch(() => [props.syncPointerTime, props.syncPointerSource] as const, ([time, source]) => {
   if (source !== props.chartId) void nextTick(() => applySharedPointer(time))
 })
+watch(() => props.selectedTime, () => scheduleChartUpdate('theme'))
 
 function handleChartClick(raw: unknown): void {
   if (!props.active) return
@@ -835,6 +839,7 @@ function handleChartClick(raw: unknown): void {
   }
   if (pointMeta && pointSeries) selectTracksidePoint(pointMeta, pointSeries)
   if (event) emit('selectSwitch', event)
+  if (pointMeta) emit('select-time', formatMeshViewportTimestamp(pointMeta.timestampMillis))
 }
 
 function handleDataZoom(raw: unknown): void {
@@ -989,16 +994,23 @@ function tracksideOverlaySeries(
       { xAxis: band.end_time },
     ]),
   } : clearEmpty ? { data: [] } : undefined
-  const markLine = props.showSwitchLines && switchEvents.length ? {
+  const markLine = props.selectedTime || (props.showSwitchLines && switchEvents.length) ? {
     silent: false,
     symbol: 'none',
     label: { show: false },
-    lineStyle: { color: theme.warning, type: 'dashed' },
-    data: switchEvents.map((event) => ({
-      name: event.timestamp,
-      xAxis: event.timestamp,
-      eventIndex: event.eventIndex,
-    })),
+    data: [
+      ...(props.selectedTime ? [{
+        name: '当前分析时刻',
+        xAxis: props.selectedTime,
+        lineStyle: { color: theme.primary, type: 'solid', width: 2 },
+      }] : []),
+      ...(props.showSwitchLines ? switchEvents.map((event) => ({
+        name: event.timestamp,
+        xAxis: event.timestamp,
+        lineStyle: { color: theme.warning, type: 'dashed' },
+        eventIndex: event.eventIndex,
+      })) : []),
+    ],
   } : clearEmpty ? { data: [] } : undefined
   return [
     ...(seriesCache.series[0] ? [{

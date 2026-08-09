@@ -6,7 +6,7 @@ import {
   listRecentOnlineMrSessions,
 } from '../api/onlineMr'
 import type { OnlineMrSessionDetail, OnlineMrSessionSummary } from '../types/onlineMr'
-import { useOnlineMrAnalysisStore } from './onlineMrAnalysis'
+import { createOnlineMrAnalysisSessionCache, useOnlineMrAnalysisStore } from './onlineMrAnalysis'
 
 vi.mock('../api/onlineMr', () => ({
   getOnlineMrSession: vi.fn(),
@@ -163,5 +163,98 @@ describe('Online MR analysis selection store', () => {
     expect(store.siteKey).toBe('site-b')
     expect(store.sessions.map((item) => item.session_id)).toEqual(['C'])
     expect(store.selectedSessionId).toBe('C')
+  })
+
+  it('reuses the session list until an explicit refresh is requested', async () => {
+    vi.mocked(listRecentOnlineMrSessions).mockResolvedValue([summary('A')])
+    const store = useOnlineMrAnalysisStore()
+
+    await store.refreshSessions({ siteKey: 'site-a', selectFirstWhenEmpty: true })
+    await store.refreshSessions({ siteKey: 'site-a', selectFirstWhenEmpty: true })
+    expect(listRecentOnlineMrSessions).toHaveBeenCalledOnce()
+
+    await store.refreshSessions({ siteKey: 'site-a', selectFirstWhenEmpty: true, force: true })
+    expect(listRecentOnlineMrSessions).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps business chunks, UI state, and viewports isolated by site and session', () => {
+    const store = useOnlineMrAnalysisStore()
+    store.resetForSite('site-a')
+    const a = createOnlineMrAnalysisSessionCache('site-a', 'A')
+    a.activeTab = 'charts'
+    a.chartTab = 'rssi'
+    a.businessRows.main_link = [{ device_time: '2026-07-21 16:00:00', mr_rssi: -45 } as any]
+    a.businessOffsets.main_link = 500
+    a.businessHasMore.main_link = true
+    a.businessLoaded.main_link = true
+    a.rssiViewport = {
+      start_time: '2026-07-21 16:00:00', end_time: '2026-07-21 16:05:00',
+      start_percent: 20, end_percent: 60,
+      full_start_time: '2026-07-21 15:55:00', full_end_time: '2026-07-21 16:10:00',
+      source: 'user_zoom',
+    }
+    const b = createOnlineMrAnalysisSessionCache('site-a', 'B')
+    b.activeTab = 'mesh-detail'
+    b.businessRows.main_link = [{ device_time: '2026-07-21 17:00:00', mr_rssi: -70 } as any]
+    store.saveSessionCache(a)
+    store.saveSessionCache(b)
+
+    expect(store.getSessionCache('site-a', 'A')).toMatchObject({
+      activeTab: 'charts',
+      chartTab: 'rssi',
+      businessOffsets: { main_link: 500 },
+      businessHasMore: { main_link: true },
+      rssiViewport: { start_time: '2026-07-21 16:00:00', end_time: '2026-07-21 16:05:00' },
+    })
+    expect(store.getSessionCache('site-a', 'B')).toMatchObject({
+      activeTab: 'mesh-detail',
+      businessRows: { main_link: [{ mr_rssi: -70 }] },
+      rssiViewport: null,
+    })
+  })
+
+  it('invalidates only the requested data scope', () => {
+    const store = useOnlineMrAnalysisStore()
+    store.resetForSite('site-a')
+    const cache = createOnlineMrAnalysisSessionCache('site-a', 'A')
+    cache.detail = detail('A')
+    cache.detailLoaded = true
+    cache.revision = 'revision-a'
+    cache.activeTab = 'charts'
+    cache.businessLoaded.main_link = true
+    cache.businessRows.main_link = [{ mr_rssi: -50 } as any]
+    store.saveSessionCache(cache)
+
+    store.invalidateSessionAnalysis('site-a', 'A')
+    expect(store.getSessionCache('site-a', 'A')).toMatchObject({
+      detailLoaded: true,
+      revision: 'revision-a',
+      activeTab: 'charts',
+      businessLoaded: { main_link: false },
+      businessRows: { main_link: [] },
+    })
+
+    store.invalidateSession('site-a', 'A')
+    expect(store.getSessionCache('site-a', 'A')).toMatchObject({
+      detail: null,
+      detailLoaded: false,
+      activeTab: 'charts',
+      businessLoaded: { main_link: false },
+    })
+  })
+
+  it('deduplicates concurrent requests with the same cache resource key', async () => {
+    const store = useOnlineMrAnalysisStore()
+    const pending = deferred<number>()
+    const request = vi.fn(() => pending.promise)
+
+    const first = store.runDeduped('site-a\0A\0main-link\0revision-a\0offset-0', request)
+    const second = store.runDeduped('site-a\0A\0main-link\0revision-a\0offset-0', request)
+    expect(request).toHaveBeenCalledOnce()
+    pending.resolve(42)
+
+    await expect(Promise.all([first, second])).resolves.toEqual([42, 42])
+    await store.runDeduped('site-a\0A\0main-link\0revision-a\0offset-0', request)
+    expect(request).toHaveBeenCalledTimes(2)
   })
 })

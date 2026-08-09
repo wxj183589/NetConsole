@@ -1504,6 +1504,8 @@ def test_mr_mesh_download_keeps_raw_when_auto_repair_cannot_complete(tmp_path: P
     device = DeviceRepository(database).create(
         Device(name="MR-03", device_type="MR", primary_address="192.0.2.55")
     )
+    expected_profile = MeshStorageService("demo", paths).ensure_mr_profile_identity_for_device(device)
+    repaired_profile_ids: list[str] = []
 
     class FakeTransfer:
         def __init__(self, *_args, **_kwargs):
@@ -1530,8 +1532,20 @@ def test_mr_mesh_download_keeps_raw_when_auto_repair_cannot_complete(tmp_path: P
         def import_files(self, *_args, **_kwargs):
             raise MeshSchemaRebuildRequired("MESH 派生数据库版本不兼容")
 
+    class FakeMaintenance:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def repair(self, _site, *, profile_ids, **_kwargs):
+            repaired_profile_ids.extend(profile_ids)
+            raise RuntimeError("repair failed")
+
     monkeypatch.setattr("netconsole.services.file_management_service.FileTransferService", FakeTransfer)
     monkeypatch.setattr("netconsole.services.file_management_service.MeshImportService", FakeImport)
+    monkeypatch.setattr(
+        "netconsole.services.file_management_service.MeshDerivedDataMaintenanceService",
+        FakeMaintenance,
+    )
     target = paths.site_mesh_root("demo") / "MR-03" / "raw" / "MR-03-2026_07_16-meshlog.log"
     relative = target.relative_to(paths.site_dir("demo")).as_posix()
     job = BackgroundJob(
@@ -1558,6 +1572,7 @@ def test_mr_mesh_download_keeps_raw_when_auto_repair_cannot_complete(tmp_path: P
     assert result["mesh_import_error_code"] == "MESH_DERIVED_DATA_REPAIR_FAILED"
     assert "自动修复失败" in result["mesh_import_error"]
     assert target.read_text(encoding="utf-8") == "mesh"
+    assert repaired_profile_ids == [expected_profile.mr_id]
 
 
 def test_mesh_parse_failure_keeps_the_downloaded_raw_file(tmp_path: Path, monkeypatch) -> None:

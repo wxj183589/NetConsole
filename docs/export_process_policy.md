@@ -177,17 +177,18 @@ ExportProcessManager
 
 ## 七、数据库和文件规则
 
-轨旁 AP 业务导出是“提交时冻结业务快照”的正式实现。Backend 先校验页面
-`expected_revision`，再把基础业务行、工作簿输入、来源 revision 和 SHA-256 写入
-`staging/trackside_ap_business/<site>/<task>/snapshot.json`；Worker 只读快照并分别
-校验业务行和工作簿行 hash，不访问实时业务库。终态回调和重启恢复清理 staging，
-Task/Artifact 保留安全 revision、hash 和计数。详见
+轨旁 AP 业务导出是“Worker 内准备并冻结业务快照”的正式实现。Backend 只验证请求
+契约并创建 Export Task，把页面 `expected_revision` 交给 Worker；Worker 在独立
+Export Process 中以只读连接读取局点数据库，把基础业务行、工作簿输入、来源 revision 和 SHA-256 写入
+`staging/trackside_ap_business/<site>/<task>/snapshot.json`，随后只读取该冻结快照
+渲染工作簿，不再访问实时业务库。快照准备、渲染和清理都在 Worker 内完成；任务已
+创建后若准备失败，Task/Artifact 进入失败终态并向 UI 返回结构化错误。详见
 [轨旁 AP 业务只读快照](TRACKSIDE_AP_BUSINESS_SNAPSHOT.md)。
 
 必须：
 
 - 导出进程自己打开 SQLite 连接。
-- 导出进程只读取 job 中指定的数据源和 filters。
+- 导出进程只读取 job 中指定的数据源和 filters，并在 Worker 内生成冻结快照。
 - 输出文件先写临时文件，成功后再替换目标文件。
 - 失败时保留清晰错误信息，必要时清理不完整临时文件。
 - 本地 `.xlsx` 导出应优化列宽、筛选、冻结、文本格式，便于 WPS Office / Microsoft Office 打开。
@@ -202,7 +203,7 @@ Task/Artifact 保留安全 revision、hash 和计数。详见
 
 - 复用 UI 线程数据库连接。
 - 依赖 WPS 云服务、WPS API、KDocs 或在线同步能力。
-- 在 UI 线程中预先读取全量数据再传给导出进程。
+- 在 UI 线程中预先读取全量数据或把全量业务行 inline 传给导出进程。
 - 默认把大数据 inline rows 写入 Job JSON；兼容 inline 模式必须显式启用且不超过当前 5000 行上限。
 - 导出失败静默，或只写控制台不反馈 UI。
 - Electron Bridge 缺失时回退到 Browser anchor 下载。

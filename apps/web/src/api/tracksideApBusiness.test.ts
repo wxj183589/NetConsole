@@ -9,6 +9,7 @@ import {
   cancelTracksideApTask,
   exportTracksideApPlan,
   exportTracksideApRenameCommands,
+  getTracksideApOnlineStatus,
   getTracksideApPlan,
   getTracksideApTask,
   listTracksideWpsTargets,
@@ -32,12 +33,18 @@ describe('trackside AP business API', () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ task_id: 'task-export' }) })
     vi.stubGlobal('fetch', fetchMock)
 
-    const proposal: TracksideApBusinessExportProposal & TracksideApBusinessExportRequest = {
+    const proposal = {
       generated_at: '2026-08-02T18:00:00+08:00',
       suggested_name: '宁波地铁12号线_轨旁AP业务_20260802_180000.xlsx',
       expected_revision: 'revision-1',
       site_id: '宁波地铁12号线',
       site_display_name: '宁波地铁12号线',
+      station: '站点A',
+      query: 'AP-A',
+      selected_row_ids: ['row-1'],
+      optical_anomaly_only: true,
+    } as TracksideApBusinessExportProposal & TracksideApBusinessExportRequest & {
+      optical_anomaly_only: boolean
     }
 
     await startTracksideApBusinessExport(proposal)
@@ -48,6 +55,9 @@ describe('trackside AP business API', () => {
         generated_at: '2026-08-02T18:00:00+08:00',
         suggested_name: '宁波地铁12号线_轨旁AP业务_20260802_180000.xlsx',
         expected_revision: 'revision-1',
+        station: '站点A',
+        query: 'AP-A',
+        selected_row_ids: ['row-1'],
       }),
     })
   })
@@ -71,6 +81,7 @@ describe('trackside AP business API', () => {
     await cancelTracksideApTask('task-1')
     await recoverTracksideApTasks()
     await getTracksideApPlan()
+    await getTracksideApOnlineStatus()
     await saveTracksideApPlan([])
     await exportTracksideApPlan(true)
     await exportTracksideApRenameCommands()
@@ -85,6 +96,7 @@ describe('trackside AP business API', () => {
       '/api/rail-transit/trackside-ap-business/tasks/task-1/cancel',
       '/api/rail-transit/trackside-ap-business/tasks/recover',
       '/api/rail-transit/trackside-ap-business/plan',
+      '/api/rail-transit/trackside-ap-business/plan/online-status',
       '/api/rail-transit/trackside-ap-business/plan/save',
       '/api/rail-transit/trackside-ap-business/plan/export',
       '/api/rail-transit/trackside-ap-business/base/rename-commands/export',

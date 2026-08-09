@@ -25,12 +25,13 @@ fping 进程仍由统一 `ShutdownManager` 登记和回收，Online MR Worker �
 功能关闭时不创建无人值守 Repository 或 Supervisor；索引库初始化失败也只让本功能 API 返回结构化
 `GROUND_UNATTENDED_UNAVAILABLE`，不会阻断人工 Online MR 或整个 Backend 启动。
 
-WMESH Syslog 的 AP 展示身份统一通过 `ApIdentityQueryService` 查询。Peer、Radio MAC 和 BSSID
-使用 `resolve_peer_macs(ap_role="trackside")`，物理 AP MAC 本身不能作为 Peer 命中证据。历史查询
-按当前页 distinct MAC 批量预加载；实时 Receiver 缓存已经解析的 MAC，并以 Identity revision 为
-失效边界。实时记录在既有 `parsed_details` 中保存 entity ID、revision、状态、来源和原因；历史原始
-NDJSON 不改写，只在读取投影中补充当前身份。Ground 不再从基础资料和 AC 明细建立第二套
-AP/Radio/Alias 字典。
+WMESH Syslog 的 AP 展示身份统一通过 `ApIdentityQueryService` 查询。Current AP 和 WMESH old/new
+端点都可能是物理 AP MAC、Radio MAC、BSSID 或已登记 alias，统一使用
+`resolve_current_ap_macs(ap_role="trackside")` 做完整 48 位 MAC 精确解析；不使用名称、尾号、前缀、
+SQL `LIKE` 或 MAC 偏移猜测。历史查询按当前页 distinct old/new MAC 单批预加载，并在同一请求内固定
+Identity revision；实时 Receiver 缓存已经解析的 MAC，并以 Identity revision 为失效边界。实时记录
+在既有 `parsed_details` 中保存 entity ID、revision、状态、来源和原因；历史原始 NDJSON 不改写，只在
+读取投影中补充当前身份。Ground 不再从基础资料和 AC 明细建立第二套 AP/Radio/Alias 字典。
 
 ## 运行状态与查看上下文
 
@@ -102,6 +103,12 @@ Ping 原始文件和汇总。其他配置保持当前 run 的既有冻结语义�
 
 `GroundUnattendedEligibilityClassifier` 组合当前局点：
 
+Current AP 现场字段在基础资料未直接建立 AP 记录时，通过
+`ApIdentityQueryService.resolve_current_ap_macs(ap_role="trackside")` 使用同一批次
+Identity revision 进行精确解析。运行时 AP 只能由匹配的实体和物理 MAC 构造；
+`ambiguous`/无效 MAC/缺少 alias 仍然不可获得正线或 Ping 资格。匹配证据、
+Identity revision、站点状态和主线/Ping 排除原因以 `ap_identity_diagnostics_json` 保存。
+
 - `main_path_code`；
 - 站点 `node_type/path_code/participates_in_direction/track_facilities`；
 - 区间 `section_kind/path_code`；
@@ -116,9 +123,17 @@ AP 名称、显示别名和站点名称都不参与位置身份匹配。AC 上�
 
 已匹配的正式轨旁 AP 使用统一 `location_class`。AP 明确标记为
 `DEPOT/PARKING_YARD/STABLING/DEPOT_CONNECTION/TEST_TRACK/NON_MAINLINE` 时按该特殊位置处理；
-历史记录缺少 `location_class` 且没有特殊区域证据时兼容为 `MAINLINE`。这条默认值仅适用于已经匹配的
-轨旁 AP，不得扩展到未匹配 MAC。特殊位置与 `participates_in_mainline=true` 的冲突会在基础资料保存时
-阻断，历史冲突只读可见并保持失败关闭。
+`UNKNOWN`/空值只表示 AP 层没有位置证据，必须继续使用已解析的站点、区间和主路径判断；站点属于
+`MAIN + participates_in_direction` 时按正线处理，车辆段、停车场、存车线和明确非主路径仍按非正线处理。
+已匹配 AP 在站点、区间和路径都没有特殊区域证据时使用 `DEFAULT_MAINLINE`，不得把 AP 层的
+`UNKNOWN` 解释为非正线。只有 AP 未匹配、身份歧义或 MAC 无效时才保留 `UNKNOWN`。特殊位置与
+`participates_in_mainline=true` 的冲突会在基础资料保存时阻断，历史冲突只读可见并保持失败关闭。
+
+活动运行的 AP Location Classification 与 Mainline Decision 一次生成并作为单一事实源。列车列表、
+详情、Ping 和深采调度共同消费 `location_class/location_class_source/participates_in_mainline`、
+`mainline_*`、`ping_*`、`deep_collection_*`、`decision_revision/decision_source`，不再分别读取旧资格
+字段推断位置。历史 schema 缺少该契约时只迁移已有资格证据的派生快照并标记
+`LEGACY_ELIGIBILITY_SNAPSHOT`；原始 AC、Ping、Syslog 和 AP Identity 事实不重算、不改写。
 
 分类结果不再用单一 `eligibility_status` 同时控制全部业务，而是独立返回：
 
@@ -186,6 +201,21 @@ AC 位置未知，并继续识别 CT 单端、CW 单端和双端同时丢包。
 分片重建或 Backend 恢复同一 run 不重置激活时间；目标真正移除后重新加入才重新预热。原始样本同时
 保存采样时的 AP identity/名称/MAC、站点、区间、里程、RSSI、AC 快照及接收时间、位置质量和
 AP 切换上下文，历史查询不会把当前 AP 回填到旧样本。
+
+Ping 曲线的黄色切换标记只来自索引库中持久化的真实
+`MESH_ACTIVELINK_SWITCH`，周期 Ping 位置上下文和重复 `display wlan mesh-link` 状态采样都不生成
+切换事件。重复 ingest 优先按 raw file/line 或事件 provenance 合并；真实
+`A -> B -> A -> B` flap 全部保留。一次曲线查询用请求级 `GroundApDisplayResolver` 批量解析 old/new
+Radio/BSSID Peer，固定同一 Identity revision，并按同 run、同 MR、同 CT/CW、同 AP、前后各 5 秒
+关联真实 RSSI。RSSI 保留采集源数值语义，不自动补负号或插值。图形仅把同一自然秒的多条真实事件
+聚合成 `AP 切换 xN`，底层事件不删除。
+
+时间轴和 Ping 曲线共用 `GroundApDisplayResolver.project_switch()` 生成 canonical Switch 投影，统一
+返回原始 old/new Peer、解析后的 AP ID/名称/物理 MAC、站点、区间、两端状态/来源/规则/原因和批次
+revision。聚合状态明确区分 `BOTH_MATCHED`、`OLD_ONLY_MATCHED`、`NEW_ONLY_MATCHED`、
+`BOTH_NOT_FOUND`、身份冲突、`INVALID_MAC` 与 `NO_AP_ENDPOINT`；任一端未解析或不存在都只影响展示，
+不会丢弃真实 Switch。时间轴保留原始 Peer 切换并追加解析后的 AP/站点，Ping Tooltip 使用同一投影，
+历史事件在查询时按当前可用 Identity 只读补全。
 
 页面“长 Ping”保留内容自适应、超限内部滚动的汇总表，曲线不再占用列表下方空间。点击“查看曲线”
 打开 Vue 内部非模态浮窗：没有遮罩，不锁定页面滚动，主页面仍可切换页签、筛选和查看其他列车；标题栏
@@ -322,12 +352,13 @@ IP/端口，保留其他 IP 的外部目标，不执行 `undo`。当前现场 H3
 详情中明确二次确认后才允许改端口，并写入高风险授权与执行审计。配置指纹包含排序后的全部 loghost 和
 当前 managed target，因此设备输出顺序变化不产生伪变更。
 
-`ground_unattended` 索引库的 additive schema v9 包含列车清单/端点绑定/策略、boot session、Syslog
+`ground_unattended` 索引库的 additive schema v10 包含列车清单/端点绑定/策略、boot session、Syslog
 配置审计、结构化 Syslog 事件、`radio_interface_states`、`mr_runtime_states`、`radio_correlations`、
 原始文件索引、Ping 丢包区间和健康事件表；新增 Profile 外部地址确认和自动补齐字段，以及
 Boot Session 的前后设备时钟、估算误差、重启原因、设备时区、UTC offset、时间质量和时钟跳变证据。
 本轮新增深采总开关、Ping 预热字段、目标激活表、运行控制操作表、raw file `revision` 和
-`ground_unattended_delete_operations` 删除审计表；旧 `system` 或空时区迁移为
+`ground_unattended_delete_operations` 删除审计表；列车运行快照新增位置来源、正线参与标记、三类
+资格原因码/文案和决策 revision/source。旧 `system` 或空时区迁移为
 `Asia/Shanghai`，其他显式 IANA 时区保持不变。启动迁移为幂等加列与
 `CREATE TABLE IF NOT EXISTS`，不重建既有局点数据库。
 
@@ -357,6 +388,28 @@ Boot Session 的前后设备时钟、估算误差、重启原因、设备时区�
 Session 只有满足最低时长、Mesh raw 存在且增长、最终化完成、正式包可用且完整性为 complete 时才
 计为 `COVERED`；单端失败、时长不足、静止/离线、软件中断或最终化不完整为 `PARTIAL`，后续重新
 符合条件时继续补采。
+
+深采资格与 Collector 状态严格分离。`INELIGIBLE`、`ELIGIBLE`、`QUEUED` 只描述资格或调度位置；
+创建 Online MR 会话但尚无任何 Collector 原始字节时为 `STARTING`。只有会话可读取且至少一个
+Collector 已写入原始字节时才展示 `RUNNING`。`GET /deep-collections/records` 复用受管 Online MR
+原始日志的 source/cursor 读取契约，按会话和分类返回有界增量；UI 的“暂停显示”只停止轮询与滚动，
+不会停止后台 Collector，也不会把文件大小或当前分页行数伪装为记录总数。
+
+深采记录在查询层按内容语义投影为 `WMESH/RSSI/RADIO/STATUS/RAW_OUTPUT`。WMESH 只接受解析成功的
+链路状态或切换事件，RSSI 必须同时具有 MAC 和真实数值，Radio 只接受信道/接口/射频 telemetry，
+Status 只接受明确生命周期或错误状态；命令回显、prompt、`display clock` 和时区文本只属于 raw。
+过滤顺序固定为分类、关键词、时间排序、cursor/limit，cursor 同时绑定 Session、分类和关键词。
+切换筛选会取消旧请求并清空列表；暂停后恢复继续使用原 cursor 补拉，不跳到最新。
+
+列车详情的 CT/CW 会话按钮先用稳定 `collector_session_id` 查询现有 Online MR Session，再复用
+`/rail-transit/online-mr-analysis?session_id=...` 工作区。活动和已结束 Session 均可打开；Session
+缺失显示“会话不存在或已被清理”，其他失败显示结构化 error code 和 request ID。Browser 与 Electron
+使用同一路由契约，不创建第二套 Session Viewer。
+
+Ping 和深采浮窗 body 使用 `flex: 1; min-height: 0` 的真实可用空间。深采表格填满余下高度并仅在
+table body 滚动；Ping 的 RTT 区为主要弹性区、逐包图和丢包表保留有界空间。ECharts 通过
+`ResizeObserver + requestAnimationFrame` 响应最大化、恢复和 DPI 导致的容器变化，不依赖写死的
+viewport 减法。
 
 ## 数据、归档和恢复
 
@@ -433,6 +486,7 @@ PUT      /trains/{train_id}/policy
 GET      /ping-targets | /ping-summary | /ping-series | /ping-series/incremental
 GET      /ping-samples | /timeline
 GET      /deep-collections | /coverage
+GET      /deep-collections/records
 GET      /operations/active | /operations/latest | /operations/{operation_id}
 GET      /archives | /archives/{archive_id} | /archives/{archive_id}/detail
 POST     /archives/{archive_id}/verify

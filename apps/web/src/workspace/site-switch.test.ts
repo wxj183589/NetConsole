@@ -1,8 +1,22 @@
+// @vitest-environment happy-dom
+
 import { describe, expect, it, vi } from 'vitest'
 
-import { coordinateSiteSwitch, SiteSwitchCancelled } from './site-switch'
+import { coordinateSiteSwitch, notifyBeforeSiteSwitch, SiteSwitchCancelled } from './site-switch'
 
 describe('site switch coordination', () => {
+  it('waits for active pages to resolve an asynchronous dirty-draft decision', async () => {
+    let resolveDraft: ((value: boolean) => void) | undefined
+    window.addEventListener('netconsole:before-site-switch', (event) => {
+      const detail = (event as CustomEvent<{ waitUntil: (promise: Promise<boolean>) => void }>).detail
+      detail.waitUntil(new Promise((resolve) => { resolveDraft = resolve }))
+    }, { once: true })
+    const pending = notifyBeforeSiteSwitch('line-b')
+
+    resolveDraft?.(true)
+    await expect(pending).resolves.toBe(true)
+  })
+
   it('treats a page cancellation during workspace preparation as cancelled', async () => {
     const coordinator = {
       isBlocked: () => false,

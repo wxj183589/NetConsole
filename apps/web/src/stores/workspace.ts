@@ -25,6 +25,7 @@ import type {
 import { notifyBeforeSiteSwitch, SiteSwitchCancelled } from '../workspace/site-switch'
 
 const SAVE_DEBOUNCE_MS = 250
+const BASE_DATA_ROUTE_NAME = 'rail-transit-base-data'
 
 export const useWorkspaceStore = defineStore('workspace', () => {
   const windowId = ref('browser-main')
@@ -73,7 +74,13 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       synchronizeRoute(to.fullPath)
     })
     initialized.value = true
-    const target = activeTab.value?.routeFullPath || WORKSPACE_DEFAULT_ROUTE
+    const restoredTarget = activeTab.value?.routeFullPath || WORKSPACE_DEFAULT_ROUTE
+    const target = restored.snapshot
+      ? landingRouteForWorkspaceActivation(restoredTarget)
+      : restoredTarget
+    if (target !== restoredTarget && activeTab.value) {
+      updateTabRouteIntent(activeTab.value, safeCanonical(target))
+    }
     if (nextRouter.currentRoute.value.fullPath !== target) {
       await nextRouter.replace(target)
     }
@@ -100,7 +107,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       const existing = tabs.value.find((tab) => tab.identityKey === canonical.identityKey)
       if (existing) {
         updateTabRouteIntent(existing, canonical)
-        if (options.activate !== false) await activateTab(existing.id)
+        if (options.activate !== false) await activateTab(existing.id, { preserveRouteIntent: true })
         else scheduleSave()
         return existing
       }
@@ -108,7 +115,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     const tab = createTab(canonical, Boolean(options.duplicate))
     tabs.value.push(tab)
     sortTabs()
-    if (options.activate !== false) await activateTab(tab.id)
+    if (options.activate !== false) await activateTab(tab.id, { preserveRouteIntent: true })
     scheduleSave()
     return tab
   }
@@ -117,15 +124,24 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     return openRoute(routeFullPath)
   }
 
-  async function activateTab(tabId: string): Promise<void> {
+  async function activateTab(
+    tabId: string,
+    options: { preserveRouteIntent?: boolean } = {},
+  ): Promise<void> {
     const tab = tabs.value.find((candidate) => candidate.id === tabId)
     if (!tab) return
+    const targetRoute = options.preserveRouteIntent
+      ? tab.routeFullPath
+      : landingRouteForWorkspaceActivation(tab.routeFullPath)
+    if (targetRoute !== tab.routeFullPath) {
+      updateTabRouteIntent(tab, safeCanonical(targetRoute))
+    }
     activeTabId.value = tab.id
     tab.lastActivatedAt = Date.now()
     syncTitle()
     scheduleSave()
-    if (router && router.currentRoute.value.fullPath !== tab.routeFullPath) {
-      await router.push(tab.routeFullPath)
+    if (router && router.currentRoute.value.fullPath !== targetRoute) {
+      await router.push(targetRoute)
     }
   }
 
@@ -250,7 +266,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   ): Promise<WorkspaceWindowState> {
     const checkpoint = createSnapshot()
     try {
-      if (!notifyBeforeSiteSwitch(targetSiteId)) throw new SiteSwitchCancelled()
+      if (!await notifyBeforeSiteSwitch(targetSiteId)) throw new SiteSwitchCancelled()
 
       const dashboardCanonical = safeCanonical(WORKSPACE_DEFAULT_ROUTE)
       const settingsCanonical = safeCanonical(settingsRouteFullPath)
@@ -327,6 +343,18 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       return canonicalizeWorkspaceRoute(router, routeFullPath)
     } catch {
       return canonicalizeWorkspaceRoute(router, WORKSPACE_DEFAULT_ROUTE)
+    }
+  }
+
+  function landingRouteForWorkspaceActivation(routeFullPath: string): string {
+    try {
+      const resolved = router?.resolve(routeFullPath)
+      if (resolved?.name !== BASE_DATA_ROUTE_NAME || !resolved.query.tab) return routeFullPath
+      const url = new URL(routeFullPath, 'http://netconsole.local')
+      url.searchParams.delete('tab')
+      return `${url.pathname}${url.search}${url.hash}`
+    } catch {
+      return routeFullPath
     }
   }
 
