@@ -51,11 +51,9 @@ class MeshParsedRebuildService:
             self._require_inside(raw_file, raw_root, "MESH raw 文件")
         if not raw_files and not allow_empty_raw:
             raise ValueError("没有可用于重建的原始 MESH 日志")
-        # 维护服务可能只恢复实际登记过的来源。未登记的历史副本和本次等待
-        # 导入的候选都不属于该次重建输入，也不能让它们的变化中断重建。
         raw_snapshot = {
             path.relative_to(raw_root).as_posix(): self._sha256(path)
-            for path in raw_files
+            for path in self._raw_files(raw_root)
         }
         self._check_cancel(should_cancel)
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
@@ -104,7 +102,7 @@ class MeshParsedRebuildService:
             self._check_cancel(should_cancel)
             current = {
                 path.relative_to(raw_root).as_posix(): self._sha256(path)
-                for path in raw_files
+                for path in self._raw_files(raw_root)
             }
             if current != raw_snapshot:
                 raise RuntimeError("重建期间原始 MESH 日志发生变化")
@@ -120,8 +118,6 @@ class MeshParsedRebuildService:
                 "parsed_record_count": result.parsed_record_count,
                 "issue_count": len(result.issues),
                 "archive_created": moved_index or moved_parsed,
-                "archived_index_path": str(archived_index) if moved_index else "",
-                "archived_parsed_path": str(archived_parsed) if moved_parsed else "",
             }
         except Exception:
             gc.collect()

@@ -65,7 +65,6 @@ export interface MeshLocalScanStats {
   found_count: number; unregistered_count: number; imported_count: number; duplicate_count: number
   invalid_count: number; needs_metadata_count: number; failed_count: number
   waiting_repair_count: number; repairing_count: number; repair_failed_count: number; parse_failed_count: number
-  queued_count: number; parsing_count: number; ignored_count: number
 }
 export interface MeshLocalScanProfile { profile_id: string; display_name: string }
 export interface MeshLocalScanCandidate {

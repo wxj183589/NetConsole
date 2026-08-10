@@ -354,15 +354,6 @@ const taskActive = computed(() => Boolean(taskCard.value && !terminalStates.has(
 const taskProgress = computed(() => taskCard.value?.progress ?? 0)
 const taskSummary = computed(() => {
   if (!taskCard.value) return ''
-  if (taskCard.value.type === 'mesh_derived_data_repair') {
-    if (taskCard.value.status === 'FAILED') {
-      return '数据库升级未完成，等待重试。原始日志和旧派生数据库均已保留。'
-    }
-    const details = taskCard.value.details || {}
-    if (taskCard.value.status === 'COMPLETED' && Number(details.warning_count || 0) > 0) {
-      return `分析数据库升级完成，${Number(details.skipped_missing_source_count || 0)} 个历史来源因原始文件缺失未恢复，本次已继续导入 ${Number(details.imported_pending_count || details.resumed_count || 0)} 个日志。`
-    }
-  }
   if (taskCard.value.error_summary) return taskCard.value.error_summary
   if (taskCard.value.message) return taskCard.value.message
   const count = Object.keys(taskCard.value.details || {}).length
@@ -406,9 +397,6 @@ const localScanCanImport = computed(() => Boolean(
   localScanSelected.value.length
   && localScanSelected.value.every((candidateId) => Boolean(localScanMappings[candidateId])),
 ))
-const localScanActionLabel = computed(() => localScanCandidates.value.some((item) => (
-  localScanSelected.value.includes(item.candidate_id) && item.scan_status === 'repair_failed'
-)) ? '重试自动修复' : '导入选中')
 const linkTimeGroups = computed(() => buildMeshTimeGroupClasses(links.value, (row) => `${row.timestamp}::${row.timestamp_tag || ''}`))
 const switchTimeGroups = computed(() => buildMeshTimeGroupClasses(switches.value, (row) => row.timestamp))
 const chartData = computed(() => rssiActivePath.value)
@@ -2738,7 +2726,7 @@ function localScanStatusText(status: MeshLocalScanCandidate['scan_status']): str
     repairing: '正在自动修复',
     queued: '等待自动导入',
     parsing: '正在解析',
-    repair_failed: '数据库升级未完成，等待重试',
+    repair_failed: '自动修复失败，可重试',
     parse_failed: '日志解析失败，可重试',
     ignored: '已忽略',
   }[status]
@@ -3667,9 +3655,6 @@ function exportTimestamp(now = new Date()): string {
           <el-tag effect="plain">待补充 {{ localScanResult.stats.needs_metadata_count }}</el-tag>
           <el-tag v-if="localScanResult.stats.waiting_repair_count" type="warning" effect="plain">等待升级 {{ localScanResult.stats.waiting_repair_count }}</el-tag>
           <el-tag v-if="localScanResult.stats.repairing_count" type="warning" effect="plain">正在修复 {{ localScanResult.stats.repairing_count }}</el-tag>
-          <el-tag v-if="localScanResult.stats.queued_count" type="info" effect="plain">等待导入 {{ localScanResult.stats.queued_count }}</el-tag>
-          <el-tag v-if="localScanResult.stats.parsing_count" type="info" effect="plain">正在解析 {{ localScanResult.stats.parsing_count }}</el-tag>
-          <el-tag v-if="localScanResult.stats.repair_failed_count" type="danger" effect="plain">升级失败 {{ localScanResult.stats.repair_failed_count }}</el-tag>
         </div>
         <div class="jump-actions local-scan-toolbar">
           <el-button @click="selectAllLocalScanCandidates">导入全部未登记文件</el-button>
@@ -3694,7 +3679,7 @@ function exportTimestamp(now = new Date()): string {
           </tbody></table>
         </div>
       </template>
-      <template #footer><el-button @click="localScanVisible = false">关闭</el-button><el-button type="primary" :loading="localScanImporting" :disabled="!localScanCanImport" @click="importSelectedLocalScan">{{ localScanActionLabel }}</el-button></template>
+      <template #footer><el-button @click="localScanVisible = false">关闭</el-button><el-button type="primary" :loading="localScanImporting" :disabled="!localScanCanImport" @click="importSelectedLocalScan">导入选中</el-button></template>
     </el-dialog>
 
     <el-dialog v-model="importVisible" title="MESH 原始日志导入" width="min(1180px, 96vw)">

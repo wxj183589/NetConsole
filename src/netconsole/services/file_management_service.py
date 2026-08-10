@@ -1504,7 +1504,7 @@ class FileManagementApplicationService:
         elif snapshot.status is TaskState.CANCELLED:
             message = "文件下载已取消"
         elif result_dto is not None and result_dto.mesh_import_status == "rebuild_required":
-            message = "文件下载完成，等待 MESH 分析数据库自动修复"
+            message = "文件下载完成，MESH 分析数据库正在自动修复"
         elif result_dto is not None and result_dto.mesh_import_status == "repair_failed":
             message = "文件下载完成，MESH 分析数据库自动修复失败"
         elif result_dto is not None and result_dto.mesh_import_status == "failed":

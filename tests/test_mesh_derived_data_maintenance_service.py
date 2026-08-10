@@ -5,7 +5,7 @@ from pathlib import Path
 
 from netconsole.core.paths import PathResolver
 from netconsole.services.background_job import BackgroundJob
-from netconsole.repositories.mesh_mr_repository import MeshMrRepository
+from netconsole.repositories.mesh_mr_repository import MeshMrRepository, SCHEMA_VERSION
 from netconsole.services.job_center.handlers.mesh_jobs import mesh_derived_data_repair
 from netconsole.services.job_center.job_context import JobContext
 from netconsole.services.mesh_derived_data_maintenance_service import (
@@ -13,7 +13,6 @@ from netconsole.services.mesh_derived_data_maintenance_service import (
     MeshRepairMode,
 )
 from netconsole.services.mesh_local_scan_service import MeshLocalScanService
-from netconsole.services.mesh_import_service import MeshImportService
 from netconsole.services.mesh_storage_service import MeshStorageService
 
 
@@ -103,41 +102,3 @@ def test_empty_recreate_resumes_selected_local_scan_candidate(tmp_path: Path) ->
     final = scan_service.get_scan(scan_id)
     assert final["candidates"][0]["scan_status"] == "imported"
     assert len(MeshMrRepository(paths.mesh_mr_db_path("demo", selected.safe_folder_name)).list_source_files()) == 1
-
-
-def test_partial_rebuild_skips_missing_registered_source_and_preserves_metadata(tmp_path: Path) -> None:
-    paths = _paths(tmp_path)
-    profile = MeshStorageService("demo", paths).create_mr_profile("列车07-MR-CT")
-    source = tmp_path / "history.log"
-    source.write_text("[1] 2026/08/03 10:12:33.579 (3)\n" + LINE + "\n", encoding="utf-8")
-    MeshImportService("demo", paths).import_files(profile, [source])
-    raw_root = paths.mesh_mr_raw_dir("demo", profile.safe_folder_name)
-    raw_file = next(raw_root.rglob("*.log"))
-    missing_name = raw_file.name
-    raw_file.rename(raw_file.with_name(f"{missing_name}.moved"))
-    unregistered = raw_root / "copied-but-never-imported.log"
-    unregistered.write_text("unregistered", encoding="utf-8")
-    index = _make_old_empty_index(paths, profile)
-
-    inspection = MeshDerivedDataMaintenanceService(paths).inspect("demo")
-    entry = inspection["incompatible_profiles"][0]
-    assert entry["repair_mode"] == MeshRepairMode.PARTIAL_SOURCE_REBUILD.value
-    assert entry["registered_source_count"] == 1
-    assert entry["missing_source_count"] == 1
-    assert entry["raw_file_count"] == 1
-
-    result = MeshDerivedDataMaintenanceService(paths).repair("demo")
-
-    assert result["skipped_missing_source_count"] == 1
-    assert result["warning_count"] == 1
-    assert unregistered.is_file()
-    with sqlite3.connect(index) as connection:
-        connection.row_factory = sqlite3.Row
-        row = connection.execute(
-            "SELECT source_status, parse_status, file_exists, original_filename FROM source_files"
-        ).fetchone()
-    assert row is not None
-    assert row["source_status"] == "RAW_FILE_MISSING"
-    assert row["parse_status"] == "missing"
-    assert row["file_exists"] == 0
-    assert row["original_filename"] == missing_name

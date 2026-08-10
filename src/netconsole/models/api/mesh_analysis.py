@@ -140,8 +140,6 @@ class MeshLocalScanStatsDTO(ApiModel):
     failed_count: int = Field(default=0, ge=0)
     waiting_repair_count: int = Field(default=0, ge=0)
     repairing_count: int = Field(default=0, ge=0)
-    queued_count: int = Field(default=0, ge=0)
-    parsing_count: int = Field(default=0, ge=0)
     repair_failed_count: int = Field(default=0, ge=0)
     parse_failed_count: int = Field(default=0, ge=0)
     ignored_count: int = Field(default=0, ge=0)
