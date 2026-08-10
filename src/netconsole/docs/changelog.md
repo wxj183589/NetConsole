@@ -1,4 +1,7 @@
 v1.4.9
+- 修复 Online MR Ping 质量指标展示：RTT、丢包率、固定分析栏、Tooltip 与 Y 轴统一复用 metricId 单位契约，RTT 固定使用 `ms` 且不再被 `0~100%` 上限裁剪，丢包率继续使用百分比。
+- MESH 来源诊断按 INFO、WARNING、ERROR 分级；过滤的 `LinkCnt=0` 占位和无效主链快照不再计作数据告警或使来源显示为 partial，重新解析后自动采用新口径。
+- 新增 MESH“AP 覆盖核查”，可比较两个已解析来源中实际观测到的正线 FIT-AP，区分已连接、未连接、资料未匹配与已排除项，并按用户选择位置导出五个 Sheet 的 Excel。
 - 无人值守深度采集强制接入标准 Online MR fping：按 CT/CW 管理 IP 独立启动，确认进程进入运行态后才开始 SSH；工具、目标或启动失败时阻止深采进入正常运行态。
 - 无人值守深采 fping 配置复用 `FpingConfig`、Web DTO、后端 Preset、`FpingV5ProbeRunner`、raw/samples/summary/metadata 与分析契约；配置独立持久化，页面不可关闭并展示每个 MR 的运行状态、样本和完整性。
 - 深采完成校验新增非空 fping samples 门槛，停止沿用 Traffic flush/finalize，重复 Session 启动复用既有 runner，普通 Fleet Ping 和轻量无人值守行为保持不变。

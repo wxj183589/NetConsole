@@ -11,6 +11,7 @@ const api = vi.hoisted(() => ({
   getGroundArchive: vi.fn(),
   getGroundProfile: vi.fn(),
   getGroundStatus: vi.fn(),
+  getOnlineMrControlPresets: vi.fn(),
   getOnlineMrSession: vi.fn(),
   getGroundTrain: vi.fn(),
   groundArchiveSummaryDownloadRequest: vi.fn(),
@@ -54,6 +55,7 @@ const api = vi.hoisted(() => ({
 const workspace = vi.hoisted(() => ({ openOrActivateRoute: vi.fn() }))
 
 vi.mock('../../api/groundUnattended', () => api)
+vi.mock('../../api/onlineMrControl', () => ({ getOnlineMrControlPresets: api.getOnlineMrControlPresets }))
 vi.mock('../../api/onlineMr', () => ({ getOnlineMrSession: api.getOnlineMrSession }))
 vi.mock('../../stores/workspace', () => ({ useWorkspaceStore: () => workspace }))
 vi.mock('../../api/client', () => {
@@ -171,6 +173,11 @@ function profile() {
     ac_ping_correlation_tolerance_seconds: 15, ap_switch_before_seconds: 5, ap_switch_after_seconds: 5,
     max_active_trains: 2, max_active_mrs: 4, max_starting_mrs: 2, max_finalizing_mrs: 2,
     deep_collection_master_enabled: true,
+    deep_fping_required: true,
+    deep_fping: {
+      enabled: true, target: '', preset_key: 'pis_high_ping_acceptance', preset_name: 'PIS 高频 Ping 验收',
+      packet_size: 64, interval_ms: 100, timeout_ms: 1000, loss_warn_percent: 1, latency_warn_ms: 100,
+    },
     fleet_ping_interval_ms: 1000, fleet_ping_timeout_ms: 4000, fleet_ping_packet_size: 64, fleet_ping_shard_size: 12, fleet_ping_warmup_seconds: 10,
     udp_listen_host: '0.0.0.0', udp_listen_port: 5514, udp_queue_capacity: 20000, raw_flush_interval_seconds: 1, raw_flush_record_count: 100,
     event_batch_size: 100, event_batch_interval_seconds: 1, boot_time_tolerance_seconds: 120, config_check_cooldown_seconds: 1800,
@@ -336,6 +343,14 @@ beforeEach(() => {
     message: '运行历史已删除',
   })
   api.getGroundStatus.mockResolvedValue(status())
+  api.getOnlineMrControlPresets.mockResolvedValue({
+    ping: [{
+      key: 'pis_high_ping_acceptance', name: 'PIS 高频 Ping 验收', packet_size_bytes: 64,
+      interval_ms: 100, timeout_ms: 1000, loss_warn_percent: 1, latency_warn_ms: 100,
+      description: '无人值守深度采集共享默认方案',
+    }],
+    traffic: [],
+  })
   api.getOnlineMrSession.mockResolvedValue({ session_id: 'session-ct', status: 'RUNNING' })
   workspace.openOrActivateRoute.mockResolvedValue({ id: 'online-mr-tab' })
   api.getGroundProfile.mockResolvedValue(profile())
