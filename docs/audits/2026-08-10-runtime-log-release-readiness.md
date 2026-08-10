@@ -28,7 +28,7 @@
 
 - 空旧表：启动前受控 drop/recreate 当前 schema，随后按正常 schema 脚本完成迁移。
 - 非空旧表：抛出 `DatabaseSchemaMismatchError`，保持原表和记录，拒绝无损性无法证明的迁移。
-- 源码层迁移正反测试已通过；冻结 package smoke 的结果在本轮干净发布构建后补充。
+- 源码层迁移正反测试已通过；提交 `845ba19ddb01bcf6507fa59a8ed1b35e7b68a51d` 的干净冻结包已完成旧库迁移与设备列表 HTTP 200 smoke，确认该兼容迁移在 frozen runtime 中生效。
 
 ## 验证记录
 
@@ -44,17 +44,19 @@
 | Web production build | passed |
 | Electron typecheck | passed |
 | Electron test | 253 passed (32 files) |
-| 完整 pytest（合并最新 main 后按六段运行） | 3852 passed, 2 skipped, 0 failed |
+| Release system（补齐兼容性 Profile 后） | 66 passed |
+| LocalProcessAdapter 与 Job Center 定向回归 | 37 passed；竞态用例连续 10 次通过 |
+| 最终完整 pytest（单次运行） | 3852 passed, 2 skipped, 0 failed, 32 warnings；677.39s |
 
-全量 pytest 初次以单命令运行时受 10 分钟终端上限终止，未返回测试结论；随后按文件首字母和测试子目录完整重跑，以上汇总为最终有效基线。
+当前代码组合第一次完整 pytest 得到 `3851 passed, 2 skipped, 1 failed`。唯一失败为 `tests/test_local_process_adapter.py::test_local_process_adapter_completes_and_reads_both_pipes`：测试在持久化状态变为 `COMPLETED` 后立即断言 Adapter 状态已移除，命中了完成回调与状态清理之间的正常异步窗口。生产语义实验会破坏协议致命错误收口，已撤销；最终只将测试改为等待既有的 `not adapter.is_running(job_id)` 契约。定向回归和连续 10 次重复均通过，随后同一代码组合的单次完整 pytest 达到上表的 0 failed 基线。
 
 ## 发布构建与安装器
 
-- 提交 `a7d112e94d565dc6f993d7cc4e34ab49d877d58a` 推送到 `github/codex/log-release-readiness` 后，PyInstaller release、Web production build、依赖闭包（71 distributions）、源工具 smoke 和受管 Backend packaged smoke 均通过。
-- `win-unpacked` package smoke 通过：frozen `log_policy.json`、时区资源、旧设备数据库迁移/list HTTP 200、Ground 状态 HTTP 200、Worker 中文协议、MESH 幂等性、重复文件名、Qt 残留、NOTICE/SBOM 均已验证；backend/frontend/self-check commit 全部为 `a7d112e9...`，`PACKAGED_DIRTY=false`。
-- Full NSIS 制品 `NetConsole-1.4.8-a7d112e9-x64-setup.exe` 已生成，大小 155,945,538 bytes，SHA-256 为 `dcaf6c04bbba38f3cdcf299596f199cb3b68ff1515fd1a5dc4004156aa129e45`。verifier 已确认 NSIS-3 Unicode、安装器嵌入 manifest、数据根脚本 SHA-256、版本资源、Backend/Frontend commit 和二次哈希读取一致。
-- `build-edition-installer.mjs full` 在当前 isolated worktree 因 `node_modules` junction 被 pnpm 判为需重装、且无 TTY 拒绝删除 junction 而停止。为保护共享依赖，未设置 CI 强制删除；随后复用同一已通过的 `package:prepare` 输出，用项目的 electron-builder、package smoke 与 `build_installer --verify` 完成上述实际 Full NSIS 构建和制品验证。
-- 2 小时 packaged soak 发现该制品缺少 `device_compatibility_profiles.json`，设备兼容性 API 在首次加载时返回 503 并记录两次 `DEVICE_COMPATIBILITY_RESOURCE_FAILED`，但 Backend、Renderer 和本轮日志链路持续存活。根因是资源读取端使用 `netconsole/assets/device_compatibility_profiles.json`，而 clean build 白名单只包含命令 Profile；本轮已将既有兼容性 Profile 加入 PyInstaller 明确白名单、CleanBuildLock 和 package smoke。修复后的制品重建结果在下方继续登记，不用旧 smoke 结果替代。
+- 提交 `a7d112e94d565dc6f993d7cc4e34ab49d877d58a` 的目录包曾通过当时的 package smoke，但后续 2 小时 soak 发现它缺少 `device_compatibility_profiles.json`，设备兼容性 API 首次加载返回 503，并记录两次 `DEVICE_COMPATIBILITY_RESOURCE_FAILED`。Backend、Renderer 和日志链路在 soak 中持续存活，但该旧制品不再作为发布候选。
+- 根因是运行端读取 `netconsole/assets/device_compatibility_profiles.json`，而 clean build 白名单只包含命令 Profile。提交 `845ba19ddb01bcf6507fa59a8ed1b35e7b68a51d` 已将现有兼容性 Profile 加入 PyInstaller 明确白名单、`CleanBuildLock` 和构建输入，并扩展 package smoke：资源必须存在，schema 必须为 `2026.07.device-compatibility-profiles.v1`，profiles 必须非空，`profile_id` 必须非空且无重复。新 smoke 对旧包会准确失败。
+- 基于 `845ba19d...` 严格按 Web/Electron build、`package.mjs`、electron-builder 顺序重建的 `win-unpacked` 完整通过 package smoke：frozen `log_policy.json`、时区和兼容性 Profile、旧设备数据库迁移/list HTTP 200、Ground 状态 HTTP 200、Worker 中文协议、MESH 幂等性、重复文件名、Qt 残留、NOTICE/SBOM 均已验证；backend/frontend/self-check commit 全部为 `845ba19d...`，`PACKAGED_DIRTY=false`。随后执行 1 分钟启动回归，未再出现 `DEVICE_COMPATIBILITY_RESOURCE_FAILED`。
+- 新 Full NSIS 制品 `NetConsole-1.4.8-845ba19d-x64-setup.exe` 已生成，大小 155,947,391 bytes，SHA-256 为 `6193b1d308d476a64e66c2bdb49de859e5311d5b26ff36481de2084e8dadef10`，build id 为 `netconsole-1.4.8-845ba19d-20260809T233802Z`。verifier 已确认 NSIS-3 Unicode、安装器嵌入 manifest、版本资源、Backend/Frontend commit、`PACKAGED_DIRTY=false` 和哈希一致。
+- 安装器绑定运行时代码提交 `845ba19d...`；后续分支提交 `8e13c5979c63da5e08e27ce0e9667849295911e4` 只修正 LocalProcessAdapter 测试的异步等待契约，不改变安装包运行时代码。二者必须分开追踪，不能把该安装器写成绑定分支后续 HEAD。
 - 真实安装、首次启动与卸载仍为 `PENDING`：本会话不是管理员，安装器是 per-machine 且数据根只能在交互页选择，不能安全静默覆盖 HKLM 指针。未尝试 UAC 绕过，也未接触正式 `D:\NetConsoleData`。
 
 ## 2 小时 Packaged Soak
