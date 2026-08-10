@@ -14,6 +14,7 @@ import {
   validateClipboardText,
   validateExternalUrl,
   validateFileDesktopActionRef,
+  validateMeshAnalysisSessionId,
   validateOnlineMrSessionId,
   validateRendererReadyReport,
   validateRendererWorkloadReport,
@@ -550,6 +551,17 @@ export function registerDesktopIpc(
     )),
   )
   dependencies.ipcMain.handle(
+    DESKTOP_IPC.openMeshAnalysisSessionLocation,
+    trusted((value) => openMeshAnalysisSessionLocation(
+      dependencies.backend,
+      dependencies.shell,
+      validateMeshAnalysisSessionId(value),
+      dependencies.fetchImpl ?? fetch,
+      dependencies.logger,
+      dependencies.artifactLstat,
+    )),
+  )
+  dependencies.ipcMain.handle(
     DESKTOP_IPC.openPath,
     trusted(async (value, event) => {
       const sourceWindow = dependencies.windowForEvent?.(event) ?? dependencies.window
@@ -845,6 +857,48 @@ async function openOnlineMrSessionLocation(
   logger: DesktopLogger = () => undefined,
   inspect: (path: string) => Promise<FileStatusLike> = lstat,
 ): Promise<NativeActionResult> {
+  return openManagedSessionLocation(
+    backend,
+    shell,
+    sessionId,
+    '/api/online-mr/sessions',
+    'ONLINE_MR',
+    fetchImpl,
+    logger,
+    inspect,
+  )
+}
+
+async function openMeshAnalysisSessionLocation(
+  backend: BackendLike,
+  shell: ShellLike,
+  sessionId: string,
+  fetchImpl: typeof fetch,
+  logger: DesktopLogger = () => undefined,
+  inspect: (path: string) => Promise<FileStatusLike> = lstat,
+): Promise<NativeActionResult> {
+  return openManagedSessionLocation(
+    backend,
+    shell,
+    sessionId,
+    '/api/rail-transit/mesh-analysis/sessions',
+    'MESH_ANALYSIS',
+    fetchImpl,
+    logger,
+    inspect,
+  )
+}
+
+async function openManagedSessionLocation(
+  backend: BackendLike,
+  shell: ShellLike,
+  sessionId: string,
+  endpointRoot: string,
+  logPrefix: 'ONLINE_MR' | 'MESH_ANALYSIS',
+  fetchImpl: typeof fetch,
+  logger: DesktopLogger = () => undefined,
+  inspect: (path: string) => Promise<FileStatusLike> = lstat,
+): Promise<NativeActionResult> {
   try {
     const runtime = backend.getRuntimeInfo()
     const base = new URL(runtime.baseUrl)
@@ -859,7 +913,7 @@ async function openOnlineMrSessionLocation(
       || base.hash
     ) throw new Error('untrusted backend')
     const url = new URL(
-      `/api/online-mr/sessions/${encodeURIComponent(sessionId)}/desktop-location`,
+      `${endpointRoot}/${encodeURIComponent(sessionId)}/desktop-location`,
       base.origin,
     )
     const response = await fetchImpl(url, {
@@ -886,26 +940,26 @@ async function openOnlineMrSessionLocation(
     ) {
       throw new Error('invalid managed target')
     }
-    const unavailable = await onlineMrLocationUnavailable(body.path, body.target_type, inspect)
+    const unavailable = await managedSessionLocationUnavailable(body.path, body.target_type, inspect)
     if (unavailable) return unavailable
     if (body.target_type === 'file') {
       shell.showItemInFolder(body.path)
     } else {
       const error = await shell.openPath(body.path)
       if (error) {
-        return await onlineMrLocationUnavailable(body.path, body.target_type, inspect)
+        return await managedSessionLocationUnavailable(body.path, body.target_type, inspect)
           ?? { success: false, availability: 'INVALID', error: '系统未能打开该会话目录。' }
       }
     }
-    logger('ELECTRON_ONLINE_MR_LOCATION_OPENED')
+    logger(`ELECTRON_${logPrefix}_LOCATION_OPENED`)
     return { success: true, availability: 'AVAILABLE' }
   } catch {
-    logger('ELECTRON_ONLINE_MR_LOCATION_FAILED')
+    logger(`ELECTRON_${logPrefix}_LOCATION_FAILED`)
     return { success: false, availability: 'INVALID', error: '打开会话本地目录失败，请检查文件是否仍存在。' }
   }
 }
 
-async function onlineMrLocationUnavailable(
+async function managedSessionLocationUnavailable(
   path: string,
   targetType: 'file' | 'directory',
   inspect: (path: string) => Promise<FileStatusLike> = lstat,

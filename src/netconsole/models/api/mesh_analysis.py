@@ -358,6 +358,13 @@ class MeshDataSourceDTO(ApiModel):
     identity_mapping_status: str = "unknown"
 
 
+class MeshDesktopLocationDTO(ApiModel):
+    """受控交给 Electron Main 的 MESH 原始来源位置。"""
+
+    target_type: Literal["file", "directory"]
+    path: str
+
+
 class MeshAnalysisSessionDetailDTO(ApiModel):
     session: MeshAnalysisSessionDTO
     analysis_params: MeshAnalysisParamsDTO

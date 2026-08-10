@@ -4,7 +4,9 @@ import hashlib
 import shutil
 import sqlite3
 from collections import defaultdict
+from datetime import datetime, timedelta
 from pathlib import Path
+from time import perf_counter
 from types import SimpleNamespace
 
 import pytest
@@ -287,9 +289,100 @@ def test_active_chart_keeps_representative_points_when_key_points_fill_budget(
     )
 
     assert chart.total_points == 240
-    assert chart.returned_points == 160
+    assert chart.returned_points == 10
     assert chart.downsampled is True
     assert chart.returned_points < chart.total_points
+    assert chart.effective_max_points == chart.requested_max_points == 10
+    assert chart.downsample_warning is not None
+
+
+def test_active_chart_compresses_large_continuous_no_active_run_within_requested_budget(
+    tmp_path: Path,
+) -> None:
+    paths, session_id, _detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    service = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())  # type: ignore[arg-type]
+    context = service._context("demo", session_id)
+    start = datetime(2026, 8, 6, 8, 0, 0)
+    row_count = 113_961
+    rows = [
+        _active_chart_row(
+            index + 1,
+            (start + timedelta(seconds=index)).strftime("%Y-%m-%d %H:%M:%S.000"),
+            "000000001618",
+            link_state="STANDBY",
+        )
+        for index in range(row_count)
+    ]
+
+    started = perf_counter()
+    chart = service._chart_dto(
+        "demo",
+        context,
+        {
+            "peer_segment": {"rows": []},
+            "run_segment": {
+                "rows": rows,
+                "events": [],
+                "estimated_interval_seconds": 1,
+                "continuity_gap_seconds": 5,
+            },
+        },
+        mode="active_path",
+        max_points=600,
+        time_from="",
+        time_to="",
+    )
+    elapsed = perf_counter() - started
+
+    assert chart.total_points == row_count
+    assert 2 <= chart.returned_points <= chart.effective_max_points == chart.requested_max_points == 600
+    assert chart.points[0].timestamp == "2026-08-06 08:00:00.000"
+    assert chart.points[-1].timestamp == "2026-08-07 15:39:20.000"
+    assert sum(point.is_anomaly for point in chart.points) == 2
+    assert chart.payload_bytes < 16 * 1024 * 1024
+    assert elapsed < 20
+
+
+def test_active_chart_omits_disabled_optional_peer_event_and_location_payloads(tmp_path: Path) -> None:
+    paths, session_id, _detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    service = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())  # type: ignore[arg-type]
+
+    chart = service.get_active_path_chart(
+        "demo",
+        session_id,
+        radio=1,
+        max_points=10,
+        include_peer=False,
+        include_events=False,
+        include_station_band=False,
+    )
+
+    assert chart.events == []
+    assert chart.location_segments == []
+    assert all(
+        point.peer_rssi is None
+        and point.peer_signal is None
+        and point.peer_tx_busy is None
+        and point.peer_rx_busy is None
+        and point.backups == []
+        for point in chart.points
+    )
+
+
+def test_mesh_source_desktop_location_reveals_file_or_existing_parent_only(tmp_path: Path) -> None:
+    paths, session_id, _detail, raw, _report = create_mesh_analysis_fixture(tmp_path)
+    service = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())  # type: ignore[arg-type]
+
+    available = service.get_source_desktop_location("demo", session_id)
+    assert available == {"target_type": "file", "path": str(raw.resolve())}
+
+    raw.unlink()
+    missing_file = service.get_source_desktop_location("demo", session_id)
+    assert missing_file == {"target_type": "directory", "path": str(raw.parent.resolve())}
+
+    shutil.rmtree(raw.parent)
+    with pytest.raises(MeshAnalysisQueryError, match="原始日志目录不存在"):
+        service.get_source_desktop_location("demo", session_id)
 
 
 def test_real_peer_observation_stays_unresolved_across_mesh_dtos(tmp_path: Path) -> None:

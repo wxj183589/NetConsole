@@ -35,6 +35,8 @@ export function createElectronAdapter(bridge: NetConsoleDesktopBridge): Platform
     showTaskNotification: (payload) => bridge.showTaskNotification(payload),
     setTaskTrayStatus: (status) => bridge.setTaskTrayStatus(status),
     onTaskCenterOpenRequested: (listener) => bridge.onTaskCenterOpenRequested?.(listener) ?? (() => undefined),
+    openMeshAnalysisSessionLocation: (sessionId) => bridge.openMeshAnalysisSessionLocation?.(sessionId)
+      ?? Promise.resolve({ success: false, error: 'Electron MESH 本地目录组件未加载，请重启 NetConsole' }),
     openPath: (capabilityId) => bridge.openPath(capabilityId),
     showItemInFolder: (capabilityId) => bridge.showItemInFolder(capabilityId),
     openExternalUrl: (url) => bridge.openExternalUrl(url),

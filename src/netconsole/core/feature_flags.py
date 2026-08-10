@@ -79,6 +79,7 @@ PACKAGED_PRODUCTION_FEATURE_IDS = PACKAGED_CORE_FEATURE_IDS | frozenset(
         "web.mesh_analysis",
         "web.mesh_analysis_import",
         "web.mesh_analysis_report_export",
+        "web.mesh_analysis_source_open_location",
         "web.network_tools",
         "web.online_mr_analysis",
         "web.online_mr_parse",

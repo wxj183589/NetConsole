@@ -14,7 +14,7 @@ import {
 } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { ArrowDown, ArrowRight, Delete, Document, Download, FullScreen, Hide, Lock, Refresh, Unlock, View, WarningFilled } from '@element-plus/icons-vue'
+import { ArrowDown, ArrowRight, Delete, Document, Download, FolderOpened, FullScreen, Hide, Lock, Refresh, Unlock, View, WarningFilled } from '@element-plus/icons-vue'
 import { t } from '../../i18n/runtime'
 
 import MeshChannelBusyChart from '../../components/mesh-analysis/MeshChannelBusyChart.vue'
@@ -70,7 +70,7 @@ import type {
 } from '../../types/meshAnalysis'
 import type { VehicleMr } from '../../types/railTransitBaseData'
 import type { RailTransitTask } from '../../types/railTransitWeb'
-import { downloadBackendResource } from '../../platform/runtime'
+import { downloadBackendResource, getPlatformAdapter } from '../../platform/runtime'
 import { loadUiPreference, saveUiPreference } from '../../platform/uiPreferences'
 import { useTaskStore } from '../../stores/tasks'
 import type { TaskItem } from '../../types/task'
@@ -362,6 +362,11 @@ const taskSummary = computed(() => {
   return count ? `已生成 ${count} 项结构化结果，完整内容请在任务中心查看。` : '完整日志、结果与 Artifact 请在任务中心查看。'
 })
 const selectedSource = computed(() => selected.value?.sources[0] || null)
+const canOpenSelectedSourceLocation = computed(() => (
+  getPlatformAdapter().hostType === 'electron'
+  && Boolean(selected.value && selectedSource.value)
+  && isFeatureEnabled('web.mesh_analysis_source_open_location')
+))
 const bundleCanApply = computed(() => Boolean(
   bundlePreview.value
   && bundlePreview.value.items.length > 0
@@ -626,6 +631,11 @@ watch([showSwitchLines, showSwitchPoints, showLocationBand, showBusySwitchLines,
     saveUiPreference('mesh-analysis-airload.show-switch-points', busyPoints),
   ]).catch(() => ElMessage.warning('图表显示偏好保存失败，当前设置仅保留在本次运行。'))
 })
+
+watch([showRssiPeer, showSwitchLines, showSwitchPoints, showLocationBand, showBusyPeer, showBusySwitchLines, showBusySwitchPoints], () => {
+  if (!meshPreferenceReady.value || !selected.value) return
+  void reloadCurrentChart()
+}, { flush: 'sync' })
 
 watch(rssiLayoutMode, (mode) => {
   if (meshPreferenceReady.value) {
@@ -1897,11 +1907,14 @@ function loadRssiWindowBatch(viewport: MeshChartViewport): Promise<void> {
     time_from: request.startTime,
     time_to: request.endTime,
   }
-  const activeRequestKey = meshChartRequestKey('active-path', request.sessionId, {
+  const activeValues = {
     ...values,
-    include_peer: true,
-    include_events: true,
-    include_station_band: true,
+    include_peer: showRssiPeer.value,
+    include_events: showSwitchLines.value || showSwitchPoints.value,
+    include_station_band: showLocationBand.value,
+  }
+  const activeRequestKey = meshChartRequestKey('active-path', request.sessionId, {
+    ...activeValues,
   })
   const tracksideWindowRequestKey = meshChartRequestKey('trackside-signal', request.sessionId, {
     ...values,
@@ -1912,7 +1925,7 @@ function loadRssiWindowBatch(viewport: MeshChartViewport): Promise<void> {
   promise = (async () => {
     try {
       const [activeResult, tracksideResult] = await Promise.all([
-        getMeshActivePathChart(request.sessionId, values, activeController.signal)
+        getMeshActivePathChart(request.sessionId, activeValues, activeController.signal)
           .catch((reason) => { throw rssiWindowFailure('active', reason) }),
         getMeshTracksideSignalChart(request.sessionId, values, tracksideController.signal)
           .catch((reason) => { throw rssiWindowFailure('trackside', reason) }),
@@ -2009,9 +2022,14 @@ async function loadActivePath(
 ): Promise<void> {
   if (!selected.value) return
   const effectiveRange = range ?? (metric === 'busy' ? defaultChartWindowRange(metric) : null)
-  const values: Record<string, string | number | null | undefined> = {
+  const values: Record<string, string | number | boolean | null | undefined> = {
     max_points: visiblePoints.value,
     radio: effectiveRange?.radio ?? chartRadio.value,
+    include_peer: metric === 'busy' ? showBusyPeer.value : showRssiPeer.value,
+    include_events: metric === 'busy'
+      ? showBusySwitchLines.value || showBusySwitchPoints.value
+      : showSwitchLines.value || showSwitchPoints.value,
+    include_station_band: showLocationBand.value,
   }
   if (metric === 'busy') {
     values.time_from = effectiveRange?.start_time
@@ -2033,9 +2051,6 @@ async function loadActivePath(
   const sessionId = selected.value.session.session_id
   const requestKey = meshChartRequestKey('active-path', sessionId, {
     ...values,
-    include_peer: true,
-    include_events: true,
-    include_station_band: true,
   })
   if (rssiActiveRequestPromise && rssiActiveRequestKey === requestKey) {
     await rssiActiveRequestPromise
@@ -3566,6 +3581,22 @@ async function rebuildSelected(): Promise<void> {
   if (!accepted) return
   void startTask(() => rebuildMeshAnalysis(selected.value!.session.session_id), 'MESH 派生数据库重建启动失败')
 }
+
+async function openSelectedSourceLocation(): Promise<void> {
+  if (!selected.value || !selectedSource.value) return
+  const result = await getPlatformAdapter().openMeshAnalysisSessionLocation(
+    selected.value.session.session_id,
+  )
+  if (!result.success) {
+    ElMessage.warning(result.error || '当前原始日志没有可打开的本地目录')
+    return
+  }
+  if (!selectedSource.value.exists) {
+    ElMessage.warning('原始日志文件已不存在，已打开其所在目录。')
+    return
+  }
+  ElMessage.success('已在本地目录中定位当前原始日志')
+}
 async function recoverTask(): Promise<void> {
   try {
     const saved = localStorage.getItem(taskStorageKey) || ''
@@ -3893,6 +3924,7 @@ function exportTimestamp(now = new Date()): string {
         </div>
         <div class="jump-actions">
           <el-button :loading="taskLoading" :disabled="!selectedSource || ['raw_missing','task_running','unsupported'].includes(selectedSource.rebuild_capability) || !isFeatureEnabled('web.mesh_analysis_import')" @click="rebuildSelected">{{ selectedSource?.rebuild_capability === 'recoverable_from_bundle' ? '恢复原始日志并重新解析' : selected.session.parsed_status === 'ready' ? '重新解析当前日志' : '升级解析结果' }}</el-button>
+          <el-button v-if="canOpenSelectedSourceLocation" :icon="FolderOpened" @click="openSelectedSourceLocation">打开本地目录</el-button>
           <el-button type="danger" plain :icon="Delete" :loading="sourceDeleteSubmitting" @click="prepareSourceDelete([selected.session])">删除当前来源</el-button>
           <el-button @click="openTaskWindow()">打开任务中心</el-button>
           <el-button @click="router.push({ path: '/rail-transit/train-communication', query: { train: selected?.session.train_name } })">在线列车通信</el-button>

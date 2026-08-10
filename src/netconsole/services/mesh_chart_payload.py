@@ -259,6 +259,7 @@ def prioritized_render_indices(
     critical_indices: Iterable[int] = (),
     trend_indices: Iterable[int] = (),
     ordinary_indices: Iterable[int] = (),
+    excluded_indices: Iterable[int] = (),
 ) -> np.ndarray:
     """Select samples with a strict critical > trend > ordinary priority."""
     if total_count <= 0:
@@ -277,7 +278,9 @@ def prioritized_render_indices(
         )
 
     trend = valid(trend_indices) - critical
-    ordinary = valid(ordinary_indices) - critical - trend
+    excluded = valid(excluded_indices) - critical
+    trend -= excluded
+    ordinary = valid(ordinary_indices) - critical - trend - excluded
     selected = set(critical)
     remaining = limit - len(selected)
     for tier in (trend, ordinary):
@@ -288,7 +291,7 @@ def prioritized_render_indices(
     if remaining > 0:
         selected.update(
             int(value)
-            for value in _spread_indices(set(range(total_count)) - selected, remaining)
+            for value in _spread_indices(set(range(total_count)) - selected - excluded, remaining)
         )
     return np.asarray(sorted(selected), dtype=np.int32)
 

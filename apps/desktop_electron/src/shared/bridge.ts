@@ -457,6 +457,7 @@ export interface NetConsoleDesktopBridge {
   revealExternalTool(toolId: string): Promise<ExternalToolLaunchResult>
   refreshExternalToolStatuses(): Promise<ExternalToolListResult>
   openOnlineMrSessionLocation?(sessionId: string): Promise<NativeActionResult>
+  openMeshAnalysisSessionLocation?(sessionId: string): Promise<NativeActionResult>
   openPath(capabilityId: string): Promise<NativeActionResult>
   showItemInFolder(capabilityId: string): Promise<NativeActionResult>
   openExternalUrl(url: string): Promise<NativeActionResult>
@@ -521,6 +522,7 @@ export const DESKTOP_IPC = Object.freeze({
   revealExternalTool: 'netconsole:desktop:external-tools:reveal',
   refreshExternalToolStatuses: 'netconsole:desktop:external-tools:refresh-statuses',
   openOnlineMrSessionLocation: 'netconsole:desktop:open-online-mr-session-location',
+  openMeshAnalysisSessionLocation: 'netconsole:desktop:open-mesh-analysis-session-location',
   openPath: 'netconsole:desktop:open-path',
   showItemInFolder: 'netconsole:desktop:show-item-in-folder',
   openExternalUrl: 'netconsole:desktop:open-external-url',
@@ -579,6 +581,7 @@ export const DESKTOP_HANDLED_CHANNELS = Object.freeze([
   DESKTOP_IPC.revealExternalTool,
   DESKTOP_IPC.refreshExternalToolStatuses,
   DESKTOP_IPC.openOnlineMrSessionLocation,
+  DESKTOP_IPC.openMeshAnalysisSessionLocation,
   DESKTOP_IPC.openPath,
   DESKTOP_IPC.showItemInFolder,
   DESKTOP_IPC.openExternalUrl,

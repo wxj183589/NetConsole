@@ -7,6 +7,7 @@ import {
   validateExternalUrl,
   validateClipboardText,
   validateFileDesktopActionRef,
+  validateMeshAnalysisSessionId,
   validateBackendDownloadRequest,
   validateChooseSavePathOptions,
   validateRendererReadyReport,
@@ -168,6 +169,10 @@ export function createDesktopBridge(ipcRenderer: IpcRendererLike): NetConsoleDes
       DESKTOP_IPC.executeFileDesktopAction,
       validateFileDesktopActionRef(actionRef),
     ) as ReturnType<NetConsoleDesktopBridge['executeFileDesktopAction']>,
+    openMeshAnalysisSessionLocation: (sessionId) => ipcRenderer.invoke(
+      DESKTOP_IPC.openMeshAnalysisSessionLocation,
+      validateMeshAnalysisSessionId(sessionId),
+    ) as ReturnType<NonNullable<NetConsoleDesktopBridge['openMeshAnalysisSessionLocation']>>,
     listExternalTools: () => ipcRenderer.invoke(
       DESKTOP_IPC.listExternalTools,
     ) as ReturnType<NetConsoleDesktopBridge['listExternalTools']>,

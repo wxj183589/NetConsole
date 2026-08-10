@@ -720,6 +720,30 @@ describe('desktop IPC', () => {
     expect(fetchMock).toHaveBeenCalledOnce()
   })
 
+  it('resolves a MESH source location only through the fixed authenticated endpoint', async () => {
+    const managedDirectory = resolve('managed-mesh', 'raw')
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response(
+      JSON.stringify({ target_type: 'directory', path: managedDirectory }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    ))
+    const { ipcMain, sender, shell } = createHarness({ fetchImpl: fetchMock })
+    const handler = ipcMain.handlers.get(DESKTOP_IPC.openMeshAnalysisSessionLocation)!
+
+    await expect(handler({ sender }, '12345678-1234-1234-1234-123456789abc:1')).resolves.toEqual({ success: true, availability: 'AVAILABLE' })
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
+      'http://127.0.0.1:43123/api/rail-transit/mesh-analysis/sessions/12345678-1234-1234-1234-123456789abc%3A1/desktop-location',
+    )
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
+      method: 'POST',
+      headers: { 'X-NetConsole-Session': 'secret-token' },
+      redirect: 'error',
+    })
+    expect(shell.openPath).toHaveBeenCalledWith(managedDirectory)
+    expect(shell.showItemInFolder).not.toHaveBeenCalled()
+    expect(() => handler({ sender }, '..\\outside')).toThrow('Mesh analysis session id is invalid')
+    expect(fetchMock).toHaveBeenCalledOnce()
+  })
+
   it('returns a safe message when an Online MR local target no longer exists', async () => {
     const fetchMock = vi.fn<typeof fetch>(async () => new Response(
       JSON.stringify({
