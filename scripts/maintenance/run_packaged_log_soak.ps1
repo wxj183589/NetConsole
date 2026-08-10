@@ -92,12 +92,23 @@ function Get-FileLength {
     return [int64](Get-Item -LiteralPath $Path).Length
 }
 
+function Get-PropertySum {
+    param(
+        [AllowNull()] [object[]]$Items,
+        [Parameter(Mandatory = $true)] [string]$Property
+    )
+
+    $measure = @($Items | Measure-Object -Property $Property -Sum)
+    if ($measure.Count -eq 0 -or $null -eq $measure[0].Sum) { return 0.0 }
+    return [double]$measure[0].Sum
+}
+
 function Get-DirectoryLength {
     param([Parameter(Mandatory = $true)] [string]$Path)
 
     if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return 0 }
-    return [int64](Get-ChildItem -LiteralPath $Path -Recurse -Force -File |
-        Measure-Object -Property Length -Sum).Sum
+    $files = @(Get-ChildItem -LiteralPath $Path -Recurse -Force -File)
+    return [int64](Get-PropertySum -Items $files -Property 'Length')
 }
 
 function Get-ControlEventCount {
@@ -118,7 +129,7 @@ function Get-SoakSample {
     )
 
     $processIds = if ($RootProcess.HasExited) { @() } else { Get-ChildProcessIds -RootProcessId $RootProcess.Id }
-    $processes = Get-ProcessSnapshot -ProcessIds $processIds
+    $processes = @(Get-ProcessSnapshot -ProcessIds $processIds)
     $electronProcesses = @($processes | Where-Object { $_.name -eq 'NetConsole' })
     $backendProcesses = @($processes | Where-Object { $_.name -eq 'NetConsoleBackend' })
     $logsDir = Join-Path $resolvedDataRoot 'runtime\logs'
@@ -133,14 +144,14 @@ function Get-SoakSample {
         process_tree_count = $processes.Count
         electron = [pscustomobject]@{
             process_count = $electronProcesses.Count
-            rss_bytes = [int64](($electronProcesses | Measure-Object -Property rss_bytes -Sum).Sum)
-            cpu_seconds = [math]::Round([double](($electronProcesses | Measure-Object -Property cpu_seconds -Sum).Sum), 3)
+            rss_bytes = [int64](Get-PropertySum -Items $electronProcesses -Property 'rss_bytes')
+            cpu_seconds = [math]::Round((Get-PropertySum -Items $electronProcesses -Property 'cpu_seconds'), 3)
         }
         python = [pscustomobject]@{
             process_count = $backendProcesses.Count
             alive = $backendProcesses.Count -gt 0
-            rss_bytes = [int64](($backendProcesses | Measure-Object -Property rss_bytes -Sum).Sum)
-            cpu_seconds = [math]::Round([double](($backendProcesses | Measure-Object -Property cpu_seconds -Sum).Sum), 3)
+            rss_bytes = [int64](Get-PropertySum -Items $backendProcesses -Property 'rss_bytes')
+            cpu_seconds = [math]::Round((Get-PropertySum -Items $backendProcesses -Property 'cpu_seconds'), 3)
         }
         logs = [pscustomobject]@{
             electron_bytes = Get-FileLength -Path $electronLog

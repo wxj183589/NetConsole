@@ -46,6 +46,7 @@
 | Electron test | 253 passed (32 files) |
 | Release system（补齐兼容性 Profile 后） | 66 passed |
 | LocalProcessAdapter 与 Job Center 定向回归 | 37 passed；竞态用例连续 10 次通过 |
+| Packaged soak 夹具回归 | 2 分钟通过；最终样本与 `completed_duration=true` 正常写出 |
 | 最终完整 pytest（单次运行） | 3852 passed, 2 skipped, 0 failed, 32 warnings；677.39s |
 
 当前代码组合第一次完整 pytest 得到 `3851 passed, 2 skipped, 1 failed`。唯一失败为 `tests/test_local_process_adapter.py::test_local_process_adapter_completes_and_reads_both_pipes`：测试在持久化状态变为 `COMPLETED` 后立即断言 Adapter 状态已移除，命中了完成回调与状态清理之间的正常异步窗口。生产语义实验会破坏协议致命错误收口，已撤销；最终只将测试改为等待既有的 `not adapter.is_running(job_id)` 契约。定向回归和连续 10 次重复均通过，随后同一代码组合的单次完整 pytest 达到上表的 0 failed 基线。
@@ -66,9 +67,10 @@
 - Electron 合计 RSS 的起始/峰值/结束值为 374.578/394.242/391.133 MiB，线性回归斜率为 +8.396 MiB/hour；Python RSS 为 194.566/204.863/204.863 MiB，斜率为 +4.797 MiB/hour。2 小时内没有高速或失控增长，但两条斜率仍为正，不能据此宣称长期无增长；8 小时 soak 仍为 `PENDING`。
 - `LOG_BACKPRESSURE` 和 `LOG_BACKPRESSURE_RECOVERED` 事件均为 0。当前 queue metrics 只存在 Electron Main 内存中，没有跨进程只读接口，因此 `queuedBytes/peakQueuedBytes/dropped*` 不能直接采样；本审计不把不可见 counters 伪报为 0。现有实现只要发生任一等级 drop 就会启动 incident 并写 backpressure/recovered 控制事件，本次没有观察到该间接证据。
 - soak 结束前的最后一个样本仍确认全部进程存活；随后测试夹具主动终止隔离进程树。`ELECTRON_UTILITY_PROCESS_GONE exit_code=-1` 发生在该夹具收口之后，不属于运行窗口内崩溃。
+- 针对新候选 `845ba19d...` 的第一次长时尝试在约 3,602 秒处记录 `ELECTRON_TRAY_EXPLICIT_QUIT` 并正常退出；随后发现夹具在单进程最终采样时的数组解包缺陷，不能将该次提前结束判为 soak 通过。夹具已修复并用 2 分钟隔离回归确认正常收口；按本次用户指示跳过新候选完整 2 小时 soak，不将其写成通过。
 
 ## 剩余风险
 
 - 现有故障注入已覆盖 Python EBUSY/PermissionError、1,000 次 rotation backoff、多进程写入及历史清理的单文件占用跳过；这不能替代真实 NTFS 锁、杀毒竞争、物理磁盘耗尽和长时间内存趋势。
-- 7,203 秒 soak 针对后来因兼容性资源缺失而淘汰的 `a7d112e9...` 目录包；新候选 `845ba19d...` 目前只有完整 package smoke 和 1 分钟启动回归。资源修复没有改动日志写入链路，但不能据此把旧制品 soak 等同为新候选的正式 2 小时验收。
-- 新候选的 2 小时/8 小时 soak、真实 NSIS 安装/首次启动/卸载、直接 dropped counters 以及 WebSocket/task service 主动业务负载仍未完成。所有强制验收通过前不得 fast-forward `main`。
+- 7,203 秒 soak 针对后来因兼容性资源缺失而淘汰的 `a7d112e9...` 目录包；资源修复没有改动日志写入链路，但不能据此把旧制品 soak 等同为新候选的正式验收。
+- 新候选完整 2 小时/8 小时 soak 已按用户指示跳过；真实 NSIS 安装/首次启动/卸载、直接 dropped counters 以及 WebSocket/task service 主动业务负载仍未完成。本次合并属于用户明确要求下的发布记录收口，不代表这些门禁已通过。
