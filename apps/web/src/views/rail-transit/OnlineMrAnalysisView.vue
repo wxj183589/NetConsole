@@ -60,6 +60,7 @@ import type { OnlineMrParsedDatabaseEnsureResult, RailTransitTask } from '../../
 import { BEFORE_SITE_SWITCH_EVENT } from '../../workspace/site-switch'
 import { formatDbmValue, formatRssiValue } from '../../components/rail-timeline/rssiPresentation'
 import { formatTimelineMetricValue } from '../../components/rail-timeline/timelineMetricPresentation'
+import type { TimelineTooltipKind } from '../../components/rail-timeline/timelineTooltip'
 
 const route = useRoute()
 const router = useRouter()
@@ -76,6 +77,7 @@ const {
 type BusinessRow = OnlineMrBusinessRow
 type RequestContext = { siteKey: string; sessionId: string; generation: number; signal: AbortSignal }
 type ChartDefinition = { key: string; title: string; unit: string; metric?: readonly string[]; switchSource?: OnlineMrSwitchRssiSource }
+type RelatedMetricDefinition = ChartDefinition & { metric: readonly string[]; tooltipKind: TimelineTooltipKind }
 
 const terminalStates = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
 const chartDefinitions: readonly ChartDefinition[] = [
@@ -108,7 +110,15 @@ const timelineMetricTypes = [
   'tx_busy',
   'rx_busy',
 ] as const
-const relatedMetricDefinitions = chartDefinitions.filter((item) => item.metric)
+const relatedMetricDefinitions: readonly RelatedMetricDefinition[] = [
+  { key: 'ping-rtt', title: 'Ping RTT', metric: ['ping_rtt'], unit: 'ms', tooltipKind: 'ping-rtt' },
+  { key: 'ping-loss', title: 'Ping 丢包率', metric: ['ping_loss'], unit: '%', tooltipKind: 'ping-loss' },
+  { key: 'interface', title: '接口速率', metric: ['interface_in_pps', 'interface_out_pps'], unit: 'pps', tooltipKind: 'interface' },
+  { key: 'traffic', title: '业务打流', metric: ['iperf_bitrate'], unit: 'Mbps', tooltipKind: 'traffic' },
+  { key: 'busy', title: '信道繁忙度（Channel Busy）', metric: ['ctl_busy', 'tx_busy', 'rx_busy'], unit: '%', tooltipKind: 'channel-busy' },
+]
+const defaultRelatedMetricKey = 'ping-rtt'
+const relatedMetricKeys = new Set(relatedMetricDefinitions.map((item) => item.key))
 
 const businessTabToTable: Record<string, OnlineMrBusinessTable> = {
   'mesh-link': 'main_link',
@@ -213,7 +223,7 @@ const showSwitchLines = ref(true)
 const showSwitchPoints = ref(true)
 const showLocationBand = ref(true)
 const rssiImmersive = ref(false)
-const relatedMetricKey = ref('ping-quality')
+const relatedMetricKey = ref(defaultRelatedMetricKey)
 const task = ref<RailTransitTask | null>(null)
 const upgradeResult = ref<OnlineMrParsedDatabaseEnsureResult | null>(null)
 const detailLoading = ref(false)
@@ -430,7 +440,7 @@ const analysisInfoSections = computed<OnlineMrAnalysisInfoSection[]>(() => {
       { label: '站点', value: infoText(point.dimensions.station) },
       { label: '区间', value: infoText(point.dimensions.section) },
     )
-  } else if (timelineCursorSource.value === 'timeline-metric' && hoveredMetric === 'ping-quality') {
+  } else if (timelineCursorSource.value === 'timeline-metric' && ['ping-rtt', 'ping-loss'].includes(hoveredMetric)) {
     const rtt = diagnosis?.pingRtt?.point
     const loss = diagnosis?.pingLoss?.point
     metricFields.push(
@@ -916,7 +926,7 @@ function restoreSessionCache(cache: OnlineMrAnalysisSessionCache): void {
   showSwitchPoints.value = cache.showSwitchPoints
   showLocationBand.value = cache.showLocationBand
   rssiImmersive.value = cache.immersiveMode
-  relatedMetricKey.value = cache.relatedMetricKey
+  relatedMetricKey.value = relatedMetricKeys.has(cache.relatedMetricKey) ? cache.relatedMetricKey : defaultRelatedMetricKey
   void nextTick(() => { restoringCache = false })
 }
 function resetSessionUi(): void {
@@ -937,7 +947,7 @@ function resetSessionUi(): void {
   showSwitchPoints.value = true
   showLocationBand.value = true
   rssiImmersive.value = false
-  relatedMetricKey.value = 'ping-quality'
+  relatedMetricKey.value = defaultRelatedMetricKey
   void nextTick(() => { restoringCache = false })
 }
 function requestCacheKey(context: RequestContext, resource: string, offset = 0): string {
@@ -1959,7 +1969,7 @@ function linkDetailRowClass({ rowIndex }: { rowIndex: number }): string {
                           :series="relatedMetricSeries"
                           :title="relatedMetric?.title"
                           :unit="relatedMetric?.unit"
-                          :tooltip-kind="relatedMetric?.key === 'ping-quality' ? 'ping-loss' : relatedMetric?.key === 'interface' ? 'interface' : relatedMetric?.key === 'busy' ? 'channel-busy' : relatedMetric?.key === 'traffic' ? 'traffic' : 'generic'"
+                          :tooltip-kind="relatedMetric?.tooltipKind || 'generic'"
                           :viewport="rssiViewport"
                           :cursor-time="timelineCursorTime"
                           :selected-time="selectedTime"

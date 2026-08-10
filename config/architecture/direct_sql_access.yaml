@@ -106,5 +106,6 @@
   {"path":"tests/test_wps_trackside_ap_sync.py","classification":"TEST_ONLY","owner":"test","reason":"WPS trackside sync test fixture."},
   {"path":"src/netconsole/services/online_mr/parsed_database_contract.py","classification":"READ_ONLY_DATA_GATEWAY","owner":"online-mr","reason":"Online MR 解析库契约检查仅以 SQLite mode=ro 读取独立会话分析库的 schema 与 capabilities，不创建、迁移或修改数据。"},
   {"path":"src/netconsole/services/online_mr/parsed_database_upgrade.py","classification":"ANALYSIS_DB_OWNER","owner":"online-mr","reason":"Online MR 解析库升级服务在 Job 语义中创建临时分析库、验证后原子替换并保留失败回滚副本；不改写 raw 原始日志。"},
-  {"path":"tests/test_online_mr_parsed_database_upgrade.py","classification":"TEST_ONLY","owner":"test","reason":"Online MR 解析数据库升级测试只在 pytest 临时目录构造 SQLite fixture。"}
+  {"path":"tests/test_online_mr_parsed_database_upgrade.py","classification":"TEST_ONLY","owner":"test","reason":"Online MR 解析数据库升级测试只在 pytest 临时目录构造 SQLite fixture。"},
+  {"path":"tests/test_mesh_ap_coverage_audit_service.py","classification":"TEST_ONLY","owner":"test","reason":"MESH AP 覆盖核查测试只在 pytest 临时目录构造并查询 SQLite fixture。"}
 ]

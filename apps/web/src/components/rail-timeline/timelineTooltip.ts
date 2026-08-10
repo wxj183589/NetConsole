@@ -146,7 +146,7 @@ function pingRtt(rows: TimelineTooltipRow[]): string {
   const body = rows.map((row) => {
     const point = pointOf(row)
     const dimensions = point?.dimensions || {}
-    return `<section>${field('目标', dimensions.target_ip || dimensions.target_name || row.seriesName || '目标')}${field('RTT', formatTimelineMetricValue('ping_rtt', valueOf(row)))}${field('丢包', formatTimelineMetricValue('ping_loss', number(dimensions.loss_percent)))}</section>`
+    return `<section>${field('目标', dimensions.target_ip || dimensions.target_name || row.seriesName || '目标')}${field('RTT', formatTimelineMetricValue('ping_rtt', valueOf(row)))}</section>`
   }).join('')
   return shell(timeOf(rows), body, pointOf(rows[0]))
 }

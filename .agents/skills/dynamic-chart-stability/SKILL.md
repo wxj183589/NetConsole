@@ -16,6 +16,7 @@ description: NetConsole ECharts 时间轴动态图的稳定性规范与回归流
 - `null` 表示真实数据缺口，曲线使用 `connectNulls: false`；不得新增白色 `graphic`、`markArea`、loading mask 或 area overlay 伪装缺口。
 - Tooltip 必须轻量、边界可控、不可阻塞图表。优先容器内 HTML Tooltip（`appendToBody: false`、`confine: true`、`pointer-events: none`、有宽高上限）；详细信息放固定分析信息栏或外部受控组件。
 - 指标语义由 `metricId` 的公共定义决定，不由页面名、图种或数值大小猜测。Tooltip、Y 轴和固定分析信息栏必须复用同一 formatter：`ping_rtt` 永远为 `ms` 且 Y 轴自适应，`ping_loss` 永远为 `%` 且范围 `0~100`，原始 `rssi` 无单位。新增动态图必须覆盖单位一致性测试。
+- 历史反例：Online MR 曾把 Ping RTT Series 错套 Ping Loss Tooltip 与 Percent Axis。禁止同一 metric group 共享单位或 formatter；必须保持 `metricId -> valueField -> unit -> axis -> formatter` 一一绑定，并分别验证 RTT 异常高点与零丢包点。
 - 站点/区间背景和选中标记的层级低于业务 series；切换指标、共享指针、Resize、KeepAlive 恢复后检查 stale Overlay 与 tooltip 是否清理。
 - 逻辑时间范围与当前渲染范围分开维护；异步查询用 generation/Abort 丢弃迟到响应，不让旧数据覆盖新会话或新 viewport。
 

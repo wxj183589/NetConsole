@@ -189,7 +189,7 @@ export function createOnlineMrAnalysisSessionCache(siteKey: string, sessionId: s
     timeRangeLocked: false,
     selectedTimeLocked: false,
     immersiveMode: false,
-    relatedMetricKey: 'ping-loss',
+    relatedMetricKey: 'ping-rtt',
     loadedAt: now,
     lastAccessedAt: now,
   }

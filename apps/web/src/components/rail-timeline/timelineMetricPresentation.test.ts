@@ -4,10 +4,10 @@ import { formatTimelineMetricValue, timelineMetricDefinition } from './timelineM
 
 describe('timeline metric presentation', () => {
   it('keeps Ping RTT and loss units distinct by metricId', () => {
-    expect(formatTimelineMetricValue('ping_rtt', 34.2)).toBe('34.2 ms')
-    expect(formatTimelineMetricValue('ping_rtt', 34.2)).not.toContain('%')
-    expect(formatTimelineMetricValue('ping_loss', 34.2)).toBe('34.2%')
-    expect(formatTimelineMetricValue('ping_loss', 34.2)).not.toContain('ms')
+    expect(formatTimelineMetricValue('ping_rtt', 44.7)).toBe('44.7 ms')
+    expect(formatTimelineMetricValue('ping_rtt', 44.7)).not.toContain('%')
+    expect(formatTimelineMetricValue('ping_loss', 0)).toBe('0%')
+    expect(formatTimelineMetricValue('ping_loss', 0)).not.toContain('ms')
   })
 
   it('leaves RTT axis unbounded above while loss stays within 0~100%', () => {

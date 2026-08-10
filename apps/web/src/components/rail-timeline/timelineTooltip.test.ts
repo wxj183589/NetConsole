@@ -75,46 +75,50 @@ describe('timeline tooltip', () => {
   it('renders Ping RTT as structured milliseconds rather than joining it to the target or a percent unit', () => {
     const html = buildTimelineTooltip('ping-rtt', [{
       seriesName: '10.122.2.249',
-      value: ['2026-08-10 02:56:12.660', 34.2],
+      value: ['2026-08-10 02:54:56.670', 44.7],
       data: {
         metricType: 'ping_rtt',
         point: {
-          timestamp: '2026-08-10 02:56:12.660',
-          value: 34.2,
+          timestamp: '2026-08-10 02:54:56.670',
+          raw_timestamp: '2026-08-10 03:05:39.398',
+          correction_confidence: 'high',
+          value: 44.7,
           text_value: null,
-          dimensions: { target_ip: '10.122.2.249', loss_percent: 0 },
+          dimensions: { target_ip: '10.122.2.249' },
         },
       },
     }], true)
 
-    expect(html).toContain('时间：2026-08-10 02:56:12.660')
+    expect(html).toContain('时间：2026-08-10 02:54:56.670')
     expect(html).toContain('目标')
     expect(html).toContain('10.122.2.249')
     expect(html).toContain('RTT')
-    expect(html).toContain('34.2 ms')
-    expect(html).toContain('丢包')
-    expect(html).toContain('0%')
-    expect(html).not.toContain('10.122.2.24934.2%')
+    expect(html).toContain('44.7 ms')
+    expect(html).toContain('原始采集时间')
+    expect(html).toContain('2026-08-10 03:05:39')
+    expect(html).toContain('已校正（高置信度）')
+    expect(html).not.toContain('44.7%')
   })
 
   it('keeps the Ping loss tooltip as a percent', () => {
     const html = buildTimelineTooltip('ping-loss', [{
       seriesName: '10.122.2.249',
-      value: ['2026-08-10 02:56:12.660', 50],
-      data: { metricType: 'ping_loss', point: { timestamp: '2026-08-10 02:56:12.660', value: 50, text_value: null, dimensions: { target_ip: '10.122.2.249' } } },
+      value: ['2026-08-10 02:54:56.670', 0],
+      data: { metricType: 'ping_loss', point: { timestamp: '2026-08-10 02:54:56.670', value: 0, text_value: null, dimensions: { target_ip: '10.122.2.249', sent: 1, received: 1, lost: 0 } } },
     }], true)
     expect(html).toContain('丢包率')
-    expect(html).toContain('50%')
-    expect(html).not.toContain('50 ms')
+    expect(html).toContain('0%')
+    expect(html).not.toContain('44.7')
+    expect(html).not.toContain('0 ms')
   })
 
   it('uses the same RTT display value as the fixed analysis information', () => {
-    const fixedInfoValue = formatTimelineMetricValue('ping_rtt', 34.2)
+    const fixedInfoValue = formatTimelineMetricValue('ping_rtt', 44.7)
     const tooltip = buildTimelineTooltip('ping-rtt', [{
-      value: ['2026-08-10 02:56:12.660', 34.2],
-      data: { metricType: 'ping_rtt', point: { timestamp: '2026-08-10 02:56:12.660', value: 34.2, text_value: null, dimensions: { target_ip: '10.122.2.249', loss_percent: 0 } } },
+      value: ['2026-08-10 02:54:56.670', 44.7],
+      data: { metricType: 'ping_rtt', point: { timestamp: '2026-08-10 02:54:56.670', value: 44.7, text_value: null, dimensions: { target_ip: '10.122.2.249' } } },
     }], true)
-    expect(fixedInfoValue).toBe('34.2 ms')
+    expect(fixedInfoValue).toBe('44.7 ms')
     expect(tooltip).toContain(`RTT</span><strong>${fixedInfoValue}</strong>`)
   })
 })

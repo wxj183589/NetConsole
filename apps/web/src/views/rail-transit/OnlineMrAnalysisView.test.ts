@@ -317,6 +317,11 @@ describe('Online MR analysis view behavior', () => {
     expect(source).toContain("removeEventListener('keydown', handleTimelineEscape, true)")
     expect(source).toContain("formatTimelineMetricValue('ping_rtt', rtt.value)")
     expect(source).toContain("formatTimelineMetricValue('ping_loss', loss.value)")
+    expect(source).toContain("{ key: 'ping-rtt', title: 'Ping RTT', metric: ['ping_rtt'], unit: 'ms', tooltipKind: 'ping-rtt' }")
+    expect(source).toContain("{ key: 'ping-loss', title: 'Ping 丢包率', metric: ['ping_loss'], unit: '%', tooltipKind: 'ping-loss' }")
+    expect(source).toContain("const defaultRelatedMetricKey = 'ping-rtt'")
+    expect(source).toContain(":tooltip-kind=\"relatedMetric?.tooltipKind || 'generic'\"")
+    expect(source).not.toContain("relatedMetric?.key === 'ping-quality' ? 'ping-loss'")
   })
 
   it('keeps one fixed analysis panel across RSSI, Ping, and Channel Busy tabs', async () => {
