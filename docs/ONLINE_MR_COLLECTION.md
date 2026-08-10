@@ -4,7 +4,7 @@
 
 Online MR 面向车载 MR 的实时 SSH/终端采集、fping 业务质量、随采集 iPerf3、手工备注、会话打包和离线诊断。原始文件是事实来源；实时视图用于现场观察，正式离线解析由 `online_mr_parse` Background Job 完成，报告由 Export Process 生成。
 
-人工页面仍最多同时选择 2 台 MR；站点级“只能有一个 Online MR 任务”的旧 Web 限制已取消。`OnlineMrConcurrencyPolicy` 继续保证同一 MR 只有一个任务，并统一活动、启动中和最终化预算。人工任务优先使用可用设备；地面无人值守只在剩余 MR 上运行，不停止人工任务。无人值守默认最多 2 辆列车/4 台 MR，且强制关闭 Session 内 iPerf 和 fping，复用独立全车长 Ping。完整边界见[轨道交通地面无人值守](GROUND_UNATTENDED.md)。
+人工页面仍最多同时选择 2 台 MR；站点级“只能有一个 Online MR 任务”的旧 Web 限制已取消。`OnlineMrConcurrencyPolicy` 继续保证同一 MR 只有一个任务，并统一活动、启动中和最终化预算。人工任务优先使用可用设备；地面无人值守只在剩余 MR 上运行，不停止人工任务。无人值守默认最多 2 辆列车/4 台 MR，Session 内 iPerf 强制关闭，但深度采集 fping 为强制依赖；独立全车 Fleet Ping 不能替代标准 Session fping 数据契约。完整边界见[轨道交通地面无人值守](GROUND_UNATTENDED.md)。
 
 页面操作顺序：选择 1～2 台 MR；配置采集周期和高频 Ping；按需配置 iPerf；点击开始并在确认窗口复核设备/参数；启用 iPerf 时完成服务端预检；创建会话后自动收起设备列表和输入区；以实时状态、解析和采集输出为主；运行中可随时添加带时间戳备注；停止后保存并打包会话。页面不再提供独立“收起设备列表”按钮，自动折叠逻辑保留，输入区的展开操作会同时恢复设备选择区域。Vue 只调用 `OnlineMrApplicationService` 对应 API；重复停止由 Application Service 幂等过滤，页面状态由 operation 查询和 Task Event Hub 共同驱动。
 
@@ -394,7 +394,7 @@ LOCAL streaming collector 会把可解析的 Mesh 行同步写入 `live_samples/
 
 `live_iperf_status.json` 是 LOCAL iPerf 运行真相，必须区分 `client_status`、`server_status` 和 `supervisor_status`，并保留 `pid/alive/exit_code/last_exit_at/last_data_at/bytes_written/last_error/stderr_tail/stop_reason/restart_count` 以及 Server 的对应字段。Client 非零退出立即保持 `failed:<exit_code>`，不得因 Session 仍活动或 raw 文件非空重新推导为 `running`；停止已退出的 child 直接记录既有终态。`-d` debug 原始输出继续完整写入 raw，但 interval/error/lifecycle 快照按事件和约 1 Hz heartbeat 限频；callback、SQLite 附属写入和快照写入异常记录为 degraded，runner exception 必须带阶段、异常类型、消息和 traceback tail。本地回环 Server 由 Backend 级共享 lease 管理：首次启动为 `managed`，多个 Online MR 共享时为 `managed_shared`；已有 listener 必须先做 iPerf 协议验证，成功为 `external_verified`，其他程序或验证失败为 `port_conflict` 并返回 `IPERF_PORT_OCCUPIED_BY_NON_IPERF`。快照必须记录 `listener_pid`、`listener_process_name`、`listener_executable`、`listener_command_line`、`listener_owner`、`listener_started_at`，最终现场报告不得只写“端口已有 listener”。Server 不因页面切换、Vue 卸载、轮询停止、Pinia 重建或 Client 结束/失败而停止，只能在当前 Session 正常/强制停止、明确结束、Backend/Electron shutdown 或受控 recovery 替换时释放。
 
-LOCAL Worker 在创建 Session 后立即记录 `startup_timeline`，并把 fping/iPerf 启动从 SSH 初始化后移到 Session 创建后的异步阶段。Traffic 子任务不改变采集命令语义，仍随采集停止和最终化统一 flush；启动失败时若 Traffic 已开始，也必须停止、flush 并释放。`startup_timeline` 只记录阶段、耗时和状态，不包含密码、Token 或服务器绝对路径。
+LOCAL Worker 在创建 Session 后立即记录 `startup_timeline`。人工 Online MR 的 fping/iPerf 在 Session 创建后异步初始化；无人值守深采通过 `fping_required_before_collection` 使用同一 Coordinator/Runner 同步等待 fping 进程进入运行态，成功后才连接 SSH，失败则让启动任务终止且不进入 `COLLECTING`。Traffic 子任务不改变采集命令语义，仍随采集停止和最终化统一 flush；启动失败时若 Traffic 已开始，也必须停止、flush 并释放。`startup_timeline` 只记录阶段、耗时和状态，不包含密码、Token 或服务器绝对路径。
 
 5C-2 的只读查询接口本身不提供控制 API。5C-10A 另在 Desktop Host 增加 LOCAL start/normal stop 薄入口；轨交 Electron 对等阶段继续增加 LOCAL force-stop/recover 和独立报告入口。Traffic flush、SSH writer、metadata、原子 ZIP 与 Task 终态顺序仍保持第 3 节契约；没有建立第二套采集器或状态机。
 

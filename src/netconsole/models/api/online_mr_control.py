@@ -6,6 +6,13 @@ from pydantic import Field, field_validator
 
 from netconsole.models.api.common import ApiModel
 from netconsole.models.api.online_mr import OnlineMrCollectorStatusDTO
+from netconsole.models.online_mr_models import (
+    DEFAULT_PING_PRESET_KEY,
+    FpingConfig,
+)
+
+
+_DEFAULT_FPING = FpingConfig()
 
 
 class OnlineMrWebItemsDTO(ApiModel):
@@ -39,11 +46,23 @@ class OnlineMrWebRadioDTO(ApiModel):
 class OnlineMrWebFpingDTO(ApiModel):
     enabled: bool = True
     target: str = Field(default="", max_length=64)
-    packet_size: int = Field(default=64, ge=1, le=65535)
-    interval_ms: int = Field(default=10, ge=10, le=60000)
-    timeout_ms: int = Field(default=100, ge=1, le=60000)
-    loss_warn_percent: float = Field(default=0.7, ge=0, le=100)
-    latency_warn_ms: int = Field(default=100, ge=1, le=60000)
+    preset_key: str = Field(default=DEFAULT_PING_PRESET_KEY, max_length=100)
+    preset_name: str = Field(default=_DEFAULT_FPING.preset_name, max_length=200)
+    packet_size: int = Field(
+        default=_DEFAULT_FPING.packet_size, ge=1, le=65535
+    )
+    interval_ms: int = Field(
+        default=_DEFAULT_FPING.interval_ms, ge=10, le=60000
+    )
+    timeout_ms: int = Field(
+        default=_DEFAULT_FPING.loss_threshold_ms, ge=1, le=60000
+    )
+    loss_warn_percent: float = Field(
+        default=_DEFAULT_FPING.loss_warn_percent, ge=0, le=100
+    )
+    latency_warn_ms: int = Field(
+        default=_DEFAULT_FPING.latency_warn_ms, ge=1, le=60000
+    )
 
 
 class OnlineMrWebIperfDTO(ApiModel):

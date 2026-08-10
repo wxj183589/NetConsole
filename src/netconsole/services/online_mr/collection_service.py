@@ -124,6 +124,23 @@ class OnlineMrCollectionService:
             )
             traffic_start_thread.start()
 
+        def start_required_fping(session) -> None:
+            nonlocal traffic_summary
+            if not manage_traffic or traffic_started.is_set():
+                return
+            mark_startup("required_fping_start_begin", session=session)
+            traffic_summary = coordinator.start_for_session(session, config)
+            fping_status = str(
+                (traffic_summary.get("fping") or {}).get("status") or ""
+            ).lower()
+            if fping_status != "running":
+                raise RuntimeError(
+                    "深度采集启动失败：fping 未进入有效运行态，"
+                    "无法生成车载 MR 分析所需的 Ping 时序数据"
+                )
+            traffic_started.set()
+            mark_startup("required_fping_running", session=session)
+
         def on_session_created(meta) -> None:
             payload = {
                 "controller_task_id": controller_task_id,
@@ -135,7 +152,10 @@ class OnlineMrCollectionService:
             emit("online_mr_session_created", json.dumps(payload, ensure_ascii=False))
             if collector.session is not None:
                 mark_startup("session_created", session=collector.session, publish=False)
-                start_traffic_async(collector.session)
+                if config.fping_required_before_collection:
+                    start_required_fping(collector.session)
+                else:
+                    start_traffic_async(collector.session)
 
         collector = OnlineMrCollector(
             config,

@@ -15,6 +15,7 @@ import {
 } from '../../api/groundUnattended'
 import { apiErrorDetail } from '../../api/client'
 import { getOnlineMrSession } from '../../api/onlineMr'
+import { getOnlineMrControlPresets } from '../../api/onlineMrControl'
 import GroundPingChart from '../../components/ground-unattended/GroundPingChart.vue'
 import { NcDataTable, type NcTableColumn } from '../../components/table'
 import NcFloatingWindow from '../../components/workspace/NcFloatingWindow.vue'
@@ -29,6 +30,7 @@ import type {
   GroundSyslogDeleteFilters, GroundSyslogDeletePreview,
   GroundSyslogTransportStatus, GroundTimelineEvent, GroundTrain, LocalIpv4Address, SourceIpRecommendation, UdpPortCheck,
 } from '../../types/groundUnattended'
+import type { OnlineMrPingPreset } from '../../types/onlineMrControl'
 import {
   groundDisplayNameSourceLabel, groundEventLabel, groundOperationStageLabel, groundRunModeLabel, groundSeverityLabel,
   groundSourceLabel, groundStatusLabel, groundTransitionContextLabel,
@@ -42,6 +44,7 @@ const saving = ref(false)
 const action = ref('')
 const status = ref<GroundStatus | null>(null)
 const profile = ref<GroundProfile | null>(null)
+const pingPresets = ref<OnlineMrPingPreset[]>([])
 const trains = ref<GroundTrain[]>([])
 const pingTargets = ref<GroundPingTarget[]>([])
 const deepCollections = ref<GroundDeepCollection[]>([])
@@ -343,6 +346,7 @@ const deepColumns: NcTableColumn<GroundDeepCollection>[] = [
   { key: 'ct_session_id', label: 'CT 会话', valueType: 'text' },
   { key: 'cw_session_id', label: 'CW 会话', valueType: 'text' },
   { key: 'collector_data', label: '实时证据', valueType: 'description', minWidth: 180, displayValue: (row) => row.collectors.map((item) => `${item.mr_role}: ${bytes(item.bytes_written)} / ${item.last_record_at || '暂无记录'}`).join('；') || '尚未创建会话' },
+  { key: 'fping_health', label: '深采 fping', valueType: 'status', minWidth: 190, displayValue: (row) => row.collectors.map((item) => `${item.mr_role}: ${item.fping_status} / ${item.fping_sample_count}`).join('；') || '尚未创建会话' },
   { key: 'failure_reason', label: t('ground.failure_reason', '失败原因'), valueType: 'error', minWidth: 220 },
   { key: 'updated_at', label: t('ground.updated_at', '更新时间'), valueType: 'datetime' },
 ]
@@ -1570,10 +1574,51 @@ async function copyDeepRecords(): Promise<void> {
   }
 }
 
+async function loadPingPresets(): Promise<void> {
+  try {
+    pingPresets.value = (await getOnlineMrControlPresets()).ping
+  } catch {
+    pingPresets.value = []
+  }
+}
+
+function applyDeepPingPreset(key: string): void {
+  if (!profile.value) return
+  const preset = pingPresets.value.find((item) => item.key === key)
+  if (!preset) {
+    profile.value.deep_fping.preset_key = ''
+    profile.value.deep_fping.preset_name = '自定义'
+    return
+  }
+  Object.assign(profile.value.deep_fping, {
+    enabled: true,
+    target: '',
+    preset_key: preset.key,
+    preset_name: preset.name,
+    packet_size: preset.packet_size_bytes,
+    interval_ms: preset.interval_ms,
+    timeout_ms: preset.timeout_ms,
+    loss_warn_percent: preset.loss_warn_percent,
+    latency_warn_ms: preset.latency_warn_ms,
+  })
+}
+
+function markDeepPingCustom(): void {
+  if (!profile.value) return
+  profile.value.deep_fping.preset_key = ''
+  profile.value.deep_fping.preset_name = '自定义'
+}
+
+function restoreDeepPingDefault(): void {
+  const preset = pingPresets.value.find((item) => item.key === 'pis_high_ping_acceptance') || pingPresets.value[0]
+  if (preset) applyDeepPingPreset(preset.key)
+}
+
 onMounted(() => {
   document.addEventListener('visibilitychange', handleVisibilityChange)
   void loadAll()
   void loadLocalAddresses()
+  void loadPingPresets()
   schedulePoll()
 })
 watch(activeTab, () => {
@@ -1852,6 +1897,7 @@ onBeforeUnmount(() => {
           <template #cell-status="{ row }"><el-tag size="small" :type="statusType(row.status)">{{ groundStatusLabel(row.status) }}</el-tag></template>
           <template #cell-deep_state="{ row }"><el-tag size="small" :type="statusType(row.deep_state)">{{ groundStatusLabel(row.deep_state) }}</el-tag></template>
           <template #cell-collector_data="{ row }"><div class="row-actions"><el-button v-for="collector in row.collectors" :key="collector.mr_role || collector.mr_id" size="small" text type="primary" :disabled="!collector.collector_session_id" @click="showDeepCollector(collector)">{{ collector.mr_role || collector.mr_id }} {{ collector.state }}</el-button><span v-if="!row.collectors.length" class="muted">尚未创建会话</span></div></template>
+          <template #cell-fping_health="{ row }"><div class="row-actions"><el-tag v-for="collector in row.collectors" :key="`${collector.mr_role}-fping`" size="small" :type="collector.fping_status === 'running' || collector.fping_status === 'stopped' && collector.fping_sample_count > 0 ? 'success' : collector.fping_status === 'failed' || collector.data_integrity_status === 'INCOMPLETE' ? 'danger' : 'info'">{{ collector.mr_role || 'MR' }} · {{ collector.fping_status }} · {{ collector.fping_sample_count }}</el-tag><span v-if="!row.collectors.length" class="muted">尚未创建会话</span></div></template>
         </NcDataTable></div>
       </el-tab-pane>
 
@@ -2085,7 +2131,19 @@ onBeforeUnmount(() => {
             <el-form-item :label="t('ground.maximum_duration', '最大采集时长（分钟）')"><el-input-number v-model="profile.maximum_collection_minutes" :disabled="!profile.deep_collection_master_enabled" :min="1" :max="1440" /></el-form-item>
             <el-form-item :label="t('ground.start_jitter', '启动错峰（秒）')"><el-input-number v-model="profile.start_jitter_seconds" :disabled="!profile.deep_collection_master_enabled" :min="0" :max="60" /></el-form-item>
             <el-form-item :label="t('ground.start_batch', '每批启动 MR 数')"><el-input-number v-model="profile.start_batch_size" :disabled="!profile.deep_collection_master_enabled" :min="1" :max="4" /></el-form-item>
-          </div></section>
+          </div>
+            <el-divider content-position="left">深度采集 fping（强制依赖）</el-divider>
+            <div class="mode-switch"><el-switch :model-value="true" disabled active-text="已自动启用" /><span>每个 CT/CW 深度会话自动 Ping 自己的 MR 管理 IP，用户不可关闭。</span></div>
+            <div class="form-grid" :class="{ 'budget-disabled': !profile.deep_collection_master_enabled }">
+              <el-form-item label="Ping 参数方案"><el-select v-model="profile.deep_fping.preset_key" :disabled="!profile.deep_collection_master_enabled" @change="applyDeepPingPreset"><el-option label="自定义" value="" /><el-option v-for="item in pingPresets" :key="item.key" :label="item.name" :value="item.key" /></el-select></el-form-item>
+              <el-form-item label="包大小（Bytes）"><el-input-number v-model="profile.deep_fping.packet_size" :disabled="!profile.deep_collection_master_enabled" :min="1" :max="65535" @change="markDeepPingCustom" /></el-form-item>
+              <el-form-item label="Ping 间隔（ms）"><el-input-number v-model="profile.deep_fping.interval_ms" :disabled="!profile.deep_collection_master_enabled" :min="10" :max="60000" @change="markDeepPingCustom" /></el-form-item>
+              <el-form-item label="超时时间（ms）"><el-input-number v-model="profile.deep_fping.timeout_ms" :disabled="!profile.deep_collection_master_enabled" :min="1" :max="60000" @change="markDeepPingCustom" /></el-form-item>
+              <el-form-item label="丢包告警阈值（%）"><el-input-number v-model="profile.deep_fping.loss_warn_percent" :disabled="!profile.deep_collection_master_enabled" :min="0" :max="100" :step="0.1" @change="markDeepPingCustom" /></el-form-item>
+              <el-form-item label="延迟告警阈值（ms）"><el-input-number v-model="profile.deep_fping.latency_warn_ms" :disabled="!profile.deep_collection_master_enabled" :min="1" :max="60000" @change="markDeepPingCustom" /></el-form-item>
+            </div>
+            <div class="form-actions"><el-button :disabled="!pingPresets.length" @click="restoreDeepPingDefault">恢复共享默认</el-button></div>
+          </section>
           <section><h2>{{ t('ground.ping_and_storage', '长 Ping 与存储') }}</h2><div class="form-grid">
             <el-form-item :label="t('ground.ping_interval', 'Ping 间隔（ms）')"><el-input-number v-model="profile.fleet_ping_interval_ms" :min="100" :max="60000" /></el-form-item>
             <el-form-item :label="t('ground.ping_timeout', 'Ping 超时（ms）')"><el-input-number v-model="profile.fleet_ping_timeout_ms" :min="100" :max="60000" /></el-form-item>
@@ -2288,7 +2346,14 @@ onBeforeUnmount(() => {
           <span>最后记录 <b>{{ selectedDeepCollector.last_record_at || '尚未收到数据' }}</b></span>
           <span>原始数据 <b>{{ bytes(selectedDeepCollector.bytes_written) }}</b></span>
           <span>AP / 站点 <b>{{ selectedDeepCollector.current_ap || '未知' }} / {{ selectedDeepCollector.station || '未知' }}</b></span>
+          <span>fping <b>{{ selectedDeepCollector.fping_status }} / {{ selectedDeepCollector.fping_target_ip || '等待目标' }}</b></span>
+          <span>fping 样本 <b>{{ selectedDeepCollector.fping_sample_count }}</b></span>
+          <span>fping 参数 <b>{{ selectedDeepCollector.fping_interval_ms || '—' }} / {{ selectedDeepCollector.fping_timeout_ms || '—' }} ms · {{ selectedDeepCollector.fping_packet_size || '—' }} Bytes</b></span>
+          <span>fping RTT <b>{{ metric(selectedDeepCollector.fping_latest_latency_ms, 'ms') }} / 平均 {{ metric(selectedDeepCollector.fping_avg_latency_ms, 'ms') }}</b></span>
+          <span>fping 丢包 <b>{{ selectedDeepCollector.fping_loss_percent == null ? '—' : `${selectedDeepCollector.fping_loss_percent.toFixed(2)}%` }}</b></span>
+          <span>Ping 完整性 <b>{{ selectedDeepCollector.data_integrity_status }}</b></span>
         </div>
+        <el-alert v-if="selectedDeepCollector.fping_error || selectedDeepCollector.data_integrity_status === 'INCOMPLETE'" type="error" :closable="false" show-icon :title="selectedDeepCollector.fping_error || '本次深度采集缺少完整 fping 时序数据'" />
         <div class="toolbar">
           <el-select v-model="deepCategory" @change="loadDeepRecords(true)">
             <el-option label="全部" value="ALL" /><el-option label="WMESH" value="WMESH" />

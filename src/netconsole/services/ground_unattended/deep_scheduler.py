@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import random
 import re
 import threading
@@ -284,6 +285,21 @@ class DeepMrCollectionScheduler:
                     continue
                 try:
                     request = self._build_start_request(endpoint, profile)
+                    self.repository.add_event(
+                        run_id=run_id,
+                        event_type="unattended_deep_fping_starting",
+                        train_id=candidate.train_id,
+                        mr_id=str(endpoint.get("mr_id") or ""),
+                        title="无人值守深采 fping 正在启动",
+                        details={
+                            "site_id": self.site_id,
+                            "run_id": run_id,
+                            "train_id": candidate.train_id,
+                            "mr_side": str(endpoint.get("endpoint") or ""),
+                            "device_id": endpoint.get("device_id"),
+                            "target_ip": request.config.fping.target,
+                        },
+                    )
                     operation = self.application_service.start_local_collection(request)
                     endpoint_code = str(endpoint.get("endpoint") or "")
                     operations_by_end[endpoint_code] = operation.controller_task_id
@@ -344,7 +360,8 @@ class DeepMrCollectionScheduler:
                     details={
                         "operations": operations_by_end,
                         "iperf_enabled": False,
-                        "session_fping_enabled": False,
+                        "session_fping_enabled": True,
+                        "fping_required": True,
                     },
                 )
                 if not active_train:
@@ -491,6 +508,14 @@ class DeepMrCollectionScheduler:
                     }
                     else "RUNNING"
                 )
+                if operation.phase in {
+                    OnlineMrPhase.VALIDATING,
+                    OnlineMrPhase.PREPARING_TASK,
+                    OnlineMrPhase.PREPARING_SESSION,
+                    OnlineMrPhase.CONNECTING,
+                    OnlineMrPhase.STARTING_COLLECTION,
+                }:
+                    state = "STARTING"
                 self.repository.save_deep_operation(
                     {
                         **row,
@@ -505,6 +530,8 @@ class DeepMrCollectionScheduler:
                         "package_verified": int(bool(row.get("package_verified"))),
                     }
                 )
+                if state == "RUNNING" and row.get("state") == "STARTING":
+                    self._record_fping_started(run_id, row, operation)
                 continue
             success, reason, session_id = self._verify_terminal_operation(
                 operation, profile
@@ -535,13 +562,25 @@ class DeepMrCollectionScheduler:
             collectors = self.query_service.list_collectors(
                 self.site_id, operation.session_id
             )
+            artifacts = self.query_service.list_artifacts(
+                self.site_id, operation.session_id
+            )
         except OnlineMrQueryError as exc:
             return False, exc.message, operation.session_id
         mesh = next((item for item in collectors if item.name == "mesh_link"), None)
+        fping_samples = next(
+            (
+                item
+                for item in artifacts
+                if item.relative_name == "raw/fping_v5_samples.jsonl"
+            ),
+            None,
+        )
         duration = float(detail.duration_minutes or operation.duration_minutes or 0)
         checks = {
             "duration": duration >= profile.minimum_valid_collection_minutes,
             "mesh_raw": bool(mesh and mesh.exists and mesh.size_bytes > 0),
+            "fping_samples": bool(fping_samples and fping_samples.size_bytes > 0),
             "finalized": bool(detail.finalization_complete),
             "package": bool(detail.has_package and detail.package_reference),
             "integrity": str(detail.data_integrity) == "complete",
@@ -550,6 +589,38 @@ class DeepMrCollectionScheduler:
             return True, "", operation.session_id
         failed = "、".join(key for key, value in checks.items() if not value)
         return False, f"深度采集完成条件不足：{failed}", operation.session_id
+
+    def _record_fping_started(self, run_id: str, row, operation) -> None:
+        if not operation.session_id:
+            return
+        try:
+            collectors = self.query_service.list_collectors(
+                self.site_id, operation.session_id
+            )
+            preview = self.query_service.get_realtime_preview(
+                self.site_id, operation.session_id
+            )
+        except OnlineMrQueryError:
+            return
+        fping = next((item for item in collectors if item.name == "fping_v5"), None)
+        if fping is None or str(fping.status).lower() != "running":
+            return
+        self.repository.add_event(
+            run_id=run_id,
+            event_type="unattended_deep_fping_started",
+            train_id=str(row.get("train_id") or ""),
+            mr_id=str(row.get("mr_id") or ""),
+            title="无人值守深采 fping 已进入运行态",
+            details={
+                "site_id": self.site_id,
+                "run_id": run_id,
+                "session_id": operation.session_id,
+                "train_id": str(row.get("train_id") or ""),
+                "mr_side": str(row.get("mr_position_code") or ""),
+                "device_id": operation.device_id,
+                "target_ip": str(preview.fping.get("target") or ""),
+            },
+        )
 
     def _update_train_coverage(self, run_id: str, profile) -> None:
         deep_rows = self.repository.list_deep_operations(run_id)
@@ -722,6 +793,13 @@ class DeepMrCollectionScheduler:
             raise ValueError("MR 未配置可用 SSH/Telnet 连接")
         if not device.primary_address or not username or not password:
             raise ValueError("MR 缺少受控连接地址或凭据")
+        fping_target = str(
+            endpoint.get("management_ip")
+            or detail.mr.management_ip
+            or device.primary_address
+            or ""
+        ).strip()
+        required_fping = self._required_fping_config(profile, fping_target)
         safe_name = re.sub(r'[\\/:*?"<>|]+', "_", detail.mr.name).strip(" ._") or "mr"
         config = OnlineMrConnectionConfig(
             site=self.site_id,
@@ -745,11 +823,12 @@ class DeepMrCollectionScheduler:
                 wireless_status=False,
             ),
             radio=OnlineMrRadioConfig(),
-            fping=FpingConfig(enabled=False, target="", preset_key="ground_unattended"),
+            fping=required_fping,
             iperf=IperfTrafficConfig(
                 enabled=False, server_ip="", preset_key="ground_unattended"
             ),
             duration_minutes=profile.maximum_collection_minutes,
+            fping_required_before_collection=True,
         )
         return OnlineMrStartRequest(
             site_id=self.site_id,
@@ -760,6 +839,28 @@ class DeepMrCollectionScheduler:
             executor_kind=OnlineMrExecutorKind.LOCAL,
             owner="ground_unattended",
         )
+
+    @staticmethod
+    def _required_fping_config(profile, target: str) -> FpingConfig:
+        normalized_target = str(target or "").strip()
+        try:
+            ipaddress.ip_address(normalized_target)
+        except ValueError:
+            raise ValueError(
+                "MR 管理 IP 无效，无法启动深度采集必需的 fping"
+            ) from None
+        deep_fping = profile.deep_fping
+        return FpingConfig(
+            enabled=True,
+            target=normalized_target,
+            preset_key=deep_fping.preset_key,
+            preset_name=deep_fping.preset_name,
+            packet_size=deep_fping.packet_size,
+            interval_ms=deep_fping.interval_ms,
+            loss_threshold_ms=deep_fping.timeout_ms,
+            loss_warn_percent=deep_fping.loss_warn_percent,
+            latency_warn_ms=deep_fping.latency_warn_ms,
+        ).normalized()
 
     def _active_operations(self):
         return self.application_service.list_operations(

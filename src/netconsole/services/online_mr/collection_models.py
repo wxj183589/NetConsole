@@ -52,6 +52,7 @@ def collection_config_to_payload(config: OnlineMrConnectionConfig) -> dict[str, 
         "duration_minutes": config.duration_minutes,
         "connection_method": config.connection_method,
         "collect_config_on_start": config.collect_config_on_start,
+        "fping_required_before_collection": config.fping_required_before_collection,
     }
 
 
@@ -126,6 +127,9 @@ def collection_config_from_payload(payload: dict[str, Any], paths: PathResolver)
         connection_targets=targets,
         connection_method=str(values.get("connection_method") or ""),
         collect_config_on_start=bool(values.get("collect_config_on_start", False)),
+        fping_required_before_collection=bool(
+            values.get("fping_required_before_collection", False)
+        ),
     )
 
 

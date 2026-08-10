@@ -11,7 +11,6 @@ from datetime import datetime
 from pathlib import Path
 
 from netconsole.core.paths import PathResolver
-from netconsole.core.ping.fping_v5_runner import run_fping_v5_json
 from netconsole.core.ping.fping_v5_stats import FpingV5Stats
 from netconsole.models.online_mr_models import IperfTrafficConfig, OnlineMrConnectionConfig
 from netconsole.services.fping_v5 import find_fping_tool
@@ -26,6 +25,7 @@ from netconsole.services.network_tools.iperf_runner import (
     run_iperf_client_preflight,
 )
 from netconsole.services.network_tools.iperf_tool_service import find_iperf_tool
+from netconsole.services.online_mr.fping_v5_probe import FpingV5ProbeRunner
 from netconsole.services.online_mr_session_store import OnlineMrSession
 
 
@@ -37,7 +37,9 @@ class _TrafficState:
     fping_stop: threading.Event = field(default_factory=threading.Event)
     fping_stats: FpingV5Stats = field(default_factory=FpingV5Stats)
     fping_thread: threading.Thread | None = None
+    fping_runner: FpingV5ProbeRunner | None = None
     fping_status: str = "disabled"
+    fping_config: dict[str, object] = field(default_factory=dict)
     iperf_runner: IperfProcessRunner | None = None
     iperf_thread: threading.Thread | None = None
     iperf_server_runner: IperfProcessRunner | None = None
@@ -87,10 +89,19 @@ class OnlineMrTrafficCoordinator:
         state = _TrafficState(session=session)
         with self._lock:
             if session_id in self._states:
-                return self.get_traffic_summary(session_id)
+                summary = self.get_traffic_summary(session_id)
+                if config.fping_required_before_collection and str(
+                    (summary.get("fping") or {}).get("status")
+                ).lower() != "running":
+                    raise RuntimeError("深度采集启动失败：既有 fping 未处于运行态")
+                return summary
             self._states[session_id] = state
 
-        self._start_fping(state, config)
+        self._start_fping(
+            state,
+            config,
+            require_ready=config.fping_required_before_collection,
+        )
         self._start_iperf(state, config)
         return self.get_traffic_summary(session_id)
 
@@ -100,6 +111,8 @@ class OnlineMrTrafficCoordinator:
             return
         state.stop_requested.set()
         state.fping_stop.set()
+        if state.fping_runner is not None:
+            state.fping_runner.stop()
         runner = state.iperf_runner
         if runner is not None:
             runner.stop("STOPPED_BY_COLLECTION")
@@ -111,6 +124,8 @@ class OnlineMrTrafficCoordinator:
             return
         state.stop_requested.set()
         state.fping_stop.set()
+        if state.fping_runner is not None:
+            state.fping_runner.stop()
         runner = state.iperf_runner
         if runner is not None:
             runner.stop("FORCED_STOPPED_BY_COLLECTION")
@@ -173,7 +188,13 @@ class OnlineMrTrafficCoordinator:
                 ),
             }
 
-    def _start_fping(self, state: _TrafficState, config: OnlineMrConnectionConfig) -> None:
+    def _start_fping(
+        self,
+        state: _TrafficState,
+        config: OnlineMrConnectionConfig,
+        *,
+        require_ready: bool = False,
+    ) -> None:
         fping = config.fping.normalized()
         if not fping.enabled:
             state.session.write_fping_final_summary("Status: high frequency ping disabled")
@@ -182,13 +203,43 @@ class OnlineMrTrafficCoordinator:
             state.fping_status = "failed"
             self._warn(state, "fping target 为空")
             state.session.write_fping_final_summary("Status: failed\nReason: ping target is empty")
+            if require_ready:
+                with self._lock:
+                    self._states.pop(state.session.meta.session_id, None)
+                raise RuntimeError("深度采集启动失败：fping 目标 IP 为空")
             return
         tool = find_fping_tool(self.paths)
         if tool is None:
             state.fping_status = "failed"
             self._warn(state, "fping v5 工具不可用")
             state.session.write_fping_final_summary("Status: failed\nReason: fping v5 tool is unavailable")
+            if require_ready:
+                with self._lock:
+                    self._states.pop(state.session.meta.session_id, None)
+                raise RuntimeError("深度采集启动失败：fping v5 工具不可用")
             return
+
+        runner = FpingV5ProbeRunner(
+            state.session,
+            fping,
+            tool,
+            source_device_id=config.device_id,
+        )
+        state.fping_runner = runner
+        state.fping_stats = runner.stats
+        state.fping_config = fping.as_dict()
+        if require_ready:
+            prepared = runner.prepare()
+            if prepared.status != "ready":
+                state.fping_status = "failed"
+                self._warn(state, prepared.error)
+                self._write_fping_snapshot(state, target=fping.target)
+                with self._lock:
+                    self._states.pop(state.session.meta.session_id, None)
+                raise RuntimeError(
+                    "深度采集启动失败：fping 未通过启动检查，"
+                    f"无法生成 Ping 时序数据（{prepared.error}）"
+                )
 
         state.fping_status = "running"
         self._write_fping_snapshot(state, target=fping.target)
@@ -198,38 +249,24 @@ class OnlineMrTrafficCoordinator:
                 if state.stop_requested.is_set():
                     state.fping_status = "stopped"
                     return
-                raw_dir = state.session.session_dir / "raw"
-                for sample in run_fping_v5_json(
-                    target=fping.target,
-                    period_ms=fping.interval_ms,
-                    timeout_ms=fping.loss_threshold_ms,
-                    packet_size=fping.packet_size,
-                    count_json=None,
-                    output_jsonl_path=raw_dir / "fping_v5_samples.jsonl",
-                    output_raw_log_path=raw_dir / "fping_v5_raw.log",
-                    stop_event=state.fping_stop,
-                    fping_path=tool,
-                ):
-                    state.fping_stats.add(sample)
-                    self._write_fping_snapshot(state, target=fping.target, latest=sample.as_dict())
-                state.fping_status = "stopped" if state.stop_requested.is_set() else "completed"
+                result = runner.run(
+                    lambda _snapshot: self._write_fping_snapshot(
+                        state,
+                        target=fping.target,
+                        latest=runner.last_sample,
+                    )
+                )
+                if result.status == "FAILED":
+                    state.fping_status = "failed"
+                    self._warn(state, f"fping 运行失败：{result.error}")
+                else:
+                    state.fping_status = (
+                        "stopped" if state.stop_requested.is_set() else "completed"
+                    )
             except Exception as exc:
                 state.fping_status = "failed"
                 self._warn(state, f"fping 运行失败：{exc}")
             finally:
-                stats = state.fping_stats.as_dict()
-                summary = {
-                    "Status": state.fping_status,
-                    "target_ip": fping.target,
-                    "sent": stats["sent_count"],
-                    "received": stats["success_count"],
-                    "lost": stats["timeout_count"],
-                    "loss_percent": stats["loss_rate_percent"],
-                    "min_latency_ms": stats["min_rtt_ms"],
-                    "max_latency_ms": stats["max_rtt_ms"],
-                    "avg_latency_ms": stats["avg_rtt_ms"],
-                }
-                state.session.write_fping_final_summary(json.dumps(summary, ensure_ascii=False, indent=2))
                 self._write_fping_snapshot(state, target=fping.target)
 
         state.fping_thread = threading.Thread(
@@ -238,6 +275,20 @@ class OnlineMrTrafficCoordinator:
             daemon=True,
         )
         state.fping_thread.start()
+        if require_ready:
+            ready = runner.wait_until_running(timeout_seconds=5.0)
+            if ready.status != "running":
+                state.fping_status = "failed"
+                self._warn(state, ready.error or "fping 未进入运行态")
+                runner.stop()
+                state.fping_thread.join(timeout=2.0)
+                self._write_fping_snapshot(state, target=fping.target)
+                with self._lock:
+                    self._states.pop(state.session.meta.session_id, None)
+                raise RuntimeError(
+                    "深度采集启动失败：fping 未成功启动，"
+                    f"无法生成 Ping 时序数据（{ready.error or ready.status}）"
+                )
 
     def _start_iperf(self, state: _TrafficState, config: OnlineMrConnectionConfig) -> None:
         traffic = config.iperf.normalized()
@@ -553,6 +604,7 @@ class OnlineMrTrafficCoordinator:
                 "status": state.fping_status,
                 "updated_at": datetime.now().isoformat(sep=" ", timespec="milliseconds"),
                 "target": target,
+                "config": dict(state.fping_config),
                 "summary": state.fping_stats.as_dict(),
                 "latest": latest or {},
             },

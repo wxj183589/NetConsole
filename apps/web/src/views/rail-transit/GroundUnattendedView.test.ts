@@ -21,6 +21,16 @@ describe('Ground unattended page', () => {
     ]) expect(source).toContain(field)
   })
 
+  it('uses shared Online MR presets and keeps deep fping visibly required', () => {
+    expect(source).toContain('getOnlineMrControlPresets')
+    expect(source).toContain('profile.deep_fping.preset_key')
+    expect(source).toContain('profile.deep_fping.loss_warn_percent')
+    expect(source).toContain('深度采集 fping（强制依赖）')
+    expect(source).toContain('用户不可关闭')
+    expect(source).toContain('selectedDeepCollector.fping_sample_count')
+    expect(source).not.toContain('v-model="profile.deep_fping.enabled"')
+  })
+
   it('only clears page polling on unmount and never stops backend work', () => {
     expect(source).toContain('onBeforeUnmount')
     expect(source).toContain('window.clearTimeout(pollTimer)')

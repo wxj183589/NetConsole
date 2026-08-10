@@ -34,7 +34,8 @@
 - `ap_resolver.py`：作为 `ApIdentityQueryService` 的薄适配器，按页/批次解析 distinct Peer、
   Radio/BSSID，缓存以 Identity revision 为失效边界；物理 AP MAC 不作为 Peer 证据，歧义保持未绑定，
   不读取或写入 AP Identity 内部表，也不维护第二套 Alias 索引。
-- `deep_scheduler.py`：每日覆盖队列、置顶和并发预算。
+- `deep_scheduler.py`：每日覆盖队列、置顶和并发预算；按 CT/CW 管理 IP 构造强制 Online MR
+  `FpingConfig`，由共享 `FpingV5ProbeRunner` 进入运行态后才继续 SSH 深采。
 - `archive_service.py`：manifest、ZIP 校验、原子发布和保留清理。
 
 Profile 的 `deep_collection_master_enabled=false` 表示轻量监测模式：Supervisor 继续 AC、Fleet Ping、

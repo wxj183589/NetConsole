@@ -1,4 +1,7 @@
 v1.4.9
+- 无人值守深度采集强制接入标准 Online MR fping：按 CT/CW 管理 IP 独立启动，确认进程进入运行态后才开始 SSH；工具、目标或启动失败时阻止深采进入正常运行态。
+- 无人值守深采 fping 配置复用 `FpingConfig`、Web DTO、后端 Preset、`FpingV5ProbeRunner`、raw/samples/summary/metadata 与分析契约；配置独立持久化，页面不可关闭并展示每个 MR 的运行状态、样本和完整性。
+- 深采完成校验新增非空 fping samples 门槛，停止沿用 Traffic flush/finalize，重复 Session 启动复用既有 runner，普通 Fleet Ping 和轻量无人值守行为保持不变。
 - 修复 Online MR 实时页面切换后控制区 MR 回退到列表第一项的问题；存在活动 Session 时按 `mr_id`、`device_id`、精确 `mr_name` 对齐，选择状态在 Pinia 生命周期内保留，Session 结束后仍保留上次选择。
 - 保留 iPerf 客户端 `-d` debug 原始输出，增加 debug/interval/错误分类与内存统计；raw 日志改为生命周期 writer，避免高频 debug 行逐行打开文件。
 - 限制 `live_iperf_status.json` 派生快照更新频率，原子替换遇 Windows 访问拒绝时有限重试，并记录相对路径、临时文件和异常阶段；快照及 callback 降级不再终止 iPerf 客户端。

@@ -70,6 +70,8 @@ Renderer 初次加载状态、运行列表、必要配置和当前页签；之�
 - 最多 2 辆活动列车、4 台活动 MR、2 台启动中 MR、2 台最终化 MR；
 - `deep_collection_master_enabled=true`；关闭后进入轻量监测模式，只保留 AC、Fleet Ping、
   UDP Syslog、WMESH 解析、位置判断和时间关联，不再启动新的 SSH 深度 MR 采集，已运行任务安全收尾；
+- 深采 fping 使用共享 Online MR `FpingConfig` 默认/Preset（默认 PIS 高频 Ping / 验收：64 Bytes、
+  10 ms、100 ms、0.7%、100 ms），参数在无人值守 Profile 中独立保存，不修改人工 Online MR 当前配置；
 - `syslog_auto_repair_enabled=true`；启动、新 Boot Session、MR 重新上线、手工检查和独立低频检查可补齐
   临时 Syslog Profile，关闭后检查保持只读；
 - 深度采集最低/建议/最大时长为 10/20/30 分钟；
@@ -91,7 +93,7 @@ Renderer 初次加载状态、运行列表、必要配置和当前页签；之�
 组播和广播地址始终拒绝。
 
 开始和结束时间不能相同，支持 `22:00-06:00` 跨午夜窗口，运行日期取窗口开始日期。运行中保存
-配置不会重启当前 fping 或 SSH 任务；`ac_poll_interval_seconds` 通过 Poller 控制文件热更新，
+配置不会重启当前 Fleet Ping、深采 fping 或 SSH 任务，新参数由后续深采 Session 使用；`ac_poll_interval_seconds` 通过 Poller 控制文件热更新，
 下一轮即使用新间隔且不重新登录 AC。`ping_depot_trains_enabled` 也在下一调度周期热更新：
 `false -> true` 增量加入符合条件的场段 CT/CW，`true -> false` 平滑移除场段目标并保留已写入的
 Ping 原始文件和汇总。其他配置保持当前 run 的既有冻结语义。状态接口同时返回下一次开始和结束时间。
@@ -367,7 +369,11 @@ Boot Session 的前后设备时钟、估算误差、重启原因、设备时区�
 `DeepMrCollectionScheduler` 只构造强类型 `OnlineMrStartRequest`，底层继续使用
 `OnlineMrApplicationService`、Job Center、原始命令、Session、正常停止、解析和原子 ZIP。无人值守
 模板固定：terminal monitor、MESH、信道繁忙度、AP 射频统计、切换记录和接口速率开启；无线状态
-默认关闭；会话级 fping 与 iPerf 均强制关闭。全车 Ping 不受深采轮换影响。
+默认关闭；会话级 iPerf 强制关闭，fping 则是深采强制依赖。Scheduler 按当前 CT/CW 的有效管理 IP
+构造独立 `FpingConfig(enabled=true)`，Session 创建后由 `OnlineMrTrafficCoordinator` 复用
+`FpingV5ProbeRunner` 完成工具/版本/目标检查和进程启动；只有 runner 进入运行态后才继续 SSH 连接。
+普通 Fleet Ping 继续服务全车在线和关联判断，使用独立分片与文件；它不能替代深采 Session 的标准
+`raw/fping_v5_raw.log`、`raw/fping_v5_samples.jsonl` 和 final summary，且不受深采轮换影响。
 
 `OnlineMrConcurrencyPolicy` 统一设备互斥和活动/启动/最终化预算。人工任务不再受“整个局点只能有
 一个任务”限制；同一 MR 仍只允许一个任务。自动调度先读取全部人工和自动 allocation，只使用剩余
@@ -385,7 +391,7 @@ Boot Session 的前后设备时钟、估算误差、重启原因、设备时区�
 资格刷新会把尚未产生结果的列车同步到 `WAITING/OFFLINE/EXCLUDED`；已经进入
 `COLLECTING/PARTIAL/COVERED/FAILED` 的业务结果不会被普通 AC 状态刷新覆盖。
 
-Session 只有满足最低时长、Mesh raw 存在且增长、最终化完成、正式包可用且完整性为 complete 时才
+Session 只有满足最低时长、Mesh raw 存在且增长、fping samples 非空、最终化完成、正式包可用且完整性为 complete 时才
 计为 `COVERED`；单端失败、时长不足、静止/离线、软件中断或最终化不完整为 `PARTIAL`，后续重新
 符合条件时继续补采。
 
@@ -394,6 +400,11 @@ Session 只有满足最低时长、Mesh raw 存在且增长、最终化完成、
 Collector 已写入原始字节时才展示 `RUNNING`。`GET /deep-collections/records` 复用受管 Online MR
 原始日志的 source/cursor 读取契约，按会话和分类返回有界增量；UI 的“暂停显示”只停止轮询与滚动，
 不会停止后台 Collector，也不会把文件大小或当前分页行数伪装为记录总数。
+
+深采详情和列表从同一 Online MR `live_fping_status.json`/Traffic summary 投影 fping 状态、目标、最后
+样本、样本数、参数、丢包和 RTT。运行中 fping 失败时 SSH 可保留已产生的原始事实，但页面将数据完整性
+标记为 `INCOMPLETE`；终态不能计为 `COVERED`。正常停止仍按 Traffic stop/join/summary、SSH writer
+flush、metadata、解析和打包收口，`ShutdownManager` 负责异常退出时的最终子进程回收。
 
 深采记录在查询层按内容语义投影为 `WMESH/RSSI/RADIO/STATUS/RAW_OUTPUT`。WMESH 只接受解析成功的
 链路状态或切换事件，RSSI 必须同时具有 MAC 和真实数值，Radio 只接受信道/接口/射频 telemetry，

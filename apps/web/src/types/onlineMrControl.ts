@@ -51,7 +51,7 @@ export interface OnlineMrStartConfig {
     collector_radio_ids: Record<string, number>
     channel_busy_radio: number; ap_radio_statistics_radio: number; wireless_status_radio: number
   }
-  fping: { enabled: boolean; target: string; packet_size: number; interval_ms: number; timeout_ms: number; loss_warn_percent: number; latency_warn_ms: number }
+  fping: { enabled: boolean; target: string; preset_key: string; preset_name: string; packet_size: number; interval_ms: number; timeout_ms: number; loss_warn_percent: number; latency_warn_ms: number }
   iperf: { enabled: boolean; server_ip: string; port: number; protocol: 'TCP' | 'UDP'; parallel: number; interval_seconds: number; udp_bitrate_mbps: number | null; tcp_report_threshold_mbps: number | null; tcp_rate_limit_mbps: number | null; packet_length: number | null; reverse: boolean }
 }
 

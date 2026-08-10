@@ -35,7 +35,7 @@ const config = reactive({
     ap_radio_statistics_radio: 1,
     wireless_status_radio: 1,
   },
-  fping: { enabled: true, target: '', packet_size: 64, interval_ms: 10, timeout_ms: 100, loss_warn_percent: 0.7, latency_warn_ms: 100 },
+  fping: { enabled: true, target: '', preset_key: 'pis_high_ping_acceptance', preset_name: 'PIS 高频 Ping / 验收', packet_size: 64, interval_ms: 10, timeout_ms: 100, loss_warn_percent: 0.7, latency_warn_ms: 100 },
   iperf: { enabled: false, server_ip: '', port: 5201, protocol: 'TCP' as 'TCP' | 'UDP', parallel: 1, interval_seconds: 1, udp_bitrate_mbps: null as number | null, tcp_report_threshold_mbps: null as number | null, tcp_rate_limit_mbps: null as number | null, packet_length: null as number | null, reverse: false },
 })
 
@@ -112,7 +112,9 @@ function applyPingPreset(key: string): void {
   if (!preset) return
   applyingPreset = true
   config.fping.enabled = true
-  config.fping.packet_size = preset.packet_size_bytes
+    config.fping.packet_size = preset.packet_size_bytes
+    config.fping.preset_key = preset.key
+    config.fping.preset_name = preset.name
   config.fping.interval_ms = preset.interval_ms
   config.fping.timeout_ms = preset.timeout_ms
   config.fping.loss_warn_percent = preset.loss_warn_percent
@@ -137,7 +139,7 @@ function applyTrafficPreset(key: string): void {
   config.iperf.reverse = preset.reverse
   applyingPreset = false
 }
-function markPingCustom(): void { if (!applyingPreset) pingPresetKey.value = 'custom' }
+function markPingCustom(): void { if (!applyingPreset) { pingPresetKey.value = 'custom'; config.fping.preset_key = ''; config.fping.preset_name = '自定义' } }
 function markTrafficCustom(): void { if (!applyingPreset) trafficPresetKey.value = 'custom' }
 function presetName<T extends OnlineMrPingPreset | OnlineMrTrafficPreset>(rows: T[], key: string): string {
   return rows.find((item) => item.key === key)?.name || '自定义'

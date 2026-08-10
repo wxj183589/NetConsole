@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from netconsole.models.api.ground_unattended import GroundUnattendedTrainDTO
+from netconsole.models.api.ground_unattended import GroundUnattendedProfileDTO
 from netconsole.repositories.ground_unattended_repository import (
     GroundUnattendedRepository,
 )
@@ -146,6 +147,20 @@ def test_collecting_train_starts_only_the_missing_endpoint() -> None:
     selected = DeepMrCollectionScheduler._startable_endpoints(train, {"1"})
 
     assert [row["endpoint"] for row in selected] == ["CW"]
+
+
+def test_deep_fping_is_forced_and_ct_cw_keep_independent_targets() -> None:
+    profile = GroundUnattendedProfileDTO(site_id="site-a")
+    profile.deep_fping.enabled = False
+
+    ct = DeepMrCollectionScheduler._required_fping_config(profile, "10.0.0.1")
+    cw = DeepMrCollectionScheduler._required_fping_config(profile, "10.0.0.2")
+
+    assert ct.enabled is True
+    assert cw.enabled is True
+    assert ct.target == "10.0.0.1"
+    assert cw.target == "10.0.0.2"
+    assert ct.interval_ms == cw.interval_ms == profile.deep_fping.interval_ms
 
 
 def test_train_coverage_waits_for_both_endpoints_and_is_counted_once(tmp_path) -> None:

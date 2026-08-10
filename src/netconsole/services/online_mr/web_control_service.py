@@ -280,8 +280,12 @@ class OnlineMrWebControlService:
             fping=FpingConfig(
                 enabled=fping_enabled,
                 target=fping_target if fping_enabled else "",
-                preset_key="real_device_test" if real_test else "web_local",
-                preset_name="真实设备保护模式" if real_test else "Web 本地受控",
+                preset_key=(
+                    "real_device_test" if real_test else request.fping.preset_key
+                ),
+                preset_name=(
+                    "真实设备保护模式" if real_test else request.fping.preset_name
+                ),
                 packet_size=request.fping.packet_size,
                 interval_ms=REAL_DEVICE_FPING_INTERVAL_MS if real_test else request.fping.interval_ms,
                 loss_threshold_ms=REAL_DEVICE_FPING_TIMEOUT_MS if real_test else request.fping.timeout_ms,

@@ -38,6 +38,8 @@ CREATE TABLE IF NOT EXISTS ground_unattended_profiles (
     max_starting_mrs INTEGER NOT NULL DEFAULT 2,
     max_finalizing_mrs INTEGER NOT NULL DEFAULT 2,
     deep_collection_master_enabled INTEGER NOT NULL DEFAULT 1,
+    deep_fping_required INTEGER NOT NULL DEFAULT 1,
+    deep_fping TEXT NOT NULL DEFAULT '{}',
     fleet_ping_interval_ms INTEGER NOT NULL DEFAULT 1000,
     fleet_ping_timeout_ms INTEGER NOT NULL DEFAULT 4000,
     fleet_ping_packet_size INTEGER NOT NULL DEFAULT 64,
@@ -662,6 +664,8 @@ ON ground_unattended_health_events(site_id, ts DESC, severity);
 
 _PROFILE_MIGRATION_COLUMNS = {
     "deep_collection_master_enabled": "INTEGER NOT NULL DEFAULT 1",
+    "deep_fping_required": "INTEGER NOT NULL DEFAULT 1",
+    "deep_fping": "TEXT NOT NULL DEFAULT '{}'",
     "fleet_ping_warmup_seconds": "INTEGER NOT NULL DEFAULT 10",
     "ping_depot_trains_enabled": "INTEGER NOT NULL DEFAULT 0",
     "udp_listen_host": "TEXT NOT NULL DEFAULT '0.0.0.0'",
@@ -960,6 +964,9 @@ class GroundUnattendedRepository:
         if row is None:
             profile = GroundUnattendedProfileDTO(site_id=self.site_id)
             payload = profile.model_dump(mode="json")
+            payload["deep_fping"] = json.dumps(
+                payload.get("deep_fping") or {}, ensure_ascii=False
+            )
             fields = tuple(payload)
             values = [
                 int(value) if isinstance(value, bool) else value
@@ -978,9 +985,14 @@ class GroundUnattendedRepository:
                 ).fetchone()
             if row is None:
                 raise RuntimeError("ground unattended profile was not created")
-        return GroundUnattendedProfileDTO.model_validate(
-            project_row_for_model(row, GroundUnattendedProfileDTO)
-        )
+        projected = project_row_for_model(row, GroundUnattendedProfileDTO)
+        deep_fping = projected.get("deep_fping")
+        if isinstance(deep_fping, str):
+            try:
+                projected["deep_fping"] = json.loads(deep_fping or "{}")
+            except json.JSONDecodeError:
+                projected["deep_fping"] = {}
+        return GroundUnattendedProfileDTO.model_validate(projected)
 
     def save_profile(
         self, profile: GroundUnattendedProfileDTO
@@ -991,6 +1003,9 @@ class GroundUnattendedRepository:
         payload = profile.model_copy(
             update={"created_at": profile.created_at or now, "updated_at": now}
         ).model_dump(mode="json")
+        payload["deep_fping"] = json.dumps(
+            payload.get("deep_fping") or {}, ensure_ascii=False
+        )
         fields = tuple(payload)
         values = [
             int(value) if isinstance(value, bool) else value
@@ -1008,6 +1023,7 @@ class GroundUnattendedRepository:
                 f"ON CONFLICT(site_id) DO UPDATE SET {updates}",
                 values,
             )
+        payload["deep_fping"] = json.loads(str(payload["deep_fping"]))
         return GroundUnattendedProfileDTO.model_validate(payload)
 
     def list_priority_train_ids(self) -> set[str]:

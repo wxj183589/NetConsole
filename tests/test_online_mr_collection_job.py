@@ -288,6 +288,56 @@ def test_application_collection_flushes_traffic_before_collector_close_and_packa
     assert order.index("traffic-flush") < order.index("collector-close")
     assert order.index("collector-close") < order.index("traffic-finalize")
     assert order[-1] == "package"
+
+
+def test_required_fping_reaches_running_before_ssh_connection_starts(
+    tmp_path: Path,
+) -> None:
+    paths = PathResolver(tmp_path)
+    order: list[str] = []
+    config = _config()
+    config.fping = FpingConfig(enabled=True, target="192.0.2.20")
+    config.fping_required_before_collection = True
+
+    class RequiredTrafficCoordinator:
+        def start_for_session(self, _session, received_config):
+            assert received_config.fping_required_before_collection is True
+            order.append("fping-running")
+            return {"fping": {"status": "running"}, "flush_complete": False}
+
+        def stop_traffic_for_session(self, _session_id):
+            order.append("fping-stop")
+
+        def flush_traffic_outputs(self, _session_id, *, timeout_seconds):
+            assert timeout_seconds > 0
+            order.append("fping-flush")
+            return []
+
+        def finalize_traffic_outputs(self, _session_id):
+            order.append("fping-finalize")
+            return {"fping": {"status": "stopped"}, "flush_complete": True}
+
+    def connection_factory(_config):
+        assert order == ["fping-running"]
+        order.append("ssh-connect")
+        return FakeConnection()
+
+    service = OnlineMrCollectionService(
+        OnlineMrSessionStore(paths),
+        connection_factory=connection_factory,
+        traffic_coordinator=RequiredTrafficCoordinator(),
+    )
+    deadline = time.monotonic() + 0.15
+
+    result = service.run(
+        config,
+        should_cancel=lambda: time.monotonic() >= deadline,
+        manage_traffic=True,
+    )
+
+    assert result["status"] == "STOPPED"
+    assert order.index("fping-running") < order.index("ssh-connect")
+    assert order.index("fping-flush") < order.index("fping-finalize")
     meta = json.loads(
         (Path(result["session_dir"]) / "session_meta.json").read_text(encoding="utf-8")
     )

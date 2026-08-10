@@ -98,6 +98,7 @@ def run_fping_v5_json(
     project_root: Path | None = None,
     fping_path: Path | None = None,
     targets: list[str] | tuple[str, ...] | None = None,
+    process_started_event: threading.Event | None = None,
 ) -> Iterator[FpingV5Sample]:
     if stop_event is not None and stop_event.is_set():
         return
@@ -131,6 +132,8 @@ def run_fping_v5_json(
             bufsize=1,
             creationflags=creationflags,
         )
+        if process_started_event is not None:
+            process_started_event.set()
         shutdown_manager.register_process(process, "fping", kind="internal_tool", shutdown_policy="terminate")
         stop_watcher = threading.Thread(
             target=_watch_stop_event,
@@ -157,6 +160,18 @@ def run_fping_v5_json(
                 yield sample
                 if count_json is not None and parsed_count >= int(count_json):
                     break
+        if count_json is None and not stop_event.is_set():
+            return_code = process.poll()
+            if return_code is None:
+                try:
+                    return_code = process.wait(timeout=0.2)
+                except subprocess.TimeoutExpired:
+                    raise RuntimeError(
+                        "fping stdout closed unexpectedly while the process was still running"
+                    ) from None
+            raise RuntimeError(
+                f"fping process exited unexpectedly with code {return_code}"
+            )
     finally:
         process_done.set()
         if process is not None:

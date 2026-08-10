@@ -47,6 +47,8 @@ TASK_SWITCH_HISTORY = "switch_history"
 TASK_INTERFACE_RATE = "interface_rate"
 TASK_TERMINAL_MONITOR = "terminal_monitor"
 TASK_FPING = "fping"
+DEFAULT_PING_PRESET_KEY = "pis_high_ping_acceptance"
+DEFAULT_PING_PRESET_NAME = "PIS 高频 Ping / 验收"
 TASK_CONFIG_COLLECT = "config_collect"
 TASK_WIRELESS_STATUS = "wireless_status"
 
@@ -176,8 +178,8 @@ class OnlineMrRadioConfig:
 class FpingConfig:
     enabled: bool = True
     target: str = ""
-    preset_key: str = ""
-    preset_name: str = ""
+    preset_key: str = DEFAULT_PING_PRESET_KEY
+    preset_name: str = DEFAULT_PING_PRESET_NAME
     packet_size: int = 64
     interval_ms: int = 10
     loss_threshold_ms: int = 100
@@ -375,6 +377,7 @@ class OnlineMrConnectionConfig:
     connection_targets: tuple[object, ...] = field(default_factory=tuple)
     connection_method: str = ""
     collect_config_on_start: bool = False
+    fping_required_before_collection: bool = False
 
 
 @dataclass

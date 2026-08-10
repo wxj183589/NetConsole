@@ -8,6 +8,12 @@ export interface GroundProfile {
   ac_ping_correlation_tolerance_seconds: number; ap_switch_before_seconds: number; ap_switch_after_seconds: number
   max_active_trains: number; max_active_mrs: number; max_starting_mrs: number; max_finalizing_mrs: number
   deep_collection_master_enabled: boolean
+  deep_fping_required: true
+  deep_fping: {
+    enabled: true; target: ''; preset_key: string; preset_name: string
+    packet_size: number; interval_ms: number; timeout_ms: number
+    loss_warn_percent: number; latency_warn_ms: number
+  }
   fleet_ping_interval_ms: number; fleet_ping_timeout_ms: number; fleet_ping_packet_size: number; fleet_ping_shard_size: number; fleet_ping_warmup_seconds: number
   ping_depot_trains_enabled: boolean
   udp_listen_host: string; udp_listen_port: number; udp_queue_capacity: number; raw_flush_interval_seconds: number; raw_flush_record_count: number
@@ -126,6 +132,10 @@ export interface GroundDeepCollector {
   run_id: string; train_id: string; mr_id: string; mr_role: string; management_ip: string; operation_id: string; collector_session_id: string
   state: GroundDeepCollectionState; state_reason: string; started_at: string; last_record_at: string; record_count: number | null; bytes_written: number
   current_ap: string; station: string; section: string; last_error: string; retry_count: number
+  fping_status: string; fping_target_ip: string; fping_started_at: string; fping_last_data_at: string
+  fping_sample_count: number; fping_interval_ms: number; fping_timeout_ms: number; fping_packet_size: number
+  fping_loss_percent: number | null; fping_avg_latency_ms: number | null; fping_latest_latency_ms: number | null
+  fping_error: string; data_integrity_status: 'UNKNOWN' | 'COMPLETE' | 'INCOMPLETE'
 }
 export interface GroundDeepCollectionRecord {
   sequence: number; timestamp: string; category: string; source: string; text: string

@@ -1771,7 +1771,9 @@ class GroundUnattendedApplicationService:
                     str(operation["mr_position_code"])
                 ] = operation
         query = self._deep_query_service()
-        session_cache: dict[str, tuple[object | None, list[object], str]] = {}
+        session_cache: dict[
+            str, tuple[object | None, list[object], dict[str, Any], str]
+        ] = {}
         items = []
         for row in rows:
             train_id = str(row["train_id"])
@@ -2051,7 +2053,9 @@ class GroundUnattendedApplicationService:
         operation: Mapping[str, Any] | None,
         endpoint: Mapping[str, Any],
         query: OnlineMrQueryService | None,
-        session_cache: dict[str, tuple[object | None, list[object], str]],
+        session_cache: dict[
+            str, tuple[object | None, list[object], dict[str, Any], str]
+        ],
     ) -> GroundDeepCollectorDTO:
         operation = operation or {}
         session_id = str(operation.get("session_id") or "")
@@ -2059,22 +2063,40 @@ class GroundUnattendedApplicationService:
         bytes_written = 0
         last_record_at = ""
         session_error = ""
+        fping_view: dict[str, Any] = {}
+        fping_row = None
         if session_id and query is not None:
             cached = session_cache.get(session_id)
             if cached is None:
                 try:
                     detail = query.get_session(self.site_id, session_id)
                     status_rows = query.list_collectors(self.site_id, session_id)
-                    cached = (detail, status_rows, "")
+                    preview_getter = getattr(query, "get_realtime_preview", None)
+                    preview = (
+                        preview_getter(self.site_id, session_id)
+                        if callable(preview_getter)
+                        else None
+                    )
+                    fping_view = dict(getattr(preview, "fping", {}) or {})
+                    if not fping_view:
+                        fping_view = dict(
+                            (getattr(detail, "traffic_summary", {}) or {}).get(
+                                "fping"
+                            )
+                            or {}
+                        )
+                    cached = (detail, status_rows, fping_view, "")
                 except OnlineMrQueryError as exc:
-                    cached = (None, [], str(exc))
+                    cached = (None, [], {}, str(exc))
                 session_cache[session_id] = cached
-            detail, status_rows, session_error = cached
+            detail, status_rows, fping_view, session_error = cached
             for status in status_rows:
                 bytes_written += int(getattr(status, "size_bytes", 0) or 0)
                 updated_at = str(getattr(status, "updated_at", "") or "")
                 if updated_at > last_record_at:
                     last_record_at = updated_at
+                if getattr(status, "name", "") == "fping_v5":
+                    fping_row = status
             # Online MR may report an operation as RUNNING immediately after the
             # session is created.  The ground-unattended view must not present
             # that as a deep collector that is already producing evidence.
@@ -2090,6 +2112,29 @@ class GroundUnattendedApplicationService:
                     state, reason = "FAILED", str(
                         getattr(detail, "error_message", "") or "Online MR 会话失败"
                     )
+        fping_summary = dict(fping_view.get("summary") or {})
+        fping_config = dict(fping_view.get("config") or {})
+        fping_latest = dict(fping_view.get("latest") or {})
+        fping_status = str(
+            fping_view.get("status")
+            or getattr(fping_row, "status", "")
+            or "missing"
+        ).lower()
+        fping_samples = int(fping_summary.get("sent_count") or 0)
+        fping_error = str(
+            fping_view.get("error")
+            or getattr(fping_row, "last_error", "")
+            or getattr(fping_row, "error", "")
+            or ""
+        )
+        if fping_status in {"failed", "error", "missing"}:
+            integrity_status = "INCOMPLETE"
+        elif fping_samples > 0:
+            integrity_status = "COMPLETE"
+        else:
+            integrity_status = "UNKNOWN"
+        if state == "RUNNING" and integrity_status == "INCOMPLETE":
+            reason = f"{reason}；fping {fping_status}，Ping 数据完整性不完整"
         return GroundDeepCollectorDTO(
             run_id=run_id,
             train_id=str(train.get("train_id") or ""),
@@ -2109,6 +2154,33 @@ class GroundUnattendedApplicationService:
             section=str(train.get("section") or ""),
             last_error=str(operation.get("error_summary") or session_error or ""),
             retry_count=max(0, int(train.get("attempt_count") or 0) - 1),
+            fping_status=fping_status,
+            fping_target_ip=str(
+                fping_view.get("target")
+                or fping_config.get("target")
+                or endpoint.get("management_ip")
+                or ""
+            ),
+            fping_started_at=str(getattr(fping_row, "started_at", "") or ""),
+            fping_last_data_at=str(
+                fping_latest.get("ts")
+                or getattr(fping_row, "last_data_at", "")
+                or fping_view.get("updated_at")
+                or ""
+            ),
+            fping_sample_count=fping_samples,
+            fping_interval_ms=int(fping_config.get("interval_ms") or 0),
+            fping_timeout_ms=int(
+                fping_config.get("timeout_ms")
+                or fping_config.get("loss_threshold_ms")
+                or 0
+            ),
+            fping_packet_size=int(fping_config.get("packet_size") or 0),
+            fping_loss_percent=fping_summary.get("loss_rate_percent"),
+            fping_avg_latency_ms=fping_summary.get("avg_rtt_ms"),
+            fping_latest_latency_ms=fping_latest.get("rtt_ms"),
+            fping_error=fping_error,
+            data_integrity_status=integrity_status,
         )
 
     @staticmethod

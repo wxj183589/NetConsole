@@ -118,7 +118,11 @@ def test_traffic_coordinator_stops_and_flushes_fping_and_iperf(
 
     monkeypatch.setattr("netconsole.services.online_mr.traffic_coordinator.find_fping_tool", lambda _paths: tool)
     monkeypatch.setattr("netconsole.services.online_mr.traffic_coordinator.find_iperf_tool", lambda _paths: tool)
-    monkeypatch.setattr("netconsole.services.online_mr.traffic_coordinator.run_fping_v5_json", fake_fping)
+    monkeypatch.setattr("netconsole.services.online_mr.fping_v5_probe.run_fping_v5_json", fake_fping)
+    monkeypatch.setattr(
+        "netconsole.services.online_mr.fping_v5_probe.check_fping_v5_available",
+        lambda **_kwargs: type("Check", (), {"available": True, "error": ""})(),
+    )
     monkeypatch.setattr("netconsole.services.online_mr.traffic_coordinator.IperfProcessRunner", _FakeIperfRunner)
 
     coordinator = OnlineMrTrafficCoordinator(paths)
@@ -156,7 +160,11 @@ def test_traffic_flush_timeout_records_warning_and_never_waits_forever(
             yield None
 
     monkeypatch.setattr("netconsole.services.online_mr.traffic_coordinator.find_fping_tool", lambda _paths: tool)
-    monkeypatch.setattr("netconsole.services.online_mr.traffic_coordinator.run_fping_v5_json", blocked_fping)
+    monkeypatch.setattr("netconsole.services.online_mr.fping_v5_probe.run_fping_v5_json", blocked_fping)
+    monkeypatch.setattr(
+        "netconsole.services.online_mr.fping_v5_probe.check_fping_v5_available",
+        lambda **_kwargs: type("Check", (), {"available": True, "error": ""})(),
+    )
 
     coordinator = OnlineMrTrafficCoordinator(paths)
     coordinator.start_for_session(session, config)
@@ -169,6 +177,84 @@ def test_traffic_flush_timeout_records_warning_and_never_waits_forever(
     assert coordinator.get_traffic_summary(session.meta.session_id)["flush_complete"] is False
     release.set()
     coordinator.flush_traffic_outputs(session.meta.session_id, timeout_seconds=1)
+
+
+def test_required_fping_is_running_before_start_returns_and_duplicate_is_suppressed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config()
+    config.iperf = IperfTrafficConfig(enabled=False)
+    config.fping_required_before_collection = True
+    paths = PathResolver(tmp_path)
+    session = OnlineMrSessionStore(paths).create_session(config)
+    tool = tmp_path / "fping.exe"
+    tool.touch()
+    starts = 0
+
+    def fake_fping(**kwargs):
+        nonlocal starts
+        starts += 1
+        kwargs["process_started_event"].set()
+        sample = FpingV5Sample(
+            ts="2026-07-13T10:00:00.000",
+            target=config.fping.target,
+            seq=1,
+            ok=True,
+            rtt_ms=1.0,
+            timeout_ms=100,
+            size=64,
+            error="",
+            backend="fping_v5_json",
+            raw_type="resp",
+            raw={},
+        )
+        yield sample
+        kwargs["stop_event"].wait(2)
+
+    monkeypatch.setattr(
+        "netconsole.services.online_mr.traffic_coordinator.find_fping_tool",
+        lambda _paths: tool,
+    )
+    monkeypatch.setattr(
+        "netconsole.services.online_mr.fping_v5_probe.check_fping_v5_available",
+        lambda **_kwargs: type("Check", (), {"available": True, "error": ""})(),
+    )
+    monkeypatch.setattr(
+        "netconsole.services.online_mr.fping_v5_probe.run_fping_v5_json",
+        fake_fping,
+    )
+
+    coordinator = OnlineMrTrafficCoordinator(paths)
+    first = coordinator.start_for_session(session, config)
+    second = coordinator.start_for_session(session, config)
+
+    assert first["fping"]["status"] == "running"
+    assert second["fping"]["status"] == "running"
+    assert starts == 1
+    coordinator.stop_traffic_for_session(session.meta.session_id)
+    coordinator.flush_traffic_outputs(session.meta.session_id, timeout_seconds=1)
+
+
+def test_required_fping_unavailable_blocks_deep_collection_start(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config()
+    config.iperf = IperfTrafficConfig(enabled=False)
+    config.fping_required_before_collection = True
+    paths = PathResolver(tmp_path)
+    session = OnlineMrSessionStore(paths).create_session(config)
+    monkeypatch.setattr(
+        "netconsole.services.online_mr.traffic_coordinator.find_fping_tool",
+        lambda _paths: None,
+    )
+
+    coordinator = OnlineMrTrafficCoordinator(paths)
+    with pytest.raises(RuntimeError, match="fping v5 工具不可用"):
+        coordinator.start_for_session(session, config)
+
+    assert coordinator.get_traffic_summary(session.meta.session_id)["fping"]["status"] == "not_managed"
 
 
 def test_loopback_iperf_starts_and_stops_managed_server(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

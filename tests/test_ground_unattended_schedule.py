@@ -49,12 +49,26 @@ def test_cross_midnight_schedule_uses_start_date() -> None:
 def test_profile_persists_updated_schedule(tmp_path) -> None:
     repo = GroundUnattendedRepository(tmp_path / "index.sqlite", site_id="site-a")
     assert repo.get_profile().ping_depot_trains_enabled is False
+    assert repo.get_profile().deep_fping.enabled is True
+    assert repo.get_profile().deep_fping.interval_ms == 10
     profile = repo.get_profile().model_copy(
         update={
             "enabled": True,
             "schedule_start_time": "08:15",
             "schedule_end_time": "00:30",
             "ping_depot_trains_enabled": True,
+            "deep_fping": repo.get_profile().deep_fping.model_copy(
+                update={
+                    "enabled": False,
+                    "preset_key": "",
+                    "preset_name": "自定义",
+                    "packet_size": 256,
+                    "interval_ms": 30,
+                    "timeout_ms": 250,
+                    "loss_warn_percent": 2.5,
+                    "latency_warn_ms": 150,
+                }
+            ),
         }
     )
     repo.save_profile(profile)
@@ -67,6 +81,11 @@ def test_profile_persists_updated_schedule(tmp_path) -> None:
         True,
     )
     assert loaded.ping_depot_trains_enabled is True
+    assert loaded.deep_fping.enabled is True
+    assert loaded.deep_fping.target == ""
+    assert loaded.deep_fping.packet_size == 256
+    assert loaded.deep_fping.interval_ms == 30
+    assert loaded.deep_fping.timeout_ms == 250
 
 
 def test_supervisor_repeated_ticks_tolerate_future_profile_columns(tmp_path) -> None:

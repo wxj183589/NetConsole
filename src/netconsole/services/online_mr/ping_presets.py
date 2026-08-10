@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from netconsole.models.online_mr_models import FpingConfig
+
 
 CUSTOM_PING_PRESET_KEY = ""
-DEFAULT_PING_PRESET_KEY = "pis_high_ping_acceptance"
+_DEFAULT_FPING = FpingConfig()
 
 
 @dataclass(frozen=True)
@@ -21,13 +23,13 @@ class HighPingPreset:
 
 _PRESETS: tuple[HighPingPreset, ...] = (
     HighPingPreset(
-        key="pis_high_ping_acceptance",
-        name="PIS 高频 Ping / 验收",
-        packet_size_bytes=64,
-        interval_ms=10,
-        timeout_ms=100,
-        loss_warn_percent=0.7,
-        latency_warn_ms=100,
+        key=_DEFAULT_FPING.preset_key,
+        name=_DEFAULT_FPING.preset_name,
+        packet_size_bytes=_DEFAULT_FPING.packet_size,
+        interval_ms=_DEFAULT_FPING.interval_ms,
+        timeout_ms=_DEFAULT_FPING.loss_threshold_ms,
+        loss_warn_percent=_DEFAULT_FPING.loss_warn_percent,
+        latency_warn_ms=_DEFAULT_FPING.latency_warn_ms,
         description="适用于 PIS 车地无线高频丢包和时延验收",
     ),
     HighPingPreset(

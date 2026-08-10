@@ -3,9 +3,10 @@ from __future__ import annotations
 import ipaddress
 from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from netconsole.models.api.common import ApiModel
+from netconsole.models.api.online_mr_control import OnlineMrWebFpingDTO
 
 
 GroundRunState = Literal[
@@ -113,6 +114,8 @@ class GroundUnattendedProfileDTO(ApiModel):
     max_starting_mrs: int = Field(default=2, ge=1, le=8)
     max_finalizing_mrs: int = Field(default=2, ge=1, le=8)
     deep_collection_master_enabled: bool = True
+    deep_fping_required: bool = True
+    deep_fping: OnlineMrWebFpingDTO = Field(default_factory=OnlineMrWebFpingDTO)
     fleet_ping_interval_ms: int = Field(default=1000, ge=100, le=60_000)
     fleet_ping_timeout_ms: int = Field(default=4000, ge=100, le=60_000)
     fleet_ping_packet_size: int = Field(default=64, ge=1, le=65_507)
@@ -146,8 +149,18 @@ class GroundUnattendedProfileDTO(ApiModel):
     created_at: str = ""
     updated_at: str = ""
 
+    @field_validator("deep_fping")
+    @classmethod
+    def enforce_deep_fping(
+        cls, value: OnlineMrWebFpingDTO
+    ) -> OnlineMrWebFpingDTO:
+        # 深度采集的 target 来自当前 CT/CW，不能持久化手工目标；enabled
+        # 是后端业务不变量，兼容旧配置/API 传 false 时仍强制开启。
+        return value.model_copy(update={"enabled": True, "target": ""})
+
     @model_validator(mode="after")
     def validate_limits(self) -> "GroundUnattendedProfileDTO":
+        self.deep_fping_required = True
         try:
             if ipaddress.ip_address(self.udp_listen_host).version != 4:
                 raise ValueError
@@ -714,6 +727,19 @@ class GroundDeepCollectorDTO(ApiModel):
     section: str = ""
     last_error: str = ""
     retry_count: int = 0
+    fping_status: str = "missing"
+    fping_target_ip: str = ""
+    fping_started_at: str = ""
+    fping_last_data_at: str = ""
+    fping_sample_count: int = 0
+    fping_interval_ms: int = 0
+    fping_timeout_ms: int = 0
+    fping_packet_size: int = 0
+    fping_loss_percent: float | None = None
+    fping_avg_latency_ms: float | None = None
+    fping_latest_latency_ms: float | None = None
+    fping_error: str = ""
+    data_integrity_status: Literal["UNKNOWN", "COMPLETE", "INCOMPLETE"] = "UNKNOWN"
 
 
 class GroundDeepCollectionRecordDTO(ApiModel):
