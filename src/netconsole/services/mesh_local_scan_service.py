@@ -640,12 +640,6 @@ class MeshLocalScanService:
             "invalid_count": statuses.count("invalid"),
             "needs_metadata_count": statuses.count("needs_metadata"),
             "failed_count": sum(value in {"failed", "parse_failed", "repair_failed"} for value in statuses),
-            "waiting_repair_count": statuses.count("waiting_repair"),
-            "repairing_count": statuses.count("repairing"),
-            "queued_count": statuses.count("queued"),
-            "parsing_count": statuses.count("parsing"),
-            "repair_failed_count": statuses.count("repair_failed"),
-            "parse_failed_count": statuses.count("parse_failed"),
             "ignored_count": statuses.count("ignored"),
         }
 

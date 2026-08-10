@@ -135,7 +135,7 @@ def mesh_derived_data_repair(context: JobContext) -> dict[str, object]:
             progress=context.progress,
             should_cancel=should_cancel,
         )
-    except Exception:
+    except Exception as exc:
         message = "MESH 分析数据库自动修复失败，原始日志和旧派生数据均已保留"
         for operation in operations:
             operation_id = str(operation.get("operation_id") or "")
@@ -182,16 +182,8 @@ def mesh_derived_data_repair(context: JobContext) -> dict[str, object]:
         )
     return {
         **repair_result,
-        "business_status": (
-            "PARTIAL_SUCCESS"
-            if any(item["status"] != "completed" for item in resumed)
-            or int(repair_result.get("warning_count") or 0) > 0
-            else "SUCCESS"
-        ),
         "resumed_operations": resumed,
         "resumed_count": sum(item["status"] == "completed" for item in resumed),
-        "imported_pending_count": sum(item["status"] == "completed" for item in resumed),
-        "failed_pending_count": sum(item["status"] != "completed" for item in resumed),
         "created_session_ids": list(dict.fromkeys(created_session_ids)),
     }
 

@@ -564,15 +564,15 @@
       "internal_only": false
     },
     "web.ground_unattended": {
-      "visible": true,
-      "enabled": true,
-      "client_package": true,
-      "internal_only": false
-    },
-    "web.rail_train_online_refresh": {
       "visible": false,
       "enabled": false,
       "client_package": false,
+      "internal_only": false
+    },
+    "web.rail_train_online_refresh": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
       "internal_only": false
     },
     "web.rail_train_online_collect": {

@@ -84,6 +84,7 @@ from netconsole.services.job_center.local_process_adapter import LocalProcessAda
 from netconsole.services.job_center.task_application_service import TaskApplicationService, TaskResourceConflictError
 from netconsole.services.job_center.web_export_event_safety import redact_web_task_text, sanitize_web_export_snapshot
 from netconsole.services.mesh_storage_service import MeshStorageService
+from netconsole.services.mesh_derived_data_maintenance_service import MeshDerivedDataMaintenanceError
 from netconsole.services.mesh_import_limits import (
     MESH_SINGLE_FILE_MAX_BYTES,
     MESH_SINGLE_FILE_MAX_LABEL,
@@ -3939,9 +3940,6 @@ class RailTransitWebApplicationService:
             "deleted_file_count", "missing_file_count", "deleted_reports",
             "parsed_links", "parsed_events", "parsed_issues", "source_file_id",
             "scanned_count", "valid_command_count", "blocking_error_count",
-            "business_status", "repair_mode", "rebuilt_source_count", "skipped_missing_source_count",
-            "pending_import_count", "imported_pending_count", "failed_pending_count", "resumed_count", "warning_count",
-            "archive_created", "failed_stage",
             "snapshot_id", "business_revision", "export_revision",
             "content_sha256", "export_content_sha256", "snapshot_created_at",
             "export_kind", "identity_revision", "abnormal_count",

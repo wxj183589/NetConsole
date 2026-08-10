@@ -148,10 +148,10 @@ const MESH_IMPORT_STATUS_LABELS: Record<string, string> = {
   completed: '已导入',
   duplicate: '重复，已存在',
   failed: '日志解析失败，可重试',
-  rebuild_required: '等待分析数据库升级',
+  rebuild_required: '已下载，正在自动修复',
   waiting_repair: '等待分析数据库升级',
   repairing: '正在自动修复',
-  repair_failed: '数据库升级未完成，等待重试',
+  repair_failed: '自动修复失败，可重试',
 }
 
 function openTaskWindow(taskId = ''): void {
@@ -703,8 +703,7 @@ function connectionRouteText(value: FileConnection): string {
         <template #cell-progress="{ row }"><el-progress :percentage="row.progress" :status="row.status === 'FAILED' ? 'exception' : row.status === 'COMPLETED' ? 'success' : undefined" /><small>{{ formatBytes(row.downloaded_bytes) }} / {{ formatBytes(row.total_bytes) }} · {{ formatSpeed(row.speed_bytes_per_second) }}</small></template>
         <template #cell-actions="{ row }">
           <el-button v-if="activeTasks.some((item) => item.task_id === row.task_id)" link type="warning" @click="cancelTask(row)">{{ t('cancel') }}</el-button>
-          <el-button v-if="row.status === 'COMPLETED' && ['failed', 'repair_failed'].includes(row.result?.mesh_import_status || '')" link type="primary" @click="importDownloadedMesh(row)">{{ row.result?.mesh_import_status === 'repair_failed' ? '重试自动修复' : '重新导入' }}</el-button>
-          <el-button v-else-if="row.retryable" link type="primary" @click="retryTask(row)">{{ t('retry') }}</el-button>
+          <el-button v-if="row.retryable" link type="primary" @click="retryTask(row)">{{ ['failed', 'repair_failed'].includes(row.result?.mesh_import_status || '') ? '重新导入' : t('retry') }}</el-button>
           <el-button v-else-if="row.status === 'COMPLETED' && row.result?.target_kind === 'mr_raw' && !row.result.mesh_import_status" link type="primary" @click="importDownloadedMesh(row)">导入到 MESH 分析</el-button>
           <el-button v-if="row.result?.mesh_session_id" link type="primary" @click="viewMeshAnalysis(row)">查看分析</el-button>
           <template v-if="row.status === 'COMPLETED' && row.result">
