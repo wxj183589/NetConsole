@@ -58,7 +58,7 @@ runtime cleanup 默认保留期已与 backend log 解耦：日志、cache、temp
 
 Electron 全量测试 252 项、Web 系统维护/日志相关测试 11 项、Python 本轮定向组合 184 项均通过。合并最新主线后的完整 pytest 为 3729 passed、2 skipped；剩余 6 项是主线新增 Online MR/架构 README/命令审计/图表 token 守卫及既有 BaseData UI Guard，不属于本轮日志改动。
 
-实际 `win-unpacked` 已成功生成，且 package smoke 前置检查确认构建提交、dirty 状态和 frozen `log_policy.json` 资源均正确；smoke 随后在既有冻结设备数据库迁移步骤停止，fixture 缺少 `ac_device_uuid`，因此不能宣称完整 package smoke 或正式安装包验收通过。1–2 小时 soak 未执行。
+此前 `win-unpacked` 的 package smoke 停在冻结设备数据库迁移：历史 fixture 的空 `ac_fit_ap_resources` 表缺少 `ac_device_uuid` 与 `ap_uuid`，而随后 schema trigger 已依赖这些字段。当前实现只在该表为空时重建为完整 schema；若表内已有记录则明确拒绝迁移，不会静默删除业务数据。源码层正反迁移测试已覆盖；本提交的完整 package smoke 与正式安装包验收仍由发布就绪审计记录，不在本节提前宣称通过。
 
 ## 剩余风险
 

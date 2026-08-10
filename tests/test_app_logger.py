@@ -12,6 +12,13 @@ from netconsole.core.paths import PathResolver
 import pytest
 
 
+def _write_from_process(root: str, process_index: int) -> None:
+    paths = PathResolver(Path(root))
+    app_logger.configure_path_resolver(paths)
+    for index in range(100):
+        app_logger.log_info(f"PROCESS_{process_index}_{index}", "parallel")
+
+
 def configure(tmp_path):
     paths = PathResolver(tmp_path)
     app_logger.configure_path_resolver(paths)
@@ -256,3 +263,50 @@ def test_debug_log_is_disabled_by_default_and_explicitly_enabled(tmp_path, monke
     monkeypatch.setenv("NETCONSOLE_LOG_LEVEL", "DEBUG")
     app_logger.log_debug("DEBUG_VISIBLE", "detail")
     assert "DEBUG_VISIBLE" in paths.app_log_path.read_text(encoding="utf-8")
+
+
+def test_app_logger_rotation_ebusy_uses_backoff_and_recovers(tmp_path, monkeypatch, capsys):
+    paths = configure(tmp_path)
+    monkeypatch.setattr(app_logger, "APP_LOG_MAX_BYTES", 120)
+    original_replace = Path.replace
+    attempts = 0
+
+    def busy_replace(source: Path, target: Path):
+        nonlocal attempts
+        if source.resolve() == paths.app_log_path.resolve():
+            attempts += 1
+            if attempts <= 4:
+                raise OSError(errno.EBUSY, "resource busy")
+        return original_replace(source, target)
+
+    clock = [100.0]
+    monkeypatch.setattr(app_logger.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(Path, "replace", busy_replace)
+    app_logger.log_info("SEED", "x" * 40)
+    for _ in range(1_000):
+        app_logger.log_info("BUSY", "x" * 40)
+    assert attempts == 1
+    for delay in (30, 60, 120):
+        clock[0] += delay
+        app_logger.log_info("BUSY_RETRY", "x" * 40)
+    clock[0] += 300
+    app_logger.log_info("RECOVER", "ready")
+    assert attempts == 5
+    assert len(list(paths.logs_dir.glob("app-*.log"))) >= 1
+    assert "APP_LOG_ROTATION_RECOVERED" in capsys.readouterr().err
+
+
+def test_app_logger_two_processes_keep_rolling_files_and_lines(tmp_path):
+    configure(tmp_path)
+    context = __import__("multiprocessing").get_context("spawn")
+    processes = [context.Process(target=_write_from_process, args=(str(tmp_path), index)) for index in range(3)]
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join(timeout=30)
+        assert process.exitcode == 0
+    files = app_logger.log_files(PathResolver(tmp_path).app_log_path)
+    lines = sum(path.read_text(encoding="utf-8").count("\n") for path in files)
+    assert lines == 300
+    assert len(files) >= 1
+    assert all(path.stat().st_size > 0 for path in files)

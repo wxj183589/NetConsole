@@ -67,6 +67,7 @@ class LogPolicy:
     housekeeper: HousekeeperPolicy
     runtime_cleanup: RuntimeCleanupPolicy
     raw_collection_truncate: bool
+    rotation_retry_seconds: tuple[int, ...]
 
 
 @lru_cache(maxsize=1)
@@ -85,6 +86,10 @@ def load_log_policy() -> LogPolicy:
     housekeeper = _mapping(payload, "housekeeper")
     runtime_cleanup = _mapping(payload, "runtime_cleanup")
     raw_collection = _mapping(payload, "raw_collection")
+    rotation_retry_seconds = tuple(
+        _positive_int_value(value, "rotation_retry_seconds")
+        for value in payload.get("rotation_retry_seconds", electron.get("rotation_retry_seconds", ()))
+    )
     policy = LogPolicy(
         application_log=ApplicationLogPolicy(
             max_event_bytes=_positive_int(application, "max_event_bytes"),
@@ -137,12 +142,13 @@ def load_log_policy() -> LogPolicy:
             ),
         ),
         raw_collection_truncate=bool(raw_collection.get("truncate", True)),
+        rotation_retry_seconds=rotation_retry_seconds,
     )
     if policy.housekeeper.target_total_bytes >= policy.housekeeper.max_total_bytes:
         raise ValueError("log housekeeper target must be below its maximum")
     if policy.electron.queue_soft_limit_bytes >= policy.electron.queue_hard_limit_bytes:
         raise ValueError("electron log queue soft limit must be below its hard limit")
-    if not policy.electron.rotation_retry_seconds:
+    if not policy.rotation_retry_seconds:
         raise ValueError("electron log rotation retry policy must not be empty")
     if not (
         policy.application_log.max_event_bytes

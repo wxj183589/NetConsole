@@ -59,6 +59,7 @@ class LogHousekeepingScan:
     protected_bytes: int = 0
     unknown_bytes: int = 0
     candidate_bytes: int = 0
+    unknown_files: int = 0
 
 
 @dataclass
@@ -90,6 +91,7 @@ class LogHousekeeper:
         *,
         now: datetime | None = None,
         application_retention_days: int | None = None,
+        include_all_history: bool = False,
     ) -> LogHousekeepingScan:
         current = now or datetime.now()
         application_days = max(
@@ -101,6 +103,7 @@ class LogHousekeeper:
         total_bytes = 0
         protected_bytes = 0
         unknown_bytes = 0
+        unknown_files = 0
         if not self.root.is_dir():
             return LogHousekeepingScan(0, (), ())
         for item in self.root.rglob("*"):
@@ -121,6 +124,7 @@ class LogHousekeeper:
                 protected_bytes += metadata.st_size
             elif category is None:
                 unknown_bytes += metadata.st_size
+                unknown_files += 1
             files.append(
                 (
                     resolved,
@@ -136,7 +140,7 @@ class LogHousekeeper:
             if category is None or is_protected:
                 continue
             retention_days = self._retention_days(category, path, application_days)
-            if modified_at < current - timedelta(days=retention_days):
+            if include_all_history or modified_at < current - timedelta(days=retention_days):
                 candidates[path] = LogHousekeepingCandidate(
                     path, size, modified_at, category, "retention"
                 )
@@ -175,6 +179,7 @@ class LogHousekeeper:
             protected_bytes=protected_bytes,
             unknown_bytes=unknown_bytes,
             candidate_bytes=sum(candidate.size for candidate in ordered),
+            unknown_files=unknown_files,
         )
 
     def clean(

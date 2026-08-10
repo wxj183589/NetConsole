@@ -227,7 +227,7 @@ def test_local_process_adapter_completes_and_reads_both_pipes(tmp_path: Path) ->
     snapshot = service.get_task(job_id)
     assert snapshot is not None
     assert snapshot.result == {"ok": True}
-    assert not adapter.is_running(job_id)
+    _wait_until(lambda: not adapter.is_running(job_id))
     command = factory.calls[0][0][0]
     kwargs = factory.calls[0][1]
     assert command[0] == service.runtime.worker_command(Path("unused"))[0]

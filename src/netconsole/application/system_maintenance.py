@@ -26,6 +26,7 @@ from netconsole.models.api.system_maintenance import (
     LogPageDTO,
     MaintenanceTaskDTO,
     OpenSourceComponentDTO,
+    RuntimeLogSummaryDTO,
 )
 from netconsole.models.task_state import TERMINAL_TASK_STATES, TaskState
 from netconsole.services.background_job import BackgroundJob
@@ -42,6 +43,7 @@ from netconsole.services.job_center.task_application_service import TaskApplicat
 from netconsole.services.job_center.web_export_event_safety import sanitize_web_export_snapshot
 from netconsole.services.system_maintenance_redaction import redact_system_maintenance_text
 from netconsole.services.log_display import display_log_row
+from netconsole.services.log_housekeeper import LogHousekeeper
 
 
 class SystemMaintenanceError(RuntimeError):
@@ -157,6 +159,24 @@ class SystemMaintenanceApplicationService:
             total_pages=result.state.total_pages,
         )
 
+    def runtime_log_summary(self) -> RuntimeLogSummaryDTO:
+        scan = LogHousekeeper(self.paths).scan(
+            application_retention_days=LOG_POLICY.backend.retention_days,
+        )
+        return RuntimeLogSummaryDTO(
+            directory=str(self.paths.logs_dir),
+            total_bytes=scan.total_bytes,
+            protected_bytes=scan.protected_bytes,
+            unknown_bytes=scan.unknown_bytes,
+            candidate_bytes=scan.candidate_bytes,
+            protected_files=len(scan.protected_files),
+            unknown_files=scan.unknown_files,
+            candidate_files=len(scan.candidates),
+            max_total_bytes=LOG_POLICY.housekeeper.max_total_bytes,
+            target_total_bytes=LOG_POLICY.housekeeper.target_total_bytes,
+            retention_days=LOG_POLICY.backend.retention_days,
+        )
+
     def clear_logs(self) -> DesktopActionDTO:
         app_logger.clear_logs(self.paths.app_log_path)
         app_logger.log_info("LOGS_CLEARED", "运行日志已清空", log_path=self.paths.app_log_path)
@@ -171,6 +191,7 @@ class SystemMaintenanceApplicationService:
         selected_item_ids: list[str] | tuple[str, ...] = (),
         confirmed: bool = False,
         automatic: bool = False,
+        manual_history: bool = False,
     ) -> MaintenanceTaskDTO | None:
         site_id = self._site(site_id)
         days = LOG_POLICY.backend.retention_days if automatic else int(retention_days)
@@ -182,6 +203,8 @@ class SystemMaintenanceApplicationService:
                 raise SystemMaintenanceError("CLEANUP_REQUEST_INVALID", "自动清理不能使用扫描模式")
             selected = list(AUTO_CLEANUP_ITEM_IDS)
             confirmed = True
+        if manual_history and (dry_run or automatic or selected != ["runtime_logs"]):
+            raise SystemMaintenanceError("CLEANUP_REQUEST_INVALID", "历史日志清理只允许清理日志历史文件")
         if dry_run:
             if selected or confirmed:
                 raise SystemMaintenanceError("CLEANUP_REQUEST_INVALID", "扫描请求不能包含清理选择或确认")
@@ -193,8 +216,8 @@ class SystemMaintenanceApplicationService:
             except ValueError as exc:
                 raise SystemMaintenanceError("CLEANUP_ITEMS_INVALID", str(exc)) from exc
         task_id = f"system-maintenance-{uuid4().hex}"
-        action = "cleanup_scan" if dry_run else ("cleanup_auto" if automatic else "cleanup_clean")
-        name = {"cleanup_scan": "扫描日志与缓存", "cleanup_clean": "安全清理日志与缓存", "cleanup_auto": "自动清理软件运行日志"}[action]
+        action = "cleanup_scan" if dry_run else ("cleanup_auto" if automatic else ("cleanup_history" if manual_history else "cleanup_clean"))
+        name = {"cleanup_scan": "扫描日志与缓存", "cleanup_clean": "安全清理日志与缓存", "cleanup_history": "清理历史日志", "cleanup_auto": "自动清理软件运行日志"}[action]
         if automatic and not claim_auto_cleanup(self.paths, task_id):
             return None
         try:
@@ -214,6 +237,7 @@ class SystemMaintenanceApplicationService:
                         "selected_item_ids": selected,
                         "confirmed": bool(confirmed),
                         "automatic": automatic,
+                        "manual_history": manual_history,
                         "_cancel_grace_ms": 3_000,
                     },
                 )
@@ -483,6 +507,7 @@ class SystemMaintenanceApplicationService:
         action = self.resolver.artifact_kind(source) or {
             "扫描日志与缓存": "cleanup_scan",
             "安全清理日志与缓存": "cleanup_clean",
+            "清理历史日志": "cleanup_history",
             "自动安全清理": "cleanup_auto",
             "自动清理软件运行日志": "cleanup_auto",
             "扫描开源依赖": "open_source_scan",

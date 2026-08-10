@@ -28,6 +28,7 @@ APPLICATION_LOG_MAX_BYTES = LOG_POLICY.application_log.max_event_bytes
 _ROTATED_LOG_PATTERN = "app-*.log"
 _LOG_FAILURE_GUARD = threading.Lock()
 _LOG_FAILURE_COUNT = 0
+_ROTATION_GUARD = threading.Lock()
 
 
 @dataclass
@@ -41,6 +42,18 @@ class _LogWriteFailureIncident:
 
 
 _LOG_FAILURE_INCIDENT = _LogWriteFailureIncident()
+
+
+@dataclass
+class _RotationFailureState:
+    consecutive_failures: int = 0
+    first_failure_at: float = 0.0
+    last_failure_at: float = 0.0
+    next_retry_at: float = 0.0
+    last_reported_failure: int = 0
+
+
+_ROTATION_FAILURES: dict[Path, _RotationFailureState] = {}
 _SENSITIVE_KEYS = (
     "password",
     "ssh_password",
@@ -60,6 +73,8 @@ def configure_path_resolver(paths: PathResolver) -> None:
     global _paths
     _paths = paths
     _reset_log_failure_incident()
+    with _ROTATION_GUARD:
+        _ROTATION_FAILURES.clear()
 
 
 def log_info(event: str, detail: str = "", *, log_path: Path | None = None) -> None:
@@ -182,6 +197,11 @@ def _rotate_if_needed(path: Path, now: datetime, incoming_bytes: int) -> None:
         return
     if stat.st_size + incoming_bytes <= APP_LOG_MAX_BYTES and changed_date == now.date():
         return
+    monotonic_now = time.monotonic()
+    with _ROTATION_GUARD:
+        failure = _ROTATION_FAILURES.get(path.resolve())
+        if failure is not None and monotonic_now < failure.next_retry_at:
+            return
     stamp = now.strftime("%Y%m%d-%H%M%S")
     for sequence in range(1, 10_000):
         rotated = path.with_name(f"app-{stamp}-{sequence:04d}.log")
@@ -189,9 +209,44 @@ def _rotate_if_needed(path: Path, now: datetime, incoming_bytes: int) -> None:
             continue
         try:
             path.replace(rotated)
-        except OSError:
+        except OSError as exc:
+            _record_rotation_failure(path, exc, monotonic_now)
             return
+        _record_rotation_success(path, monotonic_now)
         return
+
+
+def _record_rotation_failure(path: Path, exc: OSError, now: float) -> None:
+    report = False
+    with _ROTATION_GUARD:
+        key = path.resolve()
+        state = _ROTATION_FAILURES.setdefault(key, _RotationFailureState())
+        state.consecutive_failures += 1
+        if state.first_failure_at == 0.0:
+            state.first_failure_at = now
+        state.last_failure_at = now
+        delays = LOG_POLICY.rotation_retry_seconds
+        delay = delays[min(state.consecutive_failures - 1, len(delays) - 1)]
+        state.next_retry_at = now + delay
+        if state.last_reported_failure != state.consecutive_failures:
+            state.last_reported_failure = state.consecutive_failures
+            report = state.consecutive_failures == 1 or state.consecutive_failures in {2, 3, 4} or state.consecutive_failures % 10 == 0
+    if report:
+        _write_bounded_stderr(
+            "APP_LOG_ROTATION_FAILED "
+            f"count={state.consecutive_failures} retry_seconds={delay} "
+            f"error_type={type(exc).__name__} errno={_error_code(exc)}"
+        )
+
+
+def _record_rotation_success(path: Path, now: float) -> None:
+    del now
+    recovered = False
+    with _ROTATION_GUARD:
+        state = _ROTATION_FAILURES.pop(path.resolve(), None)
+        recovered = state is not None and state.consecutive_failures > 0
+    if recovered:
+        _write_bounded_stderr("APP_LOG_ROTATION_RECOVERED")
 
 
 def _report_log_write_failure(

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Iterable, Iterator, Mapping, Sequence
 
 from netconsole.core.sqlite_utils import connect_sqlite, initialize_sqlite_wal, run_sqlite_with_retry
-from netconsole.services.online_mr.parsed_database_contract import (
+from netconsole.repositories.online_mr_parsed_database_metadata import (
     PARSER_CAPABILITIES,
     PARSER_SCHEMA_VERSION,
     PARSER_VERSION,

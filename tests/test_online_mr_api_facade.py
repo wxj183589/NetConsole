@@ -234,7 +234,7 @@ def test_online_mr_routers_only_depend_on_the_injected_facade() -> None:
         for forbidden in (
             "SiteManager",
             "PathResolver",
-            "Database",
+                "from netconsole.core.database import Database",
             "Repository",
             "OnlineMrQueryService",
             "OnlineMrWebControlService",

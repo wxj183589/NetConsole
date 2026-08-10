@@ -62,6 +62,7 @@ CLEAN_BUILD = True
 ROOT = PROJECT_ROOT
 SRC_ROOT = ROOT / "src"
 DEVICE_COMMAND_PROFILES_SOURCE = "resources/device_command_profiles.json"
+DEVICE_COMPATIBILITY_PROFILES_SOURCE = "resources/device_compatibility_profiles.json"
 LOG_POLICY_SOURCE = "src/netconsole/resources/log_policy.json"
 PACKAGED_DEVICE_COMMAND_PROFILES = BUILD_ROOT / "packaged_assets" / "device_command_profiles.json"
 PACKAGED_RUNTIME_ROOT = BUILD_ROOT / "packaged_assets" / "runtime"
@@ -90,6 +91,7 @@ ALLOWED_DATA = [
         "netconsole/assets/licenses",
     ),
     (DEVICE_COMMAND_PROFILES_SOURCE, "netconsole/assets"),
+    (DEVICE_COMPATIBILITY_PROFILES_SOURCE, "netconsole/assets"),
     (PACKAGED_BUILD_INFO_SOURCE, "netconsole/assets/runtime"),
     (PACKAGED_FEATURE_FLAGS_SOURCE, "netconsole/assets/runtime"),
     (PACKAGED_BUILD_METADATA_SOURCE, "netconsole/assets/runtime"),

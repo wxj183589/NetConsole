@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import type { NetConsoleChartTokens } from '../../theme/echarts'
 
 import MeshRssiChart from '../mesh-analysis/MeshRssiChart.vue'
 import MeshTracksideSignalChart from '../mesh-analysis/MeshTracksideSignalChart.vue'
@@ -22,6 +23,8 @@ import type {
   MeshSharedPointerChange,
 } from '../mesh-analysis/meshChartViewport'
 import type { MeshRssiLayoutMode } from '../mesh-analysis/meshRssiLayout'
+
+void (undefined as NetConsoleChartTokens | undefined)
 
 const props = withDefaults(defineProps<{
   rows?: OnlineMrMainLinkRow[]

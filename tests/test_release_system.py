@@ -263,6 +263,10 @@ def test_clean_build_spec_uses_strict_whitelist_and_excludes():
         "netconsole/assets",
     ) in clean_build_spec.ALLOWED_DATA
     assert (
+        "resources/device_compatibility_profiles.json",
+        "netconsole/assets",
+    ) in clean_build_spec.ALLOWED_DATA
+    assert (
         "src/netconsole/docs",
         "netconsole/docs",
     ) not in clean_build_spec.ALLOWED_DATA
@@ -540,6 +544,20 @@ def test_clean_build_runtime_subset_copies_only_imported_modules_and_assets(
         "h3c.comware.mobile_router.generic.device-inventory.v1",
         "zte.zxr10.switch.generic.device-inventory.v3",
     }
+    compatibility_source = next(
+        Path(source)
+        for source, destination in datas
+        if destination == "netconsole/assets"
+        and Path(source).name == "device_compatibility_profiles.json"
+    )
+    compatibility_payload = json.loads(
+        compatibility_source.read_text(encoding="utf-8")
+    )
+    assert (
+        compatibility_payload["schema_version"]
+        == "2026.07.device-compatibility-profiles.v1"
+    )
+    assert compatibility_payload["profiles"]
     assert {
         "PYINSTALLER_COPYING.txt",
         "PYINSTALLER_HOOKS_CONTRIB_LICENSE.txt",

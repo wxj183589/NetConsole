@@ -11,10 +11,10 @@ import { useConfirm } from '../../components/feedback/useConfirm'
 import { useUserSelectedExport } from '../../composables/useUserSelectedExport'
 import {
   cancelMaintenanceTask,
-  clearLogs,
   getAbout,
   getChangelog,
   getLogs,
+  getRuntimeLogSummary,
   getMaintenanceTask,
   maintenanceArtifactDownloadRequest,
   openMaintenanceDirectory,
@@ -32,6 +32,7 @@ import {
   type LogEntry,
   type MaintenanceTask,
   type OpenSourceComponent,
+  type RuntimeLogSummary,
 } from '../../api/systemMaintenance'
 import CommandReferenceView from '../command-reference/CommandReferenceView.vue'
 
@@ -48,6 +49,7 @@ const level = ref('')
 const page = ref(1)
 const pageSize = ref<50 | 100 | 200 | 500>(200)
 const total = ref(0)
+const logSummary = ref<RuntimeLogSummary>()
 const tasks = ref<MaintenanceTask[]>([])
 const currentTask = ref<MaintenanceTask>()
 const cleanupItems = ref<CleanupItem[]>([])
@@ -116,12 +118,17 @@ async function loadLogs(reset = false): Promise<void> {
   }
 }
 
-async function confirmClearLogs(): Promise<void> {
+async function loadLogSummary(): Promise<void> {
+  if (typeof getRuntimeLogSummary !== 'function') return
   try {
-    if (!await confirm({ type: 'WARNING', title: '清空日志', message: '只清空日志中心记录，不删除采集数据、原始日志或报告。', confirmText: '确认清空日志' })) return
-    const result = await clearLogs()
-    ElMessage.success(result.message)
-    await loadLogs(true)
+    logSummary.value = await getRuntimeLogSummary()
+  } catch { /* summary is supplemental; log table remains usable */ }
+}
+
+async function confirmHistoryCleanup(): Promise<void> {
+  try {
+    if (!await confirm({ type: 'DESTRUCTIVE', title: '清理历史日志', message: '仅删除白名单中的 rotated electron/app、旧 WPS、诊断和归档日志；活动日志、数据库升级审计、未知文件和原始数据会保留。', confirmText: '确认清理历史日志' })) return
+    applyTaskResult(await startCleanup({ mode: 'manual_history_cleanup', retention_days: retentionDays.value, selected_item_ids: ['runtime_logs'], confirmed: true }))
   } catch (cause) {
     if (cause !== 'cancel' && cause !== 'close') ElMessage.error(errorMessage(cause))
   }
@@ -167,7 +174,7 @@ function applyTaskResult(task: MaintenanceTask): void {
     if (task.status === 'FAILED') ElMessage.error(task.error_message || '任务失败')
     else if (task.status === 'CANCELLED') ElMessage.warning('任务已取消')
     else ElMessage.success(task.message || '任务完成')
-    if (['cleanup_clean', 'cleanup_auto'].includes(task.action) && task.status === 'COMPLETED') void loadLogs()
+    if (['cleanup_clean', 'cleanup_history', 'cleanup_auto'].includes(task.action) && task.status === 'COMPLETED') { void loadLogs(); void loadLogSummary() }
     return
   }
   pollTimer = setTimeout(() => void pollTask(task.task_id), 800)
@@ -363,11 +370,11 @@ watch(
 )
 
 onMounted(async () => {
-  const results = await Promise.allSettled([loadLogs(), getChangelog(), getAbout(), recoverMaintenanceTasks()])
-  if (results[1].status === 'fulfilled') changelog.value = results[1].value
-  if (results[2].status === 'fulfilled') about.value = results[2].value
-  if (results[3].status === 'fulfilled') {
-    tasks.value = results[3].value
+  const results = await Promise.allSettled([loadLogs(), loadLogSummary(), getChangelog(), getAbout(), recoverMaintenanceTasks()])
+  if (results[2].status === 'fulfilled') changelog.value = results[2].value
+  if (results[3].status === 'fulfilled') about.value = results[3].value
+  if (results[4].status === 'fulfilled') {
+    tasks.value = results[4].value
     const completedScan = tasks.value.find((task) => task.action === 'open_source_scan' && task.components.length)
     const completedCleanup = tasks.value.find((task) => task.cleanup_items.length)
     if (completedScan) {
@@ -424,10 +431,11 @@ onBeforeUnmount(() => {
           <el-select v-model="level" clearable placeholder="全部级别"><el-option label="信息" value="INFO" /><el-option label="警告" value="WARNING" /><el-option label="错误" value="ERROR" /><el-option label="调试" value="DEBUG" /><el-option label="严重" value="CRITICAL" /></el-select>
           <el-button @click="loadLogs(true)">查询</el-button>
           <el-button :disabled="!isFeatureEnabled('desktop.native_bridge')" @click="openDirectory('logs')">打开日志目录</el-button>
-          <el-button type="danger" plain @click="confirmClearLogs">清空记录</el-button>
+          <el-button type="danger" plain :disabled="taskBusy || !isFeatureEnabled('system.disk_cleanup')" @click="confirmHistoryCleanup">清理历史日志</el-button>
           <el-button :disabled="taskBusy || !isFeatureEnabled('web.logs_export')" @click="runLogExport('current')">导出当前页</el-button>
           <el-button :disabled="taskBusy || !isFeatureEnabled('web.logs_export')" @click="runLogExport('all')">导出全部筛选结果</el-button>
         </div>
+        <div v-if="logSummary" class="log-summary" aria-label="日志摘要"><span>目录：{{ logSummary.directory }}</span><span>总量：{{ formatBytes(logSummary.total_bytes) }} / 上限 {{ formatBytes(logSummary.max_total_bytes) }}</span><span>可清理：{{ formatBytes(logSummary.candidate_bytes) }}（{{ logSummary.candidate_files }} 个）</span><span>受保护：{{ formatBytes(logSummary.protected_bytes) }}（{{ logSummary.protected_files }} 个，含数据库升级审计）</span><span>未知：{{ formatBytes(logSummary.unknown_bytes) }}（{{ logSummary.unknown_files }} 个）</span><span>保留 {{ logSummary.retention_days }} 天，目标水位 {{ formatBytes(logSummary.target_total_bytes) }}</span></div>
         <div class="log-table-host">
           <NcDataTable v-loading="loading" :data="logs" :columns="logColumns" table-id="system-log-entries" route-key="/logs" height="100%" empty-text="暂无日志记录" @cell-contextmenu="copyCell">
             <template #cell-actions="{ row }"><el-button link @click="copyLogRow(row)">整行</el-button><el-button link @click="copyText(row.raw_event, '原始事件已复制')">原始事件</el-button><el-button link @click="copyText(row.raw_detail, '原始详情已复制')">原始详情</el-button></template>
@@ -498,6 +506,7 @@ onBeforeUnmount(() => {
 .toolbar, .actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
 .toolbar .el-input { width: min(360px, 100%); }
 .toolbar .el-select { width: 140px; }
+.log-summary { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-bottom: 10px; color: var(--el-text-color-secondary); font-size: 12px; }
 .log-table-host, .maintenance-table-host { flex: 1; min-height: 0; overflow: hidden; }
 .pagination { padding-top: 12px; }
 .document { flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 18px; border-radius: 8px; background: var(--el-fill-color-light); white-space: pre-wrap; line-height: 1.65; }
