@@ -108,7 +108,7 @@ RSSI 数值按规则文件既定口径比较。两套 profile 当前 fping 平�
 
 - `apps/web/src/components/rail-timeline/RailRssiComparison.vue` 是轨道交通 RSSI 双图公共布局，`railTimeline.ts` 是 viewport/cursor/selectedTime 控制器；离线 MESH 与 Online MR 都复用它们。共享层只理解标准时间域、图表状态和 slot，不依赖 MESH/Online MR API、parser 或数据库 DTO。`MeshRssiChart` 与 `MeshTracksideSignalChart` 仍保留既有 MESH 数据语义，抽取公共框架不得改变原页面查询、降采样、切换映射或缓存边界。
 - 页面按源文件解析到实际的 compact v3 tagged samples 明细库，直接读取版本化标量列；不在正式查询路径回退旧 JSON 指标列。
-- 主链 RSSI 图按 Radio 和可选时间窗口查询。服务端采样严格分为三级：一级为首尾、有效切换、NO_ACTIVE/MULTI_ACTIVE、真实缺口、持续 0 边界和短时 0 后恢复点；二级为链路/角色/区段边界及 RSSI/Busy 极值；三级为自然秒真实代表点。一级点无条件优先，二/三级只使用剩余预算，自然秒不得扩大用户目标点数或挤占一级点。一级点超过 20,000 点安全上限时返回 413 并要求缩小时间窗口，不再静默抽样关键点。DTO 返回 `total_points/returned_points/downsampled`、请求/有效点数、`payload_bytes`、`query_duration_ms` 和必要的 `downsample_warning`；单个响应 JSON 不得超过 16 MiB。
+- 主链 RSSI 图按 Radio 和可选时间窗口查询，时间范围在 Repository SQL 条件中先下推。服务端采样严格分为三级：一级为首尾、有效切换/快速回切、真实缺口、持续 0 边界和短时 0 后恢复点，以及每个连续 `NO_ACTIVE`/`MULTI_ACTIVE` 状态段的起止边界；连续状态段的内部原始帧不得逐点升级为一级点，也不得在普通点补齐阶段重新加入。二级为链路/角色/区段边界及按剩余预算自适应时间桶保留的 RSSI/Busy 峰谷；三级为自然秒真实代表点。图表目标点数是后端硬预算：返回点数不超过请求值，不因一级点静默扩容；一级边界仍超过预算时按时间保留代表边界、完整事件事实在请求 `include_events=true` 时继续由 `events` 载荷表达，并返回 `downsample_warning`。`include_peer=false` 不返回 Peer RSSI/信号/Busy 和备链上下文，`include_events=false` 不构造扩展事件详情，`include_station_band=false` 不返回长站点/区间色带。DTO 返回 `total_points/returned_points/downsampled`、请求/有效点数、`payload_bytes`、`query_duration_ms` 和必要的 `downsample_warning`；单个响应 JSON 不得超过 16 MiB，不能通过提高该上限解决采样问题。
 - RSSI 明确数值 `0` 使用统一的连续区间规则，并且必须在服务端降采样前识别。同一自然秒内出现一条或多条连续 0 均标记为 `suppressed`；同一逻辑 series 的连续 0 覆盖至少两个不同自然秒才标记为 `sustained`。原始 `sample_count` 仍保留全部记录数，不按行数把同秒重复上报误判为持续 0。持续时长仍从第一条 0 的时间算到下一条有效非 0 采样；序列尾部没有恢复点时，使用同一逻辑 series 相邻有效时间差的中位数估算一个采样周期，估算值限制在 100～5,000 ms，样本不足回退 1,000 ms。普通空值、非法值、来源/series/run 边界和明显日志时间缺口结束当前区间，不得归入连续 0。
 - `suppressed` 0 在传给 ECharts 前直接移除，不插入空值；同一连续 series 前后有效 RSSI 由直线连接，区间位于首尾时只隐藏 0，不伪造有效 RSSI。`sustained` 区间由服务端固定保留边界，前端压缩为精确起点和结束时刻两个 0 点；Tooltip 显示“持续无有效 RSSI”、起止时间和持续时间，不按普通 RSSI `0` 展示。主用链路信号按聚合主链处理，允许跨 AP/Radio 切换桥接短时 0；夹在前后唯一有效 ACTIVE 之间、且没有来源或时间缺口的单个 `MULTI_ACTIVE` 帧只在 RSSI 显示层跳过，连续歧义、`NO_ACTIVE`、普通空值和真实缺口仍断线。事件事实和点身份均不改变。轨旁AP信号图及其他按 AP/Radio 拆分的图按物理 series/run 独立处理，禁止跨 series 连接。
 - 主链、Peer、轨旁及复用共享时间折线配置的 RSSI series 显式设置 `smooth: false`，只绘制采样点之间的直线，不使用贝塞尔、spline、移动平均或其他显示插值。短 0 被移除后不扩展 Y 轴；只有返回的持续 0 端点才使 Y 轴包含 0。原始 `0` 始终保留在 raw、parsed SQLite、链路明细和原始明细导出中；所有 `0` 均排除在平均值、最小/最大值、分位数、抖动、低 RSSI、趋势和正常 RSSI 样本数之外，持续/抑制区间数量及时长通过独立字段报告。
@@ -173,7 +173,7 @@ Electron 的“生成分析报告”和“导出链路明细”都在创建任�
 - 单个 LOG/TXT/GZ 上传文件及 GZIP 解压正文上限统一为 25 MiB；批次总解压大小仍限制为 100 MiB，并继续执行压缩比、路径和成员数量检查；
 - Rate 原始值、Retry/Error 回退空值、切换前后 RSSI 事件散点以及图表卸载资源释放；
 - 连续 RSSI `0` 的 3,000 ms 临界值、短段桥接、长段端点/Tooltip、尾部采样周期估算、普通缺失/大缺口断线、按 series 隔离和直线配置；
-- 可见窗口、全量下采样、切换及持续 0 边界锚点保留、请求点数自动提升、安全上限抽样告警和重复加载防抖；
+- 可见窗口、全量下采样、连续 `NO_ACTIVE/MULTI_ACTIVE` 状态段边界压缩、切换及持续 0 边界锚点保留、严格请求点数预算、安全上限告警和重复加载防抖；
 - RSSI 双图在相同 viewport 下替换数据或执行 `clear/setOption` 后重新应用 inside/slider DataZoom，完整时间域保持不变；
 - RSSI 拖动期间上下图只同步 preview 且不发查询，结束后只提交最后窗口；窗口请求并行、成组发布、Abort/乱序 last-wins，失败和 413 保留旧图与当前 viewport；
 - 大表导出取消、WPS/Excel 占用、临时文件清理和源证据回溯。

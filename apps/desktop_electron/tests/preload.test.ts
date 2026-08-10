@@ -41,6 +41,7 @@ describe('preload bridge', () => {
       'onTaskCenterOpenRequested',
       'onTraySiteSwitchRequested',
       'openExternalUrl',
+      'openMeshAnalysisSessionLocation',
       'openOnlineMrSessionLocation',
       'openPath',
       'openTaskWindow',
@@ -156,6 +157,7 @@ describe('preload bridge', () => {
     expect(() => bridge.openPath('C:\\private\\report.xlsx')).toThrow('capabilityId is invalid')
     expect(() => bridge.showItemInFolder('C:\\private')).toThrow('capabilityId is invalid')
     expect(() => bridge.executeFileDesktopAction('C:\\private')).toThrow('file desktop action reference is invalid')
+    expect(() => bridge.openMeshAnalysisSessionLocation?.('..\\private')).toThrow('Mesh analysis session id is invalid')
     expect(() => bridge.openOnlineMrSessionLocation?.('..\\private')).toThrow('Online MR session id is invalid')
     expect(() => bridge.launchExternalTool({
       toolId: '7c890030-3a3f-4d6b-b58e-7624d21daff9',
@@ -203,6 +205,23 @@ describe('preload bridge', () => {
     expect(ipcRenderer.invoke).toHaveBeenCalledWith(
       DESKTOP_IPC.openOnlineMrSessionLocation,
       '20260721_155004_ea78c0',
+    )
+  })
+
+  it('sends only a validated MESH session id to the fixed IPC channel', async () => {
+    const ipcRenderer: IpcRendererLike = {
+      invoke: vi.fn(async () => ({ success: true })),
+      send: vi.fn(),
+      on: vi.fn(),
+      removeListener: vi.fn(),
+    }
+    const bridge = createDesktopBridge(ipcRenderer)
+
+    await bridge.openMeshAnalysisSessionLocation?.('12345678-1234-1234-1234-123456789abc:1')
+
+    expect(ipcRenderer.invoke).toHaveBeenCalledWith(
+      DESKTOP_IPC.openMeshAnalysisSessionLocation,
+      '12345678-1234-1234-1234-123456789abc:1',
     )
   })
 })

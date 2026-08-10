@@ -19,6 +19,7 @@ from netconsole.application.rail_transit.web_application_service import RailTran
 from netconsole.backend.api.error_mapping import map_api_errors
 from netconsole.backend.api.feature_access import require_feature
 from netconsole.core import app_logger
+from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.core.sites import SiteManager
 from netconsole.models.api.mesh_analysis import (
     MeshAnalysisSessionDetailDTO,
@@ -43,6 +44,7 @@ from netconsole.models.api.mesh_analysis import (
     MeshChannelBusyPageDTO,
     MeshCounterDeltaPageDTO,
     MeshDataSourceDTO,
+    MeshDesktopLocationDTO,
     MeshLinkPageDTO,
     MeshPathChartDTO,
     MeshProfileCreateRequestDTO,
@@ -111,6 +113,17 @@ def _site_id(request: Request, supplied: str) -> str:
         return SiteManager(request.app.state.paths).validate_site_name(value)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="局点标识无效") from exc
+
+
+def _desktop(request: Request) -> None:
+    if (
+        request.app.state.runtime_mode is not RuntimeMode.DESKTOP
+        or request.url.hostname != "127.0.0.1"
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="该功能仅在 NetConsole Electron 桌面端可用。",
+        )
 
 
 def _query(callback: Callable[[], T]) -> T:
@@ -690,6 +703,9 @@ def active_path_chart(
     time_from: str = Query(default="", max_length=40),
     time_to: str = Query(default="", max_length=40),
     max_points: int = Query(default=1_000, ge=10, le=20_000),
+    include_peer: bool = Query(default=True),
+    include_events: bool = Query(default=True),
+    include_station_band: bool = Query(default=True),
 ) -> MeshPathChartDTO:
     return _query(
         lambda: _service(request).get_active_path_chart(
@@ -699,6 +715,9 @@ def active_path_chart(
             time_from=time_from,
             time_to=time_to,
             max_points=max_points,
+            include_peer=include_peer,
+            include_events=include_events,
+            include_station_band=include_station_band,
         )
     )
 
@@ -855,6 +874,26 @@ def download_artifact(request: Request, session_id: str, artifact_id: str, site_
 @router.get("/sessions/{session_id}/raw-sources", response_model=list[MeshDataSourceDTO])
 def raw_sources(request: Request, session_id: str, site_id: str = Query(default="", max_length=100)) -> list[MeshDataSourceDTO]:
     return _query(lambda: _service(request).get_raw_source_summary(_site_id(request, site_id), session_id))
+
+
+@router.post(
+    "/sessions/{session_id}/desktop-location",
+    response_model=MeshDesktopLocationDTO,
+    dependencies=[
+        Depends(_desktop),
+        Depends(require_feature("desktop.native_bridge")),
+        Depends(require_feature("web.mesh_analysis_source_open_location")),
+    ],
+)
+def desktop_location(request: Request, session_id: str) -> MeshDesktopLocationDTO:
+    return _query(
+        lambda: MeshDesktopLocationDTO.model_validate(
+            _service(request).get_source_desktop_location(
+                _current_site_id(request),
+                session_id,
+            )
+        )
+    )
 
 
 @router.get("/sessions/{session_id}/raw-sources/{source_action_id}/tail", response_model=MeshRawTailDTO)

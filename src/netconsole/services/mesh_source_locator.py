@@ -17,6 +17,7 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 @dataclass(frozen=True)
 class MeshSourceLocation:
     raw_path: Path | None
+    raw_directory: Path | None = None
     raw_relative_path: str = ""
     rebuild_capability: str = "raw_missing"
     recoverable: bool = False
@@ -85,6 +86,24 @@ class MeshSourceLocator:
                         bundle_member_id=str(source.get("bundle_member_id") or ""),
                         bundle_member_sha256=str(source.get("bundle_member_sha256") or ""),
                     )
+        for candidate, _origin in candidates:
+            directory = candidate.parent.resolve()
+            if (
+                directory.is_dir()
+                and not directory.is_symlink()
+                and self._inside(directory, raw_root)
+            ):
+                return MeshSourceLocation(
+                    raw_path=None,
+                    raw_directory=directory,
+                    missing_reason="原始日志文件已不存在，可打开其受管目录。",
+                )
+        if raw_root.is_dir() and not raw_root.is_symlink():
+            return MeshSourceLocation(
+                raw_path=None,
+                raw_directory=raw_root,
+                missing_reason="原始日志文件已不存在，可打开其受管目录。",
+            )
         bundle = self.find_bundle(site_id, str(self._value(profile, "mr_id") or ""), source)
         if bundle is not None:
             return MeshSourceLocation(

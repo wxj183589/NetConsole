@@ -1319,6 +1319,9 @@ class MeshAnalysisQueryService:
         time_from: str = "",
         time_to: str = "",
         max_points: int = 1_000,
+        include_peer: bool = True,
+        include_events: bool = True,
+        include_station_band: bool = True,
     ) -> MeshPathChartDTO:
         started = perf_counter()
         self._validate_chart_time_range(time_from, time_to)
@@ -1344,6 +1347,9 @@ class MeshAnalysisQueryService:
             max_points=max_points,
             time_from=time_from,
             time_to=time_to,
+            include_peer=include_peer,
+            include_events=include_events,
+            include_station_band=include_station_band,
         )
         return self._with_chart_metrics(result, started)
 
@@ -2069,6 +2075,37 @@ class MeshAnalysisQueryService:
             )
         ]
 
+    def get_source_desktop_location(self, site_id: str, session_id: str) -> dict[str, str]:
+        """Resolve only a managed MESH source for the Electron Main process.
+
+        The Renderer never receives this path: the desktop-only router response is
+        fetched by Electron Main through its authenticated loopback channel.
+        """
+        context = self._context(site_id, session_id)
+        raw_root = self.paths.mesh_mr_raw_dir(site_id, context.safe_folder_name).resolve()
+        location = MeshSourceLocator(self.paths).locate(
+            site_id,
+            context.source | {
+                "safe_folder_name": context.safe_folder_name,
+                "mr_id": context.mr_id,
+            },
+            context.source,
+        )
+        for target_type, candidate in (
+            ("file", location.raw_path),
+            ("directory", location.raw_directory),
+        ):
+            if candidate is None:
+                continue
+            resolved = candidate.resolve(strict=False)
+            if not self._within(resolved, raw_root) or candidate.is_symlink():
+                continue
+            if target_type == "file" and candidate.is_file():
+                return {"target_type": target_type, "path": str(resolved)}
+            if target_type == "directory" and candidate.is_dir():
+                return {"target_type": target_type, "path": str(resolved)}
+        raise MeshAnalysisQueryError("原始日志目录不存在或已不受当前局点管理。")
+
     def read_raw_tail(self, site_id: str, session_id: str, source_action_id: str, *, lines: int = 100) -> MeshRawTailDTO:
         context = self._context(site_id, session_id)
         if context.raw_path is None or source_action_id != self._artifact_id(session_id, "raw", context.raw_path.name):
@@ -2402,6 +2439,9 @@ class MeshAnalysisQueryService:
         max_points: int,
         time_from: str,
         time_to: str,
+        include_peer: bool = True,
+        include_events: bool = True,
+        include_station_band: bool = True,
     ) -> MeshPathChartDTO:
         return self._chart_payload_dto(
             site_id,
@@ -2411,6 +2451,9 @@ class MeshAnalysisQueryService:
             max_points=max_points,
             time_from=time_from,
             time_to=time_to,
+            include_peer=include_peer,
+            include_events=include_events,
+            include_station_band=include_station_band,
         )
 
     @staticmethod
@@ -2427,7 +2470,7 @@ class MeshAnalysisQueryService:
                 "MESH 图表响应超过 16 MiB 安全上限，请缩小时间窗口或降低显示范围。"
             )
         result = result.model_copy(update={"payload_bytes": payload_bytes})
-        LOGGER.info(
+        LOGGER.debug(
             "MESH_CHART_QUERY_METRICS type=%s duration_ms=%.3f payload_bytes=%d returned_points=%d",
             type(result).__name__,
             result.query_duration_ms,
@@ -2446,6 +2489,9 @@ class MeshAnalysisQueryService:
         max_points: int,
         time_from: str,
         time_to: str,
+        include_peer: bool = True,
+        include_events: bool = True,
+        include_station_band: bool = True,
     ) -> MeshPathChartDTO:
         run_segment = dict(payload.get("run_segment") or {})
         peer_segment = dict(payload.get("peer_segment") or {})
@@ -2588,40 +2634,69 @@ class MeshAnalysisQueryService:
             for index in (row.get("point_index"), row.get("busy_point_index"))
             if str(row["event"].get("event_type") or "") == "ACTIVE_SWITCH"
             and index is not None
+        } if include_events else set()
+        requested_max_points = min(max(int(max_points), 10), _MAX_CHART_RENDER_POINTS)
+        no_active_values = chart.get("no_active_indices")
+        multi_active_values = chart.get("multi_active_indices")
+        state_indices = {
+            int(value)
+            for values in (no_active_values, multi_active_values)
+            if values is not None
+            for value in values
+            if 0 <= int(value) < total_points
         }
-        critical_indices: set[int] = set()
-        for key in ("switch_indices", "no_active_indices", "multi_active_indices", "rapid_flap_indices"):
+        no_active_boundaries = self._state_run_boundary_indices(
+            point_rows,
+            no_active_values if no_active_values is not None else (),
+        )
+        multi_active_boundaries = self._state_run_boundary_indices(
+            point_rows,
+            multi_active_values if multi_active_values is not None else (),
+        )
+        state_boundaries = no_active_boundaries | multi_active_boundaries
+        gap_boundaries = {
+            neighbor
+            for index, point in enumerate(point_rows)
+            if point.get("gap_before")
+            for neighbor in (index - 1, index)
+            if neighbor >= 0
+        }
+        critical_indices: set[int] = {
+            *no_active_boundaries,
+            *multi_active_boundaries,
+            *gap_boundaries,
+            *sustained_zero_boundaries,
+            *suppressed_zero_recoveries,
+            *valid_switch_indices,
+        }
+        for key in (("switch_indices", "rapid_flap_indices") if include_events else ()):
             values = chart.get(key)
             if values is not None:
                 critical_indices.update(int(value) for value in values)
-        critical_indices.update(
-            index
-            for index, point in enumerate(point_rows)
-            if point.get("is_switch") or point.get("is_anomaly") or point.get("gap_before")
+        critical_indices.difference_update(ambiguous_active_bridge_indices)
+        if total_points:
+            critical_indices.update((0, total_points - 1))
+        budget_warnings: list[str] = []
+        if len(critical_indices) > requested_max_points:
+            original_critical_count = len(critical_indices)
+            critical_indices = self._evenly_spaced_indices(
+                critical_indices,
+                requested_max_points,
+                total_count=total_points,
+            )
+            budget_warnings.append(
+                "一级业务边界超过目标点数，已按时间保留代表边界；"
+                f"图表仍严格返回不超过 {requested_max_points} 点（原一级边界 {original_critical_count} 个）。"
+            )
+        effective_max_points = requested_max_points
+        trend_indices = self._chart_trend_row_indices(
+            point_rows,
+            max_points=max(effective_max_points - len(critical_indices), 0),
         )
-        trend_indices = self._chart_trend_row_indices(point_rows)
-        peer_change_values = chart.get("peer_change_indices")
-        if peer_change_values is not None:
-            trend_indices.update(int(value) for value in peer_change_values)
         natural_second_indices = self._natural_second_indices(
             point_rows,
             value_key="local_rssi",
         )
-        critical_indices.update(sustained_zero_boundaries)
-        critical_indices.update(suppressed_zero_recoveries)
-        critical_indices.update(valid_switch_indices)
-        critical_indices.difference_update(ambiguous_active_bridge_indices)
-        requested_max_points = min(max(int(max_points), 10), _MAX_CHART_RENDER_POINTS)
-        effective_max_points = min(
-            _MAX_CHART_RENDER_POINTS,
-            max(requested_max_points, len(critical_indices) + (2 if total_points else 0)),
-        )
-        budget_warnings: list[str] = []
-        if effective_max_points > requested_max_points:
-            budget_warnings.append(
-                "为保留全部一级业务边界，"
-                f"图表目标点数已从 {requested_max_points} 提升到 {effective_max_points}。"
-            )
         downsample_warning = " ".join(budget_warnings) or None
         indices = [
             int(index)
@@ -2631,19 +2706,32 @@ class MeshAnalysisQueryService:
                 critical_indices=critical_indices,
                 trend_indices=trend_indices,
                 ordinary_indices=natural_second_indices,
+                excluded_indices=state_indices - state_boundaries,
             )
         ]
         returned_indices = set(indices)
-        returned = [self._materialize_chart_point(ap_map, context, point_rows[index]) for index in indices]
-        location_segments = self._chart_location_segments(ap_map, point_rows)
+        def materialize_response_point(point: dict[str, Any]) -> MeshChartPointDTO:
+            return self._materialize_chart_point(
+                ap_map,
+                context,
+                point,
+                include_peer=include_peer,
+            )
+
+        returned = [materialize_response_point(point_rows[index]) for index in indices]
+        location_segments = (
+            self._chart_location_segments(ap_map, point_rows)
+            if include_station_band
+            else []
+        )
         anchor_index = self._int(dict(chart.get("metadata") or {}).get("anchor_index"))
         anchor = (
-            self._materialize_chart_point(ap_map, context, point_rows[anchor_index])
+            materialize_response_point(point_rows[anchor_index])
             if anchor_index is not None and 0 <= anchor_index < total_points
             else None
         )
         events: list[MeshChartEventDTO] = []
-        for prepared in prepared_events:
+        for prepared in (prepared_events if include_events else ()):
             event = prepared["event"]
             event_id = int(event.get("id") or 0)
             timestamp = str(event.get("event_time") or event.get("current_sample_time") or "")
@@ -2696,7 +2784,7 @@ class MeshAnalysisQueryService:
                     point_timestamp=str((render_point or {}).get("timestamp") or "") or None,
                     point_rssi=self._number((render_point or {}).get("local_rssi")),
                     point_context=(
-                        self._materialize_chart_point(ap_map, context, render_point)
+                        materialize_response_point(render_point)
                         if render_point is not None
                         else None
                     ),
@@ -2709,7 +2797,7 @@ class MeshAnalysisQueryService:
                     render_busy_rx_busy=self._number((busy_render_point or {}).get("local_rx_busy")),
                     render_busy_aligned=busy_render_aligned,
                     busy_point_context=(
-                        self._materialize_chart_point(ap_map, context, busy_render_point)
+                        materialize_response_point(busy_render_point)
                         if busy_render_point is not None
                         else None
                     ),
@@ -2723,7 +2811,7 @@ class MeshAnalysisQueryService:
             (row for row in reversed(point_rows) if str(dict(row.get("item") or {}).get("status") or "") == "ACTIVE"),
             None,
         )
-        current = self._materialize_chart_point(ap_map, context, current_row) if current_row else None
+        current = materialize_response_point(current_row) if current_row else None
         first_time = str(point_rows[0]["timestamp"]) if point_rows else None
         last_time = str(point_rows[-1]["timestamp"]) if point_rows else None
         zero_summary = local_zero_analysis.summary
@@ -3845,6 +3933,8 @@ class MeshAnalysisQueryService:
         ap_map: MeshApLocationSnapshot,
         context: _SessionContext,
         row: dict[str, Any],
+        *,
+        include_peer: bool = True,
     ) -> MeshChartPointDTO:
         item = dict(row.get("item") or {})
         segment = dict(row.get("segment") or {})
@@ -3873,15 +3963,15 @@ class MeshAnalysisQueryService:
             station=self._resolved_location_value(item, location, "station"),
             section=self._resolved_location_value(item, location, "section"),
             local_rssi=self._number(row.get("local_rssi")),
-            peer_rssi=self._number(row.get("peer_rssi")),
+            peer_rssi=self._number(row.get("peer_rssi")) if include_peer else None,
             local_rssi_zero_run=row.get("local_rssi_zero_run"),
-            peer_rssi_zero_run=row.get("peer_rssi_zero_run"),
+            peer_rssi_zero_run=row.get("peer_rssi_zero_run") if include_peer else None,
             local_signal=self._number(row.get("local_signal")),
-            peer_signal=self._number(row.get("peer_signal")),
+            peer_signal=self._number(row.get("peer_signal")) if include_peer else None,
             local_tx_busy=self._number(row.get("local_tx_busy")),
-            peer_tx_busy=self._number(row.get("peer_tx_busy")),
+            peer_tx_busy=self._number(row.get("peer_tx_busy")) if include_peer else None,
             local_rx_busy=self._number(row.get("local_rx_busy")),
-            peer_rx_busy=self._number(row.get("peer_rx_busy")),
+            peer_rx_busy=self._number(row.get("peer_rx_busy")) if include_peer else None,
             establish_time=str(item.get("establish_time") or "") or None,
             segment_sequence=self._int(row.get("segment_sequence")),
             segment_start=str(segment.get("build_start_time") or "") or None,
@@ -3894,7 +3984,7 @@ class MeshAnalysisQueryService:
             backups=[
                 self._chart_backup_from_summary(ap_map, dict(backup), context.source_id)
                 for backup in row.get("backups") or []
-            ],
+            ] if include_peer else [],
         )
 
     def _chart_segment(
@@ -4007,26 +4097,118 @@ class MeshAnalysisQueryService:
         return important
 
     @staticmethod
-    def _chart_trend_row_indices(points: list[dict[str, Any]]) -> set[int]:
-        """Return tier-two link/role boundaries and RSSI extrema."""
-        trend: set[int] = set()
+    def _evenly_spaced_indices(
+        values: set[int],
+        limit: int,
+        *,
+        total_count: int,
+    ) -> set[int]:
+        """Return stable representatives without expanding a caller's render budget."""
+        ordered = sorted(index for index in values if 0 <= index < total_count)
+        if limit <= 0 or not ordered:
+            return set()
+        if len(ordered) <= limit:
+            return set(ordered)
+        if limit == 1:
+            return {ordered[0]}
+        positions = {
+            round(position * (len(ordered) - 1) / (limit - 1))
+            for position in range(limit)
+        }
+        return {ordered[position] for position in positions}
+
+    @staticmethod
+    def _state_run_boundary_indices(
+        points: list[dict[str, Any]],
+        state_indices: object,
+    ) -> set[int]:
+        """Keep only start/end points of continuous NO_ACTIVE or MULTI_ACTIVE runs.
+
+        A status that persists for thousands of samples is visually a single state
+        interval.  Treating every raw frame as a first-tier point defeats the
+        requested sampling budget and can overflow the response body.
+        """
+        total_count = len(points)
+        candidates = sorted(
+            {
+                int(value)
+                for value in state_indices  # type: ignore[union-attr]
+                if 0 <= int(value) < total_count
+            }
+        )
+        if not candidates:
+            return set()
+
+        boundaries: set[int] = set()
+        run_start = candidates[0]
+        previous = candidates[0]
+        for index in candidates[1:]:
+            continuous = index == previous + 1 and not points[index].get("gap_before")
+            if not continuous:
+                boundaries.update((run_start, previous))
+                run_start = index
+            previous = index
+        boundaries.update((run_start, previous))
+        return boundaries
+
+    @classmethod
+    def _chart_trend_row_indices(
+        cls,
+        points: list[dict[str, Any]],
+        *,
+        max_points: int,
+    ) -> set[int]:
+        """Return bounded tier-two transitions and bucket min/max representatives."""
+        if max_points <= 0 or not points:
+            return set()
+
+        transitions: set[int] = set()
         for index in range(1, len(points)):
             previous = points[index - 1]
             current = points[index]
             if current.get("segment_sequence") != previous.get("segment_sequence"):
-                trend.update((index - 1, index))
+                transitions.update((index - 1, index))
             if current.get("peer_mac") != previous.get("peer_mac"):
-                trend.update((index - 1, index))
-        for field in ("local_rssi", "peer_rssi", "local_tx_busy", "local_rx_busy", "peer_tx_busy", "peer_rx_busy"):
-            values = [
-                (index, point.get(field))
-                for index, point in enumerate(points)
-                if point.get(field) is not None
-                and (field not in {"local_rssi", "peer_rssi"} or point.get(field) != 0)
-            ]
-            if values:
-                trend.add(min(values, key=lambda item: item[1])[0])
-                trend.add(max(values, key=lambda item: item[1])[0])
+                transitions.update((index - 1, index))
+        if len(transitions) >= max_points:
+            return cls._evenly_spaced_indices(
+                transitions,
+                max_points,
+                total_count=len(points),
+            )
+
+        trend = set(transitions)
+        remaining = max_points - len(trend)
+        fields = (
+            "local_rssi",
+            "peer_rssi",
+            "local_tx_busy",
+            "local_rx_busy",
+            "peer_tx_busy",
+            "peer_rx_busy",
+        )
+        bucket_count = max(1, remaining // (2 * len(fields)))
+        bucket_size = max(math.ceil(len(points) / bucket_count), 1)
+        extrema: set[int] = set()
+        for field in fields:
+            for start in range(0, len(points), bucket_size):
+                bucket = [
+                    (index, cls._number(point.get(field)))
+                    for index, point in enumerate(points[start : start + bucket_size], start)
+                    if point.get(field) is not None
+                    and (field not in {"local_rssi", "peer_rssi"} or point.get(field) != 0)
+                ]
+                if not bucket:
+                    continue
+                extrema.add(min(bucket, key=lambda item: item[1])[0])
+                extrema.add(max(bucket, key=lambda item: item[1])[0])
+        if len(extrema) > remaining:
+            extrema = cls._evenly_spaced_indices(
+                extrema,
+                remaining,
+                total_count=len(points),
+            )
+        trend.update(extrema)
         return trend
 
     @classmethod

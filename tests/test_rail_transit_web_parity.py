@@ -62,6 +62,7 @@ RAIL_FEATURE_IDS = (
     "online_mr.collection_notes",
     "web.mesh_analysis_import",
     "web.mesh_analysis_report_export",
+    "web.mesh_analysis_source_open_location",
     "web.rail_car_network_diagnostic_execute",
     "web.rail_task_control",
     "web.rail_car_network_point_table_write",

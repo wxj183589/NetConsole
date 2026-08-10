@@ -41,6 +41,7 @@ export function createBrowserAdapter(apiBaseUrl = '', developmentToken = ''): Pl
     showTaskNotification: async () => ({ success: false, error: DESKTOP_ONLY_MESSAGE }),
     setTaskTrayStatus: () => undefined,
     onTaskCenterOpenRequested: () => () => undefined,
+    openMeshAnalysisSessionLocation: async () => ({ success: false, error: DESKTOP_ONLY_MESSAGE }),
     openPath: async () => ({ success: false, error: DESKTOP_ONLY_MESSAGE }),
     showItemInFolder: async () => ({ success: false, error: DESKTOP_ONLY_MESSAGE }),
     openExternalUrl: async () => ({ success: false, error: DESKTOP_ONLY_MESSAGE }),
