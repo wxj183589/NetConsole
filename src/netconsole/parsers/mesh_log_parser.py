@@ -200,6 +200,43 @@ class MeshLogParser:
         if len(parts) < MIN_RECORD_FIELDS:
             issues.append(ParseIssue(str(path), line_number, "字段数量不足", f"字段数量不足：{len(parts)}", raw_line))
             return None, issues
+        link_count = _parse_int(parts[9])
+        if link_count != 1:
+            if link_count == 0:
+                issues.append(
+                    ParseIssue(
+                        str(path),
+                        line_number,
+                        "无效 LinkCnt 槽位",
+                        "LinkCnt=0 是驱动层无效槽位，已在链路事实层忽略。",
+                        raw_line,
+                        severity="INFO",
+                        field_name="LinkCnt",
+                    )
+                )
+            elif link_count is None:
+                issues.append(
+                    ParseIssue(
+                        str(path),
+                        line_number,
+                        "LinkCnt 格式异常",
+                        f"无法识别 LinkCnt：{parts[9]}；该记录已忽略。",
+                        raw_line,
+                        field_name="LinkCnt",
+                    )
+                )
+            else:
+                issues.append(
+                    ParseIssue(
+                        str(path),
+                        line_number,
+                        "未知 LinkCnt 值",
+                        f"当前协议只接受 LinkCnt=1，实际为 {link_count}；该记录已忽略，请确认设备协议。",
+                        raw_line,
+                        field_name="LinkCnt",
+                    )
+                )
+            return None, issues
         line_radio = _strip_radio(parts[0])
         if line_radio is None:
             issues.append(ParseIssue(str(path), line_number, "字段数量不足", "记录行缺少Radio字段", raw_line))
@@ -218,7 +255,6 @@ class MeshLogParser:
             issues.append(ParseIssue(str(path), line_number, "时间格式异常", f"{parts[3]} {parts[4]}", raw_line))
         duration_text = " ".join(parts[5:9])
         duration_seconds = parse_duration_seconds(parts[5:9])
-        link_count = _parse_int(parts[9])
         metric_tokens = parts[10:24]
         metrics: dict[str, int | None] = {}
         for index, (metric_name, local_key, peer_key) in enumerate(PAIRED_METRICS):

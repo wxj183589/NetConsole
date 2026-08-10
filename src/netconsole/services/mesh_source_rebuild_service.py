@@ -44,6 +44,7 @@ class MeshSourceRebuildService:
         site_id: str,
         session_id: str,
         *,
+        force_reparse: bool = False,
         progress: ProgressCallback | None = None,
         should_cancel: CancelCallback | None = None,
     ) -> dict[str, object]:
@@ -58,7 +59,7 @@ class MeshSourceRebuildService:
         # Identity changes only affect the projection fields in a healthy detail
         # database. Reuse the parsed facts even when the original raw file was
         # removed; raw parsing is reserved for missing, corrupt, or old details.
-        detail_path = self._existing_healthy_detail_path(parsed_root, source)
+        detail_path = None if force_reparse else self._existing_healthy_detail_path(parsed_root, source)
         if detail_path is not None:
             detail = MeshMrRepository(detail_path)
             before = detail.summary()
@@ -249,7 +250,7 @@ class MeshSourceRebuildService:
             "parsed_record_count": len(records),
             "issue_count": len(issues),
             "created_session_ids": [session_id],
-            "recovery_source": "bundle_archive" if recovered else location.recovery_source,
+            "recovery_source": "bundle_archive" if recovered else "raw_reparse",
             "identity_remap": dict(remap),
             "message": _identity_remap_completion_message(remap),
         }

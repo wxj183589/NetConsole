@@ -44,6 +44,7 @@ def mesh_source_rebuild(context: JobContext) -> dict[str, object]:
         result = MeshSourceRebuildService(context.paths).rebuild_source(
             site_name,
             session_id,
+            force_reparse=True,
             progress=context.progress,
             should_cancel=context.should_cancel,
         )

@@ -37,7 +37,7 @@
 - 导入 UI 选择文件后立即显示逐文件占位、阶段和取消入口；默认支持“一次选择车载 MR”批量派生列车号、CT/CW 和内部 Profile，并只做一次整批确认。逐文件修正保留在高级区，不要求对每行重复输入和勾选。
 - 同一预览批次的业务成员统一使用批次内唯一且可复验的 `member_id`；Vue key、人工映射、批次重复关系、提交 payload、worker 解压定位和来源 provenance 都不得以 `original_name`、`safe_name` 或 `stored_filename` 代替。弹窗内直接显示结构化预览错误并允许保留已选文件重新预览，迟到请求按 generation 丢弃。
 - `source_files` 保存 `raw_relative_path`、`parsed_relative_path`、bundle/archive SHA 与成员 ID/SHA。读取优先使用当前 MR 相对路径，其次安全文件名、SHA、bundle 归档，最后才读旧绝对路径。当前来源重建走 `mesh_source_rebuild`，只恢复/替换一个 detail SQLite；局点级维护只依赖真实 `source_files` 和本次冻结的待导入候选，不从全部 Mesh Profile 推导“应该存在”的 raw 列表。修复成功后自动恢复手工导入、ZIP 导入、本地扫描和设备下载导入；修复失败保留等待状态并可重试。
-- 当前来源的 detail SQLite 健康且 schema 可用时，“重新解析当前日志”优先执行 identity-only remap：按 distinct Peer MAC 查询当前 AP Identity 索引，在单事务中原子替换 mapping/cache 和链路身份投影，只更新 AP 名称、物理 AP MAC、Radio、站点、区间、来源、状态与原因。原始 Peer MAC、时间戳、RSSI、Busy、ACTIVE/STANDBY、链路状态、样本和事件保持不变；失败回滚旧身份结果。事务提交前可响应取消并完整回滚；提交/checkpoint 后才到达的取消请求不能把已提交结果覆盖成 cancelled，Job 以成功终态收口。detail 库缺失、损坏或 schema 不兼容时才从受保护 raw 走原来源重建。
+- 当前来源的 detail SQLite 健康且 schema 可用时，**AP Identity 重映射维护**才允许执行 identity-only remap：按 distinct Peer MAC 查询当前 AP Identity 索引，在单事务中原子替换 mapping/cache 和链路身份投影，只更新 AP 名称、物理 AP MAC、Radio、站点、区间、来源、状态与原因。原始 Peer MAC、时间戳、RSSI、Busy、ACTIVE/STANDBY、链路状态、样本和事件保持不变；失败回滚旧身份结果。用户显式点击“重新解析当前日志”时，无论 detail SQLite 是否健康，都必须从受保护 raw 重新解析、重建派生事实并原子替换当前来源 detail SQLite，不能复用旧 RSSI、gap、切换或统计结果。事务提交前可响应取消并完整回滚；提交/checkpoint 后才到达的取消请求不能把已提交结果覆盖成 cancelled，Job 以成功终态收口。
 - API 来源摘要明确区分三个标识：`source_file_id` 是索引库 `source_files.id` 数字值，用于分析查询、重建和导出；`source_action_id` 是受控 raw tail/来源操作的安全 ID，可以是哈希值；`bundle_member_id` 仅用于 ZIP manifest 成员恢复。旧 `source_id` 仅作为等同 `source_action_id` 的兼容别名，新客户端不得将其转换为导出 ID。
 - 同一 ZIP SHA 默认幂等。真实 12 文件包已在系统临时数据根验证：6 列车/12 MR、353,035 条解析记录、0 个解析问题；最终 353,033 条链路中 ACTIVE 129,524、STANDBY 223,509。重复导入同一 SHA 返回 12 个 duplicate，不重复写入；manifest 不含临时根/staging 路径，退出后无 staging/backup 残留。该结果证明当前样本闭环，不等同于所有 H3C 版本现场兼容。
 - 新导入的通用 `meshlog.log`、`meshlog.txt` 及 `.gz` 复合扩展名按正文首个有效时间戳归档为 `YYYY_MM_DD_<daily_sequence>meshlog.<ext>`；序号作用域是当前局点 + MESH Profile + 日志日期，按目录中最大有效序号递增，跨日期从 1 开始。无有效首时间戳使用 `unknown_date_<sequence>meshlog.<ext>` 并保留 `timestamp_not_found` 告警；已经规范命名或已有业务名称的历史文件不静默重命名。
@@ -51,6 +51,8 @@
 ## 3. 解析模型
 
 解析器按时间和 Radio 识别 ACTIVE/STANDBY/DOWN 等链路记录，规范化 MAC、RSSI、Tx/Rx Busy、链路计数、建立时间和持续时间。缺失指标写空值/N/A；RSSI 最小值、分位数或抖动只从真实有效样本计算，禁止用 0 或默认值补齐。
+
+`LinkCnt` 是链路事实的前置条件：当前确认的原始 MESH 日志协议仅接受 `LinkCnt=1`。`LinkCnt=0` 是驱动层无效槽位/占位记录，即使原行仍带有 Peer、AP 名称、角色、建链时长或 `RSSI=0/0`，也只保留在不可变 raw 文件中，不生成 parsed SQLite 的 `mesh_links`、样本、ACTIVE/STANDBY 上下文、RSSI/gap、切换/短时建链、AP Identity、统计、Tooltip、图表或报告事实。`LinkCnt` 缺失、无法解析或出现非 `0/1` 值时记录 diagnostic warning 并同样拒绝该行；不得擅自按 `>0` 扩展协议。所有 RSSI `0` 的展示和统计规则只适用于已通过 `LinkCnt=1` 校验的有效链路记录，不能据 `RSSI=0` 反推记录有效性。
 
 Peer 身份解析严格分离观测与物理身份：原始文本、规范化 Peer Radio
 MAC、Radio、链路角色、source file、raw line/offset 始终保留；物理 AP
@@ -164,7 +166,7 @@ Electron 的“生成分析报告”和“导出链路明细”都在创建任�
 - UTF-8、GB18030/GBK 输入与 gzip/普通日志；
 - 缺 Peer Name、未知 MAC、重复样本、乱序、跨大间隙和截断日志；
 - 单/双 Radio、同物理 AP 切换、A-B-A 临界与异常乒乓；
-- 缺失 RSSI/Busy 时不伪造统计；明确 RSSI `0` 保留原始记录但排除正常 RSSI 统计；
+- 覆盖 `LinkCnt=0` 严格拒绝、`LinkCnt=1` 有效入库，以及未知 `LinkCnt` diagnostic warning；缺失 RSSI/Busy 时不伪造统计；明确 RSSI `0` 只在有效链路记录中保留并排除正常 RSSI 统计；
 - 目录库到 `parsed_db_path` 的正确解析；
 - compact v3 `timestamp_tag` 唯一键、同毫秒多块顺序和旧派生 schema 显式重建；
 - ZIP 路径/压缩安全、预览 TTL、人工映射、隔离提交补偿、manifest 时机、SHA 幂等和绝对路径脱敏；
