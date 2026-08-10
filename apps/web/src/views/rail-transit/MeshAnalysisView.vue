@@ -130,6 +130,7 @@ const switches = ref<MeshSwitchEvent[]>([])
 const rssiActivePath = ref<MeshPathChart | null>(null)
 const rssiActiveLoading = ref(false)
 const rssiActiveLoaded = ref(false)
+const rssiActivePeerLoaded = ref(false)
 const rssiActiveError = ref('')
 const rssiActivePaintReady = ref(false)
 const tracksideSignal = shallowRef<MeshTracksideSignalChartData | null>(null)
@@ -632,8 +633,13 @@ watch([showSwitchLines, showSwitchPoints, showLocationBand, showBusySwitchLines,
   ]).catch(() => ElMessage.warning('图表显示偏好保存失败，当前设置仅保留在本次运行。'))
 })
 
-watch([showRssiPeer, showSwitchLines, showSwitchPoints, showLocationBand, showBusyPeer, showBusySwitchLines, showBusySwitchPoints], () => {
-  if (!meshPreferenceReady.value || !selected.value) return
+watch(showRssiPeer, (enabled) => {
+  if (!meshPreferenceReady.value || !selected.value || !enabled || rssiActivePeerLoaded.value) return
+  void loadRssiPeerSeries()
+}, { flush: 'sync' })
+
+watch(showBusyPeer, () => {
+  if (!meshPreferenceReady.value || !selected.value || activeTab.value !== 'busy') return
   void reloadCurrentChart()
 }, { flush: 'sync' })
 
@@ -750,6 +756,7 @@ function meshChartRequestKey(
     values.include_peer ?? null,
     values.include_events ?? null,
     values.include_station_band ?? null,
+    values.include_standby_context ?? null,
     values.include_standby ?? null,
   ])
 }
@@ -1508,6 +1515,7 @@ function resetSessionDetailState(
   rssiActiveLoadedKey = ''
   rssiActiveRequestPromise = null
   rssiActivePaintReady.value = false
+  rssiActivePeerLoaded.value = false
   releaseTracksideResources()
   tracksideWorkloadCycle += 1
   reportedWorkloadPhases.clear()
@@ -1843,6 +1851,7 @@ function rssiWindowRequest(viewport: MeshChartViewport): RssiWindowRequest | nul
       meshChartRevisionKey(),
       chartRadio.value,
       visiblePoints.value,
+      showRssiPeer.value,
       viewport.start_time,
       viewport.end_time,
     ]),
@@ -1910,8 +1919,9 @@ function loadRssiWindowBatch(viewport: MeshChartViewport): Promise<void> {
   const activeValues = {
     ...values,
     include_peer: showRssiPeer.value,
-    include_events: showSwitchLines.value || showSwitchPoints.value,
-    include_station_band: showLocationBand.value,
+    include_standby_context: true,
+    include_events: true,
+    include_station_band: true,
   }
   const activeRequestKey = meshChartRequestKey('active-path', request.sessionId, {
     ...activeValues,
@@ -1958,6 +1968,7 @@ function loadRssiWindowBatch(viewport: MeshChartViewport): Promise<void> {
         pendingRssiQueryViewport.value = null
       }
       rssiActivePath.value = activeResult
+      rssiActivePeerLoaded.value = Boolean(activeValues.include_peer)
       tracksideSignal.value = markRaw({ ...tracksideResult, series: [] })
       tracksideSeriesCache.value = cache
       rssiActiveLoaded.value = true
@@ -2019,6 +2030,7 @@ async function loadActivePath(
   range: MeshChartWindowRange | null = null,
   generation = detailGeneration,
   force = false,
+  preserveTrackside = false,
 ): Promise<void> {
   if (!selected.value) return
   const effectiveRange = range ?? (metric === 'busy' ? defaultChartWindowRange(metric) : null)
@@ -2026,10 +2038,9 @@ async function loadActivePath(
     max_points: visiblePoints.value,
     radio: effectiveRange?.radio ?? chartRadio.value,
     include_peer: metric === 'busy' ? showBusyPeer.value : showRssiPeer.value,
-    include_events: metric === 'busy'
-      ? showBusySwitchLines.value || showBusySwitchPoints.value
-      : showSwitchLines.value || showSwitchPoints.value,
-    include_station_band: showLocationBand.value,
+    include_standby_context: true,
+    include_events: true,
+    include_station_band: true,
   }
   if (metric === 'busy') {
     values.time_from = effectiveRange?.start_time
@@ -2063,9 +2074,11 @@ async function loadActivePath(
     && rssiActiveLoadedKey === requestKey
   ) return
 
-  cancelDeferredRssiChartWork()
-  rssiActivePaintReady.value = false
-  releaseTracksideResources()
+  if (!preserveTrackside) {
+    cancelDeferredRssiChartWork()
+    rssiActivePaintReady.value = false
+    releaseTracksideResources()
+  }
   rssiActiveAbortController?.abort()
   const requestGeneration = nextChartGeneration(metric)
   const controller = new AbortController()
@@ -2084,6 +2097,7 @@ async function loadActivePath(
       ) return
       rssiActivePath.value = result
       rssiActiveLoaded.value = true
+      rssiActivePeerLoaded.value = Boolean(values.include_peer)
       rssiActiveLoadedKey = requestKey
       rssiActiveError.value = ''
     } catch (reason) {
@@ -2129,6 +2143,32 @@ async function loadFullRssiCharts(generation = detailGeneration, forceRefresh = 
     observeTracksideChart()
     scheduleTracksideAfterActivePaint(generation, forceRefresh)
   }
+}
+
+async function loadRssiPeerSeries(): Promise<void> {
+  const chart = rssiActivePath.value
+  if (!chart || rssiActivePeerLoaded.value) return
+  const timeFrom = chart.requested_time_from || chart.time_from
+  const timeTo = chart.requested_time_to || chart.time_to
+  const range = timeFrom && timeTo
+    ? {
+        ...(rssiViewport.value || {
+          start_time: timeFrom,
+          end_time: timeTo,
+          start_percent: 0,
+          end_percent: 100,
+          full_start_time: timeFrom,
+          full_end_time: timeTo,
+          source: 'programmatic' as const,
+          source_chart: 'programmatic' as const,
+          revision: rssiViewportRevision,
+        }),
+        start_time: timeFrom,
+        end_time: timeTo,
+        radio: chartRadio.value,
+      }
+    : null
+  await loadActivePath('rssi', range, detailGeneration, false, true)
 }
 
 async function retryRssiActivePath(): Promise<void> {
@@ -2507,6 +2547,7 @@ async function changeChartRadio(): Promise<void> {
   rssiActiveLoaded.value = false
   rssiActiveLoadedKey = ''
   rssiActivePaintReady.value = false
+  rssiActivePeerLoaded.value = false
   rssiActiveError.value = ''
   releaseTracksideResources()
   busyActivePath.value = null
@@ -3444,6 +3485,7 @@ async function closeSelectedMeshSession(): Promise<void> {
   rssiActiveLoaded.value = false
   rssiActiveLoadedKey = ''
   rssiActivePaintReady.value = false
+  rssiActivePeerLoaded.value = false
   rssiActiveError.value = ''
   rssiViewport.value = null
   committedRssiViewport.value = null

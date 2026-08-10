@@ -1320,6 +1320,7 @@ class MeshAnalysisQueryService:
         time_to: str = "",
         max_points: int = 1_000,
         include_peer: bool = True,
+        include_standby_context: bool = True,
         include_events: bool = True,
         include_station_band: bool = True,
     ) -> MeshPathChartDTO:
@@ -1348,6 +1349,7 @@ class MeshAnalysisQueryService:
             time_from=time_from,
             time_to=time_to,
             include_peer=include_peer,
+            include_standby_context=include_standby_context,
             include_events=include_events,
             include_station_band=include_station_band,
         )
@@ -2440,6 +2442,7 @@ class MeshAnalysisQueryService:
         time_from: str,
         time_to: str,
         include_peer: bool = True,
+        include_standby_context: bool = True,
         include_events: bool = True,
         include_station_band: bool = True,
     ) -> MeshPathChartDTO:
@@ -2452,6 +2455,7 @@ class MeshAnalysisQueryService:
             time_from=time_from,
             time_to=time_to,
             include_peer=include_peer,
+            include_standby_context=include_standby_context,
             include_events=include_events,
             include_station_band=include_station_band,
         )
@@ -2490,6 +2494,7 @@ class MeshAnalysisQueryService:
         time_from: str,
         time_to: str,
         include_peer: bool = True,
+        include_standby_context: bool = True,
         include_events: bool = True,
         include_station_band: bool = True,
     ) -> MeshPathChartDTO:
@@ -2716,6 +2721,7 @@ class MeshAnalysisQueryService:
                 context,
                 point,
                 include_peer=include_peer,
+                include_standby_context=include_standby_context,
             )
 
         returned = [materialize_response_point(point_rows[index]) for index in indices]
@@ -3935,6 +3941,7 @@ class MeshAnalysisQueryService:
         row: dict[str, Any],
         *,
         include_peer: bool = True,
+        include_standby_context: bool = True,
     ) -> MeshChartPointDTO:
         item = dict(row.get("item") or {})
         segment = dict(row.get("segment") or {})
@@ -3984,7 +3991,7 @@ class MeshAnalysisQueryService:
             backups=[
                 self._chart_backup_from_summary(ap_map, dict(backup), context.source_id)
                 for backup in row.get("backups") or []
-            ] if include_peer else [],
+            ] if include_standby_context else [],
         )
 
     def _chart_segment(

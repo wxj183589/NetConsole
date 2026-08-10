@@ -353,6 +353,7 @@ def test_active_chart_omits_disabled_optional_peer_event_and_location_payloads(t
         radio=1,
         max_points=10,
         include_peer=False,
+        include_standby_context=False,
         include_events=False,
         include_station_band=False,
     )
@@ -813,6 +814,10 @@ def test_active_chart_keeps_tagged_gap_and_standby_context_isolated(tmp_path: Pa
             f"INSERT INTO mesh_links ({common_columns}) VALUES ({placeholders})",
             (7, 5, 1, 7, "2026-07-14 10:00:03.000", 1, "STANDBY", "0000-0000-006f", "00000000006f", "00000000006f", "AP-06", "000000000060", "车站D", "radio2", 1, 38, 1, 4, "exact", "mapping", "00000000006f", "", "session-tag", 80, 75, 2, 3, 0, 0, 7, "radio2", "1s", 1, 40, 1, 3, -56, -54),
         )
+        conn.execute(
+            f"INSERT INTO mesh_links ({common_columns}) VALUES ({placeholders})",
+            (8, 5, 1, 8, "2026-07-14 10:00:03.000", 1, "STANDBY", "0000-0000-007f", "00000000007f", "00000000007f", "AP-07", "000000000070", "车站E", "radio2", 1, 36, 2, 5, "exact", "mapping", "00000000007f", "", "session-tag", 85, 80, 3, 4, 0, 0, 8, "radio2", "1s", 1, 39, 2, 4, -55, -53),
+        )
     before = _fingerprint(detail)
     service = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())  # type: ignore[arg-type]
 
@@ -842,12 +847,29 @@ def test_active_chart_keeps_tagged_gap_and_standby_context_isolated(tmp_path: Pa
     assert tagged.peer_rssi == 46
     assert tagged.local_signal == -50
     assert tagged.peer_signal == -48
-    assert [item.link_id for item in tagged.backups] == [7]
+    assert [item.link_id for item in tagged.backups] == [7, 8]
     assert all(item.source_file_id == 1 and item.timestamp_tag == "(2)" for item in tagged.backups)
     assert tagged.backups[0].local_rssi == 38
     assert tagged.backups[0].peer_rssi == 40
     assert tagged.backups[0].local_signal == -56
     assert tagged.backups[0].peer_signal == -54
+    assert tagged.backups[1].peer_ap_name == "AP-07"
+    assert tagged.backups[1].local_rssi == 36
+    assert tagged.backups[1].peer_rssi == 39
+
+    without_peer_series = service.get_active_path_chart(
+        "demo",
+        session_id,
+        radio=1,
+        time_from="2026-07-14 10:00:03.000",
+        time_to="2026-07-14 10:00:03.001",
+        max_points=10,
+        include_peer=False,
+        include_standby_context=True,
+    )
+    tooltip_point = next(item for item in without_peer_series.points if item.timestamp_tag == "(2)")
+    assert tooltip_point.peer_rssi is None
+    assert [item.peer_ap_name for item in tooltip_point.backups] == ["AP-06", "AP-07"]
     assert before == _fingerprint(detail)
 
 
