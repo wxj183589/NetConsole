@@ -21,7 +21,11 @@ import { useUserSelectedExport } from '../../composables/useUserSelectedExport'
 import { useExternalTerminalLauncher } from '../../composables/useExternalTerminalLauncher'
 import { getPlatformAdapter } from '../../platform/runtime'
 import type { NcDataTableContextMenuItem } from '../../components/table/NcDataTableContextMenu'
-import { BEFORE_SITE_SWITCH_EVENT } from '../../workspace/site-switch'
+import {
+  BEFORE_SITE_SWITCH_EVENT,
+  SITE_CONTEXT_CHANGED_EVENT,
+  type BeforeSiteSwitchDetail,
+} from '../../workspace/site-switch'
 import TracksideApWpsConfigDialog from './TracksideApWpsConfigDialog.vue'
 import { openWpsDocumentUrl } from './wpsDocumentLink'
 import type {
@@ -83,6 +87,7 @@ const refreshing = ref(false)
 const taskSubmitting = ref(false)
 const wpsSyncing = ref(false)
 const wpsTargets = ref<WpsTracksideTarget[]>([])
+const wpsSiteId = ref('')
 const wpsConfigVisible = ref(false)
 const pendingScopeKey = ref('')
 const loadError = ref('')
@@ -138,6 +143,7 @@ function wpsTargetDeploymentReady(target: WpsTracksideTarget): boolean {
   )
 }
 let loadGeneration = 0
+let wpsRequestGeneration = 0
 let pageMounted = false
 let taskObservationReady = false
 const BUSINESS_PAGE_STALE_MS = 5 * 60 * 1000
@@ -530,6 +536,12 @@ async function loadRows(reset = false, forceNewRevision = false): Promise<boolea
         selectedRows.value = []
       }
       page.value = nextPage
+      if (wpsSiteId.value !== nextPage.site_id) {
+        wpsSiteId.value = nextPage.site_id
+        wpsTargets.value = []
+        wpsConfigVisible.value = false
+        void loadWpsTargets(nextPage.site_id)
+      }
       pageDirty.value = false
       pendingRefreshReason.value = ''
       lastLoadedAt.value = Date.now()
@@ -727,12 +739,26 @@ async function exportBusiness(): Promise<void> {
   }
 }
 
-async function loadWpsTargets(): Promise<void> {
+async function loadWpsTargets(siteId = wpsSiteId.value): Promise<void> {
   if (!wpsSyncFeatureEnabled.value) return
-  try {
-    wpsTargets.value = await listTracksideWpsTargets()
-  } catch {
+  const requestGeneration = ++wpsRequestGeneration
+  const requestSiteId = siteId
+  if (!requestSiteId) {
     wpsTargets.value = []
+    return
+  }
+  try {
+    const targets = await listTracksideWpsTargets(requestSiteId)
+    if (
+      requestGeneration !== wpsRequestGeneration
+      || wpsSiteId.value !== requestSiteId
+      || targets.some((target) => target.site_id !== requestSiteId)
+    ) return
+    wpsTargets.value = targets
+  } catch {
+    if (requestGeneration === wpsRequestGeneration && wpsSiteId.value === requestSiteId) {
+      wpsTargets.value = []
+    }
   }
 }
 
@@ -844,7 +870,9 @@ async function openWpsConfiguration(): Promise<void> {
 }
 
 function handleWpsTargetsUpdated(targets: WpsTracksideTarget[]): void {
-  wpsTargets.value = targets
+  if (targets.every((target) => target.site_id === wpsSiteId.value)) {
+    wpsTargets.value = targets
+  }
 }
 
 function exportTimestamp(now = new Date()): string {
@@ -869,8 +897,13 @@ watch(
   },
 )
 
-function handleBeforeSiteSwitch(): void {
+function handleBeforeSiteSwitch(event: Event): void {
+  const targetSiteId = (event as CustomEvent<BeforeSiteSwitchDetail>).detail?.targetSiteId || ''
   loadGeneration += 1
+  wpsRequestGeneration += 1
+  wpsSiteId.value = targetSiteId
+  wpsTargets.value = []
+  wpsConfigVisible.value = false
   page.value = null
   initialLoading.value = false
   refreshing.value = false
@@ -881,6 +914,10 @@ function handleBeforeSiteSwitch(): void {
   filters.page = 1
   savedTableScroll.top = 0
   savedTableScroll.left = 0
+}
+
+function handleSiteContextChanged(): void {
+  void loadWpsTargets()
 }
 
 onActivated(() => {
@@ -905,10 +942,10 @@ onDeactivated(() => {
 onMounted(() => {
   pageMounted = true
   window.addEventListener(BEFORE_SITE_SWITCH_EVENT, handleBeforeSiteSwitch)
+  window.addEventListener(SITE_CONTEXT_CHANGED_EVENT, handleSiteContextChanged)
   void Promise.all([
     loadRows(),
     loadOnlineStatus(),
-    loadWpsTargets(),
     taskStore.refresh().then(() => {
       currentTaskId.value = taskStore.tasks.find(
         (item) => businessTaskTypes.has(item.type) && activeStates.has(item.status),
@@ -925,6 +962,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener(BEFORE_SITE_SWITCH_EVENT, handleBeforeSiteSwitch)
+  window.removeEventListener(SITE_CONTEXT_CHANGED_EVENT, handleSiteContextChanged)
   loadGeneration += 1
 })
 </script>
@@ -1162,6 +1200,7 @@ onBeforeUnmount(() => {
       v-if="wpsSyncFeatureEnabled"
       v-model="wpsConfigVisible"
       :targets="wpsTargets"
+      :site-id="wpsSiteId"
       @targets-updated="handleWpsTargetsUpdated"
     />
   </section>

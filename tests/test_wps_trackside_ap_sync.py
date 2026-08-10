@@ -20,6 +20,7 @@ from netconsole.models.wps_sync import (
     WpsTargetType,
     build_wps_binding_id,
 )
+from netconsole.backend.api.wps_sync_router import _site_id
 from netconsole.repositories.wps_sync_repository import WpsSyncRepository
 from netconsole.services.wps_trackside_ap_sync import (
     STANDARD_TARGET_CODE,
@@ -426,6 +427,98 @@ def test_wps_public_targets_expose_only_cloud_document_deployment_identity(
     assert list(by_code) == [STANDARD_TARGET_CODE]
     assert by_code[STANDARD_TARGET_CODE]["expected_script_version"] == WPS_SCRIPT_VERSIONS[STANDARD_TARGET_CODE]
     assert by_code[STANDARD_TARGET_CODE]["expected_deployment_id"] == WPS_DEPLOYMENT_IDS[STANDARD_TARGET_CODE]
+
+
+def test_wps_configuration_isolated_per_site_and_rejects_shared_document_script(
+    tmp_path: Path,
+) -> None:
+    paths = PathResolver(tmp_path)
+    service = TracksideApWpsSyncService(paths)
+    hangzhou = "hangzhou10"
+    ningbo10 = "ningbo10"
+    ningbo = "ningbo12"
+    hangzhou_webhook = (
+        "https://www.kdocs.cn/api/v3/ide/file/hangzhou-document/"
+        "script/hangzhou-script/sync_task"
+    )
+    ningbo_webhook = (
+        "https://www.kdocs.cn/api/v3/ide/file/ningbo-document/"
+        "script/ningbo-script/sync_task"
+    )
+
+    service.configure_target(
+        hangzhou,
+        STANDARD_TARGET_CODE,
+        token="hangzhou-token",
+        document_open_url="https://www.kdocs.cn/l/hangzhou-document",
+        webhook_url=hangzhou_webhook,
+    )
+    unconfigured_ningbo = service.list_targets(ningbo)[0]
+    unconfigured_ningbo10 = service.list_targets(ningbo10)[0]
+
+    assert unconfigured_ningbo["document_open_url"] == ""
+    assert unconfigured_ningbo["webhook_url"] == ""
+    assert unconfigured_ningbo["expected_document_id"] == ""
+    assert unconfigured_ningbo["token_configured"] is False
+    assert unconfigured_ningbo10["document_open_url"] == ""
+    assert unconfigured_ningbo10["webhook_url"] == ""
+    assert unconfigured_ningbo10["token_configured"] is False
+
+    with pytest.raises(WpsSyncError) as conflict:
+        service.configure_target(
+            ningbo,
+            STANDARD_TARGET_CODE,
+            document_open_url="https://www.kdocs.cn/l/hangzhou-document",
+            webhook_url=hangzhou_webhook,
+        )
+    assert conflict.value.code == "WPS_DOCUMENT_SITE_CONFLICT"
+
+    service.configure_target(
+        ningbo,
+        STANDARD_TARGET_CODE,
+        token="ningbo-token",
+        document_open_url="https://www.kdocs.cn/l/ningbo-document",
+        webhook_url=ningbo_webhook,
+    )
+    hangzhou_target = service.list_targets(hangzhou)[0]
+    ningbo_target = service.list_targets(ningbo)[0]
+    hangzhou_credential = service._repository(hangzhou).get_target(
+        TRACKSIDE_AP_WPS_BUSINESS_KEY, STANDARD_TARGET_CODE
+    ).credential_id
+    ningbo_credential = service._repository(ningbo).get_target(
+        TRACKSIDE_AP_WPS_BUSINESS_KEY, STANDARD_TARGET_CODE
+    ).credential_id
+
+    assert hangzhou_target["document_open_url"] == "https://www.kdocs.cn/l/hangzhou-document"
+    assert ningbo_target["document_open_url"] == "https://www.kdocs.cn/l/ningbo-document"
+    assert hangzhou_credential != ningbo_credential
+    assert len({
+        paths.site_sync_dir(site) / "wps_sync.sqlite"
+        for site in (hangzhou, ningbo10, ningbo)
+    }) == 3
+
+
+def test_wps_targets_reject_a_stale_site_context(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                paths=PathResolver(tmp_path),
+                trackside_ap_business_query_service=SimpleNamespace(
+                    current_site_id=lambda: "hangzhou10"
+                ),
+            )
+        )
+    )
+
+    assert _site_id(request, "hangzhou10") == "hangzhou10"
+    with pytest.raises(HTTPException) as mismatch:
+        _site_id(request, "ningbo12")
+    assert mismatch.value.status_code == 409
+    assert mismatch.value.detail["code"] == "WPS_SITE_CONTEXT_MISMATCH"
 
 
 def test_wps_service_rejects_every_nonstandard_target_code(tmp_path: Path) -> None:

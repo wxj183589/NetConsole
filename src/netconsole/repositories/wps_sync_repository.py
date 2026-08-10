@@ -5,6 +5,8 @@ import logging
 import sqlite3
 from collections.abc import Callable, Iterable
 from datetime import datetime
+from pathlib import Path
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from netconsole.core.paths import PathResolver
@@ -493,6 +495,66 @@ class WpsSyncRepository:
                 (self.site_id, business_key),
             ).fetchall()
         return [_target_from_row(row) for row in rows]
+
+    def find_document_script_conflicts(
+        self,
+        *,
+        business_key: str,
+        target_code: str,
+        document_id: str,
+        script_id: str,
+    ) -> list[dict[str, str]]:
+        """只读检查其他局点是否已使用同一 WPS 文档共享脚本。"""
+
+        if not document_id or not script_id or not self.paths.sites_dir.is_dir():
+            return []
+        conflicts: list[dict[str, str]] = []
+        for site_dir in self.paths.sites_dir.iterdir():
+            if not site_dir.is_dir() or site_dir.name == self.site_id:
+                continue
+            path = site_dir / "sync" / "wps_sync.sqlite"
+            if not path.is_file():
+                continue
+            try:
+                with sqlite3.connect(
+                    f"file:{Path(path).as_posix()}?mode=ro", uri=True
+                ) as connection:
+                    columns = {
+                        str(row[1])
+                        for row in connection.execute(
+                            "PRAGMA table_info(wps_sync_targets)"
+                        )
+                    }
+                    if not {
+                        "site_id",
+                        "business_key",
+                        "target_code",
+                        "target_name",
+                        "expected_document_id",
+                        "webhook_url",
+                    }.issubset(columns):
+                        continue
+                    rows = connection.execute(
+                        "SELECT site_id, target_code, target_name, webhook_url "
+                        "FROM wps_sync_targets "
+                        "WHERE business_key = ? AND expected_document_id = ?",
+                        (business_key, document_id),
+                    ).fetchall()
+            except sqlite3.Error as exc:
+                raise RuntimeError(f"无法读取局点 {site_dir.name} 的 WPS 配置") from exc
+            for row_site_id, row_target_code, target_name, webhook_url in rows:
+                if str(row_target_code) != target_code:
+                    continue
+                if _webhook_script_id(str(webhook_url or "")) != script_id:
+                    continue
+                conflicts.append(
+                    {
+                        "site_id": str(row_site_id),
+                        "target_code": str(row_target_code),
+                        "target_name": str(target_name),
+                    }
+                )
+        return conflicts
 
     def get_target(self, business_key: str, target_code: str) -> WpsSyncTarget:
         targets = [
@@ -1094,6 +1156,14 @@ def _now() -> str:
 def _sanitize(value: str) -> str:
     text = str(value or "").replace("AirScript-Token", "credential")
     return text[:500]
+
+
+def _webhook_script_id(value: str) -> str:
+    parts = [part for part in urlsplit(value).path.split("/") if part]
+    try:
+        return parts[parts.index("script") + 1]
+    except (ValueError, IndexError):
+        return ""
 
 
 __all__ = ["WPS_SYNC_SCHEMA", "WpsSyncRepository"]

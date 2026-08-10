@@ -9,6 +9,7 @@ import { ApiRequestError } from '../../api/client'
 import { resetWebFeaturesForTest, setWebFeaturesForTest } from '../../features'
 import { resetUserSelectedExportForTests } from '../../composables/useUserSelectedExport'
 import { useTaskStore } from '../../stores/tasks'
+import { BEFORE_SITE_SWITCH_EVENT, SITE_CONTEXT_CHANGED_EVENT } from '../../workspace/site-switch'
 import type {
   TracksideApBusinessPage,
   TracksideApBusinessRow,
@@ -610,6 +611,38 @@ describe('TracksideApBusinessView mounted behavior', () => {
       webhook_url: 'https://www.kdocs.cn/api/v3/ide/file/standard-updated/script/test/sync_task',
     }))
     expect(vm.drafts[0].token).toBe('')
+    wrapper.unmount()
+  })
+
+  it('discards a slow previous-site WPS response after a site switch', async () => {
+    let resolvePreviousSite: ((value: WpsTracksideTarget[]) => void) | undefined
+    const previousSiteResponse = new Promise<WpsTracksideTarget[]>((resolve) => {
+      resolvePreviousSite = resolve
+    })
+    const currentSiteTargets = wpsTargets(true).map((target) => ({
+      ...target,
+      site_id: 'site-b',
+      document_open_url: 'https://www.kdocs.cn/l/site-b-document',
+    }))
+    api.listTracksideWpsTargets.mockImplementation((siteId: string) => (
+      siteId === 'demo' ? previousSiteResponse : Promise.resolve(currentSiteTargets)
+    ))
+
+    const wrapper = await mountView()
+    window.dispatchEvent(new CustomEvent(BEFORE_SITE_SWITCH_EVENT, {
+      detail: { targetSiteId: 'site-b' },
+    }))
+    window.dispatchEvent(new CustomEvent(SITE_CONTEXT_CHANGED_EVENT))
+    await flushPromises()
+    resolvePreviousSite?.(wpsTargets(true))
+    await flushPromises()
+
+    await button(wrapper, '配置云文档').trigger('click')
+    await flushPromises()
+    const dialog = wrapper.getComponent(TracksideApWpsConfigDialog)
+    expect(dialog.props('targets')).toEqual(currentSiteTargets)
+    expect((dialog.props('targets') as WpsTracksideTarget[])[0].document_open_url)
+      .toBe('https://www.kdocs.cn/l/site-b-document')
     wrapper.unmount()
   })
 

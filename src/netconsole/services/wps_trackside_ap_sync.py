@@ -743,6 +743,28 @@ class TracksideApWpsSyncService:
             if webhook_url is None
             else _document_id_from_webhook(selected_webhook_url)
         )
+        if selected_document_id and selected_webhook_url:
+            try:
+                conflicts = repository.find_document_script_conflicts(
+                    business_key=target.business_key,
+                    target_code=target.target_code,
+                    document_id=selected_document_id,
+                    script_id=_script_id_from_webhook(selected_webhook_url),
+                )
+            except RuntimeError as exc:
+                raise WpsSyncError(
+                    "WPS_CONFIG_CONFLICT_CHECK_FAILED",
+                    "无法完成跨局点 WPS 配置冲突检查，已拒绝保存",
+                ) from exc
+            if conflicts:
+                names = "、".join(
+                    self._site_display_name(item["site_id"]) for item in conflicts
+                )
+                raise WpsSyncError(
+                    "WPS_DOCUMENT_SITE_CONFLICT",
+                    f"该 WPS 文档已经被其他局点配置：{names}。不同局点原则上应使用独立 WPS 文档。",
+                    details={"conflicts": conflicts},
+                )
         selected_enabled = target.enabled if enabled is None else enabled
         configured = repository.upsert_target(
             business_key=target.business_key,

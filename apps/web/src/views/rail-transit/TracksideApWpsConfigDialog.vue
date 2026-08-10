@@ -26,6 +26,7 @@ import { wpsAirScriptSource, type WpsAirScriptKind } from './wpsAirScriptSources
 
 const props = defineProps<{
   modelValue: boolean
+  siteId: string
   targets: WpsTracksideTarget[]
 }>()
 const { confirm } = useConfirm()
@@ -92,6 +93,15 @@ watch(
   () => props.targets,
   (value) => applyTargets(value, visible.value),
   { deep: true, immediate: true },
+)
+
+watch(
+  () => props.siteId,
+  () => {
+    localTargets.value = []
+    drafts.value = []
+    errorMessage.value = ''
+  },
 )
 
 watch(visible, (value) => {
@@ -296,7 +306,14 @@ function clearSensitiveInput(): void {
 }
 
 async function reloadTargets(preserveDrafts = false): Promise<WpsTracksideTarget[]> {
-  const targets = await listTracksideWpsTargets()
+  const requestSiteId = props.siteId
+  const targets = await listTracksideWpsTargets(requestSiteId)
+  if (
+    requestSiteId !== props.siteId
+    || targets.some((target) => target.site_id !== requestSiteId)
+  ) {
+    throw new Error('WPS_SITE_CONTEXT_MISMATCH')
+  }
   applyTargets(targets, preserveDrafts)
   emit('targets-updated', targets)
   return targets
@@ -516,7 +533,7 @@ async function openDocument(target: WpsTracksideTarget): Promise<void> {
       />
       <el-alert v-if="errorMessage" :title="errorMessage" type="error" :closable="false" show-icon />
 
-      <section v-if="row" class="wps-target">
+      <section v-if="row && row.target.site_id === siteId" class="wps-target">
         <div class="target-heading">
           <div>
             <strong>WPS 云文档</strong>
@@ -702,6 +719,7 @@ async function openDocument(target: WpsTracksideTarget): Promise<void> {
           <el-button link type="primary" :icon="Document" @click="openDocument(row.target)">打开云文档</el-button>
         </div>
       </section>
+      <el-empty v-else description="正在读取当前局点 WPS 配置..." />
     </div>
 
     <template #footer>
