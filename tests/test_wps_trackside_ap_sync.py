@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+from dataclasses import replace
 from pathlib import Path
 import re
 import sqlite3
@@ -45,6 +46,9 @@ from netconsole.services.wps_trackside_ap_sync import (
     parse_wps_webhook,
     workbook_dto_from_xlsx,
 )
+
+TEST_WEBHOOK_DOCUMENT_ID = "549847228994"
+STALE_REMOTE_DOCUMENT_ID = TEST_WEBHOOK_DOCUMENT_ID
 
 
 def _protect(data: bytes, entropy: bytes) -> bytes:
@@ -396,12 +400,12 @@ def test_wps_target_run_migration_adds_async_recovery_columns_repeatably(
 
 def test_wps_webhook_parser_derives_sync_submit_and_poll_endpoints() -> None:
     endpoints = parse_wps_webhook(
-        "https://www.kdocs.cn/api/v3/ide/file/549847228994/"
+        f"https://www.kdocs.cn/api/v3/ide/file/{TEST_WEBHOOK_DOCUMENT_ID}/"
         "script/V2-2o35ebQ25Bb3Uyrnii2U3o/sync_task"
     )
 
     assert endpoints.host == "www.kdocs.cn"
-    assert endpoints.file_id == "549847228994"
+    assert endpoints.file_id == TEST_WEBHOOK_DOCUMENT_ID
     assert endpoints.script_id == "V2-2o35ebQ25Bb3Uyrnii2U3o"
     assert endpoints.sync_task_url.endswith("/sync_task")
     assert endpoints.async_task_url.endswith("/task")
@@ -621,6 +625,39 @@ def test_wps_connection_test_rejects_stale_or_cross_target_script_identity(
 
     assert captured.value.code == expected_code
     assert captured.value.details["phase"] == "PROTOCOL_HANDSHAKE"
+
+
+def test_wps_connection_test_reports_remote_document_identity_mismatch() -> None:
+    target = replace(_wps_target(), expected_document_id="536585421042")
+
+    class FakeClient:
+        def post(self, target, *, token, argv):
+            return WpsHttpResponse(
+                status_code=200,
+                body={
+                    "success": True,
+                    "protocol_version": 2,
+                    "script_version": WPS_SCRIPT_VERSIONS[STANDARD_TARGET_CODE],
+                    "deployment_id": WPS_DEPLOYMENT_IDS[STANDARD_TARGET_CODE],
+                    "target_type": "WPS_STANDARD_SPREADSHEET",
+                    "target_code": STANDARD_TARGET_CODE,
+                    "document_id": STALE_REMOTE_DOCUMENT_ID,
+                    "runtime_capability": "DEPLOYMENT_PENDING",
+                },
+            )
+
+    with pytest.raises(WpsSyncError) as captured:
+        WpsStandardSpreadsheetAdapter(FakeClient()).connection_test(
+            target, "test-only-token"
+        )
+
+    assert captured.value.code == "WPS_DOCUMENT_IDENTITY_MISMATCH"
+    assert captured.value.details["expected_document_id"] == "536585421042"
+    assert captured.value.details["remote_document_id"] == STALE_REMOTE_DOCUMENT_ID
+    assert "WPS_DOCUMENT_IDENTITY_MISMATCH" in str(captured.value)
+    assert "预期文档 ID：536585421042" in str(captured.value)
+    assert f"远端脚本声明：{STALE_REMOTE_DOCUMENT_ID}" in str(captured.value)
+    assert "重新复制脚本并全量替换" in captured.value.details["suggestion"]
 
 
 @pytest.mark.parametrize(

@@ -91,6 +91,8 @@ vi.mock('../../composables/useExternalTerminalLauncher', () => ({
 import TracksideApBusinessView from './TracksideApBusinessView.vue'
 import TracksideApWpsConfigDialog from './TracksideApWpsConfigDialog.vue'
 
+const TEST_DOCUMENT_ID = '549847228994'
+
 const extendedRowDefaults = {
   switch_vendor: 'H3C',
   switch_tx_power: '',
@@ -758,7 +760,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
         status: 'SUCCESS',
         binding_status: 'LEGACY_BINDING_ID_MISMATCH',
         binding_id_match: false,
-        remote_document_id: '549847228994',
+        remote_document_id: TEST_DOCUMENT_ID,
         remote_site_id: 'hzl10',
         remote_site_name: '杭州地铁10号线',
         remote_business_key: 'rail_transit.trackside_ap_business',
@@ -794,7 +796,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
     expect(wrapper.text()).toContain('本地 Binding ID')
     expect(wrapper.text()).toContain('wpsbind_v1_local')
     expect(wrapper.text()).toContain(`wst_${'a'.repeat(32)}`)
-    expect(wrapper.text()).toContain('549847228994')
+    expect(wrapper.text()).toContain(TEST_DOCUMENT_ID)
     expect(wrapper.text()).toContain('rail_transit.trackside_ap_business')
     expect(wrapper.text()).toContain('WPS_STANDARD_SPREADSHEET')
     expect(wrapper.text()).toContain('目标类型匹配')
@@ -912,12 +914,13 @@ describe('TracksideApBusinessView mounted behavior', () => {
     const dialog = wrapper.getComponent(TracksideApWpsConfigDialog)
     const vm = dialog.vm as unknown as {
       copyAirScript: (
-        code: 'wps_standard_spreadsheet',
+        target: WpsTracksideTarget,
         kind: 'probe' | 'sync',
       ) => Promise<void>
     }
-    await vm.copyAirScript('wps_standard_spreadsheet', 'probe')
-    await vm.copyAirScript('wps_standard_spreadsheet', 'sync')
+    const [target] = wpsTargets(true)
+    await vm.copyAirScript(target, 'probe')
+    await vm.copyAirScript(target, 'sync')
 
     expect(platformMocks.writeClipboardText).toHaveBeenNthCalledWith(
       1,

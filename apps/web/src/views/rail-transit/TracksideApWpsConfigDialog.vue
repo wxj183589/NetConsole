@@ -23,6 +23,7 @@ import type {
 import { getPlatformAdapter } from '../../platform/runtime'
 import { openWpsDocumentUrl } from './wpsDocumentLink'
 import { wpsAirScriptSource, type WpsAirScriptKind } from './wpsAirScriptSources'
+import { normalizeWpsUrlInput, tryParseWpsWebhookIdentity, type WpsUrlKind } from './wpsUrlInput'
 
 const props = defineProps<{
   modelValue: boolean
@@ -69,6 +70,7 @@ const visible = computed({
   set: (value: boolean) => emit('update:modelValue', value),
 })
 const localTargets = ref<WpsTracksideTarget[]>([])
+const loadedSiteId = ref('')
 const drafts = ref<TargetDraft[]>([])
 const savingCode = ref<WpsTracksideTargetCode | ''>('')
 const testingCode = ref<WpsTracksideTargetCode | ''>('')
@@ -87,6 +89,10 @@ const row = computed(() => {
   if (!target) return undefined
   const draft = targetDraft(target.target_code)
   return draft ? { target, draft } : undefined
+})
+const draftWebhookIdentity = computed(() => {
+  const draft = row.value?.draft
+  return draft ? tryParseWpsWebhookIdentity(draft.webhook_url) : undefined
 })
 
 watch(
@@ -111,6 +117,7 @@ watch(visible, (value) => {
 function applyTargets(value: WpsTracksideTarget[], preserveDrafts = false): void {
   const existingDrafts = new Map(drafts.value.map((draft) => [draft.target_code, draft]))
   localTargets.value = value.map((target) => ({ ...target }))
+  loadedSiteId.value = localTargets.value[0]?.site_id || ''
   drafts.value = value.map((target) => {
     const existing = preserveDrafts ? existingDrafts.get(target.target_code) : undefined
     return existing || {
@@ -282,15 +289,32 @@ function webhookScriptIdSummary(value: string): string {
 }
 
 async function copyAirScript(
-  code: WpsTracksideTargetCode,
+  target: WpsTracksideTarget,
   kind: WpsAirScriptKind,
 ): Promise<void> {
   try {
-    const result = await getPlatformAdapter().writeClipboardText(wpsAirScriptSource(code, kind))
+    if (target.site_id !== props.siteId || target.site_id !== loadedSiteId.value) {
+      throw new Error('WPS_SITE_CONTEXT_MISMATCH')
+    }
+    const draft = targetDraft(target.target_code)
+    if (!draft || targetDraftDirty(target, draft)) {
+      throw new Error('请先保存当前 WPS 配置，再复制脚本')
+    }
+    const result = await getPlatformAdapter().writeClipboardText(wpsAirScriptSource(target, kind))
     if (!result.success) throw new Error(result.error || '系统剪贴板不可用')
-    ElMessage.success(kind === 'probe' ? '只读连接探针已复制' : '正式同步脚本已复制')
+    const scriptId = tryParseWpsWebhookIdentity(target.webhook_url)?.scriptId || ''
+    const scriptSummary = scriptId.length > 8
+      ? `${scriptId.slice(0, 4)}...${scriptId.slice(-4)}`
+      : scriptId
+    ElMessage.success([
+      kind === 'probe' ? '已复制连接测试脚本' : '已复制正式同步脚本',
+      `局点：${target.site_id}`,
+      `文档 ID：${target.expected_document_id}`,
+      `脚本版本：${target.expected_script_version || '2.8.4-standard'}`,
+      ...(scriptSummary ? [`脚本 ID：${scriptSummary}`] : []),
+    ].join('\n'))
   } catch (reason) {
-    ElMessage.error(reason instanceof Error ? reason.message : '复制失败，请检查剪贴板权限')
+    errorMessage.value = reason instanceof Error ? reason.message : '复制失败，请检查当前局点和 WPS 配置'
   }
 }
 
@@ -334,11 +358,15 @@ async function saveTargetConfiguration(
   errorMessage.value = ''
   try {
     const token = draft.token.trim()
+    const document = normalizeWpsUrlInput(draft.document_open_url, 'document')
+    const webhook = normalizeWpsUrlInput(draft.webhook_url, 'webhook')
+    draft.document_open_url = document.url
+    draft.webhook_url = webhook.url
     await updateTracksideWpsTarget(code, {
       enabled: draft.enabled,
       timeout_seconds: draft.timeout_seconds,
-      document_open_url: draft.document_open_url.trim(),
-      webhook_url: draft.webhook_url.trim(),
+      document_open_url: document.url,
+      webhook_url: webhook.url,
       ...(token ? { token } : {}),
     })
     draft.token = ''
@@ -350,6 +378,25 @@ async function saveTargetConfiguration(
     return false
   } finally {
     savingCode.value = ''
+  }
+}
+
+function normalizePastedWpsUrl(
+  event: ClipboardEvent,
+  draft: TargetDraft,
+  field: 'document_open_url' | 'webhook_url',
+  kind: WpsUrlKind,
+): void {
+  const raw = event.clipboardData?.getData('text/plain') || ''
+  try {
+    const normalized = normalizeWpsUrlInput(raw, kind)
+    event.preventDefault()
+    draft[field] = normalized.url
+    errorMessage.value = ''
+    if (normalized.extracted) ElMessage.info('已自动识别 WPS 文档链接')
+  } catch (reason) {
+    event.preventDefault()
+    errorMessage.value = reason instanceof Error ? reason.message : 'WPS 链接无效'
   }
 }
 
@@ -578,7 +625,7 @@ async function openDocument(target: WpsTracksideTarget): Promise<void> {
           </label>
           <div>
             <span>预期文档 ID</span>
-            <code>{{ row.target.expected_document_id }}</code>
+            <code>{{ draftWebhookIdentity?.documentId || row.target.expected_document_id }}</code>
           </div>
         </div>
 
@@ -590,6 +637,7 @@ async function openDocument(target: WpsTracksideTarget): Promise<void> {
           <span>当前远端脚本 ID <code>{{ row.target.remote_script_id || '未确认' }}</code></span>
           <span>部署身份匹配 <el-tag size="small" :type="remoteIdentityMatches(row.target) ? 'success' : 'warning'">{{ remoteIdentityMatches(row.target) ? '是' : '否' }}</el-tag></span>
           <span>远端绑定局点 <code>{{ row.target.remote_site_name || row.target.remote_site_id || '未绑定' }}</code></span>
+          <span>webhook 文档 ID <code>{{ draftWebhookIdentity?.documentId || '未识别' }}</code></span>
           <span>webhook 脚本 ID <code>{{ webhookScriptIdSummary(row.draft.webhook_url) }}</code></span>
           <span>本地 Binding ID <code>{{ row.target.binding_id || '未生成' }}</code></span>
           <span>远端 Binding ID <code>{{ row.target.remote_binding_id || '未绑定' }}</code></span>
@@ -610,10 +658,10 @@ async function openDocument(target: WpsTracksideTarget): Promise<void> {
 
         <el-form label-position="top" class="connection-fields">
           <el-form-item label="在线文档连接：">
-            <el-input v-model="row.draft.document_open_url" placeholder="https://www.kdocs.cn/l/..." />
+            <el-input v-model="row.draft.document_open_url" placeholder="https://www.kdocs.cn/l/..." @paste="normalizePastedWpsUrl($event, row.draft, 'document_open_url', 'document')" />
           </el-form-item>
           <el-form-item label="webhook地址：">
-            <el-input v-model="row.draft.webhook_url" placeholder="https://www.kdocs.cn/api/v3/ide/file/.../sync_task" />
+            <el-input v-model="row.draft.webhook_url" placeholder="https://www.kdocs.cn/api/v3/ide/file/.../sync_task" @paste="normalizePastedWpsUrl($event, row.draft, 'webhook_url', 'webhook')" />
           </el-form-item>
           <el-form-item label="脚本令牌：">
             <el-input
@@ -627,8 +675,8 @@ async function openDocument(target: WpsTracksideTarget): Promise<void> {
         </el-form>
 
         <div class="deployment-actions">
-          <el-button :icon="CopyDocument" @click="copyAirScript(row.target.target_code, 'probe')">复制连接测试脚本</el-button>
-          <el-button :icon="CopyDocument" @click="copyAirScript(row.target.target_code, 'sync')">复制正式同步脚本</el-button>
+          <el-button :icon="CopyDocument" @click="copyAirScript(row.target, 'probe')">复制连接测试脚本</el-button>
+          <el-button :icon="CopyDocument" @click="copyAirScript(row.target, 'sync')">复制正式同步脚本</el-button>
           <el-button :loading="probingCode === row.target.target_code" :disabled="Boolean(probingCode) || Boolean(sheetTabColorProbingCode) || Boolean(columnWidthProbingCode) || Boolean(savingCode) || Boolean(testingCode) || Boolean(revalidatingCode) || Boolean(upgradingBindingCode)" @click="runtimeWriteProbe(row.target.target_code)">测试写入能力</el-button>
           <el-button :loading="syncTestingCode === row.target.target_code" :disabled="Boolean(syncTestingCode) || Boolean(probingCode) || Boolean(sheetTabColorProbingCode) || Boolean(columnWidthProbingCode) || Boolean(savingCode) || Boolean(testingCode) || Boolean(revalidatingCode) || Boolean(upgradingBindingCode)" @click="syncTestSheet(row.target.target_code)">测试同步 Sheet</el-button>
           <el-button :loading="sheetTabColorProbingCode === row.target.target_code" :disabled="Boolean(sheetTabColorProbingCode) || Boolean(columnWidthProbingCode) || Boolean(syncTestingCode) || Boolean(probingCode) || Boolean(savingCode) || Boolean(testingCode) || Boolean(revalidatingCode) || Boolean(upgradingBindingCode)" @click="sheetTabColorProbe(row.target.target_code)">测试标签颜色</el-button>

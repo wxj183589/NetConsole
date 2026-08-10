@@ -583,10 +583,19 @@ class BaseWpsAdapter:
                 details=_target_error_details(target, phase="PROTOCOL_HANDSHAKE"),
             )
         if str(result.get("document_id") or "") != target.expected_document_id:
+            remote_document_id = str(result.get("document_id") or "")
             raise WpsSyncError(
-                "WPS_DOCUMENT_ID_MISMATCH",
-                "WPS 文档身份校验失败",
-                details=_target_error_details(target, phase="DOCUMENT_IDENTITY"),
+                "WPS_DOCUMENT_IDENTITY_MISMATCH",
+                "WPS_DOCUMENT_IDENTITY_MISMATCH："
+                f"预期文档 ID：{target.expected_document_id}；"
+                f"远端脚本声明：{remote_document_id}。"
+                "当前 WPS 文档中仍部署了其他文档生成的脚本，请从当前局点重新复制脚本并全量替换",
+                details={
+                    **_target_error_details(target, phase="DOCUMENT_IDENTITY"),
+                    "expected_document_id": target.expected_document_id,
+                    "remote_document_id": remote_document_id,
+                    "suggestion": "请从当前局点重新复制脚本并全量替换到当前 WPS 文档",
+                },
             )
         # Older local test doubles did not expose the deployment identity. Keep
         # them readable, but validate every identity field returned by a real
