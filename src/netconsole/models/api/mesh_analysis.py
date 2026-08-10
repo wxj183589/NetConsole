@@ -303,7 +303,10 @@ class MeshAnalysisSessionDTO(ApiModel):
     schema_version: str | None = None
     available_capabilities: list[str] = Field(default_factory=list)
     missing_capabilities: list[str] = Field(default_factory=list)
+    info_count: int = 0
     warning_count: int = 0
+    error_count: int = 0
+    actionable_warning_count: int = 0
     report_count: int = 0
     first_sample_time: str | None = None
     last_sample_time: str | None = None
@@ -317,6 +320,68 @@ class MeshAnalysisSessionPageDTO(ApiModel):
     index_status: str = "pending"
     indexed_session_count: int = 0
     pending_session_count: int = 0
+
+
+class MeshApCoverageSourceDTO(ApiModel):
+    session_id: str
+    mr_name: str
+    original_filename: str = ""
+    first_sample_time: str | None = None
+    last_sample_time: str | None = None
+
+
+class MeshApCoverageRowDTO(ApiModel):
+    ap_name: str = ""
+    physical_ap_mac: str = ""
+    radio_mac: str = ""
+    station: str = ""
+    section: str = ""
+    direction: str = ""
+    fit_ap_status: str = ""
+    last_updated_at: str | None = None
+    seen_in_source_a: bool = False
+    seen_in_source_b: bool = False
+    active_count: int = 0
+    standby_count: int = 0
+    triangle_link_count: int = 0
+    first_seen: str | None = None
+    last_seen: str | None = None
+    identity_status: str = "unresolved"
+    identity_reason: str = ""
+    in_observed_route_scope: bool = False
+    exclude_reason: str = ""
+    result: Literal["connected", "unconnected", "unmatched", "excluded"]
+    description: str = ""
+
+
+class MeshApCoverageSummaryDTO(ApiModel):
+    expected_mainline_count: int = 0
+    expected_route_scope_count: int = 0
+    connected_count: int = 0
+    unconnected_count: int = 0
+    full_mainline_connected_count: int = 0
+    full_mainline_unconnected_count: int = 0
+    observed_count: int = 0
+    unmatched_observed_count: int = 0
+    excluded_count: int = 0
+    coverage_percent: float = 0.0
+    route_scope_mode: Literal["observed_route", "all_mainline_fallback"] = "all_mainline_fallback"
+    observed_station_count: int = 0
+    observed_section_count: int = 0
+
+
+class MeshApCoverageAuditDTO(ApiModel):
+    site_id: str
+    sources: list[MeshApCoverageSourceDTO] = Field(default_factory=list)
+    summary: MeshApCoverageSummaryDTO = Field(default_factory=MeshApCoverageSummaryDTO)
+    connected: list[MeshApCoverageRowDTO] = Field(default_factory=list)
+    unconnected: list[MeshApCoverageRowDTO] = Field(default_factory=list)
+    unmatched: list[MeshApCoverageRowDTO] = Field(default_factory=list)
+    excluded: list[MeshApCoverageRowDTO] = Field(default_factory=list)
+
+
+class MeshApCoverageAuditRequestDTO(ApiModel):
+    session_ids: list[str] = Field(min_length=2, max_length=2)
 
 
 class MeshAnalysisOverviewDTO(ApiModel):

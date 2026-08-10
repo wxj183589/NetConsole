@@ -26,6 +26,7 @@ from netconsole.models.mesh_log_models import (
     ParseIssue,
     dataclass_to_json_dict,
     format_mac_h3c,
+    summarize_parse_issues,
 )
 from netconsole.parsers.mesh_log_parser import MeshLogParser
 
@@ -298,6 +299,7 @@ def make_switch_event(source_label: str, radio: int, previous_time: datetime, pr
 
 def build_summary(files: list[ImportedLogFile], records: list[MeshLogRecord], events: list[MeshSwitchEvent], issues: list[ParseIssue], raw_record_count: int) -> MeshAnalysisSummary:
     times = [record.sample_time for record in records]
+    issue_counts = summarize_parse_issues(issues)
     return MeshAnalysisSummary(
         file_count=len(files),
         source_count=len({item.source_label for item in files}),
@@ -310,7 +312,10 @@ def build_summary(files: list[ImportedLogFile], records: list[MeshLogRecord], ev
         active_switch_count=sum(1 for event in events if event.event_type == EVENT_ACTIVE_SWITCH),
         no_active_count=sum(1 for event in events if event.event_type == EVENT_NO_ACTIVE),
         multi_active_count=sum(1 for event in events if event.event_type == EVENT_MULTI_ACTIVE),
-        issue_count=len(issues),
+        info_count=issue_counts["info"],
+        warning_count=issue_counts["warning"],
+        error_count=issue_counts["error"],
+        issue_count=issue_counts["total"],
         raw_record_count=raw_record_count,
         duplicate_record_count=max(raw_record_count - len(records), 0),
     )

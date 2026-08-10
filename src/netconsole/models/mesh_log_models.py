@@ -56,6 +56,24 @@ class ParseIssue:
     field_name: str = ""
 
 
+def summarize_parse_issues(issues: list[ParseIssue]) -> dict[str, int]:
+    """Return severity counts under the user-facing MESH diagnostic contract."""
+
+    counts = {"info": 0, "warning": 0, "error": 0}
+    for issue in issues:
+        severity = str(issue.severity or "WARNING").strip().upper()
+        if severity == "INFO":
+            counts["info"] += 1
+        elif severity == "ERROR":
+            counts["error"] += 1
+        else:
+            # Unknown legacy values remain conservative and actionable.
+            counts["warning"] += 1
+    counts["actionable"] = counts["warning"] + counts["error"]
+    counts["total"] = counts["info"] + counts["actionable"]
+    return counts
+
+
 @dataclass
 class MeshMrProfile:
     mr_id: str
@@ -88,6 +106,8 @@ class ImportedLogFile:
     record_count: int = 0
     skipped_count: int = 0
     duplicate_count: int = 0
+    info_count: int = 0
+    warning_count: int = 0
     error_count: int = 0
     lines_read: int = 0
     encoding: str = ""
@@ -178,6 +198,9 @@ class MeshAnalysisSummary:
     active_switch_count: int = 0
     no_active_count: int = 0
     multi_active_count: int = 0
+    info_count: int = 0
+    warning_count: int = 0
+    error_count: int = 0
     issue_count: int = 0
     raw_record_count: int = 0
     duplicate_record_count: int = 0

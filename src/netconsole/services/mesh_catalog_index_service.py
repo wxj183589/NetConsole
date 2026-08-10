@@ -212,7 +212,8 @@ class MeshCatalogIndexService:
         payload = "\0".join(
             str(source.get(field) or "")
             for field in (
-                "id", "parse_status", "issue_count", "records_parsed", "imported_at",
+                "id", "parse_status", "issue_count", "info_count", "warning_count", "error_count", "issue_severity_version",
+                "records_parsed", "imported_at",
                 "first_sample_time", "last_sample_time", "parsed_deleted_at",
                 "parsed_db_path", "content_sha256", "raw_sha256", "sha256",
                 "source_type", "source_device_id", "parse_task_id",
@@ -238,7 +239,10 @@ class MeshCatalogIndexService:
     ) -> dict[str, object]:
         mr_name = str(profile["display_name"])
         train_name, role = self._mr_identity(mr_name)
-        issue_count = int(source.get("issue_count") or 0)
+        has_severity_counts = int(source.get("issue_severity_version") or 0) >= 1
+        info_count = int(source.get("info_count") or 0) if has_severity_counts else 0
+        warning_count = int(source.get("warning_count") or 0) if has_severity_counts else int(source.get("issue_count") or 0)
+        error_count = int(source.get("error_count") or 0) if has_severity_counts else 0
         now = datetime.now().isoformat(sep=" ", timespec="milliseconds")
         return {
             "session_id": f"{profile['mr_id']}:{int(source['id'])}",
@@ -276,7 +280,10 @@ class MeshCatalogIndexService:
             "schema_version": str(source.get("db_schema_version") or "") or None,
             "available_capabilities_json": "[]",
             "missing_capabilities_json": "[]",
-            "warning_count": issue_count,
+            "info_count": info_count,
+            "warning_count": warning_count,
+            "error_count": error_count,
+            "actionable_warning_count": warning_count + error_count,
             "report_count": 0,
             "source_revision": revision,
             "detail_indexed": 0,

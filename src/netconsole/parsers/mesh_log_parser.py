@@ -16,6 +16,7 @@ from netconsole.models.mesh_log_models import (
     ImportedLogFile,
     MeshLogRecord,
     ParseIssue,
+    summarize_parse_issues,
 )
 from netconsole.services.ap_identity.normalizers import normalize_mac as canonical_normalize_mac
 from netconsole.utils.text_encoding import decode_bytes_with_fallback
@@ -166,14 +167,25 @@ class MeshLogParser:
             info.status = "failed"
             info.error_message = str(exc)
             issues.append(ParseIssue(str(path), 0, "文件读取失败", str(exc), ""))
-        records, snapshot_issues, discarded_snapshot_records = filter_invalid_link_count_snapshots(records)
+        records, snapshot_issues, discarded_snapshot_records, discarded_issue_lines = filter_invalid_link_count_snapshots(records)
+        issues = [
+            issue
+            for issue in issues
+            if not (
+                issue.issue_type == "无效 LinkCnt 槽位"
+                and (issue.source_file, issue.line_number) in discarded_issue_lines
+            )
+        ]
         issues.extend(snapshot_issues)
         skipped += discarded_snapshot_records
         for record_seq, record in enumerate(records, start=1):
             record.record_seq = record_seq
         info.record_count = len(records)
         info.skipped_count = skipped
-        info.error_count = len(issues)
+        issue_counts = summarize_parse_issues(issues)
+        info.info_count = issue_counts["info"]
+        info.warning_count = issue_counts["warning"]
+        info.error_count = issue_counts["error"]
         info.lines_read = read_lines
         times = [record.sample_time for record in records]
         if times:
@@ -317,7 +329,7 @@ class MeshLogParser:
 
 def filter_invalid_link_count_snapshots(
     records: list[MeshLogRecord],
-) -> tuple[list[MeshLogRecord], list[ParseIssue], int]:
+) -> tuple[list[MeshLogRecord], list[ParseIssue], int, set[tuple[str, int]]]:
     """从链路事实层移除主链 LinkCnt=0 的整个采样快照。"""
 
     by_snapshot: dict[tuple[str, int, datetime, str], list[MeshLogRecord]] = {}
@@ -356,6 +368,13 @@ def filter_invalid_link_count_snapshots(
             )
         )
 
+    discarded_issue_lines = {
+        (record.source_file, record.source_line_number)
+        for key, snapshot_records in by_snapshot.items()
+        if key in invalid_snapshot_keys
+        for record in snapshot_records
+        if record.link_count == 0
+    }
     filtered_records = [
         record
         for record in records
@@ -363,7 +382,7 @@ def filter_invalid_link_count_snapshots(
         and record.link_count != 0
     ]
     discarded_count = len(records) - len(filtered_records)
-    return filtered_records, snapshot_issues, discarded_count
+    return filtered_records, snapshot_issues, discarded_count, discarded_issue_lines
 
 
 def make_imported_file(path: Path, source_label: str | None = None, precomputed_hash: str | None = None) -> ImportedLogFile:
@@ -474,7 +493,15 @@ def parse_mesh_link_table(
         issues.extend(row_issues)
         if parsed is not None:
             records.append(parsed)
-    records, snapshot_issues, _ = filter_invalid_link_count_snapshots(records)
+    records, snapshot_issues, _discarded, discarded_issue_lines = filter_invalid_link_count_snapshots(records)
+    issues = [
+        issue
+        for issue in issues
+        if not (
+            issue.issue_type == "无效 LinkCnt 槽位"
+            and (issue.source_file, issue.line_number) in discarded_issue_lines
+        )
+    ]
     issues.extend(snapshot_issues)
     for record_seq, record in enumerate(records, start=1):
         record.record_seq = record_seq

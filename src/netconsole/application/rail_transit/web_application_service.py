@@ -218,6 +218,7 @@ class RailTransitWebApplicationService:
         "web_export_online_mr_report_xlsx",
         "web_export_mesh_analysis_report",
         "web_export_mesh_link_detail_export",
+        "web_export_mesh_ap_coverage_export",
         "web_export_car_network_point_table",
         "web_export_trackside_ap_business",
         "web_export_trackside_ap_base_xlsx",
@@ -231,6 +232,7 @@ class RailTransitWebApplicationService:
         "online_mr_report": "web_export_online_mr_report_xlsx",
         "mesh_analysis_report": "web_export_mesh_analysis_report",
         "mesh_link_detail_export": "web_export_mesh_link_detail_export",
+        "mesh_ap_coverage_export": "web_export_mesh_ap_coverage_export",
         "car_network_point_table": "web_export_car_network_point_table",
         "trackside_ap_business": "web_export_trackside_ap_business",
         "trackside_ap_base": "web_export_trackside_ap_base_xlsx",
@@ -244,6 +246,7 @@ class RailTransitWebApplicationService:
         "web_export_online_mr_report_xlsx": "online_mr_report",
         "web_export_mesh_analysis_report": "mesh_analysis_report",
         "web_export_mesh_link_detail_export": "mesh_link_detail_export",
+        "web_export_mesh_ap_coverage_export": "mesh_ap_coverage_export",
         "web_export_car_network_point_table": "car_network_point_table_export",
         "web_export_trackside_ap_business": "trackside_ap_business_export",
         "web_export_trackside_ap_base_xlsx": "trackside_ap_base_export",
@@ -257,6 +260,7 @@ class RailTransitWebApplicationService:
         "online_mr_report": "online_mr_report",
         "mesh_analysis_report": "mesh_analysis_report",
         "mesh_link_detail_export": "mesh_link_detail_export",
+        "mesh_ap_coverage_export": "mesh_ap_coverage_export",
         "car_network_point_table": "car_network_point_table_export",
         "trackside_ap_business": "trackside_ap_business_export",
         "trackside_ap_base": "trackside_ap_base_export",
@@ -3395,6 +3399,51 @@ class RailTransitWebApplicationService:
         )
         return self._start_export(site_id, job, "mesh_link_detail_export", reservation)
 
+    def start_mesh_ap_coverage_export(
+        self,
+        site_id: str,
+        *,
+        session_ids: list[str],
+    ) -> RailTransitTaskDTO:
+        site_id = self._site(site_id)
+        if len(session_ids) != 2 or len(set(session_ids)) != 2:
+            raise RailTransitWebError("MESH_AP_COVERAGE_INVALID", "请选择两个不同的 MESH 来源进行 AP 覆盖核查。")
+        try:
+            # Validate site ownership and parsed-result availability before a
+            # user selects a destination and starts a background export.
+            self.mesh_query_service.audit_ap_coverage(site_id, session_ids)
+        except (MeshAnalysisQueryError, ValueError) as exc:
+            raise RailTransitWebError("MESH_AP_COVERAGE_INVALID", str(exc)) from exc
+        output_root = self.paths.mesh_ap_coverage_export_dir(site_id).resolve()
+        self._require_within(output_root, self.paths.site_mesh_root(site_id).resolve())
+        task_id = f"rail-export-{uuid4().hex}"
+        reservation = self.artifact_store.reserve(
+            site_id=site_id,
+            owner=self._OWNER,
+            source="mesh_ap_coverage_export",
+            artifact_type="xlsx",
+            task_id=task_id,
+            task_type=self._ARTIFACT_TASK_TYPES["mesh_ap_coverage_export"],
+            output_root=output_root,
+            preferred_name=f"MESH_AP覆盖核查_{datetime.now():%Y%m%d_%H%M%S}.xlsx",
+            context={"kind": "mesh_ap_coverage", "source_a": session_ids[0], "source_b": session_ids[1]},
+        )
+        job = ExportJob(
+            job_id=task_id,
+            job_type="mesh_ap_coverage_export",
+            site_name=site_id,
+            output_path=str(reservation.output_path),
+            params={"session_ids": session_ids},
+            context={"site_name": site_id},
+        )
+        return self._start_export(
+            site_id,
+            job,
+            "mesh_ap_coverage_export",
+            reservation,
+            resource_keys=[*(f"mesh_source:{item}" for item in session_ids)],
+        )
+
     def delete_mesh_artifact(self, site_id: str, session_id: str, artifact_id: str) -> MeshArtifactDeleteResultDTO:
         site_id = self._site(site_id)
         try:
@@ -3479,6 +3528,7 @@ class RailTransitWebApplicationService:
             "mesh_analysis_source_delete",
             "web_export_mesh_analysis_report",
             "web_export_mesh_link_detail_export",
+            "web_export_mesh_ap_coverage_export",
         }
         source_key = f"mesh_source:{session_id}"
         if any(
@@ -3578,6 +3628,9 @@ class RailTransitWebApplicationService:
 
     def open_mesh_link_detail_export(self, site_id: str, artifact_id: str) -> tuple[Path, str]:
         return self._open_artifact(site_id, artifact_id, "mesh_link_detail_export")
+
+    def open_mesh_ap_coverage_export(self, site_id: str, artifact_id: str) -> tuple[Path, str]:
+        return self._open_artifact(site_id, artifact_id, "mesh_ap_coverage_export")
 
     def query_metrics(
         self,

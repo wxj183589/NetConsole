@@ -138,6 +138,7 @@ def test_parser_discards_entire_snapshot_when_active_linkcnt_is_zero(tmp_path: P
 
     assert info.record_count == 2
     assert info.skipped_count == 4
+    assert (info.info_count, info.warning_count, info.error_count) == (2, 0, 0)
     assert all(record.link_count == 1 for record in records)
     assert [
         (record.sample_time.strftime("%H:%M:%S.%f")[:12], record.link_state)
@@ -147,8 +148,9 @@ def test_parser_discards_entire_snapshot_when_active_linkcnt_is_zero(tmp_path: P
         ("10:02:52.478", "STANDBY"),
     ]
     invalid_slot_issues = [issue for issue in issues if issue.issue_type == "无效 LinkCnt 槽位"]
-    assert len(invalid_slot_issues) == 2
-    assert all(issue.severity == "INFO" and issue.field_name == "LinkCnt" for issue in invalid_slot_issues)
+    # The snapshot-level diagnostic is sufficient after an ACTIVE LinkCnt=0
+    # rejection; retaining its two row diagnostics would double-count it.
+    assert invalid_slot_issues == []
     invalid_snapshot_issues = [issue for issue in issues if issue.issue_type == "无效主链快照"]
     assert len(invalid_snapshot_issues) == 2
     assert all(issue.severity == "INFO" and issue.field_name == "LinkCnt" for issue in invalid_snapshot_issues)
@@ -299,7 +301,7 @@ def test_mesh_import_persists_all_positive_linkcnt_facts(tmp_path: Path) -> None
         ("ACTIVE", 2),
         ("STANDBY", 3),
     ]
-    assert [issue.issue_type for issue in result.issues] == ["无效 LinkCnt 槽位", "扩展 LinkCnt 值", "无效主链快照"]
+    assert [issue.issue_type for issue in result.issues] == ["扩展 LinkCnt 值", "无效主链快照"]
 
 
 def test_same_timestamp_with_different_tags_remains_distinct(tmp_path):

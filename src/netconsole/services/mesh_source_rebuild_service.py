@@ -14,6 +14,7 @@ from uuid import uuid4
 
 from netconsole.core.paths import PathResolver
 from netconsole.models.mesh_analysis_params import mesh_analysis_params_to_json
+from netconsole.models.mesh_log_models import summarize_parse_issues
 from netconsole.parsers.mesh_log_parser import MeshLogParser, sha256_file
 from netconsole.repositories.mesh_catalog_repository import MeshCatalogRepository
 from netconsole.repositories.mesh_mr_repository import PARSER_VERSION, SCHEMA_VERSION, MeshMrRepository
@@ -130,6 +131,7 @@ class MeshSourceRebuildService:
         )
         if not records:
             raise ValueError("当前原始日志未解析到合法 MESH 记录")
+        issue_counts = summarize_parse_issues(issues)
         source_order = int(source.get("source_file_order") or source["id"])
         for index, record in enumerate(records, start=1):
             record.source_label = profile.display_name
@@ -207,7 +209,10 @@ class MeshSourceRebuildService:
                 lines_read=info.lines_read,
                 records_parsed=len(records),
                 records_skipped=info.skipped_count,
-                issue_count=len(issues),
+                issue_count=issue_counts["total"],
+                info_count=issue_counts["info"],
+                warning_count=issue_counts["warning"],
+                error_count=issue_counts["error"],
             )
             repository.update_source_provenance(
                 int(source["id"]),
@@ -248,7 +253,10 @@ class MeshSourceRebuildService:
             "raw_archived_count": 1 if recovered else 0,
             "parsed_source_count": 1,
             "parsed_record_count": len(records),
-            "issue_count": len(issues),
+            "issue_count": issue_counts["total"],
+            "info_count": issue_counts["info"],
+            "warning_count": issue_counts["warning"],
+            "error_count": issue_counts["error"],
             "created_session_ids": [session_id],
             "recovery_source": "bundle_archive" if recovered else "raw_reparse",
             "identity_remap": dict(remap),

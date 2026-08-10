@@ -3,7 +3,7 @@ import type {
   MeshAnalysisSession, MeshAnalysisSummary, MeshAnomaly, MeshArtifact,
   MeshActiveBuildOrder, MeshChannelBusy, MeshCounterDeltaPage, MeshLinkDetail, MeshPathChart, MeshRawSource, MeshRawTail, MeshRatePage, MeshRssi, MeshSessionDetail, MeshSwitchEvent,
   MeshTimelineItem, MeshProfile, MeshImportContext, MeshImportContextPrepare, MeshBundleImportRequest, MeshBundlePreview, MeshAnalysisParams, MeshTracksideSignalChartData, MeshAnalysisOverview, Page,
-  MeshLocalScanResult, MeshLocalScanStart,
+  MeshLocalScanResult, MeshLocalScanStart, MeshApCoverageAudit,
 } from '../types/meshAnalysis'
 import type { RailTransitTask } from '../types/railTransitWeb'
 import type { BackendDownloadRequest } from '../../../desktop_electron/src/shared/bridge'
@@ -59,6 +59,12 @@ export const openMeshLocalScanCandidateDirectory = (scanId: string, candidateId:
   { method: 'POST' },
 )
 export const listMeshAnalysisSessions = (values: Record<string, string | number | boolean | null | undefined>): Promise<Page<MeshAnalysisSession>> => apiRequest(`${root}/sessions${qs(values)}`)
+export const auditMeshApCoverage = (sessionIds: string[]): Promise<MeshApCoverageAudit> => apiRequest(
+  `${root}/ap-coverage/audit`, { method: 'POST', body: JSON.stringify({ session_ids: sessionIds }) },
+)
+export const exportMeshApCoverage = (sessionIds: string[]): Promise<RailTransitTask> => apiRequest(
+  `${root}/ap-coverage/export`, { method: 'POST', body: JSON.stringify({ session_ids: sessionIds }) },
+)
 export const getMeshAnalysisSession = (id: string, signal?: AbortSignal): Promise<MeshSessionDetail> => apiRequest(
   `${root}/sessions/${meshSessionPathSegment(id)}`,
   signal ? { signal } : undefined,

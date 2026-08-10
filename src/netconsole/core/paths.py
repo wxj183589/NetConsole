@@ -219,6 +219,9 @@ class PathResolver:
     def mesh_mr_export_dir(self, site_name: str, safe_mr_name: str) -> Path:
         return self.mesh_mr_root(site_name, safe_mr_name) / "outputs"
 
+    def mesh_ap_coverage_export_dir(self, site_name: str) -> Path:
+        return self.site_mesh_root(site_name) / "coverage_outputs"
+
     def mesh_mr_online_sessions_root(self, site_name: str, safe_mr_name: str) -> Path:
         return self.online_mr_sessions_root(site_name, safe_mr_name)
 

@@ -59,6 +59,7 @@ import {
   listMeshActiveBuildOrder,
   listMeshArtifacts, listMeshLinks, listMeshSwitchEvents, meshArtifactDownloadRequest, previewMeshImport, rebuildMeshAnalysis,
   prepareMeshImportContext, saveMeshAnalysisParams, startMeshLocalScan, getMeshLocalScan, importMeshLocalScan, ignoreMeshLocalScanCandidates, openMeshLocalScanCandidateDirectory,
+  auditMeshApCoverage, exportMeshApCoverage,
 } from '../../api/meshAnalysis'
 import { exportMeshAnalysisReport, getRailTransitTask, recoverRailTransitTasks } from '../../api/railTransitWeb'
 import type { MeshAnalysisParamsOverride } from '../../api/railTransitWeb'
@@ -66,7 +67,7 @@ import { isFeatureEnabled } from '../../features'
 import type {
   MeshActiveBuildOrder, MeshAnalysisParams, MeshAnalysisSession, MeshAnalysisSummary, MeshArtifact, MeshBundleImportRequest, MeshBundleMapping, MeshBundlePreview, MeshLocalScanCandidate, MeshLocalScanResult,
   MeshChartEvent, MeshLinkDetail, MeshPathChart, MeshProfile, MeshRawSource, MeshRawTail, MeshSessionDetail, MeshSwitchEvent,
-  MeshTracksideSignalChartData,
+  MeshTracksideSignalChartData, MeshApCoverageAudit,
 } from '../../types/meshAnalysis'
 import type { VehicleMr } from '../../types/railTransitBaseData'
 import type { RailTransitTask } from '../../types/railTransitWeb'
@@ -117,6 +118,9 @@ const sessions = ref<MeshAnalysisSession[]>([])
 const total = ref(0)
 const selected = ref<MeshSessionDetail | null>(null)
 const selectedDeleteSessions = ref<MeshAnalysisSession[]>([])
+const apCoverageVisible = ref(false)
+const apCoverageLoading = ref(false)
+const apCoverage = ref<MeshApCoverageAudit | null>(null)
 const sourceDeleteVisible = ref(false)
 const sourceDeleteMode = ref<'parsed' | 'all'>('parsed')
 const sourceDeleteSubmitting = ref(false)
@@ -472,6 +476,22 @@ const sessionColumns: NcTableColumn<MeshAnalysisSession>[] = [
   { key: 'warnings', label: '告警', valueType: 'status', width: 80 },
   { key: 'report_count', label: '报告', valueType: 'number', width: 75 },
   { key: 'actions', label: '操作', valueType: 'actions', width: 145, fixed: 'right', hideable: false },
+]
+const coverageColumns: NcTableColumn<NonNullable<MeshApCoverageAudit['connected']>[number]>[] = [
+  { key: 'ap_name', label: 'AP 名称', valueType: 'name', minWidth: 160 },
+  { key: 'physical_ap_mac', label: '物理 AP MAC', valueType: 'mac', minWidth: 155 },
+  { key: 'radio_mac', label: 'Peer Radio MAC', valueType: 'mac', minWidth: 155 },
+  { key: 'station', label: '所属站点', minWidth: 130 },
+  { key: 'section', label: '所属区间', minWidth: 160 },
+  { key: 'fit_ap_status', label: 'FIT-AP 状态', width: 115 },
+  { key: 'seen_in_source_a', label: '来源 A', width: 90, displayValue: (row) => row.seen_in_source_a ? '是' : '否' },
+  { key: 'seen_in_source_b', label: '来源 B', width: 90, displayValue: (row) => row.seen_in_source_b ? '是' : '否' },
+  { key: 'active_count', label: 'ACTIVE', valueType: 'number', width: 95 },
+  { key: 'standby_count', label: 'STANDBY', valueType: 'number', width: 105 },
+  { key: 'first_seen', label: '首次出现', valueType: 'datetime', minWidth: 190 },
+  { key: 'last_seen', label: '最后出现', valueType: 'datetime', minWidth: 190 },
+  { key: 'exclude_reason', label: '排除原因', minWidth: 145 },
+  { key: 'description', label: '说明', minWidth: 200 },
 ]
 const buildOrderColumns: NcTableColumn<MeshActiveBuildOrder>[] = [
   { key: 'sequence', label: '序号', valueType: 'number', width: 75, fixed: 'left', hideable: false },
@@ -3626,6 +3646,46 @@ async function exportLinkDetails(): Promise<void> {
     taskLoading.value = false
   }
 }
+
+async function openApCoverageAudit(): Promise<void> {
+  if (selectedDeleteSessions.value.length !== 2) {
+    ElMessage.warning('请选择两个 MESH 来源进行 AP 覆盖核查。')
+    return
+  }
+  apCoverageLoading.value = true
+  apCoverage.value = null
+  try {
+    apCoverage.value = await auditMeshApCoverage(selectedDeleteSessions.value.map((item) => item.session_id))
+    apCoverageVisible.value = true
+  } catch (reason) {
+    ElMessage.error(reason instanceof Error ? reason.message : 'AP 覆盖核查失败')
+  } finally {
+    apCoverageLoading.value = false
+  }
+}
+
+async function exportApCoverageAudit(): Promise<void> {
+  if (selectedDeleteSessions.value.length !== 2) return
+  const suggestedName = `MESH-AP覆盖核查-${exportTimestamp()}.xlsx`
+  taskLoading.value = true
+  try {
+    const result = await userSelectedExport.submitExportAfterDestinationSelected({
+      action: 'rail.mesh_ap_coverage',
+      suggestedName,
+      context: { sourceA: selectedDeleteSessions.value[0].session_id, sourceB: selectedDeleteSessions.value[1].session_id },
+      submit: () => exportMeshApCoverage(selectedDeleteSessions.value.map((item) => item.session_id)),
+    })
+    if (result.status === 'cancelled') return
+    rememberTask(result.task)
+    pollTask()
+    void openTaskWindow(result.task.task_id)
+    ElMessage.success('AP 覆盖核查导出任务已提交，完成后将写入所选位置')
+  } catch (reason) {
+    ElMessage.error(reason instanceof Error ? reason.message : 'AP 覆盖核查导出启动失败')
+  } finally {
+    taskLoading.value = false
+  }
+}
 async function rebuildSelected(): Promise<void> {
   if (!selected.value) return
   const accepted = await confirm({
@@ -3877,6 +3937,36 @@ function exportTimestamp(now = new Date()): string {
       <template #footer><el-button @click="linkExportVisible = false">取消</el-button><el-button @click="saveSiteAnalysisParams(linkExportParams)">保存为局点默认</el-button><el-button type="primary" :loading="taskLoading" @click="exportLinkDetails">开始导出</el-button></template>
     </el-dialog>
 
+    <el-dialog v-model="apCoverageVisible" title="AP 覆盖核查" width="min(1280px, 96vw)" top="4vh">
+      <template v-if="apCoverage">
+        <p class="hint">来源 A：{{ apCoverage.sources[0]?.mr_name }} · {{ apCoverage.sources[0]?.original_filename }}<br>时间范围：{{ apCoverage.sources[0]?.first_sample_time || '—' }} — {{ apCoverage.sources[0]?.last_sample_time || '—' }}<br>来源 B：{{ apCoverage.sources[1]?.mr_name }} · {{ apCoverage.sources[1]?.original_filename }}<br>时间范围：{{ apCoverage.sources[1]?.first_sample_time || '—' }} — {{ apCoverage.sources[1]?.last_sample_time || '—' }}</p>
+        <el-alert :title="apCoverage.summary.route_scope_mode === 'observed_route' ? '默认按所选日志实际经过的正线范围统计；同时保留全正线口径。' : '未能从已观测 AP 形成可用经过范围，当前默认按全正线统计。'" type="info" :closable="false" show-icon />
+        <div class="summary-grid coverage-summary-grid">
+          <article class="metric-card"><span>本次范围正线 FIT-AP</span><strong>{{ apCoverage.summary.expected_route_scope_count }}</strong></article>
+          <article class="metric-card"><span>已连接</span><strong>{{ apCoverage.summary.connected_count }}</strong></article>
+          <article class="metric-card"><span>未连接</span><strong>{{ apCoverage.summary.unconnected_count }}</strong></article>
+          <article class="metric-card"><span>资料未匹配</span><strong>{{ apCoverage.summary.unmatched_observed_count }}</strong></article>
+          <article class="metric-card"><span>已排除非正线</span><strong>{{ apCoverage.summary.excluded_count }}</strong></article>
+          <article class="metric-card"><span>覆盖率</span><strong>{{ apCoverage.summary.coverage_percent.toFixed(2) }}%</strong></article>
+        </div>
+        <el-tabs>
+          <el-tab-pane :label="`未连接 AP (${apCoverage.unconnected.length})`">
+            <NcDataTable table-id="mesh-ap-coverage-unconnected:v1" route-key="/rail-transit/mesh-analysis" :data="apCoverage.unconnected" :columns="coverageColumns" row-key="physical_ap_mac" height="360" />
+          </el-tab-pane>
+          <el-tab-pane :label="`已连接 AP (${apCoverage.connected.length})`">
+            <NcDataTable table-id="mesh-ap-coverage-connected:v1" route-key="/rail-transit/mesh-analysis" :data="apCoverage.connected" :columns="coverageColumns" row-key="physical_ap_mac" height="360" />
+          </el-tab-pane>
+          <el-tab-pane :label="`资料未匹配 (${apCoverage.unmatched.length})`">
+            <NcDataTable table-id="mesh-ap-coverage-unmatched:v1" route-key="/rail-transit/mesh-analysis" :data="apCoverage.unmatched" :columns="coverageColumns" row-key="radio_mac" height="360" />
+          </el-tab-pane>
+          <el-tab-pane :label="`已排除 (${apCoverage.excluded.length})`">
+            <NcDataTable table-id="mesh-ap-coverage-excluded:v1" route-key="/rail-transit/mesh-analysis" :data="apCoverage.excluded" :columns="coverageColumns" row-key="physical_ap_mac" height="360" />
+          </el-tab-pane>
+        </el-tabs>
+      </template>
+      <template #footer><el-button @click="apCoverageVisible = false">关闭</el-button><el-button type="primary" :loading="taskLoading" @click="exportApCoverageAudit">导出核查结果</el-button></template>
+    </el-dialog>
+
     <el-dialog v-model="sourceDeleteVisible" title="删除 MESH 来源" width="min(760px, 94vw)" :close-on-click-modal="false">
       <div class="source-delete-list">
         <div v-for="target in sourceDeleteTargets" :key="target.session.session_id" class="source-delete-item">
@@ -3933,10 +4023,11 @@ function exportTimestamp(now = new Date()): string {
           <el-select v-model="filters.mr_role" clearable placeholder="MR 角色"><el-option label="CT" value="CT" /><el-option label="TC" value="TC" /><el-option label="CW" value="CW" /></el-select>
           <el-select v-model="filters.has_warning" clearable placeholder="数据告警"><el-option label="有告警" value="true" /><el-option label="无告警" value="false" /></el-select>
           <el-button type="primary" @click="filters.page = 1; refreshOverview()">查询</el-button>
+          <el-button :loading="apCoverageLoading" :disabled="selectedDeleteSessions.length !== 2 || !isFeatureEnabled('web.mesh_ap_coverage_audit')" @click="openApCoverageAudit">核查 AP 覆盖</el-button>
           <el-button type="danger" plain :icon="Delete" :loading="sourceDeleteSubmitting" :disabled="!selectedDeleteSessions.length" @click="prepareSourceDelete(selectedDeleteSessions)">删除选中</el-button>
         </div>
         <NcDataTable table-id="mesh-analysis-sessions:v3" route-key="/rail-transit/mesh-analysis" :data="sessions" :columns="sessionColumns" row-key="session_id" border height="340" empty-text="暂无已持久化 Mesh 分析来源" @selection-change="(rows: MeshAnalysisSession[]) => selectedDeleteSessions = rows">
-          <template #cell-warnings="{ row }"><el-tag :type="row.warning_count ? 'warning' : 'success'">{{ row.warning_count }}</el-tag></template>
+          <template #cell-warnings="{ row }"><el-tag :type="row.actionable_warning_count ? 'warning' : 'success'">{{ row.actionable_warning_count }}</el-tag></template>
           <template #cell-actions="{ row }"><el-button link type="primary" :loading="openingSessionId === row.session_id" @click.stop="openMeshAnalysisSession(row)">查看</el-button><el-button link type="danger" :icon="Delete" :loading="sourceDeleteSubmitting" @click.stop="prepareSourceDelete([row])">删除</el-button></template>
         </NcDataTable>
         <div class="pagination"><span>共 {{ total }} 个来源</span><el-pagination :current-page="filters.page" :page-size="filters.page_size" layout="prev, pager, next" :total="total" @current-change="(page: number) => { filters.page = page; refreshOverview() }" /></div>

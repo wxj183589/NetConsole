@@ -699,7 +699,7 @@ def test_corrupt_detail_database_isolated_from_healthy_session(tmp_path: Path) -
     assert sessions.total == 2
     assert healthy.link_record_count == 4
     assert broken.parsed_status == "unreadable"
-    assert broken.warning_count > 0
+    assert broken.actionable_warning_count > 0
 
 
 def test_relocated_detail_path_uses_current_parsed_file_without_writing(tmp_path: Path) -> None:
@@ -715,6 +715,23 @@ def test_relocated_detail_path_uses_current_parsed_file_without_writing(tmp_path
     assert any(warning.code == "parsed_path_relocated" for warning in result.warnings)
     assert result.session.link_record_count == 4
     assert _fingerprint(detail) == before
+
+
+def test_info_only_parse_diagnostics_do_not_make_session_partial(tmp_path: Path) -> None:
+    paths, session_id, detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    with sqlite3.connect(detail) as conn:
+        conn.execute(
+            "INSERT INTO parse_issues VALUES (2, 'INFO', '无效主链快照', '已过滤无效槽位', 2)"
+        )
+    service = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())  # type: ignore[arg-type]
+
+    session = service.get_analysis_session("demo", session_id).session
+    anomalies = service.list_anomalies("demo", session_id, page_size=100)
+
+    assert session.data_integrity == "complete"
+    assert (session.info_count, session.warning_count, session.error_count) == (1, 0, 0)
+    assert session.actionable_warning_count == 0
+    assert not [item for item in anomalies.items if item.anomaly_id == "parse:2"]
 
 
 def test_identity_revision_staleness_is_read_only_and_exposed_on_source_summary(tmp_path: Path) -> None:
