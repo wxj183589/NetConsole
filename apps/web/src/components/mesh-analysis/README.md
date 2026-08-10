@@ -25,5 +25,5 @@
 - RSSI 与空口负载直接消费 Query Service 生成的连续位置区段；区段按来源、Radio、时间间隙和站点/区间边界拆分，同一站点的多次经过不会跨时间合并。
 - MESH 表格使用不含 session/source/MR/site 的稳定 ID。Browser 使用 `localStorage`，Electron 通过白名单 Bridge 写入当前 `userData` 下的受控 UI 偏好文件；恢复默认只清理当前表。
 - 链路明细通过独立 `mesh_link_detail_export` Export Job 输出“链路明细”“主链路明细”“分析参数”三张工作表；综合报告不承载全量链路明细或全局 AP/Peer 聚合。
-- 报告和链路明细导出使用同一分析参数快照（本次覆盖 > 来源快照 > 局点默认 > 系统默认），参数写入“分析参数”Sheet，并可由页面保存为当前局点默认。
+- 报告和链路明细弹窗打开时都从当前局点读取同一份完整分析默认值；有效优先级为本次任务覆盖 > 局点默认 > 业务模板默认 > 系统默认。来源快照只用于解析追溯，不能覆盖局点默认。创建任务时冻结完整参数快照并写入“分析参数”Sheet，随后改动局点默认不影响已创建任务。
 - 报告列表中的删除只允许派生 `outputs` 文件；原始 raw、parsed SQLite 和 catalog 不可删除。删除由 Application Service 做路径白名单复验，前端只提交 opaque `artifact_id`。

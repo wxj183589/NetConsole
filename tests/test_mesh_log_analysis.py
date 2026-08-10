@@ -18,6 +18,7 @@ from netconsole.core.paths import PathResolver
 from netconsole.repositories.mesh_mr_repository import MeshMrRepository, MeshSchemaRebuildRequired
 from netconsole.repositories.ac_repository import AcRepository
 from netconsole.models.mesh_analysis_params import mesh_analysis_params_to_json, normalize_mesh_analysis_params
+from netconsole.services.mesh_analysis_params_service import load_site_mesh_analysis_params, save_site_mesh_analysis_params
 from netconsole.services import mesh_import_service
 from netconsole.services.mesh_log_analysis_service import MeshLogAnalysisService
 from netconsole.services.mesh_import_service import MeshImportService
@@ -49,6 +50,43 @@ def test_mesh_link_parameters_use_v140_defaults_and_hyphen_aliases() -> None:
     defaults = normalize_mesh_analysis_params(None)
     assert defaults.link_time_window == 4000
     assert defaults.link_establish_rssi == 26
+
+
+def test_mesh_base_time_is_the_only_switch_stability_threshold() -> None:
+    params = normalize_mesh_analysis_params(
+        {
+            "link_time_window": 2500,
+            "main_link_switch_time_ms": 4000,
+            "short_link_tolerance_ms": 500,
+        }
+    )
+
+    assert params.main_link_switch_time_ms == 2500
+    assert params.short_link_threshold_ms == 2500
+    assert params.to_dict()["main_link_switch_time_ms"] == 2500
+    assert normalize_mesh_analysis_params({"main_link_switch_time_ms": 2222}).link_time_window == 2222
+
+
+def test_mesh_analysis_params_are_persistent_and_isolated_per_site(tmp_path: Path) -> None:
+    paths = PathResolver(tmp_path)
+    saved_a = normalize_mesh_analysis_params(
+        {
+            "link_time_window": 2500,
+            "link_switch_threshold": 10,
+            "link_hold_rssi": 22,
+            "link_establish_threshold": 4,
+            "service_type": "PIS",
+            "wifi_type": "WiFi6",
+        }
+    )
+    saved_b = normalize_mesh_analysis_params({"link_time_window": 3000, "wifi_type": "WiFi5"})
+
+    save_site_mesh_analysis_params(paths, "site-a", saved_a)
+    save_site_mesh_analysis_params(paths, "site-b", saved_b)
+
+    reloaded_paths = PathResolver(tmp_path)
+    assert load_site_mesh_analysis_params(reloaded_paths, "site-a").to_dict() == saved_a.to_dict()
+    assert load_site_mesh_analysis_params(reloaded_paths, "site-b").to_dict() == saved_b.to_dict()
 
 
 def test_mesh_link_analyzer_accepts_first_link_and_applies_establishment_threshold() -> None:
@@ -1241,7 +1279,7 @@ def test_mesh_repository_builds_downsampled_link_aggregates(tmp_path):
 
 
 
-def test_active_build_order_uses_source_snapshot_before_site_fallback_and_temp_override(tmp_path):
+def test_active_build_order_first_active_is_not_misclassified_as_a_switch(tmp_path):
     repo = MeshMrRepository(tmp_path / "sample.mesh.sqlite")
     _insert_mesh_samples(repo.path, first_count=2, second_count=0)
     snapshot = mesh_analysis_params_to_json(
@@ -1259,14 +1297,14 @@ def test_active_build_order_uses_source_snapshot_before_site_fallback_and_temp_o
     )
     assert rows[0]["main_link_switch_time_ms"] == 2500
     assert rows[0]["short_link_tolerance_ms"] == 500
-    assert rows[0]["build_result"] == "normal"
-    assert "容差范围" in rows[0]["judge_reason"]
+    assert rows[0]["build_result"] == "stable"
+    assert "首个有效 ACTIVE" in rows[0]["judge_reason"]
 
     override_rows = repo.query_active_link_build_order(
         analysis_params={"main_link_switch_time_ms": 3000, "short_link_tolerance_ms": 500}
     )
     assert override_rows[0]["main_link_switch_time_ms"] == 3000
-    assert override_rows[0]["build_result"] == "short"
+    assert override_rows[0]["build_result"] == "stable"
 
 
 def test_active_build_order_marks_ap_pingpong_by_physical_ap_sequence():

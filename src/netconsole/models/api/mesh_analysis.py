@@ -846,6 +846,9 @@ class MeshSwitchEventDTO(ApiModel):
     before_rssi: float | None = None
     after_rssi: float | None = None
     duration_ms: int | None = None
+    new_active_duration_ms: int | None = None
+    stability_threshold_ms: int | None = None
+    switch_result: str = ""
     is_short_link: bool = False
     is_pingpong: bool = False
     station: str | None = None

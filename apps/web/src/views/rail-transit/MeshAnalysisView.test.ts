@@ -48,6 +48,12 @@ describe('Mesh analysis view', () => {
     expect(source).toContain('createMeshProfile')
     expect(source).toContain('exportMeshAnalysisReport')
     expect(source).toContain('recoverRailTransitTasks')
+    expect(source).toContain('await hydrateSiteAnalysisParams(reportParams)')
+    expect(source).toContain('await hydrateSiteAnalysisParams(linkExportParams)')
+    const reportDialogBody = source.match(/async function openReportDialog\(\): Promise<void> \{([\s\S]*?)\n\}/)?.[1] || ''
+    const linkExportDialogBody = source.match(/async function openLinkExportDialog\(\): Promise<void> \{([\s\S]*?)\n\}/)?.[1] || ''
+    expect(reportDialogBody).not.toContain('selected.value.analysis_params')
+    expect(linkExportDialogBody).not.toContain('selected.value.analysis_params')
     expect(source).toContain('rebuildMeshAnalysis')
     expect(source).toContain('mesh_source_rebuild')
     expect(source).toContain('getMeshImportContext')
@@ -103,6 +109,9 @@ describe('Mesh analysis view', () => {
     expect(source).not.toContain('cancelRailTransitTask')
     expect(source).toContain('生成分析报告')
     expect(source).toContain('导出链路明细')
+    expect(source).toContain("{ key: 'new_active_duration_ms'")
+    expect(source).toContain("{ key: 'stability_threshold_ms'")
+    expect(source).toContain("{ key: 'switch_result'")
     expect(source).toContain('exportMeshLinkDetails')
     expect(source).toContain("router.push('/rail-transit/train-online')")
     expect(source).not.toContain("router.push('/ac-management/mesh-links')")

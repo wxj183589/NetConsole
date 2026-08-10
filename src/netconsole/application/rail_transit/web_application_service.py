@@ -84,7 +84,6 @@ from netconsole.services.job_center.local_process_adapter import LocalProcessAda
 from netconsole.services.job_center.task_application_service import TaskApplicationService, TaskResourceConflictError
 from netconsole.services.job_center.web_export_event_safety import redact_web_task_text, sanitize_web_export_snapshot
 from netconsole.services.mesh_storage_service import MeshStorageService
-from netconsole.services.mesh_derived_data_maintenance_service import MeshDerivedDataMaintenanceError
 from netconsole.services.mesh_import_limits import (
     MESH_SINGLE_FILE_MAX_BYTES,
     MESH_SINGLE_FILE_MAX_LABEL,
@@ -3271,6 +3270,9 @@ class RailTransitWebApplicationService:
             site_analysis_params = load_site_mesh_analysis_params(self.paths, site_id).to_dict()
         except (OSError, ValueError, KeyError, json.JSONDecodeError):
             site_analysis_params = {}
+        task_analysis_params = normalize_mesh_analysis_params(
+            analysis_params_override if analysis_params_override is not None else site_analysis_params
+        ).to_dict()
         ap_location_snapshot = self.mesh_query_service.ap_location_snapshot(site_id).to_serializable()
         output_root = self.paths.mesh_mr_export_dir(site_id, context.safe_folder_name).resolve()
         self._require_within(output_root, self.paths.site_mesh_root(site_id).resolve())
@@ -3301,7 +3303,7 @@ class RailTransitWebApplicationService:
                     "source_file_ids": [context.detail_source_id],
                         "options": {
                             "report_name": f"{context.mr_name} MESH 分析报告",
-                            "analysis_params_override": analysis_params_override,
+                            "analysis_params_override": task_analysis_params,
                             "site_analysis_params": site_analysis_params,
                         "ap_location_snapshot": ap_location_snapshot,
                     },
@@ -3346,6 +3348,9 @@ class RailTransitWebApplicationService:
             site_analysis_params = load_site_mesh_analysis_params(self.paths, site_id).to_dict()
         except (OSError, ValueError, KeyError, json.JSONDecodeError):
             site_analysis_params = {}
+        task_analysis_params = normalize_mesh_analysis_params(
+            analysis_params_override if analysis_params_override is not None else site_analysis_params
+        ).to_dict()
         ap_location_snapshot = self.mesh_query_service.ap_location_snapshot(site_id).to_serializable()
         output_root = self.paths.mesh_mr_export_dir(site_id, context.safe_folder_name).resolve()
         self._require_within(output_root, self.paths.site_mesh_root(site_id).resolve())
@@ -3372,7 +3377,7 @@ class RailTransitWebApplicationService:
             db_path=str(context.detail_db),
             filters={"source_file_id": context.detail_source_id},
             params={
-                "analysis_params": analysis_params_override,
+                "analysis_params": task_analysis_params,
                 "fallback_analysis_params": site_analysis_params,
                 "ap_location_snapshot": ap_location_snapshot,
             },

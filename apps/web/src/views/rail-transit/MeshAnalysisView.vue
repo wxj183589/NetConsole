@@ -55,7 +55,7 @@ import { useAvailablePanelHeight } from '../../composables/useAvailablePanelHeig
 import { useUserSelectedExport } from '../../composables/useUserSelectedExport'
 import { ApiRequestError } from '../../api/client'
 import {
-  applyMeshBundleImport, createMeshProfile, deleteMeshArtifact, deleteMeshSource, exportMeshLinkDetails, getMeshActivePathChart, getMeshAnalysisOverview, getMeshAnalysisParamsTemplate, getMeshAnalysisSession, getMeshImportContext, getMeshPeerSegmentChart, getMeshRawTail, getMeshTracksideSignalChart,
+  applyMeshBundleImport, createMeshProfile, deleteMeshArtifact, deleteMeshSource, exportMeshLinkDetails, getMeshActivePathChart, getMeshAnalysisOverview, getMeshAnalysisParams, getMeshAnalysisParamsTemplate, getMeshAnalysisSession, getMeshImportContext, getMeshPeerSegmentChart, getMeshRawTail, getMeshTracksideSignalChart,
   listMeshActiveBuildOrder,
   listMeshArtifacts, listMeshLinks, listMeshSwitchEvents, meshArtifactDownloadRequest, previewMeshImport, rebuildMeshAnalysis,
   prepareMeshImportContext, saveMeshAnalysisParams, startMeshLocalScan, getMeshLocalScan, importMeshLocalScan, ignoreMeshLocalScanCandidates, openMeshLocalScanCandidateDirectory,
@@ -505,7 +505,7 @@ const buildOrderColumns: NcTableColumn<MeshActiveBuildOrder>[] = [
   { key: 'source_file', label: '来源文件', align: 'left', alignmentReason: 'path', minWidth: 240, showOverflowTooltip: true },
   { key: 'avg_peer_tx_busy', label: 'Peer 平均 TxBusy', valueType: 'percentage', minWidth: 135, visible: false },
   { key: 'avg_peer_rx_busy', label: 'Peer 平均 RxBusy', valueType: 'percentage', minWidth: 135, visible: false },
-  { key: 'main_link_switch_time_ms', label: '主链路切换基准(ms)', valueType: 'duration', minWidth: 155, visible: false },
+  { key: 'main_link_switch_time_ms', label: '切换稳定基准(ms)', valueType: 'duration', minWidth: 155, visible: false },
   { key: 'short_threshold_seconds', label: '短时阈值(s)', valueType: 'duration', minWidth: 110, visible: false },
   { key: 'is_same_physical_ap_radio_switch', label: '同 AP 双射频', width: 120, visible: false, displayValue: (row) => row.is_same_physical_ap_radio_switch ? '是' : '否' },
   { key: 'pingpong_group_id', label: '乒乓 Group', minWidth: 130, visible: false },
@@ -582,7 +582,9 @@ const switchColumns: NcTableColumn<MeshSwitchEvent>[] = [
   { key: 'to_ap_name', label: '目标 AP', valueType: 'name', minWidth: 150 },
   { key: 'to_peer_mac', label: '目标 AP MAC', valueType: 'mac', minWidth: 145 },
   { key: 'rssi_change', label: 'RSSI 前 / 后', width: 135, displayValue: (row) => `${display(row.before_rssi)} / ${display(row.after_rssi)}` },
-  { key: 'is_short_link', label: '短时', width: 75, displayValue: (row) => row.is_short_link ? '是' : '否' },
+  { key: 'new_active_duration_ms', label: '新主链持续', valueType: 'duration', minWidth: 120 },
+  { key: 'stability_threshold_ms', label: '基准时间', valueType: 'duration', minWidth: 110 },
+  { key: 'switch_result', label: '切换判定', width: 125, displayValue: (row) => buildResultLabel(row.switch_result || (row.is_short_link ? 'short' : 'normal')) },
   { key: 'is_pingpong', label: '乒乓', width: 75, displayValue: (row) => row.is_pingpong ? '是' : '否' },
   { key: 'station', label: '归属站点', width: 130 },
   { key: 'section', label: '归属区间', width: 150 },
@@ -3522,6 +3524,10 @@ function assignAnalysisParams(target: MeshAnalysisParams, value: MeshAnalysisPar
   Object.assign(target, value)
 }
 
+async function hydrateSiteAnalysisParams(target: MeshAnalysisParams): Promise<void> {
+  assignAnalysisParams(target, await getMeshAnalysisParams())
+}
+
 async function applyAnalysisTemplate(target: MeshAnalysisParams, serviceType: string): Promise<void> {
   try {
     assignAnalysisParams(target, await getMeshAnalysisParamsTemplate(serviceType))
@@ -3542,9 +3548,14 @@ async function saveSiteAnalysisParams(target: MeshAnalysisParams): Promise<void>
   }
 }
 
-function openReportDialog(): void {
+async function openReportDialog(): Promise<void> {
   if (!selected.value) return
-  assignAnalysisParams(reportParams, selected.value.analysis_params)
+  try {
+    await hydrateSiteAnalysisParams(reportParams)
+  } catch (reason) {
+    ElMessage.error(reason instanceof Error ? reason.message : '局点默认参数加载失败')
+    return
+  }
   useTemporaryReportParams.value = false
   reportVisible.value = true
 }
@@ -3575,9 +3586,14 @@ async function generateReport(): Promise<void> {
     taskLoading.value = false
   }
 }
-function openLinkExportDialog(): void {
+async function openLinkExportDialog(): Promise<void> {
   if (!selected.value) return
-  assignAnalysisParams(linkExportParams, selected.value.analysis_params)
+  try {
+    await hydrateSiteAnalysisParams(linkExportParams)
+  } catch (reason) {
+    ElMessage.error(reason instanceof Error ? reason.message : '局点默认参数加载失败')
+    return
+  }
   linkExportVisible.value = true
 }
 
@@ -3689,7 +3705,7 @@ function buildResultType(value: string): 'success' | 'warning' | 'danger' | 'inf
   return 'info'
 }
 function buildResultLabel(value: string): string {
-  return ({ normal: '正常', short: '短时建链', same_ap_radio_switch: '同 AP 双射频切换', pingpong_abnormal: 'AP 乒乓切换异常', critical_return: '临界回切', boundary: '边界区段' } as Record<string, string>)[value] || value
+  return ({ stable: '稳定主链（非切换）', normal: '正常切换', short: '短时建链', same_ap_radio_switch: '同 AP 双射频切换', pingpong_abnormal: 'AP 乒乓切换异常', critical_return: '临界回切', boundary: '边界区段' } as Record<string, string>)[value] || value
 }
 function safeExportPart(value: string): string {
   return value.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').trim() || 'MESH'
@@ -3832,8 +3848,6 @@ function exportTimestamp(now = new Date()): string {
             <el-form-item label="切换阈值 (RSSI)"><el-input-number v-model="reportParams.link_switch_threshold" :min="0" :max="200" /></el-form-item>
             <el-form-item label="维持链路阈值 (RSSI)"><el-input-number v-model="reportParams.link_hold_rssi" :min="0" :max="200" /></el-form-item>
             <el-form-item label="发现链路阈值 (RSSI)"><el-input-number v-model="reportParams.link_establish_threshold" :min="0" :max="200" /></el-form-item>
-            <el-form-item label="主链路切换基准 (ms)"><el-input-number v-model="reportParams.main_link_switch_time_ms" :min="1" :max="600000" /></el-form-item>
-            <el-form-item label="短时建链容差 (ms)"><el-input-number v-model="reportParams.short_link_tolerance_ms" :min="0" :max="600000" /></el-form-item>
             <el-form-item label="乒乓容差 (ms)"><el-input-number v-model="reportParams.pingpong_tolerance_ms" :min="0" :max="600000" /></el-form-item>
             <el-form-item label="乒乓返回窗口 (ms)"><el-input-number v-model="reportParams.pingpong_return_window_ms" :min="1" :max="3600000" clearable /></el-form-item>
             <el-form-item label="无线类型"><el-select v-model="reportParams.wifi_type"><el-option label="WiFi 5" value="WiFi5" /><el-option label="WiFi 6" value="WiFi6" /><el-option label="其他" value="其他" /></el-select></el-form-item>
@@ -3848,7 +3862,7 @@ function exportTimestamp(now = new Date()): string {
     <el-dialog v-model="linkExportVisible" title="导出链路明细：分析参数" width="min(720px, 94vw)">
       <div v-if="linkExportVisible">
       <el-form label-position="top">
-        <el-alert title="链路明细与综合报告使用同一链路分析参数；本次覆盖不会修改来源快照。" type="info" :closable="false" show-icon />
+        <el-alert title="链路明细与综合报告使用同一局点默认；本次导出会冻结当前参数快照。" type="info" :closable="false" show-icon />
         <div class="report-params-grid">
           <el-form-item label="业务模板"><el-select :model-value="linkExportParams.service_type" @change="(value: string) => applyAnalysisTemplate(linkExportParams, value)"><el-option label="PIS" value="PIS" /><el-option label="CBTC（待现场标定）" value="CBTC" /></el-select></el-form-item>
           <el-form-item label="基准时间 (ms)"><el-input-number v-model="linkExportParams.link_time_window" :min="1" :max="600000" /></el-form-item>

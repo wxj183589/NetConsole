@@ -1469,7 +1469,7 @@ def test_mesh_report_uses_existing_context_and_artifact_manifest(
     save_site_mesh_analysis_params(
         paths,
         "demo",
-        MeshAnalysisParams(main_link_switch_time_ms=4321, short_link_tolerance_ms=321),
+        MeshAnalysisParams(link_time_window=4321, short_link_tolerance_ms=321),
     )
     mesh_query = MeshAnalysisQueryService(
         paths, base_query=EmptyBaseQuery()
@@ -1493,7 +1493,7 @@ def test_mesh_report_uses_existing_context_and_artifact_manifest(
     service, _normal, export, _tasks = _service(paths, mesh_query)
 
     override = {
-        "main_link_switch_time_ms": 3000,
+        "link_time_window": 3000,
         "short_link_tolerance_ms": 250,
         "pingpong_tolerance_ms": 500,
         "merge_same_physical_ap_dual_radio": True,
@@ -1508,7 +1508,8 @@ def test_mesh_report_uses_existing_context_and_artifact_manifest(
     assert job.params["payload"]["source_file_ids"] == [1]
     assert job.params["payload"]["options"]["site_analysis_params"]["main_link_switch_time_ms"] == 4321
     assert job.params["payload"]["options"]["site_analysis_params"]["short_link_tolerance_ms"] == 321
-    assert job.params["payload"]["options"]["analysis_params_override"] == override
+    assert job.params["payload"]["options"]["analysis_params_override"]["link_time_window"] == 3000
+    assert job.params["payload"]["options"]["analysis_params_override"]["main_link_switch_time_ms"] == 3000
     assert job.params["payload"]["options"]["ap_location_snapshot"] == [
         {
             "name": "AP-01",
@@ -1560,7 +1561,8 @@ def test_mesh_link_detail_export_binds_selected_source_and_uses_export_process(
     assert job.job_type == "mesh_link_detail_export"
     assert Path(job.db_path) == detail_db
     assert job.filters == {"source_file_id": 1}
-    assert job.params["analysis_params"] == override
+    assert job.params["analysis_params"]["link_time_window"] == 5000
+    assert job.params["analysis_params"]["main_link_switch_time_ms"] == 5000
     assert job.params["ap_location_snapshot"] == []
     assert "链路明细" in Path(job.output_path).name
 

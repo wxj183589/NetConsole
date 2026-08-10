@@ -15,7 +15,6 @@ from netconsole.core import app_logger
 from netconsole.repositories.mesh_mr_repository import MeshMrRepository
 from netconsole.repositories.mesh_catalog_repository import MeshCatalogRepository
 from netconsole.core.paths import PathResolver
-from netconsole.models.mesh_analysis_params import mesh_analysis_params_from_json
 from netconsole.services.export.common_exporters import ExportCancelled
 from netconsole.services.export import error_event, finished_event, progress_event
 from netconsole.services.export.export_handlers import GENERIC_EXPORT_TASK_TYPES, run_generic_export_handler
@@ -283,17 +282,8 @@ def _run_mesh_link_detail_export(job: ExportJob) -> None:
         enrich_mesh_ap_location_row(row, location_snapshot)
         for row in repo.iter_link_details(filters, batch_size=2000)
     )
-    source_params: dict[str, object] = {}
-    if source_file_id not in (None, ""):
-        get_source_file = getattr(repo, "get_source_file", None)
-        source_row = get_source_file(int(source_file_id)) if callable(get_source_file) else None
-        source_row = source_row or {}
-        raw_snapshot = source_row.get("analysis_params_json")
-        if str(raw_snapshot or "").strip():
-            source_params = mesh_analysis_params_from_json(raw_snapshot).to_dict()
     merged_params = {
         **(fallback_analysis_params or {}),
-        **source_params,
         **(analysis_params or {}),
     }
     export_context = {

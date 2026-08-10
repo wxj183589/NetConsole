@@ -409,7 +409,6 @@ def resolve_report_analysis_params(
     merged = DEFAULT_MESH_ANALYSIS_PARAMS.to_dict()
     for candidate in (
         _mapping(options.site_analysis_params),
-        _mapping(source_snapshot),
         _mapping(options.analysis_params_override),
     ):
         merged.update(candidate)
@@ -420,7 +419,7 @@ def with_report_analysis_params(options: MeshReportOptions, params: MeshAnalysis
     return replace(
         options,
         short_active_segment_seconds=params.short_link_threshold_ms / 1000.0,
-        main_link_switch_time_ms=params.main_link_switch_time_ms,
+        main_link_switch_time_ms=params.link_time_window,
         short_link_tolerance_ms=params.short_link_tolerance_ms,
         pingpong_tolerance_ms=params.pingpong_tolerance_ms,
         pingpong_return_window_ms=params.effective_pingpong_return_window_ms,
@@ -506,7 +505,7 @@ def build_analysis_parameter_rows(
             }
         )
 
-    add("统一链路模型", "基准时间", "link_time_window", "ms", params.link_time_window, "判断一次链路事件持续范围")
+    add("统一链路模型", "基准时间", "link_time_window", "ms", params.link_time_window, "判断链路事件持续范围及切换后新主链是否稳定")
     add("统一链路模型", "切换阈值", "link_switch_threshold", "RSSI", params.link_switch_threshold, "主链路候选切换的信号差阈值")
     add("统一链路模型", "维持链路阈值", "link_hold_rssi", "RSSI", params.link_hold_rssi, "维持当前链路的信号基线")
     add("统一链路模型", "发现链路阈值", "link_establish_threshold", "RSSI", params.link_establish_threshold, "发现新链路所需的附加信号")
@@ -520,21 +519,15 @@ def build_analysis_parameter_rows(
         current_value=None,
         remark="link_hold_rssi + link_establish_threshold",
     )
-    add("主链路与切换", "主链路切换基准时间", "main_link_switch_time_ms", "ms", params.main_link_switch_time_ms, "主链路正常切换的基准时间")
-    add("主链路与切换", "短时判定容差", "short_link_tolerance_ms", "ms", params.short_link_tolerance_ms, "从切换基准中扣除的短时容差")
     add(
         "主链路与切换",
-        "实际短时建链阈值",
-        "main_link_switch_time_ms",
+        "切换稳定时间阈值",
+        "link_time_window",
         "ms",
         params.short_link_threshold_ms,
-        "持续时间低于此值判定为短时建链",
+        "真实 ACTIVE 切换后，新主链持续时间低于此值判定为短时建链；等于此值判定正常切换",
         current_value=None,
-        remark="max(主链路切换基准时间 - 短时判定容差, 0)",
-    )
-    rows[-1]["parameter_source"] = _higher_priority_source(
-        rows[-1]["parameter_source"],
-        _parameter_choice("short_link_tolerance_ms", override, source, site, defaults["short_link_tolerance_ms"])[1],
+        remark="link_time_window；不再扣减短时容差",
     )
     add("主链路与切换", "乒乓判定容差", "pingpong_tolerance_ms", "ms", params.pingpong_tolerance_ms, "区分异常、临界和普通回切")
     add(
@@ -604,7 +597,7 @@ def build_analysis_parameter_rows(
     return rows
 
 
-_SOURCE_PRIORITY = {"global_default": 0, "site_config": 1, "source_snapshot": 2, "report_override": 3}
+_SOURCE_PRIORITY = {"global_default": 0, "site_config": 1, "source_snapshot": 1, "report_override": 2}
 
 
 def _higher_priority_source(left: object, right: object) -> str:
@@ -622,7 +615,6 @@ def _parameter_choice(
 ) -> tuple[object, str]:
     for values, source_name in (
         (override, "report_override"),
-        (source, "source_snapshot"),
         (site, "site_config"),
     ):
         if key in values:
