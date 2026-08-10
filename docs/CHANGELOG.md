@@ -22,6 +22,7 @@
 
 - WPS 轨旁 AP 同步收敛为普通在线表格/在线文档单目标链路，配置页仅保留一个云文档目标，移除智能表格入口、适配器和部署脚本；连接地址、Webhook、脚本令牌、Binding 与同步历史继续按局点独立保存。
 - 保留已验收的 `2.8.4-standard` AirScript、9 个业务 Sheet 顺序、标签色、格式镜像、冻结窗格、异步任务和远端读回协议；本次产品收敛不要求重新部署或修改远端脚本。
+- 修复 AirScript `DOCUMENT_ID` 被静态写死的问题：连接探针和正式同步脚本改为无局点 ID 的模板，复制时仅从当前局点已保存 webhook 的 `/file/<document_id>/script/` 身份渲染；脚本版本和部署 ID 保持 `2.8.4-standard` 不变。配置页支持从 WPS 分享文本或 Markdown 自动提取可信 HTTPS 链接，并在文档身份不匹配时显示 `WPS_DOCUMENT_IDENTITY_MISMATCH`、预期/远端文档 ID 及全量替换建议。2026-08-10 用户验收通过。
 - 自动验收覆盖 Python WPS 定向回归、Web 测试/类型检查/构建、Electron 类型检查与主进程构建；全量 Python 回归在 300 秒超时窗口内未产生失败结果，未完成项继续标记为超时而非通过。
 
 ### 数据库升级与 MESH 恢复
