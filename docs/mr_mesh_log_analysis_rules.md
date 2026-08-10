@@ -58,7 +58,7 @@
 
 ## 3.1 双来源 AP 覆盖核查
 
-“AP 覆盖核查”从当前局点选择恰好两个已解析 MESH 来源；不限定 CT/CW 组合。它只读取两个 `parsed/*.mesh.sqlite` 的 `mesh_links` 聚合结果，不重新解压或解析 raw 日志。观测集合使用 `LinkCnt>0` 的 `ACTIVE` 与 `STANDBY` 链路；`LinkCnt=2` 正常计入，并另计三角链路次数。每个 Peer Radio MAC 必须经现有 `ApIdentityQueryService` 精确归并至物理 AP MAC，禁止按 AP 名称去重；未能唯一归并的观测单列为“资料未匹配”。
+“AP 覆盖核查”从当前局点选择恰好两个已解析 MESH 来源；不限定 CT/CW 组合。它只读取两个 `parsed/*.mesh.sqlite` 的 `mesh_links` 聚合结果，不重新解压或解析 raw 日志。观测集合使用 `LinkCnt>0` 的 `ACTIVE` 与 `STANDBY` 链路；`LinkCnt=2` 正常计入，并另计三角链路次数。已 remap 的 `canonical_ap_mac`（兼容 `peer_ap_mac`）是观测物理 AP 的唯一主键，直接复用其持久化 AP 名称、站点和区间，禁止降级回 Peer Radio MAC 再解析一次，也禁止按 AP 名称去重。仅历史 parsed 库缺少两个物理 MAC 投影时，才以 Peer Radio MAC 走只读 `ApIdentityQueryService` fallback；索引不是 `ready` 时核查直接失败，提示刷新 AP Identity，不把基础设施不可用统计为“资料未匹配”。每个局点独立 `devices.db` 内的 Identity scope 固定为 `current`，与 MESH remap 共用该契约，不允许用真实局点 ID 再查一次或双 scope 回退。结果返回两来源与全集的 Peer Radio/物理 AP 去重数、持久化命中和 fallback 诊断；只有 fallback 后仍无唯一物理 AP 的观测才单列为“资料未匹配”。
 
 期望集合来自当前局点 FIT-AP 资源。先依据轨旁 AP 基础资料的 `participates_in_mainline` 和 `location_class` 排除非正线；缺少结构化资料时才按“车辆段、停车场、出入段线、出段线、入段线”名称关键词兼容排除，并在结果记录 `exclude_reason`。结果明确区分“已连接、未连接、资料未匹配、已排除”；“未连接”仅表示两个所选来源中未观测到，绝不等同 AP 故障。默认范围是已观测站点/区间对应的正线 AP；若无法形成范围则回退全正线，并同时返回全正线总数。每一行保留来源 A/B 是否出现、ACTIVE/STANDBY、`LinkCnt=2` 次数及首末时间。
 

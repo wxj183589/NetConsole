@@ -7,6 +7,7 @@ from typing import Any, Iterable
 from netconsole.core.database import Database
 from netconsole.models.api.mesh_analysis import (
     MeshApCoverageAuditDTO,
+    MeshApCoverageIdentitySummaryDTO,
     MeshApCoverageRowDTO,
     MeshApCoverageSourceDTO,
     MeshApCoverageSummaryDTO,
@@ -36,6 +37,10 @@ class MeshApCoverageAuditError(ValueError):
 @dataclass(frozen=True)
 class _ObservedAp:
     raw_mac: str
+    radio_mac_keys: tuple[str, ...]
+    physical_ap_mac: str
+    identity_status: str
+    identity_reason: str
     name: str
     source_index: int
     active_count: int
@@ -75,10 +80,23 @@ class MeshApCoverageAuditService:
         if any(context.detail_db is None or not context.detail_db.is_file() for context in contexts):
             raise MeshApCoverageAuditError("所选来源缺少可用的结构化 MESH 结果，请先重新解析。")
 
-        sources = [self._source_dto(context) for context in contexts]
-        observed = [self._observed_rows(context, index) for index, context in enumerate(contexts)]
         identity_query = self._identity(site_id)
-        observed_by_ap, unmatched = self._resolve_observed(observed, identity_query)
+        identity_state = identity_query.revision_state()
+        if identity_state.status != "ready":
+            raise MeshApCoverageAuditError(
+                f"AP Identity 索引不可用（{identity_state.status}），请刷新 AP Identity 后重试。"
+            )
+        observed = [self._observed_rows(context, index) for index, context in enumerate(contexts)]
+        sources = [
+            self._source_dto(context, observed[index])
+            for index, context in enumerate(contexts)
+        ]
+        observed_by_ap, unmatched, identity_summary = self._resolve_observed(
+            observed,
+            identity_query,
+            identity_scope=identity_state.site_id,
+            identity_revision=identity_state.revision,
+        )
         expected, excluded_expected, all_fit_keys = self._expected_fit_aps(site_id, identity_query)
 
         route_stations, route_sections = self._route_scope(observed_by_ap.values())
@@ -140,6 +158,7 @@ class MeshApCoverageAuditService:
                 observed_station_count=len(route_stations),
                 observed_section_count=len(route_sections),
             ),
+            identity_summary=identity_summary,
             connected=connected,
             unconnected=unconnected,
             unmatched=unmatched_rows,
@@ -148,13 +167,15 @@ class MeshApCoverageAuditService:
 
     def _identity(self, site_id: str) -> ApIdentityQueryService:
         if self._identity_query is None:
+            # 每个局点都有独立 devices.db；库内统一索引 scope 固定为
+            # current，与 MESH remap 和其他 Identity 消费者保持一致。
             self._identity_query = ApIdentityQueryService(
-                Database(self.base_query.paths.site_db_path(site_id)), site_id=site_id
+                Database(self.base_query.paths.site_db_path(site_id))
             )
         return self._identity_query
 
     @staticmethod
-    def _source_dto(context: Any) -> MeshApCoverageSourceDTO:
+    def _source_dto(context: Any, observed_rows: list[_ObservedAp]) -> MeshApCoverageSourceDTO:
         return MeshApCoverageSourceDTO(
             session_id=context.session_id,
             mr_name=context.mr_name,
@@ -165,6 +186,16 @@ class MeshApCoverageAuditService:
             ),
             first_sample_time=str(context.source.get("first_sample_time") or "") or None,
             last_sample_time=str(context.source.get("last_sample_time") or "") or None,
+            distinct_peer_radio_count=len(
+                {mac_key for row in observed_rows for mac_key in row.radio_mac_keys}
+            ),
+            distinct_canonical_ap_count=len(
+                {
+                    normalize_mac_key(row.physical_ap_mac)
+                    for row in observed_rows
+                    if normalize_mac_key(row.physical_ap_mac)
+                }
+            ),
         )
 
     def _observed_rows(self, context: Any, source_index: int) -> list[_ObservedAp]:
@@ -177,16 +208,30 @@ class MeshApCoverageAuditService:
             if not mac_columns:
                 raise MeshApCoverageAuditError("所选来源缺少 Peer MAC 身份字段，请先重新解析。")
             mac_expr = "COALESCE(" + ", ".join(f"NULLIF({name}, '')" for name in mac_columns) + ", '')"
+            physical_columns = [name for name in ("canonical_ap_mac", "peer_ap_mac") if name in columns]
+            physical_expr = (
+                "COALESCE(" + ", ".join(f"NULLIF({name}, '')" for name in physical_columns) + ", '')"
+                if physical_columns
+                else "''"
+            )
             name_expr = "MAX(COALESCE(peer_ap_name, ''))" if "peer_ap_name" in columns else "''"
             station_expr = "MAX(COALESCE(peer_site, ''))" if "peer_site" in columns else "''"
             section_expr = "MAX(COALESCE(peer_section, ''))" if "peer_section" in columns else "''"
+            status_column = next((name for name in ("peer_identity_status", "identity_status") if name in columns), "")
+            reason_column = next((name for name in ("peer_identity_reason", "identity_reason") if name in columns), "")
+            status_expr = f"MAX(COALESCE({status_column}, ''))" if status_column else "''"
+            reason_expr = f"MAX(COALESCE({reason_column}, ''))" if reason_column else "''"
             link_count_expr = "SUM(CASE WHEN link_count = 2 THEN 1 ELSE 0 END)"
-            rows = conn.execute(
+            persisted_rows = conn.execute(
                 f"""
-                SELECT {mac_expr} AS peer_mac,
+                SELECT MAX({mac_expr}) AS peer_mac,
+                       GROUP_CONCAT(DISTINCT {mac_expr}) AS peer_radio_macs,
+                       {physical_expr} AS physical_ap_mac,
                        {name_expr} AS peer_name,
                        {station_expr} AS station,
                        {section_expr} AS section,
+                       {status_expr} AS identity_status,
+                       {reason_expr} AS identity_reason,
                        SUM(CASE WHEN link_state = 'ACTIVE' THEN 1 ELSE 0 END) AS active_count,
                        SUM(CASE WHEN link_state = 'STANDBY' THEN 1 ELSE 0 END) AS standby_count,
                        {link_count_expr} AS triangle_count,
@@ -194,13 +239,42 @@ class MeshApCoverageAuditService:
                        MAX(sample_time) AS last_seen
                 FROM mesh_links
                 WHERE link_count > 0 AND link_state IN ('ACTIVE', 'STANDBY')
-                  AND {mac_expr} <> ''
+                  AND {physical_expr} <> ''
+                GROUP BY {physical_expr}
+                """
+            ).fetchall()
+            fallback_rows = conn.execute(
+                f"""
+                SELECT {mac_expr} AS peer_mac,
+                       GROUP_CONCAT(DISTINCT {mac_expr}) AS peer_radio_macs,
+                       '' AS physical_ap_mac,
+                       {name_expr} AS peer_name,
+                       {station_expr} AS station,
+                       {section_expr} AS section,
+                       {status_expr} AS identity_status,
+                       {reason_expr} AS identity_reason,
+                       SUM(CASE WHEN link_state = 'ACTIVE' THEN 1 ELSE 0 END) AS active_count,
+                       SUM(CASE WHEN link_state = 'STANDBY' THEN 1 ELSE 0 END) AS standby_count,
+                       {link_count_expr} AS triangle_count,
+                       MIN(sample_time) AS first_seen,
+                       MAX(sample_time) AS last_seen
+                FROM mesh_links
+                WHERE link_count > 0 AND link_state IN ('ACTIVE', 'STANDBY')
+                  AND {physical_expr} = '' AND {mac_expr} <> ''
                 GROUP BY {mac_expr}
                 """
             ).fetchall()
         return [
             _ObservedAp(
                 raw_mac=str(row["peer_mac"] or ""),
+                radio_mac_keys=tuple(
+                    key
+                    for value in str(row["peer_radio_macs"] or "").split(",")
+                    if (key := normalize_mac_key(value))
+                ),
+                physical_ap_mac=str(row["physical_ap_mac"] or ""),
+                identity_status=str(row["identity_status"] or ""),
+                identity_reason=str(row["identity_reason"] or ""),
                 name=str(row["peer_name"] or ""),
                 source_index=source_index,
                 active_count=int(row["active_count"] or 0),
@@ -211,19 +285,52 @@ class MeshApCoverageAuditService:
                 station=str(row["station"] or ""),
                 section=str(row["section"] or ""),
             )
-            for row in rows
+            for row in [*persisted_rows, *fallback_rows]
         ]
 
     def _resolve_observed(
         self,
         source_rows: list[list[_ObservedAp]],
         identity_query: ApIdentityQueryService,
-    ) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+        *,
+        identity_scope: str,
+        identity_revision: int,
+    ) -> tuple[
+        dict[str, dict[str, Any]],
+        dict[str, dict[str, Any]],
+        MeshApCoverageIdentitySummaryDTO,
+    ]:
         all_rows = [row for rows in source_rows for row in rows]
-        batch = identity_query.resolve_peer_macs([row.raw_mac for row in all_rows])
         matched: dict[str, dict[str, Any]] = {}
         unmatched: dict[str, dict[str, Any]] = {}
-        for row in all_rows:
+        persisted_rows = [row for row in all_rows if row.physical_ap_mac]
+        fallback_rows = [row for row in all_rows if not row.physical_ap_mac]
+
+        # `peer_ap_mac`/`canonical_ap_mac` are the persisted result of the
+        # production MESH remap.  They are the coverage primary key, not a
+        # hint to be downgraded to a Radio MAC and resolved again.
+        for row in persisted_rows:
+            canonical_key = normalize_mac_key(row.physical_ap_mac)
+            if not canonical_key:
+                raw_key = normalize_mac_key(row.raw_mac) or row.raw_mac.casefold()
+                target = unmatched.setdefault(raw_key, self._observed_bucket(row, canonical_mac=""))
+                target["identity_status"] = "unresolved"
+                target["identity_reason"] = "持久化物理 AP MAC 格式无效"
+            else:
+                target = matched.setdefault(
+                    canonical_key,
+                    self._observed_bucket(row, canonical_mac=row.physical_ap_mac),
+                )
+                target.update(
+                    identity_status="matched",
+                    identity_reason=row.identity_reason,
+                )
+            self._accumulate_observed(target, row)
+
+        # Only historical parsed databases without a persisted physical AP
+        # projection use the read-only Identity fallback.
+        batch = identity_query.resolve_peer_macs([row.raw_mac for row in fallback_rows])
+        for row in fallback_rows:
             raw_key = normalize_mac_key(row.raw_mac) or row.raw_mac.casefold()
             resolution = batch.matches.get(normalize_mac_key(row.raw_mac) or "")
             if resolution is None or not resolution.matched:
@@ -246,7 +353,27 @@ class MeshApCoverageAuditService:
                         identity_reason=str(resolution.data_quality_warning or ""),
                     )
             self._accumulate_observed(target, row)
-        return matched, unmatched
+        return matched, unmatched, MeshApCoverageIdentitySummaryDTO(
+            identity_scope=identity_scope,
+            identity_revision=identity_revision,
+            index_status=batch.index_status if fallback_rows else "not_required",
+            mesh_distinct_peer_radio_count=len(
+                {mac_key for row in all_rows for mac_key in row.radio_mac_keys}
+            ),
+            mesh_distinct_canonical_ap_count=len(matched),
+            persisted_matched_count=len(
+                {
+                    normalize_mac_key(row.physical_ap_mac)
+                    for row in persisted_rows
+                    if normalize_mac_key(row.physical_ap_mac)
+                }
+            ),
+            fallback_requested_count=batch.distinct_count,
+            fallback_matched_count=batch.matched_count,
+            fallback_unmatched_count=(
+                batch.unresolved_count + batch.ambiguous_count + batch.invalid_count
+            ),
+        )
 
     @staticmethod
     def _observed_bucket(row: _ObservedAp, *, canonical_mac: str) -> dict[str, Any]:

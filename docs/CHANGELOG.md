@@ -5,7 +5,7 @@
 ### MR 原始 MESH 日志分析
 
 - 来源诊断按 INFO、WARNING、ERROR 分级持久化；INFO（包括被过滤的 `LinkCnt=0` 占位与无效主链快照）不再计作数据告警、不再使来源显示为 partial，也不会进入异常摘要或正式报告。历史混合 `issue_count` 保留兼容显示，重新解析后自动使用新口径。
-- 新增“AP 覆盖核查”：可选择任意两个当前局点的已解析 MESH 来源，按有效 ACTIVE/STANDBY 链路与 AP Identity 归并比较正线 FIT-AP，分别呈现已连接、未连接、资料未匹配与已排除 AP。默认优先使用日志实际经过的正线范围，并支持按用户选择位置导出五个 Sheet 的 Excel；未连接仅表示未观测，不标记为 AP 故障。
+- 新增“AP 覆盖核查”：可选择任意两个当前局点的已解析 MESH 来源，按有效 ACTIVE/STANDBY 链路与 AP Identity 归并比较正线 FIT-AP，分别呈现已连接、未连接、资料未匹配与已排除 AP。默认优先使用日志实际经过的正线范围，并支持按用户选择位置导出五个 Sheet 的 Excel；未连接仅表示未观测，不标记为 AP 故障。已 remap 的 `canonical_ap_mac` / `peer_ap_mac` 直接作为物理 AP 主键，历史结果才走只读 Peer Radio fallback；结果和 Excel 同时显示来源级/全集的物理 AP 去重及 Identity 诊断，索引未就绪会明确失败，不再伪装为大量“资料未匹配”。
 
 ### 轨道交通基础资料
 
