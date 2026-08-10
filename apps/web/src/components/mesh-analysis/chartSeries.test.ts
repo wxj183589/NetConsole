@@ -66,7 +66,7 @@ describe('mesh ACTIVE chart series', () => {
     expect(busy[1].value).toEqual([secondVisit.timestamp, null])
   })
 
-  it('suppresses short zeros while preserving a backend gap before the next visible sample', () => {
+  it('turns a no-RSSI snapshot into one null gap without a duplicate boundary point', () => {
     const first = point(1)
     const hidden = {
       ...point(2),
@@ -88,7 +88,7 @@ describe('mesh ACTIVE chart series', () => {
 
     expect(rssi.map((item) => item.value)).toEqual([
       [first.timestamp, first.local_rssi],
-      [recovered.timestamp, null],
+      [hidden.timestamp, null],
       [recovered.timestamp, recovered.local_rssi],
     ])
   })

@@ -114,6 +114,33 @@ describe('MESH RSSI tooltip', () => {
     expect(html).not.toContain('：0 / 0')
   })
 
+  it('keeps the ACTIVE role and standby context while its RSSI is unavailable', () => {
+    const html = buildMeshRssiTooltip({
+      ...point,
+      timestamp: '2026-08-07 10:02:52.001',
+      peer_ap_name: 'AP-X_3105',
+      local_rssi: null,
+      peer_rssi: null,
+      local_rssi_zero_run: {
+        state: 'sustained',
+        boundary: 'end',
+        start_time: '2026-08-07 10:02:51.873',
+        end_time: '2026-08-07 10:02:52.478',
+        duration_ms: 605,
+        sample_count: 2,
+        estimated_end: false,
+      },
+      backups: [{ ...point.backups[0], peer_ap_name: 'AP-X_3106', local_rssi: 32, peer_rssi: 31 }],
+    })
+
+    expect(html).toContain('当前轨旁 AP：AP-X_3105')
+    expect(html).toContain('MR / 轨旁 AP 接收信号：— / —')
+    expect(html).toContain('状态：持续无有效 RSSI')
+    expect(html).toContain('结束时间：2026-08-07 10:02:52.478')
+    expect(html).toContain('1. AP-X_3106')
+    expect(html).not.toContain('：0 / 0')
+  })
+
   it('renders every standby context attached to the retained ACTIVE point', () => {
     const html = buildMeshRssiTooltip({
       ...point,

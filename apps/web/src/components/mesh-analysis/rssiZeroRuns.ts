@@ -21,51 +21,20 @@ export function buildRssiDisplayPoints<T>(
   source: readonly RssiDisplaySource<T>[],
 ): RssiDisplayPoint<T>[] {
   const result: RssiDisplayPoint<T>[] = []
-  let pendingBreak = false
 
   for (const point of source) {
-    pendingBreak ||= Boolean(point.breakBefore)
     const zeroRun = point.zeroRun ?? null
-    if (zeroRun?.state === 'suppressed') continue
-    if (zeroRun?.state === 'sustained' && zeroRun.boundary === 'middle') continue
-
-    if (zeroRun?.state === 'sustained' && zeroRun.boundary === 'end') {
-      result.push({
-        timestamp: zeroRun.end_time,
-        value: 0,
-        meta: point.meta,
-        zeroRun,
-        breakBefore: pendingBreak,
-        syntheticEnd: zeroRun.end_time !== point.timestamp,
-      })
-      pendingBreak = false
-      continue
-    }
-
     result.push({
       timestamp: point.timestamp,
-      value: point.value,
+      // 0 在 MESH RSSI 口径中表示无有效采样。保留该链路点作为
+      // Tooltip 上下文，但以 null 形成真实缺口；不得在恢复时刻
+      // 合成第二个 0 点，避免与真实恢复样本重复归属。
+      value: zeroRun ? null : point.value,
       meta: point.meta,
       zeroRun,
-      breakBefore: pendingBreak,
+      breakBefore: Boolean(point.breakBefore),
       syntheticEnd: false,
     })
-    pendingBreak = false
-
-    if (
-      zeroRun?.state === 'sustained'
-      && zeroRun.boundary === 'single'
-      && zeroRun.end_time !== point.timestamp
-    ) {
-      result.push({
-        timestamp: zeroRun.end_time,
-        value: 0,
-        meta: point.meta,
-        zeroRun,
-        breakBefore: false,
-        syntheticEnd: true,
-      })
-    }
   }
 
   return result
