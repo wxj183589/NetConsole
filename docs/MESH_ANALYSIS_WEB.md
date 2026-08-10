@@ -17,7 +17,7 @@ catalog.sqlite
 - 来源索引：`files/rail_transit/mr_raw_mesh/catalog.sqlite` 与每个 MR 根下 `mesh.sqlite`；
 - 正式明细：每个来源对应的 `parsed/*.mesh.sqlite`，包含 `mesh_links`、`active_points`、`active_segments`、`switch_events`、`rssi_stats`、`diagnosis_events` 和 `parse_issues`；
 - 主/备链路：直接读取 `mesh_links.link_state`，前端不根据当前 Active 数量推断备链；
-- 短时建链、同 AP 双射频和乒乓：复用现有 `_active_build_order_rows_from_points` 和来源 `analysis_params_json`，不复制规则；
+- 短时建链、正常切换、同 AP 双射频和乒乓：复用现有 `_active_build_order_rows_from_points`，不在页面、报告或导出器复制规则；来源 `analysis_params_json` 只保留解析时的历史追溯信息，不能覆盖当前局点默认；
 - RSSI：使用持久化统计和结构化采样。缺失值保持 `null`，已有真实 `0` 保持原值；
 - 空口：读取结构化 Mesh 指标中的 Tx/Rx busy；没有持久化 CtlBusy 时返回 `null`，不从原始文本临时抓数字；
 
@@ -81,6 +81,7 @@ PUT /api/rail-transit/mesh-analysis/analysis-params
 - Job/Application Service 继续负责导入、重建、解析和报告；
 - Web 不连接 AC、不控制 Agent、不开放 `executor=AGENT`，也不修改 Online MR 生命周期；
 - 页面和报告共用 `MeshApLocationSnapshot`；候选同时读取 FIT-AP 与独立轨旁 AP 基础资料，优先按规范化 AP MAC 匹配，不要求存在 AC、FIT-AP 或交换机资料。匹配成功后返回点位编号、AP 名称、站点、区间起终点、方向和里程；基础 AP 名称为空时回退点位编号。无法唯一匹配 AP 时保持原始值和空归属，不猜测站点、区间、里程或方向。
-- 报告和链路明细弹窗默认沿用来源快照；临时参数优先级为 `temporary > source snapshot > site > default`，可保存为当前局点默认但不会改写来源或 parsed 数据库。统一链路模型默认基准时间 4000ms、切换阈值 10、维持链路 22、发现链路 4，建链信号阈值为 26，首个主链路忽略信号阈值。
+- 报告和链路明细弹窗每次打开都从当前局点上下文 ID 读取同一份 `site_meta.json` 中的完整 MESH 默认参数；读取优先级为 `temporary task override > site default > business template default > system default`。来源 `analysis_params_json` 是不可变的历史解析追溯，不参与新任务默认值或有效参数计算。保存使用原子替换，且不会改写来源或 parsed 数据库；创建报告/链路明细任务时会将完整规范化参数写入 Job options，后续修改局点默认不影响该任务。
+- `link_time_window` 是唯一的切换稳定阈值：仅在有效 ACTIVE 物理身份确实从 A 变为 B 后，按 B 的连续有效持续时间分类，`duration >= link_time_window` 为正常切换，`duration < link_time_window` 为短时建链；首个 ACTIVE 区段和同一物理 AP/Radio 内未变更的区段都不是切换。`LinkCnt=0` 整帧无效快照在进入状态机前丢弃，`LinkCnt=2` 连续有效参与时长但仅作三角链路标记。统一链路模型默认基准时间 4000ms、切换阈值 10、维持链路 22、发现链路 4，建链信号阈值为 26，首个主链路忽略信号阈值。
 - Excel/WPS 报告由 Export Process 生成，包含主链路建链顺序、链路明细、全部 ACTIVE RSSI/空口负载、单 AP 经过时段统计、切换事件和异常摘要；链路明细导出额外包含“分析参数”Sheet，嵌入图表硬上限 5,000 点，完整业务 Sheet 不截断。
 - [轨道交通无线综合看板](RAIL_TRANSIT_WIRELESS_DASHBOARD.md) 只复用本服务的摘要和最近会话，不读取明细表、不触发重解析，正式分析详情仍由本页面承担。

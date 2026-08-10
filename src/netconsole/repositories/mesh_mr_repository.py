@@ -3763,7 +3763,7 @@ def _active_build_order_rows_from_points(
         first_link_by_scope.add(scope)
         if decision.accepted:
             previous_signal_by_scope[scope] = decision.signal
-    _mark_same_physical_ap_radio_switches(result)
+    _classify_active_switches(result)
     _mark_pingpong_events(result)
     return result
 
@@ -3780,17 +3780,7 @@ def _active_build_order_row(sequence: int, rows: list[dict[str, object]], sample
     peer_tx_values = [_float(row.get("peer_tx_busy")) for row in rows]
     peer_rx_values = [_float(row.get("peer_rx_busy")) for row in rows]
     peer_radio = _first_nonempty([row.get("peer_radio_label") for row in rows]) or _first_nonempty([row.get("peer_radio") for row in rows])
-    duration_ms = int(round(duration * 1000))
     short_threshold_ms = params.short_link_threshold_ms
-    is_short = duration_ms < short_threshold_ms
-    if duration_ms < short_threshold_ms:
-        judge_reason = f"持续 {duration_ms}ms < 短时阈值 {short_threshold_ms}ms"
-    elif duration_ms < params.main_link_switch_time_ms:
-        judge_reason = f"持续 {duration_ms}ms 处于容差范围，未判短时建链"
-    elif len(rows) < MIN_NORMAL_ACTIVE_SAMPLE_COUNT:
-        judge_reason = f"采样点数 {len(rows)} 偏少，但持续时间未低于短时阈值"
-    else:
-        judge_reason = "持续时间和采样点数达到配置阈值"
     physical_ap_key = _physical_ap_key(first)
     return {
         "sequence": sequence,
@@ -3828,7 +3818,7 @@ def _active_build_order_row(sequence: int, rows: list[dict[str, object]], sample
         "avg_rx_busy": _average(rx_values),
         "avg_peer_tx_busy": _average(peer_tx_values),
         "avg_peer_rx_busy": _average(peer_rx_values),
-        "main_link_switch_time_ms": params.main_link_switch_time_ms,
+        "main_link_switch_time_ms": params.link_time_window,
         "short_link_tolerance_ms": params.short_link_tolerance_ms,
         "pingpong_tolerance_ms": params.pingpong_tolerance_ms,
         "pingpong_return_window_ms": params.effective_pingpong_return_window_ms,
@@ -3837,8 +3827,8 @@ def _active_build_order_row(sequence: int, rows: list[dict[str, object]], sample
         "is_same_physical_ap_radio_switch": False,
         "physical_ap_key": physical_ap_key,
         "merge_same_physical_ap_dual_radio": params.merge_same_physical_ap_dual_radio,
-        "build_result": "short" if is_short else "normal",
-        "judge_reason": judge_reason,
+        "build_result": "stable",
+        "judge_reason": "等待与上一有效 ACTIVE 区段比较后判定是否发生切换",
         "is_ap_return_event": False,
         "is_pingpong_abnormal": False,
         "pingpong_type": "无",
@@ -3865,6 +3855,40 @@ def _analysis_params_for_row(
     if str(raw_snapshot or "").strip():
         return mesh_analysis_params_from_json(raw_snapshot)
     return fallback_params or MeshAnalysisParams()
+
+
+def _classify_active_switches(rows: list[dict[str, object]]) -> None:
+    """仅对有效 ACTIVE 身份变化后的新主链做正常/短时分类。"""
+
+    previous_by_scope: dict[tuple[object, object], dict[str, object]] = {}
+    for row in sorted(rows, key=lambda item: (item.get("source_file_id"), item.get("radio"), str(item.get("build_start_time") or ""))):
+        scope = (row.get("source_file_id"), row.get("radio"))
+        previous = previous_by_scope.get(scope)
+        duration_ms = _segment_duration_ms(row)
+        threshold_ms = _positive_int_or_default(row.get("main_link_switch_time_ms"), 4000)
+        current_identity = _physical_ap_key(row)
+        previous_identity = _physical_ap_key(previous) if previous is not None else ""
+        current_peer = _canonical_mac(row.get("active_peer_mac"))
+        previous_peer = _canonical_mac(previous.get("active_peer_mac")) if previous is not None else ""
+
+        if previous is None:
+            row["build_result"] = "stable"
+            row["judge_reason"] = "首个有效 ACTIVE 区段，只记为稳定主链起点，不计为切换。"
+        elif current_identity and current_identity == previous_identity:
+            if current_peer and previous_peer and current_peer != previous_peer:
+                row["is_same_physical_ap_radio_switch"] = True
+                row["build_result"] = "same_ap_radio_switch"
+                row["judge_reason"] = "同一物理 AP 的射频变化，不计为 AP 主链切换或短时建链。"
+            else:
+                row["build_result"] = "stable"
+                row["judge_reason"] = "ACTIVE AP 身份未变化，不计为新的主链切换。"
+        elif duration_ms < threshold_ms:
+            row["build_result"] = "short"
+            row["judge_reason"] = f"切换后新主链持续 {duration_ms}ms < 基准时间 {threshold_ms}ms，判定短时建链。"
+        else:
+            row["build_result"] = "normal"
+            row["judge_reason"] = f"切换后新主链持续 {duration_ms}ms >= 基准时间 {threshold_ms}ms，判定正常切换。"
+        previous_by_scope[scope] = row
 
 
 def _mark_same_physical_ap_radio_switches(rows: list[dict[str, object]]) -> None:

@@ -18,7 +18,9 @@ from netconsole.services.rail_transit.mesh_analysis_query_service import (
     MeshAnalysisTimeRangeError,
 )
 from netconsole.services.rail_transit.mesh_ap_location_service import MeshApLocationSnapshot
-from netconsole.repositories.mesh_mr_repository import MeshMrRepository
+from netconsole.repositories.mesh_mr_repository import MeshMrRepository, _active_build_order_rows_from_points
+from netconsole.models.mesh_analysis_params import mesh_analysis_params_to_json
+from netconsole.services.mesh_analysis_params_service import save_site_mesh_analysis_params
 from netconsole.services.job_center.job_registry import registered_task_types
 from netconsole.services.mesh_chart_payload import (
     MeshChartSelectionLimitError,
@@ -135,7 +137,7 @@ def test_reads_persisted_mesh_results_without_modifying_sources(tmp_path: Path) 
 
     assert summary.active_link_count == 3
     assert summary.standby_link_count == 1
-    assert summary.short_link_count == 3
+    assert summary.short_link_count == 2
     assert summary.pingpong_count >= 1
     assert sessions.total == 1
     assert links.total == 4
@@ -760,23 +762,58 @@ def test_mesh_schema_rebuild_is_registered_in_existing_job_center() -> None:
     assert "mesh_schema_rebuild" in registered_task_types()
 
 
-def test_active_build_order_uses_repository_result_and_snapshot(tmp_path: Path) -> None:
+def test_active_build_order_uses_site_default_instead_of_old_source_snapshot(tmp_path: Path) -> None:
     paths, session_id, detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
-    snapshot = '{"main_link_switch_time_ms":4000,"short_link_tolerance_ms":100}'
+    snapshot = '{"link_time_window":4000,"short_link_tolerance_ms":100}'
     with sqlite3.connect(paths.mesh_mr_db_path("demo", "列车01-MR-CT")) as conn:
         conn.execute("UPDATE source_files SET analysis_params_json = ? WHERE id = 1", (snapshot,))
+    save_site_mesh_analysis_params(paths, "demo", {"link_time_window": 2500})
     service = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())  # type: ignore[arg-type]
     repository = MeshMrRepository(detail, read_only=True)
 
-    repository_rows = repository.query_active_link_build_order(source_file_id=1, analysis_params=snapshot)
+    site_params = mesh_analysis_params_to_json({"link_time_window": 2500})
+    repository_rows = repository.query_active_link_build_order(source_file_id=1, analysis_params=site_params)
     page = service.list_active_build_order("demo", session_id, sort_order="asc")
+    session = service.get_analysis_session("demo", session_id)
 
     assert page.total == len(repository_rows) == 3
     assert [item.anchor_link_id for item in page.items] == [row["anchor_link_id"] for row in repository_rows]
     assert page.items[1].pingpong_type == "AP乒乓切换异常"
     assert page.items[1].is_pingpong_abnormal is True
-    assert page.items[0].main_link_switch_time_ms == 4000
-    assert page.items[0].short_threshold_seconds == 3.9
+    assert page.items[0].main_link_switch_time_ms == 2500
+    assert page.items[0].short_threshold_seconds == 2.5
+    assert session.analysis_params.link_time_window == 2500
+
+
+def test_active_switch_stability_uses_base_time_with_exact_boundary() -> None:
+    def point(sample_time: str, peer: str, link_count: int = 1) -> dict[str, object]:
+        return {
+            "source_file_id": 1,
+            "radio": 1,
+            "sample_time": sample_time,
+            "peer_mac_raw": peer,
+            "peer_mac_normalized": peer,
+            "peer_ap_mac": peer,
+            "local_rssi_db": 40,
+            "link_count": link_count,
+        }
+
+    rows = _active_build_order_rows_from_points(
+        [
+            point("2026-08-07 10:00:00.000", "000000000001"),
+            point("2026-08-07 10:00:01.000", "000000000002"),
+            point("2026-08-07 10:00:02.000", "000000000002", 2),
+            point("2026-08-07 10:00:03.499", "000000000002"),
+            point("2026-08-07 10:00:04.000", "000000000003"),
+            point("2026-08-07 10:00:06.498", "000000000003"),
+        ],
+        {"link_time_window": 2500, "sample_interval_ms": 1},
+    )
+
+    assert [row["build_result"] for row in rows] == ["stable", "normal", "short"]
+    assert rows[1]["main_link_duration_seconds"] == 2.5
+    assert rows[1]["main_link_switch_time_ms"] == 2500
+    assert rows[2]["main_link_duration_seconds"] == 2.499
 
 
 def test_analysis_session_exposes_all_real_radios_for_chart_filters(tmp_path: Path) -> None:

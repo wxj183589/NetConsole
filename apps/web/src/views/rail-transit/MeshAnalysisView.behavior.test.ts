@@ -19,6 +19,9 @@ const mocks = vi.hoisted(() => ({
   getTask: vi.fn(),
   getOverview: vi.fn(),
   getSession: vi.fn(),
+  getAnalysisParams: vi.fn(),
+  getAnalysisParamsTemplate: vi.fn(),
+  saveAnalysisParams: vi.fn(),
   listSessions: vi.fn(),
   listBuildOrder: vi.fn(),
   listLinks: vi.fn(),
@@ -65,6 +68,8 @@ vi.mock('../../api/meshAnalysis', () => ({
   deleteMeshSource: mocks.deleteSource,
   exportMeshLinkDetails: mocks.exportDetails,
   getMeshActivePathChart: mocks.getActivePath,
+  getMeshAnalysisParams: mocks.getAnalysisParams,
+  getMeshAnalysisParamsTemplate: mocks.getAnalysisParamsTemplate,
   getMeshAnalysisSession: mocks.getSession,
   getMeshAnalysisOverview: mocks.getOverview,
   getMeshAnalysisSummary: vi.fn().mockResolvedValue({ session_count: 0, train_count: 0, mr_count: 0 }),
@@ -85,6 +90,7 @@ vi.mock('../../api/meshAnalysis', () => ({
   previewMeshImport: mocks.previewImport,
   rebuildMeshAnalysis: mocks.rebuildAnalysis,
   prepareMeshImportContext: mocks.prepareContext,
+  saveMeshAnalysisParams: mocks.saveAnalysisParams,
 }))
 vi.mock('../../api/railTransitBaseData', () => ({ listVehicleMrs: mocks.listVehicleMrs }))
 vi.mock('../../api/railTransitWeb', () => ({
@@ -348,6 +354,9 @@ beforeEach(() => {
   })
   mocks.recoverTasks.mockResolvedValue([])
   mocks.getTask.mockResolvedValue(null)
+  mocks.getAnalysisParams.mockResolvedValue({ link_time_window: 4000 })
+  mocks.getAnalysisParamsTemplate.mockResolvedValue({ link_time_window: 4000 })
+  mocks.saveAnalysisParams.mockImplementation(async (params: unknown) => params)
   mocks.listSessions.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 50 })
   mocks.getOverview.mockImplementation(async (values) => {
     const sessions = await mocks.listSessions(values)
@@ -1877,7 +1886,7 @@ describe('Mesh analysis detail behavior', () => {
     expect(meshAnalysisViewSource).toContain(':active="pageActive && activeTab === \'rssi\'')
   })
 
-  it('places RSSI deltas before AP MAC and hides unreliable switch type and duration columns', async () => {
+  it('places RSSI deltas before AP MAC and shows the unified switch classification', async () => {
     const session = {
       session_id: 'session-1', mr_name: '列车06-MR-CT', original_filename: '6CTmeshlog.log', first_sample_time: '', last_sample_time: '',
       parsed_status: 'ready', warning_count: 0, report_count: 0,
@@ -1904,10 +1913,10 @@ describe('Mesh analysis detail behavior', () => {
     const switchKeys = (switchTable.props('columns') as Array<{ key: string }>).map((column) => column.key)
     expect(switchKeys).toEqual([
       'timestamp', 'local_radio', 'from_ap_name', 'from_peer_mac', 'to_ap_name', 'to_peer_mac',
-      'rssi_change', 'is_short_link', 'is_pingpong', 'station', 'section',
+      'rssi_change', 'new_active_duration_ms', 'stability_threshold_ms', 'switch_result', 'is_pingpong', 'station', 'section',
     ])
     expect(switchKeys).not.toContain('event_type')
-    expect(switchKeys).not.toContain('duration_ms')
+    expect(switchKeys).not.toContain('is_short_link')
     wrapper.unmount()
   })
 

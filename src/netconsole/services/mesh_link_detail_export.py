@@ -137,8 +137,8 @@ ACTIVE_BUILD_ORDER_COLUMNS: tuple[tuple[str, str], ...] = (
     ("接收繁忙度", "avg_rx_busy"),
     ("Peer发送繁忙度", "avg_peer_tx_busy"),
     ("Peer接收繁忙度", "avg_peer_rx_busy"),
-    ("配置切换时间(ms)", "main_link_switch_time_ms"),
-    ("短时判定容差(ms)", "short_link_tolerance_ms"),
+    ("切换稳定基准(ms)", "main_link_switch_time_ms"),
+    ("兼容短时容差(ms)", "short_link_tolerance_ms"),
     ("建链门限通过", "link_establishment_accepted"),
     ("建链信号", "link_establishment_signal"),
     ("建链门限原因", "link_establishment_reason"),
@@ -679,7 +679,7 @@ def _write_params_sheet_xlsx(worksheet, analysis_params: dict[str, object], cont
         {"key": "当前局点/线路", "value": context.get("site_name") or "-", "remark": "导出上下文"},
         {"key": "MR名称", "value": context.get("mr_name") or "-", "remark": "导出对象"},
         {"key": "导出类型", "value": "链路明细", "remark": "MR原始MESH日志分析"},
-        {"key": "基准时间(ms)", "value": analysis_params.get("link_time_window", 4000), "remark": "判断一次链路事件持续范围"},
+        {"key": "基准时间(ms)", "value": analysis_params.get("link_time_window", 4000), "remark": "链路事件持续范围及切换后新主链稳定性判定"},
         {"key": "切换阈值(RSSI)", "value": analysis_params.get("link_switch_threshold", 10), "remark": "主链路候选切换信号差"},
         {"key": "维持链路阈值(RSSI)", "value": analysis_params.get("link_hold_rssi", 22), "remark": "维持当前链路信号基线"},
         {"key": "发现链路阈值(RSSI)", "value": analysis_params.get("link_establish_threshold", 4), "remark": "新链路附加信号"},
@@ -688,8 +688,8 @@ def _write_params_sheet_xlsx(worksheet, analysis_params: dict[str, object], cont
             "value": int(analysis_params.get("link_hold_rssi") or 22) + int(analysis_params.get("link_establish_threshold") or 4),
             "remark": "首个主链路除外；维持链路阈值 + 发现链路阈值",
         },
-        {"key": "切换时间阈值(ms)", "value": analysis_params.get("main_link_switch_time_ms", 4000), "remark": "主链路建链顺序和短时建链判断"},
-        {"key": "短时判定容差(ms)", "value": analysis_params.get("short_link_tolerance_ms", analysis_params.get("pingpong_tolerance_ms", 500)), "remark": "短时/临界判断容差"},
+        {"key": "切换稳定时间阈值(ms)", "value": analysis_params.get("link_time_window", 4000), "remark": "新主链持续时间 >= 基准时间为正常切换；< 基准时间为短时建链"},
+        {"key": "短时判定容差(ms)", "value": analysis_params.get("short_link_tolerance_ms", analysis_params.get("pingpong_tolerance_ms", 500)), "remark": "兼容保存字段；不参与正常切换/短时建链阈值"},
         {"key": "乒乓切换判断间隔(ms)", "value": analysis_params.get("pingpong_return_window_ms", "自动"), "remark": "未配置时按切换时间自动计算"},
         {"key": "同AP双射频合并", "value": _yes_no(analysis_params.get("merge_same_physical_ap_dual_radio", True)), "remark": "同一物理AP radio1/radio2 切换不计入AP乒乓"},
         {"key": "日志边界段纳入短时统计", "value": _yes_no(analysis_params.get("include_log_boundary_segments", False)), "remark": "边界段默认不计入短时建链异常"},
@@ -1056,6 +1056,8 @@ def _active_order_event_type(row: dict[str, object]) -> str:
         return "乒乓切换"
     if str(row.get("build_result") or "") == "short":
         return "短时建链"
+    if str(row.get("build_result") or "") == "normal":
+        return "正常切换"
     if row.get("is_same_physical_ap_radio_switch"):
         return "同AP射频切换"
     return ""
@@ -1063,11 +1065,13 @@ def _active_order_event_type(row: dict[str, object]) -> str:
 
 def _build_result_text(value: str) -> str:
     if value == "normal":
-        return "正常"
+        return "正常切换"
     if value == "short":
         return "短时建链"
     if value == "same_ap_radio_switch":
         return "同AP射频切换"
+    if value == "stable":
+        return "稳定主链（非切换）"
     return value
 
 

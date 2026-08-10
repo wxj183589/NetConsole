@@ -616,13 +616,8 @@ class MeshAnalysisQueryService:
             return []
 
     def _effective_analysis_params(self, context: _SessionContext) -> MeshAnalysisParamsDTO:
-        source_params = str(context.source.get("analysis_params_json") or "").strip()
         try:
-            params = (
-                mesh_analysis_params_from_json(source_params)
-                if source_params
-                else load_site_mesh_analysis_params(self.paths, context.site_id)
-            )
+            params = load_site_mesh_analysis_params(self.paths, context.site_id)
         except (OSError, ValueError, KeyError, json.JSONDecodeError):
             params = mesh_analysis_params_from_json(None)
         return MeshAnalysisParamsDTO(**params.to_dict())
@@ -1129,6 +1124,15 @@ class MeshAnalysisQueryService:
                     before_rssi=self._number(details.get("from_local_rssi")),
                     after_rssi=self._number(details.get("to_local_rssi")),
                     duration_ms=data.get("observed_window_ms"),
+                    new_active_duration_ms=int(round(float(build.get("main_link_duration_seconds") or 0) * 1000)) or None,
+                    stability_threshold_ms=self._int(build.get("main_link_switch_time_ms")),
+                    switch_result=(
+                        "short"
+                        if build.get("build_result") == "short"
+                        else "normal"
+                        if build.get("build_result") == "normal"
+                        else str(build.get("build_result") or "")
+                    ),
                     is_short_link=build.get("build_result") == "short",
                     is_pingpong=bool(build.get("is_pingpong_abnormal")),
                     station=self._resolved_location_value(to_peer, to_location, "station") or str(build.get("peer_site") or "") or None,
@@ -2333,13 +2337,12 @@ class MeshAnalysisQueryService:
         if context.detail_db is None:
             return []
         stat = context.detail_db.stat()
-        source_params = str(context.source.get("analysis_params_json") or "")
         try:
-            fallback_params = mesh_analysis_params_to_json(
+            site_params = mesh_analysis_params_to_json(
                 load_site_mesh_analysis_params(self.paths, context.site_id)
             )
         except (OSError, ValueError, KeyError, json.JSONDecodeError):
-            fallback_params = "{}"
+            site_params = "{}"
         return [
             dict(row)
             for row in self._build_rows_cached(
@@ -2347,8 +2350,8 @@ class MeshAnalysisQueryService:
                 stat.st_mtime_ns,
                 stat.st_size,
                 context.detail_source_id,
-                source_params,
-                fallback_params,
+                site_params,
+                "{}",
             )
         ]
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Mapping
+
 from netconsole.core.paths import PathResolver
 from netconsole.core.sites import SiteManager
 from netconsole.models.mesh_analysis_params import (
@@ -26,8 +28,15 @@ def load_site_mesh_analysis_params(paths: PathResolver, site_name: str) -> MeshA
     return normalize_mesh_analysis_params(metadata.get(MESH_ANALYSIS_PARAMS_METADATA_KEY))
 
 
-def save_site_mesh_analysis_params(paths: PathResolver, site_name: str, params: MeshAnalysisParams) -> None:
-    SiteManager(paths).save_site_metadata(site_name, {MESH_ANALYSIS_PARAMS_METADATA_KEY: params.to_dict()})
+def save_site_mesh_analysis_params(
+    paths: PathResolver,
+    site_name: str,
+    params: MeshAnalysisParams | Mapping[str, object],
+) -> None:
+    """按当前局点身份原子保存完整 MESH 分析默认参数。"""
+
+    normalized = normalize_mesh_analysis_params(params)
+    SiteManager(paths).save_site_metadata(site_name, {MESH_ANALYSIS_PARAMS_METADATA_KEY: normalized.to_dict()})
 
 
 def mesh_analysis_params_template(service_type: str) -> MeshAnalysisParams:

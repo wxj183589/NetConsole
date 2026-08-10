@@ -28,7 +28,9 @@ class MeshAnalysisParams:
 
     @property
     def short_link_threshold_ms(self) -> int:
-        return max(int(self.main_link_switch_time_ms) - int(self.short_link_tolerance_ms), 0)
+        """切换后新主链的稳定判定统一使用局点基准时间。"""
+
+        return int(self.link_time_window)
 
     @property
     def effective_pingpong_return_window_ms(self) -> int:
@@ -36,7 +38,7 @@ class MeshAnalysisParams:
         if configured is not None:
             return configured
         floor = 10000 if self.service_type == "PIS" else 8000
-        return max(floor, 3 * (int(self.main_link_switch_time_ms) + int(self.pingpong_tolerance_ms)))
+        return max(floor, 3 * (int(self.link_time_window) + int(self.pingpong_tolerance_ms)))
 
     @property
     def link_establish_rssi(self) -> int:
@@ -48,7 +50,8 @@ class MeshAnalysisParams:
             "link_switch_threshold": int(self.link_switch_threshold),
             "link_hold_rssi": int(self.link_hold_rssi),
             "link_establish_threshold": int(self.link_establish_threshold),
-            "main_link_switch_time_ms": int(self.main_link_switch_time_ms),
+            # 保留该字段以兼容旧 API / 已归档任务，但其语义已统一为基准时间。
+            "main_link_switch_time_ms": int(self.link_time_window),
             "short_link_tolerance_ms": int(self.short_link_tolerance_ms),
             "pingpong_tolerance_ms": int(self.pingpong_tolerance_ms),
             "pingpong_return_window_ms": int(self.pingpong_return_window_ms) if self.pingpong_return_window_ms else None,
@@ -73,8 +76,14 @@ def normalize_mesh_analysis_params(value: object | None) -> MeshAnalysisParams:
             value = {}
     data = value if isinstance(value, Mapping) else {}
     default = DEFAULT_MESH_ANALYSIS_PARAMS
+    raw_link_time_window = _value(data, "link_time_window", "link-time-window")
+    # 旧任务只保存 main_link_switch_time_ms 时，将其迁移为统一基准时间。
+    link_time_window = _positive_int(
+        raw_link_time_window if raw_link_time_window is not None else data.get("main_link_switch_time_ms"),
+        default.link_time_window,
+    )
     return MeshAnalysisParams(
-        link_time_window=_positive_int(_value(data, "link_time_window", "link-time-window"), default.link_time_window),
+        link_time_window=link_time_window,
         link_switch_threshold=_non_negative_int(
             _value(data, "link_switch_threshold", "link-switch-threshold"),
             default.link_switch_threshold,
@@ -84,7 +93,7 @@ def normalize_mesh_analysis_params(value: object | None) -> MeshAnalysisParams:
             _value(data, "link_establish_threshold", "link-establish-threshold"),
             default.link_establish_threshold,
         ),
-        main_link_switch_time_ms=_positive_int(data.get("main_link_switch_time_ms"), default.main_link_switch_time_ms),
+        main_link_switch_time_ms=link_time_window,
         short_link_tolerance_ms=_non_negative_int(data.get("short_link_tolerance_ms"), default.short_link_tolerance_ms),
         pingpong_tolerance_ms=_non_negative_int(data.get("pingpong_tolerance_ms"), default.pingpong_tolerance_ms),
         pingpong_return_window_ms=_optional_positive_int(data.get("pingpong_return_window_ms")),
