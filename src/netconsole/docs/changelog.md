@@ -1,3 +1,9 @@
+v1.4.9
+- 修复 Online MR 实时页面切换后控制区 MR 回退到列表第一项的问题；存在活动 Session 时按 `mr_id`、`device_id`、精确 `mr_name` 对齐，选择状态在 Pinia 生命周期内保留，Session 结束后仍保留上次选择。
+- 保留 iPerf 客户端 `-d` debug 原始输出，增加 debug/interval/错误分类与内存统计；raw 日志改为生命周期 writer，避免高频 debug 行逐行打开文件。
+- 限制 `live_iperf_status.json` 派生快照更新频率，原子替换遇 Windows 访问拒绝时有限重试，并记录相对路径、临时文件和异常阶段；快照及 callback 降级不再终止 iPerf 客户端。
+- 增加 Online MR 页面状态竞态、iPerf 高频 debug、callback 异常、Exit 1 和快照原子替换重试回归测试。
+
 v1.4.8
 - 新增统一数据库升级框架和系统设置管理入口，升级前执行备份与 SQLite 一致性检查，并保留日志和历史。
 - MESH 解析库恢复、源文件重建和派生数据维护接入统一升级路径，可安全修复归档与解析库不一致。
