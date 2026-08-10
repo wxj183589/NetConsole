@@ -26,6 +26,7 @@ from netconsole.models.mesh_log_models import (
     MeshSwitchEvent,
     ParseIssue,
     format_mac_h3c,
+    summarize_parse_issues,
 )
 from netconsole.models.mesh_analysis_params import MeshAnalysisParams, mesh_analysis_params_from_json, normalize_mesh_analysis_params
 from netconsole.services.mesh_link_analyzer import MeshLinkAnalyzer
@@ -282,6 +283,10 @@ class MeshMrRepository:
                     records_skipped INTEGER DEFAULT 0,
                     duplicate_records INTEGER DEFAULT 0,
                     issue_count INTEGER DEFAULT 0,
+                    info_count INTEGER DEFAULT 0,
+                    warning_count INTEGER DEFAULT 0,
+                    error_count INTEGER DEFAULT 0,
+                    issue_severity_version INTEGER DEFAULT 0,
                     error_message TEXT DEFAULT '',
                     file_exists INTEGER DEFAULT 1,
                     deleted_at TEXT DEFAULT '',
@@ -638,6 +643,10 @@ class MeshMrRepository:
             self._ensure_column(conn, "source_files", "identity_index_revision", "INTEGER DEFAULT 0")
             self._ensure_column(conn, "source_files", "identity_mapped_at", "TEXT DEFAULT ''")
             self._ensure_column(conn, "source_files", "identity_mapping_status", "TEXT DEFAULT 'unknown'")
+            self._ensure_column(conn, "source_files", "info_count", "INTEGER DEFAULT 0")
+            self._ensure_column(conn, "source_files", "warning_count", "INTEGER DEFAULT 0")
+            self._ensure_column(conn, "source_files", "error_count", "INTEGER DEFAULT 0")
+            self._ensure_column(conn, "source_files", "issue_severity_version", "INTEGER DEFAULT 0")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_links_peer_ap ON mesh_links(peer_ap_name)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_links_peer_site ON mesh_links(peer_site)")
             self._ensure_performance_indexes(conn)
@@ -806,6 +815,8 @@ class MeshMrRepository:
         source_device_id: str = "",
         parse_task_id: str = "",
     ) -> int:
+        issue_counts = summarize_parse_issues(issues)
+        issue_count = issue_counts["total"]
         if not self._is_index_database():
             return self._insert_file_result_current_db(
                 mr_id,
@@ -909,6 +920,15 @@ class MeshMrRepository:
                 ),
             )
             source_file_id = int(cursor.lastrowid)
+            conn.execute(
+                "UPDATE source_files SET info_count = ?, warning_count = ?, error_count = ?, issue_severity_version = 1 WHERE id = ?",
+                (
+                    issue_counts["info"],
+                    issue_counts["warning"],
+                    issue_counts["error"],
+                    source_file_id,
+                ),
+            )
             file_order = min((int(record.source_file_order or 0) for record in records if int(record.source_file_order or 0) > 0), default=source_file_id)
             conn.execute("UPDATE source_files SET source_file_order = ? WHERE id = ?", (file_order, source_file_id))
             self._update_meta_counts(conn)
@@ -998,6 +1018,8 @@ class MeshMrRepository:
         source_device_id: str = "",
         parse_task_id: str = "",
     ) -> int:
+        issue_counts = summarize_parse_issues(issues)
+        issue_count = issue_counts["total"]
         with self._connect() as conn:
             cursor = conn.execute(
                 """
@@ -1056,6 +1078,15 @@ class MeshMrRepository:
                 ),
             )
             source_file_id = int(cursor.lastrowid)
+            conn.execute(
+                "UPDATE source_files SET info_count = ?, warning_count = ?, error_count = ?, issue_severity_version = 1 WHERE id = ?",
+                (
+                    issue_counts["info"],
+                    issue_counts["warning"],
+                    issue_counts["error"],
+                    source_file_id,
+                ),
+            )
             file_order = min((int(record.source_file_order or 0) for record in records if int(record.source_file_order or 0) > 0), default=source_file_id)
             conn.execute("UPDATE source_files SET source_file_order = ? WHERE id = ?", (file_order, source_file_id))
             sample_rows = {}
@@ -3197,7 +3228,10 @@ class MeshMrRepository:
             )
             for row in switch_rows
         ]
-        issue_rows = conn.execute("SELECT line_number, severity, issue_type, message FROM parse_issues").fetchall()
+        issue_rows = conn.execute(
+            "SELECT line_number, severity, issue_type, message FROM parse_issues "
+            "WHERE UPPER(COALESCE(severity, 'WARNING')) <> 'INFO'"
+        ).fetchall()
         diagnosis_rows.extend(
             (
                 None,

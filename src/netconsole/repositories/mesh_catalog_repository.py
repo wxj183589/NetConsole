@@ -81,7 +81,10 @@ class MeshCatalogRepository:
                     schema_version TEXT NULL,
                     available_capabilities_json TEXT NOT NULL DEFAULT '[]',
                     missing_capabilities_json TEXT NOT NULL DEFAULT '[]',
+                    info_count INTEGER NOT NULL DEFAULT 0,
                     warning_count INTEGER NOT NULL DEFAULT 0,
+                    error_count INTEGER NOT NULL DEFAULT 0,
+                    actionable_warning_count INTEGER NOT NULL DEFAULT 0,
                     report_count INTEGER NOT NULL DEFAULT 0,
                     source_revision TEXT NOT NULL DEFAULT '',
                     detail_indexed INTEGER NOT NULL DEFAULT 0,
@@ -121,6 +124,27 @@ class MeshCatalogRepository:
             columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(mr_profiles)")}
             if "linked_device_uuid" not in columns:
                 conn.execute("ALTER TABLE mr_profiles ADD COLUMN linked_device_uuid TEXT NULL")
+            severity_migrated = False
+            for column in ("info_count", "warning_count", "error_count", "actionable_warning_count"):
+                session_columns = {
+                    str(row[1]) for row in conn.execute("PRAGMA table_info(mesh_session_index)")
+                }
+                if column not in session_columns:
+                    conn.execute(
+                        f"ALTER TABLE mesh_session_index ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0"
+                    )
+                    severity_migrated = True
+            if severity_migrated:
+                # Existing rows only have the historical mixed issue_count
+                # projection. Preserve it as a conservative fallback until the
+                # background index reads severity from their detail database.
+                conn.execute(
+                    "UPDATE mesh_session_index SET actionable_warning_count = warning_count "
+                    "WHERE actionable_warning_count = 0 AND warning_count > 0"
+                )
+                conn.execute(
+                    "UPDATE mesh_catalog_index_state SET status = 'pending' WHERE singleton = 1"
+                )
             conn.execute(
                 """
                 INSERT OR IGNORE INTO mesh_catalog_index_state (
@@ -233,7 +257,8 @@ class MeshCatalogRepository:
             "pingpong_count", "rssi_anomaly_count", "channel_busy_anomaly_count",
             "unmatched_ap_count", "data_integrity", "analysis_status", "parsed_status",
             "parsed_message", "schema_version", "available_capabilities_json",
-            "missing_capabilities_json", "warning_count", "report_count",
+            "missing_capabilities_json", "info_count", "warning_count", "error_count",
+            "actionable_warning_count", "report_count",
             "source_revision", "detail_indexed", "updated_at",
         )
         values = [[row.get(field) for field in fields] for row in rows]
@@ -571,7 +596,8 @@ class MeshCatalogRepository:
                     "last_sample_time", "link_record_count", "active_link_count",
                     "standby_link_count", "event_count", "data_integrity",
                     "analysis_status", "parsed_status", "parsed_message", "schema_version",
-                    "warning_count", "report_count",
+                    "info_count", "warning_count", "error_count", "actionable_warning_count",
+                    "report_count",
                 )
             },
             "mr_id": mr_id,

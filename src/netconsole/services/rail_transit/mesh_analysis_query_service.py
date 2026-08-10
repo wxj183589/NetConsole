@@ -24,6 +24,7 @@ from netconsole.models.api.mesh_analysis import (
     MeshAnalysisSessionDTO,
     MeshAnalysisSessionDetailDTO,
     MeshAnalysisSessionPageDTO,
+    MeshApCoverageAuditDTO,
     MeshAnalysisParamsDTO,
     MeshAnalysisSummaryDTO,
     MeshAnalysisWarningDTO,
@@ -169,6 +170,13 @@ class MeshAnalysisQueryService:
         except (OSError, ValueError, KeyError):
             return "demo"
 
+    def audit_ap_coverage(self, site_id: str, session_ids: list[str]) -> MeshApCoverageAuditDTO:
+        from netconsole.services.rail_transit.mesh_ap_coverage_audit_service import (
+            MeshApCoverageAuditService,
+        )
+
+        return MeshApCoverageAuditService(self, self.base_query).audit(site_id, session_ids)
+
     def list_profiles(self, site_id: str) -> list[MeshProfileDTO]:
         catalog = self.paths.mesh_catalog_path(site_id)
         if not catalog.is_file():
@@ -241,7 +249,7 @@ class MeshAnalysisQueryService:
                                AS channel_busy_anomaly_count,
                            CASE WHEN COUNT(*) = 0 THEN 0 ELSE SUM(unmatched_ap_count) END
                                AS unmatched_ap_count,
-                           COALESCE(SUM(CASE WHEN warning_count > 0 THEN 1 ELSE 0 END), 0)
+                           COALESCE(SUM(CASE WHEN actionable_warning_count > 0 THEN 1 ELSE 0 END), 0)
                                AS warning_session_count,
                            MAX(analysis_time) AS latest_analysis_time
                     FROM mesh_session_index
@@ -301,7 +309,7 @@ class MeshAnalysisQueryService:
                 where.append(f"{field} LIKE ? ESCAPE '\\' COLLATE NOCASE")
                 values.append(f"%{self._like_value(value)}%")
         if has_warning is not None:
-            where.append("warning_count > 0" if has_warning else "warning_count = 0")
+            where.append("actionable_warning_count > 0" if has_warning else "actionable_warning_count = 0")
         if time_from:
             where.append("COALESCE(last_sample_time, analysis_time, '') >= ?")
             values.append(time_from)
@@ -580,7 +588,7 @@ class MeshAnalysisQueryService:
             warnings.append(MeshAnalysisWarningDTO(code="raw_source_missing", message="原始 Mesh 日志当前不可用；既有结构化结果仍按只读方式展示。"))
         if context.relocated_detail:
             warnings.append(MeshAnalysisWarningDTO(code="parsed_path_relocated", message="索引中的旧数据根路径不可用，已只读使用当前 MR parsed 目录的同名结果。"))
-        if int(context.source.get("issue_count") or 0):
+        if int(stats["actionable_warning_count"] or 0):
             warnings.append(MeshAnalysisWarningDTO(code="parse_issues", message="该来源存在既有解析告警，请查看异常摘要。"))
         if identity_state["identity_mapping_status"] == "identity_stale":
             warnings.append(
@@ -1794,7 +1802,15 @@ class MeshAnalysisQueryService:
                         )
                     )
             if self._table_exists(conn, "parse_issues"):
-                for row in conn.execute("SELECT * FROM parse_issues ORDER BY id"):
+                issue_columns = self._table_columns(conn, "parse_issues")
+                issue_sql = "SELECT * FROM parse_issues"
+                # Pre-severity parsed databases are retained read-only.  Their
+                # historical issues have no INFO contract, so preserve the old
+                # behavior and treat every row as actionable until a rebuild.
+                if "severity" in issue_columns:
+                    issue_sql += " WHERE UPPER(COALESCE(severity, 'WARNING')) <> 'INFO'"
+                issue_sql += " ORDER BY id"
+                for row in conn.execute(issue_sql):
                     data = dict(row)
                     rows.append(
                         MeshAnomalyDTO(
@@ -2237,14 +2253,17 @@ class MeshAnalysisQueryService:
             active_link_count=stats["active"],
             standby_link_count=stats["standby"],
             event_count=stats["events"],
-            data_integrity="complete" if stats["parsed_status"] == "ready" and stats["warnings"] == 0 else "partial",
+            data_integrity="complete" if stats["parsed_status"] == "ready" and stats["actionable_warning_count"] == 0 else "partial",
             analysis_status=str(context.source.get("parse_status") or "unknown"),
             parsed_status=stats["parsed_status"],
             parsed_message=stats["parsed_message"],
             schema_version=stats["schema_version"],
             available_capabilities=stats["available_capabilities"],
             missing_capabilities=stats["missing_capabilities"],
-            warning_count=stats["warnings"],
+            info_count=stats["info_count"],
+            warning_count=stats["warning_count"],
+            error_count=stats["error_count"],
+            actionable_warning_count=stats["actionable_warning_count"],
             report_count=len([item for item in self._artifact_candidates(context) if item.dto.artifact_type != "raw_mesh_log"]),
             first_sample_time=str(context.source.get("first_sample_time") or "") or None,
             last_sample_time=str(context.source.get("last_sample_time") or "") or None,
@@ -2254,7 +2273,10 @@ class MeshAnalysisQueryService:
         count_keys = ("links", "active", "standby", "events", "link_up", "link_down", "switches", "short", "pingpong", "rssi_anomalies", "busy_anomalies", "unmatched")
         empty: dict[str, Any] = {key: None for key in count_keys}
         empty.update(
-            warnings=1,
+            info_count=0,
+            warning_count=0,
+            error_count=0,
+            actionable_warning_count=1,
             parsed_status="missing",
             parsed_message="结构化分析结果不存在，可继续查看原始日志并重新解析。",
             schema_version=None,
@@ -2305,7 +2327,19 @@ class MeshAnalysisQueryService:
                     result["link_up"] = int(conn.execute("SELECT COUNT(*) FROM active_segments").fetchone()[0] or 0)
                 if result["switches"] is not None:
                     result["link_down"] = result["switches"]
-                issues = int(conn.execute("SELECT COUNT(*) FROM parse_issues").fetchone()[0] or 0) if "parse_issues" in tables else 0
+                if "parse_issues" in tables:
+                    issue_columns = self._table_columns(conn, "parse_issues")
+                    if "severity" in issue_columns:
+                        issue_counts = conn.execute(
+                            "SELECT "
+                            "SUM(CASE WHEN UPPER(COALESCE(severity, 'WARNING')) = 'INFO' THEN 1 ELSE 0 END) AS info_count, "
+                            "SUM(CASE WHEN UPPER(COALESCE(severity, 'WARNING')) = 'ERROR' THEN 1 ELSE 0 END) AS error_count, "
+                            "SUM(CASE WHEN UPPER(COALESCE(severity, 'WARNING')) NOT IN ('INFO', 'ERROR') THEN 1 ELSE 0 END) AS warning_count "
+                            "FROM parse_issues"
+                        ).fetchone()
+                        result.update({key: int(issue_counts[key] or 0) for key in ("info_count", "warning_count", "error_count")})
+                    else:
+                        result["warning_count"] = int(conn.execute("SELECT COUNT(*) FROM parse_issues").fetchone()[0] or 0)
                 if "diagnosis_events" in tables and "category" in self._table_columns(conn, "diagnosis_events"):
                     diagnoses = conn.execute(
                         "SELECT SUM(CASE WHEN LOWER(category) LIKE '%rssi%' THEN 1 ELSE 0 END) AS rssi_anomalies, "
@@ -2321,7 +2355,7 @@ class MeshAnalysisQueryService:
                         LOGGER.debug("旧 MESH active_points 不支持派生建链统计", exc_info=True)
                 result["short"] = sum(row.get("build_result") == "short" for row in builds) if builds else None
                 result["pingpong"] = sum(bool(row.get("is_pingpong_abnormal")) for row in builds) if builds else None
-                result["warnings"] = issues + int(result["unmatched"] or 0) + int(context.raw_path is None) + int(result["parsed_status"] != "ready")
+                result["actionable_warning_count"] = int(result["warning_count"] or 0) + int(result["error_count"] or 0)
         except sqlite3.Error:
             LOGGER.warning("MESH 结构化结果不可读取：%s", context.session_id, exc_info=True)
             result.update(
@@ -2329,7 +2363,7 @@ class MeshAnalysisQueryService:
                 parsed_message="该会话的结构化数据库无法打开；其他会话与原始日志不受影响。",
                 available_capabilities=[],
                 missing_capabilities=sorted(_DETAIL_CAPABILITY_TABLES),
-                warnings=1 + int(context.raw_path is None),
+                actionable_warning_count=1,
             )
         return result
 

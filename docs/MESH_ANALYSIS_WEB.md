@@ -20,6 +20,8 @@ catalog.sqlite
 - 短时建链、正常切换、同 AP 双射频和乒乓：复用现有 `_active_build_order_rows_from_points`，不在页面、报告或导出器复制规则；来源 `analysis_params_json` 只保留解析时的历史追溯信息，不能覆盖当前局点默认；
 - RSSI：使用持久化统计和结构化采样。缺失值保持 `null`，已有真实 `0` 保持原值；
 - 空口：读取结构化 Mesh 指标中的 Tx/Rx busy；没有持久化 CtlBusy 时返回 `null`，不从原始文本临时抓数字；
+- 解析诊断：来源摘要分列 `info_count`、`warning_count`、`error_count`；列表“告警”只显示 `warning_count + error_count`，INFO 诊断不影响完整性、不进入异常摘要或正式报告。旧来源仅有混合 `issue_count` 时保守显示，重新解析后升级；
+- AP 覆盖核查：来源列表勾选恰好两个当前局点来源后运行 `web.mesh_ap_coverage_audit`。服务端直接聚合两个 parsed SQLite 的有效 `ACTIVE/STANDBY`（`LinkCnt>0`）并复用 AP Identity 将 Peer Radio MAC 归并到物理 AP；不在 Vue 去重，不重新扫描 raw 日志。核查默认按已观测站点/区间的正线范围，并同时提供全正线计数；未观测不代表故障。
 
 索引记录的旧绝对 `parsed_db_path` 随数据根迁移失效时，只允许在当前 MR 的 `parsed` 受控目录内按同名文件回退；不会回写索引。解析结果或 raw 缺失时显示明确 warning，不自动修复或重解析。
 
@@ -46,6 +48,8 @@ GET /api/rail-transit/mesh-analysis/sessions/{session_id}/artifacts/{artifact_id
 DELETE /api/rail-transit/mesh-analysis/sessions/{session_id}/artifacts/{artifact_id}
 GET /api/rail-transit/mesh-analysis/sessions/{session_id}/raw-sources
 GET /api/rail-transit/mesh-analysis/sessions/{session_id}/raw-sources/{source_id}/tail
+POST /api/rail-transit/mesh-analysis/ap-coverage/audit
+POST /api/rail-transit/mesh-analysis/ap-coverage/export
 ```
 
 POST /api/rail-transit/mesh-analysis/import-context/prepare

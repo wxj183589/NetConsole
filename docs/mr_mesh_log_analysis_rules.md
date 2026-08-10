@@ -54,6 +54,14 @@
 
 `LinkCnt` 是链路事实的前置条件。解析器先以 `source_file + Radio + sample_time + timestamp_tag`（存在时）组装采样快照：快照中只要出现 `ACTIVE` 且 `LinkCnt=0`，整组主备记录即为不可信采样并一起忽略；它不产生 `NO_ACTIVE`、RSSI gap、零 RSSI、角色切换中断或任何统计/图表/报告事实。若 ACTIVE 有效而某条 STANDBY 为 `LinkCnt=0`，则只丢弃该备用占位行并保留同快照其余正数链路。`LinkCnt=0` 即使原行仍带有 Peer、AP 名称、角色、建链时长或 `RSSI=0/0`，也只保留在不可变 raw 文件和 INFO diagnostic 中。所有 `LinkCnt>=1` 都是有效链路事实，必须保留原始数值：`1` 是普通直接链路；`2` 以非故障的 `△ 三角链路` 拓扑标记展示，正常参与 RSSI、主备、切换和统计；`>2` 同样保留并参与业务事实，同时记录 diagnostic warning 供协议确认，不自动推断故障或因果关系。缺失、无法解析或负数值记录 warning 后拒绝。所有 RSSI `0` 的展示和统计规则只适用于已通过正数 `LinkCnt` 校验的有效链路记录，不能据 `RSSI=0` 反推记录有效性。该规则改变解析事实，已有来源必须通过“重新解析当前日志”从 raw 重建派生结果。
 
+解析诊断按 `INFO`、`WARNING`、`ERROR` 分别持久化并在来源摘要中分别计数。`INFO` 只记录正常过滤、协议诊断或排查证据：不计入用户可见“告警”、不将来源完整性降为 `partial`、不进入异常摘要或正式报告。`WARNING` 与 `ERROR` 才是可操作告警，来源列表使用 `actionable_warning_count = warning_count + error_count`。当 `ACTIVE LinkCnt=0` 导致整帧拒绝时，来源级诊断只保留一条快照 INFO；同一快照中已拒绝的单行 `LinkCnt=0` 不再重复持久化为来源级 issue。历史来源没有 severity 计数时，目录暂将旧 `issue_count` 作为保守兼容告警；重新解析后升级到上述口径。
+
+## 3.1 双来源 AP 覆盖核查
+
+“AP 覆盖核查”从当前局点选择恰好两个已解析 MESH 来源；不限定 CT/CW 组合。它只读取两个 `parsed/*.mesh.sqlite` 的 `mesh_links` 聚合结果，不重新解压或解析 raw 日志。观测集合使用 `LinkCnt>0` 的 `ACTIVE` 与 `STANDBY` 链路；`LinkCnt=2` 正常计入，并另计三角链路次数。每个 Peer Radio MAC 必须经现有 `ApIdentityQueryService` 精确归并至物理 AP MAC，禁止按 AP 名称去重；未能唯一归并的观测单列为“资料未匹配”。
+
+期望集合来自当前局点 FIT-AP 资源。先依据轨旁 AP 基础资料的 `participates_in_mainline` 和 `location_class` 排除非正线；缺少结构化资料时才按“车辆段、停车场、出入段线、出段线、入段线”名称关键词兼容排除，并在结果记录 `exclude_reason`。结果明确区分“已连接、未连接、资料未匹配、已排除”；“未连接”仅表示两个所选来源中未观测到，绝不等同 AP 故障。默认范围是已观测站点/区间对应的正线 AP；若无法形成范围则回退全正线，并同时返回全正线总数。每一行保留来源 A/B 是否出现、ACTIVE/STANDBY、`LinkCnt=2` 次数及首末时间。
+
 Peer 身份解析严格分离观测与物理身份：原始文本、规范化 Peer Radio
 MAC、Radio、链路角色、source file、raw line/offset 始终保留；物理 AP
 名称、基础 MAC、站点、区间和里程只来自精确 Radio/BSSID/BBSSID 或完整

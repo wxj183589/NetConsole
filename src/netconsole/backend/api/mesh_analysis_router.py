@@ -23,6 +23,8 @@ from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.core.sites import SiteManager
 from netconsole.models.api.mesh_analysis import (
     MeshAnalysisSessionDetailDTO,
+    MeshApCoverageAuditDTO,
+    MeshApCoverageAuditRequestDTO,
     MeshAnalysisParamsDTO,
     MeshAnalysisParamsSaveRequestDTO,
     MeshAnalysisSessionPageDTO,
@@ -69,6 +71,9 @@ from netconsole.services.rail_transit.mesh_analysis_query_service import (
     MeshAnalysisQueryService,
     MeshAnalysisTimeRangeError,
 )
+from netconsole.services.rail_transit.mesh_ap_coverage_audit_service import (
+    MeshApCoverageAuditError,
+)
 from netconsole.services.mesh_chart_payload import MeshChartSelectionLimitError
 from netconsole.services.mesh_local_scan_service import MeshLocalScanError
 
@@ -87,6 +92,70 @@ def _rail_service(request: Request) -> RailTransitWebApplicationService:
     if service is None:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="轨交 Web 服务未接线")
     return service
+
+
+@router.post(
+    "/ap-coverage/audit",
+    response_model=MeshApCoverageAuditDTO,
+    summary="核查两个已解析 MESH 来源中的轨旁 AP 覆盖",
+    dependencies=[Depends(require_feature("web.mesh_ap_coverage_audit"))],
+)
+def audit_ap_coverage(
+    request: Request,
+    payload: MeshApCoverageAuditRequestDTO,
+) -> MeshApCoverageAuditDTO:
+    try:
+        return _service(request).audit_ap_coverage(
+            _current_site_id(request), payload.session_ids
+        )
+    except MeshApCoverageAuditError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": "MESH_AP_COVERAGE_INVALID", "message": str(exc)},
+        ) from exc
+
+
+@router.post(
+    "/ap-coverage/export",
+    response_model=RailTransitTaskDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="导出双来源 MESH AP 覆盖核查结果",
+    dependencies=[
+        Depends(require_feature("web.mesh_ap_coverage_audit")),
+        Depends(require_feature("web.rail_task_control")),
+    ],
+)
+def export_ap_coverage(
+    request: Request,
+    payload: MeshApCoverageAuditRequestDTO,
+) -> RailTransitTaskDTO:
+    try:
+        return _rail_service(request).start_mesh_ap_coverage_export(
+            _current_site_id(request), session_ids=payload.session_ids
+        )
+    except RailTransitWebError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+
+
+@router.get(
+    "/ap-coverage/artifacts/{artifact_id}/download",
+    response_class=FileResponse,
+    dependencies=[Depends(require_feature("web.mesh_ap_coverage_audit"))],
+)
+def download_ap_coverage_export(request: Request, artifact_id: str) -> FileResponse:
+    try:
+        path, name = _rail_service(request).open_mesh_ap_coverage_export(
+            _current_site_id(request), artifact_id
+        )
+    except RailTransitWebError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+    return FileResponse(path, filename=name)
 
 
 def _bundle_service(request: Request) -> MeshBundleApplicationService:

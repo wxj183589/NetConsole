@@ -26,6 +26,10 @@ _SOURCE_COLUMNS = {
     "identity_index_revision": "INTEGER DEFAULT 0",
     "identity_mapped_at": "TEXT DEFAULT ''",
     "identity_mapping_status": "TEXT DEFAULT 'unknown'",
+    "info_count": "INTEGER DEFAULT 0",
+    "warning_count": "INTEGER DEFAULT 0",
+    "error_count": "INTEGER DEFAULT 0",
+    "issue_severity_version": "INTEGER DEFAULT 0",
 }
 
 
@@ -126,6 +130,9 @@ class MeshSourceIndexRepository:
         records_parsed: int,
         records_skipped: int,
         issue_count: int,
+        info_count: int = 0,
+        warning_count: int = 0,
+        error_count: int = 0,
     ) -> None:
         with self._connect() as connection:
             connection.execute(
@@ -136,6 +143,7 @@ class MeshSourceIndexRepository:
                     db_schema_version = ?, parser_version = ?, parse_status = 'imported',
                     first_sample_time = ?, last_sample_time = ?, lines_read = ?,
                     records_parsed = ?, records_skipped = ?, issue_count = ?,
+                    info_count = ?, warning_count = ?, error_count = ?, issue_severity_version = 1,
                     error_message = '', file_exists = 1, file_status = 'ok',
                     parsed_deleted_at = '', parsed_delete_error = ''
                 WHERE id = ?
@@ -155,6 +163,9 @@ class MeshSourceIndexRepository:
                     int(records_parsed),
                     int(records_skipped),
                     int(issue_count),
+                    int(info_count),
+                    int(warning_count),
+                    int(error_count),
                     int(source_file_id),
                 ),
             )

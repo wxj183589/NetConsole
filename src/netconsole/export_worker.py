@@ -20,6 +20,10 @@ from netconsole.services.export import error_event, finished_event, progress_eve
 from netconsole.services.export.export_handlers import GENERIC_EXPORT_TASK_TYPES, run_generic_export_handler
 from netconsole.services.export.export_job import ExportJob
 from netconsole.services.mesh_link_detail_export import MeshLinkDetailExportCancelled, export_mesh_link_details_xlsx
+from netconsole.services.mesh_ap_coverage_export import (
+    MeshApCoverageExportCancelled,
+    export_mesh_ap_coverage_audit_xlsx,
+)
 from netconsole.services.job_center.job_events import (
     cancelled_event as task_cancelled_event,
     error_event as task_error_event,
@@ -37,6 +41,7 @@ from netconsole.services.rail_transit.mesh_ap_location_service import (
     enrich_mesh_ap_location_row,
 )
 from netconsole.services.mesh_report_process import MeshReportProcessRequest, run_mesh_report_process
+from netconsole.services.rail_transit.mesh_analysis_query_service import MeshAnalysisQueryService
 from netconsole.services.trackside_ap_business import TracksideApExportCancelled
 from netconsole.services.trackside_ap_export_service import (
     export_trackside_ap_business_from_snapshot,
@@ -315,6 +320,31 @@ def _run_mesh_link_detail_export(job: ExportJob) -> None:
     _emit(event)
 
 
+def _run_mesh_ap_coverage_export(job: ExportJob) -> None:
+    job.validate()
+    session_ids = [str(value) for value in job.params.get("session_ids", []) if str(value)]
+    if len(session_ids) != 2:
+        raise ValueError("AP 覆盖核查导出必须绑定两个 MESH 来源")
+    _emit_progress(job, 0, 3, "mesh_ap_coverage.query", "正在聚合两个 MESH 来源的 AP 覆盖")
+    audit = MeshAnalysisQueryService(PathResolver()).audit_ap_coverage(job.site_name, session_ids)
+    if _should_cancel(job):
+        raise MeshApCoverageExportCancelled("导出已取消")
+    _emit_progress(job, 1, 3, "mesh_ap_coverage.generate", "正在生成 AP 覆盖核查 Excel")
+    tmp_path = Path(job.tmp_path)
+    tmp_path.parent.mkdir(parents=True, exist_ok=True)
+    row_count = export_mesh_ap_coverage_audit_xlsx(
+        tmp_path,
+        audit,
+        should_cancel=lambda: _should_cancel(job),
+    )
+    if _should_cancel(job):
+        raise MeshApCoverageExportCancelled("导出已取消")
+    _emit_progress(job, 3, 3, "mesh_ap_coverage.save", "正在保存 AP 覆盖核查 Excel")
+    output_path = Path(job.output_path)
+    os.replace(tmp_path, output_path)
+    _emit(_finished(job, str(output_path), row_count=row_count))
+
+
 def _run_mesh_link_detail(job: ExportJob) -> None:
     """兼容历史直接 Worker 调用；Web 正式入口使用 mesh_link_detail_export。"""
 
@@ -427,11 +457,14 @@ def _run_job(job: ExportJob) -> int:
         if job.job_type in {"mesh_link_detail", "mesh_link_detail_export"}:
             _run_mesh_link_detail_export(job)
             return 0
+        if job.job_type == "mesh_ap_coverage_export":
+            _run_mesh_ap_coverage_export(job)
+            return 0
         if job.job_type == "mesh_analysis_report":
             _run_mesh_analysis_report(job)
             return 0
         raise ValueError(f"不支持的导出任务类型：{job.job_type}")
-    except (MeshLinkDetailExportCancelled, TracksideApExportCancelled, ExportCancelled) as exc:
+    except (MeshLinkDetailExportCancelled, MeshApCoverageExportCancelled, TracksideApExportCancelled, ExportCancelled) as exc:
         _cleanup_tmp(job)
         _emit(_error(job, str(exc), cancelled=True))
         return 2
