@@ -55,8 +55,9 @@ export function startTracksideApBusinessExport(
   })
 }
 
-export function listTracksideWpsTargets(): Promise<WpsTracksideTarget[]> {
-  return apiRequest(`${wpsRoot}/targets`)
+export function listTracksideWpsTargets(siteId = ''): Promise<WpsTracksideTarget[]> {
+  const query = siteId ? `?site_id=${encodeURIComponent(siteId)}` : ''
+  return apiRequest(`${wpsRoot}/targets${query}`)
 }
 
 export function updateTracksideWpsTarget(

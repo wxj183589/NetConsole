@@ -583,10 +583,19 @@ class BaseWpsAdapter:
                 details=_target_error_details(target, phase="PROTOCOL_HANDSHAKE"),
             )
         if str(result.get("document_id") or "") != target.expected_document_id:
+            remote_document_id = str(result.get("document_id") or "")
             raise WpsSyncError(
-                "WPS_DOCUMENT_ID_MISMATCH",
-                "WPS 文档身份校验失败",
-                details=_target_error_details(target, phase="DOCUMENT_IDENTITY"),
+                "WPS_DOCUMENT_IDENTITY_MISMATCH",
+                "WPS_DOCUMENT_IDENTITY_MISMATCH："
+                f"预期文档 ID：{target.expected_document_id}；"
+                f"远端脚本声明：{remote_document_id}。"
+                "当前 WPS 文档中仍部署了其他文档生成的脚本，请从当前局点重新复制脚本并全量替换",
+                details={
+                    **_target_error_details(target, phase="DOCUMENT_IDENTITY"),
+                    "expected_document_id": target.expected_document_id,
+                    "remote_document_id": remote_document_id,
+                    "suggestion": "请从当前局点重新复制脚本并全量替换到当前 WPS 文档",
+                },
             )
         # Older local test doubles did not expose the deployment identity. Keep
         # them readable, but validate every identity field returned by a real
@@ -743,6 +752,28 @@ class TracksideApWpsSyncService:
             if webhook_url is None
             else _document_id_from_webhook(selected_webhook_url)
         )
+        if selected_document_id and selected_webhook_url:
+            try:
+                conflicts = repository.find_document_script_conflicts(
+                    business_key=target.business_key,
+                    target_code=target.target_code,
+                    document_id=selected_document_id,
+                    script_id=_script_id_from_webhook(selected_webhook_url),
+                )
+            except RuntimeError as exc:
+                raise WpsSyncError(
+                    "WPS_CONFIG_CONFLICT_CHECK_FAILED",
+                    "无法完成跨局点 WPS 配置冲突检查，已拒绝保存",
+                ) from exc
+            if conflicts:
+                names = "、".join(
+                    self._site_display_name(item["site_id"]) for item in conflicts
+                )
+                raise WpsSyncError(
+                    "WPS_DOCUMENT_SITE_CONFLICT",
+                    f"该 WPS 文档已经被其他局点配置：{names}。不同局点原则上应使用独立 WPS 文档。",
+                    details={"conflicts": conflicts},
+                )
         selected_enabled = target.enabled if enabled is None else enabled
         configured = repository.upsert_target(
             business_key=target.business_key,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+from dataclasses import replace
 from pathlib import Path
 import re
 import sqlite3
@@ -20,6 +21,7 @@ from netconsole.models.wps_sync import (
     WpsTargetType,
     build_wps_binding_id,
 )
+from netconsole.backend.api.wps_sync_router import _site_id
 from netconsole.repositories.wps_sync_repository import WpsSyncRepository
 from netconsole.services.wps_trackside_ap_sync import (
     STANDARD_TARGET_CODE,
@@ -44,6 +46,9 @@ from netconsole.services.wps_trackside_ap_sync import (
     parse_wps_webhook,
     workbook_dto_from_xlsx,
 )
+
+TEST_WEBHOOK_DOCUMENT_ID = "549847228994"
+STALE_REMOTE_DOCUMENT_ID = TEST_WEBHOOK_DOCUMENT_ID
 
 
 def _protect(data: bytes, entropy: bytes) -> bytes:
@@ -395,12 +400,12 @@ def test_wps_target_run_migration_adds_async_recovery_columns_repeatably(
 
 def test_wps_webhook_parser_derives_sync_submit_and_poll_endpoints() -> None:
     endpoints = parse_wps_webhook(
-        "https://www.kdocs.cn/api/v3/ide/file/549847228994/"
+        f"https://www.kdocs.cn/api/v3/ide/file/{TEST_WEBHOOK_DOCUMENT_ID}/"
         "script/V2-2o35ebQ25Bb3Uyrnii2U3o/sync_task"
     )
 
     assert endpoints.host == "www.kdocs.cn"
-    assert endpoints.file_id == "549847228994"
+    assert endpoints.file_id == TEST_WEBHOOK_DOCUMENT_ID
     assert endpoints.script_id == "V2-2o35ebQ25Bb3Uyrnii2U3o"
     assert endpoints.sync_task_url.endswith("/sync_task")
     assert endpoints.async_task_url.endswith("/task")
@@ -426,6 +431,98 @@ def test_wps_public_targets_expose_only_cloud_document_deployment_identity(
     assert list(by_code) == [STANDARD_TARGET_CODE]
     assert by_code[STANDARD_TARGET_CODE]["expected_script_version"] == WPS_SCRIPT_VERSIONS[STANDARD_TARGET_CODE]
     assert by_code[STANDARD_TARGET_CODE]["expected_deployment_id"] == WPS_DEPLOYMENT_IDS[STANDARD_TARGET_CODE]
+
+
+def test_wps_configuration_isolated_per_site_and_rejects_shared_document_script(
+    tmp_path: Path,
+) -> None:
+    paths = PathResolver(tmp_path)
+    service = TracksideApWpsSyncService(paths)
+    hangzhou = "hangzhou10"
+    ningbo10 = "ningbo10"
+    ningbo = "ningbo12"
+    hangzhou_webhook = (
+        "https://www.kdocs.cn/api/v3/ide/file/hangzhou-document/"
+        "script/hangzhou-script/sync_task"
+    )
+    ningbo_webhook = (
+        "https://www.kdocs.cn/api/v3/ide/file/ningbo-document/"
+        "script/ningbo-script/sync_task"
+    )
+
+    service.configure_target(
+        hangzhou,
+        STANDARD_TARGET_CODE,
+        token="hangzhou-token",
+        document_open_url="https://www.kdocs.cn/l/hangzhou-document",
+        webhook_url=hangzhou_webhook,
+    )
+    unconfigured_ningbo = service.list_targets(ningbo)[0]
+    unconfigured_ningbo10 = service.list_targets(ningbo10)[0]
+
+    assert unconfigured_ningbo["document_open_url"] == ""
+    assert unconfigured_ningbo["webhook_url"] == ""
+    assert unconfigured_ningbo["expected_document_id"] == ""
+    assert unconfigured_ningbo["token_configured"] is False
+    assert unconfigured_ningbo10["document_open_url"] == ""
+    assert unconfigured_ningbo10["webhook_url"] == ""
+    assert unconfigured_ningbo10["token_configured"] is False
+
+    with pytest.raises(WpsSyncError) as conflict:
+        service.configure_target(
+            ningbo,
+            STANDARD_TARGET_CODE,
+            document_open_url="https://www.kdocs.cn/l/hangzhou-document",
+            webhook_url=hangzhou_webhook,
+        )
+    assert conflict.value.code == "WPS_DOCUMENT_SITE_CONFLICT"
+
+    service.configure_target(
+        ningbo,
+        STANDARD_TARGET_CODE,
+        token="ningbo-token",
+        document_open_url="https://www.kdocs.cn/l/ningbo-document",
+        webhook_url=ningbo_webhook,
+    )
+    hangzhou_target = service.list_targets(hangzhou)[0]
+    ningbo_target = service.list_targets(ningbo)[0]
+    hangzhou_credential = service._repository(hangzhou).get_target(
+        TRACKSIDE_AP_WPS_BUSINESS_KEY, STANDARD_TARGET_CODE
+    ).credential_id
+    ningbo_credential = service._repository(ningbo).get_target(
+        TRACKSIDE_AP_WPS_BUSINESS_KEY, STANDARD_TARGET_CODE
+    ).credential_id
+
+    assert hangzhou_target["document_open_url"] == "https://www.kdocs.cn/l/hangzhou-document"
+    assert ningbo_target["document_open_url"] == "https://www.kdocs.cn/l/ningbo-document"
+    assert hangzhou_credential != ningbo_credential
+    assert len({
+        paths.site_sync_dir(site) / "wps_sync.sqlite"
+        for site in (hangzhou, ningbo10, ningbo)
+    }) == 3
+
+
+def test_wps_targets_reject_a_stale_site_context(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                paths=PathResolver(tmp_path),
+                trackside_ap_business_query_service=SimpleNamespace(
+                    current_site_id=lambda: "hangzhou10"
+                ),
+            )
+        )
+    )
+
+    assert _site_id(request, "hangzhou10") == "hangzhou10"
+    with pytest.raises(HTTPException) as mismatch:
+        _site_id(request, "ningbo12")
+    assert mismatch.value.status_code == 409
+    assert mismatch.value.detail["code"] == "WPS_SITE_CONTEXT_MISMATCH"
 
 
 def test_wps_service_rejects_every_nonstandard_target_code(tmp_path: Path) -> None:
@@ -528,6 +625,39 @@ def test_wps_connection_test_rejects_stale_or_cross_target_script_identity(
 
     assert captured.value.code == expected_code
     assert captured.value.details["phase"] == "PROTOCOL_HANDSHAKE"
+
+
+def test_wps_connection_test_reports_remote_document_identity_mismatch() -> None:
+    target = replace(_wps_target(), expected_document_id="536585421042")
+
+    class FakeClient:
+        def post(self, target, *, token, argv):
+            return WpsHttpResponse(
+                status_code=200,
+                body={
+                    "success": True,
+                    "protocol_version": 2,
+                    "script_version": WPS_SCRIPT_VERSIONS[STANDARD_TARGET_CODE],
+                    "deployment_id": WPS_DEPLOYMENT_IDS[STANDARD_TARGET_CODE],
+                    "target_type": "WPS_STANDARD_SPREADSHEET",
+                    "target_code": STANDARD_TARGET_CODE,
+                    "document_id": STALE_REMOTE_DOCUMENT_ID,
+                    "runtime_capability": "DEPLOYMENT_PENDING",
+                },
+            )
+
+    with pytest.raises(WpsSyncError) as captured:
+        WpsStandardSpreadsheetAdapter(FakeClient()).connection_test(
+            target, "test-only-token"
+        )
+
+    assert captured.value.code == "WPS_DOCUMENT_IDENTITY_MISMATCH"
+    assert captured.value.details["expected_document_id"] == "536585421042"
+    assert captured.value.details["remote_document_id"] == STALE_REMOTE_DOCUMENT_ID
+    assert "WPS_DOCUMENT_IDENTITY_MISMATCH" in str(captured.value)
+    assert "预期文档 ID：536585421042" in str(captured.value)
+    assert f"远端脚本声明：{STALE_REMOTE_DOCUMENT_ID}" in str(captured.value)
+    assert "重新复制脚本并全量替换" in captured.value.details["suggestion"]
 
 
 @pytest.mark.parametrize(

@@ -9,6 +9,7 @@ import { ApiRequestError } from '../../api/client'
 import { resetWebFeaturesForTest, setWebFeaturesForTest } from '../../features'
 import { resetUserSelectedExportForTests } from '../../composables/useUserSelectedExport'
 import { useTaskStore } from '../../stores/tasks'
+import { BEFORE_SITE_SWITCH_EVENT, SITE_CONTEXT_CHANGED_EVENT } from '../../workspace/site-switch'
 import type {
   TracksideApBusinessPage,
   TracksideApBusinessRow,
@@ -89,6 +90,8 @@ vi.mock('../../composables/useExternalTerminalLauncher', () => ({
 
 import TracksideApBusinessView from './TracksideApBusinessView.vue'
 import TracksideApWpsConfigDialog from './TracksideApWpsConfigDialog.vue'
+
+const TEST_DOCUMENT_ID = '549847228994'
 
 const extendedRowDefaults = {
   switch_vendor: 'H3C',
@@ -613,6 +616,38 @@ describe('TracksideApBusinessView mounted behavior', () => {
     wrapper.unmount()
   })
 
+  it('discards a slow previous-site WPS response after a site switch', async () => {
+    let resolvePreviousSite: ((value: WpsTracksideTarget[]) => void) | undefined
+    const previousSiteResponse = new Promise<WpsTracksideTarget[]>((resolve) => {
+      resolvePreviousSite = resolve
+    })
+    const currentSiteTargets = wpsTargets(true).map((target) => ({
+      ...target,
+      site_id: 'site-b',
+      document_open_url: 'https://www.kdocs.cn/l/site-b-document',
+    }))
+    api.listTracksideWpsTargets.mockImplementation((siteId: string) => (
+      siteId === 'demo' ? previousSiteResponse : Promise.resolve(currentSiteTargets)
+    ))
+
+    const wrapper = await mountView()
+    window.dispatchEvent(new CustomEvent(BEFORE_SITE_SWITCH_EVENT, {
+      detail: { targetSiteId: 'site-b' },
+    }))
+    window.dispatchEvent(new CustomEvent(SITE_CONTEXT_CHANGED_EVENT))
+    await flushPromises()
+    resolvePreviousSite?.(wpsTargets(true))
+    await flushPromises()
+
+    await button(wrapper, '配置云文档').trigger('click')
+    await flushPromises()
+    const dialog = wrapper.getComponent(TracksideApWpsConfigDialog)
+    expect(dialog.props('targets')).toEqual(currentSiteTargets)
+    expect((dialog.props('targets') as WpsTracksideTarget[])[0].document_open_url)
+      .toBe('https://www.kdocs.cn/l/site-b-document')
+    wrapper.unmount()
+  })
+
   it('tests an unchanged WPS target without submitting the same configuration again', async () => {
     const configuredTargets = wpsTargets(true)
     api.listTracksideWpsTargets.mockResolvedValue(configuredTargets)
@@ -725,7 +760,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
         status: 'SUCCESS',
         binding_status: 'LEGACY_BINDING_ID_MISMATCH',
         binding_id_match: false,
-        remote_document_id: '549847228994',
+        remote_document_id: TEST_DOCUMENT_ID,
         remote_site_id: 'hzl10',
         remote_site_name: '杭州地铁10号线',
         remote_business_key: 'rail_transit.trackside_ap_business',
@@ -761,7 +796,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
     expect(wrapper.text()).toContain('本地 Binding ID')
     expect(wrapper.text()).toContain('wpsbind_v1_local')
     expect(wrapper.text()).toContain(`wst_${'a'.repeat(32)}`)
-    expect(wrapper.text()).toContain('549847228994')
+    expect(wrapper.text()).toContain(TEST_DOCUMENT_ID)
     expect(wrapper.text()).toContain('rail_transit.trackside_ap_business')
     expect(wrapper.text()).toContain('WPS_STANDARD_SPREADSHEET')
     expect(wrapper.text()).toContain('目标类型匹配')
@@ -879,12 +914,13 @@ describe('TracksideApBusinessView mounted behavior', () => {
     const dialog = wrapper.getComponent(TracksideApWpsConfigDialog)
     const vm = dialog.vm as unknown as {
       copyAirScript: (
-        code: 'wps_standard_spreadsheet',
+        target: WpsTracksideTarget,
         kind: 'probe' | 'sync',
       ) => Promise<void>
     }
-    await vm.copyAirScript('wps_standard_spreadsheet', 'probe')
-    await vm.copyAirScript('wps_standard_spreadsheet', 'sync')
+    const [target] = wpsTargets(true)
+    await vm.copyAirScript(target, 'probe')
+    await vm.copyAirScript(target, 'sync')
 
     expect(platformMocks.writeClipboardText).toHaveBeenNthCalledWith(
       1,

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from netconsole.backend.api.feature_access import require_feature
 from netconsole.application.rail_transit.web_application_service import (
@@ -40,9 +40,25 @@ def _rail_service(request: Request) -> RailTransitWebApplicationService:
     return service
 
 
-def _site_id(request: Request) -> str:
+def _site_id(request: Request, supplied: str = "") -> str:
     query_service = request.app.state.trackside_ap_business_query_service
-    return SiteManager(request.app.state.paths).validate_site_name(query_service.current_site_id())
+    current = SiteManager(request.app.state.paths).validate_site_name(query_service.current_site_id())
+    expected = str(supplied or "").strip()
+    if not expected:
+        return current
+    try:
+        expected = SiteManager(request.app.state.paths).validate_site_name(expected)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="局点标识无效") from exc
+    if expected != current:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "WPS_SITE_CONTEXT_MISMATCH",
+                "message": "WPS 请求局点与当前局点上下文不一致，结果已丢弃",
+            },
+        )
+    return current
 
 
 def _raise(exc: WpsSyncError) -> None:
@@ -64,8 +80,14 @@ def _raise(exc: WpsSyncError) -> None:
     response_model=list[WpsSyncTargetDTO],
     dependencies=[Depends(require_feature("web.rail_trackside_ap_business_wps_sync"))],
 )
-def list_targets(request: Request) -> list[WpsSyncTargetDTO]:
-    return [WpsSyncTargetDTO.model_validate(item) for item in _service(request).list_targets(_site_id(request))]
+def list_targets(
+    request: Request,
+    site_id: str = Query(default=""),
+) -> list[WpsSyncTargetDTO]:
+    return [
+        WpsSyncTargetDTO.model_validate(item)
+        for item in _service(request).list_targets(_site_id(request, site_id))
+    ]
 
 
 @router.put(

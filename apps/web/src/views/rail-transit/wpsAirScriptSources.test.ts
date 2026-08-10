@@ -3,6 +3,9 @@ import { describe, expect, it, vi } from 'vitest'
 import { wpsAirScriptSource, type WpsAirScriptKind } from './wpsAirScriptSources'
 import type { WpsTracksideTargetCode } from '../../types/tracksideApBusiness'
 
+const TEST_DOCUMENT_ID = '549847228994'
+const TEST_SCRIPT_ID = 'V2-test-script'
+
 const scripts: Array<{
   targetCode: WpsTracksideTargetCode
   kind: WpsAirScriptKind
@@ -16,7 +19,7 @@ const scripts: Array<{
     kind: 'probe',
     scriptVersion: '2.8.4-standard',
     deploymentId: 'trackside-ap-standard-2.8.4',
-    documentId: '549847228994',
+    documentId: TEST_DOCUMENT_ID,
     targetType: 'WPS_STANDARD_SPREADSHEET',
   },
   {
@@ -24,10 +27,23 @@ const scripts: Array<{
     kind: 'sync',
     scriptVersion: '2.8.4-standard',
     deploymentId: 'trackside-ap-standard-2.8.4',
-    documentId: '549847228994',
+    documentId: TEST_DOCUMENT_ID,
     targetType: 'WPS_STANDARD_SPREADSHEET',
   },
 ]
+
+function standardTarget(documentId = TEST_DOCUMENT_ID) {
+  return {
+    target_code: 'wps_standard_spreadsheet' as WpsTracksideTargetCode,
+    document_open_url: 'https://www.kdocs.cn/l/test-document',
+    webhook_url: `https://www.kdocs.cn/api/v3/ide/file/${documentId}/script/${TEST_SCRIPT_ID}/sync_task`,
+    expected_document_id: documentId,
+  }
+}
+
+function standardSource(kind: WpsAirScriptKind = 'sync') {
+  return wpsAirScriptSource(standardTarget(), kind)
+}
 
 function standardSpreadsheetRuntime(
   initialNames: string[],
@@ -138,7 +154,7 @@ function standardSpreadsheetRuntime(
     },
   })
   const bindingRows = [
-    ['document_id', '549847228994'],
+    ['document_id', TEST_DOCUMENT_ID],
     ['binding_id', 'wpsbind_v1_stable'],
     ['site_id', 'hzl10'],
     ['site_name', '杭州地铁10号线'],
@@ -490,7 +506,7 @@ function executeStandardSpreadsheet(
   runtime: ReturnType<typeof standardSpreadsheetRuntime>,
   args: Record<string, unknown>,
 ) {
-  const source = wpsAirScriptSource('wps_standard_spreadsheet', 'sync')
+  const source = standardSource()
   const raw = new Function('Application', 'Context', source)(runtime.application, { argv: args })
   return JSON.parse(String(raw)) as Record<string, any>
 }
@@ -512,7 +528,7 @@ function standardSyncArgs(sheetNames: string[]): Record<string, unknown> {
     protocol_version: 2,
     target_type: 'WPS_STANDARD_SPREADSHEET',
     target_code: 'wps_standard_spreadsheet',
-    document_id: '549847228994',
+    document_id: TEST_DOCUMENT_ID,
     binding_id: 'wpsbind_v1_stable',
     site_id: 'hzl10',
     site_name: '杭州地铁10号线',
@@ -539,10 +555,36 @@ function standardSyncArgs(sheetNames: string[]): Record<string, unknown> {
 
 
 describe('WPS AirScript deployment sources', () => {
+  it('renders the current webhook document identity without changing deployment identity', () => {
+    const hangzhou = standardTarget(TEST_DOCUMENT_ID)
+    const ningboDocumentId = '536585421042'
+    const ningbo = standardTarget(ningboDocumentId)
+
+    for (const kind of ['probe', 'sync'] as const) {
+      const hangzhouSource = wpsAirScriptSource(hangzhou, kind)
+      const ningboSource = wpsAirScriptSource(ningbo, kind)
+
+      expect(hangzhouSource).toContain(`const DOCUMENT_ID = "${TEST_DOCUMENT_ID}";`)
+      expect(ningboSource).toContain(`const DOCUMENT_ID = "${ningboDocumentId}";`)
+      expect(hangzhouSource).not.toBe(ningboSource)
+      expect(ningboSource).toContain('const SCRIPT_VERSION = "2.8.4-standard";')
+      expect(ningboSource).toContain('const DEPLOYMENT_ID = "trackside-ap-standard-2.8.4";')
+      expect(ningboSource).not.toContain('__NETCONSOLE_DOCUMENT_ID__')
+    }
+  })
+
+  it('refuses to render a script without a complete saved WPS identity', () => {
+    expect(() => wpsAirScriptSource({
+      ...standardTarget(),
+      webhook_url: '',
+      expected_document_id: '',
+    }, 'sync')).toThrow('请先填写有效的 WPS Webhook 地址')
+  })
+
   it.each(scripts)(
     'returns $targetCode $kind with an explicit top-level result',
     ({ targetCode, kind, scriptVersion, deploymentId, documentId, targetType }) => {
-      const source = wpsAirScriptSource(targetCode, kind)
+      const source = wpsAirScriptSource(standardTarget(documentId), kind)
 
       expect(source.trimEnd()).toMatch(/return main\(\);$/)
       expect(source).not.toMatch(/^\s*main\(\);\s*$/m)
@@ -558,7 +600,7 @@ describe('WPS AirScript deployment sources', () => {
   it.each(scripts.filter(({ kind }) => kind === 'probe'))(
     'keeps $targetCode connection probe read-only',
     ({ targetCode, kind }) => {
-      const source = wpsAirScriptSource(targetCode, kind)
+      const source = standardSource(kind)
 
       expect(source).toContain('verification: "CONNECTION_PROBE_ONLY"')
       expect(source).not.toMatch(/\.Add\(|\.Insert\(|\.ClearContents\(|\.Value\s*=|CreateRecords|DeleteRecords|EnsureFields|DeleteWhere|AddRecords/)
@@ -574,7 +616,7 @@ describe('WPS AirScript deployment sources', () => {
   )
 
   it('makes the ordinary spreadsheet sync fail closed before business writes', () => {
-    const source = wpsAirScriptSource('wps_standard_spreadsheet', 'sync')
+    const source = standardSource()
 
     expect(source).toContain('_NetConsoleSyncMeta')
     expect(source).toContain('WPS_DOCUMENT_BINDING_MISMATCH')
@@ -866,7 +908,7 @@ describe('WPS AirScript deployment sources', () => {
   })
 
   it('writes and reads back the real workbook format without changing the stable data writer', () => {
-    const source = wpsAirScriptSource('wps_standard_spreadsheet', 'sync')
+    const source = standardSource()
     const runtime = standardSpreadsheetRuntime(['轨旁AP业务', '_NetConsoleSyncMeta'])
     const args = standardSyncArgs(['轨旁AP业务']) as Record<string, any>
     args.column_width_enabled = true
@@ -1471,7 +1513,7 @@ describe('WPS AirScript deployment sources', () => {
   })
 
   it('keeps the field-verified stable writer isolated from ordering and formatting', () => {
-    const source = wpsAirScriptSource('wps_standard_spreadsheet', 'sync')
+    const source = standardSource()
     const stableWriter = source.split('function writeStableSheet(sheetDto, previousManaged)', 2)[1]
       .split('function isSystemSheetName(name)', 1)[0]
 
@@ -1484,7 +1526,7 @@ describe('WPS AirScript deployment sources', () => {
 
   function executeLegacyBindingMigration(overrides: Record<string, string> = {}) {
     const rows: Array<[string, string]> = [
-      ['document_id', '549847228994'],
+      ['document_id', TEST_DOCUMENT_ID],
       ['binding_id', `wst_${'a'.repeat(32)}`],
       ['site_id', 'hzl10'],
       ['site_name', '杭州地铁10号线'],
@@ -1531,7 +1573,7 @@ describe('WPS AirScript deployment sources', () => {
     }
     const args = {
       operation: 'migrate_legacy_binding',
-      document_id: '549847228994',
+      document_id: TEST_DOCUMENT_ID,
       site_id: 'hzl10',
       business_key: 'rail_transit.trackside_ap_business',
       target_code: 'wps_standard_spreadsheet',
@@ -1540,7 +1582,7 @@ describe('WPS AirScript deployment sources', () => {
       new_binding_id: 'wpsbind_v1_stable',
       script_id: 'test',
     }
-    const source = wpsAirScriptSource('wps_standard_spreadsheet', 'sync')
+    const source = standardSource()
     const raw = new Function('Application', 'Context', source)(application, { argv: args })
     return {
       result: JSON.parse(String(raw)) as Record<string, unknown>,
