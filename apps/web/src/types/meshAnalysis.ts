@@ -180,7 +180,7 @@ export interface MeshActiveBuildOrder extends MeshIdentityMetadata {
 }
 
 export interface MeshChartBackupLink extends MeshIdentityMetadata {
-  link_id: number | null; source_file_id?: number | null; timestamp: string; timestamp_tag: string; local_radio: number | null; link_state?: string; peer_mac: string | null; peer_ap_name: string | null; peer_ap_mac: string | null
+  link_id: number | null; source_file_id?: number | null; link_count?: number | null; timestamp: string; timestamp_tag: string; local_radio: number | null; link_state?: string; peer_mac: string | null; peer_ap_name: string | null; peer_ap_mac: string | null
   peer_radio: string | null; peer_radio_mac: string | null; local_rssi: number | null; peer_rssi: number | null
   local_signal: number | null; peer_signal: number | null; station?: string | null; section?: string | null
   local_tx_busy: number | null; peer_tx_busy: number | null
@@ -198,7 +198,7 @@ export interface MeshRssiZeroRun {
 }
 
 export interface MeshChartPoint extends MeshIdentityMetadata {
-  link_id: number | null; timestamp: string; timestamp_tag: string | null; source_file_id: number | null; segment_sequence?: number | null
+  link_id: number | null; link_count?: number | null; timestamp: string; timestamp_tag: string | null; source_file_id: number | null; segment_sequence?: number | null
   local_radio: number | null; link_state: string; peer_mac: string | null; peer_ap_name: string | null; peer_ap_mac: string | null
   peer_radio: string | null; peer_radio_mac: string | null; station: string | null; section?: string | null
   establish_time?: string | null; segment_start?: string | null; segment_end?: string | null; segment_duration_seconds?: number | null
@@ -230,7 +230,7 @@ export interface MeshLocationSegment {
 export interface MeshPathChartSummary {
   current_peer_mac: string | null; current_peer_ap_name: string | null; current_radio: number | null
   earliest_sample_time?: string | null; latest_sample_time?: string | null; first_sample_time: string | null; last_sample_time: string | null; sample_count: number; active_count: number
-  standby_context_count: number; switch_count: number; estimated_interval_seconds: number | null; continuity_gap_seconds: number | null
+  standby_context_count: number; triangle_link_point_count?: number; switch_count: number; estimated_interval_seconds: number | null; continuity_gap_seconds: number | null
   suppressed_zero_sample_count: number; suppressed_zero_run_count: number; sustained_zero_run_count: number
   sustained_zero_total_duration_ms: number; sustained_zero_longest_duration_ms: number
 }
@@ -245,7 +245,7 @@ export interface MeshPathChart {
 }
 
 export interface MeshTracksideSignalPointData extends MeshIdentityMetadata {
-  timestamp: string; timestamp_tag: string; source_file_id: number | null; link_id: number | null; sample_id: number | null
+  timestamp: string; timestamp_tag: string; source_file_id: number | null; link_id: number | null; link_count?: number | null; sample_id: number | null
   local_radio: number | null; role: 'ACTIVE' | 'STANDBY'; peer_mac: string | null; peer_ap_name: string | null; peer_ap_mac: string | null
   peer_radio: string | null; peer_radio_mac: string | null; station: string | null; section: string | null
   peer_rssi: number | null; local_rssi: number | null; peer_signal: number | null; local_signal: number | null
@@ -268,7 +268,7 @@ export interface MeshTracksideSignalChartData {
   estimated_interval_seconds: number | null; continuity_gap_seconds: number | null
   total_series: number; returned_series: number; total_points: number; returned_points: number
   total_frames: number; returned_frames: number; total_link_points: number; returned_link_points: number; total_link_runs: number
-  active_link_points: number; standby_link_points: number; returned_active_link_points: number; returned_standby_link_points: number
+  active_link_points: number; standby_link_points: number; triangle_link_points?: number; returned_active_link_points: number; returned_standby_link_points: number; returned_triangle_link_points?: number
   role_switch_count: number; skipped_missing_signal_points: number; skipped_missing_identity_points: number
   suppressed_zero_sample_count: number; suppressed_zero_run_count: number; sustained_zero_run_count: number
   sustained_zero_total_duration_ms: number; sustained_zero_longest_duration_ms: number

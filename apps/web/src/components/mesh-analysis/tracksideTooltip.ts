@@ -6,6 +6,7 @@ export interface TracksideTooltipEntry {
   apName: string | null
   radio: number | null
   role: 'ACTIVE' | 'STANDBY'
+  linkCount?: number | null
   tracksideRssi: number | null
   mrRssi: number | null
   station: string | null

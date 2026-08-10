@@ -201,20 +201,21 @@ class MeshLogParser:
             issues.append(ParseIssue(str(path), line_number, "字段数量不足", f"字段数量不足：{len(parts)}", raw_line))
             return None, issues
         link_count = _parse_int(parts[9])
-        if link_count != 1:
-            if link_count == 0:
-                issues.append(
-                    ParseIssue(
-                        str(path),
-                        line_number,
-                        "无效 LinkCnt 槽位",
-                        "LinkCnt=0 是驱动层无效槽位，已在链路事实层忽略。",
-                        raw_line,
-                        severity="INFO",
-                        field_name="LinkCnt",
-                    )
+        if link_count == 0:
+            issues.append(
+                ParseIssue(
+                    str(path),
+                    line_number,
+                    "无效 LinkCnt 槽位",
+                    "LinkCnt=0 是驱动层无效槽位，已在链路事实层忽略。",
+                    raw_line,
+                    severity="INFO",
+                    field_name="LinkCnt",
                 )
-            elif link_count is None:
+            )
+            return None, issues
+        if link_count is None or link_count < 0:
+            if link_count is None:
                 issues.append(
                     ParseIssue(
                         str(path),
@@ -230,13 +231,25 @@ class MeshLogParser:
                     ParseIssue(
                         str(path),
                         line_number,
-                        "未知 LinkCnt 值",
-                        f"当前协议只接受 LinkCnt=1，实际为 {link_count}；该记录已忽略，请确认设备协议。",
+                        "LinkCnt 值异常",
+                        f"LinkCnt 不能为负数：{link_count}；该记录已忽略。",
                         raw_line,
                         field_name="LinkCnt",
                     )
                 )
             return None, issues
+        if link_count > 2:
+            issues.append(
+                ParseIssue(
+                    str(path),
+                    line_number,
+                    "扩展 LinkCnt 值",
+                    f"保留 LinkCnt={link_count} 作为有效链路事实；请结合设备协议确认其拓扑语义。",
+                    raw_line,
+                    severity="WARNING",
+                    field_name="LinkCnt",
+                )
+            )
         line_radio = _strip_radio(parts[0])
         if line_radio is None:
             issues.append(ParseIssue(str(path), line_number, "字段数量不足", "记录行缺少Radio字段", raw_line))

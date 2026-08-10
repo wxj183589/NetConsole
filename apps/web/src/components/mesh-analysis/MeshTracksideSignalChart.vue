@@ -519,6 +519,7 @@ function tooltipEntry(point: ResolvedTracksidePoint): TracksideTooltipEntry {
     apName: pointLabel(meta),
     radio: meta.localRadio ?? series.radio,
     role: meta.role,
+    linkCount: meta.linkCount,
     tracksideRssi: meta.rssi,
     mrRssi: meta.localRssi,
     station: meta.station ?? series.station,
@@ -986,6 +987,10 @@ function tracksideOverlaySeries(
 ): Array<Record<string, unknown>> {
   const switchEvents = authoritativeSwitchEvents()
   const nodes = props.showSwitchPoints ? switchNodeData(switchEvents) : []
+  const triangleNodes = seriesCache.series.flatMap((series) => series.data.flatMap((point) => {
+    const meta = tracksidePointMeta(seriesCache, point[2])
+    return meta?.linkCount === 2 && point[1] !== null ? [point] : []
+  }))
   const locationBands = props.showLocationBand ? buildMeshLocationBands(props.locationSegments) : []
   const markArea = locationBands.length ? {
     silent: true,
@@ -1027,6 +1032,16 @@ function tracksideOverlaySeries(
       symbolSize: 10,
       data: nodes.map((node) => ({ ...node, itemStyle: { color: theme.danger } })),
     },
+    ...(triangleNodes.length || clearEmpty ? [{
+      id: 'trackside-triangle-link-nodes',
+      name: '△ 三角链路',
+      type: 'scatter',
+      symbol: 'triangle',
+      symbolSize: 9,
+      silent: false,
+      data: triangleNodes,
+      itemStyle: { color: theme.warning },
+    }] : []),
   ]
 }
 
@@ -1035,7 +1050,9 @@ function tracksideDataSeries(theme: ReturnType<typeof readNetConsoleChartTokens>
   const largeMode = isLargeTimeChart(seriesCache.totalRenderedPoints)
   const overlayById = new Map(tracksideOverlaySeries(theme).map((item) => [String(item.id), item]))
   const nodeSeries = overlayById.get('trackside-switch-nodes')
+  const triangleNodeSeries = overlayById.get('trackside-triangle-link-nodes')
   const nodeData = nodeSeries?.data
+  const triangleNodeData = triangleNodeSeries?.data
   return [
     ...seriesCache.series.map((item) => {
       const color = seriesColor(item.id, theme.textSecondary)
@@ -1063,6 +1080,7 @@ function tracksideDataSeries(theme: ReturnType<typeof readNetConsoleChartTokens>
       }
     }),
     ...(Array.isArray(nodeData) && nodeData.length ? [nodeSeries!] : []),
+    ...(Array.isArray(triangleNodeData) && triangleNodeData.length ? [triangleNodeSeries!] : []),
   ]
 }
 

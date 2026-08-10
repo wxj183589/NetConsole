@@ -535,6 +535,7 @@ class MeshActiveBuildOrderPageDTO(ApiModel):
 class MeshChartBackupLinkDTO(ApiModel):
     link_id: int | None = None
     source_file_id: int | None = None
+    link_count: int | None = None
     timestamp: str
     timestamp_tag: str = ""
     local_radio: int | None = None
@@ -573,6 +574,7 @@ class MeshRssiZeroRunDTO(ApiModel):
 class MeshChartPointDTO(ApiModel):
     link_id: int | None = None
     source_file_id: int | None = None
+    link_count: int | None = None
     timestamp: str
     timestamp_tag: str = ""
     local_radio: int | None = None
@@ -658,6 +660,7 @@ class MeshPathChartSummaryDTO(ApiModel):
     sample_count: int = 0
     active_count: int = 0
     standby_context_count: int = 0
+    triangle_link_point_count: int = 0
     switch_count: int = 0
     earliest_sample_time: str | None = None
     latest_sample_time: str | None = None
@@ -703,6 +706,7 @@ class MeshTracksideSignalPointDTO(ApiModel):
     timestamp_tag: str = ""
     source_file_id: int | None = None
     link_id: int | None = None
+    link_count: int | None = None
     sample_id: int | None = None
     local_radio: int | None = None
     role: Literal["ACTIVE", "STANDBY"]
@@ -772,8 +776,10 @@ class MeshTracksideSignalChartDTO(ApiModel):
     total_link_runs: int = 0
     active_link_points: int = 0
     standby_link_points: int = 0
+    triangle_link_points: int = 0
     returned_active_link_points: int = 0
     returned_standby_link_points: int = 0
+    returned_triangle_link_points: int = 0
     role_switch_count: int = 0
     skipped_missing_signal_points: int = 0
     skipped_missing_identity_points: int = 0

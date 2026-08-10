@@ -21,6 +21,7 @@ export interface CompactTracksidePointMeta {
   timestampTag: string
   sourceFileId: number | null
   linkId: number | null
+  linkCount: number | null
   sampleId: number | null
   localRadio: number | null
   role: 'ACTIVE' | 'STANDBY'
@@ -238,6 +239,7 @@ export function buildTracksideSeriesCache(
         timestampTag: point.timestamp_tag,
         sourceFileId: point.source_file_id,
         linkId: point.link_id,
+        linkCount: point.link_count ?? null,
         sampleId: point.sample_id,
         localRadio: point.local_radio,
         role: point.role,

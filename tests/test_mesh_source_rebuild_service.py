@@ -20,6 +20,7 @@ from netconsole.repositories.mesh_mr_repository import (
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.job_center.job_runner import run_job
 from netconsole.services.mesh_bundle_import_service import MeshBundleImportService
+from netconsole.services.mesh_import_service import MeshImportService
 from netconsole.services.mesh_source_rebuild_service import (
     MeshSourceRebuildCancelled,
     MeshSourceRebuildService,
@@ -41,6 +42,7 @@ LINE = (
     "36/43 2%/4% 45%/47% 3/1 15/27 60/72060 88/105 0/5000 2/297 "
     "314/0 0/93 0/0 0/0 0/0"
 )
+TRIANGLE_LINE = LINE.replace("5a2f", "5a3f").replace("03s 1 36/43", "03s 2 36/43")
 
 
 def _log(second: int) -> bytes:
@@ -184,6 +186,36 @@ def test_source_rebuild_force_reparse_replaces_existing_detail_from_raw(
     assert sha256_file(raw) == raw_before
     with closing(sqlite3.connect(detail)) as connection:
         assert connection.execute("SELECT DISTINCT link_count FROM mesh_links").fetchall() == [(1,)]
+
+
+def test_source_rebuild_force_reparse_restores_previously_filtered_triangle_links(
+    tmp_path: Path,
+) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    profile = MeshStorageService("demo", paths).create_mr_profile("列车01-MR-CT")
+    raw_source = tmp_path / "triangle-meshlog.log"
+    raw_source.write_text(
+        "[1] 2026/08/07 10:02:52.478\n" + LINE + "\n" + TRIANGLE_LINE + "\n",
+        encoding="utf-8",
+    )
+    MeshImportService("demo", paths).import_files(profile, [raw_source])
+    repository = MeshMrRepository(paths.mesh_mr_db_path("demo", profile.safe_folder_name))
+    source = repository.list_source_files()[0]
+    detail = Path(str(source["parsed_db_path"]))
+    with closing(sqlite3.connect(detail)) as connection:
+        connection.execute("DELETE FROM mesh_links WHERE link_count = 2")
+        connection.commit()
+        assert connection.execute("SELECT DISTINCT link_count FROM mesh_links").fetchall() == [(1,)]
+
+    rebuilt = MeshSourceRebuildService(paths).rebuild_source(
+        "demo",
+        f"{profile.mr_id}:{source['id']}",
+        force_reparse=True,
+    )
+
+    assert rebuilt["recovery_source"] == "raw_reparse"
+    with closing(sqlite3.connect(detail)) as connection:
+        assert connection.execute("SELECT link_count FROM mesh_links ORDER BY id").fetchall() == [(1,), (2,)]
 
 
 def test_identity_only_remap_rebuilds_stale_base_only_index_and_projects_location(

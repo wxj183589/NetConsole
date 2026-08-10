@@ -115,10 +115,32 @@ def test_parser_excludes_linkcnt_zero_slots_from_mesh_facts(tmp_path: Path) -> N
     assert all(issue.severity == "INFO" and issue.field_name == "LinkCnt" for issue in invalid_slot_issues)
 
 
-def test_parser_rejects_unknown_linkcnt_with_diagnostic_warning(tmp_path: Path) -> None:
-    path = tmp_path / "unknown-link-count-meshlog.log"
+def test_parser_accepts_positive_linkcnt_and_warns_only_for_extended_values(tmp_path: Path) -> None:
+    path = tmp_path / "positive-link-count-meshlog.log"
     path.write_text(
-        "[1] 2026/08/07 10:02:52.478\n" + LINE_A.replace("03s 1 36/43", "03s 2 36/43") + "\n",
+        "\n".join(
+            [
+                "[1] 2026/08/07 10:02:52.478",
+                LINE_A.replace("03s 1 36/43", "03s 2 36/43"),
+                LINE_STANDBY.replace("03s 1 30/31", "03s 3 30/31"),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    info, records, issues = MeshLogParser().parse_file(path)
+
+    assert info.skipped_count == 0
+    assert [record.link_count for record in records] == [2, 3]
+    assert [(issue.issue_type, issue.severity, issue.field_name) for issue in issues] == [
+        ("扩展 LinkCnt 值", "WARNING", "LinkCnt"),
+    ]
+
+
+def test_parser_rejects_negative_linkcnt_with_diagnostic_warning(tmp_path: Path) -> None:
+    path = tmp_path / "negative-link-count-meshlog.log"
+    path.write_text(
+        "[1] 2026/08/07 10:02:52.478\n" + LINE_A.replace("03s 1 36/43", "03s -1 36/43") + "\n",
         encoding="utf-8",
     )
 
@@ -127,11 +149,11 @@ def test_parser_rejects_unknown_linkcnt_with_diagnostic_warning(tmp_path: Path) 
     assert records == []
     assert info.skipped_count == 1
     assert [(issue.issue_type, issue.severity, issue.field_name) for issue in issues] == [
-        ("未知 LinkCnt 值", "WARNING", "LinkCnt"),
+        ("LinkCnt 值异常", "WARNING", "LinkCnt"),
     ]
 
 
-def test_mesh_import_persists_only_linkcnt_one_facts(tmp_path: Path) -> None:
+def test_mesh_import_persists_all_positive_linkcnt_facts(tmp_path: Path) -> None:
     paths = PathResolver(tmp_path)
     profile = MeshStorageService("demo", paths).create_mr_profile("14CW-01")
     source = tmp_path / "14CW-01-2026_08_07-meshlog.log"
@@ -141,6 +163,9 @@ def test_mesh_import_persists_only_linkcnt_one_facts(tmp_path: Path) -> None:
                 "[1] 2026/08/07 10:02:51.873",
                 LINE_A.replace("03s 1 36/43", "03s 0 0/0"),
                 LINE_STANDBY,
+                "[1] 2026/08/07 10:02:52.478",
+                LINE_A.replace("03s 1 36/43", "03s 2 36/43"),
+                LINE_STANDBY.replace("03s 1 30/31", "03s 3 30/31"),
             ]
         ),
         encoding="utf-8",
@@ -150,10 +175,14 @@ def test_mesh_import_persists_only_linkcnt_one_facts(tmp_path: Path) -> None:
     repository = MeshMrRepository(paths.mesh_mr_db_path("demo", profile.safe_folder_name))
     total, rows = repository.query_links(10, 0)
 
-    assert result.parsed_record_count == 1
-    assert total == 1
-    assert [(row["link_state"], row["link_count"]) for row in rows] == [("STANDBY", 1)]
-    assert [issue.issue_type for issue in result.issues] == ["无效 LinkCnt 槽位"]
+    assert result.parsed_record_count == 3
+    assert total == 3
+    assert [(row["link_state"], row["link_count"]) for row in rows] == [
+        ("STANDBY", 1),
+        ("ACTIVE", 2),
+        ("STANDBY", 3),
+    ]
+    assert [issue.issue_type for issue in result.issues] == ["无效 LinkCnt 槽位", "扩展 LinkCnt 值"]
 
 
 def test_same_timestamp_with_different_tags_remains_distinct(tmp_path):

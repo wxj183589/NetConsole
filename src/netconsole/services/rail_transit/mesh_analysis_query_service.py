@@ -2659,6 +2659,7 @@ class MeshAnalysisQueryService:
             multi_active_values if multi_active_values is not None else (),
         )
         state_boundaries = no_active_boundaries | multi_active_boundaries
+        triangle_link_boundaries = self._link_count_run_boundary_indices(point_rows, 2)
         gap_boundaries = {
             neighbor
             for index, point in enumerate(point_rows)
@@ -2673,6 +2674,7 @@ class MeshAnalysisQueryService:
             *sustained_zero_boundaries,
             *suppressed_zero_recoveries,
             *valid_switch_indices,
+            *triangle_link_boundaries,
         }
         for key in (("switch_indices", "rapid_flap_indices") if include_events else ()):
             values = chart.get(key)
@@ -2834,6 +2836,15 @@ class MeshAnalysisQueryService:
                 sample_count=total_points,
                 active_count=sum(str(dict(row.get("item") or {}).get("status") or "") == "ACTIVE" for row in point_rows),
                 standby_context_count=sum(len(row.get("backups") or []) for row in point_rows),
+                triangle_link_point_count=len(
+                    {
+                        self._int(value.get("link_id"))
+                        for row in point_rows
+                        for value in [dict(row.get("item") or {}), *(dict(item) for item in row.get("backups") or [])]
+                        if self._int(value.get("link_count")) == 2
+                        and self._int(value.get("link_id")) is not None
+                    }
+                ),
                 switch_count=sum(event.event_type == "ACTIVE_SWITCH" for event in events),
                 earliest_sample_time=first_time,
                 latest_sample_time=last_time,
@@ -2978,6 +2989,7 @@ class MeshAnalysisQueryService:
                     "timestamp_tag": timestamp_tag,
                     "source_file_id": source_file_id,
                     "link_id": link_id,
+                    "link_count": self._int(row.get("link_count")),
                     "sample_id": link_id,
                     "local_radio": local_radio,
                     "role": role,
@@ -3276,6 +3288,24 @@ class MeshAnalysisQueryService:
             | sustained_zero_boundary_frames
             | suppressed_zero_recovery_frames
         )
+        triangle_link_frames = {
+            int(frame["index"])
+            for frame in ordered_frames
+            if any(self._int(item["point_values"].get("link_count")) == 2 for item in frame["items"])
+            and (
+                int(frame["index"]) == 0
+                or not any(
+                    self._int(item["point_values"].get("link_count")) == 2
+                    for item in ordered_frames[int(frame["index"]) - 1]["items"]
+                )
+                or int(frame["index"]) == total_frames - 1
+                or not any(
+                    self._int(item["point_values"].get("link_count")) == 2
+                    for item in ordered_frames[int(frame["index"]) + 1]["items"]
+                )
+            )
+        }
+        critical_frames.update(triangle_link_frames)
         trend_frames: set[int] = set()
         ordinary_frames = self._natural_second_indices(ordered_frames)
         if total_frames:
@@ -3396,11 +3426,19 @@ class MeshAnalysisQueryService:
         standby_link_points = sum(
             item["role"] == LINK_STATE_STANDBY for item in materialized
         )
+        triangle_link_points = sum(
+            self._int(item["point_values"].get("link_count")) == 2
+            for item in materialized
+        )
         returned_active_link_points = sum(
             item["role"] == LINK_STATE_ACTIVE for item in selected_items
         )
         returned_standby_link_points = sum(
             item["role"] == LINK_STATE_STANDBY for item in selected_items
+        )
+        returned_triangle_link_points = sum(
+            self._int(item["point_values"].get("link_count")) == 2
+            for item in selected_items
         )
         downsampled = returned_frames < total_frames
 
@@ -3425,8 +3463,10 @@ class MeshAnalysisQueryService:
             total_link_runs=len(runs),
             active_link_points=active_link_points,
             standby_link_points=standby_link_points,
+            triangle_link_points=triangle_link_points,
             returned_active_link_points=returned_active_link_points,
             returned_standby_link_points=returned_standby_link_points,
+            returned_triangle_link_points=returned_triangle_link_points,
             role_switch_count=role_switch_count,
             skipped_missing_signal_points=0,
             skipped_missing_identity_points=skipped_missing_identity,
@@ -3944,6 +3984,7 @@ class MeshAnalysisQueryService:
         return MeshChartBackupLinkDTO(
             link_id=self._int(row.get("link_id")),
             source_file_id=public_source_id,
+            link_count=self._int(row.get("link_count")),
             timestamp=str(row.get("sample_time") or ""),
             timestamp_tag=str(row.get("timestamp_tag") or ""),
             local_radio=self._int(row.get("radio")),
@@ -3990,6 +4031,7 @@ class MeshAnalysisQueryService:
         return MeshChartPointDTO(
             link_id=self._int(item.get("link_id")),
             source_file_id=context.source_id,
+            link_count=self._int(item.get("link_count")),
             timestamp=str(row.get("timestamp") or ""),
             timestamp_tag=str(row.get("timestamp_tag") or ""),
             local_radio=self._int(row.get("radio")),
@@ -4192,6 +4234,19 @@ class MeshAnalysisQueryService:
             previous = index
         boundaries.update((run_start, previous))
         return boundaries
+
+    @staticmethod
+    def _link_count_run_boundary_indices(
+        points: list[dict[str, Any]],
+        link_count: int,
+    ) -> set[int]:
+        """Keep the boundaries of a positive LinkCnt topology state after sampling."""
+        matching = {
+            index
+            for index, point in enumerate(points)
+            if MeshAnalysisQueryService._int(dict(point.get("item") or {}).get("link_count")) == link_count
+        }
+        return MeshAnalysisQueryService._state_run_boundary_indices(points, matching)
 
     @classmethod
     def _chart_trend_row_indices(

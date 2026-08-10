@@ -197,6 +197,38 @@ describe('MESH charts mount and render', () => {
     expect(echartsMock.chart.off).toHaveBeenCalledTimes(6)
   })
 
+  it('renders LinkCnt=2 as a non-fault triangle overlay without adding an RSSI curve', async () => {
+    const activePoint = { ...chartPoint, link_count: 2 }
+    const tracksidePoint = { ...tracksideChartPoint, link_count: 2 }
+    const activeWrapper = mount(MeshRssiChart, { props: { points: [activePoint] } })
+    const tracksideWrapper = mount(MeshTracksideSignalChart, {
+      props: {
+        series: [{
+          ...tracksideSeries[0],
+          points: [tracksidePoint],
+          total_points: 1,
+          returned_points: 1,
+        }],
+      },
+    })
+    await flushPromises()
+
+    const options = echartsMock.chart.setOption.mock.calls.map(([option]) => option as {
+      series: Array<{ id?: string; name?: string; type?: string; symbol?: string; data?: unknown[] }>
+    })
+    expect(options[0].series.filter((item) => item.type === 'line')).toHaveLength(1)
+    expect(options[0].series.find((item) => item.id === 'active-triangle-link-nodes')).toMatchObject({
+      name: '△ 三角链路', type: 'scatter', symbol: 'triangle', data: expect.any(Array),
+    })
+    expect(options[1].series.filter((item) => item.type === 'line')).toHaveLength(1)
+    expect(options[1].series.find((item) => item.id === 'trackside-triangle-link-nodes')).toMatchObject({
+      name: '△ 三角链路', type: 'scatter', symbol: 'triangle', data: expect.any(Array),
+    })
+
+    activeWrapper.unmount()
+    tracksideWrapper.unmount()
+  })
+
   it('updates active switch and location overlays without rebuilding the RSSI chart instance', async () => {
     const wrapper = mount(MeshRssiChart, {
       props: {
@@ -1262,10 +1294,11 @@ describe('MESH charts mount and render', () => {
     const openedOverlay = echartsMock.chart.setOption.mock.calls.at(-1)?.[0] as {
       series: Array<{ id?: string; type?: string; data?: unknown[]; markLine?: { data: unknown[] } }>
     }
-    expect(openedOverlay.series.filter((item) => item.type === 'scatter')).toHaveLength(1)
+    expect(openedOverlay.series.filter((item) => item.type === 'scatter')).toHaveLength(2)
     expect(openedOverlay.series[0].data).toBeUndefined()
     expect(openedOverlay.series[0].markLine?.data).toHaveLength(708)
     expect(openedOverlay.series.find((item) => item.id === 'trackside-switch-nodes')?.data).toHaveLength(16)
+    expect(openedOverlay.series.find((item) => item.id === 'trackside-triangle-link-nodes')?.data).toEqual([])
     expect(initialOption.series.every((item, index) => item.data === businessData[index])).toBe(true)
 
     await wrapper.setProps({ showSwitchLines: false, showSwitchPoints: false })
@@ -1276,6 +1309,7 @@ describe('MESH charts mount and render', () => {
     expect(closedOverlay.series[0].data).toBeUndefined()
     expect(closedOverlay.series[0].markLine?.data).toEqual([])
     expect(closedOverlay.series.find((item) => item.id === 'trackside-switch-nodes')?.data).toEqual([])
+    expect(closedOverlay.series.find((item) => item.id === 'trackside-triangle-link-nodes')?.data).toEqual([])
 
     wrapper.unmount()
   })

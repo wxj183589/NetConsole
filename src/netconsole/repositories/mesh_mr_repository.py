@@ -47,7 +47,7 @@ MIN_NORMAL_ACTIVE_SAMPLE_COUNT = 3
 _METRIC_COLUMNS = tuple(dict.fromkeys(column for _name, left, right in PAIRED_METRICS for column in (left, right)))
 _METRIC_SELECT_COLUMNS = ", ".join(_METRIC_COLUMNS)
 _MESH_LINK_CHART_COLUMNS = (
-    "id, source_file_id, session_id, sample_time, radio, link_state, peer_mac_raw, peer_mac_normalized, "
+    "id, source_file_id, session_id, sample_time, radio, link_state, link_count, peer_mac_raw, peer_mac_normalized, "
     "peer_mac AS peer_mac_display, "
     "peer_ap_name, peer_ap_mac, peer_site, peer_radio, peer_radio_label, peer_radio_mac, establish_time, "
     "local_signal_dbm, peer_signal_dbm, "

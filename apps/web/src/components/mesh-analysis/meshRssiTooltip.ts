@@ -17,12 +17,18 @@ function divider(): string {
   return `<hr class="mesh-rssi-tooltip__divider" style="${DIVIDER_STYLE}">`
 }
 
+function linkCount(value: number | null | undefined): string {
+  if (value == null) return 'LinkCnt：—'
+  return value === 2 ? 'LinkCnt：2（△ 三角链路）' : `LinkCnt：${escapeMeshTooltipHtml(value)}`
+}
+
 export function buildBackupSection(backups: readonly MeshChartBackupLink[]): string {
   if (!backups.length) return `${divider()}<strong>备份链路：无</strong>`
   const rows = backups.map((item, index) => [
     `${index + 1}. ${escapeMeshTooltipHtml(item.peer_ap_name || item.peer_mac)}`,
     `AP MAC：${escapeMeshTooltipHtml(item.peer_ap_mac)}`,
     `MR / 轨旁 AP 接收信号：${metric(item.local_rssi)} / ${metric(item.peer_rssi)}`,
+    linkCount(item.link_count),
     `Radio：${item.local_radio == null ? '—' : `radio${escapeMeshTooltipHtml(item.local_radio)}`}`,
     `归属站点 / 区间：${escapeMeshTooltipHtml(item.station)} / ${escapeMeshTooltipHtml(item.section)}`,
   ].join('<br>'))
@@ -66,6 +72,7 @@ export function buildMeshRssiTooltip(point?: MeshChartPoint, event?: MeshChartEv
     `当前轨旁 AP：${escapeMeshTooltipHtml(point.peer_ap_name)}`,
     `当前轨旁 AP MAC：${escapeMeshTooltipHtml(point.peer_ap_mac)}`,
     `MR / 轨旁 AP 接收信号：${metric(point.local_rssi)} / ${metric(point.peer_rssi)}`,
+    linkCount(point.link_count),
     ...(point.local_rssi_zero_run
       ? [
           '<strong>状态：持续无有效 RSSI</strong>',
@@ -91,6 +98,7 @@ export function buildMeshRssiQuickTooltip(point?: MeshChartPoint, event?: MeshCh
   if (point) {
     rows.push(`RSSI ${metric(point.local_rssi, ' dBm')}`)
     rows.push(`AP ${escapeMeshTooltipHtml(point.peer_ap_name || point.peer_mac)}`)
+    rows.push(linkCount(point.link_count))
   } else if (event) {
     rows.push(escapeMeshTooltipHtml(event.to_ap_name || event.to_peer_mac || '切换事件'))
   } else {
@@ -120,6 +128,7 @@ export function buildMeshRssiZeroRunTooltip(
     `当前轨旁 AP：${escapeMeshTooltipHtml(point.peer_ap_name)}`,
     `当前轨旁 AP MAC：${escapeMeshTooltipHtml(point.peer_ap_mac)}`,
     `Radio：${point.local_radio == null ? '—' : escapeMeshTooltipHtml(point.local_radio)}`,
+    linkCount(point.link_count),
     `归属站点 / 区间：${escapeMeshTooltipHtml(point.station)} / ${escapeMeshTooltipHtml(point.section)}`,
     '</div>',
   ].join('<br>')
@@ -129,6 +138,7 @@ export function buildMeshSwitchPointTooltip(
   event: MeshSwitchEvent | undefined,
   seriesName: string,
   value: number | null | undefined,
+  linkCountValue?: number | null,
 ): string {
   return [
     `<div class="mesh-switch-tooltip" style="${TOOLTIP_STYLE}">`,
@@ -136,6 +146,7 @@ export function buildMeshSwitchPointTooltip(
     `${escapeMeshTooltipHtml(seriesName || '切换 RSSI')}：${metric(value)}`,
     `原 AP → 目标 AP：${escapeMeshTooltipHtml(event?.from_ap_name || event?.from_peer_mac)} → ${escapeMeshTooltipHtml(event?.to_ap_name || event?.to_peer_mac)}`,
     `Radio：${event?.local_radio == null ? '—' : escapeMeshTooltipHtml(event.local_radio)}`,
+    linkCount(linkCountValue),
     '</div>',
   ].join('<br>')
 }

@@ -50,6 +50,7 @@ def _insert_active_mesh_link(
     peer_signal: int | None = None,
     link_state: str = "ACTIVE",
     peer_radio_mac: str | None = None,
+    link_count: int = 1,
 ) -> None:
     ap_mac = f"{int(peer_mac, 16) + 0x1000:012x}"
     conn.execute("INSERT INTO samples VALUES (?, 1, ?, ?, '')", (row_id, radio, sample_time))
@@ -58,11 +59,11 @@ def _insert_active_mesh_link(
         INSERT INTO mesh_links (
             id, sample_id, source_file_id, record_seq, source_line_number, sample_time, radio, link_state,
             peer_mac_raw, peer_mac_normalized, peer_mac, peer_ap_name, peer_ap_mac, peer_site,
-            peer_radio_label, peer_radio, duration_seconds, local_rssi_db, peer_rssi_db,
+            peer_radio_label, peer_radio, duration_seconds, link_count, local_rssi_db, peer_rssi_db,
             local_tx_busy, peer_tx_busy, local_rx_busy, peer_rx_busy, peer_match_rule, peer_resolve_source,
             peer_radio_mac, timestamp_tag, session_id, local_signal_dbm, peer_signal_dbm
         ) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '',
-            'radio', 'radio', 1, ?, ?, 1, 1, 1, 1, 'exact', 'mapping',
+            'radio', 'radio', 1, ?, ?, ?, 1, 1, 1, 1, 'exact', 'mapping',
             ?, '', 'session-trackside', -50, ?)
         """,
         (
@@ -78,6 +79,7 @@ def _insert_active_mesh_link(
             peer_mac,
             peer_name,
             ap_mac,
+            link_count,
             (peer_rssi or 0) - 5,
             peer_rssi,
             peer_radio_mac or peer_mac,
@@ -93,6 +95,7 @@ def _active_chart_row(
     *,
     local_rssi: int = 40,
     link_state: str = "ACTIVE",
+    link_count: int = 1,
 ) -> dict[str, object]:
     return {
         "id": row_id,
@@ -101,6 +104,7 @@ def _active_chart_row(
         "timestamp_tag": "",
         "radio": 1,
         "link_state": link_state,
+        "link_count": link_count,
         "peer_mac_raw": peer_mac,
         "peer_mac_normalized": peer_mac,
         "peer_mac": peer_mac,
@@ -1434,6 +1438,83 @@ def test_trackside_signal_chart_downsamples_complete_frames(tmp_path: Path) -> N
     assert set(returned_by_frame.values()) == {4}
     assert "2026-07-15 09:50:09.000" in returned_by_frame
     assert "2026-07-15 09:50:10.000" in returned_by_frame
+
+
+def test_rssi_charts_preserve_linkcnt_two_context_and_triangle_statistics(tmp_path: Path) -> None:
+    paths, session_id, detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    with sqlite3.connect(detail) as conn:
+        _clear_mesh_chart_rows(conn)
+        _insert_active_mesh_link(
+            conn,
+            row_id=1,
+            sample_time="2026-08-07 10:02:52.478",
+            radio=1,
+            peer_name="AP-X_3105",
+            peer_mac="000000003105",
+            peer_rssi=43,
+            link_count=2,
+        )
+        _insert_active_mesh_link(
+            conn,
+            row_id=2,
+            sample_time="2026-08-07 10:02:52.478",
+            radio=1,
+            peer_name="AP-X_3106",
+            peer_mac="000000003106",
+            peer_rssi=31,
+            link_state="STANDBY",
+            link_count=1,
+        )
+    service = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())  # type: ignore[arg-type]
+
+    active_chart = service.get_active_path_chart("demo", session_id, radio=1, max_points=10)
+    trackside_chart = service.get_trackside_signal_chart("demo", session_id, radio=1, max_points=10)
+
+    assert active_chart.points[0].link_count == 2
+    assert active_chart.points[0].backups[0].link_count == 1
+    assert active_chart.summary.triangle_link_point_count == 1
+    assert trackside_chart.triangle_link_points == 1
+    assert trackside_chart.returned_triangle_link_points == 1
+    assert {
+        (point.peer_ap_name, point.role, point.link_count)
+        for series in trackside_chart.series
+        for point in series.points
+    } == {
+        ("AP-X_3105", "ACTIVE", 2),
+        ("AP-X_3106", "STANDBY", 1),
+    }
+
+
+@pytest.mark.parametrize("max_points", [600, 2_000])
+def test_rssi_chart_downsampling_preserves_linkcnt_two_boundaries(
+    tmp_path: Path,
+    max_points: int,
+) -> None:
+    paths, session_id, detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    frame_count = max_points + 100
+    with sqlite3.connect(detail) as conn:
+        _clear_mesh_chart_rows(conn)
+        for row_id in range(1, frame_count + 1):
+            minute, second = divmod(row_id - 1, 60)
+            _insert_active_mesh_link(
+                conn,
+                row_id=row_id,
+                sample_time=f"2026-08-07 11:{minute:02d}:{second:02d}.000",
+                radio=1,
+                peer_name="AP-X_3105",
+                peer_mac="000000003105",
+                peer_rssi=40 + row_id % 3,
+                link_count=2 if row_id in {max_points // 2, max_points // 2 + 1} else 1,
+            )
+    service = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())  # type: ignore[arg-type]
+
+    active_chart = service.get_active_path_chart("demo", session_id, radio=1, max_points=max_points)
+    trackside_chart = service.get_trackside_signal_chart("demo", session_id, radio=1, max_points=max_points)
+
+    assert active_chart.downsampled is True
+    assert {point.link_count for point in active_chart.points} >= {2}
+    assert trackside_chart.downsampled is True
+    assert {point.link_count for series in trackside_chart.series for point in series.points} >= {2}
 
 
 def test_trackside_signal_chart_uses_legacy_backup_context_without_duplication(tmp_path: Path) -> None:
