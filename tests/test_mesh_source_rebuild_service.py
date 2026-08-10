@@ -4,13 +4,14 @@ import io
 import json
 import sqlite3
 import zipfile
+from contextlib import closing
 from pathlib import Path
 
 import pytest
 
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
-from netconsole.parsers.mesh_log_parser import sha256_file
+from netconsole.parsers.mesh_log_parser import MeshLogParser, sha256_file
 from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.mesh_mr_repository import (
     MeshIdentityRemapValidationError,
@@ -146,6 +147,43 @@ def test_source_rebuild_prefers_identity_only_remap_for_healthy_detail(
         ).fetchall()
         assert connection.execute("SELECT COUNT(*) FROM mesh_links").fetchone()[0] == link_count_before
     assert facts_after == facts_before
+
+
+def test_source_rebuild_force_reparse_replaces_existing_detail_from_raw(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, profile, _result = _preview(tmp_path)
+    repository = MeshMrRepository(paths.mesh_mr_db_path("demo", profile.safe_folder_name))
+    source = repository.list_source_files()[0]
+    detail = Path(str(source["parsed_db_path"]))
+    raw = Path(str(source["archived_path"]))
+    raw_before = sha256_file(raw)
+    with closing(sqlite3.connect(detail)) as connection:
+        connection.execute("UPDATE mesh_links SET link_count = 0")
+        connection.commit()
+        assert connection.execute("SELECT DISTINCT link_count FROM mesh_links").fetchall() == [(0,)]
+
+    original_parse = MeshLogParser.parse_file
+    parsed_paths: list[Path] = []
+
+    def observe_parse(self, path: Path, *args, **kwargs):
+        parsed_paths.append(path)
+        return original_parse(self, path, *args, **kwargs)
+
+    monkeypatch.setattr(MeshLogParser, "parse_file", observe_parse)
+
+    rebuilt = MeshSourceRebuildService(paths).rebuild_source(
+        "demo",
+        f"{profile.mr_id}:{source['id']}",
+        force_reparse=True,
+    )
+
+    assert rebuilt["recovery_source"] == "raw_reparse"
+    assert parsed_paths == [raw]
+    assert sha256_file(raw) == raw_before
+    with closing(sqlite3.connect(detail)) as connection:
+        assert connection.execute("SELECT DISTINCT link_count FROM mesh_links").fetchall() == [(1,)]
 
 
 def test_identity_only_remap_rebuilds_stale_base_only_index_and_projects_location(
@@ -439,11 +477,14 @@ def test_source_rebuild_cancel_before_commit_uses_cancelled_job_terminal(
             should_cancel=lambda: True,
         )
 
+    captured_kwargs: dict[str, object] = {}
+
     class CancelledService:
         def __init__(self, _paths: PathResolver) -> None:
             pass
 
         def rebuild_source(self, *_args, **_kwargs):
+            captured_kwargs.update(_kwargs)
             raise MeshSourceRebuildCancelled("MESH 来源重建任务已取消")
 
     monkeypatch.setattr(
@@ -466,3 +507,4 @@ def test_source_rebuild_cancel_before_commit_uses_cancelled_job_terminal(
     assert result.cancelled is True
     assert result.ok is False
     assert result.error == "MESH 来源重建任务已取消"
+    assert captured_kwargs["force_reparse"] is True
