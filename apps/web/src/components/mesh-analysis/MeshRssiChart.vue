@@ -130,6 +130,14 @@ function switchNodeData(events: MeshChartEvent[]): Array<{ value: [string, numbe
   })
 }
 
+function triangleLinkNodeData(): Array<{ value: [string, number]; meta: MeshChartPoint }> {
+  return props.points.flatMap((point) => (
+    point.link_count === 2 && point.local_rssi != null
+      ? [{ value: [point.timestamp, point.local_rssi], meta: point }]
+      : []
+  ))
+}
+
 function hasRenderableSize(): boolean {
   return Boolean(container.value && container.value.clientWidth > 0 && container.value.clientHeight > 0)
 }
@@ -399,6 +407,7 @@ function activeOverlaySeries(
 ): Array<Record<string, unknown>> {
   const switchEvents = props.events.filter((event) => event.event_type === 'ACTIVE_SWITCH')
   const nodes = props.showSwitchPoints ? switchNodeData(switchEvents) : []
+  const triangleNodes = triangleLinkNodeData()
   const locationBands = props.showLocationBand ? buildMeshLocationBands(props.locationSegments) : []
   const markArea = locationBands.length ? {
     silent: true,
@@ -440,6 +449,15 @@ function activeOverlaySeries(
       symbolSize: 10,
       data: nodes.map((node) => ({ ...node, itemStyle: { color: theme.danger } })),
     }] : []),
+    ...(triangleNodes.length || clearEmpty ? [{
+      id: 'active-triangle-link-nodes',
+      name: '△ 三角链路',
+      type: 'scatter',
+      symbol: 'triangle',
+      symbolSize: 9,
+      data: triangleNodes,
+      itemStyle: { color: theme.warning },
+    }] : []),
   ]
 }
 
@@ -458,6 +476,7 @@ function render(reason: 'data' | 'display' | 'theme' | 'reset'): void {
   primarySeriesData = series[0]?.data || []
   const overlayById = new Map(activeOverlaySeries(theme).map((item) => [String(item.id), item]))
   const switchNodes = overlayById.get('active-switch-nodes')
+  const triangleNodes = overlayById.get('active-triangle-link-nodes')
   const target = props.lockedViewport || previous || props.initialViewport || fullViewport()
   const baseOption = createMultiSeriesTimeChartBaseOption(theme, {
     unit: 'RSSI',
@@ -509,6 +528,7 @@ function render(reason: 'data' | 'display' | 'theme' | 'reset'): void {
         ...(index === 0 ? overlayById.get(item.metric) : {}),
       })),
       ...(switchNodes ? [switchNodes] : []),
+      ...(triangleNodes ? [triangleNodes] : []),
     ],
   }, { replaceMerge: ['series'] })
   if (target) {

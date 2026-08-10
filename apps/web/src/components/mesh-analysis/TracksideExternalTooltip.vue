@@ -104,6 +104,7 @@ function hasActiveDuration(entry: TracksideTooltipEntry): boolean {
         <div class="trackside-tooltip-entry__ap">
           AP：{{ tracksideTooltipApLabel(entry) }} · Radio {{ displayTracksideTooltipMetric(entry.radio) }}
         </div>
+        <div v-if="!compact">LinkCnt：{{ entry.linkCount ?? '—' }}<span v-if="entry.linkCount === 2">（△ 三角链路）</span></div>
         <div v-if="!compact && entry.rssiZeroRun?.state === 'sustained'" class="trackside-tooltip-entry__zero-run">
           <strong>{{ t('mesh.rssi.zero.status', '状态：持续无有效 RSSI') }}</strong><br>
           {{ t('mesh.rssi.zero.start', '开始时间') }}：{{ entry.rssiZeroRun.start_time }}<br>

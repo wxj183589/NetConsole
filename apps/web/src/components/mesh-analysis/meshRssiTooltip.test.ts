@@ -5,6 +5,7 @@ import { buildMeshRssiTooltip, buildMeshRssiZeroRunTooltip, buildMeshSwitchPoint
 
 const point: MeshChartPoint = {
   link_id: 1,
+  link_count: 2,
   timestamp: '2024-10-22 14:31:50.201',
   timestamp_tag: null,
   source_file_id: 1,
@@ -31,6 +32,7 @@ const point: MeshChartPoint = {
   gap_before: false,
   backups: [{
     link_id: 2,
+    link_count: 1,
     timestamp: '2024-10-22 14:31:50.201',
     timestamp_tag: '',
     local_radio: 1,
@@ -78,9 +80,10 @@ describe('MESH RSSI tooltip', () => {
       '当前轨旁 AP：&lt;主 AP&gt;',
       '当前轨旁 AP MAC：main-ap',
       'MR / 轨旁 AP 接收信号：31 / 29',
+      'LinkCnt：2（△ 三角链路）',
       '归属站点 / 区间：站点&amp;一 / —',
       '建链持续时间：1 s',
-      '<hr class="mesh-rssi-tooltip__divider" style="margin:8px 0;border:0;border-top:1px solid currentColor;opacity:.35"><strong>备份链路</strong><br>1. 备份 AP<br>AP MAC：backup-ap<br>MR / 轨旁 AP 接收信号：30 / 28<br>Radio：radio1<br>归属站点 / 区间：站点二 / 区间二',
+      '<hr class="mesh-rssi-tooltip__divider" style="margin:8px 0;border:0;border-top:1px solid currentColor;opacity:.35"><strong>备份链路</strong><br>1. 备份 AP<br>AP MAC：backup-ap<br>MR / 轨旁 AP 接收信号：30 / 28<br>LinkCnt：1<br>Radio：radio1<br>归属站点 / 区间：站点二 / 区间二',
       '',
       '</div>',
     ].join('<br>'))
@@ -94,6 +97,7 @@ describe('MESH RSSI tooltip', () => {
     expect(html.match(/class="mesh-rssi-tooltip"/g)).toHaveLength(1)
     expect(html.match(/class="mesh-rssi-tooltip__divider"/g)).toHaveLength(3)
     expect(html).toContain('MR / 轨旁 AP 接收信号：31 / 29')
+    expect(html).toContain('LinkCnt：2（△ 三角链路）')
     expect(html).toContain('MR / 轨旁 AP 接收信号：30 / 28')
     expect(html).not.toContain('MR / 轨旁 AP 接收信号：-31 / -29')
     expect(html.toLowerCase()).not.toContain('dbm')
@@ -177,10 +181,11 @@ describe('MESH RSSI tooltip', () => {
       event_id: 1, timestamp: point.timestamp, event_type: 'ACTIVE_SWITCH', mr_name: 'MR', local_radio: 1,
       from_peer_mac: 'from', to_peer_mac: 'to', from_ap_name: '<原>', to_ap_name: '目标', before_rssi: 31, after_rssi: 29,
       duration_ms: 20, is_short_link: false, is_pingpong: false, station: null, section: null, warning: null,
-    }, '切换前', 31)
+    }, '切换前', 31, 2)
     expect(html).not.toContain('ACTIVE_SWITCH')
     expect(html).not.toContain('耗时')
     expect(html).toContain('&lt;原&gt;')
+    expect(html).toContain('LinkCnt：2（△ 三角链路）')
   })
 
   it('explains why an event without an aligned RSSI point has no red node', () => {
