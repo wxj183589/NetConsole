@@ -15,6 +15,14 @@ async function temporaryDirectory(): Promise<string> {
   return mkdtempSync(join(tmpdir(), 'netconsole-logger-test-'))
 }
 
+function appendAtLogicalTime(now: () => Date) {
+  return async (path: string, line: string): Promise<void> => {
+    await appendFile(path, line, 'utf8')
+    const timestamp = now()
+    await utimes(path, timestamp, timestamp)
+  }
+}
+
 describe('desktop file logger lifecycle', () => {
   it('rotates the active file at the configured size and keeps it writable', async () => {
     const root = await temporaryDirectory()
@@ -80,7 +88,8 @@ describe('desktop file logger lifecycle', () => {
     try {
       const active = join(root, 'electron.log')
       let clock = new Date('2026-08-10T01:00:00.000Z').getTime()
-      const logger = createFileLogger(active, { now: () => new Date(clock) })
+      const now = () => new Date(clock)
+      const logger = createFileLogger(active, { now, appendLine: appendAtLogicalTime(now) })
       for (let index = 0; index < 13; index += 1) {
         logger('BACKEND_TIMEOUT', 'endpoint=/health status=504', 'WARNING')
         clock += 5_000
@@ -99,7 +108,8 @@ describe('desktop file logger lifecycle', () => {
     try {
       const active = join(root, 'electron.log')
       let clock = new Date('2026-08-10T01:00:00.000Z').getTime()
-      const logger = createFileLogger(active, { now: () => new Date(clock) })
+      const now = () => new Date(clock)
+      const logger = createFileLogger(active, { now, appendLine: appendAtLogicalTime(now) })
       logger('BACKEND_TIMEOUT', 'endpoint=/health status=504', 'WARNING')
       clock += 11_000
       logger('BACKEND_TIMEOUT', 'endpoint=/health status=504', 'WARNING')
