@@ -115,6 +115,7 @@ export interface MeshAnalysisSession {
 export interface MeshApCoverageSource {
   session_id: string; mr_name: string; original_filename: string
   first_sample_time: string | null; last_sample_time: string | null
+  distinct_peer_radio_count: number; distinct_canonical_ap_count: number
 }
 export interface MeshApCoverageRow {
   ap_name: string; physical_ap_mac: string; radio_mac: string; station: string; section: string; direction: string
@@ -129,8 +130,14 @@ export interface MeshApCoverageSummary {
   unmatched_observed_count: number; excluded_count: number; coverage_percent: number
   route_scope_mode: 'observed_route' | 'all_mainline_fallback'; observed_station_count: number; observed_section_count: number
 }
+export interface MeshApCoverageIdentitySummary {
+  identity_scope: string; identity_revision: number; index_status: string
+  mesh_distinct_peer_radio_count: number; mesh_distinct_canonical_ap_count: number; persisted_matched_count: number
+  fallback_requested_count: number; fallback_matched_count: number; fallback_unmatched_count: number
+}
 export interface MeshApCoverageAudit {
   site_id: string; sources: MeshApCoverageSource[]; summary: MeshApCoverageSummary
+  identity_summary: MeshApCoverageIdentitySummary
   connected: MeshApCoverageRow[]; unconnected: MeshApCoverageRow[]; unmatched: MeshApCoverageRow[]; excluded: MeshApCoverageRow[]
 }
 

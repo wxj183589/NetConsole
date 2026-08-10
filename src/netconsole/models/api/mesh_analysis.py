@@ -328,6 +328,8 @@ class MeshApCoverageSourceDTO(ApiModel):
     original_filename: str = ""
     first_sample_time: str | None = None
     last_sample_time: str | None = None
+    distinct_peer_radio_count: int = 0
+    distinct_canonical_ap_count: int = 0
 
 
 class MeshApCoverageRowDTO(ApiModel):
@@ -370,10 +372,23 @@ class MeshApCoverageSummaryDTO(ApiModel):
     observed_section_count: int = 0
 
 
+class MeshApCoverageIdentitySummaryDTO(ApiModel):
+    identity_scope: str = "current"
+    identity_revision: int = 0
+    index_status: str = "not_checked"
+    mesh_distinct_peer_radio_count: int = 0
+    mesh_distinct_canonical_ap_count: int = 0
+    persisted_matched_count: int = 0
+    fallback_requested_count: int = 0
+    fallback_matched_count: int = 0
+    fallback_unmatched_count: int = 0
+
+
 class MeshApCoverageAuditDTO(ApiModel):
     site_id: str
     sources: list[MeshApCoverageSourceDTO] = Field(default_factory=list)
     summary: MeshApCoverageSummaryDTO = Field(default_factory=MeshApCoverageSummaryDTO)
+    identity_summary: MeshApCoverageIdentitySummaryDTO = Field(default_factory=MeshApCoverageIdentitySummaryDTO)
     connected: list[MeshApCoverageRowDTO] = Field(default_factory=list)
     unconnected: list[MeshApCoverageRowDTO] = Field(default_factory=list)
     unmatched: list[MeshApCoverageRowDTO] = Field(default_factory=list)

@@ -5,10 +5,12 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from openpyxl import load_workbook
+import pytest
 from netconsole.models.ap_identity_index import ApIdentityBatchResult, ApIdentityMatch
 from netconsole.services.ap_identity.normalizers import normalize_mac_key
 from netconsole.services.mesh_ap_coverage_export import export_mesh_ap_coverage_audit_xlsx
 from netconsole.services.rail_transit.mesh_ap_coverage_audit_service import (
+    MeshApCoverageAuditError,
     MeshApCoverageAuditService,
 )
 
@@ -32,9 +34,16 @@ class _FakeQueryService:
 
 
 class _FakeIdentityQuery:
-    def __init__(self, peer_to_ap: dict[str, str], ap_metadata: dict[str, dict[str, str]]) -> None:
+    def __init__(
+        self,
+        peer_to_ap: dict[str, str],
+        ap_metadata: dict[str, dict[str, str]],
+        *,
+        index_status: str = "ready",
+    ) -> None:
         self._peer_to_ap = peer_to_ap
         self._ap_metadata = ap_metadata
+        self._index_status = index_status
 
     def resolve_peer_macs(self, macs: list[str]) -> ApIdentityBatchResult:
         matches: dict[str, ApIdentityMatch] = {}
@@ -66,6 +75,9 @@ class _FakeIdentityQuery:
             matches=matches,
         )
 
+    def revision_state(self) -> SimpleNamespace:
+        return SimpleNamespace(site_id="current", revision=1, status=self._index_status)
+
     def resolve_current_ap_mac(self, mac: str) -> ApIdentityMatch:
         metadata = self._ap_metadata.get(normalize_mac_key(mac) or "", {})
         return ApIdentityMatch(
@@ -92,13 +104,16 @@ def _detail_database(path: Path, rows: list[tuple[str, str, int, str, str, str]]
                 peer_mac_raw TEXT,
                 peer_ap_name TEXT,
                 peer_site TEXT,
-                peer_section TEXT
+                peer_section TEXT,
+                peer_ap_mac TEXT,
+                peer_identity_status TEXT,
+                peer_identity_reason TEXT
             )
             """
         )
         connection.executemany(
             """
-            INSERT INTO mesh_links VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO mesh_links VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', '')
             """,
             [
                 (sample_time, state, link_count, radio_mac, radio_mac, radio_mac, name, station, section)
@@ -161,6 +176,16 @@ def test_ap_coverage_uses_valid_links_identity_and_observed_route_scope(tmp_path
         ),
     }
     physical_macs = {index: f"0000-0000-01{index:02d}" for index in range(1, 9)}
+    with sqlite3.connect(source_a) as connection:
+        connection.execute(
+            "UPDATE mesh_links SET peer_ap_mac = ?, peer_identity_status = 'matched' WHERE peer_radio_mac = ?",
+            (physical_macs[1], "0000-0000-0011"),
+        )
+    with sqlite3.connect(source_b) as connection:
+        connection.execute(
+            "UPDATE mesh_links SET peer_ap_mac = ?, peer_identity_status = 'matched' WHERE peer_radio_mac = ?",
+            (physical_macs[2], "0000-0000-0022"),
+        )
     metadata = {
         normalize_mac_key(physical_macs[index]) or "": {
             "name": f"AP-{index:02d}",
@@ -172,10 +197,7 @@ def test_ap_coverage_uses_valid_links_identity_and_observed_route_scope(tmp_path
         for index in range(1, 9)
     }
     identity = _FakeIdentityQuery(
-        {
-            normalize_mac_key("0000-0000-0011") or "": physical_macs[1],
-            normalize_mac_key("0000-0000-0022") or "": physical_macs[2],
-        },
+        {},
         metadata,
     )
     base_items = [
@@ -210,6 +232,15 @@ def test_ap_coverage_uses_valid_links_identity_and_observed_route_scope(tmp_path
     assert result.summary.unmatched_observed_count == 1
     assert result.summary.excluded_count == 3
     assert result.summary.coverage_percent == 66.67
+    assert result.identity_summary.identity_scope == "current"
+    assert result.identity_summary.mesh_distinct_canonical_ap_count == 2
+    assert result.identity_summary.persisted_matched_count == 2
+    assert result.identity_summary.fallback_requested_count == 1
+    assert result.identity_summary.fallback_unmatched_count == 1
+    assert result.sources[0].distinct_peer_radio_count == 2
+    assert result.sources[0].distinct_canonical_ap_count == 1
+    assert result.sources[1].distinct_peer_radio_count == 1
+    assert result.sources[1].distinct_canonical_ap_count == 1
     assert {item.ap_name for item in result.connected} == {"AP-01", "AP-02"}
     assert {item.ap_name for item in result.unconnected if item.in_observed_route_scope} == {"AP-03"}
     assert next(item for item in result.connected if item.ap_name == "AP-02").seen_in_source_a is False
@@ -222,3 +253,28 @@ def test_ap_coverage_uses_valid_links_identity_and_observed_route_scope(tmp_path
     assert output.is_file()
     workbook = load_workbook(output, read_only=True)
     assert workbook.sheetnames == ["核查摘要", "未连接 AP", "已连接 AP", "资料未匹配", "排除 AP"]
+
+
+def test_ap_coverage_fails_when_identity_index_is_unavailable(tmp_path: Path) -> None:
+    source_a = tmp_path / "source-a.sqlite"
+    source_b = tmp_path / "source-b.sqlite"
+    source_a.touch()
+    source_b.touch()
+    contexts = {
+        session_id: SimpleNamespace(
+            site_id="demo",
+            session_id=session_id,
+            mr_name=session_id,
+            detail_db=source,
+            source={},
+        )
+        for session_id, source in (("a", source_a), ("b", source_b))
+    }
+    service = MeshApCoverageAuditService(
+        _FakeQueryService(contexts),
+        SimpleNamespace(),
+        identity_query=_FakeIdentityQuery({}, {}, index_status="stale"),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(MeshApCoverageAuditError, match="AP Identity 索引不可用"):
+        service.audit("demo", ["a", "b"])
