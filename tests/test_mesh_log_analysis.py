@@ -76,7 +76,7 @@ def test_parse_timestamp_and_standy(tmp_path):
     assert records[0].link_state == "STANDBY"
 
 
-def test_parser_excludes_linkcnt_zero_slots_from_mesh_facts(tmp_path: Path) -> None:
+def test_parser_discards_entire_snapshot_when_active_linkcnt_is_zero(tmp_path: Path) -> None:
     path = tmp_path / "14CW-01-2026_08_07-meshlog.log"
     invalid_active = LINE_A.replace("03s 1 36/43", "03s 0 0/0")
     path.write_text(
@@ -98,21 +98,101 @@ def test_parser_excludes_linkcnt_zero_slots_from_mesh_facts(tmp_path: Path) -> N
 
     info, records, issues = MeshLogParser().parse_file(path)
 
-    assert info.record_count == 4
-    assert info.skipped_count == 2
+    assert info.record_count == 2
+    assert info.skipped_count == 4
     assert all(record.link_count == 1 for record in records)
     assert [
         (record.sample_time.strftime("%H:%M:%S.%f")[:12], record.link_state)
         for record in records
     ] == [
-        ("10:02:51.873", "STANDBY"),
-        ("10:02:52.001", "STANDBY"),
         ("10:02:52.478", "ACTIVE"),
         ("10:02:52.478", "STANDBY"),
     ]
     invalid_slot_issues = [issue for issue in issues if issue.issue_type == "无效 LinkCnt 槽位"]
     assert len(invalid_slot_issues) == 2
     assert all(issue.severity == "INFO" and issue.field_name == "LinkCnt" for issue in invalid_slot_issues)
+    invalid_snapshot_issues = [issue for issue in issues if issue.issue_type == "无效主链快照"]
+    assert len(invalid_snapshot_issues) == 2
+    assert all(issue.severity == "INFO" and issue.field_name == "LinkCnt" for issue in invalid_snapshot_issues)
+
+
+def test_parser_keeps_valid_snapshot_when_only_standby_linkcnt_is_zero(tmp_path: Path) -> None:
+    path = tmp_path / "standby-zero-meshlog.log"
+    invalid_standby = LINE_STANDBY.replace("03s 1 30/31", "03s 0 0/0")
+    second_standby = LINE_STANDBY.replace("5a4f", "5a5f")
+    path.write_text(
+        "\n".join(
+            [
+                "[1] 2026/08/07 10:02:52.478",
+                LINE_A,
+                invalid_standby,
+                second_standby,
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    info, records, issues = MeshLogParser().parse_file(path)
+
+    assert info.record_count == 2
+    assert info.skipped_count == 1
+    assert [(record.link_state, record.link_count) for record in records] == [
+        ("ACTIVE", 1),
+        ("STANDBY", 1),
+    ]
+    assert [issue.issue_type for issue in issues] == ["无效 LinkCnt 槽位"]
+
+
+def test_parser_keeps_same_timestamp_with_a_different_tag(tmp_path: Path) -> None:
+    path = tmp_path / "tagged-snapshot-meshlog.log"
+    invalid_active = LINE_A.replace("03s 1 36/43", "03s 0 0/0")
+    path.write_text(
+        "\n".join(
+            [
+                "[1] 2026/08/07 10:02:51.873 (1)",
+                invalid_active,
+                LINE_STANDBY,
+                "[1] 2026/08/07 10:02:51.873 (2)",
+                LINE_A,
+                LINE_STANDBY,
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    _, records, _ = MeshLogParser().parse_file(path)
+
+    assert [(record.timestamp_tag, record.link_state) for record in records] == [
+        ("2", "ACTIVE"),
+        ("2", "STANDBY"),
+    ]
+
+
+def test_parser_does_not_discard_same_timestamp_on_another_radio(tmp_path: Path) -> None:
+    path = tmp_path / "multi-radio-snapshot-meshlog.log"
+    invalid_active = LINE_A.replace("03s 1 36/43", "03s 0 0/0")
+    radio_two_active = LINE_A.replace("[1] Active", "[2] Active")
+    radio_two_standby = LINE_STANDBY.replace("[1] Standy", "[2] Standy")
+    path.write_text(
+        "\n".join(
+            [
+                "[1] 2026/08/07 10:02:51.873",
+                invalid_active,
+                LINE_STANDBY,
+                "[2] 2026/08/07 10:02:51.873",
+                radio_two_active,
+                radio_two_standby,
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    _, records, _ = MeshLogParser().parse_file(path)
+
+    assert [(record.radio, record.link_state) for record in records] == [
+        (2, "ACTIVE"),
+        (2, "STANDBY"),
+    ]
 
 
 def test_parser_accepts_positive_linkcnt_and_warns_only_for_extended_values(tmp_path: Path) -> None:
@@ -175,14 +255,13 @@ def test_mesh_import_persists_all_positive_linkcnt_facts(tmp_path: Path) -> None
     repository = MeshMrRepository(paths.mesh_mr_db_path("demo", profile.safe_folder_name))
     total, rows = repository.query_links(10, 0)
 
-    assert result.parsed_record_count == 3
-    assert total == 3
+    assert result.parsed_record_count == 2
+    assert total == 2
     assert [(row["link_state"], row["link_count"]) for row in rows] == [
-        ("STANDBY", 1),
         ("ACTIVE", 2),
         ("STANDBY", 3),
     ]
-    assert [issue.issue_type for issue in result.issues] == ["无效 LinkCnt 槽位", "扩展 LinkCnt 值"]
+    assert [issue.issue_type for issue in result.issues] == ["无效 LinkCnt 槽位", "扩展 LinkCnt 值", "无效主链快照"]
 
 
 def test_same_timestamp_with_different_tags_remains_distinct(tmp_path):
@@ -239,6 +318,38 @@ def test_active_switch_observed_window(tmp_path):
     assert switches[0].from_peer_mac == "30:f5:27:7a:5a:2f"
     assert switches[0].to_peer_mac == "30:f5:27:7a:5a:3f"
     assert switches[0].observed_window_ms == 717
+
+
+def test_invalid_active_snapshots_do_not_create_no_active_or_zero_rssi(tmp_path: Path) -> None:
+    path = tmp_path / "invalid-active-snapshots-meshlog.log"
+    invalid_active = LINE_A.replace("03s 1 36/43", "03s 0 0/0")
+    path.write_text(
+        "\n".join(
+            [
+                "[1] 2026/08/07 10:02:51.798",
+                LINE_A,
+                "[1] 2026/08/07 10:02:51.873",
+                invalid_active,
+                LINE_STANDBY,
+                "[1] 2026/08/07 10:02:52.001",
+                invalid_active,
+                LINE_STANDBY,
+                "[1] 2026/08/07 10:02:52.478",
+                LINE_B,
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = MeshLogAnalysisService("demo", tmp_path).analyze([path])
+
+    assert [record.sample_time.strftime("%H:%M:%S.%f")[:12] for record in result.records] == [
+        "10:02:51.798",
+        "10:02:52.478",
+    ]
+    assert all(record.metrics["local_rssi_db"] != 0 for record in result.records)
+    assert not [event for event in result.switch_events if event.event_type == EVENT_NO_ACTIVE]
+    assert [event.event_type for event in result.switch_events] == [EVENT_ACTIVE_SWITCH]
 
 
 def test_no_active_and_multi_active(tmp_path):
