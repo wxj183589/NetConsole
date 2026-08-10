@@ -63,4 +63,5 @@ describe('trackside tooltip view-model helpers', () => {
     expect(tracksideTooltipApLabel(entries[1])).toBe('AP-A')
     expect(tracksideTooltipApLabel({ ...entries[1], apName: null })).toBe('轨旁 AP 未知')
   })
+
 })

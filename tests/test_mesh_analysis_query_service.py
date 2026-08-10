@@ -196,7 +196,7 @@ def test_active_chart_marks_short_zero_before_render_sampling(tmp_path: Path) ->
     chart = service.get_active_path_chart("demo", session_id, radio=1, max_points=10)
 
     zero_point = next(point for point in chart.points if point.timestamp == "2026-07-14 10:00:01.000")
-    assert zero_point.local_rssi == 0
+    assert zero_point.local_rssi is None
     assert zero_point.local_rssi_zero_run is not None
     assert zero_point.local_rssi_zero_run.state == "suppressed"
     assert zero_point.local_rssi_zero_run.duration_ms == 1_000
@@ -1096,7 +1096,7 @@ def test_trackside_signal_chart_falls_back_to_peer_signal_not_local_rssi(tmp_pat
     assert point.data_source == "peer_signal_dbm"
 
 
-def test_trackside_signal_chart_skips_missing_peer_signal_and_breaks_across_that_frame(
+def test_trackside_signal_chart_keeps_missing_signal_role_context_and_breaks_across_that_frame(
     tmp_path: Path,
 ) -> None:
     paths, session_id, detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
@@ -1120,13 +1120,76 @@ def test_trackside_signal_chart_skips_missing_peer_signal_and_breaks_across_that
 
     chart = service.get_trackside_signal_chart("demo", session_id, radio=1, max_points=10)
 
-    assert chart.total_frames == chart.returned_frames == 2
-    assert chart.total_link_points == chart.returned_link_points == 2
-    assert chart.skipped_missing_signal_points == 1
-    assert chart.total_link_runs == 2
-    assert [point.break_before for point in chart.series[0].points] == [False, True]
-    assert all(point.local_rssi != point.peer_rssi for point in chart.series[0].points)
-    assert any("已跳过 1 个缺少 peer_rssi / peer_signal" in warning for warning in chart.warnings)
+    assert chart.total_frames == chart.returned_frames == 3
+    assert chart.total_link_points == chart.returned_link_points == 3
+    assert chart.skipped_missing_signal_points == 0
+    assert chart.total_link_runs == 1
+    assert [point.break_before for point in chart.series[0].points] == [False, False, False]
+    assert [point.peer_rssi for point in chart.series[0].points] == [40, None, 42]
+    assert any("已保留 1 个缺少 peer_rssi / peer_signal" in warning for warning in chart.warnings)
+
+
+def test_trackside_signal_chart_preserves_role_snapshot_through_zero_rssi_recovery(
+    tmp_path: Path,
+) -> None:
+    paths, session_id, detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    with sqlite3.connect(detail) as conn:
+        _clear_mesh_chart_rows(conn)
+        rows = (
+            (1, "2026-08-07 10:02:51.478", "ACTIVE", "AP-X_3106", "000000003106", 28),
+            (2, "2026-08-07 10:02:51.478", "STANDBY", "AP-X_3108", "000000003108", 30),
+            (3, "2026-08-07 10:02:51.798", "ACTIVE", "AP-X_3106", "000000003106", 29),
+            (4, "2026-08-07 10:02:51.798", "STANDBY", "AP-X_3107", "000000003107", 31),
+            (5, "2026-08-07 10:02:51.873", "ACTIVE", "AP-X_3105", "000000003105", 0),
+            (6, "2026-08-07 10:02:51.873", "STANDBY", "AP-X_3107", "000000003107", 32),
+            (7, "2026-08-07 10:02:51.873", "STANDBY", "AP-X_3106", "000000003106", 33),
+            (8, "2026-08-07 10:02:52.001", "ACTIVE", "AP-X_3105", "000000003105", 0),
+            (9, "2026-08-07 10:02:52.001", "STANDBY", "AP-X_3106", "000000003106", 32),
+            (10, "2026-08-07 10:02:52.478", "ACTIVE", "AP-X_3105", "000000003105", 0),
+            (11, "2026-08-07 10:02:52.478", "STANDBY", "AP-X_3106", "000000003106", 33),
+            (12, "2026-08-07 10:02:52.478", "ACTIVE", "AP-X_3105", "000000003105", 43),
+        )
+        for row_id, timestamp, role, peer_name, peer_mac, peer_rssi in rows:
+            _insert_active_mesh_link(
+                conn,
+                row_id=row_id,
+                sample_time=timestamp,
+                radio=1,
+                peer_name=peer_name,
+                peer_mac=peer_mac,
+                peer_rssi=peer_rssi,
+                link_state=role,
+            )
+    service = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())  # type: ignore[arg-type]
+
+    chart = service.get_trackside_signal_chart("demo", session_id, radio=1, max_points=20)
+    by_time = {
+        timestamp: [
+            point
+            for series in chart.series
+            for point in series.points
+            if point.timestamp == timestamp
+        ]
+        for timestamp in ("2026-08-07 10:02:51.873", "2026-08-07 10:02:52.001", "2026-08-07 10:02:52.478")
+    }
+
+    assert sorted((point.role, point.peer_ap_name) for point in by_time["2026-08-07 10:02:51.873"]) == [
+        ("ACTIVE", "AP-X_3105"),
+        ("STANDBY", "AP-X_3106"),
+        ("STANDBY", "AP-X_3107"),
+    ]
+    no_rssi_active = next(point for point in by_time["2026-08-07 10:02:52.001"] if point.role == "ACTIVE")
+    assert no_rssi_active.peer_ap_name == "AP-X_3105"
+    assert no_rssi_active.peer_rssi is None
+    assert no_rssi_active.rssi_zero_run is not None
+    recovered_active = next(point for point in by_time["2026-08-07 10:02:52.478"] if point.role == "ACTIVE")
+    assert recovered_active.peer_ap_name == "AP-X_3105"
+    assert recovered_active.peer_rssi == 43
+    assert recovered_active.rssi_zero_run is None
+    assert sorted((point.role, point.peer_ap_name) for point in by_time["2026-08-07 10:02:52.478"]) == [
+        ("ACTIVE", "AP-X_3105"),
+        ("STANDBY", "AP-X_3106"),
+    ]
 
 
 def test_trackside_signal_chart_uses_non_rendered_link_state_as_a_gap_frame(
@@ -1569,8 +1632,9 @@ def test_trackside_signal_chart_preserves_sustained_zero_boundaries_before_sampl
     chart = service.get_trackside_signal_chart("demo", session_id, radio=1, max_points=3)
 
     ap_a = next(item for item in chart.series if item.peer_name == "AP-A")
-    zero_points = [point for point in ap_a.points if point.peer_rssi == 0]
+    zero_points = [point for point in ap_a.points if point.rssi_zero_run is not None]
     assert [point.rssi_zero_run.boundary for point in zero_points] == ["start", "end"]
+    assert all(point.peer_rssi is None for point in zero_points)
     assert all(point.rssi_zero_run.state == "sustained" for point in zero_points)
     assert zero_points[0].rssi_zero_run.duration_ms == 2_000
     assert chart.sustained_zero_run_count == 1

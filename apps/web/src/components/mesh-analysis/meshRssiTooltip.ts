@@ -66,6 +66,14 @@ export function buildMeshRssiTooltip(point?: MeshChartPoint, event?: MeshChartEv
     `当前轨旁 AP：${escapeMeshTooltipHtml(point.peer_ap_name)}`,
     `当前轨旁 AP MAC：${escapeMeshTooltipHtml(point.peer_ap_mac)}`,
     `MR / 轨旁 AP 接收信号：${metric(point.local_rssi)} / ${metric(point.peer_rssi)}`,
+    ...(point.local_rssi_zero_run
+      ? [
+          '<strong>状态：持续无有效 RSSI</strong>',
+          `开始时间：${escapeMeshTooltipHtml(point.local_rssi_zero_run.start_time)}`,
+          `结束时间：${escapeMeshTooltipHtml(point.local_rssi_zero_run.end_time)}`,
+          `持续时间：${(point.local_rssi_zero_run.duration_ms / 1_000).toFixed(3)} s`,
+        ]
+      : []),
     `归属站点 / 区间：${escapeMeshTooltipHtml(point.station)} / ${escapeMeshTooltipHtml(point.section)}`,
     `建链持续时间：${metric(point.segment_duration_seconds, ' s')}`,
     buildBackupSection(point.backups || []),

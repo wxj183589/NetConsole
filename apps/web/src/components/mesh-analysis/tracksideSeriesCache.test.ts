@@ -185,14 +185,14 @@ describe('trackside compact series cache', () => {
 
     const cache = buildTracksideSeriesCache([shortSeries, sustainedSeries])
 
-    expect(cache.series[0].data.map((item) => item[1])).toEqual([41, 41])
+    expect(cache.series[0].data.map((item) => item[1])).toEqual([41, null, 41])
     expect(cache.series[1].data.map((item) => [item[0], item[1]])).toEqual([
       [Date.parse('2026-07-20 10:00:00.000'), 42],
-      [Date.parse(sustainedStart), 0],
-      [Date.parse(sustainedEnd), 0],
+      [Date.parse(sustainedStart), null],
+      [Date.parse('2026-07-20 10:00:03.000'), null],
       [Date.parse(sustainedEnd), 42],
     ])
-    expect(cache.pointMetaById.size).toBe(6)
+    expect(cache.pointMetaById.size).toBe(7)
     const sustainedEndPoint = cache.series[1].data[2]
     expect(tracksidePointMeta(cache, sustainedEndPoint[2])?.rssiZeroRun).toMatchObject({
       state: 'sustained',

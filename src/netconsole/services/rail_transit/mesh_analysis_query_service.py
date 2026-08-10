@@ -2903,8 +2903,10 @@ class MeshAnalysisQueryService:
         groups: dict[tuple[str, int | None], dict[str, Any]] = {}
         frame_items: dict[tuple[int, str, str, int | None], list[dict[str, Any]]] = defaultdict(list)
         observed_frame_keys: set[tuple[int, str, str, int | None]] = set()
-        seen_samples: set[tuple[tuple[int, str, str, int | None], tuple[str, int | None], int | None, str]] = set()
-        skipped_missing_signal = 0
+        snapshot_items: dict[
+            tuple[tuple[int, str, str, int | None], tuple[str, int | None], str],
+            dict[str, Any],
+        ] = {}
         skipped_missing_identity = 0
 
         for row in rows:
@@ -2958,13 +2960,11 @@ class MeshAnalysisQueryService:
             peer_signal = self._number(row.get("peer_signal_dbm"))
             data_source = self._trackside_signal_data_source(peer_rssi, peer_signal)
             link_id = self._int(row.get("id") or row.get("link_id"))
-            sample_key = (frame_key, series_key, link_id, role)
-            if sample_key in seen_samples:
-                continue
-            seen_samples.add(sample_key)
             if not data_source:
-                skipped_missing_signal += 1
-                continue
+                # 链路角色是原始事实，不能因为 RSSI 缺失而从当前快照消失。
+                # 该点仍以 null 进入序列，使曲线断开，同时让 Tooltip 保留
+                # ACTIVE/STANDBY、AP 和 Radio 上下文。
+                data_source = "missing"
 
             segment = self._chart_segment(segment_index, row) if role == LINK_STATE_ACTIVE else None
             item = {
@@ -3005,6 +3005,30 @@ class MeshAnalysisQueryService:
                     "data_source": data_source,
                 },
             }
+            sample_key = (frame_key, series_key, role)
+            previous_item = snapshot_items.get(sample_key)
+            if previous_item is not None:
+                previous_has_valid_rssi = previous_item.get("value") not in {None, 0}
+                current_has_valid_rssi = item.get("value") not in {None, 0}
+                if previous_has_valid_rssi or not current_has_valid_rssi:
+                    continue
+            snapshot_items[sample_key] = item
+
+        missing_signal_context_points = sum(
+            item.get("value") is None for item in snapshot_items.values()
+        )
+        for item in snapshot_items.values():
+            series_key = item["series_key"]
+            frame_key = item["frame_key"]
+            point_values = item["point_values"]
+            peer_name = point_values.get("peer_ap_name")
+            peer_mac = point_values.get("peer_mac")
+            ap_mac = point_values.get("peer_ap_mac")
+            peer_radio_mac = point_values.get("peer_radio_mac")
+            station = point_values.get("station")
+            section = point_values.get("section")
+            identity = series_key[0]
+            local_radio = series_key[1]
             group = groups.setdefault(
                 series_key,
                 {
@@ -3039,9 +3063,9 @@ class MeshAnalysisQueryService:
                 f"旧结构化数据缺少部分 STANDBY 行，已从真实备链上下文补充 "
                 f"{fallback_standby_points} 个备用链路点。"
             )
-        if skipped_missing_signal:
+        if missing_signal_context_points:
             warnings.append(
-                f"已跳过 {skipped_missing_signal} 个缺少 peer_rssi / peer_signal 的轨旁链路采样点。"
+                f"已保留 {missing_signal_context_points} 个缺少 peer_rssi / peer_signal 的轨旁链路上下文；曲线在这些时刻断开。"
             )
         if skipped_missing_identity:
             warnings.append(
@@ -3218,8 +3242,15 @@ class MeshAnalysisQueryService:
             )
             for item_index, zero_run in zero_analysis.metadata_by_index.items():
                 item = run_items[item_index]
+                point_updates: dict[str, Any] = {
+                    "rssi_zero_run": MeshRssiZeroRunDTO(**zero_run.to_payload()),
+                }
+                if item["point"].peer_rssi is not None:
+                    point_updates["peer_rssi"] = None
+                else:
+                    point_updates["peer_signal"] = None
                 item["point"] = item["point"].model_copy(
-                    update={"rssi_zero_run": MeshRssiZeroRunDTO(**zero_run.to_payload())}
+                    update=point_updates
                 )
             for item_index in zero_analysis.sustained_boundary_indices:
                 sustained_zero_boundary_frames.add(int(run_items[item_index]["frame_index"]))
@@ -3397,7 +3428,7 @@ class MeshAnalysisQueryService:
             returned_active_link_points=returned_active_link_points,
             returned_standby_link_points=returned_standby_link_points,
             role_switch_count=role_switch_count,
-            skipped_missing_signal_points=skipped_missing_signal,
+            skipped_missing_signal_points=0,
             skipped_missing_identity_points=skipped_missing_identity,
             suppressed_zero_sample_count=suppressed_zero_sample_count,
             suppressed_zero_run_count=suppressed_zero_run_count,
@@ -3954,6 +3985,8 @@ class MeshAnalysisQueryService:
                 "peer_site": item.get("site"),
             },
         )
+        local_zero_run = row.get("local_rssi_zero_run")
+        peer_zero_run = row.get("peer_rssi_zero_run")
         return MeshChartPointDTO(
             link_id=self._int(item.get("link_id")),
             source_file_id=context.source_id,
@@ -3969,10 +4002,12 @@ class MeshAnalysisQueryService:
             **self._identity_payload(item, location),
             station=self._resolved_location_value(item, location, "station"),
             section=self._resolved_location_value(item, location, "section"),
-            local_rssi=self._number(row.get("local_rssi")),
-            peer_rssi=self._number(row.get("peer_rssi")) if include_peer else None,
-            local_rssi_zero_run=row.get("local_rssi_zero_run"),
-            peer_rssi_zero_run=row.get("peer_rssi_zero_run") if include_peer else None,
+            local_rssi=None if local_zero_run else self._number(row.get("local_rssi")),
+            peer_rssi=(
+                None if peer_zero_run else self._number(row.get("peer_rssi"))
+            ) if include_peer else None,
+            local_rssi_zero_run=local_zero_run,
+            peer_rssi_zero_run=peer_zero_run if include_peer else None,
             local_signal=self._number(row.get("local_signal")),
             peer_signal=self._number(row.get("peer_signal")) if include_peer else None,
             local_tx_busy=self._number(row.get("local_tx_busy")),

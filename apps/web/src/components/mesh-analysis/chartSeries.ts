@@ -73,7 +73,7 @@ function rssiMetricData(
       breakBefore: point.gap_before,
     })))
   return displayPoints.flatMap((point, index) => [
-    ...(index > 0 && point.breakBefore
+    ...(index > 0 && point.breakBefore && point.value !== null
       ? [{ value: [point.timestamp, null] as [string, number | null], meta: point.meta, zeroRun: null }]
       : []),
     { value: [point.timestamp, point.value] as [string, number | null], meta: point.meta, zeroRun: point.zeroRun },

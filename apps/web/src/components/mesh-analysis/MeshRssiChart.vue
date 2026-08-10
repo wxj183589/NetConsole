@@ -11,7 +11,7 @@ import {
   createTimeChartInitOptions,
   createTimeChartLinePresentation,
 } from '../charts/multiSeriesTimeChart'
-import type { MeshChartEvent, MeshChartPoint, MeshLocationSegment, MeshRssiZeroRun } from '../../types/meshAnalysis'
+import type { MeshChartEvent, MeshChartPoint, MeshLocationSegment } from '../../types/meshAnalysis'
 import { buildMeshLocationBands, buildMeshRssiSeries } from './chartSeries'
 import {
   createFullMeshViewport,
@@ -27,7 +27,7 @@ import {
   type MeshSharedPointerChange,
   type MeshSharedTimeDomain,
 } from './meshChartViewport'
-import { buildMeshRssiQuickTooltip, buildMeshRssiTooltip, buildMeshRssiZeroRunTooltip } from './meshRssiTooltip'
+import { buildMeshRssiQuickTooltip, buildMeshRssiTooltip } from './meshRssiTooltip'
 
 const props = withDefaults(defineProps<{
   points: MeshChartPoint[]
@@ -481,26 +481,11 @@ function render(reason: 'data' | 'display' | 'theme' | 'reset'): void {
             ? first.axisValue
             : formatMeshViewportTimestamp(pointerMillis)
         const eventParam = params.find((item) => (item as { data?: { meshEvent?: MeshChartEvent } }).data?.meshEvent) as { data?: { meshEvent?: MeshChartEvent; meta?: MeshChartPoint } } | undefined
-        const zeroParam = params.find((item) => {
-          const data = (item as { data?: { zeroRun?: MeshRssiZeroRun; value?: [string, number | null] } }).data
-          return data?.zeroRun && (
-            pointerMillis === null
-            || meshTimestampMillis(data.value?.[0]) === pointerMillis
-          )
-        }) as {
-          seriesName?: string
-          data?: { zeroRun?: MeshRssiZeroRun; meta?: MeshChartPoint }
-        } | undefined
         const pointParam = params.find((item) => {
           const point = (item as { data?: { meta?: MeshChartPoint } }).data?.meta
           return point && (pointerMillis === null || meshTimestampMillis(point.timestamp) === pointerMillis)
         }) as { data?: { meta?: MeshChartPoint } } | undefined
         const event = eventParam?.data?.meshEvent
-        const zeroRun = zeroParam?.data?.zeroRun
-        const zeroPoint = zeroParam?.data?.meta
-        if (!props.quickTooltip && zeroRun && zeroPoint) {
-          return buildMeshRssiZeroRunTooltip(zeroPoint, zeroRun, pointerTime, zeroParam.seriesName)
-        }
         const point = pointParam?.data?.meta
           || eventParam?.data?.meta
           || (event ? findRenderedSwitchPoint(event) : undefined)

@@ -29,7 +29,7 @@ function point(id: number, timestamp: string, value: number | null): RssiDisplay
 }
 
 describe('RSSI zero-run display points', () => {
-  it('removes short zeros and directly joins the surrounding valid samples', () => {
+  it('keeps a short no-RSSI snapshot as a null gap instead of joining valid samples', () => {
     const source = [
       point(1, '2026-07-24 20:41:20.000', 35),
       {
@@ -41,12 +41,12 @@ describe('RSSI zero-run display points', () => {
 
     const result = buildRssiDisplayPoints(source)
 
-    expect(result.map((item) => item.value)).toEqual([35, 38])
-    expect(result.map((item) => item.meta.id)).toEqual([1, 3])
+    expect(result.map((item) => item.value)).toEqual([35, null, 38])
+    expect(result.map((item) => item.meta.id)).toEqual([1, 2, 3])
     expect(source[1].value).toBe(0)
   })
 
-  it('draws multiple consecutive zeros at their exact start and end times', () => {
+  it('keeps sustained no-RSSI points null and never synthesizes a zero at recovery', () => {
     const start = '2026-07-24 20:41:21.000'
     const end = '2026-07-24 20:41:23.000'
     const source = [
@@ -60,14 +60,15 @@ describe('RSSI zero-run display points', () => {
 
     expect(result.map((item) => [item.timestamp, item.value])).toEqual([
       ['2026-07-24 20:41:20.000', 35],
-      [start, 0],
-      [end, 0],
+      [start, null],
+      ['2026-07-24 20:41:22.000', null],
       [end, 38],
     ])
-    expect(result[2].syntheticEnd).toBe(true)
+    expect(result.filter((item) => item.timestamp === end)).toHaveLength(1)
+    expect(result.every((item) => !item.syntheticEnd)).toBe(true)
   })
 
-  it('keeps ordinary missing values and carries a hidden zero break to the next visible point', () => {
+  it('keeps ordinary missing values and no-RSSI snapshots as explicit gaps', () => {
     const short = zeroRun('suppressed', 'single', '2026-07-24 20:41:21.000', '2026-07-24 20:41:22.000', 1_000)
     const result = buildRssiDisplayPoints([
       point(1, '2026-07-24 20:41:20.000', 35),
@@ -76,11 +77,11 @@ describe('RSSI zero-run display points', () => {
       point(4, '2026-07-24 20:41:23.000', 38),
     ])
 
-    expect(result.map((item) => item.value)).toEqual([35, null, 38])
+    expect(result.map((item) => item.value)).toEqual([35, null, null, 38])
     expect(result[1].breakBefore).toBe(true)
   })
 
-  it('handles 100,000 points in one pass and removes every short zero', () => {
+  it('handles 100,000 points in one pass without manufacturing zero-valued samples', () => {
     const short = zeroRun('suppressed', 'single', 'start', 'end', 1_000)
     const source = Array.from({ length: 100_000 }, (_, index) => ({
       ...point(index, new Date(Date.UTC(2026, 6, 24, 0, 0, index)).toISOString(), index % 10 === 1 ? 0 : 40),
@@ -89,7 +90,7 @@ describe('RSSI zero-run display points', () => {
 
     const result = buildRssiDisplayPoints(source)
 
-    expect(result).toHaveLength(90_000)
+    expect(result).toHaveLength(100_000)
     expect(result.every((item) => item.value !== 0)).toBe(true)
   })
 })
