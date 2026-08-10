@@ -1,4 +1,5 @@
 import type { OnlineMrMetricPoint } from '../../types/onlineMr'
+import { formatDbmValue, formatRssiValue } from './rssiPresentation'
 
 export type TimelineTooltipKind =
   | 'generic'
@@ -81,9 +82,7 @@ export function formatPercent(value: number | null | undefined): string {
   return value === null || value === undefined || !Number.isFinite(value) ? EMPTY : `${trimNumber(value)}%`
 }
 
-export function formatRssi(value: number | null | undefined): string {
-  return value === null || value === undefined || !Number.isFinite(value) ? EMPTY : `${trimNumber(value, 0)} dBm`
-}
+export const formatRssi = formatRssiValue
 
 export function formatDuration(value: number | null | undefined): string {
   if (value === null || value === undefined || !Number.isFinite(value)) return EMPTY
@@ -195,7 +194,7 @@ function switchRssi(rows: TimelineTooltipRow[]): string {
   const event = pointOf(rows[0])?.dimensions.switch_event as Record<string, unknown> | undefined
   if (!event) return shell(timeOf(rows), rows.map((row) => field(row.seriesName || 'RSSI', formatRssi(valueOf(row)))).join(''), pointOf(rows[0]))
   const reason = String(event.reason || '')
-  return shell(timeOf(rows), `<section>${field('切出 AP', event.old_peer_name)}${field('切出 RSSI', formatRssi(number(event.old_rssi_dbm)))}${field('切入 AP', event.new_peer_name)}${field('切入 RSSI', formatRssi(number(event.new_rssi_dbm)))}${field('切出站点', event.old_station)}${field('切入站点', event.new_station)}${field('Radio', event.radio == null ? null : `Radio ${event.radio}`)}${field('原因', reason)}</section>`, pointOf(rows[0]))
+  return shell(timeOf(rows), `<section>${field('切出 AP', event.old_peer_name)}${field('切出 RSSI', formatDbmValue(number(event.old_rssi_dbm)))}${field('切入 AP', event.new_peer_name)}${field('切入 RSSI', formatDbmValue(number(event.new_rssi_dbm)))}${field('切出站点', event.old_station)}${field('切入站点', event.new_station)}${field('Radio', event.radio == null ? null : `Radio ${event.radio}`)}${field('原因', reason)}</section>`, pointOf(rows[0]))
 }
 
 export function buildTimelineTooltip(kind: TimelineTooltipKind, rows: TimelineTooltipRow[], detailed = false): string {

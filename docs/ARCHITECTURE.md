@@ -89,4 +89,4 @@ SNMP Center、通用 MIB/OID 平台和无线勘测属于批准删除项。设备
 
 ## 架构门
 
-新增功能必须沿 `Application Service -> FastAPI -> Vue` 建设，并通过 Electron 白名单本机能力完成桌面闭环。当前九个架构门已由 `scripts/architecture/run_all.py` 建立；精确分类、限时例外、历史迁移分类和未解决项见[架构一致性规则](ARCHITECTURE_COMPLIANCE.md)、[当前审计报告](archive/migrations/electron-only/ARCHITECTURE_COMPLIANCE_REPORT.md)及 [E10B 归档](archive/migrations/electron-only/2026-07-18-E10B-architecture-guards-and-remediation.md)。
+新增功能必须沿 `Application Service -> FastAPI -> Vue` 建设，并通过 Electron 白名单本机能力完成桌面闭环。当前十个架构门已由 `scripts/architecture/run_all.py` 建立，其中动态图稳定性门覆盖 ECharts 时间轴的 Canvas、Tooltip、Resize、实例生命周期和 series 替换；精确分类、限时例外、历史迁移分类和未解决项见[架构一致性规则](ARCHITECTURE_COMPLIANCE.md)、[当前审计报告](archive/migrations/electron-only/ARCHITECTURE_COMPLIANCE_REPORT.md)及 [E10B 归档](archive/migrations/electron-only/2026-07-18-E10B-architecture-guards-and-remediation.md)。

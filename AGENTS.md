@@ -102,6 +102,7 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 | `netconsole-online-mr-skill` | 车载 MR 实时采集、Ping/iPerf、会话打包 | 离线 MESH 分析 |
 | `netconsole-agent-skill` | Windows Go Agent API、构建、工具、配置、targets、MR sidecar 和运行目录 | CentOS 离线部署；纯流量语义；纯 MR 命令规则 |
 | `netconsole-mesh-analysis-skill` | MR 原始 MESH 离线分析、图表和报告 | 在线 SSH 采集 |
+| `dynamic-chart-stability` | ECharts 时间轴、Tooltip、DataZoom、Resize、KeepAlive、沉浸式或动态图白块 | 静态图、普通表格、无图表 parser |
 | `netconsole-ap-identity-skill` | AP/Radio/BSSID/Peer 身份与 shadow | 普通 AP 展示 |
 | `network-command-parser-skill` | H3C/Comware 命令回显 parser | 设备管理 SNMP、UI |
 | `traffic-test-skill` | fping、iPerf、TCP/UDP、阈值 | 普通 SSH/路由 |

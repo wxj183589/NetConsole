@@ -58,6 +58,7 @@ import type { MeshChartEvent } from '../../types/meshAnalysis'
 import type { MeshRssiLayoutMode } from '../../components/mesh-analysis/meshRssiLayout'
 import type { OnlineMrParsedDatabaseEnsureResult, RailTransitTask } from '../../types/railTransitWeb'
 import { BEFORE_SITE_SWITCH_EVENT } from '../../workspace/site-switch'
+import { formatDbmValue, formatRssiValue } from '../../components/rail-timeline/rssiPresentation'
 
 const route = useRoute()
 const router = useRouter()
@@ -77,7 +78,7 @@ type ChartDefinition = { key: string; title: string; unit: string; metric?: read
 
 const terminalStates = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
 const chartDefinitions: readonly ChartDefinition[] = [
-  { key: 'rssi', title: '主链路 RSSI', unit: 'dBm' },
+  { key: 'rssi', title: '主链路 RSSI', unit: '' },
   { key: 'switch-log-rssi', title: '实时切换日志 RSSI 快照', switchSource: 'realtime', unit: 'dBm' },
   { key: 'ping-quality', title: 'Ping 质量', metric: ['ping_loss', 'ping_rtt'], unit: '' },
   { key: 'interface', title: '接口速率', metric: ['interface_in_pps', 'interface_out_pps'], unit: 'pps' },
@@ -397,7 +398,7 @@ const businessSummaryCards = computed(() => {
     { label: '估算间隔', value: summary.estimated_interval_seconds == null ? '无数据' : `${formatNumber(summary.estimated_interval_seconds, 2)} s` },
     { label: '当前链路', value: summary.current_link_state || '无数据' },
     { label: 'Peer / AP', value: `${display(summary.current_peer_name)} / ${display(summary.current_ap_mac)}` },
-    { label: 'RSSI', value: summary.current_rssi == null ? '无数据' : `${formatNumber(summary.current_rssi, 0)} dBm` },
+    { label: 'RSSI', value: summary.current_rssi == null ? '无数据' : formatRssiValue(summary.current_rssi) },
     { label: '站点 / 区间', value: `${display(summary.current_station)} / ${display(summary.current_section)}` },
     { label: '当前时段', value: summary.current_segment_duration_seconds == null ? '无数据' : `${formatNumber(summary.current_segment_duration_seconds, 2)} s` },
     { label: '最新采样', value: summary.last_sample_time || '无数据' },
@@ -423,8 +424,8 @@ const analysisInfoSections = computed<OnlineMrAnalysisInfoSection[]>(() => {
       { label: 'AP', value: infoText(point.dimensions.peer_name || diagnosis.trackside[0].series.series_key) },
       { label: 'Radio', value: infoText(point.dimensions.radio) },
       { label: '状态', value: infoText(point.dimensions.link_state) },
-      { label: '轨旁 RSSI', value: point.value == null ? '—' : `${formatNumber(point.value, 0)} dBm` },
-      { label: 'MR RSSI', value: main?.value == null ? '—' : `${formatNumber(main.value, 0)} dBm` },
+      { label: '轨旁 RSSI', value: point.value == null ? '—' : formatRssiValue(point.value) },
+      { label: 'MR RSSI', value: main?.value == null ? '—' : formatRssiValue(main.value) },
       { label: '站点', value: infoText(point.dimensions.station) },
       { label: '区间', value: infoText(point.dimensions.section) },
     )
@@ -463,7 +464,7 @@ const analysisInfoSections = computed<OnlineMrAnalysisInfoSection[]>(() => {
     metricFields.push(
       { label: '类型', value: '主链路 RSSI' },
       { label: 'AP', value: infoText(mainDimensions.peer_name) },
-      { label: 'RSSI', value: main?.value == null ? '—' : `${formatNumber(main.value, 0)} dBm` },
+      { label: 'RSSI', value: main?.value == null ? '—' : formatRssiValue(main.value) },
     )
   }
   const switchEvent = diagnosis?.switchEvent
@@ -493,15 +494,15 @@ const analysisInfoSections = computed<OnlineMrAnalysisInfoSection[]>(() => {
         { label: 'AP', value: infoText(mainDimensions.peer_name) },
         { label: 'Peer', value: infoText(mainDimensions.peer_mac) },
         { label: 'Radio', value: infoText(mainDimensions.radio) },
-        { label: 'RSSI', value: main?.value == null ? '—' : `${formatNumber(main.value, 0)} dBm` },
+        { label: 'RSSI', value: main?.value == null ? '—' : formatRssiValue(main.value) },
         { label: '状态', value: infoText(mainDimensions.link_state), tone: String(mainDimensions.link_state || '').toUpperCase() === 'ACTIVE' ? 'success' : 'normal' },
       ],
     },
     { key: 'hover', title: '当前悬停指标', fields: metricFields },
     {
       key: 'switch', title: '切换事件', fields: switchEvent ? [
-        { label: '切出', value: `${switchEvent.old_peer_name || '—'} / ${switchEvent.old_rssi_dbm == null ? '—' : `${formatNumber(switchEvent.old_rssi_dbm, 0)} dBm`}` },
-        { label: '切入', value: `${switchEvent.new_peer_name || '—'} / ${switchEvent.new_rssi_dbm == null ? '—' : `${formatNumber(switchEvent.new_rssi_dbm, 0)} dBm`}` },
+        { label: '切出', value: `${switchEvent.old_peer_name || '—'} / ${switchEvent.old_rssi_dbm == null ? '—' : formatDbmValue(switchEvent.old_rssi_dbm)}` },
+        { label: '切入', value: `${switchEvent.new_peer_name || '—'} / ${switchEvent.new_rssi_dbm == null ? '—' : formatDbmValue(switchEvent.new_rssi_dbm)}` },
         { label: '原因', value: infoText(switchEvent.reason) },
       ] : [{ label: '当前时刻', value: '附近无切换' }],
     },

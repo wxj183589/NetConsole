@@ -14,6 +14,7 @@ from scripts.architecture.checks import (
     _css_declarations,
     _load_theme_literal_allowlist,
     _load_sql_inventory,
+    dynamic_chart_stability_findings,
     orphan_module_findings,
     typescript_records,
 )
@@ -41,6 +42,10 @@ def test_typescript_guard_uses_compiler_ast() -> None:
     assert failure is None
     assert records
     assert any(item["path"].endswith(".vue") for item in records)
+
+
+def test_dynamic_chart_guard_covers_shared_timeline_components() -> None:
+    assert dynamic_chart_stability_findings() == []
 
 
 def test_css_guard_parses_minified_and_nested_declarations() -> None:
@@ -158,4 +163,4 @@ def test_run_all_works_from_repository_root() -> None:
         check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "9/9 passed" in result.stdout
+    assert "10/10 passed" in result.stdout

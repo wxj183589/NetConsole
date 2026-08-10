@@ -1,10 +1,10 @@
 # 架构 Guard
 
-本目录实现 E10B Electron-only 架构合规 Guard。九个公开入口共享 Python AST、TypeScript AST、CSS 解析、例外校验和确定性诊断实现，但每项边界保留独立 rule ID；共享引擎不表示合并或缺少发布门。
+本目录实现 E10B Electron-only 架构合规 Guard。十个公开入口共享 Python AST、TypeScript AST、CSS 解析、例外校验和确定性诊断实现，但每项边界保留独立 rule ID；共享引擎不表示合并或缺少发布门。
 
 Guard 只读取生产代码、测试、配置、Git 跟踪状态和迁移矩阵，不修改业务代码、数据库、运行数据或命令文本。现有债务只有匹配[精确限时例外](../../config/architecture/exceptions.yaml)时才被豁免；配置无效、例外过期、未分类命中、陈旧 SQL 分类或统一入口中的陈旧例外都会失败关闭。
 
-## 九个公开门
+## 十个公开门
 
 | 公开入口 | 检查范围 | 主要 rule ID |
 | --- | --- | --- |
@@ -25,8 +25,8 @@ Guard 只读取生产代码、测试、配置、Git 跟踪状态和迁移矩阵�
 - `checks.py`：Python AST、Router AST、直接 SQL、CSS、运行路径、孤儿 import graph、迁移矩阵和各规则集合。
 - `typescript_ast.mjs`：使用工作区 TypeScript compiler API 解析 `.ts` 和 Vue `<script>`；提取 import/export、动态 import、函数符号、legacy 字段及颜色字面量。TypeScript compiler 不可用时失败关闭，不退化为裸字符串 grep。
 - `guard_core.py`：`Finding`、确定性排序、UTF-8 配置读取、例外 schema/日期/精确路径校验和退出码。
-- `cli.py`：九个公开门的唯一注册表。
-- `run_all.py`：从仓库根汇总九个门，并额外拒绝不再命中任何 Finding 的陈旧例外。
+- `cli.py`：十个公开门的唯一注册表。
+- `run_all.py`：从仓库根汇总十个门，并额外拒绝不再命中任何 Finding 的陈旧例外。
 
 FastAPI Router 规则由 `checks.py` 的 `router_boundary_messages()` 提供，现有 Router 测试直接复用该实现。设备命令门直接运行既有 `scripts/maintenance/audit_commands.py --strict --json`，不复制命令事实源。
 
@@ -58,6 +58,6 @@ FastAPI Router 规则由 `checks.py` 的 `router_boundary_messages()` 提供，�
 .\.venv\Scripts\python.exe scripts\architecture\check_ui_business_logic.py
 ```
 
-其余公开入口使用表格中的文件名。单门无未豁免命中时返回 `0`，发现问题时返回非零；例外配置本身无效时单门返回 `2`。统一入口只有九门全部通过且没有陈旧例外时返回 `0`。
+其余公开入口使用表格中的文件名。单门无未豁免命中时返回 `0`，发现问题时返回非零；例外配置本身无效时单门返回 `2`。统一入口只有十门全部通过且没有陈旧例外时返回 `0`。动态图稳定性门审计所有复用 `createTimeChartInitOptions` 的时间轴 Vue 组件，要求关闭 dirty rectangle、保留真实 null gap、释放实例并显式替换 series。
 
 相关测试见 [`tests/architecture/README.md`](../../tests/architecture/README.md)，长期分层与发布规则见[架构一致性审计](../../docs/ARCHITECTURE_COMPLIANCE.md)。

@@ -377,6 +377,7 @@ def test_metrics_preserve_ping_targets_radios_and_timeout_semantics(tmp_path: Pa
     assert sorted(point.value for row in ping for point in row.points) == [2.5, 8.0]
     assert len(busy) == 2
     assert len(rssi) == 2
+    assert all(row.unit == "" for row in rssi)
     assert all(point.value != 0 for row in rows for point in row.points if point.value is not None)
 
 

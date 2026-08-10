@@ -15,6 +15,7 @@
 - [配置采集与快照对比](CONFIG_COLLECTION.md)
 - [CBTC 旧 Wireshark DLL 逆向状态](reverse-engineering/CBTC_WIRESHARK_DLL.md)
 - [MESH 身份、存储协调与 RSSI 调查记录](mesh_analysis_identity_rssi_investigation.md)
+- [动态图共享时间轴与稳定性规则](../apps/web/src/components/charts/README.md)
 
 ## 核心文档
 

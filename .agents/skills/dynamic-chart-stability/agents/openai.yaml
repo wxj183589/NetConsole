@@ -1,0 +1,4 @@
+interface:
+  display_name: "动态图稳定性"
+  short_description: "NetConsole ECharts 时间轴动态图稳定性规则与回归门禁"
+  default_prompt: "使用动态图稳定性规则检查或修改 RSSI、Ping、iPerf、Channel Busy、DataZoom、Tooltip、Resize 和沉浸式图表。"

@@ -2788,7 +2788,7 @@ class OnlineMrQueryService:
             OnlineMrMetricSeriesDTO(
                 metric_type=metric,
                 series_key=labels[key],
-                unit="dBm",
+                unit="",
                 points=points,
                 summary=self._metric_summary(points),
             )

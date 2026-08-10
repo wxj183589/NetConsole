@@ -2,7 +2,7 @@
 
 ## 文档定位
 
-本文定义 Electron-only 重构最终阶段 `E10` 的永久规则。当前九个公开架构门、精确分类配置、最终迁移矩阵和阶段报告已经形成；实际结果、限时例外、未解决 P1/P2 与发布门见[架构一致性报告](archive/migrations/electron-only/ARCHITECTURE_COMPLIANCE_REPORT.md)及 [E10B 整改归档](archive/migrations/electron-only/2026-07-18-E10B-architecture-guards-and-remediation.md)。Guard 通过不等于 Electron 视觉、真实设备、最终制品或业务验收完成。
+本文定义 Electron-only 重构最终阶段 `E10` 的永久规则。当前十个公开架构门、精确分类配置、最终迁移矩阵和阶段报告已经形成；实际结果、限时例外、未解决 P1/P2 与发布门见[架构一致性报告](archive/migrations/electron-only/ARCHITECTURE_COMPLIANCE_REPORT.md)及 [E10B 整改归档](archive/migrations/electron-only/2026-07-18-E10B-architecture-guards-and-remediation.md)。Guard 通过不等于 Electron 视觉、真实设备、最终制品或业务验收完成。
 
 目标是验证实际代码符合 `Electron Main + Preload + Vue + FastAPI + Python Core` 分层，并追踪原 Qt 页面、Worker、Signal 和 Timer 回调中的有效业务逻辑去向。仅通过 Qt 关键字扫描或应用启动冒烟不能满足本阶段要求。
 
@@ -69,7 +69,7 @@ Vue 可以保留时间、字节、状态文字、表格列和图表坐标等显�
 - 运行路径、孤儿模块和 Qt 迁移映射；
 - 项目目录 README、仓库根运行数据和无 Qt 依赖/安装包残留。
 
-九个公开入口为：
+十个公开入口为：
 
 ```text
 scripts/architecture/check_architecture_boundaries.py

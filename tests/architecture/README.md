@@ -1,12 +1,12 @@
 # 架构 Guard 测试
 
-本目录验证 `scripts/architecture/` 的共享引擎、配置契约和九门统一入口。测试只创建 pytest 临时文件或读取当前仓库，不修改生产代码、数据库 schema、设备命令、正式报告或运行数据。
+本目录验证 `scripts/architecture/` 的共享引擎、配置契约和十门统一入口。测试只创建 pytest 临时文件或读取当前仓库，不修改生产代码、数据库 schema、设备命令、正式报告或运行数据。
 
 ## 测试职责
 
 `test_architecture_guards.py` 覆盖：
 
-- 九个公开检查没有未豁免 Finding；
+- 十个公开检查没有未豁免 Finding；
 - TypeScript compiler AST 能解析 `.ts` 与 Vue `<script>`；
 - CSS 解析器能处理压缩样式和嵌套 at-rule；
 - 主题字面量清单按文件、selector、属性和值精确匹配，当前不保留业务例外；
@@ -14,7 +14,7 @@
 - 孤儿检测不把 Router、Job Handler 和 DTO 当成普通 Service 候选；
 - 例外缺字段、过期或使用通配路径时失败关闭；
 - 例外只按 `rule_id + path` 精确匹配；
-- `run_all.py` 可从仓库根执行并汇总九个公开门。
+- `run_all.py` 可从仓库根执行并汇总十个公开门。
 
 以下既有测试复用同一 Guard 实现，避免产生第二套事实源：
 

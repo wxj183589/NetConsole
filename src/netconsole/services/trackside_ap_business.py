@@ -16,7 +16,6 @@ from netconsole.core.ap_optical_capability import (
     is_ap_optical_applicable,
 )
 from netconsole.core.optical_severity_engine import (
-    classify_optical_freshness,
     classify_optical_health,
     compute_optical_severity,
     compute_zte_optical_severity,
@@ -3153,6 +3152,23 @@ def _apply_switch_optical_change(
     history_by_interface: dict[tuple[str, str], list[dict[str, object | None]]] | None = None,
 ) -> None:
     row.setdefault("switch_optical_change", "-")
+    history_rows = (history_by_interface or {}).get((
+        str(row.get("device_uuid") or ""),
+        normalize_interface_name(row.get("interface_name")).casefold(),
+    ), [])
+    latest_valid = _latest_valid_optical_observation(history_rows)
+    if (
+        not _has_valid_rx_power(row.get("switch_rx_power"))
+        and latest_valid
+        and not _has_current_no_module_fact(row)
+    ):
+        row["switch_rx_power"] = latest_valid.get("rx_power")
+        row["switch_alarm_low"] = latest_valid.get("rx_low_alarm") or row.get("switch_alarm_low")
+        row["switch_alarm_high"] = latest_valid.get("rx_high_alarm") or row.get("switch_alarm_high")
+        row["switch_last_valid_rx_power"] = latest_valid.get("rx_power")
+        row["switch_last_valid_collected_at"] = latest_valid.get("collected_at") or latest_valid.get("created_at")
+        row["switch_optical_data_source"] = "沿用历史"
+        row["switch_optical_updated_at"] = row["switch_last_valid_collected_at"]
     device_uuid = str(row.get("device_uuid") or "")
     interface_key = normalize_interface_name(row.get("interface_name")).casefold()
     baseline = _optical_transition_baseline_before(
@@ -3188,7 +3204,12 @@ def _apply_ap_optical_change(
     row.setdefault("ap_optical_change", "-")
     history_rows = _ap_history_for_trackside(row, history_by_identity or {})
     latest_valid = _latest_valid_ap_optical_history(history_rows)
-    if _is_missing_display(row.get("ap_rx_power")) and latest_valid and not _is_missing_display(latest_valid.get("rx_power")):
+    if (
+        _is_missing_display(row.get("ap_rx_power"))
+        and latest_valid
+        and not _is_missing_display(latest_valid.get("rx_power"))
+        and not _has_current_no_module_fact(row)
+    ):
         row["ap_rx_power"] = latest_valid.get("rx_power")
         row["ap_rx_low_alarm"] = latest_valid.get("rx_low_alarm") or row.get("ap_rx_low_alarm")
         row["ap_rx_low_warning"] = latest_valid.get("rx_low_warning") or row.get("ap_rx_low_warning")
@@ -3267,10 +3288,20 @@ def _optical_transition_baseline_before(
 
 
 def _latest_valid_ap_optical_history(rows: list[dict[str, object | None]]) -> dict[str, object | None] | None:
-    candidates = [row for row in rows or [] if not _is_missing_display(row.get("rx_power"))]
+    return _latest_valid_optical_observation(rows)
+
+
+def _latest_valid_optical_observation(rows: list[dict[str, object | None]]) -> dict[str, object | None] | None:
+    candidates = [row for row in rows or [] if _has_valid_rx_power(row.get("rx_power"))]
     if not candidates:
         return None
-    return max(candidates, key=lambda row: (str(row.get("collected_at") or row.get("created_at") or ""), _int_value(row.get("id"))))
+    return max(
+        candidates,
+        key=lambda row: (
+            str(row.get("collected_at") or row.get("updated_at") or row.get("created_at") or ""),
+            _int_value(row.get("id")),
+        ),
+    )
 
 
 def ap_identity_filter(row: dict[str, object | None]) -> dict[str, str]:
@@ -3494,6 +3525,20 @@ def _explicit_no_module(row: dict[str, object | None]) -> bool:
     return any(token in text for token in ("no_module", "no module", "no transceiver", "no-transceiver", "\u65e0\u5149\u6a21\u5757"))
 
 
+def _has_current_no_module_fact(row: dict[str, object | None]) -> bool:
+    if _explicit_no_module(row):
+        return True
+    return any(
+        _normalized_optical_status(row.get(field)) == "no_module"
+        for field in (
+            "ap_optical_status",
+            "ap_device_optical_status",
+            "switch_optical_status",
+            "switch_device_optical_status",
+        )
+    )
+
+
 def _is_missing_display(value: object) -> bool:
     return str(value or "").strip() in {"", "-"}
 
@@ -3629,7 +3674,7 @@ def _is_ap_side_current_abnormal(row: dict[str, object | None]) -> bool:
         return False
     if not has_valid_ap_binding(row):
         return False
-    status = _dual_business_evaluation(row).ap_status
+    status = _current_optical_export_evaluation(row).ap_status
     return is_optical_health_abnormal(status)
 
 
@@ -3652,18 +3697,35 @@ def _dual_business_evaluation(row: dict[str, object | None]):
     )
 
 
+def _current_optical_export_evaluation(row: dict[str, object | None]):
+    """Evaluate the latest valid optical values without turning stale into unknown."""
+    return evaluate_dual_rx_business_detail(
+        row.get("ap_rx_power") if has_ap_side_optical_data(row) else None,
+        row.get("switch_rx_power"),
+        ap_reported_status=(
+            row.get("ap_device_optical_status") or row.get("ap_optical_status")
+        ) if has_ap_side_optical_data(row) else "",
+        switch_reported_status=(
+            row.get("switch_device_optical_status")
+            or row.get("switch_optical_status")
+        ),
+        ap_data_freshness="",
+        switch_data_freshness="",
+    )
+
+
 def _is_switch_side_current_abnormal(row: dict[str, object | None]) -> bool:
     if not is_ap_optical_applicable(row.get("model") or row.get("ap_model")):
         return False
     if not has_valid_ap_binding(row):
         return False
-    return is_optical_health_abnormal(_dual_business_evaluation(row).switch_status)
+    return is_optical_health_abnormal(_current_optical_export_evaluation(row).switch_status)
 
 
 def current_optical_abnormal_reason(row: dict[str, object | None]) -> dict[str, str]:
     ap_state = _ap_state(row)
     ap_online_status = "离线" if _is_ap_offline_abnormal(row) or ap_state == "offline" else "在线" if ap_state == "online" else "未知"
-    evaluation = _dual_business_evaluation(row)
+    evaluation = _current_optical_export_evaluation(row)
     if _is_ap_side_current_abnormal(row):
         return {
             "ap_online_status": ap_online_status,
@@ -3685,6 +3747,24 @@ def current_optical_abnormal_reason(row: dict[str, object | None]) -> dict[str, 
     return {"ap_online_status": ap_online_status, "judgement": "", "reason": "", "side": "", "level": "", "detail": ""}
 
 
+def _current_optical_observed_at(row: dict[str, object | None]) -> object:
+    """Use the observation time of the side that makes the export abnormal."""
+    evaluation = _current_optical_export_evaluation(row)
+    if is_optical_health_abnormal(evaluation.ap_status):
+        return (
+            row.get("ap_last_valid_collected_at")
+            or row.get("ap_optical_updated_at")
+            or row.get("updated_at")
+        )
+    if is_optical_health_abnormal(evaluation.switch_status):
+        return (
+            row.get("switch_last_valid_collected_at")
+            or row.get("switch_optical_updated_at")
+            or row.get("updated_at")
+        )
+    return row.get("updated_at")
+
+
 def is_current_optical_abnormal_export_row(row: dict[str, object | None]) -> bool:
     if not is_ap_optical_applicable(row.get("model") or row.get("ap_model")):
         return False
@@ -3692,9 +3772,6 @@ def is_current_optical_abnormal_export_row(row: dict[str, object | None]) -> boo
     if "no_module" in switch_statuses or _explicit_no_module(row):
         return False
     if "no_light" in switch_statuses and not has_trackside_export_ap_evidence(row):
-        return False
-    freshness = str(row.get("data_freshness") or "").strip().casefold()
-    if freshness == "stale" or classify_optical_freshness(row.get("updated_at"), row.get("collected_at")) == "stale":
         return False
     if _is_ap_side_current_abnormal(row):
         return True
@@ -3763,6 +3840,7 @@ def build_current_optical_abnormal_sheet(
             continue
         values = dict(data)
         values.update(current_optical_abnormal_reason(data))
+        values["updated_at"] = _current_optical_observed_at(data)
         sheet.append([_export_value(field, values) for _key, field in CURRENT_OPTICAL_ABNORMAL_COLUMNS])
         if source_sheet.row_dimensions[source_row].height is not None:
             sheet.row_dimensions[target_row].height = source_sheet.row_dimensions[source_row].height

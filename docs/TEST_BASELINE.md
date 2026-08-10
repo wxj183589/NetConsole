@@ -58,7 +58,7 @@ Netmiko 当前既有定向基线为 `20 passed, 2 failed`，失败位于 `tests/
 2. 完整前端测试与构建。
 3. Ruff 与文档链接检查。
 4. Agent 代码受影响时运行 Go 测试和对应构建检查。
-5. Electron-only 最终组合运行 [架构一致性审计](ARCHITECTURE_COMPLIANCE.md)定义的九个架构门：分层边界、禁用依赖、直接 SQL、设备命令、UI 业务逻辑、移除功能、运行路径、孤儿模块和迁移映射。
+5. Electron-only 最终组合运行 [架构一致性审计](ARCHITECTURE_COMPLIANCE.md)定义的十个架构门：分层边界、禁用依赖、直接 SQL、设备命令、UI 业务逻辑、动态图稳定性、移除功能、运行路径、孤儿模块和迁移映射。
 
 全量测试只在合并后的真实代码组合上作为最终门槛；单个并行任务不重复执行全量套件。
 
@@ -76,7 +76,7 @@ Web 门禁在共享 Windows runner 上固定最多两个 Vitest worker，并把�
 
 架构 Guard 必须在 Qt 删除和非 Qt 全量测试之后再次执行。启发式命中需要人工分类和证据；不得用目录级忽略、删除测试或无到期时间的例外换取通过。P0/P1 架构问题为零是 Electron-only 发布门。
 
-## 架构九门
+## 架构十门
 
 统一入口为：
 
@@ -101,7 +101,7 @@ Web 门禁在共享 Windows runner 上固定最多两个 Vitest worker，并把�
 设备数据库 smoke 会验证旧局点迁移、设备列表 HTTP 200、默认工作范围值和重启后的
 备份幂等性。
 
-九个门也可按改动范围定向运行：
+十个门也可按改动范围定向运行：
 
 ```text
 check_architecture_boundaries.py

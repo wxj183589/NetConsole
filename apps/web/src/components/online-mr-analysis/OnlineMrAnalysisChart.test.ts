@@ -72,7 +72,7 @@ describe('Online MR analysis chart behavior', () => {
     expect(mocks.init).toHaveBeenCalledWith(
       expect.any(HTMLElement),
       undefined,
-      expect.objectContaining({ renderer: 'canvas', useDirtyRect: true }),
+      expect.objectContaining({ renderer: 'canvas', useDirtyRect: false }),
     )
     expect(mocks.setOption).toHaveBeenCalled()
     const option = mocks.setOption.mock.calls.at(-1)?.[0] as {
@@ -86,6 +86,11 @@ describe('Online MR analysis chart behavior', () => {
     expect(option.yAxis.name).toBe('dBm')
     expect(option.series[0].data.map((row) => row.value[1])).toEqual([-60, null])
     expect(option.series[0].markLine).toBeDefined()
+    expect(option).not.toHaveProperty('graphic')
+    const tooltip = mocks.setOption.mock.calls.at(-1)?.[0]?.tooltip as Record<string, unknown>
+    expect(tooltip).toMatchObject({ renderMode: 'html', appendToBody: false, confine: true, transitionDuration: 0 })
+    expect(String(tooltip.extraCssText)).toContain('width:max-content')
+    expect(mocks.setOption.mock.calls.at(-1)?.[1]).toEqual({ replaceMerge: ['series', 'dataZoom'] })
 
     wrapper.unmount()
     expect(mocks.off).toHaveBeenCalledTimes(3)
@@ -93,5 +98,30 @@ describe('Online MR analysis chart behavior', () => {
     expect(mocks.disconnect).toHaveBeenCalledOnce()
     expect(mocks.unsubscribe).toHaveBeenCalledOnce()
     expect(mocks.dispose).toHaveBeenCalledOnce()
+  })
+
+  it('replaces metric series without creating another instance or retaining a graphic overlay', async () => {
+    const wrapper = mount(OnlineMrAnalysisChart, {
+      props: {
+        unit: 'Mbps',
+        tooltipKind: 'traffic',
+        series: [{ metric_type: 'iperf_bitrate', series_key: 'upload', unit: 'Mbps', points: [{ timestamp: '2026-07-20 10:00:00', value: 13.5, text_value: null, dimensions: { direction: 'upload' } }], summary: { count: 1, minimum: 13.5, maximum: 13.5, average: 13.5 } }],
+      },
+      global: { stubs: { ElEmpty: true } },
+    })
+    await flushPromises()
+    const firstOptionCount = mocks.setOption.mock.calls.length
+    await wrapper.setProps({
+      unit: '%',
+      tooltipKind: 'channel-busy',
+      series: [{ metric_type: 'ctl_busy', series_key: 'radio=1', unit: '%', points: [{ timestamp: '2026-07-20 10:00:01', value: null, text_value: null, dimensions: { radio: 1 } }], summary: { count: 1, minimum: null, maximum: null, average: null } }],
+    })
+    await flushPromises()
+    expect(mocks.init).toHaveBeenCalledOnce()
+    expect(mocks.setOption.mock.calls.length).toBeGreaterThan(firstOptionCount)
+    const option = mocks.setOption.mock.calls.at(-1)?.[0] as Record<string, unknown>
+    expect(option).not.toHaveProperty('graphic')
+    expect((option.series as Array<{ data: Array<{ value: [string, number | null] }> }>)[0].data[0].value[1]).toBeNull()
+    wrapper.unmount()
   })
 })

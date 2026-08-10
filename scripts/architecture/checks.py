@@ -555,6 +555,36 @@ def ui_business_logic_findings() -> list[Finding]:
     return findings
 
 
+def dynamic_chart_stability_findings() -> list[Finding]:
+    """Keep shared ECharts timelines on the proven no-dirty-rectangle lifecycle."""
+    findings: list[Finding] = []
+    chart_root = ROOT / "apps" / "web" / "src" / "components"
+    required_patterns = {
+        "useDirtyRect: false": re.compile(r"createTimeChartInitOptions\s*\([\s\S]{0,240}?useDirtyRect\s*:\s*false"),
+        "ResizeObserver": re.compile(r"ResizeObserver"),
+        "dispose": re.compile(r"\.dispose\s*\("),
+        "connectNulls: false": re.compile(r"connectNulls\s*:\s*false"),
+        "replaceMerge series": re.compile(r"replaceMerge\s*:\s*\[[^\]]*['\"]series['\"]"),
+    }
+    for path in sorted(chart_root.rglob("*.vue")):
+        text = path.read_text(encoding="utf-8")
+        if "createTimeChartInitOptions" not in text:
+            continue
+        item_path = relative_path(path)
+        for label, pattern in required_patterns.items():
+            if pattern.search(text):
+                continue
+            findings.append(
+                Finding(
+                    "DYNAMIC_CHART_STABILITY",
+                    item_path,
+                    1,
+                    f"dynamic chart must provide {label}",
+                )
+            )
+    return findings
+
+
 def _load_theme_literal_allowlist(
     config_path: Path | None = None,
 ) -> dict[tuple[str, str, str, str], dict[str, str]]:

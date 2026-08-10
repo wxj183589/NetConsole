@@ -60,4 +60,14 @@ describe('timeline tooltip', () => {
     const formatted = formatTimelineTime(new Date('2026-07-21T15:00:00.000').getTime())
     expect(formatted).toMatch(/^2026-07-21 15:00:00$/)
   })
+
+  it('does not attach dBm to raw RSSI tooltip values', () => {
+    const html = buildTimelineTooltip('generic', [{
+      seriesName: '当前 ACTIVE MR 侧 RSSI',
+      value: ['2026-07-21 15:00:00.123', 49],
+      data: { metricType: 'rssi' },
+    }])
+    expect(html).toContain('49')
+    expect(html).not.toContain('49 dBm')
+  })
 })

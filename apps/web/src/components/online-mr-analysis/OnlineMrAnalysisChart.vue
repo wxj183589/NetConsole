@@ -75,7 +75,11 @@ onMounted(async () => {
   ])
   await nextTick()
   if (!container.value) return
-  chart = core.init(container.value, undefined, createTimeChartInitOptions(pointCount()))
+  chart = core.init(container.value, undefined, createTimeChartInitOptions(pointCount(), {
+    // Dynamic timelines frequently repaint while the pointer, viewport and metric change.
+    // Dirty-rectangle compositing can leave stale white rectangles over the canvas.
+    useDirtyRect: false,
+  }))
   chart.on('datazoom', handleDataZoom)
   chart.on('click', handleChartClick)
   chart.on('updateAxisPointer', handleAxisPointer)
@@ -117,12 +121,18 @@ watch(() => [props.series, props.events, props.selectedTime], () => {
   })
 }, { deep: true })
 watch(() => props.viewport, (value) => { if (props.active) void nextTick(() => applyViewport(value)) }, { deep: true })
+watch(() => props.active, (active) => {
+  if (!active) chart?.dispatchAction({ type: 'hideTip' }, { silent: true })
+})
 watch(() => [props.cursorTime, props.selectedTime] as const, ([cursor, selected]) => {
   if (props.active) void nextTick(() => applyPointer(cursor || selected))
 })
 
 function resize(): void {
-  if (container.value?.clientWidth) chart?.resize()
+  if (container.value?.clientWidth && chart) {
+    chart.dispatchAction({ type: 'hideTip' }, { silent: true })
+    chart.resize()
+  }
 }
 
 function applyViewport(viewport: MeshChartViewport | null | undefined): void {
@@ -185,6 +195,7 @@ function handleAxisPointer(raw: unknown): void {
 
 function render(): void {
   if (!chart) return
+  chart.dispatchAction({ type: 'hideTip' }, { silent: true })
   const theme = readNetConsoleChartTokens()
   const baseOption = createMultiSeriesTimeChartBaseOption(theme, {
     title: props.title,
@@ -233,8 +244,12 @@ function render(): void {
     ...baseOption,
     tooltip: {
       ...(baseOption.tooltip as Record<string, unknown>),
+      renderMode: 'html',
+      appendToBody: false,
+      confine: true,
+      transitionDuration: 0,
       position: timelineTooltipPosition,
-      extraCssText: 'max-width:min(360px,calc(100vw - 24px));white-space:normal;',
+      extraCssText: 'box-sizing:border-box;width:max-content;max-width:min(360px,calc(100% - 24px));max-height:min(240px,calc(100% - 24px));overflow:auto;pointer-events:none;white-space:normal;',
       formatter: (raw: unknown) => buildTimelineTooltip(props.tooltipKind, (Array.isArray(raw) ? raw : [raw]) as TimelineTooltipRow[]),
     },
     yAxis: {
