@@ -658,6 +658,11 @@ async function mountHotfixRssiSession(sessionId: string) {
   return { wrapper, session, activeChart, tracksideChart }
 }
 
+async function toggleRssiPresentation(wrapper: ReturnType<typeof mount>, label: string): Promise<void> {
+  await wrapper.findAll('button').find((button) => button.text() === label)!.trigger('click')
+  await flushPromises()
+}
+
 describe('Mesh analysis import context behavior', () => {
   it('keeps four duplicate basenames as independent member mappings', async () => {
     mocks.listProfiles.mockResolvedValueOnce([{
@@ -948,6 +953,45 @@ describe('Mesh analysis import context behavior', () => {
 })
 
 describe('Mesh analysis detail behavior', () => {
+  it('keeps both RSSI datasets and the shared viewport while only presentation overlays change', async () => {
+    const { wrapper, session, activeChart, tracksideChart } = await mountHotfixRssiSession('session-overlay-state')
+    const activeCalls = mocks.getActivePath.mock.calls.length
+    const tracksideCalls = mocks.getTracksideSignal.mock.calls.length
+    const viewport = activeChart.props('syncViewport')
+    const cache = tracksideChart.props('seriesCache')
+
+    for (const label of ['显示切换时刻线', '显示切换节点', '显示站点/区间']) {
+      await toggleRssiPresentation(wrapper, label)
+    }
+
+    expect(mocks.getActivePath).toHaveBeenCalledTimes(activeCalls)
+    expect(mocks.getTracksideSignal).toHaveBeenCalledTimes(tracksideCalls)
+    expect(tracksideChart.props('seriesCache')).toBe(cache)
+    expect(activeChart.props('syncViewport')).toEqual(viewport)
+    expect(wrapper.text()).not.toContain('等待主链 RSSI 图加载完成')
+
+    mocks.getActivePath.mockResolvedValueOnce(hotfixActivePayload(session.session_id, 31))
+    ;(wrapper.vm as unknown as { showRssiPeer: boolean }).showRssiPeer = true
+    await flushPromises()
+
+    expect(mocks.getActivePath).toHaveBeenLastCalledWith(session.session_id, {
+      max_points: 600,
+      radio: 2,
+      include_peer: true,
+      include_standby_context: true,
+      include_events: true,
+      include_station_band: true,
+    }, expect.any(AbortSignal))
+    expect(mocks.getTracksideSignal).toHaveBeenCalledTimes(tracksideCalls)
+    expect(tracksideChart.props('seriesCache')).toBe(cache)
+
+    ;(wrapper.vm as unknown as { showRssiPeer: boolean }).showRssiPeer = false
+    await flushPromises()
+    expect(mocks.getActivePath).toHaveBeenCalledTimes(activeCalls + 1)
+    expect(mocks.getTracksideSignal).toHaveBeenCalledTimes(tracksideCalls)
+    wrapper.unmount()
+  })
+
   it('opens a backend compound session id with one click', async () => {
     const session = {
       session_id: 'c4682b2a-ba83-44f2-8bc9-3d2b37c37237:1',
@@ -2199,6 +2243,7 @@ describe('Mesh analysis detail behavior', () => {
       max_points: 600,
       radio: 1,
       include_peer: false,
+      include_standby_context: true,
       include_events: true,
       include_station_band: true,
     }, expect.any(AbortSignal))
@@ -2224,7 +2269,8 @@ describe('Mesh analysis detail behavior', () => {
       time_from: chartViewport.start_time,
       time_to: chartViewport.end_time,
       include_peer: false,
-      include_events: false,
+      include_standby_context: true,
+      include_events: true,
       include_station_band: true,
     })
     expect(wrapper.text()).toContain('已使用 RSSI 锁定时间')
@@ -2429,6 +2475,7 @@ describe('Mesh analysis detail behavior', () => {
         time_from: viewport.start_time,
         time_to: viewport.end_time,
         include_peer: false,
+        include_standby_context: true,
         include_events: true,
         include_station_band: true,
       }, expect.any(AbortSignal))
@@ -2766,6 +2813,7 @@ describe('Mesh analysis detail behavior', () => {
       max_points: 600,
       radio: 1,
       include_peer: false,
+      include_standby_context: true,
       include_events: true,
       include_station_band: true,
     }, expect.any(AbortSignal))
@@ -2816,6 +2864,7 @@ describe('Mesh analysis detail behavior', () => {
         time_from: zoomStart,
         time_to: zoomEnd,
         include_peer: false,
+        include_standby_context: true,
         include_events: true,
         include_station_band: true,
       }, expect.any(AbortSignal))
@@ -2877,6 +2926,7 @@ describe('Mesh analysis detail behavior', () => {
       max_points: 1200,
       radio: 1,
       include_peer: false,
+      include_standby_context: true,
       include_events: true,
       include_station_band: true,
     }, expect.any(AbortSignal))
@@ -2899,6 +2949,7 @@ describe('Mesh analysis detail behavior', () => {
         time_from: fullStart,
         time_to: fullEnd,
         include_peer: false,
+        include_standby_context: true,
         include_events: true,
         include_station_band: true,
       }, expect.any(AbortSignal))
@@ -2983,6 +3034,7 @@ describe('Mesh analysis detail behavior', () => {
         max_points: 600,
         radio: 1,
         include_peer: false,
+        include_standby_context: true,
         include_events: true,
         include_station_band: true,
       },
@@ -3231,6 +3283,7 @@ describe('Mesh analysis detail behavior', () => {
       max_points: 600,
       radio: 1,
       include_peer: false,
+      include_standby_context: true,
       include_events: true,
       include_station_band: true,
     }, expect.any(AbortSignal))

@@ -197,6 +197,35 @@ describe('MESH charts mount and render', () => {
     expect(echartsMock.chart.off).toHaveBeenCalledTimes(6)
   })
 
+  it('updates active switch and location overlays without rebuilding the RSSI chart instance', async () => {
+    const wrapper = mount(MeshRssiChart, {
+      props: {
+        points: [chartPoint, chartPointAfterGap],
+        events: [chartEvent],
+        locationSegments: [{ start_time: chartPoint.timestamp, end_time: chartPointAfterGap.timestamp, station: '站点一', section: '区间一', label: '站点一 / 区间一' }],
+      },
+    })
+    await flushPromises()
+    const initialSetOptionCalls = echartsMock.chart.setOption.mock.calls.length
+
+    await wrapper.setProps({ showSwitchLines: true, showSwitchPoints: false, showLocationBand: false })
+    await flushPromises()
+
+    expect(echartsMock.init).toHaveBeenCalledTimes(1)
+    expect(echartsMock.chart.dispose).not.toHaveBeenCalled()
+    expect(echartsMock.chart.setOption).toHaveBeenCalledTimes(initialSetOptionCalls + 1)
+    const [overlayOption, overlayUpdate] = echartsMock.chart.setOption.mock.calls.at(-1) as [
+      { series: Array<{ id: string; data?: unknown[]; markArea?: { data: unknown[] }; markLine?: { data: unknown[] } }> },
+      { lazyUpdate: boolean },
+    ]
+    expect(overlayUpdate).toEqual({ lazyUpdate: true })
+    expect(overlayOption.series[0]).toMatchObject({ id: 'local_rssi', markArea: { data: [] } })
+    expect(overlayOption.series[0].markLine?.data).toHaveLength(1)
+    expect(overlayOption.series[0]).not.toHaveProperty('data')
+    expect(overlayOption.series[1]).toMatchObject({ id: 'active-switch-nodes', data: [] })
+    wrapper.unmount()
+  })
+
   it('renders the trackside link RSSI chart without default switch markers', async () => {
     const wrapper = mount(MeshTracksideSignalChart, {
       props: {

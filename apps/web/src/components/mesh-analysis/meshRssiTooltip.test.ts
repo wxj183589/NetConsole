@@ -114,6 +114,25 @@ describe('MESH RSSI tooltip', () => {
     expect(html).not.toContain('：0 / 0')
   })
 
+  it('renders every standby context attached to the retained ACTIVE point', () => {
+    const html = buildMeshRssiTooltip({
+      ...point,
+      timestamp: '2026-08-07 12:06:23.478',
+      peer_ap_name: 'AP-X_3006',
+      backups: [
+        { ...point.backups[0], peer_ap_name: 'AP-X_3007', local_rssi: 21, peer_rssi: 21 },
+        { ...point.backups[0], link_id: 3, peer_ap_name: 'AP-X_3008', local_rssi: 26, peer_rssi: 25 },
+      ],
+    })
+
+    expect(html).toContain('当前轨旁 AP：AP-X_3006')
+    expect(html).toContain('1. AP-X_3007')
+    expect(html).toContain('2. AP-X_3008')
+    expect(html).toContain('MR / 轨旁 AP 接收信号：21 / 21')
+    expect(html).toContain('MR / 轨旁 AP 接收信号：26 / 25')
+    expect(html).not.toContain('<strong>备份链路：无</strong>')
+  })
+
   it('keeps positive RSSI values unchanged and unitless', () => {
     const html = buildMeshRssiTooltip({
       ...point,

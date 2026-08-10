@@ -233,8 +233,9 @@ onBeforeUnmount(() => {
 })
 
 watch(() => props.points, () => scheduleChartUpdate('data'))
-watch(() => [props.events, props.locationSegments] as const, () => scheduleChartUpdate('data'))
-watch(() => [props.showPeer, props.showSwitchLines, props.showSwitchPoints, props.showLocationBand] as const, () => scheduleChartUpdate('display'))
+watch(() => [props.events, props.locationSegments] as const, () => scheduleChartUpdate('display'))
+watch(() => props.showPeer, () => scheduleChartUpdate('data'))
+watch(() => [props.showSwitchLines, props.showSwitchPoints, props.showLocationBand] as const, () => scheduleChartUpdate('display'))
 watch(() => props.scope, () => { currentViewport = null; viewportReady = false; scheduleChartUpdate('reset') })
 watch(() => props.active, (active) => {
   if (active) {
@@ -392,14 +393,10 @@ function resize(): void {
   if (props.active) scheduleChartUpdate('resize')
 }
 
-function render(reason: 'data' | 'display' | 'theme' | 'reset'): void {
-  if (!chart) return
-  const previous = reason !== 'reset' && props.preserveViewport && currentViewport
-    ? { ...currentViewport }
-    : null
-  const theme = readNetConsoleChartTokens()
-  const series = buildMeshRssiSeries(props.points, props.showPeer, props.scope)
-  primarySeriesData = series[0]?.data || []
+function activeOverlaySeries(
+  theme: ReturnType<typeof readNetConsoleChartTokens>,
+  clearEmpty = false,
+): Array<Record<string, unknown>> {
   const switchEvents = props.events.filter((event) => event.event_type === 'ACTIVE_SWITCH')
   const nodes = props.showSwitchPoints ? switchNodeData(switchEvents) : []
   const locationBands = props.showLocationBand ? buildMeshLocationBands(props.locationSegments) : []
@@ -411,7 +408,56 @@ function render(reason: 'data' | 'display' | 'theme' | 'reset'): void {
       { name: band.label, xAxis: band.start_time },
       { xAxis: band.end_time },
     ]),
-  } : undefined
+  } : clearEmpty ? { data: [] } : undefined
+  const markLine = props.selectedTime || (props.showSwitchLines && switchEvents.length) ? {
+    silent: false,
+    symbol: 'none',
+    label: { show: false },
+    data: [
+      ...(props.selectedTime ? [{
+        name: '当前分析时刻',
+        xAxis: props.selectedTime,
+        lineStyle: { color: theme.primary, type: 'solid', width: 2 },
+      }] : []),
+      ...(props.showSwitchLines ? switchEvents.map((event) => ({
+        name: renderedSwitchTimestamp(event),
+        xAxis: renderedSwitchTimestamp(event),
+        lineStyle: { color: theme.warning, type: 'dashed' },
+        meshEvent: event,
+      })) : []),
+    ],
+  } : clearEmpty ? { data: [] } : undefined
+  return [
+    {
+      id: 'local_rssi',
+      ...(markArea ? { markArea } : {}),
+      ...(markLine ? { markLine } : {}),
+    },
+    ...(nodes.length || clearEmpty ? [{
+      id: 'active-switch-nodes',
+      name: '切换节点',
+      type: 'scatter',
+      symbolSize: 10,
+      data: nodes.map((node) => ({ ...node, itemStyle: { color: theme.danger } })),
+    }] : []),
+  ]
+}
+
+function render(reason: 'data' | 'display' | 'theme' | 'reset'): void {
+  if (!chart) return
+  const theme = readNetConsoleChartTokens()
+  if (reason === 'display') {
+    chart.setOption({ series: activeOverlaySeries(theme, true) }, { lazyUpdate: true })
+    focusCurrentPoint()
+    return
+  }
+  const previous = reason !== 'reset' && props.preserveViewport && currentViewport
+    ? { ...currentViewport }
+    : null
+  const series = buildMeshRssiSeries(props.points, props.showPeer, props.scope)
+  primarySeriesData = series[0]?.data || []
+  const overlayById = new Map(activeOverlaySeries(theme).map((item) => [String(item.id), item]))
+  const switchNodes = overlayById.get('active-switch-nodes')
   const target = props.lockedViewport || previous || props.initialViewport || fullViewport()
   const baseOption = createMultiSeriesTimeChartBaseOption(theme, {
     unit: 'RSSI',
@@ -469,38 +515,15 @@ function render(reason: 'data' | 'display' | 'theme' | 'reset'): void {
     yAxis: { ...(baseOption.yAxis as Record<string, unknown>), min: 'dataMin' },
     series: [
       ...series.map((item, index) => ({
-      id: item.metric,
-      name: item.name,
-      type: 'line',
-      ...createTimeChartLinePresentation(pointCount()),
-      connectNulls: false,
-      data: item.data,
-      markArea: index === 0 ? markArea : undefined,
-      markLine: index === 0 && (props.selectedTime || (props.showSwitchLines && switchEvents.length)) ? {
-        silent: false,
-        symbol: 'none',
-        label: { show: false },
-        data: [
-          ...(props.selectedTime ? [{
-            name: '当前分析时刻',
-            xAxis: props.selectedTime,
-            lineStyle: { color: theme.primary, type: 'solid', width: 2 },
-          }] : []),
-          ...(props.showSwitchLines ? switchEvents.map((event) => ({
-            name: renderedSwitchTimestamp(event),
-            xAxis: renderedSwitchTimestamp(event),
-            lineStyle: { color: theme.warning, type: 'dashed' },
-            meshEvent: event,
-          })) : []),
-        ],
-      } : undefined,
+        id: item.metric,
+        name: item.name,
+        type: 'line',
+        ...createTimeChartLinePresentation(pointCount()),
+        connectNulls: false,
+        data: item.data,
+        ...(index === 0 ? overlayById.get(item.metric) : {}),
       })),
-      ...(nodes.length ? [{
-        name: '切换节点',
-        type: 'scatter',
-        symbolSize: 10,
-        data: nodes.map((node) => ({ ...node, itemStyle: { color: theme.danger } })),
-      }] : []),
+      ...(switchNodes ? [switchNodes] : []),
     ],
   }, { replaceMerge: ['series'] })
   if (target) {

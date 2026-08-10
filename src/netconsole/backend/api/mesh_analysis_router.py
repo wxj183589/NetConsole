@@ -704,6 +704,7 @@ def active_path_chart(
     time_to: str = Query(default="", max_length=40),
     max_points: int = Query(default=1_000, ge=10, le=20_000),
     include_peer: bool = Query(default=True),
+    include_standby_context: bool = Query(default=True),
     include_events: bool = Query(default=True),
     include_station_band: bool = Query(default=True),
 ) -> MeshPathChartDTO:
@@ -716,6 +717,7 @@ def active_path_chart(
             time_to=time_to,
             max_points=max_points,
             include_peer=include_peer,
+            include_standby_context=include_standby_context,
             include_events=include_events,
             include_station_band=include_station_band,
         )
