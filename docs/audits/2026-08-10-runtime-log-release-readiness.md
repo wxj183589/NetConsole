@@ -70,4 +70,5 @@
 ## 剩余风险
 
 - 现有故障注入已覆盖 Python EBUSY/PermissionError、1,000 次 rotation backoff、多进程写入及历史清理的单文件占用跳过；这不能替代真实 NTFS 锁、杀毒竞争、物理磁盘耗尽和长时间内存趋势。
-- 真实 NSIS 安装/首次启动/卸载、直接 dropped counters、WebSocket/task service 主动业务负载和 8 小时趋势仍未完成。所有强制验收通过前不得 fast-forward `main`。
+- 7,203 秒 soak 针对后来因兼容性资源缺失而淘汰的 `a7d112e9...` 目录包；新候选 `845ba19d...` 目前只有完整 package smoke 和 1 分钟启动回归。资源修复没有改动日志写入链路，但不能据此把旧制品 soak 等同为新候选的正式 2 小时验收。
+- 新候选的 2 小时/8 小时 soak、真实 NSIS 安装/首次启动/卸载、直接 dropped counters 以及 WebSocket/task service 主动业务负载仍未完成。所有强制验收通过前不得 fast-forward `main`。
