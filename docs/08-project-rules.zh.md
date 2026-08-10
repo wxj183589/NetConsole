@@ -90,6 +90,14 @@
 - 自动发布清单中的 `real_windows_install_status` 在隔离 Windows GUI 完成不存在目录、空目录、含普通文件目录和合法旧数据根等安装验收前必须保持 `PENDING`；单元测试、Backend smoke 或 unpacked Electron smoke 不能推断为 `PASS`。
 - 架构例外必须精确到 `rule_id + path`，含理由、责任域、创建时间、到期时间和测试；禁止目录级通配、陈旧例外或删除测试换通过。
 
+## 本周新增高置信沉淀（2026-08-03 至 2026-08-09）
+
+- 基础资料继续采用按子页显式解锁：总览、站点与区间、轨旁 AP、轨旁 AP 规划、列车与车载 MR 分别建立 scope 快照和草稿；未解锁保持只读，脏草稿在切换或离开时必须显式保存、放弃或取消，revision 冲突不得覆盖服务器数据。
+- Online MR 人工采集最多同时选择 2 台 MR；取消局点级单任务限制，但同一 MR 仍保持互斥，并统一活动、启动和最终化预算。地面无人值守只能使用剩余 MR，不得停止人工任务。实时页面只读复用会话 raw/session/parsed 资源，原始文件仍是事实源，重解析和报告分别走 Job Center 与 Export Process。
+- Online MR 正常停止和最终化必须先完成 fping/iPerf flush，再停止 SSH、等待 writer/连接收口、写 metadata、解析、验证文件稳定、原子发布 ZIP，最后才进入任务终态；无法确认 flush 或文件稳定时不得标记正常完成或发布正式 ZIP。
+- WPS 轨旁 AP 同步按局点和目标独立保存连接、Webhook、Binding 和部署状态；普通表格与智能表格不得交叉使用。修改文档连接、Webhook、文档/脚本身份会清除旧远端验证并降级为 `DEPLOYMENT_PENDING`，脚本必须通过顶层 `return main();` 返回可解析 JSON。
+- WPS 正式同步必须先持久化 `target_batch_id`、无凭据请求载荷和源格式清单，再通过 Job Center 异步提交；远端超时或连接不确定时复用原 `task_id` 查询，禁止重复 POST。固定业务 Sheet registry、共享 Workbook Builder、Sheet 顺序和格式写后读回是协议边界；格式失败只能返回 warning，不得把已成功的数据写入误报为失败。
+
 ## 本周新增高置信沉淀（2026-07-27 至 2026-08-03）
 
 - 用户文件交互统一收口为固定动作注册表、共享导出协调器和专用导入选择器；页面不得再私建导出状态机、自动弹保存窗口或取消后创建任务。
