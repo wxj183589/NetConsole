@@ -42,6 +42,7 @@ export interface PlatformAdapter {
   showTaskNotification(payload: TaskNotificationPayload): Promise<NativeActionResult>
   setTaskTrayStatus(status: TaskTrayStatus): void
   onTaskCenterOpenRequested(listener: (context: TaskWindowContext) => void): () => void
+  openMeshAnalysisSessionLocation(sessionId: string): Promise<NativeActionResult>
   openPath(capabilityId: string): Promise<NativeActionResult>
   showItemInFolder(capabilityId: string): Promise<NativeActionResult>
   openExternalUrl(url: string): Promise<NativeActionResult>

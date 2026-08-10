@@ -131,6 +131,7 @@ def test_mesh_analysis_queries_keep_analysis_files_unchanged(tmp_path: Path) -> 
         "/rail-transit/mesh-analysis/import-preview",
         "/rail-transit/mesh-analysis/profiles",
         "/rail-transit/mesh-analysis/sessions/{session_id}/rebuild",
+        "/rail-transit/mesh-analysis/sessions/{session_id}/desktop-location",
         "/rail-transit/mesh-analysis/sessions/{session_id}/report",
         "/rail-transit/mesh-analysis/sessions/{session_id}/link-details/export",
         "/rail-transit/mesh-analysis/local-scans",

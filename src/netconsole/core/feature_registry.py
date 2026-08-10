@@ -277,6 +277,7 @@ FEATURES: tuple[FeatureItem, ...] = (
     FeatureItem("web.mesh_analysis", "Mesh 原始日志分析", "module.rail_transit", "page"),
     FeatureItem("web.mesh_analysis_import", "MESH 原始日志导入（Web）", "web.mesh_analysis", "action"),
     FeatureItem("web.mesh_analysis_report_export", "MESH 分析报告导出（Web）", "web.mesh_analysis", "action"),
+    FeatureItem("web.mesh_analysis_source_open_location", "打开 MESH 原始日志本地目录", "web.mesh_analysis", "action"),
     FeatureItem("web.rail_task_control", "轨交 Web 任务控制", "module.rail_transit", "action", requires=("cap.rail_task_control",), delivery_requires=("cap.rail_task_control",)),
     FeatureItem("web.rail_transit_wireless_dashboard", "轨道交通无线看板", "module.rail_transit", "page"),
     FeatureItem("web.rail_train_online", "列车在线情况（Web）", "module.rail_transit", "page", requires=("cap.train_online_data",), delivery_requires=("cap.train_online_data",)),

@@ -50,6 +50,7 @@ Electron-only E1 已删除无生产调用者的 `QtDesktopAdapter`。Python `Des
 | `openPath` | 下载完成返回的 capability ID | Main 按 purpose/action/type/TTL 解析当前进程临时授权；仅数据/报告扩展名白名单 | 打开已保存 Artifact |
 | `showItemInFolder` | 下载完成返回的 capability ID | 与 `openPath` 独立校验 reveal action；危险或仅保存类型不签发该能力 | 在资源管理器定位 |
 | `openOnlineMrSessionLocation` | 稳定 Online MR `session_id` | preload/main 双重字符白名单；main 只调用当前受管回环后端的固定 `desktop-location` 端点并注入内存令牌；后端只返回 `PathResolver` 管理根内的文件/目录，路径不返回 Renderer | 打开车载 MR 会话包、raw 或受管会话目录 |
+| `openMeshAnalysisSessionLocation` | 稳定 MESH `mr_id:source_file_id` 会话 ID | preload/main 双重字符白名单；main 只调用当前受管回环后端的固定 `desktop-location` 端点并注入内存令牌；后端仅解析当前局点 MESH raw 管理根内的普通文件/目录，路径不返回 Renderer | 定位当前离线 MESH 原始日志；文件缺失时打开仍存在的受管父目录 |
 | `openExternalUrl` | 后端设备详情 DTO 返回的 Web 管理地址 | 仅无用户名/密码的绝对 HTTPS URL；拒绝 HTTP、文件协议和畸形 URL | 交给系统默认浏览器打开设备管理页 |
 | `selectSettingsTool` | `iperf3/fping/securecrt/xshell/putty` 之一 | main 按 tool ID 固定文件名集合，复验绝对路径与 basename；FastAPI 保存与真实执行点再次校验存在性、普通文件和非符号链接 | 网络测试组件与外部终端的原生 EXE 选择 |
 | `selectSettingsDirectory` | `securecrt_sessions_root` | main 只接受语义 ID，返回值必须为绝对路径；FastAPI 保存时复验已存在目录和非符号链接 | SecureCRT 会话根目录选择 |
@@ -79,6 +80,8 @@ Renderer 不能把绝对路径提交给打开动作。`downloadBackendResource` 
 `openExternalUrl` 不复用窗口导航，也不允许 Renderer 自己创建新窗口。main/preload 两侧都校验 URL，只有无凭据 HTTPS 地址会传给 `shell.openExternal`；临时 API Token、认证 Header 和设备密码不得进入 URL。
 
 `openOnlineMrSessionLocation` 不接受 Renderer 路径、目标类型、URL 或回退目录。后端根据当前局点和 `session_id` 解析受管 Session，优先定位正式 ZIP，其次定位 MESH/终端 raw，再回退受管目录或关联报告；不存在时返回稳定安全错误。main 收到目标后只调用 `showItemInFolder` 或 `openPath`，不会把绝对路径回送 Renderer。Server Mode、非 `127.0.0.1`、缺少桌面会话认证或 Feature 关闭时端点失败关闭。
+
+`openMeshAnalysisSessionLocation` 同样不接受 Renderer 路径、目标类型、URL 或数据根。后端以当前局点和 MESH 会话 ID 通过 `MeshSourceLocator` 解析 raw 相对路径、归档名和 SHA 兼容定位；只有普通文件或其仍存在的受管父目录可返回给 Electron Main。Main 对返回目标重新 `lstat`，普通文件调用 `showItemInFolder`，目录调用 `openPath`；任何路径都不会回送 Vue。Browser/Server Mode 隐藏该操作，文件和父目录都不存在时返回稳定提示而非 500。
 
 ## 文件导出边界
 

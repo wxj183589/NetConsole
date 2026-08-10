@@ -36,6 +36,10 @@ const mocks = vi.hoisted(() => ({
   chartResize: vi.fn(),
   routerPush: vi.fn(),
   routerReplace: vi.fn(),
+  platformAdapter: {
+    hostType: 'browser' as 'browser' | 'electron',
+    openMeshAnalysisSessionLocation: vi.fn(),
+  },
   taskStore: null as null | {
     tasks: Array<Record<string, unknown>>
     refresh: ReturnType<typeof vi.fn>
@@ -92,7 +96,7 @@ vi.mock('../../components/feedback/useConfirm', () => ({ useConfirm: () => ({ co
 vi.mock('../../features', () => ({ isFeatureEnabled: vi.fn(() => true) }))
 vi.mock('../../platform/runtime', () => ({
   downloadBackendResource: vi.fn(),
-  getPlatformAdapter: () => ({ hostType: 'browser' }),
+  getPlatformAdapter: () => mocks.platformAdapter,
 }))
 vi.mock('../../stores/tasks', async () => {
   const { reactive } = await import('vue')
@@ -261,6 +265,8 @@ beforeEach(() => {
   vi.clearAllMocks()
   mocks.getOverview.mockReset()
   mocks.listSessions.mockReset()
+  mocks.platformAdapter.hostType = 'browser'
+  mocks.platformAdapter.openMeshAnalysisSessionLocation.mockResolvedValue({ success: true })
   mocks.taskStore?.tasks.splice(0)
   vi.stubGlobal('IntersectionObserver', undefined)
   let frameId = 0
@@ -2192,6 +2198,9 @@ describe('Mesh analysis detail behavior', () => {
     expect(mocks.getActivePath).toHaveBeenLastCalledWith('session-locked', {
       max_points: 600,
       radio: 1,
+      include_peer: false,
+      include_events: true,
+      include_station_band: true,
     }, expect.any(AbortSignal))
     expect(mocks.getTracksideSignal).toHaveBeenLastCalledWith('session-locked', {
       max_points: 600,
@@ -2214,6 +2223,9 @@ describe('Mesh analysis detail behavior', () => {
       radio: 1,
       time_from: chartViewport.start_time,
       time_to: chartViewport.end_time,
+      include_peer: false,
+      include_events: false,
+      include_station_band: true,
     })
     expect(wrapper.text()).toContain('已使用 RSSI 锁定时间')
 
@@ -2416,6 +2428,9 @@ describe('Mesh analysis detail behavior', () => {
         radio: 2,
         time_from: viewport.start_time,
         time_to: viewport.end_time,
+        include_peer: false,
+        include_events: true,
+        include_station_band: true,
       }, expect.any(AbortSignal))
       expect(mocks.getTracksideSignal).toHaveBeenCalledWith(session.session_id, {
         max_points: 600,
@@ -2750,6 +2765,9 @@ describe('Mesh analysis detail behavior', () => {
     expect(mocks.getActivePath).toHaveBeenCalledWith('session-1', {
       max_points: 600,
       radio: 1,
+      include_peer: false,
+      include_events: true,
+      include_station_band: true,
     }, expect.any(AbortSignal))
 
     expect(mocks.getTracksideSignal).not.toHaveBeenCalled()
@@ -2797,6 +2815,9 @@ describe('Mesh analysis detail behavior', () => {
         radio: 1,
         time_from: zoomStart,
         time_to: zoomEnd,
+        include_peer: false,
+        include_events: true,
+        include_station_band: true,
       }, expect.any(AbortSignal))
       expect(mocks.getTracksideSignal).toHaveBeenCalledWith('session-1', {
         max_points: 600,
@@ -2855,6 +2876,9 @@ describe('Mesh analysis detail behavior', () => {
     expect(mocks.getActivePath).toHaveBeenCalledWith('session-1', {
       max_points: 1200,
       radio: 1,
+      include_peer: false,
+      include_events: true,
+      include_station_band: true,
     }, expect.any(AbortSignal))
     expect(mocks.getTracksideSignal).toHaveBeenCalledWith('session-1', {
       max_points: 1200,
@@ -2874,6 +2898,9 @@ describe('Mesh analysis detail behavior', () => {
         radio: 1,
         time_from: fullStart,
         time_to: fullEnd,
+        include_peer: false,
+        include_events: true,
+        include_station_band: true,
       }, expect.any(AbortSignal))
       expect(mocks.getTracksideSignal).toHaveBeenCalledWith('session-1', {
         max_points: 1200,
@@ -2952,7 +2979,13 @@ describe('Mesh analysis detail behavior', () => {
     expect(wrapper.find('.detail-tabs').attributes('modelvalue')).toBe('rssi')
     expect(mocks.getActivePath).toHaveBeenCalledWith(
       'session-row-click',
-      { max_points: 600, radio: 1 },
+      {
+        max_points: 600,
+        radio: 1,
+        include_peer: false,
+        include_events: true,
+        include_station_band: true,
+      },
       expect.any(AbortSignal),
     )
     wrapper.unmount()
@@ -3197,6 +3230,9 @@ describe('Mesh analysis detail behavior', () => {
     expect(mocks.getActivePath).toHaveBeenCalledWith('session-link', {
       max_points: 600,
       radio: 1,
+      include_peer: false,
+      include_events: true,
+      include_station_band: true,
     }, expect.any(AbortSignal))
     expect(mocks.getTracksideSignal).toHaveBeenCalledWith('session-link', {
       max_points: 600,
@@ -3322,6 +3358,46 @@ describe('Mesh analysis detail behavior', () => {
     }))
     wrapper.unmount()
     Reflect.deleteProperty(window, 'netconsoleDesktop')
+  })
+
+  it('shows the source directory action only in Electron and passes no path to it', async () => {
+    const session = {
+      session_id: '12345678-1234-1234-1234-123456789abc:1',
+      mr_name: '列车08-MR-CT',
+      original_filename: '8CTmeshlog.log',
+      first_sample_time: '',
+      last_sample_time: '',
+      parsed_status: 'ready',
+      warning_count: 0,
+      report_count: 0,
+    }
+    mocks.listSessions.mockResolvedValue({ items: [session], total: 1, page: 1, page_size: 50 })
+    mocks.getSession.mockResolvedValue({
+      session,
+      analysis_params: {},
+      available_radios: [1],
+      warnings: [],
+      sources: [{ source_file_id: 1, exists: true }],
+    })
+
+    const browserWrapper = mount(MeshAnalysisView, { global: { stubs, directives: { loading: () => undefined } } })
+    await flushPromises()
+    await browserWrapper.findAll('button').find((button) => button.text() === '查看')!.trigger('click')
+    await flushPromises()
+    expect(browserWrapper.findAll('button').some((button) => button.text() === '打开本地目录')).toBe(false)
+    browserWrapper.unmount()
+
+    mocks.platformAdapter.hostType = 'electron'
+    const desktopWrapper = mount(MeshAnalysisView, { global: { stubs, directives: { loading: () => undefined } } })
+    await flushPromises()
+    if (!desktopWrapper.findAll('button').some((button) => button.text() === '打开本地目录')) {
+      const viewButton = desktopWrapper.findAll('button').find((button) => button.text() === '查看')
+      if (viewButton) await viewButton.trigger('click')
+    }
+    await flushPromises()
+    await desktopWrapper.findAll('button').find((button) => button.text() === '打开本地目录')!.trigger('click')
+    expect(mocks.platformAdapter.openMeshAnalysisSessionLocation).toHaveBeenCalledWith(session.session_id)
+    desktopWrapper.unmount()
   })
 
   it('keeps the no-selection session list expanded even when this window previously stored collapse', async () => {
