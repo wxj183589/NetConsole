@@ -8,7 +8,7 @@
 
 - 主链路建链顺序由 `MeshLinkAnalyzer` 经 `MeshMrRepository.query_active_link_build_order` 生成，页面 API、综合报告和链路明细导出不得各自重算区段、短时建链或乒乓结论。
 - 链路明细由 `MeshMrRepository.iter_link_details` 读取 compact v3 标量列；`timestamp_tag` 是采样身份的一部分，报告不得合并同毫秒的不同采样块。
-- 图表和 Tooltip 只消费解析事实层已接受的正数 `LinkCnt` 链路。`LinkCnt=0` 驱动占位行不进入 ACTIVE/STANDBY、RSSI、gap 或图表 payload；`LinkCnt=2` 保留正常曲线并以非故障 `△ 三角链路` 点标记，`>2` 同样保留原始值；仅无法解析或负数 `LinkCnt` 由解析器 diagnostic 后拒绝，组件不能以 `RSSI=0` 作补救判断。
+- 图表和 Tooltip 只消费解析事实层已接受的正数 `LinkCnt` 链路。解析器按 source/Radio/采样时间/采样标识组装快照：ACTIVE `LinkCnt=0` 会丢弃整个主备快照，不能形成孤立 STANDBY、`NO_ACTIVE`、RSSI gap 或 `0` 点；仅 STANDBY `LinkCnt=0` 时才单独丢弃该占位行。`LinkCnt=2` 保留正常曲线并以非故障 `△ 三角链路` 点标记，`>2` 同样保留原始值；仅无法解析或负数 `LinkCnt` 由解析器 diagnostic 后拒绝，组件不能以 `RSSI=0` 作补救判断。
 - 全部 ACTIVE RSSI 和空口负载复用 `mesh_chart_payload` 的唯一 ACTIVE 路径结果。RSSI 图固定为 MR/Peer 两条序列，空口负载图固定为 MR 侧 TxBusy/RxBusy 两条序列，不按 AP 数量扩增图例，也不伪造 CtlBusy。
 - 轨旁AP信号图独立采用 Trackside Link RSSI 语义：每个 frame 同时接收 ACTIVE 与 STANDBY 原始角色快照，RSSI 缺失也保留该角色并以 `null` 断线；序列按内部 Peer Radio/AP/Peer + 本地 Radio 身份保持稳定，角色只属于点。角色切换不拆序列或断线，链路消失后重现才开启新区段；Tooltip 通过外部 frame 索引显示同帧全部主备链路，并按 ACTIVE、STANDBY、AP/MAC 排序，同角色同 AP 的意外 gap/有效重复优先有效采样。底部全量图例默认关闭；点击点和当前范围列表只公开 AP 名称、AP MAC、Radio 与原始轨旁 RSSI，不公开内部 Peer/series/run/link 身份。
 - 页面与报告通过 `MeshApLocationSnapshot` 共享 AP 名称、MAC、站点、区间、里程和线路方向解析；Export Job 只携带该快照的受控字符串字段。Excel 工作表保留完整业务数据，嵌入图表使用关键点和极值降采样，空 ACTIVE 不创建空图。

@@ -52,7 +52,7 @@
 
 解析器按时间和 Radio 识别 ACTIVE/STANDBY/DOWN 等链路记录，规范化 MAC、RSSI、Tx/Rx Busy、链路计数、建立时间和持续时间。缺失指标写空值/N/A；RSSI 最小值、分位数或抖动只从真实有效样本计算，禁止用 0 或默认值补齐。
 
-`LinkCnt` 是链路事实的前置条件：`LinkCnt=0` 是驱动层无效槽位/占位记录，即使原行仍带有 Peer、AP 名称、角色、建链时长或 `RSSI=0/0`，也只保留在不可变 raw 文件中，不生成 parsed SQLite 的 `mesh_links`、样本、ACTIVE/STANDBY 上下文、RSSI/gap、切换/短时建链、AP Identity、统计、Tooltip、图表或报告事实。所有 `LinkCnt>=1` 都是有效链路事实，必须保留原始数值：`1` 是普通直接链路；`2` 以非故障的 `△ 三角链路` 拓扑标记展示，正常参与 RSSI、主备、切换和统计；`>2` 同样保留并参与业务事实，同时记录 diagnostic warning 供协议确认，不自动推断故障或因果关系。缺失、无法解析或负数值记录 warning 后拒绝。所有 RSSI `0` 的展示和统计规则只适用于已通过正数 `LinkCnt` 校验的有效链路记录，不能据 `RSSI=0` 反推记录有效性。
+`LinkCnt` 是链路事实的前置条件。解析器先以 `source_file + Radio + sample_time + timestamp_tag`（存在时）组装采样快照：快照中只要出现 `ACTIVE` 且 `LinkCnt=0`，整组主备记录即为不可信采样并一起忽略；它不产生 `NO_ACTIVE`、RSSI gap、零 RSSI、角色切换中断或任何统计/图表/报告事实。若 ACTIVE 有效而某条 STANDBY 为 `LinkCnt=0`，则只丢弃该备用占位行并保留同快照其余正数链路。`LinkCnt=0` 即使原行仍带有 Peer、AP 名称、角色、建链时长或 `RSSI=0/0`，也只保留在不可变 raw 文件和 INFO diagnostic 中。所有 `LinkCnt>=1` 都是有效链路事实，必须保留原始数值：`1` 是普通直接链路；`2` 以非故障的 `△ 三角链路` 拓扑标记展示，正常参与 RSSI、主备、切换和统计；`>2` 同样保留并参与业务事实，同时记录 diagnostic warning 供协议确认，不自动推断故障或因果关系。缺失、无法解析或负数值记录 warning 后拒绝。所有 RSSI `0` 的展示和统计规则只适用于已通过正数 `LinkCnt` 校验的有效链路记录，不能据 `RSSI=0` 反推记录有效性。该规则改变解析事实，已有来源必须通过“重新解析当前日志”从 raw 重建派生结果。
 
 Peer 身份解析严格分离观测与物理身份：原始文本、规范化 Peer Radio
 MAC、Radio、链路角色、source file、raw line/offset 始终保留；物理 AP
@@ -166,7 +166,7 @@ Electron 的“生成分析报告”和“导出链路明细”都在创建任�
 - UTF-8、GB18030/GBK 输入与 gzip/普通日志；
 - 缺 Peer Name、未知 MAC、重复样本、乱序、跨大间隙和截断日志；
 - 单/双 Radio、同物理 AP 切换、A-B-A 临界与异常乒乓；
-- 覆盖 `LinkCnt=0` 严格拒绝、`LinkCnt=1/2/>2` 有效入库且保留原值、`LinkCnt=2` 三角标记、无法解析/负数 diagnostic warning；降采样后仍保留三角拓扑状态边界；缺失 RSSI/Busy 时不伪造统计；明确 RSSI `0` 只在有效链路记录中保留并排除正常 RSSI 统计；
+- 覆盖 ACTIVE `LinkCnt=0` 整个 source/Radio/time/tag 快照拒绝、仅 STANDBY `LinkCnt=0` 的单行过滤、`LinkCnt=1/2/>2` 有效入库且保留原值、`LinkCnt=2` 三角标记、无法解析/负数 diagnostic warning；无效快照不得产生 `NO_ACTIVE`、RSSI `0`、synthetic gap 或切换中断；降采样后仍保留三角拓扑状态边界；缺失 RSSI/Busy 时不伪造统计；明确 RSSI `0` 只在有效链路记录中保留并排除正常 RSSI 统计；
 - 目录库到 `parsed_db_path` 的正确解析；
 - compact v3 `timestamp_tag` 唯一键、同毫秒多块顺序和旧派生 schema 显式重建；
 - ZIP 路径/压缩安全、预览 TTL、人工映射、隔离提交补偿、manifest 时机、SHA 幂等和绝对路径脱敏；

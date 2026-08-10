@@ -111,7 +111,6 @@ class MeshLogParser:
         current_tag: str | None = None
         skipped = 0
         read_lines = 0
-        record_seq = 0
         try:
             for line_number, raw_offset_start, raw_offset_end, line in _iter_decoded_lines(path):
                 if should_cancel and should_cancel():
@@ -150,8 +149,6 @@ class MeshLogParser:
                 if parsed is None:
                     skipped += 1
                     continue
-                record_seq += 1
-                parsed.record_seq = record_seq
                 records.append(parsed)
                 if progress and read_lines % 200 == 0:
                     progress(read_lines, len(records), skipped)
@@ -169,6 +166,11 @@ class MeshLogParser:
             info.status = "failed"
             info.error_message = str(exc)
             issues.append(ParseIssue(str(path), 0, "文件读取失败", str(exc), ""))
+        records, snapshot_issues, discarded_snapshot_records = filter_invalid_link_count_snapshots(records)
+        issues.extend(snapshot_issues)
+        skipped += discarded_snapshot_records
+        for record_seq, record in enumerate(records, start=1):
+            record.record_seq = record_seq
         info.record_count = len(records)
         info.skipped_count = skipped
         info.error_count = len(issues)
@@ -207,13 +209,12 @@ class MeshLogParser:
                     str(path),
                     line_number,
                     "无效 LinkCnt 槽位",
-                    "LinkCnt=0 是驱动层无效槽位，已在链路事实层忽略。",
+                    "LinkCnt=0 是驱动层无效槽位；将按所属采样快照在链路事实层过滤。",
                     raw_line,
                     severity="INFO",
                     field_name="LinkCnt",
                 )
             )
-            return None, issues
         if link_count is None or link_count < 0:
             if link_count is None:
                 issues.append(
@@ -314,6 +315,57 @@ class MeshLogParser:
         return record, issues
 
 
+def filter_invalid_link_count_snapshots(
+    records: list[MeshLogRecord],
+) -> tuple[list[MeshLogRecord], list[ParseIssue], int]:
+    """从链路事实层移除主链 LinkCnt=0 的整个采样快照。"""
+
+    by_snapshot: dict[tuple[str, int, datetime, str], list[MeshLogRecord]] = {}
+    for record in records:
+        key = (record.source_file, record.radio, record.sample_time, record.timestamp_tag or "")
+        by_snapshot.setdefault(key, []).append(record)
+
+    invalid_snapshot_keys: set[tuple[str, int, datetime, str]] = set()
+    snapshot_issues: list[ParseIssue] = []
+    for key, snapshot_records in by_snapshot.items():
+        invalid_active = next(
+            (
+                record
+                for record in snapshot_records
+                if record.link_state == LINK_STATE_ACTIVE and record.link_count == 0
+            ),
+            None,
+        )
+        if invalid_active is None:
+            continue
+        invalid_snapshot_keys.add(key)
+        _, radio, sample_time, timestamp_tag = key
+        tag_text = f"（采样标识 {timestamp_tag}）" if timestamp_tag else ""
+        snapshot_issues.append(
+            ParseIssue(
+                invalid_active.source_file,
+                invalid_active.source_line_number,
+                "无效主链快照",
+                (
+                    f"Radio {radio} 于 {sample_time.isoformat(sep=' ', timespec='milliseconds')}{tag_text} "
+                    f"存在 ACTIVE LinkCnt=0，整组 {len(snapshot_records)} 条链路记录已在事实层忽略。"
+                ),
+                invalid_active.raw_line,
+                severity="INFO",
+                field_name="LinkCnt",
+            )
+        )
+
+    filtered_records = [
+        record
+        for record in records
+        if (record.source_file, record.radio, record.sample_time, record.timestamp_tag or "") not in invalid_snapshot_keys
+        and record.link_count != 0
+    ]
+    discarded_count = len(records) - len(filtered_records)
+    return filtered_records, snapshot_issues, discarded_count
+
+
 def make_imported_file(path: Path, source_label: str | None = None, precomputed_hash: str | None = None) -> ImportedLogFile:
     stat = path.stat()
     return ImportedLogFile(
@@ -391,7 +443,6 @@ def parse_mesh_link_table(
     current_sample_time = sample_time
     current_tag: str | None = None
     path = Path(source_file or "<online>")
-    record_seq = 0
     for line_number, line in enumerate(text.splitlines(), start=1):
         raw_line = line.rstrip("\r\n")
         stripped = raw_line.strip()
@@ -422,9 +473,11 @@ def parse_mesh_link_table(
         )
         issues.extend(row_issues)
         if parsed is not None:
-            record_seq += 1
-            parsed.record_seq = record_seq
             records.append(parsed)
+    records, snapshot_issues, _ = filter_invalid_link_count_snapshots(records)
+    issues.extend(snapshot_issues)
+    for record_seq, record in enumerate(records, start=1):
+        record.record_seq = record_seq
     return records, issues
 
 
@@ -456,6 +509,7 @@ def make_duplicate_hash(record: MeshLogRecord) -> str:
             record.timestamp_tag or "",
             str(record.radio),
             record.link_state,
+            str(record.link_count),
             record.peer_mac_normalized or "",
             record.establish_time.isoformat(timespec="seconds") if record.establish_time else "",
             *metric_values,
