@@ -1,5 +1,6 @@
 import type { OnlineMrMetricPoint } from '../../types/onlineMr'
 import { formatDbmValue, formatRssiValue } from './rssiPresentation'
+import { formatTimelineMetricValue, timelineMetricDefinition } from './timelineMetricPresentation'
 
 export type TimelineTooltipKind =
   | 'generic'
@@ -136,7 +137,7 @@ function pingLoss(rows: TimelineTooltipRow[]): string {
     const sent = number(dimensions.sent)
     const received = number(dimensions.received)
     const lost = number(dimensions.lost) ?? (sent !== null && received !== null ? sent - received : null)
-    return `<section>${field('目标', target)}${field('丢包率', formatPercent(loss))}${field('发送', sent)}${field('接收', received)}${field('丢失', lost)}</section>`
+    return `<section>${field('目标', target)}${field('丢包率', formatTimelineMetricValue('ping_loss', loss))}${field('发送', sent)}${field('接收', received)}${field('丢失', lost)}</section>`
   }).join('')
   return shell(timeOf(rows), body, pointOf(rows[0]))
 }
@@ -145,7 +146,7 @@ function pingRtt(rows: TimelineTooltipRow[]): string {
   const body = rows.map((row) => {
     const point = pointOf(row)
     const dimensions = point?.dimensions || {}
-    return `<section>${field('目标', dimensions.target_ip || dimensions.target_name || row.seriesName || '目标')}${field('RTT', valueOf(row) === null ? EMPTY : `${trimNumber(valueOf(row)!)} ms`)}${field('丢包', formatPercent(number(dimensions.loss_percent)))}</section>`
+    return `<section>${field('目标', dimensions.target_ip || dimensions.target_name || row.seriesName || '目标')}${field('RTT', formatTimelineMetricValue('ping_rtt', valueOf(row)))}${field('丢包', formatTimelineMetricValue('ping_loss', number(dimensions.loss_percent)))}</section>`
   }).join('')
   return shell(timeOf(rows), body, pointOf(rows[0]))
 }
@@ -202,12 +203,13 @@ export function buildTimelineTooltip(kind: TimelineTooltipKind, rows: TimelineTo
   if (!detailed) {
     const values = rows.slice(0, 3).map((row) => {
       const value = valueOf(row)
-      const unit = kind.includes('loss') || kind === 'channel-busy' ? '%'
+      const definition = timelineMetricDefinition(row.data?.metricType)
+      const fallbackUnit = kind.includes('loss') || kind === 'channel-busy' ? '%'
         : kind.includes('jitter') || kind === 'ping-rtt' ? ' ms'
           : kind === 'traffic' ? ' Mbps'
             : kind === 'interface' ? ' pps'
               : ''
-      return field(row.seriesName || '指标', value === null ? EMPTY : `${trimNumber(value)}${unit}`)
+      return field(row.seriesName || definition?.displayLabel || '指标', definition ? formatTimelineMetricValue(definition.metricId, value) : value === null ? EMPTY : `${trimNumber(value)}${fallbackUnit}`)
     }).join('')
     return `<div class="timeline-tooltip timeline-tooltip--quick"><div class="timeline-tooltip__time">${escapeHtml(formatTimelineTime(timeOf(rows)).split(' ').at(-1) || EMPTY)}</div>${values}</div>`
   }

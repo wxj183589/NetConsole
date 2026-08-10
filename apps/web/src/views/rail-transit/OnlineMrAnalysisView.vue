@@ -59,6 +59,7 @@ import type { MeshRssiLayoutMode } from '../../components/mesh-analysis/meshRssi
 import type { OnlineMrParsedDatabaseEnsureResult, RailTransitTask } from '../../types/railTransitWeb'
 import { BEFORE_SITE_SWITCH_EVENT } from '../../workspace/site-switch'
 import { formatDbmValue, formatRssiValue } from '../../components/rail-timeline/rssiPresentation'
+import { formatTimelineMetricValue } from '../../components/rail-timeline/timelineMetricPresentation'
 
 const route = useRoute()
 const router = useRouter()
@@ -435,8 +436,8 @@ const analysisInfoSections = computed<OnlineMrAnalysisInfoSection[]>(() => {
     metricFields.push(
       { label: '类型', value: 'Ping 质量' },
       { label: '目标', value: infoText(rtt?.dimensions.target_ip || loss?.dimensions.target_ip || rtt?.dimensions.target_name) },
-      { label: 'RTT', value: rtt?.value == null ? '—' : `${formatNumber(rtt.value, 2)} ms` },
-      { label: '丢包', value: loss?.value == null ? '—' : `${formatNumber(loss.value, 2)}%` },
+      { label: 'RTT', value: rtt?.value == null ? '—' : formatTimelineMetricValue('ping_rtt', rtt.value) },
+      { label: '丢包', value: loss?.value == null ? '—' : formatTimelineMetricValue('ping_loss', loss.value) },
     )
   } else if (timelineCursorSource.value === 'timeline-metric' && hoveredMetric === 'busy') {
     const point = diagnosis?.busy?.point

@@ -18,6 +18,7 @@ import {
 } from '../mesh-analysis/meshChartViewport'
 import type { OnlineMrMetricSeries } from '../../types/onlineMr'
 import { buildTimelineTooltip, timelineTooltipPosition, type TimelineTooltipKind, type TimelineTooltipRow } from '../rail-timeline/timelineTooltip'
+import { timelineMetricDefinition } from '../rail-timeline/timelineMetricPresentation'
 
 const props = withDefaults(defineProps<{
   series: OnlineMrMetricSeries[]
@@ -197,9 +198,15 @@ function render(): void {
   if (!chart) return
   chart.dispatchAction({ type: 'hideTip' }, { silent: true })
   const theme = readNetConsoleChartTokens()
+  const metricDefinition = props.series
+    .map((item) => timelineMetricDefinition(item.metric_type))
+    .find((item): item is NonNullable<typeof item> => item !== null)
+  const axisUnit = metricDefinition?.metricId === 'ping_rtt' || metricDefinition?.metricId === 'ping_loss'
+    ? metricDefinition.axisUnit
+    : props.unit
   const baseOption = createMultiSeriesTimeChartBaseOption(theme, {
     title: props.title,
-    unit: props.unit,
+    unit: axisUnit,
     pointCount: pointCount(),
     fullDomain: props.sharedTimeDomain,
     viewport: props.viewport,
@@ -250,11 +257,16 @@ function render(): void {
       transitionDuration: 0,
       position: timelineTooltipPosition,
       extraCssText: 'box-sizing:border-box;width:max-content;max-width:min(360px,calc(100% - 24px));max-height:min(240px,calc(100% - 24px));overflow:auto;pointer-events:none;white-space:normal;',
-      formatter: (raw: unknown) => buildTimelineTooltip(props.tooltipKind, (Array.isArray(raw) ? raw : [raw]) as TimelineTooltipRow[]),
+      formatter: (raw: unknown) => buildTimelineTooltip(
+        props.tooltipKind,
+        (Array.isArray(raw) ? raw : [raw]) as TimelineTooltipRow[],
+        props.tooltipKind === 'ping-loss' || props.tooltipKind === 'ping-rtt',
+      ),
     },
     yAxis: {
       ...(baseOption.yAxis as Record<string, unknown>),
-      ...(props.tooltipKind === 'ping-loss' || props.tooltipKind === 'channel-busy' || props.tooltipKind === 'traffic-loss' ? { min: 0, max: 100 } : {}),
+      ...(metricDefinition?.axisMin === undefined ? {} : { min: metricDefinition.axisMin }),
+      ...(metricDefinition?.axisMax === undefined ? {} : { max: metricDefinition.axisMax }),
     },
     series: chartSeries,
   }, { replaceMerge: ['series', 'dataZoom'] })

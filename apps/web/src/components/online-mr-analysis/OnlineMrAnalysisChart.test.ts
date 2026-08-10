@@ -124,4 +124,30 @@ describe('Online MR analysis chart behavior', () => {
     expect((option.series as Array<{ data: Array<{ value: [string, number | null] }> }>)[0].data[0].value[1]).toBeNull()
     wrapper.unmount()
   })
+
+  it('uses the RTT metric contract for the tooltip and an unbounded millisecond axis', async () => {
+    const wrapper = mount(OnlineMrAnalysisChart, {
+      props: {
+        title: 'Ping RTT',
+        unit: 'ms',
+        tooltipKind: 'ping-rtt',
+        series: [{ metric_type: 'ping_rtt', series_key: '10.122.2.249', unit: 'ms', points: [{ timestamp: '2026-08-10 02:56:12.660', value: 280, text_value: null, dimensions: { target_ip: '10.122.2.249', loss_percent: 0 } }], summary: { count: 1, minimum: 280, maximum: 280, average: 280 } }],
+      },
+      global: { stubs: { ElEmpty: true } },
+    })
+    await flushPromises()
+
+    const option = mocks.setOption.mock.calls.at(-1)?.[0] as { yAxis: Record<string, unknown>; tooltip: { formatter: (rows: unknown[]) => string } }
+    expect(option.yAxis).toMatchObject({ name: 'ms', min: 0 })
+    expect(option.yAxis.max).toBeUndefined()
+    const html = option.tooltip.formatter([{
+      seriesName: '10.122.2.249',
+      value: ['2026-08-10 02:56:12.660', 280],
+      data: { metricType: 'ping_rtt', point: { timestamp: '2026-08-10 02:56:12.660', value: 280, text_value: null, dimensions: { target_ip: '10.122.2.249', loss_percent: 0 } } },
+    }])
+    expect(html).toContain('RTT')
+    expect(html).toContain('280 ms')
+    expect(html).not.toContain('280%')
+    wrapper.unmount()
+  })
 })

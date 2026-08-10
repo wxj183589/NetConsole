@@ -315,6 +315,8 @@ describe('Online MR analysis view behavior', () => {
     expect(source).toContain('overflow-y:auto')
     expect(source).toContain("addEventListener('keydown', handleTimelineEscape, true)")
     expect(source).toContain("removeEventListener('keydown', handleTimelineEscape, true)")
+    expect(source).toContain("formatTimelineMetricValue('ping_rtt', rtt.value)")
+    expect(source).toContain("formatTimelineMetricValue('ping_loss', loss.value)")
   })
 
   it('keeps one fixed analysis panel across RSSI, Ping, and Channel Busy tabs', async () => {

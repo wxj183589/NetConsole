@@ -35,7 +35,7 @@
 | `netconsole-online-mr-skill` | 车载 MR 实时采集、Ping/iPerf、原始日志和会话打包 | “Ping 2 自动填错”“停止采集困难” | 离线 MESH 分析 |
 | `netconsole-agent-skill` | Windows Go Agent V1、HTTP API、内嵌 Web、配置/targets、工具、MR sidecar、构建和运行目录 | “修改 Agent API”“Agent 构建失败”“工具路径或运行数据不对” | CentOS 离线部署；纯流量参数；纯 MR 命令规则 |
 | `netconsole-mesh-analysis-skill` | MR 原始 MESH 离线解析、主备链、切换、图表和报告 | “备份链为空”“乒乓判定错误” | 在线 MR SSH、普通 SNMP |
-| `dynamic-chart-stability` | ECharts 动态时间轴、Canvas、Tooltip、DataZoom、Resize、KeepAlive 和沉浸式回归 | “业务打流图白块”“切换指标后旧曲线残留”“沉浸式后 DataZoom 消失” | 静态图、普通表格、无图表 parser |
+| `dynamic-chart-stability` | ECharts 动态时间轴、Canvas、Tooltip、指标单位契约、DataZoom、Resize、KeepAlive 和沉浸式回归 | “Ping RTT 显示成 %”“业务打流图白块”“切换指标后旧曲线残留”“沉浸式后 DataZoom 消失” | 静态图、普通表格、无图表 parser |
 | `netconsole-ap-identity-skill` | AP canonical identity、Radio/BSSID/Peer、shadow 和 diagnostics | “Identity 匹配错误”“评审接管” | 普通 AP 表格/名称显示 |
 | `netconsole-project-docs-skill` | README/docs/架构状态同步 | “更新 docs”“同步重构地图” | 一次性报告、无文档影响的实现 |
 | `netconsole-data-safety-skill` | SQLite、Repository、目录、备份、迁移和清理 | “增加字段”“数据库 locked”“防止误删” | 纯 UI、无持久化 parser |
