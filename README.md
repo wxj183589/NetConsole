@@ -70,7 +70,7 @@ Agent 子项目只保留 Go/Python/Web 源码、构建脚本和 `apps/agent/reso
 flowchart LR
     E["Electron Main / Preload"] --> CORE["受管 Python Backend"]
     E --> VUE["唯一 Vue Renderer"]
-    DEV["显式 web / server\n开发诊断"] -.-> CORE
+    DEV["显式 server\n开发诊断"] -.-> CORE
     CORE --> API["FastAPI Task / Agent / Traffic API + WebSocket"]
     VUE --> API
     API --> SVC

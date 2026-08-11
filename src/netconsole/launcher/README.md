@@ -12,7 +12,7 @@
 
 - `runtime_supervisor.py`：统一持有和停止 FastAPI Runtime。
 - `web_server.py`：随机端口、短期桌面会话和 Uvicorn 生命周期。
-- `launcher.py`：仅分派显式 `web/server` 本机开发诊断；不是正式桌面 Launcher。
+- `launcher.py`：仅分派显式 `server` 本机开发诊断；不是正式桌面 Launcher。
 - `electron_desktop.py`：无参数 `main.py` 的源码开发桥接，只启动项目本地 Electron 编排器，不持有 Backend 生命周期。
 
 ## 依赖关系
