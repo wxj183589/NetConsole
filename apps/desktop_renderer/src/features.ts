@@ -9,22 +9,29 @@ interface FeatureState {
 
 const states = reactive<Record<string, FeatureState>>({})
 const loaded = ref(false)
-let pending: Promise<void> | null = null
+let generation = 0
+let pending: { generation: number, promise: Promise<void> } | null = null
 
 export async function loadRendererFeatures(force = false): Promise<void> {
   if (loaded.value && !force) return
-  if (pending && !force) return pending
+  if (pending && !force) return pending.promise
   if (force) loaded.value = false
-  pending = getRendererFeatureStates()
+  const requestGeneration = ++generation
+  const request = getRendererFeatureStates()
     .then((items) => {
+      if (requestGeneration !== generation) return
       for (const key of Object.keys(states)) delete states[key]
       for (const item of items) states[item.feature_id] = { visible: item.visible, enabled: item.enabled }
       loaded.value = true
     })
-    .finally(() => {
-      pending = null
+    .catch((cause: unknown) => {
+      if (requestGeneration === generation) throw cause
     })
-  return pending
+    .finally(() => {
+      if (pending?.generation === requestGeneration) pending = null
+    })
+  pending = { generation: requestGeneration, promise: request }
+  return request
 }
 
 export function isFeatureVisible(featureId: string): boolean {
@@ -38,12 +45,15 @@ export function isFeatureEnabled(featureId: string): boolean {
 }
 
 export function setRendererFeaturesForTest(values: Record<string, FeatureState>): void {
+  generation += 1
+  pending = null
   for (const key of Object.keys(states)) delete states[key]
   Object.assign(states, values)
   loaded.value = true
 }
 
 export function resetRendererFeaturesForTest(): void {
+  generation += 1
   for (const key of Object.keys(states)) delete states[key]
   loaded.value = false
   pending = null
