@@ -65,7 +65,7 @@ def _write_clean_build_tool_files(app_dist: Path) -> None:
 
 
 def test_version_file_exposes_only_product_version_metadata():
-    assert APP_VERSION == "v1.4.8"
+    assert APP_VERSION == "v1.4.9"
 
 
 def test_release_version_defaults_to_app_version_without_tag_scan():

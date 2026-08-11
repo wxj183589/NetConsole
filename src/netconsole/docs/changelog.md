@@ -1,4 +1,8 @@
 v1.4.9
+- 正式产品收敛为 Electron Desktop Only：`apps/desktop_renderer` 是唯一 Vue Renderer，继续通过 REST/WebSocket 使用 Python Backend 与原有业务数据契约；独立 Browser Production Runtime 和正式 `web.*` Feature 体系已移除。
+- Feature Registry V2 成为唯一正式功能注册表，Customer/Full Profile 直接使用 V2 ID，不保留旧 Web Profile、Legacy Alias 或迁移框架；Feature 快照未加载及 Customer 重新锁定期间采用 fail-closed，避免受限功能短暂显示。
+- 打包后的 `NetConsoleBackend.exe` 仅接受 Electron 受管启动、安装器辅助、Worker 与发布冒烟入口，拒绝独立 Server、默认 Launcher 及仅 host/port 参数；源码开发态回环 Server 保持可用。
+- v1.4.9 采用 Clean Install 验收，不兼容旧安装状态和 Renderer 临时 UI 状态；业务数据根仍独立于程序目录，本次未修改数据库 schema，也不执行 Web 数据到 Electron 数据迁移。
 - 修复 Online MR Ping 质量指标展示：RTT、丢包率、固定分析栏、Tooltip 与 Y 轴统一复用 metricId 单位契约，RTT 固定使用 `ms` 且不再被 `0~100%` 上限裁剪，丢包率继续使用百分比。
 - MESH 来源诊断按 INFO、WARNING、ERROR 分级；过滤的 `LinkCnt=0` 占位和无效主链快照不再计作数据告警或使来源显示为 partial，重新解析后自动采用新口径。
 - 新增 MESH“AP 覆盖核查”，可比较两个已解析来源中实际观测到的正线 FIT-AP，区分已连接、未连接、资料未匹配与已排除项，并按用户选择位置导出五个 Sheet 的 Excel。
