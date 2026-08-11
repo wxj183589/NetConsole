@@ -2425,10 +2425,16 @@ class MeshMrRepository:
                     max(2, bounded_rows // max(2, selected_series_count * 2)),
                 )
                 source_row_count = int(source_totals["total_rows"] or 0)
-                # Keep the established service-layer run/boundary sampler for
-                # medium sources.  Repository LOD starts only once materializing
-                # the source would exceed twice the bounded row budget.
-                apply_repository_frame_budget = source_row_count > bounded_rows * 2
+                # Apply the frame sampler at the row budget boundary as well.
+                # Waiting for a second full budget lets a 50k source materialize
+                # every row while a 200k source is already downsampled, causing
+                # a large response-size discontinuity around the threshold.
+                # Wide-series sources stay on the service sampler so every
+                # AP/Radio keeps its run boundaries before response fitting.
+                apply_repository_frame_budget = (
+                    source_row_count >= bounded_rows
+                    and total_series <= max(32, bounded_series // 4)
+                )
                 query_row_budget = bounded_rows if apply_repository_frame_budget else max(
                     bounded_rows,
                     source_row_count,

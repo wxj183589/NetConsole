@@ -13,6 +13,7 @@ import {
 } from '../charts/multiSeriesTimeChart'
 import type { MeshChartEvent, MeshChartPoint, MeshLocationSegment } from '../../types/meshAnalysis'
 import { buildMeshLocationBands, buildMeshRssiSeries } from './chartSeries'
+import { sampleMeshSwitchOverlayItems } from './switchOverlayBudget'
 import {
   createFullMeshViewport,
   createFullMeshViewportFromDomain,
@@ -405,7 +406,9 @@ function activeOverlaySeries(
   theme: ReturnType<typeof readNetConsoleChartTokens>,
   clearEmpty = false,
 ): Array<Record<string, unknown>> {
-  const switchEvents = props.events.filter((event) => event.event_type === 'ACTIVE_SWITCH')
+  const switchEvents = sampleMeshSwitchOverlayItems(
+    props.events.filter((event) => event.event_type === 'ACTIVE_SWITCH'),
+  )
   const nodes = props.showSwitchPoints ? switchNodeData(switchEvents) : []
   const triangleNodes = triangleLinkNodeData()
   const locationBands = props.showLocationBand ? buildMeshLocationBands(props.locationSegments) : []

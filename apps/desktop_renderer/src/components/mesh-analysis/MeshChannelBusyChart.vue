@@ -11,6 +11,7 @@ import {
 } from '../../theme/echarts'
 import type { MeshChartEvent, MeshChartPoint, MeshLocationSegment } from '../../types/meshAnalysis'
 import { buildMeshBusySeries, buildMeshLocationBands } from './chartSeries'
+import { sampleMeshSwitchOverlayItems } from './switchOverlayBudget'
 import {
   createFullMeshViewport,
   normalizeMeshViewport,
@@ -252,7 +253,9 @@ function render(reason: 'data' | 'display' | 'theme' | 'reset'): void {
   const theme = readNetConsoleChartTokens()
   const axisStyle = createNetConsoleAxisStyle(theme)
   const series = buildMeshBusySeries(props.points, props.showPeer, props.scope)
-  const switchEvents = props.events.filter((event) => event.event_type === 'ACTIVE_SWITCH')
+  const switchEvents = sampleMeshSwitchOverlayItems(
+    props.events.filter((event) => event.event_type === 'ACTIVE_SWITCH'),
+  )
   const nodes = props.showSwitchPoints ? switchNodeData(switchEvents) : []
   const locationBands = props.showLocationBand ? buildMeshLocationBands(props.locationSegments) : []
   const markArea = locationBands.length ? {

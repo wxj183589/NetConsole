@@ -143,6 +143,7 @@ const tracksideSignal = shallowRef<MeshTracksideSignalChartData | null>(null)
 const tracksideSeriesCache = shallowRef<TracksideSeriesCache | null>(null)
 const tracksideLoading = ref(false)
 const tracksideLoaded = ref(false)
+const tracksideChartRendered = ref(false)
 const tracksideError = ref('')
 const tracksideRecoveryBlocked = ref(false)
 const tracksideRecoveryReason = ref('')
@@ -463,6 +464,63 @@ const sharedRssiTimeDomain = computed<MeshSharedTimeDomain | null>(() => resolve
     tracksideSignal.value?.time_range.end,
   ].filter((value): value is string => Boolean(value)),
 ))
+function formatChartCount(value: number | null | undefined): string {
+  return Math.max(0, Number(value || 0)).toLocaleString('zh-CN')
+}
+
+function formatPayloadBytes(value: number | null | undefined): string {
+  const bytes = Math.max(0, Number(value || 0))
+  return `${(bytes / 1024 / 1024).toFixed(2)} MiB`
+}
+
+function isWindowDetail(start: string | null | undefined, end: string | null | undefined): boolean {
+  const domain = sharedRssiTimeDomain.value
+  const startMillis = meshTimestampMillis(start)
+  const endMillis = meshTimestampMillis(end)
+  const fullStartMillis = meshTimestampMillis(domain?.full_start_time)
+  const fullEndMillis = meshTimestampMillis(domain?.full_end_time)
+  if (startMillis === null || endMillis === null || fullStartMillis === null || fullEndMillis === null) return false
+  return startMillis > fullStartMillis || endMillis < fullEndMillis
+}
+
+function chartLodLabel(
+  lodLevel: number | null | undefined,
+  start: string | null | undefined,
+  end: string | null | undefined,
+): string {
+  return `${isWindowDetail(start, end) ? 'Window Detail' : 'Overview'} · LOD ${Math.max(0, Number(lodLevel || 0))}`
+}
+
+function chartWindowLabel(start: string | null | undefined, end: string | null | undefined): string {
+  return start && end ? `${start} — ${end}` : '全量时间范围'
+}
+
+function degradedChartNotice(degraded: boolean | null | undefined): string {
+  return degraded ? '数据量较大，已使用概览模式。缩放时间范围可查看更完整数据。' : ''
+}
+
+const activeChartWindow = computed(() => ({
+  start: chartData.value?.requested_time_from || chartData.value?.effective_time_from || chartData.value?.time_from,
+  end: chartData.value?.requested_time_to || chartData.value?.effective_time_to || chartData.value?.time_to,
+}))
+const tracksideChartWindow = computed(() => ({
+  start: tracksideSignal.value?.time_range.start,
+  end: tracksideSignal.value?.time_range.end,
+}))
+const rssiLoadStage = computed<{ step: string; label: string } | null>(() => {
+  if (detailLoading.value && !selected.value) return { step: '1/4', label: '读取来源元数据' }
+  if (rssiWindowLoading.value && rssiActiveLoading.value && tracksideLoading.value) {
+    return { step: '2-3/4', label: '并行加载当前窗口的主链 RSSI 与轨旁 AP 数据' }
+  }
+  if (rssiActiveLoading.value || (rssiActiveLoaded.value && !rssiActivePaintReady.value && !rssiActiveError.value)) {
+    return { step: '2/4', label: '加载主链 RSSI' }
+  }
+  if (tracksideLoading.value) return { step: '3/4', label: '加载轨旁 AP' }
+  if (tracksideLoaded.value && tracksideChartVisible.value && !tracksideChartRendered.value) {
+    return { step: '4/4', label: '绘制图表' }
+  }
+  return null
+})
 const busyChartData = computed(() => busyMode.value === 'peer' ? busyPeerPath.value : busyActivePath.value)
 const busyValidSampleCount = computed(() => (busyChartData.value?.points || []).filter((point) => (
   point.local_tx_busy != null || point.local_rx_busy != null || point.peer_tx_busy != null || point.peer_rx_busy != null
@@ -474,14 +532,16 @@ const isRssiWorkspaceMode = computed(() => activeTab.value === 'rssi')
 const sessionDetailsExpanded = computed(() => (
   !selected.value || (isRssiWorkspaceMode.value ? rssiCompactSessionExpanded.value : sessionExpanded.value)
 ))
-const activePaneAlertMessages = computed(() => [
+const activePaneAlertMessages = computed(() => [...new Set([
   rssiFocusLabel.value,
   rssiActiveError.value ? `主链 RSSI 数据加载失败：${rssiActiveError.value}` : '',
   lockedAnalysisRange.value
     ? `已锁定 ${lockedRangeLabel.value} · Radio ${lockedAnalysisRange.value.radio ?? '全部'} · RSSI 可见采样 ${lockedAnalysisRange.value.sample_count} 点`
     : '',
   chartData.value?.downsample_warning || '',
-].filter(Boolean))
+  degradedChartNotice(chartData.value?.response_budget?.degraded),
+  ...(chartData.value?.response_budget?.degrade_reasons || []),
+])].filter(Boolean))
 const activePaneAlertSummary = computed(() => {
   if (rssiActiveError.value) return `主链 RSSI 数据加载失败：${rssiActiveError.value}`
   if (rssiWindowLoading.value) return '正在加载当前时间窗口…'
@@ -1071,6 +1131,7 @@ function releaseTracksideResources(reportDisposed = true): void {
   tracksideSeriesCache.value = null
   tracksideSignal.value = null
   tracksideLoaded.value = false
+  tracksideChartRendered.value = false
   tracksideError.value = ''
   setTracksideCacheActive(meshRuntimeToken, false)
   setTracksideChartActive(meshRuntimeToken, false)
@@ -1144,11 +1205,13 @@ const tracksideRecoveryMessage = computed(() => (
     ? '上次轨旁图因渲染进程内存不足退出，已使用安全恢复模式。点击后才会重新加载轨旁图。'
     : '上次渲染轨旁图时页面异常退出，已使用安全恢复模式。点击后才会重新加载轨旁图。'
 ))
-const tracksidePaneAlertMessages = computed(() => [
+const tracksidePaneAlertMessages = computed(() => [...new Set([
   tracksideRecoveryBlocked.value ? tracksideRecoveryMessage.value : '',
   tracksideError.value ? `轨旁AP信号图加载失败：${tracksideError.value}` : '',
+  degradedChartNotice(tracksideSignal.value?.response_budget?.degraded),
+  ...(tracksideSignal.value?.response_budget?.degrade_reasons || []),
   ...(tracksideSignal.value?.warnings || []),
-].filter(Boolean))
+])].filter(Boolean))
 const tracksidePaneAlertSummary = computed(() => {
   if (tracksideRecoveryBlocked.value) return tracksideRecoveryMessage.value
   if (tracksideError.value) return `轨旁AP信号图加载失败：${tracksideError.value}`
@@ -1157,7 +1220,11 @@ const tracksidePaneAlertSummary = computed(() => {
   if (!rssiActivePaintReady.value) return '等待主链 RSSI 图完成首帧绘制'
   if (!tracksideLoaded.value) return tracksideChartVisible.value ? '轨旁AP信号图尚未加载' : '轨旁AP信号图将在滚动到可见区域后加载'
   const data = tracksideSignal.value
-  if (!data || !data.warnings.length) return ''
+  if (!data) return ''
+  if (data.response_budget?.degraded && !data.warnings.length) {
+    return `轨旁图已使用 ${chartLodLabel(data.response_budget?.lod_level, data.time_range.start, data.time_range.end)}`
+  }
+  if (!data.warnings.length) return ''
   return `轨旁图已保留关键采样：${data.returned_frames}/${data.total_frames} 时刻，${data.returned_link_points}/${data.total_link_points} 链路点`
 })
 
@@ -1624,6 +1691,7 @@ async function restoreRssiWindowFromCache(
   tracksideLoadedKey = entry.tracksideLoadedKey
   rssiActiveLoaded.value = true
   tracksideLoaded.value = true
+  tracksideChartRendered.value = false
   rssiActiveError.value = ''
   tracksideError.value = ''
   publishedRssiWindowKey = key
@@ -1958,6 +2026,7 @@ function loadTracksideSignal(
       tracksideSignal.value = markRaw({ ...result, series: [] })
       tracksideSeriesCache.value = cache
       tracksideLoaded.value = true
+      tracksideChartRendered.value = false
       tracksideLoadedKey = requestKey
       tracksideError.value = ''
       setTracksideCacheActive(meshRuntimeToken, true)
@@ -2008,10 +2077,9 @@ async function loadTracksideForCurrentWindow(): Promise<void> {
   await loadTracksideSignal(detailGeneration, true, currentTracksideWindow())
 }
 
-function handleTracksideWorkloadPhase(
-  phase: 'echarts-init' | 'echarts-set-option' | 'echarts-interactive' | 'chart-disposed',
-): void {
+function handleTracksideWorkloadPhase(phase: RendererWorkloadPhase): void {
   if (phase === 'echarts-init') setTracksideChartActive(meshRuntimeToken, true)
+  if (phase === 'echarts-set-option') tracksideChartRendered.value = true
   if (phase === 'chart-disposed') setTracksideChartActive(meshRuntimeToken, false)
   reportRendererWorkload(phase)
 }
@@ -2156,6 +2224,7 @@ function loadRssiWindowBatch(viewport: MeshChartViewport): Promise<void> {
       tracksideSeriesCache.value = cache
       rssiActiveLoaded.value = true
       tracksideLoaded.value = true
+      tracksideChartRendered.value = false
       rssiActiveLoadedKey = activeRequestKey
       tracksideLoadedKey = tracksideWindowRequestKey
       publishedRssiWindowKey = request.key
@@ -4415,6 +4484,10 @@ function exportTimestamp(now = new Date()): string {
               </template>
             </div>
           </div>
+          <div v-if="rssiLoadStage" class="rssi-load-stage" role="status" aria-live="polite">
+            <strong>步骤 {{ rssiLoadStage.step }}</strong>
+            <span>{{ rssiLoadStage.label }}</span>
+          </div>
           <div
             ref="rssiWorkspaceHost"
             class="rssi-workspace-host"
@@ -4450,7 +4523,7 @@ function exportTimestamp(now = new Date()): string {
                     <span v-else>主链 RSSI 数据尚未加载</span>
                     <el-button v-if="rssiActiveError" link type="warning" :loading="rssiActiveLoading" @click="retryRssiActivePath">重试主链 RSSI</el-button>
                   </div>
-                  <div v-else-if="chartData" class="mini-summary rssi-pane-summary"><span>当前 PeerMac <strong>{{ chartData.summary.current_peer_mac || '—' }}</strong></span><span>当前 AP <strong>{{ chartData.summary.current_peer_ap_name || '—' }}</strong></span><span>Radio <strong>{{ chartData.summary.current_radio ?? '—' }}</strong></span><span>估算采样间隔 <strong>{{ display(chartData.summary.estimated_interval_seconds, ' s') }}</strong></span><span>采样点 <strong>{{ chartData.summary.sample_count }}</strong></span><span>ACTIVE <strong>{{ chartData.summary.active_count }}</strong></span><span>STANDBY 上下文 <strong>{{ chartData.summary.standby_context_count }}</strong></span><span>△ 三角链路 <strong>{{ chartData.summary.triangle_link_point_count ?? 0 }}</strong></span><span>切换 <strong>{{ chartData.summary.switch_count }}</strong></span><span>最早 <strong>{{ chartData.summary.first_sample_time || '—' }}</strong></span><span>最新 <strong>{{ chartData.summary.last_sample_time || '—' }}</strong></span></div>
+                  <div v-else-if="chartData" class="mini-summary rssi-pane-summary"><span>当前 PeerMac <strong>{{ chartData.summary.current_peer_mac || '—' }}</strong></span><span>当前 AP <strong>{{ chartData.summary.current_peer_ap_name || '—' }}</strong></span><span>Radio <strong>{{ chartData.summary.current_radio ?? '—' }}</strong></span><span>估算采样间隔 <strong>{{ display(chartData.summary.estimated_interval_seconds, ' s') }}</strong></span><span>采样点 <strong>{{ chartData.summary.sample_count }}</strong></span><span>ACTIVE <strong>{{ chartData.summary.active_count }}</strong></span><span>STANDBY 上下文 <strong>{{ chartData.summary.standby_context_count }}</strong></span><span>△ 三角链路 <strong>{{ chartData.summary.triangle_link_point_count ?? 0 }}</strong></span><span>切换 <strong>{{ chartData.summary.switch_count }}</strong></span><span>查询行 <strong>{{ formatChartCount(chartData.response_budget?.selected_rows) }} / {{ formatChartCount(chartData.response_budget?.source_rows) }}</strong></span><span>绘图点 <strong>{{ formatChartCount(chartData.response_budget?.returned_points) }} / {{ formatChartCount(chartData.response_budget?.total_points) }}</strong></span><span>切换事件 <strong>{{ formatChartCount(chartData.response_budget?.returned_events) }} / {{ formatChartCount(chartData.response_budget?.total_events) }}</strong></span><span>LOD <strong>{{ chartLodLabel(chartData.response_budget?.lod_level, activeChartWindow.start, activeChartWindow.end) }}</strong></span><span>Payload <strong>{{ formatPayloadBytes(chartData.payload_bytes) }}</strong></span><span>当前窗口 <strong>{{ chartWindowLabel(activeChartWindow.start, activeChartWindow.end) }}</strong></span><span>最早 <strong>{{ chartData.summary.first_sample_time || '—' }}</strong></span><span>最新 <strong>{{ chartData.summary.last_sample_time || '—' }}</strong></span></div>
                   <div class="rssi-pane-chart-host">
                     <MeshRssiChart v-if="rssiActiveLoaded && chartData" ref="rssiChartRef" :points="chartData.points" :events="chartData?.events || []" :location-segments="chartData.location_segments" :show-peer="showRssiPeer" :show-switch-lines="showSwitchLines" :show-switch-points="showSwitchPoints" :show-location-band="showLocationBand" scope="active" :active="pageActive && activeTab === 'rssi' && rssiLayoutMode !== 'trackside-focus'" :focus-timestamp="focusTimestamp" :initial-viewport="rssiViewport" :sync-viewport="rssiViewport" :shared-time-domain="sharedRssiTimeDomain" :sync-pointer-time="sharedPointerTime || selectedAnalysisTime" :sync-pointer-source="sharedPointerTime ? sharedPointerSource : 'programmatic'" :selected-time="selectedAnalysisTime" @viewport-change="updateRssiViewport" @viewport-interaction-start="beginRssiViewportInteraction" @viewport-interaction-end="endRssiViewportInteraction" @pointer-change="updateSharedPointer" @select-time="selectAnalysisTime" @select-switch="selectChartSwitch" />
                     <el-empty v-else-if="rssiActiveLoaded && !rssiActiveLoading" description="当前范围没有 RSSI 数据" :image-size="60" />
@@ -4491,6 +4564,11 @@ function exportTimestamp(now = new Date()): string {
                     <span>链路存在区段 <strong>{{ tracksideSignal.total_link_runs }}</strong></span>
                     <span>角色切换 <strong>{{ tracksideSignal.role_switch_count }}</strong></span>
                     <span>缺失轨旁信号跳过 <strong>{{ tracksideSignal.skipped_missing_signal_points }}</strong></span>
+                    <span>查询行 <strong>{{ formatChartCount(tracksideSignal.response_budget?.selected_rows) }} / {{ formatChartCount(tracksideSignal.response_budget?.source_rows) }}</strong></span>
+                    <span>事件 <strong>{{ formatChartCount(tracksideSignal.response_budget?.returned_events) }} / {{ formatChartCount(tracksideSignal.response_budget?.total_events) }}</strong></span>
+                    <span>LOD <strong>{{ chartLodLabel(tracksideSignal.response_budget?.lod_level, tracksideChartWindow.start, tracksideChartWindow.end) }}</strong></span>
+                    <span>Payload <strong>{{ formatPayloadBytes(tracksideSignal.payload_bytes) }}</strong></span>
+                    <span>当前窗口 <strong>{{ chartWindowLabel(tracksideChartWindow.start, tracksideChartWindow.end) }}</strong></span>
                   </div>
                   <div ref="tracksideChartHost" class="rssi-pane-chart-host">
                     <MeshTracksideSignalChart v-if="tracksideSeriesCache" ref="tracksideChartRef" :series-cache="tracksideSeriesCache" :events="chartData?.events || []" :location-segments="chartData?.location_segments || []" :continuity-gap-seconds="tracksideSignal?.continuity_gap_seconds" :show-switch-lines="showSwitchLines" :show-switch-points="showSwitchPoints" :show-location-band="showLocationBand" :active="pageActive && activeTab === 'rssi' && tracksideChartVisible && rssiLayoutMode !== 'active-focus'" :workspace-visible="activeTab === 'rssi'" :initial-viewport="rssiViewport" :sync-viewport="rssiViewport" :shared-time-domain="sharedRssiTimeDomain" :sync-pointer-time="sharedPointerTime || selectedAnalysisTime" :sync-pointer-source="sharedPointerTime ? sharedPointerSource : 'programmatic'" :selected-time="selectedAnalysisTime" @viewport-change="updateRssiViewport" @viewport-interaction-start="beginRssiViewportInteraction" @viewport-interaction-end="endRssiViewportInteraction" @pointer-change="updateSharedPointer" @select-time="selectAnalysisTime" @select-switch="selectChartSwitch" @workload-phase="handleTracksideWorkloadPhase" @workload-profile="handleTracksideWorkloadProfile" />
@@ -4575,7 +4653,7 @@ function exportTimestamp(now = new Date()): string {
 @media(max-width:700px){.report-params-grid,.source-delete-item{grid-template-columns:1fr}}
 .selected-switch{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:8px 0;padding:8px 12px;border:1px solid var(--nc-border-light);border-radius:6px;background:var(--nc-bg-page)}
 .rssi-layout-switch{display:inline-flex;align-items:center}.rssi-layout-switch .el-button{margin-left:0;border-radius:0}.rssi-layout-switch .el-button:first-child{border-radius:6px 0 0 6px}.rssi-layout-switch .el-button:last-child{border-radius:0 6px 6px 0}.rssi-layout-switch .el-button+.el-button{margin-left:-1px}.rssi-layout-switch .el-button.is-current{position:relative;z-index:1;color:var(--nc-primary);border-color:var(--nc-primary);background:color-mix(in srgb,var(--nc-primary) 12%,var(--nc-bg-card))}
-.rssi-workspace-host{width:100%;min-width:0;min-height:240px;overflow:hidden}.rssi-pane-content{display:flex;width:100%;height:100%;min-width:0;min-height:0;flex-direction:column;overflow-y:auto}.rssi-pane-heading{display:flex;min-height:36px;flex:none;align-items:center;justify-content:space-between;gap:12px;padding:2px 4px}.rssi-pane-heading h3{margin:0}.rssi-pane-alerts{max-height:104px;flex:none;overflow-y:auto}.rssi-pane-alerts:empty{display:none}.rssi-pane-summary{flex:none;flex-wrap:nowrap!important;overflow-x:auto;overflow-y:hidden;scrollbar-width:thin}.rssi-pane-summary span{flex:none;white-space:nowrap}.rssi-pane-chart-host{width:100%;min-width:0;min-height:240px;flex:1 0 240px}
+.rssi-load-stage{display:flex;min-height:28px;align-items:center;gap:10px;padding:4px 8px;color:var(--nc-text-secondary);background:var(--nc-bg-page);border-left:3px solid var(--nc-primary);font-size:12px}.rssi-load-stage strong{color:var(--nc-primary);white-space:nowrap}.rssi-workspace-host{width:100%;min-width:0;min-height:240px;overflow:hidden}.rssi-pane-content{display:flex;width:100%;height:100%;min-width:0;min-height:0;flex-direction:column;overflow-y:auto}.rssi-pane-heading{display:flex;min-height:36px;flex:none;align-items:center;justify-content:space-between;gap:12px;padding:2px 4px}.rssi-pane-heading h3{margin:0}.rssi-pane-alerts{max-height:104px;flex:none;overflow-y:auto}.rssi-pane-alerts:empty{display:none}.rssi-pane-summary{flex:none;flex-wrap:nowrap!important;overflow-x:auto;overflow-y:hidden;scrollbar-width:thin}.rssi-pane-summary span{flex:none;white-space:nowrap}.rssi-pane-chart-host{width:100%;min-width:0;min-height:240px;flex:1 0 240px}
 .mesh-page{display:flex;min-height:0;min-width:0;flex-direction:column;gap:16px}.page-heading,.detail-heading,.jump-actions,.toolbar,.pagination,.mini-summary,.chart-toolbar,.task-line{display:flex;align-items:center;gap:12px}.page-heading,.detail-heading,.pagination{justify-content:space-between}.page-heading h1,.detail-heading h2{margin:2px 0 6px}.page-heading p,.detail-heading p,.hint{margin:0;color:var(--nc-text-secondary)}.eyebrow{color:var(--nc-primary)!important;font-size:12px;font-weight:700;letter-spacing:.08em}.summary-grid{display:grid;grid-template-columns:repeat(8,minmax(105px,1fr));gap:10px}.metric-card,.content-card{background:var(--nc-bg-card);border:1px solid var(--nc-border-light);border-radius:12px}.metric-card{padding:13px}.metric-card span{color:var(--nc-text-secondary);font-size:12px}.metric-card strong{display:block;margin-top:6px;font-size:22px}.content-card{padding:14px 16px;overflow:hidden}.sessions-panel{padding-top:10px}.sessions-toggle{display:flex;width:100%;min-height:42px;align-items:center;gap:10px;padding:6px 4px;color:var(--nc-text-primary);background:transparent;border:0;cursor:pointer;text-align:left}.sessions-toggle>span:not(.el-tag){min-width:0;overflow:hidden;color:var(--nc-text-secondary);text-overflow:ellipsis;white-space:nowrap}.sessions-toggle .el-tag{margin-left:auto}.sessions-toolbar{margin-top:14px}.task-card{max-height:140px;margin:8px 0 14px;padding:10px 12px;overflow:hidden;background:var(--nc-bg-page);border:1px solid var(--nc-border-light);border-radius:8px}.task-line{min-width:0}.task-copy{display:flex;min-width:0;flex:1;flex-direction:column}.task-copy span,.task-summary{overflow:hidden;color:var(--nc-text-secondary);font-size:12px;text-overflow:ellipsis;white-space:nowrap}.task-line>.el-button{margin-left:auto}.task-card :deep(.el-progress){margin-top:8px}.task-summary{margin:7px 0 0}.toolbar,.jump-actions,.mini-summary,.chart-toolbar{flex-wrap:wrap}.toolbar{margin-bottom:12px}.toolbar .el-input{width:240px}.toolbar .el-select{width:145px}.chart-toolbar{padding:10px 0 4px}.chart-toolbar .el-select:first-child{width:min(620px,100%)}.pagination{flex:none;padding-top:12px;color:var(--nc-text-secondary)}.detail-card{display:flex;min-height:0;flex-direction:column}.detail-tabs{min-height:0;flex:none;scroll-margin-top:12px}.detail-card :deep(.detail-tabs>.el-tabs__content){display:none}.detail-tab-content{min-height:0;flex:1}.analysis-subtabs :deep(.el-tabs__content){display:none}.table-pane,.chart-pane{min-height:0}.table-pane{display:flex;flex-direction:column}.table-host,.chart-host{min-height:0;min-width:0;flex:none}.chart-host{width:100%;min-height:360px}.detail-card .el-alert,.task-card .el-alert{margin:10px 0}.warning-summary .el-alert{margin:10px 0}.warning-list{display:flex;flex-direction:column;gap:8px}.mini-summary{padding:10px 0}.mini-summary span{padding:9px 12px;border-radius:8px;background:var(--nc-bg-page)}.hint{font-size:12px}.hidden-input{display:none}.profile-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.bundle-table-wrap{overflow-x:auto;margin-top:12px}.bundle-table{width:100%;border-collapse:collapse;min-width:900px}.bundle-table th,.bundle-table td{padding:9px;border-bottom:1px solid var(--nc-border-light);text-align:left;vertical-align:middle}.bundle-table th{color:var(--nc-text-secondary);font-size:12px}.bundle-table td small{display:block;color:var(--nc-text-secondary);margin-top:4px}.mesh-role-active{color:var(--nc-success);font-weight:600}.mesh-role-standby{color:var(--nc-text-secondary)}.nc-data-table :deep(.mesh-time-group-0 > td.el-table__cell){background:var(--nc-bg-card)}.nc-data-table :deep(.mesh-time-group-1 > td.el-table__cell){background:var(--nc-bg-page)}.nc-data-table :deep(.mesh-row-active > td.el-table__cell){color:var(--nc-success)}.nc-data-table :deep(.mesh-build-selected > td.el-table__cell){background:color-mix(in srgb,var(--nc-primary) 14%,var(--nc-bg-card))}.nc-data-table :deep(.mesh-time-group-0:hover > td.el-table__cell),.nc-data-table :deep(.mesh-time-group-1:hover > td.el-table__cell),.nc-data-table :deep(.mesh-build-selected:hover > td.el-table__cell){background:var(--nc-table-hover-bg)}h3{margin:16px 0 8px}pre{max-height:360px;overflow:auto;padding:12px;background:var(--nc-bg-code);color:var(--nc-text-code);border-radius:8px;font:12px/1.6 Consolas,monospace}@media(max-width:1450px){.summary-grid{grid-template-columns:repeat(4,minmax(120px,1fr))}}@media(max-width:900px){.summary-grid{grid-template-columns:repeat(2,minmax(120px,1fr))}.page-heading,.detail-heading{align-items:flex-start;flex-direction:column}.profile-grid{grid-template-columns:1fr}.sessions-toggle>span:not(.el-tag){display:none}}
 .mesh-page.is-rssi-workspace{gap:8px}
 .is-rssi-workspace .page-heading{min-height:36px;gap:12px}

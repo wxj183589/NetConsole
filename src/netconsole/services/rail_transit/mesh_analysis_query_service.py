@@ -2726,9 +2726,38 @@ class MeshAnalysisQueryService:
             else:
                 degraded = cls._degrade_trackside_chart_once(current)
             if degraded == current:
-                return current
+                return cls._mark_chart_budget_floor(current, payload_bytes)
             current = degraded
-        return current
+        payload_bytes = len(current.model_dump_json(exclude_none=True).encode("utf-8"))
+        return (
+            current
+            if payload_bytes <= _TARGET_CHART_PAYLOAD_BYTES
+            else cls._mark_chart_budget_floor(current, payload_bytes)
+        )
+
+    @staticmethod
+    def _mark_chart_budget_floor(
+        result: MeshPathChartDTO | MeshTracksideSignalChartDTO,
+        payload_bytes: int,
+    ) -> MeshPathChartDTO | MeshTracksideSignalChartDTO:
+        budget = result.response_budget
+        reason = (
+            f"已达到关键点和序列的最小保留粒度，响应体仍为 "
+            f"{payload_bytes / 1024 / 1024:.2f} MiB，未静默扩大返回范围。"
+        )
+        if reason in budget.degrade_reasons:
+            return result
+        return result.model_copy(
+            update={
+                "response_budget": budget.model_copy(
+                    update={
+                        "lod_level": max(1, budget.lod_level),
+                        "degraded": True,
+                        "degrade_reasons": [*budget.degrade_reasons, reason],
+                    }
+                )
+            }
+        )
 
     @classmethod
     def _degrade_path_chart_once(cls, result: MeshPathChartDTO) -> MeshPathChartDTO:

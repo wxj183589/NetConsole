@@ -20,6 +20,7 @@ import type {
 import TracksideExternalTooltip from './TracksideExternalTooltip.vue'
 import TracksideFrameDetailPanel from './TracksideFrameDetailPanel.vue'
 import { buildMeshLocationBands } from './chartSeries'
+import { sampleMeshSwitchOverlayItems } from './switchOverlayBudget'
 import {
   createFullMeshViewport,
   createFullMeshViewportFromDomain,
@@ -985,8 +986,11 @@ function tracksideOverlaySeries(
   theme: ReturnType<typeof readNetConsoleChartTokens>,
   clearEmpty = false,
 ): Array<Record<string, unknown>> {
-  const switchEvents = authoritativeSwitchEvents()
-  const nodes = props.showSwitchPoints ? switchNodeData(switchEvents) : []
+  const allSwitchEvents = authoritativeSwitchEvents()
+  const switchEvents = sampleMeshSwitchOverlayItems(allSwitchEvents)
+  const nodes = props.showSwitchPoints
+    ? sampleMeshSwitchOverlayItems(switchNodeData(allSwitchEvents))
+    : []
   const triangleNodes = seriesCache.series.flatMap((series) => series.data.flatMap((point) => {
     const meta = tracksidePointMeta(seriesCache, point[2])
     return meta?.linkCount === 2 && point[1] !== null ? [point] : []

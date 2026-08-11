@@ -1296,7 +1296,7 @@ describe('MESH charts mount and render', () => {
     }
     expect(openedOverlay.series.filter((item) => item.type === 'scatter')).toHaveLength(2)
     expect(openedOverlay.series[0].data).toBeUndefined()
-    expect(openedOverlay.series[0].markLine?.data).toHaveLength(708)
+    expect(openedOverlay.series[0].markLine?.data).toHaveLength(64)
     expect(openedOverlay.series.find((item) => item.id === 'trackside-switch-nodes')?.data).toHaveLength(16)
     expect(openedOverlay.series.find((item) => item.id === 'trackside-triangle-link-nodes')?.data).toEqual([])
     expect(initialOption.series.every((item, index) => item.data === businessData[index])).toBe(true)

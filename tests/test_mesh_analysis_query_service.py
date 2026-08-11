@@ -257,6 +257,62 @@ def test_chart_payload_automatically_reduces_lod_before_hard_limit(
     assert result.payload_bytes < 128 * 1024
 
 
+def test_chart_payload_reports_when_critical_floor_still_exceeds_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(mesh_query_module, "_TARGET_CHART_PAYLOAD_BYTES", 1_024)
+    monkeypatch.setattr(mesh_query_module, "_MAX_CHART_PAYLOAD_BYTES", 64 * 1_024)
+    chart = MeshPathChartDTO(
+        mode="active_path",
+        points=[
+            MeshChartPointDTO(
+                timestamp="2026-07-14 10:00:00.000",
+                peer_ap_name="AP-" + ("X" * 8_000),
+                is_switch=True,
+            )
+        ],
+        total_points=1,
+        returned_points=1,
+    )
+
+    result = MeshAnalysisQueryService._with_chart_metrics(chart, perf_counter())
+
+    assert result.payload_bytes > 1_024
+    assert result.payload_bytes < 64 * 1_024
+    assert result.response_budget.degraded is True
+    assert any("最小保留粒度" in reason for reason in result.response_budget.degrade_reasons)
+
+
+def test_trackside_repository_applies_frame_budget_at_exact_row_cap(tmp_path: Path) -> None:
+    _paths, _session_id, detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    with sqlite3.connect(detail) as conn:
+        _clear_mesh_chart_rows(conn)
+        for index in range(10):
+            _insert_active_mesh_link(
+                conn,
+                row_id=index + 1,
+                sample_time=f"2026-07-14 10:00:{index:02d}.000",
+                radio=1,
+                peer_name="AP-01",
+                peer_mac="000000000001",
+                peer_rssi=40 + index,
+            )
+
+    payload = MeshMrRepository(detail, read_only=True).query_trackside_link_chart_segment(
+        source_file_id=1,
+        radio=1,
+        max_rows=10,
+        max_frames=2,
+        max_series=10,
+    )
+    segment = dict(payload["run_segment"])
+    rows = list(segment["rows"])
+
+    assert segment["source_total_rows"] == 10
+    assert segment["repository_downsampled"] is True
+    assert 2 <= len(rows) < 10
+
+
 def test_active_chart_repository_budgets_8490_switch_events(tmp_path: Path) -> None:
     _paths, _session_id, detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
     sample_times = (

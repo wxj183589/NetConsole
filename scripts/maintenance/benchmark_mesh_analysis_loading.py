@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import sqlite3
+import statistics
 import time
 import tracemalloc
 from datetime import datetime, timedelta
@@ -249,7 +250,7 @@ def _chart_fixture(root: Path, record_count: int) -> Path:
     return database
 
 
-def _measure_chart_query(database: Path, kind: str) -> dict[str, object]:
+def _measure_chart_query_once(database: Path, kind: str) -> dict[str, object]:
     repository = MeshMrRepository(database, read_only=True)
     tracemalloc.start()
     query_started = time.perf_counter()
@@ -294,9 +295,10 @@ def _measure_chart_query(database: Path, kind: str) -> dict[str, object]:
     _current, peak = tracemalloc.get_traced_memory()
     tracemalloc.stop()
     return {
-        "query_seconds": round(query_seconds, 4),
-        "transform_seconds": round(transform_seconds, 4),
-        "serialization_seconds": round(serialization_seconds, 4),
+        "sql_query_seconds": round(query_seconds, 4),
+        "python_build_seconds": round(transform_seconds, 4),
+        "json_serialize_seconds": round(serialization_seconds, 4),
+        "payload_bytes": len(encoded),
         "payload_mib": round(len(encoded) / 1024 / 1024, 3),
         "source_rows": int(segment.get("source_total_rows") or segment.get("total_rows") or len(rows)),
         "selected_rows": len(rows),
@@ -304,6 +306,55 @@ def _measure_chart_query(database: Path, kind: str) -> dict[str, object]:
         "response_objects": len(response_objects) + len(events),
         "peak_memory_mib": round(peak / 1024 / 1024, 3),
         "repository_downsampled": bool(segment.get("repository_downsampled")),
+    }
+
+
+def _aggregate_chart_runs(runs: list[dict[str, object]]) -> dict[str, object]:
+    numeric_fields = (
+        "sql_query_seconds",
+        "python_build_seconds",
+        "json_serialize_seconds",
+        "payload_bytes",
+        "payload_mib",
+        "source_rows",
+        "selected_rows",
+        "event_objects",
+        "response_objects",
+        "peak_memory_mib",
+    )
+    result: dict[str, object] = {}
+    for field in numeric_fields:
+        values = [float(run[field]) for run in runs]
+        median = statistics.median(values)
+        result[field] = (
+            round(median, 4)
+            if field.endswith("seconds") or field.endswith("mib")
+            else int(round(median))
+        )
+    result["repository_downsampled"] = any(
+        bool(run["repository_downsampled"]) for run in runs
+    )
+    return result
+
+
+def _measure_chart_query(database: Path, kind: str) -> dict[str, object]:
+    # The first fresh connection is reported separately from three subsequent
+    # runs.  This distinguishes connection/page-cache warm-up from steady state
+    # without pretending that a Python process can flush the Windows file cache.
+    runs = [_measure_chart_query_once(database, kind) for _ in range(4)]
+    warm_runs = runs[1:]
+    return {
+        "cold": {"first": runs[0]},
+        "warm": {
+            "first": warm_runs[0],
+            "median": _aggregate_chart_runs(warm_runs),
+            "best": min(
+                warm_runs,
+                key=lambda run: float(run["sql_query_seconds"])
+                + float(run["python_build_seconds"])
+                + float(run["json_serialize_seconds"]),
+            ),
+        },
     }
 
 
@@ -315,9 +366,9 @@ def main() -> int:
         "--chart-records",
         action="append",
         type=int,
-        choices=(50_000, 200_000, 500_000, 1_000_000),
+        choices=(50_000, 75_000, 100_000, 150_000, 200_000, 500_000, 1_000_000),
         default=[],
-        help="追加图表链路基准规模；可重复传入 50k/200k/500k/1m。",
+        help="追加图表链路基准规模；可重复传入 50k/75k/100k/150k/200k/500k/1m。",
     )
     parser.add_argument(
         "--root",
