@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
+import { delimiter, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const appRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -13,10 +13,14 @@ if (!['full', 'customer', 'both'].includes(selection)) {
 }
 if (!python) throw new Error('未找到项目 .venv Python，无法构建版本安装包')
 
+const sourceRoot = resolve(projectRoot, 'src')
+const env = { ...process.env }
+env.PYTHONPATH = env.PYTHONPATH ? `${sourceRoot}${delimiter}${env.PYTHONPATH}` : sourceRoot
+
 execFileSync(
   python,
   ['-m', 'scripts.build.build_edition_installers', '--editions', selection],
-  { cwd: projectRoot, env: { ...process.env }, stdio: 'inherit' },
+  { cwd: projectRoot, env, stdio: 'inherit' },
 )
 
 function discoverPython() {

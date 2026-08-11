@@ -50,6 +50,9 @@ describe('Electron-only packaging', () => {
 
     expect(packageJson.scripts.package).toBe('pnpm run package:all')
     expect(launcher).toContain('scripts.build.build_edition_installers')
+    expect(launcher).toContain("resolve(projectRoot, 'src')")
+    expect(launcher).toContain('`${sourceRoot}${delimiter}${env.PYTHONPATH}`')
+    expect(launcher).toContain('{ cwd: projectRoot, env, stdio: \'inherit\' }')
     expect(builder).toContain('NETCONSOLE_PNPM_PATH')
     expect(builder).toContain('_resolve_pnpm_command()')
     expect(builder).toContain('NetConsole-{label}-{app_version}-{short}-x64-setup.exe')
