@@ -14,6 +14,7 @@ let pending: Promise<void> | null = null
 export async function loadRendererFeatures(force = false): Promise<void> {
   if (loaded.value && !force) return
   if (pending && !force) return pending
+  if (force) loaded.value = false
   pending = getRendererFeatureStates()
     .then((items) => {
       for (const key of Object.keys(states)) delete states[key]
@@ -27,12 +28,12 @@ export async function loadRendererFeatures(force = false): Promise<void> {
 }
 
 export function isFeatureVisible(featureId: string): boolean {
-  if (!loaded.value) return !featureId.startsWith('internal.')
+  if (!loaded.value) return false
   return states[featureId]?.visible === true
 }
 
 export function isFeatureEnabled(featureId: string): boolean {
-  if (!loaded.value) return !featureId.startsWith('internal.')
+  if (!loaded.value) return false
   return states[featureId]?.enabled === true
 }
 

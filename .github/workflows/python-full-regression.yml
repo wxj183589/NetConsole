@@ -47,7 +47,7 @@ jobs:
         run: python -m venv .venv
       - name: Install development dependencies
         run: .venv\Scripts\python.exe -m pip install -c constraints.txt -r requirements-dev.txt
-      - name: Build Web assets for runtime checks
+      - name: Build Desktop Renderer assets for runtime checks
         shell: pwsh
         working-directory: apps/desktop_renderer
         run: |

@@ -21,7 +21,7 @@ describe('App layout foundation', () => {
   })
 
   it('shows the fixed stale frontend warning', () => {
-    expect(source).toContain('当前 Web 前端资源与后端版本不一致，请重新构建 Web 资源。')
+    expect(source).toContain('当前 Desktop Renderer 资源与后端版本不一致，请重新构建桌面界面资源。')
     expect(source).toContain('frontendBuildId.value !== backendBuildId.value')
     expect(source).toContain("document.querySelector('[data-netconsole-build-warning]')")
   })
@@ -34,6 +34,9 @@ describe('App layout foundation', () => {
   })
 
   it('keeps sidebar state and responds at collapse and drawer breakpoints', () => {
+    expect(source).toContain("const COLLAPSED_KEY = 'netconsole.desktop.sidebar.collapsed'")
+    expect(source).toContain("const OPEN_GROUPS_KEY = 'netconsole.desktop.sidebar.open-groups'")
+    expect(source).not.toContain('netconsole.web.sidebar')
     expect(source).toContain('sessionStorage.setItem(COLLAPSED_KEY')
     expect(source).toContain('sessionStorage.setItem(OPEN_GROUPS_KEY')
     expect(source).toContain('viewportWidth.value < 1100')
