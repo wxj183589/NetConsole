@@ -69,11 +69,15 @@ Gate 0 Registry 事实：旧配置含 `89` 个 `web.*` ID。V2 允许合并重�
 | Gate 1 Feature Registry V2 | PASS | `79 passed, 1 warning`；Registry 与两个 Profile 均为 schema 2，键集严格覆盖 `140` 个 V2 ID |
 | Gate 2 Desktop Renderer 路径迁移 | PASS | Renderer `168 files / 1157 tests`、production build；Electron typecheck、`32 files / 255 tests`、源码 smoke；Python `68 passed, 1 warning` |
 | Gate 3 Browser Production 清理 | PASS | 后端 `67 passed, 1 warning`、Renderer 开发适配 `19 passed`、Electron `32 files / 255 tests`、源码 smoke |
-| 最终 Customer/Full/Package/Installer | PENDING | 待补 |
+| 最终 Customer/Full/Package/Installer | PASS | 正式双版本链完成 Renderer/Electron 测试、production build、PyInstaller、package smoke、NSIS、release manifest 与 SHA-256 Gate |
 
 ## V2 Feature Registry
 
 V2 是唯一正式 Feature Registry。它有 `140` 个 ID：`22` 个 `module.*`、`76` 个 `capability.*`、`7` 个 `internal.*`，以及既有领域内部 ID。`web.*` 为零；不存在 `LEGACY_FEATURE_ALIASES`、旧 Profile 迁移或旧 `customer.json` 兼容入口。Customer 与 Full 都以 schema 2 显式覆盖同一 `140` 个键；Customer 的表单连接测试保持关闭，Full 开启，已由 API 与 Renderer Gate 覆盖。
+
+最终安装器内嵌 Profile 已直接从 NSIS 中的 `app-64.7z` 解包核对，不以 staging 文件代替正式产物证据：Full 与 Customer 均有 `140` 个 ID、`web.* = 0`，并与各自仓库 Profile 完全相同。Customer 启用 `97` 项，Full 启用 `133` 项；Customer enabled 集合是 Full 的严格子集，Full 额外启用 `36` 项。两个版本的 `capability.desktop_native_integration` 均为 `visible/enabled/client_package = true`。
+
+正式包的 `/api/features` 不向 Renderer 暴露 `internal_only` ID；Renderer 在 Feature 快照加载后对缺失 ID fail closed，并在加载前默认隐藏 `internal.*`，因此内部“版本与功能交付”入口不会闪现或被直达路由放行。源码开发态仅在 Backend 明确允许功能配置时返回并启用该内部入口。
 
 下表记录全部 V1 `web.*` 的业务去向。这里的“收敛到已有 module”表示旧页面 Gate 被其正式模块 Gate 取代，不保留别名。
 
@@ -103,9 +107,12 @@ V2 是唯一正式 Feature Registry。它有 `140` 个 ID：`22` 个 `module.*`�
 | `web.rail_train_online_refresh`、`web.rail_train_online_collect`、`web.rail_train_online_history_export`、`web.rail_train_online_mapping_write`、`web.rail_train_online_mapping_import`、`web.rail_train_online_mapping_export` | `capability.train_online.refresh`、`capability.train_online.collect`、`capability.train_online.history_export`、`capability.train_online.mapping_write`、`capability.train_online.mapping_import`、`capability.train_online.mapping_export` | 列车在线 Capability |
 | `web.rail_car_network_diagnostic`、`web.rail_car_network_diagnostic_execute`、`web.rail_car_network_point_table_write`、`web.rail_car_network_point_table_export` | `module.train_communication`、`capability.train_communication.diagnostic_execute`、`capability.train_communication.point_table_write`、`capability.train_communication.point_table_export` | 车内通信 Capability |
 | `web.mesh_analysis_import`、`web.mesh_analysis_report_export` | `capability.mesh.import`、`capability.mesh.report_export` | MESH Capability |
+| `web.mesh_ap_coverage_audit`、`web.mesh_analysis_source_open_location` | `capability.mesh.coverage_audit`、`capability.mesh.source_open_location` | MESH 运维 Capability |
 | `web.rail_trackside_ap_business_update`、`web.rail_trackside_ap_business_export`、`web.rail_trackside_ap_business_wps_sync`、`web.rail_trackside_ap_plan`、`web.rail_trackside_ap_plan_write`、`web.rail_trackside_ap_plan_export`、`web.rail_trackside_ap_base_io` | `capability.trackside_ap.update`、`capability.trackside_ap.export`、`capability.trackside_ap.wps_sync`、`capability.trackside_ap.plan`、`capability.trackside_ap.plan_write`、`capability.trackside_ap.plan_export`、`capability.trackside_ap.base_io` | 轨旁 AP Capability |
 | `web.command_reference`、`web.logs`、`web.system_settings`、`web.feature_switch` | `module.command_reference`、`module.logs`、`module.system_settings`、`internal.feature_switch` | 收敛模块/内部开关 |
 | `web.logs_export` | `capability.logs.export` | 日志导出 Capability |
+| `web.database_upgrade` | `module.database_upgrade` | 收敛数据库升级模块 |
+| `web.database_upgrade_start`、`web.database_backup_validate`、`web.database_backup_restore`、`web.database_backup_delete`、`web.database_backup_open_directory`、`web.database_legacy_archive_organize` | `capability.database_upgrade.start`、`capability.database_upgrade.backup_validate`、`capability.database_upgrade.backup_restore`、`capability.database_upgrade.backup_delete`、`capability.database_upgrade.backup_open_directory`、`capability.database_upgrade.legacy_archive_organize` | 数据库升级/备份 Capability |
 
 ## AFTER Function Matrix
 
@@ -116,16 +123,36 @@ V2 是唯一正式 Feature Registry。它有 `140` 个 ID：`22` 个 `module.*`�
 | 轨交基础资料、列车在线、无人值守、车内通信、轨旁 AP、MESH、Online MR | AVAILABLE | AVAILABLE | Feature Gate #1、Renderer/Electron Gate |
 | Agent、任务中心、日志、工具集、Traffic、REST/WebSocket | AVAILABLE | AVAILABLE | Feature Gate #1、Electron smoke |
 | Python Backend、业务 Data Root | AVAILABLE | AVAILABLE；未改 schema/路径契约 | 代码审计、Python/Electron Gate |
+| 文件/目录选择、Save As、Artifact 保存、外部终端 | AVAILABLE | AVAILABLE | Electron IPC/Preload、Renderer adapter、real-backend 与 package smoke |
+| Monaco 配置对比、lazy routes、Worker | AVAILABLE | AVAILABLE | Renderer 全量测试与 production build |
+
+## 最终构建与 Packaged Electron
+
+| 验证 | 结果 | 证据 |
+| --- | --- | --- |
+| `scripts/build/package_local.ps1 -Edition both -NoOpenOutput` | PASS | clean 且已推送 HEAD；Renderer `168 files / 1160 tests`、Electron `32 files / 255 tests` |
+| Desktop Renderer production build | PASS | Vite 转换 `3350` modules，生成生产 `dist/index.html` 与 lazy chunks |
+| Python Backend | PASS | 锁定依赖闭包 `71 distributions`，PyInstaller 成功，冻结 Backend smoke 通过 |
+| Full installer | PASS | NSIS-3 Unicode、edition/profile=`full`、release manifest、大小与 SHA-256 复核通过 |
+| Customer installer | PASS | NSIS-3 Unicode、edition/profile=`customer`、维护密码仅保留哈希、release manifest 与 SHA-256 复核通过 |
+| Packaged Electron smoke | PASS | 受管 Backend 启停、REST、Feature 基线、旧设备库、无人值守时区、MESH 重名日志导入、任务中文完整性、端口释放通过 |
+| 包内 V2 Profile 独立解包 | PASS | 两个 installer 均 `140` 个 ID、`web.* = 0`、与源码 Profile 完全一致，Customer 未超出 Full |
+
+自动化验证覆盖 Native Bridge 的 IPC/Preload 白名单、打开文件/目录、选择文件/目录、Save As、Artifact 保存与打开、外部 URL/终端调用契约；Renderer 测试覆盖 Monaco Diff 初始化、失败 fallback 与大文件保护。上述结论是自动化契约和打包 smoke，不替代真实 GUI 点击或外部工具/设备验收。
 
 ## Browser Production 与 Listener 审计
 
-| 项目 | 处理 | 证据 |
-| --- | --- | --- |
-| 独立 Browser Production launcher | 删除 | `launcher.py` 不再接受 `--mode web`，无 `webbrowser`、bootstrap HTML 或 `RuntimeMode.DESKTOP` 分支 |
-| FastAPI Renderer 静态资源、REST/WebSocket | 保留 | Electron 受管 Backend 通过 loopback URL 装载打包 Renderer |
-| Vite、`browser-adapter.ts`、浏览器下载 fallback | 保留为开发/测试能力 | 不是正式 GUI Runtime |
-| Electron Backend | `127.0.0.1:0`，未改 | Electron 本机受管服务，需要临时 session token |
-| Agent HTTP、Syslog、Remote MR、无人值守、iPerf | bind 未改 | 有远程采集/接入职责，无法证明仅服务本机 UI |
+| Service | 当前 Bind/方向 | 需要远程访问 | 本次修改 | 原因与证据 |
+| --- | --- | --- | --- | --- |
+| Electron 受管 Backend | `127.0.0.1:0`，启动后回传实际端口 | 否 | 否 | CLI 只接受 loopback；Main 每次生成 session token，production Renderer 同源访问 |
+| Electron 开发 Renderer/Vite | `127.0.0.1:5173` 默认 | 否 | 仅目录路径同步 | 只用于开发；CORS 只接受精确 `http://127.0.0.1:<port>` origin 和白名单 header/method |
+| `--mode server` 诊断入口 | loopback，默认 `8000` | 否 | 保留且未改 bind | 无 Browser shell，不是正式 GUI Product；用于源码 API/Renderer 诊断 |
+| Agent HTTP API/内嵌现场页 | `0.0.0.0:18080` 默认，可配置 | 是 | 否 | Controller 和现场浏览器需要远程访问 Agent；不能按 Desktop UI 收口 |
+| 地面无人值守 Syslog UDP | `0.0.0.0:514` 默认，可选本机地址 | 是 | 否 | MR/网络设备向本机回传 Syslog；配置、Repository 默认值和 socket bind 均保持 |
+| Agent/iPerf server | `0.0.0.0:5201` 默认，可配置 | 是 | 否 | 远端带宽测试必须能够连接，不属于 Web Product |
+| Remote MR/SSH/SNMP/Task Controller | 主动连接设备或 Agent；无新增独立 GUI listener | 是 | 否 | 保留既有远程采集链和 REST/WebSocket 控制面 |
+
+生产 Electron 未配置跨域 Renderer origin，因此不增加 CORS middleware；开发态只对精确 loopback Vite origin开放。未扩大 CORS、Origin 或 Backend listener 重构范围。
 
 ## Removed Components
 
@@ -134,4 +161,11 @@ V2 是唯一正式 Feature Registry。它有 `140` 个 ID：`22` 个 `module.*`�
 | `launcher.py --mode web` | 唯一独立 Browser Production 入口 | Electron Main -> 受管 Python Backend -> Desktop Renderer | 无 Electron/业务消费者；Gate #3 通过 |
 | `_open_browser_shell()` 与 `web-console-*.html` | 只为浏览器打开临时 bootstrap | Electron `loadURL()` 到受管 Renderer | 仅由已删除的 `--mode web` 调用 |
 
-最终 Customer/Full package、installer、package smoke 与 Clean Install 证据将在对应构建 Gate 完成后补充；本次不进行旧安装、旧 Feature Profile、旧 UI 本地状态或业务数据迁移。
+## Clean Install 与业务数据
+
+- 自动 Gate 已验证两个正式 NSIS 安装器可解析、内层 Electron/Backend/Renderer 身份一致、`deleteAppDataOnUninstall=false`，测试只使用唯一 `D:/NetConsoleTestData/<run-id>` 并清理。
+- 本次未修改 `PathResolver`、业务数据库 schema、Repository 数据契约或 Data Root 解析；没有 Web 数据到 Electron 数据迁移，也没有旧 Renderer localStorage/IndexedDB 迁移。
+- 真实 Windows GUI 安装、卸载、重新安装、注册表 Data Root 指针复用、真实业务根只读启动及签名状态仍为 `PENDING / NOT VERIFIED`。自动化打包和 unpacked smoke 不能将这些人工门标记为 PASS。
+- 真实 Agent、Syslog、MR、H3C 设备、外部终端程序及现场网络测试保持 `REAL_DEVICE_PENDING`；本任务没有使用或修改真实业务数据。
+
+本次不进行旧安装状态、旧 Feature Profile、旧 UI 本地状态或 installer identity 兼容；Clean Install 允许重新初始化临时 UI 状态，但普通卸载不得删除独立业务数据根。

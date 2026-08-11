@@ -26,6 +26,7 @@
 | [永久架构与后续演进](ARCHITECTURE_NEXT.md) | Electron-only 永久层、不可回退边界与后续演进顺序 | 架构负责人 | 当前代码、最终迁移矩阵与目录规范 | 永久技术边界或演进顺序变化 |
 | [架构一致性审计](ARCHITECTURE_COMPLIANCE.md) | Electron-only 最终分层、Qt 历史迁移映射、自动 Guard、例外和发布阻塞规则 | 架构、迁移与发布负责人 | Git 历史、实际依赖、迁移矩阵、Guard 和非 Qt 测试 | 分层规则、Qt 删除范围、Guard 或最终发布门变化 |
 | [Electron Desktop](ELECTRON_DESKTOP.md) | Electron main/preload、Python 生命周期、临时令牌、开发/生产资源与 Qt 历史边界 | Desktop/Core/Web 开发 | `apps/desktop_electron`、`apps/desktop_renderer/src/platform`、`backend/electron_runtime.py` | Electron 生命周期、安全桥接、启动或发布状态变化 |
+| [Electron Desktop Only 收敛记录](architecture/ELECTRON_DESKTOP_ONLY.md) | Desktop Renderer 迁移、Feature Registry V2、Browser Product 清理、阶段回归与交付证据 | 架构、迁移与发布负责人 | 当前代码、测试、Customer/Full 安装包与 Listener 审计 | 产品运行形态、Renderer 目录、Feature/Profile 或交付结论变化 |
 | [架构](ARCHITECTURE.md) | Electron-only 分层、启动、后台任务、导出、数据和安全边界 | 架构与跨域开发 | `apps/desktop_electron`、`apps/desktop_renderer`、`src/netconsole/backend`、Services/Repositories | 新增跨层依赖、运行形态或核心服务 |
 | [最终迁移矩阵](architecture/MIGRATION_MATRIX.md) | 已删除 Qt 路径分类、永久去向、自动证据与当前验收状态 | 架构、迁移与验收负责人 | Git 删除历史、Feature/Navigation Registry、生产代码和测试 | 历史映射、模块状态或验收结论变化 |
 | [E10 架构一致性报告](archive/migrations/electron-only/ARCHITECTURE_COMPLIANCE_REPORT.md) | Qt 遗留回收证据、扫描分类、未解决项与发布门 | 架构与发布负责人 | 当前工作树、Guard、定向测试和最终制品 | E10 结果、风险或发布门变化 |
