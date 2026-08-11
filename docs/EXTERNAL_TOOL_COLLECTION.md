@@ -2,7 +2,7 @@
 
 ## 产品边界
 
-“工具集”是 Electron Desktop 的本机第三方 Windows 工具启动器，Feature key 为 `web.tool_collection`，路由为 `/tools`。它记录用户主动选择的 `.exe`，支持分类、收藏、常用排序、路径状态、程序图标、编辑、重新定位、启动权限和资源管理器定位。
+“工具集”是 Electron Desktop 的本机第三方 Windows 工具启动器，Feature key 为 `module.tools`，路由为 `/tools`。它记录用户主动选择的 `.exe`，支持分类、收藏、常用排序、路径状态、程序图标、编辑、重新定位、启动权限和资源管理器定位。
 
 工具程序不复制到 NetConsole 安装目录，也不进入 Python Backend、局点数据库、数据根、局点切换、`.ncsite` 或 `.ncresult`。主导航中的“工具集”包含“外部工具”、流量测试、连通性检测、无线扫描和网络测试组件；其中“外部工具”正式使用 `/tools` 路由和本页面，网络测试组件 iperf3 与 fping 由独立页面统一维护，支持内置组件优先和显式自定义回退，不自动登记为第三方 EXE。SecureCRT、Xshell 与 PuTTY 的用户可见配置入口位于“外部工具”页面；工具集默认预置这三张 `system_setting` 引用卡片，启动和定位时实时读取外部终端配置，不复制路径。
 

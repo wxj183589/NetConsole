@@ -25,7 +25,7 @@ D:\NetConsoleData
 源码和工具路径：
 
 - `src/netconsole/`：可安装的 Python 包；
-- `apps/agent/`、`apps/desktop_electron/`、`apps/web/`：独立应用；
+- `apps/agent/`、`apps/desktop_electron/`、`apps/desktop_renderer/`：独立应用；
 - `config/`：版本化配置模板；
 - `resources/`：版本化静态资源；
 - `scripts/build/`、`scripts/dev/`、`scripts/maintenance/`：工程脚本；

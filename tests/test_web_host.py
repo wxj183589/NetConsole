@@ -49,14 +49,10 @@ def test_desktop_web_server_logs_frontend_identity_without_session_token(tmp_pat
     messages: list[tuple[str, str]] = []
     monkeypatch.setattr(web_server.app_logger, "log_info", lambda event, message: messages.append((event, message)))
     server = DesktopWebServer(paths=PathResolver(tmp_path))
-    bootstrap = server.bootstrap_html()
 
     assert server.base_url.startswith("http://127.0.0.1:")
     assert server.session_token
     assert server.session_token not in server.base_url
-    assert 'method="post"' in bootstrap
-    assert f'action="{server.base_url}/__desktop_session"' in bootstrap
-    assert f'value="{server.session_token}"' in bootstrap
     event, message = next(item for item in messages if item[0] == "DESKTOP_WEB_FRONTEND_RESOURCE")
     assert event == "DESKTOP_WEB_FRONTEND_RESOURCE"
     assert all(field in message for field in ("frontend_root=", "index=", "frontend_build_id=", "backend_build_id=", "frontend_source_type="))

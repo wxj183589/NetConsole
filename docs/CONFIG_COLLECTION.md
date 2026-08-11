@@ -48,15 +48,15 @@ Electron 页面 `/config-center` 负责 H3C/Comware 配置采集、保存配置�
 
 相关路径：
 
-- `apps/web/src/views/config-collection/`
-- `apps/web/src/components/config-diff/ConfigDiffViewer.vue`
-- `apps/web/src/components/config-diff/ConfigMonacoDiff.vue`
-- `apps/web/src/views/config-collection/configDiffAdapter.ts`
-- `apps/web/src/platform/monacoEnvironment.ts`
+- `apps/desktop_renderer/src/views/config-collection/`
+- `apps/desktop_renderer/src/components/config-diff/ConfigDiffViewer.vue`
+- `apps/desktop_renderer/src/components/config-diff/ConfigMonacoDiff.vue`
+- `apps/desktop_renderer/src/views/config-collection/configDiffAdapter.ts`
+- `apps/desktop_renderer/src/platform/monacoEnvironment.ts`
 - `src/netconsole/services/config_collection_web_service.py`
 - `src/netconsole/services/config_lifecycle_service.py`
 - `src/netconsole/services/job_center/handlers/config_jobs.py`
 - `tests/test_config_collection_web_api.py`
-- `apps/web/src/views/config-collection/ConfigCollectionView.test.ts`
+- `apps/desktop_renderer/src/views/config-collection/ConfigCollectionView.test.ts`
 
 提交 `631a52e1` 修复了“两条已勾选快照未成为实际对比输入”的状态问题。`display version -> 末尾 #` 裁剪和左树收起仍未实现；真实设备、Electron 离线加载与大配置人工验收完成前不得提升为 `COMPLETE`。

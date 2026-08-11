@@ -21,9 +21,9 @@
 
 新增任务型导出必须遵循：
 
-1. 在 [`exportActionRegistry.ts`](../apps/web/src/platform/exportActionRegistry.ts) 注册稳定的固定动作。
+1. 在 [`exportActionRegistry.ts`](../apps/desktop_renderer/src/platform/exportActionRegistry.ts) 注册稳定的固定动作。
 2. 为动作定义 `module`、`label`、`filters`、`artifactExtensions` 和 `artifactMediaTypes`。
-3. 页面调用 [`submitExportAfterDestinationSelected(...)`](../apps/web/src/composables/useUserSelectedExport.ts)。
+3. 页面调用 [`submitExportAfterDestinationSelected(...)`](../apps/desktop_renderer/src/composables/useUserSelectedExport.ts)。
 4. Electron Main 先打开 Save As；用户取消时不调用 `submit`、不创建任务、不产生 Artifact，也不提示任务提交成功。
 5. 用户确认路径后才创建 Export Task。共享协调器绑定 `taskId`、`action`、Main 授权路径、文件名、`module` 和 `context`。
 6. Export Process 只生成内部 Artifact，Task Center 发布 Artifact 元数据。
@@ -58,7 +58,7 @@ async function exportData(): Promise<void> {
 
 ## 三、固定动作注册规则
 
-所有新增任务型导出必须先修改 [`apps/web/src/platform/exportActionRegistry.ts`](../apps/web/src/platform/exportActionRegistry.ts)。
+所有新增任务型导出必须先修改 [`apps/desktop_renderer/src/platform/exportActionRegistry.ts`](../apps/desktop_renderer/src/platform/exportActionRegistry.ts)。
 
 禁止页面：
 
@@ -71,7 +71,7 @@ async function exportData(): Promise<void> {
 
 ## 四、已有文件与历史 Artifact
 
-历史 Artifact、单个已有配置文件、已生成归档和现成模板响应不需要新建 Export Task。用户点击“下载”或“另存 Artifact”时调用 [`downloadBackendResource(...)`](../apps/web/src/platform/runtime.ts)，且不传 `destinationPath`，由 Electron Main 当次弹出一次 Save As。
+历史 Artifact、单个已有配置文件、已生成归档和现成模板响应不需要新建 Export Task。用户点击“下载”或“另存 Artifact”时调用 [`downloadBackendResource(...)`](../apps/desktop_renderer/src/platform/runtime.ts)，且不传 `destinationPath`，由 Electron Main 当次弹出一次 Save As。
 
 页面加载、Tab 恢复和历史任务恢复不得自动弹窗或自动保存。已有文件若需要“导出副本”，仍属于用户最终副本，必须由用户当次选择路径。
 

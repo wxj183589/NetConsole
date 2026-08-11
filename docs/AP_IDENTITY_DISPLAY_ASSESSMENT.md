@@ -351,7 +351,7 @@ display_allowed =
 src/netconsole/services/ap_identity/diagnostics_summary.py
 src/netconsole/core/feature_registry.py
 src/netconsole/models/diagnostics_summary.py
-apps/web/src/components/<approved-ap-identity-summary>.vue  # 仅在后续明确批准后
+apps/desktop_renderer/src/components/<approved-ap-identity-summary>.vue  # 仅在后续明确批准后
 tests/test_ap_identity_diagnostics_summary.py
 tests/test_ap_identity_diagnostics_display.py
 ```

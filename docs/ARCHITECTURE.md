@@ -27,7 +27,7 @@ flowchart LR
 - 无参数 `main.py` 与 `apps/desktop_electron` 的 `pnpm dev` 进入同一开发编排链。
 - 打包态由 Electron 以内部 `--electron-backend` 启动冻结 Backend。
 - Backend 只监听随机 loopback 端口，桌面会话令牌每次启动重新生成，不写 URL、日志或 SQLite。
-- `main.py --mode web|server` 只用于显式本机开发诊断。
+- `main.py --mode server` 只用于显式本机开发诊断。
 
 ## 永久分层
 
@@ -40,7 +40,7 @@ flowchart LR
 | Domain Service / Parser | 设备与业务规则、解析、归一化、报告 | UI、HTTP、IPC |
 | Repository | SQLite 查询、事务、迁移、分页与记录映射 | UI、设备命令和业务判定 |
 
-Vue 标准业务表格通过 `apps/web/src/components/table/NcDataTable.vue` 和强类型列定义表达展示契约；文本测量、自动列宽、缺失值、对齐和视图偏好属于共享 Renderer 基础，不由业务页面重复实现。该基础不读取数据库、不执行设备命令，也不改变 DTO 字段语义。现有直接 `el-table` 按 [表格迁移清单](ui/TABLE_INVENTORY.md) 分域收敛，新增违规由 `scripts/ui/` Guard 阻止。
+Vue 标准业务表格通过 `apps/desktop_renderer/src/components/table/NcDataTable.vue` 和强类型列定义表达展示契约；文本测量、自动列宽、缺失值、对齐和视图偏好属于共享 Renderer 基础，不由业务页面重复实现。该基础不读取数据库、不执行设备命令，也不改变 DTO 字段语义。现有直接 `el-table` 按 [表格迁移清单](ui/TABLE_INVENTORY.md) 分域收敛，新增违规由 `scripts/ui/` Guard 阻止。
 
 ## 后台任务与导出
 

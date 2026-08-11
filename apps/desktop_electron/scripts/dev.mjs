@@ -10,9 +10,9 @@ import { cleanupIsolatedRuntime, createIsolatedRuntime, discoverProjectPython } 
 const require = createRequire(import.meta.url)
 const appRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const projectRoot = resolve(appRoot, '..', '..')
-const webRoot = resolve(projectRoot, 'apps', 'web')
-const webRequire = createRequire(resolve(webRoot, 'package.json'))
-const viteCli = resolve(dirname(webRequire.resolve('vite/package.json')), 'bin', 'vite.js')
+const rendererRoot = resolve(projectRoot, 'apps', 'desktop_renderer')
+const rendererRequire = createRequire(resolve(rendererRoot, 'package.json'))
+const viteCli = resolve(dirname(rendererRequire.resolve('vite/package.json')), 'bin', 'vite.js')
 const typescriptCli = resolve(dirname(require.resolve('typescript/package.json')), 'bin', 'tsc')
 const buildScript = resolve(appRoot, 'scripts', 'build.mjs')
 const devPort = Number.parseInt(process.env.NETCONSOLE_DEV_PORT || '5173', 10)
@@ -236,7 +236,7 @@ try {
     String(devPort),
     '--strictPort',
   ], {
-    cwd: webRoot,
+    cwd: rendererRoot,
     env: {
       ...process.env,
       ...(codex ? {
@@ -259,7 +259,7 @@ try {
     shell: false,
     env: {
       ...electronEnv,
-      NETCONSOLE_WEB_DEV_URL: devUrl,
+      NETCONSOLE_RENDERER_DEV_URL: devUrl,
       NETCONSOLE_DEV_MODE: '1',
       NETCONSOLE_PROJECT_ROOT: projectRoot,
       NETCONSOLE_PYTHON: pythonExecutable,
@@ -283,7 +283,7 @@ try {
     const status = await waitForCodexBackend(electron)
     process.stdout.write(`NetConsole Codex development runtime ready: ${devUrl}\n`)
     process.stdout.write(`Runtime mode: ${String(status.runtime_mode || 'electron-development')}\n`)
-    process.stdout.write('Vue tests: pnpm --dir apps/web test\n')
+    process.stdout.write('Vue tests: pnpm --dir apps/desktop_renderer test\n')
     process.stdout.write('Electron tests: pnpm --dir apps/desktop_electron test\n')
   }
   const exitCode = await new Promise((resolvePromise, reject) => {

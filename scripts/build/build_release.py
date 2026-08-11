@@ -168,7 +168,7 @@ def preflight(
     if not locked_environment.ok:
         raise BuildError("构建环境与 constraints.txt 不一致")
     clean_build_spec.validate_tool_sources()
-    build_web_frontend(config, build_metadata=build_metadata)
+    build_desktop_renderer(config, build_metadata=build_metadata)
     if smoke_test:
         print("[check] source external tools")
         for result in run_tool_smoke_tests():
@@ -179,7 +179,7 @@ def preflight(
             print(f"[OK] {result.name}: {first_line}")
 
 
-def build_web_frontend(
+def build_desktop_renderer(
     config: BuildConfig,
     *,
     build_metadata: dict[str, object] | None = None,
@@ -187,11 +187,11 @@ def build_web_frontend(
     pnpm = shutil.which("pnpm.cmd") or shutil.which("pnpm")
     if pnpm is None:
         raise BuildError(
-            "未找到 pnpm，无法构建桌面版 Web 页面；请先安装 Node.js/pnpm 并执行 pnpm install。"
+            "未找到 pnpm，无法构建 Desktop Renderer；请先安装 Node.js/pnpm 并执行 pnpm install。"
         )
-    if not (config.web_dir / "node_modules").is_dir():
+    if not (config.renderer_dir / "node_modules").is_dir():
         raise BuildError(
-            "apps/web/node_modules 不存在；请先在 apps/web 执行 pnpm install --frozen-lockfile。"
+            "apps/desktop_renderer/node_modules 不存在；请先在 apps/desktop_renderer 执行 pnpm install --frozen-lockfile。"
         )
     env = os.environ.copy()
     metadata = build_metadata or collect_build_metadata(
@@ -200,10 +200,10 @@ def build_web_frontend(
         release=False,
     )
     env[BUILD_METADATA_ENV] = encode_build_metadata(metadata)
-    run([pnpm, "build"], cwd=config.web_dir, env=env)
+    run([pnpm, "build"], cwd=config.renderer_dir, env=env)
     try:
         validate_web_frontend_meta(
-            config.web_dir / "dist",
+            config.renderer_dir / "dist",
             expected_version=config.app_version,
             expected_commit=str(metadata["git_commit_full"]),
             expected_build_time=str(metadata["build_time_utc"]),
@@ -359,7 +359,7 @@ def validate_embedded_feature_gate(
 
 
 def validate_customer_feature_gate(gate: FeatureGate) -> None:
-    for feature_id in ("module.feature_switch", "system.feature_flags"):
+    for feature_id in ("internal.feature_switch",):
         if gate.is_visible(feature_id) or gate.is_enabled(feature_id):
             raise BuildError(f"Customer build exposes {feature_id}")
     expected = load_profile(profiles_dir() / "customer.json", "customer")

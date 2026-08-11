@@ -85,7 +85,7 @@ scripts/architecture/check_migration_map.py
 
 如多个检查可以由一个稳定的 AST 引擎承担，可共享实现，但上述发布门必须保留可单独定位的规则 ID 和失败输出。Python 边界检查应验证 Domain、Service、Repository、Application 与 Router 的依赖方向；TypeScript 边界检查应阻止 Vue 导入 Electron Main、Main 导入 Vue Store，以及 Preload 导入业务 Service。Repository、migration、明确的数据维护脚本和测试 fixture 之外的 `sqlite3.connect`/`aiosqlite.connect` 必须失败。生产设备命令只允许出现在版本化 Command Profile；命令 fixture、Parser 样本、文档和历史 Changelog 必须通过精确路径分类，不允许放行整个 `services/`。
 
-UI 业务逻辑扫描是启发式检查，命中必须人工分类为 `DISPLAY_ONLY`、`BUSINESS_LOGIC` 或 `FALSE_POSITIVE`，不得自动删除。SQL 和命令文本扫描也只是初筛，需结合 AST、调用图和测试样本判断；不能放行整个 `services/` 或 `apps/web/`。
+UI 业务逻辑扫描是启发式检查，命中必须人工分类为 `DISPLAY_ONLY`、`BUSINESS_LOGIC` 或 `FALSE_POSITIVE`，不得自动删除。SQL 和命令文本扫描也只是初筛，需结合 AST、调用图和测试样本判断；不能放行整个 `services/` 或 `apps/desktop_renderer/`。
 
 ### 当前 E10B 基线
 
@@ -107,12 +107,12 @@ UI 业务逻辑扫描是启发式检查，命中必须人工分类为 `DISPLAY_O
 
 ```yaml
 - rule_id: UI_BUSINESS_LOGIC
-  path: apps/web/src/utils/chart-bucket.ts
+  path: apps/desktop_renderer/src/utils/chart-bucket.ts
   reason: 仅进行像素级降采样，不改变业务统计值
   owner: web
   created_at: 2026-07-18
   expires_at: 2026-10-01
-  test: apps/web/tests/chart-bucket.spec.ts
+  test: apps/desktop_renderer/tests/chart-bucket.spec.ts
 ```
 
 当前不为尚未发现的命中创建占位例外。

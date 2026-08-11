@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 
 SUPPORTED_LANGUAGES = ("zh_CN", "en_US", "zh", "en")
@@ -3500,7 +3500,7 @@ TRANSLATIONS["zh_CN"].update(
     {
         "nav.system_settings": "系统设置",
         "nav.command_reference": "命令说明",
-        "system.feature_flags": "功能开关配置",
+        "internal.feature_switch": "功能开关配置",
         "system.disk_cleanup": "磁盘清理",
         "system.changelog": "版本更新日志",
         "system.open_source": "开源许可",
@@ -3546,7 +3546,7 @@ TRANSLATIONS["en_US"].update(
     {
         "nav.system_settings": "System",
         "nav.command_reference": "Command Reference",
-        "system.feature_flags": "Feature Flags",
+        "internal.feature_switch": "Feature Flags",
         "system.disk_cleanup": "Disk Cleanup",
         "system.changelog": "Changelog",
         "system.open_source": "Open Source Notices",

@@ -18,10 +18,10 @@ def test_current_tracked_directories_have_readmes() -> None:
 
 def test_excludes_dependency_generated_binary_and_tool_internal_paths(tmp_path: Path) -> None:
     tracked = [
-        "apps/web/src/README.md",
-        "apps/web/node_modules/package/index.js",
-        "apps/web/dist/index.js",
-        "apps/web/build/generated.js",
+        "apps/desktop_renderer/src/README.md",
+        "apps/desktop_renderer/node_modules/package/index.js",
+        "apps/desktop_renderer/dist/index.js",
+        "apps/desktop_renderer/build/generated.js",
         "resources/branding/README.md",
         "resources/tools/windows-x64/fping/fping.exe",
         "resources/branding/logo.png",
@@ -30,15 +30,15 @@ def test_excludes_dependency_generated_binary_and_tool_internal_paths(tmp_path: 
 
     assert report.maintained_directories == (
         "apps",
-        "apps/web",
-        "apps/web/src",
+        "apps/desktop_renderer",
+        "apps/desktop_renderer/src",
         "resources",
         "resources/branding",
     )
     assert report.missing_directories == (
         "apps",
-        "apps/web",
-        "apps/web/src",
+        "apps/desktop_renderer",
+        "apps/desktop_renderer/src",
         "resources",
         "resources/branding",
     )

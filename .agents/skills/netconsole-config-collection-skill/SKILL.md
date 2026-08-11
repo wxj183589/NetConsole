@@ -9,7 +9,7 @@ description: "NetConsole 配置采集中心、running/saved 快照、两文件�
 
 # 输入与路径
 
-确认设备/快照 ID、类型、左右来源、文件边界和复现步骤。先读 `docs/CONFIG_COLLECTION.md`、`apps/web/src/views/config-collection/`、Config Router/DTO、`config_collection_web_service.py`、`config_lifecycle_service.py`、config Job handlers 与对应 Python/Vue 测试。
+确认设备/快照 ID、类型、左右来源、文件边界和复现步骤。先读 `docs/CONFIG_COLLECTION.md`、`apps/desktop_renderer/src/views/config-collection/`、Config Router/DTO、`config_collection_web_service.py`、`config_lifecycle_service.py`、config Job handlers 与对应 Python/Vue 测试。
 
 # 工作流
 
@@ -22,7 +22,7 @@ description: "NetConsole 配置采集中心、running/saved 快照、两文件�
 
 # 验收与命令
 
-运行 `.venv/Scripts/python.exe -m pytest -q tests/test_config_collection_web_api.py` 及直接受影响的配置服务测试，在 `apps/web` 运行 `ConfigCollectionView.test.ts` 与 `configDiff.test.ts`；最后执行 `git diff --check`。
+运行 `.venv/Scripts/python.exe -m pytest -q tests/test_config_collection_web_api.py` 及直接受影响的配置服务测试，在 `apps/desktop_renderer` 运行 `ConfigCollectionView.test.ts` 与 `configDiff.test.ts`；最后执行 `git diff --check`。
 
 # 常见失败与报告
 

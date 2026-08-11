@@ -35,7 +35,7 @@ class NativeSettingsAction(BaseModel):
 
 def _system_settings(request: Request) -> None:
     gate = request.app.state.feature_gate
-    if gate.is_enabled("web.system_settings") or gate.is_customer_preview_active():
+    if gate.is_enabled("module.system_settings") or gate.is_customer_preview_active():
         return
     raise HTTPException(status_code=404, detail="功能未启用")
 
@@ -59,13 +59,13 @@ def _feature_switch(request: Request) -> None:
     if not gate.is_feature_configuration_available():
         app_logger.log_warning("FEATURE_CONFIGURATION_DISABLED", "runtime=packaged endpoint=system_settings")
         raise HTTPException(status_code=403, detail="正式包使用固定生产功能集，功能配置不可用")
-    if gate.is_enabled("web.feature_switch") or gate.is_customer_preview_active():
+    if gate.is_enabled("internal.feature_switch") or gate.is_customer_preview_active():
         return
     raise HTTPException(status_code=404, detail="功能未启用")
 
 
 def _network_components(request: Request) -> None:
-    if request.app.state.feature_gate.is_enabled("web.network_test_components"):
+    if request.app.state.feature_gate.is_enabled("capability.network_tools.components"):
         return
     raise HTTPException(status_code=404, detail="功能未启用")
 

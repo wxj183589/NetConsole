@@ -16,4 +16,4 @@ LLDP Router 响应使用显式 DTO 白名单，只公开本地接口、归一化
 
 生产 Electron 后端默认不暴露 `/docs` 或 OpenAPI 浏览页；路由本身仍进入受控开发诊断模式的 OpenAPI 契约。响应不得包含密码、community、Token、服务端绝对路径或任意环境变量。
 
-相关契约见 [API DTO 模型](../../models/api/README.md)、[Application Service](../../application/README.md)、[业务服务](../../services/README.md)和[设备管理页面](../../../../apps/web/src/views/devices/README.md)。当前低 CPU 限制下已运行设备详情定向 API/Query 测试；生产构建和全量测试仍延后。
+相关契约见 [API DTO 模型](../../models/api/README.md)、[Application Service](../../application/README.md)、[业务服务](../../services/README.md)和[设备管理页面](../../../../apps/desktop_renderer/src/views/devices/README.md)。当前低 CPU 限制下已运行设备详情定向 API/Query 测试；生产构建和全量测试仍延后。

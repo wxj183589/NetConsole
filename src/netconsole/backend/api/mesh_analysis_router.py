@@ -98,7 +98,7 @@ def _rail_service(request: Request) -> RailTransitWebApplicationService:
     "/ap-coverage/audit",
     response_model=MeshApCoverageAuditDTO,
     summary="核查两个已解析 MESH 来源中的轨旁 AP 覆盖",
-    dependencies=[Depends(require_feature("web.mesh_ap_coverage_audit"))],
+    dependencies=[Depends(require_feature("capability.mesh.coverage_audit"))],
 )
 def audit_ap_coverage(
     request: Request,
@@ -121,8 +121,8 @@ def audit_ap_coverage(
     status_code=status.HTTP_202_ACCEPTED,
     summary="导出双来源 MESH AP 覆盖核查结果",
     dependencies=[
-        Depends(require_feature("web.mesh_ap_coverage_audit")),
-        Depends(require_feature("web.rail_task_control")),
+        Depends(require_feature("capability.mesh.coverage_audit")),
+        Depends(require_feature("capability.rail_transit.task_control")),
     ],
 )
 def export_ap_coverage(
@@ -143,7 +143,7 @@ def export_ap_coverage(
 @router.get(
     "/ap-coverage/artifacts/{artifact_id}/download",
     response_class=FileResponse,
-    dependencies=[Depends(require_feature("web.mesh_ap_coverage_audit"))],
+    dependencies=[Depends(require_feature("capability.mesh.coverage_audit"))],
 )
 def download_ap_coverage_export(request: Request, artifact_id: str) -> FileResponse:
     try:
@@ -308,7 +308,7 @@ def import_context(request: Request) -> MeshImportContextDTO:
     "/profiles",
     response_model=MeshProfileDTO,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_feature("web.mesh_analysis_import"))],
+    dependencies=[Depends(require_feature("capability.mesh.import"))],
 )
 def create_profile(request: Request, payload: MeshProfileCreateRequestDTO) -> MeshProfileDTO:
     try:
@@ -334,7 +334,7 @@ def create_profile(request: Request, payload: MeshProfileCreateRequestDTO) -> Me
     "/import-preview",
     response_model=MeshBundlePreviewDTO,
     summary="统一预览 ZIP、LOG、GZ 或文件夹中的 MESH 日志",
-    dependencies=[Depends(require_feature("web.mesh_analysis_import"))],
+    dependencies=[Depends(require_feature("capability.mesh.import"))],
 )
 async def preview_import(
     request: Request,
@@ -362,7 +362,7 @@ async def preview_import(
         413: {"description": "ZIP 本体、成员或解压总量超过安全上限"},
         422: {"description": "ZIP 结构、成员类型、压缩比或文件格式无效"},
     },
-    dependencies=[Depends(require_feature("web.mesh_analysis_import"))],
+    dependencies=[Depends(require_feature("capability.mesh.import"))],
 )
 async def preview_bundle(
     request: Request,
@@ -395,8 +395,8 @@ async def preview_bundle(
         503: {"description": "Job Center 暂时不可用"},
     },
     dependencies=[
-        Depends(require_feature("web.mesh_analysis_import")),
-        Depends(require_feature("web.rail_task_control")),
+        Depends(require_feature("capability.mesh.import")),
+        Depends(require_feature("capability.rail_transit.task_control")),
     ],
 )
 def import_bundle(
@@ -419,8 +419,8 @@ def import_bundle(
     response_model=MeshLocalScanStartDTO,
     status_code=status.HTTP_202_ACCEPTED,
     dependencies=[
-        Depends(require_feature("web.mesh_analysis_import")),
-        Depends(require_feature("web.rail_task_control")),
+        Depends(require_feature("capability.mesh.import")),
+        Depends(require_feature("capability.rail_transit.task_control")),
     ],
 )
 def start_local_scan(request: Request) -> MeshLocalScanStartDTO:
@@ -435,7 +435,7 @@ def start_local_scan(request: Request) -> MeshLocalScanStartDTO:
 @router.get(
     "/local-scans/{scan_id}",
     response_model=MeshLocalScanResultDTO,
-    dependencies=[Depends(require_feature("web.mesh_analysis_import"))],
+    dependencies=[Depends(require_feature("capability.mesh.import"))],
 )
 def local_scan_result(request: Request, scan_id: str) -> MeshLocalScanResultDTO:
     try:
@@ -451,8 +451,8 @@ def local_scan_result(request: Request, scan_id: str) -> MeshLocalScanResultDTO:
     response_model=RailTransitTaskDTO,
     status_code=status.HTTP_202_ACCEPTED,
     dependencies=[
-        Depends(require_feature("web.mesh_analysis_import")),
-        Depends(require_feature("web.rail_task_control")),
+        Depends(require_feature("capability.mesh.import")),
+        Depends(require_feature("capability.rail_transit.task_control")),
     ],
 )
 def import_local_scan(
@@ -474,7 +474,7 @@ def import_local_scan(
 @router.post(
     "/local-scans/{scan_id}/ignore",
     response_model=MeshLocalScanResultDTO,
-    dependencies=[Depends(require_feature("web.mesh_analysis_import"))],
+    dependencies=[Depends(require_feature("capability.mesh.import"))],
 )
 def ignore_local_scan(
     request: Request,
@@ -494,7 +494,7 @@ def ignore_local_scan(
 @router.post(
     "/local-scans/{scan_id}/candidates/{candidate_id}/open-directory",
     response_model=MeshLocalScanOpenResultDTO,
-    dependencies=[Depends(require_feature("web.mesh_analysis_import"))],
+    dependencies=[Depends(require_feature("capability.mesh.import"))],
 )
 def open_local_scan_candidate_directory(
     request: Request,
@@ -919,7 +919,7 @@ def artifacts(request: Request, session_id: str, site_id: str = Query(default=""
     response_model=MeshArtifactDeleteResultDTO,
     summary="删除派生 MESH 报告或导出文件",
     responses={404: {"description": "派生文件不存在"}, 422: {"description": "未确认或原始日志不可删除"}},
-    dependencies=[Depends(require_feature("web.mesh_analysis_report_export"))],
+    dependencies=[Depends(require_feature("capability.mesh.report_export"))],
 )
 def delete_artifact(
     request: Request,
@@ -952,8 +952,8 @@ def raw_sources(request: Request, session_id: str, site_id: str = Query(default=
     response_model=MeshDesktopLocationDTO,
     dependencies=[
         Depends(_desktop),
-        Depends(require_feature("desktop.native_bridge")),
-        Depends(require_feature("web.mesh_analysis_source_open_location")),
+        Depends(require_feature("capability.desktop_native_integration")),
+        Depends(require_feature("capability.mesh.source_open_location")),
     ],
 )
 def desktop_location(request: Request, session_id: str) -> MeshDesktopLocationDTO:
@@ -984,8 +984,8 @@ def raw_tail(
     status_code=status.HTTP_202_ACCEPTED,
     summary="删除 MESH 来源归档副本和解析结果",
     dependencies=[
-        Depends(require_feature("web.mesh_analysis_import")),
-        Depends(require_feature("web.rail_task_control")),
+        Depends(require_feature("capability.mesh.import")),
+        Depends(require_feature("capability.rail_transit.task_control")),
     ],
 )
 def delete_source(
@@ -1021,8 +1021,8 @@ def delete_source(
     response_model=RailTransitTaskDTO,
     status_code=status.HTTP_202_ACCEPTED,
     dependencies=[
-        Depends(require_feature("web.mesh_analysis_import")),
-        Depends(require_feature("web.rail_task_control")),
+        Depends(require_feature("capability.mesh.import")),
+        Depends(require_feature("capability.rail_transit.task_control")),
     ],
 )
 def rebuild_session(request: Request, session_id: str, payload: MeshRebuildRequestDTO) -> RailTransitTaskDTO:
@@ -1044,8 +1044,8 @@ def rebuild_session(request: Request, session_id: str, payload: MeshRebuildReque
     response_model=RailTransitTaskDTO,
     status_code=status.HTTP_202_ACCEPTED,
     dependencies=[
-        Depends(require_feature("web.mesh_analysis_report_export")),
-        Depends(require_feature("web.rail_task_control")),
+        Depends(require_feature("capability.mesh.report_export")),
+        Depends(require_feature("capability.rail_transit.task_control")),
     ],
 )
 def start_report(
@@ -1081,8 +1081,8 @@ def start_report(
         422: {"description": "来源与当前会话不一致或导出请求无效"},
     },
     dependencies=[
-        Depends(require_feature("web.mesh_analysis_report_export")),
-        Depends(require_feature("web.rail_task_control")),
+        Depends(require_feature("capability.mesh.report_export")),
+        Depends(require_feature("capability.rail_transit.task_control")),
     ],
 )
 def start_link_detail_export(
@@ -1107,7 +1107,7 @@ def start_link_detail_export(
 @router.get(
     "/report-artifacts/{artifact_id}/download",
     response_class=FileResponse,
-    dependencies=[Depends(require_feature("web.mesh_analysis_report_export"))],
+    dependencies=[Depends(require_feature("capability.mesh.report_export"))],
 )
 def download_generated_report(request: Request, artifact_id: str) -> FileResponse:
     try:

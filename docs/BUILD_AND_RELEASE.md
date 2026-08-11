@@ -51,7 +51,7 @@ python -m pip check
 python -m scripts.build.build_release --backend pyinstaller --release
 ```
 
-该入口会重新构建 `apps/web`、生成干净 PyInstaller spec、只从入口 import graph 收集 Python 模块、复制白名单外部工具，并将临时 PyInstaller build/spec/dist 写入 `dist/_build/pyinstaller/`，正式 Backend 输出写入 `dist/v1.4.8/pyinstaller/NetConsoleBackend/`。`dist/build/` 不是当前构建目录，出现时属于旧残留。默认 `requirements.txt` 是构建兼容别名，实际指向 `requirements-build.txt`。
+该入口会重新构建 `apps/desktop_renderer`、生成干净 PyInstaller spec、只从入口 import graph 收集 Python 模块、复制白名单外部工具，并将临时 PyInstaller build/spec/dist 写入 `dist/_build/pyinstaller/`，正式 Backend 输出写入 `dist/v1.4.8/pyinstaller/NetConsoleBackend/`。`dist/build/` 不是当前构建目录，出现时属于旧残留。默认 `requirements.txt` 是构建兼容别名，实际指向 `requirements-build.txt`。
 
 完成 Backend、Electron 和安装包验收后，可以通过固定白名单清理临时构建区：
 

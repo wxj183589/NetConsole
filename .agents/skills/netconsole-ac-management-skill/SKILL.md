@@ -9,7 +9,7 @@ description: "NetConsole AC 管理、FIT-AP 资源、受控固化新 AP、开启
 
 # 输入与路径
 
-确认目标局点、AC ID、动作语义、AP 勾选范围、预期 Artifact 和复现步骤。先读 `docs/AC_MANAGEMENT.md`、`apps/web/src/views/ac-management/README.md`、`src/netconsole/application/ac/`、`src/netconsole/services/ac/`、AC Router/DTO/Vue、`tests/test_ac_management_web_api.py` 与相关 OmniPeek/动作测试。
+确认目标局点、AC ID、动作语义、AP 勾选范围、预期 Artifact 和复现步骤。先读 `docs/AC_MANAGEMENT.md`、`apps/desktop_renderer/src/views/ac-management/README.md`、`src/netconsole/application/ac/`、`src/netconsole/services/ac/`、AC Router/DTO/Vue、`tests/test_ac_management_web_api.py` 与相关 OmniPeek/动作测试。
 
 # 工作流
 
@@ -26,7 +26,7 @@ description: "NetConsole AC 管理、FIT-AP 资源、受控固化新 AP、开启
 
 # 验收与命令
 
-优先运行 `.venv/Scripts/python.exe -m pytest -q tests/test_ac_management_web_api.py tests/test_ac_action*.py tests/test_omnipeek*.py` 中存在且受影响的文件，并在 `apps/web` 运行 AC 页面定向 Vitest；最后执行 `git diff --check`。真实 AC、OmniPeek 导入和 Electron 保存未执行时明确标为待验收。
+优先运行 `.venv/Scripts/python.exe -m pytest -q tests/test_ac_management_web_api.py tests/test_ac_action*.py tests/test_omnipeek*.py` 中存在且受影响的文件，并在 `apps/desktop_renderer` 运行 AC 页面定向 Vitest；最后执行 `git diff --check`。真实 AC、OmniPeek 导入和 Electron 保存未执行时明确标为待验收。
 
 # 常见失败与报告
 

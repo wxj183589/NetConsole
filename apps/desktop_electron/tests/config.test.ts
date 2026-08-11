@@ -29,7 +29,7 @@ describe('desktop config', () => {
       env: {
         NETCONSOLE_PROJECT_ROOT: 'C:\\repo',
         NETCONSOLE_PYTHON: 'C:\\repo\\.venv\\Scripts\\python.exe',
-        NETCONSOLE_WEB_DEV_URL: 'http://127.0.0.1:5173',
+        NETCONSOLE_RENDERER_DEV_URL: 'http://127.0.0.1:5173',
         NETCONSOLE_BACKEND_TIMEOUT_MS: '12000',
         NETCONSOLE_DATA_ROOT: 'D:\\NetConsoleData',
       },
@@ -63,7 +63,7 @@ describe('desktop config', () => {
       platform: 'win32',
       env: {
         NETCONSOLE_PYTHON: 'C:\\repo\\python.exe',
-        NETCONSOLE_WEB_DEV_URL: url,
+        NETCONSOLE_RENDERER_DEV_URL: url,
       },
       fileExists: () => true,
     })).toThrow('http://127.0.0.1')

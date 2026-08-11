@@ -2,7 +2,7 @@
 
 ## 定位
 
-当前 `/rail-transit/mesh-analysis` 是 Electron/Vue 的离线 MESH 分析工作台，Feature key 为 `web.mesh_analysis`。页面负责受控导入、来源匹配、重建任务、主链路建链顺序、链路明细、动态图和报告任务；原始日志、parsed SQLite 和 session ID 仍由 Python Core/Job/Export Process 管理，Vue 不实现解析或业务判定。
+当前 `/rail-transit/mesh-analysis` 是 Electron/Vue 的离线 MESH 分析工作台，Feature key 为 `module.mesh_analysis`。页面负责受控导入、来源匹配、重建任务、主链路建链顺序、链路明细、动态图和报告任务；原始日志、parsed SQLite 和 session ID 仍由 Python Core/Job/Export Process 管理，Vue 不实现解析或业务判定。
 
 ```text
 catalog.sqlite
@@ -21,7 +21,7 @@ catalog.sqlite
 - RSSI：使用持久化统计和结构化采样。缺失值保持 `null`，已有真实 `0` 保持原值；
 - 空口：读取结构化 Mesh 指标中的 Tx/Rx busy；没有持久化 CtlBusy 时返回 `null`，不从原始文本临时抓数字；
 - 解析诊断：来源摘要分列 `info_count`、`warning_count`、`error_count`；列表“告警”只显示 `warning_count + error_count`，INFO 诊断不影响完整性、不进入异常摘要或正式报告。旧来源仅有混合 `issue_count` 时保守显示，重新解析后升级；
-- AP 覆盖核查：来源列表勾选恰好两个当前局点来源后运行 `web.mesh_ap_coverage_audit`。服务端直接聚合两个 parsed SQLite 的有效 `ACTIVE/STANDBY`（`LinkCnt>0`）；优先用 remap 已持久化的 `canonical_ap_mac`（兼容 `peer_ap_mac`）归并物理 AP，不会再次把已匹配 AP 降级为 Peer Radio MAC 重新解析。只有旧 parsed 库缺少物理 MAC 投影时才走只读 Identity fallback；索引未就绪则返回“AP Identity 索引不可用”，而非把全部观测列为资料未匹配。每个局点独立数据库的 Identity scope 均为 `current`，与 MESH remap 一致。结果页和 Excel 摘要显示来源级、全集 Peer Radio/物理 AP 去重数及持久化/fallback 诊断；不在 Vue 去重，不重新扫描 raw 日志。核查默认按已观测站点/区间的正线范围，并同时提供全正线计数；未观测不代表故障。
+- AP 覆盖核查：来源列表勾选恰好两个当前局点来源后运行 `capability.mesh.coverage_audit`。服务端直接聚合两个 parsed SQLite 的有效 `ACTIVE/STANDBY`（`LinkCnt>0`）；优先用 remap 已持久化的 `canonical_ap_mac`（兼容 `peer_ap_mac`）归并物理 AP，不会再次把已匹配 AP 降级为 Peer Radio MAC 重新解析。只有旧 parsed 库缺少物理 MAC 投影时才走只读 Identity fallback；索引未就绪则返回“AP Identity 索引不可用”，而非把全部观测列为资料未匹配。每个局点独立数据库的 Identity scope 均为 `current`，与 MESH remap 一致。结果页和 Excel 摘要显示来源级、全集 Peer Radio/物理 AP 去重数及持久化/fallback 诊断；不在 Vue 去重，不重新扫描 raw 日志。核查默认按已观测站点/区间的正线范围，并同时提供全正线计数；未观测不代表故障。
 
 索引记录的旧绝对 `parsed_db_path` 随数据根迁移失效时，只允许在当前 MR 的 `parsed` 受控目录内按同名文件回退；不会回写索引。解析结果或 raw 缺失时显示明确 warning，不自动修复或重解析。
 

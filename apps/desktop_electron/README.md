@@ -2,7 +2,7 @@
 
 本目录是唯一正式桌面外壳，负责 Electron Main、Preload、共享 Bridge 和打包脚本；业务状态、设备访问、数据库和导出仍属于 Python Core/FastAPI，不在这里复制实现。
 
-主要入口由 `package.json` 和 `scripts/` 编排，Renderer 使用 `apps/web`。使用 `pnpm test`、类型检查和项目规定的构建/smoke 命令验证；构建产物不得留在源码目录。
+主要入口由 `package.json` 和 `scripts/` 编排，Renderer 使用 `apps/desktop_renderer`。使用 `pnpm test`、类型检查和项目规定的构建/smoke 命令验证；构建产物不得留在源码目录。
 
 ## 用途与边界
 
@@ -14,7 +14,7 @@
 
 ## 依赖关系
 
-依赖 `package.json`/pnpm lock、唯一 `apps/web` Renderer 和 Python Backend；Native Bridge 必须与 Feature Gate、PathResolver 和 shared validation 对齐。
+依赖 `package.json`/pnpm lock、唯一 `apps/desktop_renderer` Renderer 和 Python Backend；Native Bridge 必须与 Feature Gate、PathResolver 和 shared validation 对齐。
 
 ## 数据与状态
 

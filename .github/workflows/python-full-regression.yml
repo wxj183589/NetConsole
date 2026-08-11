@@ -42,14 +42,14 @@ jobs:
         with:
           node-version: "24"
           cache: pnpm
-          cache-dependency-path: apps/web/pnpm-lock.yaml
+          cache-dependency-path: apps/desktop_renderer/pnpm-lock.yaml
       - name: Create isolated Python environment
         run: python -m venv .venv
       - name: Install development dependencies
         run: .venv\Scripts\python.exe -m pip install -c constraints.txt -r requirements-dev.txt
       - name: Build Web assets for runtime checks
         shell: pwsh
-        working-directory: apps/web
+        working-directory: apps/desktop_renderer
         run: |
           corepack enable
           pnpm install --frozen-lockfile

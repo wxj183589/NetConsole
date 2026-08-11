@@ -36,7 +36,7 @@ def list_database_upgrades(request: Request) -> dict[str, object]:
     "/upgrade",
     response_model=DatabaseTaskReferenceDTO,
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_feature("web.database_upgrade_start"))],
+    dependencies=[Depends(require_feature("capability.database_upgrade.start"))],
 )
 def start_database_upgrade(request: Request, payload: DatabaseUpgradeRequest) -> DatabaseTaskReferenceDTO:
     site_id = _site_id(request)
@@ -59,7 +59,7 @@ def start_database_upgrade(request: Request, payload: DatabaseUpgradeRequest) ->
     "/legacy-archives/organize",
     response_model=DatabaseTaskReferenceDTO,
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_feature("web.database_legacy_archive_organize"))],
+    dependencies=[Depends(require_feature("capability.database_upgrade.legacy_archive_organize"))],
 )
 def organize_legacy_archives(request: Request) -> DatabaseTaskReferenceDTO:
     site_id = _site_id(request)
@@ -75,7 +75,7 @@ def organize_legacy_archives(request: Request) -> DatabaseTaskReferenceDTO:
     "/backups/{backup_id}/validate",
     response_model=DatabaseTaskReferenceDTO,
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_feature("web.database_backup_validate"))],
+    dependencies=[Depends(require_feature("capability.database_upgrade.backup_validate"))],
 )
 def validate_backup(request: Request, backup_id: str) -> DatabaseTaskReferenceDTO:
     _run(lambda: _service(request).read_backup(backup_id, site_id=_site_id(request)))
@@ -91,7 +91,7 @@ def validate_backup(request: Request, backup_id: str) -> DatabaseTaskReferenceDT
     "/backups/{backup_id}/restore",
     response_model=DatabaseTaskReferenceDTO,
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_feature("web.database_backup_restore"))],
+    dependencies=[Depends(require_feature("capability.database_upgrade.backup_restore"))],
 )
 def restore_backup(
     request: Request,
@@ -114,7 +114,7 @@ def restore_backup(
     "/backups/{backup_id}/delete",
     response_model=DatabaseTaskReferenceDTO,
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_feature("web.database_backup_delete"))],
+    dependencies=[Depends(require_feature("capability.database_upgrade.backup_delete"))],
 )
 def delete_backup(
     request: Request,
@@ -135,7 +135,7 @@ def delete_backup(
 @router.post(
     "/backups/{backup_id}/open-directory",
     response_model=DesktopActionDTO,
-    dependencies=[Depends(require_feature("web.database_backup_open_directory"))],
+    dependencies=[Depends(require_feature("capability.database_upgrade.backup_open_directory"))],
 )
 def open_backup_directory(request: Request, backup_id: str) -> DesktopActionDTO:
     path = _run(lambda: _service(request).open_backup_directory(backup_id, site_id=_site_id(request)))

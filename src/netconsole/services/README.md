@@ -50,5 +50,5 @@ Service 源码不自动生成；Job/Export 临时协议文件由对应 Runtime �
 - [Job Center](../../../docs/JOB_CENTER.md)
 - [导出规范](../../../docs/export_process_policy.md)
 - [数据布局](../../../docs/DATA_LAYOUT.md)
-- [设备管理页面](../../../apps/web/src/views/devices/README.md)
+- [设备管理页面](../../../apps/desktop_renderer/src/views/devices/README.md)
 - [版本化 Command Profile 清单](../../../docs/archive/migrations/electron-only/COMMAND-PROFILE-device-inventory-2026-07-18.md)

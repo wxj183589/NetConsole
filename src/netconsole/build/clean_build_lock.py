@@ -39,7 +39,7 @@ ALLOWED_RUNTIME = (
     "src/netconsole/assets/licenses/pyinstaller_copying.txt",
     "src/netconsole/assets/licenses/pyinstaller_hooks_contrib_license.txt",
     "src/netconsole/resources/log_policy.json",
-    "apps/web/dist",
+    "apps/desktop_renderer/dist",
     "resources/device_command_profiles.json",
     "resources/device_compatibility_profiles.json",
     "resources/runtime/build_info.json",
@@ -74,7 +74,7 @@ ALLOWED_RUNTIME = (
     "netconsole/assets/device_command_profiles.json",
     "netconsole/assets/device_compatibility_profiles.json",
     "netconsole/assets/runtime",
-    "netconsole/assets/web",
+    "netconsole/assets/desktop_renderer",
     "netconsole/resources",
     "netconsole/resources/log_policy.json",
 )

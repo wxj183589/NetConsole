@@ -78,7 +78,7 @@ def test_theme_literal_allowlist_rejects_directory_wildcards(tmp_path: Path) -> 
         json.dumps(
             [
                 {
-                    "path": "apps/web/src/**",
+                    "path": "apps/desktop_renderer/src/**",
                     "selector": ".example",
                     "property": "background",
                     "value": "#ffffff",

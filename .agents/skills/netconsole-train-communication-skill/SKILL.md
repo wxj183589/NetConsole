@@ -26,7 +26,7 @@ description: "NetConsole 车内通信检测、TC1/TC2 固定拓扑、列车点�
 
 # 验收与命令
 
-运行 `.venv/Scripts/python.exe -m pytest -q tests/test_car_network_diagnostic.py tests/test_car_network_diagnostic_job.py tests/test_train_communication_query_service.py tests/test_train_communication_web_api.py`，并在 `apps/web` 运行 TrainCommunication/FixedTrainTopology/PointTable 定向 Vitest；最后 `git diff --check`。
+运行 `.venv/Scripts/python.exe -m pytest -q tests/test_car_network_diagnostic.py tests/test_car_network_diagnostic_job.py tests/test_train_communication_query_service.py tests/test_train_communication_web_api.py`，并在 `apps/desktop_renderer` 运行 TrainCommunication/FixedTrainTopology/PointTable 定向 Vitest；最后 `git diff --check`。
 
 # 常见失败与报告
 

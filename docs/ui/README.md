@@ -1,6 +1,6 @@
 # Electron/Vue UI 规范
 
-本目录记录唯一 Vue Renderer 的全局展示契约。主题事实源仍在 `apps/web/src/theme/`，表格运行时事实源在 `apps/web/src/components/table/`。
+本目录记录唯一 Vue Renderer 的全局展示契约。主题事实源仍在 `apps/desktop_renderer/src/theme/`，表格运行时事实源在 `apps/desktop_renderer/src/components/table/`。
 
 - [表格与字段标准](TABLE_AND_FIELD_STANDARDS.md)
 - [表格迁移清单](TABLE_INVENTORY.md)

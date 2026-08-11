@@ -78,7 +78,7 @@ def _raise(exc: WpsSyncError) -> None:
 @router.get(
     "/targets",
     response_model=list[WpsSyncTargetDTO],
-    dependencies=[Depends(require_feature("web.rail_trackside_ap_business_wps_sync"))],
+    dependencies=[Depends(require_feature("capability.trackside_ap.wps_sync"))],
 )
 def list_targets(
     request: Request,
@@ -93,7 +93,7 @@ def list_targets(
 @router.put(
     "/targets/{target_code}",
     response_model=WpsSyncTargetDTO,
-    dependencies=[Depends(require_feature("web.rail_trackside_ap_business_wps_sync"))],
+    dependencies=[Depends(require_feature("capability.trackside_ap.wps_sync"))],
 )
 def update_target(
     request: Request,
@@ -118,7 +118,7 @@ def update_target(
 @router.post(
     "/targets/{target_code}/connection-test",
     response_model=WpsSyncConnectionTestDTO,
-    dependencies=[Depends(require_feature("web.rail_trackside_ap_business_wps_sync"))],
+    dependencies=[Depends(require_feature("capability.trackside_ap.wps_sync"))],
 )
 def connection_test(request: Request, target_code: str) -> WpsSyncConnectionTestDTO:
     try:
@@ -133,7 +133,7 @@ def connection_test(request: Request, target_code: str) -> WpsSyncConnectionTest
 @router.post(
     "/targets/{target_code}/runtime-write-probe",
     response_model=WpsSyncConnectionTestDTO,
-    dependencies=[Depends(require_feature("web.rail_trackside_ap_business_wps_sync"))],
+    dependencies=[Depends(require_feature("capability.trackside_ap.wps_sync"))],
 )
 def runtime_write_probe(request: Request, target_code: str) -> WpsSyncConnectionTestDTO:
     try:
@@ -148,7 +148,7 @@ def runtime_write_probe(request: Request, target_code: str) -> WpsSyncConnection
 @router.post(
     "/targets/{target_code}/migrate-legacy-binding",
     response_model=WpsSyncConnectionTestDTO,
-    dependencies=[Depends(require_feature("web.rail_trackside_ap_business_wps_sync"))],
+    dependencies=[Depends(require_feature("capability.trackside_ap.wps_sync"))],
 )
 def migrate_legacy_binding(request: Request, target_code: str) -> WpsSyncConnectionTestDTO:
     try:
@@ -163,7 +163,7 @@ def migrate_legacy_binding(request: Request, target_code: str) -> WpsSyncConnect
 @router.post(
     "/targets/{target_code}/sync-test-sheet",
     response_model=WpsSyncConnectionTestDTO,
-    dependencies=[Depends(require_feature("web.rail_trackside_ap_business_wps_sync"))],
+    dependencies=[Depends(require_feature("capability.trackside_ap.wps_sync"))],
 )
 def sync_test_sheet(request: Request, target_code: str) -> WpsSyncConnectionTestDTO:
     try:
@@ -178,7 +178,7 @@ def sync_test_sheet(request: Request, target_code: str) -> WpsSyncConnectionTest
 @router.post(
     "/targets/{target_code}/sheet-tab-color-probe",
     response_model=WpsSyncConnectionTestDTO,
-    dependencies=[Depends(require_feature("web.rail_trackside_ap_business_wps_sync"))],
+    dependencies=[Depends(require_feature("capability.trackside_ap.wps_sync"))],
 )
 def sheet_tab_color_probe(
     request: Request,
@@ -196,7 +196,7 @@ def sheet_tab_color_probe(
 @router.post(
     "/targets/{target_code}/column-width-probe",
     response_model=WpsSyncConnectionTestDTO,
-    dependencies=[Depends(require_feature("web.rail_trackside_ap_business_wps_sync"))],
+    dependencies=[Depends(require_feature("capability.trackside_ap.wps_sync"))],
 )
 def column_width_probe(
     request: Request,
@@ -214,7 +214,7 @@ def column_width_probe(
 @router.post(
     "/targets/{target_code}/revalidate-deployment",
     response_model=WpsSyncConnectionTestDTO,
-    dependencies=[Depends(require_feature("web.rail_trackside_ap_business_wps_sync"))],
+    dependencies=[Depends(require_feature("capability.trackside_ap.wps_sync"))],
 )
 def revalidate_deployment(request: Request, target_code: str) -> WpsSyncConnectionTestDTO:
     try:
@@ -230,7 +230,7 @@ def revalidate_deployment(request: Request, target_code: str) -> WpsSyncConnecti
     "/sync",
     response_model=RailTransitTaskDTO,
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_feature("web.rail_trackside_ap_business_wps_sync"))],
+    dependencies=[Depends(require_feature("capability.trackside_ap.wps_sync"))],
 )
 def sync(request: Request, payload: WpsSyncRequestDTO) -> RailTransitTaskDTO:
     try:
@@ -257,7 +257,7 @@ def sync(request: Request, payload: WpsSyncRequestDTO) -> RailTransitTaskDTO:
 @router.get(
     "/batches/recent",
     response_model=WpsSyncRecentBatchesDTO,
-    dependencies=[Depends(require_feature("web.rail_trackside_ap_business_wps_sync"))],
+    dependencies=[Depends(require_feature("capability.trackside_ap.wps_sync"))],
 )
 def recent_batches(request: Request) -> WpsSyncRecentBatchesDTO:
     return WpsSyncRecentBatchesDTO(items=_service(request).recent_batches(_site_id(request)))

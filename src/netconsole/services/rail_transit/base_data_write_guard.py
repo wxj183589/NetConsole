@@ -10,7 +10,7 @@ from netconsole.core.runtime_environment import desktop_storage_mode
 from netconsole.core.sites import SiteManager
 
 
-WRITE_FEATURE_ID = "web.rail_transit_base_data_write"
+WRITE_FEATURE_ID = "capability.rail_base_data.write"
 WRITE_ENABLED_ENV = "RAIL_TRANSIT_BASE_DATA_WRITE_ENABLED"
 COPY_WRITE_ENABLED_ENV = "NETCONSOLE_ALLOW_BASE_DATA_COPY_WRITE"
 REAL_WRITE_ENABLED_ENV = "NETCONSOLE_ALLOW_REAL_BASE_DATA_WRITE"

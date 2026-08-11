@@ -79,7 +79,7 @@ try {
     $scriptDirectory = Split-Path -Parent $PSCommandPath
     $projectRoot = (Resolve-Path -LiteralPath (Join-Path $scriptDirectory "..\..")).Path
     $desktopRoot = Join-Path $projectRoot "apps\desktop_electron"
-    $webRoot = Join-Path $projectRoot "apps\web"
+    $rendererRoot = Join-Path $projectRoot "apps\desktop_renderer"
     $pythonPath = Join-Path $projectRoot ".venv\Scripts\python.exe"
     $artifactRoot = Join-Path $projectRoot "dist\electron"
     $expectedEditions = switch ($Edition) {
@@ -97,8 +97,8 @@ try {
         $pythonPath,
         (Join-Path $desktopRoot "package.json"),
         (Join-Path $desktopRoot "pnpm-lock.yaml"),
-        (Join-Path $webRoot "package.json"),
-        (Join-Path $webRoot "pnpm-lock.yaml")
+        (Join-Path $rendererRoot "package.json"),
+        (Join-Path $rendererRoot "pnpm-lock.yaml")
     )) {
         if (-not (Test-Path -LiteralPath $requiredPath)) {
             throw "缺少正式打包所需文件：$requiredPath"
@@ -148,7 +148,7 @@ try {
     }
 
     Write-Step "安装 Web 锁定依赖"
-    Invoke-Native $pnpmPath @("install", "--frozen-lockfile") $webRoot
+    Invoke-Native $pnpmPath @("install", "--frozen-lockfile") $rendererRoot
 
     Write-Step "安装 Electron 锁定依赖"
     Invoke-Native $pnpmPath @("install", "--frozen-lockfile") $desktopRoot
@@ -166,7 +166,7 @@ try {
     }
 
     Write-Step "运行 Web 测试"
-    Invoke-Native $pnpmPath @("test") $webRoot
+    Invoke-Native $pnpmPath @("test") $rendererRoot
 
     Write-Step "运行 Electron 测试"
     Invoke-Native $pnpmPath @("test") $desktopRoot

@@ -95,7 +95,7 @@ def list_local_entries(
     "/local/directories",
     response_model=LocalFilePageDTO,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_feature("web.file_management_local_write"))],
+    dependencies=[Depends(require_feature("capability.file_management.local_write"))],
 )
 def create_local_directory(
     request: Request,
@@ -121,7 +121,7 @@ def open_local_file(request: Request, entry_id: str, site_id: str = Query(defaul
 @router.get(
     "/devices",
     response_model=list[FileRemoteDeviceDTO],
-    dependencies=[Depends(require_feature("web.file_management_remote"))],
+    dependencies=[Depends(require_feature("capability.file_management.remote"))],
 )
 def list_remote_devices(request: Request, site_id: str = Query(default="", max_length=100)) -> list[FileRemoteDeviceDTO]:
     return _call(lambda: _service(request).list_remote_devices(_site_id(request, site_id)))
@@ -131,7 +131,7 @@ def list_remote_devices(request: Request, site_id: str = Query(default="", max_l
     "/connections",
     response_model=FileConnectionDTO,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_feature("web.file_management_remote"))],
+    dependencies=[Depends(require_feature("capability.file_management.remote"))],
 )
 def connect_device(request: Request, payload: DeviceFileConnectionRequestDTO, site_id: str = Query(default="", max_length=100)) -> FileConnectionDTO:
     return _remote_call(
@@ -146,7 +146,7 @@ def connect_device(request: Request, payload: DeviceFileConnectionRequestDTO, si
     "/connections/confirm-sftp-setup",
     response_model=FileConnectionDTO,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_feature("web.file_management_remote"))],
+    dependencies=[Depends(require_feature("capability.file_management.remote"))],
 )
 def confirm_sftp_setup(
     request: Request,
@@ -164,7 +164,7 @@ def confirm_sftp_setup(
 @router.delete(
     "/connections/{connection_id}",
     response_model=FileConnectionDTO,
-    dependencies=[Depends(require_feature("web.file_management_remote"))],
+    dependencies=[Depends(require_feature("capability.file_management.remote"))],
 )
 def disconnect_device(request: Request, connection_id: str, site_id: str = Query(default="", max_length=100)) -> FileConnectionDTO:
     return _remote_call(lambda: _service(request).disconnect_device(_site_id(request, site_id), connection_id))
@@ -174,7 +174,7 @@ def disconnect_device(request: Request, connection_id: str, site_id: str = Query
     "/host-keys/trust-once",
     response_model=FileConnectionDTO,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_feature("web.file_management_remote"))],
+    dependencies=[Depends(require_feature("capability.file_management.remote"))],
 )
 def trust_host_key_once(
     request: Request,
@@ -194,7 +194,7 @@ def trust_host_key_once(
     "/host-keys/trust",
     response_model=FileConnectionDTO,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_feature("web.file_management_remote"))],
+    dependencies=[Depends(require_feature("capability.file_management.remote"))],
 )
 def trust_host_key(
     request: Request,
@@ -213,7 +213,7 @@ def trust_host_key(
 @router.get(
     "/connections/{connection_id}/entries",
     response_model=RemoteFilePageDTO,
-    dependencies=[Depends(require_feature("web.file_management_remote"))],
+    dependencies=[Depends(require_feature("capability.file_management.remote"))],
 )
 def list_remote_entries(
     request: Request,
@@ -249,7 +249,7 @@ def list_files(
     "/downloads",
     response_model=FileDownloadTaskDTO,
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_feature("web.file_management_download"))],
+    dependencies=[Depends(require_feature("capability.file_management.download"))],
 )
 def start_download(
     request: Request,
@@ -257,7 +257,7 @@ def start_download(
     site_id: str = Query(default="", max_length=100),
 ) -> FileDownloadTaskDTO:
     if payload.connection_id or payload.remote_entry_id:
-        require_feature("web.file_management_remote")(request)
+        require_feature("capability.file_management.remote")(request)
     try:
         return _service(request).submit_download(
             _site_id(request, site_id),
@@ -279,8 +279,8 @@ def start_download(
     response_model=FileDownloadBatchDTO,
     status_code=status.HTTP_202_ACCEPTED,
     dependencies=[
-        Depends(require_feature("web.file_management_download")),
-        Depends(require_feature("web.file_management_remote")),
+        Depends(require_feature("capability.file_management.download")),
+        Depends(require_feature("capability.file_management.remote")),
     ],
 )
 def start_download_batch(
@@ -301,7 +301,7 @@ def start_download_batch(
 @router.get(
     "/downloads/{task_id}",
     response_model=FileDownloadTaskDTO,
-    dependencies=[Depends(require_feature("web.file_management_download"))],
+    dependencies=[Depends(require_feature("capability.file_management.download"))],
 )
 def download_task(request: Request, task_id: str, site_id: str = Query(default="", max_length=100)) -> FileDownloadTaskDTO:
     task = _call(lambda: _service(request).download_task(_site_id(request, site_id), task_id))
@@ -313,7 +313,7 @@ def download_task(request: Request, task_id: str, site_id: str = Query(default="
 @router.get(
     "/downloads",
     response_model=list[FileDownloadTaskDTO],
-    dependencies=[Depends(require_feature("web.file_management_download"))],
+    dependencies=[Depends(require_feature("capability.file_management.download"))],
 )
 def list_downloads(
     request: Request,
@@ -326,7 +326,7 @@ def list_downloads(
 @router.post(
     "/downloads/{task_id}/cancel",
     response_model=FileDownloadTaskDTO,
-    dependencies=[Depends(require_feature("web.file_management_download"))],
+    dependencies=[Depends(require_feature("capability.file_management.download"))],
 )
 def cancel_download(request: Request, task_id: str, site_id: str = Query(default="", max_length=100)) -> FileDownloadTaskDTO:
     return _call(lambda: _service(request).cancel_download(_site_id(request, site_id), task_id))
@@ -336,7 +336,7 @@ def cancel_download(request: Request, task_id: str, site_id: str = Query(default
     "/downloads/{task_id}/retry",
     response_model=FileDownloadTaskDTO,
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_feature("web.file_management_download"))],
+    dependencies=[Depends(require_feature("capability.file_management.download"))],
 )
 def retry_download(request: Request, task_id: str, site_id: str = Query(default="", max_length=100)) -> FileDownloadTaskDTO:
     return _remote_call(lambda: _service(request).retry_download(_site_id(request, site_id), task_id))
@@ -346,7 +346,7 @@ def retry_download(request: Request, task_id: str, site_id: str = Query(default=
     "/downloads/{task_id}/mesh-import",
     response_model=FileDownloadTaskDTO,
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_feature("web.file_management_download"))],
+    dependencies=[Depends(require_feature("capability.file_management.download"))],
 )
 def retry_mesh_import(request: Request, task_id: str, site_id: str = Query(default="", max_length=100)) -> FileDownloadTaskDTO:
     return _remote_call(lambda: _service(request).retry_mesh_import(_site_id(request, site_id), task_id))
@@ -355,7 +355,7 @@ def retry_mesh_import(request: Request, task_id: str, site_id: str = Query(defau
 @router.post(
     "/downloads/clear",
     response_model=FileDownloadClearDTO,
-    dependencies=[Depends(require_feature("web.file_management_download"))],
+    dependencies=[Depends(require_feature("capability.file_management.download"))],
 )
 def clear_downloads(
     request: Request,
@@ -368,7 +368,7 @@ def clear_downloads(
 @router.get(
     "/downloads/{task_id}/file",
     response_class=FileResponse,
-    dependencies=[Depends(require_feature("web.file_management_download"))],
+    dependencies=[Depends(require_feature("capability.file_management.download"))],
 )
 def download_file(request: Request, task_id: str, site_id: str = Query(default="", max_length=100)) -> FileResponse:
     path, name = _call(lambda: _service(request).open_download(_site_id(request, site_id), task_id))
@@ -378,7 +378,7 @@ def download_file(request: Request, task_id: str, site_id: str = Query(default="
 @router.post(
     "/desktop-actions/{action}",
     response_model=FileDesktopActionDTO,
-    dependencies=[Depends(require_feature("web.file_management_desktop_actions"))],
+    dependencies=[Depends(require_feature("capability.file_management.desktop_actions"))],
 )
 def prepare_desktop_action(
     request: Request,
@@ -400,7 +400,7 @@ def prepare_desktop_action(
 @router.post(
     "/desktop-actions/{action_ref}/execute",
     response_model=FileDesktopActionResultDTO,
-    dependencies=[Depends(require_feature("web.file_management_desktop_actions"))],
+    dependencies=[Depends(require_feature("capability.file_management.desktop_actions"))],
 )
 def execute_desktop_action(
     request: Request,

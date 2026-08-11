@@ -8,10 +8,10 @@ from netconsole.core.feature_registry import FEATURE_BY_ID, FeatureStatus
 
 
 FORMAL_AC_FEATURES = (
-    "web.ac_dangerous_actions",
-    "web.ac_fit_ap_external_terminal",
+    "capability.ac.dangerous_actions",
+    "capability.ac.external_terminal",
     "ac.omnipeek_name_table_export",
-    "desktop.native_bridge",
+    "capability.desktop_native_integration",
 )
 
 
@@ -58,26 +58,26 @@ def test_ac_features_are_formal_customer_features() -> None:
         assert feature.default_client_package is True
 
 
-def test_schema_one_stale_ac_defaults_are_migrated_in_development(
+def test_schema_one_ac_states_are_not_automatically_migrated(
     tmp_path: Path,
 ) -> None:
-    migrated = ("web.ac_dangerous_actions", "web.ac_fit_ap_external_terminal")
+    feature_ids = ("capability.ac.dangerous_actions", "capability.ac.external_terminal")
     _write_runtime(
         tmp_path,
         schema_version=1,
-        states={feature_id: False for feature_id in migrated},
+        states={feature_id: False for feature_id in feature_ids},
     )
 
     gate = FeatureGate(tmp_path, packaged_runtime=False)
 
-    for feature_id in migrated:
-        assert gate.is_visible(feature_id)
-        assert gate.is_enabled(feature_id)
-        assert gate.is_in_client_package(feature_id)
+    for feature_id in feature_ids:
+        assert not gate.is_visible(feature_id)
+        assert not gate.is_enabled(feature_id)
+        assert not gate.is_in_client_package(feature_id)
 
 
 def test_packaged_runtime_ignores_external_schema_two_disable(tmp_path: Path) -> None:
-    feature_id = "web.ac_fit_ap_external_terminal"
+    feature_id = "capability.ac.external_terminal"
     install_runtime_feature_files(tmp_path, edition="customer", profile="production")
     _write_runtime(
         tmp_path,
@@ -98,7 +98,7 @@ def test_packaged_runtime_ignores_external_schema_two_disable(tmp_path: Path) ->
 def test_development_runtime_honors_external_schema_two_disable(
     tmp_path: Path,
 ) -> None:
-    feature_id = "web.ac_fit_ap_external_terminal"
+    feature_id = "capability.ac.external_terminal"
     _write_runtime(tmp_path, schema_version=2, states={feature_id: False})
 
     gate = FeatureGate(tmp_path, packaged_runtime=False)
@@ -112,7 +112,7 @@ def test_development_runtime_honors_external_schema_two_disable(
 def test_external_schema_cannot_enable_development_feature_in_packaged_runtime(
     tmp_path: Path,
 ) -> None:
-    feature_id = "web.ac_extensions"
+    feature_id = "capability.ac.extensions"
     install_runtime_feature_files(tmp_path, edition="customer", profile="production")
     _write_runtime(
         tmp_path,

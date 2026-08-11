@@ -207,15 +207,15 @@ def test_disabled_web_features_hide_state_and_block_backend_routes(
         paths=PathResolver(tmp_path),
         frontend_dist=tmp_path / "missing",
     )
-    app.state.feature_gate.features["web.device_management"] = {
+    app.state.feature_gate.features["module.devices"] = {
         "visible": False,
         "enabled": False,
     }
-    app.state.feature_gate.features["web.config_collection"] = {
+    app.state.feature_gate.features["module.config_collection"] = {
         "visible": False,
         "enabled": False,
     }
-    app.state.feature_gate.features["web.network_tools_toolbox"] = {
+    app.state.feature_gate.features["capability.network_tools.toolbox"] = {
         "visible": False,
         "enabled": False,
     }
@@ -233,7 +233,7 @@ def test_disabled_web_features_hide_state_and_block_backend_routes(
     state = next(
         item
         for item in features.json()["items"]
-        if item["feature_id"] == "web.device_management"
+        if item["feature_id"] == "module.devices"
     )
     assert state["visible"] is False
     assert state["enabled"] is False

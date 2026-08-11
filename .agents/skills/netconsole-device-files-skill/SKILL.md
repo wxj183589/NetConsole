@@ -9,7 +9,7 @@ description: "NetConsole 设备文件下载、只读 SFTP、SSH/SFTP 能力区�
 
 # 输入与路径
 
-确认设备角色/版本、连接阶段、主机密钥状态、原始下载意图和队列场景。先读 `docs/device-files/`、`apps/web/src/views/file-management/README.md`、File Router/DTO、`file_management_service.py`、`file_transfer_service.py`、`task_repository.py` 与 `tests/test_file_management_service.py`。
+确认设备角色/版本、连接阶段、主机密钥状态、原始下载意图和队列场景。先读 `docs/device-files/`、`apps/desktop_renderer/src/views/file-management/README.md`、File Router/DTO、`file_management_service.py`、`file_transfer_service.py`、`task_repository.py` 与 `tests/test_file_management_service.py`。
 
 # 工作流
 
@@ -22,7 +22,7 @@ description: "NetConsole 设备文件下载、只读 SFTP、SSH/SFTP 能力区�
 
 # 验收与命令
 
-运行 `.venv/Scripts/python.exe -m pytest -q tests/test_file_management_service.py tests/test_file_management_page.py`，在 `apps/web` 运行 FileManagement 定向 Vitest；涉及桌面动作再运行 Electron 对应契约测试。最后执行 `git diff --check`。
+运行 `.venv/Scripts/python.exe -m pytest -q tests/test_file_management_service.py tests/test_file_management_page.py`，在 `apps/desktop_renderer` 运行 FileManagement 定向 Vitest；涉及桌面动作再运行 Electron 对应契约测试。最后执行 `git diff --check`。
 
 # 常见失败与报告
 

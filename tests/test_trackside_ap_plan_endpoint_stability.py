@@ -59,7 +59,7 @@ def _fixture(tmp_path: Path) -> tuple[PathResolver, Database, object]:
         traffic_service=_NoopAsyncService(),  # type: ignore[arg-type]
         frontend_dist=tmp_path / "missing-frontend",
     )
-    app.state.feature_gate.features["web.rail_trackside_ap_plan"] = {
+    app.state.feature_gate.features["capability.trackside_ap.plan"] = {
         "visible": True,
         "enabled": True,
         "client_package": True,

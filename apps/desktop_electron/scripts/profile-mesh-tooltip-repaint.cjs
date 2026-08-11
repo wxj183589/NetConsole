@@ -63,7 +63,7 @@ app.whenReady().then(async () => {
       </html>`
     await window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
     const echartsSource = require('node:fs').readFileSync(
-      resolve(__dirname, '../../web/node_modules/echarts/dist/echarts.min.js'),
+      resolve(__dirname, '../../desktop_renderer/node_modules/echarts/dist/echarts.min.js'),
       'utf8',
     )
     await window.webContents.executeJavaScript(echartsSource)

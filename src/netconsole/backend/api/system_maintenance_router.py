@@ -99,7 +99,7 @@ def start_open_source_scan(request: Request) -> MaintenanceTaskDTO:
 @router.post(
     "/exports/logs",
     response_model=MaintenanceTaskDTO,
-    dependencies=[Depends(require_feature("web.logs_export"))],
+    dependencies=[Depends(require_feature("capability.logs.export"))],
 )
 def start_log_export(request: Request, payload: LogExportRequest) -> MaintenanceTaskDTO:
     return _run(
@@ -165,7 +165,7 @@ def open_source_link(request: Request, task_id: str, component_index: int) -> Ex
 @router.post(
     "/desktop-actions/open-directory/{kind}",
     response_model=DesktopActionDTO,
-    dependencies=[Depends(require_feature("desktop.native_bridge"))],
+    dependencies=[Depends(require_feature("capability.desktop_native_integration"))],
 )
 def open_directory(request: Request, kind: Literal["logs", "cache"]) -> DesktopActionDTO:
     return _run(lambda: _service(request).open_directory(kind))

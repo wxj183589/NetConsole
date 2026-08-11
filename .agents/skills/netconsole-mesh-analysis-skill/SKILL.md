@@ -29,7 +29,7 @@ description: "MR 原始 MESH 日志、离线导入、ACTIVE/STANDBY 主备链、
 # 开始前读取
 
 - `docs/mr_mesh_log_analysis_rules.md`、`docs/MR_MESH_AP_IDENTITY_ASSESSMENT.md`。
-- `src/netconsole/backend/api/online_mr_router.py`、`apps/web/src/views/rail-transit/MeshAnalysisView.vue`、`apps/web/src/components/mesh-analysis/`。
+- `src/netconsole/backend/api/online_mr_router.py`、`apps/desktop_renderer/src/views/rail-transit/MeshAnalysisView.vue`、`apps/desktop_renderer/src/components/mesh-analysis/`。
 - `src/netconsole/services/mesh_chart_payload.py`、`src/netconsole/services/mesh_peer_mapping_service.py`。
 - `src/netconsole/parsers/mesh_log_parser.py`、`src/netconsole/services/mesh_log_analysis_service.py`、`src/netconsole/services/mesh_analysis_params_service.py`。
 - `src/netconsole/services/mr_mesh_identity_shadow.py`、`src/netconsole/repositories/mesh_catalog_repository.py`、`src/netconsole/repositories/mesh_mr_repository.py`。

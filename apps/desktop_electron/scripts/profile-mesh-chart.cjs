@@ -47,8 +47,8 @@ app.whenReady().then(async () => {
   })
   try {
     await window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent('<!doctype html><html><body><div id="chart" style="width:1800px;height:900px"></div></body></html>')}`)
-    const vueSource = readFileSync(resolve(__dirname, '../../web/node_modules/vue/dist/vue.global.prod.js'), 'utf8')
-    const echartsSource = readFileSync(resolve(__dirname, '../../web/node_modules/echarts/dist/echarts.min.js'), 'utf8')
+    const vueSource = readFileSync(resolve(__dirname, '../../desktop_renderer/node_modules/vue/dist/vue.global.prod.js'), 'utf8')
+    const echartsSource = readFileSync(resolve(__dirname, '../../desktop_renderer/node_modules/echarts/dist/echarts.min.js'), 'utf8')
     await window.webContents.executeJavaScript(vueSource)
     await window.webContents.executeJavaScript(echartsSource)
     const profile = await window.webContents.executeJavaScript(`(async () => {

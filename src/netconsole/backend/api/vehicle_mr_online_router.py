@@ -108,7 +108,7 @@ def mappings(request: Request) -> list[VehicleMrTrainMappingDTO]:
 @router.post(
     "/mappings/import/preview",
     response_model=VehicleMrMappingPreviewDTO,
-    dependencies=[Depends(require_feature("web.rail_train_online_mapping_import"))],
+    dependencies=[Depends(require_feature("capability.train_online.mapping_import"))],
 )
 async def preview_mapping_import(
     request: Request,
@@ -163,8 +163,8 @@ def events(
     response_model=RailTransitTaskDTO,
     status_code=status.HTTP_202_ACCEPTED,
     dependencies=[
-        Depends(require_feature("web.rail_train_online_collect")),
-        Depends(require_feature("web.rail_task_control")),
+        Depends(require_feature("capability.train_online.collect")),
+        Depends(require_feature("capability.rail_transit.task_control")),
     ],
 )
 def start_collection(request: Request, payload: VehicleMrCollectionStartRequestDTO) -> RailTransitTaskDTO:
@@ -181,7 +181,7 @@ def start_collection(request: Request, payload: VehicleMrCollectionStartRequestD
 @router.post(
     "/collection/{task_id}/stop",
     response_model=RailTransitTaskDTO,
-    dependencies=[Depends(require_feature("web.rail_task_control"))],
+    dependencies=[Depends(require_feature("capability.rail_transit.task_control"))],
 )
 def stop_collection(request: Request, task_id: str) -> RailTransitTaskDTO:
     try:
@@ -199,7 +199,7 @@ def stop_collection(request: Request, task_id: str) -> RailTransitTaskDTO:
     status_code=status.HTTP_202_ACCEPTED,
     summary="创建或复用列车 Mesh-Link 采集任务",
     responses={404: {"description": "AC 不存在"}, 422: {"description": "AC 连接配置无效"}, 503: {"description": "任务暂时无法创建"}},
-    dependencies=[Depends(require_feature("web.rail_train_online_refresh"))],
+    dependencies=[Depends(require_feature("capability.train_online.refresh"))],
 )
 def refresh(request: Request, payload: AcMeshLinkRefreshRequestDTO) -> AcMeshLinkRefreshResponseDTO:
     try:
@@ -236,7 +236,7 @@ def refresh(request: Request, payload: AcMeshLinkRefreshRequestDTO) -> AcMeshLin
     "/ap-mapping/refresh",
     response_model=RailTransitTaskDTO,
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_feature("web.rail_train_online_refresh"))],
+    dependencies=[Depends(require_feature("capability.train_online.refresh"))],
 )
 def refresh_ap_mapping(request: Request, train_id: str = Query(default="", max_length=100)) -> RailTransitTaskDTO:
     try:
@@ -249,7 +249,7 @@ def refresh_ap_mapping(request: Request, train_id: str = Query(default="", max_l
     "/mappings",
     response_model=RailTransitTaskDTO,
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_feature("web.rail_train_online_mapping_write"))],
+    dependencies=[Depends(require_feature("capability.train_online.mapping_write"))],
 )
 def save_mappings(request: Request, payload: VehicleMrMappingSaveRequestDTO) -> RailTransitTaskDTO:
     try:
@@ -267,7 +267,7 @@ def save_mappings(request: Request, payload: VehicleMrMappingSaveRequestDTO) -> 
     "/mappings/template/export",
     response_model=RailTransitTaskDTO,
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_feature("web.rail_train_online_mapping_export"))],
+    dependencies=[Depends(require_feature("capability.train_online.mapping_export"))],
 )
 def export_mapping_template(request: Request) -> RailTransitTaskDTO:
     try:
@@ -279,7 +279,7 @@ def export_mapping_template(request: Request) -> RailTransitTaskDTO:
 @router.get(
     "/mappings/template/artifacts/{artifact_id}/download",
     response_class=FileResponse,
-    dependencies=[Depends(require_feature("web.rail_train_online_mapping_export"))],
+    dependencies=[Depends(require_feature("capability.train_online.mapping_export"))],
 )
 def download_mapping_template(request: Request, artifact_id: str) -> FileResponse:
     try:
@@ -293,7 +293,7 @@ def download_mapping_template(request: Request, artifact_id: str) -> FileRespons
     "/history/export",
     response_model=RailTransitTaskDTO,
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_feature("web.rail_train_online_history_export"))],
+    dependencies=[Depends(require_feature("capability.train_online.history_export"))],
 )
 def export_history(request: Request, payload: VehicleMrHistoryExportRequestDTO) -> RailTransitTaskDTO:
     try:
@@ -310,7 +310,7 @@ def export_history(request: Request, payload: VehicleMrHistoryExportRequestDTO) 
 @router.get(
     "/history/artifacts/{artifact_id}/download",
     response_class=FileResponse,
-    dependencies=[Depends(require_feature("web.rail_train_online_history_export"))],
+    dependencies=[Depends(require_feature("capability.train_online.history_export"))],
 )
 def download_history(request: Request, artifact_id: str) -> FileResponse:
     try:
@@ -323,7 +323,7 @@ def download_history(request: Request, artifact_id: str) -> FileResponse:
 @router.get(
     "/tasks/{task_id}",
     response_model=RailTransitTaskDTO,
-    dependencies=[Depends(require_feature("web.rail_task_control"))],
+    dependencies=[Depends(require_feature("capability.rail_transit.task_control"))],
 )
 def task(request: Request, task_id: str) -> RailTransitTaskDTO:
     try:
@@ -338,7 +338,7 @@ def task(request: Request, task_id: str) -> RailTransitTaskDTO:
 @router.post(
     "/tasks/{task_id}/cancel",
     response_model=RailTransitTaskDTO,
-    dependencies=[Depends(require_feature("web.rail_task_control"))],
+    dependencies=[Depends(require_feature("capability.rail_transit.task_control"))],
 )
 def cancel_task(request: Request, task_id: str) -> RailTransitTaskDTO:
     task(request, task_id)
@@ -351,7 +351,7 @@ def cancel_task(request: Request, task_id: str) -> RailTransitTaskDTO:
 @router.post(
     "/tasks/recover",
     response_model=list[RailTransitTaskDTO],
-    dependencies=[Depends(require_feature("web.rail_task_control"))],
+    dependencies=[Depends(require_feature("capability.rail_transit.task_control"))],
 )
 def recover_tasks(request: Request) -> list[RailTransitTaskDTO]:
     try:

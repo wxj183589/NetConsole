@@ -65,7 +65,7 @@ def _app(service: FileManagementApplicationService, *, remote_enabled: bool = Fa
     app.state.file_management_service = service
     app.state.feature_gate = FeatureGate(service.paths.app_root)
     if remote_enabled:
-        app.state.feature_gate.features["web.file_management_remote"].update(
+        app.state.feature_gate.features["capability.file_management.remote"].update(
             visible=True,
             enabled=True,
             client_package=True,

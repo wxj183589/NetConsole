@@ -3,7 +3,7 @@
 ## 定位
 
 “轨道交通 / 地面无人值守”是独立一级页面，路由为
-`/rail-transit/ground-unattended`，Feature key 为 `web.ground_unattended`。它不复用人工
+`/rail-transit/ground-unattended`，Feature key 为 `module.ground_unattended`。它不复用人工
 “车载 MR 实时收集”页面的组件状态，也不把无人值守运行塞入单一 Online MR Session。
 
 正式调用链为：

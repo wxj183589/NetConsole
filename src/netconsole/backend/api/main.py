@@ -252,7 +252,7 @@ def create_app(
             ),
         )
     feature_gate = FeatureGate(paths.app_root, runtime_path=paths.runtime_dir)
-    ground_unattended_feature_enabled = feature_gate.is_enabled("web.ground_unattended")
+    ground_unattended_feature_enabled = feature_gate.is_enabled("module.ground_unattended")
     if (
         ground_unattended_feature_enabled
         and ac_mesh_link_resident_service is None
@@ -850,8 +850,8 @@ def _initialize_active_site_database(paths: PathResolver, site_name: str) -> Non
 
 def _frontend_dist(paths: PathResolver) -> Path:
     if is_packaged_runtime():
-        return package_resource_path("assets", "web")
-    return paths.app_root / "apps" / "web" / "dist"
+        return package_resource_path("assets", "desktop_renderer")
+    return paths.app_root / "apps" / "desktop_renderer" / "dist"
 
 
 def _frontend_source_type() -> str:

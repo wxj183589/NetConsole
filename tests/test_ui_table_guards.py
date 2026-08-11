@@ -23,7 +23,7 @@ def _empty_exceptions(root: Path) -> None:
 
 
 def test_new_direct_element_table_is_rejected(tmp_path: Path) -> None:
-    _write(tmp_path, "apps/web/src/views/demo/DemoView.vue", "<template><el-table :data=\"rows\" /></template>")
+    _write(tmp_path, "apps/desktop_renderer/src/views/demo/DemoView.vue", "<template><el-table :data=\"rows\" /></template>")
     _write(
         tmp_path,
         "config/architecture/table-layout-baseline.json",
@@ -37,7 +37,7 @@ def test_new_direct_element_table_is_rejected(tmp_path: Path) -> None:
 
 
 def test_managed_table_requires_stable_route_and_table_ids(tmp_path: Path) -> None:
-    _write(tmp_path, "apps/web/src/views/demo/DemoView.vue", "<template><NcDataTable /></template>")
+    _write(tmp_path, "apps/desktop_renderer/src/views/demo/DemoView.vue", "<template><NcDataTable /></template>")
     _write(
         tmp_path,
         "config/architecture/table-layout-baseline.json",
@@ -55,20 +55,20 @@ def test_managed_table_requires_stable_route_and_table_ids(tmp_path: Path) -> No
 def test_migrated_file_cannot_mix_legacy_column_rules(tmp_path: Path) -> None:
     _write(
         tmp_path,
-        "apps/web/src/views/demo/DemoView.vue",
+        "apps/desktop_renderer/src/views/demo/DemoView.vue",
         "<template><NcDataTable table-id=\"demo\" route-key=\"/demo\" :columns=\"columns\" />"
         "<el-table-column width=\"80\" /></template>",
     )
 
     assert check_column_definitions(tmp_path) == [
-        "迁移文件仍直接声明 el-table-column: apps/web/src/views/demo/DemoView.vue"
+        "迁移文件仍直接声明 el-table-column: apps/desktop_renderer/src/views/demo/DemoView.vue"
     ]
 
 
 def test_migrated_file_cannot_calculate_or_limit_table_width(tmp_path: Path) -> None:
     _write(
         tmp_path,
-        "apps/web/src/views/demo/DemoView.vue",
+        "apps/desktop_renderer/src/views/demo/DemoView.vue",
         "<script setup>const width = containerWidth / columns.length; distributeColumnWidths()</script>"
         "<template><NcDataTable table-id=\"demo\" route-key=\"/demo\" :columns=\"columns\" /></template>"
         "<style>.nc-data-table { width: 60%; }</style>",
@@ -79,13 +79,13 @@ def test_migrated_file_cannot_calculate_or_limit_table_width(tmp_path: Path) -> 
 
     assert any("不得自行调用公共列宽算法" in failure for failure in definition_failures)
     assert any("不得按容器宽度平均分配列宽" in failure for failure in definition_failures)
-    assert alignment_failures == ["迁移文件不得限制表格百分比宽度: apps/web/src/views/demo/DemoView.vue"]
+    assert alignment_failures == ["迁移文件不得限制表格百分比宽度: apps/desktop_renderer/src/views/demo/DemoView.vue"]
 
 
 def test_inventory_uses_only_explicit_migration_states(tmp_path: Path) -> None:
     _write(
         tmp_path,
-        "apps/web/src/views/demo/DemoView.vue",
+        "apps/desktop_renderer/src/views/demo/DemoView.vue",
         "<template><NcDataTable table-id=\"managed\" route-key=\"/demo\" :columns=\"columns\" />"
         "<el-table :data=\"rows\" /></template>",
     )

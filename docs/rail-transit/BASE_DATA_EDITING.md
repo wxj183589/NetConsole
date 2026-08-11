@@ -64,7 +64,7 @@ Vue 草稿
 真实写入仍由 Feature Registry、环境开关和局点范围共同控制。Electron Desktop 的受管会话在后端显式启用真实局点写入能力，普通 Server/浏览器不会继承该能力：
 
 ```text
-web.rail_transit_base_data_write
+capability.rail_base_data.write
 RAIL_TRANSIT_BASE_DATA_WRITE_ENABLED=1  # Server/副本脚本写入开关；Electron 受管会话不依赖环境变量
 NETCONSOLE_ALLOW_BASE_DATA_COPY_WRITE=1  # copy_validation 局点
 NETCONSOLE_ALLOW_REAL_BASE_DATA_WRITE=1  # 正式局点的额外授权

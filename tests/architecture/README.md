@@ -25,7 +25,7 @@
 | `tests/test_e10_device_command_guard.py` | 严格命令审计及现有 Command Guard/Profile 测试 |
 | `tests/test_web_architecture.py` | Vue、Electron、legacy 字段、UI 候选与主题规则 |
 
-生产 Router、动态注册 Handler、DTO 和 Parser fixture 不因“只有一个调用者”自动判为孤儿；新的误判应先修正共享 import graph 或补充精确证据，不得给 `services/**`、`apps/web/**` 等目录增加通配豁免。
+生产 Router、动态注册 Handler、DTO 和 Parser fixture 不因“只有一个调用者”自动判为孤儿；新的误判应先修正共享 import graph 或补充精确证据，不得给 `services/**`、`apps/desktop_renderer/**` 等目录增加通配豁免。
 
 主题 Guard 还检查业务 Vue/CSS 的基础色必须来自 Token、Element Plus 基础变量只有一个映射文件，以及主工作区/路由根页面保持流式宽度。品牌、状态和图表系列例外也只能逐 declaration 精确登记，不能豁免整个页面或目录。
 

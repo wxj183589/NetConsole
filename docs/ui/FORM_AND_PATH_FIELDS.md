@@ -1,6 +1,6 @@
 # 表单与路径字段
 
-系统设置中的可执行文件路径统一使用 `apps/web/src/components/settings/NcExecutablePathField.vue`。组件负责只读路径、选择、清空、可选试启动及字段级错误/成功反馈；页面只绑定值和语义动作。
+系统设置中的可执行文件路径统一使用 `apps/desktop_renderer/src/components/settings/NcExecutablePathField.vue`。组件负责只读路径、选择、清空、可选试启动及字段级错误/成功反馈；页面只绑定值和语义动作。
 
 布局必须使用“可收缩输入框 + 独立按钮组”：按钮组为 `inline-flex`，间距至少 6px，每个文字按钮最小宽度 64px，不使用绝对定位，也不把多个按钮堆入 input suffix/append。窄于 900px 时按钮组换到下一行并保持完整文字，错误反馈预留稳定高度。
 

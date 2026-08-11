@@ -86,7 +86,7 @@ def test_prepare_customer_edition_rejects_invalid_profile_before_packaging(
     profile_dir.mkdir()
     full = default_profile("full")
     customer = default_profile("customer")
-    customer["features"]["cap.train_online_data"].update(
+    customer["features"]["internal.train_online_data"].update(
         visible=False,
         enabled=False,
         client_package=False,

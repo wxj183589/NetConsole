@@ -28,7 +28,7 @@ description: "车载 MR 实时采集、Online MR、SSH 会话、实时解析、C
 
 # 开始前读取
 
-- `apps/web/src/views/rail-transit/OnlineMrRealtimeView.vue`、`apps/web/src/views/rail-transit/OnlineMrAnalysisView.vue`、`apps/web/src/components/OnlineMrLocalControl.vue`。
+- `apps/desktop_renderer/src/views/rail-transit/OnlineMrRealtimeView.vue`、`apps/desktop_renderer/src/views/rail-transit/OnlineMrAnalysisView.vue`、`apps/desktop_renderer/src/components/OnlineMrLocalControl.vue`。
 - `src/netconsole/backend/api/online_mr_router.py`、`src/netconsole/backend/api/online_mr_control_router.py`、`src/netconsole/services/online_mr/api_facade.py`。
 - `src/netconsole/services/online_mr/`、`src/netconsole/services/online_mr_collector.py`、`src/netconsole/services/online_mr_parser.py`。
 - `src/netconsole/services/online_mr_session_store.py`、`src/netconsole/services/online_mr_terminal_log_parser.py`。

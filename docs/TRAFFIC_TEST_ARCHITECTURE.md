@@ -245,9 +245,9 @@ POST /api/traffic/runs/{traffic_run_id}/retry
 
 客户端先通过 REST 读取 Run、事件和样本，再以 `after_event`、`after_sample` 排他游标连接 WebSocket。服务端只发送 `ready`、`event/events`、`samples` 和 `heartbeat` 增量消息，不发送全量快照；断线重连前前端重新使用 REST 补齐事实数据。高频 Ping 采样只通过 Traffic 专用 REST/WS 通道传递，不进入全局 `/ws/tasks`。FastAPI lifespan 负责启动和停止 `TrafficTestApplicationService`，从而绑定 `AgentTrafficSupervisor`；无参数 `python main.py` 启动同一 Electron 开发编排链。
 
-Vue 页面位于 `apps/web/src/views/network-tools/TrafficTestView.vue`，菜单入口为“工具集 / 流量测试”，路径为 `/tools/traffic`；旧 `/network-tools/traffic` 仅保留查询参数和 hash 的兼容重定向。页面包含 iPerf Server、iPerf Client、高频 Ping、实时日志、ECharts RTT 曲线、历史任务、停止和原配置重试。
+Vue 页面位于 `apps/desktop_renderer/src/views/network-tools/TrafficTestView.vue`，菜单入口为“工具集 / 流量测试”，路径为 `/tools/traffic`；旧 `/network-tools/traffic` 仅保留查询参数和 hash 的兼容重定向。页面包含 iPerf Server、iPerf Client、高频 Ping、实时日志、ECharts RTT 曲线、历史任务、停止和原配置重试。
 
-TCP 端口测试新增独立薄路由 `src/netconsole/backend/api/network_tools_router.py` 和 `POST /api/network-tools/tcp-port-test`，只调用 `NetworkToolsApplicationService -> TrafficTestApplicationService`。组合页位于 `apps/web/src/views/network-tools/NetworkToolsView.vue`，保留并嵌入现有 `TrafficTestView`；中央 API router、Vue route/nav 与 Feature 接线由集成任务统一完成。
+TCP 端口测试新增独立薄路由 `src/netconsole/backend/api/network_tools_router.py` 和 `POST /api/network-tools/tcp-port-test`，只调用 `NetworkToolsApplicationService -> TrafficTestApplicationService`。组合页位于 `apps/desktop_renderer/src/views/network-tools/NetworkToolsView.vue`，保留并嵌入现有 `TrafficTestView`；中央 API router、Vue route/nav 与 Feature 接线由集成任务统一完成。
 
 Traffic API 错误统一返回稳定 `TRAFFIC_*` code；响应不返回 traceback、Token 或绝对路径。
 

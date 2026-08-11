@@ -5,14 +5,14 @@ from pydantic import Field
 from netconsole.models.api.common import ApiModel
 
 
-class WebFeatureStateDTO(ApiModel):
+class RendererFeatureStateDTO(ApiModel):
     feature_id: str
     visible: bool
     enabled: bool
 
 
-class WebFeatureStateListDTO(ApiModel):
-    items: list[WebFeatureStateDTO] = Field(default_factory=list)
+class RendererFeatureStateListDTO(ApiModel):
+    items: list[RendererFeatureStateDTO] = Field(default_factory=list)
 
 
-__all__ = ["WebFeatureStateDTO", "WebFeatureStateListDTO"]
+__all__ = ["RendererFeatureStateDTO", "RendererFeatureStateListDTO"]

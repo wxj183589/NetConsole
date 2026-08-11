@@ -2,7 +2,7 @@
 
 ## 当前状态
 
-`/rail-transit/base-data` 是站点、设备站点绑定、区间、轨旁 AP、轨旁 AP 规划、列车和车载 MR 的统一入口，Feature key 为 `web.rail_transit_base_data`。无 query 的根路由是“基础资料总览”`VIEW` landing；重新进入、根路由刷新、切换局点或恢复工作区均回到总览。总览、站点与区间、轨旁 AP、轨旁 AP 规划、列车与车载 MR 都先展示已保存数据，不建立草稿也不显示输入、增删或维护导入控件；用户必须点击当前子页的“解锁当前子页”，才建立该 scope 的服务器快照、revision 草稿、脏状态、校验和保存。页面没有全局解锁或全局保存；显式 `?tab=...` deep-link 只指定查看子页，不能自动进入编辑。`isolated_test`、普通 Server、未认证浏览器和未授权副本进入 `READ_ONLY` 并显示明确原因。页面复用现有 Python Core 和当前局点 `devices.db`，不建立第二套基础资料数据库。
+`/rail-transit/base-data` 是站点、设备站点绑定、区间、轨旁 AP、轨旁 AP 规划、列车和车载 MR 的统一入口，Feature key 为 `module.rail_base_data`。无 query 的根路由是“基础资料总览”`VIEW` landing；重新进入、根路由刷新、切换局点或恢复工作区均回到总览。总览、站点与区间、轨旁 AP、轨旁 AP 规划、列车与车载 MR 都先展示已保存数据，不建立草稿也不显示输入、增删或维护导入控件；用户必须点击当前子页的“解锁当前子页”，才建立该 scope 的服务器快照、revision 草稿、脏状态、校验和保存。页面没有全局解锁或全局保存；显式 `?tab=...` deep-link 只指定查看子页，不能自动进入编辑。`isolated_test`、普通 Server、未认证浏览器和未授权副本进入 `READ_ONLY` 并显示明确原因。页面复用现有 Python Core 和当前局点 `devices.db`，不建立第二套基础资料数据库。
 
 原独立 `/rail-transit/trackside-ap-plan` 页面和导航已删除；旧路由只重定向到 `/rail-transit/base-data?tab=trackside-ap-planning`。规划查询和在线状态刷新继续复用现有能力，但活动页面不再提供规划模板导入、模板下载或规划导出。规划页从设备管理生成时只能采用已经匹配正式站点的 `station_id`；未匹配候选必须先到“站点与区间”维护，规划页不得创建或保存站点。轨旁 AP 规划当前是一站一行的直接维护模型，只维护 AP 数量和 AP 管理 VLAN；多个站使用相同管理 VLAN 合法。IP、掩码、网关和旧 VLAN 分组数据不参与当前规划读取。详细边界见 [轨旁 AP 逐站规划](AP_MANAGEMENT_VLAN_GROUPS.md)。
 
@@ -271,7 +271,7 @@ POST /api/rail-transit/base-data/import-operations/{operation_id}/rollback
 普通维护由 `RailTransitBaseDataApplicationService` 编排，受控导入仍由 `RailTransitBaseDataImportService` 编排；两者复用同一 `RailTransitBaseDataRepository` 和写入 Guard，不新增主数据库。每个可编辑子页独立使用 `VIEW / EDITING / DIRTY / VALIDATING / SAVING / SAVE_FAILED / READ_ONLY`；页面默认 `VIEW`，解锁后才持有当前 scope 草稿，保存或放弃只作用于明确 scope。后端 `scope` 同时限制编辑快照内容和允许提交的实体类型，未提供 `scope` 的旧调用按 `all` 兼容；后端写入仍必须通过以下能力开关：
 
 ```text
-Feature Registry: web.rail_transit_base_data_write
+Feature Registry: capability.rail_base_data.write
 RAIL_TRANSIT_BASE_DATA_WRITE_ENABLED=1       # Server/副本脚本的显式开关
 NETCONSOLE_ALLOW_BASE_DATA_COPY_WRITE=1       # 仅带 copy_validation 标记的副本
 NETCONSOLE_ALLOW_REAL_BASE_DATA_WRITE=1       # 正式局点脚本额外授权

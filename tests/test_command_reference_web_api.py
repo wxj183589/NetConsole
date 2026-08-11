@@ -44,7 +44,7 @@ def _client(tmp_path: Path) -> tuple[TestClient, FakeExportProcessAdapter, WebAr
     assert type(production_service.export_adapter) is WebExportProcessAdapter
     assert type(production_service.artifact_store) is WebArtifactStore
     assert production_service.artifact_store is app.state.web_artifact_store
-    app.state.feature_gate.features["web.command_reference"].update(visible=True, enabled=True)
+    app.state.feature_gate.features["module.command_reference"].update(visible=True, enabled=True)
 
     adapter = FakeExportProcessAdapter(app.state.task_service)
     app.state.command_reference_application_service = CommandReferenceApplicationService(

@@ -41,12 +41,12 @@ def build_electron_desktop_launch_plan(
         dev_script,
         electron_executable,
         desktop_root / "node_modules" / "typescript" / "bin" / "tsc",
-        root / "apps" / "web" / "node_modules" / "vite" / "bin" / "vite.js",
+        root / "apps" / "desktop_renderer" / "node_modules" / "vite" / "bin" / "vite.js",
     )
     missing = [path for path in required if not path.is_file()]
     if missing:
         raise ElectronDesktopLaunchError(
-            "Electron 开发依赖不完整，请先在 apps/desktop_electron 和 apps/web 执行 "
+            "Electron 开发依赖不完整，请先在 apps/desktop_electron 和 apps/desktop_renderer 执行 "
             "pnpm install --frozen-lockfile。缺少："
             + ", ".join(path.name for path in missing)
         )

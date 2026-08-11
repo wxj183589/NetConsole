@@ -46,7 +46,7 @@ def network_tools_service(request: Request) -> NetworkToolsApplicationService:
     "/tcp-port-test",
     response_model=TrafficStartResponse,
     status_code=202,
-    dependencies=[Depends(require_feature("web.network_tools_tcp_port_test"))],
+    dependencies=[Depends(require_feature("capability.network_tools.tcp_port_test"))],
 )
 async def start_tcp_port_test(body: TcpPortTestStartRequest, request: Request) -> TrafficStartResponse:
     run = await network_tools_service(request).start_tcp_port_test(
@@ -62,32 +62,32 @@ async def start_tcp_port_test(body: TcpPortTestStartRequest, request: Request) -
     return TrafficStartResponse(run=traffic_run_dto(run))
 
 
-@router.post("/toolbox/ipv4", dependencies=[Depends(require_feature("web.network_tools_toolbox"))])
+@router.post("/toolbox/ipv4", dependencies=[Depends(require_feature("capability.network_tools.toolbox"))])
 def calculate_ipv4(body: ToolboxTextRequest, request: Request) -> dict[str, object]:
     return _call_calculation(lambda: network_tools_service(request).calculate_ipv4(body.text))
 
 
-@router.post("/toolbox/ipv6", dependencies=[Depends(require_feature("web.network_tools_toolbox"))])
+@router.post("/toolbox/ipv6", dependencies=[Depends(require_feature("capability.network_tools.toolbox"))])
 def calculate_ipv6(body: ToolboxTextRequest, request: Request) -> dict[str, object]:
     return _call_calculation(lambda: network_tools_service(request).calculate_ipv6(body.text))
 
 
-@router.post("/toolbox/vlsm", dependencies=[Depends(require_feature("web.network_tools_toolbox"))])
+@router.post("/toolbox/vlsm", dependencies=[Depends(require_feature("capability.network_tools.toolbox"))])
 def calculate_vlsm(body: VlsmRequest, request: Request) -> dict[str, object]:
     return _call_calculation(lambda: network_tools_service(request).plan_vlsm(body.parent, body.requests))
 
 
-@router.post("/toolbox/subnets", dependencies=[Depends(require_feature("web.network_tools_toolbox"))])
+@router.post("/toolbox/subnets", dependencies=[Depends(require_feature("capability.network_tools.toolbox"))])
 def calculate_subnets(body: SubnetSplitRequest, request: Request) -> dict[str, object]:
     return _call_calculation(lambda: network_tools_service(request).split_subnets(body.parent, body.target_prefix, body.page, body.page_size))
 
 
-@router.post("/toolbox/summarize", dependencies=[Depends(require_feature("web.network_tools_toolbox"))])
+@router.post("/toolbox/summarize", dependencies=[Depends(require_feature("capability.network_tools.toolbox"))])
 def summarize_routes(body: ToolboxTextRequest, request: Request) -> dict[str, object]:
     return _call_calculation(lambda: network_tools_service(request).summarize_routes(body.text))
 
 
-@router.post("/toolbox/wildcard", dependencies=[Depends(require_feature("web.network_tools_toolbox"))])
+@router.post("/toolbox/wildcard", dependencies=[Depends(require_feature("capability.network_tools.toolbox"))])
 def calculate_wildcard(body: ToolboxTextRequest, request: Request) -> dict[str, object]:
     return _call_calculation(lambda: network_tools_service(request).wildcard_calculate(body.text))
 
@@ -95,13 +95,13 @@ def calculate_wildcard(body: ToolboxTextRequest, request: Request) -> dict[str, 
 @router.get(
     "/toolbox/probe-environment",
     response_model=NetworkProbeEnvironmentResponse,
-    dependencies=[Depends(require_feature("web.network_tools_toolbox"))],
+    dependencies=[Depends(require_feature("capability.network_tools.toolbox"))],
 )
 def get_network_probe_environment(request: Request) -> NetworkProbeEnvironmentResponse:
     return NetworkProbeEnvironmentResponse(**network_tools_service(request).get_network_probe_environment())
 
 
-@router.post("/tasks", response_model=NetworkTaskResponse, status_code=202, dependencies=[Depends(require_feature("web.network_tools_toolbox"))])
+@router.post("/tasks", response_model=NetworkTaskResponse, status_code=202, dependencies=[Depends(require_feature("capability.network_tools.toolbox"))])
 async def start_network_task(body: NetworkTaskStartRequest, request: Request) -> NetworkTaskResponse:
     try:
         task = await network_tools_service(request).start_network_task(**body.model_dump())
@@ -110,12 +110,12 @@ async def start_network_task(body: NetworkTaskStartRequest, request: Request) ->
     return NetworkTaskResponse(task=network_task_dto(task))
 
 
-@router.get("/runs", response_model=list[TaskDTO], dependencies=[Depends(require_feature("web.network_tools_toolbox"))])
+@router.get("/runs", response_model=list[TaskDTO], dependencies=[Depends(require_feature("capability.network_tools.toolbox"))])
 def list_network_tasks(request: Request, offset: int = 0, limit: int = 100) -> list[TaskDTO]:
     return [network_task_dto(task) for task in network_tools_service(request).list_network_tasks(offset=offset, limit=limit)]
 
 
-@router.get("/runs/{task_id}", response_model=TaskDTO, dependencies=[Depends(require_feature("web.network_tools_toolbox"))])
+@router.get("/runs/{task_id}", response_model=TaskDTO, dependencies=[Depends(require_feature("capability.network_tools.toolbox"))])
 def get_network_task(task_id: str, request: Request) -> TaskDTO:
     task = network_tools_service(request).get_network_task(task_id)
     if task is None:
@@ -123,7 +123,7 @@ def get_network_task(task_id: str, request: Request) -> TaskDTO:
     return network_task_dto(task)
 
 
-@router.get("/runs/{task_id}/events", dependencies=[Depends(require_feature("web.network_tools_toolbox"))])
+@router.get("/runs/{task_id}/events", dependencies=[Depends(require_feature("capability.network_tools.toolbox"))])
 def get_network_task_events(task_id: str, request: Request, after_sequence: int = 0, limit: int = 500) -> list[dict[str, object]]:
     if network_tools_service(request).get_network_task(task_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="网络工具任务不存在")
@@ -133,7 +133,7 @@ def get_network_task_events(task_id: str, request: Request, after_sequence: int 
     ]
 
 
-@router.post("/runs/{task_id}/cancel", response_model=TaskDTO, dependencies=[Depends(require_feature("web.network_tools_toolbox"))])
+@router.post("/runs/{task_id}/cancel", response_model=TaskDTO, dependencies=[Depends(require_feature("capability.network_tools.toolbox"))])
 def cancel_network_task(task_id: str, request: Request) -> TaskDTO:
     try:
         return network_task_dto(network_tools_service(request).cancel_network_task(task_id))
@@ -141,7 +141,7 @@ def cancel_network_task(task_id: str, request: Request) -> TaskDTO:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="网络工具任务不存在") from exc
 
 
-@router.get("/runs/{task_id}/results", response_model=NetworkTaskResultPageResponse, dependencies=[Depends(require_feature("web.network_tools_toolbox"))])
+@router.get("/runs/{task_id}/results", response_model=NetworkTaskResultPageResponse, dependencies=[Depends(require_feature("capability.network_tools.toolbox"))])
 def list_network_task_results(
     task_id: str,
     request: Request,
@@ -163,7 +163,7 @@ def list_network_task_results(
     return NetworkTaskResultPageResponse(**result)
 
 
-@router.post("/runs/{task_id}/export", response_model=NetworkTaskResponse, status_code=202, dependencies=[Depends(require_feature("web.network_tools_toolbox"))])
+@router.post("/runs/{task_id}/export", response_model=NetworkTaskResponse, status_code=202, dependencies=[Depends(require_feature("capability.network_tools.toolbox"))])
 async def export_network_task(task_id: str, body: NetworkExportRequest, request: Request) -> NetworkTaskResponse:
     try:
         task = await network_tools_service(request).export_network_task(task_id, body.format, body.filename)
@@ -174,7 +174,7 @@ async def export_network_task(task_id: str, body: NetworkExportRequest, request:
     return NetworkTaskResponse(task=network_task_dto(task))
 
 
-@router.get("/runs/{task_id}/artifact", response_model=NetworkToolArtifactResponse, dependencies=[Depends(require_feature("web.network_tools_toolbox"))])
+@router.get("/runs/{task_id}/artifact", response_model=NetworkToolArtifactResponse, dependencies=[Depends(require_feature("capability.network_tools.toolbox"))])
 def get_network_export_artifact(task_id: str, request: Request) -> NetworkToolArtifactResponse:
     try:
         return NetworkToolArtifactResponse(**network_tools_service(request).get_network_export_artifact(task_id))
@@ -184,7 +184,7 @@ def get_network_export_artifact(task_id: str, request: Request) -> NetworkToolAr
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
-@router.get("/artifacts/{artifact_id}", dependencies=[Depends(require_feature("web.network_tools_toolbox"))])
+@router.get("/artifacts/{artifact_id}", dependencies=[Depends(require_feature("capability.network_tools.toolbox"))])
 def download_network_artifact(artifact_id: str, request: Request) -> FileResponse:
     try:
         path, filename, _metadata = network_tools_service(request).open_network_artifact(artifact_id)
@@ -195,17 +195,17 @@ def download_network_artifact(artifact_id: str, request: Request) -> FileRespons
     return FileResponse(path, filename=filename)
 
 
-@router.get("/wireless-scan/adapters", dependencies=[Depends(require_feature("web.network_tools_wireless_scan"))])
+@router.get("/wireless-scan/adapters", dependencies=[Depends(require_feature("capability.network_tools.wireless_scan"))])
 def list_wireless_adapters(request: Request) -> list[dict[str, object]]:
     return network_tools_service(request).list_wireless_adapters()
 
 
-@router.get("/wireless-scan/projects", dependencies=[Depends(require_feature("web.network_tools_wireless_scan"))])
+@router.get("/wireless-scan/projects", dependencies=[Depends(require_feature("capability.network_tools.wireless_scan"))])
 def list_wireless_projects(request: Request) -> list[dict[str, object]]:
     return network_tools_service(request).list_wireless_projects()
 
 
-@router.post("/wireless-scan/projects", dependencies=[Depends(require_feature("web.network_tools_wireless_scan"))])
+@router.post("/wireless-scan/projects", dependencies=[Depends(require_feature("capability.network_tools.wireless_scan"))])
 def create_wireless_project(body: WirelessProjectRequest, request: Request) -> dict[str, object]:
     try:
         return network_tools_service(request).create_wireless_project(body.name, body.description)
@@ -213,7 +213,7 @@ def create_wireless_project(body: WirelessProjectRequest, request: Request) -> d
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
-@router.delete("/wireless-scan/projects/{project_id}", dependencies=[Depends(require_feature("web.network_tools_wireless_scan"))])
+@router.delete("/wireless-scan/projects/{project_id}", dependencies=[Depends(require_feature("capability.network_tools.wireless_scan"))])
 def delete_wireless_project(project_id: str, request: Request) -> dict[str, object]:
     try:
         network_tools_service(request).delete_wireless_project(project_id)
@@ -224,7 +224,7 @@ def delete_wireless_project(project_id: str, request: Request) -> dict[str, obje
     return {"project_id": project_id, "deleted": True}
 
 
-@router.post("/wireless-scan/tasks", response_model=NetworkTaskResponse, status_code=202, dependencies=[Depends(require_feature("web.network_tools_wireless_scan"))])
+@router.post("/wireless-scan/tasks", response_model=NetworkTaskResponse, status_code=202, dependencies=[Depends(require_feature("capability.network_tools.wireless_scan"))])
 async def start_wireless_scan(body: WirelessScanStartRequest, request: Request) -> NetworkTaskResponse:
     try:
         task = await network_tools_service(request).start_wireless_scan(**body.model_dump())
@@ -233,12 +233,12 @@ async def start_wireless_scan(body: WirelessScanStartRequest, request: Request) 
     return NetworkTaskResponse(task=network_task_dto(task))
 
 
-@router.get("/wireless-scan/tasks", response_model=list[TaskDTO], dependencies=[Depends(require_feature("web.network_tools_wireless_scan"))])
+@router.get("/wireless-scan/tasks", response_model=list[TaskDTO], dependencies=[Depends(require_feature("capability.network_tools.wireless_scan"))])
 def list_wireless_tasks(request: Request, offset: int = 0, limit: int = 100) -> list[TaskDTO]:
     return [network_task_dto(task) for task in network_tools_service(request).list_wireless_tasks(offset=offset, limit=limit)]
 
 
-@router.get("/wireless-scan/tasks/{task_id}", response_model=TaskDTO, dependencies=[Depends(require_feature("web.network_tools_wireless_scan"))])
+@router.get("/wireless-scan/tasks/{task_id}", response_model=TaskDTO, dependencies=[Depends(require_feature("capability.network_tools.wireless_scan"))])
 def get_wireless_task(task_id: str, request: Request) -> TaskDTO:
     task = network_tools_service(request).get_wireless_task(task_id)
     if task is None:
@@ -246,7 +246,7 @@ def get_wireless_task(task_id: str, request: Request) -> TaskDTO:
     return network_task_dto(task)
 
 
-@router.get("/wireless-scan/tasks/{task_id}/events", dependencies=[Depends(require_feature("web.network_tools_wireless_scan"))])
+@router.get("/wireless-scan/tasks/{task_id}/events", dependencies=[Depends(require_feature("capability.network_tools.wireless_scan"))])
 def get_wireless_task_events(task_id: str, request: Request, after_sequence: int = 0, limit: int = 500) -> list[dict[str, object]]:
     if network_tools_service(request).get_wireless_task(task_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="无线扫描任务不存在")
@@ -260,7 +260,7 @@ def get_wireless_task_events(task_id: str, request: Request, after_sequence: int
     ]
 
 
-@router.post("/wireless-scan/tasks/{task_id}/cancel", response_model=TaskDTO, dependencies=[Depends(require_feature("web.network_tools_wireless_scan"))])
+@router.post("/wireless-scan/tasks/{task_id}/cancel", response_model=TaskDTO, dependencies=[Depends(require_feature("capability.network_tools.wireless_scan"))])
 def cancel_wireless_task(task_id: str, request: Request) -> TaskDTO:
     try:
         return network_task_dto(network_tools_service(request).cancel_wireless_task(task_id))
@@ -271,7 +271,7 @@ def cancel_wireless_task(task_id: str, request: Request) -> TaskDTO:
 @router.get(
     "/wireless-scan/runs",
     response_model=WirelessScanPageResponse,
-    dependencies=[Depends(require_feature("web.network_tools_wireless_scan"))],
+    dependencies=[Depends(require_feature("capability.network_tools.wireless_scan"))],
 )
 def list_wireless_runs(
     request: Request,
@@ -284,7 +284,7 @@ def list_wireless_runs(
 @router.get(
     "/wireless-scan/runs/{scan_id}/results",
     response_model=WirelessScanPageResponse,
-    dependencies=[Depends(require_feature("web.network_tools_wireless_scan"))],
+    dependencies=[Depends(require_feature("capability.network_tools.wireless_scan"))],
 )
 def list_wireless_results(
     scan_id: str,
@@ -315,7 +315,7 @@ def list_wireless_results(
 @router.get(
     "/wireless-scan/runs/{scan_id}",
     response_model=WirelessScanRunDetailResponse,
-    dependencies=[Depends(require_feature("web.network_tools_wireless_scan"))],
+    dependencies=[Depends(require_feature("capability.network_tools.wireless_scan"))],
 )
 def get_wireless_run_detail(scan_id: str, request: Request) -> WirelessScanRunDetailResponse:
     try:
@@ -324,7 +324,7 @@ def get_wireless_run_detail(scan_id: str, request: Request) -> WirelessScanRunDe
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="无线扫描记录不存在") from exc
 
 
-@router.post("/wireless-scan/export", response_model=NetworkTaskResponse, status_code=202, dependencies=[Depends(require_feature("web.network_tools_wireless_scan"))])
+@router.post("/wireless-scan/export", response_model=NetworkTaskResponse, status_code=202, dependencies=[Depends(require_feature("capability.network_tools.wireless_scan"))])
 async def export_wireless_scan(body: WirelessExportRequest, request: Request) -> NetworkTaskResponse:
     try:
         task = await network_tools_service(request).export_wireless_scan(body.scan_id, body.format, body.filename)
@@ -335,7 +335,7 @@ async def export_wireless_scan(body: WirelessExportRequest, request: Request) ->
     return NetworkTaskResponse(task=network_task_dto(task))
 
 
-@router.get("/wireless-scan/tasks/{task_id}/artifact", response_model=NetworkToolArtifactResponse, dependencies=[Depends(require_feature("web.network_tools_wireless_scan"))])
+@router.get("/wireless-scan/tasks/{task_id}/artifact", response_model=NetworkToolArtifactResponse, dependencies=[Depends(require_feature("capability.network_tools.wireless_scan"))])
 def get_wireless_export_artifact(task_id: str, request: Request) -> NetworkToolArtifactResponse:
     try:
         return NetworkToolArtifactResponse(**network_tools_service(request).get_wireless_export_artifact(task_id))
@@ -345,7 +345,7 @@ def get_wireless_export_artifact(task_id: str, request: Request) -> NetworkToolA
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
-@router.get("/wireless-scan/artifacts/{artifact_id}", dependencies=[Depends(require_feature("web.network_tools_wireless_scan"))])
+@router.get("/wireless-scan/artifacts/{artifact_id}", dependencies=[Depends(require_feature("capability.network_tools.wireless_scan"))])
 def download_wireless_artifact(artifact_id: str, request: Request) -> FileResponse:
     try:
         path, filename, _metadata = network_tools_service(request).open_wireless_artifact(artifact_id)

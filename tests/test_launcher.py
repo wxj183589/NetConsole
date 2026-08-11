@@ -64,8 +64,8 @@ def test_parse_launch_options_defaults_to_server_diagnostics() -> None:
     assert options.port == 8000
 
 
-@pytest.mark.parametrize("removed_mode", ["auto", "qt"])
-def test_parse_launch_options_rejects_removed_qt_modes(removed_mode: str) -> None:
+@pytest.mark.parametrize("removed_mode", ["auto", "qt", "web"])
+def test_parse_launch_options_rejects_removed_product_modes(removed_mode: str) -> None:
     with pytest.raises(SystemExit):
         launcher.parse_launch_options(["--mode", removed_mode])
 
@@ -155,13 +155,13 @@ def test_electron_desktop_plan_uses_project_runtime_without_global_pnpm(tmp_path
     from netconsole.launcher.electron_desktop import build_electron_desktop_launch_plan
 
     desktop = tmp_path / "apps" / "desktop_electron"
-    web = tmp_path / "apps" / "web"
+    renderer = tmp_path / "apps" / "desktop_renderer"
     electron = desktop / "node_modules" / "electron" / "dist" / "electron.exe"
     for path in (
         desktop / "scripts" / "dev.mjs",
         electron,
         desktop / "node_modules" / "typescript" / "bin" / "tsc",
-        web / "node_modules" / "vite" / "bin" / "vite.js",
+        renderer / "node_modules" / "vite" / "bin" / "vite.js",
     ):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("", encoding="utf-8")
@@ -186,12 +186,12 @@ def test_electron_desktop_plan_accepts_explicit_node_override(tmp_path: Path) ->
     from netconsole.launcher.electron_desktop import build_electron_desktop_launch_plan
 
     desktop = tmp_path / "apps" / "desktop_electron"
-    web = tmp_path / "apps" / "web"
+    renderer = tmp_path / "apps" / "desktop_renderer"
     for path in (
         desktop / "scripts" / "dev.mjs",
         desktop / "node_modules" / "electron" / "dist" / "electron.exe",
         desktop / "node_modules" / "typescript" / "bin" / "tsc",
-        web / "node_modules" / "vite" / "bin" / "vite.js",
+        renderer / "node_modules" / "vite" / "bin" / "vite.js",
     ):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("", encoding="utf-8")
@@ -284,30 +284,10 @@ def test_entrypoint_dispatches_packaged_electron_backend(monkeypatch) -> None:
     assert calls == [["--host", "127.0.0.1", "--port", "0"]]
 
 
-def test_web_mode_opens_browser_without_qt(tmp_path: Path, monkeypatch) -> None:
-    import netconsole.launcher.runtime_supervisor as supervisor_module
-
-    opened: list[str] = []
-    monkeypatch.setattr(supervisor_module, "RuntimeSupervisor", _FakeRuntime)
-    monkeypatch.setattr(launcher, "_open_browser_shell", lambda runtime, paths: opened.append(runtime.base_url) or True)
-    monkeypatch.setattr(launcher, "_log_frontend_status", lambda runtime: None)
-
-    result = launcher._launch_once(launcher.LaunchOptions("web", "127.0.0.1", 9000), PathResolver(tmp_path))
-
-    runtime = _FakeRuntime.instances[0]
-    assert result == 0
-    assert runtime.host_mode is RuntimeMode.DESKTOP
-    assert runtime.host == "127.0.0.1"
-    assert runtime.port is None
-    assert opened == [runtime.base_url]
-    assert runtime.stopped is True
-
-
-def test_server_mode_uses_requested_bind_and_never_opens_browser(tmp_path: Path, monkeypatch) -> None:
+def test_server_mode_uses_requested_loopback_bind(tmp_path: Path, monkeypatch) -> None:
     import netconsole.launcher.runtime_supervisor as supervisor_module
 
     monkeypatch.setattr(supervisor_module, "RuntimeSupervisor", _FakeRuntime)
-    monkeypatch.setattr(launcher, "_open_browser_shell", lambda *args: pytest.fail("server mode opened browser"))
     monkeypatch.setattr(launcher, "_log_frontend_status", lambda runtime: None)
 
     result = launcher._launch_once(launcher.LaunchOptions("server", "127.0.0.2", 9000), PathResolver(tmp_path))
@@ -348,7 +328,6 @@ from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.launcher.launcher import parse_launch_options
 from netconsole.launcher.runtime_supervisor import RuntimeSupervisor
 assert parse_launch_options(['--mode', 'server']).mode == 'server'
-assert parse_launch_options(['--mode', 'web']).mode == 'web'
 RuntimeSupervisor(RuntimeMode.SERVER, paths=PathResolver(), port=None)
 RuntimeSupervisor(RuntimeMode.DESKTOP, paths=PathResolver(), port=None)
 assert not hasattr(api_main, 'app')
@@ -385,13 +364,3 @@ def test_runtime_supervisor_starts_health_endpoint_and_stops(tmp_path: Path) -> 
         runtime.stop()
 
     assert runtime.web_server.thread_alive is False
-
-
-def test_browser_open_failure_does_not_raise(tmp_path: Path, monkeypatch) -> None:
-    runtime = RuntimeSupervisor(RuntimeMode.DESKTOP, paths=PathResolver(tmp_path), port=None)
-    cleanup_paths: list[Path] = []
-    monkeypatch.setattr(launcher.webbrowser, "open_new_tab", lambda _url: False)
-    monkeypatch.setattr(launcher.atexit, "register", lambda _callback, path: cleanup_paths.append(path))
-
-    assert launcher._open_browser_shell(runtime, PathResolver(tmp_path)) is False
-    assert cleanup_paths == [PathResolver(tmp_path).runtime_cache_dir / f"web-console-{runtime.web_server.port}.html"]

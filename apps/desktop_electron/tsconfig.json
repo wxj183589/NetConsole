@@ -12,5 +12,5 @@
     "lib": ["ES2022", "DOM"],
     "types": ["node", "electron", "vitest/globals"]
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts", "vitest.config.ts", "../web/src/env.d.ts"]
+  "include": ["src/**/*.ts", "tests/**/*.ts", "vitest.config.ts", "../desktop_renderer/src/env.d.ts"]
 }

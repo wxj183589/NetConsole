@@ -15,45 +15,45 @@
 
 | 功能 ID | 中文名称 | Registry status | visible | enabled | internal_only | release included | 正式包预期 | API | 页面 | 定向自动证据 | 人工验收 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `web.device_management` | 设备管理 | `ENABLED` | 是 | 是 | 否 | 是 | 可见、可查询 | `/api/device-management/devices` | `/devices` | `test_device_management_web_api.py`、`DeviceManagementView*.test.ts` | `PENDING` |
-| `web.device_connection_test` | 已保存设备连接测试 | `ENABLED` | 是 | 是 | 否 | 是 | 前置校验后可创建任务 | `/api/device-management/devices/{id}/connection-tests` | `/devices` | `test_device_management_web_api.py` | `PENDING` |
-| `web.device_form_connection_test` | 未保存表单连接测试 | `ENABLED` | 是 | 是 | 否 | 是 | 一次性凭据、任务参数无秘密 | `/api/device-management/devices/test-connection` | `/devices` 编辑弹窗 | `test_device_management_web_api.py`、`DeviceManagementView.test.ts` | `PENDING` |
-| `web.device_management_collect` | 设备采集与诊断 | `ENABLED` | 是 | 是 | 否 | 是 | 可提交采集/诊断 | `/api/device-management/devices/*/collect` | `/devices` | `test_device_management_web_api.py`、`test_device_detail_web_api.py` | `PENDING` |
-| `web.device_management_import` | 设备导入 | `ENABLED` | 是 | 是 | 否 | 是 | 可预览并受控导入 | `/api/device-management/imports/*` | `/devices` | `test_device_management_web_api.py` | `PENDING` |
-| `web.device_management_export` | 设备导出 | `ENABLED` | 是 | 是 | 否 | 是 | 进入 Export Process | `/api/device-management/exports/*` | `/devices` | `test_device_management_web_api.py` | `PENDING` |
-| `web.config_collection` | 配置采集中心 | `ENABLED` | 是 | 是 | 否 | 是 | 采集、比较、下载可用 | `/api/config-collection/*` | `/config-collection` | 配置采集定向 pytest/Vitest | `PENDING` |
-| `web.file_management` | 文件管理 | `ENABLED` | 是 | 是 | 否 | 是 | 本地与设备文件入口可用 | `/api/file-management/*` | `/file-management` | `test_file_management_service.py` | `PENDING` |
-| `web.file_management_remote` | SFTP 浏览与下载 | `ENABLED` | 是 | 是 | 否 | 是 | 受控只读远端操作 | `/api/file-management/remote/*` | `/file-management` | `test_file_management_service.py` | `PENDING` |
-| `web.network_tools` | 网络工具 | `ENABLED` | 是 | 是 | 否 | 是 | toolbox/Traffic 可用 | `/api/network-tools/*`、`/api/traffic/*` | `/network-tools` | `test_network_tools_api.py`、`test_network_tools_web_parity.py` | `PENDING` |
-| `web.command_reference` | 命令说明 | `ENABLED` | 是 | 是 | 否 | 是 | 可查询与受控导出 | `/api/command-reference/*` | `/command-reference` | 命令说明 API/Vitest | `PENDING` |
-| `web.logs` | 日志中心 | `ENABLED` | 是 | 是 | 否 | 是 | 可查询与受控导出 | `/api/logs/*` | `/logs` | 日志 API/Vitest | `PENDING` |
-| `web.job_center` | 任务中心 | `ENABLED` | 是 | 是 | 否 | 是 | 全局入口、抽屉、浮层和完整页面可用 | `/api/job-center/*`、`/ws/tasks` | `/tasks` | `test_job_center.py`、`test_task_center.py`、`GlobalTaskCenter.test.ts`、`JobCenterView.test.ts` | `PENDING` |
-| `web.ac_management` | AC 管理 | `ENABLED` | 是 | 是 | 否 | 是 | 正式 AC 页面可用 | `/api/ac-management/*` | `/ac-management` | `test_ac_management.py` | `PENDING` |
-| `web.ac_fit_ap_resources` | FIT-AP 资源 | `ENABLED` | 是 | 是 | 否 | 是 | 资源查询与受控动作可用 | `/api/ac-management/*` | `/ac-management` | `test_ac_management.py`、AC 动作定向测试 | `PENDING` |
-| `web.rail_transit_base_data` | 轨道交通基础资料 | `ENABLED` | 是 | 是 | 否 | 是 | 查询、受控编辑与导出可用 | `/api/rail-transit/base-data/*` | `/rail-transit/base-data` | `test_rail_transit_web_parity.py` | `PENDING` |
-| `web.train_communication_monitoring` | 车内通信检测 | `ENABLED` | 是 | 是 | 否 | 是 | 固定拓扑与检测任务可用 | `/api/rail-transit/train-communication/*` | `/rail-transit/train-communication` | `test_train_communication_web_api.py` | `PENDING` |
-| `web.rail_train_online` | 列车在线 | `ENABLED` | 是 | 是 | 否 | 是 | 在线状态、刷新、映射和历史导出可用 | `/api/rail-transit/train-online/*` | `/rail-transit/train-online` | `test_web_parity_foundation.py`、轨交 parity 测试 | `PENDING` |
-| `web.ground_unattended` | 地面无人值守 | `ENABLED` | 是 | 是 | 否 | 是 | 时间窗口、正线分类、全车长 Ping、深度覆盖与安全归档已接线 | `/api/rail-transit/ground-unattended/*` | `/rail-transit/ground-unattended` | `test_ground_unattended_*.py`、GroundUnattended Vitest | `REAL_DEVICE_PENDING` |
-| `web.online_mr_realtime` | 车载 MR 实时收集 | `ENABLED` | 是 | 是 | 否 | 是 | 实时页面和受控收集入口可用 | `/api/online-mr/*` | `/rail-transit/online-mr` | Online MR 定向 pytest/Vitest | `PENDING` |
-| `web.online_mr_analysis` | 车载 MR 收集分析 | `ENABLED` | 是 | 是 | 否 | 是 | 分析页面可见 | `/api/online-mr/sessions/*` | `/rail-transit/online-mr-analysis` | `test_rail_transit_web_parity.py` | `PENDING` |
-| `web.online_mr_parse` | Online MR 解析 | `ENABLED` | 是 | 是 | 否 | 是 | 进入统一任务控制 | `/api/online-mr/sessions/{id}/parse` | Online MR 分析页 | `test_rail_transit_web_parity.py` | `PENDING` |
-| `web.online_mr_report_export` | Online MR 报告 | `ENABLED` | 是 | 是 | 否 | 是 | 进入 Export/Job 闭环 | `/api/online-mr/sessions/{id}/report` | Online MR 分析页 | `test_rail_transit_web_parity.py` | `PENDING` |
-| `web.mesh_analysis` | MR 原始 MESH 日志分析 | `ENABLED` | 是 | 是 | 否 | 是 | 分析查询页可见 | `/api/rail-transit/mesh-analysis/*` | `/rail-transit/mesh-analysis` | `test_rail_transit_web_parity.py` | `PENDING` |
-| `web.mesh_analysis_import` | MESH 导入与重建 | `ENABLED` | 是 | 是 | 否 | 是 | 可预览、导入和重建 | `/api/rail-transit/mesh-analysis/import-*` | MESH 分析页 | `test_rail_transit_web_parity.py` | `PENDING` |
-| `web.mesh_analysis_report_export` | MESH 报告与导出 | `ENABLED` | 是 | 是 | 否 | 是 | 可生成/下载派生报告 | `/api/rail-transit/mesh-analysis/*/report` | MESH 分析页 | `test_rail_transit_web_parity.py` | `PENDING` |
-| `web.rail_trackside_ap_business` | 轨旁 AP 业务 | `ENABLED` | 是 | 是 | 否 | 是 | 光衰更新与导出可用 | `/api/rail-transit/trackside-ap-business/*` | `/rail-transit/trackside-ap-business` | `test_trackside_ap_business_export_web.py` | `PENDING` |
-| `web.system_settings` | 系统设置与环境自检 | `ENABLED` | 是 | 是 | 否 | 是 | 设置、局点管理和自检可用 | `/api/settings/*`、`/api/settings/self-check` | `/settings` | `test_system_settings_web_api.py`、`SystemSettingsView.test.ts` | `PENDING` |
+| `module.devices` | 设备管理 | `ENABLED` | 是 | 是 | 否 | 是 | 可见、可查询 | `/api/device-management/devices` | `/devices` | `test_device_management_web_api.py`、`DeviceManagementView*.test.ts` | `PENDING` |
+| `capability.devices.connection_test` | 已保存设备连接测试 | `ENABLED` | 是 | 是 | 否 | 是 | 前置校验后可创建任务 | `/api/device-management/devices/{id}/connection-tests` | `/devices` | `test_device_management_web_api.py` | `PENDING` |
+| `capability.devices.form_connection_test` | 未保存表单连接测试 | `ENABLED` | 是 | 是 | 否 | 是 | 一次性凭据、任务参数无秘密 | `/api/device-management/devices/test-connection` | `/devices` 编辑弹窗 | `test_device_management_web_api.py`、`DeviceManagementView.test.ts` | `PENDING` |
+| `capability.devices.collect` | 设备采集与诊断 | `ENABLED` | 是 | 是 | 否 | 是 | 可提交采集/诊断 | `/api/device-management/devices/*/collect` | `/devices` | `test_device_management_web_api.py`、`test_device_detail_web_api.py` | `PENDING` |
+| `capability.devices.import` | 设备导入 | `ENABLED` | 是 | 是 | 否 | 是 | 可预览并受控导入 | `/api/device-management/imports/*` | `/devices` | `test_device_management_web_api.py` | `PENDING` |
+| `capability.devices.export` | 设备导出 | `ENABLED` | 是 | 是 | 否 | 是 | 进入 Export Process | `/api/device-management/exports/*` | `/devices` | `test_device_management_web_api.py` | `PENDING` |
+| `module.config_collection` | 配置采集中心 | `ENABLED` | 是 | 是 | 否 | 是 | 采集、比较、下载可用 | `/api/config-collection/*` | `/config-collection` | 配置采集定向 pytest/Vitest | `PENDING` |
+| `module.file_management` | 文件管理 | `ENABLED` | 是 | 是 | 否 | 是 | 本地与设备文件入口可用 | `/api/file-management/*` | `/file-management` | `test_file_management_service.py` | `PENDING` |
+| `capability.file_management.remote` | SFTP 浏览与下载 | `ENABLED` | 是 | 是 | 否 | 是 | 受控只读远端操作 | `/api/file-management/remote/*` | `/file-management` | `test_file_management_service.py` | `PENDING` |
+| `module.network_tools` | 网络工具 | `ENABLED` | 是 | 是 | 否 | 是 | toolbox/Traffic 可用 | `/api/network-tools/*`、`/api/traffic/*` | `/network-tools` | `test_network_tools_api.py`、`test_network_tools_web_parity.py` | `PENDING` |
+| `module.command_reference` | 命令说明 | `ENABLED` | 是 | 是 | 否 | 是 | 可查询与受控导出 | `/api/command-reference/*` | `/command-reference` | 命令说明 API/Vitest | `PENDING` |
+| `module.logs` | 日志中心 | `ENABLED` | 是 | 是 | 否 | 是 | 可查询与受控导出 | `/api/logs/*` | `/logs` | 日志 API/Vitest | `PENDING` |
+| `module.task_center` | 任务中心 | `ENABLED` | 是 | 是 | 否 | 是 | 全局入口、抽屉、浮层和完整页面可用 | `/api/job-center/*`、`/ws/tasks` | `/tasks` | `test_job_center.py`、`test_task_center.py`、`GlobalTaskCenter.test.ts`、`JobCenterView.test.ts` | `PENDING` |
+| `module.ac` | AC 管理 | `ENABLED` | 是 | 是 | 否 | 是 | 正式 AC 页面可用 | `/api/ac-management/*` | `/ac-management` | `test_ac_management.py` | `PENDING` |
+| `module.fit_ap` | FIT-AP 资源 | `ENABLED` | 是 | 是 | 否 | 是 | 资源查询与受控动作可用 | `/api/ac-management/*` | `/ac-management` | `test_ac_management.py`、AC 动作定向测试 | `PENDING` |
+| `module.rail_base_data` | 轨道交通基础资料 | `ENABLED` | 是 | 是 | 否 | 是 | 查询、受控编辑与导出可用 | `/api/rail-transit/base-data/*` | `/rail-transit/base-data` | `test_rail_transit_web_parity.py` | `PENDING` |
+| `module.train_communication` | 车内通信检测 | `ENABLED` | 是 | 是 | 否 | 是 | 固定拓扑与检测任务可用 | `/api/rail-transit/train-communication/*` | `/rail-transit/train-communication` | `test_train_communication_web_api.py` | `PENDING` |
+| `module.train_online` | 列车在线 | `ENABLED` | 是 | 是 | 否 | 是 | 在线状态、刷新、映射和历史导出可用 | `/api/rail-transit/train-online/*` | `/rail-transit/train-online` | `test_web_parity_foundation.py`、轨交 parity 测试 | `PENDING` |
+| `module.ground_unattended` | 地面无人值守 | `ENABLED` | 是 | 是 | 否 | 是 | 时间窗口、正线分类、全车长 Ping、深度覆盖与安全归档已接线 | `/api/rail-transit/ground-unattended/*` | `/rail-transit/ground-unattended` | `test_ground_unattended_*.py`、GroundUnattended Vitest | `REAL_DEVICE_PENDING` |
+| `module.online_mr` | 车载 MR 实时收集 | `ENABLED` | 是 | 是 | 否 | 是 | 实时页面和受控收集入口可用 | `/api/online-mr/*` | `/rail-transit/online-mr` | Online MR 定向 pytest/Vitest | `PENDING` |
+| `module.online_mr_analysis` | 车载 MR 收集分析 | `ENABLED` | 是 | 是 | 否 | 是 | 分析页面可见 | `/api/online-mr/sessions/*` | `/rail-transit/online-mr-analysis` | `test_rail_transit_web_parity.py` | `PENDING` |
+| `capability.online_mr.parse` | Online MR 解析 | `ENABLED` | 是 | 是 | 否 | 是 | 进入统一任务控制 | `/api/online-mr/sessions/{id}/parse` | Online MR 分析页 | `test_rail_transit_web_parity.py` | `PENDING` |
+| `capability.online_mr.report_export` | Online MR 报告 | `ENABLED` | 是 | 是 | 否 | 是 | 进入 Export/Job 闭环 | `/api/online-mr/sessions/{id}/report` | Online MR 分析页 | `test_rail_transit_web_parity.py` | `PENDING` |
+| `module.mesh_analysis` | MR 原始 MESH 日志分析 | `ENABLED` | 是 | 是 | 否 | 是 | 分析查询页可见 | `/api/rail-transit/mesh-analysis/*` | `/rail-transit/mesh-analysis` | `test_rail_transit_web_parity.py` | `PENDING` |
+| `capability.mesh.import` | MESH 导入与重建 | `ENABLED` | 是 | 是 | 否 | 是 | 可预览、导入和重建 | `/api/rail-transit/mesh-analysis/import-*` | MESH 分析页 | `test_rail_transit_web_parity.py` | `PENDING` |
+| `capability.mesh.report_export` | MESH 报告与导出 | `ENABLED` | 是 | 是 | 否 | 是 | 可生成/下载派生报告 | `/api/rail-transit/mesh-analysis/*/report` | MESH 分析页 | `test_rail_transit_web_parity.py` | `PENDING` |
+| `module.trackside_ap` | 轨旁 AP 业务 | `ENABLED` | 是 | 是 | 否 | 是 | 光衰更新与导出可用 | `/api/rail-transit/trackside-ap-business/*` | `/rail-transit/trackside-ap-business` | `test_trackside_ap_business_export_web.py` | `PENDING` |
+| `module.system_settings` | 系统设置与环境自检 | `ENABLED` | 是 | 是 | 否 | 是 | 设置、局点管理和自检可用 | `/api/settings/*`、`/api/settings/self-check` | `/settings` | `test_system_settings_web_api.py`、`SystemSettingsView.test.ts` | `PENDING` |
 
-局点管理当前是 `web.system_settings` 内的正式面板，不建立第二个 Feature ID。其 API 位于 `/api/sites` 与局点包相关路由；v4 未加密完整包凭据恢复、无迁移密码/无 `payload.enc`、脱敏包清洗、checksum 篡改零发布和 `needs_reentry` 闭环由 `test_site_storage.py / test_site_storage_api.py` 验证。设备凭据显式查看和旧字段保存兼容由 `test_device_management_web_api.py / DeviceManagementView*.test.ts` 验证。
+局点管理当前是 `module.system_settings` 内的正式面板，不建立第二个 Feature ID。其 API 位于 `/api/sites` 与局点包相关路由；v4 未加密完整包凭据恢复、无迁移密码/无 `payload.enc`、脱敏包清洗、checksum 篡改零发布和 `needs_reentry` 闭环由 `test_site_storage.py / test_site_storage_api.py` 验证。设备凭据显式查看和旧字段保存兼容由 `test_device_management_web_api.py / DeviceManagementView*.test.ts` 验证。
 
 ## 必须保持关闭的能力
 
 | 功能 ID | Registry / 属性 | 正式包预期 | 自动门禁 |
 | --- | --- | --- | --- |
-| `module.feature_switch`、`system.feature_flags`、`web.feature_switch` | `internal_only` | 不显示、不启用、配置 API 受控拒绝 | FeatureGate pytest、设置 API pytest |
-| `web.ac_online_overview`、`web.ac_extensions*`、`web.ac_config_snapshots` | `DEVELOPMENT` | 不显示、不启用 | FeatureGate pytest、构建 Gate |
-| `web.online_mr_local_control`、`web.online_mr_agent_control` | `DEVELOPMENT`，未接入生产调用 | 不显示、不启用 | FeatureGate pytest |
-| `web.rail_car_network_diagnostic` | 隐藏兼容、`DEVELOPMENT` | 不注册正式入口 | FeatureGate/导航测试 |
+| `module.feature_switch`、`system.feature_flags`、`internal.feature_switch` | `internal_only` | 不显示、不启用、配置 API 受控拒绝 | FeatureGate pytest、设置 API pytest |
+| `capability.ac.online_overview`、`capability.ac.extensions*`、`capability.ac.config_snapshots` | `DEVELOPMENT` | 不显示、不启用 | FeatureGate pytest、构建 Gate |
+| `capability.online_mr.local_control`、`capability.online_mr.agent_control` | `DEVELOPMENT`，未接入生产调用 | 不显示、不启用 | FeatureGate pytest |
+| `module.train_communication` | 隐藏兼容、`DEVELOPMENT` | 不注册正式入口 | FeatureGate/导航测试 |
 
 ## 干净安装与跨电脑验收
 

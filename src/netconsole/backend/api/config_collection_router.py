@@ -75,7 +75,7 @@ def list_snapshots(
     "/actions",
     response_model=list[ConfigTaskReferenceDTO],
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_feature("web.config_collection_fetch"))],
+    dependencies=[Depends(require_feature("capability.config_collection.fetch"))],
 )
 def submit_collection(request: Request, payload: ConfigActionRequest) -> list[ConfigTaskReferenceDTO]:
     return _query(lambda: _service(request).submit_collection(_site_id(request), payload.action, payload.device_ids))
@@ -90,7 +90,7 @@ def load_snapshot_content(request: Request, snapshot_id: int) -> ConfigTaskRefer
     "/devices/{device_id}/diff/latest",
     response_model=ConfigTaskReferenceDTO,
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_feature("web.config_collection_diff"))],
+    dependencies=[Depends(require_feature("capability.config_collection.diff"))],
 )
 def compare_latest_snapshots(request: Request, device_id: int) -> ConfigTaskReferenceDTO:
     return _query(lambda: _service(request).submit_latest_diff(_site_id(request), device_id))
@@ -100,7 +100,7 @@ def compare_latest_snapshots(request: Request, device_id: int) -> ConfigTaskRefe
     "/diff/snapshots",
     response_model=ConfigTaskReferenceDTO,
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_feature("web.config_collection_diff"))],
+    dependencies=[Depends(require_feature("capability.config_collection.diff"))],
 )
 def compare_snapshot_pair(request: Request, payload: ConfigSnapshotDiffRequest) -> ConfigTaskReferenceDTO:
     return _query(
@@ -114,7 +114,7 @@ def compare_snapshot_pair(request: Request, payload: ConfigSnapshotDiffRequest) 
     "/diff/devices",
     response_model=ConfigTaskReferenceDTO,
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_feature("web.config_collection_diff"))],
+    dependencies=[Depends(require_feature("capability.config_collection.diff"))],
 )
 def compare_device_pair(request: Request, payload: ConfigDeviceDiffRequest) -> ConfigTaskReferenceDTO:
     return _query(
@@ -148,7 +148,7 @@ def cancel_task(request: Request, task_id: str) -> ConfigTaskStatusDTO:
 @router.post(
     "/snapshots/delete/issue",
     response_model=ConfigConfirmationDTO,
-    dependencies=[Depends(require_feature("web.config_collection_delete"))],
+    dependencies=[Depends(require_feature("capability.config_collection.delete"))],
 )
 def issue_snapshot_delete(request: Request, payload: ConfigSnapshotIdsRequest) -> ConfigConfirmationDTO:
     return _query(lambda: _service(request).issue_snapshot_delete(_site_id(request), payload.snapshot_ids))
@@ -158,7 +158,7 @@ def issue_snapshot_delete(request: Request, payload: ConfigSnapshotIdsRequest) -
     "/snapshots/delete/confirm",
     response_model=ConfigTaskReferenceDTO,
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_feature("web.config_collection_delete"))],
+    dependencies=[Depends(require_feature("capability.config_collection.delete"))],
 )
 def confirm_snapshot_delete(request: Request, payload: ConfigConfirmationRequest) -> ConfigTaskReferenceDTO:
     return _query(
@@ -171,7 +171,7 @@ def confirm_snapshot_delete(request: Request, payload: ConfigConfirmationRequest
 @router.post(
     "/actions/save-force/preview",
     response_model=ConfigConfirmationDTO,
-    dependencies=[Depends(require_feature("web.config_collection_save_force"))],
+    dependencies=[Depends(require_feature("capability.config_collection.save_force"))],
 )
 def preview_save_force(request: Request, payload: ConfigDeviceIdsRequest) -> ConfigConfirmationDTO:
     return _query(lambda: _service(request).preview_save_force(_site_id(request), payload.device_ids))
@@ -181,7 +181,7 @@ def preview_save_force(request: Request, payload: ConfigDeviceIdsRequest) -> Con
     "/actions/save-force/confirm",
     response_model=ConfigTaskReferenceDTO,
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_feature("web.config_collection_save_force"))],
+    dependencies=[Depends(require_feature("capability.config_collection.save_force"))],
 )
 def confirm_save_force(request: Request, payload: ConfigConfirmationRequest) -> ConfigTaskReferenceDTO:
     return _query(
@@ -193,7 +193,7 @@ def confirm_save_force(request: Request, payload: ConfigConfirmationRequest) -> 
     "/exports/diff",
     response_model=ConfigTaskReferenceDTO,
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_feature("web.config_collection_export"))],
+    dependencies=[Depends(require_feature("capability.config_collection.export"))],
 )
 def export_diff(request: Request, payload: ConfigSnapshotDiffRequest) -> ConfigTaskReferenceDTO:
     return _query(
@@ -207,7 +207,7 @@ def export_diff(request: Request, payload: ConfigSnapshotDiffRequest) -> ConfigT
     "/exports/snapshots",
     response_model=ConfigTaskReferenceDTO,
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_feature("web.config_collection_export"))],
+    dependencies=[Depends(require_feature("capability.config_collection.export"))],
 )
 def export_snapshots(request: Request, payload: ConfigSnapshotExportRequest) -> ConfigTaskReferenceDTO:
     return _query(lambda: _service(request).submit_snapshots_export(_site_id(request), payload.snapshot_ids))
@@ -216,7 +216,7 @@ def export_snapshots(request: Request, payload: ConfigSnapshotExportRequest) -> 
 @router.post(
     "/desktop-actions/open-directory",
     response_model=ConfigDirectoryDTO,
-    dependencies=[Depends(require_feature("web.config_collection_open_directory"))],
+    dependencies=[Depends(require_feature("capability.config_collection.open_directory"))],
 )
 def directory_info(request: Request, directory_kind: str = Query(default="config_exports", max_length=30)) -> ConfigDirectoryDTO:
     return _query(lambda: _service(request).directory_info(_site_id(request), directory_kind))
@@ -225,7 +225,7 @@ def directory_info(request: Request, directory_kind: str = Query(default="config
 @router.get(
     "/artifacts/{artifact_id}",
     response_class=FileResponse,
-    dependencies=[Depends(require_feature("web.config_collection_download"))],
+    dependencies=[Depends(require_feature("capability.config_collection.download"))],
 )
 def download_artifact(request: Request, artifact_id: str) -> FileResponse:
     path, filename = _query(lambda: _service(request).open_artifact(_site_id(request), artifact_id))

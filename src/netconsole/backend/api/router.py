@@ -44,34 +44,34 @@ api_router.include_router(feature_router)
 api_router.include_router(system_settings_router)
 api_router.include_router(
     database_upgrade_router,
-    dependencies=[Depends(require_feature("web.database_upgrade"))],
+    dependencies=[Depends(require_feature("module.database_upgrade"))],
 )
 api_router.include_router(
     system_network_router,
-    dependencies=[Depends(require_feature("web.ground_unattended"))],
+    dependencies=[Depends(require_feature("module.ground_unattended"))],
 )
 api_router.include_router(site_storage_router)
 api_router.include_router(
     command_reference_router,
-    dependencies=[Depends(require_feature("web.command_reference"))],
+    dependencies=[Depends(require_feature("module.command_reference"))],
 )
 api_router.include_router(device_compatibility_router)
 api_router.include_router(
     ac_management_router,
-    dependencies=[Depends(require_feature("web.ac_management"))],
+    dependencies=[Depends(require_feature("module.ac"))],
 )
 api_router.include_router(
     ac_mesh_link_router,
-    dependencies=[Depends(require_feature("web.rail_train_online"))],
+    dependencies=[Depends(require_feature("module.train_online"))],
 )
 api_router.include_router(
     job_center_router,
-    dependencies=[Depends(require_feature("web.job_center"))],
+    dependencies=[Depends(require_feature("module.task_center"))],
 )
 api_router.include_router(task_router)
 api_router.include_router(
     agent_router,
-    dependencies=[Depends(require_feature("web.agent_management"))],
+    dependencies=[Depends(require_feature("module.agent"))],
 )
 api_router.include_router(
     traffic_router,
@@ -79,61 +79,61 @@ api_router.include_router(
 )
 api_router.include_router(
     device_management_router,
-    dependencies=[Depends(require_feature("web.device_management"))],
+    dependencies=[Depends(require_feature("module.devices"))],
 )
 api_router.include_router(
     network_tools_router,
-    dependencies=[Depends(require_feature("web.network_tools_toolbox"))],
+    dependencies=[Depends(require_feature("capability.network_tools.toolbox"))],
 )
 api_router.include_router(
     config_collection_router,
-    dependencies=[Depends(require_feature("web.config_collection"))],
+    dependencies=[Depends(require_feature("module.config_collection"))],
 )
 api_router.include_router(
     file_management_router,
-    dependencies=[Depends(require_feature("web.file_management"))],
+    dependencies=[Depends(require_feature("module.file_management"))],
 )
 api_router.include_router(
     online_mr_router,
-    dependencies=[Depends(require_feature("web.online_mr_realtime"))],
+    dependencies=[Depends(require_feature("module.online_mr"))],
 )
 api_router.include_router(online_mr_control_router)
 api_router.include_router(online_mr_agent_control_router)
 api_router.include_router(
     rail_transit_base_data_router,
-    dependencies=[Depends(require_feature("web.rail_transit_base_data"))],
+    dependencies=[Depends(require_feature("module.rail_base_data"))],
 )
 api_router.include_router(
     train_communication_router,
-    dependencies=[Depends(require_feature("web.train_communication_monitoring"))],
+    dependencies=[Depends(require_feature("module.train_communication"))],
 )
 api_router.include_router(
     trackside_ap_business_router,
-    dependencies=[Depends(require_feature("web.rail_trackside_ap_business"))],
+    dependencies=[Depends(require_feature("module.trackside_ap"))],
 )
 api_router.include_router(wps_sync_router)
 api_router.include_router(
     vehicle_mr_online_router,
-    dependencies=[Depends(require_feature("web.rail_train_online"))],
+    dependencies=[Depends(require_feature("module.train_online"))],
 )
 api_router.include_router(ground_unattended_router)
 api_router.include_router(
     mesh_analysis_router,
-    dependencies=[Depends(require_feature("web.mesh_analysis"))],
+    dependencies=[Depends(require_feature("module.mesh_analysis"))],
 )
 api_router.include_router(
     wireless_dashboard_router,
-    dependencies=[Depends(require_feature("web.rail_transit_wireless_dashboard"))],
+    dependencies=[Depends(require_feature("capability.rail_transit.wireless_dashboard"))],
 )
 api_router.include_router(
     system_maintenance_router,
-    dependencies=[Depends(require_feature("web.logs"))],
+    dependencies=[Depends(require_feature("module.logs"))],
 )
 ws_router = APIRouter()
 ws_router.include_router(task_ws_router)
 ws_router.include_router(
     agent_ws_router,
-    dependencies=[Depends(require_feature("web.agent_management"))],
+    dependencies=[Depends(require_feature("module.agent"))],
 )
 ws_router.include_router(
     traffic_ws_router,

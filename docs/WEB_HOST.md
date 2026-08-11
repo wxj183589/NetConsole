@@ -27,26 +27,26 @@ Core Runtime / FastAPI / Uvicorn
 - 关闭子任务窗口只隐藏窗口，不停止后台任务；退出 Electron 时由统一屏障停止 Backend；
 - Python 诊断 Launcher 退出时统一停止 Uvicorn 和 FastAPI lifespan；本机浏览器标签关闭不等于停止诊断 Runtime；
 - Electron 启动失败时报告明确错误；不把系统浏览器或 Qt 静默当成正式产品回退；
-- 源码开发态 `--mode web/server` 通用导入链不加载 PySide6；`server` 不主动打开浏览器；
+- 源码开发态 `--mode server` 通用导入链不加载 PySide6，且不主动打开浏览器；
 - 旧 `--mode auto/qt`、Qt probe、`--web-shell` 与 `netconsole.app.run()` 均不存在活动入口。
 
 ## 构建
 
-`scripts/build/build_release.py` 在 Python Backend 打包前执行 `apps/web` 的 `pnpm build`，并把忽略提交的 `apps/web/dist` 作为 `netconsole/assets/web` 内部资源打入 PyInstaller Backend bundle。构建机需先完成：
+`scripts/build/build_release.py` 在 Python Backend 打包前执行 `apps/desktop_renderer` 的 `pnpm build`，并把忽略提交的 `apps/desktop_renderer/dist` 作为 `netconsole/assets/desktop_renderer` 内部资源打入 PyInstaller Backend bundle。构建机需先完成：
 
 ```powershell
-cd apps/web
+cd apps/desktop_renderer
 pnpm install --frozen-lockfile
 cd ../..
 ```
 
-缺少 pnpm、`node_modules`、`dist/index.html` 或 `dist/web-build-meta.json` 时，发布构建明确失败，不生成缺少完整 Web 页面的桌面包。发布链每次都重新执行 Vue build，不再因旧 `index.html` 已存在而跳过；构建后同时校验应用版本、提交、build id、构建时间和导航 schema 版本。
+缺少 pnpm、`node_modules`、`dist/index.html` 或 `dist/desktop-renderer-build-meta.json` 时，发布构建明确失败，不生成缺少完整 Web 页面的桌面包。发布链每次都重新执行 Vue build，不再因旧 `index.html` 已存在而跳过；构建后同时校验应用版本、提交、build id、构建时间和导航 schema 版本。
 
 ## 前端资源身份
 
-- 源码模式只加载当前项目的 `apps/web/dist`，不再按文件存在性优先选择虚拟环境、旧安装目录或 `src/netconsole/assets/web`；
-- PyInstaller 冻结模式只加载包内 `netconsole/assets/web`，不跨模式回退到源码目录；
-- Vite 生成 `web-build-meta.json`，包含 `app_version`、`git_commit`、`build_time`、`navigation_schema_version` 和 `build_id`；
+- 源码模式只加载当前项目的 `apps/desktop_renderer/dist`，不再按文件存在性优先选择虚拟环境、旧安装目录或 `src/netconsole/assets/desktop_renderer`；
+- PyInstaller 冻结模式只加载包内 `netconsole/assets/desktop_renderer`，不跨模式回退到源码目录；
+- Vite 生成 `desktop-renderer-build-meta.json`，包含 `app_version`、`git_commit`、`build_time`、`navigation_schema_version` 和 `build_id`；
 - `GET /api/health` 返回后端 `build_id`；新版 Vue 在前后端 build id 不一致时显示固定顶部警告；旧产物缺少 metadata 时 FastAPI 静态入口仍会注入相同警告；
 - Desktop WebHost 启动日志记录 `frontend_root`、`index`、`frontend_build_id`、`backend_build_id` 和 `frontend_source_type`，不记录短期会话令牌；
 - 所选模式缺少 `index.html` 时只显示资源不可用页，不静默加载另一运行模式的文件。
@@ -67,13 +67,13 @@ WebHost 默认窗口为约 `1360×860`，最小尺寸为 `1024×680`。Vue 导�
 - Online MR Web 仅读取当前局点的 Session metadata、Task/Mapping、`view/*.json` 和 raw 白名单；页面隐藏或关闭后停止轮询；
 - AC 管理通过 GET-only `/api/ac-management` 和 SQLite `mode=ro + query_only` 展示现有 AC/FIT-AP、Radio 1/2、LLDP、光衰及配置快照；不连接设备、不采集、不下发命令，配置文件仅通过受控 snapshot ID 分块读取；
 - 列车在线页通过现有 Mesh-Link Query Service 按 30 秒 fresh/5 分钟 stale 边界保守聚合 CT/TC；`POST /api/rail-transit/train-online/refresh` 只接受 AC 标识和 switch-history 布尔开关，通过 Task Center Worker 执行固定只读命令。旧 `/api/ac-management/mesh-links/*` 保留为 OpenAPI deprecated 底层契约；WebHost 不持有设备凭据、不接受命令文本；旧采集没有 raw 时明确显示不可用；
-- 轨道交通基础资料通过 SQLite `mode=ro + query_only` 展示站点/区间派生视图、AP 点位、列车/MR、关联状态和按实体分组的质量问题；导入预览不保存上传原文件。5C-6B 的 apply/审计/rollback API 受 `web.rail_transit_base_data_write`、环境开关、局点范围、预览有效期和数据库哈希共同保护，默认配置不显示应用按钮，真实局点写入仍未授权；
+- 轨道交通基础资料通过 SQLite `mode=ro + query_only` 展示站点/区间派生视图、AP 点位、列车/MR、关联状态和按实体分组的质量问题；导入预览不保存上传原文件。5C-6B 的 apply/审计/rollback API 受 `capability.rail_base_data.write`、环境开关、局点范围、预览有效期和数据库哈希共同保护，默认配置不显示应用按钮，真实局点写入仍未授权；
 - 车内通信检测展示全部已登记列车、TC1/TC2 固定六节点、节点链路、VRRP 和跨 TC 状态；“开始检测”只向既有车内通信诊断 Application Service 提交列车 ID，在线状态仅作辅助提示。页面不承载 Online MR、持续 fping/iPerf、Agent、轨旁 AP 或光衰入口；卸载只停止页面轮询，不停止后台任务；
 - Mesh 原始日志分析以 `mode=ro + query_only` 读取既有单来源分析数据库，后端分页链路、降采样 RSSI/空口、复用正式短时/乒乓规则并列出现有报告；不创建 Task、不调用 parser 写入模式、不生成或删除报告，文件访问不接受路径参数；
 - 轨道交通无线综合看板通过既有 Query Service 聚合基础设施、列车通信、任务、Agent 缓存和 Mesh 分析摘要；全部接口为 GET-only，告警不增加业务阈值，页面只跳转到已有详情入口；
 - WebHost 只在独立 AGENT 页签开放已登记 Profile 的远程 MR start/status/normal stop，不开放远端包删除、强停、任意命令、任意 URL 或 Agent 配置修改；Application Service 的单 Agent 执行闭环见 [Online MR Agent 远程执行器](ONLINE_MR_AGENT_EXECUTOR.md)；
 - Agent Web 当前生产认证仍是可选 `X-Agent-Token`。示例配置虽保留 `web_username/web_password` 字段，但尚未实现用户名密码登录流程，不能把 `admin/admin` 描述为已生效认证；
 - SNMP Center、通用 MIB/OID 平台和无线勘测已删除；网络工具无线扫描独立保留。
-- Web 导航、实际路由和未完成规划由 `apps/web/src/navigation/registry.ts` 统一描述；未实现项保持隐藏且不注册占位业务路由。完整状态见[最终迁移矩阵](architecture/MIGRATION_MATRIX.md)。
+- Web 导航、实际路由和未完成规划由 `apps/desktop_renderer/src/navigation/registry.ts` 统一描述；未实现项保持隐藏且不注册占位业务路由。完整状态见[最终迁移矩阵](architecture/MIGRATION_MATRIX.md)。
 - Electron 已实现文件/目录/另存为、会话内授权路径和受管后端下载，Browser 继续使用普通下载。按业务 ID 打开的 `openArtifact`、终端与通知按实际 Feature 状态验收；所有能力必须遵守 [Desktop Native Bridge 契约](DESKTOP_NATIVE_BRIDGE.md)。
 - Electron 先拒绝新下载并取消、等待在途写入，再通过 `shutdown_ack -> exit` 控制握手停止受管 Python，所有清理完成后才退出。Qt WebHost 只作为 Git 历史迁移参考。

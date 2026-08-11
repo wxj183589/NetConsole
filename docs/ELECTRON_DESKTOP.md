@@ -32,13 +32,13 @@ Windows Server 2012 x64 的 NetConsole 主程序已有用户现场运行确认�
 
 ## 当前状态
 
-Electron Desktop 安全基础已在 `apps/desktop_electron/` 建立，复用唯一 Vue Renderer `apps/web/` 和唯一 FastAPI 组合根 `src/netconsole/backend/api/main.py:create_app()`。Electron 是唯一正式桌面产品；Qt 源码、运行时与入口已经退出活动仓库。部分业务仍处于自动实现完成但真实设备待验收状态，不能把“零 Qt”误写成全部业务已经现场验收完成。
+Electron Desktop 安全基础已在 `apps/desktop_electron/` 建立，复用唯一 Vue Renderer `apps/desktop_renderer/` 和唯一 FastAPI 组合根 `src/netconsole/backend/api/main.py:create_app()`。Electron 是唯一正式桌面产品；Qt 源码、运行时与入口已经退出活动仓库。部分业务仍处于自动实现完成但真实设备待验收状态，不能把“零 Qt”误写成全部业务已经现场验收完成。
 
 当前并存关系：
 
 ```text
 apps/desktop_electron/     Electron main/preload/shared，目标桌面外壳基础
-apps/web/                  唯一 Vue Renderer；Electron 正式使用，浏览器仅开发联调
+apps/desktop_renderer/                  唯一 Vue Renderer；Electron 正式使用，浏览器仅开发联调
 src/netconsole/            唯一 Python Core/FastAPI/Application Service
 ```
 
@@ -53,7 +53,7 @@ flowchart TD
     PY --> API["现有 FastAPI create_app"]
     API --> AS["Application Service / Repository / Infrastructure"]
     EM --> PRE["sandboxed preload + contextBridge"]
-    PRE --> VUE["apps/web Vue Renderer"]
+    PRE --> VUE["apps/desktop_renderer Vue Renderer"]
     VUE -->|"Runtime Adapter: REST / WebSocket"| API
     VUE -->|"安全下载 DTO"| PRE
     PRE -->|"固定 IPC"| EM
@@ -76,7 +76,7 @@ flowchart TD
 先准备两个独立前端工作目录的依赖：
 
 ```powershell
-cd apps/web
+cd apps/desktop_renderer
 pnpm install --frozen-lockfile
 cd ../desktop_electron
 pnpm install --frozen-lockfile
@@ -143,7 +143,7 @@ pnpm build
 pnpm start
 ```
 
-`pnpm build` 构建单文件 main/preload、Windows x64 管理员启动 helper 和 `apps/web/dist`；构建机必须提供 Go，helper 使用 `CGO_ENABLED=0` 和 Windows GUI 子系统生成。`pnpm start` 启动 Electron 与本机 Python，由 FastAPI 在同一动态回环 Origin 提供已构建的 Vue 静态资源。正式运行只使用已打包的 `resources/native/netconsole-elevated-launcher.exe`，客户机不需要 Go。Electron 不使用第二套 Renderer，也不把临时令牌放入页面 URL。
+`pnpm build` 构建单文件 main/preload、Windows x64 管理员启动 helper 和 `apps/desktop_renderer/dist`；构建机必须提供 Go，helper 使用 `CGO_ENABLED=0` 和 Windows GUI 子系统生成。`pnpm start` 启动 Electron 与本机 Python，由 FastAPI 在同一动态回环 Origin 提供已构建的 Vue 静态资源。正式运行只使用已打包的 `resources/native/netconsole-elevated-launcher.exe`，客户机不需要 Go。Electron 不使用第二套 Renderer，也不把临时令牌放入页面 URL。
 
 Electron Builder 目录包/NSIS 与 PyInstaller 受管 Backend 的构建链已经建立。NSIS 保持现有安装器，只新增程序目录之后的数据根选择页；它以管理员权限写入 HKLM 指针，普通卸载不会删除业务根。升级时保持原根；选择新根时由受管 Backend 迁移成功后才更新指针。依赖批准清单、NOTICE、SBOM 和 package smoke 仍是构建门，完整 Windows 安装/升级/卸载人工验收仍待最终组合执行。代码签名和自动升级尚未建立，不得把源码 `.venv` 当作交付依赖。
 
@@ -277,7 +277,7 @@ pnpm run build:main
 pnpm smoke:dev
 
 # Vue Browser/Electron Adapter、统一 API/WebSocket 与浏览器回退
-cd ../web
+cd ../desktop_renderer
 pnpm test
 pnpm build
 ```

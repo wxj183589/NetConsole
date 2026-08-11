@@ -291,12 +291,13 @@ def _fixture(
         )
 
     for feature_id in (
-        "web.device_management_write",
-        "web.device_management_collect",
-        "web.device_management_import",
-        "web.device_management_export",
-        "web.device_management_desktop",
-        "web.device_form_connection_test",
+        "capability.devices.write",
+        "capability.devices.collect",
+        "capability.devices.import",
+        "capability.devices.export",
+        "capability.devices.desktop_actions",
+        "capability.devices.connection_test",
+        "capability.devices.form_connection_test",
     ):
         state = dict(app.state.feature_gate.features[feature_id])
         app.state.feature_gate.features[feature_id] = {
@@ -2687,8 +2688,8 @@ def test_device_management_parent_feature_gate_blocks_write_actions(
 ) -> None:
     client, _service, _adapter, _devices, _facts, _mr, _sw = _fixture(tmp_path)
     gate = client.app.state.feature_gate
-    original = dict(gate.features["web.device_management"])
-    gate.features["web.device_management"] = {
+    original = dict(gate.features["module.devices"])
+    gate.features["module.devices"] = {
         **original,
         "enabled": False,
         "client_package": False,
@@ -2703,7 +2704,7 @@ def test_device_management_parent_feature_gate_blocks_write_actions(
             },
         )
     finally:
-        gate.features["web.device_management"] = original
+        gate.features["module.devices"] = original
     assert response.status_code == 404
 
 
@@ -2715,34 +2716,49 @@ def test_device_management_action_gates_block_their_own_endpoints(
     _write_import_csv(source)
     cases = (
         (
-            "web.device_management_write",
+            "capability.devices.write",
             "post",
             "/api/device-management/devices",
             {"json": {"name": "gate-write", "primary_address": "192.0.2.61"}},
         ),
         (
-            "web.device_management_collect",
+            "capability.devices.collect",
             "post",
             "/api/device-management/devices/batch-refresh-details",
             {"json": {"device_uuids": [str(mr.device_uuid)]}},
         ),
         (
-            "web.device_management_import",
+            "capability.devices.import",
             "post",
             "/api/device-management/imports/preview",
             {"files": {"file": (source.name, source.read_bytes(), "text/csv")}},
         ),
         (
-            "web.device_management_export",
+            "capability.devices.export",
             "post",
             "/api/device-management/exports/template",
             {"json": {}},
         ),
         (
-            "web.device_management_desktop",
+            "capability.devices.desktop_actions",
             "post",
             f"/api/device-management/devices/{mr.device_uuid}/external-terminal",
             {"json": {"terminal_type": "securecrt"}},
+        ),
+        (
+            "capability.devices.form_connection_test",
+            "post",
+            "/api/device-management/connection-tests/form",
+            {
+                "json": {
+                    "name": "gate-form-connection-test",
+                    "primary_address": "192.0.2.62",
+                    "protocol": "SSH",
+                    "ssh_enabled": True,
+                    "ssh_username": "admin",
+                    "ssh_password": "secret",
+                }
+            },
         ),
     )
     gate = client.app.state.feature_gate
