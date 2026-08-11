@@ -43,7 +43,7 @@ python -m pip check
 
 正式发布的身份事实来自构建开始时的 Git，而不是 `src/netconsole/core/version.py` 中的手工提交号或时间。`scripts/build/build_metadata.py` 在一次发布调用中读取 `git rev-parse HEAD` 与 `git status --porcelain`，生成并复用 `app_version / git_commit_full / git_commit_short / build_time_utc / build_dirty / build_source / frontend_commit / backend_commit`；时间固定为 ISO 8601 UTC。Vite、PyInstaller、Backend 自检、Electron package smoke 共用这一快照，分阶段校验时还会重新确认快照对应当前 Git 来源。
 
-正式候选必须按“修改与验证完成 → 中文提交 → 确认工作区 clean → 推送最终提交 → 读取最终 HEAD → 构建 Web/Backend/Electron/NSIS → package smoke 比较包内元数据与实际 HEAD”的顺序执行。`--release` 遇到 tracked 或 untracked 修改会直接失败；开发构建允许 `build_dirty=true`，但其 `build_source=git-development`，不能冒充正式包。最终包级输出必须包含 `SOURCE_GIT_HEAD / PACKAGED_BACKEND_COMMIT / PACKAGED_FRONTEND_COMMIT / SELF_CHECK_COMMIT / PACKAGED_BUILD_TIME / PACKAGED_DIRTY`，提交号不一致或 dirty 不为 false 都必须停止发布。
+正式候选必须按“修改与验证完成 → 中文提交 → 确认工作区 clean → 推送最终提交 → 读取最终 HEAD → 构建 Desktop Renderer/Backend/Electron/NSIS → package smoke 比较包内元数据与实际 HEAD”的顺序执行。`--release` 遇到 tracked 或 untracked 修改会直接失败；开发构建允许 `build_dirty=true`，但其 `build_source=git-development`，不能冒充正式包。最终包级输出必须包含 `SOURCE_GIT_HEAD / PACKAGED_BACKEND_COMMIT / PACKAGED_FRONTEND_COMMIT / SELF_CHECK_COMMIT / PACKAGED_BUILD_TIME / PACKAGED_DIRTY`，提交号不一致或 dirty 不为 false 都必须停止发布。
 
 先在仓库根目录执行：
 
@@ -83,7 +83,7 @@ python -m scripts.maintenance.clean_generated_artifacts --target build-temporary
 .\scripts\build\package_windows.ps1
 ```
 
-也可双击 `scripts\build\package_windows.bat`。脚本会检查 Windows、Git/upstream、项目 `.venv`、pnpm 和 Python 依赖，按两个 `pnpm-lock.yaml` 安装锁定依赖，依次运行 Web/Electron 测试，再调用下方同一个 `pnpm package` 正式链路。构建成功后，脚本会定位当前 Git HEAD 对应的 `.exe.release.json`，复核安装包大小和 SHA-256 并输出绝对路径。只检查环境而不安装依赖、测试或打包时使用：
+也可双击 `scripts\build\package_windows.bat`。脚本会检查 Windows、Git/upstream、项目 `.venv`、pnpm 和 Python 依赖，按两个 `pnpm-lock.yaml` 安装锁定依赖，依次运行 Desktop Renderer/Electron 测试，再调用下方同一个 `pnpm package` 正式链路。构建成功后，脚本会定位当前 Git HEAD 对应的 `.exe.release.json`，复核安装包大小和 SHA-256 并输出绝对路径。只检查环境而不安装依赖、测试或打包时使用：
 
 ```powershell
 .\scripts\build\package_windows.ps1 -PreflightOnly
@@ -100,7 +100,7 @@ pnpm run build
 pnpm package
 ```
 
-上述 `pnpm package` 必须在最终提交推送后执行；它会依次完成 Electron main/preload、`dist/native/netconsole-elevated-launcher.exe` 与 Web、Backend 冻结、electron-builder NSIS、现有 package smoke 和最终 setup.exe Gate。electron-builder 把 helper 固定放入 `resources/native/`，package smoke 要求该文件存在。只需检查 unpacked 目录时仍可使用 `pnpm run package:dir` 后运行 `node scripts/package-smoke.mjs`，但该路径不会生成或验证可发布的 NSIS 安装包，不能作为正式打包结果。
+上述 `pnpm package` 必须在最终提交推送后执行；它会依次完成 Electron main/preload、`dist/native/netconsole-elevated-launcher.exe`、Desktop Renderer、Backend 冻结、electron-builder NSIS、现有 package smoke 和最终 setup.exe Gate。electron-builder 把 helper 固定放入 `resources/native/`，package smoke 要求该文件存在。只需检查 unpacked 目录时仍可使用 `pnpm run package:dir` 后运行 `node scripts/package-smoke.mjs`，但该路径不会生成或验证可发布的 NSIS 安装包，不能作为正式打包结果。
 
 `package.mjs` 只接受项目 `.venv` Python 来生成 Backend，安装包通过 `extraResources` 固定放在 `resources/backend/`，运行时不依赖客户机系统 Python。`package-smoke.mjs` 只按安装包相对路径和精确 basename/目录规则扫描 Qt 残留，阻断 PySide/PyQt、shiboken、QFluentWidgets、SIP、Qt5/6 库、Qt WebEngine 进程、Qt plugin DLL 和 `qt.conf`，不会因为构建机父目录名或普通 `plugins/imageformats` 目录误报。
 

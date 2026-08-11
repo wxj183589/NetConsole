@@ -1,6 +1,8 @@
-# Vue Web Renderer
+# NetConsole Desktop Renderer
 
-本目录是 NetConsole 唯一 Vue 3 + TypeScript + Vite Renderer，负责布局、输入、轻量校验、状态绑定和可视化。设备、数据库、采集和后台状态机必须通过 FastAPI/Application Service 使用。
+本目录是 NetConsole Electron Desktop 唯一的 Vue 3 + TypeScript + Vite Renderer，负责布局、输入、轻量校验、状态绑定和可视化。设备、数据库、采集和后台状态机必须通过 FastAPI/Application Service 使用。
+
+源码开发阶段允许使用 Vite dev server 和 Browser 调试；Browser 仅是开发调试环境，不属于正式产品交付入口。生产环境只由 Electron Main 加载构建后的 Desktop Renderer。
 
 入口由 `package.json`、`vite.config.ts` 和 `src/` 组成。依赖使用 pnpm 锁文件；在此目录运行 `pnpm test` 与 `pnpm build`，构建目录和缓存不提交。
 
@@ -35,4 +37,4 @@ Vite 输出、缓存和依赖目录不得提交；测试临时数据使用测试
 
 ## 相关文档
 
-参见 [Web 架构](../../docs/WEB_ARCHITECTURE.md)、[表格规范](../../docs/ui_table_guidelines.md) 和 [UI 设计系统](../../docs/UI_DESIGN_SYSTEM.md)。
+参见 [Electron Desktop 架构](../../docs/WEB_ARCHITECTURE.md)、[表格规范](../../docs/ui_table_guidelines.md) 和 [UI 设计系统](../../docs/UI_DESIGN_SYSTEM.md)。

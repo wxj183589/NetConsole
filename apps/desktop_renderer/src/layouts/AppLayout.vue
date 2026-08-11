@@ -43,9 +43,9 @@ import {
 import { useWorkspaceStore } from '../stores/workspace'
 import AppRouteView from './AppRouteView.vue'
 
-const COLLAPSED_KEY = 'netconsole.web.sidebar.collapsed'
-const OPEN_GROUPS_KEY = 'netconsole.web.sidebar.open-groups'
-const BUILD_MISMATCH_MESSAGE = '当前 Web 前端资源与后端版本不一致，请重新构建 Web 资源。'
+const COLLAPSED_KEY = 'netconsole.desktop.sidebar.collapsed'
+const OPEN_GROUPS_KEY = 'netconsole.desktop.sidebar.open-groups'
+const BUILD_MISMATCH_MESSAGE = '当前 Desktop Renderer 资源与后端版本不一致，请重新构建桌面界面资源。'
 const BRAND_LOGO_URL = '/branding/netconsole.png'
 
 const route = useRoute()
@@ -256,7 +256,7 @@ onMounted(async () => {
   try {
     await loadRendererFeatures()
   } catch {
-    // 后端 Feature Gate 仍会拒绝禁用能力；离线时保留导航用于展示连接状态。
+    // Feature 快照不可用时保持 fail-closed，仅保留无 Feature Gate 的 Dashboard。
   }
   await refreshBackendHealth()
   if (!import.meta.env.DEV) {
@@ -294,7 +294,7 @@ onBeforeUnmount(() => {
         <img class="brand-logo" :src="BRAND_LOGO_URL" alt="NetConsole" />
         <div v-if="!sidebarCollapsed" class="brand-copy">
           <strong>NetConsole</strong>
-          <span>{{ t('shell.console', 'Web Console') }}</span>
+          <span>{{ t('shell.console', 'NetConsole') }}</span>
         </div>
       </button>
       <el-menu

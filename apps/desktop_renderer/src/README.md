@@ -1,8 +1,8 @@
-# Web 源码
+# Desktop Renderer 源码
 
 本目录按 API、组件、导航、平台适配、状态、类型、视图和主题组织 Vue Renderer。各子目录只负责前端表现与调用契约，不直接连接 SQLite、设备或执行后台任务。
 
-主要入口为 `App.vue`、`main.ts` 和相邻的路由/导航注册。修改用户可见页面、Tab 或动作时检查 Feature Registry 与 i18n，并运行 Web 测试和构建。
+主要入口为 `App.vue`、`main.ts` 和相邻的路由/导航注册。修改用户可见页面、Tab 或动作时检查 Feature Registry 与 i18n，并运行 Desktop Renderer 测试和构建。
 
 ## 用途与边界
 
@@ -30,4 +30,4 @@ API 客户端依赖 FastAPI DTO，Store 依赖 API 和类型，视图依赖 Stor
 
 ## 相关文档
 
-参见 [Web 架构](../../../docs/WEB_ARCHITECTURE.md)、[表格规范](../../../docs/ui_table_guidelines.md) 和 [UI 设计系统](../../../docs/UI_DESIGN_SYSTEM.md)。
+参见 [Electron Desktop 架构](../../../docs/WEB_ARCHITECTURE.md)、[表格规范](../../../docs/ui_table_guidelines.md) 和 [UI 设计系统](../../../docs/UI_DESIGN_SYSTEM.md)。

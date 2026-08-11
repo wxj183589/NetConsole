@@ -3,10 +3,10 @@ import type { SystemLanguage } from '../types/systemSettings'
 
 const locale = ref<SystemLanguage>('zh_CN')
 const en: Record<string, string> = {
-  'shell.console': 'Web Console', 'shell.local_console': 'Local network operations console',
+  'shell.console': 'NetConsole', 'shell.local_console': 'Local network operations console',
   'shell.toggle_navigation': 'Toggle navigation', 'shell.subtitle': 'Vue, FastAPI, and Python share one business core',
   'shell.backend_online': 'Backend Online', 'shell.backend_offline': 'Backend Offline',
-  'shell.build_mismatch': 'Web resources do not match the backend version.',
+  'shell.build_mismatch': 'The Desktop Renderer resources do not match the backend version. Rebuild the Desktop Renderer resources.',
   'shell.open_pages': 'Open pages', 'shell.open_dashboard': 'Open Dashboard',
   'shell.close_page': 'Close page', 'shell.page_tab_actions': 'Page tab actions',
   'shell.close_current_page': 'Close current', 'shell.close_other_pages': 'Close others',
