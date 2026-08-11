@@ -136,6 +136,108 @@ def test_empty_frozen_backend_entrypoint_rejects_standalone_launch(capsys, monke
     assert entrypoint.MANAGED_BACKEND_STANDALONE_MESSAGE in capsys.readouterr().err
 
 
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["NetConsoleBackend.exe", "--mode", "server"],
+        ["NetConsoleBackend.exe", "--mode=server"],
+        ["NetConsoleBackend.exe", "--host", "127.0.0.1"],
+        ["NetConsoleBackend.exe", "--port", "8000"],
+    ],
+)
+def test_packaged_backend_rejects_all_standalone_launcher_arguments(monkeypatch, argv) -> None:
+    from netconsole import entrypoint
+    from netconsole.launcher import launcher
+
+    monkeypatch.setattr(sys, "argv", argv)
+    monkeypatch.setattr(entrypoint, "is_packaged_runtime", lambda: True)
+    rejections: list[bool] = []
+    monkeypatch.setattr(
+        entrypoint,
+        "_reject_managed_backend_standalone_launch",
+        lambda: rejections.append(True) or entrypoint.MANAGED_BACKEND_STANDALONE_EXIT_CODE,
+    )
+    monkeypatch.setattr(
+        launcher,
+        "launch",
+        lambda _argv: pytest.fail("packaged Backend 不得进入 standalone launcher"),
+    )
+
+    assert entrypoint.main() == entrypoint.MANAGED_BACKEND_STANDALONE_EXIT_CODE
+    assert rejections == [True]
+
+
+def test_source_server_entrypoint_still_dispatches_to_launcher(monkeypatch) -> None:
+    from netconsole import entrypoint
+    from netconsole.launcher import launcher
+
+    monkeypatch.setattr(sys, "argv", ["main.py", "--mode", "server", "--port", "8010"])
+    monkeypatch.setattr(entrypoint, "is_packaged_runtime", lambda: False)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(launcher, "launch", lambda argv: calls.append(list(argv)) or 11)
+
+    assert entrypoint.main() == 11
+    assert calls == [["--mode", "server", "--port", "8010"]]
+
+
+def test_packaged_backend_dispatches_installer_helpers_before_standalone_gate(monkeypatch) -> None:
+    from netconsole import entrypoint
+
+    monkeypatch.setattr(entrypoint, "is_packaged_runtime", lambda: True)
+    validate_calls: list[list[str]] = []
+    migrate_calls: list[list[str]] = []
+    monkeypatch.setattr(
+        entrypoint,
+        "_validate_data_root_from_installer",
+        lambda argv: validate_calls.append(list(argv)) or 13,
+    )
+    monkeypatch.setattr(
+        entrypoint,
+        "_migrate_data_root_from_installer",
+        lambda argv: migrate_calls.append(list(argv)) or 17,
+    )
+
+    monkeypatch.setattr(sys, "argv", ["NetConsoleBackend.exe", "--validate-data-root", "D:\\Data"])
+    assert entrypoint.main() == 13
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["NetConsoleBackend.exe", "--migrate-data-root", "--source", "D:\\Old", "--target", "E:\\New"],
+    )
+    assert entrypoint.main() == 17
+
+    assert validate_calls == [["D:\\Data"]]
+    assert migrate_calls == [["--source", "D:\\Old", "--target", "E:\\New"]]
+
+
+@pytest.mark.parametrize(
+    ("argv", "module_name", "function_name", "expected"),
+    [
+        (["NetConsoleBackend.exe", "--export-worker", "--job", "job.json"], "netconsole.export_worker", "main", ["--job", "job.json"]),
+        (["NetConsoleBackend.exe", "--export-worker-job", "job.json"], "netconsole.export_worker", "main", ["--job", "job.json"]),
+        (["NetConsoleBackend.exe", "--background-worker", "--job", "job.json"], "netconsole.background_worker", "main", ["--job", "job.json"]),
+    ],
+)
+def test_packaged_backend_dispatches_worker_helpers_before_standalone_gate(
+    monkeypatch,
+    argv,
+    module_name,
+    function_name,
+    expected,
+) -> None:
+    from importlib import import_module
+    from netconsole import entrypoint
+
+    module = import_module(module_name)
+    monkeypatch.setattr(entrypoint, "is_packaged_runtime", lambda: True)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(module, function_name, lambda args: calls.append(list(args)) or 19)
+    monkeypatch.setattr(sys, "argv", argv)
+
+    assert entrypoint.main() == 19
+    assert calls == [expected]
+
+
 def test_frozen_backend_smoke_environment_still_exits_successfully(monkeypatch) -> None:
     from netconsole import entrypoint
 
@@ -278,6 +380,7 @@ def test_entrypoint_dispatches_packaged_electron_backend(monkeypatch) -> None:
 
     calls: list[list[str]] = []
     monkeypatch.setattr(sys, "argv", ["NetConsoleBackend.exe", "--electron-backend", "--host", "127.0.0.1", "--port", "0"])
+    monkeypatch.setattr(entrypoint, "is_packaged_runtime", lambda: True)
     monkeypatch.setattr(electron_runtime, "main", lambda argv: calls.append(argv) or 7)
 
     assert entrypoint.main() == 7

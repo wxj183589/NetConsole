@@ -203,9 +203,9 @@ def main() -> int:
         if os.environ.get("NETCONSOLE_RELEASE_CONTRACT_SMOKE_TEST") == "1":
             _verify_release_contract()
             return 0
+        if is_packaged_runtime():
+            return _reject_managed_backend_standalone_launch()
         if not sys.argv[1:]:
-            if is_packaged_runtime():
-                return _reject_managed_backend_standalone_launch()
             from netconsole.launcher.electron_desktop import launch_electron_desktop
 
             return launch_electron_desktop()
