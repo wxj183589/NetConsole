@@ -78,7 +78,7 @@ ANALYSIS_TOC = BUILD_ROOT / "NetConsoleBackend" / "Analysis-00.toc"
 ALLOWED_DATA = [
     ("src/netconsole", "netconsole"),
     (LOG_POLICY_SOURCE, "netconsole/resources"),
-    ("apps/web/dist", "netconsole/assets/web"),
+    ("apps/desktop_renderer/dist", "netconsole/assets/desktop_renderer"),
     ("src/netconsole/assets/open_source_notices.json", "netconsole/assets"),
     ("src/netconsole/assets/THIRD_PARTY_COMPONENTS.md", "netconsole/assets"),
     ("src/netconsole/assets/IPOP_v4.1_notice.md", "netconsole/assets"),
@@ -365,7 +365,7 @@ def build_runtime_datas_from_import_graph() -> list[tuple[str, str]]:
         else:
             source_path = ROOT / source
         if (
-            source == "apps/web/dist" and source_path.is_dir()
+            source == "apps/desktop_renderer/dist" and source_path.is_dir()
         ) or source_path.is_file():
             if (str(source_path), destination) in datas:
                 continue
@@ -572,7 +572,7 @@ def _source_to_module(source: Path) -> str:
 def prepare_runtime() -> None:
     if not CLEAN_BUILD:
         raise CleanBuildLockError("Clean Build Mode is required for release packaging")
-    ensure_web_frontend()
+    ensure_desktop_renderer()
     environment_result = check_python_environment()
     for message in environment_result.messages:
         print(message)
@@ -586,20 +586,20 @@ def prepare_runtime() -> None:
     validate_tool_sources()
 
 
-def ensure_web_frontend() -> None:
-    dist_index = ROOT / "apps" / "web" / "dist" / "index.html"
+def ensure_desktop_renderer() -> None:
+    dist_index = ROOT / "apps" / "desktop_renderer" / "dist" / "index.html"
     pnpm = shutil.which("pnpm.cmd") or shutil.which("pnpm")
     if pnpm is None:
-        raise CleanBuildLockError("未找到 pnpm，无法构建桌面版 Web 页面。")
-    web_dir = ROOT / "apps" / "web"
-    if not (web_dir / "node_modules").is_dir():
+        raise CleanBuildLockError("未找到 pnpm，无法构建 Desktop Renderer。")
+    renderer_dir = ROOT / "apps" / "desktop_renderer"
+    if not (renderer_dir / "node_modules").is_dir():
         raise CleanBuildLockError(
-            "apps/web/node_modules 不存在，请先执行 pnpm install --frozen-lockfile。"
+            "apps/desktop_renderer/node_modules 不存在，请先执行 pnpm install --frozen-lockfile。"
         )
     env = os.environ.copy()
     build_metadata = require_build_metadata()
     env[BUILD_METADATA_ENV] = encode_build_metadata(build_metadata)
-    subprocess.run([pnpm, "build"], cwd=web_dir, check=True, env=env)
+    subprocess.run([pnpm, "build"], cwd=renderer_dir, check=True, env=env)
     try:
         validate_web_frontend_meta(
             dist_index.parent,
@@ -812,7 +812,7 @@ def validate_packaged_web_frontend(app_dist: Path) -> None:
     build_metadata = require_build_metadata()
     try:
         validate_web_frontend_meta(
-            app_dist / "_internal" / "netconsole" / "assets" / "web",
+            app_dist / "_internal" / "netconsole" / "assets" / "desktop_renderer",
             expected_version=APP_VERSION,
             expected_commit=str(build_metadata["git_commit_full"]),
             expected_build_time=str(build_metadata["build_time_utc"]),

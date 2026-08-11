@@ -46,7 +46,7 @@ export function loadDesktopConfig(input: DesktopConfigInput): DesktopConfig {
   const env = input.env ?? process.env
   const platform = input.platform ?? process.platform
   const fileExists = input.fileExists ?? existsSync
-  const devServerUrl = input.isPackaged ? undefined : optionalLoopbackDevUrl(env.NETCONSOLE_WEB_DEV_URL)
+  const devServerUrl = input.isPackaged ? undefined : optionalLoopbackDevUrl(env.NETCONSOLE_RENDERER_DEV_URL)
   const projectRoot = input.isPackaged
     ? input.resourcesPath
     : resolveDeveloperPath(env.NETCONSOLE_PROJECT_ROOT, resolve(input.appPath, '..', '..'), 'project root')
@@ -143,7 +143,7 @@ function optionalLoopbackDevUrl(value: string | undefined): string | undefined {
   try {
     parsed = new URL(candidate)
   } catch {
-    throw new Error('NETCONSOLE_WEB_DEV_URL must be a valid URL')
+    throw new Error('NETCONSOLE_RENDERER_DEV_URL must be a valid URL')
   }
   if (
     parsed.protocol !== 'http:'
@@ -155,7 +155,7 @@ function optionalLoopbackDevUrl(value: string | undefined): string | undefined {
     || parsed.search
     || parsed.hash
   ) {
-    throw new Error('NETCONSOLE_WEB_DEV_URL must be an http://127.0.0.1:<port> origin')
+    throw new Error('NETCONSOLE_RENDERER_DEV_URL must be an http://127.0.0.1:<port> origin')
   }
   return parsed.origin
 }

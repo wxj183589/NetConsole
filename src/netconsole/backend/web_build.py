@@ -9,8 +9,8 @@ from netconsole.core.build_metadata import current_build_metadata
 from netconsole.core.version import APP_VERSION
 
 
-FRONTEND_BUILD_META_FILE = "web-build-meta.json"
-FRONTEND_MISMATCH_MESSAGE = "当前 Web 前端资源与后端版本不一致，请重新构建 Web 资源。"
+FRONTEND_BUILD_META_FILE = "desktop-renderer-build-meta.json"
+FRONTEND_MISMATCH_MESSAGE = "当前 Desktop Renderer 资源与后端版本不一致，请重新构建 Renderer 资源。"
 _BUILD_ID_RE = re.compile(r"[A-Za-z0-9._+-]{1,128}")
 
 

@@ -29,9 +29,9 @@ description: "iperf3、iPerf、TCP/UDP 打流、fping v5 高频 Ping、CBTC/PIS 
 # 开始前读取
 
 - `src/netconsole/core/ping/`、`src/netconsole/services/fping_v5.py`、`src/netconsole/services/fping_legacy_parser.py`。
-- `src/netconsole/services/network_tools/`、`src/netconsole/backend/api/network_tools_router.py`、`apps/web/src/views/network-tools/TrafficTestView.vue`。
+- `src/netconsole/services/network_tools/`、`src/netconsole/backend/api/network_tools_router.py`、`apps/desktop_renderer/src/views/network-tools/TrafficTestView.vue`。
 - `src/netconsole/services/online_mr/ping_presets.py`、`src/netconsole/services/online_mr/traffic_presets.py`。
-- `src/netconsole/services/online_mr/workers/`、`src/netconsole/services/online_mr/traffic_coordinator.py`、`apps/web/src/views/rail-transit/OnlineMrRealtimeView.vue`。
+- `src/netconsole/services/online_mr/workers/`、`src/netconsole/services/online_mr/traffic_coordinator.py`、`apps/desktop_renderer/src/views/rail-transit/OnlineMrRealtimeView.vue`。
 - `tests/test_fping_v5.py`、`tests/test_iperf_network_tools.py`、`tests/test_online_mr_collection.py`。
 
 # 工作流程与规则

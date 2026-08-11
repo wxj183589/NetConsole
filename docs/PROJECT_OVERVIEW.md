@@ -58,14 +58,14 @@ Electron + Vue + FastAPI/Python Core 是当前正式桌面架构。Qt/PySide6/QF
 | `src/netconsole/services/` | 采集、解析、导入导出、业务规则、外部工具 |
 | `src/netconsole/parsers/` | H3C / AC / Mesh / 文本输出解析 |
 | `apps/desktop_electron/` | Electron Main/Preload、窗口与受管 Backend 生命周期 |
-| `apps/web/` | 唯一 Vue Renderer、Element Plus/ECharts 与设计 Token |
+| `apps/desktop_renderer/` | 唯一 Vue Renderer、Element Plus/ECharts 与设计 Token |
 | `src/netconsole/build/` | 构建辅助 |
 | `scripts/build/` | 发布脚本、构建配置 |
 | `tests/` | pytest 回归测试 |
 | `resources/tools/` | 版本化的 fping/iPerf 运行工具唯一源码来源 |
 | `tools/` | 开发、诊断、维护和协议分析工具，不作为运行时工具来源 |
 
-独立应用位于 `apps/agent/`、`apps/desktop_electron/` 和 `apps/web/`。Agent 的示例配置位于 `apps/agent/resources/config/`，开发与交付运行数据统一位于 `D:\NetConsoleData\agents\local/`，构建产物位于 `dist/agent/`。
+独立应用位于 `apps/agent/`、`apps/desktop_electron/` 和 `apps/desktop_renderer/`。Agent 的示例配置位于 `apps/agent/resources/config/`，开发与交付运行数据统一位于 `D:\NetConsoleData\agents\local/`，构建产物位于 `dist/agent/`。
 
 ## 模块边界
 

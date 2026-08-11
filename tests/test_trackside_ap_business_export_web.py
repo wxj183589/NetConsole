@@ -260,10 +260,10 @@ def test_trackside_business_export_api_uses_owned_artifact_and_supports_cancel(
         process_adapter=process,  # type: ignore[arg-type]
         export_adapter=export,  # type: ignore[arg-type]
     )
-    _enable_feature(app, "web.rail_trackside_ap_business_export")
-    _enable_feature(app, "web.rail_trackside_ap_base_io")
-    _enable_feature(app, "web.rail_trackside_ap_plan_export")
-    _enable_feature(app, "web.rail_task_control")
+    _enable_feature(app, "capability.trackside_ap.export")
+    _enable_feature(app, "capability.trackside_ap.base_io")
+    _enable_feature(app, "capability.trackside_ap.plan_export")
+    _enable_feature(app, "capability.rail_transit.task_control")
     _enable_feature(app, "rail.zte_trackside_switch_adapter")
 
     with TestClient(app) as client:

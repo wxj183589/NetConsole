@@ -17,7 +17,7 @@ from netconsole.backend.api.edition_access import (
 )
 from netconsole.core.feature_registry import list_features
 from netconsole.core.runtime_mode import RuntimeMode
-from netconsole.models.api.features import WebFeatureStateDTO, WebFeatureStateListDTO
+from netconsole.models.api.features import RendererFeatureStateDTO, RendererFeatureStateListDTO
 
 
 router = APIRouter(prefix="/features", tags=["features"])
@@ -38,18 +38,18 @@ class EditionUnlockRequestDTO(BaseModel):
     password: str = Field(min_length=1, max_length=512)
 
 
-@router.get("", response_model=WebFeatureStateListDTO)
-def web_feature_states(request: Request) -> WebFeatureStateListDTO:
+@router.get("", response_model=RendererFeatureStateListDTO)
+def renderer_feature_states(request: Request) -> RendererFeatureStateListDTO:
     gate = ensure_edition_gate(request.app)
-    return WebFeatureStateListDTO(
+    return RendererFeatureStateListDTO(
         items=[
-            WebFeatureStateDTO(
+            RendererFeatureStateDTO(
                 feature_id=item.feature_id,
                 visible=gate.is_visible(item.feature_id),
                 enabled=gate.is_enabled(item.feature_id),
             )
             for item in list_features()
-            if item.feature_id.startswith("web.") or item.feature_id == "network_tools.traffic"
+            if not item.internal_only or gate.is_feature_configuration_available()
         ]
     )
 

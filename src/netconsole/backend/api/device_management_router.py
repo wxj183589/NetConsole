@@ -85,7 +85,7 @@ from netconsole.services.file_contract import artifact_media_type
 router = APIRouter(
     prefix="/device-management",
     tags=["device-management"],
-    dependencies=[Depends(require_feature("web.device_management"))],
+    dependencies=[Depends(require_feature("module.devices"))],
 )
 
 
@@ -161,7 +161,7 @@ def list_groups(request: Request) -> list[DeviceGroupDTO]:
     "/groups",
     response_model=DeviceGroupDTO,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_feature("web.device_management_write"))],
+    dependencies=[Depends(require_feature("capability.devices.write"))],
 )
 def create_group(request: Request, payload: DeviceGroupRequestDTO) -> DeviceGroupDTO:
     return _query(lambda: _service(request).create_group(payload))
@@ -170,7 +170,7 @@ def create_group(request: Request, payload: DeviceGroupRequestDTO) -> DeviceGrou
 @router.patch(
     "/groups/{group_id}",
     response_model=DeviceGroupDTO,
-    dependencies=[Depends(require_feature("web.device_management_write"))],
+    dependencies=[Depends(require_feature("capability.devices.write"))],
 )
 def rename_group(
     request: Request, group_id: int, payload: DeviceGroupRequestDTO
@@ -183,7 +183,7 @@ def rename_group(
 @router.delete(
     "/groups/{group_id}",
     response_model=DeviceGroupDeleteDTO,
-    dependencies=[Depends(require_feature("web.device_management_write"))],
+    dependencies=[Depends(require_feature("capability.devices.write"))],
 )
 def delete_group(request: Request, group_id: int) -> DeviceGroupDeleteDTO:
     return _not_found(
@@ -194,7 +194,7 @@ def delete_group(request: Request, group_id: int) -> DeviceGroupDeleteDTO:
 @router.post(
     "/groups/assign",
     response_model=DeviceGroupAssignmentDTO,
-    dependencies=[Depends(require_feature("web.device_management_write"))],
+    dependencies=[Depends(require_feature("capability.devices.write"))],
 )
 def assign_group(
     request: Request, payload: DeviceGroupAssignmentRequestDTO
@@ -205,7 +205,7 @@ def assign_group(
 @router.patch(
     "/devices/classification",
     response_model=DeviceClassificationUpdateDTO,
-    dependencies=[Depends(require_feature("web.device_management_write"))],
+    dependencies=[Depends(require_feature("capability.devices.write"))],
 )
 def update_classification(
     request: Request, payload: DeviceClassificationUpdateRequestDTO
@@ -217,7 +217,7 @@ def update_classification(
     "/devices",
     response_model=DeviceWriteDTO,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_feature("web.device_management_write"))],
+    dependencies=[Depends(require_feature("capability.devices.write"))],
 )
 def create_device(request: Request, payload: DeviceWriteRequestDTO) -> DeviceWriteDTO:
     return _query(lambda: _service(request).create_device(payload))
@@ -226,7 +226,7 @@ def create_device(request: Request, payload: DeviceWriteRequestDTO) -> DeviceWri
 @router.put(
     "/devices/{device_uuid}",
     response_model=DeviceWriteDTO,
-    dependencies=[Depends(require_feature("web.device_management_write"))],
+    dependencies=[Depends(require_feature("capability.devices.write"))],
 )
 def update_device(
     request: Request, device_uuid: str, payload: DeviceWriteRequestDTO
@@ -240,7 +240,7 @@ def update_device(
     "/devices/{device_uuid}/duplicate",
     response_model=DeviceWriteDTO,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_feature("web.device_management_write"))],
+    dependencies=[Depends(require_feature("capability.devices.write"))],
 )
 def duplicate_device(request: Request, device_uuid: str) -> DeviceWriteDTO:
     return _not_found(
@@ -251,7 +251,7 @@ def duplicate_device(request: Request, device_uuid: str) -> DeviceWriteDTO:
 @router.post(
     "/devices/delete-confirmation",
     response_model=DeviceDeletionTokenDTO,
-    dependencies=[Depends(require_feature("web.device_management_write"))],
+    dependencies=[Depends(require_feature("capability.devices.write"))],
 )
 def issue_delete_token(request: Request, payload: DeviceDeletionTokenRequestDTO):
     return _not_found(
@@ -262,7 +262,7 @@ def issue_delete_token(request: Request, payload: DeviceDeletionTokenRequestDTO)
 @router.post(
     "/devices/batch-delete",
     response_model=DeviceDeleteDTO,
-    dependencies=[Depends(require_feature("web.device_management_write"))],
+    dependencies=[Depends(require_feature("capability.devices.write"))],
 )
 def delete_devices(request: Request, payload: DeviceDeleteRequestDTO):
     return _query(lambda: _service(request).delete_devices(payload))
@@ -272,7 +272,7 @@ def delete_devices(request: Request, payload: DeviceDeleteRequestDTO):
     "/devices/batch-refresh-details",
     response_model=DeviceTaskBatchDTO,
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_feature("web.device_management_collect"))],
+    dependencies=[Depends(require_feature("capability.devices.collect"))],
 )
 def batch_refresh_details(
     request: Request, payload: DeviceBatchRefreshRequestDTO
@@ -283,7 +283,7 @@ def batch_refresh_details(
 @router.get(
     "/batch-refreshes/{batch_id}",
     response_model=DeviceTaskBatchDTO,
-    dependencies=[Depends(require_feature("web.device_management_collect"))],
+    dependencies=[Depends(require_feature("capability.devices.collect"))],
 )
 def get_batch_refresh(request: Request, batch_id: str) -> DeviceTaskBatchDTO:
     return _not_found(
@@ -296,7 +296,7 @@ def get_batch_refresh(request: Request, batch_id: str) -> DeviceTaskBatchDTO:
     "/devices/batch-connection-tests",
     response_model=DeviceTaskBatchDTO,
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_feature("web.device_connection_test"))],
+    dependencies=[Depends(require_feature("capability.devices.connection_test"))],
 )
 def batch_connection_tests(
     request: Request, payload: DeviceBatchConnectionRequestDTO
@@ -308,7 +308,7 @@ def batch_connection_tests(
     "/devices/{device_uuid}/refresh-optical",
     response_model=DeviceTaskReferenceDTO,
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_feature("web.device_management_collect"))],
+    dependencies=[Depends(require_feature("capability.devices.collect"))],
 )
 def refresh_optical(request: Request, device_uuid: str) -> DeviceTaskReferenceDTO:
     return _not_found(
@@ -536,7 +536,7 @@ def device_business_associations(
     status_code=status.HTTP_202_ACCEPTED,
     summary="提交受控设备详情刷新",
     responses=_DEVICE_DETAIL_ERROR_RESPONSES,
-    dependencies=[Depends(require_feature("web.device_management_collect"))],
+    dependencies=[Depends(require_feature("capability.devices.collect"))],
 )
 def refresh_device_detail(
     request: Request,
@@ -556,7 +556,7 @@ def refresh_device_detail(
 @router.post(
     "/imports/preview",
     response_model=DeviceImportPreviewDTO,
-    dependencies=[Depends(require_feature("web.device_management_import"))],
+    dependencies=[Depends(require_feature("capability.devices.import"))],
 )
 def preview_import(
     request: Request,
@@ -584,7 +584,7 @@ def preview_import(
     "/imports/confirm",
     response_model=DeviceTaskReferenceDTO,
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_feature("web.device_management_import"))],
+    dependencies=[Depends(require_feature("capability.devices.import"))],
 )
 def confirm_import(
     request: Request, payload: DeviceImportConfirmRequestDTO
@@ -596,7 +596,7 @@ def confirm_import(
     "/exports/csv",
     response_model=DeviceTaskReferenceDTO,
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_feature("web.device_management_export"))],
+    dependencies=[Depends(require_feature("capability.devices.export"))],
 )
 def export_csv(
     request: Request, payload: DeviceExportRequestDTO
@@ -608,7 +608,7 @@ def export_csv(
     "/exports/template",
     response_model=DeviceTaskReferenceDTO,
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_feature("web.device_management_export"))],
+    dependencies=[Depends(require_feature("capability.devices.export"))],
 )
 def export_template(
     request: Request, payload: DeviceExportRequestDTO
@@ -620,7 +620,7 @@ def export_template(
     "/exports/securecrt",
     response_model=DeviceTaskReferenceDTO,
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_feature("web.device_management_export"))],
+    dependencies=[Depends(require_feature("capability.devices.export"))],
 )
 def export_securecrt(
     request: Request, payload: DeviceSecureCrtExportRequestDTO
@@ -632,7 +632,7 @@ def export_securecrt(
     "/exports/securecrt-with-template",
     response_model=DeviceTaskReferenceDTO,
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_feature("web.device_management_export"))],
+    dependencies=[Depends(require_feature("capability.devices.export"))],
 )
 def export_securecrt_with_template(
     request: Request,
@@ -651,7 +651,7 @@ def export_securecrt_with_template(
 @router.get(
     "/exports/{task_id}",
     response_model=DeviceTaskReferenceDTO,
-    dependencies=[Depends(require_feature("web.device_management_export"))],
+    dependencies=[Depends(require_feature("capability.devices.export"))],
 )
 def export_status(request: Request, task_id: str) -> DeviceTaskReferenceDTO:
     return _not_found(
@@ -662,7 +662,7 @@ def export_status(request: Request, task_id: str) -> DeviceTaskReferenceDTO:
 @router.get(
     "/exports/{task_id}/download",
     response_class=FileResponse,
-    dependencies=[Depends(require_feature("web.device_management_export"))],
+    dependencies=[Depends(require_feature("capability.devices.export"))],
 )
 def download_export(
     request: Request,
@@ -682,7 +682,7 @@ def download_export(
     "/devices/{device_uuid}/diagnostic-download",
     response_model=DeviceTaskReferenceDTO,
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_feature("web.device_management_collect"))],
+    dependencies=[Depends(require_feature("capability.devices.collect"))],
 )
 def diagnostic_download(request: Request, device_uuid: str) -> DeviceTaskReferenceDTO:
     return _not_found(
@@ -694,7 +694,7 @@ def diagnostic_download(request: Request, device_uuid: str) -> DeviceTaskReferen
     "/diagnostic-download",
     response_model=DeviceTaskReferenceDTO,
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_feature("web.device_management_collect"))],
+    dependencies=[Depends(require_feature("capability.devices.collect"))],
 )
 def batch_diagnostic_download(
     request: Request, payload: DeviceBatchRefreshRequestDTO
@@ -707,7 +707,7 @@ def batch_diagnostic_download(
 @router.get(
     "/diagnostics/{task_id}/download",
     response_class=FileResponse,
-    dependencies=[Depends(require_feature("web.device_management_collect"))],
+    dependencies=[Depends(require_feature("capability.devices.collect"))],
 )
 def download_diagnostics(
     request: Request,
@@ -724,7 +724,7 @@ def download_diagnostics(
 @router.get(
     "/external-terminal/settings",
     response_model=DeviceExternalTerminalSettingsDTO,
-    dependencies=[Depends(require_feature("web.device_management_desktop"))],
+    dependencies=[Depends(require_feature("capability.devices.desktop_actions"))],
 )
 def external_terminal_settings(request: Request) -> DeviceExternalTerminalSettingsDTO:
     return _query(lambda: _service(request).get_external_terminal_settings())
@@ -733,7 +733,7 @@ def external_terminal_settings(request: Request) -> DeviceExternalTerminalSettin
 @router.put(
     "/external-terminal/settings",
     response_model=DeviceExternalTerminalSettingsDTO,
-    dependencies=[Depends(require_feature("web.device_management_desktop"))],
+    dependencies=[Depends(require_feature("capability.devices.desktop_actions"))],
 )
 def update_external_terminal_settings(
     request: Request,
@@ -745,7 +745,7 @@ def update_external_terminal_settings(
 @router.post(
     "/external-terminal/launch",
     response_model=DeviceExternalTerminalBatchDTO,
-    dependencies=[Depends(require_feature("web.device_management_desktop"))],
+    dependencies=[Depends(require_feature("capability.devices.desktop_actions"))],
 )
 def batch_external_terminal(
     request: Request,
@@ -757,7 +757,7 @@ def batch_external_terminal(
 @router.post(
     "/external-terminal/preflight",
     response_model=DeviceExternalTerminalPreflightDTO,
-    dependencies=[Depends(require_feature("web.device_management_desktop"))],
+    dependencies=[Depends(require_feature("capability.devices.desktop_actions"))],
 )
 def external_terminal_preflight(
     request: Request,
@@ -769,7 +769,7 @@ def external_terminal_preflight(
 @router.post(
     "/external-terminal/confirmation",
     response_model=DeviceExternalTerminalConfirmationDTO,
-    dependencies=[Depends(require_feature("web.device_management_desktop"))],
+    dependencies=[Depends(require_feature("capability.devices.desktop_actions"))],
 )
 def external_terminal_confirmation(
     request: Request,
@@ -783,7 +783,7 @@ def external_terminal_confirmation(
 @router.post(
     "/devices/{device_uuid}/external-terminal",
     response_model=DeviceExternalTerminalActionDTO,
-    dependencies=[Depends(require_feature("web.device_management_desktop"))],
+    dependencies=[Depends(require_feature("capability.devices.desktop_actions"))],
 )
 def external_terminal(
     request: Request, device_uuid: str, payload: DeviceExternalTerminalRequestDTO
@@ -812,7 +812,7 @@ def device_edit_profile(request: Request, device_uuid: str) -> DeviceEditProfile
     response_model=DeviceCredentialRevealDTO,
     summary="读取本机已保存设备凭据",
     include_in_schema=False,
-    dependencies=[Depends(require_feature("web.device_management_desktop"))],
+    dependencies=[Depends(require_feature("capability.devices.desktop_actions"))],
 )
 def reveal_device_credentials(
     request: Request, device_uuid: str, credential_field: DeviceSecretField
@@ -869,8 +869,8 @@ def device_history(
     response_model=DeviceConnectionTestDTO,
     status_code=status.HTTP_202_ACCEPTED,
     dependencies=[
-        Depends(require_feature("web.device_form_connection_test")),
-        Depends(require_feature("web.device_management_write")),
+        Depends(require_feature("capability.devices.form_connection_test")),
+        Depends(require_feature("capability.devices.write")),
     ],
 )
 def start_form_connection_test(
@@ -900,7 +900,7 @@ def start_form_connection_test(
     "/devices/{device_uuid}/connection-tests",
     response_model=DeviceConnectionTestDTO,
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_feature("web.device_connection_test"))],
+    dependencies=[Depends(require_feature("capability.devices.connection_test"))],
 )
 def start_connection_test(
     request: Request,
@@ -931,7 +931,7 @@ def start_connection_test(
 @router.get(
     "/connection-tests/{task_id}",
     response_model=DeviceConnectionTestDTO,
-    dependencies=[Depends(require_feature("web.device_connection_test"))],
+    dependencies=[Depends(require_feature("capability.devices.connection_test"))],
 )
 def connection_test(request: Request, task_id: str) -> DeviceConnectionTestDTO:
     return _not_found(
@@ -959,13 +959,13 @@ def _require_task_feature(request: Request, task: DeviceTaskReferenceDTO) -> Non
         "diagnostic_download",
         "optical_refresh",
     }:
-        feature_id = "web.device_management_collect"
+        feature_id = "capability.devices.collect"
     elif task.action == "import_csv":
-        feature_id = "web.device_management_import"
+        feature_id = "capability.devices.import"
     elif task.action == "connection_test":
-        feature_id = "web.device_connection_test"
+        feature_id = "capability.devices.connection_test"
     else:
-        feature_id = "web.device_management_export"
+        feature_id = "capability.devices.export"
     require_feature(feature_id)(request)
 
 

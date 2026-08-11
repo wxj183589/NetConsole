@@ -6,7 +6,7 @@ NetConsole 只有一套 Vue 与一套 FastAPI 组合根：
 
 ```mermaid
 flowchart LR
-    E["Electron Main / Preload"] --> V["apps/web Vue Renderer"]
+    E["Electron Main / Preload"] --> V["apps/desktop_renderer Vue Renderer"]
     E --> B["受管 FastAPI Backend"]
     V --> B
     DEV["显式 Browser 开发诊断"] -.-> V
@@ -14,7 +14,7 @@ flowchart LR
     A --> R["Repository / Parser / Job / Export"]
 ```
 
-正式桌面由 Electron 启动。无参数 `python main.py` 是 PyCharm/源码态的同一 Electron 编排入口；`--mode web|server` 只用于 loopback 开发诊断。生产包不启动 Vite，不开放开发状态接口、OpenAPI 或默认 DevTools。
+正式桌面由 Electron 启动。无参数 `python main.py` 是 PyCharm/源码态的同一 Electron 编排入口；`--mode server` 只用于 loopback 开发诊断。生产包不启动 Vite，不开放开发状态接口、OpenAPI 或默认 DevTools。
 
 ## 工作区
 
@@ -44,7 +44,7 @@ FastAPI lifespan 持有共享 Application Service；Electron Main 持有 Backend
 
 ## 资源与发布
 
-- 源码态 Vue 由 Vite 或当前 `apps/web/dist` 提供；打包态只使用包内构建资源。
+- 源码态 Vue 由 Vite 或当前 `apps/desktop_renderer/dist` 提供；打包态只使用包内构建资源。
 - Frontend/Backend build id 必须一致。
 - Browser 模式不单独发布或做产品对等验收。
 - Qt Web Shell、Qt probe、`auto/qt` 和 Browser 产品回退均不存在。

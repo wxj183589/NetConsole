@@ -257,7 +257,7 @@ def test_clean_build_spec_uses_strict_whitelist_and_excludes():
         "/ui/" not in source.replace("\\", "/")
         for source, _destination in clean_build_spec.ALLOWED_DATA
     )
-    assert ("apps/web/dist", "netconsole/assets/web") in clean_build_spec.ALLOWED_DATA
+    assert ("apps/desktop_renderer/dist", "netconsole/assets/desktop_renderer") in clean_build_spec.ALLOWED_DATA
     assert (
         "resources/device_command_profiles.json",
         "netconsole/assets",
@@ -291,11 +291,11 @@ def test_release_tools_are_copied_only_from_versioned_local_resources():
     assert "download" not in source.casefold()
 
 
-def test_clean_build_always_rebuilds_and_validates_web_frontend(tmp_path, monkeypatch):
-    web_dir = tmp_path / "apps" / "web"
-    (web_dir / "node_modules").mkdir(parents=True)
-    (web_dir / "dist").mkdir()
-    (web_dir / "dist" / "index.html").write_text("stale", encoding="utf-8")
+def test_clean_build_always_rebuilds_and_validates_desktop_renderer(tmp_path, monkeypatch):
+    renderer_dir = tmp_path / "apps" / "desktop_renderer"
+    (renderer_dir / "node_modules").mkdir(parents=True)
+    (renderer_dir / "dist").mkdir()
+    (renderer_dir / "dist" / "index.html").write_text("stale", encoding="utf-8")
     calls: list[tuple[list[str], Path]] = []
     build_metadata = _build_metadata()
 
@@ -303,8 +303,8 @@ def test_clean_build_always_rebuilds_and_validates_web_frontend(tmp_path, monkey
         assert check is True
         assert decode_build_metadata(env[BUILD_METADATA_ENV]) == build_metadata
         calls.append((command, cwd))
-        (web_dir / "dist" / "index.html").write_text("web", encoding="utf-8")
-        (web_dir / "dist" / "web-build-meta.json").write_text(
+        (renderer_dir / "dist" / "index.html").write_text("renderer", encoding="utf-8")
+        (renderer_dir / "dist" / "desktop-renderer-build-meta.json").write_text(
             json.dumps(_web_metadata()),
             encoding="utf-8",
         )
@@ -314,9 +314,9 @@ def test_clean_build_always_rebuilds_and_validates_web_frontend(tmp_path, monkey
     monkeypatch.setattr(clean_build_spec.shutil, "which", lambda _name: "pnpm.cmd")
     monkeypatch.setattr(clean_build_spec.subprocess, "run", fake_run)
 
-    clean_build_spec.ensure_web_frontend()
+    clean_build_spec.ensure_desktop_renderer()
 
-    assert calls == [(["pnpm.cmd", "build"], web_dir)]
+    assert calls == [(["pnpm.cmd", "build"], renderer_dir)]
 
 
 def test_clean_build_metadata_is_collected_once_per_process(monkeypatch):
@@ -373,7 +373,7 @@ def test_web_frontend_metadata_rejects_inconsistent_version_fields(tmp_path):
     from scripts.build.web_frontend_meta import validate_web_frontend_meta
 
     (tmp_path / "index.html").write_text("web", encoding="utf-8")
-    (tmp_path / "web-build-meta.json").write_text(
+    (tmp_path / "desktop-renderer-build-meta.json").write_text(
         json.dumps(_web_metadata(app_version="v0.0.0")),
         encoding="utf-8",
     )
@@ -384,6 +384,23 @@ def test_web_frontend_metadata_rejects_inconsistent_version_fields(tmp_path):
             expected_version=APP_VERSION,
             expected_commit=TEST_COMMIT,
         )
+
+
+def test_packaged_desktop_renderer_metadata_uses_desktop_renderer_path(
+    tmp_path, monkeypatch
+):
+    renderer_dist = (
+        tmp_path / "_internal" / "netconsole" / "assets" / "desktop_renderer"
+    )
+    renderer_dist.mkdir(parents=True)
+    (renderer_dist / "index.html").write_text("renderer", encoding="utf-8")
+    (renderer_dist / "desktop-renderer-build-meta.json").write_text(
+        json.dumps(_web_metadata()),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(clean_build_spec, "_BUILD_METADATA", _build_metadata())
+
+    clean_build_spec.validate_packaged_web_frontend(tmp_path)
 
 
 def test_build_metadata_reads_git_head_and_changes_with_commit(tmp_path: Path) -> None:
@@ -509,7 +526,7 @@ def test_clean_build_runtime_subset_copies_only_imported_modules_and_assets(
     datas = clean_build_spec.build_runtime_datas_from_import_graph()
     assert all(not destination.startswith("tools/") for _source, destination in datas)
     assert any(
-        destination == "netconsole/assets/web" and Path(source).name == "dist"
+        destination == "netconsole/assets/desktop_renderer" and Path(source).name == "dist"
         for source, destination in datas
     )
     assert any(

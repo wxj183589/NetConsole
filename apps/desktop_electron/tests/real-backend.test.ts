@@ -11,22 +11,22 @@ import { BackendDownloadManager } from '../src/main/backend-download'
 import { GrantedPathRegistry } from '../src/main/path-access'
 import { DESKTOP_SESSION_HEADER } from '../src/shared/bridge'
 import type { NetConsoleDesktopBridge } from '../src/shared/bridge'
-import { getHealth } from '../../web/src/api/client'
-import { listDevices } from '../../web/src/api/deviceManagement'
+import { getHealth } from '../../desktop_renderer/src/api/client'
+import { listDevices } from '../../desktop_renderer/src/api/deviceManagement'
 import {
   fileDownloadRequest,
   getFileDownloadTask,
   getFileManagementStatus,
   listManagedFiles,
   startFileDownload,
-} from '../../web/src/api/fileManagement'
-import { stationTemplateDownloadRequest } from '../../web/src/api/railTransitBaseData'
+} from '../../desktop_renderer/src/api/fileManagement'
+import { stationTemplateDownloadRequest } from '../../desktop_renderer/src/api/railTransitBaseData'
 import {
   initializePlatformRuntime,
   getRuntimeConfig,
   resetPlatformRuntimeForTests,
   resolveWebSocketUrl,
-} from '../../web/src/platform/runtime'
+} from '../../desktop_renderer/src/platform/runtime'
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
 const cleanupDirectories: string[] = []

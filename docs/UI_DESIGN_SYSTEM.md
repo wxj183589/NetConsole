@@ -8,11 +8,11 @@
 
 全局主题基础已经接入唯一 Renderer：
 
-- `apps/web/src/theme/tokens.css`：品牌、状态、字体、间距、圆角、密度和 Shell 尺寸；
-- `apps/web/src/theme/light.css` 与 `dark.css`：浅色/深色语义色；
-- `apps/web/src/theme/element-plus.css`：Element Plus 变量到 NetConsole Token 的映射；
-- `apps/web/src/theme/theme.ts`：浅色、深色、跟随系统的运行时切换；
-- `apps/web/src/theme/echarts.ts`：从当前 CSS Token 读取图表色并通知已挂载图表重绘；
+- `apps/desktop_renderer/src/theme/tokens.css`：品牌、状态、字体、间距、圆角、密度和 Shell 尺寸；
+- `apps/desktop_renderer/src/theme/light.css` 与 `dark.css`：浅色/深色语义色；
+- `apps/desktop_renderer/src/theme/element-plus.css`：Element Plus 变量到 NetConsole Token 的映射；
+- `apps/desktop_renderer/src/theme/theme.ts`：浅色、深色、跟随系统的运行时切换；
+- `apps/desktop_renderer/src/theme/echarts.ts`：从当前 CSS Token 读取图表色并通知已挂载图表重绘；
 - `NcCard`、`NcStatusTag`、`NcTable` 和 `NcLayout`：首批公共基础件；
 - `components/table/NcDataTable`：标准业务表格、统一列定义、自动列宽、列设置和视图偏好的阶段 1 基础；当前仍有旧表待按清单逐域迁移；
 - `components/workspace/NcLogWorkspace`：日志控制台的固定筛选/摘要/动作/分页与单一弹性表格区域；

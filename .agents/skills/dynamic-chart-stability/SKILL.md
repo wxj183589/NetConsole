@@ -9,7 +9,7 @@ description: NetConsole ECharts 时间轴动态图的稳定性规范与回归流
 
 ## 必须遵守
 
-- 先阅读 `apps/web/src/components/charts/multiSeriesTimeChart.ts`、相关图组件、测试和 MESH 历史修复；确认数据、Overlay、Tooltip、Resize 与 viewport 的责任边界。
+- 先阅读 `apps/desktop_renderer/src/components/charts/multiSeriesTimeChart.ts`、相关图组件、测试和 MESH 历史修复；确认数据、Overlay、Tooltip、Resize 与 viewport 的责任边界。
 - 动态时间图初始化显式使用 `createTimeChartInitOptions(..., { useDirtyRect: false })`。Canvas dirty rectangle 在指针、Resize、切换或大量 mark 更新后可能留下白色重绘矩形。
 - 一个容器只拥有一个 ECharts instance。挂载时初始化，停用时隐藏交互，卸载时解绑 `ResizeObserver`、事件、主题订阅并 `dispose()`；Resize 只调用 `resize()`，不重置数据或另建实例。
 - `setOption` 明确 `replaceMerge`。替换指标至少清理 `series`，同时保留共享 viewport、DataZoom、selectedTime 和 cursorTime；不要用 `chart.clear()` 代替状态恢复。

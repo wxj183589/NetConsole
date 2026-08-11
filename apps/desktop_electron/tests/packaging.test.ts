@@ -50,6 +50,9 @@ describe('Electron-only packaging', () => {
 
     expect(packageJson.scripts.package).toBe('pnpm run package:all')
     expect(launcher).toContain('scripts.build.build_edition_installers')
+    expect(launcher).toContain("resolve(projectRoot, 'src')")
+    expect(launcher).toContain('`${sourceRoot}${delimiter}${env.PYTHONPATH}`')
+    expect(launcher).toContain('{ cwd: projectRoot, env, stdio: \'inherit\' }')
     expect(builder).toContain('NETCONSOLE_PNPM_PATH')
     expect(builder).toContain('_resolve_pnpm_command()')
     expect(builder).toContain('NetConsole-{label}-{app_version}-{short}-x64-setup.exe')
@@ -281,9 +284,11 @@ describe('Electron-only packaging', () => {
     const script = readFileSync(resolve(appRoot, 'scripts', 'package-smoke.mjs'), 'utf8')
 
     expect(script).toContain('requiredProductionFeatureIds')
-    expect(script).toContain('web.device_management_collect')
-    expect(script).toContain('web.online_mr_analysis')
-    expect(script).toContain('web.mesh_analysis_import')
+    expect(script.match(/'capability\.devices\.connection_test'/g)).toHaveLength(1)
+    expect(script.match(/'capability\.devices\.form_connection_test'/g)).toHaveLength(1)
+    expect(script).toContain('capability.devices.collect')
+    expect(script).toContain('module.online_mr_analysis')
+    expect(script).toContain('capability.mesh.import')
     expect(script).toContain('Electron 包生产功能基线关闭必要能力')
   })
 

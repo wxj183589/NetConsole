@@ -58,7 +58,7 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 ## 用户文件导入导出
 
 - 新增或修改任何用户可见的导入、导出、模板下载、报告生成或 Artifact 保存入口前，必须先阅读 `docs/IMPORT_EXPORT_INTERACTION.md` 和 `docs/development/import-export-dialog-audit.md`。
-- 新增任务型导出必须先登记 `apps/web/src/platform/exportActionRegistry.ts` 的固定动作，再复用 `apps/web/src/composables/useUserSelectedExport.ts`；禁止页面自行实现路径选择、任务绑定、Artifact 轮询、最终保存或失败重试。
+- 新增任务型导出必须先登记 `apps/desktop_renderer/src/platform/exportActionRegistry.ts` 的固定动作，再复用 `apps/desktop_renderer/src/composables/useUserSelectedExport.ts`；禁止页面自行实现路径选择、任务绑定、Artifact 轮询、最终保存或失败重试。
 - 用户取消保存路径选择时不得创建任务、生成 Artifact 或提示提交成功。已有 Artifact 只在用户主动点击后另存，不得在页面加载、Tab 恢复或历史任务恢复时自动弹窗。
 - 新增导入必须复用现有 Browser `File/FileList` 或 Electron Main 专用选择器；取消不调用后端，处理后清空 file input，Main 路径模式只使用当次授权路径且保留 Backend 文件契约校验。
 - OmniPeek、局点包、SFTP 受管下载等新增例外必须同步永久规范和静态审计，写明不能使用通用协调器的技术原因并获得明确评审。
@@ -66,7 +66,7 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 ## 验证与交付
 
 - 开发阶段先运行与改动直接相关的定向测试；Python 文件改动至少运行相关 pytest、修改范围 Ruff，并按需运行 `python -m py_compile`。
-- Vue 改动在 `apps/web` 运行相关 `pnpm test` 和 `pnpm build`；Electron 改动按 `docs/TEST_BASELINE.md` 运行对应 test、typecheck、build 或 smoke 命令。
+- Vue 改动在 `apps/desktop_renderer` 运行相关 `pnpm test` 和 `pnpm build`；Electron 改动按 `docs/TEST_BASELINE.md` 运行对应 test、typecheck、build 或 smoke 命令。
 - 完整 pytest、完整前端测试/构建、Ruff、文档链接检查和受影响的 Go 测试只在集成后的真实代码组合上作为最终门槛；单个并行任务不重复跑全量套件。
 - 不得在未执行验证时声称完成；无法执行时说明原因、未验证范围和剩余风险。
 - 修改前简述实施计划；完成后列出修改文件、执行过的验证、数据库/导出/耗时任务影响和已知限制。纯文档规则修改应明确未改业务代码。
@@ -74,7 +74,7 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 ## 仓库目录约束
 
 - 新业务代码不得直接建立在仓库根目录；新增顶层目录前必须先更新 [仓库目录规范](docs/development/repository-layout.md) 并说明唯一职责。
-- Electron、Web、Agent 分别进入 `apps/desktop_electron`、`apps/web`、`apps/agent`；共享 Python 业务代码进入 `src/netconsole`。不得重新创建 `apps/desktop` 或 `src/netconsole/ui`；`apps/desktop_electron` 只放 main/preload/shared 和必要打包元数据，不复制 Vue 或 Python Core。
+- Electron、Web、Agent 分别进入 `apps/desktop_electron`、`apps/desktop_renderer`、`apps/agent`；共享 Python 业务代码进入 `src/netconsole`。不得重新创建 `apps/desktop` 或 `src/netconsole/ui`；`apps/desktop_electron` 只放 main/preload/shared 和必要打包元数据，不复制 Vue 或 Python Core。
 - 不为符合架构示意图创建空的 `domain/application/infrastructure` 层，也不机械搬移现有包；按真实用例逐步收敛依赖。
 - 配置、版本化资源、测试 fixtures 和脚本分别进入 `config`、`resources`、`tests`、`scripts/build|dev|maintenance`，不得创建 `misc`、`temp`、`new`、`project` 等模糊目录。
 - 运行数据、日志、数据库、抓包、采集结果、缓存、临时导出和正式报告不得写入或提交仓库；开发态使用 `.local/`，打包态使用系统应用数据目录或用户选择的导出目录。
@@ -82,7 +82,7 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 - 禁止使用 `Path.cwd()` 定位源码、资源、配置或运行数据；禁止用临时 `sys.path` 修改掩盖包结构问题。
 - 不允许提交 `.venv`、缓存、日志、数据库、安装包、构建产物和临时导出文件；`resources/tools` 中已记录来源与许可证的 fping/iPerf 运行依赖是已审计例外。根 `tools/` 只用于开发、诊断和维护，`apps/agent/tools/` 禁止作为运行时工具来源。
 - `apps/agent` 二级目录只保留 `cmd`、`internal`、`mr_collector_py`、`web`、`scripts`、`resources/config` 和项目元文件；示例配置命名为 `config.example.json`/`targets.example.json`，真实配置不得回写源码目录。Agent 开发运行数据使用 `.local/agent/`，构建产物使用 `dist/agent/`；禁止保留 `apps/agent/bin`、`data`、`dist`、`logs`、`packages`、`tmp` 和 `apps/agent/tools` 作为运行目录或工具来源。
-- 文档中的源码文件路径必须使用 `src/netconsole/...`；只有 Python import、模块或包名语境可以写 `netconsole.*`，不得写成 `src.netconsole.*`。除标准 `apps/desktop_electron`、`apps/web` 和 `src/netconsole` 归位外，不得新建旧根目录 `agent/tools`、`apps/desktop`、`apps/agent/tools`、`frontend`、`desktop`、`netconsole`、`profiles` 或 `project`。
+- 文档中的源码文件路径必须使用 `src/netconsole/...`；只有 Python import、模块或包名语境可以写 `netconsole.*`，不得写成 `src.netconsole.*`。除标准 `apps/desktop_electron`、`apps/desktop_renderer` 和 `src/netconsole` 归位外，不得新建旧根目录 `agent/tools`、`apps/desktop`、`apps/agent/tools`、`frontend`、`desktop`、`netconsole`、`profiles` 或 `project`。
 - 修改 Agent 构建、工具、配置或路径时，必须同步检查 `apps/agent/README.md`、`docs/AGENT.md`、`docs/BUILD_AND_RELEASE.md`、`resources/tools/README.md` 和 `docs/development/repository-layout.md`；重要文档链接必须在提交前验证。
 - 目录职责不明确时先审计内容、Git 跟踪状态和引用关系，不得先新建目录或静默删除数据。
 

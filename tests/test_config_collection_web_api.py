@@ -123,10 +123,10 @@ class _ExecutingFakeProcessAdapter(_FakeProcessAdapter):
 
 
 HANDOFF_FEATURES = (
-    "web.config_collection_delete",
-    "web.config_collection_save_force",
-    "web.config_collection_export",
-    "web.config_collection_open_directory",
+    "capability.config_collection.delete",
+    "capability.config_collection.save_force",
+    "capability.config_collection.export",
+    "capability.config_collection.open_directory",
 )
 
 

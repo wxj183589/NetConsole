@@ -117,7 +117,7 @@ def _client(
         task_service=tasks,
         frontend_dist=tmp_path / "missing-web-dist",
     )
-    for feature_id in ("web.device_management", "web.device_management_collect"):
+    for feature_id in ("module.devices", "capability.devices.collect"):
         current = dict(app.state.feature_gate.features[feature_id])
         app.state.feature_gate.features[feature_id] = {
             **current,

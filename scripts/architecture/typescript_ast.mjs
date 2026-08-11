@@ -4,7 +4,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 const compilerCandidates = [
-  path.join(root, 'apps', 'web', 'node_modules', 'typescript', 'lib', 'typescript.js'),
+  path.join(root, 'apps', 'desktop_renderer', 'node_modules', 'typescript', 'lib', 'typescript.js'),
   path.join(root, 'apps', 'desktop_electron', 'node_modules', 'typescript', 'lib', 'typescript.js'),
 ]
 const compilerPath = compilerCandidates.find(candidate => fs.existsSync(candidate))
@@ -48,7 +48,7 @@ function functionName(node) {
 }
 
 const records = []
-for (const file of [...walk(path.join(root, 'apps', 'web', 'src')), ...walk(path.join(root, 'apps', 'desktop_electron', 'src'))]) {
+for (const file of [...walk(path.join(root, 'apps', 'desktop_renderer', 'src')), ...walk(path.join(root, 'apps', 'desktop_electron', 'src'))]) {
   const original = fs.readFileSync(file, 'utf8')
   const text = file.endsWith('.vue') ? vueScript(original) : original
   const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)

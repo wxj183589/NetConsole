@@ -16,14 +16,14 @@
 ## 活动架构边界
 
 - 正式桌面产品只有 Electron Main + Preload + Vue + FastAPI/Python Core；Qt/PySide6/QFluentWidgets 源码、运行时、依赖、测试 fixture、启动探测和回退入口不得重新引入。
-- `main.py` 无参数是源码态 Electron Desktop 入口；`--mode web|server` 只用于本机开发诊断，不代表第二套产品运行时。
+- `main.py` 无参数是源码态 Electron Desktop 入口；`--mode server` 只用于本机开发诊断，不代表第二套产品运行时。
 - Vue 负责布局、输入、表格、图表和显示格式化；Electron 负责窗口、受控生命周期和白名单 Native Bridge；FastAPI Router 只做鉴权、DTO、Application Service 调用和响应映射。
 - 设备命令、SSH/Telnet/SNMP、SQLite、Parser、导出、压缩、采集状态机、AP 匹配和轨交业务规则只能放在 Python Core 的 Application/Domain/Repository/Parser/Adapter 边界内。
 - 超过 300ms 的 IO、CPU、网络、解析、压缩、大查询和批量任务进入 Job Center；所有正式导出进入独立 Export Process。
 
 ## 仓库与运行数据
 
-- 业务代码进入 `src/netconsole`；Electron、Web、Agent 分别进入 `apps/desktop_electron`、`apps/web`、`apps/agent`。不得新增 `apps/desktop`、`src/netconsole/ui`、`frontend`、`desktop`、`netconsole`、`project` 等历史或模糊目录。
+- 业务代码进入 `src/netconsole`；Electron、Web、Agent 分别进入 `apps/desktop_electron`、`apps/desktop_renderer`、`apps/agent`。不得新增 `apps/desktop`、`src/netconsole/ui`、`frontend`、`desktop`、`netconsole`、`project` 等历史或模糊目录。
 - 根目录只保留项目级配置、入口和白名单目录；运行数据、日志、SQLite、抓包、采集结果、临时导出和正式报告不得提交。
 - 路径定位使用 `PathResolver`、资源 helper 或脚本自身位置；禁止用 `Path.cwd()` 定位源码、资源、配置或运行数据，禁止用临时 `sys.path` 掩盖包结构问题。
 - 源码开发、Electron 开发、Python Backend、打包验证和正式安装包默认都读取安装器登记的 `HKLM\Software\NetConsole\DataRoot`；`NETCONSOLE_DATA_ROOT` 只作为显式覆盖，未配置持久根时停止启动，不回退到 LocalAppData、用户目录、仓库、安装目录或系统 Temp。
@@ -45,7 +45,7 @@
 
 - 新用户可见模块、页面、Tab、动作或按钮必须进入 Feature Registry；页面通过 FeatureGate/配置控制可见性，Feature 状态不替代后端鉴权和安全校验。
 - 用户可见文本进入 i18n；凭据、Token、community、私钥、设备密码和未脱敏身份样本不得进入 API 响应、任务结果、localStorage 或普通日志。
-- 工具集是 Electron Desktop 专用的本机第三方 `.exe` 启动器，使用 `module.tools` / `web.tool_collection` 和 Electron `userData` 独立存储；不得写入 Python Backend、局点数据库、数据根、`.ncsite` 或 `.ncresult`，启动和定位只传工具 ID。
+- 工具集是 Electron Desktop 专用的本机第三方 `.exe` 启动器，使用 `module.tools` / `module.tools` 和 Electron `userData` 独立存储；不得写入 Python Backend、局点数据库、数据根、`.ncsite` 或 `.ncresult`，启动和定位只传工具 ID。
 - 新表格默认使用 `NcDataTable + NcTableColumn`，缺失值显示为 `—`，事实零值保留 `0`。不得新建直接 `el-table` 页面；新增或迁移表格要同步更新 `docs/ui/TABLE_INVENTORY.md` 并补定向测试。
 - 表格列宽由公共组件按表头、抽样内容、图标/Tag/按钮 chrome 和可视区二阶段计算；容器不足时横向滚动，不压缩表头，不用字符串长度乘固定像素。
 - 状态色、主题、侧栏、Element Plus 和 ECharts 使用 Design Token；自动测试不能替代 Electron 多尺寸、多缩放、浅色/深色/跟随系统的视觉验收。
@@ -76,7 +76,7 @@
 - `/rail-transit/train-communication` 是固定车载 TC1/TC2 六节点通信检测页，不是无线综合看板；不得聚合轨旁 AP、RSSI、fping、iPerf、Online MR、Agent 或 Mesh-Link。
 - 车内通信点表每列车只能包含 `TC1-MR/TC1-SW/TC1-SRV/TC2-MR/TC2-SW/TC2-SRV` 六节点；保存使用 SHA-256 revision。生成点表任务只返回编辑区预览，固定 `save_result=false`，`COMPLETED` 不等于预览可用，缺失或无效节点必须保留当前编辑内容。
 - 轨旁 AP 逐站规划以“一座车站一行”为活动模型，只维护序号、稳定 `station_id`、AP 数量、管理 VLAN 和备注；管理 VLAN 是业务属性不是身份键，允许多站共享和 AP 数量为 `0`，旧 VLAN 组表只兼容留存，空逐站规划不得被历史数据“复活”。
-- 地面无人值守是独立 `/rail-transit/ground-unattended` 页面和 `web.ground_unattended` Feature，不复用人工 Online MR 页面状态，也不把全天无人值守塞入单一 Online MR Session；页面卸载只停止轮询，托盘隐藏时 Backend、AC 轮询、全车 Ping 和深度采集继续。
+- 地面无人值守是独立 `/rail-transit/ground-unattended` 页面和 `module.ground_unattended` Feature，不复用人工 Online MR 页面状态，也不把全天无人值守塞入单一 Online MR Session；页面卸载只停止轮询，托盘隐藏时 Backend、AC 轮询、全车 Ping 和深度采集继续。
 - 轨旁 AP 已按规范化 MAC/Registry/稳定 ID 匹配且没有特殊区域标记时默认正线；完全未匹配 AP 必须保持 `UNKNOWN/AP_UNMATCHED`，名称、alias 和站点文本不能绕过身份边界。
 - 地面无人值守调度必须独立计算正线、Ping 和深采资格，使用多目标 fping 分片、Online MR 强类型请求、并发预算、覆盖轮次、ZIP 原子归档和启动恢复；车辆段、停车场和存车线只可由默认关闭的全局开关加入长 Ping，仍排除正线统计与深采。真实 AC/MR、长时 fping、托盘隐藏持续运行和进程残留仍是人工现场门禁。
 - AP Identity 统一索引已接管 MESH、Ground、Online/Vehicle MR 和无线扫描的高频 Peer/BSSID 解析；AC Mesh-Link、基础资料直接 Identity JOIN、轨旁 AP 业务、报告读取及设备/LLDP 绑定仍按消费者审计的 P1/P2 收口。普通查询只读 `devices.db` 已生成索引，不连接 AC、不执行 SSH/SNMP、不在 GET 中 `ensure/rebuild`，`unresolved/ambiguous` 必须保留原始观测和诊断原因。

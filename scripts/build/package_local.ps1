@@ -509,7 +509,7 @@ try {
         throw "未找到 Windows PowerShell 5.1：$powerShellPath"
     }
     $desktopRoot = Join-Path $projectRoot "apps\desktop_electron"
-    $webRoot = Join-Path $projectRoot "apps\web"
+    $rendererRoot = Join-Path $projectRoot "apps\desktop_renderer"
     $pythonPath = Join-Path $projectRoot ".venv\Scripts\python.exe"
     $packageScript = Join-Path $projectRoot "scripts\build\package_windows.ps1"
     foreach ($requiredPath in @(
@@ -517,8 +517,8 @@ try {
         $packageScript,
         (Join-Path $desktopRoot "package.json"),
         (Join-Path $desktopRoot "pnpm-lock.yaml"),
-        (Join-Path $webRoot "package.json"),
-        (Join-Path $webRoot "pnpm-lock.yaml")
+        (Join-Path $rendererRoot "package.json"),
+        (Join-Path $rendererRoot "pnpm-lock.yaml")
     )) {
         if (-not (Test-Path -LiteralPath $requiredPath)) {
             throw "缺少正式打包所需文件：$requiredPath"

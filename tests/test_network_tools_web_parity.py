@@ -229,7 +229,7 @@ def _wait_task(service: NetworkToolsApplicationService, adapter: DispatchingProc
 def test_toolbox_api_reuses_python_calculator_and_rejects_extra_args(tmp_path: Path) -> None:
     service, _adapter = _service(tmp_path)
     app = _app(tmp_path, service)
-    app.state.feature_gate.features["web.network_tools_wireless_scan"] = {"visible": True, "enabled": True}
+    app.state.feature_gate.features["capability.network_tools.wireless_scan"] = {"visible": True, "enabled": True}
     with TestClient(app) as client:
         response = client.post("/api/network-tools/toolbox/ipv4", json={"text": "10.0.0.1/24"})
         rejected = client.post("/api/network-tools/toolbox/ipv4", json={"text": "10.0.0.1/24", "extra_args": ["--bad"]})
@@ -243,7 +243,7 @@ def test_toolbox_api_reuses_python_calculator_and_rejects_extra_args(tmp_path: P
 def test_network_toolbox_and_wireless_routes_require_exact_parent_feature_gate(tmp_path: Path) -> None:
     service, _adapter = _service(tmp_path)
     app = _app(tmp_path, service)
-    app.state.feature_gate.features["web.network_tools_toolbox"] = {"visible": False, "enabled": False}
+    app.state.feature_gate.features["capability.network_tools.toolbox"] = {"visible": False, "enabled": False}
     toolbox_paths = [
         ("post", "/api/network-tools/tasks", {"kind": "single_ping", "target": "host"}),
         ("get", "/api/network-tools/runs", None),
@@ -588,7 +588,7 @@ def test_toolbox_and_wireless_task_scope_rejects_site_owner_source_and_exact_typ
     ))
 
     app = _app(tmp_path, service)
-    app.state.feature_gate.features["web.network_tools_wireless_scan"] = {"visible": True, "enabled": True}
+    app.state.feature_gate.features["capability.network_tools.wireless_scan"] = {"visible": True, "enabled": True}
     with TestClient(app) as client:
         for task_id, *_rest in cases:
             assert client.get(f"/api/network-tools/runs/{task_id}").status_code == 404
@@ -669,7 +669,7 @@ def test_wireless_scan_binds_project_recovers_and_blocking_fake_is_force_cancell
     assert service.get_wireless_task(task.task_id) is not None
 
     app = _app(tmp_path, service)
-    app.state.feature_gate.features["web.network_tools_wireless_scan"] = {"visible": True, "enabled": True}
+    app.state.feature_gate.features["capability.network_tools.wireless_scan"] = {"visible": True, "enabled": True}
     with TestClient(app) as client:
         detail_response = client.get(f"/api/network-tools/wireless-scan/runs/{FakeWirelessWorkerService.scan_id}")
         submitted = client.post(
@@ -708,7 +708,7 @@ def test_wireless_scan_binds_project_recovers_and_blocking_fake_is_force_cancell
     with pytest.raises(ValueError, match="进行中的无线扫描"):
         blocking_service.delete_wireless_project(str(blocking_project["project_id"]))
     blocking_app = _app(tmp_path / "blocking", blocking_service)
-    blocking_app.state.feature_gate.features["web.network_tools_wireless_scan"] = {"visible": True, "enabled": True}
+    blocking_app.state.feature_gate.features["capability.network_tools.wireless_scan"] = {"visible": True, "enabled": True}
     with TestClient(blocking_app) as client:
         response = client.delete(f"/api/network-tools/wireless-scan/projects/{blocking_project['project_id']}")
     assert response.status_code == 409
@@ -818,7 +818,7 @@ def test_wireless_runs_and_results_use_sql_pagination_beyond_old_limits(tmp_path
     assert filtered_page["items"][0]["display_ap_name"] == "轨旁-唯一"
 
     app = _app(tmp_path, service)
-    app.state.feature_gate.features["web.network_tools_wireless_scan"] = {"visible": True, "enabled": True}
+    app.state.feature_gate.features["capability.network_tools.wireless_scan"] = {"visible": True, "enabled": True}
     with TestClient(app) as client:
         response = client.get("/api/network-tools/wireless-scan/runs", params={"page": 21, "page_size": 50})
         results_response = client.get(

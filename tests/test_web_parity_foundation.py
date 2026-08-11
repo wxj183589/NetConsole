@@ -17,7 +17,7 @@ from netconsole.core.version import APP_VERSION
 from scripts.build.web_frontend_meta import validate_web_frontend_meta
 
 
-def test_source_mode_uses_only_current_project_web_dist(
+def test_source_mode_uses_only_current_project_desktop_renderer_dist(
     tmp_path: Path, monkeypatch
 ) -> None:
     paths = PathResolver(tmp_path)
@@ -26,15 +26,15 @@ def test_source_mode_uses_only_current_project_web_dist(
         api_main, "package_resource_path", lambda *_parts: tmp_path / "old-package-web"
     )
 
-    assert api_main._frontend_dist(paths) == paths.app_root / "apps" / "web" / "dist"
+    assert api_main._frontend_dist(paths) == paths.app_root / "apps" / "desktop_renderer" / "dist"
     assert api_main._frontend_source_type() == "source"
 
 
-def test_packaged_mode_uses_only_embedded_web_resources(
+def test_packaged_mode_uses_only_embedded_desktop_renderer_resources(
     tmp_path: Path, monkeypatch
 ) -> None:
     paths = PathResolver(tmp_path)
-    packaged = tmp_path / "_internal" / "netconsole" / "assets" / "web"
+    packaged = tmp_path / "_internal" / "netconsole" / "assets" / "desktop_renderer"
     monkeypatch.setattr(api_main, "is_packaged_runtime", lambda: True)
     monkeypatch.setattr(api_main, "package_resource_path", lambda *_parts: packaged)
 
@@ -79,7 +79,7 @@ def test_matching_frontend_metadata_serves_clean_index(
         '<!doctype html><html><body><div id="app">current</div></body></html>',
         encoding="utf-8",
     )
-    (dist / "web-build-meta.json").write_text(
+    (dist / "desktop-renderer-build-meta.json").write_text(
         json.dumps(
             {
                 "app_version": APP_VERSION,
@@ -111,7 +111,7 @@ def test_stale_frontend_metadata_still_gets_server_side_warning(tmp_path: Path) 
         '<!doctype html><html><body class="legacy"><div id="app"></div></body></html>',
         encoding="utf-8",
     )
-    (dist / "web-build-meta.json").write_text(
+    (dist / "desktop-renderer-build-meta.json").write_text(
         json.dumps(
             {
                 "app_version": APP_VERSION,
@@ -139,20 +139,20 @@ def test_stale_frontend_metadata_still_gets_server_side_warning(tmp_path: Path) 
 @pytest.mark.parametrize(
     ("feature_id", "path"),
     [
-        ("web.ac_fit_ap_resources", "/api/ac-management/summary"),
-        ("web.rail_train_online", "/api/rail-transit/train-online/trains"),
-        ("web.ground_unattended", "/api/rail-transit/ground-unattended/status"),
-        ("web.job_center", "/api/job-center/summary"),
-        ("web.agent_management", "/api/agents"),
+        ("module.fit_ap", "/api/ac-management/summary"),
+        ("module.train_online", "/api/rail-transit/train-online/trains"),
+        ("module.ground_unattended", "/api/rail-transit/ground-unattended/status"),
+        ("module.task_center", "/api/job-center/summary"),
+        ("module.agent", "/api/agents"),
         ("network_tools.traffic", "/api/traffic/runs"),
-        ("web.rail_transit_base_data", "/api/rail-transit/base-data/summary"),
+        ("module.rail_base_data", "/api/rail-transit/base-data/summary"),
         (
-            "web.train_communication_monitoring",
+            "module.train_communication",
             "/api/rail-transit/train-communication/summary",
         ),
-        ("web.mesh_analysis", "/api/rail-transit/mesh-analysis/summary"),
+        ("module.mesh_analysis", "/api/rail-transit/mesh-analysis/summary"),
         (
-            "web.rail_transit_wireless_dashboard",
+            "capability.rail_transit.wireless_dashboard",
             "/api/rail-transit/wireless-dashboard/summary",
         ),
     ],
@@ -181,7 +181,7 @@ def test_disabled_network_toolbox_cannot_start_tcp_port_test(tmp_path: Path) -> 
         paths=PathResolver(tmp_path),
         frontend_dist=tmp_path / "missing",
     )
-    app.state.feature_gate.features["web.network_tools_toolbox"] = {
+    app.state.feature_gate.features["capability.network_tools.toolbox"] = {
         "visible": False,
         "enabled": False,
     }
@@ -198,7 +198,7 @@ def test_disabled_network_toolbox_cannot_start_tcp_port_test(tmp_path: Path) -> 
 @pytest.mark.parametrize(
     ("feature_id", "path"),
     [
-        ("web.agent_management", "/ws/agents"),
+        ("module.agent", "/ws/agents"),
         ("network_tools.traffic", "/ws/traffic/missing-run"),
     ],
 )
@@ -229,7 +229,7 @@ def test_shared_task_api_stays_available_when_job_center_page_is_disabled(
         paths=PathResolver(tmp_path),
         frontend_dist=tmp_path / "missing",
     )
-    app.state.feature_gate.features["web.job_center"] = {
+    app.state.feature_gate.features["module.task_center"] = {
         "visible": False,
         "enabled": False,
     }
@@ -247,15 +247,15 @@ def test_wave2_features_are_released_while_unimplemented_features_stay_hidden(
     tmp_path: Path,
 ) -> None:
     gate = FeatureGate(tmp_path)
-    assert gate.is_visible("web.system_settings") is True
-    assert gate.is_enabled("web.system_settings") is True
-    assert gate.is_in_client_package("web.system_settings") is True
+    assert gate.is_visible("module.system_settings") is True
+    assert gate.is_enabled("module.system_settings") is True
+    assert gate.is_in_client_package("module.system_settings") is True
 
-    assert gate.is_visible("web.feature_switch") is True
-    assert gate.is_enabled("web.feature_switch") is True
-    assert gate.is_in_client_package("web.feature_switch") is False
+    assert gate.is_visible("internal.feature_switch") is True
+    assert gate.is_enabled("internal.feature_switch") is True
+    assert gate.is_in_client_package("internal.feature_switch") is False
 
-    for feature_id in ("web.command_reference", "web.logs"):
+    for feature_id in ("module.command_reference", "module.logs"):
         assert gate.is_visible(feature_id) is True
         assert gate.is_enabled(feature_id) is True
         assert gate.is_in_client_package(feature_id) is True
@@ -265,7 +265,7 @@ def test_release_validation_rejects_stale_frontend_metadata(tmp_path: Path) -> N
     expected_commit = "1" * 40
     old_commit = "2" * 40
     (tmp_path / "index.html").write_text("web", encoding="utf-8")
-    (tmp_path / "web-build-meta.json").write_text(
+    (tmp_path / "desktop-renderer-build-meta.json").write_text(
         json.dumps(
             {
                 "app_version": APP_VERSION,

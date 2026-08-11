@@ -53,22 +53,22 @@ from netconsole.repositories.ac_repository import AcRepository
 
 
 RAIL_FEATURE_IDS = (
-    "web.train_communication_monitoring",
-    "web.online_mr_report_export",
-    "web.online_mr_parse",
-    "web.online_mr_session_open_location",
-    "web.online_mr_session_delete",
-    "desktop.native_bridge",
+    "module.train_communication",
+    "capability.online_mr.report_export",
+    "capability.online_mr.parse",
+    "capability.online_mr.open_location",
+    "capability.online_mr.session_delete",
+    "capability.desktop_native_integration",
     "online_mr.collection_notes",
-    "web.mesh_analysis_import",
-    "web.mesh_analysis_report_export",
-    "web.mesh_analysis_source_open_location",
-    "web.rail_car_network_diagnostic_execute",
-    "web.rail_task_control",
-    "web.rail_car_network_point_table_write",
-    "web.rail_car_network_point_table_export",
-    "web.rail_trackside_ap_business",
-    "web.rail_trackside_ap_business_update",
+    "capability.mesh.import",
+    "capability.mesh.report_export",
+    "capability.mesh.source_open_location",
+    "capability.train_communication.diagnostic_execute",
+    "capability.rail_transit.task_control",
+    "capability.train_communication.point_table_write",
+    "capability.train_communication.point_table_export",
+    "module.trackside_ap",
+    "capability.trackside_ap.update",
 )
 
 
@@ -699,9 +699,9 @@ def test_point_table_and_trackside_plan_routes_reach_application_tasks(
     )
     _enable_features(app)
     for feature_id in (
-        "web.rail_trackside_ap_plan",
-        "web.rail_trackside_ap_plan_write",
-        "web.rail_trackside_ap_plan_export",
+        "capability.trackside_ap.plan",
+        "capability.trackside_ap.plan_write",
+        "capability.trackside_ap.plan_export",
     ):
         app.state.feature_gate.features[feature_id] = {
             "visible": True,
@@ -1701,12 +1701,12 @@ def test_browser_contract_removes_site_and_relative_path_and_feature_gates_are_i
 
     with TestClient(app) as client:
         client.app.state.feature_gate.features[
-            "web.rail_car_network_diagnostic_execute"
+            "capability.train_communication.diagnostic_execute"
         ].update(visible=False, enabled=False, client_package=False)
         blocked_car = client.post(
             "/api/rail-transit/train-communication/trains/train-1/diagnostics"
         )
-        client.app.state.feature_gate.features["web.mesh_analysis_import"].update(
+        client.app.state.feature_gate.features["capability.mesh.import"].update(
             visible=False, enabled=False, client_package=False
         )
         blocked_mesh = client.post(
@@ -1714,36 +1714,36 @@ def test_browser_contract_removes_site_and_relative_path_and_feature_gates_are_i
             files={"files": ("fixture.log", b"mesh", "text/plain")},
             data={"mr_id": profile.mr_id},
         )
-        client.app.state.feature_gate.features["web.online_mr_report_export"].update(
+        client.app.state.feature_gate.features["capability.online_mr.report_export"].update(
             visible=False, enabled=False, client_package=False
         )
         blocked_online_report = client.post(
             "/api/online-mr/sessions/missing/report", json={}
         )
         client.app.state.feature_gate.features[
-            "web.mesh_analysis_report_export"
+            "capability.mesh.report_export"
         ].update(visible=False, enabled=False, client_package=False)
         blocked_mesh_report = client.post(
             "/api/rail-transit/mesh-analysis/sessions/missing/report"
         )
-        client.app.state.feature_gate.features["web.rail_trackside_ap_business_update"].update(
+        client.app.state.feature_gate.features["capability.trackside_ap.update"].update(
             visible=False, enabled=False, client_package=False
         )
         blocked_trackside_update = client.post(
             "/api/rail-transit/trackside-ap-business/update",
             json={},
         )
-        client.app.state.feature_gate.features["web.rail_task_control"].update(
+        client.app.state.feature_gate.features["capability.rail_transit.task_control"].update(
             visible=False, enabled=False, client_package=False
         )
         blocked_task_recovery = client.post("/api/online-mr/tasks/recover")
         client.app.state.feature_gate.features[
-            "web.rail_car_network_diagnostic_execute"
+            "capability.train_communication.diagnostic_execute"
         ].update(visible=True, enabled=True, client_package=True)
         blocked_car_without_control = client.post(
             "/api/rail-transit/train-communication/trains/train-1/diagnostics"
         )
-        client.app.state.feature_gate.features["web.mesh_analysis_import"].update(
+        client.app.state.feature_gate.features["capability.mesh.import"].update(
             visible=True, enabled=True, client_package=True
         )
         blocked_mesh_without_control = client.post(
@@ -1751,19 +1751,19 @@ def test_browser_contract_removes_site_and_relative_path_and_feature_gates_are_i
             files={"files": ("fixture.log", b"mesh", "text/plain")},
             data={"mr_id": profile.mr_id},
         )
-        client.app.state.feature_gate.features["web.online_mr_report_export"].update(
+        client.app.state.feature_gate.features["capability.online_mr.report_export"].update(
             visible=True, enabled=True, client_package=True
         )
         blocked_online_report_without_control = client.post(
             "/api/online-mr/sessions/missing/report", json={}
         )
         client.app.state.feature_gate.features[
-            "web.mesh_analysis_report_export"
+            "capability.mesh.report_export"
         ].update(visible=True, enabled=True, client_package=True)
         blocked_mesh_report_without_control = client.post(
             "/api/rail-transit/mesh-analysis/sessions/missing/report"
         )
-        client.app.state.feature_gate.features["web.rail_task_control"].update(
+        client.app.state.feature_gate.features["capability.rail_transit.task_control"].update(
             visible=True, enabled=True, client_package=True
         )
         rejected_site = client.post(

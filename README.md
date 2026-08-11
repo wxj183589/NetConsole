@@ -2,7 +2,7 @@
 
 NetConsole 是面向网络工程现场维护与诊断的 Windows 桌面工具，当前重点覆盖 H3C/Comware 设备管理、AC/FIT AP、轨道交通无线与车内通信检测、网络测试、配置采集、文件管理和日志诊断。设备管理保留 SNMP v1/v2c 只读基础识别；不提供 SNMPv3、通用 MIB/OID 平台或 SNMP Center。
 
-当前版本：`v1.4.8`。版本唯一来源为 `src/netconsole/core/version.py`；本文只同步展示该事实源。`apps/web/package.json` 中的 `0.1.0` 仅是内部 workspace 包版本，不是产品版本。
+当前版本：`v1.4.8`。版本唯一来源为 `src/netconsole/core/version.py`；本文只同步展示该事实源。`apps/desktop_renderer/package.json` 中的 `0.1.0` 仅是内部 workspace 包版本，不是产品版本。
 
 Windows Server 2012 x64 兼容事实（2026-07-30）：主程序和独立 Agent 均有用户现场运行确认，证据等级为 `USER_FIELD_CONFIRMED`；仓库没有隔离 Windows Server 2012 自动化 VM 记录，自动化证据记为 `AUTOMATION_NOT_RECORDED`。这两项事实不等同于正式安装包 GUI 验收通过，产品不增加按操作系统阻断启动的逻辑。
 
@@ -70,7 +70,7 @@ Agent 子项目只保留 Go/Python/Web 源码、构建脚本和 `apps/agent/reso
 flowchart LR
     E["Electron Main / Preload"] --> CORE["受管 Python Backend"]
     E --> VUE["唯一 Vue Renderer"]
-    DEV["显式 web / server\n开发诊断"] -.-> CORE
+    DEV["显式 server\n开发诊断"] -.-> CORE
     CORE --> API["FastAPI Task / Agent / Traffic API + WebSocket"]
     VUE --> API
     API --> SVC
@@ -120,7 +120,6 @@ flowchart LR
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -e . --no-deps
 .\.venv\Scripts\python.exe main.py
-.\.venv\Scripts\python.exe main.py --mode web
 .\.venv\Scripts\python.exe main.py --mode server --host 127.0.0.1 --port 8000
 .\.venv\Scripts\python.exe -m netconsole.backend.api.main
 .\.venv\Scripts\python.exe -m pytest
@@ -129,12 +128,12 @@ cd apps\desktop_electron
 pnpm dev
 ```
 
-无参数 `main.py` 是源码态 PyCharm/命令行的 Electron Desktop 入口：它使用项目本地 Electron 运行时执行同一 `scripts/dev.mjs` 编排链，不恢复 Qt，也不单独启动第二套 FastAPI。依赖已安装时不要求全局 `pnpm` 在 `PATH` 中；缺少 `apps/desktop_electron` 或 `apps/web` 的 `node_modules` 时会明确提示先安装锁定依赖。`--mode web|server` 继续只用于本机开发诊断。
+无参数 `main.py` 是源码态 PyCharm/命令行的 Electron Desktop 入口：它使用项目本地 Electron 运行时执行同一 `scripts/dev.mjs` 编排链，不恢复 Qt，也不单独启动第二套 FastAPI。依赖已安装时不要求全局 `pnpm` 在 `PATH` 中；缺少 `apps/desktop_electron` 或 `apps/desktop_renderer` 的 `node_modules` 时会明确提示先安装锁定依赖。`--mode server` 仅保留为回环本机开发诊断，独立浏览器 GUI 启动模式已删除。
 
 前端首次运行或依赖变化后执行：
 
 ```powershell
-cd apps/web
+cd apps/desktop_renderer
 pnpm install
 pnpm test
 pnpm build
@@ -170,6 +169,6 @@ Windows/PowerShell 涉及中文、日志、设备回显或路径时，先切换 
 
 ## 当前规划
 
-Web 演进阶段 4C 已接入 Traffic REST API、独立 Traffic WebSocket 和 `/network-tools/traffic` Vue 页面；阶段 4D 的 Qt Web Shell 仅为历史验收记录，其源码与活动启动入口均已删除。Online MR 已建立纯 Python LOCAL/AGENT Application Service、同局点 Task/Session 映射、Traffic 收口，以及严格 Desktop/`127.0.0.1`/短期会话保护的独立 Web LOCAL/AGENT 页签；AGENT 默认关闭，只提供固定 start/status/normal stop 与自动 package 导入，不提供强停、删除或任意命令。SNMP Center、通用 MIB/OID 平台和无线勘测已删除；AP Identity 已完成消费者审计中的 P0 高频链路，P1/P2 仍待收口，查询保持本地只读。
+Renderer 已接入 Traffic REST API、独立 Traffic WebSocket 和 `/network-tools/traffic` Vue 页面。Online MR 已建立纯 Python LOCAL/AGENT Application Service、同局点 Task/Session 映射、Traffic 收口，以及严格 Desktop/`127.0.0.1`/短期会话保护的 LOCAL/AGENT 页签；AGENT 默认关闭，只提供固定 start/status/normal stop 与自动 package 导入，不提供强停、删除或任意命令。SNMP Center、通用 MIB/OID 平台和无线勘测已删除；AP Identity 已完成消费者审计中的 P0 高频链路，P1/P2 仍待收口，查询保持本地只读。
 
-Electron-only E1 已删除 Python 启动壳中的 `auto/qt`、Qt probe、旧 Qt WebShell、Qt 页面、Qt-only 测试与无调用 Qt Native Adapter；打包 Electron 通过内部 `--electron-backend` 协议启动受管 Backend，开发态继续直接运行 `netconsole.backend.electron_runtime`。无参数 `main.py` 是 PyCharm/源码态 Electron 入口，`main.py --mode web|server` 只用于本机开发诊断。源码、依赖和安装包门禁均禁止重新引入 Qt。
+Electron Desktop Only 已删除 Python 启动壳中的 `auto/qt`、Qt probe、旧 Qt Shell、Qt 页面、Qt-only 测试、无调用 Qt Native Adapter，以及独立 Browser Production launcher。打包 Electron 通过内部 `--electron-backend` 协议启动受管 Backend，开发态继续直接运行 `netconsole.backend.electron_runtime`。无参数 `main.py` 是 PyCharm/源码态 Electron 入口；`main.py --mode server` 只用于回环开发诊断，不能打开独立浏览器 GUI。源码、依赖和安装包门禁均禁止重新引入 Qt 或独立 Web 产品。

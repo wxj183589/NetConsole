@@ -38,4 +38,4 @@ Application 层向下依赖 Service、Repository、Job/Export adapter，向上�
 
 ## 相关文档
 
-参见 [设备管理页面](../../../apps/web/src/views/devices/README.md)、[业务服务](../services/README.md)、[下一阶段开发指南](../../../docs/DEVELOPMENT_GUIDE.md)、[API 边界审计](../../../docs/API_APPLICATION_BOUNDARY_AUDIT.md)和[Job Center](../../../docs/JOB_CENTER.md)。
+参见 [设备管理页面](../../../apps/desktop_renderer/src/views/devices/README.md)、[业务服务](../services/README.md)、[下一阶段开发指南](../../../docs/DEVELOPMENT_GUIDE.md)、[API 边界审计](../../../docs/API_APPLICATION_BOUNDARY_AUDIT.md)和[Job Center](../../../docs/JOB_CENTER.md)。

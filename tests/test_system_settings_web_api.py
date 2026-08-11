@@ -50,9 +50,13 @@ def test_default_desktop_profile_reaches_settings_and_round_trips(tmp_path: Path
     client, paths = _client(tmp_path)
     features = client.get("/api/features")
     settings_feature = next(
-        item for item in features.json()["items"] if item["feature_id"] == "web.system_settings"
+        item for item in features.json()["items"] if item["feature_id"] == "module.system_settings"
     )
-    assert settings_feature == {"feature_id": "web.system_settings", "visible": True, "enabled": True}
+    assert settings_feature == {"feature_id": "module.system_settings", "visible": True, "enabled": True}
+    internal_feature = next(
+        item for item in features.json()["items"] if item["feature_id"] == "internal.feature_switch"
+    )
+    assert internal_feature == {"feature_id": "internal.feature_switch", "visible": True, "enabled": True}
 
     initial = client.get("/api/settings")
     assert initial.status_code == 200
@@ -272,7 +276,7 @@ def test_feature_template_preview_is_session_only(tmp_path: Path) -> None:
     snapshot = client.get("/api/settings/features?target=full")
     assert snapshot.status_code == 200
     items = snapshot.json()["items"]
-    target = next(item for item in items if item["feature_id"] == "web.agent_management")
+    target = next(item for item in items if item["feature_id"] == "module.agent")
     target.update({"visible": False, "enabled": False})
 
     updates = _feature_updates(items)
@@ -286,7 +290,7 @@ def test_feature_template_preview_is_session_only(tmp_path: Path) -> None:
     assert preview.json()["preview_active"] is True
     effective = client.get("/api/features").json()["items"]
     assert next(
-        item for item in effective if item["feature_id"] == "web.agent_management"
+        item for item in effective if item["feature_id"] == "module.agent"
     )["visible"] is False
 
     exited = client.post("/api/settings/features/preview/exit?target=full")
@@ -311,19 +315,19 @@ def test_feature_profile_check_auto_fix_and_save_use_backend_dependency_contract
     )
     assert devices_module["title"] != "nav.devices"
     job_center = next(
-        item for item in snapshot["items"] if item["feature_id"] == "web.job_center"
+        item for item in snapshot["items"] if item["feature_id"] == "module.task_center"
     )
     assert job_center["locked"] is True
     assert job_center["package_editable"] is False
     target = next(
-        item for item in snapshot["items"] if item["feature_id"] == "web.agent_management"
+        item for item in snapshot["items"] if item["feature_id"] == "module.agent"
     )
     assert target["group_title"] == "任务与 Agent"
     assert target["scope"] == "global"
-    assert target["dependencies"] == ["cap.task_center"]
-    assert target["delivery_dependencies"] == ["cap.task_center"]
+    assert target["dependencies"] == ["internal.task_center"]
+    assert target["delivery_dependencies"] == ["internal.task_center"]
     train_online = next(
-        item for item in snapshot["items"] if item["feature_id"] == "web.rail_train_online"
+        item for item in snapshot["items"] if item["feature_id"] == "module.train_online"
     )
     train_online.update(
         visible=False,
@@ -339,7 +343,7 @@ def test_feature_profile_check_auto_fix_and_save_use_backend_dependency_contract
     checked = client.post("/api/settings/features/check", json=payload)
     assert checked.status_code == 200
     assert any(
-        issue["dependency_id"] == "web.rail_train_online"
+        issue["dependency_id"] == "module.train_online"
         and issue["issue_type"] == "delivery_parent_missing"
         for issue in checked.json()["dependency_issues"]
     )
@@ -349,7 +353,7 @@ def test_feature_profile_check_auto_fix_and_save_use_backend_dependency_contract
     fixed_train_online = next(
         item
         for item in fixed.json()["items"]
-        if item["feature_id"] == "web.rail_train_online"
+        if item["feature_id"] == "module.train_online"
     )
     assert {
         "visible": fixed_train_online["visible"],
@@ -384,7 +388,7 @@ def test_runtime_feature_status_and_legacy_override_clear_are_separate_from_temp
             {
                 "schema_version": 2,
                 "features": {
-                    "web.agent_management": {
+                    "module.agent": {
                         "visible": False,
                         "enabled": True,
                     }
@@ -465,6 +469,10 @@ def test_packaged_runtime_keeps_settings_but_rejects_feature_configuration(
     client.app.state.feature_gate = FeatureGate(tmp_path, packaged_runtime=True)
 
     assert client.get("/api/settings").status_code == 200
+    packaged_feature_ids = {
+        item["feature_id"] for item in client.get("/api/features").json()["items"]
+    }
+    assert "internal.feature_switch" not in packaged_feature_ids
     for method, path, payload in (
         ("get", "/api/settings/features", None),
         ("put", "/api/settings/features", {"items": []}),

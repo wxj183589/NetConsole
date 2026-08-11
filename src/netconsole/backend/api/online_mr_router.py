@@ -280,8 +280,8 @@ def add_note(request: Request, session_id: str, payload: OnlineMrNoteCreateReque
     response_model=RailTransitTaskDTO,
     status_code=status.HTTP_202_ACCEPTED,
     dependencies=[
-        Depends(require_feature("web.online_mr_parse")),
-        Depends(require_feature("web.rail_task_control")),
+        Depends(require_feature("capability.online_mr.parse")),
+        Depends(require_feature("capability.rail_transit.task_control")),
     ],
 )
 def parse_session(request: Request, session_id: str, payload: OnlineMrParseRequestDTO) -> RailTransitTaskDTO:
@@ -297,8 +297,8 @@ def parse_session(request: Request, session_id: str, payload: OnlineMrParseReque
     "/sessions/{session_id}/ensure-current",
     response_model=OnlineMrParsedDatabaseEnsureDTO,
     dependencies=[
-        Depends(require_feature("web.online_mr_parse")),
-        Depends(require_feature("web.rail_task_control")),
+        Depends(require_feature("capability.online_mr.parse")),
+        Depends(require_feature("capability.rail_transit.task_control")),
     ],
 )
 def ensure_current(request: Request, session_id: str) -> OnlineMrParsedDatabaseEnsureDTO:
@@ -325,8 +325,8 @@ def artifacts(request: Request, session_id: str) -> ApiResponse[list[OnlineMrArt
     response_model=RailTransitTaskDTO,
     status_code=status.HTTP_202_ACCEPTED,
     dependencies=[
-        Depends(require_feature("web.online_mr_report_export")),
-        Depends(require_feature("web.rail_task_control")),
+        Depends(require_feature("capability.online_mr.report_export")),
+        Depends(require_feature("capability.rail_transit.task_control")),
     ],
 )
 def report(request: Request, session_id: str, payload: OnlineMrReportRequestDTO) -> RailTransitTaskDTO:
@@ -343,8 +343,8 @@ def report(request: Request, session_id: str, payload: OnlineMrReportRequestDTO)
     response_model=OnlineMrDesktopLocationDTO,
     dependencies=[
         Depends(_desktop),
-        Depends(require_feature("desktop.native_bridge")),
-        Depends(require_feature("web.online_mr_session_open_location")),
+        Depends(require_feature("capability.desktop_native_integration")),
+        Depends(require_feature("capability.online_mr.open_location")),
     ],
 )
 def desktop_location(
@@ -367,8 +367,8 @@ def desktop_location(
     response_model=RailTransitTaskDTO,
     status_code=status.HTTP_202_ACCEPTED,
     dependencies=[
-        Depends(require_feature("web.online_mr_session_delete")),
-        Depends(require_feature("web.rail_task_control")),
+        Depends(require_feature("capability.online_mr.session_delete")),
+        Depends(require_feature("capability.rail_transit.task_control")),
     ],
 )
 def delete_session(
@@ -392,8 +392,8 @@ def delete_session(
     response_model=RailTransitTaskDTO,
     status_code=status.HTTP_202_ACCEPTED,
     dependencies=[
-        Depends(require_feature("web.mesh_analysis_import")),
-        Depends(require_feature("web.rail_task_control")),
+        Depends(require_feature("capability.mesh.import")),
+        Depends(require_feature("capability.rail_transit.task_control")),
     ],
 )
 async def mesh_analysis_import(
@@ -436,7 +436,7 @@ async def mesh_analysis_import(
 @router.get(
     "/report-artifacts/{artifact_id}/download",
     response_class=FileResponse,
-    dependencies=[Depends(require_feature("web.online_mr_report_export"))],
+    dependencies=[Depends(require_feature("capability.online_mr.report_export"))],
 )
 def report_download(request: Request, artifact_id: str) -> FileResponse:
     try:
@@ -451,7 +451,7 @@ def report_download(request: Request, artifact_id: str) -> FileResponse:
 @router.get(
     "/tasks/{task_id}",
     response_model=RailTransitTaskDTO,
-    dependencies=[Depends(require_feature("web.rail_task_control"))],
+    dependencies=[Depends(require_feature("capability.rail_transit.task_control"))],
 )
 def task_detail(request: Request, task_id: str) -> RailTransitTaskDTO:
     try:
@@ -463,7 +463,7 @@ def task_detail(request: Request, task_id: str) -> RailTransitTaskDTO:
 @router.post(
     "/tasks/{task_id}/cancel",
     response_model=RailTransitTaskDTO,
-    dependencies=[Depends(require_feature("web.rail_task_control"))],
+    dependencies=[Depends(require_feature("capability.rail_transit.task_control"))],
 )
 def task_cancel(request: Request, task_id: str) -> RailTransitTaskDTO:
     try:
@@ -475,7 +475,7 @@ def task_cancel(request: Request, task_id: str) -> RailTransitTaskDTO:
 @router.post(
     "/tasks/recover",
     response_model=list[RailTransitTaskDTO],
-    dependencies=[Depends(require_feature("web.rail_task_control"))],
+    dependencies=[Depends(require_feature("capability.rail_transit.task_control"))],
 )
 def task_recover(request: Request) -> list[RailTransitTaskDTO]:
     try:

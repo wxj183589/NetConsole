@@ -16,7 +16,7 @@
 
 ## 依赖关系
 
-脚本依赖项目虚拟环境、`pyproject.toml`、requirements/constraints、`resources/tools` 和版本/资源 helper；前端构建由 `apps/web` 的 pnpm 脚本负责。
+脚本依赖项目虚拟环境、`pyproject.toml`、requirements/constraints、`resources/tools` 和版本/资源 helper；前端构建由 `apps/desktop_renderer` 的 pnpm 脚本负责。
 
 ## 数据与状态
 

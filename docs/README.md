@@ -15,7 +15,7 @@
 - [配置采集与快照对比](CONFIG_COLLECTION.md)
 - [CBTC 旧 Wireshark DLL 逆向状态](reverse-engineering/CBTC_WIRESHARK_DLL.md)
 - [MESH 身份、存储协调与 RSSI 调查记录](mesh_analysis_identity_rssi_investigation.md)
-- [动态图共享时间轴与稳定性规则](../apps/web/src/components/charts/README.md)
+- [动态图共享时间轴与稳定性规则](../apps/desktop_renderer/src/components/charts/README.md)
 
 ## 核心文档
 
@@ -25,18 +25,19 @@
 | [用户文件导入导出契约](IMPORT_EXPORT_INTERACTION.md) | 用户文件选择、固定导出动作、任务绑定、Artifact 最终落盘和受管下载例外 | Web/Electron/Export 开发 | `exportActionRegistry`、`useUserSelectedExport`、Electron BackendDownloadManager | 新增或修改任一导入、导出、下载、模板或 Artifact 保存入口 |
 | [永久架构与后续演进](ARCHITECTURE_NEXT.md) | Electron-only 永久层、不可回退边界与后续演进顺序 | 架构负责人 | 当前代码、最终迁移矩阵与目录规范 | 永久技术边界或演进顺序变化 |
 | [架构一致性审计](ARCHITECTURE_COMPLIANCE.md) | Electron-only 最终分层、Qt 历史迁移映射、自动 Guard、例外和发布阻塞规则 | 架构、迁移与发布负责人 | Git 历史、实际依赖、迁移矩阵、Guard 和非 Qt 测试 | 分层规则、Qt 删除范围、Guard 或最终发布门变化 |
-| [Electron Desktop](ELECTRON_DESKTOP.md) | Electron main/preload、Python 生命周期、临时令牌、开发/生产资源与 Qt 历史边界 | Desktop/Core/Web 开发 | `apps/desktop_electron`、`apps/web/src/platform`、`backend/electron_runtime.py` | Electron 生命周期、安全桥接、启动或发布状态变化 |
-| [架构](ARCHITECTURE.md) | Electron-only 分层、启动、后台任务、导出、数据和安全边界 | 架构与跨域开发 | `apps/desktop_electron`、`apps/web`、`src/netconsole/backend`、Services/Repositories | 新增跨层依赖、运行形态或核心服务 |
+| [Electron Desktop](ELECTRON_DESKTOP.md) | Electron main/preload、Python 生命周期、临时令牌、开发/生产资源与 Qt 历史边界 | Desktop/Core/Web 开发 | `apps/desktop_electron`、`apps/desktop_renderer/src/platform`、`backend/electron_runtime.py` | Electron 生命周期、安全桥接、启动或发布状态变化 |
+| [Electron Desktop Only 收敛记录](architecture/ELECTRON_DESKTOP_ONLY.md) | Desktop Renderer 迁移、Feature Registry V2、Browser Product 清理、阶段回归与交付证据 | 架构、迁移与发布负责人 | 当前代码、测试、Customer/Full 安装包与 Listener 审计 | 产品运行形态、Renderer 目录、Feature/Profile 或交付结论变化 |
+| [架构](ARCHITECTURE.md) | Electron-only 分层、启动、后台任务、导出、数据和安全边界 | 架构与跨域开发 | `apps/desktop_electron`、`apps/desktop_renderer`、`src/netconsole/backend`、Services/Repositories | 新增跨层依赖、运行形态或核心服务 |
 | [最终迁移矩阵](architecture/MIGRATION_MATRIX.md) | 已删除 Qt 路径分类、永久去向、自动证据与当前验收状态 | 架构、迁移与验收负责人 | Git 删除历史、Feature/Navigation Registry、生产代码和测试 | 历史映射、模块状态或验收结论变化 |
 | [E10 架构一致性报告](archive/migrations/electron-only/ARCHITECTURE_COMPLIANCE_REPORT.md) | Qt 遗留回收证据、扫描分类、未解决项与发布门 | 架构与发布负责人 | 当前工作树、Guard、定向测试和最终制品 | E10 结果、风险或发布门变化 |
-| [Electron/Vue/FastAPI 架构](WEB_ARCHITECTURE.md) | 唯一 Renderer、API、Browser 诊断和 Desktop Bridge 边界 | Web 与桌面宿主开发 | `src/netconsole/backend/api`、`apps/desktop_electron`、`apps/web` | Web 接入、运行模式或 Bridge 变化 |
+| [Electron/Vue/FastAPI 架构](WEB_ARCHITECTURE.md) | 唯一 Renderer、API、Browser 诊断和 Desktop Bridge 边界 | Web 与桌面宿主开发 | `src/netconsole/backend/api`、`apps/desktop_electron`、`apps/desktop_renderer` | Web 接入、运行模式或 Bridge 变化 |
 | [Web 迁移计划（历史兼容）](WEB_MIGRATION_PLAN.md) | 已结束双轨迁移的兼容指针 | 历史维护 | Git 历史与最终迁移矩阵 | 不再作为当前状态源 |
 | [Web 迁移矩阵（历史兼容）](WEB_MIGRATION_MATRIX.md) | 已结束双轨矩阵的兼容指针 | 历史维护 | Git 历史与最终迁移矩阵 | 不再作为当前状态源 |
 | [Desktop WebHost](WEB_HOST.md) | Electron Web Runtime、开发诊断入口及历史 Qt WebHost 边界 | Desktop/Core/Web 开发 | Electron Runtime、`src/netconsole/launcher`、Git 历史迁移证据 | WebHost 生命周期、认证、诊断入口或打包变化 |
 | [Qt/Electron 对等矩阵（历史兼容）](development/qt-electron-parity-matrix.md) | 旧详细矩阵兼容指针 | 历史维护 | Git 历史与最终迁移矩阵 | 不再作为当前状态源 |
 | [轨道交通逐操作矩阵（历史兼容）](development/parity/rail-transit.md) | 已冻结的逐操作迁移规格兼容指针 | 历史维护 | Git 历史与最终迁移矩阵 | 不再作为当前状态源 |
 | [设备管理对等规格（历史兼容）](development/parity/device-management.md) | 已冻结的逐字段/逐操作规格兼容指针 | 历史维护 | Git 历史与最终迁移矩阵 | 不再作为当前状态源 |
-| [设备管理与设备详情](../apps/web/src/views/devices/README.md) | 设备列表、快速详情抽屉、完整详情页、数据来源、Command Profile 与验收边界 | Device/Application/API/Vue 开发 | Device Detail Application/Query Service、DTO/API、版本化 Profile 和 Vue | 设备字段、能力、刷新任务、页签或验收状态变化 |
+| [设备管理与设备详情](../apps/desktop_renderer/src/views/devices/README.md) | 设备列表、快速详情抽屉、完整详情页、数据来源、Command Profile 与验收边界 | Device/Application/API/Vue 开发 | Device Detail Application/Query Service、DTO/API、版本化 Profile 和 Vue | 设备字段、能力、刷新任务、页签或验收状态变化 |
 | [文件管理对等规格（历史兼容）](development/parity/file-management.md) | 已冻结的双栏/SFTP/下载队列规格兼容指针 | 历史维护 | Git 历史与最终迁移矩阵 | 不再作为当前状态源 |
 | [设备文件下载](device-files/README.md) | Electron 设备文件只读浏览、SFTP、主机密钥、下载任务，以及同模块下的配置采集中心和设备诊断下载入口 | File Service/Task Center/Web | 当前代码、历史取证和定向测试 | SFTP、主机密钥、下载或安全边界变化 |
 | [配置采集与快照对比](CONFIG_COLLECTION.md) | 配置采集、快照选择、双栏 Diff、裁剪、导出和恢复 | Config Service/Task Center/Web | 配置 handler、API、Vue 与定向测试 | 快照、对比、裁剪、导出或恢复语义变化 |
@@ -73,10 +74,10 @@
 | [Traffic Web 应用边界](development/api-boundary-wave-1/traffic-web-boundary.md) | Traffic 执行端、查询分页、取消/重试和 Router 展示映射边界 | Traffic Web/API 开发 | `TrafficWebApplicationService`、Traffic Router、组合根 | Traffic Web 用例或 REST/WebSocket 契约变化 |
 | [功能模块](FEATURE_MODULES.md) | 一级模块、子功能和 Feature key | UI/版本配置开发 | `core/feature_registry.py`、主窗口注册 | 页面、Tab、动作或 Feature key 变化 |
 | [表格与 UI 规范](ui_table_guidelines.md) | Vue/Element Plus 表格、列宽、滚动、密度和状态 | Vue UI 开发 | `NcTable`、Element Plus、相关测试 | 公共组件、页面布局或表格规则变化 |
-| [NetConsole UI 设计系统](UI_DESIGN_SYSTEM.md) | Vue 3 + Element Plus + ECharts + Design Token 的主题、组件和可视化规范 | Web/UI 开发 | `apps/web/src/theme`、`apps/web/src/styles`、Electron 主题 IPC | Token、主题、组件、窗口背景或图表规范变化 |
-| [表格与字段展示标准](ui/TABLE_AND_FIELD_STANDARDS.md) | `NcDataTable`、自动列宽、对齐、缺失值、偏好和增量 Guard | Web/UI 开发 | `apps/web/src/components/table`、`scripts/ui`、表格清单 | 公共表格契约、列定义或迁移状态变化 |
+| [NetConsole UI 设计系统](UI_DESIGN_SYSTEM.md) | Vue 3 + Element Plus + ECharts + Design Token 的主题、组件和可视化规范 | Web/UI 开发 | `apps/desktop_renderer/src/theme`、`apps/desktop_renderer/src/styles`、Electron 主题 IPC | Token、主题、组件、窗口背景或图表规范变化 |
+| [表格与字段展示标准](ui/TABLE_AND_FIELD_STANDARDS.md) | `NcDataTable`、自动列宽、对齐、缺失值、偏好和增量 Guard | Web/UI 开发 | `apps/desktop_renderer/src/components/table`、`scripts/ui`、表格清单 | 公共表格契约、列定义或迁移状态变化 |
 | [表格迁移清单](ui/TABLE_INVENTORY.md) | 所有 Vue 表格的组件、对齐、列宽和整改状态 | Web/UI 开发与验收 | `scripts/ui/export_table_inventory.py` 扫描结果 | 任一表格新增、删除或迁移 |
-| [全局确认对话框](ui/CONFIRMATION_DIALOGS.md) | 统一确认类型、风险文案、键盘和安全边界 | Web/UI 开发 | `apps/web/src/components/feedback` | 新增确认动作、风险等级或弹窗行为变化 |
+| [全局确认对话框](ui/CONFIRMATION_DIALOGS.md) | 统一确认类型、风险文案、键盘和安全边界 | Web/UI 开发 | `apps/desktop_renderer/src/components/feedback` | 新增确认动作、风险等级或弹窗行为变化 |
 | [构建与发布](BUILD_AND_RELEASE.md) | 构建入口、版本、外部工具和验证 | 发布维护者 | `scripts/build/build_release.py`、构建脚本、`src/netconsole/core/version.py` | 依赖、打包、版本或发布目录变化 |
 | [完整版与客户版打包](FULL_AND_CUSTOMER_PACKAGING.md) | Full/Customer 模板、客户交付三态、会话预览、依赖检查和构建门禁 | 发布维护者、功能交付配置人员 | Feature Registry、Settings Application Service、版本准备脚本 | 模板语义、依赖关系、预览或 Profile 门禁变化 |
 | [正式包功能矩阵](PACKAGED_FEATURE_MATRIX.md) | 正式生产 Feature、页面/API、自动证据与干净安装人工状态 | 发布维护者、验收人员 | Registry、生产基线、打包 smoke、Windows/跨电脑验收记录 | 正式包功能、Feature 状态或人工验收结果变化 |

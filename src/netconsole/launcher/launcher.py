@@ -1,12 +1,9 @@
 from __future__ import annotations
 
 import argparse
-import atexit
 import ipaddress
 import os
 import sys
-import threading
-import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Sequence
@@ -74,7 +71,7 @@ class SingleInstanceGuard:
 
 def parse_launch_options(argv: Sequence[str]) -> LaunchOptions:
     parser = argparse.ArgumentParser(prog="NetConsole")
-    parser.add_argument("--mode", choices=("web", "server"), default="server")
+    parser.add_argument("--mode", choices=("server",), default="server")
     parser.add_argument("--host", type=_loopback_host, default="127.0.0.1")
     parser.add_argument("--port", type=_valid_port, default=8000)
     values = parser.parse_args(list(argv))
@@ -100,9 +97,9 @@ def launch(argv: Sequence[str] | None = None) -> int:
 def _launch_once(options: LaunchOptions, paths: PathResolver) -> int:
     from netconsole.launcher.runtime_supervisor import RuntimeSupervisor
 
-    host_mode = RuntimeMode.SERVER if options.mode == "server" else RuntimeMode.DESKTOP
-    host = _loopback_host(options.host) if host_mode is RuntimeMode.SERVER else "127.0.0.1"
-    port = options.port if host_mode is RuntimeMode.SERVER else None
+    host_mode = RuntimeMode.SERVER
+    host = _loopback_host(options.host)
+    port = options.port
     app_logger.log_info(
         "LAUNCHER_MODE_SELECTED",
         f"requested={options.mode} host_mode={host_mode.value}",
@@ -113,42 +110,9 @@ def _launch_once(options: LaunchOptions, paths: PathResolver) -> int:
         return 4
     _log_frontend_status(runtime)
     try:
-        if options.mode == "web":
-            _open_browser_shell(runtime, paths)
         return runtime.wait()
     finally:
         runtime.stop()
-
-
-def _open_browser_shell(runtime: RuntimeSupervisor, paths: PathResolver) -> bool:
-    try:
-        paths.runtime_cache_dir.mkdir(parents=True, exist_ok=True)
-        bootstrap_path = paths.runtime_cache_dir / f"web-console-{runtime.web_server.port}.html"
-        bootstrap_path.write_text(runtime.web_server.bootstrap_html(), encoding="utf-8")
-    except OSError as exc:
-        app_logger.log_error("BROWSER_SHELL_BOOTSTRAP_FAILED", f"error={exc}")
-        return False
-    try:
-        opened = bool(webbrowser.open_new_tab(bootstrap_path.as_uri()))
-    except (OSError, webbrowser.Error) as exc:
-        app_logger.log_error("BROWSER_SHELL_OPEN_FAILED", f"error={exc}")
-        opened = False
-    if opened:
-        app_logger.log_info("BROWSER_SHELL_OPENED", f"base_url={runtime.base_url}")
-    else:
-        app_logger.log_warning("BROWSER_SHELL_OPEN_FAILED", f"base_url={runtime.base_url}")
-    atexit.register(_remove_bootstrap_file, bootstrap_path)
-    cleanup = threading.Timer(60, _remove_bootstrap_file, args=(bootstrap_path,))
-    cleanup.daemon = True
-    cleanup.start()
-    return opened
-
-
-def _remove_bootstrap_file(path: Path) -> None:
-    try:
-        path.unlink(missing_ok=True)
-    except OSError as exc:
-        app_logger.log_warning("BROWSER_SHELL_BOOTSTRAP_CLEANUP_FAILED", str(exc))
 
 
 def _log_frontend_status(runtime: RuntimeSupervisor) -> None:

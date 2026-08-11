@@ -29,19 +29,17 @@ class FeatureDisabledError(RuntimeError):
     pass
 
 
-PROTECTED_INTERNAL_FEATURE_IDS = {"module.feature_switch", "system.feature_flags"}
+PROTECTED_INTERNAL_FEATURE_IDS = {"internal.feature_switch"}
 PACKAGED_CORE_FEATURE_IDS = frozenset(
     {
         "module.logs",
         "module.system_settings",
-        "web.job_center",
-        "web.logs",
-        "web.system_settings",
+        "module.task_center",
     }
 )
 PACKAGED_PRODUCTION_FEATURE_IDS = PACKAGED_CORE_FEATURE_IDS | frozenset(
     {
-        "desktop.native_bridge",
+        "capability.desktop_native_integration",
         "devices.securecrt_sessions",
         "module.ac",
         "module.command_reference",
@@ -59,63 +57,49 @@ PACKAGED_PRODUCTION_FEATURE_IDS = PACKAGED_CORE_FEATURE_IDS | frozenset(
         "online_mr.iperf_test",
         "rail.online_mr_analysis",
         "rail.online_mr_collection",
-        "web.ac_fit_ap_resources",
-        "web.ac_management",
-        "web.command_reference",
-        "web.config_collection",
-        "web.config_collection_fetch",
-        "web.device_connection_test",
-        "web.device_form_connection_test",
-        "web.device_management",
-        "web.device_management_collect",
-        "web.device_management_desktop",
-        "web.device_management_export",
-        "web.device_management_import",
-        "web.device_management_write",
-        "web.file_management",
-        "web.file_management_desktop_actions",
-        "web.file_management_download",
-        "web.file_management_remote",
-        "web.mesh_analysis",
-        "web.mesh_analysis_import",
-        "web.mesh_analysis_report_export",
-        "web.mesh_ap_coverage_audit",
-        "web.mesh_analysis_source_open_location",
-        "web.network_tools",
-        "web.online_mr_analysis",
-        "web.online_mr_parse",
-        "web.online_mr_realtime",
-        "web.online_mr_report_export",
-        "web.rail_trackside_ap_business",
-        "web.rail_trackside_ap_business_export",
-        "web.rail_trackside_ap_plan",
-        "web.rail_trackside_ap_plan_export",
-        "web.rail_trackside_ap_plan_write",
-        "web.rail_train_online_collect",
-        "web.rail_train_online_history_export",
-        "web.rail_train_online_mapping_export",
-        "web.rail_train_online_mapping_import",
-        "web.rail_train_online_mapping_write",
-        "web.rail_train_online_refresh",
-        "web.rail_transit_base_data",
-        "web.rail_transit_base_data_write",
-        "web.train_communication_monitoring",
+        "module.fit_ap",
+        "capability.config_collection.fetch",
+        "capability.devices.connection_test",
+        "capability.devices.collect",
+        "capability.devices.desktop_actions",
+        "capability.devices.export",
+        "capability.devices.import",
+        "capability.devices.write",
+        "capability.file_management.desktop_actions",
+        "capability.file_management.download",
+        "capability.file_management.remote",
+        "module.mesh_analysis",
+        "capability.mesh.import",
+        "capability.mesh.report_export",
+        "capability.mesh.coverage_audit",
+        "capability.mesh.source_open_location",
+        "module.network_tools",
+        "module.online_mr_analysis",
+        "capability.online_mr.parse",
+        "module.online_mr",
+        "capability.online_mr.report_export",
+        "module.trackside_ap",
+        "capability.trackside_ap.export",
+        "capability.trackside_ap.plan",
+        "capability.trackside_ap.plan_export",
+        "capability.trackside_ap.plan_write",
+        "capability.train_online.collect",
+        "capability.train_online.history_export",
+        "capability.train_online.mapping_export",
+        "capability.train_online.mapping_import",
+        "capability.train_online.mapping_write",
+        "capability.train_online.refresh",
+        "module.rail_base_data",
+        "capability.rail_base_data.write",
+        "module.train_communication",
         "mesh.generate_report",
     }
 )
 PACKAGED_ENABLED_ONLY_FEATURE_IDS = frozenset(
-    {"web.rail_task_control", "web.rail_train_online"}
+    {"capability.rail_transit.task_control", "module.train_online"}
 )
 FEATURE_STATE_KEYS = ("visible", "enabled", "client_package", "internal_only")
 FEATURE_PROFILE_SCHEMA_VERSION = 2
-LEGACY_FORMALIZED_FEATURE_IDS = frozenset(
-    {
-        "web.ac_dangerous_actions",
-        "web.ac_fit_ap_external_terminal",
-        "web.rail_trackside_ap_business",
-        "web.rail_trackside_ap_business_update",
-    }
-)
 
 
 @dataclass(frozen=True)
@@ -444,10 +428,6 @@ class FeatureGate:
 
     def _merge_data(self, data: dict[str, Any]) -> None:
         self.profile = str(data.get("profile") or self.profile)
-        try:
-            schema_version = int(data.get("schema_version") or 1)
-        except (TypeError, ValueError):
-            schema_version = 1
         normalized_count = 0
         for feature_id, raw_state in dict(data.get("features") or {}).items():
             if feature_id not in FEATURE_BY_ID or not isinstance(raw_state, dict):
@@ -462,11 +442,7 @@ class FeatureGate:
                 FEATURE_BY_ID[feature_id],
                 {
                     **current,
-                    **_migrate_legacy_formalized_feature_state(
-                        feature_id,
-                        raw_state,
-                        schema_version=schema_version,
-                    ),
+                    **raw_state,
                 },
             )
         if normalized_count:
@@ -588,24 +564,6 @@ def default_feature_state(item: FeatureItem) -> dict[str, bool]:
             "internal_only": internal_only,
         },
     )
-
-
-def _migrate_legacy_formalized_feature_state(
-    feature_id: str,
-    raw_state: dict[str, Any],
-    *,
-    schema_version: int = 1,
-) -> dict[str, Any]:
-    if schema_version >= FEATURE_PROFILE_SCHEMA_VERSION or feature_id not in LEGACY_FORMALIZED_FEATURE_IDS:
-        return raw_state
-    values = {key: _bool_override(raw_state.get(key)) for key in FEATURE_STATE_KEYS}
-    if values["internal_only"] is True or values["client_package"] not in {False, None}:
-        return raw_state
-    old_disabled_default = values["visible"] is False and values["enabled"] is False
-    old_development_default = values["visible"] is True and values["enabled"] is True
-    if not (old_disabled_default or old_development_default):
-        return raw_state
-    return {**raw_state, **default_feature_state(FEATURE_BY_ID[feature_id])}
 
 
 def normalize_feature_state(item: FeatureItem, raw_state: dict[str, Any] | None = None) -> dict[str, bool]:

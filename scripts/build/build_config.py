@@ -54,8 +54,8 @@ class BuildConfig:
         )
 
     @property
-    def web_dir(self) -> Path:
-        return self.root / "apps" / "web"
+    def renderer_dir(self) -> Path:
+        return self.root / "apps" / "desktop_renderer"
 
 
 def load_config() -> BuildConfig:

@@ -124,7 +124,7 @@ def test_dashboard_aggregates_existing_statuses_and_reuses_site_version_cache(tm
     assert _AgentService.calls == 1
     assert {item.id for item in first.alerts.items} >= {"ac-offline", "ac-unauthenticated", "optical-ap-1", "mesh-stale", "train-12", "task-task-1", "base-data-quality", "mesh-analysis-warning"}
     assert all(item.severity in {"critical", "warning"} for item in first.alerts.items)
-    assert FEATURE_BY_ID["web.rail_transit_wireless_dashboard"].parent_id == "module.rail_transit"
+    assert FEATURE_BY_ID["capability.rail_transit.wireless_dashboard"].parent_id == "module.rail_transit"
 
 
 def test_dashboard_agent_section_never_calls_remote_probe(tmp_path: Path) -> None:

@@ -33,18 +33,18 @@ dist/
 *.spec.bak
 
 # Web dependencies and generated files
-apps/web/node_modules/
-apps/web/dist/
-apps/web/.vite/
-apps/web/.cache/
-apps/web/test-results/
-apps/web/playwright-report/
-apps/web/*.js
-apps/web/*.d.ts
-apps/web/*.tsbuildinfo
-apps/web/src/**/*.js
-apps/web/src/**/*.d.ts
-!apps/web/src/env.d.ts
+apps/desktop_renderer/node_modules/
+apps/desktop_renderer/dist/
+apps/desktop_renderer/.vite/
+apps/desktop_renderer/.cache/
+apps/desktop_renderer/test-results/
+apps/desktop_renderer/playwright-report/
+apps/desktop_renderer/*.js
+apps/desktop_renderer/*.d.ts
+apps/desktop_renderer/*.tsbuildinfo
+apps/desktop_renderer/src/**/*.js
+apps/desktop_renderer/src/**/*.d.ts
+!apps/desktop_renderer/src/env.d.ts
 apps/desktop_electron/node_modules/
 apps/desktop_electron/dist/
 apps/desktop_electron/*.tsbuildinfo

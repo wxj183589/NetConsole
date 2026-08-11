@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import html
 import secrets
 import socket
 import threading
@@ -84,7 +83,7 @@ class DesktopWebServer:
         self.thread = threading.Thread(
             target=run_server,
             args=(self.server,),
-            name="netconsole-web-api",
+            name="netconsole-desktop-renderer-api",
             daemon=True,
         )
 
@@ -109,15 +108,3 @@ class DesktopWebServer:
     def stop(self) -> None:
         if self.thread.is_alive():
             stop_server(self.server, self.thread)
-
-    def bootstrap_html(self) -> str:
-        if not self.session_token:
-            return f'<meta http-equiv="refresh" content="0;url={html.escape(self.base_url, quote=True)}">'
-        action = html.escape(f"{self.base_url}/__desktop_session", quote=True)
-        token = html.escape(self.session_token, quote=True)
-        return f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
-<title>NetConsole Web</title></head><body>
-<form id="desktop-session" method="post" action="{action}">
-<input type="hidden" name="token" value="{token}"></form>
-<script>document.getElementById('desktop-session').submit()</script>
-</body></html>"""

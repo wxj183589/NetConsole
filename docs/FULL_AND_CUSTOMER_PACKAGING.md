@@ -30,7 +30,7 @@ Feature Registry 明确区分三种关系：
 
 Backend 的检查接口返回结构化依赖问题，页面按缺失依赖聚合展示。自动修复只修改当前草稿：运行依赖会启用并隐藏，客户交付依赖还会纳入客户版；内部、开发中、隐藏或已停用能力不能通过自动修复进入客户版。用户确认保存后才写 Full/Customer 模板。
 
-当前客户模板已将 `web.rail_train_online` 和 `web.rail_task_control` 作为“交付但隐藏”的必要能力，并明确排除未交付的 Online MR 会话定位和删除动作。
+当前客户模板已将 `module.train_online` 和 `capability.rail_transit.task_control` 作为“交付但隐藏”的必要能力，并明确排除未交付的 Online MR 会话定位和删除动作。
 
 ## 模板门禁
 

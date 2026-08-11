@@ -2,7 +2,7 @@
 
 ## 定位
 
-阶段 5C-9 在 `/rail-transit/wireless-dashboard` 增加轨道交通无线综合看板，Feature key 为 `web.rail_transit_wireless_dashboard`。它把已经存在的只读结果聚合为一个现场总览，不建立新的业务事实源：
+阶段 5C-9 在 `/rail-transit/wireless-dashboard` 增加轨道交通无线综合看板，Feature key 为 `capability.rail_transit.wireless_dashboard`。它把已经存在的只读结果聚合为一个现场总览，不建立新的业务事实源：
 
 ```text
 基础资料 / FIT-AP / 光衰 / AC Mesh-Link

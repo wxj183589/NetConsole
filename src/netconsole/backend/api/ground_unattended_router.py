@@ -54,7 +54,7 @@ from netconsole.models.api.system_maintenance import DesktopActionDTO
 router = APIRouter(
     prefix="/rail-transit/ground-unattended",
     tags=["ground-unattended"],
-    dependencies=[Depends(require_feature("web.ground_unattended"))],
+    dependencies=[Depends(require_feature("module.ground_unattended"))],
 )
 
 

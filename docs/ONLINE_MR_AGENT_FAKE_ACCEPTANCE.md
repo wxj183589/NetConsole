@@ -49,7 +49,7 @@ Fake Agent 位于 `tests/support/fake_online_mr_agent.py`，只监听 `127.0.0.1
 ```powershell
 .venv\Scripts\python.exe -m pytest -q tests/test_online_mr_agent_web_fake_acceptance.py
 .venv\Scripts\python.exe -m pytest -q tests/test_online_mr_agent_executor.py tests/test_online_mr_agent_http_client.py tests/test_online_mr_web_control_api.py tests/test_online_mr_web_control_service.py
-Set-Location apps/web
+Set-Location apps/desktop_renderer
 npm test -- --run src/views/rail-transit/TrainCommunicationView.test.ts
 npm run build
 ```

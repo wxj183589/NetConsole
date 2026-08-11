@@ -15,7 +15,7 @@
   tests/test_ground_unattended_foundation.py `
   tests/test_ground_unattended_eligibility.py -q
 
-Set-Location apps/web
+Set-Location apps/desktop_renderer
 pnpm exec vitest run `
   src/views/devices/DeviceManagementView.mount.test.ts `
   src/views/devices/DeviceManagementView.test.ts `

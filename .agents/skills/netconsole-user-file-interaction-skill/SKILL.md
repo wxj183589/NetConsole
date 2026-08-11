@@ -17,13 +17,13 @@ description: "NetConsole 用户可见导入、导出、模板下载、报告保�
 
 - `docs/IMPORT_EXPORT_INTERACTION.md`
 - `docs/development/import-export-dialog-audit.md`
-- `apps/web/src/composables/useUserSelectedExport.ts`
-- `apps/web/src/platform/exportActionRegistry.ts`
-- `apps/web/src/platform/runtime.ts`
-- `apps/web/src/platform/types.ts`
+- `apps/desktop_renderer/src/composables/useUserSelectedExport.ts`
+- `apps/desktop_renderer/src/platform/exportActionRegistry.ts`
+- `apps/desktop_renderer/src/platform/runtime.ts`
+- `apps/desktop_renderer/src/platform/types.ts`
 - `apps/desktop_electron/src/main/backend-download.ts`
 - `apps/desktop_electron/src/main/ipc.ts`
-- 目标导入/导出入口及其现有测试、`apps/web/src/platform/exportEntryAudit.test.ts` 和 `apps/web/src/composables/useUserSelectedExport.test.ts`
+- 目标导入/导出入口及其现有测试、`apps/desktop_renderer/src/platform/exportEntryAudit.test.ts` 和 `apps/desktop_renderer/src/composables/useUserSelectedExport.test.ts`
 
 # 工作流程
 

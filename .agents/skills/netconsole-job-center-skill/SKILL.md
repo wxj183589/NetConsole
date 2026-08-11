@@ -30,7 +30,7 @@ description: "NetConsole Job Center、后台 Job、JobSpec、BackgroundJob、Job
 
 - `docs/ARCHITECTURE.md`、`docs/JOB_CENTER.md`、`docs/REFACTOR_MAP.md`、`docs/background_task_policy.md`。
 - `src/netconsole/background_worker.py`、`src/netconsole/services/background_job.py`、`src/netconsole/services/job_center/local_process_adapter.py`。
-- `src/netconsole/services/job_center/`、`src/netconsole/backend/api/job_center_router.py`、`apps/web/src/views/job-center/JobCenterView.vue`。
+- `src/netconsole/services/job_center/`、`src/netconsole/backend/api/job_center_router.py`、`apps/desktop_renderer/src/views/job-center/JobCenterView.vue`。
 - `src/netconsole/core/background_tasks.py`、`src/netconsole/core/shutdown_manager.py`、`tests/test_job_center.py`。
 
 # 工作流程

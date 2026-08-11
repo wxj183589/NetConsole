@@ -38,21 +38,21 @@ from netconsole.services.rail_transit.import_preview_service import RailTransitI
 
 
 AC_FEATURE_IDS = (
-    "web.ac_extensions",
-    "web.ac_extensions_preview",
-    "web.ac_extensions_apply",
-    "web.ac_extensions_rollback",
-    "web.ac_extensions_export",
-    "web.ac_refresh",
-    "web.ac_fit_ap_delete",
-    "web.ac_fit_ap_metadata_import",
-    "web.ac_fit_ap_metadata_write",
-    "web.ac_fit_ap_history",
-    "web.ac_fit_ap_resource_export",
-    "web.ac_dangerous_actions",
+    "capability.ac.extensions",
+    "capability.ac.extensions.preview",
+    "capability.ac.extensions.apply",
+    "capability.ac.extensions.rollback",
+    "capability.ac.extensions.export",
+    "capability.ac.refresh",
+    "capability.ac.fit_ap.delete",
+    "capability.ac.fit_ap.metadata_import",
+    "capability.ac.fit_ap.metadata_write",
+    "capability.ac.fit_ap.history",
+    "capability.ac.fit_ap.resource_export",
+    "capability.ac.dangerous_actions",
     "ac.omnipeek_name_table_export",
-    "web.ac_fit_ap_external_terminal",
-    "desktop.native_bridge",
+    "capability.ac.external_terminal",
+    "capability.desktop_native_integration",
 )
 CSV_CONTENT = (
     "AP名称,AP_MAC,归属类型,归属站点,归属区间,区间起点站,区间终点站,场段,区域,网络,线别,里程,点位说明,方向,备注\n"
@@ -934,31 +934,31 @@ def test_fine_grained_feature_gates_block_child_actions_independently(
 ) -> None:
     client, _service_instance = _client(tmp_path, monkeypatch)
     with client:
-        client.app.state.feature_gate.features["web.ac_dangerous_actions"].update(visible=False, enabled=False, client_package=False)
+        client.app.state.feature_gate.features["capability.ac.dangerous_actions"].update(visible=False, enabled=False, client_package=False)
         blocked_action = client.post(
             "/api/ac-management/actions/plans", json={"target_id": "ac-1", "action_id": "persist_auto_ap"}
         )
-        client.app.state.feature_gate.features["web.ac_extensions_preview"].update(visible=False, enabled=False, client_package=False)
+        client.app.state.feature_gate.features["capability.ac.extensions.preview"].update(visible=False, enabled=False, client_package=False)
         blocked_preview = client.post(
             "/api/ac-management/extensions/import-preview",
             files={"file": ("extensions.csv", CSV_CONTENT, "text/csv")},
         )
-        client.app.state.feature_gate.features["web.ac_refresh"].update(visible=False, enabled=False, client_package=False)
+        client.app.state.feature_gate.features["capability.ac.refresh"].update(visible=False, enabled=False, client_package=False)
         blocked_refresh = client.post("/api/ac-management/local-rebuild/optical", json={"ac_id": "ac-1"})
         blocked_task_recovery = client.post("/api/ac-management/web-tasks/recover")
         blocked_export_without_task_control = client.post("/api/ac-management/extensions/export")
-        client.app.state.feature_gate.features["web.ac_extensions_apply"].update(visible=False, enabled=False, client_package=False)
+        client.app.state.feature_gate.features["capability.ac.extensions.apply"].update(visible=False, enabled=False, client_package=False)
         blocked_apply = client.post(
             "/api/ac-management/extensions/import-apply",
             json={"preview_id": "missing", "preview_digest": "missing", "explicit_confirmation": True},
         )
-        client.app.state.feature_gate.features["web.ac_extensions_rollback"].update(visible=False, enabled=False, client_package=False)
+        client.app.state.feature_gate.features["capability.ac.extensions.rollback"].update(visible=False, enabled=False, client_package=False)
         blocked_rollback = client.post(
             "/api/ac-management/extensions/audits/missing/rollback",
             json={"explicit_confirmation": True},
         )
-        client.app.state.feature_gate.features["web.ac_extensions_export"].update(visible=False, enabled=False, client_package=False)
-        client.app.state.feature_gate.features["web.ac_refresh"].update(visible=True, enabled=True, client_package=True)
+        client.app.state.feature_gate.features["capability.ac.extensions.export"].update(visible=False, enabled=False, client_package=False)
+        client.app.state.feature_gate.features["capability.ac.refresh"].update(visible=True, enabled=True, client_package=True)
         blocked_export = client.post("/api/ac-management/extensions/export")
         readable = client.get("/api/ac-management/extensions")
 

@@ -158,9 +158,9 @@ def test_topology_and_diagnostic_routes_use_query_and_application_services(tmp_p
     app.state.train_communication_query_service = _ApiService()
     app.state.rail_transit_web_application_service = _ApplicationService()
     for feature_id in (
-        "web.train_communication_monitoring",
-        "web.rail_car_network_diagnostic_execute",
-        "web.rail_task_control",
+        "module.train_communication",
+        "capability.train_communication.diagnostic_execute",
+        "capability.rail_transit.task_control",
     ):
         app.state.feature_gate.features[feature_id] = {
             "visible": True,

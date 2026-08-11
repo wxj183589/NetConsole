@@ -407,7 +407,7 @@ def _read_nested_build_metadata(
         frontend = _extract_archive_json(
             seven_zip,
             app_archive,
-            r"resources\backend\_internal\netconsole\assets\web\web-build-meta.json",
+            r"resources\backend\_internal\netconsole\assets\desktop_renderer\desktop-renderer-build-meta.json",
         )
         return backend, frontend
 

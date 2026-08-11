@@ -385,11 +385,11 @@ def architecture_boundary_findings() -> list[Finding]:
         for item in record["imports"]:
             specifier = str(item["specifier"]).replace("\\", "/")
             line = int(item["line"])
-            if item_path.startswith("apps/web/src/") and (
+            if item_path.startswith("apps/desktop_renderer/src/") and (
                 "/main/" in specifier or "/preload/" in specifier
             ):
                 findings.append(Finding("TS_WEB_ELECTRON_IMPORT", item_path, line, f"web imports {specifier}"))
-            elif item_path.startswith("apps/desktop_electron/src/main/") and ("apps/web" in specifier or "/stores/" in specifier):
+            elif item_path.startswith("apps/desktop_electron/src/main/") and ("apps/desktop_renderer" in specifier or "/stores/" in specifier):
                 findings.append(Finding("TS_MAIN_WEB_IMPORT", item_path, line, f"main imports {specifier}"))
             elif item_path.startswith("apps/desktop_electron/src/preload/") and not (
                 specifier == "electron" or specifier.startswith("../shared/") or specifier.startswith("./")
@@ -397,8 +397,8 @@ def architecture_boundary_findings() -> list[Finding]:
                 findings.append(Finding("TS_PRELOAD_BUSINESS_IMPORT", item_path, line, f"preload imports {specifier}"))
         for item in record["legacy"]:
             if item_path not in {
-                "apps/web/src/navigation/registry.ts",
-                "apps/web/src/navigation/registry.test.ts",
+                "apps/desktop_renderer/src/navigation/registry.ts",
+                "apps/desktop_renderer/src/navigation/registry.test.ts",
             }:
                 findings.append(Finding("LEGACY_NAV_FIELD_SCOPE", item_path, int(item["line"]), f"legacy field {item['name']} escaped migration metadata"))
     return findings
@@ -418,7 +418,7 @@ def forbidden_import_findings() -> list[Finding]:
             for module in modules:
                 if module.split(".", 1)[0] in forbidden_roots:
                     findings.append(Finding("QT_RUNTIME_IMPORT", relative_path(path), node.lineno, f"imports {module}"))
-    for relative in ("requirements-runtime.txt", "pyproject.toml", "apps/desktop_electron/package.json", "apps/web/package.json"):
+    for relative in ("requirements-runtime.txt", "pyproject.toml", "apps/desktop_electron/package.json", "apps/desktop_renderer/package.json"):
         text = (ROOT / relative).read_text(encoding="utf-8")
         for marker in sorted(forbidden_roots):
             if re.search(rf"(?i)(?:^|[^a-z]){re.escape(marker)}(?:$|[^a-z])", text):
@@ -536,7 +536,7 @@ def ui_business_logic_findings() -> list[Finding]:
     candidates: set[tuple[str, str]] = set()
     for record in records:
         item_path = str(record["path"])
-        if not item_path.startswith("apps/web/src/") or item_path.endswith(".test.ts"):
+        if not item_path.startswith("apps/desktop_renderer/src/") or item_path.endswith(".test.ts"):
             continue
         for item in record["functions"]:
             symbol = str(item["name"])
@@ -558,7 +558,7 @@ def ui_business_logic_findings() -> list[Finding]:
 def dynamic_chart_stability_findings() -> list[Finding]:
     """Keep shared ECharts timelines on the proven no-dirty-rectangle lifecycle."""
     findings: list[Finding] = []
-    chart_root = ROOT / "apps" / "web" / "src" / "components"
+    chart_root = ROOT / "apps" / "desktop_renderer" / "src" / "components"
     required_patterns = {
         "useDirtyRect: false": re.compile(r"createTimeChartInitOptions\s*\([\s\S]{0,240}?useDirtyRect\s*:\s*false"),
         "ResizeObserver": re.compile(r"ResizeObserver"),
@@ -605,7 +605,7 @@ def _load_theme_literal_allowlist(
         item_path = values["path"].replace("\\", "/")
         test_path = values["test"].replace("\\", "/")
         if (
-            not item_path.startswith("apps/web/src/")
+            not item_path.startswith("apps/desktop_renderer/src/")
             or Path(item_path).is_absolute()
             or any(char in item_path for char in "*?[")
             or not (ROOT / item_path).is_file()
@@ -653,7 +653,7 @@ def web_theme_findings(
             )
         ]
     matched_literal_allowlist: set[tuple[str, str, str, str]] = set()
-    tokens_path = ROOT / "apps" / "web" / "src" / "theme" / "tokens.css"
+    tokens_path = ROOT / "apps" / "desktop_renderer" / "src" / "theme" / "tokens.css"
     token_declarations = {
         declaration.property: declaration.value
         for declaration in _file_css_declarations(tokens_path)
@@ -697,8 +697,8 @@ def web_theme_findings(
                 Finding("WEB_THEME_TOKEN_MISSING", relative_path(theme_path), 0, f"missing {token}")
             )
 
-    style_paths = sorted((ROOT / "apps" / "web" / "src").rglob("*.css"))
-    style_paths.extend(sorted((ROOT / "apps" / "web" / "src").rglob("*.vue")))
+    style_paths = sorted((ROOT / "apps" / "desktop_renderer" / "src").rglob("*.css"))
+    style_paths.extend(sorted((ROOT / "apps" / "desktop_renderer" / "src").rglob("*.vue")))
     sidebar_background_found = False
     for path in style_paths:
         item_path = relative_path(path)
@@ -727,7 +727,7 @@ def web_theme_findings(
                     )
             if (
                 declaration.property.startswith(BASE_ELEMENT_PREFIXES)
-                and item_path != "apps/web/src/theme/element-plus.css"
+                and item_path != "apps/desktop_renderer/src/theme/element-plus.css"
             ):
                 findings.append(
                     Finding(
@@ -795,7 +795,7 @@ def web_theme_findings(
         findings.append(
             Finding(
                 "WEB_THEME_SIDEBAR_SURFACE",
-                "apps/web/src/styles/main.css",
+                "apps/desktop_renderer/src/styles/main.css",
                 0,
                 ".app-sidebar background must be var(--nc-bg-sidebar)",
             )
@@ -812,7 +812,7 @@ def web_theme_findings(
             )
         )
 
-    main_styles = ROOT / "apps" / "web" / "src" / "styles" / "main.css"
+    main_styles = ROOT / "apps" / "desktop_renderer" / "src" / "styles" / "main.css"
     layout_declarations = {
         (item.selector, item.property): item.value
         for item in _file_css_declarations(main_styles)
@@ -835,7 +835,7 @@ def web_theme_findings(
                     f"{key[0]} {key[1]} must be {expected}",
                 )
             )
-    app_layout = ROOT / "apps" / "web" / "src" / "layouts" / "AppLayout.vue"
+    app_layout = ROOT / "apps" / "desktop_renderer" / "src" / "layouts" / "AppLayout.vue"
     app_layout_text = app_layout.read_text(encoding="utf-8")
     if re.search(
         r"style\s*=\s*(['\"])[^'\"]*background(?:-color)?\s*:\s*(?:#[0-9a-f]{3,8}|rgba?\s*\(|hsla?\s*\()[^'\"]*\1",
@@ -882,7 +882,7 @@ def web_theme_findings(
                     f"chart literal color {color['value']}",
                 )
             )
-    echarts_path = ROOT / "apps" / "web" / "src" / "theme" / "echarts.ts"
+    echarts_path = ROOT / "apps" / "desktop_renderer" / "src" / "theme" / "echarts.ts"
     echarts_text = echarts_path.read_text(encoding="utf-8")
     for token in sorted(chart_series_tokens):
         if f"read('{token}'" not in echarts_text:

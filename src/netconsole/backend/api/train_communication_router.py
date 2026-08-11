@@ -132,8 +132,8 @@ def online_trains(
     response_model=RailTransitTaskDTO,
     status_code=status.HTTP_202_ACCEPTED,
     dependencies=[
-        Depends(require_feature("web.rail_car_network_diagnostic_execute")),
-        Depends(require_feature("web.rail_task_control")),
+        Depends(require_feature("capability.train_communication.diagnostic_execute")),
+        Depends(require_feature("capability.rail_transit.task_control")),
     ],
 )
 def start_car_network_diagnostic(request: Request, train_id: str) -> RailTransitTaskDTO:
@@ -149,7 +149,7 @@ def start_car_network_diagnostic(request: Request, train_id: str) -> RailTransit
 @router.get(
     "/diagnostics/{task_id}",
     response_model=RailTransitTaskDTO,
-    dependencies=[Depends(require_feature("web.rail_task_control"))],
+    dependencies=[Depends(require_feature("capability.rail_transit.task_control"))],
 )
 def diagnostic_task(request: Request, task_id: str) -> RailTransitTaskDTO:
     try:
@@ -161,7 +161,7 @@ def diagnostic_task(request: Request, task_id: str) -> RailTransitTaskDTO:
 @router.post(
     "/diagnostics/{task_id}/cancel",
     response_model=RailTransitTaskDTO,
-    dependencies=[Depends(require_feature("web.rail_task_control"))],
+    dependencies=[Depends(require_feature("capability.rail_transit.task_control"))],
 )
 def cancel_car_network_diagnostic(request: Request, task_id: str) -> RailTransitTaskDTO:
     try:
@@ -173,7 +173,7 @@ def cancel_car_network_diagnostic(request: Request, task_id: str) -> RailTransit
 @router.post(
     "/diagnostics/recover",
     response_model=list[RailTransitTaskDTO],
-    dependencies=[Depends(require_feature("web.rail_task_control"))],
+    dependencies=[Depends(require_feature("capability.rail_transit.task_control"))],
 )
 def recover_car_network_diagnostics(request: Request) -> list[RailTransitTaskDTO]:
     try:
@@ -185,7 +185,7 @@ def recover_car_network_diagnostics(request: Request) -> list[RailTransitTaskDTO
 @router.get(
     "/point-table",
     response_model=CarNetworkPointTableDTO,
-    dependencies=[Depends(require_feature("web.train_communication_monitoring"))],
+    dependencies=[Depends(require_feature("module.train_communication"))],
 )
 def point_table(request: Request) -> CarNetworkPointTableDTO:
     try:
@@ -197,7 +197,7 @@ def point_table(request: Request) -> CarNetworkPointTableDTO:
 @router.post(
     "/point-table/import/preview",
     response_model=CarNetworkPointPreviewDTO,
-    dependencies=[Depends(require_feature("web.rail_car_network_point_table_write"))],
+    dependencies=[Depends(require_feature("capability.train_communication.point_table_write"))],
 )
 async def preview_point_table_import(
     request: Request,
@@ -220,7 +220,7 @@ async def preview_point_table_import(
 @router.post(
     "/point-table/transform",
     response_model=CarNetworkPointTableDTO,
-    dependencies=[Depends(require_feature("web.rail_car_network_point_table_write"))],
+    dependencies=[Depends(require_feature("capability.train_communication.point_table_write"))],
 )
 def transform_point_table(
     request: Request,
@@ -242,8 +242,8 @@ def transform_point_table(
     response_model=RailTransitTaskDTO,
     status_code=status.HTTP_202_ACCEPTED,
     dependencies=[
-        Depends(require_feature("web.rail_car_network_point_table_write")),
-        Depends(require_feature("web.rail_task_control")),
+        Depends(require_feature("capability.train_communication.point_table_write")),
+        Depends(require_feature("capability.rail_transit.task_control")),
     ],
 )
 def save_point_table(
@@ -269,8 +269,8 @@ def save_point_table(
     response_model=RailTransitTaskDTO,
     status_code=status.HTTP_202_ACCEPTED,
     dependencies=[
-        Depends(require_feature("web.rail_car_network_point_table_write")),
-        Depends(require_feature("web.rail_task_control")),
+        Depends(require_feature("capability.train_communication.point_table_write")),
+        Depends(require_feature("capability.rail_transit.task_control")),
     ],
 )
 def generate_point_table(
@@ -292,7 +292,7 @@ def generate_point_table(
     "/point-table/export",
     response_model=RailTransitTaskDTO,
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_feature("web.rail_car_network_point_table_export"))],
+    dependencies=[Depends(require_feature("capability.train_communication.point_table_export"))],
 )
 def export_point_table(
     request: Request,
@@ -310,7 +310,7 @@ def export_point_table(
 @router.get(
     "/point-table/artifacts/{artifact_id}/download",
     response_class=FileResponse,
-    dependencies=[Depends(require_feature("web.rail_car_network_point_table_export"))],
+    dependencies=[Depends(require_feature("capability.train_communication.point_table_export"))],
 )
 def download_point_table(
     request: Request,
@@ -331,7 +331,7 @@ def download_point_table(
 @router.get(
     "/point-table/tasks/{task_id}",
     response_model=RailTransitTaskDTO,
-    dependencies=[Depends(require_feature("web.rail_task_control"))],
+    dependencies=[Depends(require_feature("capability.rail_transit.task_control"))],
 )
 def point_table_task(request: Request, task_id: str) -> RailTransitTaskDTO:
     try:
@@ -346,7 +346,7 @@ def point_table_task(request: Request, task_id: str) -> RailTransitTaskDTO:
 @router.post(
     "/point-table/tasks/{task_id}/cancel",
     response_model=RailTransitTaskDTO,
-    dependencies=[Depends(require_feature("web.rail_task_control"))],
+    dependencies=[Depends(require_feature("capability.rail_transit.task_control"))],
 )
 def cancel_point_table_task(request: Request, task_id: str) -> RailTransitTaskDTO:
     point_table_task(request, task_id)
@@ -359,7 +359,7 @@ def cancel_point_table_task(request: Request, task_id: str) -> RailTransitTaskDT
 @router.post(
     "/point-table/tasks/recover",
     response_model=list[RailTransitTaskDTO],
-    dependencies=[Depends(require_feature("web.rail_task_control"))],
+    dependencies=[Depends(require_feature("capability.rail_transit.task_control"))],
 )
 def recover_point_table_tasks(request: Request) -> list[RailTransitTaskDTO]:
     try:

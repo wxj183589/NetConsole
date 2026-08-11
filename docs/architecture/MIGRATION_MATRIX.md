@@ -21,17 +21,17 @@ Feature Registry 的 `FeatureStatus` 只表达入口是否允许进入生产基�
 
 | 主要模块（Feature / Navigation） | Registry | 入口实现 | 自动化 | Electron 人工 | 真实设备/局点 | 正式包 | 主要事实源 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 设备管理（`web.device_management` / `devices`） | `ENABLED` | `IMPLEMENTED_UNVERIFIED` | `AUTOMATION_COVERED` | `PENDING` | `REAL_DEVICE_PENDING` | `RELEASE_INCLUDED / GUI_PENDING` | Device API/Vue、Navigation Registry、设备定向测试 |
-| AC/FIT-AP（`web.ac_management`、`web.ac_fit_ap_resources` / `ac.fit-aps`） | `ENABLED` | `PARTIAL / REAL_DEVICE_PENDING` | `AUTOMATION_COVERED` | `PENDING` | `REAL_DEVICE_PENDING` | `RELEASE_INCLUDED / GUI_PENDING` | AC Application Service/API/Vue、AC 动作与导出测试 |
-| 轨交基础资料与轨旁 AP（`web.rail_transit_base_data`、`web.rail_trackside_ap_business` / `rail.base-data`、`rail.trackside-ap-business`） | `ENABLED` | `PARTIAL` | `AUTOMATION_COVERED` | `PENDING` | `REAL_DEVICE_PENDING` | `RELEASE_INCLUDED / GUI_PENDING` | Rail API/Vue、基础资料和轨旁 AP 定向测试 |
-| 列车在线、通信、MESH、Online MR（`web.rail_train_online` 等 / `rail.*`） | `ENABLED` | `PARTIAL / REAL_DEVICE_PENDING` | `AUTOMATION_COVERED` | `PENDING` | `REAL_DEVICE_PENDING` | `RELEASE_INCLUDED / GUI_PENDING` | Rail/Online MR/MESH Service、API、Vue 与定向测试 |
-| 配置采集（`web.config_collection` / `config`） | `ENABLED` | `IMPLEMENTED_UNVERIFIED` | `AUTOMATION_COVERED` | `PENDING` | `REAL_DEVICE_PENDING` | `RELEASE_INCLUDED / GUI_PENDING` | Config Service/API/Vue、采集/差异/Artifact 测试 |
-| 设备文件下载（`web.file_management` / `files`） | `ENABLED` | `IMPLEMENTED_UNVERIFIED` | `AUTOMATION_COVERED` | `PENDING` | `REAL_DEVICE_PENDING` | `RELEASE_INCLUDED / GUI_PENDING` | File Service/API/Vue/Bridge 与 SFTP/队列测试 |
-| 网络工具与 Traffic（`web.network_tools` / `network.*`） | `ENABLED` | `PARTIAL / REAL_DEVICE_PENDING` | `AUTOMATION_COVERED` | `PENDING` | `REAL_DEVICE_PENDING` | `RELEASE_INCLUDED / GUI_PENDING` | Network/Traffic Service/API/WebSocket/Vue 测试 |
-| 工具集（`web.tool_collection` / `tools`） | `ENABLED` | `IMPLEMENTED_UNVERIFIED` | `AUTOMATION_COVERED` | `PENDING` | `NOT_APPLICABLE` | `RELEASE_INCLUDED / GUI_PENDING` | Electron 外部工具 Store/IPC/Vue 测试 |
-| Task Center 与 Agent 管理（`web.job_center`、`web.agent_management` / `tasks`、`agents`） | `ENABLED` | `PARTIAL` | `AUTOMATION_COVERED` | `PENDING` | `REAL_DEVICE_PENDING` | `RELEASE_INCLUDED / GUI_PENDING` | Job/Agent Service、REST/WebSocket、Vue 测试 |
-| 命令、日志、系统设置（`web.command_reference`、`web.logs`、`web.system_settings`） | `ENABLED` | `PARTIAL / IMPLEMENTED_UNVERIFIED` | `AUTOMATION_COVERED` | `PENDING` | `NOT_APPLICABLE` | `RELEASE_INCLUDED / GUI_PENDING` | 对应 Application Service/API/Vue/Bridge 测试 |
-| 内部/开发功能（`web.feature_switch`、`web.ac_extensions*` 等） | `DEVELOPMENT` / `internal_only` | `HIDDEN` 或 `NOT_STARTED` | `AUTOMATION_COVERED` | `NOT_APPLICABLE` | `NOT_APPLICABLE` | `EXCLUDED` | Feature Gate、生产基线与导航测试 |
+| 设备管理（`module.devices` / `devices`） | `ENABLED` | `IMPLEMENTED_UNVERIFIED` | `AUTOMATION_COVERED` | `PENDING` | `REAL_DEVICE_PENDING` | `RELEASE_INCLUDED / GUI_PENDING` | Device API/Vue、Navigation Registry、设备定向测试 |
+| AC/FIT-AP（`module.ac`、`module.fit_ap` / `ac.fit-aps`） | `ENABLED` | `PARTIAL / REAL_DEVICE_PENDING` | `AUTOMATION_COVERED` | `PENDING` | `REAL_DEVICE_PENDING` | `RELEASE_INCLUDED / GUI_PENDING` | AC Application Service/API/Vue、AC 动作与导出测试 |
+| 轨交基础资料与轨旁 AP（`module.rail_base_data`、`module.trackside_ap` / `rail.base-data`、`rail.trackside-ap-business`） | `ENABLED` | `PARTIAL` | `AUTOMATION_COVERED` | `PENDING` | `REAL_DEVICE_PENDING` | `RELEASE_INCLUDED / GUI_PENDING` | Rail API/Vue、基础资料和轨旁 AP 定向测试 |
+| 列车在线、通信、MESH、Online MR（`module.train_online` 等 / `rail.*`） | `ENABLED` | `PARTIAL / REAL_DEVICE_PENDING` | `AUTOMATION_COVERED` | `PENDING` | `REAL_DEVICE_PENDING` | `RELEASE_INCLUDED / GUI_PENDING` | Rail/Online MR/MESH Service、API、Vue 与定向测试 |
+| 配置采集（`module.config_collection` / `config`） | `ENABLED` | `IMPLEMENTED_UNVERIFIED` | `AUTOMATION_COVERED` | `PENDING` | `REAL_DEVICE_PENDING` | `RELEASE_INCLUDED / GUI_PENDING` | Config Service/API/Vue、采集/差异/Artifact 测试 |
+| 设备文件下载（`module.file_management` / `files`） | `ENABLED` | `IMPLEMENTED_UNVERIFIED` | `AUTOMATION_COVERED` | `PENDING` | `REAL_DEVICE_PENDING` | `RELEASE_INCLUDED / GUI_PENDING` | File Service/API/Vue/Bridge 与 SFTP/队列测试 |
+| 网络工具与 Traffic（`module.network_tools` / `network.*`） | `ENABLED` | `PARTIAL / REAL_DEVICE_PENDING` | `AUTOMATION_COVERED` | `PENDING` | `REAL_DEVICE_PENDING` | `RELEASE_INCLUDED / GUI_PENDING` | Network/Traffic Service/API/WebSocket/Vue 测试 |
+| 工具集（`module.tools` / `tools`） | `ENABLED` | `IMPLEMENTED_UNVERIFIED` | `AUTOMATION_COVERED` | `PENDING` | `NOT_APPLICABLE` | `RELEASE_INCLUDED / GUI_PENDING` | Electron 外部工具 Store/IPC/Vue 测试 |
+| Task Center 与 Agent 管理（`module.task_center`、`module.agent` / `tasks`、`agents`） | `ENABLED` | `PARTIAL` | `AUTOMATION_COVERED` | `PENDING` | `REAL_DEVICE_PENDING` | `RELEASE_INCLUDED / GUI_PENDING` | Job/Agent Service、REST/WebSocket、Vue 测试 |
+| 命令、日志、系统设置（`module.command_reference`、`module.logs`、`module.system_settings`） | `ENABLED` | `PARTIAL / IMPLEMENTED_UNVERIFIED` | `AUTOMATION_COVERED` | `PENDING` | `NOT_APPLICABLE` | `RELEASE_INCLUDED / GUI_PENDING` | 对应 Application Service/API/Vue/Bridge 测试 |
+| 内部/开发功能（`internal.feature_switch`、`capability.ac.extensions*` 等） | `DEVELOPMENT` / `internal_only` | `HIDDEN` 或 `NOT_STARTED` | `AUTOMATION_COVERED` | `NOT_APPLICABLE` | `NOT_APPLICABLE` | `EXCLUDED` | Feature Gate、生产基线与导航测试 |
 | SNMP Center、无线勘测 | `REMOVED` | `REMOVED` | `AUTOMATION_COVERED` | `NOT_APPLICABLE` | `NOT_APPLICABLE` | `EXCLUDED` | `REMOVED_FEATURE_IDS`、removed-feature/package Guard |
 
 Windows Server 2012 x64 的兼容性证据单独记录：NetConsole 主程序和独立 Agent 均为 `USER_FIELD_CONFIRMED`；仓库自动化 VM 为 `AUTOMATION_NOT_RECORDED`；正式安装包 GUI 验收仍为 `PENDING`。这组状态不改变上表各业务模块的现场验收结论，也不引入 OS 启动阻断。
@@ -40,7 +40,7 @@ Windows Server 2012 x64 的兼容性证据单独记录：NetConsole 主程序和
 
 | 原 Qt 路径/代表类与入口 | 分类 | 永久位置 | 主要自动证据 | 删除依据 |
 | --- | --- | --- | --- | --- |
-| `src/netconsole/ui/main_window.py`、`app_fluent_window.py`、`app_window_factory.py`、`navigation.py`、`shell/**` | `ADAPTER_REPLACED` | `apps/desktop_electron/src/main`、`preload`；`apps/web/src/App.vue`、导航 Registry | Electron lifecycle/security、Vue navigation 测试 | Electron 是唯一桌面宿主；无业务规则留在窗口壳 |
+| `src/netconsole/ui/main_window.py`、`app_fluent_window.py`、`app_window_factory.py`、`navigation.py`、`shell/**` | `ADAPTER_REPLACED` | `apps/desktop_electron/src/main`、`preload`；`apps/desktop_renderer/src/App.vue`、导航 Registry | Electron lifecycle/security、Vue navigation 测试 | Electron 是唯一桌面宿主；无业务规则留在窗口壳 |
 | `src/netconsole/ui/components/**`、`widgets/**`、`table/**`、`theme/**`、`icons/**` | `PURE_UI` | Vue/Element Plus/ECharts 与 NetConsole Design Token | Vue 组件、布局和主题测试 | Qt 控件/Delegate/绘制代码无永久业务职责 |
 | `job_process_manager.py`、`background_process_bridge.py`、`job_action_helper.py`、`export_process_manager.py`、`export_action_helper.py` | `ADAPTER_REPLACED` | `services/job_center/runtime`、`LocalProcessAdapter`、Task Center、Export Process、Electron Artifact Bridge | `test_job_center*`、`test_export_process_framework.py`、Electron 任务窗口测试 | 状态、取消、事件和 Artifact 已由纯 Python/桌面白名单承担 |
 | `device_management_page.py`、`device_dialog.py`、`device_detail_dialog.py`、`device_group_dialog.py`、连接/批量/诊断 Worker | `BUSINESS_MOVED` | `device_management_web_service.py`、Device Router/DTO、Device Vue、领域 handlers | `test_device_management_web_api.py`、`test_device_management_table_rules.py` | CRUD、分组、连接、诊断、导入导出进入永久链；现场仍待验收 |

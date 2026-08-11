@@ -1,6 +1,6 @@
 # 全局确认对话框
 
-NetConsole 的业务确认统一由 `apps/web/src/components/feedback/useConfirm.ts` 提交、由应用根节点的 `NcConfirmDialog` 渲染。页面不得使用 `window.confirm()`、私有确认弹窗或直接调用 `ElMessageBox.confirm()`。
+NetConsole 的业务确认统一由 `apps/desktop_renderer/src/components/feedback/useConfirm.ts` 提交、由应用根节点的 `NcConfirmDialog` 渲染。页面不得使用 `window.confirm()`、私有确认弹窗或直接调用 `ElMessageBox.confirm()`。
 
 ## 确认类型
 

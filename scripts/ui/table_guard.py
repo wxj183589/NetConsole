@@ -8,14 +8,14 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-WEB_SOURCE = Path("apps/web/src")
+RENDERER_SOURCE = Path("apps/desktop_renderer/src")
 BASELINE_PATH = Path("config/architecture/table-layout-baseline.json")
 EXCEPTIONS_PATH = Path("config/architecture/table-layout-exceptions.yaml")
 INVENTORY_PATH = Path("docs/ui/TABLE_INVENTORY.md")
 SHARED_TABLE_PATHS = (
-    Path("apps/web/src/components/table/NcTableColumn.ts"),
-    Path("apps/web/src/components/table/useAutoColumnWidth.ts"),
-    Path("apps/web/src/components/table/NcDataTable.vue"),
+    Path("apps/desktop_renderer/src/components/table/NcTableColumn.ts"),
+    Path("apps/desktop_renderer/src/components/table/useAutoColumnWidth.ts"),
+    Path("apps/desktop_renderer/src/components/table/NcDataTable.vue"),
 )
 
 DIRECT_TABLE_RE = re.compile(r"<el-table(?!-)(?P<attrs>[^>]*)>", re.IGNORECASE | re.DOTALL)
@@ -48,7 +48,7 @@ def _static_attribute(attrs: str, name: str) -> str:
 
 
 def _legacy_table_id(path: str, ordinal: int) -> str:
-    stem = Path(path).with_suffix("").as_posix().replace("apps/web/src/", "")
+    stem = Path(path).with_suffix("").as_posix().replace("apps/desktop_renderer/src/", "")
     return f"legacy:{stem.replace('/', ':')}:{ordinal}"
 
 
@@ -64,10 +64,10 @@ def _legacy_route(path: str) -> str:
 def scan_tables(root: Path = PROJECT_ROOT) -> tuple[list[TableUse], list[TableUse]]:
     direct: list[TableUse] = []
     managed: list[TableUse] = []
-    source_root = root / WEB_SOURCE
+    source_root = root / RENDERER_SOURCE
     for file_path in sorted(source_root.rglob("*.vue")):
         relative = file_path.relative_to(root).as_posix()
-        if relative.startswith("apps/web/src/components/table/") or relative.endswith("/NcTable.vue"):
+        if relative.startswith("apps/desktop_renderer/src/components/table/") or relative.endswith("/NcTable.vue"):
             continue
         source = file_path.read_text(encoding="utf-8")
         for ordinal, match in enumerate(DIRECT_TABLE_RE.finditer(source), start=1):

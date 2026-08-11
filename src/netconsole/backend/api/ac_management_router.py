@@ -69,7 +69,7 @@ def _web_site_id(request: Request) -> str:
 @router.get(
     "/summary",
     response_model=AcManagementSummaryDTO,
-    dependencies=[Depends(require_feature("web.ac_fit_ap_resources"))],
+    dependencies=[Depends(require_feature("module.fit_ap"))],
 )
 def summary(request: Request) -> AcManagementSummaryDTO:
     return _query(lambda: _service(request).get_summary(_site_id(request)))
@@ -78,7 +78,7 @@ def summary(request: Request) -> AcManagementSummaryDTO:
 @router.get(
     "/aps",
     response_model=AcApPageDTO,
-    dependencies=[Depends(require_feature("web.ac_fit_ap_resources"))],
+    dependencies=[Depends(require_feature("module.fit_ap"))],
 )
 def list_aps(
     request: Request,
@@ -117,7 +117,7 @@ def list_aps(
 @router.get(
     "/optical-anomalies",
     response_model=AcApPageDTO,
-    dependencies=[Depends(require_feature("web.ac_fit_ap_resources"))],
+    dependencies=[Depends(require_feature("module.fit_ap"))],
 )
 def optical_anomalies(
     request: Request,
@@ -136,7 +136,7 @@ def optical_anomalies(
 @router.get(
     "/aps/{ap_id}",
     response_model=AcApDetailDTO,
-    dependencies=[Depends(require_feature("web.ac_fit_ap_resources"))],
+    dependencies=[Depends(require_feature("module.fit_ap"))],
 )
 def ap_detail(request: Request, ap_id: str) -> AcApDetailDTO:
     return _required(_query(lambda: _service(request).get_ap_detail(_site_id(request), ap_id)), "AP 不存在")
@@ -145,7 +145,7 @@ def ap_detail(request: Request, ap_id: str) -> AcApDetailDTO:
 @router.get(
     "/aps/{ap_id}/history/{history_kind}",
     response_model=AcApHistoryPageDTO,
-    dependencies=[Depends(require_feature("web.ac_fit_ap_history"))],
+    dependencies=[Depends(require_feature("capability.ac.fit_ap.history"))],
 )
 def ap_history(
     request: Request,
@@ -169,7 +169,7 @@ def ap_history(
 @router.get(
     "/aps/{ap_id}/radios",
     response_model=list[AcRadioDTO],
-    dependencies=[Depends(require_feature("web.ac_fit_ap_resources"))],
+    dependencies=[Depends(require_feature("module.fit_ap"))],
 )
 def ap_radios(request: Request, ap_id: str) -> list[AcRadioDTO]:
     return _required(_query(lambda: _service(request).get_ap_radios(_site_id(request), ap_id)), "AP 不存在")
@@ -178,7 +178,7 @@ def ap_radios(request: Request, ap_id: str) -> list[AcRadioDTO]:
 @router.get(
     "/aps/{ap_id}/lldp",
     response_model=AcLldpDTO,
-    dependencies=[Depends(require_feature("web.ac_fit_ap_resources"))],
+    dependencies=[Depends(require_feature("module.fit_ap"))],
 )
 def ap_lldp(request: Request, ap_id: str) -> AcLldpDTO:
     return _required(_query(lambda: _service(request).get_ap_lldp(_site_id(request), ap_id)), "AP 不存在")
@@ -187,7 +187,7 @@ def ap_lldp(request: Request, ap_id: str) -> AcLldpDTO:
 @router.get(
     "/aps/{ap_id}/optical",
     response_model=AcOpticalDTO,
-    dependencies=[Depends(require_feature("web.ac_fit_ap_resources"))],
+    dependencies=[Depends(require_feature("module.fit_ap"))],
 )
 def ap_optical(request: Request, ap_id: str) -> AcOpticalDTO:
     return _required(_query(lambda: _service(request).get_ap_optical(_site_id(request), ap_id)), "AP 不存在")
@@ -196,7 +196,7 @@ def ap_optical(request: Request, ap_id: str) -> AcOpticalDTO:
 @router.get(
     "/config-snapshots",
     response_model=AcConfigSnapshotPageDTO,
-    dependencies=[Depends(require_feature("web.ac_fit_ap_resources"))],
+    dependencies=[Depends(require_feature("module.fit_ap"))],
 )
 def config_snapshots(
     request: Request,
@@ -215,7 +215,7 @@ def config_snapshots(
 @router.get(
     "/config-snapshots/{snapshot_id}",
     response_model=AcConfigContentDTO,
-    dependencies=[Depends(require_feature("web.ac_fit_ap_resources"))],
+    dependencies=[Depends(require_feature("module.fit_ap"))],
 )
 def config_snapshot(
     request: Request,
@@ -230,7 +230,7 @@ def config_snapshot(
 @router.get(
     "/config-snapshots/{snapshot_id}/diff",
     response_model=AcConfigDiffDTO,
-    dependencies=[Depends(require_feature("web.ac_fit_ap_resources"))],
+    dependencies=[Depends(require_feature("module.fit_ap"))],
 )
 def config_diff(
     request: Request,
@@ -248,7 +248,7 @@ def config_diff(
 @router.get(
     "/online-overview",
     response_model=AcManagementSummaryDTO,
-    dependencies=[Depends(require_feature("web.ac_online_overview"))],
+    dependencies=[Depends(require_feature("capability.ac.online_overview"))],
 )
 def online_overview(request: Request) -> AcManagementSummaryDTO:
     return _query(lambda: _service(request).get_summary(_site_id(request)))
@@ -257,7 +257,7 @@ def online_overview(request: Request) -> AcManagementSummaryDTO:
 @router.get(
     "/optical",
     response_model=AcApPageDTO,
-    dependencies=[Depends(require_feature("web.ac_optical"))],
+    dependencies=[Depends(require_feature("capability.ac.optical"))],
 )
 def optical(
     request: Request,
@@ -273,7 +273,7 @@ def optical(
 @router.get(
     "/extensions",
     response_model=AcExtensionPageDTO,
-    dependencies=[Depends(require_feature("web.ac_extensions"))],
+    dependencies=[Depends(require_feature("capability.ac.extensions"))],
 )
 def extensions(
     request: Request,
@@ -287,7 +287,7 @@ def extensions(
 @router.post(
     "/extensions/import-preview",
     response_model=AcExtensionPreviewDTO,
-    dependencies=[Depends(require_feature("web.ac_extensions_preview"))],
+    dependencies=[Depends(require_feature("capability.ac.extensions.preview"))],
 )
 async def extension_import_preview(
     request: Request,
@@ -312,7 +312,7 @@ async def extension_import_preview(
     "/extensions/import-apply",
     response_model=AcExtensionApplyResultDTO,
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_feature("web.ac_extensions_apply"))],
+    dependencies=[Depends(require_feature("capability.ac.extensions.apply"))],
 )
 def extension_import_apply(request: Request, payload: AcExtensionApplyRequestDTO) -> AcExtensionApplyResultDTO:
     try:
@@ -324,7 +324,7 @@ def extension_import_apply(request: Request, payload: AcExtensionApplyRequestDTO
 @router.post(
     "/extensions/audits/{audit_id}/rollback",
     response_model=AcExtensionRollbackResultDTO,
-    dependencies=[Depends(require_feature("web.ac_extensions_rollback"))],
+    dependencies=[Depends(require_feature("capability.ac.extensions.rollback"))],
 )
 def extension_rollback(request: Request, audit_id: str, payload: AcExtensionRollbackRequestDTO) -> AcExtensionRollbackResultDTO:
     try:
@@ -337,7 +337,7 @@ def extension_rollback(request: Request, audit_id: str, payload: AcExtensionRoll
     "/local-rebuild/{rebuild_kind}",
     response_model=AcWebTaskDTO,
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_feature("web.ac_refresh"))],
+    dependencies=[Depends(require_feature("capability.ac.refresh"))],
 )
 def local_rebuild(request: Request, rebuild_kind: str, payload: AcLocalRebuildRequestDTO) -> AcWebTaskDTO:
     task_types = {"ac": "ac_overview_refresh", "fit-ap": "ac_fit_ap_resources_refresh", "optical": "ac_fit_ap_optical_refresh", "trackside-plan": "trackside_ap_plan_refresh"}
@@ -354,7 +354,7 @@ def local_rebuild(request: Request, rebuild_kind: str, payload: AcLocalRebuildRe
     "/refresh/{refresh_kind}",
     response_model=AcWebTaskDTO,
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_feature("web.ac_refresh"))],
+    dependencies=[Depends(require_feature("capability.ac.refresh"))],
 )
 def refresh_resources(request: Request, refresh_kind: str, payload: AcRefreshRequestDTO) -> AcWebTaskDTO:
     try:
@@ -372,7 +372,7 @@ def refresh_resources(request: Request, refresh_kind: str, payload: AcRefreshReq
     "/fit-aps/verbose",
     response_model=AcWebTaskDTO,
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_feature("web.ac_refresh"))],
+    dependencies=[Depends(require_feature("capability.ac.refresh"))],
 )
 def refresh_fit_ap_verbose(request: Request, payload: AcFitApVerboseRequestDTO) -> AcWebTaskDTO:
     try:
@@ -391,8 +391,8 @@ def refresh_fit_ap_verbose(request: Request, payload: AcFitApVerboseRequestDTO) 
     response_model=AcWebTaskDTO,
     status_code=status.HTTP_202_ACCEPTED,
     dependencies=[
-        Depends(require_feature("web.ac_fit_ap_delete")),
-        Depends(require_feature("web.ac_refresh")),
+        Depends(require_feature("capability.ac.fit_ap.delete")),
+        Depends(require_feature("capability.ac.refresh")),
     ],
 )
 def delete_fit_aps(request: Request, payload: AcFitApDeleteRequestDTO) -> AcWebTaskDTO:
@@ -412,8 +412,8 @@ def delete_fit_aps(request: Request, payload: AcFitApDeleteRequestDTO) -> AcWebT
     response_model=AcWebTaskDTO,
     status_code=status.HTTP_202_ACCEPTED,
     dependencies=[
-        Depends(require_feature("web.ac_fit_ap_metadata_import")),
-        Depends(require_feature("web.ac_refresh")),
+        Depends(require_feature("capability.ac.fit_ap.metadata_import")),
+        Depends(require_feature("capability.ac.refresh")),
     ],
 )
 async def import_fit_ap_metadata(request: Request, file: UploadFile = File(...)) -> AcWebTaskDTO:
@@ -435,8 +435,8 @@ async def import_fit_ap_metadata(request: Request, file: UploadFile = File(...))
     response_model=AcWebTaskDTO,
     status_code=status.HTTP_202_ACCEPTED,
     dependencies=[
-        Depends(require_feature("web.ac_fit_ap_metadata_write")),
-        Depends(require_feature("web.ac_refresh")),
+        Depends(require_feature("capability.ac.fit_ap.metadata_write")),
+        Depends(require_feature("capability.ac.refresh")),
     ],
 )
 def save_fit_ap_metadata(request: Request, ap_id: str, payload: AcFitApMetadataSaveRequestDTO) -> AcWebTaskDTO:
@@ -457,7 +457,7 @@ def save_fit_ap_metadata(request: Request, ap_id: str, payload: AcFitApMetadataS
     status_code=status.HTTP_202_ACCEPTED,
     dependencies=[
         Depends(require_feature("ac.omnipeek_name_table_export")),
-        Depends(require_feature("web.ac_refresh")),
+        Depends(require_feature("capability.ac.refresh")),
     ],
 )
 def preview_fit_ap_omnipeek(request: Request, payload: AcOmniPeekRequestDTO) -> AcWebTaskDTO:
@@ -504,7 +504,7 @@ def fit_ap_omnipeek_preview(
     status_code=status.HTTP_202_ACCEPTED,
     dependencies=[
         Depends(require_feature("ac.omnipeek_name_table_export")),
-        Depends(require_feature("web.ac_refresh")),
+        Depends(require_feature("capability.ac.refresh")),
     ],
 )
 def export_fit_ap_omnipeek(request: Request, payload: AcOmniPeekRequestDTO) -> AcWebTaskDTO:
@@ -523,7 +523,7 @@ def export_fit_ap_omnipeek(request: Request, payload: AcOmniPeekRequestDTO) -> A
     "/fit-aps/export",
     response_model=AcWebTaskDTO,
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_feature("web.ac_fit_ap_resource_export"))],
+    dependencies=[Depends(require_feature("capability.ac.fit_ap.resource_export"))],
 )
 def export_fit_ap_resources(request: Request, payload: AcFitApResourceExportRequestDTO) -> AcWebTaskDTO:
     try:
@@ -563,8 +563,8 @@ def save_fit_ap_omnipeek_preferences(
     "/fit-aps/external-terminal/options",
     response_model=AcExternalTerminalOptionsDTO,
     dependencies=[
-        Depends(require_feature("web.ac_fit_ap_external_terminal")),
-        Depends(require_feature("desktop.native_bridge")),
+        Depends(require_feature("capability.ac.external_terminal")),
+        Depends(require_feature("capability.desktop_native_integration")),
     ],
 )
 def fit_ap_external_terminal_options(request: Request) -> AcExternalTerminalOptionsDTO:
@@ -578,8 +578,8 @@ def fit_ap_external_terminal_options(request: Request) -> AcExternalTerminalOpti
     "/fit-aps/{ap_id}/external-terminal",
     response_model=AcExternalTerminalActionDTO,
     dependencies=[
-        Depends(require_feature("web.ac_fit_ap_external_terminal")),
-        Depends(require_feature("desktop.native_bridge")),
+        Depends(require_feature("capability.ac.external_terminal")),
+        Depends(require_feature("capability.desktop_native_integration")),
     ],
 )
 def fit_ap_external_terminal(
@@ -602,7 +602,7 @@ def fit_ap_external_terminal(
     "/trackside-business/local-rebuild",
     response_model=AcWebTaskDTO,
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_feature("web.ac_refresh"))],
+    dependencies=[Depends(require_feature("capability.ac.refresh"))],
 )
 def trackside_business_local_rebuild(request: Request, payload: AcLocalRebuildRequestDTO) -> AcWebTaskDTO:
     try:
@@ -619,7 +619,7 @@ def trackside_business_local_rebuild(request: Request, payload: AcLocalRebuildRe
 @router.get(
     "/web-tasks/{task_id}",
     response_model=AcWebTaskDTO,
-    dependencies=[Depends(require_feature("web.ac_refresh"))],
+    dependencies=[Depends(require_feature("capability.ac.refresh"))],
 )
 def web_task(request: Request, task_id: str) -> AcWebTaskDTO:
     try:
@@ -631,7 +631,7 @@ def web_task(request: Request, task_id: str) -> AcWebTaskDTO:
 @router.post(
     "/web-tasks/{task_id}/cancel",
     response_model=AcWebTaskDTO,
-    dependencies=[Depends(require_feature("web.ac_refresh"))],
+    dependencies=[Depends(require_feature("capability.ac.refresh"))],
 )
 def cancel_web_task(request: Request, task_id: str) -> AcWebTaskDTO:
     try:
@@ -643,7 +643,7 @@ def cancel_web_task(request: Request, task_id: str) -> AcWebTaskDTO:
 @router.post(
     "/web-tasks/recover",
     response_model=list[AcWebTaskDTO],
-    dependencies=[Depends(require_feature("web.ac_refresh"))],
+    dependencies=[Depends(require_feature("capability.ac.refresh"))],
 )
 def recover_web_tasks(request: Request) -> list[AcWebTaskDTO]:
     try:
@@ -655,7 +655,7 @@ def recover_web_tasks(request: Request) -> list[AcWebTaskDTO]:
 @router.post(
     "/actions/plans",
     response_model=AcActionPlanDTO,
-    dependencies=[Depends(require_feature("web.ac_dangerous_actions"))],
+    dependencies=[Depends(require_feature("capability.ac.dangerous_actions"))],
 )
 def create_action_plan(request: Request, payload: AcActionPlanCreateRequestDTO) -> AcActionPlanDTO:
     try:
@@ -667,7 +667,7 @@ def create_action_plan(request: Request, payload: AcActionPlanCreateRequestDTO) 
 @router.get(
     "/actions/plans/{plan_id}",
     response_model=AcActionPlanDTO,
-    dependencies=[Depends(require_feature("web.ac_dangerous_actions"))],
+    dependencies=[Depends(require_feature("capability.ac.dangerous_actions"))],
 )
 def action_plan(request: Request, plan_id: str) -> AcActionPlanDTO:
     try:
@@ -679,7 +679,7 @@ def action_plan(request: Request, plan_id: str) -> AcActionPlanDTO:
 @router.post(
     "/actions/plans/{plan_id}/confirm",
     response_model=AcActionPlanDTO,
-    dependencies=[Depends(require_feature("web.ac_dangerous_actions"))],
+    dependencies=[Depends(require_feature("capability.ac.dangerous_actions"))],
 )
 def confirm_action_plan(request: Request, plan_id: str, payload: AcActionConfirmRequestDTO) -> AcActionPlanDTO:
     try:
@@ -692,7 +692,7 @@ def confirm_action_plan(request: Request, plan_id: str, payload: AcActionConfirm
     "/actions/plans/{plan_id}/execute",
     response_model=AcActionPlanDTO,
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_feature("web.ac_dangerous_actions"))],
+    dependencies=[Depends(require_feature("capability.ac.dangerous_actions"))],
 )
 def execute_action_plan(request: Request, plan_id: str) -> AcActionPlanDTO:
     try:
@@ -703,7 +703,7 @@ def execute_action_plan(request: Request, plan_id: str) -> AcActionPlanDTO:
 
 @router.get(
     "/actions/plans/{plan_id}/audit",
-    dependencies=[Depends(require_feature("web.ac_dangerous_actions"))],
+    dependencies=[Depends(require_feature("capability.ac.dangerous_actions"))],
 )
 def action_audit(request: Request, plan_id: str) -> dict[str, object]:
     try:
@@ -717,8 +717,8 @@ def action_audit(request: Request, plan_id: str) -> dict[str, object]:
     response_model=AcWebTaskDTO,
     status_code=status.HTTP_202_ACCEPTED,
     dependencies=[
-        Depends(require_feature("web.ac_extensions_export")),
-        Depends(require_feature("web.ac_refresh")),
+        Depends(require_feature("capability.ac.extensions.export")),
+        Depends(require_feature("capability.ac.refresh")),
     ],
 )
 def extension_export(
@@ -735,7 +735,7 @@ def extension_export(
 @router.get(
     "/extensions/artifacts/{artifact_id}/download",
     response_class=FileResponse,
-    dependencies=[Depends(require_feature("web.ac_extensions_export"))],
+    dependencies=[Depends(require_feature("capability.ac.extensions.export"))],
 )
 def extension_export_download(request: Request, artifact_id: str) -> FileResponse:
     try:
@@ -760,7 +760,7 @@ def fit_ap_omnipeek_download(request: Request, artifact_id: str) -> FileResponse
 
 @router.get(
     "/fit-aps/artifacts/{artifact_id}/download",
-    dependencies=[Depends(require_feature("web.ac_fit_ap_resource_export"))],
+    dependencies=[Depends(require_feature("capability.ac.fit_ap.resource_export"))],
 )
 def fit_ap_resource_download(request: Request, artifact_id: str) -> FileResponse:
     try:

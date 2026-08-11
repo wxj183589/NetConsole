@@ -49,7 +49,7 @@ Web 入口 `/rail-transit/train-communication` 是 TC1/TC2 固定六节点拓扑
 
 ## 5C-8 Mesh 原始日志分析结果 Web 化
 
-Web 入口 `/rail-transit/mesh-analysis` 只读展示既有离线 Mesh 结构化结果：来源会话、主/备链路、主链路区间、切换事件、RSSI、既有空口指标、短时建链、乒乓切换、AP 统计以及已生成报告。Feature key 为 `web.mesh_analysis`，详细契约见 [Mesh 分析 Web 页面](MESH_ANALYSIS_WEB.md)。
+Web 入口 `/rail-transit/mesh-analysis` 只读展示既有离线 Mesh 结构化结果：来源会话、主/备链路、主链路区间、切换事件、RSSI、既有空口指标、短时建链、乒乓切换、AP 统计以及已生成报告。Feature key 为 `module.mesh_analysis`，详细契约见 [Mesh 分析 Web 页面](MESH_ANALYSIS_WEB.md)。
 
 Query Service 直接以 SQLite `mode=ro + query_only` 打开来源对应的 `parsed/*.mesh.sqlite`，不会实例化会初始化或升级 schema 的旧 Repository。短时建链、同 AP 双射频和乒乓判断继续复用当前正式纯分析函数及来源参数快照；前端不重算主备、切换或异常。RSSI 空值保持 `null`，已有数值 `0` 不被擅自改写。
 
@@ -80,7 +80,7 @@ MR 先按 Peer Name 与设备管理名称精确匹配，再按唯一的列车号
 
 ## 列车在线统一查询与受控刷新边界
 
-唯一用户入口为 `/rail-transit/train-online`，页面和底层 Mesh-Link API 共用 Feature `web.rail_train_online`；旧 `web.ac_mesh_links` 页面 Feature 已删除。数据源仍为当前局点：
+唯一用户入口为 `/rail-transit/train-online`，页面和底层 Mesh-Link API 共用 Feature `module.train_online`；旧 `former AC Mesh-Link page` 页面 Feature 已删除。数据源仍为当前局点：
 
 ```text
 files/rail_transit/online_mr/parsed/vehicle_mr_online.sqlite

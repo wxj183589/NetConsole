@@ -102,7 +102,7 @@ def _verify_release_contract() -> None:
     if missing_assets:
         raise RuntimeError("发布包缺少第三方说明：" + ", ".join(missing_assets))
     gate = FeatureGate(BASE_DIR, packaged_runtime=True)
-    for feature_id in ("module.feature_switch", "system.feature_flags"):
+    for feature_id in ("internal.feature_switch",):
         if gate.is_visible(feature_id) or gate.is_enabled(feature_id):
             raise RuntimeError(f"打包版暴露了开发功能：{feature_id}")
     for feature_id in PACKAGED_CORE_FEATURE_IDS:

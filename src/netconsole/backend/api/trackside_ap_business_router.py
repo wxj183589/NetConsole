@@ -116,7 +116,7 @@ def switch_adapters(request: Request) -> TracksideSwitchAdapterCatalogDTO:
     status_code=status.HTTP_202_ACCEPTED,
     dependencies=[
         Depends(require_feature("rail.zte_trackside_switch_adapter")),
-        Depends(require_feature("web.rail_task_control")),
+        Depends(require_feature("capability.rail_transit.task_control")),
     ],
 )
 def start_switch_adapter_sample(
@@ -167,8 +167,8 @@ def download_switch_adapter_sample(
         503: {"description": "导出任务暂不可用"},
     },
     dependencies=[
-        Depends(require_feature("web.rail_trackside_ap_business_export")),
-        Depends(require_feature("web.rail_task_control")),
+        Depends(require_feature("capability.trackside_ap.export")),
+        Depends(require_feature("capability.rail_transit.task_control")),
     ],
 )
 def export_business(
@@ -195,7 +195,7 @@ def export_business(
     "/export/proposal",
     response_model=TracksideApBusinessExportProposalDTO,
     summary="获取轨旁 AP 业务导出建议文件名",
-    dependencies=[Depends(require_feature("web.rail_trackside_ap_business_export"))],
+    dependencies=[Depends(require_feature("capability.trackside_ap.export"))],
 )
 def export_business_proposal(
     request: Request,
@@ -213,7 +213,7 @@ def export_business_proposal(
     response_class=FileResponse,
     summary="下载轨旁 AP 业务工作簿",
     responses={404: {"description": "Artifact 不存在或不属于当前局点"}},
-    dependencies=[Depends(require_feature("web.rail_trackside_ap_business_export"))],
+    dependencies=[Depends(require_feature("capability.trackside_ap.export"))],
 )
 def download_business_artifact(request: Request, artifact_id: str) -> FileResponse:
     try:
@@ -231,8 +231,8 @@ def download_business_artifact(request: Request, artifact_id: str) -> FileRespon
     response_model=RailTransitTaskDTO,
     status_code=status.HTTP_202_ACCEPTED,
     dependencies=[
-        Depends(require_feature("web.rail_trackside_ap_base_io")),
-        Depends(require_feature("web.rail_task_control")),
+        Depends(require_feature("capability.trackside_ap.base_io")),
+        Depends(require_feature("capability.rail_transit.task_control")),
     ],
 )
 def export_base(
@@ -253,7 +253,7 @@ def export_base(
 @router.get(
     "/base/artifacts/{artifact_id}/download",
     response_class=FileResponse,
-    dependencies=[Depends(require_feature("web.rail_trackside_ap_base_io"))],
+    dependencies=[Depends(require_feature("capability.trackside_ap.base_io"))],
 )
 def download_base_artifact(request: Request, artifact_id: str) -> FileResponse:
     try:
@@ -270,8 +270,8 @@ def download_base_artifact(request: Request, artifact_id: str) -> FileResponse:
     response_model=RailTransitTaskDTO,
     status_code=status.HTTP_202_ACCEPTED,
     dependencies=[
-        Depends(require_feature("web.rail_trackside_ap_base_io")),
-        Depends(require_feature("web.rail_task_control")),
+        Depends(require_feature("capability.trackside_ap.base_io")),
+        Depends(require_feature("capability.rail_transit.task_control")),
     ],
 )
 def export_rename_commands(
@@ -290,7 +290,7 @@ def export_rename_commands(
 @router.get(
     "/base/rename-commands/artifacts/{artifact_id}/download",
     response_class=FileResponse,
-    dependencies=[Depends(require_feature("web.rail_trackside_ap_base_io"))],
+    dependencies=[Depends(require_feature("capability.trackside_ap.base_io"))],
 )
 def download_rename_command_artifact(request: Request, artifact_id: str) -> FileResponse:
     try:
@@ -305,7 +305,7 @@ def download_rename_command_artifact(request: Request, artifact_id: str) -> File
 @router.get(
     "/plan",
     response_model=TracksideApPlanDTO,
-    dependencies=[Depends(require_feature("web.rail_trackside_ap_plan"))],
+    dependencies=[Depends(require_feature("capability.trackside_ap.plan"))],
 )
 def plan(request: Request, response: Response) -> TracksideApPlanDTO:
     request_id = uuid.uuid4().hex
@@ -388,7 +388,7 @@ def plan(request: Request, response: Response) -> TracksideApPlanDTO:
 @router.get(
     "/plan/online-status",
     response_model=TracksideApOnlineStatusDTO,
-    dependencies=[Depends(require_feature("web.rail_trackside_ap_plan"))],
+    dependencies=[Depends(require_feature("capability.trackside_ap.plan"))],
 )
 def plan_online_status(request: Request) -> TracksideApOnlineStatusDTO:
     try:
@@ -402,7 +402,7 @@ def plan_online_status(request: Request) -> TracksideApOnlineStatusDTO:
 @router.get(
     "/plan/online-status/excluded",
     response_model=TracksideApScopeExcludedPageDTO,
-    dependencies=[Depends(require_feature("web.rail_trackside_ap_plan"))],
+    dependencies=[Depends(require_feature("capability.trackside_ap.plan"))],
 )
 def plan_online_status_excluded(
     request: Request,
@@ -422,7 +422,7 @@ def plan_online_status_excluded(
 @router.get(
     "/plan/online-status/unmatched",
     response_model=TracksideApUnmatchedOnlinePageDTO,
-    dependencies=[Depends(require_feature("web.rail_trackside_ap_plan"))],
+    dependencies=[Depends(require_feature("capability.trackside_ap.plan"))],
 )
 def plan_online_status_unmatched(
     request: Request,
@@ -442,7 +442,7 @@ def plan_online_status_unmatched(
 @router.post(
     "/plan/auto-group-preview",
     response_model=ApManagementVlanPreviewDTO,
-    dependencies=[Depends(require_feature("web.rail_trackside_ap_plan"))],
+    dependencies=[Depends(require_feature("capability.trackside_ap.plan"))],
 )
 def preview_auto_group(
     request: Request,
@@ -477,7 +477,7 @@ def _preview_plan_change(
 @router.post(
     "/plan/adjustment-preview",
     response_model=ApManagementVlanPreviewDTO,
-    dependencies=[Depends(require_feature("web.rail_trackside_ap_plan"))],
+    dependencies=[Depends(require_feature("capability.trackside_ap.plan"))],
 )
 def preview_adjustment(
     request: Request,
@@ -489,7 +489,7 @@ def preview_adjustment(
 @router.post(
     "/plan/mode-impact-preview",
     response_model=ApManagementVlanPreviewDTO,
-    dependencies=[Depends(require_feature("web.rail_trackside_ap_plan"))],
+    dependencies=[Depends(require_feature("capability.trackside_ap.plan"))],
 )
 def preview_mode_impact(
     request: Request,
@@ -501,7 +501,7 @@ def preview_mode_impact(
 @router.post(
     "/plan/validate",
     response_model=ApManagementVlanPreviewDTO,
-    dependencies=[Depends(require_feature("web.rail_trackside_ap_plan"))],
+    dependencies=[Depends(require_feature("capability.trackside_ap.plan"))],
 )
 def validate_plan(
     request: Request,
@@ -513,7 +513,7 @@ def validate_plan(
 @router.post(
     "/plan/address-preview",
     response_model=ApManagementVlanPreviewDTO,
-    dependencies=[Depends(require_feature("web.rail_trackside_ap_plan"))],
+    dependencies=[Depends(require_feature("capability.trackside_ap.plan"))],
 )
 def preview_addresses(
     request: Request,
@@ -525,7 +525,7 @@ def preview_addresses(
 @router.get(
     "/plan/effective-network",
     response_model=EffectiveManagementNetworkDTO,
-    dependencies=[Depends(require_feature("web.rail_trackside_ap_plan"))],
+    dependencies=[Depends(require_feature("capability.trackside_ap.plan"))],
 )
 def effective_network(
     request: Request,
@@ -552,7 +552,7 @@ def effective_network(
 @router.post(
     "/plan/point-table-preview",
     response_model=TracksideApPointTablePreviewDTO,
-    dependencies=[Depends(require_feature("web.rail_trackside_ap_plan"))],
+    dependencies=[Depends(require_feature("capability.trackside_ap.plan"))],
 )
 def preview_point_table(
     request: Request,
@@ -570,7 +570,7 @@ def preview_point_table(
 @router.post(
     "/plan/import/preview",
     response_model=TracksideApPlanPreviewDTO,
-    dependencies=[Depends(require_feature("web.rail_trackside_ap_plan_write"))],
+    dependencies=[Depends(require_feature("capability.trackside_ap.plan_write"))],
 )
 async def preview_plan_import(
     request: Request,
@@ -595,8 +595,8 @@ async def preview_plan_import(
     response_model=RailTransitTaskDTO,
     status_code=status.HTTP_202_ACCEPTED,
     dependencies=[
-        Depends(require_feature("web.rail_trackside_ap_plan_write")),
-        Depends(require_feature("web.rail_task_control")),
+        Depends(require_feature("capability.trackside_ap.plan_write")),
+        Depends(require_feature("capability.rail_transit.task_control")),
     ],
 )
 def save_plan(request: Request, payload: TracksideApPlanWriteRequestDTO) -> RailTransitTaskDTO:
@@ -618,7 +618,7 @@ def save_plan(request: Request, payload: TracksideApPlanWriteRequestDTO) -> Rail
     "/plan/export",
     response_model=RailTransitTaskDTO,
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_feature("web.rail_trackside_ap_plan_export"))],
+    dependencies=[Depends(require_feature("capability.trackside_ap.plan_export"))],
 )
 def export_plan(request: Request, payload: TracksideApPlanExportRequestDTO) -> RailTransitTaskDTO:
     try:
@@ -633,7 +633,7 @@ def export_plan(request: Request, payload: TracksideApPlanExportRequestDTO) -> R
 @router.get(
     "/plan/artifacts/{artifact_id}/download",
     response_class=FileResponse,
-    dependencies=[Depends(require_feature("web.rail_trackside_ap_plan_export"))],
+    dependencies=[Depends(require_feature("capability.trackside_ap.plan_export"))],
 )
 def download_plan_artifact(request: Request, artifact_id: str) -> FileResponse:
     try:
@@ -651,8 +651,8 @@ def download_plan_artifact(request: Request, artifact_id: str) -> FileResponse:
     response_model=RailTransitTaskDTO,
     status_code=status.HTTP_202_ACCEPTED,
     dependencies=[
-        Depends(require_feature("web.rail_trackside_ap_business_update")),
-        Depends(require_feature("web.rail_task_control")),
+        Depends(require_feature("capability.trackside_ap.update")),
+        Depends(require_feature("capability.rail_transit.task_control")),
     ],
 )
 def update(request: Request, payload: TracksideApUpdateRequestDTO) -> RailTransitTaskDTO:
@@ -671,7 +671,7 @@ def update(request: Request, payload: TracksideApUpdateRequestDTO) -> RailTransi
 @router.get(
     "/tasks/{task_id}",
     response_model=RailTransitTaskDTO,
-    dependencies=[Depends(require_feature("web.rail_task_control"))],
+    dependencies=[Depends(require_feature("capability.rail_transit.task_control"))],
 )
 def task(request: Request, task_id: str) -> RailTransitTaskDTO:
     try:
@@ -686,7 +686,7 @@ def task(request: Request, task_id: str) -> RailTransitTaskDTO:
 @router.post(
     "/tasks/{task_id}/cancel",
     response_model=RailTransitTaskDTO,
-    dependencies=[Depends(require_feature("web.rail_task_control"))],
+    dependencies=[Depends(require_feature("capability.rail_transit.task_control"))],
 )
 def cancel_task(request: Request, task_id: str) -> RailTransitTaskDTO:
     try:
@@ -699,7 +699,7 @@ def cancel_task(request: Request, task_id: str) -> RailTransitTaskDTO:
 @router.post(
     "/tasks/recover",
     response_model=list[RailTransitTaskDTO],
-    dependencies=[Depends(require_feature("web.rail_task_control"))],
+    dependencies=[Depends(require_feature("capability.rail_transit.task_control"))],
 )
 def recover_tasks(request: Request) -> list[RailTransitTaskDTO]:
     try:
