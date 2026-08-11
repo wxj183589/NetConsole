@@ -1,5 +1,27 @@
 # NetConsole 更新日志
 
+## v1.4.9 - 2026-08-12
+
+### Electron Desktop Only 与数据边界
+
+- 正式产品收敛为 Electron Desktop Only：Electron Main + Preload + `apps/desktop_renderer` 是唯一 GUI 运行形态，Renderer 继续通过 REST/WebSocket 使用 Python Backend 与原有数据层；独立 Browser Production Runtime 已退出，FastAPI、REST、WebSocket、Vite 开发联调及 Agent 内嵌 Web 等技术能力不受影响。
+- 打包后的 `NetConsoleBackend.exe` 仅接受 Electron 受管启动、安装器辅助、Worker 与发布冒烟入口；独立 Server、默认 Launcher 以及仅传入 host/port 的启动方式都会被拒绝，源码开发态回环 Server 保持可用。
+- v1.4.9 采用 Clean Install 验收，不承诺旧 installer 身份、旧 Renderer localStorage/IndexedDB 临时状态或旧 Browser Runtime 配置迁移；业务数据根继续独立于程序目录，本次未修改数据库 schema，也不执行 Web 数据到 Electron 数据迁移。
+
+### Feature Registry V2 与客户版权限
+
+- Feature Registry V2 成为唯一正式功能注册表，正式业务代码、Frontend、Backend 和 Customer/Full Profile 不再使用 `web.*` Feature ID；旧 Web Profile、旧 customer.json、Legacy Alias 和长期兼容层不进入新架构。
+- Customer/Full Profile 直接按 V2 生成并保持完整 Registry ID 集合；Customer 不扩权、Full 不缩水。未保存设备表单连接测试继续仅向 Full 开放。
+- Renderer 在 Feature 快照尚未加载、强制刷新以及 Full 切回 Customer 的等待阶段统一 fail-closed，避免 Full-only 菜单或按钮短暂显示；加载完成后按当前 Profile 恢复授权界面。
+- Renderer 标题、侧栏文案、存储键和 CI 构建说明统一使用 Desktop Renderer 语义，不改业务页面、Router、Store、REST、WebSocket 或 Native Bridge 数据链。
+
+### Online MR、MESH 与无人值守
+
+- 修复 Online MR Ping 质量指标展示：RTT、丢包率、固定分析栏、Tooltip 与 Y 轴统一复用 metricId 单位契约，RTT 固定使用 `ms` 且不再被百分比上限裁剪。
+- MESH 来源诊断按 INFO、WARNING、ERROR 分级；过滤的 `LinkCnt=0` 占位和无效主链快照不再计作数据告警。新增“AP 覆盖核查”，支持比较两个来源实际观测到的正线 FIT-AP 并导出五个 Sheet 的 Excel。
+- 无人值守深度采集接入标准 Online MR fping 契约，按 CT/CW 独立确认运行态后再开始 SSH；工具、目标或启动失败时不会误报为正常采集，完成校验要求存在非空 fping samples。
+- 修复 Online MR 实时页面切换后的 MR 选择状态回退，并增强 iPerf debug 原始输出、生命周期写入、派生快照限频与 Windows 原子替换重试；快照或 callback 降级不再终止 iPerf 客户端。
+
 ## v1.4.8 - 2026-08-07
 
 ### MR 原始 MESH 日志分析
