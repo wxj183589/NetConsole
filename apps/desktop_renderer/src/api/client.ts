@@ -30,6 +30,8 @@ const inflightQueryRequests = new Map<string, Promise<unknown>>()
 export interface ApiRequestOptions extends RequestInit {
   /** Only heavy read-only queries may opt into a longer client-side timeout. */
   queryTimeoutMs?: number
+  /** Set to false to supersede a matching shared GET/HEAD and bypass in-flight sharing. */
+  coalesce?: boolean
 }
 
 export class ApiRequestError extends Error {
@@ -190,7 +192,11 @@ async function fetchWithQueryTimeout(
   const timeoutMs = queryRequest
     ? normalizeQueryTimeout(options.queryTimeoutMs)
     : undefined
-  const { queryTimeoutMs: _queryTimeoutMs, ...fetchOptions } = options
+  const {
+    queryTimeoutMs: _queryTimeoutMs,
+    coalesce: _coalesce,
+    ...fetchOptions
+  } = options
   const externalSignal = fetchOptions.signal
   if (externalSignal?.aborted) throw requestAbortedError(path)
 
@@ -354,6 +360,10 @@ export function apiRequest<T>(path: string, options: ApiRequestOptions = {}): Pr
     return apiRequestInternal<T>(path, options)
   }
   const key = `${method}:${resolveApiUrl(path)}:${normalizeQueryTimeout(options.queryTimeoutMs)}`
+  if (options.coalesce === false) {
+    inflightQueryRequests.delete(key)
+    return apiRequestInternal<T>(path, options)
+  }
   const existing = inflightQueryRequests.get(key)
   if (existing) return existing as Promise<T>
   const request = apiRequestInternal<T>(path, options)
