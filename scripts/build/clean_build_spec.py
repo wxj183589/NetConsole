@@ -812,7 +812,7 @@ def validate_packaged_web_frontend(app_dist: Path) -> None:
     build_metadata = require_build_metadata()
     try:
         validate_web_frontend_meta(
-            app_dist / "_internal" / "netconsole" / "assets" / "web",
+            app_dist / "_internal" / "netconsole" / "assets" / "desktop_renderer",
             expected_version=APP_VERSION,
             expected_commit=str(build_metadata["git_commit_full"]),
             expected_build_time=str(build_metadata["build_time_utc"]),

@@ -386,6 +386,23 @@ def test_web_frontend_metadata_rejects_inconsistent_version_fields(tmp_path):
         )
 
 
+def test_packaged_desktop_renderer_metadata_uses_desktop_renderer_path(
+    tmp_path, monkeypatch
+):
+    renderer_dist = (
+        tmp_path / "_internal" / "netconsole" / "assets" / "desktop_renderer"
+    )
+    renderer_dist.mkdir(parents=True)
+    (renderer_dist / "index.html").write_text("renderer", encoding="utf-8")
+    (renderer_dist / "desktop-renderer-build-meta.json").write_text(
+        json.dumps(_web_metadata()),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(clean_build_spec, "_BUILD_METADATA", _build_metadata())
+
+    clean_build_spec.validate_packaged_web_frontend(tmp_path)
+
+
 def test_build_metadata_reads_git_head_and_changes_with_commit(tmp_path: Path) -> None:
     from scripts.build.build_metadata import collect_build_metadata
 
