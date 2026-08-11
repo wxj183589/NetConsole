@@ -43,6 +43,15 @@ def test_expected_noise_does_not_hide_arbitrary_failed_display_command() -> None
     assert not audit_commands.is_expected_noise("display version failed", path)
 
 
+def test_i18n_ui_copy_is_expected_noise_only_in_the_i18n_catalog() -> None:
+    command = "display paused"
+    i18n_path = audit_commands.ROOT / "src/netconsole/core/i18n.py"
+    production_path = audit_commands.ROOT / "src/netconsole/services/command_guard.py"
+
+    assert audit_commands.is_expected_noise(command, i18n_path)
+    assert not audit_commands.is_expected_noise(command, production_path)
+
+
 def test_strict_audit_blocks_known_deferred_profile_migrations(
     monkeypatch,
 ) -> None:

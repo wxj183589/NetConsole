@@ -125,6 +125,8 @@ def test_mesh_analysis_queries_keep_analysis_files_unchanged(tmp_path: Path) -> 
     assert routes
     post_paths = {route.path for route in routes if route.methods == {"POST"}}
     assert post_paths == {
+        "/rail-transit/mesh-analysis/ap-coverage/audit",
+        "/rail-transit/mesh-analysis/ap-coverage/export",
         "/rail-transit/mesh-analysis/bundles/import",
         "/rail-transit/mesh-analysis/bundles/preview",
         "/rail-transit/mesh-analysis/import-context/prepare",

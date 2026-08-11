@@ -340,7 +340,7 @@ def is_expected_noise(command: str, path: Path) -> bool:
     relative = path.relative_to(ROOT)
     if relative.as_posix() == "src/netconsole/services/rail_transit/online_mr_diagnosis_parser.py" and text == "display ar5drv":
         return True
-    if relative.parts[:2] == ("netconsole", "core") and relative.name == "i18n.py":
+    if relative.as_posix() == "src/netconsole/core/i18n.py":
         return True
     if text in {"display ", "iperf3", "iperf3.exe", "fping_v3.exe", "restful api", "winscp.exe"}:
         return True
