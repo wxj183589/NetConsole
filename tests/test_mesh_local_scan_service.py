@@ -58,12 +58,6 @@ def test_local_scan_is_recursive_site_scoped_and_content_based(tmp_path: Path) -
         "invalid_count": 1,
         "needs_metadata_count": 0,
         "failed_count": 0,
-        "waiting_repair_count": 0,
-        "repairing_count": 0,
-        "queued_count": 0,
-        "parsing_count": 0,
-        "repair_failed_count": 0,
-        "parse_failed_count": 0,
         "ignored_count": 0,
     }
     rows = {item["file_name"]: item for item in result["candidates"]}
