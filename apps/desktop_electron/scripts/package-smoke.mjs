@@ -100,7 +100,7 @@ const requiredProductionFeatureIds = [
   'module.config_collection',
   'capability.config_collection.fetch',
   'capability.devices.connection_test',
-  'capability.devices.connection_test',
+  'capability.devices.form_connection_test',
   'module.devices',
   'capability.devices.collect',
   'capability.devices.desktop_actions',

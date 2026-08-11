@@ -284,6 +284,8 @@ describe('Electron-only packaging', () => {
     const script = readFileSync(resolve(appRoot, 'scripts', 'package-smoke.mjs'), 'utf8')
 
     expect(script).toContain('requiredProductionFeatureIds')
+    expect(script.match(/'capability\.devices\.connection_test'/g)).toHaveLength(1)
+    expect(script.match(/'capability\.devices\.form_connection_test'/g)).toHaveLength(1)
     expect(script).toContain('capability.devices.collect')
     expect(script).toContain('module.online_mr_analysis')
     expect(script).toContain('capability.mesh.import')

@@ -27,11 +27,13 @@ export async function loadRendererFeatures(force = false): Promise<void> {
 }
 
 export function isFeatureVisible(featureId: string): boolean {
-  return !loaded.value || states[featureId]?.visible !== false
+  if (!loaded.value) return !featureId.startsWith('internal.')
+  return states[featureId]?.visible === true
 }
 
 export function isFeatureEnabled(featureId: string): boolean {
-  return !loaded.value || states[featureId]?.enabled !== false
+  if (!loaded.value) return !featureId.startsWith('internal.')
+  return states[featureId]?.enabled === true
 }
 
 export function setRendererFeaturesForTest(values: Record<string, FeatureState>): void {

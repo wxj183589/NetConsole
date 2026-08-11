@@ -49,7 +49,7 @@ def renderer_feature_states(request: Request) -> RendererFeatureStateListDTO:
                 enabled=gate.is_enabled(item.feature_id),
             )
             for item in list_features()
-            if not item.internal_only
+            if not item.internal_only or gate.is_feature_configuration_available()
         ]
     )
 

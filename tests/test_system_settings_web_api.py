@@ -53,6 +53,10 @@ def test_default_desktop_profile_reaches_settings_and_round_trips(tmp_path: Path
         item for item in features.json()["items"] if item["feature_id"] == "module.system_settings"
     )
     assert settings_feature == {"feature_id": "module.system_settings", "visible": True, "enabled": True}
+    internal_feature = next(
+        item for item in features.json()["items"] if item["feature_id"] == "internal.feature_switch"
+    )
+    assert internal_feature == {"feature_id": "internal.feature_switch", "visible": True, "enabled": True}
 
     initial = client.get("/api/settings")
     assert initial.status_code == 200
@@ -465,6 +469,10 @@ def test_packaged_runtime_keeps_settings_but_rejects_feature_configuration(
     client.app.state.feature_gate = FeatureGate(tmp_path, packaged_runtime=True)
 
     assert client.get("/api/settings").status_code == 200
+    packaged_feature_ids = {
+        item["feature_id"] for item in client.get("/api/features").json()["items"]
+    }
+    assert "internal.feature_switch" not in packaged_feature_ids
     for method, path, payload in (
         ("get", "/api/settings/features", None),
         ("put", "/api/settings/features", {"items": []}),

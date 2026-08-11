@@ -11,7 +11,7 @@ import {
 
 vi.mock('./api/features', () => ({ getRendererFeatureStates: vi.fn() }))
 
-describe('Web Feature Gate', () => {
+describe('Desktop Renderer Feature Gate', () => {
   beforeEach(() => {
     resetRendererFeaturesForTest()
     vi.mocked(getRendererFeatureStates).mockReset()
@@ -31,9 +31,24 @@ describe('Web Feature Gate', () => {
     expect(isFeatureEnabled('module.file_management')).toBe(false)
   })
 
-  it('fails open before loading but honors explicit test states', () => {
+  it('fails open for public features before loading but keeps internal features hidden', () => {
     expect(isFeatureVisible('module.devices')).toBe(true)
+    expect(isFeatureVisible('internal.feature_switch')).toBe(false)
+    expect(isFeatureEnabled('internal.feature_switch')).toBe(false)
     setRendererFeaturesForTest({ 'module.devices': { visible: false, enabled: false } })
     expect(isFeatureVisible('module.devices')).toBe(false)
+  })
+
+  it('fails closed for feature ids omitted from a loaded backend snapshot', async () => {
+    vi.mocked(getRendererFeatureStates).mockResolvedValue([
+      { feature_id: 'module.devices', visible: true, enabled: true },
+    ])
+
+    await loadRendererFeatures()
+
+    expect(isFeatureVisible('internal.feature_switch')).toBe(false)
+    expect(isFeatureEnabled('internal.feature_switch')).toBe(false)
+    expect(isFeatureVisible('module.unknown')).toBe(false)
+    expect(isFeatureEnabled('module.unknown')).toBe(false)
   })
 })
