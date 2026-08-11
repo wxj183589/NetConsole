@@ -110,10 +110,11 @@ flowchart LR
 1. [项目文档索引](docs/README.md)
 2. [下一阶段开发指南](docs/DEVELOPMENT_GUIDE.md)
 3. [开发规则](docs/DEVELOPMENT_RULES.md)
-4. [下一代架构](docs/ARCHITECTURE_NEXT.md)
-5. [当前架构](docs/ARCHITECTURE.md)
-6. [数据与路径](docs/DATA_LAYOUT.md)
-7. 与改动领域对应的专题文档
+4. [Change Impact Framework](docs/development/CHANGE_IMPACT_FRAMEWORK.md)
+5. [下一代架构](docs/ARCHITECTURE_NEXT.md)
+6. [当前架构](docs/ARCHITECTURE.md)
+7. [数据与路径](docs/DATA_LAYOUT.md)
+8. 与改动领域对应的专题文档
 
 优先使用仓库虚拟环境：
 

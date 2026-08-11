@@ -1,0 +1,4 @@
+interface:
+  display_name: "NetConsole Ground Unattended"
+  short_description: "维护地面无人值守调度、Ping、Syslog、深采与安全归档"
+  default_prompt: "使用 $netconsole-ground-unattended-skill 处理地面无人值守业务变更。"

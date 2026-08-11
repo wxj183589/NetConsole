@@ -1,0 +1,4 @@
+interface:
+  display_name: "NetConsole Release Packaging"
+  short_description: "维护 PyInstaller、Electron Builder、NSIS 与 Windows 发布门禁"
+  default_prompt: "使用 $netconsole-release-packaging-skill 处理 Windows 构建与发布变更。"

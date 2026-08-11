@@ -8,7 +8,7 @@
 .agents/skills/<skill-name>/SKILL.md
 ```
 
-这些文件位于仓库目录，不写入用户全局 Skill 目录。本项目当前 Skills 默认是 instruction-only，不为完整感创建空的 `scripts/`、`references/`、`assets/` 或 `agents/`。
+这些文件位于仓库目录，不写入用户全局 Skill 目录。简单领域 Skill 可以只包含 `SKILL.md`；需要 Codex UI 元数据的新 Skill 允许包含经官方生成器校验的 `agents/openai.yaml`。不为完整感创建空的 `scripts/`、`references/` 或 `assets/`。
 
 `.agents/skills` 已纳入 Git，用于在本地仓库、远端分支和其他开发环境之间共享同一套 Codex 工作流。
 
@@ -34,12 +34,18 @@
 | `netconsole-config-collection-skill` | 快照选择、两文件对比、裁剪、双栏 Diff 与导出 | “勾选两个文件不能对比” | AC 快照、普通文本 diff |
 | `netconsole-online-mr-skill` | 车载 MR 实时采集、Ping/iPerf、原始日志和会话打包 | “Ping 2 自动填错”“停止采集困难” | 离线 MESH 分析 |
 | `netconsole-agent-skill` | Windows Go Agent V1、HTTP API、内嵌 Web、配置/targets、工具、MR sidecar、构建和运行目录 | “修改 Agent API”“Agent 构建失败”“工具路径或运行数据不对” | CentOS 离线部署；纯流量参数；纯 MR 命令规则 |
+| `netconsole-device-management-skill` | 设备 CRUD、稳定身份、凭据、连接/采集、CSV 和外部终端 | “设备 IP 更新”“批量采集”“设备 CSV 导入” | AC/FIT-AP、SFTP、配置快照 |
+| `netconsole-electron-desktop-skill` | Electron Main/Preload/IPC、受管 Backend、窗口、托盘和 Native Bridge | “修改 IPC”“Backend 重启后重连”“托盘恢复” | 普通 Vue 业务、NSIS/发布制品 |
+| `netconsole-rail-base-data-skill` | 线路/站点/区间/车辆资料、轨旁规划、编辑 scope 和 revision | “基础资料保存冲突”“导入站点区间” | 轨旁运行态、Ground、Online MR 采集 |
+| `netconsole-trackside-ap-skill` | 轨旁业务、FIT-AP/LLDP/光衰、Identity 消费、业务快照和导出 | “轨旁 AP 关联错误”“上线统计”“光衰导出” | 普通 AC、无轨旁作用域 Identity |
+| `netconsole-ground-unattended-skill` | Ground 调度、资格、fping、Syslog、深采、归档与恢复 | “无人值守调度”“Syslog 关联”“深采恢复” | 普通 Online MR、离线 MESH |
+| `netconsole-release-packaging-skill` | 依赖分层、PyInstaller/Electron/NSIS、Full/Customer、Package Smoke | “打包失败”“安装数据根”“客户版制品” | 普通业务功能、单个报告导出 |
 | `netconsole-mesh-analysis-skill` | MR 原始 MESH 离线解析、主备链、切换、图表和报告 | “备份链为空”“乒乓判定错误” | 在线 MR SSH、普通 SNMP |
 | `dynamic-chart-stability` | ECharts 动态时间轴、Canvas、Tooltip、指标单位契约、DataZoom、Resize、KeepAlive 和沉浸式回归 | “Ping RTT 显示成 %”“业务打流图白块”“切换指标后旧曲线残留”“沉浸式后 DataZoom 消失” | 静态图、普通表格、无图表 parser |
 | `netconsole-ap-identity-skill` | AP canonical identity、Radio/BSSID/Peer、shadow 和 diagnostics | “Identity 匹配错误”“评审接管” | 普通 AP 表格/名称显示 |
 | `netconsole-project-docs-skill` | README/docs/架构状态同步 | “更新 docs”“同步重构地图” | 一次性报告、无文档影响的实现 |
 | `netconsole-data-safety-skill` | SQLite、Repository、目录、备份、迁移和清理 | “增加字段”“数据库 locked”“防止误删” | 纯 UI、无持久化 parser |
-| `netconsole-change-review-skill` | 当前 diff 的跨领域只读评审 | “评审本次修改”“看看遗漏” | 直接实现、自动修复 |
+| `netconsole-change-review-skill` | L3/L4 编码前 Change Impact/Consumer Audit 和当前 diff 的跨领域只读评审 | “改共享层前查消费者”“评审本次修改” | 直接实现、自动修复 |
 
 ## 4. Skill 组合关系
 
@@ -57,10 +63,18 @@
 | Agent 流量任务 | `netconsole-agent-skill` | `traffic-test-skill` |
 | Agent Online MR sidecar | `netconsole-agent-skill` | `netconsole-online-mr-skill` |
 | Agent 文档同步 | `netconsole-agent-skill` | `netconsole-project-docs-skill` |
+| 设备管理纵向链 | `netconsole-device-management-skill` | `netconsole-job-center-skill`、文件交互/导出 Skill |
+| Electron Main/IPC/生命周期 | `netconsole-electron-desktop-skill` | `netconsole-change-review-skill`、数据安全 Skill |
+| 轨交基础资料 | `netconsole-rail-base-data-skill` | 设备管理、AP Identity、文件交互 Skill |
+| 轨旁 AP 业务 | `netconsole-trackside-ap-skill` | AC、AP Identity、Job/Export Skill |
+| 地面无人值守 | `netconsole-ground-unattended-skill` | Online MR、Traffic、AP Identity、数据安全 Skill |
+| 构建与发布 | `netconsole-release-packaging-skill` | Electron Desktop、数据安全、Change Review Skill |
 | 离线 MESH 分析 | `netconsole-mesh-analysis-skill` | `netconsole-ap-identity-skill`、`netconsole-export-report-skill` |
 | Online MR/MESH 动态图 | `dynamic-chart-stability` | `netconsole-online-mr-skill` 或 `netconsole-mesh-analysis-skill` |
 | 数据库/目录升级 | `netconsole-data-safety-skill` | `netconsole-change-review-skill` |
 | 完成重要改造 | `netconsole-project-docs-skill` | `netconsole-change-review-skill` |
+
+普通领域任务直接使用领域 Skill；一旦触及 Registry 登记的 L3/L4 共享契约，必须同时使用 `netconsole-change-review-skill`，按 Consumer Matrix 选择回归，不无条件加载全部 Skills。
 
 不要让一个 Skill 无条件加载全部其他 Skills。只有任务真实跨越另一领域时才组合。
 
@@ -77,7 +91,7 @@ $netconsole-user-file-interaction-skill 为已有 Artifact 增加用户主动“
 
 $netconsole-export-report-skill 增加后台 XLSX 报告，验证中文列宽、冻结、筛选、文件占用和取消清理。
 
-$netconsole-change-review-skill 只读评审当前 diff，重点检查 UI 阻塞、SQLite、设备命令和原始日志回归。
+$netconsole-change-review-skill 在修改 AP Identity/Task/Electron/DataRoot 前执行 Change Impact Audit，列出消费者、并行修改和合并后回归。
 ```
 
 自然语言中明确出现用户可见导入/导出、模板下载、报告保存、Artifact 另存、Save As/Open/File/Folder 选择、Task Center 保存失败重试、Job Center、Online MR、MESH、AP Identity、iperf3、fping、乱码等触发词时，Codex 也应自动选择相应 Skill。任务型报告通常同时加载 `netconsole-user-file-interaction-skill` 和 `netconsole-export-report-skill`：前者负责用户选择和最终落盘，后者负责 Export Process、格式与内部 Artifact。
@@ -124,14 +138,14 @@ $netconsole-change-review-skill 只读评审当前 diff，重点检查 UI 阻塞
 ## 9. 当前架构状态提示
 
 - `src/netconsole/services/job_center/handlers/legacy_tasks.py` 仍是兼容区，只迁出、不迁入；不能写成全部任务已迁移。
-- AP Identity 当前主要是 canonical 工具、shadow comparison 和只读 diagnostics；不能写成已全面接管生产匹配。
+- AP Identity 的局点级统一索引已进入生产，MESH、Ground、Online/Vehicle MR、Wireless 和部分 Trackside 高频解析已接管；AC Mesh-Link、基础资料、其他报告和部分拓扑仍按消费者审计收敛。不能写成“全部仍是 shadow”，也不能写成“所有消费者已全面接管”。
 - Windows Go Agent V1 已位于 `apps/agent/`，包含 HTTP API、内嵌 Web、iPerf/fping、MR sidecar、目标管理、任务事件和采集包；Python Controller 已接入 Traffic，并提供默认关闭的单 Agent Online MR start/status/normal stop 与安全包导入。
 - 普通 Job Center 仍以本地 Worker Process 为主；Windows Go Agent 是独立执行端，通过 Controller/Traffic 适配接入，不等同于 Job Center 完全远程化。CentOS 离线部署、主动注册、多 Controller 和完整 Traffic Web 页面仍未完成。
 - 本地 XLSX 格式优化在范围内；WPS 云服务、WPS API、KDocs 和在线同步默认不在范围内。
 
 ## 10. 过期 Skill 审计与后续候选
 
-2026-07-23 按当前代码路径和触发面审计既有 12 个 Skill：没有 Skill 被退役 Qt 架构、已删除 SNMP Center 或无线勘测完全取代，因此本轮无安全删除项；陈旧内容按原职责更新。新增上述四个重复且高风险的领域 Skill 后，应继续优先扩展现有目录，避免同义 Skill。
+2026-08-12 按当前代码路径、Feature Registry 和触发面复核：没有既有 Skill 被退役 Qt 架构、已删除 SNMP Center 或无线勘测完全取代，因此本轮无安全删除项。新增设备管理、Electron Desktop、轨交基础资料、轨旁 AP、地面无人值守和发布打包 6 个长期领域 Skill；后续优先原位扩展，避免同义 Skill。
 
 当前仅保留以下后续候选：
 

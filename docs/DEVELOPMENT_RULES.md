@@ -13,6 +13,28 @@
 
 超过 300ms 的 IO、CPU 或网络任务不得在 UI 线程执行。重 CPU、重 IO、重网络和批量任务进入 Worker Process；所有导出进入独立 Export Process。
 
+## 共享层稳定窗口与风险分级
+
+Electron-only 架构收口后的下一至两个开发周期是共享基础设施稳定窗口。业务 Bug 和必要兼容修复可以继续；`api/client`、`NcDataTable`、Task/Job、Export、AP Identity、Feature Registry、Path/DataRoot、Electron runtime 和构建发布原则上不做并行的大范围重构。稳定窗口结束必须以新的 `main` 基线通过为证据，不能只按日期宣布结束。
+
+同一时间最多进行一个 L3/L4 共享基础设施重构。业务功能可以并行，但不得借业务需求顺手重写共享层；确需触碰共享层时将它计入当前唯一基础设施改动，并由集成负责人确认消费者和合并顺序。
+
+改动风险按以下最低等级管理：
+
+- `L1`：单页面 CSS、文案、局部只读展示或纯文档；
+- `L2`：单一领域 Application Service、Repository、Parser 或页面行为；
+- `L3`：共享组件、Renderer API 基础、Task/Job、Export、AP Identity；
+- `L4`：Feature Registry、DataRoot、数据库迁移、Electron runtime、CI、构建发布。
+
+机器可读范围与消费者套件以 [`config/architecture/change_impact_matrix.json`](../config/architecture/change_impact_matrix.json) 为准，执行入口为 `python -m scripts.quality.check_change_impact`。路径审计只能上调最低风险，不能替代语义审阅；跨领域、兼容协议或持久化行为变化必须人工上调。L3/L4 必须执行 [Consumer Matrix](development/CHANGE_IMPACT_FRAMEWORK.md#consumer-matrix)，并在合并到 `main` 后对最终提交复验。
+
+## 分支与 Worktree 生命周期
+
+- 普通分支目标寿命为当天，最长原则上 1～2 天；超过期限或基线明显漂移时，从最新 `main` 创建新 worktree/分支并只迁移本任务提交。
+- 不反复 merge `main` 到业务分支，不在业务分支解决与本任务无关的冲突，也不把其他线程的工作树改动带入本任务提交。
+- 开始 L3/L4 前检查高风险文件的并行所有权；有并行修改时由集成负责人决定串行、拆分或停止，无法确认时明确标记 `UNKNOWN`。
+- 合并顺序由依赖关系和风险决定，不以“谁先完成”替代集成审计。分支绿不等于 `main` 绿；合并后回归失败必须用独立修复任务恢复基线。
+
 ## 下一阶段 UI 与分层边界
 
 - 当前产品形态是 Python Core + FastAPI 永久业务层、Vue 唯一主界面和 Electron 桌面外壳；Qt 源码、运行时和入口已删除，历史行为只通过 Git 与最终迁移矩阵追溯。

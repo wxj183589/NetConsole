@@ -1,0 +1,4 @@
+interface:
+  display_name: "NetConsole Electron Desktop"
+  short_description: "维护 Electron Main、Preload、IPC 与受管 Backend 生命周期"
+  default_prompt: "使用 $netconsole-electron-desktop-skill 实现或评审 Electron 桌面运行时变更。"

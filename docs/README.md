@@ -46,6 +46,8 @@
 | [外部终端白名单](external-terminal/README.md) | SecureCRT、Xshell、PuTTY 的受控可执行文件名、选择器和启动复验边界 | Desktop/Device/Application 开发 | Shared Bridge、Electron Main、Python Settings Tool Validation | 终端类型、文件名或启动边界变化 |
 | [表单与路径字段](ui/FORM_AND_PATH_FIELDS.md) | 路径输入、按钮组、字段反馈和窄窗口布局规范 | Vue Renderer 开发 | `NcExecutablePathField` 与系统设置页面 | 新增或修改路径选择字段时 |
 | [开发规则](DEVELOPMENT_RULES.md) | 编码、分层、任务、导出、Feature、测试规则 | 所有代码贡献者 | `AGENTS.md`、架构代码、测试 | 开发约束或工程基线变化 |
+| [Change Impact Framework](development/CHANGE_IMPACT_FRAMEWORK.md) | L1-L4 风险、共享契约、Consumer Matrix、worktree 与合并后回归 | 所有开发、评审与集成人员 | Change Impact Registry、当前调用图、测试与 CI | 共享契约、消费者、风险等级或合并门变化 |
+| [测试资产审计](development/TEST_ASSET_AUDIT.md) | 当前测试规模、保留边界和下一轮压缩候选 | 测试治理与领域 owner | 当前测试文件、生产引用和 Consumer Matrix | 执行一批测试合并/删除或重新分类后 |
 | [下一阶段开发指南](DEVELOPMENT_GUIDE.md) | 永久功能调用链、前端/API/Electron 硬边界和迁移检查 | Web/Core/Desktop 开发 | 下一代架构、开发规则、目录规范 | 新功能链路或跨层约束变化 |
 | [API / Application 边界审计](API_APPLICATION_BOUNDARY_AUDIT.md) | 18 个 FastAPI Router 的分层证据、判级和治理顺序 | Web/API/Core 开发 | Router、组合根、Application/Query Service | Router 依赖、用例编排或存储错误边界变化 |
 | [项目级 Codex Skills](CODEX_SKILLS.md) | Skill 清单、路由、组合和维护 | Codex/Skill 维护者 | `.agents/skills`、`AGENTS.md` | Skill 新增、升级、改名或边界变化 |

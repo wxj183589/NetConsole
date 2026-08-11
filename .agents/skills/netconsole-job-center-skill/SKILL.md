@@ -63,6 +63,7 @@ description: "NetConsole Job Center、后台 Job、JobSpec、BackgroundJob、Job
 
 # 相关 Skills
 
+- 修改 Task/Job/Worker 共享契约前：`netconsole-change-review-skill`。
 - 导出进程：`netconsole-export-report-skill`。
 - 设备 SNMP v1/v2c：遵守设备管理 Service/Task 边界；SNMP Center、MIB/OID 与 SNMPv3 已删除。
 - 在线 MR 长任务：`netconsole-online-mr-skill`。

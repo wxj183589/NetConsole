@@ -1,0 +1,453 @@
+{
+  "schema_version": 1,
+  "default_level": "L2",
+  "levels": {
+    "L1": "单页面 CSS、文案、局部只读展示或纯文档变更",
+    "L2": "单一领域的 Application Service、Repository、Parser 或页面行为",
+    "L3": "共享组件、Renderer API 基础、Task/Job、Export 或 AP Identity",
+    "L4": "Feature Registry、DataRoot、数据库迁移、Electron runtime、CI 或构建发布"
+  },
+  "domains": {
+    "architecture_governance": "Architecture governance",
+    "renderer_platform": "Desktop Renderer platform",
+    "devices": "Device Management",
+    "ac_fit_ap": "AC/FIT-AP",
+    "config_collection": "Config Collection",
+    "file_management": "File Management",
+    "rail_base": "Rail Base Data",
+    "trackside_ap": "Trackside AP",
+    "mesh": "MESH",
+    "online_mr": "Online MR",
+    "ground_unattended": "Ground Unattended",
+    "network_tools": "Network Tools",
+    "system_settings": "System Settings",
+    "task_job": "Task/Job Center",
+    "export": "Export Process",
+    "ap_identity": "AP Identity",
+    "feature_delivery": "Feature and edition delivery",
+    "data_platform": "DataRoot and database platform",
+    "electron_runtime": "Electron runtime",
+    "agent": "Windows Go Agent",
+    "release_engineering": "Build and release"
+  },
+  "low_risk_patterns": [
+    "docs/**",
+    "**/*.md",
+    "apps/desktop_renderer/src/views/**/*.css"
+  ],
+  "consumer_suites": {
+    "python-full": {
+      "label": "完整 Python 领域与 API 回归",
+      "command": ".venv\\Scripts\\python.exe -m pytest -q --tb=short",
+      "evidence": [
+        "pytest.ini",
+        ".github/workflows/python-full-regression.yml"
+      ]
+    },
+    "renderer-full": {
+      "label": "完整 Renderer API、Store、组件与页面回归",
+      "command": "在 apps/desktop_renderer 运行 pnpm test 和 pnpm build",
+      "evidence": [
+        "apps/desktop_renderer/package.json",
+        "apps/desktop_renderer/src/api/client.test.ts",
+        "apps/desktop_renderer/src/components/table/NcDataTable.test.ts"
+      ]
+    },
+    "electron-contract": {
+      "label": "Electron Main/Preload 契约、类型与构建",
+      "command": "在 apps/desktop_electron 运行 pnpm test、pnpm run typecheck、pnpm run build:main",
+      "evidence": [
+        "apps/desktop_electron/package.json",
+        "apps/desktop_electron/tests/ipc.test.ts",
+        "apps/desktop_electron/tests/preload.test.ts"
+      ]
+    },
+    "architecture-guards": {
+      "label": "Electron-only 架构门与共享契约静态检查",
+      "command": ".venv\\Scripts\\python.exe scripts\\architecture\\run_all.py",
+      "evidence": [
+        "scripts/architecture/run_all.py",
+        "tests/architecture/test_architecture_guards.py"
+      ]
+    },
+    "main-contract-smoke": {
+      "label": "主线 12 个关键入口的最小 happy-path/contract smoke",
+      "command": "按 docs/development/CHANGE_IMPACT_FRAMEWORK.md 的主线 Smoke Matrix 运行现有定向测试",
+      "evidence": [
+        "tests/test_electron_runtime.py",
+        "tests/test_sites.py",
+        "tests/test_device_management_web_api.py",
+        "tests/test_ac_management_web_api.py",
+        "tests/test_rail_transit_base_data_web_api.py",
+        "tests/test_trackside_ap_business_snapshot.py",
+        "tests/test_mesh_analysis_web_api.py",
+        "tests/test_online_mr_application_service.py",
+        "tests/test_ground_unattended_api.py",
+        "tests/test_job_center_web_api.py",
+        "tests/test_export_process_framework.py",
+        "tests/test_system_settings_web_api.py"
+      ]
+    },
+    "package-smoke": {
+      "label": "正式 Electron 制品契约 smoke；只在 release/package gate 执行",
+      "command": "在 apps/desktop_electron 运行 pnpm run smoke:package",
+      "evidence": [
+        "apps/desktop_electron/scripts/package-smoke.mjs",
+        "apps/desktop_electron/package.json"
+      ]
+    }
+  },
+  "risk_areas": [
+    {
+      "id": "renderer-api-client",
+      "owner": "renderer_platform",
+      "level": "L3",
+      "patterns": [
+        "apps/desktop_renderer/src/api/client.ts"
+      ],
+      "consumers": [
+        "devices",
+        "ac_fit_ap",
+        "config_collection",
+        "file_management",
+        "rail_base",
+        "trackside_ap",
+        "mesh",
+        "online_mr",
+        "ground_unattended",
+        "network_tools",
+        "system_settings",
+        "feature_delivery"
+      ],
+      "compatibility_risks": [
+        "Origin、鉴权、错误映射、超时、下载与 WebSocket 约定影响全部 Renderer 请求"
+      ],
+      "suites": [
+        "renderer-full",
+        "electron-contract"
+      ]
+    },
+    {
+      "id": "nc-data-table",
+      "owner": "renderer_platform",
+      "level": "L3",
+      "patterns": [
+        "apps/desktop_renderer/src/components/table/**"
+      ],
+      "consumers": [
+        "devices",
+        "ac_fit_ap",
+        "trackside_ap",
+        "mesh",
+        "online_mr",
+        "ground_unattended",
+        "task_job",
+        "config_collection",
+        "file_management",
+        "network_tools"
+      ],
+      "compatibility_risks": [
+        "列渲染、选择、滚动、列宽、偏好和右键菜单变化会跨页面扩散"
+      ],
+      "suites": [
+        "renderer-full"
+      ]
+    },
+    {
+      "id": "dynamic-chart-timeline",
+      "owner": "renderer_platform",
+      "level": "L3",
+      "patterns": [
+        "apps/desktop_renderer/src/components/charts/**",
+        "apps/desktop_renderer/src/components/rail-timeline/**"
+      ],
+      "consumers": [
+        "mesh",
+        "online_mr",
+        "ground_unattended",
+        "network_tools"
+      ],
+      "compatibility_risks": [
+        "metric、单位、轴、Tooltip、空值、DataZoom、时间游标和 Resize/KeepAlive 契约不能漂移"
+      ],
+      "suites": [
+        "renderer-full",
+        "architecture-guards"
+      ]
+    },
+    {
+      "id": "task-center",
+      "owner": "task_job",
+      "level": "L3",
+      "patterns": [
+        "src/netconsole/background_worker.py",
+        "src/netconsole/services/job_center/task_application_service.py",
+        "src/netconsole/services/job_center/job_runner.py",
+        "src/netconsole/services/job_center/local_process_adapter.py",
+        "src/netconsole/services/job_center/worker_protocol.py",
+        "src/netconsole/services/job_center/runtime/**",
+        "src/netconsole/backend/api/job_center_router.py",
+        "src/netconsole/backend/api/task_router.py",
+        "apps/desktop_renderer/src/api/tasks.ts",
+        "apps/desktop_renderer/src/stores/tasks.ts",
+        "apps/desktop_renderer/src/task-center/**",
+        "apps/desktop_renderer/src/views/job-center/**"
+      ],
+      "consumers": [
+        "devices",
+        "ac_fit_ap",
+        "config_collection",
+        "file_management",
+        "mesh",
+        "online_mr",
+        "ground_unattended",
+        "trackside_ap",
+        "network_tools",
+        "export"
+      ],
+      "compatibility_risks": [
+        "任务终态、事件、取消、资源锁、Artifact 和 Worker 协议必须保持一致"
+      ],
+      "suites": [
+        "python-full",
+        "renderer-full",
+        "electron-contract",
+        "main-contract-smoke"
+      ]
+    },
+    {
+      "id": "export-framework",
+      "owner": "export",
+      "level": "L3",
+      "patterns": [
+        "src/netconsole/export_worker.py",
+        "src/netconsole/application/web_export_process_adapter.py",
+        "src/netconsole/services/export/**",
+        "apps/desktop_renderer/src/platform/exportActionRegistry.ts",
+        "apps/desktop_renderer/src/composables/useUserSelectedExport.ts"
+      ],
+      "consumers": [
+        "devices",
+        "ac_fit_ap",
+        "config_collection",
+        "mesh",
+        "online_mr",
+        "ground_unattended",
+        "trackside_ap",
+        "network_tools",
+        "task_job"
+      ],
+      "compatibility_risks": [
+        "用户授权路径、Artifact 生命周期、原子落盘、取消与失败重试不能退化"
+      ],
+      "suites": [
+        "python-full",
+        "renderer-full",
+        "electron-contract",
+        "main-contract-smoke"
+      ]
+    },
+    {
+      "id": "ap-identity",
+      "owner": "ap_identity",
+      "level": "L3",
+      "patterns": [
+        "src/netconsole/services/ap_identity/**",
+        "src/netconsole/repositories/ap_identity_repository.py",
+        "src/netconsole/models/ap_identity_index.py"
+      ],
+      "consumers": [
+        "mesh",
+        "ground_unattended",
+        "online_mr",
+        "network_tools",
+        "trackside_ap",
+        "ac_fit_ap",
+        "rail_base",
+        "export"
+      ],
+      "compatibility_risks": [
+        "精确归一化、站点作用域和 matched/unresolved/ambiguous 冲突语义不能改变"
+      ],
+      "suites": [
+        "python-full",
+        "main-contract-smoke"
+      ]
+    },
+    {
+      "id": "feature-registry",
+      "owner": "feature_delivery",
+      "level": "L4",
+      "patterns": [
+        "src/netconsole/core/feature_registry.py",
+        "config/profiles/features/**",
+        "apps/desktop_renderer/src/features.ts",
+        "apps/desktop_renderer/src/router/featureGuard.ts"
+      ],
+      "consumers": [
+        "renderer_platform",
+        "devices",
+        "ac_fit_ap",
+        "config_collection",
+        "file_management",
+        "rail_base",
+        "trackside_ap",
+        "mesh",
+        "online_mr",
+        "ground_unattended",
+        "network_tools",
+        "system_settings",
+        "task_job",
+        "agent",
+        "feature_delivery",
+        "electron_runtime",
+        "release_engineering"
+      ],
+      "compatibility_risks": [
+        "功能可见性、路由、产品模板和正式包必要集合必须保持同一事实源"
+      ],
+      "suites": [
+        "python-full",
+        "renderer-full",
+        "electron-contract",
+        "architecture-guards",
+        "main-contract-smoke"
+      ]
+    },
+    {
+      "id": "data-root-and-migration",
+      "owner": "data_platform",
+      "level": "L4",
+      "patterns": [
+        "src/netconsole/core/paths.py",
+        "src/netconsole/core/runtime_environment.py",
+        "src/netconsole/core/data_root_configuration.py",
+        "src/netconsole/core/storage_manifest.py",
+        "src/netconsole/core/database.py",
+        "src/netconsole/services/database_upgrade/**",
+        "src/netconsole/services/site_storage.py",
+        "src/netconsole/services/job_center/handlers/site_jobs.py",
+        "scripts/maintenance/migrate_unified_data_root.py",
+        "apps/desktop_electron/src/main/data-root-configuration.ts",
+        "apps/desktop_electron/src/main/development-data-root.ts"
+      ],
+      "consumers": [
+        "devices",
+        "task_job",
+        "export",
+        "mesh",
+        "online_mr",
+        "ground_unattended",
+        "agent",
+        "system_settings",
+        "electron_runtime",
+        "release_engineering"
+      ],
+      "compatibility_risks": [
+        "根解析、主数据库兼容、备份回滚和原始数据保留错误可能造成启动失败或数据损失"
+      ],
+      "suites": [
+        "python-full",
+        "renderer-full",
+        "electron-contract",
+        "architecture-guards",
+        "main-contract-smoke"
+      ]
+    },
+    {
+      "id": "electron-runtime",
+      "owner": "electron_runtime",
+      "level": "L4",
+      "patterns": [
+        "src/netconsole/backend/electron_runtime.py",
+        "apps/desktop_electron/src/main/**",
+        "apps/desktop_electron/src/preload/**",
+        "apps/desktop_electron/src/shared/**"
+      ],
+      "consumers": [
+        "renderer_platform",
+        "devices",
+        "ac_fit_ap",
+        "config_collection",
+        "file_management",
+        "rail_base",
+        "trackside_ap",
+        "mesh",
+        "online_mr",
+        "ground_unattended",
+        "network_tools",
+        "system_settings",
+        "task_job",
+        "export",
+        "electron_runtime"
+      ],
+      "compatibility_risks": [
+        "启动、进程回收、窗口状态、IPC 白名单和临时授权不能破坏安全或生命周期"
+      ],
+      "suites": [
+        "python-full",
+        "renderer-full",
+        "electron-contract",
+        "architecture-guards",
+        "main-contract-smoke"
+      ]
+    },
+    {
+      "id": "build-release-and-ci",
+      "owner": "release_engineering",
+      "level": "L4",
+      "patterns": [
+        "scripts/build/**",
+        "apps/desktop_electron/scripts/package.mjs",
+        "apps/desktop_electron/scripts/package-smoke.mjs",
+        "requirements-*.txt",
+        "constraints.txt"
+      ],
+      "consumers": [
+        "renderer_platform",
+        "data_platform",
+        "electron_runtime",
+        "feature_delivery",
+        "release_engineering"
+      ],
+      "compatibility_risks": [
+        "依赖、版本身份、运行时内容、Full/Customer 差异和最终制品可启动性必须一致"
+      ],
+      "suites": [
+        "python-full",
+        "renderer-full",
+        "electron-contract",
+        "architecture-guards",
+        "main-contract-smoke",
+        "package-smoke"
+      ]
+    },
+    {
+      "id": "change-impact-governance",
+      "owner": "architecture_governance",
+      "level": "L4",
+      "patterns": [
+        "config/architecture/change_impact_matrix.json",
+        "scripts/quality/check_change_impact.py",
+        ".github/workflows/*.yml"
+      ],
+      "consumers": [
+        "architecture_governance",
+        "renderer_platform",
+        "data_platform",
+        "electron_runtime",
+        "release_engineering"
+      ],
+      "compatibility_risks": [
+        "漏分级或漏消费者会让共享层改动绕过必要回归"
+      ],
+      "suites": [
+        "python-full",
+        "renderer-full",
+        "electron-contract",
+        "architecture-guards",
+        "main-contract-smoke"
+      ]
+    }
+  ]
+}

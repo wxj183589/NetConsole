@@ -1,0 +1,4 @@
+interface:
+  display_name: "NetConsole Trackside AP"
+  short_description: "维护轨旁 AP 规划、业务快照、LLDP、光衰与导出"
+  default_prompt: "使用 $netconsole-trackside-ap-skill 处理轨旁 AP 业务变更。"

@@ -58,6 +58,7 @@ description: "SQLite schema、Repository、数据库 locked/WAL、PathResolver�
 
 # 相关 Skills
 
+- 修改 DataRoot/schema/migration 等 L4 契约前：`netconsole-change-review-skill`。
 - Job 连接边界：`netconsole-job-center-skill`。
 - Export 临时文件：`netconsole-export-report-skill`。
 - AP 主数据风险：`netconsole-ap-identity-skill`。

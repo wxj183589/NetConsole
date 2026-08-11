@@ -55,6 +55,15 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 - 重要架构或状态变化同步 docs；区分已完成、兼容层、shadow/diagnostics、部分迁移和规划。
 - 完成后运行适用验证并如实报告；提交/推送说明使用中文，未经用户要求不自动提交。
 
+## Change Impact 与共享层稳定窗口
+
+- 开始任务时先按 [`docs/development/CHANGE_IMPACT_FRAMEWORK.md`](docs/development/CHANGE_IMPACT_FRAMEWORK.md) 判断 L1-L4；计划路径使用 `python -m scripts.quality.check_change_impact --paths ...` 获取最低等级、共享契约、消费者和回归套件。语义只能上调风险，不能下调 Registry 命中。
+- L1 是单页面 CSS/文案/局部展示；L2 是单领域 Service/Repository/Parser/页面；L3 是共享组件、Renderer API、Task/Job、Export、AP Identity；L4 是 Feature Registry、DataRoot、数据库迁移、Electron runtime、CI 和构建发布。
+- L3/L4 编码前必须使用 `netconsole-change-review-skill` 完成 Consumer Audit，列出写入、读取、缓存、展示、导出、旧格式、并行修改和合并后复验；不得只跑当前目标模块测试。
+- Electron-only 收敛后的 1～2 个开发轮次作为共享层稳定窗口：`api/client`、NcDataTable、动态图、Task/Job、Export、AP Identity、Feature Registry、Path/DataRoot、Electron runtime 和构建发布只接受必要 Bug/安全修复。同一时间最多一个大型 L3/L4 重构，解除冻结以新的 `main` baseline 为证据。
+- 普通 worktree/分支尽量当天或 1～2 天完成。分支明显落后 `main` 时优先从最新 `main` 重建并移植本任务提交；同步 `main` 遇到不属于当前领域的共享文件冲突时标记 `out-of-scope conflict`，不得顺手解决后继续按原风险交付。
+- L3/L4 在最终合并 commit 重新运行 Registry 指定 consumer suites；分支绿不等于 `main` 绿。交付必须报告 risk、contracts、consumers、兼容性、并行修改、合并后结果和 GUI/设备/制品缺口。
+
 ## 用户文件导入导出
 
 - 新增或修改任何用户可见的导入、导出、模板下载、报告生成或 Artifact 保存入口前，必须先阅读 `docs/IMPORT_EXPORT_INTERACTION.md` 和 `docs/development/import-export-dialog-audit.md`。
@@ -101,6 +110,12 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 | `netconsole-config-collection-skill` | 配置快照、两文件对比、裁剪和差异导出 | AC 快照、普通文本 diff |
 | `netconsole-online-mr-skill` | 车载 MR 实时采集、Ping/iPerf、会话打包 | 离线 MESH 分析 |
 | `netconsole-agent-skill` | Windows Go Agent API、构建、工具、配置、targets、MR sidecar 和运行目录 | CentOS 离线部署；纯流量语义；纯 MR 命令规则 |
+| `netconsole-device-management-skill` | 设备 CRUD、连接/采集、CSV、凭据和外部终端 | AC/FIT-AP、SFTP、配置快照 |
+| `netconsole-electron-desktop-skill` | Electron Main/Preload/IPC、Backend 生命周期、窗口与托盘 | 普通 Vue 业务、NSIS/发布制品 |
+| `netconsole-rail-base-data-skill` | 轨交基础资料、站点/区间、轨旁规划、revision 和事务保存 | 轨旁运行态、Ground、Online MR 采集 |
+| `netconsole-trackside-ap-skill` | 轨旁 AP 业务、LLDP/光衰/采集、Identity 消费和业务快照 | 普通 AC、无轨旁作用域 Identity |
+| `netconsole-ground-unattended-skill` | 地面无人值守调度、资格、fping/Syslog、深采和归档恢复 | 普通 Online MR 或离线 MESH |
+| `netconsole-release-packaging-skill` | PyInstaller/Electron/NSIS、Full/Customer、制品与发布门 | 普通业务功能和单个报告导出 |
 | `netconsole-mesh-analysis-skill` | MR 原始 MESH 离线分析、图表和报告 | 在线 SSH 采集 |
 | `dynamic-chart-stability` | ECharts 时间轴、Tooltip、指标单位契约、DataZoom、Resize、KeepAlive、沉浸式或动态图白块 | 静态图、普通表格、无图表 parser |
 | `netconsole-ap-identity-skill` | AP/Radio/BSSID/Peer 身份与 shadow | 普通 AP 展示 |
@@ -109,6 +124,6 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 | `windows-encoding-skill` | Windows/H3C/文件/子进程编码 | i18n 词条设计 |
 | `netconsole-data-safety-skill` | SQLite、Repository、目录、备份和清理 | 纯 UI/parser |
 | `netconsole-project-docs-skill` | README/docs/架构状态同步 | 一次性用户报告 |
-| `netconsole-change-review-skill` | 当前 diff 的项目级只读评审 | 直接实现或自动修复 |
+| `netconsole-change-review-skill` | L3/L4 编码前 Change Impact Audit 与当前 diff 只读评审 | 直接实现或自动修复 |
 
 只在当前任务跨领域时组合相关 Skills，不无条件加载全部 Skills。

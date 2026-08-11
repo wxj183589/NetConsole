@@ -61,6 +61,7 @@ description: "NetConsole Export Center、ExportJob、XLSX/CSV/PDF/ZIP/Markdown �
 
 # 相关 Skills
 
+- 修改 Export/Artifact/文件共享契约前：`netconsole-change-review-skill`。
 - 用户文件选择、任务绑定和最终落盘：`netconsole-user-file-interaction-skill`。
 - Job 协议：`netconsole-job-center-skill`。
 - 数据目录安全：`netconsole-data-safety-skill`。

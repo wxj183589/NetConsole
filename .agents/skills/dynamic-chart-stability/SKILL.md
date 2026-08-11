@@ -35,3 +35,10 @@ description: NetConsole ECharts 时间轴动态图的稳定性规范与回归流
 至少在 1920x1080 普通与沉浸式窗口检查 RSSI、Ping、业务打流、Channel Busy、接口速率；循环进入/退出沉浸式至少 5 次、切换指标至少 10 次。用 DevTools/脚本确认每个图容器只有一个 canvas，Tooltip 不覆盖绘图区，Canvas 网格在 null gap 后仍存在。
 
 运行相关 Vitest、`pnpm build`、`scripts/architecture/run_all.py` 及 `dynamic-chart-stability` 单门。报告自动化结果与真实桌面/设备验收分开，不把 Guard 或测试通过写成 GUI 已验收。
+
+## 相关 Skills
+
+- 修改共享 chart/timeline/metric 契约前：`netconsole-change-review-skill`。
+- Online MR：`netconsole-online-mr-skill`。
+- MESH：`netconsole-mesh-analysis-skill`。
+- Ground：`netconsole-ground-unattended-skill`。

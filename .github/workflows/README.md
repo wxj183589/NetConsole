@@ -2,12 +2,14 @@
 
 ## 用途与边界
 
-本目录存放持续集成工作流。快速门禁用于 PR 的常规反馈；全量 Python 回归用于发现快速组合未覆盖的跨模块失败。工作流只安装锁定依赖、执行既有入口并报告结果，不修改仓库或业务数据。
+本目录存放持续集成工作流。快速门禁先按 Change Impact Matrix 输出风险等级和消费者，再执行 PR 的常规反馈；全量 Python 回归用于发现快速组合未覆盖的跨模块失败。工作流只安装锁定依赖、执行既有入口并报告结果，不修改仓库或业务数据。
 
 ## 主要入口
 
-- `quality-gate.yml`：PR 与 `main` 推送触发的 Python 核心、Web 和 Electron 检查。
+- `quality-gate.yml`：PR 与 `main` 推送触发的 Change Impact Audit、Python 核心、Renderer、Electron 检查及稳定聚合状态。
 - `python-full-regression.yml`：PR、`workflow_dispatch`、每日定时和 `main` 推送触发的完整 `pytest -q` 阻断门禁。
+
+`main` 推送会重新运行两个 workflow，不复用 PR 结果。`Regression gate complete` 聚合影响审计和三个消费者门；`Python full regression` 保持独立，以便 Branch protection / Ruleset 同时要求快速集成门和完整 Python 门。合并后的任一失败表示当前 `main` 基线不可发布，必须通过后续最小修复恢复，workflow 本身不能回滚提交。
 
 ## 禁止事项
 

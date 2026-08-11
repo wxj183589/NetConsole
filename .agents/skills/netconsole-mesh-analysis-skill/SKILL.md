@@ -43,7 +43,7 @@ description: "MR 原始 MESH 日志、离线导入、ACTIVE/STANDBY 主备链、
 4. 主链切换时间、短时容差、乒乓窗口和同 AP 双射频规则从 `MeshAnalysisParams`/源文件快照读取，不写死经验值。
 5. 乒乓基于 AP 级主链序列和有效返回窗口；超窗往返不算异常，同 AP Radio 往返单独分类。
 6. RSSI、最小 RSSI、发送/接收忙度和日志上报时长保持可追溯；显示降采样不得改变统计。
-7. 备份链缺失先检查 parser、归一化、source_file_id 和 Identity shadow；AP Identity 当前只读诊断，不接管生产映射。
+7. 备份链缺失先检查 parser、归一化、source_file_id 和统一 Identity 批量投影；MESH 高频 Peer 解析已经接入生产 Identity，仍须保留 revision、unresolved/ambiguous 和 raw 事实。
 8. 大导入/解析/图表计算进 Job；报告和链路明细进 Export Process，UI 不做全量 SQL 或 Excel。
 9. 每个原始日志/`source_file_id` 独立生成可追溯报告；综合报告与链路明细保持固定工作表边界，并记录最终参数快照。结论面向普通读者且只来自真实 raw/派生数据，不用示例或随机数据填充缺口。
 
@@ -57,6 +57,7 @@ description: "MR 原始 MESH 日志、离线导入、ACTIVE/STANDBY 主备链、
 
 # 相关 Skills
 
+- 修改共享 Identity/Task/Export/动态图契约前：`netconsole-change-review-skill`。
 - CLI parser：`network-command-parser-skill`。
 - AP Identity：`netconsole-ap-identity-skill`。
 - 报告：`netconsole-export-report-skill`。

@@ -1,0 +1,4 @@
+interface:
+  display_name: "NetConsole Rail Base Data"
+  short_description: "维护轨交站点、区间、轨旁 AP 基础资料与 revision 编辑"
+  default_prompt: "使用 $netconsole-rail-base-data-skill 处理轨道交通基础资料变更。"

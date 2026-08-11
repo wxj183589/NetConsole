@@ -11,7 +11,7 @@ ALLOWED_DIRECTORY_NAMES = {"__pycache__", "qt-webengine-debug", "qt-webengine-in
 ALLOWED_DIRECTORY_PREFIXES = ("pytest-", "qt-final-acceptance-", "qt-package-")
 ALLOWED_FILE_PREFIXES = ("qt-final-acceptance", "qt-package-")
 ALLOWED_FILE_SUFFIXES = {".json", ".log", ".png", ".txt"}
-PROTECTED_NAMES = {"acceptance", "agent", "agent_team", "data", "logs", "runtime", "tmp"}
+PROTECTED_NAMES = {"acceptance", "agent", "data", "logs", "runtime", "tmp"}
 
 
 @dataclass(frozen=True)

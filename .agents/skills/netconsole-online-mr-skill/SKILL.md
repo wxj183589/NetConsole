@@ -67,6 +67,7 @@ description: "车载 MR 实时采集、Online MR、SSH 会话、实时解析、C
 
 # 相关 Skills
 
+- 修改共享 API/Task/Identity/动态图契约前：`netconsole-change-review-skill`。
 - Ping/iPerf：`traffic-test-skill`。
 - CLI parser：`network-command-parser-skill`。
 - 长运行 Job：`netconsole-job-center-skill`。
