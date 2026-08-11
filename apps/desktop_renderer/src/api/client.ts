@@ -30,7 +30,7 @@ const inflightQueryRequests = new Map<string, Promise<unknown>>()
 export interface ApiRequestOptions extends RequestInit {
   /** Only heavy read-only queries may opt into a longer client-side timeout. */
   queryTimeoutMs?: number
-  /** Set to false when a GET/HEAD request must bypass in-flight request sharing. */
+  /** Set to false to supersede a matching shared GET/HEAD and bypass in-flight sharing. */
   coalesce?: boolean
 }
 
@@ -356,11 +356,14 @@ async function apiRequestInternal<T>(path: string, options: ApiRequestOptions = 
 export function apiRequest<T>(path: string, options: ApiRequestOptions = {}): Promise<T> {
   const method = (options.method || 'GET').toUpperCase()
   const queryRequest = method === 'GET' || method === 'HEAD'
-  const shouldCoalesce = queryRequest && !options.signal && options.coalesce !== false
-  if (!shouldCoalesce) {
+  if (!queryRequest || options.signal) {
     return apiRequestInternal<T>(path, options)
   }
   const key = `${method}:${resolveApiUrl(path)}:${normalizeQueryTimeout(options.queryTimeoutMs)}`
+  if (options.coalesce === false) {
+    inflightQueryRequests.delete(key)
+    return apiRequestInternal<T>(path, options)
+  }
   const existing = inflightQueryRequests.get(key)
   if (existing) return existing as Promise<T>
   const request = apiRequestInternal<T>(path, options)

@@ -384,7 +384,7 @@ describe('API client errors', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
-  it('bypasses an existing in-flight GET when coalescing is disabled', async () => {
+  it('bypasses and evicts an existing in-flight GET when coalescing is disabled', async () => {
     const resolveFetches: Array<(value: Response) => void> = []
     const fetchMock = vi.fn((_input: RequestInfo | URL, _request?: RequestInit) => new Promise<Response>((resolve) => {
       resolveFetches.push(resolve)
@@ -396,18 +396,26 @@ describe('API client errors', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(2)
     expect(fetchMock.mock.calls[1][1]).not.toHaveProperty('coalesce')
-    resolveFetches[0](new Response(JSON.stringify({ value: 'existing' }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    }))
     resolveFetches[1](new Response(JSON.stringify({ value: 'fresh' }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     }))
+    await expect(fresh).resolves.toEqual({ value: 'fresh' })
 
-    await expect(Promise.all([existing, fresh])).resolves.toEqual([
+    const retry = apiRequest('/api/features')
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    resolveFetches[0](new Response(JSON.stringify({ value: 'existing' }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    resolveFetches[2](new Response(JSON.stringify({ value: 'retry' }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    await expect(Promise.all([existing, retry])).resolves.toEqual([
       { value: 'existing' },
-      { value: 'fresh' },
+      { value: 'retry' },
     ])
   })
 

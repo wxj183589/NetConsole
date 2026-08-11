@@ -16,6 +16,7 @@ interface FeatureSnapshotItem {
 
 interface PendingFeatureResponse {
   resolve: (snapshot: FeatureSnapshotItem[]) => void
+  fail: () => void
 }
 
 const fullSnapshot: FeatureSnapshotItem[] = [
@@ -45,7 +46,13 @@ function pendingFeatureFetch(): {
 } {
   const responses: PendingFeatureResponse[] = []
   const fetchMock = vi.fn(() => new Promise<Response>((resolve) => {
-    responses.push({ resolve: (snapshot) => resolve(jsonResponse(snapshot)) })
+    responses.push({
+      resolve: (snapshot) => resolve(jsonResponse(snapshot)),
+      fail: () => resolve(new Response(JSON.stringify({ detail: 'unavailable' }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' },
+      })),
+    })
   }))
   vi.stubGlobal('fetch', fetchMock)
   return { fetchMock, responses }
@@ -106,5 +113,30 @@ describe('Feature snapshot request integration', () => {
     await loadingOldCustomer
     expect(isFeatureVisible('module.ground_unattended')).toBe(true)
     expect(isFeatureEnabled('capability.devices.form_connection_test')).toBe(true)
+  })
+
+  it('does not reuse the older Full GET after a fresh Customer request fails', async () => {
+    const { fetchMock, responses } = pendingFeatureFetch()
+
+    const loadingOldFull = loadRendererFeatures()
+    const loadingCustomer = loadRendererFeatures(true)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+
+    responses[1].fail()
+    await expect(loadingCustomer).rejects.toMatchObject({ status: 500 })
+    expect(isFeatureVisible('module.ground_unattended')).toBe(false)
+    expect(isFeatureEnabled('capability.devices.form_connection_test')).toBe(false)
+
+    const loadingCustomerRetry = loadRendererFeatures()
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    responses[2].resolve(customerSnapshot)
+    await loadingCustomerRetry
+    expect(isFeatureVisible('module.ground_unattended')).toBe(false)
+    expect(isFeatureEnabled('capability.devices.form_connection_test')).toBe(false)
+
+    responses[0].resolve(fullSnapshot)
+    await loadingOldFull
+    expect(isFeatureVisible('module.ground_unattended')).toBe(false)
+    expect(isFeatureEnabled('capability.devices.form_connection_test')).toBe(false)
   })
 })
