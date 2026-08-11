@@ -15,7 +15,7 @@ NetConsole/
 ├─ apps/
 │  ├─ agent/                # Windows Go Agent 及其 sidecar/静态页面
 │  ├─ desktop_electron/     # Electron main/preload/shared 安全外壳
-│  └─ web/                  # Vue/TypeScript/Vite 前端
+│  └─ desktop_renderer/     # Vue/TypeScript/Vite Desktop Renderer
 ├─ src/
 │  └─ netconsole/               # 可安装的共享 Python 包
 ├─ config/
@@ -164,7 +164,7 @@ Windows 源码开发态、打包态和正式包均使用安装器在 `HKLM\Softw
 | `agent/` | `apps/agent/` | 独立 Go Agent |
 | `desktop/` | Git 历史 | Qt Web Shell 已回收；不得重新创建该目录 |
 | 新增 Electron 外壳 | `apps/desktop_electron/` | 仅 main/preload/shared；唯一 Renderer 仍为 `apps/desktop_renderer/` |
-| `frontend/` | `apps/desktop_renderer/` | Vue Web 前端 |
+| `frontend/` | `apps/desktop_renderer/` | Vue Desktop Renderer |
 | `netconsole/` | `src/netconsole/` | 共享 Python 包，导入名仍是 `netconsole` |
 | `profiles/` | `config/profiles/` | Feature profile 配置 |
 | `project/build_*.py` | `scripts/build/` | 构建脚本 |

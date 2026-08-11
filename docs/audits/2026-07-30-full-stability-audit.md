@@ -11,6 +11,8 @@
 - 原主工作区：审计开始时干净，`main` 与 `github/main` 一致
 - 开放 PR：Draft PR #13 `codex/adr-open-source-capability-integration`，仅文档 ADR；本次不修改其 worktree
 
+> **历史快照说明**：本文记录 2026-07-30 基线的审计结果。文中的 `apps/web/...`、`apps/web/package.json` 等路径是该基线工作树中的历史路径，仅用于复现当时证据，不作为当前代码导航。当前 Vue Desktop Renderer 路径为 `apps/desktop_renderer/...`；活动文档和新审计应以当前路径为准。
+
 ## 产品边界
 
 - `full_migration` 保持 `format_version=4` 的未加密普通 ZIP 语义，继续保留真实设备凭据。本次不新增密码、加密、签名、HMAC 或密钥体系。
