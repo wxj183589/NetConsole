@@ -384,6 +384,57 @@ describe('API client errors', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
+  it('bypasses an existing in-flight GET when coalescing is disabled', async () => {
+    const resolveFetches: Array<(value: Response) => void> = []
+    const fetchMock = vi.fn((_input: RequestInfo | URL, _request?: RequestInit) => new Promise<Response>((resolve) => {
+      resolveFetches.push(resolve)
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const existing = apiRequest('/api/features')
+    const fresh = apiRequest('/api/features', { coalesce: false })
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock.mock.calls[1][1]).not.toHaveProperty('coalesce')
+    resolveFetches[0](new Response(JSON.stringify({ value: 'existing' }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    resolveFetches[1](new Response(JSON.stringify({ value: 'fresh' }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    await expect(Promise.all([existing, fresh])).resolves.toEqual([
+      { value: 'existing' },
+      { value: 'fresh' },
+    ])
+  })
+
+  it('does not coalesce two concurrent GET requests that both opt out', async () => {
+    const resolveFetches: Array<(value: Response) => void> = []
+    const fetchMock = vi.fn((_input: RequestInfo | URL, _request?: RequestInit) => new Promise<Response>((resolve) => {
+      resolveFetches.push(resolve)
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const first = apiRequest('/api/features', { coalesce: false })
+    const second = apiRequest('/api/features', { coalesce: false })
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    for (const resolve of resolveFetches) {
+      resolve(new Response(JSON.stringify({ value: 'fresh' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+    }
+
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      { value: 'fresh' },
+      { value: 'fresh' },
+    ])
+  })
+
   it.each([502, 503, 504])('retries transient HTTP %s once for GET requests', async (status) => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response('', { status }))

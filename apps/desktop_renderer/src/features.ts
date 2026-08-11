@@ -17,7 +17,7 @@ export async function loadRendererFeatures(force = false): Promise<void> {
   if (pending && !force) return pending.promise
   if (force) loaded.value = false
   const requestGeneration = ++generation
-  const request = getRendererFeatureStates()
+  const request = getRendererFeatureStates({ fresh: force })
     .then((items) => {
       if (requestGeneration !== generation) return
       for (const key of Object.keys(states)) delete states[key]
