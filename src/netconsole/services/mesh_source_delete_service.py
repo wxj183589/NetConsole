@@ -8,8 +8,8 @@ from uuid import uuid4
 
 from netconsole.core.paths import PathResolver
 from netconsole.repositories.mesh_catalog_repository import MeshCatalogRepository
+from netconsole.repositories.mesh_source_index_repository import MeshSourceIndexRepository
 from netconsole.services.mesh_source_locator import MeshSourceLocator
-from netconsole.services.mesh_source_rebuild_service import MeshSourceRebuildService
 
 
 class MeshSourceDeleteService:
@@ -32,19 +32,38 @@ class MeshSourceDeleteService:
         delete_generated_reports = bool(
             delete_generated_reports or delete_raw_archive
         )
-        try:
-            profile, source, index = MeshSourceRebuildService(self.paths)._source(site_id, session_id)
-        except ValueError as exc:
-            if "不存在" in str(exc):
-                return {
-                    "session_id": session_id,
-                    "already_deleted": True,
-                    "already_deleted_count": 1,
-                    "deleted_files": 0,
-                    "deleted_file_count": 0,
-                    "missing_file_count": 0,
-                }
-            raise
+        parsed_session = self._parse_session_id(session_id)
+        if parsed_session is None:
+            raise ValueError("MESH 来源标识无效")
+        mr_id, source_id = parsed_session
+        catalog = MeshCatalogRepository(self.paths.mesh_catalog_path(site_id))
+        profile = catalog.get_profile(mr_id)
+        if profile is None:
+            return self._already_missing_result(
+                session_id,
+                delete_raw_archive=delete_raw_archive,
+            )
+        index_path = self.paths.mesh_mr_db_path(site_id, profile.safe_folder_name)
+        if not index_path.is_file():
+            return self._delete_central_residual(
+                catalog,
+                session_id=session_id,
+                mr_id=mr_id,
+                source_file_id=source_id,
+                delete_raw_archive=delete_raw_archive,
+                reason_code="SOURCE_INDEX_MISSING",
+            )
+        index = MeshSourceIndexRepository(index_path)
+        source = index.get_source_file(source_id)
+        if source is None:
+            return self._delete_central_residual(
+                catalog,
+                session_id=session_id,
+                mr_id=mr_id,
+                source_file_id=source_id,
+                delete_raw_archive=delete_raw_archive,
+                reason_code="SOURCE_INDEX_ROW_MISSING",
+            )
 
         profile_root = self._inside(
             self.paths.mesh_mr_root(site_id, profile.safe_folder_name).resolve(),
@@ -100,7 +119,6 @@ class MeshSourceDeleteService:
         moved: list[tuple[Path, Path]] = []
         deleted_index: dict[str, object] | None = None
         source_metadata_changed = False
-        catalog = MeshCatalogRepository(self.paths.mesh_catalog_path(site_id))
         catalog_snapshot: dict[str, list[dict[str, object]]] = {"session_index": [], "fingerprints": []}
         try:
             gc.collect()
@@ -203,6 +221,100 @@ class MeshSourceDeleteService:
             "source_file_id": source_id,
             "cleanup_pending": cleanup_pending,
             "cleanup_warning": cleanup_warning,
+        }
+
+    @staticmethod
+    def _parse_session_id(session_id: str) -> tuple[str, int] | None:
+        mr_id, separator, source_value = str(session_id or "").rpartition(":")
+        if not separator or not mr_id or not source_value.isdigit():
+            return None
+        source_id = int(source_value)
+        return (mr_id, source_id) if source_id > 0 else None
+
+    @staticmethod
+    def _already_missing_result(
+        session_id: str,
+        *,
+        delete_raw_archive: bool,
+    ) -> dict[str, object]:
+        return {
+            "session_id": session_id,
+            "already_deleted": True,
+            "already_deleted_count": 1,
+            "delete_raw_archive": bool(delete_raw_archive),
+            "delete_parsed_data": True,
+            "deleted_files": 0,
+            "deleted_file_count": 0,
+            "missing_file_count": 0,
+            "central_residual_cleaned": False,
+        }
+
+    def _delete_central_residual(
+        self,
+        catalog: MeshCatalogRepository,
+        *,
+        session_id: str,
+        mr_id: str,
+        source_file_id: int,
+        delete_raw_archive: bool,
+        reason_code: str,
+    ) -> dict[str, object]:
+        catalog.record_source_health(
+            session_id=session_id,
+            mr_id=mr_id,
+            source_file_id=source_file_id,
+            health_status="BROKEN_SOURCE",
+            reason_code=reason_code,
+            details={"delete_reconciliation": True},
+        )
+        if delete_raw_archive:
+            snapshot = catalog.delete_source_index(
+                session_id=session_id,
+                mr_id=mr_id,
+                source_file_id=source_file_id,
+            )
+            changed = bool(
+                snapshot.get("session_index") or snapshot.get("fingerprints")
+            )
+            terminal_status = "DELETED" if changed else "ALREADY_MISSING"
+        else:
+            snapshot = catalog.mark_session_parsed_deleted(
+                session_id,
+                reports_deleted=True,
+            )
+            changed = bool(snapshot.get("session_index"))
+            terminal_status = "PARSED_DELETED" if changed else "ALREADY_MISSING"
+        catalog.record_source_health(
+            session_id=session_id,
+            mr_id=mr_id,
+            source_file_id=source_file_id,
+            health_status=terminal_status,
+            reason_code=reason_code,
+            details={"central_residual_cleaned": changed},
+        )
+        if not changed:
+            return self._already_missing_result(
+                session_id,
+                delete_raw_archive=delete_raw_archive,
+            )
+        return {
+            "session_id": session_id,
+            "already_deleted": False,
+            "already_deleted_count": 0,
+            "delete_raw_archive": bool(delete_raw_archive),
+            "delete_parsed_data": True,
+            "delete_generated_reports": True,
+            "deleted_files": 0,
+            "deleted_file_count": 0,
+            "missing_file_count": 2,
+            "deleted_reports": 0,
+            "parsed_links": 0,
+            "parsed_events": 0,
+            "parsed_issues": 0,
+            "source_file_id": source_file_id,
+            "central_residual_cleaned": True,
+            "cleanup_pending": False,
+            "cleanup_warning": "",
         }
 
     @staticmethod

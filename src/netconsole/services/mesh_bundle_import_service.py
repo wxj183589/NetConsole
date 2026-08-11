@@ -38,8 +38,12 @@ from netconsole.services.mesh_import_limits import (
     MESH_SINGLE_FILE_MAX_LABEL,
 )
 from netconsole.services.mesh_parsed_rebuild_service import MeshParsedRebuildService
-from netconsole.services.mesh_log_analysis_service import PARSER_VERSION
-from netconsole.services.mesh_storage_service import suggest_mesh_archive_filename
+from netconsole.repositories.mesh_mr_repository import PARSER_VERSION
+from netconsole.services.mesh_import_preflight_service import MeshImportPreflightService
+from netconsole.services.mesh_storage_service import (
+    MeshStorageService,
+    suggest_mesh_archive_filename,
+)
 
 
 _MESH_MEMBER_RE = re.compile(
@@ -533,13 +537,37 @@ class MeshBundleImportService:
         )
         same = next((item for item in matches if item["profile_id"] == profile_id), None)
         other = next((item for item in matches if item["profile_id"] != profile_id), None)
+        preflight_results = MeshImportPreflightService(
+            self.site_name,
+            self.paths,
+        ).inspect_import(
+            profile,
+            content_sha256=member.content_sha256,
+            raw_sha256=member.raw_sha256,
+        )
+        broken_same = next(
+            (
+                item
+                for item in preflight_results
+                if item.mr_id == profile_id and item.broken
+            ),
+            None,
+        )
         stored_filename, sequence, rename_status, rename_warning = suggest_mesh_archive_filename(
             self.paths.mesh_mr_raw_dir(self.site_name, profile.safe_folder_name),
             Path(member.safe_name).name,
             member.first_log_timestamp,
         )
         existing = same or other
-        duplicate_status = "duplicate_same_mr" if same else "duplicate_other_mr" if other else "new"
+        duplicate_status = (
+            "broken_same_mr"
+            if same and broken_same is not None
+            else "duplicate_same_mr"
+            if same
+            else "duplicate_other_mr"
+            if other
+            else "new"
+        )
         return {
             "profile_id": profile_id,
             "profile_name": profile_name,
@@ -548,7 +576,7 @@ class MeshBundleImportService:
             "rename_status": rename_status,
             "rename_warning": rename_warning,
             "duplicate_status": duplicate_status,
-            "import_allowed": existing is None,
+            "import_allowed": existing is None or duplicate_status == "broken_same_mr",
             "existing_source_id": (existing or {}).get("source_id"),
             "existing_stored_filename": str((existing or {}).get("stored_filename") or ""),
             "existing_session_id": str((existing or {}).get("session_id") or ""),
@@ -756,8 +784,13 @@ class MeshBundleImportService:
         approved = tuple(dict(item) for item in mappings)
         if approved != tuple(meta.get("approved_mappings") or ()):
             raise MeshBundleImportError("MAPPING_CHANGED", "MESH ZIP 映射与已确认预览不一致")
-        if self.is_archived(manifest.archive_sha256):
-            profiles = self._profiles_for_mappings(approved)
+        profiles = self._profiles_for_mappings(approved)
+        broken_sources = self._approved_broken_sources(
+            profiles,
+            approved,
+            manifest,
+        )
+        if self.is_archived(manifest.archive_sha256) and not broken_sources:
             return {
                 "archive_sha256": manifest.archive_sha256,
                 "member_count": len(manifest.members),
@@ -771,8 +804,7 @@ class MeshBundleImportService:
         rollback = self._transaction_root() / f".{job_id}.rollback"
         try:
             _raise_if_cancelled(should_cancel)
-            if self.is_archived(manifest.archive_sha256):
-                profiles = self._profiles_for_mappings(approved)
+            if self.is_archived(manifest.archive_sha256) and not broken_sources:
                 return {
                     "archive_sha256": manifest.archive_sha256,
                     "member_count": len(manifest.members),
@@ -804,7 +836,6 @@ class MeshBundleImportService:
                         "DUPLICATE_CONTENT_OTHER_MR",
                         f"日志正文已归属于其他 MR：{other['profile_name']}，请检查映射",
                     )
-            profiles = self._profiles_for_mappings(approved)
             self._ensure_identity_snapshot_current()
             self._prepare_transaction(transaction, profiles)
             staging_paths = PathResolver(
@@ -1074,7 +1105,16 @@ class MeshBundleImportService:
             _require_child(source, self.paths.site_mesh_root(self.site_name).resolve())
             _require_child(target, staging_paths.site_mesh_root(self.site_name).resolve())
             if not source.is_dir():
-                raise MeshBundleImportError("PROFILE_STORAGE_NOT_FOUND", "MESH Profile 数据目录不存在")
+                storage = MeshStorageService(self.site_name, staging_paths)
+                storage.ensure_mr_dirs(profile)
+                storage.write_mr_json(profile)
+                MeshMrRepository(
+                    staging_paths.mesh_mr_db_path(
+                        self.site_name,
+                        profile.safe_folder_name,
+                    )
+                )
+                continue
             _copy_tree_snapshot(source, target)
             if MeshMrRepository._is_compact_schema(target / "mesh.sqlite"):
                 self._rewrite_snapshot_paths_to_staging(source, target)
@@ -1115,18 +1155,37 @@ class MeshBundleImportService:
                 "SELECT id, archived_path, parsed_db_path FROM source_files"
             ).fetchall()
             for row in rows:
-                production_archived = Path(str(row["archived_path"] or "")).resolve()
-                production_parsed = Path(str(row["parsed_db_path"] or "")).resolve()
+                archived_value = str(row["archived_path"] or "").strip()
+                parsed_value = str(row["parsed_db_path"] or "").strip()
+                production_archived = Path(archived_value).resolve() if archived_value else None
+                production_parsed = Path(parsed_value).resolve() if parsed_value else None
+                if production_archived is None or production_parsed is None:
+                    connection.execute(
+                        "UPDATE source_files SET source_status = 'BROKEN_SOURCE', "
+                        "file_status = 'broken' WHERE id = ?",
+                        (int(row["id"]),),
+                    )
+                    continue
                 _require_child(production_archived, production_profile)
                 _require_child(production_parsed, production_profile)
                 staging_archived = staging_profile / production_archived.relative_to(production_profile)
                 staging_parsed = staging_profile / production_parsed.relative_to(production_profile)
-                if not staging_archived.is_file() or not staging_parsed.is_file():
-                    raise MeshBundleImportError("PROFILE_SNAPSHOT_INVALID", "MESH Profile 隔离副本不完整")
                 connection.execute(
-                    "UPDATE source_files SET archived_path = ?, parsed_db_path = ? WHERE id = ?",
-                    (str(staging_archived), str(staging_parsed), int(row["id"])),
+                    "UPDATE source_files SET archived_path = ?, parsed_db_path = ?, "
+                    "source_status = CASE WHEN ? THEN source_status ELSE 'BROKEN_SOURCE' END, "
+                    "file_status = CASE WHEN ? THEN file_status ELSE 'broken' END, "
+                    "file_exists = ? WHERE id = ?",
+                    (
+                        str(staging_archived),
+                        str(staging_parsed),
+                        int(staging_archived.is_file() and staging_parsed.is_file()),
+                        int(staging_archived.is_file() and staging_parsed.is_file()),
+                        int(staging_archived.is_file()),
+                        int(row["id"]),
+                    ),
                 )
+                if not staging_archived.is_file() or not staging_parsed.is_file():
+                    continue
                 with closing(sqlite3.connect(staging_parsed)) as detail:
                     detail.execute(
                         "UPDATE source_files SET archived_path = ? WHERE archived_path = ?",
@@ -1138,6 +1197,29 @@ class MeshBundleImportService:
                     )
                     detail.commit()
             connection.commit()
+
+    def _approved_broken_sources(
+        self,
+        profiles: Mapping[str, MeshMrProfile],
+        mappings: tuple[dict[str, object], ...],
+        manifest: MeshBundleManifest,
+    ) -> set[str]:
+        members = {member.member_id: member for member in manifest.members}
+        service = MeshImportPreflightService(self.site_name, self.paths)
+        broken: set[str] = set()
+        for mapping in mappings:
+            member = members[str(mapping["member_id"])]
+            profile = profiles[str(mapping["profile_id"])]
+            if any(
+                item.broken
+                for item in service.inspect_import(
+                    profile,
+                    content_sha256=member.content_sha256,
+                    raw_sha256=member.raw_sha256,
+                )
+            ):
+                broken.add(member.member_id)
+        return broken
 
     def _import_staging_profiles(
         self,
@@ -1719,8 +1801,13 @@ def _copy_tree_snapshot(source: Path, target: Path) -> None:
 
 def _publish_profile_snapshot(staging: Path, state: _ProfilePublishState) -> None:
     production = state.production_root
-    if not staging.is_dir() or not production.is_dir():
+    if not staging.is_dir():
         raise MeshBundleImportError("PROFILE_STORAGE_NOT_FOUND", "MESH Profile 数据目录不存在")
+    if production.exists() and not production.is_dir():
+        raise MeshBundleImportError("PROFILE_STORAGE_INVALID", "MESH Profile 数据目录路径发生冲突")
+    if not production.exists():
+        production.mkdir(parents=True, exist_ok=False)
+        state.created_directories.append(production)
     entries = list(staging.rglob("*"))
     if any(path.is_symlink() for path in entries):
         raise MeshBundleImportError("PROFILE_STORAGE_INVALID", "MESH Profile 目录包含符号链接")

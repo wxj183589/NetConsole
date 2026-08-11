@@ -41,7 +41,7 @@ from netconsole.services.mesh_rssi_stats import calc_numeric_stats
 
 SCHEMA_VERSION = "meshlog_compact_v3_tagged_samples"
 SCHEMA_KEY = "schema_" + "version"
-PARSER_VERSION = "meshlog_compact_v3_tagged_samples"
+PARSER_VERSION = "meshlog_parser_v1"
 DERIVED_ANALYSIS_VERSION = "6"
 DERIVED_ANALYSIS_KEY = "derived_analysis_version"
 MIN_NORMAL_ACTIVE_SAMPLE_COUNT = 3
@@ -82,7 +82,7 @@ _MESH_LINK_IDENTITY_PROJECTION_COLUMNS = {
 }
 _MESH_EVENT_CHART_COLUMNS = (
     "id, source_file_id, event_time, event_type, radio, from_peer_mac, to_peer_mac, "
-    "current_sample_time, observed_window_ms, details_json"
+    "previous_sample_time, current_sample_time, observed_window_ms, details_json"
 )
 _MESH_PERFORMANCE_INDEXES: tuple[tuple[str, str, tuple[str, ...], str], ...] = (
     (
@@ -91,6 +91,13 @@ _MESH_PERFORMANCE_INDEXES: tuple[tuple[str, str, tuple[str, ...], str], ...] = (
         ("source_file_id", "radio", "sample_time", "id"),
         "CREATE INDEX IF NOT EXISTS idx_mesh_links_source_radio_time_id "
         "ON mesh_links(source_file_id, radio, sample_time, id)",
+    ),
+    (
+        "idx_mesh_links_source_time_radio_id",
+        "mesh_links",
+        ("source_file_id", "sample_time", "radio", "id"),
+        "CREATE INDEX IF NOT EXISTS idx_mesh_links_source_time_radio_id "
+        "ON mesh_links(source_file_id, sample_time, radio, id)",
     ),
     (
         "idx_mesh_links_source_state_radio_time_id",
@@ -119,6 +126,27 @@ _MESH_PERFORMANCE_INDEXES: tuple[tuple[str, str, tuple[str, ...], str], ...] = (
         ("source_file_id", "radio", "event_time", "id"),
         "CREATE INDEX IF NOT EXISTS idx_switch_events_source_radio_time_id "
         "ON switch_events(source_file_id, radio, event_time, id)",
+    ),
+    (
+        "idx_active_segments_source_radio_start_id",
+        "active_segments",
+        ("source_file_id", "radio", "start_time", "id"),
+        "CREATE INDEX IF NOT EXISTS idx_active_segments_source_radio_start_id "
+        "ON active_segments(source_file_id, radio, start_time, id)",
+    ),
+    (
+        "idx_switch_events_source_time_id",
+        "switch_events",
+        ("source_file_id", "event_time", "id"),
+        "CREATE INDEX IF NOT EXISTS idx_switch_events_source_time_id "
+        "ON switch_events(source_file_id, event_time, id)",
+    ),
+    (
+        "idx_switch_events_source_type_time_id",
+        "switch_events",
+        ("source_file_id", "event_type", "event_time", "id"),
+        "CREATE INDEX IF NOT EXISTS idx_switch_events_source_type_time_id "
+        "ON switch_events(source_file_id, event_type, event_time, id)",
     ),
     (
         "idx_mesh_links_record_order",
@@ -242,7 +270,6 @@ class MeshMrRepository:
                 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
                 INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_' || 'version', 'meshlog_compact_v3_tagged_samples');
                 INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', 'meshlog_compact_v3_tagged_samples');
-                INSERT OR REPLACE INTO meta(key, value) VALUES ('parser_version', 'meshlog_compact_v3_tagged_samples');
                 CREATE TABLE IF NOT EXISTS source_files (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     mr_id TEXT NOT NULL,
@@ -567,6 +594,15 @@ class MeshMrRepository:
                 CREATE VIEW IF NOT EXISTS mesh_events AS SELECT * FROM switch_events;
                 """
             )
+            # CREATE IF NOT EXISTS statements above are idempotent.  Existing
+            # compact databases still need additive compatibility migrations;
+            # serialize that PRAGMA/ALTER sequence across processes.
+            conn.execute("BEGIN IMMEDIATE")
+            if is_new_database:
+                conn.execute(
+                    "INSERT OR REPLACE INTO meta(key, value) VALUES ('parser_version', ?)",
+                    (PARSER_VERSION,),
+                )
             for column in (
                 "raw_relative_path",
                 "parsed_relative_path",
@@ -1841,19 +1877,248 @@ class MeshMrRepository:
             return {"anchor": anchor, "peer_segment": _segment_payload(anchor, [], interval, gap), "run_segment": _segment_payload(anchor, [], interval, gap)}
         return self._query_peer_chart_segments_in_range(anchor, start_time, end_time, interval, gap, partial=False, full_loading=False, source_file_id=source_file_id)
 
+    @staticmethod
+    def _budgeted_event_rows(
+        conn: sqlite3.Connection,
+        *,
+        where: str,
+        values: list[object],
+        max_events: int,
+    ) -> tuple[list[dict[str, object]], int]:
+        total = int(
+            conn.execute(f"SELECT COUNT(*) FROM switch_events {where}", values).fetchone()[0]
+            or 0
+        )
+        if total == 0 or max_events <= 0:
+            return [], total
+        if total <= max_events:
+            rows = conn.execute(
+                f"""
+                SELECT {_MESH_EVENT_CHART_COLUMNS}
+                FROM switch_events
+                {where}
+                ORDER BY radio ASC, event_time ASC, id ASC
+                """,
+                values,
+            ).fetchall()
+            return [dict(row) for row in rows], total
+        stride = max(1, (total + max_events - 1) // max_events)
+        rows = conn.execute(
+            f"""
+            WITH ordered AS (
+                SELECT {_MESH_EVENT_CHART_COLUMNS},
+                       ROW_NUMBER() OVER (ORDER BY radio ASC, event_time ASC, id ASC) AS row_no,
+                       COUNT(*) OVER () AS total_rows
+                FROM switch_events
+                {where}
+            )
+            SELECT {_MESH_EVENT_CHART_COLUMNS}
+            FROM ordered
+            WHERE row_no = 1 OR row_no = total_rows OR ((row_no - 1) % ?) = 0
+            ORDER BY radio ASC, event_time ASC, id ASC
+            LIMIT ?
+            """,
+            (*values, stride, max_events),
+        ).fetchall()
+        return [dict(row) for row in rows], total
+
+    @staticmethod
+    def _budgeted_chart_rows(
+        conn: sqlite3.Connection,
+        *,
+        chart_columns: str,
+        where: str,
+        values: list[object],
+        order_by: str,
+        max_rows: int,
+        event_times: Iterable[str] = (),
+        critical_frame_row_limit: int = 32,
+        frame_count: int = 0,
+        max_frames: int = 0,
+        known_totals: Mapping[str, object] | None = None,
+    ) -> tuple[list[sqlite3.Row], dict[str, int | bool]]:
+        aggregate: Mapping[str, object]
+        if known_totals is not None:
+            aggregate = known_totals
+        else:
+            aggregate = conn.execute(
+                f"""
+                SELECT COUNT(*) AS total_rows,
+                       COUNT(DISTINCT sample_id) AS total_frames,
+                       SUM(CASE WHEN link_state = ? THEN 1 ELSE 0 END) AS active_rows,
+                       SUM(CASE WHEN link_state = ? THEN 1 ELSE 0 END) AS standby_rows,
+                       MIN(id) AS min_id,
+                       MAX(id) AS max_id,
+                       MIN(sample_id) AS min_sample_id,
+                       MAX(sample_id) AS max_sample_id
+                FROM mesh_links
+                {where}
+                """,
+                (LINK_STATE_ACTIVE, LINK_STATE_STANDBY, *values),
+            ).fetchone()
+        total_rows = int(aggregate["total_rows"] or 0)
+        totals: dict[str, int | bool] = {
+            "total_rows": total_rows,
+            "total_frames": int(aggregate["total_frames"] or 0),
+            "active_rows": int(aggregate["active_rows"] or 0),
+            "standby_rows": int(aggregate["standby_rows"] or 0),
+            "repository_downsampled": (
+                total_rows > max_rows or (frame_count > 0 and max_frames > 0 and frame_count > max_frames)
+            ),
+        }
+        if total_rows == 0 or max_rows <= 0:
+            return [], totals
+        preserve_frames = frame_count > 0 and max_frames > 0
+        if total_rows <= max_rows and not (preserve_frames and frame_count > max_frames):
+            return (
+                conn.execute(
+                    f"SELECT {chart_columns} FROM mesh_links {where} ORDER BY {order_by}",
+                    values,
+                ).fetchall(),
+                totals,
+            )
+
+        normalized_event_times = sorted({str(value) for value in event_times if str(value)})
+        event_time_cte = (
+            "VALUES " + ", ".join("(?)" for _ in normalized_event_times)
+            if normalized_event_times
+            else "SELECT NULL WHERE 0"
+        )
+        event_match = (
+            "sample_time IN (SELECT value FROM event_times)"
+            if normalized_event_times
+            else "0"
+        )
+        stride = max(
+            1,
+            (
+                (frame_count + max_frames - 1) // max_frames
+                if preserve_frames
+                else (total_rows + max_rows - 1) // max_rows
+            ),
+        )
+        min_id = int(aggregate["min_id"] or 0)
+        max_id = int(aggregate["max_id"] or min_id)
+        min_sample_id = int(aggregate["min_sample_id"] or 0)
+        max_sample_id = int(aggregate["max_sample_id"] or min_sample_id)
+        if preserve_frames:
+            frame_condition = (
+                "(sample_id = ? OR sample_id = ? OR ((sample_id - ?) % ?) = 0 "
+                f"OR {event_match})"
+            )
+            sampled_where = (
+                f"{where} AND {frame_condition}"
+                if where
+                else f"WHERE {frame_condition}"
+            )
+            selected_ids_sql = f"""
+            WITH event_times(value) AS ({event_time_cte}),
+            sampled AS (
+                SELECT id, sample_id, sample_time, link_state,
+                       CASE
+                           WHEN sample_id = {min_sample_id} OR sample_id = {max_sample_id} THEN 0
+                           WHEN {event_match} THEN 1
+                           ELSE 2
+                       END AS priority
+                FROM mesh_links
+                {sampled_where}
+            ),
+            ranked AS (
+                SELECT id, sample_time, priority,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY sample_id
+                           ORDER BY CASE WHEN link_state = '{LINK_STATE_ACTIVE}' THEN 0 ELSE 1 END, id
+                       ) AS frame_row_no
+                FROM sampled
+            )
+            SELECT id
+            FROM ranked
+            WHERE frame_row_no <= ?
+            ORDER BY priority ASC, sample_time ASC, id ASC
+            LIMIT ?
+            """
+            parameters_list: list[object] = [
+                *normalized_event_times,
+                *values,
+                min_sample_id,
+                max_sample_id,
+                min_sample_id,
+                stride,
+                max(1, critical_frame_row_limit),
+                max_rows,
+            ]
+        else:
+            row_stride = max(1, (max_id - min_id + 1 + max_rows - 1) // max_rows)
+            row_condition = (
+                "(id = ? OR id = ? OR ((id - ?) % ?) = 0 "
+                f"OR {event_match})"
+            )
+            sampled_where = (
+                f"{where} AND {row_condition}"
+                if where
+                else f"WHERE {row_condition}"
+            )
+            selected_ids_sql = f"""
+            WITH event_times(value) AS ({event_time_cte}),
+            candidates AS (
+                SELECT id, sample_time,
+                       CASE
+                           WHEN id = {min_id} OR id = {max_id} THEN 0
+                           WHEN {event_match} THEN 1
+                           ELSE 2
+                       END AS priority
+                FROM mesh_links
+                {sampled_where}
+            )
+            SELECT id
+            FROM candidates
+            ORDER BY priority ASC, sample_time ASC, id ASC
+            LIMIT ?
+            """
+            parameters_list = [
+                *normalized_event_times,
+                *values,
+                min_id,
+                max_id,
+                min_id,
+                row_stride,
+                max_rows,
+            ]
+        parameters = tuple(parameters_list)
+        rows = conn.execute(
+            f"""
+            SELECT {chart_columns}
+            FROM mesh_links
+            WHERE id IN ({selected_ids_sql})
+            ORDER BY {order_by}
+            """,
+            parameters,
+        ).fetchall()
+        totals["returned_rows"] = len(rows)
+        return rows, totals
+
     def query_active_link_chart_segments(
         self,
         source_file_id: int | str | None = None,
         radio: int | None = None,
         time_from: str = "",
         time_to: str = "",
+        max_rows: int = 50_000,
+        max_events: int = 256,
     ) -> dict[str, object]:
         if self._is_index_database():
             if source_file_id not in (None, ""):
                 repo = self._detail_repo_for_source(source_file_id)
                 if repo is None:
                     return {"anchor": None, "peer_segment": _segment_payload(None, [], None, None), "run_segment": _segment_payload(None, [], None, None)}
-                payload = repo.query_active_link_chart_segments(None, radio, time_from, time_to)
+                payload = repo.query_active_link_chart_segments(
+                    None,
+                    radio,
+                    time_from,
+                    time_to,
+                    max_rows=max_rows,
+                    max_events=max_events,
+                )
                 for segment_key in ("peer_segment", "run_segment"):
                     segment = payload.get(segment_key)
                     if isinstance(segment, dict):
@@ -1865,7 +2130,14 @@ class MeshMrRepository:
             rows: list[dict[str, object]] = []
             events: list[dict[str, object]] = []
             for source_id, repo in self._detail_repo_items():
-                payload = repo.query_active_link_chart_segments(None, radio, time_from, time_to)
+                payload = repo.query_active_link_chart_segments(
+                    None,
+                    radio,
+                    time_from,
+                    time_to,
+                    max_rows=max_rows,
+                    max_events=max_events,
+                )
                 run = dict(payload.get("run_segment") or {})
                 detail_rows = list(run.get("rows") or [])
                 for row in detail_rows:
@@ -1920,29 +2192,34 @@ class MeshMrRepository:
         events_where = f"WHERE {' AND '.join(event_clauses)}" if event_clauses else ""
         with self._connect() as conn:
             chart_columns = _mesh_link_chart_columns(conn)
+            events, total_events = self._budgeted_event_rows(
+                conn,
+                where=events_where,
+                values=event_values,
+                max_events=max(0, int(max_events)),
+            )
+            event_times = {
+                str(value)
+                for event in events
+                for value in (
+                    event.get("previous_sample_time"),
+                    event.get("current_sample_time"),
+                    event.get("event_time"),
+                )
+                if value
+            }
+            raw_rows, query_totals = self._budgeted_chart_rows(
+                conn,
+                chart_columns=chart_columns,
+                where=where,
+                values=values,
+                order_by="radio ASC, sample_time ASC, id ASC",
+                max_rows=max(2, int(max_rows)),
+                event_times=event_times,
+            )
             rows = [
                 _with_synthetic_payload(row)
-                for row in conn.execute(
-                    f"""
-                    SELECT {chart_columns}
-                    FROM mesh_links
-                    {where}
-                    ORDER BY radio ASC, sample_time ASC, id ASC
-                    """,
-                    values,
-                ).fetchall()
-            ]
-            events = [
-                dict(row)
-                for row in conn.execute(
-                    f"""
-                    SELECT {_MESH_EVENT_CHART_COLUMNS}
-                    FROM switch_events
-                    {events_where}
-                    ORDER BY radio ASC, event_time ASC, id ASC
-                    """,
-                    event_values,
-                ).fetchall()
+                for row in raw_rows
             ]
         active_rows = [row for row in rows if row.get("link_state") == LINK_STATE_ACTIVE]
         standby_rows = [row for row in rows if row.get("link_state") == LINK_STATE_STANDBY]
@@ -1965,6 +2242,12 @@ class MeshMrRepository:
         anchor = next((row for row in rows if row.get("link_state") == LINK_STATE_ACTIVE), rows[0] if rows else None)
         interval, gap = _interval_and_threshold([str(row.get("sample_time") or "") for row in rows if row.get("sample_time")])
         run_segment = _segment_payload(anchor, rows, interval, gap)
+        run_segment.update(query_totals)
+        run_segment["returned_rows"] = len(rows)
+        run_segment["total_events"] = total_events
+        run_segment["returned_events"] = len(events)
+        run_segment["repository_row_budget"] = max(2, int(max_rows))
+        run_segment["repository_event_budget"] = max(0, int(max_events))
         peer_segment = _segment_payload(anchor, [], interval, gap)
         for segment in (peer_segment, run_segment):
             segment["partial"] = False
@@ -1980,6 +2263,10 @@ class MeshMrRepository:
         radio: int | None = None,
         time_from: str = "",
         time_to: str = "",
+        max_rows: int = 50_000,
+        max_frames: int = 2_000,
+        max_series: int = 256,
+        max_events: int = 256,
     ) -> dict[str, object]:
         """只读轨旁链路 RSSI 标量行，不构造未消费的 synthetic metric payload。"""
         if self._is_index_database():
@@ -1987,14 +2274,32 @@ class MeshMrRepository:
                 repo = self._detail_repo_for_source(source_file_id)
                 if repo is None:
                     return {"run_segment": _segment_payload(None, [], None, None)}
-                payload = repo.query_trackside_link_chart_segment(None, radio, time_from, time_to)
+                payload = repo.query_trackside_link_chart_segment(
+                    None,
+                    radio,
+                    time_from,
+                    time_to,
+                    max_rows=max_rows,
+                    max_frames=max_frames,
+                    max_series=max_series,
+                    max_events=max_events,
+                )
                 segment = dict(payload.get("run_segment") or {})
                 for row in segment.get("rows") or []:
                     row["source_file_id"] = int(source_file_id)
                 return {"run_segment": segment}
             rows: list[dict[str, object]] = []
             for source_id, repo in self._detail_repo_items():
-                payload = repo.query_trackside_link_chart_segment(None, radio, time_from, time_to)
+                payload = repo.query_trackside_link_chart_segment(
+                    None,
+                    radio,
+                    time_from,
+                    time_to,
+                    max_rows=max_rows,
+                    max_frames=max_frames,
+                    max_series=max_series,
+                    max_events=max_events,
+                )
                 detail_rows = list(dict(payload.get("run_segment") or {}).get("rows") or [])
                 for row in detail_rows:
                     row["source_file_id"] = source_id
@@ -2025,17 +2330,125 @@ class MeshMrRepository:
             where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
             with self._connect() as conn:
                 chart_columns = _mesh_link_chart_columns(conn)
+                series_identity = (
+                    "COALESCE(NULLIF(peer_radio_mac, ''), NULLIF(peer_ap_mac, ''), "
+                    "NULLIF(peer_mac_normalized, ''), NULLIF(peer_mac, ''), "
+                    "NULLIF(peer_mac_raw, ''), NULLIF(lower(trim(peer_ap_name)), ''))"
+                )
+                series_key = f"({series_identity} || ':' || COALESCE(CAST(radio AS TEXT), ''))"
+                source_totals = conn.execute(
+                    f"""
+                    SELECT COUNT(*) AS total_rows,
+                           COUNT(DISTINCT sample_id) AS total_frames,
+                           SUM(CASE WHEN link_state = ? THEN 1 ELSE 0 END) AS active_rows,
+                           SUM(CASE WHEN link_state = ? THEN 1 ELSE 0 END) AS standby_rows,
+                           SUM(CASE WHEN link_count = 2 THEN 1 ELSE 0 END) AS triangle_rows,
+                           COUNT(DISTINCT {series_key}) AS total_series,
+                           MIN(id) AS min_id,
+                           MAX(id) AS max_id,
+                           MIN(sample_id) AS min_sample_id,
+                           MAX(sample_id) AS max_sample_id
+                    FROM mesh_links
+                    {where}
+                    """,
+                    (LINK_STATE_ACTIVE, LINK_STATE_STANDBY, *values),
+                ).fetchone()
+                total_series = int(source_totals["total_series"] or 0)
+                selected_series: list[str] = []
+                bounded_series = max(1, int(max_series))
+                if total_series > bounded_series:
+                    series_where = (
+                        f"{where} AND {series_identity} IS NOT NULL"
+                        if where
+                        else f"WHERE {series_identity} IS NOT NULL"
+                    )
+                    selected_series = [
+                        str(row["series_key"])
+                        for row in conn.execute(
+                            f"""
+                            SELECT {series_key} AS series_key
+                            FROM mesh_links
+                            {series_where}
+                            GROUP BY series_key
+                            ORDER BY MAX(CASE WHEN link_state = ? THEN 1 ELSE 0 END) DESC,
+                                     MIN(sample_time) ASC,
+                                     series_key ASC
+                            LIMIT ?
+                            """,
+                            (*values, LINK_STATE_ACTIVE, bounded_series),
+                        ).fetchall()
+                    ]
+                    placeholders = ", ".join("?" for _ in selected_series)
+                    clauses.append(f"{series_key} IN ({placeholders})")
+                    values.extend(selected_series)
+                    where = f"WHERE {' AND '.join(clauses)}"
+
+                event_clauses: list[str] = []
+                event_values: list[object] = []
+                if source_file_id not in (None, ""):
+                    event_clauses.append("source_file_id = ?")
+                    event_values.append(int(source_file_id))
+                if radio is not None:
+                    event_clauses.append("radio = ?")
+                    event_values.append(int(radio))
+                if time_from:
+                    event_clauses.append("event_time >= ?")
+                    event_values.append(time_from)
+                if time_to:
+                    event_clauses.append("event_time <= ?")
+                    event_values.append(time_to)
+                events_where = (
+                    f"WHERE {' AND '.join(event_clauses)}" if event_clauses else ""
+                )
+                event_rows, total_events = self._budgeted_event_rows(
+                    conn,
+                    where=events_where,
+                    values=event_values,
+                    max_events=max(0, int(max_events)),
+                )
+                event_times = {
+                    str(value)
+                    for event in event_rows
+                    for value in (
+                        event.get("previous_sample_time"),
+                        event.get("current_sample_time"),
+                        event.get("event_time"),
+                    )
+                    if value
+                }
+                total_frames = int(source_totals["total_frames"] or 0)
+                selected_series_count = len(selected_series) or total_series or 1
+                bounded_rows = max(2, int(max_rows))
+                requested_frames = max(2, int(max_frames))
+                repository_frame_budget = min(
+                    requested_frames,
+                    max(2, bounded_rows // max(2, selected_series_count * 2)),
+                )
+                source_row_count = int(source_totals["total_rows"] or 0)
+                # Keep the established service-layer run/boundary sampler for
+                # medium sources.  Repository LOD starts only once materializing
+                # the source would exceed twice the bounded row budget.
+                apply_repository_frame_budget = source_row_count > bounded_rows * 2
+                query_row_budget = bounded_rows if apply_repository_frame_budget else max(
+                    bounded_rows,
+                    source_row_count,
+                )
+                raw_rows, query_totals = self._budgeted_chart_rows(
+                    conn,
+                    chart_columns=chart_columns,
+                    where=where,
+                    values=values,
+                    order_by="sample_time ASC, radio ASC, id ASC",
+                    max_rows=query_row_budget,
+                    event_times=event_times,
+                    critical_frame_row_limit=bounded_series * 2,
+                    frame_count=total_frames if apply_repository_frame_budget else 0,
+                    max_frames=repository_frame_budget if apply_repository_frame_budget else 0,
+                    known_totals=source_totals if not selected_series else None,
+                )
                 rows = [
                     dict(row)
-                    for row in conn.execute(
-                        f"""
-                        SELECT {chart_columns}
-                        FROM mesh_links
-                        {where}
-                        ORDER BY sample_time ASC, timestamp_tag ASC, radio ASC, id ASC
-                        """,
-                        values,
-                    ).fetchall()
+                    for row in raw_rows
                 ]
         ordered_times = list(
             dict.fromkeys(str(row.get("sample_time") or "") for row in rows if row.get("sample_time"))
@@ -2045,7 +2458,35 @@ class MeshMrRepository:
             (row for row in rows if row.get("link_state") == LINK_STATE_ACTIVE),
             rows[0] if rows else None,
         )
-        return {"run_segment": _segment_payload(anchor, rows, interval, gap)}
+        run_segment = _segment_payload(anchor, rows, interval, gap)
+        if not self._is_index_database():
+            run_segment.update(query_totals)
+            run_segment.update(
+                {
+                    "source_total_rows": int(source_totals["total_rows"] or 0),
+                    "source_active_rows": int(source_totals["active_rows"] or 0),
+                    "source_standby_rows": int(source_totals["standby_rows"] or 0),
+                    "source_triangle_rows": int(source_totals["triangle_rows"] or 0),
+                    "source_total_frames": int(source_totals["total_frames"] or 0),
+                    "source_total_series": total_series,
+                    "returned_rows": len(rows),
+                    "returned_events": len(event_rows),
+                    "total_events": total_events,
+                    "repository_row_budget": max(2, int(max_rows)),
+                    "repository_frame_budget": repository_frame_budget,
+                    "repository_series_budget": bounded_series,
+                    "repository_event_budget": max(0, int(max_events)),
+                    "repository_downsampled": bool(
+                        int(source_totals["total_rows"] or 0) > len(rows)
+                        or total_series > bounded_series
+                        or (
+                            apply_repository_frame_budget
+                            and total_frames > repository_frame_budget
+                        )
+                    ),
+                }
+            )
+        return {"run_segment": run_segment}
 
     def _query_active_path_backup_rows(self, conn: sqlite3.Connection, active_rows: list[dict[str, object]]) -> list[dict[str, object]]:
         if not active_rows:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import shutil
 import sqlite3
 import stat
 import zipfile
@@ -21,7 +22,7 @@ from netconsole.services.mesh_bundle_import_service import (
     MeshBundleImportService,
 )
 from netconsole.services.mesh_import_service import MeshImportService
-from netconsole.services.mesh_log_analysis_service import PARSER_VERSION
+from netconsole.repositories.mesh_mr_repository import PARSER_VERSION
 from netconsole.services.mesh_storage_service import MeshStorageService
 
 
@@ -313,6 +314,76 @@ def test_successful_worker_commit_rewrites_staging_paths_and_finalizes_manifest(
     )
     assert duplicate["idempotent"] is True
     assert repository.summary()["source_file_count"] == 1
+
+
+def test_bundle_reimport_recovers_profile_directory_deleted_outside_application(
+    tmp_path: Path,
+) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    profile = MeshStorageService("demo", paths).create_mr_profile("01-MR-CT")
+    archive = tmp_path / "bundle-recover.zip"
+    _zip(archive, {"01CTmeshlog.log": VALID_LOG})
+    service = MeshBundleImportService("demo", paths)
+
+    with archive.open("rb") as source:
+        first_preview = service.create_preview(archive.name, source, [profile])
+    first_member_id = str(first_preview["items"][0]["member_id"])
+    first_mapping = [
+        {
+            "member_id": first_member_id,
+            "train_number": "01",
+            "role": "CT",
+            "profile_id": profile.mr_id,
+        }
+    ]
+    service.approve_preview(
+        str(first_preview["preview_id"]),
+        first_mapping,
+        [profile.mr_id],
+    )
+    service.import_approved_preview(
+        str(first_preview["preview_id"]),
+        first_mapping,
+        job_id="mesh-bundle-before-external-delete",
+    )
+
+    profile_root = paths.mesh_mr_root("demo", profile.safe_folder_name)
+    shutil.rmtree(profile_root)
+    assert not profile_root.exists()
+
+    with archive.open("rb") as source:
+        recovery_preview = service.create_preview(archive.name, source, [profile])
+    recovery_item = recovery_preview["items"][0]
+    assert recovery_item["duplicate_status"] == "broken_same_mr"
+    assert recovery_item["import_allowed"] is True
+    recovery_mapping = [
+        {
+            "member_id": str(recovery_item["member_id"]),
+            "train_number": "01",
+            "role": "CT",
+            "profile_id": profile.mr_id,
+        }
+    ]
+    service.approve_preview(
+        str(recovery_preview["preview_id"]),
+        recovery_mapping,
+        [profile.mr_id],
+    )
+    recovered = service.import_approved_preview(
+        str(recovery_preview["preview_id"]),
+        recovery_mapping,
+        job_id="mesh-bundle-after-external-delete",
+    )
+
+    repository = MeshMrRepository(
+        paths.mesh_mr_db_path("demo", profile.safe_folder_name)
+    )
+    rows = repository.list_source_files()
+    assert recovered["imported_count"] == 1
+    assert recovered["idempotent"] is False
+    assert len(rows) == 1
+    assert Path(str(rows[0]["archived_path"])).is_file()
+    assert Path(str(rows[0]["parsed_db_path"])).is_file()
 
 
 def test_bundle_import_refreshes_stale_base_only_identity_before_staging_snapshot(

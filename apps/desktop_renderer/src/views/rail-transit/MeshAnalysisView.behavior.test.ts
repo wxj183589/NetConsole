@@ -25,6 +25,7 @@ const mocks = vi.hoisted(() => ({
   listSessions: vi.fn(),
   listBuildOrder: vi.fn(),
   listLinks: vi.fn(),
+  listSwitchEvents: vi.fn(),
   getActivePath: vi.fn(),
   getPeerPath: vi.fn(),
   getTracksideSignal: vi.fn(),
@@ -33,7 +34,9 @@ const mocks = vi.hoisted(() => ({
   listAnomalies: vi.fn(),
   exportDetails: vi.fn(),
   deleteSource: vi.fn(),
+  batchDeleteSources: vi.fn(),
   rebuildAnalysis: vi.fn(),
+  startMaintenance: vi.fn(),
   chartApplyViewport: vi.fn(),
   chartResetViewport: vi.fn(),
   chartResize: vi.fn(),
@@ -64,6 +67,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('../../api/meshAnalysis', () => ({
   applyMeshBundleImport: vi.fn(),
+  batchDeleteMeshSources: mocks.batchDeleteSources,
   createMeshProfile: mocks.createProfile,
   deleteMeshSource: mocks.deleteSource,
   exportMeshLinkDetails: mocks.exportDetails,
@@ -85,12 +89,13 @@ vi.mock('../../api/meshAnalysis', () => ({
   listMeshArtifacts: vi.fn(),
   listMeshLinks: mocks.listLinks,
   listMeshProfiles: mocks.listProfiles,
-  listMeshSwitchEvents: vi.fn(),
+  listMeshSwitchEvents: mocks.listSwitchEvents,
   meshArtifactDownloadRequest: vi.fn(),
   previewMeshImport: mocks.previewImport,
   rebuildMeshAnalysis: mocks.rebuildAnalysis,
   prepareMeshImportContext: mocks.prepareContext,
   saveMeshAnalysisParams: mocks.saveAnalysisParams,
+  startMeshMaintenance: mocks.startMaintenance,
 }))
 vi.mock('../../api/railTransitBaseData', () => ({ listVehicleMrs: mocks.listVehicleMrs }))
 vi.mock('../../api/railTransitWeb', () => ({
@@ -182,12 +187,30 @@ const selectStub = defineComponent({
 const dataTableStub = defineComponent({
   inheritAttrs: false,
   props: { data: { type: Array, default: () => [] }, columns: { type: Array, default: () => [] }, tableId: { type: String, default: '' } },
-  emits: ['row-click', 'row-dblclick', 'sort-change'],
+  emits: ['row-click', 'row-dblclick', 'sort-change', 'selection-change'],
   setup(props, { attrs, slots }) {
     return () => h('div', { ...attrs, 'data-table-id': props.tableId }, props.data.flatMap((row) => [
       slots.default?.({ row }),
       slots['cell-actions']?.({ row }),
     ]))
+  },
+})
+const paginationStub = defineComponent({
+  inheritAttrs: false,
+  props: {
+    currentPage: { type: Number, default: 1 },
+    pageSize: { type: Number, default: 0 },
+    total: { type: Number, default: 0 },
+  },
+  emits: ['current-change', 'size-change'],
+  setup(props, { attrs }) {
+    return () => h('div', {
+      ...attrs,
+      class: 'pagination-stub',
+      'data-current-page': props.currentPage,
+      'data-page-size': props.pageSize,
+      'data-total': props.total,
+    })
   },
 })
 const dialogStub = defineComponent({
@@ -254,7 +277,7 @@ const stubs: Record<string, Component | boolean> = {
   ElInputNumber: passthrough,
   ElIcon: passthrough,
   ElOption: optionStub,
-  ElPagination: passthrough,
+  ElPagination: paginationStub,
   ElPopover: popoverStub,
   ElSelect: selectStub,
   ElTabPane: passthrough,
@@ -376,6 +399,7 @@ beforeEach(() => {
   })
   mocks.listBuildOrder.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 100 })
   mocks.listLinks.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 100 })
+  mocks.listSwitchEvents.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 100 })
   mocks.getActivePath.mockResolvedValue({ mode: 'active_path', anchor: null, points: [], events: [], total_points: 0, downsampled: false, summary: {}, time_from: null, time_to: null })
   mocks.getPeerPath.mockResolvedValue({ mode: 'peer_segment', anchor: null, points: [], events: [], total_points: 0, downsampled: false, summary: {}, time_from: null, time_to: null })
   mocks.getTracksideSignal.mockResolvedValue({
@@ -413,19 +437,21 @@ beforeEach(() => {
     include_standby: true,
   })
   mocks.exportDetails.mockResolvedValue({ action: 'mesh_link_detail_export', task_id: 'mesh-export-1', status: 'RUNNING' })
-  mocks.deleteSource.mockResolvedValue({
-    action: 'mesh_analysis_source_delete',
-    task_id: 'mesh-delete-1',
-    status: 'COMPLETED',
-    result_summary: {
-      session_id: 'session-delete',
-      delete_raw_archive: false,
-      delete_parsed_data: true,
-    },
+  mocks.batchDeleteSources.mockResolvedValue({
+    action: 'mesh_analysis_sources_delete',
+    task_id: 'mesh-delete-batch-1',
+    status: 'RUNNING',
+    result_summary: {},
   })
   mocks.rebuildAnalysis.mockResolvedValue({
     action: 'mesh_source_rebuild',
     task_id: 'mesh-identity-remap-1',
+    status: 'RUNNING',
+    result_summary: {},
+  })
+  mocks.startMaintenance.mockResolvedValue({
+    action: 'mesh_analysis_maintenance',
+    task_id: 'mesh-identity-refresh-1',
     status: 'RUNNING',
     result_summary: {},
   })
@@ -1942,6 +1968,88 @@ describe('Mesh analysis detail behavior', () => {
     wrapper.unmount()
   })
 
+  it('pages switch events through the backend and uses the available table height', async () => {
+    const session = {
+      session_id: 'session-switch-page', mr_name: '列车34-MR-CW', original_filename: '34-CW.log', first_sample_time: '', last_sample_time: '',
+      parsed_status: 'ready', warning_count: 0, report_count: 0,
+    }
+    mocks.listSessions.mockResolvedValue({ items: [session], total: 1, page: 1, page_size: 50 })
+    mocks.getSession.mockResolvedValue({
+      session,
+      analysis_params: {},
+      available_radios: [1],
+      warnings: [],
+      sources: [{ source_file_id: 1, source_action_id: 'source-switch-page', exists: true, rebuild_capability: 'ready' }],
+    })
+    mocks.listSwitchEvents.mockImplementation(async (_sessionId: string, values: { page: number; page_size: number }) => ({
+      items: [{ event_id: `switch-${values.page}`, timestamp: '2026-07-20 10:00:00.000' }],
+      total: 8_490,
+      page: values.page,
+      page_size: values.page_size,
+    }))
+    const wrapper = mount(MeshAnalysisView, { global: { stubs, directives: { loading: () => undefined } } })
+    await flushPromises()
+    await wrapper.findAll('button').find((button) => button.text() === '查看')!.trigger('click')
+    await flushPromises()
+
+    const detailTabs = wrapper.findAllComponents(tabsStub)
+      .find((tabs) => tabs.classes().includes('detail-tabs'))!
+    await detailTabs.vm.$emit('update:modelValue', 'switches')
+    await flushPromises()
+
+    expect(mocks.listSwitchEvents).toHaveBeenLastCalledWith('session-switch-page', {
+      page: 1,
+      page_size: 100,
+      radio: null,
+      result_filter: null,
+    })
+    const switchPane = wrapper.get('#pane-switches')
+    const switchTable = switchPane.getComponent(dataTableStub)
+    expect(switchTable.attributes('height')).not.toBe('430')
+    const pagination = switchPane.getComponent(paginationStub)
+    expect(pagination.attributes('data-total')).toBe('8490')
+    expect(pagination.attributes('data-page-size')).toBe('100')
+
+    await pagination.vm.$emit('current-change', 2)
+    await flushPromises()
+    expect(mocks.listSwitchEvents).toHaveBeenLastCalledWith('session-switch-page', {
+      page: 2,
+      page_size: 100,
+      radio: null,
+      result_filter: null,
+    })
+
+    await pagination.vm.$emit('size-change', 200)
+    await flushPromises()
+    expect(mocks.listSwitchEvents).toHaveBeenLastCalledWith('session-switch-page', {
+      page: 1,
+      page_size: 200,
+      radio: null,
+      result_filter: null,
+    })
+
+    const radioSelect = switchPane.get('select[data-placeholder="Radio"]')
+    await radioSelect.setValue('1')
+    await flushPromises()
+    expect(mocks.listSwitchEvents).toHaveBeenLastCalledWith('session-switch-page', {
+      page: 1,
+      page_size: 200,
+      radio: 1,
+      result_filter: null,
+    })
+
+    const resultSelect = switchPane.get('select[data-placeholder="切换分类"]')
+    await resultSelect.setValue('pingpong')
+    await flushPromises()
+    expect(mocks.listSwitchEvents).toHaveBeenLastCalledWith('session-switch-page', {
+      page: 1,
+      page_size: 200,
+      radio: 1,
+      result_filter: 'pingpong',
+    })
+    wrapper.unmount()
+  })
+
   it('submits parsed-only deletion from a source row after the second confirmation', async () => {
     const session = {
       session_id: 'session-delete',
@@ -1963,13 +2071,31 @@ describe('Mesh analysis detail behavior', () => {
       exists: true,
       rebuild_capability: 'ready',
     }
-    mocks.listSessions.mockResolvedValueOnce({ items: [session], total: 1, page: 1, page_size: 50 })
+    mocks.listSessions.mockResolvedValue({ items: [session], total: 1, page: 1, page_size: 50 })
     mocks.getSession.mockResolvedValue({
       session,
       analysis_params: {},
       available_radios: [1],
       warnings: [],
       sources: [source],
+    })
+    mocks.batchDeleteSources.mockResolvedValueOnce({
+      action: 'mesh_analysis_sources_delete',
+      task_id: 'mesh-delete-batch-1',
+      status: 'COMPLETED',
+      result_summary: {
+        requested_count: 1,
+        success_count: 1,
+        failed_count: 0,
+        skipped_count: 0,
+        delete_raw_archive: false,
+        items: [{
+          session_id: session.session_id,
+          status: 'parsed_deleted',
+          success: true,
+          delete_raw_archive: false,
+        }],
+      },
     })
     const wrapper = mount(MeshAnalysisView, { global: { stubs, directives: { loading: () => undefined } } })
     await flushPromises()
@@ -1984,17 +2110,66 @@ describe('Mesh analysis detail behavior', () => {
     await wrapper.findAll('button').find((button) => button.text() === '继续并二次确认')!.trigger('click')
     await flushPromises()
 
-    expect(mocks.deleteSource).toHaveBeenCalledWith('session-delete', {
+    expect(mocks.batchDeleteSources).toHaveBeenCalledOnce()
+    expect(mocks.batchDeleteSources).toHaveBeenCalledWith(['session-delete'], {
       deleteRawArchive: false,
       deleteParsedData: true,
       deleteGeneratedReports: true,
     })
-    expect(mocks.routerPush).toHaveBeenCalledWith({ name: 'tasks', query: { module: 'rail', task_id: 'mesh-delete-1' } })
-    expect(wrapper.text()).toContain('分析会话 · 0 个来源 · 0 列车 / 0 MR')
-    expect(wrapper.text()).toContain('共 0 个来源')
-    expect(wrapper.find('.detail-card').exists()).toBe(false)
+    expect(mocks.deleteSource).not.toHaveBeenCalled()
+    expect(mocks.routerPush).toHaveBeenCalledWith({ name: 'tasks', query: { module: 'rail', task_id: 'mesh-delete-batch-1' } })
+    expect(wrapper.text()).toContain('分析会话 · 1 个来源 · 1 列车 / 1 MR')
+    expect(wrapper.find('.detail-card').exists()).toBe(true)
     wrapper.unmount()
   })
+
+  it('submits one batch task for multiple sources and keeps rows until the task finishes', async () => {
+    const sessions = ['session-delete-a', 'session-delete-b'].map((sessionId, index) => ({
+      session_id: sessionId,
+      mr_name: `列车3${index + 4}-MR-CW`,
+      train_name: `列车3${index + 4}`,
+      original_filename: `${index + 34}-CW.log`,
+      first_sample_time: '',
+      last_sample_time: '',
+      parsed_status: 'ready',
+      warning_count: 0,
+      report_count: 0,
+      link_record_count: 10,
+    }))
+    mocks.listSessions.mockResolvedValue({ items: sessions, total: 2, page: 1, page_size: 50 })
+    mocks.getSession.mockImplementation(async (sessionId: string) => ({
+      session: sessions.find((item) => item.session_id === sessionId),
+      analysis_params: {},
+      available_radios: [1],
+      warnings: [],
+      sources: [{
+        source_file_id: sessionId.endsWith('a') ? 1 : 2,
+        source_action_id: `source-${sessionId}`,
+        exists: true,
+        rebuild_capability: 'ready',
+      }],
+    }))
+    const wrapper = mount(MeshAnalysisView, { global: { stubs, directives: { loading: () => undefined } } })
+    await flushPromises()
+
+    const sessionTable = wrapper.findAllComponents(dataTableStub)
+      .find((table) => table.props('tableId') === 'mesh-analysis-sessions:v3')!
+    await sessionTable.vm.$emit('selection-change', sessions)
+    await wrapper.findAll('button').find((button) => button.text() === '删除选中')!.trigger('click')
+    await flushPromises()
+    await wrapper.findAll('button').find((button) => button.text() === '继续并二次确认')!.trigger('click')
+    await flushPromises()
+
+    expect(mocks.batchDeleteSources).toHaveBeenCalledOnce()
+    expect(mocks.batchDeleteSources).toHaveBeenCalledWith(
+      ['session-delete-a', 'session-delete-b'],
+      { deleteRawArchive: false, deleteParsedData: true, deleteGeneratedReports: true },
+    )
+    expect(mocks.deleteSource).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('共 2 个来源')
+    wrapper.unmount()
+  })
+
   it('removes the local MESH task card when the global task store dismisses it', async () => {
     mocks.recoverTasks.mockResolvedValueOnce([{
       task_id: 'mesh-failed-dismissed',
@@ -2026,7 +2201,7 @@ describe('Mesh analysis detail behavior', () => {
     expect(mocks.taskStoreReleasePolling).toHaveBeenCalledWith('mesh-analysis-view')
   })
 
-  it('submits one identity-only remap task when a healthy source revision is stale', async () => {
+  it('waits for an explicit identity projection refresh when a healthy source revision is stale', async () => {
     const session = {
       session_id: 'session-identity-stale',
       mr_name: '列车07-MR-CT',
@@ -2048,6 +2223,8 @@ describe('Mesh analysis detail behavior', () => {
         source_file_id: 7,
         source_action_id: 'source-stale-1',
         source_id: 'source-stale-1',
+        exists: true,
+        rebuild_capability: 'ready',
         identity_mapping_status: 'identity_stale',
       }],
     })
@@ -2059,8 +2236,18 @@ describe('Mesh analysis detail behavior', () => {
 
     expect(wrapper.find('.detail-heading .warning-summary-trigger').exists()).toBe(true)
     expect(wrapper.find('.warning-summary').exists()).toBe(false)
-    expect(mocks.rebuildAnalysis).toHaveBeenCalledOnce()
-    expect(mocks.rebuildAnalysis).toHaveBeenCalledWith('session-identity-stale')
+    expect(wrapper.text()).toContain('打开页面不会自动提交任务')
+    expect(mocks.startMaintenance).not.toHaveBeenCalled()
+    expect(mocks.rebuildAnalysis).not.toHaveBeenCalled()
+
+    await wrapper.findAll('button').find((button) => button.text() === '立即刷新身份映射')!.trigger('click')
+    await flushPromises()
+
+    expect(mocks.startMaintenance).toHaveBeenCalledOnce()
+    expect(mocks.startMaintenance).toHaveBeenCalledWith(
+      'session-identity-stale',
+      { kind: 'identity_projection_refresh' },
+    )
     expect(mocks.taskStoreRefresh).toHaveBeenCalled()
     wrapper.unmount()
   })
@@ -2112,6 +2299,24 @@ describe('Mesh analysis detail behavior', () => {
       available_radios: [],
       warnings: [],
       sources: [source],
+    })
+    mocks.batchDeleteSources.mockResolvedValueOnce({
+      action: 'mesh_analysis_sources_delete',
+      task_id: 'mesh-delete-race-1',
+      status: 'COMPLETED',
+      result_summary: {
+        requested_count: 1,
+        success_count: 1,
+        failed_count: 0,
+        skipped_count: 0,
+        delete_raw_archive: true,
+        items: [{
+          session_id: session.session_id,
+          status: 'deleted',
+          success: true,
+          delete_raw_archive: true,
+        }],
+      },
     })
     const wrapper = mount(MeshAnalysisView, { global: { stubs, directives: { loading: () => undefined } } })
     await flushPromises()
@@ -2513,6 +2718,61 @@ describe('Mesh analysis detail behavior', () => {
         full_end_time: viewport.full_end_time,
       })
       expect(tracksideChart.props('syncViewport')).toEqual(activeChart.props('syncViewport'))
+    } finally {
+      wrapper.unmount()
+      vi.useRealTimers()
+    }
+  })
+
+  it('reuses a bounded RSSI window cache when returning to a recent viewport', async () => {
+    const { wrapper, session, activeChart } = await mountHotfixRssiSession('session-window-lru')
+    mocks.getActivePath.mockClear()
+    mocks.getTracksideSignal.mockClear()
+    const viewportA = {
+      start_time: '2026-07-24 10:10:00.000',
+      end_time: '2026-07-24 10:13:00.000',
+      start_percent: 16,
+      end_percent: 22,
+      full_start_time: session.first_sample_time,
+      full_end_time: session.last_sample_time,
+      source: 'user_zoom' as const,
+      source_chart: 'active-rssi' as const,
+      revision: 41,
+    }
+    const viewportB = {
+      ...viewportA,
+      start_time: '2026-07-24 10:20:00.000',
+      end_time: '2026-07-24 10:23:00.000',
+      revision: 42,
+    }
+    mocks.getActivePath.mockImplementation((_id, values) => Promise.resolve(
+      hotfixActivePayload(
+        session.session_id,
+        values.time_from === viewportA.start_time ? 41 : 51,
+        String(values.time_from),
+        String(values.time_to),
+      ),
+    ))
+    mocks.getTracksideSignal.mockImplementation((_id, values) => Promise.resolve(
+      hotfixTracksidePayload(
+        session.session_id,
+        values.time_from === viewportA.start_time ? 39 : 49,
+        String(values.time_from),
+        String(values.time_to),
+      ),
+    ))
+    vi.useFakeTimers()
+
+    try {
+      for (const viewport of [viewportA, viewportB, { ...viewportA, revision: 43 }]) {
+        await activeChart.vm.$emit('viewport-change', viewport)
+        await vi.advanceTimersByTimeAsync(500)
+        await flushPromises()
+      }
+
+      expect(mocks.getActivePath).toHaveBeenCalledTimes(2)
+      expect(mocks.getTracksideSignal).toHaveBeenCalledTimes(2)
+      expect((activeChart.props('points') as Array<{ local_rssi: number }>)[0].local_rssi).toBe(41)
     } finally {
       wrapper.unmount()
       vi.useRealTimers()
@@ -3049,6 +3309,83 @@ describe('Mesh analysis detail behavior', () => {
       },
       expect.any(AbortSignal),
     )
+    wrapper.unmount()
+  })
+
+  it('offers an explicit unloaded trackside action and requests the current viewport first', async () => {
+    class IdleIntersectionObserver {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+      takeRecords(): IntersectionObserverEntry[] { return [] }
+      readonly root = null
+      readonly rootMargin = '0px'
+      readonly thresholds = [0]
+    }
+    vi.stubGlobal('IntersectionObserver', IdleIntersectionObserver)
+    const session = {
+      session_id: 'session-trackside-unloaded',
+      mr_name: '列车07-MR-CT',
+      original_filename: '7CTmeshlog.log',
+      first_sample_time: '2026-07-20 10:00:00.000',
+      last_sample_time: '2026-07-20 10:01:00.000',
+      parsed_status: 'ready',
+      warning_count: 0,
+      report_count: 0,
+    }
+    mocks.listSessions.mockResolvedValue({ items: [session], total: 1, page: 1, page_size: 50 })
+    mocks.getSession.mockResolvedValue({
+      session,
+      analysis_params: {},
+      available_radios: [1],
+      warnings: [],
+      sources: [{ source_file_id: 7, source_action_id: 'source-trackside-unloaded', exists: true, rebuild_capability: 'ready' }],
+    })
+    mocks.listBuildOrder.mockResolvedValue({
+      items: [{
+        sequence: 1,
+        anchor_link_id: 7,
+        local_radio: 1,
+        build_start_time: session.first_sample_time,
+        build_end_time: session.last_sample_time,
+        build_result: 'normal',
+      }],
+      total: 1,
+      page: 1,
+      page_size: 100,
+    })
+    mocks.getActivePath.mockResolvedValue(hotfixActivePayload(session.session_id, 30))
+    mocks.getTracksideSignal.mockResolvedValue(hotfixTracksidePayload(session.session_id, 28))
+    const wrapper = mount(MeshAnalysisView, { global: { stubs, directives: { loading: () => undefined } } })
+    await flushPromises()
+    await wrapper.findAll('button').find((button) => button.text() === '查看')!.trigger('click')
+    await flushPromises()
+    await wrapper.findAll('button').find((button) => button.text() === '查看动态图')!.trigger('click')
+    await flushPromises()
+
+    expect(mocks.getTracksideSignal).not.toHaveBeenCalled()
+    const viewport = {
+      ...chartViewport,
+      start_time: '2026-07-20 10:00:10.000',
+      end_time: '2026-07-20 10:00:20.000',
+      full_start_time: session.first_sample_time,
+      full_end_time: session.last_sample_time,
+      source: 'programmatic' as const,
+    }
+    const activeChart = wrapper.findAllComponents(meshChartStub).find((chart) => chart.props('scope') === 'active')!
+    await activeChart.vm.$emit('viewport-change', viewport)
+    await nextTick()
+    const loadButton = wrapper.findAll('button').find((button) => button.text() === '加载当前窗口')
+    expect(loadButton?.exists()).toBe(true)
+
+    await loadButton!.trigger('click')
+    await flushPromises()
+    expect(mocks.getTracksideSignal).toHaveBeenCalledWith(session.session_id, {
+      max_points: 600,
+      radio: 1,
+      time_from: viewport.start_time,
+      time_to: viewport.end_time,
+    }, expect.any(AbortSignal))
     wrapper.unmount()
   })
 

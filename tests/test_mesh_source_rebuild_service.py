@@ -4,6 +4,7 @@ import io
 import json
 import sqlite3
 import zipfile
+from copy import deepcopy
 from contextlib import closing
 from pathlib import Path
 
@@ -151,6 +152,24 @@ def test_source_rebuild_prefers_identity_only_remap_for_healthy_detail(
     assert facts_after == facts_before
 
 
+def test_new_mesh_import_uses_current_parser_without_upgrade_prompt(
+    tmp_path: Path,
+) -> None:
+    paths, profile, _result = _preview(tmp_path)
+    source = MeshMrRepository(
+        paths.mesh_mr_db_path("demo", profile.safe_folder_name)
+    ).list_source_files()[0]
+
+    detail = MeshAnalysisQueryService(paths).get_analysis_session(
+        "demo",
+        f"{profile.mr_id}:{source['id']}",
+    )
+
+    assert detail.maintenance_state.schema_status == "current"
+    assert detail.maintenance_state.parser_status == "current"
+    assert detail.maintenance_state.derived_analysis_status == "current"
+
+
 def test_source_rebuild_force_reparse_replaces_existing_detail_from_raw(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -186,6 +205,34 @@ def test_source_rebuild_force_reparse_replaces_existing_detail_from_raw(
     assert sha256_file(raw) == raw_before
     with closing(sqlite3.connect(detail)) as connection:
         assert connection.execute("SELECT DISTINCT link_count FROM mesh_links").fetchall() == [(1,)]
+
+
+def test_source_rebuild_identity_validation_uses_persisted_deduplicated_count(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, profile, _result = _preview(tmp_path)
+    repository = MeshMrRepository(paths.mesh_mr_db_path("demo", profile.safe_folder_name))
+    source = repository.list_source_files()[0]
+    detail = Path(str(source["parsed_db_path"]))
+    original_parse = MeshLogParser.parse_file
+
+    def duplicate_parser_output(self, path: Path, *args, **kwargs):
+        info, records, issues = original_parse(self, path, *args, **kwargs)
+        return info, [*records, deepcopy(records[0])], issues
+
+    monkeypatch.setattr(MeshLogParser, "parse_file", duplicate_parser_output)
+
+    rebuilt = MeshSourceRebuildService(paths).rebuild_source(
+        "demo",
+        f"{profile.mr_id}:{source['id']}",
+        force_reparse=True,
+    )
+
+    with closing(sqlite3.connect(detail)) as connection:
+        persisted = int(connection.execute("SELECT COUNT(*) FROM mesh_links").fetchone()[0])
+    assert rebuilt["parsed_record_count"] == persisted
+    assert rebuilt["identity_remap"]["link_row_count"] == persisted
 
 
 def test_source_rebuild_force_reparse_restores_previously_filtered_triangle_links(

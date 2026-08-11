@@ -7,6 +7,7 @@ from pathlib import Path
 
 from netconsole.core.sqlite_utils import connect_sqlite, initialize_sqlite_wal
 from netconsole.models.mesh_log_models import MeshMrProfile
+from netconsole.repositories.mesh_catalog_schema import migrate_mesh_catalog
 
 
 def dt_text(value: datetime | None) -> str | None:
@@ -28,130 +29,9 @@ class MeshCatalogRepository:
     def initialize(self) -> None:
         with self._connect() as conn:
             initialize_sqlite_wal(conn)
-            conn.executescript(
-                """
-                PRAGMA foreign_keys = ON;
-                CREATE TABLE IF NOT EXISTS mr_profiles (
-                    mr_id TEXT PRIMARY KEY,
-                    display_name TEXT NOT NULL UNIQUE,
-                    safe_folder_name TEXT NOT NULL UNIQUE,
-                    relative_folder_path TEXT NOT NULL,
-                    linked_device_id INTEGER NULL,
-                    linked_device_uuid TEXT NULL,
-                    earliest_sample_time TEXT NULL,
-                    latest_sample_time TEXT NULL,
-                    source_file_count INTEGER DEFAULT 0,
-                    sample_count INTEGER DEFAULT 0,
-                    link_record_count INTEGER DEFAULT 0,
-                    session_count INTEGER DEFAULT 0,
-                    event_count INTEGER DEFAULT 0,
-                    last_import_at TEXT NULL,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    notes TEXT DEFAULT ''
-                );
-                CREATE TABLE IF NOT EXISTS mesh_session_index (
-                    session_id TEXT PRIMARY KEY,
-                    mr_id TEXT NOT NULL,
-                    source_file_id INTEGER NOT NULL,
-                    train_name TEXT NOT NULL DEFAULT '',
-                    mr_name TEXT NOT NULL,
-                    mr_role TEXT NOT NULL DEFAULT '',
-                    source_type TEXT NOT NULL DEFAULT 'raw_mesh_log',
-                    original_filename TEXT NOT NULL DEFAULT '',
-                    analysis_time TEXT NULL,
-                    first_sample_time TEXT NULL,
-                    last_sample_time TEXT NULL,
-                    link_record_count INTEGER NULL,
-                    active_link_count INTEGER NULL,
-                    standby_link_count INTEGER NULL,
-                    event_count INTEGER NULL,
-                    link_up_event_count INTEGER NULL,
-                    link_down_event_count INTEGER NULL,
-                    switch_event_count INTEGER NULL,
-                    short_link_count INTEGER NULL,
-                    pingpong_count INTEGER NULL,
-                    rssi_anomaly_count INTEGER NULL,
-                    channel_busy_anomaly_count INTEGER NULL,
-                    unmatched_ap_count INTEGER NULL,
-                    data_integrity TEXT NOT NULL DEFAULT 'partial',
-                    analysis_status TEXT NOT NULL DEFAULT 'unknown',
-                    parsed_status TEXT NOT NULL DEFAULT 'indexing',
-                    parsed_message TEXT NOT NULL DEFAULT '',
-                    schema_version TEXT NULL,
-                    available_capabilities_json TEXT NOT NULL DEFAULT '[]',
-                    missing_capabilities_json TEXT NOT NULL DEFAULT '[]',
-                    info_count INTEGER NOT NULL DEFAULT 0,
-                    warning_count INTEGER NOT NULL DEFAULT 0,
-                    error_count INTEGER NOT NULL DEFAULT 0,
-                    actionable_warning_count INTEGER NOT NULL DEFAULT 0,
-                    report_count INTEGER NOT NULL DEFAULT 0,
-                    source_revision TEXT NOT NULL DEFAULT '',
-                    detail_indexed INTEGER NOT NULL DEFAULT 0,
-                    updated_at TEXT NOT NULL,
-                    UNIQUE(mr_id, source_file_id),
-                    FOREIGN KEY(mr_id) REFERENCES mr_profiles(mr_id) ON DELETE CASCADE
-                );
-                CREATE INDEX IF NOT EXISTS idx_mesh_session_index_analysis_time
-                    ON mesh_session_index(analysis_time DESC, session_id DESC);
-                CREATE INDEX IF NOT EXISTS idx_mesh_session_index_mr
-                    ON mesh_session_index(mr_id, source_file_id);
-                CREATE INDEX IF NOT EXISTS idx_mesh_session_index_warning
-                    ON mesh_session_index(warning_count, analysis_time DESC);
-                CREATE TABLE IF NOT EXISTS mesh_source_fingerprints (
-                    content_sha256 TEXT NOT NULL,
-                    raw_sha256 TEXT NOT NULL DEFAULT '',
-                    mr_id TEXT NOT NULL,
-                    source_file_id INTEGER NOT NULL,
-                    stored_filename TEXT NOT NULL DEFAULT '',
-                    updated_at TEXT NOT NULL,
-                    PRIMARY KEY(content_sha256, mr_id, source_file_id),
-                    FOREIGN KEY(mr_id) REFERENCES mr_profiles(mr_id) ON DELETE CASCADE
-                );
-                CREATE INDEX IF NOT EXISTS idx_mesh_source_fingerprints_raw
-                    ON mesh_source_fingerprints(raw_sha256);
-                CREATE TABLE IF NOT EXISTS mesh_catalog_index_state (
-                    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
-                    status TEXT NOT NULL DEFAULT 'pending',
-                    discovered_session_count INTEGER NOT NULL DEFAULT 0,
-                    indexed_session_count INTEGER NOT NULL DEFAULT 0,
-                    detail_indexed_session_count INTEGER NOT NULL DEFAULT 0,
-                    last_error TEXT NOT NULL DEFAULT '',
-                    updated_at TEXT NOT NULL
-                );
-                """
-            )
-            columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(mr_profiles)")}
-            if "linked_device_uuid" not in columns:
-                conn.execute("ALTER TABLE mr_profiles ADD COLUMN linked_device_uuid TEXT NULL")
-            severity_migrated = False
-            for column in ("info_count", "warning_count", "error_count", "actionable_warning_count"):
-                session_columns = {
-                    str(row[1]) for row in conn.execute("PRAGMA table_info(mesh_session_index)")
-                }
-                if column not in session_columns:
-                    conn.execute(
-                        f"ALTER TABLE mesh_session_index ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0"
-                    )
-                    severity_migrated = True
-            if severity_migrated:
-                # Existing rows only have the historical mixed issue_count
-                # projection. Preserve it as a conservative fallback until the
-                # background index reads severity from their detail database.
-                conn.execute(
-                    "UPDATE mesh_session_index SET actionable_warning_count = warning_count "
-                    "WHERE actionable_warning_count = 0 AND warning_count > 0"
-                )
-                conn.execute(
-                    "UPDATE mesh_catalog_index_state SET status = 'pending' WHERE singleton = 1"
-                )
-            conn.execute(
-                """
-                INSERT OR IGNORE INTO mesh_catalog_index_state (
-                    singleton, status, updated_at
-                ) VALUES (1, 'pending', ?)
-                """,
-                (datetime.now().isoformat(sep=" ", timespec="milliseconds"),),
+            migrate_mesh_catalog(
+                conn,
+                now=datetime.now().isoformat(sep=" ", timespec="milliseconds"),
             )
 
     def create_profile(self, profile: MeshMrProfile) -> MeshMrProfile:
@@ -479,6 +359,110 @@ class MeshCatalogRepository:
             )
         return {"session_index": session_rows, "fingerprints": []}
 
+    def record_source_health(
+        self,
+        *,
+        session_id: str,
+        mr_id: str,
+        source_file_id: int,
+        health_status: str,
+        reason_code: str = "",
+        details: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        now = datetime.now().isoformat(sep=" ", timespec="milliseconds")
+        normalized_status = str(health_status or "UNKNOWN").strip().upper()
+        normalized_reason = str(reason_code or "").strip().upper()
+        details_json = json.dumps(
+            details or {},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            previous = conn.execute(
+                "SELECT health_status, reason_code, details_json "
+                "FROM mesh_source_lifecycle WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            previous_status = str(previous["health_status"] or "") if previous else ""
+            changed = (
+                previous is None
+                or previous_status != normalized_status
+                or str(previous["reason_code"] or "") != normalized_reason
+                or str(previous["details_json"] or "{}") != details_json
+            )
+            conn.execute(
+                """
+                INSERT INTO mesh_source_lifecycle (
+                    session_id, mr_id, source_file_id, health_status,
+                    reason_code, details_json, checked_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(session_id) DO UPDATE SET
+                    mr_id=excluded.mr_id,
+                    source_file_id=excluded.source_file_id,
+                    health_status=excluded.health_status,
+                    reason_code=excluded.reason_code,
+                    details_json=excluded.details_json,
+                    checked_at=excluded.checked_at,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    session_id,
+                    mr_id,
+                    int(source_file_id),
+                    normalized_status,
+                    normalized_reason,
+                    details_json,
+                    now,
+                    now,
+                ),
+            )
+            if changed:
+                conn.execute(
+                    """
+                    INSERT INTO mesh_source_lifecycle_events (
+                        session_id, mr_id, source_file_id, previous_status,
+                        health_status, reason_code, details_json, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        session_id,
+                        mr_id,
+                        int(source_file_id),
+                        previous_status,
+                        normalized_status,
+                        normalized_reason,
+                        details_json,
+                        now,
+                    ),
+                )
+        return {
+            "session_id": session_id,
+            "mr_id": mr_id,
+            "source_file_id": int(source_file_id),
+            "health_status": normalized_status,
+            "reason_code": normalized_reason,
+            "details": details or {},
+            "checked_at": now,
+            "changed": changed,
+        }
+
+    def get_source_health(self, session_id: str) -> dict[str, object] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM mesh_source_lifecycle WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        try:
+            result["details"] = json.loads(str(result.pop("details_json") or "{}"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            result["details"] = {}
+        return result
+
     def restore_source_index(self, snapshot: dict[str, list[dict[str, object]]]) -> None:
         with self._connect() as conn:
             for table, rows in (
@@ -504,6 +488,14 @@ class MeshCatalogRepository:
             )
             for row in rows
         }
+
+    def get_session_index(self, session_id: str) -> dict[str, object] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM mesh_session_index WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+        return dict(row) if row else None
 
     def update_index_state(
         self,

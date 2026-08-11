@@ -14,6 +14,10 @@ from netconsole.services.mesh_source_rebuild_service import (
     MeshSourceRebuildService,
 )
 from netconsole.services.mesh_source_delete_service import MeshSourceDeleteService
+from netconsole.services.mesh_sources_delete_service import (
+    MeshSourcesDeleteCancelled,
+    MeshSourcesDeleteService,
+)
 from netconsole.repositories.mesh_catalog_repository import MeshCatalogRepository
 from netconsole.services.mesh_local_scan_service import MeshLocalScanService
 
@@ -68,6 +72,54 @@ def mesh_analysis_source_delete(context: JobContext) -> dict[str, object]:
     )
     context.progress("mesh_analysis_source_delete", 1, 1, "MESH 来源删除完成")
     return result
+
+
+def mesh_analysis_maintenance(context: JobContext) -> dict[str, object]:
+    context.check_cancelled()
+    site_name = str(context.params.get("site_name") or "")
+    session_id = str(context.params.get("session_id") or "")
+    kind = str(context.params.get("maintenance_kind") or "")
+    if kind not in {"identity_projection_refresh", "parser_rebuild"}:
+        raise ValueError("不支持的 MESH 来源维护类型")
+    try:
+        result = MeshSourceRebuildService(context.paths).rebuild_source(
+            site_name,
+            session_id,
+            force_reparse=bool(context.params.get("force_reparse")),
+            progress=context.progress,
+            should_cancel=context.should_cancel,
+        )
+    except MeshSourceRebuildCancelled as exc:
+        raise BackgroundTaskCancelled(str(exc)) from exc
+    MeshCatalogRepository(
+        context.paths.mesh_catalog_path(site_name)
+    ).mark_session_index_dirty(session_id)
+    return {**result, "maintenance_kind": kind}
+
+
+def mesh_analysis_sources_delete(context: JobContext) -> dict[str, object]:
+    context.check_cancelled()
+    params = dict(context.params)
+    raw_session_ids = params.get("session_ids")
+    session_ids = (
+        [str(item) for item in raw_session_ids]
+        if isinstance(raw_session_ids, (list, tuple))
+        else []
+    )
+    try:
+        return MeshSourcesDeleteService(context.paths).delete_sources(
+            str(params.get("site_name") or ""),
+            session_ids,
+            delete_raw_archive=bool(params.get("delete_raw_archive")),
+            delete_parsed_data=bool(params.get("delete_parsed_data", True)),
+            delete_generated_reports=bool(
+                params.get("delete_generated_reports", True)
+            ),
+            progress=context.progress,
+            should_cancel=context.should_cancel,
+        )
+    except MeshSourcesDeleteCancelled as exc:
+        raise BackgroundTaskCancelled(str(exc)) from exc
 
 
 def mesh_local_scan(context: JobContext) -> dict[str, object]:
@@ -289,8 +341,10 @@ HANDLERS = {
     "mesh_mr_profiles_refresh": mesh_mr_profiles_refresh,
     "mesh_schema_rebuild": mesh_schema_rebuild,
     "mesh_source_rebuild": mesh_source_rebuild,
+    "mesh_analysis_maintenance": mesh_analysis_maintenance,
     "mesh_derived_data_repair": mesh_derived_data_repair,
     "mesh_analysis_source_delete": mesh_analysis_source_delete,
+    "mesh_analysis_sources_delete": mesh_analysis_sources_delete,
     "mesh_local_scan": mesh_local_scan,
     "mesh_local_scan_import": mesh_local_scan_import,
 }

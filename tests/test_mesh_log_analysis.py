@@ -588,6 +588,7 @@ def test_mesh_repository_uses_performance_indexes_and_keyset_iteration(tmp_path)
         index_names = {row[1] for row in conn.execute("PRAGMA index_list(mesh_links)").fetchall()}
         assert {
             "idx_mesh_links_source_radio_time_id",
+            "idx_mesh_links_source_time_radio_id",
             "idx_mesh_links_source_state_radio_time_id",
             "idx_mesh_links_source_peer_radio_time_id",
             "idx_mesh_links_record_order",
@@ -611,6 +612,48 @@ def test_mesh_repository_uses_performance_indexes_and_keyset_iteration(tmp_path)
             ).fetchall()
         )
         assert "idx_mesh_links_source_radio_time_id" in radio_plan
+        all_radio_plan = "\n".join(
+            str(row[3])
+            for row in conn.execute(
+                """
+                EXPLAIN QUERY PLAN
+                SELECT id
+                FROM mesh_links
+                WHERE source_file_id = ? AND sample_time >= ? AND sample_time <= ?
+                ORDER BY source_file_id ASC, sample_time ASC, radio ASC, id ASC
+                """,
+                (1, "2025-12-03 10:00:00.000", "2025-12-03 10:00:10.000"),
+            ).fetchall()
+        )
+        assert "idx_mesh_links_source_time_radio_id" in all_radio_plan
+        switch_index_names = {
+            row[1] for row in conn.execute("PRAGMA index_list(switch_events)").fetchall()
+        }
+        assert {
+            "idx_switch_events_source_time_id",
+            "idx_switch_events_source_type_time_id",
+        } <= switch_index_names
+        switch_plan = "\n".join(
+            str(row[3])
+            for row in conn.execute(
+                """
+                EXPLAIN QUERY PLAN
+                SELECT id
+                FROM switch_events
+                WHERE source_file_id = ? AND event_type = ?
+                  AND event_time >= ? AND event_time <= ?
+                ORDER BY event_time ASC, id ASC
+                LIMIT 100
+                """,
+                (
+                    1,
+                    "ACTIVE_SWITCH",
+                    "2025-12-03 10:00:00.000",
+                    "2025-12-03 10:00:10.000",
+                ),
+            ).fetchall()
+        )
+        assert "idx_switch_events_source_type_time_id" in switch_plan
         order_plan = "\n".join(
             str(row[3])
             for row in conn.execute(

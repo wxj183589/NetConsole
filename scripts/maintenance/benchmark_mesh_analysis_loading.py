@@ -7,6 +7,7 @@ import shutil
 import sqlite3
 import time
 import tracemalloc
+from datetime import datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
@@ -126,10 +127,198 @@ def _measure(service: CountingQueryService, legacy: bool) -> dict[str, object]:
     }
 
 
+def _chart_fixture(root: Path, record_count: int) -> Path:
+    database = root / f"chart-{record_count}.mesh.sqlite"
+    MeshMrRepository(database)
+    base = datetime(2026, 7, 30, 10, 0, 0)
+    frame_width = 10
+    frame_count = (record_count + frame_width - 1) // frame_width
+    with sqlite3.connect(database) as connection:
+        connection.execute("PRAGMA synchronous = OFF")
+        connection.execute(
+            """
+            INSERT INTO source_files (
+                mr_id, original_path, archived_path, original_filename, archived_filename,
+                sha256, file_size, imported_at, parser_version, parse_status
+            ) VALUES ('benchmark-mr', 'benchmark.log', 'benchmark.log', 'benchmark.log',
+                      'benchmark.log', 'benchmark-sha', ?, '2026-07-30 10:00:00.000', ?, 'ok')
+            """,
+            (record_count, SCHEMA_VERSION),
+        )
+        for start in range(0, frame_count, 10_000):
+            stop = min(start + 10_000, frame_count)
+            samples = []
+            for frame_index in range(start, stop):
+                timestamp = base + timedelta(seconds=frame_index)
+                sample_time = timestamp.strftime("%Y-%m-%d %H:%M:%S.000")
+                samples.append(
+                    (
+                        frame_index + 1,
+                        1,
+                        1,
+                        sample_time,
+                        int(timestamp.timestamp() * 1000),
+                        "",
+                    )
+                )
+            connection.executemany(
+                """
+                INSERT INTO samples (
+                    id, source_file_id, radio, sample_time, sample_time_epoch_ms, timestamp_tag
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                samples,
+            )
+        for start in range(0, record_count, 10_000):
+            stop = min(start + 10_000, record_count)
+            links = []
+            for index in range(start, stop):
+                frame_index, slot = divmod(index, frame_width)
+                sample_time = (base + timedelta(seconds=frame_index)).strftime(
+                    "%Y-%m-%d %H:%M:%S.000"
+                )
+                peer_index = (frame_index + slot) % 64
+                peer_mac = f"{peer_index + 1:012x}"
+                role = "ACTIVE" if slot == 0 else "STANDBY"
+                links.append(
+                    (
+                        index + 1,
+                        frame_index + 1,
+                        1,
+                        1,
+                        index + 1,
+                        index + 1,
+                        1,
+                        sample_time,
+                        role,
+                        role,
+                        peer_mac,
+                        peer_mac,
+                        peer_mac,
+                        f"AP-{peer_index:02d}",
+                        f"0d 00h 00m {frame_index % 60:02d}s",
+                        1,
+                        35 + (frame_index % 20),
+                        38 + (frame_index % 20),
+                        f"benchmark-{index + 1}",
+                    )
+                )
+            connection.executemany(
+                """
+                INSERT INTO mesh_links (
+                    id, sample_id, source_file_id, source_file_order, record_seq,
+                    source_line_number, radio, sample_time, link_state_raw, link_state,
+                    peer_mac_raw, peer_mac_normalized, peer_radio_mac, peer_ap_name,
+                    duration_text, duration_seconds, local_rssi_db, peer_rssi_db,
+                    record_fingerprint
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                links,
+            )
+        events = []
+        for frame_index in range(1_000, frame_count, 1_000):
+            event_time = (base + timedelta(seconds=frame_index)).strftime(
+                "%Y-%m-%d %H:%M:%S.000"
+            )
+            previous_time = (base + timedelta(seconds=frame_index - 1)).strftime(
+                "%Y-%m-%d %H:%M:%S.000"
+            )
+            events.append(
+                (
+                    "ACTIVE_SWITCH",
+                    event_time,
+                    1,
+                    previous_time,
+                    event_time,
+                    1_000,
+                    "000000000001",
+                    "000000000002",
+                    "{}",
+                    1,
+                )
+            )
+        connection.executemany(
+            """
+            INSERT INTO switch_events (
+                event_type, event_time, radio, previous_sample_time, current_sample_time,
+                observed_window_ms, from_peer_mac, to_peer_mac, details_json, source_file_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            events,
+        )
+    return database
+
+
+def _measure_chart_query(database: Path, kind: str) -> dict[str, object]:
+    repository = MeshMrRepository(database, read_only=True)
+    tracemalloc.start()
+    query_started = time.perf_counter()
+    if kind == "active_path":
+        payload = repository.query_active_link_chart_segments(
+            source_file_id=1,
+            max_rows=8_000,
+            max_events=256,
+        )
+    else:
+        payload = repository.query_trackside_link_chart_segment(
+            source_file_id=1,
+            max_rows=50_000,
+            max_frames=2_000,
+            max_series=512,
+            max_events=256,
+        )
+    query_seconds = time.perf_counter() - query_started
+    segment = dict(payload.get("run_segment") or {})
+    rows = list(segment.get("rows") or [])
+    events = list(segment.get("events") or [])
+    transform_started = time.perf_counter()
+    response_objects = [
+        {
+            "timestamp": row.get("sample_time"),
+            "radio": row.get("radio"),
+            "state": row.get("link_state"),
+            "peer": row.get("peer_mac_normalized"),
+            "local_rssi": row.get("local_rssi_db"),
+            "peer_rssi": row.get("peer_rssi_db"),
+        }
+        for row in rows
+    ]
+    transform_seconds = time.perf_counter() - transform_started
+    serialization_started = time.perf_counter()
+    encoded = json.dumps(
+        {"points": response_objects, "events": events},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    serialization_seconds = time.perf_counter() - serialization_started
+    _current, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    return {
+        "query_seconds": round(query_seconds, 4),
+        "transform_seconds": round(transform_seconds, 4),
+        "serialization_seconds": round(serialization_seconds, 4),
+        "payload_mib": round(len(encoded) / 1024 / 1024, 3),
+        "source_rows": int(segment.get("source_total_rows") or segment.get("total_rows") or len(rows)),
+        "selected_rows": len(rows),
+        "event_objects": len(events),
+        "response_objects": len(response_objects) + len(events),
+        "peak_memory_mib": round(peak / 1024 / 1024, 3),
+        "repository_downsampled": bool(segment.get("repository_downsampled")),
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--profiles", type=int, default=36)
     parser.add_argument("--sources", type=int, default=1000)
+    parser.add_argument(
+        "--chart-records",
+        action="append",
+        type=int,
+        choices=(50_000, 200_000, 500_000, 1_000_000),
+        default=[],
+        help="追加图表链路基准规模；可重复传入 50k/200k/500k/1m。",
+    )
     parser.add_argument(
         "--root",
         type=Path,
@@ -145,6 +334,16 @@ def main() -> int:
         MeshCatalogIndexService(paths).rebuild_now("demo")
         index_seconds = time.perf_counter() - index_started
         after = _measure(CountingQueryService(paths), legacy=False)
+        chart_results: dict[str, object] = {}
+        for record_count in args.chart_records:
+            chart_database = _chart_fixture(args.root, record_count)
+            chart_results[str(record_count)] = {
+                "active_path": _measure_chart_query(chart_database, "active_path"),
+                "trackside_signal": _measure_chart_query(
+                    chart_database,
+                    "trackside_signal",
+                ),
+            }
         print(
             json.dumps(
                 {
@@ -155,6 +354,7 @@ def main() -> int:
                     "before": before,
                     "catalog_backfill_seconds": round(index_seconds, 4),
                     "after": after,
+                    "chart_loading": chart_results,
                 },
                 ensure_ascii=False,
                 indent=2,

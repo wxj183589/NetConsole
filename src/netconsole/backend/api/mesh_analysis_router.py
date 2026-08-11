@@ -58,7 +58,9 @@ from netconsole.models.api.mesh_analysis import (
     MeshReportArtifactDTO,
     MeshArtifactDeleteRequestDTO,
     MeshArtifactDeleteResultDTO,
+    MeshMaintenanceRequestDTO,
     MeshSourceDeleteRequestDTO,
+    MeshSourcesDeleteRequestDTO,
     MeshRssiDTO,
     MeshSwitchEventPageDTO,
     MeshTracksideSignalChartDTO,
@@ -659,12 +661,29 @@ def switch_events(
     session_id: str,
     site_id: str = Query(default="", max_length=100),
     event_type: str = Query(default="", max_length=50),
+    radio: int | None = Query(default=None, ge=1, le=64),
+    result_filter: str = Query(
+        default="",
+        pattern="^(|normal|short|pingpong)$",
+    ),
     time_from: str = Query(default="", max_length=40),
     time_to: str = Query(default="", max_length=40),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=100, ge=1, le=500),
 ) -> MeshSwitchEventPageDTO:
-    return _query(lambda: _service(request).list_switch_events(_site_id(request, site_id), session_id, event_type=event_type, time_from=time_from, time_to=time_to, page=page, page_size=page_size))
+    return _query(
+        lambda: _service(request).list_switch_events(
+            _site_id(request, site_id),
+            session_id,
+            event_type=event_type,
+            radio=radio,
+            switch_result=result_filter,
+            time_from=time_from,
+            time_to=time_to,
+            page=page,
+            page_size=page_size,
+        )
+    )
 
 
 @router.get("/sessions/{session_id}/rssi", response_model=MeshRssiDTO)
@@ -1012,6 +1031,78 @@ def delete_source(
         )
         raise HTTPException(
             status_code=status_code,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+
+
+@router.post(
+    "/sources/batch-delete",
+    response_model=RailTransitTaskDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="批量删除 MESH 来源归档副本和解析结果",
+    dependencies=[
+        Depends(require_feature("capability.mesh.import")),
+        Depends(require_feature("capability.rail_transit.task_control")),
+    ],
+)
+def delete_sources(
+    request: Request,
+    payload: MeshSourcesDeleteRequestDTO,
+) -> RailTransitTaskDTO:
+    try:
+        return _rail_service(request).start_mesh_sources_delete(
+            _current_site_id(request),
+            payload.session_ids,
+            delete_raw_archive=payload.delete_raw_archive,
+            delete_parsed_data=payload.delete_parsed_data,
+            delete_generated_reports=payload.delete_generated_reports,
+            explicit_confirmation=payload.explicit_confirmation,
+        )
+    except RailTransitWebError as exc:
+        status_code = (
+            status.HTTP_404_NOT_FOUND
+            if exc.code.endswith("NOT_FOUND")
+            else status.HTTP_409_CONFLICT
+            if exc.code == "MESH_SOURCE_TASK_RUNNING"
+            else status.HTTP_422_UNPROCESSABLE_ENTITY
+        )
+        raise HTTPException(
+            status_code=status_code,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+
+
+@router.post(
+    "/sessions/{session_id}/maintenance",
+    response_model=RailTransitTaskDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="显式提交 MESH 来源维护任务",
+    dependencies=[
+        Depends(require_feature("capability.mesh.import")),
+        Depends(require_feature("capability.rail_transit.task_control")),
+    ],
+)
+def maintain_session(
+    request: Request,
+    session_id: str,
+    payload: MeshMaintenanceRequestDTO,
+) -> RailTransitTaskDTO:
+    try:
+        return _rail_service(request).start_mesh_maintenance(
+            _current_site_id(request),
+            session_id,
+            kind=payload.kind,
+            explicit_confirmation=payload.explicit_confirmation,
+        )
+    except RailTransitWebError as exc:
+        raise HTTPException(
+            status_code=(
+                status.HTTP_404_NOT_FOUND
+                if exc.code.endswith("NOT_FOUND")
+                else status.HTTP_409_CONFLICT
+                if exc.code == "MESH_SOURCE_TASK_RUNNING"
+                else status.HTTP_422_UNPROCESSABLE_ENTITY
+            ),
             detail={"code": exc.code, "message": str(exc)},
         ) from exc
 

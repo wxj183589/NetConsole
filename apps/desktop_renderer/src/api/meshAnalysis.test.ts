@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
-  applyMeshBundleImport, createMeshProfile, deleteMeshArtifact, deleteMeshSource, exportMeshLinkDetails, getMeshActivePathChart, getMeshAnalysisParamsTemplate,
+  applyMeshBundleImport, batchDeleteMeshSources, createMeshProfile, deleteMeshArtifact, deleteMeshSource, exportMeshLinkDetails, getMeshActivePathChart, getMeshAnalysisParamsTemplate,
   getMeshAnalysisSession, getMeshCounterDeltas, getMeshPeerSegmentChart, getMeshRateSeries, getMeshTracksideSignalChart, listMeshActiveBuildOrder, listMeshProfiles, listMeshSwitchEvents,
   getMeshLocalScan, ignoreMeshLocalScanCandidates, importMeshLocalScan, openMeshLocalScanCandidateDirectory,
-  previewMeshBundle, saveMeshAnalysisParams, startMeshLocalScan,
+  previewMeshBundle, saveMeshAnalysisParams, startMeshLocalScan, startMeshMaintenance,
 } from './meshAnalysis'
 
 describe('Mesh profile API', () => {
@@ -80,12 +80,12 @@ describe('Mesh profile API', () => {
 
     await getMeshRateSeries('session/1', { time_from: '2026-07-20T10:00:00.123Z', time_to: '2026-07-20T11:00:00.123Z', max_points: 2000 })
     await getMeshCounterDeltas('session/1', { max_points: 2000 })
-    await listMeshSwitchEvents('session/1', { page: 1, page_size: 500 })
+    await listMeshSwitchEvents('session/1', { page: 1, page_size: 100 })
 
     expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
       '/api/rail-transit/mesh-analysis/sessions/session%2F1/rate-series?time_from=2026-07-20T10%3A00%3A00.123Z&time_to=2026-07-20T11%3A00%3A00.123Z&max_points=2000',
       '/api/rail-transit/mesh-analysis/sessions/session%2F1/counter-deltas?max_points=2000',
-      '/api/rail-transit/mesh-analysis/sessions/session%2F1/switch-events?page=1&page_size=500',
+      '/api/rail-transit/mesh-analysis/sessions/session%2F1/switch-events?page=1&page_size=100',
     ])
   })
 
@@ -198,6 +198,42 @@ describe('Mesh profile API', () => {
       delete_raw_archive: true,
       delete_parsed_data: true,
       delete_generated_reports: true,
+      explicit_confirmation: true,
+    })
+  })
+
+  it('submits one confirmed batch delete task for deduplicated sources', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ task_id: 'delete-batch-1' }) })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await batchDeleteMeshSources(['session-1', 'session-2', 'session-1'], {
+      deleteRawArchive: false,
+      deleteParsedData: true,
+      deleteGeneratedReports: true,
+    })
+
+    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/rail-transit/mesh-analysis/sources/batch-delete')
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: 'POST' })
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      session_ids: ['session-1', 'session-2'],
+      delete_raw_archive: false,
+      delete_parsed_data: true,
+      delete_generated_reports: true,
+      explicit_confirmation: true,
+    })
+  })
+
+  it('starts an explicit identity projection maintenance task', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ task_id: 'maintenance-1' }) })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await startMeshMaintenance('session/1', { kind: 'identity_projection_refresh' })
+
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/rail-transit/mesh-analysis/sessions/session%2F1/maintenance')
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: 'POST' })
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      kind: 'identity_projection_refresh',
       explicit_confirmation: true,
     })
   })

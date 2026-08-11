@@ -10,12 +10,10 @@ from netconsole.core.paths import PathResolver
 from netconsole.models.mesh_log_models import ImportedLogFile, MeshMrProfile, MeshSwitchEvent, ParseIssue
 from netconsole.parsers.mesh_log_parser import MeshLogParser, inspect_mesh_log_path, make_imported_file
 from netconsole.models.mesh_analysis_params import mesh_analysis_params_to_json
-from netconsole.repositories.mesh_mr_repository import MeshMrRepository
-from netconsole.services.mesh_log_analysis_service import (
-    PARSER_VERSION,
-)
+from netconsole.repositories.mesh_mr_repository import PARSER_VERSION, MeshMrRepository
 from netconsole.services.mesh_analysis_params_service import load_site_mesh_analysis_params
 from netconsole.services.mesh_peer_mapping_service import MeshPeerMappingService
+from netconsole.services.mesh_import_preflight_service import MeshImportPreflightService
 from netconsole.services.mesh_storage_service import MeshStorageService
 from netconsole.services.file_contract import ImportValidationError
 
@@ -82,17 +80,64 @@ class MeshImportService:
         analysis_params_json = mesh_analysis_params_to_json(analysis_params)
         app_logger.log_info("MESH_IMPORT_ANALYSIS_PARAMS_SNAPSHOT", f"site={self.site_name} params={analysis_params_json}")
         result = MeshImportResult()
+        preflight = (
+            MeshImportPreflightService(self.site_name, self.paths)
+            if self.database_path is None
+            else None
+        )
         total = len(files)
         next_record_seq = 1
         for index, path in enumerate(files, start=1):
             if should_cancel and should_cancel():
                 break
             metadata = inspect_mesh_log_path(path)
+            if preflight is not None:
+                preflight.inspect_import(
+                    profile,
+                    content_sha256=metadata.content_sha256,
+                    raw_sha256=metadata.raw_sha256,
+                )
             duplicate = repo.find_by_content_sha256(
                 metadata.content_sha256,
                 raw_sha256=metadata.raw_sha256,
             )
             if duplicate is not None:
+                if preflight is not None:
+                    assessment = preflight.inspect_source(profile, duplicate)
+                    if assessment.broken:
+                        recovered = preflight.prepare_broken_duplicate(
+                            profile,
+                            duplicate,
+                            selected_file=path,
+                            metadata=metadata,
+                        )
+                        info = make_imported_file(
+                            path,
+                            source_label=profile.display_name,
+                            precomputed_hash=metadata.raw_sha256,
+                        )
+                        info.status = "recovered"
+                        result.files.append(info)
+                        result.imported_count += 1
+                        result.parsed_record_count += int(
+                            recovered.get("parsed_record_count") or 0
+                        )
+                        result.source_results.append(
+                            {
+                                "result": "recovered_existing",
+                                "duplicate_status": "broken_same_mr_recovered",
+                                "original_filename": path.name,
+                                "raw_sha256": metadata.raw_sha256,
+                                "content_sha256": metadata.content_sha256,
+                                "source_id": int(duplicate["id"]),
+                                "session_id": str(recovered["session_id"]),
+                                "profile_id": profile.mr_id,
+                                "source_type": str(
+                                    duplicate.get("source_type") or source_type
+                                ),
+                            }
+                        )
+                        continue
                 info = make_imported_file(path, source_label=profile.display_name, precomputed_hash=metadata.raw_sha256)
                 info.status = "duplicate"
                 result.files.append(info)
@@ -225,6 +270,10 @@ class MeshImportService:
                     "parse_task_id": str(parse_task_id or ""),
                 }
             )
+            if preflight is not None:
+                imported_source = repo.get_source_file(source_file_id)
+                if imported_source is not None:
+                    preflight.inspect_source(profile, imported_source)
             result.imported_count += 1
             result.parsed_record_count += len(records)
             if progress:

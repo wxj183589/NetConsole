@@ -195,7 +195,9 @@ class RailTransitWebApplicationService:
         "mesh_schema_rebuild": "MESH 派生数据库重建",
         "mesh_derived_data_repair": "自动修复 MESH 分析数据库",
         "mesh_source_rebuild": "MESH 当前来源恢复与重新解析",
+        "mesh_analysis_maintenance": "MESH 来源维护",
         "mesh_analysis_source_delete": "删除 MESH 来源及解析结果",
+        "mesh_analysis_sources_delete": "批量删除 MESH 来源及解析结果",
         "car_network_diagnostic": "车内通信检测",
         "car_network_generate_point_table": "从设备管理生成车内通信点表",
         "car_network_save_point_table": "保存车内通信点表",
@@ -3525,7 +3527,9 @@ class RailTransitWebApplicationService:
             "mesh_schema_rebuild",
             "mesh_derived_data_repair",
             "mesh_source_rebuild",
+            "mesh_analysis_maintenance",
             "mesh_analysis_source_delete",
+            "mesh_analysis_sources_delete",
             "web_export_mesh_analysis_report",
             "web_export_mesh_link_detail_export",
             "web_export_mesh_ap_coverage_export",
@@ -3552,7 +3556,10 @@ class RailTransitWebApplicationService:
                 "delete_parsed_data": True,
                 "delete_generated_reports": bool(delete_generated_reports),
                 "explicit_confirmation": True,
-                "resource_keys": [source_key],
+                "resource_keys": self._mesh_source_delete_resource_keys(
+                    site_id,
+                    [session_id],
+                ),
                 "audit": {
                     "source": "electron_mesh_analysis",
                     "action": "delete_source",
@@ -3560,6 +3567,146 @@ class RailTransitWebApplicationService:
                 },
             },
         )
+
+    def start_mesh_sources_delete(
+        self,
+        site_id: str,
+        session_ids: Sequence[str],
+        *,
+        delete_raw_archive: bool,
+        delete_parsed_data: bool,
+        delete_generated_reports: bool,
+        explicit_confirmation: bool,
+    ) -> RailTransitTaskDTO:
+        site_id = self._site(site_id)
+        if not explicit_confirmation:
+            raise RailTransitWebError(
+                "CONFIRMATION_REQUIRED",
+                "批量删除 MESH 来源前必须显式确认",
+            )
+        if not delete_parsed_data:
+            raise RailTransitWebError(
+                "DELETE_SCOPE_INVALID",
+                "MESH 来源删除必须包含解析结果",
+            )
+        selected = tuple(
+            dict.fromkeys(str(item or "").strip() for item in session_ids)
+        )
+        selected = tuple(item for item in selected if item)
+        if not selected:
+            raise RailTransitWebError(
+                "MESH_SOURCE_REQUIRED",
+                "至少选择一个 MESH 来源",
+            )
+        if len(selected) > 100:
+            raise RailTransitWebError(
+                "MESH_SOURCE_LIMIT_EXCEEDED",
+                "单次最多删除 100 个 MESH 来源",
+            )
+        invalid_session = False
+        for item in selected:
+            mr_id, separator, source_value = item.rpartition(":")
+            if (
+                not separator
+                or not mr_id
+                or not source_value.isdigit()
+                or int(source_value) <= 0
+            ):
+                invalid_session = True
+                break
+        if invalid_session:
+            raise RailTransitWebError(
+                "MESH_SESSION_INVALID",
+                "MESH 来源标识无效",
+            )
+        return self._start_task(
+            site_id,
+            "mesh_analysis_sources_delete",
+            {
+                "session_ids": list(selected),
+                "delete_raw_archive": bool(delete_raw_archive),
+                "delete_parsed_data": True,
+                "delete_generated_reports": bool(delete_generated_reports),
+                "explicit_confirmation": True,
+                "resource_keys": self._mesh_source_delete_resource_keys(
+                    site_id,
+                    selected,
+                ),
+                "resource_conflict_message": "当前局点已有 MESH 导入、重建或删除任务正在运行",
+                "audit": {
+                    "source": "electron_mesh_analysis",
+                    "action": "delete_sources",
+                    "source_count": len(selected),
+                    "delete_raw_archive": bool(delete_raw_archive),
+                },
+            },
+        )
+
+    def start_mesh_maintenance(
+        self,
+        site_id: str,
+        session_id: str,
+        *,
+        kind: str,
+        explicit_confirmation: bool,
+    ) -> RailTransitTaskDTO:
+        site_id = self._site(site_id)
+        if not explicit_confirmation:
+            raise RailTransitWebError(
+                "CONFIRMATION_REQUIRED",
+                "提交 MESH 来源维护任务前必须显式确认",
+            )
+        normalized_kind = str(kind or "").strip()
+        if normalized_kind not in {
+            "identity_projection_refresh",
+            "parser_rebuild",
+        }:
+            raise RailTransitWebError(
+                "MESH_MAINTENANCE_KIND_INVALID",
+                "不支持的 MESH 来源维护类型",
+            )
+        try:
+            self.mesh_query_service._context(site_id, session_id)
+        except MeshAnalysisQueryError as exc:
+            raise RailTransitWebError("MESH_SESSION_NOT_FOUND", str(exc)) from exc
+        return self._start_task(
+            site_id,
+            "mesh_analysis_maintenance",
+            {
+                "session_id": session_id,
+                "maintenance_kind": normalized_kind,
+                "force_reparse": normalized_kind == "parser_rebuild",
+                "explicit_confirmation": True,
+                "resource_keys": self._mesh_source_delete_resource_keys(
+                    site_id,
+                    [session_id],
+                ),
+                "resource_conflict_message": "当前来源已有 MESH 导入、重建、维护或删除任务正在运行",
+                "audit": {
+                    "source": "electron_mesh_analysis",
+                    "action": normalized_kind,
+                },
+            },
+        )
+
+    def _mesh_source_delete_resource_keys(
+        self,
+        site_id: str,
+        session_ids: Sequence[str],
+    ) -> list[str]:
+        profile_ids = sorted(
+            {
+                item.rpartition(":")[0]
+                for item in session_ids
+                if item.rpartition(":")[0]
+            }
+        )
+        return [
+            f"mesh-import:{site_id}",
+            f"mesh_catalog:{site_id}",
+            *(f"mesh_profile:{site_id}:{profile_id}" for profile_id in profile_ids),
+            *(f"mesh_source:{session_id}" for session_id in session_ids),
+        ]
 
     def get_task(self, site_id: str, task_id: str) -> RailTransitTaskDTO:
         site_id = self._site(site_id)
@@ -3982,10 +4129,12 @@ class RailTransitWebApplicationService:
         summary: dict[str, object] = {}
         for key in (
             "count", "row_count", "train_count", "success_count", "failed_count",
+            "requested_count",
             "imported_count", "duplicate_count", "parsed_record_count", "member_count",
             "raw_archived_count", "parsed_source_count",
             "mesh_samples", "channel_busy_samples", "fping_samples", "iperf_samples", "issue_count",
             "session_id", "scan_id", "status", "scope", "target_label", "target_count", "skipped_count",
+            "maintenance_kind",
             "fit_ap_resource_count", "fit_ap_optical_success_count", "fit_ap_optical_failed_count",
             "candidate_ap_interface_count", "current_lldp_port_count", "preserved_lldp_port_count",
             "concurrency", "requested_concurrency", "effective_concurrency",
@@ -4020,6 +4169,40 @@ class RailTransitWebApplicationService:
             value = result.get(key)
             if isinstance(value, list):
                 summary[f"{key}_count"] = len(value)
+        if task_type == "mesh_analysis_sources_delete":
+            raw_items = result.get("items")
+            if isinstance(raw_items, list):
+                normalized_items: list[dict[str, object]] = []
+                for raw_item in raw_items[:200]:
+                    if not isinstance(raw_item, dict):
+                        continue
+                    item: dict[str, object] = {}
+                    for key in (
+                        "session_id",
+                        "status",
+                        "success",
+                        "message",
+                        "delete_raw_archive",
+                    ):
+                        value = raw_item.get(key)
+                        if isinstance(value, (bool, str)):
+                            item[key] = value
+                    if item:
+                        normalized_items.append(item)
+                summary["items"] = normalized_items
+        if task_type in {"mesh_source_rebuild", "mesh_analysis_maintenance"}:
+            remap = result.get("identity_remap")
+            if isinstance(remap, dict):
+                summary["identity_remap"] = {
+                    key: value
+                    for key in (
+                        "validation_status",
+                        "matched_mapping_count",
+                        "updated_link_row_count",
+                        "identity_index_revision",
+                    )
+                    if isinstance((value := remap.get(key)), (bool, int, float, str))
+                }
         created_session_ids = result.get("created_session_ids")
         if isinstance(created_session_ids, list) and all(isinstance(item, str) for item in created_session_ids):
             summary["created_session_ids"] = created_session_ids

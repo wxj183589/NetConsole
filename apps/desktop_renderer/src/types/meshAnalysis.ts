@@ -167,7 +167,14 @@ export interface MeshAnalysisParams {
   merge_same_physical_ap_dual_radio: boolean; include_log_boundary_segments: boolean; sample_interval_ms: number | null
   service_type: 'PIS' | 'CBTC' | '信号' | '其他'; wifi_type: 'WiFi5' | 'WiFi6' | '其他'
 }
-export interface MeshSessionDetail { session: MeshAnalysisSession; analysis_params: MeshAnalysisParams; available_radios?: number[]; warnings: MeshWarning[]; sources: MeshRawSource[] }
+export interface MeshMaintenanceState {
+  schema_current: string; schema_latest: string; schema_status: 'current' | 'outdated' | 'missing' | 'unreadable'
+  parser_current: string; parser_latest: string; parser_status: 'current' | 'compatible_legacy' | 'outdated' | 'unknown'
+  derived_analysis_current: string; derived_analysis_latest: string; derived_analysis_status: 'current' | 'outdated' | 'missing' | 'unreadable'
+  identity_saved_revision: number; identity_current_revision: number; identity_status: string
+  allowed_actions: Array<'identity_projection_refresh' | 'parser_rebuild'>
+}
+export interface MeshSessionDetail { session: MeshAnalysisSession; analysis_params: MeshAnalysisParams; available_radios?: number[]; warnings: MeshWarning[]; sources: MeshRawSource[]; maintenance_state: MeshMaintenanceState }
 
 export interface MeshIdentityMetadata {
   identity_status?: 'matched' | 'unresolved' | 'ambiguous'
@@ -267,6 +274,16 @@ export interface MeshPathChartSummary {
   sustained_zero_total_duration_ms: number; sustained_zero_longest_duration_ms: number
 }
 
+export interface MeshChartResponseBudget {
+  target_payload_bytes: number; hard_payload_bytes: number
+  point_limit: number; event_limit: number; location_segment_limit: number; series_limit: number
+  source_rows: number; selected_rows: number
+  total_points: number; returned_points: number; total_events: number; returned_events: number
+  total_location_segments: number; returned_location_segments: number
+  total_series: number; returned_series: number
+  lod_level: number; degraded: boolean; degrade_reasons: string[]
+}
+
 export interface MeshPathChart {
   mode: 'active_path' | 'peer_segment'; anchor: MeshChartPoint | null; points: MeshChartPoint[]; events: MeshChartEvent[]
   location_segments: MeshLocationSegment[]
@@ -274,6 +291,7 @@ export interface MeshPathChart {
   summary: MeshPathChartSummary; time_from: string | null; time_to: string | null
   requested_time_from: string | null; requested_time_to: string | null; effective_time_from: string | null; effective_time_to: string | null
   first_sample_time: string | null; last_sample_time: string | null; total_points_in_range: number; payload_bytes: number; query_duration_ms: number
+  response_budget: MeshChartResponseBudget
 }
 
 export interface MeshTracksideSignalPointData extends MeshIdentityMetadata {
@@ -307,6 +325,7 @@ export interface MeshTracksideSignalChartData {
   downsampled: boolean; requested_max_frames: number; effective_max_frames: number
   requested_max_points: number; effective_max_points?: number; top_n: number
   included_roles: Array<'ACTIVE' | 'STANDBY'>; include_standby: boolean; payload_bytes: number; query_duration_ms: number
+  response_budget: MeshChartResponseBudget
 }
 
 export interface MeshTimelineItem extends MeshIdentityMetadata { segment_id: number; start_time: string; end_time: string; duration_seconds: number | null; peer_ap_name: string | null; peer_ap_mac: string | null; local_radio: number | null; rssi_min: number | null; rssi_avg: number | null; rssi_max: number | null; station: string | null; section: string | null; mileage: string | null; line_side: string | null; event_type: string | null; warning: string | null }

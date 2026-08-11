@@ -106,6 +106,77 @@ def _enable_features(app) -> None:
         }
 
 
+def test_mesh_five_source_delete_starts_one_job_and_projects_safe_items(
+    tmp_path: Path,
+) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    service, normal, _export, _tasks = _service(paths)
+    profile_id = "12345678-abcd-4321-abcd-1234567890ab"
+    session_ids = [f"{profile_id}:{index}" for index in range(1, 6)]
+
+    started = service.start_mesh_sources_delete(
+        "demo",
+        session_ids,
+        delete_raw_archive=True,
+        delete_parsed_data=True,
+        delete_generated_reports=True,
+        explicit_confirmation=True,
+    )
+
+    assert len(normal.jobs) == 1
+    job = normal.jobs[started.task_id]
+    assert job.task_type == "mesh_analysis_sources_delete"
+    assert job.params["session_ids"] == session_ids
+    assert "mesh-import:demo" in job.params["resource_keys"]
+    assert all(
+        f"mesh_source:{session_id}" in job.params["resource_keys"]
+        for session_id in session_ids
+    )
+
+    items = [
+        {
+            "session_id": session_id,
+            "status": "deleted",
+            "success": True,
+            "message": "来源归档及分析结果已删除",
+            "delete_raw_archive": True,
+            "private_path": "must-not-leak",
+        }
+        for session_id in session_ids
+    ]
+    normal.complete(
+        started.task_id,
+        {
+            "requested_count": 5,
+            "success_count": 5,
+            "failed_count": 0,
+            "skipped_count": 0,
+            "delete_raw_archive": True,
+            "items": items,
+        },
+    )
+    completed = service.get_task("demo", started.task_id)
+
+    assert completed.result_summary == {
+        "requested_count": 5,
+        "success_count": 5,
+        "failed_count": 0,
+        "skipped_count": 0,
+        "delete_raw_archive": True,
+        "items_count": 5,
+        "items": [
+            {
+                "session_id": session_id,
+                "status": "deleted",
+                "success": True,
+                "message": "来源归档及分析结果已删除",
+                "delete_raw_archive": True,
+            }
+            for session_id in session_ids
+        ],
+    }
+
+
 def _mark_online_mr_parsed_ready(session_dir: Path, session_id: str) -> None:
     repository = OnlineMrDiagnosisRepository(session_dir / "parsed" / "online_diagnosis.sqlite")
     repository.initialize()
@@ -858,6 +929,45 @@ def test_mesh_rebuild_reuses_job_center_and_requires_confirmation(tmp_path: Path
     assert normal.jobs[started.task_id].task_type == "mesh_source_rebuild"
     assert normal.jobs[started.task_id].params["session_id"] == session_id
     assert normal.jobs[started.task_id].params["explicit_confirmation"] is True
+
+
+def test_mesh_maintenance_is_explicit_and_keeps_identity_refresh_separate_from_reparse(
+    tmp_path: Path,
+) -> None:
+    paths, session_id, _detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    mesh_query = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())  # type: ignore[arg-type]
+    service, normal, _export, _tasks = _service(paths, mesh_query=mesh_query)
+
+    with pytest.raises(RailTransitWebError) as confirmation:
+        service.start_mesh_maintenance(
+            "demo",
+            session_id,
+            kind="identity_projection_refresh",
+            explicit_confirmation=False,
+        )
+    assert confirmation.value.code == "CONFIRMATION_REQUIRED"
+
+    identity = service.start_mesh_maintenance(
+        "demo",
+        session_id,
+        kind="identity_projection_refresh",
+        explicit_confirmation=True,
+    )
+    identity_job = normal.jobs[identity.task_id]
+    normal.complete(identity.task_id)
+    parser = service.start_mesh_maintenance(
+        "demo",
+        session_id,
+        kind="parser_rebuild",
+        explicit_confirmation=True,
+    )
+
+    parser_job = normal.jobs[parser.task_id]
+    assert identity_job.task_type == parser_job.task_type == "mesh_analysis_maintenance"
+    assert identity_job.params["maintenance_kind"] == "identity_projection_refresh"
+    assert identity_job.params["force_reparse"] is False
+    assert parser_job.params["maintenance_kind"] == "parser_rebuild"
+    assert parser_job.params["force_reparse"] is True
 
 
 def test_mesh_upload_staging_accepts_gzip_logs_and_preserves_parser_suffix(

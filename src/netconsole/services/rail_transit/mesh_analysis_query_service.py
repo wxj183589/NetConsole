@@ -40,11 +40,13 @@ from netconsole.models.api.mesh_analysis import (
     MeshChartEventDTO,
     MeshChartLocationSegmentDTO,
     MeshChartPointDTO,
+    MeshChartResponseBudgetDTO,
     MeshCounterDeltaPageDTO,
     MeshCounterDeltaPointDTO,
     MeshDataSourceDTO,
     MeshLinkDetailDTO,
     MeshLinkPageDTO,
+    MeshMaintenanceStateDTO,
     MeshProfileDTO,
     MeshLinkTimelineDTO,
     MeshPathChartDTO,
@@ -67,7 +69,14 @@ from netconsole.models.api.mesh_analysis import (
 )
 from netconsole.models.mesh_analysis_params import mesh_analysis_params_from_json, mesh_analysis_params_to_json
 from netconsole.models.mesh_log_models import LINK_STATE_ACTIVE, LINK_STATE_STANDBY
-from netconsole.repositories.mesh_mr_repository import MeshMrRepository, MeshSchemaRebuildRequired, SCHEMA_VERSION
+from netconsole.repositories.mesh_mr_repository import (
+    DERIVED_ANALYSIS_KEY,
+    DERIVED_ANALYSIS_VERSION,
+    PARSER_VERSION,
+    SCHEMA_VERSION,
+    MeshMrRepository,
+    MeshSchemaRebuildRequired,
+)
 from netconsole.services.mesh_analysis_params_service import load_site_mesh_analysis_params
 from netconsole.services.mesh_chart_payload import (
     MeshChartSelectionLimitError,
@@ -90,6 +99,11 @@ _ALLOWED_OUTPUT_SUFFIXES = {".xlsx", ".zip", ".csv", ".json", ".md"}
 _MAX_PAGE_SIZE = 1_000
 _MAX_CHART_RENDER_POINTS = 20_000
 _MAX_TRACKSIDE_LINK_POINTS = 50_000
+_MAX_CHART_SOURCE_ROWS = 50_000
+_MAX_CHART_EVENTS = 256
+_MAX_CHART_LOCATION_SEGMENTS = 256
+_MAX_TRACKSIDE_SERIES = 512
+_TARGET_CHART_PAYLOAD_BYTES = 4 * 1024 * 1024
 _MAX_CHART_PAYLOAD_BYTES = 16 * 1024 * 1024
 LOGGER = logging.getLogger(__name__)
 _DETAIL_CAPABILITY_TABLES = {
@@ -594,7 +608,7 @@ class MeshAnalysisQueryService:
             warnings.append(
                 MeshAnalysisWarningDTO(
                     code="identity_mapping_stale",
-                    message="AP 身份索引已更新；打开健康来源后将通过任务中心轻量刷新身份映射。",
+                    message="AP 身份索引已更新；可在详情中显式提交身份映射刷新任务，也可稍后处理。",
                     severity="warning",
                 )
             )
@@ -604,6 +618,90 @@ class MeshAnalysisQueryService:
             available_radios=self._available_radios(context),
             warnings=warnings,
             sources=self.get_raw_source_summary(site_id, session_id),
+            maintenance_state=self._maintenance_state(context, stats, identity_state),
+        )
+
+    def _maintenance_state(
+        self,
+        context: _SessionContext,
+        stats: dict[str, Any],
+        identity_state: dict[str, Any],
+    ) -> MeshMaintenanceStateDTO:
+        parsed_status = str(stats.get("parsed_status") or "missing")
+        schema_status = {
+            "ready": "current",
+            "legacy": "outdated",
+            "missing": "missing",
+            "unreadable": "unreadable",
+        }.get(parsed_status, "outdated")
+        parser_current = str(context.source.get("parser_version") or "unknown")
+        if parser_current == PARSER_VERSION:
+            parser_status = "current"
+        elif parser_current == SCHEMA_VERSION:
+            # Historical releases wrote the compact storage schema into the
+            # parser field.  It is a compatible alias, not an upgrade signal.
+            parser_status = "compatible_legacy"
+        elif parser_current == "unknown":
+            parser_status = "unknown"
+        else:
+            parser_status = "outdated"
+
+        derived_current = "unknown"
+        derived_status = "missing" if context.detail_db is None else "unreadable"
+        if context.detail_db is not None:
+            try:
+                with closing(self._connect_readonly(context.detail_db)) as conn:
+                    if self._table_exists(conn, "schema_meta"):
+                        row = conn.execute(
+                            "SELECT value FROM schema_meta WHERE key = ? LIMIT 1",
+                            (DERIVED_ANALYSIS_KEY,),
+                        ).fetchone()
+                    else:
+                        row = None
+                derived_current = (
+                    str(row[0])
+                    if row and row[0] not in (None, "")
+                    else "unknown"
+                )
+                derived_status = (
+                    "current"
+                    if derived_current == DERIVED_ANALYSIS_VERSION
+                    else "outdated"
+                )
+            except (OSError, sqlite3.Error):
+                derived_status = "unreadable"
+
+        allowed_actions: list[str] = []
+        if (
+            parsed_status == "ready"
+            and identity_state.get("identity_mapping_status") == "identity_stale"
+        ):
+            allowed_actions.append("identity_projection_refresh")
+        location = MeshSourceLocator(self.paths).locate(
+            context.site_id,
+            context.source
+            | {
+                "safe_folder_name": context.safe_folder_name,
+                "mr_id": context.mr_id,
+            },
+            context.source,
+        )
+        if context.raw_path is not None or location.recoverable:
+            allowed_actions.append("parser_rebuild")
+        return MeshMaintenanceStateDTO(
+            schema_current=str(stats.get("schema_version") or "unknown"),
+            schema_latest=SCHEMA_VERSION,
+            schema_status=schema_status,
+            parser_current=parser_current,
+            parser_latest=PARSER_VERSION,
+            parser_status=parser_status,
+            derived_analysis_current=derived_current,
+            derived_analysis_latest=DERIVED_ANALYSIS_VERSION,
+            derived_analysis_status=derived_status,
+            identity_saved_revision=int(identity_state.get("identity_index_revision") or 0),
+            identity_current_revision=int(identity_state.get("identity_current_revision") or 0),
+            identity_status=str(identity_state.get("identity_mapping_status") or "unknown"),
+            allowed_actions=allowed_actions,
         )
 
     def _available_radios(self, context: _SessionContext) -> list[int]:
@@ -1051,6 +1149,9 @@ class MeshAnalysisQueryService:
         session_id: str,
         *,
         event_type: str = "",
+        radio: int | None = None,
+        switch_result: str = "",
+        pingpong_only: bool = False,
         time_from: str = "",
         time_to: str = "",
         page: int = 1,
@@ -1059,23 +1160,81 @@ class MeshAnalysisQueryService:
         context = self._context(site_id, session_id)
         if context.detail_db is None:
             return MeshSwitchEventPageDTO(page=page, page_size=page_size)
-        clauses: list[str] = []
-        values: list[Any] = []
+        try:
+            analysis_params = load_site_mesh_analysis_params(self.paths, context.site_id)
+        except (OSError, ValueError, KeyError, json.JSONDecodeError):
+            analysis_params = mesh_analysis_params_from_json("{}")
+        short_threshold_ms = int(analysis_params.short_link_threshold_ms)
+        pingpong_window_ms = int(analysis_params.effective_pingpong_return_window_ms)
+        clauses: list[str] = ["se.source_file_id = ?"]
+        values: list[Any] = [context.detail_source_id]
+        segment_duration_expr = """
+            (SELECT seg.duration_sec
+             FROM active_segments seg
+             WHERE seg.source_file_id = se.source_file_id
+               AND seg.radio = se.radio
+               AND seg.start_time = COALESCE(NULLIF(se.current_sample_time, ''), se.event_time)
+             ORDER BY seg.id ASC
+             LIMIT 1)
+        """
+        pingpong_expr = """
+            EXISTS (
+                SELECT 1
+                FROM switch_events next_event
+                WHERE next_event.source_file_id = se.source_file_id
+                  AND next_event.radio = se.radio
+                  AND next_event.event_time > se.event_time
+                  AND (julianday(next_event.event_time) - julianday(se.event_time)) * 86400000.0 <= ?
+                  AND COALESCE(next_event.from_peer_mac, '') = COALESCE(se.to_peer_mac, '')
+                  AND COALESCE(next_event.to_peer_mac, '') = COALESCE(se.from_peer_mac, '')
+            )
+        """
         if event_type:
-            clauses.append("event_type = ?")
+            clauses.append("se.event_type = ?")
             values.append(event_type)
+        if radio is not None:
+            clauses.append("se.radio = ?")
+            values.append(int(radio))
         if time_from:
-            clauses.append("event_time >= ?")
+            clauses.append("se.event_time >= ?")
             values.append(time_from)
         if time_to:
-            clauses.append("event_time <= ?")
+            clauses.append("se.event_time <= ?")
             values.append(time_to)
-        where = "WHERE " + " AND ".join(clauses) if clauses else ""
+        normalized_result = switch_result.casefold().strip()
+        if normalized_result in {"normal", "short"}:
+            comparator = ">=" if normalized_result == "normal" else "<"
+            clauses.append(
+                f"{segment_duration_expr} IS NOT NULL AND ({segment_duration_expr} * 1000.0) {comparator} ?"
+            )
+            values.extend((short_threshold_ms,))
+        if normalized_result == "pingpong" or pingpong_only:
+            clauses.append(pingpong_expr)
+            values.append(pingpong_window_ms)
+        where = "WHERE " + " AND ".join(clauses)
         current, size = self._page(page, page_size)
         offset = (current - 1) * size
         with closing(self._connect_readonly(context.detail_db)) as conn:
-            total = int(conn.execute(f"SELECT COUNT(*) FROM switch_events {where}", values).fetchone()[0] or 0)
-            rows = conn.execute(f"SELECT * FROM switch_events {where} ORDER BY event_time, id LIMIT ? OFFSET ?", (*values, size, offset)).fetchall()
+            total = int(
+                conn.execute(
+                    f"SELECT COUNT(*) FROM switch_events se {where}",
+                    values,
+                ).fetchone()[0]
+                or 0
+            )
+            select_values: list[Any] = [pingpong_window_ms, *values, size, offset]
+            rows = conn.execute(
+                f"""
+                SELECT se.*,
+                       {segment_duration_expr} AS derived_duration_seconds,
+                       {pingpong_expr} AS derived_is_pingpong
+                FROM switch_events se
+                {where}
+                ORDER BY se.event_time, se.id
+                LIMIT ? OFFSET ?
+                """,
+                select_values,
+            ).fetchall()
             link_columns = self._table_columns(conn, "mesh_links")
             peer_identity_select = ", ".join(
                 (
@@ -1094,22 +1253,43 @@ class MeshAnalysisQueryService:
                     ("peer_identity_reason", "peer_identity_reason"),
                 )
             )
-            peer_rows = conn.execute(
-                f"""
-                SELECT peer_mac_normalized, MAX(peer_ap_name) AS peer_ap_name, MAX(peer_ap_mac) AS peer_ap_mac,
-                       MAX(peer_site) AS peer_site, {peer_identity_select}
-                FROM mesh_links WHERE COALESCE(peer_mac_normalized, '') != '' GROUP BY peer_mac_normalized
-                """
-            ).fetchall()
+            page_peer_keys = sorted(
+                {
+                    self._mac_key(value)
+                    for row in rows
+                    for value in (row["from_peer_mac"], row["to_peer_mac"])
+                    if self._mac_key(value)
+                }
+            )
+            if page_peer_keys:
+                placeholders = ", ".join("?" for _ in page_peer_keys)
+                peer_rows = conn.execute(
+                    f"""
+                    SELECT peer_mac_normalized, MAX(peer_ap_name) AS peer_ap_name, MAX(peer_ap_mac) AS peer_ap_mac,
+                           MAX(peer_site) AS peer_site, {peer_identity_select}
+                    FROM mesh_links
+                    WHERE source_file_id = ? AND peer_mac_normalized IN ({placeholders})
+                    GROUP BY peer_mac_normalized
+                    """,
+                    (context.detail_source_id, *page_peer_keys),
+                ).fetchall()
+            else:
+                peer_rows = []
         ap_map = self._ap_map(site_id)
         peer_map = {self._mac_key(row["peer_mac_normalized"]): dict(row) for row in peer_rows}
-        builds = self._build_rows(context)
-        build_by_start = {str(row.get("build_start_time") or ""): row for row in builds}
         items: list[MeshSwitchEventDTO] = []
         for row in rows:
             data = dict(row)
             details = self._json_object(data.get("details_json"))
-            build = build_by_start.get(str(data.get("current_sample_time") or data.get("event_time") or ""), {})
+            duration_seconds = self._number(data.get("derived_duration_seconds"))
+            derived_result = (
+                "short"
+                if duration_seconds is not None and duration_seconds * 1000 < short_threshold_ms
+                else "normal"
+                if duration_seconds is not None
+                else ""
+            )
+            derived_pingpong = bool(data.get("derived_is_pingpong"))
             from_peer = peer_map.get(self._mac_key(data.get("from_peer_mac")), {})
             to_peer = peer_map.get(self._mac_key(data.get("to_peer_mac")), {})
             from_peer["peer_mac_normalized"] = data.get("from_peer_mac")
@@ -1128,22 +1308,20 @@ class MeshAnalysisQueryService:
                     from_peer_mac=str(data.get("from_peer_mac") or "") or None,
                     to_peer_mac=str(data.get("to_peer_mac") or "") or None,
                     from_ap_name=self._resolved_ap_name(from_peer, from_location),
-                    to_ap_name=self._resolved_ap_name(to_peer, to_location) or str(build.get("peer_ap_name") or "") or None,
+                    to_ap_name=self._resolved_ap_name(to_peer, to_location),
                     before_rssi=self._number(details.get("from_local_rssi")),
                     after_rssi=self._number(details.get("to_local_rssi")),
                     duration_ms=data.get("observed_window_ms"),
-                    new_active_duration_ms=int(round(float(build.get("main_link_duration_seconds") or 0) * 1000)) or None,
-                    stability_threshold_ms=self._int(build.get("main_link_switch_time_ms")),
-                    switch_result=(
-                        "short"
-                        if build.get("build_result") == "short"
-                        else "normal"
-                        if build.get("build_result") == "normal"
-                        else str(build.get("build_result") or "")
+                    new_active_duration_ms=(
+                        int(round(duration_seconds * 1000))
+                        if duration_seconds is not None
+                        else None
                     ),
-                    is_short_link=build.get("build_result") == "short",
-                    is_pingpong=bool(build.get("is_pingpong_abnormal")),
-                    station=self._resolved_location_value(to_peer, to_location, "station") or str(build.get("peer_site") or "") or None,
+                    stability_threshold_ms=short_threshold_ms,
+                    switch_result=derived_result,
+                    is_short_link=derived_result == "short",
+                    is_pingpong=derived_pingpong,
+                    station=self._resolved_location_value(to_peer, to_location, "station"),
                     section=self._resolved_location_value(to_peer, to_location, "section"),
                     from_identity_status=str(from_identity["identity_status"]),
                     from_identity_source=from_identity["identity_source"],
@@ -1346,11 +1524,17 @@ class MeshAnalysisQueryService:
                 requested_time_to=time_to or None,
             )
         repository = self._chart_repository(context)
+        source_row_budget = min(
+            _MAX_CHART_SOURCE_ROWS,
+            max(2_000, min(max(int(max_points), 10), _MAX_CHART_RENDER_POINTS) * 8),
+        )
         payload = repository.query_active_link_chart_segments(
             source_file_id=context.detail_source_id,
             radio=radio,
             time_from=time_from,
             time_to=time_to,
+            max_rows=source_row_budget,
+            max_events=_MAX_CHART_EVENTS if include_events else 0,
         )
         result = self._chart_dto(
             site_id,
@@ -1404,6 +1588,10 @@ class MeshAnalysisQueryService:
             radio=radio,
             time_from=time_from,
             time_to=time_to,
+            max_rows=_MAX_TRACKSIDE_LINK_POINTS,
+            max_frames=min(max_points, _MAX_CHART_RENDER_POINTS),
+            max_series=_MAX_TRACKSIDE_SERIES,
+            max_events=_MAX_CHART_EVENTS,
         )
         result = self._trackside_signal_chart_dto(
             context,
@@ -2497,18 +2685,21 @@ class MeshAnalysisQueryService:
             include_station_band=include_station_band,
         )
 
-    @staticmethod
+    @classmethod
     def _with_chart_metrics(
+        cls,
         result: MeshPathChartDTO | MeshTracksideSignalChartDTO,
         started: float,
     ) -> MeshPathChartDTO | MeshTracksideSignalChartDTO:
         result = result.model_copy(update={"query_duration_ms": round((perf_counter() - started) * 1000, 3)})
-        payload_bytes = len(result.model_dump_json(exclude_none=True).encode("utf-8"))
-        result = result.model_copy(update={"payload_bytes": payload_bytes})
-        payload_bytes = len(result.model_dump_json(exclude_none=True).encode("utf-8"))
+        result = cls._fit_chart_response_budget(result)
+        payload_bytes = 0
+        for _ in range(2):
+            result = result.model_copy(update={"payload_bytes": payload_bytes})
+            payload_bytes = len(result.model_dump_json(exclude_none=True).encode("utf-8"))
         if payload_bytes > _MAX_CHART_PAYLOAD_BYTES:
             raise MeshAnalysisPayloadLimitError(
-                "MESH 图表响应超过 16 MiB 安全上限，请缩小时间窗口或降低显示范围。"
+                "MESH 图表已自动降级但仍超过 16 MiB 硬上限，请缩小时间窗口。"
             )
         result = result.model_copy(update={"payload_bytes": payload_bytes})
         LOGGER.debug(
@@ -2519,6 +2710,206 @@ class MeshAnalysisQueryService:
             result.returned_points,
         )
         return result
+
+    @classmethod
+    def _fit_chart_response_budget(
+        cls,
+        result: MeshPathChartDTO | MeshTracksideSignalChartDTO,
+    ) -> MeshPathChartDTO | MeshTracksideSignalChartDTO:
+        current = result
+        for _ in range(8):
+            payload_bytes = len(current.model_dump_json(exclude_none=True).encode("utf-8"))
+            if payload_bytes <= _TARGET_CHART_PAYLOAD_BYTES:
+                return current
+            if isinstance(current, MeshPathChartDTO):
+                degraded = cls._degrade_path_chart_once(current)
+            else:
+                degraded = cls._degrade_trackside_chart_once(current)
+            if degraded == current:
+                return current
+            current = degraded
+        return current
+
+    @classmethod
+    def _degrade_path_chart_once(cls, result: MeshPathChartDTO) -> MeshPathChartDTO:
+        budget = result.response_budget
+        level = budget.lod_level + 1
+        reasons = list(budget.degrade_reasons)
+        updates: dict[str, Any] = {}
+
+        if len(result.events) > 32:
+            event_limit = max(32, len(result.events) // 2)
+            updates["events"] = cls._spread_sequence(result.events, event_limit)
+            reasons.append(f"响应体接近上限，事件从 {len(result.events)} 条降级为 {event_limit} 条")
+        elif len(result.location_segments) > 32:
+            segment_limit = max(32, len(result.location_segments) // 2)
+            updates["location_segments"] = cls._spread_sequence(
+                result.location_segments,
+                segment_limit,
+            )
+            reasons.append(
+                f"响应体接近上限，位置区段从 {len(result.location_segments)} 段降级为 {segment_limit} 段"
+            )
+        elif len(result.points) > 100:
+            point_limit = max(100, len(result.points) // 2)
+            critical = {
+                index
+                for index, point in enumerate(result.points)
+                if point.is_switch or point.is_anomaly or point.gap_before
+            }
+            selected = set(
+                cls._evenly_spread_indices(
+                    critical,
+                    min(len(critical), point_limit),
+                )
+            )
+            selected.update({0, len(result.points) - 1})
+            if len(selected) < point_limit:
+                ordinary = set(range(len(result.points))) - selected
+                selected.update(
+                    cls._evenly_spread_indices(ordinary, point_limit - len(selected))
+                )
+            selected_points = [result.points[index] for index in sorted(selected)]
+            updates.update(
+                {
+                    "points": selected_points,
+                    "returned_points": len(selected_points),
+                    "downsampled": True,
+                    "effective_max_points": len(selected_points),
+                }
+            )
+            reasons.append(
+                f"响应体接近上限，图点从 {len(result.points)} 点自动降级为 {len(selected_points)} 点"
+            )
+        else:
+            stripped_points = [
+                point.model_copy(update={"backups": []}) if point.backups else point
+                for point in result.points
+            ]
+            stripped_events = [
+                event.model_copy(update={"point_context": None, "busy_point_context": None})
+                for event in result.events
+            ]
+            if stripped_points == result.points and stripped_events == result.events:
+                return result
+            updates.update({"points": stripped_points, "events": stripped_events})
+            reasons.append("响应体接近硬上限，已移除重复的事件点上下文与备用链详情")
+
+        next_events = updates.get("events", result.events)
+        next_segments = updates.get("location_segments", result.location_segments)
+        next_points = updates.get("points", result.points)
+        next_budget = budget.model_copy(
+            update={
+                "returned_points": len(next_points),
+                "returned_events": len(next_events),
+                "returned_location_segments": len(next_segments),
+                "lod_level": level,
+                "degraded": True,
+                "degrade_reasons": reasons,
+            }
+        )
+        updates["response_budget"] = next_budget
+        return result.model_copy(update=updates)
+
+    @classmethod
+    def _degrade_trackside_chart_once(
+        cls,
+        result: MeshTracksideSignalChartDTO,
+    ) -> MeshTracksideSignalChartDTO:
+        budget = result.response_budget
+        level = budget.lod_level + 1
+        reasons = list(budget.degrade_reasons)
+        series = list(result.series)
+        if len(series) > 16:
+            series_limit = max(16, len(series) // 2)
+            active = [item for item in series if LINK_STATE_ACTIVE in item.roles_present]
+            selected = active[:series_limit]
+            if len(selected) < series_limit:
+                remaining = [item for item in series if item not in selected]
+                selected.extend(cls._spread_sequence(remaining, series_limit - len(selected)))
+            series = selected
+            reasons.append(
+                f"响应体接近上限，AP/Radio 序列从 {len(result.series)} 条降级为 {len(series)} 条"
+            )
+        else:
+            frame_timestamps = sorted(
+                {
+                    point.timestamp
+                    for item in series
+                    for point in item.points
+                }
+            )
+            if len(frame_timestamps) <= 20:
+                return result
+            frame_limit = max(20, len(frame_timestamps) // 2)
+            selected_timestamps = set(cls._spread_sequence(frame_timestamps, frame_limit))
+            selected_series: list[MeshTracksideSignalSeriesDTO] = []
+            for item in series:
+                points = [point for point in item.points if point.timestamp in selected_timestamps]
+                if not points:
+                    continue
+                selected_series.append(
+                    item.model_copy(
+                        update={
+                            "points": points,
+                            "returned_points": len(points),
+                        }
+                    )
+                )
+            series = selected_series
+            reasons.append(
+                f"响应体接近上限，轨旁采样时刻从 {len(frame_timestamps)} 个降级为 {frame_limit} 个"
+            )
+
+        returned_points = sum(item.returned_points for item in series)
+        returned_frames = len(
+            {
+                point.timestamp
+                for item in series
+                for point in item.points
+            }
+        )
+        returned_active = sum(
+            point.role == LINK_STATE_ACTIVE for item in series for point in item.points
+        )
+        returned_standby = sum(
+            point.role == LINK_STATE_STANDBY for item in series for point in item.points
+        )
+        returned_triangle = sum(
+            point.link_count == 2 for item in series for point in item.points
+        )
+        next_budget = budget.model_copy(
+            update={
+                "returned_points": returned_points,
+                "returned_series": len(series),
+                "lod_level": level,
+                "degraded": True,
+                "degrade_reasons": reasons,
+            }
+        )
+        return result.model_copy(
+            update={
+                "series": series,
+                "returned_series": len(series),
+                "returned_frames": returned_frames,
+                "returned_link_points": returned_points,
+                "returned_points": returned_points,
+                "returned_active_link_points": returned_active,
+                "returned_standby_link_points": returned_standby,
+                "returned_triangle_link_points": returned_triangle,
+                "downsampled": True,
+                "response_budget": next_budget,
+            }
+        )
+
+    @classmethod
+    def _spread_sequence(cls, values: list[Any], limit: int) -> list[Any]:
+        if limit <= 0 or not values:
+            return []
+        if len(values) <= limit:
+            return list(values)
+        indices = cls._evenly_spread_indices(set(range(len(values))), limit)
+        return [values[index] for index in sorted(indices)]
 
     def _chart_payload_dto(
         self,
@@ -2559,7 +2950,12 @@ class MeshAnalysisQueryService:
         multi_active = {int(value) for value in (multi_active_values if multi_active_values is not None else [])}
         switch_indices = {int(value) for value in (switch_values if switch_values is not None else [])}
         events_by_index = dict(chart.get("events_by_index") or {})
-        segment_index = self._chart_segment_index(self._build_rows(context))
+        repository_downsampled = bool(run_segment.get("repository_downsampled"))
+        segment_index = (
+            {}
+            if repository_downsampled
+            else self._chart_segment_index(self._build_rows(context))
+        )
         ap_map = self._ap_map(site_id)
         metadata = dict(chart.get("metadata") or {})
         continuity_gap = self._number(metadata.get("continuity_gap_seconds"))
@@ -2764,10 +3160,15 @@ class MeshAnalysisQueryService:
             )
 
         returned = [materialize_response_point(point_rows[index]) for index in indices]
-        location_segments = (
+        all_location_segments = (
             self._chart_location_segments(ap_map, point_rows)
             if include_station_band
             else []
+        )
+        location_segments = (
+            self._spread_sequence(all_location_segments, _MAX_CHART_LOCATION_SEGMENTS)
+            if len(all_location_segments) > _MAX_CHART_LOCATION_SEGMENTS
+            else all_location_segments
         )
         anchor_index = self._int(dict(chart.get("metadata") or {}).get("anchor_index"))
         anchor = (
@@ -2860,6 +3261,52 @@ class MeshAnalysisQueryService:
         first_time = str(point_rows[0]["timestamp"]) if point_rows else None
         last_time = str(point_rows[-1]["timestamp"]) if point_rows else None
         zero_summary = local_zero_analysis.summary
+        source_total_points = int(run_segment.get("total_frames") or total_points)
+        source_rows = int(run_segment.get("total_rows") or len(run_segment.get("rows") or []))
+        selected_rows = int(run_segment.get("returned_rows") or len(run_segment.get("rows") or []))
+        total_events = (
+            int(run_segment.get("total_events") or len(prepared_events))
+            if include_events
+            else 0
+        )
+        degrade_reasons: list[str] = []
+        if repository_downsampled:
+            degrade_reasons.append(
+                f"仓储层已从 {source_rows} 行中按窗口和关键切换时刻选择 {selected_rows} 行"
+            )
+        if len(prepared_events) < total_events:
+            degrade_reasons.append(
+                f"切换事件已从 {total_events} 条按时间密度返回 {len(prepared_events)} 条"
+            )
+        if len(location_segments) < len(all_location_segments):
+            degrade_reasons.append(
+                f"位置区段已从 {len(all_location_segments)} 段返回 {len(location_segments)} 段"
+            )
+        if degrade_reasons:
+            downsample_warning = " ".join(
+                value for value in (downsample_warning, *degrade_reasons) if value
+            )
+        response_budget = MeshChartResponseBudgetDTO(
+            target_payload_bytes=_TARGET_CHART_PAYLOAD_BYTES,
+            hard_payload_bytes=_MAX_CHART_PAYLOAD_BYTES,
+            point_limit=effective_max_points,
+            event_limit=_MAX_CHART_EVENTS if include_events else 0,
+            location_segment_limit=_MAX_CHART_LOCATION_SEGMENTS if include_station_band else 0,
+            series_limit=0,
+            source_rows=source_rows,
+            selected_rows=selected_rows,
+            total_points=source_total_points,
+            returned_points=len(returned),
+            total_events=total_events,
+            returned_events=len(events),
+            total_location_segments=len(all_location_segments),
+            returned_location_segments=len(location_segments),
+            total_series=0,
+            returned_series=0,
+            lod_level=1 if degrade_reasons else 0,
+            degraded=bool(degrade_reasons),
+            degrade_reasons=degrade_reasons,
+        )
         result = MeshPathChartDTO(
             mode="active_path" if mode == "active_path" else "peer_segment",
             anchor=anchor,
@@ -2870,8 +3317,14 @@ class MeshAnalysisQueryService:
                 current_peer_mac=current.peer_mac if current else None,
                 current_peer_ap_name=current.peer_ap_name if current else None,
                 current_radio=current.local_radio if current else None,
-                sample_count=total_points,
-                active_count=sum(str(dict(row.get("item") or {}).get("status") or "") == "ACTIVE" for row in point_rows),
+                sample_count=source_total_points,
+                active_count=int(
+                    run_segment.get("active_rows")
+                    or sum(
+                        str(dict(row.get("item") or {}).get("status") or "") == "ACTIVE"
+                        for row in point_rows
+                    )
+                ),
                 standby_context_count=sum(len(row.get("backups") or []) for row in point_rows),
                 triangle_link_point_count=len(
                     {
@@ -2895,9 +3348,9 @@ class MeshAnalysisQueryService:
                 sustained_zero_total_duration_ms=zero_summary.sustained_total_duration_ms,
                 sustained_zero_longest_duration_ms=zero_summary.sustained_longest_duration_ms,
             ),
-            total_points=total_points,
+            total_points=source_total_points,
             returned_points=len(returned),
-            downsampled=len(returned) < total_points,
+            downsampled=len(returned) < source_total_points or repository_downsampled,
             requested_max_points=requested_max_points,
             effective_max_points=effective_max_points,
             downsample_warning=downsample_warning,
@@ -2909,14 +3362,10 @@ class MeshAnalysisQueryService:
             effective_time_to=last_time,
             first_sample_time=first_time,
             last_sample_time=last_time,
-            total_points_in_range=total_points,
+            total_points_in_range=source_total_points,
+            response_budget=response_budget,
         )
-        payload_bytes = len(result.model_dump_json(exclude_none=True).encode("utf-8"))
-        if payload_bytes > _MAX_CHART_PAYLOAD_BYTES:
-            raise MeshAnalysisPayloadLimitError(
-                "MESH 图表响应超过 16 MiB 安全上限，请缩小时间窗口或降低显示范围。"
-            )
-        return result.model_copy(update={"payload_bytes": payload_bytes})
+        return result
 
     def _trackside_signal_chart_dto(
         self,
@@ -2947,7 +3396,12 @@ class MeshAnalysisQueryService:
         estimated_interval = self._number(run_segment.get("estimated_interval_seconds"))
         continuity_gap = self._number(run_segment.get("continuity_gap_seconds"))
         ap_map = self._ap_map(context.site_id)
-        segment_index = self._chart_segment_index(self._build_rows(context))
+        repository_downsampled = bool(run_segment.get("repository_downsampled"))
+        segment_index = (
+            {}
+            if repository_downsampled
+            else self._chart_segment_index(self._build_rows(context))
+        )
         groups: dict[tuple[str, int | None], dict[str, Any]] = {}
         frame_items: dict[tuple[int, str, str, int | None], list[dict[str, Any]]] = defaultdict(list)
         observed_frame_keys: set[tuple[int, str, str, int | None]] = set()
@@ -3477,7 +3931,71 @@ class MeshAnalysisQueryService:
             self._int(item["point_values"].get("link_count")) == 2
             for item in selected_items
         )
-        downsampled = returned_frames < total_frames
+        source_total_series = (
+            int(run_segment.get("source_total_series") or len(groups))
+            if repository_downsampled
+            else len(groups)
+        )
+        source_total_frames = (
+            int(run_segment.get("source_total_frames") or total_frames)
+            if repository_downsampled
+            else total_frames
+        )
+        source_total_link_points = (
+            int(run_segment.get("source_total_rows") or total_link_points)
+            if repository_downsampled
+            else total_link_points
+        )
+        source_active_link_points = (
+            int(run_segment.get("source_active_rows") or active_link_points)
+            if repository_downsampled
+            else active_link_points
+        )
+        source_standby_link_points = (
+            int(run_segment.get("source_standby_rows") or standby_link_points)
+            if repository_downsampled
+            else standby_link_points
+        )
+        source_triangle_link_points = (
+            int(run_segment.get("source_triangle_rows") or triangle_link_points)
+            if repository_downsampled
+            else triangle_link_points
+        )
+        source_rows = int(run_segment.get("source_total_rows") or total_link_points)
+        selected_rows = int(run_segment.get("returned_rows") or len(rows))
+        degrade_reasons: list[str] = []
+        if repository_downsampled:
+            degrade_reasons.append(
+                f"仓储层已从 {source_rows} 行中按时间窗口、关键切换帧和序列预算选择 {selected_rows} 行"
+            )
+            warnings.append(degrade_reasons[-1])
+        if source_total_series > len(groups):
+            degrade_reasons.append(
+                f"AP/Radio 序列已从 {source_total_series} 条返回 {len(groups)} 条"
+            )
+            warnings.append(degrade_reasons[-1])
+        downsampled = returned_frames < source_total_frames or repository_downsampled
+        response_budget = MeshChartResponseBudgetDTO(
+            target_payload_bytes=_TARGET_CHART_PAYLOAD_BYTES,
+            hard_payload_bytes=_MAX_CHART_PAYLOAD_BYTES,
+            point_limit=_MAX_TRACKSIDE_LINK_POINTS,
+            event_limit=_MAX_CHART_EVENTS,
+            location_segment_limit=0,
+            series_limit=_MAX_TRACKSIDE_SERIES,
+            source_rows=source_rows,
+            selected_rows=selected_rows,
+            total_points=source_total_link_points,
+            returned_points=returned_link_points,
+            total_events=int(run_segment.get("total_events") or 0),
+            returned_events=int(run_segment.get("returned_events") or 0),
+            total_location_segments=0,
+            returned_location_segments=0,
+            total_series=source_total_series,
+            returned_series=len(series),
+            lod_level=1 if degrade_reasons else 0,
+            degraded=bool(degrade_reasons),
+            degrade_reasons=degrade_reasons,
+        )
 
         result = MeshTracksideSignalChartDTO(
             source_id=context.session_id,
@@ -3491,16 +4009,16 @@ class MeshAnalysisQueryService:
             warnings=warnings,
             estimated_interval_seconds=estimated_interval,
             continuity_gap_seconds=continuity_gap,
-            total_series=len(groups),
+            total_series=source_total_series,
             returned_series=len(series),
-            total_frames=total_frames,
+            total_frames=source_total_frames,
             returned_frames=returned_frames,
-            total_link_points=total_link_points,
+            total_link_points=source_total_link_points,
             returned_link_points=returned_link_points,
             total_link_runs=len(runs),
-            active_link_points=active_link_points,
-            standby_link_points=standby_link_points,
-            triangle_link_points=triangle_link_points,
+            active_link_points=source_active_link_points,
+            standby_link_points=source_standby_link_points,
+            triangle_link_points=source_triangle_link_points,
             returned_active_link_points=returned_active_link_points,
             returned_standby_link_points=returned_standby_link_points,
             returned_triangle_link_points=returned_triangle_link_points,
@@ -3512,7 +4030,7 @@ class MeshAnalysisQueryService:
             sustained_zero_run_count=sustained_zero_run_count,
             sustained_zero_total_duration_ms=sustained_zero_total_duration_ms,
             sustained_zero_longest_duration_ms=sustained_zero_longest_duration_ms,
-            total_points=total_link_points,
+            total_points=source_total_link_points,
             returned_points=returned_link_points,
             downsampled=downsampled,
             requested_max_frames=requested_max_frames,
@@ -3522,13 +4040,9 @@ class MeshAnalysisQueryService:
             top_n=0,
             included_roles=[LINK_STATE_ACTIVE, LINK_STATE_STANDBY],
             include_standby=True,
+            response_budget=response_budget,
         )
-        payload_bytes = len(result.model_dump_json(exclude_none=True).encode("utf-8"))
-        if payload_bytes > _MAX_CHART_PAYLOAD_BYTES:
-            raise MeshAnalysisPayloadLimitError(
-                "轨旁图响应超过 16 MiB 安全上限，请缩小时间窗口或降低显示范围。"
-            )
-        return result.model_copy(update={"payload_bytes": payload_bytes})
+        return result
 
     def _trackside_rows_with_standby_fallback(
         self,

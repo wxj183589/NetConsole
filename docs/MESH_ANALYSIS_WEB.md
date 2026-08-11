@@ -21,9 +21,11 @@ catalog.sqlite
 - RSSI：使用持久化统计和结构化采样。缺失值保持 `null`，已有真实 `0` 保持原值；
 - 空口：读取结构化 Mesh 指标中的 Tx/Rx busy；没有持久化 CtlBusy 时返回 `null`，不从原始文本临时抓数字；
 - 解析诊断：来源摘要分列 `info_count`、`warning_count`、`error_count`；列表“告警”只显示 `warning_count + error_count`，INFO 诊断不影响完整性、不进入异常摘要或正式报告。旧来源仅有混合 `issue_count` 时保守显示，重新解析后升级；
+- 来源详情分别返回 catalog/profile schema、parser 语义版本、derived analysis 版本和 AP Identity projection revision。页面打开只检测并展示状态，不自动提交重建；Identity stale 只显示“立即刷新身份映射”，parser outdated 才允许显式重新解析，二者不能互相冒充；
+- 导入前由 `MeshImportPreflightService` 核对 Profile 根、raw、parsed、来源索引、catalog 会话和 fingerprint。数据库仍有来源而受管文件被人工删除时，catalog 持久化 `BROKEN_SOURCE` 生命周期记录；重新选择同一正文可恢复原 session 的 raw 并重建，而不是要求删除数据库；
 - AP 覆盖核查：来源列表勾选恰好两个当前局点来源后运行 `capability.mesh.coverage_audit`。服务端直接聚合两个 parsed SQLite 的有效 `ACTIVE/STANDBY`（`LinkCnt>0`）；优先用 remap 已持久化的 `canonical_ap_mac`（兼容 `peer_ap_mac`）归并物理 AP，不会再次把已匹配 AP 降级为 Peer Radio MAC 重新解析。只有旧 parsed 库缺少物理 MAC 投影时才走只读 Identity fallback；索引未就绪则返回“AP Identity 索引不可用”，而非把全部观测列为资料未匹配。每个局点独立数据库的 Identity scope 均为 `current`，与 MESH remap 一致。结果页和 Excel 摘要显示来源级、全集 Peer Radio/物理 AP 去重数及持久化/fallback 诊断；不在 Vue 去重，不重新扫描 raw 日志。核查默认按已观测站点/区间的正线范围，并同时提供全正线计数；未观测不代表故障。
 
-索引记录的旧绝对 `parsed_db_path` 随数据根迁移失效时，只允许在当前 MR 的 `parsed` 受控目录内按同名文件回退；不会回写索引。解析结果或 raw 缺失时显示明确 warning，不自动修复或重解析。
+索引记录的旧绝对 `parsed_db_path` 随数据根迁移失效时，只允许在当前 MR 的 `parsed` 受控目录内按同名文件回退；不会回写索引。普通 GET 遇到解析结果或 raw 缺失时只显示明确 warning，不自动修复或重解析；修复仅发生在用户显式重新导入或提交维护任务后。
 
 ## API
 
@@ -55,6 +57,8 @@ POST /api/rail-transit/mesh-analysis/ap-coverage/export
 POST /api/rail-transit/mesh-analysis/import-context/prepare
 POST /api/rail-transit/mesh-analysis/import-preview
 POST /api/rail-transit/mesh-analysis/bundles/import
+POST /api/rail-transit/mesh-analysis/sources/batch-delete
+POST /api/rail-transit/mesh-analysis/sessions/{session_id}/maintenance
 POST /api/rail-transit/mesh-analysis/sessions/{session_id}/rebuild
 POST /api/rail-transit/mesh-analysis/sessions/{session_id}/report
 GET /api/rail-transit/mesh-analysis/analysis-params
@@ -73,12 +77,30 @@ PUT /api/rail-transit/mesh-analysis/analysis-params
 - 主链路建链顺序、链路明细、RSSI 和空口图表使用同一可视区域高度计算，监听窗口与容器尺寸变化；分页保留在表格下方，表格内部滚动。嵌套 RSSI/空口模式 Tab 不再占据独立内容高度；
 - 链路明细使用后端分页和时间/AP/MR 条件；
 - 主链路时间线读取既有区间，不返回全部采样；
-- RSSI 和空口由后端按 Radio、时间窗口和目标点数查询，最多返回 2,000 个点；首尾、切换/异常/断点和极值按优先级保留，返回实际 `returned_points`；单 AP 支持指定区段或全部经过时段（段间断线）。
+- RSSI 和轨旁图先在 Repository 下推 `source/radio/time`，再按 SQL 候选行、关键事件、frame 和 series 预算读取；不再全库 `fetchall` 后才抽样。统一 `response_budget` 返回 source/selected、total/returned、LOD 级别和降级原因，目标响应 4 MiB，16 MiB 仅是自动逐级降级后的最后硬阈值；
+- 全天 Overview 的曲线、事件、站点带、series 和 frame 分别受全局预算约束。事件超过 256 条时保留关键事实并按时间代表采样，真实总数继续通过 `total_events` 返回；轨旁图最多向 Renderer 交付受控 frame/link-point/series 集合，缩放后再按当前窗口读取细节；
+- 切换事件列表使用真实服务端分页，默认 100 条并支持 50/100/200，Radio、正常/短时/乒乓条件下推 SQL；表格高度按可用视口和实际行数共同计算，不再固定 430px；
+- RSSI 工作区取消整卡灰色遮罩，metadata、主链查询、轨旁等待/查询/渲染分别维护局部状态；旧图在新窗口请求期间继续可见。轨旁未加载且未在加载时始终提供当前窗口加载动作，失败时提供重新加载；
+- 最近窗口使用非响应式、最多 2 项且估算 payload 合计不超过 16 MiB 的 LRU；key 包含 session、source revision、Radio、窗口和预算。返回最近窗口直接复用 immutable DTO 与 compact series cache，驱逐、切换来源和卸载都会显式 dispose；
 - 切换事件 payload 预载前后 AP、Peer 和建链区段，图表点击可回到建链顺序；ECharts 仅在活动 Tab 且容器宽高有效时初始化，激活、数据变化和 ResizeObserver 触发 RAF resize，卸载时取消 RAF、解除事件并释放实例。
 - 离线来源列表默认 30 秒刷新，连续失败三次降为 90 秒；
 - 页面隐藏时不请求，组件卸载时清理 timer 和 ECharts；
 - raw 只有用户明确点击且来源为普通文本时读取受控尾部。
 - 页面内任务区域只显示任务名、状态、紧凑进度和一行摘要；完整日志、结果、Artifact、错误和停止操作统一进入 Task Center。刷新页面只恢复活动态或失败态 MESH 任务，不自动展开旧 COMPLETED 任务。
+- 多选来源删除只创建一个 `mesh_analysis_sources_delete` Job。Worker 按稳定顺序逐来源执行，返回 requested/success/failed/skipped 和逐项状态；任务完成前列表不提前移除，`parsed_deleted` 保留来源并刷新，只有 raw 来源删除成功或已不存在才移除行。
+
+### 2026-08-12 生成数据基准
+
+命令使用当前 worktree `src`，每个 frame 10 条 ACTIVE/STANDBY link；耗时为 Repository 查询，payload 为基准脚本构造的有界标量响应，不包含 Electron 首帧耗时。
+
+| link rows | active query | active objects / payload | trackside query | trackside objects / payload |
+| ---: | ---: | ---: | ---: | ---: |
+| 50,000 | 0.415 s | 7,217 / 0.833 MiB | 2.034 s | 50,000 / 5.765 MiB |
+| 200,000 | 0.792 s | 8,019 / 0.925 MiB | 0.653 s | 4,230 / 0.488 MiB |
+| 500,000 | 1.351 s | 8,049 / 0.937 MiB | 1.424 s | 4,860 / 0.560 MiB |
+| 1,000,000 | 2.322 s | 8,099 / 0.949 MiB | 3.422 s | 5,890 / 0.679 MiB |
+
+50k 轨旁仍走既有中等规模完整 run/boundary 语义，因此 Repository 基准保留 50k 行；正式 Query Service 随后仍执行统一 Response Budget。200k 起 Repository LOD 生效，返回对象数、payload 和峰值内存不再随原始行数线性增长。真实 Renderer transform、ECharts `setOption` 和 first paint 继续由 Electron workload 诊断采集，本脚本不伪造浏览器渲染数据。
 
 ## 当前边界
 

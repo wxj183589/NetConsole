@@ -166,12 +166,17 @@ class MeshSourceRebuildService:
             issues,
             mesh_analysis_params_to_json(load_site_mesh_analysis_params(self.paths, site_id)),
         )
+        # SQLite intentionally de-duplicates repeated source rows through the
+        # compact schema's UNIQUE constraint.  Identity remap validates the
+        # persisted projection, so its invariant must use the database count
+        # instead of the parser's pre-deduplication list length.
+        persisted_link_count = int(detail.summary().get("link_record_count") or 0)
         mapping_service = MeshPeerMappingService(site_id, self.paths)
         mapping_service.refresh_repository(detail)
         remap = mapping_service.last_remap_summary
         _require_verified_identity_remap(
             remap,
-            expected_link_count=len(records),
+            expected_link_count=persisted_link_count,
         )
         detail.update_identity_mapping_metadata(
             identity_index_revision=int(remap.get("identity_index_revision") or 0),
@@ -207,7 +212,7 @@ class MeshSourceRebuildService:
                 first_sample_time=min((record.sample_time for record in records), default=None),
                 last_sample_time=max((record.sample_time for record in records), default=None),
                 lines_read=info.lines_read,
-                records_parsed=len(records),
+                records_parsed=persisted_link_count,
                 records_skipped=info.skipped_count,
                 issue_count=issue_counts["total"],
                 info_count=issue_counts["info"],
@@ -252,7 +257,7 @@ class MeshSourceRebuildService:
             "archive_sha256": location.archive_sha256,
             "raw_archived_count": 1 if recovered else 0,
             "parsed_source_count": 1,
-            "parsed_record_count": len(records),
+            "parsed_record_count": persisted_link_count,
             "issue_count": issue_counts["total"],
             "info_count": issue_counts["info"],
             "warning_count": issue_counts["warning"],

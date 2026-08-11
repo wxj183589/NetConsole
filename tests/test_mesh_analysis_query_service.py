@@ -11,6 +11,8 @@ from types import SimpleNamespace
 
 import pytest
 
+import netconsole.services.rail_transit.mesh_analysis_query_service as mesh_query_module
+from netconsole.models.api.mesh_analysis import MeshChartPointDTO, MeshPathChartDTO
 from netconsole.services.rail_transit.mesh_analysis_query_service import (
     MeshAnalysisPayloadLimitError,
     MeshAnalysisQueryError,
@@ -174,6 +176,126 @@ def test_reads_persisted_mesh_results_without_modifying_sources(tmp_path: Path) 
     assert anomalies.total >= 4
     assert location_snapshot.to_serializable() == []
     assert before == [_fingerprint(path) for path in protected]
+
+
+def test_switch_event_filters_are_sql_scoped_and_do_not_require_full_build_order(
+    tmp_path: Path,
+) -> None:
+    paths, session_id, detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    save_site_mesh_analysis_params(
+        paths,
+        "demo",
+        {"link_time_window": 4_000, "pingpong_return_window_ms": 1_500},
+    )
+    with sqlite3.connect(detail) as conn:
+        conn.executemany(
+            """
+            INSERT INTO active_segments (
+                id, radio, peer_mac, peer_mac_normalized, peer_ap_name,
+                belong_station, belong_section, belong_type, start_time, end_time,
+                duration_sec, sample_count, event_type, source_file_id
+            ) VALUES (?, 1, ?, ?, ?, '', '', '', ?, ?, ?, 1, 'stable', 1)
+            """,
+            (
+                (
+                    2,
+                    "00000000002f",
+                    "00000000002f",
+                    "AP-02",
+                    "2026-07-14 10:00:01.000",
+                    "2026-07-14 10:00:01.999",
+                    1.0,
+                ),
+                (
+                    3,
+                    "00000000001f",
+                    "00000000001f",
+                    "AP-01",
+                    "2026-07-14 10:00:02.000",
+                    "2026-07-14 10:00:11.999",
+                    10.0,
+                ),
+            ),
+        )
+    service = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())  # type: ignore[arg-type]
+    service._build_rows = lambda _context: (_ for _ in ()).throw(AssertionError("不得全量构造 build_rows"))  # type: ignore[method-assign]
+
+    short = service.list_switch_events("demo", session_id, radio=1, switch_result="short")
+    normal = service.list_switch_events("demo", session_id, radio=1, switch_result="normal")
+    pingpong = service.list_switch_events("demo", session_id, radio=1, switch_result="pingpong")
+    other_radio = service.list_switch_events("demo", session_id, radio=2)
+
+    assert [item.event_id for item in short.items] == [1]
+    assert [item.event_id for item in normal.items] == [2]
+    assert [item.event_id for item in pingpong.items] == [1]
+    assert other_radio.total == 0
+
+
+def test_chart_payload_automatically_reduces_lod_before_hard_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(mesh_query_module, "_TARGET_CHART_PAYLOAD_BYTES", 64 * 1024)
+    monkeypatch.setattr(mesh_query_module, "_MAX_CHART_PAYLOAD_BYTES", 128 * 1024)
+    chart = MeshPathChartDTO(
+        mode="active_path",
+        points=[
+            MeshChartPointDTO(
+                timestamp=f"2026-07-14 10:00:{index % 60:02d}.{index:03d}",
+                peer_ap_name="AP-" + ("X" * 500),
+            )
+            for index in range(400)
+        ],
+        total_points=400,
+        returned_points=400,
+    )
+
+    result = MeshAnalysisQueryService._with_chart_metrics(chart, perf_counter())
+
+    assert result.response_budget.degraded is True
+    assert result.response_budget.lod_level > 0
+    assert result.returned_points < 400
+    assert result.payload_bytes < 128 * 1024
+
+
+def test_active_chart_repository_budgets_8490_switch_events(tmp_path: Path) -> None:
+    _paths, _session_id, detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    sample_times = (
+        "2026-07-14 10:00:00.000",
+        "2026-07-14 10:00:01.000",
+        "2026-07-14 10:00:02.000",
+    )
+    with sqlite3.connect(detail) as conn:
+        conn.execute("DELETE FROM switch_events")
+        conn.executemany(
+            """
+            INSERT INTO switch_events (
+                id, event_type, event_time, radio, previous_sample_time,
+                current_sample_time, observed_window_ms, from_peer_mac,
+                to_peer_mac, details_json, source_file_id
+            ) VALUES (?, 'ACTIVE_SWITCH', ?, 1, ?, ?, 1000,
+                      '00000000001f', '00000000002f', '{}', 1)
+            """,
+            (
+                (
+                    index + 1,
+                    sample_times[index % len(sample_times)],
+                    sample_times[index % len(sample_times)],
+                    sample_times[(index + 1) % len(sample_times)],
+                )
+                for index in range(8_490)
+            ),
+        )
+
+    payload = MeshMrRepository(detail, read_only=True).query_active_link_chart_segments(
+        source_file_id=1,
+        max_rows=10,
+        max_events=200,
+    )
+    segment = dict(payload["run_segment"])
+
+    assert segment["total_events"] == 8_490
+    assert segment["returned_events"] <= 200
+    assert len(segment["events"]) == segment["returned_events"]
 
 
 def test_rssi_statistics_exclude_zero_and_report_it_separately(tmp_path: Path) -> None:

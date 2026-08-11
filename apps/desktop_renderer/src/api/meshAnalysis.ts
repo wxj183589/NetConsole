@@ -70,6 +70,16 @@ export const getMeshAnalysisSession = (id: string, signal?: AbortSignal): Promis
   signal ? { signal } : undefined,
 )
 export const rebuildMeshAnalysis = (id: string): Promise<RailTransitTask> => apiRequest(`${root}/sessions/${meshSessionPathSegment(id)}/rebuild`, { method: 'POST', body: JSON.stringify({ explicit_confirmation: true }) })
+export const startMeshMaintenance = (
+  id: string,
+  payload: { kind: 'identity_projection_refresh' | 'parser_rebuild' },
+): Promise<RailTransitTask> => apiRequest(
+  `${root}/sessions/${meshSessionPathSegment(id)}/maintenance`,
+  {
+    method: 'POST',
+    body: JSON.stringify({ ...payload, explicit_confirmation: true }),
+  },
+)
 export const exportMeshLinkDetails = (id: string, sourceFileId: number, analysisParamsOverride?: MeshAnalysisParams): Promise<RailTransitTask> => apiRequest(`${root}/sessions/${meshSessionPathSegment(id)}/link-details/export`, { method: 'POST', body: JSON.stringify({ source_file_id: sourceFileId, ...(analysisParamsOverride ? { analysis_params_override: analysisParamsOverride } : {}) }) })
 export const listMeshLinks = (id: string, values: Record<string, string | number | boolean | null | undefined>): Promise<Page<MeshLinkDetail>> => apiRequest(`${root}/sessions/${meshSessionPathSegment(id)}/links${qs(values)}`)
 export const listMeshActiveBuildOrder = (
@@ -121,6 +131,22 @@ export const deleteMeshSource = (
   {
     method: 'DELETE',
     body: JSON.stringify({
+      delete_raw_archive: options.deleteRawArchive,
+      delete_parsed_data: options.deleteParsedData !== false,
+      delete_generated_reports: options.deleteGeneratedReports !== false,
+      explicit_confirmation: true,
+    }),
+  },
+)
+export const batchDeleteMeshSources = (
+  sessionIds: string[],
+  options: { deleteRawArchive: boolean; deleteParsedData?: boolean; deleteGeneratedReports?: boolean },
+): Promise<RailTransitTask> => apiRequest(
+  `${root}/sources/batch-delete`,
+  {
+    method: 'POST',
+    body: JSON.stringify({
+      session_ids: [...new Set(sessionIds.map((value) => value.trim()).filter(Boolean))],
       delete_raw_archive: options.deleteRawArchive,
       delete_parsed_data: options.deleteParsedData !== false,
       delete_generated_reports: options.deleteGeneratedReports !== false,

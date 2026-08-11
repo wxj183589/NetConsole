@@ -19,6 +19,10 @@
 
 - 修复 Online MR Ping 质量指标展示：RTT、丢包率、固定分析栏、Tooltip 与 Y 轴统一复用 metricId 单位契约，RTT 固定使用 `ms` 且不再被百分比上限裁剪。
 - MESH 来源诊断按 INFO、WARNING、ERROR 分级；过滤的 `LinkCnt=0` 占位和无效主链快照不再计作数据告警。新增“AP 覆盖核查”，支持比较两个来源实际观测到的正线 FIT-AP 并导出五个 Sheet 的 Excel。
+- MESH 导入新增磁盘/数据库一致性 preflight 和 `BROKEN_SOURCE` 生命周期记录；人工删除 Profile/raw/parsed 目录后，重新导入同一正文可恢复原 session 并重建受管目录，不要求删除历史数据库。新导入直接写入当前 schema、parser 与 Identity revision。
+- 修复多来源删除并发触发 `duplicate column name: info_count`：catalog 使用 `mesh_catalog_v3_source_lifecycle` 有序事务迁移，批量删除合并为一个 `mesh_analysis_sources_delete` Job 并返回逐来源结果；页面不再提前移除未完成或失败来源。
+- MESH schema、parser、derived analysis 与 Identity projection 状态拆分展示；打开来源不再自动提交身份重建，身份刷新和 parser 重解析改为两个显式维护动作。身份 remap 记录数校验改用写入后去重事实，避免原日志重复行被误报为记录数变化。
+- MESH 海量图表查询新增 SQL 候选集、全局 Response Budget 和多级 LOD：点、事件、站点带、series 与 frame 共同受控，目标响应 4 MiB、16 MiB 为最终硬阈值。切换事件改为默认 100 条服务端分页和 SQL 筛选，轨旁未加载状态始终提供当前窗口加载动作，详情页取消整卡灰色遮罩。
 - 无人值守深度采集接入标准 Online MR fping 契约，按 CT/CW 独立确认运行态后再开始 SSH；工具、目标或启动失败时不会误报为正常采集，完成校验要求存在非空 fping samples。
 - 修复 Online MR 实时页面切换后的 MR 选择状态回退，并增强 iPerf debug 原始输出、生命周期写入、派生快照限频与 Windows 原子替换重试；快照或 callback 降级不再终止 iPerf 客户端。
 

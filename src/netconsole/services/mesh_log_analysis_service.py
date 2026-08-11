@@ -32,7 +32,6 @@ from netconsole.parsers.mesh_log_parser import MeshLogParser
 
 
 SUPPORTED_SUFFIXES = (".log", ".txt", ".gz")
-PARSER_VERSION = "meshlog_compact_v3_tagged_samples"
 COUNTER_KEYS = (
     "local_tx",
     "peer_tx",

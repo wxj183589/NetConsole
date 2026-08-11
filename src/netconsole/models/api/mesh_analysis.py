@@ -15,6 +15,22 @@ class MeshAnalysisWarningDTO(ApiModel):
     severity: str = "warning"
 
 
+class MeshMaintenanceStateDTO(ApiModel):
+    schema_current: str = "unknown"
+    schema_latest: str
+    schema_status: Literal["current", "outdated", "missing", "unreadable"]
+    parser_current: str = "unknown"
+    parser_latest: str
+    parser_status: Literal["current", "compatible_legacy", "outdated", "unknown"]
+    derived_analysis_current: str = "unknown"
+    derived_analysis_latest: str
+    derived_analysis_status: Literal["current", "outdated", "missing", "unreadable"]
+    identity_saved_revision: int = 0
+    identity_current_revision: int = 0
+    identity_status: str = "unknown"
+    allowed_actions: list[Literal["identity_projection_refresh", "parser_rebuild"]] = Field(default_factory=list)
+
+
 class MeshProfileDTO(ApiModel):
     mr_id: str
     display_name: str
@@ -258,6 +274,15 @@ class MeshSourceDeleteRequestDTO(ApiModel):
     explicit_confirmation: bool = False
 
 
+class MeshSourcesDeleteRequestDTO(MeshSourceDeleteRequestDTO):
+    session_ids: list[str] = Field(min_length=1, max_length=100)
+
+
+class MeshMaintenanceRequestDTO(ApiModel):
+    kind: Literal["identity_projection_refresh", "parser_rebuild"]
+    explicit_confirmation: bool = False
+
+
 class MeshAnalysisSummaryDTO(ApiModel):
     site_id: str
     index_status: str = "pending"
@@ -451,6 +476,7 @@ class MeshAnalysisSessionDetailDTO(ApiModel):
     available_radios: list[int] = Field(default_factory=list)
     warnings: list[MeshAnalysisWarningDTO] = Field(default_factory=list)
     sources: list[MeshDataSourceDTO] = Field(default_factory=list)
+    maintenance_state: MeshMaintenanceStateDTO
 
 
 class MeshLinkDetailDTO(ApiModel):
@@ -733,6 +759,30 @@ class MeshChartLocationSegmentDTO(ApiModel):
     mileage_end: str | None = None
 
 
+class MeshChartResponseBudgetDTO(ApiModel):
+    """图表响应的统一预算与实际返回量；旧调用方可忽略本字段。"""
+
+    target_payload_bytes: int = 4 * 1024 * 1024
+    hard_payload_bytes: int = 16 * 1024 * 1024
+    point_limit: int = 0
+    event_limit: int = 0
+    location_segment_limit: int = 0
+    series_limit: int = 0
+    source_rows: int = 0
+    selected_rows: int = 0
+    total_points: int = 0
+    returned_points: int = 0
+    total_events: int = 0
+    returned_events: int = 0
+    total_location_segments: int = 0
+    returned_location_segments: int = 0
+    total_series: int = 0
+    returned_series: int = 0
+    lod_level: int = 0
+    degraded: bool = False
+    degrade_reasons: list[str] = Field(default_factory=list)
+
+
 class MeshPathChartSummaryDTO(ApiModel):
     current_peer_mac: str | None = None
     current_peer_ap_name: str | None = None
@@ -779,6 +829,9 @@ class MeshPathChartDTO(ApiModel):
     total_points_in_range: int = 0
     payload_bytes: int = 0
     query_duration_ms: float = 0
+    response_budget: MeshChartResponseBudgetDTO = Field(
+        default_factory=MeshChartResponseBudgetDTO
+    )
 
 
 class MeshTracksideSignalPointDTO(ApiModel):
@@ -882,6 +935,9 @@ class MeshTracksideSignalChartDTO(ApiModel):
     include_standby: bool = True
     payload_bytes: int = 0
     query_duration_ms: float = 0
+    response_budget: MeshChartResponseBudgetDTO = Field(
+        default_factory=MeshChartResponseBudgetDTO
+    )
 
 
 class MeshLinkTimelineDTO(ApiModel):

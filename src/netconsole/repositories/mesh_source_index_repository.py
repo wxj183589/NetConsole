@@ -19,7 +19,12 @@ _SOURCE_COLUMNS = {
     "archive_sha256": "TEXT DEFAULT ''",
     "bundle_member_id": "TEXT DEFAULT ''",
     "bundle_member_sha256": "TEXT DEFAULT ''",
+    "raw_sha256": "TEXT DEFAULT ''",
+    "content_sha256": "TEXT DEFAULT ''",
+    "source_status": "TEXT DEFAULT ''",
     "file_exists": "INTEGER DEFAULT 1",
+    "deleted_at": "TEXT DEFAULT ''",
+    "delete_error": "TEXT DEFAULT ''",
     "file_status": "TEXT DEFAULT 'ok'",
     "parsed_deleted_at": "TEXT DEFAULT ''",
     "parsed_delete_error": "TEXT DEFAULT ''",
@@ -42,6 +47,10 @@ class MeshSourceIndexRepository:
             raise ValueError("MESH 来源索引不存在")
         with self._connect() as connection:
             initialize_sqlite_wal(connection)
+            # Serialize schema compatibility checks across worker processes.
+            # The second opener reads columns only after the first migration
+            # transaction commits, eliminating PRAGMA/ALTER TOCTOU races.
+            connection.execute("BEGIN IMMEDIATE")
             if not connection.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='source_files'"
             ).fetchone():
@@ -50,6 +59,63 @@ class MeshSourceIndexRepository:
             for name, definition in _SOURCE_COLUMNS.items():
                 if name not in columns:
                     connection.execute(f"ALTER TABLE source_files ADD COLUMN {name} {definition}")
+
+    def mark_source_broken(
+        self,
+        source_file_id: int,
+        *,
+        raw_exists: bool,
+        reason_code: str,
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE source_files
+                SET source_status = 'BROKEN_SOURCE',
+                    file_exists = ?,
+                    file_status = 'broken',
+                    error_message = ?
+                WHERE id = ?
+                """,
+                (
+                    int(raw_exists),
+                    str(reason_code or "BROKEN_SOURCE"),
+                    int(source_file_id),
+                ),
+            )
+
+    def restore_raw_archive(
+        self,
+        source_file_id: int,
+        *,
+        raw_path: Path,
+        raw_relative_path: str,
+        raw_sha256: str,
+        content_sha256: str,
+        archive_sha256: str = "",
+    ) -> None:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE source_files
+                SET archived_path = ?, archived_filename = ?, raw_relative_path = ?,
+                    raw_sha256 = ?, content_sha256 = ?, archive_sha256 = ?,
+                    file_exists = 1, file_status = 'ok', source_status = 'imported',
+                    error_message = '', deleted_at = '', delete_error = ''
+                WHERE id = ?
+                """,
+                (
+                    str(raw_path),
+                    raw_path.name,
+                    str(raw_relative_path or ""),
+                    str(raw_sha256 or ""),
+                    str(content_sha256 or ""),
+                    str(archive_sha256 or ""),
+                    int(source_file_id),
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("MESH 来源不存在")
 
     def get_source_file(self, source_file_id: int) -> dict[str, object] | None:
         with self._connect() as connection:

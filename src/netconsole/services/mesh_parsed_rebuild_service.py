@@ -10,7 +10,11 @@ from typing import Any, Callable, Iterable, Mapping
 from uuid import uuid4
 
 from netconsole.core.paths import PathResolver
-from netconsole.repositories.mesh_mr_repository import MeshMrRepository, SCHEMA_VERSION
+from netconsole.repositories.mesh_mr_repository import (
+    PARSER_VERSION,
+    SCHEMA_VERSION,
+    MeshMrRepository,
+)
 from netconsole.services.database_upgrade.coordinator import DatabaseUpgradeCoordinator
 from netconsole.services.database_upgrade.models import (
     DatabaseDescriptor,
@@ -412,7 +416,7 @@ class _MeshUpgradeAdapter:
         if result.get("valid") and missing_tables:
             result["valid"] = False
             result["error"] = f"MESH 必要表缺失：{', '.join(missing_tables)}"
-        if result.get("valid") and result.get("parser_version") != SCHEMA_VERSION:
+        if result.get("valid") and result.get("parser_version") != PARSER_VERSION:
             result["valid"] = False
             result["error"] = "MESH parser_version 不匹配"
         return result

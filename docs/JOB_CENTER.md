@@ -38,6 +38,8 @@ Job Center 是普通后台任务的统一调度层；Export Process 是共享同
 
 升级和恢复任务通过 `resource_keys` 与当前局点的 `mesh-import:<site>` 冲突控制联动，并在 Worker 内再获取数据库范围的跨进程维护锁。进度阶段固定覆盖维护锁、暂停写入、WAL checkpoint、已验证旧库备份、影子构建、影子校验、原子切换、smoke 和完成。任务 `COMPLETED` 只表示维护流程正常收口；缺失 raw 等可恢复问题通过结构化 warning/result 字段表达。
 
+MESH 来源维护使用 typed `mesh_analysis_maintenance` Job：`identity_projection_refresh` 只刷新 AP Identity 投影，`parser_rebuild` 才从 raw 重解析。页面 GET 不自动创建维护任务。多来源删除使用单个 `mesh_analysis_sources_delete` Job，最多 100 个 session，按顺序报告 `requested_count/success_count/failed_count/skipped_count/items`；单项 `already_missing` 不使整批失败，Renderer 只根据逐项终态更新来源列表。导入、重建、维护和删除共用 catalog/profile/source 资源键，防止同一 SQLite/来源并发写入。
+
 备份删除在提交后不可取消，避免目录处于部分删除状态；验证、恢复和删除同时持有备份级锁。恢复和删除必须由 GUI 二次确认，恢复前先为当前活动库创建新的安全备份，删除还要拒绝非终态 journal 正在引用的备份。历史归档整理与 MESH 导入互斥，避免把正在切换中的 `rollback` 文件误识别为历史文件。所有操作写入 `runtime/logs/database_upgrade_audit.jsonl`，任务中心清理不会删除数据库备份或升级 journal。
 
 文件管理下载仍以 `tasks.db` 为状态 SSOT。文件页面恢复时由 `TaskRepository` 在 SQL 层按

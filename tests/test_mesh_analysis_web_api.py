@@ -132,6 +132,8 @@ def test_mesh_analysis_queries_keep_analysis_files_unchanged(tmp_path: Path) -> 
         "/rail-transit/mesh-analysis/import-context/prepare",
         "/rail-transit/mesh-analysis/import-preview",
         "/rail-transit/mesh-analysis/profiles",
+        "/rail-transit/mesh-analysis/sources/batch-delete",
+        "/rail-transit/mesh-analysis/sessions/{session_id}/maintenance",
         "/rail-transit/mesh-analysis/sessions/{session_id}/rebuild",
         "/rail-transit/mesh-analysis/sessions/{session_id}/desktop-location",
         "/rail-transit/mesh-analysis/sessions/{session_id}/report",
@@ -225,6 +227,75 @@ def test_mesh_source_delete_api_submits_confirmed_scope_to_application_service(
             "explicit_confirmation": True,
         }
     ]
+
+
+def test_mesh_batch_delete_and_maintenance_apis_submit_one_typed_task(
+    tmp_path: Path,
+) -> None:
+    paths, session_id, _detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    paths.config_dir.mkdir(parents=True, exist_ok=True)
+    paths.app_config_path.write_text('{"current_site":"demo"}', encoding="utf-8")
+    app = create_app(paths=paths, frontend_dist=tmp_path / "missing-dist")
+    calls: list[dict[str, object]] = []
+
+    def start_mesh_sources_delete(
+        site_id: str,
+        session_ids: list[str],
+        **scope: object,
+    ) -> RailTransitTaskDTO:
+        calls.append(
+            {"action": "batch-delete", "site_id": site_id, "session_ids": session_ids, **scope}
+        )
+        return RailTransitTaskDTO(
+            task_id="mesh-batch-delete-api",
+            status="PENDING",
+            action="mesh_analysis_sources_delete",
+        )
+
+    def start_mesh_maintenance(
+        site_id: str,
+        source_id: str,
+        **params: object,
+    ) -> RailTransitTaskDTO:
+        calls.append(
+            {"action": "maintenance", "site_id": site_id, "source_id": source_id, **params}
+        )
+        return RailTransitTaskDTO(
+            task_id="mesh-maintenance-api",
+            status="PENDING",
+            action="mesh_analysis_maintenance",
+        )
+
+    app.state.rail_transit_web_application_service = SimpleNamespace(
+        start_mesh_sources_delete=start_mesh_sources_delete,
+        start_mesh_maintenance=start_mesh_maintenance,
+    )
+
+    with TestClient(app) as client:
+        batch = client.post(
+            "/api/rail-transit/mesh-analysis/sources/batch-delete",
+            json={
+                "session_ids": [session_id, session_id],
+                "delete_raw_archive": True,
+                "delete_parsed_data": True,
+                "delete_generated_reports": True,
+                "explicit_confirmation": True,
+            },
+        )
+        maintenance = client.post(
+            f"/api/rail-transit/mesh-analysis/sessions/{quote(session_id, safe='')}/maintenance",
+            json={
+                "kind": "identity_projection_refresh",
+                "explicit_confirmation": True,
+            },
+        )
+
+    assert batch.status_code == maintenance.status_code == 202
+    assert batch.json()["task_id"] == "mesh-batch-delete-api"
+    assert maintenance.json()["task_id"] == "mesh-maintenance-api"
+    assert calls[0]["session_ids"] == [session_id, session_id]
+    assert calls[1]["kind"] == "identity_projection_refresh"
+    assert calls[1]["explicit_confirmation"] is True
 
 
 def test_mesh_profile_api_lists_persisted_profiles_and_creates_real_profile(tmp_path: Path) -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gc
 import json
+import shutil
 import sqlite3
 from pathlib import Path
 from uuid import uuid4
@@ -235,6 +236,36 @@ def test_delete_complete_tolerates_missing_raw_and_parsed_files(
     assert result["missing_file_count"] == 2
     assert external.is_file()
     assert repository.get_source_file(int(source["id"])) is None
+
+
+def test_delete_reconciles_catalog_when_profile_directory_was_removed(
+    tmp_path: Path,
+) -> None:
+    paths, profile, _external, repository, source, session_id, result = (
+        _import_source(tmp_path)
+    )
+    profile_root = paths.mesh_mr_root("demo", profile.safe_folder_name)
+    del repository, result
+    gc.collect()
+    shutil.rmtree(profile_root)
+
+    result = MeshSourceDeleteService(paths).delete_source(
+        "demo",
+        session_id,
+        delete_raw_archive=True,
+        delete_parsed_data=True,
+        delete_generated_reports=True,
+    )
+
+    catalog = MeshCatalogRepository(paths.mesh_catalog_path("demo"))
+    assert result["central_residual_cleaned"] is True
+    assert result["already_deleted"] is False
+    assert catalog.get_session_index(session_id) is None
+    assert catalog.find_source_fingerprints(
+        content_sha256=str(source["content_sha256"]),
+        raw_sha256=str(source["raw_sha256"]),
+    ) == []
+    assert catalog.get_source_health(session_id)["health_status"] == "DELETED"
 
 
 def test_delete_parsed_tolerates_old_schema_index(tmp_path: Path) -> None:
