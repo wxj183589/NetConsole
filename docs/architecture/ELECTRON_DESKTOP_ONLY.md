@@ -59,7 +59,7 @@
 | `pnpm run build:main`（`apps/desktop_electron`） | PASS | typecheck、Main/Preload build 完成 |
 | `pnpm smoke:dev`（`apps/desktop_electron`） | PASS | Backend ready、Renderer 加载、`SHUTDOWN_STARTED -> DOWNLOADS_STOPPED -> BACKEND_STOPPED -> EXIT_REQUESTED -> EXIT_RETURNED`；存在既有 Element Plus `role` 警告 |
 
-Gate 0 Registry 事实：旧配置含 `89` 个 `web.*` ID。V2 允许合并重复/实现细节 Feature 和移除已证明无业务消费者的独立 Browser Production Feature；除此以外不得扩大 Customer 或缩减 Full 业务能力。
+Gate 0 Registry 事实：V1 Customer/Full Profile 各含 `89` 个 `web.*` 配置键；V1 Registry 实际有 `98` 个唯一 `web.*` ID，迁移表下方完整列出这 `98` 个 ID。V2 允许合并重复/实现细节 Feature 和移除已证明无业务消费者的独立 Browser Production Feature；除此以外不得扩大 Customer 或缩减 Full 业务能力。
 
 ## 阶段状态
 

@@ -50,7 +50,7 @@ Windows Server 2012 x64 兼容事实（2026-07-30）：主程序和独立 Agent 
 ## 仓库结构
 
 ```text
-apps/       独立应用：Agent、Electron Desktop 和 Web 前端
+apps/       独立应用：Agent、Electron Desktop 和 Desktop Renderer
 src/        可安装的 Python 包（src/netconsole）
 config/     开发和构建配置模板（含 feature profiles）
 docs/       项目文档和长期工程规则
