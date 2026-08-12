@@ -126,33 +126,33 @@
       "internal_only": false
     },
     "capability.devices.form_connection_test": {
-      "visible": false,
-      "enabled": false,
-      "client_package": false,
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
       "internal_only": false
     },
     "capability.devices.write": {
-      "visible": false,
-      "enabled": false,
-      "client_package": false,
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
       "internal_only": false
     },
     "capability.devices.collect": {
-      "visible": false,
-      "enabled": false,
-      "client_package": false,
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
       "internal_only": false
     },
     "capability.devices.import": {
-      "visible": false,
-      "enabled": false,
-      "client_package": false,
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
       "internal_only": false
     },
     "capability.devices.export": {
-      "visible": false,
-      "enabled": false,
-      "client_package": false,
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
       "internal_only": false
     },
     "capability.devices.desktop_actions": {
@@ -234,7 +234,7 @@
       "internal_only": false
     },
     "capability.network_tools.wireless_scan": {
-      "visible": true,
+      "visible": false,
       "enabled": true,
       "client_package": true,
       "internal_only": false
@@ -403,38 +403,38 @@
     },
     "rail.online_mr_collection": {
       "visible": false,
-      "enabled": false,
-      "client_package": false,
+      "enabled": true,
+      "client_package": true,
       "internal_only": false
     },
     "rail.online_mr_analysis": {
       "visible": false,
-      "enabled": false,
-      "client_package": false,
+      "enabled": true,
+      "client_package": true,
       "internal_only": false
     },
     "online_mr.analysis_link_details": {
       "visible": false,
-      "enabled": false,
-      "client_package": false,
+      "enabled": true,
+      "client_package": true,
       "internal_only": false
     },
     "online_mr.analysis_fping_1s": {
       "visible": false,
-      "enabled": false,
-      "client_package": false,
+      "enabled": true,
+      "client_package": true,
       "internal_only": false
     },
     "online_mr.collection_notes": {
       "visible": false,
-      "enabled": false,
-      "client_package": false,
+      "enabled": true,
+      "client_package": true,
       "internal_only": false
     },
     "online_mr.agent_packages": {
       "visible": false,
-      "enabled": false,
-      "client_package": false,
+      "enabled": true,
+      "client_package": true,
       "internal_only": false
     },
     "module.online_mr": {
@@ -505,8 +505,8 @@
     },
     "capability.mesh.report_export": {
       "visible": false,
-      "enabled": false,
-      "client_package": false,
+      "enabled": true,
+      "client_package": true,
       "internal_only": false
     },
     "capability.mesh.coverage_audit": {
@@ -541,8 +541,8 @@
     },
     "module.ground_unattended": {
       "visible": false,
-      "enabled": false,
-      "client_package": false,
+      "enabled": true,
+      "client_package": true,
       "internal_only": false
     },
     "capability.train_online.refresh": {
@@ -553,14 +553,14 @@
     },
     "capability.train_online.collect": {
       "visible": false,
-      "enabled": false,
-      "client_package": false,
+      "enabled": true,
+      "client_package": true,
       "internal_only": false
     },
     "capability.train_online.history_export": {
       "visible": false,
-      "enabled": false,
-      "client_package": false,
+      "enabled": true,
+      "client_package": true,
       "internal_only": false
     },
     "capability.train_online.mapping_write": {
@@ -661,8 +661,8 @@
     },
     "capability.rail_base_data.write": {
       "visible": false,
-      "enabled": false,
-      "client_package": false,
+      "enabled": true,
+      "client_package": true,
       "internal_only": false
     },
     "ac.trackside_ap_plan": {
@@ -769,8 +769,8 @@
     },
     "mesh.generate_report": {
       "visible": false,
-      "enabled": false,
-      "client_package": false,
+      "enabled": true,
+      "client_package": true,
       "internal_only": false
     },
     "system.disk_cleanup": {
