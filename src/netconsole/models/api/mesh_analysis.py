@@ -836,6 +836,10 @@ class MeshPathChartSummaryDTO(ApiModel):
     last_sample_time: str | None = None
     estimated_interval_seconds: float | None = None
     continuity_gap_seconds: float | None = None
+    display_gap_seconds: float | None = None
+    analysis_gap_count: int = 0
+    display_gap_count: int = 0
+    display_segment_count: int = 0
     suppressed_zero_sample_count: int = 0
     suppressed_zero_run_count: int = 0
     sustained_zero_run_count: int = 0

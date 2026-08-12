@@ -1014,7 +1014,7 @@ describe('Mesh analysis detail behavior', () => {
     await flushPromises()
 
     expect(mocks.getActivePath).toHaveBeenLastCalledWith(session.session_id, {
-      max_points: 600,
+      max_points: 2000,
       radio: 2,
       view_mode: 'overview',
       include_peer: true,
@@ -2459,7 +2459,7 @@ describe('Mesh analysis detail behavior', () => {
     await wrapper.findAll('button').find((button) => button.text() === '查看动态图')!.trigger('click')
     await flushPromises()
     expect(mocks.getActivePath).toHaveBeenLastCalledWith('session-locked', {
-      max_points: 600,
+      max_points: 2000,
       radio: 1,
       view_mode: 'overview',
       include_peer: false,
@@ -2468,7 +2468,7 @@ describe('Mesh analysis detail behavior', () => {
       include_station_band: true,
     }, expect.any(AbortSignal))
     expect(mocks.getTracksideSignal).toHaveBeenLastCalledWith('session-locked', {
-      max_points: 600,
+      max_points: 2000,
       radio: 1,
       time_from: undefined,
       time_to: undefined,
@@ -2485,7 +2485,7 @@ describe('Mesh analysis detail behavior', () => {
     await flushPromises()
 
     expect(mocks.getActivePath).toHaveBeenLastCalledWith('session-locked', {
-      max_points: 600,
+      max_points: 2000,
       radio: 1,
       time_from: chartViewport.start_time,
       time_to: chartViewport.end_time,
@@ -2716,7 +2716,7 @@ describe('Mesh analysis detail behavior', () => {
       await activeChart.vm.$emit('viewport-change', viewport)
       await vi.advanceTimersByTimeAsync(500)
       expect(mocks.getActivePath).toHaveBeenCalledWith(session.session_id, {
-        max_points: 600,
+        max_points: 2000,
         radio: 2,
         time_from: viewport.start_time,
         time_to: viewport.end_time,
@@ -2727,7 +2727,7 @@ describe('Mesh analysis detail behavior', () => {
         include_station_band: true,
       }, expect.any(AbortSignal))
       expect(mocks.getTracksideSignal).toHaveBeenCalledWith(session.session_id, {
-        max_points: 600,
+        max_points: 2000,
         radio: 2,
         time_from: viewport.start_time,
         time_to: viewport.end_time,
@@ -3115,7 +3115,7 @@ describe('Mesh analysis detail behavior', () => {
     await chartButton!.trigger('click')
     await flushPromises()
     expect(mocks.getActivePath).toHaveBeenCalledWith('session-1', {
-      max_points: 600,
+      max_points: 2000,
       radio: 1,
       view_mode: 'overview',
       include_peer: false,
@@ -3137,7 +3137,7 @@ describe('Mesh analysis detail behavior', () => {
     intersectionCallbacks[0]?.([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver)
     await flushPromises()
     expect(mocks.getTracksideSignal).toHaveBeenCalledWith('session-1', {
-      max_points: 600,
+      max_points: 2000,
       radio: 1,
       time_from: undefined,
       time_to: undefined,
@@ -3166,7 +3166,7 @@ describe('Mesh analysis detail behavior', () => {
     })
     await vi.waitFor(() => {
       expect(mocks.getActivePath).toHaveBeenCalledWith('session-1', {
-        max_points: 600,
+        max_points: 2000,
         radio: 1,
         time_from: zoomStart,
         time_to: zoomEnd,
@@ -3177,7 +3177,7 @@ describe('Mesh analysis detail behavior', () => {
         include_station_band: true,
       }, expect.any(AbortSignal))
       expect(mocks.getTracksideSignal).toHaveBeenCalledWith('session-1', {
-        max_points: 600,
+        max_points: 2000,
         radio: 1,
         time_from: zoomStart,
         time_to: zoomEnd,
@@ -3226,7 +3226,7 @@ describe('Mesh analysis detail behavior', () => {
     mocks.getTracksideSignal.mockClear()
     mocks.chartApplyViewport.mockClear()
     const targetPointSelect = wrapper.findAllComponents(selectStub).find((select) => (
-      select.findAll('[data-option-label]').some((option) => option.text() === '目标 1200 点')
+      select.findAll('[data-option-label]').some((option) => option.text() === '概览精度 1200 点')
     ))
     await targetPointSelect!.vm.$emit('update:modelValue', 1200)
     await targetPointSelect!.vm.$emit('change', 1200)
@@ -3342,7 +3342,7 @@ describe('Mesh analysis detail behavior', () => {
     expect(mocks.getActivePath).toHaveBeenCalledWith(
       'session-row-click',
       {
-        max_points: 600,
+        max_points: 2000,
         radio: 1,
         view_mode: 'overview',
         include_peer: false,
@@ -3424,7 +3424,7 @@ describe('Mesh analysis detail behavior', () => {
     await loadButton!.trigger('click')
     await flushPromises()
     expect(mocks.getTracksideSignal).toHaveBeenCalledWith(session.session_id, {
-      max_points: 600,
+      max_points: 2000,
       radio: 1,
       time_from: viewport.start_time,
       time_to: viewport.end_time,
@@ -3670,7 +3670,7 @@ describe('Mesh analysis detail behavior', () => {
     await flushPromises()
 
     expect(mocks.getActivePath).toHaveBeenCalledWith('session-link', {
-      max_points: 600,
+      max_points: 2000,
       radio: 1,
       view_mode: 'overview',
       include_peer: false,
@@ -3679,7 +3679,7 @@ describe('Mesh analysis detail behavior', () => {
       include_station_band: true,
     }, expect.any(AbortSignal))
     expect(mocks.getTracksideSignal).toHaveBeenCalledWith('session-link', {
-      max_points: 600,
+      max_points: 2000,
       radio: 1,
       time_from: undefined,
       time_to: undefined,

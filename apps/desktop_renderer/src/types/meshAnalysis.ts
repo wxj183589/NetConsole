@@ -274,6 +274,7 @@ export interface MeshPathChartSummary {
   current_peer_mac: string | null; current_peer_ap_name: string | null; current_radio: number | null
   earliest_sample_time?: string | null; latest_sample_time?: string | null; first_sample_time: string | null; last_sample_time: string | null; sample_count: number; active_count: number
   standby_context_count: number; triangle_link_point_count?: number; switch_count: number; estimated_interval_seconds: number | null; continuity_gap_seconds: number | null
+  display_gap_seconds?: number | null; analysis_gap_count?: number; display_gap_count?: number; display_segment_count?: number
   suppressed_zero_sample_count: number; suppressed_zero_run_count: number; sustained_zero_run_count: number
   sustained_zero_total_duration_ms: number; sustained_zero_longest_duration_ms: number
 }

@@ -999,6 +999,194 @@ def test_overview_gap_propagation_keeps_normal_downsample_connected(tmp_path: Pa
     assert chart.points[gap_index].gap_before is True
     assert chart.points[-1].gap_before is False
 
+def _overview_coverage_ratio(points: list[MeshChartPointDTO], first: datetime, last: datetime, bucket_count: int = 100) -> float:
+    if not points or last <= first:
+        return 0.0
+    span = (last - first).total_seconds()
+    if span <= 0:
+        return 0.0
+    seen: set[int] = set()
+    for point in points:
+        timestamp = datetime.fromisoformat(point.timestamp)
+        position = int((timestamp - first).total_seconds() / span * bucket_count)
+        seen.add(min(position, bucket_count - 1))
+    return len(seen) / bucket_count
+
+
+def test_overview_51324_samples_cover_full_day_time_buckets(tmp_path: Path) -> None:
+    paths, session_id, _detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    service = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())  # type: ignore[arg-type]
+    context = service._context("demo", session_id)
+    start = datetime(2026, 8, 6, 3, 30, 0)
+    rows = [
+        _active_chart_row(
+            index + 1,
+            (start + timedelta(seconds=index)).strftime("%Y-%m-%d %H:%M:%S.000"),
+            "000000001618",
+            local_rssi=-50 + index % 24,
+        )
+        for index in range(51_324)
+    ]
+    chart = service._chart_dto(
+        "demo",
+        context,
+        {
+            "peer_segment": {"rows": []},
+            "run_segment": {
+                "rows": rows,
+                "events": [],
+                "total_events": 8_490,
+                "estimated_interval_seconds": 1,
+                "continuity_gap_seconds": 5,
+            },
+        },
+        mode="active_path",
+        max_points=2_000,
+        time_from="",
+        time_to="",
+    )
+    assert chart.view_mode == "overview"
+    assert chart.returned_points <= 2_000
+    first = datetime.fromisoformat(chart.points[0].timestamp)
+    last = datetime.fromisoformat(chart.points[-1].timestamp)
+    assert _overview_coverage_ratio(chart.points, first, last) >= 0.95
+
+
+def test_overview_line_keeps_one_continuous_segment_with_switches_and_triangle(tmp_path: Path) -> None:
+    paths, session_id, _detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    service = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())  # type: ignore[arg-type]
+    context = service._context("demo", session_id)
+    start = datetime(2026, 8, 6, 8, 0, 0)
+    rows = [
+        _active_chart_row(
+            index + 1,
+            (start + timedelta(seconds=index)).strftime("%Y-%m-%d %H:%M:%S.000"),
+            "000000001618",
+            local_rssi=-40 + index % 20,
+            link_count=2 if index % 17 == 0 else 1,
+        )
+        for index in range(50_000)
+    ]
+    chart = service._chart_dto(
+        "demo",
+        context,
+        {
+            "peer_segment": {"rows": []},
+            "run_segment": {
+                "rows": rows,
+                "events": [],
+                "total_events": 8_000,
+                "estimated_interval_seconds": 1,
+                "continuity_gap_seconds": 5,
+            },
+        },
+        mode="active_path",
+        max_points=2_000,
+        time_from="",
+        time_to="",
+    )
+    assert chart.view_mode == "overview"
+    assert chart.returned_points <= 2_000
+    assert chart.summary.display_segment_count == 1
+    assert all(point.gap_before is False for point in chart.points)
+    assert chart.points[0].timestamp == rows[0]["sample_time"]
+    assert chart.points[-1].timestamp == rows[-1]["sample_time"]
+    first = datetime.fromisoformat(chart.points[0].timestamp)
+    last = datetime.fromisoformat(chart.points[-1].timestamp)
+    assert _overview_coverage_ratio(chart.points, first, last) >= 0.95
+
+
+def test_overview_real_no_active_gap_produces_two_segments_with_null(tmp_path: Path) -> None:
+    paths, session_id, _detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    service = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())  # type: ignore[arg-type]
+    context = service._context("demo", session_id)
+    rows = [
+        _active_chart_row(
+            index + 1,
+            f"2026-08-06 08:{index // 60:02d}:{index % 60:02d}.000",
+            "000000001618",
+            local_rssi=35,
+        )
+        for index in range(10 * 60)
+    ]
+    rows += [
+        _active_chart_row(
+            len(rows) + index + 1,
+            f"2026-08-06 08:{10 + index // 60:02d}:{index % 60:02d}.000",
+            "000000001618",
+            link_state="STANDBY",
+        )
+        for index in range(5 * 60)
+    ]
+    rows += [
+        _active_chart_row(
+            len(rows) + index + 1,
+            f"2026-08-06 08:{15 + index // 60:02d}:{index % 60:02d}.000",
+            "000000001618",
+            local_rssi=38,
+        )
+        for index in range(15 * 60)
+    ]
+    chart = service._chart_dto(
+        "demo",
+        context,
+        {
+            "peer_segment": {"rows": []},
+            "run_segment": {
+                "rows": rows,
+                "events": [],
+                "estimated_interval_seconds": 1,
+                "continuity_gap_seconds": 5,
+            },
+        },
+        mode="active_path",
+        max_points=2_000,
+        time_from="",
+        time_to="",
+    )
+    assert chart.view_mode == "overview"
+    assert chart.summary.display_segment_count == 2
+    assert any(point.local_rssi is None for point in chart.points)
+
+
+def test_overview_sampling_jitter_stays_one_segment_while_analysis_gap_counts(tmp_path: Path) -> None:
+    paths, session_id, _detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    service = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())  # type: ignore[arg-type]
+    context = service._context("demo", session_id)
+    start = datetime(2026, 8, 6, 8, 0, 0)
+    offsets = [0, 2, 4, 9, 11, 17, 19, 24]
+    rows = [
+        _active_chart_row(
+            index + 1,
+            (start + timedelta(seconds=offset)).strftime("%Y-%m-%d %H:%M:%S.000"),
+            "000000001618",
+            local_rssi=-40 + index,
+        )
+        for index, offset in enumerate(offsets)
+    ]
+    chart = service._chart_dto(
+        "demo",
+        context,
+        {
+            "peer_segment": {"rows": []},
+            "run_segment": {
+                "rows": rows,
+                "events": [],
+                "estimated_interval_seconds": 2,
+                "continuity_gap_seconds": 3,
+            },
+        },
+        mode="active_path",
+        max_points=100,
+        time_from="",
+        time_to="",
+    )
+    assert chart.view_mode == "overview"
+    assert chart.summary.analysis_gap_count > 0
+    assert chart.summary.display_gap_count == 0
+    assert chart.summary.display_segment_count == 1
+    assert all(point.gap_before is False for point in chart.points)
+
 
 def test_resolve_chart_view_mode_treats_full_range_explicit_timestamps_as_overview() -> None:
     first = "2026-08-06 03:30:00.000"

@@ -226,7 +226,7 @@ const rssiCompactSessionExpanded = ref(false)
 const showBusyPeer = ref(false)
 const showBusySwitchLines = ref(false)
 const showBusySwitchPoints = ref(false)
-const visiblePoints = ref(600)
+const visiblePoints = ref(2000)
 const chartRadio = ref<number | null>(null)
 const selectedSegment = ref<MeshActiveBuildOrder | null>(null)
 const allPeerVisits = ref(false)
@@ -4582,7 +4582,7 @@ function exportTimestamp(now = new Date()): string {
                 {{ rssiImmersive ? '退出沉浸' : '沉浸对比' }}
               </el-button>
               <el-select v-model="chartRadio" placeholder="选择 Radio" @change="changeChartRadio"><el-option v-for="radio in availableChartRadios" :key="radio" :label="`Radio ${radio}`" :value="radio" /></el-select>
-              <el-select v-model="visiblePoints" @change="reloadCurrentChart"><el-option label="目标 120 点" :value="120" /><el-option label="目标 300 点" :value="300" /><el-option label="目标 600 点" :value="600" /><el-option label="目标 1200 点" :value="1200" /><el-option label="目标 2000 点（关键点优先）" :value="2000" /></el-select>
+              <el-select v-model="visiblePoints" @change="reloadCurrentChart"><el-option label="概览精度 600 点" :value="600" /><el-option label="概览精度 1200 点" :value="1200" /><el-option label="概览精度 2000 点" :value="2000" /><el-option label="概览精度 4000 点（高精度）" :value="4000" /></el-select>
             </div>
             <div class="rssi-chart-toolbar__row">
               <el-checkbox v-model="showRssiPeer">显示 Peer 侧 RSSI</el-checkbox>
@@ -4694,7 +4694,7 @@ function exportTimestamp(now = new Date()): string {
             </RailRssiComparison>
           </div>
           <div v-if="selectedChartEvent" class="selected-switch"><span>切换：{{ selectedChartEvent.from_ap_name || selectedChartEvent.from_peer_mac || '—' }} → {{ selectedChartEvent.to_ap_name || selectedChartEvent.to_peer_mac || '—' }} · {{ selectedChartEvent.timestamp }}</span><el-button link type="primary" @click="showSwitchInBuildOrder">查看建链顺序</el-button></div>
-          <p class="hint">{{ chartData?.downsampled ? `主图从 ${chartData.total_points} 点按业务边界、趋势、普通代表三级预算返回 ${chartData.returned_points} 点（目标 ${chartData.requested_max_points}）` : `主图展示 ${chartData?.returned_points ?? 0} 个真实结构化样本` }}；轨旁图按完整 frame 返回主备链路，缩放后自动加载当前时间窗口。</p>
+          <p class="hint">{{ chartData?.downsampled ? `主图从 ${chartData.total_points} 点按全天时间桶折线骨架返回 ${chartData.returned_points} 点（概览精度 ${chartData.requested_max_points}）` : `主图展示 ${chartData?.returned_points ?? 0} 个真实结构化样本` }}；轨旁图按完整 frame 返回主备链路，缩放后自动加载当前时间窗口。</p>
         </div>
 
         <div v-show="activeTab === 'busy'" id="pane-busy" class="chart-pane">
@@ -4702,7 +4702,7 @@ function exportTimestamp(now = new Date()): string {
           <div class="chart-toolbar">
             <el-select v-if="busyMode === 'peer'" :model-value="selectedVisitValue" filterable placeholder="选择 AP / 经过时段" @change="selectSegmentByAnchor"><el-option v-if="selectedSegment" label="全部经过时段（各区段断开）" value="all-visits" /><el-option v-for="row in buildOrderOptions" :key="row.anchor_link_id" :label="`第 ${row.sequence} 次 · Radio ${row.local_radio ?? '—'} · ${row.peer_ap_name || row.active_peer_mac} · ${row.build_start_time} — ${row.build_end_time}`" :value="row.anchor_link_id" /></el-select>
             <el-select v-if="busyMode === 'active'" v-model="chartRadio" placeholder="选择 Radio" @change="changeChartRadio"><el-option v-for="radio in availableChartRadios" :key="radio" :label="`Radio ${radio}`" :value="radio" /></el-select>
-            <el-select v-model="visiblePoints" @change="reloadCurrentChart"><el-option label="目标 120 点" :value="120" /><el-option label="目标 300 点" :value="300" /><el-option label="目标 600 点" :value="600" /><el-option label="目标 1200 点" :value="1200" /><el-option label="目标 2000 点（逐秒优先）" :value="2000" /></el-select>
+            <el-select v-model="visiblePoints" @change="reloadCurrentChart"><el-option label="概览精度 600 点" :value="600" /><el-option label="概览精度 1200 点" :value="1200" /><el-option label="概览精度 2000 点" :value="2000" /><el-option label="概览精度 4000 点（高精度）" :value="4000" /></el-select>
             <el-checkbox v-model="showBusyPeer">显示 Peer 侧 Tx/Rx Busy</el-checkbox>
             <el-button :icon="showBusySwitchLines ? View : Hide" @click="showBusySwitchLines = !showBusySwitchLines">显示切换时刻线</el-button>
             <el-button :icon="showBusySwitchPoints ? View : Hide" @click="showBusySwitchPoints = !showBusySwitchPoints">显示切换节点</el-button>

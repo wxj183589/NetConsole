@@ -3142,6 +3142,8 @@ class MeshAnalysisQueryService:
         ap_map = self._ap_map(site_id)
         metadata = dict(chart.get("metadata") or {})
         continuity_gap = self._number(metadata.get("continuity_gap_seconds"))
+        estimated_interval = self._number(metadata.get("estimated_interval_seconds"))
+        display_gap_seconds = self._display_gap_seconds(continuity_gap, estimated_interval)
         point_rows: list[dict[str, Any]] = []
         previous_time: datetime | None = None
         previous_source = ""
@@ -3152,8 +3154,16 @@ class MeshAnalysisQueryService:
             radio = self._int(radios[index] if index < len(radios) else item.get("radio"))
             current_time = self._parse_time(timestamp)
             gap_before = bool(previous_source and source != previous_source)
+            analysis_gap_before = gap_before
             if previous_time is not None and current_time is not None and continuity_gap is not None:
-                gap_before = gap_before or (current_time - previous_time).total_seconds() > continuity_gap
+                analysis_gap_before = analysis_gap_before or (current_time - previous_time).total_seconds() > continuity_gap
+            if (
+                previous_time is not None
+                and current_time is not None
+                and display_gap_seconds is not None
+                and (current_time - previous_time).total_seconds() > display_gap_seconds
+            ):
+                gap_before = True
             row_for_segment = {
                 "source_file_id": source,
                 "sample_time": timestamp,
@@ -3164,6 +3174,7 @@ class MeshAnalysisQueryService:
             segment_sequence = self._int((segment or {}).get("sequence"))
             if mode == "peer_segment" and previous_segment_sequence is not None and segment_sequence != previous_segment_sequence:
                 gap_before = True
+                analysis_gap_before = True
             if mode == "active_path":
                 local_rssi = self._chart_array_number(active_series.get("active_local_rssi"), index)
                 peer_rssi = self._chart_array_number(active_peer_rssi, index)
@@ -3203,6 +3214,7 @@ class MeshAnalysisQueryService:
                     "is_switch": index in switch_indices,
                     "is_anomaly": index in no_active or index in multi_active,
                     "gap_before": gap_before,
+                    "analysis_gap_before": analysis_gap_before,
                     "backups": backups[index] if index < len(backups) else [],
                 }
             )
@@ -3223,7 +3235,7 @@ class MeshAnalysisQueryService:
             point_rows,
             timestamp_selector=lambda row: row.get("timestamp"),
             value_selector=lambda row: row.get("local_rssi"),
-            boundary_before_selector=lambda row: bool(row.get("gap_before")),
+            boundary_before_selector=lambda row: bool(row.get("analysis_gap_before")),
             fallback_sample_interval_ms=fallback_interval_ms,
             maximum_continuous_gap_ms=maximum_gap_ms,
         )
@@ -3231,7 +3243,7 @@ class MeshAnalysisQueryService:
             point_rows,
             timestamp_selector=lambda row: row.get("timestamp"),
             value_selector=lambda row: row.get("peer_rssi"),
-            boundary_before_selector=lambda row: bool(row.get("gap_before")),
+            boundary_before_selector=lambda row: bool(row.get("analysis_gap_before")),
             fallback_sample_interval_ms=fallback_interval_ms,
             maximum_continuous_gap_ms=maximum_gap_ms,
         )
@@ -3497,6 +3509,15 @@ class MeshAnalysisQueryService:
             downsample_warning = " ".join(
                 value for value in (downsample_warning, *degrade_reasons) if value
             )
+        analysis_gap_count = sum(1 for row in point_rows if row.get("analysis_gap_before"))
+        display_gap_count = sum(1 for row in point_rows if row.get("gap_before"))
+        display_segment_count = 0
+        previous_line_visible = False
+        for point in returned:
+            line_visible = point.local_rssi is not None
+            if line_visible and (not previous_line_visible or point.gap_before):
+                display_segment_count += 1
+            previous_line_visible = line_visible
         response_budget = MeshChartResponseBudgetDTO(
             target_payload_bytes=_TARGET_CHART_PAYLOAD_BYTES,
             hard_payload_bytes=_MAX_CHART_PAYLOAD_BYTES,
@@ -3554,6 +3575,10 @@ class MeshAnalysisQueryService:
                 last_sample_time=last_time,
                 estimated_interval_seconds=self._number(metadata.get("estimated_interval_seconds")),
                 continuity_gap_seconds=continuity_gap,
+                display_gap_seconds=display_gap_seconds,
+                analysis_gap_count=analysis_gap_count,
+                display_gap_count=display_gap_count,
+                display_segment_count=display_segment_count,
                 suppressed_zero_sample_count=zero_summary.suppressed_sample_count,
                 suppressed_zero_run_count=zero_summary.suppressed_run_count,
                 sustained_zero_run_count=zero_summary.sustained_run_count,
@@ -5187,55 +5212,127 @@ class MeshAnalysisQueryService:
         ordinary_indices: set[int],
         excluded_indices: set[int],
     ) -> tuple[list[int], str | None]:
-        """Reserve the Overview line budget for continuous RSSI trend coverage.
+        """Build the Overview main line from a time-bucket RSSI skeleton.
 
-        Switches and other annotations already have independent event/overlay
-        budgets.  They may enrich the returned line points, but cannot consume
-        the trend skeleton that makes the full-day RSSI graph readable.
+        The main RSSI line is produced only from timestamp + valid ACTIVE
+        local_rssi values: every time bucket keeps its first/last sample and an
+        evenly spread subset also keeps local min/max, so the full-day trend
+        reads as one continuous polyline.  Business annotations (switches,
+        triangles, anomalies) use the independent event/overlay budget and never
+        enter the line selection; real display gaps are propagated as null
+        breaks by _chart_gap_between, not by line-point selection.
         """
         total_points = len(points)
         if not total_points:
             return [], None
         limit = min(max(int(max_points), 2), total_points)
-        trend_budget = min(limit, max(2, math.ceil(limit * 0.70)))
-        trend_indices = cls._chart_segment_trend_indices(points, max_points=trend_budget)
-        selected = set(trend_indices)
-        if len(selected) < min(limit, total_points):
-            remaining = limit - len(selected)
-            critical_candidates = set(critical_indices) - selected
-            if len(critical_candidates) > remaining:
-                critical_candidates = cls._evenly_spaced_indices(
-                    critical_candidates,
-                    remaining,
-                    total_count=total_points,
-                )
-            selected.update(critical_candidates)
+        selected = cls._overview_line_bucket_indices(
+            points,
+            max_points=limit,
+            excluded_indices=excluded_indices,
+        )
         if len(selected) < limit:
             remaining = limit - len(selected)
             ordinary_candidates = set(ordinary_indices) - selected - set(excluded_indices)
-            selected.update(
-                cls._evenly_spaced_indices(
+            if len(ordinary_candidates) > remaining:
+                ordinary_candidates = cls._evenly_spaced_indices(
                     ordinary_candidates,
                     remaining,
                     total_count=total_points,
                 )
-            )
+            selected.update(ordinary_candidates)
         if len(selected) < limit:
             remaining = limit - len(selected)
-            selected.update(
-                cls._evenly_spaced_indices(
-                    set(range(total_points)) - selected - set(excluded_indices),
+            candidates = set(range(total_points)) - selected - set(excluded_indices)
+            if len(candidates) > remaining:
+                candidates = cls._evenly_spaced_indices(
+                    candidates,
                     remaining,
                     total_count=total_points,
                 )
-            )
+            selected.update(candidates)
         if len(selected) > limit:
             selected = cls._evenly_spaced_indices(selected, limit, total_count=total_points)
         warning = (
-            f"Overview 优先保留 {len(trend_indices)} 个 RSSI 趋势骨架点；"
-            f"其余 {max(limit - len(trend_indices), 0)} 个点用于代表性业务边界。"
+            f"Overview 按全天时间桶保留 {len(selected)} 个 RSSI 趋势折线点（首尾、峰谷）；"
+            "切换、三角链路、异常使用独立事件预算，不参与主线选点。"
         ) if total_points > limit else None
         return sorted(selected), warning
+
+    @classmethod
+    def _overview_line_bucket_indices(
+        cls,
+        points: list[dict[str, Any]],
+        *,
+        max_points: int,
+        excluded_indices: set[int] | None = None,
+    ) -> set[int]:
+        """Time-bucket min/max-preserving skeleton for the Overview RSSI line.
+
+        Only samples with a valid local_rssi participate.  Buckets are spread
+        over the first-to-last valid time span; every non-empty bucket keeps
+        first and last, then an evenly spread subset of buckets contributes
+        local min/max representatives up to the point budget.  The result is
+        time-ordered and never interpolates synthetic RSSI values.
+        """
+        excluded = excluded_indices or set()
+        valid: list[tuple[datetime, int]] = []
+        for index, point in enumerate(points):
+            if index in excluded:
+                continue
+            value = cls._number(point.get("local_rssi"))
+            timestamp = cls._parse_time(point.get("timestamp"))
+            if timestamp is None or value is None:
+                continue
+            valid.append((timestamp, index))
+        if not valid:
+            return set()
+        valid.sort(key=lambda item: item[0])
+        limit = min(max(int(max_points), 2), len(points))
+        if len(valid) <= limit:
+            return {index for _timestamp, index in valid}
+        bucket_count = max(2, min(limit // 3, 900))
+        start = valid[0][0]
+        end = valid[-1][0]
+        span_seconds = max((end - start).total_seconds(), 1.0)
+        buckets: list[list[int]] = [[] for _ in range(bucket_count)]
+        for timestamp, index in valid:
+            position = int((timestamp - start).total_seconds() / span_seconds * bucket_count)
+            buckets[min(position, bucket_count - 1)].append(index)
+        selected: set[int] = set()
+        for bucket in buckets:
+            if bucket:
+                selected.update((bucket[0], bucket[-1]))
+        remaining = limit - len(selected)
+        if remaining > 0:
+            minmax_candidates: list[int] = []
+            for bucket in buckets:
+                if len(bucket) < 3:
+                    continue
+                values = [(cls._number(points[index].get("local_rssi")), index) for index in bucket]
+                candidates = {min(values)[1], max(values)[1]} - selected
+                minmax_candidates.extend(sorted(candidates))
+            if len(minmax_candidates) > remaining:
+                minmax_candidates = cls._spread_sequence(minmax_candidates, remaining)
+            selected.update(minmax_candidates)
+        return selected
+
+    @staticmethod
+    def _display_gap_seconds(
+        continuity_gap: float | None,
+        estimated_interval: float | None,
+    ) -> float:
+        """Display continuity threshold derived from the source log cadence.
+
+        Analysis continuity (continuity_gap) stays untouched and keeps serving
+        link/switch diagnostics; the chart line only breaks on real holes, so
+        ordinary 2s/5s sampling jitter stays connected.  A hole longer than
+        10x the analysis gap (with a 60s floor) is a real display break;
+        NO_ACTIVE / missing RSSI samples break independently via nulls.
+        """
+        gap = continuity_gap or 0.0
+        interval = estimated_interval or 0.0
+        return max(gap * 10.0, interval * 20.0, 60.0)
 
     @staticmethod
     def _chart_gap_between(points: list[dict[str, Any]], previous_index: int, current_index: int) -> bool:
