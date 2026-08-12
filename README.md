@@ -1,175 +1,173 @@
 # NetConsole
 
-NetConsole 是面向网络工程现场维护与诊断的 Windows 桌面工具，当前重点覆盖 H3C/Comware 设备管理、AC/FIT AP、轨道交通无线与车内通信检测、网络测试、配置采集、文件管理和日志诊断。设备管理保留 SNMP v1/v2c 只读基础识别；不提供 SNMPv3、通用 MIB/OID 平台或 SNMP Center。
+简体中文 | [English](README_EN.md)
 
-当前版本：`v1.4.9`。版本唯一来源为 `src/netconsole/core/version.py`；本文只同步展示该事实源。`apps/desktop_renderer/package.json` 中的 `0.1.0` 仅是内部 workspace 包版本，不是产品版本。
+[![Quality gate](https://github.com/wxj183589/NetConsole/actions/workflows/quality-gate.yml/badge.svg)](https://github.com/wxj183589/NetConsole/actions/workflows/quality-gate.yml) [![Python 3.13](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)](https://www.python.org/) [![Windows desktop](https://img.shields.io/badge/desktop-Windows-0078D6?logo=windows&logoColor=white)](https://github.com/wxj183589/NetConsole)
 
-Windows Server 2012 x64 兼容事实（2026-07-30）：主程序和独立 Agent 均有用户现场运行确认，证据等级为 `USER_FIELD_CONFIRMED`；仓库没有隔离 Windows Server 2012 自动化 VM 记录，自动化证据记为 `AUTOMATION_NOT_RECORDED`。这两项事实不等同于正式安装包 GUI 验收通过，产品不增加按操作系统阻断启动的逻辑。
+**轨道交通 WLAN 工程诊断与数据分析工具**
 
-局点、新建/切换、全局数据根迁移、备份恢复和数据包导入导出由 Python Core 统一管理。设置页支持完整迁移包、脱敏分享包、现场采集包和采集回传包；`full_migration` 是无需迁移密码的普通 ZIP 完整包，直接包含局点数据库及设备用户名、密码、SNMP community 和隧道凭据，界面会明确警告只能保存到可信位置。只有脱敏/现场/回传及旧无凭据包会清除秘密并要求重新录入。回传包按稳定局点 UUID、文件 SHA-256 和可识别记录 UUID 预检合并，绝不以局点名称或本地自增 ID 覆盖数据。Electron 只通过版本化 API 和白名单 Native Bridge 操作。完整约束见 [局点与数据存储](docs/storage/README.md)。
+NetConsole 是一个以轨道交通 WLAN 无线通信质量为核心的开源工程工具。项目主要面向地铁和市域铁路的 PIS WLAN、CBTC WLAN 相关通信子系统，围绕线路实施、开局调试、现场采集、实时诊断、历史分析和持续优化建设完整数据链路；当前重点覆盖采集、实时/离线诊断和无人值守。
 
-## 仓库地址
+**在问题消失之前，先把关键数据留下来。**
 
-| 仓库 | Git 推送地址 | 浏览器地址 |
-| --- | --- | --- |
-| GitHub | `git@github.com:wxj183589/NetConsole.git` | `https://github.com/wxj183589/NetConsole.git` |
-| NAS | `ssh://git@nas.love-ok.com:3022/mengyou/NetConsole.git` | `https://nas.love-ok.com:3021/mengyou/NetConsole.git` |
+轨道交通无线故障经常是瞬态的。等工程人员介入时，AP、AC、交换机、车载设备和链路在故障时间点的状态可能已经改变，日志也可能被覆盖。NetConsole 关注的不是单纯增加设备操作入口，而是尽可能持续地采集、保存、关联和分析故障前后的有效证据。
 
-关于页只使用浏览器地址，Git 操作只使用 SSH 推送地址，二者不得混用。
+> NetConsole 可以分析 PIS/CBTC WLAN 的通信质量，但不参与 CBTC 安全控制逻辑。
 
-当前开发技术栈为 Python 3.13、SQLite、Netmiko、openpyxl、FastAPI、Pydantic、Vue 3、TypeScript、Vite、Electron、Element Plus、Pinia、Vue Router 和 ECharts。`apps/desktop_electron` 是唯一正式桌面产品，复用 FastAPI 与唯一 Vue Renderer；源码态 Browser 仅用于开发、联调和诊断。Qt/PySide6/QFluentWidgets 源码、运行时和回退入口已经退出活动仓库，历史 Qt 终版只作为仓库外归档成果和旧功能事实记录。Python 依赖按 runtime/test/build/dev 分层并由 `constraints.txt` 锁定；Vue 与 Electron 分别以各自 `apps/*/package.json` 和 `pnpm-lock.yaml` 为准。
+当前状态：持续开发；正式桌面产品面向 Windows。
 
-长期产品架构已确定为 **Python Core + FastAPI 永久业务层、Vue 永久主界面、Electron 唯一桌面外壳**。Electron 已完成安全宿主以及设备、AC/FIT-AP、轨交、配置、文件、网络工具、工具集、命令参考、系统设置、日志维护等代码闭环，但真实设备和桌面人工验收仍按模块标记为 `REAL_DEVICE_PENDING` 或 `IMPLEMENTED_UNVERIFIED`。工具集只在 Electron Desktop 注册用户自备 EXE，使用独立 userData Store 与仅工具 ID 的安全启动链，不进入局点数据或 Python Backend。浏览器式工作区、多窗口和 Windows 通知区域驻留已接入；签名、升级和最终 Windows 安装包人工验收仍属于后续门槛。
+## 核心模型
 
-## 工作区与通知区域
-
-- 主窗口和附加工作区窗口都使用同一 Vue Renderer 与受管 Python Backend；标签支持切换、关闭、固定，以及路由策略明确允许的复制和“在新窗口打开”，不会为标签或窗口再启动 Backend。标签清单、顺序、当前路由和组件缓存只存在于当前进程；冷启动固定为单个 Dashboard，旧 `workspace-layout.json`、`netconsole.workspace.v1` 和 `netconsole.web.open-page-tabs` 仅做兼容清理，不恢复业务标签。
-- 每次 Electron 进程创建主窗口时都忽略上次的位置、尺寸和窗口状态，按启动时的 Windows 主显示器工作区定位并以保留系统标题栏的最大化窗口显示。运行期仍可还原、移动、缩放或最小化；隐藏到托盘后恢复的是当前窗口状态，只有完整退出或重启进程才重新应用启动默认值。
-- 默认关闭主窗口时仅隐藏到 Windows 右下角通知区域。后台任务和 Backend 继续运行；可双击托盘图标或在菜单中选择“打开 NetConsole”，也可从菜单新建工作区窗口或打开唯一任务中心窗口。托盘显示 Registry 的局点显示名称，并提供“快速切换局点”；该入口只将请求带回系统设置，仍复用确认、未保存设置/活动任务预检、工作区快照与 Backend 重启校验，绝不在托盘中绕过这些保护。
-- 托盘菜单中的“退出 NetConsole”是完整退出入口，会丢弃当前工作区会话、保留用户明确保存的界面偏好、关闭受管窗口和停止 Backend。关闭“关闭主窗口后驻留通知区域”设置后，最后一个普通业务窗口关闭时恢复受控退出。
-- 浏览器开发模式仍可使用多标签工作区，但没有 Electron 原生多窗口与托盘能力。托盘图标复用 `resources/branding/netconsole.ico`，打包时复制到 Electron `extraResources/branding`。
-
-## 当前能力
-
-| 一级模块 | Feature key | 主要能力 |
-| --- | --- | --- |
-| 设备管理 | `module.devices` | 设备、分组、连接测试、批量采集、CSV 与 SecureCRT 导出 |
-| AC 管理 | `module.ac` | FIT-AP 资源、扩展、光衰、受控固化/远程登录动作、FIT-AP 资源 XLSX 和 OmniPeek 名称表 |
-| 轨道交通 | `module.rail_transit` | 基础资料、列车在线、独立地面无人值守、车载 MR、Online MR、MR/Mesh 离线分析、轨旁 AP、全列车车内通信检测与点表 |
-| 配置采集 | `module.config_collection` | 配置快照、勾选/左右对比、批量采集和差异导出 |
-| 文件管理 | `module.file_management` | 受控 SFTP 浏览、持久下载队列、MESH 日志归档和本地文件管理 |
-| 工具集 | `module.tools` | 流量测试、连通性检测、无线扫描、网络测试组件和第三方 EXE 管理 |
-| 命令参考 | `module.command_reference` | 命令、参数、解析器与消费者索引 |
-| 日志 | `module.logs` | 应用日志查看与导出 |
-| 系统设置 | `module.system_settings` | 局点、主题、工具路径、磁盘清理和版本信息 |
-
-模块、页面、Tab、动作和按钮的真实启用状态以 `src/netconsole/core/feature_registry.py` 为准。新增用户可见能力必须先登记 Feature key，再由页面通过 `FeatureGate` 控制。入口实现、自动化、Electron 人工、真实设备/局点和正式包五个验收维度见[迁移矩阵事实维度表](docs/architecture/MIGRATION_MATRIX.md#事实维度验收矩阵)；`FeatureStatus` 和 Navigation `parity_state` 不替代这些验收结论。
-
-源码开发态以“版本与功能交付”作为 Full/Customer 模板的唯一功能矩阵入口；系统设置只展示当前版本、基础模板、会话状态和历史覆盖数量。模板草稿可进入当前进程预览，但不写运行时覆盖，退出预览或重启后恢复；历史 `feature_flags.local.json` 仅保留显式清理兼容。正式 Electron 包采用不可编辑的固定生产功能集，不显示或调用模板配置入口。打包基线缺失或损坏时回退到 Feature Registry 的稳定生产默认，而不是关闭全部功能。系统设置、局点与数据管理、任务中心和运行日志属于正式包核心能力，不依赖 customer profile 或本地 override；`client_package` 只表达构建选择/发布元数据，不作为正式运行时的通用权限开关。Full/Customer 模板、客户交付三态和构建前依赖门禁见[完整版与客户版打包](docs/FULL_AND_CUSTOMER_PACKAGING.md)。
-
-## 仓库结构
+无线是问题中心，设备管理和轨道交通基础资料是数据底座，实时与无人值守采集负责留下证据，关联建模和分析负责把证据变成结论。
 
 ```text
-apps/       独立应用：Agent、Electron Desktop 和 Desktop Renderer
-src/        可安装的 Python 包（src/netconsole）
-config/     开发和构建配置模板（含 feature profiles）
-docs/       项目文档和长期工程规则
-resources/  版本化静态资源、命令参考和随包运行工具
-scripts/    build、dev、maintenance 脚本
-tests/      自动化测试和脱敏 fixtures
-tools/      独立开发、诊断、维护和协议分析工具，不作为运行时工具来源
+Infrastructure data      Engineering context       Operational data
+设备、AC、AP、交换机、接口   线路、车站、区间、点位、列车   MESH/MR、RSSI、漫游、时延、日志
+IP、VLAN、拓扑与配置         AP 规划、车载资料、业务关系      实时采集、测试与无人值守归档
+                \                 |                 /
+                 \                |                /
+                  Correlation and modeling
+                               |
+              Wireless diagnostics and quality analysis
+                               |
+                         Network optimization
 ```
 
-根目录只保留项目级配置、说明、许可证、`main.py` 兼容入口和上述白名单目录。完整规则见 [仓库目录规范](docs/development/repository-layout.md)。
+设备发现告诉 NetConsole 一个对象在技术上是什么；工程基础资料补充它在线路业务中代表什么。只有把两者与运行数据放在同一上下文中，才能回答“这是哪个 AP、位于哪个区间、连接哪台交换机、切换是否合理、历史上是否重复发生”等现场问题。
 
-Agent 子项目只保留 Go/Python/Web 源码、构建脚本和 `apps/agent/resources/config/` 下的示例配置；开发与交付运行数据统一位于数据根的 `agents/local/`，构建输出在 `dist/agent/`。fping/iPerf 的版本化源码唯一位于 `resources/tools/`，Agent 交付包内才复制到 `tools/windows-x64/`。
+## 主要能力
+
+### 1. 轨道交通工程基础资料
+
+- 线路、车站、区间、方向和轨旁 AP 规划
+- 车载设备、列车与通信点表
+- AP 点位、设备角色、IP/VLAN 和工程关系
+- 可校验、可预览、可回滚的基础资料导入与编辑
+
+### 2. 网络与 WLAN 基础设施
+
+- 网络设备、分组、地址和连接信息管理
+- H3C/Comware SSH 采集与 AC/FIT-AP 资源管理
+- 交换机、接口、VLAN、链路和配置快照上下文
+- SNMP v1/v2c 只读基础识别；不提供 SNMPv3、通用 MIB/OID 平台或 SNMP Center
+- 轨旁 AP、LLDP、端口和光衰信息（以设备型号和数据来源支持范围为准）
+
+### 3. 无线运行数据采集
+
+- Online MR 与车载无线数据采集
+- MESH/MR 原始日志导入、解析、时间轴和报告
+- RSSI、Peer、Radio、关联/漫游与 AP Identity 关联
+- 地面无人值守采集、fping、Syslog/WMESH 原始数据和归档
+- 原始文件、会话、任务和导出 Artifact 的生命周期管理
+
+### 4. 诊断与工程测试
+
+- 无线事件与线路、AP、列车、设备、时间的关联分析
+- 车内通信检测与跨 TC 检查
+- Ping、吞吐测试、Traffic、无线扫描和现场网络工具
+- 配置采集、文本/快照对比、受控 SFTP 文件下载
+- 后台 Job、取消、进度、日志和 XLSX/CSV/PDF 等导出流程
+
+通用的 SSH、SNMP、设备管理、配置采集、Ping、吞吐测试、文件管理和 Windows Go Agent 能力，都是无线诊断的数据采集与工程基础设施，也可以作为更广泛现场网络工程的工具集使用。
 
 ## 架构摘要
 
 ```mermaid
 flowchart LR
-    E["Electron Main / Preload"] --> CORE["受管 Python Backend"]
-    E --> VUE["唯一 Vue Renderer"]
-    DEV["显式 server\n开发诊断"] -.-> CORE
-    CORE --> API["FastAPI Task / Agent / Traffic API + WebSocket"]
-    VUE --> API
-    API --> SVC
-    SVC --> REPO["Repositories"]
-    REPO --> DB["SQLite / 文件数据"]
-    SVC --> JOB["Background Job Process"]
-    SVC --> EXP["Export Process"]
-    JOB --> REG["Job Registry / Domain Handlers"]
-    EXP --> WRITER["Export Handlers"]
-    REG --> SVC
-    WRITER --> REPO
-    API --> CTRL["AgentControllerService"]
-    CTRL --> AGENT["Windows Go Agent HTTP API"]
-    AGENT --> AGENTDATA["Agent tasks / raw / packages"]
-    SVC --> TRAFFIC["TrafficTestApplicationService"]
-    TRAFFIC --> JOB
-    TRAFFIC --> CTRL
+    E["Electron Main / Preload"] --> V["Vue Renderer"]
+    E --> B["受管 Python Backend / FastAPI"]
+    V --> B
+    B --> S["Application Services"]
+    S --> R["SQLite / 文件数据"]
+    S --> J["Background Jobs / Export Processes"]
+    S --> D["SSH / SNMP / Agent / 设备适配器"]
 ```
 
-- UI 只负责交互和轻量展示；预计超过 300 ms 的 IO、CPU 或网络工作进入后台任务。
-- 正式桌面后台任务走 `Vue/FastAPI Application Service -> LocalProcessAdapter -> TaskApplicationService/TaskRuntime -> background_worker -> JobRegistry -> handler`。
-- 任务快照和事件写入每局点 `tasks.db`；Vue 任务中心支持列表、详情、日志和协作取消。`COMPLETED` 只表示调度生命周期结束，不保证所有业务目标成功；批量任务还需读取结构化业务结果。当前轨旁 AP 光衰任务已在详情中区分部分成功，但列表级通用警告聚合仍是已知缺口。
-- Agent 配置与运行状态分别写入每局点 `agents.db`；Token 仅保存在当前 Python 进程内，REST/WebSocket 不返回凭据。
-- 所有正式导出走独立 Export Process。Electron 主动导出先由用户选择最终路径，取消不创建任务；Artifact 完成后使用 Main 授权目标、大小和 SHA-256 写入同目录临时文件并安全替换。没有会话绑定的历史 Artifact 继续由用户点击后另存。
-- 可再次导入的 XLSX/CSV/JSON/ZIP 正式导出写入 NetConsole 文件契约；导入入口在业务层统一校验扩展名、模块、类型、schema、必要结构和非空数据，不能只依赖文件选择框过滤。
-- `JobRegistry` 按领域 handler 模块分区；能力集合由测试校验，不再在文档和测试中绑定易漂移的任务总数。多数既有领域 handler 仍通过 `legacy_tasks.py` 薄适配，迁移尚未完成。
-- 设备批量连接测试和批量详情采集使用永久后台 Worker/进程链；是否已由统一 Job Center 接管以生产 handler 和测试为准。
-- AP Identity 已由局点级 `devices.db` 统一索引接管 MESH、Ground、Online/Vehicle MR 和 Wireless 的高频 Peer/BSSID 解析；AC Mesh-Link、基础资料/轨旁业务与报告读取仍按消费者审计分阶段收口。普通查询只读，来源写入后显式重建，无 AC 时基础资料仍可独立完成 H3C Radio 反查。
-- Windows Go Agent 仍是独立进程和数据根；`AgentTrafficSupervisor` 已把远端 iPerf/fping 状态、事件和结果映射到 Task Center，Online MR 也提供默认关闭的单 Agent start/status/normal stop、自动包下载和安全导入。Token 始终留在 Controller 进程内，不提供远端强停、包删除或任意命令。
+- Electron 是正式 Windows 桌面外壳，Vue 是唯一主界面。
+- Python Core 和 FastAPI 运行时（runtime）承载业务、数据、设备适配器与任务编排。
+- 网络、磁盘、解析和导出等长任务进入后台 Job 或独立 Export Process。
+- Windows Go Agent 是独立的可选采集进程；Linux/CentOS 离线部署、主动注册和多 Controller 不属于当前交付范围。
 
-完整说明见 [当前架构](docs/ARCHITECTURE.md)、[永久架构与后续演进](docs/ARCHITECTURE_NEXT.md)、[Electron Desktop](docs/ELECTRON_DESKTOP.md)、[最终迁移矩阵](docs/architecture/MIGRATION_MATRIX.md)、[架构一致性报告](docs/archive/migrations/electron-only/ARCHITECTURE_COMPLIANCE_REPORT.md)、[Job Center](docs/JOB_CENTER.md)、[导出进程规范](docs/export_process_policy.md) 和 [重构地图](docs/REFACTOR_MAP.md)。
+详细说明见 [当前架构](docs/ARCHITECTURE.md)、[Electron Desktop](docs/ELECTRON_DESKTOP.md)、[Agent](docs/AGENT.md) 和 [仓库目录规范](docs/development/repository-layout.md)。
 
-## 开发与运行
+## 项目状态
 
-开发前先阅读：
+NetConsole 处于持续开发阶段。当前正式桌面目标是 Windows，代码主线为 Python Core + FastAPI + Vue + Electron；模块自动化、真实设备/局点验证和最终安装包验收可能处于不同阶段，不能仅依据源码入口推断为生产就绪。
 
-1. [项目文档索引](docs/README.md)
-2. [下一阶段开发指南](docs/DEVELOPMENT_GUIDE.md)
-3. [开发规则](docs/DEVELOPMENT_RULES.md)
-4. [Change Impact Framework](docs/development/CHANGE_IMPACT_FRAMEWORK.md)
-5. [下一代架构](docs/ARCHITECTURE_NEXT.md)
-6. [当前架构](docs/ARCHITECTURE.md)
-7. [数据与路径](docs/DATA_LAYOUT.md)
-8. 与改动领域对应的专题文档
+当前产品版本以 [`src/netconsole/core/version.py`](src/netconsole/core/version.py) 为唯一事实源。
 
-优先使用仓库虚拟环境：
+- 已有：轨道交通基础资料、设备与 AC/FIT-AP 管理、Online MR、MESH/MR 离线分析、地面无人值守、AP Identity、网络测试、任务中心和数据导出等代码与自动化测试。
+- 仍在演进：跨厂商采集覆盖、全线路历史数据标准化、质量评估模型、异常识别和面向线路的可视化。
+- 尚无：可供公众直接下载的稳定 Release 安装包。构建和打包入口见 [构建与发布](docs/BUILD_AND_RELEASE.md)。
+
+## Roadmap
+
+主路线围绕无线通信质量的数据闭环推进，而不是简单增加菜单数量：
+
+```text
+当前       采集 → 实时诊断 → MESH/MR 分析 → 无人值守
+下一阶段   数据标准化 → 线路/设备/AP/列车建模 → 全量历史分析
+长期       自动质量评估 → 异常识别 → 动态线路可视化
+           → 优化前后对比 → 数据驱动优化
+```
+
+Infrastructure & Network Tooling 路线会持续补充更多厂商适配、交换机和链路诊断、配置分析、Agent、文件管理与数据导入导出，但这些扩展仍服务于更完整的无线诊断上下文。
+
+## 使用方式
+
+仓库当前没有公开稳定安装包，普通用户不应把历史 Git tag、CI Artifact 或源码目录视为正式发行版。需要评估项目时，请按下方开发流程从源码运行；需要生成 Windows 安装包时，请严格使用[构建与发布](docs/BUILD_AND_RELEASE.md)中的锁定依赖和打包门禁。
+
+## 开发运行
+
+当前开发与构建目标为 Windows 11、CPython 3.13、Node.js 24 和 pnpm 11。下面的快速启动使用隔离测试根，不读取或修改正式业务数据。普通 `pnpm dev` 才使用持久化数据根，其规则见 [数据根](docs/storage/DATA_ROOT.md)。不要把运行数据、凭据或真实现场日志放入仓库。
 
 ```powershell
+# 1. 创建项目虚拟环境，并安装锁定的开发依赖
+py -3.13 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -c constraints.txt -r requirements-dev.txt
 .\.venv\Scripts\python.exe -m pip install -e . --no-deps
-.\.venv\Scripts\python.exe main.py
-.\.venv\Scripts\python.exe main.py --mode server --host 127.0.0.1 --port 8000
-.\.venv\Scripts\python.exe -m netconsole.backend.api.main
-.\.venv\Scripts\python.exe -m pytest
 
-cd apps\desktop_electron
-pnpm dev
+# 2. 安装两个前端工作区的锁定依赖
+cd apps\desktop_renderer
+pnpm install --frozen-lockfile
+cd ..\desktop_electron
+pnpm install --frozen-lockfile
+
+# 3. 使用隔离测试数据启动 Electron 开发链
+pnpm dev:codex
 ```
 
-无参数 `main.py` 是源码态 PyCharm/命令行的 Electron Desktop 入口：它使用项目本地 Electron 运行时执行同一 `scripts/dev.mjs` 编排链，不恢复 Qt，也不单独启动第二套 FastAPI。依赖已安装时不要求全局 `pnpm` 在 `PATH` 中；缺少 `apps/desktop_electron` 或 `apps/desktop_renderer` 的 `node_modules` 时会明确提示先安装锁定依赖。`--mode server` 仅保留为回环本机开发诊断，独立浏览器 GUI 启动模式已删除。
-
-前端首次运行或依赖变化后执行：
+`pnpm dev:codex` 和 `pnpm smoke:dev` 使用 `D:\NetConsoleTestData\<run-id>` 下的临时测试根，不读取正式业务根。需要持久保存开发数据且机器已配置数据根时，才使用 `pnpm dev`。Python 定向测试：
 
 ```powershell
-cd apps/desktop_renderer
-pnpm install
-pnpm test
-pnpm build
+.\.venv\Scripts\python.exe -m pytest tests\test_web_architecture.py tests\test_mesh_analysis_web_api.py -q
 ```
 
-Windows/PowerShell 涉及中文、日志、设备回显或路径时，先切换 UTF-8；源码和 Markdown 统一使用 UTF-8。读取 H3C 回显、MIB 和历史日志时，按 `utf-8-sig -> utf-8 -> gb18030 -> gbk` 顺序探测，不得因终端显示乱码直接改写业务数据。
+完整开发、测试和打包要求分别见 [开发指南](docs/DEVELOPMENT_GUIDE.md)、[测试基线](docs/TEST_BASELINE.md) 和 [构建与发布](docs/BUILD_AND_RELEASE.md)。
 
-## 数据与发布边界
+## 文档导航
 
-- Windows NSIS 安装向导分别选择程序安装目录与业务数据目录；业务数据根由 `HKLM\Software\NetConsole\DataRoot` 持久化，当前机器配置为 `D:\NetConsoleData`。程序升级、修复和普通卸载只处理程序文件，不会删除该数据根。源码开发、Electron 开发、Python Backend、打包验证与正式安装包都读取同一机器配置；只有 `RuntimeMode.TEST` 可使用显式的 `D:\NetConsoleTestData\<run-id>`。不会依赖当前工作目录、LocalAppData、用户目录或源码目录；仓库 `.local/` 和根 `data/` 仅作为历史迁移源。
-- 主应用数据库（尤其设备管理和 FIT AP 资源）默认保持兼容；会话解析库与可重建分析表可在明确任务范围内重构。
-- SNMP Center、通用 MIB/OID 字典与无线勘测已从活动产品、源码资源和发布依赖中删除；历史用户数据库与文件不做破坏性清理。设备管理只保留 SNMP v1/v2c 只读基础识别，网络工具无线扫描仍是独立能力。
-- `resources/tools/` 是主程序和 Agent 随包运行工具的唯一源码来源；构建后交付包内统一使用 `tools/windows-x64/{fping,iperf3}`。根 `tools/` 不再保存 fping/iPerf 运行依赖，IPOP 仅为用户自备外部工具，任何正式包都不得携带 `IPOP.EXE`。
-- 历史 Qt 发布包只作为仓库外归档成果，不进入当前构建。Electron-only 安装包使用无 Qt Backend bundle，并通过锁定依赖、真实 PyInstaller 制品清单、许可证、SBOM 和本地工具资源 Guard。
-- 构建入口、版本来源、外部工具和 Windows 验证要求见 [构建与发布](docs/BUILD_AND_RELEASE.md)。
-
-## 重点专题
-
+- [项目文档索引](docs/README.md)
+- [轨道交通无线业务模型](docs/RAIL_TRANSIT_WIRELESS.md)
+- [轨道交通基础资料](docs/RAIL_TRANSIT_BASE_DATA.md)
 - [Online MR 实时采集](docs/ONLINE_MR_COLLECTION.md)
-- [Windows 独立 Go Agent](docs/AGENT.md)
-- [Agent Controller](docs/AGENT_CONTROLLER.md)
-- [Agent 流量测试协议](docs/AGENT_TRAFFIC_API.md)
-- [统一流量测试架构](docs/TRAFFIC_TEST_ARCHITECTURE.md)
-- [MR/Mesh 日志分析规则](docs/mr_mesh_log_analysis_rules.md)
+- [MESH/MR 日志分析 Web](docs/MESH_ANALYSIS_WEB.md)
+- [地面无人值守](docs/GROUND_UNATTENDED.md)
 - [AC/FIT-AP 管理](docs/AC_MANAGEMENT.md)
-- [车内通信检测](docs/TRAIN_COMMUNICATION_MONITORING.md)
-- [设备文件下载与 SFTP](docs/device-files/README.md)
 - [配置采集与快照对比](docs/CONFIG_COLLECTION.md)
-- [CBTC 旧 Wireshark DLL 逆向状态](docs/reverse-engineering/CBTC_WIRESHARK_DLL.md)
-- [AP Identity](docs/AP_IDENTITY.md)
-- [表格与 UI 规范](docs/ui_table_guidelines.md)
-- [功能模块与 Feature key](docs/FEATURE_MODULES.md)
+- [局点与数据存储](docs/storage/README.md)
+- [Windows Go Agent](docs/AGENT.md)
 
-## 当前规划
+## 贡献与安全
 
-Renderer 已接入 Traffic REST API、独立 Traffic WebSocket 和 `/network-tools/traffic` Vue 页面。Online MR 已建立纯 Python LOCAL/AGENT Application Service、同局点 Task/Session 映射、Traffic 收口，以及严格 Desktop/`127.0.0.1`/短期会话保护的 LOCAL/AGENT 页签；AGENT 默认关闭，只提供固定 start/status/normal stop 与自动 package 导入，不提供强停、删除或任意命令。SNMP Center、通用 MIB/OID 平台和无线勘测已删除；AP Identity 已完成消费者审计中的 P0 高频链路，P1/P2 仍待收口，查询保持本地只读。
+欢迎通过 [GitHub Issues](https://github.com/wxj183589/NetConsole/issues) 和 Pull Request 提交问题报告、文档改进、设备兼容性、命令解析器、WLAN 分析、自动化测试和跨环境验证方面的贡献。提交时请使用脱敏后的设备型号、固件版本、命令回显或日志，并说明预期与实际行为。
 
-Electron Desktop Only 已删除 Python 启动壳中的 `auto/qt`、Qt probe、旧 Qt Shell、Qt 页面、Qt-only 测试、无调用 Qt Native Adapter，以及独立 Browser Production launcher。打包 Electron 通过内部 `--electron-backend` 协议启动受管 Backend，开发态继续直接运行 `netconsole.backend.electron_runtime`。无参数 `main.py` 是 PyCharm/源码态 Electron 入口；`main.py --mode server` 只用于回环开发诊断，不能打开独立浏览器 GUI。源码、依赖和安装包门禁均禁止重新引入 Qt 或独立 Web 产品。
+请勿在公开 Issue、Pull Request 或附件中提交密码、私钥、SNMP community、访问令牌、真实拓扑、生产 IP/MAC 或未脱敏现场数据。仓库当前没有公开专用安全邮箱；安全问题请先通过维护者可用的私下渠道联系。
+
+## 许可证
+
+许可证说明见 [LICENSE](LICENSE)。当前仓库许可证文件将 NetConsole 标注为 non-commercial GPLv3 project；使用、修改或再分发前请阅读完整条款。
+
+## 相关项目
+
+NetConsole 使用 Python、FastAPI、Vue、Electron、SQLite、Netmiko、ECharts、openpyxl 等开源组件。第三方组件与许可证清单见 [docs/open_source_notices.json](docs/open_source_notices.json)。
