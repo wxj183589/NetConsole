@@ -66,6 +66,18 @@ describe('mesh ACTIVE chart series', () => {
     expect(busy[1].value).toEqual([secondVisit.timestamp, null])
   })
 
+  it('keeps a propagated overview gap as a null break after downsampling', () => {
+    const beforeGap = point(1)
+    const afterGap = { ...point(2), timestamp: '2026-07-20T12:00:00.123Z', gap_before: true }
+    const series = buildMeshRssiSeries([beforeGap, afterGap])[0].data
+
+    expect(series.map((item) => item.value)).toEqual([
+      [beforeGap.timestamp, beforeGap.local_rssi],
+      [afterGap.timestamp, null],
+      [afterGap.timestamp, afterGap.local_rssi],
+    ])
+  })
+
   it('turns a no-RSSI snapshot into one null gap without a duplicate boundary point', () => {
     const first = point(1)
     const hidden = {

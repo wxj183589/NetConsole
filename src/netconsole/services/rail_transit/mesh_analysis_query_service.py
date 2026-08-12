@@ -3222,12 +3222,6 @@ class MeshAnalysisQueryService:
         }
         total_points = len(point_rows)
         prepared_events = self._prepare_chart_events(point_rows, events_by_index)
-        displayed_event_indices = {
-            int(index)
-            for event_row in prepared_events
-            for index in (event_row.get("point_index"), event_row.get("busy_point_index"))
-            if index is not None
-        } if include_events else set()
         valid_switch_indices = {
             int(index)
             for row in prepared_events
@@ -3236,6 +3230,7 @@ class MeshAnalysisQueryService:
             and index is not None
         } if include_events else set()
         requested_max_points = min(max(int(max_points), 10), _MAX_CHART_RENDER_POINTS)
+        overview = not time_from and not time_to
         no_active_values = chart.get("no_active_indices")
         multi_active_values = chart.get("multi_active_indices")
         state_indices = {
@@ -3268,51 +3263,47 @@ class MeshAnalysisQueryService:
             *gap_boundaries,
             *sustained_zero_boundaries,
             *suppressed_zero_recoveries,
-            *valid_switch_indices,
             *triangle_link_boundaries,
         }
-        critical_indices.update(displayed_event_indices)
+        if not overview and include_events:
+            critical_indices.update(valid_switch_indices)
+            for key in ("switch_indices", "rapid_flap_indices"):
+                values = chart.get(key)
+                if values is not None:
+                    critical_indices.update(int(value) for value in values)
         critical_indices.difference_update(ambiguous_active_bridge_indices)
         if total_points:
             critical_indices.update((0, total_points - 1))
-        budget_warnings: list[str] = []
-        overview = not time_from and not time_to
-        critical_budget = requested_max_points
-        if overview:
-            critical_budget = max(2, requested_max_points // 3)
-        if len(critical_indices) > critical_budget:
-            original_critical_count = len(critical_indices)
-            critical_indices = self._evenly_spaced_indices(
-                critical_indices,
-                critical_budget,
-                total_count=total_points,
-            )
-            budget_warnings.append(
-                "一级业务边界超过目标点数，已按时间保留代表边界；"
-                f"图表仍严格返回不超过 {requested_max_points} 点（原一级边界 {original_critical_count} 个）。"
-            )
         effective_max_points = requested_max_points
-        trend_indices = self._chart_trend_row_indices(
-            point_rows,
-            max_points=max(effective_max_points - len(critical_indices), 0),
-            preserve_segments=overview,
-        )
         natural_second_indices = self._natural_second_indices(
             point_rows,
             value_key="local_rssi",
         )
-        downsample_warning = " ".join(budget_warnings) or None
-        indices = [
-            int(index)
-            for index in prioritized_render_indices(
-                total_points,
-                effective_max_points,
+        if overview:
+            indices, downsample_warning = self._overview_trend_render_indices(
+                point_rows,
+                max_points=effective_max_points,
                 critical_indices=critical_indices,
-                trend_indices=trend_indices,
                 ordinary_indices=natural_second_indices,
                 excluded_indices=state_indices - state_boundaries,
             )
-        ]
+        else:
+            trend_indices = self._chart_trend_row_indices(
+                point_rows,
+                max_points=max(effective_max_points - len(critical_indices), 0),
+            )
+            indices = [
+                int(index)
+                for index in prioritized_render_indices(
+                    total_points,
+                    effective_max_points,
+                    critical_indices=critical_indices,
+                    trend_indices=trend_indices,
+                    ordinary_indices=natural_second_indices,
+                    excluded_indices=state_indices - state_boundaries,
+                )
+            ]
+            downsample_warning = None
         returned_indices = set(indices)
         def materialize_response_point(point: dict[str, Any]) -> MeshChartPointDTO:
             return self._materialize_chart_point(
@@ -5058,6 +5049,66 @@ class MeshAnalysisQueryService:
         candidates = {index for segment in segments for index in segment} - selected
         selected.update(cls._evenly_spaced_indices(candidates, remaining, total_count=len(points)))
         return selected
+
+    @classmethod
+    def _overview_trend_render_indices(
+        cls,
+        points: list[dict[str, Any]],
+        *,
+        max_points: int,
+        critical_indices: set[int],
+        ordinary_indices: set[int],
+        excluded_indices: set[int],
+    ) -> tuple[list[int], str | None]:
+        """Reserve the Overview line budget for continuous RSSI trend coverage.
+
+        Switches and other annotations already have independent event/overlay
+        budgets.  They may enrich the returned line points, but cannot consume
+        the trend skeleton that makes the full-day RSSI graph readable.
+        """
+        total_points = len(points)
+        if not total_points:
+            return [], None
+        limit = min(max(int(max_points), 2), total_points)
+        trend_budget = min(limit, max(2, math.ceil(limit * 0.70)))
+        trend_indices = cls._chart_segment_trend_indices(points, max_points=trend_budget)
+        selected = set(trend_indices)
+        if len(selected) < min(limit, total_points):
+            remaining = limit - len(selected)
+            critical_candidates = set(critical_indices) - selected
+            if len(critical_candidates) > remaining:
+                critical_candidates = cls._evenly_spaced_indices(
+                    critical_candidates,
+                    remaining,
+                    total_count=total_points,
+                )
+            selected.update(critical_candidates)
+        if len(selected) < limit:
+            remaining = limit - len(selected)
+            ordinary_candidates = set(ordinary_indices) - selected - set(excluded_indices)
+            selected.update(
+                cls._evenly_spaced_indices(
+                    ordinary_candidates,
+                    remaining,
+                    total_count=total_points,
+                )
+            )
+        if len(selected) < limit:
+            remaining = limit - len(selected)
+            selected.update(
+                cls._evenly_spaced_indices(
+                    set(range(total_points)) - selected - set(excluded_indices),
+                    remaining,
+                    total_count=total_points,
+                )
+            )
+        if len(selected) > limit:
+            selected = cls._evenly_spaced_indices(selected, limit, total_count=total_points)
+        warning = (
+            f"Overview 优先保留 {len(trend_indices)} 个 RSSI 趋势骨架点；"
+            f"其余 {max(limit - len(trend_indices), 0)} 个点用于代表性业务边界。"
+        ) if total_points > limit else None
+        return sorted(selected), warning
 
     @staticmethod
     def _chart_gap_between(points: list[dict[str, Any]], previous_index: int, current_index: int) -> bool:
