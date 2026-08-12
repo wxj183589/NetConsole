@@ -2,6 +2,17 @@ name: quality-gate
 
 on:
   pull_request:
+  workflow_dispatch:
+    inputs:
+      runner_mode:
+        description: "Runner backend for this trusted manual run"
+        required: true
+        default: auto
+        type: choice
+        options:
+          - auto
+          - hosted
+          - self-hosted
   push:
     branches:
       - main
@@ -17,9 +28,67 @@ env:
   PYTHONUTF8: "1"
 
 jobs:
+  runner-preflight:
+    name: Runner preflight
+    runs-on: &netconsole_windows_runner >-
+      ${{ github.event_name == 'pull_request' && 'windows-latest'
+      || github.event_name == 'workflow_dispatch' && inputs.runner_mode == 'hosted' && 'windows-latest'
+      || (github.event_name == 'workflow_dispatch' && inputs.runner_mode == 'self-hosted'
+      || (github.event_name == 'workflow_dispatch' && inputs.runner_mode == 'auto'
+      || github.event_name != 'workflow_dispatch') && vars.NETCONSOLE_CI_RUNNER_MODE == 'self-hosted')
+      && 'netconsole-ci-windows-x64'
+      || 'windows-latest' }}
+    timeout-minutes: 5
+    steps:
+      - name: Verify runner boundary and toolchain
+        shell: pwsh
+        env:
+          NETCONSOLE_CI_RUNNER_BACKEND: ${{ runner.environment }}
+          NETCONSOLE_CI_RUNNER_OS: ${{ runner.os }}
+          NETCONSOLE_CI_RUNNER_ARCH: ${{ runner.arch }}
+        run: |
+          $backend = $env:NETCONSOLE_CI_RUNNER_BACKEND
+          if ($env:GITHUB_EVENT_NAME -eq "pull_request" -and $backend -eq "self-hosted") {
+            throw "Public pull_request runs must never use the self-hosted runner."
+          }
+          if ($backend -eq "self-hosted") {
+            $required = @("python", "node", "pnpm", "git")
+            foreach ($command in $required) {
+              if (-not (Get-Command $command -ErrorAction SilentlyContinue)) {
+                throw "Self-hosted runner is missing required command: $command"
+              }
+            }
+            $testRoot = [IO.Path]::GetFullPath("D:\NetConsoleTestData")
+            if ($testRoot -eq [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE)) {
+              throw "The test data root must not be the checked-out workspace."
+            }
+          }
+          if ($backend -eq "self-hosted") {
+            $pythonVersion = python --version 2>&1
+            $nodeVersion = node --version
+            $pnpmVersion = pnpm --version
+            $gitVersion = git --version
+          } else {
+            $pythonVersion = "GitHub-hosted image"
+            $nodeVersion = "GitHub-hosted image"
+            $pnpmVersion = "GitHub-hosted image"
+            $gitVersion = "GitHub-hosted image"
+          }
+          @"
+          ## Runner preflight
+          - Backend: ``$backend``
+          - OS / arch: ``$env:NETCONSOLE_CI_RUNNER_OS`` / ``$env:NETCONSOLE_CI_RUNNER_ARCH``
+          - Python: ``$pythonVersion``
+          - Node: ``$nodeVersion``
+          - pnpm: ``$pnpmVersion``
+          - Git: ``$gitVersion``
+          - Test data policy: ``D:\NetConsoleTestData\<run-id>`` only
+          "@ | Add-Content -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+
   change-impact:
     name: Change impact audit
-    runs-on: windows-latest
+    needs: runner-preflight
+    runs-on: *netconsole_windows_runner
     timeout-minutes: 5
     outputs:
       risk_level: ${{ steps.audit.outputs.risk_level }}
@@ -51,8 +120,10 @@ jobs:
 
   python-core:
     name: Python core and API
-    needs: change-impact
-    runs-on: windows-latest
+    needs:
+      - runner-preflight
+      - change-impact
+    runs-on: *netconsole_windows_runner
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -86,8 +157,10 @@ jobs:
 
   web:
     name: Desktop Renderer typecheck, tests, and build
-    needs: change-impact
-    runs-on: windows-latest
+    needs:
+      - runner-preflight
+      - change-impact
+    runs-on: *netconsole_windows_runner
     timeout-minutes: 30
     defaults:
       run:
@@ -110,8 +183,10 @@ jobs:
 
   electron:
     name: Electron contract and build
-    needs: change-impact
-    runs-on: windows-latest
+    needs:
+      - runner-preflight
+      - change-impact
+    runs-on: *netconsole_windows_runner
     timeout-minutes: 30
     defaults:
       run:
@@ -156,10 +231,11 @@ jobs:
     if: ${{ always() }}
     needs:
       - change-impact
+      - runner-preflight
       - python-core
       - web
       - electron
-    runs-on: windows-latest
+    runs-on: *netconsole_windows_runner
     timeout-minutes: 5
     steps:
       - name: Require impact audit and consumer gates
