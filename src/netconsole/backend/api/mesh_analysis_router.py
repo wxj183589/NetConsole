@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 import logging
-from typing import TypeVar
+from typing import Literal, TypeVar
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse
@@ -804,6 +804,7 @@ def active_path_chart(
     radio: int | None = Query(default=None, ge=1, le=64),
     time_from: str = Query(default="", max_length=40),
     time_to: str = Query(default="", max_length=40),
+    view_mode: Literal["overview", "window"] | None = Query(default=None),
     max_points: int = Query(default=1_000, ge=10, le=20_000),
     include_peer: bool = Query(default=True),
     include_standby_context: bool = Query(default=True),
@@ -817,6 +818,7 @@ def active_path_chart(
             radio=radio,
             time_from=time_from,
             time_to=time_to,
+            view_mode=view_mode,
             max_points=max_points,
             include_peer=include_peer,
             include_standby_context=include_standby_context,
@@ -843,6 +845,7 @@ def trackside_signal_chart(
     radio: int | None = Query(default=None, ge=1, le=64),
     time_from: str = Query(default="", max_length=40),
     time_to: str = Query(default="", max_length=40),
+    view_mode: Literal["overview", "window"] | None = Query(default=None),
     max_points: int = Query(default=1_000, ge=10, le=20_000),
     include_standby: bool = Query(default=True),
     top_n: int = Query(default=0, ge=0, le=50),
@@ -854,6 +857,7 @@ def trackside_signal_chart(
             radio=radio,
             time_from=time_from,
             time_to=time_to,
+            view_mode=view_mode,
             max_points=max_points,
             include_standby=include_standby,
             top_n=top_n,

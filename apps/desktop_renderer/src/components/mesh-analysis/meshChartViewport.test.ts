@@ -4,6 +4,7 @@ import {
   acceptMeshSharedViewport,
   createFullMeshViewport,
   enforceMinimumMeshViewport,
+  isFullRssiViewport,
   meshDataZoomRequiresCorrection,
   normalizeMeshViewport,
   resolveMeshSharedTimeDomain,
@@ -116,6 +117,23 @@ describe('MESH chart viewport', () => {
       full_start_time: '2026-07-20 09:00:00.000',
       full_end_time: '2026-07-20 12:00:00.000',
     })
+  })
+
+  it('treats full-range viewports as Overview even with small timestamp drift', () => {
+    const domain = {
+      full_start_time: '2026-07-20 09:00:00.000',
+      full_end_time: '2026-07-20 12:00:00.000',
+    }
+    expect(isFullRssiViewport({
+      ...domain,
+      start_time: '2026-07-20 09:00:00.500',
+      end_time: '2026-07-20 11:59:59.500',
+    })).toBe(true)
+    expect(isFullRssiViewport({
+      ...domain,
+      start_time: '2026-07-20 10:00:00.000',
+      end_time: '2026-07-20 10:10:00.000',
+    })).toBe(false)
   })
 
   it('accepts one effective source revision and ignores mirrored feedback with the same range', () => {

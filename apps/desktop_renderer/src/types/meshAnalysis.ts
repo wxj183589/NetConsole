@@ -289,7 +289,7 @@ export interface MeshChartResponseBudget {
 }
 
 export interface MeshPathChart {
-  mode: 'active_path' | 'peer_segment'; anchor: MeshChartPoint | null; points: MeshChartPoint[]; events: MeshChartEvent[]
+  mode: 'active_path' | 'peer_segment'; view_mode: 'overview' | 'window'; anchor: MeshChartPoint | null; points: MeshChartPoint[]; events: MeshChartEvent[]
   location_segments: MeshLocationSegment[]
   total_points: number; returned_points: number; downsampled: boolean; requested_max_points: number; effective_max_points: number; downsample_warning: string | null
   summary: MeshPathChartSummary; time_from: string | null; time_to: string | null
@@ -317,7 +317,7 @@ export interface MeshTracksideSignalSeriesData {
 }
 
 export interface MeshTracksideSignalChartData {
-  source_id: string; radio: number | null; time_range: { start: string | null; end: string | null }
+  source_id: string; view_mode: 'overview' | 'window'; radio: number | null; time_range: { start: string | null; end: string | null }
   series: MeshTracksideSignalSeriesData[]; events: MeshChartEvent[]; warnings: string[]
   estimated_interval_seconds: number | null; continuity_gap_seconds: number | null
   total_series: number; returned_series: number; total_points: number; returned_points: number

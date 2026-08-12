@@ -4,6 +4,7 @@ export type MeshChartViewportSource = 'user_zoom' | 'programmatic' | 'initial'
 export type MeshRssiChartSource = 'active-rssi' | 'trackside-rssi' | 'timeline-metric' | 'programmatic'
 export type MeshViewportBoundaryMode = 'sample' | 'absolute'
 export const MIN_MESH_VIEWPORT_SPAN_MS = MIN_TIME_CHART_VIEWPORT_SPAN_MS
+export const MESH_FULL_RANGE_TOLERANCE_MS = 2_000
 
 export interface MeshSharedTimeDomain {
   full_start_time: string
@@ -264,6 +265,20 @@ export function meshViewportRangeEquals(
     && left.end_time === right.end_time
     && left.full_start_time === right.full_start_time
     && left.full_end_time === right.full_end_time,
+  )
+}
+
+export function isFullRssiViewport(
+  viewport: Pick<MeshChartViewport, 'start_time' | 'end_time' | 'full_start_time' | 'full_end_time'>,
+): boolean {
+  const start = meshTimestampMillis(viewport.start_time)
+  const end = meshTimestampMillis(viewport.end_time)
+  const fullStart = meshTimestampMillis(viewport.full_start_time)
+  const fullEnd = meshTimestampMillis(viewport.full_end_time)
+  if (start === null || end === null || fullStart === null || fullEnd === null) return false
+  return (
+    start <= fullStart + MESH_FULL_RANGE_TOLERANCE_MS
+    && end >= fullEnd - MESH_FULL_RANGE_TOLERANCE_MS
   )
 }
 

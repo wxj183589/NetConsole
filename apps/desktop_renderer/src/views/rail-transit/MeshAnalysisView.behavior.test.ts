@@ -530,10 +530,12 @@ function hotfixActivePayload(
   marker: number,
   timeFrom: string | null = null,
   timeTo: string | null = null,
+  viewMode: 'overview' | 'window' = timeFrom && timeTo ? 'window' : 'overview',
 ) {
   const timestamp = timeFrom || '2026-07-24 10:00:00.000'
   return {
     mode: 'active_path',
+    view_mode: viewMode,
     anchor: null,
     points: [{ timestamp, local_radio: 2, local_rssi: marker }],
     events: [],
@@ -564,9 +566,11 @@ function hotfixTracksidePayload(
   marker: number,
   timeFrom = '2026-07-24 10:00:00.000',
   timeTo = '2026-07-24 11:00:00.000',
+  viewMode: 'overview' | 'window' = 'overview',
 ) {
   return {
     source_id: sessionId,
+    view_mode: viewMode,
     radio: 2,
     time_range: { start: timeFrom, end: timeTo },
     series: [{
@@ -1012,6 +1016,7 @@ describe('Mesh analysis detail behavior', () => {
     expect(mocks.getActivePath).toHaveBeenLastCalledWith(session.session_id, {
       max_points: 600,
       radio: 2,
+      view_mode: 'overview',
       include_peer: true,
       include_standby_context: true,
       include_events: true,
@@ -2456,6 +2461,7 @@ describe('Mesh analysis detail behavior', () => {
     expect(mocks.getActivePath).toHaveBeenLastCalledWith('session-locked', {
       max_points: 600,
       radio: 1,
+      view_mode: 'overview',
       include_peer: false,
       include_standby_context: true,
       include_events: true,
@@ -2466,6 +2472,7 @@ describe('Mesh analysis detail behavior', () => {
       radio: 1,
       time_from: undefined,
       time_to: undefined,
+      view_mode: 'overview',
     }, expect.anything())
     const tracksideChart = wrapper.findAllComponents(meshChartStub).find((chart) => chart.props('scope') === '')
     expect(tracksideChart?.props('events')).toEqual([])
@@ -2657,6 +2664,31 @@ describe('Mesh analysis detail behavior', () => {
     wrapper.unmount()
   })
 
+  it('keeps the initial RSSI Overview when the chart reports a full-range viewport', async () => {
+    const { wrapper, session, activeChart } = await mountHotfixRssiSession('session-overview-init')
+    mocks.getActivePath.mockClear()
+    mocks.getTracksideSignal.mockClear()
+    const fullViewport = {
+      start_time: '2026-07-24 10:00:00.500',
+      end_time: '2026-07-24 10:59:59.500',
+      start_percent: 0,
+      end_percent: 100,
+      full_start_time: session.first_sample_time,
+      full_end_time: session.last_sample_time,
+      source: 'user_zoom' as const,
+      source_chart: 'active-rssi' as const,
+      revision: 5,
+    }
+
+    await activeChart.vm.$emit('viewport-ready', fullViewport)
+    await activeChart.vm.$emit('viewport-change', fullViewport)
+    await flushPromises()
+
+    expect(mocks.getActivePath).not.toHaveBeenCalled()
+    expect(mocks.getTracksideSignal).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
   it('publishes a zoom window only after both RSSI responses are ready', async () => {
     const { wrapper, session, activeChart, tracksideChart } = await mountHotfixRssiSession('session-window-atomic')
     const previousPoints = activeChart.props('points')
@@ -2688,6 +2720,7 @@ describe('Mesh analysis detail behavior', () => {
         radio: 2,
         time_from: viewport.start_time,
         time_to: viewport.end_time,
+        view_mode: 'window',
         include_peer: false,
         include_standby_context: true,
         include_events: true,
@@ -2698,15 +2731,16 @@ describe('Mesh analysis detail behavior', () => {
         radio: 2,
         time_from: viewport.start_time,
         time_to: viewport.end_time,
+        view_mode: 'window',
       }, expect.any(AbortSignal))
 
-      activeWindow.resolve(hotfixActivePayload(session.session_id, 41, viewport.start_time, viewport.end_time))
+      activeWindow.resolve(hotfixActivePayload(session.session_id, 41, viewport.start_time, viewport.end_time, 'window'))
       await flushPromises()
       expect(activeChart.props('points')).toBe(previousPoints)
       expect(tracksideChart.props('seriesCache')).toBe(previousCache)
       expect(wrapper.findAllComponents(meshChartStub).some((chart) => chart.props('scope') === '')).toBe(true)
 
-      tracksideWindow.resolve(hotfixTracksidePayload(session.session_id, 39, viewport.start_time, viewport.end_time))
+      tracksideWindow.resolve(hotfixTracksidePayload(session.session_id, 39, viewport.start_time, viewport.end_time, 'window'))
       await flushPromises()
       expect(activeChart.props('points')).not.toBe(previousPoints)
       expect((activeChart.props('points') as Array<{ local_rssi: number }>)[0].local_rssi).toBe(41)
@@ -2751,6 +2785,7 @@ describe('Mesh analysis detail behavior', () => {
         values.time_from === viewportA.start_time ? 41 : 51,
         String(values.time_from),
         String(values.time_to),
+        values.view_mode === 'overview' ? 'overview' : 'window',
       ),
     ))
     mocks.getTracksideSignal.mockImplementation((_id, values) => Promise.resolve(
@@ -2759,6 +2794,7 @@ describe('Mesh analysis detail behavior', () => {
         values.time_from === viewportA.start_time ? 39 : 49,
         String(values.time_from),
         String(values.time_to),
+        values.view_mode === 'overview' ? 'overview' : 'window',
       ),
     ))
     vi.useFakeTimers()
@@ -3081,6 +3117,7 @@ describe('Mesh analysis detail behavior', () => {
     expect(mocks.getActivePath).toHaveBeenCalledWith('session-1', {
       max_points: 600,
       radio: 1,
+      view_mode: 'overview',
       include_peer: false,
       include_standby_context: true,
       include_events: true,
@@ -3104,6 +3141,7 @@ describe('Mesh analysis detail behavior', () => {
       radio: 1,
       time_from: undefined,
       time_to: undefined,
+      view_mode: 'overview',
     }, expect.anything())
     const tracksideChart = wrapper.findAllComponents(meshChartStub).find((chart) => (
       ((chart.props('seriesCache') as { series?: unknown[] } | null)?.series?.length ?? 0) > 0
@@ -3132,6 +3170,7 @@ describe('Mesh analysis detail behavior', () => {
         radio: 1,
         time_from: zoomStart,
         time_to: zoomEnd,
+        view_mode: 'window',
         include_peer: false,
         include_standby_context: true,
         include_events: true,
@@ -3142,6 +3181,7 @@ describe('Mesh analysis detail behavior', () => {
         radio: 1,
         time_from: zoomStart,
         time_to: zoomEnd,
+        view_mode: 'window',
       }, expect.anything())
     })
 
@@ -3194,6 +3234,7 @@ describe('Mesh analysis detail behavior', () => {
     expect(mocks.getActivePath).toHaveBeenCalledWith('session-1', {
       max_points: 1200,
       radio: 1,
+      view_mode: 'overview',
       include_peer: false,
       include_standby_context: true,
       include_events: true,
@@ -3204,6 +3245,7 @@ describe('Mesh analysis detail behavior', () => {
       radio: 1,
       time_from: undefined,
       time_to: undefined,
+      view_mode: 'overview',
     }, expect.anything())
     expect(activeRssiChart?.props('syncViewport')).toMatchObject({
       start_time: zoomStart,
@@ -3215,8 +3257,7 @@ describe('Mesh analysis detail behavior', () => {
       expect(mocks.getActivePath).toHaveBeenCalledWith('session-1', {
         max_points: 1200,
         radio: 1,
-        time_from: fullStart,
-        time_to: fullEnd,
+        view_mode: 'overview',
         include_peer: false,
         include_standby_context: true,
         include_events: true,
@@ -3225,8 +3266,9 @@ describe('Mesh analysis detail behavior', () => {
       expect(mocks.getTracksideSignal).toHaveBeenCalledWith('session-1', {
         max_points: 1200,
         radio: 1,
-        time_from: fullStart,
-        time_to: fullEnd,
+        time_from: undefined,
+        time_to: undefined,
+        view_mode: 'overview',
       }, expect.any(AbortSignal))
     })
     await flushPromises()
@@ -3302,6 +3344,7 @@ describe('Mesh analysis detail behavior', () => {
       {
         max_points: 600,
         radio: 1,
+        view_mode: 'overview',
         include_peer: false,
         include_standby_context: true,
         include_events: true,
@@ -3385,6 +3428,7 @@ describe('Mesh analysis detail behavior', () => {
       radio: 1,
       time_from: viewport.start_time,
       time_to: viewport.end_time,
+      view_mode: 'window',
     }, expect.any(AbortSignal))
     wrapper.unmount()
   })
@@ -3628,6 +3672,7 @@ describe('Mesh analysis detail behavior', () => {
     expect(mocks.getActivePath).toHaveBeenCalledWith('session-link', {
       max_points: 600,
       radio: 1,
+      view_mode: 'overview',
       include_peer: false,
       include_standby_context: true,
       include_events: true,
@@ -3638,6 +3683,7 @@ describe('Mesh analysis detail behavior', () => {
       radio: 1,
       time_from: undefined,
       time_to: undefined,
+      view_mode: 'overview',
     }, expect.anything())
     const activeRssiChart = wrapper.findAllComponents(meshChartStub).find((chart) => (
       chart.props('scope') === 'active' && (chart.props('points') as unknown[]).length > 0

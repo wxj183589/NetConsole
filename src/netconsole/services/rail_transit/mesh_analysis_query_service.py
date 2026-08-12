@@ -1635,6 +1635,7 @@ class MeshAnalysisQueryService:
         radio: int | None = None,
         time_from: str = "",
         time_to: str = "",
+        view_mode: str | None = None,
         max_points: int = 1_000,
         include_peer: bool = True,
         include_standby_context: bool = True,
@@ -1645,8 +1646,13 @@ class MeshAnalysisQueryService:
         self._validate_chart_time_range(time_from, time_to)
         context = self._context(site_id, session_id)
         if context.detail_db is None:
+            resolved_view_mode = (
+                view_mode
+                or self._resolve_chart_view_mode(None, time_from, time_to, None, None)
+            )
             return MeshPathChartDTO(
                 mode="active_path",
+                view_mode=resolved_view_mode,
                 requested_time_from=time_from or None,
                 requested_time_to=time_to or None,
             )
@@ -1671,6 +1677,7 @@ class MeshAnalysisQueryService:
             max_points=max_points,
             time_from=time_from,
             time_to=time_to,
+            view_mode=view_mode,
             include_peer=include_peer,
             include_standby_context=include_standby_context,
             include_events=include_events,
@@ -1686,6 +1693,7 @@ class MeshAnalysisQueryService:
         radio: int | None = None,
         time_from: str = "",
         time_to: str = "",
+        view_mode: str | None = None,
         max_points: int = 1_000,
         include_standby: bool = True,
         top_n: int = 0,
@@ -1697,8 +1705,13 @@ class MeshAnalysisQueryService:
         context = self._context(site_id, session_id)
         max_points = max(int(max_points), 10)
         if context.detail_db is None:
+            resolved_view_mode = (
+                view_mode
+                or self._resolve_chart_view_mode(None, time_from, time_to, None, None)
+            )
             return MeshTracksideSignalChartDTO(
                 source_id=context.session_id,
+                view_mode=resolved_view_mode,
                 radio=radio,
                 time_range=MeshTracksideSignalRangeDTO(
                     start=time_from or None,
@@ -1726,6 +1739,7 @@ class MeshAnalysisQueryService:
             radio=radio,
             time_from=time_from,
             time_to=time_to,
+            view_mode=view_mode,
             max_points=max_points,
         )
         return self._with_chart_metrics(result, started)
@@ -2793,6 +2807,7 @@ class MeshAnalysisQueryService:
         max_points: int,
         time_from: str,
         time_to: str,
+        view_mode: str | None = None,
         include_peer: bool = True,
         include_standby_context: bool = True,
         include_events: bool = True,
@@ -2806,6 +2821,7 @@ class MeshAnalysisQueryService:
             max_points=max_points,
             time_from=time_from,
             time_to=time_to,
+            view_mode=view_mode,
             include_peer=include_peer,
             include_standby_context=include_standby_context,
             include_events=include_events,
@@ -3077,6 +3093,7 @@ class MeshAnalysisQueryService:
         max_points: int,
         time_from: str,
         time_to: str,
+        view_mode: str | None = None,
         include_peer: bool = True,
         include_standby_context: bool = True,
         include_events: bool = True,
@@ -3084,6 +3101,16 @@ class MeshAnalysisQueryService:
     ) -> MeshPathChartDTO:
         run_segment = dict(payload.get("run_segment") or {})
         peer_segment = dict(payload.get("peer_segment") or {})
+        source_first = str(run_segment.get("segment_start") or peer_segment.get("segment_start") or "")
+        source_last = str(run_segment.get("segment_end") or peer_segment.get("segment_end") or "")
+        resolved_view_mode = self._resolve_chart_view_mode(
+            view_mode,
+            time_from,
+            time_to,
+            source_first,
+            source_last,
+        )
+        overview = resolved_view_mode == "overview"
         run_segment["rows"] = self._chart_rows_in_window(run_segment.get("rows"), time_from, time_to)
         peer_segment["rows"] = self._chart_rows_in_window(peer_segment.get("rows"), time_from, time_to)
         run_segment["events"] = self._chart_events_in_window(run_segment.get("events"), time_from, time_to)
@@ -3230,7 +3257,6 @@ class MeshAnalysisQueryService:
             and index is not None
         } if include_events else set()
         requested_max_points = min(max(int(max_points), 10), _MAX_CHART_RENDER_POINTS)
-        overview = not time_from and not time_to
         no_active_values = chart.get("no_active_indices")
         multi_active_values = chart.get("multi_active_indices")
         state_indices = {
@@ -3287,7 +3313,30 @@ class MeshAnalysisQueryService:
                 ordinary_indices=natural_second_indices,
                 excluded_indices=state_indices - state_boundaries,
             )
+            critical_overflow_reason = None
         else:
+            critical_count_before_budget = len(critical_indices)
+            guaranteed_critical = {
+                *no_active_boundaries,
+                *multi_active_boundaries,
+                *gap_boundaries,
+                *sustained_zero_boundaries,
+                *suppressed_zero_recoveries,
+                *triangle_link_boundaries,
+            }
+            if critical_count_before_budget > effective_max_points:
+                critical_indices = self._bounded_critical_indices(
+                    critical_indices,
+                    guaranteed_indices=guaranteed_critical,
+                    limit=effective_max_points,
+                    total_count=total_points,
+                )
+            critical_overflow_reason = (
+                f"当前窗口关键业务点 {critical_count_before_budget} 个，"
+                f"已按预算显示 {len(critical_indices)} 个代表性节点；继续放大可查看完整细节。"
+                if critical_count_before_budget > len(critical_indices)
+                else None
+            )
             trend_indices = self._chart_trend_row_indices(
                 point_rows,
                 max_points=max(effective_max_points - len(critical_indices), 0),
@@ -3430,6 +3479,8 @@ class MeshAnalysisQueryService:
             else 0
         )
         degrade_reasons: list[str] = []
+        if critical_overflow_reason:
+            degrade_reasons.append(critical_overflow_reason)
         if repository_downsampled:
             degrade_reasons.append(
                 f"仓储层已从 {source_rows} 行中按窗口和关键切换时刻选择 {selected_rows} 行"
@@ -3469,6 +3520,7 @@ class MeshAnalysisQueryService:
         )
         result = MeshPathChartDTO(
             mode="active_path" if mode == "active_path" else "peer_segment",
+            view_mode=resolved_view_mode,
             anchor=anchor,
             points=returned,
             events=events,
@@ -3535,9 +3587,17 @@ class MeshAnalysisQueryService:
         radio: int | None,
         time_from: str,
         time_to: str,
+        view_mode: str | None = None,
         max_points: int,
     ) -> MeshTracksideSignalChartDTO:
         run_segment = dict(payload.get("run_segment") or {})
+        resolved_view_mode = self._resolve_chart_view_mode(
+            view_mode,
+            time_from,
+            time_to,
+            str(run_segment.get("segment_start") or ""),
+            str(run_segment.get("segment_end") or ""),
+        )
         rows = self._chart_rows_in_window(run_segment.get("rows"), time_from, time_to)
         rows, fallback_standby_points = self._trackside_rows_with_standby_fallback(
             payload,
@@ -4159,6 +4219,7 @@ class MeshAnalysisQueryService:
 
         result = MeshTracksideSignalChartDTO(
             source_id=context.session_id,
+            view_mode=resolved_view_mode,
             radio=radio,
             time_range=MeshTracksideSignalRangeDTO(
                 start=time_from or str(run_segment.get("segment_start") or "") or None,
@@ -5049,6 +5110,72 @@ class MeshAnalysisQueryService:
         candidates = {index for segment in segments for index in segment} - selected
         selected.update(cls._evenly_spaced_indices(candidates, remaining, total_count=len(points)))
         return selected
+
+    @classmethod
+    def _resolve_chart_view_mode(
+        cls,
+        view_mode: str | None,
+        time_from: str,
+        time_to: str,
+        source_first: str | None,
+        source_last: str | None,
+    ) -> str:
+        """Decide Overview vs Window from the request, not only from empty bounds."""
+        if view_mode in ("overview", "window"):
+            return view_mode
+        if not time_from and not time_to:
+            return "overview"
+        if source_first and source_last:
+            first = cls._parse_time(source_first)
+            last = cls._parse_time(source_last)
+            requested_first = cls._parse_time(time_from) if time_from else first
+            requested_last = cls._parse_time(time_to) if time_to else last
+            if (
+                first is not None
+                and last is not None
+                and requested_first is not None
+                and requested_last is not None
+                and abs((requested_first - first).total_seconds()) <= 2.0
+                and abs((last - requested_last).total_seconds()) <= 2.0
+            ):
+                return "overview"
+        return "window"
+
+    @classmethod
+    def _bounded_critical_indices(
+        cls,
+        critical_indices: set[int],
+        *,
+        guaranteed_indices: set[int],
+        limit: int,
+        total_count: int,
+    ) -> set[int]:
+        """Cap critical candidates before strict selection so long windows degrade."""
+        if limit <= 0 or total_count <= 0:
+            return set()
+        guaranteed = {
+            index
+            for index in guaranteed_indices
+            if 0 <= index < total_count
+        }
+        guaranteed.update({0, total_count - 1})
+        if len(guaranteed) >= limit:
+            return cls._evenly_spaced_indices(
+                guaranteed,
+                limit,
+                total_count=total_count,
+            )
+        candidates = {
+            index
+            for index in critical_indices
+            if 0 <= index < total_count
+        } - guaranteed
+        sampled = cls._evenly_spaced_indices(
+            candidates,
+            limit - len(guaranteed),
+            total_count=total_count,
+        )
+        return guaranteed | sampled
 
     @classmethod
     def _overview_trend_render_indices(

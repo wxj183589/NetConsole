@@ -1000,6 +1000,112 @@ def test_overview_gap_propagation_keeps_normal_downsample_connected(tmp_path: Pa
     assert chart.points[-1].gap_before is False
 
 
+def test_resolve_chart_view_mode_treats_full_range_explicit_timestamps_as_overview() -> None:
+    first = "2026-08-06 03:30:00.000"
+    last = "2026-08-06 15:48:00.000"
+    assert MeshAnalysisQueryService._resolve_chart_view_mode(None, "", "", first, last) == "overview"
+    assert (
+        MeshAnalysisQueryService._resolve_chart_view_mode(
+            None,
+            first,
+            last,
+            first,
+            last,
+        )
+        == "overview"
+    )
+    assert (
+        MeshAnalysisQueryService._resolve_chart_view_mode(
+            None,
+            "2026-08-06 10:00:00.000",
+            "2026-08-06 10:10:00.000",
+            first,
+            last,
+        )
+        == "window"
+    )
+    assert (
+        MeshAnalysisQueryService._resolve_chart_view_mode(
+            "overview",
+            "2026-08-06 10:00:00.000",
+            "2026-08-06 10:10:00.000",
+            first,
+            last,
+        )
+        == "overview"
+    )
+
+
+def test_active_chart_full_range_with_explicit_timestamps_uses_overview(tmp_path: Path) -> None:
+    paths, session_id, _detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    service = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())  # type: ignore[arg-type]
+
+    chart = service.get_active_path_chart(
+        "demo",
+        session_id,
+        radio=1,
+        max_points=10,
+        time_from="2026-07-14 10:00:00.000",
+        time_to="2026-07-14 10:00:03.000",
+    )
+    forced_window = service.get_active_path_chart(
+        "demo",
+        session_id,
+        radio=1,
+        max_points=10,
+        time_from="2026-07-14 10:00:00.000",
+        time_to="2026-07-14 10:00:03.000",
+        view_mode="window",
+    )
+
+    assert chart.view_mode == "overview"
+    assert chart.returned_points <= 10
+    assert forced_window.view_mode == "window"
+
+
+def test_active_chart_long_window_degrades_critical_overflow_instead_of_failing(
+    tmp_path: Path,
+) -> None:
+    paths, session_id, _detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    service = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())  # type: ignore[arg-type]
+    context = service._context("demo", session_id)
+    start = datetime(2026, 8, 6, 8, 0, 0)
+    rows = [
+        _active_chart_row(
+            index + 1,
+            (start + timedelta(seconds=index)).strftime("%Y-%m-%d %H:%M:%S.000"),
+            "000000001618",
+            local_rssi=30 + index % 10,
+            link_state="ACTIVE" if index % 2 == 0 else "STANDBY",
+        )
+        for index in range(6_000)
+    ]
+
+    chart = service._chart_dto(
+        "demo",
+        context,
+        {
+            "peer_segment": {"rows": []},
+            "run_segment": {
+                "rows": rows,
+                "events": [],
+                "estimated_interval_seconds": 1,
+                "continuity_gap_seconds": 5,
+            },
+        },
+        mode="active_path",
+        max_points=2_000,
+        time_from="2026-08-06 08:00:00.000",
+        time_to="2026-08-06 09:40:00.000",
+        view_mode="window",
+    )
+
+    assert chart.view_mode == "window"
+    assert chart.returned_points <= 2_000
+    assert chart.response_budget.degraded is True
+    assert any("代表性节点" in reason for reason in chart.response_budget.degrade_reasons)
+
+
 def test_identity_revision_staleness_is_read_only_and_exposed_on_source_summary(tmp_path: Path) -> None:
     paths, session_id, _detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
     index = paths.mesh_mr_db_path("demo", "列车01-MR-CT")

@@ -845,6 +845,7 @@ class MeshPathChartSummaryDTO(ApiModel):
 
 class MeshPathChartDTO(ApiModel):
     mode: Literal["active_path", "peer_segment"]
+    view_mode: Literal["overview", "window"] = "overview"
     anchor: MeshChartPointDTO | None = None
     points: list[MeshChartPointDTO] = Field(default_factory=list)
     events: list[MeshChartEventDTO] = Field(default_factory=list)
@@ -931,6 +932,7 @@ class MeshTracksideSignalRangeDTO(ApiModel):
 
 class MeshTracksideSignalChartDTO(ApiModel):
     source_id: str
+    view_mode: Literal["overview", "window"] = "overview"
     radio: int | None = None
     time_range: MeshTracksideSignalRangeDTO = Field(default_factory=MeshTracksideSignalRangeDTO)
     series: list[MeshTracksideSignalSeriesDTO] = Field(default_factory=list)

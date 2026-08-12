@@ -70,6 +70,7 @@ def test_mesh_analysis_queries_keep_analysis_files_unchanged(tmp_path: Path) -> 
     assert all(response.status_code == 200 for response in responses)
     assert invalid_range.status_code == 422
     active_chart = responses[5].json()
+    assert active_chart["view_mode"] == "overview"
     assert active_chart["total_points_in_range"] == active_chart["total_points"]
     assert active_chart["effective_time_from"] == active_chart["first_sample_time"]
     assert active_chart["requested_max_points"] == 10
@@ -78,6 +79,7 @@ def test_mesh_analysis_queries_keep_analysis_files_unchanged(tmp_path: Path) -> 
     assert active_chart["payload_bytes"] > 0
     assert active_chart["query_duration_ms"] >= 0
     trackside_chart = responses[6].json()
+    assert trackside_chart["view_mode"] == "overview"
     assert trackside_chart["included_roles"] == ["ACTIVE", "STANDBY"]
     assert trackside_chart["include_standby"] is True
     assert trackside_chart["total_frames"] >= trackside_chart["returned_frames"]
@@ -176,6 +178,35 @@ def test_mesh_chart_safety_limit_maps_to_http_413(tmp_path: Path) -> None:
 
     assert response.status_code == 413
     assert "关键业务点超过安全渲染上限" in response.json()["detail"]
+
+
+def test_mesh_chart_full_range_explicit_timestamps_returns_overview_view_mode(
+    tmp_path: Path,
+) -> None:
+    paths, session_id, _detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    app = create_app(paths=paths, frontend_dist=tmp_path / "missing-dist")
+    app.state.mesh_analysis_query_service = MeshAnalysisQueryService(
+        paths,
+        base_query=EmptyBaseQuery(),  # type: ignore[arg-type]
+    )
+    encoded = quote(session_id, safe="")
+
+    with TestClient(app) as client:
+        overview = client.get(
+            f"/api/rail-transit/mesh-analysis/sessions/{encoded}/charts/active-path"
+            "?site_id=demo&radio=1&max_points=10"
+            "&time_from=2026-07-14%2010%3A00%3A00.000"
+            "&time_to=2026-07-14%2010%3A00%3A03.000"
+        )
+        window = client.get(
+            f"/api/rail-transit/mesh-analysis/sessions/{encoded}/charts/active-path"
+            "?site_id=demo&radio=1&max_points=10&view_mode=window"
+        )
+
+    assert overview.status_code == 200
+    assert overview.json()["view_mode"] == "overview"
+    assert window.status_code == 200
+    assert window.json()["view_mode"] == "window"
 
 
 def test_mesh_source_delete_api_submits_confirmed_scope_to_application_service(

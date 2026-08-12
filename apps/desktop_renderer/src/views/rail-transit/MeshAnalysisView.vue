@@ -32,6 +32,7 @@ import {
 import {
   acceptMeshSharedViewport,
   createFullMeshViewportFromDomain,
+  isFullRssiViewport,
   meshTimestampMillis,
   meshViewportRangeEquals,
   normalizeMeshViewport,
@@ -499,12 +500,26 @@ function isWindowDetail(start: string | null | undefined, end: string | null | u
   return startMillis > fullStartMillis || endMillis < fullEndMillis
 }
 
+function rssiViewModeForViewport(
+  viewport: Pick<MeshChartViewport, 'start_time' | 'end_time' | 'full_start_time' | 'full_end_time'>,
+): 'overview' | 'window' {
+  return isFullRssiViewport(viewport) ? 'overview' : 'window'
+}
+
+function rssiViewModeForRange(range: MeshChartWindowRange | null): 'overview' | 'window' {
+  return range ? rssiViewModeForViewport(range) : 'overview'
+}
+
 function chartLodLabel(
   lodLevel: number | null | undefined,
   start: string | null | undefined,
   end: string | null | undefined,
+  viewMode: 'overview' | 'window' | null | undefined,
 ): string {
-  return `${isWindowDetail(start, end) ? 'Window Detail' : 'Overview'} · LOD ${Math.max(0, Number(lodLevel || 0))}`
+  const mode = viewMode === 'overview' || viewMode === 'window'
+    ? viewMode
+    : isWindowDetail(start, end) ? 'window' : 'overview'
+  return `${mode === 'window' ? 'Window Detail' : 'Overview'} · LOD ${Math.max(0, Number(lodLevel || 0))}`
 }
 
 function chartWindowLabel(start: string | null | undefined, end: string | null | undefined): string {
@@ -888,6 +903,7 @@ function meshChartRequestKey(
     meshChartRevisionKey(),
     values.radio ?? null,
     values.max_points ?? null,
+    values.view_mode ?? null,
     values.time_from ?? null,
     values.time_to ?? null,
     values.include_peer ?? null,
@@ -1238,7 +1254,7 @@ const tracksidePaneAlertSummary = computed(() => {
   const data = tracksideSignal.value
   if (!data) return ''
   if (data.response_budget?.degraded && !data.warnings.length) {
-    return `轨旁图已使用 ${chartLodLabel(data.response_budget?.lod_level, data.time_range.start, data.time_range.end)}`
+    return `轨旁图已使用 ${chartLodLabel(data.response_budget?.lod_level, data.time_range.start, data.time_range.end, data.view_mode)}`
   }
   if (!data.warnings.length) return ''
   return `轨旁图已保留关键采样：${data.returned_frames}/${data.total_frames} 时刻，${data.returned_link_points}/${data.total_link_points} 链路点`
@@ -1989,6 +2005,7 @@ function loadTracksideSignal(
     radio: chartRadio.value,
     time_from: range?.start_time,
     time_to: range?.end_time,
+    view_mode: rssiViewModeForRange(range),
   }
   const requestKey = meshChartRequestKey(
     'trackside-signal',
@@ -2182,6 +2199,7 @@ function loadRssiWindowBatch(viewport: MeshChartViewport): Promise<void> {
     radio: request.radio,
     time_from: request.startTime,
     time_to: request.endTime,
+    view_mode: rssiViewModeForViewport(viewport),
   }
   const activeValues = {
     ...values,
@@ -2307,6 +2325,9 @@ async function loadActivePath(
     include_standby_context: true,
     include_events: true,
     include_station_band: true,
+  }
+  if (metric === 'rssi') {
+    values.view_mode = rssiViewModeForRange(effectiveRange)
   }
   if (metric === 'busy') {
     values.time_from = effectiveRange?.start_time
@@ -2440,10 +2461,32 @@ async function loadRssiPeerSeries(): Promise<void> {
 async function retryRssiActivePath(): Promise<void> {
   const viewport = pendingRssiQueryViewport.value || rssiViewport.value || committedRssiViewport.value
   if (viewport && rssiActivePath.value && tracksideSeriesCache.value) {
+    if (isFullRssiViewport(viewport)) {
+      await loadFullRssiCharts(detailGeneration, true)
+      return
+    }
     await loadRssiWindowBatch(viewport)
     return
   }
   await loadFullRssiCharts(detailGeneration, true)
+}
+
+function reloadRssiOverviewIfNeeded(): void {
+  if (!selected.value) return
+  const activeOverviewLoaded = Boolean(
+    rssiActiveLoaded.value
+    && rssiActivePath.value?.view_mode === 'overview',
+  )
+  const tracksideOverviewLoaded = Boolean(
+    tracksideLoaded.value
+    && tracksideSignal.value?.view_mode === 'overview',
+  )
+  if (activeOverviewLoaded && tracksideOverviewLoaded) return
+  if (activeOverviewLoaded) {
+    void loadTracksideForCurrentWindow()
+  } else {
+    void loadFullRssiCharts(detailGeneration, true)
+  }
 }
 
 function ensureSharedRssiViewport(): void {
@@ -2597,8 +2640,12 @@ function resetCurrentChartViewport(): void {
       return
     }
     pendingRssiQueryViewport.value = viewport
+    rssiViewport.value = viewport
+    committedRssiViewport.value = { ...viewport }
     invalidateRssiWindowBatch()
     scheduleRssiWindowReload(viewport, 0)
+    rssiChartRef.value?.applyViewport(viewport)
+    tracksideChartRef.value?.applyViewport(viewport)
   }
 }
 
@@ -2623,6 +2670,16 @@ function updateRssiViewport(viewport: MeshChartViewport): void {
   if (!accepted || accepted === rssiViewport.value) return
   rssiViewportRevision += 1
   rssiViewport.value = accepted
+  if (isFullRssiViewport(accepted)) {
+    pendingRssiQueryViewport.value = null
+    invalidateRssiWindowBatch()
+    if (accepted.source === 'user_zoom') {
+      reloadRssiOverviewIfNeeded()
+    }
+    rssiChartRef.value?.applyViewport(accepted)
+    tracksideChartRef.value?.applyViewport(accepted)
+    return
+  }
   if (accepted.source === 'user_zoom' && accepted.start_time && accepted.end_time) {
     pendingRssiQueryViewport.value = accepted
     if (!rssiViewportInteracting.value) {
@@ -2656,6 +2713,10 @@ function scheduleRssiWindowReload(
   if (rssiWindowReloadTimer !== null) window.clearTimeout(rssiWindowReloadTimer)
   rssiWindowReloadTimer = null
   if (rssiViewportInteracting.value) return
+  if (isFullRssiViewport(viewport)) {
+    reloadRssiOverviewIfNeeded()
+    return
+  }
   rssiWindowReloadTimer = window.setTimeout(() => {
     rssiWindowReloadTimer = null
     if (rssiViewportInteracting.value) return
@@ -4576,7 +4637,7 @@ function exportTimestamp(now = new Date()): string {
                     <span v-else>主链 RSSI 数据尚未加载</span>
                     <el-button v-if="rssiActiveError" link type="warning" :loading="rssiActiveLoading" @click="retryRssiActivePath">重试主链 RSSI</el-button>
                   </div>
-                  <div v-else-if="chartData" class="mini-summary rssi-pane-summary"><span>当前 PeerMac <strong>{{ chartData.summary.current_peer_mac || '—' }}</strong></span><span>当前 AP <strong>{{ chartData.summary.current_peer_ap_name || '—' }}</strong></span><span>Radio <strong>{{ chartData.summary.current_radio ?? '—' }}</strong></span><span>估算采样间隔 <strong>{{ display(chartData.summary.estimated_interval_seconds, ' s') }}</strong></span><span>采样点 <strong>{{ chartData.summary.sample_count }}</strong></span><span>ACTIVE <strong>{{ chartData.summary.active_count }}</strong></span><span>STANDBY 上下文 <strong>{{ chartData.summary.standby_context_count }}</strong></span><span>△ 三角链路 <strong>{{ chartData.summary.triangle_link_point_count ?? 0 }}</strong></span><span>切换 <strong>{{ chartData.summary.switch_count }}</strong></span><span>查询行 <strong>{{ formatChartCount(chartData.response_budget?.selected_rows) }} / {{ formatChartCount(chartData.response_budget?.source_rows) }}</strong></span><span>绘图点 <strong>{{ formatChartCount(chartData.response_budget?.returned_points) }} / {{ formatChartCount(chartData.response_budget?.total_points) }}</strong></span><span>切换事件 <strong>{{ formatChartCount(chartData.response_budget?.returned_events) }} / {{ formatChartCount(chartData.response_budget?.total_events) }}</strong></span><span>LOD <strong>{{ chartLodLabel(chartData.response_budget?.lod_level, activeChartWindow.start, activeChartWindow.end) }}</strong></span><span>Payload <strong>{{ formatPayloadBytes(chartData.payload_bytes) }}</strong></span><span>当前窗口 <strong>{{ chartWindowLabel(activeChartWindow.start, activeChartWindow.end) }}</strong></span><span>最早 <strong>{{ chartData.summary.first_sample_time || '—' }}</strong></span><span>最新 <strong>{{ chartData.summary.last_sample_time || '—' }}</strong></span></div>
+                  <div v-else-if="chartData" class="mini-summary rssi-pane-summary"><span>当前 PeerMac <strong>{{ chartData.summary.current_peer_mac || '—' }}</strong></span><span>当前 AP <strong>{{ chartData.summary.current_peer_ap_name || '—' }}</strong></span><span>Radio <strong>{{ chartData.summary.current_radio ?? '—' }}</strong></span><span>估算采样间隔 <strong>{{ display(chartData.summary.estimated_interval_seconds, ' s') }}</strong></span><span>采样点 <strong>{{ chartData.summary.sample_count }}</strong></span><span>ACTIVE <strong>{{ chartData.summary.active_count }}</strong></span><span>STANDBY 上下文 <strong>{{ chartData.summary.standby_context_count }}</strong></span><span>△ 三角链路 <strong>{{ chartData.summary.triangle_link_point_count ?? 0 }}</strong></span><span>切换 <strong>{{ chartData.summary.switch_count }}</strong></span><span>查询行 <strong>{{ formatChartCount(chartData.response_budget?.selected_rows) }} / {{ formatChartCount(chartData.response_budget?.source_rows) }}</strong></span><span>绘图点 <strong>{{ formatChartCount(chartData.response_budget?.returned_points) }} / {{ formatChartCount(chartData.response_budget?.total_points) }}</strong></span><span>切换事件 <strong>{{ formatChartCount(chartData.response_budget?.returned_events) }} / {{ formatChartCount(chartData.response_budget?.total_events) }}</strong></span><span>LOD <strong>{{ chartLodLabel(chartData.response_budget?.lod_level, activeChartWindow.start, activeChartWindow.end, chartData.view_mode) }}</strong></span><span>Payload <strong>{{ formatPayloadBytes(chartData.payload_bytes) }}</strong></span><span>当前窗口 <strong>{{ chartWindowLabel(activeChartWindow.start, activeChartWindow.end) }}</strong></span><span>最早 <strong>{{ chartData.summary.first_sample_time || '—' }}</strong></span><span>最新 <strong>{{ chartData.summary.last_sample_time || '—' }}</strong></span></div>
                   <div class="rssi-pane-chart-host">
                     <MeshRssiChart v-if="rssiActiveLoaded && chartData" ref="rssiChartRef" :points="chartData.points" :events="chartData?.events || []" :location-segments="chartData.location_segments" :show-peer="showRssiPeer" :show-switch-lines="showSwitchLines" :show-switch-points="showSwitchPoints" :show-location-band="showLocationBand" scope="active" :active="pageActive && activeTab === 'rssi' && rssiLayoutMode !== 'trackside-focus'" :focus-timestamp="focusTimestamp" :initial-viewport="rssiViewport" :sync-viewport="rssiViewport" :shared-time-domain="sharedRssiTimeDomain" :sync-pointer-time="sharedPointerTime || selectedAnalysisTime" :sync-pointer-source="sharedPointerTime ? sharedPointerSource : 'programmatic'" :selected-time="selectedAnalysisTime" @viewport-change="updateRssiViewport" @viewport-interaction-start="beginRssiViewportInteraction" @viewport-interaction-end="endRssiViewportInteraction" @pointer-change="updateSharedPointer" @select-time="selectAnalysisTime" @select-switch="selectChartSwitch" />
                     <el-empty v-else-if="rssiActiveLoaded && !rssiActiveLoading" description="当前范围没有 RSSI 数据" :image-size="60" />
@@ -4619,7 +4680,7 @@ function exportTimestamp(now = new Date()): string {
                     <span>缺失轨旁信号跳过 <strong>{{ tracksideSignal.skipped_missing_signal_points }}</strong></span>
                     <span>查询行 <strong>{{ formatChartCount(tracksideSignal.response_budget?.selected_rows) }} / {{ formatChartCount(tracksideSignal.response_budget?.source_rows) }}</strong></span>
                     <span>事件 <strong>{{ formatChartCount(tracksideSignal.response_budget?.returned_events) }} / {{ formatChartCount(tracksideSignal.response_budget?.total_events) }}</strong></span>
-                    <span>LOD <strong>{{ chartLodLabel(tracksideSignal.response_budget?.lod_level, tracksideChartWindow.start, tracksideChartWindow.end) }}</strong></span>
+                    <span>LOD <strong>{{ chartLodLabel(tracksideSignal.response_budget?.lod_level, tracksideChartWindow.start, tracksideChartWindow.end, tracksideSignal.view_mode) }}</strong></span>
                     <span>Payload <strong>{{ formatPayloadBytes(tracksideSignal.payload_bytes) }}</strong></span>
                     <span>当前窗口 <strong>{{ chartWindowLabel(tracksideChartWindow.start, tracksideChartWindow.end) }}</strong></span>
                   </div>
