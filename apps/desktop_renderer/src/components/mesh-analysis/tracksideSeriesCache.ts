@@ -140,7 +140,6 @@ export function buildTracksideSeriesCache(
       pointCount: item.points.length,
     }
     seriesMetaById.set(item.series_id, compactSeries)
-    let previousRunId: string | null = null
     let coverageStartMillis: number | null = null
     let coverageEndMillis: number | null = null
     let previousCoverageRunId: string | null = null
@@ -204,7 +203,6 @@ export function buildTracksideSeriesCache(
       if (
         rendered.length
         && displayPoint.breakBefore
-        && (currentRunId == null || currentRunId !== previousRunId)
       ) {
         rendered.push([timestampMillis, null, -1, -1])
         metaIds.push(-1)
@@ -262,7 +260,6 @@ export function buildTracksideSeriesCache(
       const frame = frameMetaIds.get(timestampMillis)
       if (frame) frame.push(metaId)
       else frameMetaIds.set(timestampMillis, [metaId])
-      previousRunId = currentRunId
       totalRenderedPoints += 1
     }
     flushCoverage()

@@ -642,7 +642,11 @@ function hotfixTracksidePayload(
   }
 }
 
-async function mountHotfixRssiSession(sessionId: string, resolutionMode: 'full' | 'overview' = 'full') {
+async function mountHotfixRssiSession(
+  sessionId: string,
+  resolutionMode: 'full' | 'overview' = 'full',
+  activePayload: Record<string, unknown> = hotfixActivePayload(sessionId, 30),
+) {
   const session = {
     session_id: sessionId,
     mr_name: '列车35-MR-CT',
@@ -676,7 +680,7 @@ async function mountHotfixRssiSession(sessionId: string, resolutionMode: 'full' 
     page: 1,
     page_size: 100,
   })
-  mocks.getActivePath.mockResolvedValue(hotfixActivePayload(sessionId, 30))
+  mocks.getActivePath.mockResolvedValue(activePayload)
   mocks.getTracksideSignal.mockResolvedValue(hotfixTracksidePayload(sessionId, 28))
 
   const wrapper = mount(MeshAnalysisView, {
@@ -993,6 +997,51 @@ describe('Mesh analysis import context behavior', () => {
 })
 
 describe('Mesh analysis detail behavior', () => {
+  it('labels the full RSSI line separately from the business overlay budget', async () => {
+    const activePayload = {
+      ...hotfixActivePayload('session-full-rssi-summary', 30),
+      rssi_line: {
+        resolution_mode: 'full',
+        total_points: 51_324,
+        returned_points: 51_324,
+        gap_count: 0,
+        points: [['2026-07-24 10:00:00.000', 30, false]],
+      },
+      response_budget: {
+        target_payload_bytes: 8_000_000,
+        hard_payload_bytes: 16_000_000,
+        point_limit: 4_000,
+        event_limit: 256,
+        location_segment_limit: 256,
+        series_limit: 0,
+        source_rows: 51_324,
+        selected_rows: 4_000,
+        total_points: 51_324,
+        returned_points: 4_000,
+        total_events: 8_490,
+        returned_events: 251,
+        total_location_segments: 0,
+        returned_location_segments: 0,
+        total_series: 0,
+        returned_series: 0,
+        lod_level: 1,
+        degraded: true,
+        degrade_reasons: [],
+      },
+    }
+    const { wrapper } = await mountHotfixRssiSession(
+      'session-full-rssi-summary',
+      'full',
+      activePayload,
+    )
+
+    expect(wrapper.text()).toContain('主链 RSSI 全量 51,324 / 51,324')
+    expect(wrapper.text()).toContain('业务叠加点 4,000 / 51,324')
+    expect(wrapper.text()).toContain('业务叠加精度')
+    expect(wrapper.text()).not.toContain('绘图点 4,000 / 51,324')
+    wrapper.unmount()
+  })
+
   it('keeps both RSSI datasets and the shared viewport while only presentation overlays change', async () => {
     const { wrapper, session, activeChart, tracksideChart } = await mountHotfixRssiSession('session-overlay-state')
     const activeCalls = mocks.getActivePath.mock.calls.length
@@ -3221,7 +3270,7 @@ describe('Mesh analysis detail behavior', () => {
     mocks.getTracksideSignal.mockClear()
     mocks.chartApplyViewport.mockClear()
     const targetPointSelect = wrapper.findAllComponents(selectStub).find((select) => (
-      select.findAll('[data-option-label]').some((option) => option.text() === '概览精度 1200 点')
+      select.findAll('[data-option-label]').some((option) => option.text() === '1200 点')
     ))
     await targetPointSelect!.vm.$emit('update:modelValue', 1200)
     await targetPointSelect!.vm.$emit('change', 1200)

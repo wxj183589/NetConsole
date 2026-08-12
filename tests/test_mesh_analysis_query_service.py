@@ -2062,6 +2062,37 @@ def test_trackside_signal_chart_breaks_when_ap_disappears_then_returns(tmp_path:
     assert len({point.run_id for point in ap_a.points}) == 2
 
 
+def test_trackside_signal_chart_marks_a_real_multi_hour_sampling_gap(tmp_path: Path) -> None:
+    paths, session_id, detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    with sqlite3.connect(detail) as conn:
+        _clear_mesh_chart_rows(conn)
+        for row_id, timestamp in enumerate(
+            (
+                "2026-08-06 03:30:00.000",
+                "2026-08-06 03:30:01.000",
+                "2026-08-06 06:00:00.000",
+            ),
+            start=1,
+        ):
+            _insert_active_mesh_link(
+                conn,
+                row_id=row_id,
+                sample_time=timestamp,
+                radio=1,
+                peer_name="AP-A",
+                peer_mac="00000000000a",
+                peer_rssi=40 + row_id,
+            )
+    service = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())  # type: ignore[arg-type]
+
+    chart = service.get_trackside_signal_chart("demo", session_id, radio=1, max_points=10)
+
+    assert chart.continuity_gap_seconds is not None
+    assert chart.continuity_gap_seconds < 2.5 * 60 * 60
+    assert [point.break_before for point in chart.series[0].points] == [False, False, True]
+    assert len({point.run_id for point in chart.series[0].points}) == 2
+
+
 def test_trackside_signal_chart_splits_same_ap_name_by_peer_radio_mac(tmp_path: Path) -> None:
     paths, session_id, detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
     with sqlite3.connect(detail) as conn:

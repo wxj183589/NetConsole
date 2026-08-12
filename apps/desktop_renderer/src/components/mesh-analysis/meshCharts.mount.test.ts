@@ -721,7 +721,7 @@ describe('MESH charts mount and render', () => {
     wrapper.unmount()
   })
 
-  it('does not insert repeated nulls when a point is flagged inside the same run', async () => {
+  it('honors an explicit display gap even when compatibility payloads reuse the run id', async () => {
     const firstPoint = { ...tracksideChartPoint, run_id: 'run-1', run_sequence: 1 }
     const middlePoint = {
       ...tracksideChartPoint,
@@ -753,6 +753,7 @@ describe('MESH charts mount and render', () => {
     expect(option.series[0].connectNulls).toBe(false)
     expect(option.series[0].data?.map((item) => item.slice(0, 2))).toEqual([
       [Date.parse(firstPoint.timestamp), -45],
+      [Date.parse(middlePoint.timestamp), null],
       [Date.parse(middlePoint.timestamp), -42],
       [Date.parse(lastPoint.timestamp), -41],
     ])

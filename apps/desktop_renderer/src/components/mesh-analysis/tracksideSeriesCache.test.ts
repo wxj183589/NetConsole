@@ -260,6 +260,27 @@ describe('trackside compact series cache', () => {
     )).toBe(Date.parse(first))
   })
 
+  it('inserts a null only for an explicit display gap while keeping ordinary LOD points connected', () => {
+    const early = '2026-08-06 03:30:00.000'
+    const later = '2026-08-06 06:00:00.000'
+    const broken = buildTracksideSeriesCache([series([
+      point(early, 1),
+      point(later, 1, true),
+    ])])
+    const continuous = buildTracksideSeriesCache([series([
+      point('2026-08-06 03:30:00.000', 1),
+      point('2026-08-06 03:32:00.000', 1),
+    ])])
+
+    expect(broken.series[0].data.map((item) => [item[0], item[1]])).toEqual([
+      [Date.parse(early), 41],
+      [Date.parse(later), null],
+      [Date.parse(later), 41],
+    ])
+    expect(continuous.series[0].data.map((item) => item[1])).toEqual([41, 41])
+    expect(continuous.series[0].data.some((item) => item[1] === null)).toBe(false)
+  })
+
   it('does not snap across a break, a new run, or outside rendered coverage', () => {
     const first = '2024-10-22 14:39:13.000'
     const second = '2024-10-22 14:39:21.000'
