@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import copy
+import io
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -11,6 +13,7 @@ from scripts.quality.check_change_impact import (
     _load_config,
     _write_github_output,
     classify,
+    main,
 )
 
 
@@ -111,3 +114,49 @@ def test_github_output_is_stable_and_machine_readable(tmp_path: Path) -> None:
     assert entries["risk_areas"] == "data-root-and-migration"
     assert entries["requires_post_merge"] == "true"
     assert "main-contract-smoke" in entries["consumer_suites"]
+
+
+def test_main_reconfigures_legacy_stdio_and_preserves_utf8_github_files(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    stdout_bytes = io.BytesIO()
+    stderr_bytes = io.BytesIO()
+    stdout = io.TextIOWrapper(stdout_bytes, encoding="cp1252")
+    stderr = io.TextIOWrapper(stderr_bytes, encoding="cp1252")
+    github_output = tmp_path / "github-output.txt"
+    github_summary = tmp_path / "github-summary.md"
+    monkeypatch.setattr(sys, "stdout", stdout)
+    monkeypatch.setattr(sys, "stderr", stderr)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "check_change_impact",
+            "--paths",
+            "README.md",
+            "--github-output",
+            str(github_output),
+            "--github-summary",
+            str(github_summary),
+        ],
+    )
+
+    assert main() == 0
+    stdout.flush()
+
+    console_summary = stdout_bytes.getvalue().decode("utf-8")
+    assert "风险等级：`L1`" in console_summary
+    assert "Change Impact Audit" in console_summary
+    assert github_output.read_text(encoding="utf-8").startswith("risk_level=L1\n")
+    assert "风险等级：`L1`" in github_summary.read_text(encoding="utf-8")
+
+
+def test_main_keeps_stringio_stdout_compatible(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stdout = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", stdout)
+    monkeypatch.setattr(sys, "argv", ["check_change_impact", "--paths", "README.md"])
+
+    assert main() == 0
+    assert "风险等级：`L1`" in stdout.getvalue()

@@ -5,6 +5,7 @@ import fnmatch
 import glob
 import json
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -173,6 +174,14 @@ def _csv(values: Iterable[str]) -> str:
     return ",".join(values)
 
 
+def _configure_utf8_stdio() -> None:
+    """Keep the standalone quality command Unicode-safe on legacy Windows consoles."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8")
+
+
 def _write_github_output(path: Path, impact: Impact) -> None:
     entries = {
         "risk_level": impact.level,
@@ -223,6 +232,7 @@ def _summary(impact: Impact, config: dict[str, Any]) -> str:
 
 
 def main() -> int:
+    _configure_utf8_stdio()
     parser = argparse.ArgumentParser(description="Classify NetConsole changes and print required consumer regression suites.")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--base-sha", default="")

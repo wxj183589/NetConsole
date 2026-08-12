@@ -16,6 +16,9 @@ concurrency:
   group: python-full-regression-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  PYTHONUTF8: "1"
+
 jobs:
   pytest-full:
     name: Python full regression

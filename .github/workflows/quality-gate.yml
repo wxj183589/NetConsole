@@ -13,6 +13,9 @@ concurrency:
   group: quality-gate-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  PYTHONUTF8: "1"
+
 jobs:
   change-impact:
     name: Change impact audit
