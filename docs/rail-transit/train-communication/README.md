@@ -4,12 +4,11 @@
 
 ## 文档
 
-- [点表模型与维护](POINT_TABLE.md)
-- [固定拓扑与节点映射](TOPOLOGY.md)
-- [检测任务流程](CHECK_WORKFLOW.md)
-- [VRRP 语义](VRRP.md)
-- [跨 TC 检测](CROSS_TC.md)
-- [Qt 业务迁移说明](MIGRATION_FROM_QT.md)
+- [点表模型与维护](./POINT_TABLE.md)
+- [固定拓扑与节点映射](./TOPOLOGY.md)
+- [检测任务流程](./CHECK_WORKFLOW.md)
+- [VRRP 语义](./VRRP.md)
+- [跨 TC 检测](./CROSS_TC.md)
 
 ## 当前边界
 
@@ -22,3 +21,19 @@
 - 点表生成只形成预览；保存任务完成原子替换和 revision 复验后，Dialog 通过 `saved` 事件通知父页面刷新拓扑和检测启动条件。
 - 未配置、未检测、检测中、正常、异常和数据过期必须保持区分。
 - Online MR、轨旁 AP、fping 和 iPerf 不在本页执行；Mesh-Link 仅作为检测过程中的辅助状态，不替代点表节点的真实 SSH/Ping 结果。
+
+## 能力状态与历史边界
+
+本功能保留了历史 Qt 实现中的点表、节点映射、检测任务和结果语义，但不恢复 Qt 页面、Qt 入口或第二套任务模型。当前能力归属如下：
+
+| 能力 | 当前 Electron/Python 归属 | 状态 |
+| --- | --- | --- |
+| 固定六节点拓扑 | `TrainCommunicationQueryService` + Vue `FixedTrainTopology` | 已接入 |
+| 点表读取、校验与 revision | `TrainCommunicationPointTableService` | 已接入 |
+| 点表编辑、导入与导出 | `RailTransitWebApplicationService` + 现有点表弹窗 | 已接入，待真实桌面验收 |
+| 检测任务 | `car_network_diagnostic` Task Center | 已复用 |
+| VRRP 虚拟 IP 静态展示 | `TrainCommunicationQueryService` + Vue `FixedTrainTopology` | 已接入，不提供主备状态检测 |
+| 跨 TC 聚合 | `TrainCommunicationQueryService` | 已接入 |
+| 真实设备检测 | 现有诊断 Worker 与设备连接基础设施 | 待真实设备验收 |
+
+未验证的设备、命令和现场结果不得标记为完成。SNMP Center、无线勘测和 Qt 运行时不属于当前功能范围。

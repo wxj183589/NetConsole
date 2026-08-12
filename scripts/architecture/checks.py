@@ -993,7 +993,14 @@ def orphan_module_findings() -> list[Finding]:
 
 
 def migration_map_findings() -> list[Finding]:
-    path = ROOT / "docs" / "architecture" / "MIGRATION_MATRIX.md"
+    path = (
+        ROOT
+        / "docs"
+        / "archive"
+        / "migrations"
+        / "qt-to-electron"
+        / "MIGRATION_MATRIX.md"
+    )
     if not path.is_file():
         return [Finding("MIGRATION_MAP_MISSING", relative_path(path), 0, "migration matrix is missing")]
     text = path.read_text(encoding="utf-8")

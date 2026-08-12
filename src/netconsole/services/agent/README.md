@@ -30,4 +30,4 @@ Agent 任务/原始日志/采集包由 Go Agent 数据根管理，Controller 只
 
 ## 相关文档
 
-参见 [Agent Controller](../../../../docs/AGENT_CONTROLLER.md)、[Agent 流量协议](../../../../docs/AGENT_TRAFFIC_API.md) 和 [独立 Agent](../../../../docs/AGENT.md)。
+参见 [Agent Controller](../../../../docs/agent/CONTROLLER.md)、[Agent 流量协议](../../../../docs/agent/TRAFFIC_API.md) 和 [独立 Agent](../../../../docs/agent/README.md)。

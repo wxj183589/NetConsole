@@ -30,4 +30,4 @@
 
 ## 相关文档
 
-参见 [AC 管理](../../../../docs/AC_MANAGEMENT.md)、[AP Identity](../../../../docs/AP_IDENTITY.md) 和 [Job Center](../../../../docs/JOB_CENTER.md)。
+参见 [AC 管理](../../../../docs/rail-transit/AC_MANAGEMENT.md)、[AP Identity](../../../../docs/AP_IDENTITY.md) 和 [Job Center](../../../../docs/job-center/README.md)。

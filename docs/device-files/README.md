@@ -65,8 +65,8 @@ WinSCP 动作只允许 Renderer 提交 60 秒有效、一次性消费的 `action
 
 专题说明：
 
-- [SFTP 连接](SFTP_CONNECTION.md)
-- [主机密钥信任](HOST_KEY_TRUST.md)
-- [下载流程](DOWNLOAD_WORKFLOW.md)
-- [安全边界](SECURITY.md)
-- [2026-07-28 隧道回归验收记录](ACCEPTANCE-2026-07-28.md)
+- [SFTP 连接](./SFTP_CONNECTION.md)
+- [主机密钥信任](./HOST_KEY_TRUST.md)
+- [下载流程](./DOWNLOAD_WORKFLOW.md)
+- [安全边界](./SECURITY.md)
+- [2026-07-28 隧道回归验收记录](./ACCEPTANCE-2026-07-28.md)

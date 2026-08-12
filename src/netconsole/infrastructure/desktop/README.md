@@ -25,5 +25,5 @@ Python 契约与安全拒绝见 `tests/test_desktop_action_service.py`；Electro
 
 ## 相关文档
 
-- [Desktop Native Bridge](../../../../docs/DESKTOP_NATIVE_BRIDGE.md)
-- [架构一致性审计](../../../../docs/ARCHITECTURE_COMPLIANCE.md)
+- [Desktop Native Bridge](../../../../docs/architecture/NATIVE_BRIDGE.md)
+- [架构一致性审计](../../../../docs/architecture/COMPLIANCE.md)

@@ -30,4 +30,4 @@
 
 ## 相关文档
 
-参见 [工具资源说明](../../resources/tools/README.md)、[构建与发布](../../docs/BUILD_AND_RELEASE.md) 和 [目录规范](../../docs/development/repository-layout.md)。
+参见 [工具资源说明](../../resources/tools/README.md)、[构建与发布](../../docs/release/BUILD_AND_RELEASE.md) 和 [目录规范](../../docs/development/repository-layout.md)。

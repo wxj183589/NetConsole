@@ -1,33 +1,35 @@
-# 架构迁移资料
-
-本目录保存当前 Electron-only 架构的迁移矩阵等专题证据，解释删除 Qt 路径、永久去向和自动验收边界。它是审计资料，不是新的运行时配置。
-
-修改必须以生产代码、测试和 Git 事实为先，并同步 `docs/README.md` 或核心架构文档。链接使用仓库相对路径，提交前运行文档链接测试。
+# 架构专题
 
 ## 用途与边界
 
-本目录保存 Electron-only 架构迁移矩阵和审计证据，说明删除 Qt 路径、永久去向和发布门；它不是运行时配置，也不授权恢复旧入口。
+本目录维护当前 Electron Desktop + Vue Renderer + FastAPI/Python Core 架构的专题规则。总体分层以 [当前架构](../ARCHITECTURE.md) 为入口；历史迁移映射只在 [归档](../archive/README.md) 中保存。
 
 ## 主要入口
 
-`MIGRATION_MATRIX.md` 是当前迁移分类入口；总体架构、目录规则和 Guard 文档位于上级 `docs/`。
+- [Desktop](./DESKTOP.md)：Electron Main/Preload、Backend 生命周期、窗口、托盘和日志。
+- [Renderer Runtime](./RUNTIME.md)：唯一 Vue Renderer、FastAPI、REST/WebSocket 和 Browser 开发诊断。
+- [Native Bridge](./NATIVE_BRIDGE.md)：受控文件、终端、通知和本机动作白名单。
+- [Feature Modules](./FEATURE_MODULES.md)：Feature Registry 与模块状态表达。
+- [Architecture Compliance](./COMPLIANCE.md)：分层、Guard、迁移分类和发布阻塞规则。
+- [Refactor Map](./REFACTOR_MAP.md)：当前技术债务、永久入口与集成门。
+- [External Tools](./EXTERNAL_TOOL_COLLECTION.md)：第三方工具注册与受控启动。
 
 ## 依赖关系
 
-内容依赖生产代码、Git 删除历史、Feature/Navigation Registry、自动 Guard 和测试结果；文档不能独立推翻代码事实。
+架构文档以生产代码、Feature/Navigation Registry、构建配置、测试和 Guard 为事实源，不独立授权跨层依赖或兼容入口。
 
 ## 数据与状态
 
-文件记录已完成、兼容、shadow、部分迁移、未迁移和规划状态，不包含真实账号、设备回显或运行数据库。
+本目录不保存运行数据、设备回显或构建产物。模块状态必须区分自动化、Electron 人工、真实设备/局点和正式制品证据。
 
 ## 测试与修改
 
-架构变化先运行相关 Guard、依赖层、Web/Electron 和文档链接测试，再更新矩阵与索引；必须明确证据来源和剩余风险。
+修改架构契约后运行 Change Impact、相关消费者测试、架构 Guard 和 Markdown 链接检查；L3/L4 在最终集成提交重新验证。
 
 ## 生成与清理
 
-本目录只维护 Markdown 证据；扫描报告和临时产物放临时/归档目录，不把生成结果混入源码或静默删除历史证据。
+扫描报告和一次性阶段记录不进入活动架构目录；可恢复过程由 Git 保存，必要冻结证据进入受控归档。
 
 ## 相关文档
 
-参见 [架构索引](../README.md)、[下一代架构](../ARCHITECTURE_NEXT.md) 和 [仓库目录规范](../development/repository-layout.md)。
+目录内文档描述当前约束，不维护阶段计划、兼容跳转或迁移流水账。修改架构事实后同步代码、机器可读配置、测试和文档索引。

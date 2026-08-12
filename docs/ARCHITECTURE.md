@@ -4,9 +4,9 @@
 
 NetConsole 当前正式桌面产品只有 Electron。Electron Main/Preload 承载窗口、受管 Backend 生命周期和白名单本机能力；Vue 3 是唯一 Renderer；FastAPI/Python Core 是永久业务层。本机 Browser 与无 Shell Server 只用于源码开发、诊断和 API 联调，不构成独立产品或失败回退。
 
-Qt/PySide6/QFluentWidgets 源码、入口、运行依赖和发布链已经删除。历史行为只通过 Git 与[最终迁移矩阵](architecture/MIGRATION_MATRIX.md)追踪，不能恢复 Qt 入口规避未完成业务。
+Qt/PySide6/QFluentWidgets 源码、入口、运行依赖和发布链已经删除。历史行为只通过 Git 与[冻结迁移矩阵](./archive/migrations/qt-to-electron/MIGRATION_MATRIX.md)追踪，不能恢复 Qt 入口规避未完成业务。
 
-局点与数据存储遵循 `Vue -> /api/v1 -> Site/DataRoot Application Service -> PathResolver/Repository`。复制、SQLite、压缩和完整性校验只在 Python Worker 中执行；Electron Main 只维护 `bootstrap.json`、原生选择器和 Backend 生命周期。详见 [局点与数据存储](storage/README.md)。
+局点与数据存储遵循 `Vue -> /api/v1 -> Site/DataRoot Application Service -> PathResolver/Repository`。复制、SQLite、压缩和完整性校验只在 Python Worker 中执行；Electron Main 只维护 `bootstrap.json`、原生选择器和 Backend 生命周期。详见 [局点与数据存储](./storage/README.md)。
 
 ## 启动链
 
@@ -40,7 +40,7 @@ flowchart LR
 | Domain Service / Parser | 设备与业务规则、解析、归一化、报告 | UI、HTTP、IPC |
 | Repository | SQLite 查询、事务、迁移、分页与记录映射 | UI、设备命令和业务判定 |
 
-Vue 标准业务表格通过 `apps/desktop_renderer/src/components/table/NcDataTable.vue` 和强类型列定义表达展示契约；文本测量、自动列宽、缺失值、对齐和视图偏好属于共享 Renderer 基础，不由业务页面重复实现。该基础不读取数据库、不执行设备命令，也不改变 DTO 字段语义。现有直接 `el-table` 按 [表格迁移清单](ui/TABLE_INVENTORY.md) 分域收敛，新增违规由 `scripts/ui/` Guard 阻止。
+Vue 标准业务表格通过 `apps/desktop_renderer/src/components/table/NcDataTable.vue` 和强类型列定义表达展示契约；文本测量、自动列宽、缺失值、对齐和视图偏好属于共享 Renderer 基础，不由业务页面重复实现。该基础不读取数据库、不执行设备命令，也不改变 DTO 字段语义。现有直接 `el-table` 按 [表格迁移清单](./ui/TABLE_INVENTORY.md) 分域收敛，新增违规由 `scripts/ui/` Guard 阻止。
 
 ## 后台任务与导出
 
@@ -83,10 +83,18 @@ flowchart LR
 
 ## 当前完成边界
 
-“Qt 已删除”只表示技术栈和启动架构完成收口，不表示所有业务都通过人工或真实设备验收。模块状态以[最终迁移矩阵](architecture/MIGRATION_MATRIX.md)、Navigation Registry、Feature Registry 和测试为准；自动测试不能把 `PARTIAL`、`IMPLEMENTED_UNVERIFIED` 或 `REAL_DEVICE_PENDING` 提升为 `COMPLETE`。
+“Qt 已删除”只表示技术栈和启动架构完成收口，不表示所有业务都通过人工或真实设备验收。当前模块状态以 Navigation Registry、Feature Registry、生产代码、测试和[正式包功能矩阵](./release/PACKAGED_FEATURE_MATRIX.md)为准；冻结迁移矩阵只用于解释历史去向。自动测试不能把 `PARTIAL`、`IMPLEMENTED_UNVERIFIED` 或 `REAL_DEVICE_PENDING` 提升为 `COMPLETE`。
+
+## 演进约束
+
+- 补齐尚未验证的模块时沿现有 Application Service、FastAPI、Vue 和 Electron 白名单能力建设，不恢复 Qt 或独立 Browser 产品。
+- `legacy_tasks.py` 中仍有生产消费者的实现按领域逐步下沉到明确 Service/handler，不能通过复制状态机制造第二套任务契约。
+- 生产设备命令进入版本化 Command Profile；无可信厂商、角色、平台、版本或样本证据时失败关闭。
+- Electron 托盘、签名、升级和安装包能力不得扩大 Native Bridge 的任意命令、路径或 URL 权限。
+- 自动化、Electron 人工、真实设备/局点和正式制品是独立证据维度；只有对应证据完成后才能提升状态。
 
 SNMP Center、通用 MIB/OID 平台和无线勘测属于批准删除项。设备管理只保留 SNMP v1/v2c 基础识别；网络工具无线扫描是独立能力。
 
 ## 架构门
 
-新增功能必须沿 `Application Service -> FastAPI -> Vue` 建设，并通过 Electron 白名单本机能力完成桌面闭环。当前十个架构门已由 `scripts/architecture/run_all.py` 建立，其中动态图稳定性门覆盖 ECharts 时间轴的 Canvas、Tooltip、Resize、实例生命周期和 series 替换；精确分类、限时例外、历史迁移分类和未解决项见[架构一致性规则](ARCHITECTURE_COMPLIANCE.md)、[当前审计报告](archive/migrations/electron-only/ARCHITECTURE_COMPLIANCE_REPORT.md)及 [E10B 归档](archive/migrations/electron-only/2026-07-18-E10B-architecture-guards-and-remediation.md)。
+新增功能必须沿 `Application Service -> FastAPI -> Vue` 建设，并通过 Electron 白名单本机能力完成桌面闭环。当前十个架构门已由 `scripts/architecture/run_all.py` 建立，其中动态图稳定性门覆盖 ECharts 时间轴的 Canvas、Tooltip、Resize、实例生命周期和 series 替换；长期规则见[架构一致性](./architecture/COMPLIANCE.md)，历史整改证据留在[迁移归档](./archive/migrations/electron-only/README.md)。

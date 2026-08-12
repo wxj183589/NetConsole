@@ -51,4 +51,4 @@ API 客户端不生成持久文件；测试 mock、快照和临时响应只能�
 
 ## 相关文档
 
-参见 [设备管理页面](../views/devices/README.md)、[API/Application 边界审计](../../../../docs/API_APPLICATION_BOUNDARY_AUDIT.md)、[Web 架构](../../../../docs/WEB_ARCHITECTURE.md) 和 [API DTO 模型](../../../../src/netconsole/models/api/README.md)。
+参见 [设备管理页面](../views/devices/README.md)、[API/Application 边界审计](../../../../docs/development/API_APPLICATION_BOUNDARY.md)、[Web 架构](../../../../docs/architecture/RUNTIME.md) 和 [API DTO 模型](../../../../src/netconsole/models/api/README.md)。

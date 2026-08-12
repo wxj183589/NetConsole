@@ -37,4 +37,4 @@ Vite 输出、缓存和依赖目录不得提交；测试临时数据使用测试
 
 ## 相关文档
 
-参见 [Electron Desktop 架构](../../docs/WEB_ARCHITECTURE.md)、[表格规范](../../docs/ui_table_guidelines.md) 和 [UI 设计系统](../../docs/UI_DESIGN_SYSTEM.md)。
+参见 [Electron Desktop 架构](../../docs/architecture/RUNTIME.md)、[表格规范](../../docs/ui/TABLE_GUIDELINES.md) 和 [UI 设计系统](../../docs/ui/DESIGN_SYSTEM.md)。

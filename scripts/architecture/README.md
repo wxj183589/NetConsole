@@ -33,7 +33,7 @@ FastAPI Router 规则由 `checks.py` 的 `router_boundary_messages()` 提供，�
 
 ## 配置与例外
 
-配置统一位于 [`config/architecture`](../../config/architecture/)：
+配置统一位于 [`config/architecture`](../../config/architecture)：
 
 - `direct_sql_access.yaml`：每个直接连接文件必须精确登记，分类只允许 `REPOSITORY_REQUIRED`、`READ_ONLY_DATA_GATEWAY`、`ANALYSIS_DB_OWNER`、`MIGRATION_TOOL`、`TEST_ONLY`、`VIOLATION`；只有 `VIOLATION` 产生发布债务 Finding。
 - `ui_business_logic.yaml`：AST 名称命中只产生待分类证据，人工分类只允许 `DISPLAY_ONLY`、`BUSINESS_LOGIC`、`FALSE_POSITIVE`。函数名本身不能自动判定违规。
@@ -61,4 +61,4 @@ FastAPI Router 规则由 `checks.py` 的 `router_boundary_messages()` 提供，�
 
 其余公开入口使用表格中的文件名。单门无未豁免命中时返回 `0`，发现问题时返回非零；例外配置本身无效时单门返回 `2`。统一入口只有十门全部通过且没有陈旧例外时返回 `0`。动态图稳定性门审计所有复用 `createTimeChartInitOptions` 的时间轴 Vue 组件，要求关闭 dirty rectangle、保留真实 null gap、释放实例并显式替换 series。
 
-相关测试见 [`tests/architecture/README.md`](../../tests/architecture/README.md)，长期分层与发布规则见[架构一致性审计](../../docs/ARCHITECTURE_COMPLIANCE.md)。
+相关测试见 [`tests/architecture/README.md`](../../tests/architecture/README.md)，长期分层与发布规则见[架构一致性审计](../../docs/architecture/COMPLIANCE.md)。

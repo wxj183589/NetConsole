@@ -31,4 +31,4 @@
 
 ## 相关文档
 
-参见 [第三方依赖](../../../docs/THIRD_PARTY_DEPENDENCIES.md)、[构建与发布](../../../docs/BUILD_AND_RELEASE.md) 和 `licenses/README.md`。
+参见 [第三方依赖](../../../docs/release/THIRD_PARTY_DEPENDENCIES.md)、[构建与发布](../../../docs/release/BUILD_AND_RELEASE.md) 和 `licenses/README.md`。

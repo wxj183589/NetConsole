@@ -28,7 +28,7 @@ description: "NetConsole 地面无人值守、07:00-23:00/跨午夜调度、列�
 
 # 开始前读取
 
-- `docs/GROUND_UNATTENDED.md`、`docs/GROUND_UNATTENDED_RISK_AUDIT.md`、`src/netconsole/services/ground_unattended/README.md`。
+- `docs/rail-transit/ground-unattended/README.md`、`src/netconsole/services/ground_unattended/README.md`。
 - `src/netconsole/services/ground_unattended/`、`src/netconsole/repositories/ground_unattended_repository.py`。
 - `src/netconsole/backend/api/ground_unattended_router.py`、`src/netconsole/models/api/ground_unattended.py`。
 - `src/netconsole/services/job_center/handlers/ground_unattended_jobs.py`、共享 Online MR/fping/AP Identity 入口。

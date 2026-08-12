@@ -30,4 +30,4 @@ Profile 由 Feature Registry/启动配置消费，构建清单由 `scripts/build
 
 ## 相关文档
 
-参见 [仓库目录规范](../docs/development/repository-layout.md)、[功能模块](../docs/FEATURE_MODULES.md) 和 [构建与发布](../docs/BUILD_AND_RELEASE.md)。
+参见 [仓库目录规范](../docs/development/repository-layout.md)、[功能模块](../docs/architecture/FEATURE_MODULES.md) 和 [构建与发布](../docs/release/BUILD_AND_RELEASE.md)。

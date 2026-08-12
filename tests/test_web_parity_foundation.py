@@ -297,7 +297,9 @@ def test_parity_matrix_covers_fixed_modules_and_allowed_states() -> None:
     matrix = (
         Path(__file__).resolve().parents[1]
         / "docs"
-        / "architecture"
+        / "archive"
+        / "migrations"
+        / "qt-to-electron"
         / "MIGRATION_MATRIX.md"
     ).read_text(encoding="utf-8")
     for title in (
@@ -343,7 +345,9 @@ def test_module_migration_matrix_uses_canonical_states_and_electron_product() ->
     matrix = (
         Path(__file__).resolve().parents[1]
         / "docs"
-        / "architecture"
+        / "archive"
+        / "migrations"
+        / "qt-to-electron"
         / "MIGRATION_MATRIX.md"
     ).read_text(encoding="utf-8")
     for legacy_state in (
@@ -363,11 +367,11 @@ def test_current_architecture_docs_do_not_reintroduce_legacy_parity_states() -> 
     content = "\n".join(
         (docs_root / name).read_text(encoding="utf-8")
         for name in (
-            "ARCHITECTURE_NEXT.md",
-            "ELECTRON_DESKTOP.md",
-            "WEB_ARCHITECTURE.md",
-            "ARCHITECTURE_COMPLIANCE.md",
-            "architecture/MIGRATION_MATRIX.md",
+            "ARCHITECTURE.md",
+            "architecture/DESKTOP.md",
+            "architecture/RUNTIME.md",
+            "architecture/COMPLIANCE.md",
+            "archive/migrations/qt-to-electron/MIGRATION_MATRIX.md",
         )
     )
     for legacy_state in (

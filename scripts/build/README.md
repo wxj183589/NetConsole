@@ -2,7 +2,7 @@
 
 本目录负责 PyInstaller/前端元数据、依赖与许可证检查、SBOM、运行工具校验和 Windows 发布编排。它只生成构建产物，不把产物当源码提交。
 
-主要入口为 `build_release.py`、`release.py`、`check_packaged_runtime.py` 和清单脚本。验证使用 Python 虚拟环境及 `docs/BUILD_AND_RELEASE.md` 规定的命令，构建临时目录完成后清理。
+主要入口为 `build_release.py`、`release.py`、`check_packaged_runtime.py` 和清单脚本。验证使用 Python 虚拟环境及 `docs/release/BUILD_AND_RELEASE.md` 规定的命令，构建临时目录完成后清理。
 
 ## 用途与边界
 
@@ -32,4 +32,4 @@
 
 ## 相关文档
 
-参见 [构建与发布](../../docs/BUILD_AND_RELEASE.md)、[第三方依赖](../../docs/THIRD_PARTY_DEPENDENCIES.md) 和 [仓库目录规范](../../docs/development/repository-layout.md)。
+参见 [构建与发布](../../docs/release/BUILD_AND_RELEASE.md)、[第三方依赖](../../docs/release/THIRD_PARTY_DEPENDENCIES.md) 和 [仓库目录规范](../../docs/development/repository-layout.md)。

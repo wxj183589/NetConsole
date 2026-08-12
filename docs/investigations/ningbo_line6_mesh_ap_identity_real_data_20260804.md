@@ -1,5 +1,7 @@
 # 宁波地铁 6 号线 MESH AP Identity 真实数据调查
 
+> 历史现场证据：本文冻结 2026-08-04 的脱敏样本、remap 口径和副本验证，不是当前实现规范。当前规则以 MESH、AP Identity、生产代码和测试为准。
+
 - 调查日期：2026-08-04
 - 调查性质：只读取证，不连接 AC、MR 或现场设备，不修改业务代码
 - 结论置信度：高（真实数据快照、当前 Resolver、任务记录、页面查询和一次性副本实验相互印证）
@@ -295,7 +297,7 @@ CSV 仅包含要求的 Peer、候选数量、alias/Resolver 结果和匹配后�
 ### 11.2 自动测试
 
 - MESH 分析、查询 Web API、identity remap 和来源重建定向组合：`131 passed, 2 warnings`；相关筛选集 `tests -k "mesh and (identity or remap or rebuild)"`：`64 passed, 3365 deselected, 1 warning`。
-- 改动范围 Ruff check、`py_compile` 和 `pnpm --dir apps/web exec vue-tsc -b` 通过；Web 定向命令实际完成 `150 files / 917 tests`。
+- 改动范围 Ruff check、`py_compile` 和当时 Renderer 的 `vue-tsc -b` 通过；前端定向命令实际完成 `150 files / 917 tests`。该路径已在后续 Electron-only 收敛中迁入 `apps/desktop_renderer`。
 - `ruff format --check` 报告仓库现有 9 个文件需要重排，本次未引入无关全文件格式化；该项待项目统一格式化基线处理，不能记作本次通过。
 
 ### 11.3 disposable 副本验收

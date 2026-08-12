@@ -28,7 +28,7 @@ description: "NetConsole Electron Main、Preload、IPC、Native Bridge、受管 
 
 # 开始前读取
 
-- `docs/ELECTRON_DESKTOP.md`、`docs/DESKTOP_NATIVE_BRIDGE.md`、`docs/ARCHITECTURE.md`。
+- `docs/architecture/DESKTOP.md`、`docs/architecture/NATIVE_BRIDGE.md`、`docs/ARCHITECTURE.md`。
 - `apps/desktop_electron/src/main/`、`apps/desktop_electron/src/preload/`、`apps/desktop_electron/src/shared/`。
 - `apps/desktop_renderer/src/platform/`、`src/netconsole/backend/electron_runtime.py`、`src/netconsole/backend/api/main.py`。
 - `apps/desktop_electron/tests/`、`tests/test_electron_runtime.py` 和目标 Bridge/Renderer Adapter 测试。

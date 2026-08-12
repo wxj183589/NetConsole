@@ -30,4 +30,4 @@ profile 不生成运行数据；测试生成的合并配置写入临时目录，
 
 ## 相关文档
 
-参见 [功能模块](../../docs/FEATURE_MODULES.md) 和 [仓库目录规范](../../docs/development/repository-layout.md)。
+参见 [功能模块](../../docs/architecture/FEATURE_MODULES.md) 和 [仓库目录规范](../../docs/development/repository-layout.md)。

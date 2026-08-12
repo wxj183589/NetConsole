@@ -45,6 +45,6 @@ BrowserWindow 创建时保持隐藏。新进程的主窗口不接收历史坐标
 
 ## 相关文档
 
-- [Electron Desktop](../../../../docs/ELECTRON_DESKTOP.md)
-- [Native Bridge](../../../../docs/DESKTOP_NATIVE_BRIDGE.md)
+- [Electron Desktop](../../../../docs/architecture/DESKTOP.md)
+- [Native Bridge](../../../../docs/architecture/NATIVE_BRIDGE.md)
 - [外部终端白名单](../../../../docs/external-terminal/README.md)

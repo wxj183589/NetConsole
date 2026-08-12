@@ -93,7 +93,7 @@ flowchart TB
 - 网络、磁盘、解析和导出等长任务进入后台 Job 或独立 Export Process；Infrastructure 通过受控适配器访问设备和工具。
 - Windows Go Agent 是独立的可选采集进程；Linux/CentOS 离线部署、主动注册和多 Controller 不属于当前交付范围。
 
-详细说明见 [当前架构](docs/ARCHITECTURE.md)、[Electron Desktop](docs/ELECTRON_DESKTOP.md)、[Agent](docs/AGENT.md) 和 [仓库目录规范](docs/development/repository-layout.md)。
+详细说明见 [当前架构](docs/ARCHITECTURE.md)、[Electron Desktop](docs/architecture/DESKTOP.md)、[Agent](docs/agent/README.md) 和 [仓库目录规范](docs/development/repository-layout.md)。
 
 ## 项目状态
 
@@ -103,7 +103,7 @@ NetConsole 处于持续开发阶段。当前正式桌面目标是 Windows，代�
 
 - 已有：轨道交通基础资料、设备与 AC/FIT-AP 管理、Online MR、MESH/MR 离线分析、地面无人值守、AP Identity、网络测试、任务中心和数据导出等代码与自动化测试。
 - 仍在演进：跨厂商采集覆盖、全线路历史数据标准化、质量评估模型、异常识别和面向线路的可视化。
-- 尚无：可供公众直接下载的稳定 Release 安装包。构建和打包入口见 [构建与发布](docs/BUILD_AND_RELEASE.md)。
+- 尚无：可供公众直接下载的稳定 Release 安装包。构建和打包入口见 [构建与发布](docs/release/BUILD_AND_RELEASE.md)。
 
 ## Roadmap
 
@@ -120,7 +120,7 @@ Infrastructure & Network Tooling 路线会持续补充更多厂商适配、交�
 
 ## 使用方式
 
-仓库当前没有公开稳定安装包，普通用户不应把历史 Git tag、CI Artifact 或源码目录视为正式发行版。需要评估项目时，请按下方开发流程从源码运行；需要生成 Windows 安装包时，请严格使用[构建与发布](docs/BUILD_AND_RELEASE.md)中的锁定依赖和打包门禁。
+仓库当前没有公开稳定安装包，普通用户不应把历史 Git tag、CI Artifact 或源码目录视为正式发行版。需要评估项目时，请按下方开发流程从源码运行；需要生成 Windows 安装包时，请严格使用[构建与发布](docs/release/BUILD_AND_RELEASE.md)中的锁定依赖和打包门禁。
 
 ## 开发运行
 
@@ -148,20 +148,20 @@ pnpm dev:codex
 .\.venv\Scripts\python.exe -m pytest tests\test_web_architecture.py tests\test_mesh_analysis_web_api.py -q
 ```
 
-完整开发、测试和打包要求分别见 [开发指南](docs/DEVELOPMENT_GUIDE.md)、[测试基线](docs/TEST_BASELINE.md) 和 [构建与发布](docs/BUILD_AND_RELEASE.md)。
+完整开发、测试和打包要求分别见 [开发规则](docs/DEVELOPMENT_RULES.md)、[测试基线](docs/testing/BASELINE.md) 和 [构建与发布](docs/release/BUILD_AND_RELEASE.md)。
 
 ## 文档导航
 
 - [项目文档索引](docs/README.md)
-- [轨道交通无线业务模型](docs/RAIL_TRANSIT_WIRELESS.md)
-- [轨道交通基础资料](docs/RAIL_TRANSIT_BASE_DATA.md)
-- [Online MR 实时采集](docs/ONLINE_MR_COLLECTION.md)
-- [MESH/MR 日志分析 Web](docs/MESH_ANALYSIS_WEB.md)
-- [地面无人值守](docs/GROUND_UNATTENDED.md)
-- [AC/FIT-AP 管理](docs/AC_MANAGEMENT.md)
-- [配置采集与快照对比](docs/CONFIG_COLLECTION.md)
+- [轨道交通无线业务模型](docs/rail-transit/WIRELESS.md)
+- [轨道交通基础资料](docs/rail-transit/base-data/README.md)
+- [Online MR 实时采集](docs/rail-transit/online-mr/README.md)
+- [MESH/MR 日志分析](docs/rail-transit/mesh/README.md)
+- [地面无人值守](docs/rail-transit/ground-unattended/README.md)
+- [AC/FIT-AP 管理](docs/rail-transit/AC_MANAGEMENT.md)
+- [配置采集与快照对比](docs/device-management/CONFIG_COLLECTION.md)
 - [局点与数据存储](docs/storage/README.md)
-- [Windows Go Agent](docs/AGENT.md)
+- [Windows Go Agent](docs/agent/README.md)
 
 ## 贡献与安全
 

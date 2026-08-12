@@ -48,4 +48,4 @@ DTO 表示单次请求/响应或事件快照，不持有长期状态；Token、�
 
 ## 相关文档
 
-参见 [FastAPI API](../../backend/api/README.md)、[设备管理页面](../../../../apps/desktop_renderer/src/views/devices/README.md)、[API 边界审计](../../../../docs/API_APPLICATION_BOUNDARY_AUDIT.md)和[Web 架构](../../../../docs/WEB_ARCHITECTURE.md)。
+参见 [FastAPI API](../../backend/api/README.md)、[设备管理页面](../../../../apps/desktop_renderer/src/views/devices/README.md)、[API 边界审计](../../../../docs/development/API_APPLICATION_BOUNDARY.md)和[Web 架构](../../../../docs/architecture/RUNTIME.md)。
