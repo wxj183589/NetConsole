@@ -74,19 +74,24 @@ General SSH, SNMP, device management, configuration collection, Ping, throughput
 ## Architecture
 
 ```mermaid
-flowchart LR
+flowchart TB
     E["Electron Main / Preload"] --> V["Vue Renderer"]
-    E --> B["Managed Python Backend / FastAPI"]
+    E --> B["Managed FastAPI Backend / Router"]
     V --> B
-    B --> S["Application Services"]
-    S --> R["SQLite / file data"]
-    S --> J["Background Jobs / Export Processes"]
-    S --> D["SSH / SNMP / Agent / device adapters"]
+    B --> A["Application Services"]
+    A --> D["Domain Services / Parsers"]
+    A --> P["Repositories"]
+    A --> J["Background Jobs / Export Processes"]
+    D --> I["Infrastructure / Device Adapters"]
+    P --> S["SQLite / Controlled Files"]
+    J --> S
+    I --> X["SSH / SNMP / Agent / SFTP / Tools"]
 ```
 
 - Electron is the formal Windows desktop shell and Vue is the single main renderer.
-- Python Core and FastAPI own business logic, data access, device adapters, and task orchestration.
-- Network, disk, parsing, and export work runs in background jobs or dedicated export processes.
+- The FastAPI/Python runtime Router handles DTOs, authentication, and Service calls; Application Services orchestrate use cases.
+- Domain Services / Parsers own device and business rules, while Repositories own SQLite, controlled files, and transactions.
+- Network, disk, parsing, and export work runs in background jobs or dedicated export processes; Infrastructure accesses devices and tools through controlled adapters.
 - The Windows Go Agent is an optional independent collection process. CentOS offline deployment, active registration, and multi-controller operation are outside the current delivery scope.
 
 See [Current architecture](docs/ARCHITECTURE.md), [Electron Desktop](docs/ELECTRON_DESKTOP.md), [Agent](docs/AGENT.md), and the [repository layout](docs/development/repository-layout.md).

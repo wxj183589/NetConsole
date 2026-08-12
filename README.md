@@ -73,19 +73,24 @@ IP、VLAN、拓扑与配置         AP 规划、车载资料、业务关系     
 ## 架构摘要
 
 ```mermaid
-flowchart LR
+flowchart TB
     E["Electron Main / Preload"] --> V["Vue Renderer"]
-    E --> B["受管 Python Backend / FastAPI"]
+    E --> B["受管 FastAPI Backend / Router"]
     V --> B
-    B --> S["Application Services"]
-    S --> R["SQLite / 文件数据"]
-    S --> J["Background Jobs / Export Processes"]
-    S --> D["SSH / SNMP / Agent / 设备适配器"]
+    B --> A["Application Services"]
+    A --> D["Domain Services / Parsers"]
+    A --> P["Repositories"]
+    A --> J["Background Jobs / Export Processes"]
+    D --> I["Infrastructure / Device Adapters"]
+    P --> S["SQLite / Controlled Files"]
+    J --> S
+    I --> X["SSH / SNMP / Agent / SFTP / Tools"]
 ```
 
 - Electron 是正式 Windows 桌面外壳，Vue 是唯一主界面。
-- Python Core 和 FastAPI 运行时（runtime）承载业务、数据、设备适配器与任务编排。
-- 网络、磁盘、解析和导出等长任务进入后台 Job 或独立 Export Process。
+- FastAPI/Python runtime 中的 Router 只做 DTO、鉴权和 Service 调用；Application Services 编排用例。
+- Domain Services / Parsers 负责设备与业务规则，Repositories 负责 SQLite、受控文件和事务。
+- 网络、磁盘、解析和导出等长任务进入后台 Job 或独立 Export Process；Infrastructure 通过受控适配器访问设备和工具。
 - Windows Go Agent 是独立的可选采集进程；Linux/CentOS 离线部署、主动注册和多 Controller 不属于当前交付范围。
 
 详细说明见 [当前架构](docs/ARCHITECTURE.md)、[Electron Desktop](docs/ELECTRON_DESKTOP.md)、[Agent](docs/AGENT.md) 和 [仓库目录规范](docs/development/repository-layout.md)。
