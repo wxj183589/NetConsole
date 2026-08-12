@@ -8,7 +8,7 @@ import sys
 import threading
 from time import monotonic
 from dataclasses import dataclass
-from typing import TextIO
+from typing import Callable, TextIO
 from urllib.parse import urlsplit
 
 import uvicorn
@@ -16,11 +16,11 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from netconsole.backend.api.main import DESKTOP_SESSION_HEADER, create_app
-from netconsole.core.backend_instance_lock import BackendInstanceInUseError, BackendInstanceLock
+from netconsole.core.backend_instance_lock import BackendInstanceLock
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_environment import is_packaged_runtime
 from netconsole.core.runtime_mode import RuntimeMode
-from netconsole.core.storage_manifest import StorageCompatibilityError, prepare_storage_manifest
+from netconsole.core.storage_manifest import prepare_storage_manifest
 
 
 _SESSION_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{32,256}$")
@@ -65,6 +65,7 @@ def build_app(
     session_token: str,
     *,
     paths: PathResolver | None = None,
+    startup_stage: Callable[[str], None] | None = None,
 ) -> FastAPI:
     if _SESSION_TOKEN_RE.fullmatch(session_token) is None:
         raise ValueError("invalid Electron runtime session token")
@@ -79,6 +80,7 @@ def build_app(
         development_api_enabled=options.development,
         development_runtime_label="electron-development" if options.development else "electron-production",
         development_frontend_mode="vite" if options.renderer_origin else "dist",
+        startup_stage=startup_stage,
     )
     if options.renderer_origin:
         app.add_middleware(
@@ -103,12 +105,10 @@ def main(argv: list[str] | None = None, *, stdin: TextIO | None = None) -> int:
             _emit_startup_stage("instance_lock_acquired", started_at)
             prepare_storage_manifest(paths)
             _emit_startup_stage("storage_manifest_ready", started_at)
-            app = build_app(options, session_token, paths=paths)
-            _emit_startup_stage("application_built", started_at)
             listener = socket.create_server((options.host, options.port), family=socket.AF_INET)
             actual_port = int(listener.getsockname()[1])
             try:
-                _emit_startup_stage("listener_ready", started_at)
+                _emit_startup_stage("listener_bound", started_at)
                 print(
                     json.dumps(
                         {
@@ -120,6 +120,14 @@ def main(argv: list[str] | None = None, *, stdin: TextIO | None = None) -> int:
                     ),
                     flush=True,
                 )
+                app = build_app(
+                    options,
+                    session_token,
+                    paths=paths,
+                    startup_stage=lambda stage: _emit_startup_stage(stage, started_at),
+                )
+                _emit_startup_stage("application_built", started_at)
+                _emit_startup_stage("listener_ready", started_at)
                 server = uvicorn.Server(
                     uvicorn.Config(
                         app,
@@ -131,17 +139,17 @@ def main(argv: list[str] | None = None, *, stdin: TextIO | None = None) -> int:
                 )
                 control_thread = threading.Thread(
                     target=watch_control_stream,
-                    args=(control_stream, server),
+                    args=(control_stream, server, sys.stdout, lambda: setattr(app.state, "accepting_work", False)),
                     name="netconsole-electron-control",
                     daemon=True,
                 )
                 control_thread.start()
                 server.run(sockets=[listener])
-                emit_shutdown_ack(sys.stdout)
+                emit_shutdown_complete(sys.stdout)
                 wait_for_exit_command(control_stream)
             finally:
                 listener.close()
-    except (BackendInstanceInUseError, StorageCompatibilityError) as exc:
+    except Exception as exc:
         print(
             json.dumps(
                 {
@@ -171,7 +179,12 @@ def _emit_startup_stage(stage: str, started_at: float) -> None:
     )
 
 
-def watch_control_stream(stream: TextIO, server: uvicorn.Server) -> None:
+def watch_control_stream(
+    stream: TextIO,
+    server: uvicorn.Server,
+    output: TextIO | None = None,
+    on_shutdown: Callable[[], None] | None = None,
+) -> None:
     for raw in stream:
         if len(raw) > 4096:
             continue
@@ -180,17 +193,33 @@ def watch_control_stream(stream: TextIO, server: uvicorn.Server) -> None:
         except json.JSONDecodeError:
             continue
         if payload == {"command": "shutdown"}:
+            if on_shutdown is not None:
+                on_shutdown()
+            emit_shutdown_received(output or sys.stdout)
             server.should_exit = True
             return
     server.should_exit = True
 
 
-def emit_shutdown_ack(output: TextIO) -> None:
+def emit_shutdown_received(output: TextIO) -> None:
     print(
-        '{"event":"netconsole.electron_backend.shutdown_ack"}',
+        '{"event":"netconsole.electron_backend.shutdown_received"}',
         file=output,
         flush=True,
     )
+
+
+def emit_shutdown_complete(output: TextIO) -> None:
+    print(
+        '{"event":"netconsole.electron_backend.shutdown_complete"}',
+        file=output,
+        flush=True,
+    )
+
+
+def emit_shutdown_ack(output: TextIO) -> None:
+    """Backward-compatible alias for older smoke callers."""
+    emit_shutdown_complete(output)
 
 
 def wait_for_exit_command(stream: TextIO) -> None:
@@ -242,7 +271,9 @@ if __name__ == "__main__":
 __all__ = [
     "ElectronRuntimeOptions",
     "build_app",
+    "emit_shutdown_complete",
     "emit_shutdown_ack",
+    "emit_shutdown_received",
     "main",
     "parse_options",
     "read_session_token",

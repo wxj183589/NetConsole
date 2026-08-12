@@ -8,6 +8,7 @@ import secrets
 from contextlib import asynccontextmanager
 from http.cookies import SimpleCookie
 from pathlib import Path
+from typing import Callable
 from urllib.parse import parse_qs
 
 from fastapi import FastAPI, Request
@@ -169,6 +170,29 @@ class DesktopSessionMiddleware:
         await response(scope, receive, send)
 
 
+class DesktopShutdownAdmissionMiddleware:
+    """Reject new mutating desktop requests once controlled shutdown begins."""
+
+    def __init__(self, app, *, state) -> None:
+        self.app = app
+        self.state = state
+
+    async def __call__(self, scope, receive, send) -> None:
+        if (
+            scope.get("type") == "http"
+            and scope.get("method") in {"POST", "PUT", "PATCH", "DELETE"}
+            and not bool(getattr(self.state, "accepting_work", True))
+        ):
+            response = JSONResponse(
+                status_code=503,
+                content={"detail": "NetConsole 正在安全退出，暂不接受新的后台操作"},
+                headers={"Retry-After": "5"},
+            )
+            await response(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
+
+
 def create_app(
     runtime_mode: RuntimeMode = RuntimeMode.SERVER,
     *,
@@ -193,6 +217,7 @@ def create_app(
     development_api_enabled: bool = False,
     development_runtime_label: str = "development",
     development_frontend_mode: str = "dist",
+    startup_stage: Callable[[str], None] | None = None,
 ) -> FastAPI:
     paths = paths or PathResolver()
     for recovered_upgrade in recover_incomplete_upgrades(paths):
@@ -200,7 +225,8 @@ def create_app(
             "DATABASE_UPGRADE_RECOVERED",
             f"operation={recovered_upgrade.get('operation_id')} stage={recovered_upgrade.get('stage')}",
         )
-    site_name = _current_site_name(paths)
+    _emit_startup_stage(startup_stage, "upgrade_recovery_complete")
+    site_name = _current_site_name(paths, startup_stage=startup_stage)
     defer_runtime_start = bool(runtime_mode is RuntimeMode.DESKTOP and desktop_session_token)
     if online_mr_web_control_enabled is None:
         online_mr_web_control_enabled = os.environ.get("ONLINE_MR_WEB_CONTROL_ENABLED", "0") == "1"
@@ -352,6 +378,8 @@ def create_app(
             try:
                 # 先让 health、静态资源与首屏完成；历史任务恢复不参与桌面首屏关键路径。
                 await asyncio.sleep(_DESKTOP_DEFERRED_RUNTIME_DELAY_SECONDS)
+                if not app.state.accepting_work:
+                    return
                 reconcile_tasks = getattr(task_service, "reconcile_orphaned_local_tasks", None)
                 if callable(reconcile_tasks):
                     await asyncio.to_thread(reconcile_tasks)
@@ -404,6 +432,7 @@ def create_app(
             yield
         finally:
             if deferred_start_task is not None:
+                deferred_start_task.cancel()
                 await asyncio.gather(deferred_start_task, return_exceptions=True)
             if auto_cleanup_task is not None:
                 auto_cleanup_task.cancel()
@@ -486,6 +515,8 @@ def create_app(
     app.state.development_runtime_label = str(development_runtime_label)
     app.state.development_frontend_mode = str(development_frontend_mode)
     app.state.desktop_session_protected = bool(desktop_session_token)
+    app.state.accepting_work = True
+    app.add_middleware(DesktopShutdownAdmissionMiddleware, state=app.state)
     app.state.online_mr_web_control_enabled = online_mr_web_control_enabled
     app.state.online_mr_agent_executor_enabled = online_mr_agent_executor_enabled
     app.state.runtime_services_ready = False
@@ -776,6 +807,7 @@ def create_app(
 
     app.include_router(api_router)
     app.include_router(ws_router)
+    _emit_startup_stage(startup_stage, "routers_registered")
     if development_api_enabled:
         if runtime_mode is not RuntimeMode.DESKTOP or not desktop_session_token:
             raise RuntimeError("development API requires protected desktop runtime")
@@ -823,31 +855,50 @@ def create_app(
     return app
 
 
-def _current_site_name(paths: PathResolver) -> str:
+def _current_site_name(
+    paths: PathResolver,
+    *,
+    startup_stage: Callable[[str], None] | None = None,
+) -> str:
     preferred = str(os.environ.get("NETCONSOLE_ACTIVE_SITE_ID") or "").strip()
     if preferred:
         try:
             selected = SiteRegistryRepository(paths).resolve_directory_name(preferred)
             if paths.site_dir(selected).is_dir():
-                _initialize_active_site_database(paths, selected)
+                _initialize_active_site_database(paths, selected, startup_stage=startup_stage)
                 return selected
         except (SiteStorageError, ValueError):
             pass
     if not any(path.is_dir() and not path.is_symlink() for path in paths.sites_dir.glob("*")):
         DemoSiteSeedService(paths).seed()
     selected = SiteManager(paths).get_current_site()
-    _initialize_active_site_database(paths, selected)
+    _initialize_active_site_database(paths, selected, startup_stage=startup_stage)
     return selected
 
 
-def _initialize_active_site_database(paths: PathResolver, site_name: str) -> None:
+def _initialize_active_site_database(
+    paths: PathResolver,
+    site_name: str,
+    *,
+    startup_stage: Callable[[str], None] | None = None,
+) -> None:
     database = Database(paths.site_db_path(site_name))
     if not database.exists():
         raise RuntimeError("当前局点设备数据库不存在，Backend 未启动")
     database.initialize()
+    _emit_startup_stage(startup_stage, "active_site_database_ready")
     # Database.initialize() may normalize legacy rows and advance the source
     # revision; refresh the read-only identity index before API consumers use it.
     ApIdentityQueryService(database).ensure_index("backend_startup")
+    _emit_startup_stage(startup_stage, "ap_identity_index_ready")
+
+
+def _emit_startup_stage(
+    callback: Callable[[str], None] | None,
+    stage: str,
+) -> None:
+    if callback is not None:
+        callback(stage)
 
 
 def _frontend_dist(paths: PathResolver) -> Path:

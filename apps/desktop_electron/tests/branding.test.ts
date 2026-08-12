@@ -1,4 +1,4 @@
-import { existsSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 import { describe, expect, it } from 'vitest'
@@ -30,7 +30,7 @@ describe('desktop branding resources', () => {
 
     expect(developmentIcon).toBe(resolve(repoRoot, 'resources', 'branding', 'netconsole.ico'))
     expect(packagedIcon).toBe(resolve(appRoot, 'dist', 'resources', 'branding', 'netconsole.ico'))
-    expect(developmentIcon).not.toContain('C:\\Users\\')
+    expect(readFileSync(resolve(appRoot, 'src', 'main', 'branding.ts'), 'utf8')).not.toContain('C:\\Users\\')
     expect(existsSync(developmentIcon)).toBe(true)
     expect(statSync(developmentIcon).size).toBeGreaterThan(0)
     expect(statSync(resolve(repoRoot, 'resources', 'branding', 'netconsole.png')).size).toBeGreaterThan(0)

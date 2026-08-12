@@ -6,13 +6,16 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from netconsole.backend.api.main import DESKTOP_SESSION_HEADER
+from netconsole.backend.api.main import DESKTOP_SESSION_HEADER, DesktopShutdownAdmissionMiddleware
 from netconsole.backend.electron_runtime import (
     ElectronRuntimeOptions,
     build_app,
     emit_shutdown_ack,
+    emit_shutdown_complete,
+    emit_shutdown_received,
     parse_options,
     read_session_token,
     wait_for_exit_command,
@@ -114,22 +117,81 @@ def test_session_token_rejects_invalid_handshake(payload: str) -> None:
 
 def test_control_stream_requests_shutdown_and_ignores_unknown_messages() -> None:
     server = SimpleNamespace(should_exit=False)
+    shutdown_requested = False
+
+    def mark_shutdown() -> None:
+        nonlocal shutdown_requested
+        shutdown_requested = True
+
     watch_control_stream(
         io.StringIO('not-json\n{"command":"unknown"}\n{"command":"shutdown"}\n'),
         server,
+        on_shutdown=mark_shutdown,
     )
 
     assert server.should_exit is True
+    assert shutdown_requested is True
 
 
-def test_shutdown_ack_is_emitted_as_bounded_json_event() -> None:
+def test_shutdown_lifecycle_events_are_emitted_as_bounded_json_events() -> None:
     output = io.StringIO()
 
+    emit_shutdown_received(output)
+    output.seek(0)
+    assert json.loads(output.readline()) == {
+        "event": "netconsole.electron_backend.shutdown_received"
+    }
+    output = io.StringIO()
+    emit_shutdown_complete(output)
+    assert json.loads(output.getvalue()) == {
+        "event": "netconsole.electron_backend.shutdown_complete"
+    }
+    output = io.StringIO()
     emit_shutdown_ack(output)
 
     assert json.loads(output.getvalue()) == {
-        "event": "netconsole.electron_backend.shutdown_ack"
+        "event": "netconsole.electron_backend.shutdown_complete"
     }
+
+
+def test_build_app_forwards_startup_stage_callback(monkeypatch) -> None:
+    stages: list[str] = []
+    captured: dict[str, object] = {}
+
+    def fake_create_app(*args, **kwargs):
+        captured.update(kwargs)
+        return FastAPI()
+
+    monkeypatch.setattr("netconsole.backend.electron_runtime.create_app", fake_create_app)
+
+    build_app(
+        ElectronRuntimeOptions(host="127.0.0.1", port=0),
+        "a" * 32,
+        startup_stage=stages.append,
+    )
+
+    assert captured["startup_stage"] == stages.append
+
+
+def test_desktop_shutdown_admission_rejects_new_mutating_requests() -> None:
+    app = FastAPI()
+    app.state.accepting_work = False
+    app.add_middleware(DesktopShutdownAdmissionMiddleware, state=app.state)
+
+    @app.get("/read")
+    def read() -> dict[str, bool]:
+        return {"ok": True}
+
+    @app.post("/write")
+    def write() -> dict[str, bool]:
+        return {"ok": True}
+
+    with TestClient(app) as client:
+        assert client.get("/read").status_code == 200
+        response = client.post("/write")
+
+    assert response.status_code == 503
+    assert response.headers["retry-after"] == "5"
 
 
 def test_startup_failure_protocol_is_ascii_and_preserves_chinese(monkeypatch, capsys) -> None:

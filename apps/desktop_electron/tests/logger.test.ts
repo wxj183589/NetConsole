@@ -205,6 +205,28 @@ describe('desktop file logger lifecycle', () => {
     }
   })
 
+  it('reports whether a bounded flush reached disk', async () => {
+    const root = await temporaryDirectory()
+    let releaseDisk: (() => void) | undefined
+    const diskGate = new Promise<void>((resolvePromise) => { releaseDisk = resolvePromise })
+    try {
+      const logger = createFileLogger(join(root, 'electron.log'), {
+        appendLine: async (path, line) => {
+          await diskGate
+          await appendFile(path, line, { encoding: 'utf8' })
+        },
+      })
+      logger('SLOW_DISK_EVENT')
+
+      await expect(logger.flush(1)).resolves.toBe(false)
+      releaseDisk?.()
+      await expect(logger.flush(30_000)).resolves.toBe(true)
+    } finally {
+      releaseDisk?.()
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   it('backs off repeated EBUSY rotation failures and recovers rolling', async () => {
     const root = await temporaryDirectory()
     try {

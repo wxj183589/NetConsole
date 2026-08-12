@@ -131,7 +131,7 @@ pnpm smoke:workspace-tray
 
 Codex 开发链可用 `pnpm exec node scripts/dev.mjs --codex --smoke` 做同口径冒烟；它还验证受保护的 `/api/dev/runtime-status` 已就绪，并检查固定端口退出后可重新绑定。浏览器与 Electron 专项 E2E 将在独立 Playwright 阶段接入；在脚本真实存在前，不把 Vitest 或 smoke 冒充 E2E。
 
-启动日志使用单调时钟记录 `electron.app_ready -> window_created -> loading_view_shown -> backend.spawn_started -> handshake_received -> health_ready -> renderer.navigation_started -> dom_ready -> mounted -> desktop.interactive`。Vue `mounted` 与可交互状态严格分开：页面先挂载基础壳，加载设置并通过真实 health 后才上报 `interactive`。Desktop 下历史 Task/Agent/Traffic/File 恢复延后到首屏之后执行；普通 Server 模式仍保持同步启动和失败回滚。当前实测基线与优化证据见 [E5 启动性能归档](archive/migrations/electron-only/E5-2026-07-18.md)。
+启动日志使用单调时钟记录 `electron.app_ready -> window_created -> loading_view_shown -> backend.spawn_started -> handshake_received -> health_ready -> renderer.navigation_started -> dom_ready -> mounted -> desktop.interactive`。受管 Backend 另以结构化 INFO 记录 `spawn -> first stdout` 及 `paths_resolved / instance_lock_acquired / storage_manifest_ready / listener_bound / active_site_database_ready / ap_identity_index_ready / routers_registered / application_built / listener_ready`，用于区分冻结 EXE/DLL 加载、数据根、数据库与应用组合耗时；不记录令牌或凭据。启动页单次加载后按这些真实阶段更新中文状态，并持续显示无虚假百分比的动画、已用时间和慢启动提示。Vue `mounted` 与可交互状态严格分开：页面先挂载基础壳，加载设置并通过真实 health 后才上报 `interactive`。Desktop 下历史 Task/Agent/Traffic/File 恢复延后到首屏之后执行；普通 Server 模式仍保持同步启动和失败回滚。当前实测基线与优化证据见 [E5 启动性能归档](archive/migrations/electron-only/E5-2026-07-18.md)。
 
 ## 生产资源模式
 
@@ -156,11 +156,12 @@ Electron Builder 目录包/NSIS 与 PyInstaller 受管 Backend 的构建链已�
 3. 使用可执行文件和参数数组启动 `netconsole.backend.electron_runtime`，固定 `shell: false`、`windowsHide: true`、`127.0.0.1` 和端口 `0`。
 4. 令牌只通过已持有子进程的 stdin 首行 JSON 传递；不进入参数、环境变量、URL 或配置。
 5. Electron 先校验受管子进程管道返回的 `127.0.0.1:<port>`，再使用临时请求头轮询真实 `/api/health`，成功后才加载正式 Vue 页面。
-6. stdout 只消费受管启动/退出协议，生产默认不落文件；stderr 先移除令牌和常见敏感字段，再按受控警告/错误事件写入 Electron 日志。
+6. stdout 只消费受管启动/退出协议；生产仅将结构化 lifecycle 事件提升为 INFO，其余 stdout 保持 DEBUG。stderr 先移除令牌和常见敏感字段，再按受控警告/错误事件写入 Electron 日志。
 7. 正常退出时 Main 通过同一 stdin 控制管道发送 `shutdown`，Python 控制线程据此请求 Uvicorn 优雅退出；父进程异常导致管道 EOF 时，Python 同样请求退出。
-8. Python 只在 `uvicorn.Server.run()` 完全返回后发送 `netconsole.electron_backend.shutdown_ack`，随后等待 Main 的 `exit`；Main 收到该确认后才发送 `exit` 并关闭控制管道。
-9. 只有优雅停止确认超时才对本管理器持有的子进程句柄发送终止信号；不按名称扫描或误杀其他 Python。
-10. 后端意外退出或强制终止后仍未退出时状态变为 `failed`，只向当前受信 Renderer 发送脱敏状态事件，不谎报 `stopped`。
+8. Python 收到命令后立即发送 `netconsole.electron_backend.shutdown_received`；只在 Uvicorn 与 FastAPI lifespan 完全退出后发送 `shutdown_complete`，随后等待 Main 的 `exit`。协议事件不能替代 OS 进程退出。
+9. Main 始终等待 child `exit/close`，超时后按 `SIGTERM -> SIGKILL -> Windows 当前 owned PID 的 taskkill /T /F` 有界升级；不按进程名扫描或误杀其他 Python/外部工具。
+10. 只有 child 实际退出才能转为 `stopped`。后端意外退出或最终升级仍未退出时状态变为 `failed`，只向当前受信 Renderer 发送脱敏状态事件，不谎报 `stopped`。
+11. 正式默认阶段 watchdog 为 30 秒，整体启动 hard deadline 为 60 秒；监听握手与 health ready 分开计时，合法阶段进展可刷新 watchdog，但不能无限等待。
 
 ### 运行日志生命周期
 
@@ -172,7 +173,7 @@ Backend 重启或恢复后，Main 的 `ready` 只表示新进程已通过 superv
 
 通用 API client 只允许 `GET/HEAD` 对明确的连接中断、Backend 重启和 `502/503/504` 做一次受控恢复：Electron 先重绑定，再从当前 generation 重新构造 URL 与 Header 后重试。`POST/PUT/PATCH/DELETE` 不自动重放，避免响应丢失时重复创建任务或执行写操作。Runtime 重绑定诊断只记录 host、reason、generation、耗时和端口是否变化，不记录 Origin、令牌或请求头。
 
-桌面总退出是单一受管屏障：先等待 Desktop IPC 的下载清理，再完成上述 Python `shutdown_ack -> exit` 握手，最后清空会话路径授权；这些步骤结束后才销毁窗口、释放单实例锁并退出 Electron。Windows 下不依赖可能缺失的 child `exit/close` 事件来判定 Uvicorn 是否已经停止。
+桌面总退出是单一受管屏障：进入 shutdown 后立即显示复用主窗口的“正在安全退出”进度页，拒绝第二实例恢复、任务中心、工作区窗口和局点切换；先等待 Desktop IPC 的下载取消与原子文件清理，再完成 Python `shutdown_received -> shutdown_complete -> child exit`，最后关闭窗口、Tray 和会话路径授权。完成事件只在 Backend 停止、窗口/Tray 收口并完成日志 flush 后记录。单实例锁保持到 Electron 进程真正结束，不在 `app.exit()` 前提前释放。Windows 注销/关机监听 `query-session-end`/`session-end`，采用 preventDefault 后的尽力收尾，不能保证操作系统提供完整主动退出预算；自动测试不能替代 Windows Server 2012、机械硬盘、RDP 多会话及正式安装包人工验收。
 
 ## 本地 API 安全模型
 
@@ -248,7 +249,7 @@ Renderer 当前只能调用：
 - `chooseSavePath` 只选择目标；可选默认目录必须来自本会话 `selectDirectory` 授权。Excel、ZIP、PDF、NAM、报告和 Artifact 内容继续由 Python Application Service/Export Process 生成。
 - `downloadBackendResource` 在 Browser 中使用普通下载，在 Electron 中只把匹配设备、配置、文件、AC、MESH、Online MR 和网络工具既有 Artifact 路由的安全相对 API 描述交给 main；普通 `/api` 路由不在白名单。Renderer 可回传本会话 `chooseSavePath` 产生的目标路径以避免重复弹窗，main 必须重新验证内存授权，任意路径仍被拒绝。Main 会保存选择时的目标快照，并在下载开始和提交最终文件前复验；目标被其他进程创建、替换、改成目录或改变时拒绝覆盖并要求重新选择位置。main 使用当前动态后端和请求头令牌流式写同目录临时文件，成功后安全替换，并拒绝用户把最终文件改成不同实际扩展。Renderer 不接收完整文件、任意 URL 或 Header，令牌不进入 URL、Storage 或日志。
 - Browser Adapter 启动原生下载后返回 `started`；Electron 只有保存完成才返回 `saved`，原生保存对话框取消返回 `cancelled`，HTTP、网络、文件或退出中止返回 `failed` 并清理 `.part`。
-- Electron 退出先关闭下载入口、取消并等待在途流完成清理；保存对话框仍打开时也不会在退出开始后创建新下载。随后 Main 请求 Python 停止，等待 Uvicorn 退出后的 `shutdown_ack`，再发送 `exit`；全部受管清理结束后才退出 Electron。
+- Electron 退出先关闭下载入口、取消并等待在途流完成清理；保存对话框仍打开时也不会在退出开始后创建新下载。随后 Main 请求 Python 停止，等待 `shutdown_received`、Uvicorn/lifespan 完成后的 `shutdown_complete` 和 child OS exit；全部受管清理结束后才退出 Electron。
 - 后续 `openArtifact` 必须使用受控 `artifact_id` 解析，不得把当前临时路径授权扩大为任意业务路径接口。
 
 ## Qt 历史回收策略

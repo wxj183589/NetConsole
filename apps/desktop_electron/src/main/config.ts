@@ -161,7 +161,7 @@ function optionalLoopbackDevUrl(value: string | undefined): string | undefined {
 }
 
 function parseTimeout(value: string | undefined): number {
-  if (!value) return 15_000
+  if (!value) return 30_000
   const timeout = Number(value)
   if (!Number.isInteger(timeout) || timeout < 1_000 || timeout > 60_000) {
     throw new Error('NETCONSOLE_BACKEND_TIMEOUT_MS must be between 1000 and 60000')

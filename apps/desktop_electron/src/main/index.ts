@@ -19,6 +19,8 @@ import { ExternalToolService } from './external-tool-service'
 import { launchExternalToolElevated } from './elevated-tool-launcher'
 import { readExternalToolSystemSettings } from './external-tool-settings'
 import { StartupTimeline } from './startup-timeline'
+import { StartupProgressPage, startupStageLabel } from './startup-progress-page'
+import { ShutdownProgressPage } from './shutdown-progress-page'
 import {
   installRendererDiagnostics,
   safeDiagnosticUrl,
@@ -77,7 +79,9 @@ let closeToTrayEnabled = true
 let explicitQuitRequested = false
 let backend: PythonBackendManager | undefined
 let allowQuit = false
+let shuttingDown = false
 let requestedExitCode = 0
+let shutdownStartedAt: bigint | undefined
 let shutdownPromise: Promise<void> | undefined
 let smokeWatchdogTimer: NodeJS.Timeout | undefined
 let smokeStableTimer: NodeJS.Timeout | undefined
@@ -96,6 +100,8 @@ let managedLogger: ManagedDesktopLogger | undefined
 let desktopIpc: DesktopIpcRegistration | undefined
 const startupStartedAt = process.hrtime.bigint()
 let startupTimeline: StartupTimeline | undefined
+let startupProgressPage: StartupProgressPage | undefined
+let shutdownProgressPage: ShutdownProgressPage | undefined
 let bootstrapStore: DesktopBootstrapStore | undefined
 let uiPreferenceStore: UiPreferenceStore | undefined
 let desktopDataRoot = ''
@@ -119,6 +125,10 @@ const hasSingleInstanceLock = process.env.NETCONSOLE_ISOLATED_SMOKE === '1'
 if (!hasSingleInstanceLock) app.quit()
 
 app.on('second-instance', () => {
+  if (shuttingDown) {
+    logger('ELECTRON_SECOND_INSTANCE_IGNORED', 'reason=shutdown_in_progress')
+    return
+  }
   void restoreApplicationWindow()
 })
 
@@ -179,6 +189,10 @@ async function startDesktop(): Promise<void> {
     startupTimeoutMs: config.startupTimeoutMs,
     logger,
     onStartupMilestone: (event) => startupTimeline?.mark(event),
+    onStartupProgress: (progress) => {
+      logger('ELECTRON_BACKEND_STARTUP_STAGE', `stage=${progress.stage} elapsed_ms=${progress.elapsedMs} pid=${progress.pid ?? 'none'}`)
+      startupProgressPage?.update(startupStageLabel(progress.stage))
+    },
   })
   const developmentMenu = isDevelopmentMenuEnabled(config.devServerUrl)
   if (!developmentMenu) Menu.setApplicationMenu(null)
@@ -368,11 +382,17 @@ async function startDesktop(): Promise<void> {
     }
   })
 
-  await loadStatusPage(mainWindow, '正在启动 NetConsole', '正在启动本地 Python Core，请稍候。')
+  startupProgressPage = new StartupProgressPage({
+    window: mainWindow,
+    isDark: () => nativeTheme.shouldUseDarkColors,
+  })
+  await startupProgressPage.load()
   startupTimeline.mark('electron.loading_view_shown')
 
   try {
+    startupProgressPage.update(startupStageLabel('backend.spawn_started'))
     const runtime = await backend.start()
+    startupProgressPage.update(startupStageLabel('backend.health_ready'))
     await refreshTraySiteContext(runtime, desktopActiveSiteId)
     const backendOrigin = new URL(runtime.baseUrl).origin
     rendererUrl = config.devServerUrl ?? runtime.baseUrl
@@ -414,6 +434,9 @@ async function startDesktop(): Promise<void> {
     rememberManagedRendererTarget(mainWindow, mainRendererTarget)
     startSmokeWatchdog()
     startupTimeline.mark('renderer.navigation_started')
+    startupProgressPage.update(startupStageLabel('renderer.navigation_started'))
+    startupProgressPage.dispose()
+    startupProgressPage = undefined
     const rendererWindow = mainWindow
     rendererWindow.webContents.once('dom-ready', () => startupTimeline?.mark('renderer.dom_ready'))
     armRendererThemeDisplay(rendererWindow)
@@ -435,6 +458,8 @@ async function startDesktop(): Promise<void> {
       if (process.env.NETCONSOLE_ELECTRON_SMOKE_TEST === '1') requestExit(2)
     })
   } catch (cause) {
+    startupProgressPage?.dispose()
+    startupProgressPage = undefined
     if (mainWindow) {
       await showManagedWindowError(
         mainWindow,
@@ -543,10 +568,20 @@ function createMainWindow(
     rendererProcessFailures.delete(webContentsId)
     rendererRecoveries.delete(webContentsId)
   })
+  window.on('query-session-end', (event) => {
+    logger('ELECTRON_WINDOWS_SESSION_END_REQUESTED')
+    ;(event as { preventDefault?: () => void }).preventDefault?.()
+    requestExit(0)
+  })
+  window.on('session-end', () => {
+    logger('ELECTRON_WINDOWS_SESSION_ENDED')
+    requestExit(0)
+  })
   return window
 }
 
 async function restartManagedBackend(update: SiteStorageRestartRequest): Promise<void> {
+  if (shuttingDown) throw new Error('NetConsole 正在安全退出，无法切换局点')
   const cookieWindow = getAllDesktopWindows()[0]
   if (!backend || !cookieWindow || !bootstrapStore) throw new Error('desktop runtime is unavailable')
   if (!desktopStorageContext.persistent) throw new Error('隔离测试模式不允许修改正式局点或数据根')
@@ -642,7 +677,7 @@ interface DesktopSiteContext {
 }
 
 async function requestTraySiteSwitch(siteId: string): Promise<void> {
-  if (!mainWindow || mainWindow.isDestroyed() || !trayController) return
+  if (shuttingDown || !mainWindow || mainWindow.isDestroyed() || !trayController) return
   trayController.updateContext({ siteSwitching: true })
   try {
     await workspaceWindowController?.showMainWindow()
@@ -788,7 +823,7 @@ function installManagedWindowDiagnostics(window: BrowserWindow, smoke = false): 
 }
 
 async function openTaskWindow(context: TaskWindowContext): Promise<NativeActionResult> {
-  if (!rendererUrl || !workspaceWindowController || explicitQuitRequested) {
+  if (shuttingDown || !rendererUrl || !workspaceWindowController || explicitQuitRequested) {
     return { success: false, error: '任务中心尚未就绪' }
   }
   await restoreApplicationWindow()
@@ -800,7 +835,7 @@ async function openTaskWindow(context: TaskWindowContext): Promise<NativeActionR
 }
 
 async function openWorkspaceWindow(request: WorkspaceWindowOpenRequest): Promise<NativeActionResult> {
-  if (!rendererUrl || !workspaceWindowController || explicitQuitRequested) {
+  if (shuttingDown || !rendererUrl || !workspaceWindowController || explicitQuitRequested) {
     return { success: false, error: '工作区窗口尚未就绪' }
   }
   return workspaceWindowController.open(request)
@@ -1146,6 +1181,7 @@ async function updateCloseToTrayEnabled(enabled: boolean): Promise<CloseToTraySt
 }
 
 async function restoreApplicationWindow(): Promise<void> {
+  if (shuttingDown) return
   try {
     await workspaceWindowController?.showMainWindow()
   } catch {
@@ -1171,13 +1207,26 @@ function requestExit(code: number): void {
 
 function beginShutdownAndExit(): void {
   if (shutdownPromise) return
+  shuttingDown = true
   allowQuit = true
-  workspaceWindowController?.flush()
-  workspaceWindowController?.closeAllForQuit()
-  trayController?.dispose()
+  shutdownStartedAt = process.hrtime.bigint()
+  logger('ELECTRON_SHUTDOWN_REQUESTED', `source=${explicitQuitRequested ? 'tray' : 'system'}`)
+  for (const window of getAllDesktopWindows()) {
+    if (window !== mainWindow && !window.isDestroyed()) window.close()
+  }
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    shutdownProgressPage = new ShutdownProgressPage({
+      window: mainWindow,
+      isDark: () => nativeTheme.shouldUseDarkColors,
+    })
+    void shutdownProgressPage.load().then(() => {
+      if (!mainWindow || mainWindow.isDestroyed()) return
+      if (!mainWindow.isVisible()) mainWindow.show()
+      mainWindow.focus()
+    })
+  }
   shutdownPromise = shutdown().finally(() => {
     traceSmoke('EXIT_REQUESTED')
-    app.releaseSingleInstanceLock()
     app.exit(requestedExitCode)
     traceSmoke('EXIT_RETURNED')
   })
@@ -1192,6 +1241,8 @@ async function shutdown(): Promise<void> {
   smokeRendererLoading = false
   smokeMainWindowStartupValidated = false
   logger('ELECTRON_SHUTDOWN_STARTED')
+  shutdownProgressPage?.update('正在停止新的后台任务')
+  logger('ELECTRON_SHUTDOWN_STAGE', 'stage=blocking_new_work')
   traceSmoke('SHUTDOWN_STARTED')
   try {
     taskNotificationController = undefined
@@ -1200,6 +1251,8 @@ async function shutdown(): Promise<void> {
     requestedExitCode = Math.max(requestedExitCode, 1)
   }
   try {
+    logger('ELECTRON_SHUTDOWN_STAGE', 'stage=draining_downloads')
+    shutdownProgressPage?.update('正在结束文件保存')
     await desktopIpc?.shutdown()
     logger('ELECTRON_DOWNLOADS_STOPPED')
     traceSmoke('DOWNLOADS_STOPPED')
@@ -1207,18 +1260,36 @@ async function shutdown(): Promise<void> {
     requestedExitCode = Math.max(requestedExitCode, 1)
   }
   try {
+    logger('ELECTRON_SHUTDOWN_STAGE', 'stage=stopping_backend')
+    shutdownProgressPage?.update('正在停止本地核心服务')
     await backend?.stop()
-    logger('ELECTRON_SHUTDOWN_COMPLETE')
+    logger('ELECTRON_BACKEND_STOPPED')
     traceSmoke('BACKEND_STOPPED')
   } catch {
     // BackendManager has already moved to the failed state and logged the reason.
     requestedExitCode = Math.max(requestedExitCode, 1)
   } finally {
-    await managedLogger?.flush()
+    logger('ELECTRON_SHUTDOWN_STAGE', 'stage=finalizing_windows')
+    shutdownProgressPage?.update('正在完成退出')
+    workspaceWindowController?.closeAllForQuit()
+    trayController?.dispose()
+    const preCompleteLogFlush = await managedLogger?.flush()
     workspaceWindowController?.dispose()
     workspaceWindowController = undefined
     trayController = undefined
     pathRegistry.clear()
+    if (preCompleteLogFlush === false) {
+      requestedExitCode = Math.max(requestedExitCode, 1)
+      logger('ELECTRON_SHUTDOWN_LOG_FLUSH_TIMEOUT')
+    } else {
+      logger(
+        'ELECTRON_SHUTDOWN_COMPLETE',
+        `elapsed_ms=${Math.round(Number(process.hrtime.bigint() - (shutdownStartedAt ?? process.hrtime.bigint())) / 1_000_000)}`,
+      )
+      if ((await managedLogger?.flush()) === false) requestedExitCode = Math.max(requestedExitCode, 1)
+    }
+    shutdownProgressPage?.dispose()
+    shutdownProgressPage = undefined
   }
 }
 

@@ -18,7 +18,7 @@ export interface LogQueueMetrics {
 }
 
 export interface ManagedDesktopLogger extends DesktopLogger {
-  flush: (timeoutMs?: number) => Promise<void>
+  flush: (timeoutMs?: number) => Promise<boolean>
   getQueueMetrics: () => LogQueueMetrics
 }
 
@@ -312,18 +312,19 @@ export function createFileLogger(
     droppedError: dropped.error,
     backpressureActive: incident !== undefined,
   })
-  logger.flush = async (timeoutOverride?: number): Promise<void> => {
-    if (!draining && queue.length === 0) return
-    const idle = new Promise<void>((resolvePromise) => idleWaiters.push(resolvePromise))
+  logger.flush = async (timeoutOverride?: number): Promise<boolean> => {
+    if (!draining && queue.length === 0) return true
+    const idle = new Promise<boolean>((resolvePromise) => idleWaiters.push(() => resolvePromise(true)))
     const timeout = Math.max(1, timeoutOverride ?? flushTimeoutMs)
     let timer: ReturnType<typeof setTimeout> | undefined
-    await Promise.race([
+    const flushed = await Promise.race([
       idle,
-      new Promise<void>((resolvePromise) => {
-        timer = setTimeout(resolvePromise, timeout)
+      new Promise<boolean>((resolvePromise) => {
+        timer = setTimeout(() => resolvePromise(false), timeout)
       }),
     ])
     if (timer) clearTimeout(timer)
+    return flushed
   }
   return logger
 }

@@ -13,6 +13,7 @@ import { DESKTOP_SESSION_HEADER } from '../src/shared/bridge'
 const TOKEN = 'electron-test-token-abcdefghijklmnopqrstuvwxyz'
 
 class FakeChild extends EventEmitter implements ManagedChildProcess {
+  pid?: number
   readonly stdin = new PassThrough()
   readonly stdout = new PassThrough()
   readonly stderr = new PassThrough()
@@ -27,8 +28,11 @@ class FakeChild extends EventEmitter implements ManagedChildProcess {
     if (respondToShutdown) {
       this.stdin.on('data', (chunk) => {
         if (chunk.toString('utf8').includes('"command":"shutdown"')) {
-          this.stdout.write('{"event":"netconsole.electron_backend.shutdown_ack"}\n')
-          queueMicrotask(() => this.exit(0))
+          this.stdout.write('{"event":"netconsole.electron_backend.shutdown_received"}\n')
+          this.stdout.write('{"event":"netconsole.electron_backend.shutdown_complete"}\n')
+          this.stdin.on('data', (exitChunk) => {
+            if (exitChunk.toString('utf8').includes('"command":"exit"')) queueMicrotask(() => this.exit(0))
+          })
         }
       })
     }
@@ -73,6 +77,9 @@ function createManager(options: {
   runtimeMode?: 'desktop-development' | 'desktop-packaged'
   announcedPort?: number
   startupFailure?: string
+  startupTimeoutMs?: number
+  startupHardTimeoutMs?: number
+  delay?: (milliseconds: number) => Promise<void>
 } = {}) {
   const child = options.child ?? new FakeChild()
   const spawnCalls: Array<{ command: string; args: string[]; options: Record<string, unknown> }> = []
@@ -95,11 +102,12 @@ function createManager(options: {
     dataRoot: 'D:\\NetConsoleData',
     runtimeMode: options.runtimeMode ?? 'desktop-development',
     pythonPath: 'C:\\NetConsole\\src',
-    startupTimeoutMs: 50,
+    startupTimeoutMs: options.startupTimeoutMs ?? 50,
+    startupHardTimeoutMs: options.startupHardTimeoutMs,
     stopTimeoutMs: 5,
     pollIntervalMs: 1,
     createToken: () => TOKEN,
-    delay: async () => undefined,
+    delay: options.delay ?? (async () => undefined),
     spawnProcess,
     fetchImpl: options.fetchImpl ?? vi.fn(async (_url, request) => {
       expect(new Headers(request?.headers).get(DESKTOP_SESSION_HEADER)).toBe(TOKEN)
@@ -121,6 +129,20 @@ describe('PythonBackendManager', () => {
     const { manager } = createManager({ startupFailure: message })
 
     await expect(manager.start()).rejects.toThrow(message)
+  })
+
+  it('surfaces startup failure after listening without waiting for a health timeout', async () => {
+    const child = new FakeChild(false)
+    const fetchImpl = vi.fn(async () => {
+      child.announceStartupFailure('application build failed')
+      throw new Error('not ready')
+    }) as typeof fetch
+    const { manager } = createManager({ child, fetchImpl, startupTimeoutMs: 10_000 })
+
+    await expect(manager.start()).rejects.toThrow('application build failed')
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+    expect(manager.getStatus().state).toBe('failed')
   })
 
   it('starts once, sends the token through stdin, and uses a shell-free hidden child', async () => {
@@ -239,20 +261,21 @@ describe('PythonBackendManager', () => {
     expect(statuses).toEqual(['starting', 'ready', 'failed'])
   })
 
-  it('stops after an acknowledgement even when Windows misses the child exit event', async () => {
+  it('escalates after a lifecycle acknowledgement when the child never exits', async () => {
     const child = new FakeChild(false)
     child.stdin.on('data', (chunk) => {
       if (chunk.toString('utf8').includes('"command":"shutdown"')) {
-        child.stdout.write('{"event":"netconsole.electron_backend.shutdown_ack"}\n')
+        child.stdout.write('{"event":"netconsole.electron_backend.shutdown_received"}\n')
+        child.stdout.write('{"event":"netconsole.electron_backend.shutdown_complete"}\n')
       }
     })
-    const { manager } = createManager({ child, awaitProcessExit: false })
+    const { manager } = createManager({ child })
 
     await manager.start()
     await manager.stop()
 
-    expect(child.signals).toEqual([])
-    expect(manager.getStatus()).toEqual({ state: 'stopped' })
+    expect(child.signals).toContain('SIGTERM')
+    expect(manager.getStatus().state).toBe('stopped')
   })
 
   it('moves to failed when setup fails before a child is spawned', async () => {
@@ -308,8 +331,8 @@ describe('PythonBackendManager', () => {
       fetchImpl: vi.fn(async () => { throw new Error('not ready') }) as typeof fetch,
     })
 
-    await expect(manager.start()).rejects.toThrow('health check timed out')
-    expect(child.signals[0]).toBe('SIGKILL')
+    await expect(manager.start()).rejects.toThrow('stage watchdog')
+    expect(child.signals[0]).toBe('SIGTERM')
     expect(manager.getStatus().state).toBe('failed')
   })
 
@@ -318,7 +341,7 @@ describe('PythonBackendManager', () => {
     const { manager, spawnCalls } = createManager({ child })
     await manager.start()
 
-    await expect(manager.stop()).rejects.toThrow('did not acknowledge shutdown')
+    await expect(manager.stop()).rejects.toThrow('did not exit after termination escalation')
     await expect(manager.start()).rejects.toThrow('still running after a failed stop')
 
     expect(child.signals).toEqual(['SIGTERM', 'SIGKILL'])
@@ -338,5 +361,18 @@ describe('PythonBackendManager', () => {
 
     expect(logs.join('\n')).not.toContain(TOKEN)
     expect(logs.join('\n')).toContain('session_token=***')
+  })
+
+  it('logs the owned backend process exit with pid, code, and signal', async () => {
+    const logs: string[] = []
+    const { manager, child } = createManager({
+      logger: (event, detail) => logs.push(`${event} ${detail ?? ''}`),
+    })
+    child.pid = 24680
+
+    await manager.start()
+    await manager.stop()
+
+    expect(logs).toContain('ELECTRON_BACKEND_PROCESS_EXITED pid=24680 code=0 signal=none')
   })
 })
