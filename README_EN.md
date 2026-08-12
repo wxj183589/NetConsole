@@ -82,7 +82,7 @@ flowchart TB
     A --> D["Domain Services / Parsers"]
     A --> P["Repositories"]
     A --> J["Background Jobs / Export Processes"]
-    D --> I["Infrastructure / Device Adapters"]
+    A --> I["Infrastructure / Device Adapters"]
     P --> S["SQLite / Controlled Files"]
     J --> S
     I --> X["SSH / SNMP / Agent / SFTP / Tools"]
