@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as api from '../../api/siteStorage'
 import * as tasks from '../../api/tasks'
 import { ApiRequestError } from '../../api/client'
-import type { SiteRecord } from '../../api/siteStorage'
+import type { SiteRecord, SiteRetentionReport } from '../../api/siteStorage'
 import SiteStoragePanel from './SiteStoragePanel.vue'
 
 vi.mock('../../api/siteStorage')
@@ -59,6 +59,78 @@ function site(overrides: Partial<SiteRecord> = {}): SiteRecord {
     data_integrity: 'ok',
     recommended_action: 'keep_and_review',
     audited_at: '2026-07-21T08:00:00+08:00',
+    ...overrides,
+  }
+}
+
+function retentionReport(overrides: Partial<SiteRetentionReport> = {}): SiteRetentionReport {
+  return {
+    scan_token: 'a'.repeat(64),
+    site_id: 'demo',
+    display_name: '演示局点',
+    generated_at: '2026-08-13T12:00:00+00:00',
+    policy: {
+      backup_archive_days: 30,
+      backup_delete_days: 90,
+      online_mr_raw_archive_days: 30,
+      task_event_retention_days: 90,
+      rollback_keep_count: 2,
+    },
+    summary: {
+      total_bytes: 8 * 1024 ** 3,
+      current_database_bytes: 1024 ** 3,
+      raw_bytes: 2 * 1024 ** 3,
+      parsed_bytes: 1024 ** 3,
+      backup_bytes: 4 * 1024 ** 3,
+      other_bytes: 0,
+      safe_cleanup_bytes: 700 * 1024 ** 2,
+      compressible_bytes: 200 * 1024 ** 2,
+      actionable_count: 2,
+    },
+    candidates: [
+      {
+        candidate_id: 'safe-delete',
+        category: 'outdated_database',
+        relative_path: 'files/backups/database-migrations/devices-before-old.sqlite',
+        display_name: 'devices-before-old.sqlite',
+        size_bytes: 700 * 1024 ** 2,
+        estimated_release_bytes: 700 * 1024 ** 2,
+        age_days: 100,
+        status: 'historical_migration_version',
+        recommended_action: 'delete',
+        safe: true,
+        reason: '当前 schema 更高且存在更新回滚副本',
+        details: { schema_version: '2026.07.01.old' },
+      },
+      {
+        candidate_id: 'safe-archive',
+        category: 'expired_raw',
+        relative_path: 'files/rail_transit/online_mr/MR-01/sessions/session-1/raw',
+        display_name: 'Online MR session-1 原始数据',
+        size_bytes: 300 * 1024 ** 2,
+        estimated_release_bytes: 200 * 1024 ** 2,
+        age_days: 45,
+        status: 'archived_raw_copy',
+        recommended_action: 'archive',
+        safe: true,
+        reason: '完整会话包已校验',
+        details: { session_id: 'session-1' },
+      },
+      {
+        candidate_id: 'unknown',
+        category: 'outdated_database',
+        relative_path: 'files/backups/unknown.sqlite',
+        display_name: 'unknown.sqlite',
+        size_bytes: 64 * 1024 ** 2,
+        estimated_release_bytes: 0,
+        age_days: 200,
+        status: 'unknown_database',
+        recommended_action: 'keep',
+        safe: false,
+        reason: '数据库类型或 schema 无法确认，只能人工复核',
+        details: {},
+      },
+    ],
     ...overrides,
   }
 }
@@ -406,6 +478,70 @@ describe('SiteStoragePanel', () => {
     expect(api.auditSite).toHaveBeenCalledWith('demo')
     expect(adapter.openTaskWindow).toHaveBeenCalledWith({ taskId: 'audit-1', module: 'logs' })
     expect(api.listSites).toHaveBeenCalledTimes(2)
+  })
+
+  it('submits the first retention scan and renders all cleanup sections', async () => {
+    vi.mocked(api.getLatestSiteRetention)
+      .mockRejectedValueOnce(new ApiRequestError('尚未生成数据清理扫描', 404, 'SITE_RETENTION_SCAN_NOT_FOUND'))
+      .mockResolvedValueOnce(retentionReport())
+    vi.mocked(api.scanSiteRetention).mockResolvedValue({ task_id: 'scan-1', task_type: 'site_retention_scan' })
+    vi.mocked(tasks.getTask).mockResolvedValue({ status: 'COMPLETED' } as never)
+    const wrapper = mount(SiteStoragePanel)
+    await flushPromises()
+
+    await wrapper.get('[data-testid="retention-site-demo"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('尚未生成数据清理扫描')
+
+    await wrapper.get('[data-testid="retention-scan"]').trigger('click')
+    await flushPromises()
+
+    expect(api.scanSiteRetention).toHaveBeenCalledWith('demo')
+    expect(adapter.openTaskWindow).toHaveBeenCalledWith({ taskId: 'scan-1', module: 'logs' })
+    expect(wrapper.get('[data-testid="retention-summary"]').text()).toContain('8.0 GB')
+    expect(wrapper.text()).toContain('过期原始包/日志')
+    expect(wrapper.text()).toContain('历史数据库备份')
+    expect(wrapper.text()).toContain('过时数据库版本')
+    expect(wrapper.text()).toContain('数据库历史记录/空间压缩')
+  })
+
+  it('keeps unknown databases disabled and executes only explicitly selected safe items', async () => {
+    vi.mocked(api.getLatestSiteRetention)
+      .mockResolvedValueOnce(retentionReport())
+      .mockResolvedValueOnce(retentionReport({ candidates: [], summary: { ...retentionReport().summary, safe_cleanup_bytes: 0, compressible_bytes: 0, actionable_count: 0 } }))
+    vi.mocked(api.applySiteRetention).mockResolvedValue({ task_id: 'apply-1', task_type: 'site_retention_apply' })
+    vi.mocked(api.scanSiteRetention).mockResolvedValue({ task_id: 'scan-2', task_type: 'site_retention_scan' })
+    vi.mocked(tasks.getTask).mockResolvedValue({ status: 'COMPLETED' } as never)
+    const prompt = vi.spyOn(ElMessageBox, 'prompt').mockResolvedValue({ value: '演示局点', action: 'confirm' } as never)
+    const wrapper = mount(SiteStoragePanel)
+    await flushPromises()
+
+    await wrapper.get('[data-testid="retention-site-demo"]').trigger('click')
+    await flushPromises()
+    const unknown = wrapper.getComponent(
+      '[data-testid="retention-candidate-unknown"]',
+    ) as VueWrapper
+    expect((unknown.props() as Record<string, unknown>).disabled).toBe(true)
+    unknown.vm.$emit('change', true)
+    const safeDelete = wrapper.getComponent(
+      '[data-testid="retention-candidate-safe-delete"]',
+    ) as VueWrapper
+    safeDelete.vm.$emit('change', true)
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('已选 1 项')
+    await wrapper.get('[data-testid="retention-execute"]').trigger('click')
+    await flushPromises()
+
+    expect(prompt).toHaveBeenCalledWith(
+      expect.stringContaining('预计释放 700.0 MB'),
+      '确认执行数据清理',
+      expect.objectContaining({ inputPlaceholder: '演示局点' }),
+    )
+    expect(api.applySiteRetention).toHaveBeenCalledWith('demo', 'a'.repeat(64), ['safe-delete'])
+    expect(adapter.openTaskWindow).toHaveBeenCalledWith({ taskId: 'apply-1', module: 'logs' })
+    expect(api.scanSiteRetention).toHaveBeenCalledWith('demo')
+    expect(wrapper.text()).toContain('可处理 0 项')
   })
 
   it('shows only safe audit facts and does not render server paths', async () => {

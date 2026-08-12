@@ -4,10 +4,11 @@ import json
 import logging
 import re
 import sqlite3
+import zipfile
 from collections import defaultdict
 from contextlib import closing
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
 from netconsole.core.paths import PathResolver
@@ -330,7 +331,14 @@ class OnlineMrQueryService:
                 item = merged_item
             path = self._safe_session_file(session_dir, str(item.get("raw_file") or relative_name))
             exists = bool(path and path.is_file() and not path.is_symlink())
-            size = path.stat().st_size if exists and path else 0
+            archived = None if exists else self._archived_member_info(
+                session_dir, str(item.get("raw_file") or relative_name)
+            )
+            if archived is not None:
+                exists = True
+            size = path.stat().st_size if exists and path and path.is_file() else (
+                int(archived.file_size) if archived is not None else 0
+            )
             status = str(item.get("status") or "").lower()
             is_enabled = name in enabled or (bool(item) and status != "disabled")
             if not is_enabled:
@@ -345,6 +353,9 @@ class OnlineMrQueryService:
                 path=path if exists else None,
                 item=item,
                 view=view,
+                archived_updated_at=(
+                    self._zip_info_time(archived) if archived is not None else None
+                ),
             )
             health_status, stale_seconds = self._collector_health(
                 active=active,
@@ -603,10 +614,12 @@ class OnlineMrQueryService:
         path: Path | None,
         item: dict[str, Any],
         view: dict[str, Any],
+        archived_updated_at: str | None = None,
     ) -> str | None:
         candidates = [
             self._text_or_none(item.get("updated_at")),
             self._text_or_none(view.get("updated_at")),
+            archived_updated_at,
         ]
         if path is not None:
             try:
@@ -721,14 +734,23 @@ class OnlineMrQueryService:
 
     def _latest_raw_link(self, session_dir: Path) -> dict[str, Any]:
         path = self._safe_session_file(session_dir, self._WEB_RAW_SOURCES["mesh_link"])
-        if path is None or not path.is_file() or path.is_symlink():
-            return {}
         try:
-            stat = path.stat()
-            raw_text = self._read_tail_text(path, MAX_PREVIEW_RAW_TAIL_BYTES)
+            if path is not None and path.is_file() and not path.is_symlink():
+                stat = path.stat()
+                raw_text = self._read_tail_text(path, MAX_PREVIEW_RAW_TAIL_BYTES)
+                collected_at = datetime.fromtimestamp(stat.st_mtime)
+            else:
+                archived = self._read_archived_tail(
+                    session_dir,
+                    self._WEB_RAW_SOURCES["mesh_link"],
+                    maximum_bytes=MAX_PREVIEW_RAW_TAIL_BYTES,
+                )
+                if archived is None:
+                    return {}
+                raw_text, _size, modified_at = archived
+                collected_at = self._as_datetime(modified_at) or datetime.now()
             if not raw_text:
                 return {}
-            collected_at = datetime.fromtimestamp(stat.st_mtime)
             records, _status, _error = parse_mesh_link_text(raw_text, collected_at)
             active_records = [record for record in records if record.link_state == "ACTIVE"]
             active = next(reversed(active_records), None) if active_records else None
@@ -855,23 +877,36 @@ class OnlineMrQueryService:
             raise OnlineMrQueryError(OnlineMrQueryErrorCode.QUERY_LIMIT_EXCEEDED, f"日志行数必须在 1 到 {MAX_WEB_TAIL_LIMIT} 之间")
         session_dir = self._find_session(site_id, session_id)
         path = self._safe_session_file(session_dir, self._WEB_RAW_SOURCES[name])
-        if path is None or not path.is_file() or path.is_symlink():
-            return OnlineMrRawTailDTO(name=name, message="文件不存在或尚未生成")
-        stat = path.stat()
-        if stat.st_size == 0:
-            return OnlineMrRawTailDTO(name=name, message="文件不存在或尚未生成")
-        lines: list[str] = []
-        consumed = 0
-        with path.open("rb") as handle:
-            handle.seek(self._tail_cursor(path, tail))
-            for _ in range(tail):
-                raw = handle.readline(MAX_LOG_LINE_BYTES)
-                if not raw:
-                    break
-                consumed += len(raw)
-                if consumed > MAX_WEB_TAIL_BYTES:
-                    break
-                lines.append(raw.decode("utf-8", errors="replace").rstrip("\r\n"))
+        if path is not None and path.is_file() and not path.is_symlink():
+            stat = path.stat()
+            if stat.st_size == 0:
+                return OnlineMrRawTailDTO(name=name, message="文件不存在或尚未生成")
+            lines: list[str] = []
+            consumed = 0
+            with path.open("rb") as handle:
+                handle.seek(self._tail_cursor(path, tail))
+                for _ in range(tail):
+                    raw = handle.readline(MAX_LOG_LINE_BYTES)
+                    if not raw:
+                        break
+                    consumed += len(raw)
+                    if consumed > MAX_WEB_TAIL_BYTES:
+                        break
+                    lines.append(raw.decode("utf-8", errors="replace").rstrip("\r\n"))
+            size_bytes = stat.st_size
+            modified_at = datetime.fromtimestamp(stat.st_mtime).isoformat(
+                sep=" ", timespec="seconds"
+            )
+        else:
+            archived = self._read_archived_tail(
+                session_dir,
+                self._WEB_RAW_SOURCES[name],
+                maximum_bytes=MAX_WEB_TAIL_BYTES,
+            )
+            if archived is None:
+                return OnlineMrRawTailDTO(name=name, message="文件不存在或尚未生成")
+            text, size_bytes, modified_at = archived
+            lines = text.splitlines()[-tail:]
         summary: dict[str, Any] = {}
         if name == "fping_summary" and lines:
             try:
@@ -884,8 +919,8 @@ class OnlineMrQueryService:
             exists=True,
             lines=lines,
             message="" if lines else "文件存在但暂无内容",
-            size_bytes=stat.st_size,
-            modified_at=datetime.fromtimestamp(stat.st_mtime).isoformat(sep=" ", timespec="seconds"),
+            size_bytes=size_bytes,
+            modified_at=modified_at,
             summary=summary,
         )
 
@@ -896,13 +931,30 @@ class OnlineMrQueryService:
             path = self._safe_session_file(session_dir, relative_name)
             exists = bool(path and path.is_file() and not path.is_symlink())
             stat = path.stat() if exists and path else None
+            archived = None if exists else self._archived_member_info(
+                session_dir, relative_name
+            )
             rows.append(
                 OnlineMrRawFileDTO(
                     name=name,
                     relative_name=relative_name,
-                    exists=exists,
-                    size_bytes=stat.st_size if stat else 0,
-                    modified_at=datetime.fromtimestamp(stat.st_mtime).isoformat(sep=" ", timespec="seconds") if stat else None,
+                    exists=exists or archived is not None,
+                    size_bytes=(
+                        stat.st_size
+                        if stat
+                        else int(archived.file_size)
+                        if archived is not None
+                        else 0
+                    ),
+                    modified_at=(
+                        datetime.fromtimestamp(stat.st_mtime).isoformat(
+                            sep=" ", timespec="seconds"
+                        )
+                        if stat
+                        else self._zip_info_time(archived)
+                        if archived is not None
+                        else None
+                    ),
                 )
             )
         return rows
@@ -924,6 +976,7 @@ class OnlineMrQueryService:
         candidates.append((session_dir / "parsed" / "online_diagnosis.sqlite", "parsed", False, True))
         rows: list[OnlineMrArtifactDTO] = []
         root = session_dir.resolve()
+        listed_names: set[str] = set()
         for path, kind, fact, rebuildable in candidates:
             if not path.is_file() or path.is_symlink() or self._is_temporary(path):
                 continue
@@ -934,6 +987,7 @@ class OnlineMrQueryService:
                 continue
             stat = resolved.stat()
             relative = resolved.relative_to(root).as_posix()
+            listed_names.add(relative)
             rows.append(
                 OnlineMrArtifactDTO(
                     name=resolved.name,
@@ -945,6 +999,36 @@ class OnlineMrQueryService:
                     is_rebuildable=rebuildable,
                 )
             )
+        package = self._session_package_path(session_dir)
+        if package.is_file() and not package.is_symlink():
+            try:
+                with zipfile.ZipFile(package) as archive:
+                    for info in archive.infolist():
+                        relative = PurePosixPath(info.filename)
+                        if (
+                            info.is_dir()
+                            or not info.filename
+                            or relative.is_absolute()
+                            or any(part in {"", ".", ".."} for part in relative.parts)
+                            or (relative.parts[0] if relative.parts else "") not in {"raw", "logs"}
+                            or info.filename in listed_names
+                        ):
+                            continue
+                        rows.append(
+                            OnlineMrArtifactDTO(
+                                name=relative.name,
+                                kind="raw" if relative.parts[0] == "raw" else "log",
+                                relative_name=info.filename,
+                                size_bytes=int(info.file_size),
+                                modified_at=self._zip_info_time(info),
+                                available=True,
+                                downloadable=False,
+                                is_fact_source=True,
+                                is_rebuildable=False,
+                            )
+                        )
+            except (OSError, zipfile.BadZipFile):
+                pass
         return sorted(rows, key=lambda item: (item.kind, item.relative_name))
 
     def read_log_chunk(
@@ -965,34 +1049,59 @@ class OnlineMrQueryService:
             raise OnlineMrQueryError(OnlineMrQueryErrorCode.QUERY_LIMIT_EXCEEDED, f"日志行数必须在 1 到 {MAX_LOG_LIMIT} 之间")
         session_dir = self._find_session(site_id, session_id)
         path = session_dir / self._LOG_SOURCES[source]
-        if not path.is_file() or path.is_symlink():
-            raise OnlineMrQueryError(OnlineMrQueryErrorCode.ARTIFACT_NOT_FOUND, "日志文件不存在")
-        size = path.stat().st_size
-        start = self._tail_cursor(path, limit) if tail else cursor
+        archived = None
+        if path.is_file() and not path.is_symlink():
+            size = path.stat().st_size
+            start = self._tail_cursor(path, limit) if tail else cursor
+            handle_context = path.open("rb")
+        else:
+            archived = self._open_archived_member(
+                session_dir, self._LOG_SOURCES[source]
+            )
+            if archived is None:
+                raise OnlineMrQueryError(
+                    OnlineMrQueryErrorCode.ARTIFACT_NOT_FOUND, "日志文件不存在"
+                )
+            archive, handle, info = archived
+            size = int(info.file_size)
+            start = self._archived_tail_cursor(handle, size, limit) if tail else cursor
+            handle_context = handle
         if start > size:
+            if archived is not None:
+                archived[0].close()
             raise OnlineMrQueryError(OnlineMrQueryErrorCode.LOG_CURSOR_INVALID, "日志游标超过文件末尾")
         lines: list[OnlineMrLogLineDTO] = []
-        with path.open("rb") as handle:
-            handle.seek(start)
-            for _ in range(limit):
-                sequence = handle.tell()
-                raw = handle.readline(MAX_LOG_LINE_BYTES)
-                if not raw:
-                    break
-                text = raw.decode("utf-8", errors="replace").rstrip("\r\n")
-                match = _TIMESTAMP_RE.match(text)
-                level = _LEVEL_RE.search(text)
-                lines.append(
-                    OnlineMrLogLineDTO(
-                        sequence=sequence,
-                        timestamp=match.group(1) if match else None,
-                        source=source,
-                        text=text,
-                        level=level.group(1).upper() if level else None,
+        try:
+            with handle_context as handle:
+                handle.seek(start)
+                for _ in range(limit):
+                    sequence = handle.tell()
+                    raw = handle.readline(MAX_LOG_LINE_BYTES)
+                    if not raw:
+                        break
+                    text = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+                    match = _TIMESTAMP_RE.match(text)
+                    level = _LEVEL_RE.search(text)
+                    lines.append(
+                        OnlineMrLogLineDTO(
+                            sequence=sequence,
+                            timestamp=match.group(1) if match else None,
+                            source=source,
+                            text=text,
+                            level=level.group(1).upper() if level else None,
+                        )
                     )
-                )
-            next_cursor = handle.tell()
-        return OnlineMrLogChunkDTO(source=source, cursor=start, next_cursor=next_cursor, has_more=next_cursor < path.stat().st_size, lines=lines)
+                next_cursor = handle.tell()
+        finally:
+            if archived is not None:
+                archived[0].close()
+        return OnlineMrLogChunkDTO(
+            source=source,
+            cursor=start,
+            next_cursor=next_cursor,
+            has_more=next_cursor < size,
+            lines=lines,
+        )
 
     def get_database_summary(self, site_id: str, session_id: str) -> OnlineMrDatabaseSummaryDTO:
         session_dir = self._find_session(site_id, session_id)
@@ -2384,6 +2493,91 @@ class OnlineMrQueryService:
         except (OSError, ValueError):
             return None
         return candidate
+
+    @staticmethod
+    def _session_package_path(session_dir: Path) -> Path:
+        return session_dir / "outputs" / f"{session_dir.name}.zip"
+
+    def _archived_member_info(
+        self, session_dir: Path, relative_name: str
+    ) -> zipfile.ZipInfo | None:
+        opened = self._open_archived_member(session_dir, relative_name)
+        if opened is None:
+            return None
+        archive, handle, info = opened
+        handle.close()
+        archive.close()
+        return info
+
+    def _open_archived_member(
+        self, session_dir: Path, relative_name: str
+    ) -> tuple[zipfile.ZipFile, zipfile.ZipExtFile, zipfile.ZipInfo] | None:
+        relative = Path(str(relative_name or ""))
+        if (
+            not relative_name
+            or relative.is_absolute()
+            or any(part in {"", ".", ".."} for part in relative.parts)
+        ):
+            return None
+        package = self._session_package_path(session_dir)
+        if not package.is_file() or package.is_symlink():
+            return None
+        archive: zipfile.ZipFile | None = None
+        try:
+            archive = zipfile.ZipFile(package)
+            info = archive.getinfo(relative.as_posix())
+            if info.is_dir() or info.file_size < 0:
+                archive.close()
+                return None
+            return archive, archive.open(info), info
+        except (KeyError, OSError, zipfile.BadZipFile):
+            if archive is not None:
+                archive.close()
+            return None
+
+    def _read_archived_tail(
+        self,
+        session_dir: Path,
+        relative_name: str,
+        *,
+        maximum_bytes: int,
+    ) -> tuple[str, int, str] | None:
+        opened = self._open_archived_member(session_dir, relative_name)
+        if opened is None:
+            return None
+        archive, handle, info = opened
+        try:
+            size = int(info.file_size)
+            handle.seek(max(0, size - max(1, int(maximum_bytes))))
+            data = handle.read(max(1, int(maximum_bytes)))
+            if size > len(data):
+                separator = data.find(b"\n")
+                data = data[separator + 1 :] if separator >= 0 else b""
+            return (
+                data.decode("utf-8", errors="replace"),
+                size,
+                self._zip_info_time(info),
+            )
+        finally:
+            handle.close()
+            archive.close()
+
+    @staticmethod
+    def _archived_tail_cursor(
+        handle: zipfile.ZipExtFile, size: int, line_count: int
+    ) -> int:
+        maximum = min(size, max(MAX_WEB_TAIL_BYTES, line_count * MAX_LOG_LINE_BYTES))
+        start = max(0, size - maximum)
+        handle.seek(start)
+        data = handle.read(maximum)
+        offsets = [index + 1 for index, value in enumerate(data) if value == 10]
+        if len(offsets) <= line_count:
+            return start
+        return start + offsets[-line_count - 1]
+
+    @staticmethod
+    def _zip_info_time(info: zipfile.ZipInfo) -> str:
+        return datetime(*info.date_time).isoformat(sep=" ", timespec="seconds")
 
     def _operation_status(self, site_id: str, session_id: str, task_id: str | None) -> tuple[str | None, str | None, float | None, str | None]:
         path = self.paths.site_tasks_db_path(site_id)

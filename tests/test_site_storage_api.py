@@ -425,6 +425,9 @@ def test_site_storage_contract_is_in_openapi(tmp_path: Path) -> None:
     assert "/api/v1/storage/data-root/migrate" in paths
     assert "/api/v1/sites/{site_id}/audit" in paths
     assert "/api/v1/sites/{site_id}/cleanup/prepare" in paths
+    assert "/api/v1/sites/{site_id}/retention/scan" in paths
+    assert "/api/v1/sites/{site_id}/retention/latest" in paths
+    assert "/api/v1/sites/{site_id}/retention/apply" in paths
     assert "/api/v1/sites/recycle/{cleanup_token}/restore" in paths
     assert "site-and-storage" in paths["/api/v1/sites"]["get"]["tags"]
 
@@ -477,6 +480,59 @@ def test_cleanup_api_requires_audit_and_explicit_confirmation(tmp_path: Path) ->
     assert rejected.status_code == 422
 
 
+def test_retention_scan_and_apply_use_server_owned_candidates(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    paths = client.app.state.paths
+    report = client.app.state.site_retention_service.scan("demo")
+
+    latest = client.get("/api/v1/sites/demo/retention/latest")
+    assert latest.status_code == 200, latest.text
+    assert latest.json()["scan_token"] == report["scan_token"]
+    assert all(
+        set(item).issuperset(
+            {
+                "candidate_id",
+                "category",
+                "relative_path",
+                "recommended_action",
+                "safe",
+            }
+        )
+        for item in latest.json()["candidates"]
+    )
+    assert str(paths.data_root) not in latest.text
+
+    rejected = client.post(
+        "/api/v1/sites/demo/retention/apply",
+        json={
+            "scan_token": report["scan_token"],
+            "candidate_ids": ["not-a-server-candidate"],
+            "confirmed": False,
+        },
+    )
+    assert rejected.status_code == 422
+    assert rejected.json()["detail"]["code"] == "SITE_RETENTION_CONFIRMATION_REQUIRED"
+
+
+def test_retention_scan_submits_site_scoped_job(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    captured: list[object] = []
+
+    def capture(job: object, **_kwargs: object) -> str:
+        captured.append(job)
+        return str(getattr(job, "job_id"))
+
+    client.app.state.site_process_adapter.start_job = capture
+    response = client.post("/api/v1/sites/demo/retention/scan")
+
+    assert response.status_code == 202, response.text
+    job = captured[0]
+    payload = getattr(job, "to_dict")()
+    assert payload["task_type"] == "site_retention_scan"
+    assert payload["params"]["resource_keys"] == ["site-retention:demo"]
+    assert "path" not in payload["params"]
+
+
 def test_demo_rebuild_rejects_user_data_bypass(tmp_path: Path) -> None:
     client = _client(tmp_path)
     response = client.post(
@@ -526,6 +582,15 @@ def test_isolated_storage_is_read_only_and_redacted(
         ("/api/v1/sites/import", {"package_path": str(tmp_path / "site.ncsite")}),
         ("/api/v1/sites/demo/audit", {}),
         ("/api/v1/sites/demo/cleanup/prepare", {}),
+        ("/api/v1/sites/demo/retention/scan", {}),
+        (
+            "/api/v1/sites/demo/retention/apply",
+            {
+                "scan_token": "0" * 64,
+                "candidate_ids": ["candidate"],
+                "confirmed": True,
+            },
+        ),
         ("/api/v1/sites/demo/rebuild", {"confirmed": True}),
         ("/api/v1/sites/recycle/1234567890abcdef/restore", {"confirmed": True}),
         ("/api/v1/storage/data-root/validate", {"path": str(tmp_path / "target")}),
@@ -571,6 +636,24 @@ def test_site_cleanup_commit_tasks_are_not_cancellable(tmp_path: Path) -> None:
     )
 
     task = client.get("/api/job-center/tasks/site-cleanup-task")
+
+    assert task.status_code == 200
+    assert task.json()["cancellable"] is False
+    assert "不可停止" in task.json()["cancel_reason"]
+
+
+def test_site_retention_apply_task_is_not_cancellable(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    client.app.state.task_service.create_external_task(
+        task_id="site-retention-task",
+        task_type="site_retention_apply",
+        task_name="执行局点数据清理",
+        source="local",
+        owner="site-storage",
+        site_name="demo",
+    )
+
+    task = client.get("/api/job-center/tasks/site-retention-task")
 
     assert task.status_code == 200
     assert task.json()["cancellable"] is False

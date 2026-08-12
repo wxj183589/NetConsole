@@ -8,6 +8,7 @@ from netconsole.services.site_lifecycle import (
     SiteAuditService,
     SiteCleanupApplicationService,
 )
+from netconsole.services.site_retention import SiteRetentionService
 from netconsole.services.site_storage import (
     DataRootApplicationService,
     SiteApplicationService,
@@ -26,10 +27,17 @@ SITE_STORAGE_TASK_TYPES = frozenset(
         "site_export",
         "site_import",
         "site_migration",
+        "site_retention_apply",
+        "site_retention_scan",
     }
 )
 SITE_STORAGE_NONCANCELLABLE_TASK_TYPES = frozenset(
-    {"site_cleanup_apply", "site_cleanup_restore", "site_demo_rebuild"}
+    {
+        "site_cleanup_apply",
+        "site_cleanup_restore",
+        "site_demo_rebuild",
+        "site_retention_apply",
+    }
 )
 
 
@@ -69,6 +77,41 @@ def site_cleanup_restore(context: JobContext) -> dict[str, object]:
         str(context.params.get("cleanup_token") or "")
     )
     context.progress("restore", 1, 1, "局点已从回收区恢复")
+    return result
+
+
+def site_retention_scan(context: JobContext) -> dict[str, object]:
+    return SiteRetentionService(context.paths).scan(
+        str(context.params.get("site_id") or ""),
+        check_cancel=context.check_cancelled,
+        progress=lambda current, total, message: context.progress(
+            "retention_scan", current, total, message
+        ),
+    )
+
+
+def site_retention_apply(context: JobContext) -> dict[str, object]:
+    result = SiteRetentionService(context.paths).apply(
+        str(context.params.get("site_id") or ""),
+        scan_token=str(context.params.get("scan_token") or ""),
+        candidate_ids=[
+            str(value)
+            for value in context.params.get("candidate_ids", [])
+            if str(value).strip()
+        ],
+        current_job_id=context.job_id,
+        check_cancel=context.check_cancelled,
+        progress=lambda current, total, message: context.progress(
+            "retention_apply", current, total, message
+        ),
+    )
+    context.structured_progress(
+        "retention_apply",
+        int(result.get("success_count") or 0),
+        int(result.get("selected_count") or 0),
+        "局点数据清理完成",
+        released_bytes=int(result.get("released_bytes") or 0),
+    )
     return result
 
 
@@ -154,6 +197,8 @@ HANDLERS = {
     "site_demo_rebuild": site_demo_rebuild,
     "site_export": site_export,
     "site_migration": site_migration,
+    "site_retention_scan": site_retention_scan,
+    "site_retention_apply": site_retention_apply,
     "site_import": site_import,
 }
 

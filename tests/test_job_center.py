@@ -54,6 +54,8 @@ def test_registry_contains_all_existing_task_types() -> None:
         "ac_command_action_execute",
         "device_csv_import",
         "device_connection_test",
+        "site_retention_apply",
+        "site_retention_scan",
         "file_management_download",
         "mesh_mr_profiles_refresh",
         "traffic_local_iperf_server",

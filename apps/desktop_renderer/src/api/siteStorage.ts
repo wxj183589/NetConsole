@@ -59,6 +59,47 @@ export interface SiteCleanupPlan {
   can_delete: boolean
 }
 
+export interface SiteRetentionCandidate {
+  candidate_id: string
+  category: 'current_database' | 'expired_raw' | 'history_backup' | 'outdated_database' | 'task_history' | string
+  relative_path: string
+  display_name: string
+  size_bytes: number
+  estimated_release_bytes: number
+  age_days: number
+  status: string
+  recommended_action: 'keep' | 'archive' | 'delete' | 'purge' | string
+  safe: boolean
+  reason: string
+  details: Record<string, unknown>
+}
+
+export interface SiteRetentionReport {
+  scan_token: string
+  site_id: string
+  display_name: string
+  generated_at: string
+  policy: {
+    backup_archive_days: number
+    backup_delete_days: number
+    online_mr_raw_archive_days: number
+    task_event_retention_days: number
+    rollback_keep_count: number
+  }
+  summary: {
+    total_bytes: number
+    current_database_bytes: number
+    raw_bytes: number
+    parsed_bytes: number
+    backup_bytes: number
+    other_bytes: number
+    safe_cleanup_bytes: number
+    compressible_bytes: number
+    actionable_count: number
+  }
+  candidates: SiteRetentionCandidate[]
+}
+
 export interface DataRootSnapshot {
   data_root: string
   default_data_root: string
@@ -138,6 +179,9 @@ export const migrateDataRoot = (path: string) => apiRequest<SiteTaskResponse>('/
 export const migrateSite = (siteId: string, destinationRoot: string) => apiRequest<SiteTaskResponse>(`/api/v1/sites/${encodeURIComponent(siteId)}/migrate`, { method: 'POST', body: JSON.stringify({ destination_root: destinationRoot }) })
 export const auditSite = (siteId: string) => apiRequest<SiteTaskResponse>(`/api/v1/sites/${encodeURIComponent(siteId)}/audit`, { method: 'POST' })
 export const getLatestSiteAudit = (siteId: string) => apiRequest<SiteAuditSummary>(`/api/v1/sites/${encodeURIComponent(siteId)}/audit/latest`)
+export const scanSiteRetention = (siteId: string) => apiRequest<SiteTaskResponse>(`/api/v1/sites/${encodeURIComponent(siteId)}/retention/scan`, { method: 'POST' })
+export const getLatestSiteRetention = (siteId: string) => apiRequest<SiteRetentionReport>(`/api/v1/sites/${encodeURIComponent(siteId)}/retention/latest`)
+export const applySiteRetention = (siteId: string, scanToken: string, candidateIds: string[]) => apiRequest<SiteTaskResponse>(`/api/v1/sites/${encodeURIComponent(siteId)}/retention/apply`, { method: 'POST', body: JSON.stringify({ scan_token: scanToken, candidate_ids: candidateIds, confirmed: true }) })
 export const prepareSiteCleanup = (siteId: string) => apiRequest<SiteCleanupPlan>(`/api/v1/sites/${encodeURIComponent(siteId)}/cleanup/prepare`, { method: 'POST' })
 export const applySiteCleanup = (siteId: string, cleanupToken: string) => apiRequest<SiteTaskResponse>(`/api/v1/sites/${encodeURIComponent(siteId)}/cleanup/apply`, { method: 'POST', body: JSON.stringify({ cleanup_token: cleanupToken, confirmed: true }) })
 export const rebuildDemoSite = (allowUserData = false) => apiRequest<SiteTaskResponse>('/api/v1/sites/demo/rebuild', { method: 'POST', body: JSON.stringify({ confirmed: true, allow_user_data: allowUserData }) })

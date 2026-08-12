@@ -1,0 +1,449 @@
+from __future__ import annotations
+
+import json
+import os
+import sqlite3
+import zipfile
+from contextlib import closing
+from datetime import UTC, datetime
+from pathlib import Path
+
+import pytest
+
+from netconsole.core.paths import PathResolver
+from netconsole.models.task_snapshot import TaskSnapshot
+from netconsole.models.task_state import TaskState
+from netconsole.repositories.task_repository import TaskRepository
+from netconsole.services.online_mr.query_service import OnlineMrQueryService
+from netconsole.services.site_retention import SiteRetentionService
+from netconsole.services.site_storage import SiteApplicationService, SiteStorageError
+
+
+NOW = datetime(2026, 8, 13, 12, 0, tzinfo=UTC)
+
+
+def _paths(tmp_path: Path) -> PathResolver:
+    app_root = tmp_path / "app"
+    app_root.mkdir()
+    return PathResolver(app_root=app_root, data_root=tmp_path / "data")
+
+
+def _site(tmp_path: Path) -> tuple[PathResolver, Path]:
+    paths = _paths(tmp_path)
+    created = SiteApplicationService(paths).create_site("line-12", "宁波地铁12号线")
+    return paths, Path(str(created["path"]))
+
+
+def _write_devices_database(path: Path, schema_version: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with closing(sqlite3.connect(path)) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE devices (id INTEGER PRIMARY KEY, name TEXT NOT NULL);
+            CREATE TABLE schema_metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            """
+        )
+        connection.execute(
+            "INSERT INTO schema_metadata VALUES ('schema_version', ?, '', '')",
+            (schema_version,),
+        )
+        connection.execute("INSERT INTO devices(name) VALUES ('device')")
+        connection.commit()
+
+
+def _set_age(path: Path, days: int) -> None:
+    timestamp = (NOW.timestamp() - days * 86400)
+    os.utime(path, (timestamp, timestamp))
+
+
+def _candidate(report: dict[str, object], name: str) -> dict[str, object]:
+    return next(
+        item
+        for item in report["candidates"]  # type: ignore[index]
+        if isinstance(item, dict) and item.get("display_name") == name
+    )
+
+
+def test_scan_keeps_current_and_recent_rollbacks_but_deletes_old_version(
+    tmp_path: Path,
+) -> None:
+    paths, root = _site(tmp_path)
+    backups = root / "files" / "backups" / "database-migrations"
+    recent = backups / "devices-before-recent.sqlite"
+    stable = backups / "devices-before-stable.sqlite"
+    old = backups / "devices-before-old.sqlite"
+    _write_devices_database(recent, "2026.08.01.recent")
+    _write_devices_database(stable, "2026.07.31.stable")
+    _write_devices_database(old, "2026.07.01.old")
+    _set_age(recent, 10)
+    _set_age(stable, 20)
+    _set_age(old, 100)
+
+    service = SiteRetentionService(paths, now=lambda: NOW)
+    report = service.scan("line-12")
+
+    current = next(
+        item
+        for item in report["candidates"]  # type: ignore[index]
+        if isinstance(item, dict)
+        and item.get("category") == "current_database"
+        and item.get("display_name") == "devices.db"
+    )
+    assert current["safe"] is False
+    assert current["status"] == "current_use"
+    assert _candidate(report, recent.name)["status"] == "recent_rollback"
+    assert _candidate(report, stable.name)["status"] == "recent_stable"
+    old_candidate = _candidate(report, old.name)
+    assert old_candidate["safe"] is True
+    assert old_candidate["recommended_action"] == "delete"
+
+    result = service.apply(
+        "line-12",
+        scan_token=str(report["scan_token"]),
+        candidate_ids=[str(old_candidate["candidate_id"])],
+    )
+
+    assert result["success_count"] == 1
+    assert not old.exists()
+    assert recent.exists()
+    assert stable.exists()
+    assert (root / "db" / "devices.db").exists()
+
+
+def test_scan_archives_30_to_90_day_backup_with_conservative_estimate(
+    tmp_path: Path,
+) -> None:
+    paths, root = _site(tmp_path)
+    backups = root / "files" / "backups" / "database-migrations"
+    recent = backups / "devices-before-recent.sqlite"
+    stable = backups / "devices-before-stable.sqlite"
+    archive_target = backups / "devices-before-archive.sqlite"
+    for path, version in (
+        (recent, "2026.08.01.recent"),
+        (stable, "2026.07.31.stable"),
+        (archive_target, "2026.07.01.archive"),
+    ):
+        _write_devices_database(path, version)
+    with closing(sqlite3.connect(archive_target)) as connection:
+        connection.executemany(
+            "INSERT INTO devices(name) VALUES (?)",
+            [("repeated-device-name-" * 20,) for _ in range(5000)],
+        )
+        connection.commit()
+    _set_age(recent, 10)
+    _set_age(stable, 20)
+    _set_age(archive_target, 45)
+
+    service = SiteRetentionService(paths, now=lambda: NOW)
+    report = service.scan("line-12")
+    candidate = _candidate(report, archive_target.name)
+
+    assert candidate["safe"] is True
+    assert candidate["recommended_action"] == "archive"
+    assert 0 < int(candidate["estimated_release_bytes"]) < int(candidate["size_bytes"])
+
+    result = service.apply(
+        "line-12",
+        scan_token=str(report["scan_token"]),
+        candidate_ids=[str(candidate["candidate_id"])],
+    )
+
+    assert result["success_count"] == 1
+    assert not archive_target.exists()
+    archive_path = root / str(result["results"][0]["archive_path"])  # type: ignore[index]
+    assert archive_path.is_file()
+    with zipfile.ZipFile(archive_path) as archive:
+        assert archive.testzip() is None
+        assert archive_target.name in archive.namelist()
+
+
+def test_exact_duplicate_known_backup_can_be_deleted_but_unknown_cannot(
+    tmp_path: Path,
+) -> None:
+    paths, root = _site(tmp_path)
+    backups = root / "files" / "backups" / "database-migrations"
+    known_new = backups / "devices-copy-new.sqlite"
+    known_old = backups / "devices-copy-old.sqlite"
+    _write_devices_database(known_new, "2026.08.01.copy")
+    known_old.write_bytes(known_new.read_bytes())
+    _set_age(known_new, 5)
+    _set_age(known_old, 10)
+
+    unknown_new = backups / "legacy-copy-new.sqlite"
+    unknown_old = backups / "legacy-copy-old.sqlite"
+    with closing(sqlite3.connect(unknown_new)) as connection:
+        connection.execute("CREATE TABLE legacy_payload(value TEXT NOT NULL)")
+        connection.execute("INSERT INTO legacy_payload VALUES ('unknown')")
+        connection.commit()
+    unknown_old.write_bytes(unknown_new.read_bytes())
+    _set_age(unknown_new, 100)
+    _set_age(unknown_old, 110)
+
+    report = SiteRetentionService(paths, now=lambda: NOW).scan("line-12")
+    known = _candidate(report, known_old.name)
+    unknown = _candidate(report, unknown_old.name)
+
+    assert known["status"] == "duplicate_backup"
+    assert known["safe"] is True
+    assert known["recommended_action"] == "delete"
+    assert unknown["status"] == "unknown_database"
+    assert unknown["safe"] is False
+    assert unknown["recommended_action"] == "keep"
+
+
+def test_unreferenced_database_cannot_prove_backup_is_outdated(tmp_path: Path) -> None:
+    paths, root = _site(tmp_path)
+    current = root / "db" / "legacy-devices.sqlite"
+    backup = root / "files" / "backups" / "database-migrations" / "devices-old.sqlite"
+    (root / "db" / "devices.db").unlink()
+    _write_devices_database(current, "2026.08.10.current")
+    _write_devices_database(backup, "2026.07.01.old")
+    _set_age(backup, 100)
+
+    report = SiteRetentionService(paths, now=lambda: NOW).scan("line-12")
+    current_candidate = _candidate(report, current.name)
+    backup_candidate = _candidate(report, backup.name)
+
+    assert current_candidate["details"]["code_reference"] == "protected_unverified"
+    assert backup_candidate["safe"] is False
+    assert backup_candidate["recommended_action"] == "keep"
+    assert "当前 schema" in str(backup_candidate["reason"])
+
+
+def test_nonempty_backup_wal_blocks_automatic_cleanup(tmp_path: Path) -> None:
+    paths, root = _site(tmp_path)
+    backups = root / "files" / "backups" / "database-migrations"
+    recent = backups / "devices-before-recent.sqlite"
+    stable = backups / "devices-before-stable.sqlite"
+    old = backups / "devices-before-old.sqlite"
+    _write_devices_database(recent, "2026.08.01.recent")
+    _write_devices_database(stable, "2026.07.31.stable")
+    _write_devices_database(old, "2026.07.01.old")
+    _set_age(recent, 10)
+    _set_age(stable, 20)
+    _set_age(old, 100)
+
+    connection = sqlite3.connect(old)
+    try:
+        assert connection.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+        connection.execute("INSERT INTO devices(name) VALUES ('pending-wal')")
+        connection.commit()
+        assert old.with_name(f"{old.name}-wal").stat().st_size > 0
+        _set_age(old, 100)
+
+        candidate = _candidate(
+            SiteRetentionService(paths, now=lambda: NOW).scan("line-12"), old.name
+        )
+    finally:
+        connection.close()
+
+    assert candidate["safe"] is False
+    assert candidate["recommended_action"] == "keep"
+    assert "WAL" in str(candidate["reason"])
+
+
+def test_apply_rejects_changed_candidate_after_scan(tmp_path: Path) -> None:
+    paths, root = _site(tmp_path)
+    backup = root / "files" / "backups" / "database-migrations" / "old.sqlite"
+    retained = backup.with_name("recent.sqlite")
+    stable = backup.with_name("stable.sqlite")
+    _write_devices_database(retained, "2026.08.01.recent")
+    _write_devices_database(stable, "2026.07.31.stable")
+    _write_devices_database(backup, "2026.07.01.old")
+    _set_age(retained, 10)
+    _set_age(stable, 20)
+    _set_age(backup, 100)
+    service = SiteRetentionService(paths, now=lambda: NOW)
+    report = service.scan("line-12")
+    candidate = _candidate(report, backup.name)
+
+    with closing(sqlite3.connect(backup)) as connection:
+        connection.execute("INSERT INTO devices(name) VALUES ('changed')")
+        connection.commit()
+
+    with pytest.raises(SiteStorageError) as stale:
+        service.apply(
+            "line-12",
+            scan_token=str(report["scan_token"]),
+            candidate_ids=[str(candidate["candidate_id"])],
+        )
+
+    assert stale.value.code == "SITE_RETENTION_SCAN_STALE"
+    assert backup.exists()
+
+
+def test_online_mr_raw_archive_keeps_web_raw_readable_from_session_package(
+    tmp_path: Path,
+) -> None:
+    paths, root = _site(tmp_path)
+    session_id = "20260701_120000_test"
+    session_dir = (
+        root
+        / "files"
+        / "rail_transit"
+        / "online_mr"
+        / "MR-01__1"
+        / "sessions"
+        / session_id
+    )
+    raw_dir = session_dir / "raw"
+    parsed_dir = session_dir / "parsed"
+    outputs_dir = session_dir / "outputs"
+    raw_dir.mkdir(parents=True)
+    parsed_dir.mkdir()
+    outputs_dir.mkdir()
+    raw = raw_dir / "mesh_link_raw.log"
+    raw.write_text("2026-07-01 12:00:00 mesh active\n", encoding="utf-8")
+    with closing(sqlite3.connect(parsed_dir / "online_diagnosis.sqlite")) as connection:
+        connection.execute("CREATE TABLE parsed_samples(id INTEGER PRIMARY KEY)")
+        connection.commit()
+    meta = {
+        "session_id": session_id,
+        "site": "line-12",
+        "mr_name": "MR-01",
+        "started_at": "2026-07-01T12:00:00Z",
+        "ended_at": "2026-07-01T12:10:00Z",
+        "status": "STOPPED",
+        "finalization_complete": True,
+        "package_available": True,
+        "data_integrity": "complete",
+    }
+    (session_dir / "session_meta.json").write_text(
+        json.dumps(meta, ensure_ascii=False), encoding="utf-8"
+    )
+    package = outputs_dir / f"{session_id}.zip"
+    with zipfile.ZipFile(package, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.write(raw, "raw/mesh_link_raw.log")
+        archive.write(
+            parsed_dir / "online_diagnosis.sqlite",
+            "parsed/online_diagnosis.sqlite",
+        )
+        archive.writestr("session_meta.json", json.dumps(meta, ensure_ascii=False))
+
+    service = SiteRetentionService(paths, now=lambda: NOW)
+    report = service.scan("line-12")
+    candidate = next(
+        item
+        for item in report["candidates"]  # type: ignore[index]
+        if isinstance(item, dict)
+        and item.get("category") == "expired_raw"
+        and item.get("details", {}).get("session_id") == session_id
+    )
+    assert candidate["safe"] is True
+
+    service.apply(
+        "line-12",
+        scan_token=str(report["scan_token"]),
+        candidate_ids=[str(candidate["candidate_id"])],
+    )
+
+    assert not raw_dir.exists()
+    assert package.exists()
+    assert (parsed_dir / "online_diagnosis.sqlite").exists()
+    tail = OnlineMrQueryService(paths).read_raw_tail(
+        "line-12", session_id, "mesh_link"
+    )
+    assert tail.exists is True
+    assert tail.lines == ["2026-07-01 12:00:00 mesh active"]
+    summary = OnlineMrQueryService(paths).get_raw_summary("line-12", session_id)
+    assert next(item for item in summary if item.name == "mesh_link").exists is True
+    chunk = OnlineMrQueryService(paths).read_log_chunk(
+        "line-12", session_id, "mesh_link", limit=10
+    )
+    assert [line.text for line in chunk.lines] == [
+        "2026-07-01 12:00:00 mesh active"
+    ]
+
+
+def test_apply_blocks_when_another_task_is_active(tmp_path: Path) -> None:
+    paths, root = _site(tmp_path)
+    backups = root / "files" / "backups" / "database-migrations"
+    recent = backups / "devices-before-recent.sqlite"
+    stable = backups / "devices-before-stable.sqlite"
+    old = backups / "devices-before-old.sqlite"
+    _write_devices_database(recent, "2026.08.01.recent")
+    _write_devices_database(stable, "2026.07.31.stable")
+    _write_devices_database(old, "2026.07.01.old")
+    _set_age(recent, 10)
+    _set_age(stable, 20)
+    _set_age(old, 100)
+    service = SiteRetentionService(paths, now=lambda: NOW)
+    report = service.scan("line-12")
+    candidate = _candidate(report, old.name)
+
+    TaskRepository(root / "db" / "tasks.db").save(
+        TaskSnapshot(
+            task_id="other-running-task",
+            task_type="device_collect",
+            task_name="设备采集",
+            status=TaskState.RUNNING,
+            created_time="2026-08-13T00:00:00Z",
+            updated_time="2026-08-13T00:01:00Z",
+            site_name="line-12",
+        )
+    )
+
+    with pytest.raises(SiteStorageError) as blocked:
+        service.apply(
+            "line-12",
+            scan_token=str(report["scan_token"]),
+            candidate_ids=[str(candidate["candidate_id"])],
+            current_job_id="retention-job",
+        )
+
+    assert blocked.value.code == "SITE_HAS_ACTIVE_TASKS"
+    assert old.exists()
+
+
+def test_task_event_retention_removes_only_expired_events_and_vacuums(
+    tmp_path: Path,
+) -> None:
+    paths, root = _site(tmp_path)
+    task_db = root / "db" / "tasks.db"
+    TaskRepository(task_db)
+    with closing(sqlite3.connect(task_db)) as connection:
+        connection.execute(
+            """
+            INSERT INTO task_events(
+                event_id, task_id, event_type, event_time, source, payload_json
+            ) VALUES ('old-event', 'old-task', 'log', '2026-04-01T00:00:00Z', 'test', '{}')
+            """
+        )
+        connection.commit()
+        connection.execute(
+            """
+            INSERT INTO task_events(
+                event_id, task_id, event_type, event_time, source, payload_json
+            ) VALUES ('recent-event', 'recent-task', 'log', '2026-08-01T00:00:00Z', 'test', '{}')
+            """
+        )
+        connection.commit()
+    service = SiteRetentionService(paths, now=lambda: NOW)
+    report = service.scan("line-12")
+    candidate = next(
+        item
+        for item in report["candidates"]  # type: ignore[index]
+        if isinstance(item, dict) and item.get("category") == "task_history"
+    )
+    assert candidate["safe"] is True
+    assert candidate["details"]["event_count"] == 1  # type: ignore[index]
+
+    result = service.apply(
+        "line-12",
+        scan_token=str(report["scan_token"]),
+        candidate_ids=[str(candidate["candidate_id"])],
+    )
+
+    assert result["success_count"] == 1
+    with closing(sqlite3.connect(task_db)) as connection:
+        rows = connection.execute(
+            "SELECT event_id FROM task_events ORDER BY event_id"
+        ).fetchall()
+        quick_check = connection.execute("PRAGMA quick_check").fetchone()[0]
+    assert rows == [("recent-event",)]
+    assert quick_check == "ok"

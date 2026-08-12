@@ -134,6 +134,49 @@ class SiteCleanupPlanResponse(ApiModel):
     can_delete: bool
 
 
+class SiteRetentionExecuteRequest(ApiModel):
+    scan_token: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
+    candidate_ids: list[str] = Field(min_length=1, max_length=500)
+    confirmed: bool = False
+
+
+class SiteRetentionCandidateResponse(ApiModel):
+    candidate_id: str
+    category: str
+    relative_path: str
+    display_name: str
+    size_bytes: int
+    estimated_release_bytes: int
+    age_days: int
+    status: str
+    recommended_action: str
+    safe: bool
+    reason: str
+    details: dict[str, object] = Field(default_factory=dict)
+
+
+class SiteRetentionSummaryResponse(ApiModel):
+    total_bytes: int
+    current_database_bytes: int
+    raw_bytes: int
+    parsed_bytes: int
+    backup_bytes: int
+    other_bytes: int
+    safe_cleanup_bytes: int
+    compressible_bytes: int
+    actionable_count: int
+
+
+class SiteRetentionReportResponse(ApiModel):
+    scan_token: str
+    site_id: str
+    display_name: str
+    generated_at: str
+    policy: dict[str, int]
+    summary: SiteRetentionSummaryResponse
+    candidates: list[SiteRetentionCandidateResponse]
+
+
 __all__ = [
     "DataRootPathRequest",
     "SiteActivateRequest",
@@ -152,4 +195,8 @@ __all__ = [
     "SiteDemoRebuildRequest",
     "SiteAuditSummaryResponse",
     "SiteCleanupPlanResponse",
+    "SiteRetentionCandidateResponse",
+    "SiteRetentionExecuteRequest",
+    "SiteRetentionReportResponse",
+    "SiteRetentionSummaryResponse",
 ]

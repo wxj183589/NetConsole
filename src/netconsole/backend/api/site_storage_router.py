@@ -19,6 +19,8 @@ from netconsole.models.api.site_storage import (
     SiteExportRequest,
     SiteImportInspectRequest,
     SiteImportRequest,
+    SiteRetentionExecuteRequest,
+    SiteRetentionReportResponse,
     SiteTaskResponse,
     SiteTrashRequest,
     SiteTrashResponse,
@@ -29,6 +31,7 @@ from netconsole.services.site_lifecycle import (
     SiteAuditService,
     SiteCleanupApplicationService,
 )
+from netconsole.services.site_retention import SiteRetentionService
 from netconsole.services.site_storage import (
     DataRootApplicationService,
     SiteApplicationService,
@@ -76,6 +79,10 @@ def _audit(request: Request) -> SiteAuditService:
 
 def _cleanup(request: Request) -> SiteCleanupApplicationService:
     return request.app.state.site_cleanup_application_service
+
+
+def _retention(request: Request) -> SiteRetentionService:
+    return request.app.state.site_retention_service
 
 
 @router.get(
@@ -193,6 +200,73 @@ def latest_site_audit(request: Request, site_id: str) -> SiteAuditSummaryRespons
             for name in SiteAuditSummaryResponse.model_fields
             if name in public
         }
+    )
+
+
+@router.post(
+    "/sites/{site_id}/retention/scan",
+    response_model=SiteTaskResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="扫描局点可清理数据",
+    description="通过 Task Center 只读统计数据库、历史备份、原始数据和任务历史，不修改业务数据。",
+    dependencies=[Depends(_desktop), Depends(_persistent_storage)],
+)
+def scan_site_retention(request: Request, site_id: str) -> SiteTaskResponse:
+    _call(lambda: _sites(request).get_site(site_id))
+    return _submit(request, "site_retention_scan", {"site_id": site_id})
+
+
+@router.get(
+    "/sites/{site_id}/retention/latest",
+    response_model=SiteRetentionReportResponse,
+    summary="读取最近数据清理扫描",
+    dependencies=[Depends(_desktop)],
+)
+def latest_site_retention(
+    request: Request, site_id: str
+) -> SiteRetentionReportResponse:
+    report = _call(lambda: _retention(request).latest(site_id))
+    if not report:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "SITE_RETENTION_SCAN_NOT_FOUND",
+                "message": "尚未生成数据清理扫描",
+            },
+        )
+    return SiteRetentionReportResponse.model_validate(report)
+
+
+@router.post(
+    "/sites/{site_id}/retention/apply",
+    response_model=SiteTaskResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="执行局点数据清理",
+    description="复验扫描令牌和候选证据后，通过 Task Center 执行所选归档或清理动作。",
+    dependencies=[Depends(_desktop), Depends(_persistent_storage)],
+)
+def apply_site_retention(
+    request: Request, site_id: str, payload: SiteRetentionExecuteRequest
+) -> SiteTaskResponse:
+    if not payload.confirmed:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "SITE_RETENTION_CONFIRMATION_REQUIRED",
+                "message": "执行数据清理前必须明确确认",
+            },
+        )
+    _call(lambda: _sites(request).get_site(site_id))
+    _call(lambda: _retention(request).validate_scan(site_id, payload.scan_token))
+    _call(lambda: _sites(request).ensure_no_active_tasks(site_id))
+    return _submit(
+        request,
+        "site_retention_apply",
+        {
+            "site_id": site_id,
+            "scan_token": payload.scan_token,
+            "candidate_ids": payload.candidate_ids,
+        },
     )
 
 
@@ -514,8 +588,16 @@ def _submit(
                     "site_cleanup_apply": "安全清理局点",
                     "site_cleanup_restore": "恢复局点",
                     "site_demo_rebuild": "重建演示局点",
+                    "site_retention_scan": "扫描可清理数据",
+                    "site_retention_apply": "执行局点数据清理",
                 }[task_type],
                 "owner": "site-storage",
+                "resource_keys": (
+                    [f"site-retention:{params.get('site_id')}"]
+                    if task_type in {"site_retention_scan", "site_retention_apply"}
+                    else []
+                ),
+                "resource_conflict_message": "该局点已有数据清理任务正在执行",
             },
         ),
     )

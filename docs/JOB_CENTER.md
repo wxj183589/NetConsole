@@ -36,6 +36,8 @@ Job Center 是普通后台任务的统一调度层；Export Process 是共享同
 
 数据库维护统一使用 `database_upgrade`、`database_backup_validation`、`database_backup_restore`、`legacy_database_archive_migration` 和 `database_backup_delete`。Worker 只接收 `database_kind/scope/profile/backup_id` 等语义标识，不接收 Renderer 路径、SQLite connection 或 Repository。第一阶段 `database_upgrade` 仅允许 `mesh_derived`；其他数据库必须先实现独立 Adapter，不能借通用 handler 直接删除重建。
 
+局点瘦身使用 `site_retention_scan` 和 `site_retention_apply`，owner 为 `site-storage`，同一局点通过 `site-retention:<site_id>` 资源键互斥。扫描任务可取消且只读；执行任务只接收 `site_id + scan_token + candidate_ids`，写入前重新扫描并复验数据库、ZIP、WAL、活动任务和受控相对路径。执行包含不可逆删除或 `VACUUM`，因此提交后不可取消。完整策略见[局点数据保留与清理](storage/SITE_RETENTION.md)。
+
 升级和恢复任务通过 `resource_keys` 与当前局点的 `mesh-import:<site>` 冲突控制联动，并在 Worker 内再获取数据库范围的跨进程维护锁。进度阶段固定覆盖维护锁、暂停写入、WAL checkpoint、已验证旧库备份、影子构建、影子校验、原子切换、smoke 和完成。任务 `COMPLETED` 只表示维护流程正常收口；缺失 raw 等可恢复问题通过结构化 warning/result 字段表达。
 
 MESH 来源维护使用 typed `mesh_analysis_maintenance` Job：`identity_projection_refresh` 只刷新 AP Identity 投影，`parser_rebuild` 才从 raw 重解析。页面 GET 不自动创建维护任务。多来源删除使用单个 `mesh_analysis_sources_delete` Job，最多 100 个 session，按顺序报告 `requested_count/success_count/failed_count/skipped_count/items`；单项 `already_missing` 不使整批失败，Renderer 只根据逐项终态更新来源列表。导入、重建、维护和删除共用 catalog/profile/source 资源键，防止同一 SQLite/来源并发写入。

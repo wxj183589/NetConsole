@@ -105,6 +105,7 @@ from netconsole.services.site_lifecycle import (
     SiteAuditService,
     SiteCleanupApplicationService,
 )
+from netconsole.services.site_retention import SiteRetentionService
 from netconsole.services.site_storage import (
     DataRootApplicationService,
     SiteApplicationService,
@@ -499,6 +500,7 @@ def create_app(
     app.state.site_cleanup_application_service = SiteCleanupApplicationService(
         paths, site_application_service
     )
+    app.state.site_retention_service = SiteRetentionService(paths)
     app.state.site_process_adapter = web_process_adapter
     app.state.web_artifact_store = web_artifact_store
     app.state.desktop_action_service = desktop_action_service

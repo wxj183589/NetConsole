@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import zipfile
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -320,6 +321,27 @@ def test_artifacts_exclude_symlinks(tmp_path: Path) -> None:
     except OSError:
         pytest.skip("当前 Windows 环境不允许创建符号链接")
     assert "raw/outside.log" not in {row.relative_name for row in service.list_artifacts("site-a", "symlink")}
+
+
+def test_artifacts_include_archived_raw_members(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    session = _session(service, "archived-artifacts")
+    raw = session / "raw" / "mesh_link_raw.log"
+    raw.write_text("archived raw\n", encoding="utf-8")
+    raw_size = raw.stat().st_size
+    package = session / "outputs" / f"{session.name}.zip"
+    with zipfile.ZipFile(package, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.write(raw, "raw/mesh_link_raw.log")
+    raw.unlink()
+    raw.parent.rmdir()
+
+    rows = service.list_artifacts("site-a", "archived-artifacts")
+    archived = next(row for row in rows if row.relative_name == "raw/mesh_link_raw.log")
+
+    assert archived.kind == "raw"
+    assert archived.size_bytes == raw_size
+    assert archived.downloadable is False
+    assert archived.is_fact_source is True
 
 
 def test_preview_rssi_prefers_signal_dbm_and_normalizes_positive_h3c_magnitude() -> None:

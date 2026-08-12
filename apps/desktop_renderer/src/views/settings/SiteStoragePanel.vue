@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowDown, MoreFilled } from '@element-plus/icons-vue'
 
-import { activateSite, applySiteCleanup, auditSite, createSite, exportSite, getDataRoot, getLatestSiteAudit, importSite, inspectSitePackage, listSites, migrateDataRoot, migrateSite, preflightSiteActivation, prepareSiteCleanup, rebuildDemoSite, trashSite, updateSite, validateDataRoot, type DataRootSnapshot, type SiteConflictChoice, type SiteConflictResolution, type SitePackageInspection, type SitePackageType, type SiteRecord } from '../../api/siteStorage'
+import { activateSite, applySiteCleanup, applySiteRetention, auditSite, createSite, exportSite, getDataRoot, getLatestSiteAudit, getLatestSiteRetention, importSite, inspectSitePackage, listSites, migrateDataRoot, migrateSite, preflightSiteActivation, prepareSiteCleanup, rebuildDemoSite, scanSiteRetention, trashSite, updateSite, validateDataRoot, type DataRootSnapshot, type SiteConflictChoice, type SiteConflictResolution, type SitePackageInspection, type SitePackageType, type SiteRecord, type SiteRetentionCandidate, type SiteRetentionReport } from '../../api/siteStorage'
 import { ApiRequestError } from '../../api/client'
 import { getPlatformAdapter } from '../../platform/runtime'
 import { getTask } from '../../api/tasks'
@@ -39,6 +39,11 @@ const editDialogVisible = ref(false)
 const editMode = ref<'full' | 'rename'>('full')
 const editingSite = ref<SiteRecord | null>(null)
 const editForm = ref({ display_name: '', line_name: '', project_type: '' })
+const retentionDialogVisible = ref(false)
+const retentionSite = ref<SiteRecord | null>(null)
+const retentionReport = ref<SiteRetentionReport | null>(null)
+const retentionSelectedIds = ref<string[]>([])
+const retentionBusy = ref(false)
 const projectTypeOptions = ['PIS车地无线系统', '信号系统', '通信系统', '综合监控系统', '其他']
 const desktopOnly = getPlatformAdapter().hostType === 'electron'
 const { confirm: confirmAction } = useConfirm()
@@ -46,6 +51,31 @@ const workspace = useWorkspaceStore()
 const panelRoot = ref<HTMLElement | null>(null)
 let panelMounted = false
 let reloadGeneration = 0
+
+const retentionGroups = computed(() => {
+  const candidates = retentionReport.value?.candidates || []
+  return [
+    { key: 'expired-raw', title: '过期原始包/日志', categories: ['expired_raw'] },
+    { key: 'history-backup', title: '历史数据库备份', categories: ['history_backup'] },
+    { key: 'outdated-database', title: '过时数据库版本', categories: ['outdated_database', 'current_database'] },
+    { key: 'task-history', title: '数据库历史记录/空间压缩', categories: ['task_history'] },
+  ].map((group) => ({
+    ...group,
+    candidates: candidates.filter((candidate) => group.categories.includes(candidate.category)),
+  }))
+})
+
+const selectedRetentionCandidates = computed(() => {
+  const selected = new Set(retentionSelectedIds.value)
+  return (retentionReport.value?.candidates || []).filter(
+    (candidate) => selected.has(candidate.candidate_id) && candidate.safe,
+  )
+})
+
+const selectedRetentionBytes = computed(() => selectedRetentionCandidates.value.reduce(
+  (total, candidate) => total + candidate.estimated_release_bytes,
+  0,
+))
 
 onMounted(() => {
   panelMounted = true
@@ -184,6 +214,99 @@ async function showAudit(site: SiteRecord): Promise<void> {
       `建议：${actionLabel(audit.recommended_action)}`,
     ].join('\n'), `${site.display_name} 审计清单`, { confirmButtonText: '关闭' })
   } catch (cause) { showError(cause, '审计清单读取失败') }
+}
+
+async function openRetention(site: SiteRecord): Promise<void> {
+  retentionSite.value = site
+  retentionReport.value = null
+  retentionSelectedIds.value = []
+  retentionDialogVisible.value = true
+  retentionBusy.value = true
+  try {
+    retentionReport.value = await getLatestSiteRetention(site.site_id)
+  } catch (cause) {
+    if (!(cause instanceof ApiRequestError) || cause.code !== 'SITE_RETENTION_SCAN_NOT_FOUND') {
+      showError(cause, '数据清理扫描读取失败')
+    }
+  } finally {
+    retentionBusy.value = false
+  }
+}
+
+async function runRetentionScan(options: { notify?: boolean } = {}): Promise<void> {
+  const site = retentionSite.value
+  if (!site) return
+  retentionBusy.value = true
+  try {
+    const task = await scanSiteRetention(site.site_id)
+    await openTask(task.task_id)
+    const completed = await waitForTask(task.task_id)
+    if (completed !== 'COMPLETED') throw new Error(`数据清理扫描任务状态：${completed}`)
+    retentionReport.value = await getLatestSiteRetention(site.site_id)
+    retentionSelectedIds.value = []
+    if (options.notify !== false) ElMessage.success('可清理数据扫描完成')
+  } catch (cause) {
+    showError(cause, '可清理数据扫描失败')
+  } finally {
+    retentionBusy.value = false
+  }
+}
+
+function updateRetentionSelection(candidate: SiteRetentionCandidate, selected: boolean): void {
+  if (!candidate.safe) return
+  const values = new Set(retentionSelectedIds.value)
+  if (selected) values.add(candidate.candidate_id)
+  else values.delete(candidate.candidate_id)
+  retentionSelectedIds.value = [...values]
+}
+
+function selectAllSafeRetentionCandidates(): void {
+  retentionSelectedIds.value = (retentionReport.value?.candidates || [])
+    .filter((candidate) => candidate.safe)
+    .map((candidate) => candidate.candidate_id)
+}
+
+async function executeRetention(): Promise<void> {
+  const site = retentionSite.value
+  const report = retentionReport.value
+  const candidates = selectedRetentionCandidates.value
+  if (!site || !report || !candidates.length) {
+    ElMessage.warning('请先选择至少一项可安全清理的数据')
+    return
+  }
+  const destructive = candidates.some((candidate) => ['delete', 'purge'].includes(candidate.recommended_action))
+  const confirmed = await confirmAction({
+    type: destructive ? 'DESTRUCTIVE' : 'WARNING',
+    title: destructive ? '确认执行数据清理' : '确认压缩过期数据',
+    message: `将处理 ${candidates.length} 项数据，预计释放 ${formatBytes(selectedRetentionBytes.value)}。执行前 Backend 会重新核验扫描令牌、数据库和归档证据。`,
+    detail: candidates.map((candidate) => `${retentionActionLabel(candidate.recommended_action)}：${candidate.relative_path}`).join('\n'),
+    notice: destructive ? '删除和任务历史清理不可撤销；数据库归档仍保留可校验 ZIP。' : '原始松散文件仅在完整会话包校验通过后移除。',
+    ...(destructive ? {
+      confirmationText: site.display_name,
+      confirmationLabel: `输入“${site.display_name}”以确认`,
+    } : {}),
+    confirmText: destructive ? '确认执行清理' : '确认压缩',
+    closeOnEscape: false,
+  })
+  if (!confirmed) return
+
+  retentionBusy.value = true
+  try {
+    const task = await applySiteRetention(
+      site.site_id,
+      report.scan_token,
+      candidates.map((candidate) => candidate.candidate_id),
+    )
+    await openTask(task.task_id)
+    const completed = await waitForTask(task.task_id)
+    if (completed !== 'COMPLETED') throw new Error(`数据清理任务状态：${completed}`)
+    ElMessage.success('所选数据已处理，正在重新扫描')
+    await runRetentionScan({ notify: false })
+  } catch (cause) {
+    showError(cause, '局点数据清理失败')
+  } finally {
+    retentionBusy.value = false
+  }
 }
 
 async function cleanupSite(site: SiteRecord): Promise<void> {
@@ -497,6 +620,8 @@ function showError(cause: unknown, fallback: string): void { error.value = cause
 function formatBytes(value: number): string { if (!Number.isFinite(value) || value <= 0) return '0 B'; const units = ['B', 'KB', 'MB', 'GB', 'TB']; const index = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1); return `${(value / 1024 ** index).toFixed(index ? 1 : 0)} ${units[index]}` }
 function classificationLabel(value: string): string { return ({ active_site: '当前正式局点', normal_site: '正式局点', managed_demo: '演示局点 · 可重建', legacy_demo: '旧版 Demo 待审计', legacy_valid: 'Legacy 待审计', legacy_alias: 'Legacy 别名', legacy_duplicate: 'Legacy 重复', orphan: '孤立目录', empty_shell: '疑似迁移残留', unknown: '未审计' } as Record<string, string>)[value] || value }
 function actionLabel(value: string): string { return ({ audit_required: '需要审计', safe_delete_to_recycle: '可安全移入回收区', backup_then_rebuild: '备份后重建 Demo', keep_and_review: '保留并复核' } as Record<string, string>)[value] || value }
+function retentionActionLabel(value: string): string { return ({ keep: '保留', archive: '压缩归档', delete: '删除', purge: '清理并压缩数据库' } as Record<string, string>)[value] || value }
+function retentionStatusLabel(value: string): string { return ({ current_use: '当前使用', recent_rollback: '最近回滚', recent_stable: '最近稳定', historical_migration_version: '历史迁移版本', duplicate_backup: '重复备份', unknown_database: '未知数据库', recent_raw: '近期原始数据', archived_raw_copy: '归档副本已校验', protected_raw: '受保护原始数据', manual_retain: '人工保留', expired_task_events: '过期任务事件', within_retention: '保留期内' } as Record<string, string>)[value] || value }
 function integrityLabel(value: SiteRecord['data_integrity']): string { return ({ ok: '正常', failed: '异常', unknown: '待审计' } as const)[value] || '待审计' }
 function classificationTag(site: SiteRecord): 'success' | 'warning' | 'danger' | 'info' { const value = site.classification || 'unknown'; if (value === 'managed_demo') return 'success'; if (value === 'empty_shell') return 'danger'; if (value.startsWith('legacy')) return 'warning'; return 'info' }
 function siteInfoText(value: string | null | undefined): string { return String(value || '').trim() }
@@ -575,6 +700,7 @@ function displayValue(value: unknown): string { if (value === null || value === 
         <div v-if="root?.persistent" class="site-actions">
           <el-button :data-testid="`audit-site-${site.site_id}`" size="small" :disabled="busy" @click="auditSelectedSite(site)">审计</el-button>
           <el-button v-if="site.audited_at" :data-testid="`show-audit-${site.site_id}`" size="small" :disabled="busy" @click="showAudit(site)">查看清单</el-button>
+          <el-button :data-testid="`retention-site-${site.site_id}`" size="small" :disabled="busy" @click="openRetention(site)">数据清理</el-button>
           <el-button :data-testid="`switch-site-${site.site_id}`" size="small" :disabled="site.active || busy" @click="switchSite(site)">{{ site.active ? '当前局点' : '切换' }}</el-button>
           <el-dropdown :disabled="busy" trigger="click" @command="handleSiteAction(site, $event)">
             <el-button :data-testid="`more-site-${site.site_id}`" size="small" :disabled="busy">
@@ -595,6 +721,77 @@ function displayValue(value: unknown): string { if (value === null || value === 
         </div>
       </article>
     </div>
+    <el-dialog v-if="retentionDialogVisible" v-model="retentionDialogVisible" class="site-retention-dialog" width="min(1120px, 96vw)" :close-on-click-modal="false" :close-on-press-escape="!retentionBusy" :show-close="!retentionBusy" title="数据清理">
+      <div v-loading="retentionBusy" class="retention-content" data-testid="retention-dialog">
+        <div class="retention-heading">
+          <div>
+            <strong>{{ retentionSite?.display_name }}</strong>
+            <code>{{ retentionSite?.site_id }}</code>
+          </div>
+          <div class="retention-actions">
+            <el-button size="small" :disabled="retentionBusy" data-testid="retention-scan" @click="runRetentionScan()">扫描可清理数据</el-button>
+            <el-button v-if="retentionReport" size="small" :disabled="retentionBusy || !retentionReport.summary.actionable_count" @click="selectAllSafeRetentionCandidates">全选可安全处理项</el-button>
+          </div>
+        </div>
+
+        <template v-if="retentionReport">
+          <div class="retention-summary" data-testid="retention-summary">
+            <span><small>当前总占用</small><strong>{{ formatBytes(retentionReport.summary.total_bytes) }}</strong></span>
+            <span><small>当前数据库</small><strong>{{ formatBytes(retentionReport.summary.current_database_bytes) }}</strong></span>
+            <span><small>原始抓包/日志</small><strong>{{ formatBytes(retentionReport.summary.raw_bytes) }}</strong></span>
+            <span><small>解析数据</small><strong>{{ formatBytes(retentionReport.summary.parsed_bytes) }}</strong></span>
+            <span><small>历史备份</small><strong>{{ formatBytes(retentionReport.summary.backup_bytes) }}</strong></span>
+            <span><small>可安全清理</small><strong>{{ formatBytes(retentionReport.summary.safe_cleanup_bytes) }}</strong></span>
+            <span><small>可压缩空间</small><strong>{{ formatBytes(retentionReport.summary.compressible_bytes) }}</strong></span>
+          </div>
+          <div class="retention-meta">
+            <span>扫描时间：{{ retentionReport.generated_at }}</span>
+            <span>可处理 {{ retentionReport.summary.actionable_count }} 项</span>
+            <span>已选 {{ selectedRetentionCandidates.length }} 项 / 预计释放 {{ formatBytes(selectedRetentionBytes) }}</span>
+          </div>
+
+          <section v-for="group in retentionGroups" :key="group.key" class="retention-group" :data-testid="`retention-group-${group.key}`">
+            <div class="retention-group-heading">
+              <h3>{{ group.title }}</h3>
+              <span>{{ group.candidates.length }} 项</span>
+            </div>
+            <div v-if="group.candidates.length" class="retention-list">
+              <label v-for="candidate in group.candidates" :key="candidate.candidate_id" class="retention-row" :class="{ blocked: !candidate.safe }">
+                <el-checkbox
+                  :model-value="retentionSelectedIds.includes(candidate.candidate_id)"
+                  :disabled="!candidate.safe || retentionBusy"
+                  :aria-label="candidate.display_name"
+                  :data-testid="`retention-candidate-${candidate.candidate_id}`"
+                  @change="updateRetentionSelection(candidate, Boolean($event))"
+                />
+                <span class="retention-item-main">
+                  <span class="retention-item-title">
+                    <strong>{{ candidate.display_name }}</strong>
+                    <el-tag size="small" :type="candidate.safe ? 'success' : 'info'">{{ retentionStatusLabel(candidate.status) }}</el-tag>
+                    <el-tag v-if="candidate.recommended_action !== 'keep'" size="small" effect="plain">{{ retentionActionLabel(candidate.recommended_action) }}</el-tag>
+                  </span>
+                  <code>{{ candidate.relative_path }}</code>
+                  <small>{{ candidate.reason }}</small>
+                </span>
+                <span class="retention-item-size">
+                  <strong>{{ formatBytes(candidate.size_bytes) }}</strong>
+                  <small v-if="candidate.safe">预计释放 {{ formatBytes(candidate.estimated_release_bytes) }}</small>
+                  <small>{{ candidate.age_days }} 天</small>
+                </span>
+              </label>
+            </div>
+            <el-empty v-else :image-size="48" description="暂无数据" />
+          </section>
+        </template>
+        <el-empty v-else :image-size="72" description="尚未生成数据清理扫描">
+          <el-button type="primary" :disabled="retentionBusy" @click="runRetentionScan()">开始扫描</el-button>
+        </el-empty>
+      </div>
+      <template #footer>
+        <el-button :disabled="retentionBusy" @click="retentionDialogVisible = false">关闭</el-button>
+        <el-button type="danger" :loading="retentionBusy" :disabled="!selectedRetentionCandidates.length" data-testid="retention-execute" @click="executeRetention">执行所选项</el-button>
+      </template>
+    </el-dialog>
     <el-dialog v-model="editDialogVisible" class="site-edit-dialog" width="min(620px, calc(100vw - 32px))" :close-on-click-modal="false" :title="editMode === 'rename' ? '重命名局点' : '编辑局点信息'">
       <el-form label-position="top">
         <el-form-item label="局点名称" required>
@@ -703,5 +900,5 @@ function displayValue(value: unknown): string { if (value === null || value === 
 
 <style scoped>
 .el-alert{margin-top:14px}
-.storage-panel{padding:18px 20px;scroll-margin-top:16px;background:var(--el-bg-color);border:1px solid var(--el-border-color-light);border-radius:8px;transition:outline-color .18s ease,box-shadow .18s ease}.storage-panel--focused{outline:1px solid var(--nc-primary);box-shadow:0 0 0 3px color-mix(in srgb,var(--nc-primary),transparent 82%)}.panel-heading,.actions,.root-summary,.site-item,.site-main,.site-actions,.site-info-tags,.site-facts{display:flex;align-items:center;gap:10px}.panel-heading{justify-content:space-between;gap:18px}.panel-heading h2{margin:0 0 5px;font-size:17px}.panel-heading p{margin:0;color:var(--nc-text-secondary);font-size:13px}.actions,.site-actions{flex-wrap:wrap;justify-content:flex-end}.blocking-tasks{display:grid;gap:8px;margin-top:10px}.blocking-task{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 12px;border:1px solid var(--el-color-warning-light-5);border-radius:6px;background:var(--el-color-warning-light-9)}.blocking-task>div{display:flex;align-items:center;gap:8px;min-width:0;flex-wrap:wrap}.blocking-task code{overflow-wrap:anywhere}.blocking-task p{width:100%;margin:0;color:var(--nc-text-secondary);font-size:12px}.root-summary{margin:16px 0;padding:10px 12px;background:var(--nc-surface-muted);border-radius:6px;flex-wrap:wrap}.root-summary code{flex:1;min-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.site-list{display:grid;gap:8px}.site-item{justify-content:space-between;padding:11px 12px;border:1px solid var(--el-border-color-lighter);border-radius:6px}.site-item.active{border-color:var(--el-color-success-light-5);background:var(--el-color-success-light-9)}.site-content{display:grid;min-width:0;gap:7px}.site-main,.site-info-tags,.site-facts{min-width:0;flex-wrap:wrap}.site-main strong{font-size:14px}.site-facts code{color:var(--nc-text-secondary)}.site-facts span{color:var(--nc-text-secondary);font-size:12px}.site-edit-dialog :deep(.el-form){display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 14px}.site-edit-dialog :deep(.el-form-item){min-width:0}.site-edit-dialog :deep(.el-form-item:first-child),.site-edit-dialog :deep(.el-form-item:nth-child(2)),.site-edit-dialog :deep(.el-form-item:nth-child(3)){grid-column:1/-1}.preflight-grid{display:grid;grid-template-columns:repeat(4,minmax(120px,1fr));gap:8px;margin:14px 0}.preflight-grid span{padding:9px 10px;background:var(--nc-surface-muted);border-radius:6px;color:var(--nc-text-secondary);font-size:12px}.preflight-grid strong{display:block;margin-bottom:2px;color:var(--nc-text-primary);font-size:16px}.preflight-grid .danger strong{color:var(--el-color-danger)}.import-options{display:grid;gap:14px;margin-top:16px}.import-options :deep(.el-form){display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.import-options :deep(.el-form-item){margin-bottom:0}.full-width{width:100%}.raw-only-option{margin:14px 0}.conflict-section{margin-top:4px}.section-heading{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:8px}.section-heading span{color:var(--nc-text-secondary);font-size:12px}.conflict-table-wrap{width:100%;overflow-x:auto}.conflict-table-wrap :deep(.el-table){min-width:980px}.site-import-dialog code{overflow-wrap:anywhere}@media(max-width:900px){.panel-heading{align-items:flex-start;flex-direction:column}.actions{justify-content:flex-start}.blocking-task{align-items:flex-start;flex-direction:column}.site-item{align-items:flex-start;flex-direction:column}.site-actions{justify-content:flex-start}.site-edit-dialog :deep(.el-form){grid-template-columns:1fr}.preflight-grid{grid-template-columns:repeat(2,minmax(110px,1fr))}.import-options :deep(.el-form){grid-template-columns:1fr}.section-heading{align-items:flex-start;flex-direction:column}}
+.storage-panel{padding:18px 20px;scroll-margin-top:16px;background:var(--el-bg-color);border:1px solid var(--el-border-color-light);border-radius:8px;transition:outline-color .18s ease,box-shadow .18s ease}.storage-panel--focused{outline:1px solid var(--nc-primary);box-shadow:0 0 0 3px color-mix(in srgb,var(--nc-primary),transparent 82%)}.panel-heading,.actions,.root-summary,.site-item,.site-main,.site-actions,.site-info-tags,.site-facts{display:flex;align-items:center;gap:10px}.panel-heading{justify-content:space-between;gap:18px}.panel-heading h2{margin:0 0 5px;font-size:17px}.panel-heading p{margin:0;color:var(--nc-text-secondary);font-size:13px}.actions,.site-actions{flex-wrap:wrap;justify-content:flex-end}.blocking-tasks{display:grid;gap:8px;margin-top:10px}.blocking-task{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 12px;border:1px solid var(--el-color-warning-light-5);border-radius:6px;background:var(--el-color-warning-light-9)}.blocking-task>div{display:flex;align-items:center;gap:8px;min-width:0;flex-wrap:wrap}.blocking-task code{overflow-wrap:anywhere}.blocking-task p{width:100%;margin:0;color:var(--nc-text-secondary);font-size:12px}.root-summary{margin:16px 0;padding:10px 12px;background:var(--nc-surface-muted);border-radius:6px;flex-wrap:wrap}.root-summary code{flex:1;min-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.site-list{display:grid;gap:8px}.site-item{justify-content:space-between;padding:11px 12px;border:1px solid var(--el-border-color-lighter);border-radius:6px}.site-item.active{border-color:var(--el-color-success-light-5);background:var(--el-color-success-light-9)}.site-content{display:grid;min-width:0;gap:7px}.site-main,.site-info-tags,.site-facts{min-width:0;flex-wrap:wrap}.site-main strong{font-size:14px}.site-facts code{color:var(--nc-text-secondary)}.site-facts span{color:var(--nc-text-secondary);font-size:12px}.retention-content{min-height:280px;max-height:68vh;overflow:auto;padding-right:4px}.retention-heading,.retention-heading>div,.retention-actions,.retention-meta,.retention-item-title{display:flex;align-items:center;gap:10px}.retention-heading{position:sticky;top:0;z-index:2;justify-content:space-between;padding:2px 0 12px;background:var(--el-bg-color)}.retention-heading>div:first-child{min-width:0;flex-wrap:wrap}.retention-heading code{color:var(--nc-text-secondary)}.retention-actions{flex-wrap:wrap;justify-content:flex-end}.retention-summary{display:grid;grid-template-columns:repeat(4,minmax(130px,1fr));border-block:1px solid var(--el-border-color-lighter)}.retention-summary span{min-width:0;padding:12px;border-right:1px solid var(--el-border-color-lighter)}.retention-summary span:nth-child(4n){border-right:0}.retention-summary small,.retention-summary strong{display:block}.retention-summary small{margin-bottom:4px;color:var(--nc-text-secondary)}.retention-summary strong{font-size:16px}.retention-meta{padding:10px 0;color:var(--nc-text-secondary);font-size:12px;flex-wrap:wrap}.retention-group{margin-top:14px}.retention-group-heading{display:flex;align-items:center;justify-content:space-between;padding-bottom:7px;border-bottom:1px solid var(--el-border-color)}.retention-group-heading h3{margin:0;font-size:14px}.retention-group-heading span{color:var(--nc-text-secondary);font-size:12px}.retention-list{display:grid}.retention-row{display:grid;grid-template-columns:28px minmax(0,1fr) minmax(100px,auto);align-items:center;gap:10px;padding:10px 8px;border-bottom:1px solid var(--el-border-color-lighter);cursor:pointer}.retention-row.blocked{cursor:default;background:var(--nc-surface-muted)}.retention-item-main{display:grid;min-width:0;gap:4px}.retention-item-title{min-width:0;flex-wrap:wrap}.retention-item-title strong{font-size:13px}.retention-item-main code{overflow-wrap:anywhere;color:var(--nc-text-secondary);font-size:12px}.retention-item-main small{color:var(--nc-text-secondary)}.retention-item-size{display:grid;justify-items:end;gap:3px;text-align:right}.retention-item-size small{color:var(--nc-text-secondary);font-size:11px}.site-edit-dialog :deep(.el-form){display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 14px}.site-edit-dialog :deep(.el-form-item){min-width:0}.site-edit-dialog :deep(.el-form-item:first-child),.site-edit-dialog :deep(.el-form-item:nth-child(2)),.site-edit-dialog :deep(.el-form-item:nth-child(3)){grid-column:1/-1}.preflight-grid{display:grid;grid-template-columns:repeat(4,minmax(120px,1fr));gap:8px;margin:14px 0}.preflight-grid span{padding:9px 10px;background:var(--nc-surface-muted);border-radius:6px;color:var(--nc-text-secondary);font-size:12px}.preflight-grid strong{display:block;margin-bottom:2px;color:var(--nc-text-primary);font-size:16px}.preflight-grid .danger strong{color:var(--el-color-danger)}.import-options{display:grid;gap:14px;margin-top:16px}.import-options :deep(.el-form){display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.import-options :deep(.el-form-item){margin-bottom:0}.full-width{width:100%}.raw-only-option{margin:14px 0}.conflict-section{margin-top:4px}.section-heading{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:8px}.section-heading span{color:var(--nc-text-secondary);font-size:12px}.conflict-table-wrap{width:100%;overflow-x:auto}.conflict-table-wrap :deep(.el-table){min-width:980px}.site-import-dialog code{overflow-wrap:anywhere}@media(max-width:900px){.panel-heading{align-items:flex-start;flex-direction:column}.actions{justify-content:flex-start}.blocking-task{align-items:flex-start;flex-direction:column}.site-item{align-items:flex-start;flex-direction:column}.site-actions{justify-content:flex-start}.retention-heading{align-items:flex-start;flex-direction:column}.retention-actions{justify-content:flex-start}.retention-summary{grid-template-columns:repeat(2,minmax(120px,1fr))}.retention-summary span:nth-child(2n){border-right:0}.retention-row{grid-template-columns:28px minmax(0,1fr)}.retention-item-size{grid-column:2;justify-items:start;text-align:left}.site-edit-dialog :deep(.el-form){grid-template-columns:1fr}.preflight-grid{grid-template-columns:repeat(2,minmax(110px,1fr))}.import-options :deep(.el-form){grid-template-columns:1fr}.section-heading{align-items:flex-start;flex-direction:column}}
 </style>

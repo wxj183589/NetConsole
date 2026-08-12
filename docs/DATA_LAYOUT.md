@@ -154,6 +154,8 @@ API 调用方内存/Renderer 状态中流转，不写 SQLite、不修改 NDJSON�
 
 ## 清理边界
 
+局点业务数据的物理瘦身由独立的 Site Retention 用例处理，长期规则见[局点数据保留与清理](storage/SITE_RETENTION.md)。扫描报告位于 `<data_root>/runtime/site_retention/<site_id>/`，只保存局点相对路径、策略、证据摘要和服务端令牌；它不是业务事实源，也不允许 Renderer 回传任意路径。当前第一阶段只覆盖历史数据库备份/过时版本、已被完整会话 ZIP 覆盖的 Online MR 松散 raw 和 90 天以前的 `task_events`。当前数据库、未知数据库、MESH、无人值守、设备采集历史和人工保留数据不自动清理。
+
 自动和手动缓存清理只能处理已白名单的 `runtime/cache/`、`runtime/temp/` 与受认可的运行日志；日志 Housekeeper 每小时 best-effort 检查 `runtime/logs/`，总量超过 300 MB 时按最旧 rotated electron、app、WPS、diagnostic、archive 顺序清到 250 MB。活动 `electron.log`/`app.log`、启动/崩溃诊断、`database_upgrade_audit.jsonl`、最近 5 分钟仍可能被 WPS 占用的文件和未识别文件均受保护；不能因单个文件锁定或删除失败阻断启动。该清理不触及局点数据库、配置、raw、会话业务日志、正式 outputs、报告、备份、Agent 包、迁移材料或 `.trash/`。普通局点删除只允许把 Registry 中的一级 `sites/<site>/` 普通目录原子移动到 `.trash/`，不递归永久删除；移动和 Registry 更新任一阶段失败都必须回滚。执行前必须重新确认规范化路径位于数据根允许子树，并拒绝符号链接和路径逃逸。
 
 任务中心的“清理”不是磁盘清理。它只在当前局点 `tasks.db` 的任务快照上写入 `dismissed_at / dismissed_by / dismiss_reason`，隐藏已结束的历史记录；任务事件、日志、采集结果、会话文件、正式导出和 Artifact 均保留。真正的物理清理只能由独立数据库维护或文件管理用例按白名单、保留期和路径边界执行。

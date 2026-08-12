@@ -11,6 +11,7 @@ NSIS 安装器把程序安装位置和数据存放位置分开选择。业务数
 - [局点迁移](SITE_MIGRATION.md)：单局点/全局迁移、staging、回滚边界。
 - [局点包格式](SITE_PACKAGE_FORMAT.md)：未加密完整迁移、脱敏分享、现场采集、采集回传、manifest、checksum、凭据边界和安全合并。
 - [备份恢复](BACKUP_AND_RESTORE.md)：替换导入、旧数据保留和恢复策略。
+- [局点数据保留与清理](SITE_RETENTION.md)：扫描令牌、数据库分类、Online MR 原始数据、任务事件和保护边界。
 - [安全边界](SECURITY.md)：路径、ZIP、API 和 Electron IPC 约束。
 
-当前功能已接入 `/api/v1/sites` 和 `/api/v1/storage/data-root`。`PATCH /api/v1/sites/{site_id}` 只更新显示名称、线路名称和项目类型，不修改稳定 ID 或物理目录；普通非当前局点通过 `POST /api/v1/sites/{site_id}/trash` 原子移动到 `.trash/` 后再注销 Registry。空壳局点的二阶段 cleanup 与 Demo 重建仍是独立流程并复用现有 Task Center，不建立第二套任务模型。审计结果不等于清理授权，`.trash/` 和 cleanup 回收区也不会由自动缓存清理处理。真实数据回收、真实大数据迁移和人工 Electron 点击验收仍需单独执行。
+当前功能已接入 `/api/v1/sites` 和 `/api/v1/storage/data-root`。`PATCH /api/v1/sites/{site_id}` 只更新显示名称、线路名称和项目类型，不修改稳定 ID 或物理目录；普通非当前局点通过 `POST /api/v1/sites/{site_id}/trash` 原子移动到 `.trash/` 后再注销 Registry。空壳局点的二阶段 cleanup、Demo 重建和局点数据保留清理都复用现有 Task Center，不建立第二套任务模型。保留清理先通过 `/retention/scan` 生成服务端令牌和相对路径候选，再由 `/retention/apply` 复验后执行；当前数据库、未知数据库、活动任务和证据不足的原始数据固定受保护。审计结果不等于清理授权，`.trash/` 和 cleanup 回收区也不会由自动缓存清理处理。
