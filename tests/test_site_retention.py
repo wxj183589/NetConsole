@@ -199,10 +199,17 @@ def test_exact_duplicate_known_backup_can_be_deleted_but_unknown_cannot(
 def test_unreferenced_database_cannot_prove_backup_is_outdated(tmp_path: Path) -> None:
     paths, root = _site(tmp_path)
     current = root / "db" / "legacy-devices.sqlite"
-    backup = root / "files" / "backups" / "database-migrations" / "devices-old.sqlite"
+    backups = root / "files" / "backups" / "database-migrations"
+    recent = backups / "devices-recent.sqlite"
+    stable = backups / "devices-stable.sqlite"
+    backup = backups / "devices-old.sqlite"
     (root / "db" / "devices.db").unlink()
     _write_devices_database(current, "2026.08.10.current")
+    _write_devices_database(recent, "2026.08.01.recent")
+    _write_devices_database(stable, "2026.07.31.stable")
     _write_devices_database(backup, "2026.07.01.old")
+    _set_age(recent, 10)
+    _set_age(stable, 20)
     _set_age(backup, 100)
 
     report = SiteRetentionService(paths, now=lambda: NOW).scan("line-12")
