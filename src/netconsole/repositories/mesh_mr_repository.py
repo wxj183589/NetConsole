@@ -48,7 +48,7 @@ MIN_NORMAL_ACTIVE_SAMPLE_COUNT = 3
 _METRIC_COLUMNS = tuple(dict.fromkeys(column for _name, left, right in PAIRED_METRICS for column in (left, right)))
 _METRIC_SELECT_COLUMNS = ", ".join(_METRIC_COLUMNS)
 _MESH_LINK_CHART_COLUMNS = (
-    "id, source_file_id, session_id, sample_time, radio, link_state, link_count, peer_mac_raw, peer_mac_normalized, "
+    "id, sample_id, source_file_id, session_id, sample_time, radio, link_state, link_count, peer_mac_raw, peer_mac_normalized, "
     "peer_mac AS peer_mac_display, "
     "peer_ap_name, peer_ap_mac, peer_site, peer_radio, peer_radio_label, peer_radio_mac, establish_time, "
     "local_signal_dbm, peer_signal_dbm, "
@@ -1932,6 +1932,7 @@ class MeshMrRepository:
         order_by: str,
         max_rows: int,
         event_times: Iterable[str] = (),
+        critical_sample_ids: Iterable[int] = (),
         critical_frame_row_limit: int = 32,
         frame_count: int = 0,
         max_frames: int = 0,
@@ -1979,6 +1980,7 @@ class MeshMrRepository:
             )
 
         normalized_event_times = sorted({str(value) for value in event_times if str(value)})
+        normalized_critical_sample_ids = sorted({int(value) for value in critical_sample_ids})
         event_time_cte = (
             "VALUES " + ", ".join("(?)" for _ in normalized_event_times)
             if normalized_event_times
@@ -1987,6 +1989,11 @@ class MeshMrRepository:
         event_match = (
             "sample_time IN (SELECT value FROM event_times)"
             if normalized_event_times
+            else "0"
+        )
+        critical_sample_match = (
+            "sample_id IN (" + ", ".join(str(value) for value in normalized_critical_sample_ids) + ")"
+            if normalized_critical_sample_ids
             else "0"
         )
         stride = max(
@@ -2004,7 +2011,7 @@ class MeshMrRepository:
         if preserve_frames:
             frame_condition = (
                 "(sample_id = ? OR sample_id = ? OR ((sample_id - ?) % ?) = 0 "
-                f"OR {event_match})"
+                f"OR {event_match} OR {critical_sample_match})"
             )
             sampled_where = (
                 f"{where} AND {frame_condition}"
@@ -2016,8 +2023,8 @@ class MeshMrRepository:
             sampled AS (
                 SELECT id, sample_id, sample_time, link_state,
                        CASE
-                           WHEN sample_id = {min_sample_id} OR sample_id = {max_sample_id} THEN 0
-                           WHEN {event_match} THEN 1
+                            WHEN sample_id = {min_sample_id} OR sample_id = {max_sample_id} THEN 0
+                            WHEN {event_match} OR {critical_sample_match} THEN 1
                            ELSE 2
                        END AS priority
                 FROM mesh_links
@@ -2096,6 +2103,82 @@ class MeshMrRepository:
         ).fetchall()
         totals["returned_rows"] = len(rows)
         return rows, totals
+
+    @staticmethod
+    def _trackside_boundary_sample_ids(
+        conn: sqlite3.Connection,
+        *,
+        where: str,
+        values: list[object],
+        series_identity: str,
+        display_gap_seconds: float,
+    ) -> tuple[set[int], set[int]]:
+        """Find first/last frames for every AP/Radio visit without loading link rows."""
+        identity_where = (
+            f"{where} AND {series_identity} IS NOT NULL"
+            if where
+            else f"WHERE {series_identity} IS NOT NULL"
+        )
+        rows = conn.execute(
+            f"""
+            WITH frame_series AS (
+                SELECT source_file_id, radio, sample_id, sample_time,
+                       {series_identity} AS series_key,
+                       DENSE_RANK() OVER (
+                           PARTITION BY source_file_id, radio
+                           ORDER BY sample_time, sample_id
+                       ) AS frame_no
+                FROM mesh_links
+                {identity_where}
+                GROUP BY source_file_id, radio, sample_id, sample_time, series_key
+            ), ordered AS (
+                SELECT sample_id, sample_time, frame_no,
+                       LAG(sample_id) OVER series_order AS previous_sample_id,
+                       LAG(sample_time) OVER series_order AS previous_sample_time,
+                       LAG(frame_no) OVER series_order AS previous_frame_no,
+                       LEAD(frame_no) OVER series_order AS next_frame_no
+                FROM frame_series
+                WINDOW series_order AS (
+                    PARTITION BY source_file_id, radio, series_key
+                    ORDER BY frame_no, sample_id
+                )
+            )
+            SELECT sample_id, sample_time, frame_no, previous_sample_id,
+                   previous_sample_time, previous_frame_no
+            FROM ordered
+            WHERE previous_frame_no IS NULL
+               OR frame_no > previous_frame_no + 1
+               OR next_frame_no IS NULL
+               OR next_frame_no > frame_no + 1
+               OR (julianday(sample_time) - julianday(previous_sample_time)) * 86400.0 > ?
+            """,
+            (*values, display_gap_seconds),
+        ).fetchall()
+        boundary_ids = {
+            int(value)
+            for row in rows
+            for value in (row["sample_id"], row["previous_sample_id"])
+            if value is not None
+        }
+        break_ids = {
+            int(row["sample_id"])
+            for row in rows
+            if row["previous_sample_time"] is not None
+            and (
+                (
+                    row["previous_frame_no"] is not None
+                    and int(row["frame_no"]) > int(row["previous_frame_no"]) + 1
+                )
+                or (
+                    _seconds_between(
+                        str(row["previous_sample_time"]),
+                        str(row["sample_time"]),
+                    )
+                    > display_gap_seconds
+                )
+            )
+        }
+        return boundary_ids, break_ids
 
     def query_active_link_chart_segments(
         self,
@@ -2491,6 +2574,38 @@ class MeshMrRepository:
                     source_row_count >= bounded_rows
                     and total_series <= max(32, bounded_series // 4)
                 )
+                critical_sample_ids: set[int] = set()
+                display_break_sample_ids: set[int] = set()
+                source_interval: float | None = None
+                source_gap: float | None = None
+                if apply_repository_frame_budget:
+                    ordered_source_times = [
+                        str(row["sample_time"])
+                        for row in conn.execute(
+                            f"""
+                            SELECT sample_time
+                            FROM mesh_links
+                            {where}
+                            GROUP BY source_file_id, radio, sample_id, sample_time
+                            ORDER BY sample_time, sample_id
+                            """,
+                            values,
+                        ).fetchall()
+                        if row["sample_time"]
+                    ]
+                    source_interval, source_gap = _interval_and_threshold(ordered_source_times)
+                    display_gap_seconds = max(
+                        float(source_gap or 0.0) * 10.0,
+                        float(source_interval or 0.0) * 20.0,
+                        60.0,
+                    )
+                    critical_sample_ids, display_break_sample_ids = self._trackside_boundary_sample_ids(
+                        conn,
+                        where=where,
+                        values=values,
+                        series_identity=series_identity,
+                        display_gap_seconds=display_gap_seconds,
+                    )
                 query_row_budget = bounded_rows if apply_repository_frame_budget else max(
                     bounded_rows,
                     source_row_count,
@@ -2503,6 +2618,7 @@ class MeshMrRepository:
                     order_by="sample_time ASC, radio ASC, id ASC",
                     max_rows=query_row_budget,
                     event_times=event_times,
+                    critical_sample_ids=critical_sample_ids,
                     critical_frame_row_limit=bounded_series * 2,
                     frame_count=total_frames if apply_repository_frame_budget else 0,
                     max_frames=repository_frame_budget if apply_repository_frame_budget else 0,
@@ -2512,10 +2628,16 @@ class MeshMrRepository:
                     dict(row)
                     for row in raw_rows
                 ]
+                for row in rows:
+                    if int(row.get("sample_id") or row.get("id") or 0) in display_break_sample_ids:
+                        row["_trackside_break_before"] = True
         ordered_times = list(
             dict.fromkeys(str(row.get("sample_time") or "") for row in rows if row.get("sample_time"))
         )
         interval, gap = _interval_and_threshold(ordered_times)
+        if not self._is_index_database() and source_interval is not None:
+            interval = source_interval
+            gap = source_gap
         anchor = next(
             (row for row in rows if row.get("link_state") == LINK_STATE_ACTIVE),
             rows[0] if rows else None,
