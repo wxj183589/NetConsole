@@ -32,6 +32,13 @@ def test_windows_runner_selection_is_consistent_and_safe_for_public_prs() -> Non
         assert jobs["runner-preflight"]["timeout-minutes"] == 5
         assert "Public pull_request runs must never use the self-hosted runner." in raw
         assert "D:\\NetConsoleTestData" in raw
+        assert "NETCONSOLE_RUNTIME_MODE: test" in raw
+        assert "NETCONSOLE_DATA_ROOT: D:\\NetConsoleTestData\\github-actions\\${{ github.run_id }}-${{ github.run_attempt }}" in raw
+        assert "NETCONSOLE_DATA_ROOT must be a unique child" in raw
+        assert "Remove-Item -LiteralPath $env:NETCONSOLE_DATA_ROOT -Recurse -Force" in raw
+        assert "runner.os ==" not in raw
+        assert "requires Windows" in raw
+        assert "requires X64" in raw
 
         for job_name, job in jobs.items():
             assert job["runs-on"] == selector, (path, job_name)
@@ -57,3 +64,10 @@ def test_manual_runner_choice_and_setup_documentation_are_present() -> None:
         "pull_request",
     ):
         assert expected in documentation
+
+
+def test_readme_architecture_keeps_infrastructure_under_application() -> None:
+    for filename in ("README.md", "README_EN.md"):
+        text = (ROOT / filename).read_text(encoding="utf-8")
+        assert "A --> I[\"Infrastructure / Device Adapters\"]" in text
+        assert "D --> I[\"Infrastructure / Device Adapters\"]" not in text

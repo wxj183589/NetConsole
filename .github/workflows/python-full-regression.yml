@@ -28,6 +28,9 @@ concurrency:
 
 env:
   PYTHONUTF8: "1"
+  NETCONSOLE_RUNTIME_MODE: test
+  NETCONSOLE_CI_TEST_ROOT: D:\NetConsoleTestData\github-actions\${{ github.run_id }}-${{ github.run_attempt }}
+  NETCONSOLE_DATA_ROOT: D:\NetConsoleTestData\github-actions\${{ github.run_id }}-${{ github.run_attempt }}-preflight
 
 jobs:
   runner-preflight:
@@ -50,6 +53,12 @@ jobs:
           NETCONSOLE_CI_RUNNER_ARCH: ${{ runner.arch }}
         run: |
           $backend = $env:NETCONSOLE_CI_RUNNER_BACKEND
+          if ($env:NETCONSOLE_CI_RUNNER_OS -ne "Windows") {
+            throw "NetConsole CI requires Windows; received $env:NETCONSOLE_CI_RUNNER_OS."
+          }
+          if ($env:NETCONSOLE_CI_RUNNER_ARCH -ne "X64") {
+            throw "NetConsole CI requires X64; received $env:NETCONSOLE_CI_RUNNER_ARCH."
+          }
           if ($env:GITHUB_EVENT_NAME -eq "pull_request" -and $backend -eq "self-hosted") {
             throw "Public pull_request runs must never use the self-hosted runner."
           }
@@ -74,6 +83,13 @@ jobs:
             $pnpmVersion = "GitHub-hosted image"
             $gitVersion = "GitHub-hosted image"
           }
+          $testBase = [IO.Path]::GetFullPath("D:\NetConsoleTestData").TrimEnd('\') + '\'
+          $productionRoot = [IO.Path]::GetFullPath("D:\NetConsoleData").TrimEnd('\')
+          $testRoot = [IO.Path]::GetFullPath($env:NETCONSOLE_DATA_ROOT).TrimEnd('\')
+          if ($testRoot -eq $productionRoot -or -not $testRoot.StartsWith($testBase, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "NETCONSOLE_DATA_ROOT must be a unique child of D:\NetConsoleTestData and never D:\NetConsoleData."
+          }
+          New-Item -ItemType Directory -Force -Path $testRoot | Out-Null
           @"
           ## Runner preflight
           - Backend: ``$backend``
@@ -84,16 +100,25 @@ jobs:
           - Git: ``$gitVersion``
           - Test data policy: ``D:\NetConsoleTestData\<run-id>`` only
           "@ | Add-Content -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+      - name: Remove preflight test root
+        if: ${{ always() }}
+        shell: pwsh
+        run: Remove-Item -LiteralPath $env:NETCONSOLE_DATA_ROOT -Recurse -Force -ErrorAction SilentlyContinue
 
   pytest-full:
     name: Python full regression
     needs: runner-preflight
     runs-on: *netconsole_windows_runner
     timeout-minutes: 30
+    env:
+      NETCONSOLE_DATA_ROOT: D:\NetConsoleTestData\github-actions\${{ github.run_id }}-${{ github.run_attempt }}-python-full
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Prepare isolated test root
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force -Path $env:NETCONSOLE_DATA_ROOT | Out-Null
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13.9"
@@ -127,3 +152,7 @@ jobs:
         run: .venv\Scripts\python.exe -m pytest -q --tb=short
         env:
           PYTHONPATH: ${{ github.workspace }}/src
+      - name: Remove isolated test root
+        if: ${{ always() }}
+        shell: pwsh
+        run: Remove-Item -LiteralPath $env:NETCONSOLE_DATA_ROOT -Recurse -Force -ErrorAction SilentlyContinue

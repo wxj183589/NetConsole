@@ -26,6 +26,9 @@ concurrency:
 
 env:
   PYTHONUTF8: "1"
+  NETCONSOLE_RUNTIME_MODE: test
+  NETCONSOLE_CI_TEST_ROOT: D:\NetConsoleTestData\github-actions\${{ github.run_id }}-${{ github.run_attempt }}
+  NETCONSOLE_DATA_ROOT: D:\NetConsoleTestData\github-actions\${{ github.run_id }}-${{ github.run_attempt }}-preflight
 
 jobs:
   runner-preflight:
@@ -48,9 +51,24 @@ jobs:
           NETCONSOLE_CI_RUNNER_ARCH: ${{ runner.arch }}
         run: |
           $backend = $env:NETCONSOLE_CI_RUNNER_BACKEND
+          if ($env:NETCONSOLE_CI_RUNNER_OS -ne "Windows") {
+            throw "NetConsole CI requires Windows; received $env:NETCONSOLE_CI_RUNNER_OS."
+          }
+          if ($env:NETCONSOLE_CI_RUNNER_ARCH -ne "X64") {
+            throw "NetConsole CI requires X64; received $env:NETCONSOLE_CI_RUNNER_ARCH."
+          }
           if ($env:GITHUB_EVENT_NAME -eq "pull_request" -and $backend -eq "self-hosted") {
             throw "Public pull_request runs must never use the self-hosted runner."
           }
+          $testBase = [IO.Path]::GetFullPath("D:\NetConsoleTestData").TrimEnd('\') + '\'
+          $productionRoot = [IO.Path]::GetFullPath("D:\NetConsoleData").TrimEnd('\')
+          $testRoot = [IO.Path]::GetFullPath($env:NETCONSOLE_DATA_ROOT).TrimEnd('\')
+          if ($testRoot -eq $productionRoot -or -not $testRoot.StartsWith($testBase, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "NETCONSOLE_DATA_ROOT must be a unique child of D:\NetConsoleTestData and never D:\NetConsoleData."
+          }
+          New-Item -ItemType Directory -Force -Path $testRoot | Out-Null
+          "NETCONSOLE_RUNTIME_MODE=$env:NETCONSOLE_RUNTIME_MODE" | Add-Content -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+          "NETCONSOLE_DATA_ROOT=$testRoot" | Add-Content -Encoding utf8 $env:GITHUB_STEP_SUMMARY
           if ($backend -eq "self-hosted") {
             $required = @("python", "node", "pnpm", "git")
             foreach ($command in $required) {
@@ -84,6 +102,10 @@ jobs:
           - Git: ``$gitVersion``
           - Test data policy: ``D:\NetConsoleTestData\<run-id>`` only
           "@ | Add-Content -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+      - name: Remove preflight test root
+        if: ${{ always() }}
+        shell: pwsh
+        run: Remove-Item -LiteralPath $env:NETCONSOLE_DATA_ROOT -Recurse -Force -ErrorAction SilentlyContinue
 
   change-impact:
     name: Change impact audit
@@ -102,6 +124,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Prepare isolated test root
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force -Path $env:NETCONSOLE_DATA_ROOT | Out-Null
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
@@ -117,6 +142,10 @@ jobs:
           --head-sha $env:HEAD_SHA
           --github-output $env:GITHUB_OUTPUT
           --github-summary $env:GITHUB_STEP_SUMMARY
+      - name: Remove isolated test root
+        if: ${{ always() }}
+        shell: pwsh
+        run: Remove-Item -LiteralPath $env:NETCONSOLE_DATA_ROOT -Recurse -Force -ErrorAction SilentlyContinue
 
   python-core:
     name: Python core and API
@@ -125,8 +154,13 @@ jobs:
       - change-impact
     runs-on: *netconsole_windows_runner
     timeout-minutes: 30
+    env:
+      NETCONSOLE_DATA_ROOT: D:\NetConsoleTestData\github-actions\${{ github.run_id }}-${{ github.run_attempt }}-python-core
     steps:
       - uses: actions/checkout@v4
+      - name: Prepare isolated test root
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force -Path $env:NETCONSOLE_DATA_ROOT | Out-Null
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
@@ -154,6 +188,10 @@ jobs:
           tests/test_mesh_analysis_query_service.py
           tests/test_mesh_analysis_web_api.py
           -q
+      - name: Remove isolated test root
+        if: ${{ always() }}
+        shell: pwsh
+        run: Remove-Item -LiteralPath $env:NETCONSOLE_DATA_ROOT -Recurse -Force -ErrorAction SilentlyContinue
 
   web:
     name: Desktop Renderer typecheck, tests, and build
@@ -162,11 +200,16 @@ jobs:
       - change-impact
     runs-on: *netconsole_windows_runner
     timeout-minutes: 30
+    env:
+      NETCONSOLE_DATA_ROOT: D:\NetConsoleTestData\github-actions\${{ github.run_id }}-${{ github.run_attempt }}-renderer
     defaults:
       run:
         working-directory: apps/desktop_renderer
     steps:
       - uses: actions/checkout@v4
+      - name: Prepare isolated test root
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force -Path $env:NETCONSOLE_DATA_ROOT | Out-Null
       - uses: pnpm/action-setup@v4
         with:
           version: 11.9.0
@@ -180,6 +223,10 @@ jobs:
       - name: Run complete Renderer test suite
         run: pnpm exec vitest run --maxWorkers=1 --testTimeout=20000 --hookTimeout=20000
       - run: pnpm build
+      - name: Remove isolated test root
+        if: ${{ always() }}
+        shell: pwsh
+        run: Remove-Item -LiteralPath $env:NETCONSOLE_DATA_ROOT -Recurse -Force -ErrorAction SilentlyContinue
 
   electron:
     name: Electron contract and build
@@ -188,11 +235,16 @@ jobs:
       - change-impact
     runs-on: *netconsole_windows_runner
     timeout-minutes: 30
+    env:
+      NETCONSOLE_DATA_ROOT: D:\NetConsoleTestData\github-actions\${{ github.run_id }}-${{ github.run_attempt }}-electron
     defaults:
       run:
         working-directory: apps/desktop_electron
     steps:
       - uses: actions/checkout@v4
+      - name: Prepare isolated test root
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force -Path $env:NETCONSOLE_DATA_ROOT | Out-Null
       - id: setup-python
         uses: actions/setup-python@v5
         with:
@@ -225,6 +277,10 @@ jobs:
           NETCONSOLE_PYTHON: ${{ steps.setup-python.outputs.python-path }}
       - run: pnpm run typecheck
       - run: pnpm run build:main
+      - name: Remove isolated test root
+        if: ${{ always() }}
+        shell: pwsh
+        run: Remove-Item -LiteralPath $env:NETCONSOLE_DATA_ROOT -Recurse -Force -ErrorAction SilentlyContinue
 
   regression-gate:
     name: Regression gate complete
