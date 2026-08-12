@@ -67,7 +67,7 @@ import { isFeatureEnabled } from '../../features'
 import type {
   MeshActiveBuildOrder, MeshAnalysisParams, MeshAnalysisSession, MeshAnalysisSummary, MeshArtifact, MeshBundleImportRequest, MeshBundleMapping, MeshBundlePreview, MeshLocalScanCandidate, MeshLocalScanResult,
   MeshChartEvent, MeshLinkDetail, MeshPathChart, MeshProfile, MeshRawSource, MeshRawTail, MeshSessionDetail, MeshSwitchEvent,
-  MeshTracksideSignalChartData, MeshApCoverageAudit, MeshParseIssue,
+  MeshTracksideSignalChartData, MeshApCoverageAudit, MeshParseIssue, MeshParseIssueSummary,
 } from '../../types/meshAnalysis'
 import type { VehicleMr } from '../../types/railTransitBaseData'
 import type { RailTransitTask } from '../../types/railTransitWeb'
@@ -289,6 +289,15 @@ const warningPopoverWidth = computed(() => (
     : Math.min(420, Math.max(240, window.innerWidth - 32))
 ))
 const maintenanceWarnings = computed(() => (selected.value?.warnings || []).filter((warning) => warning.code !== 'parse_issues'))
+const parseIssueSummary = computed<MeshParseIssueSummary>(() => selected.value?.parse_issue_summary ?? {
+  available: true,
+  total_count: 0,
+  info_count: 0,
+  warning_count: 0,
+  error_count: 0,
+  message: '',
+  groups: [],
+})
 const buildOrderFilters = reactive({ page: 1, page_size: 100, sort_order: 'desc', radio: '', peer: '', station: '', build_result: '', pingpong_only: false })
 const linkFilters = reactive({ query: '', link_role: '', page: 1, page_size: 100, sort_order: 'asc' })
 const switchFilters = reactive({ page: 1, page_size: 100, radio: '', result: '' })
@@ -4360,7 +4369,7 @@ function exportTimestamp(now = new Date()): string {
           <div class="detail-title-line">
             <h2>{{ selected.session.mr_name }}</h2>
             <el-popover
-              v-if="maintenanceWarnings.length || selected.parse_issue_summary.total_count"
+              v-if="maintenanceWarnings.length || parseIssueSummary.total_count"
               placement="bottom-start"
               :width="warningPopoverWidth"
               trigger="click"
@@ -4370,23 +4379,23 @@ function exportTimestamp(now = new Date()): string {
                   class="warning-summary-trigger"
                   link
                   type="warning"
-                  :aria-label="`查看 ${maintenanceWarnings.length + selected.parse_issue_summary.total_count} 条数据告警`"
+                  :aria-label="`查看 ${maintenanceWarnings.length + parseIssueSummary.total_count} 条数据告警`"
                 >
                   <el-icon aria-hidden="true"><WarningFilled /></el-icon>
-                  <span>数据告警 {{ maintenanceWarnings.length + selected.parse_issue_summary.total_count }}</span>
+                  <span>数据告警 {{ maintenanceWarnings.length + parseIssueSummary.total_count }}</span>
                 </el-button>
               </template>
               <div class="warning-popover-content">
                 <div class="warning-popover-heading">
                   <span>数据告警</span>
-                  <strong>{{ maintenanceWarnings.length + selected.parse_issue_summary.total_count }} 条</strong>
+                  <strong>{{ maintenanceWarnings.length + parseIssueSummary.total_count }} 条</strong>
                 </div>
                 <div class="warning-list">
-                  <div v-if="selected.parse_issue_summary.total_count" class="parse-issue-summary">
-                    <div class="parse-issue-summary__heading"><strong>解析异常</strong><span>{{ selected.parse_issue_summary.total_count }} 条（错误 {{ selected.parse_issue_summary.error_count }} · 告警 {{ selected.parse_issue_summary.warning_count }} · 信息 {{ selected.parse_issue_summary.info_count }}）</span></div>
-                    <el-alert v-if="selected.parse_issue_summary.message" :title="selected.parse_issue_summary.message" :type="selected.parse_issue_summary.available ? 'warning' : 'info'" :closable="false" show-icon />
-                    <div v-for="group in selected.parse_issue_summary.groups" :key="`${group.code}:${group.severity}`" class="parse-issue-group"><span>{{ group.code }} · {{ group.severity }} · {{ group.count }} 条</span><small>{{ group.message || group.examples[0] }}</small></div>
-                    <el-button v-if="selected.parse_issue_summary.available" link type="primary" @click="openParseIssues">查看全部异常</el-button>
+                  <div v-if="parseIssueSummary.total_count" class="parse-issue-summary">
+                    <div class="parse-issue-summary__heading"><strong>解析异常</strong><span>{{ parseIssueSummary.total_count }} 条（错误 {{ parseIssueSummary.error_count }} · 告警 {{ parseIssueSummary.warning_count }} · 信息 {{ parseIssueSummary.info_count }}）</span></div>
+                    <el-alert v-if="parseIssueSummary.message" :title="parseIssueSummary.message" :type="parseIssueSummary.available ? 'warning' : 'info'" :closable="false" show-icon />
+                    <div v-for="group in parseIssueSummary.groups" :key="`${group.code}:${group.severity}`" class="parse-issue-group"><span>{{ group.code }} · {{ group.severity }} · {{ group.count }} 条</span><small>{{ group.message || group.examples[0] }}</small></div>
+                    <el-button v-if="parseIssueSummary.available" link type="primary" @click="openParseIssues">查看全部异常</el-button>
                   </div>
                   <el-alert v-for="warning in maintenanceWarnings" :key="warning.code" :title="warning.message" :type="severityType(warning.severity)" :closable="false" show-icon />
                 </div>

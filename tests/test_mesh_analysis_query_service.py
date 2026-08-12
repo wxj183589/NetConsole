@@ -962,6 +962,44 @@ def test_overview_trend_budget_preserves_segments_and_gap_semantics() -> None:
     assert not MeshAnalysisQueryService._chart_gap_between(points, 3, 4)
 
 
+def test_overview_prioritizes_full_day_trend_over_dense_switches(tmp_path: Path) -> None:
+    paths, session_id, _detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    service = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())  # type: ignore[arg-type]
+    context = service._context("demo", session_id)
+    start = datetime(2026, 8, 6, 3, 30, 0)
+    rows = [
+        _active_chart_row(index + 1, (start + timedelta(seconds=index)).strftime("%Y-%m-%d %H:%M:%S.000"), "000000001618", local_rssi=25 + index % 24)
+        for index in range(51_324)
+    ]
+    chart = service._chart_dto(
+        "demo", context,
+        {"peer_segment": {"rows": []}, "run_segment": {"rows": rows, "events": [], "total_events": 8_490, "estimated_interval_seconds": 1, "continuity_gap_seconds": 5}},
+        mode="active_path", max_points=2_000, time_from="", time_to="",
+    )
+    assert chart.returned_points <= 2_000
+    assert chart.points[0].timestamp == rows[0]["sample_time"]
+    assert chart.points[-1].timestamp == rows[-1]["sample_time"]
+    first_time = datetime.fromisoformat(chart.points[0].timestamp)
+    buckets = {int((datetime.fromisoformat(point.timestamp) - first_time).total_seconds()) * 300 // len(rows) for point in chart.points}
+    assert len(buckets) >= 200
+
+
+def test_overview_gap_propagation_keeps_normal_downsample_connected(tmp_path: Path) -> None:
+    paths, session_id, _detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    service = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())  # type: ignore[arg-type]
+    context = service._context("demo", session_id)
+    rows = [_active_chart_row(index + 1, f"2026-08-06 03:{30 + index:02d}:00.000", "000000001618", local_rssi=40 + index) for index in range(10)]
+    rows += [_active_chart_row(index + 11, f"2026-08-06 06:{index:02d}:00.000", "000000001620", local_rssi=30 + index) for index in range(10)]
+    chart = service._chart_dto(
+        "demo", context,
+        {"peer_segment": {"rows": []}, "run_segment": {"rows": rows, "events": [], "estimated_interval_seconds": 60, "continuity_gap_seconds": 300}},
+        mode="active_path", max_points=10, time_from="", time_to="",
+    )
+    gap_index = next(index for index, point in enumerate(chart.points) if point.timestamp == "2026-08-06 06:00:00.000")
+    assert chart.points[gap_index].gap_before is True
+    assert chart.points[-1].gap_before is False
+
+
 def test_identity_revision_staleness_is_read_only_and_exposed_on_source_summary(tmp_path: Path) -> None:
     paths, session_id, _detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
     index = paths.mesh_mr_db_path("demo", "列车01-MR-CT")
