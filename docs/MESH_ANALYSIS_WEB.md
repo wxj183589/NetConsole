@@ -77,7 +77,7 @@ PUT /api/rail-transit/mesh-analysis/analysis-params
 - 主链路建链顺序、链路明细、RSSI 和空口图表使用同一可视区域高度计算，监听窗口与容器尺寸变化；分页保留在表格下方，表格内部滚动。嵌套 RSSI/空口模式 Tab 不再占据独立内容高度；
 - 链路明细使用后端分页和时间/AP/MR 条件；
 - 主链路时间线读取既有区间，不返回全部采样；
-- RSSI 和轨旁图先在 Repository 下推 `source/radio/time`，再按 SQL 候选行、关键事件、frame 和 series 预算读取；不再全库 `fetchall` 后才抽样。统一 `response_budget` 返回 source/selected、total/returned、LOD 级别和降级原因，目标响应 4 MiB，16 MiB 仅是自动逐级降级后的最后硬阈值；
+- 主链 RSSI 默认使用独立紧凑 Full Line：按 `source/radio/time` 返回范围内全部有效 ACTIVE MR 侧 `[timestamp, rssi, gap_before]`，不受富 DTO 的 2,000 点与关键事件预算影响；切换、三角链路、位置、Peer 上下文继续作为独立 Overlay LOD。Full 数据加载后缩放只使用客户端 DataZoom。轨旁图仍按 SQL 候选行、关键 frame 和 series 预算读取，统一 `response_budget` 继续报告 Overlay/轨旁的 source/selected、total/returned、LOD 与降级原因；
 - 全天 Overview 的曲线、事件、站点带、series 和 frame 分别受全局预算约束。事件超过 256 条时保留关键事实并按时间代表采样，真实总数继续通过 `total_events` 返回；轨旁图最多向 Renderer 交付受控 frame/link-point/series 集合，缩放后再按当前窗口读取细节；
 - 切换事件列表使用真实服务端分页，默认 100 条并支持 50/100/200，Radio、正常/短时/乒乓条件下推 SQL；表格高度按可用视口和实际行数共同计算，不再固定 430px；
 - RSSI 工作区取消整卡灰色遮罩，metadata、主链查询、轨旁等待/查询/渲染分别维护局部状态；旧图在新窗口请求期间继续可见。轨旁未加载且未在加载时始终提供当前窗口加载动作，失败时提供重新加载；

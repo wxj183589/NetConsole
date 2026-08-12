@@ -2257,6 +2257,62 @@ class MeshMrRepository:
         run_segment["events"] = events
         return {"anchor": anchor, "peer_segment": peer_segment, "run_segment": run_segment}
 
+    def query_active_rssi_line(
+        self,
+        source_file_id: int | str | None = None,
+        radio: int | None = None,
+        time_from: str = "",
+        time_to: str = "",
+    ) -> dict[str, object]:
+        if self._is_index_database():
+            repo = self._detail_repo_for_source(source_file_id) if source_file_id not in (None, "") else None
+            return repo.query_active_rssi_line(None, radio, time_from, time_to) if repo else {"rows": []}
+        clauses: list[str] = []
+        values: list[object] = []
+        if source_file_id not in (None, ""):
+            clauses.append("s.source_file_id = ?")
+            values.append(int(source_file_id))
+        if radio is not None:
+            clauses.append("s.radio = ?")
+            values.append(int(radio))
+        if time_from:
+            clauses.append("s.sample_time >= ?")
+            values.append(time_from)
+        if time_to:
+            clauses.append("s.sample_time <= ?")
+            values.append(time_to)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._connect() as conn:
+            rows = [
+                dict(row)
+                for row in conn.execute(
+                    f"""
+                    SELECT s.id AS sample_id, s.sample_time, s.timestamp_tag, s.radio,
+                           ml.id AS active_link_id,
+                           ml.local_rssi_db AS local_rssi
+                    FROM samples s
+                    LEFT JOIN mesh_links ml
+                      ON ml.sample_id = s.id
+                     AND ml.link_state = ?
+                     AND COALESCE(ml.link_count, 1) > 0
+                    {where}
+                    ORDER BY s.sample_time, s.timestamp_tag, s.radio, s.id, ml.id
+                    """,
+                    (LINK_STATE_ACTIVE, *values),
+                ).fetchall()
+            ]
+        timestamps = [
+            str(group[0].get("sample_time") or "")
+            for group in _group_rows_by_value(rows, "sample_id")
+            if group and group[0].get("sample_time")
+        ]
+        interval, gap = _interval_and_threshold(timestamps)
+        return {
+            "rows": rows,
+            "estimated_interval_seconds": interval,
+            "continuity_gap_seconds": gap,
+        }
+
     def query_trackside_link_chart_segment(
         self,
         source_file_id: int | str | None = None,
@@ -4126,6 +4182,18 @@ def _interval_and_threshold(ordered_times: list[str]) -> tuple[float | None, flo
     gaps = [gap for previous, current in zip(ordered_times, ordered_times[1:]) if (gap := _seconds_between(previous, current)) >= 0]
     interval = float(median(gaps)) if gaps else None
     return interval, min(max((interval or 1.0) * 5, 5.0), 60.0)
+
+
+def _group_rows_by_value(rows: list[dict[str, object]], key: str) -> list[list[dict[str, object]]]:
+    groups: list[list[dict[str, object]]] = []
+    previous: object = object()
+    for row in rows:
+        value = row.get(key)
+        if not groups or value != previous:
+            groups.append([])
+            previous = value
+        groups[-1].append(row)
+    return groups
 
 
 def _segment_payload(anchor: dict[str, object] | None, rows: list[dict[str, object]], interval: float | None, gap: float | None) -> dict[str, object]:

@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
-import type { MeshChartPoint, MeshCounterDeltaPoint, MeshRatePoint, MeshSwitchEvent } from '../../types/meshAnalysis'
+import type { MeshChartPoint, MeshCounterDeltaPoint, MeshRatePoint, MeshRssiLine, MeshSwitchEvent } from '../../types/meshAnalysis'
 import {
   buildMeshBusySeries,
   buildMeshCounterDeltaSeries,
   buildMeshLocationBands,
   buildMeshRateSeries,
+  buildMeshFullRssiSeries,
   buildMeshRssiSeries,
   buildMeshSwitchRssiSeries,
 } from './chartSeries'
@@ -21,6 +22,54 @@ function point(index: number): MeshChartPoint {
 }
 
 describe('mesh ACTIVE chart series', () => {
+  it('keeps every compact Full RSSI sample outside the rich-point budget', () => {
+    const count = 8_956
+    const line: MeshRssiLine = {
+      resolution_mode: 'full', total_points: count, returned_points: count, gap_count: 0,
+      points: Array.from({ length: count }, (_, index) => [
+        `2026-07-20T10:${String(Math.floor(index / 60) % 60).padStart(2, '0')}:${String(index % 60).padStart(2, '0')}.000Z`,
+        -30 - index % 40,
+        false,
+      ]),
+    }
+
+    const series = buildMeshFullRssiSeries(line)
+
+    expect(series.data).toHaveLength(count)
+    expect(series.data.every((item) => item.meta === undefined)).toBe(true)
+  })
+
+  it.each([10_000, 25_000, 50_000, 100_000])('builds all %i Full RSSI samples for ECharts', (count) => {
+    const line: MeshRssiLine = {
+      resolution_mode: 'full', total_points: count, returned_points: count, gap_count: 0,
+      points: Array.from({ length: count }, (_, index) => [
+        `2026-07-20T10:00:${String(index).padStart(6, '0')}.000Z`,
+        -30 - index % 40,
+        false,
+      ]),
+    }
+
+    expect(buildMeshFullRssiSeries(line).data).toHaveLength(count)
+  })
+
+  it('adds one null only for a real Full RSSI gap', () => {
+    const line: MeshRssiLine = {
+      resolution_mode: 'full', total_points: 3, returned_points: 3, gap_count: 1,
+      points: [
+        ['2026-07-20T10:00:00.000Z', -40, false],
+        ['2026-07-20T10:00:02.000Z', -41, false],
+        ['2026-07-20T10:05:00.000Z', -42, true],
+      ],
+    }
+
+    expect(buildMeshFullRssiSeries(line).data.map((item) => item.value)).toEqual([
+      ['2026-07-20T10:00:00.000Z', -40],
+      ['2026-07-20T10:00:02.000Z', -41],
+      ['2026-07-20T10:05:00.000Z', null],
+      ['2026-07-20T10:05:00.000Z', -42],
+    ])
+  })
+
   it('keeps backend location segments independent for repeated visits', () => {
     const bands = buildMeshLocationBands([
       { start_time: '2026-07-20T10:00:00Z', end_time: '2026-07-20T10:01:00Z', station: '站点一', section: '区间一', label: '站点一 / 区间一' },

@@ -140,7 +140,7 @@ const linkTotal = ref(0)
 const switches = ref<MeshSwitchEvent[]>([])
 const switchTotal = ref(0)
 const switchLoading = ref(false)
-const rssiActivePath = ref<MeshPathChart | null>(null)
+const rssiActivePath = shallowRef<MeshPathChart | null>(null)
 const rssiActiveLoading = ref(false)
 const rssiActiveLoaded = ref(false)
 const rssiActivePeerLoaded = ref(false)
@@ -227,6 +227,7 @@ const showBusyPeer = ref(false)
 const showBusySwitchLines = ref(false)
 const showBusySwitchPoints = ref(false)
 const visiblePoints = ref(2000)
+const rssiResolutionMode = ref<'full' | 'high' | 'overview'>('full')
 const chartRadio = ref<number | null>(null)
 const selectedSegment = ref<MeshActiveBuildOrder | null>(null)
 const allPeerVisits = ref(false)
@@ -477,6 +478,8 @@ const sharedRssiTimeDomain = computed<MeshSharedTimeDomain | null>(() => resolve
     chartData.value?.summary.first_sample_time,
     chartData.value?.summary.latest_sample_time,
     chartData.value?.summary.last_sample_time,
+    chartData.value?.rssi_line?.points[0]?.[0],
+    chartData.value?.rssi_line?.points[(chartData.value?.rssi_line?.points.length || 0) - 1]?.[0],
     tracksideSignal.value?.time_range.start,
     tracksideSignal.value?.time_range.end,
   ].filter((value): value is string => Boolean(value)),
@@ -2130,6 +2133,7 @@ function rssiWindowRequest(viewport: MeshChartViewport): RssiWindowRequest | nul
       meshChartRevisionKey(),
       chartRadio.value,
       visiblePoints.value,
+      rssiResolutionMode.value,
       showRssiPeer.value,
       viewport.start_time,
       viewport.end_time,
@@ -2203,6 +2207,7 @@ function loadRssiWindowBatch(viewport: MeshChartViewport): Promise<void> {
   }
   const activeValues = {
     ...values,
+    resolution_mode: rssiResolutionMode.value,
     include_peer: showRssiPeer.value,
     include_standby_context: true,
     include_events: true,
@@ -2252,7 +2257,7 @@ function loadRssiWindowBatch(viewport: MeshChartViewport): Promise<void> {
       if (meshViewportRangeEquals(pendingRssiQueryViewport.value, publishedViewport)) {
         pendingRssiQueryViewport.value = null
       }
-      rssiActivePath.value = activeResult
+      rssiActivePath.value = markRaw(activeResult)
       rssiActivePeerLoaded.value = Boolean(activeValues.include_peer)
       tracksideSignal.value = markRaw({ ...tracksideResult, series: [] })
       tracksideSeriesCache.value = cache
@@ -2328,6 +2333,7 @@ async function loadActivePath(
   }
   if (metric === 'rssi') {
     values.view_mode = rssiViewModeForRange(effectiveRange)
+    values.resolution_mode = rssiResolutionMode.value
   }
   if (metric === 'busy') {
     values.time_from = effectiveRange?.start_time
@@ -2382,7 +2388,7 @@ async function loadActivePath(
         || !isLatestChartRequest(metric, requestGeneration)
         || controller.signal.aborted
       ) return
-      rssiActivePath.value = result
+      rssiActivePath.value = markRaw(result)
       rssiActiveLoaded.value = true
       rssiActivePeerLoaded.value = Boolean(values.include_peer)
       rssiActiveLoadedKey = requestKey
@@ -2460,6 +2466,11 @@ async function loadRssiPeerSeries(): Promise<void> {
 
 async function retryRssiActivePath(): Promise<void> {
   const viewport = pendingRssiQueryViewport.value || rssiViewport.value || committedRssiViewport.value
+  if (rssiResolutionMode.value === 'full') {
+    await loadActivePath('rssi', null, detailGeneration, true, true)
+    if (viewport) await loadTracksideSignal(detailGeneration, true, { ...viewport, radio: chartRadio.value })
+    return
+  }
   if (viewport && rssiActivePath.value && tracksideSeriesCache.value) {
     if (isFullRssiViewport(viewport)) {
       await loadFullRssiCharts(detailGeneration, true)
@@ -2621,6 +2632,12 @@ async function reloadCurrentChart(): Promise<void> {
   }
 }
 
+async function changeRssiResolutionMode(): Promise<void> {
+  if (rssiResolutionMode.value === 'high') visiblePoints.value = 4000
+  else if (rssiResolutionMode.value === 'overview' && visiblePoints.value > 2000) visiblePoints.value = 2000
+  await reloadCurrentChart()
+}
+
 function resetCurrentChartViewport(): void {
   if (activeTab.value === 'busy') busyChartRef.value?.resetViewport()
   else {
@@ -2717,6 +2734,13 @@ function scheduleRssiWindowReload(
     reloadRssiOverviewIfNeeded()
     return
   }
+  if (rssiResolutionMode.value === 'full') {
+    rssiWindowReloadTimer = window.setTimeout(() => {
+      rssiWindowReloadTimer = null
+      if (!rssiViewportInteracting.value) void loadTracksideSignal(detailGeneration, true, { ...viewport, radio: chartRadio.value })
+    }, Math.max(0, delayMs))
+    return
+  }
   rssiWindowReloadTimer = window.setTimeout(() => {
     rssiWindowReloadTimer = null
     if (rssiViewportInteracting.value) return
@@ -2746,7 +2770,17 @@ function lockCurrentRssiRange(): void {
     ElMessage.warning('当前 RSSI 图没有可锁定的时间范围')
     return
   }
-  const samples = visibleMeshSamples(chartData.value?.points || [], viewport)
+  const fullLine = chartData.value?.rssi_line?.points || []
+  const startMillis = meshTimestampMillis(viewport.start_time)
+  const endMillis = meshTimestampMillis(viewport.end_time)
+  const samples = fullLine.length && startMillis !== null && endMillis !== null
+    ? fullLine
+        .filter(([timestamp]) => {
+          const value = meshTimestampMillis(timestamp)
+          return value !== null && value >= startMillis && value <= endMillis
+        })
+        .map(([timestamp]) => ({ timestamp }))
+    : visibleMeshSamples(chartData.value?.points || [], viewport)
   if (samples.length < 2) {
     ElMessage.warning('请至少选择包含两个真实采样点的时间范围')
     return
@@ -4582,7 +4616,8 @@ function exportTimestamp(now = new Date()): string {
                 {{ rssiImmersive ? '退出沉浸' : '沉浸对比' }}
               </el-button>
               <el-select v-model="chartRadio" placeholder="选择 Radio" @change="changeChartRadio"><el-option v-for="radio in availableChartRadios" :key="radio" :label="`Radio ${radio}`" :value="radio" /></el-select>
-              <el-select v-model="visiblePoints" @change="reloadCurrentChart"><el-option label="概览精度 600 点" :value="600" /><el-option label="概览精度 1200 点" :value="1200" /><el-option label="概览精度 2000 点" :value="2000" /><el-option label="概览精度 4000 点（高精度）" :value="4000" /></el-select>
+              <span class="toolbar-label">主链 RSSI 精度</span>
+              <el-select v-model="rssiResolutionMode" @change="changeRssiResolutionMode"><el-option label="全量（默认）" value="full" /><el-option label="高精度" value="high" /><el-option label="概览" value="overview" /></el-select>
             </div>
             <div class="rssi-chart-toolbar__row">
               <el-checkbox v-model="showRssiPeer">显示 Peer 侧 RSSI</el-checkbox>
@@ -4637,9 +4672,9 @@ function exportTimestamp(now = new Date()): string {
                     <span v-else>主链 RSSI 数据尚未加载</span>
                     <el-button v-if="rssiActiveError" link type="warning" :loading="rssiActiveLoading" @click="retryRssiActivePath">重试主链 RSSI</el-button>
                   </div>
-                  <div v-else-if="chartData" class="mini-summary rssi-pane-summary"><span>当前 PeerMac <strong>{{ chartData.summary.current_peer_mac || '—' }}</strong></span><span>当前 AP <strong>{{ chartData.summary.current_peer_ap_name || '—' }}</strong></span><span>Radio <strong>{{ chartData.summary.current_radio ?? '—' }}</strong></span><span>估算采样间隔 <strong>{{ display(chartData.summary.estimated_interval_seconds, ' s') }}</strong></span><span>采样点 <strong>{{ chartData.summary.sample_count }}</strong></span><span>ACTIVE <strong>{{ chartData.summary.active_count }}</strong></span><span>STANDBY 上下文 <strong>{{ chartData.summary.standby_context_count }}</strong></span><span>△ 三角链路 <strong>{{ chartData.summary.triangle_link_point_count ?? 0 }}</strong></span><span>切换 <strong>{{ chartData.summary.switch_count }}</strong></span><span>查询行 <strong>{{ formatChartCount(chartData.response_budget?.selected_rows) }} / {{ formatChartCount(chartData.response_budget?.source_rows) }}</strong></span><span>绘图点 <strong>{{ formatChartCount(chartData.response_budget?.returned_points) }} / {{ formatChartCount(chartData.response_budget?.total_points) }}</strong></span><span>切换事件 <strong>{{ formatChartCount(chartData.response_budget?.returned_events) }} / {{ formatChartCount(chartData.response_budget?.total_events) }}</strong></span><span>LOD <strong>{{ chartLodLabel(chartData.response_budget?.lod_level, activeChartWindow.start, activeChartWindow.end, chartData.view_mode) }}</strong></span><span>Payload <strong>{{ formatPayloadBytes(chartData.payload_bytes) }}</strong></span><span>当前窗口 <strong>{{ chartWindowLabel(activeChartWindow.start, activeChartWindow.end) }}</strong></span><span>最早 <strong>{{ chartData.summary.first_sample_time || '—' }}</strong></span><span>最新 <strong>{{ chartData.summary.last_sample_time || '—' }}</strong></span></div>
+                  <div v-else-if="chartData" class="mini-summary rssi-pane-summary"><span>当前 PeerMac <strong>{{ chartData.summary.current_peer_mac || '—' }}</strong></span><span>当前 AP <strong>{{ chartData.summary.current_peer_ap_name || '—' }}</strong></span><span>Radio <strong>{{ chartData.summary.current_radio ?? '—' }}</strong></span><span>估算采样间隔 <strong>{{ display(chartData.summary.estimated_interval_seconds, ' s') }}</strong></span><span>采样点 <strong>{{ chartData.summary.sample_count }}</strong></span><span>ACTIVE <strong>{{ chartData.summary.active_count }}</strong></span><span>STANDBY 上下文 <strong>{{ chartData.summary.standby_context_count }}</strong></span><span>△ 三角链路 <strong>{{ chartData.summary.triangle_link_point_count ?? 0 }}</strong></span><span>RSSI 主线 <strong>{{ formatChartCount(chartData.rssi_line?.returned_points ?? chartData.returned_points) }} / {{ formatChartCount(chartData.rssi_line?.total_points ?? chartData.total_points) }}</strong></span><span>业务 Overlay 点 <strong>{{ formatChartCount(chartData.response_budget?.returned_points) }} / {{ formatChartCount(chartData.response_budget?.total_points) }}</strong></span><span>切换事件 Overlay <strong>{{ formatChartCount(chartData.response_budget?.returned_events) }} / {{ formatChartCount(chartData.response_budget?.total_events) }}</strong></span><span>Overlay LOD <strong>{{ chartLodLabel(chartData.response_budget?.lod_level, activeChartWindow.start, activeChartWindow.end, chartData.view_mode) }}</strong></span><span>Payload <strong>{{ formatPayloadBytes(chartData.payload_bytes) }}</strong></span><span>当前窗口 <strong>{{ chartWindowLabel(activeChartWindow.start, activeChartWindow.end) }}</strong></span><span>最早 <strong>{{ chartData.summary.first_sample_time || '—' }}</strong></span><span>最新 <strong>{{ chartData.summary.last_sample_time || '—' }}</strong></span></div>
                   <div class="rssi-pane-chart-host">
-                    <MeshRssiChart v-if="rssiActiveLoaded && chartData" ref="rssiChartRef" :points="chartData.points" :events="chartData?.events || []" :location-segments="chartData.location_segments" :show-peer="showRssiPeer" :show-switch-lines="showSwitchLines" :show-switch-points="showSwitchPoints" :show-location-band="showLocationBand" scope="active" :active="pageActive && activeTab === 'rssi' && rssiLayoutMode !== 'trackside-focus'" :focus-timestamp="focusTimestamp" :initial-viewport="rssiViewport" :sync-viewport="rssiViewport" :shared-time-domain="sharedRssiTimeDomain" :sync-pointer-time="sharedPointerTime || selectedAnalysisTime" :sync-pointer-source="sharedPointerTime ? sharedPointerSource : 'programmatic'" :selected-time="selectedAnalysisTime" @viewport-change="updateRssiViewport" @viewport-interaction-start="beginRssiViewportInteraction" @viewport-interaction-end="endRssiViewportInteraction" @pointer-change="updateSharedPointer" @select-time="selectAnalysisTime" @select-switch="selectChartSwitch" />
+                    <MeshRssiChart v-if="rssiActiveLoaded && chartData" ref="rssiChartRef" :points="chartData.points" :rssi-line="chartData.rssi_line" :events="chartData?.events || []" :location-segments="chartData.location_segments" :show-peer="showRssiPeer" :show-switch-lines="showSwitchLines" :show-switch-points="showSwitchPoints" :show-location-band="showLocationBand" scope="active" :active="pageActive && activeTab === 'rssi' && rssiLayoutMode !== 'trackside-focus'" :focus-timestamp="focusTimestamp" :initial-viewport="rssiViewport" :sync-viewport="rssiViewport" :shared-time-domain="sharedRssiTimeDomain" :sync-pointer-time="sharedPointerTime || selectedAnalysisTime" :sync-pointer-source="sharedPointerTime ? sharedPointerSource : 'programmatic'" :selected-time="selectedAnalysisTime" @viewport-change="updateRssiViewport" @viewport-interaction-start="beginRssiViewportInteraction" @viewport-interaction-end="endRssiViewportInteraction" @pointer-change="updateSharedPointer" @select-time="selectAnalysisTime" @select-switch="selectChartSwitch" />
                     <el-empty v-else-if="rssiActiveLoaded && !rssiActiveLoading" description="当前范围没有 RSSI 数据" :image-size="60" />
                   </div>
                 </div>
@@ -4694,7 +4729,7 @@ function exportTimestamp(now = new Date()): string {
             </RailRssiComparison>
           </div>
           <div v-if="selectedChartEvent" class="selected-switch"><span>切换：{{ selectedChartEvent.from_ap_name || selectedChartEvent.from_peer_mac || '—' }} → {{ selectedChartEvent.to_ap_name || selectedChartEvent.to_peer_mac || '—' }} · {{ selectedChartEvent.timestamp }}</span><el-button link type="primary" @click="showSwitchInBuildOrder">查看建链顺序</el-button></div>
-          <p class="hint">{{ chartData?.downsampled ? `主图从 ${chartData.total_points} 点按全天时间桶折线骨架返回 ${chartData.returned_points} 点（概览精度 ${chartData.requested_max_points}）` : `主图展示 ${chartData?.returned_points ?? 0} 个真实结构化样本` }}；轨旁图按完整 frame 返回主备链路，缩放后自动加载当前时间窗口。</p>
+          <p class="hint">{{ chartData?.rssi_line ? `主链 RSSI 使用 ${chartData.rssi_line.returned_points} / ${chartData.rssi_line.total_points} 个真实有效 ACTIVE 样本；业务 Overlay 独立按预算返回` : (chartData?.downsampled ? `主链 RSSI 从 ${chartData.total_points} 点按所选精度返回 ${chartData.returned_points} 点` : `主链 RSSI 展示 ${chartData?.returned_points ?? 0} 个真实结构化样本`) }}；轨旁图继续按窗口与 LOD 加载，Full 模式缩放不会重新请求主线。</p>
         </div>
 
         <div v-show="activeTab === 'busy'" id="pane-busy" class="chart-pane">

@@ -847,9 +847,19 @@ class MeshPathChartSummaryDTO(ApiModel):
     sustained_zero_longest_duration_ms: int = 0
 
 
+class MeshRssiLineDTO(ApiModel):
+    resolution_mode: Literal["full", "high", "overview"] = "overview"
+    total_points: int = 0
+    returned_points: int = 0
+    gap_count: int = 0
+    points: list[tuple[str, float, bool]] = Field(default_factory=list)
+
+
 class MeshPathChartDTO(ApiModel):
     mode: Literal["active_path", "peer_segment"]
     view_mode: Literal["overview", "window"] = "overview"
+    resolution_mode: Literal["full", "high", "overview"] = "overview"
+    rssi_line: MeshRssiLineDTO | None = None
     anchor: MeshChartPointDTO | None = None
     points: list[MeshChartPointDTO] = Field(default_factory=list)
     events: list[MeshChartEventDTO] = Field(default_factory=list)

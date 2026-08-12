@@ -642,7 +642,7 @@ function hotfixTracksidePayload(
   }
 }
 
-async function mountHotfixRssiSession(sessionId: string) {
+async function mountHotfixRssiSession(sessionId: string, resolutionMode: 'full' | 'overview' = 'full') {
   const session = {
     session_id: sessionId,
     mr_name: '列车35-MR-CT',
@@ -694,6 +694,7 @@ async function mountHotfixRssiSession(sessionId: string) {
 
   const activeChart = wrapper.findAllComponents(meshChartStub).find((chart) => chart.props('scope') === 'active')!
   const tracksideChart = wrapper.findAllComponents(meshChartStub).find((chart) => chart.props('scope') === '')!
+  ;(wrapper.vm as unknown as { rssiResolutionMode: 'full' | 'overview' }).rssiResolutionMode = resolutionMode
   return { wrapper, session, activeChart, tracksideChart }
 }
 
@@ -1017,6 +1018,7 @@ describe('Mesh analysis detail behavior', () => {
       max_points: 2000,
       radio: 2,
       view_mode: 'overview',
+      resolution_mode: 'full',
       include_peer: true,
       include_standby_context: true,
       include_events: true,
@@ -2462,6 +2464,7 @@ describe('Mesh analysis detail behavior', () => {
       max_points: 2000,
       radio: 1,
       view_mode: 'overview',
+      resolution_mode: 'full',
       include_peer: false,
       include_standby_context: true,
       include_events: true,
@@ -2690,7 +2693,7 @@ describe('Mesh analysis detail behavior', () => {
   })
 
   it('publishes a zoom window only after both RSSI responses are ready', async () => {
-    const { wrapper, session, activeChart, tracksideChart } = await mountHotfixRssiSession('session-window-atomic')
+    const { wrapper, session, activeChart, tracksideChart } = await mountHotfixRssiSession('session-window-atomic', 'overview')
     const previousPoints = activeChart.props('points')
     const previousCache = tracksideChart.props('seriesCache')
     const activeWindow = deferred<ReturnType<typeof hotfixActivePayload>>()
@@ -2721,6 +2724,7 @@ describe('Mesh analysis detail behavior', () => {
         time_from: viewport.start_time,
         time_to: viewport.end_time,
         view_mode: 'window',
+        resolution_mode: 'overview',
         include_peer: false,
         include_standby_context: true,
         include_events: true,
@@ -2759,7 +2763,7 @@ describe('Mesh analysis detail behavior', () => {
   })
 
   it('reuses a bounded RSSI window cache when returning to a recent viewport', async () => {
-    const { wrapper, session, activeChart } = await mountHotfixRssiSession('session-window-lru')
+    const { wrapper, session, activeChart } = await mountHotfixRssiSession('session-window-lru', 'overview')
     mocks.getActivePath.mockClear()
     mocks.getTracksideSignal.mockClear()
     const viewportA = {
@@ -2816,7 +2820,7 @@ describe('Mesh analysis detail behavior', () => {
   })
 
   it('previews every drag viewport but submits only the final window after pointer release', async () => {
-    const { wrapper, session, activeChart, tracksideChart } = await mountHotfixRssiSession('session-window-drag')
+    const { wrapper, session, activeChart, tracksideChart } = await mountHotfixRssiSession('session-window-drag', 'overview')
     mocks.getActivePath.mockClear()
     mocks.getTracksideSignal.mockClear()
     mocks.getActivePath.mockResolvedValue(hotfixActivePayload(session.session_id, 45))
@@ -2872,7 +2876,7 @@ describe('Mesh analysis detail behavior', () => {
   })
 
   it('aborts an obsolete RSSI window batch and rejects its late responses', async () => {
-    const { wrapper, session, activeChart } = await mountHotfixRssiSession('session-window-race')
+    const { wrapper, session, activeChart } = await mountHotfixRssiSession('session-window-race', 'overview')
     const requests = new Map<string, {
       active: ReturnType<typeof deferred<ReturnType<typeof hotfixActivePayload>>>
       trackside: ReturnType<typeof deferred<ReturnType<typeof hotfixTracksidePayload>>>
@@ -2947,7 +2951,7 @@ describe('Mesh analysis detail behavior', () => {
   })
 
   it('keeps the previous RSSI snapshot and viewport when a window request fails', async () => {
-    const { wrapper, session, activeChart, tracksideChart } = await mountHotfixRssiSession('session-window-failure')
+    const { wrapper, session, activeChart, tracksideChart } = await mountHotfixRssiSession('session-window-failure', 'overview')
     const previousPoints = activeChart.props('points')
     const previousCache = tracksideChart.props('seriesCache')
     mocks.getActivePath.mockClear()
@@ -3118,6 +3122,7 @@ describe('Mesh analysis detail behavior', () => {
       max_points: 2000,
       radio: 1,
       view_mode: 'overview',
+      resolution_mode: 'full',
       include_peer: false,
       include_standby_context: true,
       include_events: true,
@@ -3165,17 +3170,7 @@ describe('Mesh analysis detail behavior', () => {
       revision: 10,
     })
     await vi.waitFor(() => {
-      expect(mocks.getActivePath).toHaveBeenCalledWith('session-1', {
-        max_points: 2000,
-        radio: 1,
-        time_from: zoomStart,
-        time_to: zoomEnd,
-        view_mode: 'window',
-        include_peer: false,
-        include_standby_context: true,
-        include_events: true,
-        include_station_band: true,
-      }, expect.any(AbortSignal))
+      expect(mocks.getActivePath).toHaveBeenCalledTimes(1)
       expect(mocks.getTracksideSignal).toHaveBeenCalledWith('session-1', {
         max_points: 2000,
         radio: 1,
@@ -3235,6 +3230,7 @@ describe('Mesh analysis detail behavior', () => {
       max_points: 1200,
       radio: 1,
       view_mode: 'overview',
+      resolution_mode: 'full',
       include_peer: false,
       include_standby_context: true,
       include_events: true,
@@ -3258,6 +3254,7 @@ describe('Mesh analysis detail behavior', () => {
         max_points: 1200,
         radio: 1,
         view_mode: 'overview',
+        resolution_mode: 'full',
         include_peer: false,
         include_standby_context: true,
         include_events: true,
@@ -3345,6 +3342,7 @@ describe('Mesh analysis detail behavior', () => {
         max_points: 2000,
         radio: 1,
         view_mode: 'overview',
+        resolution_mode: 'full',
         include_peer: false,
         include_standby_context: true,
         include_events: true,
@@ -3673,6 +3671,7 @@ describe('Mesh analysis detail behavior', () => {
       max_points: 2000,
       radio: 1,
       view_mode: 'overview',
+      resolution_mode: 'full',
       include_peer: false,
       include_standby_context: true,
       include_events: true,

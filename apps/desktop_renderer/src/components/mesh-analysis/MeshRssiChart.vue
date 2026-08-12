@@ -11,8 +11,8 @@ import {
   createTimeChartInitOptions,
   createTimeChartLinePresentation,
 } from '../charts/multiSeriesTimeChart'
-import type { MeshChartEvent, MeshChartPoint, MeshLocationSegment } from '../../types/meshAnalysis'
-import { buildMeshLocationBands, buildMeshRssiSeries } from './chartSeries'
+import type { MeshChartEvent, MeshChartPoint, MeshLocationSegment, MeshRssiLine } from '../../types/meshAnalysis'
+import { buildMeshFullRssiSeries, buildMeshLocationBands, buildMeshRssiSeries } from './chartSeries'
 import { sampleMeshSwitchOverlayItems } from './switchOverlayBudget'
 import {
   createFullMeshViewport,
@@ -32,6 +32,7 @@ import { buildMeshRssiQuickTooltip, buildMeshRssiTooltip } from './meshRssiToolt
 
 const props = withDefaults(defineProps<{
   points: MeshChartPoint[]
+  rssiLine?: MeshRssiLine | null
   events?: MeshChartEvent[]
   locationSegments?: MeshLocationSegment[]
   showPeer?: boolean
@@ -51,7 +52,7 @@ const props = withDefaults(defineProps<{
   syncPointerSource?: MeshRssiChartSource | null
   selectedTime?: string | null
   quickTooltip?: boolean
-}>(), { events: () => [], locationSegments: () => [], showPeer: false, showSwitchLines: false, showSwitchPoints: true, showLocationBand: true, scope: 'active', active: true, focusTimestamp: '', initialViewport: null, syncViewport: null, lockedViewport: null, preserveViewport: true, sharedTimeDomain: null, chartId: 'active-rssi', syncPointerTime: null, syncPointerSource: null, selectedTime: null, quickTooltip: false })
+}>(), { rssiLine: null, events: () => [], locationSegments: () => [], showPeer: false, showSwitchLines: false, showSwitchPoints: true, showLocationBand: true, scope: 'active', active: true, focusTimestamp: '', initialViewport: null, syncViewport: null, lockedViewport: null, preserveViewport: true, sharedTimeDomain: null, chartId: 'active-rssi', syncPointerTime: null, syncPointerSource: null, selectedTime: null, quickTooltip: false })
 const emit = defineEmits<{
   selectSwitch: [event: MeshChartEvent]
   'viewport-change': [viewport: MeshChartViewport]
@@ -66,7 +67,7 @@ const container = ref<HTMLDivElement | null>(null)
 let chart: EChartsType | null = null
 let resizeObserver: ResizeObserver | null = null
 let unsubscribeTheme: (() => void) | null = null
-let primarySeriesData: Array<{ value: [string, number | null]; meta: MeshChartPoint }> = []
+let primarySeriesData: Array<{ value: [string, number | null]; meta?: MeshChartPoint }> = []
 let initialization: Promise<boolean> | null = null
 let resizeFrame: number | null = null
 let pendingRenderReason: 'data' | 'display' | 'theme' | 'reset' | null = null
@@ -91,8 +92,8 @@ function markViewportApplied(viewport: MeshChartViewport): void {
   appliedViewportEpoch = chartRenderEpoch
 }
 
-const timestamps = (): string[] => props.points.map((point) => point.timestamp)
-const pointCount = (): number => props.points.length
+const timestamps = (): string[] => props.rssiLine?.points.map((point) => point[0]) || props.points.map((point) => point.timestamp)
+const pointCount = (): number => props.rssiLine?.returned_points || props.points.length
 const fullViewport = (source: MeshChartViewport['source'] = 'initial'): MeshChartViewport | null => (
   props.sharedTimeDomain
     ? createFullMeshViewportFromDomain(props.sharedTimeDomain, source, props.chartId, currentViewport?.revision ?? 0)
@@ -241,7 +242,7 @@ onBeforeUnmount(() => {
   invalidateAppliedViewport()
 })
 
-watch(() => props.points, () => scheduleChartUpdate('data'))
+watch(() => [props.points, props.rssiLine] as const, () => scheduleChartUpdate('data'))
 watch(() => [props.events, props.locationSegments] as const, () => scheduleChartUpdate('display'))
 watch(() => props.showPeer, () => scheduleChartUpdate('data'))
 watch(() => [props.showSwitchLines, props.showSwitchPoints, props.showLocationBand] as const, () => scheduleChartUpdate('display'))
@@ -283,7 +284,7 @@ function handleChartClick(raw: unknown): void {
 
 function focusCurrentPoint(): void {
   if (!props.focusTimestamp) return
-  const dataIndex = primarySeriesData.findIndex((point) => point.meta.timestamp === props.focusTimestamp && point.value[1] !== null)
+  const dataIndex = primarySeriesData.findIndex((point) => (point.meta?.timestamp || point.value[0]) === props.focusTimestamp && point.value[1] !== null)
   if (dataIndex >= 0) chart?.dispatchAction({ type: 'showTip', seriesIndex: 0, dataIndex })
 }
 
@@ -475,7 +476,10 @@ function render(reason: 'data' | 'display' | 'theme' | 'reset'): void {
   const previous = reason !== 'reset' && props.preserveViewport && currentViewport
     ? { ...currentViewport }
     : null
-  const series = buildMeshRssiSeries(props.points, props.showPeer, props.scope)
+  const richSeries = buildMeshRssiSeries(props.points, props.showPeer, props.scope)
+  const series = props.rssiLine
+    ? [buildMeshFullRssiSeries(props.rssiLine), ...richSeries.filter((item) => item.metric === 'peer_rssi')]
+    : richSeries
   primarySeriesData = series[0]?.data || []
   const overlayById = new Map(activeOverlaySeries(theme).map((item) => [String(item.id), item]))
   const switchNodes = overlayById.get('active-switch-nodes')
@@ -514,6 +518,11 @@ function render(reason: 'data' | 'display' | 'theme' | 'reset'): void {
         const exactPoint = point && (pointerMillis === null || meshTimestampMillis(point.timestamp) === pointerMillis)
           ? point
           : undefined
+        if (!point && pointerTime) {
+          const valueParam = params.find((item) => Number.isFinite((item as { data?: { value?: [string, number | null] } }).data?.value?.[1])) as { data?: { value?: [string, number | null] } } | undefined
+          const value = valueParam?.data?.value?.[1]
+          if (value != null) return `${pointerTime}<br>RSSI ${value}`
+        }
         return props.quickTooltip
           ? buildMeshRssiQuickTooltip(exactPoint, event, pointerTime)
           : buildMeshRssiTooltip(exactPoint, event, pointerTime)

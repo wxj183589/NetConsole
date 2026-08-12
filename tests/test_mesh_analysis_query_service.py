@@ -178,6 +178,82 @@ def test_reads_persisted_mesh_results_without_modifying_sources(tmp_path: Path) 
     assert before == [_fingerprint(path) for path in protected]
 
 
+def test_full_rssi_line_bypasses_render_point_budget(tmp_path: Path) -> None:
+    paths, session_id, detail, *_ = create_mesh_analysis_fixture(tmp_path)
+    with sqlite3.connect(detail) as conn:
+        _clear_mesh_chart_rows(conn)
+        for row_id in range(1, 26):
+            _insert_active_mesh_link(
+                conn,
+                row_id=row_id,
+                sample_time=f"2026-07-14 10:00:{row_id:02d}.000",
+                radio=1,
+                peer_name=f"AP-{row_id}",
+                peer_mac=f"{row_id:012x}",
+                peer_rssi=40 + row_id % 5,
+            )
+        conn.commit()
+
+    chart = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery()).get_active_path_chart(  # type: ignore[arg-type]
+        "demo", session_id, radio=1, max_points=10, resolution_mode="full"
+    )
+
+    assert chart.rssi_line is not None
+    assert chart.rssi_line.resolution_mode == "full"
+    assert chart.rssi_line.total_points == chart.rssi_line.returned_points == 25
+    assert len(chart.rssi_line.points) == 25
+    assert chart.rssi_line.returned_points > chart.requested_max_points
+    assert chart.returned_points <= chart.requested_max_points
+
+
+def test_full_rssi_line_breaks_only_on_real_missing_samples() -> None:
+    payload = {
+        "estimated_interval_seconds": 2.0,
+        "continuity_gap_seconds": 6.0,
+        "rows": [
+            {"sample_id": 1, "sample_time": "2026-07-14 10:00:00.000", "active_link_id": 1, "local_rssi": 40},
+            {"sample_id": 2, "sample_time": "2026-07-14 10:00:02.000", "active_link_id": 2, "local_rssi": 41},
+            {"sample_id": 3, "sample_time": "2026-07-14 10:00:05.000", "active_link_id": None, "local_rssi": None},
+            {"sample_id": 4, "sample_time": "2026-07-14 10:00:09.000", "active_link_id": 4, "local_rssi": 42},
+            {"sample_id": 5, "sample_time": "2026-07-14 10:00:11.000", "active_link_id": 5, "local_rssi": 43},
+            {"sample_id": 6, "sample_time": "2026-07-14 10:00:17.000", "active_link_id": 6, "local_rssi": 44},
+            {"sample_id": 7, "sample_time": "2026-07-14 10:00:19.000", "active_link_id": 7, "local_rssi": 45},
+            {"sample_id": 8, "sample_time": "2026-07-14 10:00:24.000", "active_link_id": 8, "local_rssi": 46},
+        ],
+    }
+
+    line = MeshAnalysisQueryService._full_rssi_line_dto(payload)
+
+    assert line.returned_points == 7
+    assert line.gap_count == 1
+    assert [point[2] for point in line.points] == [False, False, True, False, False, False, False]
+
+
+@pytest.mark.parametrize(
+    "point_count",
+    [2_239, 4_478, 6_717, 8_956, 17_912, 51_324],
+    ids=["30m", "1h", "1.5h", "2h", "4h", "12h"],
+)
+def test_full_rssi_line_keeps_all_points_for_regression_time_ranges(point_count: int) -> None:
+    rows = [
+        {
+            "sample_id": index,
+            "sample_time": (datetime(2026, 7, 14) + timedelta(milliseconds=index * 842)).isoformat(sep=" ", timespec="milliseconds"),
+            "active_link_id": index,
+            "local_rssi": 30 + index % 30,
+        }
+        for index in range(point_count)
+    ]
+    line = MeshAnalysisQueryService._full_rssi_line_dto({
+        "rows": rows,
+        "estimated_interval_seconds": 0.842,
+        "continuity_gap_seconds": 5.0,
+    })
+
+    assert line.total_points == line.returned_points == point_count
+    assert len(line.points) == point_count
+
+
 def test_switch_event_filters_are_sql_scoped_and_do_not_require_full_build_order(
     tmp_path: Path,
 ) -> None:

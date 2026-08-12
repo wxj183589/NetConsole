@@ -60,6 +60,7 @@ from netconsole.models.api.mesh_analysis import (
     MeshRatePointDTO,
     MeshReportArtifactDTO,
     MeshRssiDTO,
+    MeshRssiLineDTO,
     MeshRssiPointDTO,
     MeshRssiStatisticsDTO,
     MeshRssiZeroRunDTO,
@@ -1636,6 +1637,7 @@ class MeshAnalysisQueryService:
         time_from: str = "",
         time_to: str = "",
         view_mode: str | None = None,
+        resolution_mode: str = "overview",
         max_points: int = 1_000,
         include_peer: bool = True,
         include_standby_context: bool = True,
@@ -1653,6 +1655,7 @@ class MeshAnalysisQueryService:
             return MeshPathChartDTO(
                 mode="active_path",
                 view_mode=resolved_view_mode,
+                resolution_mode=resolution_mode,
                 requested_time_from=time_from or None,
                 requested_time_to=time_to or None,
             )
@@ -1683,7 +1686,73 @@ class MeshAnalysisQueryService:
             include_events=include_events,
             include_station_band=include_station_band,
         )
+        if resolution_mode == "full":
+            line_payload = repository.query_active_rssi_line(
+                source_file_id=context.detail_source_id,
+                radio=radio,
+                time_from=time_from,
+                time_to=time_to,
+            )
+            result = result.model_copy(
+                update={
+                    "resolution_mode": "full",
+                    "rssi_line": self._full_rssi_line_dto(line_payload),
+                }
+            )
+        else:
+            result = result.model_copy(update={"resolution_mode": resolution_mode})
         return self._with_chart_metrics(result, started)
+
+    @classmethod
+    def _full_rssi_line_dto(cls, payload: dict[str, object]) -> MeshRssiLineDTO:
+        rows = [dict(row) for row in payload.get("rows") or [] if isinstance(row, dict)]
+        continuity_gap = cls._number(payload.get("continuity_gap_seconds"))
+        estimated_interval = cls._number(payload.get("estimated_interval_seconds"))
+        display_gap = cls._display_gap_seconds(continuity_gap, estimated_interval)
+        points: list[tuple[str, float, bool]] = []
+        previous_valid_time: datetime | None = None
+        pending_gap = False
+        for sample_rows in cls._group_full_rssi_rows(rows):
+            valid_rows = [
+                row
+                for row in sample_rows
+                if row.get("active_link_id") is not None
+                and cls._number(row.get("local_rssi")) not in (None, 0)
+            ]
+            if not valid_rows:
+                pending_gap = True
+                continue
+            for row_index, row in enumerate(valid_rows):
+                timestamp = str(row.get("sample_time") or "")
+                current_time = cls._parse_time(timestamp)
+                value = cls._number(row.get("local_rssi"))
+                if current_time is None or value is None:
+                    continue
+                gap_before = bool(points and pending_gap and row_index == 0)
+                if previous_valid_time is not None and row_index == 0:
+                    gap_before = gap_before or (current_time - previous_valid_time).total_seconds() > display_gap
+                points.append((timestamp, value, gap_before))
+                previous_valid_time = current_time
+            pending_gap = False
+        return MeshRssiLineDTO(
+            resolution_mode="full",
+            total_points=len(points),
+            returned_points=len(points),
+            gap_count=sum(point[2] for point in points),
+            points=points,
+        )
+
+    @staticmethod
+    def _group_full_rssi_rows(rows: list[dict[str, object]]) -> list[list[dict[str, object]]]:
+        groups: list[list[dict[str, object]]] = []
+        previous_sample_id: object = object()
+        for row in rows:
+            sample_id = row.get("sample_id")
+            if not groups or sample_id != previous_sample_id:
+                groups.append([])
+                previous_sample_id = sample_id
+            groups[-1].append(row)
+        return groups
 
     def get_trackside_signal_chart(
         self,

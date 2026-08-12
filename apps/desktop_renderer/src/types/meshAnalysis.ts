@@ -279,6 +279,14 @@ export interface MeshPathChartSummary {
   sustained_zero_total_duration_ms: number; sustained_zero_longest_duration_ms: number
 }
 
+export interface MeshRssiLine {
+  resolution_mode: 'full' | 'high' | 'overview'
+  total_points: number
+  returned_points: number
+  gap_count: number
+  points: Array<[timestamp: string, rssi: number, gap_before: boolean]>
+}
+
 export interface MeshChartResponseBudget {
   target_payload_bytes: number; hard_payload_bytes: number
   point_limit: number; event_limit: number; location_segment_limit: number; series_limit: number
@@ -290,7 +298,7 @@ export interface MeshChartResponseBudget {
 }
 
 export interface MeshPathChart {
-  mode: 'active_path' | 'peer_segment'; view_mode: 'overview' | 'window'; anchor: MeshChartPoint | null; points: MeshChartPoint[]; events: MeshChartEvent[]
+  mode: 'active_path' | 'peer_segment'; view_mode: 'overview' | 'window'; resolution_mode?: 'full' | 'high' | 'overview'; rssi_line?: MeshRssiLine | null; anchor: MeshChartPoint | null; points: MeshChartPoint[]; events: MeshChartEvent[]
   location_segments: MeshLocationSegment[]
   total_points: number; returned_points: number; downsampled: boolean; requested_max_points: number; effective_max_points: number; downsample_warning: string | null
   summary: MeshPathChartSummary; time_from: string | null; time_to: string | null

@@ -60,6 +60,10 @@ def test_mesh_analysis_queries_keep_analysis_files_unchanged(tmp_path: Path) -> 
             f"/api/rail-transit/mesh-analysis/sessions/{encoded}/charts/active-path"
             "?site_id=demo&time_from=2026-07-14%2010%3A00%3A01.000&time_to=2026-07-14%2010%3A00%3A01.000"
         )
+        full_rssi = client.get(
+            f"/api/rail-transit/mesh-analysis/sessions/{encoded}/charts/active-path"
+            "?site_id=demo&radio=1&max_points=10&resolution_mode=full"
+        )
         removed_alignment = client.get(f"/api/rail-transit/mesh-analysis/sessions/{encoded}/alignment?site_id=demo")
         source = responses[-1].json()[0]
         source_id = source["source_action_id"]
@@ -69,6 +73,11 @@ def test_mesh_analysis_queries_keep_analysis_files_unchanged(tmp_path: Path) -> 
 
     assert all(response.status_code == 200 for response in responses)
     assert invalid_range.status_code == 422
+    assert full_rssi.status_code == 200
+    full_rssi_payload = full_rssi.json()
+    assert full_rssi_payload["resolution_mode"] == "full"
+    assert full_rssi_payload["rssi_line"]["resolution_mode"] == "full"
+    assert full_rssi_payload["rssi_line"]["returned_points"] == full_rssi_payload["rssi_line"]["total_points"]
     active_chart = responses[5].json()
     assert active_chart["view_mode"] == "overview"
     assert active_chart["total_points_in_range"] == active_chart["total_points"]
