@@ -3,7 +3,7 @@ import type {
   MeshAnalysisSession, MeshAnalysisSummary, MeshAnomaly, MeshArtifact,
   MeshActiveBuildOrder, MeshChannelBusy, MeshCounterDeltaPage, MeshLinkDetail, MeshPathChart, MeshRawSource, MeshRawTail, MeshRatePage, MeshRssi, MeshSessionDetail, MeshSwitchEvent,
   MeshTimelineItem, MeshProfile, MeshImportContext, MeshImportContextPrepare, MeshBundleImportRequest, MeshBundlePreview, MeshAnalysisParams, MeshTracksideSignalChartData, MeshAnalysisOverview, Page,
-  MeshLocalScanResult, MeshLocalScanStart, MeshApCoverageAudit,
+  MeshLocalScanResult, MeshLocalScanStart, MeshApCoverageAudit, MeshParseIssuePage,
 } from '../types/meshAnalysis'
 import type { RailTransitTask } from '../types/railTransitWeb'
 import type { BackendDownloadRequest } from '../../../desktop_electron/src/shared/bridge'
@@ -67,6 +67,10 @@ export const exportMeshApCoverage = (sessionIds: string[]): Promise<RailTransitT
 )
 export const getMeshAnalysisSession = (id: string, signal?: AbortSignal): Promise<MeshSessionDetail> => apiRequest(
   `${root}/sessions/${meshSessionPathSegment(id)}`,
+  signal ? { signal } : undefined,
+)
+export const listMeshParseIssues = (id: string, values: Record<string, string | number | boolean | null | undefined>, signal?: AbortSignal): Promise<MeshParseIssuePage> => apiRequest(
+  `${root}/sessions/${meshSessionPathSegment(id)}/parse-issues${qs(values)}`,
   signal ? { signal } : undefined,
 )
 export const rebuildMeshAnalysis = (id: string): Promise<RailTransitTask> => apiRequest(`${root}/sessions/${meshSessionPathSegment(id)}/rebuild`, { method: 'POST', body: JSON.stringify({ explicit_confirmation: true }) })

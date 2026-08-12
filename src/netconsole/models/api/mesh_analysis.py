@@ -15,6 +15,43 @@ class MeshAnalysisWarningDTO(ApiModel):
     severity: str = "warning"
 
 
+class MeshParseIssueSummaryGroupDTO(ApiModel):
+    code: str
+    severity: str = "warning"
+    count: int = 0
+    message: str = ""
+    examples: list[str] = Field(default_factory=list)
+
+
+class MeshParseIssueSummaryDTO(ApiModel):
+    available: bool = True
+    total_count: int = 0
+    info_count: int = 0
+    warning_count: int = 0
+    error_count: int = 0
+    message: str = ""
+    groups: list[MeshParseIssueSummaryGroupDTO] = Field(default_factory=list)
+
+
+class MeshParseIssueDTO(ApiModel):
+    issue_id: int
+    severity: str = "warning"
+    code: str = "parse_issue"
+    message: str = ""
+    line_number: int | None = None
+    source_file: str | None = None
+    field_name: str | None = None
+    raw_line_start: int | None = None
+    raw_line_end: int | None = None
+
+
+class MeshParseIssuePageDTO(ApiModel):
+    items: list[MeshParseIssueDTO] = Field(default_factory=list)
+    total: int = 0
+    page: int = 1
+    page_size: int = 100
+
+
 class MeshMaintenanceStateDTO(ApiModel):
     schema_current: str = "unknown"
     schema_latest: str
@@ -475,6 +512,7 @@ class MeshAnalysisSessionDetailDTO(ApiModel):
     analysis_params: MeshAnalysisParamsDTO
     available_radios: list[int] = Field(default_factory=list)
     warnings: list[MeshAnalysisWarningDTO] = Field(default_factory=list)
+    parse_issue_summary: MeshParseIssueSummaryDTO = Field(default_factory=MeshParseIssueSummaryDTO)
     sources: list[MeshDataSourceDTO] = Field(default_factory=list)
     maintenance_state: MeshMaintenanceStateDTO
 

@@ -49,6 +49,7 @@ from netconsole.models.api.mesh_analysis import (
     MeshDesktopLocationDTO,
     MeshLinkPageDTO,
     MeshPathChartDTO,
+    MeshParseIssuePageDTO,
     MeshProfileCreateRequestDTO,
     MeshProfileDTO,
     MeshRawTailDTO,
@@ -597,6 +598,19 @@ def overview(
 @router.get("/sessions/{session_id}", response_model=MeshAnalysisSessionDetailDTO)
 def session_detail(request: Request, session_id: str, site_id: str = Query(default="", max_length=100)) -> MeshAnalysisSessionDetailDTO:
     return _query(lambda: _service(request).get_analysis_session(_site_id(request, site_id), session_id))
+
+
+@router.get("/sessions/{session_id}/parse-issues", response_model=MeshParseIssuePageDTO)
+def parse_issues(
+    request: Request,
+    session_id: str,
+    site_id: str = Query(default="", max_length=100),
+    severity: str = Query(default="", max_length=20),
+    issue_type: str = Query(default="", max_length=100),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=100, ge=1, le=1_000),
+) -> MeshParseIssuePageDTO:
+    return _query(lambda: _service(request).list_parse_issues(_site_id(request, site_id), session_id, page=page, page_size=page_size, severity=severity, issue_type=issue_type))
 
 
 @router.get("/sessions/{session_id}/links", response_model=MeshLinkPageDTO)

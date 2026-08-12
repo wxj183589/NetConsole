@@ -28,6 +28,10 @@ from netconsole.models.api.mesh_analysis import (
     MeshAnalysisParamsDTO,
     MeshAnalysisSummaryDTO,
     MeshAnalysisWarningDTO,
+    MeshParseIssueDTO,
+    MeshParseIssuePageDTO,
+    MeshParseIssueSummaryDTO,
+    MeshParseIssueSummaryGroupDTO,
     MeshActiveBuildOrderDTO,
     MeshActiveBuildOrderPageDTO,
     MeshAnomalyDTO,
@@ -590,6 +594,7 @@ class MeshAnalysisQueryService:
     def get_analysis_session(self, site_id: str, session_id: str) -> MeshAnalysisSessionDetailDTO:
         context = self._context(site_id, session_id)
         stats = self._stats(context)
+        parse_issue_summary = self._parse_issue_summary(context, stats)
         identity_state = self._identity_mapping_state(context)
         warnings: list[MeshAnalysisWarningDTO] = []
         if stats["parsed_status"] == "missing":
@@ -603,7 +608,13 @@ class MeshAnalysisQueryService:
         if context.relocated_detail:
             warnings.append(MeshAnalysisWarningDTO(code="parsed_path_relocated", message="索引中的旧数据根路径不可用，已只读使用当前 MR parsed 目录的同名结果。"))
         if int(stats["actionable_warning_count"] or 0):
-            warnings.append(MeshAnalysisWarningDTO(code="parse_issues", message="该来源存在既有解析告警，请查看异常摘要。"))
+            warnings.append(
+                MeshAnalysisWarningDTO(
+                    code="parse_issues",
+                    message=parse_issue_summary.message or f"该来源存在 {parse_issue_summary.total_count} 条解析异常。",
+                    severity="error" if parse_issue_summary.error_count else "warning",
+                )
+            )
         if identity_state["identity_mapping_status"] == "identity_stale":
             warnings.append(
                 MeshAnalysisWarningDTO(
@@ -617,9 +628,125 @@ class MeshAnalysisQueryService:
             analysis_params=self._effective_analysis_params(context),
             available_radios=self._available_radios(context),
             warnings=warnings,
+            parse_issue_summary=parse_issue_summary,
             sources=self.get_raw_source_summary(site_id, session_id),
             maintenance_state=self._maintenance_state(context, stats, identity_state),
         )
+
+    def _parse_issue_summary(self, context: _SessionContext, stats: dict[str, Any]) -> MeshParseIssueSummaryDTO:
+        if context.detail_db is None:
+            if int(stats.get("actionable_warning_count") or 0):
+                return MeshParseIssueSummaryDTO(
+                    available=False,
+                    total_count=int(stats.get("actionable_warning_count") or 0),
+                    warning_count=int(stats.get("warning_count") or 0),
+                    error_count=int(stats.get("error_count") or 0),
+                    message="历史记录了解析异常，但结构化结果文件当前不可读，暂无可展示的异常明细。",
+                )
+            return MeshParseIssueSummaryDTO()
+        try:
+            with closing(self._connect_readonly(context.detail_db)) as conn:
+                if not self._table_exists(conn, "parse_issues"):
+                    if int(stats.get("actionable_warning_count") or 0):
+                        return MeshParseIssueSummaryDTO(
+                            available=False,
+                            total_count=int(stats.get("actionable_warning_count") or 0),
+                            warning_count=int(stats.get("warning_count") or 0),
+                            error_count=int(stats.get("error_count") or 0),
+                            message="历史记录了解析异常，但当前结构化结果未保存可展示的异常明细。",
+                        )
+                    return MeshParseIssueSummaryDTO()
+                columns = self._table_columns(conn, "parse_issues")
+                severity_expr = "UPPER(COALESCE(severity, 'WARNING'))" if "severity" in columns else "'WARNING'"
+                code_column = next((name for name in ("issue_type", "code", "field_name") if name in columns), None)
+                code_expr = f"COALESCE(NULLIF({code_column}, ''), 'parse_issue')" if code_column else "'parse_issue'"
+                message_expr = "COALESCE(message, '')" if "message" in columns else "''"
+                rows = conn.execute(
+                    f"SELECT {code_expr} AS code, {severity_expr} AS severity, COUNT(*) AS count, "
+                    f"MIN({message_expr}) AS message FROM parse_issues GROUP BY code, severity ORDER BY count DESC LIMIT 20"
+                ).fetchall()
+                counts = conn.execute(
+                    f"SELECT COUNT(*) AS total, SUM(CASE WHEN {severity_expr} = 'INFO' THEN 1 ELSE 0 END) AS info_count, "
+                    f"SUM(CASE WHEN {severity_expr} = 'ERROR' THEN 1 ELSE 0 END) AS error_count, "
+                    f"SUM(CASE WHEN {severity_expr} NOT IN ('INFO', 'ERROR') THEN 1 ELSE 0 END) AS warning_count FROM parse_issues"
+                ).fetchone()
+                groups = []
+                for row in rows:
+                    group = dict(row)
+                    example_rows = conn.execute(
+                        f"SELECT {message_expr} AS message FROM parse_issues WHERE {code_expr} = ? AND {severity_expr} = ? "
+                        "ORDER BY id LIMIT 3",
+                        (str(group["code"]), str(group["severity"])),
+                    ).fetchall()
+                    groups.append(MeshParseIssueSummaryGroupDTO(
+                        code=str(group["code"] or "parse_issue"),
+                        severity=str(group["severity"] or "WARNING").lower(),
+                        count=int(group["count"] or 0),
+                        message=str(group["message"] or ""),
+                        examples=[str(item["message"] or "") for item in example_rows if str(item["message"] or "")],
+                    ))
+                return MeshParseIssueSummaryDTO(
+                    total_count=int(counts["total"] or 0),
+                    info_count=int(counts["info_count"] or 0),
+                    warning_count=int(counts["warning_count"] or 0),
+                    error_count=int(counts["error_count"] or 0),
+                    groups=groups,
+                )
+        except sqlite3.Error:
+            LOGGER.debug("MESH 解析异常摘要读取失败：%s", context.session_id, exc_info=True)
+            return MeshParseIssueSummaryDTO(
+                available=False,
+                total_count=int(stats.get("actionable_warning_count") or 0),
+                warning_count=int(stats.get("warning_count") or 0),
+                error_count=int(stats.get("error_count") or 0),
+                message="解析异常摘要暂时不可读，请检查结构化分析结果。",
+            )
+
+    def list_parse_issues(
+        self,
+        site_id: str,
+        session_id: str,
+        *,
+        page: int = 1,
+        page_size: int = 100,
+        severity: str = "",
+        issue_type: str = "",
+    ) -> MeshParseIssuePageDTO:
+        context = self._context(site_id, session_id)
+        if context.detail_db is None:
+            return MeshParseIssuePageDTO(page=page, page_size=page_size)
+        page = max(1, int(page))
+        page_size = min(max(1, int(page_size)), _MAX_PAGE_SIZE)
+        with closing(self._connect_readonly(context.detail_db)) as conn:
+            if not self._table_exists(conn, "parse_issues"):
+                return MeshParseIssuePageDTO(page=page, page_size=page_size)
+            columns = self._table_columns(conn, "parse_issues")
+            severity_expr = "UPPER(COALESCE(severity, 'WARNING'))" if "severity" in columns else "'WARNING'"
+            code_column = next((name for name in ("issue_type", "code", "field_name") if name in columns), None)
+            code_expr = f"COALESCE(NULLIF({code_column}, ''), 'parse_issue')" if code_column else "'parse_issue'"
+            filters: list[str] = []
+            args: list[Any] = []
+            if severity:
+                filters.append(f"{severity_expr} = ?")
+                args.append(str(severity).upper())
+            if issue_type and code_column:
+                filters.append(f"{code_expr} = ?")
+                args.append(issue_type)
+            where = f" WHERE {' AND '.join(filters)}" if filters else ""
+            total = int(conn.execute(f"SELECT COUNT(*) FROM parse_issues{where}", args).fetchone()[0] or 0)
+            select = ["id", severity_expr + " AS severity", code_expr + " AS code"]
+            for name in ("message", "line_number", "source_file", "field_name", "raw_line_start", "raw_line_end"):
+                select.append(name if name in columns else f"NULL AS {name}")
+            rows = conn.execute(
+                f"SELECT {', '.join(select)} FROM parse_issues{where} ORDER BY id LIMIT ? OFFSET ?",
+                [*args, page_size, (page - 1) * page_size],
+            ).fetchall()
+            return MeshParseIssuePageDTO(
+                items=[MeshParseIssueDTO(issue_id=int(row["id"]), severity=str(row["severity"] or "WARNING").lower(), code=str(row["code"] or "parse_issue"), message=str(row["message"] or ""), line_number=row["line_number"], source_file=row["source_file"], field_name=row["field_name"], raw_line_start=row["raw_line_start"], raw_line_end=row["raw_line_end"]) for row in rows],
+                total=total,
+                page=page,
+                page_size=page_size,
+            )
 
     def _maintenance_state(
         self,
@@ -3095,6 +3222,12 @@ class MeshAnalysisQueryService:
         }
         total_points = len(point_rows)
         prepared_events = self._prepare_chart_events(point_rows, events_by_index)
+        displayed_event_indices = {
+            int(index)
+            for event_row in prepared_events
+            for index in (event_row.get("point_index"), event_row.get("busy_point_index"))
+            if index is not None
+        } if include_events else set()
         valid_switch_indices = {
             int(index)
             for row in prepared_events
@@ -3138,19 +3271,20 @@ class MeshAnalysisQueryService:
             *valid_switch_indices,
             *triangle_link_boundaries,
         }
-        for key in (("switch_indices", "rapid_flap_indices") if include_events else ()):
-            values = chart.get(key)
-            if values is not None:
-                critical_indices.update(int(value) for value in values)
+        critical_indices.update(displayed_event_indices)
         critical_indices.difference_update(ambiguous_active_bridge_indices)
         if total_points:
             critical_indices.update((0, total_points - 1))
         budget_warnings: list[str] = []
-        if len(critical_indices) > requested_max_points:
+        overview = not time_from and not time_to
+        critical_budget = requested_max_points
+        if overview:
+            critical_budget = max(2, requested_max_points // 3)
+        if len(critical_indices) > critical_budget:
             original_critical_count = len(critical_indices)
             critical_indices = self._evenly_spaced_indices(
                 critical_indices,
-                requested_max_points,
+                critical_budget,
                 total_count=total_points,
             )
             budget_warnings.append(
@@ -3161,6 +3295,7 @@ class MeshAnalysisQueryService:
         trend_indices = self._chart_trend_row_indices(
             point_rows,
             max_points=max(effective_max_points - len(critical_indices), 0),
+            preserve_segments=overview,
         )
         natural_second_indices = self._natural_second_indices(
             point_rows,
@@ -3188,7 +3323,12 @@ class MeshAnalysisQueryService:
                 include_standby_context=include_standby_context,
             )
 
-        returned = [materialize_response_point(point_rows[index]) for index in indices]
+        returned = []
+        for position, index in enumerate(indices):
+            point = materialize_response_point(point_rows[index])
+            if position and self._chart_gap_between(point_rows, indices[position - 1], index):
+                point = point.model_copy(update={"gap_before": True})
+            returned.append(point)
         all_location_segments = (
             self._chart_location_segments(ap_map, point_rows)
             if include_station_band
@@ -4834,11 +4974,14 @@ class MeshAnalysisQueryService:
         points: list[dict[str, Any]],
         *,
         max_points: int,
+        preserve_segments: bool = False,
     ) -> set[int]:
         """Return bounded tier-two transitions and bucket min/max representatives."""
         if max_points <= 0 or not points:
             return set()
 
+        if preserve_segments:
+            return cls._chart_segment_trend_indices(points, max_points=max_points)
         transitions: set[int] = set()
         for index in range(1, len(points)):
             previous = points[index - 1]
@@ -4887,6 +5030,43 @@ class MeshAnalysisQueryService:
             )
         trend.update(extrema)
         return trend
+
+    @classmethod
+    def _chart_segment_trend_indices(cls, points: list[dict[str, Any]], *, max_points: int) -> set[int]:
+        segments: list[list[int]] = []
+        current: list[int] = []
+        for index, point in enumerate(points):
+            valid = point.get("local_rssi") is not None
+            if not valid:
+                if current:
+                    segments.append(current)
+                    current = []
+                continue
+            if current and (point.get("gap_before") or cls._chart_gap_between(points, current[-1], index)):
+                segments.append(current)
+                current = []
+            current.append(index)
+        if current:
+            segments.append(current)
+        if not segments or max_points <= 0:
+            return set()
+        required = {segment[0] for segment in segments} | {segment[-1] for segment in segments}
+        if len(required) >= max_points:
+            return cls._evenly_spaced_indices(required, max_points, total_count=len(points))
+        selected = set(required)
+        remaining = max_points - len(selected)
+        candidates = {index for segment in segments for index in segment} - selected
+        selected.update(cls._evenly_spaced_indices(candidates, remaining, total_count=len(points)))
+        return selected
+
+    @staticmethod
+    def _chart_gap_between(points: list[dict[str, Any]], previous_index: int, current_index: int) -> bool:
+        if current_index <= previous_index:
+            return False
+        return any(
+            bool(points[index].get("gap_before")) or points[index].get("local_rssi") is None
+            for index in range(previous_index + 1, current_index + 1)
+        )
 
     @classmethod
     def _chart_array_number(cls, values: object, index: int) -> float | None:

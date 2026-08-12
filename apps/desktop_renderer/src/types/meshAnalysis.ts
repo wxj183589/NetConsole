@@ -151,6 +151,10 @@ export interface MeshImportContext {
 }
 export interface MeshAnalysisOverview { summary: MeshAnalysisSummary; sessions: Page<MeshAnalysisSession> }
 export interface MeshWarning { code: string; message: string; severity: string }
+export interface MeshParseIssueSummaryGroup { code: string; severity: string; count: number; message: string; examples: string[] }
+export interface MeshParseIssueSummary { available: boolean; total_count: number; info_count: number; warning_count: number; error_count: number; message: string; groups: MeshParseIssueSummaryGroup[] }
+export interface MeshParseIssue { issue_id: number; severity: string; code: string; message: string; line_number: number | null; source_file: string | null; field_name: string | null; raw_line_start: number | null; raw_line_end: number | null }
+export interface MeshParseIssuePage { items: MeshParseIssue[]; total: number; page: number; page_size: number }
 export interface MeshRawSource {
   source_file_id: number; source_action_id: string; source_id?: string; source_type: string; name: string; exists: boolean; size_bytes: number; modified_at: string | null
   original_filename: string; stored_filename: string; raw_sha256: string; content_sha256: string
@@ -174,7 +178,7 @@ export interface MeshMaintenanceState {
   identity_saved_revision: number; identity_current_revision: number; identity_status: string
   allowed_actions: Array<'identity_projection_refresh' | 'parser_rebuild'>
 }
-export interface MeshSessionDetail { session: MeshAnalysisSession; analysis_params: MeshAnalysisParams; available_radios?: number[]; warnings: MeshWarning[]; sources: MeshRawSource[]; maintenance_state: MeshMaintenanceState }
+export interface MeshSessionDetail { session: MeshAnalysisSession; analysis_params: MeshAnalysisParams; available_radios?: number[]; warnings: MeshWarning[]; parse_issue_summary: MeshParseIssueSummary; sources: MeshRawSource[]; maintenance_state: MeshMaintenanceState }
 
 export interface MeshIdentityMetadata {
   identity_status?: 'matched' | 'unresolved' | 'ambiguous'
