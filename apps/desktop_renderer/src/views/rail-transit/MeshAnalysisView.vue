@@ -55,7 +55,7 @@ import { useAvailablePanelHeight } from '../../composables/useAvailablePanelHeig
 import { useUserSelectedExport } from '../../composables/useUserSelectedExport'
 import { ApiRequestError } from '../../api/client'
 import {
-  applyMeshBundleImport, batchDeleteMeshSources, createMeshProfile, deleteMeshArtifact, exportMeshLinkDetails, getMeshActivePathChart, getMeshAnalysisOverview, getMeshAnalysisParams, getMeshAnalysisParamsTemplate, getMeshAnalysisSession, getMeshImportContext, getMeshPeerSegmentChart, getMeshRawTail, getMeshTracksideSignalChart,
+  applyMeshBundleImport, batchDeleteMeshSources, createMeshProfile, deleteMeshArtifact, exportMeshLinkDetails, getMeshActivePathChart, getMeshAnalysisOverview, getMeshAnalysisParams, getMeshAnalysisParamsTemplate, getMeshAnalysisSession, getMeshImportContext, getMeshPeerSegmentChart, getMeshRawTail, getMeshTracksideSignalChart, listMeshParseIssues,
   listMeshActiveBuildOrder,
   listMeshArtifacts, listMeshLinks, listMeshSwitchEvents, meshArtifactDownloadRequest, previewMeshImport, rebuildMeshAnalysis,
   prepareMeshImportContext, saveMeshAnalysisParams, startMeshLocalScan, startMeshMaintenance, getMeshLocalScan, importMeshLocalScan, ignoreMeshLocalScanCandidates, openMeshLocalScanCandidateDirectory,
@@ -67,7 +67,7 @@ import { isFeatureEnabled } from '../../features'
 import type {
   MeshActiveBuildOrder, MeshAnalysisParams, MeshAnalysisSession, MeshAnalysisSummary, MeshArtifact, MeshBundleImportRequest, MeshBundleMapping, MeshBundlePreview, MeshLocalScanCandidate, MeshLocalScanResult,
   MeshChartEvent, MeshLinkDetail, MeshPathChart, MeshProfile, MeshRawSource, MeshRawTail, MeshSessionDetail, MeshSwitchEvent,
-  MeshTracksideSignalChartData, MeshApCoverageAudit,
+  MeshTracksideSignalChartData, MeshApCoverageAudit, MeshParseIssue,
 } from '../../types/meshAnalysis'
 import type { VehicleMr } from '../../types/railTransitBaseData'
 import type { RailTransitTask } from '../../types/railTransitWeb'
@@ -125,6 +125,12 @@ const sourceDeleteVisible = ref(false)
 const sourceDeleteMode = ref<'parsed' | 'all'>('parsed')
 const sourceDeleteSubmitting = ref(false)
 const sourceDeleteTargets = ref<Array<{ session: MeshAnalysisSession; source: MeshRawSource }>>([])
+const parseIssuesVisible = ref(false)
+const parseIssuesLoading = ref(false)
+const parseIssues = ref<MeshParseIssue[]>([])
+const parseIssuesTotal = ref(0)
+const parseIssuesPage = ref(1)
+const parseIssuesPageSize = 100
 const buildOrders = ref<MeshActiveBuildOrder[]>([])
 const buildOrderVisits = ref<MeshActiveBuildOrder[]>([])
 const buildOrderTotal = ref(0)
@@ -282,6 +288,7 @@ const warningPopoverWidth = computed(() => (
     ? 420
     : Math.min(420, Math.max(240, window.innerWidth - 32))
 ))
+const maintenanceWarnings = computed(() => (selected.value?.warnings || []).filter((warning) => warning.code !== 'parse_issues'))
 const buildOrderFilters = reactive({ page: 1, page_size: 100, sort_order: 'desc', radio: '', peer: '', station: '', build_result: '', pingpong_only: false })
 const linkFilters = reactive({ query: '', link_role: '', page: 1, page_size: 100, sort_order: 'asc' })
 const switchFilters = reactive({ page: 1, page_size: 100, radio: '', result: '' })
@@ -4035,6 +4042,26 @@ function refreshDetailPanels(): void {
 function display(value: unknown, suffix = ''): string { return value === null || value === undefined || value === '' ? '无数据' : `${value}${suffix}` }
 function formatBytes(value: number): string { if (!value) return '0 B'; if (value < 1024) return `${value} B`; if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} KB`; return `${(value / 1024 ** 2).toFixed(1)} MB` }
 function severityType(value: string): 'error' | 'warning' | 'info' { return value === 'error' || value === 'critical' ? 'error' : value === 'warning' ? 'warning' : 'info' }
+
+async function loadParseIssues(page = 1): Promise<void> {
+  if (!selected.value) return
+  parseIssuesLoading.value = true
+  try {
+    const result = await listMeshParseIssues(selected.value.session.session_id, { page, page_size: parseIssuesPageSize })
+    parseIssues.value = result.items
+    parseIssuesTotal.value = result.total
+    parseIssuesPage.value = result.page
+  } catch (reason) {
+    ElMessage.error(reason instanceof Error ? reason.message : '解析异常明细加载失败')
+  } finally {
+    parseIssuesLoading.value = false
+  }
+}
+
+function openParseIssues(): void {
+  parseIssuesVisible.value = true
+  void loadParseIssues(1)
+}
 function buildOrderRowClass(params: { row: MeshActiveBuildOrder }): string { return selectedSegment.value?.anchor_link_id === params.row.anchor_link_id ? 'mesh-build-selected' : '' }
 function linkRowClass(params: { row: MeshLinkDetail }): string { return `${linkTimeGroups.value.get(params.row) || ''} ${params.row.link_role === 'ACTIVE' ? 'mesh-row-active' : ''}`.trim() }
 function switchRowClass(params: { row: MeshSwitchEvent }): string { return switchTimeGroups.value.get(params.row) || '' }
@@ -4078,6 +4105,17 @@ function exportTimestamp(now = new Date()): string {
     </header>
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon />
 
+    <el-dialog v-model="parseIssuesVisible" title="解析异常明细" width="min(1100px, 94vw)" :close-on-click-modal="false">
+      <el-table v-loading="parseIssuesLoading" :data="parseIssues" border height="520">
+        <el-table-column prop="severity" label="级别" width="90" />
+        <el-table-column prop="code" label="类型" width="180" />
+        <el-table-column prop="message" label="说明" min-width="360" show-overflow-tooltip />
+        <el-table-column prop="source_file" label="来源文件" min-width="180" show-overflow-tooltip />
+        <el-table-column prop="line_number" label="行号" width="90" />
+        <el-table-column prop="field_name" label="字段" width="140" />
+      </el-table>
+      <div class="pagination"><span>共 {{ parseIssuesTotal }} 条</span><el-pagination :current-page="parseIssuesPage" :page-size="parseIssuesPageSize" layout="prev, pager, next" :total="parseIssuesTotal" @current-change="loadParseIssues" /></div>
+    </el-dialog>
     <el-dialog v-model="localScanVisible" title="扫描本地 MESH 日志" width="min(1280px, 96vw)" :close-on-click-modal="false">
       <el-alert v-if="localScanError" :title="localScanError" type="error" :closable="false" show-icon />
       <el-alert v-if="!localScanResult" title="扫描任务完成后将在此显示当前局点 raw 目录中的新增日志。" type="info" :closable="false" show-icon />
@@ -4322,7 +4360,7 @@ function exportTimestamp(now = new Date()): string {
           <div class="detail-title-line">
             <h2>{{ selected.session.mr_name }}</h2>
             <el-popover
-              v-if="selected.warnings.length"
+              v-if="maintenanceWarnings.length || selected.parse_issue_summary.total_count"
               placement="bottom-start"
               :width="warningPopoverWidth"
               trigger="click"
@@ -4332,19 +4370,25 @@ function exportTimestamp(now = new Date()): string {
                   class="warning-summary-trigger"
                   link
                   type="warning"
-                  :aria-label="`查看 ${selected.warnings.length} 条数据告警`"
+                  :aria-label="`查看 ${maintenanceWarnings.length + selected.parse_issue_summary.total_count} 条数据告警`"
                 >
                   <el-icon aria-hidden="true"><WarningFilled /></el-icon>
-                  <span>数据告警 {{ selected.warnings.length }}</span>
+                  <span>数据告警 {{ maintenanceWarnings.length + selected.parse_issue_summary.total_count }}</span>
                 </el-button>
               </template>
               <div class="warning-popover-content">
                 <div class="warning-popover-heading">
                   <span>数据告警</span>
-                  <strong>{{ selected.warnings.length }} 条</strong>
+                  <strong>{{ maintenanceWarnings.length + selected.parse_issue_summary.total_count }} 条</strong>
                 </div>
                 <div class="warning-list">
-                  <el-alert v-for="warning in selected.warnings" :key="warning.code" :title="warning.message" :type="severityType(warning.severity)" :closable="false" show-icon />
+                  <div v-if="selected.parse_issue_summary.total_count" class="parse-issue-summary">
+                    <div class="parse-issue-summary__heading"><strong>解析异常</strong><span>{{ selected.parse_issue_summary.total_count }} 条（错误 {{ selected.parse_issue_summary.error_count }} · 告警 {{ selected.parse_issue_summary.warning_count }} · 信息 {{ selected.parse_issue_summary.info_count }}）</span></div>
+                    <el-alert v-if="selected.parse_issue_summary.message" :title="selected.parse_issue_summary.message" :type="selected.parse_issue_summary.available ? 'warning' : 'info'" :closable="false" show-icon />
+                    <div v-for="group in selected.parse_issue_summary.groups" :key="`${group.code}:${group.severity}`" class="parse-issue-group"><span>{{ group.code }} · {{ group.severity }} · {{ group.count }} 条</span><small>{{ group.message || group.examples[0] }}</small></div>
+                    <el-button v-if="selected.parse_issue_summary.available" link type="primary" @click="openParseIssues">查看全部异常</el-button>
+                  </div>
+                  <el-alert v-for="warning in maintenanceWarnings" :key="warning.code" :title="warning.message" :type="severityType(warning.severity)" :closable="false" show-icon />
                 </div>
               </div>
             </el-popover>

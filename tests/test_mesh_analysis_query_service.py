@@ -912,6 +912,56 @@ def test_info_only_parse_diagnostics_do_not_make_session_partial(tmp_path: Path)
     assert not [item for item in anomalies.items if item.anomaly_id == "parse:2"]
 
 
+def test_parse_issue_summary_and_pagination_are_structured(tmp_path: Path) -> None:
+    paths, session_id, detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    with sqlite3.connect(detail) as conn:
+        conn.execute("INSERT INTO parse_issues VALUES (2, 'ERROR', 'bad_rssi', 'RSSI 字段无法解析', 12)")
+        conn.execute("INSERT INTO parse_issues VALUES (3, 'WARNING', 'bad_rssi', 'RSSI 缺失', 18)")
+    service = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())  # type: ignore[arg-type]
+
+    detail_result = service.get_analysis_session("demo", session_id)
+    summary = detail_result.parse_issue_summary
+    assert summary.total_count == 2
+    assert summary.error_count == 1
+    assert summary.warning_count == 1
+    assert sum(group.count for group in summary.groups if group.code == "bad_rssi") == 2
+    assert any(warning.code == "parse_issues" and "2 条" in warning.message for warning in detail_result.warnings)
+
+    page = service.list_parse_issues("demo", session_id, page=2, page_size=1)
+    assert page.total == 2
+    assert page.page == 2
+    assert len(page.items) == 1
+    assert page.items[0].line_number == 18
+
+
+def test_parse_issue_summary_reports_legacy_missing_detail(tmp_path: Path) -> None:
+    paths, session_id, detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    with sqlite3.connect(detail) as conn:
+        conn.execute("DROP TABLE parse_issues")
+        conn.execute("CREATE TABLE parse_issue_catalog (id INTEGER PRIMARY KEY, count INTEGER)")
+    index = paths.mesh_mr_db_path("demo", "列车01-MR-CT")
+    with sqlite3.connect(index) as conn:
+        conn.execute("UPDATE source_files SET parsed_db_path = ? WHERE id = 1", (str(detail),))
+    service = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())  # type: ignore[arg-type]
+    result = service.get_analysis_session("demo", session_id)
+    assert result.parse_issue_summary.available is True
+    assert result.parse_issue_summary.total_count == 0
+
+
+def test_overview_trend_budget_preserves_segments_and_gap_semantics() -> None:
+    points = [
+        {"local_rssi": 40, "gap_before": False},
+        {"local_rssi": 41, "gap_before": False},
+        {"local_rssi": None, "gap_before": True},
+        {"local_rssi": 30, "gap_before": False},
+        {"local_rssi": 31, "gap_before": False},
+    ]
+    indices = MeshAnalysisQueryService._chart_trend_row_indices(points, max_points=4, preserve_segments=True)
+    assert {0, 1, 3, 4}.issubset(indices)
+    assert MeshAnalysisQueryService._chart_gap_between(points, 1, 3)
+    assert not MeshAnalysisQueryService._chart_gap_between(points, 3, 4)
+
+
 def test_identity_revision_staleness_is_read_only_and_exposed_on_source_summary(tmp_path: Path) -> None:
     paths, session_id, _detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
     index = paths.mesh_mr_db_path("demo", "列车01-MR-CT")
