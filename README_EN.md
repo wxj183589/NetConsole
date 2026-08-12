@@ -172,7 +172,7 @@ Never attach passwords, private keys, SNMP communities, access tokens, real topo
 
 ## License
 
-See [LICENSE](LICENSE). The current license file describes NetConsole as a non-commercial GPLv3 project; read the complete text before using, modifying, or redistributing the project.
+NetConsole is licensed under the GNU General Public License v3.0 (GPL-3.0-only). See [LICENSE](LICENSE) for details.
 
 ## Open-source components
 

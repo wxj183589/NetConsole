@@ -171,7 +171,7 @@ pnpm dev:codex
 
 ## 许可证
 
-许可证说明见 [LICENSE](LICENSE)。当前仓库许可证文件将 NetConsole 标注为 non-commercial GPLv3 project；使用、修改或再分发前请阅读完整条款。
+NetConsole 采用 GNU General Public License v3.0（GPL-3.0-only）开源许可，详见 [LICENSE](LICENSE)。
 
 ## 相关项目
 
