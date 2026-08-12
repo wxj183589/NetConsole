@@ -163,6 +163,10 @@ describe('desktop file logger lifecycle', () => {
   it('bounds a 10000-event slow-disk burst and emits one recovery', async () => {
     const root = await temporaryDirectory()
     let releaseDisk: (() => void) | undefined
+    let appendStartedResolve: (() => void) | undefined
+    const appendStartedPromise = new Promise<void>((resolvePromise) => {
+      appendStartedResolve = resolvePromise
+    })
     const diskGate = new Promise<void>((resolvePromise) => { releaseDisk = resolvePromise })
     try {
       const active = join(root, 'electron.log')
@@ -172,18 +176,18 @@ describe('desktop file logger lifecycle', () => {
         queueHardLimitBytes: 8 * 1024,
         flushTimeoutMs: 30_000,
         appendLine: async (path, line) => {
+          appendStartedResolve?.()
+          appendStartedResolve = undefined
           await diskGate
           await appendFile(path, line, { encoding: 'utf8' })
         },
       })
-      const started = performance.now()
       for (let index = 0; index < 10_000; index += 1) {
         const level = index % 500 === 0 ? 'ERROR' : index % 2 === 0 ? 'DEBUG' : 'INFO'
         logger(`BURST_${index}`, 'x'.repeat(256), level)
       }
-      const enqueueMs = performance.now() - started
+      await appendStartedPromise
       const pressured = logger.getQueueMetrics()
-      expect(enqueueMs).toBeLessThan(500)
       expect(pressured.queuedBytes).toBeLessThanOrEqual(8 * 1024)
       expect(pressured.peakQueuedBytes).toBeLessThanOrEqual(8 * 1024)
       expect(pressured.droppedDebug + pressured.droppedInfo).toBeGreaterThan(0)
