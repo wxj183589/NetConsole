@@ -12,7 +12,14 @@ from types import SimpleNamespace
 import pytest
 
 import netconsole.services.rail_transit.mesh_analysis_query_service as mesh_query_module
-from netconsole.models.api.mesh_analysis import MeshChartPointDTO, MeshPathChartDTO
+from netconsole.models.api.mesh_analysis import (
+    MeshChartPointDTO,
+    MeshChartResponseBudgetDTO,
+    MeshPathChartDTO,
+    MeshTracksideSignalChartDTO,
+    MeshTracksideSignalPointDTO,
+    MeshTracksideSignalSeriesDTO,
+)
 from netconsole.services.rail_transit.mesh_analysis_query_service import (
     MeshAnalysisPayloadLimitError,
     MeshAnalysisQueryError,
@@ -48,6 +55,7 @@ def _insert_active_mesh_link(
     row_id: int,
     sample_time: str,
     radio: int,
+    source_file_id: int = 1,
     peer_name: str,
     peer_mac: str,
     peer_rssi: int | None,
@@ -57,7 +65,10 @@ def _insert_active_mesh_link(
     link_count: int = 1,
 ) -> None:
     ap_mac = f"{int(peer_mac, 16) + 0x1000:012x}"
-    conn.execute("INSERT INTO samples VALUES (?, 1, ?, ?, '')", (row_id, radio, sample_time))
+    conn.execute(
+        "INSERT INTO samples VALUES (?, ?, ?, ?, '')",
+        (row_id, source_file_id, radio, sample_time),
+    )
     conn.execute(
         """
         INSERT INTO mesh_links (
@@ -66,13 +77,14 @@ def _insert_active_mesh_link(
             peer_radio_label, peer_radio, duration_seconds, link_count, local_rssi_db, peer_rssi_db,
             local_tx_busy, peer_tx_busy, local_rx_busy, peer_rx_busy, peer_match_rule, peer_resolve_source,
             peer_radio_mac, timestamp_tag, session_id, local_signal_dbm, peer_signal_dbm
-        ) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '',
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '',
             'radio', 'radio', 1, ?, ?, ?, 1, 1, 1, 1, 'exact', 'mapping',
             ?, '', 'session-trackside', -50, ?)
         """,
         (
             row_id,
             row_id,
+            source_file_id,
             row_id,
             row_id,
             sample_time,
@@ -387,6 +399,135 @@ def test_trackside_repository_applies_frame_budget_at_exact_row_cap(tmp_path: Pa
     assert segment["source_total_rows"] == 10
     assert segment["repository_downsampled"] is True
     assert 2 <= len(rows) < 10
+    assert not any(row.get("_trackside_break_before") for row in rows)
+
+
+def test_trackside_repository_marks_ap_reappearance_after_missing_frames(tmp_path: Path) -> None:
+    paths, session_id, detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    sequence = (
+        ("AP-A", "00000000000a"),
+        ("AP-A", "00000000000a"),
+        ("AP-B", "00000000000b"),
+        ("AP-B", "00000000000b"),
+        ("AP-A", "00000000000a"),
+        ("AP-A", "00000000000a"),
+    )
+    with sqlite3.connect(detail) as conn:
+        _clear_mesh_chart_rows(conn)
+        for row_id, (peer_name, peer_mac) in enumerate(sequence, start=1):
+            _insert_active_mesh_link(
+                conn,
+                row_id=row_id,
+                sample_time=f"2026-08-06 03:30:{row_id:02d}.000",
+                radio=1,
+                peer_name=peer_name,
+                peer_mac=peer_mac,
+                peer_rssi=40 + row_id,
+            )
+
+    repository = MeshMrRepository(detail, read_only=True)
+    payload = repository.query_trackside_link_chart_segment(
+        source_file_id=1,
+        radio=1,
+        max_rows=6,
+        max_frames=2,
+        max_series=10,
+    )
+    rows = list(dict(payload["run_segment"])["rows"])
+
+    assert next(row for row in rows if row["sample_time"] == "2026-08-06 03:30:05.000")[
+        "_trackside_break_before"
+    ] is True
+
+    service = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())  # type: ignore[arg-type]
+    chart = service._trackside_signal_chart_dto(
+        service._context("demo", session_id),
+        payload,
+        radio=1,
+        time_from="",
+        time_to="",
+        max_points=2,
+    )
+    ap_a = next(item for item in chart.series if item.peer_name == "AP-A")
+
+    assert [point.break_before for point in ap_a.points] == [False, False, True, False]
+    assert len({point.run_id for point in ap_a.points}) == 2
+
+
+def test_trackside_repository_preserves_repeated_visit_and_display_gap_boundaries(
+    tmp_path: Path,
+) -> None:
+    paths, session_id, detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    timestamps = (
+        "2026-08-06 03:30:00.000",
+        "2026-08-06 03:30:01.000",
+        "2026-08-06 03:30:02.000",
+        "2026-08-06 03:30:03.000",
+        "2026-08-06 06:00:00.000",
+        "2026-08-06 06:00:01.000",
+        "2026-08-06 06:00:02.000",
+        "2026-08-06 06:00:03.000",
+        "2026-08-06 12:00:00.000",
+        "2026-08-06 12:00:01.000",
+        "2026-08-06 12:00:02.000",
+        "2026-08-06 12:00:03.000",
+    )
+    with sqlite3.connect(detail) as conn:
+        _clear_mesh_chart_rows(conn)
+        for row_id, timestamp in enumerate(timestamps, start=1):
+            _insert_active_mesh_link(
+                conn,
+                row_id=row_id,
+                sample_time=timestamp,
+                radio=1,
+                peer_name="AP-A",
+                peer_mac="00000000000a",
+                peer_rssi=40 + row_id,
+            )
+
+    repository = MeshMrRepository(detail, read_only=True)
+    payload = repository.query_trackside_link_chart_segment(
+        source_file_id=1,
+        radio=1,
+        max_rows=12,
+        max_frames=2,
+        max_series=10,
+    )
+    segment = dict(payload["run_segment"])
+    rows = list(segment["rows"])
+
+    assert {row["sample_time"] for row in rows} >= {
+        "2026-08-06 03:30:03.000",
+        "2026-08-06 06:00:00.000",
+        "2026-08-06 06:00:03.000",
+        "2026-08-06 12:00:00.000",
+    }
+    assert next(row for row in rows if row["sample_time"] == "2026-08-06 06:00:00.000")[
+        "_trackside_break_before"
+    ] is True
+    assert next(row for row in rows if row["sample_time"] == "2026-08-06 12:00:00.000")[
+        "_trackside_break_before"
+    ] is True
+
+    service = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())  # type: ignore[arg-type]
+    chart = service._trackside_signal_chart_dto(
+        service._context("demo", session_id),
+        payload,
+        radio=1,
+        time_from="",
+        time_to="",
+        max_points=2,
+    )
+    series = chart.series[0]
+
+    timestamps_by_break = {point.timestamp: point.break_before for point in series.points}
+    assert timestamps_by_break["2026-08-06 03:30:00.000"] is False
+    assert timestamps_by_break["2026-08-06 03:30:03.000"] is False
+    assert timestamps_by_break["2026-08-06 06:00:00.000"] is True
+    assert timestamps_by_break["2026-08-06 06:00:03.000"] is False
+    assert timestamps_by_break["2026-08-06 12:00:00.000"] is True
+    assert timestamps_by_break["2026-08-06 12:00:03.000"] is False
+    assert len({point.run_id for point in series.points}) == 3
 
 
 def test_active_chart_repository_budgets_8490_switch_events(tmp_path: Path) -> None:
@@ -2091,6 +2232,158 @@ def test_trackside_signal_chart_marks_a_real_multi_hour_sampling_gap(tmp_path: P
     assert chart.continuity_gap_seconds < 2.5 * 60 * 60
     assert [point.break_before for point in chart.series[0].points] == [False, False, True]
     assert len({point.run_id for point in chart.series[0].points}) == 2
+
+
+def test_trackside_signal_chart_breaks_at_source_boundary(tmp_path: Path) -> None:
+    paths, session_id, _detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    service = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())  # type: ignore[arg-type]
+    rows = [
+        _active_chart_row(1, "2026-08-06 03:30:00.000", "00000000000a"),
+        _active_chart_row(2, "2026-08-06 03:30:01.000", "00000000000a"),
+        _active_chart_row(3, "2026-08-06 03:30:02.000", "00000000000a"),
+    ]
+    rows[2]["source_file_id"] = 2
+
+    chart = service._trackside_signal_chart_dto(
+        service._context("demo", session_id),
+        {
+            "run_segment": {
+                "rows": rows,
+                "estimated_interval_seconds": 1.0,
+                "continuity_gap_seconds": 5.0,
+            }
+        },
+        radio=1,
+        time_from="",
+        time_to="",
+        max_points=10,
+    )
+
+    assert [point.break_before for point in chart.series[0].points] == [False, False, True]
+    assert len({point.run_id for point in chart.series[0].points}) == 2
+
+
+def test_trackside_lod_propagates_removed_break_marker() -> None:
+    points = [
+        MeshTracksideSignalPointDTO(timestamp=f"2026-08-06 03:30:0{index}.000", role="ACTIVE", run_id="run-1")
+        for index in range(5)
+    ]
+    points[2] = points[2].model_copy(update={"break_before": True})
+
+    selected = MeshAnalysisQueryService._select_trackside_points_with_breaks(
+        points,
+        lambda point: point.timestamp in {points[0].timestamp, points[1].timestamp, points[3].timestamp, points[4].timestamp},
+    )
+
+    assert [point.break_before for point in selected] == [False, False, True, False]
+
+
+def test_trackside_lod_keeps_ordinary_downsample_connected() -> None:
+    points = [
+        MeshTracksideSignalPointDTO(timestamp=f"2026-08-06 03:30:0{index}.000", role="ACTIVE", run_id="run-1")
+        for index in range(4)
+    ]
+
+    selected = MeshAnalysisQueryService._select_trackside_points_with_breaks(
+        points,
+        lambda point: point.timestamp in {points[0].timestamp, points[3].timestamp},
+    )
+
+    assert [point.break_before for point in selected] == [False, False]
+
+
+def test_trackside_lod_preserves_explicit_break_with_same_run_id() -> None:
+    points = [
+        MeshTracksideSignalPointDTO(timestamp="2026-08-06 03:30:00.000", role="ACTIVE", run_id="run-1"),
+        MeshTracksideSignalPointDTO(
+            timestamp="2026-08-06 06:00:00.000",
+            role="ACTIVE",
+            run_id="run-1",
+            break_before=True,
+        ),
+    ]
+
+    selected = MeshAnalysisQueryService._select_trackside_points_with_breaks(points, lambda _point: True)
+
+    assert [point.break_before for point in selected] == [False, True]
+
+
+def test_trackside_payload_degradation_preserves_removed_break_through_lod3() -> None:
+    points = [
+        MeshTracksideSignalPointDTO(
+            timestamp=f"2026-08-06 03:30:{index:02d}.000",
+            role="ACTIVE",
+            run_id="run-1",
+            break_before=index == 11,
+        )
+        for index in range(80)
+    ]
+    chart = MeshTracksideSignalChartDTO(
+        source_id="source-1",
+        series=[
+            MeshTracksideSignalSeriesDTO(
+                series_id="ap-a",
+                roles_present=["ACTIVE"],
+                total_points=len(points),
+                returned_points=len(points),
+                points=points,
+            )
+        ],
+        returned_series=1,
+        returned_frames=len(points),
+        returned_link_points=len(points),
+        returned_points=len(points),
+        response_budget=MeshChartResponseBudgetDTO(
+            returned_series=1,
+            returned_points=len(points),
+        ),
+    )
+
+    lod2 = MeshAnalysisQueryService._degrade_trackside_chart_once(chart)
+    lod3 = MeshAnalysisQueryService._degrade_trackside_chart_once(lod2)
+
+    assert lod2.response_budget.lod_level == 1
+    assert lod3.response_budget.lod_level == 2
+    assert sum(point.break_before for point in lod2.series[0].points) == 1
+    assert sum(point.break_before for point in lod3.series[0].points) == 1
+    assert next(point for point in lod3.series[0].points if point.break_before).timestamp > points[11].timestamp
+
+
+def test_trackside_series_degradation_keeps_visit_boundaries_for_retained_series() -> None:
+    series = []
+    for series_index in range(128):
+        points = [
+            MeshTracksideSignalPointDTO(
+                timestamp=f"2026-08-06 {hour:02d}:00:00.000",
+                role="ACTIVE" if series_index == 0 else "STANDBY",
+                run_id=f"run-{series_index}-{visit}",
+                break_before=visit > 0,
+            )
+            for visit, hour in enumerate((3, 6, 12))
+        ]
+        series.append(
+            MeshTracksideSignalSeriesDTO(
+                series_id=f"ap-{series_index}",
+                roles_present=["ACTIVE" if series_index == 0 else "STANDBY"],
+                total_points=3,
+                returned_points=3,
+                points=points,
+            )
+        )
+    chart = MeshTracksideSignalChartDTO(
+        source_id="source-1",
+        series=series,
+        returned_series=len(series),
+        returned_frames=3,
+        returned_link_points=384,
+        returned_points=384,
+        response_budget=MeshChartResponseBudgetDTO(returned_series=128, returned_points=384),
+    )
+
+    degraded = MeshAnalysisQueryService._degrade_trackside_chart_once(chart)
+
+    retained_active = next(item for item in degraded.series if item.series_id == "ap-0")
+    assert [point.break_before for point in retained_active.points] == [False, True, True]
 
 
 def test_trackside_signal_chart_splits_same_ap_name_by_peer_radio_mac(tmp_path: Path) -> None:

@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from uuid import UUID
 
 from netconsole.core.paths import PathResolver
@@ -3086,7 +3086,10 @@ class MeshAnalysisQueryService:
             selected_timestamps = set(cls._spread_sequence(frame_timestamps, frame_limit))
             selected_series: list[MeshTracksideSignalSeriesDTO] = []
             for item in series:
-                points = [point for point in item.points if point.timestamp in selected_timestamps]
+                points = cls._select_trackside_points_with_breaks(
+                    item.points,
+                    lambda point: point.timestamp in selected_timestamps,
+                )
                 if not points:
                     continue
                 selected_series.append(
@@ -3142,6 +3145,28 @@ class MeshAnalysisQueryService:
                 "response_budget": next_budget,
             }
         )
+
+    @staticmethod
+    def _select_trackside_points_with_breaks(
+        points: list[MeshTracksideSignalPointDTO],
+        predicate: Callable[[MeshTracksideSignalPointDTO], bool],
+    ) -> list[MeshTracksideSignalPointDTO]:
+        """Filter a trackside series without losing a break hidden by LOD."""
+        selected: list[MeshTracksideSignalPointDTO] = []
+        pending_break = False
+        previous_run_id: str | None = None
+        for point in points:
+            if point.break_before:
+                pending_break = True
+            if not predicate(point):
+                continue
+            break_before = bool(selected) and bool(
+                point.break_before or pending_break or previous_run_id != point.run_id
+            )
+            selected.append(point.model_copy(update={"break_before": break_before}))
+            pending_break = False
+            previous_run_id = point.run_id
+        return selected
 
     @classmethod
     def _spread_sequence(cls, values: list[Any], limit: int) -> list[Any]:
@@ -3789,13 +3814,14 @@ class MeshAnalysisQueryService:
                 "row": row,
                 "role": role,
                 "value": peer_rssi if peer_rssi is not None else peer_signal,
+                "repository_break_before": bool(row.get("_trackside_break_before")),
                 "point_values": {
                     "timestamp": timestamp,
                     "timestamp_tag": timestamp_tag,
                     "source_file_id": source_file_id,
                     "link_id": link_id,
                     "link_count": self._int(row.get("link_count")),
-                    "sample_id": link_id,
+                    "sample_id": self._int(row.get("sample_id")),
                     "local_radio": local_radio,
                     "role": role,
                     "peer_mac": peer_mac,
@@ -3960,6 +3986,7 @@ class MeshAnalysisQueryService:
                     or previous.get("source_file_id") != frame["source_file_id"]
                     or series_key not in previous_series
                     or gap_break
+                    or any(item.get("repository_break_before") for item in items)
                 )
                 if starts_new_run:
                     run_sequence += 1
@@ -4164,6 +4191,15 @@ class MeshAnalysisQueryService:
             for item in materialized
             if int(item["frame_index"]) in selected_frame_indices
         ]
+        selected_point_keys_by_series: dict[
+            tuple[str, int | None],
+            set[tuple[int | None, str, str, str]],
+        ] = defaultdict(set)
+        for item in selected_items:
+            point = item["point"]
+            selected_point_keys_by_series[item["series_key"]].add(
+                (point.link_id, point.timestamp, point.timestamp_tag, point.role)
+            )
         returned_frames = len(
             {int(item["frame_index"]) for item in selected_items}
         )
@@ -4175,16 +4211,18 @@ class MeshAnalysisQueryService:
             )
 
         selected_by_series: dict[tuple[str, int | None], list[MeshTracksideSignalPointDTO]] = defaultdict(list)
-        last_selected_by_series: dict[tuple[str, int | None], dict[str, Any]] = {}
-        for item in selected_items:
-            series_key = item["series_key"]
-            previous = last_selected_by_series.get(series_key)
-            point = item["point"]
-            break_before = False if previous is None else bool(
-                previous.get("run_id") != item.get("run_id")
+        for group in groups.values():
+            selected_point_keys = selected_point_keys_by_series[group["series_key"]]
+            selected_by_series[group["series_key"]] = self._select_trackside_points_with_breaks(
+                [item["point"] for item in group["items"]],
+                lambda point: (
+                    point.link_id,
+                    point.timestamp,
+                    point.timestamp_tag,
+                    point.role,
+                )
+                in selected_point_keys,
             )
-            selected_by_series[series_key].append(point.model_copy(update={"break_before": break_before}))
-            last_selected_by_series[series_key] = item
 
         series: list[MeshTracksideSignalSeriesDTO] = []
         for group in sorted(
