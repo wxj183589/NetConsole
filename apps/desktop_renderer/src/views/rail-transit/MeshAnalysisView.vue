@@ -756,6 +756,14 @@ const sourceColumns: NcTableColumn<MeshRawSource>[] = [
   { key: 'size_bytes', label: '大小', valueType: 'number', width: 110, displayValue: (row) => formatBytes(row.size_bytes) },
   { key: 'tail', label: '日志片段', valueType: 'actions', width: 110, hideable: false },
 ]
+const parseIssueColumns: NcTableColumn<MeshParseIssue>[] = [
+  { key: 'severity', label: '级别', width: 90 },
+  { key: 'code', label: '类型', width: 180 },
+  { key: 'message', label: '说明', align: 'left', alignmentReason: 'long-text', minWidth: 360, showOverflowTooltip: true },
+  { key: 'source_file', label: '来源文件', align: 'left', alignmentReason: 'path', minWidth: 180, showOverflowTooltip: true },
+  { key: 'line_number', label: '行号', valueType: 'number', width: 90 },
+  { key: 'field_name', label: '字段', width: 140 },
+]
 
 async function restoreMeshPreferences(): Promise<void> {
   const [lines, points, band, busyLines, busyPoints, layoutMode, splitRatio] = await Promise.all([
@@ -4210,14 +4218,7 @@ function exportTimestamp(now = new Date()): string {
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon />
 
     <el-dialog v-model="parseIssuesVisible" title="解析异常明细" width="min(1100px, 94vw)" :close-on-click-modal="false">
-      <el-table v-loading="parseIssuesLoading" :data="parseIssues" border height="520">
-        <el-table-column prop="severity" label="级别" width="90" />
-        <el-table-column prop="code" label="类型" width="180" />
-        <el-table-column prop="message" label="说明" min-width="360" show-overflow-tooltip />
-        <el-table-column prop="source_file" label="来源文件" min-width="180" show-overflow-tooltip />
-        <el-table-column prop="line_number" label="行号" width="90" />
-        <el-table-column prop="field_name" label="字段" width="140" />
-      </el-table>
+      <NcDataTable v-loading="parseIssuesLoading" table-id="mesh-analysis-parse-issues:v1" route-key="/rail-transit/mesh-analysis" :data="parseIssues" :columns="parseIssueColumns" border height="520" empty-text="暂无解析异常" />
       <div class="pagination"><span>共 {{ parseIssuesTotal }} 条</span><el-pagination :current-page="parseIssuesPage" :page-size="parseIssuesPageSize" layout="prev, pager, next" :total="parseIssuesTotal" @current-change="loadParseIssues" /></div>
     </el-dialog>
     <el-dialog v-model="localScanVisible" title="扫描本地 MESH 日志" width="min(1280px, 96vw)" :close-on-click-modal="false">

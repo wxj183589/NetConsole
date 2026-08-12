@@ -73,7 +73,7 @@ describe('Mesh analysis view', () => {
     expect(source).toContain('getMeshTracksideSignalChart')
     expect(source).toContain('MeshTracksideSignalChartData')
     expect(source).toContain('<MeshTracksideSignalChart')
-    expect(source).toContain('轨旁图按完整 frame 返回主备链路')
+    expect(source).toContain('轨旁图继续按窗口与 LOD 加载')
     expect(source).not.toContain('轨旁图按 Peer Radio MAC / AP MAC / Peer MAC')
     expect(source).toContain("import RailRssiComparison from '../../components/rail-timeline/RailRssiComparison.vue'")
     expect(source).toContain('<RailRssiComparison')
