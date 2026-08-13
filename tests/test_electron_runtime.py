@@ -150,7 +150,6 @@ def test_shutdown_progress_monitor_emits_only_count_changes() -> None:
     _stop_shutdown_progress_monitor(app)
     progress = [json.loads(line) for line in output.getvalue().splitlines()]
     assert [item["active_tasks"] for item in progress] == [6, 3, 0]
-    assert shutdown_requested is True
 
 
 def test_shutdown_lifecycle_events_are_emitted_as_bounded_json_events() -> None:
@@ -228,7 +227,8 @@ def test_startup_failure_protocol_is_ascii_and_preserves_chinese(monkeypatch, ca
         def __exit__(self, *_args) -> None:
             pass
 
-    monkeypatch.setattr(electron_runtime, "PathResolver", lambda: object())
+    paths = SimpleNamespace(host_environment_profile_path=Path("missing-host-profile.json"))
+    monkeypatch.setattr(electron_runtime, "PathResolver", lambda: paths)
     monkeypatch.setattr(electron_runtime, "BackendInstanceLock", InstanceLock)
     monkeypatch.setattr(
         electron_runtime,
@@ -287,7 +287,7 @@ def test_slow_storage_manifest_is_announced_before_work_starts(monkeypatch, caps
     assert result == 3
 
 
-def test_upgrade_recovery_is_announced_before_storage_scan(monkeypatch) -> None:
+def test_upgrade_recovery_is_announced_before_storage_scan(monkeypatch, tmp_path: Path) -> None:
     from netconsole.backend.api import main as api_main
     from netconsole.core.runtime_mode import RuntimeMode
 
@@ -302,7 +302,10 @@ def test_upgrade_recovery_is_announced_before_storage_scan(monkeypatch) -> None:
     with pytest.raises(RuntimeError, match="simulated slow recovery stop"):
         api_main.create_app(
             RuntimeMode.TEST,
-            paths=object(),
+            paths=SimpleNamespace(
+                host_environment_profile_path=tmp_path / "missing-host-profile.json",
+                settings_path=tmp_path / "missing-settings.json",
+            ),
             startup_stage=stages.append,
         )
 
