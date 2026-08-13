@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 from openpyxl import load_workbook
 
-from tests.support.web_parity_test_support import FakeExportProcessAdapter, FakeLocalProcessAdapter
+from tests.support.job_process_test_support import FakeExportProcessAdapter, FakeLocalProcessAdapter
 from netconsole.application.rail_transit import web_application_service as rail_transit_web_application_service
 from netconsole.application.rail_transit.web_application_service import (
     RailTransitWebApplicationService,
