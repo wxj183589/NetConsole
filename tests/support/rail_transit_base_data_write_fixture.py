@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from rail_transit_base_data_fixture import build_rail_transit_base_data_fixture, mark_base_data_copy
+from tests.support.rail_transit_base_data_fixture import (
+    build_rail_transit_base_data_fixture,
+    mark_base_data_copy,
+)
 from netconsole.core.paths import PathResolver
 from netconsole.models.api.rail_transit_base_data import ImportPreviewRowDTO, MergePlanDTO
 from netconsole.services.rail_transit.base_data_import_service import RailTransitBaseDataImportService

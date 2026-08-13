@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from rail_transit_base_data_write_fixture import build_copy_service, create_plan
+from tests.support.rail_transit_base_data_write_fixture import build_copy_service, create_plan
 from netconsole.models.api.rail_transit_base_data import (
     FieldProvenanceDTO,
     ImportPreviewRowDTO,

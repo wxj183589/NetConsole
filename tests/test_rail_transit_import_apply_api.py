@@ -5,7 +5,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from rail_transit_base_data_fixture import build_rail_transit_base_data_fixture, mark_base_data_copy
+from tests.support.rail_transit_base_data_fixture import build_rail_transit_base_data_fixture, mark_base_data_copy
 from netconsole.backend.api.main import create_app
 from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.repositories.rail_transit_base_data_repository import (

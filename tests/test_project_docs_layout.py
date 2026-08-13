@@ -15,6 +15,10 @@ FORBIDDEN_DOCS_ROOT_SUFFIXES = (
     "_INVESTIGATION.MD",
     "_PLAN.MD",
 )
+FORBIDDEN_ACTIVE_DOC_STEM_RE = re.compile(
+    r"(?:^|[_-])(?:ASSESSMENT|AUDIT|OBSERVATION_PLAN|MIGRATION_PLAN|HANDOFF|STATUS_REPORT|INVESTIGATION)(?:[_-]|$)",
+    re.IGNORECASE,
+)
 LEGACY_RENDERER_PATH_RE = re.compile(
     r"(?<!desktop_)apps[\\/]web(?:[\\/]|\b)", re.IGNORECASE
 )
@@ -74,11 +78,14 @@ def _markdown_files() -> list[Path]:
 
 def _active_docs_markdown(docs_root: Path | None = None) -> list[Path]:
     docs_root = docs_root or ROOT / "docs"
-    archive = (docs_root / "archive").resolve()
+    excluded_roots = {
+        (docs_root / "archive").resolve(),
+        (docs_root / "investigations").resolve(),
+    }
     return [
         path
         for path in _markdown_under(docs_root)
-        if archive not in path.resolve().parents
+        if not any(root in path.resolve().parents for root in excluded_roots)
     ]
 
 
@@ -87,6 +94,21 @@ def _transient_docs_root_files(docs_root: Path) -> list[Path]:
         path
         for path in sorted(docs_root.glob("*.md"))
         if path.name.upper().endswith(FORBIDDEN_DOCS_ROOT_SUFFIXES)
+    ]
+
+
+def _transient_active_docs_files(docs_root: Path) -> list[Path]:
+    """Return staged/temporary filenames in active docs only.
+
+    This intentionally matches explicit lifecycle terms instead of every
+    ``PLAN`` filename; durable domain plans such as Trackside AP Planning are
+    valid active documentation.
+    """
+
+    return [
+        path
+        for path in _active_docs_markdown(docs_root)
+        if FORBIDDEN_ACTIVE_DOC_STEM_RE.search(path.stem)
     ]
 
 
@@ -145,28 +167,51 @@ def test_docs_root_rejects_transient_governance_filenames() -> None:
     )
 
 
-def test_transient_docs_filename_guard_only_applies_to_docs_root(
+def test_active_docs_reject_transient_governance_filenames() -> None:
+    violations = [
+        path.relative_to(ROOT).as_posix()
+        for path in _transient_active_docs_files(ROOT / "docs")
+    ]
+
+    assert not violations, (
+        "active docs must not contain transient assessment/audit/plan/handoff/"
+        "status/investigation filenames (archive and investigations are exempt):\n"
+        + "\n".join(violations)
+    )
+
+
+def test_transient_active_docs_filename_guard_excludes_archive_and_investigations(
     tmp_path: Path,
 ) -> None:
-    root_files = [
-        tmp_path / name
+    active_files = [
+        tmp_path / "development" / name
         for name in (
-            "ROOT_ASSESSMENT.md",
-            "ROOT_AUDIT.md",
-            "ROOT_INVESTIGATION.md",
-            "ROOT_PLAN.md",
+            "TOPIC_ASSESSMENT.md",
+            "TOPIC_AUDIT.md",
+            "TOPIC_OBSERVATION_PLAN.md",
+            "TOPIC_MIGRATION_PLAN.md",
+            "TOPIC_HANDOFF.md",
+            "TOPIC_STATUS_REPORT.md",
+            "TOPIC_INVESTIGATION.md",
         )
     ]
-    topic_plan = tmp_path / "development" / "TOPIC_PLAN.md"
+    for active_file in active_files:
+        active_file.parent.mkdir(parents=True, exist_ok=True)
+        active_file.write_text("active", encoding="utf-8")
+
+    durable_plan = tmp_path / "rail-transit" / "base-data" / "TRACKSIDE_AP_PLANNING.md"
+    durable_plan.parent.mkdir(parents=True)
+    durable_plan.write_text("durable domain plan", encoding="utf-8")
+
     archived_audit = tmp_path / "archive" / "HISTORY_AUDIT.md"
-    for root_file in root_files:
-        root_file.write_text("root", encoding="utf-8")
-    topic_plan.parent.mkdir()
-    topic_plan.write_text("topic", encoding="utf-8")
-    archived_audit.parent.mkdir()
+    archived_audit.parent.mkdir(parents=True)
     archived_audit.write_text("archive", encoding="utf-8")
 
-    assert _transient_docs_root_files(tmp_path) == root_files
+    investigation = tmp_path / "investigations" / "TEMP_INVESTIGATION.md"
+    investigation.parent.mkdir(parents=True)
+    investigation.write_text("investigation", encoding="utf-8")
+
+    assert _transient_active_docs_files(tmp_path) == sorted(active_files)
 
 
 def test_active_docs_discovery_excludes_archive(tmp_path: Path) -> None:

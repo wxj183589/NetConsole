@@ -13,12 +13,15 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run a local fping v5 JSON smoke test.")
+    parser = argparse.ArgumentParser(description="Run a local fping v5 JSON smoke check.")
     parser.add_argument("--target", default="127.0.0.1")
     parser.add_argument("--period-ms", type=int, default=100)
     parser.add_argument("--timeout-ms", type=int, default=100)
     parser.add_argument("--count-json", type=int, default=20)
-    parser.add_argument("--output-dir", default=str(PROJECT_ROOT / ".local" / "data" / "debug" / "fping_v5"))
+    parser.add_argument(
+        "--output-dir",
+        default=str(PROJECT_ROOT / ".local" / "runtime" / "smoke" / "fping_v5"),
+    )
     parser.add_argument("--fping-path", default="")
     args = parser.parse_args()
 

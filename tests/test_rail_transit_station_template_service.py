@@ -15,7 +15,7 @@ from netconsole.services.rail_transit.station_template_service import (
     STATION_HEADERS,
     StationTemplateService,
 )
-from rail_transit_base_data_fixture import build_rail_transit_base_data_fixture
+from tests.support.rail_transit_base_data_fixture import build_rail_transit_base_data_fixture
 
 
 def _service(tmp_path: Path) -> StationTemplateService:

@@ -12,11 +12,11 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
-from mesh_analysis_test_support import (
+from tests.support.mesh_analysis_test_support import (
     EmptyBaseQuery,
     create_mesh_analysis_fixture,
 )
-from web_parity_test_support import FakeExportProcessAdapter, FakeLocalProcessAdapter
+from tests.support.web_parity_test_support import FakeExportProcessAdapter, FakeLocalProcessAdapter
 from netconsole.application.rail_transit.web_application_service import (
     RailTransitWebApplicationService,
     RailTransitWebError,

@@ -7,7 +7,7 @@ import pytest
 
 from netconsole.services.mesh_parsed_rebuild_service import MeshParsedRebuildService
 from netconsole.services.file_contract import ImportValidationError
-from tests.mesh_analysis_test_support import create_mesh_analysis_fixture
+from tests.support.mesh_analysis_test_support import create_mesh_analysis_fixture
 
 
 def _fingerprint(path: Path) -> tuple[int, str]:

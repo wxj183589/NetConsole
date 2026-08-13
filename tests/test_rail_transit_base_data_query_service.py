@@ -13,7 +13,7 @@ from netconsole.services.rail_transit.base_data_query_service import RailTransit
 from netconsole.services.rail_transit.trackside_ap_location import (
     resolve_trackside_ap_location,
 )
-from rail_transit_base_data_fixture import build_rail_transit_base_data_fixture
+from tests.support.rail_transit_base_data_fixture import build_rail_transit_base_data_fixture
 
 
 def _fingerprint(path: Path) -> tuple[str, int]:

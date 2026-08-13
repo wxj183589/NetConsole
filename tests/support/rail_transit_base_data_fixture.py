@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from ac_management_web_fixture import build_ac_management_fixture
+from tests.support.ac_management_web_fixture import build_ac_management_fixture
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 

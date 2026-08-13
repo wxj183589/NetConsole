@@ -38,7 +38,7 @@ from netconsole.services.trackside_ap_export_service import (
     load_trackside_ap_business_snapshot,
     select_trackside_ap_business_rows,
 )
-from web_parity_test_support import FakeExportProcessAdapter, FakeLocalProcessAdapter
+from tests.support.web_parity_test_support import FakeExportProcessAdapter, FakeLocalProcessAdapter
 
 
 def _database(tmp_path: Path) -> Database:

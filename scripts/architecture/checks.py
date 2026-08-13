@@ -993,30 +993,26 @@ def orphan_module_findings() -> list[Finding]:
 
 
 def migration_map_findings() -> list[Finding]:
-    path = (
-        ROOT
-        / "docs"
-        / "archive"
-        / "migrations"
-        / "qt-to-electron"
-        / "MIGRATION_MATRIX.md"
-    )
+    path = CONFIG_ROOT / "migration_map.json"
     if not path.is_file():
-        return [Finding("MIGRATION_MAP_MISSING", relative_path(path), 0, "migration matrix is missing")]
-    text = path.read_text(encoding="utf-8")
+        return [Finding("MIGRATION_MAP_MISSING", relative_path(path), 0, "current migration contract is missing")]
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return [Finding("MIGRATION_MAP_CONFIG", relative_path(path), 0, str(exc))]
     findings: list[Finding] = []
+    if not isinstance(payload, dict):
+        return [Finding("MIGRATION_MAP_CONFIG", relative_path(path), 0, "current migration contract must be an object")]
+    for key in ("classifications", "dispositions", "modules"):
+        if not isinstance(payload.get(key), list) or not payload[key]:
+            findings.append(Finding("MIGRATION_MAP_CONFIG", relative_path(path), 0, f"missing non-empty {key}"))
     for value in ("PURE_UI", "BUSINESS_MOVED", "ADAPTER_REPLACED", "DEAD_CODE", "FEATURE_REMOVED"):
-        if f"`{value}`" not in text:
+        if value not in payload.get("classifications", []):
             findings.append(Finding("MIGRATION_MAP_CLASSIFICATION", relative_path(path), 0, f"missing {value}"))
     for value in ("MIGRATED", "REMOVED", "HIDDEN_PENDING_MIGRATION", "BLOCKED"):
-        if f"`{value}`" not in text:
+        if value not in payload.get("dispositions", []):
             findings.append(Finding("MIGRATION_MAP_STATUS", relative_path(path), 0, f"missing {value}"))
-    history = run_git("ls-tree", "-r", "--name-only", "2d0bdbd5^", "--", "src/netconsole/ui")
-    if history.returncode != 0:
-        findings.append(Finding("MIGRATION_MAP_HISTORY", relative_path(path), 0, "cannot read Qt deletion baseline 2d0bdbd5^"))
-    else:
-        qt_files = history.stdout.splitlines()
-        declared = re.search(r"153\s*个受跟踪 Qt 文件", text) is not None
-        if len(qt_files) != 153 or not declared:
-            findings.append(Finding("MIGRATION_MAP_HISTORY", relative_path(path), 0, f"Qt baseline expected=153 actual={len(qt_files)} declared={declared}"))
+    for item in payload.get("modules", []):
+        if not isinstance(item, dict) or not item.get("id") or item.get("disposition") not in payload.get("dispositions", []):
+            findings.append(Finding("MIGRATION_MAP_CONFIG", relative_path(path), 0, "invalid module disposition"))
     return findings
