@@ -149,7 +149,7 @@ describe('trackside conflict-aware series colors', () => {
     const started = performance.now()
     const assignment = assignTracksideSeriesColors(cache, createTracksideSeriesPalette())
     const elapsed = performance.now() - started
-    const effectiveTargetMs = targetMs * (process.env.CI ? 2 : 1)
+    const effectiveTargetMs = targetMs * (process.env.NETCONSOLE_VITEST_PARALLEL_GATE ? 2 : 1)
     console.info(
       `trackside colors: series=${seriesCount} points=${pointCount} edges=${assignment.conflictEdgeCount} `
       + `colors=${assignment.usedColorCount} graph=${assignment.conflictGraphBuildMs.toFixed(3)}ms `

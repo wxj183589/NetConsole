@@ -86,6 +86,7 @@ describe('desktop config', () => {
     expect(config.backendArgumentsPrefix).toEqual(['--electron-backend'])
     expect(config.dataRoot).toBe('D:\\NetConsoleData')
     expect(config).not.toHaveProperty('backendPythonPath')
+    expect(config.startupTimeoutMs).toBe(30_000)
   })
 
   it('rejects a desktop data root inside the project', () => {

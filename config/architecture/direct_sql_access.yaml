@@ -18,6 +18,7 @@
   {"path":"src/netconsole/services/site_lifecycle.py","classification":"REPOSITORY_REQUIRED","owner":"storage","reason":"局点审计、可恢复清理和 Demo 重建的存储生命周期所有者；只读审计业务表，并在受控 staging 发布前 checkpoint SQLite。"},
   {"path":"src/netconsole/services/site_retention.py","classification":"REPOSITORY_REQUIRED","owner":"storage","reason":"局点保留扫描和受控清理的 SQLite、WAL、ZIP 与数据库生命周期所有者；只接受服务端候选令牌。"},
   {"path":"src/netconsole/services/site_sync.py","classification":"REPOSITORY_REQUIRED","owner":"storage","reason":"局点包导出、回传预检合并、SQLite Backup、凭据清洗和失败恢复的存储生命周期所有者。"},
+  {"path":"src/netconsole/services/history_store.py","classification":"REPOSITORY_REQUIRED","owner":"data","reason":"devices.db history outbox、按月 shard、catalog 与显式 legacy copy/verify checkpoint 的存储生命周期所有者；不在 startup 扫描历史。"},
   {"path":"scripts/build/smoke_frozen_device_database.py","classification":"TEST_ONLY","owner":"release","reason":"冻结 Backend 发布 smoke 在隔离测试根构造旧库，并在迁移后只读校验完整性；不参与产品运行。"},
   {"path":"scripts/maintenance/benchmark_mesh_analysis_loading.py","classification":"TEST_ONLY","owner":"mesh","reason":"MESH 加载性能基准只在显式测试根构造临时 fixture，并在完成后删除；不访问正式业务数据库。"},
   {"path":"scripts/maintenance/check_online_mr_session_state.py","classification":"READ_ONLY_DATA_GATEWAY","owner":"online-mr","reason":"只读会话诊断脚本。"},
@@ -25,6 +26,7 @@
   {"path":"scripts/maintenance/migrate_unified_data_root.py","classification":"MIGRATION_TOOL","owner":"data","reason":"显式统一数据根迁移工具仅对 staging 中发现的 SQLite 副本执行只读完整性校验，源目录在发布前保持不变。"},
   {"path":"scripts/maintenance/backfill_trackside_ap_station_identity.py","classification":"MIGRATION_TOOL","owner":"rail-transit","reason":"轨旁 AP station_id 维护工具仅接受显式数据库副本，默认 dry-run；apply 受 revision hash 保护，不访问自动解析的正式局点库。"},
   {"path":"scripts/maintenance/upgrade_ap_extension_schema.py","classification":"MIGRATION_TOOL","owner":"ac","reason":"显式 schema 升级脚本。"},
+  {"path":"scripts/maintenance/benchmark_devices_history_growth.py","classification":"TEST_ONLY","owner":"data","reason":"历史增长基准只在临时目录构造 legacy/current-history fixture，不访问正式数据根。"},
   {"path":"src/netconsole/services/mesh_parsed_rebuild_service.py","classification":"ANALYSIS_DB_OWNER","owner":"mesh","reason":"在 Job Worker 中归档、重建、校验并失败回滚 MESH 派生 SQLite；原始日志只读保留。"},
   {"path":"src/netconsole/services/database_upgrade/sqlite_consistency.py","classification":"REPOSITORY_REQUIRED","owner":"data","reason":"统一数据库升级框架的 SQLite Backup、WAL checkpoint 和只读完整性校验边界。"},
   {"path":"src/netconsole/services/mesh_derived_data_maintenance_service.py","classification":"ANALYSIS_DB_OWNER","owner":"mesh","reason":"MESH 派生数据库维护状态与来源恢复的 SQLite 生命周期所有者。"},
@@ -87,6 +89,7 @@
   {"path":"tests/test_rail_transit_import_preview.py","classification":"TEST_ONLY","owner":"test","reason":"轨道交通导入预览测试准备临时基础资料行。"},
   {"path":"tests/test_task_center.py","classification":"TEST_ONLY","owner":"test","reason":"Task Center 测试 fixture。"},
   {"path":"tests/test_site_storage.py","classification":"TEST_ONLY","owner":"test","reason":"局点存储和包格式测试 fixture。"},
+  {"path":"tests/test_history_store.py","classification":"TEST_ONLY","owner":"test","reason":"HistoryStore 测试只在 pytest 临时目录构造 SQLite fixture。"},
   {"path":"tests/test_trackside_optical_result_repository.py","classification":"TEST_ONLY","owner":"test","reason":"轨旁光衰 Repository 测试 fixture。"},
   {"path":"tests/test_traffic_agent_adapter.py","classification":"TEST_ONLY","owner":"test","reason":"Traffic Agent 测试 fixture。"},
   {"path":"tests/test_traffic_local_adapter.py","classification":"TEST_ONLY","owner":"test","reason":"Traffic Local 测试 fixture。"},
@@ -112,4 +115,7 @@
   {"path":"tests/test_mesh_ap_coverage_audit_service.py","classification":"TEST_ONLY","owner":"test","reason":"MESH AP 覆盖核查测试只在 pytest 临时目录构造并查询 SQLite fixture。"},
   {"path":"src/netconsole/services/mesh_import_preflight_service.py","classification":"READ_ONLY_DATA_GATEWAY","owner":"mesh","reason":"只读检查候选 SQLite 是否可读及 sqlite_master 是否可查询；连接使用 mode=ro 与 query_only，不创建或修改业务数据。"},
   {"path":"tests/test_mesh_catalog_schema.py","classification":"TEST_ONLY","owner":"test","reason":"MESH catalog schema migration concurrency test fixture。"}
+,
+  {"path":"scripts/maintenance/diagnose_server_hdd.py","classification":"READ_ONLY_DATA_GATEWAY","owner":"data","reason":"现场诊断仅以 SQLite mode=ro/query_only 读取设备库统计，不创建或修改数据库。"},
+  {"path":"scripts/maintenance/validate_phase21_snapshot.py","classification":"TEST_ONLY","owner":"data","reason":"Phase 2.1 离线副本验证使用 SQLite backup API 和隔离临时库，不连接或修改现场数据。"}
 ]

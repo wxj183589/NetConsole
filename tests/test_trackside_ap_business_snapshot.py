@@ -15,6 +15,7 @@ from netconsole.core.sites import SiteManager
 from netconsole.backend.api.trackside_ap_business_router import _raise_snapshot_error
 from netconsole.models.ap_identity_index import ApIdentityBatchResult, ApIdentityMatch
 from netconsole.repositories.device_repository import DeviceRepository
+from netconsole.services.history_store import HistoryStore
 from netconsole.services.job_center.task_application_service import TaskApplicationService
 from netconsole.services.rail_transit.effective_trackside_ap_scope import (
     TracksideApScopeContext,
@@ -197,6 +198,35 @@ def test_source_revisions_track_runtime_content_but_ignore_unrelated_metadata(
             include_export_history=True,
         )["export_history_revision"]
         != before_export_history["export_history_revision"]
+    )
+
+
+def test_source_revisions_include_history_outbox_without_opening_history_shards(
+    tmp_path: Path,
+) -> None:
+    database = _database(tmp_path)
+    before = read_trackside_ap_source_revisions(database)
+    history_root = database.path.parent / "history"
+    history_root.mkdir()
+    (history_root / "catalog.db").write_bytes(
+        b"must not be opened by current-db revision"
+    )
+
+    with database.connect() as connection:
+        assert HistoryStore(database.path).record_event(
+            connection,
+            kind="fit_ap_lldp",
+            entity_key="ap-1",
+            payload={"ap_uuid": "ap-1", "neighbor_interface": "GE1/0/1"},
+            collected_at="2026-08-13T10:00:00",
+            meaningful_fields=("ap_uuid", "neighbor_interface"),
+        )
+        connection.commit()
+
+    after = read_trackside_ap_source_revisions(database)
+    assert after["ap_history_revision"] != before["ap_history_revision"]
+    assert (history_root / "catalog.db").read_bytes() == (
+        b"must not be opened by current-db revision"
     )
 
 

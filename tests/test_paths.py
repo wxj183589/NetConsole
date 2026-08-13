@@ -29,6 +29,7 @@ def test_path_resolver_creates_site_dirs(tmp_path):
     assert paths.app_config_path == tmp_path / "config" / "application.json"
     assert paths.settings_path == tmp_path / "config" / "settings.json"
     assert paths.runtime_dir == tmp_path / "runtime"
+    assert paths.host_environment_profile_path == tmp_path / "runtime" / "environment" / "host-profile.json"
     assert paths.runtime_cache_dir == tmp_path / "runtime" / "cache"
     assert paths.offline_ap_cache_path == tmp_path / "runtime" / "cache" / "offline_ap_cache.json"
     assert paths.logs_dir == tmp_path / "runtime" / "logs"
@@ -36,12 +37,23 @@ def test_path_resolver_creates_site_dirs(tmp_path):
     assert paths.sites_dir == tmp_path / "sites"
     assert paths.site_dir() == site
     assert paths.site_db_path() == site / "db" / "devices.db"
+    assert paths.site_history_dir() == site / "db" / "history"
+    assert paths.site_history_catalog_path() == site / "db" / "history" / "catalog.db"
+    assert paths.site_history_shard_path("demo", "2026-08") == site / "db" / "history" / "devices-2026-08.db"
     assert paths.site_metrics_dir() == site / "cache" / "metrics"
     assert (site / "db").is_dir()
     for dirname in ("raw", "parsed", "reports", "downloads", "tasks", "metrics", "rail_transit", "network_tools", "backups"):
         assert not (site / dirname).exists()
     assert not (site / "files").exists()
     assert not (site / "cache").exists()
+
+
+@pytest.mark.parametrize("period", ("2026-8", "2026-081", "bad-08", "2026/08"))
+def test_history_shard_path_rejects_non_month_periods(tmp_path, period):
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+
+    with pytest.raises(ValueError, match="history shard period"):
+        paths.site_history_shard_path("demo", period)
 
 
 def test_path_resolver_site_paths_use_files_and_cache_layout(tmp_path):

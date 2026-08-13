@@ -39,6 +39,33 @@ def test_upsert_device_fact_creates_and_replaces_old_data(tmp_path):
     assert [item["sysname"] for item in repository.list_fact_history("device-1")] == ["NEW", "OLD"]
 
 
+def test_uptime_growth_does_not_create_a_change_event(tmp_path):
+    repository = make_repository(tmp_path)
+    repository.upsert_device_fact(
+        {
+            "device_uuid": "device-1",
+            "sysname": "SW1",
+            "model": "S6520",
+            "uptime": 100,
+            "collected_at": "2026-06-13T10:00:00",
+        }
+    )
+    repository.upsert_device_fact(
+        {
+            "device_uuid": "device-1",
+            "sysname": "SW1",
+            "model": "S6520",
+            "uptime": 400,
+            "collected_at": "2026-06-13T10:05:00",
+        }
+    )
+    with repository.database.connect() as conn:
+        pending = conn.execute(
+            "SELECT COUNT(*) FROM history_outbox WHERE kind='device_fact'"
+        ).fetchone()[0]
+    assert pending == 1
+
+
 def test_get_latest_raw_log_path_reads_device_fact_path(tmp_path):
     repository = make_repository(tmp_path)
     repository.upsert_device_fact(

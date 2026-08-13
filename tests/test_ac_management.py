@@ -954,6 +954,45 @@ def test_fit_ap_optical_history_is_appended_and_sorted(tmp_path):
     assert history[0]["wavelength"] == "1310 nm"
     assert history[0]["transmission_distance"] == "10 km"
     assert history[0]["connector_type"] == "LC"
+    with repository.database.connect() as conn:
+        legacy_count = conn.execute(
+            "SELECT COUNT(*) FROM ac_fit_ap_optical_history WHERE ap_uuid = ?",
+            (ap_uuid,),
+        ).fetchone()[0]
+        projection_count = conn.execute(
+            "SELECT COUNT(*) FROM ap_optical_history WHERE ap_uuid = ?",
+            (ap_uuid,),
+        ).fetchone()[0]
+    assert legacy_count == 0
+    assert projection_count == 0
+
+
+def test_fit_ap_optical_telemetry_jitter_does_not_create_change_event(tmp_path):
+    repository = AcRepository(make_database(tmp_path))
+    repository.replace_fit_ap_resources(
+        "ac-1", [{"ap_name": "ap-a", "serial_number": "SN-001"}]
+    )
+    ap_uuid = repository.list_fit_ap_resources("ac-1")[0]["ap_uuid"]
+    repository.replace_fit_ap_optical(
+        "ac-1", [{"ap_uuid": ap_uuid, "rx_power": "-10.5", "temperature": "30.0", "collected_at": "2026-01-01T00:00:00"}]
+    )
+    repository.replace_fit_ap_optical(
+        "ac-1", [{"ap_uuid": ap_uuid, "rx_power": "-10.6", "temperature": "30.1", "collected_at": "2026-01-01T00:01:00"}]
+    )
+    with repository.database.connect() as conn:
+        pending = conn.execute(
+            "SELECT COUNT(*) FROM history_outbox WHERE kind='fit_ap_optical'"
+        ).fetchone()[0]
+    assert pending == 1
+
+    repository.replace_fit_ap_optical(
+        "ac-1", [{"ap_uuid": ap_uuid, "rx_power": "-10.6", "optical_alarm_status": "no_light", "collected_at": "2026-01-01T00:02:00"}]
+    )
+    with repository.database.connect() as conn:
+        pending = conn.execute(
+            "SELECT COUNT(*) FROM history_outbox WHERE kind='fit_ap_optical'"
+        ).fetchone()[0]
+    assert pending == 2
 
 
 def test_fit_ap_lldp_history_is_appended_and_sorted(tmp_path):
@@ -1058,6 +1097,46 @@ def test_fit_ap_resource_lldp_merges_ap_direct_and_marks_history_changes(tmp_pat
     ]
     assert history[0]["is_changed"] == 0
     assert history[1]["is_changed"] == 1
+    with repository.database.connect() as conn:
+        legacy_count = conn.execute(
+            "SELECT COUNT(*) FROM ac_fit_ap_lldp_history WHERE ap_uuid = ?",
+            (ap_uuid,),
+        ).fetchone()[0]
+        projection_count = conn.execute(
+            "SELECT COUNT(*) FROM ap_lldp_history WHERE ap_uuid = ?",
+            (ap_uuid,),
+        ).fetchone()[0]
+    assert legacy_count == 0
+    assert projection_count == 0
+
+
+def test_fit_ap_resource_history_uses_change_aware_outbox_without_legacy_writes(tmp_path):
+    repository = AcRepository(make_database(tmp_path))
+    sample = {
+        "ap_name": "ap-change-aware",
+        "ap_mac": "0011-2233-4455",
+        "serial_number": "SN-001",
+        "state": "R/M",
+        "collected_at": "2026-01-01T00:00:00",
+    }
+
+    for _ in range(100):
+        repository.replace_fit_ap_resources("ac-1", [sample])
+
+    ap_uuid = repository.list_fit_ap_resources("ac-1")[0]["ap_uuid"]
+    history = repository.list_fit_ap_resource_history("ac-1")
+    assert [row["ap_uuid"] for row in history] == [ap_uuid]
+    with repository.database.connect() as conn:
+        legacy_count = conn.execute(
+            "SELECT COUNT(*) FROM ac_fit_ap_resource_history WHERE ap_uuid = ?",
+            (ap_uuid,),
+        ).fetchone()[0]
+        outbox_count = conn.execute(
+            "SELECT COUNT(*) FROM history_outbox WHERE kind = 'fit_ap_resource' AND entity_key = ?",
+            (f"ac-1:{ap_uuid}",),
+        ).fetchone()[0]
+    assert legacy_count == 0
+    assert outbox_count == 1
 
 
 def test_fit_ap_optical_failed_row_does_not_overwrite_valid_rx(tmp_path):
@@ -1377,6 +1456,22 @@ def test_fit_ap_radio_history_is_appended_from_resource_rows(tmp_path):
     assert [row["channel"] for row in history[:2]] == ["153", "149"]
     assert history[0]["bandwidth"] == "80"
     assert history[0]["tx_power"] == "25"
+
+
+def test_fit_ap_radio_telemetry_jitter_does_not_create_change_event(tmp_path):
+    repository = AcRepository(make_database(tmp_path))
+    repository.replace_fit_ap_resources(
+        "ac-1", [{"ap_name": "ap-a", "serial_number": "SN-001", "rid1_channel": "149", "rid1_usage": "10", "rid1_clients": "2"}]
+    )
+    ap_uuid = repository.list_fit_ap_resources("ac-1")[0]["ap_uuid"]
+    repository.replace_fit_ap_resources(
+        "ac-1", [{"ap_uuid": ap_uuid, "ap_name": "ap-a", "serial_number": "SN-001", "rid1_channel": "149", "rid1_usage": "20", "rid1_clients": "3", "collected_at": "2026-01-01T00:01:00"}]
+    )
+    with repository.database.connect() as conn:
+        pending = conn.execute(
+            "SELECT COUNT(*) FROM history_outbox WHERE kind='fit_ap_radio'"
+        ).fetchone()[0]
+    assert pending == 1
 
 
 def test_fit_ap_resource_history_is_appended_from_resource_rows(tmp_path):

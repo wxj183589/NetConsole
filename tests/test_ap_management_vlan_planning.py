@@ -578,6 +578,9 @@ def test_trackside_station_plan_migration_repairs_duplicate_sequences(tmp_path):
             WHERE mode = 'unified'
             """
         )
+        connection.execute(
+            "UPDATE schema_metadata SET value = 'legacy' WHERE key = 'schema_version'"
+        )
         connection.commit()
 
     database.initialize()
@@ -649,6 +652,9 @@ def test_allocation_reference_migration_removes_unique_ip_without_data_loss(
             CREATE INDEX idx_rail_ap_vlan_allocations_group_order
             ON rail_ap_vlan_allocations(group_id, allocation_order);
             """
+        )
+        connection.execute(
+            "UPDATE schema_metadata SET value = 'legacy' WHERE key = 'schema_version'"
         )
         connection.commit()
 

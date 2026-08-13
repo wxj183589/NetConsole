@@ -3,6 +3,12 @@
 
 !include "LogicLib.nsh"
 !include "nsDialogs.nsh"
+!include "StrFunc.nsh"
+!ifndef BUILD_UNINSTALLER
+; StrFunc first defines the implementation macro, then redefines ${StrStr}
+; as the three-argument call wrapper used below.
+!insertmacro FUNCTION_STRING_StrStr
+!endif
 !include "${__FILEDIR__}\..\dist\installer-build\installer-build-identity.nsh"
 
 !macro customHeader
@@ -36,6 +42,9 @@ Var NetConsoleDataRootNormalized
 Var NetConsoleDataRootDriveRoot
 Var NetConsoleDataRootDriveType
 Var NetConsoleDataRootExists
+Var NetConsolePerformanceMode
+Var NetConsoleRuntimeModeStandard
+Var NetConsoleRuntimeModeUnattended
 !endif
 
 !macro customInit
@@ -58,10 +67,17 @@ Var NetConsoleDataRootExists
     ${EndIf}
   ${EndIf}
   StrCpy $NetConsoleDataRootChanged "0"
+  ReadRegStr $0 HKLM "SOFTWARE\Microsoft\Windows NT\CurrentVersion" "ProductName"
+  StrCpy $NetConsolePerformanceMode "standard"
+  ${StrStr} $1 $0 "Server"
+  ${If} $1 != ""
+    StrCpy $NetConsolePerformanceMode "server_unattended"
+  ${EndIf}
 !macroend
 
 !macro customPageAfterChangeDir
   Page custom NetConsoleDataRootPageCreate NetConsoleDataRootPageLeave
+  Page custom NetConsoleRuntimeModePageCreate NetConsoleRuntimeModePageLeave
 !macroend
 
 !macro customInstall
@@ -94,6 +110,16 @@ Var NetConsoleDataRootExists
   ${If} $0 != 0
     Abort "Backend 数据根初始化或兼容性校验失败（退出代码 $0）。请检查安装日志；不要删除已有数据。"
   ${EndIf}
+  ExecWait '"$INSTDIR\resources\backend\NetConsoleBackend.exe" --set-runtime-performance-mode "$NetConsoleDataRoot" "$NetConsolePerformanceMode"' $0
+  ${If} $0 != 0
+    Abort "运行模式保存失败（退出代码 $0）。数据目录未发布到注册表。"
+  ${EndIf}
+  ; Advisory only: bounded hardware collection must never make an otherwise
+  ; valid install fail.  Normal startup reads this profile and never reruns WMI.
+  ExecWait '"$INSTDIR\resources\backend\NetConsoleBackend.exe" --collect-host-profile "$NetConsoleDataRoot" --timeout-seconds 4' $0
+  ${If} $0 != 0
+    DetailPrint "Host environment profile collection skipped: exit_code=$0"
+  ${EndIf}
   WriteRegStr HKLM "Software\NetConsole" "DataRoot" "$NetConsoleDataRoot"
 !macroend
 
@@ -123,6 +149,35 @@ Function NetConsoleDataRootPageCreate
   Pop $0
   Call NetConsoleRefreshDataRootStatus
   nsDialogs::Show
+FunctionEnd
+
+Function NetConsoleRuntimeModePageCreate
+  nsDialogs::Create 1018
+  Pop $0
+  ${If} $0 == error
+    Abort
+  ${EndIf}
+  ${NSD_CreateLabel} 0 0 100% 30u "选择运行模式。服务器/无人值守优先会优先保障实时采集；离线分析、报表、缓存和维护任务可能延迟。"
+  Pop $0
+  ${NSD_CreateRadioButton} 0 38u 100% 12u "标准模式"
+  Pop $NetConsoleRuntimeModeStandard
+  ${NSD_CreateRadioButton} 0 58u 100% 24u "服务器 / 无人值守优先（适合长期采集服务器）"
+  Pop $NetConsoleRuntimeModeUnattended
+  ${If} $NetConsolePerformanceMode == "server_unattended"
+    ${NSD_Check} $NetConsoleRuntimeModeUnattended
+  ${Else}
+    ${NSD_Check} $NetConsoleRuntimeModeStandard
+  ${EndIf}
+  nsDialogs::Show
+FunctionEnd
+
+Function NetConsoleRuntimeModePageLeave
+  ${NSD_GetState} $NetConsoleRuntimeModeUnattended $0
+  ${If} $0 == ${BST_CHECKED}
+    StrCpy $NetConsolePerformanceMode "server_unattended"
+  ${Else}
+    StrCpy $NetConsolePerformanceMode "standard"
+  ${EndIf}
 FunctionEnd
 
 Function NetConsoleBrowseDataRoot

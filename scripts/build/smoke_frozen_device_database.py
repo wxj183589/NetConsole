@@ -222,9 +222,7 @@ def _run_backend(
         response = _device_list(port)
         process.stdin.write(json.dumps({"command": "shutdown"}) + "\n")
         process.stdin.flush()
-        _wait_for_event(
-            output, "netconsole.electron_backend.shutdown_ack", process
-        )
+        _wait_for_shutdown_complete(output, process)
         process.stdin.write(json.dumps({"command": "exit"}) + "\n")
         process.stdin.flush()
         process.wait(timeout=15)
@@ -318,6 +316,29 @@ def _wait_for_event(
         if payload.get("event") == event:
             return
     raise TimeoutError(f"等待冻结 Backend 事件超时: {event}")
+
+
+def _wait_for_shutdown_complete(
+    output: queue.Queue[str], process: subprocess.Popen[str]
+) -> None:
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            raise RuntimeError(f"冻结 Backend 提前退出: code={process.returncode}")
+        try:
+            line = output.get(timeout=0.2)
+        except queue.Empty:
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if payload.get("event") in {
+            "netconsole.electron_backend.shutdown_complete",
+            "netconsole.electron_backend.shutdown_ack",
+        }:
+            return
+    raise TimeoutError("等待冻结 Backend shutdown_complete 事件超时")
 
 
 def _device_list(port: int) -> dict[str, object]:

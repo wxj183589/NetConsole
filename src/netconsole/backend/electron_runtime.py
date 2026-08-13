@@ -8,7 +8,7 @@ import sys
 import threading
 from time import monotonic
 from dataclasses import dataclass
-from typing import TextIO
+from typing import Callable, TextIO
 from urllib.parse import urlsplit
 
 import uvicorn
@@ -16,11 +16,12 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from netconsole.backend.api.main import DESKTOP_SESSION_HEADER, create_app
-from netconsole.core.backend_instance_lock import BackendInstanceInUseError, BackendInstanceLock
+from netconsole.core.backend_instance_lock import BackendInstanceLock
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_environment import is_packaged_runtime
 from netconsole.core.runtime_mode import RuntimeMode
-from netconsole.core.storage_manifest import StorageCompatibilityError, prepare_storage_manifest
+from netconsole.core.storage_manifest import prepare_storage_manifest
+from netconsole.core.runtime_profile import read_host_environment_profile
 
 
 _SESSION_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{32,256}$")
@@ -65,6 +66,7 @@ def build_app(
     session_token: str,
     *,
     paths: PathResolver | None = None,
+    startup_stage: Callable[[str], None] | None = None,
 ) -> FastAPI:
     if _SESSION_TOKEN_RE.fullmatch(session_token) is None:
         raise ValueError("invalid Electron runtime session token")
@@ -79,6 +81,7 @@ def build_app(
         development_api_enabled=options.development,
         development_runtime_label="electron-development" if options.development else "electron-production",
         development_frontend_mode="vite" if options.renderer_origin else "dist",
+        startup_stage=startup_stage,
     )
     if options.renderer_origin:
         app.add_middleware(
@@ -97,18 +100,21 @@ def main(argv: list[str] | None = None, *, stdin: TextIO | None = None) -> int:
     session_token = read_session_token(control_stream)
     started_at = monotonic()
     try:
+        _emit_startup_stage("paths_resolving", started_at)
         paths = PathResolver()
         _emit_startup_stage("paths_resolved", started_at)
+        _log_host_environment_summary(paths)
+        _emit_startup_stage("instance_lock_acquiring", started_at)
         with BackendInstanceLock(paths):
             _emit_startup_stage("instance_lock_acquired", started_at)
+            _emit_startup_stage("storage_manifest_preparing", started_at)
             prepare_storage_manifest(paths)
             _emit_startup_stage("storage_manifest_ready", started_at)
-            app = build_app(options, session_token, paths=paths)
-            _emit_startup_stage("application_built", started_at)
+            _emit_startup_stage("listener_binding", started_at)
             listener = socket.create_server((options.host, options.port), family=socket.AF_INET)
             actual_port = int(listener.getsockname()[1])
             try:
-                _emit_startup_stage("listener_ready", started_at)
+                _emit_startup_stage("listener_bound", started_at)
                 print(
                     json.dumps(
                         {
@@ -120,6 +126,15 @@ def main(argv: list[str] | None = None, *, stdin: TextIO | None = None) -> int:
                     ),
                     flush=True,
                 )
+                _emit_startup_stage("application_building", started_at)
+                app = build_app(
+                    options,
+                    session_token,
+                    paths=paths,
+                    startup_stage=lambda stage: _emit_startup_stage(stage, started_at),
+                )
+                _emit_startup_stage("application_built", started_at)
+                _emit_startup_stage("listener_ready", started_at)
                 server = uvicorn.Server(
                     uvicorn.Config(
                         app,
@@ -131,17 +146,19 @@ def main(argv: list[str] | None = None, *, stdin: TextIO | None = None) -> int:
                 )
                 control_thread = threading.Thread(
                     target=watch_control_stream,
-                    args=(control_stream, server),
+                    args=(control_stream, server, sys.stdout, lambda: _begin_runtime_shutdown(app, sys.stdout)),
                     name="netconsole-electron-control",
                     daemon=True,
                 )
                 control_thread.start()
                 server.run(sockets=[listener])
-                emit_shutdown_ack(sys.stdout)
+                _stop_shutdown_progress_monitor(app)
+                _emit_shutdown_progress_from_app(app, sys.stdout, "persistence_draining")
+                emit_shutdown_complete(sys.stdout)
                 wait_for_exit_command(control_stream)
             finally:
                 listener.close()
-    except (BackendInstanceInUseError, StorageCompatibilityError) as exc:
+    except Exception as exc:
         print(
             json.dumps(
                 {
@@ -171,7 +188,12 @@ def _emit_startup_stage(stage: str, started_at: float) -> None:
     )
 
 
-def watch_control_stream(stream: TextIO, server: uvicorn.Server) -> None:
+def watch_control_stream(
+    stream: TextIO,
+    server: uvicorn.Server,
+    output: TextIO | None = None,
+    on_shutdown: Callable[[], None] | None = None,
+) -> None:
     for raw in stream:
         if len(raw) > 4096:
             continue
@@ -180,12 +202,172 @@ def watch_control_stream(stream: TextIO, server: uvicorn.Server) -> None:
         except json.JSONDecodeError:
             continue
         if payload == {"command": "shutdown"}:
+            if on_shutdown is not None:
+                on_shutdown()
+            emit_shutdown_received(output or sys.stdout)
             server.should_exit = True
             return
     server.should_exit = True
 
 
+def _begin_runtime_shutdown(app: FastAPI, output: TextIO) -> None:
+    """Close task admission before uvicorn starts lifespan teardown."""
+    app.state.accepting_work = False
+    begin_shutdown = getattr(app.state, "task_service", None)
+    begin_shutdown = getattr(begin_shutdown, "begin_shutdown", None)
+    snapshot = begin_shutdown() if callable(begin_shutdown) else {}
+    emit_shutdown_progress(
+        output,
+        "draining_tasks",
+        active_tasks=snapshot.get("active_tasks") if isinstance(snapshot, dict) else None,
+        active_workers=snapshot.get("active_workers") if isinstance(snapshot, dict) else None,
+    )
+    _start_shutdown_progress_monitor(
+        app,
+        output,
+        initial_snapshot=snapshot if isinstance(snapshot, dict) else None,
+    )
+
+
+def _start_shutdown_progress_monitor(
+    app: FastAPI,
+    output: TextIO,
+    *,
+    initial_snapshot: dict[str, object] | None = None,
+) -> None:
+    if getattr(app.state, "shutdown_progress_thread", None) is not None:
+        return
+    stop_event = threading.Event()
+    app.state.shutdown_progress_stop = stop_event
+
+    def monitor() -> None:
+        previous: tuple[int | None, int | None] | None = (
+            (
+                initial_snapshot.get("active_tasks"),
+                initial_snapshot.get("active_workers"),
+            )
+            if initial_snapshot is not None
+            else None
+        )
+        while not stop_event.wait(0.2):
+            snapshot_factory = getattr(getattr(app.state, "task_service", None), "active_task_snapshot", None)
+            snapshot = snapshot_factory() if callable(snapshot_factory) else {}
+            if not isinstance(snapshot, dict):
+                continue
+            counts = (
+                snapshot.get("active_tasks"),
+                snapshot.get("active_workers"),
+            )
+            if counts == previous:
+                continue
+            previous = counts
+            emit_shutdown_progress(
+                output,
+                "draining_tasks",
+                active_tasks=counts[0],
+                active_workers=counts[1],
+            )
+
+    thread = threading.Thread(
+        target=monitor,
+        name="netconsole-shutdown-progress",
+        daemon=True,
+    )
+    app.state.shutdown_progress_thread = thread
+    thread.start()
+
+
+def _stop_shutdown_progress_monitor(app: FastAPI) -> None:
+    stop_event = getattr(app.state, "shutdown_progress_stop", None)
+    thread = getattr(app.state, "shutdown_progress_thread", None)
+    if stop_event is None:
+        return
+    stop_event.set()
+    if isinstance(thread, threading.Thread) and thread is not threading.current_thread():
+        thread.join(timeout=1.0)
+    app.state.shutdown_progress_stop = None
+    app.state.shutdown_progress_thread = None
+
+
+def _log_host_environment_summary(paths: PathResolver) -> None:
+    """Profile reads are advisory; never trigger synchronous hardware discovery."""
+    profile = read_host_environment_profile(paths.host_environment_profile_path)
+    if profile is None:
+        return
+    try:
+        def value(group: object, key: str) -> object:
+            item = getattr(group, "get", lambda *_: None)(key)
+            return getattr(item, "value", "unknown")
+
+        print(
+            "HOST_ENVIRONMENT "
+            f"os={value(profile.os, 'platform')} "
+            f"cpu_logical={value(profile.cpu, 'logical_processors')} "
+            f"memory_bytes={value(profile.memory, 'bytes')} "
+            f"virtualization={value(profile.virtualization, 'status')}",
+            file=sys.stderr,
+            flush=True,
+        )
+        print(
+            "STORAGE_ENVIRONMENT "
+            f"volume={value(profile.storage, 'volume')} "
+            f"media={value(profile.storage, 'media_type')} "
+            f"hardware_raid={value(profile.storage, 'hardware_raid')} "
+            f"raid_level={value(profile.storage, 'raid_level')}",
+            file=sys.stderr,
+            flush=True,
+        )
+    except Exception:
+        return
+
+
+def _emit_shutdown_progress_from_app(app: FastAPI, output: TextIO, phase: str) -> None:
+    snapshot_factory = getattr(getattr(app.state, "task_service", None), "active_task_snapshot", None)
+    snapshot = snapshot_factory() if callable(snapshot_factory) else {}
+    emit_shutdown_progress(
+        output,
+        phase,
+        active_tasks=snapshot.get("active_tasks") if isinstance(snapshot, dict) else None,
+        active_workers=snapshot.get("active_workers") if isinstance(snapshot, dict) else None,
+    )
+
+
+def emit_shutdown_received(output: TextIO) -> None:
+    print(
+        '{"event":"netconsole.electron_backend.shutdown_received"}',
+        file=output,
+        flush=True,
+    )
+
+
+def emit_shutdown_progress(
+    output: TextIO,
+    phase: str,
+    *,
+    active_tasks: int | None = None,
+    active_workers: int | None = None,
+) -> None:
+    payload: dict[str, object] = {
+        "event": "netconsole.electron_backend.shutdown_progress",
+        "phase": str(phase),
+    }
+    if active_tasks is not None:
+        payload["active_tasks"] = max(0, int(active_tasks))
+    if active_workers is not None:
+        payload["active_workers"] = max(0, int(active_workers))
+    print(json.dumps(payload, separators=(",", ":")), file=output, flush=True)
+
+
+def emit_shutdown_complete(output: TextIO) -> None:
+    print(
+        '{"event":"netconsole.electron_backend.shutdown_complete"}',
+        file=output,
+        flush=True,
+    )
+
+
 def emit_shutdown_ack(output: TextIO) -> None:
+    """Legacy command-receipt signal; it never proves lifespan completion."""
     print(
         '{"event":"netconsole.electron_backend.shutdown_ack"}',
         file=output,
@@ -242,7 +424,10 @@ if __name__ == "__main__":
 __all__ = [
     "ElectronRuntimeOptions",
     "build_app",
+    "emit_shutdown_complete",
     "emit_shutdown_ack",
+    "emit_shutdown_received",
+    "emit_shutdown_progress",
     "main",
     "parse_options",
     "read_session_token",

@@ -24,6 +24,64 @@ def test_current_schema_initialize_skips_full_integrity_check(tmp_path, monkeypa
     assert integrity_calls == []
 
 
+def test_current_schema_initialize_uses_read_fast_path_without_checkpoint_or_schema_write(
+    tmp_path, monkeypatch
+):
+    db = Database(tmp_path / "devices.db")
+    db.initialize()
+    checkpoint_calls = []
+    schema_writes = []
+    statements = []
+    original_connect = Database.connect
+
+    def tracked_connect(self):
+        connection = original_connect(self)
+        connection.set_trace_callback(statements.append)
+        return connection
+
+    monkeypatch.setattr(
+        Database,
+        "_checkpoint_wal",
+        staticmethod(lambda _connection: checkpoint_calls.append(True)),
+    )
+    monkeypatch.setattr(
+        Database,
+        "_write_schema_version",
+        lambda _self, _connection: schema_writes.append(True),
+    )
+    monkeypatch.setattr(Database, "connect", tracked_connect)
+
+    db.initialize()
+
+    assert checkpoint_calls == []
+    assert schema_writes == []
+    assert not any("BEGIN IMMEDIATE" in statement.upper() for statement in statements)
+    assert not any("WAL_CHECKPOINT" in statement.upper() for statement in statements)
+
+
+def test_schema_migration_checkpoints_once_then_returns_to_fast_path(tmp_path, monkeypatch):
+    db = Database(tmp_path / "devices.db")
+    db.initialize()
+    with db.connect() as conn:
+        conn.execute(
+            "UPDATE schema_metadata SET value = '2026.07.30.device_work_scope_status' "
+            "WHERE key = 'schema_version'"
+        )
+        conn.commit()
+
+    checkpoint_calls = []
+    monkeypatch.setattr(
+        Database,
+        "_checkpoint_wal",
+        staticmethod(lambda _connection: checkpoint_calls.append(True)),
+    )
+    db.initialize()
+    assert checkpoint_calls == [True]
+
+    db.initialize()
+    assert checkpoint_calls == [True]
+
+
 def test_base_data_revision_counter_tracks_committed_base_data_only(tmp_path):
     paths = PathResolver(data_root=tmp_path)
     database_path = paths.site_db_path("demo")
@@ -760,7 +818,7 @@ def test_database_initialize_rejects_schema_without_metadata(tmp_path):
     assert "group_id" not in columns
     assert dict(row) == {"device_uuid": "legacy-uuid", "name": "AC-OLD", "ip_address": "10.122.100.10"}
 
-def test_fit_ap_resource_update_writes_ap_entity_and_snapshot(tmp_path):
+def test_fit_ap_resource_update_writes_current_entity_and_history_outbox(tmp_path):
     db = Database(tmp_path / "devices.db")
     db.initialize()
     repository = AcRepository(db)
@@ -780,7 +838,12 @@ def test_fit_ap_resource_update_writes_ap_entity_and_snapshot(tmp_path):
 
     entities = repository.list_ap_entities("ac-1")
     with db.connect() as conn:
-        snapshots = conn.execute("SELECT * FROM ap_resource_snapshots WHERE ap_uuid = 'ap-idle'").fetchall()
+        legacy_snapshots = conn.execute(
+            "SELECT * FROM ap_resource_snapshots WHERE ap_uuid = 'ap-idle'"
+        ).fetchall()
+        outbox = conn.execute(
+            "SELECT kind, entity_key FROM history_outbox WHERE kind = 'fit_ap_resource'"
+        ).fetchall()
 
     assert len(entities) == 1
     assert entities[0]["ap_uuid"] == "ap-idle"
@@ -789,7 +852,9 @@ def test_fit_ap_resource_update_writes_ap_entity_and_snapshot(tmp_path):
     assert entities[0]["station"] == "Station A"
     assert entities[0]["state_display"] == "Idle"
     assert entities[0]["is_offline"] == 1
-    assert len(snapshots) == 1
+    assert legacy_snapshots == []
+    assert [tuple(row) for row in outbox] == [("fit_ap_resource", "ac-1:ap-idle")]
+    assert repository.list_fit_ap_resource_history("ac-1")[0]["ap_uuid"] == "ap-idle"
 
 
 def test_demo_context_creates_demo_data_once_with_connection_and_snmp_examples(tmp_path):

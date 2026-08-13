@@ -5,9 +5,11 @@ import html
 import os
 import re
 import secrets
+import sqlite3
 from contextlib import asynccontextmanager
 from http.cookies import SimpleCookie
 from pathlib import Path
+from typing import Callable
 from urllib.parse import parse_qs
 
 from fastapi import FastAPI, Request
@@ -40,6 +42,11 @@ from netconsole.core.feature_flags import FeatureGate
 from netconsole.core.resources import package_resource_path
 from netconsole.core.runtime_environment import is_packaged_runtime
 from netconsole.core.runtime_mode import RuntimeMode
+from netconsole.core.runtime_profile import (
+    RuntimeCapabilityPolicy,
+    read_host_environment_profile,
+    read_runtime_performance_mode,
+)
 from netconsole.core.sites import SiteManager
 from netconsole.core.version import APP_NAME, APP_VERSION
 from netconsole.infrastructure.desktop import LocalDesktopAdapter, UnavailableDesktopAdapter
@@ -63,6 +70,7 @@ from netconsole.services.file_management_service import FileManagementApplicatio
 from netconsole.services.job_center.task_application_service import TaskApplicationService
 from netconsole.services.job_center.query_service import JobCenterQueryService
 from netconsole.services.job_center.local_process_adapter import LocalProcessAdapter
+from netconsole.services.history_store import HistoryStore
 from netconsole.services.network_tools.application_service import NetworkToolsApplicationService
 from netconsole.services.online_mr.api_facade import OnlineMrApiFacade
 from netconsole.services.online_mr.errors import OnlineMrQueryError, OnlineMrQueryErrorCode
@@ -120,6 +128,15 @@ _SECRET_RE = re.compile(r"(?i)((?:x-agent-token|token)\s*[:=]\s*)[^\s,;]+")
 DESKTOP_SESSION_COOKIE = "netconsole_desktop_session"
 DESKTOP_SESSION_HEADER = "x-netconsole-session"
 _DESKTOP_DEFERRED_RUNTIME_DELAY_SECONDS = 1.0
+_HISTORY_DRAIN_INITIAL_DELAY_SECONDS = 5.0
+_HISTORY_DRAIN_NORMAL_INTERVAL_SECONDS = 10.0
+_HISTORY_DRAIN_UNATTENDED_INTERVAL_SECONDS = 60.0
+
+
+def _unattended_run_active(repository: GroundUnattendedRepository | None) -> bool:
+    """Maintenance pauses only for a persisted active unattended run."""
+
+    return bool(repository is not None and repository.get_active_run())
 
 
 class DesktopSessionMiddleware:
@@ -169,6 +186,75 @@ class DesktopSessionMiddleware:
         await response(scope, receive, send)
 
 
+class DesktopShutdownAdmissionMiddleware:
+    """Reject new mutating desktop requests once controlled shutdown begins."""
+
+    def __init__(self, app, *, state) -> None:
+        self.app = app
+        self.state = state
+
+    async def __call__(self, scope, receive, send) -> None:
+        if (
+            scope.get("type") == "http"
+            and scope.get("method") in {"POST", "PUT", "PATCH", "DELETE"}
+            and not bool(getattr(self.state, "accepting_work", True))
+        ):
+            response = JSONResponse(
+                status_code=503,
+                content={"detail": "NetConsole 正在安全退出，暂不接受新的后台操作"},
+                headers={"Retry-After": "5"},
+            )
+            await response(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
+
+
+class RuntimeServicesAdmissionMiddleware:
+    """Reject service-dependent writes while deferred runtime services are unavailable."""
+
+    _PREFIXES = (
+        "/api/agents",
+        "/api/traffic",
+        "/api/file-management",
+        "/api/online-mr-control",
+        "/api/online-mr-agent",
+        "/api/rail-transit/online-mr-control",
+        "/api/rail-transit/online-mr-agent",
+        "/api/rail-transit/ground-unattended",
+    )
+
+    def __init__(self, app, *, state) -> None:
+        self.app = app
+        self.state = state
+
+    async def __call__(self, scope, receive, send) -> None:
+        if (
+            scope.get("type") == "http"
+            and scope.get("method") in {"POST", "PUT", "PATCH", "DELETE"}
+            and str(scope.get("path") or "").startswith(self._PREFIXES)
+            and not bool(getattr(self.state, "runtime_services_ready", False))
+            and str(getattr(self.state, "runtime_services_status", "starting")) != "stopping"
+        ):
+            status = str(getattr(self.state, "runtime_services_status", "starting"))
+            degraded = status == "degraded"
+            response = JSONResponse(
+                status_code=503,
+                content={
+                    "detail": "运行服务初始化失败，当前处于降级状态"
+                    if degraded
+                    else "运行服务正在初始化",
+                    "code": "RUNTIME_SERVICES_DEGRADED"
+                    if degraded
+                    else "RUNTIME_SERVICES_NOT_READY",
+                    "runtime_services_status": status,
+                },
+                headers={"Retry-After": "2"},
+            )
+            await response(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
+
+
 def create_app(
     runtime_mode: RuntimeMode = RuntimeMode.SERVER,
     *,
@@ -193,14 +279,23 @@ def create_app(
     development_api_enabled: bool = False,
     development_runtime_label: str = "development",
     development_frontend_mode: str = "dist",
+    startup_stage: Callable[[str], None] | None = None,
 ) -> FastAPI:
     paths = paths or PathResolver()
+    host_profile = read_host_environment_profile(paths.host_environment_profile_path)
+    performance_mode = read_runtime_performance_mode(paths.settings_path)
+    capability_policy = RuntimeCapabilityPolicy.from_profile(host_profile, mode=performance_mode)
+    _emit_startup_stage(startup_stage, "upgrade_recovery_started")
     for recovered_upgrade in recover_incomplete_upgrades(paths):
         app_logger.log_warning(
             "DATABASE_UPGRADE_RECOVERED",
             f"operation={recovered_upgrade.get('operation_id')} stage={recovered_upgrade.get('stage')}",
         )
-    site_name = _current_site_name(paths)
+    _emit_startup_stage(startup_stage, "upgrade_recovery_complete")
+    _emit_startup_stage(startup_stage, "active_site_resolving")
+    site_name = _current_site_name(paths, startup_stage=startup_stage)
+    _emit_startup_stage(startup_stage, "active_site_resolved")
+    _emit_startup_stage(startup_stage, "application_services_initializing")
     defer_runtime_start = bool(runtime_mode is RuntimeMode.DESKTOP and desktop_session_token)
     if online_mr_web_control_enabled is None:
         online_mr_web_control_enabled = os.environ.get("ONLINE_MR_WEB_CONTROL_ENABLED", "0") == "1"
@@ -267,6 +362,11 @@ def create_app(
     if callable(resident_binder):
         resident_binder(ac_mesh_link_resident_service)
     web_process_adapter = LocalProcessAdapter(task_service)
+    history_store = HistoryStore(
+        paths.site_db_path(site_name),
+        site_id=site_name,
+        history_root=paths.site_history_dir(site_name),
+    )
     site_application_service = SiteApplicationService(paths, task_service)
     data_root_application_service = DataRootApplicationService(paths, site_application_service)
     site_package_service = SitePackageService(paths, site_application_service)
@@ -348,10 +448,43 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
+        async def start_unattended_services() -> bool:
+            if not ground_unattended_feature_enabled:
+                return True
+            if ground_unattended_supervisor is None:
+                app.state.unattended_ready = False
+                app.state.unattended_status = "failed"
+                app.state.unattended_error = (
+                    app.state.ground_unattended_startup_error or "unavailable"
+                )
+                app_logger.log_error(
+                    "UNATTENDED_SERVICE_FAILED",
+                    "component=ground_unattended error=unavailable",
+                )
+                return False
+            try:
+                await asyncio.to_thread(ground_unattended_supervisor.start)
+                app.state.unattended_ready = True
+                app.state.unattended_status = "ready"
+                app.state.unattended_error = ""
+                return True
+            except Exception as exc:
+                app.state.unattended_ready = False
+                app.state.unattended_status = "failed"
+                app.state.unattended_error = exc.__class__.__name__
+                app_logger.log_error(
+                    "UNATTENDED_SERVICE_FAILED",
+                    f"component=ground_unattended error={exc.__class__.__name__}: "
+                    f"{_safe_error_message(str(exc))}",
+                )
+                return False
+
         async def start_deferred_runtime_services() -> None:
             try:
                 # 先让 health、静态资源与首屏完成；历史任务恢复不参与桌面首屏关键路径。
                 await asyncio.sleep(_DESKTOP_DEFERRED_RUNTIME_DELAY_SECONDS)
+                if not app.state.accepting_work:
+                    return
                 reconcile_tasks = getattr(task_service, "reconcile_orphaned_local_tasks", None)
                 if callable(reconcile_tasks):
                     await asyncio.to_thread(reconcile_tasks)
@@ -361,10 +494,18 @@ def create_app(
                     await asyncio.to_thread(reconcile_traffic)
                 await traffic_service.start()
                 await asyncio.to_thread(file_management_service.start)
-                if ground_unattended_supervisor is not None:
-                    await asyncio.to_thread(ground_unattended_supervisor.start)
-                app.state.runtime_services_ready = True
+                unattended_started = (
+                    app.state.unattended_status != "failed"
+                    if capability_policy.unattended_priority
+                    else await start_unattended_services()
+                )
+                app.state.runtime_services_ready = unattended_started
+                app.state.runtime_services_status = "ready" if unattended_started else "degraded"
+                if not unattended_started:
+                    app.state.runtime_services_error = app.state.unattended_error or "unavailable"
             except Exception as exc:
+                app.state.runtime_services_ready = False
+                app.state.runtime_services_status = "degraded"
                 app.state.runtime_services_error = exc.__class__.__name__
                 app_logger.log_error(
                     "WEB_LIFESPAN_START_FAILED",
@@ -385,29 +526,123 @@ def create_app(
                     app_logger.log_warning("APP_AUTO_CLEANUP_FAILED", _safe_error_message(str(exc)))
                 await asyncio.sleep(LOG_POLICY.housekeeper.interval_seconds)
 
+        async def schedule_history_drain() -> None:
+            """Drain history independently from deferred runtime services."""
+
+            await asyncio.sleep(_HISTORY_DRAIN_INITIAL_DELAY_SECONDS)
+            while True:
+                if not app.state.accepting_work:
+                    return
+                try:
+                    diagnostics = await asyncio.to_thread(history_store.outbox_diagnostics)
+                    app.state.history_pending = diagnostics.pending
+                    app.state.history_oldest_pending_age_seconds = (
+                        diagnostics.oldest_pending_age_seconds
+                    )
+                    app.state.history_pressure = diagnostics.pressure
+                    if diagnostics.pressure == "degraded":
+                        app.state.history_status = "degraded"
+                    elif app.state.history_status == "idle":
+                        app.state.history_status = "ready"
+                except (OSError, sqlite3.Error) as exc:
+                    app.state.history_status = "degraded"
+                    app.state.history_error = exc.__class__.__name__
+                try:
+                    unattended_active = await asyncio.to_thread(
+                        _unattended_run_active,
+                        getattr(app.state, "ground_unattended_repository", None),
+                    )
+                    result = await asyncio.to_thread(
+                        history_store.drain,
+                        limit=100,
+                        unattended_active=unattended_active,
+                        max_elapsed_seconds=2.0 if unattended_active else None,
+                    )
+                    app.state.history_pending = result.pending
+                    app.state.history_last_drain_elapsed_ms = result.elapsed_ms
+                    app.state.history_last_drain_written = result.written
+                    app.state.history_budget_overrun = result.budget_exceeded
+                    app.state.history_oldest_pending_age_seconds = result.oldest_pending_age_seconds
+                    app.state.history_pressure = result.pressure
+                    app.state.history_status = "paused" if result.paused else (
+                        "degraded" if result.degraded else "ready"
+                    )
+                    app.state.history_error = "" if not result.degraded else "shard_write_failed"
+                    if result.degraded:
+                        app_logger.log_warning(
+                            "HISTORY_DRAIN_DEGRADED",
+                            f"pending={result.pending} written={result.written}",
+                        )
+                    elif result.budget_exceeded:
+                        app_logger.log_warning(
+                            "HISTORY_DRAIN_BUDGET_OVERRUN",
+                            f"elapsed_ms={result.elapsed_ms} written={result.written} pending={result.pending}",
+                        )
+                except (OSError, sqlite3.Error) as exc:
+                    app.state.history_status = "degraded"
+                    app.state.history_error = exc.__class__.__name__
+                    app_logger.log_warning(
+                        "HISTORY_DRAIN_DEGRADED",
+                        f"error={exc.__class__.__name__}: {_safe_error_message(str(exc))}",
+                    )
+                await asyncio.sleep(
+                    _HISTORY_DRAIN_UNATTENDED_INTERVAL_SECONDS
+                    if _unattended_run_active(
+                        getattr(app.state, "ground_unattended_repository", None)
+                    )
+                    else _HISTORY_DRAIN_NORMAL_INTERVAL_SECONDS
+                )
+
         auto_cleanup_task = (
             asyncio.create_task(schedule_auto_cleanup())
-            if runtime_mode is RuntimeMode.DESKTOP and desktop_session_token
+            if (
+                runtime_mode is RuntimeMode.DESKTOP
+                and desktop_session_token
+                and capability_policy.low_priority_work_enabled
+            )
             else None
         )
+        history_drain_task = asyncio.create_task(schedule_history_drain())
         deferred_start_task: asyncio.Task[None] | None = None
         try:
             if defer_runtime_start:
+                # Server/unattended mode publishes health only after the
+                # realtime receiver/supervisor can run. The remaining desktop
+                # services stay deferred and cannot delay that readiness.
+                if capability_policy.unattended_priority:
+                    unattended_started = await start_unattended_services()
+                    if not unattended_started:
+                        app.state.runtime_services_ready = False
+                        app.state.runtime_services_status = "degraded"
+                        app.state.runtime_services_error = app.state.unattended_error or "unavailable"
                 deferred_start_task = asyncio.create_task(start_deferred_runtime_services())
             else:
+                unattended_started = await start_unattended_services()
                 await agent_service.start()
                 await traffic_service.start()
                 file_management_service.start()
-                if ground_unattended_supervisor is not None:
-                    ground_unattended_supervisor.start()
-                app.state.runtime_services_ready = True
+                app.state.runtime_services_ready = unattended_started
+                app.state.runtime_services_status = "ready" if unattended_started else "degraded"
+                if not unattended_started:
+                    app.state.runtime_services_error = app.state.unattended_error or "unavailable"
             yield
         finally:
+            app.state.runtime_services_status = "stopping"
+            if app.state.unattended_ready:
+                app.state.unattended_status = "stopping"
+                app.state.unattended_ready = False
+            app.state.accepting_work = False
+            begin_shutdown = getattr(task_service, "begin_shutdown", None)
+            if callable(begin_shutdown):
+                begin_shutdown()
             if deferred_start_task is not None:
+                deferred_start_task.cancel()
                 await asyncio.gather(deferred_start_task, return_exceptions=True)
             if auto_cleanup_task is not None:
                 auto_cleanup_task.cancel()
                 await asyncio.gather(auto_cleanup_task, return_exceptions=True)
+            history_drain_task.cancel()
+            await asyncio.gather(history_drain_task, return_exceptions=True)
             if ground_unattended_supervisor is not None:
                 try:
                     await asyncio.to_thread(ground_unattended_supervisor.close)
@@ -486,10 +721,44 @@ def create_app(
     app.state.development_runtime_label = str(development_runtime_label)
     app.state.development_frontend_mode = str(development_frontend_mode)
     app.state.desktop_session_protected = bool(desktop_session_token)
+    app.state.accepting_work = True
+    app.add_middleware(DesktopShutdownAdmissionMiddleware, state=app.state)
+    app.add_middleware(RuntimeServicesAdmissionMiddleware, state=app.state)
     app.state.online_mr_web_control_enabled = online_mr_web_control_enabled
     app.state.online_mr_agent_executor_enabled = online_mr_agent_executor_enabled
     app.state.runtime_services_ready = False
+    app.state.runtime_services_status = "starting"
     app.state.runtime_services_error = ""
+    app.state.history_status = "idle"
+    app.state.history_pending = 0
+    app.state.history_error = ""
+    app.state.history_oldest_pending_age_seconds = 0
+    app.state.history_pressure = "normal"
+    app.state.history_last_drain_elapsed_ms = 0
+    app.state.history_last_drain_written = 0
+    app.state.history_budget_overrun = False
+    app.state.history_store = history_store
+    app.state.host_environment_profile = host_profile
+    app.state.performance_mode = performance_mode.value
+    app.state.capability_policy = capability_policy
+    app.state.unattended_status = "starting" if ground_unattended_feature_enabled else "disabled"
+    app.state.unattended_ready = False
+    app.state.unattended_error = ""
+    if host_profile is None:
+        app_logger.log_info("HOST_ENVIRONMENT", "profile=unavailable")
+    else:
+        app_logger.log_info(
+            "HOST_ENVIRONMENT",
+            "profile=loaded "
+            f"cpu_logical={getattr(host_profile.cpu.get('logical_processors'), 'value', 'unknown')} "
+            f"hardware_raid={getattr(host_profile.storage.get('hardware_raid'), 'value', 'unknown')}",
+        )
+    app_logger.log_info(
+        "RUNTIME_CAPABILITY_POLICY",
+        f"mode={capability_policy.mode} cpu_workers={capability_policy.cpu_worker_limit} "
+        f"disk_maintenance={capability_policy.disk_maintenance_concurrency} "
+        f"unattended_priority={capability_policy.unattended_priority}",
+    )
     app.state.paths = paths
     app.state.backend_build_id = backend_build_id(paths.app_root)
     app.state.task_service = task_service
@@ -706,6 +975,8 @@ def create_app(
             )
         except Exception as exc:
             app.state.ground_unattended_startup_error = exc.__class__.__name__
+            app.state.unattended_status = "failed"
+            app.state.unattended_error = exc.__class__.__name__
             app_logger.log_error(
                 "GROUND_UNATTENDED_START_FAILED",
                 f"component=ground_unattended error={exc.__class__.__name__}: "
@@ -776,6 +1047,7 @@ def create_app(
 
     app.include_router(api_router)
     app.include_router(ws_router)
+    _emit_startup_stage(startup_stage, "routers_registered")
     if development_api_enabled:
         if runtime_mode is not RuntimeMode.DESKTOP or not desktop_session_token:
             raise RuntimeError("development API requires protected desktop runtime")
@@ -823,31 +1095,52 @@ def create_app(
     return app
 
 
-def _current_site_name(paths: PathResolver) -> str:
+def _current_site_name(
+    paths: PathResolver,
+    *,
+    startup_stage: Callable[[str], None] | None = None,
+) -> str:
     preferred = str(os.environ.get("NETCONSOLE_ACTIVE_SITE_ID") or "").strip()
     if preferred:
         try:
             selected = SiteRegistryRepository(paths).resolve_directory_name(preferred)
             if paths.site_dir(selected).is_dir():
-                _initialize_active_site_database(paths, selected)
+                _initialize_active_site_database(paths, selected, startup_stage=startup_stage)
                 return selected
         except (SiteStorageError, ValueError):
             pass
     if not any(path.is_dir() and not path.is_symlink() for path in paths.sites_dir.glob("*")):
         DemoSiteSeedService(paths).seed()
     selected = SiteManager(paths).get_current_site()
-    _initialize_active_site_database(paths, selected)
+    _initialize_active_site_database(paths, selected, startup_stage=startup_stage)
     return selected
 
 
-def _initialize_active_site_database(paths: PathResolver, site_name: str) -> None:
+def _initialize_active_site_database(
+    paths: PathResolver,
+    site_name: str,
+    *,
+    startup_stage: Callable[[str], None] | None = None,
+) -> None:
     database = Database(paths.site_db_path(site_name))
     if not database.exists():
         raise RuntimeError("当前局点设备数据库不存在，Backend 未启动")
+    _emit_startup_stage(startup_stage, "active_site_database_initializing")
     database.initialize()
+    _emit_startup_stage(startup_stage, "active_site_database_ready")
     # Database.initialize() may normalize legacy rows and advance the source
     # revision; refresh the read-only identity index before API consumers use it.
+    _emit_startup_stage(startup_stage, "ap_identity_index_initializing")
     ApIdentityQueryService(database).ensure_index("backend_startup")
+    _emit_startup_stage(startup_stage, "ap_identity_index_ready")
+
+
+def _emit_startup_stage(
+    callback: Callable[[str], None] | None,
+    stage: str,
+) -> None:
+    if callback is not None:
+        callback(stage)
 
 
 def _frontend_dist(paths: PathResolver) -> Path:

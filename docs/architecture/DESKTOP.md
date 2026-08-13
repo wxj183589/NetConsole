@@ -131,7 +131,7 @@ pnpm smoke:workspace-tray
 
 Codex 开发链可用 `pnpm exec node scripts/dev.mjs --codex --smoke` 做同口径冒烟；它还验证受保护的 `/api/dev/runtime-status` 已就绪，并检查固定端口退出后可重新绑定。浏览器与 Electron 专项 E2E 将在独立 Playwright 阶段接入；在脚本真实存在前，不把 Vitest 或 smoke 冒充 E2E。
 
-启动日志使用单调时钟记录 `electron.app_ready -> window_created -> loading_view_shown -> backend.spawn_started -> handshake_received -> health_ready -> renderer.navigation_started -> dom_ready -> mounted -> desktop.interactive`。Vue `mounted` 与可交互状态严格分开：页面先挂载基础壳，加载设置并通过真实 health 后才上报 `interactive`。Desktop 下历史 Task/Agent/Traffic/File 恢复延后到首屏之后执行；普通 Server 模式仍保持同步启动和失败回滚。当前实测基线与优化证据见 [E5 启动性能归档](../archive/migrations/electron-only/E5-2026-07-18.md)。
+启动日志使用单调时钟记录 `electron.app_ready -> window_created -> loading_view_shown -> backend.spawn_started -> handshake_received -> health_ready -> renderer.navigation_started -> dom_ready -> mounted -> desktop.interactive`。受管 Backend 另以结构化 INFO 记录 `spawn -> first stdout` 及 `paths_resolved / instance_lock_acquired / storage_manifest_ready / listener_bound / active_site_database_ready / ap_identity_index_ready / routers_registered / application_built / listener_ready`，用于区分冻结 EXE/DLL 加载、数据根、数据库与应用组合耗时；不记录令牌或凭据。启动页单次加载后按这些真实阶段更新中文状态，并持续显示无虚假百分比的动画、已用时间和慢启动提示。Vue `mounted` 与可交互状态严格分开：页面先挂载基础壳，加载设置并通过真实 health 后才上报 `interactive`。Desktop 下历史 Task/Agent/Traffic/File 恢复延后到首屏之后执行；普通 Server 模式仍保持同步启动和失败回滚。当前 schema 且无需迁移/修复的 `devices.db` 启动使用只读 fast path，不执行 schema 脚本、`BEGIN IMMEDIATE`、schema version 写入或 `wal_checkpoint(TRUNCATE)`；只有新库、schema upgrade 或明确兼容/数据修复才进入 maintenance 并 checkpoint。运行服务的 `runtime_services_ready` 与 Backend core health 分层；degraded 状态会在 health 暴露并拒绝 Agent/Traffic/File 等写操作。当前 active site 必须通过 SiteRegistry 与 `PathResolver.site_db_path()` 解析，禁止硬编码显示名、legacy 目录或现场 hostname。当前实测基线与优化证据见 [E5 启动性能归档](../archive/migrations/electron-only/E5-2026-07-18.md)。
 
 ## 生产资源模式
 
@@ -156,11 +156,12 @@ Electron Builder 目录包/NSIS 与 PyInstaller 受管 Backend 的构建链已�
 3. 使用可执行文件和参数数组启动 `netconsole.backend.electron_runtime`，固定 `shell: false`、`windowsHide: true`、`127.0.0.1` 和端口 `0`。
 4. 令牌只通过已持有子进程的 stdin 首行 JSON 传递；不进入参数、环境变量、URL 或配置。
 5. Electron 先校验受管子进程管道返回的 `127.0.0.1:<port>`，再使用临时请求头轮询真实 `/api/health`，成功后才加载正式 Vue 页面。
-6. stdout 只消费受管启动/退出协议，生产默认不落文件；stderr 先移除令牌和常见敏感字段，再按受控警告/错误事件写入 Electron 日志。
+6. stdout 只消费受管启动/退出协议；生产仅将结构化 lifecycle 事件提升为 INFO，其余 stdout 保持 DEBUG。stderr 先移除令牌和常见敏感字段，再按受控警告/错误事件写入 Electron 日志。
 7. 正常退出时 Main 通过同一 stdin 控制管道发送 `shutdown`，Python 控制线程据此请求 Uvicorn 优雅退出；父进程异常导致管道 EOF 时，Python 同样请求退出。
-8. Python 只在 `uvicorn.Server.run()` 完全返回后发送 `netconsole.electron_backend.shutdown_ack`，随后等待 Main 的 `exit`；Main 收到该确认后才发送 `exit` 并关闭控制管道。
-9. 只有优雅停止确认超时才对本管理器持有的子进程句柄发送终止信号；不按名称扫描或误杀其他 Python。
-10. 后端意外退出或强制终止后仍未退出时状态变为 `failed`，只向当前受信 Renderer 发送脱敏状态事件，不谎报 `stopped`。
+8. Python 收到命令后立即发送 `netconsole.electron_backend.shutdown_received`；只在 Uvicorn 与 FastAPI lifespan 完全退出后发送 `shutdown_complete`，随后等待 Main 的 `exit`。协议事件不能替代 OS 进程退出。
+9. Main 始终等待 child `exit/close`，超时后按 `SIGTERM -> SIGKILL -> Windows 当前 owned PID 的 taskkill /T /F` 有界升级；不按进程名扫描或误杀其他 Python/外部工具。
+10. 只有 child 实际退出才能转为 `stopped`。后端意外退出或最终升级仍未退出时状态变为 `failed`，只向当前受信 Renderer 发送脱敏状态事件，不谎报 `stopped`。
+11. 正式默认阶段 watchdog 为 30 秒，整体启动 hard deadline 为 60 秒；监听握手与 health ready 分开计时，合法阶段进展可刷新 watchdog，但不能无限等待。
 
 ### 运行日志生命周期
 
@@ -168,17 +169,11 @@ Electron Main 的应用日志由异步队列写入 `<data_root>/runtime/logs/ele
 
 Python `app.log` 使用相同的 20 MB + 日期滚动与 7 天保留。启动后异步执行一次轻量 Housekeeper，运行期间每小时 best-effort 检查日志目录；总量上限 300 MB，清理目标 250 MB，活动日志和数据库升级审计始终保护。WPS writer 不属于 Electron 仓库，本边界只治理其外部 stdout/stderr 文件的识别、保留和总容量清理。
 
-日志策略的唯一事实源是 `src/netconsole/resources/log_policy.json`，源码与冻结 Backend 必须加载同一资源；构建和 package smoke 必须验证该资源存在。Electron 队列以 4 MB 为软上限、8 MB 为硬上限，软上限后优先丢弃低等级事件，并以受限的背压/恢复事件报告；退出 flush 最多等待 5 秒，不能因失效磁盘永久阻塞应用退出。
-
-rotation 失败按 30、60、120、300 秒退避；退避期间继续追加活动日志，不逐条重试 rename。fallback 同 fingerprint 60 秒限流并限制为 2 MB。Python 写入错误同样限流，恢复后只记录一次恢复事件。普通 detail、结构化 context 和受控 traceback 分别受 16 KB、32 KB 和 256 KB 上限约束。
-
-Housekeeper 只删除明确识别且达到条件的 rotated electron/app、WPS、diagnostic 和 archive 日志。活动日志、启动/崩溃诊断、数据库升级审计、最近仍可能被占用的文件、unknown、symlink、raw、Artifact、数据库和采集结果全部保护；即使无法达到容量目标也只能报警，不能扩大删除范围。
-
 Backend 重启或恢复后，Main 的 `ready` 只表示新进程已通过 supervisor 健康检查。Vue Runtime 收到该事件后必须重新通过受信 preload bridge 读取并校验 Runtime Config，把动态 Origin 和 `X-NetConsole-Session` 令牌作为同一 generation 原子替换；完成前统一显示为重新连接中。根布局随后使用新绑定再次请求 `/api/health`，只有成功后才显示 `Backend Online`。重绑定失败保留上一份受信 Electron 绑定用于诊断，但状态保持失败，绝不回退 Browser 相对 `/api`。
 
 通用 API client 只允许 `GET/HEAD` 对明确的连接中断、Backend 重启和 `502/503/504` 做一次受控恢复：Electron 先重绑定，再从当前 generation 重新构造 URL 与 Header 后重试。`POST/PUT/PATCH/DELETE` 不自动重放，避免响应丢失时重复创建任务或执行写操作。Runtime 重绑定诊断只记录 host、reason、generation、耗时和端口是否变化，不记录 Origin、令牌或请求头。
 
-桌面总退出是单一受管屏障：先等待 Desktop IPC 的下载清理，再完成上述 Python `shutdown_ack -> exit` 握手，最后清空会话路径授权；这些步骤结束后才销毁窗口、释放单实例锁并退出 Electron。Windows 下不依赖可能缺失的 child `exit/close` 事件来判定 Uvicorn 是否已经停止。
+桌面总退出是单一受管屏障：进入 shutdown 后立即显示复用主窗口的“正在安全退出”进度页，拒绝第二实例恢复、任务中心、工作区窗口和局点切换；先等待 Desktop IPC 的下载取消与原子文件清理，再完成 Python `shutdown_received -> shutdown_complete -> child exit`，最后关闭窗口、Tray 和会话路径授权。完成事件只在 Backend 停止、窗口/Tray 收口并完成日志 flush 后记录。单实例锁保持到 Electron 进程真正结束，不在 `app.exit()` 前提前释放。Windows 注销/关机监听 `query-session-end`/`session-end`，采用 preventDefault 后的尽力收尾，不能保证操作系统提供完整主动退出预算；自动测试不能替代 Windows Server 2012、机械硬盘、RDP 多会话及正式安装包人工验收。
 
 ## 本地 API 安全模型
 
@@ -243,7 +238,7 @@ Renderer 当前只能调用：
 
 没有通用 `invoke(channel)`、`send(channel)`、文件读写、环境变量读取、Python 路径设置或命令执行接口。详细路径规则见 [Desktop Native Bridge 契约](./NATIVE_BRIDGE.md)。
 
-工具集使用独立 `userData/external-tools.json` schema v2 Store，不进入 UI Preference 或局点数据。iperf3/fping 留在系统设置；SecureCRT/Xshell/PuTTY 的用户可见配置入口位于工具集，卡片只保存系统终端引用；旧 IPOP 路径幂等迁移为独立工具。Renderer 启动只传工具 UUID 与普通/管理员模式，Main 重新取已登记记录并复验。普通启动固定 `shell:false / detached:true / stdio:"ignore"`；管理员启动通过打包的最小 Go helper 调用 `ShellExecuteExW(runas)`，禁止提升 NetConsole 自身，UAC 取消不增加统计。自定义图标源路径留在 Main 的短期选择表，Renderer 只收到 `selectionId` 和 data URL。真实 UAC 和正式包 helper 状态为 `IMPLEMENTED_UNVERIFIED`，完整契约见[工具集](./EXTERNAL_TOOL_COLLECTION.md)。
+工具集使用独立 `userData/external-tools.json` schema v2 Store，不进入 UI Preference 或局点数据。iperf3/fping 留在系统设置；SecureCRT/Xshell/PuTTY 的用户可见配置入口位于工具集，卡片只保存系统终端引用；旧 IPOP 路径幂等迁移为独立工具。Renderer 启动只传工具 UUID 与普通/管理员模式，Main 重新取已登记记录并复验。普通启动固定 `shell:false / detached:true / stdio:"ignore"`；管理员启动通过打包的最小 Go helper 调用 `ShellExecuteExW(runas)`，禁止提升 NetConsole 自身，UAC 取消不增加统计。自定义图标源路径留在 Main 的短期选择表，Renderer 只收到 `selectionId` 和 data URL。真实 UAC 和正式包 helper 状态为 `IMPLEMENTED_UNVERIFIED`，完整契约见[工具集](EXTERNAL_TOOL_COLLECTION.md)。
 
 ## 文件选择与导出边界
 
@@ -254,7 +249,7 @@ Renderer 当前只能调用：
 - `chooseSavePath` 只选择目标；可选默认目录必须来自本会话 `selectDirectory` 授权。Excel、ZIP、PDF、NAM、报告和 Artifact 内容继续由 Python Application Service/Export Process 生成。
 - `downloadBackendResource` 在 Browser 中使用普通下载，在 Electron 中只把匹配设备、配置、文件、AC、MESH、Online MR 和网络工具既有 Artifact 路由的安全相对 API 描述交给 main；普通 `/api` 路由不在白名单。Renderer 可回传本会话 `chooseSavePath` 产生的目标路径以避免重复弹窗，main 必须重新验证内存授权，任意路径仍被拒绝。Main 会保存选择时的目标快照，并在下载开始和提交最终文件前复验；目标被其他进程创建、替换、改成目录或改变时拒绝覆盖并要求重新选择位置。main 使用当前动态后端和请求头令牌流式写同目录临时文件，成功后安全替换，并拒绝用户把最终文件改成不同实际扩展。Renderer 不接收完整文件、任意 URL 或 Header，令牌不进入 URL、Storage 或日志。
 - Browser Adapter 启动原生下载后返回 `started`；Electron 只有保存完成才返回 `saved`，原生保存对话框取消返回 `cancelled`，HTTP、网络、文件或退出中止返回 `failed` 并清理 `.part`。
-- Electron 退出先关闭下载入口、取消并等待在途流完成清理；保存对话框仍打开时也不会在退出开始后创建新下载。随后 Main 请求 Python 停止，等待 Uvicorn 退出后的 `shutdown_ack`，再发送 `exit`；全部受管清理结束后才退出 Electron。
+- Electron 退出先关闭下载入口、取消并等待在途流完成清理；保存对话框仍打开时也不会在退出开始后创建新下载。随后 Main 请求 Python 停止，等待 `shutdown_received`、Uvicorn/lifespan 完成后的 `shutdown_complete` 和 child OS exit；全部受管清理结束后才退出 Electron。
 - 后续 `openArtifact` 必须使用受控 `artifact_id` 解析，不得把当前临时路径授权扩大为任意业务路径接口。
 
 ## Qt 历史回收策略
@@ -265,7 +260,7 @@ Electron 后续业务实现以当前 Feature Registry、生产代码和真实业
 
 SNMP Center、通用 MIB/OID 平台与无线勘测已经正式删除，不进入 Electron 迁移、发布或未来重建清单。设备管理只保留 SNMP v1/v2c 只读基础识别，网络工具无线扫描保持独立能力。
 
-Electron 宿主、下载和退出链已完成自动冒烟；Online MR 等业务闭环的当前状态以 Feature/Navigation Registry、生产代码、测试和[正式包功能矩阵](../release/PACKAGED_FEATURE_MATRIX.md)为准，冻结迁移矩阵只用于 Qt 历史追溯。
+Electron 宿主、下载和退出链已完成自动冒烟；Online MR 等业务闭环按最终迁移矩阵继续验收，Qt 历史只通过 Git 追溯。
 
 后续不能只保留只读列表和详情页。每个模块必须按完整纵向业务闭环补齐创建、启动、实时状态、停止、异常、恢复、Artifact 和导出；未达到可用门槛的 Electron 入口保持隐藏或明确标记待验收，不能恢复 Qt 回退入口。浏览器开发联调通过不构成正式产品验收证据。
 

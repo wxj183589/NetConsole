@@ -543,7 +543,10 @@ async function validateFrozenGroundUnattendedStatus(dataRoot) {
       ) {
         port = payload.port
         resolveListening(port)
-      } else if (payload?.event === 'netconsole.electron_backend.shutdown_ack') {
+      } else if (
+        payload?.event === 'netconsole.electron_backend.shutdown_complete'
+        || payload?.event === 'netconsole.electron_backend.shutdown_ack'
+      ) {
         resolveShutdownAck()
       }
     }

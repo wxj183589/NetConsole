@@ -312,6 +312,14 @@ class LocalProcessAdapter:
                 if not state.done.is_set() and not state.terminalizing
             )
 
+    def active_worker_snapshot(self) -> dict[str, int]:
+        with self._state_lock:
+            active = tuple(
+                state for state in self._states.values()
+                if not state.done.is_set() and not state.terminalizing
+            )
+        return {"active_workers": len(active), "active_tasks": len(active)}
+
     def wait(self, job_id: str, timeout: float | None = None) -> bool:
         with self._state_lock:
             state = self._states.get(str(job_id or ""))
@@ -347,6 +355,9 @@ class LocalProcessAdapter:
         started = time.monotonic()
         timeout = max(0.0, float(timeout_seconds))
         deadline = started + timeout
+        begin_shutdown = getattr(self.task_service, "begin_shutdown", None)
+        if callable(begin_shutdown):
+            begin_shutdown()
         with self._state_lock:
             self._closing = True
             states = tuple(

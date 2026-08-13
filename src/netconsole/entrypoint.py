@@ -158,6 +158,38 @@ def _migrate_data_root_from_installer(arguments: list[str]) -> int:
     return 0
 
 
+def _collect_host_profile_from_installer(arguments: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="NetConsoleBackend.exe --collect-host-profile")
+    parser.add_argument("data_root", type=Path)
+    parser.add_argument("--timeout-seconds", type=float, default=4.0)
+    values = parser.parse_args(arguments)
+    from netconsole.core.runtime_profile import collect_and_write_host_environment_profile
+
+    target = values.data_root / "runtime" / "environment" / "host-profile.json"
+    collect_and_write_host_environment_profile(
+        target,
+        data_root=values.data_root,
+        timeout_seconds=min(max(values.timeout_seconds, 0.1), 15.0),
+    )
+    return 0
+
+
+def _set_runtime_performance_mode_from_installer(arguments: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="NetConsoleBackend.exe --set-runtime-performance-mode"
+    )
+    parser.add_argument("data_root", type=Path)
+    parser.add_argument("mode", choices=("standard", "server_unattended"))
+    values = parser.parse_args(arguments)
+    from netconsole.core.paths import PathResolver
+    from netconsole.core.settings import SettingsStore
+
+    SettingsStore(PathResolver(data_root=values.data_root)).set_value(
+        "app/runtime_performance_mode", values.mode
+    )
+    return 0
+
+
 def main() -> int:
     if os.environ.get("NETCONSOLE_SMOKE_TEST") == "1":
         return 0
@@ -171,6 +203,10 @@ def main() -> int:
             return _validate_data_root_from_installer(sys.argv[2:])
         if len(sys.argv) >= 2 and sys.argv[1] == "--migrate-data-root":
             return _migrate_data_root_from_installer(sys.argv[2:])
+        if len(sys.argv) >= 2 and sys.argv[1] == "--collect-host-profile":
+            return _collect_host_profile_from_installer(sys.argv[2:])
+        if len(sys.argv) >= 2 and sys.argv[1] == "--set-runtime-performance-mode":
+            return _set_runtime_performance_mode_from_installer(sys.argv[2:])
         if len(sys.argv) >= 2 and sys.argv[1] == "--export-worker":
             from netconsole.export_worker import main as run_export_worker
 

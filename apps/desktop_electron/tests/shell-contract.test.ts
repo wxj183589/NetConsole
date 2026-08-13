@@ -49,12 +49,25 @@ describe('Electron shell product contract', () => {
     expect(source).toContain("logger('ELECTRON_SMOKE_WATCHDOG_EXPIRED')")
     expect(source).toContain("logger('ELECTRON_SMOKE_RENDERER_STABLE')")
     expect(source).toContain("logger('ELECTRON_SMOKE_STABILITY_RESET')")
-    expect(source).toContain("logger('ELECTRON_SHUTDOWN_COMPLETE')")
+    const backendStopped = source.indexOf("logger('ELECTRON_BACKEND_STOPPED')")
+    const finalizing = source.indexOf("logger('ELECTRON_SHUTDOWN_STAGE', 'stage=finalizing_windows')")
+    const firstLoggerFlush = source.indexOf('const preCompleteLogFlush = await flushShutdownLogs()')
+    const shutdownComplete = source.indexOf("'ELECTRON_SHUTDOWN_COMPLETE'")
+    expect(backendStopped).toBeGreaterThanOrEqual(0)
+    expect(finalizing).toBeGreaterThan(backendStopped)
+    expect(firstLoggerFlush).toBeGreaterThan(finalizing)
+    expect(shutdownComplete).toBeGreaterThan(firstLoggerFlush)
     expect(source).toContain('function beginShutdownAndExit(): void')
     expect(source).toContain("app.on('window-all-closed'")
     expect(source).toContain('if (trayAvailable && closeToTrayEnabled && !explicitQuitRequested) return')
     expect(source).toContain('workspaceWindowController?.closeAllForQuit()')
     expect(source).not.toContain('process.exit(requestedExitCode)')
+    expect(source).toContain("logger('ELECTRON_BACKEND_PROCESS_STILL_ALIVE')")
+    expect(source).toContain("logger('ELECTRON_SHUTDOWN_INCOMPLETE'")
+    expect(source).toContain('if (!complete) return')
+    expect(source.indexOf('allowQuit = true')).toBeGreaterThan(
+      source.indexOf('shutdownPromise = shutdown().then((complete)'),
+    )
   })
 
   it('shows an observable system-themed loading page and gates the business renderer theme', () => {
@@ -136,5 +149,25 @@ describe('Electron shell product contract', () => {
     expect(restoreSource).not.toContain('.maximize()')
     expect(restoreSource).toContain('workspaceWindowController?.showMainWindow()')
     expect(source).toContain("throw new Error('tray restore reapplied main window startup state')")
+  })
+
+  it('blocks business actions once shutdown starts and handles Windows session end', () => {
+    const taskSource = source.slice(
+      source.indexOf('async function openTaskWindow'),
+      source.indexOf('async function openWorkspaceWindow'),
+    )
+    const workspaceSource = source.slice(
+      source.indexOf('async function openWorkspaceWindow'),
+      source.indexOf('function getWorkspaceWindowState'),
+    )
+    const switchSource = source.slice(
+      source.indexOf('async function requestTraySiteSwitch'),
+      source.indexOf('async function refreshTraySiteContext'),
+    )
+    expect(taskSource).toContain('shuttingDown')
+    expect(workspaceSource).toContain('shuttingDown')
+    expect(switchSource).toContain('shuttingDown')
+    expect(source).toContain(";(event as { preventDefault?: () => void }).preventDefault?.()")
+    expect(source).toContain("logger('ELECTRON_SECOND_INSTANCE_IGNORED', 'reason=shutdown_in_progress')")
   })
 })

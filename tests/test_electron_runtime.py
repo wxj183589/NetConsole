@@ -6,13 +6,18 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from netconsole.backend.api.main import DESKTOP_SESSION_HEADER
+from netconsole.backend.api.main import DESKTOP_SESSION_HEADER, DesktopShutdownAdmissionMiddleware
 from netconsole.backend.electron_runtime import (
     ElectronRuntimeOptions,
     build_app,
     emit_shutdown_ack,
+    emit_shutdown_complete,
+    emit_shutdown_received,
+    _start_shutdown_progress_monitor,
+    _stop_shutdown_progress_monitor,
     parse_options,
     read_session_token,
     wait_for_exit_command,
@@ -114,22 +119,98 @@ def test_session_token_rejects_invalid_handshake(payload: str) -> None:
 
 def test_control_stream_requests_shutdown_and_ignores_unknown_messages() -> None:
     server = SimpleNamespace(should_exit=False)
+    shutdown_requested = False
+
+    def mark_shutdown() -> None:
+        nonlocal shutdown_requested
+        shutdown_requested = True
+
     watch_control_stream(
         io.StringIO('not-json\n{"command":"unknown"}\n{"command":"shutdown"}\n'),
         server,
+        on_shutdown=mark_shutdown,
     )
 
     assert server.should_exit is True
 
 
-def test_shutdown_ack_is_emitted_as_bounded_json_event() -> None:
+def test_shutdown_progress_monitor_emits_only_count_changes() -> None:
+    output = io.StringIO()
+    values = [{"active_tasks": 6, "active_workers": 2}, {"active_tasks": 3, "active_workers": 1}, {"active_tasks": 0, "active_workers": 0}]
+    app = FastAPI()
+    app.state.task_service = SimpleNamespace(active_task_snapshot=lambda: values[0])
+    _start_shutdown_progress_monitor(app, output)
+    import time
+
+    time.sleep(0.25)
+    app.state.task_service.active_task_snapshot = lambda: values[1]
+    time.sleep(0.25)
+    app.state.task_service.active_task_snapshot = lambda: values[2]
+    time.sleep(0.25)
+    _stop_shutdown_progress_monitor(app)
+    progress = [json.loads(line) for line in output.getvalue().splitlines()]
+    assert [item["active_tasks"] for item in progress] == [6, 3, 0]
+
+
+def test_shutdown_lifecycle_events_are_emitted_as_bounded_json_events() -> None:
     output = io.StringIO()
 
+    emit_shutdown_received(output)
+    output.seek(0)
+    assert json.loads(output.readline()) == {
+        "event": "netconsole.electron_backend.shutdown_received"
+    }
+    output = io.StringIO()
+    emit_shutdown_complete(output)
+    assert json.loads(output.getvalue()) == {
+        "event": "netconsole.electron_backend.shutdown_complete"
+    }
+    output = io.StringIO()
     emit_shutdown_ack(output)
 
     assert json.loads(output.getvalue()) == {
         "event": "netconsole.electron_backend.shutdown_ack"
     }
+
+
+def test_build_app_forwards_startup_stage_callback(monkeypatch) -> None:
+    stages: list[str] = []
+    captured: dict[str, object] = {}
+
+    def fake_create_app(*args, **kwargs):
+        captured.update(kwargs)
+        return FastAPI()
+
+    monkeypatch.setattr("netconsole.backend.electron_runtime.create_app", fake_create_app)
+
+    build_app(
+        ElectronRuntimeOptions(host="127.0.0.1", port=0),
+        "a" * 32,
+        startup_stage=stages.append,
+    )
+
+    assert captured["startup_stage"] == stages.append
+
+
+def test_desktop_shutdown_admission_rejects_new_mutating_requests() -> None:
+    app = FastAPI()
+    app.state.accepting_work = False
+    app.add_middleware(DesktopShutdownAdmissionMiddleware, state=app.state)
+
+    @app.get("/read")
+    def read() -> dict[str, bool]:
+        return {"ok": True}
+
+    @app.post("/write")
+    def write() -> dict[str, bool]:
+        return {"ok": True}
+
+    with TestClient(app) as client:
+        assert client.get("/read").status_code == 200
+        response = client.post("/write")
+
+    assert response.status_code == 503
+    assert response.headers["retry-after"] == "5"
 
 
 def test_startup_failure_protocol_is_ascii_and_preserves_chinese(monkeypatch, capsys) -> None:
@@ -146,7 +227,8 @@ def test_startup_failure_protocol_is_ascii_and_preserves_chinese(monkeypatch, ca
         def __exit__(self, *_args) -> None:
             pass
 
-    monkeypatch.setattr(electron_runtime, "PathResolver", lambda: object())
+    paths = SimpleNamespace(host_environment_profile_path=Path("missing-host-profile.json"))
+    monkeypatch.setattr(electron_runtime, "PathResolver", lambda: paths)
     monkeypatch.setattr(electron_runtime, "BackendInstanceLock", InstanceLock)
     monkeypatch.setattr(
         electron_runtime,
@@ -164,10 +246,109 @@ def test_startup_failure_protocol_is_ascii_and_preserves_chinese(monkeypatch, ca
     assert result == 3
     assert output.isascii()
     assert [event["stage"] for event in events[:-1]] == [
+        "paths_resolving",
         "paths_resolved",
+        "instance_lock_acquiring",
         "instance_lock_acquired",
+        "storage_manifest_preparing",
     ]
     assert events[-1]["message"] == "数据目录初始化失败"
+
+
+def test_slow_storage_manifest_is_announced_before_work_starts(monkeypatch, capsys) -> None:
+    from netconsole.backend import electron_runtime
+    from netconsole.core.storage_manifest import StorageCompatibilityError
+
+    class InstanceLock:
+        def __init__(self, _paths) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> None:
+            pass
+
+    def slow_manifest(_paths) -> None:
+        output = capsys.readouterr().out
+        stages = [json.loads(line)["stage"] for line in output.splitlines()]
+        assert stages[-1] == "storage_manifest_preparing"
+        raise StorageCompatibilityError("simulated slow storage stop")
+
+    monkeypatch.setattr(electron_runtime, "PathResolver", lambda: object())
+    monkeypatch.setattr(electron_runtime, "BackendInstanceLock", InstanceLock)
+    monkeypatch.setattr(electron_runtime, "prepare_storage_manifest", slow_manifest)
+
+    result = electron_runtime.main(
+        ["--host", "127.0.0.1", "--port", "0"],
+        stdin=io.StringIO(f'{{"session_token":"{TOKEN}"}}\n'),
+    )
+
+    assert result == 3
+
+
+def test_upgrade_recovery_is_announced_before_storage_scan(monkeypatch, tmp_path: Path) -> None:
+    from netconsole.backend.api import main as api_main
+    from netconsole.core.runtime_mode import RuntimeMode
+
+    stages: list[str] = []
+
+    def slow_recovery(_paths):
+        assert stages[-1] == "upgrade_recovery_started"
+        raise RuntimeError("simulated slow recovery stop")
+
+    monkeypatch.setattr(api_main, "recover_incomplete_upgrades", slow_recovery)
+
+    with pytest.raises(RuntimeError, match="simulated slow recovery stop"):
+        api_main.create_app(
+            RuntimeMode.TEST,
+            paths=SimpleNamespace(
+                host_environment_profile_path=tmp_path / "missing-host-profile.json",
+                settings_path=tmp_path / "missing-settings.json",
+            ),
+            startup_stage=stages.append,
+        )
+
+
+def test_active_site_storage_stages_are_emitted_before_slow_operations(monkeypatch) -> None:
+    from netconsole.backend.api import main as api_main
+
+    stages: list[str] = []
+
+    class SlowDatabase:
+        def __init__(self, _path) -> None:
+            pass
+
+        def exists(self) -> bool:
+            return True
+
+        def initialize(self) -> None:
+            assert stages[-1] == "active_site_database_initializing"
+
+    class SlowIdentityService:
+        def __init__(self, _database) -> None:
+            pass
+
+        def ensure_index(self, reason: str) -> None:
+            assert reason == "backend_startup"
+            assert stages[-1] == "ap_identity_index_initializing"
+
+    paths = SimpleNamespace(site_db_path=lambda _site_name: Path("slow-storage.sqlite"))
+    monkeypatch.setattr(api_main, "Database", SlowDatabase)
+    monkeypatch.setattr(api_main, "ApIdentityQueryService", SlowIdentityService)
+
+    api_main._initialize_active_site_database(
+        paths,
+        "demo",
+        startup_stage=stages.append,
+    )
+
+    assert stages == [
+        "active_site_database_initializing",
+        "active_site_database_ready",
+        "ap_identity_index_initializing",
+        "ap_identity_index_ready",
+    ]
 
 
 def test_exit_command_wait_ignores_unknown_messages_and_eof() -> None:
