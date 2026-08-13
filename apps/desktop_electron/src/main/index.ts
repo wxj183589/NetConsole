@@ -193,6 +193,15 @@ async function startDesktop(): Promise<void> {
       logger('ELECTRON_BACKEND_STARTUP_STAGE', `stage=${progress.stage} elapsed_ms=${progress.elapsedMs} pid=${progress.pid ?? 'none'}`)
       startupProgressPage?.update(startupStageLabel(progress.stage))
     },
+    onShutdownProgress: (progress) => {
+      const counts = [
+        progress.activeTasks == null ? undefined : `任务 ${progress.activeTasks}`,
+        progress.activeWorkers == null ? undefined : `工作进程 ${progress.activeWorkers}`,
+      ].filter((value): value is string => Boolean(value))
+      shutdownProgressPage?.update(
+        counts.length > 0 ? `正在安全停止后台任务（${counts.join('，')}）` : '正在安全停止后台任务',
+      )
+    },
   })
   const developmentMenu = isDevelopmentMenuEnabled(config.devServerUrl)
   if (!developmentMenu) Menu.setApplicationMenu(null)
@@ -921,7 +930,11 @@ function handleRendererReady(report: RendererHostReport, sourceWindow: unknown):
   }
   if (window !== mainWindow) return
   if (report.phase === 'mounted') startupTimeline?.mark('renderer.mounted')
-  if (report.phase === 'interactive' && report.healthOk) startupTimeline?.mark('desktop.interactive')
+  if (report.phase === 'interactive' && report.healthOk) {
+    startupTimeline?.mark('desktop.interactive')
+    const summary = startupTimeline?.performanceSummary()
+    if (summary) logger('STARTUP_PERFORMANCE_SUMMARY', JSON.stringify(summary))
+  }
   if (process.env.NETCONSOLE_ELECTRON_SMOKE_TEST !== '1' || report.phase === 'mounted') return
   if (!smokeMainWindowStartupValidated) {
     if (!validateMainWindowStartupState()) {
@@ -1208,7 +1221,6 @@ function requestExit(code: number): void {
 function beginShutdownAndExit(): void {
   if (shutdownPromise) return
   shuttingDown = true
-  allowQuit = true
   shutdownStartedAt = process.hrtime.bigint()
   logger('ELECTRON_SHUTDOWN_REQUESTED', `source=${explicitQuitRequested ? 'tray' : 'system'}`)
   for (const window of getAllDesktopWindows()) {
@@ -1225,14 +1237,16 @@ function beginShutdownAndExit(): void {
       mainWindow.focus()
     })
   }
-  shutdownPromise = shutdown().finally(() => {
+  shutdownPromise = shutdown().then((complete) => {
+    if (!complete) return
+    allowQuit = true
     traceSmoke('EXIT_REQUESTED')
     app.exit(requestedExitCode)
     traceSmoke('EXIT_RETURNED')
   })
 }
 
-async function shutdown(): Promise<void> {
+async function shutdown(): Promise<boolean> {
   if (smokeWatchdogTimer) clearTimeout(smokeWatchdogTimer)
   if (smokeStableTimer) clearTimeout(smokeStableTimer)
   smokeWatchdogTimer = undefined
@@ -1244,6 +1258,7 @@ async function shutdown(): Promise<void> {
   shutdownProgressPage?.update('正在停止新的后台任务')
   logger('ELECTRON_SHUTDOWN_STAGE', 'stage=blocking_new_work')
   traceSmoke('SHUTDOWN_STARTED')
+  let backendStopped = false
   try {
     taskNotificationController = undefined
     workspaceWindowController?.flush()
@@ -1263,34 +1278,48 @@ async function shutdown(): Promise<void> {
     logger('ELECTRON_SHUTDOWN_STAGE', 'stage=stopping_backend')
     shutdownProgressPage?.update('正在停止本地核心服务')
     await backend?.stop()
+    if (backend?.isOwnedProcessAlive()) throw new Error('owned backend process is still alive')
+    backendStopped = true
     logger('ELECTRON_BACKEND_STOPPED')
     traceSmoke('BACKEND_STOPPED')
   } catch {
     // BackendManager has already moved to the failed state and logged the reason.
     requestedExitCode = Math.max(requestedExitCode, 1)
-  } finally {
-    logger('ELECTRON_SHUTDOWN_STAGE', 'stage=finalizing_windows')
-    shutdownProgressPage?.update('正在完成退出')
-    workspaceWindowController?.closeAllForQuit()
-    trayController?.dispose()
-    const preCompleteLogFlush = await managedLogger?.flush()
-    workspaceWindowController?.dispose()
-    workspaceWindowController = undefined
-    trayController = undefined
-    pathRegistry.clear()
-    if (preCompleteLogFlush === false) {
-      requestedExitCode = Math.max(requestedExitCode, 1)
-      logger('ELECTRON_SHUTDOWN_LOG_FLUSH_TIMEOUT')
-    } else {
-      logger(
-        'ELECTRON_SHUTDOWN_COMPLETE',
-        `elapsed_ms=${Math.round(Number(process.hrtime.bigint() - (shutdownStartedAt ?? process.hrtime.bigint())) / 1_000_000)}`,
-      )
-      if ((await managedLogger?.flush()) === false) requestedExitCode = Math.max(requestedExitCode, 1)
-    }
-    shutdownProgressPage?.dispose()
-    shutdownProgressPage = undefined
   }
+  if (!backendStopped) {
+    const backendAlive = backend?.isOwnedProcessAlive() === true
+    if (backendAlive) logger('ELECTRON_BACKEND_PROCESS_STILL_ALIVE')
+    logger('ELECTRON_SHUTDOWN_INCOMPLETE', `backend_alive=${backendAlive}`)
+    shutdownProgressPage?.update('安全退出未完成，本地核心服务仍在运行，请查看日志')
+    await flushShutdownLogs()
+    return false
+  }
+  logger('ELECTRON_SHUTDOWN_STAGE', 'stage=finalizing_windows')
+  shutdownProgressPage?.update('正在完成退出')
+  workspaceWindowController?.closeAllForQuit()
+  trayController?.dispose()
+  const preCompleteLogFlush = await flushShutdownLogs()
+  workspaceWindowController?.dispose()
+  workspaceWindowController = undefined
+  trayController = undefined
+  pathRegistry.clear()
+  if (preCompleteLogFlush === false) {
+    requestedExitCode = Math.max(requestedExitCode, 1)
+    logger('ELECTRON_SHUTDOWN_LOG_FLUSH_TIMEOUT')
+  } else {
+    logger(
+      'ELECTRON_SHUTDOWN_COMPLETE',
+      `elapsed_ms=${Math.round(Number(process.hrtime.bigint() - (shutdownStartedAt ?? process.hrtime.bigint())) / 1_000_000)}`,
+    )
+    if ((await flushShutdownLogs()) === false) requestedExitCode = Math.max(requestedExitCode, 1)
+  }
+  shutdownProgressPage?.dispose()
+  shutdownProgressPage = undefined
+  return true
+}
+
+async function flushShutdownLogs(): Promise<boolean | undefined> {
+  return managedLogger?.flush()
 }
 
 function traceSmoke(event: string): void {

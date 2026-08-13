@@ -16,6 +16,8 @@ from netconsole.backend.electron_runtime import (
     emit_shutdown_ack,
     emit_shutdown_complete,
     emit_shutdown_received,
+    _start_shutdown_progress_monitor,
+    _stop_shutdown_progress_monitor,
     parse_options,
     read_session_token,
     wait_for_exit_command,
@@ -130,6 +132,24 @@ def test_control_stream_requests_shutdown_and_ignores_unknown_messages() -> None
     )
 
     assert server.should_exit is True
+
+
+def test_shutdown_progress_monitor_emits_only_count_changes() -> None:
+    output = io.StringIO()
+    values = [{"active_tasks": 6, "active_workers": 2}, {"active_tasks": 3, "active_workers": 1}, {"active_tasks": 0, "active_workers": 0}]
+    app = FastAPI()
+    app.state.task_service = SimpleNamespace(active_task_snapshot=lambda: values[0])
+    _start_shutdown_progress_monitor(app, output)
+    import time
+
+    time.sleep(0.25)
+    app.state.task_service.active_task_snapshot = lambda: values[1]
+    time.sleep(0.25)
+    app.state.task_service.active_task_snapshot = lambda: values[2]
+    time.sleep(0.25)
+    _stop_shutdown_progress_monitor(app)
+    progress = [json.loads(line) for line in output.getvalue().splitlines()]
+    assert [item["active_tasks"] for item in progress] == [6, 3, 0]
     assert shutdown_requested is True
 
 
@@ -150,7 +170,7 @@ def test_shutdown_lifecycle_events_are_emitted_as_bounded_json_events() -> None:
     emit_shutdown_ack(output)
 
     assert json.loads(output.getvalue()) == {
-        "event": "netconsole.electron_backend.shutdown_complete"
+        "event": "netconsole.electron_backend.shutdown_ack"
     }
 
 
@@ -226,10 +246,106 @@ def test_startup_failure_protocol_is_ascii_and_preserves_chinese(monkeypatch, ca
     assert result == 3
     assert output.isascii()
     assert [event["stage"] for event in events[:-1]] == [
+        "paths_resolving",
         "paths_resolved",
+        "instance_lock_acquiring",
         "instance_lock_acquired",
+        "storage_manifest_preparing",
     ]
     assert events[-1]["message"] == "数据目录初始化失败"
+
+
+def test_slow_storage_manifest_is_announced_before_work_starts(monkeypatch, capsys) -> None:
+    from netconsole.backend import electron_runtime
+    from netconsole.core.storage_manifest import StorageCompatibilityError
+
+    class InstanceLock:
+        def __init__(self, _paths) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> None:
+            pass
+
+    def slow_manifest(_paths) -> None:
+        output = capsys.readouterr().out
+        stages = [json.loads(line)["stage"] for line in output.splitlines()]
+        assert stages[-1] == "storage_manifest_preparing"
+        raise StorageCompatibilityError("simulated slow storage stop")
+
+    monkeypatch.setattr(electron_runtime, "PathResolver", lambda: object())
+    monkeypatch.setattr(electron_runtime, "BackendInstanceLock", InstanceLock)
+    monkeypatch.setattr(electron_runtime, "prepare_storage_manifest", slow_manifest)
+
+    result = electron_runtime.main(
+        ["--host", "127.0.0.1", "--port", "0"],
+        stdin=io.StringIO(f'{{"session_token":"{TOKEN}"}}\n'),
+    )
+
+    assert result == 3
+
+
+def test_upgrade_recovery_is_announced_before_storage_scan(monkeypatch) -> None:
+    from netconsole.backend.api import main as api_main
+    from netconsole.core.runtime_mode import RuntimeMode
+
+    stages: list[str] = []
+
+    def slow_recovery(_paths):
+        assert stages[-1] == "upgrade_recovery_started"
+        raise RuntimeError("simulated slow recovery stop")
+
+    monkeypatch.setattr(api_main, "recover_incomplete_upgrades", slow_recovery)
+
+    with pytest.raises(RuntimeError, match="simulated slow recovery stop"):
+        api_main.create_app(
+            RuntimeMode.TEST,
+            paths=object(),
+            startup_stage=stages.append,
+        )
+
+
+def test_active_site_storage_stages_are_emitted_before_slow_operations(monkeypatch) -> None:
+    from netconsole.backend.api import main as api_main
+
+    stages: list[str] = []
+
+    class SlowDatabase:
+        def __init__(self, _path) -> None:
+            pass
+
+        def exists(self) -> bool:
+            return True
+
+        def initialize(self) -> None:
+            assert stages[-1] == "active_site_database_initializing"
+
+    class SlowIdentityService:
+        def __init__(self, _database) -> None:
+            pass
+
+        def ensure_index(self, reason: str) -> None:
+            assert reason == "backend_startup"
+            assert stages[-1] == "ap_identity_index_initializing"
+
+    paths = SimpleNamespace(site_db_path=lambda _site_name: Path("slow-storage.sqlite"))
+    monkeypatch.setattr(api_main, "Database", SlowDatabase)
+    monkeypatch.setattr(api_main, "ApIdentityQueryService", SlowIdentityService)
+
+    api_main._initialize_active_site_database(
+        paths,
+        "demo",
+        startup_stage=stages.append,
+    )
+
+    assert stages == [
+        "active_site_database_initializing",
+        "active_site_database_ready",
+        "ap_identity_index_initializing",
+        "ap_identity_index_ready",
+    ]
 
 
 def test_exit_command_wait_ignores_unknown_messages_and_eof() -> None:

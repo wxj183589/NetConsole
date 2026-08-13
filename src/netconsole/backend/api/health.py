@@ -18,6 +18,13 @@ def health(request: Request) -> HealthResponse:
         data_root=str(request.app.state.paths.data_root),
         active_site_id=sites.active_site_id(),
         storage_schema_version=CURRENT_STORAGE_SCHEMA_VERSION,
+        runtime_services_status=str(getattr(request.app.state, "runtime_services_status", "ready")),
+        runtime_services_ready=bool(getattr(request.app.state, "runtime_services_ready", True)),
+        runtime_services_error=str(getattr(request.app.state, "runtime_services_error", "")),
+        performance_mode=str(getattr(request.app.state, "performance_mode", "standard")),
+        unattended_status=str(getattr(request.app.state, "unattended_status", "disabled")),
+        unattended_ready=bool(getattr(request.app.state, "unattended_ready", False)),
+        unattended_error=str(getattr(request.app.state, "unattended_error", "")),
     )
 
 
@@ -27,6 +34,13 @@ def health_response(
     data_root: str = "",
     active_site_id: str = "",
     storage_schema_version: int = CURRENT_STORAGE_SCHEMA_VERSION,
+    runtime_services_status: str = "ready",
+    runtime_services_ready: bool = True,
+    runtime_services_error: str = "",
+    performance_mode: str = "standard",
+    unattended_status: str = "disabled",
+    unattended_ready: bool = False,
+    unattended_error: str = "",
 ) -> HealthResponse:
     return HealthResponse(
         status="ok",
@@ -35,4 +49,11 @@ def health_response(
         data_root=data_root,
         active_site_id=active_site_id,
         storage_schema_version=storage_schema_version,
+        runtime_services_status=runtime_services_status,
+        runtime_services_ready=runtime_services_ready,
+        runtime_services_error=runtime_services_error,
+        performance_mode=performance_mode,
+        unattended_status=unattended_status,
+        unattended_ready=unattended_ready,
+        unattended_error=unattended_error,
     )

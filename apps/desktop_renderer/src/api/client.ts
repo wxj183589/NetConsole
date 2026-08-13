@@ -2,6 +2,10 @@ export interface HealthResponse {
   status: string
   version: string
   build_id: string
+  performance_mode?: string
+  unattended_status?: string
+  unattended_ready?: boolean
+  unattended_error?: string
 }
 
 export interface RendererBuildMeta {

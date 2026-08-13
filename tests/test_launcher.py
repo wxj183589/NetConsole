@@ -186,6 +186,8 @@ def test_packaged_backend_dispatches_installer_helpers_before_standalone_gate(mo
     monkeypatch.setattr(entrypoint, "is_packaged_runtime", lambda: True)
     validate_calls: list[list[str]] = []
     migrate_calls: list[list[str]] = []
+    profile_calls: list[list[str]] = []
+    mode_calls: list[list[str]] = []
     monkeypatch.setattr(
         entrypoint,
         "_validate_data_root_from_installer",
@@ -196,6 +198,16 @@ def test_packaged_backend_dispatches_installer_helpers_before_standalone_gate(mo
         "_migrate_data_root_from_installer",
         lambda argv: migrate_calls.append(list(argv)) or 17,
     )
+    monkeypatch.setattr(
+        entrypoint,
+        "_collect_host_profile_from_installer",
+        lambda argv: profile_calls.append(list(argv)) or 23,
+    )
+    monkeypatch.setattr(
+        entrypoint,
+        "_set_runtime_performance_mode_from_installer",
+        lambda argv: mode_calls.append(list(argv)) or 29,
+    )
 
     monkeypatch.setattr(sys, "argv", ["NetConsoleBackend.exe", "--validate-data-root", "D:\\Data"])
     assert entrypoint.main() == 13
@@ -205,9 +217,15 @@ def test_packaged_backend_dispatches_installer_helpers_before_standalone_gate(mo
         ["NetConsoleBackend.exe", "--migrate-data-root", "--source", "D:\\Old", "--target", "E:\\New"],
     )
     assert entrypoint.main() == 17
+    monkeypatch.setattr(sys, "argv", ["NetConsoleBackend.exe", "--collect-host-profile", "D:\\Data"])
+    assert entrypoint.main() == 23
+    monkeypatch.setattr(sys, "argv", ["NetConsoleBackend.exe", "--set-runtime-performance-mode", "D:\\Data", "standard"])
+    assert entrypoint.main() == 29
 
     assert validate_calls == [["D:\\Data"]]
     assert migrate_calls == [["--source", "D:\\Old", "--target", "E:\\New"]]
+    assert profile_calls == [["D:\\Data"]]
+    assert mode_calls == [["D:\\Data", "standard"]]
 
 
 @pytest.mark.parametrize(

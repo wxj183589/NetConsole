@@ -449,6 +449,7 @@ class SyslogUdpReceiver:
         self._source_receive_sequences: dict[tuple[str, int], int] = {}
         self._batch_duration_ms = 0.0
         self._reported_dropped_count = 0
+        self._reported_pressure = False
         self._ap_resolver = GroundApDisplayResolver(
             ap_identity_query_service
         )
@@ -487,6 +488,7 @@ class SyslogUdpReceiver:
         self._last_line_hash = {}
         self._last_error = ""
         self._reported_dropped_count = 0
+        self._reported_pressure = False
         self._event_batch_size = max(1, int(event_batch_size))
         self._event_batch_interval = max(0.1, float(event_batch_interval_seconds))
         self._writer = RawStreamWriter(
@@ -629,6 +631,7 @@ class SyslogUdpReceiver:
             "udp_last_received_at": self._last_received_at,
             "udp_queue_length": self._queue.qsize(),
             "udp_queue_capacity": self._queue.maxsize,
+            "udp_queue_pressure": round(self._queue.qsize() / self._queue.maxsize, 4),
             "udp_dropped_count": self._dropped_count,
             "raw_records_written": writer.records_written if writer else 0,
             "raw_bytes_written": writer.bytes_written if writer else 0,
@@ -979,6 +982,21 @@ class SyslogUdpReceiver:
         return "COMPLETE", None
 
     def _flush_if_due(self) -> None:
+        queue_length = self._queue.qsize()
+        queue_capacity = self._queue.maxsize
+        pressure = queue_length / queue_capacity if queue_capacity else 0.0
+        if pressure >= 0.8 and not self._reported_pressure:
+            self._reported_pressure = True
+            self.repository.add_health_event(
+                run_id=self._run_id,
+                component="udp_receiver",
+                severity="warning",
+                code="SYSLOG_QUEUE_PRESSURE",
+                message="Syslog 接收队列接近容量上限",
+                details={"queue_length": queue_length, "queue_capacity": queue_capacity},
+            )
+        elif pressure < 0.5:
+            self._reported_pressure = False
         if self._dropped_count > self._reported_dropped_count:
             added = self._dropped_count - self._reported_dropped_count
             self._reported_dropped_count = self._dropped_count
@@ -988,6 +1006,17 @@ class SyslogUdpReceiver:
                 severity="warning",
                 code="UDP_QUEUE_OVERFLOW",
                 message=f"UDP 有界队列已丢弃 {added} 条报文",
+                details={
+                    "dropped_total": self._dropped_count,
+                    "queue_capacity": self._queue.maxsize,
+                },
+            )
+            self.repository.add_health_event(
+                run_id=self._run_id,
+                component="udp_receiver",
+                severity="warning",
+                code="SYSLOG_DROPPED",
+                message=f"Syslog 队列已丢弃 {added} 条报文",
                 details={
                     "dropped_total": self._dropped_count,
                     "queue_capacity": self._queue.maxsize,

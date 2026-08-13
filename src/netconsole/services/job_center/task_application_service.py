@@ -60,6 +60,7 @@ class TaskApplicationService:
         self._reconciled_sites: set[str] = set()
         self._job_sites: dict[str, str] = {}
         self._reconcile_on_start = bool(reconcile_on_start)
+        self._shutdown_lock = threading.RLock()
         self._resource_guard = threading.Lock()
         build_metadata = current_build_metadata(self.paths.app_root)
         self._producer_commit = str(
@@ -86,6 +87,7 @@ class TaskApplicationService:
         return repository
 
     def prepare(self, job: BackgroundJob) -> TaskLaunch:
+        self._ensure_accepting_work()
         job_id = job.job_id or uuid.uuid4().hex
         runtime_job = BackgroundJob.from_dict({**job.to_dict(), "job_id": job_id})
         params = dict(runtime_job.params or {})
@@ -151,6 +153,7 @@ class TaskApplicationService:
     ) -> TaskSnapshot:
         """创建不由本地 Worker 承载、但仍进入统一任务中心的任务。"""
 
+        self._ensure_accepting_work()
         selected_site = str(site_name or self.site_name or "demo")
         repository = self.repository(selected_site)
         if repository.get(task_id) is not None:
@@ -281,6 +284,33 @@ class TaskApplicationService:
                 source="api",
             )
         return True
+
+    def begin_shutdown(self) -> dict[str, int]:
+        """Close task admission, cancel owned work and return a live drain snapshot."""
+        with self._shutdown_lock:
+            self.runtime.begin_shutdown()
+        return self.active_task_snapshot()
+
+    def active_task_snapshot(self) -> dict[str, int]:
+        snapshot = self.runtime.active_snapshot()
+        try:
+            sites = set(self._repositories) or {self.site_name}
+            snapshot["active_tasks"] = sum(
+                len(repository.list(statuses=_ACTIVE_TASK_STATES, limit=2_000))
+                for repository in (self.repository(site) for site in sites)
+            )
+        except (OSError, RuntimeError):
+            # During final persistence teardown, runtime counts remain authoritative.
+            snapshot["active_tasks"] = int(snapshot.get("active_tasks", 0))
+        snapshot["active_workers"] = int(snapshot.get("active_workers", 0))
+        return snapshot
+
+    def accepting_work(self) -> bool:
+        return self.runtime.accept_new_tasks()
+
+    def _ensure_accepting_work(self) -> None:
+        if not self.accepting_work():
+            raise RuntimeError("backend is shutting down; new tasks are rejected")
 
     def complete(self, job_id: str, exit_code: int) -> dict[str, object] | None:
         try:

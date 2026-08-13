@@ -4,6 +4,7 @@ import hashlib
 import json
 import sqlite3
 import threading
+from time import monotonic
 import traceback
 import uuid
 from contextlib import closing
@@ -12,6 +13,7 @@ from pathlib import Path
 
 from netconsole.core.device_credential_store import (
     DEVICE_CREDENTIAL_STATE_SCHEMA,
+    credential_is_complete,
     repair_device_credential_states,
 )
 from netconsole.core.sqlite_utils import (
@@ -1956,10 +1958,11 @@ class Database:
             identity_schema_migration = False
             trackside_ap_location_migration = False
             rail_base_identity_migration = False
+            maintenance_required = True
+            initialize_started = monotonic()
             try:
                 conn = self.connect()
                 stage = "configure"
-                initialize_sqlite_wal(conn)
                 if existed:
                     stage = "inspect"
                     schema_version_before = self._safe_schema_version(conn)
@@ -1976,6 +1979,23 @@ class Database:
                     rail_base_identity_migration = (
                         self._requires_rail_base_identity_migration(conn)
                     )
+                    maintenance_required = (
+                        schema_version_before != CURRENT_SCHEMA_VERSION
+                        or address_migration
+                        or classification_migration
+                        or identity_schema_migration
+                        or trackside_ap_location_migration
+                        or rail_base_identity_migration
+                        or self._requires_legacy_schema_compatibility_repair(conn)
+                        or self._requires_device_credential_state_repair(conn)
+                    )
+                    if not maintenance_required:
+                        self._log_startup_maintenance(
+                            mode="fast_path",
+                            elapsed_ms=(monotonic() - initialize_started) * 1000,
+                            checkpoint=False,
+                        )
+                        return
                     if (
                         address_migration
                         or classification_migration
@@ -1993,6 +2013,7 @@ class Database:
                             if trackside_ap_location_migration
                             else "rail-base-identity-relations",
                         )
+                initialize_sqlite_wal(conn)
                 stage = "schema"
                 schema_scripts = (
                     self._schema_scripts_for_existing_database(conn)
@@ -2036,7 +2057,7 @@ class Database:
                 # 初始化阶段产生的 WAL 必须在 Backend 对外提供只读 API 前落盘；
                 # 否则首个 GET 关闭连接时可能触发延迟 checkpoint，表现为只读请求改写数据库文件。
                 stage = "checkpoint"
-                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                self._checkpoint_wal(conn)
                 if existed and (
                     address_migration
                     or classification_migration
@@ -2058,6 +2079,11 @@ class Database:
                             else {}
                         ),
                     )
+                self._log_startup_maintenance(
+                    mode="maintenance",
+                    elapsed_ms=(monotonic() - initialize_started) * 1000,
+                    checkpoint=True,
+                )
             except Exception as exc:
                 if conn is not None:
                     try:
@@ -2122,6 +2148,75 @@ class Database:
             )
         conn.execute("DROP TABLE ac_fit_ap_resources")
         conn.executescript(AC_FIT_AP_RESOURCES_SCHEMA)
+
+    def _requires_legacy_schema_compatibility_repair(
+        self, conn: sqlite3.Connection
+    ) -> bool:
+        if not self._table_exists(conn, "ac_fit_ap_resources"):
+            return True
+        columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(ac_fit_ap_resources)").fetchall()
+        }
+        required = {"ac_device_uuid", "ap_uuid"}
+        if required.issubset(columns):
+            return False
+        return True
+
+    @staticmethod
+    def _requires_device_credential_state_repair(conn: sqlite3.Connection) -> bool:
+        if not Database._table_exists(conn, "device_credential_states"):
+            return True
+        rows = conn.execute(
+            "SELECT device_uuid, credential_field FROM device_credential_states "
+            "WHERE status = 'needs_reentry'"
+        ).fetchall()
+        if not rows or not Database._table_exists(conn, "devices"):
+            return False
+        device_uuids = {str(row["device_uuid"] or "") for row in rows}
+        device_columns = {
+            str(row["name"]) for row in conn.execute("PRAGMA table_info(devices)")
+        }
+        selected = [
+            field
+            for field in (
+                "device_uuid",
+                "username",
+                "password",
+                "ssh_username",
+                "ssh_password",
+                "telnet_username",
+                "telnet_password",
+                "tunnel1_username",
+                "tunnel1_password",
+                "tunnel2_username",
+                "tunnel2_password",
+                "snmp_ro_community",
+            )
+            if field in device_columns
+        ]
+        if "device_uuid" not in selected:
+            return False
+        placeholders = ", ".join("?" for _ in device_uuids)
+        device_rows = conn.execute(
+            f"SELECT {', '.join(selected)} FROM devices "
+            f"WHERE device_uuid IN ({placeholders})",
+            tuple(device_uuids),
+        ).fetchall()
+        values_by_uuid = {
+            str(row["device_uuid"] or ""): dict(row) for row in device_rows
+        }
+        return any(
+            credential_is_complete(
+                values_by_uuid.get(str(row["device_uuid"] or ""), {}),
+                str(row["credential_field"] or ""),
+            )
+            for row in rows
+        )
+
+    @staticmethod
+    def _checkpoint_wal(conn: sqlite3.Connection) -> None:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
     def _apply_additive_schema_updates(self, conn: sqlite3.Connection) -> None:
         if self._requires_device_address_migration(conn):
@@ -3394,6 +3489,23 @@ class Database:
                     "legacy_operation_status_counts="
                     f"{json.dumps(legacy_operation_status_counts, ensure_ascii=True, sort_keys=True)} "
                     f"backup_path={backup_path or '<none>'}"
+                ),
+            )
+        except Exception:
+            pass
+
+    def _log_startup_maintenance(
+        self, *, mode: str, elapsed_ms: float, checkpoint: bool
+    ) -> None:
+        try:
+            from netconsole.core import app_logger
+
+            app_logger.log_info(
+                "DATABASE_STARTUP_MAINTENANCE",
+                (
+                    f"site={self._site_name()} database_path={self.path} "
+                    f"mode={mode} elapsed_ms={round(elapsed_ms, 1)} "
+                    f"checkpoint={checkpoint}"
                 ),
             )
         except Exception:

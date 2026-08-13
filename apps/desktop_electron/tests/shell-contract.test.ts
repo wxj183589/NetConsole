@@ -51,7 +51,7 @@ describe('Electron shell product contract', () => {
     expect(source).toContain("logger('ELECTRON_SMOKE_STABILITY_RESET')")
     const backendStopped = source.indexOf("logger('ELECTRON_BACKEND_STOPPED')")
     const finalizing = source.indexOf("logger('ELECTRON_SHUTDOWN_STAGE', 'stage=finalizing_windows')")
-    const firstLoggerFlush = source.indexOf('await managedLogger?.flush()')
+    const firstLoggerFlush = source.indexOf('const preCompleteLogFlush = await flushShutdownLogs()')
     const shutdownComplete = source.indexOf("'ELECTRON_SHUTDOWN_COMPLETE'")
     expect(backendStopped).toBeGreaterThanOrEqual(0)
     expect(finalizing).toBeGreaterThan(backendStopped)
@@ -62,6 +62,12 @@ describe('Electron shell product contract', () => {
     expect(source).toContain('if (trayAvailable && closeToTrayEnabled && !explicitQuitRequested) return')
     expect(source).toContain('workspaceWindowController?.closeAllForQuit()')
     expect(source).not.toContain('process.exit(requestedExitCode)')
+    expect(source).toContain("logger('ELECTRON_BACKEND_PROCESS_STILL_ALIVE')")
+    expect(source).toContain("logger('ELECTRON_SHUTDOWN_INCOMPLETE'")
+    expect(source).toContain('if (!complete) return')
+    expect(source.indexOf('allowQuit = true')).toBeGreaterThan(
+      source.indexOf('shutdownPromise = shutdown().then((complete)'),
+    )
   })
 
   it('shows an observable system-themed loading page and gates the business renderer theme', () => {

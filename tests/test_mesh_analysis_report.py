@@ -25,7 +25,7 @@ from netconsole.services.mesh_analysis_report import (
 )
 from netconsole.services.mesh_chart_payload import build_chart_payload
 from netconsole.services.mesh_link_detail_export import active_build_order_row_values
-from netconsole.services.mesh_report_process import _analysis_params_for_report
+from netconsole.services.mesh_report_process import _analysis_params_for_report, calculate_worker_count
 from netconsole.services.rail_transit.mesh_analysis_query_service import MeshAnalysisQueryService
 from netconsole.core.paths import PathResolver
 from netconsole.repositories.mesh_mr_repository import MeshMrRepository
@@ -51,6 +51,11 @@ from netconsole.services.mesh_quality_analysis import (
 PEER_A = "30f5277a5a2f"
 PEER_B = "30f5277a5a30"
 PEER_C = "30f5277a5a31"
+
+
+def test_calculate_worker_count_respects_runtime_worker_limit():
+    options = MeshReportOptions(use_multi_core=True, worker_processes=8)
+    assert calculate_worker_count(options, worker_limit=2) == 2
 
 
 def _row(

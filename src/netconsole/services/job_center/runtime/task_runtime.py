@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -61,11 +62,16 @@ class TaskRuntime:
         self.paths = paths or PathResolver()
         self.events = event_bus or TaskEventHub()
         self._tasks: dict[str, _RuntimeTask] = {}
+        self._closing = False
+        self._lock = threading.RLock()
 
     def prepare(self, job: BackgroundJob) -> TaskLaunch:
         job_id = job.job_id or uuid.uuid4().hex
-        if job_id in self._tasks:
-            raise RuntimeError("同一后台任务正在执行")
+        with self._lock:
+            if self._closing:
+                raise RuntimeError("backend is shutting down; new tasks are rejected")
+            if job_id in self._tasks:
+                raise RuntimeError("duplicate background task")
         job_dir = self.paths.runtime_cache_dir / "background_jobs"
         job_dir.mkdir(parents=True, exist_ok=True)
         cancel_path = job_dir / f"{job_id}.cancel"
@@ -90,7 +96,22 @@ class TaskRuntime:
             working_directory=working_directory,
             environment=environment,
         )
-        self._tasks[job_id] = _RuntimeTask(launch=launch)
+        with self._lock:
+            if self._closing:
+                for path in (job_path, cancel_path):
+                    try:
+                        path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                raise RuntimeError("backend is shutting down; new tasks are rejected")
+            if job_id in self._tasks:
+                for path in (job_path, cancel_path):
+                    try:
+                        path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                raise RuntimeError("duplicate background task")
+            self._tasks[job_id] = _RuntimeTask(launch=launch)
         self._set_state(job_id, TaskState.PENDING)
         self._set_state(job_id, TaskState.STARTING)
         return launch
@@ -258,6 +279,26 @@ class TaskRuntime:
 
     def is_running(self, job_id: str) -> bool:
         return job_id in self._tasks
+
+    def active_snapshot(self) -> dict[str, int]:
+        with self._lock:
+            active = tuple(self._tasks.values())
+        return {
+            "active_tasks": len(active),
+            "active_workers": len(active),
+            "stopping_tasks": sum(1 for task in active if task.state is TaskState.STOPPING),
+        }
+
+    def begin_shutdown(self) -> dict[str, int]:
+        with self._lock:
+            self._closing = True
+            task_ids = tuple(self._tasks)
+        for job_id in task_ids:
+            self.request_cancel(job_id)
+        return self.active_snapshot()
+
+    def accept_new_tasks(self) -> bool:
+        return not self._closing
 
     def worker_command(self, job_path: Path) -> tuple[str, list[str]]:
         if getattr(sys, "frozen", False):

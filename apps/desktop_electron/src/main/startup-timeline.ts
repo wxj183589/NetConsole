@@ -39,4 +39,14 @@ export class StartupTimeline {
   snapshot(): StartupTimelineEntry[] {
     return [...this.entries.values()].map((entry) => ({ ...entry }))
   }
+
+  performanceSummary(): Record<string, number | undefined> {
+    const elapsed = (event: StartupMilestone): number | undefined => this.entries.get(event)?.elapsedMs
+    return {
+      spawn_first_stdout_ms: elapsed('backend.handshake_received'),
+      backend_health_ms: elapsed('backend.health_ready'),
+      renderer_ready_ms: elapsed('desktop.interactive'),
+      total_ms: elapsed('desktop.interactive'),
+    }
+  }
 }

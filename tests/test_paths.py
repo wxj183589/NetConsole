@@ -29,6 +29,7 @@ def test_path_resolver_creates_site_dirs(tmp_path):
     assert paths.app_config_path == tmp_path / "config" / "application.json"
     assert paths.settings_path == tmp_path / "config" / "settings.json"
     assert paths.runtime_dir == tmp_path / "runtime"
+    assert paths.host_environment_profile_path == tmp_path / "runtime" / "environment" / "host-profile.json"
     assert paths.runtime_cache_dir == tmp_path / "runtime" / "cache"
     assert paths.offline_ap_cache_path == tmp_path / "runtime" / "cache" / "offline_ap_cache.json"
     assert paths.logs_dir == tmp_path / "runtime" / "logs"

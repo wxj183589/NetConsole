@@ -24,11 +24,13 @@ def runtime_status(request: Request) -> DevelopmentRuntimeStatusResponse:
     _require_loopback(request)
     task_service = request.app.state.task_service
     runtime_services_ready = bool(request.app.state.runtime_services_ready)
-    active_tasks = len(task_service.list_tasks(statuses=_ACTIVE_TASK_STATES, limit=1_000))
+    snapshot = getattr(task_service, "active_task_snapshot", None)
+    counts = snapshot() if callable(snapshot) else {}
+    active_tasks = int(counts.get("active_tasks", len(task_service.list_tasks(statuses=_ACTIVE_TASK_STATES, limit=1_000))))
     storage_mode = desktop_storage_mode()
     return DevelopmentRuntimeStatusResponse(
         runtime_mode=str(request.app.state.development_runtime_label),
-        backend_ready=runtime_services_ready,
+        backend_ready=bool(getattr(request.app.state, "runtime_services_status", "starting") != "degraded"),
         data_root="<redacted>",
         storage_mode=storage_mode,
         data_root_kind="temporary" if storage_mode == "isolated_test" else "persistent",

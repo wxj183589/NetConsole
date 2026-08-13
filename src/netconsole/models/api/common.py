@@ -35,3 +35,10 @@ class HealthResponse(ApiModel):
     data_root: str
     active_site_id: str
     storage_schema_version: int
+    runtime_services_status: str = "ready"
+    runtime_services_ready: bool = True
+    runtime_services_error: str = ""
+    performance_mode: str = "standard"
+    unattended_status: str = "disabled"
+    unattended_ready: bool = False
+    unattended_error: str = ""

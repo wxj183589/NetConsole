@@ -41,6 +41,11 @@ from netconsole.core.feature_flags import FeatureGate
 from netconsole.core.resources import package_resource_path
 from netconsole.core.runtime_environment import is_packaged_runtime
 from netconsole.core.runtime_mode import RuntimeMode
+from netconsole.core.runtime_profile import (
+    RuntimeCapabilityPolicy,
+    read_host_environment_profile,
+    read_runtime_performance_mode,
+)
 from netconsole.core.sites import SiteManager
 from netconsole.core.version import APP_NAME, APP_VERSION
 from netconsole.infrastructure.desktop import LocalDesktopAdapter, UnavailableDesktopAdapter
@@ -193,6 +198,52 @@ class DesktopShutdownAdmissionMiddleware:
         await self.app(scope, receive, send)
 
 
+class RuntimeServicesAdmissionMiddleware:
+    """Reject service-dependent writes while deferred runtime services are unavailable."""
+
+    _PREFIXES = (
+        "/api/agents",
+        "/api/traffic",
+        "/api/file-management",
+        "/api/online-mr-control",
+        "/api/online-mr-agent",
+        "/api/rail-transit/online-mr-control",
+        "/api/rail-transit/online-mr-agent",
+        "/api/rail-transit/ground-unattended",
+    )
+
+    def __init__(self, app, *, state) -> None:
+        self.app = app
+        self.state = state
+
+    async def __call__(self, scope, receive, send) -> None:
+        if (
+            scope.get("type") == "http"
+            and scope.get("method") in {"POST", "PUT", "PATCH", "DELETE"}
+            and str(scope.get("path") or "").startswith(self._PREFIXES)
+            and not bool(getattr(self.state, "runtime_services_ready", False))
+            and str(getattr(self.state, "runtime_services_status", "starting")) != "stopping"
+        ):
+            status = str(getattr(self.state, "runtime_services_status", "starting"))
+            degraded = status == "degraded"
+            response = JSONResponse(
+                status_code=503,
+                content={
+                    "detail": "运行服务初始化失败，当前处于降级状态"
+                    if degraded
+                    else "运行服务正在初始化",
+                    "code": "RUNTIME_SERVICES_DEGRADED"
+                    if degraded
+                    else "RUNTIME_SERVICES_NOT_READY",
+                    "runtime_services_status": status,
+                },
+                headers={"Retry-After": "2"},
+            )
+            await response(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
+
+
 def create_app(
     runtime_mode: RuntimeMode = RuntimeMode.SERVER,
     *,
@@ -220,13 +271,20 @@ def create_app(
     startup_stage: Callable[[str], None] | None = None,
 ) -> FastAPI:
     paths = paths or PathResolver()
+    host_profile = read_host_environment_profile(paths.host_environment_profile_path)
+    performance_mode = read_runtime_performance_mode(paths.settings_path)
+    capability_policy = RuntimeCapabilityPolicy.from_profile(host_profile, mode=performance_mode)
+    _emit_startup_stage(startup_stage, "upgrade_recovery_started")
     for recovered_upgrade in recover_incomplete_upgrades(paths):
         app_logger.log_warning(
             "DATABASE_UPGRADE_RECOVERED",
             f"operation={recovered_upgrade.get('operation_id')} stage={recovered_upgrade.get('stage')}",
         )
     _emit_startup_stage(startup_stage, "upgrade_recovery_complete")
+    _emit_startup_stage(startup_stage, "active_site_resolving")
     site_name = _current_site_name(paths, startup_stage=startup_stage)
+    _emit_startup_stage(startup_stage, "active_site_resolved")
+    _emit_startup_stage(startup_stage, "application_services_initializing")
     defer_runtime_start = bool(runtime_mode is RuntimeMode.DESKTOP and desktop_session_token)
     if online_mr_web_control_enabled is None:
         online_mr_web_control_enabled = os.environ.get("ONLINE_MR_WEB_CONTROL_ENABLED", "0") == "1"
@@ -374,6 +432,37 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
+        async def start_unattended_services() -> bool:
+            if not ground_unattended_feature_enabled:
+                return True
+            if ground_unattended_supervisor is None:
+                app.state.unattended_ready = False
+                app.state.unattended_status = "failed"
+                app.state.unattended_error = (
+                    app.state.ground_unattended_startup_error or "unavailable"
+                )
+                app_logger.log_error(
+                    "UNATTENDED_SERVICE_FAILED",
+                    "component=ground_unattended error=unavailable",
+                )
+                return False
+            try:
+                await asyncio.to_thread(ground_unattended_supervisor.start)
+                app.state.unattended_ready = True
+                app.state.unattended_status = "ready"
+                app.state.unattended_error = ""
+                return True
+            except Exception as exc:
+                app.state.unattended_ready = False
+                app.state.unattended_status = "failed"
+                app.state.unattended_error = exc.__class__.__name__
+                app_logger.log_error(
+                    "UNATTENDED_SERVICE_FAILED",
+                    f"component=ground_unattended error={exc.__class__.__name__}: "
+                    f"{_safe_error_message(str(exc))}",
+                )
+                return False
+
         async def start_deferred_runtime_services() -> None:
             try:
                 # 先让 health、静态资源与首屏完成；历史任务恢复不参与桌面首屏关键路径。
@@ -389,10 +478,18 @@ def create_app(
                     await asyncio.to_thread(reconcile_traffic)
                 await traffic_service.start()
                 await asyncio.to_thread(file_management_service.start)
-                if ground_unattended_supervisor is not None:
-                    await asyncio.to_thread(ground_unattended_supervisor.start)
-                app.state.runtime_services_ready = True
+                unattended_started = (
+                    app.state.unattended_status != "failed"
+                    if capability_policy.unattended_priority
+                    else await start_unattended_services()
+                )
+                app.state.runtime_services_ready = unattended_started
+                app.state.runtime_services_status = "ready" if unattended_started else "degraded"
+                if not unattended_started:
+                    app.state.runtime_services_error = app.state.unattended_error or "unavailable"
             except Exception as exc:
+                app.state.runtime_services_ready = False
+                app.state.runtime_services_status = "degraded"
                 app.state.runtime_services_error = exc.__class__.__name__
                 app_logger.log_error(
                     "WEB_LIFESPAN_START_FAILED",
@@ -415,22 +512,45 @@ def create_app(
 
         auto_cleanup_task = (
             asyncio.create_task(schedule_auto_cleanup())
-            if runtime_mode is RuntimeMode.DESKTOP and desktop_session_token
+            if (
+                runtime_mode is RuntimeMode.DESKTOP
+                and desktop_session_token
+                and capability_policy.low_priority_work_enabled
+            )
             else None
         )
         deferred_start_task: asyncio.Task[None] | None = None
         try:
             if defer_runtime_start:
+                # Server/unattended mode publishes health only after the
+                # realtime receiver/supervisor can run. The remaining desktop
+                # services stay deferred and cannot delay that readiness.
+                if capability_policy.unattended_priority:
+                    unattended_started = await start_unattended_services()
+                    if not unattended_started:
+                        app.state.runtime_services_ready = False
+                        app.state.runtime_services_status = "degraded"
+                        app.state.runtime_services_error = app.state.unattended_error or "unavailable"
                 deferred_start_task = asyncio.create_task(start_deferred_runtime_services())
             else:
+                unattended_started = await start_unattended_services()
                 await agent_service.start()
                 await traffic_service.start()
                 file_management_service.start()
-                if ground_unattended_supervisor is not None:
-                    ground_unattended_supervisor.start()
-                app.state.runtime_services_ready = True
+                app.state.runtime_services_ready = unattended_started
+                app.state.runtime_services_status = "ready" if unattended_started else "degraded"
+                if not unattended_started:
+                    app.state.runtime_services_error = app.state.unattended_error or "unavailable"
             yield
         finally:
+            app.state.runtime_services_status = "stopping"
+            if app.state.unattended_ready:
+                app.state.unattended_status = "stopping"
+                app.state.unattended_ready = False
+            app.state.accepting_work = False
+            begin_shutdown = getattr(task_service, "begin_shutdown", None)
+            if callable(begin_shutdown):
+                begin_shutdown()
             if deferred_start_task is not None:
                 deferred_start_task.cancel()
                 await asyncio.gather(deferred_start_task, return_exceptions=True)
@@ -517,10 +637,33 @@ def create_app(
     app.state.desktop_session_protected = bool(desktop_session_token)
     app.state.accepting_work = True
     app.add_middleware(DesktopShutdownAdmissionMiddleware, state=app.state)
+    app.add_middleware(RuntimeServicesAdmissionMiddleware, state=app.state)
     app.state.online_mr_web_control_enabled = online_mr_web_control_enabled
     app.state.online_mr_agent_executor_enabled = online_mr_agent_executor_enabled
     app.state.runtime_services_ready = False
+    app.state.runtime_services_status = "starting"
     app.state.runtime_services_error = ""
+    app.state.host_environment_profile = host_profile
+    app.state.performance_mode = performance_mode.value
+    app.state.capability_policy = capability_policy
+    app.state.unattended_status = "starting" if ground_unattended_feature_enabled else "disabled"
+    app.state.unattended_ready = False
+    app.state.unattended_error = ""
+    if host_profile is None:
+        app_logger.log_info("HOST_ENVIRONMENT", "profile=unavailable")
+    else:
+        app_logger.log_info(
+            "HOST_ENVIRONMENT",
+            "profile=loaded "
+            f"cpu_logical={getattr(host_profile.cpu.get('logical_processors'), 'value', 'unknown')} "
+            f"hardware_raid={getattr(host_profile.storage.get('hardware_raid'), 'value', 'unknown')}",
+        )
+    app_logger.log_info(
+        "RUNTIME_CAPABILITY_POLICY",
+        f"mode={capability_policy.mode} cpu_workers={capability_policy.cpu_worker_limit} "
+        f"disk_maintenance={capability_policy.disk_maintenance_concurrency} "
+        f"unattended_priority={capability_policy.unattended_priority}",
+    )
     app.state.paths = paths
     app.state.backend_build_id = backend_build_id(paths.app_root)
     app.state.task_service = task_service
@@ -737,6 +880,8 @@ def create_app(
             )
         except Exception as exc:
             app.state.ground_unattended_startup_error = exc.__class__.__name__
+            app.state.unattended_status = "failed"
+            app.state.unattended_error = exc.__class__.__name__
             app_logger.log_error(
                 "GROUND_UNATTENDED_START_FAILED",
                 f"component=ground_unattended error={exc.__class__.__name__}: "
@@ -885,10 +1030,12 @@ def _initialize_active_site_database(
     database = Database(paths.site_db_path(site_name))
     if not database.exists():
         raise RuntimeError("当前局点设备数据库不存在，Backend 未启动")
+    _emit_startup_stage(startup_stage, "active_site_database_initializing")
     database.initialize()
     _emit_startup_stage(startup_stage, "active_site_database_ready")
     # Database.initialize() may normalize legacy rows and advance the source
     # revision; refresh the read-only identity index before API consumers use it.
+    _emit_startup_stage(startup_stage, "ap_identity_index_initializing")
     ApIdentityQueryService(database).ensure_index("backend_startup")
     _emit_startup_stage(startup_stage, "ap_identity_index_ready")
 

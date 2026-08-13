@@ -29,6 +29,7 @@ class MeshReportProcessRequest:
     temp_path: str
     options: MeshReportOptions
     source_file_ids: tuple[int, ...] = ()
+    worker_limit: int | None = None
 
 
 @dataclass(frozen=True)
@@ -90,7 +91,7 @@ def run_mesh_report_process(request: MeshReportProcessRequest, progress_queue: A
         source_files = _list_source_files(Path(request.db_path), request.source_file_ids)
         if not source_files:
             raise RuntimeError("当前数据缺少源文件关联，无法按 meshlog 单独生成报告。")
-        workers = calculate_worker_count(request.options)
+        workers = calculate_worker_count(request.options, worker_limit=request.worker_limit)
         total = len(source_files)
         emit("progress", 2, f"workers:{workers}", output_dir=str(output_dir), file_total=total)
         if workers > 1 and total > 1:
@@ -219,17 +220,25 @@ def _run_sequential_reports(
     emit("completed", 100, "done", str(output_dir), str(output_dir), generated_files)
 
 
-def calculate_worker_count(options: MeshReportOptions) -> int:
+def calculate_worker_count(
+    options: MeshReportOptions,
+    *,
+    worker_limit: int | None = None,
+) -> int:
     config = _load_performance_config()
     if not options.use_multi_core:
         return 1
     manual = int(options.worker_processes or 0)
     if manual > 0:
-        return max(1, min(manual, min(os.cpu_count() or 1, 16)))
-    reserve = int(config.get("reserve_cpu_cores", 2))
-    maximum = int(config.get("max_worker_processes", 8))
-    cpu_count = os.cpu_count() or 1
-    return min(max(1, cpu_count - reserve), maximum)
+        workers = max(1, min(manual, min(os.cpu_count() or 1, 16)))
+    else:
+        reserve = int(config.get("reserve_cpu_cores", 2))
+        maximum = int(config.get("max_worker_processes", 8))
+        cpu_count = os.cpu_count() or 1
+        workers = min(max(1, cpu_count - reserve), maximum)
+    if worker_limit is not None:
+        workers = min(workers, max(1, int(worker_limit)))
+    return workers
 
 
 def _build_report_jobs(output_dir: Path, request: MeshReportProcessRequest, source_files: list[dict[str, object]]) -> list[dict[str, object]]:

@@ -24,6 +24,12 @@ export interface BackendStartupProgress {
   pid?: number
 }
 
+export interface BackendShutdownProgress {
+  phase: string
+  activeTasks?: number
+  activeWorkers?: number
+}
+
 export interface ManagedChildProcess extends EventEmitter {
   pid?: number
   stdin: Writable
@@ -51,6 +57,12 @@ export interface PythonBackendManagerOptions {
   rendererOrigin?: string
   startupTimeoutMs?: number
   startupHardTimeoutMs?: number
+  /** Timeout waiting for the runtime to acknowledge shutdown (3-5s in production). */
+  shutdownAckTimeoutMs?: number
+  /** Timeout waiting for FastAPI lifespan/task drain to complete. */
+  shutdownGracefulTimeoutMs?: number
+  /** Timeout for each OS process-exit observation/escalation step. */
+  processExitTimeoutMs?: number
   stopTimeoutMs?: number
   pollIntervalMs?: number
   environment?: NodeJS.ProcessEnv
@@ -64,6 +76,7 @@ export interface PythonBackendManagerOptions {
   logger?: DesktopLogger
   onStartupMilestone?: (event: Extract<StartupMilestone, `backend.${string}`>) => void
   onStartupProgress?: (progress: BackendStartupProgress) => void
+  onShutdownProgress?: (progress: BackendShutdownProgress) => void
 }
 
 export class PythonBackendManager {
@@ -87,8 +100,10 @@ export class PythonBackendManager {
   private readonly shutdownCompleteListeners = new Set<(child: ManagedChildProcess) => void>()
   private readonly options: Required<Pick<
     PythonBackendManagerOptions,
-    'startupTimeoutMs' | 'startupHardTimeoutMs' | 'stopTimeoutMs' | 'pollIntervalMs' | 'spawnProcess' | 'fetchImpl' | 'createToken' | 'delay' | 'forceTerminateProcessTree' | 'logger'
+    'startupTimeoutMs' | 'startupHardTimeoutMs' | 'shutdownAckTimeoutMs' | 'shutdownGracefulTimeoutMs' | 'processExitTimeoutMs' | 'stopTimeoutMs' | 'pollIntervalMs' | 'spawnProcess' | 'fetchImpl' | 'createToken' | 'delay' | 'forceTerminateProcessTree' | 'logger'
   >> & PythonBackendManagerOptions
+
+  private readonly startupAbortControllers = new Set<AbortController>()
 
   constructor(options: PythonBackendManagerOptions) {
     this.options = {
@@ -96,6 +111,9 @@ export class PythonBackendManager {
       startupTimeoutMs: options.startupTimeoutMs ?? 30_000,
       startupHardTimeoutMs: options.startupHardTimeoutMs ?? Math.max(60_000, (options.startupTimeoutMs ?? 30_000) * 2),
       stopTimeoutMs: options.stopTimeoutMs ?? 5_000,
+      shutdownAckTimeoutMs: options.shutdownAckTimeoutMs ?? options.stopTimeoutMs ?? 5_000,
+      shutdownGracefulTimeoutMs: options.shutdownGracefulTimeoutMs ?? 30_000,
+      processExitTimeoutMs: options.processExitTimeoutMs ?? options.stopTimeoutMs ?? 5_000,
       pollIntervalMs: options.pollIntervalMs ?? 100,
       spawnProcess: options.spawnProcess ?? defaultSpawn,
       fetchImpl: options.fetchImpl ?? fetch,
@@ -158,13 +176,18 @@ export class PythonBackendManager {
   stop(): Promise<void> {
     if (this.stopPromise) return this.stopPromise
     this.stopRequested = true
-    const waitForStart = this.startPromise
-      ? this.startPromise.catch(() => undefined)
-      : Promise.resolve()
-    this.stopPromise = waitForStart.then(() => this.stopInternal()).finally(() => {
+    for (const controller of this.startupAbortControllers) controller.abort()
+    // Do not await a potentially stuck startup promise. The owned child is
+    // terminated immediately; startInternal observes stopRequested and exits.
+    this.stopPromise = this.stopInternal().finally(() => {
       this.stopPromise = undefined
     })
     return this.stopPromise
+  }
+
+  /** True while the child owned by this manager has not emitted exit/close. */
+  isOwnedProcessAlive(): boolean {
+    return this.child?.exitCode === null
   }
 
   configureStorage(dataRoot: string, activeSiteId: string): void {
@@ -185,6 +208,7 @@ export class PythonBackendManager {
     this.startupLastProgressAt = undefined
     this.error = undefined
     this.transition('starting')
+    if (this.stopRequested) throw new Error('Python backend startup was cancelled')
     const developmentMode = this.options.runtimeMode === 'desktop-development'
       && (this.options.environment?.NETCONSOLE_DEV_MODE ?? process.env.NETCONSOLE_DEV_MODE) === '1'
     const configuredToken = developmentMode
@@ -264,7 +288,7 @@ export class PythonBackendManager {
         this.transition('failed')
         this.options.logger('ELECTRON_BACKEND_START_FAILED', message)
       }
-      if (child) {
+      if (child && !this.stopRequested) {
         try {
           await this.terminateOwnedChild(child, false)
         } catch (cleanupCause) {
@@ -288,6 +312,10 @@ export class PythonBackendManager {
       let settled = false
       let firstStdoutSeen = false
       const timeout = setInterval(() => {
+        if (this.stopRequested) {
+          finish(new Error('Python backend startup was cancelled'))
+          return
+        }
         const timeoutError = this.currentStartupTimeoutError()
         if (timeoutError) finish(timeoutError)
       }, Math.max(10, Math.min(this.options.pollIntervalMs, 250)))
@@ -350,13 +378,19 @@ export class PythonBackendManager {
           for (const listener of this.shutdownCompleteListeners) listener(child)
           return
         }
+        if (isShutdownProgress(payload)) {
+          this.options.onShutdownProgress?.({
+            phase: payload.phase,
+            ...(payload.active_tasks == null ? {} : { activeTasks: payload.active_tasks }),
+            ...(payload.active_workers == null ? {} : { activeWorkers: payload.active_workers }),
+          })
+          return
+        }
         if (event === 'netconsole.electron_backend.shutdown_ack') {
-          // Compatibility with older packaged backends. New runtimes emit the
-          // two explicit lifecycle events above.
+          // Legacy ACK proves command receipt only. It must not be promoted to
+          // shutdown_complete because lifespan cleanup may still be running.
           this.shutdownReceived.add(child)
-          this.shutdownComplete.add(child)
           for (const listener of this.shutdownReceivedListeners) listener(child)
-          for (const listener of this.shutdownCompleteListeners) listener(child)
           return
         }
         if (settled) return
@@ -386,6 +420,7 @@ export class PythonBackendManager {
         throw new Error('Python backend exited before becoming ready')
       }
       const controller = new AbortController()
+      this.startupAbortControllers.add(controller)
       const remainingHardDeadline = this.options.startupHardTimeoutMs - (
         Date.now() - (this.startupStartedAt ?? Date.now())
       )
@@ -408,6 +443,7 @@ export class PythonBackendManager {
         // 连接拒绝和启动期短超时均由下一轮重试处理。
       } finally {
         clearTimeout(timeout)
+        this.startupAbortControllers.delete(controller)
       }
       await this.options.delay(this.options.pollIntervalMs)
     }
@@ -507,7 +543,7 @@ export class PythonBackendManager {
       await this.escalateTermination(child)
       return
     }
-    const acknowledged = await this.waitForSignal(received)
+    const acknowledged = await this.waitForSignal(received, this.options.shutdownAckTimeoutMs)
     this.shutdownReceivedListeners.delete(receivedListener)
     if (!acknowledged) {
       this.options.logger('ELECTRON_BACKEND_SHUTDOWN_RECEIVED_TIMEOUT')
@@ -526,7 +562,7 @@ export class PythonBackendManager {
       }
       this.shutdownCompleteListeners.add(completeListener)
     })
-    const shutdownComplete = await this.waitForSignal(complete)
+    const shutdownComplete = await this.waitForSignal(complete, this.options.shutdownGracefulTimeoutMs)
     this.shutdownCompleteListeners.delete(completeListener)
     if (!shutdownComplete) {
       this.options.logger('ELECTRON_BACKEND_SHUTDOWN_COMPLETE_TIMEOUT')
@@ -541,16 +577,16 @@ export class PythonBackendManager {
     }
     child.stdin.end()
     this.options.logger('ELECTRON_BACKEND_CONTROL_CLOSED')
-    if (!(await this.waitForProcessExitWithin(child, this.options.stopTimeoutMs))) {
+    if (!(await this.waitForProcessExitWithin(child, this.options.processExitTimeoutMs))) {
       await this.escalateTermination(child)
     }
     this.options.logger('ELECTRON_BACKEND_PROCESS_RELEASED')
   }
 
-  private async waitForSignal(signal: Promise<boolean>): Promise<boolean> {
+  private async waitForSignal(signal: Promise<boolean>, timeoutMs: number): Promise<boolean> {
     let timer: ReturnType<typeof setTimeout> | undefined
     const timeout = new Promise<boolean>((resolvePromise) => {
-      timer = setTimeout(() => resolvePromise(false), this.options.stopTimeoutMs)
+      timer = setTimeout(() => resolvePromise(false), timeoutMs)
     })
     try {
       return await Promise.race([signal, timeout])
@@ -577,13 +613,13 @@ export class PythonBackendManager {
     child.stdin.end()
     this.options.logger('ELECTRON_BACKEND_TERMINATE_REQUESTED')
     child.kill('SIGTERM')
-    if (await this.waitForProcessExitWithin(child, this.options.stopTimeoutMs)) return
+    if (await this.waitForProcessExitWithin(child, this.options.processExitTimeoutMs)) return
     child.kill('SIGKILL')
-    if (await this.waitForProcessExitWithin(child, this.options.stopTimeoutMs)) return
+    if (await this.waitForProcessExitWithin(child, this.options.processExitTimeoutMs)) return
     const pid = child.pid
     if (process.platform === 'win32' && typeof pid === 'number' && Number.isInteger(pid) && pid > 0) {
       const terminated = await this.options.forceTerminateProcessTree(pid)
-      if (terminated && await this.waitForProcessExitWithin(child, this.options.stopTimeoutMs)) return
+      if (terminated && await this.waitForProcessExitWithin(child, this.options.processExitTimeoutMs)) return
     }
     throw new Error('Python backend did not exit after termination escalation')
   }
@@ -627,12 +663,22 @@ export class PythonBackendManager {
       return new Error(this.startupTimeoutMessage('hard deadline'))
     }
     const lastProgressAt = this.startupLastProgressAt ?? startedAt
-    if (now - lastProgressAt >= this.options.startupTimeoutMs) {
+    const stageTimeoutMs = this.startupStage && DISK_HEAVY_STARTUP_STAGES.has(this.startupStage)
+      ? Math.max(this.options.startupTimeoutMs, 45_000)
+      : this.options.startupTimeoutMs
+    if (now - lastProgressAt >= stageTimeoutMs) {
       return new Error(this.startupTimeoutMessage('stage watchdog'))
     }
     return undefined
   }
 }
+
+const DISK_HEAVY_STARTUP_STAGES = new Set([
+  'storage_manifest_preparing',
+  'upgrade_recovery_started',
+  'active_site_database_initializing',
+  'ap_identity_index_initializing',
+])
 
 function parseDevelopmentPort(value: string | undefined): number {
   if (!value) return 0
@@ -758,4 +804,23 @@ function isStartupStage(value: unknown): value is { stage: string; elapsed_ms: n
   return payloadEvent(value) === 'netconsole.electron_backend.startup_stage'
     && typeof (value as Record<string, unknown>).stage === 'string'
     && typeof (value as Record<string, unknown>).elapsed_ms === 'number'
+}
+
+function isShutdownProgress(value: unknown): value is {
+  event: 'netconsole.electron_backend.shutdown_progress'
+  phase: string
+  active_tasks?: number
+  active_workers?: number
+} {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const payload = value as Record<string, unknown>
+  return payload.event === 'netconsole.electron_backend.shutdown_progress'
+    && typeof payload.phase === 'string'
+    && payload.phase.length > 0
+    && isOptionalNonNegativeInteger(payload.active_tasks)
+    && isOptionalNonNegativeInteger(payload.active_workers)
+}
+
+function isOptionalNonNegativeInteger(value: unknown): boolean {
+  return value == null || (Number.isInteger(value) && Number(value) >= 0)
 }

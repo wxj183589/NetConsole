@@ -86,6 +86,18 @@ describe('real Python backend integration', () => {
       expect(unauthorized.status).toBe(401)
       expect(authorized.status).toBe(200)
       await expect(authorized.json()).resolves.toMatchObject({ status: 'ok' })
+      await vi.waitFor(async () => {
+        const readiness = await fetch(`${runtime.baseUrl}/api/health`, {
+          headers: { [DESKTOP_SESSION_HEADER]: runtime.apiToken },
+        })
+        const payload = await readiness.json() as {
+          runtime_services_ready?: boolean
+          runtime_services_status?: string
+        }
+        expect(readiness.status).toBe(200)
+        expect(payload.runtime_services_ready).toBe(true)
+        expect(payload.runtime_services_status).toBe('ready')
+      }, { timeout: 15_000, interval: 100 })
       vi.stubGlobal('window', {
         netconsoleDesktop: runtimeBridge(manager),
         location: { origin: 'http://127.0.0.1:5173', protocol: 'http:', host: '127.0.0.1:5173' },

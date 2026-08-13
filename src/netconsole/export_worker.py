@@ -12,6 +12,11 @@ from pathlib import Path
 from typing import Any
 
 from netconsole.core import app_logger
+from netconsole.core.runtime_profile import (
+    RuntimeCapabilityPolicy,
+    read_host_environment_profile,
+    read_runtime_performance_mode,
+)
 from netconsole.repositories.mesh_mr_repository import MeshMrRepository
 from netconsole.repositories.mesh_catalog_repository import MeshCatalogRepository
 from netconsole.core.paths import PathResolver
@@ -386,6 +391,11 @@ def _run_mesh_analysis_report(job: ExportJob) -> None:
     if len(source_ids) != 1:
         raise ValueError("Web MESH 报告必须绑定一个来源文件")
     queue = _MeshProgressQueue(job)
+    paths = PathResolver()
+    capability_policy = RuntimeCapabilityPolicy.from_profile(
+        read_host_environment_profile(paths.host_environment_profile_path),
+        mode=read_runtime_performance_mode(paths.settings_path),
+    )
     request = MeshReportProcessRequest(
         db_path=job.db_path,
         mr_name=str(payload.get("mr_name") or ""),
@@ -393,6 +403,7 @@ def _run_mesh_analysis_report(job: ExportJob) -> None:
         temp_path=job.tmp_path,
         options=options,
         source_file_ids=source_ids,
+        worker_limit=capability_policy.cpu_worker_limit,
     )
     try:
         run_mesh_report_process(request, queue, _MeshCancelEvent(job))

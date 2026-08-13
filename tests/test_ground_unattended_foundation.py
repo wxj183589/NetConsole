@@ -302,6 +302,25 @@ def test_udp_receiver_routes_multiple_mrs_and_keeps_unidentified_separate(tmp_pa
     assert not any(thread.name.startswith("ground-syslog-") and thread.is_alive() for thread in __import__("threading").enumerate())
 
 
+def test_syslog_receiver_reports_bounded_queue_pressure_and_drop(tmp_path: Path) -> None:
+    repository = GroundUnattendedRepository(tmp_path / "ground" / "index.sqlite", site_id="site-a")
+    receiver = SyslogUdpReceiver(repository=repository, site_id="site-a")
+    receiver._queue = __import__("queue").Queue(maxsize=100)
+    for index in range(80):
+        receiver._queue.put_nowait(
+            __import__("netconsole.services.ground_unattended.syslog_runtime", fromlist=["UdpEnvelope"]).UdpEnvelope(
+                source_ip="127.0.0.1", source_port=514, receive_time="2026-01-01T00:00:00+00:00",
+                global_receive_sequence=index, source_receive_sequence=index, payload=b"test",
+            )
+        )
+    receiver._run_id = "run-1"
+    receiver._flush_if_due()
+    receiver._dropped_count = 2
+    receiver._flush_if_due()
+    codes = {row["code"] for row in repository.list_health_events(run_id="run-1")}
+    assert {"SYSLOG_QUEUE_PRESSURE", "SYSLOG_DROPPED"} <= codes
+
+
 def test_boot_session_and_fixed_syslog_profile_do_not_save(tmp_path: Path) -> None:
     paths = PathResolver(tmp_path / "app", tmp_path / "data")
     site = "site-a"

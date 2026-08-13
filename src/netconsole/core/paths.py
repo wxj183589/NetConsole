@@ -132,6 +132,12 @@ class PathResolver:
         return self.config_dir / "storage-manifest.json"
 
     @property
+    def host_environment_profile_path(self) -> Path:
+        """安装期采集的脱敏主机画像；启动阶段只读取此文件。"""
+
+        return self.runtime_dir / "environment" / "host-profile.json"
+
+    @property
     def app_log_path(self) -> Path:
         return self.logs_dir / "app.log"
 

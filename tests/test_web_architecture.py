@@ -86,6 +86,13 @@ def test_fastapi_app_exposes_registered_web_modules() -> None:
         "data_root": "",
         "active_site_id": "",
         "storage_schema_version": 1,
+        "runtime_services_status": "ready",
+        "runtime_services_ready": True,
+        "runtime_services_error": "",
+        "performance_mode": "standard",
+        "unattended_status": "disabled",
+        "unattended_ready": False,
+        "unattended_error": "",
     }
     assert app.state.runtime_mode is RuntimeMode.SERVER
     assert {
@@ -110,6 +117,46 @@ def test_fastapi_app_exposes_registered_web_modules() -> None:
     assert app.state.file_management_service is not None
     assert app.state.network_tools_service is not None
     assert app.state.online_mr_web_control_enabled is False
+    assert app.state.capability_policy.disk_maintenance_concurrency == 1
+
+
+def test_server_unattended_mode_reports_readiness_without_hardware_recollection(
+    tmp_path: Path,
+) -> None:
+    paths = PathResolver(tmp_path / "app", tmp_path / "data")
+    paths.settings_path.parent.mkdir(parents=True, exist_ok=True)
+    paths.settings_path.write_text(
+        '{"app/runtime_performance_mode":"server_unattended"}',
+        encoding="utf-8",
+    )
+    app = create_app(RuntimeMode.DESKTOP, paths=paths, frontend_dist=tmp_path / "missing")
+
+    assert app.state.performance_mode == "server_unattended"
+    assert app.state.capability_policy.unattended_priority is True
+    assert app.state.capability_policy.low_priority_work_enabled is False
+    assert app.state.host_environment_profile is None
+
+
+def test_deferred_runtime_failure_is_visible_and_blocks_service_writes(tmp_path: Path) -> None:
+    app = create_app(
+        RuntimeMode.SERVER,
+        paths=PathResolver(tmp_path),
+        frontend_dist=tmp_path / "missing",
+    )
+    app.state.runtime_services_status = "degraded"
+    app.state.runtime_services_ready = False
+    app.state.runtime_services_error = "AgentControllerService"
+
+    with TestClient(app) as client:
+        health = client.get("/api/health")
+        blocked = client.post("/api/traffic/runs", json={})
+
+    assert health.status_code == 200
+    assert health.json()["runtime_services_status"] == "degraded"
+    assert health.json()["runtime_services_ready"] is False
+    assert health.json()["runtime_services_error"] == "AgentControllerService"
+    assert blocked.status_code == 503
+    assert blocked.json()["code"] == "RUNTIME_SERVICES_DEGRADED"
 
 
 @pytest.mark.parametrize("runtime_mode", [RuntimeMode.DESKTOP, RuntimeMode.SERVER])
@@ -454,6 +501,23 @@ def test_task_runtime_tracks_states_and_reuses_worker_protocol(tmp_path: Path) -
     assert not service.is_running("runtime-job")
     assert not launch.job_path.exists()
     assert not launch.cancel_path.exists()
+
+
+def test_task_runtime_shutdown_closes_admission_and_reports_active_counts(tmp_path: Path) -> None:
+    service = TaskApplicationService(paths=PathResolver(tmp_path), reconcile_on_start=False)
+    launch = service.prepare(BackgroundJob(job_id="drain-6", task_type="demo_task"))
+    before = service.active_task_snapshot()
+    assert before["active_tasks"] == 1
+    assert before["active_workers"] == 1
+
+    stopping = service.begin_shutdown()
+    assert stopping["active_tasks"] == 1
+    assert stopping["stopping_tasks"] == 1
+    with pytest.raises(RuntimeError, match="shutting down"):
+        service.prepare(BackgroundJob(job_id="rejected", task_type="demo_task"))
+
+    service.complete(launch.job.job_id, 1)
+    assert service.active_task_snapshot()["active_tasks"] == 0
 
 
 def test_task_runtime_package_has_no_qt_dependency() -> None:
