@@ -242,6 +242,43 @@ SectionEnd
         assert not target.exists()
 
 
+def test_nsis_installer_include_compiles_with_strfunc_calls(tmp_path: Path) -> None:
+    if os.name != "nt":
+        pytest.skip("需要 Windows NSIS 编译器执行安装器 include 回归")
+
+    makensis, plugin_dir = _find_nsis_runtime()
+    installer_include = (
+        build_installer.DESKTOP_ROOT / "build" / "installer-data-root.nsh"
+    )
+    script = tmp_path / "installer-include-test.nsi"
+    executable = tmp_path / "installer-include-test.exe"
+    script.write_text(
+        f'''Unicode true
+RequestExecutionLevel user
+OutFile "{executable}"
+SilentInstall silent
+!addplugindir "{plugin_dir}"
+!include "{installer_include}"
+
+Section
+SectionEnd
+''',
+        encoding="utf-8-sig",
+    )
+
+    compilation = subprocess.run(
+        [str(makensis), "/V2", str(script)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+        check=False,
+    )
+    assert compilation.returncode == 0, compilation.stdout + compilation.stderr
+    assert executable.is_file()
+
+
 def _find_nsis_runtime() -> tuple[Path, Path]:
     local_app_data = os.environ.get("LOCALAPPDATA")
     if not local_app_data:
