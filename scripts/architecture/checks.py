@@ -992,27 +992,43 @@ def orphan_module_findings() -> list[Finding]:
     return findings
 
 
-def migration_map_findings() -> list[Finding]:
-    path = CONFIG_ROOT / "migration_map.json"
+def product_architecture_findings() -> list[Finding]:
+    path = CONFIG_ROOT / "product_architecture.json"
     if not path.is_file():
-        return [Finding("MIGRATION_MAP_MISSING", relative_path(path), 0, "current migration contract is missing")]
+        return [Finding("PRODUCT_ARCHITECTURE_MISSING", relative_path(path), 0, "product architecture contract is missing")]
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        return [Finding("MIGRATION_MAP_CONFIG", relative_path(path), 0, str(exc))]
+        return [Finding("PRODUCT_ARCHITECTURE_CONFIG", relative_path(path), 0, str(exc))]
     findings: list[Finding] = []
     if not isinstance(payload, dict):
-        return [Finding("MIGRATION_MAP_CONFIG", relative_path(path), 0, "current migration contract must be an object")]
-    for key in ("classifications", "dispositions", "modules"):
-        if not isinstance(payload.get(key), list) or not payload[key]:
-            findings.append(Finding("MIGRATION_MAP_CONFIG", relative_path(path), 0, f"missing non-empty {key}"))
-    for value in ("PURE_UI", "BUSINESS_MOVED", "ADAPTER_REPLACED", "DEAD_CODE", "FEATURE_REMOVED"):
-        if value not in payload.get("classifications", []):
-            findings.append(Finding("MIGRATION_MAP_CLASSIFICATION", relative_path(path), 0, f"missing {value}"))
-    for value in ("MIGRATED", "REMOVED", "HIDDEN_PENDING_MIGRATION", "BLOCKED"):
-        if value not in payload.get("dispositions", []):
-            findings.append(Finding("MIGRATION_MAP_STATUS", relative_path(path), 0, f"missing {value}"))
-    for item in payload.get("modules", []):
-        if not isinstance(item, dict) or not item.get("id") or item.get("disposition") not in payload.get("dispositions", []):
-            findings.append(Finding("MIGRATION_MAP_CONFIG", relative_path(path), 0, "invalid module disposition"))
+        return [Finding("PRODUCT_ARCHITECTURE_CONFIG", relative_path(path), 0, "product architecture contract must be an object")]
+    expected_sources = {
+        "version": "src/netconsole/core/version.py",
+        "features": "src/netconsole/core/feature_registry.py",
+        "data_root": "src/netconsole/core/paths.py",
+    }
+    if payload.get("product_model") != "ELECTRON_DESKTOP_ONLY":
+        findings.append(Finding("PRODUCT_ARCHITECTURE_MODEL", relative_path(path), 0, "product model must remain Electron Desktop Only"))
+    if payload.get("maintenance_state") != "LONG_TERM_MAINTENANCE":
+        findings.append(Finding("PRODUCT_ARCHITECTURE_STATE", relative_path(path), 0, "repository must use the long-term maintenance baseline"))
+    if payload.get("authoritative_sources") != expected_sources:
+        findings.append(Finding("PRODUCT_ARCHITECTURE_SOURCES", relative_path(path), 0, "version, feature, or DataRoot source is not authoritative"))
+    components = payload.get("components")
+    expected_components = {"electron-host", "desktop-renderer", "python-backend", "windows-agent"}
+    if not isinstance(components, list) or {item.get("id") for item in components if isinstance(item, dict)} != expected_components:
+        findings.append(Finding("PRODUCT_ARCHITECTURE_COMPONENTS", relative_path(path), 0, "runtime component set is incomplete"))
+    else:
+        for item in components:
+            required_paths = item.get("required_paths")
+            if not isinstance(required_paths, list) or not required_paths:
+                findings.append(Finding("PRODUCT_ARCHITECTURE_COMPONENTS", relative_path(path), 0, f"{item['id']} has no required paths"))
+                continue
+            for required_path in required_paths:
+                if not isinstance(required_path, str) or not (ROOT / required_path).is_file():
+                    findings.append(Finding("PRODUCT_ARCHITECTURE_PATH", str(required_path), 0, f"missing required path for {item['id']}"))
+    history = payload.get("historical_migration")
+    archive = "docs/archive/migrations/qt-to-electron/MIGRATION_MATRIX.md"
+    if history != {"status": "CLOSED", "archive": archive} or not (ROOT / archive).is_file():
+        findings.append(Finding("PRODUCT_ARCHITECTURE_HISTORY", relative_path(path), 0, "closed migration history must resolve to the archive"))
     return findings

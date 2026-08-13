@@ -10,4 +10,4 @@ from scripts.architecture.cli import main
 
 
 if __name__ == "__main__":
-    raise SystemExit(main("migration-map"))
+    raise SystemExit(main("product-architecture"))

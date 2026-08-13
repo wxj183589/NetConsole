@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "default_level": "L2",
   "levels": {
     "L1": "单页面 CSS、文案、局部只读展示或纯文档变更",
@@ -38,16 +38,16 @@
   "consumer_suites": {
     "python-full": {
       "label": "完整 Python 领域与 API 回归",
-      "command": ".venv\\Scripts\\python.exe -m pytest -q --tb=short",
-      "evidence": [
+      "executor": "python-full",
+      "required_evidence": [
         "pytest.ini",
         ".github/workflows/python-full-regression.yml"
       ]
     },
     "renderer-full": {
       "label": "完整 Renderer API、Store、组件与页面回归",
-      "command": "在 apps/desktop_renderer 运行 pnpm test 和 pnpm build",
-      "evidence": [
+      "executor": "renderer-full",
+      "required_evidence": [
         "apps/desktop_renderer/package.json",
         "apps/desktop_renderer/src/api/client.test.ts",
         "apps/desktop_renderer/src/components/table/NcDataTable.test.ts"
@@ -55,8 +55,8 @@
     },
     "electron-contract": {
       "label": "Electron Main/Preload 契约、类型与构建",
-      "command": "在 apps/desktop_electron 运行 pnpm test、pnpm run typecheck、pnpm run build:main",
-      "evidence": [
+      "executor": "electron-contract",
+      "required_evidence": [
         "apps/desktop_electron/package.json",
         "apps/desktop_electron/tests/ipc.test.ts",
         "apps/desktop_electron/tests/preload.test.ts"
@@ -64,16 +64,17 @@
     },
     "architecture-guards": {
       "label": "Electron-only 架构门与共享契约静态检查",
-      "command": ".venv\\Scripts\\python.exe scripts\\architecture\\run_all.py",
-      "evidence": [
+      "executor": "architecture-guards",
+      "required_evidence": [
         "scripts/architecture/run_all.py",
         "tests/architecture/test_architecture_guards.py"
       ]
     },
     "main-contract-smoke": {
       "label": "主线 12 个关键入口的最小 happy-path/contract smoke",
-      "command": "按 docs/development/CHANGE_IMPACT_FRAMEWORK.md 的主线 Smoke Matrix 运行现有定向测试",
-      "evidence": [
+      "executor": "main-contract-smoke",
+      "required_evidence": [
+        "scripts/quality/run_main_contract_smoke.py",
         "tests/test_electron_runtime.py",
         "tests/test_sites.py",
         "tests/test_device_management_web_api.py",
@@ -90,8 +91,8 @@
     },
     "package-smoke": {
       "label": "正式 Electron 制品契约 smoke；只在 release/package gate 执行",
-      "command": "在 apps/desktop_electron 运行 pnpm run smoke:package",
-      "evidence": [
+      "executor": "package-smoke",
+      "required_evidence": [
         "apps/desktop_electron/scripts/package-smoke.mjs",
         "apps/desktop_electron/package.json"
       ]
@@ -420,6 +421,33 @@
         "architecture-guards",
         "main-contract-smoke",
         "package-smoke"
+      ]
+    },
+    {
+      "id": "product-architecture-governance",
+      "owner": "architecture_governance",
+      "level": "L4",
+      "patterns": [
+        "config/architecture/product_architecture.json",
+        "scripts/architecture/**"
+      ],
+      "consumers": [
+        "architecture_governance",
+        "renderer_platform",
+        "data_platform",
+        "electron_runtime",
+        "agent",
+        "release_engineering"
+      ],
+      "compatibility_risks": [
+        "正式运行形态、权威事实源或架构 Guard 漂移会破坏 Electron-only 长期基线"
+      ],
+      "suites": [
+        "python-full",
+        "renderer-full",
+        "electron-contract",
+        "architecture-guards",
+        "main-contract-smoke"
       ]
     },
     {
