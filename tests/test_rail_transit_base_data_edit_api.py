@@ -19,7 +19,7 @@ from netconsole.repositories.rail_transit_base_data_repository import (
     RailTransitBaseDataRepository,
 )
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
-from rail_transit_base_data_fixture import build_rail_transit_base_data_fixture, mark_base_data_copy
+from tests.support.rail_transit_base_data_fixture import build_rail_transit_base_data_fixture, mark_base_data_copy
 
 
 class _NoopAsyncService:

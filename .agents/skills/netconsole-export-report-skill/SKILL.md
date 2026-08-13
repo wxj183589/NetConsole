@@ -28,7 +28,7 @@ description: "NetConsole Export Center、ExportJob、XLSX/CSV/PDF/ZIP/Markdown �
 
 # 开始前读取
 
-- `docs/export_process_policy.md`、`docs/IMPORT_EXPORT_INTERACTION.md`、`docs/JOB_CENTER.md`、`docs/DEVELOPMENT_RULES.md`。
+- `docs/export/PROCESS_POLICY.md`、`docs/export/USER_FILE_INTERACTION.md`、`docs/job-center/README.md`、`docs/DEVELOPMENT_RULES.md`。
 - `apps/desktop_renderer/src/platform/exportActionRegistry.ts`、`apps/desktop_renderer/src/composables/useUserSelectedExport.ts`。
 - `src/netconsole/export_worker.py`、`src/netconsole/services/export/`、`src/netconsole/services/export_task_models.py`。
 - `src/netconsole/services/excel_autosize.py`、`src/netconsole/services/excel_report_utils.py`、`src/netconsole/services/excel_stream_exporter.py`。

@@ -30,4 +30,4 @@
 
 ## 相关文档
 
-参见 [功能模块](../../../../docs/FEATURE_MODULES.md)、[表格规范](../../../../docs/ui_table_guidelines.md) 和 [Web 架构](../../../../docs/WEB_ARCHITECTURE.md)。
+参见 [功能模块](../../../../docs/architecture/FEATURE_MODULES.md)、[表格规范](../../../../docs/ui/TABLE_GUIDELINES.md) 和 [Web 架构](../../../../docs/architecture/RUNTIME.md)。

@@ -10,9 +10,9 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
-from ac_management_web_fixture import build_ac_management_fixture
-from rail_transit_base_data_fixture import mark_base_data_copy
-from web_parity_test_support import FakeExportProcessAdapter, FakeLocalProcessAdapter
+from tests.support.ac_management_web_fixture import build_ac_management_fixture
+from tests.support.rail_transit_base_data_fixture import mark_base_data_copy
+from tests.support.web_parity_test_support import FakeExportProcessAdapter, FakeLocalProcessAdapter
 from netconsole.application.ac.web_application_service import AcWebActionError, AcWebApplicationService
 from netconsole.application.web_export_process_adapter import WebExportProcessAdapter
 from netconsole.backend.api.main import create_app

@@ -31,6 +31,6 @@
 
 ## 相关文档
 
-- [Online MR 实时采集](../../../../docs/ONLINE_MR_COLLECTION.md)
-- [Online MR Agent](../../../../docs/ONLINE_MR_AGENT_EXECUTOR.md)
-- [架构一致性审计](../../../../docs/ARCHITECTURE_COMPLIANCE.md)
+- [Online MR 实时采集](../../../../docs/rail-transit/online-mr/README.md)
+- [Online MR Agent](../../../../docs/rail-transit/online-mr/AGENT_EXECUTOR.md)
+- [架构一致性审计](../../../../docs/architecture/COMPLIANCE.md)

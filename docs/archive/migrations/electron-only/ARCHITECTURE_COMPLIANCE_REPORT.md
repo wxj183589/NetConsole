@@ -1,8 +1,10 @@
 # Electron-only 架构一致性报告
 
+> 冻结历史基线：本文记录 2026-07 Electron-only 收敛时的检查结果和未验收边界，不代表当前文件数量、例外数量或功能状态。当前规则与结果以生产代码、机器可读配置、测试和 [架构一致性](../../../architecture/COMPLIANCE.md) 为准。
+
 ## 结论
 
-本报告记录 2026-07-18 起当前分支的 E10/E10B 收口事实。Qt 活动源码、入口、运行依赖与发布链已删除；首轮回收了遗留 Qt/MIB/OID 字节码缓存、七处 Qt offscreen 测试环境设置、旧命令路径引用、过时迁移文档和项目 Skill 中的失效 UI 路径，并建立[最终迁移矩阵](../../../architecture/MIGRATION_MATRIX.md)。九门 Guard、精确分类与整改明细见 [E10B 归档](2026-07-18-E10B-architecture-guards-and-remediation.md)。
+本报告记录 2026-07-18 起当前分支的 E10/E10B 收口事实。Qt 活动源码、入口、运行依赖与发布链已删除；首轮回收了遗留 Qt/MIB/OID 字节码缓存、七处 Qt offscreen 测试环境设置、旧命令路径引用、过时迁移文档和项目 Skill 中的失效 UI 路径，并建立[冻结迁移矩阵](../qt-to-electron/MIGRATION_MATRIX.md)。九门 Guard、精确分类与整改结论已汇总在本文，逐提交过程由 Git 历史保留。
 
 在首轮清理之后，E10B 已建立九个公开架构门及精确配置：Direct SQL 61 个文件全部分类且 `VIOLATION=0`，38 条限时例外精确到规则和文件，建立目录门时 139 个维护目录 README 缺失为 0。该结论是“Electron-only 架构 Guard 基线成立”，不是“所有业务已完成真实设备验收”。AC、轨道交通、配置、文件、网络工具和随后完成定向自动验证的设备详情仍按矩阵保留 `PARTIAL`、`IMPLEMENTED_UNVERIFIED` 或 `REAL_DEVICE_PENDING`；Electron 主题最终视觉验收也仍为 `PENDING`。
 
@@ -71,4 +73,4 @@ Navigation Registry 的活动注册项已迁移为 `legacy_page_id/legacy_featur
 | P2 | 14 个 Python 分层债务与 24 个孤儿候选 | 逐项迁移、接线或删除；例外到期或陈旧时 Guard 失败 |
 | P2 | Command Profile 当前仅接管 `device.inventory.collect` | E11 逐域迁移；E12 另行完成正式 API v1 契约，不能在 E10B 报告中提前完成 |
 
-因此，遗留清理、活动文档/Skill 事实源、最终迁移矩阵和 E10B 九门 Guard 基线已经形成；Electron-only 架构事实成立，状态色自动 Guard 和设备详情定向自动验证已收口，但 Electron 主题人工视觉验收、真实设备/桌面人工验收、E11 命令平台扩展和 E12 API 契约仍受以上 P1/P2 约束。
+因此，遗留清理、活动文档/Skill 事实源、冻结迁移矩阵和 E10B 九门 Guard 基线已经形成；Electron-only 架构事实成立，状态色自动 Guard 和设备详情定向自动验证已收口，但 Electron 主题人工视觉验收、真实设备/桌面人工验收、E11 命令平台扩展和 E12 API 契约仍受以上 P1/P2 约束。

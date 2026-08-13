@@ -16,7 +16,7 @@ from netconsole.models.api.rail_transit_web import RailTransitTaskDTO
 from netconsole.models.api.rail_transit_base_data import VehicleMrDTO, VehicleMrPageDTO
 from netconsole.services.mesh_chart_payload import MeshChartSelectionLimitError
 from netconsole.services.rail_transit.mesh_analysis_query_service import MeshAnalysisQueryService
-from tests.mesh_analysis_test_support import EmptyBaseQuery, create_mesh_analysis_fixture
+from tests.support.mesh_analysis_test_support import EmptyBaseQuery, create_mesh_analysis_fixture
 
 
 def _fingerprint(path: Path) -> tuple[int, str]:

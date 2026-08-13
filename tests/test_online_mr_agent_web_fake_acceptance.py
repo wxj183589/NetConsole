@@ -44,7 +44,7 @@ from netconsole.services.online_mr.web_control_service import OnlineMrWebControl
 from netconsole.services.rail_transit.base_data_query_service import (
     RailTransitBaseDataQueryService,
 )
-from rail_transit_base_data_fixture import build_rail_transit_base_data_fixture
+from tests.support.rail_transit_base_data_fixture import build_rail_transit_base_data_fixture
 from support.fake_online_mr_agent import FAKE_AGENT_TOKEN, FakeOnlineMrAgent
 
 

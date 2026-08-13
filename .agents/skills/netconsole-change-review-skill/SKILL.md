@@ -30,7 +30,7 @@ description: "评审 NetConsole 当前 git diff、在编码前执行 Change Impa
 
 - `git status --short`、`git diff --name-status`、`git diff --stat`、目标 diff 和基线提交。
 - `git worktree list --porcelain`；对可访问 worktree 只读检查分支、状态和与本任务重叠的共享路径。
-- `AGENTS.md`、`docs/DEVELOPMENT_RULES.md`、`docs/TEST_BASELINE.md`、`docs/REFACTOR_MAP.md`。
+- `AGENTS.md`、`docs/DEVELOPMENT_RULES.md`、`docs/testing/BASELINE.md`、`docs/architecture/REFACTOR_MAP.md`。
 - 存在时读取 `docs/development/CHANGE_IMPACT_FRAMEWORK.md` 和 `config/architecture/change_impact_matrix.json`；机器可读 Registry 优先于静态示例。
 - 相关生产代码、调用方、写入方、缓存、DTO、测试、领域文档和目标专业 Skill。
 

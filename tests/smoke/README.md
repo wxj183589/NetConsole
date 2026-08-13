@@ -30,4 +30,4 @@
 
 ## 相关文档
 
-参见 [测试基线](../../docs/TEST_BASELINE.md)、[测试目录说明](../README.md) 和 `snmp/README.md`。
+参见 [测试基线](../../docs/testing/BASELINE.md)、[测试目录说明](../README.md) 和 `snmp/README.md`。

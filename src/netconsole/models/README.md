@@ -38,5 +38,5 @@ Application Service、Service、Router DTO 映射和测试可以导入本目录�
 
 ## 相关文档
 
-- [开发指南](../../../docs/DEVELOPMENT_GUIDE.md)
-- [API/Application 边界审计](../../../docs/API_APPLICATION_BOUNDARY_AUDIT.md)
+- [开发规则](../../../docs/DEVELOPMENT_RULES.md)
+- [API/Application 边界审计](../../../docs/development/API_APPLICATION_BOUNDARY.md)

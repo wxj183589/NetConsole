@@ -52,7 +52,7 @@ description: "NetConsole Windows Go Agent、apps/agent、Agent HTTP API、内嵌
 
 # 工作流程
 
-1. 先读取 `docs/AGENT.md`、`apps/agent/README.md`、`docs/BUILD_AND_RELEASE.md`、`docs/AGENT_TRAFFIC_API.md` 和 `resources/tools/README.md`。
+1. 先读取 `docs/agent/README.md`、`apps/agent/README.md`、`docs/release/BUILD_AND_RELEASE.md`、`docs/agent/TRAFFIC_API.md` 和 `resources/tools/README.md`。
 2. 先确认实际代码、测试和构建脚本，再判断改动属于 Agent、Controller、Traffic 或 Online MR 边界。
 3. 修改路径时同步检查 CLI 参数、环境变量、配置/目标查找顺序、交付包内部路径、启动脚本和运行数据目录。
 4. 不跨进程共享 SQLite connection、Renderer 状态、Repository 或凭据；Agent Token 只由 Controller 在请求时提供。

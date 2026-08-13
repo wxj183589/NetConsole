@@ -33,4 +33,4 @@ Parser/Service 读取命令与分析规则，构建脚本读取品牌和工具�
 
 ## 相关文档
 
-参见 [命令参考规范](../docs/COMMAND_REFERENCE.md)、[构建与发布](../docs/BUILD_AND_RELEASE.md) 和 [资源工具说明](tools/README.md)。
+参见 [命令参考规范](../docs/device-management/COMMAND_REFERENCE.md)、[构建与发布](../docs/release/BUILD_AND_RELEASE.md) 和 [资源工具说明](./tools/README.md)。

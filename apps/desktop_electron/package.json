@@ -25,7 +25,6 @@
     "package:all": "node scripts/build-edition-installer.mjs both",
     "package:full": "node scripts/build-edition-installer.mjs full",
     "package:customer": "node scripts/build-edition-installer.mjs customer",
-    "package:legacy": "node scripts/build-installer.mjs",
     "smoke:package": "pnpm run package:dir && node scripts/package-smoke.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run"

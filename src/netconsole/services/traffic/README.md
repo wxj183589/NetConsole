@@ -30,4 +30,4 @@ Traffic 依赖 Job Center、Agent Controller、Network Tools、Traffic Repositor
 
 ## 相关文档
 
-参见 [统一流量测试架构](../../../../docs/TRAFFIC_TEST_ARCHITECTURE.md)、[Agent 流量协议](../../../../docs/AGENT_TRAFFIC_API.md) 和 [Traffic Skill](../../../../.agents/skills/traffic-test-skill/SKILL.md)。
+参见 [统一流量测试架构](../../../../docs/traffic/README.md)、[Agent 流量协议](../../../../docs/agent/TRAFFIC_API.md) 和 [Traffic Skill](../../../../.agents/skills/traffic-test-skill/SKILL.md)。

@@ -78,4 +78,4 @@ Change Impact Matrix 只做变更分级和消费者路由，不修改产品行�
 .\.venv\Scripts\python.exe -m scripts.quality.check_change_impact --paths config/architecture/change_impact_matrix.json
 ```
 
-脚本会拒绝重复区域、缺少稳定领域 owner、未知风险等级、空契约、未知消费者/suite、陈旧路径/证据和关键共享路径降级。L3/L4 的消费者与验证规则见 [Change Impact Framework](../../docs/development/CHANGE_IMPACT_FRAMEWORK.md) 和[测试基线](../../docs/TEST_BASELINE.md)。
+脚本会拒绝重复区域、缺少稳定领域 owner、未知风险等级、空契约、未知消费者/suite、陈旧路径/证据和关键共享路径降级。L3/L4 的消费者与验证规则见 [Change Impact Framework](../../docs/development/CHANGE_IMPACT_FRAMEWORK.md) 和[测试基线](../../docs/testing/BASELINE.md)。

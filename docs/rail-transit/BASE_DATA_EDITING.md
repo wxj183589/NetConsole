@@ -72,7 +72,7 @@ NETCONSOLE_ALLOW_REAL_BASE_DATA_WRITE=1  # 正式局点的额外授权
 
 未获得写权限时，维护子页为 `READ_ONLY`，不显示“编辑”、生成站点、导入或增删入口，后端也拒绝越权写入。Electron 写入必须同时通过短期 `desktop_session_token`；导入预览只在对应可写维护子页中进入，确认结果仅应用到该子页草稿。`site_meta.json` 写入只允许当前受控局点，使用临时文件和 `os.replace()`，并保留未知安全字段。
 
-稳定 ID、规划 reconcile、事务顺序、业务投影和迁移规则见 [轨旁 AP 主数据与关联模型](TRACKSIDE_AP_DOMAIN_MODEL.md)。
+稳定 ID、规划 reconcile、事务顺序、业务投影和迁移规则见 [轨旁 AP 主数据与关联模型](./TRACKSIDE_AP_DOMAIN_MODEL.md)。
 
 ## 定向验证
 

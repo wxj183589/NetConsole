@@ -6,7 +6,7 @@
 
 ## 边界
 
-测试不得依赖开发机绝对路径、真实设备凭据或正式用户数据。迁移期仍有 Qt 测试用于识别业务断言；E1 必须先迁移有效断言，再删除 Qt-only 测试。
+测试不得依赖开发机绝对路径、真实设备凭据或正式用户数据。Qt-only 与 standalone Browser Product 测试已经退出活动基线，不得恢复；名称含 `web` 的 FastAPI/Renderer 契约测试仍属于当前产品。
 
 ## 主要入口
 
@@ -25,7 +25,7 @@
 
 ## 测试
 
-定向示例：`.venv/Scripts/python.exe -m pytest tests/test_site_database_recovery.py -q`。最终组合按 `docs/TEST_BASELINE.md` 执行。
+定向示例：`.venv/Scripts/python.exe -m pytest tests/test_site_database_recovery.py -q`。最终组合按 `docs/testing/BASELINE.md` 执行。
 
 ## 修改规则
 
@@ -37,5 +37,5 @@
 
 ## 相关文档
 
-- [测试基线](../docs/TEST_BASELINE.md)
+- [测试基线](../docs/testing/BASELINE.md)
 - [仓库目录规范](../docs/development/repository-layout.md)

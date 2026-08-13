@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from web_parity_test_support import FakeExportProcessAdapter
+from tests.support.web_parity_test_support import FakeExportProcessAdapter
 from netconsole.application.web_artifacts import WebArtifactStore
 from netconsole.application.web_export_process_adapter import WebExportProcessAdapter
 from netconsole.backend.api.main import create_app

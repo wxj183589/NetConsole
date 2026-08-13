@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from ac_management_web_fixture import build_ac_management_fixture
+from tests.support.ac_management_web_fixture import build_ac_management_fixture
 from netconsole.core.database import Database
 from netconsole.models.api.ac_management import AcApDTO, AcLldpDTO, AcOpticalDTO
 from netconsole.repositories.ac_repository import AcRepository

@@ -30,4 +30,4 @@
 
 ## 相关文档
 
-参见 [Windows 编码 Skill](../../../.agents/skills/windows-encoding-skill/SKILL.md)、[导出规范](../../../docs/export_process_policy.md) 和 [数据路径](../../../docs/DATA_LAYOUT.md)。
+参见 [Windows 编码 Skill](../../../.agents/skills/windows-encoding-skill/SKILL.md)、[导出规范](../../../docs/export/PROCESS_POLICY.md) 和 [数据路径](../../../docs/storage/DATA_LAYOUT.md)。

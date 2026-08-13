@@ -749,3 +749,34 @@ def test_local_process_adapter_shutdown_cleans_active_process_and_closes_host(tm
     assert adapter.active_job_ids() == ()
     with pytest.raises(RuntimeError, match="正在关闭"):
         adapter.start_job(_job(paths, "after-shutdown"))
+
+
+def test_local_process_adapter_finalizing_cancel_is_not_reported_active(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, service = _service(tmp_path)
+    job_id = "local-finalizing-cancel"
+    process = _FakeProcess(auto_finish=False, terminate_exits=True)
+    adapter = LocalProcessAdapter(service, popen_factory=_PopenFactory(process))
+    original_complete = service.complete
+    complete_persisted = threading.Event()
+    release_complete = threading.Event()
+
+    def blocked_complete(selected_job_id: str, exit_code: int):
+        payload = original_complete(selected_job_id, exit_code)
+        complete_persisted.set()
+        assert release_complete.wait(1)
+        return payload
+
+    monkeypatch.setattr(service, "complete", blocked_complete)
+    adapter.start_job(_job(paths, job_id, cancel_grace_ms=60000))
+    assert adapter.cancel_job(job_id) is True
+
+    adapter.shutdown(timeout_seconds=0.01)
+
+    assert complete_persisted.wait(1)
+    assert service.get_task(job_id).status is TaskState.CANCELLED
+    assert adapter.active_job_ids() == ()
+    release_complete.set()
+    assert adapter.wait(job_id, timeout=1)

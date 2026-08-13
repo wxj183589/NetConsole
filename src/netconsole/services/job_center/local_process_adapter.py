@@ -486,19 +486,12 @@ class LocalProcessAdapter:
         if not self._claim_finalization(state):
             return
         payload: dict[str, object] | None = None
-        with self._state_lock:
-            completing_after_cancel = state.cancel_scheduled
-            if not completing_after_cancel:
-                state.terminalizing = True
         try:
             with self._service_lock:
                 payload = self.task_service.complete(state.job_id, exit_code)
         except Exception as exc:
             app_logger.log_error("LOCAL_WORKER_COMPLETE_FAILED", f"job_id={state.job_id} error={exc}")
         finally:
-            if completing_after_cancel:
-                with self._state_lock:
-                    state.terminalizing = True
             self._notify_completion(
                 state,
                 exit_code=exit_code,
@@ -596,12 +589,13 @@ class LocalProcessAdapter:
                 return
             state.done.wait(remaining)
 
-    @staticmethod
-    def _claim_finalization(state: _RunningLocalProcess) -> bool:
+    def _claim_finalization(self, state: _RunningLocalProcess) -> bool:
         with state.finalize_lock:
             if state.finalized:
                 return False
             state.finalized = True
+            with self._state_lock:
+                state.terminalizing = True
             return True
 
     def _abandon(self, state: _RunningLocalProcess) -> None:

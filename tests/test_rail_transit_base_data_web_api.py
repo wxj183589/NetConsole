@@ -9,7 +9,7 @@ from urllib.parse import unquote
 from fastapi.testclient import TestClient
 from openpyxl import Workbook, load_workbook
 
-from rail_transit_base_data_fixture import build_rail_transit_base_data_fixture
+from tests.support.rail_transit_base_data_fixture import build_rail_transit_base_data_fixture
 from netconsole.backend.api.main import create_app
 from netconsole.core.database import Database
 from netconsole.core.runtime_mode import RuntimeMode

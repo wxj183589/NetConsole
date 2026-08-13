@@ -21,7 +21,7 @@ from netconsole.services.rail_transit.station_source_utils import (
     parse_station_source_values,
     station_identity_key,
 )
-from rail_transit_base_data_fixture import build_rail_transit_base_data_fixture
+from tests.support.rail_transit_base_data_fixture import build_rail_transit_base_data_fixture
 
 
 def test_main_station_defaults_to_underground_island_without_overwriting_explicit_values() -> None:

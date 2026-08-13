@@ -30,4 +30,4 @@
 
 ## 相关文档
 
-参见 [导出进程规范](../../../../docs/export_process_policy.md)、[数据与路径](../../../../docs/DATA_LAYOUT.md) 和 [导出 Skill](../../../../.agents/skills/netconsole-export-report-skill/SKILL.md)。
+参见 [导出进程规范](../../../../docs/export/PROCESS_POLICY.md)、[数据与路径](../../../../docs/storage/DATA_LAYOUT.md) 和 [导出 Skill](../../../../.agents/skills/netconsole-export-report-skill/SKILL.md)。

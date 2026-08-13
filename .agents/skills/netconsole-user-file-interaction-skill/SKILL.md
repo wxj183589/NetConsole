@@ -15,7 +15,7 @@ description: "NetConsole 用户可见导入、导出、模板下载、报告保�
 
 # 开始前读取
 
-- `docs/IMPORT_EXPORT_INTERACTION.md`
+- `docs/export/USER_FILE_INTERACTION.md`
 - `docs/development/import-export-dialog-audit.md`
 - `apps/desktop_renderer/src/composables/useUserSelectedExport.ts`
 - `apps/desktop_renderer/src/platform/exportActionRegistry.ts`

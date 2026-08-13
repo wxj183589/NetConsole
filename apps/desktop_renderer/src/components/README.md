@@ -32,4 +32,4 @@
 
 ## 相关文档
 
-参见 [表格规范](../../../../docs/ui/TABLE_AND_FIELD_STANDARDS.md)、[表格迁移清单](../../../../docs/ui/TABLE_INVENTORY.md)、[UI 设计系统](../../../../docs/UI_DESIGN_SYSTEM.md) 和 `src/theme/`。
+参见 [表格规范](../../../../docs/ui/TABLE_AND_FIELD_STANDARDS.md)、[表格迁移清单](../../../../docs/ui/TABLE_INVENTORY.md)、[UI 设计系统](../../../../docs/ui/DESIGN_SYSTEM.md) 和 `src/theme/`。

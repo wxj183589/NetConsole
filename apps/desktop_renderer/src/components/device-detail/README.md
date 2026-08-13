@@ -53,4 +53,4 @@
 
 ## 相关文档
 
-参见 [设备管理页面](../../views/devices/README.md)、[统一表格组件](../table/README.md)、[表格规范](../../../../../docs/ui/TABLE_AND_FIELD_STANDARDS.md)、[UI 设计系统](../../../../../docs/UI_DESIGN_SYSTEM.md) 和 [Codex Skills](../../../../../docs/CODEX_SKILLS.md)。业务事实来源以 Python 后端 DTO、`visible_sections`、capability/profile、阈值和 Task Center 契约为准；当前状态保持 `IMPLEMENTED_UNVERIFIED / REAL_DEVICE_PENDING`。
+参见 [设备管理页面](../../views/devices/README.md)、[统一表格组件](../table/README.md)、[表格规范](../../../../../docs/ui/TABLE_AND_FIELD_STANDARDS.md)、[UI 设计系统](../../../../../docs/ui/DESIGN_SYSTEM.md) 和 [Codex Skills](../../../../../docs/development/CODEX_SKILLS.md)。业务事实来源以 Python 后端 DTO、`visible_sections`、capability/profile、阈值和 Task Center 契约为准；当前状态保持 `IMPLEMENTED_UNVERIFIED / REAL_DEVICE_PENDING`。

@@ -36,11 +36,11 @@ description: "NetConsole README、docs、架构说明、REFACTOR_MAP、Job/Expor
 # 工作流程
 
 1. 按“生产代码 > 测试/断言 > 当前 diff > 当前专题文档 > Git 近期提交 > 历史规划”确认事实。
-2. 检查 README、docs 索引、架构、开发规则、REFACTOR_MAP 和受影响领域专题。
+2. 检查 README、docs 索引、架构、开发规则、`docs/architecture/REFACTOR_MAP.md` 和受影响领域专题。
 3. 明确标注已完成、保留兼容层、shadow/diagnostics、部分迁移、尚未迁移、规划中或禁止接管。
 4. 读取 `src/netconsole/core/version.py`、Feature Registry 和 PathResolver，不手写可能漂移的版本、入口或路径。
 5. 使用仓库相对链接，不创建大小写不同的重复文档，不复制整份源码或整套 docs 到 Skill。
-6. 审计 `.agents/skills/`：被退役架构或删除模块完全取代、且无活动触发面的 Skill 才删除；仍有现行职责但事实陈旧的原位更新，并同步 `AGENTS.md` 与 `docs/CODEX_SKILLS.md`。
+6. 审计 `.agents/skills/`：被退役架构或删除模块完全取代、且无活动触发面的 Skill 才删除；仍有现行职责但事实陈旧的原位更新，并同步 `AGENTS.md` 与 `docs/development/CODEX_SKILLS.md`。
 
 # 项目约束
 

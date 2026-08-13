@@ -39,4 +39,4 @@
 ## 相关文档
 
 - [布局边界](../layouts/README.md)
-- [UI 设计系统](../../../../docs/UI_DESIGN_SYSTEM.md)
+- [UI 设计系统](../../../../docs/ui/DESIGN_SYSTEM.md)

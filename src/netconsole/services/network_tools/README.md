@@ -30,4 +30,4 @@
 
 ## 相关文档
 
-参见 [统一流量测试](../../../../docs/TRAFFIC_TEST_ARCHITECTURE.md)、[Agent 流量协议](../../../../docs/AGENT_TRAFFIC_API.md) 和 [网络工具 Skill](../../../../.agents/skills/traffic-test-skill/SKILL.md)。
+参见 [统一流量测试](../../../../docs/traffic/README.md)、[Agent 流量协议](../../../../docs/agent/TRAFFIC_API.md) 和 [网络工具 Skill](../../../../.agents/skills/traffic-test-skill/SKILL.md)。

@@ -23,7 +23,7 @@ from netconsole.services.rail_transit.mesh_analysis_query_service import (
     MeshAnalysisQueryService,
 )
 
-from mesh_analysis_test_support import EmptyBaseQuery
+from tests.support.mesh_analysis_test_support import EmptyBaseQuery
 
 
 MESH_LOG = (

@@ -20,6 +20,18 @@ SKIP_PATH_PARTS = {"build", "__pycache__"}
 DEFERRED_PROFILE_MIGRATION_COMMANDS: set[tuple[str, str]] = set()
 EXPECTED_NON_COMMAND_LITERALS = {
     (
+        "src/netconsole/services/rail_transit/mesh_analysis_query_service.py",
+        "display gaps are propagated as null",
+    ),
+    (
+        "src/netconsole/services/rail_transit/mesh_analysis_query_service.py",
+        "display continuity threshold derived from the source log cadence",
+    ),
+    (
+        "src/netconsole/services/rail_transit/mesh_analysis_query_service.py",
+        "display break",
+    ),
+    (
         "src/netconsole/services/h3c_ac_collect_service.py",
         "display wlan ap unauthenticated failed",
     ),
