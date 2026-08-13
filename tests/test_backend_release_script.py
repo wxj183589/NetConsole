@@ -33,6 +33,8 @@ def test_backend_release_reads_unified_version() -> None:
     assert config.app_name == "NetConsole"
     assert config.app_version == APP_VERSION == "v1.4.9"
     assert config.zip_path("pyinstaller").name == f"NetConsole_{APP_VERSION}_pyinstaller.zip"
+    assert config.ipop_notice == ROOT / "docs" / "release" / "IPOP_v4.1_NOTICE.md"
+    assert config.ipop_notice.is_file()
 
 
 def test_backend_pyinstaller_command_uses_generated_qt_free_spec() -> None:

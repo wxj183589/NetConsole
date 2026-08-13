@@ -22,7 +22,7 @@ class BuildConfig:
 
     @property
     def ipop_notice(self) -> Path:
-        return self.root / "docs" / "IPOP_v4.1_notice.md"
+        return self.root / "docs" / "release" / "IPOP_v4.1_NOTICE.md"
 
     @property
     def release_version_dir(self) -> Path:
