@@ -442,6 +442,8 @@ class SyslogUdpReceiver:
         self._last_error = ""
         self._event_batch: list[dict[str, Any]] = []
         self._timeline_batch: list[dict[str, Any]] = []
+        self._event_batch_size = 100
+        self._event_batch_interval = 1.0
         self._last_batch_at = time.monotonic()
         self._last_clock_offset_ms: dict[str, float] = {}
         self._last_line_hash: dict[str, str] = {}

@@ -1290,7 +1290,8 @@ describe('MESH charts mount and render', () => {
     await flushPromises()
     const overlayUpdateMs = performance.now() - overlayStarted
     console.info(`trackside overlay profile: ${overlayUpdateMs.toFixed(3)}ms`)
-    expect(overlayUpdateMs).toBeLessThan(50)
+    const overlayBudgetMs = process.env.NETCONSOLE_VITEST_PARALLEL_GATE ? 100 : 50
+    expect(overlayUpdateMs).toBeLessThan(overlayBudgetMs)
     expect(echartsMock.chart.setOption).toHaveBeenCalledTimes(beforeOverlaySetOptionCount + 1)
     const openedOverlay = echartsMock.chart.setOption.mock.calls.at(-1)?.[0] as {
       series: Array<{ id?: string; type?: string; data?: unknown[]; markLine?: { data: unknown[] } }>

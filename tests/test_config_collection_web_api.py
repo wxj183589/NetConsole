@@ -905,11 +905,12 @@ def test_config_fake_handlers_complete_save_delete_export_recovery_failure_and_c
     with zipfile.ZipFile(zip_path) as archive:
         assert any(name.endswith("running_20260715_101500.txt") for name in archive.namelist())
         assert "_netconsole_manifest.json" in archive.namelist()
-    with TestClient(app) as client:
-        diff_download = client.get(f"/api/config-collection/artifacts/{diff_artifact_id}")
-        zip_download = client.get(
-            f"/api/config-collection/artifacts/{zip_status.result['artifact_id']}"
-        )
+    client = TestClient(app)
+    diff_download = client.get(f"/api/config-collection/artifacts/{diff_artifact_id}")
+    zip_download = client.get(
+        f"/api/config-collection/artifacts/{zip_status.result['artifact_id']}"
+    )
+    client.close()
     assert diff_download.status_code == 200
     assert diff_name in unquote(diff_download.headers["content-disposition"])
     assert int(diff_download.headers["content-length"]) == diff_path.stat().st_size

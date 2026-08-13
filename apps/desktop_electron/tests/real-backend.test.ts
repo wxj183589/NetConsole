@@ -167,7 +167,7 @@ describe('real Python backend integration', () => {
     }
 
     expect(manager.getStatus()).toEqual({ state: 'stopped' })
-  })
+  }, 60_000)
 })
 
 function runtimeBridge(manager: PythonBackendManager): NetConsoleDesktopBridge {

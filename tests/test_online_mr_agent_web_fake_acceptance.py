@@ -169,6 +169,8 @@ def _acceptance_stack(
         online_mr_agent_executor_enabled=True,
     )
     app.state.online_mr_api_facade = OnlineMrApiFacade(paths, query, local_control, agent_web)
+    app.state.runtime_services_ready = True
+    app.state.runtime_services_status = "ready"
     try:
         yield AcceptanceStack(
             app=app,

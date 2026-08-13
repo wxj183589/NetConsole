@@ -561,6 +561,7 @@ class GroundHealthDTO(ApiModel):
     udp_last_received_at: str = ""
     udp_queue_length: int = 0
     udp_queue_capacity: int = 0
+    udp_queue_pressure: float = Field(default=0.0, ge=0.0, le=1.0)
     udp_dropped_count: int = 0
     raw_records_written: int = 0
     raw_bytes_written: int = 0

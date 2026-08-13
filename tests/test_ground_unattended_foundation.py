@@ -315,10 +315,10 @@ def test_syslog_receiver_reports_bounded_queue_pressure_and_drop(tmp_path: Path)
         )
     receiver._run_id = "run-1"
     receiver._flush_if_due()
+    assert repository.latest_health_event()["code"] == "SYSLOG_QUEUE_PRESSURE"
     receiver._dropped_count = 2
     receiver._flush_if_due()
-    codes = {row["code"] for row in repository.list_health_events(run_id="run-1")}
-    assert {"SYSLOG_QUEUE_PRESSURE", "SYSLOG_DROPPED"} <= codes
+    assert repository.latest_health_event()["code"] == "SYSLOG_DROPPED"
 
 
 def test_boot_session_and_fixed_syslog_profile_do_not_save(tmp_path: Path) -> None:
