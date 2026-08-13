@@ -11,6 +11,9 @@ export interface HealthResponse {
   history_error?: string
   history_oldest_pending_age_seconds?: number
   history_pressure?: string
+  history_last_drain_elapsed_ms?: number
+  history_last_drain_written?: number
+  history_budget_overrun?: boolean
 }
 
 export interface RendererBuildMeta {

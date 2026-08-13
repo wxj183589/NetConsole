@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from threading import Event
 
@@ -102,6 +103,9 @@ def test_fastapi_app_exposes_registered_web_modules() -> None:
         "history_error": "",
         "history_oldest_pending_age_seconds": 0,
         "history_pressure": "normal",
+        "history_last_drain_elapsed_ms": 0,
+        "history_last_drain_written": 0,
+        "history_budget_overrun": False,
     }
     assert app.state.runtime_mode is RuntimeMode.SERVER
     assert {
@@ -220,6 +224,7 @@ def test_history_drain_is_independent_from_deferred_runtime_readiness(
         app.state.runtime_services_status = "degraded"
         health = client.get("/api/health")
         assert health.status_code == 200
+        time.sleep(0.05)
         assert calls
         assert calls[0]["unattended_active"] is False
 

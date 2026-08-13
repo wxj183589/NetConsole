@@ -157,7 +157,7 @@ def _telemetry_metrics(
     entities: int,
     samples: int,
     interval_minutes: int,
-) -> dict[str, int | float | str]:
+) -> dict[str, object]:
     database_path = root / "sites" / "telemetry" / "db" / "devices.db"
     Database(database_path).initialize()
     store = HistoryStore(database_path, site_id="telemetry")
@@ -214,12 +214,17 @@ def _production_metrics(
     samples: int,
     interval_minutes: int,
     slow_storage_ms: int = 0,
-) -> dict[str, int | float | str]:
-    """Exercise collector-shaped transactions and bounded unattended drain."""
+) -> dict[str, object]:
+    """Exercise collector cadence and the real one-minute history scheduler on virtual time."""
 
     database_path = root / "sites" / "production-shaped" / "db" / "devices.db"
     Database(database_path).initialize()
-    store = HistoryStore(database_path, site_id="production-shaped")
+    virtual_now = [datetime(2026, 8, 1, tzinfo=UTC)]
+    store = HistoryStore(
+        database_path,
+        site_id="production-shaped",
+        clock=lambda: virtual_now[0],
+    )
     if slow_storage_ms > 0:
         original_write = store._write_shard_batch
 
@@ -229,56 +234,94 @@ def _production_metrics(
 
         store._write_shard_batch = delayed_write
 
-    start = datetime(2026, 8, 1, tzinfo=UTC)
     generated = 0
     logical_transactions = 0
     peak_pending = 0
     peak_age = 0
-    drained = 0
+    drained_during_unattended = 0
+    drain_cycles = 0
+    shard_commits = 0
+    drain_elapsed_ms: list[int] = []
     started = time.perf_counter()
-    kinds = ("fit_ap_resource", "fit_ap_radio", "fit_ap_optical", "fit_ap_lldp", "device_interface", "device_optical", "device_lldp")
+    kinds = (
+        "fit_ap_resource", "fit_ap_radio", "fit_ap_optical", "fit_ap_lldp",
+        "device_interface", "device_optical", "device_lldp",
+    )
+    collector_periods = {
+        "fit_ap_resource": 5,
+        "fit_ap_radio": 5,
+        "fit_ap_optical": 15,
+        "fit_ap_lldp": 15,
+        "device_interface": 5,
+        "device_optical": 15,
+        "device_lldp": 15,
+    }
+    total_minutes = samples * interval_minutes
     with connect_sqlite(database_path, foreign_keys=True) as conn:
-        for sample in range(samples):
-            collected_at = _timestamp(start, sample, interval_minutes)
+        for minute in range(total_minutes):
+            virtual_now[0] = datetime(2026, 8, 1, tzinfo=UTC) + timedelta(minutes=minute)
+            due_kinds = [kind for kind, period in collector_periods.items() if minute % period == 0]
+            if due_kinds:
+                collected_at = virtual_now[0].isoformat(timespec="seconds")
             for entity in range(entities):
+                if not due_kinds:
+                    continue
                 ap = f"ap-{entity:04d}"
-                common = {"ap_uuid": ap, "status": "up", "channel": 149}
+                status = "down" if minute == total_minutes // 2 and entity % 10 == 0 else "up"
+                common = {"ap_uuid": ap, "status": status, "channel": 149}
                 events = (
                     ("fit_ap_resource", f"ac-1:{ap}", common, ("ap_uuid", "status")),
-                    ("fit_ap_radio", f"{ap}:1", {**common, "rid": 1, "usage": sample % 100}, ("ap_uuid", "rid", "status", "channel")),
-                    ("fit_ap_radio", f"{ap}:2", {**common, "rid": 2, "usage": (sample + 1) % 100}, ("ap_uuid", "rid", "status", "channel")),
+                    ("fit_ap_radio", f"{ap}:1", {**common, "rid": 1, "usage": minute % 100}, ("ap_uuid", "rid", "status", "channel")),
+                    ("fit_ap_radio", f"{ap}:2", {**common, "rid": 2, "usage": (minute + 1) % 100}, ("ap_uuid", "rid", "status", "channel")),
                     ("fit_ap_optical", ap, {**common, "optical_alarm_status": "normal", "rx": -3.0}, ("ap_uuid", "optical_alarm_status")),
                     ("fit_ap_lldp", ap, {**common, "neighbor": "sw-1", "port": "GE1/0/1"}, ("ap_uuid", "neighbor", "port")),
-                    ("device_interface", f"device-1:GE{entity}/0/1", {"device_uuid": "device-1", "interface_name": f"GE{entity}/0/1", "link_status": "up"}, ("device_uuid", "interface_name", "link_status")),
+                    ("device_interface", f"device-1:GE{entity}/0/1", {"device_uuid": "device-1", "interface_name": f"GE{entity}/0/1", "link_status": status}, ("device_uuid", "interface_name", "link_status")),
                     ("device_optical", f"device-1:GE{entity}/0/1", {"device_uuid": "device-1", "interface_name": f"GE{entity}/0/1", "status": "normal", "rx": -3.0}, ("device_uuid", "interface_name", "status")),
                     ("device_lldp", f"device-1:GE{entity}/0/1", {"device_uuid": "device-1", "local_interface": f"GE{entity}/0/1", "neighbor": "sw-1"}, ("device_uuid", "local_interface", "neighbor")),
                 )
                 for kind, key, payload, fields in events:
-                    payload = {**payload, "collected_at": collected_at, "collect_run_uuid": f"run-{sample}"}
+                    if kind not in due_kinds:
+                        continue
+                    payload = {**payload, "collected_at": collected_at, "collect_run_uuid": f"run-{minute}"}
                     generated += int(store.record_event(conn, kind=kind, entity_key=key, payload=payload, collected_at=collected_at, meaningful_fields=fields))
-            conn.commit()
-            logical_transactions += 1
-            diagnostics = store.outbox_diagnostics()
-            peak_pending = max(peak_pending, diagnostics.pending)
-            peak_age = max(peak_age, diagnostics.oldest_pending_age_seconds)
+            if due_kinds:
+                conn.commit()
+                logical_transactions += 1
+            # Backend's unattended scheduler is a one-minute loop, independent
+            # of collector cadence.  Every virtual minute is one drain cycle.
             result = store.drain(unattended_active=True, limit=100, max_elapsed_seconds=2.0)
-            drained += result.written
-            peak_pending = max(peak_pending, result.pending)
-            peak_age = max(peak_age, result.oldest_pending_age_seconds)
-
+            drain_cycles += 1
+            drained_during_unattended += result.written
+            shard_commits += result.shard_commits
+            drain_elapsed_ms.append(result.elapsed_ms)
+            diagnostics = store.outbox_diagnostics()
+            peak_pending = max(peak_pending, diagnostics.pending, result.pending)
+            peak_age = max(peak_age, diagnostics.oldest_pending_age_seconds, result.oldest_pending_age_seconds)
+    pending_before_catchup = store.pending_count()
+    oldest_before_catchup = store.outbox_diagnostics().oldest_pending_age_seconds
+    catchup_drained = 0
     while store.pending_count():
         result = store.drain(limit=500)
-        drained += result.written
+        catchup_drained += result.written
         if result.degraded or result.written == 0:
             break
     shard_bytes = sum(path.stat().st_size for path in store.history_root.glob("devices-*.db"))
     catalog = store.history_root / "catalog.db"
     return {
         "events_generated": generated,
-        "events_drained": drained,
-        "peak_pending": peak_pending,
-        "final_pending": store.pending_count(),
+        "events_drained_during_unattended": drained_during_unattended,
+        "pending_before_catchup": pending_before_catchup,
+        "oldest_pending_before_catchup_seconds": oldest_before_catchup,
+        "peak_pending_during_unattended": peak_pending,
         "peak_oldest_pending_age_seconds": peak_age,
+        "catchup_drained": catchup_drained,
+        "final_pending_after_catchup": store.pending_count(),
+        "drain_cycles": drain_cycles,
+        "virtual_duration_minutes": total_minutes,
+        "history_scheduler_interval_minutes": 1,
+        "shard_commit_count": shard_commits,
+        "average_drain_elapsed_ms": round(sum(drain_elapsed_ms) / max(1, len(drain_elapsed_ms)), 2),
+        "max_drain_elapsed_ms": max(drain_elapsed_ms, default=0),
         "logical_transaction_count": logical_transactions,
         "elapsed_seconds": round(time.perf_counter() - started, 3),
         "current_database_bytes": database_path.stat().st_size,
@@ -301,7 +344,13 @@ def main() -> int:
     parser.add_argument("--days", type=int, default=2)
     parser.add_argument("--poll-minutes", type=int, default=5)
     parser.add_argument("--output", type=Path, default=None)
-    parser.add_argument("--slow-storage-ms", type=int, default=0)
+    parser.add_argument(
+        "--slow-storage-ms",
+        type=int,
+        nargs="+",
+        default=[0],
+        help="每个 shard chunk 注入的慢存储毫秒数，可重复/一次传入多个档位",
+    )
     args = parser.parse_args()
     if args.entities < 1 or args.days < 1 or args.poll_minutes < 1:
         raise SystemExit("entities、days 和 poll-minutes 必须大于 0")
@@ -333,13 +382,16 @@ def main() -> int:
             samples=samples,
             interval_minutes=args.poll_minutes,
         )
-        production = _production_metrics(
-            root,
-            entities=args.entities,
-            samples=samples,
-            interval_minutes=args.poll_minutes,
-            slow_storage_ms=max(0, args.slow_storage_ms),
-        )
+        production_by_delay = {
+            str(max(0, delay)): _production_metrics(
+                root / f"slow-{max(0, delay)}",
+                entities=args.entities,
+                samples=samples,
+                interval_minutes=args.poll_minutes,
+                slow_storage_ms=max(0, delay),
+            )
+            for delay in args.slow_storage_ms
+        }
         report = {
             "fixture": {
                 "entities": args.entities,
@@ -351,7 +403,8 @@ def main() -> int:
             "legacy_per_sample": legacy,
             "change_aware_month_shard": phase2,
             "telemetry_and_state_mix": telemetry,
-            "production_shaped": production,
+            "production_shaped": production_by_delay[str(max(0, args.slow_storage_ms[0]))],
+            "production_shaped_by_slow_storage": production_by_delay,
             "projection": {
                 f"{days}_days": {
                     "legacy_rows": _project(legacy["rows"], observed_days=observed_days, days=days),

@@ -31,6 +31,9 @@ def health(request: Request) -> HealthResponse:
             getattr(request.app.state, "history_oldest_pending_age_seconds", 0)
         ),
         history_pressure=str(getattr(request.app.state, "history_pressure", "normal")),
+        history_last_drain_elapsed_ms=int(getattr(request.app.state, "history_last_drain_elapsed_ms", 0)),
+        history_last_drain_written=int(getattr(request.app.state, "history_last_drain_written", 0)),
+        history_budget_overrun=bool(getattr(request.app.state, "history_budget_overrun", False)),
     )
 
 
@@ -52,6 +55,9 @@ def health_response(
     history_error: str = "",
     history_oldest_pending_age_seconds: int = 0,
     history_pressure: str = "normal",
+    history_last_drain_elapsed_ms: int = 0,
+    history_last_drain_written: int = 0,
+    history_budget_overrun: bool = False,
 ) -> HealthResponse:
     return HealthResponse(
         status="ok",
@@ -72,4 +78,7 @@ def health_response(
         history_error=history_error,
         history_oldest_pending_age_seconds=max(0, int(history_oldest_pending_age_seconds)),
         history_pressure=history_pressure,
+        history_last_drain_elapsed_ms=max(0, int(history_last_drain_elapsed_ms)),
+        history_last_drain_written=max(0, int(history_last_drain_written)),
+        history_budget_overrun=bool(history_budget_overrun),
     )

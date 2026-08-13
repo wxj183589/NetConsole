@@ -559,6 +559,9 @@ def create_app(
                         max_elapsed_seconds=2.0 if unattended_active else None,
                     )
                     app.state.history_pending = result.pending
+                    app.state.history_last_drain_elapsed_ms = result.elapsed_ms
+                    app.state.history_last_drain_written = result.written
+                    app.state.history_budget_overrun = result.budget_exceeded
                     app.state.history_oldest_pending_age_seconds = result.oldest_pending_age_seconds
                     app.state.history_pressure = result.pressure
                     app.state.history_status = "paused" if result.paused else (
@@ -569,6 +572,11 @@ def create_app(
                         app_logger.log_warning(
                             "HISTORY_DRAIN_DEGRADED",
                             f"pending={result.pending} written={result.written}",
+                        )
+                    elif result.budget_exceeded:
+                        app_logger.log_warning(
+                            "HISTORY_DRAIN_BUDGET_OVERRUN",
+                            f"elapsed_ms={result.elapsed_ms} written={result.written} pending={result.pending}",
                         )
                 except (OSError, sqlite3.Error) as exc:
                     app.state.history_status = "degraded"
@@ -726,6 +734,9 @@ def create_app(
     app.state.history_error = ""
     app.state.history_oldest_pending_age_seconds = 0
     app.state.history_pressure = "normal"
+    app.state.history_last_drain_elapsed_ms = 0
+    app.state.history_last_drain_written = 0
+    app.state.history_budget_overrun = False
     app.state.history_store = history_store
     app.state.host_environment_profile = host_profile
     app.state.performance_mode = performance_mode.value

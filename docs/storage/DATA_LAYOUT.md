@@ -101,9 +101,11 @@ Phase 2 的目标是先停止 `devices.db` 因高频快照持续增长，同时�
 
 Phase 2.1 收口了写入语义：`device_fact.uptime`、接口配置采集时间、LLDP `holdtime/ttl`、光衰 RX/TX/温度/电压/偏置电流，以及 FIT-AP Radio 的 usage/clients/tx_power、FIT-AP Optical 的连续量只作为 heartbeat payload，不参与普通 change fingerprint。设备/AP 身份、型号、版本、链路/邻居、channel/bandwidth、status/alarm、阈值和冲突状态仍在变化时立即记录。各 kind 继续使用独立 sampling 周期，heartbeat 仍保留最新 telemetry payload。
 
-无人值守期间 history 以低频、较大但有界的事务批次排空：基础批次 100 条，积压或年龄升高时提升到 250/500 条，单批默认不超过 2 秒。这样在保持 Syslog/MR/Ping persistence 优先级的同时，排空能力应覆盖实测历史生成速率；`/api/health` 暴露 `history_status`、`history_pending`、`history_oldest_pending_age_seconds`、`history_pressure` 和 `history_error`。History drain 不因 Agent/Traffic/File Management 等 deferred runtime 未 ready 而停滞。
+无人值守期间 history 以低频、较大但有界的事务批次排空：基础批次 100 条，积压或年龄升高时提升到 250/500 条，目标调度预算为 2 秒。已开始的 SQLite chunk 必须安全完成；chunk 完成后若已超出预算，本轮不再启动下一 chunk，不强制中断事务。`/api/health` 暴露 `history_status`、`history_pending`、`history_oldest_pending_age_seconds`、`history_pressure`、`history_last_drain_elapsed_ms`、`history_last_drain_written` 和 `history_budget_overrun`。History drain 不因 Agent/Traffic/File Management 等 deferred runtime 未 ready 而停滞。
 
 Catalog rollover 会在新月份写入时将其它 ACTIVE 分片收口为 CLOSED，并以真实月份末日填充 `period_end`（包括闰年二月）。
+
+History growth benchmark 使用统一虚拟时钟按分钟推进 collector 与 history scheduler；验收以 unattended 阶段的 `pending_before_catchup`、最老 pending age、drain cycles 和 elapsed 为准。结束后的 catch-up 仅用于临时 fixture 清理，不代表无人值守排空能力。
 
 ### 写入、查询与升级流程
 
@@ -111,7 +113,7 @@ Catalog rollover 会在新月份写入时将其它 ACTIVE 分片收口为 CLOSED
 flowchart LR
     C["设备 / AC 采集"] --> S["devices.db current state"]
     C --> O["同一事务: history_outbox + history_state"]
-    O -->|"READY 后，100/250/500 行\n按积压、年龄和 2 秒批次预算自适应 drain"| M["devices-YYYY-MM.db"]
+    O -->|"READY 后，100/250/500 行\n按积压、年龄和 2 秒软预算自适应 drain"| M["devices-YYYY-MM.db"]
     M --> K["catalog.db\n已知月分片"]
     U["SERVER_UNATTENDED ACTIVE"] -."暂停 maintenance".-> O
     U -."暂停 maintenance".-> M

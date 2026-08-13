@@ -14,7 +14,7 @@ import re
 import sqlite3
 import time
 from calendar import monthrange
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -210,6 +210,9 @@ class HistoryDrainResult:
     oldest_pending_age_seconds: int = 0
     attempts: int = 0
     pressure: str = "normal"
+    elapsed_ms: int = 0
+    budget_exceeded: bool = False
+    shard_commits: int = 0
 
 
 @dataclass(frozen=True)
@@ -287,12 +290,20 @@ class HistoryStore:
         site_id: str = "",
         history_root: Path | None = None,
         heartbeat_seconds: dict[str, int] | None = None,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.database_path = Path(database_path)
         self.site_id = str(site_id or self.database_path.parent.parent.name)
         self.history_root = Path(history_root or self.database_path.parent / "history")
         self.heartbeat_seconds = {**TELEMETRY_SAMPLING_SECONDS, **(heartbeat_seconds or {})}
+        self._clock = clock
         self._last_query_errors: tuple[str, ...] = ()
+
+    def _now(self) -> datetime:
+        value = (self._clock or _local_now)()
+        if value.tzinfo is not None:
+            return value.astimezone().replace(tzinfo=None)
+        return value
 
     @classmethod
     def from_connection(cls, conn: sqlite3.Connection) -> HistoryStore:
@@ -379,7 +390,7 @@ class HistoryStore:
             event_type = "heartbeat"
         if not should_record:
             return False
-        created_at = _local_now().isoformat(timespec="seconds")
+        created_at = self._now().isoformat(timespec="seconds")
         event_id = hashlib.sha256(
             f"{kind}|{entity_key}|{digest}|{event_type}|{now}".encode()
         ).hexdigest()
@@ -430,7 +441,7 @@ class HistoryStore:
             return HistoryOutboxDiagnostics(pressure="degraded")
         pending = int(row["pending"] if row is not None else 0)
         oldest = _parse_time(str(row["oldest"] or "")) if row is not None else None
-        age = max(0, int((_local_now() - oldest).total_seconds())) if oldest else 0
+        age = max(0, int((self._now() - oldest).total_seconds())) if oldest else 0
         pressure = "high" if pending >= max(1, int(high_watermark)) else "normal"
         return HistoryOutboxDiagnostics(
             pending=pending,
@@ -481,12 +492,14 @@ class HistoryStore:
             if not rows:
                 return HistoryDrainResult()
             written = 0
+            shard_commits = 0
             started_at = time.monotonic()
             batches: dict[str, list[dict[str, Any]]] = {}
             for row in rows:
                 event = dict(row)
                 batches.setdefault(_period(str(event["collected_at"])), []).append(event)
             stop_for_budget = False
+            budget_exceeded = False
             for batch in batches.values():
                 chunk_limit = UNATTENDED_SHARD_BATCH_LIMIT if unattended_active else len(batch)
                 for offset in range(0, len(batch), chunk_limit):
@@ -496,6 +509,7 @@ class HistoryStore:
                         and time.monotonic() - started_at >= batch_budget
                     ):
                         stop_for_budget = True
+                        budget_exceeded = True
                         break
                     chunk = batch[offset : offset + chunk_limit]
                     try:
@@ -507,6 +521,13 @@ class HistoryStore:
                             )
                             current.commit()
                         written += len(chunk)
+                        shard_commits += 1
+                        if (
+                            batch_budget is not None
+                            and time.monotonic() - started_at >= batch_budget
+                        ):
+                            budget_exceeded = True
+                            stop_for_budget = True
                     except (OSError, sqlite3.Error, ValueError):
                         with closing(connect_sqlite(self.database_path, foreign_keys=True)) as current:
                             current.executemany(
@@ -519,6 +540,9 @@ class HistoryStore:
                             pending=self.outbox_diagnostics(high_watermark=high_watermark).pending,
                             degraded=True,
                             pressure="degraded",
+                            elapsed_ms=int((time.monotonic() - started_at) * 1000),
+                            budget_exceeded=budget_exceeded,
+                            shard_commits=shard_commits,
                         )
                 if stop_for_budget:
                     break
@@ -527,12 +551,16 @@ class HistoryStore:
                 pending = self._pending_count_on(current)
                 current.commit()
             diagnostics = self.outbox_diagnostics(high_watermark=high_watermark)
+            elapsed_ms = int((time.monotonic() - started_at) * 1000)
             return HistoryDrainResult(
                 written=written,
                 pending=pending,
                 oldest_pending_age_seconds=diagnostics.oldest_pending_age_seconds,
                 attempts=diagnostics.attempts,
                 pressure=diagnostics.pressure,
+                elapsed_ms=elapsed_ms,
+                budget_exceeded=budget_exceeded,
+                shard_commits=shard_commits,
             )
         except (OSError, sqlite3.Error):
             return HistoryDrainResult(degraded=True, pressure="degraded")
@@ -570,9 +598,9 @@ class HistoryStore:
         catalog_path = self.history_root / "catalog.db"
         with closing(connect_sqlite(catalog_path, foreign_keys=True)) as catalog:
             self._ensure_catalog(catalog)
-            now = _local_now().isoformat(timespec="seconds")
+            now = self._now().isoformat(timespec="seconds")
             relative_path = shard_path.name
-            is_current_period = period == _local_now().strftime("%Y-%m")
+            is_current_period = period == self._now().strftime("%Y-%m")
             catalog.execute(
                 "UPDATE history_catalog SET status='CLOSED', closed_at=? "
                 "WHERE status='ACTIVE' AND shard_id < ?",

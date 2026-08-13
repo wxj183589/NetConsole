@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from itertools import pairwise
@@ -125,6 +126,45 @@ def test_unattended_drain_adapts_to_backlog_without_tiny_commit_policy(tmp_path)
     assert result.paused is False
     assert result.written == 2
     assert result.pending == 0
+
+
+def test_unattended_soft_budget_finishes_started_chunk_and_keeps_later_rows(
+    tmp_path, monkeypatch
+):
+    store = _store(tmp_path)
+    for index in range(150):
+        with connect_sqlite(store.database_path, foreign_keys=True) as conn:
+            assert store.record_event(
+                conn,
+                kind="fit_ap_resource",
+                entity_key=f"ap-{index}",
+                payload={"ap_uuid": f"ap-{index}", "status": "up"},
+                collected_at="2026-08-01T10:00:00",
+                meaningful_fields=("ap_uuid", "status"),
+            )
+            conn.commit()
+
+    writes: list[int] = []
+    original_write = store._write_shard_batch
+
+    def slow_write(rows):
+        writes.append(len(rows))
+        time.sleep(0.02)
+        original_write(rows)
+
+    monkeypatch.setattr(store, "_write_shard_batch", slow_write)
+    result = store.drain(
+        unattended_active=True,
+        high_watermark=1,
+        max_elapsed_seconds=0.01,
+    )
+
+    assert result.written == 100
+    assert result.pending == 50
+    assert writes == [100]
+    assert result.budget_exceeded is True
+    assert result.shard_commits == 1
+    assert result.elapsed_ms >= 20
 
 
 def test_unattended_drain_limit_scales_with_backlog_and_age():

@@ -47,3 +47,6 @@ class HealthResponse(ApiModel):
     history_error: str = ""
     history_oldest_pending_age_seconds: int = 0
     history_pressure: str = "normal"
+    history_last_drain_elapsed_ms: int = 0
+    history_last_drain_written: int = 0
+    history_budget_overrun: bool = False
