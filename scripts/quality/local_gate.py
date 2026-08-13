@@ -107,19 +107,16 @@ def resolve_revisions(base_sha: str = "", head_sha: str = "") -> tuple[str, str]
     head = head_sha or _git("rev-parse", "HEAD")
     if base_sha:
         return base_sha, head
-    try:
-        upstream = _git("rev-parse", "@{upstream}")
-    except subprocess.CalledProcessError:
-        upstream = ""
-        for candidate in ("github/main", "origin/main", "main"):
-            try:
-                upstream = _git("rev-parse", "--verify", candidate)
-                break
-            except subprocess.CalledProcessError:
-                continue
-        if not upstream:
-            upstream = f"{head}^"
-    return _git("merge-base", head, upstream), head
+    main_revision = ""
+    for candidate in ("github/main", "origin/main", "main"):
+        try:
+            main_revision = _git("rev-parse", "--verify", candidate)
+            break
+        except subprocess.CalledProcessError:
+            continue
+    if not main_revision:
+        main_revision = f"{head}^"
+    return _git("merge-base", head, main_revision), head
 
 
 def changed_paths(base_sha: str, head_sha: str) -> tuple[str, ...]:
