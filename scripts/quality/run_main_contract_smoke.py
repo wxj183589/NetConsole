@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import argparse
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
 from uuid import uuid4
+
+from scripts.quality.local_gate import remove_owned_test_root
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -59,7 +60,7 @@ def run_main_contract_smoke(*, run_id: str | None = None) -> int:
     try:
         return subprocess.run(command, cwd=ROOT, env=environment, check=False).returncode
     finally:
-        shutil.rmtree(run_root, ignore_errors=True)
+        remove_owned_test_root(run_root, base_root=TEST_BASE_ROOT)
 
 
 def main() -> int:

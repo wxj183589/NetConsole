@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 from contextlib import contextmanager
@@ -147,6 +148,25 @@ def _test_root(run_id: str, *, base_root: Path = TEST_BASE_ROOT) -> Path:
     return target
 
 
+def remove_owned_test_root(target: Path, *, base_root: Path = TEST_BASE_ROOT) -> None:
+    resolved = target.resolve()
+    base = base_root.resolve()
+    if resolved == base or not resolved.is_relative_to(base):
+        raise ValueError("Local Gate may only remove an owned child of the test base root")
+    if not resolved.exists():
+        return
+
+    def clear_readonly_and_retry(function: Callable[[str], object], path: str, error: BaseException) -> None:
+        if not isinstance(error, PermissionError):
+            raise error
+        os.chmod(path, stat.S_IWRITE)
+        function(path)
+
+    shutil.rmtree(resolved, onexc=clear_readonly_and_retry)
+    if resolved.exists():
+        raise OSError(f"Local Gate failed to remove its test root: {resolved}")
+
+
 @contextmanager
 def isolated_test_environment(
     run_id: str,
@@ -169,7 +189,7 @@ def isolated_test_environment(
     finally:
         verified = _test_root(run_id, base_root=base_root)
         if verified == run_root.resolve():
-            shutil.rmtree(verified, ignore_errors=True)
+            remove_owned_test_root(verified, base_root=base_root)
 
 
 def _pytest_step(label: str, targets: Iterable[str], context: GateContext) -> CommandStep:

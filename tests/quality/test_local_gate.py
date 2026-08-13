@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import stat
 from dataclasses import replace
 from pathlib import Path
 
@@ -154,6 +155,18 @@ def test_isolation_overrides_formal_root_and_cleans_only_owned_run(tmp_path: Pat
 
     assert not run_root.exists()
     assert formal.is_dir()
+
+
+def test_isolation_removes_readonly_test_files(tmp_path: Path) -> None:
+    base = tmp_path / "NetConsoleTestData"
+
+    with isolated_test_environment("local-gate-readonly", base_root=base) as (run_root, _):
+        readonly = run_root / "pytest" / ".git" / "objects" / "object"
+        readonly.parent.mkdir(parents=True)
+        readonly.write_bytes(b"git object")
+        readonly.chmod(stat.S_IREAD)
+
+    assert not run_root.exists()
 
 
 def test_isolation_rejects_test_base_itself(tmp_path: Path) -> None:
