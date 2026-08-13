@@ -148,6 +148,15 @@ pnpm dev:codex
 .\.venv\Scripts\python.exe -m pytest tests\test_web_architecture.py tests\test_mesh_analysis_web_api.py -q
 ```
 
+提交前按 Change Impact 自动选择本地质量门；L4 或最终 `main` baseline 显式执行 FULL：
+
+```powershell
+.\.venv\Scripts\python.exe -m scripts.quality.local_gate --mode auto
+.\.venv\Scripts\python.exe -m scripts.quality.local_gate --mode full
+```
+
+本地 Gate 使用唯一 `D:\NetConsoleTestData\<run-id>`，不会读取正式业务根。GitHub Actions 保持为可选远端复核。
+
 完整开发、测试和打包要求分别见 [开发规则](docs/DEVELOPMENT_RULES.md)、[测试基线](docs/testing/BASELINE.md) 和 [构建与发布](docs/release/BUILD_AND_RELEASE.md)。
 
 ## 文档导航

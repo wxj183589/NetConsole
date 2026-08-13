@@ -1,6 +1,6 @@
 # Windows Self-hosted CI
 
-NetConsole 的质量门禁仍由 GitHub Actions 管理，但 Windows Job 可以在受控的本机 Runner 上执行。该机制是一次性的 Runner 后端选择，不是 Hosted 失败后的自动重试：Job 排队后不会在两种后端之间跳转。
+NetConsole 以本地 Local Quality Gate 作为主要开发验证事实源；GitHub Actions 是可选远端复核，Windows Job 可以在受控的本机 Runner 上执行。该机制是一次性的 Runner 后端选择，不是 Hosted 失败后的自动重试：Job 排队后不会在两种后端之间跳转。
 
 ## 选择规则
 
