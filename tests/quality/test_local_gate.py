@@ -35,7 +35,7 @@ def test_auto_mode_uses_risk_level(risk: str, expected: str) -> None:
     assert select_mode("auto", risk) == expected
 
 
-def test_revision_resolution_prefers_github_main_without_upstream(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_revision_resolution_prefers_github_main_over_feature_upstream(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[str, ...]] = []
 
     def fake_git(*args: str) -> str:
@@ -43,7 +43,7 @@ def test_revision_resolution_prefers_github_main_without_upstream(monkeypatch: p
         if args == ("rev-parse", "HEAD"):
             return "head-sha"
         if args == ("rev-parse", "@{upstream}"):
-            raise local_gate.subprocess.CalledProcessError(128, args)
+            return "feature-upstream-sha"
         if args == ("rev-parse", "--verify", "github/main"):
             return "github-main-sha"
         if args == ("merge-base", "head-sha", "github-main-sha"):
@@ -53,7 +53,52 @@ def test_revision_resolution_prefers_github_main_without_upstream(monkeypatch: p
     monkeypatch.setattr(local_gate, "_git", fake_git)
 
     assert resolve_revisions() == ("base-sha", "head-sha")
+    assert ("rev-parse", "@{upstream}") not in calls
     assert ("rev-parse", "--verify", "origin/main") not in calls
+
+
+@pytest.mark.parametrize(
+    ("unavailable", "selected_ref", "selected_sha"),
+    (
+        (("github/main",), "origin/main", "origin-main-sha"),
+        (("github/main", "origin/main"), "main", "local-main-sha"),
+    ),
+)
+def test_revision_resolution_falls_back_through_main_refs(
+    monkeypatch: pytest.MonkeyPatch,
+    unavailable: tuple[str, ...],
+    selected_ref: str,
+    selected_sha: str,
+) -> None:
+    def fake_git(*args: str) -> str:
+        if args == ("rev-parse", "HEAD"):
+            return "head-sha"
+        if args[:2] == ("rev-parse", "--verify") and args[2] in unavailable:
+            raise local_gate.subprocess.CalledProcessError(128, args)
+        if args == ("rev-parse", "--verify", selected_ref):
+            return selected_sha
+        if args == ("merge-base", "head-sha", selected_sha):
+            return "base-sha"
+        raise AssertionError(args)
+
+    monkeypatch.setattr(local_gate, "_git", fake_git)
+
+    assert resolve_revisions() == ("base-sha", "head-sha")
+
+
+def test_revision_resolution_uses_parent_when_no_main_ref_exists(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_git(*args: str) -> str:
+        if args == ("rev-parse", "HEAD"):
+            return "head-sha"
+        if args[:2] == ("rev-parse", "--verify"):
+            raise local_gate.subprocess.CalledProcessError(128, args)
+        if args == ("merge-base", "head-sha", "head-sha^"):
+            return "parent-sha"
+        raise AssertionError(args)
+
+    monkeypatch.setattr(local_gate, "_git", fake_git)
+
+    assert resolve_revisions() == ("parent-sha", "head-sha")
 
 
 def test_windows_pnpm_command_uses_cmd_resolved_executable(monkeypatch: pytest.MonkeyPatch) -> None:
