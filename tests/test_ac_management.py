@@ -967,6 +967,34 @@ def test_fit_ap_optical_history_is_appended_and_sorted(tmp_path):
     assert projection_count == 0
 
 
+def test_fit_ap_optical_telemetry_jitter_does_not_create_change_event(tmp_path):
+    repository = AcRepository(make_database(tmp_path))
+    repository.replace_fit_ap_resources(
+        "ac-1", [{"ap_name": "ap-a", "serial_number": "SN-001"}]
+    )
+    ap_uuid = repository.list_fit_ap_resources("ac-1")[0]["ap_uuid"]
+    repository.replace_fit_ap_optical(
+        "ac-1", [{"ap_uuid": ap_uuid, "rx_power": "-10.5", "temperature": "30.0", "collected_at": "2026-01-01T00:00:00"}]
+    )
+    repository.replace_fit_ap_optical(
+        "ac-1", [{"ap_uuid": ap_uuid, "rx_power": "-10.6", "temperature": "30.1", "collected_at": "2026-01-01T00:01:00"}]
+    )
+    with repository.database.connect() as conn:
+        pending = conn.execute(
+            "SELECT COUNT(*) FROM history_outbox WHERE kind='fit_ap_optical'"
+        ).fetchone()[0]
+    assert pending == 1
+
+    repository.replace_fit_ap_optical(
+        "ac-1", [{"ap_uuid": ap_uuid, "rx_power": "-10.6", "optical_alarm_status": "no_light", "collected_at": "2026-01-01T00:02:00"}]
+    )
+    with repository.database.connect() as conn:
+        pending = conn.execute(
+            "SELECT COUNT(*) FROM history_outbox WHERE kind='fit_ap_optical'"
+        ).fetchone()[0]
+    assert pending == 2
+
+
 def test_fit_ap_lldp_history_is_appended_and_sorted(tmp_path):
     repository = AcRepository(make_database(tmp_path))
     repository.replace_fit_ap_resources(
@@ -1428,6 +1456,22 @@ def test_fit_ap_radio_history_is_appended_from_resource_rows(tmp_path):
     assert [row["channel"] for row in history[:2]] == ["153", "149"]
     assert history[0]["bandwidth"] == "80"
     assert history[0]["tx_power"] == "25"
+
+
+def test_fit_ap_radio_telemetry_jitter_does_not_create_change_event(tmp_path):
+    repository = AcRepository(make_database(tmp_path))
+    repository.replace_fit_ap_resources(
+        "ac-1", [{"ap_name": "ap-a", "serial_number": "SN-001", "rid1_channel": "149", "rid1_usage": "10", "rid1_clients": "2"}]
+    )
+    ap_uuid = repository.list_fit_ap_resources("ac-1")[0]["ap_uuid"]
+    repository.replace_fit_ap_resources(
+        "ac-1", [{"ap_uuid": ap_uuid, "ap_name": "ap-a", "serial_number": "SN-001", "rid1_channel": "149", "rid1_usage": "20", "rid1_clients": "3", "collected_at": "2026-01-01T00:01:00"}]
+    )
+    with repository.database.connect() as conn:
+        pending = conn.execute(
+            "SELECT COUNT(*) FROM history_outbox WHERE kind='fit_ap_radio'"
+        ).fetchone()[0]
+    assert pending == 1
 
 
 def test_fit_ap_resource_history_is_appended_from_resource_rows(tmp_path):

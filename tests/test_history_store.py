@@ -61,6 +61,32 @@ def test_change_aware_history_records_one_initial_event_then_per_kind_heartbeat(
     ]
 
 
+def test_telemetry_only_changes_are_sampled_and_latest_payload_is_kept(tmp_path):
+    store = _store(tmp_path)
+
+    def record(collected_at: str, uptime: int) -> bool:
+        with connect_sqlite(store.database_path, foreign_keys=True) as conn:
+            value = store.record_event(
+                conn,
+                kind="device_fact",
+                entity_key="device-1",
+                payload={"device_uuid": "device-1", "model": "S6520", "uptime": uptime},
+                collected_at=collected_at,
+                heartbeat_seconds=3600,
+                meaningful_fields=("device_uuid", "model"),
+            )
+            conn.commit()
+        return value
+
+    assert record("2026-08-01T10:00:00", 100)
+    assert not record("2026-08-01T10:05:00", 400)
+    assert record("2026-08-01T11:00:00", 3700)
+    assert store.drain(limit=10).written == 2
+    events = store.query_events(kind="device_fact")
+    assert [event["event_type"] for event in events] == ["heartbeat", "change"]
+    assert events[0]["uptime"] == 3700
+
+
 def test_history_store_rotates_month_shards_without_losing_or_duplicating_events(tmp_path):
     store = _store(tmp_path)
     assert _record(store, collected_at="2026-07-31T23:59:00", value="up")
@@ -74,6 +100,55 @@ def test_history_store_rotates_month_shards_without_losing_or_duplicating_events
     assert (store.history_root / "devices-2026-07.db").is_file()
     assert (store.history_root / "devices-2026-08.db").is_file()
     assert len(store.query_events(kind="device_interface")) == 2
+    with connect_sqlite(store.history_root / "catalog.db", foreign_keys=True) as conn:
+        catalog = {
+            row["shard_id"]: dict(row)
+            for row in conn.execute(
+                "SELECT shard_id, period_end, status FROM history_catalog"
+            ).fetchall()
+        }
+    assert catalog["2026-07"]["period_end"] == "2026-07-31"
+    assert catalog["2026-08"]["status"] == "ACTIVE"
+
+
+def test_unattended_pressure_allows_only_tiny_bounded_drain(tmp_path):
+    store = _store(tmp_path)
+    assert _record(store, collected_at="2026-08-01T10:00:00", value="up")
+    assert _record(store, collected_at="2026-08-01T10:01:00", value="down")
+
+    paused = store.drain(unattended_active=True, high_watermark=10)
+    assert paused.paused is True
+    assert paused.pending == 2
+    pressured = store.drain(unattended_active=True, high_watermark=1, limit=500)
+    assert pressured.paused is False
+    assert pressured.written == 2
+    assert pressured.pending == 0
+
+
+def test_outbox_diagnostics_reports_bounded_pressure_and_age(tmp_path):
+    store = _store(tmp_path)
+    assert _record(store, collected_at="2026-08-01T10:00:00", value="up")
+    diagnostics = store.outbox_diagnostics(high_watermark=1)
+    assert diagnostics.pending == 1
+    assert diagnostics.pressure == "high"
+    assert diagnostics.attempts == 0
+
+
+def test_new_outbox_write_preserves_existing_legacy_rows(tmp_path):
+    store = _store(tmp_path)
+    with connect_sqlite(store.database_path, foreign_keys=True) as conn:
+        conn.execute(
+            "CREATE TABLE device_facts_history (id INTEGER PRIMARY KEY, device_uuid TEXT, "
+            "sysname TEXT, collected_at TEXT, created_at TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO device_facts_history VALUES (1, 'device-1', 'legacy', '2026-07-01T00:00:00', '2026-07-01T00:00:00')"
+        )
+        conn.commit()
+    assert _record(store, collected_at="2026-08-01T10:00:00", value="up")
+    with connect_sqlite(store.database_path, foreign_keys=True) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM device_facts_history").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM history_outbox").fetchone()[0] == 1
 
 
 def test_outbox_survives_current_commit_before_shard_drain_and_recovers_after_restart(tmp_path):

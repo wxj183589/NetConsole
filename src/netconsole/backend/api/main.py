@@ -5,6 +5,7 @@ import html
 import os
 import re
 import secrets
+import sqlite3
 from contextlib import asynccontextmanager
 from http.cookies import SimpleCookie
 from pathlib import Path
@@ -529,6 +530,20 @@ def create_app(
             while True:
                 if not app.state.accepting_work:
                     return
+                try:
+                    diagnostics = await asyncio.to_thread(history_store.outbox_diagnostics)
+                    app.state.history_pending = diagnostics.pending
+                    app.state.history_oldest_pending_age_seconds = (
+                        diagnostics.oldest_pending_age_seconds
+                    )
+                    app.state.history_pressure = diagnostics.pressure
+                    if not app.state.runtime_services_ready and diagnostics.pressure == "degraded":
+                        app.state.history_status = "degraded"
+                    elif not app.state.runtime_services_ready and app.state.history_status == "idle":
+                        app.state.history_status = "deferred"
+                except (OSError, sqlite3.Error) as exc:
+                    app.state.history_status = "degraded"
+                    app.state.history_error = exc.__class__.__name__
                 if app.state.runtime_services_ready:
                     try:
                         unattended_active = await asyncio.to_thread(
@@ -537,26 +552,31 @@ def create_app(
                         )
                         result = await asyncio.to_thread(
                             history_store.drain,
-                            limit=100,
+                            limit=10 if unattended_active else 100,
                             unattended_active=unattended_active,
                         )
                         app.state.history_pending = result.pending
+                        app.state.history_oldest_pending_age_seconds = result.oldest_pending_age_seconds
+                        app.state.history_pressure = result.pressure
                         app.state.history_status = "paused" if result.paused else (
                             "degraded" if result.degraded else "ready"
                         )
+                        app.state.history_error = "" if not result.degraded else "shard_write_failed"
                         if result.degraded:
                             app_logger.log_warning(
                                 "HISTORY_DRAIN_DEGRADED",
                                 f"pending={result.pending} written={result.written}",
                             )
-                    except Exception as exc:
+                    except (OSError, sqlite3.Error) as exc:
                         app.state.history_status = "degraded"
                         app.state.history_error = exc.__class__.__name__
                         app_logger.log_warning(
                             "HISTORY_DRAIN_DEGRADED",
                             f"error={exc.__class__.__name__}: {_safe_error_message(str(exc))}",
                         )
-                await asyncio.sleep(10)
+                await asyncio.sleep(60 if _unattended_run_active(
+                    getattr(app.state, "ground_unattended_repository", None)
+                ) else 10)
 
         auto_cleanup_task = (
             asyncio.create_task(schedule_auto_cleanup())
@@ -697,6 +717,8 @@ def create_app(
     app.state.history_status = "idle"
     app.state.history_pending = 0
     app.state.history_error = ""
+    app.state.history_oldest_pending_age_seconds = 0
+    app.state.history_pressure = "normal"
     app.state.history_store = history_store
     app.state.host_environment_profile = host_profile
     app.state.performance_mode = performance_mode.value

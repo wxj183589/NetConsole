@@ -42,3 +42,8 @@ class HealthResponse(ApiModel):
     unattended_status: str = "disabled"
     unattended_ready: bool = False
     unattended_error: str = ""
+    history_status: str = "idle"
+    history_pending: int = 0
+    history_error: str = ""
+    history_oldest_pending_age_seconds: int = 0
+    history_pressure: str = "normal"

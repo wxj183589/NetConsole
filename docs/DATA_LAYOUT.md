@@ -97,7 +97,13 @@ Phase 2 的目标是先停止 `devices.db` 因高频快照持续增长，同时�
 - Phase 2A/2B 已实现的边界是路径、catalog/outbox、按月分片、change-aware 新写和 query compatibility；旧 history table、旧索引和当前态表均保留。`devices.db` 中旧历史不会在启动时批量迁移，840 MiB 的旧库可以直接打开。
 - Phase 2C 的已接入查询接口可合并相关 legacy history 与新 outbox/shard 事件。没有 dual-write 回 legacy table：切换后的新 producer 仅在 current transaction 内写 outbox；尚未接入 producer 的历史继续保持 legacy 行为，不能因此推断该表已完成切换。轨旁业务快照的轻量 revision 只读取 current DB 中的 `history_outbox/history_state`；`catalog.db` 和月分片仍不参与正常快照或启动扫描，站点包同步暂仍以 legacy 表作为兼容事实源。
 - legacy migration 是独立 maintenance，必须在 Backend READY 后显式调度，以 source table + last source id journal、bounded batch、copy/verify checkpoint、幂等 resume 实现。无法无损确定业务实体键或采集时间的旧行不会被猜测写入新历史，而是写入 `history_migration_skips`（source id + reason）并推进 checkpoint；源行仍保留并可查询，后续可由维护工具单独修复。`ap_resource_snapshots` 是站点包/AP 实体快照兼容证据，不作为通用 AC 资源历史迁移源。默认不启用 source deletion；本阶段不得 DROP 表、删除 legacy row、自动 VACUUM 或修改现场 `D:\NetConsoleData`。
-- `SERVER_UNATTENDED ACTIVE` 时必须暂停 history drain、legacy migration、retention、aggregation 和旧分片维护，保留 Syslog、MR、Ping 和当前任务 persistence 的 I/O 优先级。暂停不丢弃 outbox，恢复后可继续 bounded drain；磁盘并发维持为 1 或现有 capability policy 更低值。
+- `SERVER_UNATTENDED ACTIVE` 时必须暂停 legacy migration、retention、aggregation 和旧分片维护，保留 Syslog、MR、Ping 和当前任务 persistence 的 I/O 优先级。history drain 按 Phase 2.1 pressure-aware 规则运行：正常压力或磁盘繁忙时暂停，高水位时仅允许极小有界批次；暂停不丢弃 outbox，恢复后可继续 bounded drain；磁盘并发维持为 1 或现有 capability policy 更低值。
+
+Phase 2.1 收口了写入语义：`device_fact.uptime`、接口配置采集时间、LLDP `holdtime/ttl`、光衰 RX/TX/温度/电压/偏置电流，以及 FIT-AP Radio 的 usage/clients/tx_power、FIT-AP Optical 的连续量只作为 heartbeat payload，不参与普通 change fingerprint。设备/AP 身份、型号、版本、链路/邻居、channel/bandwidth、status/alarm、阈值和冲突状态仍在变化时立即记录。各 kind 继续使用独立 sampling 周期，heartbeat 仍保留最新 telemetry payload。
+
+无人值守期间不再无条件阻塞 history：正常压力或磁盘繁忙时暂停；outbox 达到高水位（默认 5,000 条）时仅以最多 10 条的小批量、低频 drain，绝不抢占 Syslog/MR/Ping persistence。`/api/health` 暴露 `history_status`、`history_pending`、`history_oldest_pending_age_seconds`、`history_pressure` 和 `history_error`；deferred runtime 期间为 `deferred`，不会把 history 失败升级为 Core/Unattended 启动失败。
+
+Catalog rollover 会在新月份写入时将其它 ACTIVE 分片收口为 CLOSED，并以真实月份末日填充 `period_end`（包括闰年二月）。
 
 ### 写入、查询与升级流程
 

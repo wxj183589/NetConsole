@@ -96,6 +96,11 @@ def test_fastapi_app_exposes_registered_web_modules() -> None:
         "unattended_status": "disabled",
         "unattended_ready": False,
         "unattended_error": "",
+        "history_status": "idle",
+        "history_pending": 0,
+        "history_error": "",
+        "history_oldest_pending_age_seconds": 0,
+        "history_pressure": "normal",
     }
     assert app.state.runtime_mode is RuntimeMode.SERVER
     assert {
@@ -172,6 +177,9 @@ def test_deferred_runtime_failure_is_visible_and_blocks_service_writes(tmp_path:
         app.state.runtime_services_status = "degraded"
         app.state.runtime_services_ready = False
         app.state.runtime_services_error = "AgentControllerService"
+        app.state.history_status = "degraded"
+        app.state.history_pending = 18200
+        app.state.history_error = "shard_write_failed"
         health = client.get("/api/health")
         blocked = client.post("/api/traffic/runs", json={})
 
@@ -179,6 +187,9 @@ def test_deferred_runtime_failure_is_visible_and_blocks_service_writes(tmp_path:
     assert health.json()["runtime_services_status"] == "degraded"
     assert health.json()["runtime_services_ready"] is False
     assert health.json()["runtime_services_error"] == "AgentControllerService"
+    assert health.json()["history_status"] == "degraded"
+    assert health.json()["history_pending"] == 18200
+    assert health.json()["history_error"] == "shard_write_failed"
     assert blocked.status_code == 503
     assert blocked.json()["code"] == "RUNTIME_SERVICES_DEGRADED"
 

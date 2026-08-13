@@ -6,6 +6,11 @@ export interface HealthResponse {
   unattended_status?: string
   unattended_ready?: boolean
   unattended_error?: string
+  history_status?: string
+  history_pending?: number
+  history_error?: string
+  history_oldest_pending_age_seconds?: number
+  history_pressure?: string
 }
 
 export interface RendererBuildMeta {

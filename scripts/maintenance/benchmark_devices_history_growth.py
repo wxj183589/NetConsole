@@ -78,6 +78,7 @@ def _legacy_metrics(
         count = int(conn.execute("SELECT COUNT(*) FROM legacy_history").fetchone()[0])
     return {
         "rows": count,
+        "estimated_collection_commits_per_day": samples,
         "database_baseline_bytes": baseline_bytes,
         "history_growth_bytes": path.stat().st_size - baseline_bytes,
     }
@@ -135,6 +136,7 @@ def _phase2_metrics(
     current_database_growth_bytes = database_path.stat().st_size - current_database_baseline_bytes
     return {
         "rows": written,
+        "estimated_collection_commits_per_day": samples,
         "current_database_baseline_bytes": current_database_baseline_bytes,
         # This is a fixed current-state/outbox schema and entity-state cost for
         # a stable fixture. It must not be projected as daily history growth.
@@ -145,6 +147,62 @@ def _phase2_metrics(
         "total_incremental_bytes": current_database_growth_bytes
         + shard_bytes
         + catalog_bytes,
+    }
+
+
+def _telemetry_metrics(
+    root: Path,
+    *,
+    entities: int,
+    samples: int,
+    interval_minutes: int,
+) -> dict[str, int | float | str]:
+    database_path = root / "sites" / "telemetry" / "db" / "devices.db"
+    Database(database_path).initialize()
+    store = HistoryStore(database_path, site_id="telemetry")
+    start = datetime(2026, 8, 1, tzinfo=UTC)
+    state_changes = 0
+    with connect_sqlite(database_path, foreign_keys=True) as conn:
+        for sample in range(samples):
+            collected_at = _timestamp(start, sample, interval_minutes)
+            for entity in range(entities):
+                online = not (sample == samples // 2 and entity % 10 == 0)
+                usage = (sample * 7 + entity) % 100
+                store.record_event(
+                    conn,
+                    kind="fit_ap_radio",
+                    entity_key=f"ap-{entity:04d}:1",
+                    payload={
+                        "ap_uuid": f"ap-{entity:04d}",
+                        "rid": 1,
+                        "status": "up" if online else "down",
+                        "channel": "149",
+                        "usage": usage,
+                        "clients": (sample + entity) % 8,
+                        "collected_at": collected_at,
+                    },
+                    collected_at=collected_at,
+                    meaningful_fields=("ap_uuid", "rid", "status", "channel"),
+                    heartbeat_seconds=1800,
+                )
+                state_changes += int(not online and sample == samples // 2)
+        conn.commit()
+    outbox_peak = store.pending_count()
+    written = 0
+    while True:
+        result = store.drain(limit=500)
+        written += result.written
+        if result.pending == 0 or result.degraded:
+            break
+    shard_bytes = sum(path.stat().st_size for path in store.history_root.glob("devices-*.db"))
+    catalog = store.history_root / "catalog.db"
+    return {
+        "rows": written,
+        "estimated_collection_commits_per_day": samples,
+        "outbox_peak": outbox_peak,
+        "state_changes": state_changes,
+        "history_growth_bytes": shard_bytes + (catalog.stat().st_size if catalog.is_file() else 0),
+        "sampling_policy": "radio heartbeat=1800s; status/channel immediate",
     }
 
 
@@ -185,6 +243,12 @@ def main() -> int:
             samples=samples,
             interval_minutes=args.poll_minutes,
         )
+        telemetry = _telemetry_metrics(
+            root,
+            entities=args.entities,
+            samples=samples,
+            interval_minutes=args.poll_minutes,
+        )
         report = {
             "fixture": {
                 "entities": args.entities,
@@ -195,6 +259,7 @@ def main() -> int:
             },
             "legacy_per_sample": legacy,
             "change_aware_month_shard": phase2,
+            "telemetry_and_state_mix": telemetry,
             "projection": {
                 f"{days}_days": {
                     "legacy_rows": _project(legacy["rows"], observed_days=observed_days, days=days),

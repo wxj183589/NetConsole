@@ -2772,7 +2772,7 @@ class AcRepository:
                 collected_at=str(row.get("collected_at") or self._now()),
                 meaningful_fields=(
                     "ac_device_uuid", "ap_uuid", "ap_name", "rid", "status", "mode", "band",
-                    "channel", "bandwidth", "usage", "tx_power", "clients", "bbssid",
+                    "channel", "bandwidth", "bbssid",
                 ),
             )
 
@@ -2799,8 +2799,8 @@ class AcRepository:
                 "lldp_neighbor", "lldp_local_interface", "lldp_local_interface_normalized",
                 "lldp_neighbor_name", "lldp_neighbor_mac", "lldp_neighbor_mac_normalized",
                 "lldp_neighbor_interface", "link_match_status", "source", "neighbor_interface",
-                "neighbor_mac", "neighbor_device_name", "neighbor_rx_power", "interface_name",
-                "temperature", "voltage", "bias_current", "tx_power", "rx_power", "rx_low_alarm",
+                "neighbor_mac", "neighbor_device_name", "interface_name",
+                "rx_low_alarm",
                 "rx_high_alarm", "tx_low_alarm", "tx_high_alarm", "rx_low_warning", "rx_high_warning",
                 "tx_low_warning", "tx_high_warning", "optical_alarm_status", "status", "error_message",
                 "module_model", "module_serial_number", "module_vendor", "wavelength",

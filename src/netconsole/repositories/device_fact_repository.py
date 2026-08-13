@@ -238,7 +238,7 @@ class DeviceFactRepository:
                 collected_at=str(payload["collected_at"]),
                 meaningful_fields=(
                     "device_uuid", "sysname", "model", "serial_number", "mac_address",
-                    "software_version", "bootrom_version", "vendor", "uptime",
+                    "software_version", "bootrom_version", "vendor",
                 ),
             )
             conn.commit()
@@ -309,7 +309,7 @@ class DeviceFactRepository:
                 collected_at=str(payload["collected_at"]),
                 meaningful_fields=(
                     "device_uuid", "sysname", "model", "serial_number", "mac_address",
-                    "software_version", "bootrom_version", "vendor", "uptime",
+                    "software_version", "bootrom_version", "vendor",
                 ),
             )
             conn.commit()
@@ -345,7 +345,10 @@ class DeviceFactRepository:
                     collected_at=str(payload["collected_at"]),
                     meaningful_fields=tuple(
                         field for field in INTERFACE_FIELDS
-                        if field not in {"collected_at", "collect_run_uuid", "raw_log_path", "updated_at"}
+                        if field not in {
+                            "collected_at", "collect_run_uuid", "raw_log_path", "updated_at",
+                            "vlan_config_collected_at",
+                        }
                     ),
                 )
             conn.commit()
@@ -426,7 +429,10 @@ class DeviceFactRepository:
                 collected_at=str(payload["collected_at"]),
                 meaningful_fields=tuple(
                     field for field in INTERFACE_FIELDS
-                    if field not in {"collected_at", "collect_run_uuid", "raw_log_path", "updated_at"}
+                    if field not in {
+                        "collected_at", "collect_run_uuid", "raw_log_path", "updated_at",
+                        "vlan_config_collected_at",
+                    }
                 ),
             )
             conn.commit()
@@ -453,8 +459,11 @@ class DeviceFactRepository:
                     payload=payload,
                     collected_at=str(payload["collected_at"]),
                     meaningful_fields=(
-                        "device_uuid", "interface_name", "rx_power", "tx_power", "temperature",
-                        "voltage", "bias_current", "status", "rx_low_alarm", "rx_high_alarm",
+                        "device_uuid", "interface_name", "module_model", "module_serial_number",
+                        "module_vendor", "wavelength", "transmission_distance", "connector_type",
+                        "device_vendor", "device_reported_status", "threshold_source", "transceiver_mode",
+                        "vendor_part_number", "vendor_revision", "vendor_serial_number", "status",
+                        "rx_low_alarm", "rx_high_alarm",
                         "tx_low_alarm", "tx_high_alarm", "rx_low_warning", "rx_high_warning",
                         "tx_low_warning", "tx_high_warning",
                     ),
@@ -548,8 +557,11 @@ class DeviceFactRepository:
                 payload=payload,
                 collected_at=str(payload["collected_at"]),
                 meaningful_fields=(
-                    "device_uuid", "interface_name", "rx_power", "tx_power", "temperature",
-                    "voltage", "bias_current", "status", "rx_low_alarm", "rx_high_alarm",
+                    "device_uuid", "interface_name", "module_model", "module_serial_number",
+                    "module_vendor", "wavelength", "transmission_distance", "connector_type",
+                    "device_vendor", "device_reported_status", "threshold_source", "transceiver_mode",
+                    "vendor_part_number", "vendor_revision", "vendor_serial_number", "status",
+                    "rx_low_alarm", "rx_high_alarm",
                     "tx_low_alarm", "tx_high_alarm", "rx_low_warning", "rx_high_warning",
                     "tx_low_warning", "tx_high_warning",
                 ),
@@ -612,7 +624,7 @@ class DeviceFactRepository:
                     meaningful_fields=(
                         "device_uuid", "local_interface", "scope", "chassis_type", "chassis_id",
                         "neighbor_sysname", "neighbor_mac", "port_id_type", "neighbor_interface",
-                        "neighbor_ip", "holdtime", "ttl", "port_description", "system_description",
+                        "neighbor_ip", "port_description", "system_description",
                         "system_capabilities", "pvid", "operational_mau", "max_frame_size",
                         "neighbor_device_uuid",
                     ),
@@ -705,7 +717,7 @@ class DeviceFactRepository:
                 meaningful_fields=(
                     "device_uuid", "local_interface", "scope", "chassis_type", "chassis_id",
                     "neighbor_sysname", "neighbor_mac", "port_id_type", "neighbor_interface",
-                    "neighbor_ip", "holdtime", "ttl", "port_description", "system_description",
+                    "neighbor_ip", "port_description", "system_description",
                     "system_capabilities", "pvid", "operational_mau", "max_frame_size",
                     "neighbor_device_uuid",
                 ),

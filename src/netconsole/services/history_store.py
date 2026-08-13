@@ -12,6 +12,7 @@ import hashlib
 import json
 import re
 import sqlite3
+from calendar import monthrange
 from collections.abc import Iterable
 from contextlib import closing
 from dataclasses import dataclass
@@ -31,6 +32,13 @@ DEFAULT_HEARTBEAT_SECONDS = {
     "fit_ap_optical": 900,
     "fit_ap_lldp": 1800,
 }
+
+# A heartbeat is the sampling policy for continuous telemetry.  Discrete
+# state/configuration fields are passed explicitly by each producer and are
+# recorded immediately when they change.
+TELEMETRY_SAMPLING_SECONDS = dict(DEFAULT_HEARTBEAT_SECONDS)
+OUTBOX_PRESSURE_HIGH_WATERMARK = 5_000
+UNATTENDED_DRAIN_LIMIT = 10
 
 OUTBOX_SCHEMA = """
 CREATE TABLE IF NOT EXISTS history_outbox (
@@ -189,6 +197,17 @@ class HistoryDrainResult:
     pending: int = 0
     paused: bool = False
     degraded: bool = False
+    oldest_pending_age_seconds: int = 0
+    attempts: int = 0
+    pressure: str = "normal"
+
+
+@dataclass(frozen=True)
+class HistoryOutboxDiagnostics:
+    pending: int = 0
+    oldest_pending_age_seconds: int = 0
+    attempts: int = 0
+    pressure: str = "normal"
 
 
 @dataclass(frozen=True)
@@ -262,7 +281,7 @@ class HistoryStore:
         self.database_path = Path(database_path)
         self.site_id = str(site_id or self.database_path.parent.parent.name)
         self.history_root = Path(history_root or self.database_path.parent / "history")
-        self.heartbeat_seconds = {**DEFAULT_HEARTBEAT_SECONDS, **(heartbeat_seconds or {})}
+        self.heartbeat_seconds = {**TELEMETRY_SAMPLING_SECONDS, **(heartbeat_seconds or {})}
         self._last_query_errors: tuple[str, ...] = ()
 
     @classmethod
@@ -383,16 +402,53 @@ class HistoryStore:
             row = conn.execute("SELECT COUNT(*) FROM history_outbox").fetchone()
         return int(row[0] if row else 0)
 
+    def outbox_diagnostics(self, *, high_watermark: int = OUTBOX_PRESSURE_HIGH_WATERMARK) -> HistoryOutboxDiagnostics:
+        """Return bounded pressure diagnostics without scanning payloads."""
+
+        if not self.database_path.is_file():
+            return HistoryOutboxDiagnostics()
+        try:
+            with closing(connect_sqlite(self.database_path, foreign_keys=True)) as conn:
+                if not self._table_exists(conn, "history_outbox"):
+                    return HistoryOutboxDiagnostics()
+                row = conn.execute(
+                    "SELECT COUNT(*) AS pending, MIN(created_at) AS oldest, "
+                    "COALESCE(MAX(attempts), 0) AS attempts FROM history_outbox"
+                ).fetchone()
+        except (OSError, sqlite3.Error):
+            return HistoryOutboxDiagnostics(pressure="degraded")
+        pending = int(row["pending"] if row is not None else 0)
+        oldest = _parse_time(str(row["oldest"] or "")) if row is not None else None
+        age = max(0, int((_local_now() - oldest).total_seconds())) if oldest else 0
+        pressure = "high" if pending >= max(1, int(high_watermark)) else "normal"
+        return HistoryOutboxDiagnostics(
+            pending=pending,
+            oldest_pending_age_seconds=age,
+            attempts=int(row["attempts"] if row is not None else 0),
+            pressure=pressure,
+        )
+
     def drain(
         self,
         *,
         limit: int = 100,
         unattended_active: bool = False,
+        disk_busy: bool = False,
+        high_watermark: int = OUTBOX_PRESSURE_HIGH_WATERMARK,
     ) -> HistoryDrainResult:
-        """Drain a bounded batch; unattended mode pauses maintenance work."""
+        """Drain a bounded batch while preserving unattended I/O priority."""
 
+        diagnostics = self.outbox_diagnostics(high_watermark=high_watermark)
         if unattended_active:
-            return HistoryDrainResult(pending=self.pending_count(), paused=True)
+            if disk_busy or diagnostics.pressure != "high":
+                return HistoryDrainResult(
+                    pending=diagnostics.pending,
+                    paused=True,
+                    oldest_pending_age_seconds=diagnostics.oldest_pending_age_seconds,
+                    attempts=diagnostics.attempts,
+                    pressure=diagnostics.pressure,
+                )
+            limit = min(max(1, int(limit)), UNATTENDED_DRAIN_LIMIT)
         if not self.database_path.is_file():
             return HistoryDrainResult()
         try:
@@ -429,16 +485,24 @@ class HistoryStore:
                         current.commit()
                     return HistoryDrainResult(
                         written=written,
-                        pending=self.pending_count(),
+                        pending=self.outbox_diagnostics(high_watermark=high_watermark).pending,
                         degraded=True,
+                        pressure="degraded",
                     )
             with closing(connect_sqlite(self.database_path, foreign_keys=True)) as current:
                 self.ensure_outbox(current)
                 pending = self._pending_count_on(current)
                 current.commit()
-            return HistoryDrainResult(written=written, pending=pending)
+            diagnostics = self.outbox_diagnostics(high_watermark=high_watermark)
+            return HistoryDrainResult(
+                written=written,
+                pending=pending,
+                oldest_pending_age_seconds=diagnostics.oldest_pending_age_seconds,
+                attempts=diagnostics.attempts,
+                pressure=diagnostics.pressure,
+            )
         except (OSError, sqlite3.Error):
-            return HistoryDrainResult(degraded=True)
+            return HistoryDrainResult(degraded=True, pressure="degraded")
 
     def _write_shard_batch(self, rows: list[dict[str, Any]]) -> None:
         """Append one month of durable outbox events with bounded SQLite commits."""
@@ -457,6 +521,13 @@ class HistoryStore:
             relative_path = shard_path.name
             is_current_period = period == _local_now().strftime("%Y-%m")
             catalog.execute(
+                "UPDATE history_catalog SET status='CLOSED', closed_at=? "
+                "WHERE status='ACTIVE' AND shard_id < ?",
+                (now, period),
+            )
+            year, month = (int(part) for part in period.split("-", 1))
+            last_day = monthrange(year, month)[1]
+            catalog.execute(
                 """
                 INSERT INTO history_catalog
                     (shard_id, site_id, period_start, period_end, relative_path, status, created_at, closed_at)
@@ -470,7 +541,7 @@ class HistoryStore:
                     period,
                     self.site_id,
                     f"{period}-01",
-                    f"{period}-31",
+                    f"{period}-{last_day:02d}",
                     relative_path,
                     "ACTIVE" if is_current_period else "CLOSED",
                     now,

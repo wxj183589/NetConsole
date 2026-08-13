@@ -2,10 +2,9 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Request
 
-from netconsole.core.version import APP_VERSION
 from netconsole.core.storage_manifest import CURRENT_STORAGE_SCHEMA_VERSION
+from netconsole.core.version import APP_VERSION
 from netconsole.models.api import HealthResponse
-
 
 router = APIRouter(tags=["system"])
 
@@ -25,6 +24,13 @@ def health(request: Request) -> HealthResponse:
         unattended_status=str(getattr(request.app.state, "unattended_status", "disabled")),
         unattended_ready=bool(getattr(request.app.state, "unattended_ready", False)),
         unattended_error=str(getattr(request.app.state, "unattended_error", "")),
+        history_status=str(getattr(request.app.state, "history_status", "idle")),
+        history_pending=int(getattr(request.app.state, "history_pending", 0)),
+        history_error=str(getattr(request.app.state, "history_error", "")),
+        history_oldest_pending_age_seconds=int(
+            getattr(request.app.state, "history_oldest_pending_age_seconds", 0)
+        ),
+        history_pressure=str(getattr(request.app.state, "history_pressure", "normal")),
     )
 
 
@@ -41,6 +47,11 @@ def health_response(
     unattended_status: str = "disabled",
     unattended_ready: bool = False,
     unattended_error: str = "",
+    history_status: str = "idle",
+    history_pending: int = 0,
+    history_error: str = "",
+    history_oldest_pending_age_seconds: int = 0,
+    history_pressure: str = "normal",
 ) -> HealthResponse:
     return HealthResponse(
         status="ok",
@@ -56,4 +67,9 @@ def health_response(
         unattended_status=unattended_status,
         unattended_ready=unattended_ready,
         unattended_error=unattended_error,
+        history_status=history_status,
+        history_pending=max(0, int(history_pending)),
+        history_error=history_error,
+        history_oldest_pending_age_seconds=max(0, int(history_oldest_pending_age_seconds)),
+        history_pressure=history_pressure,
     )
