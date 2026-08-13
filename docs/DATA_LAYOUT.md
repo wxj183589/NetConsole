@@ -51,6 +51,9 @@ Electron 的 `userData`、`sessionData`、`cache`、`logs`、`crashDumps` 和 `t
 <data_root>/sites/<site>/
 ├─ db/
 │  ├─ devices.db
+│  ├─ history/                   # Phase 2 新历史：按月分片，不参与正常启动维护
+│  │  ├─ catalog.db              # 只记录已知分片，不扫描目录发现历史库
+│  │  └─ devices-YYYY-MM.db      # append-only change/heartbeat event shard
 │  ├─ tasks.db
 │  └─ agents.db
 ├─ files/
@@ -68,6 +71,70 @@ Electron 的 `userData`、`sessionData`、`cache`、`logs`、`crashDumps` 和 `t
 切换局点只改变 `sites/<site>` 的业务上下文，不改变 `data_root`。局点名和稳定 `site_id` 的映射由 `config/site_registry.json` 管理；Repository、任务和历史数据继续使用受控的实际局点目录。不得以显示名称、当前工作目录或源代码位置推导局点路径。
 
 `devices.db`、`tasks.db`、`agents.db` 使用各自进程/线程独立的 SQLite 连接，保持 WAL、busy timeout、foreign keys 和幂等初始化。轨旁 AP 逐站规划的唯一事实表为 `ac_trackside_ap_plan(mode='unified')`；空表表示用户已明确清空，维护页、上线概览、PVID 核验和共享范围查询均直接返回空规划。`rail_ap_vlan_plans / groups / group_members / assignments / allocations` 只作为历史留存，不由当前读取链投影，也不再由数据库初始化根据逐站规划生成。当前逐站保存不删除这些历史表。逐站字段和唯一索引升级在数据库初始化事务内幂等执行，失败整体回滚。不可逆 schema 升级必须先备份，并更新 storage manifest；不得以删除或重建真实数据库代替迁移。
+
+## devices.db 当前态与历史态（Phase 2）
+
+Phase 2 的目标是先停止 `devices.db` 因高频快照持续增长，同时保持旧局点可原样升级和查询。当前态继续写入 `devices.db`；新的设备采集历史在同一 current-state 事务中先写入小型 `history_outbox`，READY 后由有界后台 drain 写入 `db/history/devices-YYYY-MM.db`。分片和 catalog 不属于 `Database.initialize()` 的启动工作：启动不会扫描、校验、迁移、checkpoint、retention 或 VACUUM 任一历史分片。
+
+`history_state` 只保存每个 `kind + entity_key` 最近一次有业务意义的指纹和记录时间。变化立即入 outbox；无变化时才按类型独立 heartbeat 周期低频记录。采集时间、采集批次 UUID、raw 路径和其他运行元数据不得单独造成 change。当前实现的默认周期为 device fact/interface 60 分钟、device LLDP 30 分钟、device optical 15 分钟；FIT AP resource/LLDP 30 分钟、FIT AP optical 15 分钟、FIT AP radio 30 分钟。实际历史事件的业务字段由各 producer 显式选择，不能用整行字符串比较。
+
+| 数据类别 | 当前态 producer / storage | 新历史写入路径 | 兼容 consumer / legacy 表 | 业务语义与索引 |
+| --- | --- | --- | --- | --- |
+| Device fact | `DeviceFactRepository.upsert_device_fact` -> `device_facts` | `device_fact` outbox -> 月分片 | `list_fact_history` + `device_facts_history` | 设备型号、版本、MAC 等事实变化；legacy 按 device/time 查询 |
+| Device interface | `replace_device_interfaces` -> `device_interfaces` | `device_interface` outbox -> 月分片 | `list_interface_history` + `device_interfaces_history` | 链路、VLAN、端口和地址语义；`device_uuid, interface_name, collected_at, id` |
+| Device optical | `replace_optical_modules` -> `device_optical_modules` | `device_optical` outbox -> 月分片 | `list_optical_history` + `device_optical_modules_history` | RX/TX、阈值、告警和状态；`device_uuid, interface_name, collected_at, id` |
+| Device LLDP | `replace_lldp_neighbors` -> `device_lldp_neighbors` | `device_lldp` outbox -> 月分片 | `list_lldp_history` + `device_lldp_neighbors_history` | 邻居、端口、MAC、PVID 等拓扑变化；`device_uuid, local_interface, collected_at, id` |
+| FIT AP resource | `AcRepository.replace_fit_ap_resources` -> `ac_fit_ap_resources` / `ap_entities` | `fit_ap_resource` outbox -> 月分片 | `list_fit_ap_resource_history` + `ac_fit_ap_resource_history`；`ap_resource_snapshots` 仍供站点同步/兼容身份证据 | 前者为 AC 全量资源时间线，后者为带 `snapshot_uuid` 的 AP 实体快照；不得假设可删或已合并 |
+| FIT AP LLDP | AC resource/optical collection current projection | `fit_ap_lldp` outbox -> 月分片 | `list_fit_ap_lldp_history`、`list_all_ap_lldp_history`、轨旁导出/离线账本；`ac_fit_ap_lldp_history` 与 `ap_lldp_history` | 前者是 AC 采集来源历史，后者维护 latest 标志并供 AP/轨旁消费者；本阶段仅统一新写路径，不删除双轨旧数据 |
+| FIT AP optical | `replace_fit_ap_optical` -> `ac_fit_ap_optical` | `fit_ap_optical` outbox -> 月分片 | `ApOpticalHistoryService`、轨旁导出；`ac_fit_ap_optical_history` 与 `ap_optical_history` | 前者为 AC optical 采集历史，后者为 AP/side 投影和 latest 标志；RX/TX/alarm 是变化字段 |
+| FIT AP radio | FIT AP resource collection current projection | `fit_ap_radio` outbox -> 月分片 | `list_fit_ap_radio_history` + `ac_fit_ap_radio_history` | radio state、mode、channel、signal/usage 等；`ap_uuid, collected_at, id` |
+| FIT AP unauthenticated | `replace_fit_ap_unauthenticated` -> `ac_fit_ap_unauthenticated` | 本阶段暂不切换，继续 legacy | `list_fit_ap_unauthenticated_history` + `ac_fit_ap_unauthenticated_history` | 未知/未认证 AP 证据，字段与身份推断耦合；后续单独定义迁移语义 |
+| AP resource snapshot | 站点包/身份兼容写入 | 本阶段不进入通用 history shard | `site_sync` + `ap_resource_snapshots` | `snapshot_uuid` 是快照实体，不是 AC 资源时间线；不得与 `fit_ap_resource` 合并 |
+| Station online summary | 站点聚合保存 | 本阶段暂不切换，继续 legacy | `list_station_online_summary_history` + `ac_station_online_summary_history` | 站点级聚合快照，不应按 AP 资源 change-aware 规则去重 |
+
+### rollout、迁移与无人值守边界
+
+- Phase 2A/2B 已实现的边界是路径、catalog/outbox、按月分片、change-aware 新写和 query compatibility；旧 history table、旧索引和当前态表均保留。`devices.db` 中旧历史不会在启动时批量迁移，840 MiB 的旧库可以直接打开。
+- Phase 2C 的已接入查询接口可合并相关 legacy history 与新 outbox/shard 事件。没有 dual-write 回 legacy table：切换后的新 producer 仅在 current transaction 内写 outbox；尚未接入 producer 的历史继续保持 legacy 行为，不能因此推断该表已完成切换。轨旁业务快照的轻量 revision 只读取 current DB 中的 `history_outbox/history_state`；`catalog.db` 和月分片仍不参与正常快照或启动扫描，站点包同步暂仍以 legacy 表作为兼容事实源。
+- legacy migration 是独立 maintenance，必须在 Backend READY 后显式调度，以 source table + last source id journal、bounded batch、copy/verify checkpoint、幂等 resume 实现。无法无损确定业务实体键或采集时间的旧行不会被猜测写入新历史，而是写入 `history_migration_skips`（source id + reason）并推进 checkpoint；源行仍保留并可查询，后续可由维护工具单独修复。`ap_resource_snapshots` 是站点包/AP 实体快照兼容证据，不作为通用 AC 资源历史迁移源。默认不启用 source deletion；本阶段不得 DROP 表、删除 legacy row、自动 VACUUM 或修改现场 `D:\NetConsoleData`。
+- `SERVER_UNATTENDED ACTIVE` 时必须暂停 history drain、legacy migration、retention、aggregation 和旧分片维护，保留 Syslog、MR、Ping 和当前任务 persistence 的 I/O 优先级。暂停不丢弃 outbox，恢复后可继续 bounded drain；磁盘并发维持为 1 或现有 capability policy 更低值。
+
+### 写入、查询与升级流程
+
+```mermaid
+flowchart LR
+    C["设备 / AC 采集"] --> S["devices.db current state"]
+    C --> O["同一事务: history_outbox + history_state"]
+    O -->|"READY 后，100 行 / 10 秒\n有界 drain"| M["devices-YYYY-MM.db"]
+    M --> K["catalog.db\n已知月分片"]
+    U["SERVER_UNATTENDED ACTIVE"] -."暂停 maintenance".-> O
+    U -."暂停 maintenance".-> M
+```
+
+```mermaid
+flowchart LR
+    Q["历史 API / Export"] --> L["legacy devices.db history table"]
+    Q --> O["未 drain 的 current outbox"]
+    Q --> K["catalog 仅定位必要月份"]
+    K --> M["目标月 shard"]
+    L --> R["按 collected_at 合并、排序、分页"]
+    O --> R
+    M --> R
+```
+
+```mermaid
+flowchart TD
+    A["Backend READY 后显式 maintenance job"] --> B{"SERVER_UNATTENDED ACTIVE?"}
+    B -->|"是"| P["暂停，不改变 checkpoint"]
+    B -->|"否"| C["按 source id 读取最多 500 legacy rows"]
+    C --> D["以 deterministic event_id 写入月 shard"]
+    D --> E["回读并校验 event_id"]
+    E --> F["提交 copy/verify checkpoint"]
+    F --> G["下一有界批次 / 崩溃后 resume"]
+    G -."本阶段禁止".-> X["删除 legacy row / DROP / VACUUM"]
+```
+
+迁移基础设施当前仅提供显式调用的 copy/verify 批次，并且默认没有任务注册、自动调度或 source deletion。复制成功的 legacy event 以确定性 ID 保存在 shard 内供校验与未来 cutover 使用；在逐表 cutover 尚未启用前，普通兼容查询刻意排除它，继续以 legacy table 为事实源，避免双份返回。`tasks.db` 不在本阶段范围内。
 
 每个局点的 `sync/wps_sync.sqlite` 保存 WPS 云文档配置、DPAPI 加密凭据、同步批次和远端异步任务恢复状态。正式 Workbook 请求在提交前以不含 Token 的 JSON 持久化，完整远端 `task_id` 仅保存在该库；API、任务参数和日志只输出脱敏 ID。常规升级只做幂等增量迁移，不删除、重建或覆盖当前云文档的配置、凭据和历史。产品功能明确退役时允许精确删除对应本地目标及运行状态：必须在同一事务内按稳定旧代码匹配、先处理外键运行记录、保留混合批次中的当前目标历史，并仅在无剩余引用时删除凭据；迁移重复运行必须为 no-op，且不得访问或修改远端文档。程序重启后以原 `target_batch_id + remote_task_id` 恢复查询，不能因本地 Worker 丢失重复提交已取得 ID 的任务。
 

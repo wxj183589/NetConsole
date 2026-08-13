@@ -7,7 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from netconsole.backend.api.health import health_response
-from netconsole.backend.api.main import create_app
+from netconsole.backend.api.main import _unattended_run_active, create_app
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_mode import RuntimeMode
@@ -15,6 +15,9 @@ from netconsole.core.version import APP_VERSION
 from netconsole.infrastructure.desktop import (
     LocalDesktopAdapter,
     UnavailableDesktopAdapter,
+)
+from netconsole.repositories.ground_unattended_repository import (
+    GroundUnattendedRepository,
 )
 from netconsole.models.api import (
     AgentStatusDTO,
@@ -137,17 +140,38 @@ def test_server_unattended_mode_reports_readiness_without_hardware_recollection(
     assert app.state.host_environment_profile is None
 
 
+def test_history_maintenance_pauses_only_for_a_persisted_unattended_run(
+    tmp_path: Path,
+) -> None:
+    repository = GroundUnattendedRepository(tmp_path / "ground.db", site_id="demo")
+
+    assert _unattended_run_active(repository) is False
+    run = repository.create_or_get_run(
+        run_id="run-1",
+        run_date="2026-08-13",
+        scheduled_start_at="2026-08-13T07:00:00+08:00",
+        scheduled_end_at="2026-08-13T23:00:00+08:00",
+        state="STARTING",
+    )
+    assert _unattended_run_active(repository) is True
+
+    repository.update_run(str(run["run_id"]), state="COMPLETED")
+    assert _unattended_run_active(repository) is False
+
+
 def test_deferred_runtime_failure_is_visible_and_blocks_service_writes(tmp_path: Path) -> None:
     app = create_app(
         RuntimeMode.SERVER,
         paths=PathResolver(tmp_path),
         frontend_dist=tmp_path / "missing",
     )
-    app.state.runtime_services_status = "degraded"
-    app.state.runtime_services_ready = False
-    app.state.runtime_services_error = "AgentControllerService"
 
     with TestClient(app) as client:
+        # Lifespan initializes the runtime state.  Apply the failure after it
+        # has run so this verifies the write gate rather than stale setup.
+        app.state.runtime_services_status = "degraded"
+        app.state.runtime_services_ready = False
+        app.state.runtime_services_error = "AgentControllerService"
         health = client.get("/api/health")
         blocked = client.post("/api/traffic/runs", json={})
 

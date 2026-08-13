@@ -1,20 +1,27 @@
 from __future__ import annotations
 
+import json
+import re
 from collections import Counter
 from datetime import datetime
-import re
 from uuid import uuid4
 
 from netconsole.core import app_logger
-from netconsole.parsers.h3c.ac.state_mapper import classify_fit_ap_state
-from netconsole.services.fit_ap_link_info import merge_lldp_payload, normalize_interface_key, normalize_lldp_payload, optical_payload_from_row, resolve_fit_ap_link_info, resolve_optical_match_status
-from netconsole.utils.station_normalize import normalize_station_value
-
 from netconsole.core.database import Database
+from netconsole.parsers.h3c.ac.state_mapper import classify_fit_ap_state
 from netconsole.services.ap_extension_import import normalize_ap_mac
+from netconsole.services.fit_ap_link_info import (
+    merge_lldp_payload,
+    normalize_interface_key,
+    normalize_lldp_payload,
+    optical_payload_from_row,
+    resolve_fit_ap_link_info,
+    resolve_optical_match_status,
+)
+from netconsole.services.history_store import HistoryStore
 from netconsole.services.trackside_ap_business import parse_vlan_set
 from netconsole.utils.mileage import parse_mileage_to_meters
-
+from netconsole.utils.station_normalize import normalize_station_value
 
 TRACKSIDE_AP_PLAN_MODE = "unified"
 LEGACY_TRACKSIDE_PLAN_MODES = {"single_vlan", "multi_vlan"}
@@ -624,6 +631,7 @@ AP_OPTICAL_ENTITY_HISTORY_FIELDS = (
 class AcRepository:
     def __init__(self, database: Database) -> None:
         self.database = database
+        self.history_store = HistoryStore(database.path)
 
     def upsert_ac_ap_summary(self, data: dict[str, object | None]) -> dict[str, object | None]:
         payload = self._payload(SUMMARY_FIELDS, data)
@@ -833,7 +841,6 @@ class AcRepository:
         )
         self._append_resource_history(conn, payload)
         self._upsert_ap_entity(conn, payload)
-        self._append_ap_resource_snapshot(conn, payload)
         self._append_radio_history(conn, payload)
         self._append_resource_lldp_history(conn, payload)
         if preserved_fields:
@@ -1008,7 +1015,15 @@ class AcRepository:
                 """,
                 (ac_device_uuid, limit),
             ).fetchall()
-        return [dict(row) for row in rows]
+        return self._merge_history_rows(
+            [dict(row) for row in rows],
+            self.history_store.query_events(
+                kind="fit_ap_resource",
+                entity_prefix=f"{ac_device_uuid}:",
+                limit=limit,
+            ),
+            limit=limit,
+        )
 
     def list_all_fit_ap_resource_history(self, limit: int = 100000) -> list[dict[str, object | None]]:
         with self.database.connect() as conn:
@@ -1020,7 +1035,11 @@ class AcRepository:
                 """,
                 (limit,),
             ).fetchall()
-        return [dict(row) for row in rows]
+        return self._merge_history_rows(
+            [dict(row) for row in rows],
+            self.history_store.query_events(kind="fit_ap_resource", limit=limit),
+            limit=limit,
+        )
 
     def list_ap_entities(self, ac_device_uuid: str | None = None) -> list[dict[str, object | None]]:
         params: list[object] = []
@@ -1575,40 +1594,8 @@ class AcRepository:
                 conn.execute(f"INSERT INTO ac_fit_ap_optical ({columns}) VALUES ({placeholders})", [payload[field] for field in FIT_AP_OPTICAL_FIELDS])
                 self._update_fit_ap_resource_link_info(conn, ac_device_uuid, payload)
             for payload in current_payloads:
-                history_payload = self._payload(FIT_AP_OPTICAL_HISTORY_FIELDS, {**payload, "created_at": now})
-                history_columns = ", ".join(FIT_AP_OPTICAL_HISTORY_FIELDS)
-                history_placeholders = ", ".join("?" for _ in FIT_AP_OPTICAL_HISTORY_FIELDS)
-                conn.execute(
-                    f"INSERT INTO ac_fit_ap_optical_history ({history_columns}) VALUES ({history_placeholders})",
-                    [history_payload[field] for field in FIT_AP_OPTICAL_HISTORY_FIELDS],
-                )
-                lldp_payload = self._payload(
-                    FIT_AP_LLDP_HISTORY_FIELDS,
-                    {
-                        **payload,
-                        "source": payload.get("_history_lldp_source") or payload.get("lldp_source") or "ap_direct_lldp",
-                        "local_interface": payload.get("lldp_local_interface") or payload.get("interface_name"),
-                        "local_interface_normalized": payload.get("lldp_local_interface_normalized"),
-                        "lldp_neighbor": payload.get("lldp_neighbor_name") or payload.get("lldp_neighbor"),
-                        "neighbor_name": payload.get("lldp_neighbor_name") or payload.get("neighbor_name"),
-                        "neighbor_mac": payload.get("lldp_neighbor_mac") or payload.get("neighbor_mac"),
-                        "neighbor_mac_normalized": payload.get("lldp_neighbor_mac_normalized"),
-                        "neighbor_interface": payload.get("lldp_neighbor_interface") or payload.get("neighbor_interface"),
-                        "neighbor_device_name": payload.get("neighbor_device_name") or payload.get("lldp_neighbor_name"),
-                        "session_id": payload.get("collect_run_uuid"),
-                        "is_changed": self._lldp_history_changed(conn, payload.get("ap_uuid"), payload),
-                        "conflict_flag": 1 if str(payload.get("lldp_match_status") or payload.get("link_match_status") or "") == "conflict" else 0,
-                        "created_at": now,
-                    },
-                )
-                lldp_columns = ", ".join(FIT_AP_LLDP_HISTORY_FIELDS)
-                lldp_placeholders = ", ".join("?" for _ in FIT_AP_LLDP_HISTORY_FIELDS)
-                conn.execute(
-                    f"INSERT INTO ac_fit_ap_lldp_history ({lldp_columns}) VALUES ({lldp_placeholders})",
-                    [lldp_payload[field] for field in FIT_AP_LLDP_HISTORY_FIELDS],
-                )
-                self._append_ap_lldp_history(conn, lldp_payload)
-                self._append_ap_optical_history(conn, payload)
+                self._record_fit_ap_optical_history(conn, payload)
+                self._append_resource_lldp_history(conn, payload)
             conn.commit()
 
     def list_fit_ap_optical(self, ac_device_uuid: str) -> list[dict[str, object | None]]:
@@ -1775,7 +1762,19 @@ class AcRepository:
                 f"SELECT * FROM ac_fit_ap_optical_history {where} ORDER BY collected_at DESC, id DESC LIMIT ?",
                 params,
             ).fetchall()
-        return [dict(row) for row in rows]
+        if ap_uuid:
+            events = self.history_store.query_events(
+                kind="fit_ap_optical", entity_key=str(ap_uuid), limit=limit
+            )
+        elif ap_name:
+            events = [
+                event
+                for event in self.history_store.query_events(kind="fit_ap_optical", limit=limit)
+                if event.get("ap_name") == ap_name
+            ]
+        else:
+            events = self.history_store.query_events(kind="fit_ap_optical", limit=limit)
+        return self._merge_history_rows([dict(row) for row in rows], events, limit=limit)
 
     def list_fit_ap_optical_history_by_ap(self, ap_uuid: str, limit: int = 100) -> list[dict[str, object | None]]:
         return self.list_fit_ap_optical_history(ap_uuid=ap_uuid, limit=limit)
@@ -1791,7 +1790,13 @@ class AcRepository:
                 """,
                 (ap_uuid, limit),
             ).fetchall()
-        return [dict(row) for row in rows]
+        return self._merge_history_rows(
+            [dict(row) for row in rows],
+            self.history_store.query_events(
+                kind="fit_ap_radio", entity_prefix=f"{ap_uuid}:", limit=limit
+            ),
+            limit=limit,
+        )
 
     def list_fit_ap_lldp_history_by_ap(self, ap_uuid: str, limit: int = 100) -> list[dict[str, object | None]]:
         with self.database.connect() as conn:
@@ -1804,7 +1809,13 @@ class AcRepository:
                 """,
                 (ap_uuid, limit),
             ).fetchall()
-        return [dict(row) for row in rows]
+        return self._merge_history_rows(
+            [dict(row) for row in rows],
+            self.history_store.query_events(
+                kind="fit_ap_lldp", entity_key=str(ap_uuid), limit=limit
+            ),
+            limit=limit,
+        )
 
     def list_fit_ap_history_page(
         self,
@@ -1815,18 +1826,34 @@ class AcRepository:
         offset: int = 0,
     ) -> list[dict[str, object | None]]:
         table = _fit_ap_history_table(history_kind)
+        normalized_kind = str(history_kind or "").strip().casefold()
         with self.database.connect() as conn:
             rows = conn.execute(
                 f"SELECT * FROM {table} WHERE ap_uuid = ? ORDER BY collected_at DESC, id DESC LIMIT ? OFFSET ?",
-                (ap_uuid, max(1, int(limit)), max(0, int(offset))),
+                (ap_uuid, max(1, int(limit) + max(0, int(offset))), 0),
             ).fetchall()
-        return [dict(row) for row in rows]
+        events = self.history_store.query_events(
+            kind=f"fit_ap_{normalized_kind}",
+            entity_prefix=f"{ap_uuid}:" if normalized_kind == "radio" else None,
+            entity_key=str(ap_uuid) if normalized_kind != "radio" else None,
+            limit=max(1, int(limit) + max(0, int(offset))),
+        )
+        combined = self._merge_history_rows(
+            [dict(row) for row in rows], events, limit=max(1, int(limit) + max(0, int(offset)))
+        )
+        return combined[max(0, int(offset)) : max(0, int(offset)) + max(1, int(limit))]
 
     def count_fit_ap_history(self, history_kind: str, ap_uuid: str) -> int:
         table = _fit_ap_history_table(history_kind)
         with self.database.connect() as conn:
             row = conn.execute(f"SELECT COUNT(*) AS total FROM {table} WHERE ap_uuid = ?", (ap_uuid,)).fetchone()
-        return int(row["total"] if row is not None else 0)
+        normalized_kind = str(history_kind or "").strip().casefold()
+        events = self.history_store.count_events(
+            kind=f"fit_ap_{normalized_kind}",
+            entity_prefix=f"{ap_uuid}:" if normalized_kind == "radio" else None,
+            entity_key=str(ap_uuid) if normalized_kind != "radio" else None,
+        )
+        return int(row["total"] if row is not None else 0) + events
 
     def list_all_ap_optical_history(self, limit: int = 100000) -> list[dict[str, object | None]]:
         with self.database.connect() as conn:
@@ -1854,13 +1881,19 @@ class AcRepository:
                 """,
                 (limit,),
             ).fetchall()
-        return [dict(row) for row in entity_rows] + [dict(row) for row in fit_rows]
+        events = self.history_store.query_events(kind="fit_ap_optical", limit=limit)
+        return self._merge_history_rows(
+            [dict(row) for row in entity_rows] + [dict(row) for row in fit_rows],
+            events,
+            limit=limit,
+        )
 
     def get_previous_ap_optical_history(
         self,
         identity: dict[str, str],
         before_collected_at: str | None = None,
     ) -> dict[str, object | None] | None:
+        legacy_row: dict[str, object | None] | None = None
         with self.database.connect() as conn:
             clauses, params = self._ap_identity_clauses(identity, allowed=("ap_uuid",))
             if clauses:
@@ -1880,28 +1913,39 @@ class AcRepository:
                     params,
                 ).fetchone()
                 if row is not None:
-                    return dict(row)
-            clauses, params = self._ap_identity_clauses(identity, allowed=("ap_uuid", "ap_mac"))
-            if not clauses:
-                return None
-            before_clause = ""
-            if before_collected_at:
-                before_clause = "AND collected_at < ?"
-                params.append(before_collected_at)
-            row = conn.execute(
-                f"""
-                SELECT * FROM ac_fit_ap_optical_history
-                WHERE ({' OR '.join(clauses)})
-                  {before_clause}
-                  AND (
-                    rx_power IS NOT NULL OR optical_alarm_status IS NOT NULL OR status IS NOT NULL
-                  )
-                ORDER BY collected_at DESC, id DESC
-                LIMIT 1
-                """,
-                params,
-            ).fetchone()
-        return dict(row) if row is not None else None
+                    legacy_row = dict(row)
+            if legacy_row is None:
+                clauses, params = self._ap_identity_clauses(identity, allowed=("ap_uuid", "ap_mac"))
+                if clauses:
+                    before_clause = ""
+                    if before_collected_at:
+                        before_clause = "AND collected_at < ?"
+                        params.append(before_collected_at)
+                    row = conn.execute(
+                        f"""
+                        SELECT * FROM ac_fit_ap_optical_history
+                        WHERE ({' OR '.join(clauses)})
+                          {before_clause}
+                          AND (
+                            rx_power IS NOT NULL OR optical_alarm_status IS NOT NULL OR status IS NOT NULL
+                          )
+                        ORDER BY collected_at DESC, id DESC
+                        LIMIT 1
+                        """,
+                        params,
+                    ).fetchone()
+                    legacy_row = dict(row) if row is not None else None
+        ap_uuid = str(identity.get("ap_uuid") or "")
+        events = self.history_store.query_events(
+            kind="fit_ap_optical",
+            entity_key=ap_uuid,
+            limit=100_000,
+            collected_to=before_collected_at,
+        ) if ap_uuid else []
+        candidates = self._merge_history_rows([legacy_row] if legacy_row else [], events, limit=500)
+        if before_collected_at:
+            candidates = [row for row in candidates if str(row.get("collected_at") or "") < before_collected_at]
+        return candidates[0] if candidates else None
 
     def get_previous_ap_lldp_history(
         self,
@@ -1915,6 +1959,7 @@ class AcRepository:
         if before_collected_at:
             before_clause = "AND collected_at < ?"
             params.append(before_collected_at)
+        legacy_row: dict[str, object | None] | None = None
         with self.database.connect() as conn:
             row = conn.execute(
                 f"""
@@ -1928,24 +1973,36 @@ class AcRepository:
                 params,
             ).fetchone()
             if row is not None:
-                return dict(row)
-            clauses, params = self._ap_identity_clauses(identity, allowed=("ap_uuid", "ap_mac"))
-            before_clause = ""
-            if before_collected_at:
-                before_clause = "AND collected_at < ?"
-                params.append(before_collected_at)
-            row = conn.execute(
-                f"""
-                SELECT * FROM ac_fit_ap_lldp_history
-                WHERE ({' OR '.join(clauses)})
-                  {before_clause}
-                  AND neighbor_interface IS NOT NULL
-                ORDER BY collected_at DESC, id DESC
-                LIMIT 1
-                """,
-                params,
-            ).fetchone()
-        return dict(row) if row is not None else None
+                legacy_row = dict(row)
+            if legacy_row is None:
+                clauses, params = self._ap_identity_clauses(identity, allowed=("ap_uuid", "ap_mac"))
+                before_clause = ""
+                if before_collected_at:
+                    before_clause = "AND collected_at < ?"
+                    params.append(before_collected_at)
+                row = conn.execute(
+                    f"""
+                    SELECT * FROM ac_fit_ap_lldp_history
+                    WHERE ({' OR '.join(clauses)})
+                      {before_clause}
+                      AND neighbor_interface IS NOT NULL
+                    ORDER BY collected_at DESC, id DESC
+                    LIMIT 1
+                    """,
+                    params,
+                ).fetchone()
+                legacy_row = dict(row) if row is not None else None
+        ap_uuid = str(identity.get("ap_uuid") or "")
+        events = self.history_store.query_events(
+            kind="fit_ap_lldp",
+            entity_key=ap_uuid,
+            limit=100_000,
+            collected_to=before_collected_at,
+        ) if ap_uuid else []
+        candidates = self._merge_history_rows([legacy_row] if legacy_row else [], events, limit=500)
+        if before_collected_at:
+            candidates = [row for row in candidates if str(row.get("collected_at") or "") < before_collected_at]
+        return candidates[0] if candidates else None
 
     def list_latest_ap_lldp_history(self, ap_uuid: str) -> dict[str, object | None] | None:
         with self.database.connect() as conn:
@@ -1958,7 +2015,12 @@ class AcRepository:
                 """,
                 (ap_uuid,),
             ).fetchone()
-        return dict(row) if row is not None else None
+        events = self.history_store.query_events(
+            kind="fit_ap_lldp", entity_key=str(ap_uuid), limit=1
+        )
+        return self._merge_history_rows(
+            [dict(row)] if row is not None else [], events, limit=1
+        )[0] if row is not None or events else None
 
     def list_latest_ap_lldp_histories(self, limit: int = 100000) -> list[dict[str, object | None]]:
         with self.database.connect() as conn:
@@ -2005,7 +2067,8 @@ class AcRepository:
             current = latest.get(key)
             if current is None or _latest_row_score(row) >= _latest_row_score(current):
                 latest[key] = row
-        return [*latest.values(), *passthrough]
+        events = self.history_store.query_events(kind="fit_ap_lldp", limit=limit)
+        return self._merge_history_rows([*latest.values(), *passthrough], events, limit=limit)
 
     def list_all_ap_lldp_history(self, limit: int = 100000) -> list[dict[str, object | None]]:
         with self.database.connect() as conn:
@@ -2041,7 +2104,11 @@ class AcRepository:
                 """,
                 (limit,),
             ).fetchall()
-        return [dict(row) for row in entity_rows] + [dict(row) for row in fit_rows]
+        return self._merge_history_rows(
+            [dict(row) for row in entity_rows] + [dict(row) for row in fit_rows],
+            self.history_store.query_events(kind="fit_ap_lldp", limit=limit),
+            limit=limit,
+        )
 
     def get_fit_ap_resource(self, ac_device_uuid: str, ap_name: str) -> dict[str, object | None] | None:
         rows = self.list_fit_ap_resources_with_metadata(ac_device_uuid)
@@ -2664,7 +2731,6 @@ class AcRepository:
         ) else 1
 
     def _append_radio_history(self, conn, payload: dict[str, object | None]) -> None:
-        now = self._now()
         for rid in (1, 2, 3):
             status = payload.get(f"rid{rid}_status")
             mode = payload.get(f"rid{rid}_mode")
@@ -2694,11 +2760,53 @@ class AcRepository:
                 "collected_at": payload.get("collected_at"),
                 "collect_run_uuid": payload.get("collect_run_uuid"),
                 "raw_log_path": payload.get("raw_log_path"),
-                "created_at": now,
             }
-            columns = ", ".join(FIT_AP_RADIO_HISTORY_FIELDS)
-            placeholders = ", ".join("?" for _ in FIT_AP_RADIO_HISTORY_FIELDS)
-            conn.execute(f"INSERT INTO ac_fit_ap_radio_history ({columns}) VALUES ({placeholders})", [row[field] for field in FIT_AP_RADIO_HISTORY_FIELDS])
+            ap_uuid = str(row.get("ap_uuid") or "")
+            if not ap_uuid:
+                continue
+            self.history_store.record_event(
+                conn,
+                kind="fit_ap_radio",
+                entity_key=f"{ap_uuid}:{rid}",
+                payload=row,
+                collected_at=str(row.get("collected_at") or self._now()),
+                meaningful_fields=(
+                    "ac_device_uuid", "ap_uuid", "ap_name", "rid", "status", "mode", "band",
+                    "channel", "bandwidth", "usage", "tx_power", "clients", "bbssid",
+                ),
+            )
+
+    def _record_fit_ap_optical_history(self, conn, payload: dict[str, object | None]) -> None:
+        ap_uuid = str(payload.get("ap_uuid") or "")
+        if not ap_uuid:
+            return
+        row = self._payload(
+            FIT_AP_OPTICAL_HISTORY_FIELDS,
+            {
+                **payload,
+                "source": payload.get("source") or "ap_optical_diag",
+                "session_id": payload.get("collect_run_uuid"),
+            },
+        )
+        self.history_store.record_event(
+            conn,
+            kind="fit_ap_optical",
+            entity_key=ap_uuid,
+            payload=row,
+            collected_at=str(row.get("collected_at") or self._now()),
+            meaningful_fields=(
+                "ac_device_uuid", "ap_uuid", "ap_name", "ap_mac", "ap_ip", "site",
+                "lldp_neighbor", "lldp_local_interface", "lldp_local_interface_normalized",
+                "lldp_neighbor_name", "lldp_neighbor_mac", "lldp_neighbor_mac_normalized",
+                "lldp_neighbor_interface", "link_match_status", "source", "neighbor_interface",
+                "neighbor_mac", "neighbor_device_name", "neighbor_rx_power", "interface_name",
+                "temperature", "voltage", "bias_current", "tx_power", "rx_power", "rx_low_alarm",
+                "rx_high_alarm", "tx_low_alarm", "tx_high_alarm", "rx_low_warning", "rx_high_warning",
+                "tx_low_warning", "tx_high_warning", "optical_alarm_status", "status", "error_message",
+                "module_model", "module_serial_number", "module_vendor", "wavelength",
+                "transmission_distance", "connector_type",
+            ),
+        )
 
     def _append_resource_lldp_history(self, conn, payload: dict[str, object | None]) -> None:
         if not any(
@@ -2711,7 +2819,6 @@ class AcRepository:
             )
         ):
             return
-        now = self._now()
         row = self._payload(
             FIT_AP_LLDP_HISTORY_FIELDS,
             {
@@ -2719,7 +2826,7 @@ class AcRepository:
                 "ap_uuid": payload.get("ap_uuid"),
                 "ap_name": payload.get("ap_name"),
                 "ap_mac": payload.get("ap_mac"),
-                "source": payload.get("lldp_source") or "ac_bulk_lldp",
+                "source": payload.get("_history_lldp_source") or payload.get("lldp_source") or "ac_bulk_lldp",
                 "local_interface": payload.get("lldp_local_interface"),
                 "local_interface_normalized": payload.get("lldp_local_interface_normalized"),
                 "lldp_neighbor": payload.get("lldp_neighbor_name"),
@@ -2727,34 +2834,55 @@ class AcRepository:
                 "neighbor_interface": payload.get("lldp_neighbor_interface"),
                 "neighbor_mac": payload.get("lldp_neighbor_mac"),
                 "neighbor_mac_normalized": payload.get("lldp_neighbor_mac_normalized"),
-                "neighbor_device_name": payload.get("lldp_neighbor_name"),
+                "neighbor_device_name": payload.get("neighbor_device_name") or payload.get("lldp_neighbor_name"),
                 "session_id": payload.get("collect_run_uuid"),
-                "is_changed": self._lldp_history_changed(conn, payload.get("ap_uuid"), payload),
+                "is_changed": 1,
                 "conflict_flag": 1 if str(payload.get("lldp_match_status") or "") == "conflict" else 0,
                 "collected_at": payload.get("collected_at"),
                 "collect_run_uuid": payload.get("collect_run_uuid"),
                 "raw_log_path": payload.get("raw_log_path"),
-                "created_at": now,
             },
         )
-        columns = ", ".join(FIT_AP_LLDP_HISTORY_FIELDS)
-        placeholders = ", ".join("?" for _ in FIT_AP_LLDP_HISTORY_FIELDS)
-        conn.execute(f"INSERT INTO ac_fit_ap_lldp_history ({columns}) VALUES ({placeholders})", [row[field] for field in FIT_AP_LLDP_HISTORY_FIELDS])
+        ap_uuid = str(row.get("ap_uuid") or "")
+        if not ap_uuid:
+            return
+        self.history_store.record_event(
+            conn,
+            kind="fit_ap_lldp",
+            entity_key=ap_uuid,
+            payload=row,
+            collected_at=str(row.get("collected_at") or self._now()),
+            meaningful_fields=(
+                "ac_device_uuid", "ap_uuid", "ap_name", "ap_mac", "source", "local_interface",
+                "local_interface_normalized", "lldp_neighbor", "neighbor_interface", "neighbor_mac",
+                "neighbor_mac_normalized", "neighbor_device_name", "neighbor_name", "conflict_flag",
+            ),
+        )
 
     def _append_resource_history(self, conn, payload: dict[str, object | None]) -> None:
-        now = self._now()
         row = self._payload(
             FIT_AP_RESOURCE_HISTORY_FIELDS,
             {
                 **payload,
                 "site_name": payload.get("site_name") or payload.get("site"),
-                "created_at": now,
             },
         )
-        row["collected_at"] = row.get("collected_at") or now
-        columns = ", ".join(FIT_AP_RESOURCE_HISTORY_FIELDS)
-        placeholders = ", ".join("?" for _ in FIT_AP_RESOURCE_HISTORY_FIELDS)
-        conn.execute(f"INSERT INTO ac_fit_ap_resource_history ({columns}) VALUES ({placeholders})", [row[field] for field in FIT_AP_RESOURCE_HISTORY_FIELDS])
+        row["collected_at"] = row.get("collected_at") or self._now()
+        ac_device_uuid = str(row.get("ac_device_uuid") or "")
+        ap_uuid = str(row.get("ap_uuid") or "")
+        if not ac_device_uuid or not ap_uuid:
+            return
+        self.history_store.record_event(
+            conn,
+            kind="fit_ap_resource",
+            entity_key=f"{ac_device_uuid}:{ap_uuid}",
+            payload=row,
+            collected_at=str(row["collected_at"]),
+            meaningful_fields=(
+                "ac_device_uuid", "ap_uuid", "ap_name", "ap_mac", "ap_ip", "serial_number",
+                "state_raw", "state_display", "site_name",
+            ),
+        )
 
     def _resolve_fit_ap_entity_uuid(
         self,
@@ -2963,6 +3091,30 @@ class AcRepository:
     ) -> str:
         if field not in FIT_AP_STABLE_IDENTITY_FIELDS:
             return ""
+        has_outbox = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'history_outbox'"
+        ).fetchone()
+        outbox_rows = conn.execute(
+            """
+            SELECT payload_json FROM history_outbox
+            WHERE kind = 'fit_ap_resource'
+            ORDER BY collected_at DESC, event_id DESC
+            """
+        ).fetchall() if has_outbox else []
+        for outbox_row in outbox_rows:
+            try:
+                event = json.loads(str(outbox_row["payload_json"]))
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(event, dict) or str(event.get("ap_uuid") or "") != ap_uuid:
+                continue
+            value = (
+                self._mac_from_text(event.get(field))
+                if field == "ap_mac"
+                else self._clean_identity_value(event.get(field))
+            )
+            if value:
+                return value
         history_tables = (
             ("ac_fit_ap_resource_history", FIT_AP_RESOURCE_HISTORY_FIELDS),
             ("ap_resource_snapshots", AP_RESOURCE_SNAPSHOT_FIELDS),
@@ -3548,6 +3700,29 @@ class AcRepository:
     @staticmethod
     def _now() -> str:
         return datetime.now().isoformat(timespec="seconds")
+
+    @staticmethod
+    def _merge_history_rows(
+        legacy_rows: list[dict[str, object | None]],
+        events: list[dict[str, object | None]],
+        *,
+        limit: int,
+    ) -> list[dict[str, object | None]]:
+        normalized_events: list[dict[str, object | None]] = []
+        for event in events:
+            row = dict(event)
+            if "is_changed" in row:
+                row["is_changed"] = 0 if row.get("event_type") == "heartbeat" else 1
+            normalized_events.append(row)
+        return sorted(
+            [*legacy_rows, *normalized_events],
+            key=lambda row: (
+                str(row.get("collected_at") or ""),
+                str(row.get("event_id") or ""),
+                _int_value(row.get("id")),
+            ),
+            reverse=True,
+        )[: max(1, int(limit))]
 
 
 def _latest_rows_by_ap_identity(rows: list[dict[str, object | None]]) -> list[dict[str, object | None]]:

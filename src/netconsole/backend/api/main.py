@@ -69,6 +69,7 @@ from netconsole.services.file_management_service import FileManagementApplicatio
 from netconsole.services.job_center.task_application_service import TaskApplicationService
 from netconsole.services.job_center.query_service import JobCenterQueryService
 from netconsole.services.job_center.local_process_adapter import LocalProcessAdapter
+from netconsole.services.history_store import HistoryStore
 from netconsole.services.network_tools.application_service import NetworkToolsApplicationService
 from netconsole.services.online_mr.api_facade import OnlineMrApiFacade
 from netconsole.services.online_mr.errors import OnlineMrQueryError, OnlineMrQueryErrorCode
@@ -126,6 +127,12 @@ _SECRET_RE = re.compile(r"(?i)((?:x-agent-token|token)\s*[:=]\s*)[^\s,;]+")
 DESKTOP_SESSION_COOKIE = "netconsole_desktop_session"
 DESKTOP_SESSION_HEADER = "x-netconsole-session"
 _DESKTOP_DEFERRED_RUNTIME_DELAY_SECONDS = 1.0
+
+
+def _unattended_run_active(repository: GroundUnattendedRepository | None) -> bool:
+    """Maintenance pauses only for a persisted active unattended run."""
+
+    return bool(repository is not None and repository.get_active_run())
 
 
 class DesktopSessionMiddleware:
@@ -351,6 +358,11 @@ def create_app(
     if callable(resident_binder):
         resident_binder(ac_mesh_link_resident_service)
     web_process_adapter = LocalProcessAdapter(task_service)
+    history_store = HistoryStore(
+        paths.site_db_path(site_name),
+        site_id=site_name,
+        history_root=paths.site_history_dir(site_name),
+    )
     site_application_service = SiteApplicationService(paths, task_service)
     data_root_application_service = DataRootApplicationService(paths, site_application_service)
     site_package_service = SitePackageService(paths, site_application_service)
@@ -510,6 +522,42 @@ def create_app(
                     app_logger.log_warning("APP_AUTO_CLEANUP_FAILED", _safe_error_message(str(exc)))
                 await asyncio.sleep(LOG_POLICY.housekeeper.interval_seconds)
 
+        async def schedule_history_drain() -> None:
+            """Drain only after readiness; history maintenance never delays startup."""
+
+            await asyncio.sleep(5)
+            while True:
+                if not app.state.accepting_work:
+                    return
+                if app.state.runtime_services_ready:
+                    try:
+                        unattended_active = await asyncio.to_thread(
+                            _unattended_run_active,
+                            getattr(app.state, "ground_unattended_repository", None),
+                        )
+                        result = await asyncio.to_thread(
+                            history_store.drain,
+                            limit=100,
+                            unattended_active=unattended_active,
+                        )
+                        app.state.history_pending = result.pending
+                        app.state.history_status = "paused" if result.paused else (
+                            "degraded" if result.degraded else "ready"
+                        )
+                        if result.degraded:
+                            app_logger.log_warning(
+                                "HISTORY_DRAIN_DEGRADED",
+                                f"pending={result.pending} written={result.written}",
+                            )
+                    except Exception as exc:
+                        app.state.history_status = "degraded"
+                        app.state.history_error = exc.__class__.__name__
+                        app_logger.log_warning(
+                            "HISTORY_DRAIN_DEGRADED",
+                            f"error={exc.__class__.__name__}: {_safe_error_message(str(exc))}",
+                        )
+                await asyncio.sleep(10)
+
         auto_cleanup_task = (
             asyncio.create_task(schedule_auto_cleanup())
             if (
@@ -519,6 +567,7 @@ def create_app(
             )
             else None
         )
+        history_drain_task = asyncio.create_task(schedule_history_drain())
         deferred_start_task: asyncio.Task[None] | None = None
         try:
             if defer_runtime_start:
@@ -557,6 +606,8 @@ def create_app(
             if auto_cleanup_task is not None:
                 auto_cleanup_task.cancel()
                 await asyncio.gather(auto_cleanup_task, return_exceptions=True)
+            history_drain_task.cancel()
+            await asyncio.gather(history_drain_task, return_exceptions=True)
             if ground_unattended_supervisor is not None:
                 try:
                     await asyncio.to_thread(ground_unattended_supervisor.close)
@@ -643,6 +694,10 @@ def create_app(
     app.state.runtime_services_ready = False
     app.state.runtime_services_status = "starting"
     app.state.runtime_services_error = ""
+    app.state.history_status = "idle"
+    app.state.history_pending = 0
+    app.state.history_error = ""
+    app.state.history_store = history_store
     app.state.host_environment_profile = host_profile
     app.state.performance_mode = performance_mode.value
     app.state.capability_policy = capability_policy

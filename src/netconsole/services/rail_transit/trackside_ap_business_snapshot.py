@@ -41,6 +41,10 @@ _CURRENT_SOURCE_TABLES: dict[str, tuple[str, ...]] = {
         "ap_lldp_history",
         "ac_fit_ap_lldp_history",
         "ac_fit_ap_unauthenticated_history",
+        # Phase 2 history compatibility: only the current DB's small outbox
+        # lineage participates here. Monthly shards are never scanned.
+        "history_outbox",
+        "history_state",
     ),
 }
 _EXPORT_HISTORY_TABLES = (
