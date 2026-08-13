@@ -18,6 +18,15 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from netconsole.core.runtime_profile import read_host_environment_profile
+
+DEFAULT_STARTUP_LOG = Path(r"D:\NetConsoleData\runtime\logs\electron.log")
+STARTUP_EVENTS = {
+    "ELECTRON_BACKEND_FIRST_STDOUT",
+    "ELECTRON_BACKEND_STARTUP_STAGE",
+    "ELECTRON_BACKEND_READY",
+}
+
 
 def _sqlite_readonly(path: Path) -> sqlite3.Connection:
     uri = f"{path.resolve().as_uri()}?mode=ro"
@@ -33,7 +42,7 @@ def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
     ).fetchone() is not None
 
 
-def _db_report(path: Path) -> dict[str, Any]:
+def _db_report(path: Path, *, deep: bool = False) -> dict[str, Any]:
     report: dict[str, Any] = {
         "path": str(path),
         "exists": path.is_file(),
@@ -81,16 +90,16 @@ def _db_report(path: Path) -> dict[str, Any]:
                 for name in tables
                 if "history" in name or name in {"history_outbox", "history_state"}
             ]
-            report["history_tables"] = {
-                name: int(conn.execute(f"SELECT COUNT(*) FROM \"{name}\"").fetchone()[0])
-                for name in history_tables
-            }
+            report["history_tables"] = history_tables
+            if deep:
+                report["history_table_counts"] = {
+                    name: int(conn.execute(f"SELECT COUNT(*) FROM \"{name}\"").fetchone()[0])
+                    for name in history_tables
+                }
             if _table_exists(conn, "history_outbox"):
-                report["history_pending"] = int(
-                    conn.execute("SELECT COUNT(*) FROM history_outbox WHERE drained_at IS NULL").fetchone()[0]
-                )
+                report["history_pending"] = int(conn.execute("SELECT COUNT(*) FROM history_outbox").fetchone()[0])
                 oldest = conn.execute(
-                    "SELECT MIN(collected_at) FROM history_outbox WHERE drained_at IS NULL"
+                    "SELECT MIN(created_at) FROM history_outbox"
                 ).fetchone()[0]
                 report["history_oldest_pending"] = oldest
             else:
@@ -130,24 +139,106 @@ def _disk_report(path: Path) -> dict[str, Any]:
         return {"total_bytes": None, "free_bytes": None, "used_bytes": None}
 
 
+def _parse_json_startup_line(line: str) -> dict[str, Any] | None:
+    try:
+        item = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(item, dict):
+        return None
+    event_name = str(item.get("event") or item.get("EVENT") or "")
+    if event_name == "netconsole.electron_backend.startup_stage":
+        return {
+            "format": "python_json",
+            "event": "ELECTRON_BACKEND_STARTUP_STAGE",
+            "timestamp": item.get("timestamp") or item.get("ts"),
+            "level": item.get("level", "INFO"),
+            "detail": item.get("stage") or item.get("detail") or "",
+            "elapsed_ms": item.get("elapsed_ms"),
+        }
+    normalized = event_name.upper().replace(".", "_")
+    if normalized.endswith(("ELECTRON_BACKEND_READY", "BACKEND_READY")):
+        event = "ELECTRON_BACKEND_READY"
+    elif normalized.endswith(("ELECTRON_BACKEND_FIRST_STDOUT", "BACKEND_FIRST_STDOUT")):
+        event = "ELECTRON_BACKEND_FIRST_STDOUT"
+    elif "STARTUP" in normalized or "READY" in normalized:
+        event = normalized
+    else:
+        return None
+    return {
+        "format": "python_json",
+        "event": event,
+        "timestamp": item.get("timestamp") or item.get("ts"),
+        "level": item.get("level", "INFO"),
+        "detail": item.get("detail") or item.get("message") or item.get("stage") or "",
+        "elapsed_ms": item.get("elapsed_ms"),
+    }
+
+
+def _parse_pipe_startup_line(line: str) -> dict[str, Any] | None:
+    parts = [part.strip() for part in line.split("|", 3)]
+    if len(parts) != 4:
+        return None
+    timestamp, level, event, detail = parts
+    event = event.upper()
+    if event not in STARTUP_EVENTS and not ("STARTUP" in event or "READY" in event):
+        return None
+    return {
+        "format": "electron_pipe",
+        "event": event,
+        "timestamp": timestamp,
+        "level": level,
+        "detail": detail,
+    }
+
+
 def _startup_events(path: Path | None) -> dict[str, Any]:
     if path is None or not path.is_file():
         return {"source": str(path) if path else None, "events": [], "status": "not_provided"}
     events: list[dict[str, Any]] = []
     try:
         for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-            try:
-                item = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(item, dict) and ("startup_stage" in item or item.get("event") == "netconsole.electron_backend.startup_stage"):
+            item = _parse_json_startup_line(line) or _parse_pipe_startup_line(line)
+            if item is not None:
                 events.append(item)
     except OSError:
         return {"source": str(path), "events": [], "status": "unreadable"}
-    return {"source": str(path), "events": events, "status": "ready"}
+    return {"source": str(path), "events": events, "timeline": events, "status": "ready"}
 
 
-def collect_report(*, database: Path, disk_path: Path, startup_log: Path | None = None) -> dict[str, Any]:
+def _default_host_profile(database: Path) -> Path:
+    parts = database.resolve().parts
+    if len(parts) >= 5 and parts[-4].casefold() == "sites":
+        return Path(*parts[:-4]) / "runtime" / "environment" / "host-profile.json"
+    return Path(r"D:\NetConsoleData\runtime\environment\host-profile.json")
+
+
+def _host_report(database: Path, profile_path: Path | None) -> dict[str, Any]:
+    target = profile_path or _default_host_profile(database)
+    profile = read_host_environment_profile(target)
+    if profile is None:
+        return {"profile_path": str(target), "profile_status": "not_available", "memory": {"bytes": "unknown"}}
+    memory = profile.memory.get("bytes")
+    return {
+        "profile_path": str(target),
+        "profile_status": "ready",
+        "profile_collected_at": profile.collected_at,
+        "memory": {
+            "bytes": getattr(memory, "value", "unknown"),
+            "source": getattr(memory, "source", "unavailable"),
+            "confidence": getattr(memory, "confidence", "unknown"),
+        },
+    }
+
+
+def collect_report(
+    *,
+    database: Path,
+    disk_path: Path,
+    startup_log: Path | None = None,
+    host_profile: Path | None = None,
+    deep: bool = False,
+) -> dict[str, Any]:
     return {
         "captured_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "script": "diagnose_server_hdd",
@@ -156,11 +247,12 @@ def collect_report(*, database: Path, disk_path: Path, startup_log: Path | None 
             "os": platform.platform(),
             "python": platform.python_version(),
             "cpu_count": os.cpu_count(),
+            **_host_report(database, host_profile),
         },
         "disk": _disk_report(disk_path),
         "processes": _processes(),
-        "database": _db_report(database),
-        "startup": _startup_events(startup_log),
+        "database": {**_db_report(database, deep=deep), "deep": deep},
+        "startup": _startup_events(startup_log or DEFAULT_STARTUP_LOG),
         "disk_counters": {
             "active_time_percent": "unknown",
             "queue_length": "unknown",
@@ -174,13 +266,17 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="只读采集 NetConsole Windows Server/HDD 诊断信息")
     parser.add_argument("--database", type=Path, required=True, help="devices.db 路径；只读打开")
     parser.add_argument("--disk-path", type=Path, default=None, help="用于统计容量的卷或目录")
-    parser.add_argument("--startup-log", type=Path, default=None, help="可选的 JSONL 启动日志")
+    parser.add_argument("--startup-log", type=Path, default=None, help="可选的 electron.log；默认 D:\\NetConsoleData\\runtime\\logs\\electron.log")
+    parser.add_argument("--host-profile", type=Path, default=None, help="可选安装期 host-profile.json")
+    parser.add_argument("--deep", action="store_true", help="显式精确统计全部 legacy history 表；默认不扫描")
     parser.add_argument("--output", type=Path, default=None, help="输出 JSON；不指定时打印到 stdout")
     args = parser.parse_args(argv)
     report = collect_report(
         database=args.database,
         disk_path=args.disk_path or args.database,
         startup_log=args.startup_log,
+        host_profile=args.host_profile,
+        deep=args.deep,
     )
     payload = json.dumps(report, ensure_ascii=False, indent=2)
     if args.output:

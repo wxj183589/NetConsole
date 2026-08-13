@@ -23,8 +23,18 @@ $env:PYTHONPATH = "src"
 ```
 
 脚本只读输出 OS/CPU、卷容量、Backend PID、devices.db/WAL/SHM、schema/table/index/history
-计数和可用启动阶段。Windows Server 2012/2012 R2 不支持的磁盘 active time、队列和延迟返回
+元数据和可用启动阶段。默认不扫描 legacy history 全表；只有显式添加 `--deep` 才执行精确
+历史表 COUNT。`history_pending` 使用 outbox 当前 `COUNT(*)`，最老 pending 使用 `MIN(created_at)`。
+`--deep` 仅用于维护窗口或离线副本；`SERVER_UNATTENDED ACTIVE` 现场不得启用，避免扫全量
+legacy history 影响 Syslog/MR/Ping 和当前任务状态持久化。
+Windows Server 2012/2012 R2 不支持的磁盘 active time、队列和延迟返回
 `unknown`；这些字段由资源监视器/PerfMon 人工记录，脚本不会每秒启动 PowerShell。
+
+默认读取 `D:\NetConsoleData\runtime\logs\electron.log`，同时解析 Electron 的
+`timestamp | LEVEL | EVENT | detail` 与 Python JSON startup 事件，提取
+`ELECTRON_BACKEND_FIRST_STDOUT`、`ELECTRON_BACKEND_STARTUP_STAGE`、
+`ELECTRON_BACKEND_READY`。RAM 优先来自安装期
+`runtime/environment/host-profile.json`，不会在正常诊断中重新运行 WMI hardware scan。
 
 ## 离线副本验证
 
@@ -34,12 +44,16 @@ $env:PYTHONPATH = "src"
 $env:PYTHONPATH = "src"
 .\.venv\Scripts\python.exe -m scripts.maintenance.validate_phase21_snapshot `
   --source "E:\offline\devices.db" `
-  --work-root "E:\NetConsoleValidation\phase21"
+  --work-root "E:\NetConsoleValidation\phase21" `
+  --backend-smoke
 ```
 
 验收要求：第一次初始化允许按 schema 进入 maintenance；第二次初始化必须走 current-schema
-fast path，文件大小稳定，不扫描 history shard，不调用 legacy migration。副本仍应能查询旧
-history；新事件经 `history_outbox` 排空后进入 `history/devices-YYYY-MM.db`。
+fast path，报告字段为 `database_initialize_first_ms`/
+`database_initialize_second_ms`，不代表 Backend startup time。`--backend-smoke` 只对隔离
+副本启动真实 `create_app/backend runtime -> listener -> /api/health`，记录
+`backend_ready_ms`，并拒绝 `D:\NetConsoleData`。副本仍应能查询旧 history；新事件经
+`history_outbox` 排空后进入 `history/devices-YYYY-MM.db`。
 
 ## A/B 现场步骤
 
