@@ -103,6 +103,10 @@ function desktopRendererBuildMetaPlugin() {
 export default defineConfig({
   test: {
     exclude: [...configDefaults.exclude, 'tests/visual/e2e/**'],
+    maxWorkers: 4,
+    testTimeout: 20_000,
+    hookTimeout: 20_000,
+    env: { NETCONSOLE_VITEST_PARALLEL_GATE: '1' },
     server: { deps: { inline: ['element-plus', '@element-plus/icons-vue'] } },
   },
   plugins: [

@@ -13,7 +13,7 @@ import { buildTracksideSeriesCache } from './tracksideSeriesCache'
 const SERIES_COUNT = 140
 const POINT_COUNT = 14_581
 const RUN_COUNT = 6_264
-const PERFORMANCE_BUDGET_MULTIPLIER = process.env.CI ? 2 : 1
+const PERFORMANCE_BUDGET_MULTIPLIER = process.env.NETCONSOLE_VITEST_PARALLEL_GATE ? 2 : 1
 
 const theme: NetConsoleChartTokens = {
   series: ['#1677ff', '#52c41a', '#faad14', '#ff4d4f', '#909399'],

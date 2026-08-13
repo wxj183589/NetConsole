@@ -131,7 +131,7 @@ pnpm smoke:workspace-tray
 
 Codex 开发链可用 `pnpm exec node scripts/dev.mjs --codex --smoke` 做同口径冒烟；它还验证受保护的 `/api/dev/runtime-status` 已就绪，并检查固定端口退出后可重新绑定。浏览器与 Electron 专项 E2E 将在独立 Playwright 阶段接入；在脚本真实存在前，不把 Vitest 或 smoke 冒充 E2E。
 
-启动日志使用单调时钟记录 `electron.app_ready -> window_created -> loading_view_shown -> backend.spawn_started -> handshake_received -> health_ready -> renderer.navigation_started -> dom_ready -> mounted -> desktop.interactive`。受管 Backend 另以结构化 INFO 记录 `spawn -> first stdout` 及 `paths_resolved / instance_lock_acquired / storage_manifest_ready / listener_bound / active_site_database_ready / ap_identity_index_ready / routers_registered / application_built / listener_ready`，用于区分冻结 EXE/DLL 加载、数据根、数据库与应用组合耗时；不记录令牌或凭据。启动页单次加载后按这些真实阶段更新中文状态，并持续显示无虚假百分比的动画、已用时间和慢启动提示。Vue `mounted` 与可交互状态严格分开：页面先挂载基础壳，加载设置并通过真实 health 后才上报 `interactive`。Desktop 下历史 Task/Agent/Traffic/File 恢复延后到首屏之后执行；普通 Server 模式仍保持同步启动和失败回滚。当前 schema 且无需迁移/修复的 `devices.db` 启动使用只读 fast path，不执行 schema 脚本、`BEGIN IMMEDIATE`、schema version 写入或 `wal_checkpoint(TRUNCATE)`；只有新库、schema upgrade 或明确兼容/数据修复才进入 maintenance 并 checkpoint。运行服务的 `runtime_services_ready` 与 Backend core health 分层；degraded 状态会在 health 暴露并拒绝 Agent/Traffic/File 等写操作。当前 active site 必须通过 SiteRegistry 与 `PathResolver.site_db_path()` 解析，禁止硬编码显示名、legacy 目录或现场 hostname。当前实测基线与优化证据见 [E5 启动性能归档](archive/migrations/electron-only/E5-2026-07-18.md)。
+启动日志使用单调时钟记录 `electron.app_ready -> window_created -> loading_view_shown -> backend.spawn_started -> handshake_received -> health_ready -> renderer.navigation_started -> dom_ready -> mounted -> desktop.interactive`。受管 Backend 另以结构化 INFO 记录 `spawn -> first stdout` 及 `paths_resolved / instance_lock_acquired / storage_manifest_ready / listener_bound / active_site_database_ready / ap_identity_index_ready / routers_registered / application_built / listener_ready`，用于区分冻结 EXE/DLL 加载、数据根、数据库与应用组合耗时；不记录令牌或凭据。启动页单次加载后按这些真实阶段更新中文状态，并持续显示无虚假百分比的动画、已用时间和慢启动提示。Vue `mounted` 与可交互状态严格分开：页面先挂载基础壳，加载设置并通过真实 health 后才上报 `interactive`。Desktop 下历史 Task/Agent/Traffic/File 恢复延后到首屏之后执行；普通 Server 模式仍保持同步启动和失败回滚。当前 schema 且无需迁移/修复的 `devices.db` 启动使用只读 fast path，不执行 schema 脚本、`BEGIN IMMEDIATE`、schema version 写入或 `wal_checkpoint(TRUNCATE)`；只有新库、schema upgrade 或明确兼容/数据修复才进入 maintenance 并 checkpoint。运行服务的 `runtime_services_ready` 与 Backend core health 分层；degraded 状态会在 health 暴露并拒绝 Agent/Traffic/File 等写操作。当前 active site 必须通过 SiteRegistry 与 `PathResolver.site_db_path()` 解析，禁止硬编码显示名、legacy 目录或现场 hostname。当前实测基线与优化证据见 [E5 启动性能归档](../archive/migrations/electron-only/E5-2026-07-18.md)。
 
 ## 生产资源模式
 
@@ -236,7 +236,7 @@ Renderer 当前只能调用：
 - MESH 轨旁图诊断用单向 `reportRendererWorkload`，只接受固定模块、路由、阶段和有界标量
 - `getRendererRecoveryState`，只返回当前受管窗口在本次应用运行期内的固定恢复 DTO
 
-没有通用 `invoke(channel)`、`send(channel)`、文件读写、环境变量读取、Python 路径设置或命令执行接口。详细路径规则见 [Desktop Native Bridge 契约](DESKTOP_NATIVE_BRIDGE.md)。
+没有通用 `invoke(channel)`、`send(channel)`、文件读写、环境变量读取、Python 路径设置或命令执行接口。详细路径规则见 [Desktop Native Bridge 契约](./NATIVE_BRIDGE.md)。
 
 工具集使用独立 `userData/external-tools.json` schema v2 Store，不进入 UI Preference 或局点数据。iperf3/fping 留在系统设置；SecureCRT/Xshell/PuTTY 的用户可见配置入口位于工具集，卡片只保存系统终端引用；旧 IPOP 路径幂等迁移为独立工具。Renderer 启动只传工具 UUID 与普通/管理员模式，Main 重新取已登记记录并复验。普通启动固定 `shell:false / detached:true / stdio:"ignore"`；管理员启动通过打包的最小 Go helper 调用 `ShellExecuteExW(runas)`，禁止提升 NetConsole 自身，UAC 取消不增加统计。自定义图标源路径留在 Main 的短期选择表，Renderer 只收到 `selectionId` 和 data URL。真实 UAC 和正式包 helper 状态为 `IMPLEMENTED_UNVERIFIED`，完整契约见[工具集](EXTERNAL_TOOL_COLLECTION.md)。
 

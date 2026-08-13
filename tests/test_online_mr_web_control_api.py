@@ -75,7 +75,10 @@ def _app(tmp_path: Path, service: _ControlService, *, mode: RuntimeMode = Runtim
         desktop_session_token="desktop-token" if mode is RuntimeMode.DESKTOP else None,
         online_mr_web_control_service=service,
     )
-    return wire_online_mr_api_facade(app, paths)
+    app = wire_online_mr_api_facade(app, paths)
+    app.state.runtime_services_ready = True
+    app.state.runtime_services_status = "ready"
+    return app
 
 
 def _authorized_client(app, *, base_url: str = "http://127.0.0.1"):
