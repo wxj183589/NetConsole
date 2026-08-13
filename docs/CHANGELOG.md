@@ -2,6 +2,12 @@
 
 ## v1.4.9 - 2026-08-12
 
+### 第二阶段 Cleanup 收尾
+
+- 测试共享 helper/fixture 统一归档到 `tests/support/`，并同步所有消费者；本地 fping 入口明确为 `run_fping_v5_smoke.py`，不再伪装成 pytest 测试。
+- 当前迁移机器契约提炼到 `config/architecture/migration_map.json`，历史 Qt 迁移矩阵冻结为 archive 追溯资料，不再参与正式 Guard 判定。
+- Documentation Guard 扩展到全部 active docs，排除 archive/investigations，并禁止阶段性文档命名；架构、命令、直接 SQL 和 Renderer 业务逻辑 Guard 的陈旧误报与缺口已收敛。
+
 ### Electron Desktop Only 与数据边界
 
 - 正式产品收敛为 Electron Desktop Only：Electron Main + Preload + `apps/desktop_renderer` 是唯一 GUI 运行形态，Renderer 继续通过 REST/WebSocket 使用 Python Backend 与原有数据层；独立 Browser Production Runtime 已退出，FastAPI、REST、WebSocket、Vite 开发联调及 Agent 内嵌 Web 等技术能力不受影响。
