@@ -45,6 +45,9 @@ dry-run 不写 parsed DB、raw 或 catalog，并兼容缺少后续可选身份�
 
 ## 测试
 
+- `diagnose_server_hdd.py`：只读采集 Windows Server/HDD 主机、卷容量、Backend PID、devices.db/WAL/SHM、History health 和启动阶段；旧系统性能计数器不可用时返回 `unknown`。
+- `validate_phase21_snapshot.py`：仅对用户提供的离线 `devices.db` 副本执行 SQLite Backup API 隔离验证，确认 current-schema fast path 和新 History shard 写入；未提供副本时明确 `NOT_EXECUTED`。
+
 清理测试只在 `D:\NetConsoleTestData\<run-id>` 构造目标，禁止对真实 `D:\NetConsoleData`、历史 `data/`、`.local/` 或 LocalAppData 目录做破坏性测试。
 
 ## 修改规则

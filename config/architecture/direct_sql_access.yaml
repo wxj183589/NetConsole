@@ -115,4 +115,7 @@
   {"path":"tests/test_mesh_ap_coverage_audit_service.py","classification":"TEST_ONLY","owner":"test","reason":"MESH AP 覆盖核查测试只在 pytest 临时目录构造并查询 SQLite fixture。"},
   {"path":"src/netconsole/services/mesh_import_preflight_service.py","classification":"READ_ONLY_DATA_GATEWAY","owner":"mesh","reason":"只读检查候选 SQLite 是否可读及 sqlite_master 是否可查询；连接使用 mode=ro 与 query_only，不创建或修改业务数据。"},
   {"path":"tests/test_mesh_catalog_schema.py","classification":"TEST_ONLY","owner":"test","reason":"MESH catalog schema migration concurrency test fixture。"}
+,
+  {"path":"scripts/maintenance/diagnose_server_hdd.py","classification":"READ_ONLY_DATA_GATEWAY","owner":"data","reason":"现场诊断仅以 SQLite mode=ro/query_only 读取设备库统计，不创建或修改数据库。"},
+  {"path":"scripts/maintenance/validate_phase21_snapshot.py","classification":"TEST_ONLY","owner":"data","reason":"Phase 2.1 离线副本验证使用 SQLite backup API 和隔离临时库，不连接或修改现场数据。"}
 ]
