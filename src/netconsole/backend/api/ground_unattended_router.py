@@ -759,8 +759,75 @@ def operation(request: Request, operation_id: str) -> GroundOperationDTO:
 
 
 @router.get("/archives", response_model=GroundArchivePageDTO)
-def archives(request: Request) -> GroundArchivePageDTO:
-    return _call(lambda: _service(request).archives(_site_id(request)))
+def archives(request: Request, response: Response) -> GroundArchivePageDTO:
+    request_id = uuid.uuid4().hex
+    started = time.monotonic()
+    service = getattr(
+        request.app.state, "ground_unattended_application_service", None
+    )
+    site_id = str(getattr(service, "site_id", "") or "")
+    paths = getattr(service, "paths", None)
+    site_root = str(paths.site_dir(site_id)) if paths is not None and site_id else ""
+    archive_root = (
+        str(paths.ground_unattended_archives_dir(site_id))
+        if paths is not None and site_id
+        else ""
+    )
+    index_path = (
+        str(paths.ground_unattended_db_path(site_id))
+        if paths is not None and site_id
+        else ""
+    )
+    detail = _syslog_log_detail(
+        request_id=request_id,
+        site_id=site_id,
+        site_root=site_root,
+        archive_root=archive_root,
+        index_path=index_path,
+    )
+    try:
+        result = _service(request).archives(_site_id(request))
+        response.headers["X-Request-ID"] = request_id
+        app_logger.log_info(
+            "GROUND_ARCHIVES_QUERY_COMPLETED",
+            f"{detail} returned_count={len(result.items)} "
+            f"elapsed_ms={round((time.monotonic() - started) * 1000, 3)}",
+        )
+        return result
+    except HTTPException:
+        response.headers["X-Request-ID"] = request_id
+        raise
+    except GroundUnattendedError as exc:
+        app_logger.log_error(
+            "GROUND_ARCHIVES_QUERY_FAILED",
+            f"{detail} exception_type={type(exc).__name__} "
+            f"failure_code={exc.code} elapsed_ms={round((time.monotonic() - started) * 1000, 3)}",
+        )
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={
+                "code": exc.code,
+                "message": exc.message,
+                "details": {"request_id": request_id},
+            },
+            headers={"X-Request-ID": request_id},
+        ) from exc
+    except Exception as exc:
+        app_logger.log_error(
+            "GROUND_ARCHIVES_QUERY_FAILED",
+            f"{detail} exception_type={type(exc).__name__} "
+            f"elapsed_ms={round((time.monotonic() - started) * 1000, 3)} "
+            f"traceback={traceback.format_exc()}",
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "code": "GROUND_ARCHIVES_QUERY_FAILED",
+                "message": "历史归档查询失败，请使用请求编号查看 Backend 日志",
+                "details": {"request_id": request_id},
+            },
+            headers={"X-Request-ID": request_id},
+        ) from exc
 
 
 @router.get("/archives/{archive_id}", response_model=GroundArchiveDTO)

@@ -907,6 +907,125 @@ def test_ground_unattended_repository_failure_is_feature_scoped(
     }
 
 
+def test_ground_unattended_archive_list_accepts_legacy_and_nullable_rows(
+    tmp_path, monkeypatch
+) -> None:
+    paths = PathResolver(tmp_path / "app", tmp_path / "data")
+    app = create_app(paths=paths)
+    repository = app.state.ground_unattended_repository
+    repository.upsert_archive(
+        {
+            "archive_id": "archive-legacy-summary",
+            "site_id": "demo",
+            "run_id": "run-legacy-summary",
+            "run_date": "2026-07-25",
+            "relative_path": "archives/missing.zip",
+            "archive_status": "READY",
+            "summary_json": json.dumps(["legacy-summary"]),
+            "archive_size_bytes": "not-a-number",
+            "created_at": "",
+            "updated_at": "",
+        }
+    )
+    repository.upsert_archive(
+        {
+            "archive_id": "archive-null-fields",
+            "site_id": "demo",
+            "run_id": "run-null-fields",
+            "run_date": "2026-07-24",
+            "relative_path": "archives/missing-2.zip",
+            "archive_status": "PENDING",
+            "summary_json": "{invalid-json",
+            "created_at": "",
+            "updated_at": "",
+        }
+    )
+    events: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        ground_unattended_router.app_logger,
+        "log_error",
+        lambda event, detail="": events.append((event, detail)),
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/api/rail-transit/ground-unattended/archives")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total"] == 2
+    assert payload["items"][0]["summary"] == {}
+    assert payload["items"][0]["archive_size_bytes"] == 0
+    assert payload["items"][1]["summary"] == {}
+    assert payload["items"][1]["archive_status"] == "PENDING"
+    normalized = app.state.ground_unattended_application_service._archive_dto(
+        {
+            "archive_id": None,
+            "site_id": None,
+            "run_id": None,
+            "run_date": None,
+            "archive_status": None,
+            "summary": ["legacy"],
+            "archive_size_bytes": "invalid",
+            "created_at": None,
+            "updated_at": None,
+        }
+    )
+    assert normalized.archive_id == ""
+    assert normalized.archive_status == ""
+    assert normalized.summary == {}
+    assert normalized.archive_size_bytes == 0
+    assert not any(event == "GROUND_ARCHIVES_QUERY_FAILED" for event, _ in events)
+
+
+def test_ground_unattended_archive_list_empty_is_successful(tmp_path) -> None:
+    paths = PathResolver(tmp_path / "app", tmp_path / "data")
+    app = create_app(paths=paths)
+
+    with TestClient(app) as client:
+        response = client.get("/api/rail-transit/ground-unattended/archives")
+
+    assert response.status_code == 200
+    assert response.json() == {"items": [], "total": 0}
+
+
+def test_ground_unattended_archive_list_returns_diagnostic_request_id(
+    tmp_path, monkeypatch
+) -> None:
+    paths = PathResolver(tmp_path / "app", tmp_path / "data")
+    app = create_app(paths=paths)
+    service = app.state.ground_unattended_application_service
+    monkeypatch.setattr(
+        app.state.ground_unattended_supervisor,
+        "start",
+        lambda: None,
+    )
+    events: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        ground_unattended_router.app_logger,
+        "log_error",
+        lambda event, detail="": events.append((event, detail)),
+    )
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        monkeypatch.setattr(
+            service.repository,
+            "list_archives",
+            lambda: (_ for _ in ()).throw(RuntimeError("index unavailable")),
+        )
+        response = client.get("/api/rail-transit/ground-unattended/archives")
+
+    assert response.status_code == 500
+    body = response.json()["detail"]
+    request_id = body["details"]["request_id"]
+    assert body["code"] == "GROUND_ARCHIVES_QUERY_FAILED"
+    assert response.headers["x-request-id"] == request_id
+    failed = next(detail for event, detail in events if event == "GROUND_ARCHIVES_QUERY_FAILED")
+    assert f"request_id={request_id}" in failed
+    assert "exception_type=RuntimeError" in failed
+    assert "Traceback" in failed
+    assert "index.sqlite" in failed
+
+
 def test_ground_unattended_archive_summary_download_and_desktop_action(
     tmp_path,
 ) -> None:
