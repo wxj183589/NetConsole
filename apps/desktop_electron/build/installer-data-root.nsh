@@ -4,9 +4,11 @@
 !include "LogicLib.nsh"
 !include "nsDialogs.nsh"
 !include "StrFunc.nsh"
+!ifndef BUILD_UNINSTALLER
 ; StrFunc first defines the implementation macro, then redefines ${StrStr}
 ; as the three-argument call wrapper used below.
 !insertmacro FUNCTION_STRING_StrStr
+!endif
 !include "${__FILEDIR__}\..\dist\installer-build\installer-build-identity.nsh"
 
 !macro customHeader

@@ -250,33 +250,35 @@ def test_nsis_installer_include_compiles_with_strfunc_calls(tmp_path: Path) -> N
     installer_include = (
         build_installer.DESKTOP_ROOT / "build" / "installer-data-root.nsh"
     )
-    script = tmp_path / "installer-include-test.nsi"
-    executable = tmp_path / "installer-include-test.exe"
-    script.write_text(
-        f'''Unicode true
+    for label, define in (("installer", ""), ("uninstaller", "!define BUILD_UNINSTALLER")):
+        script = tmp_path / f"{label}-include-test.nsi"
+        executable = tmp_path / f"{label}-include-test.exe"
+        script.write_text(
+            f'''Unicode true
 RequestExecutionLevel user
 OutFile "{executable}"
 SilentInstall silent
 !addplugindir "{plugin_dir}"
+{define}
 !include "{installer_include}"
 
 Section
 SectionEnd
 ''',
-        encoding="utf-8-sig",
-    )
+            encoding="utf-8-sig",
+        )
 
-    compilation = subprocess.run(
-        [str(makensis), "/V2", str(script)],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=30,
-        check=False,
-    )
-    assert compilation.returncode == 0, compilation.stdout + compilation.stderr
-    assert executable.is_file()
+        compilation = subprocess.run(
+            [str(makensis), "/V2", str(script)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            check=False,
+        )
+        assert compilation.returncode == 0, compilation.stdout + compilation.stderr
+        assert executable.is_file()
 
 
 def _find_nsis_runtime() -> tuple[Path, Path]:
