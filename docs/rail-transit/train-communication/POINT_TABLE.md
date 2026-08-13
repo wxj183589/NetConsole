@@ -2,12 +2,8 @@
 
 ## 数据来源
 
-历史 Qt 点表和检测流程通过 Git 历史审计确认，事实源文件包括：
-
-- `src/netconsole/ui/pages/car_network_diagnostic_page.py`
-- `src/netconsole/ui/car_network_diagnostic_worker.py`
-
-当前实现不恢复 Qt UI，而是将点表读取、校验和 revision 保护收敛到 `TrainCommunicationPointTableService`。运行数据位于局点数据根的：
+历史 Qt 点表和检测流程仅通过 Git 历史审计确认；活动源码不再保留旧 Qt
+路径，也不把历史文件当作当前契约。当前实现不恢复 Qt UI，而是将点表读取、校验和 revision 保护收敛到 `TrainCommunicationPointTableService`。运行数据位于局点数据根的：
 
 ```text
 files/rail_transit/car_network/parsed/point_table.json

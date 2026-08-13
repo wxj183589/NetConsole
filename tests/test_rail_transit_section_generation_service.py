@@ -13,7 +13,7 @@ from netconsole.repositories.rail_transit_base_data_repository import (
 from netconsole.services.rail_transit.section_generation_service import (
     SectionGenerationService,
 )
-from rail_transit_base_data_fixture import build_rail_transit_base_data_fixture
+from tests.support.rail_transit_base_data_fixture import build_rail_transit_base_data_fixture
 
 
 def _station(

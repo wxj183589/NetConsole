@@ -37,6 +37,6 @@ Python 缓存可安全删除；包内版本化资源不可按缓存处理。
 
 ## 相关文档
 
-- [下一代架构](../../docs/ARCHITECTURE_NEXT.md)
-- [开发指南](../../docs/DEVELOPMENT_GUIDE.md)
-- [数据布局](../../docs/DATA_LAYOUT.md)
+- [当前架构](../../docs/ARCHITECTURE.md)
+- [开发规则](../../docs/DEVELOPMENT_RULES.md)
+- [数据布局](../../docs/storage/DATA_LAYOUT.md)

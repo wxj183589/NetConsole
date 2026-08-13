@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from rail_transit_base_data_write_fixture import build_copy_service, create_plan
+from tests.support.rail_transit_base_data_write_fixture import build_copy_service, create_plan
 from netconsole.services.rail_transit.base_data_import_service import BaseDataImportError
 
 

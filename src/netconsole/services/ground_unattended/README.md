@@ -64,8 +64,8 @@ Syslog 和位置关联，Deep Scheduler 只同步/收尾已有任务，不再填
 
 ## 相关文档
 
-- [地面无人值守](../../../../docs/GROUND_UNATTENDED.md)
-- [地面无人值守风险审计](../../../../docs/GROUND_UNATTENDED_RISK_AUDIT.md)
-- [数据布局](../../../../docs/DATA_LAYOUT.md)
-- [Online MR](../../../../docs/ONLINE_MR_COLLECTION.md)
+- [地面无人值守](../../../../docs/rail-transit/ground-unattended/README.md)
+- [地面无人值守](../../../../docs/rail-transit/ground-unattended/README.md)
+- [数据布局](../../../../docs/storage/DATA_LAYOUT.md)
+- [Online MR](../../../../docs/rail-transit/online-mr/README.md)
 - [项目架构](../../../../docs/ARCHITECTURE.md)

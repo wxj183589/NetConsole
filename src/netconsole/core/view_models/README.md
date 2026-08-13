@@ -36,5 +36,5 @@
 
 ## 相关文档
 
-- [MR/MESH 日志分析规则](../../../../docs/mr_mesh_log_analysis_rules.md)
-- [架构合规说明](../../../../docs/ARCHITECTURE_COMPLIANCE.md)
+- [MR/MESH 日志分析规则](../../../../docs/rail-transit/mesh/ANALYSIS_RULES.md)
+- [架构合规说明](../../../../docs/architecture/COMPLIANCE.md)

@@ -155,7 +155,7 @@ POST /api/v1/power/restore
 
 `GET /api/v1/capabilities` 返回 Agent 自报能力。内建 `ping_probe`/`tcp_ping_probe`、任务事件、结果和 Online MR 采集直接报告可用；iPerf/fping 能力依据 Agent 当前工具检测结果报告。Controller 不应根据操作系统猜测能力，旧 Agent 缺少该接口时应将能力保留为未知。
 
-流量参数、事件游标、结果和错误码的完整契约见 [Agent 流量测试协议](../../docs/AGENT_TRAFFIC_API.md)。旧 iPerf `extra_args` 只为兼容保留并继续过滤，新 Python Typed Client 不发送该字段。
+流量参数、事件游标、结果和错误码的完整契约见 [Agent 流量测试协议](../../docs/agent/TRAFFIC_API.md)。旧 iPerf `extra_args` 只为兼容保留并继续过滤，新 Python Typed Client 不发送该字段。
 
 ## 任务与采集包
 

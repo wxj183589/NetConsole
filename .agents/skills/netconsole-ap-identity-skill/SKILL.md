@@ -28,9 +28,8 @@ description: "AP Identity、CanonicalApIdentity、AP/Radio/BSSID/Peer MAC 归一
 
 # 开始前读取
 
-- `docs/AP_IDENTITY.md`、`docs/AP_IDENTITY_CONSUMER_AUDIT.md`、`docs/AP_MODEL_ASSESSMENT.md`、`docs/AP_IDENTITY_OBSERVATION_PLAN.md`。
-- `docs/AP_IDENTITY_DISPLAY_ASSESSMENT.md`、`docs/AP_IDENTITY_JOB_DETAIL_HOST_ASSESSMENT.md`。
-- `docs/TRACKSIDE_AP_IDENTITY_ASSESSMENT.md`、`docs/MR_MESH_AP_IDENTITY_ASSESSMENT.md`、`docs/EXPORT_FIELD_DEDUP_ASSESSMENT.md`。
+- `docs/AP_IDENTITY.md`；模型分层、消费者状态、展示/脱敏、真实局点观测、导出边界与回滚均以该文档为唯一活动 SSOT。
+- 涉及 MESH、轨旁、Ground、基础资料或导出时，再读取对应领域的当前专题文档；不得从历史 Assessment 恢复过期阶段结论。
 - `src/netconsole/services/ap_identity/`、`src/netconsole/services/ac/ac_identity_models.py`、`src/netconsole/services/ac/ac_identity_adapter.py`。
 - `src/netconsole/services/ac/ac_optical_identity_adapter.py`、`src/netconsole/services/mr_mesh_identity_shadow.py`。
 - `src/netconsole/services/rail_transit/trackside_ap_identity_shadow.py`、`src/netconsole/services/export_identity_diagnostics.py`、`src/netconsole/models/diagnostics_summary.py`。
@@ -51,7 +50,7 @@ description: "AP Identity、CanonicalApIdentity、AP/Radio/BSSID/Peer MAC 归一
 - 局点级 `devices.db` 统一索引、批量 Query、revision 和诊断基础设施已进入生产。
 - MESH、Ground、Online/Vehicle MR、Wireless 和轨旁 AP 业务/导出的高频 Peer/BSSID/物理 AP 解析已经按消费者使用统一入口；这些路径不能再按“仅 shadow”维护。
 - AC Mesh-Link、轨旁基础资料搜索、其他报告读取以及设备/LLDP topology binding 仍处于 P1/P2 收敛范围；FIT-AP/AC 搜索虽使用统一查询，领域业务仍由 AC 负责。
-- 统一任务窗口只展示受控摘要；部分消费者接管不等于全系统接管，GET 不得修复 stale projection 或触发 rebuild。
+- 诊断允许列表模型和默认关闭开关已存在，但 AP Identity 摘要尚未接入全局任务中心或具名 Vue 页面；部分消费者接管不等于全系统接管，GET 不得修复 stale projection 或触发 rebuild。
 
 # 验证与失败报告
 

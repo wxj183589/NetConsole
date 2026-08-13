@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from web_parity_test_support import FakeExportProcessAdapter, FakeLocalProcessAdapter
+from tests.support.web_parity_test_support import FakeExportProcessAdapter, FakeLocalProcessAdapter
 
 from netconsole.application.rail_transit import web_application_service
 from netconsole.application.rail_transit.web_application_service import RailTransitWebApplicationService, RailTransitWebError

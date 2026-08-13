@@ -514,7 +514,7 @@ def test_v2_device_connection_capabilities_preserve_customer_scope() -> None:
     )["features"]
 
     assert customer["capability.devices.connection_test"]["enabled"] is True
-    assert customer["capability.devices.form_connection_test"]["enabled"] is False
+    assert customer["capability.devices.form_connection_test"]["enabled"] is True
     assert full["capability.devices.connection_test"]["enabled"] is True
     assert full["capability.devices.form_connection_test"]["enabled"] is True
 

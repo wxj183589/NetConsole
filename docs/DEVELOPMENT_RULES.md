@@ -26,7 +26,7 @@ Electron-only 架构收口后的下一至两个开发周期是共享基础设施
 - `L3`：共享组件、Renderer API 基础、Task/Job、Export、AP Identity；
 - `L4`：Feature Registry、DataRoot、数据库迁移、Electron runtime、CI、构建发布。
 
-机器可读范围与消费者套件以 [`config/architecture/change_impact_matrix.json`](../config/architecture/change_impact_matrix.json) 为准，执行入口为 `python -m scripts.quality.check_change_impact`。路径审计只能上调最低风险，不能替代语义审阅；跨领域、兼容协议或持久化行为变化必须人工上调。L3/L4 必须执行 [Consumer Matrix](development/CHANGE_IMPACT_FRAMEWORK.md#consumer-matrix)，并在合并到 `main` 后对最终提交复验。
+机器可读范围与消费者套件以 [`config/architecture/change_impact_matrix.json`](../config/architecture/change_impact_matrix.json) 为准，执行入口为 `python -m scripts.quality.check_change_impact`。路径审计只能上调最低风险，不能替代语义审阅；跨领域、兼容协议或持久化行为变化必须人工上调。L3/L4 必须执行 [Consumer Matrix](./development/CHANGE_IMPACT_FRAMEWORK.md#consumer-matrix)，并在合并到 `main` 后对最终提交复验。
 
 ## 分支与 Worktree 生命周期
 
@@ -37,14 +37,14 @@ Electron-only 架构收口后的下一至两个开发周期是共享基础设施
 
 ## 下一阶段 UI 与分层边界
 
-- 当前产品形态是 Python Core + FastAPI 永久业务层、Vue 唯一主界面和 Electron 桌面外壳；Qt 源码、运行时和入口已删除，历史行为只通过 Git 与最终迁移矩阵追溯。
+- 当前产品形态是 Python Core + FastAPI 永久业务层、Vue 唯一主界面和 Electron 桌面外壳；Qt 源码、运行时和入口已删除，历史行为只通过 Git 与冻结迁移矩阵追溯。
 - 不新增 Qt 业务页面或 Qt 专用业务逻辑。新功能默认沿共享规则/Application Service -> FastAPI -> Vue 建设。
 - Vue 与 Electron 只负责表现和受控本机能力；FastAPI Router 只负责 DTO、鉴权、调用 Application Service 和响应映射。
 - Vue、Electron 和 Router 均不得直接操作 Repository、SQLite、设备命令、SSH/SNMP 或业务文件。
 - Electron 安全基础已进入实现期；只允许 `apps/desktop_electron` 中的窗口、Python 生命周期和白名单 Bridge，不得新增第二套 Renderer/业务 Core。路径只能使用当前原生对话框授予的临时能力，禁止任意命令、程序或未授权路径。
 - SNMP Center、通用 MIB/OID 平台与无线勘测已删除，不得恢复代码、资源、依赖或入口；网络工具无线扫描是独立保留能力。
 
-详细规则见 [下一代架构](ARCHITECTURE_NEXT.md) 与 [下一阶段开发指南](DEVELOPMENT_GUIDE.md)。
+总体分层与不可回退边界见[当前架构](./ARCHITECTURE.md)。仓库布局、数据安全、测试和提交规则以根 `AGENTS.md`、本文及机器可读 Change Impact Matrix 为准。
 
 ## Job 必备字段和能力
 
@@ -77,7 +77,7 @@ Worker 必须支持 `progress / log / finished / error / cancelled`。失败不�
 
 ## 导出统一规则
 
-- 永久交互契约见 [用户文件导入导出交互契约](IMPORT_EXPORT_INTERACTION.md)。
+- 永久交互契约见 [用户文件导入导出交互契约](./export/USER_FILE_INTERACTION.md)。
 - 导出必须区分两层路径：Python Export Process 的内部 Artifact 路径，以及 Electron Main 当次授权的用户最终保存路径。
 - 用户最终路径不进入 Python `ExportJob` 或业务数据库；`ExportJob.output_path` 只表示 Worker 的内部 Artifact 输出位置。
 - Worker 只负责生成内部 Artifact，并保留临时文件、JSONL、取消和原子替换规则；Renderer 的共享协调器负责当前 session 中任务与授权路径的绑定。
@@ -202,47 +202,16 @@ SNMP 仅作为设备管理的只读连接测试与基础识别适配器存在，
 
 ## AP Identity 边界
 
-- AP identity 迁移以 [AP_MODEL_ASSESSMENT.md](AP_MODEL_ASSESSMENT.md) 为基线；现有 `ap_entities` 是内部统一身份基础，不得再新增平行 AP 主表。
-- `ap_uuid` 只用于已解析的站点数据库对象；跨模块关联优先规范化 AP MAC。序列号、AC+APID 和 AP 名称只能按来源、站点/AC 作用域和唯一性降级匹配。
-- 表内 `id`、AC 原生 `apid/ap_id`、`ap_uuid` 是三种不同语义，接口和测试不得混用。
-- AP MAC 与 Radio MAC/BSSID/BBSSID 分层；Peer MAC 是日志观测值，只有带 source/match rule 的 resolver 结果才能说明其对应 AP 或 Radio。
-- identity 解析必须返回 matched、unresolved 或 ambiguous；多候选不得静默选第一条，失败不得顺手创建 AP 实体。只有 AC 资源 Repository 写入口可以创建新 `ap_uuid`。
-- `site_id` 数据作用域、业务站点 station 和区间 section 分开；section 可以存在而 station 为空。PIS 默认不强制红/蓝网，信号系统按既有规则处理。
-- 轨旁业务同时引用 AP identity 与交换机 device_uuid+interface 拓扑 identity；光衰同时引用 AC、AP、接口和在线状态，任何 identity 工具不得承载或改写业务判定。
-- MR/Mesh、无线扫描、历史查询、页面展示和导出只能读取统一 identity 结果，写入各自的观测/派生数据，不能回写 AP 主身份。
-- AP Identity 基础工具保持纯 Python，不接生产写流程、不改 schema；领域接入必须先做旧/新 shadow comparison 并保留旧生产路径作为回滚。
-- 基础工具固定在 `services/ap_identity`，不得导入 PySide6、UI、Repository、Job Center、网络连接或光衰/轨旁业务规则。
-- Radio/BSSID resolver 默认只使用 Candidate 显式映射；复用 H3C 派生规则时必须通过后续具名适配器和 shadow comparison，不能在通用 resolver 中隐式推导。
-- AC/FIT-AP 统一通过 `services/ac/ac_identity_adapter.py` 只读接入；adapter 只接收普通 row，不导入 Repository/UI/Worker，不写数据库。
-- AP 扩展 preview/commit/refresh/save 的 `identity_shadow` 仅是诊断附加字段；commit/save 必须继续使用旧 service/legacy 写入路径，shadow unavailable、unresolved 或 ambiguous 都不得阻断原流程。
-- `identity_changed` 只表示 old/new 状态或候选差异，不授权新 resolver 覆盖旧 key；旧 helper 必须保留为回滚路径。
-- 阶段 3 只能在光衰 Domain 内增加 identity shadow，不得改变光衰阈值、AP 离线关联、交换机无光规则、Repository 写入或页面字段。
-- 阶段 3 光衰 shadow 统一通过 `services/ac/ac_optical_identity_adapter.py`；仅有交换机接口的记录不得解析为 AP，Radio/BSSID/Peer MAC 不得作为光衰 AP 写入匹配依据。
-- 光衰 `identity_shadow` 只附加到 Job result；诊断异常必须返回 `available=false` 且不得改变原任务终态。旧 `AcOpticalService` UUID/name 关联和业务分类结果始终是生产结果与回滚路径。
-- 阶段 4 轨旁评估以 [TRACKSIDE_AP_IDENTITY_ASSESSMENT.md](TRACKSIDE_AP_IDENTITY_ASSESSMENT.md) 为准；交换机接口是 topology identity，站点/区间/里程只作位置证据。
-- 阶段 4.1 只能在旧轨旁聚合 rows 和旧详情 matches 生成后附加只读 shadow；不得改变候选端口、LLDP/光衰 fallback、行去重、采集范围、缓存、双击定位、状态、导出或历史。
-- 轨旁 shadow adapter 只接收普通 row，不导入 UI/Repository/Worker、不写数据库；shadow 失败必须 unavailable 且不得改变加载或详情任务终态。
-- 阶段 4.1 统一使用 `services/rail_transit/trackside_ap_identity_shadow.py`；聚合使用 `identity_shadow`，详情使用 `detail_identity_shadow`，页面不得消费这些字段改变显示或选择。
-- LLDP neighbor MAC 只能作为 peer observation evidence；interface/port 是 topology evidence，station/section/mileage 是位置 evidence，Radio/BSSID 不作为轨旁 AP MAC 匹配输入。
-- 阶段 5 MR/Mesh评估以 [MR_MESH_AP_IDENTITY_ASSESSMENT.md](MR_MESH_AP_IDENTITY_ASSESSMENT.md) 为准；`peer_mac` 是日志观测，Peer Radio、Radio MAC和BSSID/BBSSID不得直接折叠为AP MAC。
-- 阶段5.1统一使用`services/mr_mesh_identity_shadow.py`，只在`mesh_log_import`、`online_mr_parse`、`vehicle_mr_mapping_load`旧结果完成后附加只读诊断；不得修改raw parser、mapping/cache、数据库、ACTIVE/STANDBY、主备链、同AP双Radio、短链、乒乓、RSSI或Busy规则。
-- MR/Mesh shadow adapter只接收普通row，不导入UI/Repository/Worker/网络或parser，不写parsed DB；候选快照由handler通过现有Repository只读方法构建，shadow失败必须unavailable且不得改变原任务终态。
-- Online MR shadow读取parsed DB时必须使用只读连接；Vehicle mapping shadow不得调用带光衰站点回填副作用的`load_trackside_ap_lookup()`。
-- Mesh链路明细继续不导出“归属来源”和“Peer Radio MAC”；任何重复MAC诊断不得在阶段5.1改变页面列、报告SQL或导出表头/值。
-- 阶段6导出评估以 [EXPORT_FIELD_DEDUP_ASSESSMENT.md](EXPORT_FIELD_DEDUP_ASSESSMENT.md) 为准；必须区分当前页面 Export Process入口与兼容/直接 exporter，不得把同名报告服务视为同一调用链。
-- 阶段6.1只允许在旧formatter输入/输出旁路附加小型聚合 diagnostics；不得修改workbook/CSV/NAM、Sheet、表头、报告SQL、解析、页面、主备链、RSSI/min RSSI、Busy、短链或乒乓结果。
-- Peer MAC、Peer Radio MAC、AP MAC、Radio MAC和BSSID/BBSSID只可按各自语义统计相同值；相同不等于可删除。现有输入没有安全字段时diagnostics必须`available=false`。
-- 导出逻辑 golden 应比较Sheet、表头、关键行值、筛选、冻结窗格、样式和列宽；不得依赖不稳定的XLSX二进制哈希。diagnostics或sidecar失败不得改变原导出终态。
-- 阶段6.1 P0统一使用`services/export_identity_diagnostics.py`；Mesh只在旧行进入formatter前流式观察，Online MR兼容报告只在旧位置数组生成后按原表头观察。diagnostics不得持久化、不得生成默认sidecar，也不得成为字段删除或SQL修改依据。
-- Mesh Export Process只在finished result附加`export_identity_diagnostics`；`OnlineMrAnalysisReportExporter.export()`继续返回原`Path`，诊断通过只读`result_metadata`暴露。诊断失败必须`available=false`且原导出继续成功。
-- 阶段7真实局点观测统一遵守 [AP_IDENTITY_OBSERVATION_PLAN.md](AP_IDENTITY_OBSERVATION_PLAN.md)：只提取聚合字段，不支持的指标写`null`，完整result/items/evidence/raw log/数据库/xlsx不得进入仓库，MAC/IP/名称/路径必须使用campaign HMAC或token脱敏。
-- 阶段7阈值只用于决定是否有资格评估只读展示，不是生产强制规则。identity changed非零、作用域/歧义超阈值或RSSI/备链缺失相对基线增加时，继续使用旧生产路径；不得自动修复、删除字段或调整resolver。
-- 后续只读展示必须使用独立feature flag、默认关闭、可整体禁用，只展示脱敏聚合和不可用状态，不展示shadow items、samples、evidence或warning明文。
-- 阶段8只读展示评估以 [AP_IDENTITY_DISPLAY_ASSESSMENT.md](AP_IDENTITY_DISPLAY_ASSESSMENT.md) 为准。展示层必须先经过严格字段允许列表，未知字段丢弃，`items/samples/evidence/warnings/error`和明文身份/路径不得进入ViewModel、UI、日志或默认报告。
-- 阶段 8 的历史 Qt 宿主方案已终止；任何可见展示必须等待真实局点试运行、脱敏复核，并接入当前全局任务中心或具名 Vue 页面。所有 flag 默认关闭且 internal-only，不得增加第二套任务持久化或直接绑定原始 result。
-- diagnostics disabled/unavailable/failed只影响诊断区域，不得改变原Job/Export终态、成功提示或旧业务结果；全局kill switch关闭展示时不得停止生产任务或删除业务数据。
-- 脱敏结构以 `src/netconsole/models/diagnostics_summary.py` 为永久模型，导出适配位于 `src/netconsole/services/export_identity_diagnostics.py`；两者不得依赖 Renderer、Electron、网络或数据库连接，也不得保留原始 result 引用。
-- 全局/UI 逻辑开关缺失时视为关闭；samples 开关即使为真也不得暴露明细。历史宿主评审文档仅作设计证据，不构成恢复 Qt Dialog/Manager 的授权。
+- [AP Identity](./AP_IDENTITY.md) 是模型、索引、解析优先级、消费者状态、诊断、真实局点观测、导出与回滚的唯一活动 SSOT；不得从历史 Assessment 恢复过期阶段结论。
+- `ap_uuid`、表内 `id`、AC 原生 `apid/ap_id`、AP MAC、Radio MAC、BSSID/BBSSID 和 Peer MAC 是不同语义。Peer MAC 是日志观测；站点、区间和里程是位置证据；交换机 `device_uuid + interface` 是拓扑身份，均不得直接折叠为物理 AP 身份。
+- Resolver 必须返回 `matched`、`unresolved` 或 `ambiguous` 并保留来源、规则、confidence 与 revision；多候选不得静默选第一条，失败不得创建 AP 实体。只有现有来源写入流程可以创建或刷新主身份。
+- 普通 GET、页面刷新、历史查询和导出只读统一索引，不连接设备、不重建索引、不回写来源主数据。索引只在明确来源写事件或受控启动修复后刷新。
+- MESH、Ground、Online/Vehicle MR、Wireless 与轨旁 AP 已接管的消费者必须保留原始观测和统一身份投影；未接管消费者保留显式白名单，不得复制新的私有 MAC 索引或推导规则。
+- Identity 工具不承载采集、主备链、光衰、拓扑、RSSI、Channel Busy、页面或报告业务规则。Adapter/shadow/diagnostics 失败必须表达为 unavailable/warning，不得改变 Job、Export、加载或写入终态。
+- 新生产消费者接管前必须执行 L3 Consumer Audit、旧/新对照、批量 revision 固定、真实局点脱敏观测和单模块回滚验证；部分消费者接管不等于全系统接管。
+- 真实局点观测只保存聚合指标；完整 result/items/evidence、raw log、数据库和 xlsx 不得进入仓库，MAC/IP/名称/路径必须使用 campaign HMAC 或不可逆 token。展示层使用严格允许列表，未知字段和明文样本丢弃，开关缺失视为关闭。
+- Identity diagnostics 不得成为字段删除、SQL 修改或报告语义变化的依据。导出 golden 比较 Sheet、表头、关键行值、筛选、冻结窗格、样式和列宽，不依赖不稳定的 XLSX 二进制哈希；诊断失败时原导出继续按既有契约完成。
+- 诊断模型与导出适配不得依赖 Renderer、Electron、网络或数据库连接，也不得保留原始 result 引用。任何可见诊断只能接入当前 Job Center 或具名 Vue 页面，禁止恢复 Qt 宿主或第二套任务持久化。
 
 ## 提交前检查
 

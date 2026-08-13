@@ -2,6 +2,13 @@
 
 ## v1.4.9 - 2026-08-12
 
+### 第二阶段 Cleanup 收尾
+
+- 测试共享 helper/fixture 统一归档到 `tests/support/`，并同步所有消费者；本地 fping 入口明确为 `run_fping_v5_smoke.py`，不再伪装成 pytest 测试。
+- 当前迁移机器契约提炼到 `config/architecture/migration_map.json`，历史 Qt 迁移矩阵冻结为 archive 追溯资料，不再参与正式 Guard 判定。
+- Documentation Guard 扩展到全部 active docs，排除 archive/investigations，并禁止阶段性文档命名；架构、命令、直接 SQL 和 Renderer 业务逻辑 Guard 的陈旧误报与缺口已收敛。
+- 修复本地 Worker 在关闭或取消后的最终收口竞态，已进入终态的任务会立即退出 active 列表，避免应用退出阶段短暂残留活动任务。
+
 ### Electron Desktop Only 与数据边界
 
 - 正式产品收敛为 Electron Desktop Only：Electron Main + Preload + `apps/desktop_renderer` 是唯一 GUI 运行形态，Renderer 继续通过 REST/WebSocket 使用 Python Backend 与原有数据层；独立 Browser Production Runtime 已退出，FastAPI、REST、WebSocket、Vite 开发联调及 Agent 内嵌 Web 等技术能力不受影响。
@@ -261,8 +268,8 @@
   多候选保持 `AMBIGUOUS`，主链路进入或离开空态分别显示“无主链路 → 新 AP”和
   “旧 AP → 无主链路”，不写 AP Identity 主数据。
 - 新增 50k READY ZIP Ping、500k active Ping、100k Syslog、36 MR/30 天 Registry、30 分钟页面轮询、
-  10 分钟 Syslog 自动刷新和 100 次图表开关规模门；详细结论见
-  [地面无人值守风险审计](GROUND_UNATTENDED_RISK_AUDIT.md)。
+  10 分钟 Syslog 自动刷新和 100 次图表开关规模门；长期边界已并入
+  [地面无人值守](./rail-transit/ground-unattended/README.md)。
 
 ### MR/MESH 分析性能
 
@@ -286,7 +293,7 @@
 - 全部可见 Vue 路由完成导入、导出、模板、报告、Artifact 和受管下载审计。设备、AC、轨道交通、配置、网络工具、命令说明与日志的任务型导出统一为“先选择最终路径、再创建任务”，取消不提交，任务完成后不再突然弹出第二个保存窗口。
 - 新增固定导出动作注册表和共享用户目标协调器，使用 Renderer 当前会话绑定任务与 Main 授权路径；Artifact 落盘继续校验大小和 SHA-256，保存失败保留 Artifact，可在任务中心重新选择位置且不重新生成。历史 Artifact 保持用户点击后另存。
 - 导入入口统一保证用户触发、取消不预检、处理后清空 file input；OmniPeek 和局点包保留既有专用选择流程，远程 SFTP 批量下载保留受管文件区语义。Browser 开发模式只报告下载已启动，正式 Electron Bridge 缺失不回退浏览器下载。
-- 新增静态入口审计与共享协调器行为测试，禁止生产 Vue/TS 新增未登记任务导出、Renderer 下载旁路、测试输出目录或用户 Downloads 默认路径。完整矩阵见 [UI 导入导出文件选择审计](development/import-export-dialog-audit.md)。
+- 新增静态入口审计与共享协调器行为测试，禁止生产 Vue/TS 新增未登记任务导出、Renderer 下载旁路、测试输出目录或用户 Downloads 默认路径。永久规则见 [用户文件交互契约](./export/USER_FILE_INTERACTION.md)。
 
 ### 设备当前工作状态
 
@@ -742,11 +749,11 @@
 - 删除 Python 启动壳中的 Qt Shell、Qt capability probe、旧 `--web-shell` 和提权 Qt 子入口；无参数 `main.py` 作为 PyCharm/源码开发入口启动项目本地 Electron 编排链，正式桌面生命周期仍统一由 Electron Main 管理。打包 Backend 使用内部 `--electron-backend` 分派受管 Runtime，源码 `web/server` 仅保留回环开发诊断。
 - Electron 开发编排不再依赖调用方提供全局 `pnpm`：项目本地 Electron 可作为 Node 运行时完成 typecheck、main/preload 构建、Vite 和 Electron 启停；无参数 `main.py` 自动传入当前 `.venv` Python，并保留端口与子进程清理门。
 - SNMP Center、通用 MIB/OID 字典、版本化 MIB 归档、Trap/Poll/拓扑、通用查询与批量采集，以及无线勘测/热力图链已从活动产品、源码资源、Job/Export、依赖和发布内容中删除；Pillow 与 pysnmp 不再作为产品依赖。设备管理只保留 SNMP v1/v2c 只读连接测试和基础识别，网络工具无线扫描独立保留。
-- E1 回收无调用的 `apps/desktop` Qt WebShell、包标记、`src/netconsole/ui` 与 Qt-only 运行测试；历史行为统一由 Git 和最终迁移矩阵追溯。
+- E1 回收无调用的 `apps/desktop` Qt WebShell、包标记、`src/netconsole/ui` 与 Qt-only 运行测试；历史行为统一由 Git 和冻结迁移矩阵追溯。
 - E10B 建立九个公开架构门和统一入口，覆盖分层、禁用依赖、Direct SQL、设备命令、UI 业务逻辑、移除功能、运行路径、孤儿模块与迁移映射。Direct SQL 已对 61 个文件精确分类且 `VIOLATION=0`；限时例外已由 42 条收敛为 38 条（Python 分层 14、孤儿候选 24、状态色 0），`check_ui_business_logic.py` 当前为 0 finding / 0 waived；目录门建立时 139 个维护目录 README 0 缺失。命令目录已登记 `device.inventory.collect` 和 `device.sftp.enable` 两个稳定 Operation；SFTP 自动启用已进入统一任务链，但 E11 命令平台、E12 API v1 以及 Electron/真实设备验收均不因本项提前完成。
 - Electron main/preload 保持 sandbox、白名单 IPC、动态回环 FastAPI、会话令牌、下载退出屏障和受管 Python 生命周期；开发资源、生产资源和无效 Python 失败冒烟均通过且退出无 5173、Electron、Vite 或受管 Python 残留。
-- Browser 模式只保留源码开发、联调和诊断；Electron 是唯一正式桌面产品。Qt 源码、运行时、入口、测试环境和发布链已经删除，历史行为仅通过 Git 与最终迁移矩阵追溯，不得恢复为回退入口。
-- 清理并归档阶段性 Codex 任务、worktree 和本地分支；CentOS 7、Windows Legacy 兼容包及旧 Qt 临时终版明确放弃，不进入 `main`。完整归档见 [Electron 对等迁移第二波归档](development/electron-parity-wave2.md)。
+- Browser 模式只保留源码开发、联调和诊断；Electron 是唯一正式桌面产品。Qt 源码、运行时、入口、测试环境和发布链已经删除，历史行为仅通过 Git 与冻结迁移矩阵追溯，不得恢复为回退入口。
+- 清理并归档阶段性 Codex 任务、worktree 和本地分支；CentOS 7、Windows Legacy 兼容包及旧 Qt 临时终版明确放弃，不进入 `main`。完整归档见 [Electron 对等迁移第二波归档](./archive/migrations/qt-to-electron/README.md)。
 
 ### 数据库
 
@@ -808,7 +815,7 @@
 
 ### 架构
 - 完成 Web 演进阶段 2：每局点 `tasks.db` 正式保存任务快照和结构化事件，新增 `TaskRepository`、`TaskEventHub`、恢复核对、任务 REST API 与 `/ws/tasks`；Qt 继续通过兼容 signals 使用原 Job/Worker 协议。
-- 新增 Vue 3/TypeScript/Vite/Element Plus/Pinia/Vue Router 基础工程，提供 App Layout、Dashboard 空页和任务中心列表/详情/日志/停止入口；FastAPI 提供 `apps/web/dist` 和 SPA fallback。
+- 新增 Vue 3/TypeScript/Vite/Element Plus/Pinia/Vue Router 基础工程，提供 App Layout、Dashboard 空页和任务中心列表/详情/日志/停止入口；当时的 FastAPI 静态目录与 SPA fallback 已在后续 Electron-only 收敛中替换。
 - 新增 Registry 级 `FeatureStatus`；SNMP Center 与无线勘测设为不可由 profile 重开的 `DISABLED`，Qt 导航/页面入口和 Web 路由关闭。网络工具无线扫描单独登记并保持可用，Web 迁移为 HOLD。
 - 新增 Web 演进阶段 0/1 基线：保留现有 Python Core，增加 Desktop/Server `RuntimeMode`、Pydantic API DTO、FastAPI 健康检查/OpenAPI 和不替换当前主窗口的 `--web-shell` 实验入口；Vue 与业务 API 尚未开始。
 - 将 Job 文件、取消文件、七状态、JSONL 分块解析、终态和清理下沉到无 PySide6 依赖的 `TaskRuntime`/`TaskApplicationService`；原 `BackgroundProcessManager` 保留为 Qt/QProcess Adapter，现有 JobSpec、Registry、handlers、Worker 和 Export Process 不变。

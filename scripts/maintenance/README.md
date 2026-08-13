@@ -57,7 +57,7 @@ dry-run 不写 parsed DB、raw 或 catalog，并兼容缺少后续可选身份�
 
 ## 相关文档
 
-- `docs/DATA_LAYOUT.md`
+- `docs/storage/DATA_LAYOUT.md`
 - `docs/storage/SITE_MANAGEMENT.md`
-- `docs/BUILD_AND_RELEASE.md`
+- `docs/release/BUILD_AND_RELEASE.md`
 - `docs/development/repository-layout.md`

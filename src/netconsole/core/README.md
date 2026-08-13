@@ -31,4 +31,4 @@ PathResolver 生成系统应用数据根、局点 DB、runtime、缓存和会话
 
 ## 相关文档
 
-参见 [数据与路径](../../../docs/DATA_LAYOUT.md)、[功能模块](../../../docs/FEATURE_MODULES.md) 和 [永久架构](../../../docs/ARCHITECTURE_NEXT.md)。
+参见 [数据与路径](../../../docs/storage/DATA_LAYOUT.md)、[功能模块](../../../docs/architecture/FEATURE_MODULES.md) 和 [当前架构](../../../docs/ARCHITECTURE.md)。

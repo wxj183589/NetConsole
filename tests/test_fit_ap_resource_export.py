@@ -7,7 +7,7 @@ import pytest
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
-from ac_management_web_fixture import build_ac_management_fixture
+from tests.support.ac_management_web_fixture import build_ac_management_fixture
 from netconsole.core.database import Database
 from netconsole.repositories.ac_repository import AcRepository
 from netconsole.services.ac.fit_ap_resource_export import (

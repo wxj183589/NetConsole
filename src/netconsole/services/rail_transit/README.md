@@ -32,4 +32,4 @@
 
 ## 相关文档
 
-参见 [轨道交通无线业务模型](../../../../docs/RAIL_TRANSIT_WIRELESS.md)、[基础资料](../../../../docs/RAIL_TRANSIT_BASE_DATA.md)、[Online MR](../../../../docs/ONLINE_MR_COLLECTION.md) 和 [MESH 规则](../../../../docs/mr_mesh_log_analysis_rules.md)。
+参见 [轨道交通无线业务模型](../../../../docs/rail-transit/WIRELESS.md)、[基础资料](../../../../docs/rail-transit/base-data/README.md)、[Online MR](../../../../docs/rail-transit/online-mr/README.md) 和 [MESH 规则](../../../../docs/rail-transit/mesh/ANALYSIS_RULES.md)。

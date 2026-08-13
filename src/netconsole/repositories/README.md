@@ -45,4 +45,4 @@ Repository 依赖 Database/PathResolver/站点上下文，被 Service、Applicat
 
 ## 相关文档
 
-参见 [设备管理页面](../../../apps/desktop_renderer/src/views/devices/README.md)、[数据与路径](../../../docs/DATA_LAYOUT.md)、[Job Center](../../../docs/JOB_CENTER.md)和[数据安全 Skill](../../../.agents/skills/netconsole-data-safety-skill/SKILL.md)。
+参见 [设备管理页面](../../../apps/desktop_renderer/src/views/devices/README.md)、[数据与路径](../../../docs/storage/DATA_LAYOUT.md)、[Job Center](../../../docs/job-center/README.md)和[数据安全 Skill](../../../.agents/skills/netconsole-data-safety-skill/SKILL.md)。

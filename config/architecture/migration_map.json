@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "source": "config/architecture/migration_map.json",
+  "description": "当前 Electron 迁移处置契约；历史映射保留在 docs/archive，仅供追溯。",
+  "classifications": [
+    "PURE_UI",
+    "BUSINESS_MOVED",
+    "ADAPTER_REPLACED",
+    "DEAD_CODE",
+    "FEATURE_REMOVED"
+  ],
+  "dispositions": [
+    "MIGRATED",
+    "REMOVED",
+    "HIDDEN_PENDING_MIGRATION",
+    "BLOCKED"
+  ],
+  "modules": [
+    {"id": "electron-desktop", "disposition": "MIGRATED", "status": "COMPLETE"},
+    {"id": "devices", "disposition": "MIGRATED", "status": "IMPLEMENTED_UNVERIFIED"},
+    {"id": "ac-fit-ap", "disposition": "HIDDEN_PENDING_MIGRATION", "status": "PARTIAL"},
+    {"id": "rail-transit-mesh", "disposition": "HIDDEN_PENDING_MIGRATION", "status": "PARTIAL"},
+    {"id": "config-collection", "disposition": "MIGRATED", "status": "IMPLEMENTED_UNVERIFIED"},
+    {"id": "device-files", "disposition": "MIGRATED", "status": "IMPLEMENTED_UNVERIFIED"},
+    {"id": "network-tools-traffic", "disposition": "MIGRATED", "status": "PARTIAL"},
+    {"id": "task-center-agent", "disposition": "MIGRATED", "status": "PARTIAL"},
+    {"id": "command-logs-settings", "disposition": "MIGRATED", "status": "PARTIAL"},
+    {"id": "feature-switch", "disposition": "HIDDEN_PENDING_MIGRATION", "status": "NOT_STARTED"},
+    {"id": "snmp-center-wireless-survey", "disposition": "REMOVED", "status": "COMPLETE"}
+  ]
+}

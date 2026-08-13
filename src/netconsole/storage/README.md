@@ -30,4 +30,4 @@ MR 数据库、WAL、备份和可重建分析表位于局点数据根；原始�
 
 ## 相关文档
 
-参见 [数据与路径](../../../docs/DATA_LAYOUT.md)、[仓库 Repository](../repositories/README.md) 和 [数据安全 Skill](../../../.agents/skills/netconsole-data-safety-skill/SKILL.md)。
+参见 [数据与路径](../../../docs/storage/DATA_LAYOUT.md)、[仓库 Repository](../repositories/README.md) 和 [数据安全 Skill](../../../.agents/skills/netconsole-data-safety-skill/SKILL.md)。

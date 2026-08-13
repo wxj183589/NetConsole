@@ -1,8 +1,9 @@
-# Electron-only 迁移归档
+# Electron-only 冻结证据
 
-本目录记录 E1～E6A 等 Electron-only 阶段的边界、证据、发布门和交接状态。它用于审计和后续维护，不是生产代码或新的架构入口。
+本目录只保留 Electron-only 收敛中无法由当前代码直接恢复的测量或审计基线，不是当前架构或发布规则。当前规则见 [总体架构](../../../ARCHITECTURE.md)、[Desktop](../../../architecture/DESKTOP.md)、[存储](../../../storage/README.md)和[构建发布](../../../release/BUILD_AND_RELEASE.md)。
 
-修改归档必须标明实际验证和剩余风险，不能把历史 Qt 方案写成当前实现；完成后检查相对链接和文档索引。
+- [启动性能基线](./E5-2026-07-18.md)：测量环境、阶段耗时和优化前后证据。
+- [真实库索引基线](./E6-2026-07-18.md)：脱敏副本查询计划、索引收益和回滚边界。
+- [架构一致性基线](./ARCHITECTURE_COMPLIANCE_REPORT.md)：2026-07 的 Guard、迁移分类与未验收边界。
 
-- [2026-07-21 局点生命周期与运行日志整改交接](E11-site-lifecycle-runtime-log-2026-07-21.md)
-- [2026-07-21 Codex 会话收尾交接档案](HANDOFF-2026-07-21.md)
+原 E1-E4、E6A、E10B、E11、交接、依赖和生成物清理过程由 Git 历史保留，其长期规则已并入活动文档。

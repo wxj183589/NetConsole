@@ -2,7 +2,9 @@
 
 ## 定位
 
-Qt/Web 双轨与 Qt → Electron 对等迁移已经结束。本目录只记录历史事实，不构成活动架构、依赖、启动入口或待恢复产品计划。当前事实来源依次为生产代码、测试、[最终迁移矩阵](../../../architecture/MIGRATION_MATRIX.md)、[当前架构](../../../ARCHITECTURE.md)和 Feature Registry。
+Qt/Web 双轨与 Qt → Electron 对等迁移已经结束。本目录只记录历史事实，不构成活动架构、依赖、启动入口或待恢复产品计划。当前事实来源依次为生产代码、测试、[冻结迁移矩阵](MIGRATION_MATRIX.md)、[当前架构](../../../ARCHITECTURE.md)和 Feature Registry。
+
+固定决策是：唯一正式 GUI 为 Electron Desktop，Vue/Vite 只承担唯一 Renderer 的开发与构建，Renderer 通过 REST/WebSocket 使用永久 Python Backend；Agent、Syslog、Ground、Remote MR 和设备采集不是 standalone Browser 产品。迁移没有改变业务 DataRoot、数据库 schema 或领域数据契约，也不保留旧 Qt/Browser Feature alias 作为回退入口。
 
 ## 冻结证据
 
@@ -19,7 +21,7 @@ git show 2d0bdbd5^:docs/WEB_MIGRATION_PLAN.md
 git show 2d0bdbd5^:docs/development/qt-electron-parity-matrix.md
 ```
 
-仓库根 `docs/01-product.md`、`02-architecture.md`、`03-device-management.md`、`06-roadmap.md`、`08-project-rules.*`、`WEB_*MIGRATION*.md` 以及 `docs/development/*parity*` 仅保留兼容指针，不能再被引用为当前实现。
+旧兼容指针已经删除。历史内容通过上述 Git 命令读取；当前文档不得重新引用这些路径。
 
 ## 固定结论
 

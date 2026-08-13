@@ -28,7 +28,7 @@ description: "SQLite schema、Repository、数据库 locked/WAL、PathResolver�
 
 # 开始前读取
 
-- `docs/DATA_LAYOUT.md`、`docs/ARCHITECTURE.md`、`docs/04-database.md`。
+- `docs/storage/DATA_LAYOUT.md`、`docs/ARCHITECTURE.md`、`docs/storage/DATABASE.md`。
 - `src/netconsole/core/database.py`、`src/netconsole/core/sqlite_utils.py`、`src/netconsole/core/paths.py`、`src/netconsole/core/sites.py`。
 - `src/netconsole/services/data_disk_manager.py`、`src/netconsole/services/app_auto_cleanup.py`、`src/netconsole/services/path_preference_service.py`。
 - 目标 `src/netconsole/repositories/`、`src/netconsole/storage/`。

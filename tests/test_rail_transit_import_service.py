@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from rail_transit_base_data_fixture import build_rail_transit_base_data_fixture, mark_base_data_copy
+from tests.support.rail_transit_base_data_fixture import build_rail_transit_base_data_fixture, mark_base_data_copy
 from netconsole.models.api.rail_transit_base_data import ImportPreviewRowDTO
 from netconsole.repositories.rail_transit_base_data_repository import RailTransitBaseDataRepository
 from netconsole.core.database import Database

@@ -5,7 +5,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from ac_mesh_link_web_fixture import build_ac_mesh_link_fixture
+from tests.support.ac_mesh_link_web_fixture import build_ac_mesh_link_fixture
 from netconsole.backend.api.main import create_app
 from netconsole.core.runtime_mode import RuntimeMode
 

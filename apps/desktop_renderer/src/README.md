@@ -30,4 +30,4 @@ API 客户端依赖 FastAPI DTO，Store 依赖 API 和类型，视图依赖 Stor
 
 ## 相关文档
 
-参见 [Electron Desktop 架构](../../../docs/WEB_ARCHITECTURE.md)、[表格规范](../../../docs/ui_table_guidelines.md) 和 [UI 设计系统](../../../docs/UI_DESIGN_SYSTEM.md)。
+参见 [Electron Desktop 架构](../../../docs/architecture/RUNTIME.md)、[表格规范](../../../docs/ui/TABLE_GUIDELINES.md) 和 [UI 设计系统](../../../docs/ui/DESIGN_SYSTEM.md)。

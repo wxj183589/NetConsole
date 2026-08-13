@@ -37,7 +37,7 @@ from netconsole.services.mesh_chart_payload import (
     render_indices,
 )
 from netconsole.services.mesh_catalog_index_service import MeshCatalogIndexService
-from tests.mesh_analysis_test_support import EmptyBaseQuery, create_mesh_analysis_fixture
+from tests.support.mesh_analysis_test_support import EmptyBaseQuery, create_mesh_analysis_fixture
 
 
 def _fingerprint(path: Path) -> tuple[int, str]:

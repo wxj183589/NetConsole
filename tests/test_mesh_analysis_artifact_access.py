@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from netconsole.services.rail_transit.mesh_analysis_query_service import MeshAnalysisQueryError, MeshAnalysisQueryService
-from tests.mesh_analysis_test_support import EmptyBaseQuery, create_mesh_analysis_fixture
+from tests.support.mesh_analysis_test_support import EmptyBaseQuery, create_mesh_analysis_fixture
 
 
 def test_artifact_id_resolves_only_enumerated_session_files(tmp_path) -> None:

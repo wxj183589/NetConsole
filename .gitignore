@@ -24,7 +24,7 @@ data/
 runtime/
 logs/
 tmp/
-release/
+/release/
 
 # Build output
 /build/

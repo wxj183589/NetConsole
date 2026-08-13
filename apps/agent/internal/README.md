@@ -30,4 +30,4 @@
 
 ## 相关文档
 
-参见 [Agent 总说明](../README.md)、`docs/AGENT.md` 和 `docs/AGENT_TRAFFIC_API.md`。
+参见 [Agent 总说明](../README.md)、[Controller](../../../docs/agent/CONTROLLER.md)和[流量测试 API](../../../docs/agent/TRAFFIC_API.md)。

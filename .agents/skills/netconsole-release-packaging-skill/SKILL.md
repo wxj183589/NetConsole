@@ -28,8 +28,8 @@ description: "NetConsole Python 依赖分层/constraints、PyInstaller Backend�
 
 # 开始前读取
 
-- `docs/BUILD_AND_RELEASE.md`、`docs/FULL_AND_CUSTOMER_PACKAGING.md`、`docs/PACKAGED_FEATURE_MATRIX.md`。
-- `docs/DATA_LAYOUT.md`、`docs/storage/README.md`、`docs/ELECTRON_DESKTOP.md`。
+- `docs/release/BUILD_AND_RELEASE.md`、`docs/release/FULL_AND_CUSTOMER_PACKAGING.md`、`docs/release/PACKAGED_FEATURE_MATRIX.md`。
+- `docs/storage/DATA_LAYOUT.md`、`docs/storage/README.md`、`docs/architecture/DESKTOP.md`。
 - `requirements-*.txt`、`constraints.txt`、`pyproject.toml`、`src/netconsole/core/version.py`、`src/netconsole/core/feature_registry.py`。
 - `scripts/build/`、`apps/desktop_electron/package.json`、`apps/desktop_electron/scripts/`、`apps/desktop_electron/build/installer-data-root.nsh`。
 - `config/profiles/features/full.json`、`config/profiles/features/customer.json` 和相关 build/package tests。

@@ -31,4 +31,4 @@ Backend 不把运行数据写入源码；日志、数据库、任务、导出临
 
 ## 相关文档
 
-参见 [当前架构](../../../docs/ARCHITECTURE.md)、[API 边界审计](../../../docs/API_APPLICATION_BOUNDARY_AUDIT.md) 和 `api/README.md`。
+参见 [当前架构](../../../docs/ARCHITECTURE.md)、[API 边界审计](../../../docs/development/API_APPLICATION_BOUNDARY.md) 和 `api/README.md`。

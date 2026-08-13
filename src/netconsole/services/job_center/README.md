@@ -30,4 +30,4 @@ Worker/进程临时目录、事件日志和取消资源由 JobContext/PathResolv
 
 ## 相关文档
 
-参见 [Job Center](../../../../docs/JOB_CENTER.md)、[后台任务策略](../../../../docs/background_task_policy.md) 和 `handlers/README.md`。
+参见 [Job Center](../../../../docs/job-center/README.md)、[后台任务策略](../../../../docs/job-center/BACKGROUND_TASK_POLICY.md) 和 `handlers/README.md`。

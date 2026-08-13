@@ -53,7 +53,7 @@
   {"path":"src/netconsole/services/rail_transit/station_source_discovery_service.py","classification":"READ_ONLY_DATA_GATEWAY","owner":"rail-transit","reason":"设备管理站点来源只读发现网关。"},
   {"path":"src/netconsole/services/rail_transit/mesh_analysis_query_service.py","classification":"READ_ONLY_DATA_GATEWAY","owner":"mesh","reason":"MESH 分析只读数据网关。"},
   {"path":"src/netconsole/services/online_mr/db/event_db_writer.py","classification":"ANALYSIS_DB_OWNER","owner":"online-mr","reason":"Online MR 事件分析库所有者。"},
-  {"path":"tests/mesh_analysis_test_support.py","classification":"TEST_ONLY","owner":"test","reason":"MESH 测试 fixture。"},
+  {"path":"tests/support/mesh_analysis_test_support.py","classification":"TEST_ONLY","owner":"test","reason":"MESH 测试 fixture。"},
   {"path":"tests/test_ac_management.py","classification":"TEST_ONLY","owner":"test","reason":"AC 测试 fixture。"},
   {"path":"tests/test_agent_controller.py","classification":"TEST_ONLY","owner":"test","reason":"Agent 测试 fixture。"},
   {"path":"tests/test_device_compatibility.py","classification":"TEST_ONLY","owner":"test","reason":"设备兼容性测试只读断言未创建 tasks.db。"},
@@ -112,5 +112,7 @@
   {"path":"src/netconsole/services/online_mr/parsed_database_upgrade.py","classification":"ANALYSIS_DB_OWNER","owner":"online-mr","reason":"Online MR 解析库升级服务在 Job 语义中创建临时分析库、验证后原子替换并保留失败回滚副本；不改写 raw 原始日志。"},
   {"path":"tests/test_online_mr_parsed_database_upgrade.py","classification":"TEST_ONLY","owner":"test","reason":"Online MR 解析数据库升级测试只在 pytest 临时目录构造 SQLite fixture。"},
   {"path":"tests/test_site_retention.py","classification":"TEST_ONLY","owner":"test","reason":"局点保留扫描、归档、删除和 VACUUM 测试只在 pytest 临时数据根构造 SQLite fixture。"},
-  {"path":"tests/test_mesh_ap_coverage_audit_service.py","classification":"TEST_ONLY","owner":"test","reason":"MESH AP 覆盖核查测试只在 pytest 临时目录构造并查询 SQLite fixture。"}
+  {"path":"tests/test_mesh_ap_coverage_audit_service.py","classification":"TEST_ONLY","owner":"test","reason":"MESH AP 覆盖核查测试只在 pytest 临时目录构造并查询 SQLite fixture。"},
+  {"path":"src/netconsole/services/mesh_import_preflight_service.py","classification":"READ_ONLY_DATA_GATEWAY","owner":"mesh","reason":"只读检查候选 SQLite 是否可读及 sqlite_master 是否可查询；连接使用 mode=ro 与 query_only，不创建或修改业务数据。"},
+  {"path":"tests/test_mesh_catalog_schema.py","classification":"TEST_ONLY","owner":"test","reason":"MESH catalog schema migration concurrency test fixture。"}
 ]

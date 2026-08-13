@@ -31,4 +31,4 @@
 
 ## 相关文档
 
-参见 [命令参考](../../../docs/COMMAND_REFERENCE.md)、[编码规则](../../../docs/DEVELOPMENT_RULES.md) 和 `h3c/README.md`。
+参见 [命令参考](../../../docs/device-management/COMMAND_REFERENCE.md)、[编码规则](../../../docs/DEVELOPMENT_RULES.md) 和 `h3c/README.md`。

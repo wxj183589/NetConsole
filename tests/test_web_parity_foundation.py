@@ -293,57 +293,29 @@ def test_release_validation_rejects_stale_frontend_metadata(tmp_path: Path) -> N
         )
 
 
-def test_parity_matrix_covers_fixed_modules_and_allowed_states() -> None:
-    matrix = (
-        Path(__file__).resolve().parents[1]
-        / "docs"
-        / "architecture"
-        / "MIGRATION_MATRIX.md"
-    ).read_text(encoding="utf-8")
-    for title in (
-        "设备管理",
-        "AC 管理",
-        "轨道交通",
-        "配置采集中心",
-        "文件管理",
-        "网络工具",
-        "命令说明",
-        "日志中心",
-        "系统设置",
-        "功能开关",
-        "SNMP Center",
-        "无线勘测",
-        "无线扫描",
-    ):
-        assert title in matrix
-    for state in (
-        "NOT_STARTED",
-        "UI_ONLY",
-        "READ_ONLY",
-        "FAKE",
-        "PARTIAL",
-        "IMPLEMENTED_UNVERIFIED",
-        "REAL_DEVICE_PENDING",
-        "COMPLETE",
-        "BLOCKED",
-    ):
-        assert state in matrix
-    for legacy_state in (
-        "IN_PROGRESS",
-        "CONTROLLED_WRITE",
-        "FAKE_ACCEPTED",
-        "FOUNDATION_READY",
-        "FUTURE_REBUILD",
-    ):
-        assert f"`{legacy_state}`" not in matrix
-    assert "| 设备管理 | `MIGRATED` | `IMPLEMENTED_UNVERIFIED` |" in matrix
+def test_current_migration_contract_covers_fixed_modules_and_allowed_states() -> None:
+    contract = json.loads(
+        (Path(__file__).resolve().parents[1] / "config" / "architecture" / "migration_map.json").read_text(encoding="utf-8")
+    )
+    assert {"PURE_UI", "BUSINESS_MOVED", "ADAPTER_REPLACED", "DEAD_CODE", "FEATURE_REMOVED"} <= set(contract["classifications"])
+    assert {"MIGRATED", "REMOVED", "HIDDEN_PENDING_MIGRATION", "BLOCKED"} <= set(contract["dispositions"])
+    assert {item["id"] for item in contract["modules"]} >= {"devices", "rail-transit-mesh", "snmp-center-wireless-survey"}
+
+
+def test_frozen_migration_archive_is_historical_only() -> None:
+    archive = Path(__file__).resolve().parents[1] / "docs" / "archive" / "migrations" / "qt-to-electron" / "MIGRATION_MATRIX.md"
+    text = archive.read_text(encoding="utf-8")
+    assert "历史" in text
+    assert "不作为后续当前状态源" in text
 
 
 def test_module_migration_matrix_uses_canonical_states_and_electron_product() -> None:
     matrix = (
         Path(__file__).resolve().parents[1]
         / "docs"
-        / "architecture"
+        / "archive"
+        / "migrations"
+        / "qt-to-electron"
         / "MIGRATION_MATRIX.md"
     ).read_text(encoding="utf-8")
     for legacy_state in (
@@ -363,11 +335,11 @@ def test_current_architecture_docs_do_not_reintroduce_legacy_parity_states() -> 
     content = "\n".join(
         (docs_root / name).read_text(encoding="utf-8")
         for name in (
-            "ARCHITECTURE_NEXT.md",
-            "ELECTRON_DESKTOP.md",
-            "WEB_ARCHITECTURE.md",
-            "ARCHITECTURE_COMPLIANCE.md",
-            "architecture/MIGRATION_MATRIX.md",
+            "ARCHITECTURE.md",
+            "architecture/DESKTOP.md",
+            "architecture/RUNTIME.md",
+            "architecture/COMPLIANCE.md",
+            "archive/migrations/qt-to-electron/MIGRATION_MATRIX.md",
         )
     )
     for legacy_state in (

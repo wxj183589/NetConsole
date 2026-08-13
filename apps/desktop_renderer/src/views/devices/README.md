@@ -104,7 +104,7 @@ LLDP 历史数据按公开 DTO 白名单消费，不进入任意原始对象透�
 
 ## API 与 DTO
 
-设备详情 API、分页和错误契约见 [Web API 客户端](../../api/README.md)与 [FastAPI API](../../../../../src/netconsole/backend/api/README.md)；Pydantic DTO 见 [API DTO 模型](../../../../../src/netconsole/models/api/README.md)，前端映射见 [Web 类型契约](../../types/README.md)。
+设备详情 API、分页和错误契约见 [Renderer API 客户端](../../api/README.md)与 [FastAPI API](../../../../../src/netconsole/backend/api/README.md)；Pydantic DTO 见 [API DTO 模型](../../../../../src/netconsole/models/api/README.md)，前端映射见 [Renderer 类型契约](../../types/README.md)。
 
 普通查询响应不得包含设备密码、SNMP community、Token、服务端绝对路径或任意环境变量。唯一例外是上述本机桌面显式 reveal 动作，它只返回用户刚刚选择的单个凭据字段，不进入 OpenAPI、任务参数或日志。Artifact 只通过既有受控下载契约交给 Electron Main。
 
@@ -117,9 +117,8 @@ LLDP 历史数据按公开 DTO 白名单消费，不进入任意原始对象透�
 ## 相关文档
 
 - [设备详情展示组件](../../components/device-detail/README.md)
-- [最终迁移矩阵](../../../../../docs/architecture/MIGRATION_MATRIX.md)
-- [历史设备管理兼容入口](../../../../../docs/03-device-management.md)
-- [版本化 Command Profile 清单](../../../../../docs/archive/migrations/electron-only/COMMAND-PROFILE-device-inventory-2026-07-18.md)
+- [设备管理文档](../../../../../docs/device-management/VENDOR_IMPORT_AND_COLLECTION.md)
+- [命令参考与版本化 Profile](../../../../../docs/device-management/COMMAND_REFERENCE.md)
 
 ## 连接状态语义
 

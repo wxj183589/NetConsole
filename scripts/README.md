@@ -30,4 +30,4 @@
 
 ## 相关文档
 
-参见 [构建与发布](../docs/BUILD_AND_RELEASE.md)、[仓库目录规范](../docs/development/repository-layout.md) 和子目录 README。
+参见 [构建与发布](../docs/release/BUILD_AND_RELEASE.md)、[仓库目录规范](../docs/development/repository-layout.md) 和子目录 README。

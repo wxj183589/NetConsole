@@ -37,6 +37,6 @@ Vite/FastAPI 开发入口默认只绑定 `127.0.0.1`；生产不得增加无认�
 
 ## 相关文档
 
-- [Electron Desktop](../../../docs/ELECTRON_DESKTOP.md)
-- [下一代架构](../../../docs/ARCHITECTURE_NEXT.md)
-- [构建与发布](../../../docs/BUILD_AND_RELEASE.md)
+- [Electron Desktop](../../../docs/architecture/DESKTOP.md)
+- [当前架构](../../../docs/ARCHITECTURE.md)
+- [构建与发布](../../../docs/release/BUILD_AND_RELEASE.md)

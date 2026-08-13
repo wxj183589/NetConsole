@@ -30,4 +30,4 @@
 
 ## 相关文档
 
-参见 [Electron Desktop](../../docs/ELECTRON_DESKTOP.md)、[Native Bridge 契约](../../docs/DESKTOP_NATIVE_BRIDGE.md) 和 [Web 架构](../../docs/WEB_ARCHITECTURE.md)。
+参见 [Electron Desktop](../../docs/architecture/DESKTOP.md)、[Native Bridge 契约](../../docs/architecture/NATIVE_BRIDGE.md) 和 [Web 架构](../../docs/architecture/RUNTIME.md)。

@@ -15,7 +15,7 @@ from netconsole.services.online_mr.query_service import OnlineMrQueryService
 from netconsole.services.online_mr.real_device_test_policy import OnlineMrRealDeviceTestPolicy
 from netconsole.services.online_mr.web_control_service import OnlineMrWebControlService
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
-from rail_transit_base_data_fixture import build_rail_transit_base_data_fixture
+from tests.support.rail_transit_base_data_fixture import build_rail_transit_base_data_fixture
 
 
 class _ProcessAdapter:

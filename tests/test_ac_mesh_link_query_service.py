@@ -4,7 +4,7 @@ import hashlib
 from datetime import datetime
 from pathlib import Path
 
-from ac_mesh_link_web_fixture import build_ac_mesh_link_fixture
+from tests.support.ac_mesh_link_web_fixture import build_ac_mesh_link_fixture
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.models.ap_identity_index import ApIdentityMatch
