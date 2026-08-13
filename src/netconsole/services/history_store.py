@@ -12,6 +12,7 @@ import hashlib
 import json
 import re
 import sqlite3
+import time
 from calendar import monthrange
 from collections.abc import Iterable
 from contextlib import closing
@@ -38,7 +39,16 @@ DEFAULT_HEARTBEAT_SECONDS = {
 # recorded immediately when they change.
 TELEMETRY_SAMPLING_SECONDS = dict(DEFAULT_HEARTBEAT_SECONDS)
 OUTBOX_PRESSURE_HIGH_WATERMARK = 5_000
-UNATTENDED_DRAIN_LIMIT = 10
+# Unattended draining runs on a low-frequency scheduler.  Its smallest batch
+# must still exceed the measured steady event rate; otherwise the outbox would
+# simply move the historical growth back into devices.db.
+UNATTENDED_DRAIN_BASE_LIMIT = 100
+UNATTENDED_DRAIN_ELEVATED_LIMIT = 250
+UNATTENDED_DRAIN_MAX_LIMIT = 500
+UNATTENDED_SHARD_BATCH_LIMIT = 100
+UNATTENDED_DRAIN_MAX_ELAPSED_SECONDS = 2.0
+UNATTENDED_ELEVATED_AGE_SECONDS = 300
+UNATTENDED_URGENT_AGE_SECONDS = 900
 
 OUTBOX_SCHEMA = """
 CREATE TABLE IF NOT EXISTS history_outbox (
@@ -293,38 +303,39 @@ class HistoryStore:
     def ensure_outbox(self, conn: sqlite3.Connection) -> None:
         # executescript commits a pending sqlite3 transaction.  The outbox must
         # share the caller's current-state transaction, so install this small
-        # additive schema statement-by-statement instead.
-        if not self._table_exists(conn, "history_outbox"):
-            conn.execute(
-                """
-                CREATE TABLE history_outbox (
-                    event_id TEXT PRIMARY KEY,
-                    kind TEXT NOT NULL,
-                    entity_key TEXT NOT NULL,
-                    event_type TEXT NOT NULL,
-                    collected_at TEXT NOT NULL,
-                    payload_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    attempts INTEGER NOT NULL DEFAULT 0
-                )
-                """
+        # additive schema statement-by-statement.  IF NOT EXISTS makes first
+        # collection writes safe when several workers reach a new site at once.
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS history_outbox (
+                event_id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL,
+                entity_key TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                collected_at TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0
             )
-            conn.execute(
-                "CREATE INDEX idx_history_outbox_created "
-                "ON history_outbox(created_at, event_id)"
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_history_outbox_created
+            ON history_outbox(created_at, event_id)
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS history_state (
+                kind TEXT NOT NULL,
+                entity_key TEXT NOT NULL,
+                fingerprint TEXT NOT NULL,
+                last_recorded_at TEXT NOT NULL,
+                PRIMARY KEY(kind, entity_key)
             )
-        if not self._table_exists(conn, "history_state"):
-            conn.execute(
-                """
-                CREATE TABLE history_state (
-                    kind TEXT NOT NULL,
-                    entity_key TEXT NOT NULL,
-                    fingerprint TEXT NOT NULL,
-                    last_recorded_at TEXT NOT NULL,
-                    PRIMARY KEY(kind, entity_key)
-                )
-                """
-            )
+            """
+        )
 
     def record_event(
         self,
@@ -433,22 +444,30 @@ class HistoryStore:
         *,
         limit: int = 100,
         unattended_active: bool = False,
-        disk_busy: bool = False,
         high_watermark: int = OUTBOX_PRESSURE_HIGH_WATERMARK,
+        max_elapsed_seconds: float | None = None,
     ) -> HistoryDrainResult:
-        """Drain a bounded batch while preserving unattended I/O priority."""
+        """Drain a bounded batch while preserving unattended I/O priority.
+
+        Unattended callers may pass their normal small scheduler limit.  The
+        outbox chooses its own bounded batch from pending count and age so a
+        low-frequency scheduler has sufficient sustained throughput. Admission
+        is based on backlog, age and elapsed batch budget; no synthetic disk
+        pressure signal is used because no reliable producer supplies one.
+        """
 
         diagnostics = self.outbox_diagnostics(high_watermark=high_watermark)
+        effective_limit = max(1, min(int(limit), UNATTENDED_DRAIN_MAX_LIMIT))
+        batch_budget: float | None = max_elapsed_seconds
         if unattended_active:
-            if disk_busy or diagnostics.pressure != "high":
-                return HistoryDrainResult(
-                    pending=diagnostics.pending,
-                    paused=True,
-                    oldest_pending_age_seconds=diagnostics.oldest_pending_age_seconds,
-                    attempts=diagnostics.attempts,
-                    pressure=diagnostics.pressure,
-                )
-            limit = min(max(1, int(limit)), UNATTENDED_DRAIN_LIMIT)
+            effective_limit = self._unattended_drain_limit(
+                diagnostics, high_watermark=high_watermark
+            )
+            batch_budget = (
+                UNATTENDED_DRAIN_MAX_ELAPSED_SECONDS
+                if max_elapsed_seconds is None
+                else max(0.0, float(max_elapsed_seconds))
+            )
         if not self.database_path.is_file():
             return HistoryDrainResult()
         try:
@@ -457,38 +476,52 @@ class HistoryStore:
                     return HistoryDrainResult()
                 rows = current.execute(
                     "SELECT * FROM history_outbox ORDER BY created_at, event_id LIMIT ?",
-                    (max(1, min(int(limit), 500)),),
+                    (effective_limit,),
                 ).fetchall()
             if not rows:
                 return HistoryDrainResult()
             written = 0
+            started_at = time.monotonic()
             batches: dict[str, list[dict[str, Any]]] = {}
             for row in rows:
                 event = dict(row)
                 batches.setdefault(_period(str(event["collected_at"])), []).append(event)
+            stop_for_budget = False
             for batch in batches.values():
-                try:
-                    self._write_shard_batch(batch)
-                    with closing(connect_sqlite(self.database_path, foreign_keys=True)) as current:
-                        current.executemany(
-                            "DELETE FROM history_outbox WHERE event_id=?",
-                            [(str(event["event_id"]),) for event in batch],
+                chunk_limit = UNATTENDED_SHARD_BATCH_LIMIT if unattended_active else len(batch)
+                for offset in range(0, len(batch), chunk_limit):
+                    if (
+                        written
+                        and batch_budget is not None
+                        and time.monotonic() - started_at >= batch_budget
+                    ):
+                        stop_for_budget = True
+                        break
+                    chunk = batch[offset : offset + chunk_limit]
+                    try:
+                        self._write_shard_batch(chunk)
+                        with closing(connect_sqlite(self.database_path, foreign_keys=True)) as current:
+                            current.executemany(
+                                "DELETE FROM history_outbox WHERE event_id=?",
+                                [(str(event["event_id"]),) for event in chunk],
+                            )
+                            current.commit()
+                        written += len(chunk)
+                    except (OSError, sqlite3.Error, ValueError):
+                        with closing(connect_sqlite(self.database_path, foreign_keys=True)) as current:
+                            current.executemany(
+                                "UPDATE history_outbox SET attempts=attempts+1 WHERE event_id=?",
+                                [(str(event["event_id"]),) for event in chunk],
+                            )
+                            current.commit()
+                        return HistoryDrainResult(
+                            written=written,
+                            pending=self.outbox_diagnostics(high_watermark=high_watermark).pending,
+                            degraded=True,
+                            pressure="degraded",
                         )
-                        current.commit()
-                    written += len(batch)
-                except (OSError, sqlite3.Error, ValueError):
-                    with closing(connect_sqlite(self.database_path, foreign_keys=True)) as current:
-                        current.executemany(
-                            "UPDATE history_outbox SET attempts=attempts+1 WHERE event_id=?",
-                            [(str(event["event_id"]),) for event in batch],
-                        )
-                        current.commit()
-                    return HistoryDrainResult(
-                        written=written,
-                        pending=self.outbox_diagnostics(high_watermark=high_watermark).pending,
-                        degraded=True,
-                        pressure="degraded",
-                    )
+                if stop_for_budget:
+                    break
             with closing(connect_sqlite(self.database_path, foreign_keys=True)) as current:
                 self.ensure_outbox(current)
                 pending = self._pending_count_on(current)
@@ -503,6 +536,26 @@ class HistoryStore:
             )
         except (OSError, sqlite3.Error):
             return HistoryDrainResult(degraded=True, pressure="degraded")
+
+    @staticmethod
+    def _unattended_drain_limit(
+        diagnostics: HistoryOutboxDiagnostics,
+        *,
+        high_watermark: int,
+    ) -> int:
+        """Choose a bounded batch that clears normal production backlog."""
+
+        if (
+            diagnostics.pending >= max(1, int(high_watermark))
+            or diagnostics.oldest_pending_age_seconds >= UNATTENDED_URGENT_AGE_SECONDS
+        ):
+            return UNATTENDED_DRAIN_MAX_LIMIT
+        if (
+            diagnostics.pending >= max(UNATTENDED_DRAIN_BASE_LIMIT, int(high_watermark) // 4)
+            or diagnostics.oldest_pending_age_seconds >= UNATTENDED_ELEVATED_AGE_SECONDS
+        ):
+            return UNATTENDED_DRAIN_ELEVATED_LIMIT
+        return UNATTENDED_DRAIN_BASE_LIMIT
 
     def _write_shard_batch(self, rows: list[dict[str, Any]]) -> None:
         """Append one month of durable outbox events with bounded SQLite commits."""

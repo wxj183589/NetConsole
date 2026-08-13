@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
+from itertools import pairwise
+from threading import Barrier
 
 import pytest
 
+import netconsole.services.history_store as history_store_module
 from netconsole.core.database import Database
 from netconsole.core.sqlite_utils import connect_sqlite
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
@@ -111,18 +115,28 @@ def test_history_store_rotates_month_shards_without_losing_or_duplicating_events
     assert catalog["2026-08"]["status"] == "ACTIVE"
 
 
-def test_unattended_pressure_allows_only_tiny_bounded_drain(tmp_path):
+def test_unattended_drain_adapts_to_backlog_without_tiny_commit_policy(tmp_path):
     store = _store(tmp_path)
     assert _record(store, collected_at="2026-08-01T10:00:00", value="up")
     assert _record(store, collected_at="2026-08-01T10:01:00", value="down")
 
-    paused = store.drain(unattended_active=True, high_watermark=10)
-    assert paused.paused is True
-    assert paused.pending == 2
-    pressured = store.drain(unattended_active=True, high_watermark=1, limit=500)
-    assert pressured.paused is False
-    assert pressured.written == 2
-    assert pressured.pending == 0
+    result = store.drain(unattended_active=True, high_watermark=10)
+
+    assert result.paused is False
+    assert result.written == 2
+    assert result.pending == 0
+
+
+def test_unattended_drain_limit_scales_with_backlog_and_age():
+    base = history_store_module.HistoryOutboxDiagnostics(pending=1)
+    elevated = history_store_module.HistoryOutboxDiagnostics(pending=1_500)
+    urgent = history_store_module.HistoryOutboxDiagnostics(
+        pending=1, oldest_pending_age_seconds=history_store_module.UNATTENDED_URGENT_AGE_SECONDS
+    )
+
+    assert HistoryStore._unattended_drain_limit(base, high_watermark=5_000) == 100
+    assert HistoryStore._unattended_drain_limit(elevated, high_watermark=5_000) == 250
+    assert HistoryStore._unattended_drain_limit(urgent, high_watermark=5_000) == 500
 
 
 def test_outbox_diagnostics_reports_bounded_pressure_and_age(tmp_path):
@@ -164,15 +178,77 @@ def test_outbox_survives_current_commit_before_shard_drain_and_recovers_after_re
     assert [event["link_status"] for event in restarted.query_events(kind="device_interface")] == ["up"]
 
 
-def test_unattended_mode_pauses_history_maintenance_without_discarding_outbox(tmp_path):
+def test_unattended_mode_drains_normal_backlog_without_discarding_outbox(tmp_path):
     store = _store(tmp_path)
     assert _record(store, collected_at="2026-08-01T10:00:00", value="up")
 
-    paused = store.drain(unattended_active=True)
-    resumed = store.drain()
+    drained = store.drain(unattended_active=True)
 
-    assert (paused.written, paused.pending, paused.paused, paused.degraded) == (0, 1, True, False)
-    assert (resumed.written, resumed.pending, resumed.paused, resumed.degraded) == (1, 0, False, False)
+    assert (drained.written, drained.pending, drained.paused, drained.degraded) == (1, 0, False, False)
+
+
+def test_first_outbox_write_is_safe_across_concurrent_connections(tmp_path):
+    store = _store(tmp_path)
+    worker_count = 25
+    barrier = Barrier(worker_count)
+
+    def record(index: int) -> bool:
+        barrier.wait()
+        with connect_sqlite(store.database_path, foreign_keys=True) as conn:
+            recorded = store.record_event(
+                conn,
+                kind="device_interface",
+                entity_key=f"device-{index}:GE1/0/1",
+                payload={"device_uuid": f"device-{index}", "link_status": "up"},
+                collected_at="2026-08-01T10:00:00",
+                meaningful_fields=("device_uuid", "link_status"),
+            )
+            conn.commit()
+        return recorded
+
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        results = list(executor.map(record, range(worker_count)))
+
+    assert results == [True] * worker_count
+    assert store.pending_count() == worker_count
+    assert store.drain(limit=worker_count).written == worker_count
+
+
+def test_unattended_adaptive_drain_keeps_simulated_steady_outbox_bounded(
+    tmp_path, monkeypatch
+):
+    store = _store(tmp_path)
+    clock = [datetime.fromisoformat("2026-08-01T10:00:00")]
+    monkeypatch.setattr(history_store_module, "_local_now", lambda: clock[0])
+    pending = []
+    oldest_ages = []
+
+    # A 250-event burst followed by 80 events per scheduler minute is above
+    # the measured average production rate.  The 100-event base batch must
+    # clear it without letting the outbox age or pending count diverge.
+    for minute in range(24):
+        produced = 250 if minute in {0, 12} else 80
+        with connect_sqlite(store.database_path, foreign_keys=True) as conn:
+            for index in range(produced):
+                assert store.record_event(
+                    conn,
+                    kind="fit_ap_radio",
+                    entity_key=f"ap-{minute}-{index}:1",
+                    payload={"ap_uuid": f"ap-{minute}-{index}", "channel": 36},
+                    collected_at=clock[0].isoformat(timespec="seconds"),
+                    meaningful_fields=("ap_uuid", "channel"),
+                )
+            conn.commit()
+        result = store.drain(unattended_active=True, limit=10)
+        pending.append(result.pending)
+        oldest_ages.append(result.oldest_pending_age_seconds)
+        clock[0] += timedelta(minutes=1)
+
+    assert pending[0] == 150
+    assert pending[-1] == 0
+    assert max(pending) <= 160
+    assert any(later < earlier for earlier, later in pairwise(pending))
+    assert max(oldest_ages) <= 7 * 60
 
 
 def test_corrupt_shard_reports_degraded_and_leaves_outbox_for_retry(tmp_path):

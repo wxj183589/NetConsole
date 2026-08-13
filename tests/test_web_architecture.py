@@ -6,6 +6,7 @@ from threading import Event
 import pytest
 from fastapi.testclient import TestClient
 
+import netconsole.backend.api.main as main_module
 from netconsole.backend.api.health import health_response
 from netconsole.backend.api.main import _unattended_run_active, create_app
 from netconsole.core.database import Database
@@ -16,9 +17,6 @@ from netconsole.infrastructure.desktop import (
     LocalDesktopAdapter,
     UnavailableDesktopAdapter,
 )
-from netconsole.repositories.ground_unattended_repository import (
-    GroundUnattendedRepository,
-)
 from netconsole.models.api import (
     AgentStatusDTO,
     ApiResponse,
@@ -26,6 +24,9 @@ from netconsole.models.api import (
     ErrorResponse,
     TaskDTO,
     TaskEventDTO,
+)
+from netconsole.repositories.ground_unattended_repository import (
+    GroundUnattendedRepository,
 )
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.job_center.job_events import finished_event, progress_event
@@ -192,6 +193,35 @@ def test_deferred_runtime_failure_is_visible_and_blocks_service_writes(tmp_path:
     assert health.json()["history_error"] == "shard_write_failed"
     assert blocked.status_code == 503
     assert blocked.json()["code"] == "RUNTIME_SERVICES_DEGRADED"
+
+
+def test_history_drain_is_independent_from_deferred_runtime_readiness(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(main_module, "_HISTORY_DRAIN_INITIAL_DELAY_SECONDS", 0.0)
+    monkeypatch.setattr(main_module, "_HISTORY_DRAIN_NORMAL_INTERVAL_SECONDS", 0.01)
+    app = create_app(
+        RuntimeMode.SERVER,
+        paths=PathResolver(tmp_path),
+        frontend_dist=tmp_path / "missing",
+    )
+
+    calls = []
+
+    def fake_drain(**kwargs):
+        calls.append(kwargs)
+        from netconsole.services.history_store import HistoryDrainResult
+
+        return HistoryDrainResult()
+
+    monkeypatch.setattr(app.state.history_store, "drain", fake_drain)
+    with TestClient(app) as client:
+        app.state.runtime_services_ready = False
+        app.state.runtime_services_status = "degraded"
+        health = client.get("/api/health")
+        assert health.status_code == 200
+        assert calls
+        assert calls[0]["unattended_active"] is False
 
 
 @pytest.mark.parametrize("runtime_mode", [RuntimeMode.DESKTOP, RuntimeMode.SERVER])

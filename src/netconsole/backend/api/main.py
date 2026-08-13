@@ -128,6 +128,9 @@ _SECRET_RE = re.compile(r"(?i)((?:x-agent-token|token)\s*[:=]\s*)[^\s,;]+")
 DESKTOP_SESSION_COOKIE = "netconsole_desktop_session"
 DESKTOP_SESSION_HEADER = "x-netconsole-session"
 _DESKTOP_DEFERRED_RUNTIME_DELAY_SECONDS = 1.0
+_HISTORY_DRAIN_INITIAL_DELAY_SECONDS = 5.0
+_HISTORY_DRAIN_NORMAL_INTERVAL_SECONDS = 10.0
+_HISTORY_DRAIN_UNATTENDED_INTERVAL_SECONDS = 60.0
 
 
 def _unattended_run_active(repository: GroundUnattendedRepository | None) -> bool:
@@ -524,9 +527,9 @@ def create_app(
                 await asyncio.sleep(LOG_POLICY.housekeeper.interval_seconds)
 
         async def schedule_history_drain() -> None:
-            """Drain only after readiness; history maintenance never delays startup."""
+            """Drain history independently from deferred runtime services."""
 
-            await asyncio.sleep(5)
+            await asyncio.sleep(_HISTORY_DRAIN_INITIAL_DELAY_SECONDS)
             while True:
                 if not app.state.accepting_work:
                     return
@@ -537,46 +540,50 @@ def create_app(
                         diagnostics.oldest_pending_age_seconds
                     )
                     app.state.history_pressure = diagnostics.pressure
-                    if not app.state.runtime_services_ready and diagnostics.pressure == "degraded":
+                    if diagnostics.pressure == "degraded":
                         app.state.history_status = "degraded"
-                    elif not app.state.runtime_services_ready and app.state.history_status == "idle":
-                        app.state.history_status = "deferred"
+                    elif app.state.history_status == "idle":
+                        app.state.history_status = "ready"
                 except (OSError, sqlite3.Error) as exc:
                     app.state.history_status = "degraded"
                     app.state.history_error = exc.__class__.__name__
-                if app.state.runtime_services_ready:
-                    try:
-                        unattended_active = await asyncio.to_thread(
-                            _unattended_run_active,
-                            getattr(app.state, "ground_unattended_repository", None),
-                        )
-                        result = await asyncio.to_thread(
-                            history_store.drain,
-                            limit=10 if unattended_active else 100,
-                            unattended_active=unattended_active,
-                        )
-                        app.state.history_pending = result.pending
-                        app.state.history_oldest_pending_age_seconds = result.oldest_pending_age_seconds
-                        app.state.history_pressure = result.pressure
-                        app.state.history_status = "paused" if result.paused else (
-                            "degraded" if result.degraded else "ready"
-                        )
-                        app.state.history_error = "" if not result.degraded else "shard_write_failed"
-                        if result.degraded:
-                            app_logger.log_warning(
-                                "HISTORY_DRAIN_DEGRADED",
-                                f"pending={result.pending} written={result.written}",
-                            )
-                    except (OSError, sqlite3.Error) as exc:
-                        app.state.history_status = "degraded"
-                        app.state.history_error = exc.__class__.__name__
+                try:
+                    unattended_active = await asyncio.to_thread(
+                        _unattended_run_active,
+                        getattr(app.state, "ground_unattended_repository", None),
+                    )
+                    result = await asyncio.to_thread(
+                        history_store.drain,
+                        limit=100,
+                        unattended_active=unattended_active,
+                        max_elapsed_seconds=2.0 if unattended_active else None,
+                    )
+                    app.state.history_pending = result.pending
+                    app.state.history_oldest_pending_age_seconds = result.oldest_pending_age_seconds
+                    app.state.history_pressure = result.pressure
+                    app.state.history_status = "paused" if result.paused else (
+                        "degraded" if result.degraded else "ready"
+                    )
+                    app.state.history_error = "" if not result.degraded else "shard_write_failed"
+                    if result.degraded:
                         app_logger.log_warning(
                             "HISTORY_DRAIN_DEGRADED",
-                            f"error={exc.__class__.__name__}: {_safe_error_message(str(exc))}",
+                            f"pending={result.pending} written={result.written}",
                         )
-                await asyncio.sleep(60 if _unattended_run_active(
-                    getattr(app.state, "ground_unattended_repository", None)
-                ) else 10)
+                except (OSError, sqlite3.Error) as exc:
+                    app.state.history_status = "degraded"
+                    app.state.history_error = exc.__class__.__name__
+                    app_logger.log_warning(
+                        "HISTORY_DRAIN_DEGRADED",
+                        f"error={exc.__class__.__name__}: {_safe_error_message(str(exc))}",
+                    )
+                await asyncio.sleep(
+                    _HISTORY_DRAIN_UNATTENDED_INTERVAL_SECONDS
+                    if _unattended_run_active(
+                        getattr(app.state, "ground_unattended_repository", None)
+                    )
+                    else _HISTORY_DRAIN_NORMAL_INTERVAL_SECONDS
+                )
 
         auto_cleanup_task = (
             asyncio.create_task(schedule_auto_cleanup())

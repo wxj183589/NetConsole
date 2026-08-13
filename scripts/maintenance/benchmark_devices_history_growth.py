@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import tempfile
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -78,7 +79,7 @@ def _legacy_metrics(
         count = int(conn.execute("SELECT COUNT(*) FROM legacy_history").fetchone()[0])
     return {
         "rows": count,
-        "estimated_collection_commits_per_day": samples,
+        "synthetic_sample_count": samples,
         "database_baseline_bytes": baseline_bytes,
         "history_growth_bytes": path.stat().st_size - baseline_bytes,
     }
@@ -136,7 +137,7 @@ def _phase2_metrics(
     current_database_growth_bytes = database_path.stat().st_size - current_database_baseline_bytes
     return {
         "rows": written,
-        "estimated_collection_commits_per_day": samples,
+        "synthetic_sample_count": samples,
         "current_database_baseline_bytes": current_database_baseline_bytes,
         # This is a fixed current-state/outbox schema and entity-state cost for
         # a stable fixture. It must not be projected as daily history growth.
@@ -198,11 +199,93 @@ def _telemetry_metrics(
     catalog = store.history_root / "catalog.db"
     return {
         "rows": written,
-        "estimated_collection_commits_per_day": samples,
+        "synthetic_sample_count": samples,
         "outbox_peak": outbox_peak,
         "state_changes": state_changes,
         "history_growth_bytes": shard_bytes + (catalog.stat().st_size if catalog.is_file() else 0),
         "sampling_policy": "radio heartbeat=1800s; status/channel immediate",
+    }
+
+
+def _production_metrics(
+    root: Path,
+    *,
+    entities: int,
+    samples: int,
+    interval_minutes: int,
+    slow_storage_ms: int = 0,
+) -> dict[str, int | float | str]:
+    """Exercise collector-shaped transactions and bounded unattended drain."""
+
+    database_path = root / "sites" / "production-shaped" / "db" / "devices.db"
+    Database(database_path).initialize()
+    store = HistoryStore(database_path, site_id="production-shaped")
+    if slow_storage_ms > 0:
+        original_write = store._write_shard_batch
+
+        def delayed_write(rows):
+            time.sleep(slow_storage_ms / 1000)
+            original_write(rows)
+
+        store._write_shard_batch = delayed_write
+
+    start = datetime(2026, 8, 1, tzinfo=UTC)
+    generated = 0
+    logical_transactions = 0
+    peak_pending = 0
+    peak_age = 0
+    drained = 0
+    started = time.perf_counter()
+    kinds = ("fit_ap_resource", "fit_ap_radio", "fit_ap_optical", "fit_ap_lldp", "device_interface", "device_optical", "device_lldp")
+    with connect_sqlite(database_path, foreign_keys=True) as conn:
+        for sample in range(samples):
+            collected_at = _timestamp(start, sample, interval_minutes)
+            for entity in range(entities):
+                ap = f"ap-{entity:04d}"
+                common = {"ap_uuid": ap, "status": "up", "channel": 149}
+                events = (
+                    ("fit_ap_resource", f"ac-1:{ap}", common, ("ap_uuid", "status")),
+                    ("fit_ap_radio", f"{ap}:1", {**common, "rid": 1, "usage": sample % 100}, ("ap_uuid", "rid", "status", "channel")),
+                    ("fit_ap_radio", f"{ap}:2", {**common, "rid": 2, "usage": (sample + 1) % 100}, ("ap_uuid", "rid", "status", "channel")),
+                    ("fit_ap_optical", ap, {**common, "optical_alarm_status": "normal", "rx": -3.0}, ("ap_uuid", "optical_alarm_status")),
+                    ("fit_ap_lldp", ap, {**common, "neighbor": "sw-1", "port": "GE1/0/1"}, ("ap_uuid", "neighbor", "port")),
+                    ("device_interface", f"device-1:GE{entity}/0/1", {"device_uuid": "device-1", "interface_name": f"GE{entity}/0/1", "link_status": "up"}, ("device_uuid", "interface_name", "link_status")),
+                    ("device_optical", f"device-1:GE{entity}/0/1", {"device_uuid": "device-1", "interface_name": f"GE{entity}/0/1", "status": "normal", "rx": -3.0}, ("device_uuid", "interface_name", "status")),
+                    ("device_lldp", f"device-1:GE{entity}/0/1", {"device_uuid": "device-1", "local_interface": f"GE{entity}/0/1", "neighbor": "sw-1"}, ("device_uuid", "local_interface", "neighbor")),
+                )
+                for kind, key, payload, fields in events:
+                    payload = {**payload, "collected_at": collected_at, "collect_run_uuid": f"run-{sample}"}
+                    generated += int(store.record_event(conn, kind=kind, entity_key=key, payload=payload, collected_at=collected_at, meaningful_fields=fields))
+            conn.commit()
+            logical_transactions += 1
+            diagnostics = store.outbox_diagnostics()
+            peak_pending = max(peak_pending, diagnostics.pending)
+            peak_age = max(peak_age, diagnostics.oldest_pending_age_seconds)
+            result = store.drain(unattended_active=True, limit=100, max_elapsed_seconds=2.0)
+            drained += result.written
+            peak_pending = max(peak_pending, result.pending)
+            peak_age = max(peak_age, result.oldest_pending_age_seconds)
+
+    while store.pending_count():
+        result = store.drain(limit=500)
+        drained += result.written
+        if result.degraded or result.written == 0:
+            break
+    shard_bytes = sum(path.stat().st_size for path in store.history_root.glob("devices-*.db"))
+    catalog = store.history_root / "catalog.db"
+    return {
+        "events_generated": generated,
+        "events_drained": drained,
+        "peak_pending": peak_pending,
+        "final_pending": store.pending_count(),
+        "peak_oldest_pending_age_seconds": peak_age,
+        "logical_transaction_count": logical_transactions,
+        "elapsed_seconds": round(time.perf_counter() - started, 3),
+        "current_database_bytes": database_path.stat().st_size,
+        "shard_bytes": shard_bytes,
+        "catalog_bytes": catalog.stat().st_size if catalog.is_file() else 0,
+        "slow_storage_ms": slow_storage_ms,
+        "kinds": list(kinds),
     }
 
 
@@ -218,6 +301,7 @@ def main() -> int:
     parser.add_argument("--days", type=int, default=2)
     parser.add_argument("--poll-minutes", type=int, default=5)
     parser.add_argument("--output", type=Path, default=None)
+    parser.add_argument("--slow-storage-ms", type=int, default=0)
     args = parser.parse_args()
     if args.entities < 1 or args.days < 1 or args.poll_minutes < 1:
         raise SystemExit("entities、days 和 poll-minutes 必须大于 0")
@@ -249,6 +333,13 @@ def main() -> int:
             samples=samples,
             interval_minutes=args.poll_minutes,
         )
+        production = _production_metrics(
+            root,
+            entities=args.entities,
+            samples=samples,
+            interval_minutes=args.poll_minutes,
+            slow_storage_ms=max(0, args.slow_storage_ms),
+        )
         report = {
             "fixture": {
                 "entities": args.entities,
@@ -260,6 +351,7 @@ def main() -> int:
             "legacy_per_sample": legacy,
             "change_aware_month_shard": phase2,
             "telemetry_and_state_mix": telemetry,
+            "production_shaped": production,
             "projection": {
                 f"{days}_days": {
                     "legacy_rows": _project(legacy["rows"], observed_days=observed_days, days=days),
