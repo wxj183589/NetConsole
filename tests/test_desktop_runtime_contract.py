@@ -293,13 +293,18 @@ def test_release_validation_rejects_stale_frontend_metadata(tmp_path: Path) -> N
         )
 
 
-def test_current_migration_contract_covers_fixed_modules_and_allowed_states() -> None:
+def test_current_product_architecture_contract_is_stable_and_resolvable() -> None:
     contract = json.loads(
-        (Path(__file__).resolve().parents[1] / "config" / "architecture" / "migration_map.json").read_text(encoding="utf-8")
+        (Path(__file__).resolve().parents[1] / "config" / "architecture" / "product_architecture.json").read_text(
+            encoding="utf-8"
+        )
     )
-    assert {"PURE_UI", "BUSINESS_MOVED", "ADAPTER_REPLACED", "DEAD_CODE", "FEATURE_REMOVED"} <= set(contract["classifications"])
-    assert {"MIGRATED", "REMOVED", "HIDDEN_PENDING_MIGRATION", "BLOCKED"} <= set(contract["dispositions"])
-    assert {item["id"] for item in contract["modules"]} >= {"devices", "rail-transit-mesh", "snmp-center-wireless-survey"}
+    root = Path(__file__).resolve().parents[1]
+    assert contract["product_model"] == "ELECTRON_DESKTOP_ONLY"
+    assert contract["maintenance_state"] == "LONG_TERM_MAINTENANCE"
+    assert contract["historical_migration"]["status"] == "CLOSED"
+    assert all(root.joinpath(path).is_file() for item in contract["components"] for path in item["required_paths"])
+    assert all(root.joinpath(path).is_file() for path in contract["authoritative_sources"].values())
 
 
 def test_frozen_migration_archive_is_historical_only() -> None:

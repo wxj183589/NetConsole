@@ -199,7 +199,7 @@ display wlan mesh-link switch-history  # 仅布尔开关启用
 ## 定向验证
 
 ```powershell
-.venv\Scripts\python.exe -m pytest tests/test_ac_management.py tests/test_ac_domain_job.py tests/test_ac_web_parity.py tests/test_ac_management_web_api.py -q
+.venv\Scripts\python.exe -m pytest tests/test_ac_management.py tests/test_ac_domain_job.py tests/test_ac_application_job_contract.py tests/test_ac_api_feature_contract.py tests/test_ac_export_contract.py tests/test_ac_desktop_action_contract.py tests/test_ac_management_web_api.py -q
 .venv\Scripts\python.exe -m pytest tests/test_fit_ap_resource_export.py -q
 .venv\Scripts\python.exe -m pytest tests/test_ac_mesh_link_refresh_service.py tests/test_ac_mesh_link_refresh_job.py tests/test_ac_mesh_link_refresh_api.py -q
 .venv\Scripts\python.exe -m pytest tests/test_ac_mesh_link_query_service.py tests/test_ac_mesh_link_web_api.py -q

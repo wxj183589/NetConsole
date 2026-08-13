@@ -2,7 +2,7 @@
 
 本目录实现 E10B Electron-only 架构合规 Guard。十个公开入口共享 Python AST、TypeScript AST、CSS 解析、例外校验和确定性诊断实现，但每项边界保留独立 rule ID；共享引擎不表示合并或缺少发布门。
 
-Guard 只读取生产代码、测试、配置、Git 跟踪状态和迁移矩阵，不修改业务代码、数据库、运行数据或命令文本。现有债务只有匹配[精确限时例外](../../config/architecture/exceptions.yaml)时才被豁免；配置无效、例外过期、未分类命中、陈旧 SQL 分类或统一入口中的陈旧例外都会失败关闭。
+Guard 只读取生产代码、测试、配置、Git 跟踪状态和稳定产品架构声明，不修改业务代码、数据库、运行数据或命令文本。现有债务只有匹配[精确限时例外](../../config/architecture/exceptions.yaml)时才被豁免；配置无效、例外过期、未分类命中、陈旧 SQL 分类或统一入口中的陈旧例外都会失败关闭。
 
 ## 十个公开门
 
@@ -17,13 +17,13 @@ Guard 只读取生产代码、测试、配置、Git 跟踪状态和迁移矩阵�
 | `check_removed_features.py` | 已删除 Qt 路径、SNMP Center、无线勘测等活动入口回归 | `REMOVED_FEATURE_PATH`、`REMOVED_FEATURE_ENTRY` |
 | `check_runtime_paths.py` | 仓库运行数据、`Path.cwd()`、目录职责 README | `RUNTIME_PATH_GIT`、`RUNTIME_PATH_TRACKED`、`RUNTIME_PATH_CWD`、`DIRECTORY_README_CONFIG`、`DIRECTORY_README_MISSING` |
 | `check_orphan_modules.py` | 无静态生产调用者的 Service 候选；排除 Router、DTO、Job Handler、包入口和显式动态注册 | `ORPHAN_SERVICE_MODULE` |
-| `check_migration_map.py` | Qt 删除基线、迁移分类与状态词汇 | `MIGRATION_MAP_MISSING`、`MIGRATION_MAP_CLASSIFICATION`、`MIGRATION_MAP_STATUS`、`MIGRATION_MAP_HISTORY` |
+| `check_product_architecture.py` | Electron Desktop Only 运行组件、权威事实源和已关闭迁移历史 | `PRODUCT_ARCHITECTURE_MISSING`、`PRODUCT_ARCHITECTURE_MODEL`、`PRODUCT_ARCHITECTURE_COMPONENTS`、`PRODUCT_ARCHITECTURE_SOURCES`、`PRODUCT_ARCHITECTURE_HISTORY` |
 
 `check_architecture_boundaries.py` 是一个公开门，但其中 Python、TypeScript、Router、Electron 和 legacy names 均输出上表中的独立规则名，不能用其中一类通过推断其他边界也已通过。
 
 ## 共享实现
 
-- `checks.py`：Python AST、Router AST、直接 SQL、CSS、运行路径、孤儿 import graph、迁移矩阵和各规则集合。
+- `checks.py`：Python AST、Router AST、直接 SQL、CSS、运行路径、孤儿 import graph、产品架构声明和各规则集合。
 - `typescript_ast.mjs`：使用工作区 TypeScript compiler API 解析 `.ts` 和 Vue `<script>`；提取 import/export、动态 import、函数符号、legacy 字段及颜色字面量。TypeScript compiler 不可用时失败关闭，不退化为裸字符串 grep。
 - `guard_core.py`：`Finding`、确定性排序、UTF-8 配置读取、例外 schema/日期/精确路径校验和退出码。
 - `cli.py`：十个公开门的唯一注册表。

@@ -2,9 +2,9 @@
 
 ## 文档定位
 
-本文定义 Electron-only 架构的永久一致性规则。当前 Guard、精确分类配置和冻结迁移矩阵已经形成；2026-07 的建立基线见[架构一致性报告](../archive/migrations/electron-only/ARCHITECTURE_COMPLIANCE_REPORT.md)。Guard 通过不等于 Electron 视觉、真实设备、最终制品或业务验收完成。
+本文定义 Electron-only 架构的永久一致性规则。当前 Guard、精确分类配置和稳定产品架构声明已经形成；2026-07 的建立基线见[架构一致性报告](../archive/migrations/electron-only/ARCHITECTURE_COMPLIANCE_REPORT.md)。Guard 通过不等于 Electron 视觉、真实设备、最终制品或业务验收完成。
 
-目标是验证实际代码符合 `Electron Main + Preload + Vue + FastAPI + Python Core` 分层，并追踪原 Qt 页面、Worker、Signal 和 Timer 回调中的有效业务逻辑去向。仅通过 Qt 关键字扫描或应用启动冒烟不能满足本阶段要求。
+目标是持续验证实际代码符合 `Electron Main + Preload + Vue + FastAPI + Python Core` 分层。原 Qt 页面、Worker、Signal 和 Timer 回调的业务逻辑去向已经冻结在 archive 与 Git 历史中，不再作为活动迁移任务。
 
 ## 分层边界
 
@@ -28,24 +28,9 @@ Vue 可以保留时间、字节、状态文字、表格列和图表坐标等显�
 
 该切片不代表命令平台全量完成。AC 专项、Online MR 专项采集、配置、诊断、文件管理及 Agent sidecar 的生产命令仍需逐域迁移；Huawei 与未匹配的 ZTE 型号必须失败关闭。`src/netconsole/services/command_guard.py` 仍作为迁移期精确序列二次保护，不能替代 Profile resolver；ZTE 前三条核心命令失败会停止该设备，任一 LLDP 命令失败则保留有效接口/光模块和可用的另一份 LLDP 结果并标记 `partial_success`。未经确认的 ZTE LLDP 候选已退出 Guard。现场提供但未验证的 ZTE 硬件、SN、配置、文件、Ping 与 `write` 只进入命令参考，不自动进入生产 Profile。`scripts/maintenance/audit_commands.py` 对 Profile 只接受经正式 loader 验证后的完整规范化命令相等；发布审计使用 `--strict` 时任何 deferred 项都会返回非零。
 
-## Qt 历史迁移追踪
+## Qt 历史迁移归档
 
-删除 Qt 文件前后都要检查 Git 历史中的 `src/netconsole/ui/`、`apps/desktop/`、Qt Page、Dialog、Worker、Table Model、Signal 和 Timer callback。重点复核 `_clicked`、`_on_*`、`_handle_*`、`_update_*`、`_refresh_*`、`_load_*`、`_parse_*`、`_calculate_*`、`_merge_*`、`_match_*`、`_resolve_*`、`_build_*` 和 `_finalize_*`。
-
-冻结迁移映射保存在 `docs/archive/migrations/qt-to-electron/MIGRATION_MATRIX.md`，逐个记录：
-
-| 原 Qt 文件 | 原函数/类 | 分类 | 新位置 | 新测试 | 删除依据 |
-| --- | --- | --- | --- | --- | --- |
-
-分类只允许：
-
-- `PURE_UI`：没有业务语义，可直接删除。
-- `BUSINESS_MOVED`：给出永久层实现和测试。
-- `ADAPTER_REPLACED`：给出 Electron、API 或 Event Hub 替代位置。
-- `DEAD_CODE`：提供无入口、无引用或不可达证据。
-- `FEATURE_REMOVED`：仅用于经批准正式删除的功能，例如 SNMP Center 和无线勘测。
-
-无法确认的代码不得批量标记为 `DEAD_CODE`。功能级迁移状态只允许 `MIGRATED`、`REMOVED`、`HIDDEN_PENDING_MIGRATION` 和 `BLOCKED`；`MIGRATED` 必须同时具有新入口、新服务、新测试且旧 Qt 文件已删除。
+Qt 到 Electron 的仓库迁移已经关闭。最终迁移映射保存在 `docs/archive/migrations/qt-to-electron/MIGRATION_MATRIX.md`，仅用于历史追溯；当前产品能力以 `src/netconsole/core/feature_registry.py` 为准，当前运行形态以 `config/architecture/product_architecture.json` 为准。普通技术债按领域任务处理，不再创建新的 migration wave 或全仓 cleanup phase。
 
 ## 专项审计域
 
@@ -66,7 +51,7 @@ Vue 可以保留时间、字节、状态文字、表格列和图表坐标等显�
 - 生产设备命令硬编码；
 - Vue/Electron 可疑业务逻辑；
 - 已删除功能的活动入口；
-- 运行路径、孤儿模块和 Qt 迁移映射；
+- 运行路径、孤儿模块和稳定产品架构声明；
 - 项目目录 README、仓库根运行数据和无 Qt 依赖/安装包残留。
 
 十个公开入口为：
@@ -80,22 +65,19 @@ scripts/architecture/check_ui_business_logic.py
 scripts/architecture/check_removed_features.py
 scripts/architecture/check_runtime_paths.py
 scripts/architecture/check_orphan_modules.py
-scripts/architecture/check_migration_map.py
+scripts/architecture/check_product_architecture.py
 ```
 
 如多个检查可以由一个稳定的 AST 引擎承担，可共享实现，但上述发布门必须保留可单独定位的规则 ID 和失败输出。Python 边界检查应验证 Domain、Service、Repository、Application 与 Router 的依赖方向；TypeScript 边界检查应阻止 Vue 导入 Electron Main、Main 导入 Vue Store，以及 Preload 导入业务 Service。Repository、migration、明确的数据维护脚本和测试 fixture 之外的 `sqlite3.connect`/`aiosqlite.connect` 必须失败。生产设备命令只允许出现在版本化 Command Profile；命令 fixture、Parser 样本、文档和历史 Changelog 必须通过精确路径分类，不允许放行整个 `services/`。
 
 UI 业务逻辑扫描是启发式检查，命中必须人工分类为 `DISPLAY_ONLY`、`BUSINESS_LOGIC` 或 `FALSE_POSITIVE`，不得自动删除。SQL 和命令文本扫描也只是初筛，需结合 AST、调用图和测试样本判断；不能放行整个 `services/` 或 `apps/desktop_renderer/`。
 
-### 当前 E10B 基线
+### 当前长期基线
 
-截至 2026-07-18 当前工作树，统一入口 `scripts/architecture/run_all.py` 已建立并完成九门基线检查。可核实配置事实为：
+统一入口 `scripts/architecture/run_all.py` 维持十门基线检查；第十门校验 Electron Desktop Only 四个运行组件、权威事实源和迁移归档已关闭。历史建立过程保留在 archive，不再作为活动阶段。
 
-- Direct SQL：61 个精确文件分类，包含 `REPOSITORY_REQUIRED` 12、`READ_ONLY_DATA_GATEWAY` 12、`ANALYSIS_DB_OWNER` 6、`MIGRATION_TOOL` 2、`TEST_ONLY` 29，`VIOLATION=0`；
-- UI AST：32 个精确符号分类，其中 `DISPLAY_ONLY` 15、`FALSE_POSITIVE` 17，没有以函数名直接推断业务违规；
-- 限时例外：38 条，全部精确到 `rule_id + path`，包括 Python 分层 14、孤儿候选 24；状态色例外已归零；
-- 目录职责：建立检查时扫描 139 个维护目录，README 缺失为 0；新增目录仍必须重新运行门禁；
-- Command Profile：目前只有 `device.inventory.collect` 进入版本化平台。AC、MR、配置、文件等生产命令迁移属于后续 `E11`，正式 API v1 契约治理属于后续 `E12`，均不能因九门建立而写成完成。
+- Direct SQL、UI AST、限时例外和目录职责均由当前配置与 Guard 动态校验，不在本文冻结易漂移数量。
+- Command Profile 当前只有 `device.inventory.collect` 进入版本化平台。AC、MR、配置、文件等命令按各领域事实与验证状态维护；这不再被描述为 Qt→Electron 迁移阶段。
 
 历史状态色字面量已收敛到语义 Token，对应 `WEB_STATUS_COLOR_TOKEN` 例外已删除；`check_ui_business_logic.py` 当前为 0 finding / 0 waived。Guard 已收窄规则，避免把 `--nc-text-primary` 等普通文本 Token 误判为状态色，并由单元测试固定。全局浅色/深色/跟随系统、Element Plus、ECharts 和 Electron 背景严格 IPC 已接入；最终 Electron 多尺寸、多缩放和 Windows 跟随系统视觉验收仍为 `PENDING`，自动测试不能替代视觉通过。
 
@@ -123,30 +105,9 @@ UI 业务逻辑扫描是启发式检查，命中必须人工分类为 `DISPLAY_O
 
 `docs/storage/DATA_LAYOUT.md` 必须为每个活动数据库记录事实源或派生数据、拥有者 Repository、生命周期、备份、迁移和清理策略，重点包括 `devices.db`、`tasks.db`、`agents.db`、`traffic_runs.sqlite`、`iperf_results.sqlite`、Online MR 会话 SQLite 和 MESH catalog/SQLite。还要检查同一业务事实是否无理由重复存储、启动是否全库扫描、connection 是否跨线程共享、是否缺少 WAL/`busy_timeout`、大查询是否分页，以及 schema 修改是否都有 migration。
 
-## 交付物和发布门
+## 长期发布阻塞条件
 
-`E10` 必须生成 `docs/archive/migrations/electron-only/ARCHITECTURE_COMPLIANCE_REPORT.md`，至少逐项记录：
-
-1. Qt 删除完整性；
-2. 被删除 Qt 文件中的业务逻辑迁移结果；
-3. UI 层业务逻辑命中；
-4. Router 业务逻辑命中；
-5. 直接 SQL 命中；
-6. 设备命令硬编码命中；
-7. Core 反向依赖命中；
-8. 孤儿代码；
-9. 无效依赖与资源；
-10. 数据库重复事实和所有权；
-11. API/OpenAPI 覆盖；
-12. 目录 README 覆盖；
-13. SNMP Center 与无线勘测删除结果；
-14. 版本化 Command Profile 覆盖；
-15. 架构例外；
-16. 未解决项、风险等级和后续计划。
-
-每个问题必须包含文件、行号、规则、影响、建议位置、发布阻塞状态和处理状态。报告只能基于实际 Guard、Git 历史和测试结果生成；在 E10 真正执行前不得创建内容为空或声称通过的占位报告。
-
-以下任一项存在时不得标记 Electron-only 重构完成或发布：
+历史 E10 合规报告保留在 `docs/archive/migrations/electron-only/ARCHITECTURE_COMPLIANCE_REPORT.md`，不再生成新的阶段报告。以下任一项存在时不得发布：
 
 - 活动代码仍导入 Qt，或安装包仍携带 Qt 依赖/资源/许可证；
 - Vue、Electron Main/Preload 或 FastAPI Router 承载核心业务算法；
@@ -154,31 +115,15 @@ UI 业务逻辑扫描是启发式检查，命中必须人工分类为 `DISPLAY_O
 - 生产命令绕过版本化 Command Profile；
 - Service/Application 反向依赖 UI、Electron 或 FastAPI；
 - Repository 之外存在未经批准的活动直接数据库访问；
-- 删除 Qt 文件中的业务逻辑没有迁移记录；
+- 当前产品架构声明与实际运行组件或权威事实源不一致；
 - SNMP Center 或无线勘测仍有活动入口；
 - API 契约、目录 README、数据所有权或运行路径门缺失；
 - P0/P1 架构问题未清零。
 
 P2 如延期，必须有明确问题记录、责任人、原因、临时边界、测试和完成时间。
 
-## 最终执行顺序
+## 长期验证
 
-1. 完成 Qt 删除、无 Qt 构建和非 Qt 全量测试。
-2. 扫描 Qt 关键字、依赖、安装包资源和许可证残留。
-3. 建立已删除 Qt 文件业务迁移映射。
-4. 检查 Python import 边界。
-5. 检查 TypeScript 依赖边界。
-6. 检查 Vue/Electron UI 业务逻辑并人工分类命中。
-7. 检查全部 FastAPI Router 与 API DTO/OpenAPI 契约。
-8. 检查直接 SQL、Repository 所有权和数据库一致性。
-9. 检查生产设备命令与版本化 Command Profile。
-10. 检查 SNMP Center、无线勘测和其他移除功能残留。
-11. 检查目录 README、运行路径、仓库 `data/.local`、依赖和资源。
-12. 检查孤儿 Service、Router、DTO、Parser、Handler 和入口。
-13. 修复所有 P0/P1；P2 只有满足延期字段时可保留。
-14. 运行全部架构 Guard、非 Qt 完整测试和 Electron/Vue/API 测试。
-15. 生成架构合规报告和修复提交。
-16. 再次运行全部 Guard 与发布检查。
-17. 确认工作树干净，等待用户确认后才推送。
+日常修改先运行 Change Impact，再由 `python -m scripts.quality.local_gate --mode auto` 选择 FAST、CONSUMER 或 FULL。L3/L4 合并、rebase 或解决冲突后，旧结果失效；最终组合必须重新运行登记消费者套件，L4 使用 `--mode full`。发布任务另行执行适用的 Package Smoke、Windows GUI、安装升级、签名和真实设备验收。
 
-完成标准是 UI/Router/Electron 无业务算法、Application/Service 无 UI 或协议框架反向依赖、Repository 独占活动数据库访问、Command Profile 独占生产命令定义、Parser 职责中立且版本明确，以及全部 Qt 业务逻辑已迁移或有可核验证据地删除。
+长期标准是 UI/Router/Electron 无业务算法、Application/Service 无 UI 或协议框架反向依赖、Repository 独占活动数据库访问、Command Profile 独占生产命令定义、Parser 职责中立且版本明确。普通技术债按领域任务、Change Impact 和 Local Gate 单独处理，不再开启全仓迁移或 cleanup wave。

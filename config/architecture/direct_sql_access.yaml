@@ -72,7 +72,7 @@
   {"path":"tests/test_mesh_source_rebuild_service.py","classification":"TEST_ONLY","owner":"test","reason":"MESH 单一来源恢复、重建隔离和 bundle SHA 校验测试 fixture。"},
   {"path":"tests/test_rebuild_mesh_parsed_data.py","classification":"TEST_ONLY","owner":"test","reason":"MESH 派生数据库重建工具测试 fixture。"},
   {"path":"tests/test_mr_mesh_identity_shadow.py","classification":"TEST_ONLY","owner":"test","reason":"MR Identity 测试 fixture。"},
-  {"path":"tests/test_network_tools_web_parity.py","classification":"TEST_ONLY","owner":"test","reason":"网络工具测试 fixture。"},
+  {"path":"tests/test_network_tools_wireless_contract.py","classification":"TEST_ONLY","owner":"test","reason":"网络工具测试 fixture。"},
   {"path":"tests/test_online_mr_agent_package_importer.py","classification":"TEST_ONLY","owner":"test","reason":"Online MR 包导入测试 fixture。"},
   {"path":"tests/test_online_mr_application_service.py","classification":"TEST_ONLY","owner":"test","reason":"Online MR Application 测试 fixture。"},
   {"path":"tests/test_online_mr_collection.py","classification":"TEST_ONLY","owner":"test","reason":"Online MR 采集测试 fixture。"},

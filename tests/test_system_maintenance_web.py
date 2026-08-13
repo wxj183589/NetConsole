@@ -30,7 +30,7 @@ from netconsole.services.job_center.worker_protocol import encode_event
 from netconsole.services.open_source_notice_service import OpenSourceComponent, OpenSourceNoticeService
 from netconsole.services.system_maintenance_redaction import redact_system_maintenance_text
 
-from tests.support.web_parity_test_support import FakeExportProcessAdapter, FakeLocalProcessAdapter
+from tests.support.job_process_test_support import FakeExportProcessAdapter, FakeLocalProcessAdapter
 
 
 def _paths(tmp_path: Path) -> PathResolver:

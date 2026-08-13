@@ -9,6 +9,7 @@ NetConsole 测试按风险等级、共享契约和消费者选择，不按历史
 - 开发分支先跑定向测试，L3/L4 在最终合并 commit 上重新验证。
 - 自动化证据、Electron GUI、真实设备、正式安装包和长时运行分别报告，不能互相替代。
 - 默认 PR 离线运行，不连接真实设备、不要求 Windows GUI、不读取正式数据根。
+- 本地 `scripts.quality.local_gate` 是主要开发验证入口；GitHub Actions 只提供可选远端复核。
 
 ## 测试层级
 
@@ -43,6 +44,12 @@ L3 必须先运行 Change Impact：
 
 随后执行 Registry 输出的 consumer suites。不能只跑当前目标模块，也不应无差别连接现场设备或执行安装包人工验收。
 
+推荐直接使用统一入口：
+
+```powershell
+.\.venv\Scripts\python.exe -m scripts.quality.local_gate --mode consumer
+```
+
 ### FULL
 
 L4、release 和新 main baseline 执行完整受支持组合：
@@ -53,6 +60,12 @@ L4、release 和新 main baseline 执行完整受支持组合：
 4. Ruff、架构门、文档/路径检查。
 5. Agent 受影响时执行 Go test/build check。
 6. Packaging 受影响时执行对应 package contract/smoke。
+
+统一入口：
+
+```powershell
+.\.venv\Scripts\python.exe -m scripts.quality.local_gate --mode full
+```
 
 ## 数据隔离
 
@@ -137,7 +150,7 @@ Desktop startup -> Site/DataRoot -> Devices -> AC/FIT-AP
 
 ## PR 与合并后验证
 
-- Pull Request 运行 Change Impact Audit、快速质量门和当前完整自动基线；GitHub Ruleset 必须将稳定聚合门设为 required。
+- Pull Request 可运行 Change Impact Audit、快速质量门和当前完整自动基线；本地 Gate 是主要开发事实源，GitHub Actions 作为可选远端复核。
 - `python-full-regression.yml` 继续在 PR、`main` push、手动和定时任务运行完整 pytest。
 - L3/L4 的分支结果在合并后失效；最终 `main` commit 必须重新运行 Registry 指定 consumer suites。
 - L4 还必须执行完整支持基线和适用 platform/package gate，并记录 GUI/设备/安装包缺口。

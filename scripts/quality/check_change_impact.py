@@ -60,8 +60,8 @@ def _matches(path: str, pattern: str) -> bool:
 def _load_config(path: Path) -> dict[str, Any]:
     with path.open("r", encoding="utf-8") as stream:
         config = json.load(stream)
-    if config.get("schema_version") != 1:
-        raise ValueError("change impact matrix schema_version must be 1")
+    if config.get("schema_version") != 2:
+        raise ValueError("change impact matrix schema_version must be 2")
     default_level = config.get("default_level")
     if default_level not in LEVEL_ORDER:
         raise ValueError(f"invalid default_level: {default_level!r}")
@@ -80,11 +80,11 @@ def _load_config(path: Path) -> dict[str, Any]:
     known_suite_ids = set(suites)
     known_domain_ids = set(domains)
     for suite_id, suite in suites.items():
-        if not isinstance(suite, dict) or not suite.get("label") or not suite.get("command"):
-            raise ValueError(f"consumer suite {suite_id!r} must declare label and command")
-        evidence = suite.get("evidence")
+        if not isinstance(suite, dict) or not suite.get("label") or not suite.get("executor"):
+            raise ValueError(f"consumer suite {suite_id!r} must declare label and executor")
+        evidence = suite.get("required_evidence")
         if not isinstance(evidence, list) or not evidence or any(not isinstance(item, str) or not item for item in evidence):
-            raise ValueError(f"consumer suite {suite_id!r} must declare evidence paths")
+            raise ValueError(f"consumer suite {suite_id!r} must declare required_evidence paths")
         missing_evidence = [item for item in evidence if not (ROOT / item).is_file()]
         if missing_evidence:
             raise ValueError(f"consumer suite {suite_id!r} references missing evidence: {missing_evidence}")
@@ -207,7 +207,7 @@ def _summary(impact: Impact, config: dict[str, Any]) -> str:
     suite_lines = [
         (
             f"- `{suite_id}`: {config['consumer_suites'][suite_id]['label']}"
-            f"；命令：`{config['consumer_suites'][suite_id]['command']}`"
+            f"；执行器：`{config['consumer_suites'][suite_id]['executor']}`"
         )
         for suite_id in impact.suites
     ] or ["- 按当前模块运行定向测试"]

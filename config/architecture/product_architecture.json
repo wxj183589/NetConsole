@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "source": "config/architecture/product_architecture.json",
+  "product_model": "ELECTRON_DESKTOP_ONLY",
+  "maintenance_state": "LONG_TERM_MAINTENANCE",
+  "components": [
+    {
+      "id": "electron-host",
+      "required_paths": [
+        "apps/desktop_electron/src/main/index.ts",
+        "apps/desktop_electron/src/preload/index.ts"
+      ]
+    },
+    {
+      "id": "desktop-renderer",
+      "required_paths": [
+        "apps/desktop_renderer/src/App.vue"
+      ]
+    },
+    {
+      "id": "python-backend",
+      "required_paths": [
+        "src/netconsole/backend/api/main.py"
+      ]
+    },
+    {
+      "id": "windows-agent",
+      "required_paths": [
+        "apps/agent/cmd/netconsole-agent/main.go"
+      ]
+    }
+  ],
+  "authoritative_sources": {
+    "version": "src/netconsole/core/version.py",
+    "features": "src/netconsole/core/feature_registry.py",
+    "data_root": "src/netconsole/core/paths.py"
+  },
+  "historical_migration": {
+    "status": "CLOSED",
+    "archive": "docs/archive/migrations/qt-to-electron/MIGRATION_MATRIX.md"
+  }
+}

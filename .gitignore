@@ -10,6 +10,7 @@ __pycache__/
 .mypy_cache/
 .coverage
 htmlcov/
+.local-reports/
 
 # IDE and local Codex state
 .idea/

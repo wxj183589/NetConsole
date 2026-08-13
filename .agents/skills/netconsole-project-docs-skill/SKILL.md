@@ -48,6 +48,8 @@ description: "NetConsole README、docs、架构说明、REFACTOR_MAP、Job/Expor
 - RE 文档必须用 `CONFIRMED / SUPPORTED / INFERRED / UNVERIFIED / REJECTED` 区分证据，不把文件名、口头摘要或单一样本当作已确认算法。
 - Windows Go Agent V1 已位于 `apps/agent/`，包含 HTTP API、内嵌 Web、iPerf/fping、MR sidecar、目标管理、任务事件和采集包；不能再写成“无 Go Agent 实现”。CentOS 离线部署、主动注册、多 Controller 和完整 Traffic Web 页面仍未实现。
 - AP Identity 不得写成已全面接管；`legacy_tasks.py` 存在时不得写成全部任务已迁移。
+- Electron/Qt 迁移已关闭：当前架构事实读取 `config/architecture/product_architecture.json`，历史迁移矩阵只在 `docs/archive/**` 追溯；不得新增 migration wave、phase cleanup 或 parity 作为当前开发阶段。
+- 长期维护验证入口是 `python -m scripts.quality.local_gate --mode auto`；Consumer Suite 必须引用 `config/architecture/change_impact_matrix.json` 的稳定 suite ID，不在文档中复制第二套命令事实。
 - 产品 changelog 只记录实际用户功能变化；纯 Codex Skill 工作不伪装成产品功能。
 
 # 验证与失败报告

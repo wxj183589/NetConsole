@@ -80,6 +80,17 @@ AP Identity 当前不是“全部 shadow”，也不是“全部消费者已接�
 .\.venv\Scripts\python.exe -m scripts.quality.check_change_impact --paths apps/desktop_renderer/src/api/client.ts
 ```
 
+本地质量门是开发验证的主要事实源，统一执行 Change Impact、定向检查、消费者套件和最终 FULL Gate：
+
+```powershell
+.\.venv\Scripts\python.exe -m scripts.quality.local_gate --mode auto
+.\.venv\Scripts\python.exe -m scripts.quality.local_gate --mode fast
+.\.venv\Scripts\python.exe -m scripts.quality.local_gate --mode consumer
+.\.venv\Scripts\python.exe -m scripts.quality.local_gate --mode full
+```
+
+Gate 强制使用 `RuntimeMode.TEST` 与唯一 `D:/NetConsoleTestData/<run-id>`，报告写入 `.local-reports/`。GitHub Actions 保持为可选远端复核，不替代本地 Gate，也不把未执行的 GUI、设备、安装包或长时运行验收写成通过。
+
 输出必须稳定列出：
 
 - 最高风险等级；

@@ -18,7 +18,7 @@ from netconsole.services.job_center.job_registry import dispatch_job, registered
 from netconsole.services.job_center.task_application_service import TaskApplicationService
 from netconsole.services.mesh_bundle_import_service import MeshBundleImportService
 from netconsole.services.mesh_storage_service import MeshStorageService
-from tests.support.web_parity_test_support import FakeLocalProcessAdapter
+from tests.support.job_process_test_support import FakeLocalProcessAdapter
 
 
 def _bundle_bytes() -> bytes:

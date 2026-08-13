@@ -42,7 +42,7 @@ apps/desktop_renderer/                  唯一 Vue Renderer；Electron 正式使
 src/netconsole/            唯一 Python Core/FastAPI/Application Service
 ```
 
-已删除 Qt 文件的业务去向继续由 Electron-only 迁移矩阵和 E10 Git 历史审计追踪。Electron 没有复制 Vue 页面、Python Service、Repository、Parser、Agent、Online MR 或报告逻辑。
+已删除 Qt 文件的业务去向只由冻结迁移矩阵和 Git 历史追溯。Electron 没有复制 Vue 页面、Python Service、Repository、Parser、Agent、Online MR 或报告逻辑。
 
 ## 运行架构
 
@@ -254,9 +254,9 @@ Renderer 当前只能调用：
 
 ## Qt 历史回收策略
 
-Qt/PySide6/QFluentWidgets 源码、运行时和桌面入口已经删除，不再允许通过兼容导入、回退壳或开发依赖重新进入活动架构。旧页面只作为 Git 历史事实源参与 E10 审计；每个删除文件必须归类为 `PURE_UI`、`BUSINESS_MOVED`、`ADAPTER_REPLACED`、`DEAD_CODE` 或 `FEATURE_REMOVED`，并关联新位置与测试。
+Qt/PySide6/QFluentWidgets 源码、运行时和桌面入口已经删除，不再允许通过兼容导入、回退壳或开发依赖重新进入活动架构。旧页面和删除分类只保留在冻结迁移矩阵与 Git 历史中，不再驱动当前开发。
 
-Electron 后续业务实现继续以已交付 Qt 行为和真实业务契约为对照，补齐 Vue → FastAPI → Application Service 纵向闭环；缺失能力必须在 Electron 中明确隐藏或标记待验收，不能恢复 Qt 入口规避迁移。
+Electron 后续业务实现以当前 Feature Registry、生产代码和真实业务契约为准；缺失能力必须在 Electron 中明确隐藏或标记待验收，不能恢复 Qt 入口。
 
 SNMP Center、通用 MIB/OID 平台与无线勘测已经正式删除，不进入 Electron 迁移、发布或未来重建清单。设备管理只保留 SNMP v1/v2c 只读基础识别，网络工具无线扫描保持独立能力。
 

@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 from openpyxl import Workbook, load_workbook
 
-from tests.support.web_parity_test_support import FakeExportProcessAdapter, FakeLocalProcessAdapter
+from tests.support.job_process_test_support import FakeExportProcessAdapter, FakeLocalProcessAdapter
 from netconsole.application.rail_transit.web_application_service import RailTransitWebApplicationService, RailTransitWebError
 from netconsole.application.web_artifacts import WebArtifactError
 from netconsole.core.database import Database

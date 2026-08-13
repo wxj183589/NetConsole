@@ -25,7 +25,7 @@ def _write_config(path: Path, config: dict[str, object]) -> Path:
 def test_registry_loads_and_references_current_evidence() -> None:
     config = _load_config(DEFAULT_CONFIG)
 
-    assert config["schema_version"] == 1
+    assert config["schema_version"] == 2
     assert "renderer-api-client" in {area["id"] for area in config["risk_areas"]}
     assert "main-contract-smoke" in config["consumer_suites"]
 
@@ -83,7 +83,7 @@ def test_registry_rejects_unknown_consumer_id(tmp_path: Path) -> None:
 
 def test_registry_rejects_missing_suite_evidence(tmp_path: Path) -> None:
     config = copy.deepcopy(_load_config(DEFAULT_CONFIG))
-    config["consumer_suites"]["renderer-full"]["evidence"].append("tests/does-not-exist.py")
+    config["consumer_suites"]["renderer-full"]["required_evidence"].append("tests/does-not-exist.py")
 
     with pytest.raises(ValueError, match="missing evidence"):
         _load_config(_write_config(tmp_path / "missing-evidence.json", config))

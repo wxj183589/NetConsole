@@ -14,6 +14,7 @@
 | `table-layout-baseline.json` | 记录全局表格整改阶段 1 已存在的直接 `el-table`；逐域迁移后删除对应项，不得扩充以接纳新债务。 |
 | `table-layout-exceptions.yaml` | 只登记固定复选框、序号、展开或图标列的精确限时例外。 |
 | `change_impact_matrix.json` | 定义 L1-L4、共享高风险路径、消费者与最低回归套件，供 Codex 与 CI 的 Change Impact Audit 读取。 |
+| `product_architecture.json` | 固定 Electron Desktop Only 的运行组件、权威事实源和长期维护状态；历史迁移细节只保留在 archive。 |
 
 所有 `.yaml` 使用 JSON-compatible YAML 子集和 UTF-8 编码，由 Guard 自身读取，不引入额外 YAML 运行依赖。列表项必须使用仓库相对精确路径；禁止目录级通配或整层豁免。
 
@@ -70,7 +71,7 @@ Guard 会拒绝未分类的新命中和已不再直接连接 SQLite 的陈旧分
 .\.venv\Scripts\python.exe -m pytest tests\architecture -q
 ```
 
-九个公开门、共享 AST 引擎和 rule ID 对照见[架构 Guard README](../../scripts/architecture/README.md)，配置契约测试见[架构 Guard 测试 README](../../tests/architecture/README.md)。
+十个公开门、共享 AST 引擎和 rule ID 对照见[架构 Guard README](../../scripts/architecture/README.md)，配置契约测试见[架构 Guard 测试 README](../../tests/architecture/README.md)。
 
 Change Impact Matrix 只做变更分级和消费者路由，不修改产品行为，也不代替测试执行。修改后至少运行：
 
