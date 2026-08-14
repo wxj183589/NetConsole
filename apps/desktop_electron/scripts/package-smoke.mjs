@@ -9,6 +9,10 @@ const appRoot = resolve(import.meta.dirname, '..')
 const projectRoot = resolve(appRoot, '..', '..')
 const unpackedRoot = resolve(projectRoot, 'dist', 'electron', 'win-unpacked')
 const WINDOWS_TEST_DATA_ROOT = 'D:\\study\\test-data\\NetConsole'
+const buildEdition = String(process.env.NETCONSOLE_BUILD_EDITION || 'full').trim().toLowerCase()
+if (!['full', 'customer'].includes(buildEdition)) {
+  throw new Error(`NETCONSOLE_BUILD_EDITION 仅允许 full/customer，当前为：${buildEdition}`)
+}
 const qtPackagePrefixes = [
   'pyside2',
   'pyside6',
@@ -388,8 +392,7 @@ try {
   rmSync(smokeRoot, { recursive: true, force: true })
 }
 
-const smokeEdition = String(process.env.NETCONSOLE_BUILD_EDITION || '').trim().toLowerCase()
-const editionSmokeScope = smokeEdition === 'customer'
+const editionSmokeScope = buildEdition === 'customer'
   ? 'customer feature policy and core Backend smoke'
   : 'ground unattended status HTTP 200'
 console.log(`Electron packaged smoke passed with frozen timezone data, device compatibility profiles, device database migration/list HTTP 200, ${editionSmokeScope}, MESH import context idempotency, four duplicate basenames, duplicate-safe archive naming, frozen Worker Chinese protocol, no Qt residue, and NOTICE/SBOM metadata.`)
@@ -557,7 +560,7 @@ async function validateFrozenGroundUnattendedStatus(dataRoot) {
   })
   child.stdin.write(`${JSON.stringify({ session_token: token })}\n`)
 
-  const edition = String(process.env.NETCONSOLE_BUILD_EDITION || '').trim().toLowerCase()
+  const edition = buildEdition
   let failure = null
   try {
     port = await withTimeout(listening, 20_000, '冻结 Backend 监听超时')
@@ -1004,10 +1007,7 @@ function validatePackagedRuntimeFeaturePolicy() {
   const runtimeRoot = resolve(backendRoot, '_internal', 'netconsole', 'assets', 'runtime')
   const buildInfo = JSON.parse(readFileSync(resolve(runtimeRoot, 'build_info.json'), 'utf8'))
   const featureFlags = JSON.parse(readFileSync(resolve(runtimeRoot, 'feature_flags.json'), 'utf8'))
-  const edition = String(process.env.NETCONSOLE_BUILD_EDITION || '').trim().toLowerCase()
-  if (!['full', 'customer'].includes(edition)) {
-    throw new Error('Electron 包 smoke 缺少有效 NETCONSOLE_BUILD_EDITION。')
-  }
+  const edition = buildEdition
   if (buildInfo.edition !== edition || buildInfo.feature_profile !== edition) {
     throw new Error(`Electron 包 build_info 与 ${edition}/${edition} 版本策略不一致。`)
   }
@@ -1124,7 +1124,7 @@ function validatePackagedRuntimeIdentityLogs(dataRoot) {
   const rendererRoot = resolve(backendRoot, '_internal', 'netconsole', 'assets', 'desktop_renderer')
   const metadata = JSON.parse(readFileSync(resolve(runtimeRoot, 'build-metadata.json'), 'utf8'))
   const frontend = JSON.parse(readFileSync(resolve(rendererRoot, 'desktop-renderer-build-meta.json'), 'utf8'))
-  const edition = String(process.env.NETCONSOLE_BUILD_EDITION || '').trim().toLowerCase()
+  const edition = buildEdition
   const expected = [
     `backend_commit=${metadata.backend_commit}`,
     `frontend_commit=${frontend.git_commit_full}`,

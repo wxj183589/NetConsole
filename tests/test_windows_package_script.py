@@ -73,3 +73,18 @@ def test_windows_package_launcher_only_calls_the_powershell_orchestrator() -> No
     assert "%*" in launcher
     for forbidden in ("git reset", "git clean", "git push", "pnpm package"):
         assert forbidden not in launcher
+
+
+def test_package_smoke_uses_the_same_default_edition_as_package_prepare() -> None:
+    package_prepare = (
+        ROOT / "apps" / "desktop_electron" / "scripts" / "package.mjs"
+    ).read_text(encoding="utf-8")
+    package_smoke = (
+        ROOT / "apps" / "desktop_electron" / "scripts" / "package-smoke.mjs"
+    ).read_text(encoding="utf-8")
+
+    expected_default = "process.env.NETCONSOLE_BUILD_EDITION || 'full'"
+    assert expected_default in package_prepare
+    assert expected_default in package_smoke
+    assert "const buildEdition =" in package_smoke
+    assert "const edition = buildEdition" in package_smoke
