@@ -463,22 +463,29 @@ const ElementStubs = {
   }),
 }
 
+const fullPackagedFeatureSnapshot = {
+  'capability.trackside_ap.update': { visible: true, enabled: true },
+  'capability.trackside_ap.export': { visible: true, enabled: true },
+  'capability.rail_transit.task_control': { visible: true, enabled: true },
+  'capability.devices.desktop_actions': { visible: true, enabled: true },
+  'capability.ac.external_terminal': { visible: true, enabled: true },
+  'capability.desktop_native_integration': { visible: true, enabled: true },
+  'rail.zte_trackside_switch_adapter': { visible: true, enabled: true },
+  'capability.trackside_ap.wps_sync': { visible: true, enabled: true },
+}
+
+const customerPackagedFeatureSnapshot = {
+  ...fullPackagedFeatureSnapshot,
+  'capability.trackside_ap.wps_sync': { visible: false, enabled: false },
+}
+
 describe('TracksideApBusinessView mounted behavior', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     resetUserSelectedExportForTests()
     resetRendererFeaturesForTest()
     for (const method of Object.values(api)) method.mockReset()
-    setRendererFeaturesForTest({
-      'capability.trackside_ap.update': { visible: true, enabled: true },
-      'capability.trackside_ap.export': { visible: true, enabled: true },
-      'capability.rail_transit.task_control': { visible: true, enabled: true },
-      'capability.devices.desktop_actions': { visible: true, enabled: true },
-      'capability.ac.external_terminal': { visible: true, enabled: true },
-      'capability.desktop_native_integration': { visible: true, enabled: true },
-      'rail.zte_trackside_switch_adapter': { visible: true, enabled: true },
-      'capability.trackside_ap.wps_sync': { visible: true, enabled: true },
-    })
+    setRendererFeaturesForTest(fullPackagedFeatureSnapshot)
     api.listTracksideApBusiness.mockResolvedValue(page())
     api.listTracksideWpsTargets.mockResolvedValue([])
     api.updateTracksideWpsTarget.mockResolvedValue({})
@@ -584,6 +591,28 @@ describe('TracksideApBusinessView mounted behavior', () => {
     expect(wrapper.find('input[placeholder="站点"]').exists()).toBe(false)
     expect(wrapper.find('select').exists()).toBe(true)
     wrapper.unmount()
+  })
+
+  it('renders WPS controls for the Full packaged snapshot and hides them for Customer', async () => {
+    const fullWrapper = await mountView()
+
+    expect(buttons(fullWrapper, '同步云文档')).toHaveLength(1)
+    expect(buttons(fullWrapper, '打开云文档')).toHaveLength(1)
+    expect(buttons(fullWrapper, '配置云文档')).toHaveLength(1)
+    expect(fullWrapper.findComponent(TracksideApWpsConfigDialog).exists()).toBe(true)
+    expect(api.listTracksideWpsTargets).toHaveBeenCalled()
+    fullWrapper.unmount()
+
+    api.listTracksideWpsTargets.mockClear()
+    setRendererFeaturesForTest(customerPackagedFeatureSnapshot)
+    const customerWrapper = await mountView()
+
+    expect(buttons(customerWrapper, '同步云文档')).toHaveLength(0)
+    expect(buttons(customerWrapper, '打开云文档')).toHaveLength(0)
+    expect(buttons(customerWrapper, '配置云文档')).toHaveLength(0)
+    expect(customerWrapper.findComponent(TracksideApWpsConfigDialog).exists()).toBe(false)
+    expect(api.listTracksideWpsTargets).not.toHaveBeenCalled()
+    customerWrapper.unmount()
   })
 
   it('opens the single WPS cloud document configuration and saves its connection', async () => {

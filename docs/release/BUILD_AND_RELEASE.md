@@ -119,7 +119,7 @@ Package smoke 还会在最终冻结的 `resources/backend/NetConsoleBackend.exe`
 重复迁移备份。该 smoke 不读取机器级数据根，也不修改真实局点数据库。若构建机没有可用
 的最终冻结 Backend，只能报告 Python/应用层定向测试，不能声称正式 Backend smoke 已通过。
 
-干净 PyInstaller 构建会在临时 build 目录生成并嵌入 `_internal/netconsole/assets/runtime/{build_info.json,feature_flags.json,build-metadata.json}`：edition 固定为 `customer`，profile 固定为 `production`，构建身份来自本次 Git 快照，不从源码硬编码或客户机外部配置取值。Backend dist 校验与 Electron package smoke 都会解析这些 JSON，校验设备管理/采集/导入导出、文件下载、网络工具、AC、列车在线、Online MR 和 MESH 等必要生产能力，并拒绝任何 `feature_flags.local.json`。冻结运行时即使缺少或损坏 `feature_flags.json`，也必须通过 Registry fallback 保留必要生产能力，同时继续隐藏 internal/development 功能。`client_package` 仅是构建/发布元数据，不能作为正式运行时通用拒绝条件。
+干净 PyInstaller 构建会先在临时 build 目录生成并嵌入 `_internal/netconsole/assets/runtime/{build_info.json,feature_flags.json,build-metadata.json}`。PyInstaller 中间态使用 fail-closed 的 `customer/production` 基线；Electron edition staging 随后必须通过 `prepare_electron_edition.py` 将最终包内基线改写为 Full 的 `full/full` 或 Customer 的 `customer/customer`。构建身份来自本次 Git 快照，不从源码硬编码或客户机外部配置取值。Backend dist 校验与 Electron package smoke 都会解析最终 JSON，校验设备管理/采集/导入导出、文件下载、网络工具、AC、列车在线、Online MR、MESH，以及 Full 包的轨旁 AP WPS 云同步等必要生产能力，并拒绝任何 `feature_flags.local.json`。冻结运行时即使缺少或损坏 `feature_flags.json`，也必须通过 Registry fallback 保留必要生产能力，同时继续隐藏 internal/development 功能；Customer fallback 还必须关闭 Full-only 能力。`client_package` 仅是构建/发布元数据，不能作为正式运行时通用拒绝条件。
 
 系统设置的“正式包环境自检”验证 Backend、前后端构建标识、只读生产 Feature policy、当前局点、数据根、`tasks.db`、`devices.db`、非秘密凭据状态表、fping/iPerf3、Electron Bridge，以及 REST/WebSocket 中文探针。自检不返回本机绝对路径或凭据。完整功能与人工验收状态见[正式包功能矩阵](./PACKAGED_FEATURE_MATRIX.md)。
 

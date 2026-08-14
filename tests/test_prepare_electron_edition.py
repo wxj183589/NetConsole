@@ -31,6 +31,18 @@ def _embedded_build_info(root):
     return path, json.loads(path.read_text(encoding="utf-8"))
 
 
+def _embedded_feature_flags(root):
+    path = (
+        root
+        / "_internal"
+        / "netconsole"
+        / "assets"
+        / "runtime"
+        / "feature_flags.json"
+    )
+    return path, json.loads(path.read_text(encoding="utf-8"))
+
+
 def test_prepare_full_edition_has_no_customer_password_hash(tmp_path) -> None:
     root = _backend_root(tmp_path)
 
@@ -65,6 +77,37 @@ def test_prepare_customer_edition_stores_only_verifiable_hash(tmp_path) -> None:
     assert password not in serialized
     assert verify_admin_unlock_password(build_info, password) is True
     assert verify_admin_unlock_password(build_info, "wrong-password") is False
+
+
+@pytest.mark.parametrize(
+    ("edition", "password", "expected_enabled"),
+    (
+        ("full", None, True),
+        ("customer", "customer-maintenance-password", False),
+    ),
+)
+def test_prepared_edition_embeds_the_wps_full_only_delivery_contract(
+    tmp_path,
+    edition: str,
+    password: str | None,
+    expected_enabled: bool,
+) -> None:
+    root = _backend_root(tmp_path)
+
+    prepare_electron_edition(
+        root,
+        edition=edition,
+        customer_password=password,
+    )
+
+    _, feature_flags = _embedded_feature_flags(root)
+    assert feature_flags["profile"] == edition
+    assert feature_flags["features"]["capability.trackside_ap.wps_sync"] == {
+        "visible": expected_enabled,
+        "enabled": expected_enabled,
+        "client_package": expected_enabled,
+        "internal_only": False,
+    }
 
 
 def test_prepare_customer_edition_rejects_missing_or_weak_password(tmp_path) -> None:

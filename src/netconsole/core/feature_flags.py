@@ -95,6 +95,12 @@ PACKAGED_PRODUCTION_FEATURE_IDS = PACKAGED_CORE_FEATURE_IDS | frozenset(
         "mesh.generate_report",
     }
 )
+PACKAGED_FULL_ONLY_FEATURE_IDS = frozenset(
+    {"capability.trackside_ap.wps_sync"}
+)
+PACKAGED_FULL_REQUIRED_FEATURE_IDS = (
+    PACKAGED_PRODUCTION_FEATURE_IDS | PACKAGED_FULL_ONLY_FEATURE_IDS
+)
 PACKAGED_ENABLED_ONLY_FEATURE_IDS = frozenset(
     {"capability.rail_transit.task_control", "module.train_online"}
 )
@@ -477,6 +483,12 @@ class FeatureGate:
     def _effective_state(self, feature_id: str, seen: set[str] | None = None) -> dict[str, bool]:
         item = FEATURE_BY_ID[feature_id]
         state = normalize_feature_state(item, self.features.get(feature_id))
+        if (
+            self.packaged_policy.active
+            and self.edition == "customer"
+            and feature_id in PACKAGED_FULL_ONLY_FEATURE_IDS
+        ):
+            state.update(visible=False, enabled=False, client_package=False)
         if feature_id in PROTECTED_INTERNAL_FEATURE_IDS and self.packaged_policy.active:
             state.update({"visible": False, "enabled": False, "client_package": False, "internal_only": True})
         if self._is_protected_internal_feature(feature_id) and not self._is_customer_mode():

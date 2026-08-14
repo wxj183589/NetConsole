@@ -132,6 +132,7 @@ const requiredProductionFeatureIds = [
   'capability.trackside_ap.plan',
   'capability.trackside_ap.plan_export',
   'capability.trackside_ap.plan_write',
+  'capability.trackside_ap.wps_sync',
   'module.train_online',
   'capability.train_online.collect',
   'capability.train_online.history_export',
@@ -594,6 +595,26 @@ async function validateFrozenGroundUnattendedStatus(dataRoot) {
     console.log(`HEALTH_BUILD_ID=${health.build_id}`)
     console.log(`HEALTH_BACKEND_COMMIT=${health.backend_commit}`)
     console.log(`HEALTH_FRONTEND_COMMIT=${health.frontend_commit}`)
+    const featuresResponse = await fetch(`http://127.0.0.1:${port}/api/features`, {
+      headers: { 'X-NetConsole-Session': token },
+      signal: AbortSignal.timeout(10_000),
+    })
+    const featuresBody = await featuresResponse.text()
+    if (featuresResponse.status !== 200 || !(featuresResponse.headers.get('content-type') ?? '').includes('application/json')) {
+      throw new Error(`冻结 Backend /api/features 请求失败：HTTP ${featuresResponse.status}, body=${featuresBody}`)
+    }
+    const effectiveFeatures = JSON.parse(featuresBody)
+    const effectiveWpsSync = effectiveFeatures?.items?.find(
+      (item) => item?.feature_id === 'capability.trackside_ap.wps_sync',
+    )
+    const effectiveWpsExpected = edition === 'full'
+    if (
+      !effectiveWpsSync
+      || effectiveWpsSync.visible !== effectiveWpsExpected
+      || effectiveWpsSync.enabled !== effectiveWpsExpected
+    ) {
+      throw new Error(`冻结 Backend ${edition} WPS 云同步有效 Feature 状态错误：${featuresBody}`)
+    }
     if (edition !== 'customer') {
     const url =
       `http://127.0.0.1:${port}/api/rail-transit/ground-unattended/status`
@@ -1022,6 +1043,15 @@ function validatePackagedRuntimeFeaturePolicy() {
     if (!state || state.visible !== true || state.enabled !== true || state.internal_only === true) {
       throw new Error(`Electron 包生产功能基线关闭必要能力：${featureId}`)
     }
+  }
+  const wpsSyncState = featureFlags.features['capability.trackside_ap.wps_sync']
+  const wpsSyncExpected = edition === 'full'
+  if (!wpsSyncState || wpsSyncState.internal_only !== false || (
+    wpsSyncState.visible !== wpsSyncExpected
+    || wpsSyncState.enabled !== wpsSyncExpected
+    || wpsSyncState.client_package !== wpsSyncExpected
+  )) {
+    throw new Error(`Electron ${edition} 包 WPS 云同步交付状态不符合 Full-only 契约。`)
   }
   for (const [featureId, state] of Object.entries(featureFlags.features)) {
     if (state.enabled !== true && state.visible === true) {

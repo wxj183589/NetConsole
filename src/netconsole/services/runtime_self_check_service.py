@@ -13,7 +13,7 @@ from netconsole.core.database import Database
 from netconsole.core.feature_flags import (
     PACKAGED_CORE_FEATURE_IDS,
     PACKAGED_ENABLED_ONLY_FEATURE_IDS,
-    PACKAGED_PRODUCTION_FEATURE_IDS,
+    PACKAGED_FULL_REQUIRED_FEATURE_IDS,
     FeatureGate,
 )
 from netconsole.core.runtime_environment import is_packaged_runtime
@@ -165,7 +165,7 @@ class RuntimeSelfCheckService:
         required_visible = (
             PACKAGED_CORE_FEATURE_IDS
             if self.feature_gate.profile == "customer"
-            else PACKAGED_PRODUCTION_FEATURE_IDS
+            else PACKAGED_FULL_REQUIRED_FEATURE_IDS
         )
         missing = [
             feature

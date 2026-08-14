@@ -293,6 +293,10 @@ describe('Electron-only packaging', () => {
     expect(script).toContain('capability.devices.collect')
     expect(script).toContain('module.online_mr_analysis')
     expect(script).toContain('capability.mesh.import')
+    expect(script).toContain('capability.trackside_ap.wps_sync')
+    expect(script).toContain('/api/features')
+    expect(script).toContain('effectiveWpsSync.visible !== effectiveWpsExpected')
+    expect(script).toContain('wpsSyncState.client_package !== wpsSyncExpected')
     expect(script).toContain('Electron 包生产功能基线关闭必要能力')
   })
 
