@@ -231,7 +231,7 @@ try {
             throw "$edition 发布清单指向的安装包不存在：$artifactPath"
         }
         $artifact = Get-Item -LiteralPath $artifactPath
-        $actualHash = (Get-FileHash -LiteralPath $artifactPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $actualHash = (Microsoft.PowerShell.Utility\Get-FileHash -LiteralPath $artifactPath -Algorithm SHA256).Hash.ToLowerInvariant()
         $expectedHash = ([string]$releaseManifest.artifact_sha256).ToLowerInvariant()
         if ($actualHash -ne $expectedHash) {
             throw "$edition 安装包 SHA-256 与发布清单不一致。expected=$expectedHash，actual=$actualHash"

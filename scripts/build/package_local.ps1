@@ -285,7 +285,7 @@ function Get-VerifiedArtifacts {
             throw "$expectedEdition 发布清单指向的安装包不存在：$artifactPath"
         }
         $artifact = Get-Item -LiteralPath $artifactPath
-        $actualHash = (Get-FileHash -LiteralPath $artifactPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $actualHash = (Microsoft.PowerShell.Utility\Get-FileHash -LiteralPath $artifactPath -Algorithm SHA256).Hash.ToLowerInvariant()
         $expectedHash = ([string]$manifest.artifact_sha256).ToLowerInvariant()
         if ($actualHash -ne $expectedHash) {
             throw "$expectedEdition 安装包 SHA-256 与发布清单不一致。"
@@ -413,7 +413,7 @@ function Publish-VerifiedArtifacts {
             $manifestDestination = "$destination.release.json"
             Copy-Item -LiteralPath $artifact.ArtifactPath -Destination $destination -Force
             Copy-Item -LiteralPath $artifact.ManifestPath -Destination $manifestDestination -Force
-            $stagedHash = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant()
+            $stagedHash = (Microsoft.PowerShell.Utility\Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant()
             if ($stagedHash -ne $artifact.Hash) {
                 throw "复制后的 $($artifact.Edition) 安装包 SHA-256 校验失败。"
             }
