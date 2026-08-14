@@ -33,7 +33,8 @@ def test_windows_package_script_rechecks_the_final_artifact() -> None:
     assert "installer_git_commit -eq $head" in script
     assert "packaged_dirty -ne $false" in script
     assert 'real_windows_install_status -ne "PENDING"' in script
-    assert "Get-FileHash -LiteralPath $artifactPath -Algorithm SHA256" in script
+    assert "Get-Sha256Hex -Path $artifactPath" in script
+    assert "[System.Security.Cryptography.SHA256]::Create()" in script
     assert "artifact.Length -ne [int64]$releaseManifest.artifact_size" in script
 
 

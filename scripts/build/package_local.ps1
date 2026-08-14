@@ -7,7 +7,6 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
-Import-Module Microsoft.PowerShell.Utility -ErrorAction Stop
 
 $utf8 = [System.Text.UTF8Encoding]::new($false)
 [Console]::InputEncoding = $utf8
@@ -49,6 +48,24 @@ function Resolve-NativeCommand {
         throw "未找到命令：$Name"
     }
     return $command.Source
+}
+
+function Get-Sha256Hex {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $stream = [System.IO.File]::OpenRead($Path)
+    try {
+        $sha256 = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            return ([System.BitConverter]::ToString($sha256.ComputeHash($stream))).Replace("-", "").ToLowerInvariant()
+        }
+        finally {
+            $sha256.Dispose()
+        }
+    }
+    finally {
+        $stream.Dispose()
+    }
 }
 
 function Resolve-PnpmCommand {
@@ -285,7 +302,7 @@ function Get-VerifiedArtifacts {
             throw "$expectedEdition 发布清单指向的安装包不存在：$artifactPath"
         }
         $artifact = Get-Item -LiteralPath $artifactPath
-        $actualHash = (Microsoft.PowerShell.Utility\Get-FileHash -LiteralPath $artifactPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $actualHash = Get-Sha256Hex -Path $artifactPath
         $expectedHash = ([string]$manifest.artifact_sha256).ToLowerInvariant()
         if ($actualHash -ne $expectedHash) {
             throw "$expectedEdition 安装包 SHA-256 与发布清单不一致。"
@@ -413,7 +430,7 @@ function Publish-VerifiedArtifacts {
             $manifestDestination = "$destination.release.json"
             Copy-Item -LiteralPath $artifact.ArtifactPath -Destination $destination -Force
             Copy-Item -LiteralPath $artifact.ManifestPath -Destination $manifestDestination -Force
-            $stagedHash = (Microsoft.PowerShell.Utility\Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant()
+            $stagedHash = Get-Sha256Hex -Path $destination
             if ($stagedHash -ne $artifact.Hash) {
                 throw "复制后的 $($artifact.Edition) 安装包 SHA-256 校验失败。"
             }
