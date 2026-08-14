@@ -19,6 +19,7 @@ $script:PasswordEnvironmentName = "NETCONSOLE_CUSTOMER_UNLOCK_PASSWORD"
 $script:PnpmPathEnvironmentName = "NETCONSOLE_PNPM_PATH"
 $script:MutexName = "Global\NetConsoleLocalInstallerBuild"
 $script:CorepackPnpmVersion = "11.16.0"
+$script:DurableReleaseRoot = "D:\study\release\NetConsole"
 
 function Write-Stage {
     param(
@@ -287,11 +288,24 @@ function Get-VerifiedArtifacts {
         if ($manifest.backend_commit -ne $Head -or $manifest.frontend_commit -ne $Head) {
             throw "$expectedEdition 发布清单的 Backend/Frontend commit 与 Installer commit 不一致。"
         }
+        if (
+            [string]::IsNullOrWhiteSpace([string]$manifest.version) -or
+            $manifest.build_commit -ne $manifest.installer_git_commit -or
+            $manifest.build_timestamp -ne $manifest.installer_build_time_utc
+        ) {
+            throw "$expectedEdition 发布清单的版本或构建事实字段不一致。"
+        }
         if ($manifest.edition_payload_verified -ne $true) {
             throw "$expectedEdition 发布清单未通过包内版本策略校验。"
         }
         if ($manifest.real_windows_install_status -ne "PENDING") {
             throw "$expectedEdition 真实 Windows GUI 安装状态必须为 PENDING。"
+        }
+        if ($manifest.server_installation_status -ne "PENDING") {
+            throw "$expectedEdition Server 安装状态必须为 PENDING。"
+        }
+        if ($manifest.package_smoke -ne "PASS") {
+            throw "$expectedEdition 发布清单未记录 package smoke 通过。"
         }
         if ($expectedEdition -eq "customer" -and $manifest.admin_unlock_configured -ne $true) {
             throw "Customer 发布清单缺少维护密码配置标记。"
@@ -378,8 +392,10 @@ function Write-ReleaseSummary {
         app_version = $AppVersion
         edition_selection = $EditionSelection
         tests_passed = $true
+        package_smoke = "PASS"
         artifacts = $summaryArtifacts
         real_windows_install_status = "PENDING"
+        server_installation_status = "PENDING"
     }
     $summary | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $FinalRoot "BUILD_SUMMARY.json") -Encoding UTF8
 
@@ -416,13 +432,17 @@ function Publish-VerifiedArtifacts {
         [Parameter(Mandatory = $true)][datetime]$CompletedAt
     )
 
-    $releaseRoot = Join-Path $ProjectRoot "dist\release"
+    $releaseRoot = $script:DurableReleaseRoot
+    $normalizedProjectRoot = [System.IO.Path]::GetFullPath($ProjectRoot).TrimEnd("\")
+    $normalizedReleaseRoot = [System.IO.Path]::GetFullPath($releaseRoot).TrimEnd("\")
+    if ($normalizedReleaseRoot.StartsWith("$normalizedProjectRoot\", [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "正式发布根不得位于仓库或 dist 内：$normalizedReleaseRoot"
+    }
     New-Item -ItemType Directory -Path $releaseRoot -Force | Out-Null
     $stagingRoot = Join-Path $releaseRoot (".staging-" + [guid]::NewGuid().ToString("N"))
-    $finalName = "$AppVersion-$($Head.Substring(0, 8))-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
-    $finalRoot = Join-Path $releaseRoot $finalName
+    $finalRoot = Join-Path $releaseRoot $AppVersion
     if (Test-Path -LiteralPath $finalRoot) {
-        throw "最终发布目录已存在，拒绝覆盖：$finalRoot"
+        throw "正式版本目录已存在，拒绝覆盖或混入新候选：$finalRoot"
     }
 
     New-Item -ItemType Directory -Path $stagingRoot -Force | Out-Null

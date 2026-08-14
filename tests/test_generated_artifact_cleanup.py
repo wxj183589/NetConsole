@@ -85,6 +85,22 @@ def test_cleanup_removes_only_build_temporary_directory(tmp_path: Path) -> None:
     assert all(directory.exists() for directory in retained)
 
 
+def test_all_build_output_cleanup_never_touches_durable_release(tmp_path: Path) -> None:
+    root = _repo(tmp_path / "NetConsole")
+    generated = root / "dist" / "electron" / "setup.exe"
+    generated.parent.mkdir(parents=True)
+    generated.write_bytes(b"build")
+    durable = tmp_path / "release" / "NetConsole" / "v1.4.9" / "setup.exe"
+    durable.parent.mkdir(parents=True)
+    durable.write_bytes(b"release")
+
+    report = clean_generated_artifacts(root, "all-build-output", apply=True)
+
+    assert report["items"][0]["status"] == "removed"
+    assert not (root / "dist").exists()
+    assert durable.read_bytes() == b"release"
+
+
 def test_cleanup_rejects_linked_target(tmp_path: Path) -> None:
     root = _repo(tmp_path / "repo")
     outside = tmp_path / "outside"

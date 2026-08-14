@@ -542,7 +542,10 @@ describe('Local Windows packaging launcher', () => {
   })
 
   it('creates an atomic, self-contained release directory and summary', () => {
-    expect(localScript).toContain('dist\\release')
+    expect(localScript).toContain('D:\\study\\release\\NetConsole')
+    expect(localScript).not.toContain('dist\\release')
+    expect(localScript).not.toContain('C:\\NetConsoleRelease')
+    expect(localScript).not.toContain('D:\\NetConsoleRelease')
     expect(localScript).toContain('.staging-')
     expect(localScript).toContain('Move-Item -LiteralPath $stagingRoot -Destination $finalRoot')
     expect(localScript).toContain('SHA256SUMS.txt')
@@ -550,6 +553,10 @@ describe('Local Windows packaging launcher', () => {
     expect(localScript).toContain('BUILD_SUMMARY.md')
     expect(localScript).toContain('artifact_sha256')
     expect(localScript).toContain('real_windows_install_status = "PENDING"')
+    expect(localScript).toContain('server_installation_status = "PENDING"')
+    expect(localScript).toContain('package_smoke = "PASS"')
+    expect(localScript).toContain('$manifest.build_commit -ne $manifest.installer_git_commit')
+    expect(localScript).toContain('$manifest.build_timestamp -ne $manifest.installer_build_time_utc')
     expect(localScript).toContain('自动构建和包内校验已通过；真实 Windows GUI 安装验收仍为 PENDING。')
     expect(localScript).toContain('explorer.exe')
     expect(localScript).toContain('Explorer 打开失败')

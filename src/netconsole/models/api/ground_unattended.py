@@ -150,6 +150,13 @@ class GroundUnattendedProfileDTO(ApiModel):
     created_at: str = ""
     updated_at: str = ""
 
+    @field_validator("timezone", mode="before")
+    @classmethod
+    def normalize_legacy_timezone(cls, value: object) -> object:
+        if isinstance(value, str) and value.strip().lower() == "system":
+            return "Asia/Shanghai"
+        return value
+
     @field_validator("deep_fping")
     @classmethod
     def enforce_deep_fping(

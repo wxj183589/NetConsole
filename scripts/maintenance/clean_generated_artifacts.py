@@ -9,6 +9,7 @@ from pathlib import Path
 
 
 TARGETS = {
+    "all-build-output": (Path("dist"),),
     "build-temporary": (Path("dist") / "_build",),
     "legacy-qt-release": (Path("dist") / "v1.3.8",),
 }

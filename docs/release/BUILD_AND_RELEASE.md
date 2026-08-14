@@ -59,7 +59,7 @@ python -m pip check
 python -m scripts.build.build_release --backend pyinstaller --release
 ```
 
-该入口会重新构建 `apps/desktop_renderer`、生成干净 PyInstaller spec、只从入口 import graph 收集 Python 模块、复制白名单外部工具，并将临时 PyInstaller build/spec/dist 写入 `dist/_build/pyinstaller/`，正式 Backend 输出写入 `dist/v1.4.9/pyinstaller/NetConsoleBackend/`。`dist/build/` 不是当前构建目录，出现时属于旧残留。默认 `requirements.txt` 是构建兼容别名，实际指向 `requirements-build.txt`。
+该入口会重新构建 `apps/desktop_renderer`、生成干净 PyInstaller spec、只从入口 import graph 收集 Python 模块、复制白名单外部工具，并将临时 PyInstaller build/spec/dist 写入 `dist/_build/pyinstaller/`，供 Electron 消费的 Backend 输出写入 `dist/_build/backend-release/v1.4.9/pyinstaller/NetConsoleBackend/`。该目录仍是可再生构建中间产物，不是正式制品。`dist/build/` 和 `dist/v<版本>/` 不是当前构建目录，出现时属于旧残留。默认 `requirements.txt` 是构建兼容别名，实际指向 `requirements-build.txt`。
 
 完成 Backend、Electron 和安装包验收后，可以通过固定白名单清理临时构建区：
 
@@ -69,7 +69,7 @@ python -m scripts.maintenance.clean_generated_artifacts --target build-temporary
   --manifest "D:\NetConsoleData\migrations\generated-cleanup-build-temporary.json"
 ```
 
-该目标只允许删除 `dist/_build/`，不会处理 `dist/v1.4.9/`、`dist/electron/`、`dist/agent/`、仓库数据或用户数据根。`setuptools-residue` 只能存在于临时构建期间，构建验收完成后应随 `_build` 一并清理。
+`all-build-output` 目标只允许删除仓库内整个 `dist/`；`build-intermediate` 只删除 `dist/_build/`。两者都不会处理外部正式制品根 `D:\study\release\NetConsole`、仓库数据或用户数据根。`setuptools-residue` 只能存在于临时构建期间，构建验收完成后应随 `_build` 一并清理。
 
 默认安装会同时传入 `-c constraints.txt`。无论是否使用 `--skip-install`，构建 preflight 都会从 `requirements-build.txt` 遍历已安装 distribution 的完整依赖闭包，并逐项核对 constraints 的精确版本；缺包、版本漂移、传递依赖未锁定或无效 metadata 均直接失败。Electron `package.mjs` 在调用 `--skip-install` 前还会单独执行同一 Guard，不能把开发机 `.venv` 的偶然可用状态当成发布环境。
 

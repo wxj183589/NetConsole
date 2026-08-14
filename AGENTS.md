@@ -39,6 +39,13 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 - 安装器必须拒绝系统盘、网络/可移动盘、程序目录、用户 Profile 与 NetConsole 必需路径发生真实冲突的目录；允许含无冲突普通文件的目录并保留原内容。升级和修复默认沿用既有根。更改根必须先完成受控迁移，再更新指针；普通卸载保留业务数据和指针。
 - 自动化测试必须显式 `RuntimeMode.TEST` 和 `D:\study\test-data\NetConsole\<run-id>`，不得读取机器级指针或真实根。
 
+## 构建产物与正式发布目录
+
+- 仓库内 `D:\study\NetConsole\dist\` 只保存可由源码、锁文件和构建脚本重新生成的临时输出，包括 Renderer、Electron、PyInstaller、Agent、日志和 smoke 中间产物；它不是正式制品库，可由受控清理整体删除。
+- 正式发布制品的唯一持久根是 `D:\study\release\NetConsole\<version>\`。正式打包入口必须在全部 Gate 通过后，把安装包、release manifest、SHA-256 清单和构建摘要一起原子发布到该目录；已存在的版本目录不得覆盖或混入另一候选。
+- 禁止把 `C:\NetConsoleRelease`、`D:\NetConsoleRelease`、仓库内 `dist\release` 或 `dist\v<version>` 用作持久发布目录。PyInstaller Backend 中间输出统一位于 `dist\_build\backend-release\`。
+- 普通构建清理只能清理仓库内 `dist\`，不得触碰 `D:\study\release\NetConsole`。正式制品的归档或删除必须有用户明确授权，并先核对文件名、大小、SHA-256、Installer/Backend/Frontend commit、`packaged_dirty=false`、edition 和发布状态。
+
 ## 全局开发规则
 
 - 先梳理目标、假设和验证标准；只改当前需求范围，优先复用现有组件、Service、Repository、Parser 和路径 helper。

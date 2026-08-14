@@ -18,7 +18,7 @@ class BuildConfig:
     icon_file: Path = ROOT / "resources" / "branding" / "netconsole.ico"
     changelog_file: Path = ROOT / "src" / "netconsole" / "docs" / "changelog.md"
     tools_dir: Path = ROOT / "resources" / "tools"
-    release_dir: Path = ROOT / "dist"
+    release_dir: Path = ROOT / "dist" / "_build" / "backend-release"
 
     @property
     def ipop_notice(self) -> Path:
@@ -32,7 +32,7 @@ class BuildConfig:
         return self.release_version_dir / backend
 
     def backend_build_dir(self, backend: str) -> Path:
-        return self.release_dir / "_build" / backend
+        return self.root / "dist" / "_build" / backend
 
     def zip_path(self, backend: str) -> Path:
         return (
