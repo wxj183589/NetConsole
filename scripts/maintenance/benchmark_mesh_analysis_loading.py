@@ -373,7 +373,7 @@ def main() -> int:
     parser.add_argument(
         "--root",
         type=Path,
-        default=Path(r"D:\NetConsoleTestData") / f"mesh-perf-{uuid4().hex}",
+        default=Path(r"D:\study\test-data\NetConsole") / f"mesh-perf-{uuid4().hex}",
     )
     parser.add_argument("--keep", action="store_true")
     args = parser.parse_args()

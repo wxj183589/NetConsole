@@ -156,7 +156,7 @@ def test_test_mode_rejects_real_data_root(monkeypatch):
     try:
         runtime_environment.data_root()
     except RuntimeError as exc:
-        assert "NetConsoleTestData" in str(exc)
+        assert r"D:\study\test-data\NetConsole" in str(exc)
     else:
         raise AssertionError("expected production data root rejection in tests")
 

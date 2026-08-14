@@ -25,7 +25,7 @@ func writeTool(t *testing.T, path string) {
 
 func testAgentDataRoot(t *testing.T) string {
 	t.Helper()
-	base := `D:\NetConsoleTestData`
+	base := `D:\study\test-data\NetConsole`
 	if err := os.MkdirAll(base, 0o755); err != nil {
 		t.Fatal(err)
 	}

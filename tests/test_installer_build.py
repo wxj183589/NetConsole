@@ -114,7 +114,7 @@ def test_nsis_location_validation_accepts_missing_paths_without_creating_them(
         pytest.skip("需要 Windows D: 固定磁盘执行 NSIS 规范化行为测试")
 
     makensis, plugin_dir = _find_nsis_runtime()
-    target_parent = Path("D:/NetConsoleTestData") / f"nsis-normalize-{uuid4().hex}"
+    target_parent = Path("D:/study/test-data/NetConsole") / f"nsis-normalize-{uuid4().hex}"
     missing = target_parent / "missing"
     chinese_missing = target_parent / "网络设备采集数据"
     trailing_missing = f"{missing}\\"

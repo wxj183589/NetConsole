@@ -236,7 +236,7 @@ describe('Electron-only packaging', () => {
   it('runs the packaged Electron smoke only in a unique D-drive test root', () => {
     const script = readFileSync(resolve(appRoot, 'scripts', 'package-smoke.mjs'), 'utf8')
 
-    expect(script).toContain("const WINDOWS_TEST_DATA_ROOT = 'D:\\\\NetConsoleTestData'")
+    expect(script).toContain("const WINDOWS_TEST_DATA_ROOT = 'D:\\\\study\\\\test-data\\\\NetConsole'")
     expect(script).toContain("mkdtempSync(join(WINDOWS_TEST_DATA_ROOT, 'NetConsole-package-smoke-'))")
     expect(script).toContain("NETCONSOLE_RUNTIME_MODE: 'test'")
     expect(script).toContain("NETCONSOLE_STORAGE_MODE: 'isolated_test'")

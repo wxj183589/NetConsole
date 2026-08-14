@@ -142,7 +142,7 @@ pnpm install --frozen-lockfile
 pnpm dev:codex
 ```
 
-`pnpm dev:codex` 和 `pnpm smoke:dev` 使用 `D:\NetConsoleTestData\<run-id>` 下的临时测试根，不读取正式业务根。需要持久保存开发数据且机器已配置数据根时，才使用 `pnpm dev`。Python 定向测试：
+`pnpm dev:codex` 和 `pnpm smoke:dev` 使用 `D:\study\test-data\NetConsole\<run-id>` 下的临时测试根，不读取正式业务根。需要持久保存开发数据且机器已配置数据根时，才使用 `pnpm dev`。Python 定向测试：
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests\test_web_architecture.py tests\test_mesh_analysis_web_api.py -q
@@ -155,7 +155,7 @@ pnpm dev:codex
 .\.venv\Scripts\python.exe -m scripts.quality.local_gate --mode full
 ```
 
-本地 Gate 使用唯一 `D:\NetConsoleTestData\<run-id>`，不会读取正式业务根。GitHub Actions 保持为可选远端复核。
+本地 Gate 使用唯一 `D:\study\test-data\NetConsole\<run-id>`，不会读取正式业务根。GitHub Actions 保持为可选远端复核。
 
 完整开发、测试和打包要求分别见 [开发规则](docs/DEVELOPMENT_RULES.md)、[测试基线](docs/testing/BASELINE.md) 和 [构建与发布](docs/release/BUILD_AND_RELEASE.md)。
 

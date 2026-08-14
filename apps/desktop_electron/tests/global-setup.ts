@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 
 export default function setup(): () => void {
-  const testBase = 'D:\\NetConsoleTestData'
+  const testBase = 'D:\\study\\test-data\\NetConsole'
   mkdirSync(testBase, { recursive: true })
   const testRoot = mkdtempSync(join(testBase, 'electron-vitest-'))
   process.env.TEMP = testRoot

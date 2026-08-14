@@ -102,11 +102,11 @@ cd apps/desktop_electron
 pnpm dev:codex
 ```
 
-该入口为本次进程生成随机开发 Session，在 `D:\NetConsoleTestData\<run-id>` 创建隔离数据根，并固定使用 `127.0.0.1:5173` 与 `127.0.0.1:8000`。Vue 仅在 Vite 开发编译中取得内存令牌，先通过受保护的 `/api/dev/session` 建立 HttpOnly、SameSite Strict Cookie，再复用正式 REST、WebSocket 和下载契约；令牌不写仓库、URL、日志、SQLite 或持久浏览器存储。只读 `/api/dev/runtime-status` 仅在显式开发模式、回环请求和有效 Session 下注册，并对数据根脱敏。退出时编排器回收 Electron、Vite、Python、两个端口和严格校验过的本次测试目录。
+该入口为本次进程生成随机开发 Session，在 `D:\study\test-data\NetConsole\<run-id>` 创建隔离数据根，并固定使用 `127.0.0.1:5173` 与 `127.0.0.1:8000`。Vue 仅在 Vite 开发编译中取得内存令牌，先通过受保护的 `/api/dev/session` 建立 HttpOnly、SameSite Strict Cookie，再复用正式 REST、WebSocket 和下载契约；令牌不写仓库、URL、日志、SQLite 或持久浏览器存储。只读 `/api/dev/runtime-status` 仅在显式开发模式、回环请求和有效 Session 下注册，并对数据根脱敏。退出时编排器回收 Electron、Vite、Python、两个端口和严格校验过的本次测试目录。
 
 普通 `pnpm dev` 继续使用动态 Backend 端口并只服务 Electron；`dev:codex` 的固定端口只用于本机自动化。两者都拒绝 `0.0.0.0` 和非回环 Origin。生产打包不接受 `--dev-mode`，不注册开发状态接口和 OpenAPI，也不读取开发固定端口或开发 Session 环境变量。
 
-`pnpm dev` 是持久开发模式：它先读取显式 `NETCONSOLE_DATA_ROOT`，否则读取安装器写入的 `HKLM\Software\NetConsole\DataRoot`（当前机器为 `D:\NetConsoleData`），然后在该根下保存正式 `userData` 与 bootstrap。没有这两种配置时 Electron 在创建业务数据前停止启动，不会猜测 AppData。`dev:codex`、`smoke:dev`、`smoke:task-center` 与 package smoke 是隔离测试模式：每次只在 `D:\NetConsoleTestData\<run-id>` 创建统一根布局，Electron 在申请单实例锁和 `app.whenReady()` 前切换 `userData`，退出时仅删除经过边界校验的本次 run-id。`smoke:task-window` 仅作为旧命令别名保留，也执行主窗口任务中心 smoke。隔离模式不读取机器级指针或正式 bootstrap，局点/数据根写 API 返回 403，设置页只显示脱敏的临时数据根和只读提示。
+`pnpm dev` 是持久开发模式：它先读取显式 `NETCONSOLE_DATA_ROOT`，否则读取安装器写入的 `HKLM\Software\NetConsole\DataRoot`（当前机器为 `D:\NetConsoleData`），然后在该根下保存正式 `userData` 与 bootstrap。没有这两种配置时 Electron 在创建业务数据前停止启动，不会猜测 AppData。`dev:codex`、`smoke:dev`、`smoke:task-center` 与 package smoke 是隔离测试模式：每次只在 `D:\study\test-data\NetConsole\<run-id>` 创建统一根布局，Electron 在申请单实例锁和 `app.whenReady()` 前切换 `userData`，退出时仅删除经过边界校验的本次 run-id。`smoke:task-window` 仅作为旧命令别名保留，也执行主窗口任务中心 smoke。隔离模式不读取机器级指针或正式 bootstrap，局点/数据根写 API 返回 403，设置页只显示脱敏的临时数据根和只读提示。
 
 正常启动会拒绝 bootstrap 中位于 Temp、测试根、不存在或缺少 `sites/` 的数据根，先保存 `bootstrap.json.invalid-<timestamp>`，再回退到正常持久化根。Python 缺失或不可执行只会让启动明确失败，不创建 demo、不改数据根和 bootstrap。可用以下命令只读诊断；只有显式 `--repair` 才会备份并原子修复配置引用，不移动或删除任何局点数据：
 

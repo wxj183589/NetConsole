@@ -8,7 +8,7 @@ import { isDeepStrictEqual } from 'node:util'
 const appRoot = resolve(import.meta.dirname, '..')
 const projectRoot = resolve(appRoot, '..', '..')
 const unpackedRoot = resolve(projectRoot, 'dist', 'electron', 'win-unpacked')
-const WINDOWS_TEST_DATA_ROOT = 'D:\\NetConsoleTestData'
+const WINDOWS_TEST_DATA_ROOT = 'D:\\study\\test-data\\NetConsole'
 const qtPackagePrefixes = [
   'pyside2',
   'pyside6',

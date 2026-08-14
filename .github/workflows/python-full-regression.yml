@@ -29,8 +29,8 @@ concurrency:
 env:
   PYTHONUTF8: "1"
   NETCONSOLE_RUNTIME_MODE: test
-  NETCONSOLE_CI_TEST_ROOT: D:\NetConsoleTestData\github-actions\${{ github.run_id }}-${{ github.run_attempt }}
-  NETCONSOLE_DATA_ROOT: D:\NetConsoleTestData\github-actions\${{ github.run_id }}-${{ github.run_attempt }}-preflight
+  NETCONSOLE_CI_TEST_ROOT: D:\study\test-data\NetConsole\github-actions\${{ github.run_id }}-${{ github.run_attempt }}
+  NETCONSOLE_DATA_ROOT: D:\study\test-data\NetConsole\github-actions\${{ github.run_id }}-${{ github.run_attempt }}-preflight
 
 jobs:
   runner-preflight:
@@ -69,7 +69,7 @@ jobs:
                 throw "Self-hosted runner is missing required command: $command"
               }
             }
-            $testRoot = [IO.Path]::GetFullPath("D:\NetConsoleTestData")
+            $testRoot = [IO.Path]::GetFullPath("D:\study\test-data\NetConsole")
             if ($testRoot -eq [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE)) {
               throw "The test data root must not be the checked-out workspace."
             }
@@ -83,11 +83,11 @@ jobs:
             $pnpmVersion = "GitHub-hosted image"
             $gitVersion = "GitHub-hosted image"
           }
-          $testBase = [IO.Path]::GetFullPath("D:\NetConsoleTestData").TrimEnd('\') + '\'
+          $testBase = [IO.Path]::GetFullPath("D:\study\test-data\NetConsole").TrimEnd('\') + '\'
           $productionRoot = [IO.Path]::GetFullPath("D:\NetConsoleData").TrimEnd('\')
           $testRoot = [IO.Path]::GetFullPath($env:NETCONSOLE_DATA_ROOT).TrimEnd('\')
           if ($testRoot -eq $productionRoot -or -not $testRoot.StartsWith($testBase, [StringComparison]::OrdinalIgnoreCase)) {
-            throw "NETCONSOLE_DATA_ROOT must be a unique child of D:\NetConsoleTestData and never D:\NetConsoleData."
+            throw "NETCONSOLE_DATA_ROOT must be a unique child of D:\study\test-data\NetConsole and never D:\NetConsoleData."
           }
           New-Item -ItemType Directory -Force -Path $testRoot | Out-Null
           @"
@@ -98,7 +98,7 @@ jobs:
           - Node: ``$nodeVersion``
           - pnpm: ``$pnpmVersion``
           - Git: ``$gitVersion``
-          - Test data policy: ``D:\NetConsoleTestData\<run-id>`` only
+          - Test data policy: ``D:\study\test-data\NetConsole\<run-id>`` only
           "@ | Add-Content -Encoding utf8 $env:GITHUB_STEP_SUMMARY
       - name: Remove preflight test root
         if: ${{ always() }}
@@ -111,7 +111,7 @@ jobs:
     runs-on: *netconsole_windows_runner
     timeout-minutes: 30
     env:
-      NETCONSOLE_DATA_ROOT: D:\NetConsoleTestData\github-actions\${{ github.run_id }}-${{ github.run_attempt }}-python-full
+      NETCONSOLE_DATA_ROOT: D:\study\test-data\NetConsole\github-actions\${{ github.run_id }}-${{ github.run_attempt }}-python-full
     steps:
       - uses: actions/checkout@v4
         with:

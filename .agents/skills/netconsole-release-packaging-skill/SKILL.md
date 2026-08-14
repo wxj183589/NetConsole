@@ -39,7 +39,7 @@ description: "NetConsole Python 依赖分层/constraints、PyInstaller Backend�
 - 正式桌面产品只有 Electron + 唯一 Vue Renderer + PyInstaller `NetConsoleBackend.exe`；客户机不依赖源码、系统 Python、Node、pnpm、Git 或 Go。
 - Full 和 Customer 复用同一源码，区别来自经门禁校验的功能模板和发布元数据，不复制客户版工程。
 - 业务数据根由 `HKLM\Software\NetConsole\DataRoot` 持久化；无合法持久根时停止启动，不回退 LocalAppData、用户目录、仓库、程序目录或 Temp。
-- 自动 package smoke 只使用 `RuntimeMode.TEST` 和 `D:\NetConsoleTestData\<run-id>`；不得读取机器级指针或真实数据根。
+- 自动 package smoke 只使用 `RuntimeMode.TEST` 和 `D:\study\test-data\NetConsole\<run-id>`；不得读取机器级指针或真实数据根。
 - Windows Server 2012 x64 只有 `USER_FIELD_CONFIRMED` 现场事实，自动化 VM 为 `AUTOMATION_NOT_RECORDED`；正式 GUI 安装状态仍独立记录。
 
 # 工作流程

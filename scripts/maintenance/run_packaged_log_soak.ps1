@@ -17,7 +17,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
-$testBase = [System.IO.Path]::GetFullPath('D:\NetConsoleTestData').TrimEnd('\')
+$testBase = [System.IO.Path]::GetFullPath('D:\study\test-data\NetConsole').TrimEnd('\')
 $resolvedDataRoot = [System.IO.Path]::GetFullPath($DataRoot).TrimEnd('\')
 $resolvedExecutable = [System.IO.Path]::GetFullPath($Executable)
 

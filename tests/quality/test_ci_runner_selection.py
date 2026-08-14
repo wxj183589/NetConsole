@@ -31,9 +31,9 @@ def test_windows_runner_selection_is_consistent_and_safe_for_public_prs() -> Non
         assert "netconsole-ci-windows-x64" in selector
         assert jobs["runner-preflight"]["timeout-minutes"] == 5
         assert "Public pull_request runs must never use the self-hosted runner." in raw
-        assert "D:\\NetConsoleTestData" in raw
+        assert "D:\\study\\test-data\\NetConsole" in raw
         assert "NETCONSOLE_RUNTIME_MODE: test" in raw
-        assert "NETCONSOLE_DATA_ROOT: D:\\NetConsoleTestData\\github-actions\\${{ github.run_id }}-${{ github.run_attempt }}" in raw
+        assert "NETCONSOLE_DATA_ROOT: D:\\study\\test-data\\NetConsole\\github-actions\\${{ github.run_id }}-${{ github.run_attempt }}" in raw
         assert "NETCONSOLE_DATA_ROOT must be a unique child" in raw
         assert "Remove-Item -LiteralPath $env:NETCONSOLE_DATA_ROOT -Recurse -Force" in raw
         assert "runner.os ==" not in raw
@@ -60,7 +60,7 @@ def test_manual_runner_choice_and_setup_documentation_are_present() -> None:
         "netconsole-ci-windows-x64",
         "Settings → Actions → Runners → New self-hosted runner",
         "D:\\GitHubActions\\NetConsoleRunner",
-        "D:\\NetConsoleTestData\\<run-id>",
+        "D:\\study\\test-data\\NetConsole\\<run-id>",
         "pull_request",
     ):
         assert expected in documentation

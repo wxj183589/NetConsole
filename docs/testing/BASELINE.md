@@ -69,7 +69,7 @@ L4、release 和新 main baseline 执行完整受支持组合：
 
 ## 数据隔离
 
-- 自动测试必须显式使用 `RuntimeMode.TEST` 和唯一 `D:/NetConsoleTestData/<run-id>`。
+- 自动测试必须显式使用 `RuntimeMode.TEST` 和唯一 `D:/study/test-data/NetConsole/<run-id>`。
 - pytest 在收集测试模块前建立隔离根；缺少显式测试根必须失败关闭。
 - 禁止读取或写入 `D:/NetConsoleData`、机器级 DataRoot 指针、正式局点数据库、真实会话和报告。
 - PyInstaller Backend、release contract 和 Electron Package Smoke 必须自行建立并清理唯一测试根，不复用系统 Temp 或构建机业务数据。

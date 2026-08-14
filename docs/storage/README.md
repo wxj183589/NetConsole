@@ -2,7 +2,7 @@
 
 NetConsole 的正式桌面产品是 Electron Main + Vue + FastAPI/Python Core。局点、数据根、迁移以及 `.ncsite` / `.ncresult` 数据包由 Python Application Service 管理，Electron Main 只提供原生选择器、受控目录打开和 Backend 重启。
 
-NSIS 安装器把程序安装位置和数据存放位置分开选择。业务数据根写入 `HKLM\Software\NetConsole\DataRoot`，当前机器为 `D:\NetConsoleData`，其顶层固定为 `config/`、`sites/`、`runtime/`、`agents/`、`migrations/` 和 `staging/`；普通局点安全删除时按需创建 `.trash/`。程序升级、修复和普通卸载均保留业务数据。开发和正式安装包都读取该唯一配置，自动测试仅可使用显式的 `D:\NetConsoleTestData\<run-id>`；不得使用 LocalAppData、用户目录、仓库、安装目录或系统 Temp 作为运行根。根锁、schema manifest、备份、冲突保留和迁移报告的约束见[数据根](./DATA_ROOT.md)。
+NSIS 安装器把程序安装位置和数据存放位置分开选择。业务数据根写入 `HKLM\Software\NetConsole\DataRoot`，当前机器为 `D:\NetConsoleData`，其顶层固定为 `config/`、`sites/`、`runtime/`、`agents/`、`migrations/` 和 `staging/`；普通局点安全删除时按需创建 `.trash/`。程序升级、修复和普通卸载均保留业务数据。开发和正式安装包都读取该唯一配置，自动测试仅可使用显式的 `D:\study\test-data\NetConsole\<run-id>`；不得使用 LocalAppData、用户目录、仓库、安装目录或系统 Temp 作为运行根。根锁、schema manifest、备份、冲突保留和迁移报告的约束见[数据根](./DATA_ROOT.md)。
 
 ## 文档
 

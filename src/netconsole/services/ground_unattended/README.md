@@ -56,7 +56,7 @@ Syslog 和位置关联，Deep Scheduler 只同步/收尾已有任务，不再填
 
 ## 数据安全
 
-运行数据位于 `data/sites/<site_id>/ground_unattended/`，路径由 `PathResolver` 解析。归档校验失败时保留 active 原始数据；删除归档必须经过当前局点校验、显式确认和 Repository 状态检查。运行历史删除只移除历史 run 索引及其关联查询数据，不会自动删除历史归档 ZIP；记录级 Syslog 删除只能使用 opaque file/sequence/line 身份，Vue 与 Router 不接触物理路径、文件 API 或 SQL；锁、revision、文件哈希和 SQLite 派生清理由生命周期服务与 Repository 协作完成。自动测试只能使用 `RuntimeMode.TEST` 与 `D:\NetConsoleTestData\<run-id>`。
+运行数据位于 `data/sites/<site_id>/ground_unattended/`，路径由 `PathResolver` 解析。归档校验失败时保留 active 原始数据；删除归档必须经过当前局点校验、显式确认和 Repository 状态检查。运行历史删除只移除历史 run 索引及其关联查询数据，不会自动删除历史归档 ZIP；记录级 Syslog 删除只能使用 opaque file/sequence/line 身份，Vue 与 Router 不接触物理路径、文件 API 或 SQL；锁、revision、文件哈希和 SQLite 派生清理由生命周期服务与 Repository 协作完成。自动测试只能使用 `RuntimeMode.TEST` 与 `D:\study\test-data\NetConsole\<run-id>`。
 
 ## 验证
 

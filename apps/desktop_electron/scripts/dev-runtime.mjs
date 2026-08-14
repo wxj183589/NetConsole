@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { basename, join, resolve, sep } from 'node:path'
 
-const WINDOWS_TEST_DATA_ROOT = 'D:\\NetConsoleTestData'
+const WINDOWS_TEST_DATA_ROOT = 'D:\\study\\test-data\\NetConsole'
 
 export function discoverProjectPython({ projectRoot, commonRoot, environment = process.env, platform = process.platform, probe = true, log = () => undefined }) {
   log('ELECTRON_PYTHON_DISCOVERY_START')
