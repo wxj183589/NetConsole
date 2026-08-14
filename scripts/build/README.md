@@ -10,7 +10,7 @@
 
 ## 主要入口
 
-`package_windows.ps1` 是 Windows 正式安装包链路，`package_windows.bat` 可用于从传统终端启动。项目根目录的 `一键打包安装包.cmd` 调用 `package_local.ps1`，负责 SecureString 密码、单实例、日志和 `dist/release` 整理；正式构建仍由 `package_windows.ps1` 复用锁定依赖、两端测试、Electron `package:full/customer/all` 和最终 Gate。构建完成后会再次核对 release manifest、文件大小和 SHA-256。`-PreflightOnly` 只执行环境与 Git 预检。未找到全局 `pnpm.cmd` 时，本地入口通过 Node 24 的 Corepack 建立固定 `pnpm@11.16.0` 进程内临时代理，不修改机器级 PATH 或全局 npm 安装。PowerShell 入口保持 UTF-8 BOM，以便 Windows PowerShell 5.1 在执行编码初始化语句前正确解析中文。
+`package_windows.ps1` 是 Windows 正式安装包链路，`package_windows.bat` 可用于从传统终端启动。项目根目录的 `一键打包安装包.cmd` 调用 `package_local.ps1`，负责 SecureString 密码、单实例、日志，并在全部 Gate 通过后原子发布到唯一持久根 `D:\study\release\NetConsole\<version>`；正式构建仍由 `package_windows.ps1` 复用锁定依赖、两端测试、Electron `package:full/customer/all` 和最终 Gate。构建完成后会再次核对 release manifest、文件大小和 SHA-256；已存在的版本目录不得覆盖。`-PreflightOnly` 只执行环境与 Git 预检。未找到全局 `pnpm.cmd` 时，本地入口通过 Node 24 的 Corepack 建立固定 `pnpm@11.16.0` 进程内临时代理，不修改机器级 PATH 或全局 npm 安装。PowerShell 入口保持 UTF-8 BOM，以便 Windows PowerShell 5.1 在执行编码初始化语句前正确解析中文。
 
 `build_release.py`/`release.py` 编排底层发布，`check_packaged_runtime.py`、`check_runtime_deps.py`、`pyinstaller_artifact_inventory.py` 和工具校验脚本提供门禁。
 
@@ -20,7 +20,7 @@
 
 ## 数据与状态
 
-输入为源码、锁定依赖、版本和审计清单；构建状态、spec、日志和制品只进入 `dist/` 下的受控临时路径，不写入 `src/`。
+输入为源码、锁定依赖、版本和审计清单；构建状态、spec、日志和中间制品只进入 `dist/` 下的受控临时路径，不写入 `src/`。PyInstaller Backend 中间输出固定在 `dist/_build/backend-release/`，正式安装包及其元数据只持久化到 `D:\study\release\NetConsole\<version>`。
 
 ## 测试与修改
 
@@ -28,7 +28,7 @@
 
 ## 生成与清理
 
-允许生成 `dist/agent`、PyInstaller 临时 build/spec、安装包和 SBOM；失败或验收后使用已有清理脚本清除临时输出，不删除用户数据。
+允许生成 `dist/agent`、PyInstaller 临时 build/spec、安装包和 SBOM；失败或验收后使用已有清理脚本清除临时输出。`all-build-output` 可以清理整个仓库 `dist/`，但不得删除 `D:\study\release\NetConsole` 或用户数据。
 
 ## 相关文档
 

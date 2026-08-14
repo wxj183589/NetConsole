@@ -128,6 +128,7 @@ def build_edition_installers(selection: str) -> list[dict[str, Any]]:
                     ),
                 )
             )
+            result["package_smoke"] = "PASS"
             release_path = artifact.with_suffix(".exe.release.json")
             installer._write_json_atomic(release_path, result)
             staged_artifact = staging_root / artifact.name

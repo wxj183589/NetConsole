@@ -262,12 +262,15 @@ def verify_installer_artifact(path: Path) -> dict[str, Any]:
 
     result = {
         "schema": "netconsole.installer-release.v1",
+        "version": manifest["app_version"],
         "artifact_name": artifact.name,
         "artifact_sha256": first_hash,
         "artifact_size": artifact_stat.st_size,
         "installer_git_commit": commit,
+        "build_commit": commit,
         "installer_git_short": manifest["installer_git_short"],
         "installer_build_time_utc": manifest["installer_build_time_utc"],
+        "build_timestamp": manifest["installer_build_time_utc"],
         "installer_build_id": manifest["installer_build_id"],
         "installer_policy": manifest["installer_policy"],
         "installer_policy_source_sha256": source_sha,
@@ -284,6 +287,7 @@ def verify_installer_artifact(path: Path) -> dict[str, Any]:
         .isoformat(timespec="seconds")
         .replace("+00:00", "Z"),
         "real_windows_install_status": "PENDING",
+        "server_installation_status": "PENDING",
     }
     _write_json_atomic(artifact.with_suffix(".exe.release.json"), result)
     return result

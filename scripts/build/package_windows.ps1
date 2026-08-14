@@ -227,8 +227,21 @@ try {
         if ($releaseManifest.packaged_dirty -ne $false) {
             throw "$edition 发布清单标记 packaged_dirty=true，拒绝交付。"
         }
+        if (
+            [string]::IsNullOrWhiteSpace([string]$releaseManifest.version) -or
+            $releaseManifest.build_commit -ne $releaseManifest.installer_git_commit -or
+            $releaseManifest.build_timestamp -ne $releaseManifest.installer_build_time_utc
+        ) {
+            throw "$edition 发布清单的版本或构建事实字段不一致。"
+        }
         if ($releaseManifest.real_windows_install_status -ne "PENDING") {
             throw "$edition 自动构建的真实安装状态必须为 PENDING。"
+        }
+        if ($releaseManifest.server_installation_status -ne "PENDING") {
+            throw "$edition Server 安装状态必须为 PENDING。"
+        }
+        if ($releaseManifest.package_smoke -ne "PASS") {
+            throw "$edition 发布清单未记录 package smoke 通过。"
         }
         if ($releaseManifest.feature_profile -ne $edition) {
             throw "$edition 发布清单的 feature_profile 不匹配。"
