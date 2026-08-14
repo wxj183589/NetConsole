@@ -204,6 +204,14 @@ AC 位置未知，并继续识别 CT 单端、CW 单端和双端同时丢包。
 保存采样时的 AP identity/名称/MAC、站点、区间、里程、RSSI、AC 快照及接收时间、位置质量和
 AP 切换上下文，历史查询不会把当前 AP 回填到旧样本。
 
+Backend 恢复同一活动 run 时，Supervisor 会在启动 Fleet Ping 后从持久化列车端点重建最近一次
+`ping_eligible` 目标；该恢复只在最后 AC 事实仍处于 `ac_stale_grace_seconds` 内生效，不重复写入 AC
+snapshot/event。恢复前后由不同 writer generation 产生的 Ping 分段仍按同一 run/目标/时间范围合并查询，
+诊断返回 `active_segment`、`segment_count`、`last_persisted_sample_at` 和
+`last_query_sample_at`。如果 AC 长时间没有新事实并超过 grace，恢复目标会被移除，不能永久伪装在线。
+run 恢复摘要同时返回 `main_link_state/main_link_last_event_at/main_link_recovered` 与
+`ap_identity_revision`，用于现场区分“已从持久事实恢复”“最近事实明确断链”和“没有持久事件”。
+
 Ping 曲线的黄色切换标记只来自索引库中持久化的真实
 `MESH_ACTIVELINK_SWITCH`，周期 Ping 位置上下文和重复 `display wlan mesh-link` 状态采样都不生成
 切换事件。重复 ingest 优先按 raw file/line 或事件 provenance 合并；真实
@@ -273,6 +281,15 @@ MR。设备主体、地址和凭据仍只存在于设备管理；无人值守只
 为 `active/<run_date>/realtime/syslog/<train>/<CT|CW>/<date>/<hour>_<generation>.ndjson`。当前打开
 文件不会被压缩；停止、轮转或重启恢复后才登记为关闭/恢复文件。SQLite 只保存分钟汇总、连续丢包区间、
 结构化 Syslog 事件、射频运行状态、SNMP 关联、原始文件索引和健康事件，不保存高频 Ping 原文。
+每个打开文件独立维护 flush 时间和记录数；多列车/多端位交错写入时，任何文件都不会被另一个活跃文件
+重置 flush 时钟而长期不可见。
+
+Crash 恢复将旧 `OPEN` Syslog 文件标记为 `PENDING_RECOVERY`，随后从该文件已持久化的最大
+`raw_line_number` 之后有界重放 WMESH 结构事件和时间轴；两类投影使用原始 file/line provenance
+幂等去重，只有到达 EOF 才把文件置为 `PARSED`。重放异常只写健康告警并保留待恢复状态，不终止整个
+无人值守 run。`MESH_ACTIVELINK_SWITCH` 同时接受 `radioMAC_peerMAC(rssi)`、`_peerMAC(rssi)` 与
+`peerMAC(rssi)`，单 MAC 只作为 observed Peer alias 交给 AP Identity 精确解析，不做模糊或跨站匹配。
+设备时钟被标记为 `CLOCK_OFFSET/CLOCK_JUMP` 时，业务关联使用接收时间，同时保留设备时间原始事实。
 
 页面新增独立“Syslog 日志”标签，通过 `/syslog-records` 分页查看当前 OPEN、历史
 CLOSED/RECOVERED 和 READY ZIP 中的真实接收内容。当前运行默认最近 30 分钟，历史运行默认完整运行
@@ -463,6 +480,12 @@ RUNNING Task 先按本地 Worker orphan 规则收敛，新 Task 延用按 run/co
 `poll_session_id` 并记录 `ac_poller_recovered`，不会把陈旧任务当作活动 Poller。窗口外继续最终化和
 归档。无法恢复的自动 operation 标记为 PARTIAL。BUILDING/FAILED 且 active 仍存在的归档会在下一次
 Backend 启动重试。
+
+恢复 STOPPING/FINALIZING 时会先恢复 Online MR mappings，再继续同一持久停止 operation。停止请求、
+run 状态和 requested action 通过单事务 claim 建立；并发 STOP/STOP_AND_ARCHIVE 只保留一个活动操作。
+旧版本遗留的 `ERROR + FAILED stop` 会创建一次 `RECOVERY` 收口操作，继续停止 AC、深采、Fleet Ping
+与 Syslog。深采超过常规 deadline 后进入有界 force-stop/等待终态阶段，未取得全部自动任务终态前不会
+把 run 伪装为完成；曾发生的超时与强停失败会累计保留在最终摘要。
 
 详细保留到期只删除已校验正式归档及对应 AC/Ping 分段/事件/深采索引；每日汇总保留至
 `summary_retention_days`。手工删除同样走 Supervisor 队列、明确确认和受管路径校验，正在使用的当日

@@ -9,12 +9,59 @@ from starlette.testclient import WebSocketDenialResponse
 
 from netconsole.backend.api import main as api_main
 from netconsole.backend.api.main import create_app
-from netconsole.backend.web_build import FRONTEND_MISMATCH_MESSAGE
+from netconsole.backend.web_build import FRONTEND_MISMATCH_MESSAGE, verified_frontend_commit
 from netconsole.core.feature_flags import FeatureGate
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.core.version import APP_VERSION
 from scripts.build.web_frontend_meta import validate_web_frontend_meta
+
+
+def _renderer_build_metadata(commit: str, *, dirty: bool = False) -> dict[str, object]:
+    identity = f"{commit}-dirty" if dirty else commit
+    return {
+        "app_version": APP_VERSION,
+        "git_commit": identity,
+        "git_commit_full": commit,
+        "git_commit_short": commit[:8],
+        "build_time": "2026-08-14T00:00:00Z",
+        "build_time_utc": "2026-08-14T00:00:00Z",
+        "build_dirty": dirty,
+        "build_source": "git-development" if dirty else "git-release",
+        "frontend_commit": commit,
+        "backend_commit": commit,
+        "navigation_schema_version": 1,
+        "build_id": f"{APP_VERSION}+{identity}",
+    }
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid"),
+    [
+        ("git_commit_full", "short"),
+        ("git_commit_short", "deadbeef"),
+        ("git_commit", "2" * 40),
+        ("frontend_commit", "2" * 40),
+        ("backend_commit", "2" * 40),
+        ("build_dirty", "false"),
+        ("build_id", f"{APP_VERSION}+{'2' * 40}"),
+    ],
+)
+def test_verified_frontend_commit_rejects_internally_inconsistent_metadata(
+    field: str,
+    invalid: object,
+) -> None:
+    metadata = _renderer_build_metadata("1" * 40)
+    metadata[field] = invalid
+
+    assert verified_frontend_commit(metadata) == "unknown"
+
+
+def test_verified_frontend_commit_accepts_clean_and_dirty_metadata() -> None:
+    commit = "1" * 40
+
+    assert verified_frontend_commit(_renderer_build_metadata(commit)) == commit
+    assert verified_frontend_commit(_renderer_build_metadata(commit, dirty=True)) == commit
 
 
 def test_source_mode_uses_only_current_project_desktop_renderer_dist(
@@ -60,6 +107,7 @@ def test_missing_legacy_frontend_metadata_shows_rebuild_warning(tmp_path: Path) 
     assert root.status_code == 200
     assert FRONTEND_MISMATCH_MESSAGE in root.text
     assert health.json()["build_id"] == app.state.backend_build_id
+    assert health.json()["frontend_commit"] == "unknown"
     assert app.state.frontend_source_type == "override"
     assert app.state.frontend_build_id == ""
 
@@ -134,6 +182,55 @@ def test_stale_frontend_metadata_still_gets_server_side_warning(tmp_path: Path) 
     assert FRONTEND_MISMATCH_MESSAGE in root.text
     assert 'data-netconsole-build-warning="1"' in root.text
     assert app.state.frontend_build_mismatch is True
+
+
+def test_health_and_backend_log_report_the_actual_stale_renderer_commit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend_commit = "1" * 40
+    renderer_commit = "2" * 40
+    backend_metadata = {
+        "app_version": APP_VERSION,
+        "git_commit_full": backend_commit,
+        "git_commit_short": backend_commit[:8],
+        "build_time_utc": "2026-08-14T00:00:00Z",
+        "build_dirty": False,
+        "build_source": "git-release",
+        "frontend_commit": backend_commit,
+        "backend_commit": backend_commit,
+    }
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("<html><body>stale</body></html>", encoding="utf-8")
+    (dist / "desktop-renderer-build-meta.json").write_text(
+        json.dumps(_renderer_build_metadata(renderer_commit)),
+        encoding="utf-8",
+    )
+    events: list[tuple[str, str]] = []
+    monkeypatch.setattr(api_main, "current_build_metadata", lambda _root: backend_metadata)
+    monkeypatch.setattr(
+        "netconsole.backend.web_build.current_build_metadata",
+        lambda _root: backend_metadata,
+    )
+    monkeypatch.setattr(
+        api_main.app_logger,
+        "log_info",
+        lambda event, detail="", **_kwargs: events.append((event, detail)),
+    )
+
+    app = create_app(RuntimeMode.SERVER, paths=PathResolver(tmp_path), frontend_dist=dist)
+    with TestClient(app) as client:
+        response = client.get("/api/health")
+
+    identity_events = [detail for event, detail in events if event == "BUILD_IDENTITY"]
+    assert response.status_code == 200
+    assert response.json()["backend_commit"] == backend_commit
+    assert response.json()["frontend_commit"] == renderer_commit
+    assert app.state.frontend_build_mismatch is True
+    assert len(identity_events) == 1
+    assert f"backend_commit={backend_commit}" in identity_events[0]
+    assert f"frontend_commit={renderer_commit}" in identity_events[0]
 
 
 @pytest.mark.parametrize(

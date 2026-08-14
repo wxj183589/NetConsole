@@ -4,6 +4,8 @@ import json
 import time
 from datetime import datetime, timedelta
 
+import pytest
+
 from netconsole.core.ping.fping_v5_models import BACKEND, FpingV5Sample
 from netconsole.core.ping.fping_v5_runner import build_fping_v5_args
 from netconsole.repositories.ground_unattended_repository import (
@@ -72,6 +74,109 @@ def test_fleet_ping_dynamic_targets_rotation_summaries_and_stop(tmp_path) -> Non
         thread.name.startswith("fleet-ping-") and thread.is_alive()
         for thread in __import__("threading").enumerate()
     )
+
+
+def test_fleet_ping_restart_preserves_run_count_and_overlapping_summary(
+    tmp_path,
+) -> None:
+    repo = GroundUnattendedRepository(
+        tmp_path / "ground" / "index.sqlite", site_id="site-a"
+    )
+    now = datetime.now().astimezone()
+    run_date = now.date().isoformat()
+    repo.create_or_get_run(
+        run_id="run-restart",
+        run_date=run_date,
+        scheduled_start_at=now.isoformat(timespec="seconds"),
+        scheduled_end_at=(now + timedelta(hours=1)).isoformat(timespec="seconds"),
+        state="RUNNING",
+    )
+    repo.update_run("run-restart", ping_sample_count=41)
+    bucket_start = now.replace(
+        hour=0, minute=0, second=0, microsecond=0
+    ).isoformat(timespec="seconds")
+    repo.upsert_ping_summary(
+        {
+            "site_id": "site-a",
+            "run_id": "run-restart",
+            "bucket_kind": "daily",
+            "bucket_start": bucket_start,
+            "bucket_end": (
+                now.replace(hour=0, minute=0, second=0, microsecond=0)
+                + timedelta(days=1)
+            ).isoformat(timespec="seconds"),
+            "target_ip": "192.0.2.10",
+            "train_id": "train-1",
+            "train_no": "train-1",
+            "mr_id": "train-1-CT",
+            "mr_position_code": "CT",
+            "ac_snapshot_id": 1,
+            "ap_identity": "",
+            "raw_sample_count": 10,
+            "warmup_ignored_count": 0,
+            "sent_count": 10,
+            "success_count": 8,
+            "loss_count": 2,
+            "loss_rate_percent": 20.0,
+            "min_rtt_ms": 10.0,
+            "avg_rtt_ms": 15.0,
+            "max_rtt_ms": 20.0,
+            "continuous_loss_max_count": 2,
+            "continuous_loss_max_seconds": 2.0,
+            "created_at": now.isoformat(timespec="seconds"),
+        }
+    )
+
+    fleet = FleetPingSupervisor(repository=repo, site_id="site-a", runner=_idle_runner)
+    active = tmp_path / "ground" / "active" / run_date
+    fleet.start(
+        run_id="run-restart",
+        run_date=run_date,
+        active_dir=active,
+        period_ms=1000,
+        timeout_ms=4000,
+        packet_size=64,
+        shard_size=2,
+        correlation_tolerance_seconds=15,
+        switch_before_seconds=5,
+        switch_after_seconds=5,
+    )
+    assert fleet.sample_count == 41
+    fleet.update_targets([_target("192.0.2.10", "train-1", "CT")])
+    assert fleet.target_summaries()[0]["sent_count"] == 10
+
+    fleet._record_sample(
+        FpingV5Sample(
+            ts=now.isoformat(timespec="milliseconds"),
+            target="192.0.2.10",
+            seq=42,
+            ok=True,
+            rtt_ms=30.0,
+            timeout_ms=4000,
+            size=64,
+            error="",
+            backend=BACKEND,
+            raw_type="response",
+            raw={},
+        ),
+        "shard-001",
+    )
+    fleet.flush_summaries()
+
+    summary = repo.get_ping_summary(
+        "run-restart",
+        bucket_kind="daily",
+        bucket_start=bucket_start,
+        target_ip="192.0.2.10",
+    )
+    assert fleet.sample_count == 42
+    assert summary is not None
+    assert summary["raw_sample_count"] == 11
+    assert summary["sent_count"] == 11
+    assert summary["success_count"] == 9
+    assert summary["loss_count"] == 2
+    assert summary["avg_rtt_ms"] == pytest.approx(16.6667)
+    fleet.stop()
 
 
 def test_fleet_ping_only_marks_real_ap_changes_as_transition(tmp_path) -> None:
@@ -161,6 +266,13 @@ def _fake_runner(
                 raw={},
             )
         stop_event.wait(0.005)
+
+
+def _idle_runner(*, stop_event, **_kwargs):
+    while not stop_event.wait(0.01):
+        pass
+    return
+    yield
 
 
 def _target(

@@ -383,6 +383,7 @@ try {
   )
   if (result.error) throw result.error
   if (result.status !== 0) throw new Error(`Electron packaged smoke failed with exit code ${result.status}`)
+  validatePackagedRuntimeIdentityLogs(smokeDataRoot)
 } finally {
   rmSync(smokeRoot, { recursive: true, force: true })
 }
@@ -560,6 +561,36 @@ async function validateFrozenGroundUnattendedStatus(dataRoot) {
   let failure = null
   try {
     port = await withTimeout(listening, 20_000, '冻结 Backend 监听超时')
+    const backendRoot = resolve(unpackedRoot, 'resources', 'backend')
+    const runtimeRoot = resolve(backendRoot, '_internal', 'netconsole', 'assets', 'runtime')
+    const rendererRoot = resolve(backendRoot, '_internal', 'netconsole', 'assets', 'desktop_renderer')
+    const metadata = JSON.parse(readFileSync(resolve(runtimeRoot, 'build-metadata.json'), 'utf8'))
+    const frontend = JSON.parse(readFileSync(resolve(rendererRoot, 'desktop-renderer-build-meta.json'), 'utf8'))
+    const healthResponse = await fetch(`http://127.0.0.1:${port}/api/health`, {
+      headers: { 'X-NetConsole-Session': token },
+      signal: AbortSignal.timeout(10_000),
+    })
+    const healthBody = await healthResponse.text()
+    if (healthResponse.status !== 200 || !(healthResponse.headers.get('content-type') ?? '').includes('application/json')) {
+      throw new Error(`冻结 Backend /api/health 请求失败：HTTP ${healthResponse.status}, body=${healthBody}`)
+    }
+    const health = JSON.parse(healthBody)
+    const expectedBuildId = `${metadata.app_version}+${metadata.backend_commit}`
+    if (
+      health?.status !== 'ok'
+      || health?.build_id !== expectedBuildId
+      || health?.backend_commit !== metadata.backend_commit
+      || health?.frontend_commit !== frontend.git_commit_full
+      || health?.commit_sha_short !== metadata.git_commit_short
+      || health?.edition !== edition
+      || health?.packaged_dirty !== false
+      || health?.build_timestamp !== metadata.build_time_utc
+    ) {
+      throw new Error(`冻结 Backend /api/health 构建身份不一致：${healthBody}`)
+    }
+    console.log(`HEALTH_BUILD_ID=${health.build_id}`)
+    console.log(`HEALTH_BACKEND_COMMIT=${health.backend_commit}`)
+    console.log(`HEALTH_FRONTEND_COMMIT=${health.frontend_commit}`)
     if (edition !== 'customer') {
     const url =
       `http://127.0.0.1:${port}/api/rail-transit/ground-unattended/status`
@@ -1085,6 +1116,34 @@ function validatePackagedBuildMetadata() {
   console.log(`SELF_CHECK_COMMIT=${metadata.backend_commit}`)
   console.log(`PACKAGED_BUILD_TIME=${metadata.build_time_utc}`)
   console.log(`PACKAGED_DIRTY=${String(metadata.build_dirty).toLowerCase()}`)
+}
+
+function validatePackagedRuntimeIdentityLogs(dataRoot) {
+  const backendRoot = resolve(unpackedRoot, 'resources', 'backend')
+  const runtimeRoot = resolve(backendRoot, '_internal', 'netconsole', 'assets', 'runtime')
+  const rendererRoot = resolve(backendRoot, '_internal', 'netconsole', 'assets', 'desktop_renderer')
+  const metadata = JSON.parse(readFileSync(resolve(runtimeRoot, 'build-metadata.json'), 'utf8'))
+  const frontend = JSON.parse(readFileSync(resolve(rendererRoot, 'desktop-renderer-build-meta.json'), 'utf8'))
+  const edition = String(process.env.NETCONSOLE_BUILD_EDITION || '').trim().toLowerCase()
+  const expected = [
+    `backend_commit=${metadata.backend_commit}`,
+    `frontend_commit=${frontend.git_commit_full}`,
+    `edition=${edition}`,
+    'packaged_dirty=false',
+    `build_timestamp=${metadata.build_time_utc}`,
+  ]
+  const electronLog = readFileSync(resolve(dataRoot, 'runtime', 'logs', 'electron.log'), 'utf8')
+  const backendLog = readFileSync(resolve(dataRoot, 'runtime', 'logs', 'app.log'), 'utf8')
+  const electronIdentityLines = electronLog.split(/\r?\n/u).filter((line) => line.includes('ELECTRON_BUILD_IDENTITY'))
+  const backendIdentityLines = backendLog.split(/\r?\n/u).filter((line) => line.includes('BUILD_IDENTITY'))
+  if (electronIdentityLines.length !== 1 || expected.some((value) => !electronIdentityLines[0].includes(value))) {
+    throw new Error('正式 Electron 日志未记录完整且一致的构建身份。')
+  }
+  if (backendIdentityLines.length !== 1 || expected.some((value) => !backendIdentityLines[0].includes(value))) {
+    throw new Error('正式 Backend 日志未记录完整且一致的构建身份。')
+  }
+  console.log(`ELECTRON_LOG_COMMIT=${metadata.backend_commit}`)
+  console.log(`BACKEND_LOG_COMMIT=${metadata.backend_commit}`)
 }
 
 function validateElevatedLauncher() {

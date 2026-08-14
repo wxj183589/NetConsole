@@ -183,10 +183,11 @@ class GroundUnattendedProfileDTO(ApiModel):
                 raise ValueError("MR 日志回传地址必须是具体的单播 IPv4 地址")
         if self.schedule_start_time == self.schedule_end_time:
             raise ValueError("开始时间和结束时间不能相同")
-        try:
-            ZoneInfo(self.timezone)
-        except ZoneInfoNotFoundError:
-            raise ValueError("时区必须是有效的 IANA 时区名称") from None
+        if self.timezone.strip().casefold() != "system":
+            try:
+                ZoneInfo(self.timezone)
+            except ZoneInfoNotFoundError:
+                raise ValueError("时区必须是有效的 IANA 时区名称") from None
         if not (
             self.minimum_valid_collection_minutes
             <= self.preferred_collection_minutes
@@ -985,6 +986,10 @@ class GroundQueryDiagnosticsDTO(ApiModel):
     resolved_mr_ids: list[str] = Field(default_factory=list)
     raw_file_registry_hit_count: int = 0
     matched_count: int = 0
+    segment_count: int = 0
+    active_segment: str = ""
+    last_persisted_sample_at: str = ""
+    last_query_sample_at: str = ""
 
 
 class GroundPingSamplePageDTO(ApiModel):

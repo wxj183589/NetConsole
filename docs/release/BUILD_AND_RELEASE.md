@@ -8,9 +8,17 @@ NSIS 必须显式启用 Unicode 安装器，并先在零写入状态下识别候
 
 正式 NSIS 构建只能从已提交、工作区 clean 且 `HEAD` 已推送到当前 upstream 的状态开始。`pnpm package` 会清理白名单内的 `dist/electron/`、`dist/_build/` 和 `apps/desktop_electron/dist/`，为 electron-builder 分配本轮独立临时目录，并生成 `NetConsole-<version>-<git-short>-x64-setup.exe`；固定名称 `NetConsole-<version>-x64-setup.exe` 或同名唯一制品在构建前存在时直接失败，避免覆盖旧包后仅按修改时间误判。
 
+构建开始时冻结完整 commit，最终 EXE Gate 前以及向 `D:\study\release\NetConsole\v<version>` 持久发布前都必须再次检查 tracked/untracked 工作区、HEAD 与 upstream；任一处变化立即失败，不生成或发布宣称 `dirty=false` 的正式制品。外层 PowerShell 还要显式复核 release manifest 中的 Backend/Frontend commit 均等于冻结 commit。
+
 外层 NSIS 必须把 app 版本、完整/短 Git commit、UTC 构建时间、build ID、数据根策略版本及策略源码 SHA-256 写入 PE 版本资源，并在数据根页面显示可核对的短身份。最终 EXE 还必须内嵌本轮 installer manifest 和实际参与编译的数据根 include 源码。post-build Gate 使用支持 NSIS handler 的完整 7-Zip 直接打开最终 `setup.exe`，复核 `NSIS-3 Unicode`、PE 身份、内嵌 manifest/源码哈希、新文案存在、三段旧阻止文案不存在、EXE 晚于策略源码和本轮构建开始时间、两次 SHA-256 一致，以及内层 Backend/Frontend commit 均等于 Installer commit 且 `dirty=false`。构建机可安装完整版 7-Zip，或通过 `NETCONSOLE_7Z` 指向支持 `Nsis` format handler 的 `7z.exe`；electron-builder 缓存中的精简 `7za.exe` 不满足此门禁。
 
+Full/Customer 正式安装器的 PE 版本资源还必须包含 `InstallerEdition` 与
+`InstallerFeatureProfile`，并与 edition manifest、Backend `build_info.json` 和包内 Feature Profile
+严格相等；不能只依赖文件名表达版本类型。
+
 Gate 成功后在安装包旁生成同名 `.exe.release.json`，记录文件名、SHA-256、字节数、Installer/Backend/Frontend commit、build ID、策略源码哈希、新旧文案扫描结果和 `real_windows_install_status`。自动构建只能将真实安装状态写为 `PENDING`；只有在隔离的全新 Windows 机器或 VM 完成不存在目录、空目录、含普通文件目录和合法旧数据根四种 GUI 安装，并核对注册表指针及原文件哈希后，才能在交付记录中改为 `PASS`。
+
+正式 Renderer 右上角固定显示 `v<version>+<8位短SHA>`，dirty 源码态明确追加 `-dirty`；不再只在开发模式显示 commit。`/api/health` 同时返回 `build_id`、Backend/Frontend 完整 commit、短 commit、edition、`packaged_dirty` 和 UTC build timestamp。Backend `app.log` 与 Electron `electron.log` 分别写入一条 `BUILD_IDENTITY` / `ELECTRON_BUILD_IDENTITY`，不记录令牌、凭据或物理业务路径。
 
 ## Windows Server 2012 兼容事实
 

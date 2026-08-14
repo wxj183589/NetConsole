@@ -12,7 +12,14 @@ import {
   restoreFeatureSettings,
   saveFeatureSettings,
 } from '../../api/systemSettings'
+import {
+  getHealth,
+  getRendererBuildMeta,
+  type HealthResponse,
+  type RendererBuildMeta,
+} from '../../api/client'
 import { loadRendererFeatures } from '../../features'
+import { visibleVersionIdentity } from '../../platform/buildIdentity'
 import { useConfirm } from '../../components/feedback/useConfirm'
 import type {
   FeatureConfigurationTarget,
@@ -38,6 +45,8 @@ const loading = ref(false)
 const saving = ref(false)
 const previewing = ref(false)
 const error = ref('')
+const buildIdentity = ref<HealthResponse | null>(null)
+const rendererBuildIdentity = ref<RendererBuildMeta | null>(null)
 
 const dirty = computed(() => JSON.stringify(features.value) !== baseline.value)
 const baselineFeatures = computed<FeatureSetting[]>(() => (
@@ -81,7 +90,23 @@ const dependencyIssueGroups = computed(() => [...new Map(
 const changedCount = computed(() => features.value.filter(isModified).length)
 const includedCount = computed(() => features.value.filter((item) => Boolean(item.package_included)).length)
 
-onMounted(() => { void loadTarget('customer') })
+const visibleBuildVersion = computed(() => (
+  rendererBuildIdentity.value
+    ? `v${visibleVersionIdentity(rendererBuildIdentity.value.app_version, rendererBuildIdentity.value.build_id)}`
+    : import.meta.env.DEV && buildIdentity.value
+      ? `v${visibleVersionIdentity(buildIdentity.value.version, buildIdentity.value.build_id)}`
+    : '--'
+))
+const buildIdentityMismatch = computed(() => Boolean(
+  buildIdentity.value
+  && rendererBuildIdentity.value
+  && buildIdentity.value.build_id !== rendererBuildIdentity.value.build_id,
+))
+
+onMounted(() => {
+  void loadTarget('customer')
+  void loadBuildIdentity()
+})
 onBeforeRouteLeave(async () => {
   if (dirty.value && !await confirm({
     type: 'WARNING',
@@ -118,6 +143,15 @@ async function loadTarget(selected: ProfileTarget): Promise<void> {
   } finally {
     loading.value = false
   }
+}
+
+async function loadBuildIdentity(): Promise<void> {
+  const [health, renderer] = await Promise.allSettled([
+    getHealth(),
+    getRendererBuildMeta(),
+  ])
+  buildIdentity.value = health.status === 'fulfilled' ? health.value : null
+  rendererBuildIdentity.value = renderer.status === 'fulfilled' ? renderer.value : null
 }
 
 function accept(data: FeatureSettingsSnapshot, updateBaseline = true): void {
@@ -400,6 +434,22 @@ function message(cause: unknown, fallback: string): string {
       :closable="false"
       show-icon
     />
+
+    <section class="profile-card build-identity" data-testid="build-identity">
+      <div><span>当前构建</span><strong>{{ visibleBuildVersion }}</strong></div>
+      <div><span>Backend 完整提交</span><code>{{ buildIdentity?.backend_commit || '--' }}</code></div>
+      <div><span>Frontend 完整提交</span><code>{{ rendererBuildIdentity?.git_commit_full || '--' }}</code></div>
+      <div><span>版本类型</span><strong>{{ buildIdentity?.edition || '--' }}</strong></div>
+      <div><span>正式包状态</span><strong>{{ buildIdentity?.packaged_dirty === false ? 'clean' : buildIdentity?.packaged_dirty === true ? 'dirty' : '--' }}</strong></div>
+      <div><span>构建时间（UTC）</span><code>{{ buildIdentity?.build_timestamp || '--' }}</code></div>
+    </section>
+    <el-alert
+      v-if="buildIdentityMismatch"
+      :title="`Renderer ${rendererBuildIdentity?.build_id} 与 Backend ${buildIdentity?.build_id} 不一致，请重新安装完整版本。`"
+      type="error"
+      :closable="false"
+      show-icon
+    />
     <el-alert
       v-if="previewing"
       title="当前处于会话预览：只影响本次进程，未写入打包模板；草稿仍保持未保存状态。"
@@ -556,5 +606,5 @@ function message(cause: unknown, fallback: string): string {
 </template>
 
 <style scoped>
-.profile-page{display:flex;flex-direction:column;gap:16px;max-width:1680px;margin:0 auto}.page-header,.header-actions,.profile-selector,.profile-facts,.filters,.dependency-heading,.preview-actions{display:flex;align-items:center;gap:12px}.page-header,.profile-selector,.dependency-heading{justify-content:space-between}.page-header h1{margin:0}.page-header p,.profile-help{margin:6px 0 0;color:var(--nc-text-secondary)}.header-actions,.profile-facts{flex-wrap:wrap;justify-content:flex-end}.profile-card{padding:18px 20px;background:var(--el-bg-color);border:1px solid var(--el-border-color-light);border-radius:8px}.filters{display:grid;grid-template-columns:minmax(280px,1fr) 240px auto;margin-bottom:16px}.feature-groups{border-top:1px solid var(--el-border-color-light)}.group-title{margin-right:10px;font-weight:600}.feature-title{display:flex;min-width:0;flex-direction:column;align-items:flex-start;gap:4px}.feature-title code,.dependency-panel code{max-width:100%;overflow:hidden;color:var(--nc-text-secondary);font-family:Consolas,"Courier New",monospace;font-size:12px;text-overflow:ellipsis;white-space:nowrap}.feature-title small{color:var(--el-color-warning);font-size:12px}.dependency-panel{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.dependency-heading{grid-column:1/-1}.dependency-panel article{min-width:0;padding:12px;border-left:3px solid var(--el-color-danger);background:var(--el-fill-color-light)}.dependency-panel article strong,.dependency-panel article code{display:block}.dependency-panel article p{margin:10px 0 4px;color:var(--nc-text-secondary)}.dependency-panel article ul{margin:0;padding-left:20px}.preview-actions{justify-content:flex-end;flex-wrap:wrap}.preview-actions span{margin-right:auto;color:var(--nc-text-secondary)}@media(max-width:900px){.page-header,.profile-selector{align-items:flex-start;flex-direction:column}.header-actions,.profile-facts{justify-content:flex-start}.filters,.dependency-panel{grid-template-columns:1fr}}
+.profile-page{display:flex;flex-direction:column;gap:16px;max-width:1680px;margin:0 auto}.page-header,.header-actions,.profile-selector,.profile-facts,.filters,.dependency-heading,.preview-actions{display:flex;align-items:center;gap:12px}.page-header,.profile-selector,.dependency-heading{justify-content:space-between}.page-header h1{margin:0}.page-header p,.profile-help{margin:6px 0 0;color:var(--nc-text-secondary)}.header-actions,.profile-facts{flex-wrap:wrap;justify-content:flex-end}.profile-card{padding:18px 20px;background:var(--el-bg-color);border:1px solid var(--el-border-color-light);border-radius:8px}.build-identity{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 20px}.build-identity div{display:flex;min-width:0;flex-direction:column;gap:5px}.build-identity span{color:var(--nc-text-secondary);font-size:12px}.build-identity code{overflow-wrap:anywhere;font-family:Consolas,"Courier New",monospace}.filters{display:grid;grid-template-columns:minmax(280px,1fr) 240px auto;margin-bottom:16px}.feature-groups{border-top:1px solid var(--el-border-color-light)}.group-title{margin-right:10px;font-weight:600}.feature-title{display:flex;min-width:0;flex-direction:column;align-items:flex-start;gap:4px}.feature-title code,.dependency-panel code{max-width:100%;overflow:hidden;color:var(--nc-text-secondary);font-family:Consolas,"Courier New",monospace;font-size:12px;text-overflow:ellipsis;white-space:nowrap}.feature-title small{color:var(--el-color-warning);font-size:12px}.dependency-panel{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.dependency-heading{grid-column:1/-1}.dependency-panel article{min-width:0;padding:12px;border-left:3px solid var(--el-color-danger);background:var(--el-fill-color-light)}.dependency-panel article strong,.dependency-panel article code{display:block}.dependency-panel article p{margin:10px 0 4px;color:var(--nc-text-secondary)}.dependency-panel article ul{margin:0;padding-left:20px}.preview-actions{justify-content:flex-end;flex-wrap:wrap}.preview-actions span{margin-right:auto;color:var(--nc-text-secondary)}@media(max-width:900px){.page-header,.profile-selector{align-items:flex-start;flex-direction:column}.header-actions,.profile-facts{justify-content:flex-start}.build-identity,.filters,.dependency-panel{grid-template-columns:1fr}}
 </style>

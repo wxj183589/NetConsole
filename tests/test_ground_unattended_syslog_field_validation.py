@@ -826,6 +826,17 @@ def test_info_center_overwrite_is_not_reported_as_udp_loss(tmp_path: Path) -> No
 def test_repository_additively_migrates_syslog_runtime_columns(tmp_path: Path) -> None:
     db_path = tmp_path / "legacy" / "index.sqlite"
     repository = GroundUnattendedRepository(db_path, site_id="site-a")
+    repository.save_operation(
+        {
+            "operation_id": "legacy-operation",
+            "run_id": "legacy-run",
+            "operation_type": "STOP",
+            "operation_state": "RUNNING",
+            "operation_stage": "FINALIZING",
+            "progress_percent": 60,
+            "message": "旧停止记录",
+        }
+    )
     with sqlite3.connect(db_path) as conn:
         conn.executescript(
             """
@@ -835,6 +846,13 @@ def test_repository_additively_migrates_syslog_runtime_columns(tmp_path: Path) -
             ALTER TABLE ground_unattended_boot_sessions DROP COLUMN info_center_metrics_json;
             ALTER TABLE ground_unattended_wmesh_events DROP COLUMN clock_offset_ms;
             ALTER TABLE ground_unattended_profiles DROP COLUMN allow_external_syslog_address;
+            ALTER TABLE ground_unattended_operations DROP COLUMN stop_trigger;
+            ALTER TABLE ground_unattended_operations DROP COLUMN stop_reason;
+            ALTER TABLE ground_unattended_operations DROP COLUMN requested_by;
+            ALTER TABLE ground_unattended_operations DROP COLUMN request_id;
+            ALTER TABLE ground_unattended_operations DROP COLUMN previous_state;
+            ALTER TABLE ground_unattended_operations DROP COLUMN next_state;
+            ALTER TABLE ground_unattended_operations DROP COLUMN triggered_at;
             """
         )
     repository.initialize()
@@ -850,6 +868,12 @@ def test_repository_additively_migrates_syslog_runtime_columns(tmp_path: Path) -
         }
         boot_columns = {row[1] for row in conn.execute("PRAGMA table_info(ground_unattended_boot_sessions)")}
         event_columns = {row[1] for row in conn.execute("PRAGMA table_info(ground_unattended_wmesh_events)")}
+        operation_columns = {
+            row[1]
+            for row in conn.execute(
+                "PRAGMA table_info(ground_unattended_operations)"
+            )
+        }
         table_names = {
             row[0]
             for row in conn.execute(
@@ -859,6 +883,11 @@ def test_repository_additively_migrates_syslog_runtime_columns(tmp_path: Path) -
         schema_version = conn.execute(
             "SELECT value FROM ground_unattended_schema WHERE key='schema_version'"
         ).fetchone()[0]
+        legacy_operation = conn.execute(
+            "SELECT stop_trigger, stop_reason, requested_by, request_id, "
+            "previous_state, next_state, triggered_at "
+            "FROM ground_unattended_operations WHERE operation_id='legacy-operation'"
+        ).fetchone()
     assert {"last_syslog_source_ip", "syslog_hostname", "last_syslog_identity_verified_at"} <= endpoint_columns
     assert {
         "allow_external_syslog_address",
@@ -909,6 +938,16 @@ def test_repository_additively_migrates_syslog_runtime_columns(tmp_path: Path) -
         "decision_revision",
         "decision_source",
     } <= train_columns
+    assert {
+        "stop_trigger",
+        "stop_reason",
+        "requested_by",
+        "request_id",
+        "previous_state",
+        "next_state",
+        "triggered_at",
+    } <= operation_columns
+    assert legacy_operation == ("UNKNOWN", "", "", "", "", "", "")
     assert schema_version == "11"
 
 

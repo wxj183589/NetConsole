@@ -167,6 +167,11 @@ Electron Builder 目录包/NSIS 与 PyInstaller 受管 Backend 的构建链已�
 
 Electron Main 的应用日志由异步队列写入 `<data_root>/runtime/logs/electron.log`，达到 20 MB 或跨本地日期时滚动为 `electron-YYYYMMDD-HHmmss-NNNN.log`，旧文件保留 7 天。生产默认只落盘 `INFO` 及以上；Backend stdout 仅用于协议控制，stderr 作为受控错误/警告事件记录，重复 fingerprint 在 10 秒窗口内抑制并每 60 秒输出摘要。大对象只写有限摘要，不改变局点 raw/artifact 的完整内容。
 
+Backend health ready 后，Electron 写入 `ELECTRON_BUILD_IDENTITY`，包含完整 `build_id`、Backend/Frontend
+commit、edition、dirty 与 build timestamp；Python 启动日志写入同口径 `BUILD_IDENTITY`。Renderer 在
+所有模式把合法 build identity 显示为 `v<version>+<8位短SHA>`。这些字段用于区分“现场旧安装包”与
+“当前修复包”，不得用运行目录名或文件修改时间代替 provenance。
+
 Python `app.log` 使用相同的 20 MB + 日期滚动与 7 天保留。启动后异步执行一次轻量 Housekeeper，运行期间每小时 best-effort 检查日志目录；总量上限 300 MB，清理目标 250 MB，活动日志和数据库升级审计始终保护。WPS writer 不属于 Electron 仓库，本边界只治理其外部 stdout/stderr 文件的识别、保留和总容量清理。
 
 Backend 重启或恢复后，Main 的 `ready` 只表示新进程已通过 supervisor 健康检查。Vue Runtime 收到该事件后必须重新通过受信 preload bridge 读取并校验 Runtime Config，把动态 Origin 和 `X-NetConsole-Session` 令牌作为同一 generation 原子替换；完成前统一显示为重新连接中。根布局随后使用新绑定再次请求 `/api/health`，只有成功后才显示 `Backend Online`。重绑定失败保留上一份受信 Electron 绑定用于诊断，但状态保持失败，绝不回退 Browser 相对 `/api`。

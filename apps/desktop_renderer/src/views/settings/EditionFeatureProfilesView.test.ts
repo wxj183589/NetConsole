@@ -5,10 +5,12 @@ import { createMemoryHistory, createRouter } from 'vue-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import * as api from '../../api/systemSettings'
+import { getHealth, getRendererBuildMeta } from '../../api/client'
 import type { FeatureSetting, FeatureSettingsSnapshot } from '../../types/systemSettings'
 import EditionFeatureProfilesView from './EditionFeatureProfilesView.vue'
 
 vi.mock('../../api/systemSettings')
+vi.mock('../../api/client', () => ({ getHealth: vi.fn(), getRendererBuildMeta: vi.fn() }))
 vi.mock('../../features', () => ({ loadRendererFeatures: vi.fn() }))
 vi.mock('../../components/feedback/useConfirm', () => ({
   useConfirm: () => ({ confirm: vi.fn(async () => true) }),
@@ -112,6 +114,30 @@ async function mounted() {
 beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(api.getFeatureSettings).mockResolvedValue(snapshot())
+  vi.mocked(getHealth).mockResolvedValue({
+    status: 'ok',
+    version: '1.4.9',
+    build_id: 'v1.4.9+29541dda879049c54ace0730c44fc6f3eb92b872',
+    backend_commit: '29541dda879049c54ace0730c44fc6f3eb92b872',
+    frontend_commit: '29541dda879049c54ace0730c44fc6f3eb92b872',
+    edition: 'full',
+    packaged_dirty: false,
+    build_timestamp: '2026-08-14T08:00:00Z',
+  })
+  vi.mocked(getRendererBuildMeta).mockResolvedValue({
+    app_version: 'v1.4.9',
+    git_commit: '99bba059c3359d409673286a9093503fe9d09255',
+    git_commit_full: '99bba059c3359d409673286a9093503fe9d09255',
+    git_commit_short: '99bba059',
+    build_time: '2026-08-14T08:00:00Z',
+    build_time_utc: '2026-08-14T08:00:00Z',
+    build_dirty: false,
+    build_source: 'git-release',
+    frontend_commit: '99bba059c3359d409673286a9093503fe9d09255',
+    backend_commit: '99bba059c3359d409673286a9093503fe9d09255',
+    navigation_schema_version: 1,
+    build_id: 'v1.4.9+99bba059c3359d409673286a9093503fe9d09255',
+  })
 })
 
 describe('EditionFeatureProfilesView', () => {
@@ -119,6 +145,11 @@ describe('EditionFeatureProfilesView', () => {
     const wrapper = await mounted()
 
     expect(wrapper.text()).toContain('版本与功能交付')
+    expect(wrapper.get('[data-testid="build-identity"]').text()).toContain('v1.4.9+99bba059')
+    expect(wrapper.get('[data-testid="build-identity"]').text()).toContain('29541dda879049c54ace0730c44fc6f3eb92b872')
+    expect(wrapper.get('[data-testid="build-identity"]').text()).toContain('99bba059c3359d409673286a9093503fe9d09255')
+    expect(wrapper.get('[data-testid="build-identity"]').text()).toContain('clean')
+    expect(wrapper.text()).toContain('与 Backend v1.4.9+29541dda879049c54ace0730c44fc6f3eb92b872 不一致')
     expect(wrapper.text()).toContain('客户版状态')
     expect(wrapper.text()).not.toContain('纳入客户版')
     expect(wrapper.find('[data-testid="customer-state-ac.mesh_link.refresh"]').exists()).toBe(true)

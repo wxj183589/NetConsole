@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from netconsole.core.paths import PathResolver
 from netconsole.models.api.rail_transit_base_data import RailTransitSummaryDTO
@@ -11,6 +14,7 @@ from netconsole.repositories.ground_unattended_repository import (
 )
 from netconsole.services.ground_unattended.application_service import (
     GroundUnattendedApplicationService,
+    GroundUnattendedError,
 )
 from netconsole.services.ground_unattended.supervisor import (
     GroundUnattendedSupervisor,
@@ -164,10 +168,18 @@ def test_supervisor_processes_each_controller_snapshot_only_once(
 
 
 class _DeepScheduler:
-    def __init__(self, *, active: bool, active_ids: list[str] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        active: bool,
+        active_ids: list[str] | None = None,
+        force_completes: bool = True,
+    ) -> None:
         self.active = active
         self.active_ids = active_ids or (["deep-1"] if active else [])
+        self.force_completes = force_completes
         self.stop_calls = 0
+        self.force_stop_calls: list[str] = []
         self.recover_calls: list[str] = []
 
     def recover(self, run_id: str) -> None:
@@ -184,6 +196,14 @@ class _DeepScheduler:
 
     def active_automated_operation_ids(self) -> list[str]:
         return list(self.active_ids)
+
+    def force_stop_all(self, run_id: str, *, reason: str) -> list[str]:
+        self.force_stop_calls.append(reason)
+        operation_ids = list(self.active_ids)
+        if self.force_completes:
+            self.active = False
+            self.active_ids = []
+        return operation_ids
 
 
 class _ResidentService:
@@ -214,6 +234,18 @@ class _ResidentService:
 
     def list_statuses(self, **_values):
         return list(self.statuses)
+
+
+class _FleetPingRecorder:
+    def __init__(self) -> None:
+        self.started = False
+        self.target_updates: list[list[object]] = []
+
+    def start(self, **_values) -> None:
+        self.started = True
+
+    def update_targets(self, targets) -> None:
+        self.target_updates.append(list(targets))
 
 
 def test_application_shutdown_quiesces_process_without_stopping_business_run(
@@ -259,6 +291,89 @@ def test_user_stop_intent_is_persisted_before_supervisor_command_runs(
     assert run["requested_action"] == "stop_and_archive"
     assert operation is not None and operation["operation_state"] == "PENDING"
     assert operation["stop_trigger"] == "USER_STOP_AND_ARCHIVE"
+
+    supervisor._handle_commands()
+    operation = repository.get_operation(response.operation_id)
+    assert operation is not None and operation["previous_state"] == "RUNNING"
+
+
+def test_concurrent_stop_requests_share_one_durable_operation(tmp_path: Path) -> None:
+    supervisor, repository, _mesh = _supervisor(tmp_path)
+    service = GroundUnattendedApplicationService(
+        supervisor.paths,
+        site_id="site-a",
+        repository=repository,
+        supervisor=supervisor,
+        base_query=_BaseQuery(),  # type: ignore[arg-type]
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        responses = list(
+            executor.map(lambda archive: service.stop("site-a", archive=archive), [False, True])
+        )
+
+    active = repository.list_operations(run_id="run-1", active_only=True)
+    assert len(active) == 1
+    assert {response.operation_id for response in responses} == {active[0]["operation_id"]}
+    assert len(supervisor._commands) == 1
+
+
+def test_stop_intent_is_not_overwritten_by_pause_or_resume(tmp_path: Path) -> None:
+    supervisor, repository, _mesh = _supervisor(tmp_path)
+    service = GroundUnattendedApplicationService(
+        supervisor.paths,
+        site_id="site-a",
+        repository=repository,
+        supervisor=supervisor,
+        base_query=_BaseQuery(),  # type: ignore[arg-type]
+    )
+
+    response = service.stop("site-a", archive=True)
+
+    with pytest.raises(GroundUnattendedError, match="仅运行中的") as pause_error:
+        service.pause("site-a")
+    assert pause_error.value.code == "RUN_NOT_PAUSABLE"
+    with pytest.raises(GroundUnattendedError, match="仅已暂停的") as resume_error:
+        service.resume("site-a")
+    assert resume_error.value.code == "RUN_NOT_RESUMABLE"
+
+    # 模拟在 stop 已持久化后仍滞留于队列中的旧命令，消费端必须再次校验状态。
+    supervisor.request("pause")
+    supervisor.request("resume")
+    supervisor._handle_commands()
+
+    run = repository.get_run("run-1")
+    operation = repository.get_operation(response.operation_id)
+    assert run is not None and run["state"] == "STOPPING"
+    assert run["requested_action"] == "stop_and_archive"
+    assert operation is not None and operation["operation_state"] == "RUNNING"
+
+
+def test_pause_and_resume_only_allow_exact_state_transitions(tmp_path: Path) -> None:
+    supervisor, repository, _mesh = _supervisor(tmp_path)
+    service = GroundUnattendedApplicationService(
+        supervisor.paths,
+        site_id="site-a",
+        repository=repository,
+        supervisor=supervisor,
+        base_query=_BaseQuery(),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(GroundUnattendedError) as resume_error:
+        service.resume("site-a")
+    assert resume_error.value.code == "RUN_NOT_RESUMABLE"
+
+    service.pause("site-a")
+    supervisor._handle_commands()
+    assert repository.get_run("run-1")["state"] == "PAUSED"
+
+    with pytest.raises(GroundUnattendedError) as pause_error:
+        service.pause("site-a")
+    assert pause_error.value.code == "RUN_NOT_PAUSABLE"
+
+    service.resume("site-a")
+    supervisor._handle_commands()
+    assert repository.get_run("run-1")["state"] == "RUNNING"
 
 
 def test_ac_poller_stop_timeout_keeps_controller_diagnostics(
@@ -415,6 +530,175 @@ def test_restart_backfills_missing_frozen_window_before_next_tick(
     assert repository.latest_operation(run_id="run-1") is None
 
 
+def test_restart_restores_persisted_ping_targets_without_new_ac_snapshot(
+    tmp_path: Path,
+) -> None:
+    supervisor, repository, _mesh = _supervisor(tmp_path)
+    repository.save_profile(
+        repository.get_profile().model_copy(
+            update={"enabled": True, "ac_stale_grace_seconds": 180}
+        )
+    )
+    repository.update_run(
+        "run-1",
+        summary_json={"ac_last_processed_snapshot_ids": {"ac-1": 11, "ac-2": 21}},
+    )
+    repository.upsert_train_state(
+        "run-1",
+        "2026-07-29",
+        {
+            "train_id": "train-02",
+            "train_no": "02",
+            "train_name": "列车02",
+            "ping_eligible": True,
+            "current_ap_name": "AP0808",
+            "current_ap_mac": "0011-2233-4455",
+            "station": "泽民",
+            "section": "泽民-大卿桥-下行",
+            "rssi": -61,
+            "ac_snapshot_id": 21,
+            "ac_received_at": "2026-07-29T11:45:00+08:00",
+            "endpoints": [
+                {
+                    "endpoint": "CW",
+                    "mr_id": "mr-cw-02",
+                    "mr_name": "列车02-MR-CW",
+                    "device_id": 22,
+                    "management_ip": "192.168.100.232",
+                    "ping_target_eligible": True,
+                }
+            ],
+            "ap_identity_diagnostics": {"identity_revision": 8743},
+        },
+        ap_identity="ap-identity-0808",
+        same_ap_since="2026-07-29T11:40:00+08:00",
+    )
+    repository.insert_wmesh_events(
+        [
+            {
+                "run_id": "run-1",
+                "device_uuid": "mr-cw-02",
+                "train_id": "train-02",
+                "mr_role": "CW",
+                "event_type": "MESH_LINKUP",
+                "event_family": "WMESH",
+                "receive_time": "2026-07-29T11:45:30+08:00",
+            }
+        ]
+    )
+    ping = _FleetPingRecorder()
+    supervisor.fleet_ping = ping  # type: ignore[assignment]
+    clock = [datetime.fromisoformat("2026-07-29T11:46:00+08:00")]
+    supervisor.now_provider = lambda: clock[0]
+    supervisor._network_profile_error = lambda _profile: None  # type: ignore[method-assign]
+    supervisor.inventory_sync = SimpleNamespace(synchronize=lambda: None)  # type: ignore[assignment]
+    supervisor._start_syslog = lambda *_args: None  # type: ignore[method-assign]
+    supervisor._ensure_ac_resident_pollers = lambda *_args: None  # type: ignore[method-assign]
+
+    supervisor._recover_on_start()
+
+    assert ping.started is True
+    assert len(ping.target_updates[-1]) == 1
+    recovered = ping.target_updates[-1][0]
+    assert recovered.target_ip == "192.168.100.232"
+    assert recovered.current_ap_name == "AP0808"
+    assert recovered.station == "泽民"
+    assert recovered.section == "泽民-大卿桥-下行"
+    run = repository.get_run("run-1")
+    assert run is not None
+    assert run["summary"]["recovered_from_restart"] is True
+    assert run["summary"]["ping_recovered_target_count"] == 1
+    assert run["summary"]["main_link_recovered"] is True
+    assert run["summary"]["main_link_state"] == "MESH_LINKUP"
+    assert run["summary"]["main_link_last_event_at"] == (
+        "2026-07-29T11:45:30+08:00"
+    )
+    assert run["summary"]["ap_identity_revision"] == 8743
+
+    clock[0] = datetime.fromisoformat("2026-07-29T11:49:01+08:00")
+    supervisor._poll_ac_and_classify(
+        repository.get_run("run-1"),
+        repository.get_profile(),
+        clock[0],
+        scheduling_paused=False,
+    )
+
+    assert ping.target_updates[-1] == []
+
+
+def test_restart_marks_persisted_main_link_stale_after_existing_grace(
+    tmp_path: Path,
+) -> None:
+    supervisor, repository, _mesh = _supervisor(tmp_path)
+    repository.save_profile(
+        repository.get_profile().model_copy(
+            update={"enabled": True, "ac_stale_grace_seconds": 120}
+        )
+    )
+    repository.insert_wmesh_events(
+        [
+            {
+                "run_id": "run-1",
+                "device_uuid": "mr-cw-02",
+                "event_type": "MESH_LINKUP",
+                "event_family": "WMESH",
+                "receive_time": "2026-07-29T11:40:00+08:00",
+                "peer_name": "AP0808",
+            }
+        ]
+    )
+    supervisor.now_provider = lambda: datetime.fromisoformat(
+        "2026-07-29T11:46:00+08:00"
+    )
+    supervisor._network_profile_error = lambda _profile: None  # type: ignore[method-assign]
+    supervisor.inventory_sync = SimpleNamespace(synchronize=lambda: None)  # type: ignore[assignment]
+    supervisor.fleet_ping = _FleetPingRecorder()  # type: ignore[assignment]
+    supervisor._start_syslog = lambda *_args: None  # type: ignore[method-assign]
+    supervisor._ensure_ac_resident_pollers = lambda *_args: None  # type: ignore[method-assign]
+    supervisor.deep_scheduler = None
+
+    supervisor._recover_on_start()
+
+    run = repository.get_run("run-1")
+    assert run is not None
+    assert run["summary"]["main_link_state"] == "STALE"
+    assert run["summary"]["main_link_recovered"] is False
+
+
+def test_endpoint_snapshot_scopes_persisted_wmesh_to_current_run(
+    tmp_path: Path,
+) -> None:
+    _supervisor_instance, repository, _mesh = _supervisor(tmp_path)
+    repository.insert_wmesh_events(
+        [
+            {
+                "run_id": "run-1",
+                "device_uuid": "mr-cw-02",
+                "event_type": "MESH_LINKUP",
+                "event_family": "WMESH",
+                "receive_time": "2026-07-29T11:45:00+08:00",
+                "peer_name": "AP-CURRENT-RUN",
+            },
+            {
+                "run_id": "run-other",
+                "device_uuid": "mr-cw-02",
+                "event_type": "MESH_LINKUP",
+                "event_family": "WMESH",
+                "receive_time": "2026-07-29T11:46:00+08:00",
+                "peer_name": "AP-OTHER-RUN",
+            },
+        ]
+    )
+
+    snapshot = repository.train_endpoint_snapshot(
+        ["mr-cw-02"], run_id="run-1"
+    )
+
+    assert snapshot["wmesh_by_device"]["mr-cw-02"]["peer_name"] == (
+        "AP-CURRENT-RUN"
+    )
+
+
 def test_restart_inside_frozen_window_records_profile_disabled_reason(
     tmp_path: Path,
 ) -> None:
@@ -432,6 +716,45 @@ def test_restart_inside_frozen_window_records_profile_disabled_reason(
     assert operation is not None
     assert operation["stop_trigger"] == "PROFILE_DISABLED"
     assert operation["operation_type"] == "STOP"
+
+
+def test_restart_retries_legacy_error_with_failed_stop_operation(
+    tmp_path: Path,
+) -> None:
+    supervisor, repository, _mesh = _supervisor(tmp_path)
+    repository.update_run("run-1", state="ERROR", requested_action="fatal_error")
+    repository.save_operation(
+        {
+            "operation_id": "legacy-failed-stop",
+            "site_id": "site-a",
+            "run_id": "run-1",
+            "operation_type": "STOP",
+            "operation_state": "FAILED",
+            "operation_stage": "FAILED",
+            "progress_percent": 100,
+            "message": "旧版本停止失败",
+            "failure_code": "DEEP_COLLECTION_STOP_TIMEOUT",
+            "started_at": "2026-07-29T11:40:00+08:00",
+            "updated_at": "2026-07-29T11:43:00+08:00",
+        }
+    )
+    deep = _DeepScheduler(active=False)
+    supervisor.deep_scheduler = deep  # type: ignore[assignment]
+    supervisor.ac_resident_service = _ResidentService()  # type: ignore[assignment]
+
+    supervisor._recover_on_start()
+    recovered = repository.latest_operation(run_id="run-1", active_only=True)
+    assert recovered is not None
+    assert recovered["operation_id"] != "legacy-failed-stop"
+    assert recovered["stop_trigger"] == "RECOVERY"
+    assert repository.get_run("run-1")["state"] == "STOPPING"
+
+    supervisor._tick()
+
+    run = repository.get_run("run-1")
+    operation = repository.get_operation(str(recovered["operation_id"]))
+    assert run is not None and run["state"] == "COMPLETED"
+    assert operation is not None and operation["operation_state"] == "COMPLETED"
 
 
 def test_deep_collection_stop_deadline_continues_other_component_cleanup(
@@ -525,6 +848,99 @@ def test_deep_collection_deadline_accounts_for_bounded_finalizing_waves(
     completed = repository.get_operation("stop-waves")
     assert completed is not None and completed["operation_state"] == "FAILED"
     assert resident.stop_calls
+
+
+def test_deep_collection_force_stop_keeps_run_owned_until_mapping_terminal(
+    tmp_path: Path,
+) -> None:
+    supervisor, repository, _mesh = _supervisor(tmp_path)
+    deep = _DeepScheduler(active=True, force_completes=False)
+    supervisor.deep_scheduler = deep  # type: ignore[assignment]
+    supervisor.ac_resident_service = _ResidentService()  # type: ignore[assignment]
+    repository.update_run("run-1", state="STOPPING", requested_action="stop")
+    repository.save_operation(
+        {
+            "operation_id": "stop-force-wait",
+            "site_id": "site-a",
+            "run_id": "run-1",
+            "operation_type": "STOP",
+            "operation_state": "RUNNING",
+            "operation_stage": "STOP_REQUESTED",
+            "progress_percent": 5,
+            "message": "停止",
+            "stop_trigger": "USER_NORMAL_STOP",
+            "triggered_at": "2026-07-29T11:40:00+08:00",
+            "started_at": "2026-07-29T11:40:00+08:00",
+            "updated_at": "2026-07-29T11:40:00+08:00",
+        }
+    )
+    supervisor.now_provider = lambda: datetime.fromisoformat(
+        "2026-07-29T11:43:00+08:00"
+    )
+
+    supervisor._finalize_run(repository.get_active_run(), archive=False)
+
+    run = repository.get_run("run-1")
+    operation = repository.get_operation("stop-force-wait")
+    assert run is not None and run["state"] == "FINALIZING"
+    assert operation is not None and operation["operation_state"] == "RUNNING"
+    assert operation["operation_stage"] == "WAITING_DEEP_COLLECTION_TERMINAL"
+    assert deep.force_stop_calls == ["normal_stop_deadline_exceeded"]
+
+
+def test_restart_from_deep_wait_preserves_persisted_ping_count(
+    tmp_path: Path,
+) -> None:
+    supervisor, repository, _mesh = _supervisor(tmp_path)
+    repository.update_run(
+        "run-1",
+        state="FINALIZING",
+        requested_action="stop",
+        ping_sample_count=47,
+    )
+    repository.save_operation(
+        {
+            "operation_id": "stop-restart-count",
+            "site_id": "site-a",
+            "run_id": "run-1",
+            "operation_type": "STOP",
+            "operation_state": "RUNNING",
+            "operation_stage": "WAITING_DEEP_COLLECTION_TERMINAL",
+            "progress_percent": 90,
+            "message": "等待深度采集映射进入终态",
+            "stop_trigger": "USER_NORMAL_STOP",
+            "stop_reason": "用户请求正常停止",
+            "triggered_at": "2026-07-29T11:40:00+08:00",
+            "started_at": "2026-07-29T11:40:00+08:00",
+            "updated_at": "2026-07-29T11:43:00+08:00",
+            "result_summary": {
+                "ping_sample_count": 47,
+                "deep_collection_stop_state": "FORCE_STOPPING",
+                "stop_failures": [
+                    {
+                        "component": "deep_collection",
+                        "code": "DEEP_COLLECTION_STOP_TIMEOUT",
+                        "message": "深度采集任务未在停止预算内终结",
+                        "state": "TIMED_OUT",
+                    }
+                ],
+            },
+        }
+    )
+    deep = _DeepScheduler(active=False)
+    supervisor.deep_scheduler = deep  # type: ignore[assignment]
+    supervisor.ac_resident_service = _ResidentService()  # type: ignore[assignment]
+
+    supervisor._recover_on_start()
+    supervisor._tick()
+
+    run = repository.get_run("run-1")
+    operation = repository.get_operation("stop-restart-count")
+    assert run is not None and run["state"] == "COMPLETED"
+    assert run["ping_sample_count"] == 47
+    assert operation is not None and operation["operation_state"] == "FAILED"
+    assert operation["result_summary"]["ping_sample_count"] == 47
+    assert deep.recover_calls == ["run-1"]
 
 
 def test_ac_health_marks_backoff_degraded_and_keeps_failed_poller(

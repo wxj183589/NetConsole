@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import subprocess
@@ -9,6 +10,28 @@ from uuid import uuid4
 import pytest
 
 from scripts.build import build_edition_installers, build_installer
+
+
+def test_final_installer_verification_rechecks_frozen_git_state() -> None:
+    source = inspect.getsource(build_installer.verify_installer_artifact)
+
+    assert source.index("require_clean_synced_git()") < source.index(
+        '"schema": "netconsole.installer-release.v1"'
+    )
+    assert '_git("rev-parse", "HEAD") != commit' in source
+
+
+def test_installer_pe_identity_includes_edition_and_feature_profile() -> None:
+    source = build_installer.INSTALLER_POLICY_SOURCE.read_text(encoding="utf-8")
+    verification = inspect.getsource(build_installer.verify_installer_artifact)
+
+    assert '"InstallerEdition" "${NETCONSOLE_INSTALLER_EDITION}"' in source
+    assert (
+        '"InstallerFeatureProfile" "${NETCONSOLE_INSTALLER_FEATURE_PROFILE}"'
+        in source
+    )
+    assert 'expected_version_strings["InstallerEdition"]' in verification
+    assert 'expected_version_strings["InstallerFeatureProfile"]' in verification
 
 
 def test_edition_installer_prefers_explicit_pnpm_path(
@@ -96,6 +119,7 @@ def test_prepare_identity_uses_unique_commit_artifact_and_source_hash(
     assert manifest["standard_artifact_absent_before_build"] is True
     identity = build_installer.INSTALLER_IDENTITY_PATH.read_text(encoding="utf-8")
     assert '!define NETCONSOLE_INSTALLER_GIT_SHORT "aaaaaaaa"' in identity
+    assert '!define NETCONSOLE_INSTALLER_EDITION "unscoped"' in identity
     assert manifest["installer_policy_source_sha256"] in identity
 
 

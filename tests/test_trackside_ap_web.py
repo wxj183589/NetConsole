@@ -598,6 +598,65 @@ def test_trackside_snapshot_uses_device_and_ac_without_base_data(
     assert snapshot.rows[0]["ap_mac"] == "0011-2233-4455"
 
 
+def test_trackside_snapshot_projects_unique_legacy_station_and_matches_fit_by_mac(
+    tmp_path: Path,
+) -> None:
+    database = Database(tmp_path / "legacy-station-projection.sqlite")
+    database.initialize()
+    repository = AcRepository(database)
+    _seed_base_stations(repository, ["16-双陈站"])
+    imported = repository.import_ap_extension_points(
+        [
+            {
+                "site_id": "demo",
+                "belong_type": "station",
+                "station_name": "双陈站",
+                "ap_name": f"AP-SC-{index}",
+                "ap_mac_norm": f"0011223344{index:02d}",
+                "raw_payload_json": json.dumps(
+                    {
+                        "operation_status": "in_service",
+                        "project_id": "demo",
+                    },
+                    ensure_ascii=False,
+                ),
+            }
+            for index in (1, 2)
+        ],
+        source_file="legacy-trackside.xlsx",
+        template_type="legacy_trackside_fixture",
+    )
+    assert imported["error_rows"] == 0
+    repository.replace_fit_ap_resources(
+        "ac-fixture",
+        [
+            {
+                "ap_uuid": f"fit-{index}",
+                "ap_name": f"AP-SC-{index}",
+                "ap_mac": f"0011223344{index:02d}",
+                "state": "R/M",
+            }
+            for index in (1, 2, 3)
+        ],
+    )
+
+    with database.connect() as observer:
+        before_data_version = int(observer.execute("PRAGMA data_version").fetchone()[0])
+        snapshot = load_trackside_ap_business_snapshot(
+            DeviceRepository(database),
+            "demo",
+            generation=1,
+        )
+        after_data_version = int(observer.execute("PRAGMA data_version").fetchone()[0])
+
+    assert snapshot.scope is not None
+    assert snapshot.scope.scope_ap_reference_count == 2
+    assert snapshot.fit_ap_resource_count == 3
+    assert snapshot.fit_ap_matched_count == 2
+    assert snapshot.fit_ap_unmatched_online_count == 1
+    assert before_data_version == after_data_version
+
+
 def test_trackside_snapshot_keeps_other_devices_when_one_interface_source_fails(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

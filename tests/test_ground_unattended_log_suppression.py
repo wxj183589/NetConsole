@@ -14,6 +14,7 @@ def test_repeated_tick_error_emits_first_summary_and_recovery(monkeypatch, caplo
     supervisor._tick_error_last_at = 0.0
     supervisor._tick_error_summary_at = 0.0
     supervisor._tick_error_count = 0
+    supervisor._tick_consecutive_failure_count = 0
     clock = iter(float(value) for value in range(101))
     monkeypatch.setattr(supervisor_module.time, "monotonic", lambda: next(clock))
     caplog.set_level(logging.INFO, logger=supervisor_module.LOGGER.name)
@@ -27,7 +28,7 @@ def test_repeated_tick_error_emits_first_summary_and_recovery(monkeypatch, caplo
     supervisor._record_tick_recovery()
 
     messages = [record.getMessage() for record in caplog.records]
-    assert sum(emitted) == 2
+    assert sum(emitted) == 1
     assert sum("调度周期失败：" in message for message in messages) == 1
     assert sum("调度周期失败重复" in message for message in messages) == 1
     assert any("repeated=60" in message for message in messages)
@@ -42,6 +43,7 @@ def test_same_tick_error_logs_again_after_suppression_window(monkeypatch, caplog
     supervisor._tick_error_last_at = 0.0
     supervisor._tick_error_summary_at = 0.0
     supervisor._tick_error_count = 0
+    supervisor._tick_consecutive_failure_count = 0
     clock = iter([100.0, 111.0])
     monkeypatch.setattr(supervisor_module.time, "monotonic", lambda: next(clock))
     caplog.set_level(logging.ERROR, logger=supervisor_module.LOGGER.name)
@@ -61,6 +63,7 @@ def test_tick_recovery_uses_entire_incident_duration(monkeypatch, caplog) -> Non
     supervisor._tick_error_last_at = 0.0
     supervisor._tick_error_summary_at = 0.0
     supervisor._tick_error_count = 0
+    supervisor._tick_consecutive_failure_count = 0
     clock = iter([*range(100, 161, 5), 161.0])
     monkeypatch.setattr(supervisor_module.time, "monotonic", lambda: next(clock))
     caplog.set_level(logging.INFO, logger=supervisor_module.LOGGER.name)
@@ -75,3 +78,20 @@ def test_tick_recovery_uses_entire_incident_duration(monkeypatch, caplog) -> Non
         if "调度周期已恢复" in record.getMessage()
     ]
     assert recovered == ["地面无人值守调度周期已恢复：site=test-site downtime_seconds=61.0"]
+
+
+def test_three_consecutive_different_tick_errors_trigger_safe_stop(monkeypatch) -> None:
+    supervisor = object.__new__(GroundUnattendedSupervisor)
+    supervisor.site_id = "test-site"
+    supervisor._tick_error_fingerprint = ""
+    supervisor._tick_error_started_at = 0.0
+    supervisor._tick_error_last_at = 0.0
+    supervisor._tick_error_summary_at = 0.0
+    supervisor._tick_error_count = 0
+    supervisor._tick_consecutive_failure_count = 0
+    clock = iter([100.0, 101.0, 102.0])
+    monkeypatch.setattr(supervisor_module.time, "monotonic", lambda: next(clock))
+
+    assert supervisor._record_tick_failure(RuntimeError("offline")) is False
+    assert supervisor._record_tick_failure(ValueError("invalid profile")) is False
+    assert supervisor._record_tick_failure(OSError("database busy")) is True

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -2184,6 +2184,64 @@ class GroundUnattendedRepository:
             raise RuntimeError("ground unattended operation was not saved")
         return saved
 
+    def create_active_operation_if_absent(
+        self,
+        values: dict[str, Any],
+        *,
+        run_state: str | None = None,
+        requested_action: str | None = None,
+    ) -> tuple[dict[str, Any], bool]:
+        """Atomically claim the single active stop-operation slot for one run."""
+
+        row = dict(values)
+        row.setdefault("site_id", self.site_id)
+        row.setdefault("started_at", _now())
+        row.setdefault("updated_at", _now())
+        if "result_summary_json" not in row:
+            row["result_summary_json"] = json.dumps(
+                row.pop("result_summary", {}), ensure_ascii=False
+            )
+        run_id = str(row.get("run_id") or "")
+        with self._transaction() as conn:
+            existing = conn.execute(
+                "SELECT * FROM ground_unattended_operations "
+                "WHERE site_id=? AND run_id=? "
+                "AND UPPER(operation_state) IN ('PENDING','RUNNING') "
+                "ORDER BY updated_at DESC, operation_id DESC LIMIT 1",
+                (self.site_id, run_id),
+            ).fetchone()
+            if existing is not None:
+                return _decode_row(existing), False
+            fields = tuple(row)
+            conn.execute(
+                f"INSERT INTO ground_unattended_operations ({', '.join(fields)}) "
+                f"VALUES ({', '.join('?' for _ in fields)})",
+                tuple(row[field] for field in fields),
+            )
+            if run_state is not None or requested_action is not None:
+                assignments: list[str] = ["updated_at=?"]
+                params: list[Any] = [_now()]
+                if run_state is not None:
+                    assignments.append("state=?")
+                    params.append(run_state)
+                if requested_action is not None:
+                    assignments.append("requested_action=?")
+                    params.append(requested_action)
+                params.extend((self.site_id, run_id))
+                conn.execute(
+                    "UPDATE ground_unattended_runs "
+                    f"SET {', '.join(assignments)} WHERE site_id=? AND run_id=?",
+                    params,
+                )
+            saved = conn.execute(
+                "SELECT * FROM ground_unattended_operations "
+                "WHERE site_id=? AND operation_id=?",
+                (self.site_id, str(row["operation_id"])),
+            ).fetchone()
+            if saved is None:
+                raise RuntimeError("ground unattended operation was not saved")
+            return _decode_row(saved), True
+
     def get_operation(self, operation_id: str) -> dict[str, Any] | None:
         with self._connection() as conn:
             row = conn.execute(
@@ -2423,6 +2481,31 @@ class GroundUnattendedRepository:
                 (self.site_id, run_id),
             ).fetchall()
         return [_decode_row(row) for row in rows]
+
+    def get_ping_summary(
+        self,
+        run_id: str,
+        *,
+        bucket_kind: str,
+        bucket_start: str,
+        target_ip: str,
+        ap_identity: str = "",
+    ) -> dict[str, Any] | None:
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM ground_unattended_ping_summaries "
+                "WHERE site_id=? AND run_id=? AND bucket_kind=? AND bucket_start=? "
+                "AND target_ip=? AND ap_identity=?",
+                (
+                    self.site_id,
+                    run_id,
+                    bucket_kind,
+                    bucket_start,
+                    target_ip,
+                    ap_identity,
+                ),
+            ).fetchone()
+        return _decode_row(row) if row else None
 
     def get_raw_file(self, file_id: str) -> dict[str, Any] | None:
         with self._connection() as conn:
@@ -2730,6 +2813,69 @@ class GroundUnattendedRepository:
         values = list(rows)
         if not values:
             return 0
+        with self._transaction() as conn:
+            return self._insert_wmesh_events(conn, values)
+
+    def commit_wmesh_projection_batch(
+        self,
+        events: Iterable[dict[str, Any]],
+        timeline: Iterable[dict[str, Any]],
+        *,
+        raw_checkpoints: Mapping[str, int] | None = None,
+        completed_raw_file_ids: Iterable[str] = (),
+        complete_closed_files: bool = False,
+    ) -> int:
+        """Atomically persist WMESH projections and their raw scan checkpoints."""
+
+        event_values = list(events)
+        timeline_values = list(timeline)
+        checkpoints = {
+            str(file_id): max(0, int(line_number))
+            for file_id, line_number in dict(raw_checkpoints or {}).items()
+            if str(file_id)
+        }
+        completed = {str(file_id) for file_id in completed_raw_file_ids if str(file_id)}
+        if not event_values and not timeline_values and not checkpoints:
+            return 0
+        with self._transaction() as conn:
+            inserted = self._insert_wmesh_events(conn, event_values)
+            self._insert_timeline_events(conn, timeline_values)
+            now = _now()
+            for file_id, line_number in checkpoints.items():
+                row = conn.execute(
+                    "SELECT status, record_count FROM ground_unattended_raw_files "
+                    "WHERE site_id=? AND file_id=?",
+                    (self.site_id, file_id),
+                ).fetchone()
+                if row is None:
+                    raise ValueError("ground unattended raw file not found")
+                is_complete = file_id in completed or (
+                    complete_closed_files
+                    and
+                    str(row["status"] or "").upper() != "OPEN"
+                    and line_number >= max(0, int(row["record_count"] or 0))
+                )
+                parse_status = (
+                    "PARSED"
+                    if is_complete
+                    else f"STREAMING@{line_number}"
+                    if str(row["status"] or "").upper() == "OPEN"
+                    else f"PENDING_RECOVERY@{line_number}"
+                )
+                conn.execute(
+                    "UPDATE ground_unattended_raw_files "
+                    "SET parse_status=?, updated_at=? WHERE site_id=? AND file_id=?",
+                    (parse_status, now, self.site_id, file_id),
+                )
+        return inserted
+
+    def _insert_wmesh_events(
+        self,
+        conn: sqlite3.Connection,
+        values: list[dict[str, Any]],
+    ) -> int:
+        if not values:
+            return 0
         fields = (
             "site_id",
             "run_id",
@@ -2771,53 +2917,53 @@ class GroundUnattendedRepository:
         )
         now = _now()
         inserted = 0
-        with self._transaction() as conn:
-            for row in values:
-                raw_file_id = str(row.get("raw_file_id") or "")
-                raw_line_number = row.get("raw_line_number")
-                existing = None
-                if raw_file_id and raw_line_number not in {None, ""}:
-                    existing = conn.execute(
-                        "SELECT id FROM ground_unattended_wmesh_events "
-                        "WHERE site_id=? AND raw_file_id=? AND raw_line_number=? "
-                        "LIMIT 1",
-                        (self.site_id, raw_file_id, int(raw_line_number)),
-                    ).fetchone()
-                elif row.get("dedup_key"):
-                    existing = conn.execute(
-                        "SELECT id FROM ground_unattended_wmesh_events "
-                        "WHERE site_id=? AND dedup_key=? LIMIT 1",
-                        (self.site_id, str(row["dedup_key"])),
-                    ).fetchone()
-                if existing is not None:
+        for row in values:
+            raw_file_id = str(row.get("raw_file_id") or "")
+            raw_line_number = row.get("raw_line_number")
+            existing = None
+            if raw_file_id and raw_line_number not in {None, ""}:
+                existing = conn.execute(
+                    "SELECT id FROM ground_unattended_wmesh_events "
+                    "WHERE site_id=? AND raw_file_id=? AND raw_line_number=? "
+                    "LIMIT 1",
+                    (self.site_id, raw_file_id, int(raw_line_number)),
+                ).fetchone()
+            elif row.get("dedup_key"):
+                existing = conn.execute(
+                    "SELECT id FROM ground_unattended_wmesh_events "
+                    "WHERE site_id=? AND dedup_key=? LIMIT 1",
+                    (self.site_id, str(row["dedup_key"])),
+                ).fetchone()
+            if existing is not None:
+                if not (raw_file_id and raw_line_number not in {None, ""}):
                     conn.execute(
                         "UPDATE ground_unattended_wmesh_events "
                         "SET duplicate_count=duplicate_count+1 WHERE id=?",
                         (int(existing["id"]),),
                     )
-                    continue
-                conn.execute(
-                    f"INSERT INTO ground_unattended_wmesh_events ({', '.join(fields)}) "
-                    f"VALUES ({', '.join('?' for _ in fields)})",
-                    tuple(
-                        json.dumps(row.get("details") or {}, ensure_ascii=False)
-                        if field == "details_json"
-                        else int(bool(row.get(field)))
-                        if field == "expected_internal_change"
-                        else int(row.get(field) or 0)
-                        if field == "duplicate_count"
-                        else row.get(
-                            field,
-                            self.site_id
-                            if field == "site_id"
-                            else now
-                            if field == "created_at"
-                            else "",
-                        )
-                        for field in fields
-                    ),
-                )
-                inserted += 1
+                continue
+            conn.execute(
+                f"INSERT INTO ground_unattended_wmesh_events ({', '.join(fields)}) "
+                f"VALUES ({', '.join('?' for _ in fields)})",
+                tuple(
+                    json.dumps(row.get("details") or {}, ensure_ascii=False)
+                    if field == "details_json"
+                    else int(bool(row.get(field)))
+                    if field == "expected_internal_change"
+                    else int(row.get(field) or 0)
+                    if field == "duplicate_count"
+                    else row.get(
+                        field,
+                        self.site_id
+                        if field == "site_id"
+                        else now
+                        if field == "created_at"
+                        else "",
+                    )
+                    for field in fields
+                ),
+            )
+            inserted += 1
         return inserted
 
     def record_control_syslog_event(
@@ -3346,7 +3492,10 @@ class GroundUnattendedRepository:
         train_id: str = "",
         mr_id: str = "",
         mr_role: str = "",
+        source_ip: str = "",
         event_type: str = "",
+        start_time: str = "",
+        end_time: str = "",
         limit: int = 200,
         offset: int = 0,
     ) -> list[dict[str, Any]]:
@@ -3367,14 +3516,75 @@ class GroundUnattendedRepository:
         if mr_role:
             where.append("UPPER(mr_role)=UPPER(?)")
             params.append(mr_role)
+        if source_ip:
+            where.append("source_ip=?")
+            params.append(source_ip)
         if event_type:
             where.append("event_type=?")
             params.append(event_type)
+        if start_time:
+            where.append("receive_time>=?")
+            params.append(start_time)
+        if end_time:
+            where.append("receive_time<=?")
+            params.append(end_time)
         with self._connection() as conn:
             rows = conn.execute(
                 f"SELECT * FROM ground_unattended_wmesh_events WHERE {' AND '.join(where)} "
                 "ORDER BY receive_time DESC LIMIT ? OFFSET ?",
-                (*params, max(1, min(int(limit), 2_000)), max(0, int(offset))),
+                (*params, max(1, min(int(limit), 20_000)), max(0, int(offset))),
+            ).fetchall()
+        return [_decode_row(row) for row in rows]
+
+    def list_wmesh_events_for_identity(
+        self,
+        *,
+        run_id: str = "",
+        train_id: str = "",
+        mr_id: str = "",
+        mr_role: str = "",
+        source_ip: str = "",
+        start_time: str = "",
+        end_time: str = "",
+    ) -> list[dict[str, Any]]:
+        """Read every matching identity form in one SQLite snapshot.
+
+        Older WMESH rows may lack ``device_uuid`` while retaining source IP or
+        train/role evidence.  The disjunction preserves those rows and the
+        single SELECT avoids cross-connection OFFSET drift during live writes.
+        """
+
+        where = [
+            "site_id=?",
+            "(event_family='WMESH' OR (event_family='' AND event_type LIKE 'MESH_%'))",
+        ]
+        params: list[Any] = [self.site_id]
+        if run_id:
+            where.append("run_id=?")
+            params.append(run_id)
+        identity_where: list[str] = []
+        if mr_id:
+            identity_where.append("device_uuid=?")
+            params.append(mr_id)
+        if source_ip:
+            identity_where.append("source_ip=?")
+            params.append(source_ip)
+        if train_id and mr_role:
+            identity_where.append("(train_id=? AND UPPER(mr_role)=UPPER(?))")
+            params.extend((train_id, mr_role))
+        if identity_where:
+            where.append(f"({' OR '.join(identity_where)})")
+        if start_time:
+            where.append("receive_time>=?")
+            params.append(start_time)
+        if end_time:
+            where.append("receive_time<=?")
+            params.append(end_time)
+        with self._connection() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM ground_unattended_wmesh_events WHERE {' AND '.join(where)} "
+                "ORDER BY receive_time DESC, id DESC",
+                params,
             ).fetchall()
         return [_decode_row(row) for row in rows]
 
@@ -3508,7 +3718,7 @@ class GroundUnattendedRepository:
         return _decode_row(row) if row else None
 
     def train_endpoint_snapshot(
-        self, device_uuids: Iterable[str]
+        self, device_uuids: Iterable[str], *, run_id: str = ""
     ) -> dict[str, Any]:
         """Read endpoint projections in one short SQLite snapshot.
 
@@ -3529,6 +3739,8 @@ class GroundUnattendedRepository:
             }
         placeholders = ",".join("?" for _ in targets)
         params = (self.site_id, *targets)
+        wmesh_run_clause = " AND run_id=?" if run_id else ""
+        wmesh_params = (*params, run_id) if run_id else params
         with self._connection() as conn:
             conn.execute("BEGIN")
             boot_rows = conn.execute(
@@ -3553,10 +3765,10 @@ class GroundUnattendedRepository:
                     WHERE site_id=? AND device_uuid IN ({placeholders}) AND (
                         event_family='WMESH'
                         OR (event_family='' AND event_type LIKE 'MESH_%')
-                    )
+                    ){wmesh_run_clause}
                 ) WHERE _rank=1
                 """,
-                params,
+                wmesh_params,
             ).fetchall()
             runtime_rows = conn.execute(
                 "SELECT * FROM ground_unattended_mr_runtime_states "
@@ -3686,30 +3898,40 @@ class GroundUnattendedRepository:
         if not values:
             return 0
         with self._transaction() as conn:
-            conn.executemany(
-                """
-                INSERT INTO ground_unattended_events(
-                    site_id, run_id, ts, event_type, severity, train_id, mr_id,
-                    title, message, details_json
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    (
-                        self.site_id,
-                        str(row.get("run_id") or ""),
-                        str(row.get("ts") or _now()),
-                        str(row.get("event_type") or "event"),
-                        str(row.get("severity") or "info"),
-                        str(row.get("train_id") or ""),
-                        str(row.get("mr_id") or ""),
-                        str(row.get("title") or ""),
-                        str(row.get("message") or ""),
-                        json.dumps(row.get("details") or {}, ensure_ascii=False),
-                    )
-                    for row in values
-                ],
-            )
+            self._insert_timeline_events(conn, values)
         return len(values)
+
+    def _insert_timeline_events(
+        self,
+        conn: sqlite3.Connection,
+        values: list[dict[str, Any]],
+    ) -> None:
+        if not values:
+            return
+        conn.executemany(
+            """
+            INSERT OR IGNORE INTO ground_unattended_events(
+                site_id, run_id, ts, event_type, severity, train_id, mr_id,
+                title, message, details_json, dedup_key
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    self.site_id,
+                    str(row.get("run_id") or ""),
+                    str(row.get("ts") or _now()),
+                    str(row.get("event_type") or "event"),
+                    str(row.get("severity") or "info"),
+                    str(row.get("train_id") or ""),
+                    str(row.get("mr_id") or ""),
+                    str(row.get("title") or ""),
+                    str(row.get("message") or ""),
+                    json.dumps(row.get("details") or {}, ensure_ascii=False),
+                    str(row.get("dedup_key") or ""),
+                )
+                for row in values
+            ],
+        )
 
     def latest_health_event(self) -> dict[str, Any] | None:
         with self._connection() as conn:

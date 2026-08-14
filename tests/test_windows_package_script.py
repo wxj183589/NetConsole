@@ -32,10 +32,31 @@ def test_windows_package_script_rechecks_the_final_artifact() -> None:
     assert '"netconsole.installer-release.v1"' in script
     assert "installer_git_commit -eq $head" in script
     assert "packaged_dirty -ne $false" in script
+    assert "backend_commit -ne $head" in script
+    assert "frontend_commit -ne $head" in script
+    assert "$finalDirty" in script
+    assert "$finalHead -ne $head" in script
+    assert "$finalUpstream -ne $head" in script
     assert 'real_windows_install_status -ne "PENDING"' in script
     assert "Get-Sha256Hex -Path $artifactPath" in script
     assert "[System.Security.Cryptography.SHA256]::Create()" in script
     assert "artifact.Length -ne [int64]$releaseManifest.artifact_size" in script
+
+
+def test_local_release_publish_rechecks_source_and_inner_commits() -> None:
+    script = (
+        ROOT / "scripts" / "build" / "package_local.ps1"
+    ).read_text(encoding="utf-8-sig")
+
+    assert "$manifest.backend_commit -ne $Head" in script
+    assert "$manifest.frontend_commit -ne $Head" in script
+    assert "$finalDirty" in script
+    assert "$finalHead -ne $head" in script
+    assert "$finalUpstream -ne $head" in script
+    assert "$publishDirty" in script
+    assert script.index("$publishDirty") < script.index(
+        "Publish-VerifiedArtifacts -ProjectRoot"
+    )
 
 
 def test_windows_package_launcher_only_calls_the_powershell_orchestrator() -> None:

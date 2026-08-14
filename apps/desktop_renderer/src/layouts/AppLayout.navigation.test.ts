@@ -5,7 +5,7 @@ import { createPinia } from 'pinia'
 import { defineComponent } from 'vue'
 import { flushPromises, mount } from '@vue/test-utils'
 import { createMemoryHistory, createRouter } from 'vue-router'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { useWorkspaceStore } from '../stores/workspace'
 import AppLayout from './AppLayout.vue'
@@ -16,7 +16,11 @@ vi.mock('../api/client', () => ({
     version: '1.4.9',
     build_id: 'v1.4.9+99bba059c3359d409673286a9093503fe9d09255',
   })),
-  getRendererBuildMeta: vi.fn(async () => ({ build_id: 'test' })),
+  getRendererBuildMeta: vi.fn(async () => ({
+    app_version: 'v1.4.9',
+    git_commit_full: '29541dda879049c54ace0730c44fc6f3eb92b872',
+    build_id: 'v1.4.9+29541dda879049c54ace0730c44fc6f3eb92b872',
+  })),
 }))
 
 vi.mock('../features', () => ({
@@ -29,7 +33,10 @@ const MeshPage = defineComponent({ template: '<div data-test="mesh-page">MESH �
 const BaseDataPage = defineComponent({ template: '<div data-test="base-data-page">基础资料页面</div>' })
 
 describe('AppLayout 轨道交通导航', () => {
+  afterEach(() => vi.unstubAllEnvs())
+
   it('从 MESH 页面真实点击基础资料后同步路由、标题和页面', async () => {
+    vi.stubEnv('DEV', false)
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1920 })
     sessionStorage.clear()
     const router = createRouter({
@@ -71,7 +78,8 @@ describe('AppLayout 轨道交通导航', () => {
     await flushPromises()
 
     expect(wrapper.find('[data-test="mesh-page"]').exists()).toBe(true)
-    expect(wrapper.find('.header-status').text()).toContain('v1.4.9-<99bba059>')
+    expect(wrapper.find('.header-status').text()).toContain('v1.4.9+29541dda')
+    expect(wrapper.text()).toContain('当前 Desktop Renderer 资源与后端版本不一致')
     const baseDataMenu = wrapper.findAll('.el-menu-item').find((item) => item.text().trim() === '基础资料')
     expect(baseDataMenu).toBeDefined()
     await baseDataMenu!.trigger('click')

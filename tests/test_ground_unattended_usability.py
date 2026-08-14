@@ -28,6 +28,7 @@ from netconsole.services.ground_unattended.supervisor import (
     GroundUnattendedSupervisor,
 )
 from netconsole.services.ground_unattended.syslog_runtime import RawStreamWriter
+from netconsole.services.ground_unattended import syslog_runtime as syslog_runtime_module
 
 
 def test_profile_migrates_legacy_timezone_and_persists_lightweight_mode(
@@ -122,6 +123,138 @@ def test_fleet_ping_warmup_is_per_target_persisted_and_restarts_after_readd(
     recovered.update_targets([target])
     assert recovered.target_summaries()[0]["started_at"] != activated_at
     assert recovered.stop()["success"] is True
+
+
+def test_raw_writer_flush_interval_is_independent_for_each_open_file(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    clock = [0.0]
+    monkeypatch.setattr(syslog_runtime_module.time, "monotonic", lambda: clock[0])
+    repository = GroundUnattendedRepository(
+        tmp_path / "ground" / "index.sqlite", site_id="site-a"
+    )
+    writer = RawStreamWriter(
+        root=repository.db_path.parent / "active" / "2026-07-28",
+        repository=repository,
+        site_id="site-a",
+        run_id="run-flush",
+        run_date="2026-07-28",
+        data_type="ping",
+        directory_name="fleet_ping",
+        flush_records=100,
+        flush_interval_seconds=1.0,
+    )
+    now = datetime.now().astimezone()
+    writer.write({"train_id": "train-b", "mr_role": "CW", "sample": 1}, now)
+    b_file = writer._files[("train-b", "CW", now.strftime("%Y-%m-%d_%H"))].path
+    clock[0] = 1.1
+    writer.write({"train_id": "train-a", "mr_role": "CT", "sample": 1}, now)
+    assert b_file.read_text(encoding="utf-8") == ""
+
+    clock[0] = 1.2
+    writer.write({"train_id": "train-b", "mr_role": "CW", "sample": 2}, now)
+
+    assert len(b_file.read_text(encoding="utf-8").splitlines()) == 2
+    writer.close()
+
+
+def test_ping_query_unions_segments_created_before_and_after_restart(
+    tmp_path,
+) -> None:
+    repository = GroundUnattendedRepository(
+        tmp_path / "ground" / "index.sqlite", site_id="site-a"
+    )
+    active = repository.db_path.parent / "active" / "2026-07-28"
+    now = datetime.now().astimezone() - timedelta(seconds=250)
+    segment_ids: list[str] = []
+    initial_cursor = ""
+
+    for generation, offset in (("before", 0), ("after", 100)):
+        writer = RawStreamWriter(
+            root=active,
+            repository=repository,
+            site_id="site-a",
+            run_id="run-restart-segments",
+            run_date="2026-07-28",
+            data_type="ping",
+            directory_name="fleet_ping",
+            flush_records=1,
+        )
+        for index in range(100):
+            sample_time = now + timedelta(seconds=offset + index)
+            file_id, _line = writer.write(
+                {
+                    "sample_id": f"{generation}-{index}",
+                    "ts": sample_time.isoformat(timespec="milliseconds"),
+                    "target_ip": "192.0.2.10",
+                    "train_id": "train-1",
+                    "train_no": "04",
+                    "mr_id": "mr-ct",
+                    "mr_name": "NBL12-LC04-MR-CT",
+                    "mr_position_code": "CT",
+                    "mr_role": "CT",
+                    "seq": offset + index,
+                    "ok": True,
+                    "rtt_ms": 2.0 + index,
+                    "warmup_ignored": False,
+                    "current_ap_identity": (
+                        "ap-before" if generation == "before" else "ap-after"
+                    ),
+                    "current_ap_name": (
+                        "AP0712" if generation == "before" else "AP0808"
+                    ),
+                    "station": "泽民",
+                    "section": "泽民-大卿桥-下行",
+                    "position_quality": "MATCHED",
+                },
+                sample_time,
+            )
+            if file_id not in segment_ids:
+                segment_ids.append(file_id)
+        writer.close()
+        if generation == "before":
+            initial = GroundRawStreamQueryService(repository).ping_series(
+                run_id="run-restart-segments",
+                target_ip="192.0.2.10",
+                start_time=(now - timedelta(seconds=1)).isoformat(),
+                end_time=(now + timedelta(seconds=99)).isoformat(),
+            )
+            assert initial["raw_sample_count"] == 100
+            initial_cursor = str(initial["next_cursor"])
+
+    series = GroundRawStreamQueryService(repository).ping_series(
+        run_id="run-restart-segments",
+        target_ip="192.0.2.10",
+        start_time=(now - timedelta(seconds=1)).isoformat(),
+        end_time=(now + timedelta(seconds=201)).isoformat(),
+    )
+
+    assert series["raw_sample_count"] == 200
+    assert len({row["sample_id"] for row in series["points"]}) == 200
+    assert series["points"][0]["sample_id"] == "before-0"
+    assert series["points"][-1]["sample_id"] == "after-99"
+    after = next(
+        row for row in series["points"] if row["sample_id"] == "after-0"
+    )
+    assert after["current_ap_name"] == "AP0808"
+    assert after["station"] == "泽民"
+    assert after["section"] == "泽民-大卿桥-下行"
+    assert len(segment_ids) == 2
+    assert series["diagnostics"]["segment_count"] == 2
+    assert series["diagnostics"]["active_segment"] == segment_ids[-1]
+    assert series["diagnostics"]["last_persisted_sample_at"]
+    assert series["diagnostics"]["last_query_sample_at"]
+
+    incremental = GroundRawStreamQueryService(repository).ping_series_incremental(
+        run_id="run-restart-segments",
+        target_ip="192.0.2.10",
+        cursor=initial_cursor,
+        max_points=200,
+    )
+    assert incremental["raw_sample_count"] == 100
+    assert incremental["points"][0]["sample_id"] == "after-0"
+    assert incremental["points"][-1]["sample_id"] == "after-99"
 
 
 def test_raw_queries_preserve_loss_points_page_syslog_and_reject_path_escape(

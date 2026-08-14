@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import zipfile
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -164,6 +165,129 @@ def test_ping_transition_marker_projects_wmesh_event_and_real_rssi_evidence(
     assert marker["rssi_after"] == -72
     assert marker["raw_file_id"] == "syslog-raw"
     assert marker["source_sequence"] == 42
+
+
+def test_ping_transition_marker_pushes_identity_before_20k_limit(
+    tmp_path: Path,
+) -> None:
+    paths, repository, run_id = _setup_run(tmp_path)
+    raw_path = (
+        paths.ground_unattended_active_dir("site-a", "2026-07-25")
+        / "fleet_ping"
+        / "ping-scale.jsonl"
+    )
+    _register_ping_file(
+        repository,
+        raw_path,
+        file_id="raw-ping-scale",
+        run_id=run_id,
+        sample_id="sample-scale",
+        ts="2026-07-25T08:00:00+08:00",
+    )
+    base = datetime.fromisoformat("2026-07-25T08:00:00+08:00")
+    insert_sql = """
+        INSERT INTO ground_unattended_wmesh_events(
+            site_id, run_id, device_uuid, train_id, mr_role, event_type,
+            receive_time, event_family, event_time, dedup_key, details_json,
+            created_at
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """
+    rows = [
+        (
+            "site-a",
+            run_id,
+            "mr-ct",
+            "train-1",
+            "CT",
+            "MESH_ACTIVELINK_SWITCH",
+            base.isoformat(timespec="milliseconds"),
+            "WMESH",
+            base.isoformat(timespec="milliseconds"),
+            "target-switch",
+            json.dumps({"peer_ap_name": "AP-TARGET"}),
+            base.isoformat(timespec="milliseconds"),
+        )
+    ]
+    rows.extend(
+        (
+            "site-a",
+            run_id,
+            "mr-ct",
+            "train-1",
+            "CT",
+            "MESH_LINKUP",
+            (base + timedelta(milliseconds=index + 1)).isoformat(
+                timespec="milliseconds"
+            ),
+            "WMESH",
+            (base + timedelta(milliseconds=index + 1)).isoformat(
+                timespec="milliseconds"
+            ),
+            f"other-{index}",
+            "{}",
+            base.isoformat(timespec="milliseconds"),
+        )
+        for index in range(20_000)
+    )
+    with repository._transaction() as conn:
+        conn.executemany(insert_sql, rows)
+
+    result = GroundRawStreamQueryService(repository).ping_series(
+        run_id=run_id,
+        mr_id="mr-ct",
+        target_ip="192.0.2.10",
+        start_time="2026-07-25T08:00:00+08:00",
+        end_time="2026-07-25T08:00:30+08:00",
+    )
+
+    assert len(result["ap_transitions"]) == 1
+    assert result["ap_transitions"][0]["new_ap_name"] == "AP-TARGET"
+
+
+def test_ping_transition_marker_receive_prefilter_keeps_complete_clock_skew(
+    tmp_path: Path,
+) -> None:
+    paths, repository, run_id = _setup_run(tmp_path)
+    raw_path = (
+        paths.ground_unattended_active_dir("site-a", "2026-07-25")
+        / "fleet_ping"
+        / "ping-clock-boundary.jsonl"
+    )
+    _register_ping_file(
+        repository,
+        raw_path,
+        file_id="raw-ping-clock-boundary",
+        run_id=run_id,
+        sample_id="sample-clock-boundary",
+        ts="2026-07-25T08:00:00+08:00",
+    )
+    repository.record_control_syslog_event(
+        {
+            "run_id": run_id,
+            "device_uuid": "mr-ct",
+            "train_id": "train-1",
+            "mr_role": "CT",
+            "event_type": "MESH_ACTIVELINK_SWITCH",
+            "event_family": "WMESH",
+            "receive_time": "2026-07-25T07:59:50.200+08:00",
+            "event_time": "2026-07-25T07:59:55.100+08:00",
+            "event_time_source": "DEVICE_TIME",
+            "data_quality": "COMPLETE",
+            "dedup_key": "clock-boundary-switch",
+            "details": {"peer_ap_name": "AP-CLOCK-BOUNDARY"},
+        }
+    )
+
+    result = GroundRawStreamQueryService(repository).ping_series(
+        run_id=run_id,
+        mr_id="mr-ct",
+        target_ip="192.0.2.10",
+        start_time="2026-07-25T08:00:00+08:00",
+        end_time="2026-07-25T08:00:01+08:00",
+    )
+
+    assert len(result["ap_transitions"]) == 1
+    assert result["ap_transitions"][0]["new_ap_name"] == "AP-CLOCK-BOUNDARY"
 
 
 def test_ping_sample_position_context_does_not_emit_switch_marker(

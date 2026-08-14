@@ -307,6 +307,22 @@ describe('Electron-only packaging', () => {
     expect(script).toContain('PACKAGED_FRONTEND_COMMIT=')
   })
 
+  it('verifies the frozen health response and runtime logs use the same packaged identity', () => {
+    const script = readFileSync(resolve(appRoot, 'scripts', 'package-smoke.mjs'), 'utf8')
+
+    expect(script).toContain('/api/health')
+    expect(script).toContain('health?.backend_commit !== metadata.backend_commit')
+    expect(script).toContain('health?.frontend_commit !== frontend.git_commit_full')
+    expect(script).toContain('health?.packaged_dirty !== false')
+    expect(script).toContain('validatePackagedRuntimeIdentityLogs(smokeDataRoot)')
+    expect(script).toContain("resolve(dataRoot, 'runtime', 'logs', 'electron.log')")
+    expect(script).toContain("resolve(dataRoot, 'runtime', 'logs', 'app.log')")
+    expect(script).toContain('ELECTRON_BUILD_IDENTITY')
+    expect(script).toContain('BUILD_IDENTITY')
+    expect(script).toContain('electronIdentityLines.length !== 1')
+    expect(script).toContain('backendIdentityLines.length !== 1')
+  })
+
   it('requires runtime-versioned NOTICE and a strict CycloneDX SBOM', () => {
     const script = readFileSync(resolve(appRoot, 'scripts', 'package-smoke.mjs'), 'utf8').toLowerCase()
 
