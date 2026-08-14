@@ -909,7 +909,7 @@ def test_repository_additively_migrates_syslog_runtime_columns(tmp_path: Path) -
         "decision_revision",
         "decision_source",
     } <= train_columns
-    assert schema_version == "10"
+    assert schema_version == "11"
 
 
 def test_real_syslog_shapes_keep_parser_fields_and_clock_semantics(tmp_path: Path) -> None:

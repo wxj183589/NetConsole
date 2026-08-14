@@ -164,9 +164,14 @@ def test_supervisor_processes_each_controller_snapshot_only_once(
 
 
 class _DeepScheduler:
-    def __init__(self, *, active: bool) -> None:
+    def __init__(self, *, active: bool, active_ids: list[str] | None = None) -> None:
         self.active = active
+        self.active_ids = active_ids or (["deep-1"] if active else [])
         self.stop_calls = 0
+        self.recover_calls: list[str] = []
+
+    def recover(self, run_id: str) -> None:
+        self.recover_calls.append(run_id)
 
     def stop_all(self, *_args, **_kwargs) -> None:
         self.stop_calls += 1
@@ -176,6 +181,9 @@ class _DeepScheduler:
 
     def has_active_automated(self) -> bool:
         return self.active
+
+    def active_automated_operation_ids(self) -> list[str]:
+        return list(self.active_ids)
 
 
 class _ResidentService:
@@ -208,7 +216,7 @@ class _ResidentService:
         return list(self.statuses)
 
 
-def test_application_shutdown_requests_normal_ac_stop_before_deep_jobs_finish(
+def test_application_shutdown_quiesces_process_without_stopping_business_run(
     tmp_path: Path,
 ) -> None:
     supervisor, repository, _mesh = _supervisor(tmp_path)
@@ -219,20 +227,38 @@ def test_application_shutdown_requests_normal_ac_stop_before_deep_jobs_finish(
 
     supervisor._shutdown_active_run()
 
-    assert deep.stop_calls == 1
-    assert resident.stop_calls == [
-        {
-            "site_name": "site-a",
-            "run_id": "run-1",
-            "timeout_seconds": 25.0,
-        }
-    ]
+    assert deep.stop_calls == 0
+    assert resident.stop_calls == []
     run = repository.get_run("run-1")
     assert run is not None
-    assert run["state"] == "FINALIZING"
+    assert run["state"] == "RUNNING"
     operation = repository.latest_operation(run_id="run-1")
-    assert operation is not None
-    assert operation["operation_stage"] == "STOPPING_AC_POLLER"
+    assert operation is None
+    events = repository.list_events("run-1", event_type="backend_shutdown_quiesced")
+    assert len(events) == 1
+    assert events[0]["details"]["stop_trigger"] == "BACKEND_SHUTDOWN"
+
+
+def test_user_stop_intent_is_persisted_before_supervisor_command_runs(
+    tmp_path: Path,
+) -> None:
+    supervisor, repository, _mesh = _supervisor(tmp_path)
+    service = GroundUnattendedApplicationService(
+        supervisor.paths,
+        site_id="site-a",
+        repository=repository,
+        supervisor=supervisor,
+        base_query=_BaseQuery(),  # type: ignore[arg-type]
+    )
+
+    response = service.stop("site-a", archive=True)
+
+    run = repository.get_run("run-1")
+    operation = repository.get_operation(response.operation_id)
+    assert run is not None and run["state"] == "STOPPING"
+    assert run["requested_action"] == "stop_and_archive"
+    assert operation is not None and operation["operation_state"] == "PENDING"
+    assert operation["stop_trigger"] == "USER_STOP_AND_ARCHIVE"
 
 
 def test_ac_poller_stop_timeout_keeps_controller_diagnostics(
@@ -258,6 +284,247 @@ def test_ac_poller_stop_timeout_keeps_controller_diagnostics(
         "stopped": False,
         "forced": True,
     }
+
+
+def test_restart_recovers_legacy_application_shutdown_inside_frozen_window(
+    tmp_path: Path,
+) -> None:
+    supervisor, repository, _mesh = _supervisor(tmp_path)
+    repository.save_profile(repository.get_profile().model_copy(update={"enabled": True}))
+    repository.update_run(
+        "run-1", state="FINALIZING", requested_action="application_shutdown"
+    )
+    deep = _DeepScheduler(active=False)
+    supervisor.deep_scheduler = deep  # type: ignore[assignment]
+    supervisor.now_provider = lambda: datetime.fromisoformat(
+        "2026-07-29T11:46:00+08:00"
+    )
+    supervisor._network_profile_error = lambda _profile: None  # type: ignore[method-assign]
+    supervisor.inventory_sync = SimpleNamespace(synchronize=lambda: None)  # type: ignore[assignment]
+    supervisor._start_fleet_ping = lambda *_args: None  # type: ignore[method-assign]
+    supervisor._start_syslog = lambda *_args: None  # type: ignore[method-assign]
+    supervisor._ensure_ac_resident_pollers = lambda *_args: None  # type: ignore[method-assign]
+
+    supervisor._recover_on_start()
+
+    run = repository.get_run("run-1")
+    assert run is not None and run["state"] == "RUNNING"
+    assert run["requested_action"] == "recovered_after_shutdown"
+    assert deep.recover_calls == ["run-1"]
+
+
+def test_restart_keeps_persisted_user_archive_intent_over_shutdown_marker(
+    tmp_path: Path,
+) -> None:
+    supervisor, repository, _mesh = _supervisor(tmp_path)
+    repository.save_profile(repository.get_profile().model_copy(update={"enabled": True}))
+    repository.update_run(
+        "run-1", state="FINALIZING", requested_action="application_shutdown"
+    )
+    repository.save_operation(
+        {
+            "operation_id": "user-archive",
+            "site_id": "site-a",
+            "run_id": "run-1",
+            "operation_type": "STOP_AND_ARCHIVE",
+            "operation_state": "PENDING",
+            "operation_stage": "STOP_REQUESTED",
+            "progress_percent": 0,
+            "message": "停止并归档请求已提交",
+            "stop_trigger": "USER_STOP_AND_ARCHIVE",
+            "requested_by": "local_user",
+            "started_at": "2026-07-29T11:45:00+08:00",
+            "updated_at": "2026-07-29T11:45:00+08:00",
+        }
+    )
+    deep = _DeepScheduler(active=False)
+    supervisor.deep_scheduler = deep  # type: ignore[assignment]
+    supervisor.now_provider = lambda: datetime.fromisoformat(
+        "2026-07-29T11:46:00+08:00"
+    )
+
+    supervisor._recover_on_start()
+
+    run = repository.get_run("run-1")
+    operation = repository.get_operation("user-archive")
+    assert run is not None and run["state"] == "STOPPING"
+    assert run["requested_action"] == "stop_and_archive"
+    assert operation is not None and operation["operation_state"] == "PENDING"
+    assert operation["stop_trigger"] == "USER_STOP_AND_ARCHIVE"
+    assert deep.recover_calls == ["run-1"]
+
+
+def test_legacy_backend_shutdown_operation_keeps_backend_reason_and_continues(
+    tmp_path: Path,
+) -> None:
+    supervisor, repository, _mesh = _supervisor(tmp_path)
+    repository.update_run(
+        "run-1", state="FINALIZING", requested_action="application_shutdown"
+    )
+    repository.save_operation(
+        {
+            "operation_id": "legacy-backend-stop",
+            "site_id": "site-a",
+            "run_id": "run-1",
+            "operation_type": "STOP",
+            "operation_state": "RUNNING",
+            "operation_stage": "STOPPING_AC_POLLER",
+            "progress_percent": 22,
+            "message": "正在停止 AC 常驻轮询",
+            "started_at": "2026-07-29T11:45:00+08:00",
+            "updated_at": "2026-07-29T11:45:00+08:00",
+        }
+    )
+    deep = _DeepScheduler(active=False)
+    supervisor.deep_scheduler = deep  # type: ignore[assignment]
+
+    supervisor._recover_on_start()
+
+    run = repository.get_run("run-1")
+    operation = repository.get_operation("legacy-backend-stop")
+    assert run is not None and run["state"] == "FINALIZING"
+    assert operation is not None
+    assert operation["stop_trigger"] == "BACKEND_SHUTDOWN"
+    assert "旧版本 Backend 退出" in operation["stop_reason"]
+    assert deep.recover_calls == ["run-1"]
+
+
+def test_restart_backfills_missing_frozen_window_before_next_tick(
+    tmp_path: Path,
+) -> None:
+    supervisor, repository, _mesh = _supervisor(tmp_path)
+    repository.save_profile(repository.get_profile().model_copy(update={"enabled": True}))
+    repository.update_run("run-1", scheduled_start_at="", scheduled_end_at="")
+    supervisor.now_provider = lambda: datetime.fromisoformat(
+        "2026-07-29T11:46:00+08:00"
+    )
+    supervisor._network_profile_error = lambda _profile: None  # type: ignore[method-assign]
+    supervisor.inventory_sync = SimpleNamespace(synchronize=lambda: None)  # type: ignore[assignment]
+    supervisor._start_fleet_ping = lambda *_args: None  # type: ignore[method-assign]
+    supervisor._start_syslog = lambda *_args: None  # type: ignore[method-assign]
+    supervisor._ensure_ac_resident_pollers = lambda *_args: None  # type: ignore[method-assign]
+    supervisor._poll_if_due = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
+
+    supervisor._recover_on_start()
+    supervisor._tick()
+
+    run = repository.get_run("run-1")
+    assert run is not None and run["state"] == "RUNNING"
+    assert run["scheduled_start_at"].startswith("2026-07-29T07:00:00")
+    assert run["scheduled_end_at"].startswith("2026-07-29T23:00:00")
+    assert repository.latest_operation(run_id="run-1") is None
+
+
+def test_restart_inside_frozen_window_records_profile_disabled_reason(
+    tmp_path: Path,
+) -> None:
+    supervisor, repository, _mesh = _supervisor(tmp_path)
+    supervisor.now_provider = lambda: datetime.fromisoformat(
+        "2026-07-29T11:46:00+08:00"
+    )
+
+    supervisor._recover_on_start()
+
+    run = repository.get_run("run-1")
+    operation = repository.latest_operation(run_id="run-1")
+    assert run is not None and run["state"] == "STOPPING"
+    assert run["requested_action"] == "disabled"
+    assert operation is not None
+    assert operation["stop_trigger"] == "PROFILE_DISABLED"
+    assert operation["operation_type"] == "STOP"
+
+
+def test_deep_collection_stop_deadline_continues_other_component_cleanup(
+    tmp_path: Path,
+) -> None:
+    supervisor, repository, _mesh = _supervisor(tmp_path)
+    deep = _DeepScheduler(active=True)
+    resident = _ResidentService()
+    supervisor.deep_scheduler = deep  # type: ignore[assignment]
+    supervisor.ac_resident_service = resident  # type: ignore[assignment]
+    repository.update_run("run-1", state="STOPPING", requested_action="stop")
+    repository.save_operation(
+        {
+            "operation_id": "stop-timeout",
+            "site_id": "site-a",
+            "run_id": "run-1",
+            "operation_type": "STOP",
+            "operation_state": "RUNNING",
+            "operation_stage": "STOP_REQUESTED",
+            "progress_percent": 5,
+            "message": "停止",
+            "stop_trigger": "USER_NORMAL_STOP",
+            "stop_reason": "用户请求正常停止",
+            "triggered_at": "2026-07-29T11:40:00+08:00",
+            "started_at": "2026-07-29T11:40:00+08:00",
+            "updated_at": "2026-07-29T11:40:00+08:00",
+        }
+    )
+    supervisor.now_provider = lambda: datetime.fromisoformat(
+        "2026-07-29T11:43:00+08:00"
+    )
+    run = repository.get_active_run()
+    assert run is not None
+
+    supervisor._finalize_run(run, archive=False)
+
+    operation = repository.get_operation("stop-timeout")
+    assert operation is not None
+    assert operation["operation_state"] == "FAILED"
+    assert operation["failure_code"] == "DEEP_COLLECTION_STOP_TIMEOUT"
+    assert operation["result_summary"]["stop_failures"][0]["component"] == "deep_collection"
+    assert operation["result_summary"]["deep_collection_stop_state"] == "TIMED_OUT"
+    assert resident.stop_calls
+    run = repository.get_run("run-1")
+    assert run is not None and run["state"] == "COMPLETED"
+
+
+def test_deep_collection_deadline_accounts_for_bounded_finalizing_waves(
+    tmp_path: Path,
+) -> None:
+    supervisor, repository, _mesh = _supervisor(tmp_path)
+    deep = _DeepScheduler(
+        active=True,
+        active_ids=["deep-1", "deep-2", "deep-3", "deep-4"],
+    )
+    resident = _ResidentService()
+    supervisor.deep_scheduler = deep  # type: ignore[assignment]
+    supervisor.ac_resident_service = resident  # type: ignore[assignment]
+    repository.save_profile(
+        repository.get_profile().model_copy(update={"max_finalizing_mrs": 2})
+    )
+    repository.update_run("run-1", state="STOPPING", requested_action="stop")
+    repository.save_operation(
+        {
+            "operation_id": "stop-waves",
+            "site_id": "site-a",
+            "run_id": "run-1",
+            "operation_type": "STOP",
+            "operation_state": "RUNNING",
+            "operation_stage": "STOP_REQUESTED",
+            "progress_percent": 5,
+            "message": "停止",
+            "stop_trigger": "USER_NORMAL_STOP",
+            "triggered_at": "2026-07-29T11:40:00+08:00",
+            "started_at": "2026-07-29T11:40:00+08:00",
+            "updated_at": "2026-07-29T11:40:00+08:00",
+        }
+    )
+    clock = [datetime.fromisoformat("2026-07-29T11:42:30+08:00")]
+    supervisor.now_provider = lambda: clock[0]
+
+    supervisor._finalize_run(repository.get_active_run(), archive=False)
+
+    waiting = repository.get_operation("stop-waves")
+    assert waiting is not None and waiting["operation_state"] == "RUNNING"
+    assert waiting["result_summary"]["deep_collection_stop_timeout_seconds"] == 160.0
+    assert resident.stop_calls == []
+
+    clock[0] = datetime.fromisoformat("2026-07-29T11:42:41+08:00")
+    supervisor._finalize_run(repository.get_active_run(), archive=False)
+    completed = repository.get_operation("stop-waves")
+    assert completed is not None and completed["operation_state"] == "FAILED"
+    assert resident.stop_calls
 
 
 def test_ac_health_marks_backoff_degraded_and_keeps_failed_poller(

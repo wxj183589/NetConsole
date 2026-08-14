@@ -141,6 +141,21 @@ class DeepMrCollectionScheduler:
             )
         ) or any(not future.done() for future in self._stop_futures.values())
 
+    def active_automated_operation_ids(self) -> list[str]:
+        operation_ids = {
+            allocation.operation.controller_task_id
+            for allocation in self.policy.allocations(
+                self.site_id, self._active_operations()
+            )
+            if allocation.automated
+        }
+        operation_ids.update(
+            operation_id
+            for operation_id, future in self._stop_futures.items()
+            if not future.done()
+        )
+        return sorted(operation_ids)
+
     def close(self) -> None:
         self._stop_executor.shutdown(wait=True, cancel_futures=False)
 

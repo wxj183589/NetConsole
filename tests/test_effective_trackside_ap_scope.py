@@ -346,10 +346,128 @@ def test_scope_excludes_non_service_cross_project_and_ambiguous_station_rows() -
     assert "当前工作状态不是参与当前调试。" in reasons
     assert "不属于当前项目。" in reasons
     assert "缺少当前项目要求的建设阶段。" in reasons
-    assert "缺少有效 station_id；历史站名仅供诊断，不能建立正式关联。" in reasons
+    assert "缺少有效 station_id，且精确站名对应多个正式站点。" in reasons
     assert "在线 AP 尚未匹配轨旁 AP 基础资料；基础资料仅作补充，不影响业务生成。" in {
         item.reason for item in scope.unmatched_online_items
     }
+
+
+def test_legacy_base_ap_uses_only_unique_exact_station_projection_at_field_scale() -> None:
+    station = _station(100, "16-双陈站", "node-shuangchen", 16)
+    station_id = str(station["station_id"])
+    references = [
+        _reference(
+            index,
+            f"AP-SC-{index:04d}",
+            "双陈站",
+            f"{index:012x}",
+            operation_status="in_service",
+            project_id="extension",
+            construction_phase_id="phase_2",
+        )
+        for index in range(1, 684)
+    ]
+    resources = [
+        _resource(
+            None,
+            f"AP-SC-{index:04d}",
+            f"{index:012x}",
+            ap_uuid=f"fit-ap-{index}",
+        )
+        for index in range(1, 686)
+    ]
+
+    scope = resolve_effective_trackside_ap_scope(
+        context=TracksideApScopeContext(
+            site_id="extension",
+            project_id="extension",
+            line_name="杭州地铁10号线延长线",
+            project_phase="phase_2",
+        ),
+        station_rows=[station],
+        plan_rows=[
+            {
+                "station_id": station_id,
+                "station_name": "双陈站",
+                "ap_count": 683,
+                "sequence_no": 16,
+            }
+        ],
+        reference_rows=references,
+        resource_rows=resources,
+    )
+
+    assert scope.scope_ap_reference_count == 683
+    assert scope.fit_ap_resource_total_count == 685
+    assert scope.fit_ap_matched_count == 683
+    assert scope.fit_ap_unmatched_online_count == 2
+    assert scope.station_statistics()[0]["actual_online_count"] == 683
+
+
+def test_legacy_station_projection_keeps_ambiguous_name_out_of_scope() -> None:
+    stations = [
+        _station(100, "16-双陈站", "node-shuangchen-a", 16),
+        _station(101, "双陈站", "node-shuangchen-b", 17),
+    ]
+    reference = _reference(
+        1,
+        "AP-SC-01",
+        "双陈站",
+        "001122334455",
+        operation_status="in_service",
+        project_id="extension",
+        construction_phase_id="phase_2",
+    )
+
+    scope = resolve_effective_trackside_ap_scope(
+        context=TracksideApScopeContext(
+            site_id="extension",
+            project_id="extension",
+            line_name="杭州地铁10号线延长线",
+            project_phase="phase_2",
+        ),
+        station_rows=stations,
+        plan_rows=[],
+        reference_rows=[reference],
+        resource_rows=[
+            _resource(1, "AP-SC-01", "001122334455", ap_uuid="fit-ap-1")
+        ],
+    )
+
+    assert scope.scope_ap_reference_count == 0
+    assert scope.fit_ap_matched_count == 0
+    assert any("对应多个正式站点" in item.reason for item in scope.excluded_items)
+
+
+def test_legacy_station_projection_keeps_unknown_name_out_of_scope() -> None:
+    reference = _reference(
+        1,
+        "AP-UNKNOWN-01",
+        "不存在站",
+        "001122334455",
+        operation_status="in_service",
+        project_id="extension",
+        construction_phase_id="phase_2",
+    )
+
+    scope = resolve_effective_trackside_ap_scope(
+        context=TracksideApScopeContext(
+            site_id="extension",
+            project_id="extension",
+            line_name="杭州地铁10号线延长线",
+            project_phase="phase_2",
+        ),
+        station_rows=[_station(100, "16-双陈站", "node-shuangchen", 16)],
+        plan_rows=[],
+        reference_rows=[reference],
+        resource_rows=[
+            _resource(None, "AP-UNKNOWN-01", "001122334455", ap_uuid="fit-ap-1")
+        ],
+    )
+
+    assert scope.scope_ap_reference_count == 0
+    assert scope.fit_ap_matched_count == 0
+    assert any("未命中当前正式站点" in item.reason for item in scope.excluded_items)
 
 
 def test_over_planned_rate_is_not_exported_as_a_large_percentage() -> None:

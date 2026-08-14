@@ -46,8 +46,8 @@ def test_same_tick_error_logs_again_after_suppression_window(monkeypatch, caplog
     monkeypatch.setattr(supervisor_module.time, "monotonic", lambda: next(clock))
     caplog.set_level(logging.ERROR, logger=supervisor_module.LOGGER.name)
 
-    assert supervisor._record_tick_failure(RuntimeError("offline")) is True
-    assert supervisor._record_tick_failure(RuntimeError("offline")) is True
+    assert supervisor._record_tick_failure(RuntimeError("offline")) is False
+    assert supervisor._record_tick_failure(RuntimeError("offline")) is False
 
     messages = [record.getMessage() for record in caplog.records]
     assert sum("调度周期失败：" in message for message in messages) == 2

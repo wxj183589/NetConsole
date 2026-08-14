@@ -524,6 +524,11 @@ class GroundUnattendedApplicationService:
             )
         now = datetime.now().astimezone().isoformat(timespec="milliseconds")
         operation_id = f"groundop_{uuid.uuid4().hex}"
+        request_id = f"groundreq_{uuid.uuid4().hex}"
+        stop_trigger = (
+            "USER_STOP_AND_ARCHIVE" if archive else "USER_NORMAL_STOP"
+        )
+        stop_reason = "用户请求停止并归档" if archive else "用户请求正常停止"
         self.repository.save_operation(
             {
                 "operation_id": operation_id,
@@ -538,9 +543,21 @@ class GroundUnattendedApplicationService:
                     if archive
                     else "正常停止请求已提交"
                 ),
+                "stop_trigger": stop_trigger,
+                "stop_reason": stop_reason,
+                "requested_by": "local_user",
+                "request_id": request_id,
+                "previous_state": str(run.get("state") or ""),
+                "next_state": "STOPPING",
+                "triggered_at": now,
                 "started_at": now,
                 "updated_at": now,
             }
+        )
+        self.repository.update_run(
+            run_id,
+            state="STOPPING",
+            requested_action="stop_and_archive" if archive else "stop",
         )
         self.supervisor.request(
             "stop", archive=archive, operation_id=operation_id
@@ -2930,6 +2947,17 @@ class GroundUnattendedApplicationService:
         for row in self.repository.list_deep_operations(run_id):
             operations[(str(row["train_id"]), str(row["mr_position_code"]))] = row
         profile = self.repository.get_profile()
+        endpoint_snapshot = self.repository.train_endpoint_snapshot(
+            endpoint.mr_id
+            for train in trains
+            for endpoint in train.endpoints
+            if endpoint.mr_id
+        )
+        boot_by_device = dict(endpoint_snapshot["boot_by_device"])
+        wmesh_by_device = dict(endpoint_snapshot["wmesh_by_device"])
+        runtime_by_device = dict(endpoint_snapshot["runtime_by_device"])
+        radio_by_device = dict(endpoint_snapshot["radio_by_device"])
+        audit_by_device = dict(endpoint_snapshot["audit_by_device"])
         result = []
         for train in trains:
             endpoints = []
@@ -2938,28 +2966,18 @@ class GroundUnattendedApplicationService:
                 end_key = (train.train_id, f"end:{endpoint.endpoint}")
                 summary = summaries.get(mr_key) or summaries.get(end_key) or {}
                 operation = operations.get((train.train_id, endpoint.endpoint)) or {}
-                boot = self.repository.latest_boot_session(endpoint.mr_id) if endpoint.mr_id else None
-                wmesh = self.repository.latest_wmesh_event(endpoint.mr_id) if endpoint.mr_id else None
-                radio_runtime = (
-                    self.repository.get_mr_runtime_state(endpoint.mr_id)
-                    if endpoint.mr_id
-                    else None
-                )
+                boot = boot_by_device.get(endpoint.mr_id)
+                wmesh = wmesh_by_device.get(endpoint.mr_id)
+                radio_runtime = runtime_by_device.get(endpoint.mr_id)
                 radio_interfaces = (
                     [
                         _radio_interface_projection(item)
-                        for item in self.repository.list_radio_interface_states(
-                            device_uuid=endpoint.mr_id
-                        )
+                        for item in radio_by_device.get(endpoint.mr_id, [])
                     ]
                     if endpoint.mr_id
                     else []
                 )
-                config_audit = (
-                    self.repository.latest_syslog_config_audit(endpoint.mr_id)
-                    if endpoint.mr_id
-                    else None
-                )
+                config_audit = audit_by_device.get(endpoint.mr_id)
                 info_center = dict((boot or {}).get("info_center_metrics") or {})
                 managed_ip = str(profile.syslog_server_ip or "")
                 managed_port = int(profile.syslog_server_port)

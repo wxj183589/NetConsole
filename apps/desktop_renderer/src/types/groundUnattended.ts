@@ -180,6 +180,8 @@ export interface GroundOperation {
   operation_id: string; site_id: string; run_id: string; operation_type: 'STOP' | 'STOP_AND_ARCHIVE'
   operation_state: 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED'; operation_stage: string; progress_percent: number
   message: string; started_at: string; updated_at: string; completed_at: string; failure_code: string; failure_reason: string
+  stop_trigger: 'USER_NORMAL_STOP' | 'USER_STOP_AND_ARCHIVE' | 'SCHEDULE_END' | 'PROFILE_DISABLED' | 'BACKEND_SHUTDOWN' | 'SITE_SWITCH' | 'RECOVERY' | 'FATAL_ERROR' | 'UNKNOWN'
+  stop_reason: string; requested_by: string; request_id: string; previous_state: string; next_state: string; triggered_at: string
   result_summary: Record<string, unknown>
 }
 export interface GroundPingSample {

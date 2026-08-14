@@ -12,6 +12,7 @@ import pytest
 from netconsole.core.paths import PathResolver
 from netconsole.core.database import Database
 from netconsole.repositories.device_repository import DeviceRepository
+from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.backend.api.main import _current_site_name
 from netconsole.services.ap_identity import ApIdentityQueryService
 from netconsole.services.site_storage import (
@@ -515,6 +516,253 @@ def test_full_migration_package_plainly_copies_and_restores_credentials(
     assert restored.credential_status == "available"
 
 
+def test_full_migration_round_trip_preserves_device_group_contract(
+    tmp_path: Path,
+) -> None:
+    source_paths = _paths(tmp_path / "source")
+    source_sites = SiteApplicationService(source_paths)
+    source_sites.create_site("source-site", "源局点")
+    source_database = Database(source_paths.site_db_path("source-site"))
+    groups = DeviceGroupRepository(source_database, "source-site")
+    chinese_group = groups.create("车站通信设备", sort_order=71)
+    empty_group = groups.create("暂未投运设备", sort_order=72)
+    assert chinese_group.id is not None
+    assert empty_group.id is not None
+    with sqlite3.connect(source_database.path) as connection:
+        connection.executemany(
+            "INSERT INTO devices (device_uuid, name, station, group_id, device_vendor, "
+            "device_type, project_phase, work_scope_status, primary_address, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
+            [
+                (
+                    "device-h3c",
+                    "H3C-AC",
+                    "同一站点",
+                    int(chinese_group.id),
+                    "H3C",
+                    "AC",
+                    "phase_2",
+                    "included",
+                    "192.0.2.41",
+                ),
+                (
+                    "device-zte",
+                    "ZTE-SW",
+                    "同一站点",
+                    int(chinese_group.id),
+                    "ZTE",
+                    "SW",
+                    "phase_1",
+                    "excluded",
+                    "192.0.2.42",
+                ),
+                (
+                    "device-other",
+                    "OTHER-MR",
+                    "另一站点",
+                    None,
+                    "Other",
+                    "MR",
+                    "other",
+                    "included",
+                    "192.0.2.43",
+                ),
+            ],
+        )
+        source_groups = connection.execute(
+            "SELECT id, name, sort_order FROM device_groups ORDER BY id"
+        ).fetchall()
+        source_memberships = connection.execute(
+            "SELECT device_uuid, group_id FROM devices ORDER BY device_uuid"
+        ).fetchall()
+        connection.commit()
+
+    package = tmp_path / "group-round-trip.ncsite"
+    SitePackageService(source_paths, source_sites).export_site("source-site", package)
+    with zipfile.ZipFile(package) as archive:
+        manifest = json.loads(archive.read("manifest.json"))
+    group_summary = manifest["relation_summary"]["device_groups"]
+    assert group_summary["schema_version"] == 1
+    assert group_summary["group_count"] == len(source_groups)
+    assert group_summary["grouped_device_count"] == 2
+    assert group_summary["orphan_group_reference_count"] == 0
+
+    target_paths = _paths(tmp_path / "target")
+    target_sites = SiteApplicationService(target_paths)
+    SitePackageService(target_paths, target_sites).import_site(
+        package,
+        site_id="restored-site",
+        display_name="恢复局点",
+    )
+    with sqlite3.connect(target_paths.site_db_path("restored-site")) as connection:
+        target_groups = connection.execute(
+            "SELECT id, name, sort_order FROM device_groups ORDER BY id"
+        ).fetchall()
+        target_memberships = connection.execute(
+            "SELECT device_uuid, group_id FROM devices ORDER BY device_uuid"
+        ).fetchall()
+        target_scopes = connection.execute(
+            "SELECT DISTINCT site_id FROM device_groups ORDER BY site_id"
+        ).fetchall()
+
+    assert target_groups == source_groups
+    assert target_memberships == source_memberships
+    assert target_scopes == [("restored-site",)]
+    assert any(row[1] == "暂未投运设备" for row in target_groups)
+
+
+def test_legacy_v4_package_without_group_metadata_rebinds_unique_scope(
+    tmp_path: Path,
+) -> None:
+    source_paths = _paths(tmp_path / "source")
+    source_sites = SiteApplicationService(source_paths)
+    source_sites.create_site("legacy-source", "旧完整包")
+    database = Database(source_paths.site_db_path("legacy-source"))
+    group = DeviceGroupRepository(database, "legacy-source").create("旧包中文组")
+    assert group.id is not None
+    with sqlite3.connect(database.path) as connection:
+        connection.execute(
+            "INSERT INTO devices (device_uuid, name, group_id, primary_address, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))",
+            ("legacy-device", "旧包设备", int(group.id), "192.0.2.51"),
+        )
+        connection.commit()
+    package = tmp_path / "legacy-v4.ncsite"
+    SitePackageService(source_paths, source_sites).export_site("legacy-source", package)
+    rewritten = tmp_path / "legacy-v4-without-relation-metadata.ncsite"
+    with zipfile.ZipFile(package) as source, zipfile.ZipFile(
+        rewritten, "w", compression=zipfile.ZIP_DEFLATED
+    ) as target:
+        for info in source.infolist():
+            value = source.read(info.filename)
+            if info.filename == "manifest.json":
+                manifest = json.loads(value)
+                manifest.pop("site_scope", None)
+                manifest.pop("relation_summary", None)
+                value = json.dumps(manifest, ensure_ascii=False).encode("utf-8")
+            target.writestr(info, value)
+
+    target_paths = _paths(tmp_path / "target")
+    target_sites = SiteApplicationService(target_paths)
+    SitePackageService(target_paths, target_sites).import_site(
+        rewritten,
+        site_id="legacy-target",
+    )
+
+    restored_groups = DeviceGroupRepository(
+        Database(target_paths.site_db_path("legacy-target")), "legacy-target"
+    ).list()
+    restored = DeviceRepository(
+        Database(target_paths.site_db_path("legacy-target"))
+    ).get_by_uuid("legacy-device")
+    assert any(item.name == "旧包中文组" for item in restored_groups)
+    assert restored is not None
+    assert restored.group_id == group.id
+
+
+def test_full_package_import_rebinds_legacy_blank_group_scope(
+    tmp_path: Path,
+) -> None:
+    source_paths = _paths(tmp_path / "source")
+    source_sites = SiteApplicationService(source_paths)
+    source_sites.create_site("legacy-source", "旧空作用域局点")
+    database = Database(source_paths.site_db_path("legacy-source"))
+    group = DeviceGroupRepository(database, "legacy-source").create("旧空作用域组")
+    assert group.id is not None
+    with sqlite3.connect(database.path) as connection:
+        connection.execute(
+            "UPDATE device_groups SET site_id=''",
+        )
+        connection.execute(
+            "INSERT INTO devices (device_uuid, name, group_id, primary_address, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))",
+            ("legacy-blank-device", "旧设备", int(group.id), "192.0.2.52"),
+        )
+        connection.commit()
+    package = tmp_path / "legacy-blank-scope.ncsite"
+    SitePackageService(source_paths, source_sites).export_site("legacy-source", package)
+
+    target_paths = _paths(tmp_path / "target")
+    target_sites = SiteApplicationService(target_paths)
+    SitePackageService(target_paths, target_sites).import_site(
+        package,
+        site_id="legacy-target",
+    )
+
+    restored_groups = DeviceGroupRepository(
+        Database(target_paths.site_db_path("legacy-target")), "legacy-target"
+    ).list()
+    assert restored_groups
+    assert {item.site_id for item in restored_groups} == {"legacy-target"}
+    assert any(item.name == "旧空作用域组" for item in restored_groups)
+
+
+def test_full_package_import_rejects_mixed_group_scopes(tmp_path: Path) -> None:
+    source_paths = _paths(tmp_path / "source")
+    source_sites = SiteApplicationService(source_paths)
+    source_sites.create_site("mixed-source", "混合作用域局点")
+    database = Database(source_paths.site_db_path("mixed-source"))
+    groups = DeviceGroupRepository(database, "mixed-source")
+    first = groups.create("正常组")
+    second = groups.create("空作用域组")
+    assert first.id is not None and second.id is not None
+    with sqlite3.connect(database.path) as connection:
+        connection.execute(
+            "UPDATE device_groups SET site_id='' WHERE id=?",
+            (int(second.id),),
+        )
+        connection.commit()
+    package = tmp_path / "mixed-scope.ncsite"
+    SitePackageService(source_paths, source_sites).export_site("mixed-source", package)
+
+    target_paths = _paths(tmp_path / "target")
+    with pytest.raises(SiteStorageError) as raised:
+        SitePackageService(
+            target_paths,
+            SiteApplicationService(target_paths),
+        ).import_site(package, site_id="mixed-target")
+
+    assert raised.value.code == "SITE_IMPORT_RELATION_SCOPE_CONFLICT"
+    assert not target_paths.site_dir("mixed-target").exists()
+
+
+@pytest.mark.parametrize("schema_version", [2, True, 1.0])
+def test_full_package_import_rejects_unknown_group_relation_schema(
+    tmp_path: Path,
+    schema_version: object,
+) -> None:
+    source_paths = _paths(tmp_path / "source")
+    source_sites = SiteApplicationService(source_paths)
+    source_sites.create_site("source-site", "源局点")
+    database = Database(source_paths.site_db_path("source-site"))
+    DeviceGroupRepository(database, "source-site").create("分组")
+    package = tmp_path / "source.ncsite"
+    SitePackageService(source_paths, source_sites).export_site("source-site", package)
+    rewritten = tmp_path / "unknown-relation-schema.ncsite"
+    with zipfile.ZipFile(package) as source, zipfile.ZipFile(
+        rewritten, "w", compression=zipfile.ZIP_DEFLATED
+    ) as target:
+        for info in source.infolist():
+            value = source.read(info.filename)
+            if info.filename == "manifest.json":
+                manifest = json.loads(value)
+                manifest["relation_summary"]["device_groups"][
+                    "schema_version"
+                ] = schema_version
+                value = json.dumps(manifest, ensure_ascii=False).encode("utf-8")
+            target.writestr(info, value)
+
+    target_paths = _paths(tmp_path / "target")
+    with pytest.raises(SiteStorageError) as raised:
+        SitePackageService(
+            target_paths,
+            SiteApplicationService(target_paths),
+        ).import_site(rewritten, site_id="target-site")
+
+    assert raised.value.code == "SITE_IMPORT_RELATION_SCHEMA_UNSUPPORTED"
+    assert not target_paths.site_dir("target-site").exists()
+
+
 def test_import_migrates_database_in_staging_before_publish(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -768,6 +1016,18 @@ def test_import_replace_uses_legacy_directory_path(tmp_path: Path) -> None:
     source_paths = _paths(tmp_path / "source")
     source_sites = SiteApplicationService(source_paths)
     source_sites.create_site("source-site", "源局点")
+    source_database = Database(source_paths.site_db_path("source-site"))
+    source_group = DeviceGroupRepository(source_database, "source-site").create(
+        "保留分组"
+    )
+    assert source_group.id is not None
+    with sqlite3.connect(source_database.path) as connection:
+        connection.execute(
+            "INSERT INTO devices (device_uuid, name, group_id, primary_address, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))",
+            ("legacy-replace-device", "分组设备", int(source_group.id), "192.0.2.61"),
+        )
+        connection.commit()
     package = tmp_path / "source.ncsite"
     SitePackageService(source_paths, source_sites).export_site("source-site", package)
 
@@ -794,6 +1054,15 @@ def test_import_replace_uses_legacy_directory_path(tmp_path: Path) -> None:
     assert (
         target_sites.get_site(str(legacy["site_id"]))["display_name"] == "替换后的局点"
     )
+    with sqlite3.connect(target_paths.site_db_path(legacy_name)) as connection:
+        scopes = connection.execute(
+            "SELECT DISTINCT site_id FROM device_groups ORDER BY site_id"
+        ).fetchall()
+        restored = connection.execute(
+            "SELECT group_id FROM devices WHERE device_uuid='legacy-replace-device'"
+        ).fetchone()
+    assert scopes == [(legacy_name,)]
+    assert restored == (int(source_group.id),)
 
 
 def test_full_migration_replace_restores_original_site_when_publish_fails(

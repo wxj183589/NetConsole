@@ -200,6 +200,8 @@ const severityLabels: Record<string, string> = {
 
 const operationStageLabels: Record<string, string> = {
   STOP_REQUESTED: '已提交停止请求',
+  STOPPING_DEEP_COLLECTION: '正在停止深度采集',
+  STOPPING_AC_POLLER: '正在停止 AC 常驻轮询',
   STOPPING_PING: '正在停止长 Ping',
   STOPPING_SYSLOG: '正在停止 Syslog 接收',
   FLUSHING_QUEUE: '正在清空接收队列',
@@ -212,6 +214,7 @@ const operationStageLabels: Record<string, string> = {
   ARCHIVE_READY: '归档校验完成',
   CLEANING_ARCHIVED_ACTIVE: '正在清理已归档数据',
   COMPLETED: '操作完成',
+  RECOVERED: '恢复处理完成',
   FAILED: '操作失败',
 }
 
@@ -233,6 +236,22 @@ export function groundSeverityLabel(value: unknown): string {
 export function groundOperationStageLabel(value: unknown): string {
   const key = String(value || '').trim()
   return key ? operationStageLabels[key] || '正在处理' : '等待处理'
+}
+
+export function groundStopTriggerLabel(value: unknown): string {
+  const key = String(value || '').trim()
+  const labels: Record<string, string> = {
+    USER_NORMAL_STOP: '用户请求正常停止',
+    USER_STOP_AND_ARCHIVE: '用户请求停止并归档',
+    SCHEDULE_END: '到达冻结的计划结束时间',
+    PROFILE_DISABLED: '无人值守配置已停用',
+    BACKEND_SHUTDOWN: 'Backend 生命周期触发',
+    SITE_SWITCH: '局点切换触发',
+    RECOVERY: '恢复流程触发',
+    FATAL_ERROR: '连续致命调度错误',
+    UNKNOWN: '历史记录未保存触发来源',
+  }
+  return labels[key] || '历史记录未保存触发来源'
 }
 
 export function groundRunModeLabel(value: unknown): string {
