@@ -8,6 +8,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+Import-Module Microsoft.PowerShell.Utility -ErrorAction Stop
 
 $utf8 = [System.Text.UTF8Encoding]::new($false)
 [Console]::InputEncoding = $utf8
