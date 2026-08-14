@@ -1584,8 +1584,17 @@ def _resolve_station_id(
         if mapped in known:
             return mapped, ""
         return "", "关联的 station_id 不属于当前有效站点。"
-    del station_aliases
-    return "", "缺少有效 station_id；历史站名仅供诊断，不能建立正式关联。"
+    station_key = _station_key(
+        row.get("station_name")
+        or metadata.get("canonical_station_name")
+        or metadata.get("station_name")
+    )
+    candidates = station_aliases.get(station_key, set()) if station_key else set()
+    if len(candidates) == 1:
+        return next(iter(candidates)), ""
+    if len(candidates) > 1:
+        return "", "缺少有效 station_id，且精确站名对应多个正式站点。"
+    return "", "缺少有效 station_id，且精确站名未命中当前正式站点。"
 
 
 def _resolve_plan_station_id(

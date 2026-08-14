@@ -24,13 +24,19 @@ created_at / source_platform / contains_credentials / credential_reentry_count
 databases / artifacts / checksums
 ```
 
+新生成的 `full_migration` 与 `sanitized_share` v4 包还携带可选扩展 `site_scope / relation_summary`；`field_collection`、`collection_return` 继续使用各自的同步 manifest 合同。
+
 `full_migration` 还明确记录 `encrypted=false`。包中不包含加密参数、`payload.enc`、迁移密码或凭据冲突策略。
 
 `site_id` 是 Registry 的稳定内部标识；`site_uuid` 是跨电脑判断“是否同一局点”的不可变标识。显示名称可修改，不能参与匹配。新局点会创建 `site_uuid`；Legacy 局点必须先完成只读审计，才允许建立同步标识和导出现场/回传包。
 
+`site_scope.source_directory_name` 记录来源端实际物理局点目录名。`relation_summary.device_groups` 记录关系 schema、来源 scope、分组数、已分组设备数、孤儿引用数以及分组定义/成员关系摘要。真实分组定义和 `device -> group` 关系仍只存于 `devices.db`，manifest 只用于导入前后的无损校验，不建立第二份业务事实。存在扩展字段时会校验 schema、字段类型、来源物理 scope 和摘要；未知 schema 会停止导入。旧 v1/v2/v4 包缺少这些新增字段时继续兼容：导入只在 staging 数据库中可唯一确定一个分组 scope 且没有孤儿引用时重绑定；多 scope 或关系损坏会停止发布。
+
 ## 内容与安全边界
 
 完整迁移包是普通 ZIP，直接包含 `manifest.json`、`checksums.json`、`README.txt` 和完整 `site/` 快照。SQLite 通过 Backup API 生成一致副本，每个文件都有 SHA-256；导入先完成路径、符号链接、解压大小、checksum、manifest 和 SQLite 完整性校验，全部成功后才原子发布。任何校验失败都不会发布半个局点。
+
+恢复为不同局点标识或替换 Legacy 中文物理目录时，导入在 staging 中把 `device_groups.site_id` 重绑定为目标物理目录名；分组 ID、名称、排序、空组以及 `devices.group_id` 全部保持不变。重绑定前后会校验分组数量、成员数量、孤儿引用和两类摘要，失败时不发布目标局点。
 
 完整迁移包保留设备用户名、SSH/Telnet 密码、SNMP community 和隧道凭据。导入新局点或替换已有局点都直接使用包内数据库及其凭据，不提供 `credential_policy`，也不会因来源电脑不同设置 `needs_reentry`。它不要求或接收迁移密码，也不生成加密载荷；导出页和导入预检会明确警告“完整迁移包包含设备用户名和密码”。该包不提供机密性，必须只保存到可信位置。
 

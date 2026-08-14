@@ -84,7 +84,7 @@ FIT-AP 运行态由 AC 原始状态统一判定：`R/M`、`R/B` 为在线，其�
 
 ## 5. 迁移与兼容
 
-数据库初始化幂等增加物理关系列和索引，并为已有正式站点/区间主记录补齐确定性 ID。跨表关系由 `scripts/maintenance/backfill_trackside_ap_station_identity.py` 在数据库副本上迁移：默认 dry-run；apply 必须提供报告哈希和 `APPLY_RAIL_BASE_IDENTITY_BACKFILL` 显式确认。报告分别列出主记录、设备绑定、AP 站点/区间和规划关系的既有、安全、歧义、未解析与已应用数量；歧义项不写入。
+数据库初始化幂等增加物理关系列和索引，并为已有正式站点/区间主记录补齐确定性 ID。对升级前已存在、仅缺 `station_id` 的轨旁 AP 基础记录，业务查询可按记录自身站名经既有 `canonical_station_name` 规范化后的完整名称唯一等值命中当前局点正式站点，从而建立只读兼容投影；零候选或多候选继续排除并返回诊断，不写库、不跨站、不使用模糊名称，也不据此生成 AP 规划。跨表持久关系仍由 `scripts/maintenance/backfill_trackside_ap_station_identity.py` 在数据库副本上迁移：默认 dry-run；apply 必须提供报告哈希和 `APPLY_RAIL_BASE_IDENTITY_BACKFILL` 显式确认。报告分别列出主记录、设备绑定、AP 站点/区间和规划关系的既有、安全、歧义、未解析与已应用数量；歧义项不写入。
 
 迁移不自动寻找正式局点，也不删除历史行。执行方在 apply 前保留原数据库副本和 dry-run JSON；校验或事务失败时脚本回滚本次写入，已提交结果需要回退时以执行前副本恢复，并重新构建一次 AP Identity。应用前哈希不一致必须重新 dry-run，禁止拿旧报告覆盖后续修改。
 

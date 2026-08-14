@@ -33,6 +33,7 @@ import type {
 import type { OnlineMrPingPreset } from '../../types/onlineMrControl'
 import {
   groundDisplayNameSourceLabel, groundEventLabel, groundOperationStageLabel, groundRunModeLabel, groundSeverityLabel,
+  groundStopTriggerLabel,
   groundSourceLabel, groundStatusLabel, groundTransitionContextLabel,
 } from './groundUnattendedLabels'
 
@@ -1685,7 +1686,7 @@ onBeforeUnmount(() => {
     <section v-if="visibleOperation" class="operation-band" :class="`operation-${visibleOperation.operation_state.toLocaleLowerCase()}`">
       <div class="operation-heading">
         <div>
-          <b>{{ visibleOperation.operation_type === 'STOP_AND_ARCHIVE' ? '停止并归档' : '正常停止' }}</b>
+          <b>{{ visibleOperation.operation_type === 'STOP_AND_ARCHIVE' ? '停止并归档' : '运行停止' }}</b>
           <span>{{ groundOperationStageLabel(visibleOperation.operation_stage) }}</span>
         </div>
         <div class="row-actions">
@@ -1697,7 +1698,8 @@ onBeforeUnmount(() => {
       </div>
       <el-progress :percentage="visibleOperation.progress_percent" :status="visibleOperation.operation_state === 'FAILED' ? 'exception' : visibleOperation.operation_state === 'COMPLETED' ? 'success' : undefined" />
       <p>{{ visibleOperation.message }}<span v-if="visibleOperation.failure_reason">：{{ visibleOperation.failure_reason }}</span></p>
-      <small>操作编号 {{ visibleOperation.operation_id }} · 最后更新 {{ visibleOperation.updated_at }}</small>
+      <small>触发原因 {{ visibleOperation.stop_reason || groundStopTriggerLabel(visibleOperation.stop_trigger) }} · 触发时间 {{ visibleOperation.triggered_at || visibleOperation.started_at }}</small>
+      <small>操作编号 {{ visibleOperation.operation_id }}<template v-if="visibleOperation.request_id"> · 请求编号 {{ visibleOperation.request_id }}</template> · 最后更新 {{ visibleOperation.updated_at }}</small>
     </section>
 
     <section v-if="generalLoadIssues.length" class="load-warning">

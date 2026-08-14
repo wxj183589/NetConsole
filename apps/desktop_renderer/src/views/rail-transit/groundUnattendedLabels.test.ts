@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   groundEventLabel,
   groundOperationStageLabel,
+  groundStopTriggerLabel,
   groundSeverityLabel,
   groundStatusLabel,
   groundTransitionContextLabel,
@@ -15,6 +16,10 @@ describe('ground unattended Chinese labels', () => {
     expect(groundEventLabel('mesh_activelink_switch')).toBe('WMESH 主链路切换')
     expect(groundSeverityLabel('critical')).toBe('严重')
     expect(groundOperationStageLabel('STOPPING_SYSLOG')).toBe('正在停止 Syslog 接收')
+    expect(groundOperationStageLabel('STOPPING_DEEP_COLLECTION')).toBe('正在停止深度采集')
+    expect(groundOperationStageLabel('STOPPING_AC_POLLER')).toBe('正在停止 AC 常驻轮询')
+    expect(groundStopTriggerLabel('BACKEND_SHUTDOWN')).toBe('Backend 生命周期触发')
+    expect(groundStopTriggerLabel('UNKNOWN')).toBe('历史记录未保存触发来源')
     expect(groundStatusLabel('OPEN')).toBe('正在写入')
     expect(groundStatusLabel('WAITING_FIRST_LOG')).toBe('等待首条日志')
     expect(groundTransitionContextLabel('AFTER_AP_TRANSITION')).toBe('AP 切换后')

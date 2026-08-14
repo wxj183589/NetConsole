@@ -524,6 +524,11 @@ class GroundUnattendedApplicationService:
             )
         now = datetime.now().astimezone().isoformat(timespec="milliseconds")
         operation_id = f"groundop_{uuid.uuid4().hex}"
+        request_id = f"groundreq_{uuid.uuid4().hex}"
+        stop_trigger = (
+            "USER_STOP_AND_ARCHIVE" if archive else "USER_NORMAL_STOP"
+        )
+        stop_reason = "用户请求停止并归档" if archive else "用户请求正常停止"
         self.repository.save_operation(
             {
                 "operation_id": operation_id,
@@ -538,9 +543,21 @@ class GroundUnattendedApplicationService:
                     if archive
                     else "正常停止请求已提交"
                 ),
+                "stop_trigger": stop_trigger,
+                "stop_reason": stop_reason,
+                "requested_by": "local_user",
+                "request_id": request_id,
+                "previous_state": str(run.get("state") or ""),
+                "next_state": "STOPPING",
+                "triggered_at": now,
                 "started_at": now,
                 "updated_at": now,
             }
+        )
+        self.repository.update_run(
+            run_id,
+            state="STOPPING",
+            requested_action="stop_and_archive" if archive else "stop",
         )
         self.supervisor.request(
             "stop", archive=archive, operation_id=operation_id
@@ -2930,6 +2947,17 @@ class GroundUnattendedApplicationService:
         for row in self.repository.list_deep_operations(run_id):
             operations[(str(row["train_id"]), str(row["mr_position_code"]))] = row
         profile = self.repository.get_profile()
+        endpoint_snapshot = self.repository.train_endpoint_snapshot(
+            endpoint.mr_id
+            for train in trains
+            for endpoint in train.endpoints
+            if endpoint.mr_id
+        )
+        boot_by_device = dict(endpoint_snapshot["boot_by_device"])
+        wmesh_by_device = dict(endpoint_snapshot["wmesh_by_device"])
+        runtime_by_device = dict(endpoint_snapshot["runtime_by_device"])
+        radio_by_device = dict(endpoint_snapshot["radio_by_device"])
+        audit_by_device = dict(endpoint_snapshot["audit_by_device"])
         result = []
         for train in trains:
             endpoints = []
@@ -2938,28 +2966,18 @@ class GroundUnattendedApplicationService:
                 end_key = (train.train_id, f"end:{endpoint.endpoint}")
                 summary = summaries.get(mr_key) or summaries.get(end_key) or {}
                 operation = operations.get((train.train_id, endpoint.endpoint)) or {}
-                boot = self.repository.latest_boot_session(endpoint.mr_id) if endpoint.mr_id else None
-                wmesh = self.repository.latest_wmesh_event(endpoint.mr_id) if endpoint.mr_id else None
-                radio_runtime = (
-                    self.repository.get_mr_runtime_state(endpoint.mr_id)
-                    if endpoint.mr_id
-                    else None
-                )
+                boot = boot_by_device.get(endpoint.mr_id)
+                wmesh = wmesh_by_device.get(endpoint.mr_id)
+                radio_runtime = runtime_by_device.get(endpoint.mr_id)
                 radio_interfaces = (
                     [
                         _radio_interface_projection(item)
-                        for item in self.repository.list_radio_interface_states(
-                            device_uuid=endpoint.mr_id
-                        )
+                        for item in radio_by_device.get(endpoint.mr_id, [])
                     ]
                     if endpoint.mr_id
                     else []
                 )
-                config_audit = (
-                    self.repository.latest_syslog_config_audit(endpoint.mr_id)
-                    if endpoint.mr_id
-                    else None
-                )
+                config_audit = audit_by_device.get(endpoint.mr_id)
                 info_center = dict((boot or {}).get("info_center_metrics") or {})
                 managed_ip = str(profile.syslog_server_ip or "")
                 managed_port = int(profile.syslog_server_port)
@@ -3172,29 +3190,41 @@ class GroundUnattendedApplicationService:
 
     @staticmethod
     def _archive_dto(row: dict[str, Any]) -> GroundArchiveDTO:
-        summary = row.get("summary") or {}
+        raw_summary = row.get("summary")
+        summary = dict(raw_summary) if isinstance(raw_summary, Mapping) else {}
+
+        def _text(key: str) -> str:
+            value = row.get(key)
+            return str(value) if value is not None else ""
+
+        def _integer(value: object) -> int:
+            try:
+                return int(value or 0)
+            except (TypeError, ValueError):
+                return 0
+
         return GroundArchiveDTO(
-            archive_id=row["archive_id"],
-            site_id=row["site_id"],
-            run_id=row["run_id"],
-            run_date=row["run_date"],
-            actual_started_at=row.get("actual_started_at", ""),
-            actual_ended_at=row.get("actual_ended_at", ""),
-            mainline_train_count=int(summary.get("mainline_train_count") or 0),
-            ping_target_count=int(summary.get("ping_target_count") or 0),
-            ping_sample_count=int(summary.get("ping_sample_count") or 0),
-            covered_train_count=int(summary.get("covered_train_count") or 0),
-            complete_session_count=int(summary.get("complete_session_count") or 0),
-            partial_session_count=int(summary.get("partial_session_count") or 0),
-            archive_size_bytes=int(row.get("archive_size_bytes") or 0),
-            sha256=str(row.get("sha256") or ""),
-            manifest_sha256=str(row.get("manifest_sha256") or ""),
-            archive_status=row.get("archive_status", ""),
-            retention_until=row.get("retention_until", ""),
+            archive_id=_text("archive_id"),
+            site_id=_text("site_id"),
+            run_id=_text("run_id"),
+            run_date=_text("run_date"),
+            actual_started_at=_text("actual_started_at"),
+            actual_ended_at=_text("actual_ended_at"),
+            mainline_train_count=_integer(summary.get("mainline_train_count")),
+            ping_target_count=_integer(summary.get("ping_target_count")),
+            ping_sample_count=_integer(summary.get("ping_sample_count")),
+            covered_train_count=_integer(summary.get("covered_train_count")),
+            complete_session_count=_integer(summary.get("complete_session_count")),
+            partial_session_count=_integer(summary.get("partial_session_count")),
+            archive_size_bytes=_integer(row.get("archive_size_bytes")),
+            sha256=_text("sha256"),
+            manifest_sha256=_text("manifest_sha256"),
+            archive_status=_text("archive_status"),
+            retention_until=_text("retention_until"),
             summary=summary,
-            message=row.get("message", ""),
-            created_at=row.get("created_at", ""),
-            updated_at=row.get("updated_at", ""),
+            message=_text("message"),
+            created_at=_text("created_at"),
+            updated_at=_text("updated_at"),
         )
 
     def _run_dto(self, row: dict[str, Any]) -> GroundRunDTO:

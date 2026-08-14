@@ -1223,6 +1223,15 @@ class SitePackageService:
                     "checksums": manifest_files,
                     "contains_credentials": False,
                     "credential_reentry_count": reentry_count,
+                    "site_scope": {
+                        "schema_version": 1,
+                        "source_directory_name": site.root_path.name,
+                    },
+                    "relation_summary": {
+                        "device_groups": _device_group_contract(
+                            root / "db" / "devices.db"
+                        )
+                    },
                 }
                 (Path(temp) / "manifest.json").write_text(
                     json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -1313,6 +1322,15 @@ class SitePackageService:
                     "contains_credentials": True,
                     "credential_reentry_count": 0,
                     "encrypted": False,
+                    "site_scope": {
+                        "schema_version": 1,
+                        "source_directory_name": site.root_path.name,
+                    },
+                    "relation_summary": {
+                        "device_groups": _device_group_contract(
+                            site_root / "db" / "devices.db"
+                        )
+                    },
                 }
                 _atomic_json(temp_root / "manifest.json", manifest)
                 _atomic_json(temp_root / "checksums.json", manifest_files)
@@ -1551,7 +1569,8 @@ class SitePackageService:
                 imported_database = imported_root / "db" / "devices.db"
                 reentry_count = 0
                 if imported_database.is_file():
-                    with sqlite3.connect(imported_database) as connection:
+                    connection = sqlite3.connect(imported_database)
+                    try:
                         if bool(info.get("contains_credentials")):
                             repair_device_credential_states(connection)
                         else:
@@ -1566,7 +1585,19 @@ class SitePackageService:
                                 ),
                             )
                         connection.commit()
+                    finally:
+                        connection.close()
                     Database(imported_database).initialize()
+                    connection = sqlite3.connect(imported_database)
+                    try:
+                        _rebind_device_group_scope(
+                            connection,
+                            target_scope=target.name,
+                            manifest=manifest,
+                        )
+                        connection.commit()
+                    finally:
+                        connection.close()
                     ApIdentityQueryService(
                         Database(imported_database)
                     ).rebuild_index("site_package_import_staging")
@@ -1842,6 +1873,266 @@ def _copy_sanitized_database(source: Path, target: Path) -> int:
     finally:
         target_connection.close()
         source_connection.close()
+
+
+def _device_group_contract(database: Path) -> dict[str, object]:
+    if not database.is_file():
+        return {
+            "schema_version": 1,
+            "scope_ids": [],
+            "group_count": 0,
+            "grouped_device_count": 0,
+            "orphan_group_reference_count": 0,
+            "definitions_sha256": _relation_digest([]),
+            "membership_sha256": _relation_digest([]),
+        }
+    connection = sqlite3.connect(database)
+    try:
+        connection.row_factory = sqlite3.Row
+        return _device_group_contract_from_connection(connection)
+    finally:
+        connection.close()
+
+
+def _device_group_contract_from_connection(
+    connection: sqlite3.Connection,
+) -> dict[str, object]:
+    tables = {
+        str(row[0])
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+    if not {"devices", "device_groups"} <= tables:
+        return {
+            "schema_version": 1,
+            "scope_ids": [],
+            "group_count": 0,
+            "grouped_device_count": 0,
+            "orphan_group_reference_count": 0,
+            "definitions_sha256": _relation_digest([]),
+            "membership_sha256": _relation_digest([]),
+        }
+    group_rows = connection.execute(
+        "SELECT id, site_id, name, sort_order, created_at, updated_at "
+        "FROM device_groups ORDER BY id"
+    ).fetchall()
+    membership_rows = connection.execute(
+        "SELECT device_uuid, group_id FROM devices "
+        "WHERE group_id IS NOT NULL ORDER BY device_uuid"
+    ).fetchall()
+    orphan_count = int(
+        connection.execute(
+            "SELECT COUNT(*) FROM devices d LEFT JOIN device_groups g ON g.id=d.group_id "
+            "WHERE d.group_id IS NOT NULL AND g.id IS NULL"
+        ).fetchone()[0]
+    )
+    definitions = [
+        [
+            int(row["id"]),
+            str(row["name"] or ""),
+            int(row["sort_order"] or 0),
+            str(row["created_at"] or ""),
+            str(row["updated_at"] or ""),
+        ]
+        for row in group_rows
+    ]
+    memberships = [
+        [str(row["device_uuid"] or ""), int(row["group_id"])]
+        for row in membership_rows
+    ]
+    return {
+        "schema_version": 1,
+        "scope_ids": sorted(
+            {
+                str(row["site_id"] or "")
+                for row in group_rows
+            }
+        ),
+        "group_count": len(group_rows),
+        "grouped_device_count": len(membership_rows),
+        "orphan_group_reference_count": orphan_count,
+        "definitions_sha256": _relation_digest(definitions),
+        "membership_sha256": _relation_digest(memberships),
+    }
+
+
+def _relation_digest(rows: list[object]) -> str:
+    payload = json.dumps(
+        rows,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _rebind_device_group_scope(
+    connection: sqlite3.Connection,
+    *,
+    target_scope: str,
+    manifest: dict[str, object],
+) -> dict[str, object]:
+    connection.row_factory = sqlite3.Row
+    before = _device_group_contract_from_connection(connection)
+    relation_summary = manifest.get("relation_summary")
+    has_site_scope = "site_scope" in manifest
+    has_relation_summary = "relation_summary" in manifest
+    if has_site_scope != has_relation_summary:
+        raise SiteStorageError(
+            "SITE_IMPORT_RELATION_MANIFEST_INVALID",
+            "局点包中的来源作用域与关系摘要必须同时存在",
+            details={"relation": "device_groups"},
+        )
+    if relation_summary is not None and not isinstance(relation_summary, dict):
+        raise SiteStorageError(
+            "SITE_IMPORT_RELATION_MANIFEST_INVALID",
+            "局点包中的关系摘要格式无效",
+            details={"relation": "device_groups", "field": "relation_summary"},
+        )
+    expected_value = (
+        relation_summary.get("device_groups")
+        if isinstance(relation_summary, dict)
+        else None
+    )
+    if has_relation_summary and expected_value is None:
+        raise SiteStorageError(
+            "SITE_IMPORT_RELATION_MANIFEST_INVALID",
+            "局点包缺少设备分组关系摘要",
+            details={"relation": "device_groups", "field": "device_groups"},
+        )
+    if expected_value is not None and not isinstance(expected_value, dict):
+        raise SiteStorageError(
+            "SITE_IMPORT_RELATION_MANIFEST_INVALID",
+            "局点包中的设备分组关系摘要格式无效",
+            details={"relation": "device_groups", "field": "device_groups"},
+        )
+    expected = dict(expected_value or {})
+    if expected:
+        if not (
+            type(expected.get("schema_version")) is int
+            and expected["schema_version"] == 1
+        ):
+            raise SiteStorageError(
+                "SITE_IMPORT_RELATION_SCHEMA_UNSUPPORTED",
+                "局点包中的设备分组关系版本不受支持",
+                details={
+                    "relation": "device_groups",
+                    "schema_version": expected.get("schema_version"),
+                },
+            )
+        if not (
+            isinstance(expected.get("scope_ids"), list)
+            and all(isinstance(value, str) for value in expected["scope_ids"])
+            and all(
+                type(expected.get(field)) is int
+                and int(expected[field]) >= 0
+                for field in (
+                    "group_count",
+                    "grouped_device_count",
+                    "orphan_group_reference_count",
+                )
+            )
+            and all(
+                isinstance(expected.get(field), str)
+                and re.fullmatch(r"[0-9a-f]{64}", str(expected[field])) is not None
+                for field in ("definitions_sha256", "membership_sha256")
+            )
+        ):
+            raise SiteStorageError(
+                "SITE_IMPORT_RELATION_MANIFEST_INVALID",
+                "局点包中的设备分组关系摘要字段无效",
+                details={"relation": "device_groups"},
+            )
+        for field in (
+            "scope_ids",
+            "group_count",
+            "grouped_device_count",
+            "orphan_group_reference_count",
+            "definitions_sha256",
+            "membership_sha256",
+        ):
+            if before.get(field) != expected.get(field):
+                raise SiteStorageError(
+                    "SITE_IMPORT_RELATION_MISMATCH",
+                    "局点包中的设备分组关系与 manifest 不一致",
+                    details={"relation": "device_groups", "field": field},
+                )
+    site_scope = manifest.get("site_scope")
+    if site_scope is not None:
+        if not (
+            isinstance(site_scope, dict)
+            and type(site_scope.get("schema_version")) is int
+            and site_scope["schema_version"] == 1
+        ):
+            raise SiteStorageError(
+                "SITE_IMPORT_SITE_SCOPE_UNSUPPORTED",
+                "局点包中的来源作用域版本不受支持",
+                details={"field": "site_scope"},
+            )
+        source_scope = site_scope.get("source_directory_name")
+        if not isinstance(source_scope, str) or not source_scope:
+            raise SiteStorageError(
+                "SITE_IMPORT_SITE_SCOPE_INVALID",
+                "局点包中的来源物理目录名无效",
+                details={"field": "source_directory_name"},
+            )
+        before_scope_ids = [str(value) for value in before["scope_ids"]]
+        if (
+            len(before_scope_ids) == 1
+            and before_scope_ids[0]
+            and before_scope_ids[0] != source_scope
+        ):
+            raise SiteStorageError(
+                "SITE_IMPORT_SITE_SCOPE_MISMATCH",
+                "设备分组作用域与局点包来源物理目录不一致",
+                details={
+                    "source_directory_name": source_scope,
+                    "group_scope": before_scope_ids[0],
+                },
+            )
+    if int(before["orphan_group_reference_count"]) > 0:
+        raise SiteStorageError(
+            "SITE_IMPORT_RELATION_INVALID",
+            "局点包存在找不到分组定义的设备关系，已停止导入",
+            details={
+                "relation": "device_groups",
+                "orphan_count": int(before["orphan_group_reference_count"]),
+            },
+        )
+    scope_ids = [str(value) for value in before["scope_ids"]]
+    if len(scope_ids) > 1:
+        raise SiteStorageError(
+            "SITE_IMPORT_RELATION_SCOPE_CONFLICT",
+            "局点包包含多个设备分组作用域，无法安全重绑定",
+            details={"relation": "device_groups", "scope_ids": scope_ids},
+        )
+    if scope_ids and scope_ids[0] != target_scope:
+        connection.execute(
+            "UPDATE device_groups SET site_id=? WHERE COALESCE(site_id, '')=?",
+            (target_scope, scope_ids[0]),
+        )
+    after = _device_group_contract_from_connection(connection)
+    for field in (
+        "group_count",
+        "grouped_device_count",
+        "orphan_group_reference_count",
+        "definitions_sha256",
+        "membership_sha256",
+    ):
+        if before[field] != after[field]:
+            raise SiteStorageError(
+                "SITE_IMPORT_RELATION_REBIND_FAILED",
+                "设备分组作用域重绑定未通过无损校验",
+                details={"relation": "device_groups", "field": field},
+            )
+    if int(after["group_count"]) and after["scope_ids"] != [target_scope]:
+        raise SiteStorageError(
+            "SITE_IMPORT_RELATION_REBIND_FAILED",
+            "设备分组作用域未绑定到目标局点",
+            details={"relation": "device_groups"},
+        )
+    return after
 
 
 def _copy_database_snapshot(source: Path, target: Path) -> None:

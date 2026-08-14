@@ -341,6 +341,13 @@ CREATE TABLE IF NOT EXISTS ground_unattended_operations (
     completed_at TEXT NOT NULL DEFAULT '',
     failure_code TEXT NOT NULL DEFAULT '',
     failure_reason TEXT NOT NULL DEFAULT '',
+    stop_trigger TEXT NOT NULL DEFAULT 'UNKNOWN',
+    stop_reason TEXT NOT NULL DEFAULT '',
+    requested_by TEXT NOT NULL DEFAULT '',
+    request_id TEXT NOT NULL DEFAULT '',
+    previous_state TEXT NOT NULL DEFAULT '',
+    next_state TEXT NOT NULL DEFAULT '',
+    triggered_at TEXT NOT NULL DEFAULT '',
     result_summary_json TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS idx_ground_operations_active
@@ -504,6 +511,8 @@ CREATE TABLE IF NOT EXISTS ground_unattended_wmesh_events (
 );
 CREATE INDEX IF NOT EXISTS idx_ground_wmesh_timeline
 ON ground_unattended_wmesh_events(site_id, run_id, receive_time DESC, train_id);
+CREATE INDEX IF NOT EXISTS idx_ground_wmesh_device_latest
+ON ground_unattended_wmesh_events(site_id, device_uuid, receive_time DESC);
 
 CREATE TABLE IF NOT EXISTS ground_unattended_radio_interface_states (
     site_id TEXT NOT NULL,
@@ -766,6 +775,16 @@ _RAW_FILE_MIGRATION_COLUMNS = {
     "revision": "INTEGER NOT NULL DEFAULT 0",
 }
 
+_OPERATION_MIGRATION_COLUMNS = {
+    "stop_trigger": "TEXT NOT NULL DEFAULT 'UNKNOWN'",
+    "stop_reason": "TEXT NOT NULL DEFAULT ''",
+    "requested_by": "TEXT NOT NULL DEFAULT ''",
+    "request_id": "TEXT NOT NULL DEFAULT ''",
+    "previous_state": "TEXT NOT NULL DEFAULT ''",
+    "next_state": "TEXT NOT NULL DEFAULT ''",
+    "triggered_at": "TEXT NOT NULL DEFAULT ''",
+}
+
 
 _RUN_STATES_ACTIVE = {
     "STARTING",
@@ -809,6 +828,11 @@ class GroundUnattendedRepository:
             self._ensure_columns(conn, "ground_unattended_events", _EVENT_MIGRATION_COLUMNS)
             self._ensure_columns(
                 conn,
+                "ground_unattended_operations",
+                _OPERATION_MIGRATION_COLUMNS,
+            )
+            self._ensure_columns(
+                conn,
                 "ground_unattended_syslog_config_audits",
                 _CONFIG_AUDIT_MIGRATION_COLUMNS,
             )
@@ -837,7 +861,7 @@ class GroundUnattendedRepository:
             conn.execute(
                 """
                 INSERT INTO ground_unattended_schema(key, value, updated_at)
-                VALUES('schema_version', '10', ?)
+                VALUES('schema_version', '11', ?)
                 ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
                 """,
                 (_now(),),
@@ -3482,6 +3506,103 @@ class GroundUnattendedRepository:
                 (self.site_id, device_uuid),
             ).fetchone()
         return _decode_row(row) if row else None
+
+    def train_endpoint_snapshot(
+        self, device_uuids: Iterable[str]
+    ) -> dict[str, Any]:
+        """Read endpoint projections in one short SQLite snapshot.
+
+        The train page used to open five connections per MR endpoint. During
+        stop/finalize writes that multiplied a single busy wait into an HTTP
+        timeout. Keep this read independent from the Supervisor lifecycle lock
+        and project the latest rows in one connection instead.
+        """
+
+        targets = sorted({str(value).strip() for value in device_uuids if str(value).strip()})
+        if not targets:
+            return {
+                "boot_by_device": {},
+                "wmesh_by_device": {},
+                "runtime_by_device": {},
+                "radio_by_device": {},
+                "audit_by_device": {},
+            }
+        placeholders = ",".join("?" for _ in targets)
+        params = (self.site_id, *targets)
+        with self._connection() as conn:
+            conn.execute("BEGIN")
+            boot_rows = conn.execute(
+                f"""
+                SELECT * FROM (
+                    SELECT b.*, ROW_NUMBER() OVER (
+                        PARTITION BY device_uuid ORDER BY last_checked_at DESC
+                    ) AS _rank
+                    FROM ground_unattended_boot_sessions b
+                    WHERE site_id=? AND device_uuid IN ({placeholders})
+                ) WHERE _rank=1
+                """,
+                params,
+            ).fetchall()
+            wmesh_rows = conn.execute(
+                f"""
+                SELECT * FROM (
+                    SELECT e.*, ROW_NUMBER() OVER (
+                        PARTITION BY device_uuid ORDER BY receive_time DESC
+                    ) AS _rank
+                    FROM ground_unattended_wmesh_events e
+                    WHERE site_id=? AND device_uuid IN ({placeholders}) AND (
+                        event_family='WMESH'
+                        OR (event_family='' AND event_type LIKE 'MESH_%')
+                    )
+                ) WHERE _rank=1
+                """,
+                params,
+            ).fetchall()
+            runtime_rows = conn.execute(
+                "SELECT * FROM ground_unattended_mr_runtime_states "
+                f"WHERE site_id=? AND device_uuid IN ({placeholders})",
+                params,
+            ).fetchall()
+            radio_rows = conn.execute(
+                "SELECT * FROM ground_unattended_radio_interface_states "
+                f"WHERE site_id=? AND device_uuid IN ({placeholders}) "
+                "ORDER BY device_uuid, interface_name",
+                params,
+            ).fetchall()
+            audit_rows = conn.execute(
+                f"""
+                SELECT * FROM (
+                    SELECT a.*, ROW_NUMBER() OVER (
+                        PARTITION BY device_uuid ORDER BY checked_at DESC
+                    ) AS _rank
+                    FROM ground_unattended_syslog_config_audits a
+                    WHERE site_id=? AND device_uuid IN ({placeholders})
+                ) WHERE _rank=1
+                """,
+                params,
+            ).fetchall()
+
+        radio_by_device: dict[str, list[dict[str, Any]]] = {}
+        for row in radio_rows:
+            decoded = _decode_row(row)
+            radio_by_device.setdefault(str(decoded.get("device_uuid") or ""), []).append(
+                decoded
+            )
+        return {
+            "boot_by_device": {
+                str(row["device_uuid"]): _decode_row(row) for row in boot_rows
+            },
+            "wmesh_by_device": {
+                str(row["device_uuid"]): _decode_row(row) for row in wmesh_rows
+            },
+            "runtime_by_device": {
+                str(row["device_uuid"]): _decode_row(row) for row in runtime_rows
+            },
+            "radio_by_device": radio_by_device,
+            "audit_by_device": {
+                str(row["device_uuid"]): _decode_row(row) for row in audit_rows
+            },
+        }
 
     def confirm_syslog_identity(
         self,

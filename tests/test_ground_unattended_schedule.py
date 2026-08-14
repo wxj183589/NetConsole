@@ -4,6 +4,8 @@ import socket
 from datetime import datetime
 from types import SimpleNamespace
 
+import pytest
+
 from netconsole.core.paths import PathResolver
 from netconsole.models.api.ground_unattended import GroundUnattendedProfileDTO
 from netconsole.models.api.rail_transit_base_data import RailTransitSummaryDTO
@@ -23,6 +25,11 @@ def test_default_and_regular_schedule_window() -> None:
     )
     assert active.active
     assert active.run_date == "2026-07-25"
+
+
+def test_profile_rejects_invalid_timezone_before_runtime() -> None:
+    with pytest.raises(ValueError, match="IANA"):
+        GroundUnattendedProfileDTO(site_id="site-a", timezone="Shanghai/local")
     ended = schedule_window(
         datetime.fromisoformat("2026-07-25T23:00:00+08:00"), "07:00", "23:00", "Asia/Shanghai"
     )
@@ -215,6 +222,58 @@ def test_supervisor_auto_starts_and_finishes_at_window_boundary(tmp_path) -> Non
     supervisor._tick()
     supervisor._tick()
     assert repo.latest_run()["state"] == "COMPLETED"  # type: ignore[index]
+    operation = repo.latest_operation(run_id=str(repo.latest_run()["run_id"]))  # type: ignore[index]
+    assert operation is not None
+    assert operation["stop_trigger"] == "SCHEDULE_END"
+    assert operation["previous_state"] == "RUNNING"
+    assert operation["next_state"] == "STOPPING"
+
+
+def test_running_run_uses_frozen_end_when_profile_changes_at_midday(tmp_path) -> None:
+    paths = PathResolver(tmp_path / "app", tmp_path / "data")
+    paths.site_dir("site-a").mkdir(parents=True)
+    repo = GroundUnattendedRepository(
+        paths.ground_unattended_db_path("site-a"), site_id="site-a"
+    )
+    repo.save_profile(
+        repo.get_profile().model_copy(
+            update={
+                "enabled": True,
+                "schedule_start_time": "07:00",
+                "schedule_end_time": "23:00",
+                "udp_listen_port": _available_udp_port(),
+                "syslog_server_ip": "192.0.2.100",
+                "allow_external_syslog_address": True,
+            }
+        )
+    )
+    clock = [datetime.fromisoformat("2026-07-25T07:00:00+08:00")]
+    supervisor = GroundUnattendedSupervisor(
+        paths,
+        site_id="site-a",
+        repository=repo,
+        base_query=_BaseQuery(),  # type: ignore[arg-type]
+        mesh_query=_MeshQuery(),  # type: ignore[arg-type]
+        vehicle_query=_VehicleQuery(),  # type: ignore[arg-type]
+        now_provider=lambda: clock[0],
+    )
+    supervisor._start_fleet_ping = lambda *_args: None  # type: ignore[method-assign]
+    supervisor._start_syslog = lambda *_args: None  # type: ignore[method-assign]
+    supervisor._ensure_ac_resident_pollers = lambda *_args: None  # type: ignore[method-assign]
+    supervisor._poll_if_due = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
+    supervisor._tick()
+    run = repo.get_active_run()
+    assert run is not None
+    assert run["scheduled_end_at"].startswith("2026-07-25T23:00:00")
+
+    repo.save_profile(
+        repo.get_profile().model_copy(update={"schedule_end_time": "08:00"})
+    )
+    for value in ("11:00:00", "11:46:00", "15:00:00"):
+        clock[0] = datetime.fromisoformat(f"2026-07-25T{value}+08:00")
+        supervisor._tick()
+        assert repo.get_active_run()["state"] == "RUNNING"  # type: ignore[index]
+        assert repo.latest_operation(run_id=str(run["run_id"])) is None
 
 
 def test_manual_stop_does_not_auto_restart_inside_the_same_window(tmp_path) -> None:
@@ -250,6 +309,11 @@ def test_manual_stop_does_not_auto_restart_inside_the_same_window(tmp_path) -> N
     supervisor._tick()
     assert repo.latest_run()["state"] == "COMPLETED"  # type: ignore[index]
     assert repo.latest_run()["requested_action"] == "stop"  # type: ignore[index]
+    operation = repo.latest_operation(run_id=str(run_id))
+    assert operation is not None
+    assert operation["stop_trigger"] == "USER_NORMAL_STOP"
+    assert operation["stop_reason"] == "用户请求正常停止"
+    assert operation["request_id"].startswith("groundreq_")
 
     supervisor._tick()
     assert repo.get_active_run() is None
@@ -259,7 +323,7 @@ def test_manual_stop_does_not_auto_restart_inside_the_same_window(tmp_path) -> N
     supervisor._tick()
     assert repo.get_active_run()["state"] == "RUNNING"  # type: ignore[index]
     assert repo.get_active_run()["requested_action"] == "manual_start"  # type: ignore[index]
-    supervisor._shutdown_active_run()
+    supervisor.close()
 
 
 def test_supervisor_does_not_reopen_ready_archived_run_date(tmp_path) -> None:

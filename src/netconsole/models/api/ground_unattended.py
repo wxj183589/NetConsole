@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 from typing import Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import Field, field_validator, model_validator
 
@@ -182,6 +183,10 @@ class GroundUnattendedProfileDTO(ApiModel):
                 raise ValueError("MR 日志回传地址必须是具体的单播 IPv4 地址")
         if self.schedule_start_time == self.schedule_end_time:
             raise ValueError("开始时间和结束时间不能相同")
+        try:
+            ZoneInfo(self.timezone)
+        except ZoneInfoNotFoundError:
+            raise ValueError("时区必须是有效的 IANA 时区名称") from None
         if not (
             self.minimum_valid_collection_minutes
             <= self.preferred_collection_minutes
@@ -907,6 +912,23 @@ class GroundOperationDTO(ApiModel):
     completed_at: str = ""
     failure_code: str = ""
     failure_reason: str = ""
+    stop_trigger: Literal[
+        "USER_NORMAL_STOP",
+        "USER_STOP_AND_ARCHIVE",
+        "SCHEDULE_END",
+        "PROFILE_DISABLED",
+        "BACKEND_SHUTDOWN",
+        "SITE_SWITCH",
+        "RECOVERY",
+        "FATAL_ERROR",
+        "UNKNOWN",
+    ] = "UNKNOWN"
+    stop_reason: str = ""
+    requested_by: str = ""
+    request_id: str = ""
+    previous_state: str = ""
+    next_state: str = ""
+    triggered_at: str = ""
     result_summary: dict[str, object] = Field(default_factory=dict)
 
 
