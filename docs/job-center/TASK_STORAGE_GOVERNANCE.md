@@ -14,11 +14,12 @@ large terminal results occur in both the current snapshot and latest
 `finished` event, and high-frequency producers append consecutive identical
 progress events.
 
-The duplicate terminal representation is not changed in Phase 1. Event replay,
-WebSocket recovery, Online MR reconciliation and Site Package merge contracts
-consume it, so removing one copy requires a separate shared-contract design.
-The recommended current option is D: bound proven write amplification first,
-then define retention policy with the user.
+The duplicate terminal representation is not changed in Phase 1 or B2. Event
+replay, live WebSocket delivery, Online MR reconciliation and Site Package merge
+contracts consume it. The consumer audit, four design options, recommended
+authoritative `task_results` model, retention proposal, index proposal and
+maintenance-exclusive owner are recorded in
+[Task Terminal Result Consumer Matrix](./TASK_TERMINAL_RESULT_CONSUMER_MATRIX.md).
 
 ## Read-only Profiler
 
@@ -41,11 +42,11 @@ values as exact page attribution. If `dbstat` is available on another host, it
 uses actual page allocation automatically.
 
 ```powershell
-$env:PYTHONPATH = "D:\study\worktrees\NetConsole\tasks-db-governance\src;D:\study\worktrees\NetConsole\tasks-db-governance"
-& "D:\study\NetConsole\.venv\Scripts\python.exe" -m scripts.maintenance.profile_tasks_db `
+$env:PYTHONPATH = "$PWD\src;$PWD"
+& ".\.venv\Scripts\python.exe" -m scripts.maintenance.profile_tasks_db `
   --data-root "D:\NetConsoleData" --site-id "<site-id>"
 
-& "D:\study\NetConsole\.venv\Scripts\python.exe" -m scripts.maintenance.profile_tasks_db `
+& ".\.venv\Scripts\python.exe" -m scripts.maintenance.profile_tasks_db `
   --data-root "D:\NetConsoleData" --site-id "<site-id>" --deep `
   --database "D:\study\test-data\NetConsole\tasks-db-governance\<run-id>\tasks.db" `
   --output-dir "D:\study\diagnostic\NetConsole\tasks-db-governance\<run-id>"
@@ -87,5 +88,15 @@ throughput and commit latency percentiles.
 - Artifact filesystem truth remains owned by
   `ArtifactReconciliationService`; the profiler reports DB references only.
 - Adding an `event_time` retention index is a schema migration and is deferred.
-- Site Return Package treatment of `online_mr_task_sessions` requires a product
-  contract decision.
+- Site Return Package can physically carry `online_mr_task_sessions`, but the
+  current return merge only handles snapshots/events. Preserving Online MR
+  mappings is a confirmed compatibility gap that must be resolved before a
+  result-reference cutover.
+- Candidate retention periods remain `USER_POLICY_REQUIRED`; B2 does not invoke
+  the existing Site Retention task-history purge or VACUUM path.
+- The current Site Retention owner uniformly purges all task events older than
+  90 days. A future typed policy must replace that path in place; it must not
+  run as a second, competing retention implementation.
+- Future History migration, site retention, task retention and large compact
+  must share `site-database-maintenance:<site_id>` through
+  `database_maintenance_lock()`; this unification remains design-only.

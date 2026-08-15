@@ -28,7 +28,7 @@ Job Center 是普通后台任务的统一调度层；Export Process 是共享同
 - `task_application_service.py`：任务应用层、快照更新、恢复核对和跨进程协作取消。
 - `repositories/task_repository.py`：每局点 `tasks.db` 的快照、事件、WAL 和查询。
 - `repositories/online_mr_task_session_repository.py`：复用同一局点 `tasks.db` 保存 Online MR Controller Task 与 Session 的最小映射，不保存连接配置或凭据。
-- 任务存储第一阶段治理的只读 profiler、400 MiB 根因、连续相同 progress 的 30 秒采样、事务幂等修复和明确延后的 retention/result 契约见 [Task Storage Governance](./TASK_STORAGE_GOVERNANCE.md)。本阶段不删除、归档、VACUUM 或修改用户可见保留期限。
+- 任务存储第一阶段治理的只读 profiler、400 MiB 根因、连续相同 progress 的 30 秒采样、事务幂等修复和明确延后的 retention/result 契约见 [Task Storage Governance](./TASK_STORAGE_GOVERNANCE.md)；终态结果消费者、权威结果模型、retention/index 与维护互斥设计见 [Task Terminal Result Consumer Matrix](./TASK_TERMINAL_RESULT_CONSUMER_MATRIX.md)。本阶段不删除、归档、VACUUM、迁移 schema/index 或修改用户可见保留期限。
 - 历史 `src/netconsole/ui/job_process_manager.py` 已删除；其状态、取消和事件职责分别由永久 Service/Runtime/Adapter 承担，旧路径只在冻结迁移矩阵中追溯。
 - `local_process_adapter.py`：纯 Python Worker 进程宿主，复用同一 `TaskApplicationService/TaskRuntime`，供非 Qt 应用层启动本地 Job；stdout/stderr 使用可用字节增量读取，不能等到 64 KiB 缓冲区填满或进程退出后才发布 JSONL 事件。Windows 下使用 Job Object 回收子进程树，并通过完成回调同步外部业务 Run 终态。`force_stop_job()` 只在业务层有界协作停止失败后立即 terminate/kill 进程树，不替代普通取消。
 - `handlers/`：AC、配置、数据库升级、设备、文件、Mesh、网络、在线 MR、轨道交通、Traffic 领域分区；网络工具无线扫描的既有任务由独立兼容 handler 承接。
