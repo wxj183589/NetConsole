@@ -3,7 +3,9 @@
 ## Status
 
 This maintenance capability copies supported legacy `*_history` rows from one
-resolved `devices.db` into the existing monthly HistoryStore shards. It is
+resolved `devices.db` into the existing monthly HistoryStore shards. New target
+writes use [History Storage V2](./HISTORY_STORAGE_V2.md), while existing V1-only
+and mixed V1/V2 shards remain readable. It is
 explicitly invoked, defaults to off, and never runs during application startup
 or installation.
 
@@ -62,6 +64,11 @@ The existing history `catalog.db` owns three additive migration tables:
 - `legacy_history_migration_ranges`: source key range + target month, stable
   source/target digests, deterministic samples, counts, latency and budget.
 
+V2 does not repeat `legacy_source_table` and `legacy_source_id` in every target
+payload. The range journal is the durable provenance for source table, source
+key range, month, digest and sample; a future cutover must require a `VERIFIED`
+range instead of inferring provenance from duplicated payload metadata.
+
 Only `PENDING`, `COPYING`, `VERIFYING`, `VERIFIED` and `FAILED` are valid. A
 chunk writes one target-month transaction at a time, verifies exact event IDs,
 stable digests and deterministic samples, then advances the source checkpoint.
@@ -110,6 +117,10 @@ months, duplicates and errors:
   --synthetic-rows 10000 --chunk-rows 500 `
   --output-dir "D:\study\diagnostic\NetConsole\device-history-migration\<run-id>\benchmark-medium"
 ```
+
+Storage profiling and V1/V2 query comparison are separate read-only tools. Both
+accept only paths under `D:\study`; profiling VACUUM is limited to rebuildable
+diagnostic scratch databases and never applies to the source snapshot.
 
 ## Remaining Gates
 

@@ -67,7 +67,11 @@ def _target_count(service: HistoryLegacyMigrationService) -> int:
     total = 0
     for shard in service.history_root.glob("devices-????-??.db"):
         with sqlite3.connect(shard) as conn:
-            total += int(conn.execute("SELECT COUNT(*) FROM history_events").fetchone()[0])
+            for table in ("history_events", "history_events_v2"):
+                if conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+                ).fetchone():
+                    total += int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
     return total
 
 
@@ -308,12 +312,34 @@ def test_projection_rows_share_canonical_identity_and_do_not_overwrite_authorita
     assert result["migration"]["duplicate_count"] == 1
     shard = service.history_root / "devices-2026-08.db"
     with sqlite3.connect(shard) as conn:
-        payload = json.loads(
-            conn.execute(
-                "SELECT payload_json FROM history_events WHERE payload_json LIKE '%\"legacy_source_id\":1%'"
-            ).fetchone()[0]
+        fields = [
+            str(row[0])
+            for row in conn.execute(
+                "SELECT fields_json FROM history_payload_schemas_v2 ORDER BY payload_schema_id"
+            )
+        ]
+        assert all("legacy_source_table" not in item for item in fields)
+        assert all("legacy_source_id" not in item for item in fields)
+    with sqlite3.connect(source) as conn:
+        conn.row_factory = sqlite3.Row
+        source_row = dict(
+            conn.execute("SELECT * FROM ac_fit_ap_optical_history WHERE id=1").fetchone()
         )
-    assert payload["legacy_source_table"] == "ac_fit_ap_optical_history"
+    event = HistoryStore.legacy_migration_event("ac_fit_ap_optical_history", source_row)
+    stored = service.store.read_legacy_migration_events([event])
+    assert len(stored) == 1
+    payload = json.loads(stored[0]["payload_json"])
+    assert payload["id"] == 1
+    assert payload["ac_device_uuid"] == "ac-1"
+    authoritative_ranges = [
+        item
+        for item in result["ranges"]
+        if item["source_table"] == "ac_fit_ap_optical_history"
+    ]
+    assert authoritative_ranges
+    assert authoritative_ranges[0]["source_start_key"] == 1
+    assert authoritative_ranges[0]["source_end_key"] == 2
+    assert authoritative_ranges[0]["source_digest"] == authoritative_ranges[0]["target_digest"]
 
 
 def test_migration_and_realtime_history_writer_share_the_same_month_safely(

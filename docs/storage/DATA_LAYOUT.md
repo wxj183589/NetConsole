@@ -74,7 +74,7 @@ Electron 的 `userData`、`sessionData`、`cache`、`logs`、`crashDumps` 和 `t
 
 ## devices.db 当前态与历史态（Phase 2）
 
-Phase 2 的目标是先停止 `devices.db` 因高频快照持续增长，同时保持旧局点可原样升级和查询。当前态继续写入 `devices.db`；新的设备采集历史在同一 current-state 事务中先写入小型 `history_outbox`，READY 后由有界后台 drain 写入 `db/history/devices-YYYY-MM.db`。分片和 catalog 不属于 `Database.initialize()` 的启动工作：启动不会扫描、校验、迁移、checkpoint、retention 或 VACUUM 任一历史分片。
+Phase 2 的目标是先停止 `devices.db` 因高频快照持续增长，同时保持旧局点可原样升级和查询。当前态继续写入 `devices.db`；新的设备采集历史在同一 current-state 事务中先写入小型 `history_outbox`，READY 后由有界后台 drain 以 [History Storage V2](./HISTORY_STORAGE_V2.md) 写入 `db/history/devices-YYYY-MM.db`。分片和 catalog 不属于 `Database.initialize()` 的启动工作：启动不会扫描、校验、迁移、checkpoint、retention 或 VACUUM 任一历史分片。
 
 `history_state` 只保存每个 `kind + entity_key` 最近一次有业务意义的指纹和记录时间。变化立即入 outbox；无变化时才按类型独立 heartbeat 周期低频记录。采集时间、采集批次 UUID、raw 路径和其他运行元数据不得单独造成 change。当前实现的默认周期为 device fact/interface 60 分钟、device LLDP 30 分钟、device optical 15 分钟；FIT AP resource/LLDP 30 分钟、FIT AP optical 15 分钟、FIT AP radio 30 分钟。实际历史事件的业务字段由各 producer 显式选择，不能用整行字符串比较。
 
@@ -94,7 +94,7 @@ Phase 2 的目标是先停止 `devices.db` 因高频快照持续增长，同时�
 
 ### rollout、迁移与无人值守边界
 
-- Phase 2A/2B 已实现的边界是路径、catalog/outbox、按月分片、change-aware 新写和 query compatibility；旧 history table、旧索引和当前态表均保留。`devices.db` 中旧历史不会在启动时批量迁移，840 MiB 的旧库可以直接打开。
+- Phase 2A/2B 已实现的边界是路径、catalog/outbox、按月分片、change-aware 新写和 query compatibility；新分片写入 Storage V2，既有 V1-only 与同月 V1/V2 mixed shard 继续可读，不做 eager rewrite。旧 history table、旧索引和当前态表均保留。`devices.db` 中旧历史不会在启动时批量迁移，840 MiB 的旧库可以直接打开。
 - Phase 2C 的已接入查询接口可合并相关 legacy history 与新 outbox/shard 事件。没有 dual-write 回 legacy table：切换后的新 producer 仅在 current transaction 内写 outbox；尚未接入 producer 的历史继续保持 legacy 行为，不能因此推断该表已完成切换。轨旁业务快照的轻量 revision 只读取 current DB 中的 `history_outbox/history_state`；`catalog.db` 和月分片仍不参与正常快照或启动扫描，站点包同步暂仍以 legacy 表作为兼容事实源。
 - legacy migration 是独立 maintenance，必须在 Backend READY 后显式调度，以 source table + last source id journal、bounded batch、copy/verify checkpoint、幂等 resume 实现。无法无损确定业务实体键或采集时间的旧行不会被猜测写入新历史，而是写入 `history_migration_skips`（source id + reason）并推进 checkpoint；源行仍保留并可查询，后续可由维护工具单独修复。`ap_resource_snapshots` 是站点包/AP 实体快照兼容证据，不作为通用 AC 资源历史迁移源。默认不启用 source deletion；本阶段不得 DROP 表、删除 legacy row、自动 VACUUM 或修改现场 `D:\NetConsoleData`。
 - `SERVER_UNATTENDED ACTIVE` 时必须暂停 legacy migration、retention、aggregation 和旧分片维护，保留 Syslog、MR、Ping 和当前任务 persistence 的 I/O 优先级。history drain 仍按自身可写性运行，不依赖整体 `runtime_services_ready`：根据 pending 数量、最老事件年龄和单批耗时在 100/250/500 条之间自适应，并设置单批时间上限；不使用未接入生产的 `disk_busy` 信号。暂停不丢弃 outbox，恢复后可继续 bounded drain；磁盘并发维持为 1 或现有 capability policy 更低值。
@@ -142,7 +142,7 @@ flowchart TD
     G -."本阶段禁止".-> X["删除 legacy row / DROP / VACUUM"]
 ```
 
-迁移基础设施提供显式 maintenance CLI 的 inventory、start、pause、resume、status 和 COPY/verify 批次，默认关闭且没有自动调度或 source deletion。迁移总表、逐源表 checkpoint 和逐月 range journal 保存 source database identity、稳定 digest、sample、计数与 commit/budget telemetry；复制成功的 legacy event 以 `source_table + source PK` 确定性 ID 保存在 shard 内供校验与未来 cutover 使用。两组已确认重复的 AP 投影不再写 event：权威来源先完整复制，投影逐批匹配并验证对应的权威 target event 后只计 duplicate，不折叠权威表内的不同源行。在逐表 cutover 尚未启用前，普通兼容查询刻意排除全部 `event_type=legacy` 副本，继续以 legacy table 为事实源，避免双份返回。完整约束见 [Legacy Device History COPY-only Migration](./LEGACY_HISTORY_MIGRATION.md)。`tasks.db` 不在本阶段范围内。
+迁移基础设施提供显式 maintenance CLI 的 inventory、start、pause、resume、status 和 COPY/verify 批次，默认关闭且没有自动调度或 source deletion。迁移总表、逐源表 checkpoint 和逐月 range journal 保存 source database identity、source table/key range、稳定 digest、sample、计数与 commit/budget telemetry；Storage V2 不再把 `legacy_source_table/id` 重复存入每行 payload。复制成功的 legacy event 以 `source_table + source PK` 确定性 ID 保存在 shard 内供校验与未来 cutover 使用。两组已确认重复的 AP 投影不再写 event：权威来源先完整复制，投影逐批匹配并验证对应的权威 target event 后只计 duplicate，不折叠权威表内的不同源行。在逐表 cutover 尚未启用前，普通兼容查询刻意排除全部 `event_type=legacy` 副本，继续以 legacy table 为事实源，避免双份返回。完整约束见 [Legacy Device History COPY-only Migration](./LEGACY_HISTORY_MIGRATION.md)。`tasks.db` 不在本阶段范围内。
 
 每个局点的 `sync/wps_sync.sqlite` 保存 WPS 云文档配置、DPAPI 加密凭据、同步批次和远端异步任务恢复状态。正式 Workbook 请求在提交前以不含 Token 的 JSON 持久化，完整远端 `task_id` 仅保存在该库；API、任务参数和日志只输出脱敏 ID。常规升级只做幂等增量迁移，不删除、重建或覆盖当前云文档的配置、凭据和历史。产品功能明确退役时允许精确删除对应本地目标及运行状态：必须在同一事务内按稳定旧代码匹配、先处理外键运行记录、保留混合批次中的当前目标历史，并仅在无剩余引用时删除凭据；迁移重复运行必须为 no-op，且不得访问或修改远端文档。程序重启后以原 `target_batch_id + remote_task_id` 恢复查询，不能因本地 Worker 丢失重复提交已取得 ID 的任务。
 
