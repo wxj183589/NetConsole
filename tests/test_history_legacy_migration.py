@@ -440,6 +440,13 @@ def test_per_table_cutover_query_authority_persists_and_rolls_back(
     ] == ["2026-01-01T00:00:00", "2025-12-31T23:59:59"]
     assert service.store.count_events(kind="device_fact") == 3
     assert not service.store.legacy_source_is_authoritative("device_facts_history")
+    parity = service.validate_query_parity("authority", "device_facts_history")
+    assert parity["result"] == "PASS"
+    assert parity["month_counts"] == {
+        "2025-12": 1,
+        "2026-01": 1,
+        "2026-02": 1,
+    }
 
     restarted = _service(tmp_path / "restart", source)
     restarted.history_root = service.history_root
@@ -462,6 +469,15 @@ def test_per_table_cutover_query_authority_persists_and_rolls_back(
     assert rolled_back["table"]["authority_state"] == "LEGACY_AUTHORITY"
     assert rolled_back["table"]["cutover_revision"] == 3
     assert service.store.query_events(kind="device_fact") == []
+    recutover = service.cutover(
+        "authority",
+        "device_facts_history",
+        expected_revision=3,
+        reason="rollback validation passed",
+    )
+    assert recutover["table"]["authority_state"] == "SHARD_AUTHORITY"
+    assert recutover["table"]["cutover_revision"] == 5
+    assert len(service.store.query_events(kind="device_fact")) == 3
     with pytest.raises(ValueError, match="revision mismatch"):
         service.cutover(
             "authority",

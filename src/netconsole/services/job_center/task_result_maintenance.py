@@ -18,6 +18,7 @@ from netconsole.repositories.task_repository import (
 from netconsole.services.database_footprint_maintenance import (
     DEVELOPMENT_ROOT,
     assert_development_path,
+    sqlite_quick_profile,
 )
 from netconsole.services.database_upgrade.coordinator import (
     database_maintenance_lock,
@@ -84,6 +85,97 @@ class TaskResultMaintenanceService:
             },
             "canonical_result_bytes": canonical_bytes,
             "samples": samples,
+        }
+
+    def profile(self) -> dict[str, Any]:
+        """Return a deep, read-only storage profile for one tasks rehearsal DB."""
+
+        physical = sqlite_quick_profile(self.tasks_database)
+        with self.repository._connect() as connection:
+            snapshots = [
+                dict(row)
+                for row in connection.execute(
+                    "SELECT status, task_type, substr(updated_time, 1, 7) AS month, "
+                    "COUNT(*) AS rows, SUM(LENGTH(result_json)) AS result_json_bytes "
+                    "FROM task_snapshots GROUP BY status, task_type, month "
+                    "ORDER BY status, task_type, month"
+                ).fetchall()
+            ]
+            events = [
+                dict(row)
+                for row in connection.execute(
+                    "SELECT event_type, substr(event_time, 1, 7) AS month, "
+                    "COUNT(*) AS rows, SUM(LENGTH(payload_json)) AS payload_bytes "
+                    "FROM task_events GROUP BY event_type, month "
+                    "ORDER BY event_type, month"
+                ).fetchall()
+            ]
+            results_row = connection.execute(
+                "SELECT COUNT(*) AS rows, COALESCE(SUM(byte_size), 0) AS bytes "
+                "FROM task_results"
+            ).fetchone()
+            tables = {
+                str(row[0])
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_schema WHERE type='table'"
+                ).fetchall()
+            }
+            sessions = (
+                int(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM online_mr_task_sessions"
+                    ).fetchone()[0]
+                )
+                if "online_mr_task_sessions" in tables
+                else 0
+            )
+            classifications: Counter[str] = Counter()
+            duplicate_bytes = 0
+            for row in self._terminal_snapshots(connection):
+                candidate = self._classify(connection, row)
+                classifications[candidate.classification] += 1
+                if candidate.classification == "MATCHED":
+                    duplicate_bytes += len(candidate.canonical_json.encode("utf-8"))
+        return {
+            "database": str(self.tasks_database),
+            "physical": physical,
+            "task_snapshots": {
+                "rows": int(physical["table_counts"].get("task_snapshots", 0)),
+                "result_json_bytes": sum(
+                    int(row.get("result_json_bytes") or 0) for row in snapshots
+                ),
+                "breakdown": snapshots,
+            },
+            "task_events": {
+                "rows": int(physical["table_counts"].get("task_events", 0)),
+                "payload_bytes": sum(
+                    int(row.get("payload_bytes") or 0) for row in events
+                ),
+                "progress_payload_bytes": sum(
+                    int(row.get("payload_bytes") or 0)
+                    for row in events
+                    if str(row.get("event_type") or "") == "progress"
+                ),
+                "log_payload_bytes": sum(
+                    int(row.get("payload_bytes") or 0)
+                    for row in events
+                    if str(row.get("event_type") or "") == "log"
+                ),
+                "breakdown": events,
+            },
+            "task_results": {
+                "rows": int(results_row["rows"] if results_row else 0),
+                "canonical_bytes": int(results_row["bytes"] if results_row else 0),
+            },
+            "online_mr_task_sessions": {"rows": sessions},
+            "terminal_result_semantic_duplication": {
+                "matched_tasks": int(classifications["MATCHED"]),
+                "removable_bytes": duplicate_bytes,
+                "classifications": {
+                    name: int(classifications[name])
+                    for name in sorted(BACKFILL_CLASSIFICATIONS)
+                },
+            },
         }
 
     def backfill(

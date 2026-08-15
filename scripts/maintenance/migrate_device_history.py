@@ -24,6 +24,7 @@ def _parser() -> argparse.ArgumentParser:
             "status",
             "cutover",
             "rollback",
+            "validate-query",
             "mark-delete-eligible",
             "preview-delete-plan",
             "validate-delete-plan",
@@ -38,6 +39,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--migration-id")
     parser.add_argument("--source-table", action="append", default=[])
     parser.add_argument("--expected-revision", type=int)
+    parser.add_argument("--expected-table-revision", action="append", default=[])
     parser.add_argument("--reason", default="")
     parser.add_argument("--observation-file", type=Path)
     parser.add_argument("--plan-file", type=Path)
@@ -65,9 +67,15 @@ def _parser() -> argparse.ArgumentParser:
 
 def _service(args: argparse.Namespace) -> HistoryLegacyMigrationService:
     paths = PathResolver(data_root=args.data_root)
-    site = SiteRegistryRepository(paths).get(args.site_id)
-    source_database = (args.source_db or (site.root_path / "db" / "devices.db")).resolve()
-    history_root = (args.history_root or (site.root_path / "db" / "history")).resolve()
+    if args.source_db is not None and args.history_root is not None:
+        site_id = str(args.site_id)
+        source_database = args.source_db.resolve()
+        history_root = args.history_root.resolve()
+    else:
+        site = SiteRegistryRepository(paths).get(args.site_id)
+        site_id = site.site_id
+        source_database = (args.source_db or (site.root_path / "db" / "devices.db")).resolve()
+        history_root = (args.history_root or (site.root_path / "db" / "history")).resolve()
     run_id = datetime.now(UTC).astimezone().strftime("%Y%m%dT%H%M%S%z")
     diagnostics = (
         args.diagnostics_dir
@@ -75,7 +83,7 @@ def _service(args: argparse.Namespace) -> HistoryLegacyMigrationService:
     ).resolve()
     return HistoryLegacyMigrationService(
         paths,
-        site_id=site.site_id,
+        site_id=site_id,
         source_database=source_database,
         history_root=history_root,
         diagnostics_dir=diagnostics,
@@ -127,6 +135,14 @@ def main(argv: list[str] | None = None) -> int:
         if not args.migration_id:
             raise SystemExit("status requires --migration-id")
         result = service.status(args.migration_id)
+    elif args.command == "validate-query":
+        if not args.migration_id or len(args.source_table) != 1:
+            raise SystemExit(
+                "validate-query requires --migration-id and exactly one --source-table"
+            )
+        result = service.validate_query_parity(
+            args.migration_id, str(args.source_table[0])
+        )
     elif args.command in {"cutover", "rollback", "mark-delete-eligible"}:
         if not args.migration_id or len(args.source_table) != 1:
             raise SystemExit(
@@ -183,8 +199,21 @@ def main(argv: list[str] | None = None) -> int:
     else:
         if args.plan_file is None:
             raise SystemExit("delete-source requires --plan-file")
-        if args.expected_revision is None:
-            raise SystemExit("delete-source requires --expected-revision")
+        table_revisions: dict[str, int] | None = None
+        if args.expected_table_revision:
+            table_revisions = {}
+            for value in args.expected_table_revision:
+                table, separator, revision = str(value).partition("=")
+                if not separator or not table.strip() or not revision.isdigit():
+                    raise SystemExit(
+                        "--expected-table-revision must use source_table=revision"
+                    )
+                table_revisions[table.strip()] = int(revision)
+        if args.expected_revision is None and table_revisions is None:
+            raise SystemExit(
+                "delete-source requires --expected-revision or "
+                "--expected-table-revision"
+            )
         if not args.expected_plan_digest or not args.expected_source_identity:
             raise SystemExit(
                 "delete-source requires --expected-plan-digest and --expected-source-identity"
@@ -197,6 +226,7 @@ def main(argv: list[str] | None = None) -> int:
             expected_plan_digest=args.expected_plan_digest,
             expected_source_identity=args.expected_source_identity,
             expected_revision=args.expected_revision,
+            expected_table_revisions=table_revisions,
             batch_rows=args.delete_batch_rows,
             apply=args.apply,
             allow_development_root_only=args.allow_development_root_only,

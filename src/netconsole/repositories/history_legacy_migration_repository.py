@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 from contextlib import closing
 from dataclasses import dataclass
@@ -699,6 +700,30 @@ class LegacyHistorySourceRepository:
                 "ORDER BY id"
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def find_rows_by_event_ids(
+        self, table: str, event_ids: set[str]
+    ) -> dict[str, dict[str, Any]]:
+        """Resolve a bounded query sample to legacy rows without mutable indexes."""
+
+        name = self._validated_table(table)
+        wanted = {str(value) for value in event_ids if str(value)}
+        found: dict[str, dict[str, Any]] = {}
+        with closing(self.connect()) as conn:
+            cursor = conn.execute(f'SELECT * FROM "{name}" ORDER BY id')
+            while wanted:
+                rows = cursor.fetchmany(2000)
+                if not rows:
+                    break
+                for row in rows:
+                    value = dict(row)
+                    event_id = hashlib.sha256(
+                        f"legacy|{name}|{int(value.get('id') or 0)}".encode()
+                    ).hexdigest()
+                    if event_id in wanted:
+                        found[event_id] = value
+                        wanted.remove(event_id)
+        return found
 
     def projection_matches(
         self,

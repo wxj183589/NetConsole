@@ -9,16 +9,19 @@ and mixed V1/V2 shards remain readable. It is
 explicitly invoked, defaults to off, and never runs during application startup
 or installation.
 
-The initial migration remains COPY-only. A3 adds an explicit, per-source-table
-query-authority state machine, but cutover is non-destructive:
+The ordinary migration remains COPY-only. An explicit maintenance phase adds a
+per-source-table query-authority state machine and a development-root-only
+source-delete executor:
 
-- source rows are never updated or deleted;
+- COPY, cutover and rollback do not update or delete source rows;
 - before cutover, source rows remain authoritative and migrated
   `event_type=legacy` shard rows remain hidden from normal HistoryStore queries;
 - after an explicit table cutover, the matching legacy table is excluded from
   the ordinary query and the verified shard rows become authoritative;
-- there is no source-delete, table-drop, compaction, replacement, or VACUUM API;
-- rollback only changes query authority while the source remains intact.
+- exact source deletion and safe compaction are available only for isolated
+  databases below `D:\study`; there is no production override;
+- rollback changes query authority while the source remains intact, and a
+  verified table can be promoted to shard authority again after rollback.
 
 ## Inventory
 
@@ -95,8 +98,9 @@ LEGACY_AUTHORITY -> SHARD_VERIFIED -> SHARD_AUTHORITY
                                      -> SOURCE_DELETE_ELIGIBLE
 ```
 
-`SOURCE_DELETED` is reserved in the schema but cannot be entered by current
-code. `SHARD_VERIFIED` is set only after the table and all ranges verify.
+`SOURCE_DELETED` can be entered only by the isolated exact-plan executor after
+all planned keys are absent and protected row counts remain unchanged.
+`SHARD_VERIFIED` is set only after the table and all ranges verify.
 `cutover` requires an expected revision and reason, then changes only that
 table's ordinary query authority. Other tables may remain under legacy
 authority. `rollback` returns `SHARD_VERIFIED`, `SHARD_AUTHORITY` or
@@ -113,16 +117,18 @@ event both revalidate.
 `preview-delete-plan` writes `LEGACY_HISTORY_DELETE_PLAN.json` with exact
 source key ranges, row/verified counts, per-range digests, authority revision,
 eligibility and exclusions. `validate-delete-plan` rechecks the source database
-identity, current range proof, revision and stable plan digest. Both commands
-are preview/validation only; no DELETE executor exists.
+identity, current range proof, revision and stable plan digest. `delete-source`
+additionally requires the expected plan digest, source identity, per-table
+revision evidence, `--apply` and `--allow-development-root-only`. It deletes
+only planned primary keys in bounded 250/500/1000-row transactions.
+Unsupported tables and rows absent from the plan are never selected.
 
 ## Priority And Commands
 
 The maintenance class is `site-database-maintenance`. The implementation
 uses the shared cross-process key `site-database-maintenance:<site_id>`.
-History migration/cutover and Site Retention scan/apply now use the same key;
-Site Retention acquires it before its narrower storage lock. Future compact
-must use this helper instead of introducing a second lock family.
+History migration/cutover/delete, typed Site Retention and safe compact use the
+same key. Site Retention acquires it before its narrower storage lock.
 
 `start` and `resume` require explicit `--apply`. `pause` changes the requested
 state; a running process observes it after the current transaction/checkpoint.
@@ -179,7 +185,7 @@ keeps `SERVER_HDD_STORAGE_V2_TEST=PENDING`.
 - Real Windows Server HDD long-duration migration remains pending until a
   separately approved maintenance window; SSD/synthetic delay is not an HDD
   substitute.
-- Query cutover is implemented but requires an explicit per-table command and
-  has not been applied to production data.
-- Source-delete eligibility and a digest-protected preview plan are implemented;
-  source DELETE, DROP, production VACUUM and physical shrink remain unavailable.
+- Query cutover, rollback, re-cutover and exact source deletion are implemented,
+  but no operation has been enabled against production data.
+- Production source DELETE, DROP, retention, VACUUM and physical replacement
+  remain unavailable and require a separate production maintenance gate.

@@ -44,16 +44,28 @@
 
 ### 任务历史
 
-任务历史当前仅提供 typed retention preview，不执行清理。现有 `SiteRetentionService` 是唯一 owner，没有新增平行 Task Retention Service。
+产品 UI/API 的任务历史仍仅提供 typed retention preview，不执行清理。现有
+`SiteRetentionService` 是唯一 owner，没有新增平行 Task Retention Service。
+数据库治理 CLI 另提供只允许 `D:\study` 隔离副本的 rehearsal executor，
+用于验证精确计划和测量空间；它不构成生产策略批准。
 
 - `PENDING/STARTING/RUNNING/STOPPING` snapshot 候选为永不自动清理；终态 snapshot 使用 90 天提案。
 - `progress` event 使用 14 天提案，普通 state/log/notification 使用 30 天提案，terminal event 使用 90 天提案。
 - `task_results` 完整权威结果使用 90 天候选，仅用于计算；Artifact 和 Online MR mapping/session 仍由领域 lifecycle 管理。
 - preview 按 task type/status/event type/result type 输出总行数、would-delete rows 和估算字节数。
-- 所有期限均为 `USER_POLICY_REQUIRED`；候选固定 `safe=false`、`action=preview`、`apply_enabled=false`、`vacuum=false`。
+- 产品入口中的所有期限仍为 `USER_POLICY_REQUIRED`；候选固定
+  `safe=false`、`action=preview`、`apply_enabled=false`、`vacuum=false`。
 - 将 task preview candidate 提交到 apply 会被拒绝，不执行 Task DELETE、checkpoint 或 VACUUM。
 
-旧的统一 90 天 task event 方案不再作为可选择候选。未来只有在用户批准期限、补齐分批/WAL/恢复门禁后，才能原位升级同一 owner 的执行路径。
+隔离 rehearsal plan 使用固定格式、数据库逻辑内容摘要、主文件 SHA、精确
+event sequence ranges、snapshot/result 主键列表、各集合 digest 和 expected
+counts。apply 在取得 `site-database-maintenance:<site_id>` 后重算逻辑摘要，
+只删除 plan 中的主键且要求实际数量完全相等；不执行 checkpoint、VACUUM
+或 Artifact 文件删除。活动任务、Online MR mapping、Ground task 和带 Artifact
+引用的任务固定受保护。执行器没有 production force 参数。
+
+旧的统一 90 天 task event 方案不再作为可选择候选。生产 apply 只有在用户
+批准期限并完成独立维护门禁后，才能原位开放同一 owner 的执行路径。
 
 ## 固定保护规则
 

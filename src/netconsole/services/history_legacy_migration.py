@@ -317,6 +317,8 @@ class HistoryLegacyMigrationService:
         with database_maintenance_lock(self.paths, lock_key):
             self._assert_current_source(migration_id)
             checkpoint = self._required_table(migration_id, source_table)
+            if checkpoint.cutover_revision != int(expected_revision):
+                raise ValueError("cutover revision mismatch")
             spec = SUPPORTED_SPECS.get(source_table)
             if spec is None:
                 raise ValueError(f"unsupported legacy history source: {source_table}")
@@ -331,11 +333,20 @@ class HistoryLegacyMigrationService:
                     )
             if checkpoint.status != "VERIFIED" or checkpoint.error_count:
                 raise ValueError("source table copy verification is incomplete")
+            if checkpoint.authority_state == "LEGACY_AUTHORITY":
+                checkpoint = self.journal.transition_authority(
+                    migration_id,
+                    source_table,
+                    to_state="SHARD_VERIFIED",
+                    expected_revision=expected_revision,
+                    reason=f"{reason}; restore verified shard candidate",
+                    now=self._now(),
+                )
             updated = self.journal.transition_authority(
                 migration_id,
                 source_table,
                 to_state="SHARD_AUTHORITY",
-                expected_revision=expected_revision,
+                expected_revision=checkpoint.cutover_revision,
                 reason=reason,
                 now=self._now(),
             )
@@ -560,7 +571,8 @@ class HistoryLegacyMigrationService:
         *,
         expected_plan_digest: str,
         expected_source_identity: str,
-        expected_revision: int,
+        expected_revision: int | None = None,
+        expected_table_revisions: dict[str, int] | None = None,
         batch_rows: int = 500,
         apply: bool = False,
         allow_development_root_only: bool = False,
@@ -597,16 +609,31 @@ class HistoryLegacyMigrationService:
             tables = list(plan.get("tables") or [])
             if not tables:
                 raise ValueError("delete plan has no tables")
+            revisions = {
+                str(item.get("source_table") or ""): int(
+                    item.get("cutover_revision") or -1
+                )
+                for item in tables
+            }
+            if expected_table_revisions is not None:
+                normalized = {
+                    str(table): int(revision)
+                    for table, revision in expected_table_revisions.items()
+                }
+                if normalized != revisions:
+                    raise ValueError("expected table revisions mismatch")
+            elif expected_revision is None or any(
+                revision != int(expected_revision) for revision in revisions.values()
+            ):
+                raise ValueError("expected cutover revision mismatch")
             for item in tables:
-                if int(item.get("cutover_revision") or -1) != int(expected_revision):
-                    raise ValueError("expected cutover revision mismatch")
                 if not bool(item.get("eligibility")):
                     raise ValueError("delete plan contains an ineligible table")
             result = self._delete_source_locked(
                 str(plan["migration_id"]),
                 tables,
                 plan_digest=supplied_digest,
-                expected_revision=int(expected_revision),
+                expected_revisions=revisions,
                 batch_rows=safe_batch,
             )
         return {
@@ -624,7 +651,7 @@ class HistoryLegacyMigrationService:
         tables: list[dict[str, Any]],
         *,
         plan_digest: str,
-        expected_revision: int,
+        expected_revisions: dict[str, int],
         batch_rows: int,
     ) -> dict[str, Any]:
         deleted_total = 0
@@ -638,6 +665,7 @@ class HistoryLegacyMigrationService:
                 if table not in SUPPORTED_SPECS or not table.replace("_", "").isalnum():
                     raise ValueError(f"invalid source delete table: {table}")
                 checkpoint = self._required_table(migration_id, table)
+                expected_revision = int(expected_revisions[table])
                 if (
                     checkpoint.authority_state != "SOURCE_DELETE_ELIGIBLE"
                     or checkpoint.cutover_revision != expected_revision
@@ -1249,6 +1277,150 @@ class HistoryLegacyMigrationService:
             "inventory": inventory,
             "source_preserved": True,
             "destructive_operations": {"DELETE": "NO", "DROP": "NO", "VACUUM": "NO"},
+        }
+
+    def validate_query_parity(
+        self, migration_id: str, source_table: str
+    ) -> dict[str, Any]:
+        """Validate count, ordering, pagination, filters, and event identity."""
+
+        checkpoint = self._required_table(migration_id, source_table)
+        spec = SUPPORTED_SPECS.get(source_table)
+        if spec is None or checkpoint.authority_state not in {
+            "SHARD_AUTHORITY",
+            "SOURCE_DELETE_ELIGIBLE",
+            "SOURCE_DELETED",
+        }:
+            raise ValueError("query parity requires shard authority")
+        if spec.canonical_source:
+            if checkpoint.authority_state == "SOURCE_DELETED":
+                return {
+                    "source_table": source_table,
+                    "kind": spec.entity_type,
+                    "projection_duplicate": True,
+                    "canonical_source": spec.canonical_source,
+                    "verified_rows": checkpoint.verified_count,
+                    "canonical_mapping_rows": checkpoint.verified_count,
+                    "post_delete": True,
+                    "result": "PASS",
+                }
+            proof = self._build_delete_plan_table(checkpoint)
+            if not proof["eligibility"]:
+                raise ValueError("projection canonical parity failed")
+            return {
+                "source_table": source_table,
+                "kind": spec.entity_type,
+                "projection_duplicate": True,
+                "canonical_source": spec.canonical_source,
+                "verified_rows": checkpoint.verified_count,
+                "canonical_mapping_rows": int(proof["row_count"]),
+                "result": "PASS",
+            }
+
+        kind = spec.entity_type
+        expected_count = int(checkpoint.verified_count)
+        actual_count = self.store.count_events(kind=kind)
+        if actual_count != expected_count:
+            raise RuntimeError(
+                f"history count parity failed: {actual_count} != {expected_count}"
+            )
+        page_size = min(25, max(1, expected_count))
+        first = self.store.query_events(kind=kind, limit=page_size, offset=0)
+        second = self.store.query_events(
+            kind=kind, limit=page_size, offset=page_size
+        )
+        combined = first + second
+        expected_order = sorted(
+            combined,
+            key=lambda item: (
+                str(item.get("collected_at") or ""),
+                str(item.get("event_id") or ""),
+            ),
+            reverse=True,
+        )
+        if combined != expected_order:
+            raise RuntimeError("history ordering or pagination parity failed")
+        identities = [str(item.get("event_id") or "") for item in combined]
+        if len(identities) != len(set(identities)):
+            raise RuntimeError("history pagination returned duplicate event identity")
+        source_samples: dict[str, dict[str, Any]] = {}
+        if checkpoint.authority_state != "SOURCE_DELETED":
+            source_samples = self.source.find_rows_by_event_ids(
+                source_table, set(identities)
+            )
+            if len(source_samples) != len(identities):
+                raise RuntimeError("history query source identity is missing")
+            for item in combined:
+                expected_event = self.store.legacy_migration_event(
+                    source_table, source_samples[str(item["event_id"])]
+                )
+                expected_output = json.loads(str(expected_event["payload_json"]))
+                for envelope_field in (
+                    "collected_at",
+                    "legacy_source_table",
+                    "legacy_source_id",
+                ):
+                    expected_output.pop(envelope_field, None)
+                expected_output.update(
+                    {
+                        "event_id": expected_event["event_id"],
+                        "event_type": expected_event["event_type"],
+                        "collected_at": expected_event["collected_at"],
+                    }
+                )
+                if self._stable_digest(item) != self._stable_digest(expected_output):
+                    raise RuntimeError("history query event identity or payload mismatch")
+
+        month_counts: dict[str, int] = {}
+        for record in self.journal.range_records(migration_id):
+            if str(record["source_table"]) != source_table:
+                continue
+            month = str(record["target_month"])
+            if month == "INVALID":
+                continue
+            month_counts[month] = month_counts.get(month, 0) + int(
+                record["source_count"]
+            )
+        for month, expected in month_counts.items():
+            actual = self.store.count_events(
+                kind=kind,
+                collected_from=f"{month}-01T00:00:00",
+                collected_to=f"{month}-31T23:59:59.999999",
+            )
+            if actual != expected:
+                raise RuntimeError(
+                    f"history month filter parity failed for {month}: {actual} != {expected}"
+                )
+        entity_count = 0
+        if first and checkpoint.authority_state != "SOURCE_DELETED":
+            source_row = source_samples[str(first[0]["event_id"])]
+            event = self.store.legacy_migration_event(source_table, source_row)
+            entity_count = self.store.count_events(
+                kind=kind, entity_key=str(event["entity_key"])
+            )
+            if entity_count <= 0:
+                raise RuntimeError("history entity filter parity failed")
+        health = self.store.history_health()
+        if health["status"] != "ready":
+            raise RuntimeError(f"history query health degraded: {health['errors']}")
+        return {
+            "source_table": source_table,
+            "kind": kind,
+            "projection_duplicate": False,
+            "expected_count": expected_count,
+            "actual_count": actual_count,
+            "page_one_rows": len(first),
+            "page_two_rows": len(second),
+            "month_counts": month_counts,
+            "entity_filter_count": entity_count,
+            "history_health": health,
+            "post_delete": checkpoint.authority_state == "SOURCE_DELETED",
+            "payload_identity_validation": (
+                "PRE_DELETE_RANGE_DIGEST"
+                if checkpoint.authority_state == "SOURCE_DELETED"
+                else "LIVE_SOURCE_SAMPLE"
+            ),
+            "result": "PASS",
         }
 
     def _append_invalid(self, rows: list[dict[str, Any]]) -> None:

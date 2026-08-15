@@ -10,6 +10,10 @@ from pathlib import Path
 from typing import Any
 
 from netconsole.core.paths import PathResolver
+from netconsole.services.database_upgrade.coordinator import (
+    database_maintenance_lock,
+    site_database_maintenance_key,
+)
 from netconsole.services.database_upgrade.sqlite_consistency import fsync_file, sha256_file
 from netconsole.services.site_storage import SiteRecord, SiteStorageError, validate_site_id
 
@@ -211,6 +215,57 @@ def sqlite_quick_profile(path: str | Path) -> dict[str, Any]:
     return result
 
 
+def sqlite_content_fingerprint(path: str | Path) -> str:
+    """Stream every application table row into a deterministic content digest."""
+
+    database = Path(path).resolve()
+    digest = hashlib.sha256()
+    with closing(_connect_readonly(database)) as connection:
+        tables = [
+            str(row[0])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_schema WHERE type='table' "
+                "AND name NOT LIKE 'sqlite_%' ORDER BY name"
+            ).fetchall()
+        ]
+        for table in tables:
+            metadata = connection.execute(f'PRAGMA table_info("{table}")').fetchall()
+            columns = [str(row[1]) for row in metadata]
+            primary = [str(row[1]) for row in metadata if int(row[5] or 0)]
+            order = primary or ["rowid"]
+            digest.update(f"{table}\0{','.join(columns)}\0".encode("utf-8"))
+            cursor = connection.execute(
+                f'SELECT * FROM "{table}" ORDER BY '
+                + ", ".join(f'"{column}"' for column in order)
+            )
+            while True:
+                rows = cursor.fetchmany(500)
+                if not rows:
+                    break
+                for row in rows:
+                    digest.update(len(row).to_bytes(4, "big"))
+                    for value in row:
+                        if value is None:
+                            payload = b""
+                            marker = b"n"
+                        elif isinstance(value, bytes):
+                            payload = value
+                            marker = b"b"
+                        elif isinstance(value, int):
+                            payload = str(value).encode("ascii")
+                            marker = b"i"
+                        elif isinstance(value, float):
+                            payload = repr(value).encode("ascii")
+                            marker = b"f"
+                        else:
+                            payload = str(value).encode("utf-8")
+                            marker = b"s"
+                        digest.update(marker)
+                        digest.update(len(payload).to_bytes(8, "big"))
+                        digest.update(payload)
+    return digest.hexdigest()
+
+
 @dataclass(frozen=True)
 class CompactResult:
     source: str
@@ -224,12 +279,26 @@ class DevelopmentDatabaseCompactService:
 
     def __init__(
         self,
+        paths: PathResolver,
         *,
+        site_id: str,
         development_root: str | Path = DEVELOPMENT_ROOT,
     ) -> None:
+        self.paths = paths
+        self.site_id = str(site_id or "").strip()
+        if not self.site_id:
+            raise ValueError("site_id is required for database compaction")
         self.development_root = Path(development_root).resolve()
 
     def compact(self, source: str | Path, destination: str | Path) -> CompactResult:
+        with database_maintenance_lock(
+            self.paths, site_database_maintenance_key(self.site_id)
+        ):
+            return self._compact_locked(source, destination)
+
+    def _compact_locked(
+        self, source: str | Path, destination: str | Path
+    ) -> CompactResult:
         source_path = assert_development_path(
             source, development_root=self.development_root
         )
@@ -243,16 +312,29 @@ class DevelopmentDatabaseCompactService:
         before = sqlite_quick_profile(source_path)
         if not before["valid"]:
             raise sqlite3.DatabaseError("source database quick_check failed")
+        before["content_fingerprint"] = sqlite_content_fingerprint(source_path)
         destination_path.parent.mkdir(parents=True, exist_ok=True)
         with closing(sqlite3.connect(source_path, timeout=60)) as connection:
             connection.execute("PRAGMA busy_timeout = 60000")
             connection.execute("VACUUM INTO ?", (str(destination_path),))
         fsync_file(destination_path)
         after = sqlite_quick_profile(destination_path)
+        after["content_fingerprint"] = sqlite_content_fingerprint(destination_path)
         self._assert_equivalent(before, after)
         return CompactResult(str(source_path), str(destination_path), before, after)
 
     def replace(
+        self,
+        source: str | Path,
+        compacted: str | Path,
+        rollback: str | Path,
+    ) -> dict[str, Any]:
+        with database_maintenance_lock(
+            self.paths, site_database_maintenance_key(self.site_id)
+        ):
+            return self._replace_locked(source, compacted, rollback)
+
+    def _replace_locked(
         self,
         source: str | Path,
         compacted: str | Path,
@@ -271,11 +353,14 @@ class DevelopmentDatabaseCompactService:
             raise FileExistsError(f"rollback path already exists: {rollback_path}")
         before = sqlite_quick_profile(source_path)
         candidate = sqlite_quick_profile(compacted_path)
+        before["content_fingerprint"] = sqlite_content_fingerprint(source_path)
+        candidate["content_fingerprint"] = sqlite_content_fingerprint(compacted_path)
         self._assert_equivalent(before, candidate)
         os.replace(source_path, rollback_path)
         try:
             os.replace(compacted_path, source_path)
             active = sqlite_quick_profile(source_path)
+            active["content_fingerprint"] = sqlite_content_fingerprint(source_path)
             self._assert_equivalent(before, active)
         except Exception:
             if source_path.exists():
@@ -293,12 +378,22 @@ class DevelopmentDatabaseCompactService:
         }
 
     def rollback(self, source: str | Path, rollback: str | Path) -> dict[str, Any]:
+        with database_maintenance_lock(
+            self.paths, site_database_maintenance_key(self.site_id)
+        ):
+            return self._rollback_locked(source, rollback)
+
+    def _rollback_locked(
+        self, source: str | Path, rollback: str | Path
+    ) -> dict[str, Any]:
         source_path = assert_development_path(source, development_root=self.development_root)
         rollback_path = assert_development_path(
             rollback, development_root=self.development_root
         )
         current = sqlite_quick_profile(source_path)
         previous = sqlite_quick_profile(rollback_path)
+        current["content_fingerprint"] = sqlite_content_fingerprint(source_path)
+        previous["content_fingerprint"] = sqlite_content_fingerprint(rollback_path)
         self._assert_equivalent(current, previous)
         displaced = source_path.with_name(f"{source_path.name}.pre-rollback")
         if displaced.exists():
@@ -307,6 +402,7 @@ class DevelopmentDatabaseCompactService:
         try:
             os.replace(rollback_path, source_path)
             restored = sqlite_quick_profile(source_path)
+            restored["content_fingerprint"] = sqlite_content_fingerprint(source_path)
             self._assert_equivalent(previous, restored)
         except Exception:
             if not source_path.exists() and displaced.exists():
@@ -323,7 +419,12 @@ class DevelopmentDatabaseCompactService:
     def _assert_equivalent(before: dict[str, Any], after: dict[str, Any]) -> None:
         if not before.get("valid") or not after.get("valid"):
             raise sqlite3.DatabaseError("database validation failed")
-        for field in ("schema_version", "schema_digest", "table_counts"):
+        for field in (
+            "schema_version",
+            "schema_digest",
+            "table_counts",
+            "content_fingerprint",
+        ):
             if before.get(field) != after.get(field):
                 raise sqlite3.DatabaseError(f"database compact fingerprint mismatch: {field}")
 
@@ -366,5 +467,6 @@ __all__ = [
     "assert_development_path",
     "resolve_registered_active_site_readonly",
     "sqlite_online_backup_readonly",
+    "sqlite_content_fingerprint",
     "sqlite_quick_profile",
 ]

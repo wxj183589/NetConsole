@@ -15,6 +15,7 @@ from netconsole.services.database_footprint_maintenance import (
     sqlite_online_backup_readonly,
     sqlite_quick_profile,
 )
+from scripts.maintenance.rehearse_database_footprint import main as rehearsal_main
 
 
 def _database(path: Path) -> Path:
@@ -81,7 +82,11 @@ def test_readonly_online_backup_and_compact_replace_rollback(tmp_path: Path) -> 
         connection.commit()
     before = sqlite_quick_profile(snapshot)
     compacted = tmp_path / "run" / "compacted.db"
-    service = DevelopmentDatabaseCompactService(development_root=tmp_path)
+    service = DevelopmentDatabaseCompactService(
+        PathResolver(app_root=tmp_path, data_root=tmp_path / "maintenance"),
+        site_id="line-12",
+        development_root=tmp_path,
+    )
     result = service.compact(snapshot, compacted)
     assert result.after["size_bytes"] <= result.before["size_bytes"]
     rollback = tmp_path / "run" / "snapshot.db.pre-compact"
@@ -102,3 +107,63 @@ def test_development_path_guard_fails_closed(tmp_path: Path) -> None:
         assert_development_path(tmp_path, development_root=tmp_path)
     with pytest.raises(ValueError, match="must be under"):
         assert_development_path(tmp_path.parent / "outside.db", development_root=tmp_path)
+
+
+def test_rehearsal_cli_creates_readonly_snapshots_and_working_copies(
+    tmp_path: Path,
+) -> None:
+    data_root = tmp_path / "production"
+    site_root = data_root / "sites" / "line-12"
+    _database(site_root / "db" / "devices.db")
+    _database(site_root / "db" / "tasks.db")
+    config = data_root / "config"
+    config.mkdir(parents=True)
+    application = config / "application.json"
+    registry = config / "site_registry.json"
+    application.write_text(
+        json.dumps({"current_site": "line-12"}), encoding="utf-8"
+    )
+    registry.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "sites": [
+                    {
+                        "site_id": "line-12",
+                        "display_name": "Line 12",
+                        "relative_path": "sites/line-12",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    before = {path: path.read_bytes() for path in (application, registry)}
+    run_root = tmp_path / "run"
+    diagnostics = tmp_path / "diagnostics"
+
+    assert rehearsal_main(
+        [
+            "snapshot",
+            "--production-data-root",
+            str(data_root),
+            "--run-root",
+            str(run_root),
+            "--diagnostics-dir",
+            str(diagnostics),
+        ]
+    ) == 0
+    assert rehearsal_main(
+        ["prepare-rehearsal", "--run-root", str(run_root)]
+    ) == 0
+
+    assert before == {path: path.read_bytes() for path in (application, registry)}
+    assert (diagnostics / "RESOLVED_SITE.json").is_file()
+    for path in (
+        run_root / "source" / "devices.db",
+        run_root / "source" / "tasks.db",
+        run_root / "devices-rehearsal" / "devices.db",
+        run_root / "tasks-rehearsal" / "tasks.db",
+    ):
+        assert sqlite_quick_profile(path)["quick_check"] == "ok"
+    assert (run_root / "devices-rehearsal" / "history").is_dir()
