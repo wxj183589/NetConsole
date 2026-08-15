@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,9 @@ from netconsole.services.job_center.task_application_service import (
 from netconsole.services.job_center.task_result_rollout import (
     TaskResultRolloutError,
     TaskResultRolloutService,
+)
+from netconsole.services.job_center.task_result_maintenance import (
+    TaskResultMaintenanceService,
 )
 from netconsole.services.site_storage import SiteRecord, SiteRegistryRepository
 from scripts.maintenance.manage_task_result_rollout import main as rollout_cli_main
@@ -245,6 +249,148 @@ def test_future_rollout_states_cannot_be_applied(
         )
     assert blocked.value.code == code
     assert service.status()["task_result_storage_state"] == "LEGACY_DUAL_FULL"
+
+
+def test_historical_backfill_is_classified_idempotent_and_ref_read_through(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "tasks.db"
+    repository = TaskRepository(path)
+
+    matched_snapshot, matched_event = _terminal("matched")
+    assert repository.record(matched_snapshot, matched_event)
+    snapshot_only, snapshot_event = _terminal("snapshot-only")
+    snapshot_event = replace(snapshot_event, payload={"message": "done"})
+    assert repository.record(snapshot_only, snapshot_event)
+    event_only, event_only_event = _terminal("event-only")
+    event_only = replace(event_only, result={})
+    assert repository.record(event_only, event_only_event)
+    conflict, conflict_event = _terminal("conflict")
+    conflict_event = replace(
+        conflict_event,
+        payload={"result": {"task": "conflict", "rows": 999}},
+    )
+    assert repository.record(conflict, conflict_event)
+    invalid, invalid_event = _terminal("invalid")
+    invalid = replace(invalid, result={})
+    invalid_event = replace(invalid_event, payload={"message": "done"})
+    assert repository.record(invalid, invalid_event)
+
+    TaskResultRolloutService(path).enable_dual_write(
+        expected_revision=1,
+        reason="isolated historical backfill",
+        updated_by="pytest",
+    )
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path / "runtime")
+    maintenance = TaskResultMaintenanceService(
+        paths,
+        site_id="line-12",
+        tasks_database=path,
+        development_root=tmp_path,
+    )
+    analysis = maintenance.analyze_backfill()
+    assert analysis["classifications"] == {
+        "CONFLICT": 1,
+        "EVENT_ONLY": 1,
+        "INVALID": 1,
+        "MATCHED": 1,
+        "SNAPSHOT_ONLY": 1,
+    }
+    first = maintenance.backfill(
+        apply=True,
+        allow_development_root_only=True,
+    )
+    second = maintenance.backfill(
+        apply=True,
+        allow_development_root_only=True,
+    )
+    assert first["new_result_rows"] == 3
+    assert second["new_result_rows"] == 0
+    assert second["idempotent"] is True
+
+    ref = maintenance.enable_ref_authority(
+        expected_revision=2,
+        reason="isolated ref authority rehearsal",
+        updated_by="pytest",
+        apply=True,
+        allow_development_root_only=True,
+    )
+    assert ref["state"] == "RESULT_REF_AUTHORITY"
+    assert ref["revision"] == 4
+    assert ref["snapshot_full_results_removed"] == 2
+    with sqlite3.connect(path) as connection:
+        stored = connection.execute(
+            "SELECT result_json FROM task_snapshots WHERE task_id='matched'"
+        ).fetchone()[0]
+        event_payload = json.loads(
+            connection.execute(
+                "SELECT payload_json FROM task_events WHERE task_id='matched'"
+            ).fetchone()[0]
+        )
+    assert stored == "{}"
+    assert "result" not in event_payload and event_payload["result_id"]
+    restarted = TaskRepository(path)
+    assert restarted.get("matched").result == matched_snapshot.result
+    assert restarted.list_events("matched")[0]["payload"]["result"] == (
+        matched_snapshot.result
+    )
+    assert restarted.get("conflict").result == conflict.result
+
+
+def test_ref_authority_keeps_live_websocket_payload_full(tmp_path: Path) -> None:
+    data_root = tmp_path / "data"
+    paths = PathResolver(app_root=tmp_path, data_root=data_root)
+    task_db = paths.site_tasks_db_path("demo")
+    TaskResultRolloutService(task_db).enable_dual_write(
+        expected_revision=1,
+        reason="isolated ref fixture",
+        updated_by="pytest",
+    )
+    TaskResultMaintenanceService(
+        paths,
+        site_id="demo",
+        tasks_database=task_db,
+        development_root=tmp_path,
+    ).enable_ref_authority(
+        expected_revision=2,
+        reason="isolated ref fixture",
+        updated_by="pytest",
+        apply=True,
+        allow_development_root_only=True,
+    )
+    service = TaskApplicationService(paths, site_name="demo", reconcile_on_start=False)
+    service.create_external_task(
+        task_id="ref-live-result",
+        task_type="agent_task",
+        task_name="Ref Live Result",
+        source="agent",
+    )
+    stream = service.events.open_stream()
+    result = {"status": "COMPLETED", "rows": 11}
+    snapshot = service.record_external_event(
+        "ref-live-result",
+        "finished",
+        {"message": "done", "result": result},
+        source="agent",
+        event_id="ref-live-finished",
+        event_time="2026-08-16T03:00:00Z",
+    )
+    live = stream.get(timeout=1)
+    stream.close()
+
+    assert snapshot.result == result and snapshot.result_id
+    assert live["payload"]["result"] == result
+    with sqlite3.connect(task_db) as connection:
+        stored_snapshot = connection.execute(
+            "SELECT result_json FROM task_snapshots WHERE task_id='ref-live-result'"
+        ).fetchone()[0]
+        stored_event = json.loads(
+            connection.execute(
+                "SELECT payload_json FROM task_events WHERE event_id='ref-live-finished'"
+            ).fetchone()[0]
+        )
+    assert stored_snapshot == "{}"
+    assert "result" not in stored_event and stored_event["result_id"]
 
 
 def test_default_websocket_terminal_payload_remains_full(tmp_path: Path) -> None:

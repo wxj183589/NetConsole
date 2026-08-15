@@ -318,8 +318,9 @@ class TaskRepository:
         target_state: TaskResultStorageState,
         updated_by: str,
         reason: str,
+        allow_advanced: bool = False,
     ) -> TaskResultRolloutStatus | None:
-        if (expected_state, target_state) not in {
+        production_transitions = {
             (
                 TaskResultStorageState.LEGACY_DUAL_FULL,
                 TaskResultStorageState.TASK_RESULTS_DUAL_WRITE,
@@ -328,7 +329,21 @@ class TaskRepository:
                 TaskResultStorageState.TASK_RESULTS_DUAL_WRITE,
                 TaskResultStorageState.LEGACY_DUAL_FULL,
             ),
-        }:
+        }
+        advanced_transitions = {
+            (
+                TaskResultStorageState.TASK_RESULTS_DUAL_WRITE,
+                TaskResultStorageState.TASK_RESULTS_VERIFIED,
+            ),
+            (
+                TaskResultStorageState.TASK_RESULTS_VERIFIED,
+                TaskResultStorageState.RESULT_REF_AUTHORITY,
+            ),
+        }
+        transition = (expected_state, target_state)
+        if transition not in production_transitions and not (
+            allow_advanced and transition in advanced_transitions
+        ):
             raise ValueError("task result rollout persistence transition is blocked")
         updated: TaskResultRolloutStatus | None = None
 
@@ -404,11 +419,7 @@ class TaskRepository:
         ):
             return snapshot, event
         rollout = self._task_result_rollout_status_from_connection(conn)
-        if rollout.ref_authority_active:
-            raise sqlite3.DatabaseError(
-                "RESULT_REF_AUTHORITY requires a separate approved migration phase"
-            )
-        if not rollout.dual_write_active:
+        if not rollout.dual_write_active and not rollout.ref_authority_active:
             return snapshot, event
         canonical = self._canonical_result_json(result)
         encoded = canonical.encode("utf-8")
@@ -456,14 +467,19 @@ class TaskRepository:
         enriched_payload = {**dict(event.payload), "result": verified_result, **refs}
         event.payload.clear()
         event.payload.update(enriched_payload)
+        stored_payload = dict(enriched_payload)
+        stored_result = verified_result
+        if rollout.ref_authority_active:
+            stored_payload.pop("result", None)
+            stored_result = {}
         stored_snapshot = replace(
             snapshot,
-            result=verified_result,
+            result=stored_result,
             result_id=result_id,
             result_hash=result_hash,
             result_summary=summary,
         )
-        return stored_snapshot, replace(event, payload=event.payload)
+        return stored_snapshot, replace(event, payload=stored_payload)
 
     @staticmethod
     def _task_result_rollout_status_from_connection(
@@ -1516,7 +1532,7 @@ class TaskRepository:
             if str(row.get("result_hash") or "") not in {"", str(verified["sha256"])}:
                 raise sqlite3.DatabaseError("task snapshot result hash mismatch")
             legacy_result_json = str(row.get("result_json") or "").strip()
-            if legacy_result_json in {"", "null"}:
+            if legacy_result_json in {"", "{}", "null"}:
                 row["result_json"] = str(verified["canonical_json"])
             row["result_hash"] = str(verified["sha256"])
             if not self._json_object(row.get("result_summary_json")):
