@@ -585,11 +585,11 @@ class HistoryStore:
             return UNATTENDED_DRAIN_ELEVATED_LIMIT
         return UNATTENDED_DRAIN_BASE_LIMIT
 
-    def _write_shard_batch(self, rows: list[dict[str, Any]]) -> None:
+    def _write_shard_batch(self, rows: list[dict[str, Any]]) -> int:
         """Append one month of durable outbox events with bounded SQLite commits."""
 
         if not rows:
-            return
+            return 0
         period = _period(str(rows[0]["collected_at"]))
         if any(_period(str(row["collected_at"])) != period for row in rows):
             raise ValueError("history shard batch must contain one month")
@@ -675,6 +675,57 @@ class HistoryStore:
                         (inserted - 1, period),
                     )
                 catalog.commit()
+        return inserted
+
+    def copy_legacy_migration_events(
+        self, events: list[dict[str, Any]]
+    ) -> tuple[int, int]:
+        """Write and durably verify an explicit COPY-only migration chunk."""
+
+        inserted = 0
+        batches: dict[str, list[dict[str, Any]]] = {}
+        for event in events:
+            if str(event.get("event_type") or "") != "legacy":
+                raise ValueError("migration events must use event_type=legacy")
+            batches.setdefault(_period(str(event["collected_at"])), []).append(event)
+        for batch in batches.values():
+            inserted += self._write_shard_batch(batch)
+        if events:
+            self._verify_shard_events(events)
+        return inserted, len(events)
+
+    def read_legacy_migration_events(
+        self, events: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Read exact copied events for digest/sample verification."""
+
+        found: dict[str, dict[str, Any]] = {}
+        by_period: dict[str, list[str]] = {}
+        for event in events:
+            by_period.setdefault(_period(str(event["collected_at"])), []).append(
+                str(event["event_id"])
+            )
+        for period, event_ids in by_period.items():
+            event_ids = sorted(set(event_ids))
+            shard_path = self.history_root / f"devices-{period}.db"
+            with closing(self._connect_readonly(shard_path)) as shard:
+                for offset in range(0, len(event_ids), 500):
+                    chunk = event_ids[offset : offset + 500]
+                    placeholders = ", ".join("?" for _ in chunk)
+                    rows = shard.execute(
+                        "SELECT * FROM history_events WHERE event_id IN ("
+                        + placeholders
+                        + ")",
+                        chunk,
+                    ).fetchall()
+                    found.update((str(row["event_id"]), dict(row)) for row in rows)
+        return [found[str(event["event_id"])] for event in events if str(event["event_id"]) in found]
+
+    @staticmethod
+    def legacy_migration_event(source_table: str, row: dict[str, Any]) -> dict[str, Any]:
+        """Build the stable shard event used by the maintenance migration."""
+
+        return HistoryStore._legacy_event(source_table, row)
 
     def query_events(
         self,
@@ -1086,10 +1137,11 @@ class HistoryStore:
         payload = dict(row)
         payload["legacy_source_table"] = source_table
         payload["legacy_source_id"] = source_id
+        canonical_identity = HistoryStore._canonical_legacy_identity(
+            source_table, row, collected_at=collected_at
+        )
         return {
-            "event_id": hashlib.sha256(
-                f"legacy|{source_table}|{source_id}".encode()
-            ).hexdigest(),
+            "event_id": hashlib.sha256(canonical_identity.encode()).hexdigest(),
             "kind": spec.kind,
             "entity_key": ":".join(entity_values),
             "event_type": "legacy",
@@ -1099,6 +1151,18 @@ class HistoryStore:
             ),
             "created_at": str(row.get("created_at") or collected_at),
         }
+
+    @staticmethod
+    def _canonical_legacy_identity(
+        source_table: str,
+        row: dict[str, Any],
+        *,
+        collected_at: str,
+    ) -> str:
+        """Return the stable source-row identity for an authoritative legacy fact."""
+
+        del collected_at
+        return f"legacy|{source_table}|{int(row.get('id') or 0)}"
 
     def _verify_shard_events(self, events: list[dict[str, Any]]) -> None:
         """Confirm durable event identity before advancing the source checkpoint."""

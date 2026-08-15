@@ -19,6 +19,8 @@
 - `audit_sites.py`：只读扫描局点文件、SQLite 完整性、业务记录和 Registry/bootstrap 引用，并把审计 manifest 写入当前数据根；不移动或删除局点。
 - `rebuild_mesh_parsed_data.py`：在 schema 变更后从受保护 raw 日志重建 MESH 派生 SQLite；默认仅输出计划，`--apply` 必须在 NetConsole 完全退出后执行。
 - `remap_mesh_identity.py`：扫描健康的 MESH parsed 来源并规划/执行 identity-only remap；默认 dry-run，只有显式 `--apply` 才逐来源复用 `MeshSourceRebuildService` 写入，经数据库回读验证后才发布 ready。
+- `migrate_device_history.py`：显式 inventory/start/pause/resume/status 的 legacy history COPY-only 迁移；start/resume 必须 `--apply`，无源删除、DROP 或 VACUUM 能力。
+- `benchmark_device_history_legacy_migration.py`：只在 `D:\study` 隔离数据上测量迁移吞吐、chunk latency、commit/checkpoint 和 target growth。
 
 局点审计从仓库根运行，默认使用源码开发数据根；`--site-id` 可限制为一个稳定 ID 或目录名，`--output` 可指定 manifest 文件：
 
