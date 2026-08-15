@@ -2,6 +2,8 @@
 
 局点数据清理是独立的扫描、复核和执行用例，不复用缓存清理，也不按目录或文件年龄直接递归删除。入口位于“系统设置 -> 局点与数据管理 -> 数据清理”。所有扫描和执行都进入 Job Center；Renderer 只提交局点 ID、服务端扫描令牌和候选 ID，不接收或提交任意物理路径。
 
+扫描和执行统一占用 `site-database-maintenance:<site_id>`。执行时先获取该数据库维护锁，再获取 `site-retention-<site_id>` 领域 storage lock。History migration/cutover 使用同一数据库维护键；future compact 也必须复用，避免同一局点的重 IO/写维护并发。
+
 ## 两阶段流程
 
 1. `site_retention_scan` 只读统计局点总占用、当前数据库、原始数据、解析数据、历史备份和其他文件，并分类候选。
@@ -42,18 +44,25 @@
 
 ### 任务历史
 
-- 仅删除 `tasks.db.task_events` 中 90 天以前的事件。
-- `task_snapshots`、任务业务结果、Artifact 和领域数据保持不变。
-- 删除后执行 WAL checkpoint 和 SQLite `VACUUM`。
-- 同一局点存在其他活动任务时拒绝整个执行任务。
+任务历史当前仅提供 typed retention preview，不执行清理。现有 `SiteRetentionService` 是唯一 owner，没有新增平行 Task Retention Service。
+
+- `PENDING/STARTING/RUNNING/STOPPING` snapshot 候选为永不自动清理；终态 snapshot 使用 90 天提案。
+- `progress` event 使用 14 天提案，普通 state/log/notification 使用 30 天提案，terminal event 使用 90 天提案。
+- `task_results` 完整权威结果使用 90 天候选，仅用于计算；Artifact 和 Online MR mapping/session 仍由领域 lifecycle 管理。
+- preview 按 task type/status/event type/result type 输出总行数、would-delete rows 和估算字节数。
+- 所有期限均为 `USER_POLICY_REQUIRED`；候选固定 `safe=false`、`action=preview`、`apply_enabled=false`、`vacuum=false`。
+- 将 task preview candidate 提交到 apply 会被拒绝，不执行 Task DELETE、checkpoint 或 VACUUM。
+
+旧的统一 90 天 task event 方案不再作为可选择候选。未来只有在用户批准期限、补齐分批/WAL/恢复门禁后，才能原位升级同一 owner 的执行路径。
 
 ## 固定保护规则
 
 - 当前数据库、未知数据库、当前活动任务数据、解析失败或证据不完整的 raw、人工保留数据不进入自动候选。
+- `USER_POLICY_REQUIRED` 的 task history preview 不进入可执行候选。
 - 执行只接受扫描报告中后端签发的候选 ID；路径必须再次解析到当前局点白名单子树，且拒绝符号链接和路径逃逸。
 - 归档先写临时 ZIP并执行 CRC/大小校验，再原子发布；成功后才移除原备份。
 - 真实局点开发验收只允许 scan-only，除非用户明确授权执行并已完成备份复核。
 
 ## 延后范围
 
-MESH 原始导入、无人值守 active/archive、设备采集历史、FIT AP radio、LLDP、光模块历史和高频快照降采样尚未接入通用局点清理。它们各自有索引、引用和事实源契约；在领域级恢复读取、保留标记、运行门禁和回归测试完成前保持不自动清理。
+MESH 原始导入、无人值守 active/archive、设备采集历史、FIT AP radio、LLDP、光模块历史、高频快照降采样和 task history 实际执行尚未接入通用局点清理。它们各自有索引、引用和事实源契约；在领域级恢复读取、保留标记、运行门禁和回归测试完成前保持不自动清理。

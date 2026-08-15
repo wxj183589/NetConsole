@@ -19,10 +19,13 @@
 - `audit_sites.py`：只读扫描局点文件、SQLite 完整性、业务记录和 Registry/bootstrap 引用，并把审计 manifest 写入当前数据根；不移动或删除局点。
 - `rebuild_mesh_parsed_data.py`：在 schema 变更后从受保护 raw 日志重建 MESH 派生 SQLite；默认仅输出计划，`--apply` 必须在 NetConsole 完全退出后执行。
 - `remap_mesh_identity.py`：扫描健康的 MESH parsed 来源并规划/执行 identity-only remap；默认 dry-run，只有显式 `--apply` 才逐来源复用 `MeshSourceRebuildService` 写入，经数据库回读验证后才发布 ready。
-- `migrate_device_history.py`：显式 inventory/start/pause/resume/status 的 legacy history COPY-only 迁移；start/resume 必须 `--apply`，无源删除、DROP 或 VACUUM 能力。
+- `migrate_device_history.py`：显式 inventory/start/pause/resume/status 的 legacy history COPY-only 迁移，以及逐表 cutover/rollback/observation eligibility/delete-plan preview；状态切换必须 `--apply`，无源删除、DROP 或 VACUUM 能力。
 - `benchmark_device_history_legacy_migration.py`：只在 `D:\study` 隔离数据上测量迁移吞吐、chunk latency、commit/checkpoint 和 target growth。
 - `profile_device_history_storage.py`：只读剖析隔离 legacy/V1 history 的表、payload、envelope、索引和 fragmentation；`--decompose` 的 VACUUM 只作用于 diagnostics scratch。
 - `benchmark_device_history_storage_queries.py`：只读比较隔离 V1/V2 月分片的实体、时间范围、跨月和 offset 查询，输出延迟、EXPLAIN plan 与 event ID 一致性摘要。
+- `validate_history_migration_server_hdd.py`：只评估已捕获的 migration/host/operational JSON 证据，不打开 source DB、不运行迁移；缺少真实 HDD 或运行态证据时保持 `PENDING`。
+- `profile_tasks_db.py`：LIGHT 只读元数据、DEEP 只读隔离副本的 tasks.db 存储剖析。
+- `benchmark_tasks_db_governance.py`：在 `D:\study` 隔离库对比 legacy dual-full、B3 dual-write、future ref-only、100/1,000/10,000 task scale、约 4.5 MB result 和 progress sampling；future 空间差异仅为 potential。
 
 局点审计从仓库根运行，默认使用源码开发数据根；`--site-id` 可限制为一个稳定 ID 或目录名，`--output` 可指定 manifest 文件：
 
@@ -51,6 +54,20 @@ dry-run 不写 parsed DB、raw 或 catalog，并兼容缺少后续可选身份�
 
 - `diagnose_server_hdd.py`：只读采集 Windows Server/HDD 主机、卷容量、Backend PID、devices.db/WAL/SHM、History health 和启动阶段；旧系统性能计数器不可用时返回 `unknown`。
 - `validate_phase21_snapshot.py`：仅对用户提供的离线 `devices.db` 副本执行 SQLite Backup API 隔离验证，确认 current-schema fast path 和新 History shard 写入；未提供副本时明确 `NOT_EXECUTED`。
+
+History HDD 证据校验与 Task 结果布局 benchmark 均只向 `D:\study` 写报告：
+
+```powershell
+$env:PYTHONPATH = "$PWD\src;$PWD"
+.\.venv\Scripts\python.exe -m scripts.maintenance.validate_history_migration_server_hdd `
+  --migration-benchmark "<migration-report.json>" `
+  --host-diagnostic "<host-diagnostic.json>" `
+  --operational-observation "<observation.json>" `
+  --output-dir "D:\study\diagnostic\NetConsole\device-history-cutover\<run-id>"
+
+.\.venv\Scripts\python.exe -m scripts.maintenance.benchmark_tasks_db_governance `
+  --output-dir "D:\study\diagnostic\NetConsole\tasks-db-governance\<run-id>"
+```
 
 清理测试只在 `D:\study\test-data\NetConsole\<run-id>` 构造目标，禁止对真实 `D:\NetConsoleData`、历史 `data/`、`.local/` 或 LocalAppData 目录做破坏性测试。
 

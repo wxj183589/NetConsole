@@ -21,6 +21,35 @@ authoritative `task_results` model, retention proposal, index proposal and
 maintenance-exclusive owner are recorded in
 [Task Terminal Result Consumer Matrix](./TASK_TERMINAL_RESULT_CONSUMER_MATRIX.md).
 
+## B3 Immutable Result Compatibility Phase
+
+Schema version 4 adds immutable `task_results` with deterministic `result_id`,
+`task_id`, terminal event type, canonical UTF-8 JSON, SHA-256, byte size,
+schema version and creation time. `result_id` derives from task identity,
+terminal event type and result hash, so a retry of the same semantic result is
+idempotent. A trigger rejects updates to an existing authority row.
+
+For `finished/error/cancelled` events containing an object result,
+`TaskRepository.record()` now performs the result insert/validation, snapshot
+update and terminal event insert in one `BEGIN IMMEDIATE` transaction. The live
+WebSocket payload uses the persisted and verified identity. Query paths verify
+result id/hash/size/task ownership and support:
+
+- legacy rows with only full `result_json`;
+- B3 rows with `result_id` plus the old full snapshot/event result;
+- future ref-only fixtures that read through `task_results`.
+
+Production writing remains the second form. B3 is an additive compatibility
+phase and may use more space; ref-only writing and historical backfill are not
+enabled. Artifact finalization may update the snapshot projection but cannot
+change the immutable terminal authority row.
+
+Site Return Package now merges `task_results`, `task_snapshots`, `task_events`
+and `online_mr_task_sessions` in that order inside one transaction. Immutable
+result/event or Online MR mapping conflicts fail closed; same-content retries
+are no-ops, incomplete/wrong-site references are rejected, and Artifact events
+do not create authority results.
+
 ## Read-only Profiler
 
 `scripts/maintenance/profile_tasks_db.py` supports two modes:
@@ -73,30 +102,36 @@ identical payloads are skipped; the next changed progress is durable.
 ## Benchmark
 
 `scripts/maintenance/benchmark_tasks_db_governance.py` writes only isolated
-databases under `D:\study`. It covers 100/1,000/10,000 terminal tasks, one
-3,000-event high-frequency progress stream, a 30-second sampled comparison and
-a large terminal result. It reports DB/WAL bytes, event rows, events/task,
-throughput and commit latency percentiles.
+databases under `D:\study`. It compares legacy dual-full, current B3 dual-write
+and future ref-only simulation at 100/1,000/10,000 small-result tasks. Bounded
+actual samples cover medium and approximately 4.5 MB results without creating a
+multi-GB cross product. The report includes DB/WAL bytes, bytes/task, write and
+read-through latency, result hash cost, plus the existing 3,000-event progress
+sampling comparison. Current B3 deltas are compatibility overhead; only the
+future ref-only delta is labelled potential.
+
+```powershell
+$env:PYTHONPATH = "$PWD\src;$PWD"
+& ".\.venv\Scripts\python.exe" -m scripts.maintenance.benchmark_tasks_db_governance `
+  --output-dir "D:\study\diagnostic\NetConsole\tasks-db-governance\<run-id>"
+```
 
 ## Deferred Work
 
 - Destructive retention is `NOT STARTED`.
 - Retention periods are `USER_POLICY_REQUIRED`; soft-dismiss expiry does not
   authorize physical deletion.
-- Terminal result representation, event archive/shards and database split are
-  unchanged.
+- Stopping the old full snapshot/event result copies, event archive/shards and
+  database split are deferred.
 - Artifact filesystem truth remains owned by
   `ArtifactReconciliationService`; the profiler reports DB references only.
 - Adding an `event_time` retention index is a schema migration and is deferred.
-- Site Return Package can physically carry `online_mr_task_sessions`, but the
-  current return merge only handles snapshots/events. Preserving Online MR
-  mappings is a confirmed compatibility gap that must be resolved before a
-  result-reference cutover.
-- Candidate retention periods remain `USER_POLICY_REQUIRED`; B2 does not invoke
-  the existing Site Retention task-history purge or VACUUM path.
-- The current Site Retention owner uniformly purges all task events older than
-  90 days. A future typed policy must replace that path in place; it must not
-  run as a second, competing retention implementation.
-- Future History migration, site retention, task retention and large compact
-  must share `site-database-maintenance:<site_id>` through
-  `database_maintenance_lock()`; this unification remains design-only.
+- Typed retention is preview-only inside the existing `SiteRetentionService`.
+  It reports snapshot type/status, event 14/30/90-day proposals, result rows and
+  estimated bytes, but its candidate is unsafe, apply-disabled and performs no
+  task DELETE or VACUUM.
+- History migration and Site Retention now share
+  `site-database-maintenance:<site_id>` through `database_maintenance_lock()`;
+  future compact must reuse the same key.
+- Real Electron GUI, long-running Agent/Online MR/Ground activity, target HDD
+  and result-ref-only production cutover remain separate acceptance gates.

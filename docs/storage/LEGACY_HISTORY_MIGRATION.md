@@ -1,4 +1,4 @@
-# Legacy Device History COPY-only Migration
+# Legacy Device History Migration And Non-destructive Cutover
 
 ## Status
 
@@ -9,13 +9,16 @@ and mixed V1/V2 shards remain readable. It is
 explicitly invoked, defaults to off, and never runs during application startup
 or installation.
 
-Phase 1 is COPY-only:
+The initial migration remains COPY-only. A3 adds an explicit, per-source-table
+query-authority state machine, but cutover is non-destructive:
 
-- source rows remain authoritative and are never updated or deleted;
-- migrated shard events use `event_type=legacy` and remain hidden from normal
-  HistoryStore queries, preventing legacy + shard duplicate results;
+- source rows are never updated or deleted;
+- before cutover, source rows remain authoritative and migrated
+  `event_type=legacy` shard rows remain hidden from normal HistoryStore queries;
+- after an explicit table cutover, the matching legacy table is excluded from
+  the ordinary query and the verified shard rows become authoritative;
 - there is no source-delete, table-drop, compaction, replacement, or VACUUM API;
-- a future source cutover/delete design requires separate approval.
+- rollback only changes query authority while the source remains intact.
 
 ## Inventory
 
@@ -63,13 +66,16 @@ The existing history `catalog.db` owns three additive migration tables:
   counts, error and status;
 - `legacy_history_migration_ranges`: source key range + target month, stable
   source/target digests, deterministic samples, counts, latency and budget.
+- `legacy_history_authority_transitions`: immutable per-table revision history
+  for cutover, rollback and observation-gate transitions.
 
 V2 does not repeat `legacy_source_table` and `legacy_source_id` in every target
 payload. The range journal is the durable provenance for source table, source
 key range, month, digest and sample; a future cutover must require a `VERIFIED`
 range instead of inferring provenance from duplicated payload metadata.
 
-Only `PENDING`, `COPYING`, `VERIFYING`, `VERIFIED` and `FAILED` are valid. A
+Migration status remains one of `PENDING`, `COPYING`, `VERIFYING`, `VERIFIED`
+and `FAILED`; it does not imply query authority or source-delete eligibility. A
 chunk writes one target-month transaction at a time, verifies exact event IDs,
 stable digests and deterministic samples, then advances the source checkpoint.
 If the process exits after target commit but before checkpoint, resume repeats
@@ -80,13 +86,43 @@ Invalid timestamps and unsupported row shapes are not dropped silently. Only
 source table, source key and a reason code are written to
 `LEGACY_HISTORY_INVALID_ROWS.jsonl`; any such row makes the result `NOT_READY`.
 
+## Authority, Rollback And Delete-plan Preview
+
+Each supported source table independently moves through:
+
+```text
+LEGACY_AUTHORITY -> SHARD_VERIFIED -> SHARD_AUTHORITY
+                                     -> SOURCE_DELETE_ELIGIBLE
+```
+
+`SOURCE_DELETED` is reserved in the schema but cannot be entered by current
+code. `SHARD_VERIFIED` is set only after the table and all ranges verify.
+`cutover` requires an expected revision and reason, then changes only that
+table's ordinary query authority. Other tables may remain under legacy
+authority. `rollback` returns `SHARD_VERIFIED`, `SHARD_AUTHORITY` or
+`SOURCE_DELETE_ELIGIBLE` to `LEGACY_AUTHORITY` without copying or changing the
+source.
+
+The observation gate requires query validation, consumer validation and no
+integrity mismatch. Eligibility is then recalculated from current supported
+source rows, verified ranges, source/target digests and canonical projection
+mapping. Unsupported/invalid rows are permanently excluded. Retired projection
+duplicates are eligible only when their canonical source mapping and target
+event both revalidate.
+
+`preview-delete-plan` writes `LEGACY_HISTORY_DELETE_PLAN.json` with exact
+source key ranges, row/verified counts, per-range digests, authority revision,
+eligibility and exclusions. `validate-delete-plan` rechecks the source database
+identity, current range proof, revision and stable plan digest. Both commands
+are preview/validation only; no DELETE executor exists.
+
 ## Priority And Commands
 
 The maintenance class is `site-database-maintenance`. The implementation
-reuses the existing cross-process database maintenance lock for its own run.
-SiteRetention currently uses a different lock family, so unifying all future
-retention and migration operations remains `SHARED_CHANGE_REQUIRED` and is not
-claimed by this branch.
+uses the shared cross-process key `site-database-maintenance:<site_id>`.
+History migration/cutover and Site Retention scan/apply now use the same key;
+Site Retention acquires it before its narrower storage lock. Future compact
+must use this helper instead of introducing a second lock family.
 
 `start` and `resume` require explicit `--apply`. `pause` changes the requested
 state; a running process observes it after the current transaction/checkpoint.
@@ -96,16 +132,26 @@ interrupts a SQLite transaction. Chunk sizes are restricted to 100, 250 or
 500 rows.
 
 ```powershell
-$env:PYTHONPATH = "D:\study\worktrees\NetConsole\device-history-legacy-migration\src;D:\study\worktrees\NetConsole\device-history-legacy-migration"
-& "D:\study\NetConsole\.venv\Scripts\python.exe" -m scripts.maintenance.migrate_device_history inventory `
+$env:PYTHONPATH = "$PWD\src;$PWD"
+& ".\.venv\Scripts\python.exe" -m scripts.maintenance.migrate_device_history inventory `
   --data-root "D:\NetConsoleData" --site-id "<site-id>" --light
 
-& "D:\study\NetConsole\.venv\Scripts\python.exe" -m scripts.maintenance.migrate_device_history start `
+& ".\.venv\Scripts\python.exe" -m scripts.maintenance.migrate_device_history start `
   --data-root "D:\study\test-data\NetConsole\device-history-migration\<run-id>\runtime" `
   --site-id "<registered-test-site>" --source-db "D:\study\test-data\NetConsole\device-history-migration\<run-id>\devices.db" `
   --history-root "D:\study\test-data\NetConsole\device-history-migration\<run-id>\history" `
   --diagnostics-dir "D:\study\diagnostic\NetConsole\device-history-migration\<run-id>" `
   --immutable-source --chunk-rows 500 --apply
+
+& ".\.venv\Scripts\python.exe" -m scripts.maintenance.migrate_device_history cutover `
+  --data-root "<isolated-data-root>" --site-id "<site-id>" `
+  --migration-id "<migration-id>" --source-table "<verified-table>" `
+  --expected-revision 1 --reason "consumer validation passed" --apply
+
+& ".\.venv\Scripts\python.exe" -m scripts.maintenance.migrate_device_history preview-delete-plan `
+  --data-root "<isolated-data-root>" --site-id "<site-id>" `
+  --migration-id "<migration-id>" --source-table "<eligible-table>" `
+  --diagnostics-dir "D:\study\diagnostic\NetConsole\device-history-cutover\<run-id>"
 ```
 
 The benchmark entry supports isolated synthetic or snapshot runs and reports
@@ -113,7 +159,7 @@ rows/second, source/target bytes, chunk latency, target/checkpoint commits,
 months, duplicates and errors:
 
 ```powershell
-& "D:\study\NetConsole\.venv\Scripts\python.exe" -m scripts.maintenance.benchmark_device_history_legacy_migration `
+& ".\.venv\Scripts\python.exe" -m scripts.maintenance.benchmark_device_history_legacy_migration `
   --synthetic-rows 10000 --chunk-rows 500 `
   --output-dir "D:\study\diagnostic\NetConsole\device-history-migration\<run-id>\benchmark-medium"
 ```
@@ -122,11 +168,18 @@ Storage profiling and V1/V2 query comparison are separate read-only tools. Both
 accept only paths under `D:\study`; profiling VACUUM is limited to rebuildable
 diagnostic scratch databases and never applies to the source snapshot.
 
+`validate_history_migration_server_hdd.py` only evaluates previously captured
+migration, host diagnostic and operational-observation JSON. It never opens the
+source database or runs migration. Missing real HDD performance counters,
+backend/outbox/Unattended/Syslog/MR/Ping evidence, or any failed observation
+keeps `SERVER_HDD_STORAGE_V2_TEST=PENDING`.
+
 ## Remaining Gates
 
 - Real Windows Server HDD long-duration migration remains pending until a
   separately approved maintenance window; SSD/synthetic delay is not an HDD
   substitute.
-- Normal query cutover remains disabled, so copied events intentionally do not
-  replace legacy reads.
-- Source delete design, retention and physical file shrink are not started.
+- Query cutover is implemented but requires an explicit per-table command and
+  has not been applied to production data.
+- Source-delete eligibility and a digest-protected preview plan are implemented;
+  source DELETE, DROP, production VACUUM and physical shrink remain unavailable.

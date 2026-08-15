@@ -72,6 +72,8 @@ Electron 的 `userData`、`sessionData`、`cache`、`logs`、`crashDumps` 和 `t
 
 `devices.db`、`tasks.db`、`agents.db` 使用各自进程/线程独立的 SQLite 连接，保持 WAL、busy timeout、foreign keys 和幂等初始化。轨旁 AP 逐站规划的唯一事实表为 `ac_trackside_ap_plan(mode='unified')`；空表表示用户已明确清空，维护页、上线概览、PVID 核验和共享范围查询均直接返回空规划。`rail_ap_vlan_plans / groups / group_members / assignments / allocations` 只作为历史留存，不由当前读取链投影，也不再由数据库初始化根据逐站规划生成。当前逐站保存不删除这些历史表。逐站字段和唯一索引升级在数据库初始化事务内幂等执行，失败整体回滚。不可逆 schema 升级必须先备份，并更新 storage manifest；不得以删除或重建真实数据库代替迁移。
 
+`tasks.db` schema version 4 增加不可变 `task_results`。B3 对含对象结果的 `finished/error/cancelled` 在同一 `BEGIN IMMEDIATE` 中写 result authority、snapshot 和 terminal event；确定性 `result_id` 绑定 task、终态类型和 canonical JSON SHA-256。当前是 additive dual-write 兼容期，`task_snapshots.result_json` 和 `task_events.payload_json.result` 仍保留完整结果；旧 full-only、当前 dual-write 和 future ref-only fixture 均可读。Site Return Package 以单事务合并 `task_results -> task_snapshots -> task_events -> online_mr_task_sessions`，不可变结果、事件或 mapping 冲突失败关闭。停止旧副本、历史 backfill、DELETE 和 VACUUM 均未启用。
+
 ## devices.db 当前态与历史态（Phase 2）
 
 Phase 2 的目标是先停止 `devices.db` 因高频快照持续增长，同时保持旧局点可原样升级和查询。当前态继续写入 `devices.db`；新的设备采集历史在同一 current-state 事务中先写入小型 `history_outbox`，READY 后由有界后台 drain 以 [History Storage V2](./HISTORY_STORAGE_V2.md) 写入 `db/history/devices-YYYY-MM.db`。分片和 catalog 不属于 `Database.initialize()` 的启动工作：启动不会扫描、校验、迁移、checkpoint、retention 或 VACUUM 任一历史分片。
@@ -96,7 +98,7 @@ Phase 2 的目标是先停止 `devices.db` 因高频快照持续增长，同时�
 
 - Phase 2A/2B 已实现的边界是路径、catalog/outbox、按月分片、change-aware 新写和 query compatibility；新分片写入 Storage V2，既有 V1-only 与同月 V1/V2 mixed shard 继续可读，不做 eager rewrite。旧 history table、旧索引和当前态表均保留。`devices.db` 中旧历史不会在启动时批量迁移，840 MiB 的旧库可以直接打开。
 - Phase 2C 的已接入查询接口可合并相关 legacy history 与新 outbox/shard 事件。没有 dual-write 回 legacy table：切换后的新 producer 仅在 current transaction 内写 outbox；尚未接入 producer 的历史继续保持 legacy 行为，不能因此推断该表已完成切换。轨旁业务快照的轻量 revision 只读取 current DB 中的 `history_outbox/history_state`；`catalog.db` 和月分片仍不参与正常快照或启动扫描，站点包同步暂仍以 legacy 表作为兼容事实源。
-- legacy migration 是独立 maintenance，必须在 Backend READY 后显式调度，以 source table + last source id journal、bounded batch、copy/verify checkpoint、幂等 resume 实现。无法无损确定业务实体键或采集时间的旧行不会被猜测写入新历史，而是写入 `history_migration_skips`（source id + reason）并推进 checkpoint；源行仍保留并可查询，后续可由维护工具单独修复。`ap_resource_snapshots` 是站点包/AP 实体快照兼容证据，不作为通用 AC 资源历史迁移源。默认不启用 source deletion；本阶段不得 DROP 表、删除 legacy row、自动 VACUUM 或修改现场 `D:\NetConsoleData`。
+- legacy migration 是独立 maintenance，必须在 Backend READY 后显式调度，以 source table + last source id journal、bounded batch、copy/verify checkpoint、幂等 resume 实现。无法无损确定业务实体键或采集时间的旧行不会被猜测写入新历史，而是记录 source id + reason；源行始终保留。逐 source table authority 允许验证后显式 cutover 到 shard query，并可在源未删除时回退到 legacy；unsupported/invalid rows 不进入 delete eligibility。`ap_resource_snapshots` 是站点包/AP 实体快照兼容证据，不作为通用 AC 资源历史迁移源。source delete executor 不存在；本阶段不得 DROP 表、删除 legacy row、自动 VACUUM 或修改现场 `D:\NetConsoleData`。
 - `SERVER_UNATTENDED ACTIVE` 时必须暂停 legacy migration、retention、aggregation 和旧分片维护，保留 Syslog、MR、Ping 和当前任务 persistence 的 I/O 优先级。history drain 仍按自身可写性运行，不依赖整体 `runtime_services_ready`：根据 pending 数量、最老事件年龄和单批耗时在 100/250/500 条之间自适应，并设置单批时间上限；不使用未接入生产的 `disk_busy` 信号。暂停不丢弃 outbox，恢复后可继续 bounded drain；磁盘并发维持为 1 或现有 capability policy 更低值。
 
 Phase 2.1 收口了写入语义：`device_fact.uptime`、接口配置采集时间、LLDP `holdtime/ttl`、光衰 RX/TX/温度/电压/偏置电流，以及 FIT-AP Radio 的 usage/clients/tx_power、FIT-AP Optical 的连续量只作为 heartbeat payload，不参与普通 change fingerprint。设备/AP 身份、型号、版本、链路/邻居、channel/bandwidth、status/alarm、阈值和冲突状态仍在变化时立即记录。各 kind 继续使用独立 sampling 周期，heartbeat 仍保留最新 telemetry payload。
@@ -139,10 +141,12 @@ flowchart TD
     D --> E["回读并校验 event_id"]
     E --> F["提交 copy/verify checkpoint"]
     F --> G["下一有界批次 / 崩溃后 resume"]
-    G -."本阶段禁止".-> X["删除 legacy row / DROP / VACUUM"]
+    G --> H["逐表 SHARD_VERIFIED"]
+    H -."显式、非破坏 cutover".-> I["SHARD_AUTHORITY / 可回退"]
+    I -."本阶段禁止".-> X["删除 legacy row / DROP / VACUUM"]
 ```
 
-迁移基础设施提供显式 maintenance CLI 的 inventory、start、pause、resume、status 和 COPY/verify 批次，默认关闭且没有自动调度或 source deletion。迁移总表、逐源表 checkpoint 和逐月 range journal 保存 source database identity、source table/key range、稳定 digest、sample、计数与 commit/budget telemetry；Storage V2 不再把 `legacy_source_table/id` 重复存入每行 payload。复制成功的 legacy event 以 `source_table + source PK` 确定性 ID 保存在 shard 内供校验与未来 cutover 使用。两组已确认重复的 AP 投影不再写 event：权威来源先完整复制，投影逐批匹配并验证对应的权威 target event 后只计 duplicate，不折叠权威表内的不同源行。在逐表 cutover 尚未启用前，普通兼容查询刻意排除全部 `event_type=legacy` 副本，继续以 legacy table 为事实源，避免双份返回。完整约束见 [Legacy Device History COPY-only Migration](./LEGACY_HISTORY_MIGRATION.md)。`tasks.db` 不在本阶段范围内。
+迁移基础设施提供显式 maintenance CLI 的 inventory、start、pause、resume、status、cutover、rollback、observation eligibility 和 delete-plan preview/validation，默认关闭且没有自动调度或 source deletion。迁移总表、逐源表 checkpoint、authority transition 和逐月 range journal 保存 source database identity、source table/key range、稳定 digest、sample、计数、revision 与 commit/budget telemetry；Storage V2 不再把 `legacy_source_table/id` 重复存入每行 payload。复制成功的 legacy event 以 `source_table + source PK` 确定性 ID 保存在 shard 内。两组已确认重复的 AP 投影不再写 event：权威来源先完整复制，投影逐批匹配并验证对应的权威 target event 后只计 duplicate，不折叠权威表内的不同源行。普通查询按每张表的 authority 决定读取 legacy 或 shard，避免双份返回；delete plan 只生成精确 source key/range 与 digest proof，没有执行器。完整约束见 [Legacy Device History Migration And Non-destructive Cutover](./LEGACY_HISTORY_MIGRATION.md)。
 
 每个局点的 `sync/wps_sync.sqlite` 保存 WPS 云文档配置、DPAPI 加密凭据、同步批次和远端异步任务恢复状态。正式 Workbook 请求在提交前以不含 Token 的 JSON 持久化，完整远端 `task_id` 仅保存在该库；API、任务参数和日志只输出脱敏 ID。常规升级只做幂等增量迁移，不删除、重建或覆盖当前云文档的配置、凭据和历史。产品功能明确退役时允许精确删除对应本地目标及运行状态：必须在同一事务内按稳定旧代码匹配、先处理外键运行记录、保留混合批次中的当前目标历史，并仅在无剩余引用时删除凭据；迁移重复运行必须为 no-op，且不得访问或修改远端文档。程序重启后以原 `target_batch_id + remote_task_id` 恢复查询，不能因本地 Worker 丢失重复提交已取得 ID 的任务。
 
@@ -229,7 +233,7 @@ API 调用方内存/Renderer 状态中流转，不写 SQLite、不修改 NDJSON�
 
 ## 清理边界
 
-局点业务数据的物理瘦身由独立的 Site Retention 用例处理，长期规则见[局点数据保留与清理](./SITE_RETENTION.md)。扫描报告位于 `<data_root>/runtime/site_retention/<site_id>/`，只保存局点相对路径、策略、证据摘要和服务端令牌；它不是业务事实源，也不允许 Renderer 回传任意路径。当前第一阶段只覆盖历史数据库备份/过时版本、已被完整会话 ZIP 覆盖的 Online MR 松散 raw 和 90 天以前的 `task_events`。当前数据库、未知数据库、MESH、无人值守、设备采集历史和人工保留数据不自动清理。
+局点业务数据的物理瘦身由独立的 Site Retention 用例处理，长期规则见[局点数据保留与清理](./SITE_RETENTION.md)。扫描报告位于 `<data_root>/runtime/site_retention/<site_id>/`，只保存局点相对路径、策略、证据摘要和服务端令牌；它不是业务事实源，也不允许 Renderer 回传任意路径。历史数据库备份/过时版本和已被完整会话 ZIP 覆盖的 Online MR 松散 raw 保持既有受控流程。Task history 当前只输出按 type/status/time 的 typed preview；期限为 `USER_POLICY_REQUIRED`，候选不可 apply，Task DELETE/VACUUM 未启用。当前数据库、未知数据库、MESH、无人值守、设备采集历史和人工保留数据不自动清理。
 
 自动和手动缓存清理只能处理已白名单的 `runtime/cache/`、`runtime/temp/` 与受认可的运行日志；日志 Housekeeper 每小时 best-effort 检查 `runtime/logs/`，总量超过 300 MB 时按最旧 rotated electron、app、WPS、diagnostic、archive 顺序清到 250 MB。活动 `electron.log`/`app.log`、启动/崩溃诊断、`database_upgrade_audit.jsonl`、最近 5 分钟仍可能被 WPS 占用的文件和未识别文件均受保护；不能因单个文件锁定或删除失败阻断启动。该清理不触及局点数据库、配置、raw、会话业务日志、正式 outputs、报告、备份、Agent 包、迁移材料或 `.trash/`。普通局点删除只允许把 Registry 中的一级 `sites/<site>/` 普通目录原子移动到 `.trash/`，不递归永久删除；移动和 Registry 更新任一阶段失败都必须回滚。执行前必须重新确认规范化路径位于数据根允许子树，并拒绝符号链接和路径逃逸。
 

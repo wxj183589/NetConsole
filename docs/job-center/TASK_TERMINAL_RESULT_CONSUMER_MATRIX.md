@@ -2,9 +2,10 @@
 
 ## 状态与边界
 
-本文是 Task 终态结果去重、物理 retention、索引和维护互斥的设计输入，状态为
-`DESIGN_ONLY`。B2 没有执行 `DELETE`、归档、`VACUUM`、schema/index migration，
-也没有改变用户可见保留期限。
+本文记录 Task 终态结果去重、物理 retention、索引和维护互斥契约。当前状态为
+`B3_COMPATIBILITY_PHASE`：不可变 `task_results`、dual-write/read-through、Site
+Return Package 四表合并和 typed retention preview 已实现；result-ref-only 正式写入、
+历史回填、DELETE、归档、VACUUM 和 retention policy 仍未启用。
 
 当前 `finished/error/cancelled` 结果通常同时进入：
 
@@ -24,16 +25,15 @@
 | Agent Traffic / Agent package import | 是，Controller 当前任务状态 | 是，外部事件幂等写入和实时通知 | 是 | 是 | 是 | 是 | Agent Online MR 包导入写入两处 |
 | Online MR Application Service | 是，Task 状态；Session 另有 mapping/session 事实源 | 是，LOCAL live terminal 的 status、stop reason、warnings | 有限 | 主要依赖 mapping、session metadata 和 snapshot | 是 | 是 | 直接依赖 |
 | Ground Unattended | 使用关联 Task 的状态、资源占用和 Task Center 投影 | 不直接以完整 terminal result 作为 run/archive SSOT | 否 | Ground repository、run/session 和 archive 为主 | 间接 | 间接 | 深度采集通过 Online MR mapping |
-| Site Return Package | 是，按 `updated_time` 合并 snapshot | 是，按 `event_id` 合并事件 | 是 | 是 | 直接依赖 | 包含 Agent/Online MR 结果 | 物理包可携带 mapping，但当前回传合并不处理 `online_mr_task_sessions` |
+| Site Return Package | 是，按 `updated_time` 合并 snapshot | 是，按 `event_id` 合并事件 | 是 | 是 | 直接依赖；先合并 `task_results` | 包含 Agent/Online MR 结果 | 已原子合并 `online_mr_task_sessions`，冲突失败关闭 |
 | Artifact reconciliation / download | 是，Artifact id/hash/name/path metadata 的主输入 | 否 | 否 | 是 | Artifact 文件另行打包/校验 | 间接 | 报告由领域 owner 管理 |
 | Device/Config/File/Network/Export 等领域 Service | 是，完成后刷新、下载和业务部分成功判断 | 少量流程读取事件历史，不应假设完整结果永久存在 | 部分 | 是 | 间接 | 部分 | 部分 |
 
 关键结论：当前绝大多数长期读取依赖 snapshot，但 Online MR live 协调、通用事件 API 和
-Site Return Package 仍要求 terminal event 可解释。当前
-`site_sync._merge_tasks_database()` 只合并 `task_snapshots/task_events`，不会合并
-`online_mr_task_sessions`；因此回传后丢失 Online MR mapping 是已确认兼容缺口，未来引入
-`task_results` 前必须先定义 mapping/result 的包格式与冲突策略。不能只删除 event payload 或
-只删除 snapshot result。
+Site Return Package 仍要求 terminal event 可解释。B3 已补齐
+`task_results -> task_snapshots -> task_events -> online_mr_task_sessions` 的单事务合并，
+以 result identity/hash、event identity/payload 和 mapping 双重身份校验冲突。兼容期仍不能只
+删除 event payload 或 snapshot result；生产写入继续保留两份旧 full result。
 
 ## 方案比较
 
@@ -50,25 +50,28 @@ Site Return Package 仍要求 terminal event 可解释。当前
 
 - `task_results` 以 `result_id` 为主键，并保存 `task_id`、终态类型、canonical JSON、
   SHA-256、字节数、创建时间和 schema version。
-- 写入 terminal event 时，在同一 `BEGIN IMMEDIATE` 事务中写入 result、更新 snapshot
-  的 `result_id/result_summary/result_hash`，并写入 event 的
-  `result_id/result_summary/result_hash`。
+- B3 写入 terminal event 时，在同一 `BEGIN IMMEDIATE` 事务中写入/验证 result、更新
+  snapshot，并写入 event；两处旧 full result 和新增的
+  `result_id/result_summary/result_hash` 当前同时保留。
 - Query Service 在兼容期通过 join/read-through 继续构造现有 `snapshot.result` DTO；
   事件详情只在明确请求时补读完整结果，列表、日志和普通 replay 使用 summary/hash。
-- live WebSocket 可以继续广播当前完整结果，但持久化层只保存 ref/summary/hash；广播和
-  持久化必须由同一已验证 result identity 生成。
+- live WebSocket 继续广播当前完整结果，广播和持久化由同一已验证 result identity 生成。
+  “持久化层只保存 ref/summary/hash”仍是未来 cutover，不是 B3 当前写入行为。
 - `artifact_finalized/artifact_rejected` 不得覆盖不可变业务终态结果；Artifact availability
   作为独立 projection/metadata 更新。
-- Site Return Package 必须先补齐 `online_mr_task_sessions` 合并，再按 `result_id + hash`
-  合并 `task_results`；冲突时失败关闭，不能按最后写入静默覆盖。
+- Site Return Package 已补齐 `online_mr_task_sessions` 和 `task_results` 合并；相同 identity
+  和内容幂等 no-op，不同内容、mapping identity 碰撞、缺失 Controller task、Agent 引用
+  不完整或局点不匹配均使整个 tasks merge 回滚。
 
-建议按“建表与双写 -> read-through 兼容 -> consumer 切换 -> 停止双份完整 payload ->
-另行批准历史回填/清理”推进。最后一步才可能释放现有约 154 MB 重复空间；B2 未执行任何一步。
+实施顺序仍是“建表与双写 -> read-through 兼容 -> consumer 切换 -> 停止双份完整 payload ->
+另行批准历史回填/清理”。B3 完成前两步和 Return Package blocker；停止双份 payload 尚未
+启用。约 154 MB 只能描述为未来 potential，当前没有 saved space 声明。
 
-`vehicle_mr_online_refresh_all` 是当前大型 result producer。其设备、列车状态、AP 与映射数据
-已有领域 Repository/Store 事实源；后续应只返回 revision、计数、刷新时间和 reload hint，页面
-通过正常查询刷新。Online MR 采集任务本身的 session identity、stop reason、integrity、package
-和 warnings 必须保留，并与 Session lifecycle 同步，不能按普通一次性 UI task 处理。
+`vehicle_mr_online_refresh_all`、`device_list_page`、`ac_fit_ap_optical_refresh`、
+`ac_fit_ap_resources_refresh` 和 `trackside_ap_optical_update` 是重点大型 result producer。
+B3 不改变它们的领域结果契约；后续若收敛为 revision/计数/reload hint，必须作为独立领域改动
+审计。Online MR 的 session identity、stop reason、integrity、package 和 warnings 必须保留，
+并与 Session lifecycle 同步，不能按普通一次性 UI task 处理。
 
 ## Retention 设计
 
@@ -76,9 +79,10 @@ Site Return Package 仍要求 terminal event 可解释。当前
 
 - `task_snapshots.expires_at` 只驱动任务历史软隐藏：成功/取消默认 7 天，失败/业务告警默认
   30 天；快照、事件、结果和 Artifact 不因此物理删除。
-- `SiteRetentionService` 当前存在“统一删除 90 天以前全部 task_events + VACUUM”的显式
-  用户选择流程，不区分 progress、state、log 或 terminal。B2 没有调用、修改或批准该流程。
-  未来分级策略必须替换/升级这个既有 owner，不能新增一个并列 retention 路径。
+- `SiteRetentionService` 仍是唯一 owner。B4 已将 task history 候选原位升级为 typed preview：
+  candidate 为 `safe=false`、`recommended_action=preview`、
+  `status=USER_POLICY_REQUIRED` 和 `apply_enabled=false`，task apply 会拒绝；没有执行 DELETE
+  或 VACUUM。未来批准的分级策略仍必须原位升级，不能新增并列 retention Service。
 
 未来细分策略建议如下，所有期限均为 `USER_POLICY_REQUIRED`：
 
@@ -131,14 +135,15 @@ lock key = site-database-maintenance:<site_id>
 owner = src/netconsole/services/database_upgrade/coordinator.py::database_maintenance_lock
 ```
 
-History migration、升级后的 site/task retention 和 large compact 必须复用这个跨进程锁。
+History migration/cutover 和 Site Retention scan/apply 已复用这个跨进程锁；future task
+retention 和 large compact 必须继续复用。
 不得新增第二个 scheduler 或 lock 实现。现有 `storage_lock` 可继续保护领域操作，但统一顺序应为
 `database_maintenance_lock` 在外、领域 `storage_lock` 在内，避免反向获取造成死锁。锁内还需复核
 活动任务、候选 token、数据库 identity、WAL 状态和取消边界。
 
-现有 `SiteRetentionService` 的统一 90 天 task-event purge 必须由原 owner 原位升级为分级策略，
-不能保留旧 purge 再增加第二个 Task retention Service。该统一是后续
-`SHARED_CHANGE_REQUIRED`，B2 只记录设计，不修改现有 retention 执行路径。
+`SiteRetentionService` 的 typed task preview 已原位接管候选生成，任务历史 apply 被禁用。
+期限获批后必须在同一 owner 内实现分批执行，不能恢复旧统一 purge 再增加第二个 Task
+retention Service。
 
 ## 实施前 Gate
 
