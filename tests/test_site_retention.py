@@ -620,3 +620,169 @@ def test_future_compact_lock_serializes_retention_preview(tmp_path: Path) -> Non
     compact_thread.join(timeout=2)
     retention_thread.join(timeout=2)
     assert retention_completed.is_set()
+
+
+def test_typed_task_retention_exact_apply_preserves_active_mr_ground_and_artifact(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    task_db = tmp_path / "rehearsal" / "tasks.db"
+    rollout = TaskResultRolloutService(task_db)
+    rollout.enable_dual_write(
+        expected_revision=1,
+        reason="typed retention fixture",
+        updated_by="pytest",
+    )
+    repository = TaskRepository(task_db)
+    old_time = "2026-01-01T00:00:00Z"
+
+    def terminal(task_id: str, task_type: str, result: dict[str, object]) -> None:
+        snapshot = TaskSnapshot(
+            task_id=task_id,
+            task_type=task_type,
+            task_name=task_id,
+            status=TaskState.COMPLETED,
+            created_time=old_time,
+            finished_time=old_time,
+            updated_time=old_time,
+            progress=100,
+            result=result,
+            site_name="line-12",
+        )
+        event = TaskEvent(
+            event_id=f"finished-{task_id}",
+            task_id=task_id,
+            type="finished",
+            time=old_time,
+            source="pytest",
+            payload={"result": result},
+        )
+        assert repository.record(snapshot, event)
+
+    terminal("ordinary-old", "device_collect", {"rows": 10})
+    terminal("mr-old", "online_mr_collect", {"rows": 20})
+    terminal("ground-old", "ground_unattended_collect", {"rows": 30})
+    terminal("artifact-old", "report_export", {"artifact_id": "artifact-1"})
+    repository.save(
+        TaskSnapshot(
+            task_id="active-old",
+            task_type="device_collect",
+            task_name="active-old",
+            status=TaskState.RUNNING,
+            created_time=old_time,
+            updated_time=old_time,
+            site_name="line-12",
+        )
+    )
+    artifact = tmp_path / "rehearsal" / "artifact.xlsx"
+    artifact.write_bytes(b"artifact")
+    with closing(sqlite3.connect(task_db)) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE online_mr_task_sessions (
+                controller_task_id TEXT PRIMARY KEY,
+                session_id TEXT,
+                site_id TEXT NOT NULL
+            );
+            INSERT INTO online_mr_task_sessions VALUES
+                ('mr-old', 'session-1', 'line-12');
+            """
+        )
+        connection.executemany(
+            "INSERT INTO task_events "
+            "(event_id, task_id, event_type, event_time, source, payload_json) "
+            "VALUES (?, ?, ?, ?, 'pytest', '{}')",
+            [
+                ("progress-ordinary", "ordinary-old", "progress", old_time),
+                ("log-ordinary", "ordinary-old", "log", old_time),
+                ("progress-active", "active-old", "progress", old_time),
+            ],
+        )
+        connection.commit()
+
+    service = SiteRetentionService(paths, now=lambda: NOW)
+    plan = service.preview_typed_task_retention(
+        "line-12",
+        tasks_database=task_db,
+        development_root=tmp_path,
+    )
+
+    assert plan["policy"]["status"] == "REHEARSAL_POLICY_ONLY"
+    assert plan["expected_counts"] == {
+        "events": 3,
+        "snapshots": 1,
+        "results": 1,
+    }
+    assert plan["protected"] == {
+        "total": 4,
+        "active": 1,
+        "online_mr": 1,
+        "ground": 1,
+        "artifact": 1,
+        "task_ids": ["active-old", "artifact-old", "ground-old", "mr-old"],
+    }
+    result = service.apply_typed_task_retention(
+        plan,
+        expected_plan_digest=str(plan["plan_digest"]),
+        apply=True,
+        allow_development_root_only=True,
+        development_root=tmp_path,
+    )
+
+    assert result["deleted"] == plan["expected_counts"]
+    assert result["active_tasks_deleted"] == 0
+    assert result["artifacts_deleted"] == 0
+    assert artifact.read_bytes() == b"artifact"
+    with closing(sqlite3.connect(task_db)) as connection:
+        remaining = {
+            str(row[0])
+            for row in connection.execute("SELECT task_id FROM task_snapshots")
+        }
+        mapping_count = connection.execute(
+            "SELECT COUNT(*) FROM online_mr_task_sessions"
+        ).fetchone()[0]
+        quick_check = connection.execute("PRAGMA quick_check").fetchone()[0]
+    assert remaining == {"active-old", "artifact-old", "ground-old", "mr-old"}
+    assert mapping_count == 1
+    assert quick_check == "ok"
+
+
+def test_typed_task_retention_rejects_stale_database_and_outside_root(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    task_db = tmp_path / "rehearsal" / "tasks.db"
+    repository = TaskRepository(task_db)
+    repository.save(
+        TaskSnapshot(
+            task_id="active",
+            task_type="device_collect",
+            task_name="active",
+            status=TaskState.RUNNING,
+            created_time="2026-01-01T00:00:00Z",
+            updated_time="2026-01-01T00:00:00Z",
+        )
+    )
+    service = SiteRetentionService(paths, now=lambda: NOW)
+    plan = service.preview_typed_task_retention(
+        "line-12", tasks_database=task_db, development_root=tmp_path
+    )
+    with closing(sqlite3.connect(task_db)) as connection:
+        connection.execute(
+            "UPDATE task_snapshots SET message='changed' WHERE task_id='active'"
+        )
+        connection.commit()
+    with pytest.raises(ValueError, match="source database changed"):
+        service.apply_typed_task_retention(
+            plan,
+            expected_plan_digest=str(plan["plan_digest"]),
+            apply=True,
+            allow_development_root_only=True,
+            development_root=tmp_path,
+        )
+    with pytest.raises(ValueError, match="must be under"):
+        service.preview_typed_task_retention(
+            "line-12",
+            tasks_database=task_db,
+            development_root=tmp_path / "different-root",
+        )

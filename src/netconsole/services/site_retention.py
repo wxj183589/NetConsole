@@ -8,17 +8,22 @@ import re
 import sqlite3
 import zipfile
 import zlib
-from collections import defaultdict
+from collections import Counter, defaultdict
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from netconsole.core.atomic_file import atomic_write_bytes
 from netconsole.core.paths import PathResolver
 from netconsole.services.database_upgrade.coordinator import (
     database_maintenance_lock,
     site_database_maintenance_key,
+)
+from netconsole.services.database_upgrade.sqlite_consistency import sha256_file
+from netconsole.services.database_footprint_maintenance import (
+    DEVELOPMENT_ROOT,
+    assert_development_path,
 )
 from netconsole.services.site_storage import (
     SiteRegistryRepository,
@@ -281,6 +286,358 @@ class SiteRetentionService:
             "warning_count": 0,
             "released_bytes": released,
             "results": results,
+        }
+
+    def preview_typed_task_retention(
+        self,
+        site_id: str,
+        *,
+        tasks_database: str | Path,
+        development_root: str | Path = DEVELOPMENT_ROOT,
+    ) -> dict[str, Any]:
+        """Build an exact rehearsal-only task retention plan without mutations."""
+
+        database = assert_development_path(
+            tasks_database, development_root=development_root
+        )
+        if database.is_symlink() or not database.is_file():
+            raise ValueError("tasks retention database is missing or untrusted")
+        now = self._normalized_now()
+        with closing(self._connect_readonly(database)) as connection:
+            connection.row_factory = sqlite3.Row
+            tables = {
+                str(row[0])
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_schema WHERE type='table'"
+                ).fetchall()
+            }
+            required = {"task_snapshots", "task_events"}
+            if not required.issubset(tables):
+                raise ValueError("tasks retention database schema is incomplete")
+            database_identity = self._task_retention_database_identity(
+                connection, tables
+            )
+            snapshots = [
+                dict(row)
+                for row in connection.execute(
+                    "SELECT task_id, task_type, status, finished_time, updated_time, "
+                    "result_path, result_json, result_id FROM task_snapshots "
+                    "ORDER BY task_id"
+                ).fetchall()
+            ]
+            online_mr_ids: set[str] = set()
+            if "online_mr_task_sessions" in tables:
+                columns = {
+                    str(row[1])
+                    for row in connection.execute(
+                        "PRAGMA table_info(online_mr_task_sessions)"
+                    ).fetchall()
+                }
+                task_column = next(
+                    (
+                        name
+                        for name in ("controller_task_id", "task_id")
+                        if name in columns
+                    ),
+                    "",
+                )
+                if task_column:
+                    online_mr_ids = {
+                        str(row[0])
+                        for row in connection.execute(
+                            f'SELECT "{task_column}" FROM online_mr_task_sessions '
+                            f'WHERE "{task_column}" IS NOT NULL'
+                        ).fetchall()
+                        if str(row[0] or "")
+                    }
+
+            protected: dict[str, str] = {}
+            snapshot_delete_ids: list[str] = []
+            snapshot_bytes = 0
+            snapshot_by_id = {str(row["task_id"]): row for row in snapshots}
+            for row in snapshots:
+                task_id = str(row["task_id"])
+                reason = self._task_retention_protection(row, online_mr_ids)
+                if reason:
+                    protected[task_id] = reason
+                    continue
+                status = str(row.get("status") or "").upper()
+                timestamp = self._parse_datetime(
+                    row.get("finished_time") or row.get("updated_time")
+                )
+                if (
+                    status in {"COMPLETED", "FAILED", "CANCELLED"}
+                    and timestamp is not None
+                    and now - timestamp >= timedelta(days=90)
+                ):
+                    snapshot_delete_ids.append(task_id)
+                    snapshot_bytes += len(str(row.get("result_json") or "").encode("utf-8"))
+
+            event_rows = [
+                dict(row)
+                for row in connection.execute(
+                    "SELECT sequence, event_id, task_id, event_type, event_time, "
+                    "payload_json FROM task_events ORDER BY sequence"
+                ).fetchall()
+            ]
+            snapshot_delete_set = set(snapshot_delete_ids)
+            event_delete_sequences: list[int] = []
+            event_bytes = 0
+            event_breakdown: Counter[str] = Counter()
+            kept_result_ids: set[str] = {
+                str(row.get("result_id") or "")
+                for row in snapshots
+                if str(row["task_id"]) not in snapshot_delete_set
+                and str(row.get("result_id") or "")
+            }
+            for row in event_rows:
+                task_id = str(row.get("task_id") or "")
+                event_type = str(row.get("event_type") or "")
+                delete = task_id in snapshot_delete_set
+                if not delete and task_id not in protected:
+                    timestamp = self._parse_datetime(row.get("event_time"))
+                    days = (
+                        14
+                        if event_type == "progress"
+                        else 90
+                        if event_type in {"finished", "error", "cancelled"}
+                        else 30
+                    )
+                    delete = bool(
+                        timestamp is not None
+                        and now - timestamp >= timedelta(days=days)
+                    )
+                payload = self._retention_json_object(row.get("payload_json"))
+                if delete:
+                    event_delete_sequences.append(int(row["sequence"]))
+                    event_bytes += len(str(row.get("payload_json") or "").encode("utf-8"))
+                    event_breakdown[event_type] += 1
+                else:
+                    result_id = str(payload.get("result_id") or "")
+                    if result_id:
+                        kept_result_ids.add(result_id)
+
+            result_delete_ids: list[str] = []
+            result_bytes = 0
+            if "task_results" in tables:
+                for row in connection.execute(
+                    "SELECT result_id, task_id, byte_size, created_time "
+                    "FROM task_results ORDER BY result_id"
+                ).fetchall():
+                    result_id = str(row[0])
+                    task_id = str(row[1])
+                    created = self._parse_datetime(row[3])
+                    if (
+                        result_id not in kept_result_ids
+                        and task_id not in protected
+                        and created is not None
+                        and now - created >= timedelta(days=90)
+                    ):
+                        result_delete_ids.append(result_id)
+                        result_bytes += int(row[2] or 0)
+
+        semantic: dict[str, Any] = {
+            "format": "netconsole-typed-task-retention-plan",
+            "version": 1,
+            "site_id": str(site_id),
+            "database": str(database),
+            "database_sha256": sha256_file(database),
+            "database_identity": database_identity,
+            "policy": {
+                "status": "REHEARSAL_POLICY_ONLY",
+                "production_approved": False,
+                "active": "NEVER_DELETE",
+                "terminal_snapshot_days": 90,
+                "progress_event_days": 14,
+                "ordinary_event_days": 30,
+                "log_event_days": 30,
+                "terminal_event_days": 90,
+                "task_result_days": 90,
+                "online_mr_session": "PRESERVE",
+                "artifact_files": "PRESERVE",
+            },
+            "event_sequence_ranges": self._compress_integer_keys(
+                event_delete_sequences
+            ),
+            "event_sequence_digest": self._stable_json_digest(
+                event_delete_sequences
+            ),
+            "snapshot_task_ids": sorted(snapshot_delete_ids),
+            "snapshot_task_digest": self._stable_json_digest(
+                sorted(snapshot_delete_ids)
+            ),
+            "result_ids": sorted(result_delete_ids),
+            "result_digest": self._stable_json_digest(sorted(result_delete_ids)),
+            "expected_counts": {
+                "events": len(event_delete_sequences),
+                "snapshots": len(snapshot_delete_ids),
+                "results": len(result_delete_ids),
+            },
+        }
+        digest = self._stable_json_digest(semantic)
+        return {
+            **semantic,
+            "generated_at": now.isoformat(timespec="seconds"),
+            "plan_digest": digest,
+            "estimated_bytes": {
+                "event_payload": event_bytes,
+                "snapshot_result": snapshot_bytes,
+                "task_results": result_bytes,
+                "total": event_bytes + snapshot_bytes + result_bytes,
+            },
+            "event_type_counts": dict(sorted(event_breakdown.items())),
+            "protected": {
+                "total": len(protected),
+                "active": sum(value == "ACTIVE" for value in protected.values()),
+                "online_mr": sum(
+                    value == "ONLINE_MR" for value in protected.values()
+                ),
+                "ground": sum(value == "GROUND" for value in protected.values()),
+                "artifact": sum(
+                    value == "ARTIFACT" for value in protected.values()
+                ),
+                "task_ids": sorted(protected),
+            },
+            "snapshot_status_counts": dict(
+                sorted(
+                    Counter(
+                        str(snapshot_by_id[task_id].get("status") or "")
+                        for task_id in snapshot_delete_ids
+                    ).items()
+                )
+            ),
+            "apply_enabled": True,
+            "development_root_only": True,
+            "implicit_vacuum": False,
+            "artifact_files_deleted": 0,
+        }
+
+    def apply_typed_task_retention(
+        self,
+        plan: dict[str, Any],
+        *,
+        expected_plan_digest: str,
+        apply: bool = False,
+        allow_development_root_only: bool = False,
+        development_root: str | Path = DEVELOPMENT_ROOT,
+    ) -> dict[str, Any]:
+        """Apply one exact typed retention plan without compacting or deleting files."""
+
+        if not apply or not allow_development_root_only:
+            raise ValueError(
+                "typed retention requires --apply and --allow-development-root-only"
+            )
+        semantic_keys = (
+            "format",
+            "version",
+            "site_id",
+            "database",
+            "database_sha256",
+            "database_identity",
+            "policy",
+            "event_sequence_ranges",
+            "event_sequence_digest",
+            "snapshot_task_ids",
+            "snapshot_task_digest",
+            "result_ids",
+            "result_digest",
+            "expected_counts",
+        )
+        if str(plan.get("format") or "") != "netconsole-typed-task-retention-plan":
+            raise ValueError("invalid typed retention plan format")
+        semantic = {key: plan[key] for key in semantic_keys}
+        digest = self._stable_json_digest(semantic)
+        if digest != str(plan.get("plan_digest") or ""):
+            raise ValueError("typed retention plan digest mismatch")
+        if digest != str(expected_plan_digest or ""):
+            raise ValueError("expected typed retention plan digest mismatch")
+        database = assert_development_path(
+            str(plan["database"]), development_root=development_root
+        )
+        self._assert_task_retention_database_identity(database, plan)
+        if self._stable_json_digest(list(plan["snapshot_task_ids"])) != str(
+            plan["snapshot_task_digest"]
+        ):
+            raise ValueError("typed retention snapshot key digest mismatch")
+        if self._stable_json_digest(list(plan["result_ids"])) != str(
+            plan["result_digest"]
+        ):
+            raise ValueError("typed retention result key digest mismatch")
+        event_keys = self._expand_integer_ranges(plan["event_sequence_ranges"])
+        if self._stable_json_digest(event_keys) != str(plan["event_sequence_digest"]):
+            raise ValueError("typed retention event key digest mismatch")
+
+        lock_key = site_database_maintenance_key(str(plan["site_id"]))
+        with database_maintenance_lock(self.paths, lock_key):
+            self._assert_task_retention_database_identity(database, plan)
+            deleted = {"events": 0, "snapshots": 0, "results": 0}
+            connection = sqlite3.connect(database, timeout=60)
+            try:
+                connection.execute("PRAGMA busy_timeout = 60000")
+                connection.execute("PRAGMA foreign_keys = ON")
+                connection.execute("BEGIN IMMEDIATE")
+                for keys in self._chunks(event_keys, 500):
+                    cursor = connection.execute(
+                        "DELETE FROM task_events WHERE sequence IN "
+                        f"({','.join('?' for _ in keys)})",
+                        keys,
+                    )
+                    deleted["events"] += int(cursor.rowcount or 0)
+                for keys in self._chunks(list(plan["snapshot_task_ids"]), 500):
+                    cursor = connection.execute(
+                        "DELETE FROM task_snapshots WHERE task_id IN "
+                        f"({','.join('?' for _ in keys)})",
+                        keys,
+                    )
+                    deleted["snapshots"] += int(cursor.rowcount or 0)
+                for keys in self._chunks(list(plan["result_ids"]), 500):
+                    cursor = connection.execute(
+                        "DELETE FROM task_results WHERE result_id IN "
+                        f"({','.join('?' for _ in keys)})",
+                        keys,
+                    )
+                    deleted["results"] += int(cursor.rowcount or 0)
+                expected = {
+                    key: int(value)
+                    for key, value in dict(plan["expected_counts"]).items()
+                }
+                if deleted != expected:
+                    connection.rollback()
+                    raise RuntimeError(
+                        f"typed retention exact count mismatch: {deleted} != {expected}"
+                    )
+                active = int(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM task_snapshots WHERE status IN "
+                        "('PENDING','STARTING','RUNNING','STOPPING')"
+                    ).fetchone()[0]
+                )
+                online_mr = (
+                    int(
+                        connection.execute(
+                            "SELECT COUNT(*) FROM online_mr_task_sessions"
+                        ).fetchone()[0]
+                    )
+                    if connection.execute(
+                        "SELECT 1 FROM sqlite_schema WHERE type='table' "
+                        "AND name='online_mr_task_sessions'"
+                    ).fetchone()
+                    else 0
+                )
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+            finally:
+                connection.close()
+        return {
+            "plan_digest": digest,
+            "deleted": deleted,
+            "active_tasks_remaining": active,
+            "online_mr_mappings_remaining": online_mr,
+            "active_tasks_deleted": 0,
+            "artifacts_deleted": 0,
+            "implicit_vacuum": False,
         }
 
     def _storage_totals(
@@ -990,44 +1347,11 @@ class SiteRetentionService:
     def _apply_task_history(
         self, root: Path, candidate: dict[str, object]
     ) -> dict[str, object]:
-        details = candidate.get("details") if isinstance(candidate.get("details"), dict) else {}
-        cutoff = str(details.get("cutoff") or "")
-        if not cutoff:
-            raise SiteStorageError(
-                "SITE_RETENTION_CANDIDATE_INVALID", "任务历史清理缺少截止时间"
-            )
-        path = self._controlled_file(root, "db/tasks.db", root / "db")
-        before = path.stat().st_size
-        connection = sqlite3.connect(path, timeout=30)
-        try:
-            connection.execute("PRAGMA busy_timeout = 30000")
-            connection.execute("PRAGMA foreign_keys = ON")
-            connection.execute("BEGIN IMMEDIATE")
-            cursor = connection.execute(
-                "DELETE FROM task_events WHERE event_time < ?", (cutoff,)
-            )
-            deleted = int(cursor.rowcount or 0)
-            connection.commit()
-            connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            connection.execute("VACUUM")
-        except sqlite3.Error as exc:
-            connection.rollback()
-            raise SiteStorageError(
-                "SITE_RETENTION_TASK_HISTORY_FAILED", "任务历史清理或 VACUUM 失败"
-            ) from exc
-        finally:
-            connection.close()
-        after = path.stat().st_size
-        return {
-            "candidate_id": candidate.get("candidate_id"),
-            "category": "task_history",
-            "action": "purge",
-            "relative_path": "db/tasks.db#task_events",
-            "deleted_events": deleted,
-            "released_bytes": max(0, before - after),
-            "database_size_before": before,
-            "database_size_after": after,
-        }
+        del root, candidate
+        raise SiteStorageError(
+            "USER_POLICY_REQUIRED",
+            "宽泛任务历史清理已禁用；仅允许精确 typed retention 计划",
+        )
 
     def _ensure_no_other_active_tasks(
         self, root: Path, *, current_job_id: str
@@ -1075,6 +1399,142 @@ class SiteRetentionService:
                     ]
                 },
             )
+
+    @classmethod
+    def _task_retention_protection(
+        cls, row: dict[str, Any], online_mr_ids: set[str]
+    ) -> str:
+        task_id = str(row.get("task_id") or "")
+        status = str(row.get("status") or "").upper()
+        task_type = str(row.get("task_type") or "").casefold()
+        if status in _ACTIVE_TASK_STATES:
+            return "ACTIVE"
+        if task_id in online_mr_ids or "online_mr" in task_type:
+            return "ONLINE_MR"
+        if task_type.startswith("ground_") or "ground_unattended" in task_type:
+            return "GROUND"
+        result_text = str(row.get("result_json") or "")
+        if (
+            str(row.get("result_path") or "").strip()
+            or '"artifact_id"' in result_text
+            or '"artifact_path"' in result_text
+            or '"artifact_name"' in result_text
+        ):
+            return "ARTIFACT"
+        return ""
+
+    @staticmethod
+    def _retention_json_object(value: object) -> dict[str, Any]:
+        try:
+            parsed = json.loads(str(value or "{}"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {}
+        return dict(parsed) if isinstance(parsed, dict) else {}
+
+    def _assert_task_retention_database_identity(
+        self, database: Path, plan: dict[str, Any]
+    ) -> None:
+        with closing(self._connect_readonly(database)) as connection:
+            tables = {
+                str(row[0])
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_schema WHERE type='table'"
+                ).fetchall()
+            }
+            current = self._task_retention_database_identity(connection, tables)
+        if current != str(plan.get("database_identity") or ""):
+            raise ValueError("typed retention source database changed")
+
+    @staticmethod
+    def _task_retention_database_identity(
+        connection: sqlite3.Connection, tables: set[str]
+    ) -> str:
+        digest = hashlib.sha256()
+        selected_tables = (
+            "task_result_storage_rollout",
+            "task_snapshots",
+            "task_events",
+            "task_results",
+            "online_mr_task_sessions",
+        )
+        for table in selected_tables:
+            if table not in tables:
+                continue
+            columns = [
+                str(row[1])
+                for row in connection.execute(f'PRAGMA table_info("{table}")')
+            ]
+            primary = [
+                str(row[1])
+                for row in connection.execute(f'PRAGMA table_info("{table}")')
+                if int(row[5] or 0)
+            ]
+            order = primary or (["rowid"] if table != "task_result_storage_rollout" else columns[:1])
+            digest.update(f"{table}\0{','.join(columns)}\0".encode("utf-8"))
+            cursor = connection.execute(
+                f'SELECT * FROM "{table}" ORDER BY '
+                + ", ".join(f'"{column}"' for column in order)
+            )
+            while True:
+                rows = cursor.fetchmany(500)
+                if not rows:
+                    break
+                for row in rows:
+                    payload = json.dumps(
+                        list(row),
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                        default=str,
+                    ).encode("utf-8")
+                    digest.update(len(payload).to_bytes(8, "big"))
+                    digest.update(payload)
+        return digest.hexdigest()
+
+    @staticmethod
+    def _stable_json_digest(value: object) -> str:
+        payload = json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _compress_integer_keys(values: list[int]) -> list[dict[str, int]]:
+        keys = sorted(set(int(value) for value in values))
+        if not keys:
+            return []
+        ranges: list[dict[str, int]] = []
+        start = previous = keys[0]
+        for value in keys[1:]:
+            if value == previous + 1:
+                previous = value
+                continue
+            ranges.append({"start": start, "end": previous})
+            start = previous = value
+        ranges.append({"start": start, "end": previous})
+        return ranges
+
+    @staticmethod
+    def _expand_integer_ranges(values: object) -> list[int]:
+        if not isinstance(values, list):
+            raise ValueError("typed retention event ranges are invalid")
+        keys: list[int] = []
+        for item in values:
+            if not isinstance(item, dict):
+                raise ValueError("typed retention event range is invalid")
+            start = int(item.get("start") or 0)
+            end = int(item.get("end") or 0)
+            if start <= 0 or end < start:
+                raise ValueError("typed retention event range is invalid")
+            keys.extend(range(start, end + 1))
+        return keys
+
+    @staticmethod
+    def _chunks(values: list[Any], size: int) -> list[list[Any]]:
+        return [values[index : index + size] for index in range(0, len(values), size)]
 
     def _candidate(
         self,
