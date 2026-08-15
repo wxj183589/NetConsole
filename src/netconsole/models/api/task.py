@@ -28,6 +28,9 @@ class TaskDTO(ApiModel):
     result_path: str = ""
     error_message: str = ""
     result: dict[str, Any] = Field(default_factory=dict)
+    result_id: str = ""
+    result_hash: str = ""
+    result_summary: dict[str, Any] = Field(default_factory=dict)
     source: str = "local"
     cancellable: bool = False
 

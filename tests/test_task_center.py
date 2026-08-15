@@ -626,7 +626,9 @@ def test_trackside_business_result_is_exposed_in_task_detail_without_raw_result_
     assert "skipped" not in detail.details
 
 
-def test_task_repository_initialization_preserves_existing_tables(tmp_path: Path) -> None:
+def test_task_repository_initialization_preserves_existing_tables(
+    tmp_path: Path,
+) -> None:
     db_path = PathResolver(tmp_path).site_tasks_db_path("demo")
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(db_path) as conn:
@@ -642,7 +644,7 @@ def test_task_repository_initialization_preserves_existing_tables(tmp_path: Path
             conn.execute(
                 "SELECT value FROM task_schema_meta WHERE key = 'schema_version'"
             ).fetchone()[0]
-            == "3"
+            == "4"
         )
 
 

@@ -42,9 +42,18 @@ def task_dto(snapshot: TaskSnapshot) -> TaskDTO:
         result_path=snapshot.result_path,
         error_message=snapshot.error_message,
         result=snapshot.result,
+        result_id=snapshot.result_id,
+        result_hash=snapshot.result_hash,
+        result_summary=snapshot.result_summary,
         source=snapshot.source,
         cancellable=snapshot.source == "local"
-        and snapshot.status in {TaskState.PENDING, TaskState.STARTING, TaskState.RUNNING, TaskState.STOPPING},
+        and snapshot.status
+        in {
+            TaskState.PENDING,
+            TaskState.STARTING,
+            TaskState.RUNNING,
+            TaskState.STOPPING,
+        },
     )
 
 

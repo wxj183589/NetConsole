@@ -38,6 +38,9 @@ class TaskSnapshot:
     result_path: str = ""
     error_message: str = ""
     result: dict[str, Any] = field(default_factory=dict)
+    result_id: str = ""
+    result_hash: str = ""
+    result_summary: dict[str, Any] = field(default_factory=dict)
     source: str = "local"
     site_name: str = "demo"
     owner_pid: int = 0

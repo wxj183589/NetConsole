@@ -351,6 +351,7 @@ class SiteSyncService:
             task_preview = _preview_task_merge(
                 target.root_path / "db" / "tasks.db",
                 extracted / "return" / "databases" / "current" / "tasks.db",
+                site_id=target.site_id,
             )
 
         file_hashes = {
@@ -450,7 +451,9 @@ class SiteSyncService:
             database_plan = _plan_database_merge(
                 devices_local, devices_base, devices_returned
             )
-            task_preview = _preview_task_merge(tasks_local, tasks_returned)
+            task_preview = _preview_task_merge(
+                tasks_local, tasks_returned, site_id=target.site_id
+            )
             unresolved = [
                 conflict
                 for conflict in [
@@ -502,7 +505,10 @@ class SiteSyncService:
                         resolution_map,
                     )
                     task_result = _apply_task_merge(
-                        tasks_local, tasks_returned, resolution_map
+                        tasks_local,
+                        tasks_returned,
+                        resolution_map,
+                        site_id=target.site_id,
                     )
 
                 metadata = self._read_metadata(target.root_path)
@@ -1031,7 +1037,12 @@ def _apply_database_plan(
     }
 
 
-def _preview_task_merge(local: Path, returned: Path) -> dict[str, object]:
+def _preview_task_merge(
+    local: Path,
+    returned: Path,
+    *,
+    site_id: str = "",
+) -> dict[str, object]:
     if not returned.is_file():
         return {
             "new_tasks": 0,
@@ -1065,6 +1076,26 @@ def _preview_task_merge(local: Path, returned: Path) -> dict[str, object]:
                     _task_summary(returned_row),
                 ).to_public()
             )
+    with closing(connect_sqlite(returned)) as returned_db:
+        returned_db.row_factory = sqlite3.Row
+        local_context = (
+            closing(connect_sqlite(local))
+            if local.is_file()
+            else closing(sqlite3.connect(":memory:"))
+        )
+        with local_context as local_db:
+            local_db.row_factory = sqlite3.Row
+            task_ids = set(local_rows) | set(returned_rows)
+            _validate_task_merge_references(
+                local_db,
+                returned_db,
+                task_ids=task_ids,
+                site_id=site_id,
+            )
+            conflicts.extend(
+                item.to_public()
+                for item in _immutable_task_conflicts(local_db, returned_db)
+            )
     return {
         "new_tasks": new_tasks,
         "updated_tasks": updated_tasks,
@@ -1078,12 +1109,18 @@ def _apply_task_merge(
     local: Path,
     returned: Path,
     resolutions: dict[str, dict[str, object]],
+    *,
+    site_id: str = "",
 ) -> dict[str, int]:
     if not returned.is_file():
         return {"new_tasks": 0, "updated_tasks": 0, "duplicate_tasks": 0}
+    from netconsole.repositories.online_mr_task_session_repository import (
+        OnlineMrTaskSessionRepository,
+    )
     from netconsole.repositories.task_repository import TaskRepository
 
     TaskRepository(local).initialize()
+    OnlineMrTaskSessionRepository(local, site_id=site_id or "demo").initialize()
     inserted = 0
     updated = 0
     duplicates = 0
@@ -1098,10 +1135,39 @@ def _apply_task_merge(
         try:
             local_rows = _task_rows_from_connection(local_db)
             returned_rows = _task_rows_from_connection(returned_db)
+            task_ids = set(local_rows) | set(returned_rows)
+            _validate_task_merge_references(
+                local_db,
+                returned_db,
+                task_ids=task_ids,
+                site_id=site_id,
+            )
+            immutable_conflicts = _immutable_task_conflicts(local_db, returned_db)
+            if immutable_conflicts:
+                conflict = immutable_conflicts[0]
+                _raise(
+                    "SITE_IMPORT_TASK_CONFLICT",
+                    f"回传任务数据存在不可覆盖冲突：{conflict.entity_type}/{conflict.entity_id}",
+                )
+
+            for returned_result in _rows_for_table(
+                returned_db, "task_results", order_by="result_id"
+            ):
+                result_id = str(returned_result.get("result_id") or "")
+                existing = _row_by_key(local_db, "task_results", "result_id", result_id)
+                if existing is not None:
+                    continue
+                _insert_compatible_row(
+                    local_db,
+                    "task_results",
+                    returned_result,
+                    skip=set(),
+                )
+
             for task_id, returned_row in returned_rows.items():
                 local_row = local_rows.get(task_id)
                 if local_row is None:
-                    _insert_row(
+                    _insert_compatible_row(
                         local_db, "task_snapshots", returned_row, skip={"sequence"}
                     )
                     inserted += 1
@@ -1124,19 +1190,37 @@ def _apply_task_merge(
                 ):
                     _replace_row(local_db, "task_snapshots", returned_row, ("task_id",))
                     updated += 1
-            if "task_events" in _table_names(returned_db):
-                events = returned_db.execute(
-                    "SELECT * FROM task_events ORDER BY sequence"
-                ).fetchall()
-                for event in events:
-                    values = dict(event)
-                    values.pop("sequence", None)
-                    columns = sorted(values)
-                    local_db.execute(
-                        f"INSERT OR IGNORE INTO task_events ({', '.join(_quote(column) for column in columns)}) "
-                        f"VALUES ({', '.join('?' for _ in columns)})",
-                        [values[column] for column in columns],
-                    )
+            for event in _rows_for_table(
+                returned_db, "task_events", order_by="sequence"
+            ):
+                event_id = str(event.get("event_id") or "")
+                existing = _row_by_key(local_db, "task_events", "event_id", event_id)
+                if existing is not None:
+                    continue
+                _insert_compatible_row(
+                    local_db, "task_events", event, skip={"sequence"}
+                )
+
+            for mapping in _rows_for_table(
+                returned_db,
+                "online_mr_task_sessions",
+                order_by="controller_task_id",
+            ):
+                controller_task_id = str(mapping.get("controller_task_id") or "")
+                existing = _row_by_key(
+                    local_db,
+                    "online_mr_task_sessions",
+                    "controller_task_id",
+                    controller_task_id,
+                )
+                if existing is not None:
+                    continue
+                _insert_compatible_row(
+                    local_db,
+                    "online_mr_task_sessions",
+                    mapping,
+                    skip=set(),
+                )
             local_db.commit()
         except Exception:
             local_db.rollback()
@@ -1146,6 +1230,334 @@ def _apply_task_merge(
         "updated_tasks": updated,
         "duplicate_tasks": duplicates,
     }
+
+
+def _immutable_task_conflicts(
+    local_db: sqlite3.Connection,
+    returned_db: sqlite3.Connection,
+) -> list[MergeConflict]:
+    conflicts: list[MergeConflict] = []
+    for returned_result in _rows_for_table(returned_db, "task_results"):
+        result_id = str(returned_result.get("result_id") or "")
+        local_result = _row_by_key(local_db, "task_results", "result_id", result_id)
+        if local_result is not None and _result_semantics(
+            local_result
+        ) != _result_semantics(returned_result):
+            conflicts.append(
+                _conflict(
+                    "task_result",
+                    result_id,
+                    "immutable_content",
+                    None,
+                    _result_summary(local_result),
+                    _result_summary(returned_result),
+                )
+            )
+
+    for returned_event in _rows_for_table(returned_db, "task_events"):
+        event_id = str(returned_event.get("event_id") or "")
+        local_event = _row_by_key(local_db, "task_events", "event_id", event_id)
+        if local_event is not None and _event_semantics(
+            local_event
+        ) != _event_semantics(returned_event):
+            conflicts.append(
+                _conflict(
+                    "task_event",
+                    event_id,
+                    "immutable_content",
+                    None,
+                    _event_semantics(local_event),
+                    _event_semantics(returned_event),
+                )
+            )
+
+    local_mappings = {
+        str(row.get("controller_task_id") or ""): row
+        for row in _rows_for_table(local_db, "online_mr_task_sessions")
+    }
+    returned_mappings = _rows_for_table(returned_db, "online_mr_task_sessions")
+    for returned_mapping in returned_mappings:
+        controller_task_id = str(returned_mapping.get("controller_task_id") or "")
+        local_mapping = local_mappings.get(controller_task_id)
+        if local_mapping is not None and _mapping_semantics(
+            local_mapping
+        ) != _mapping_semantics(returned_mapping):
+            conflicts.append(
+                _conflict(
+                    "online_mr_task_session",
+                    controller_task_id,
+                    "immutable_mapping",
+                    None,
+                    _mapping_summary(local_mapping),
+                    _mapping_summary(returned_mapping),
+                )
+            )
+
+    combined_mappings = [*local_mappings.values(), *returned_mappings]
+    conflicts.extend(_mapping_identity_conflicts(combined_mappings))
+    unique: dict[str, MergeConflict] = {}
+    for conflict in conflicts:
+        unique.setdefault(conflict.conflict_id, conflict)
+    return list(unique.values())
+
+
+def _validate_task_merge_references(
+    local_db: sqlite3.Connection,
+    returned_db: sqlite3.Connection,
+    *,
+    task_ids: set[str],
+    site_id: str,
+) -> None:
+    from netconsole.repositories.task_repository import TaskRepository
+
+    local_results = {
+        str(row.get("result_id") or ""): row
+        for row in _rows_for_table(local_db, "task_results")
+    }
+    returned_results = {
+        str(row.get("result_id") or ""): row
+        for row in _rows_for_table(returned_db, "task_results")
+    }
+    for result_id, row in returned_results.items():
+        if not result_id:
+            _raise(
+                "SITE_IMPORT_TASK_RESULT_INVALID", "回传 task_results 缺少 result_id"
+            )
+        try:
+            TaskRepository._verified_result_row(row)
+        except (sqlite3.Error, TypeError, ValueError) as exc:
+            _raise(
+                "SITE_IMPORT_TASK_RESULT_INVALID",
+                f"回传 task_results 身份校验失败：{result_id} ({exc})",
+            )
+        if str(row.get("task_id") or "") not in task_ids:
+            _raise(
+                "SITE_IMPORT_TASK_REFERENCE_INVALID",
+                f"task_results 引用了不存在的任务：{row.get('task_id')}",
+            )
+
+    available_results = {**local_results, **returned_results}
+    for snapshot in _rows_for_table(returned_db, "task_snapshots"):
+        _validate_result_reference(snapshot, available_results, owner="task_snapshots")
+    for event in _rows_for_table(returned_db, "task_events"):
+        task_id = str(event.get("task_id") or "")
+        if task_id not in task_ids:
+            _raise(
+                "SITE_IMPORT_TASK_REFERENCE_INVALID",
+                f"task_events 引用了不存在的任务：{task_id}",
+            )
+        payload = _json_object_strict(event.get("payload_json"), owner="task_events")
+        _validate_result_reference(payload, available_results, owner="task_events")
+
+    mappings = _rows_for_table(returned_db, "online_mr_task_sessions")
+    for mapping in mappings:
+        controller_task_id = str(mapping.get("controller_task_id") or "")
+        if controller_task_id not in task_ids:
+            _raise(
+                "SITE_IMPORT_TASK_REFERENCE_INVALID",
+                f"Online MR mapping 引用了不存在的 Controller task：{controller_task_id}",
+            )
+        mapping_site = str(mapping.get("site_id") or "")
+        if site_id and mapping_site != site_id:
+            _raise(
+                "SITE_IMPORT_TASK_REFERENCE_INVALID",
+                f"Online MR mapping 局点不匹配：{mapping_site}",
+            )
+        agent_id = str(mapping.get("agent_id") or "")
+        agent_task_id = str(mapping.get("agent_task_id") or "")
+        if bool(agent_id) != bool(agent_task_id):
+            _raise(
+                "SITE_IMPORT_TASK_REFERENCE_INVALID",
+                f"Online MR Agent task 引用不完整：{controller_task_id}",
+            )
+
+
+def _validate_result_reference(
+    values: dict[str, object],
+    results: dict[str, dict[str, object]],
+    *,
+    owner: str,
+) -> None:
+    result_id = str(values.get("result_id") or "")
+    result_hash = str(values.get("result_hash") or "")
+    if not result_id and not result_hash:
+        return
+    if not result_id or not result_hash:
+        _raise(
+            "SITE_IMPORT_TASK_REFERENCE_INVALID",
+            f"{owner} 的 result_id/result_hash 引用不完整",
+        )
+    result = results.get(result_id)
+    if result is None or str(result.get("sha256") or "") != result_hash:
+        _raise(
+            "SITE_IMPORT_TASK_REFERENCE_INVALID",
+            f"{owner} 引用了不存在或 hash 不匹配的 task_result：{result_id}",
+        )
+    owner_task_id = str(values.get("task_id") or "")
+    if owner_task_id and str(result.get("task_id") or "") != owner_task_id:
+        _raise(
+            "SITE_IMPORT_TASK_REFERENCE_INVALID",
+            f"{owner} 的 task_result 不属于当前任务：{result_id}",
+        )
+
+
+def _mapping_identity_conflicts(
+    mappings: list[dict[str, object]],
+) -> list[MergeConflict]:
+    conflicts: list[MergeConflict] = []
+    seen_sessions: dict[str, str] = {}
+    seen_agent_tasks: dict[tuple[str, str], str] = {}
+    for mapping in mappings:
+        controller_task_id = str(mapping.get("controller_task_id") or "")
+        session_id = str(mapping.get("session_id") or "")
+        if session_id:
+            previous = seen_sessions.setdefault(session_id, controller_task_id)
+            if previous != controller_task_id:
+                conflicts.append(
+                    _conflict(
+                        "online_mr_task_session",
+                        session_id,
+                        "session_id",
+                        None,
+                        previous,
+                        controller_task_id,
+                    )
+                )
+        agent_id = str(mapping.get("agent_id") or "")
+        agent_task_id = str(mapping.get("agent_task_id") or "")
+        if agent_id and agent_task_id:
+            identity = (agent_id, agent_task_id)
+            previous = seen_agent_tasks.setdefault(identity, controller_task_id)
+            if previous != controller_task_id:
+                conflicts.append(
+                    _conflict(
+                        "online_mr_task_session",
+                        f"{agent_id}/{agent_task_id}",
+                        "agent_task_id",
+                        None,
+                        previous,
+                        controller_task_id,
+                    )
+                )
+    return conflicts
+
+
+def _rows_for_table(
+    connection: sqlite3.Connection,
+    table: str,
+    *,
+    order_by: str = "",
+) -> list[dict[str, object]]:
+    if table not in _table_names(connection):
+        return []
+    order = f" ORDER BY {_quote(order_by)}" if order_by else ""
+    return [
+        dict(row) for row in connection.execute(f"SELECT * FROM {_quote(table)}{order}")
+    ]
+
+
+def _row_by_key(
+    connection: sqlite3.Connection,
+    table: str,
+    key: str,
+    value: object,
+) -> dict[str, object] | None:
+    if table not in _table_names(connection):
+        return None
+    row = connection.execute(
+        f"SELECT * FROM {_quote(table)} WHERE {_quote(key)} = ? LIMIT 1",
+        (value,),
+    ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def _insert_compatible_row(
+    connection: sqlite3.Connection,
+    table: str,
+    row: dict[str, object],
+    *,
+    skip: set[str],
+) -> None:
+    writable_columns = {
+        str(item[1])
+        for item in connection.execute(f"PRAGMA table_info({_quote(table)})")
+    }
+    values = {
+        key: value
+        for key, value in row.items()
+        if key not in skip and key in writable_columns
+    }
+    columns = sorted(values)
+    connection.execute(
+        f"INSERT INTO {_quote(table)} ({', '.join(_quote(column) for column in columns)}) "
+        f"VALUES ({', '.join('?' for _ in columns)})",
+        [values[column] for column in columns],
+    )
+
+
+def _result_semantics(row: dict[str, object]) -> dict[str, object]:
+    return {
+        key: row.get(key)
+        for key in (
+            "result_id",
+            "task_id",
+            "terminal_event_type",
+            "canonical_json",
+            "sha256",
+            "byte_size",
+            "schema_version",
+        )
+    }
+
+
+def _result_summary(row: dict[str, object]) -> dict[str, object]:
+    return {
+        "result_id": row.get("result_id"),
+        "task_id": row.get("task_id"),
+        "terminal_event_type": row.get("terminal_event_type"),
+        "sha256": row.get("sha256"),
+        "byte_size": row.get("byte_size"),
+        "schema_version": row.get("schema_version"),
+    }
+
+
+def _event_semantics(row: dict[str, object]) -> dict[str, object]:
+    return {
+        "event_id": row.get("event_id"),
+        "task_id": row.get("task_id"),
+        "event_type": row.get("event_type"),
+        "event_time": row.get("event_time"),
+        "source": row.get("source"),
+        "payload": _json_object_strict(row.get("payload_json"), owner="task_events"),
+    }
+
+
+def _mapping_semantics(row: dict[str, object]) -> dict[str, object]:
+    return {key: value for key, value in row.items()}
+
+
+def _mapping_summary(row: dict[str, object]) -> dict[str, object]:
+    return {
+        "controller_task_id": row.get("controller_task_id"),
+        "session_id": row.get("session_id"),
+        "site_id": row.get("site_id"),
+        "executor_kind": row.get("executor_kind"),
+        "agent_id": row.get("agent_id"),
+        "agent_task_id": row.get("agent_task_id"),
+        "phase": row.get("phase"),
+        "mapping_state": row.get("mapping_state"),
+        "updated_at": row.get("updated_at"),
+    }
+
+
+def _json_object_strict(value: object, *, owner: str) -> dict[str, object]:
+    try:
+        parsed = json.loads(str(value or "{}"))
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        _raise("SITE_IMPORT_TASK_REFERENCE_INVALID", f"{owner} JSON 无效：{exc}")
+    if not isinstance(parsed, dict):
+        _raise("SITE_IMPORT_TASK_REFERENCE_INVALID", f"{owner} JSON 必须是对象")
+    return dict(parsed)
 
 
 def _task_conflicts(preview: dict[str, object]) -> list[MergeConflict]:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sqlite3
@@ -253,12 +254,45 @@ class JobCenterQueryService:
         with closing(self._connect(db_path)) as conn:
             if not self._table_exists(conn, "task_snapshots"):
                 return []
-            rows = conn.execute(
+            has_result_refs = self._table_exists(
+                conn, "task_results"
+            ) and self._column_exists(conn, "task_snapshots", "result_id")
+            result_expression = (
+                "COALESCE(NULLIF(task.result_json, ''), result.canonical_json, '{}')"
+                if has_result_refs
+                else "task.result_json"
+            )
+            result_join = (
+                "LEFT JOIN task_results result ON result.result_id=task.result_id"
+                if has_result_refs
+                else ""
+            )
+            authority_columns = (
                 """
-                SELECT result_json, updated_time
-                FROM task_snapshots
-                WHERE task_type = ? AND status = ? AND site_name = ?
-                ORDER BY updated_time DESC
+                , task.task_id AS authority_owner_task_id
+                , task.result_json AS legacy_result_json
+                , task.result_id AS result_reference_id
+                , task.result_hash AS result_reference_hash
+                , result.result_id AS authority_result_id
+                , result.task_id AS authority_result_task_id
+                , result.terminal_event_type AS authority_terminal_event_type
+                , result.sha256 AS authority_result_hash
+                , result.byte_size AS authority_result_bytes
+                , result.canonical_json AS authority_result_json
+                , CASE WHEN task.result_id <> '' THEN 1 ELSE 0 END
+                  AS result_reference_present
+                """
+                if has_result_refs
+                else ""
+            )
+            rows = conn.execute(
+                f"""
+                SELECT {result_expression} AS result_json, task.updated_time
+                       {authority_columns}
+                FROM task_snapshots task
+                {result_join}
+                WHERE task.task_type = ? AND task.status = ? AND task.site_name = ?
+                ORDER BY task.updated_time DESC
                 LIMIT ?
                 """,
                 (
@@ -268,9 +302,12 @@ class JobCenterQueryService:
                     max(1, min(int(limit), 200)),
                 ),
             ).fetchall()
+        values = [dict(row) for row in rows]
+        for row in values:
+            self._verify_result_reference(row)
         return [
             (self._json_object(row["result_json"]), str(row["updated_time"] or ""))
-            for row in rows
+            for row in values
         ]
 
     def get_summary(self, site_id: str) -> JobCenterSummaryDTO:
@@ -332,13 +369,54 @@ class JobCenterQueryService:
         return conn
 
     def _task_select(self, conn: sqlite3.Connection, *, detail: bool) -> str:
+        has_result_refs = self._table_exists(
+            conn, "task_results"
+        ) and self._column_exists(conn, "task_snapshots", "result_id")
+        result_expression = (
+            "COALESCE(NULLIF(task.result_json, ''), result.canonical_json, '{}')"
+            if has_result_refs
+            else "task.result_json"
+        )
         result_column = (
-            ", task.result_json"
+            f", {result_expression} AS result_json"
             if detail
-            else """
-                , task.result_json AS business_result_json
-                , CASE WHEN task.status = 'COMPLETED' THEN task.result_json ELSE NULL END
+            else f"""
+                , {result_expression} AS business_result_json
+                , CASE WHEN task.status = 'COMPLETED' THEN {result_expression} ELSE NULL END
                   AS artifact_result_json
+            """
+        )
+        result_columns = (
+            """
+                , task.task_id AS authority_owner_task_id
+                , task.result_json AS legacy_result_json
+                , task.result_id AS result_reference_id
+                , task.result_hash AS result_reference_hash
+                , result.result_id AS authority_result_id
+                , result.task_id AS authority_result_task_id
+                , result.terminal_event_type AS authority_terminal_event_type
+                , result.sha256 AS authority_result_hash
+                , result.byte_size AS authority_result_bytes
+                , result.canonical_json AS authority_result_json
+                , CASE WHEN task.result_id <> '' THEN 1 ELSE 0 END
+                  AS result_reference_present
+                , CASE WHEN task.result_json = '' AND task.result_id <> '' THEN 1 ELSE 0 END
+                  AS result_reference_used
+            """
+            if has_result_refs
+            else """
+                , NULL AS authority_result_hash
+                , NULL AS authority_result_bytes
+                , NULL AS authority_result_json
+                , NULL AS authority_owner_task_id
+                , NULL AS legacy_result_json
+                , NULL AS result_reference_id
+                , NULL AS result_reference_hash
+                , NULL AS authority_result_id
+                , NULL AS authority_result_task_id
+                , NULL AS authority_terminal_event_type
+                , 0 AS result_reference_present
+                , 0 AS result_reference_used
             """
         )
         if self._column_exists(conn, "task_snapshots", "text_integrity"):
@@ -369,7 +447,7 @@ class JobCenterQueryService:
                 mapping.mapping_state, mapping.error_code AS mapping_error_code,
                 mapping.error_summary AS mapping_error_summary
             """
-            join = "LEFT JOIN online_mr_task_sessions mapping ON mapping.controller_task_id = task.task_id"
+            mapping_join = "LEFT JOIN online_mr_task_sessions mapping ON mapping.controller_task_id = task.task_id"
         else:
             mapping_columns = """
                 NULL AS session_id, NULL AS device_id, NULL AS device_name,
@@ -377,7 +455,12 @@ class JobCenterQueryService:
                 NULL AS mapping_state, NULL AS mapping_error_code,
                 NULL AS mapping_error_summary
             """
-            join = ""
+            mapping_join = ""
+        result_join = (
+            "LEFT JOIN task_results result ON result.result_id=task.result_id"
+            if has_result_refs
+            else ""
+        )
         return f"""
             SELECT task.task_id, task.task_type, task.task_name, task.status,
                    task.progress, task.current, task.total, task.stage,
@@ -386,11 +469,44 @@ class JobCenterQueryService:
                    task.created_time, task.started_time, task.finished_time,
                    task.updated_time, task.result_path, task.error_message,
                    {integrity_columns}{history_columns}{mapping_columns}{result_column}
+                   {result_columns}
             FROM task_snapshots task
-            {join}
+            {mapping_join}
+            {result_join}
         """
 
-    def _task_from_row(self, row: dict[str, object], *, include_result: bool = False) -> JobCenterTaskDTO:
+    @staticmethod
+    def _verify_result_reference(row: dict[str, object]) -> None:
+        if not bool(row.get("result_reference_present")):
+            return
+        canonical = str(row.get("authority_result_json") or "")
+        encoded = canonical.encode("utf-8")
+        digest = hashlib.sha256(encoded).hexdigest()
+        if digest != str(row.get("authority_result_hash") or ""):
+            raise sqlite3.DatabaseError("task result read-through hash mismatch")
+        if len(encoded) != int(row.get("authority_result_bytes") or -1):
+            raise sqlite3.DatabaseError("task result read-through size mismatch")
+        if str(row.get("result_reference_hash") or "") not in {"", digest}:
+            raise sqlite3.DatabaseError("task result reference hash mismatch")
+        owner_task_id = str(row.get("authority_owner_task_id") or "")
+        terminal_event_type = str(row.get("authority_terminal_event_type") or "")
+        expected_id = (
+            "tr-"
+            + hashlib.sha256(
+                f"{owner_task_id}\0{terminal_event_type}\0{digest}".encode("utf-8")
+            ).hexdigest()
+        )
+        if (
+            str(row.get("result_reference_id") or "") != expected_id
+            or str(row.get("authority_result_id") or "") != expected_id
+            or str(row.get("authority_result_task_id") or "") != owner_task_id
+        ):
+            raise sqlite3.DatabaseError("task result read-through identity mismatch")
+
+    def _task_from_row(
+        self, row: dict[str, object], *, include_result: bool = False
+    ) -> JobCenterTaskDTO:
+        self._verify_result_reference(row)
         result = self._json_object(row.get("result_json")) if include_result else {}
         business_result = (
             result
@@ -403,14 +519,20 @@ class JobCenterQueryService:
             else self._json_object(row.get("artifact_result_json"))
         )
         status = str(row.get("status") or "UNKNOWN").upper()
-        error_summary = redact_web_task_text(row.get("mapping_error_summary") or row.get("error_message") or "")
-        error_code = str(row.get("mapping_error_code") or result.get("error_code") or "")
+        error_summary = redact_web_task_text(
+            row.get("mapping_error_summary") or row.get("error_message") or ""
+        )
+        error_code = str(
+            row.get("mapping_error_code") or result.get("error_code") or ""
+        )
         if not error_code and error_summary.startswith("AC_MESH_LINK_"):
             error_code = error_summary.partition(":")[0]
         source = str(row.get("source") or "local")
         executor = str(row.get("executor_kind") or result.get("executor_kind") or "")
         if not executor:
-            executor = "AGENT" if source.casefold() == "agent" or row.get("agent") else "LOCAL"
+            executor = (
+                "AGENT" if source.casefold() == "agent" or row.get("agent") else "LOCAL"
+            )
         started = str(row.get("started_time") or "")
         finished = str(row.get("finished_time") or "")
         task_type = str(row.get("task_type") or "")
@@ -468,7 +590,9 @@ class JobCenterQueryService:
         return JobCenterTaskDTO(
             id=task_id,
             type=task_type,
-            name=redact_web_task_text(row.get("task_name") or row.get("task_type") or ""),
+            name=redact_web_task_text(
+                row.get("task_name") or row.get("task_type") or ""
+            ),
             status=status,
             lifecycle_status=status,
             business_status=business.business_status,
@@ -484,9 +608,7 @@ class JobCenterQueryService:
             current=max(0, int(row.get("current") or 0)),
             total=max(0, int(row.get("total") or 0)),
             task_mode=(
-                "resident"
-                if task_type == "ac_mesh_link_resident_poll"
-                else "once"
+                "resident" if task_type == "ac_mesh_link_resident_poll" else "once"
             ),
             progress_mode=(
                 "indeterminate"
@@ -501,10 +623,14 @@ class JobCenterQueryService:
             executor=redact_web_task_text(executor).upper(),
             source=redact_web_task_text(source),
             device_id=redact_web_task_text(row.get("device_id") or ""),
-            device_name=redact_web_task_text(row.get("device_name") or row.get("device") or ""),
+            device_name=redact_web_task_text(
+                row.get("device_name") or row.get("device") or ""
+            ),
             agent=redact_web_task_text(row.get("agent") or ""),
             mr_name=redact_web_task_text(row.get("mr_name") or ""),
-            session_id=redact_web_task_text(row.get("session_id") or result.get("session_id") or ""),
+            session_id=redact_web_task_text(
+                row.get("session_id") or result.get("session_id") or ""
+            ),
             mapping_state=redact_web_task_text(row.get("mapping_state") or ""),
             created_time=str(row.get("created_time") or ""),
             started_time=started,
@@ -534,7 +660,9 @@ class JobCenterQueryService:
             producer_commit=str(row.get("producer_commit") or "unknown"),
             snapshot_id=self._optional_int(result.get("snapshot_id")),
             records_count=self._optional_int(result.get("records_count")),
-            parser_version=redact_web_task_text(self._first_text(result, "parser_version")),
+            parser_version=redact_web_task_text(
+                self._first_text(result, "parser_version")
+            ),
             module=self._module(owner, task_type),
             cancellable=cancellable,
             cancel_reason=cancel_reason,
@@ -542,8 +670,7 @@ class JobCenterQueryService:
             artifact_reason=(
                 ""
                 if artifact_download
-                else artifact.missing_reason
-                or "当前任务 owner 未提供可下载 Artifact"
+                else artifact.missing_reason or "当前任务 owner 未提供可下载 Artifact"
             ),
             artifact_available=artifact.artifact_available,
             artifact_availability=artifact.artifact_availability.value,
@@ -551,7 +678,9 @@ class JobCenterQueryService:
             downloadable=artifact.downloadable,
             openable=artifact.openable,
             parent_directory_openable=artifact.parent_directory_openable,
-            details=self._task_details(task_type, row, result) if include_result else {},
+            details=self._task_details(task_type, row, result)
+            if include_result
+            else {},
         )
 
     @classmethod

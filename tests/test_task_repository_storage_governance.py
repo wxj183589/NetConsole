@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -16,6 +18,7 @@ from netconsole.repositories.task_repository import TaskRepository
 from netconsole.services.job_center.task_application_service import (
     TaskApplicationService,
 )
+from netconsole.services.job_center.query_service import JobCenterQueryService
 
 
 def _snapshot(task_id: str = "task-1", **changes) -> TaskSnapshot:
@@ -417,3 +420,265 @@ def test_three_thousand_sampled_progress_events_are_all_broadcast_live(
     assert [event["type"] for event in persisted] == ["state", "progress"]
     assert persisted[1]["id"] == "live-progress-0"
     stream.close()
+
+
+def _terminal_event(
+    task_id: str,
+    event_id: str,
+    result: dict[str, object],
+    *,
+    event_type: str = "finished",
+    event_time: str = "2026-08-15T01:00:00Z",
+) -> TaskEvent:
+    return TaskEvent(
+        event_id=event_id,
+        task_id=task_id,
+        type=event_type,
+        time=event_time,
+        source="worker",
+        payload={"message": "done", "result": result},
+    )
+
+
+def _terminal_snapshot(
+    task_id: str,
+    result: dict[str, object],
+    *,
+    status: TaskState = TaskState.COMPLETED,
+) -> TaskSnapshot:
+    return _snapshot(
+        task_id=task_id,
+        status=status,
+        progress=100,
+        result=result,
+        finished_time="2026-08-15T01:00:00Z",
+        updated_time="2026-08-15T01:00:00Z",
+    )
+
+
+def test_terminal_result_is_canonical_deterministic_idempotent_and_immutable(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "tasks.db"
+    repository = TaskRepository(path)
+    first_result = {"中文": "正常", "nested": {"z": 2, "a": 1}, "items": [3, 2, 1]}
+    second_result = {"items": [3, 2, 1], "nested": {"a": 1, "z": 2}, "中文": "正常"}
+
+    assert repository.record(
+        _terminal_snapshot("task-canonical", first_result),
+        _terminal_event("task-canonical", "finished-1", first_result),
+    )
+    assert repository.record(
+        _terminal_snapshot("task-canonical", second_result),
+        _terminal_event(
+            "task-canonical",
+            "finished-2",
+            second_result,
+            event_time="2026-08-15T01:00:01Z",
+        ),
+    )
+
+    expected = json.dumps(
+        first_result,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    expected_hash = hashlib.sha256(expected.encode("utf-8")).hexdigest()
+    expected_id = (
+        "tr-"
+        + hashlib.sha256(
+            f"task-canonical\0finished\0{expected_hash}".encode("utf-8")
+        ).hexdigest()
+    )
+    with sqlite3.connect(path) as conn:
+        row = conn.execute("SELECT * FROM task_results").fetchone()
+        assert conn.execute("SELECT COUNT(*) FROM task_results").fetchone()[0] == 1
+        assert row is not None
+        assert (row[0], row[3], row[4], row[5], row[6]) == (
+            expected_id,
+            expected,
+            expected_hash,
+            len(expected.encode("utf-8")),
+            1,
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+            conn.execute(
+                "UPDATE task_results SET canonical_json='{}' WHERE result_id=?",
+                (expected_id,),
+            )
+
+
+def test_terminal_result_identity_conflict_rolls_back_snapshot_and_event(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "tasks.db"
+    repository = TaskRepository(path)
+    result = {"status": "OK", "count": 3}
+    canonical = TaskRepository._canonical_result_json(result)
+    result_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    result_id = (
+        "tr-"
+        + hashlib.sha256(
+            f"task-conflict\0finished\0{result_hash}".encode("utf-8")
+        ).hexdigest()
+    )
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            """
+            INSERT INTO task_results (
+                result_id, task_id, terminal_event_type, canonical_json,
+                sha256, byte_size, schema_version, created_time
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                result_id,
+                "task-conflict",
+                "finished",
+                '{"tampered":true}',
+                result_hash,
+                len(canonical.encode("utf-8")),
+                1,
+                "2026-08-15T00:00:00Z",
+            ),
+        )
+        conn.commit()
+
+    with pytest.raises(sqlite3.DatabaseError, match="hash mismatch"):
+        repository.record(
+            _terminal_snapshot("task-conflict", result),
+            _terminal_event("task-conflict", "finished-conflict", result),
+        )
+    with sqlite3.connect(path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM task_snapshots").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM task_events").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM task_results").fetchone()[0] == 1
+
+
+def test_old_dual_write_and_ref_only_results_remain_readable(tmp_path: Path) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path / "data")
+    path = paths.site_tasks_db_path("demo")
+    repository = TaskRepository(path)
+    repository.save(
+        _terminal_snapshot("task-old-only", {"mode": "old-only", "count": 1})
+    )
+    dual_result = {"mode": "dual-write", "count": 2}
+    assert repository.record(
+        _terminal_snapshot("task-ref", dual_result),
+        _terminal_event("task-ref", "finished-ref", dual_result),
+    )
+    dual = repository.get("task-ref")
+    assert dual is not None and dual.result == dual_result and dual.result_id
+
+    with sqlite3.connect(path) as conn:
+        event = conn.execute(
+            "SELECT event_id, payload_json FROM task_events WHERE event_id='finished-ref'"
+        ).fetchone()
+        assert event is not None
+        payload = json.loads(str(event[1]))
+        payload.pop("result", None)
+        conn.execute(
+            "UPDATE task_snapshots SET result_json='' WHERE task_id='task-ref'"
+        )
+        conn.execute(
+            "UPDATE task_events SET payload_json=? WHERE event_id=?",
+            (json.dumps(payload, ensure_ascii=False, separators=(",", ":")), event[0]),
+        )
+        conn.commit()
+
+    assert repository.get("task-old-only").result == {"mode": "old-only", "count": 1}
+    ref_only = TaskRepository(path).get("task-ref")
+    assert ref_only is not None and ref_only.result == dual_result
+    events = TaskRepository(path).list_events("task-ref")
+    assert events[-1]["payload"]["result"] == dual_result
+    results = JobCenterQueryService(paths).list_task_results(
+        "demo", task_type="trackside_ap_optical_update"
+    )
+    assert {item[0]["mode"] for item in results} == {"old-only", "dual-write"}
+
+
+def test_large_terminal_result_round_trips_without_changing_producer_contract(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "tasks.db"
+    repository = TaskRepository(path)
+    result = {
+        "producer": "vehicle_mr_online_refresh_all",
+        "payload": "x" * (4 * 1024 * 1024 + 512 * 1024),
+    }
+    assert repository.record(
+        _terminal_snapshot("task-large-result", result),
+        _terminal_event("task-large-result", "finished-large", result),
+    )
+    persisted = repository.get("task-large-result")
+    assert persisted is not None and persisted.result == result
+    authority = repository.get_result(persisted.result_id)
+    assert authority is not None
+    assert 4 * 1024 * 1024 <= int(authority["byte_size"]) <= 5 * 1024 * 1024
+
+
+def test_live_terminal_event_uses_persisted_result_identity(tmp_path: Path) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path / "data")
+    service = TaskApplicationService(paths, site_name="demo", reconcile_on_start=False)
+    service.create_external_task(
+        task_id="task-live-result",
+        task_type="ac_fit_ap_resources_refresh",
+        task_name="FIT-AP 资源刷新",
+        source="agent",
+    )
+    stream = service.events.open_stream()
+    result = {"status": "COMPLETED", "resources": [{"ap": "ap-1"}]}
+    snapshot = service.record_external_event(
+        "task-live-result",
+        "finished",
+        {"message": "done", "result": result},
+        source="agent",
+        event_id="live-finished-result",
+        event_time="2026-08-15T01:00:00Z",
+    )
+    live = stream.get()
+    authority = service.repository("demo").get_result(snapshot.result_id)
+    assert authority is not None
+    assert live["payload"]["result"] == authority["result"] == result
+    assert live["payload"]["result_id"] == snapshot.result_id == authority["result_id"]
+    assert live["payload"]["result_hash"] == snapshot.result_hash == authority["sha256"]
+    stream.close()
+
+
+def test_artifact_projection_does_not_mutate_authoritative_terminal_result(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "tasks.db"
+    repository = TaskRepository(path)
+    terminal_result = {"artifact_id": "report-1", "available": False, "rows": 12}
+    assert repository.record(
+        _terminal_snapshot("task-artifact", terminal_result),
+        _terminal_event("task-artifact", "finished-artifact", terminal_result),
+    )
+    terminal = repository.get("task-artifact")
+    assert terminal is not None
+    authority_before = repository.get_result(terminal.result_id)
+    projection = {"artifact_id": "report-1", "available": True, "rows": 12}
+    assert repository.record(
+        replace(
+            terminal,
+            result=projection,
+            updated_time="2026-08-15T01:01:00Z",
+        ),
+        TaskEvent(
+            event_id="artifact-finalized",
+            task_id="task-artifact",
+            type="artifact_finalized",
+            time="2026-08-15T01:01:00Z",
+            source="artifact_reconciliation",
+            payload={"message": "ready", "result": projection},
+        ),
+    )
+    current = repository.get("task-artifact")
+    authority_after = repository.get_result(terminal.result_id)
+    assert current is not None and current.result == projection
+    assert current.result_id == terminal.result_id
+    assert authority_after == authority_before
+    with sqlite3.connect(path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM task_results").fetchone()[0] == 1

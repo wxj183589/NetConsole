@@ -215,12 +215,18 @@ class TaskApplicationService:
     ) -> TaskSnapshot:
         """先持久化外部任务事件，再广播同一事件；持久化失败会直接上抛。"""
 
-        selected_site = str(site_name or self._job_sites.get(task_id) or self.site_name or "demo")
+        selected_site = str(
+            site_name or self._job_sites.get(task_id) or self.site_name or "demo"
+        )
         repository = self.repository(selected_site)
         snapshot = repository.get(task_id)
         if snapshot is None:
             raise KeyError(task_id)
-        safe_payload = sanitize_web_export_event(payload) if is_web_export_task(snapshot.task_type) else dict(payload or {})
+        safe_payload = (
+            sanitize_web_export_event(payload)
+            if is_web_export_task(snapshot.task_type)
+            else dict(payload or {})
+        )
         selected_time = event_time or utc_now_iso()
         event = TaskEvent(
             event_id=event_id or uuid.uuid4().hex,
@@ -237,11 +243,16 @@ class TaskApplicationService:
             if current is None:
                 raise KeyError(task_id)
             return current
+        persisted_snapshot = repository.get(task_id) or updated
         self._job_sites[task_id] = selected_site
         self.events.publish_persisted(event.to_dict())
-        if updated.status in {TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELLED}:
+        if persisted_snapshot.status in {
+            TaskState.COMPLETED,
+            TaskState.FAILED,
+            TaskState.CANCELLED,
+        }:
             self._job_sites.pop(task_id, None)
-        return updated
+        return persisted_snapshot
 
     def mark_running(self, job_id: str) -> None:
         self.runtime.mark_running(job_id)
@@ -643,8 +654,13 @@ class TaskApplicationService:
                 if persisted:
                     self.events.publish_persisted(safe_event.to_dict())
                 return False
-            updated = self._apply_event(snapshot, event_type, payload, str(envelope.get("time") or utc_now_iso()))
-            return repository.record(
+            updated = self._apply_event(
+                snapshot,
+                event_type,
+                payload,
+                str(envelope.get("time") or utc_now_iso()),
+            )
+            persisted = repository.record(
                 updated,
                 TaskEvent(
                     event_id=str(envelope.get("id") or uuid.uuid4().hex),
@@ -656,8 +672,14 @@ class TaskApplicationService:
                 ),
                 allowed_from=self._allowed_from(snapshot, event_type, payload),
             )
+            if persisted:
+                envelope["payload"] = dict(payload)
+            return persisted
         except Exception as exc:
-            app_logger.log_error("TASK_EVENT_PERSIST_FAILED", f"task_id={envelope.get('task_id', '')} error={exc}")
+            app_logger.log_error(
+                "TASK_EVENT_PERSIST_FAILED",
+                f"task_id={envelope.get('task_id', '')} error={exc}",
+            )
             return False
 
     def _apply_event(self, snapshot: TaskSnapshot, event_type: str, payload: dict[str, Any], event_time: str) -> TaskSnapshot:
