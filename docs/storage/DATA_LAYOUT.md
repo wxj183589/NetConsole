@@ -142,7 +142,7 @@ flowchart TD
     G -."本阶段禁止".-> X["删除 legacy row / DROP / VACUUM"]
 ```
 
-迁移基础设施当前仅提供显式调用的 copy/verify 批次，并且默认没有任务注册、自动调度或 source deletion。复制成功的 legacy event 以确定性 ID 保存在 shard 内供校验与未来 cutover 使用；在逐表 cutover 尚未启用前，普通兼容查询刻意排除它，继续以 legacy table 为事实源，避免双份返回。`tasks.db` 不在本阶段范围内。
+迁移基础设施提供显式 maintenance CLI 的 inventory、start、pause、resume、status 和 COPY/verify 批次，默认关闭且没有自动调度或 source deletion。迁移总表、逐源表 checkpoint 和逐月 range journal 保存 source database identity、稳定 digest、sample、计数与 commit/budget telemetry；复制成功的 legacy event 以 `source_table + source PK` 确定性 ID 保存在 shard 内供校验与未来 cutover 使用。两组已确认重复的 AP 投影不再写 event：权威来源先完整复制，投影逐批匹配并验证对应的权威 target event 后只计 duplicate，不折叠权威表内的不同源行。在逐表 cutover 尚未启用前，普通兼容查询刻意排除全部 `event_type=legacy` 副本，继续以 legacy table 为事实源，避免双份返回。完整约束见 [Legacy Device History COPY-only Migration](./LEGACY_HISTORY_MIGRATION.md)。`tasks.db` 不在本阶段范围内。
 
 每个局点的 `sync/wps_sync.sqlite` 保存 WPS 云文档配置、DPAPI 加密凭据、同步批次和远端异步任务恢复状态。正式 Workbook 请求在提交前以不含 Token 的 JSON 持久化，完整远端 `task_id` 仅保存在该库；API、任务参数和日志只输出脱敏 ID。常规升级只做幂等增量迁移，不删除、重建或覆盖当前云文档的配置、凭据和历史。产品功能明确退役时允许精确删除对应本地目标及运行状态：必须在同一事务内按稳定旧代码匹配、先处理外键运行记录、保留混合批次中的当前目标历史，并仅在无剩余引用时删除凭据；迁移重复运行必须为 no-op，且不得访问或修改远端文档。程序重启后以原 `target_batch_id + remote_task_id` 恢复查询，不能因本地 Worker 丢失重复提交已取得 ID 的任务。
 
