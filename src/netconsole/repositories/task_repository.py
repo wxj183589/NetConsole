@@ -89,6 +89,8 @@ CREATE INDEX IF NOT EXISTS idx_task_events_task_sequence
     ON task_events(task_id, sequence DESC);
 """
 
+PROGRESS_EVENT_HEARTBEAT_SECONDS = 30
+
 
 class TaskRepository:
     def __init__(self, db_path: str | Path) -> None:
@@ -171,12 +173,24 @@ class TaskRepository:
         def operation() -> None:
             nonlocal recorded
             with self._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                exists = conn.execute(
+                    "SELECT 1 FROM task_events WHERE event_id = ?",
+                    (event.event_id,),
+                ).fetchone()
+                if exists is not None:
+                    conn.rollback()
+                    return
+                if self._sample_repeated_progress(conn, event):
+                    conn.rollback()
+                    recorded = True
+                    return
                 if not self._upsert(conn, snapshot, allowed_from=allowed_from):
                     conn.rollback()
                     return
                 conn.execute(
                     """
-                    INSERT OR IGNORE INTO task_events (
+                    INSERT INTO task_events (
                         event_id, task_id, event_type, event_time, source, payload_json
                     ) VALUES (?, ?, ?, ?, ?, ?)
                     """,
@@ -194,6 +208,49 @@ class TaskRepository:
 
         run_sqlite_with_retry(operation)
         return recorded
+
+    @classmethod
+    def _sample_repeated_progress(cls, conn, event: TaskEvent) -> bool:
+        """Keep current progress accurate while bounding identical event history."""
+
+        if event.type != "progress":
+            return False
+        row = conn.execute(
+            """
+            SELECT event_type, event_time, source, payload_json
+            FROM task_events
+            WHERE task_id = ?
+            ORDER BY sequence DESC
+            LIMIT 1
+            """,
+            (event.task_id,),
+        ).fetchone()
+        if row is None or str(row["event_type"]) != "progress":
+            return False
+        if str(row["source"] or "") != str(event.source or ""):
+            return False
+        try:
+            previous_payload = json.loads(str(row["payload_json"] or "{}"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return False
+        if previous_payload != event.payload:
+            return False
+        previous_time = cls._event_datetime(str(row["event_time"] or ""))
+        current_time = cls._event_datetime(event.time)
+        if previous_time is None or current_time is None:
+            return False
+        elapsed = (current_time - previous_time).total_seconds()
+        return 0 <= elapsed < PROGRESS_EVENT_HEARTBEAT_SECONDS
+
+    @staticmethod
+    def _event_datetime(value: str) -> datetime | None:
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC)
 
     def record_once(
         self,
