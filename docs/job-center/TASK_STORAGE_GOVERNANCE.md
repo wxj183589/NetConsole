@@ -29,20 +29,41 @@ schema version and creation time. `result_id` derives from task identity,
 terminal event type and result hash, so a retry of the same semantic result is
 idempotent. A trigger rejects updates to an existing authority row.
 
-For `finished/error/cancelled` events containing an object result,
-`TaskRepository.record()` now performs the result insert/validation, snapshot
+Schema capability is separate from the per-database write rollout. New and
+upgraded databases both initialize the persisted state to `LEGACY_DUAL_FULL`;
+the presence of schema version 4 or an empty `task_results` table never enables
+dual-write. The four modeled states are:
+
+| State | Write behavior | Current apply availability |
+| --- | --- | --- |
+| `LEGACY_DUAL_FULL` | full snapshot + full event; no new `task_results` row | default |
+| `TASK_RESULTS_DUAL_WRITE` | full snapshot + full event + immutable result | explicit CAS transition only |
+| `TASK_RESULTS_VERIFIED` | compatibility validation completed; still no ref authority | apply disabled |
+| `RESULT_REF_AUTHORITY` | future single full result plus refs/summaries | production apply disabled |
+
+The current state, revision, timestamp, actor, reason and schema version live in
+the same `tasks.db`. Transitions use an expected revision and append an
+immutable audit row. The only enabled transitions are explicit
+`LEGACY_DUAL_FULL -> TASK_RESULTS_DUAL_WRITE` and the non-destructive rollback
+that stops future dual-writes while retaining all existing result rows.
+
+When `TASK_RESULTS_DUAL_WRITE` is explicitly active, `finished/error/cancelled`
+events containing an object result perform result insert/validation, snapshot
 update and terminal event insert in one `BEGIN IMMEDIATE` transaction. The live
-WebSocket payload uses the persisted and verified identity. Query paths verify
-result id/hash/size/task ownership and support:
+WebSocket payload uses the persisted and verified identity. In the default
+state, terminal persistence remains equivalent to B2 and performs no result
+authority insert. Query paths remain enabled in every rollout state and verify
+result id/hash/size/task ownership while supporting:
 
 - legacy rows with only full `result_json`;
 - B3 rows with `result_id` plus the old full snapshot/event result;
 - future ref-only fixtures that read through `task_results`.
 
-Production writing remains the second form. B3 is an additive compatibility
-phase and may use more space; ref-only writing and historical backfill are not
-enabled. Artifact finalization may update the snapshot projection but cannot
-change the immutable terminal authority row.
+Site Return Package import also remains independent of local rollout state. A
+package may merge valid `task_results` without changing future local writes.
+Artifact finalization may update the snapshot projection but cannot change an
+immutable terminal authority row. Ref-only writing and historical backfill are
+not enabled.
 
 Site Return Package now merges `task_results`, `task_snapshots`, `task_events`
 and `online_mr_task_sessions` in that order inside one transaction. Immutable
@@ -102,18 +123,34 @@ identical payloads are skipped; the next changed progress is durable.
 ## Benchmark
 
 `scripts/maintenance/benchmark_tasks_db_governance.py` writes only isolated
-databases under `D:\study`. It compares legacy dual-full, current B3 dual-write
-and future ref-only simulation at 100/1,000/10,000 small-result tasks. Bounded
-actual samples cover medium and approximately 4.5 MB results without creating a
-multi-GB cross product. The report includes DB/WAL bytes, bytes/task, write and
-read-through latency, result hash cost, plus the existing 3,000-event progress
-sampling comparison. Current B3 deltas are compatibility overhead; only the
-future ref-only delta is labelled potential.
+databases under `D:\study`. It compares a legacy dual-full baseline, the real
+guarded default, explicit `TASK_RESULTS_DUAL_WRITE` and future ref-only
+simulation at 100/1,000/10,000 small-result tasks. Bounded actual samples cover
+medium and approximately 4.5 MB results without creating a multi-GB cross
+product. The report includes DB/WAL bytes, bytes/task, write and read-through
+latency, result hash cost, plus the existing 3,000-event progress sampling
+comparison. Explicit dual-write deltas are compatibility overhead; only the
+future ref-only delta is labelled potential. Terminal layout capacity is
+measured after a common WAL checkpoint/truncate so checkpoint timing cannot
+double-count pages; progress sampling retains live DB/WAL measurements.
 
 ```powershell
 $env:PYTHONPATH = "$PWD\src;$PWD"
 & ".\.venv\Scripts\python.exe" -m scripts.maintenance.benchmark_tasks_db_governance `
   --output-dir "D:\study\diagnostic\NetConsole\tasks-db-governance\<run-id>"
+```
+
+Rollout status and the two approved transitions use the explicit maintenance
+CLI. Status output contains only schema/state/revision/count flags; transitions
+require `--expected-revision`, a reason and `--apply`:
+
+```powershell
+& ".\.venv\Scripts\python.exe" -m scripts.maintenance.manage_task_result_rollout `
+  status --data-root "<data-root>" --site-id "<site-id>"
+
+& ".\.venv\Scripts\python.exe" -m scripts.maintenance.manage_task_result_rollout `
+  enable-dual-write --data-root "<data-root>" --site-id "<site-id>" `
+  --expected-revision 1 --reason "approved compatibility validation" --apply
 ```
 
 ## Deferred Work
@@ -135,3 +172,5 @@ $env:PYTHONPATH = "$PWD\src;$PWD"
   future compact must reuse the same key.
 - Real Electron GUI, long-running Agent/Online MR/Ground activity, target HDD
   and result-ref-only production cutover remain separate acceptance gates.
+- `TASK_RESULTS_VERIFIED` evidence approval and `RESULT_REF_AUTHORITY` are
+  separate future gates; this phase exposes no apply transition for either.

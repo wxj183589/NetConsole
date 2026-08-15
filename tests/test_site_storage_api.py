@@ -66,6 +66,25 @@ def test_site_registry_create_list_and_activate(tmp_path: Path) -> None:
     assert activated.json()["restart_required"] is True
 
 
+def test_task_result_storage_diagnostics_defaults_off_and_exposes_no_payload(
+    tmp_path: Path,
+) -> None:
+    response = _client(tmp_path).get("/api/v1/sites/demo/task-result-storage")
+    payload = response.json()
+
+    assert response.status_code == 200, response.text
+    assert payload == {
+        "schema_version": 4,
+        "task_result_storage_state": "LEGACY_DUAL_FULL",
+        "revision": 1,
+        "updated_at": payload["updated_at"],
+        "task_results_rows": 0,
+        "dual_write_active": False,
+        "ref_authority_active": False,
+    }
+    assert str(payload["updated_at"])
+
+
 def test_site_info_patch_updates_summary_and_rejects_duplicate_name(
     tmp_path: Path,
 ) -> None:

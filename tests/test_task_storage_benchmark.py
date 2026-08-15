@@ -13,19 +13,27 @@ def test_task_storage_benchmark_compares_all_result_layouts(tmp_path: Path) -> N
         progress_events=4,
     )
 
-    assert report["phase"] == "B3_COMPATIBILITY_PHASE"
+    assert report["phase"] == "B3_ROLLOUT_GUARDED_COMPATIBILITY_PHASE"
+    assert report["default_rollout_state"] == "LEGACY_DUAL_FULL"
+    assert report["task_results_dual_write_default"] is False
     comparisons = report["terminal_result_storage"]["task_count_scale"]
     assert len(comparisons) == 1
     layouts = comparisons[0]["layouts"]
     assert set(layouts) == {
         "legacy_dual_full",
-        "b3_dual_write",
+        "guarded_default",
+        "task_results_dual_write",
         "future_ref_only",
     }
     assert layouts["legacy_dual_full"]["results"] == 0
-    assert layouts["b3_dual_write"]["results"] == 2
+    assert layouts["guarded_default"]["results"] == 0
+    assert layouts["guarded_default"]["measurement_state"] == "checkpointed"
+    assert layouts["task_results_dual_write"]["results"] == 2
     assert layouts["future_ref_only"]["results"] == 2
     assert layouts["future_ref_only"]["read_path"] == "task_results_read_through"
+    assert comparisons[0]["storage_comparison"][
+        "guarded_default_vs_legacy_percent"
+    ] == 0
 
     size_samples = report["terminal_result_storage"]["result_size_samples"]
     large = next(item for item in size_samples if item["result_profile"] == "large")

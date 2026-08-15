@@ -19,6 +19,9 @@ from netconsole.services.job_center.task_application_service import (
     TaskApplicationService,
 )
 from netconsole.services.job_center.query_service import JobCenterQueryService
+from netconsole.services.job_center.task_result_rollout import (
+    TaskResultRolloutService,
+)
 
 
 def _snapshot(task_id: str = "task-1", **changes) -> TaskSnapshot:
@@ -456,11 +459,20 @@ def _terminal_snapshot(
     )
 
 
+def _enable_dual_write(path: Path) -> None:
+    TaskResultRolloutService(path).enable_dual_write(
+        expected_revision=1,
+        reason="B3 compatibility fixture",
+        updated_by="pytest",
+    )
+
+
 def test_terminal_result_is_canonical_deterministic_idempotent_and_immutable(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "tasks.db"
     repository = TaskRepository(path)
+    _enable_dual_write(path)
     first_result = {"中文": "正常", "nested": {"z": 2, "a": 1}, "items": [3, 2, 1]}
     second_result = {"items": [3, 2, 1], "nested": {"a": 1, "z": 2}, "中文": "正常"}
 
@@ -515,6 +527,7 @@ def test_terminal_result_identity_conflict_rolls_back_snapshot_and_event(
 ) -> None:
     path = tmp_path / "tasks.db"
     repository = TaskRepository(path)
+    _enable_dual_write(path)
     result = {"status": "OK", "count": 3}
     canonical = TaskRepository._canonical_result_json(result)
     result_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
@@ -564,6 +577,7 @@ def test_old_dual_write_and_ref_only_results_remain_readable(tmp_path: Path) -> 
         _terminal_snapshot("task-old-only", {"mode": "old-only", "count": 1})
     )
     dual_result = {"mode": "dual-write", "count": 2}
+    _enable_dual_write(path)
     assert repository.record(
         _terminal_snapshot("task-ref", dual_result),
         _terminal_event("task-ref", "finished-ref", dual_result),
@@ -603,6 +617,7 @@ def test_large_terminal_result_round_trips_without_changing_producer_contract(
 ) -> None:
     path = tmp_path / "tasks.db"
     repository = TaskRepository(path)
+    _enable_dual_write(path)
     result = {
         "producer": "vehicle_mr_online_refresh_all",
         "payload": "x" * (4 * 1024 * 1024 + 512 * 1024),
@@ -621,6 +636,7 @@ def test_large_terminal_result_round_trips_without_changing_producer_contract(
 def test_live_terminal_event_uses_persisted_result_identity(tmp_path: Path) -> None:
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path / "data")
     service = TaskApplicationService(paths, site_name="demo", reconcile_on_start=False)
+    _enable_dual_write(paths.site_tasks_db_path("demo"))
     service.create_external_task(
         task_id="task-live-result",
         task_type="ac_fit_ap_resources_refresh",
@@ -651,6 +667,7 @@ def test_artifact_projection_does_not_mutate_authoritative_terminal_result(
 ) -> None:
     path = tmp_path / "tasks.db"
     repository = TaskRepository(path)
+    _enable_dual_write(path)
     terminal_result = {"artifact_id": "report-1", "available": False, "rows": 12}
     assert repository.record(
         _terminal_snapshot("task-artifact", terminal_result),

@@ -19,12 +19,16 @@ from netconsole.repositories.task_repository import (
     TASK_RESULT_SCHEMA_VERSION,
     TaskRepository,
 )
+from netconsole.services.job_center.task_result_rollout import (
+    TaskResultRolloutService,
+)
 
 
 _DEVELOPMENT_ROOT = Path("D:/study").resolve()
 _TERMINAL_LAYOUTS = (
     "legacy_dual_full",
-    "b3_dual_write",
+    "guarded_default",
+    "task_results_dual_write",
     "future_ref_only",
 )
 
@@ -269,6 +273,12 @@ def _terminal_layout_case(
         raise ValueError(f"unsupported terminal layout: {layout}")
     path = root / f"terminal-{profile}-{count}-{layout}.db"
     repository = TaskRepository(path)
+    if layout == "task_results_dual_write":
+        TaskResultRolloutService(path).enable_dual_write(
+            expected_revision=1,
+            reason="isolated task storage benchmark",
+            updated_by="benchmark",
+        )
     wal_keeper = repository._connect()
     result = _result_fixture(profile)
     canonical_bytes = len(TaskRepository._canonical_result_json(result).encode("utf-8"))
@@ -277,7 +287,7 @@ def _terminal_layout_case(
     started = time.monotonic()
     try:
         for index in range(count):
-            task_id = f"{layout}-{profile}-{index:05d}"
+            task_id = f"terminal-{profile}-{index:05d}"
             timestamp = (
                 (datetime(2026, 8, 15, tzinfo=UTC) + timedelta(seconds=index))
                 .isoformat()
@@ -295,24 +305,27 @@ def _terminal_layout_case(
             write_started = time.perf_counter()
             if layout == "legacy_dual_full":
                 _write_legacy_dual_full(repository, snapshot, event)
-            elif layout == "b3_dual_write":
-                repository.record(snapshot, event, allowed_from=())
+            elif layout in {"guarded_default", "task_results_dual_write"}:
+                repository.record(snapshot, event)
             else:
                 _write_future_ref_only(repository, snapshot, event)
             latencies.append((time.perf_counter() - write_started) * 1000)
             task_ids.append(task_id)
         elapsed = time.monotonic() - started
         read_latency = _measure_reads(repository, task_ids, result)
-        metrics = _database_metrics(path)
     finally:
         wal_keeper.close()
+    with repository._connect() as checkpoint:
+        checkpoint.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    metrics = _database_metrics(path)
     return {
         "layout": layout,
+        "measurement_state": "checkpointed",
         "read_path": (
             "legacy_full"
-            if layout == "legacy_dual_full"
+            if layout in {"legacy_dual_full", "guarded_default"}
             else "dual_full_validated"
-            if layout == "b3_dual_write"
+            if layout == "task_results_dual_write"
             else "task_results_read_through"
         ),
         "requested_tasks": count,
@@ -342,7 +355,8 @@ def _terminal_comparison(
         for layout in _TERMINAL_LAYOUTS
     }
     legacy_bytes = layouts["legacy_dual_full"]["total_storage_bytes"]
-    b3_bytes = layouts["b3_dual_write"]["total_storage_bytes"]
+    guarded_bytes = layouts["guarded_default"]["total_storage_bytes"]
+    dual_write_bytes = layouts["task_results_dual_write"]["total_storage_bytes"]
     future_bytes = layouts["future_ref_only"]["total_storage_bytes"]
     return {
         "result_profile": profile,
@@ -351,9 +365,15 @@ def _terminal_comparison(
         "result_hash_latency_ms": _measure_hash_cost(_result_fixture(profile)),
         "layouts": layouts,
         "storage_comparison": {
-            "b3_vs_legacy_bytes_delta": b3_bytes - legacy_bytes,
-            "b3_vs_legacy_percent": round(
-                (b3_bytes - legacy_bytes) * 100 / max(1, legacy_bytes), 2
+            "guarded_default_vs_legacy_bytes_delta": guarded_bytes - legacy_bytes,
+            "guarded_default_vs_legacy_percent": round(
+                (guarded_bytes - legacy_bytes) * 100 / max(1, legacy_bytes), 2
+            ),
+            "task_results_dual_write_vs_legacy_bytes_delta": (
+                dual_write_bytes - legacy_bytes
+            ),
+            "task_results_dual_write_vs_legacy_percent": round(
+                (dual_write_bytes - legacy_bytes) * 100 / max(1, legacy_bytes), 2
             ),
             "future_ref_only_vs_legacy_potential_bytes_delta": (
                 future_bytes - legacy_bytes
@@ -499,7 +519,9 @@ def run_benchmark(
     )
     result = {
         "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
-        "phase": "B3_COMPATIBILITY_PHASE",
+        "phase": "B3_ROLLOUT_GUARDED_COMPATIBILITY_PHASE",
+        "default_rollout_state": "LEGACY_DUAL_FULL",
+        "task_results_dual_write_default": False,
         "terminal_result_storage": {
             "task_count_scale": task_scale,
             "result_size_samples": result_size_samples,
@@ -508,8 +530,9 @@ def run_benchmark(
                 "4.5 MB results use bounded actual samples to avoid multi-GB test output."
             ),
             "space_claim": (
-                "Current B3 is additive dual-write and does not claim saved space; "
-                "future ref-only deltas are potential only."
+                "Default guarded writes remain legacy dual-full. Explicit task_results "
+                "dual-write is compatibility overhead; future ref-only deltas are "
+                "potential only."
             ),
         },
         "progress_before": legacy_progress,

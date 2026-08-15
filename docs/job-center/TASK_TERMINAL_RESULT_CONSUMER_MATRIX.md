@@ -3,14 +3,20 @@
 ## 状态与边界
 
 本文记录 Task 终态结果去重、物理 retention、索引和维护互斥契约。当前状态为
-`B3_COMPATIBILITY_PHASE`：不可变 `task_results`、dual-write/read-through、Site
-Return Package 四表合并和 typed retention preview 已实现；result-ref-only 正式写入、
-历史回填、DELETE、归档、VACUUM 和 retention policy 仍未启用。
+`B3_ROLLOUT_GUARDED_COMPATIBILITY_PHASE`：不可变 `task_results`、read-through、Site
+Return Package 四表合并和 typed retention preview 已实现；dual-write 仅在单个
+`tasks.db` 显式切换后运行，result-ref-only 正式写入、历史回填、DELETE、归档、VACUUM
+和 retention policy 仍未启用。
 
 当前 `finished/error/cancelled` 结果通常同时进入：
 
 - `task_snapshots.result_json`，供当前状态、重启恢复、业务详情和 Artifact 投影读取；
 - `task_events.payload_json.result`，供实时事件、事件回放、局点回传合并和审计读取。
+
+新库、旧库升级和普通 Backend startup 均初始化为 `LEGACY_DUAL_FULL`，因此默认不为新
+终态写入 `task_results`。schema version 4 和表存在只表示 capability 可用，不表示 rollout
+已开启。只有带 revision CAS、reason 和 audit 的显式 transition 才进入
+`TASK_RESULTS_DUAL_WRITE`，此时才临时保存第三份完整结果。
 
 生产只读剖析显示，两份大型终态结果存在约 154 MB 语义重复。删除任一副本前必须先完成
 下面的消费者迁移。
@@ -33,7 +39,8 @@ Return Package 四表合并和 typed retention preview 已实现；result-ref-on
 Site Return Package 仍要求 terminal event 可解释。B3 已补齐
 `task_results -> task_snapshots -> task_events -> online_mr_task_sessions` 的单事务合并，
 以 result identity/hash、event identity/payload 和 mapping 双重身份校验冲突。兼容期仍不能只
-删除 event payload 或 snapshot result；生产写入继续保留两份旧 full result。
+删除 event payload 或 snapshot result；默认生产写入继续只保留两份旧 full result。
+Package 中存在 `task_results` 不会改变本地 rollout state。
 
 ## 方案比较
 
@@ -50,12 +57,13 @@ Site Return Package 仍要求 terminal event 可解释。B3 已补齐
 
 - `task_results` 以 `result_id` 为主键，并保存 `task_id`、终态类型、canonical JSON、
   SHA-256、字节数、创建时间和 schema version。
-- B3 写入 terminal event 时，在同一 `BEGIN IMMEDIATE` 事务中写入/验证 result、更新
-  snapshot，并写入 event；两处旧 full result 和新增的
-  `result_id/result_summary/result_hash` 当前同时保留。
+- 显式 `TASK_RESULTS_DUAL_WRITE` 写入 terminal event 时，在同一 `BEGIN IMMEDIATE` 事务中
+  写入/验证 result、更新 snapshot，并写入 event；两处旧 full result 和新增的
+  `result_id/result_summary/result_hash` 同时保留。默认 `LEGACY_DUAL_FULL` 不执行该写入。
 - Query Service 在兼容期通过 join/read-through 继续构造现有 `snapshot.result` DTO；
   事件详情只在明确请求时补读完整结果，列表、日志和普通 replay 使用 summary/hash。
-- live WebSocket 继续广播当前完整结果，广播和持久化由同一已验证 result identity 生成。
+- live WebSocket 继续广播当前完整结果；dual-write 激活时，广播和持久化由同一已验证
+  result identity 生成。
   “持久化层只保存 ref/summary/hash”仍是未来 cutover，不是 B3 当前写入行为。
 - `artifact_finalized/artifact_rejected` 不得覆盖不可变业务终态结果；Artifact availability
   作为独立 projection/metadata 更新。
@@ -63,9 +71,11 @@ Site Return Package 仍要求 terminal event 可解释。B3 已补齐
   和内容幂等 no-op，不同内容、mapping identity 碰撞、缺失 Controller task、Agent 引用
   不完整或局点不匹配均使整个 tasks merge 回滚。
 
-实施顺序仍是“建表与双写 -> read-through 兼容 -> consumer 切换 -> 停止双份完整 payload ->
-另行批准历史回填/清理”。B3 完成前两步和 Return Package blocker；停止双份 payload 尚未
-启用。约 154 MB 只能描述为未来 potential，当前没有 saved space 声明。
+Rollout 顺序为 `LEGACY_DUAL_FULL -> TASK_RESULTS_DUAL_WRITE -> TASK_RESULTS_VERIFIED ->
+RESULT_REF_AUTHORITY`。当前只开放前两态之间的显式启用和停止未来 dual-write；停止不会删除
+既有 authority row，read-through 始终开启。`TASK_RESULTS_VERIFIED` 需要独立验证证据，
+`RESULT_REF_AUTHORITY` 需要单独获批的迁移阶段，两者都没有生产 apply 入口。约 154 MB 只能
+描述为未来 potential，当前没有 saved space 声明。
 
 `vehicle_mr_online_refresh_all`、`device_list_page`、`ac_fit_ap_optical_refresh`、
 `ac_fit_ap_resources_refresh` 和 `trackside_ap_optical_update` 是重点大型 result producer。

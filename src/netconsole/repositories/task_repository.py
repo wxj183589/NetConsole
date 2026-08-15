@@ -10,6 +10,10 @@ from pathlib import Path
 from typing import Any
 
 from netconsole.core.sqlite_utils import connect_sqlite, initialize_sqlite_wal, run_sqlite_with_retry
+from netconsole.models.task_result_rollout import (
+    TaskResultRolloutStatus,
+    TaskResultStorageState,
+)
 from netconsole.models.task_state import TaskState
 from netconsole.models.task_snapshot import (
     TEXT_INTEGRITY_VALUES,
@@ -32,6 +36,52 @@ CREATE TABLE IF NOT EXISTS task_schema_meta (
     value TEXT NOT NULL
 );
 INSERT OR IGNORE INTO task_schema_meta(key, value) VALUES ('schema_version', '4');
+
+CREATE TABLE IF NOT EXISTS task_result_storage_rollout (
+    singleton_id INTEGER PRIMARY KEY CHECK(singleton_id = 1),
+    state TEXT NOT NULL CHECK(state IN (
+        'LEGACY_DUAL_FULL',
+        'TASK_RESULTS_DUAL_WRITE',
+        'TASK_RESULTS_VERIFIED',
+        'RESULT_REF_AUTHORITY'
+    )),
+    revision INTEGER NOT NULL CHECK(revision >= 1),
+    updated_at TEXT NOT NULL,
+    updated_by TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    schema_version INTEGER NOT NULL
+);
+INSERT OR IGNORE INTO task_result_storage_rollout (
+    singleton_id, state, revision, updated_at, updated_by, reason, schema_version
+) VALUES (
+    1,
+    'LEGACY_DUAL_FULL',
+    1,
+    strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+    'schema',
+    'default rollout guard',
+    4
+);
+
+CREATE TABLE IF NOT EXISTS task_result_storage_rollout_audit (
+    revision INTEGER PRIMARY KEY CHECK(revision >= 2),
+    from_state TEXT NOT NULL,
+    to_state TEXT NOT NULL,
+    changed_at TEXT NOT NULL,
+    changed_by TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    schema_version INTEGER NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS trg_task_result_rollout_audit_immutable_update
+BEFORE UPDATE ON task_result_storage_rollout_audit
+BEGIN
+    SELECT RAISE(ABORT, 'task result rollout audit rows are immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_task_result_rollout_audit_immutable_delete
+BEFORE DELETE ON task_result_storage_rollout_audit
+BEGIN
+    SELECT RAISE(ABORT, 'task result rollout audit rows are immutable');
+END;
 
 CREATE TABLE IF NOT EXISTS task_snapshots (
     task_id TEXT PRIMARY KEY,
@@ -251,9 +301,99 @@ class TaskRepository:
                 return None
             return self._verified_result_row(dict(row))
 
-    @classmethod
+    def task_result_rollout_status(self) -> TaskResultRolloutStatus:
+        with self._connect() as conn:
+            return self._task_result_rollout_status_from_connection(conn)
+
+    def task_result_count(self) -> int:
+        with self._connect() as conn:
+            row = conn.execute("SELECT COUNT(*) AS count FROM task_results").fetchone()
+            return int(row["count"]) if row is not None else 0
+
+    def compare_and_set_task_result_rollout(
+        self,
+        *,
+        expected_state: TaskResultStorageState,
+        expected_revision: int,
+        target_state: TaskResultStorageState,
+        updated_by: str,
+        reason: str,
+    ) -> TaskResultRolloutStatus | None:
+        if (expected_state, target_state) not in {
+            (
+                TaskResultStorageState.LEGACY_DUAL_FULL,
+                TaskResultStorageState.TASK_RESULTS_DUAL_WRITE,
+            ),
+            (
+                TaskResultStorageState.TASK_RESULTS_DUAL_WRITE,
+                TaskResultStorageState.LEGACY_DUAL_FULL,
+            ),
+        }:
+            raise ValueError("task result rollout persistence transition is blocked")
+        updated: TaskResultRolloutStatus | None = None
+
+        def operation() -> None:
+            nonlocal updated
+            with self._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                changed_at = utc_now_iso()
+                next_revision = int(expected_revision) + 1
+                cursor = conn.execute(
+                    """
+                    UPDATE task_result_storage_rollout
+                    SET state = ?, revision = ?, updated_at = ?, updated_by = ?,
+                        reason = ?, schema_version = 4
+                    WHERE singleton_id = 1 AND state = ? AND revision = ?
+                    """,
+                    (
+                        target_state.value,
+                        next_revision,
+                        changed_at,
+                        updated_by,
+                        reason,
+                        expected_state.value,
+                        int(expected_revision),
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    conn.rollback()
+                    return
+                conn.execute(
+                    """
+                    INSERT INTO task_result_storage_rollout_audit (
+                        revision, from_state, to_state, changed_at,
+                        changed_by, reason, schema_version
+                    ) VALUES (?, ?, ?, ?, ?, ?, 4)
+                    """,
+                    (
+                        next_revision,
+                        expected_state.value,
+                        target_state.value,
+                        changed_at,
+                        updated_by,
+                        reason,
+                    ),
+                )
+                updated = self._task_result_rollout_status_from_connection(conn)
+                conn.commit()
+
+        run_sqlite_with_retry(operation)
+        return updated
+
+    def list_task_result_rollout_audit(self) -> list[dict[str, object]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT revision, from_state, to_state, changed_at,
+                       changed_by, reason, schema_version
+                FROM task_result_storage_rollout_audit
+                ORDER BY revision
+                """
+            ).fetchall()
+            return [dict(row) for row in rows]
+
     def _prepare_terminal_result(
-        cls,
+        self,
         conn,
         snapshot: TaskSnapshot,
         event: TaskEvent,
@@ -263,12 +403,19 @@ class TaskRepository:
             result, dict
         ):
             return snapshot, event
-        canonical = cls._canonical_result_json(result)
+        rollout = self._task_result_rollout_status_from_connection(conn)
+        if rollout.ref_authority_active:
+            raise sqlite3.DatabaseError(
+                "RESULT_REF_AUTHORITY requires a separate approved migration phase"
+            )
+        if not rollout.dual_write_active:
+            return snapshot, event
+        canonical = self._canonical_result_json(result)
         encoded = canonical.encode("utf-8")
         result_hash = hashlib.sha256(encoded).hexdigest()
         identity_input = f"{event.task_id}\0{event.type}\0{result_hash}".encode("utf-8")
         result_id = "tr-" + hashlib.sha256(identity_input).hexdigest()
-        summary = cls._result_summary(result, byte_size=len(encoded))
+        summary = self._result_summary(result, byte_size=len(encoded))
         conn.execute(
             """
             INSERT OR IGNORE INTO task_results
@@ -292,7 +439,7 @@ class TaskRepository:
         ).fetchone()
         if row is None:
             raise sqlite3.IntegrityError("terminal task result was not persisted")
-        verified = cls._verified_result_row(dict(row))
+        verified = self._verified_result_row(dict(row))
         if (
             str(verified["task_id"]) != event.task_id
             or str(verified["terminal_event_type"]) != event.type
@@ -317,6 +464,34 @@ class TaskRepository:
             result_summary=summary,
         )
         return stored_snapshot, replace(event, payload=event.payload)
+
+    @staticmethod
+    def _task_result_rollout_status_from_connection(
+        conn,
+    ) -> TaskResultRolloutStatus:
+        row = conn.execute(
+            """
+            SELECT state, revision, updated_at, updated_by, reason, schema_version
+            FROM task_result_storage_rollout
+            WHERE singleton_id = 1
+            """
+        ).fetchone()
+        if row is None:
+            raise sqlite3.DatabaseError("task result storage rollout state is missing")
+        try:
+            state = TaskResultStorageState(str(row["state"]))
+        except ValueError as exc:
+            raise sqlite3.DatabaseError(
+                "task result storage rollout state is invalid"
+            ) from exc
+        return TaskResultRolloutStatus(
+            state=state,
+            revision=int(row["revision"]),
+            updated_at=str(row["updated_at"]),
+            updated_by=str(row["updated_by"]),
+            reason=str(row["reason"]),
+            schema_version=int(row["schema_version"]),
+        )
 
     @staticmethod
     def _canonical_result_json(result: dict[str, Any]) -> str:

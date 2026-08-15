@@ -18,6 +18,9 @@ from netconsole.repositories.online_mr_task_session_repository import (
     OnlineMrTaskSessionRepository,
 )
 from netconsole.repositories.task_repository import TaskRepository
+from netconsole.services.job_center.task_result_rollout import (
+    TaskResultRolloutService,
+)
 from netconsole.services.site_storage import SiteStorageError
 from netconsole.services.site_sync import _apply_task_merge, _preview_task_merge
 
@@ -30,6 +33,14 @@ def _terminal_task(
     event_id: str | None = None,
 ) -> TaskRepository:
     repository = TaskRepository(path)
+    rollout = TaskResultRolloutService(path)
+    rollout_status = rollout.status()
+    if not bool(rollout_status["dual_write_active"]):
+        rollout.enable_dual_write(
+            expected_revision=int(rollout_status["revision"]),
+            reason="Site Return Package task_results fixture",
+            updated_by="pytest",
+        )
     time = "2026-08-15T02:00:00Z"
     snapshot = TaskSnapshot(
         task_id=task_id,
@@ -123,6 +134,10 @@ def test_site_return_tasks_merge_all_four_tables_and_is_idempotent(
             == 1
         )
     assert source.get("controller-1") is not None
+    assert (
+        TaskResultRolloutService(local).status()["task_result_storage_state"]
+        == "LEGACY_DUAL_FULL"
+    )
 
 
 def test_site_return_ref_only_snapshot_and_event_read_through_after_merge(

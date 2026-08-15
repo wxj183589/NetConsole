@@ -25,7 +25,8 @@
 - `benchmark_device_history_storage_queries.py`：只读比较隔离 V1/V2 月分片的实体、时间范围、跨月和 offset 查询，输出延迟、EXPLAIN plan 与 event ID 一致性摘要。
 - `validate_history_migration_server_hdd.py`：只评估已捕获的 migration/host/operational JSON 证据，不打开 source DB、不运行迁移；缺少真实 HDD 或运行态证据时保持 `PENDING`。
 - `profile_tasks_db.py`：LIGHT 只读元数据、DEEP 只读隔离副本的 tasks.db 存储剖析。
-- `benchmark_tasks_db_governance.py`：在 `D:\study` 隔离库对比 legacy dual-full、B3 dual-write、future ref-only、100/1,000/10,000 task scale、约 4.5 MB result 和 progress sampling；future 空间差异仅为 potential。
+- `manage_task_result_rollout.py`：读取单个 tasks.db 的安全 rollout 摘要；仅显式 `--apply`、revision CAS 和 reason 可启用或停止未来 dual-write，不提供 verified/ref-only apply。
+- `benchmark_tasks_db_governance.py`：在 `D:\study` 隔离库对比 legacy baseline、guarded default、显式 dual-write、future ref-only、100/1,000/10,000 task scale、约 4.5 MB result 和 progress sampling；future 空间差异仅为 potential。
 
 局点审计从仓库根运行，默认使用源码开发数据根；`--site-id` 可限制为一个稳定 ID 或目录名，`--output` 可指定 manifest 文件：
 

@@ -32,6 +32,9 @@ from netconsole.models.task_snapshot import TaskSnapshot
 from netconsole.models.task_state import TaskState
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.services.ap_identity import ApIdentityQueryService
+from netconsole.services.job_center.task_result_rollout import (
+    TaskResultRolloutService,
+)
 from netconsole.services.site_sync import (
     COLLECTION_RETURN,
     FIELD_COLLECTION,
@@ -629,6 +632,10 @@ class SiteApplicationService:
                 item, audit, str(latest.get("generated_at") or "")
             ),
         }
+
+    def task_result_storage_status(self, site_id: str) -> dict[str, object]:
+        site = self.registry.get(site_id)
+        return TaskResultRolloutService(site.root_path / "db" / "tasks.db").status()
 
     def _lifecycle_summary(
         self, item: SiteRecord, audit: dict[str, object] | None, audited_at: str

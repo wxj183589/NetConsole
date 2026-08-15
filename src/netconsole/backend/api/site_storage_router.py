@@ -128,6 +128,18 @@ def get_site(request: Request, site_id: str) -> dict[str, object]:
     return _call(lambda: _sites(request).get_site(site_id))
 
 
+@router.get(
+    "/sites/{site_id}/task-result-storage",
+    summary="读取任务结果存储 rollout 状态",
+    description="只返回 schema、状态、revision、结果行数和启用标志。",
+    dependencies=[Depends(_desktop)],
+)
+def task_result_storage_status(
+    request: Request, site_id: str
+) -> dict[str, object]:
+    return _call(lambda: _sites(request).task_result_storage_status(site_id))
+
+
 @router.patch(
     "/sites/{site_id}",
     summary="修改局点信息",

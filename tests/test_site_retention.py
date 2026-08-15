@@ -21,6 +21,9 @@ from netconsole.services.database_upgrade.coordinator import (
     site_database_maintenance_key,
 )
 from netconsole.services.online_mr.query_service import OnlineMrQueryService
+from netconsole.services.job_center.task_result_rollout import (
+    TaskResultRolloutService,
+)
 from netconsole.services.site_retention import SiteRetentionService
 from netconsole.services.site_storage import SiteApplicationService, SiteStorageError
 
@@ -477,6 +480,11 @@ def test_task_retention_preview_breaks_down_type_status_and_authority_result(
     paths, root = _site(tmp_path)
     task_db = root / "db" / "tasks.db"
     repository = TaskRepository(task_db)
+    TaskResultRolloutService(task_db).enable_dual_write(
+        expected_revision=1,
+        reason="typed retention authority fixture",
+        updated_by="pytest",
+    )
     old_time = "2026-04-01T00:00:00Z"
     result = {"producer": "ac_fit_ap_resources_refresh", "rows": 500}
     snapshot = TaskSnapshot(
