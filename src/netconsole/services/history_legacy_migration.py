@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import random
+import sqlite3
 import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
@@ -23,6 +24,10 @@ from netconsole.services.database_upgrade.coordinator import (
     SITE_DATABASE_MAINTENANCE_CLASS,
     database_maintenance_lock,
     site_database_maintenance_key,
+)
+from netconsole.services.database_footprint_maintenance import (
+    DEVELOPMENT_ROOT,
+    assert_development_path,
 )
 from netconsole.services.history_store import HistoryStore
 
@@ -477,7 +482,7 @@ class HistoryLegacyMigrationService:
             "source_database_identity": record.source_database_identity,
             "tables": tables,
             "excluded_sources": excluded,
-            "source_delete_executor": "NOT_IMPLEMENTED",
+            "source_delete_executor": "DEVELOPMENT_ROOT_ONLY_V1",
         }
         plan_digest = self._stable_digest(semantic)
         plan = {
@@ -548,6 +553,175 @@ class HistoryLegacyMigrationService:
             "plan_digest": digest,
             "source_delete_executed": False,
         }
+
+    def delete_source(
+        self,
+        plan: dict[str, Any],
+        *,
+        expected_plan_digest: str,
+        expected_source_identity: str,
+        expected_revision: int,
+        batch_rows: int = 500,
+        apply: bool = False,
+        allow_development_root_only: bool = False,
+        development_root: Path = DEVELOPMENT_ROOT,
+    ) -> dict[str, Any]:
+        """Delete only exact verified source keys from an isolated development copy."""
+
+        if not apply or not allow_development_root_only:
+            raise ValueError(
+                "source deletion requires --apply and --allow-development-root-only"
+            )
+        if self.source.immutable:
+            raise ValueError("immutable source cannot be deleted")
+        assert_development_path(
+            self.source_database, development_root=development_root
+        )
+        safe_batch = int(batch_rows)
+        if safe_batch not in {250, 500, 1000}:
+            raise ValueError("source delete batch_rows must be 250, 500, or 1000")
+        supplied_digest = str(expected_plan_digest or "").strip().lower()
+        supplied_identity = str(expected_source_identity or "").strip().lower()
+        if supplied_digest != str(plan.get("plan_digest") or "").strip().lower():
+            raise ValueError("expected delete plan digest mismatch")
+        if supplied_identity != str(
+            plan.get("source_database_identity") or ""
+        ).strip().lower():
+            raise ValueError("expected source identity mismatch")
+
+        lock_key = site_database_maintenance_key(self.site_id)
+        with database_maintenance_lock(self.paths, lock_key):
+            validation = self._validate_delete_plan_locked(plan)
+            if validation["plan_digest"] != supplied_digest:
+                raise ValueError("validated delete plan digest mismatch")
+            tables = list(plan.get("tables") or [])
+            if not tables:
+                raise ValueError("delete plan has no tables")
+            for item in tables:
+                if int(item.get("cutover_revision") or -1) != int(expected_revision):
+                    raise ValueError("expected cutover revision mismatch")
+                if not bool(item.get("eligibility")):
+                    raise ValueError("delete plan contains an ineligible table")
+            result = self._delete_source_locked(
+                str(plan["migration_id"]),
+                tables,
+                plan_digest=supplied_digest,
+                expected_revision=int(expected_revision),
+                batch_rows=safe_batch,
+            )
+        return {
+            "migration_id": str(plan["migration_id"]),
+            "plan_digest": supplied_digest,
+            "source_database_identity": supplied_identity,
+            "batch_rows": safe_batch,
+            "source_delete_executed": True,
+            **result,
+        }
+
+    def _delete_source_locked(
+        self,
+        migration_id: str,
+        tables: list[dict[str, Any]],
+        *,
+        plan_digest: str,
+        expected_revision: int,
+        batch_rows: int,
+    ) -> dict[str, Any]:
+        deleted_total = 0
+        table_results: list[dict[str, Any]] = []
+        connection = sqlite3.connect(self.source_database, timeout=60)
+        try:
+            connection.execute("PRAGMA busy_timeout = 60000")
+            connection.execute("PRAGMA foreign_keys = ON")
+            for item in tables:
+                table = str(item.get("source_table") or "")
+                if table not in SUPPORTED_SPECS or not table.replace("_", "").isalnum():
+                    raise ValueError(f"invalid source delete table: {table}")
+                checkpoint = self._required_table(migration_id, table)
+                if (
+                    checkpoint.authority_state != "SOURCE_DELETE_ELIGIBLE"
+                    or checkpoint.cutover_revision != expected_revision
+                    or checkpoint.delete_plan_digest != plan_digest
+                ):
+                    raise ValueError("source delete authority, revision, or digest is stale")
+                before = int(
+                    connection.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
+                )
+                expected = int(item.get("row_count") or 0)
+                deleted = 0
+                batches = 0
+                for range_item in item.get("ranges", []):
+                    for key_range in range_item.get("source_key_ranges", []):
+                        start = int(key_range.get("start") or 0)
+                        end = int(key_range.get("end") or 0)
+                        if start <= 0 or end < start:
+                            raise ValueError("invalid source delete key range")
+                        cursor_key = start - 1
+                        while True:
+                            rows = connection.execute(
+                                f'SELECT id FROM "{table}" '
+                                "WHERE id BETWEEN ? AND ? AND id > ? "
+                                "ORDER BY id LIMIT ?",
+                                (start, end, cursor_key, batch_rows),
+                            ).fetchall()
+                            if not rows:
+                                break
+                            keys = [int(row[0]) for row in rows]
+                            connection.execute("BEGIN IMMEDIATE")
+                            cursor = connection.execute(
+                                f'DELETE FROM "{table}" WHERE id IN '
+                                f"({','.join('?' for _ in keys)})",
+                                keys,
+                            )
+                            if int(cursor.rowcount or 0) != len(keys):
+                                connection.rollback()
+                                raise RuntimeError("source delete batch count mismatch")
+                            connection.commit()
+                            deleted += len(keys)
+                            batches += 1
+                            cursor_key = keys[-1]
+                after = int(
+                    connection.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
+                )
+                if deleted != expected or before - after != expected:
+                    raise RuntimeError("source delete exact row count mismatch")
+                remaining = 0
+                for range_item in item.get("ranges", []):
+                    for key_range in range_item.get("source_key_ranges", []):
+                        remaining += int(
+                            connection.execute(
+                                f'SELECT COUNT(*) FROM "{table}" WHERE id BETWEEN ? AND ?',
+                                (
+                                    int(key_range.get("start") or 0),
+                                    int(key_range.get("end") or 0),
+                                ),
+                            ).fetchone()[0]
+                        )
+                if remaining:
+                    raise RuntimeError("planned source keys remain after delete")
+                updated = self.journal.transition_authority(
+                    migration_id,
+                    table,
+                    to_state="SOURCE_DELETED",
+                    expected_revision=expected_revision,
+                    reason=f"exact plan {plan_digest} applied under development root",
+                    now=self._now(),
+                )
+                deleted_total += deleted
+                table_results.append(
+                    {
+                        "source_table": table,
+                        "rows_before": before,
+                        "deleted_rows": deleted,
+                        "rows_after": after,
+                        "batches": batches,
+                        "authority_state": updated.authority_state,
+                        "cutover_revision": updated.cutover_revision,
+                    }
+                )
+        finally:
+            connection.close()
+        return {"deleted_rows": deleted_total, "tables": table_results}
 
     def _run(
         self,

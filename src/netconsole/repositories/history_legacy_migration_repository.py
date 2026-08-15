@@ -338,8 +338,6 @@ class HistoryLegacyMigrationRepository:
     ) -> TableCheckpoint:
         target = str(to_state or "").upper()
         self._validate_authority_state(target)
-        if target == "SOURCE_DELETED":
-            raise ValueError("source deletion is not implemented")
         explanation = str(reason or "").strip()
         if not explanation:
             raise ValueError("authority transition reason is required")
@@ -347,7 +345,7 @@ class HistoryLegacyMigrationRepository:
             "LEGACY_AUTHORITY": {"SHARD_VERIFIED"},
             "SHARD_VERIFIED": {"SHARD_AUTHORITY", "LEGACY_AUTHORITY"},
             "SHARD_AUTHORITY": {"SOURCE_DELETE_ELIGIBLE", "LEGACY_AUTHORITY"},
-            "SOURCE_DELETE_ELIGIBLE": {"LEGACY_AUTHORITY"},
+            "SOURCE_DELETE_ELIGIBLE": {"LEGACY_AUTHORITY", "SOURCE_DELETED"},
             "SOURCE_DELETED": set(),
         }
         self.ensure_schema()

@@ -27,6 +27,7 @@ def _parser() -> argparse.ArgumentParser:
             "mark-delete-eligible",
             "preview-delete-plan",
             "validate-delete-plan",
+            "delete-source",
         ),
     )
     parser.add_argument("--data-root", type=Path, required=True)
@@ -41,6 +42,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--observation-file", type=Path)
     parser.add_argument("--plan-file", type=Path)
     parser.add_argument("--chunk-rows", type=int, default=250, choices=(100, 250, 500))
+    parser.add_argument("--delete-batch-rows", type=int, default=500, choices=(250, 500, 1000))
+    parser.add_argument("--expected-plan-digest")
+    parser.add_argument("--expected-source-identity")
+    parser.add_argument("--allow-development-root-only", action="store_true")
     parser.add_argument("--max-elapsed-seconds", type=float, default=2.0)
     parser.add_argument("--slow-storage-delay-seconds", type=float, default=0.0)
     parser.add_argument("--immutable-source", action="store_true")
@@ -168,13 +173,34 @@ def main(argv: list[str] | None = None) -> int:
             args.migration_id,
             source_tables=list(args.source_table or []),
         )
-    else:
+    elif args.command == "validate-delete-plan":
         if args.plan_file is None:
             raise SystemExit("validate-delete-plan requires --plan-file")
         plan = json.loads(args.plan_file.resolve().read_text(encoding="utf-8"))
         if not isinstance(plan, dict):
             raise SystemExit("delete plan file must contain a JSON object")
         result = service.validate_delete_plan(plan)
+    else:
+        if args.plan_file is None:
+            raise SystemExit("delete-source requires --plan-file")
+        if args.expected_revision is None:
+            raise SystemExit("delete-source requires --expected-revision")
+        if not args.expected_plan_digest or not args.expected_source_identity:
+            raise SystemExit(
+                "delete-source requires --expected-plan-digest and --expected-source-identity"
+            )
+        plan = json.loads(args.plan_file.resolve().read_text(encoding="utf-8"))
+        if not isinstance(plan, dict):
+            raise SystemExit("delete plan file must contain a JSON object")
+        result = service.delete_source(
+            plan,
+            expected_plan_digest=args.expected_plan_digest,
+            expected_source_identity=args.expected_source_identity,
+            expected_revision=args.expected_revision,
+            batch_rows=args.delete_batch_rows,
+            apply=args.apply,
+            allow_development_root_only=args.allow_development_root_only,
+        )
     print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True, default=str))
     return 0
 

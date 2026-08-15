@@ -542,7 +542,7 @@ def test_delete_eligibility_plan_excludes_unsupported_and_verifies_projection(
 
     plan = service.preview_delete_plan("delete-plan")
 
-    assert plan["source_delete_executor"] == "NOT_IMPLEMENTED"
+    assert plan["source_delete_executor"] == "DEVELOPMENT_ROOT_ONLY_V1"
     assert plan["source_delete_executed"] is False
     assert len(plan["plan_digest"]) == 64
     assert service.validate_delete_plan(plan)["valid"] is True
@@ -668,3 +668,115 @@ def test_delete_plan_rejects_digest_source_identity_and_revision_staleness(
         conn.commit()
     with pytest.raises(ValueError, match="identity changed"):
         other.validate_delete_plan(plan)
+
+
+def test_source_delete_applies_exact_plan_and_preserves_unsupported_rows(
+    tmp_path: Path,
+) -> None:
+    source = _source_database(
+        tmp_path,
+        rows=[
+            (1, "a", "2026-08-01T00:00:00"),
+            (2, "b", "2026-08-02T00:00:00"),
+            (3, "c", "2026-08-03T00:00:00"),
+        ],
+    )
+    with sqlite3.connect(source) as connection:
+        connection.execute(
+            "CREATE TABLE ac_fit_ap_unauthenticated_history "
+            "(id INTEGER PRIMARY KEY, ac_device_uuid TEXT, collected_at TEXT)"
+        )
+        connection.execute(
+            "INSERT INTO ac_fit_ap_unauthenticated_history VALUES (1, 'ac-1', '2026-08-01')"
+        )
+        connection.commit()
+    service = _service(tmp_path, source, immutable_source=False)
+    service.start(migration_id="delete-executor", max_elapsed_seconds=0)
+    service.cutover(
+        "delete-executor",
+        "device_facts_history",
+        expected_revision=1,
+        reason="isolated verification passed",
+    )
+    service.evaluate_delete_eligibility(
+        "delete-executor",
+        "device_facts_history",
+        expected_revision=2,
+        observation={
+            "query_validation": True,
+            "consumer_validation": True,
+            "integrity_mismatch": False,
+        },
+        reason="isolated observation passed",
+    )
+    plan = service.preview_delete_plan("delete-executor")
+
+    result = service.delete_source(
+        plan,
+        expected_plan_digest=str(plan["plan_digest"]),
+        expected_source_identity=str(plan["source_database_identity"]),
+        expected_revision=3,
+        batch_rows=250,
+        apply=True,
+        allow_development_root_only=True,
+        development_root=tmp_path,
+    )
+
+    assert result["deleted_rows"] == 3
+    assert result["tables"][0]["authority_state"] == "SOURCE_DELETED"
+    with sqlite3.connect(source) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM device_facts_history"
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT COUNT(*) FROM ac_fit_ap_unauthenticated_history"
+        ).fetchone()[0] == 1
+
+
+def test_source_delete_requires_development_root_and_exact_expectations(
+    tmp_path: Path,
+) -> None:
+    source = _source_database(
+        tmp_path, rows=[(1, "a", "2026-08-01T00:00:00")]
+    )
+    service = _service(tmp_path, source, immutable_source=False)
+    service.start(migration_id="guarded-delete", max_elapsed_seconds=0)
+    service.cutover(
+        "guarded-delete",
+        "device_facts_history",
+        expected_revision=1,
+        reason="verified",
+    )
+    service.evaluate_delete_eligibility(
+        "guarded-delete",
+        "device_facts_history",
+        expected_revision=2,
+        observation={
+            "query_validation": True,
+            "consumer_validation": True,
+            "integrity_mismatch": False,
+        },
+        reason="observed",
+    )
+    plan = service.preview_delete_plan("guarded-delete")
+
+    with pytest.raises(ValueError, match="expected delete plan digest mismatch"):
+        service.delete_source(
+            plan,
+            expected_plan_digest="0" * 64,
+            expected_source_identity=str(plan["source_database_identity"]),
+            expected_revision=3,
+            apply=True,
+            allow_development_root_only=True,
+            development_root=tmp_path,
+        )
+    with pytest.raises(ValueError, match="maintenance target"):
+        service.delete_source(
+            plan,
+            expected_plan_digest=str(plan["plan_digest"]),
+            expected_source_identity=str(plan["source_database_identity"]),
+            expected_revision=3,
+            apply=True,
+            allow_development_root_only=True,
+            development_root=tmp_path / "different-root",
+        )
