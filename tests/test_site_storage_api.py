@@ -529,7 +529,7 @@ def test_retention_scan_submits_site_scoped_job(tmp_path: Path) -> None:
     job = captured[0]
     payload = getattr(job, "to_dict")()
     assert payload["task_type"] == "site_retention_scan"
-    assert payload["params"]["resource_keys"] == ["site-retention:demo"]
+    assert payload["params"]["resource_keys"] == ["site-database-maintenance:demo"]
     assert "path" not in payload["params"]
 
 

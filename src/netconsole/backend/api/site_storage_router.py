@@ -27,6 +27,9 @@ from netconsole.models.api.site_storage import (
     SiteUpdateRequest,
 )
 from netconsole.services.background_job import BackgroundJob
+from netconsole.services.database_upgrade.coordinator import (
+    site_database_maintenance_key,
+)
 from netconsole.services.site_lifecycle import (
     SiteAuditService,
     SiteCleanupApplicationService,
@@ -593,7 +596,7 @@ def _submit(
                 }[task_type],
                 "owner": "site-storage",
                 "resource_keys": (
-                    [f"site-retention:{params.get('site_id')}"]
+                    [site_database_maintenance_key(str(params.get("site_id") or ""))]
                     if task_type in {"site_retention_scan", "site_retention_apply"}
                     else []
                 ),

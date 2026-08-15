@@ -3,17 +3,23 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import threading
 import zipfile
-from contextlib import closing
+from contextlib import closing, contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
 from netconsole.core.paths import PathResolver
-from netconsole.models.task_snapshot import TaskSnapshot
+from netconsole.models.task_snapshot import TaskEvent, TaskSnapshot
 from netconsole.models.task_state import TaskState
 from netconsole.repositories.task_repository import TaskRepository
+from netconsole.services import site_retention as retention_module
+from netconsole.services.database_upgrade.coordinator import (
+    database_maintenance_lock,
+    site_database_maintenance_key,
+)
 from netconsole.services.online_mr.query_service import OnlineMrQueryService
 from netconsole.services.site_retention import SiteRetentionService
 from netconsole.services.site_storage import SiteApplicationService, SiteStorageError
@@ -407,7 +413,7 @@ def test_apply_blocks_when_another_task_is_active(tmp_path: Path) -> None:
     assert old.exists()
 
 
-def test_task_event_retention_removes_only_expired_events_and_vacuums(
+def test_task_retention_is_typed_preview_only_and_keeps_events_unchanged(
     tmp_path: Path,
 ) -> None:
     paths, root = _site(tmp_path)
@@ -437,20 +443,172 @@ def test_task_event_retention_removes_only_expired_events_and_vacuums(
         for item in report["candidates"]  # type: ignore[index]
         if isinstance(item, dict) and item.get("category") == "task_history"
     )
-    assert candidate["safe"] is True
-    assert candidate["details"]["event_count"] == 1  # type: ignore[index]
+    assert candidate["safe"] is False
+    assert candidate["recommended_action"] == "preview"
+    assert candidate["status"] == "USER_POLICY_REQUIRED"
+    assert candidate["details"]["apply_enabled"] is False  # type: ignore[index]
+    assert candidate["details"]["vacuum"] is False  # type: ignore[index]
+    event_breakdown = candidate["details"]["task_event_breakdown"]  # type: ignore[index]
+    log_preview = next(item for item in event_breakdown if item["event_type"] == "log")
+    assert log_preview["retention_days"] == 30
+    assert log_preview["would_delete_rows"] == 1
+    assert int(candidate["details"]["would_delete_bytes_estimate"]) > 0  # type: ignore[index]
 
-    result = service.apply(
-        "line-12",
-        scan_token=str(report["scan_token"]),
-        candidate_ids=[str(candidate["candidate_id"])],
-    )
+    with pytest.raises(SiteStorageError) as blocked:
+        service.apply(
+            "line-12",
+            scan_token=str(report["scan_token"]),
+            candidate_ids=[str(candidate["candidate_id"])],
+        )
 
-    assert result["success_count"] == 1
+    assert blocked.value.code == "SITE_RETENTION_CANDIDATE_BLOCKED"
     with closing(sqlite3.connect(task_db)) as connection:
         rows = connection.execute(
             "SELECT event_id FROM task_events ORDER BY event_id"
         ).fetchall()
         quick_check = connection.execute("PRAGMA quick_check").fetchone()[0]
-    assert rows == [("recent-event",)]
+    assert rows == [("old-event",), ("recent-event",)]
     assert quick_check == "ok"
+
+
+def test_task_retention_preview_breaks_down_type_status_and_authority_result(
+    tmp_path: Path,
+) -> None:
+    paths, root = _site(tmp_path)
+    task_db = root / "db" / "tasks.db"
+    repository = TaskRepository(task_db)
+    old_time = "2026-04-01T00:00:00Z"
+    result = {"producer": "ac_fit_ap_resources_refresh", "rows": 500}
+    snapshot = TaskSnapshot(
+        task_id="old-terminal-task",
+        task_type="ac_fit_ap_resources_refresh",
+        task_name="刷新 FIT-AP 资源",
+        status=TaskState.COMPLETED,
+        created_time=old_time,
+        finished_time=old_time,
+        updated_time=old_time,
+        progress=100,
+        result=result,
+        site_name="line-12",
+    )
+    event = TaskEvent(
+        event_id="old-terminal-event",
+        task_id=snapshot.task_id,
+        type="finished",
+        time=old_time,
+        source="worker",
+        payload={"result": result},
+    )
+    assert repository.record(snapshot, event)
+    repository.save(
+        TaskSnapshot(
+            task_id="active-task",
+            task_type="device_collect",
+            task_name="设备采集",
+            status=TaskState.RUNNING,
+            created_time=old_time,
+            updated_time=old_time,
+            site_name="line-12",
+        )
+    )
+
+    report = SiteRetentionService(paths, now=lambda: NOW).scan("line-12")
+    candidate = next(
+        item
+        for item in report["candidates"]  # type: ignore[index]
+        if isinstance(item, dict) and item.get("category") == "task_history"
+    )
+    details = candidate["details"]
+    snapshots = details["task_snapshot_breakdown"]
+    completed = next(
+        item for item in snapshots if item["task_type"] == "ac_fit_ap_resources_refresh"
+    )
+    active = next(item for item in snapshots if item["task_type"] == "device_collect")
+    assert completed["status"] == "COMPLETED"
+    assert completed["would_delete_rows"] == 1
+    assert active["policy"] == "NEVER_WHILE_ACTIVE"
+    assert active["would_delete_rows"] == 0
+    results = details["task_result_breakdown"]
+    assert len(results) == 1
+    result_preview = results[0]
+    assert result_preview["terminal_event_type"] == "finished"
+    assert result_preview["total_rows"] == 1
+    assert result_preview["retention_days"] == 90
+    assert result_preview["cutoff"] == "2026-05-15T12:00:00+00:00"
+    assert result_preview["would_delete_rows"] == 1
+    assert result_preview["would_delete_bytes_estimate"] > 0
+    assert result_preview["authority_copies_after_retention"] == 1
+
+
+def test_retention_database_lock_wraps_storage_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, root = _site(tmp_path)
+    backups = root / "files" / "backups" / "database-migrations"
+    recent = backups / "devices-before-recent.sqlite"
+    stable = backups / "devices-before-stable.sqlite"
+    old = backups / "devices-before-old.sqlite"
+    _write_devices_database(recent, "2026.08.01.recent")
+    _write_devices_database(stable, "2026.07.31.stable")
+    _write_devices_database(old, "2026.07.01.old")
+    _set_age(recent, 10)
+    _set_age(stable, 20)
+    _set_age(old, 100)
+    active_database_locks: list[str] = []
+
+    @contextmanager
+    def database_lock(_paths: PathResolver, key: str):
+        active_database_locks.append(key)
+        try:
+            yield
+        finally:
+            active_database_locks.pop()
+
+    original_storage_lock = retention_module.storage_lock
+
+    @contextmanager
+    def storage_lock(paths_value: PathResolver, name: str):
+        assert active_database_locks == [site_database_maintenance_key("line-12")]
+        with original_storage_lock(paths_value, name):
+            yield
+
+    monkeypatch.setattr(retention_module, "database_maintenance_lock", database_lock)
+    monkeypatch.setattr(retention_module, "storage_lock", storage_lock)
+    service = SiteRetentionService(paths, now=lambda: NOW)
+    report = service.scan("line-12")
+    candidate = _candidate(report, old.name)
+    service.apply(
+        "line-12",
+        scan_token=str(report["scan_token"]),
+        candidate_ids=[str(candidate["candidate_id"])],
+    )
+    assert active_database_locks == []
+
+
+def test_future_compact_lock_serializes_retention_preview(tmp_path: Path) -> None:
+    paths, _root = _site(tmp_path)
+    key = site_database_maintenance_key("line-12")
+    compact_entered = threading.Event()
+    release_compact = threading.Event()
+    retention_completed = threading.Event()
+
+    def compact() -> None:
+        with database_maintenance_lock(paths, key):
+            compact_entered.set()
+            release_compact.wait(timeout=5)
+
+    def preview() -> None:
+        SiteRetentionService(paths, now=lambda: NOW).scan("line-12")
+        retention_completed.set()
+
+    compact_thread = threading.Thread(target=compact)
+    retention_thread = threading.Thread(target=preview)
+    compact_thread.start()
+    assert compact_entered.wait(timeout=2)
+    retention_thread.start()
+    assert not retention_completed.wait(timeout=0.1)
+    release_compact.set()
+    compact_thread.join(timeout=2)
+    retention_thread.join(timeout=2)
+    assert retention_completed.is_set()

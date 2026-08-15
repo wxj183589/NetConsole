@@ -172,7 +172,7 @@ class SiteRetentionReportResponse(ApiModel):
     site_id: str
     display_name: str
     generated_at: str
-    policy: dict[str, int]
+    policy: dict[str, object]
     summary: SiteRetentionSummaryResponse
     candidates: list[SiteRetentionCandidateResponse]
 
