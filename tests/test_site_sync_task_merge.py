@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -168,6 +169,40 @@ def test_site_return_ref_only_snapshot_and_event_read_through_after_merge(
     repository = TaskRepository(local)
     assert repository.get("controller-ref").result == result
     assert repository.list_events("controller-ref")[-1]["payload"]["result"] == result
+
+
+def test_site_return_accepts_registered_directory_name_as_site_alias(
+    tmp_path: Path,
+) -> None:
+    local = tmp_path / "local.db"
+    returned = tmp_path / "returned.db"
+    TaskRepository(local)
+    _terminal_task(returned, "controller-alias", {"rows": 2})
+    OnlineMrTaskSessionRepository(returned, site_id="Line 12").create(
+        replace(
+            _mapping("controller-alias", session_id="session-alias"),
+            site_id="Line 12",
+        )
+    )
+
+    with pytest.raises(SiteStorageError, match="局点不匹配"):
+        _preview_task_merge(local, returned, site_id="legacy-line-12")
+    preview = _preview_task_merge(
+        local,
+        returned,
+        site_id="legacy-line-12",
+        site_aliases={"Line 12"},
+    )
+    assert preview["new_tasks"] == 1
+    result = _apply_task_merge(
+        local,
+        returned,
+        {},
+        site_id="legacy-line-12",
+        site_aliases={"Line 12"},
+    )
+    assert result["new_tasks"] == 1
+    assert TaskRepository(local).get("controller-alias").result == {"rows": 2}
 
 
 def test_site_return_result_conflict_fails_closed_without_partial_tasks_merge(

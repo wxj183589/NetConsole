@@ -60,6 +60,10 @@ databases / artifacts / checksums
 
 - 原始文件按 SHA-256 去重；同路径不同内容不覆盖，转存为 `files/sync-imports/<日期>/<来源电脑>/<导入ID>/...`。
 - `tasks.db` 按 `task_id`、`event_id` 合并；完整成功优先于部分完成、失败、已取消和运行中，同等级仅在回传结果更完整时更新。
+- `task_results`、ref-only snapshot/event 和 `online_mr_task_sessions` 在同一事务中
+  合并并校验引用。Online MR mapping 的 `site_id` 可匹配目标 Registry stable
+  ID，或目标 `SiteRecord` 明确提供的显示名/物理目录名 alias；任意其他局点值
+  继续 fail closed，不能从回传数据自行扩展 alias。
 - `devices`、`collect_runs`、`device_facts`、FIT-AP/AP 实体及其带 UUID 的快照/历史记录按稳定 UUID 三方合并。双方修改同一字段且值不同，会要求选择本地值、回传值或手工值。
 - 未提供稳定 UUID 的旧基础资料或派生表不会被按本地自增 ID 猜测合并；预检会计入“未支持记录”，导入时保留本机数据，不会静默覆盖。
 - 删除请求默认只展示和记录，不自动删除设备、AP、列车、原始文件、报告或历史数据。

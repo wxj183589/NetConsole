@@ -8,6 +8,7 @@ import sqlite3
 import tempfile
 import uuid
 import zipfile
+from collections.abc import Collection
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -352,6 +353,7 @@ class SiteSyncService:
                 target.root_path / "db" / "tasks.db",
                 extracted / "return" / "databases" / "current" / "tasks.db",
                 site_id=target.site_id,
+                site_aliases={target.display_name, target.root_path.name},
             )
 
         file_hashes = {
@@ -452,7 +454,10 @@ class SiteSyncService:
                 devices_local, devices_base, devices_returned
             )
             task_preview = _preview_task_merge(
-                tasks_local, tasks_returned, site_id=target.site_id
+                tasks_local,
+                tasks_returned,
+                site_id=target.site_id,
+                site_aliases={target.display_name, target.root_path.name},
             )
             unresolved = [
                 conflict
@@ -509,6 +514,7 @@ class SiteSyncService:
                         tasks_returned,
                         resolution_map,
                         site_id=target.site_id,
+                        site_aliases={target.display_name, target.root_path.name},
                     )
 
                 metadata = self._read_metadata(target.root_path)
@@ -1042,6 +1048,7 @@ def _preview_task_merge(
     returned: Path,
     *,
     site_id: str = "",
+    site_aliases: Collection[str] = (),
 ) -> dict[str, object]:
     if not returned.is_file():
         return {
@@ -1091,6 +1098,7 @@ def _preview_task_merge(
                 returned_db,
                 task_ids=task_ids,
                 site_id=site_id,
+                site_aliases=site_aliases,
             )
             conflicts.extend(
                 item.to_public()
@@ -1111,6 +1119,7 @@ def _apply_task_merge(
     resolutions: dict[str, dict[str, object]],
     *,
     site_id: str = "",
+    site_aliases: Collection[str] = (),
 ) -> dict[str, int]:
     if not returned.is_file():
         return {"new_tasks": 0, "updated_tasks": 0, "duplicate_tasks": 0}
@@ -1141,6 +1150,7 @@ def _apply_task_merge(
                 returned_db,
                 task_ids=task_ids,
                 site_id=site_id,
+                site_aliases=site_aliases,
             )
             immutable_conflicts = _immutable_task_conflicts(local_db, returned_db)
             if immutable_conflicts:
@@ -1307,6 +1317,7 @@ def _validate_task_merge_references(
     *,
     task_ids: set[str],
     site_id: str,
+    site_aliases: Collection[str] = (),
 ) -> None:
     from netconsole.repositories.task_repository import TaskRepository
 
@@ -1358,7 +1369,12 @@ def _validate_task_merge_references(
                 f"Online MR mapping 引用了不存在的 Controller task：{controller_task_id}",
             )
         mapping_site = str(mapping.get("site_id") or "")
-        if site_id and mapping_site != site_id:
+        allowed_sites = {
+            str(value).strip().casefold()
+            for value in (site_id, *site_aliases)
+            if str(value).strip()
+        }
+        if allowed_sites and mapping_site.strip().casefold() not in allowed_sites:
             _raise(
                 "SITE_IMPORT_TASK_REFERENCE_INVALID",
                 f"Online MR mapping 局点不匹配：{mapping_site}",
