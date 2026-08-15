@@ -192,5 +192,7 @@ def validate_sqlite(path: Path) -> dict[str, Any]:
 
 
 def fsync_file(path: Path) -> None:
-    with path.open("rb") as handle:
+    # Windows rejects FlushFileBuffers for a descriptor opened without write access.
+    with path.open("r+b") as handle:
+        handle.flush()
         os.fsync(handle.fileno())
