@@ -13,6 +13,7 @@ import json
 import re
 import sqlite3
 import time
+import zlib
 from calendar import monthrange
 from collections.abc import Callable, Iterable
 from contextlib import closing
@@ -106,7 +107,7 @@ CREATE TABLE IF NOT EXISTS history_migration_skips (
 );
 """
 
-SHARD_SCHEMA = """
+SHARD_SCHEMA_V1 = """
 PRAGMA user_version = 1;
 CREATE TABLE IF NOT EXISTS history_events (
     event_id TEXT PRIMARY KEY,
@@ -121,6 +122,61 @@ CREATE INDEX IF NOT EXISTS idx_history_events_entity_time
     ON history_events(kind, entity_key, collected_at DESC, event_id DESC);
 CREATE INDEX IF NOT EXISTS idx_history_events_time
     ON history_events(collected_at DESC, event_id DESC);
+"""
+
+STORAGE_SCHEMA_VERSION = 2
+PAYLOAD_SCHEMA_VERSION = 2
+PAYLOAD_CODEC_JSON = 0
+PAYLOAD_CODEC_ZLIB_JSON = 1
+_PAYLOAD_ENVELOPE_FIELDS = frozenset(
+    {"collected_at", "legacy_source_table", "legacy_source_id"}
+)
+
+SHARD_SCHEMA_V2 = """
+CREATE TABLE IF NOT EXISTS history_storage_metadata (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS history_kinds_v2 (
+    kind_id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE
+);
+CREATE TABLE IF NOT EXISTS history_entities_v2 (
+    entity_id INTEGER PRIMARY KEY,
+    kind_id INTEGER NOT NULL,
+    entity_key TEXT NOT NULL,
+    UNIQUE(kind_id, entity_key),
+    FOREIGN KEY(kind_id) REFERENCES history_kinds_v2(kind_id)
+);
+CREATE TABLE IF NOT EXISTS history_event_types_v2 (
+    event_type_id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE
+);
+CREATE TABLE IF NOT EXISTS history_payload_schemas_v2 (
+    payload_schema_id INTEGER PRIMARY KEY,
+    payload_schema_version INTEGER NOT NULL,
+    fields_json TEXT NOT NULL,
+    UNIQUE(payload_schema_version, fields_json)
+);
+CREATE TABLE IF NOT EXISTS history_events_v2 (
+    event_id BLOB PRIMARY KEY,
+    kind_id INTEGER NOT NULL,
+    entity_id INTEGER NOT NULL,
+    event_type_id INTEGER NOT NULL,
+    collected_at TEXT NOT NULL,
+    payload_schema_id INTEGER NOT NULL,
+    payload_codec INTEGER NOT NULL,
+    payload BLOB NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(kind_id) REFERENCES history_kinds_v2(kind_id),
+    FOREIGN KEY(entity_id) REFERENCES history_entities_v2(entity_id),
+    FOREIGN KEY(event_type_id) REFERENCES history_event_types_v2(event_type_id),
+    FOREIGN KEY(payload_schema_id) REFERENCES history_payload_schemas_v2(payload_schema_id)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS idx_history_events_v2_entity_time
+    ON history_events_v2(entity_id, collected_at DESC, event_id DESC);
+CREATE INDEX IF NOT EXISTS idx_history_events_v2_kind_time
+    ON history_events_v2(kind_id, collected_at DESC, event_id DESC);
 """
 
 
@@ -611,10 +667,12 @@ class HistoryStore:
             catalog.execute(
                 """
                 INSERT INTO history_catalog
-                    (shard_id, site_id, period_start, period_end, relative_path, status, created_at, closed_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    (shard_id, site_id, period_start, period_end, relative_path,
+                     schema_version, status, created_at, closed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(shard_id) DO UPDATE SET
                     relative_path=excluded.relative_path,
+                    schema_version=MAX(history_catalog.schema_version, excluded.schema_version),
                     status=excluded.status,
                     closed_at=excluded.closed_at
                 """,
@@ -624,42 +682,77 @@ class HistoryStore:
                     f"{period}-01",
                     f"{period}-{last_day:02d}",
                     relative_path,
+                    STORAGE_SCHEMA_VERSION,
                     "ACTIVE" if is_current_period else "CLOSED",
                     now,
                     None if is_current_period else now,
                 ),
             )
             catalog.commit()
-        inserts: list[tuple[str, str, str, str, str, str, str]] = []
-        for row in rows:
-            payload = json.loads(str(row["payload_json"]))
-            inserts.append(
-                (
-                    str(row["event_id"]),
-                    str(row["kind"]),
-                    str(row["entity_key"]),
-                    str(row["event_type"]),
-                    str(row["collected_at"]),
-                    json.dumps(
-                        payload,
-                        ensure_ascii=False,
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    ),
-                    str(row["created_at"]),
-                )
-            )
         inserted = 0
         with closing(connect_sqlite(shard_path, foreign_keys=True)) as shard:
             self._ensure_shard(shard)
-            for values in inserts:
+            existing = self._existing_event_ids(
+                shard, [str(row["event_id"]) for row in rows]
+            )
+            kind_ids: dict[str, int] = {}
+            entity_ids: dict[tuple[int, str], int] = {}
+            event_type_ids: dict[str, int] = {}
+            payload_schema_ids: dict[str, int] = {}
+            for row in rows:
+                event_id = str(row["event_id"])
+                if event_id in existing:
+                    continue
+                kind = str(row["kind"])
+                entity_key = str(row["entity_key"])
+                event_type = str(row["event_type"])
+                if kind not in kind_ids:
+                    kind_ids[kind] = self._dictionary_id(
+                        shard,
+                        table="history_kinds_v2",
+                        id_column="kind_id",
+                        value_column="name",
+                        value=kind,
+                    )
+                kind_id = kind_ids[kind]
+                entity_cache_key = (kind_id, entity_key)
+                if entity_cache_key not in entity_ids:
+                    entity_ids[entity_cache_key] = self._entity_id(
+                        shard, kind_id=kind_id, entity_key=entity_key
+                    )
+                if event_type not in event_type_ids:
+                    event_type_ids[event_type] = self._dictionary_id(
+                        shard,
+                        table="history_event_types_v2",
+                        id_column="event_type_id",
+                        value_column="name",
+                        value=event_type,
+                    )
+                event_type_id = event_type_ids[event_type]
+                payload = json.loads(str(row["payload_json"]))
+                fields_json, codec, encoded_payload = self._encode_payload_v2(payload)
+                if fields_json not in payload_schema_ids:
+                    payload_schema_ids[fields_json] = self._payload_schema_id(
+                        shard, fields_json=fields_json
+                    )
                 cursor = shard.execute(
                     """
-                    INSERT OR IGNORE INTO history_events
-                        (event_id, kind, entity_key, event_type, collected_at, payload_json, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    INSERT OR IGNORE INTO history_events_v2
+                        (event_id, kind_id, entity_id, event_type_id, collected_at,
+                         payload_schema_id, payload_codec, payload, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    values,
+                    (
+                        self._event_id_bytes(event_id),
+                        kind_id,
+                        entity_ids[entity_cache_key],
+                        event_type_id,
+                        str(row["collected_at"]),
+                        payload_schema_ids[fields_json],
+                        codec,
+                        encoded_payload,
+                        str(row["created_at"]),
+                    ),
                 )
                 inserted += max(0, cursor.rowcount)
             shard.commit()
@@ -712,13 +805,17 @@ class HistoryStore:
                 for offset in range(0, len(event_ids), 500):
                     chunk = event_ids[offset : offset + 500]
                     placeholders = ", ".join("?" for _ in chunk)
-                    rows = shard.execute(
-                        "SELECT * FROM history_events WHERE event_id IN ("
-                        + placeholders
-                        + ")",
-                        chunk,
-                    ).fetchall()
-                    found.update((str(row["event_id"]), dict(row)) for row in rows)
+                    if self._table_exists(shard, "history_events"):
+                        rows = shard.execute(
+                            "SELECT * FROM history_events WHERE event_id IN ("
+                            + placeholders
+                            + ")",
+                            chunk,
+                        ).fetchall()
+                        found.update((str(row["event_id"]), dict(row)) for row in rows)
+                    if self._table_exists(shard, "history_events_v2"):
+                        rows_v2 = self._read_v2_storage_rows(shard, chunk)
+                        found.update((str(row["event_id"]), row) for row in rows_v2)
         return [found[str(event["event_id"])] for event in events if str(event["event_id"]) in found]
 
     @staticmethod
@@ -800,24 +897,43 @@ class HistoryStore:
                     continue
                 try:
                     with closing(self._connect_readonly(path)) as shard:
-                        if not self._table_exists(shard, "history_events"):
+                        has_v1 = self._table_exists(shard, "history_events")
+                        has_v2 = self._table_exists(shard, "history_events_v2")
+                        if not has_v1 and not has_v2:
                             errors.append(f"shard:{path.name}:missing_schema")
                             continue
-                        rows = self._query_rows(
-                            shard,
-                            "history_events",
-                            kind=kind,
-                            entity_key=entity_key,
-                            entity_prefix=entity_prefix,
-                            limit=requested,
-                            collected_from=collected_from,
-                            collected_to=collected_to,
-                        )
-                    events.extend(self._event_dict(dict(row)) for row in rows)
+                        shard_events: list[dict[str, Any]] = []
+                        if has_v1:
+                            rows_v1 = self._query_rows(
+                                shard,
+                                "history_events",
+                                kind=kind,
+                                entity_key=entity_key,
+                                entity_prefix=entity_prefix,
+                                limit=requested,
+                                collected_from=collected_from,
+                                collected_to=collected_to,
+                            )
+                            shard_events.extend(
+                                self._event_dict(dict(row)) for row in rows_v1
+                            )
+                        if has_v2:
+                            shard_events.extend(
+                                self._query_v2_events(
+                                    shard,
+                                    kind=kind,
+                                    entity_key=entity_key,
+                                    entity_prefix=entity_prefix,
+                                    limit=requested,
+                                    collected_from=collected_from,
+                                    collected_to=collected_to,
+                                )
+                            )
+                    events.extend(shard_events)
                     events = self._sort_unique_events(events)[:requested]
                     # Catalog periods never overlap. Once one period itself
                     # supplies a complete page, older periods cannot affect it.
-                    if len(rows) >= requested and len(events) >= requested:
+                    if len(shard_events) >= requested and len(events) >= requested:
                         break
                 except (OSError, sqlite3.Error) as exc:
                     errors.append(f"shard:{path.name}:{exc.__class__.__name__}")
@@ -907,7 +1023,18 @@ class HistoryStore:
                         with closing(self._connect_readonly(path)) as shard:
                             if self._table_exists(shard, "history_events"):
                                 total += count_rows(shard, "history_events")
-                            else:
+                            if self._table_exists(shard, "history_events_v2"):
+                                total += self._count_v2_events(
+                                    shard,
+                                    kind=kind,
+                                    entity_key=entity_key,
+                                    entity_prefix=entity_prefix,
+                                    collected_from=collected_from,
+                                    collected_to=collected_to,
+                                )
+                            if not self._table_exists(
+                                shard, "history_events"
+                            ) and not self._table_exists(shard, "history_events_v2"):
                                 errors.append(f"shard:{path.name}:missing_schema")
                     except (OSError, sqlite3.Error) as exc:
                         errors.append(f"shard:{path.name}:{exc.__class__.__name__}")
@@ -1175,14 +1302,8 @@ class HistoryStore:
         for period, event_ids in by_period.items():
             shard_path = self.history_root / f"devices-{period}.db"
             with closing(self._connect_readonly(shard_path)) as shard:
-                placeholders = ", ".join("?" for _ in event_ids)
-                row = shard.execute(
-                    "SELECT COUNT(*) AS total FROM history_events WHERE event_id IN ("
-                    + placeholders
-                    + ")",
-                    event_ids,
-                ).fetchone()
-            if int(row["total"] if row is not None else 0) != len(event_ids):
+                found = self._existing_event_ids(shard, event_ids)
+            if found != set(event_ids):
                 raise sqlite3.DatabaseError("legacy history shard verification failed")
 
     def _record_migration_skips(
@@ -1284,8 +1405,199 @@ class HistoryStore:
 
     @classmethod
     def _ensure_shard(cls, conn: sqlite3.Connection) -> None:
-        if not cls._table_exists(conn, "history_events"):
-            conn.executescript(SHARD_SCHEMA)
+        user_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+        if user_version > STORAGE_SCHEMA_VERSION:
+            raise sqlite3.DatabaseError(
+                f"unsupported history storage schema version: {user_version}"
+            )
+        if cls._table_exists(conn, "history_storage_metadata"):
+            versions = dict(
+                conn.execute(
+                    "SELECT key, value FROM history_storage_metadata "
+                    "WHERE key IN ('storage_schema_version', 'payload_schema_version')"
+                ).fetchall()
+            )
+            supported = {
+                "storage_schema_version": STORAGE_SCHEMA_VERSION,
+                "payload_schema_version": PAYLOAD_SCHEMA_VERSION,
+            }
+            for key, maximum in supported.items():
+                if key not in versions:
+                    continue
+                try:
+                    current = int(versions[key])
+                except (TypeError, ValueError) as exc:
+                    raise sqlite3.DatabaseError(
+                        f"invalid history storage metadata: {key}"
+                    ) from exc
+                if current > maximum:
+                    raise sqlite3.DatabaseError(
+                        f"unsupported history storage metadata: {key}={current}"
+                    )
+        conn.executescript(SHARD_SCHEMA_V2)
+        conn.execute(
+            "INSERT OR REPLACE INTO history_storage_metadata(key, value) VALUES (?, ?)",
+            ("storage_schema_version", str(STORAGE_SCHEMA_VERSION)),
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO history_storage_metadata(key, value) VALUES (?, ?)",
+            ("payload_schema_version", str(PAYLOAD_SCHEMA_VERSION)),
+        )
+        conn.execute(f"PRAGMA user_version = {STORAGE_SCHEMA_VERSION}")
+
+    @staticmethod
+    def _event_id_bytes(event_id: str) -> bytes:
+        value = str(event_id or "").strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", value):
+            raise ValueError("history event_id must be a SHA-256 hex digest")
+        return bytes.fromhex(value)
+
+    @staticmethod
+    def _event_id_text(event_id: Any) -> str:
+        if isinstance(event_id, bytes):
+            return event_id.hex()
+        return str(event_id or "")
+
+    @classmethod
+    def _existing_event_ids(
+        cls, conn: sqlite3.Connection, event_ids: list[str]
+    ) -> set[str]:
+        found: set[str] = set()
+        unique = sorted(set(event_ids))
+        for offset in range(0, len(unique), 500):
+            chunk = unique[offset : offset + 500]
+            placeholders = ", ".join("?" for _ in chunk)
+            if cls._table_exists(conn, "history_events"):
+                rows = conn.execute(
+                    "SELECT event_id FROM history_events WHERE event_id IN ("
+                    + placeholders
+                    + ")",
+                    chunk,
+                ).fetchall()
+                found.update(str(row[0]) for row in rows)
+            if cls._table_exists(conn, "history_events_v2"):
+                rows = conn.execute(
+                    "SELECT event_id FROM history_events_v2 WHERE event_id IN ("
+                    + placeholders
+                    + ")",
+                    [cls._event_id_bytes(value) for value in chunk],
+                ).fetchall()
+                found.update(cls._event_id_text(row[0]) for row in rows)
+        return found
+
+    @staticmethod
+    def _dictionary_id(
+        conn: sqlite3.Connection,
+        *,
+        table: str,
+        id_column: str,
+        value_column: str,
+        value: str,
+    ) -> int:
+        conn.execute(
+            f"INSERT OR IGNORE INTO {table}({value_column}) VALUES (?)", (value,)
+        )
+        row = conn.execute(
+            f"SELECT {id_column} FROM {table} WHERE {value_column}=?", (value,)
+        ).fetchone()
+        if row is None:
+            raise sqlite3.DatabaseError(f"history dictionary write failed: {table}")
+        return int(row[0])
+
+    @staticmethod
+    def _entity_id(
+        conn: sqlite3.Connection, *, kind_id: int, entity_key: str
+    ) -> int:
+        conn.execute(
+            "INSERT OR IGNORE INTO history_entities_v2(kind_id, entity_key) VALUES (?, ?)",
+            (kind_id, entity_key),
+        )
+        row = conn.execute(
+            "SELECT entity_id FROM history_entities_v2 WHERE kind_id=? AND entity_key=?",
+            (kind_id, entity_key),
+        ).fetchone()
+        if row is None:
+            raise sqlite3.DatabaseError("history entity dictionary write failed")
+        return int(row[0])
+
+    @staticmethod
+    def _payload_schema_id(conn: sqlite3.Connection, *, fields_json: str) -> int:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO history_payload_schemas_v2
+                (payload_schema_version, fields_json)
+            VALUES (?, ?)
+            """,
+            (PAYLOAD_SCHEMA_VERSION, fields_json),
+        )
+        row = conn.execute(
+            """
+            SELECT payload_schema_id FROM history_payload_schemas_v2
+            WHERE payload_schema_version=? AND fields_json=?
+            """,
+            (PAYLOAD_SCHEMA_VERSION, fields_json),
+        ).fetchone()
+        if row is None:
+            raise sqlite3.DatabaseError("history payload schema write failed")
+        return int(row[0])
+
+    @staticmethod
+    def _lookup_v2_id(
+        conn: sqlite3.Connection,
+        *,
+        table: str,
+        id_column: str,
+        value_column: str,
+        value: str,
+    ) -> int | None:
+        row = conn.execute(
+            f"SELECT {id_column} FROM {table} WHERE {value_column}=?", (value,)
+        ).fetchone()
+        return int(row[0]) if row is not None else None
+
+    @staticmethod
+    def _encode_payload_v2(payload: Any) -> tuple[str, int, bytes]:
+        if isinstance(payload, dict):
+            normalized = {
+                str(key): _json_value(value)
+                for key, value in payload.items()
+                if str(key) not in _PAYLOAD_ENVELOPE_FIELDS
+            }
+        else:
+            normalized = {"value": _json_value(payload)}
+        fields = sorted(normalized)
+        fields_json = json.dumps(fields, ensure_ascii=False, separators=(",", ":"))
+        raw = json.dumps(
+            [normalized[field] for field in fields],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        compressed = zlib.compress(raw, level=1)
+        if len(compressed) + 4 < len(raw):
+            return fields_json, PAYLOAD_CODEC_ZLIB_JSON, compressed
+        return fields_json, PAYLOAD_CODEC_JSON, raw
+
+    @staticmethod
+    def _decode_payload_v2(row: dict[str, Any]) -> dict[str, Any]:
+        schema_version = int(row.get("payload_schema_version") or 0)
+        if schema_version != PAYLOAD_SCHEMA_VERSION:
+            raise ValueError(
+                f"unsupported history payload schema version: {schema_version}"
+            )
+        encoded = bytes(row.get("payload") or b"")
+        codec = int(row.get("payload_codec") or 0)
+        if codec not in {PAYLOAD_CODEC_JSON, PAYLOAD_CODEC_ZLIB_JSON}:
+            raise ValueError(f"unsupported history payload codec: {codec}")
+        try:
+            if codec == PAYLOAD_CODEC_ZLIB_JSON:
+                encoded = zlib.decompress(encoded)
+            values = json.loads(encoded.decode("utf-8"))
+            fields = json.loads(str(row.get("fields_json") or "[]"))
+        except (UnicodeDecodeError, json.JSONDecodeError, zlib.error) as exc:
+            raise ValueError("invalid History Storage V2 payload") from exc
+        if not isinstance(fields, list) or not isinstance(values, list) or len(fields) != len(values):
+            raise ValueError("invalid History Storage V2 payload")
+        return dict(zip((str(field) for field in fields), values, strict=True))
 
     @staticmethod
     def _query_rows(
@@ -1325,6 +1637,218 @@ class HistoryStore:
             + " ORDER BY collected_at DESC, event_id DESC LIMIT ?",
             params,
         ).fetchall()
+
+    @classmethod
+    def _query_v2_events(
+        cls,
+        conn: sqlite3.Connection,
+        *,
+        kind: str,
+        entity_key: str | None,
+        entity_prefix: str | None,
+        limit: int,
+        collected_from: str | None,
+        collected_to: str | None,
+    ) -> list[dict[str, Any]]:
+        kind_id = cls._lookup_v2_id(
+            conn,
+            table="history_kinds_v2",
+            id_column="kind_id",
+            value_column="name",
+            value=kind,
+        )
+        if kind_id is None:
+            return []
+        clauses = ["e.kind_id=?"]
+        params: list[Any] = [kind_id]
+        if entity_key is not None:
+            entity_row = conn.execute(
+                "SELECT entity_id FROM history_entities_v2 "
+                "WHERE kind_id=? AND entity_key=?",
+                (kind_id, entity_key),
+            ).fetchone()
+            if entity_row is None:
+                return []
+            clauses.append("e.entity_id=?")
+            params.append(int(entity_row[0]))
+        elif entity_prefix is not None:
+            clauses.append("n.entity_key LIKE ?")
+            params.append(f"{entity_prefix}%")
+        legacy_type_id = cls._lookup_v2_id(
+            conn,
+            table="history_event_types_v2",
+            id_column="event_type_id",
+            value_column="name",
+            value="legacy",
+        )
+        if legacy_type_id is not None:
+            clauses.append("e.event_type_id != ?")
+            params.append(legacy_type_id)
+        if collected_from:
+            clauses.append("e.collected_at >= ?")
+            params.append(str(collected_from))
+        if collected_to:
+            clauses.append("e.collected_at <= ?")
+            params.append(str(collected_to))
+        params.append(limit)
+        index_name = (
+            "idx_history_events_v2_entity_time"
+            if entity_key is not None
+            else "idx_history_events_v2_kind_time"
+        )
+        rows = conn.execute(
+            """
+            SELECT e.event_id, k.name AS kind, n.entity_key, t.name AS event_type,
+                   e.collected_at, e.payload_codec, e.payload, e.created_at,
+                   s.payload_schema_version, s.fields_json
+            FROM history_events_v2 AS e INDEXED BY """
+            + index_name
+            + " "
+            + """
+            JOIN history_kinds_v2 AS k ON k.kind_id=e.kind_id
+            JOIN history_entities_v2 AS n ON n.entity_id=e.entity_id
+            JOIN history_event_types_v2 AS t ON t.event_type_id=e.event_type_id
+            JOIN history_payload_schemas_v2 AS s
+              ON s.payload_schema_id=e.payload_schema_id
+            WHERE """
+            + " AND ".join(clauses)
+            + " ORDER BY e.collected_at DESC, e.event_id DESC LIMIT ?",
+            params,
+        ).fetchall()
+        return [cls._event_dict_v2(dict(row)) for row in rows]
+
+    @classmethod
+    def _count_v2_events(
+        cls,
+        conn: sqlite3.Connection,
+        *,
+        kind: str,
+        entity_key: str | None,
+        entity_prefix: str | None,
+        collected_from: str | None,
+        collected_to: str | None,
+    ) -> int:
+        kind_id = cls._lookup_v2_id(
+            conn,
+            table="history_kinds_v2",
+            id_column="kind_id",
+            value_column="name",
+            value=kind,
+        )
+        if kind_id is None:
+            return 0
+        clauses = ["e.kind_id=?"]
+        params: list[Any] = [kind_id]
+        join_entity = entity_prefix is not None and entity_key is None
+        if entity_key is not None:
+            entity_row = conn.execute(
+                "SELECT entity_id FROM history_entities_v2 "
+                "WHERE kind_id=? AND entity_key=?",
+                (kind_id, entity_key),
+            ).fetchone()
+            if entity_row is None:
+                return 0
+            clauses.append("e.entity_id=?")
+            params.append(int(entity_row[0]))
+        elif entity_prefix is not None:
+            clauses.append("n.entity_key LIKE ?")
+            params.append(f"{entity_prefix}%")
+        legacy_type_id = cls._lookup_v2_id(
+            conn,
+            table="history_event_types_v2",
+            id_column="event_type_id",
+            value_column="name",
+            value="legacy",
+        )
+        if legacy_type_id is not None:
+            clauses.append("e.event_type_id != ?")
+            params.append(legacy_type_id)
+        if collected_from:
+            clauses.append("e.collected_at >= ?")
+            params.append(str(collected_from))
+        if collected_to:
+            clauses.append("e.collected_at <= ?")
+            params.append(str(collected_to))
+        index_name = (
+            "idx_history_events_v2_entity_time"
+            if entity_key is not None
+            else "idx_history_events_v2_kind_time"
+        )
+        row = conn.execute(
+            """
+            SELECT COUNT(*) AS total
+            FROM history_events_v2 AS e INDEXED BY """
+            + index_name
+            + " "
+            + """
+            """
+            + (
+                "JOIN history_entities_v2 AS n ON n.entity_id=e.entity_id "
+                if join_entity
+                else ""
+            )
+            + "WHERE "
+            + " AND ".join(clauses),
+            params,
+        ).fetchone()
+        return int(row["total"] if row is not None else 0)
+
+    @classmethod
+    def _read_v2_storage_rows(
+        cls, conn: sqlite3.Connection, event_ids: list[str]
+    ) -> list[dict[str, Any]]:
+        if not event_ids:
+            return []
+        placeholders = ", ".join("?" for _ in event_ids)
+        rows = conn.execute(
+            """
+            SELECT e.event_id, k.name AS kind, n.entity_key, t.name AS event_type,
+                   e.collected_at, e.payload_codec, e.payload, e.created_at,
+                   s.payload_schema_version, s.fields_json
+            FROM history_events_v2 AS e
+            JOIN history_kinds_v2 AS k ON k.kind_id=e.kind_id
+            JOIN history_entities_v2 AS n ON n.entity_id=e.entity_id
+            JOIN history_event_types_v2 AS t ON t.event_type_id=e.event_type_id
+            JOIN history_payload_schemas_v2 AS s
+              ON s.payload_schema_id=e.payload_schema_id
+            WHERE e.event_id IN ("""
+            + placeholders
+            + ")",
+            [cls._event_id_bytes(value) for value in event_ids],
+        ).fetchall()
+        output: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            payload = cls._decode_payload_v2(item)
+            payload["collected_at"] = item["collected_at"]
+            output.append(
+                {
+                    "event_id": cls._event_id_text(item["event_id"]),
+                    "kind": item["kind"],
+                    "entity_key": item["entity_key"],
+                    "event_type": item["event_type"],
+                    "collected_at": item["collected_at"],
+                    "payload_json": json.dumps(
+                        payload,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    "created_at": item["created_at"],
+                }
+            )
+        return output
+
+    @classmethod
+    def _event_dict_v2(cls, row: dict[str, Any]) -> dict[str, Any]:
+        payload = cls._decode_payload_v2(row)
+        result = {
+            **payload,
+            "event_id": cls._event_id_text(row.get("event_id")),
+            "event_type": row.get("event_type"),
+            "collected_at": row.get("collected_at"),
+        }
+        return result
 
     @staticmethod
     def _validate_legacy_source(source_table: str) -> str:

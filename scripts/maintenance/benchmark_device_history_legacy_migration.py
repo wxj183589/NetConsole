@@ -7,6 +7,7 @@ import json
 import math
 import sqlite3
 import time
+from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -80,6 +81,23 @@ def _directory_size(path: Path) -> int:
     return sum(item.stat().st_size for item in path.rglob("*") if item.is_file()) if path.is_dir() else 0
 
 
+def _storage_versions(history_root: Path) -> dict[str, int]:
+    versions: dict[str, int] = {}
+    for shard in sorted(history_root.glob("devices-????-??.db")):
+        with closing(sqlite3.connect(f"{shard.resolve().as_uri()}?mode=ro", uri=True)) as conn:
+            row = conn.execute(
+                "SELECT value FROM history_storage_metadata "
+                "WHERE key='storage_schema_version'"
+            ).fetchone() if conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='history_storage_metadata'"
+            ).fetchone() else None
+            versions[shard.name] = int(
+                row[0] if row is not None else conn.execute("PRAGMA user_version").fetchone()[0]
+            )
+    return versions
+
+
 def run_benchmark(
     *,
     source_database: Path,
@@ -120,22 +138,29 @@ def run_benchmark(
     if started_at.tzinfo is None:
         started_at = started_at.replace(tzinfo=UTC)
     wall_elapsed = max(0.0, (datetime.now(UTC) - started_at.astimezone(UTC)).total_seconds())
+    target_total = _directory_size(history_root)
+    copied = int(migration.get("copied_count") or 0)
     report = {
         "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "source_database_name": source.name,
         "source_size_bytes": source.stat().st_size,
-        "target_growth_bytes": _directory_size(history_root) - target_before,
+        "target_growth_bytes": target_total - target_before,
+        "target_total_bytes": target_total,
         "chunk_rows": chunk_rows,
         "current_invocation_elapsed_seconds": round(invocation_elapsed, 3),
         "active_chunk_elapsed_seconds": round(active_chunk_elapsed, 3),
         "wall_elapsed_since_start_seconds": round(wall_elapsed, 3),
-        "rows_copied": int(migration.get("copied_count") or 0),
+        "rows_copied": copied,
         "rows_verified": processed,
         "duplicate_count": int(migration.get("duplicate_count") or 0),
         "error_count": int(migration.get("error_count") or 0),
         "active_rows_per_second": round(processed / max(active_chunk_elapsed, 0.000001), 2),
         "target_commits": int(migration.get("target_commits") or 0),
         "checkpoint_commits": int(migration.get("checkpoint_commits") or 0),
+        "bytes_written_per_copied_event": round(
+            (target_total - target_before) / max(1, copied), 2
+        ),
+        "storage_schema_versions": _storage_versions(history_root),
         "chunk_latency_ms": _percentiles([int(row.get("elapsed_ms") or 0) for row in range_rows]),
         "months": sorted(
             {str(row.get("target_month") or "") for row in range_rows if row.get("target_month") != "INVALID"}

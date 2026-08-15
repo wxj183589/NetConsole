@@ -21,6 +21,8 @@
 - `remap_mesh_identity.py`：扫描健康的 MESH parsed 来源并规划/执行 identity-only remap；默认 dry-run，只有显式 `--apply` 才逐来源复用 `MeshSourceRebuildService` 写入，经数据库回读验证后才发布 ready。
 - `migrate_device_history.py`：显式 inventory/start/pause/resume/status 的 legacy history COPY-only 迁移；start/resume 必须 `--apply`，无源删除、DROP 或 VACUUM 能力。
 - `benchmark_device_history_legacy_migration.py`：只在 `D:\study` 隔离数据上测量迁移吞吐、chunk latency、commit/checkpoint 和 target growth。
+- `profile_device_history_storage.py`：只读剖析隔离 legacy/V1 history 的表、payload、envelope、索引和 fragmentation；`--decompose` 的 VACUUM 只作用于 diagnostics scratch。
+- `benchmark_device_history_storage_queries.py`：只读比较隔离 V1/V2 月分片的实体、时间范围、跨月和 offset 查询，输出延迟、EXPLAIN plan 与 event ID 一致性摘要。
 
 局点审计从仓库根运行，默认使用源码开发数据根；`--site-id` 可限制为一个稳定 ID 或目录名，`--output` 可指定 manifest 文件：
 
@@ -63,6 +65,7 @@ dry-run 不写 parsed DB、raw 或 catalog，并兼容缺少后续可选身份�
 ## 相关文档
 
 - `docs/storage/DATA_LAYOUT.md`
+- `docs/storage/HISTORY_STORAGE_V2.md`
 - `docs/storage/SITE_MANAGEMENT.md`
 - `docs/release/BUILD_AND_RELEASE.md`
 - `docs/development/repository-layout.md`
