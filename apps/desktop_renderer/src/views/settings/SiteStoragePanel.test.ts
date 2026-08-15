@@ -74,6 +74,15 @@ function retentionReport(overrides: Partial<SiteRetentionReport> = {}): SiteRete
       backup_delete_days: 90,
       online_mr_raw_archive_days: 30,
       task_event_retention_days: 90,
+      task_retention_status: 'USER_POLICY_REQUIRED',
+      typed_task_retention_apply_enabled: false,
+      typed_task_retention_proposal: {
+        progress_event_days: 14,
+        ordinary_event_days: 30,
+        terminal_metadata_days: 90,
+        terminal_snapshot_days: 90,
+        terminal_result_days: 90,
+      },
       rollback_keep_count: 2,
     },
     summary: {

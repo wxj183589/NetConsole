@@ -418,6 +418,7 @@ def test_task_public_boundary_sanitizes_legacy_web_export_paths(tmp_path: Path) 
         "demo", "session-legacy-path", "legacy.xlsx"
     )
     leak = str(export.jobs[started.task_id].output_path)
+    secret = "plain-web-export-secret"
     repository = tasks.repository("demo")
     snapshot = repository.get(started.task_id)
     assert snapshot is not None
@@ -429,7 +430,7 @@ def test_task_public_boundary_sanitizes_legacy_web_export_paths(tmp_path: Path) 
             finished_time=now,
             updated_time=now,
             result_path=leak,
-            result={"output_path": leak, "row_count": 1},
+            result={"output_path": leak, "token": secret, "row_count": 1},
             error_message=f"导出失败：{leak}",
         ),
         TaskEvent(
@@ -438,7 +439,10 @@ def test_task_public_boundary_sanitizes_legacy_web_export_paths(tmp_path: Path) 
             type="finished",
             time=now,
             source="worker",
-            payload={"message": f"导出完成：{leak}", "result": {"output_path": leak}},
+            payload={
+                "message": f"导出完成：{leak}",
+                "result": {"output_path": leak, "token": secret},
+            },
         ),
     )
 
@@ -461,6 +465,8 @@ def test_task_public_boundary_sanitizes_legacy_web_export_paths(tmp_path: Path) 
     )
     assert leak not in serialized
     assert "output_path" not in serialized
+    assert secret not in serialized
+    assert '"token"' not in serialized
     assert "<redacted-path>" in serialized
 
 

@@ -44,6 +44,16 @@ _PATH_KEYS = {
     "tmp_path",
     "traceback",
 }
+_SECRET_KEYS = {
+    "authorization",
+    "community",
+    "credential",
+    "password",
+    "secret",
+    "token",
+    "x-agent-token",
+}
+_SENSITIVE_KEYS = _PATH_KEYS | _SECRET_KEYS
 
 
 def is_web_export_task(task_type: str) -> bool:
@@ -65,11 +75,25 @@ def redact_web_export_text(value: object) -> str:
 
 def sanitize_web_export_value(value: Any) -> Any:
     if isinstance(value, dict):
-        return {
-            str(key): sanitize_web_export_value(item)
-            for key, item in value.items()
-            if str(key).casefold() not in _PATH_KEYS
-        }
+        sanitized: dict[str, Any] = {}
+        sensitive_key_names_removed = False
+        for key, item in value.items():
+            name = str(key)
+            if name.casefold() in _SENSITIVE_KEYS:
+                continue
+            cleaned = sanitize_web_export_value(item)
+            if name.casefold() == "keys" and isinstance(cleaned, list):
+                filtered = [
+                    candidate
+                    for candidate in cleaned
+                    if str(candidate).casefold() not in _SENSITIVE_KEYS
+                ]
+                sensitive_key_names_removed = len(filtered) != len(cleaned)
+                cleaned = filtered
+            sanitized[name] = cleaned
+        if sensitive_key_names_removed:
+            sanitized["keys_truncated"] = True
+        return sanitized
     if isinstance(value, (list, tuple)):
         return [sanitize_web_export_value(item) for item in value]
     if isinstance(value, str):
@@ -84,6 +108,11 @@ def sanitize_web_export_event(event: dict[str, object]) -> dict[str, object]:
     return dict(sanitized) if isinstance(sanitized, dict) else {}
 
 
+def sanitize_web_export_result_summary(value: object) -> dict[str, Any]:
+    sanitized = sanitize_web_export_value(value)
+    return dict(sanitized) if isinstance(sanitized, dict) else {}
+
+
 def sanitize_web_export_snapshot(snapshot: TaskSnapshot) -> TaskSnapshot:
     if not is_web_export_task(snapshot.task_type):
         return snapshot
@@ -92,6 +121,7 @@ def sanitize_web_export_snapshot(snapshot: TaskSnapshot) -> TaskSnapshot:
         snapshot,
         result_path="",
         result=dict(result) if isinstance(result, dict) else {},
+        result_summary=sanitize_web_export_result_summary(snapshot.result_summary),
         message=redact_web_export_text(snapshot.message),
         error_message=redact_web_export_text(snapshot.error_message),
     )
@@ -102,6 +132,7 @@ __all__ = [
     "redact_web_export_text",
     "redact_web_task_text",
     "sanitize_web_export_event",
+    "sanitize_web_export_result_summary",
     "sanitize_web_export_snapshot",
     "sanitize_web_export_value",
 ]
