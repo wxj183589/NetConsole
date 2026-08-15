@@ -23,6 +23,10 @@ from pathlib import Path
 from typing import Any
 
 from netconsole.core.sqlite_utils import connect_sqlite
+from netconsole.repositories.history_legacy_migration_repository import (
+    HistoryLegacyMigrationRepository,
+    SHARD_QUERY_AUTHORITY_STATES,
+)
 
 DEFAULT_HEARTBEAT_SECONDS = {
     "device_fact": 3600,
@@ -194,6 +198,17 @@ LEGACY_HISTORY_TABLES = frozenset(
         "ap_optical_history",
     }
 )
+
+KIND_CANONICAL_LEGACY_SOURCE = {
+    "device_fact": "device_facts_history",
+    "device_interface": "device_interfaces_history",
+    "device_optical": "device_optical_modules_history",
+    "device_lldp": "device_lldp_neighbors_history",
+    "fit_ap_resource": "ac_fit_ap_resource_history",
+    "fit_ap_radio": "ac_fit_ap_radio_history",
+    "fit_ap_lldp": "ac_fit_ap_lldp_history",
+    "fit_ap_optical": "ac_fit_ap_optical_history",
+}
 
 
 def _parse_time(value: str) -> datetime | None:
@@ -846,6 +861,7 @@ class HistoryStore:
         safe_limit = max(1, int(limit))
         safe_offset = max(0, int(offset))
         requested = safe_limit + safe_offset
+        include_legacy = self._kind_uses_shard_authority(kind)
         if self.database_path.is_file():
             try:
                 with closing(self._connect_readonly(self.database_path)) as current:
@@ -859,6 +875,7 @@ class HistoryStore:
                             limit=requested,
                             collected_from=collected_from,
                             collected_to=collected_to,
+                            include_legacy=False,
                         )
                         events.extend(self._event_dict(dict(row)) for row in pending)
             except (OSError, sqlite3.Error) as exc:
@@ -913,6 +930,7 @@ class HistoryStore:
                                 limit=requested,
                                 collected_from=collected_from,
                                 collected_to=collected_to,
+                                include_legacy=include_legacy,
                             )
                             shard_events.extend(
                                 self._event_dict(dict(row)) for row in rows_v1
@@ -927,6 +945,7 @@ class HistoryStore:
                                     limit=requested,
                                     collected_from=collected_from,
                                     collected_to=collected_to,
+                                    include_legacy=include_legacy,
                                 )
                             )
                     events.extend(shard_events)
@@ -957,11 +976,17 @@ class HistoryStore:
         total = 0
         errors: list[str] = []
 
-        def count_rows(conn: sqlite3.Connection, table: str) -> int:
+        include_legacy = self._kind_uses_shard_authority(kind)
+
+        def count_rows(
+            conn: sqlite3.Connection, table: str, *, allow_legacy: bool
+        ) -> int:
             # Copied legacy rows remain intentionally hidden until a future
             # per-table cutover can exclude their source rows. Otherwise an
             # old database would return the legacy row and its verified copy.
-            clauses = ["kind = ?", "event_type != 'legacy'"]
+            clauses = ["kind = ?"]
+            if not allow_legacy:
+                clauses.append("event_type != 'legacy'")
             params: list[Any] = [kind]
             if entity_key is not None:
                 clauses.append("entity_key = ?")
@@ -985,7 +1010,9 @@ class HistoryStore:
             try:
                 with closing(self._connect_readonly(self.database_path)) as current:
                     if self._table_exists(current, "history_outbox"):
-                        total += count_rows(current, "history_outbox")
+                        total += count_rows(
+                            current, "history_outbox", allow_legacy=False
+                        )
             except (OSError, sqlite3.Error) as exc:
                 errors.append(f"current:{exc.__class__.__name__}")
 
@@ -1022,7 +1049,11 @@ class HistoryStore:
                     try:
                         with closing(self._connect_readonly(path)) as shard:
                             if self._table_exists(shard, "history_events"):
-                                total += count_rows(shard, "history_events")
+                                total += count_rows(
+                                    shard,
+                                    "history_events",
+                                    allow_legacy=include_legacy,
+                                )
                             if self._table_exists(shard, "history_events_v2"):
                                 total += self._count_v2_events(
                                     shard,
@@ -1031,6 +1062,7 @@ class HistoryStore:
                                     entity_prefix=entity_prefix,
                                     collected_from=collected_from,
                                     collected_to=collected_to,
+                                    include_legacy=include_legacy,
                                 )
                             if not self._table_exists(
                                 shard, "history_events"
@@ -1042,6 +1074,24 @@ class HistoryStore:
                 errors.append(f"catalog:{exc.__class__.__name__}")
         self._last_query_errors = tuple(errors)
         return total
+
+    def legacy_source_is_authoritative(self, source_table: str) -> bool:
+        """Return whether ordinary readers should still include this legacy table."""
+
+        source = self._validate_legacy_source(source_table)
+        state = HistoryLegacyMigrationRepository(
+            self.history_root / "catalog.db"
+        ).effective_authority_state(source)
+        return state not in SHARD_QUERY_AUTHORITY_STATES
+
+    def filter_legacy_rows(
+        self, source_table: str, rows: Iterable[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        return list(rows) if self.legacy_source_is_authoritative(source_table) else []
+
+    def _kind_uses_shard_authority(self, kind: str) -> bool:
+        source = KIND_CANONICAL_LEGACY_SOURCE.get(str(kind or ""))
+        return bool(source and not self.legacy_source_is_authoritative(source))
 
     def _safe_shard_path(self, relative_path: str) -> Path | None:
         """Resolve catalog paths without allowing reads outside the history root."""
@@ -1610,11 +1660,14 @@ class HistoryStore:
         limit: int,
         collected_from: str | None,
         collected_to: str | None,
+        include_legacy: bool = False,
     ) -> list[sqlite3.Row]:
         # A migration copy is durable verification data, not a new producer
         # event. Keep legacy readers authoritative until their explicit
         # source-table cutover exists, preventing duplicate history results.
-        clauses = ["kind=?", "event_type != 'legacy'"]
+        clauses = ["kind=?"]
+        if not include_legacy:
+            clauses.append("event_type != 'legacy'")
         params: list[Any] = [kind]
         if entity_key is not None:
             clauses.append("entity_key=?")
@@ -1649,6 +1702,7 @@ class HistoryStore:
         limit: int,
         collected_from: str | None,
         collected_to: str | None,
+        include_legacy: bool = False,
     ) -> list[dict[str, Any]]:
         kind_id = cls._lookup_v2_id(
             conn,
@@ -1681,7 +1735,7 @@ class HistoryStore:
             value_column="name",
             value="legacy",
         )
-        if legacy_type_id is not None:
+        if legacy_type_id is not None and not include_legacy:
             clauses.append("e.event_type_id != ?")
             params.append(legacy_type_id)
         if collected_from:
@@ -1727,6 +1781,7 @@ class HistoryStore:
         entity_prefix: str | None,
         collected_from: str | None,
         collected_to: str | None,
+        include_legacy: bool = False,
     ) -> int:
         kind_id = cls._lookup_v2_id(
             conn,
@@ -1760,7 +1815,7 @@ class HistoryStore:
             value_column="name",
             value="legacy",
         )
-        if legacy_type_id is not None:
+        if legacy_type_id is not None and not include_legacy:
             clauses.append("e.event_type_id != ?")
             params.append(legacy_type_id)
         if collected_from:

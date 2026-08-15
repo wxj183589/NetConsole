@@ -11,6 +11,7 @@ from scripts.maintenance.profile_device_history_storage import (
     profile_legacy_history,
     profile_v1_history,
 )
+from scripts.maintenance.validate_history_migration_server_hdd import validate_evidence
 
 
 def _event(event_id: str, collected_at: str, value: str) -> dict[str, str]:
@@ -122,3 +123,36 @@ def test_storage_profiler_and_query_benchmark_use_small_isolated_fixtures(tmp_pa
         for item in plans["v2_kind_time"]
     )
     assert (tmp_path / "query" / "HISTORY_QUERY_BENCHMARK.json").is_file()
+
+
+def test_server_hdd_validator_keeps_missing_field_evidence_pending() -> None:
+    report = validate_evidence(
+        {
+            "result": "COPY_ONLY_READY",
+            "error_count": 0,
+            "active_rows_per_second": 123.4,
+            "chunk_latency_ms": {"p50": 10, "p95": 20, "p99": 30, "max": 40},
+        },
+        {
+            "database": {"exists": True, "history_pending": 0},
+            "disk_performance": {
+                "active_time_percent": "unknown",
+                "queue_length": "unknown",
+            },
+        },
+        {
+            "target_media_is_hdd": False,
+            "migration_pause_verified": True,
+            "backend_ready_verified": True,
+            "outbox_recovered": True,
+            "ground_unattended_healthy": True,
+            "syslog_receive_healthy": True,
+            "mr_ping_task_persistence_healthy": True,
+            "disk_not_sustained_saturated": True,
+        },
+    )
+
+    assert report["server_hdd_storage_v2_test"] == "PENDING"
+    assert "target_media_is_hdd" in report["unmet_or_missing_gates"]
+    assert "disk_performance_counter" in report["unmet_or_missing_gates"]
+    assert report["migration_executed_by_validator"] is False

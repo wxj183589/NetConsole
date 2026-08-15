@@ -3,12 +3,17 @@ from __future__ import annotations
 import json
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 
 from netconsole.core.paths import PathResolver
 from netconsole.core.sqlite_utils import connect_sqlite
+from netconsole.services import history_legacy_migration as migration_module
+from netconsole.services.database_upgrade.coordinator import (
+    site_database_maintenance_key,
+)
 from netconsole.services.history_legacy_migration import HistoryLegacyMigrationService
 from netconsole.services.history_store import HistoryStore
 
@@ -395,3 +400,271 @@ def test_large_batch_uses_bounded_commits_and_verifies_every_row(tmp_path: Path)
     assert result["migration"]["verified_count"] == 1_000
     assert result["migration"]["checkpoint_commits"] == 4
     assert _target_count(service) == 1_000
+
+
+def test_per_table_cutover_query_authority_persists_and_rolls_back(
+    tmp_path: Path,
+) -> None:
+    source = _source_database(
+        tmp_path,
+        rows=[
+            (1, "a", "2025-12-31T23:59:59"),
+            (2, "b", "2026-01-01T00:00:00"),
+            (3, "c", "2026-02-01T00:00:00"),
+        ],
+    )
+    service = _service(tmp_path, source)
+    migrated = service.start(migration_id="authority", max_elapsed_seconds=0)
+    checkpoint = migrated["tables"][0]
+
+    assert checkpoint["authority_state"] == "SHARD_VERIFIED"
+    assert checkpoint["cutover_revision"] == 1
+    assert service.store.query_events(kind="device_fact") == []
+
+    cutover = service.cutover(
+        "authority",
+        "device_facts_history",
+        expected_revision=1,
+        reason="consumer validation passed",
+    )
+
+    assert cutover["table"]["authority_state"] == "SHARD_AUTHORITY"
+    assert cutover["table"]["cutover_revision"] == 2
+    assert [
+        row["collected_at"]
+        for row in service.store.query_events(kind="device_fact", limit=2)
+    ] == ["2026-02-01T00:00:00", "2026-01-01T00:00:00"]
+    assert [
+        row["collected_at"]
+        for row in service.store.query_events(kind="device_fact", limit=2, offset=1)
+    ] == ["2026-01-01T00:00:00", "2025-12-31T23:59:59"]
+    assert service.store.count_events(kind="device_fact") == 3
+    assert not service.store.legacy_source_is_authoritative("device_facts_history")
+
+    restarted = _service(tmp_path / "restart", source)
+    restarted.history_root = service.history_root
+    restarted.store = HistoryStore(
+        source, site_id="site-a", history_root=service.history_root
+    )
+    restarted.journal = service.journal
+    assert (
+        restarted.status("authority")["tables"][0]["authority_state"]
+        == "SHARD_AUTHORITY"
+    )
+    assert len(restarted.store.query_events(kind="device_fact")) == 3
+
+    rolled_back = service.rollback_cutover(
+        "authority",
+        "device_facts_history",
+        expected_revision=2,
+        reason="consumer mismatch",
+    )
+    assert rolled_back["table"]["authority_state"] == "LEGACY_AUTHORITY"
+    assert rolled_back["table"]["cutover_revision"] == 3
+    assert service.store.query_events(kind="device_fact") == []
+    with pytest.raises(ValueError, match="revision mismatch"):
+        service.cutover(
+            "authority",
+            "device_facts_history",
+            expected_revision=1,
+            reason="stale operator request",
+        )
+
+
+def test_delete_eligibility_plan_excludes_unsupported_and_verifies_projection(
+    tmp_path: Path,
+) -> None:
+    source = _source_database(
+        tmp_path,
+        rows=[(1, "a", "2026-08-01T00:00:00")],
+    )
+    with sqlite3.connect(source) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE ac_fit_ap_optical_history (
+                id INTEGER PRIMARY KEY, ac_device_uuid TEXT NOT NULL, ap_uuid TEXT NOT NULL,
+                interface_name TEXT, rx_power TEXT, tx_power TEXT, collected_at TEXT, created_at TEXT
+            );
+            CREATE TABLE ap_optical_history (
+                id INTEGER PRIMARY KEY, history_uuid TEXT, ap_uuid TEXT NOT NULL, side TEXT,
+                device_uuid TEXT, interface_name TEXT, rx_power TEXT, tx_power TEXT,
+                alarm_status TEXT, collected_at TEXT, data_source TEXT, is_latest INTEGER,
+                created_at TEXT
+            );
+            CREATE TABLE ac_fit_ap_unauthenticated_history (
+                id INTEGER PRIMARY KEY, ac_device_uuid TEXT, collected_at TEXT
+            );
+            INSERT INTO ac_fit_ap_optical_history VALUES
+                (1, 'ac-1', 'ap-1', 'GE1/0/1', '-10', '-2',
+                 '2026-08-01T00:00:00', '2026-08-01T00:00:00');
+            INSERT INTO ap_optical_history VALUES
+                (9, 'history-9', 'ap-1', 'A', 'ac-1', 'GE1/0/1', '-10', '-2',
+                 'normal', '2026-08-01T00:00:00', 'legacy', 1,
+                 '2026-08-01T00:00:00');
+            INSERT INTO ac_fit_ap_unauthenticated_history VALUES
+                (607, 'ac-unsupported', '2026-08-01T00:00:00');
+            """
+        )
+    service = _service(tmp_path, source)
+    migrated = service.start(migration_id="delete-plan", max_elapsed_seconds=0)
+    checkpoints = {item["source_table"]: item for item in migrated["tables"]}
+    assert checkpoints["ap_optical_history"]["duplicate_count"] == 1
+
+    for table in (
+        "device_facts_history",
+        "ac_fit_ap_optical_history",
+        "ap_optical_history",
+    ):
+        checkpoint = service.status("delete-plan")["tables"]
+        current = next(item for item in checkpoint if item["source_table"] == table)
+        service.cutover(
+            "delete-plan",
+            table,
+            expected_revision=int(current["cutover_revision"]),
+            reason="query and consumer validation",
+        )
+        current = next(
+            item
+            for item in service.status("delete-plan")["tables"]
+            if item["source_table"] == table
+        )
+        service.evaluate_delete_eligibility(
+            "delete-plan",
+            table,
+            expected_revision=int(current["cutover_revision"]),
+            observation={
+                "query_validation": True,
+                "consumer_validation": True,
+                "integrity_mismatch": False,
+            },
+            reason="observation window passed",
+        )
+
+    plan = service.preview_delete_plan("delete-plan")
+
+    assert plan["source_delete_executor"] == "NOT_IMPLEMENTED"
+    assert plan["source_delete_executed"] is False
+    assert len(plan["plan_digest"]) == 64
+    assert service.validate_delete_plan(plan)["valid"] is True
+    unsupported = next(
+        item
+        for item in plan["excluded_sources"]
+        if item["source_table"] == "ac_fit_ap_unauthenticated_history"
+    )
+    assert unsupported["eligibility"] is False
+    assert unsupported["row_count"] == 1
+    projection = next(
+        item for item in plan["tables"] if item["source_table"] == "ap_optical_history"
+    )
+    assert projection["eligibility"] is True
+    assert projection["duplicate_count"] == 1
+    assert projection["ranges"][0]["projection_duplicate"] is True
+    assert projection["ranges"][0]["source_key_ranges"] == [{"start": 9, "end": 9}]
+    assert (tmp_path / "diagnostics" / "LEGACY_HISTORY_DELETE_PLAN.json").is_file()
+    with sqlite3.connect(source) as conn:
+        assert (
+            conn.execute("SELECT COUNT(*) FROM device_facts_history").fetchone()[0] == 1
+        )
+        assert (
+            conn.execute("SELECT COUNT(*) FROM ap_optical_history").fetchone()[0] == 1
+        )
+
+
+def test_cutover_revalidates_source_inside_shared_maintenance_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _source_database(
+        tmp_path,
+        rows=[(1, "a", "2026-08-01T00:00:00")],
+    )
+    service = _service(tmp_path, source)
+    service.start(migration_id="locked-cutover", max_elapsed_seconds=0)
+    observed_keys: list[str] = []
+
+    @contextmanager
+    def maintenance_lock(_paths: PathResolver, key: str):
+        observed_keys.append(key)
+        with sqlite3.connect(source) as connection:
+            connection.execute(
+                "INSERT INTO device_facts_history VALUES (2, 'device-2', 'S6520', ?, ?)",
+                ("2026-08-02T00:00:00", "2026-08-02T00:00:00"),
+            )
+            connection.commit()
+        yield
+
+    monkeypatch.setattr(
+        migration_module,
+        "database_maintenance_lock",
+        maintenance_lock,
+    )
+
+    with pytest.raises(ValueError, match="identity changed"):
+        service.cutover(
+            "locked-cutover",
+            "device_facts_history",
+            expected_revision=1,
+            reason="must revalidate under lock",
+        )
+
+    assert observed_keys == [site_database_maintenance_key("site-a")]
+    checkpoint = service.status("locked-cutover")["tables"][0]
+    assert checkpoint["authority_state"] == "SHARD_VERIFIED"
+
+
+def test_delete_plan_rejects_digest_source_identity_and_revision_staleness(
+    tmp_path: Path,
+) -> None:
+    source = _source_database(
+        tmp_path,
+        rows=[(1, "a", "2026-08-01T00:00:00")],
+    )
+    service = _service(tmp_path, source)
+    service.start(migration_id="stale-plan", max_elapsed_seconds=0)
+    service.cutover(
+        "stale-plan",
+        "device_facts_history",
+        expected_revision=1,
+        reason="validated",
+    )
+    service.evaluate_delete_eligibility(
+        "stale-plan",
+        "device_facts_history",
+        expected_revision=2,
+        observation={
+            "query_validation": True,
+            "consumer_validation": True,
+            "integrity_mismatch": False,
+        },
+        reason="observed",
+    )
+    plan = service.preview_delete_plan("stale-plan")
+
+    changed = json.loads(json.dumps(plan))
+    changed["tables"][0]["row_count"] = 99
+    with pytest.raises(ValueError, match="digest mismatch"):
+        service.validate_delete_plan(changed)
+
+    service.rollback_cutover(
+        "stale-plan",
+        "device_facts_history",
+        expected_revision=3,
+        reason="rollback after preview",
+    )
+    with pytest.raises(ValueError, match="authority is stale"):
+        service.validate_delete_plan(plan)
+
+    other = _service(tmp_path / "identity", source)
+    other.history_root = service.history_root
+    other.store = HistoryStore(
+        source, site_id="site-a", history_root=service.history_root
+    )
+    other.journal = service.journal
+    with sqlite3.connect(source) as conn:
+        conn.execute(
+            "INSERT INTO device_facts_history VALUES (2, 'device-2', 'S6520', ?, ?)",
+            ("2026-08-02T00:00:00", "2026-08-02T00:00:00"),
+        )
+        conn.commit()
+    with pytest.raises(ValueError, match="identity changed"):
+        other.validate_delete_plan(plan)

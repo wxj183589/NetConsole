@@ -27,6 +27,14 @@ from netconsole.services.database_upgrade.sqlite_consistency import (
 
 _LOCKS: dict[str, threading.RLock] = {}
 _LOCKS_GUARD = threading.Lock()
+SITE_DATABASE_MAINTENANCE_CLASS = "site-database-maintenance"
+
+
+def site_database_maintenance_key(site_id: str) -> str:
+    selected = str(site_id or "").strip()
+    if not selected:
+        raise ValueError("site_id 不能为空")
+    return f"{SITE_DATABASE_MAINTENANCE_CLASS}:{selected}"
 
 
 @contextmanager
@@ -319,4 +327,9 @@ class DatabaseUpgradeCoordinator:
             progress(stage, current, 100, message)
 
 
-__all__ = ["DatabaseUpgradeCoordinator", "database_maintenance_lock"]
+__all__ = [
+    "DatabaseUpgradeCoordinator",
+    "SITE_DATABASE_MAINTENANCE_CLASS",
+    "database_maintenance_lock",
+    "site_database_maintenance_key",
+]

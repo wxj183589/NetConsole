@@ -753,11 +753,17 @@ class DeviceFactRepository:
             limit=100_000,
         ))
 
-    def list_all_optical_history(self, device_uuids: list[str] | None = None, limit: int = 100000) -> list[dict[str, object | None]]:
+    def list_all_optical_history(
+        self, device_uuids: list[str] | None = None, limit: int = 100000
+    ) -> list[dict[str, object | None]]:
         params: list[object] = []
         where = ""
         if device_uuids is not None:
-            device_uuids = [str(device_uuid) for device_uuid in device_uuids if str(device_uuid or "").strip()]
+            device_uuids = [
+                str(device_uuid)
+                for device_uuid in device_uuids
+                if str(device_uuid or "").strip()
+            ]
             if not device_uuids:
                 return []
         if device_uuids:
@@ -775,7 +781,9 @@ class DeviceFactRepository:
                 """,
                 params,
             ).fetchall()
-        legacy = [dict(row) for row in rows]
+        legacy = self.history_store.filter_legacy_rows(
+            "device_optical_modules_history", (dict(row) for row in rows)
+        )
         events = self.history_store.query_events(
             kind="device_optical",
             limit=max(1, min(int(limit), 100000)),
@@ -783,7 +791,11 @@ class DeviceFactRepository:
         )
         if device_uuids:
             allowed = set(device_uuids)
-            events = [event for event in events if str(event.get("device_uuid") or "") in allowed]
+            events = [
+                event
+                for event in events
+                if str(event.get("device_uuid") or "") in allowed
+            ]
         return _normalize_optical_rows(
             sorted(
                 [*legacy, *events],
@@ -824,7 +836,11 @@ class DeviceFactRepository:
                 """,
                 params,
             ).fetchone()
-        legacy = dict(row) if row is not None else None
+        legacy_rows = self.history_store.filter_legacy_rows(
+            "device_optical_modules_history",
+            ([dict(row)] if row is not None else []),
+        )
+        legacy = legacy_rows[0] if legacy_rows else None
         events = self.history_store.query_events(
             kind="device_optical",
             entity_key=f"{device_uuid}:{interface_name}",
@@ -832,11 +848,25 @@ class DeviceFactRepository:
             collected_to=before_collected_at,
         )
         if before_collected_at:
-            events = [event for event in events if str(event.get("collected_at") or "") < before_collected_at]
-            if legacy is not None and str(legacy.get("collected_at") or "") >= before_collected_at:
+            events = [
+                event
+                for event in events
+                if str(event.get("collected_at") or "") < before_collected_at
+            ]
+            if (
+                legacy is not None
+                and str(legacy.get("collected_at") or "") >= before_collected_at
+            ):
                 legacy = None
         candidates = [row for row in ([legacy] if legacy else [])] + events
-        candidates.sort(key=lambda item: (str(item.get("collected_at") or ""), str(item.get("event_id") or ""), _int_value(item.get("id"))), reverse=True)
+        candidates.sort(
+            key=lambda item: (
+                str(item.get("collected_at") or ""),
+                str(item.get("event_id") or ""),
+                _int_value(item.get("id")),
+            ),
+            reverse=True,
+        )
         return _normalize_optical_row(candidates[0]) if candidates else None
 
     def list_lldp_history(self, device_uuid: str, local_interface: str) -> list[dict[str, object | None]]:
@@ -872,27 +902,38 @@ class DeviceFactRepository:
                     safe_limit + safe_offset,
                 ),
             ).fetchall()
+        legacy_rows = self.history_store.filter_legacy_rows(
+            table, (dict(row) for row in rows)
+        )
         mapped = self._merge_history(
             _history_kind_to_store_kind(history_kind),
             _history_kind_entity_key(history_kind, device_uuid, object_name),
-            [dict(row) for row in rows],
+            legacy_rows,
             limit=safe_limit + safe_offset,
         )
-        mapped = mapped[safe_offset:safe_offset + safe_limit]
+        mapped = mapped[safe_offset : safe_offset + safe_limit]
         return (
             _normalize_optical_rows(mapped)
-            if str(history_kind or "").strip().casefold() in {"optical", "optical_module"}
+            if str(history_kind or "").strip().casefold()
+            in {"optical", "optical_module"}
             else mapped
         )
 
-    def count_object_history(self, history_kind: str, device_uuid: str, object_name: str) -> int:
+    def count_object_history(
+        self, history_kind: str, device_uuid: str, object_name: str
+    ) -> int:
         table, object_field = _device_object_history_source(history_kind)
         with self.database.connect() as conn:
             row = conn.execute(
                 f"SELECT COUNT(*) AS total FROM {table} WHERE device_uuid = ? AND {object_field} = ?",
                 (device_uuid, object_name),
             ).fetchone()
-        return int(row["total"] if row is not None else 0) + self.history_store.count_events(
+        legacy_total = (
+            int(row["total"] if row is not None else 0)
+            if self.history_store.legacy_source_is_authoritative(table)
+            else 0
+        )
+        return legacy_total + self.history_store.count_events(
             kind=_history_kind_to_store_kind(history_kind),
             entity_key=_history_kind_entity_key(history_kind, device_uuid, object_name),
         )
@@ -1056,13 +1097,15 @@ class DeviceFactRepository:
         history_payload["created_at"] = history_payload.get("created_at") or cls._now()
         cls._insert(conn, table, fields, history_payload)
 
-    def _list_history(self, table: str, where: str, params: tuple[object, ...]) -> list[dict[str, object | None]]:
+    def _list_history(
+        self, table: str, where: str, params: tuple[object, ...]
+    ) -> list[dict[str, object | None]]:
         with self.database.connect() as conn:
             rows = conn.execute(
                 f"SELECT * FROM {table} WHERE {where} ORDER BY collected_at DESC, id DESC",
                 params,
             ).fetchall()
-        return [dict(row) for row in rows]
+        return self.history_store.filter_legacy_rows(table, (dict(row) for row in rows))
 
     def _merge_history(
         self,
