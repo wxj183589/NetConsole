@@ -33,6 +33,7 @@
     "src/netconsole/services/runtime_self_check_service.py",
     "scripts/maintenance/check_desktop_bootstrap.py",
     "scripts/maintenance/benchmark_database_functional_queries.py",
+    "scripts/maintenance/collect_functional_consumer_observations.py",
     "scripts/maintenance/collect_global_storage_inventory.py",
     "scripts/maintenance/diagnose_server_hdd.py",
     "scripts/maintenance/migrate_legacy_runtime_data.py",
