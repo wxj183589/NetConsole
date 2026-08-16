@@ -178,6 +178,10 @@ _RESULT_AUTHORITY_EVENT_TYPES = (
 class TaskRepository:
     def __init__(self, db_path: str | Path) -> None:
         self.db_path = Path(db_path)
+        # task_results are immutable and addressed by deterministic result_id.
+        # Cache verified canonical payloads so a task detail read does not
+        # re-hash one large result for the snapshot and each terminal event.
+        self._verified_result_cache: dict[str, dict[str, Any]] = {}
         self.task_history = TaskHistoryStore(self.db_path)
         self.initialize()
 
@@ -305,7 +309,7 @@ class TaskRepository:
             row = self._result_row(conn, str(result_id))
             if row is None:
                 return None
-            return self._verified_result_row(dict(row))
+            return self._verified_result_for_read(dict(row))
 
     def task_result_rollout_status(self) -> TaskResultRolloutStatus:
         with self._connect() as conn:
@@ -458,7 +462,7 @@ class TaskRepository:
         ).fetchone()
         if row is None:
             raise sqlite3.IntegrityError("terminal task result was not persisted")
-        verified = self._verified_result_row(dict(row))
+        verified = self._verified_result_for_read(dict(row))
         if (
             str(verified["task_id"]) != event.task_id
             or str(verified["terminal_event_type"]) != event.type
@@ -550,6 +554,17 @@ class TaskRepository:
     @classmethod
     def _verified_result_row(cls, row: dict[str, object]) -> dict[str, Any]:
         return verify_task_result_row(dict(row))
+
+    def _verified_result_for_read(self, row: dict[str, object]) -> dict[str, Any]:
+        result_id = str(row.get("result_id") or "")
+        if result_id:
+            cached = self._verified_result_cache.get(result_id)
+            if cached is not None:
+                return cached
+        verified = self._verified_result_row(row)
+        if result_id:
+            self._verified_result_cache[result_id] = verified
+        return verified
 
     @classmethod
     def _sample_repeated_progress(cls, conn, event: TaskEvent) -> bool:
@@ -1550,7 +1565,7 @@ class TaskRepository:
             result = self._result_row(conn, result_id)
             if result is None:
                 raise sqlite3.DatabaseError("task snapshot result reference is missing")
-            verified = self._verified_result_row(dict(result))
+            verified = self._verified_result_for_read(dict(result))
             if str(verified["task_id"]) != str(row["task_id"]):
                 raise sqlite3.DatabaseError("task snapshot result task binding mismatch")
             if str(row.get("result_hash") or "") not in {"", str(verified["sha256"])}:
@@ -1683,7 +1698,7 @@ class TaskRepository:
             row = self._result_row(conn, result_id)
             if row is None:
                 raise sqlite3.DatabaseError("task event result reference is missing")
-            verified = self._verified_result_row(dict(row))
+            verified = self._verified_result_for_read(dict(row))
             if str(verified["task_id"]) != str(event["task_id"]):
                 raise sqlite3.DatabaseError("task event result task binding mismatch")
             if str(verified["terminal_event_type"]) != str(event["type"]):

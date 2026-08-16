@@ -44,6 +44,14 @@ DEVICE_MAINTENANCE_TABLES = frozenset(
         "history_state",
     }
 )
+DEVICE_AUXILIARY_COMPATIBILITY_TABLES = frozenset(
+    {
+        # Added by AP Identity evidence governance. It is validated through
+        # the AP Identity consumer matrix and is not part of legacy device
+        # query result semantics.
+        "ap_identity_radio_evidence",
+    }
+)
 TASK_MAINTENANCE_TABLES = frozenset(
     {
         "task_schema_meta",
@@ -79,6 +87,7 @@ class _ReadonlyTaskRepository(TaskRepository):
 
     def __init__(self, db_path: Path, *, history_root: Path) -> None:
         self.db_path = Path(db_path)
+        self._verified_result_cache: dict[str, dict[str, Any]] = {}
         self.task_history = TaskHistoryStore(
             self.db_path,
             history_root=history_root,
@@ -586,6 +595,8 @@ def _table_exclusion_reason(owner: str, table: str) -> str:
             return "SUPPORTED_LEGACY_HISTORY_MIGRATION_AUTHORITY"
         if table in DEVICE_MAINTENANCE_TABLES:
             return "MAINTENANCE_METADATA"
+        if table in DEVICE_AUXILIARY_COMPATIBILITY_TABLES:
+            return "AUXILIARY_COMPATIBILITY_EVIDENCE"
         return ""
     if table in TASK_REPOSITORY_AUTHORITY_TABLES:
         return "TASK_REPOSITORY_SEMANTIC_AUTHORITY"

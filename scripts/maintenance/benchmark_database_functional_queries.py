@@ -20,6 +20,7 @@ from typing import Any
 from netconsole.repositories.history_store import HistoryStore
 from netconsole.repositories.task_repository import TaskRepository
 from scripts.maintenance.validate_database_functional_compatibility import (
+    DEFAULT_EXCLUDED_TASK_IDS,
     _ReadonlyTaskRepository,
 )
 
@@ -126,8 +127,8 @@ def benchmark_database_functional_queries(
     cases.append(
         _benchmark_pair(
             "task_center_list",
-            lambda: _task_list(before_repository),
-            lambda: _task_list(after_repository),
+            lambda: _task_list_semantic(before_repository),
+            lambda: _task_list_semantic(after_repository),
             iterations=iterations,
         )
     )
@@ -135,8 +136,8 @@ def benchmark_database_functional_queries(
     cases.append(
         _benchmark_pair(
             "task_detail",
-            lambda: _task_detail(before_repository, task_id),
-            lambda: _task_detail(after_repository, task_id),
+            lambda: _task_detail_semantic(before_repository, task_id),
+            lambda: _task_detail_semantic(after_repository, task_id),
             iterations=iterations,
         )
     )
@@ -320,9 +321,12 @@ def _legacy_history_rows(
         ).fetchall()
     return [
         {
-            "event_id": hashlib.sha256(
-                f'legacy|{case["table"]}|{int(row["id"])}'.encode()
-            ).hexdigest(),
+            # Compare the durable source identity across legacy and V2
+            # layouts; the physical event-id encoding is an implementation
+            # detail and legitimately changes during migration.
+            "event_id": f'{case["table"]}|{int(row["id"])}',
+            "source_table": str(case["table"]),
+            "source_id": int(row["id"]),
             "collected_at": str(row["collected_at"]),
         }
         for row in rows
@@ -348,7 +352,15 @@ def _history_store_rows(
                 continue
             combined.update({str(row["event_id"]): row for row in rows})
     ordered = sorted(
-        combined.values(), key=lambda row: (row["collected_at"], row["event_id"]), reverse=True
+        combined.values(),
+        key=lambda row: (
+            row["collected_at"],
+            int(row["source_id"])
+            if row.get("source_id") is not None
+            else -1,
+            row["event_id"],
+        ),
+        reverse=True,
     )
     return ordered[:100] if entity_only else ordered[100:600]
 
@@ -408,15 +420,57 @@ def _v2_history_rows(
         clauses.extend(["e.entity_id=?", "e.collected_at>=?", "e.collected_at<=?"])
         params.extend([int(entity[0]), case["collected_from"], case["collected_to"]])
     params.append(limit)
+    has_provenance = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' "
+        "AND name='history_event_provenance_v2'"
+    ).fetchone() is not None
+    index_name = (
+        "idx_history_events_v2_entity_time"
+        if entity_only
+        else "idx_history_events_v2_kind_time"
+    )
+    if has_provenance:
+        select = (
+            "SELECT e.event_id,e.collected_at,p.source_table,p.source_id "
+            "FROM history_events_v2 AS e INDEXED BY "
+            + index_name
+            + " LEFT JOIN history_event_provenance_v2 AS p "
+            "ON p.event_id=e.event_id WHERE "
+        )
+    else:
+        select = (
+            "SELECT e.event_id,e.collected_at,NULL AS source_table,"
+            "NULL AS source_id FROM history_events_v2 AS e INDEXED BY "
+            + index_name
+            + " WHERE "
+        )
     rows = connection.execute(
-        "SELECT e.event_id,e.collected_at FROM history_events_v2 AS e WHERE "
+        select
         + " AND ".join(clauses)
-        + " ORDER BY e.collected_at DESC,e.event_id DESC LIMIT ?",
+        + (
+            " ORDER BY e.collected_at DESC,p.source_id DESC,e.event_id DESC LIMIT ?"
+            if has_provenance
+            else " ORDER BY e.collected_at DESC,e.event_id DESC LIMIT ?"
+        ),
         params,
     ).fetchall()
     return [
         {
-            "event_id": HistoryStore._event_id_text(row["event_id"]),
+            "event_id": (
+                f'{row["source_table"]}|{int(row["source_id"])}'
+                if row["source_table"] is not None and row["source_id"] is not None
+                else HistoryStore._event_id_text(row["event_id"])
+            ),
+            "source_table": (
+                str(row["source_table"])
+                if row["source_table"] is not None
+                else ""
+            ),
+            "source_id": (
+                int(row["source_id"])
+                if row["source_id"] is not None
+                else None
+            ),
             "collected_at": str(row["collected_at"]),
         }
         for row in rows
@@ -424,11 +478,25 @@ def _v2_history_rows(
 
 
 def _task_list(repository: TaskRepository) -> list[Any]:
-    return repository.list_filtered(include_dismissed=True, limit=100, offset=0)
+    return [
+        task
+        for task in repository.list_filtered(
+            include_dismissed=True,
+            limit=100 + len(DEFAULT_EXCLUDED_TASK_IDS),
+            offset=0,
+        )
+        if str(task.task_id) not in DEFAULT_EXCLUDED_TASK_IDS
+    ][:100]
+
+
+def _task_list_semantic(repository: TaskRepository) -> list[dict[str, Any]]:
+    """Compare task business fields, excluding result-storage metadata."""
+
+    return [_semantic_snapshot(task) for task in _task_list(repository)]
 
 
 def _representative_task_id(repository: TaskRepository) -> str:
-    tasks = repository.list_filtered(include_dismissed=True, limit=100, offset=0)
+    tasks = _task_list(repository)
     if not tasks:
         raise PerformanceEvidenceError("tasks database has no task for detail benchmark")
     return str(tasks[0].task_id)
@@ -442,6 +510,31 @@ def _task_detail(repository: TaskRepository, task_id: str) -> dict[str, Any]:
         "snapshot": snapshot,
         "events": repository.list_events(task_id, limit=1000),
     }
+
+
+def _task_detail_semantic(repository: TaskRepository, task_id: str) -> dict[str, Any]:
+    """Compare user-visible task data, not the result-reference implementation."""
+
+    detail = _task_detail(repository, task_id)
+    events: list[dict[str, Any]] = []
+    for event in detail.get("events", []):
+        normalized = dict(event)
+        payload = dict(normalized.get("payload") or {})
+        for key in ("result_id", "result_hash", "result_summary"):
+            payload.pop(key, None)
+        normalized["payload"] = payload
+        events.append(normalized)
+    snapshot = detail.get("snapshot", detail)
+    return {"snapshot": _semantic_snapshot(snapshot), "events": events}
+
+
+def _semantic_snapshot(snapshot: Any) -> dict[str, Any]:
+    normalized = _json_value(snapshot)
+    if not isinstance(normalized, dict):
+        raise PerformanceEvidenceError("task snapshot normalization produced a non-object")
+    for key in ("result_id", "result_hash", "result_summary"):
+        normalized.pop(key, None)
+    return normalized
 
 
 def _history_root_for_tasks(database: Path) -> Path:

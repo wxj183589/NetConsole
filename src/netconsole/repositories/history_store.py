@@ -2648,8 +2648,16 @@ class HistoryStore:
         )
         if kind_id is None:
             return []
-        clauses = ["e.kind_id=?", f"n.entity_key IN ({','.join('?' for _ in entity_keys)})"]
-        params: list[Any] = [kind_id, *entity_keys]
+        entity_rows = conn.execute(
+            "SELECT entity_id FROM history_entities_v2 "
+            f"WHERE kind_id=? AND entity_key IN ({','.join('?' for _ in entity_keys)})",
+            (kind_id, *entity_keys),
+        ).fetchall()
+        entity_ids = [int(row[0]) for row in entity_rows]
+        if not entity_ids:
+            return []
+        clauses = ["e.kind_id=?", f"e.entity_id IN ({','.join('?' for _ in entity_ids)})"]
+        params: list[Any] = [kind_id, *entity_ids]
         if not include_legacy:
             clauses.append("t.name != 'legacy'")
         if event_types:
@@ -2664,7 +2672,7 @@ class HistoryStore:
             """
             + provenance_select
             + """
-            FROM history_events_v2 AS e INDEXED BY idx_history_events_v2_kind_time
+            FROM history_events_v2 AS e INDEXED BY idx_history_events_v2_entity_time
             JOIN history_kinds_v2 AS k ON k.kind_id=e.kind_id
             JOIN history_entities_v2 AS n ON n.entity_id=e.entity_id
             JOIN history_event_types_v2 AS t ON t.event_type_id=e.event_type_id

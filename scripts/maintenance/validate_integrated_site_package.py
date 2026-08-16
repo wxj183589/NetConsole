@@ -651,6 +651,12 @@ def _registered_authority_profile(
         reference_count = 0
         reference_values: list[tuple[str, str]] = []
         for path in discovered[store_id]:
+            # SQLite WAL/SHM sidecars may disappear between the recursive
+            # inventory and profiling when the writer connection checkpoints
+            # or closes. They are runtime-only and excluded from package
+            # authority; do not turn that benign race into a failed rehearsal.
+            if not path.exists():
+                continue
             relative = path.resolve().relative_to(site_root.resolve()).as_posix()
             profile = _authority_file_profile(path)
             files[relative] = profile

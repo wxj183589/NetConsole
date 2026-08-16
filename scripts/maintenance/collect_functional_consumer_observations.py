@@ -139,6 +139,23 @@ def collect_functional_consumer_observations(
     for store_id in sorted(source_stores):
         left = source_stores[store_id]
         right = imported_stores[store_id]
+        policy_class = str(left.get("policy_class") or "").upper()
+        if policy_class == "EXCLUDED":
+            if right.get("files"):
+                raise ConsumerObservationError(
+                    f"excluded Site Package store was imported: {store_id}"
+                )
+            # Excluded runtime markers (for example the History append lock)
+            # intentionally have no imported authority. Compare their policy,
+            # not a source-only file digest.
+            store_values[store_id] = "EXCLUDED:" + str(
+                left.get("site_package_policy") or ""
+            )
+            store_paths[store_id] = (
+                _store_paths(source_site, left, package_path),
+                _store_paths(imported_site, right, package_path),
+            )
+            continue
         left_digest = str(left.get("semantic_digest") or "")
         right_digest = str(right.get("semantic_digest") or "")
         if not left_digest or left_digest != right_digest:
@@ -365,7 +382,134 @@ def _stores(package: Mapping[str, Any], side: str) -> dict[str, Mapping[str, Any
     value = package.get(side, {}).get("registered_storage", {}).get("stores", {})
     if not isinstance(value, Mapping):
         raise ConsumerObservationError(f"{side} registered storage stores are missing")
-    return {str(key): item for key, item in value.items() if isinstance(item, Mapping)}
+    stores = {
+        str(key): item for key, item in value.items() if isinstance(item, Mapping)
+    }
+    side_data = package.get(side, {})
+    site_name = str(package.get("scope", {}).get("physical_directory") or "")
+    data_root = Path(str(side_data.get("data_root") or ""))
+    site_root = data_root / "sites" / site_name
+
+    def add_profile_store(
+        store_id: str,
+        relative: str,
+        profile: Mapping[str, Any],
+        *,
+        owner: str,
+        authority: str,
+        data_type: str,
+    ) -> None:
+        if store_id in stores or not profile:
+            return
+        semantic_profile = {
+            key: profile.get(key)
+            for key in ("quick_check", "schema_digest", "table_counts")
+            if key in profile
+        }
+        stores[store_id] = {
+            "policy_class": "REQUIRED",
+            "owner": owner,
+            "authority": authority,
+            "data_type": data_type,
+            "files": {relative: {"kind": "sqlite"}},
+            "semantic_digest": _sha256_json(semantic_profile),
+            "source_locations": [],
+        }
+
+    add_profile_store(
+        "site.devices.current",
+        "db/devices.db",
+        side_data.get("devices", {}),
+        owner="DeviceRepository",
+        authority="current devices.db operational authority",
+        data_type="OPERATIONAL_CURRENT",
+    )
+    task_profile = side_data.get("tasks", {}).get("profile", {})
+    add_profile_store(
+        "site.tasks.current",
+        "db/tasks.db",
+        task_profile,
+        owner="TaskRepository",
+        authority="current tasks.db operational and recovery authority",
+        data_type="OPERATIONAL_CURRENT",
+    )
+
+    history = side_data.get("history", {})
+    history_files = history.get("files", {})
+    if isinstance(history_files, Mapping):
+        catalog = history_files.get("catalog.db")
+        if isinstance(catalog, Mapping) and "site.history.catalog" not in stores:
+            stores["site.history.catalog"] = {
+                "policy_class": "REQUIRED",
+                "owner": "HistoryStore",
+                "authority": "published history catalog authority",
+                "data_type": "HISTORICAL_RAW_FACT",
+                "files": {"db/history/catalog.db": {"kind": "sqlite"}},
+                "semantic_digest": _sha256_json(
+                    {
+                        key: catalog.get(key)
+                        for key in ("quick_check", "table_counts", "event_identity_digest")
+                    }
+                ),
+                "source_locations": [],
+            }
+        shard_files = {
+            str(relative): profile
+            for relative, profile in history_files.items()
+            if str(relative).startswith("devices-") and isinstance(profile, Mapping)
+        }
+        if shard_files and "site.history.shard" not in stores:
+            stores["site.history.shard"] = {
+                "policy_class": "REQUIRED",
+                "owner": "HistoryStore",
+                "authority": "immutable verified history shard authority",
+                "data_type": "HISTORICAL_RAW_FACT",
+                "files": {
+                    f"db/history/{relative}": {"kind": "sqlite"}
+                    for relative in sorted(shard_files)
+                },
+                "semantic_digest": _sha256_json(
+                    {
+                        relative: {
+                            key: profile.get(key)
+                            for key in (
+                                "quick_check",
+                                "table_counts",
+                                "event_identity_digest",
+                                "kinds",
+                            )
+                        }
+                        for relative, profile in sorted(shard_files.items())
+                    }
+                ),
+                "source_locations": [],
+            }
+
+    if "site.artifacts.managed" not in stores:
+        artifact_root = site_root / "files" / "web_artifacts"
+        artifact_files = (
+            sorted(path for path in artifact_root.rglob("*") if path.is_file())
+            if artifact_root.is_dir()
+            else []
+        )
+        if artifact_files:
+            manifest = []
+            relative_files: dict[str, Mapping[str, Any]] = {}
+            for path in artifact_files:
+                relative = path.relative_to(site_root).as_posix()
+                digest = _sha256_file(path)
+                manifest.append({"path": relative, "bytes": path.stat().st_size, "sha256": digest})
+                relative_files[relative] = {"kind": "file", "bytes": path.stat().st_size, "sha256": digest}
+            stores["site.artifacts.managed"] = {
+                "policy_class": "REQUIRED",
+                "owner": "ArtifactStore",
+                "authority": "managed artifact content authority",
+                "data_type": "ARTIFACT_OR_RAW_FILE",
+                "files": relative_files,
+                "semantic_digest": _sha256_json(manifest),
+                "source_locations": [],
+            }
+    return stores
 
 
 def _package_sites(package: Mapping[str, Any], development: Path) -> tuple[Path, Path]:
@@ -414,6 +558,14 @@ def _sha256_json(value: Any) -> str:
             value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
         ).encode("utf-8")
     ).hexdigest()
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _input_file(path: Path, development: Path) -> Path:
