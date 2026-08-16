@@ -60,6 +60,7 @@ def run_storage_targeted_gate(
 ) -> dict[str, Any]:
     root = repo_root.resolve(strict=True)
     development = development_root.resolve(strict=True)
+    policy_root = _development_policy_root(development)
     output = output_path.resolve()
     if output == development or not output.is_relative_to(development):
         raise TargetedGateError("targeted gate output must remain below D:/study")
@@ -69,8 +70,14 @@ def run_storage_targeted_gate(
     if not safe_id or Path(safe_id).name != safe_id:
         raise TargetedGateError("run_id must be one safe path component")
     base = test_base_root.resolve()
+    if base == policy_root or not base.is_relative_to(policy_root):
+        raise TargetedGateError("targeted gate test base must remain below D:/study")
     run_root = (base / safe_id).resolve()
-    if run_root == base or not run_root.is_relative_to(base):
+    if (
+        run_root == base
+        or not run_root.is_relative_to(base)
+        or not run_root.is_relative_to(policy_root)
+    ):
         raise TargetedGateError("targeted gate run root escapes its test base")
     if run_root.exists():
         raise TargetedGateError(f"targeted gate run root already exists: {run_root}")
@@ -123,9 +130,23 @@ def run_storage_targeted_gate(
     return report
 
 
+def _development_policy_root(development: Path) -> Path:
+    if os.name != "nt":
+        return development
+    fixed = DEFAULT_DEVELOPMENT_ROOT.resolve(strict=True)
+    if not development.is_relative_to(fixed):
+        raise TargetedGateError("development root must remain below D:/study")
+    return fixed
+
+
 def _remove_owned_root(path: Path, base: Path) -> None:
     resolved = path.resolve()
-    if resolved == base or not resolved.is_relative_to(base):
+    policy_root = _development_policy_root(base)
+    if (
+        resolved == base
+        or not resolved.is_relative_to(base)
+        or not resolved.is_relative_to(policy_root)
+    ):
         raise TargetedGateError("refusing to remove an unowned test path")
     shutil.rmtree(resolved)
 

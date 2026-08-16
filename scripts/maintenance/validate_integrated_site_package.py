@@ -25,6 +25,10 @@ from netconsole.services.job_center.artifact_reconciliation import (
     ArtifactReconciliationService,
     ArtifactTaskBinding,
 )
+from netconsole.services.database_footprint_maintenance import (
+    DEVELOPMENT_ROOT,
+    assert_development_path,
+)
 from netconsole.services.site_storage import (
     FULL_MIGRATION,
     SiteApplicationService,
@@ -123,6 +127,15 @@ def _require_inside(path: Path, root: Path, *, label: str) -> Path:
     if resolved == root.resolve() or not _inside(resolved, root):
         raise ValueError(f"{label} must be a child of {root}")
     return resolved
+
+
+def _require_development_path(path: Path, *, label: str) -> Path:
+    if os.name != "nt":
+        return path.resolve()
+    try:
+        return assert_development_path(path, development_root=DEVELOPMENT_ROOT)
+    except ValueError as exc:
+        raise ValueError(f"{label} must remain below D:/study") from exc
 
 
 def _readonly_connection(path: Path) -> sqlite3.Connection:
@@ -1375,13 +1388,21 @@ def _staging_entries(paths: PathResolver) -> list[str]:
 
 
 def run(args: argparse.Namespace) -> dict[str, object]:
-    run_root = Path(args.run_root).resolve()
-    diagnostic_root = Path(args.diagnostic_root).resolve()
+    run_root = _require_development_path(Path(args.run_root), label="run root")
+    diagnostic_root = _require_development_path(
+        Path(args.diagnostic_root), label="diagnostic root"
+    )
     registry_path = Path(args.storage_registry).resolve()
     stores = _load_site_storage_registry(registry_path)
     workspace = _require_inside(Path(args.workspace), run_root, label="workspace")
     output = _require_inside(Path(args.output), diagnostic_root, label="output")
     package = _require_inside(Path(args.package), workspace, label="package")
+    for label, mutable_path in (
+        ("workspace", workspace),
+        ("output", output),
+        ("package", package),
+    ):
+        _require_development_path(mutable_path, label=label)
     if workspace.exists():
         raise FileExistsError(f"workspace already exists: {workspace}")
     if output.exists():

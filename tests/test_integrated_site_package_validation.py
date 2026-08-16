@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -19,6 +21,7 @@ from scripts.maintenance.validate_integrated_site_package import (
     _load_site_storage_registry,
     _package_manifest_members,
     _package_policy_class,
+    _require_development_path,
     _registered_authority_parity,
     _registered_authority_profile,
     _registered_export_contract,
@@ -26,6 +29,7 @@ from scripts.maintenance.validate_integrated_site_package import (
     _readonly_connection,
     _rows_by_sequence,
     _sqlite_backup,
+    run,
 )
 
 
@@ -180,6 +184,28 @@ def test_integrated_validation_refuses_output_root_or_escape(tmp_path: Path) -> 
         _require_inside(root, root, label="case")
     with pytest.raises(ValueError, match="child"):
         _require_inside(tmp_path / "outside", root, label="case")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows storage policy")
+def test_integrated_validation_rejects_mutable_root_outside_development_root() -> None:
+    with pytest.raises(ValueError, match="run root.*D:/study"):
+        run(SimpleNamespace(run_root=Path("C:/NetConsole-package-unsafe")))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows storage policy")
+def test_integrated_validation_rejects_reparse_mutable_root(
+    tmp_path: Path,
+) -> None:
+    link = tmp_path / "outside-link"
+    try:
+        link.symlink_to(Path("C:/Windows"), target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlink unavailable: {exc}")
+
+    with pytest.raises(ValueError, match="run root.*D:/study"):
+        run(SimpleNamespace(run_root=link))
+    with pytest.raises(ValueError, match="workspace.*D:/study"):
+        _require_development_path(link / "workspace", label="workspace")
 
 
 def test_integrated_validation_reads_selected_events_without_writing_source(
