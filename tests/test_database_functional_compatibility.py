@@ -31,6 +31,16 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _checkpoint_task_inputs(inputs: dict[str, Path]) -> None:
+    for key in ("before_tasks", "after_tasks"):
+        database = inputs[key]
+        with closing(Database(database).connect()) as connection:
+            checkpoint = connection.execute(
+                "PRAGMA wal_checkpoint(TRUNCATE)"
+            ).fetchone()
+            assert checkpoint is not None and int(checkpoint[0]) == 0
+
+
 def _create_devices(path: Path, *, include_legacy: bool, changed: bool = False) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with closing(Database(path).connect()) as connection:
@@ -233,7 +243,7 @@ def _prepare_rehearsal(
 
     write_observations(before_observations, "before")
     write_observations(after_observations, "after")
-    return {
+    inputs = {
         "before_devices": before_devices,
         "after_devices": after_devices,
         "before_tasks": before_tasks,
@@ -243,9 +253,23 @@ def _prepare_rehearsal(
         "before_consumer_observations": before_observations,
         "after_consumer_observations": after_observations,
     }
+    _checkpoint_task_inputs(inputs)
+    return inputs
 
 
-def _run(root: Path, inputs: dict[str, Path], *, output: str = "output"):
+def _run(
+    root: Path,
+    inputs: dict[str, Path],
+    *,
+    output: str = "output",
+    checkpoint_tasks: bool = True,
+):
+    if checkpoint_tasks and any(
+        wal_path.is_file() and wal_path.stat().st_size > 0
+        for key in ("before_tasks", "after_tasks")
+        for wal_path in (inputs[key].with_name(f"{inputs[key].name}-wal"),)
+    ):
+        _checkpoint_task_inputs(inputs)
     return validate_database_functional_compatibility(
         **inputs,
         output_dir=root / output,
@@ -294,7 +318,7 @@ def test_functional_compatibility_passes_repository_readthrough_without_payload_
         if name.endswith("devices") or name.endswith("tasks")
     }
 
-    result = _run(root, inputs)
+    result = _run(root, inputs, checkpoint_tasks=False)
 
     assert result["status"] == "PASS"
     assert set(result["outputs"]) == set(OUTPUT_FILENAMES)
@@ -344,6 +368,37 @@ def test_functional_compatibility_passes_repository_readthrough_without_payload_
 
     with pytest.raises(FileExistsError, match="refusing to overwrite"):
         _run(root, inputs)
+
+
+def test_functional_compatibility_rejects_non_checkpointed_wal(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "development"
+    root.mkdir()
+    inputs = _prepare_rehearsal(root)
+    with closing(Database(inputs["after_tasks"]).connect()) as connection:
+        connection.execute(
+            "UPDATE task_snapshots SET message='pending WAL' "
+            "WHERE task_id='task-real'"
+        )
+        connection.commit()
+        wal_path = inputs["after_tasks"].with_name(
+            f"{inputs['after_tasks'].name}-wal"
+        )
+        assert wal_path.stat().st_size > 0
+
+        with pytest.raises(
+            FunctionalCompatibilityError,
+            match="non-empty WAL",
+        ):
+            _run(
+                root,
+                inputs,
+                output="wal-output",
+                checkpoint_tasks=False,
+            )
+
+    assert not (root / "wal-output" / "FUNCTIONAL_AFTER.json").exists()
 
 
 def test_functional_compatibility_reports_hash_only_differences_and_failed_evidence(

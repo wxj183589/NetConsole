@@ -134,6 +134,7 @@
   {"path":"scripts/maintenance/diagnose_server_hdd.py","classification":"READ_ONLY_DATA_GATEWAY","owner":"data","reason":"现场诊断仅以 SQLite mode=ro/query_only 读取设备库统计，不创建或修改数据库。"},
   {"path":"scripts/maintenance/validate_phase21_snapshot.py","classification":"TEST_ONLY","owner":"data","reason":"Phase 2.1 离线副本验证使用 SQLite backup API 和隔离临时库，不连接或修改现场数据。"},
   {"path":"scripts/maintenance/rehearse_database_footprint.py","classification":"MIGRATION_TOOL","owner":"storage","reason":"数据库存量治理仅在显式 D:\\study 隔离副本中执行快照、profiling、retention 与 compact rehearsal；生产根只读。"},
+  {"path":"scripts/maintenance/validate_database_functional_compatibility.py","classification":"READ_ONLY_DATA_GATEWAY","owner":"storage","reason":"Before/After 功能透明验收只接受已 checkpoint 的 D:\\study 隔离快照，以 mode=ro/immutable=1 读取；非空 WAL 失败关闭且不得创建或修改输入 sidecar。"},
   {"path":"scripts/maintenance/validate_integrated_site_package.py","classification":"TEST_ONLY","owner":"storage","reason":"FULL Site Package 集成验证只在显式 D:\\study 隔离根创建 SQLite Online Backup 副本、导出/导入 staging 与重启 fixture；源副本使用 mode=ro/immutable 并校验前后 SHA-256。"},
   {"path":"src/netconsole/services/database_footprint_maintenance.py","classification":"REPOSITORY_REQUIRED","owner":"storage","reason":"统一只读 snapshot、SQLite footprint、Safe Compact 与原子替换边界，仅允许 D:\\study 开发目标执行破坏性操作。"},
   {"path":"src/netconsole/services/history_legacy_migration.py","classification":"MIGRATION_TOOL","owner":"data","reason":"显式 Legacy History COPY/verify/source-delete 编排；默认 COPY-only，删除阶段要求隔离开发根和精确计划。"},

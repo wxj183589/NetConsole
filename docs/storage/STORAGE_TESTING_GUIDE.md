@@ -52,6 +52,11 @@ binds every final consumer to canonical results from the integrated Site Package
 and No-Reinflation evidence. The final consumer matrix rejects any Before/After query-digest
 difference even when both individual observation manifests claim PASS.
 
+Before/After SQLite inputs must be quiescent isolated snapshots produced by the Backup API or an
+explicit checkpoint. The functional validator opens them with immutable read-only connections and
+fails closed on a non-empty WAL; validation must never recover, checkpoint, or create sidecars next
+to evidence inputs.
+
 Each SQLite table must report, where applicable:
 
 - row count and estimated logical payload bytes;

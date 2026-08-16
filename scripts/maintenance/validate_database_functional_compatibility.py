@@ -18,7 +18,11 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from netconsole.core.database import Database
+from netconsole.core.sqlite_utils import (
+    DEFAULT_SQLITE_BUSY_TIMEOUT_MS,
+    DEFAULT_SQLITE_TIMEOUT_SECONDS,
+    configure_sqlite_connection,
+)
 from netconsole.models.task_snapshot import TaskSnapshot
 from netconsole.models.task_state import TaskState
 from netconsole.repositories.history_store import LEGACY_HISTORY_TABLES, TaskHistoryStore
@@ -1431,8 +1435,23 @@ def _overlaps(left: Path, right: Path) -> bool:
 
 
 def _connect_readonly(path: Path) -> sqlite3.Connection:
-    connection = Database(path).connect_readonly()
-    connection.execute("PRAGMA busy_timeout = 30000")
+    wal_path = path.with_name(f"{path.name}-wal")
+    if wal_path.is_file() and wal_path.stat().st_size > 0:
+        raise FunctionalCompatibilityError(
+            f"functional compatibility input has a non-empty WAL: {path}"
+        )
+    connection = sqlite3.connect(
+        f"{path.resolve().as_uri()}?mode=ro&immutable=1",
+        uri=True,
+        timeout=DEFAULT_SQLITE_TIMEOUT_SECONDS,
+    )
+    connection.row_factory = sqlite3.Row
+    configure_sqlite_connection(
+        connection,
+        busy_timeout_ms=DEFAULT_SQLITE_BUSY_TIMEOUT_MS,
+        foreign_keys=True,
+    )
+    connection.execute("PRAGMA query_only = ON")
     return connection
 
 
