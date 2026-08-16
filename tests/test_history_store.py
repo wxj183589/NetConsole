@@ -787,6 +787,62 @@ def test_legacy_provenance_backfill_repairs_older_v2_shard_idempotently(tmp_path
     assert catalog_sha == store._shard_profile(shard_path)["sha256"]
 
 
+def test_legacy_provenance_backfill_optimizes_complete_rowid_table(tmp_path):
+    store = _store(tmp_path)
+    event = HistoryStore.legacy_migration_event(
+        "device_facts_history",
+        {
+            "id": 41,
+            "device_uuid": "device-41",
+            "model": "S6520",
+            "collected_at": "2026-08-01T10:00:00",
+            "created_at": "2026-08-01T10:00:00",
+        },
+    )
+    assert store.copy_legacy_migration_events([event]) == (1, 1)
+    shard_path = store.history_root / "devices-2026-08.db"
+    with connect_sqlite(shard_path, foreign_keys=True) as shard:
+        event_id = shard.execute(
+            "SELECT event_id FROM history_events_v2"
+        ).fetchone()[0]
+        shard.execute("DROP TABLE history_event_provenance_v2")
+        shard.executescript(
+            """
+            CREATE TABLE history_event_provenance_v2 (
+                event_id BLOB PRIMARY KEY,
+                source_table TEXT NOT NULL,
+                source_id INTEGER NOT NULL,
+                FOREIGN KEY(event_id) REFERENCES history_events_v2(event_id)
+                    ON DELETE CASCADE
+            );
+            CREATE INDEX idx_history_event_provenance_v2_source
+                ON history_event_provenance_v2(source_table, source_id);
+            CREATE UNIQUE INDEX ux_history_event_provenance_v2_source
+                ON history_event_provenance_v2(source_table, source_id);
+            """
+        )
+        shard.execute(
+            "INSERT INTO history_event_provenance_v2 "
+            "(event_id, source_table, source_id) VALUES (?, ?, ?)",
+            (event_id, "device_facts_history", 41),
+        )
+        shard.commit()
+
+    repaired = store.backfill_legacy_provenance(batch_size=1)
+
+    assert repaired["status"] == "PASS"
+    assert repaired["backfilled"] == 0
+    assert repaired["shards"][0]["provenance_storage_optimized"] is True
+    with connect_sqlite(shard_path, foreign_keys=True) as shard:
+        table_sql = str(
+            shard.execute(
+                "SELECT sql FROM sqlite_master "
+                "WHERE type='table' AND name='history_event_provenance_v2'"
+            ).fetchone()[0]
+        )
+    assert "WITHOUT ROWID" in table_sql.upper()
+
+
 def test_legacy_migration_journals_unmigratable_rows_without_blocking_later_ids(tmp_path):
     database_path = tmp_path / "sites" / "demo" / "db" / "devices.db"
     database = Database(database_path)

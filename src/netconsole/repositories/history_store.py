@@ -1225,6 +1225,10 @@ class HistoryStore:
                         backfilled += len(provenance_rows)
                         last_collected_at = str(rows[-1]["collected_at"])
                         last_event_id = bytes(rows[-1]["event_id"])
+                    # _ensure_shard may have upgraded metadata even when every
+                    # legacy event already has provenance.  End that transaction
+                    # before the compact-table rewrite opens its own IMMEDIATE one.
+                    shard.commit()
                     provenance_storage_optimized = (
                         self._optimize_legacy_provenance_storage(shard)
                     )
