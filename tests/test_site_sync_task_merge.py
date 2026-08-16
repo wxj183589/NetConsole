@@ -171,6 +171,125 @@ def test_site_return_ref_only_snapshot_and_event_read_through_after_merge(
     assert repository.list_events("controller-ref")[-1]["payload"]["result"] == result
 
 
+def test_site_return_accepts_failed_snapshot_with_finished_result_authority(
+    tmp_path: Path,
+) -> None:
+    local = tmp_path / "local.db"
+    returned = tmp_path / "returned.db"
+    TaskRepository(local)
+    result = {"data_persisted": False, "worker_exit_code": 1}
+    _terminal_task(returned, "legacy-failed-finished", result)
+    with sqlite3.connect(returned) as conn:
+        conn.execute(
+            "UPDATE task_snapshots SET status='FAILED' "
+            "WHERE task_id='legacy-failed-finished'"
+        )
+        conn.commit()
+
+    _apply_task_merge(local, returned, {}, site_id="demo")
+
+    snapshot = TaskRepository(local).get("legacy-failed-finished")
+    assert snapshot is not None
+    assert snapshot.status == TaskState.FAILED
+    assert snapshot.result == result
+
+
+def test_site_return_preserves_artifact_projection_result_authority(
+    tmp_path: Path,
+) -> None:
+    local = tmp_path / "local.db"
+    returned = tmp_path / "returned.db"
+    TaskRepository(local)
+    terminal_result = {"artifact_id": "report-1", "available": False, "rows": 12}
+    source = _terminal_task(returned, "artifact-projection", terminal_result)
+    terminal = source.get("artifact-projection")
+    assert terminal is not None
+    projection = {"artifact_id": "report-1", "available": True, "rows": 12}
+    assert source.record(
+        replace(
+            terminal,
+            result=projection,
+            updated_time="2026-08-15T02:01:00Z",
+        ),
+        TaskEvent(
+            event_id="artifact-finalized",
+            task_id="artifact-projection",
+            type="artifact_finalized",
+            time="2026-08-15T02:01:00Z",
+            source="artifact_reconciliation",
+            payload={"message": "ready", "result": projection},
+        ),
+    )
+
+    _apply_task_merge(local, returned, {}, site_id="demo")
+
+    repository = TaskRepository(local)
+    snapshot = repository.get("artifact-projection")
+    assert snapshot is not None
+    assert snapshot.result == projection
+    authority = repository.get_result(snapshot.result_id)
+    assert authority["terminal_event_type"] == "artifact_finalized"
+    assert authority["result"] == projection
+
+
+@pytest.mark.parametrize(
+    "invalid_kind",
+    [
+        "wrong_task",
+        "wrong_event_type",
+        "wrong_full_result",
+        "wrong_snapshot_full_result",
+    ],
+)
+def test_site_return_rejects_invalid_event_result_authority(
+    tmp_path: Path,
+    invalid_kind: str,
+) -> None:
+    local = tmp_path / "local.db"
+    returned = tmp_path / "returned.db"
+    TaskRepository(local)
+    authority_repository = _terminal_task(
+        returned,
+        "authority-task",
+        {"rows": 1},
+    )
+    _terminal_task(returned, "target-task", {"rows": 2})
+    authority = authority_repository.get("authority-task")
+    assert authority is not None
+    with sqlite3.connect(returned) as conn:
+        if invalid_kind == "wrong_event_type":
+            conn.execute(
+                "UPDATE task_events SET event_type='error' "
+                "WHERE task_id='target-task'"
+            )
+        elif invalid_kind == "wrong_snapshot_full_result":
+            conn.execute(
+                "UPDATE task_snapshots SET result_json=? WHERE task_id='target-task'",
+                ('{"rows":999}',),
+            )
+        else:
+            payload = json.loads(
+                conn.execute(
+                    "SELECT payload_json FROM task_events WHERE task_id='target-task'"
+                ).fetchone()[0]
+            )
+            if invalid_kind == "wrong_task":
+                payload["result_id"] = authority.result_id
+                payload["result_hash"] = authority.result_hash
+                payload.pop("result", None)
+            else:
+                payload["result"] = {"rows": 999}
+            conn.execute(
+                "UPDATE task_events SET payload_json=? WHERE task_id='target-task'",
+                (json.dumps(payload, separators=(",", ":")),),
+            )
+        conn.commit()
+
+    with pytest.raises(SiteStorageError, match="task_result|终态事件类型|完整 result"):
+        _apply_task_merge(local, returned, {}, site_id="demo")
+    assert TaskRepository(local).get("target-task") is None
+
+
 def test_site_return_accepts_registered_directory_name_as_site_alias(
     tmp_path: Path,
 ) -> None:

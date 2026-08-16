@@ -8,6 +8,11 @@ Qt/PySide6/QFluentWidgets 源码、入口、运行依赖和发布链已经删除
 
 局点与数据存储遵循 `Vue -> /api/v1 -> Site/DataRoot Application Service -> PathResolver/Repository`。复制、SQLite、压缩和完整性校验只在 Python Worker 中执行；Electron Main 只维护 `bootstrap.json`、原生选择器和 Backend 生命周期。详见 [局点与数据存储](./storage/README.md)。
 
+所有 SQLite、raw/Artifact、derived、cache、staging 与 backup owner 还必须登记到机器可读
+Storage Registry，并遵循 [全局存储架构](./storage/STORAGE_ARCHITECTURE.md)：authority 不能按文件名
+猜测，`UNKNOWN = PROTECT`，任何瘦身都必须保持功能、查询、恢复和原始测量精度，并通过
+No-Reinflation replay。该契约不授权生产 DELETE/DROP/VACUUM、数据库替换或数据根迁移。
+
 ## 启动链
 
 ```mermaid

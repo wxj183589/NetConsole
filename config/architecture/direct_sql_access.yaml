@@ -18,7 +18,8 @@
   {"path":"src/netconsole/services/site_lifecycle.py","classification":"REPOSITORY_REQUIRED","owner":"storage","reason":"局点审计、可恢复清理和 Demo 重建的存储生命周期所有者；只读审计业务表，并在受控 staging 发布前 checkpoint SQLite。"},
   {"path":"src/netconsole/services/site_retention.py","classification":"REPOSITORY_REQUIRED","owner":"storage","reason":"局点保留扫描和受控清理的 SQLite、WAL、ZIP 与数据库生命周期所有者；只接受服务端候选令牌。"},
   {"path":"src/netconsole/services/site_sync.py","classification":"REPOSITORY_REQUIRED","owner":"storage","reason":"局点包导出、回传预检合并、SQLite Backup、凭据清洗和失败恢复的存储生命周期所有者。"},
-  {"path":"src/netconsole/services/history_store.py","classification":"REPOSITORY_REQUIRED","owner":"data","reason":"devices.db history outbox、按月 shard、catalog 与显式 legacy copy/verify checkpoint 的存储生命周期所有者；不在 startup 扫描历史。"},
+  {"path":"src/netconsole/services/site_package_staging.py","classification":"REPOSITORY_REQUIRED","owner":"storage","reason":"局点包与 Site Sync 中断恢复所有者；仅对已绑定 rollback snapshot 执行 quick_check 和受控恢复发布。"},
+  {"path":"src/netconsole/repositories/history_store.py","classification":"REPOSITORY_REQUIRED","owner":"data","reason":"devices/tasks History Storage V2 outbox、catalog、月分片、封存与 read-through Repository；service 路径仅保留兼容 facade。"},
   {"path":"src/netconsole/repositories/history_legacy_migration_repository.py","classification":"REPOSITORY_REQUIRED","owner":"data","reason":"显式 legacy history COPY-only 迁移的只读源访问与 durable catalog journal Repository；不提供源删除、DROP 或 VACUUM 能力。"},
   {"path":"scripts/build/smoke_frozen_device_database.py","classification":"TEST_ONLY","owner":"release","reason":"冻结 Backend 发布 smoke 在隔离测试根构造旧库，并在迁移后只读校验完整性；不参与产品运行。"},
   {"path":"scripts/maintenance/benchmark_mesh_analysis_loading.py","classification":"TEST_ONLY","owner":"mesh","reason":"MESH 加载性能基准只在显式测试根构造临时 fixture，并在完成后删除；不访问正式业务数据库。"},
@@ -33,6 +34,7 @@
   {"path":"scripts/maintenance/benchmark_device_history_legacy_migration.py","classification":"TEST_ONLY","owner":"data","reason":"legacy history 迁移基准仅接受 D:\\study 下的隔离副本或自行生成的 fixture，并将 target 与 diagnostics 写入显式测试目录。"},
   {"path":"scripts/maintenance/profile_device_history_storage.py","classification":"TEST_ONLY","owner":"data","reason":"History Storage 物理剖析仅以只读方式检查 D:\\study 下的隔离 legacy/V1 副本；VACUUM 只作用于 diagnostics 内可重建 scratch 数据库。"},
   {"path":"scripts/maintenance/benchmark_device_history_storage_queries.py","classification":"TEST_ONLY","owner":"data","reason":"History Storage V1/V2 查询基准只读访问 D:\\study 下的隔离月分片，并将延迟、查询计划与一致性摘要写入显式 diagnostics 目录。"},
+  {"path":"scripts/maintenance/validate_history_provenance.py","classification":"MIGRATION_TOOL","owner":"data","reason":"History provenance 维护入口默认只读审计 D:\\study 隔离 devices/catalog/shard；显式双开关才调用幂等 backfill，生产数据路径不可用。"},
   {"path":"src/netconsole/services/mesh_parsed_rebuild_service.py","classification":"ANALYSIS_DB_OWNER","owner":"mesh","reason":"在 Job Worker 中归档、重建、校验并失败回滚 MESH 派生 SQLite；原始日志只读保留。"},
   {"path":"src/netconsole/services/database_upgrade/sqlite_consistency.py","classification":"REPOSITORY_REQUIRED","owner":"data","reason":"统一数据库升级框架的 SQLite Backup、WAL checkpoint 和只读完整性校验边界。"},
   {"path":"src/netconsole/services/mesh_derived_data_maintenance_service.py","classification":"ANALYSIS_DB_OWNER","owner":"mesh","reason":"MESH 派生数据库维护状态与来源恢复的 SQLite 生命周期所有者。"},
@@ -100,6 +102,7 @@
   {"path":"tests/test_site_sync_task_merge.py","classification":"TEST_ONLY","owner":"test","reason":"Site Return Package 的 task_results、task snapshots/events 和 Online MR mapping 原子合并测试只在 pytest 隔离目录构造 SQLite fixture。"},
   {"path":"tests/test_site_storage.py","classification":"TEST_ONLY","owner":"test","reason":"局点存储和包格式测试 fixture。"},
   {"path":"tests/test_history_store.py","classification":"TEST_ONLY","owner":"test","reason":"HistoryStore 测试只在 pytest 临时目录构造 SQLite fixture。"},
+  {"path":"tests/test_validate_history_provenance.py","classification":"TEST_ONLY","owner":"test","reason":"History provenance CLI 测试只在 pytest 的 D:\\study 隔离目录构造 devices/catalog/shard fixture。"},
   {"path":"tests/test_history_legacy_migration.py","classification":"TEST_ONLY","owner":"test","reason":"legacy history COPY-only 迁移测试只在 pytest 临时目录构造源库、catalog 与月分片 fixture。"},
   {"path":"tests/test_history_storage_tools.py","classification":"TEST_ONLY","owner":"test","reason":"History Storage profiler/query benchmark 测试只在 pytest 的 D:\\study 隔离目录构造 legacy、V1 和 V2 SQLite fixture。"},
   {"path":"tests/test_trackside_optical_result_repository.py","classification":"TEST_ONLY","owner":"test","reason":"轨旁光衰 Repository 测试 fixture。"},
@@ -129,5 +132,17 @@
   {"path":"tests/test_mesh_catalog_schema.py","classification":"TEST_ONLY","owner":"test","reason":"MESH catalog schema migration concurrency test fixture。"}
 ,
   {"path":"scripts/maintenance/diagnose_server_hdd.py","classification":"READ_ONLY_DATA_GATEWAY","owner":"data","reason":"现场诊断仅以 SQLite mode=ro/query_only 读取设备库统计，不创建或修改数据库。"},
-  {"path":"scripts/maintenance/validate_phase21_snapshot.py","classification":"TEST_ONLY","owner":"data","reason":"Phase 2.1 离线副本验证使用 SQLite backup API 和隔离临时库，不连接或修改现场数据。"}
+  {"path":"scripts/maintenance/validate_phase21_snapshot.py","classification":"TEST_ONLY","owner":"data","reason":"Phase 2.1 离线副本验证使用 SQLite backup API 和隔离临时库，不连接或修改现场数据。"},
+  {"path":"scripts/maintenance/rehearse_database_footprint.py","classification":"MIGRATION_TOOL","owner":"storage","reason":"数据库存量治理仅在显式 D:\\study 隔离副本中执行快照、profiling、retention 与 compact rehearsal；生产根只读。"},
+  {"path":"scripts/maintenance/validate_integrated_site_package.py","classification":"TEST_ONLY","owner":"storage","reason":"FULL Site Package 集成验证只在显式 D:\\study 隔离根创建 SQLite Online Backup 副本、导出/导入 staging 与重启 fixture；源副本使用 mode=ro/immutable 并校验前后 SHA-256。"},
+  {"path":"src/netconsole/services/database_footprint_maintenance.py","classification":"REPOSITORY_REQUIRED","owner":"storage","reason":"统一只读 snapshot、SQLite footprint、Safe Compact 与原子替换边界，仅允许 D:\\study 开发目标执行破坏性操作。"},
+  {"path":"src/netconsole/services/history_legacy_migration.py","classification":"MIGRATION_TOOL","owner":"data","reason":"显式 Legacy History COPY/verify/source-delete 编排；默认 COPY-only，删除阶段要求隔离开发根和精确计划。"},
+  {"path":"tests/test_backup_lifecycle.py","classification":"TEST_ONLY","owner":"test","reason":"Backup lifecycle revision reuse、UNKNOWN protect、stale/empty plan 与开发副本 retirement fixture。"},
+  {"path":"tests/test_database_footprint_maintenance.py","classification":"TEST_ONLY","owner":"test","reason":"只读 snapshot、Safe Compact、WAL preflight、replace/rollback fault-injection fixture。"},
+  {"path":"tests/test_storage_no_reinflation.py","classification":"TEST_ONLY","owner":"test","reason":"Task、Ground、MESH、Site Package 与 backup No-Reinflation 测试仅在 pytest 临时目录构造 SQLite fixture。"}
+,
+  {"path":"tests/test_integrated_site_package_validation.py","classification":"TEST_ONLY","owner":"test","reason":"FULL Site Package 集成验证测试仅在 pytest 临时目录构造 SQLite fixture 和 isolated data roots。"},
+  {"path":"scripts/maintenance/collect_global_storage_inventory.py","classification":"READ_ONLY_DATA_GATEWAY","owner":"storage","reason":"全局 storage inventory 仅按 SQLite header 识别，并以 mode=ro/immutable=1 审计 data-root 全局域；非空 WAL fail-closed，不创建或修改业务数据库。"},
+  {"path":"tests/test_collect_global_storage_inventory.py","classification":"TEST_ONLY","owner":"test","reason":"全局 storage inventory 测试仅在 pytest 临时目录构造 SQLite、WAL 与 ZIP fixture。"},
+  {"path":"scripts/maintenance/benchmark_database_functional_queries.py","classification":"TEST_ONLY","owner":"storage","reason":"最终功能透明性能比较仅以 mode=ro/immutable=1 读取 D:\\study 下的真实隔离副本、History shards 与 Site Package 导入副本，并输出 p50/p95/max；不访问或修改生产数据库。"}
 ]

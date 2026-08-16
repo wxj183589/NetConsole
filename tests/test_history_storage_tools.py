@@ -4,9 +4,11 @@ import json
 import sqlite3
 
 import netconsole.services.history_store as history_store_module
+import pytest
 from netconsole.core.sqlite_utils import connect_sqlite
 from netconsole.services.history_store import HistoryStore
 from scripts.maintenance.benchmark_device_history_storage_queries import run_benchmark
+from scripts.maintenance.migrate_device_history import _write_output
 from scripts.maintenance.profile_device_history_storage import (
     profile_legacy_history,
     profile_v1_history,
@@ -156,3 +158,13 @@ def test_server_hdd_validator_keeps_missing_field_evidence_pending() -> None:
     assert "target_media_is_hdd" in report["unmet_or_missing_gates"]
     assert "disk_performance_counter" in report["unmet_or_missing_gates"]
     assert report["migration_executed_by_validator"] is False
+
+
+def test_migration_cli_writes_new_json_evidence(tmp_path) -> None:
+    output = tmp_path / "diagnostic" / "cutover.json"
+
+    _write_output(output, '{"status":"PASS"}')
+
+    assert json.loads(output.read_text(encoding="utf-8")) == {"status": "PASS"}
+    with pytest.raises(FileExistsError):
+        _write_output(output, '{"status":"FAIL"}')

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
-import json
 import io
+import json
 import subprocess
 import sys
+import threading
+import time
+from contextlib import redirect_stdout
 from pathlib import Path
 
 import pytest
@@ -31,10 +34,12 @@ from netconsole.services.job_center.job_registry import (
 from netconsole.services.job_center.handlers import legacy_tasks
 from netconsole.services.job_center.job_runner import run_job
 from netconsole.services.job_center.worker_protocol import (
+    bind_worker_protocol_stream,
     encode_event,
     encode_event_bytes,
     feed_jsonl,
     parse_event_line,
+    parse_worker_event_line,
     write_event,
 )
 
@@ -188,6 +193,125 @@ def test_worker_protocol_is_ascii_binary_and_bypasses_cp936_text_wrapper() -> No
     assert direct == wrapped
     assert all(value < 128 for value in wrapped)
     assert json.loads(wrapped.decode("ascii"))["message"] == "正在验证设备凭据 · 宁波地铁12号线"
+
+
+def test_worker_protocol_uses_current_stdout_instead_of_invalid_original(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw = io.BytesIO()
+    current_stdout = type("CurrentStdout", (), {"buffer": raw})()
+    invalid_stdout = type("InvalidStdout", (), {"buffer": None})()
+    monkeypatch.setattr(sys, "stdout", current_stdout)
+    monkeypatch.setattr(sys, "__stdout__", invalid_stdout)
+
+    write_event(progress_event("job-current", "query", 1, 1, "查询完成"))
+
+    assert json.loads(raw.getvalue().decode("ascii"))["job_id"] == "job-current"
+
+
+def test_worker_protocol_binding_survives_application_stdout_redirect() -> None:
+    protocol = io.BytesIO()
+    diagnostics = io.StringIO()
+
+    with bind_worker_protocol_stream(protocol), redirect_stdout(diagnostics):
+        print("raw device echo")
+        write_event(progress_event("job-bound", "query", 1, 1, "查询完成"))
+
+    assert diagnostics.getvalue() == "raw device echo\n"
+    assert json.loads(protocol.getvalue().decode("ascii"))["job_id"] == "job-bound"
+
+
+def test_worker_protocol_binding_is_visible_to_child_threads() -> None:
+    protocol = io.BytesIO()
+    diagnostics = io.StringIO()
+
+    def emit_from_thread() -> None:
+        write_event(progress_event("job-thread", "query", 1, 1, "查询完成"))
+
+    with bind_worker_protocol_stream(protocol), redirect_stdout(diagnostics):
+        thread = threading.Thread(target=emit_from_thread)
+        thread.start()
+        thread.join(timeout=2)
+
+    assert not thread.is_alive()
+    assert diagnostics.getvalue() == ""
+    assert json.loads(protocol.getvalue().decode("ascii"))["job_id"] == "job-thread"
+
+
+def test_worker_protocol_concurrent_frames_remain_parseable() -> None:
+    class YieldingBinaryStream:
+        def __init__(self) -> None:
+            self._buffer = bytearray()
+            self._buffer_lock = threading.Lock()
+
+        def write(self, payload: bytes) -> int:
+            midpoint = max(1, len(payload) // 2)
+            with self._buffer_lock:
+                self._buffer.extend(payload[:midpoint])
+            time.sleep(0.001)
+            with self._buffer_lock:
+                self._buffer.extend(payload[midpoint:])
+            return len(payload)
+
+        def flush(self) -> None:
+            return
+
+        def getvalue(self) -> bytes:
+            with self._buffer_lock:
+                return bytes(self._buffer)
+
+    worker_count = 16
+    frames_per_worker = 16
+    protocol = YieldingBinaryStream()
+    start = threading.Barrier(worker_count)
+    failures: list[BaseException] = []
+    failures_lock = threading.Lock()
+
+    def emit_frames(worker: int) -> None:
+        try:
+            start.wait(timeout=5)
+            for frame in range(frames_per_worker):
+                write_event(
+                    progress_event(
+                        f"job-{worker}",
+                        "concurrent-write",
+                        frame,
+                        frames_per_worker,
+                        f"frame-{worker}-{frame}",
+                    )
+                )
+        except BaseException as exc:  # pragma: no cover - asserted in parent thread
+            with failures_lock:
+                failures.append(exc)
+
+    with bind_worker_protocol_stream(protocol):
+        threads = [
+            threading.Thread(target=emit_frames, args=(worker,))
+            for worker in range(worker_count)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert failures == []
+    raw = protocol.getvalue().decode("ascii")
+    assert raw.endswith("\n")
+    lines = raw.splitlines()
+    assert len(lines) == worker_count * frames_per_worker
+
+    observed: set[tuple[str, int]] = set()
+    for line in lines:
+        event, reason = parse_worker_event_line(line)
+        assert reason == ""
+        assert event is not None
+        observed.add((str(event["job_id"]), int(event["current"])))
+    assert observed == {
+        (f"job-{worker}", frame)
+        for worker in range(worker_count)
+        for frame in range(frames_per_worker)
+    }
 
 
 def test_job_runner_returns_structured_cancelled_result() -> None:

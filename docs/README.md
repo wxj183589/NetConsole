@@ -41,6 +41,8 @@
 ## Storage & Operations
 
 - [存储与数据安全](./storage/README.md)：SQLite、备份、升级、路径和清理。
+- [全局存储架构](./storage/STORAGE_ARCHITECTURE.md)：数据库/raw/Artifact/cache/staging/backup 的 authority 与 lifecycle owner。
+- [存储验收](./storage/STORAGE_TESTING_GUIDE.md)：全局 inventory、功能透明、No-Reinflation 和真实 snapshot 安全边界。
 - [外部终端](./external-terminal/README.md)：受控终端选择与启动。
 - [逆向工程](./reverse-engineering/README.md)：协议证据等级与受控逆向资料。
 

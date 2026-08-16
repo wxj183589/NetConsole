@@ -233,18 +233,21 @@ def test_smoke_failure_for_first_creation_restores_missing_database_state(tmp_pa
     assert manifest["result_status"] == "NO_EXISTING_DATABASE"
 
 
-def test_repeated_upgrades_create_independent_backups(tmp_path: Path) -> None:
+def test_repeated_upgrades_reuse_the_same_verified_source_revision(tmp_path: Path) -> None:
     paths = PathResolver(data_root=tmp_path)
     active = tmp_path / "active.sqlite"
     _create_database(active)
 
-    for _ in range(3):
+    results = [
         DatabaseUpgradeCoordinator(paths).upgrade(_descriptor(paths, active, _Adapter()))
+        for _ in range(3)
+    ]
 
     manifests = list(paths.database_upgrade_backups_dir.rglob("manifest.json"))
-    assert len(manifests) == 3
+    assert len(manifests) == 2
     backup_ids = {json.loads(path.read_text(encoding="utf-8"))["backup_id"] for path in manifests}
-    assert len(backup_ids) == 3
+    assert len(backup_ids) == 2
+    assert results[1].backup_id == results[2].backup_id
     assert all((path.parent / "database.sqlite").stat().st_size > 0 for path in manifests)
 
 

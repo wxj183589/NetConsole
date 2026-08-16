@@ -59,11 +59,26 @@ result id/hash/size/task ownership while supporting:
 - B3 rows with `result_id` plus the old full snapshot/event result;
 - future ref-only fixtures that read through `task_results`.
 
+A snapshot's current `status` is not the identity of the event that originally
+produced its preserved result. Legacy producers can persist a `finished` result
+and later leave the snapshot in `FAILED`; snapshot read-through therefore
+validates task ownership and hash without deriving a terminal event type from
+the current status. Artifact finalization or rejection stores a separate
+immutable projection result and atomically rebinds the current snapshot while
+leaving the original terminal authority row unchanged. Event references remain
+stricter: the referenced result must belong to the same task, the exact event
+type and, when retained, the same canonical full result.
+Historical backfill considers result-bearing `finished/error/cancelled` events
+together, preserves the actual producer event type, and protects a task as
+`CONFLICT` when different terminal types provide competing results.
+
 Site Return Package import also remains independent of local rollout state. A
 package may merge valid `task_results` without changing future local writes.
-Artifact finalization may update the snapshot projection but cannot change an
-immutable terminal authority row. Ref-only writing and historical backfill are
-not enabled.
+Artifact finalization may update the snapshot projection and its canonical
+reference but cannot change an immutable terminal authority row. Historical
+backfill and ref-authority apply
+are available only through the explicitly development-root-restricted
+rehearsal capability under `D:\study`; production apply remains unavailable.
 
 Site Return Package now merges `task_results`, `task_snapshots`, `task_events`
 and `online_mr_task_sessions` in that order inside one transaction. Immutable
@@ -155,7 +170,8 @@ require `--expected-revision`, a reason and `--apply`:
 
 ## Deferred Work
 
-- Destructive retention is `NOT STARTED`.
+- Production destructive retention is `NOT STARTED`; the typed executor is
+  restricted to explicit isolated rehearsal paths below `D:\study`.
 - Retention periods are `USER_POLICY_REQUIRED`; soft-dismiss expiry does not
   authorize physical deletion.
 - Stopping the old full snapshot/event result copies, event archive/shards and
@@ -172,5 +188,6 @@ require `--expected-revision`, a reason and `--apply`:
   future compact must reuse the same key.
 - Real Electron GUI, long-running Agent/Online MR/Ground activity, target HDD
   and result-ref-only production cutover remain separate acceptance gates.
-- `TASK_RESULTS_VERIFIED` evidence approval and `RESULT_REF_AUTHORITY` are
-  separate future gates; this phase exposes no apply transition for either.
+- Production `TASK_RESULTS_VERIFIED` approval and `RESULT_REF_AUTHORITY` remain
+  separate future gates. Development-only rehearsal transitions do not grant
+  production authority.

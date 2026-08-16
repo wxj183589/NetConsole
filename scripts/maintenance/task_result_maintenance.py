@@ -41,6 +41,7 @@ class _BackfillCandidate:
     canonical_json: str
     result: dict[str, Any]
     event_rows: tuple[dict[str, Any], ...]
+    bind_snapshot: bool
 
 
 class TaskResultMaintenanceService:
@@ -192,10 +193,17 @@ class TaskResultMaintenanceService:
             counts: Counter[str] = Counter()
             created = 0
             referenced = 0
+            repaired_snapshot_refs = 0
+            repaired_event_refs = 0
             processed = 0
             with self.repository._connect() as connection:
                 rows = self._terminal_snapshots(connection)
                 for row in rows:
+                    snapshot_repairs, event_repairs = self._remove_invalid_bindings(
+                        connection, row
+                    )
+                    repaired_snapshot_refs += snapshot_repairs
+                    repaired_event_refs += event_repairs
                     candidate = self._classify(connection, row)
                     counts[candidate.classification] += 1
                     if candidate.classification in {"CONFLICT", "INVALID"}:
@@ -214,8 +222,15 @@ class TaskResultMaintenanceService:
             },
             "new_result_rows": created,
             "referenced_tasks": referenced,
+            "invalid_snapshot_refs_removed": repaired_snapshot_refs,
+            "invalid_event_refs_removed": repaired_event_refs,
             "task_results_rows": self.repository.task_result_count(),
-            "idempotent": created == 0,
+            "idempotent": (
+                created == 0
+                and referenced == 0
+                and repaired_snapshot_refs == 0
+                and repaired_event_refs == 0
+            ),
         }
 
     def enable_ref_authority(
@@ -278,7 +293,7 @@ class TaskResultMaintenanceService:
         released_json_bytes = 0
         with self.repository._connect() as connection:
             rows = connection.execute(
-                "SELECT task_id, result_id, result_hash, result_json "
+                "SELECT task_id, status, result_id, result_hash, result_json "
                 "FROM task_snapshots WHERE result_id <> '' ORDER BY task_id"
             ).fetchall()
             for row in rows:
@@ -296,7 +311,7 @@ class TaskResultMaintenanceService:
                     if snapshot_rows % batch_rows == 0:
                         connection.commit()
             event_candidates = connection.execute(
-                "SELECT sequence, payload_json FROM task_events "
+                "SELECT sequence, task_id, event_type, payload_json FROM task_events "
                 "WHERE payload_json LIKE '%\"result_id\"%' ORDER BY sequence"
             ).fetchall()
             for row in event_candidates:
@@ -305,6 +320,12 @@ class TaskResultMaintenanceService:
                 if not result_id:
                     continue
                 verified = self._result_by_id(connection, result_id)
+                self._assert_result_binding(
+                    verified,
+                    task_id=str(row["task_id"]),
+                    terminal_event_type=str(row["event_type"]),
+                    owner="event",
+                )
                 if str(payload.get("result_hash") or "") not in {
                     "",
                     str(verified["sha256"]),
@@ -337,6 +358,7 @@ class TaskResultMaintenanceService:
     def _persist_candidate(
         self, connection: sqlite3.Connection, candidate: _BackfillCandidate
     ) -> tuple[int, int]:
+        self._validate_candidate_bindings(connection, candidate)
         encoded = candidate.canonical_json.encode("utf-8")
         digest = hashlib.sha256(encoded).hexdigest()
         result_id = self._result_id(
@@ -374,24 +396,27 @@ class TaskResultMaintenanceService:
         summary_json = json.dumps(
             summary, ensure_ascii=False, sort_keys=True, separators=(",", ":")
         )
-        snapshot_cursor = connection.execute(
-            """
-            UPDATE task_snapshots
-            SET result_id=?, result_hash=?, result_summary_json=?
-            WHERE task_id=? AND (
-                result_id<>? OR result_hash<>? OR result_summary_json<>?
+        snapshot_rows = 0
+        if candidate.bind_snapshot:
+            snapshot_cursor = connection.execute(
+                """
+                UPDATE task_snapshots
+                SET result_id=?, result_hash=?, result_summary_json=?
+                WHERE task_id=? AND (
+                    result_id<>? OR result_hash<>? OR result_summary_json<>?
+                )
+                """,
+                (
+                    result_id,
+                    digest,
+                    summary_json,
+                    candidate.task_id,
+                    result_id,
+                    digest,
+                    summary_json,
+                ),
             )
-            """,
-            (
-                result_id,
-                digest,
-                summary_json,
-                candidate.task_id,
-                result_id,
-                digest,
-                summary_json,
-            ),
-        )
+            snapshot_rows = int(snapshot_cursor.rowcount or 0)
         for event_row in candidate.event_rows:
             payload = self._json_object(str(event_row.get("payload_json") or ""))
             payload.update(
@@ -404,16 +429,17 @@ class TaskResultMaintenanceService:
                     int(event_row["sequence"]),
                 ),
             )
-        return created, int(snapshot_cursor.rowcount or 0)
+        return created, snapshot_rows
 
     def _classify(
         self, connection: sqlite3.Connection, snapshot: dict[str, Any]
     ) -> _BackfillCandidate:
         task_id = str(snapshot["task_id"])
+        status_event_type = self._status_event(snapshot["status"])
         events = [
             dict(row)
             for row in connection.execute(
-                "SELECT sequence, event_type, event_time, payload_json "
+                "SELECT sequence, task_id, event_type, event_time, payload_json "
                 "FROM task_events WHERE task_id=? "
                 f"AND event_type IN ({','.join('?' for _ in TERMINAL_RESULT_EVENT_TYPES)}) "
                 "ORDER BY sequence",
@@ -422,11 +448,42 @@ class TaskResultMaintenanceService:
         ]
         snapshot_result = self._nonempty_object(str(snapshot.get("result_json") or ""))
         event_results: dict[str, dict[str, Any]] = {}
+        event_rows_by_result: dict[str, list[dict[str, Any]]] = {}
+        event_types_by_result: dict[str, set[str]] = {}
+        event_reference_conflict = False
         for event in events:
+            event_type = str(event.get("event_type") or "")
             payload = self._json_object(str(event.get("payload_json") or ""))
             result = payload.get("result")
-            if isinstance(result, dict) and result:
-                event_results.setdefault(self._canonical_json(result), result)
+            full_canonical = (
+                self._canonical_json(result)
+                if isinstance(result, dict) and result
+                else ""
+            )
+            referenced_canonical = ""
+            result_id = str(payload.get("result_id") or "")
+            if result_id:
+                referenced = self._result_by_id(connection, result_id)
+                if (
+                    str(referenced["task_id"]) == task_id
+                    and str(referenced["terminal_event_type"]) == event_type
+                ):
+                    referenced_canonical = str(referenced["canonical_json"])
+                    if full_canonical and full_canonical != referenced_canonical:
+                        event_reference_conflict = True
+                else:
+                    event_reference_conflict = True
+            canonical = full_canonical or referenced_canonical
+            if not canonical:
+                continue
+            event_result = (
+                dict(result)
+                if full_canonical
+                else dict(self._result_by_id(connection, result_id)["result"])
+            )
+            event_results.setdefault(canonical, event_result)
+            event_rows_by_result.setdefault(canonical, []).append(event)
+            event_types_by_result.setdefault(canonical, set()).add(event_type)
 
         referenced: dict[str, Any] | None = None
         result_id = str(snapshot.get("result_id") or "")
@@ -436,49 +493,81 @@ class TaskResultMaintenanceService:
             self._canonical_json(snapshot_result) if snapshot_result is not None else ""
         )
         if referenced is not None:
+            if str(referenced["task_id"]) != task_id:
+                return self._candidate(snapshot, events, (), "CONFLICT", "", {})
+            if str(snapshot.get("result_hash") or "") not in {
+                "",
+                str(referenced["sha256"]),
+            }:
+                return self._candidate(snapshot, events, (), "CONFLICT", "", {})
             referenced_canonical = str(referenced["canonical_json"])
             if snapshot_canonical and snapshot_canonical != referenced_canonical:
-                return self._candidate(snapshot, events, "CONFLICT", "", {})
+                return self._candidate(snapshot, events, (), "CONFLICT", "", {})
             snapshot_canonical = referenced_canonical
             snapshot_result = dict(referenced["result"])
-        if len(event_results) > 1:
-            return self._candidate(snapshot, events, "CONFLICT", "", {})
+        if (
+            event_reference_conflict
+            or len(event_results) > 1
+            or any(len(event_types) > 1 for event_types in event_types_by_result.values())
+        ):
+            return self._candidate(snapshot, events, (), "CONFLICT", "", {})
         event_canonical = next(iter(event_results), "")
         event_result = event_results.get(event_canonical)
+        bound_event_rows = tuple(event_rows_by_result.get(event_canonical, ()))
+        event_type = next(iter(event_types_by_result.get(event_canonical, ())), "")
         if snapshot_canonical and event_canonical:
             if snapshot_canonical != event_canonical:
-                return self._candidate(snapshot, events, "CONFLICT", "", {})
+                return self._candidate(snapshot, events, (), "CONFLICT", "", {})
             return self._candidate(
-                snapshot, events, "MATCHED", snapshot_canonical, snapshot_result or {}
+                snapshot,
+                events,
+                bound_event_rows,
+                "MATCHED",
+                snapshot_canonical,
+                snapshot_result or {},
+                terminal_event_type=event_type,
             )
         if snapshot_canonical:
             return self._candidate(
                 snapshot,
                 events,
+                (),
                 "SNAPSHOT_ONLY",
                 snapshot_canonical,
                 snapshot_result or {},
+                terminal_event_type=(
+                    str(referenced["terminal_event_type"])
+                    if referenced is not None
+                    else status_event_type
+                ),
             )
         if event_canonical:
             return self._candidate(
                 snapshot,
                 events,
+                bound_event_rows,
                 "EVENT_ONLY",
                 event_canonical,
                 event_result or {},
+                terminal_event_type=event_type,
             )
-        return self._candidate(snapshot, events, "INVALID", "", {})
+        return self._candidate(snapshot, events, (), "INVALID", "", {})
 
     def _candidate(
         self,
         snapshot: dict[str, Any],
-        events: list[dict[str, Any]],
+        expected_events: list[dict[str, Any]],
+        bound_event_rows: tuple[dict[str, Any], ...],
         classification: str,
         canonical: str,
         result: dict[str, Any],
+        *,
+        terminal_event_type: str = "",
     ) -> _BackfillCandidate:
-        latest = events[-1] if events else {}
-        event_type = str(latest.get("event_type") or self._status_event(snapshot["status"]))
+        latest = bound_event_rows[-1] if bound_event_rows else (
+            expected_events[-1] if expected_events else {}
+        )
+        event_type = terminal_event_type or self._status_event(snapshot["status"])
         created = str(
             latest.get("event_time")
             or snapshot.get("finished_time")
@@ -493,13 +582,179 @@ class TaskResultMaintenanceService:
             created_time=created,
             canonical_json=canonical,
             result=result,
-            event_rows=tuple(events),
+            event_rows=bound_event_rows,
+            bind_snapshot=classification in {"MATCHED", "SNAPSHOT_ONLY"},
         )
+
+    def _validate_candidate_bindings(
+        self, connection: sqlite3.Connection, candidate: _BackfillCandidate
+    ) -> None:
+        if candidate.terminal_event_type not in TERMINAL_RESULT_EVENT_TYPES:
+            raise sqlite3.IntegrityError("task result backfill terminal type is invalid")
+        if not candidate.result or self._canonical_json(candidate.result) != (
+            candidate.canonical_json
+        ):
+            raise sqlite3.IntegrityError("task result backfill canonical content mismatch")
+        for event in candidate.event_rows:
+            if str(event.get("task_id") or "") != candidate.task_id:
+                raise sqlite3.IntegrityError("task result backfill event task mismatch")
+            if str(event.get("event_type") or "") != candidate.terminal_event_type:
+                raise sqlite3.IntegrityError("task result backfill event type mismatch")
+            payload = self._json_object(str(event.get("payload_json") or ""))
+            full = payload.get("result")
+            full_matches = isinstance(full, dict) and bool(full) and (
+                self._canonical_json(full) == candidate.canonical_json
+            )
+            ref_matches = False
+            result_id = str(payload.get("result_id") or "")
+            if result_id:
+                referenced = self._result_by_id(connection, result_id)
+                self._assert_result_binding(
+                    referenced,
+                    task_id=candidate.task_id,
+                    terminal_event_type=candidate.terminal_event_type,
+                    owner="event",
+                )
+                ref_matches = str(referenced["canonical_json"]) == (
+                    candidate.canonical_json
+                )
+            if not full_matches and not ref_matches:
+                raise sqlite3.IntegrityError(
+                    "task result backfill event provenance mismatch"
+                )
+
+    def _remove_invalid_bindings(
+        self, connection: sqlite3.Connection, snapshot: dict[str, Any]
+    ) -> tuple[int, int]:
+        task_id = str(snapshot["task_id"])
+        snapshot_repairs = 0
+        snapshot_result_id = str(snapshot.get("result_id") or "")
+        if snapshot_result_id:
+            referenced = self._result_by_id(connection, snapshot_result_id)
+            snapshot_hash = str(snapshot.get("result_hash") or "")
+            snapshot_result = self._nonempty_object(
+                str(snapshot.get("result_json") or "")
+            )
+            content_mismatch = snapshot_result is not None and (
+                self._canonical_json(snapshot_result)
+                != str(referenced["canonical_json"])
+            )
+            ambiguous_status_binding = (
+                snapshot_result is None
+                and str(referenced["terminal_event_type"])
+                != self._status_event(snapshot["status"])
+                and self._has_different_status_event_result(
+                    connection,
+                    task_id=task_id,
+                    event_type=self._status_event(snapshot["status"]),
+                    canonical_json=str(referenced["canonical_json"]),
+                )
+            )
+            if (
+                str(referenced["task_id"]) != task_id
+                or snapshot_hash not in {"", str(referenced["sha256"])}
+                or content_mismatch
+                or ambiguous_status_binding
+            ):
+                connection.execute(
+                    "UPDATE task_snapshots SET result_id='', result_hash='', "
+                    "result_summary_json='{}' WHERE task_id=?",
+                    (task_id,),
+                )
+                snapshot.update(
+                    {"result_id": "", "result_hash": "", "result_summary_json": "{}"}
+                )
+                snapshot_repairs = 1
+
+        event_repairs = 0
+        rows = connection.execute(
+            "SELECT sequence, task_id, event_type, payload_json FROM task_events "
+            "WHERE task_id=? AND payload_json LIKE '%\"result_id\"%'",
+            (task_id,),
+        ).fetchall()
+        for raw_row in rows:
+            row = dict(raw_row)
+            payload = self._json_object(str(row.get("payload_json") or ""))
+            result_id = str(payload.get("result_id") or "")
+            if not result_id:
+                continue
+            referenced = self._result_by_id(connection, result_id)
+            if (
+                str(referenced["task_id"]) == str(row["task_id"])
+                and str(referenced["terminal_event_type"]) == str(row["event_type"])
+            ):
+                continue
+            payload.pop("result_id", None)
+            payload.pop("result_hash", None)
+            payload.pop("result_summary", None)
+            connection.execute(
+                "UPDATE task_events SET payload_json=? WHERE sequence=?",
+                (
+                    json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+                    int(row["sequence"]),
+                ),
+            )
+            event_repairs += 1
+        return snapshot_repairs, event_repairs
+
+    def _has_different_status_event_result(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        task_id: str,
+        event_type: str,
+        canonical_json: str,
+    ) -> bool:
+        rows = connection.execute(
+            "SELECT payload_json FROM task_events WHERE task_id=? AND event_type=?",
+            (task_id, event_type),
+        ).fetchall()
+        for row in rows:
+            payload = self._json_object(str(row["payload_json"] or ""))
+            full = payload.get("result")
+            if isinstance(full, dict) and full:
+                if self._canonical_json(full) != canonical_json:
+                    return True
+                continue
+            result_id = str(payload.get("result_id") or "")
+            if not result_id:
+                continue
+            referenced = self._result_by_id(connection, result_id)
+            if (
+                str(referenced["task_id"]) == task_id
+                and str(referenced["terminal_event_type"]) == event_type
+                and str(referenced["canonical_json"]) != canonical_json
+            ):
+                return True
+        return False
+
+    @staticmethod
+    def _assert_result_binding(
+        result: dict[str, Any],
+        *,
+        task_id: str,
+        terminal_event_type: str | None,
+        owner: str,
+    ) -> None:
+        if str(result["task_id"]) != task_id:
+            raise sqlite3.DatabaseError(f"task {owner} result task binding mismatch")
+        if terminal_event_type is not None and (
+            str(result["terminal_event_type"]) != terminal_event_type
+        ):
+            raise sqlite3.DatabaseError(
+                f"task {owner} result terminal event binding mismatch"
+            )
 
     def _verified_reference(
         self, connection: sqlite3.Connection, snapshot: dict[str, Any]
     ) -> dict[str, Any]:
         result = self._result_by_id(connection, str(snapshot.get("result_id") or ""))
+        self._assert_result_binding(
+            result,
+            task_id=str(snapshot["task_id"]),
+            terminal_event_type=None,
+            owner="snapshot",
+        )
         if str(snapshot.get("result_hash") or "") not in {"", str(result["sha256"])}:
             raise sqlite3.DatabaseError("snapshot result ref hash mismatch")
         return result

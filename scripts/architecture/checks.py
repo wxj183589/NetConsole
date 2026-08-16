@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import fnmatch
 import json
 import re
 import subprocess
@@ -29,6 +30,49 @@ SQL_CLASSIFICATIONS = {
     "TEST_ONLY",
     "VIOLATION",
 }
+STORAGE_REGISTRY_PATH = ROOT / "config" / "storage_registry.yaml"
+STORAGE_REQUIRED_FIELDS = {
+    "id",
+    "relative_path",
+    "owner",
+    "data_type",
+    "authority",
+    "producer",
+    "consumers",
+    "retention_owner",
+    "rebuildable",
+    "site_package_policy",
+    "backup_policy",
+    "migration_policy",
+    "schema_version",
+    "allowed_data_classes",
+    "forbidden_data_classes",
+    "source_locations",
+}
+STORAGE_TABLE_RULE_REQUIRED_FIELDS = {
+    "tables",
+    "data_class",
+    "authority",
+    "producer",
+    "consumers",
+    "lifecycle_owner",
+    "rebuildable",
+    "source_locations",
+}
+SQLITE_LITERAL_PATTERN = re.compile(r"(?:^|[/\\])[^/\\]*(?:\.db|\.sqlite|\.sqlite3)(?:$|[-.])", re.IGNORECASE)
+SQLITE_LITERAL_TOKEN_PATTERN = re.compile(
+    r"(?P<database>[A-Za-z0-9_{}.*-]+\.(?:db|sqlite|sqlite3)(?:-[A-Za-z0-9_{}.*-]+)?)",
+    re.IGNORECASE,
+)
+NON_PYTHON_STORAGE_SUFFIXES = frozenset({".ts", ".tsx", ".js", ".mjs", ".cjs", ".go"})
+NON_PYTHON_STORAGE_MARKERS = re.compile(
+    r"(?:"
+    r"better-sqlite3|node:sqlite|modernc\.org/sqlite|github\.com/mattn/go-sqlite3|"
+    r"database/sql|\bsqlite3\b|\bCREATE\s+(?:TABLE|INDEX|VIEW|TRIGGER)\b|"
+    r"[A-Za-z0-9_{}.*-]+\.(?:db|sqlite|sqlite3)(?:[-.][A-Za-z0-9_{}.*-]+)?"
+    r")",
+    re.IGNORECASE,
+)
 UI_CLASSIFICATIONS = {"DISPLAY_ONLY", "BUSINESS_LOGIC", "FALSE_POSITIVE"}
 UI_NAME_PATTERN = re.compile(
     r"(?:parse|calculat|aggregate|merge|match|resolve|dedup|normaliz|bucket|summari[sz]|derive|classif|reconcile)",
@@ -235,6 +279,518 @@ def _aliases(tree: ast.AST) -> dict[str, str]:
             for item in node.names:
                 result[item.asname or item.name.split(".")[0]] = item.name
     return result
+
+
+def storage_registry_findings(
+    registry_path: Path = STORAGE_REGISTRY_PATH,
+    *,
+    source_roots: Iterable[Path] | None = None,
+    direct_sql_path: Path | None = None,
+) -> list[Finding]:
+    findings: list[Finding] = []
+    try:
+        registry = load_json_yaml(registry_path)
+    except ValueError as exc:
+        return [Finding("STORAGE_REGISTRY_INVALID", relative_path(registry_path), 0, str(exc))]
+    registry_display = _storage_display_path(registry_path)
+    if not isinstance(registry, dict):
+        return [Finding("STORAGE_REGISTRY_INVALID", registry_display, 0, "registry must be an object")]
+    classes = registry.get("data_classes")
+    stores = registry.get("stores")
+    if not isinstance(classes, list) or not classes or len(set(classes)) != len(classes):
+        findings.append(
+            Finding("STORAGE_REGISTRY_INVALID", registry_display, 0, "data_classes must be a unique non-empty list")
+        )
+        classes = []
+    class_set = {str(value) for value in classes}
+    if registry.get("unknown_policy") != "PROTECT" or "UNKNOWN" not in class_set:
+        findings.append(
+            Finding("STORAGE_UNKNOWN_POLICY", registry_display, 0, "UNKNOWN must be registered and default to PROTECT")
+        )
+    if not isinstance(stores, list) or not stores:
+        findings.append(Finding("STORAGE_REGISTRY_INVALID", registry_display, 0, "stores must be a non-empty list"))
+        return findings
+
+    ids: set[str] = set()
+    registered_locations: set[str] = set()
+    registered_database_patterns: set[str] = set()
+    registered_database_patterns_by_location: dict[str, set[str]] = {}
+    for index, item in enumerate(stores, start=1):
+        if not isinstance(item, dict):
+            findings.append(Finding("STORAGE_REGISTRY_INVALID", registry_display, index, "store must be an object"))
+            continue
+        missing = sorted(STORAGE_REQUIRED_FIELDS - set(item))
+        if missing:
+            findings.append(
+                Finding("STORAGE_REGISTRY_INVALID", registry_display, index, f"store is missing fields: {', '.join(missing)}")
+            )
+            continue
+        store_id = str(item.get("id") or "").strip()
+        if not store_id or store_id in ids:
+            findings.append(Finding("STORAGE_REGISTRY_INVALID", registry_display, index, f"duplicate or empty id: {store_id}"))
+        ids.add(store_id)
+        for field in (
+            "relative_path",
+            "owner",
+            "data_type",
+            "authority",
+            "retention_owner",
+            "site_package_policy",
+            "backup_policy",
+            "migration_policy",
+        ):
+            if not str(item.get(field) or "").strip():
+                findings.append(Finding("STORAGE_REGISTRY_INVALID", registry_display, index, f"{store_id}.{field} is empty"))
+        if not isinstance(item.get("rebuildable"), bool):
+            findings.append(Finding("STORAGE_REGISTRY_INVALID", registry_display, index, f"{store_id}.rebuildable must be boolean"))
+        database_name_patterns = item.get("database_name_patterns")
+        if database_name_patterns is not None and (
+            not isinstance(database_name_patterns, list)
+            or not database_name_patterns
+            or not all(
+                isinstance(pattern, str)
+                and bool(pattern.strip())
+                and "/" not in pattern.replace("\\", "/")
+                for pattern in database_name_patterns
+            )
+        ):
+            findings.append(
+                Finding(
+                    "STORAGE_REGISTRY_INVALID",
+                    registry_display,
+                    index,
+                    f"{store_id}.database_name_patterns must contain filename-only patterns",
+                )
+            )
+        for field in (
+            "producer",
+            "consumers",
+            "allowed_data_classes",
+            "forbidden_data_classes",
+            "source_locations",
+        ):
+            value = item.get(field)
+            if not isinstance(value, list) or (
+                field in {"producer", "consumers", "allowed_data_classes", "source_locations"}
+                and not value
+            ):
+                findings.append(Finding("STORAGE_REGISTRY_INVALID", registry_display, index, f"{store_id}.{field} must be a list"))
+        allowed = {str(value) for value in item.get("allowed_data_classes", [])}
+        forbidden = {str(value) for value in item.get("forbidden_data_classes", [])}
+        if not allowed <= class_set or not forbidden <= class_set or allowed & forbidden:
+            findings.append(Finding("STORAGE_CLASSIFICATION_INVALID", registry_display, index, f"{store_id} has invalid allowed/forbidden classes"))
+        if str(item.get("data_type")) not in class_set:
+            findings.append(Finding("STORAGE_CLASSIFICATION_INVALID", registry_display, index, f"{store_id} data_type is not registered"))
+        if str(item.get("data_type")) == "UNKNOWN":
+            active_producer = item.get("active_producer")
+            if not isinstance(active_producer, bool):
+                findings.append(
+                    Finding(
+                        "STORAGE_UNKNOWN_ACTIVE_PRODUCER",
+                        registry_display,
+                        index,
+                        f"{store_id} UNKNOWN must declare boolean active_producer",
+                    )
+                )
+            if (
+                str(item.get("authority")) != "UNKNOWN_PROTECT"
+                or item.get("rebuildable") is not False
+                or str(item.get("retention_owner")) != "UNKNOWN_PROTECT"
+            ):
+                findings.append(Finding("STORAGE_UNKNOWN_POLICY", registry_display, index, f"{store_id} UNKNOWN must fail closed"))
+        if str(item.get("data_type")) == "BACKUP_ROLLBACK" and "UNKNOWN" == str(item.get("retention_owner")):
+            findings.append(Finding("STORAGE_BACKUP_OWNER", registry_display, index, f"{store_id} backup has no retention owner"))
+        if str(item.get("data_type")) == "STAGING_TEMPORARY" and "cleanup" not in str(item.get("migration_policy")).casefold() and "recover" not in str(item.get("migration_policy")).casefold():
+            findings.append(Finding("STORAGE_STAGING_LIFECYCLE", registry_display, index, f"{store_id} staging has no cleanup/recovery policy"))
+        table_rules = item.get("table_rules", [])
+        if not isinstance(table_rules, list):
+            findings.append(
+                Finding(
+                    "STORAGE_REGISTRY_INVALID",
+                    registry_display,
+                    index,
+                    f"{store_id}.table_rules must be a list",
+                )
+            )
+            table_rules = []
+        relative_path_value = str(item.get("relative_path") or "").casefold()
+        store_database_patterns = _registry_database_patterns(
+            str(item.get("relative_path") or ""),
+            item.get("database_name_patterns"),
+        )
+        registered_database_patterns.update(store_database_patterns)
+        requires_table_rules = (
+            len(allowed) > 1
+            and str(item.get("data_type"))
+            not in {"STAGING_TEMPORARY", "BACKUP_ROLLBACK", "UNKNOWN"}
+            and bool(re.search(r"\.(?:db|sqlite)(?:$|[.*-])", relative_path_value))
+        )
+        if requires_table_rules and not table_rules:
+            findings.append(
+                Finding(
+                    "STORAGE_TABLE_OWNER_MISSING",
+                    registry_display,
+                    index,
+                    f"{store_id} multi-class SQLite store requires exact table ownership rules",
+                )
+            )
+        seen_rule_tables: set[str] = set()
+        for rule_index, rule in enumerate(table_rules, start=1):
+            if not isinstance(rule, dict):
+                findings.append(
+                    Finding(
+                        "STORAGE_REGISTRY_INVALID",
+                        registry_display,
+                        index,
+                        f"{store_id}.table_rules[{rule_index}] must be an object",
+                    )
+                )
+                continue
+            missing_rule = sorted(STORAGE_TABLE_RULE_REQUIRED_FIELDS - set(rule))
+            if missing_rule:
+                findings.append(
+                    Finding(
+                        "STORAGE_TABLE_OWNER_MISSING",
+                        registry_display,
+                        index,
+                        f"{store_id}.table_rules[{rule_index}] is missing: {', '.join(missing_rule)}",
+                    )
+                )
+                continue
+            tables = rule.get("tables")
+            if not isinstance(tables, list) or not tables or not all(
+                isinstance(table, str)
+                and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", table)
+                for table in tables
+            ):
+                findings.append(
+                    Finding(
+                        "STORAGE_TABLE_OWNER_MISSING",
+                        registry_display,
+                        index,
+                        f"{store_id}.table_rules[{rule_index}] has no exact table names",
+                    )
+                )
+                continue
+            normalized_tables = {str(table).casefold() for table in tables}
+            if seen_rule_tables & normalized_tables:
+                findings.append(
+                    Finding(
+                        "STORAGE_TABLE_OWNER_AMBIGUOUS",
+                        registry_display,
+                        index,
+                        f"{store_id} declares one table in multiple lifecycle rules",
+                    )
+                )
+            seen_rule_tables.update(normalized_tables)
+            if str(rule.get("data_class")) not in allowed:
+                findings.append(
+                    Finding(
+                        "STORAGE_CLASSIFICATION_INVALID",
+                        registry_display,
+                        index,
+                        f"{store_id}.table_rules[{rule_index}] class is not allowed",
+                    )
+                )
+            for field in ("producer", "consumers", "source_locations"):
+                values = rule.get(field)
+                if not isinstance(values, list) or not values or not all(
+                    isinstance(value, str) and value for value in values
+                ):
+                    findings.append(
+                        Finding(
+                            "STORAGE_TABLE_OWNER_MISSING",
+                            registry_display,
+                            index,
+                            f"{store_id}.table_rules[{rule_index}].{field} must be a non-empty list",
+                        )
+                    )
+            if not str(rule.get("authority") or "").strip() or not str(
+                rule.get("lifecycle_owner") or ""
+            ).strip():
+                findings.append(
+                    Finding(
+                        "STORAGE_TABLE_OWNER_MISSING",
+                        registry_display,
+                        index,
+                        f"{store_id}.table_rules[{rule_index}] lacks authority or lifecycle owner",
+                    )
+                )
+            if not isinstance(rule.get("rebuildable"), bool):
+                findings.append(
+                    Finding(
+                        "STORAGE_REGISTRY_INVALID",
+                        registry_display,
+                        index,
+                        f"{store_id}.table_rules[{rule_index}].rebuildable must be boolean",
+                    )
+                )
+        for location in item.get("source_locations", []):
+            normalized = str(location).replace("\\", "/").strip("/")
+            registered_locations.add(normalized)
+            registered_database_patterns_by_location.setdefault(normalized, set()).update(
+                store_database_patterns
+            )
+            if not (ROOT / normalized).exists():
+                findings.append(Finding("STORAGE_SOURCE_MISSING", registry_display, index, f"{store_id} source location does not exist: {normalized}"))
+        for rule in item.get("table_rules", []):
+            if not isinstance(rule, dict):
+                continue
+            for location in rule.get("source_locations", []):
+                normalized = str(location).replace("\\", "/").strip("/")
+                registered_locations.add(normalized)
+                registered_database_patterns_by_location.setdefault(normalized, set()).update(
+                    store_database_patterns
+                )
+                if not (ROOT / normalized).exists():
+                    findings.append(
+                        Finding(
+                            "STORAGE_SOURCE_MISSING",
+                            registry_display,
+                            index,
+                            f"{store_id} table source location does not exist: {normalized}",
+                        )
+                    )
+
+    for location in registry.get("infrastructure_locations", []):
+        normalized = str(location).replace("\\", "/").strip("/")
+        registered_locations.add(normalized)
+        registered_database_patterns_by_location.setdefault(normalized, set()).update(
+            registered_database_patterns
+        )
+        if not (ROOT / normalized).exists():
+            findings.append(Finding("STORAGE_SOURCE_MISSING", registry_display, 0, f"infrastructure location does not exist: {normalized}"))
+
+    inventory_path = direct_sql_path or CONFIG_ROOT / "direct_sql_access.yaml"
+    try:
+        direct_inventory = load_json_yaml(inventory_path)
+    except ValueError as exc:
+        findings.append(Finding("STORAGE_REGISTRY_INVALID", relative_path(inventory_path), 0, str(exc)))
+        direct_inventory = []
+    direct_paths: set[str] = set()
+    direct_classifications: dict[str, str] = {}
+    if isinstance(direct_inventory, list):
+        for item in direct_inventory:
+            if not isinstance(item, dict):
+                continue
+            path = str(item.get("path") or "").replace("\\", "/")
+            direct_paths.add(path)
+            direct_classifications[path] = str(item.get("classification") or "")
+            if str(item.get("classification")) == "TEST_ONLY":
+                continue
+            owner = str(item.get("owner") or "")
+            registered = any(
+                path == location or path.startswith(f"{location}/")
+                for location in registered_locations
+            )
+            if not registered:
+                findings.append(
+                    Finding(
+                        "UNREGISTERED_STORAGE",
+                        path,
+                        0,
+                        f"database source has no exact storage registry declaration for owner '{owner}'",
+                    )
+                )
+
+    roots = tuple(
+        source_roots
+        or (
+            ROOT / "src" / "netconsole",
+            ROOT / "scripts" / "maintenance",
+            ROOT / "scripts" / "build",
+            ROOT / "apps" / "agent",
+            ROOT / "apps" / "desktop_electron" / "src",
+            ROOT / "apps" / "desktop_renderer" / "src",
+        )
+    )
+    for root in roots:
+        if not root.exists():
+            continue
+        for path in sorted(root.rglob("*.py")):
+            try:
+                tree = _parse_python(path)
+            except (OSError, SyntaxError) as exc:
+                display = _storage_display_path(path)
+                findings.append(Finding("STORAGE_SCAN_ERROR", display, 0, str(exc)))
+                continue
+            aliases = _aliases(tree)
+            candidate_lines: list[tuple[int, str]] = []
+            database_literals: list[tuple[int, str]] = []
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Call) and _qualified_name(node.func, aliases) in SQL_CONNECT_NAMES:
+                    candidate_lines.append((int(getattr(node, "lineno", 0)), _qualified_name(node.func, aliases)))
+                elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+                    value = node.value.strip()
+                    if SQLITE_LITERAL_PATTERN.search(value) or "CREATE TABLE" in value.upper():
+                        candidate_lines.append((int(getattr(node, "lineno", 0)), value[:120]))
+                    database_literals.extend(
+                        (int(getattr(node, "lineno", 0)), match.group("database"))
+                        for match in SQLITE_LITERAL_TOKEN_PATTERN.finditer(value)
+                    )
+            if not candidate_lines:
+                continue
+            display = _storage_display_path(path)
+            source_database_patterns = _registered_database_patterns_for_source(
+                display,
+                registered_database_patterns_by_location,
+            )
+            registered = display in direct_paths or any(
+                display == location or display.startswith(f"{location}/")
+                for location in registered_locations
+            )
+            if not registered:
+                line, database = min(candidate_lines)
+                findings.append(
+                    Finding(
+                        "UNREGISTERED_STORAGE",
+                        display,
+                        line,
+                        f"UNREGISTERED STORAGE database={database!r}; source location has no storage registry declaration",
+                    )
+                )
+                continue
+            if direct_classifications.get(display) != "TEST_ONLY":
+                findings.extend(
+                    _unregistered_database_literal_findings(
+                        display,
+                        database_literals,
+                        registered_database_patterns=source_database_patterns,
+                    )
+                )
+        for path in sorted(
+            candidate
+            for candidate in root.rglob("*")
+            if candidate.is_file()
+            and candidate.suffix.casefold() in NON_PYTHON_STORAGE_SUFFIXES
+            and not _is_non_python_test_source(candidate)
+        ):
+            try:
+                lines = path.read_text(encoding="utf-8").splitlines()
+            except (OSError, UnicodeError) as exc:
+                findings.append(
+                    Finding("STORAGE_SCAN_ERROR", _storage_display_path(path), 0, str(exc))
+                )
+                continue
+            candidate_lines = [
+                (line_number, line.strip()[:120])
+                for line_number, line in enumerate(lines, start=1)
+                if NON_PYTHON_STORAGE_MARKERS.search(line)
+            ]
+            if not candidate_lines:
+                continue
+            database_literals = [
+                (line_number, match.group("database"))
+                for line_number, line in enumerate(lines, start=1)
+                for match in SQLITE_LITERAL_TOKEN_PATTERN.finditer(line)
+            ]
+            display = _storage_display_path(path)
+            source_database_patterns = _registered_database_patterns_for_source(
+                display,
+                registered_database_patterns_by_location,
+            )
+            registered = display in direct_paths or any(
+                display == location or display.startswith(f"{location}/")
+                for location in registered_locations
+            )
+            if not registered:
+                line, database = min(candidate_lines)
+                findings.append(
+                    Finding(
+                        "UNREGISTERED_STORAGE",
+                        display,
+                        line,
+                        f"UNREGISTERED STORAGE database={database!r}; non-Python source location has no storage registry declaration",
+                    )
+                )
+                continue
+            if direct_classifications.get(display) != "TEST_ONLY":
+                findings.extend(
+                    _unregistered_database_literal_findings(
+                        display,
+                        database_literals,
+                        registered_database_patterns=source_database_patterns,
+                    )
+                )
+    return findings
+
+
+def _registry_database_patterns(
+    relative_path_value: str,
+    explicit_patterns: object = None,
+) -> set[str]:
+    patterns: set[str] = set()
+    for alternative in relative_path_value.replace("\\", "/").split("|"):
+        filename = alternative.rstrip("/").rsplit("/", 1)[-1].casefold()
+        if not re.search(r"\.(?:db|sqlite|sqlite3)(?:$|[-.*])", filename):
+            continue
+        normalized = re.sub(r"\{[^{}]+\}", "*", filename)
+        normalized = normalized.replace("yyyy-mm[-nnnn]", "*")
+        patterns.add(normalized)
+    if isinstance(explicit_patterns, list):
+        patterns.update(
+            str(pattern).replace("\\", "/").rsplit("/", 1)[-1].casefold()
+            for pattern in explicit_patterns
+            if str(pattern).strip()
+        )
+    return patterns
+
+
+def _registered_database_patterns_for_source(
+    display: str,
+    patterns_by_location: dict[str, set[str]],
+) -> set[str]:
+    patterns: set[str] = set()
+    for location, registered_patterns in patterns_by_location.items():
+        if display == location or display.startswith(f"{location}/"):
+            patterns.update(registered_patterns)
+    return patterns
+
+
+def _unregistered_database_literal_findings(
+    display: str,
+    literals: Iterable[tuple[int, str]],
+    *,
+    registered_database_patterns: set[str],
+) -> list[Finding]:
+    findings: list[Finding] = []
+    seen: set[tuple[int, str]] = set()
+    for line, literal in literals:
+        database = literal.replace("\\", "/").rsplit("/", 1)[-1].casefold()
+        if database.startswith("*."):
+            continue
+        key = (line, database)
+        if key in seen:
+            continue
+        seen.add(key)
+        if any(fnmatch.fnmatchcase(database, pattern) for pattern in registered_database_patterns):
+            continue
+        findings.append(
+            Finding(
+                "UNREGISTERED_STORAGE",
+                display,
+                line,
+                f"UNREGISTERED STORAGE database={literal!r}; registered source has no matching physical database declaration",
+            )
+        )
+    return findings
+
+
+def _is_non_python_test_source(path: Path) -> bool:
+    name = path.name.casefold()
+    return (
+        name.endswith("_test.go")
+        or ".test." in name
+        or ".spec." in name
+        or any(part.casefold() in {"node_modules", "dist", "coverage"} for part in path.parts)
+    )
+
+
+def _storage_display_path(path: Path) -> str:
+    try:
+        return relative_path(path)
+    except ValueError:
+        return path.as_posix()
 
 
 def _forbidden_router_import(module: str) -> bool:

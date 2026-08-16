@@ -39,7 +39,11 @@ from netconsole.services.job_center.web_export_event_safety import (
     redact_web_export_text,
     sanitize_web_export_value,
 )
-from netconsole.services.job_center.worker_protocol import configure_standard_streams, write_event
+from netconsole.services.job_center.worker_protocol import (
+    bind_worker_protocol_stream,
+    configure_standard_streams,
+    write_event,
+)
 from netconsole.services.mesh_analysis_report import MeshReportOptions
 from netconsole.services.rail_transit.mesh_ap_location_service import (
     MeshApLocationSnapshot,
@@ -436,7 +440,7 @@ def _run_mesh_analysis_report(job: ExportJob) -> None:
 
 def run_job(job: ExportJob) -> int:
     diagnostics = sys.stderr or getattr(sys, "__stderr__", None) or io.StringIO()
-    with redirect_stdout(diagnostics):
+    with bind_worker_protocol_stream(), redirect_stdout(diagnostics):
         return _run_job(job)
 
 

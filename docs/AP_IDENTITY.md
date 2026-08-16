@@ -186,10 +186,17 @@ ApIdentityMatch]`，现有按 key、`values()` 或 `dict.update()` 消费方式�
 - `ap_identity_h3c_prefixes`：保留的历史诊断数据，生产查询不读取；
 - `ap_identity_conflicts`：AC/Base 不一致及可审计上下文；
 - `ap_identity_index_state`：revision、构建原因、来源计数和时间。
+- `ap_identity_radio_evidence`：按 `(ap_uuid, rid)` 保存最新有效 BBSSID，
+  是从高频 Radio History 提炼出的 `OPERATIONAL_CURRENT` 重建证据。
+
+旧 `ac_fit_ap_radio_history` 以及迁入共享 History 的 `fit_ap_radio` 事件继续作为
+历史事实保留，但不再承担 AP Identity 重建 authority。初始化升级优先从旧表
+回填 radio evidence；旧表已完成迁移时，只允许从现有已验证的 active
+`ac_bbssid/ac_runtime` 索引别名恢复一次，避免历史退休改变查询结果。
 
 当前主数据库 schema 版本以 `src/netconsole/core/database.py` 的
 `CURRENT_SCHEMA_VERSION` 为唯一事实源；本次文档复核时为
-`2026.08.07.ap_topology_resolver`。初始化是增量且
+`2026.08.16.ap_identity_radio_evidence`。初始化是增量且
 幂等的，不删除现有 AP、日志、规划或缓存数据。
 
 ## 7. 索引刷新边界
@@ -212,11 +219,16 @@ Backend 启动只保留缺失或过期索引的兼容性收口；`_initialize_ac
 启动时机，也不会把启动修复当作来源写入的替代路径。
 
 来源 revision 监听 `ap_extension_points`、FIT-AP 当前资源、
-Radio/LLDP 历史、FIT-AP metadata、兼容 AP entity/光衰/轨旁缓存，以及
+当前 Radio identity evidence、LLDP 历史、FIT-AP metadata、兼容 AP entity/光衰/轨旁缓存，以及
 被 FIT-AP 资源引用 AC 的 `devices.device_uuid/device_vendor`。无关交换机、
 未被 FIT-AP 引用的设备和 `device_facts` 更新不提升 revision，普通设备
 状态采集不会把 AP Identity 误标为 stale。写任务完成全部来源持久化后
 按批次只构建一次，禁止在每台 AP、每条 Radio/LLDP 或 GET 中重建。
+
+AC Radio 采集仍把完整状态变化和低频 heartbeat 写入 History；只有规范化后的
+BBSSID 发生语义变化时才 UPSERT `ap_identity_radio_evidence` 并提升 Identity
+source revision。相同 BBSSID 的高频重放不得重复更新这张 evidence 表或额外提升
+source revision。
 
 `source_revision=0` 是“当前来源 revision 合法为零”，不是缺失或过期。
 只有索引状态不存在/索引 revision 无效时返回 `identity_index_missing`，

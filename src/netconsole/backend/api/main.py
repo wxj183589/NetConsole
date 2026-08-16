@@ -593,6 +593,26 @@ def create_app(
                     else _HISTORY_DRAIN_NORMAL_INTERVAL_SECONDS
                 )
 
+        try:
+            staging_recovery = await asyncio.to_thread(
+                site_package_service.recover_orphaned_staging
+            )
+            app.state.site_package_staging_recovery = staging_recovery.to_dict()
+            if staging_recovery.failures:
+                app_logger.log_warning(
+                    "SITE_PACKAGE_STAGING_RECOVERY_PARTIAL",
+                    f"failed={len(staging_recovery.failures)}",
+                )
+        except Exception as exc:
+            app.state.site_package_staging_recovery = {
+                "status": "FAIL",
+                "error": exc.__class__.__name__,
+            }
+            app_logger.log_warning(
+                "SITE_PACKAGE_STAGING_RECOVERY_FAILED",
+                f"error={exc.__class__.__name__}",
+            )
+
         auto_cleanup_task = (
             asyncio.create_task(schedule_auto_cleanup())
             if (

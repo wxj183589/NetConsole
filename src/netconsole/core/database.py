@@ -26,7 +26,7 @@ from netconsole.core.sqlite_utils import (
 from netconsole.models.device_address import InvalidDeviceAddressError, normalize_ip_address
 
 
-CURRENT_SCHEMA_VERSION = "2026.08.07.ap_topology_resolver"
+CURRENT_SCHEMA_VERSION = "2026.08.16.ap_identity_radio_evidence"
 
 DEVICE_CLASSIFICATION_COLUMNS = (
     "project_phase",
@@ -1594,6 +1594,15 @@ INSERT OR IGNORE INTO ap_identity_index_state (
     build_reason, built_at
 )
 VALUES ('current', 0, 0, 0, 0, 0, 0, 0, 'schema_initialized', '');
+
+CREATE TABLE IF NOT EXISTS ap_identity_radio_evidence (
+    ap_uuid TEXT NOT NULL,
+    rid INTEGER NOT NULL,
+    bbssid TEXT NOT NULL,
+    collected_at TEXT,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(ap_uuid, rid)
+);
 """
 
 AP_RESOURCE_SNAPSHOTS_SCHEMA = """
@@ -1626,8 +1635,7 @@ def _ap_identity_source_revision_schema() -> str:
     tables = (
         "ap_extension_points",
         "ac_fit_ap_resources",
-        "ac_fit_ap_radio_history",
-        "ac_fit_ap_lldp_history",
+        "ap_identity_radio_evidence",
         "ac_fit_ap_metadata",
         "ap_entities",
         "ac_fit_ap_optical",
@@ -1661,6 +1669,13 @@ END;
             )
     statements.append(
         """
+DROP TRIGGER IF EXISTS trg_ap_identity_source_acfitapradiohistory_insert;
+DROP TRIGGER IF EXISTS trg_ap_identity_source_acfitapradiohistory_update;
+DROP TRIGGER IF EXISTS trg_ap_identity_source_acfitapradiohistory_delete;
+DROP TRIGGER IF EXISTS trg_ap_identity_source_acfitaplldphistory_insert;
+DROP TRIGGER IF EXISTS trg_ap_identity_source_acfitaplldphistory_update;
+DROP TRIGGER IF EXISTS trg_ap_identity_source_acfitaplldphistory_delete;
+
 DROP TRIGGER IF EXISTS trg_ap_identity_source_devices_insert;
 DROP TRIGGER IF EXISTS trg_ap_identity_source_devices_update;
 DROP TRIGGER IF EXISTS trg_ap_identity_source_devices_delete;
@@ -2026,6 +2041,8 @@ class Database:
                 )
                 stage = "additive_updates"
                 self._apply_additive_schema_updates(conn)
+                stage = "ap_identity_radio_evidence_backfill"
+                self._backfill_ap_identity_radio_evidence(conn)
                 stage = "rail_base_master_identity_backfill"
                 self._backfill_rail_base_master_ids(conn)
                 stage = "classification_validation"
@@ -2819,6 +2836,8 @@ class Database:
     def _requires_ap_identity_schema_migration(self, conn: sqlite3.Connection) -> bool:
         if not self._table_exists(conn, "ap_identity_index_state"):
             return True
+        if not self._table_exists(conn, "ap_identity_radio_evidence"):
+            return True
         required_columns = {
             "source_revision",
             "actual_radio_alias_count",
@@ -2836,6 +2855,112 @@ class Database:
             ).fetchall()
         }
         return not required_columns <= columns
+
+    def _backfill_ap_identity_radio_evidence(
+        self,
+        conn: sqlite3.Connection,
+    ) -> None:
+        """Preserve latest BBSSID identity evidence outside legacy history."""
+
+        if not self._table_exists(conn, "ap_identity_radio_evidence"):
+            return
+        source_state = (
+            conn.execute(
+                """
+                SELECT revision, updated_at
+                FROM ap_identity_source_state
+                WHERE site_id='current'
+                """
+            ).fetchone()
+            if self._table_exists(conn, "ap_identity_source_state")
+            else None
+        )
+        if self._table_exists(conn, "ac_fit_ap_radio_history"):
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO ap_identity_radio_evidence (
+                    ap_uuid, rid, bbssid, collected_at, updated_at
+                )
+                SELECT h.ap_uuid,
+                       h.rid,
+                       trim(h.bbssid),
+                       h.collected_at,
+                       COALESCE(
+                           NULLIF(h.created_at, ''),
+                           NULLIF(h.collected_at, ''),
+                           strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                       )
+                FROM ac_fit_ap_radio_history h
+                JOIN (
+                    SELECT ap_uuid, rid, MAX(id) AS latest_id
+                    FROM ac_fit_ap_radio_history
+                    WHERE ap_uuid IS NOT NULL
+                      AND trim(ap_uuid) != ''
+                      AND rid BETWEEN 1 AND 3
+                      AND bbssid IS NOT NULL
+                      AND trim(bbssid) != ''
+                    GROUP BY ap_uuid, rid
+                ) latest ON latest.latest_id = h.id
+                """
+            )
+        if not (
+            self._table_exists(conn, "ap_identity_mac_aliases")
+            and self._table_exists(conn, "ap_identity_entities")
+        ):
+            self._restore_ap_identity_source_state(conn, source_state)
+            return
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO ap_identity_radio_evidence (
+                ap_uuid, rid, bbssid, collected_at, updated_at
+            )
+            SELECT e.ac_ap_uuid,
+                   a.radio_id,
+                   COALESCE(NULLIF(trim(a.mac_display), ''), a.mac_key),
+                   NULL,
+                   COALESCE(
+                       NULLIF(a.updated_at, ''),
+                       NULLIF(a.created_at, ''),
+                       strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                   )
+            FROM ap_identity_mac_aliases a
+            JOIN (
+                SELECT entity_id, radio_id, MAX(alias_id) AS latest_alias_id
+                FROM ap_identity_mac_aliases
+                WHERE site_id = 'current'
+                  AND alias_type = 'ac_bbssid'
+                  AND source = 'ac_runtime'
+                  AND is_active = 1
+                  AND radio_id BETWEEN 1 AND 3
+                GROUP BY entity_id, radio_id
+            ) latest ON latest.latest_alias_id = a.alias_id
+            JOIN ap_identity_entities e ON e.entity_id = a.entity_id
+            WHERE e.site_id = 'current'
+              AND e.ac_ap_uuid IS NOT NULL
+              AND trim(e.ac_ap_uuid) != ''
+              AND COALESCE(NULLIF(trim(a.mac_display), ''), trim(a.mac_key)) != ''
+            """
+        )
+
+        self._restore_ap_identity_source_state(conn, source_state)
+
+    @staticmethod
+    def _restore_ap_identity_source_state(
+        conn: sqlite3.Connection,
+        source_state: sqlite3.Row | None,
+    ) -> None:
+        """Do not treat an authority-preserving backfill as a source change."""
+
+        if source_state is None:
+            return
+        conn.execute(
+            """
+            UPDATE ap_identity_source_state
+            SET revision=?, updated_at=?
+            WHERE site_id='current'
+            """,
+            (int(source_state["revision"]), str(source_state["updated_at"] or "")),
+        )
 
     def _requires_trackside_ap_location_migration(
         self, conn: sqlite3.Connection

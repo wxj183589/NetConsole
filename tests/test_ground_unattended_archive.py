@@ -4,6 +4,8 @@ import json
 import zipfile
 from datetime import datetime
 
+import pytest
+
 from netconsole.core.paths import PathResolver
 from netconsole.repositories.ground_unattended_repository import (
     GroundUnattendedRepository,
@@ -109,6 +111,58 @@ def test_corrupted_ready_archive_without_active_data_is_not_overwritten(
     assert failed is not None
     assert failed["archive_status"] == "FAILED"
     assert failed["message"] == "正式归档校验失败且原始数据不存在，已保留现有文件"
+
+
+def test_ready_archive_retry_repairs_raw_registry_before_active_cleanup(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    paths, repo, service, run_id = _setup(tmp_path)
+    active = paths.ground_unattended_active_dir("site-a", "2026-07-25")
+    raw_path = active / "realtime" / "syslog" / "events.ndjson"
+    raw_path.parent.mkdir(parents=True)
+    raw_path.write_text('{"event":"mesh-link"}\n', encoding="utf-8")
+    repo.upsert_raw_file(
+        {
+            "file_id": "raw-before-ready-crash",
+            "run_id": run_id,
+            "data_type": "syslog",
+            "relative_path": raw_path.relative_to(repo.db_path.parent).as_posix(),
+            "start_time": "2026-07-25T08:00:00+08:00",
+            "end_time": "2026-07-25T08:00:01+08:00",
+            "record_count": 1,
+            "size_bytes": raw_path.stat().st_size,
+            "sha256": "a" * 64,
+            "status": "CLOSED",
+            "archive_status": "PENDING",
+        }
+    )
+    original_mark = repo.mark_raw_files_archived
+
+    def crash_before_raw_registration(*_args, **_kwargs):
+        raise KeyboardInterrupt("simulated process interruption")
+
+    monkeypatch.setattr(repo, "mark_raw_files_archived", crash_before_raw_registration)
+    with pytest.raises(KeyboardInterrupt, match="simulated process interruption"):
+        service.archive_run(run_id, repo.get_profile())
+
+    interrupted_archive = repo.get_archive_by_run(run_id)
+    assert interrupted_archive is not None
+    assert interrupted_archive["archive_status"] == "READY"
+    assert interrupted_archive["active_cleanup_pending"] == 1
+    assert repo.get_raw_file("raw-before-ready-crash")["archive_status"] == "PENDING"  # type: ignore[index]
+    assert active.is_dir()
+
+    monkeypatch.setattr(repo, "mark_raw_files_archived", original_mark)
+    recovered = service.archive_run(run_id, repo.get_profile())
+
+    assert recovered.success is True
+    assert recovered.active_cleanup_pending is False
+    registered = repo.get_raw_file("raw-before-ready-crash")
+    assert registered is not None
+    assert registered["archive_status"] == "ARCHIVED"
+    assert registered["compressed_path"] == interrupted_archive["relative_path"]
+    assert not active.exists()
 
 
 def _setup(tmp_path):

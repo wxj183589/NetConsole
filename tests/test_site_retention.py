@@ -707,11 +707,12 @@ def test_typed_task_retention_exact_apply_preserves_active_mr_ground_and_artifac
         development_root=tmp_path,
     )
 
-    assert plan["policy"]["status"] == "REHEARSAL_POLICY_ONLY"
+    assert plan["policy"]["status"] == "REHEARSAL_OPERATIONAL_WINDOW_ONLY"
     assert plan["expected_counts"] == {
-        "events": 3,
-        "snapshots": 1,
-        "results": 1,
+        "archive_events": 3,
+        "disposable_events": 0,
+        "archive_results": 1,
+        "snapshots": 0,
     }
     assert plan["protected"] == {
         "total": 4,
@@ -719,6 +720,7 @@ def test_typed_task_retention_exact_apply_preserves_active_mr_ground_and_artifac
         "online_mr": 1,
         "ground": 1,
         "artifact": 1,
+        "ambiguous": 0,
         "task_ids": ["active-old", "artifact-old", "ground-old", "mr-old"],
     }
     result = service.apply_typed_task_retention(
@@ -729,7 +731,12 @@ def test_typed_task_retention_exact_apply_preserves_active_mr_ground_and_artifac
         development_root=tmp_path,
     )
 
-    assert result["deleted"] == plan["expected_counts"]
+    assert result["archived"] == {"events": 3, "results": 1}
+    assert result["deleted"] == {
+        "archived_events": 3,
+        "disposable_events": 0,
+        "archived_results": 1,
+    }
     assert result["active_tasks_deleted"] == 0
     assert result["artifacts_deleted"] == 0
     assert artifact.read_bytes() == b"artifact"
@@ -742,9 +749,26 @@ def test_typed_task_retention_exact_apply_preserves_active_mr_ground_and_artifac
             "SELECT COUNT(*) FROM online_mr_task_sessions"
         ).fetchone()[0]
         quick_check = connection.execute("PRAGMA quick_check").fetchone()[0]
-    assert remaining == {"active-old", "artifact-old", "ground-old", "mr-old"}
+    assert remaining == {
+        "active-old",
+        "artifact-old",
+        "ground-old",
+        "mr-old",
+        "ordinary-old",
+    }
     assert mapping_count == 1
     assert quick_check == "ok"
+    restarted = TaskRepository(task_db)
+    ordinary = restarted.get("ordinary-old")
+    assert ordinary is not None
+    assert ordinary.result == {"rows": 10}
+    assert [event["id"] for event in restarted.list_events("ordinary-old")] == [
+        "finished-ordinary-old",
+        "progress-ordinary",
+        "log-ordinary",
+    ]
+    assert result["sealed_shards"]
+    assert all(item["status"] == "VERIFIED" for item in result["sealed_shards"])
 
 
 def test_typed_task_retention_rejects_stale_database_and_outside_root(

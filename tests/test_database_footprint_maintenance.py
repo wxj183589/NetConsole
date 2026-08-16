@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from contextlib import closing
 from pathlib import Path
@@ -15,12 +16,14 @@ from netconsole.services.database_footprint_maintenance import (
     sqlite_online_backup_readonly,
     sqlite_quick_profile,
 )
+from netconsole.services import database_footprint_maintenance as maintenance_module
 from scripts.maintenance.rehearse_database_footprint import main as rehearsal_main
+from scripts.maintenance.rehearse_database_footprint import _cleanup_sqlite_sidecars
 
 
 def _database(path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection:
         connection.executescript(
             "CREATE TABLE records (id INTEGER PRIMARY KEY, value TEXT NOT NULL);"
             "INSERT INTO records(value) VALUES ('one'), ('two'), ('three');"
@@ -76,6 +79,8 @@ def test_readonly_online_backup_and_compact_replace_rollback(tmp_path: Path) -> 
     )
     assert snapshot_result["quick_check"] == "ok"
     assert snapshot_result["table_counts"] == {"records": 3}
+    assert not snapshot.with_name(f"{snapshot.name}-wal").exists()
+    assert not snapshot.with_name(f"{snapshot.name}-shm").exists()
 
     with closing(sqlite3.connect(snapshot)) as connection:
         connection.execute("DELETE FROM records WHERE id = 2")
@@ -97,6 +102,102 @@ def test_readonly_online_backup_and_compact_replace_rollback(tmp_path: Path) -> 
     assert restored["rolled_back"] is True
     assert sqlite_quick_profile(snapshot)["table_counts"] == {"records": 2}
     assert before["schema_digest"] == sqlite_quick_profile(snapshot)["schema_digest"]
+
+
+def test_site_package_staging_sidecars_are_removed_after_closed_owner(tmp_path: Path) -> None:
+    database = _database(tmp_path / "site-package" / "tasks.db")
+    for suffix in ("-wal", "-shm"):
+        database.with_name(f"{database.name}{suffix}").write_bytes(b"staging")
+
+    _cleanup_sqlite_sidecars(database)
+
+    assert not database.with_name(f"{database.name}-wal").exists()
+    assert not database.with_name(f"{database.name}-shm").exists()
+
+
+def test_compact_replace_failure_keeps_active_database_available(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _database(tmp_path / "source.db")
+    compacted = tmp_path / "compacted.db"
+    service = DevelopmentDatabaseCompactService(
+        PathResolver(app_root=tmp_path, data_root=tmp_path / "maintenance"),
+        site_id="line-12",
+        development_root=tmp_path,
+    )
+    service.compact(source, compacted)
+    rollback = tmp_path / "source.rollback.db"
+    original_replace = os.replace
+
+    def fail_candidate_replace(src: str | Path, dst: str | Path) -> None:
+        if Path(src) == compacted and Path(dst) == source:
+            raise OSError("injected candidate replace failure")
+        original_replace(src, dst)
+
+    monkeypatch.setattr(maintenance_module.os, "replace", fail_candidate_replace)
+    with pytest.raises(OSError, match="injected candidate"):
+        service.replace(source, compacted, rollback)
+
+    assert source.is_file()
+    assert compacted.is_file()
+    assert sqlite_quick_profile(source)["table_counts"] == {"records": 3}
+
+
+def test_compact_rollback_failure_keeps_current_and_rollback_authorities(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _database(tmp_path / "source.db")
+    compacted = tmp_path / "compacted.db"
+    rollback = tmp_path / "source.rollback.db"
+    service = DevelopmentDatabaseCompactService(
+        PathResolver(app_root=tmp_path, data_root=tmp_path / "maintenance"),
+        site_id="line-12",
+        development_root=tmp_path,
+    )
+    with closing(sqlite3.connect(source)) as connection:
+        connection.execute("DELETE FROM records WHERE id = 2")
+        connection.commit()
+    service.compact(source, compacted)
+    service.replace(source, compacted, rollback)
+    original_replace = os.replace
+
+    def fail_rollback_replace(src: str | Path, dst: str | Path) -> None:
+        if Path(src) == rollback and Path(dst) == source:
+            raise OSError("injected rollback replace failure")
+        original_replace(src, dst)
+
+    monkeypatch.setattr(maintenance_module.os, "replace", fail_rollback_replace)
+    with pytest.raises(OSError, match="injected rollback"):
+        service.rollback(source, rollback)
+
+    assert source.is_file()
+    assert rollback.is_file()
+    assert sqlite_quick_profile(source)["table_counts"] == {"records": 2}
+    assert sqlite_quick_profile(rollback)["table_counts"] == {"records": 2}
+
+
+def test_compact_replace_refuses_live_wal_sidecars(tmp_path: Path) -> None:
+    source = _database(tmp_path / "source.db")
+    compacted = tmp_path / "compacted.db"
+    service = DevelopmentDatabaseCompactService(
+        PathResolver(app_root=tmp_path, data_root=tmp_path / "maintenance"),
+        site_id="line-12",
+        development_root=tmp_path,
+    )
+    service.compact(source, compacted)
+    writer = sqlite3.connect(source)
+    try:
+        assert str(writer.execute("PRAGMA journal_mode=WAL").fetchone()[0]).lower() == "wal"
+        writer.execute("INSERT INTO records(value) VALUES ('uncheckpointed')")
+        writer.commit()
+        assert source.with_name(f"{source.name}-wal").stat().st_size > 0
+        with pytest.raises(sqlite3.OperationalError, match="sidecars"):
+            service.replace(source, compacted, tmp_path / "source.rollback.db")
+    finally:
+        writer.close()
+
+    assert source.is_file()
+    assert compacted.is_file()
 
 
 def test_development_path_guard_fails_closed(tmp_path: Path) -> None:

@@ -118,8 +118,15 @@ class GroundUnattendedArchiveService:
                     )
                     return ArchiveResult(str(existing["archive_id"]), False, message)
             else:
+                archive_reference = str(existing.get("relative_path") or "")
+                self.repository.mark_raw_files_archived(run_id, archive_reference)
+                raw_registration_complete = (
+                    self.repository.count_unarchived_raw_files(run_id) == 0
+                )
                 cleanup_pending = bool(existing.get("active_cleanup_pending"))
-                if cleanup_pending and active_dir.is_dir():
+                if not raw_registration_complete:
+                    cleanup_pending = True
+                elif cleanup_pending and active_dir.is_dir():
                     try:
                         self._safe_remove_active_dir(active_dir)
                         cleanup_pending = False
@@ -264,7 +271,7 @@ class GroundUnattendedArchiveService:
                     self.paths.ground_unattended_root(self.site_id)
                 ).as_posix(),
             )
-            cleanup_pending = False
+            cleanup_pending = self.repository.count_unarchived_raw_files(run_id) > 0
             _progress(
                 progress_callback,
                 "CLEANING_ARCHIVED_ACTIVE",
@@ -272,10 +279,11 @@ class GroundUnattendedArchiveService:
                 "正在按安全策略清理已归档 active 数据",
                 {"archive_id": archive_id},
             )
-            try:
-                self._safe_remove_active_dir(active_dir)
-            except OSError:
-                cleanup_pending = True
+            if not cleanup_pending:
+                try:
+                    self._safe_remove_active_dir(active_dir)
+                except OSError:
+                    cleanup_pending = True
             self.repository.upsert_archive(
                 {
                     "archive_id": archive_id,

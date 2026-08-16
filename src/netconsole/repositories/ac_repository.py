@@ -2845,6 +2845,9 @@ class AcRepository:
             tx_power = payload.get(f"rid{rid}_tx_power")
             clients = payload.get(f"rid{rid}_clients")
             bbssid = payload.get(f"rid{rid}_bbssid")
+            normalized_bbssid = normalize_ap_mac(bbssid)
+            if normalized_bbssid.normalized:
+                bbssid = normalized_bbssid.display
             if not any(value not in (None, "") for value in (status, mode, band, channel, bandwidth, usage, tx_power, clients, bbssid)):
                 continue
             row = {
@@ -2877,6 +2880,41 @@ class AcRepository:
                 meaningful_fields=(
                     "ac_device_uuid", "ap_uuid", "ap_name", "rid", "status", "mode", "band",
                     "channel", "bandwidth", "bbssid",
+                ),
+            )
+            if not normalized_bbssid.normalized:
+                continue
+            existing = conn.execute(
+                """
+                SELECT bbssid
+                FROM ap_identity_radio_evidence
+                WHERE ap_uuid = ? AND rid = ?
+                """,
+                (ap_uuid, rid),
+            ).fetchone()
+            if (
+                existing is not None
+                and normalize_ap_mac(existing["bbssid"]).normalized
+                == normalized_bbssid.normalized
+            ):
+                continue
+            conn.execute(
+                """
+                INSERT INTO ap_identity_radio_evidence (
+                    ap_uuid, rid, bbssid, collected_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(ap_uuid, rid) DO UPDATE SET
+                    bbssid = excluded.bbssid,
+                    collected_at = excluded.collected_at,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    ap_uuid,
+                    rid,
+                    normalized_bbssid.display,
+                    row.get("collected_at"),
+                    self._now(),
                 ),
             )
 

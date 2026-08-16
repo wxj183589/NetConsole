@@ -67,6 +67,7 @@ from netconsole.models.task_history_policy import (
     business_result_has_warning,
     project_business_result,
 )
+from netconsole.repositories.history_store import TaskHistoryStore
 
 AC_WEB_OWNER = "web_ac"
 RAIL_WEB_OWNER = "web_rail_transit"
@@ -182,7 +183,9 @@ class JobCenterQueryService:
                 + " ORDER BY task.updated_time DESC, task.task_id DESC LIMIT ?",
                 (max(1, min(int(limit), 1000)),),
             ).fetchall()
-        tasks = [self._task_from_row(dict(row)) for row in rows]
+        values = [dict(row) for row in rows]
+        self._hydrate_result_references(db_path, values)
+        tasks = [self._task_from_row(row) for row in values]
         normalized_statuses = {str(value).upper() for value in statuses or set() if value}
         if normalized_statuses:
             tasks = [task for task in tasks if task.status.upper() in normalized_statuses]
@@ -207,36 +210,52 @@ class JobCenterQueryService:
             if row is None:
                 return None
             values = dict(row)
+            progress_rows: list[dict[str, object]] = []
             if self._table_exists(conn, "task_events"):
-                rows = conn.execute(
+                progress_rows = [
+                    dict(item)
+                    for item in conn.execute(
                     """
-                    SELECT payload_json
+                    SELECT sequence, event_id, payload_json
                     FROM task_events
                     WHERE task_id = ? AND event_type = 'progress'
                     ORDER BY sequence DESC
                     LIMIT 30
                     """,
                     (str(task_id),),
-                ).fetchall()
-                for row_item in rows:
-                    payload = self._json_object(row_item["payload_json"])
-                    details = self._payload_details(payload)
-                    event = str(details.get("event") or "").casefold()
-                    if details and (
-                        str(values.get("task_type") or "")
-                        == "ac_mesh_link_resident_poll"
-                        or details.get("ap_name")
-                        or details.get("ap_ip")
-                        or event
-                        in {
-                            "ap_started",
-                            "ap_completed",
-                            "ap_retry_started",
-                            "plan_ready",
-                        }
-                    ):
-                        values["latest_progress_json"] = row_item["payload_json"]
-                        break
+                    ).fetchall()
+                ]
+        self._hydrate_result_references(db_path, [values])
+        archived_progress = TaskHistoryStore(db_path).list_events_for_tasks(
+            [str(task_id)], event_types=["progress"]
+        ).get(str(task_id), [])
+        progress_by_id = {
+            str(item.get("event_id") or item.get("sequence") or ""): item
+            for item in (*archived_progress, *progress_rows)
+        }
+        for row_item in sorted(
+            progress_by_id.values(),
+            key=lambda item: int(item.get("sequence") or 0),
+            reverse=True,
+        )[:30]:
+            payload = self._json_object(row_item["payload_json"])
+            details = self._payload_details(payload)
+            event = str(details.get("event") or "").casefold()
+            if details and (
+                str(values.get("task_type") or "")
+                == "ac_mesh_link_resident_poll"
+                or details.get("ap_name")
+                or details.get("ap_ip")
+                or event
+                in {
+                    "ap_started",
+                    "ap_completed",
+                    "ap_retry_started",
+                    "plan_ready",
+                }
+            ):
+                values["latest_progress_json"] = row_item["payload_json"]
+                break
         return self._task_from_row(values, include_result=True)
 
     def list_task_results(
@@ -257,11 +276,7 @@ class JobCenterQueryService:
             has_result_refs = self._table_exists(
                 conn, "task_results"
             ) and self._column_exists(conn, "task_snapshots", "result_id")
-            result_expression = (
-                "COALESCE(NULLIF(task.result_json, ''), result.canonical_json, '{}')"
-                if has_result_refs
-                else "task.result_json"
-            )
+            result_expression = self._result_expression(has_result_refs)
             result_join = (
                 "LEFT JOIN task_results result ON result.result_id=task.result_id"
                 if has_result_refs
@@ -303,6 +318,7 @@ class JobCenterQueryService:
                 ),
             ).fetchall()
         values = [dict(row) for row in rows]
+        self._hydrate_result_references(db_path, values)
         for row in values:
             self._verify_result_reference(row)
         return [
@@ -337,19 +353,34 @@ class JobCenterQueryService:
             exists = conn.execute("SELECT 1 FROM task_snapshots WHERE task_id = ?", (str(task_id),)).fetchone()
             if exists is None:
                 return None
-            if not self._table_exists(conn, "task_events"):
-                return JobCenterLogTailDTO(task_id=task_id, message="暂无日志")
-            rows = conn.execute(
-                """
-                SELECT sequence, event_time, event_type, source, payload_json
-                FROM task_events
-                WHERE task_id = ?
-                ORDER BY sequence DESC
-                LIMIT ?
-                """,
-                (str(task_id), max(1, min(int(tail), 300))),
-            ).fetchall()
-        lines = [self._log_line(dict(row)) for row in reversed(rows)]
+            rows: list[dict[str, Any]] = []
+            if self._table_exists(conn, "task_events"):
+                rows = [
+                    dict(item)
+                    for item in conn.execute(
+                    """
+                    SELECT sequence, event_id, task_id, event_time, event_type,
+                           source, payload_json
+                    FROM task_events
+                    WHERE task_id = ?
+                    ORDER BY sequence DESC
+                    LIMIT ?
+                    """,
+                    (str(task_id), max(1, min(int(tail), 300))),
+                    ).fetchall()
+                ]
+        archived = TaskHistoryStore(db_path).list_events_for_tasks(
+            [str(task_id)]
+        ).get(str(task_id), [])
+        by_id = {
+            str(item.get("event_id") or item.get("sequence") or ""): item
+            for item in (*archived, *rows)
+        }
+        safe_tail = max(1, min(int(tail), 300))
+        merged = sorted(
+            by_id.values(), key=lambda item: int(item.get("sequence") or 0)
+        )[-safe_tail:]
+        lines = [self._log_line(row) for row in merged]
         return JobCenterLogTailDTO(task_id=task_id, lines=lines, message="" if lines else "暂无日志")
 
     def _db_path(self, site_id: str) -> Path:
@@ -372,11 +403,7 @@ class JobCenterQueryService:
         has_result_refs = self._table_exists(
             conn, "task_results"
         ) and self._column_exists(conn, "task_snapshots", "result_id")
-        result_expression = (
-            "COALESCE(NULLIF(task.result_json, ''), result.canonical_json, '{}')"
-            if has_result_refs
-            else "task.result_json"
-        )
+        result_expression = self._result_expression(has_result_refs)
         result_column = (
             f", {result_expression} AS result_json"
             if detail
@@ -474,6 +501,57 @@ class JobCenterQueryService:
             {mapping_join}
             {result_join}
         """
+
+    @staticmethod
+    def _result_expression(has_result_refs: bool) -> str:
+        if not has_result_refs:
+            return "task.result_json"
+        return """
+            CASE
+                WHEN result.canonical_json IS NOT NULL THEN result.canonical_json
+                WHEN TRIM(COALESCE(task.result_json, '')) NOT IN ('', '{}', 'null')
+                    THEN task.result_json
+                ELSE '{}'
+            END
+        """
+
+    @staticmethod
+    def _hydrate_result_references(
+        db_path: Path, rows: list[dict[str, object]]
+    ) -> None:
+        history: TaskHistoryStore | None = None
+        for row in rows:
+            if not bool(row.get("result_reference_present")):
+                continue
+            if not str(row.get("authority_result_id") or ""):
+                history = history or TaskHistoryStore(db_path)
+                archived = history.get_result(str(row.get("result_reference_id") or ""))
+                if archived is not None:
+                    row.update(
+                        {
+                            "authority_result_id": archived["result_id"],
+                            "authority_result_task_id": archived["task_id"],
+                            "authority_terminal_event_type": archived[
+                                "terminal_event_type"
+                            ],
+                            "authority_result_hash": archived["sha256"],
+                            "authority_result_bytes": archived["byte_size"],
+                            "authority_result_json": archived["canonical_json"],
+                        }
+                    )
+            canonical = str(row.get("authority_result_json") or "")
+            if not canonical:
+                continue
+            if "result_json" in row:
+                row["result_json"] = canonical
+            if "business_result_json" in row:
+                row["business_result_json"] = canonical
+            if "artifact_result_json" in row:
+                row["artifact_result_json"] = (
+                    canonical
+                    if str(row.get("status") or "").upper() == "COMPLETED"
+                    else None
+                )
 
     @staticmethod
     def _verify_result_reference(row: dict[str, object]) -> None:

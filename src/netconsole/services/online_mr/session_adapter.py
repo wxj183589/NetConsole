@@ -57,7 +57,7 @@ class SessionAdapter:
         path = self.raw_dir / "fping_v5_samples.jsonl"
         if not path.exists():
             return
-        for line in read_text_with_fallback(path).splitlines():
+        for line_number, line in enumerate(read_text_with_fallback(path).splitlines(), start=1):
             try:
                 payload = json.loads(line)
             except json.JSONDecodeError:
@@ -69,6 +69,12 @@ class SessionAdapter:
             event_payload = payload
             if sample is not None:
                 event_payload = sample.as_dict()
+            event_payload = {
+                **event_payload,
+                "raw_file": path.name,
+                "offset_start": line_number,
+                "offset_end": line_number,
+            }
             yield OnlineMrEvent(
                 timestamp=datetime.fromisoformat(ts),
                 session_id=self.session_id,
@@ -98,12 +104,18 @@ class SessionAdapter:
                     source="iperf3",
                     module="iperf",
                     event_type=EVENT_IPERF3_SAMPLE,
-                    payload=payload if isinstance(payload, dict) else {"value": payload},
+                    payload={
+                        **(payload if isinstance(payload, dict) else {"value": payload}),
+                        "raw_file": path.name,
+                        "offset_start": 1,
+                        "offset_end": 1,
+                    },
                     raw=text,
                 )
                 continue
-            for row in parse_iperf_lines(text.splitlines()):
+            for line_number, row in enumerate(parse_iperf_lines(text.splitlines()), start=1):
                 timestamp = _datetime_from_payload(row.get("collector_time")) or datetime.now()
+                row = {**row, "raw_file": path.name, "offset_start": line_number, "offset_end": line_number}
                 yield OnlineMrEvent(
                     timestamp=timestamp,
                     session_id=self.session_id,
@@ -114,8 +126,9 @@ class SessionAdapter:
                     payload=row,
                     raw=str(row.get("raw_line") or ""),
                 )
-            for error in parse_iperf_error_lines(text.splitlines()):
+            for line_number, error in enumerate(parse_iperf_error_lines(text.splitlines()), start=1):
                 timestamp = _datetime_from_payload(error.get("collector_time")) or datetime.now()
+                error = {**error, "raw_file": path.name, "offset_start": line_number, "offset_end": line_number}
                 yield OnlineMrEvent(
                     timestamp=timestamp,
                     session_id=self.session_id,

@@ -28,6 +28,7 @@ from netconsole.models.task_history_policy import (
     task_requires_attention,
     utc_time_reached,
 )
+from netconsole.repositories.history_store import TaskHistoryStore, verify_task_result_row
 
 
 TASK_SCHEMA = """
@@ -166,11 +167,18 @@ CREATE INDEX IF NOT EXISTS idx_task_events_task_sequence
 PROGRESS_EVENT_HEARTBEAT_SECONDS = 30
 TASK_RESULT_SCHEMA_VERSION = 1
 TERMINAL_RESULT_EVENT_TYPES = frozenset({"finished", "error", "cancelled"})
+_POST_TERMINAL_RESULT_EVENT_TYPES = frozenset(
+    {"artifact_finalized", "artifact_rejected"}
+)
+_RESULT_AUTHORITY_EVENT_TYPES = (
+    TERMINAL_RESULT_EVENT_TYPES | _POST_TERMINAL_RESULT_EVENT_TYPES
+)
 
 
 class TaskRepository:
     def __init__(self, db_path: str | Path) -> None:
         self.db_path = Path(db_path)
+        self.task_history = TaskHistoryStore(self.db_path)
         self.initialize()
 
     def _connect(self):
@@ -294,9 +302,7 @@ class TaskRepository:
 
     def get_result(self, result_id: str) -> dict[str, Any] | None:
         with self._connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM task_results WHERE result_id=?", (str(result_id),)
-            ).fetchone()
+            row = self._result_row(conn, str(result_id))
             if row is None:
                 return None
             return self._verified_result_row(dict(row))
@@ -414,10 +420,12 @@ class TaskRepository:
         event: TaskEvent,
     ) -> tuple[TaskSnapshot, TaskEvent]:
         result = event.payload.get("result")
-        if event.type not in TERMINAL_RESULT_EVENT_TYPES or not isinstance(
+        if event.type not in _RESULT_AUTHORITY_EVENT_TYPES or not isinstance(
             result, dict
         ):
             return snapshot, event
+        if snapshot.task_id != event.task_id:
+            raise sqlite3.IntegrityError("terminal task result task binding mismatch")
         rollout = self._task_result_rollout_status_from_connection(conn)
         if not rollout.dual_write_active and not rollout.ref_authority_active:
             return snapshot, event
@@ -459,6 +467,16 @@ class TaskRepository:
         ):
             raise sqlite3.IntegrityError("terminal task result identity conflict")
         verified_result = dict(verified["result"])
+        bind_snapshot = False
+        if isinstance(snapshot.result, dict):
+            snapshot_matches = self._canonical_result_json(snapshot.result) == canonical
+            if event.type in _POST_TERMINAL_RESULT_EVENT_TYPES:
+                bind_snapshot = snapshot_matches
+            else:
+                snapshot_event_type = self._terminal_event_type_for_status(
+                    snapshot.status
+                )
+                bind_snapshot = snapshot_event_type == event.type and snapshot_matches
         refs = {
             "result_id": result_id,
             "result_hash": result_hash,
@@ -468,17 +486,17 @@ class TaskRepository:
         event.payload.clear()
         event.payload.update(enriched_payload)
         stored_payload = dict(enriched_payload)
-        stored_result = verified_result
         if rollout.ref_authority_active:
             stored_payload.pop("result", None)
-            stored_result = {}
-        stored_snapshot = replace(
-            snapshot,
-            result=stored_result,
-            result_id=result_id,
-            result_hash=result_hash,
-            result_summary=summary,
-        )
+        stored_snapshot = snapshot
+        if bind_snapshot:
+            stored_snapshot = replace(
+                snapshot,
+                result={} if rollout.ref_authority_active else verified_result,
+                result_id=result_id,
+                result_hash=result_hash,
+                result_summary=summary,
+            )
         return stored_snapshot, replace(event, payload=stored_payload)
 
     @staticmethod
@@ -531,32 +549,7 @@ class TaskRepository:
 
     @classmethod
     def _verified_result_row(cls, row: dict[str, object]) -> dict[str, Any]:
-        canonical = str(row.get("canonical_json") or "")
-        encoded = canonical.encode("utf-8")
-        digest = hashlib.sha256(encoded).hexdigest()
-        if digest != str(row.get("sha256") or ""):
-            raise sqlite3.DatabaseError("task result hash mismatch")
-        if len(encoded) != int(row.get("byte_size") or -1):
-            raise sqlite3.DatabaseError("task result byte size mismatch")
-        expected_id = (
-            "tr-"
-            + hashlib.sha256(
-                (
-                    f"{row.get('task_id', '')}\0{row.get('terminal_event_type', '')}\0{digest}"
-                ).encode("utf-8")
-            ).hexdigest()
-        )
-        if expected_id != str(row.get("result_id") or ""):
-            raise sqlite3.DatabaseError("task result deterministic identity mismatch")
-        try:
-            result = json.loads(canonical)
-        except json.JSONDecodeError as exc:
-            raise sqlite3.DatabaseError(
-                "task result canonical JSON is invalid"
-            ) from exc
-        if not isinstance(result, dict):
-            raise sqlite3.DatabaseError("task result canonical JSON must be an object")
-        return {**row, "result": result}
+        return verify_task_result_row(dict(row))
 
     @classmethod
     def _sample_repeated_progress(cls, conn, event: TaskEvent) -> bool:
@@ -1103,6 +1096,8 @@ class TaskRepository:
     def list_events(
         self, task_id: str, *, after_sequence: int = 0, limit: int = 500
     ) -> list[dict[str, Any]]:
+        safe_after = max(0, int(after_sequence))
+        safe_limit = max(1, min(int(limit), 2000))
         with self._connect() as conn:
             rows = conn.execute(
                 """
@@ -1112,9 +1107,19 @@ class TaskRepository:
                 ORDER BY sequence ASC
                 LIMIT ?
                 """,
-                (task_id, max(0, int(after_sequence)), max(1, min(int(limit), 2000))),
+                (task_id, safe_after, safe_limit),
             ).fetchall()
-            return [self._event_from_connection_row(conn, dict(row)) for row in rows]
+            current = [self._event_from_connection_row(conn, dict(row)) for row in rows]
+            archived_rows = self.task_history.list_events(
+                task_id, after_sequence=safe_after, limit=safe_limit
+            )
+            archived = [
+                self._event_from_connection_row(conn, row) for row in archived_rows
+            ]
+        merged = {str(event["id"]): event for event in (*archived, *current)}
+        return sorted(
+            merged.values(), key=lambda event: (int(event["sequence"]), str(event["id"]))
+        )[:safe_limit]
 
     def list_events_for_tasks(
         self,
@@ -1153,6 +1158,21 @@ class TaskRepository:
                 for row in rows:
                     event = self._event_from_connection_row(conn, dict(row))
                     grouped.setdefault(str(event["task_id"]), []).append(event)
+            archived_by_task = self.task_history.list_events_for_tasks(
+                ids,
+                event_types=types,
+            )
+            for task_id in ids:
+                for row in archived_by_task.get(task_id, []):
+                    event = self._event_from_connection_row(conn, row)
+                    grouped.setdefault(task_id, []).append(event)
+                deduplicated = {
+                    str(event["id"]): event for event in grouped.get(task_id, [])
+                }
+                grouped[task_id] = sorted(
+                    deduplicated.values(),
+                    key=lambda event: (int(event["sequence"]), str(event["id"])),
+                )
         return grouped
 
     def list_all_events(
@@ -1425,7 +1445,11 @@ class TaskRepository:
                 agent=excluded.agent,
                 result_path=excluded.result_path,
                 error_message=excluded.error_message,
-                result_json=excluded.result_json,
+                result_json=CASE
+                    WHEN excluded.result_id <> '' THEN excluded.result_json
+                    WHEN task_snapshots.result_id <> '' THEN task_snapshots.result_json
+                    ELSE excluded.result_json
+                END,
                 result_id=CASE
                     WHEN excluded.result_id <> '' THEN excluded.result_id
                     ELSE task_snapshots.result_id
@@ -1523,17 +1547,24 @@ class TaskRepository:
     ) -> TaskSnapshot:
         result_id = str(row.get("result_id") or "")
         if result_id:
-            result = conn.execute(
-                "SELECT * FROM task_results WHERE result_id=?", (result_id,)
-            ).fetchone()
+            result = self._result_row(conn, result_id)
             if result is None:
                 raise sqlite3.DatabaseError("task snapshot result reference is missing")
             verified = self._verified_result_row(dict(result))
+            if str(verified["task_id"]) != str(row["task_id"]):
+                raise sqlite3.DatabaseError("task snapshot result task binding mismatch")
             if str(row.get("result_hash") or "") not in {"", str(verified["sha256"])}:
                 raise sqlite3.DatabaseError("task snapshot result hash mismatch")
             legacy_result_json = str(row.get("result_json") or "").strip()
             if legacy_result_json in {"", "{}", "null"}:
                 row["result_json"] = str(verified["canonical_json"])
+            elif (
+                self._canonical_result_json(self._json_object(legacy_result_json))
+                != str(verified["canonical_json"])
+            ):
+                raise sqlite3.DatabaseError(
+                    "task snapshot full result does not match result reference"
+                )
             row["result_hash"] = str(verified["sha256"])
             if not self._json_object(row.get("result_summary_json")):
                 row["result_summary_json"] = json.dumps(
@@ -1615,6 +1646,18 @@ class TaskRepository:
         return []
 
     @staticmethod
+    def _terminal_event_type_for_status(status: object) -> str:
+        try:
+            normalized = status.value
+        except AttributeError:
+            normalized = str(status)
+        return {
+            TaskState.COMPLETED.value: "finished",
+            TaskState.FAILED.value: "error",
+            TaskState.CANCELLED.value: "cancelled",
+        }.get(str(normalized).upper(), "")
+
+    @staticmethod
     def _resource_key_set(values: Collection[str]) -> set[str]:
         return {str(value or "").strip() for value in values if str(value or "").strip()}
 
@@ -1637,12 +1680,16 @@ class TaskRepository:
         payload = dict(event["payload"])
         result_id = str(payload.get("result_id") or "")
         if result_id:
-            row = conn.execute(
-                "SELECT * FROM task_results WHERE result_id=?", (result_id,)
-            ).fetchone()
+            row = self._result_row(conn, result_id)
             if row is None:
                 raise sqlite3.DatabaseError("task event result reference is missing")
             verified = self._verified_result_row(dict(row))
+            if str(verified["task_id"]) != str(event["task_id"]):
+                raise sqlite3.DatabaseError("task event result task binding mismatch")
+            if str(verified["terminal_event_type"]) != str(event["type"]):
+                raise sqlite3.DatabaseError(
+                    "task event result terminal event binding mismatch"
+                )
             if str(payload.get("result_hash") or "") not in {
                 "",
                 str(verified["sha256"]),
@@ -1666,6 +1713,13 @@ class TaskRepository:
             event["payload"] = payload
         return event
 
+    def _result_row(self, conn, result_id: str) -> dict[str, Any] | sqlite3.Row | None:
+        row = conn.execute(
+            "SELECT * FROM task_results WHERE result_id=?", (str(result_id),)
+        ).fetchone()
+        if row is not None:
+            return row
+        return self.task_history.get_result(str(result_id))
 
 def _contains_replacement_character(value: object) -> bool:
     if isinstance(value, str):

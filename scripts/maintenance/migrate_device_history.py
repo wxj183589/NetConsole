@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from netconsole.core.paths import PathResolver
+from netconsole.services.database_footprint_maintenance import assert_development_path
 from netconsole.services.history_legacy_migration import HistoryLegacyMigrationService
 from netconsole.services.site_storage import SiteRegistryRepository
 
@@ -43,6 +44,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--reason", default="")
     parser.add_argument("--observation-file", type=Path)
     parser.add_argument("--plan-file", type=Path)
+    parser.add_argument(
+        "--output",
+        type=Path,
+        help="write the command result as new JSON evidence below D:/study",
+    )
     parser.add_argument("--chunk-rows", type=int, default=250, choices=(100, 250, 500))
     parser.add_argument("--delete-batch-rows", type=int, default=500, choices=(250, 500, 1000))
     parser.add_argument("--expected-plan-digest")
@@ -106,7 +112,7 @@ def main(argv: list[str] | None = None) -> int:
         and not args.apply
     ):
         raise SystemExit(
-            "COPY/authority changes require explicit --apply; source deletion is not implemented"
+            "COPY, authority changes, and source deletion require explicit --apply"
         )
     if args.command == "inventory":
         result = service.inventory(exact_counts=not args.light)
@@ -231,8 +237,25 @@ def main(argv: list[str] | None = None) -> int:
             apply=args.apply,
             allow_development_root_only=args.allow_development_root_only,
         )
-    print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True, default=str))
+    payload = json.dumps(
+        result,
+        ensure_ascii=False,
+        indent=2,
+        sort_keys=True,
+        default=str,
+    )
+    if args.output is not None:
+        _write_output(args.output, payload)
+    print(payload)
     return 0
+
+
+def _write_output(path: Path, payload: str) -> None:
+    target = assert_development_path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with target.open("x", encoding="utf-8", newline="\n") as stream:
+        stream.write(payload)
+        stream.write("\n")
 
 
 if __name__ == "__main__":

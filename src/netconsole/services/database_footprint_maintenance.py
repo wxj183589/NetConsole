@@ -3,9 +3,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import sqlite3
+import time
 from contextlib import closing
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +23,56 @@ from netconsole.services.site_storage import SiteRecord, SiteStorageError, valid
 
 DEVELOPMENT_ROOT = Path("D:/study")
 SNAPSHOT_FORMAT = "netconsole-sqlite-online-backup-v1"
+
+
+def _assert_sqlite_sidecars_quiescent(path: Path) -> None:
+    """Refuse main-file replacement while WAL shared state may still be live."""
+
+    active = [
+        sidecar
+        for sidecar in (
+            path.with_name(f"{path.name}-wal"),
+            path.with_name(f"{path.name}-shm"),
+        )
+        if sidecar.exists() and sidecar.stat().st_size > 0
+    ]
+    if active:
+        names = ", ".join(sidecar.name for sidecar in active)
+        raise sqlite3.OperationalError(
+            f"database sidecars must be checkpointed and closed before replacement: {names}"
+        )
+
+
+def _remove_sqlite_sidecars(path: Path) -> None:
+    """Remove sidecars owned by a closed maintenance snapshot connection."""
+
+    for suffix in ("-wal", "-shm"):
+        path.with_name(f"{path.name}{suffix}").unlink(missing_ok=True)
+
+
+def _fsync_parent_directory(path: Path) -> None:
+    """Flush rename metadata where the platform supports directory handles."""
+
+    if os.name == "nt":
+        return
+    descriptor = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _atomic_replace(source: Path, destination: Path) -> None:
+    """Retry transient Windows sharing violations without widening the cutover."""
+
+    for attempt in range(5):
+        try:
+            os.replace(source, destination)
+            return
+        except PermissionError:
+            if os.name != "nt" or attempt == 4:
+                raise
+            time.sleep(0.05 * (attempt + 1))
 
 
 def assert_development_path(
@@ -143,6 +196,7 @@ def sqlite_online_backup_readonly(
         validation = sqlite_quick_profile(temporary)
         if not validation["valid"]:
             raise sqlite3.DatabaseError("SQLite Online Backup validation failed")
+        _remove_sqlite_sidecars(temporary)
         fsync_file(temporary)
         os.replace(temporary, destination_path)
     finally:
@@ -152,7 +206,9 @@ def sqlite_online_backup_readonly(
             source_connection.close()
         if temporary.exists():
             temporary.unlink()
+        _remove_sqlite_sidecars(temporary)
     profile = sqlite_quick_profile(destination_path)
+    _remove_sqlite_sidecars(destination_path)
     return {
         "format": SNAPSHOT_FORMAT,
         "source": str(source_path),
@@ -266,6 +322,223 @@ def sqlite_content_fingerprint(path: str | Path) -> str:
     return digest.hexdigest()
 
 
+def sqlite_rowid_dependency_report(path: str | Path) -> dict[str, Any]:
+    """Reject compact when populated tables have no stable explicit identity."""
+
+    database = Path(path).resolve()
+    tables: list[dict[str, Any]] = []
+    schema_rowid_references: list[str] = []
+    with closing(_connect_readonly(database)) as connection:
+        connection.row_factory = sqlite3.Row
+        schema_rows = connection.execute(
+            "SELECT type, name, tbl_name, sql FROM sqlite_schema "
+            "WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name"
+        ).fetchall()
+        for row in schema_rows:
+            sql = str(row["sql"] or "")
+            if "rowid" in sql.casefold():
+                schema_rowid_references.append(str(row["name"]))
+            if str(row["type"]) != "table" or not sql:
+                continue
+            table = str(row["name"])
+            columns = connection.execute(
+                f'PRAGMA table_info("{table}")'
+            ).fetchall()
+            primary_key = [
+                str(item["name"])
+                for item in sorted(columns, key=lambda item: int(item["pk"] or 0))
+                if int(item["pk"] or 0) > 0
+            ]
+            row_count = int(
+                connection.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
+            )
+            without_rowid = "WITHOUT ROWID" in sql.upper()
+            tables.append(
+                {
+                    "table": table,
+                    "rows": row_count,
+                    "primary_key": primary_key,
+                    "without_rowid": without_rowid,
+                    "implicit_rowid_dependency": bool(
+                        row_count > 0 and not primary_key and not without_rowid
+                    ),
+                }
+            )
+    blockers = [row["table"] for row in tables if row["implicit_rowid_dependency"]]
+    return {
+        "database": str(database),
+        "safe_for_vacuum_into": not blockers and not schema_rowid_references,
+        "blocking_tables": blockers,
+        "schema_rowid_references": schema_rowid_references,
+        "tables": tables,
+    }
+
+
+def sqlite_growth_telemetry(
+    path: str | Path,
+    *,
+    history_root: str | Path | None = None,
+    baseline_rows_per_day: dict[str, float] | None = None,
+) -> dict[str, Any]:
+    """Produce read-only footprint/growth evidence without changing producer policy."""
+
+    database = Path(path).resolve()
+    baseline = baseline_rows_per_day or {}
+    table_rows: list[dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = []
+    with closing(_connect_readonly(database)) as connection:
+        connection.row_factory = sqlite3.Row
+        page_size = int(connection.execute("PRAGMA page_size").fetchone()[0])
+        page_count = int(connection.execute("PRAGMA page_count").fetchone()[0])
+        freelist = int(connection.execute("PRAGMA freelist_count").fetchone()[0])
+        objects = connection.execute(
+            "SELECT type, name, tbl_name, sql FROM sqlite_schema "
+            "WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name"
+        ).fetchall()
+        index_owner = {
+            str(row["name"]): str(row["tbl_name"])
+            for row in objects
+            if str(row["type"]) == "index"
+        }
+        dbstat_bytes: dict[str, int] = {}
+        try:
+            for row in connection.execute(
+                "SELECT name, SUM(pgsize) AS bytes FROM dbstat GROUP BY name"
+            ):
+                dbstat_bytes[str(row["name"])] = int(row["bytes"] or 0)
+        except sqlite3.Error:
+            dbstat_bytes = {}
+        index_bytes_by_table: dict[str, int] = {}
+        for index, owner in index_owner.items():
+            index_bytes_by_table[owner] = index_bytes_by_table.get(owner, 0) + int(
+                dbstat_bytes.get(index, 0)
+            )
+        for schema_row in objects:
+            if str(schema_row["type"]) != "table" or not str(schema_row["sql"] or ""):
+                continue
+            table = str(schema_row["name"])
+            columns = [
+                str(row["name"])
+                for row in connection.execute(f'PRAGMA table_info("{table}")')
+            ]
+            count = int(
+                connection.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
+            )
+            payload_columns = [
+                column
+                for column in columns
+                if column.casefold()
+                in {
+                    "payload",
+                    "payload_json",
+                    "result_json",
+                    "canonical_json",
+                    "raw_json",
+                    "details_json",
+                }
+            ]
+            payload_bytes = 0
+            for column in payload_columns:
+                payload_bytes += int(
+                    connection.execute(
+                        f'SELECT COALESCE(SUM(length(CAST("{column}" AS BLOB))), 0) '
+                        f'FROM "{table}"'
+                    ).fetchone()[0]
+                )
+            time_column = next(
+                (
+                    column
+                    for column in (
+                        "event_time",
+                        "collected_at",
+                        "created_time",
+                        "created_at",
+                        "updated_time",
+                        "updated_at",
+                    )
+                    if column in columns
+                ),
+                "",
+            )
+            minimum = maximum = ""
+            rows_per_day = 0.0
+            bytes_per_day = 0.0
+            if time_column and count:
+                bounds = connection.execute(
+                    f'SELECT MIN("{time_column}"), MAX("{time_column}") FROM "{table}"'
+                ).fetchone()
+                minimum, maximum = str(bounds[0] or ""), str(bounds[1] or "")
+                try:
+                    start = datetime.fromisoformat(minimum.replace("Z", "+00:00"))
+                    end = datetime.fromisoformat(maximum.replace("Z", "+00:00"))
+                    span_days = max(1.0, (end - start).total_seconds() / 86400.0)
+                    rows_per_day = count / span_days
+                    bytes_per_day = payload_bytes / span_days
+                except (TypeError, ValueError):
+                    pass
+            duplicate_ratio = 0.0
+            duplicate_column = payload_columns[0] if payload_columns else ""
+            if duplicate_column and count:
+                distinct = int(
+                    connection.execute(
+                        f'SELECT COUNT(DISTINCT "{duplicate_column}") FROM "{table}"'
+                    ).fetchone()[0]
+                )
+                duplicate_ratio = max(0.0, min(1.0, 1.0 - distinct / count))
+            expected = float(baseline.get(table) or 0.0)
+            growth_ratio = rows_per_day / expected if expected > 0 else 0.0
+            if growth_ratio >= 10:
+                warnings.append(
+                    {
+                        "table": table,
+                        "metric": "rows_per_day",
+                        "ratio": growth_ratio,
+                        "severity": "CRITICAL" if growth_ratio >= 100 else "WARNING",
+                    }
+                )
+            table_rows.append(
+                {
+                    "table": table,
+                    "rows": count,
+                    "table_bytes": int(dbstat_bytes.get(table, 0)),
+                    "index_bytes": int(index_bytes_by_table.get(table, 0)),
+                    "payload_bytes": payload_bytes,
+                    "time_column": time_column,
+                    "min_time": minimum,
+                    "max_time": maximum,
+                    "rows_per_day": rows_per_day,
+                    "bytes_per_day": bytes_per_day,
+                    "duplicate_ratio": duplicate_ratio,
+                    "growth_ratio_to_baseline": growth_ratio,
+                }
+            )
+    history_bytes = 0
+    history_files = 0
+    if history_root is not None:
+        root = Path(history_root).resolve()
+        if root.is_dir():
+            for item in root.glob("*.db"):
+                if item.is_file() and not item.is_symlink():
+                    history_files += 1
+                    history_bytes += item.stat().st_size
+    return {
+        "format": "netconsole-footprint-growth-telemetry-v1",
+        "database": str(database),
+        "database_size_bytes": database.stat().st_size,
+        "page_size": page_size,
+        "page_count": page_count,
+        "freelist_count": freelist,
+        "freelist_bytes": freelist * page_size,
+        "tables": table_rows,
+        "history": {"files": history_files, "bytes": history_bytes},
+        "history_current_ratio": (
+            history_bytes / database.stat().st_size if database.stat().st_size else 0.0
+        ),
+        "warnings": warnings,
+        "automatic_data_suppression": False,
+    }
+
+
 @dataclass(frozen=True)
 class CompactResult:
     source: str
@@ -312,6 +585,12 @@ class DevelopmentDatabaseCompactService:
         before = sqlite_quick_profile(source_path)
         if not before["valid"]:
             raise sqlite3.DatabaseError("source database quick_check failed")
+        rowid_report = sqlite_rowid_dependency_report(source_path)
+        if not rowid_report["safe_for_vacuum_into"]:
+            raise sqlite3.DatabaseError(
+                "source database may depend on implicit ROWID; compact refused"
+            )
+        before["rowid_dependency_report"] = rowid_report
         before["content_fingerprint"] = sqlite_content_fingerprint(source_path)
         destination_path.parent.mkdir(parents=True, exist_ok=True)
         with closing(sqlite3.connect(source_path, timeout=60)) as connection:
@@ -351,24 +630,42 @@ class DevelopmentDatabaseCompactService:
             raise ValueError("source, compacted, and rollback paths must differ")
         if rollback_path.exists():
             raise FileExistsError(f"rollback path already exists: {rollback_path}")
+        _assert_sqlite_sidecars_quiescent(source_path)
+        _assert_sqlite_sidecars_quiescent(compacted_path)
         before = sqlite_quick_profile(source_path)
         candidate = sqlite_quick_profile(compacted_path)
         before["content_fingerprint"] = sqlite_content_fingerprint(source_path)
         candidate["content_fingerprint"] = sqlite_content_fingerprint(compacted_path)
         self._assert_equivalent(before, candidate)
-        os.replace(source_path, rollback_path)
+        sqlite_online_backup_readonly(
+            source_path,
+            rollback_path,
+            development_root=self.development_root,
+        )
         try:
-            os.replace(compacted_path, source_path)
+            _atomic_replace(compacted_path, source_path)
+            _fsync_parent_directory(source_path)
             active = sqlite_quick_profile(source_path)
             active["content_fingerprint"] = sqlite_content_fingerprint(source_path)
             self._assert_equivalent(before, active)
         except Exception:
+            if compacted_path.exists():
+                active = sqlite_quick_profile(source_path)
+                active["content_fingerprint"] = sqlite_content_fingerprint(source_path)
+                self._assert_equivalent(before, active)
+                raise
             if source_path.exists():
                 failed = source_path.with_name(f"{source_path.name}.failed-replacement")
-                if failed.exists():
-                    failed.unlink()
-                os.replace(source_path, failed)
-            os.replace(rollback_path, source_path)
+                if not failed.exists():
+                    temporary = failed.with_name(f".{failed.name}.tmp")
+                    try:
+                        shutil.copy2(source_path, temporary)
+                        fsync_file(temporary)
+                        os.replace(temporary, failed)
+                    finally:
+                        temporary.unlink(missing_ok=True)
+            _atomic_replace(rollback_path, source_path)
+            _fsync_parent_directory(source_path)
             raise
         return {
             "replaced": True,
@@ -390,6 +687,8 @@ class DevelopmentDatabaseCompactService:
         rollback_path = assert_development_path(
             rollback, development_root=self.development_root
         )
+        _assert_sqlite_sidecars_quiescent(source_path)
+        _assert_sqlite_sidecars_quiescent(rollback_path)
         current = sqlite_quick_profile(source_path)
         previous = sqlite_quick_profile(rollback_path)
         current["content_fingerprint"] = sqlite_content_fingerprint(source_path)
@@ -398,16 +697,16 @@ class DevelopmentDatabaseCompactService:
         displaced = source_path.with_name(f"{source_path.name}.pre-rollback")
         if displaced.exists():
             raise FileExistsError(f"rollback displacement already exists: {displaced}")
-        os.replace(source_path, displaced)
-        try:
-            os.replace(rollback_path, source_path)
-            restored = sqlite_quick_profile(source_path)
-            restored["content_fingerprint"] = sqlite_content_fingerprint(source_path)
-            self._assert_equivalent(previous, restored)
-        except Exception:
-            if not source_path.exists() and displaced.exists():
-                os.replace(displaced, source_path)
-            raise
+        sqlite_online_backup_readonly(
+            source_path,
+            displaced,
+            development_root=self.development_root,
+        )
+        _atomic_replace(rollback_path, source_path)
+        _fsync_parent_directory(source_path)
+        restored = sqlite_quick_profile(source_path)
+        restored["content_fingerprint"] = sqlite_content_fingerprint(source_path)
+        self._assert_equivalent(previous, restored)
         return {
             "rolled_back": True,
             "active": str(source_path),

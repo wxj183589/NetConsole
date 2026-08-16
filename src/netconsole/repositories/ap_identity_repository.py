@@ -434,23 +434,31 @@ class ApIdentityRepository:
             for row in rows
             if row.get("ap_uuid")
         }
-        history_rows = connection.execute(
-            """
-            SELECT h.ap_uuid, h.rid, h.bbssid
-            FROM ac_fit_ap_radio_history h
-            JOIN (
-                SELECT ap_uuid, rid, MAX(id) AS latest_id
-                FROM ac_fit_ap_radio_history
-                WHERE bbssid IS NOT NULL AND trim(bbssid) != ''
-                GROUP BY ap_uuid, rid
-            ) latest ON latest.latest_id = h.id
-            """
-        ).fetchall()
-        for history in history_rows:
-            row = by_uuid.get(str(history["ap_uuid"] or ""))
-            rid = int(history["rid"] or 0)
+        if connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            ("ap_identity_radio_evidence",),
+        ).fetchone() is not None:
+            evidence_rows = connection.execute(
+                "SELECT ap_uuid, rid, bbssid FROM ap_identity_radio_evidence"
+            ).fetchall()
+        else:
+            evidence_rows = connection.execute(
+                """
+                SELECT h.ap_uuid, h.rid, h.bbssid
+                FROM ac_fit_ap_radio_history h
+                JOIN (
+                    SELECT ap_uuid, rid, MAX(id) AS latest_id
+                    FROM ac_fit_ap_radio_history
+                    WHERE bbssid IS NOT NULL AND trim(bbssid) != ''
+                    GROUP BY ap_uuid, rid
+                ) latest ON latest.latest_id = h.id
+                """
+            ).fetchall()
+        for evidence in evidence_rows:
+            row = by_uuid.get(str(evidence["ap_uuid"] or ""))
+            rid = int(evidence["rid"] or 0)
             if row is not None and rid > 0:
-                row[f"rid{rid}_bbssid_history"] = history["bbssid"]
+                row[f"rid{rid}_bbssid_history"] = evidence["bbssid"]
         lldp_by_mac = ApIdentityRepository._load_lldp_station_evidence(connection)
         for row in rows:
             ap_mac = normalize_mac_key(row.get("ap_mac") or row.get("ap_mac_norm"))

@@ -16,6 +16,7 @@ from scripts.architecture.checks import (
     _load_sql_inventory,
     dynamic_chart_stability_findings,
     orphan_module_findings,
+    storage_registry_findings,
     typescript_records,
 )
 from scripts.architecture.cli import CHECKS
@@ -35,6 +36,208 @@ def test_all_architecture_checks_have_no_unwaived_findings() -> None:
         if (unwaived := apply_exceptions(check(), exceptions)[0])
     }
     assert active == {}
+
+
+def test_storage_registry_guard_rejects_a_new_unregistered_sqlite(tmp_path: Path) -> None:
+    rogue = tmp_path / "rogue_owner.py"
+    rogue.write_text(
+        "import sqlite3\n\n"
+        "def create():\n"
+        "    return sqlite3.connect('rogue.db')\n",
+        encoding="utf-8",
+    )
+
+    findings = storage_registry_findings(source_roots=[tmp_path])
+
+    assert any(item.rule_id == "UNREGISTERED_STORAGE" for item in findings)
+    assert any("rogue.db" in item.message for item in findings)
+
+
+def test_storage_registry_guard_requires_exact_direct_sql_source_registration(
+    tmp_path: Path,
+) -> None:
+    inventory = tmp_path / "direct_sql.json"
+    inventory.write_text(
+        json.dumps(
+            [
+                {
+                    "path": "src/netconsole/repositories/unregistered_store.py",
+                    "classification": "REPOSITORY_REQUIRED",
+                    "owner": "job-center",
+                    "reason": "same code owner is not an exact store binding",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    findings = storage_registry_findings(
+        source_roots=[tmp_path / "absent"], direct_sql_path=inventory
+    )
+
+    assert any(
+        item.rule_id == "UNREGISTERED_STORAGE"
+        and item.path == "src/netconsole/repositories/unregistered_store.py"
+        and "exact storage registry declaration" in item.message
+        for item in findings
+    )
+
+
+def test_storage_registry_closes_observed_legacy_paths_without_guessing_owners() -> None:
+    registry = json.loads((ROOT / "config" / "storage_registry.yaml").read_text(encoding="utf-8"))
+    stores = {str(item["id"]): item for item in registry["stores"]}
+    expected_owned = {
+        "site.legacy.snmp": "sites/{site_id}/db/snmp.db",
+        "site.legacy.config_raw": "sites/{site_id}/raw/config/**",
+        "site.legacy.device_downloads": "sites/{site_id}/downloads/files/**",
+    }
+    expected_unknown = {
+        "site.legacy.snmp_sidecars": "sites/{site_id}/db/snmp.db-*",
+        "unknown.fit_ap_association_backups": (
+            "sites/{site_id}/files/backups/fit-ap-association-*/**"
+        ),
+        "unknown.ground_unattended_backups": (
+            "sites/{site_id}/files/backups/ground_unattended/**"
+        ),
+    }
+
+    for store_id, relative_path in expected_owned.items():
+        store = stores[store_id]
+        assert store["relative_path"] == relative_path
+        assert store["data_type"] != "UNKNOWN"
+        assert store["authority"] != "UNKNOWN_PROTECT"
+        assert store["retention_owner"] != "UNKNOWN_PROTECT"
+        assert store["producer"] != ["NO_ACTIVE_PRODUCER_PROVEN"]
+
+    for store_id, relative_path in expected_unknown.items():
+        store = stores[store_id]
+        assert store["relative_path"] == relative_path
+        assert store["data_type"] == "UNKNOWN"
+        assert store["authority"] == "UNKNOWN_PROTECT"
+        assert store["retention_owner"] == "UNKNOWN_PROTECT"
+        assert store["rebuildable"] is False
+        assert store["allowed_data_classes"] == ["UNKNOWN"]
+        assert isinstance(store["active_producer"], bool)
+
+    assert all(
+        isinstance(store.get("active_producer"), bool)
+        for store in stores.values()
+        if store["data_type"] == "UNKNOWN"
+    )
+
+
+def test_storage_registry_uses_exclusive_upgrade_lifecycle_classes() -> None:
+    registry = json.loads((ROOT / "config" / "storage_registry.yaml").read_text(encoding="utf-8"))
+    stores = {str(item["id"]): item for item in registry["stores"]}
+
+    assert stores["site.backups.database_upgrade"]["relative_path"] == (
+        "backups/database_upgrade/{scope_type}/{scope_id}/{database_kind}/{backup_id}/**"
+    )
+    invalid_legacy = stores["site.backups.database_upgrade_invalid_legacy"]
+    assert invalid_legacy["relative_path"] == (
+        "backups/database_upgrade/_invalid/{archive_id}/**"
+    )
+    assert invalid_legacy["data_type"] == "UNKNOWN"
+    assert invalid_legacy["authority"] == "UNKNOWN_PROTECT"
+    assert invalid_legacy["rebuildable"] is False
+    assert stores["site.backups.database_migration"]["allowed_data_classes"] == [
+        "BACKUP_ROLLBACK"
+    ]
+    assert stores["site.online_mr.session_parsed_candidate"][
+        "allowed_data_classes"
+    ] == ["STAGING_TEMPORARY"]
+    assert stores["site.online_mr.session_parsed_rollback"][
+        "allowed_data_classes"
+    ] == ["BACKUP_ROLLBACK"]
+
+
+def test_storage_registry_covers_global_persistent_lifecycle_roots() -> None:
+    registry = json.loads(
+        (ROOT / "config" / "storage_registry.yaml").read_text(encoding="utf-8")
+    )
+    stores = {str(item["id"]): item for item in registry["stores"]}
+    expected = {
+        "global.migrations.conflicts": "BACKUP_ROLLBACK",
+        "global.migrations.source_archives": "BACKUP_ROLLBACK",
+        "global.migrations.unclassified": "UNKNOWN",
+        "global.legacy.mib_archive": "ARTIFACT_OR_RAW_FILE",
+        "global.runtime.logs": "HISTORICAL_RAW_FACT",
+        "global.runtime.background_jobs": "OPERATIONAL_CURRENT",
+        "global.runtime.export_jobs": "OPERATIONAL_CURRENT",
+        "global.runtime.base_data_import_previews": "STAGING_TEMPORARY",
+        "global.runtime.database_upgrade": "OPERATIONAL_CURRENT",
+        "global.runtime.electron_user_data": "OPERATIONAL_CURRENT",
+        "global.legacy_agent.data": "ARTIFACT_OR_RAW_FILE",
+        "global.data_root.staging": "STAGING_TEMPORARY",
+    }
+
+    for store_id, data_type in expected.items():
+        store = stores[store_id]
+        assert store["data_type"] == data_type
+        assert store["producer"]
+        assert store["consumers"]
+        assert store["retention_owner"]
+
+
+def test_storage_registry_classifies_legacy_online_mr_live_tables() -> None:
+    registry = json.loads((ROOT / "config" / "storage_registry.yaml").read_text(encoding="utf-8"))
+    stores = {str(item["id"]): item for item in registry["stores"]}
+    rules = stores["site.online_mr.session_parsed"]["table_rules"]
+    table_classes = {
+        str(table): str(rule["data_class"])
+        for rule in rules
+        for table in rule["tables"]
+    }
+
+    assert {
+        table_classes[table]
+        for table in (
+            "collector_logs",
+            "live_samples",
+            "live_mesh_links",
+            "live_channel_busy",
+            "live_interface_rates",
+            "live_radio_statistics_raw_index",
+            "live_terminal_events",
+            "live_events",
+            "ping_samples",
+        )
+    } == {"HISTORICAL_RAW_FACT"}
+    assert table_classes["ping_summary"] == "HISTORICAL_TREND"
+    assert table_classes["live_switch_history_latest"] == "OPERATIONAL_CURRENT"
+
+    legacy_mesh = stores["site.mesh.legacy_analysis"]
+    assert legacy_mesh["relative_path"] == (
+        "sites/{site_id}/analysis/mesh/{analysis_id}/analysis.sqlite"
+    )
+    assert legacy_mesh["data_type"] == "UNKNOWN"
+    assert legacy_mesh["authority"] == "UNKNOWN_PROTECT"
+    assert legacy_mesh["retention_owner"] == "UNKNOWN_PROTECT"
+    assert legacy_mesh["active_producer"] is True
+    assert legacy_mesh["source_locations"] == [
+        "src/netconsole/services/mesh_log_analysis_service.py"
+    ]
+
+    ground_rules = stores["site.ground.index"]["table_rules"]
+    ground_unknown = next(
+        rule
+        for rule in ground_rules
+        if "ground_unattended_ping_loss_intervals" in rule["tables"]
+    )
+    assert ground_unknown["data_class"] == "UNKNOWN"
+    assert ground_unknown["authority"] == "UNKNOWN_PROTECT"
+
+    device_rule_tables = {
+        str(table)
+        for rule in stores["site.devices.current"]["table_rules"]
+        for table in rule["tables"]
+    }
+    assert not {
+        "wifi_floor_plans",
+        "wifi_observations",
+        "wifi_survey_points",
+        "wifi_survey_sessions",
+    } & device_rule_tables
 
 
 def test_typescript_guard_uses_compiler_ast() -> None:
@@ -163,4 +366,4 @@ def test_run_all_works_from_repository_root() -> None:
         check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "10/10 passed" in result.stdout
+    assert "11/11 passed" in result.stdout

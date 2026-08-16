@@ -89,6 +89,118 @@ def test_selected_syslog_delete_rewrites_atomically_and_removes_provenance(
     assert not any(path.suffix == ".bak" for path in raw_path.parent.iterdir())
 
 
+def test_interrupted_raw_rewrite_rolls_back_from_durable_journal(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repository, raw_path = _setup_completed_run(tmp_path)
+    lifecycle = GroundRawDataLifecycleService(repository)
+    preview = lifecycle.preview_syslog_deletion(
+        run_id=RUN_ID,
+        mode="SELECTED",
+        record_keys=[
+            {
+                "raw_file_id": "raw-syslog",
+                "global_receive_sequence": 2,
+                "source_receive_sequence": 2,
+                "raw_line_number": 2,
+            }
+        ],
+        filters={},
+        include_derived_events=True,
+    )
+    assert preview.plan is not None
+    original = raw_path.read_bytes()
+    before = repository.get_raw_file("raw-syslog")
+    assert before is not None
+
+    monkeypatch.setattr(
+        repository,
+        "apply_syslog_deletion_metadata",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            KeyboardInterrupt("simulated file/registry interruption")
+        ),
+    )
+    with pytest.raises(KeyboardInterrupt, match="file/registry interruption"):
+        lifecycle.execute_syslog_deletion(
+            preview.plan,
+            operation_id="operation-crash-before-metadata",
+        )
+
+    assert raw_path.read_bytes() != original
+    assert list(lifecycle.journal_root.glob("*.json"))
+    assert any(path.suffix == ".bak" for path in raw_path.parent.iterdir())
+    monkeypatch.undo()
+
+    recovered = GroundRawDataLifecycleService(repository)
+
+    assert recovered.recover_interrupted_operations() == []
+    assert raw_path.read_bytes() == original
+    after = repository.get_raw_file("raw-syslog")
+    assert after is not None
+    assert after["revision"] == before["revision"]
+    assert after["sha256"] == before["sha256"]
+    assert repository.list_wmesh_events(run_id=RUN_ID)
+    assert not list(lifecycle.journal_root.glob("*.json"))
+    assert not any(path.suffix == ".bak" for path in raw_path.parent.iterdir())
+
+
+def test_interrupted_after_metadata_commit_finalizes_durable_journal(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repository, raw_path = _setup_completed_run(tmp_path)
+    lifecycle = GroundRawDataLifecycleService(repository)
+    preview = lifecycle.preview_syslog_deletion(
+        run_id=RUN_ID,
+        mode="SELECTED",
+        record_keys=[
+            {
+                "raw_file_id": "raw-syslog",
+                "global_receive_sequence": 2,
+                "source_receive_sequence": 2,
+                "raw_line_number": 2,
+            }
+        ],
+        filters={},
+        include_derived_events=True,
+    )
+    assert preview.plan is not None
+    original = raw_path.read_bytes()
+    original_apply = repository.apply_syslog_deletion_metadata
+
+    def commit_then_interrupt(*args, **kwargs):
+        original_apply(*args, **kwargs)
+        raise KeyboardInterrupt("simulated post-commit interruption")
+
+    monkeypatch.setattr(
+        repository,
+        "apply_syslog_deletion_metadata",
+        commit_then_interrupt,
+    )
+    with pytest.raises(KeyboardInterrupt, match="post-commit interruption"):
+        lifecycle.execute_syslog_deletion(
+            preview.plan,
+            operation_id="operation-crash-after-metadata",
+        )
+
+    committed = raw_path.read_bytes()
+    assert committed != original
+    assert list(lifecycle.journal_root.glob("*.json"))
+    monkeypatch.undo()
+
+    GroundRawDataLifecycleService(repository)
+
+    assert raw_path.read_bytes() == committed
+    registered = repository.get_raw_file("raw-syslog")
+    assert registered is not None
+    assert registered["revision"] == 1
+    assert registered["sha256"] == _sha256(raw_path)
+    assert repository.list_wmesh_events(run_id=RUN_ID) == []
+    assert not list(lifecycle.journal_root.glob("*.json"))
+    assert not any(path.suffix == ".bak" for path in raw_path.parent.iterdir())
+
+
 def test_filtered_and_run_all_preview_are_blocked_for_active_open_or_ready(
     tmp_path: Path,
 ) -> None:

@@ -119,8 +119,12 @@ source key ranges, row/verified counts, per-range digests, authority revision,
 eligibility and exclusions. `validate-delete-plan` rechecks the source database
 identity, current range proof, revision and stable plan digest. `delete-source`
 additionally requires the expected plan digest, source identity, per-table
-revision evidence, `--apply` and `--allow-development-root-only`. It deletes
-only planned primary keys in bounded 250/500/1000-row transactions.
+revision evidence, `--apply` and `--allow-development-root-only`. It opens one
+`BEGIN IMMEDIATE` transaction for the exact plan, revalidates source identity
+inside that transaction, and processes planned primary keys in bounded
+250/500/1000-row selects. This closes the plan-validation-to-delete TOCTOU
+window while keeping batch memory bounded; authority journal transitions publish
+only after the source transaction commits.
 Unsupported tables and rows absent from the plan are never selected.
 
 ## Priority And Commands

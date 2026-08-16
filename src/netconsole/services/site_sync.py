@@ -22,6 +22,7 @@ from netconsole.core.device_credential_store import (
 from netconsole.core.paths import PathResolver
 from netconsole.core.sqlite_utils import connect_sqlite
 from netconsole.core.version import APP_VERSION
+from netconsole.services.site_package_staging import SitePackageStagingLifecycle
 
 
 FULL_MIGRATION = "full_migration"
@@ -34,7 +35,7 @@ PACKAGE_TYPES = frozenset(
 PACKAGE_FORMAT = "netconsole-site-package"
 PACKAGE_FORMAT_VERSION = 4
 
-_DATABASE_SUFFIXES = {".db", ".sqlite", ".sqlite3"}
+_DATABASE_SUFFIXES = frozenset({".db", ".sqlite", ".sqlite3"})
 _EXCLUDED_PARTS = {
     "agents.db",
     "bootstrap",
@@ -125,6 +126,7 @@ class SiteSyncService:
     def __init__(self, paths: PathResolver, sites: object) -> None:
         self.paths = paths
         self.sites = sites
+        self.staging_lifecycle = SitePackageStagingLifecycle(paths)
 
     def export_field_package(
         self,
@@ -138,9 +140,7 @@ class SiteSyncService:
         baseline_id = str(uuid.uuid4())
         destination = _with_suffix(destination, ".ncsite")
         files = list(self._field_collection_files(record.root_path))
-        with tempfile.TemporaryDirectory(
-            prefix="netconsole-field-package-"
-        ) as temporary:
+        with self._temporary_directory("netconsole-field-package-") as temporary:
             temp_root = Path(temporary)
             checksums = self._copy_package_files(
                 files,
@@ -215,9 +215,7 @@ class SiteSyncService:
             ).items()
         }
 
-        with tempfile.TemporaryDirectory(
-            prefix="netconsole-return-package-"
-        ) as temporary:
+        with self._temporary_directory("netconsole-return-package-") as temporary:
             temp_root = Path(temporary)
             payload_root = temp_root / "return"
             file_entries: list[dict[str, object]] = []
@@ -232,7 +230,7 @@ class SiteSyncService:
                 if relative == "site_meta.json":
                     continue
                 current_paths.add(relative)
-                if source.suffix.casefold() in _DATABASE_SUFFIXES:
+                if is_sqlite_database_path(source):
                     continue
                 digest = _sha256(source)
                 if baseline_files.get(relative) == digest:
@@ -331,9 +329,7 @@ class SiteSyncService:
         target = self._resolve_target(
             str(manifest.get("site_uuid") or ""), target_site_id
         )
-        with tempfile.TemporaryDirectory(
-            prefix="netconsole-return-inspect-"
-        ) as temporary:
+        with self._temporary_directory("netconsole-return-inspect-") as temporary:
             extracted = Path(temporary)
             _extract_selected(
                 package,
@@ -359,7 +355,7 @@ class SiteSyncService:
         file_hashes = {
             _sha256(item)
             for item in self._sync_candidate_files(target.root_path)
-            if item.suffix.casefold() not in _DATABASE_SUFFIXES
+            if not is_sqlite_database_path(item)
         }
         entries = [
             item for item in manifest.get("file_entries", []) if isinstance(item, dict)
@@ -424,6 +420,16 @@ class SiteSyncService:
         target = self._resolve_target(
             str(manifest.get("site_uuid") or ""), target_site_id
         )
+        package_sha256 = _sha256(package)
+        completed = self._completed_return_import(
+            target.root_path,
+            package_id=str(manifest.get("package_id") or ""),
+            package_sha256=package_sha256,
+            base_revision=int(manifest.get("base_revision") or 1),
+            raw_only=raw_only,
+        )
+        if completed is not None:
+            return completed
         import_id = str(uuid.uuid4())
         resolution_map = {
             str(item.get("conflict_id") or ""): item
@@ -436,11 +442,13 @@ class SiteSyncService:
         )
         created_files: list[Path] = []
         archived_files: list[Path] = []
-        recovery.mkdir(parents=True, exist_ok=False)
+        audit_path = (
+            self.paths.site_sync_dir(target.root_path.name)
+            / "imports"
+            / f"{import_id}.json"
+        )
 
-        with tempfile.TemporaryDirectory(
-            prefix="netconsole-return-import-"
-        ) as temporary:
+        with self._temporary_directory("netconsole-return-import-") as temporary:
             extracted = Path(temporary)
             _extract_all(package, extracted)
             devices_base = extracted / "return" / "databases" / "base" / "devices.db"
@@ -473,12 +481,25 @@ class SiteSyncService:
                 }
             ]
             if unresolved and not raw_only:
-                shutil.rmtree(recovery, ignore_errors=True)
                 _raise(
                     "SITE_IMPORT_CONFLICT",
                     "回传包仍有未处理冲突，请先在预检页面选择处理方式",
                 )
 
+            recovery.mkdir(parents=True, exist_ok=False)
+            journal = self.staging_lifecycle.begin_sync_import(
+                operation_id=import_id,
+                target=target.root_path,
+                recovery=recovery,
+                package_id=str(manifest.get("package_id") or ""),
+                package_sha256=package_sha256,
+                base_revision=int(manifest.get("base_revision") or 1),
+                raw_only=raw_only,
+                devices_existed=devices_local.is_file(),
+                tasks_existed=tasks_local.is_file(),
+                metadata_existed=(target.root_path / "site_meta.json").is_file(),
+                audit_path=audit_path,
+            )
             try:
                 _copy_database(devices_local, recovery / "db" / "devices.db")
                 if tasks_local.is_file():
@@ -488,6 +509,8 @@ class SiteSyncService:
                     recovery.joinpath("site_meta.json").write_bytes(
                         metadata_path.read_bytes()
                     )
+                self.staging_lifecycle.mark_sync_import(journal, "PREPARED")
+                self.staging_lifecycle.mark_sync_import(journal, "APPLYING")
 
                 file_result = self._merge_return_files(
                     target.root_path,
@@ -496,6 +519,7 @@ class SiteSyncService:
                     import_id,
                     created_files,
                     archived_files,
+                    sync_journal=journal,
                 )
                 database_result = {
                     "new_records": 0,
@@ -526,6 +550,7 @@ class SiteSyncService:
                     "version": 1,
                     "import_id": import_id,
                     "package_id": str(manifest.get("package_id") or ""),
+                    "package_sha256": package_sha256,
                     "site_uuid": str(manifest.get("site_uuid") or ""),
                     "base_revision": int(manifest.get("base_revision") or 1),
                     "applied_revision": metadata["revision"],
@@ -548,13 +573,7 @@ class SiteSyncService:
                         target.root_path
                     ).as_posix(),
                 }
-                _atomic_json(
-                    self.paths.site_sync_dir(target.root_path.name)
-                    / "imports"
-                    / f"{import_id}.json",
-                    audit,
-                )
-                return {
+                result = {
                     "site_id": target.site_id,
                     "display_name": target.display_name,
                     "package_type": COLLECTION_RETURN,
@@ -566,18 +585,17 @@ class SiteSyncService:
                     **task_result,
                     "deletion_requests_ignored": audit["deletion_requests_ignored"],
                 }
+                audit["result"] = result
+                _atomic_json(audit_path, audit)
+                self.staging_lifecycle.mark_sync_import(
+                    journal,
+                    "APPLIED",
+                    applied_revision=int(metadata["revision"]),
+                )
+                self.staging_lifecycle.finish_sync_import(journal)
+                return result
             except Exception:
-                _restore_database(recovery / "db" / "devices.db", devices_local)
-                if (recovery / "db" / "tasks.db").is_file():
-                    _restore_database(recovery / "db" / "tasks.db", tasks_local)
-                for path in reversed(created_files):
-                    path.unlink(missing_ok=True)
-                for path in reversed(archived_files):
-                    path.unlink(missing_ok=True)
-                if (recovery / "site_meta.json").is_file():
-                    shutil.copy2(
-                        recovery / "site_meta.json", target.root_path / "site_meta.json"
-                    )
+                self.staging_lifecycle.reconcile_sync_import(journal)
                 raise
 
     def record_field_baseline(
@@ -672,11 +690,13 @@ class SiteSyncService:
         import_id: str,
         created_files: list[Path],
         archived_files: list[Path],
+        *,
+        sync_journal: Path,
     ) -> dict[str, int]:
         existing_by_hash = {
             _sha256(item): item
             for item in self._sync_candidate_files(site_root)
-            if item.suffix.casefold() not in _DATABASE_SUFFIXES
+            if not is_sqlite_database_path(item)
         }
         source_machine = _safe_component(
             str(manifest.get("source_machine_id") or "unknown")
@@ -714,6 +734,9 @@ class SiteSyncService:
                 archived_files.append(target)
             else:
                 created_files.append(target)
+            self.staging_lifecycle.record_sync_import_created_path(
+                sync_journal, target
+            )
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, target)
             existing_by_hash[digest] = target
@@ -723,6 +746,52 @@ class SiteSyncService:
             "duplicate_files": duplicates,
             "renamed_files": renamed,
         }
+
+    def _completed_return_import(
+        self,
+        site_root: Path,
+        *,
+        package_id: str,
+        package_sha256: str,
+        base_revision: int,
+        raw_only: bool,
+    ) -> dict[str, object] | None:
+        if not package_id:
+            return None
+        imports = self.paths.site_sync_dir(site_root.name) / "imports"
+        if not imports.is_dir():
+            return None
+        for path in sorted(imports.glob("*.json")):
+            try:
+                audit = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                continue
+            if not isinstance(audit, dict) or str(audit.get("package_id") or "") != package_id:
+                continue
+            recorded_sha = str(audit.get("package_sha256") or "")
+            if recorded_sha != package_sha256:
+                _raise(
+                    "SITE_IMPORT_PACKAGE_ID_REUSED",
+                    "回传包 package_id 已使用但内容 SHA-256 不一致",
+                )
+            if (
+                int(audit.get("base_revision") or 1) != int(base_revision)
+                or bool(audit.get("raw_only")) != bool(raw_only)
+            ):
+                continue
+            result = audit.get("result")
+            if not isinstance(result, dict):
+                _raise(
+                    "SITE_IMPORT_AUDIT_INCOMPLETE",
+                    "回传包已有导入审计但缺少可验证结果，拒绝重复执行",
+                )
+            return {
+                **result,
+                "import_id": str(audit.get("import_id") or result.get("import_id") or ""),
+                "backup_created": False,
+                "idempotent_replay": True,
+            }
+        return None
 
     def _manifest(
         self,
@@ -754,6 +823,10 @@ class SiteSyncService:
             **extra,
         }
 
+    def _temporary_directory(self, prefix: str) -> tempfile.TemporaryDirectory[str]:
+        self.paths.temp_dir.mkdir(parents=True, exist_ok=True)
+        return tempfile.TemporaryDirectory(prefix=prefix, dir=self.paths.temp_dir)
+
     def _write_package(
         self,
         temp_root: Path,
@@ -761,7 +834,9 @@ class SiteSyncService:
         manifest: dict[str, object],
     ) -> None:
         destination.parent.mkdir(parents=True, exist_ok=True)
-        staging = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
+        staging, staging_journal = self.staging_lifecycle.begin_publish_path(
+            destination
+        )
         try:
             _atomic_json(temp_root / "manifest.json", manifest)
             _atomic_json(temp_root / "checksums.json", manifest["checksums"])
@@ -777,7 +852,7 @@ class SiteSyncService:
                         archive.write(item, item.relative_to(temp_root).as_posix())
             os.replace(staging, destination)
         finally:
-            staging.unlink(missing_ok=True)
+            self.staging_lifecycle.finish_publish_path(staging, staging_journal)
 
     def _copy_package_files(
         self,
@@ -793,7 +868,7 @@ class SiteSyncService:
                 check_cancel()
             relative = source.relative_to(root)
             target = target_root / relative
-            if source.suffix.casefold() in _DATABASE_SUFFIXES:
+            if is_sqlite_database_path(source):
                 _copy_sanitized_database(source, target)
             else:
                 target.parent.mkdir(parents=True, exist_ok=True)
@@ -1358,7 +1433,13 @@ def _validate_task_merge_references(
                 f"task_events 引用了不存在的任务：{task_id}",
             )
         payload = _json_object_strict(event.get("payload_json"), owner="task_events")
-        _validate_result_reference(payload, available_results, owner="task_events")
+        _validate_result_reference(
+            payload,
+            available_results,
+            owner="task_events",
+            task_id=task_id,
+            terminal_event_type=str(event.get("event_type") or ""),
+        )
 
     mappings = _rows_for_table(returned_db, "online_mr_task_sessions")
     for mapping in mappings:
@@ -1393,6 +1474,8 @@ def _validate_result_reference(
     results: dict[str, dict[str, object]],
     *,
     owner: str,
+    task_id: str = "",
+    terminal_event_type: str | None = None,
 ) -> None:
     result_id = str(values.get("result_id") or "")
     result_hash = str(values.get("result_hash") or "")
@@ -1409,12 +1492,36 @@ def _validate_result_reference(
             "SITE_IMPORT_TASK_REFERENCE_INVALID",
             f"{owner} 引用了不存在或 hash 不匹配的 task_result：{result_id}",
         )
-    owner_task_id = str(values.get("task_id") or "")
+    owner_task_id = str(task_id or values.get("task_id") or "")
     if owner_task_id and str(result.get("task_id") or "") != owner_task_id:
         _raise(
             "SITE_IMPORT_TASK_REFERENCE_INVALID",
             f"{owner} 的 task_result 不属于当前任务：{result_id}",
         )
+    if terminal_event_type is not None and (
+        str(result.get("terminal_event_type") or "") != terminal_event_type
+    ):
+        _raise(
+            "SITE_IMPORT_TASK_REFERENCE_INVALID",
+            f"{owner} 的 task_result 终态事件类型不匹配：{result_id}",
+        )
+
+    full_result: object = values.get("result")
+    if full_result is None and "result_json" in values:
+        full_result = _json_object_strict(values.get("result_json"), owner=owner)
+    if isinstance(full_result, dict) and full_result:
+        canonical = json.dumps(
+            full_result,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        if canonical != str(result.get("canonical_json") or ""):
+            _raise(
+                "SITE_IMPORT_TASK_REFERENCE_INVALID",
+                f"{owner} 的完整 result 与 task_result 不一致：{result_id}",
+            )
 
 
 def _mapping_identity_conflicts(
@@ -1804,6 +1911,10 @@ def _database_schema_version(path: Path) -> str:
         return ""
 
 
+def is_sqlite_database_path(path: str | Path) -> bool:
+    return Path(path).suffix.casefold() in _DATABASE_SUFFIXES
+
+
 def _copy_database(source: Path, target: Path) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     source_connection = connect_sqlite(source, row_factory=False)
@@ -1959,4 +2070,5 @@ __all__ = [
     "PACKAGE_FORMAT_VERSION",
     "PACKAGE_TYPES",
     "SiteSyncService",
+    "is_sqlite_database_path",
 ]

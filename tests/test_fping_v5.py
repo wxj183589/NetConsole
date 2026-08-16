@@ -134,6 +134,74 @@ def test_online_mr_event_bus_writes_events_to_db(tmp_path: Path) -> None:
         row = conn.execute("SELECT session_id, device_id, source, module, event_type FROM event_stream").fetchone()
     assert row == ("s1", 7, "fping_v5", "fping", EVENT_FPING_V5_SAMPLE)
 
+    with sqlite3.connect(tmp_path / "events.sqlite") as conn:
+        stored = conn.execute(
+            "SELECT raw, raw_file, raw_sha256, source_identity FROM event_stream"
+        ).fetchone()
+    assert stored[0] is None
+    assert stored[1] == "raw/fping.log"
+    assert len(stored[2]) == 64
+    assert len(stored[3]) == 64
+
+    writer.write_event_to_db(
+        OnlineMrEvent(
+            timestamp=datetime(2026, 6, 27, 10, 0, 0),
+            device_id=7,
+            session_id="s1",
+            source="fping_v5",
+            module="fping",
+            event_type=EVENT_FPING_V5_SAMPLE,
+            payload={"loss_rate_percent": 0.0},
+            raw='{"resp":{}}',
+        )
+    )
+    with sqlite3.connect(tmp_path / "events.sqlite") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM event_stream").fetchone()[0] == 1
+
+
+def test_online_mr_event_replay_refreshes_derived_facts_without_row_growth(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "events.sqlite"
+    writer = OnlineMrEventDbWriter(database)
+    common = {
+        "timestamp": datetime(2026, 6, 27, 10, 0, 0),
+        "device_id": 7,
+        "session_id": "replay-1",
+        "source": "fping_v5",
+        "module": "fping",
+        "event_type": EVENT_FPING_V5_SAMPLE,
+        "raw": '{"resp":{"rtt":1.25}}',
+    }
+    raw_ref = {
+        "raw_file": "raw/fping_v5_samples.jsonl",
+        "raw_offset_start": 128,
+        "raw_offset_end": 153,
+    }
+    writer.write_event_to_db(
+        OnlineMrEvent(
+            **common,
+            payload={**raw_ref, "rtt_ms": 1.0, "parser_version": "v1"},
+        )
+    )
+    writer.write_event_to_db(
+        OnlineMrEvent(
+            **common,
+            payload={**raw_ref, "rtt_ms": 1.25, "parser_version": "v2"},
+        )
+    )
+
+    with sqlite3.connect(database) as connection:
+        rows = connection.execute(
+            "SELECT payload_json, raw, raw_file, raw_offset_start, raw_offset_end "
+            "FROM event_stream"
+        ).fetchall()
+    assert len(rows) == 1
+    payload = json.loads(rows[0][0])
+    assert payload["rtt_ms"] == 1.25
+    assert payload["parser_version"] == "v2"
+    assert rows[0][1:] == (None, raw_ref["raw_file"], 128, 153)
+
 
 def test_iperf3_json_args_enable_json_output(tmp_path: Path) -> None:
     args = build_iperf3_json_args(tmp_path / "iperf3.exe", IperfClientConfig("10.0.0.1", interval_seconds=1))
@@ -295,9 +363,16 @@ def test_offline_replay_engine_writes_fping_events_and_diagnosis(tmp_path: Path)
     assert result.events == 1
     assert result.fping["link_quality"] == 100.0
     assert result.diagnosis_score == 100.0
-    with sqlite3.connect(session_dir / "parsed" / "online_diagnosis.sqlite") as conn:
+    db_path = session_dir / "parsed" / "online_diagnosis.sqlite"
+    first_size = db_path.stat().st_size
+    second = replay_session(session_dir, session_id="s1", device_id=7)
+    assert second.events == 1
+    with sqlite3.connect(db_path) as conn:
         row = conn.execute("SELECT source, module, event_type FROM event_stream").fetchone()
+        count = conn.execute("SELECT COUNT(*) FROM event_stream").fetchone()[0]
     assert row == ("fping_v5", "fping", EVENT_FPING_V5_SAMPLE)
+    assert count == 1
+    assert db_path.stat().st_size == first_size
 
 
 def test_diagnosis_parser_creates_replay_segment_for_fping_only_session(tmp_path: Path) -> None:

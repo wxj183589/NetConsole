@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
+import threading
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -11,8 +13,10 @@ import pytest
 
 from netconsole.core.paths import PathResolver
 from netconsole.core.database import Database
+from netconsole.models.wps_sync import TRACKSIDE_AP_WPS_BUSINESS_KEY, WpsTargetType
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
+from netconsole.repositories.wps_sync_repository import WpsSyncRepository
 from netconsole.backend.api.main import _current_site_name
 from netconsole.services.ap_identity import ApIdentityQueryService
 from netconsole.services.site_storage import (
@@ -25,12 +29,536 @@ from netconsole.services.site_storage import (
     validate_site_id,
 )
 from netconsole.services.site_lifecycle import SiteCleanupApplicationService
+from netconsole.services.site_package_staging import SitePackageStagingLifecycle
 
 
 def _paths(tmp_path: Path) -> PathResolver:
     app = tmp_path / "app"
     app.mkdir(parents=True)
     return PathResolver(app_root=app, data_root=tmp_path / "data-root")
+
+
+def _create_auxiliary_sqlite(path: Path, value: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute("CREATE TABLE samples (value TEXT NOT NULL)")
+        connection.execute("INSERT INTO samples (value) VALUES (?)", (value,))
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def _test_wps_protection(value: bytes, entropy: bytes) -> bytes:
+    key = hashlib.sha256(entropy).digest()
+    return bytes(item ^ key[index % len(key)] for index, item in enumerate(value))
+
+
+def test_site_package_staging_recovers_interrupted_internal_and_publish_work(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    lifecycle = SitePackageStagingLifecycle(paths)
+    internal = paths.temp_dir / "netconsole-site-export-interrupted"
+    internal.mkdir(parents=True)
+    (internal / "devices.db").write_bytes(b"sqlite-staging")
+    imported = paths.temp_dir / "site-import-staging" / "interrupted"
+    imported.mkdir(parents=True)
+    (imported / "tasks.sqlite").write_bytes(b"sqlite-staging")
+
+    destination = (tmp_path / "exports" / "site.ncsite").resolve()
+    destination.parent.mkdir(parents=True)
+    operation_id = "a" * 32
+    publish = destination.with_name(f".{destination.name}.{operation_id}.tmp")
+    publish.write_bytes(b"partial-package")
+    lifecycle.journal_dir.mkdir(parents=True)
+    (lifecycle.journal_dir / f"{operation_id}.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "operation_id": operation_id,
+                "staging_path": str(publish),
+                "destination_path": str(destination),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = lifecycle.recover_orphans()
+
+    assert result.to_dict() == {
+        "status": "PASS",
+        "removed_internal_entries": 2,
+        "removed_publish_files": 1,
+        "removed_journals": 1,
+        "restored_site_imports": 0,
+        "completed_site_imports": 0,
+        "restored_sync_imports": 0,
+        "completed_sync_imports": 0,
+        "failures": [],
+    }
+    assert not internal.exists()
+    assert not imported.exists()
+    assert not publish.exists()
+    assert lifecycle.recover_orphans().status == "PASS"
+
+
+def test_site_package_staging_recovery_rejects_unbound_external_path(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    lifecycle = SitePackageStagingLifecycle(paths)
+    operation_id = "b" * 32
+    destination = (tmp_path / "exports" / "site.ncsite").resolve()
+    protected = (tmp_path / "protected.txt").resolve()
+    protected.write_text("protect", encoding="utf-8")
+    lifecycle.journal_dir.mkdir(parents=True)
+    journal = lifecycle.journal_dir / f"{operation_id}.json"
+    journal.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "operation_id": operation_id,
+                "staging_path": str(protected),
+                "destination_path": str(destination),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = lifecycle.recover_orphans()
+
+    assert result.status == "PARTIAL"
+    assert protected.read_text(encoding="utf-8") == "protect"
+    assert journal.is_file()
+
+
+def test_site_sync_import_startup_recovery_restores_applying_operation(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    lifecycle = SitePackageStagingLifecycle(paths)
+    operation_id = "1" * 32
+    import_uuid = "11111111-1111-1111-1111-111111111111"
+    target = paths.sites_dir / "line-one"
+    devices = target / "db" / "devices.db"
+    tasks = target / "db" / "tasks.db"
+    metadata = target / "site_meta.json"
+    recovery = target / "files" / "backups" / f"sync-import-{import_uuid}"
+    audit = target / "sync" / "imports" / f"{import_uuid}.json"
+    _create_auxiliary_sqlite(devices, "after")
+    _create_auxiliary_sqlite(tasks, "after")
+    metadata.write_text('{"revision":2}', encoding="utf-8")
+    _create_auxiliary_sqlite(recovery / "db" / "devices.db", "before")
+    _create_auxiliary_sqlite(recovery / "db" / "tasks.db", "before")
+    (recovery / "site_meta.json").write_text('{"revision":1}', encoding="utf-8")
+    journal = lifecycle.begin_sync_import(
+        operation_id=operation_id,
+        target=target,
+        recovery=recovery,
+        package_id="package-1",
+        package_sha256="a" * 64,
+        base_revision=1,
+        raw_only=False,
+        devices_existed=True,
+        tasks_existed=True,
+        metadata_existed=True,
+        audit_path=audit,
+    )
+    lifecycle.mark_sync_import(journal, "PREPARED")
+    lifecycle.mark_sync_import(journal, "APPLYING")
+    created = target / "files" / "sync-imports" / "new.log"
+    lifecycle.record_sync_import_created_path(journal, created)
+    created.parent.mkdir(parents=True)
+    created.write_text("new", encoding="utf-8")
+    audit.parent.mkdir(parents=True)
+    audit.write_text("{}", encoding="utf-8")
+
+    result = lifecycle.recover_orphans()
+
+    assert result.failures == []
+    with sqlite3.connect(devices) as connection:
+        assert connection.execute("SELECT value FROM samples").fetchone() == ("before",)
+    with sqlite3.connect(tasks) as connection:
+        assert connection.execute("SELECT value FROM samples").fetchone() == ("before",)
+    assert json.loads(metadata.read_text(encoding="utf-8"))["revision"] == 1
+    assert not created.exists()
+    assert not audit.exists()
+    assert not recovery.exists()
+    assert not journal.exists()
+    assert result.restored_sync_imports == 1
+
+
+def test_site_sync_import_startup_recovery_keeps_applied_operation(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    lifecycle = SitePackageStagingLifecycle(paths)
+    operation_id = "2" * 32
+    import_uuid = "22222222-2222-2222-2222-222222222222"
+    target = paths.sites_dir / "line-two"
+    recovery = target / "files" / "backups" / f"sync-import-{import_uuid}"
+    audit = target / "sync" / "imports" / f"{import_uuid}.json"
+    _create_auxiliary_sqlite(target / "db" / "devices.db", "committed")
+    (target / "site_meta.json").write_text('{"revision":5}', encoding="utf-8")
+    _create_auxiliary_sqlite(recovery / "db" / "devices.db", "before")
+    journal = lifecycle.begin_sync_import(
+        operation_id=operation_id,
+        target=target,
+        recovery=recovery,
+        package_id="package-2",
+        package_sha256="b" * 64,
+        base_revision=4,
+        raw_only=False,
+        devices_existed=True,
+        tasks_existed=False,
+        metadata_existed=False,
+        audit_path=audit,
+    )
+    lifecycle.mark_sync_import(journal, "PREPARED")
+    lifecycle.mark_sync_import(journal, "APPLYING")
+    audit.parent.mkdir(parents=True)
+    audit.write_text(
+        json.dumps(
+            {
+                "package_id": "package-2",
+                "package_sha256": "b" * 64,
+                "applied_revision": 5,
+            }
+        ),
+        encoding="utf-8",
+    )
+    lifecycle.mark_sync_import(journal, "APPLIED", applied_revision=5)
+
+    result = lifecycle.recover_orphans()
+
+    with sqlite3.connect(target / "db" / "devices.db") as connection:
+        assert connection.execute("SELECT value FROM samples").fetchone() == ("committed",)
+    assert recovery.is_dir()
+    assert audit.is_file()
+    assert not journal.exists()
+    assert result.completed_sync_imports == 1
+
+
+@pytest.mark.parametrize("metadata", [None, '{"revision":4}'])
+def test_site_sync_applied_recovery_requires_published_target_revision(
+    tmp_path: Path,
+    metadata: str | None,
+) -> None:
+    paths = _paths(tmp_path)
+    lifecycle = SitePackageStagingLifecycle(paths)
+    operation_id = "3" * 32
+    import_uuid = "33333333-3333-3333-3333-333333333333"
+    target = paths.sites_dir / "line-three"
+    recovery = target / "files" / "backups" / f"sync-import-{import_uuid}"
+    audit = target / "sync" / "imports" / f"{import_uuid}.json"
+    _create_auxiliary_sqlite(target / "db" / "devices.db", "unverified")
+    _create_auxiliary_sqlite(recovery / "db" / "devices.db", "before")
+    if metadata is not None:
+        (target / "site_meta.json").write_text(metadata, encoding="utf-8")
+    journal = lifecycle.begin_sync_import(
+        operation_id=operation_id,
+        target=target,
+        recovery=recovery,
+        package_id="package-3",
+        package_sha256="c" * 64,
+        base_revision=4,
+        raw_only=False,
+        devices_existed=True,
+        tasks_existed=False,
+        metadata_existed=False,
+        audit_path=audit,
+    )
+    lifecycle.mark_sync_import(journal, "PREPARED")
+    lifecycle.mark_sync_import(journal, "APPLYING")
+    audit.parent.mkdir(parents=True)
+    audit.write_text(
+        json.dumps(
+            {
+                "package_id": "package-3",
+                "package_sha256": "c" * 64,
+                "applied_revision": 5,
+            }
+        ),
+        encoding="utf-8",
+    )
+    lifecycle.mark_sync_import(journal, "APPLIED", applied_revision=5)
+
+    result = lifecycle.recover_orphans()
+
+    assert result.completed_sync_imports == 0
+    assert result.failures and result.failures[0]["path"] == str(journal)
+    assert journal.is_file()
+    assert recovery.is_dir()
+    assert audit.is_file()
+
+
+def test_site_package_staging_recovers_interrupted_site_replacement(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    lifecycle = SitePackageStagingLifecycle(paths)
+    target = paths.sites_dir / "site-one"
+    target.mkdir(parents=True)
+    (target / "site_meta.json").write_text("original", encoding="utf-8")
+    backup = paths.archive_dir / f"site-import-{target.name}-{'c' * 32}"
+    backup.parent.mkdir(parents=True)
+    journal = lifecycle.begin_site_replacement(target, backup)
+    os.replace(target, backup)
+    lifecycle.mark_site_replacement(journal, "BACKUP_PUBLISHED")
+
+    result = lifecycle.recover_orphans()
+
+    assert result.status == "PASS"
+    assert result.restored_site_imports == 1
+    assert result.removed_journals == 1
+    assert (target / "site_meta.json").read_text(encoding="utf-8") == "original"
+    assert not backup.exists()
+    assert not journal.exists()
+
+
+def test_site_package_staging_rolls_back_published_uncommitted_replacement(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    lifecycle = SitePackageStagingLifecycle(paths)
+    target = paths.sites_dir / "site-one"
+    target.mkdir(parents=True)
+    (target / "site_meta.json").write_text("original", encoding="utf-8")
+    backup = paths.archive_dir / f"site-import-{target.name}-{'d' * 32}"
+    backup.parent.mkdir(parents=True)
+    journal = lifecycle.begin_site_replacement(target, backup)
+    os.replace(target, backup)
+    lifecycle.mark_site_replacement(journal, "BACKUP_PUBLISHED")
+    target.mkdir()
+    (target / "site_meta.json").write_text("uncommitted", encoding="utf-8")
+    lifecycle.mark_site_replacement(journal, "TARGET_PUBLISHED")
+
+    result = lifecycle.recover_orphans()
+
+    assert result.status == "PASS"
+    assert result.restored_site_imports == 1
+    assert (target / "site_meta.json").read_text(encoding="utf-8") == "original"
+    assert not backup.exists()
+    assert not journal.exists()
+
+
+def test_site_package_staging_preserves_application_committed_replacement(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    lifecycle = SitePackageStagingLifecycle(paths)
+    target = paths.sites_dir / "site-one"
+    target.mkdir(parents=True)
+    (target / "site_meta.json").write_text("committed", encoding="utf-8")
+    backup = paths.archive_dir / f"site-import-{target.name}-{'e' * 32}"
+    backup.mkdir(parents=True)
+    (backup / "site_meta.json").write_text("original", encoding="utf-8")
+    paths.config_dir.mkdir(parents=True, exist_ok=True)
+    (paths.config_dir / "site_registry.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "sites": [
+                    {
+                        "site_id": "site-one",
+                        "display_name": "site-one",
+                        "relative_path": "sites/site-one",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    journal = lifecycle.begin_site_replacement(target, backup)
+    lifecycle.mark_site_replacement(journal, "TARGET_PUBLISHED")
+    lifecycle.bind_site_replacement_registry(
+        journal,
+        site_id="site-one",
+        preimage={
+            "site_id": "site-one",
+            "display_name": "site-one",
+            "relative_path": "sites/site-one",
+        },
+        expected={
+            "site_id": "site-one",
+            "display_name": "site-one",
+            "relative_path": "sites/site-one",
+        },
+    )
+    lifecycle.mark_site_replacement(journal, "APPLICATION_COMMITTED")
+
+    result = lifecycle.recover_orphans()
+
+    assert result.status == "PASS"
+    assert result.completed_site_imports == 1
+    assert (target / "site_meta.json").read_text(encoding="utf-8") == "committed"
+    assert (backup / "site_meta.json").read_text(encoding="utf-8") == "original"
+    assert not journal.exists()
+
+
+def test_site_package_staging_rejects_committed_journal_after_target_tamper(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    lifecycle = SitePackageStagingLifecycle(paths)
+    target = paths.sites_dir / "site-one"
+    target.mkdir(parents=True)
+    (target / "site_meta.json").write_text("committed", encoding="utf-8")
+    backup = paths.archive_dir / f"site-import-{target.name}-{'f' * 32}"
+    backup.mkdir(parents=True)
+    (backup / "site_meta.json").write_text("original", encoding="utf-8")
+    paths.config_dir.mkdir(parents=True, exist_ok=True)
+    (paths.config_dir / "site_registry.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "sites": [
+                    {
+                        "site_id": "site-one",
+                        "display_name": "site-one",
+                        "relative_path": "sites/site-one",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    journal = lifecycle.begin_site_replacement(target, backup)
+    lifecycle.mark_site_replacement(journal, "TARGET_PUBLISHED")
+    lifecycle.bind_site_replacement_registry(
+        journal,
+        site_id="site-one",
+        preimage={
+            "site_id": "site-one",
+            "display_name": "site-one",
+            "relative_path": "sites/site-one",
+        },
+        expected={
+            "site_id": "site-one",
+            "display_name": "site-one",
+            "relative_path": "sites/site-one",
+        },
+    )
+    lifecycle.mark_site_replacement(journal, "APPLICATION_COMMITTED")
+    (target / "site_meta.json").write_text("tampered", encoding="utf-8")
+
+    result = lifecycle.recover_orphans()
+
+    assert result.status == "PASS"
+    assert result.completed_site_imports == 0
+    assert result.restored_site_imports == 1
+    assert (target / "site_meta.json").read_text(encoding="utf-8") == "original"
+
+
+def test_site_package_staging_requires_application_commit_state_for_recovery(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    lifecycle = SitePackageStagingLifecycle(paths)
+    target = paths.sites_dir / "site-one"
+    target.mkdir(parents=True)
+    (target / "site_meta.json").write_text("published", encoding="utf-8")
+    backup = paths.archive_dir / f"site-import-{target.name}-{'a' * 32}"
+    backup.mkdir(parents=True)
+    (backup / "site_meta.json").write_text("original", encoding="utf-8")
+    paths.config_dir.mkdir(parents=True, exist_ok=True)
+    (paths.config_dir / "site_registry.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "sites": [
+                    {
+                        "site_id": "site-one",
+                        "display_name": "site-one",
+                        "relative_path": "sites/site-one",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    journal = lifecycle.begin_site_replacement(target, backup)
+    lifecycle.mark_site_replacement(journal, "TARGET_PUBLISHED")
+    lifecycle.bind_site_replacement_registry(
+        journal,
+        site_id="site-one",
+        preimage={
+            "site_id": "site-one",
+            "display_name": "site-one",
+            "relative_path": "sites/site-one",
+        },
+        expected={
+            "site_id": "site-one",
+            "display_name": "site-one",
+            "relative_path": "sites/site-one",
+        },
+    )
+
+    result = lifecycle.recover_orphans()
+
+    assert result.status == "PASS"
+    assert result.completed_site_imports == 0
+    assert result.restored_site_imports == 1
+    assert (target / "site_meta.json").read_text(encoding="utf-8") == "original"
+
+
+def test_site_package_staging_removes_uncommitted_new_site(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    lifecycle = SitePackageStagingLifecycle(paths)
+    target = paths.sites_dir / "new-site"
+    journal = lifecycle.begin_site_replacement(target, None)
+    target.mkdir(parents=True)
+    (target / "site_meta.json").write_text("uncommitted", encoding="utf-8")
+    lifecycle.mark_site_replacement(journal, "TARGET_PUBLISHED")
+
+    result = lifecycle.recover_orphans()
+
+    assert result.status == "PASS"
+    assert result.restored_site_imports == 1
+    assert not target.exists()
+    assert not journal.exists()
+
+
+def test_site_package_publish_journal_cleans_after_normal_completion(
+    tmp_path: Path,
+) -> None:
+    lifecycle = SitePackageStagingLifecycle(_paths(tmp_path))
+    destination = tmp_path / "exports" / "site.ncsite"
+    destination.parent.mkdir(parents=True)
+
+    with lifecycle.publish_path(destination) as staging:
+        staging.write_bytes(b"package")
+        assert len(list(lifecycle.journal_dir.glob("*.json"))) == 1
+
+    assert not staging.exists()
+    assert not list(lifecycle.journal_dir.glob("*.json"))
+
+
+def test_site_package_recovery_waits_for_active_staging_operation(
+    tmp_path: Path,
+) -> None:
+    lifecycle = SitePackageStagingLifecycle(_paths(tmp_path))
+    active = lifecycle.paths.temp_dir / "netconsole-site-export-active"
+    active.mkdir(parents=True)
+    entered = threading.Event()
+
+    def recover() -> object:
+        entered.set()
+        return lifecycle.recover_orphans()
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        with lifecycle.operation_lease():
+            future = executor.submit(recover)
+            assert entered.wait(timeout=2)
+            assert not future.done()
+            assert active.is_dir()
+        result = future.result(timeout=2)
+
+    assert result.status == "PASS"
+    assert not active.exists()
 
 
 def test_site_creation_uses_stable_id_and_chinese_display_name(tmp_path: Path) -> None:
@@ -417,6 +945,235 @@ def test_site_package_sanitizes_credentials_and_has_checksums(tmp_path: Path) ->
     ]
 
 
+@pytest.mark.parametrize("package_type", ["full_migration", "sanitized_share"])
+def test_site_package_excludes_online_mr_transient_and_rollback_files(
+    tmp_path: Path,
+    package_type: str,
+) -> None:
+    paths = _paths(tmp_path)
+    sites = SiteApplicationService(paths)
+    sites.create_site("site-one", "一号线")
+    session = (
+        paths.site_dir("site-one")
+        / "files"
+        / "rail_transit"
+        / "online_mr"
+        / "profile-one"
+        / "sessions"
+        / "session-one"
+    )
+    current = session / "parsed" / "online_diagnosis.sqlite"
+    candidate = session / "parsed" / "online_diagnosis.sqlite.upgrading"
+    rollback = (
+        session / "parsed" / "retired" / "online_diagnosis.previous.sqlite"
+    )
+    _create_auxiliary_sqlite(current, "current")
+    _create_auxiliary_sqlite(candidate, "candidate")
+    _create_auxiliary_sqlite(rollback, "rollback")
+    (session / "parsed" / "online_diagnosis.upgrade.json").write_text(
+        "{}", encoding="utf-8"
+    )
+    (session / "view").mkdir(parents=True)
+    (session / "view" / "live.json").write_text("{}", encoding="utf-8")
+    (session / "raw").mkdir(parents=True)
+    (session / "raw" / "mesh.log").write_text("raw", encoding="utf-8")
+    (session / "session_meta.json").write_text("{}", encoding="utf-8")
+    package = tmp_path / f"{package_type}.ncsite"
+
+    SitePackageService(paths, sites).export_site(
+        "site-one", package, package_type=package_type
+    )
+
+    prefix = (
+        "site/files/rail_transit/online_mr/profile-one/"
+        "sessions/session-one/"
+    )
+    with zipfile.ZipFile(package) as archive:
+        names = set(archive.namelist())
+    assert prefix + "parsed/online_diagnosis.sqlite" in names
+    assert prefix + "raw/mesh.log" in names
+    assert prefix + "session_meta.json" in names
+    assert prefix + "parsed/online_diagnosis.sqlite.upgrading" not in names
+    assert prefix + "parsed/online_diagnosis.upgrade.json" not in names
+    assert prefix + "parsed/retired/online_diagnosis.previous.sqlite" not in names
+    assert prefix + "view/live.json" not in names
+
+
+@pytest.mark.parametrize("package_type", ["full_migration", "sanitized_share"])
+def test_site_package_round_trips_all_sqlite_suffixes_from_wal_snapshot(
+    tmp_path: Path,
+    package_type: str,
+) -> None:
+    source_paths = _paths(tmp_path / "source")
+    source_sites = SiteApplicationService(source_paths)
+    source_sites.create_site("source-site", "源局点")
+    source_root = source_paths.site_dir("source-site")
+    wal_database = (
+        source_root / "files" / "rail_transit" / "ground_unattended" / "index.sqlite"
+    )
+    sqlite3_database = source_root / "files" / "analysis" / "result.sqlite3"
+    wal_database.parent.mkdir(parents=True, exist_ok=True)
+    wal_connection = sqlite3.connect(wal_database)
+    try:
+        assert wal_connection.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+        wal_connection.execute("PRAGMA wal_autocheckpoint=0")
+        wal_connection.execute("CREATE TABLE samples (value TEXT NOT NULL)")
+        wal_connection.execute(
+            "INSERT INTO samples (value) VALUES (?)", ("uncheckpointed",)
+        )
+        wal_connection.commit()
+        assert Path(f"{wal_database}-wal").is_file()
+        _create_auxiliary_sqlite(sqlite3_database, "sqlite3-snapshot")
+
+        package = tmp_path / f"{package_type}.ncsite"
+        SitePackageService(source_paths, source_sites).export_site(
+            "source-site",
+            package,
+            package_type=package_type,
+        )
+    finally:
+        wal_connection.close()
+
+    wal_entry = "site/files/rail_transit/ground_unattended/index.sqlite"
+    sqlite3_entry = "site/files/analysis/result.sqlite3"
+    with zipfile.ZipFile(package) as archive:
+        manifest = json.loads(archive.read("manifest.json"))
+        assert "site/db/devices.db" in manifest["databases"]
+        assert wal_entry in manifest["databases"]
+        assert sqlite3_entry in manifest["databases"]
+        archive.extract(wal_entry, tmp_path / "inspect")
+    with sqlite3.connect(tmp_path / "inspect" / wal_entry) as connection:
+        assert connection.execute("PRAGMA quick_check").fetchone() == ("ok",)
+        assert connection.execute("SELECT value FROM samples").fetchone() == (
+            "uncheckpointed",
+        )
+
+    target_paths = _paths(tmp_path / "target")
+    target_sites = SiteApplicationService(target_paths)
+    SitePackageService(target_paths, target_sites).import_site(
+        package,
+        site_id="restored-site",
+    )
+    restored_wal = target_paths.site_dir("restored-site") / wal_entry.removeprefix(
+        "site/"
+    )
+    restored_sqlite3 = target_paths.site_dir(
+        "restored-site"
+    ) / sqlite3_entry.removeprefix("site/")
+    with sqlite3.connect(restored_wal) as connection:
+        assert connection.execute("PRAGMA quick_check").fetchone() == ("ok",)
+        assert connection.execute("SELECT value FROM samples").fetchone() == (
+            "uncheckpointed",
+        )
+        assert connection.execute("PRAGMA journal_mode").fetchone() == ("delete",)
+    with sqlite3.connect(restored_sqlite3) as connection:
+        assert connection.execute("SELECT value FROM samples").fetchone() == (
+            "sqlite3-snapshot",
+        )
+    assert not Path(f"{restored_wal}-wal").exists()
+    assert not Path(f"{restored_wal}-shm").exists()
+    assert not list(source_paths.temp_dir.glob("netconsole-site-export-*"))
+    assert not list((target_paths.temp_dir / "site-import-staging").glob("*"))
+
+
+def test_site_package_rejects_corrupt_sqlite3_and_cleans_import_staging(
+    tmp_path: Path,
+) -> None:
+    source_paths = _paths(tmp_path / "source")
+    source_sites = SiteApplicationService(source_paths)
+    source_sites.create_site("source-site", "源局点")
+    database = source_paths.site_dir("source-site") / "files" / "bad.sqlite3"
+    _create_auxiliary_sqlite(database, "before-corruption")
+    package = tmp_path / "source.ncsite"
+    SitePackageService(source_paths, source_sites).export_site("source-site", package)
+
+    corrupt_name = "site/files/bad.sqlite3"
+    corrupt_value = b"not a sqlite database"
+    rewritten = tmp_path / "corrupt.ncsite"
+    with zipfile.ZipFile(package) as source:
+        manifest = json.loads(source.read("manifest.json"))
+        checksums = json.loads(source.read("checksums.json"))
+        digest = hashlib.sha256(corrupt_value).hexdigest()
+        manifest["checksums"][corrupt_name] = digest
+        checksums[corrupt_name] = digest
+        with zipfile.ZipFile(
+            rewritten, "w", compression=zipfile.ZIP_DEFLATED
+        ) as target:
+            for info in source.infolist():
+                value = source.read(info.filename)
+                if info.filename == corrupt_name:
+                    value = corrupt_value
+                elif info.filename == "manifest.json":
+                    value = json.dumps(manifest, ensure_ascii=False).encode("utf-8")
+                elif info.filename == "checksums.json":
+                    value = json.dumps(checksums, ensure_ascii=False).encode("utf-8")
+                target.writestr(info, value)
+
+    target_paths = _paths(tmp_path / "target")
+    target_sites = SiteApplicationService(target_paths)
+    with pytest.raises(SiteStorageError) as raised:
+        SitePackageService(target_paths, target_sites).import_site(
+            rewritten,
+            site_id="corrupt-site",
+        )
+
+    assert raised.value.code == "SITE_MIGRATION_FAILED"
+    assert not target_paths.site_dir("corrupt-site").exists()
+    assert not list((target_paths.temp_dir / "site-import-staging").glob("*"))
+
+
+def test_site_sync_staging_uses_managed_temp_and_cleans_success_and_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from netconsole.services import site_sync as site_sync_module
+
+    paths = _paths(tmp_path)
+    sites = SiteApplicationService(paths)
+    sites.create_site("site-one", "一号线")
+    packages = SitePackageService(paths, sites)
+    original_temporary_directory = site_sync_module.tempfile.TemporaryDirectory
+    temporary_roots: list[Path | None] = []
+
+    def tracked_temporary_directory(*args: object, **kwargs: object):
+        directory = kwargs.get("dir")
+        temporary_roots.append(Path(directory).resolve() if directory else None)
+        return original_temporary_directory(*args, **kwargs)
+
+    monkeypatch.setattr(
+        site_sync_module.tempfile,
+        "TemporaryDirectory",
+        tracked_temporary_directory,
+    )
+    packages.export_site(
+        "site-one",
+        tmp_path / "field-success.ncsite",
+        package_type="field_collection",
+    )
+
+    original_replace = site_sync_module.os.replace
+    failed_destination = (tmp_path / "field-failure.ncsite").resolve()
+
+    def fail_destination_publish(source: object, destination: object) -> None:
+        if Path(destination).resolve() == failed_destination:
+            raise OSError("forced package publish failure")
+        original_replace(source, destination)
+
+    monkeypatch.setattr(site_sync_module.os, "replace", fail_destination_publish)
+    with pytest.raises(OSError, match="forced package publish failure"):
+        packages.export_site(
+            "site-one",
+            failed_destination,
+            package_type="field_collection",
+        )
+
+    assert temporary_roots == [paths.temp_dir.resolve(), paths.temp_dir.resolve()]
+    assert paths.temp_dir.is_dir()
+    assert not list(paths.temp_dir.glob("netconsole-*"))
+    assert not failed_destination.exists()
+    assert not list(tmp_path.glob(".field-failure.ncsite.*.tmp"))
+
+
 def test_full_migration_package_plainly_copies_and_restores_credentials(
     tmp_path: Path,
 ) -> None:
@@ -514,6 +1271,119 @@ def test_full_migration_package_plainly_copies_and_restores_credentials(
     assert restored.snmp_ro_community == community
     assert restored.tunnel1_password == tunnel_secret
     assert restored.credential_status == "available"
+
+
+def test_full_migration_round_trips_sync_authorities_without_plaintext_wps_token(
+    tmp_path: Path,
+) -> None:
+    source_paths = _paths(tmp_path / "source")
+    source_sites = SiteApplicationService(source_paths)
+    source_sites.create_site("site-one", "源局点")
+    source_repository = WpsSyncRepository(
+        source_paths,
+        "site-one",
+        protect=_test_wps_protection,
+        unprotect=_test_wps_protection,
+    )
+    secret = "WPS-site-package-secret"
+    source_target = source_repository.upsert_target(
+        business_key=TRACKSIDE_AP_WPS_BUSINESS_KEY,
+        target_code="wps_standard_sheet",
+        target_type=WpsTargetType.STANDARD_SPREADSHEET,
+        target_name="WPS 普通表格",
+        document_open_url="https://example.test/document",
+        webhook_url="https://example.test/webhook",
+        expected_document_id="document-one",
+        token=secret,
+    )
+    source_sync = source_paths.site_sync_dir("site-one")
+    baseline = source_sync / "baselines" / "11111111-1111-1111-1111-111111111111"
+    _create_auxiliary_sqlite(baseline / "devices.db", "baseline-device")
+    baseline_manifest = baseline / "manifest.json"
+    baseline_manifest.write_text(
+        json.dumps({"baseline_id": baseline.name, "base_revision": 7}),
+        encoding="utf-8",
+    )
+    import_audit = source_sync / "imports" / "return-one.json"
+    import_audit.parent.mkdir(parents=True)
+    import_audit.write_text(
+        json.dumps({"package_id": "return-one", "applied_revision": 8}),
+        encoding="utf-8",
+    )
+    (source_sync / "imports" / "interrupted.part").write_bytes(b"transient")
+
+    sanitized_package = tmp_path / "sanitized.ncsite"
+    SitePackageService(source_paths, source_sites).export_site(
+        "site-one",
+        sanitized_package,
+        package_type="sanitized_share",
+    )
+    with zipfile.ZipFile(sanitized_package) as archive:
+        assert not any(name.startswith("site/sync/") for name in archive.namelist())
+
+    package = tmp_path / "full.ncsite"
+    SitePackageService(source_paths, source_sites).export_site("site-one", package)
+    with zipfile.ZipFile(package) as archive:
+        names = set(archive.namelist())
+        manifest = json.loads(archive.read("manifest.json"))
+        wps_payload = archive.read("site/sync/wps_sync.sqlite")
+    assert {
+        "site/sync/wps_sync.sqlite",
+        "site/sync/baselines/11111111-1111-1111-1111-111111111111/devices.db",
+        "site/sync/baselines/11111111-1111-1111-1111-111111111111/manifest.json",
+        "site/sync/imports/return-one.json",
+    } <= names
+    assert "site/sync/imports/interrupted.part" not in names
+    assert "site/sync/wps_sync.sqlite" in manifest["databases"]
+    assert secret.encode("utf-8") not in wps_payload
+
+    target_paths = _paths(tmp_path / "target")
+    target_sites = SiteApplicationService(target_paths)
+    target_sites.create_site("site-one", "原目标局点")
+    SitePackageService(target_paths, target_sites).import_site(
+        package,
+        replace_site_id="site-one",
+        display_name="恢复局点",
+    )
+
+    del target_sites
+    restarted_sites = SiteApplicationService(target_paths)
+    restored_root = restarted_sites.registry.get("site-one").root_path
+    restored_repository = WpsSyncRepository(
+        target_paths,
+        "site-one",
+        protect=_test_wps_protection,
+        unprotect=_test_wps_protection,
+    )
+    restored_target = restored_repository.get_target(
+        TRACKSIDE_AP_WPS_BUSINESS_KEY,
+        "wps_standard_sheet",
+    )
+    assert restored_target.credential_id == source_target.credential_id
+    assert restored_repository.resolve_token(restored_target) == secret
+    assert json.loads(
+        (restored_root / import_audit.relative_to(source_paths.site_dir("site-one"))).read_text(
+            encoding="utf-8"
+        )
+    ) == {"package_id": "return-one", "applied_revision": 8}
+    assert json.loads(
+        (
+            restored_root
+            / baseline_manifest.relative_to(source_paths.site_dir("site-one"))
+        ).read_text(encoding="utf-8")
+    )["base_revision"] == 7
+    with sqlite3.connect(
+        restored_root / baseline.relative_to(source_paths.site_dir("site-one")) / "devices.db"
+    ) as connection:
+        assert connection.execute("SELECT value FROM samples").fetchone() == (
+            "baseline-device",
+        )
+    with sqlite3.connect(restored_repository.path) as connection:
+        encrypted_token = connection.execute(
+            "SELECT encrypted_token FROM wps_credentials WHERE credential_id = ?",
+            (restored_target.credential_id,),
+        ).fetchone()[0]
+    assert bytes(encrypted_token) != secret.encode("utf-8")
 
 
 def test_full_migration_round_trip_preserves_device_group_contract(
@@ -1071,12 +1941,32 @@ def test_full_migration_replace_restores_original_site_when_publish_fails(
     source_paths = _paths(tmp_path / "source")
     source_sites = SiteApplicationService(source_paths)
     source_sites.create_site("source-site", "源局点")
+    source_sync = source_paths.site_sync_dir("source-site")
+    _create_auxiliary_sqlite(source_sync / "wps_sync.sqlite", "replacement-sync")
+    (source_sync / "baselines" / "replacement").mkdir(parents=True)
+    (source_sync / "baselines" / "replacement" / "manifest.json").write_text(
+        "replacement-baseline",
+        encoding="utf-8",
+    )
+    (source_sync / "imports").mkdir(parents=True)
+    (source_sync / "imports" / "replacement.json").write_text(
+        "replacement-import",
+        encoding="utf-8",
+    )
     package = tmp_path / "source.ncsite"
     SitePackageService(source_paths, source_sites).export_site("source-site", package)
 
     target_paths = _paths(tmp_path / "target")
     target_sites = SiteApplicationService(target_paths)
     target_sites.create_site("target-site", "原局点")
+    target_sync = target_paths.site_sync_dir("target-site")
+    _create_auxiliary_sqlite(target_sync / "wps_sync.sqlite", "original-sync")
+    original_baseline = target_sync / "baselines" / "original" / "manifest.json"
+    original_baseline.parent.mkdir(parents=True)
+    original_baseline.write_text("original-baseline", encoding="utf-8")
+    original_import = target_sync / "imports" / "original.json"
+    original_import.parent.mkdir(parents=True)
+    original_import.write_text("original-import", encoding="utf-8")
     marker = target_paths.site_files_dir("target-site") / "original.txt"
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text("original-site-data", encoding="utf-8")
@@ -1095,6 +1985,186 @@ def test_full_migration_replace_restores_original_site_when_publish_fails(
     assert marker.read_text(encoding="utf-8") == "original-site-data"
     with sqlite3.connect(target_paths.site_db_path("target-site")) as connection:
         assert connection.execute("PRAGMA quick_check").fetchone() == ("ok",)
+    restarted_sites = SiteApplicationService(target_paths)
+    restarted_root = restarted_sites.registry.get("target-site").root_path
+    with sqlite3.connect(restarted_root / "sync" / "wps_sync.sqlite") as connection:
+        assert connection.execute("SELECT value FROM samples").fetchone() == (
+            "original-sync",
+        )
+    assert original_baseline.read_text(encoding="utf-8") == "original-baseline"
+    assert original_import.read_text(encoding="utf-8") == "original-import"
+
+
+def test_full_migration_replace_failure_restores_chinese_physical_site_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_paths = _paths(tmp_path / "source")
+    source_sites = SiteApplicationService(source_paths)
+    source_sites.create_site("source-site", "源局点")
+    package = tmp_path / "source.ncsite"
+    SitePackageService(source_paths, source_sites).export_site("source-site", package)
+
+    target_paths = _paths(tmp_path / "target")
+    physical_name = "宁波地铁12号线"
+    target_paths.ensure_site_dirs(physical_name)
+    target_database = Database(target_paths.site_db_path(physical_name))
+    target_database.initialize()
+    target_sites = SiteApplicationService(target_paths)
+    target_record = next(
+        item for item in target_sites.list_sites() if item["display_name"] == physical_name
+    )
+    marker = target_paths.site_files_dir(physical_name) / "original.txt"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("original-site-data", encoding="utf-8")
+
+    def fail_register(_record: object) -> None:
+        raise RuntimeError("simulated registry failure")
+
+    monkeypatch.setattr(target_sites.registry, "register", fail_register)
+    with pytest.raises(SiteStorageError) as failed:
+        SitePackageService(target_paths, target_sites).import_site(
+            package,
+            replace_site_id=str(target_record["site_id"]),
+        )
+
+    assert failed.value.code == "SITE_IMPORT_FAILED"
+    assert marker.read_text(encoding="utf-8") == "original-site-data"
+    assert target_paths.site_db_path(physical_name).is_file()
+    assert not list(
+        (target_paths.temp_dir / "site-import-replacement-journal").glob("*.json")
+    )
+
+
+def test_full_migration_new_site_failure_removes_unregistered_publish(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_paths = _paths(tmp_path / "source")
+    source_sites = SiteApplicationService(source_paths)
+    source_sites.create_site("source-site", "源局点")
+    package = tmp_path / "source.ncsite"
+    SitePackageService(source_paths, source_sites).export_site("source-site", package)
+
+    target_paths = _paths(tmp_path / "target")
+    target_sites = SiteApplicationService(target_paths)
+
+    def fail_register(_record: object) -> None:
+        raise RuntimeError("simulated registry failure")
+
+    monkeypatch.setattr(target_sites.registry, "register", fail_register)
+    with pytest.raises(SiteStorageError) as failed:
+        SitePackageService(target_paths, target_sites).import_site(
+            package,
+            site_id="new-site",
+        )
+
+    assert failed.value.code == "SITE_IMPORT_FAILED"
+    assert not target_paths.site_dir("new-site").exists()
+    assert not list(
+        (
+            target_paths.temp_dir / "site-import-replacement-journal"
+        ).glob("*.json")
+    )
+
+
+def test_full_migration_create_preserves_commit_when_register_raises_after_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_paths = _paths(tmp_path / "source")
+    source_sites = SiteApplicationService(source_paths)
+    source_sites.create_site("source-site", "源局点")
+    package = tmp_path / "source.ncsite"
+    SitePackageService(source_paths, source_sites).export_site("source-site", package)
+
+    target_paths = _paths(tmp_path / "target")
+    target_sites = SiteApplicationService(target_paths)
+    original_register = target_sites.registry.register
+
+    def persist_then_fail(record: SiteRecord) -> None:
+        original_register(record)
+        raise RuntimeError("simulated crash after Registry persistence")
+
+    monkeypatch.setattr(target_sites.registry, "register", persist_then_fail)
+    result = SitePackageService(target_paths, target_sites).import_site(
+        package,
+        site_id="new-site",
+        display_name="已提交局点",
+    )
+
+    assert result["site_id"] == "new-site"
+    assert target_sites.get_site("new-site")["display_name"] == "已提交局点"
+    assert target_paths.site_db_path("new-site").is_file()
+    assert not list(
+        (target_paths.temp_dir / "site-import-replacement-journal").glob("*.json")
+    )
+
+
+def test_full_migration_replace_preserves_commit_when_register_raises_after_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_paths = _paths(tmp_path / "source")
+    source_sites = SiteApplicationService(source_paths)
+    source_sites.create_site("source-site", "源局点")
+    source_marker = source_paths.site_files_dir("source-site") / "new.txt"
+    source_marker.parent.mkdir(parents=True, exist_ok=True)
+    source_marker.write_text("new", encoding="utf-8")
+    package = tmp_path / "source.ncsite"
+    SitePackageService(source_paths, source_sites).export_site("source-site", package)
+
+    target_paths = _paths(tmp_path / "target")
+    target_sites = SiteApplicationService(target_paths)
+    target_sites.create_site("target-site", "原局点")
+    old_marker = target_paths.site_files_dir("target-site") / "old.txt"
+    old_marker.parent.mkdir(parents=True, exist_ok=True)
+    old_marker.write_text("old", encoding="utf-8")
+    original_register = target_sites.registry.register
+
+    def persist_then_fail(record: SiteRecord) -> None:
+        original_register(record)
+        raise RuntimeError("simulated crash after Registry persistence")
+
+    monkeypatch.setattr(target_sites.registry, "register", persist_then_fail)
+    result = SitePackageService(target_paths, target_sites).import_site(
+        package,
+        replace_site_id="target-site",
+        display_name="替换后局点",
+    )
+
+    assert result["backup_created"] is True
+    assert target_sites.get_site("target-site")["display_name"] == "替换后局点"
+    assert (target_paths.site_files_dir("target-site") / "new.txt").is_file()
+    assert not old_marker.exists()
+
+
+def test_field_package_baseline_failure_rolls_back_files_and_registry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_paths = _paths(tmp_path / "source")
+    source_sites = SiteApplicationService(source_paths)
+    source_sites.create_site("line-one", "源局点")
+    package = tmp_path / "field.ncsite"
+    SitePackageService(source_paths, source_sites).export_site(
+        "line-one", package, package_type="field_collection"
+    )
+
+    target_paths = _paths(tmp_path / "target")
+    target_sites = SiteApplicationService(target_paths)
+
+    def fail_baseline(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("simulated baseline failure")
+
+    monkeypatch.setattr(
+        "netconsole.services.site_sync.SiteSyncService.record_field_baseline",
+        fail_baseline,
+    )
+    with pytest.raises(SiteStorageError) as failed:
+        SitePackageService(target_paths, target_sites).import_site(
+            package,
+            site_id="line-one",
+        )
+
+    assert failed.value.code == "SITE_IMPORT_FAILED"
+    assert target_sites.registry.raw_record("line-one") is None
+    assert not target_paths.site_dir("line-one").exists()
 
 
 def test_field_return_package_previews_and_applies_three_way_merge(
@@ -1227,6 +2297,30 @@ def test_field_return_package_previews_and_applies_three_way_merge(
     assert next(
         source_paths.site_backups_dir("line-one").glob("sync-import-*")
     ).is_dir()
+    metadata_before_replay = json.loads(
+        (source_paths.site_dir("line-one") / "site_meta.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    backups_before_replay = sorted(
+        source_paths.site_backups_dir("line-one").glob("sync-import-*")
+    )
+
+    repeated = source_packages.import_site(
+        return_package,
+        site_id="line-one",
+        conflict_resolutions=resolutions,
+    )
+
+    assert repeated["idempotent_replay"] is True
+    assert repeated["backup_created"] is False
+    assert repeated["import_id"] == merged["import_id"]
+    assert json.loads(
+        (source_paths.site_dir("line-one") / "site_meta.json").read_text(
+            encoding="utf-8"
+        )
+    )["revision"] == metadata_before_replay["revision"]
+    assert sorted(source_paths.site_backups_dir("line-one").glob("sync-import-*")) == backups_before_replay
 
 
 def test_legacy_site_requires_audit_before_exporting_field_collection_package(

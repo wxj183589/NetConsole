@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from dataclasses import replace
@@ -19,7 +20,7 @@ from netconsole.services.job_center.task_result_rollout import (
     TaskResultRolloutError,
     TaskResultRolloutService,
 )
-from netconsole.services.job_center.task_result_maintenance import (
+from scripts.maintenance.task_result_maintenance import (
     TaskResultMaintenanceService,
 )
 from netconsole.services.site_storage import SiteRecord, SiteRegistryRepository
@@ -337,7 +338,361 @@ def test_historical_backfill_is_classified_idempotent_and_ref_read_through(
     assert restarted.get("conflict").result == conflict.result
 
 
-def test_ref_authority_keeps_live_websocket_payload_full(tmp_path: Path) -> None:
+def test_backfill_binds_only_final_finished_result_after_null_error(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "tasks.db"
+    repository = TaskRepository(path)
+    final_snapshot, finished_event = _terminal("error-then-finished")
+    error_snapshot = replace(
+        final_snapshot,
+        status=TaskState.RUNNING,
+        progress=50,
+        result={},
+        finished_time="",
+        updated_time="2026-08-16T02:59:00Z",
+    )
+    error_event = replace(
+        finished_event,
+        event_id="error-before-finished",
+        type="error",
+        time="2026-08-16T02:59:00Z",
+        payload={"message": "transient", "result": None},
+    )
+    assert repository.record(error_snapshot, error_event)
+    assert repository.record(final_snapshot, finished_event)
+
+    TaskResultRolloutService(path).enable_dual_write(
+        expected_revision=1,
+        reason="event binding regression",
+        updated_by="pytest",
+    )
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path / "runtime")
+    maintenance = TaskResultMaintenanceService(
+        paths,
+        site_id="line-12",
+        tasks_database=path,
+        development_root=tmp_path,
+    )
+    first = maintenance.backfill(
+        apply=True,
+        allow_development_root_only=True,
+    )
+    with sqlite3.connect(path) as connection:
+        finished_payload = json.loads(
+            connection.execute(
+                "SELECT payload_json FROM task_events "
+                "WHERE event_id='finished-error-then-finished'"
+            ).fetchone()[0]
+        )
+        error_payload = json.loads(
+            connection.execute(
+                "SELECT payload_json FROM task_events "
+                "WHERE event_id='error-before-finished'"
+            ).fetchone()[0]
+        )
+        error_payload.update(
+            {
+                key: finished_payload[key]
+                for key in ("result_id", "result_hash", "result_summary")
+            }
+        )
+        connection.execute(
+            "UPDATE task_events SET payload_json=? "
+            "WHERE event_id='error-before-finished'",
+            (json.dumps(error_payload, ensure_ascii=False, separators=(",", ":")),),
+        )
+        connection.commit()
+    repaired = maintenance.backfill(
+        apply=True,
+        allow_development_root_only=True,
+    )
+    maintenance.enable_ref_authority(
+        expected_revision=2,
+        reason="event binding regression",
+        updated_by="pytest",
+        apply=True,
+        allow_development_root_only=True,
+    )
+    second = maintenance.backfill(
+        apply=True,
+        allow_development_root_only=True,
+    )
+
+    assert first["new_result_rows"] == 1
+    assert first["invalid_event_refs_removed"] == 0
+    assert repaired["invalid_event_refs_removed"] == 1
+    assert repaired["idempotent"] is False
+    assert second["idempotent"] is True
+    with sqlite3.connect(path) as connection:
+        raw_events = {
+            str(event_id): json.loads(str(payload_json))
+            for event_id, payload_json in connection.execute(
+                "SELECT event_id, payload_json FROM task_events ORDER BY sequence"
+            )
+        }
+    assert raw_events["error-before-finished"] == {
+        "message": "transient",
+        "result": None,
+    }
+    assert "result" not in raw_events["finished-error-then-finished"]
+    assert raw_events["finished-error-then-finished"]["result_id"]
+    events = TaskRepository(path).list_events("error-then-finished")
+    assert events[0]["payload"]["result"] is None
+    assert events[1]["payload"]["result"] == final_snapshot.result
+    assert TaskRepository(path).get("error-then-finished").result == (
+        final_snapshot.result
+    )
+
+
+def test_backfill_preserves_failed_snapshot_result_from_finished_event(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "tasks.db"
+    repository = TaskRepository(path)
+    TaskResultRolloutService(path).enable_dual_write(
+        expected_revision=1,
+        reason="legacy failed snapshot fixture",
+        updated_by="pytest",
+    )
+    result = {"data_persisted": False, "worker_exit_code": 1}
+    snapshot, finished_event = _terminal("failed-with-finished-result")
+    snapshot = replace(
+        snapshot,
+        status=TaskState.FAILED,
+        result=result,
+        error_message="legacy producer reported failure after persisting a result",
+    )
+    finished_event = replace(
+        finished_event,
+        payload={"message": "legacy terminal result", "result": result},
+    )
+    assert repository.record(snapshot, finished_event)
+
+    maintenance = TaskResultMaintenanceService(
+        PathResolver(app_root=tmp_path, data_root=tmp_path / "runtime"),
+        site_id="line-12",
+        tasks_database=path,
+        development_root=tmp_path,
+    )
+    backfill = maintenance.backfill(
+        apply=True,
+        allow_development_root_only=True,
+    )
+    maintenance.enable_ref_authority(
+        expected_revision=2,
+        reason="legacy failed snapshot fixture",
+        updated_by="pytest",
+        apply=True,
+        allow_development_root_only=True,
+    )
+
+    assert backfill["classifications"]["MATCHED"] == 1
+    assert backfill["referenced_tasks"] == 1
+    restarted = TaskRepository(path)
+    stored = restarted.get(snapshot.task_id)
+    assert stored is not None
+    assert stored.status == TaskState.FAILED
+    assert stored.result == result
+    assert restarted.get_result(stored.result_id)["terminal_event_type"] == "finished"
+    assert restarted.list_events(snapshot.task_id)[0]["payload"]["result"] == result
+
+
+def test_backfill_does_not_replace_empty_cancelled_result_from_later_event(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "tasks.db"
+    repository = TaskRepository(path)
+    timestamp = "2026-08-16T03:00:00Z"
+    cancelled_snapshot = TaskSnapshot(
+        task_id="cancelled-with-later-event",
+        task_type="vehicle_mr_online_collection_start",
+        task_name="Cancelled Collection",
+        status=TaskState.CANCELLED,
+        created_time=timestamp,
+        finished_time=timestamp,
+        updated_time=timestamp,
+        result={},
+    )
+    cancelled_diagnostic = {"data_persisted": None, "worker_exit_code": 1}
+    cancelled_event = TaskEvent(
+        event_id="cancelled-empty",
+        task_id=cancelled_snapshot.task_id,
+        type="cancelled",
+        time=timestamp,
+        source="test",
+        payload={"message": "cancelled", "result": cancelled_diagnostic},
+    )
+    later_result = {"data_persisted": True, "worker_exit_code": 0}
+    later_finished = TaskEvent(
+        event_id="finished-after-cancelled",
+        task_id=cancelled_snapshot.task_id,
+        type="finished",
+        time="2026-08-16T03:00:01Z",
+        source="test",
+        payload={"message": "late", "result": later_result},
+    )
+    assert repository.record(cancelled_snapshot, cancelled_event)
+    assert repository.record(cancelled_snapshot, later_finished)
+    TaskResultRolloutService(path).enable_dual_write(
+        expected_revision=1,
+        reason="cancelled binding regression",
+        updated_by="pytest",
+    )
+    maintenance = TaskResultMaintenanceService(
+        PathResolver(app_root=tmp_path, data_root=tmp_path / "runtime"),
+        site_id="line-12",
+        tasks_database=path,
+        development_root=tmp_path,
+    )
+    canonical = json.dumps(
+        later_result,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    encoded = canonical.encode("utf-8")
+    digest = hashlib.sha256(encoded).hexdigest()
+    result_id = "tr-" + hashlib.sha256(
+        f"{cancelled_snapshot.task_id}\0finished\0{digest}".encode("utf-8")
+    ).hexdigest()
+    summary = repository._result_summary(later_result, byte_size=len(encoded))
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            """
+            INSERT INTO task_results (
+                result_id, task_id, terminal_event_type, canonical_json,
+                sha256, byte_size, schema_version, created_time
+            ) VALUES (?, ?, 'finished', ?, ?, ?, 1, ?)
+            """,
+            (
+                result_id,
+                cancelled_snapshot.task_id,
+                canonical,
+                digest,
+                len(encoded),
+                later_finished.time,
+            ),
+        )
+        connection.execute(
+            "UPDATE task_snapshots SET result_id=?, result_hash=?, "
+            "result_summary_json=? WHERE task_id=?",
+            (
+                result_id,
+                digest,
+                json.dumps(summary, ensure_ascii=False, separators=(",", ":")),
+                cancelled_snapshot.task_id,
+            ),
+        )
+        finished_payload = dict(later_finished.payload)
+        finished_payload.update(
+            {
+                "result_id": result_id,
+                "result_hash": digest,
+                "result_summary": summary,
+            }
+        )
+        connection.execute(
+            "UPDATE task_events SET payload_json=? WHERE event_id=?",
+            (
+                json.dumps(
+                    finished_payload, ensure_ascii=False, separators=(",", ":")
+                ),
+                later_finished.event_id,
+            ),
+        )
+        connection.commit()
+
+    first = maintenance.backfill(
+        apply=True,
+        allow_development_root_only=True,
+    )
+    second = maintenance.backfill(
+        apply=True,
+        allow_development_root_only=True,
+    )
+
+    assert first["classifications"]["CONFLICT"] == 1
+    assert first["new_result_rows"] == 0
+    assert first["referenced_tasks"] == 0
+    assert first["invalid_snapshot_refs_removed"] == 1
+    assert second["idempotent"] is True
+    assert TaskRepository(path).get(cancelled_snapshot.task_id).result == {}
+    events = TaskRepository(path).list_events(cancelled_snapshot.task_id)
+    assert events[0]["payload"]["result"] == cancelled_diagnostic
+    assert events[1]["payload"]["result"] == later_result
+
+
+def test_backfill_keeps_event_only_result_out_of_empty_cancelled_snapshot(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "tasks.db"
+    repository = TaskRepository(path)
+    timestamp = "2026-08-16T03:00:00Z"
+    task_id = "cancelled-event-only-result"
+    event_result = {"data_persisted": None, "worker_exit_code": 1}
+    snapshot = TaskSnapshot(
+        task_id=task_id,
+        task_type="vehicle_mr_online_collection_start",
+        task_name="Cancelled Collection",
+        status=TaskState.CANCELLED,
+        created_time=timestamp,
+        finished_time=timestamp,
+        updated_time=timestamp,
+        result={},
+    )
+    event = TaskEvent(
+        event_id="cancelled-event-only",
+        task_id=task_id,
+        type="cancelled",
+        time=timestamp,
+        source="test",
+        payload={"message": "worker stopped", "result": event_result},
+    )
+    assert repository.record(snapshot, event)
+    TaskResultRolloutService(path).enable_dual_write(
+        expected_revision=1,
+        reason="event-only result regression",
+        updated_by="pytest",
+    )
+    maintenance = TaskResultMaintenanceService(
+        PathResolver(app_root=tmp_path, data_root=tmp_path / "runtime"),
+        site_id="line-12",
+        tasks_database=path,
+        development_root=tmp_path,
+    )
+
+    first = maintenance.backfill(apply=True, allow_development_root_only=True)
+    second = maintenance.backfill(apply=True, allow_development_root_only=True)
+
+    assert first["classifications"]["EVENT_ONLY"] == 1
+    assert first["new_result_rows"] == 1
+    assert first["referenced_tasks"] == 0
+    assert second["idempotent"] is True
+    with sqlite3.connect(path) as connection:
+        stored_snapshot = connection.execute(
+            "SELECT result_json, result_id, result_hash, result_summary_json "
+            "FROM task_snapshots WHERE task_id=?",
+            (task_id,),
+        ).fetchone()
+        stored_event = json.loads(
+            connection.execute(
+                "SELECT payload_json FROM task_events WHERE event_id=?",
+                (event.event_id,),
+            ).fetchone()[0]
+        )
+    assert stored_snapshot == ("{}", "", "", "{}")
+    assert stored_event["result"] == event_result
+    assert stored_event["result_id"]
+    assert TaskRepository(path).get(task_id).result == {}
+    assert TaskRepository(path).list_events(task_id)[0]["payload"]["result"] == (
+        event_result
+    )
+
+
+def test_ref_authority_keeps_terminal_and_artifact_live_payloads_full(
+    tmp_path: Path,
+) -> None:
     data_root = tmp_path / "data"
     paths = PathResolver(app_root=tmp_path, data_root=data_root)
     task_db = paths.site_tasks_db_path("demo")
@@ -380,6 +735,26 @@ def test_ref_authority_keeps_live_websocket_payload_full(tmp_path: Path) -> None
 
     assert snapshot.result == result and snapshot.result_id
     assert live["payload"]["result"] == result
+    artifact_stream = service.events.open_stream()
+    projection = {"artifact_id": "report-ref", "available": True, "rows": 11}
+    projected = service.record_external_event(
+        "ref-live-result",
+        "artifact_finalized",
+        {"message": "ready", "result": projection},
+        source="artifact_store",
+        event_id="ref-live-artifact",
+        event_time="2026-08-16T03:01:00Z",
+    )
+    artifact_live = artifact_stream.get(timeout=1)
+    artifact_stream.close()
+
+    assert projected.result == projection
+    assert projected.result_id and projected.result_id != snapshot.result_id
+    assert artifact_live["payload"]["result"] == projection
+    authority = service.repository("demo").get_result(projected.result_id)
+    assert authority is not None
+    assert authority["terminal_event_type"] == "artifact_finalized"
+    assert authority["result"] == projection
     with sqlite3.connect(task_db) as connection:
         stored_snapshot = connection.execute(
             "SELECT result_json FROM task_snapshots WHERE task_id='ref-live-result'"
@@ -389,8 +764,15 @@ def test_ref_authority_keeps_live_websocket_payload_full(tmp_path: Path) -> None
                 "SELECT payload_json FROM task_events WHERE event_id='ref-live-finished'"
             ).fetchone()[0]
         )
+        stored_artifact_event = json.loads(
+            connection.execute(
+                "SELECT payload_json FROM task_events WHERE event_id='ref-live-artifact'"
+            ).fetchone()[0]
+        )
     assert stored_snapshot == "{}"
     assert "result" not in stored_event and stored_event["result_id"]
+    assert "result" not in stored_artifact_event
+    assert stored_artifact_event["result_id"] == projected.result_id
 
 
 def test_default_websocket_terminal_payload_remains_full(tmp_path: Path) -> None:

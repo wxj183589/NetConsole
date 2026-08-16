@@ -22,8 +22,9 @@ os.environ["NETCONSOLE_DATA_ROOT"] = str(_TEST_RUN_ROOT / "session")
 
 
 def _cleanup_test_run_root() -> None:
-    for target in (_TEST_BASETEMP_ROOT, _TEST_RUN_ROOT):
-        _cleanup_owned_test_path(target)
+    if os.environ.get("NETCONSOLE_PRESERVE_TEST_BASETEMP") != "1":
+        _cleanup_owned_test_path(_TEST_BASETEMP_ROOT)
+    _cleanup_owned_test_path(_TEST_RUN_ROOT)
 
 
 def _cleanup_owned_test_path(target: Path | None) -> None:

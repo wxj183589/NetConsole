@@ -311,6 +311,47 @@ def test_source_revision_only_tracks_devices_used_as_fit_ap_controllers(
     assert service.repository.source_revision() == before_vendor_update + 1
 
 
+def test_source_revision_ignores_legacy_lldp_history_but_tracks_current_lldp(
+    tmp_path: Path,
+) -> None:
+    database, _repository, service = _fixture(tmp_path)
+    initial_revision = service.repository.source_revision()
+
+    with database.connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO ac_fit_ap_lldp_history (
+                ac_device_uuid, ap_uuid, collected_at, created_at
+            )
+            VALUES ('ac-1', 'ap-1', '2026-08-16T00:00:00+00:00', '')
+            """
+        )
+        connection.commit()
+    assert service.repository.source_revision() == initial_revision
+
+    with database.connect() as connection:
+        connection.execute("DELETE FROM ac_fit_ap_lldp_history")
+        connection.commit()
+    assert service.repository.source_revision() == initial_revision
+
+    with database.connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO device_lldp_neighbors (
+                device_uuid, local_interface, neighbor_mac,
+                collected_at, updated_at
+            )
+            VALUES (
+                'switch-1', 'GigabitEthernet1/0/1', '74ad-cb9d-3320',
+                '2026-08-16T00:00:00+00:00', ''
+            )
+            """
+        )
+        connection.commit()
+
+    assert service.repository.source_revision() == initial_revision + 1
+
+
 def test_failed_build_preserves_previous_index(tmp_path: Path) -> None:
     _database, repository, service = _fixture(tmp_path)
     _base_ap(repository, name="AP-A", mac="74ad-cb9d-3320")
@@ -1053,6 +1094,179 @@ def test_actual_ac_bbssid_wins_over_other_entity_base_prefix(tmp_path: Path) -> 
     assert match.effective_ap_name == "AP-RUNTIME"
     assert match.matched_alias_type == "ac_bbssid"
     assert match.match_rule == "actual_bbssid_exact"
+
+
+def test_radio_evidence_backfill_survives_legacy_history_retirement(
+    tmp_path: Path,
+) -> None:
+    database, repository, service = _fixture(tmp_path)
+    repository.replace_fit_ap_resources(
+        "ac-1",
+        [
+            {
+                "ap_uuid": "ap-runtime",
+                "ap_name": "AP-RUNTIME",
+                "ap_mac": "0011-2233-4455",
+            }
+        ],
+    )
+    with database.connect() as connection:
+        source_revision_before_backfill = int(
+            connection.execute(
+                "SELECT revision FROM ap_identity_source_state WHERE site_id='current'"
+            ).fetchone()[0]
+        )
+        connection.execute(
+            """
+            INSERT INTO ac_fit_ap_radio_history (
+                ac_device_uuid, ap_uuid, ap_name, rid, bbssid,
+                collected_at, created_at
+            )
+            VALUES (
+                'ac-1', 'ap-runtime', 'AP-RUNTIME', 1,
+                '4873-97cc-e9af', '2026-08-01T00:00:00+00:00',
+                '2026-08-01T00:00:00+00:00'
+            )
+            """
+        )
+        connection.execute("DROP TABLE ap_identity_radio_evidence")
+        connection.commit()
+
+    database.initialize()
+    with database.connect() as connection:
+        source_revision_after_backfill = int(
+            connection.execute(
+                "SELECT revision FROM ap_identity_source_state WHERE site_id='current'"
+            ).fetchone()[0]
+        )
+    service.rebuild_index("radio_evidence_backfill")
+    before = service.resolve_peer_mac("487397cce9af")
+    with database.connect() as connection:
+        evidence = connection.execute(
+            """
+            SELECT ap_uuid, rid, bbssid
+            FROM ap_identity_radio_evidence
+            """
+        ).fetchone()
+        revision_before = connection.execute(
+            "SELECT revision FROM ap_identity_source_state WHERE site_id='current'"
+        ).fetchone()[0]
+        connection.execute("DELETE FROM ac_fit_ap_radio_history")
+        connection.commit()
+        revision_after = connection.execute(
+            "SELECT revision FROM ap_identity_source_state WHERE site_id='current'"
+        ).fetchone()[0]
+
+    service.rebuild_index("legacy_radio_history_retired")
+    after = service.resolve_peer_mac("487397cce9af")
+
+    assert tuple(evidence) == ("ap-runtime", 1, "4873-97cc-e9af")
+    assert source_revision_after_backfill == source_revision_before_backfill
+    assert revision_after == revision_before
+    assert before.status == after.status == "matched"
+    assert before.matched_entity_id == after.matched_entity_id
+    assert before.matched_alias_type == after.matched_alias_type == "ac_bbssid"
+    assert before.match_rule == after.match_rule == "actual_bbssid_exact"
+
+
+def test_radio_evidence_backfills_from_verified_identity_aliases(
+    tmp_path: Path,
+) -> None:
+    database, repository, service = _fixture(tmp_path)
+    repository.replace_fit_ap_resources(
+        "ac-1",
+        [
+            {
+                "ap_uuid": "ap-runtime",
+                "ap_name": "AP-RUNTIME",
+                "ap_mac": "0011-2233-4455",
+            }
+        ],
+    )
+    with database.connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO ac_fit_ap_radio_history (
+                ac_device_uuid, ap_uuid, ap_name, rid, bbssid,
+                collected_at, created_at
+            )
+            VALUES (
+                'ac-1', 'ap-runtime', 'AP-RUNTIME', 2,
+                '4873-97cc-e9bf', '2026-08-01T00:00:00+00:00',
+                '2026-08-01T00:00:00+00:00'
+            )
+            """
+        )
+        connection.execute("DROP TABLE ap_identity_radio_evidence")
+        connection.commit()
+    service.rebuild_index("legacy_radio_alias")
+
+    with database.connect() as connection:
+        connection.execute("DELETE FROM ac_fit_ap_radio_history")
+        connection.commit()
+
+    database.initialize()
+    with database.connect() as connection:
+        evidence = connection.execute(
+            """
+            SELECT ap_uuid, rid, bbssid
+            FROM ap_identity_radio_evidence
+            """
+        ).fetchone()
+    service.rebuild_index("verified_alias_fallback")
+    match = service.resolve_peer_mac("487397cce9bf")
+
+    assert tuple(evidence) == ("ap-runtime", 2, "4873-97cc-e9bf")
+    assert match.status == "matched"
+    assert match.matched_entity_id == "ac:ap-runtime"
+    assert match.radio_id == 2
+
+
+def test_radio_evidence_changes_only_for_semantic_bbssid_changes(
+    tmp_path: Path,
+) -> None:
+    database, repository, _service = _fixture(tmp_path)
+
+    def append(bbssid: str, collected_at: str) -> tuple[int, int, str, str]:
+        with database.connect() as connection:
+            repository._append_radio_history(
+                connection,
+                {
+                    "ac_device_uuid": "ac-1",
+                    "ap_uuid": "ap-runtime",
+                    "ap_name": "AP-RUNTIME",
+                    "rid1_bbssid": bbssid,
+                    "collected_at": collected_at,
+                },
+            )
+            connection.commit()
+            revision = int(
+                connection.execute(
+                    "SELECT revision FROM ap_identity_source_state "
+                    "WHERE site_id='current'"
+                ).fetchone()[0]
+            )
+            outbox_count = int(
+                connection.execute("SELECT COUNT(*) FROM history_outbox").fetchone()[0]
+            )
+            evidence = connection.execute(
+                """
+                SELECT bbssid, updated_at
+                FROM ap_identity_radio_evidence
+                WHERE ap_uuid='ap-runtime' AND rid=1
+                """
+            ).fetchone()
+        return revision, outbox_count, str(evidence["bbssid"]), str(evidence["updated_at"])
+
+    first = append("48:73:97:cc:e9:af", "2026-08-01T00:00:00+00:00")
+    repeated = append("4873.97cc.e9af", "2026-08-01T00:01:00+00:00")
+    changed = append("4873-97cc-e9bf", "2026-08-01T00:02:00+00:00")
+
+    assert first[1:] == (1, "4873-97cc-e9af", first[3])
+    assert repeated == first
+    assert changed[0] == first[0] + 1
+    assert changed[1] == 2
+    assert changed[2] == "4873-97cc-e9bf"
 
 
 def test_resolve_and_search_do_not_modify_persisted_index(tmp_path: Path) -> None:

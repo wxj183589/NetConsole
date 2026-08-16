@@ -13,6 +13,7 @@ from scripts.architecture.checks import (
     product_architecture_findings,
     removed_feature_findings,
     runtime_path_findings,
+    storage_registry_findings,
     ui_business_logic_findings,
 )
 from scripts.architecture.guard_core import Finding, finish
@@ -29,6 +30,7 @@ CHECKS: dict[str, Callable[[], list[Finding]]] = {
     "runtime-paths": runtime_path_findings,
     "orphan-modules": orphan_module_findings,
     "product-architecture": product_architecture_findings,
+    "storage-registry": storage_registry_findings,
 }
 
 

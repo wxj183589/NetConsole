@@ -18,7 +18,7 @@ from netconsole.services.database_footprint_maintenance import (
     sqlite_quick_profile,
 )
 from netconsole.services.database_upgrade.sqlite_consistency import sha256_file
-from netconsole.services.job_center.task_result_maintenance import (
+from scripts.maintenance.task_result_maintenance import (
     TaskResultMaintenanceService,
 )
 from netconsole.services.job_center.task_result_rollout import (
@@ -413,34 +413,38 @@ def _task_compatibility(args: argparse.Namespace) -> dict[str, Any]:
 
     exported = run_root / "site-package-export" / "tasks.db"
     imported = run_root / "site-package-import" / "tasks.db"
-    export_result = (
-        {"destination": str(exported), **sqlite_quick_profile(exported)}
-        if exported.is_file()
-        else sqlite_online_backup_readonly(database, exported)
-    )
-    TaskRepository(imported)
-    merge = _apply_task_merge(
-        imported,
-        exported,
-        {},
-        site_id=site_id,
-        site_aliases=args.site_alias,
-    )
-    source_counts = _task_package_counts(exported)
-    imported_counts = _task_package_counts(imported)
-    if source_counts != imported_counts:
-        raise RuntimeError("Site Package task table counts do not match")
-    imported_repository = TaskRepository(imported)
-    imported_snapshot = imported_repository.get(compatibility_task)
-    if imported_snapshot is None or imported_snapshot.result != rest_snapshot.result:
-        raise RuntimeError("Site Package imported ref read-through failed")
-    idempotent_merge = _apply_task_merge(
-        imported,
-        exported,
-        {},
-        site_id=site_id,
-        site_aliases=args.site_alias,
-    )
+    try:
+        export_result = (
+            {"destination": str(exported), **sqlite_quick_profile(exported)}
+            if exported.is_file()
+            else sqlite_online_backup_readonly(database, exported)
+        )
+        TaskRepository(imported)
+        merge = _apply_task_merge(
+            imported,
+            exported,
+            {},
+            site_id=site_id,
+            site_aliases=args.site_alias,
+        )
+        source_counts = _task_package_counts(exported)
+        imported_counts = _task_package_counts(imported)
+        if source_counts != imported_counts:
+            raise RuntimeError("Site Package task table counts do not match")
+        imported_repository = TaskRepository(imported)
+        imported_snapshot = imported_repository.get(compatibility_task)
+        if imported_snapshot is None or imported_snapshot.result != rest_snapshot.result:
+            raise RuntimeError("Site Package imported ref read-through failed")
+        idempotent_merge = _apply_task_merge(
+            imported,
+            exported,
+            {},
+            site_id=site_id,
+            site_aliases=args.site_alias,
+        )
+    finally:
+        _cleanup_sqlite_sidecars(exported)
+        _cleanup_sqlite_sidecars(imported)
     return {
         "Task Center": "PASS",
         "REST": "PASS",
@@ -476,6 +480,13 @@ def _task_package_counts(path: Path) -> dict[str, int]:
                 "online_mr_task_sessions",
             )
         }
+
+
+def _cleanup_sqlite_sidecars(path: Path) -> None:
+    """Remove closed Site Package staging sidecars after the DB owner finishes."""
+
+    for suffix in ("-wal", "-shm"):
+        path.with_name(f"{path.name}{suffix}").unlink(missing_ok=True)
 
 
 def _require_apply(args: argparse.Namespace) -> None:

@@ -19,7 +19,8 @@
 - `audit_sites.py`：只读扫描局点文件、SQLite 完整性、业务记录和 Registry/bootstrap 引用，并把审计 manifest 写入当前数据根；不移动或删除局点。
 - `rebuild_mesh_parsed_data.py`：在 schema 变更后从受保护 raw 日志重建 MESH 派生 SQLite；默认仅输出计划，`--apply` 必须在 NetConsole 完全退出后执行。
 - `remap_mesh_identity.py`：扫描健康的 MESH parsed 来源并规划/执行 identity-only remap；默认 dry-run，只有显式 `--apply` 才逐来源复用 `MeshSourceRebuildService` 写入，经数据库回读验证后才发布 ready。
-- `migrate_device_history.py`：显式 inventory/start/pause/resume/status 的 legacy history COPY-only 迁移，以及逐表 cutover/rollback/observation eligibility/delete-plan preview；状态切换必须 `--apply`，无源删除、DROP 或 VACUUM 能力。
+- `migrate_device_history.py`：显式 inventory/start/pause/resume/status 的 legacy history COPY-only 迁移，以及逐表 cutover/rollback/observation eligibility/delete-plan preview；状态切换必须 `--apply`。精确源删除执行器还必须提供 plan/source/revision 摘要和 `--allow-development-root-only`，且只接受 `D:\study` 隔离副本；生产 `DELETE`、`DROP` 或 `VACUUM` 始终不可用。`--output` 可把单次结果保存为新的 JSON 证据且拒绝覆盖既有文件。
+- `validate_history_provenance.py`：默认以 SQLite read-only 连接审计隔离 `devices.db`、History catalog 和全部登记 shard 的 quick/integrity/foreign-key、event/provenance 数量、missing/duplicate source identity、`WITHOUT ROWID` 与 provenance 索引布局；只有同时提供 `--apply-backfill --allow-development-root-only` 才调用幂等 provenance backfill。数据库、History 根和新建 JSON 证据必须解析在 `D:\study` 下，既有输出拒绝覆盖。
 - `benchmark_device_history_legacy_migration.py`：只在 `D:\study` 隔离数据上测量迁移吞吐、chunk latency、commit/checkpoint 和 target growth。
 - `profile_device_history_storage.py`：只读剖析隔离 legacy/V1 history 的表、payload、envelope、索引和 fragmentation；`--decompose` 的 VACUUM 只作用于 diagnostics scratch。
 - `benchmark_device_history_storage_queries.py`：只读比较隔离 V1/V2 月分片的实体、时间范围、跨月和 offset 查询，输出延迟、EXPLAIN plan 与 event ID 一致性摘要。
@@ -27,6 +28,11 @@
 - `profile_tasks_db.py`：LIGHT 只读元数据、DEEP 只读隔离副本的 tasks.db 存储剖析。
 - `manage_task_result_rollout.py`：读取单个 tasks.db 的安全 rollout 摘要；仅显式 `--apply`、revision CAS 和 reason 可启用或停止未来 dual-write，不提供 verified/ref-only apply。
 - `benchmark_tasks_db_governance.py`：在 `D:\study` 隔离库对比 legacy baseline、guarded default、显式 dual-write、future ref-only、100/1,000/10,000 task scale、约 4.5 MB result 和 progress sampling；future 空间差异仅为 potential。
+- `benchmark_database_functional_queries.py`：只以 `mode=ro&immutable=1` 比较真实隔离 Before/After 的 Device、FIT-AP、LLDP、History、Task 以及 Site Package 内 MESH/Ground 查询，输出绑定 Git HEAD 的 p50/p95/max、结果数量和语义 SHA-256。
+- `collect_functional_consumer_observations.py`：从真实隔离 Site Package、性能和 No-Reinflation 证据生成完整 consumer Before/After manifest；只接受 registered store 与查询语义一致的 canonical digest。
+- `build_site_storage_optimization_impact.py`：只读绑定递归 site/global inventory、隔离前后 devices/tasks、最终 History 根和 task result 去重报告，生成可复验的 `netconsole-site-storage-impact-v1`，拒绝手工猜测或不匹配的 baseline 字节。
+- `finalize_functional_compatibility.py`：将数据库 Before/After、完整 Site Package、No-Reinflation、性能比较、最终 Storage footprint 以及 TARGETED/FAST/CONSUMER/FULL Gate 绑定到同一 Git HEAD，并强制每个 consumer 的 Before/After query digest 相同；任何缺项或 FAIL 都拒绝生成最终三份功能报告。
+- `../quality/run_storage_targeted_gate.py`：在唯一 `D:\study\test-data\NetConsole\<run-id>` 中执行数据库治理定向套件，完成后删除自有测试根并保存绑定 HEAD 的 TARGETED 报告。
 
 局点审计从仓库根运行，默认使用源码开发数据根；`--site-id` 可限制为一个稳定 ID 或目录名，`--output` 可指定 manifest 文件：
 

@@ -34,11 +34,11 @@ databases / artifacts / checksums
 
 ## 内容与安全边界
 
-完整迁移包是普通 ZIP，直接包含 `manifest.json`、`checksums.json`、`README.txt` 和完整 `site/` 快照。SQLite 通过 Backup API 生成一致副本，每个文件都有 SHA-256；导入先完成路径、符号链接、解压大小、checksum、manifest 和 SQLite 完整性校验，全部成功后才原子发布。任何校验失败都不会发布半个局点。
+完整迁移包是普通 ZIP，直接包含 `manifest.json`、`checksums.json`、`README.txt` 和完整 `site/` 快照。FULL_MIGRATION 必须同时携带 `sync/wps_sync.sqlite`、`sync/baselines/**` 和 `sync/imports/**`，以保留 WPS 当前配置/运行审计、现场回传基准和幂等导入审计；脱敏或 metadata-only 合同可以省略这些 authority。SQLite 通过 Backup API 生成一致副本，每个文件都有 SHA-256；导入先完成路径、符号链接、解压大小、checksum、manifest 和 SQLite 完整性校验，全部成功后才原子发布。任何校验失败都不会发布半个局点。
 
 恢复为不同局点标识或替换 Legacy 中文物理目录时，导入在 staging 中把 `device_groups.site_id` 重绑定为目标物理目录名；分组 ID、名称、排序、空组以及 `devices.group_id` 全部保持不变。重绑定前后会校验分组数量、成员数量、孤儿引用和两类摘要，失败时不发布目标局点。
 
-完整迁移包保留设备用户名、SSH/Telnet 密码、SNMP community 和隧道凭据。导入新局点或替换已有局点都直接使用包内数据库及其凭据，不提供 `credential_policy`，也不会因来源电脑不同设置 `needs_reentry`。它不要求或接收迁移密码，也不生成加密载荷；导出页和导入预检会明确警告“完整迁移包包含设备用户名和密码”。该包不提供机密性，必须只保存到可信位置。
+完整迁移包保留设备用户名、SSH/Telnet 密码、SNMP community 和隧道凭据。WPS Token 只以 `wps_sync.sqlite` 中原有的 Windows DPAPI 密文迁移，导出过程不得解密、重加密为包内明文或复制到 manifest；跨 Windows 用户/电脑后 DPAPI 无法解密时不得把该密文视为有效凭据，必须在目标机重新配置。导入新局点或替换已有局点都直接使用包内设备数据库及其凭据，不提供 `credential_policy`，也不会因来源电脑不同设置 `needs_reentry`。它不要求或接收迁移密码，也不生成加密载荷；导出页和导入预检会明确警告“完整迁移包包含设备用户名和密码”。该包不提供机密性，必须只保存到可信位置。
 
 脱敏分享包、现场采集包和采集回传包均不包含秘密。现场采集包仅下发 `site_meta.json`、清洗后的 `db/devices.db`、配置中心资料和车内通信点表，不下发任务历史、大量原始日志或历史报告。导入现场包后，本机在 `sync/baselines/<baseline_id>/` 保存不可变基准。
 
@@ -56,7 +56,7 @@ databases / artifacts / checksums
 
 ## 回传预检与合并
 
-回传包必须匹配本机一个 `site_uuid`。预检显示新增/重复文件、任务、可自动更新记录、冲突、删除请求、无效数据和预计空间；实际写入前创建 `files/backups/sync-import-<id>/` 恢复快照。
+回传包必须匹配本机一个 `site_uuid`。预检显示新增/重复文件、任务、可自动更新记录、冲突、删除请求、无效数据和预计空间；实际写入前创建 `files/backups/sync-import-<id>/` 恢复快照。相同 `package_id + package SHA-256 + base_revision + raw_only` 重放直接返回原导入审计，不递增局点 revision，也不再创建完整数据库快照；相同 `package_id` 但内容 hash 不同会拒绝。
 
 - 原始文件按 SHA-256 去重；同路径不同内容不覆盖，转存为 `files/sync-imports/<日期>/<来源电脑>/<导入ID>/...`。
 - `tasks.db` 按 `task_id`、`event_id` 合并；完整成功优先于部分完成、失败、已取消和运行中，同等级仅在回传结果更完整时更新。
@@ -68,4 +68,4 @@ databases / artifacts / checksums
 - 未提供稳定 UUID 的旧基础资料或派生表不会被按本地自增 ID 猜测合并；预检会计入“未支持记录”，导入时保留本机数据，不会静默覆盖。
 - 删除请求默认只展示和记录，不自动删除设备、AP、列车、原始文件、报告或历史数据。
 
-回传合并在数据库事务中执行；文件先复制到受控位置。任何失败都会恢复数据库快照并删除本次新增文件。
+回传合并在数据库事务中执行；文件先复制到受控位置。每个待创建文件在复制前写入 durable journal，数据库、`site_meta.json` 和 audit 使用 `PREPARING / PREPARED / APPLYING / APPLIED` 状态协调。普通失败和进程中断都会恢复数据库快照并删除本次精确登记的新增文件；只有 APPLIED journal 与 package hash、audit、applied revision 一致时，启动恢复才保留提交结果。

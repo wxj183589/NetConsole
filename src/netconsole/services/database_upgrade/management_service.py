@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from netconsole.core.interprocess_lock import interprocess_file_lock
 from netconsole.core.paths import PathResolver
+from netconsole.services.database_upgrade.backup_lifecycle import BackupLifecycleService
 from netconsole.services.database_upgrade.backup_store import DatabaseBackupStore
 from netconsole.services.database_upgrade.coordinator import DatabaseUpgradeCoordinator
 from netconsole.services.database_upgrade.history import LegacyDatabaseArchiveService
@@ -22,6 +23,7 @@ class DatabaseUpgradeManagementService:
     def __init__(self, paths: PathResolver) -> None:
         self.paths = paths
         self.backups = DatabaseBackupStore(paths)
+        self.backup_lifecycle = BackupLifecycleService(paths)
         self.history = LegacyDatabaseArchiveService(paths, backup_store=self.backups)
 
     def list_status(self, site_id: str) -> dict[str, Any]:
@@ -60,6 +62,19 @@ class DatabaseUpgradeManagementService:
             "backup_count": len(backups),
             "backup_size_bytes": sum(int(item.get("database_size") or 0) for item in backups),
         }
+
+    def preview_backup_retirement(
+        self,
+        *,
+        keep_revisions: int = 2,
+        protected_backup_ids: tuple[str, ...] = (),
+    ) -> dict[str, Any]:
+        """Return a manifest-driven plan; production retirement is never applied here."""
+
+        return self.backup_lifecycle.preview_retirement(
+            keep_revisions=keep_revisions,
+            protected_backup_ids=protected_backup_ids,
+        )
 
     def read_backup(self, backup_id: str, *, site_id: str | None = None) -> dict[str, Any]:
         item = self.backups.read(backup_id)

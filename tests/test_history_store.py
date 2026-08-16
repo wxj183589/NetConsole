@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import sqlite3
+import subprocess
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from itertools import pairwise
+from pathlib import Path
 from threading import Barrier
 
 import pytest
@@ -53,6 +58,56 @@ def _stored_event_count(conn) -> int:
         ).fetchone():
             total += int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
     return total
+
+
+def _archive_event(index: int) -> dict[str, object]:
+    collected_at = f"2026-08-01T10:{index % 60:02d}:{index % 60:02d}"
+    return {
+        "event_id": hashlib.sha256(f"history-event-{index}".encode()).hexdigest(),
+        "kind": "device_interface",
+        "entity_key": f"device-{index}:GE1/0/1",
+        "event_type": "change",
+        "collected_at": collected_at,
+        "payload_json": json.dumps(
+            {"device_uuid": f"device-{index}", "sample": index},
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        "created_at": collected_at,
+    }
+
+
+def _physical_event_ids(history_root) -> list[str]:
+    event_ids: list[str] = []
+    for shard_path in sorted(history_root.glob("devices-*.db")):
+        with connect_sqlite(shard_path, foreign_keys=True) as shard:
+            if shard.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='history_events'"
+            ).fetchone():
+                event_ids.extend(
+                    str(row[0])
+                    for row in shard.execute("SELECT event_id FROM history_events")
+                )
+            if shard.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='history_events_v2'"
+            ).fetchone():
+                event_ids.extend(
+                    str(row[0]).lower()
+                    for row in shard.execute("SELECT hex(event_id) FROM history_events_v2")
+                )
+    return event_ids
+
+
+@pytest.mark.parametrize("segment_max_bytes", [0, -1])
+def test_history_segment_size_configuration_rejects_non_positive_values(
+    tmp_path, segment_max_bytes
+):
+    with pytest.raises(ValueError, match="positive integer"):
+        HistoryStore(
+            tmp_path / "devices.db",
+            site_id="demo",
+            segment_max_bytes=segment_max_bytes,
+        )
 
 
 def test_change_aware_history_records_one_initial_event_then_per_kind_heartbeat(tmp_path):
@@ -125,7 +180,7 @@ def test_history_store_rotates_month_shards_without_losing_or_duplicating_events
             ).fetchall()
         }
     assert catalog["2026-07"]["period_end"] == "2026-07-31"
-    assert catalog["2026-08"]["status"] == "ACTIVE"
+    assert catalog["2026-08"]["status"] == "OPEN"
 
 
 def test_storage_v2_is_versioned_and_round_trips_compact_payload(tmp_path):
@@ -650,6 +705,88 @@ def test_explicit_legacy_migration_copies_verifies_and_resumes_without_source_de
     assert complete.checkpoint.rows_copied == resumed.checkpoint.rows_copied
 
 
+def test_legacy_provenance_backfill_repairs_older_v2_shard_idempotently(tmp_path):
+    store = _store(tmp_path)
+    events = [
+        HistoryStore.legacy_migration_event(
+            "device_facts_history",
+            {
+                "id": source_id,
+                "device_uuid": f"device-{source_id}",
+                "model": "S6520",
+                "collected_at": collected_at,
+                "created_at": collected_at,
+            },
+        )
+        for source_id, collected_at in (
+            (41, "2026-08-01T10:00:00"),
+            (42, "2026-08-01T10:00:00"),
+            (43, "2026-08-01T10:01:00"),
+        )
+    ]
+    assert store.copy_legacy_migration_events(events) == (3, 3)
+    shard_path = store.history_root / "devices-2026-08.db"
+    with connect_sqlite(shard_path, foreign_keys=True) as shard:
+        shard.execute("DROP TABLE history_event_provenance_v2")
+        shard.executescript(
+            """
+            CREATE TABLE history_event_provenance_v2 (
+                event_id BLOB PRIMARY KEY,
+                source_table TEXT NOT NULL,
+                source_id INTEGER NOT NULL,
+                FOREIGN KEY(event_id) REFERENCES history_events_v2(event_id)
+                    ON DELETE CASCADE
+            );
+            CREATE INDEX idx_history_event_provenance_v2_source
+                ON history_event_provenance_v2(source_table, source_id);
+            CREATE UNIQUE INDEX ux_history_event_provenance_v2_source
+                ON history_event_provenance_v2(source_table, source_id);
+            """
+        )
+        shard.commit()
+
+    repaired = store.backfill_legacy_provenance(batch_size=1)
+
+    assert repaired["status"] == "PASS"
+    assert repaired["backfilled"] == 3
+    assert repaired["shards"][0]["provenance_storage_optimized"] is True
+    with connect_sqlite(shard_path, foreign_keys=True) as shard:
+        provenance = shard.execute(
+            "SELECT source_table, source_id FROM history_event_provenance_v2 "
+            "ORDER BY source_id"
+        ).fetchall()
+        assert [tuple(row) for row in provenance] == [
+            ("device_facts_history", 41),
+            ("device_facts_history", 42),
+            ("device_facts_history", 43),
+        ]
+        table_sql = str(
+            shard.execute(
+                "SELECT sql FROM sqlite_master "
+                "WHERE type='table' AND name='history_event_provenance_v2'"
+            ).fetchone()[0]
+        )
+        assert "WITHOUT ROWID" in table_sql.upper()
+        index_names = {
+            str(row[1])
+            for row in shard.execute(
+                "PRAGMA index_list(history_event_provenance_v2)"
+            ).fetchall()
+        }
+        assert "ux_history_event_provenance_v2_source" in index_names
+        assert "idx_history_event_provenance_v2_source" not in index_names
+    repeated = store.backfill_legacy_provenance(batch_size=1)
+    assert repeated["backfilled"] == 0
+    assert repeated["shards"][0]["provenance_storage_optimized"] is False
+    with connect_sqlite(store.history_root / "catalog.db", foreign_keys=True) as catalog:
+        catalog_sha = str(
+            catalog.execute(
+                "SELECT sha256 FROM history_catalog WHERE shard_id='2026-08'"
+            ).fetchone()[0]
+        )
+    assert catalog_sha == store._shard_profile(shard_path)["sha256"]
+
+
 def test_legacy_migration_journals_unmigratable_rows_without_blocking_later_ids(tmp_path):
     database_path = tmp_path / "sites" / "demo" / "db" / "devices.db"
     database = Database(database_path)
@@ -857,3 +994,235 @@ def test_legacy_history_remains_queryable_alongside_new_outbox_history(tmp_path)
     with database.connect() as conn:
         assert conn.execute("SELECT COUNT(*) FROM device_facts_history").fetchone()[0] == 1
         assert conn.execute("SELECT COUNT(*) FROM history_outbox").fetchone()[0] == 1
+
+
+def test_history_shard_seal_is_windows_safe_and_restart_idempotent(tmp_path):
+    store = _store(tmp_path)
+    event = _archive_event(1)
+    assert store._write_shard_batch([event]) == 1
+
+    sealed = store.seal_shard("2026-08")
+    restarted = HistoryStore(
+        store.database_path,
+        site_id="demo",
+        history_root=store.history_root,
+    )
+    repeated = restarted.seal_shard("2026-08")
+
+    assert sealed["status"] == "VERIFIED"
+    assert repeated["status"] == "VERIFIED"
+    assert repeated["sha256"] == sealed["sha256"]
+    assert repeated["sealed_at"] == sealed["sealed_at"]
+
+
+def test_catalog_publish_failure_replay_repairs_profile_without_duplicate(
+    tmp_path, monkeypatch
+):
+    store = _store(tmp_path)
+    first = _archive_event(1)
+    second = _archive_event(2)
+    assert store._write_shard_batch([first]) == 1
+    original_publish = store._publish_shard
+    attempts = 0
+
+    def fail_once(**kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise sqlite3.OperationalError("catalog publish interrupted")
+        return original_publish(**kwargs)
+
+    monkeypatch.setattr(store, "_publish_shard", fail_once)
+    with pytest.raises(sqlite3.OperationalError, match="publish interrupted"):
+        store._write_shard_batch([second])
+
+    shard_path = store.history_root / "devices-2026-08.db"
+    with connect_sqlite(shard_path, foreign_keys=True) as shard:
+        assert _stored_event_count(shard) == 2
+    with connect_sqlite(store.history_root / "catalog.db", foreign_keys=True) as catalog:
+        assert catalog.execute(
+            "SELECT row_count FROM history_catalog WHERE shard_id='2026-08'"
+        ).fetchone()[0] == 1
+
+    assert store._write_shard_batch([second]) == 0
+    with connect_sqlite(store.history_root / "catalog.db", foreign_keys=True) as catalog:
+        row = catalog.execute(
+            "SELECT row_count, sha256 FROM history_catalog WHERE shard_id='2026-08'"
+        ).fetchone()
+    assert int(row["row_count"]) == 2
+    assert str(row["sha256"]) == store._shard_profile(shard_path)["sha256"]
+    assert _physical_event_ids(store.history_root).count(str(second["event_id"])) == 1
+
+
+def test_sealed_shard_replay_is_noop_and_new_event_uses_next_segment(tmp_path):
+    database_path = tmp_path / "sites" / "demo" / "db" / "devices.db"
+    store = HistoryStore(database_path, site_id="demo", segment_max_bytes=1)
+    first = _archive_event(1)
+    second = _archive_event(2)
+    assert store._write_shard_batch([first]) == 1
+    sealed = store.seal_shard("2026-08")
+    sealed_path = store.history_root / "devices-2026-08.db"
+    sealed_bytes = sealed_path.read_bytes()
+
+    assert store._write_shard_batch([first]) == 0
+    assert not (store.history_root / "devices-2026-08-0002.db").exists()
+    assert store._write_shard_batch([second]) == 1
+
+    assert sealed_path.read_bytes() == sealed_bytes
+    assert store._shard_profile(sealed_path)["sha256"] == sealed["sha256"]
+    assert (store.history_root / "devices-2026-08-0002.db").is_file()
+    assert set(_physical_event_ids(store.history_root)) == {
+        str(first["event_id"]),
+        str(second["event_id"]),
+    }
+
+
+def test_concurrent_rollover_keeps_event_identity_and_catalog_profiles_unique(
+    tmp_path,
+):
+    database_path = tmp_path / "sites" / "demo" / "db" / "devices.db"
+    seed_store = HistoryStore(database_path, site_id="demo", segment_max_bytes=1)
+    seed = _archive_event(1000)
+    assert seed_store._write_shard_batch([seed]) == 1
+    batches = [
+        [_archive_event(index) for index in range(worker * 4, worker * 4 + 8)]
+        for worker in range(6)
+    ]
+    barrier = Barrier(len(batches))
+
+    def write(batch):
+        store = HistoryStore(
+            database_path,
+            site_id="demo",
+            history_root=seed_store.history_root,
+            segment_max_bytes=1,
+        )
+        barrier.wait()
+        return store._write_shard_batch(batch)
+
+    with ThreadPoolExecutor(max_workers=len(batches)) as executor:
+        inserted = list(executor.map(write, batches))
+
+    expected_ids = {
+        str(event["event_id"])
+        for event in [seed, *(event for batch in batches for event in batch)]
+    }
+    physical_ids = _physical_event_ids(seed_store.history_root)
+    assert sum(inserted) == len(expected_ids) - 1
+    assert len(physical_ids) == len(set(physical_ids)) == len(expected_ids)
+    assert set(physical_ids) == expected_ids
+    assert seed_store.count_events(kind="device_interface") == len(expected_ids)
+    assert (seed_store.history_root / ".history-append.lock").is_file()
+
+    with connect_sqlite(
+        seed_store.history_root / "catalog.db", foreign_keys=True
+    ) as catalog:
+        catalog_rows = [
+            dict(row)
+            for row in catalog.execute(
+                "SELECT * FROM history_catalog ORDER BY segment"
+            ).fetchall()
+        ]
+    assert len(catalog_rows) == sum(value > 0 for value in inserted) + 1
+    assert [row["status"] for row in catalog_rows[:-1]] == [
+        "VERIFIED"
+    ] * (len(catalog_rows) - 1)
+    assert catalog_rows[-1]["status"] == "OPEN"
+    for row in catalog_rows:
+        path = seed_store.history_root / str(row["relative_path"])
+        profile = seed_store._shard_profile(path)
+        assert int(row["row_count"]) == profile["row_count"]
+        assert int(row["size_bytes"]) == profile["size_bytes"]
+        assert str(row["sha256"]) == profile["sha256"]
+
+
+def test_multiprocess_rollover_serializes_overlapping_event_ids(tmp_path):
+    database_path = tmp_path / "sites" / "demo" / "db" / "devices.db"
+    gate_path = tmp_path / "process-gate"
+    script = r"""
+import hashlib
+import json
+import sys
+import time
+from pathlib import Path
+
+from netconsole.services.history_store import HistoryStore
+
+database_path = Path(sys.argv[1])
+worker = int(sys.argv[2])
+ready_path = Path(sys.argv[3])
+gate_path = Path(sys.argv[4])
+events = []
+for index in range(worker * 4, worker * 4 + 8):
+    collected_at = f"2026-08-01T10:{index % 60:02d}:{index % 60:02d}"
+    events.append(
+        {
+            "event_id": hashlib.sha256(f"history-event-{index}".encode()).hexdigest(),
+            "kind": "device_interface",
+            "entity_key": f"device-{index}:GE1/0/1",
+            "event_type": "change",
+            "collected_at": collected_at,
+            "payload_json": json.dumps(
+                {"device_uuid": f"device-{index}", "sample": index},
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            "created_at": collected_at,
+        }
+    )
+ready_path.write_text("ready", encoding="utf-8")
+while not gate_path.exists():
+    time.sleep(0.01)
+store = HistoryStore(database_path, site_id="demo", segment_max_bytes=1)
+print(store._write_shard_batch(events), flush=True)
+"""
+    env = dict(os.environ)
+    source_root = str(Path(history_store_module.__file__).resolve().parents[2])
+    env["PYTHONPATH"] = (
+        source_root
+        if not env.get("PYTHONPATH")
+        else f"{source_root}{os.pathsep}{env['PYTHONPATH']}"
+    )
+    processes = []
+    ready_paths = []
+    try:
+        for worker in range(3):
+            ready_path = tmp_path / f"process-{worker}.ready"
+            ready_paths.append(ready_path)
+            processes.append(
+                subprocess.Popen(
+                    [
+                        sys.executable,
+                        "-c",
+                        script,
+                        str(database_path),
+                        str(worker),
+                        str(ready_path),
+                        str(gate_path),
+                    ],
+                    env=env,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    encoding="utf-8",
+                )
+            )
+        deadline = time.monotonic() + 10
+        while not all(path.is_file() for path in ready_paths):
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        gate_path.write_text("go", encoding="utf-8")
+        outputs = [process.communicate(timeout=20) for process in processes]
+    finally:
+        gate_path.write_text("go", encoding="utf-8")
+        for process in processes:
+            if process.poll() is None:
+                process.terminate()
+                process.wait(timeout=5)
+
+    assert [process.returncode for process in processes] == [0, 0, 0], outputs
+    assert sum(int(stdout.strip()) for stdout, _stderr in outputs) == 16
+    store = HistoryStore(database_path, site_id="demo", segment_max_bytes=1)
+    physical_ids = _physical_event_ids(store.history_root)
+    assert len(physical_ids) == len(set(physical_ids)) == 16
+    assert store.count_events(kind="device_interface") == 16

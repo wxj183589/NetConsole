@@ -14,6 +14,7 @@ from netconsole.services.job_center.job_events import log_event, progress_event
 from netconsole.services.job_center.job_runner import run_job as run_center_job
 from netconsole.services.job_center.worker_protocol import (
     WorkerProtocolFrameTooLarge,
+    bind_worker_protocol_stream,
     configure_standard_streams,
     write_event,
 )
@@ -42,7 +43,7 @@ def run_job(job: BackgroundJob, sensitive_bootstrap: SensitiveBootstrap | None =
         if bool(job.params.get("_emit_log_events")) and message_text:
             _emit(log_event(job.job_id, message_text, stage=stage))
 
-    with redirect_stdout(diagnostics):
+    with bind_worker_protocol_stream(), redirect_stdout(diagnostics):
         result = run_center_job(
             job,
             progress_callback=emit_progress,

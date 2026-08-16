@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 from contextlib import ExitStack
 from dataclasses import dataclass
@@ -32,6 +33,8 @@ _ACTIVE_RUN_STATES = {
     "ERROR",
 }
 _REWRITABLE_FILE_STATES = {"CLOSED", "RECOVERED", "PENDING"}
+_OPERATION_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]{1,128}")
+_REWRITE_JOURNAL_VERSION = 1
 
 
 class GroundRawLifecycleError(RuntimeError):
@@ -149,6 +152,193 @@ class GroundRawDataLifecycleService:
     def __init__(self, repository: GroundUnattendedRepository) -> None:
         self.repository = repository
         self.adapter = GroundRawFileAdapter(repository)
+        self.journal_root = (
+            repository.db_path.parent / "raw_lifecycle_journal"
+        ).resolve()
+        self.recover_interrupted_operations()
+
+    def recover_interrupted_operations(self) -> list[str]:
+        if not self.journal_root.is_dir():
+            return []
+        if self.journal_root.is_symlink() or _is_junction(self.journal_root):
+            raise GroundRawLifecycleError(
+                "RAW_FILE_RECOVERY_INVALID",
+                "Syslog 生命周期恢复目录不是受管普通目录",
+            )
+        recovered: list[str] = []
+        for journal_path in sorted(self.journal_root.glob("*.json")):
+            if journal_path.is_symlink() or not journal_path.is_file():
+                raise GroundRawLifecycleError(
+                    "RAW_FILE_RECOVERY_INVALID",
+                    "Syslog 生命周期恢复日志包含非普通文件",
+                )
+            self._recover_rewrite_journal(journal_path)
+            recovered.append(journal_path.stem)
+        return recovered
+
+    def _recover_rewrite_journal(self, journal_path: Path) -> None:
+        try:
+            journal = json.loads(journal_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise GroundRawLifecycleError(
+                "RAW_FILE_RECOVERY_INVALID",
+                "Syslog 生命周期恢复日志无法读取，已停止自动处理",
+            ) from exc
+        operation_id = str(journal.get("operation_id") or "")
+        entries = journal.get("files")
+        if (
+            int(journal.get("version") or 0) != _REWRITE_JOURNAL_VERSION
+            or str(journal.get("site_id") or "") != self.repository.site_id
+            or not _OPERATION_ID_PATTERN.fullmatch(operation_id)
+            or not isinstance(entries, list)
+            or not entries
+        ):
+            raise GroundRawLifecycleError(
+                "RAW_FILE_RECOVERY_INVALID",
+                "Syslog 生命周期恢复日志字段无效，已停止自动处理",
+            )
+        with ExitStack() as stack:
+            resolved: list[tuple[dict[str, Any], dict[str, Any], Path, Path, Path]] = []
+            for raw_entry in entries:
+                if not isinstance(raw_entry, dict):
+                    raise GroundRawLifecycleError(
+                        "RAW_FILE_RECOVERY_INVALID",
+                        "Syslog 生命周期恢复日志文件项无效",
+                    )
+                entry = dict(raw_entry)
+                file_id = str(entry.get("file_id") or "")
+                registered = self.repository.get_raw_file(file_id)
+                if registered is None:
+                    raise GroundRawLifecycleError(
+                        "RAW_FILE_RECOVERY_UNCERTAIN",
+                        "Syslog 生命周期恢复时找不到原始文件登记，已保留恢复证据",
+                    )
+                if str(registered.get("relative_path") or "") != str(
+                    entry.get("relative_path") or ""
+                ):
+                    raise GroundRawLifecycleError(
+                        "RAW_FILE_RECOVERY_UNCERTAIN",
+                        "Syslog 生命周期恢复路径与 Registry 不一致",
+                    )
+                target = self.adapter.registered_path(
+                    str(entry.get("relative_path") or "")
+                )
+                stack.enter_context(
+                    interprocess_file_lock(
+                        self.adapter.lock_path(target), timeout_seconds=5.0
+                    )
+                )
+                backup = target.with_name(f".{target.name}.{operation_id}.bak")
+                part = target.with_name(f".{target.name}.{operation_id}.part")
+                resolved.append((entry, registered, target, backup, part))
+
+            committed = all(
+                int(registered.get("revision") or 0)
+                == int(entry.get("base_revision") or 0) + 1
+                and str(registered.get("sha256") or "")
+                == str(entry.get("new_sha256") or "")
+                for entry, registered, _target, _backup, _part in resolved
+            )
+            pending = all(
+                int(registered.get("revision") or 0)
+                == int(entry.get("base_revision") or 0)
+                for entry, registered, _target, _backup, _part in resolved
+            )
+            if not committed and not pending:
+                raise GroundRawLifecycleError(
+                    "RAW_FILE_RECOVERY_UNCERTAIN",
+                    "Syslog 生命周期恢复检测到混合 revision，已保留恢复证据",
+                )
+
+            for entry, _registered, target, backup, part in resolved:
+                if committed:
+                    _verify_file_identity(
+                        target,
+                        size_bytes=int(entry.get("new_size_bytes") or 0),
+                        sha256=str(entry.get("new_sha256") or ""),
+                        code="RAW_FILE_RECOVERY_UNCERTAIN",
+                    )
+                else:
+                    old_size = int(entry.get("old_size_bytes") or 0)
+                    old_sha = str(entry.get("old_sha256") or "")
+                    target_is_old = _file_has_identity(
+                        target, size_bytes=old_size, sha256=old_sha
+                    )
+                    if not target_is_old:
+                        _verify_file_identity(
+                            backup,
+                            size_bytes=old_size,
+                            sha256=old_sha,
+                            code="RAW_FILE_RECOVERY_UNCERTAIN",
+                        )
+                        os.replace(backup, target)
+                        _verify_file_identity(
+                            target,
+                            size_bytes=old_size,
+                            sha256=old_sha,
+                            code="RAW_FILE_RECOVERY_UNCERTAIN",
+                        )
+                backup.unlink(missing_ok=True)
+                part.unlink(missing_ok=True)
+            journal_path.unlink()
+
+    def _write_rewrite_journal(
+        self,
+        *,
+        operation_id: str,
+        run_id: str,
+        staged: list[dict[str, Any]],
+    ) -> Path:
+        if not _OPERATION_ID_PATTERN.fullmatch(operation_id):
+            raise GroundRawLifecycleError(
+                "RAW_FILE_OPERATION_ID_INVALID",
+                "Syslog 生命周期操作标识无效",
+            )
+        self.journal_root.mkdir(parents=True, exist_ok=True)
+        if self.journal_root.is_symlink() or _is_junction(self.journal_root):
+            raise GroundRawLifecycleError(
+                "RAW_FILE_RECOVERY_INVALID",
+                "Syslog 生命周期恢复目录不是受管普通目录",
+            )
+        path = self.journal_root / f"{operation_id}.json"
+        if path.exists():
+            raise GroundRawLifecycleError(
+                "RAW_FILE_OPERATION_EXISTS",
+                "Syslog 生命周期操作已有未完成恢复日志",
+            )
+        payload = {
+            "version": _REWRITE_JOURNAL_VERSION,
+            "operation_id": operation_id,
+            "site_id": self.repository.site_id,
+            "run_id": run_id,
+            "created_at": datetime.now().astimezone().isoformat(
+                timespec="milliseconds"
+            ),
+            "files": [
+                {
+                    "file_id": str(item["registered"].get("file_id") or ""),
+                    "relative_path": str(
+                        item["registered"].get("relative_path") or ""
+                    ),
+                    "base_revision": int(
+                        item["registered"].get("revision") or 0
+                    ),
+                    "old_size_bytes": int(item["old_size_bytes"]),
+                    "old_sha256": str(item["old_sha256"]),
+                    "new_size_bytes": int(item["size_bytes"]),
+                    "new_sha256": str(item["sha256"]),
+                }
+                for item in staged
+            ],
+        }
+        temp = path.with_suffix(".json.tmp")
+        with temp.open("x", encoding="utf-8", newline="\n") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp, path)
+        return path
 
     def preview_syslog_deletion(
         self,
@@ -332,6 +522,7 @@ class GroundRawDataLifecycleService:
         progress: Callable[[str, int, int, str], None] | None = None,
         check_cancelled: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
+        self.recover_interrupted_operations()
         if plan.site_id != self.repository.site_id:
             raise GroundRawLifecycleError(
                 "SITE_MISMATCH",
@@ -437,6 +628,11 @@ class GroundRawDataLifecycleService:
                         "RAW_FILE_REVISION_CONFLICT",
                         "删除预览后匹配记录数量已变化，请重新预览",
                     )
+                journal_path = self._write_rewrite_journal(
+                    operation_id=operation_id,
+                    run_id=plan.run_id,
+                    staged=staged,
+                )
                 backups: list[tuple[Path, Path]] = []
                 replaced: list[tuple[Path, Path]] = []
                 try:
@@ -503,10 +699,13 @@ class GroundRawDataLifecycleService:
                             "RAW_FILE_ROLLBACK_FAILED",
                             "原始文件回滚失败：" + "；".join(rollback_errors),
                         )
-                    raise
-                finally:
                     for _target, backup in backups:
                         backup.unlink(missing_ok=True)
+                    journal_path.unlink(missing_ok=True)
+                    raise
+                for _target, backup in backups:
+                    backup.unlink(missing_ok=True)
+                journal_path.unlink(missing_ok=True)
                 if progress:
                     progress(
                         "VERIFYING",
@@ -641,9 +840,11 @@ def _stage_rewrite(
     record_count = 0
     timestamps: list[str] = []
     digest = hashlib.sha256()
+    original_digest = hashlib.sha256()
     parser = WmeshRealtimeParser()
     with path.open("rb") as source, part_path.open("xb") as target:
         for line_number, raw_line in enumerate(source, start=1):
+            original_digest.update(raw_line)
             record = _decode_record(raw_line)
             delete = record is not None and _matches_delete_scope(
                 record,
@@ -672,6 +873,8 @@ def _stage_rewrite(
         "path": path,
         "part_path": part_path,
         "matched_refs": matched_refs,
+        "old_size_bytes": path.stat().st_size,
+        "old_sha256": original_digest.hexdigest(),
         "record_count": record_count,
         "size_bytes": part_path.stat().st_size,
         "sha256": digest.hexdigest(),
@@ -865,6 +1068,29 @@ def _verify_replacement(rewrite: Mapping[str, Any]) -> None:
         raise GroundRawLifecycleError(
             "RAW_FILE_REWRITE_VERIFY_FAILED",
             "Syslog 原始文件原子替换后的大小或 SHA-256 校验失败",
+        )
+
+
+def _file_has_identity(path: Path, *, size_bytes: int, sha256: str) -> bool:
+    return (
+        path.is_file()
+        and not path.is_symlink()
+        and path.stat().st_size == size_bytes
+        and _sha256_file(path) == sha256
+    )
+
+
+def _verify_file_identity(
+    path: Path,
+    *,
+    size_bytes: int,
+    sha256: str,
+    code: str,
+) -> None:
+    if not _file_has_identity(path, size_bytes=size_bytes, sha256=sha256):
+        raise GroundRawLifecycleError(
+            code,
+            "Syslog 生命周期恢复文件的大小或 SHA-256 不匹配，已保留恢复证据",
         )
 
 

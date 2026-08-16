@@ -13,6 +13,7 @@
 - [Architecture Compliance](./COMPLIANCE.md)：分层、Guard、迁移分类和发布阻塞规则。
 - [Refactor Map](./REFACTOR_MAP.md)：当前技术债务、永久入口与集成门。
 - [External Tools](./EXTERNAL_TOOL_COLLECTION.md)：第三方工具注册与受控启动。
+- [Storage Authority And Lifecycle ADR](./ADR-storage-authority-and-lifecycle.md)：全局存储分类、authority、owner、No-Reinflation 与生产边界。
 
 ## 依赖关系
 

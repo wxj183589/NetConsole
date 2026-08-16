@@ -133,6 +133,8 @@ class NetmikoShellConnection(OnlineMrConnection):
         stop_event: Event,
         timeout: int,
         line_callback: Callable[[datetime, str], None] | None = None,
+        persisted_line_callback: Callable[[datetime, str, int, int], None]
+        | None = None,
     ) -> None:
         if self.connection is None:
             raise OnlineMrConnectionError("connection is closed")
@@ -141,19 +143,27 @@ class NetmikoShellConnection(OnlineMrConnection):
         if not callable(writer) or not callable(reader):
             raise OnlineMrConnectionError("interactive shell is unavailable")
         raw_path.parent.mkdir(parents=True, exist_ok=True)
-        write_queue: Queue[str | None] = Queue(maxsize=20000)
+        write_queue: Queue[
+            tuple[str, Callable[[int, int], None] | None] | None
+        ] = Queue(maxsize=20000)
         writer_error: list[Exception] = []
 
         def write_loop() -> None:
             try:
                 with raw_path.open("a", encoding="utf-8") as file:
                     while True:
-                        line = write_queue.get()
-                        if line is None:
+                        item = write_queue.get()
+                        if item is None:
                             break
-                        file.write(line)
-                        if write_queue.empty():
+                        text, on_persisted = item
+                        if on_persisted is not None:
                             file.flush()
+                        offset_start = raw_path.stat().st_size
+                        file.write(text)
+                        if on_persisted is not None or write_queue.empty():
+                            file.flush()
+                        if on_persisted is not None:
+                            on_persisted(offset_start, raw_path.stat().st_size)
                     file.flush()
             except Exception as exc:
                 writer_error.append(exc)
@@ -161,9 +171,12 @@ class NetmikoShellConnection(OnlineMrConnection):
         writer_thread = Thread(target=write_loop, name="online-mr-raw-writer", daemon=True)
         writer_thread.start()
 
-        def enqueue(text: str) -> None:
+        def enqueue(
+            text: str,
+            on_persisted: Callable[[int, int], None] | None = None,
+        ) -> None:
             try:
-                write_queue.put_nowait(text)
+                write_queue.put_nowait((text, on_persisted))
             except Exception:
                 # File archival must not block or terminate the SSH read path.
                 pass
@@ -184,7 +197,22 @@ class NetmikoShellConnection(OnlineMrConnection):
                     for line in normalize_command_output(chunk).splitlines():
                         if line_callback is not None:
                             line_callback(stamp_dt, line)
-                        enqueue(f"{stamp} [collector=repeat] RX {line}\n")
+                        on_persisted = (
+                            (
+                                lambda start, end, *, value=line, observed_at=stamp_dt: persisted_line_callback(
+                                    observed_at,
+                                    value,
+                                    start,
+                                    end,
+                                )
+                            )
+                            if persisted_line_callback is not None
+                            else None
+                        )
+                        enqueue(
+                            f"{stamp} [collector=repeat] RX {line}\n",
+                            on_persisted,
+                        )
                     continue
                 if time.monotonic() - idle_started > max(3, timeout):
                     enqueue(f"{datetime.now():%Y-%m-%d %H:%M:%S} [collector=repeat] WARNING no output for {timeout}s\n")
@@ -341,7 +369,7 @@ class OnlineMrCollector:
         self._device_terminal_queue: Queue[str | None] = Queue(maxsize=20000)
         self._device_terminal_writer_thread: Thread | None = None
         self._streaming_mode = False
-        self._mesh_stream_buffers: dict[str, list[str]] = {}
+        self._mesh_stream_buffers: dict[str, list[tuple[str, int, int]]] = {}
         self._mesh_stream_buffer_bytes: dict[str, int] = {}
 
     def start(self) -> OnlineMrSessionMeta:
@@ -485,7 +513,18 @@ class OnlineMrCollector:
             for command in commands:
                 raw_parts.append(self._send(command))
             raw_text = "\n".join(raw_parts)
-            raw_file, start, end = session.append_raw(task_type, command_text, raw_text, collected_at)
+            if task_type == TASK_SWITCH_HISTORY:
+                raw_file, start, end = session.replace_switch_history_latest(
+                    collected_at,
+                    raw_text,
+                )
+            else:
+                raw_file, start, end = session.append_raw(
+                    task_type,
+                    command_text,
+                    raw_text,
+                    collected_at,
+                )
             sample_id = self._persist_task_result(task_type, collected_at, command_text, raw_file, start, end, raw_text)
             self._inc(task_type, True)
             self._update_meta()
@@ -701,13 +740,19 @@ class OnlineMrCollector:
             if parse_status == "FAILED":
                 self.stats.parse_failed += 1
             return sample_id
+        if task_type == TASK_SWITCH_HISTORY:
+            return session.replace_current_sample(
+                task_type,
+                collected_at,
+                command_text,
+                raw_file,
+                start,
+                end,
+                "OK",
+            )
         sample_id = session.append_sample(task_type, collected_at, command_text, raw_file, start, end, "OK")
         if task_type == TASK_CHANNEL_BUSY:
             session.append_channel_busy(sample_id, parse_channel_busy_text(raw_text))
-        elif task_type == TASK_AP_RADIO_STATISTICS:
-            session.append_raw_index("live_radio_statistics_raw_index", sample_id, raw_text)
-        elif task_type == TASK_SWITCH_HISTORY:
-            session.replace_switch_history_latest(collected_at, raw_text, raw_file, start, end)
         elif task_type == TASK_INTERFACE_RATE:
             session.append_interface_rates(sample_id, collected_at, raw_text)
         return sample_id
@@ -837,10 +882,42 @@ class OnlineMrCollector:
                         raw_path,
                         self._stream_stop,
                         self.config.command_timeout,
-                        line_callback=lambda stamp, line: self._publish_stream_line(task_type, stamp, line),
+                        line_callback=lambda stamp, line: self._publish_stream_line(
+                            task_type,
+                            stamp,
+                            line,
+                            persist=False,
+                        ),
+                        persisted_line_callback=lambda stamp, line, start, end: self._persist_stream_line(
+                            task_type,
+                            stamp,
+                            line,
+                            f"raw/{raw_path.name}",
+                            start,
+                            end,
+                        ),
                     )
                 except TypeError:
-                    runner(commands, raw_path, self._stream_stop, self.config.command_timeout)
+                    try:
+                        runner(
+                            commands,
+                            raw_path,
+                            self._stream_stop,
+                            self.config.command_timeout,
+                            line_callback=lambda stamp, line: self._publish_stream_line(
+                                task_type,
+                                stamp,
+                                line,
+                                persist=False,
+                            ),
+                        )
+                    except TypeError:
+                        runner(
+                            commands,
+                            raw_path,
+                            self._stream_stop,
+                            self.config.command_timeout,
+                        )
             except Exception as exc:
                 if not self.cancelled and not self._stream_stop.is_set():
                     self._record_command_failure(task_type, "\n".join(commands), exc)
@@ -913,7 +990,14 @@ class OnlineMrCollector:
     def _compact_prepare_output(self, output: str) -> str:
         return " ".join(output.split())[:300]
 
-    def _publish_stream_line(self, task_type: str, timestamp: datetime, line: str) -> None:
+    def _publish_stream_line(
+        self,
+        task_type: str,
+        timestamp: datetime,
+        line: str,
+        *,
+        persist: bool = True,
+    ) -> None:
         if self.session is None:
             return
         module_event = {
@@ -936,38 +1020,21 @@ class OnlineMrCollector:
             payload={"task_type": task_type, "line": line},
             raw=line,
         )
-        # Streaming collectors do not have command-level sample boundaries. A
-        # parsed mesh row is still a durable fact, so persist it immediately;
-        # the raw log remains the authoritative byte-level source.
-        if task_type == TASK_MESH_LINK:
-            try:
-                buffer = self._mesh_stream_buffers.setdefault(task_type, [])
-                buffer_bytes = self._mesh_stream_buffer_bytes.get(task_type, 0)
-                buffer.append(line)
-                buffer_bytes += len(line.encode("utf-8", errors="replace"))
-                while len(buffer) > MAX_MESH_STREAM_BUFFER_LINES or buffer_bytes > MAX_MESH_STREAM_BUFFER_BYTES:
-                    removed = buffer.pop(0)
-                    buffer_bytes -= len(removed.encode("utf-8", errors="replace"))
-                self._mesh_stream_buffer_bytes[task_type] = max(0, buffer_bytes)
-                records, parse_status, error = parse_mesh_link_text("\n".join(buffer), timestamp)
-                if records:
-                    raw_path = self.session.session_dir / "raw" / "mesh_link_raw.log"
-                    raw_size = raw_path.stat().st_size if raw_path.exists() else 0
-                    sample_id = self.session.append_sample(
-                        task_type,
-                        timestamp,
-                        "stream",
-                        "raw/mesh_link_raw.log",
-                        raw_size,
-                        raw_size + len(line.encode("utf-8")),
-                        parse_status,
-                        error,
-                    )
-                    self.session.append_mesh_links(sample_id, records)
-                    buffer.clear()
-                    self._mesh_stream_buffer_bytes[task_type] = 0
-            except Exception as exc:
-                self.session.log("WARNING", f"stream mesh persistence failed: {exc}")
+        if persist and task_type == TASK_MESH_LINK:
+            raw_file, start, end = self.session.append_raw(
+                task_type,
+                "stream",
+                line,
+                timestamp,
+            )
+            self._persist_stream_line(
+                task_type,
+                timestamp,
+                line,
+                raw_file,
+                start,
+                end,
+            )
         self._enqueue_collector_output_raw(f"[collector=repeat] {task_type} {line}", timestamp)
         if self.realtime_cache:
             self.realtime_cache.append_raw_event(
@@ -983,6 +1050,51 @@ class OnlineMrCollector:
             )
         if self._stream_event_callback is not None:
             self._stream_event_callback(event)
+
+    def _persist_stream_line(
+        self,
+        task_type: str,
+        timestamp: datetime,
+        line: str,
+        raw_file: str,
+        raw_offset_start: int,
+        raw_offset_end: int,
+    ) -> None:
+        if self.session is None or task_type != TASK_MESH_LINK:
+            return
+        try:
+            buffer = self._mesh_stream_buffers.setdefault(task_type, [])
+            buffer_bytes = self._mesh_stream_buffer_bytes.get(task_type, 0)
+            buffer.append((line, raw_offset_start, raw_offset_end))
+            buffer_bytes += len(line.encode("utf-8", errors="replace"))
+            while (
+                len(buffer) > MAX_MESH_STREAM_BUFFER_LINES
+                or buffer_bytes > MAX_MESH_STREAM_BUFFER_BYTES
+            ):
+                removed, _start, _end = buffer.pop(0)
+                buffer_bytes -= len(removed.encode("utf-8", errors="replace"))
+            self._mesh_stream_buffer_bytes[task_type] = max(0, buffer_bytes)
+            records, parse_status, error = parse_mesh_link_text(
+                "\n".join(item[0] for item in buffer),
+                timestamp,
+            )
+            if not records:
+                return
+            sample_id = self.session.append_sample(
+                task_type,
+                timestamp,
+                "stream",
+                raw_file,
+                buffer[0][1],
+                buffer[-1][2],
+                parse_status,
+                error,
+            )
+            self.session.append_mesh_links(sample_id, records)
+            buffer.clear()
+            self._mesh_stream_buffer_bytes[task_type] = 0
+        except Exception as exc:
+            self.session.log("WARNING", f"stream mesh persistence failed: {exc}")
 
     def _start_terminal_monitor_thread(self) -> None:
         session = self._session()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import hashlib
 import json
 import os
@@ -13,6 +14,7 @@ import zipfile
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import wraps
 from pathlib import Path
 from threading import RLock
 from typing import Callable, Iterator
@@ -43,6 +45,11 @@ from netconsole.services.site_sync import (
     PACKAGE_TYPES,
     SANITIZED_SHARE,
     SiteSyncService,
+    is_sqlite_database_path,
+)
+from netconsole.services.site_package_staging import (
+    SitePackageStagingLifecycle,
+    SitePackageStagingRecovery,
 )
 
 
@@ -250,6 +257,17 @@ def storage_lock(paths: PathResolver, name: str) -> Iterator[None]:
         lock_dir = paths.runtime_dir / "locks"
         with interprocess_file_lock(lock_dir / f"{name}.lock"):
             yield
+
+
+def _with_site_package_operation_lease(
+    method: Callable[..., dict[str, object]],
+) -> Callable[..., dict[str, object]]:
+    @wraps(method)
+    def wrapped(self, *args: object, **kwargs: object) -> dict[str, object]:
+        with self.staging_lifecycle.operation_lease():
+            return method(self, *args, **kwargs)
+
+    return wrapped
 
 
 class SiteRegistryRepository:
@@ -493,6 +511,21 @@ class SiteRegistryRepository:
                 )
             return self.paths.data_root / relative_path
         raise SiteStorageError("SITE_NOT_FOUND", "局点不存在")
+
+    def raw_record(self, site_id: str) -> dict[str, object] | None:
+        """Return one exact persisted record without lazy site discovery."""
+        wanted = validate_site_id(site_id)
+        matches = [
+            dict(item)
+            for item in self._load().get("sites", [])
+            if isinstance(item, dict)
+            and str(item.get("site_id") or "").casefold() == wanted
+        ]
+        if len(matches) > 1:
+            raise SiteStorageError(
+                "SITE_REGISTRY_CONFLICT", "Registry 存在重复局点记录"
+            )
+        return matches[0] if matches else None
 
     def _load(self) -> dict[str, object]:
         if not self.path.exists():
@@ -1150,7 +1183,12 @@ class SitePackageService:
     ) -> None:
         self.paths = paths
         self.sites = sites or SiteApplicationService(paths)
+        self.staging_lifecycle = SitePackageStagingLifecycle(paths)
 
+    def recover_orphaned_staging(self) -> SitePackageStagingRecovery:
+        return self.staging_lifecycle.recover_orphans()
+
+    @_with_site_package_operation_lease
     def export_site(
         self,
         site_id: str,
@@ -1185,7 +1223,9 @@ class SitePackageService:
         if destination.suffix.casefold() != ".ncsite":
             destination = destination.with_suffix(".ncsite")
         destination.parent.mkdir(parents=True, exist_ok=True)
-        staging = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
+        staging, staging_journal = self.staging_lifecycle.begin_publish_path(
+            destination
+        )
         try:
             manifest_files: dict[str, str] = {}
             reentry_count = 0
@@ -1200,7 +1240,7 @@ class SitePackageService:
                     relative = source.relative_to(site.root_path).as_posix()
                     target = root / relative
                     target.parent.mkdir(parents=True, exist_ok=True)
-                    if source.name.endswith(".db"):
+                    if is_sqlite_database_path(source):
                         reentry_count = max(
                             reentry_count,
                             _copy_sanitized_database(source, target),
@@ -1224,7 +1264,7 @@ class SitePackageService:
                     "created_at": _now(),
                     "source_platform": "windows" if os.name == "nt" else os.name,
                     "databases": [
-                        name for name in manifest_files if name.endswith(".db")
+                        name for name in manifest_files if is_sqlite_database_path(name)
                     ],
                     "artifacts": [],
                     "checksums": manifest_files,
@@ -1269,7 +1309,7 @@ class SitePackageService:
                 "credential_reentry_count": reentry_count,
             }
         finally:
-            staging.unlink(missing_ok=True)
+            self.staging_lifecycle.finish_publish_path(staging, staging_journal)
 
     def _export_full_site(
         self,
@@ -1286,7 +1326,9 @@ class SitePackageService:
         if destination.suffix.casefold() != ".ncsite":
             destination = destination.with_suffix(".ncsite")
         destination.parent.mkdir(parents=True, exist_ok=True)
-        staging = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
+        staging, staging_journal = self.staging_lifecycle.begin_publish_path(
+            destination
+        )
         try:
             self.paths.temp_dir.mkdir(parents=True, exist_ok=True)
             with tempfile.TemporaryDirectory(
@@ -1295,12 +1337,15 @@ class SitePackageService:
                 temp_root = Path(temp)
                 site_root = temp_root / "site"
                 manifest_files: dict[str, str] = {}
-                for source in _safe_site_files(site.root_path):
+                for source in _safe_site_files(
+                    site.root_path,
+                    include_full_sync_authority=True,
+                ):
                     if check_cancel:
                         check_cancel()
                     relative = source.relative_to(site.root_path).as_posix()
                     target = site_root / relative
-                    if source.suffix.casefold() in {".db", ".sqlite", ".sqlite3"}:
+                    if is_sqlite_database_path(source):
                         _copy_database_snapshot(source, target)
                     else:
                         target.parent.mkdir(parents=True, exist_ok=True)
@@ -1322,7 +1367,7 @@ class SitePackageService:
                     "created_at": _now(),
                     "source_platform": "windows" if os.name == "nt" else os.name,
                     "databases": [
-                        name for name in manifest_files if name.endswith(".db")
+                        name for name in manifest_files if is_sqlite_database_path(name)
                     ],
                     "artifacts": [],
                     "checksums": manifest_files,
@@ -1364,7 +1409,7 @@ class SitePackageService:
                 "encrypted": False,
             }
         finally:
-            staging.unlink(missing_ok=True)
+            self.staging_lifecycle.finish_publish_path(staging, staging_journal)
 
     def inspect_package(
         self,
@@ -1528,6 +1573,7 @@ class SitePackageService:
                 "SITE_IMPORT_INVALID_PACKAGE", "局点包不是有效 ZIP"
             ) from exc
 
+    @_with_site_package_operation_lease
     def import_site(
         self,
         package: Path,
@@ -1557,6 +1603,7 @@ class SitePackageService:
         name = validate_display_name(
             display_name or str(info["site_name"]) or wanted_id
         )
+        registry_preimage = self.sites.registry.raw_record(wanted_id)
         replacement = (
             self.sites.registry.get(replace_site_id) if replace_site_id else None
         )
@@ -1566,7 +1613,7 @@ class SitePackageService:
             else self.paths.sites_dir / wanted_id
         )
         backup: Path | None = None
-        published = False
+        replacement_journal: Path | None = None
         staging = self.paths.temp_dir / "site-import-staging" / uuid.uuid4().hex
         with storage_lock(self.paths, "site-import"):
             try:
@@ -1605,24 +1652,44 @@ class SitePackageService:
                         connection.commit()
                     finally:
                         connection.close()
-                    ApIdentityQueryService(
-                        Database(imported_database)
-                    ).rebuild_index("site_package_import_staging")
+                    ApIdentityQueryService(Database(imported_database)).rebuild_index(
+                        "site_package_import_staging"
+                    )
+                    # Legacy repository context managers finish transactions but
+                    # can leave unreachable SQLite handles in a reference cycle.
+                    # Release them before Windows atomically publishes staging.
+                    gc.collect()
                 _quick_check_site(imported_root)
+                _finalize_site_databases(imported_root)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 if target.exists():
                     if replace_site_id is None:
                         raise SiteStorageError("SITE_IMPORT_CONFLICT", "目标局点已存在")
                     backup = (
                         self.paths.archive_dir
-                        / f"site-import-{wanted_id}-{uuid.uuid4().hex}"
+                        / f"site-import-{target.name}-{uuid.uuid4().hex}"
                     )
                     backup.parent.mkdir(parents=True, exist_ok=True)
+                    replacement_journal = (
+                        self.staging_lifecycle.begin_site_replacement(
+                            target, backup
+                        )
+                    )
                     _finalize_site_databases(target)
                     _publish_directory(target, backup)
+                    self.staging_lifecycle.mark_site_replacement(
+                        replacement_journal, "BACKUP_PUBLISHED"
+                    )
                     _remove_directory_after_backup(target)
+                else:
+                    replacement_journal = (
+                        self.staging_lifecycle.begin_site_replacement(target, None)
+                    )
                 _publish_directory(imported_root, target)
-                published = True
+                if replacement_journal is not None:
+                    self.staging_lifecycle.mark_site_replacement(
+                        replacement_journal, "TARGET_PUBLISHED"
+                    )
                 imported_metadata = self.sites.manager.load_site_metadata(target.name)
                 line_name = normalize_optional_site_info(
                     manifest.get("line_name")
@@ -1644,6 +1711,29 @@ class SitePackageService:
                         "system_type": project_type or "",
                     },
                 )
+                if package_type == FIELD_COLLECTION:
+                    SiteSyncService(self.paths, self.sites).record_field_baseline(
+                        target, manifest
+                    )
+                registry_expected: dict[str, object] = {
+                    "site_id": wanted_id,
+                    "display_name": name,
+                    "relative_path": target.resolve()
+                    .relative_to(self.paths.data_root.resolve())
+                    .as_posix(),
+                    "remark": "imported",
+                }
+                if line_name is not None:
+                    registry_expected["line_name"] = line_name
+                if project_type is not None:
+                    registry_expected["project_type"] = project_type
+                if replacement_journal is not None:
+                    self.staging_lifecycle.bind_site_replacement_registry(
+                        replacement_journal,
+                        site_id=wanted_id,
+                        preimage=registry_preimage,
+                        expected=registry_expected,
+                    )
                 self.sites.registry.register(
                     SiteRecord(
                         wanted_id,
@@ -1654,10 +1744,13 @@ class SitePackageService:
                         project_type=project_type,
                     )
                 )
-                if package_type == FIELD_COLLECTION:
-                    SiteSyncService(self.paths, self.sites).record_field_baseline(
-                        target, manifest
+                if replacement_journal is not None:
+                    self.staging_lifecycle.mark_site_replacement(
+                        replacement_journal, "APPLICATION_COMMITTED"
                     )
+                self.staging_lifecycle.finish_site_replacement(
+                    replacement_journal
+                )
                 return {
                     "site_id": wanted_id,
                     "display_name": name,
@@ -1667,23 +1760,47 @@ class SitePackageService:
                     "credential_reentry_count": reentry_count,
                 }
             except SiteStorageError:
-                if published and backup and target.exists():
-                    shutil.rmtree(target, ignore_errors=True)
-                if backup and not target.exists():
-                    _publish_directory(backup, target)
-                shutil.rmtree(staging, ignore_errors=True)
+                if replacement_journal is not None and replacement_journal.exists():
+                    self.staging_lifecycle.promote_persisted_registry_commit(
+                        replacement_journal
+                    )
+                    outcome = self.staging_lifecycle.reconcile_site_replacement(
+                        replacement_journal
+                    )
+                    if outcome == "COMMITTED":
+                        return {
+                            "site_id": wanted_id,
+                            "display_name": name,
+                            "package_type": package_type,
+                            "backup_created": backup is not None,
+                            "requires_credentials": reentry_count > 0,
+                            "credential_reentry_count": reentry_count,
+                        }
+                _remove_temporary_directory(staging)
                 raise
             except Exception as exc:
-                shutil.rmtree(staging, ignore_errors=True)
-                if published and backup and target.exists():
-                    shutil.rmtree(target, ignore_errors=True)
-                if backup and not target.exists():
-                    _publish_directory(backup, target)
+                _remove_temporary_directory(staging)
+                if replacement_journal is not None and replacement_journal.exists():
+                    self.staging_lifecycle.promote_persisted_registry_commit(
+                        replacement_journal
+                    )
+                    outcome = self.staging_lifecycle.reconcile_site_replacement(
+                        replacement_journal
+                    )
+                    if outcome == "COMMITTED":
+                        return {
+                            "site_id": wanted_id,
+                            "display_name": name,
+                            "package_type": package_type,
+                            "backup_created": backup is not None,
+                            "requires_credentials": reentry_count > 0,
+                            "credential_reentry_count": reentry_count,
+                        }
                 raise SiteStorageError(
                     "SITE_IMPORT_FAILED", "局点导入失败，已保留原数据"
                 ) from exc
             finally:
-                shutil.rmtree(staging, ignore_errors=True)
+                _remove_temporary_directory(staging)
 
     @staticmethod
     def _read_manifest(package: Path) -> dict[str, object]:
@@ -1758,6 +1875,16 @@ def _remove_directory_after_backup(path: Path) -> None:
     )
 
 
+def _remove_temporary_directory(path: Path) -> None:
+    for _attempt in range(20):
+        if not path.exists():
+            return
+        shutil.rmtree(path, ignore_errors=True)
+        if not path.exists():
+            return
+        time.sleep(0.05)
+
+
 def _publish_data_root(source: Path, destination: Path) -> None:
     """Publish a complete data root by same-volume rename only.
 
@@ -1818,12 +1945,18 @@ def _directory_size(root: Path) -> int:
 
 
 def _quick_check_site(root: Path) -> None:
-    for db in root.rglob("*.db"):
-        connection = sqlite3.connect(db)
+    for database in _site_database_paths(root):
+        connection: sqlite3.Connection | None = None
         try:
+            connection = sqlite3.connect(database)
             result = connection.execute("PRAGMA quick_check").fetchone()
+        except sqlite3.DatabaseError as exc:
+            raise SiteStorageError(
+                "SITE_MIGRATION_FAILED", "SQLite 完整性检查失败"
+            ) from exc
         finally:
-            connection.close()
+            if connection is not None:
+                connection.close()
         if not result or str(result[0]).lower() != "ok":
             raise SiteStorageError("SITE_MIGRATION_FAILED", "SQLite 完整性检查失败")
 
@@ -1835,10 +1968,10 @@ def _quick_check_site_tree(root: Path) -> None:
 
 def _finalize_site_databases(root: Path) -> None:
     """Checkpoint WAL files before a Windows directory publish."""
-    for db in root.rglob("*.db"):
+    for database in _site_database_paths(root):
         connection: sqlite3.Connection | None = None
         try:
-            connection = sqlite3.connect(db, timeout=5)
+            connection = sqlite3.connect(database, timeout=5)
             connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             connection.execute("PRAGMA journal_mode=DELETE")
         except sqlite3.DatabaseError:
@@ -1848,24 +1981,70 @@ def _finalize_site_databases(root: Path) -> None:
                 connection.close()
         for suffix in ("-wal", "-shm"):
             try:
-                (db.parent / f"{db.name}{suffix}").unlink(missing_ok=True)
+                (database.parent / f"{database.name}{suffix}").unlink(missing_ok=True)
             except OSError:
                 pass
     time.sleep(0.02)
 
 
-def _safe_site_files(root: Path) -> Iterator[Path]:
+def _site_database_paths(root: Path) -> Iterator[Path]:
+    for item in root.rglob("*"):
+        if item.is_file() and is_sqlite_database_path(item):
+            yield item
+
+
+def _safe_site_files(
+    root: Path,
+    *,
+    include_full_sync_authority: bool = False,
+) -> Iterator[Path]:
     for item in root.rglob("*"):
         if not item.is_file():
             continue
-        relative_parts = {part.casefold() for part in item.relative_to(root).parts}
+        relative_path = item.relative_to(root)
+        relative_parts = {part.casefold() for part in relative_path.parts}
+        sensitive_parts = relative_parts & _SENSITIVE_PARTS
+        if include_full_sync_authority and _is_full_migration_sync_authority(
+            relative_path
+        ):
+            sensitive_parts.discard("sync")
         if (
-            relative_parts & _SENSITIVE_PARTS
+            sensitive_parts
             or item.name.endswith((".tmp", ".lock", ".part", "-wal", "-shm"))
             or ".db-" in item.name
+            or _is_excluded_online_mr_package_file(relative_path)
         ):
             continue
         yield item
+
+
+def _is_full_migration_sync_authority(relative_path: Path) -> bool:
+    parts = tuple(part.casefold() for part in relative_path.parts)
+    return parts == ("sync", "wps_sync.sqlite") or (
+        len(parts) >= 3
+        and parts[:2] in {
+            ("sync", "baselines"),
+            ("sync", "imports"),
+        }
+    )
+
+
+def _is_excluded_online_mr_package_file(relative_path: Path) -> bool:
+    parts = tuple(part.casefold() for part in relative_path.parts)
+    if (
+        len(parts) < 7
+        or parts[:3] != ("files", "rail_transit", "online_mr")
+        or parts[4] != "sessions"
+    ):
+        return False
+    session_relative = parts[6:]
+    return (
+        session_relative[:1] == ("view",)
+        or session_relative == ("parsed", "online_diagnosis.sqlite.upgrading")
+        or session_relative == ("parsed", "online_diagnosis.upgrade.json")
+        or session_relative
+        == ("parsed", "retired", "online_diagnosis.previous.sqlite")
+    )
 
 
 def _copy_sanitized_database(source: Path, target: Path) -> int:

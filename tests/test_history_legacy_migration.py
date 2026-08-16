@@ -740,6 +740,11 @@ def test_source_delete_applies_exact_plan_and_preserves_unsupported_rows(
 
     assert result["deleted_rows"] == 3
     assert result["tables"][0]["authority_state"] == "SOURCE_DELETED"
+    parity = service.validate_query_parity("delete-executor", "device_facts_history")
+    assert parity["result"] == "PASS"
+    assert parity["post_delete"] is True
+    assert parity["target_query"]["mapping_rows"] == 3
+    assert len(parity["target_query"]["mapping_hash"]) == 64
     with sqlite3.connect(source) as connection:
         assert connection.execute(
             "SELECT COUNT(*) FROM device_facts_history"
@@ -747,6 +752,213 @@ def test_source_delete_applies_exact_plan_and_preserves_unsupported_rows(
         assert connection.execute(
             "SELECT COUNT(*) FROM ac_fit_ap_unauthenticated_history"
         ).fetchone()[0] == 1
+
+
+def test_source_delete_revalidates_identity_inside_single_write_transaction(
+    tmp_path: Path,
+) -> None:
+    source = _source_database(
+        tmp_path,
+        rows=[
+            (source_id, f"device-{source_id}", "2026-08-01T00:00:00")
+            for source_id in range(1, 1001)
+        ],
+    )
+    service = _service(tmp_path, source, immutable_source=False)
+    service.start(migration_id="delete-toctou", max_elapsed_seconds=0)
+    service.cutover(
+        "delete-toctou",
+        "device_facts_history",
+        expected_revision=1,
+        reason="isolated verification passed",
+    )
+    service.evaluate_delete_eligibility(
+        "delete-toctou",
+        "device_facts_history",
+        expected_revision=2,
+        observation={
+            "query_validation": True,
+            "consumer_validation": True,
+            "integrity_mismatch": False,
+        },
+        reason="isolated observation passed",
+    )
+    plan = service.preview_delete_plan("delete-toctou")
+
+    original_assert_current_source = service._assert_current_source
+    assertions = 0
+    writer_errors: list[str] = []
+
+    def assert_current_source(migration_id: str):
+        nonlocal assertions
+        record = original_assert_current_source(migration_id)
+        assertions += 1
+        if assertions == 2:
+
+            def attempt_writer() -> None:
+                try:
+                    with sqlite3.connect(source, timeout=0.1) as connection:
+                        connection.execute("PRAGMA busy_timeout = 100")
+                        connection.execute(
+                            "INSERT INTO device_facts_history "
+                            "VALUES (2000, 'late-writer', 'S6520', ?, ?)",
+                            ("2026-08-01T00:00:00", "2026-08-01T00:00:00"),
+                        )
+                        connection.commit()
+                except sqlite3.OperationalError as exc:
+                    writer_errors.append(str(exc))
+
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                executor.submit(attempt_writer).result(timeout=2)
+        return record
+
+    service._assert_current_source = assert_current_source  # type: ignore[method-assign]
+    result = service.delete_source(
+        plan,
+        expected_plan_digest=str(plan["plan_digest"]),
+        expected_source_identity=str(plan["source_database_identity"]),
+        expected_revision=3,
+        batch_rows=250,
+        apply=True,
+        allow_development_root_only=True,
+        development_root=tmp_path,
+    )
+
+    assert result["deleted_rows"] == 1000
+    assert assertions == 2
+    assert writer_errors and "locked" in writer_errors[0].casefold()
+    with sqlite3.connect(source) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM device_facts_history"
+        ).fetchone()[0] == 0
+
+
+def test_post_delete_month_parity_aggregates_multiple_ranges(
+    tmp_path: Path,
+) -> None:
+    source = _source_database(
+        tmp_path,
+        rows=[
+            (source_id, f"device-{source_id}", "2026-08-01T00:00:00")
+            for source_id in range(1, 502)
+        ],
+    )
+    service = _service(tmp_path, source, immutable_source=False)
+    service.start(
+        migration_id="delete-multi-range-month",
+        chunk_rows=100,
+        max_elapsed_seconds=0,
+    )
+    service.cutover(
+        "delete-multi-range-month",
+        "device_facts_history",
+        expected_revision=1,
+        reason="isolated verification passed",
+    )
+    service.evaluate_delete_eligibility(
+        "delete-multi-range-month",
+        "device_facts_history",
+        expected_revision=2,
+        observation={
+            "query_validation": True,
+            "consumer_validation": True,
+            "integrity_mismatch": False,
+        },
+        reason="isolated observation passed",
+    )
+    plan = service.preview_delete_plan("delete-multi-range-month")
+    service.delete_source(
+        plan,
+        expected_plan_digest=str(plan["plan_digest"]),
+        expected_source_identity=str(plan["source_database_identity"]),
+        expected_revision=3,
+        batch_rows=250,
+        apply=True,
+        allow_development_root_only=True,
+        development_root=tmp_path,
+    )
+
+    parity = service.validate_query_parity(
+        "delete-multi-range-month", "device_facts_history"
+    )
+
+    assert parity["result"] == "PASS"
+    assert parity["post_delete"] is True
+    assert parity["target_query"]["mapping_rows"] == 501
+
+
+def test_source_delete_preserves_ap_identity_state_with_legacy_delete_trigger(
+    tmp_path: Path,
+) -> None:
+    source = _source_database(tmp_path)
+    with sqlite3.connect(source) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE ac_fit_ap_lldp_history (
+                id INTEGER PRIMARY KEY,
+                ac_device_uuid TEXT NOT NULL,
+                ap_uuid TEXT NOT NULL,
+                collected_at TEXT,
+                created_at TEXT
+            );
+            INSERT INTO ac_fit_ap_lldp_history VALUES
+                (1, 'ac-1', 'ap-1', '2026-08-01T00:00:00', ''),
+                (2, 'ac-1', 'ap-1', '2026-08-02T00:00:00', '');
+            CREATE TABLE ap_identity_source_state (
+                site_id TEXT PRIMARY KEY,
+                revision INTEGER NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            INSERT INTO ap_identity_source_state
+            VALUES ('current', 41, 'preserved');
+            CREATE TRIGGER trg_ap_identity_source_acfitaplldphistory_delete
+            AFTER DELETE ON ac_fit_ap_lldp_history
+            BEGIN
+                UPDATE ap_identity_source_state
+                SET revision = revision + 1, updated_at = 'triggered'
+                WHERE site_id = 'current';
+            END;
+            """
+        )
+        connection.commit()
+    service = _service(tmp_path, source, immutable_source=False)
+    service.start(migration_id="lldp-delete", max_elapsed_seconds=0)
+    service.cutover(
+        "lldp-delete",
+        "ac_fit_ap_lldp_history",
+        expected_revision=1,
+        reason="isolated verification passed",
+    )
+    service.evaluate_delete_eligibility(
+        "lldp-delete",
+        "ac_fit_ap_lldp_history",
+        expected_revision=2,
+        observation={
+            "query_validation": True,
+            "consumer_validation": True,
+            "integrity_mismatch": False,
+        },
+        reason="isolated observation passed",
+    )
+    plan = service.preview_delete_plan("lldp-delete")
+
+    result = service.delete_source(
+        plan,
+        expected_plan_digest=str(plan["plan_digest"]),
+        expected_source_identity=str(plan["source_database_identity"]),
+        expected_revision=3,
+        batch_rows=250,
+        apply=True,
+        allow_development_root_only=True,
+        development_root=tmp_path,
+    )
+
+    assert result["deleted_rows"] == 2
+    with sqlite3.connect(source) as connection:
+        assert connection.execute(
+            "SELECT revision, updated_at FROM ap_identity_source_state "
+            "WHERE site_id = 'current'"
+        ).fetchone() == (41, "preserved")
 
 
 def test_source_delete_requires_development_root_and_exact_expectations(

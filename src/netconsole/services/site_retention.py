@@ -25,6 +25,7 @@ from netconsole.services.database_footprint_maintenance import (
     DEVELOPMENT_ROOT,
     assert_development_path,
 )
+from netconsole.services.history_store import TaskHistoryStore, verify_task_result_row
 from netconsole.services.site_storage import (
     SiteRegistryRepository,
     SiteStorageError,
@@ -295,7 +296,7 @@ class SiteRetentionService:
         tasks_database: str | Path,
         development_root: str | Path = DEVELOPMENT_ROOT,
     ) -> dict[str, Any]:
-        """Build an exact rehearsal-only task retention plan without mutations."""
+        """Build an owner-based rehearsal plan: archive facts, delete only noise."""
 
         database = assert_development_path(
             tasks_database, development_root=development_root
@@ -311,8 +312,7 @@ class SiteRetentionService:
                     "SELECT name FROM sqlite_schema WHERE type='table'"
                 ).fetchall()
             }
-            required = {"task_snapshots", "task_events"}
-            if not required.issubset(tables):
+            if not {"task_snapshots", "task_events"}.issubset(tables):
                 raise ValueError("tasks retention database schema is incomplete")
             database_identity = self._task_retention_database_identity(
                 connection, tables
@@ -325,6 +325,26 @@ class SiteRetentionService:
                     "ORDER BY task_id"
                 ).fetchall()
             ]
+            result_authority: dict[str, dict[str, Any]] = {}
+            if "task_results" in tables:
+                for raw in connection.execute(
+                    "SELECT result_id, task_id, terminal_event_type, canonical_json, "
+                    "sha256, byte_size, schema_version, created_time FROM task_results"
+                ).fetchall():
+                    verified = verify_task_result_row(dict(raw))
+                    result_authority[str(verified["result_id"])] = verified
+            task_history = TaskHistoryStore(database, site_id=str(site_id))
+            for row in snapshots:
+                result_id = str(row.get("result_id") or "")
+                result_json = str(row.get("result_json") or "").strip()
+                if not result_id or result_json not in {"", "{}", "null"}:
+                    continue
+                authority = result_authority.get(result_id)
+                if authority is None:
+                    authority = task_history.get_result(result_id)
+                if authority is not None:
+                    row["result_json"] = str(authority["canonical_json"])
+            snapshot_by_id = {str(row["task_id"]): row for row in snapshots}
             online_mr_ids: set[str] = set()
             if "online_mr_task_sessions" in tables:
                 columns = {
@@ -334,11 +354,7 @@ class SiteRetentionService:
                     ).fetchall()
                 }
                 task_column = next(
-                    (
-                        name
-                        for name in ("controller_task_id", "task_id")
-                        if name in columns
-                    ),
+                    (name for name in ("controller_task_id", "task_id") if name in columns),
                     "",
                 )
                 if task_column:
@@ -352,160 +368,161 @@ class SiteRetentionService:
                     }
 
             protected: dict[str, str] = {}
-            snapshot_delete_ids: list[str] = []
-            snapshot_bytes = 0
-            snapshot_by_id = {str(row["task_id"]): row for row in snapshots}
             for row in snapshots:
-                task_id = str(row["task_id"])
                 reason = self._task_retention_protection(row, online_mr_ids)
                 if reason:
-                    protected[task_id] = reason
-                    continue
-                status = str(row.get("status") or "").upper()
-                timestamp = self._parse_datetime(
-                    row.get("finished_time") or row.get("updated_time")
-                )
-                if (
-                    status in {"COMPLETED", "FAILED", "CANCELLED"}
-                    and timestamp is not None
-                    and now - timestamp >= timedelta(days=90)
-                ):
-                    snapshot_delete_ids.append(task_id)
-                    snapshot_bytes += len(str(row.get("result_json") or "").encode("utf-8"))
+                    protected[str(row["task_id"])] = reason
 
-            event_rows = [
-                dict(row)
-                for row in connection.execute(
-                    "SELECT sequence, event_id, task_id, event_type, event_time, "
-                    "payload_json FROM task_events ORDER BY sequence"
-                ).fetchall()
-            ]
-            snapshot_delete_set = set(snapshot_delete_ids)
-            event_delete_sequences: list[int] = []
-            event_bytes = 0
-            event_breakdown: Counter[str] = Counter()
-            kept_result_ids: set[str] = {
-                str(row.get("result_id") or "")
-                for row in snapshots
-                if str(row["task_id"]) not in snapshot_delete_set
-                and str(row.get("result_id") or "")
-            }
-            for row in event_rows:
+            archive_events: list[dict[str, Any]] = []
+            disposable_events: list[dict[str, Any]] = []
+            archive_event_counts: Counter[str] = Counter()
+            disposable_event_counts: Counter[str] = Counter()
+            for raw in connection.execute(
+                "SELECT sequence, event_id, task_id, event_type, event_time, source, "
+                "payload_json FROM task_events ORDER BY sequence"
+            ).fetchall():
+                row = dict(raw)
                 task_id = str(row.get("task_id") or "")
                 event_type = str(row.get("event_type") or "")
-                delete = task_id in snapshot_delete_set
-                if not delete and task_id not in protected:
-                    timestamp = self._parse_datetime(row.get("event_time"))
-                    days = (
-                        14
-                        if event_type == "progress"
-                        else 90
-                        if event_type in {"finished", "error", "cancelled"}
-                        else 30
-                    )
-                    delete = bool(
-                        timestamp is not None
-                        and now - timestamp >= timedelta(days=days)
-                    )
-                payload = self._retention_json_object(row.get("payload_json"))
-                if delete:
-                    event_delete_sequences.append(int(row["sequence"]))
-                    event_bytes += len(str(row.get("payload_json") or "").encode("utf-8"))
-                    event_breakdown[event_type] += 1
-                else:
-                    result_id = str(payload.get("result_id") or "")
-                    if result_id:
-                        kept_result_ids.add(result_id)
+                if task_id not in snapshot_by_id:
+                    protected.setdefault(task_id or f"orphan:{row['sequence']}", "AMBIGUOUS")
+                    continue
+                if task_id in protected:
+                    continue
+                timestamp = self._parse_datetime(row.get("event_time"))
+                if timestamp is None:
+                    protected.setdefault(task_id, "AMBIGUOUS")
+                    continue
+                age = now - timestamp
+                if event_type == "progress" and age >= timedelta(days=14):
+                    archive_events.append(row)
+                    archive_event_counts[event_type] += 1
+                    continue
+                days = 90 if event_type in {"finished", "error", "cancelled"} else 30
+                if age >= timedelta(days=days):
+                    archive_events.append(row)
+                    archive_event_counts[event_type] += 1
 
-            result_delete_ids: list[str] = []
-            result_bytes = 0
+            archive_results: list[dict[str, Any]] = []
             if "task_results" in tables:
-                for row in connection.execute(
-                    "SELECT result_id, task_id, byte_size, created_time "
+                for raw in connection.execute(
+                    "SELECT result_id, task_id, terminal_event_type, canonical_json, "
+                    "sha256, byte_size, schema_version, created_time "
                     "FROM task_results ORDER BY result_id"
                 ).fetchall():
-                    result_id = str(row[0])
-                    task_id = str(row[1])
-                    created = self._parse_datetime(row[3])
+                    row = dict(raw)
+                    task_id = str(row.get("task_id") or "")
+                    created = self._parse_datetime(row.get("created_time"))
                     if (
-                        result_id not in kept_result_ids
+                        task_id in snapshot_by_id
                         and task_id not in protected
                         and created is not None
                         and now - created >= timedelta(days=90)
                     ):
-                        result_delete_ids.append(result_id)
-                        result_bytes += int(row[2] or 0)
+                        archive_results.append(row)
 
+        archive_event_keys = [int(row["sequence"]) for row in archive_events]
+        disposable_event_keys = [int(row["sequence"]) for row in disposable_events]
+        archive_result_ids = [str(row["result_id"]) for row in archive_results]
+        action_by_task: dict[str, Counter[str]] = defaultdict(Counter)
+        for row in archive_events:
+            action_by_task[str(row["task_id"])]["archive_events"] += 1
+        for row in disposable_events:
+            action_by_task[str(row["task_id"])]["delete_progress"] += 1
+        for row in archive_results:
+            action_by_task[str(row["task_id"])]["archive_results"] += 1
+        owner_decisions = [
+            {
+                "task_id": task_id,
+                "status": str(snapshot_by_id.get(task_id, {}).get("status") or ""),
+                "classification": (
+                    "OPERATIONAL_CURRENT"
+                    if task_id in protected
+                    else "HISTORICAL_RAW_FACT_AND_DISPOSABLE"
+                    if task_id in action_by_task
+                    else "OPERATIONAL_LIGHTWEIGHT_INDEX"
+                ),
+                "protection": protected.get(task_id, ""),
+                "archive_events": int(action_by_task[task_id]["archive_events"]),
+                "archive_results": int(action_by_task[task_id]["archive_results"]),
+                "delete_progress": int(action_by_task[task_id]["delete_progress"]),
+            }
+            for task_id in sorted(set(snapshot_by_id) | set(action_by_task) | set(protected))
+        ]
         semantic: dict[str, Any] = {
-            "format": "netconsole-typed-task-retention-plan",
-            "version": 1,
+            "format": "netconsole-owner-task-lifecycle-plan",
+            "version": 2,
             "site_id": str(site_id),
             "database": str(database),
             "database_sha256": sha256_file(database),
             "database_identity": database_identity,
             "policy": {
-                "status": "REHEARSAL_POLICY_ONLY",
+                "status": "REHEARSAL_OPERATIONAL_WINDOW_ONLY",
                 "production_approved": False,
-                "active": "NEVER_DELETE",
-                "terminal_snapshot_days": 90,
+                "active": "RETAIN_OPERATIONAL",
+                "lightweight_snapshot": "RETAIN_OPERATIONAL",
                 "progress_event_days": 14,
                 "ordinary_event_days": 30,
-                "log_event_days": 30,
                 "terminal_event_days": 90,
                 "task_result_days": 90,
+                "historical_fact": "ARCHIVE_VERIFY_THEN_RETIRE_OPERATIONAL_COPY",
+                "progress_history": "ARCHIVE_VERIFY_THEN_RETIRE_OPERATIONAL_COPY",
+                "progress_noise": "DELETE_ONLY_WHEN_DUPLICATE_IS_VERIFIED",
                 "online_mr_session": "PRESERVE",
+                "ground_reference": "PRESERVE",
                 "artifact_files": "PRESERVE",
+                "permanent_retention": "USER_POLICY_REQUIRED",
             },
-            "event_sequence_ranges": self._compress_integer_keys(
-                event_delete_sequences
-            ),
-            "event_sequence_digest": self._stable_json_digest(
-                event_delete_sequences
-            ),
-            "snapshot_task_ids": sorted(snapshot_delete_ids),
-            "snapshot_task_digest": self._stable_json_digest(
-                sorted(snapshot_delete_ids)
-            ),
-            "result_ids": sorted(result_delete_ids),
-            "result_digest": self._stable_json_digest(sorted(result_delete_ids)),
+            "archive_event_sequence_ranges": self._compress_integer_keys(archive_event_keys),
+            "archive_event_sequence_digest": self._stable_json_digest(archive_event_keys),
+            "archive_event_content_digest": TaskHistoryStore.source_row_digest(archive_events),
+            "disposable_event_sequence_ranges": self._compress_integer_keys(disposable_event_keys),
+            "disposable_event_sequence_digest": self._stable_json_digest(disposable_event_keys),
+            "disposable_event_content_digest": TaskHistoryStore.source_row_digest(disposable_events),
+            "archive_result_ids": archive_result_ids,
+            "archive_result_id_digest": self._stable_json_digest(archive_result_ids),
+            "archive_result_content_digest": TaskHistoryStore.source_row_digest(archive_results),
+            "owner_decisions": owner_decisions,
+            "owner_decision_digest": self._stable_json_digest(owner_decisions),
             "expected_counts": {
-                "events": len(event_delete_sequences),
-                "snapshots": len(snapshot_delete_ids),
-                "results": len(result_delete_ids),
+                "archive_events": len(archive_events),
+                "disposable_events": len(disposable_events),
+                "archive_results": len(archive_results),
+                "snapshots": 0,
             },
         }
         digest = self._stable_json_digest(semantic)
+        archive_event_bytes = sum(
+            len(str(row.get("payload_json") or "").encode("utf-8")) for row in archive_events
+        )
+        disposable_event_bytes = sum(
+            len(str(row.get("payload_json") or "").encode("utf-8")) for row in disposable_events
+        )
+        result_bytes = sum(int(row.get("byte_size") or 0) for row in archive_results)
         return {
             **semantic,
             "generated_at": now.isoformat(timespec="seconds"),
             "plan_digest": digest,
+            "empty_scope": not (archive_events or disposable_events or archive_results),
             "estimated_bytes": {
-                "event_payload": event_bytes,
-                "snapshot_result": snapshot_bytes,
-                "task_results": result_bytes,
-                "total": event_bytes + snapshot_bytes + result_bytes,
+                "historical_event_payload_moved": archive_event_bytes,
+                "canonical_result_moved": result_bytes,
+                "progress_noise_removed": disposable_event_bytes,
+                "operational_retired_total": archive_event_bytes
+                + result_bytes
+                + disposable_event_bytes,
             },
-            "event_type_counts": dict(sorted(event_breakdown.items())),
+            "archive_event_type_counts": dict(sorted(archive_event_counts.items())),
+            "disposable_event_type_counts": dict(sorted(disposable_event_counts.items())),
             "protected": {
                 "total": len(protected),
                 "active": sum(value == "ACTIVE" for value in protected.values()),
-                "online_mr": sum(
-                    value == "ONLINE_MR" for value in protected.values()
-                ),
+                "online_mr": sum(value == "ONLINE_MR" for value in protected.values()),
                 "ground": sum(value == "GROUND" for value in protected.values()),
-                "artifact": sum(
-                    value == "ARTIFACT" for value in protected.values()
-                ),
+                "artifact": sum(value == "ARTIFACT" for value in protected.values()),
+                "ambiguous": sum(value == "AMBIGUOUS" for value in protected.values()),
                 "task_ids": sorted(protected),
             },
-            "snapshot_status_counts": dict(
-                sorted(
-                    Counter(
-                        str(snapshot_by_id[task_id].get("status") or "")
-                        for task_id in snapshot_delete_ids
-                    ).items()
-                )
-            ),
             "apply_enabled": True,
             "development_root_only": True,
             "implicit_vacuum": False,
@@ -521,7 +538,7 @@ class SiteRetentionService:
         allow_development_root_only: bool = False,
         development_root: str | Path = DEVELOPMENT_ROOT,
     ) -> dict[str, Any]:
-        """Apply one exact typed retention plan without compacting or deleting files."""
+        """Archive facts and delete only exact disposable rows in an isolated copy."""
 
         if not apply or not allow_development_root_only:
             raise ValueError(
@@ -535,16 +552,23 @@ class SiteRetentionService:
             "database_sha256",
             "database_identity",
             "policy",
-            "event_sequence_ranges",
-            "event_sequence_digest",
-            "snapshot_task_ids",
-            "snapshot_task_digest",
-            "result_ids",
-            "result_digest",
+            "archive_event_sequence_ranges",
+            "archive_event_sequence_digest",
+            "archive_event_content_digest",
+            "disposable_event_sequence_ranges",
+            "disposable_event_sequence_digest",
+            "disposable_event_content_digest",
+            "archive_result_ids",
+            "archive_result_id_digest",
+            "archive_result_content_digest",
+            "owner_decisions",
+            "owner_decision_digest",
             "expected_counts",
         )
-        if str(plan.get("format") or "") != "netconsole-typed-task-retention-plan":
+        if str(plan.get("format") or "") != "netconsole-owner-task-lifecycle-plan":
             raise ValueError("invalid typed retention plan format")
+        if int(plan.get("version") or 0) != 2:
+            raise ValueError("unsupported typed retention plan version")
         semantic = {key: plan[key] for key in semantic_keys}
         digest = self._stable_json_digest(semantic)
         if digest != str(plan.get("plan_digest") or ""):
@@ -555,51 +579,114 @@ class SiteRetentionService:
             str(plan["database"]), development_root=development_root
         )
         self._assert_task_retention_database_identity(database, plan)
-        if self._stable_json_digest(list(plan["snapshot_task_ids"])) != str(
-            plan["snapshot_task_digest"]
+        archive_event_keys = self._expand_integer_ranges(
+            plan["archive_event_sequence_ranges"]
+        )
+        disposable_event_keys = self._expand_integer_ranges(
+            plan["disposable_event_sequence_ranges"]
+        )
+        archive_result_ids = [str(value) for value in plan["archive_result_ids"]]
+        if self._stable_json_digest(archive_event_keys) != str(
+            plan["archive_event_sequence_digest"]
         ):
-            raise ValueError("typed retention snapshot key digest mismatch")
-        if self._stable_json_digest(list(plan["result_ids"])) != str(
-            plan["result_digest"]
+            raise ValueError("task archive event key digest mismatch")
+        if self._stable_json_digest(disposable_event_keys) != str(
+            plan["disposable_event_sequence_digest"]
         ):
-            raise ValueError("typed retention result key digest mismatch")
-        event_keys = self._expand_integer_ranges(plan["event_sequence_ranges"])
-        if self._stable_json_digest(event_keys) != str(plan["event_sequence_digest"]):
-            raise ValueError("typed retention event key digest mismatch")
+            raise ValueError("task disposable event key digest mismatch")
+        if self._stable_json_digest(archive_result_ids) != str(
+            plan["archive_result_id_digest"]
+        ):
+            raise ValueError("task archive result key digest mismatch")
+        if self._stable_json_digest(list(plan["owner_decisions"])) != str(
+            plan["owner_decision_digest"]
+        ):
+            raise ValueError("task lifecycle owner decision digest mismatch")
+        if not (archive_event_keys or disposable_event_keys or archive_result_ids):
+            raise ValueError("task lifecycle plan scope must not be empty")
 
         lock_key = site_database_maintenance_key(str(plan["site_id"]))
         with database_maintenance_lock(self.paths, lock_key):
             self._assert_task_retention_database_identity(database, plan)
-            deleted = {"events": 0, "snapshots": 0, "results": 0}
+            with closing(self._connect_readonly(database)) as readonly:
+                readonly.row_factory = sqlite3.Row
+                archive_events = self._task_rows_by_integer_keys(
+                    readonly, "task_events", "sequence", archive_event_keys
+                )
+                disposable_events = self._task_rows_by_integer_keys(
+                    readonly, "task_events", "sequence", disposable_event_keys
+                )
+                archive_results = self._task_rows_by_text_keys(
+                    readonly, "task_results", "result_id", archive_result_ids
+                )
+            if TaskHistoryStore.source_row_digest(archive_events) != str(
+                plan["archive_event_content_digest"]
+            ):
+                raise ValueError("task archive event content changed")
+            if TaskHistoryStore.source_row_digest(disposable_events) != str(
+                plan["disposable_event_content_digest"]
+            ):
+                raise ValueError("task disposable event content changed")
+            if TaskHistoryStore.source_row_digest(archive_results) != str(
+                plan["archive_result_content_digest"]
+            ):
+                raise ValueError("task archive result content changed")
+            history = TaskHistoryStore(database, site_id=str(plan["site_id"]))
+            archived = {"events": 0, "results": 0}
+            if archive_events:
+                _inserted, verified = history.archive_event_rows(archive_events)
+                archived["events"] = verified
+            if archive_results:
+                _inserted, verified = history.archive_result_rows(archive_results)
+                archived["results"] = verified
+            sealed_shards = history.store.seal_open_shards()
+            if archive_events:
+                inserted, verified = history.archive_event_rows(archive_events)
+                if inserted or verified != len(archive_events):
+                    raise sqlite3.DatabaseError(
+                        "sealed task event archive verification failed"
+                    )
+            if archive_results:
+                inserted, verified = history.archive_result_rows(archive_results)
+                if inserted or verified != len(archive_results):
+                    raise sqlite3.DatabaseError(
+                        "sealed task result archive verification failed"
+                    )
+
+            deleted = {"archived_events": 0, "disposable_events": 0, "archived_results": 0}
             connection = sqlite3.connect(database, timeout=60)
             try:
                 connection.execute("PRAGMA busy_timeout = 60000")
                 connection.execute("PRAGMA foreign_keys = ON")
                 connection.execute("BEGIN IMMEDIATE")
-                for keys in self._chunks(event_keys, 500):
+                for keys in self._chunks(archive_event_keys, 500):
                     cursor = connection.execute(
                         "DELETE FROM task_events WHERE sequence IN "
                         f"({','.join('?' for _ in keys)})",
                         keys,
                     )
-                    deleted["events"] += int(cursor.rowcount or 0)
-                for keys in self._chunks(list(plan["snapshot_task_ids"]), 500):
+                    deleted["archived_events"] += int(cursor.rowcount or 0)
+                for keys in self._chunks(disposable_event_keys, 500):
                     cursor = connection.execute(
-                        "DELETE FROM task_snapshots WHERE task_id IN "
+                        "DELETE FROM task_events WHERE sequence IN "
                         f"({','.join('?' for _ in keys)})",
                         keys,
                     )
-                    deleted["snapshots"] += int(cursor.rowcount or 0)
-                for keys in self._chunks(list(plan["result_ids"]), 500):
+                    deleted["disposable_events"] += int(cursor.rowcount or 0)
+                for keys in self._chunks(archive_result_ids, 500):
                     cursor = connection.execute(
                         "DELETE FROM task_results WHERE result_id IN "
                         f"({','.join('?' for _ in keys)})",
                         keys,
                     )
-                    deleted["results"] += int(cursor.rowcount or 0)
+                    deleted["archived_results"] += int(cursor.rowcount or 0)
+                expected_counts = {
+                    key: int(value) for key, value in dict(plan["expected_counts"]).items()
+                }
                 expected = {
-                    key: int(value)
-                    for key, value in dict(plan["expected_counts"]).items()
+                    "archived_events": expected_counts["archive_events"],
+                    "disposable_events": expected_counts["disposable_events"],
+                    "archived_results": expected_counts["archive_results"],
                 }
                 if deleted != expected:
                     connection.rollback()
@@ -632,12 +719,16 @@ class SiteRetentionService:
                 connection.close()
         return {
             "plan_digest": digest,
+            "archived": archived,
             "deleted": deleted,
             "active_tasks_remaining": active,
             "online_mr_mappings_remaining": online_mr,
             "active_tasks_deleted": 0,
+            "snapshots_deleted": 0,
             "artifacts_deleted": 0,
             "implicit_vacuum": False,
+            "history_root": str(history.history_root),
+            "sealed_shards": sealed_shards,
         }
 
     def _storage_totals(
@@ -1535,6 +1626,60 @@ class SiteRetentionService:
     @staticmethod
     def _chunks(values: list[Any], size: int) -> list[list[Any]]:
         return [values[index : index + size] for index in range(0, len(values), size)]
+
+    @classmethod
+    def _task_rows_by_integer_keys(
+        cls,
+        connection: sqlite3.Connection,
+        table: str,
+        column: str,
+        keys: list[int],
+    ) -> list[dict[str, Any]]:
+        if (table, column) != ("task_events", "sequence"):
+            raise ValueError("unsupported integer task lifecycle selector")
+        if not keys:
+            return []
+        rows: list[dict[str, Any]] = []
+        for chunk in cls._chunks(keys, 500):
+            rows.extend(
+                dict(row)
+                for row in connection.execute(
+                    f"SELECT * FROM {table} WHERE {column} IN "
+                    f"({','.join('?' for _ in chunk)}) ORDER BY {column}",
+                    chunk,
+                ).fetchall()
+            )
+        rows.sort(key=lambda row: int(row[column]))
+        if [int(row[column]) for row in rows] != sorted(keys):
+            raise ValueError("task lifecycle integer selector no longer matches source")
+        return rows
+
+    @classmethod
+    def _task_rows_by_text_keys(
+        cls,
+        connection: sqlite3.Connection,
+        table: str,
+        column: str,
+        keys: list[str],
+    ) -> list[dict[str, Any]]:
+        if (table, column) != ("task_results", "result_id"):
+            raise ValueError("unsupported text task lifecycle selector")
+        if not keys:
+            return []
+        rows: list[dict[str, Any]] = []
+        for chunk in cls._chunks(keys, 500):
+            rows.extend(
+                dict(row)
+                for row in connection.execute(
+                    f"SELECT * FROM {table} WHERE {column} IN "
+                    f"({','.join('?' for _ in chunk)}) ORDER BY {column}",
+                    chunk,
+                ).fetchall()
+            )
+        rows.sort(key=lambda row: str(row[column]))
+        if [str(row[column]) for row in rows] != sorted(keys):
+            raise ValueError("task lifecycle text selector no longer matches source")
+        return rows
 
     def _candidate(
         self,

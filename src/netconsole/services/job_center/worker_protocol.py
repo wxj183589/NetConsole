@@ -3,9 +3,20 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any, BinaryIO, TextIO
 
 _FALLBACK_STDOUT: BinaryIO | None = None
+_BOUND_STDOUT: ContextVar[BinaryIO | TextIO | None] = ContextVar(
+    "worker_protocol_stdout",
+    default=None,
+)
+_PROCESS_BOUND_STDOUT: BinaryIO | TextIO | None = None
+_PROCESS_BOUND_STDOUT_LOCK = threading.RLock()
+_PROTOCOL_WRITE_LOCK = threading.Lock()
 WORKER_EVENT_TYPES = frozenset({"progress", "log", "finished", "error", "cancelled"})
 WORKER_PROTOCOL_MAX_FRAME_BYTES = 1_048_576
 
@@ -36,21 +47,45 @@ def encode_event_bytes(event: dict[str, Any]) -> bytes:
 
 def write_event(event: dict[str, Any], stream: BinaryIO | TextIO | None = None) -> None:
     payload = encode_event_bytes(event)
-    if stream is None:
-        target = _stdout_binary_stream()
-        target.write(payload)
-        target.flush()
-        return
-    binary_target = getattr(stream, "buffer", None)
-    if binary_target is not None:
-        binary_target.write(payload)
-        binary_target.flush()
-        return
+    with _PROTOCOL_WRITE_LOCK:
+        if stream is None:
+            stream = _BOUND_STDOUT.get() or _process_bound_stdout() or sys.stdout
+        if stream is None:
+            stream = _fallback_stdout()
+        binary_target = getattr(stream, "buffer", None)
+        if binary_target is not None:
+            binary_target.write(payload)
+            binary_target.flush()
+            return
+        try:
+            stream.write(payload)  # type: ignore[arg-type]
+        except TypeError:
+            stream.write(payload.decode("ascii"))  # type: ignore[arg-type]
+        stream.flush()
+
+
+@contextmanager
+def bind_worker_protocol_stream(
+    stream: BinaryIO | TextIO | None = None,
+) -> Iterator[None]:
+    global _PROCESS_BOUND_STDOUT
+    target = stream if stream is not None else sys.stdout
+    bound = target or _fallback_stdout()
+    token = _BOUND_STDOUT.set(bound)
+    with _PROCESS_BOUND_STDOUT_LOCK:
+        previous = _PROCESS_BOUND_STDOUT
+        _PROCESS_BOUND_STDOUT = bound
     try:
-        stream.write(payload)  # type: ignore[arg-type]
-    except TypeError:
-        stream.write(payload.decode("ascii"))  # type: ignore[arg-type]
-    stream.flush()
+        yield
+    finally:
+        with _PROCESS_BOUND_STDOUT_LOCK:
+            _PROCESS_BOUND_STDOUT = previous
+        _BOUND_STDOUT.reset(token)
+
+
+def _process_bound_stdout() -> BinaryIO | TextIO | None:
+    with _PROCESS_BOUND_STDOUT_LOCK:
+        return _PROCESS_BOUND_STDOUT
 
 
 def configure_standard_streams() -> None:
@@ -73,14 +108,6 @@ def _reconfigure_stream(stream: object, **options: object) -> None:
         reconfigure(**options)
     except (OSError, TypeError, ValueError):
         return
-
-
-def _stdout_binary_stream() -> BinaryIO:
-    for stream in (getattr(sys, "__stdout__", None), sys.stdout):
-        target = getattr(stream, "buffer", None)
-        if target is not None:
-            return target
-    return _fallback_stdout()
 
 
 def _fallback_stdout() -> BinaryIO:

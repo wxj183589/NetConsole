@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -177,6 +178,8 @@ class OnlineMrSession:
                     raw_file TEXT NOT NULL,
                     raw_offset_start INTEGER NOT NULL,
                     raw_offset_end INTEGER NOT NULL,
+                    raw_content_sha256 TEXT NOT NULL DEFAULT '',
+                    raw_source_id TEXT NOT NULL DEFAULT '',
                     parse_status TEXT NOT NULL,
                     error_message TEXT DEFAULT ''
                 );
@@ -347,6 +350,7 @@ class OnlineMrSession:
                 CREATE INDEX IF NOT EXISTS idx_iperf_intervals_run ON iperf_intervals(run_id);
                 """
             )
+            self._ensure_live_sample_authority_columns(conn)
             self._ensure_mesh_link_columns(conn)
             self._ensure_channel_busy_columns(conn)
 
@@ -521,9 +525,10 @@ class OnlineMrSession:
         with path.open("a", encoding="utf-8") as file:
             file.write(payload)
             file.flush()
+        offset_end = path.stat().st_size
         if mirror_to_collector_output:
             self.append_collector_output_raw(payload)
-        return f"raw/{raw_name}", offset_start, offset_start + len(payload.encode("utf-8"))
+        return f"raw/{raw_name}", offset_start, offset_end
 
     def append_collector_output_raw(self, text: str, collected_at: datetime | None = None) -> Path:
         path = self.session_dir / "raw" / COLLECTOR_OUTPUT_RAW_FILE
@@ -554,13 +559,19 @@ class OnlineMrSession:
         error_message: str = "",
         device_clock: str | None = None,
     ) -> int:
+        raw_content_sha256, raw_source_id = self._raw_authority(
+            task_type,
+            raw_file,
+            raw_offset_start,
+            raw_offset_end,
+        )
         with self._connect() as conn:
             cursor = conn.execute(
                 """
                 INSERT INTO live_samples (
                     session_id, task_type, collected_at, device_clock, command_group, raw_file, raw_offset_start,
-                    raw_offset_end, parse_status, error_message
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    raw_offset_end, raw_content_sha256, raw_source_id, parse_status, error_message
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     self.meta.session_id,
@@ -571,11 +582,90 @@ class OnlineMrSession:
                     raw_file,
                     raw_offset_start,
                     raw_offset_end,
+                    raw_content_sha256,
+                    raw_source_id,
                     parse_status,
                     error_message,
                 ),
             )
             return int(cursor.lastrowid)
+
+    def replace_current_sample(
+        self,
+        task_type: str,
+        collected_at: datetime,
+        command: str,
+        raw_file: str,
+        raw_offset_start: int,
+        raw_offset_end: int,
+        parse_status: str,
+        error_message: str = "",
+        device_clock: str | None = None,
+    ) -> int:
+        raw_content_sha256, raw_source_id = self._raw_authority(
+            task_type,
+            raw_file,
+            raw_offset_start,
+            raw_offset_end,
+        )
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT id FROM live_samples WHERE session_id=? AND task_type=? "
+                "ORDER BY id DESC",
+                (self.meta.session_id, task_type),
+            ).fetchall()
+            if existing:
+                sample_id = int(existing[0][0])
+                conn.execute(
+                    "DELETE FROM live_samples WHERE session_id=? AND task_type=? AND id<>?",
+                    (self.meta.session_id, task_type, sample_id),
+                )
+                conn.execute(
+                    """
+                    UPDATE live_samples
+                    SET collected_at=?, device_clock=?, command_group=?, raw_file=?,
+                        raw_offset_start=?, raw_offset_end=?, raw_content_sha256=?,
+                        raw_source_id=?, parse_status=?, error_message=?
+                    WHERE id=?
+                    """,
+                    (
+                        collected_at.isoformat(sep=" ", timespec="milliseconds"),
+                        device_clock,
+                        command,
+                        raw_file,
+                        raw_offset_start,
+                        raw_offset_end,
+                        raw_content_sha256,
+                        raw_source_id,
+                        parse_status,
+                        error_message,
+                        sample_id,
+                    ),
+                )
+                return sample_id
+            conn.execute(
+                """
+                INSERT INTO live_samples (
+                    session_id, task_type, collected_at, device_clock, command_group, raw_file, raw_offset_start,
+                    raw_offset_end, raw_content_sha256, raw_source_id, parse_status, error_message
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    self.meta.session_id,
+                    task_type,
+                    collected_at.isoformat(sep=" ", timespec="milliseconds"),
+                    device_clock,
+                    command,
+                    raw_file,
+                    raw_offset_start,
+                    raw_offset_end,
+                    raw_content_sha256,
+                    raw_source_id,
+                    parse_status,
+                    error_message,
+                ),
+            )
+            return int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
 
     def append_mesh_links(self, sample_id: int, records: list[MeshLogRecord]) -> None:
         with self._connect() as conn:
@@ -617,7 +707,7 @@ class OnlineMrSession:
                         row.get("ctl_busy"),
                         row.get("tx_busy"),
                         row.get("rx_busy"),
-                        row.get("raw_text"),
+                        None,
                     )
                     for row in rows
                 ],
@@ -633,16 +723,16 @@ class OnlineMrSession:
         self,
         collected_at: datetime,
         raw_text: str,
-        raw_file: str,
-        raw_offset_start: int,
-        raw_offset_end: int,
         parse_status: str = "OK",
         device_clock: str | None = None,
-    ) -> None:
+    ) -> tuple[str, int, int]:
         latest_path = self.session_dir / "raw" / "switch_history_latest.log"
         tmp_path = self.session_dir / "raw" / "switch_history_latest.tmp"
         tmp_path.write_text(raw_text.rstrip() + "\n", encoding="utf-8")
         tmp_path.replace(latest_path)
+        raw_file = "raw/switch_history_latest.log"
+        raw_offset_start = 0
+        raw_offset_end = latest_path.stat().st_size
         with self._connect() as conn:
             conn.execute("DELETE FROM live_switch_history_latest")
             conn.execute(
@@ -661,6 +751,7 @@ class OnlineMrSession:
                     parse_status,
                 ),
             )
+        return raw_file, raw_offset_start, raw_offset_end
 
     def append_interface_rates(self, sample_id: int, collected_at: datetime, raw_text: str) -> None:
         rows = parse_interface_rate_text(raw_text)
@@ -684,8 +775,8 @@ class OnlineMrSession:
                             row.get("total_pps"),
                             row.get("broadcast_pps"),
                             row.get("multicast_pps"),
-                            row.get("raw_line"),
-                            row.get("raw_line"),
+                            None,
+                            None,
                         )
                         for row in rows
                     ],
@@ -698,7 +789,7 @@ class OnlineMrSession:
                     total_pps, broadcast_pps, multicast_pps, raw_line, raw_text
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (sample_id, collected_at.isoformat(sep=" ", timespec="milliseconds"), None, None, None, None, None, None, None, None, ""),
+                (sample_id, collected_at.isoformat(sep=" ", timespec="milliseconds"), None, None, None, None, None, None, None, None, None),
             )
 
     def append_ping_samples(self, rows: list[dict[str, object]], packet_size: int, interval_ms: int, loss_threshold_ms: int) -> None:
@@ -810,6 +901,54 @@ class OnlineMrSession:
             metrics.get("local_err"),
             metrics.get("peer_err"),
         )
+
+    def _raw_authority(
+        self,
+        task_type: str,
+        raw_file: str,
+        raw_offset_start: int,
+        raw_offset_end: int,
+    ) -> tuple[str, str]:
+        path = self.session_dir / Path(raw_file)
+        try:
+            resolved_session = self.session_dir.resolve()
+            resolved_path = path.resolve(strict=True)
+            if not resolved_path.is_relative_to(resolved_session):
+                return "", ""
+            size = resolved_path.stat().st_size
+            if raw_offset_start < 0 or raw_offset_end < raw_offset_start or raw_offset_end > size:
+                return "", ""
+            with resolved_path.open("rb") as file:
+                file.seek(raw_offset_start)
+                payload = file.read(raw_offset_end - raw_offset_start)
+        except OSError:
+            return "", ""
+        if len(payload) != raw_offset_end - raw_offset_start:
+            return "", ""
+        content_sha256 = hashlib.sha256(payload).hexdigest()
+        identity = "\0".join(
+            (
+                self.meta.session_id,
+                task_type,
+                Path(raw_file).as_posix(),
+                str(raw_offset_start),
+                str(raw_offset_end),
+                content_sha256,
+            )
+        ).encode("utf-8")
+        return content_sha256, f"online-mr:{hashlib.sha256(identity).hexdigest()}"
+
+    @staticmethod
+    def _ensure_live_sample_authority_columns(conn: sqlite3.Connection) -> None:
+        columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(live_samples)").fetchall()
+        }
+        for column in ("raw_content_sha256", "raw_source_id"):
+            if column not in columns:
+                conn.execute(
+                    f"ALTER TABLE live_samples ADD COLUMN {column} TEXT NOT NULL DEFAULT ''"
+                )
 
     @staticmethod
     def _ensure_mesh_link_columns(conn: sqlite3.Connection) -> None:
