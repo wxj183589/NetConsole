@@ -338,6 +338,69 @@ def test_historical_backfill_is_classified_idempotent_and_ref_read_through(
     assert restarted.get("conflict").result == conflict.result
 
 
+def test_backfill_prefers_verified_artifact_finalization_over_pending_terminal(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "tasks.db"
+    repository = TaskRepository(path)
+    pending_snapshot, pending_event = _terminal("artifact-finalized")
+    pending = {"artifact_id": "artifact-1", "artifact_pending": True, "row_count": 3}
+    final = {
+        "artifact_id": "artifact-1",
+        "artifact_name": "report.csv",
+        "artifact_pending": False,
+        "row_count": 3,
+        "sha256": "a" * 64,
+        "size_bytes": 12,
+    }
+    pending_snapshot = replace(pending_snapshot, result=pending)
+    pending_event = replace(pending_event, payload={"message": "done", "result": pending})
+    assert repository.record(pending_snapshot, pending_event)
+    finalized_snapshot = replace(
+        pending_snapshot,
+        result=final,
+        updated_time="2026-08-16T03:00:01Z",
+    )
+    finalized_event = TaskEvent(
+        event_id="artifact-finalized-artifact-finalized",
+        task_id=finalized_snapshot.task_id,
+        type="artifact_finalized",
+        time="2026-08-16T03:00:01Z",
+        source="artifact_store",
+        payload={"message": "ready", "result": final},
+    )
+    assert repository.record(finalized_snapshot, finalized_event)
+
+    maintenance = TaskResultMaintenanceService(
+        PathResolver(app_root=tmp_path, data_root=tmp_path / "runtime"),
+        site_id="line-12",
+        tasks_database=path,
+        development_root=tmp_path,
+    )
+    analysis = maintenance.analyze_backfill()
+    assert analysis["classifications"] == {
+        "CONFLICT": 0,
+        "EVENT_ONLY": 0,
+        "INVALID": 0,
+        "MATCHED": 1,
+        "SNAPSHOT_ONLY": 0,
+    }
+    result = maintenance.backfill(apply=True, allow_development_root_only=True)
+    assert result["new_result_rows"] == 1
+    authority = repository.get_result(
+        TaskResultMaintenanceService._result_id(
+            finalized_snapshot.task_id,
+            "artifact_finalized",
+            hashlib.sha256(
+                json.dumps(final, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+            ).hexdigest(),
+        )
+    )
+    assert authority is not None
+    assert authority["terminal_event_type"] == "artifact_finalized"
+    assert authority["result"] == final
+
+
 def test_backfill_binds_only_final_finished_result_after_null_error(
     tmp_path: Path,
 ) -> None:

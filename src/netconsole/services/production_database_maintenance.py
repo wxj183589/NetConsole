@@ -1362,19 +1362,17 @@ class ProductionTaskRolloutExecutor:
             _production_permit=_PRODUCTION_ROLLOUT_PERMIT,
         )
         analysis = service.analyze_backfill()
-        blocked = sum(
-            int(analysis["classifications"].get(name, 0))
-            for name in ("CONFLICT", "INVALID")
-        )
-        if blocked:
+        conflict_count = int(analysis["classifications"].get("CONFLICT", 0))
+        protected_invalid_count = int(analysis["classifications"].get("INVALID", 0))
+        if conflict_count:
             journal.update(
                 "task_rollout_blocked",
                 recovery_strategy="component_resume",
                 initial_source_sha256=expected_source_sha256,
                 analysis=analysis,
-                error="CONFLICT_OR_INVALID",
+                error="CONFLICT",
             )
-            raise ProductionMaintenanceError("task rollout contains CONFLICT or INVALID rows")
+            raise ProductionMaintenanceError("task rollout contains CONFLICT rows")
         journal.update(
             "task_rollout_started",
             recovery_strategy="component_resume",
@@ -1383,6 +1381,7 @@ class ProductionTaskRolloutExecutor:
             maintenance_lock=site_database_maintenance_key(self.site_id),
             initial_source_sha256=expected_source_sha256,
             analysis=analysis,
+            protected_invalid_count=protected_invalid_count,
             switched=False,
         )
         try:
@@ -1415,11 +1414,10 @@ class ProductionTaskRolloutExecutor:
             )
             journal.update("task_backfill_completed", backfill=backfill)
             verification = service.analyze_backfill()
-            if any(
-                int(verification["classifications"].get(name, 0))
-                for name in ("CONFLICT", "INVALID")
-            ):
-                raise ProductionMaintenanceError("task backfill verification failed")
+            if int(verification["classifications"].get("CONFLICT", 0)):
+                raise ProductionMaintenanceError("task backfill verification failed: CONFLICT")
+            if int(verification["classifications"].get("INVALID", 0)) != protected_invalid_count:
+                raise ProductionMaintenanceError("task backfill verification changed protected INVALID rows")
             rerun_source = _checkpoint_database(database)
             rerun = service.backfill_production(
                 authorization=authorization,
@@ -1448,6 +1446,7 @@ class ProductionTaskRolloutExecutor:
                 "idempotency_rerun": rerun,
                 "verification": verification,
                 "authority": authority,
+                "protected_invalid_count": protected_invalid_count,
                 "protected_active_states": ["PENDING", "RUNNING"],
             }
             journal.update(

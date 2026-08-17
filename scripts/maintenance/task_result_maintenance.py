@@ -31,6 +31,10 @@ BACKFILL_CLASSIFICATIONS = frozenset(
 )
 _PRODUCTION_ROLLOUT_PERMIT = object()
 _TERMINAL_STATUSES = ("COMPLETED", "FAILED", "CANCELLED")
+_POST_TERMINAL_RESULT_EVENT_TYPES = frozenset(
+    {"artifact_finalized", "artifact_rejected"}
+)
+_RESULT_EVENT_TYPES = TERMINAL_RESULT_EVENT_TYPES | _POST_TERMINAL_RESULT_EVENT_TYPES
 
 
 def _production_profile(path: Path) -> dict[str, Any]:
@@ -515,14 +519,15 @@ class TaskResultMaintenanceService:
     ) -> _BackfillCandidate:
         task_id = str(snapshot["task_id"])
         status_event_type = self._status_event(snapshot["status"])
+        result_event_types = sorted(_RESULT_EVENT_TYPES)
         events = [
             dict(row)
             for row in connection.execute(
                 "SELECT sequence, task_id, event_type, event_time, payload_json "
                 "FROM task_events WHERE task_id=? "
-                f"AND event_type IN ({','.join('?' for _ in TERMINAL_RESULT_EVENT_TYPES)}) "
+                f"AND event_type IN ({','.join('?' for _ in result_event_types)}) "
                 "ORDER BY sequence",
-                (task_id, *sorted(TERMINAL_RESULT_EVENT_TYPES)),
+                (task_id, *result_event_types),
             ).fetchall()
         ]
         snapshot_result = self._nonempty_object(str(snapshot.get("result_json") or ""))
@@ -584,16 +589,64 @@ class TaskResultMaintenanceService:
                 return self._candidate(snapshot, events, (), "CONFLICT", "", {})
             snapshot_canonical = referenced_canonical
             snapshot_result = dict(referenced["result"])
-        if (
-            event_reference_conflict
-            or len(event_results) > 1
-            or any(len(event_types) > 1 for event_types in event_types_by_result.values())
-        ):
+        if event_reference_conflict:
             return self._candidate(snapshot, events, (), "CONFLICT", "", {})
-        event_canonical = next(iter(event_results), "")
-        event_result = event_results.get(event_canonical)
-        bound_event_rows = tuple(event_rows_by_result.get(event_canonical, ()))
-        event_type = next(iter(event_types_by_result.get(event_canonical, ())), "")
+
+        # Artifact finalization is a deliberate post-terminal authority
+        # transition: the worker first emits a pending result, then the
+        # artifact store adds the verified filename/digest/size.  Prefer that
+        # later result when it is internally unambiguous, while still failing
+        # closed on multiple post-terminal payloads or artifact identities.
+        post_terminal_canonicals = {
+            canonical
+            for canonical, rows in event_rows_by_result.items()
+            if any(
+                str(row.get("event_type") or "")
+                in _POST_TERMINAL_RESULT_EVENT_TYPES
+                for row in rows
+            )
+        }
+        if len(post_terminal_canonicals) > 1:
+            return self._candidate(snapshot, events, (), "CONFLICT", "", {})
+        if post_terminal_canonicals:
+            event_canonical = next(iter(post_terminal_canonicals))
+            post_rows = tuple(
+                row
+                for row in event_rows_by_result.get(event_canonical, ())
+                if str(row.get("event_type") or "")
+                in _POST_TERMINAL_RESULT_EVENT_TYPES
+            )
+            post_event_types = {
+                str(row.get("event_type") or "") for row in post_rows
+            }
+            if len(post_event_types) != 1:
+                return self._candidate(snapshot, events, (), "CONFLICT", "", {})
+            event_result = event_results.get(event_canonical)
+            bound_event_rows = post_rows
+            event_type = next(iter(post_event_types))
+            artifact_ids = {
+                str(value.get("artifact_id") or "")
+                for value in (snapshot_result or {}, event_result or {})
+                if str(value.get("artifact_id") or "")
+            }
+            for canonical, values in event_results.items():
+                if canonical == event_canonical:
+                    continue
+                for value in (values or {},):
+                    artifact_id = str(value.get("artifact_id") or "")
+                    if artifact_id:
+                        artifact_ids.add(artifact_id)
+            if len(artifact_ids) > 1:
+                return self._candidate(snapshot, events, (), "CONFLICT", "", {})
+        else:
+            if len(event_results) > 1 or any(
+                len(event_types) > 1 for event_types in event_types_by_result.values()
+            ):
+                return self._candidate(snapshot, events, (), "CONFLICT", "", {})
+            event_canonical = next(iter(event_results), "")
+            event_result = event_results.get(event_canonical)
+            bound_event_rows = tuple(event_rows_by_result.get(event_canonical, ()))
+            event_type = next(iter(event_types_by_result.get(event_canonical, ())), "")
         if snapshot_canonical and event_canonical:
             if snapshot_canonical != event_canonical:
                 return self._candidate(snapshot, events, (), "CONFLICT", "", {})
@@ -668,7 +721,7 @@ class TaskResultMaintenanceService:
     def _validate_candidate_bindings(
         self, connection: sqlite3.Connection, candidate: _BackfillCandidate
     ) -> None:
-        if candidate.terminal_event_type not in TERMINAL_RESULT_EVENT_TYPES:
+        if candidate.terminal_event_type not in _RESULT_EVENT_TYPES:
             raise sqlite3.IntegrityError("task result backfill terminal type is invalid")
         if not candidate.result or self._canonical_json(candidate.result) != (
             candidate.canonical_json

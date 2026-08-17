@@ -22,6 +22,8 @@ from netconsole.services.production_database_maintenance import (
 from netconsole.services.database_footprint_maintenance import sqlite_quick_profile
 from netconsole.services.database_upgrade.sqlite_consistency import sqlite_backup
 from netconsole.repositories.task_repository import TaskRepository
+from netconsole.models.task_snapshot import TaskEvent, TaskSnapshot
+from netconsole.models.task_state import TaskState
 from scripts.maintenance.production_database_maintenance import main as production_main
 
 
@@ -387,6 +389,63 @@ def test_execute_cutover_chain_reaches_executable_without_replacing_tasks_db(
     manifest = result["manifest"]["manifest"]
     assert manifest["execution_status"] == "EXECUTABLE"
     assert sqlite_quick_profile(tasks, immutable=True)["sha256"] != before["sha256"]
+
+
+def test_execute_cutover_chain_protects_invalid_task_rows(tmp_path: Path) -> None:
+    paths, site, _ = _site(tmp_path)
+    tasks = site / "db" / "tasks.db"
+    repository = TaskRepository(tasks)
+    timestamp = "2026-08-16T03:00:00Z"
+    snapshot = TaskSnapshot(
+        task_id="invalid-terminal",
+        task_type="device_connection_test",
+        task_name="Invalid terminal",
+        status=TaskState.CANCELLED,
+        created_time=timestamp,
+        finished_time=timestamp,
+        updated_time=timestamp,
+        result={},
+    )
+    event = TaskEvent(
+        event_id="invalid-terminal-cancelled",
+        task_id=snapshot.task_id,
+        type="cancelled",
+        time=timestamp,
+        source="test",
+        payload={"message": "cancelled"},
+    )
+    assert repository.record(snapshot, event)
+    with closing(sqlite3.connect(tasks)) as connection:
+        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    del repository
+    gc.collect()
+    capability = _capability(
+        paths,
+        operation_id="chain-tasks-invalid-protected",
+        source_identity="chain-tasks-invalid-protected-source",
+    )
+    owner = capability._rollback_owners[("legacy-dfd356e96ea0", "tasks.db")]
+
+    result = capability.execute_cutover_chain(
+        "tasks.db",
+        operation_id="chain-tasks-invalid-protected",
+        owner_contract=owner,
+        row_identity={"table": "records", "key": "id"},
+        mode="production",
+        authorization=PRODUCTION_AUTHORIZATION_TOKEN,
+        writer_quiescent=True,
+        gates=_gates(),
+        perform_replace=False,
+    )
+
+    assert result["status"] == "EXECUTABLE"
+    assert result["task"]["authority"]["state"] == "RESULT_REF_AUTHORITY"
+    assert result["task"]["protected_invalid_count"] == 1
+    with closing(sqlite3.connect(tasks)) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM task_results").fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT result_json FROM task_snapshots WHERE task_id='invalid-terminal'"
+        ).fetchone()[0] == "{}"
 
 
 def test_preflight_rejects_stale_source_and_requires_production_mode(tmp_path: Path) -> None:
