@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from contextlib import closing
@@ -26,6 +27,7 @@ from netconsole.services.database_footprint_maintenance import sqlite_quick_prof
 from netconsole.services.database_upgrade.sqlite_consistency import sqlite_backup
 from scripts.maintenance.production_database_maintenance import (
     _evidence_pass,
+    _gate_evidence,
     main as production_main,
 )
 
@@ -375,6 +377,216 @@ def test_quiescence_evidence_requires_all_execution_safety_fields(
             operation_id="op-quiescence",
             binding=binding,
         )
+
+
+def test_gate_evidence_is_bound_to_actual_current_head_pass_report(
+    tmp_path: Path,
+) -> None:
+    paths, _site_path, _root = _site(tmp_path)
+    source_report = tmp_path / "targeted-report.json"
+    source_report.write_text(
+        json.dumps(
+            {
+                "mode": "targeted",
+                "result": "PASS",
+                "head_sha": HEAD,
+                "failed": [],
+                "not_run": [],
+                "executed_suites": [
+                    {"suite_id": "storage-targeted", "status": "PASS"}
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    source_sha256 = hashlib.sha256(source_report.read_bytes()).hexdigest()
+    wrapper = tmp_path / "targeted-wrapper.json"
+    wrapper.write_text(
+        json.dumps(
+            {
+                "evidence_type": "production-current-head-gate-v2",
+                "gate": "targeted",
+                "status": "PASS",
+                "current_implementation_head": HEAD,
+                "rehearsal_evidence_head": REHEARSAL_HEAD,
+                "verified_at": "2026-08-17T00:00:00Z",
+                "source_reports": [
+                    {
+                        "path": str(source_report.resolve()),
+                        "sha256": source_sha256,
+                        "status": "PASS",
+                        "current_implementation_head": HEAD,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    parsed = _gate_evidence([wrapper], binding=_binding(paths))
+
+    assert parsed["targeted"]["evidence_sha256"] == hashlib.sha256(
+        json.dumps([source_sha256], separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def test_gate_evidence_rejects_missing_changed_or_stale_source_report(
+    tmp_path: Path,
+) -> None:
+    paths, _site_path, _root = _site(tmp_path)
+    source_report = tmp_path / "full-report.json"
+    source_report.write_text(
+        json.dumps(
+            {
+                "mode": "full",
+                "result": "PASS",
+                "head_sha": HEAD,
+                "failed": [],
+                "not_run": [],
+                "executed_suites": [
+                    {"suite_id": "python-full", "status": "PASS"}
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    wrapper = tmp_path / "full-wrapper.json"
+    base = {
+        "evidence_type": "production-current-head-gate-v2",
+        "gate": "full",
+        "status": "PASS",
+        "current_implementation_head": HEAD,
+        "rehearsal_evidence_head": REHEARSAL_HEAD,
+        "verified_at": "2026-08-17T00:00:00Z",
+    }
+    wrapper.write_text(json.dumps(base), encoding="utf-8")
+    with pytest.raises(SystemExit, match="not source-bound"):
+        _gate_evidence([wrapper], binding=_binding(paths))
+
+    source_sha256 = hashlib.sha256(source_report.read_bytes()).hexdigest()
+    bound = {
+        **base,
+        "source_reports": [
+            {
+                "path": str(source_report.resolve()),
+                "sha256": source_sha256,
+                "status": "PASS",
+                "current_implementation_head": HEAD,
+            }
+        ],
+    }
+    wrapper.write_text(json.dumps(bound), encoding="utf-8")
+    source_report.write_text(
+        json.dumps({"mode": "full", "result": "FAIL", "head_sha": HEAD}),
+        encoding="utf-8",
+    )
+    with pytest.raises(SystemExit, match="missing or changed"):
+        _gate_evidence([wrapper], binding=_binding(paths))
+
+    bound["source_reports"][0]["sha256"] = hashlib.sha256(
+        source_report.read_bytes()
+    ).hexdigest()
+    bound["source_reports"][0]["status"] = "FAIL"
+    wrapper.write_text(json.dumps(bound), encoding="utf-8")
+    with pytest.raises(SystemExit, match="not current-HEAD PASS"):
+        _gate_evidence([wrapper], binding=_binding(paths))
+
+
+def test_gate_evidence_rejects_source_report_for_wrong_gate_semantics(
+    tmp_path: Path,
+) -> None:
+    paths, _site_path, _root = _site(tmp_path)
+    source_report = tmp_path / "wrong-mode.json"
+    source_report.write_text(
+        json.dumps(
+            {
+                "mode": "fast",
+                "result": "PASS",
+                "head_sha": HEAD,
+                "failed": [],
+                "not_run": [],
+                "executed_suites": [
+                    {"suite_id": "python-full", "status": "PASS"}
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    wrapper = tmp_path / "targeted-wrapper.json"
+    wrapper.write_text(
+        json.dumps(
+            {
+                "evidence_type": "production-current-head-gate-v2",
+                "gate": "targeted",
+                "status": "PASS",
+                "current_implementation_head": HEAD,
+                "rehearsal_evidence_head": REHEARSAL_HEAD,
+                "verified_at": "2026-08-17T00:00:00Z",
+                "source_reports": [
+                    {
+                        "path": str(source_report.resolve()),
+                        "sha256": hashlib.sha256(
+                            source_report.read_bytes()
+                        ).hexdigest(),
+                        "status": "PASS",
+                        "current_implementation_head": HEAD,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(SystemExit, match="mode does not match"):
+        _gate_evidence([wrapper], binding=_binding(paths))
+
+
+def test_bind_gate_cli_writes_create_only_source_bound_evidence(
+    tmp_path: Path,
+) -> None:
+    _paths, _site_path, root = _site(tmp_path)
+    report = tmp_path / "fast.json"
+    report.write_text(
+        json.dumps(
+            {
+                "mode": "fast",
+                "result": "PASS",
+                "head_sha": HEAD,
+                "failed": [],
+                "not_run": [],
+                "executed_suites": [
+                    {"suite_id": "storage-targeted", "status": "PASS"}
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    output = tmp_path / "fast-gate.json"
+    command = [
+        "bind-gate",
+        "--data-root",
+        str(root),
+        "--site-id",
+        "legacy-dfd356e96ea0",
+        "--git-head",
+        HEAD,
+        "--rehearsal-evidence-head",
+        REHEARSAL_HEAD,
+        "--gate",
+        "fast",
+        "--source-report",
+        str(report),
+        "--output",
+        str(output),
+    ]
+
+    assert production_main(command) == 0
+    value = json.loads(output.read_text(encoding="utf-8"))
+    assert value["evidence_type"] == "production-current-head-gate-v2"
+    assert value["source_reports"][0]["sha256"] == hashlib.sha256(
+        report.read_bytes()
+    ).hexdigest()
+    with pytest.raises(FileExistsError, match="output already exists"):
+        production_main(command)
 
 
 def test_storage_registry_has_protected_pending_production_rollback_owners() -> None:

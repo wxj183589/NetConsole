@@ -53,7 +53,11 @@ def _source_database(root: Path, *, rows: list[tuple[int, str, str]] | None = No
 
 
 def _service(
-    tmp_path: Path, source: Path, *, immutable_source: bool = True
+    tmp_path: Path,
+    source: Path,
+    *,
+    immutable_source: bool = True,
+    isolated_rehearsal: bool = False,
 ) -> HistoryLegacyMigrationService:
     data_root = tmp_path / "runtime"
     data_root.mkdir(parents=True, exist_ok=True)
@@ -65,6 +69,7 @@ def _service(
         history_root=tmp_path / "target" / "history",
         diagnostics_dir=tmp_path / "diagnostics",
         immutable_source=immutable_source,
+        isolated_rehearsal=isolated_rehearsal,
     )
 
 
@@ -829,7 +834,12 @@ def test_post_delete_projection_revalidates_larger_canonical_target(
             """
         )
         connection.commit()
-    service = _service(tmp_path, source, immutable_source=False)
+    service = _service(
+        tmp_path,
+        source,
+        immutable_source=True,
+        isolated_rehearsal=True,
+    )
     service.start(migration_id="projection-post-delete", max_elapsed_seconds=0)
     for table in (
         "device_facts_history",

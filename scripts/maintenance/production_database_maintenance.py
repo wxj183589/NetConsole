@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -27,7 +28,10 @@ from netconsole.services.production_database_maintenance import (
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("manifest", "preflight", "execute", "rollback"))
+    parser.add_argument(
+        "command",
+        choices=("bind-gate", "manifest", "preflight", "execute", "rollback"),
+    )
     parser.add_argument("--data-root", type=Path, required=True)
     parser.add_argument("--site-id", required=True)
     parser.add_argument("--database")
@@ -53,6 +57,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--functional-evidence", type=Path)
     parser.add_argument("--operation-id", default=f"production-maintenance-{uuid4().hex[:12]}")
     parser.add_argument("--gate-evidence", type=Path, action="append", default=[])
+    parser.add_argument("--gate", choices=PRODUCTION_GATE_KEYS)
+    parser.add_argument("--source-report", type=Path, action="append", default=[])
     return parser
 
 
@@ -62,6 +68,171 @@ def _sha256_file(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _source_status_and_head(value: dict[str, object]) -> tuple[str, str]:
+    status = str(
+        value.get("result") or value.get("status") or value.get("overall_status") or ""
+    ).upper()
+    head = str(
+        value.get("current_implementation_head")
+        or value.get("git_head")
+        or value.get("head_sha")
+        or ""
+    ).casefold()
+    return status, head
+
+
+def _suite_pass(value: dict[str, object], suite_id: str) -> bool:
+    suites = value.get("executed_suites")
+    return isinstance(suites, list) and any(
+        isinstance(item, dict)
+        and str(item.get("suite_id") or "") == suite_id
+        and str(item.get("status") or "").upper() == "PASS"
+        for item in suites
+    )
+
+
+def _validate_gate_source_semantics(
+    key: str,
+    reports: list[dict[str, object]],
+    *,
+    binding: ProductionEvidenceBinding,
+) -> None:
+    if not reports:
+        raise SystemExit(f"production gate evidence has no source reports: {key}")
+    for report in reports:
+        status, head = _source_status_and_head(report)
+        if status != "PASS" or head != binding.current_implementation_head:
+            raise SystemExit(
+                f"production gate source report is not current-HEAD PASS: {key}"
+            )
+    if key in {"targeted", "fast", "consumer", "full"}:
+        report = reports[0]
+        if len(reports) != 1 or str(report.get("mode") or "").casefold() != key:
+            raise SystemExit(
+                f"production gate source report mode does not match gate: {key}"
+            )
+        if report.get("failed") or report.get("not_run"):
+            raise SystemExit(f"production gate source report is incomplete: {key}")
+        suites = report.get("executed_suites")
+        if not isinstance(suites, list) or not suites or any(
+            not isinstance(item, dict)
+            or str(item.get("status") or "").upper() != "PASS"
+            for item in suites
+        ):
+            raise SystemExit(f"production gate source report suites failed: {key}")
+        return
+    if key in {"renderer", "electron", "architecture"}:
+        required_suite = {
+            "renderer": "renderer-full",
+            "electron": "electron-contract",
+            "architecture": "architecture-guards",
+        }[key]
+        if len(reports) != 1 or not _suite_pass(reports[0], required_suite):
+            raise SystemExit(
+                f"production gate source report is missing PASS suite: {key}"
+            )
+        return
+    if key == "functional_compatibility":
+        report = reports[0]
+        summary = report.get("summary")
+        matrix = report.get("consumer_matrix")
+        if (
+            len(reports) != 1
+            or str(report.get("audit_mode") or "") != "FINAL_EVIDENCE"
+            or not isinstance(summary, dict)
+            or int(summary.get("consumer_check_count") or 0) != 29
+            or int(summary.get("passed_count") or 0) != 29
+            or int(summary.get("failed_count") or 0) != 0
+            or not isinstance(matrix, list)
+            or len(matrix) != 29
+            or any(
+                not isinstance(item, dict)
+                or str(item.get("status") or "").upper() != "PASS"
+                for item in matrix
+            )
+        ):
+            raise SystemExit("production functional compatibility report is incomplete")
+        return
+    if key == "site_package":
+        report = reports[0]
+        if (
+            len(reports) != 1
+            or str(report.get("format") or "")
+            != "netconsole-integrated-site-package-validation-v1"
+        ):
+            raise SystemExit("production Site Package report is invalid")
+        return
+    if key == "no_reinflation":
+        report = reports[0]
+        summary = report.get("summary")
+        scenarios = report.get("scenarios")
+        if (
+            len(reports) != 1
+            or str(report.get("format") or "") != "netconsole-storage-no-reinflation"
+            or not isinstance(summary, dict)
+            or int(summary.get("scenario_count") or 0) != 8
+            or int(summary.get("passed") or 0) != 8
+            or int(summary.get("failed") or 0) != 0
+            or not isinstance(scenarios, list)
+            or len(scenarios) != 8
+            or any(
+                not isinstance(item, dict)
+                or str(item.get("status") or "").upper() != "PASS"
+                for item in scenarios
+            )
+        ):
+            raise SystemExit("production No-Reinflation report is incomplete")
+        return
+    if key == "current_exact_plans" and len(reports) != 2:
+        raise SystemExit("production exact plan gate requires devices and tasks reports")
+    if any(str(report.get("gate") or "") != key for report in reports):
+        raise SystemExit(f"production gate source report gate does not match: {key}")
+
+
+def _build_gate_wrapper(
+    key: str,
+    source_paths: list[Path],
+    *,
+    binding: ProductionEvidenceBinding,
+) -> dict[str, object]:
+    reports: list[dict[str, object]] = []
+    source_specs: list[dict[str, str]] = []
+    for raw_path in source_paths:
+        report_path = assert_development_path(raw_path)
+        if not report_path.is_file():
+            raise SystemExit(f"production gate source report is not a file: {report_path}")
+        try:
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise SystemExit(
+                f"production gate source report is invalid: {report_path}"
+            ) from exc
+        if not isinstance(report, dict):
+            raise SystemExit(
+                f"production gate source report must be an object: {report_path}"
+            )
+        status, head = _source_status_and_head(report)
+        reports.append(report)
+        source_specs.append(
+            {
+                "path": str(report_path),
+                "sha256": _sha256_file(report_path),
+                "status": status,
+                "current_implementation_head": head,
+            }
+        )
+    _validate_gate_source_semantics(key, reports, binding=binding)
+    return {
+        "evidence_type": "production-current-head-gate-v2",
+        "gate": key,
+        "status": "PASS",
+        "current_implementation_head": binding.current_implementation_head,
+        "rehearsal_evidence_head": binding.rehearsal_evidence_head,
+        "verified_at": datetime.now(UTC).isoformat(),
+        "source_reports": source_specs,
+    }
 
 
 def _gate_evidence(
@@ -85,7 +256,7 @@ def _gate_evidence(
             raise SystemExit(f"unknown or duplicate production gate evidence: {key}")
         if (
             str(value.get("evidence_type") or "")
-            != "production-current-head-gate-v1"
+            != "production-current-head-gate-v2"
             or str(value.get("status") or "") != "PASS"
             or str(value.get("current_implementation_head") or "").casefold()
             != binding.current_implementation_head
@@ -94,10 +265,52 @@ def _gate_evidence(
             or not str(value.get("verified_at") or "").strip()
         ):
             raise SystemExit(f"production gate evidence is not current-HEAD PASS: {key}")
+        source_specs = value.get("source_reports")
+        if not isinstance(source_specs, list) or not source_specs:
+            raise SystemExit(f"production gate evidence is not source-bound: {key}")
+        source_values: list[dict[str, object]] = []
+        source_hashes: list[str] = []
+        for source_spec in source_specs:
+            if not isinstance(source_spec, dict):
+                raise SystemExit(f"production gate source binding is invalid: {key}")
+            report_path = Path(str(source_spec.get("path") or ""))
+            declared_sha256 = str(source_spec.get("sha256") or "").casefold()
+            if not report_path.is_absolute() or len(declared_sha256) != 64:
+                raise SystemExit(f"production gate source binding is invalid: {key}")
+            report = assert_development_path(report_path)
+            if not report.is_file() or _sha256_file(report) != declared_sha256:
+                raise SystemExit(
+                    f"production gate source report is missing or changed: {key}"
+                )
+            try:
+                source_value = json.loads(report.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise SystemExit(
+                    f"production gate source report is invalid: {key}"
+                ) from exc
+            if not isinstance(source_value, dict):
+                raise SystemExit(
+                    f"production gate source report must be an object: {key}"
+                )
+            actual_status, actual_head = _source_status_and_head(source_value)
+            if (
+                str(source_spec.get("status") or "").upper() != actual_status
+                or str(source_spec.get("current_implementation_head") or "").casefold()
+                != actual_head
+            ):
+                raise SystemExit(
+                    f"production gate source binding does not match report: {key}"
+                )
+            source_values.append(source_value)
+            source_hashes.append(declared_sha256)
+        _validate_gate_source_semantics(key, source_values, binding=binding)
+        evidence_sha256 = hashlib.sha256(
+            json.dumps(source_hashes, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
         parsed[key] = {
             "status": "PASS",
             "current_implementation_head": binding.current_implementation_head,
-            "evidence_sha256": _sha256_file(source),
+            "evidence_sha256": evidence_sha256,
         }
     return parsed
 
@@ -167,6 +380,18 @@ def main(argv: list[str] | None = None) -> int:
     output = assert_development_path(args.output) if args.output is not None else None
     if output is not None and output.exists():
         raise FileExistsError(f"output already exists: {output}")
+    if args.command == "bind-gate":
+        if args.gate is None or not args.source_report or output is None:
+            raise SystemExit("bind-gate requires --gate, --source-report and --output")
+        value = _build_gate_wrapper(
+            args.gate,
+            args.source_report,
+            binding=binding,
+        )
+        binding.assert_current(paths)
+        _write_output(output, value)
+        print(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0
     if args.command == "manifest":
         if args.source is None or args.candidate is None or args.manifest is None:
             raise SystemExit("manifest requires --source, --candidate and --manifest")

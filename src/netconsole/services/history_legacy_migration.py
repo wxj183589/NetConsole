@@ -611,7 +611,7 @@ class HistoryLegacyMigrationService:
             raise ValueError(
                 "source deletion requires --apply and --allow-development-root-only"
             )
-        if self.source.immutable:
+        if self.source.immutable and not self.isolated_rehearsal:
             raise ValueError("immutable source cannot be deleted")
         assert_development_path(
             self.source_database, development_root=development_root
