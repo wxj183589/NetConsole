@@ -138,8 +138,11 @@ same key. Site Retention acquires it before its narrower storage lock.
 state; a running process observes it after the current transaction/checkpoint.
 An active unattended callback pauses before admitting another chunk. The
 elapsed budget likewise decides whether another chunk may start and never
-interrupts a SQLite transaction. Chunk sizes are restricted to 100, 250 or
-500 rows.
+interrupts a SQLite transaction. Normal/production-capable runs remain capped
+at 500 rows. `--isolated-rehearsal` may use 1,000, 2,500 or 5,000 rows only
+when DataRoot, immutable source, history target and diagnostics all resolve
+below `D:\study`; the service rejects mutable or out-of-root inputs before
+opening the migration.
 
 ```powershell
 $env:PYTHONPATH = "$PWD\src;$PWD"
@@ -151,7 +154,7 @@ $env:PYTHONPATH = "$PWD\src;$PWD"
   --site-id "<registered-test-site>" --source-db "D:\study\test-data\NetConsole\device-history-migration\<run-id>\devices.db" `
   --history-root "D:\study\test-data\NetConsole\device-history-migration\<run-id>\history" `
   --diagnostics-dir "D:\study\diagnostic\NetConsole\device-history-migration\<run-id>" `
-  --immutable-source --chunk-rows 500 --apply
+  --immutable-source --isolated-rehearsal --chunk-rows 5000 --apply
 
 & ".\.venv\Scripts\python.exe" -m scripts.maintenance.migrate_device_history cutover `
   --data-root "<isolated-data-root>" --site-id "<site-id>" `
@@ -191,5 +194,7 @@ keeps `SERVER_HDD_STORAGE_V2_TEST=PENDING`.
   substitute.
 - Query cutover, rollback, re-cutover and exact source deletion are implemented,
   but no operation has been enabled against production data.
-- Production source DELETE, DROP, retention, VACUUM and physical replacement
-  remain unavailable and require a separate production maintenance gate.
+- 独立 production maintenance capability 已实现，约束见
+  [Production Database Maintenance](./PRODUCTION_DATABASE_MAINTENANCE.md)。当前
+  rollback owner 仍未建立 VERIFIED backup set，production authorization 和真实
+  DELETE、DROP、retention、VACUUM、source retirement、physical replacement 均未执行。

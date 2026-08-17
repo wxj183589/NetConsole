@@ -12,6 +12,7 @@ from scripts.maintenance import collect_global_storage_inventory as collector
 from scripts.maintenance.collect_global_storage_inventory import (
     GlobalStorageInventoryError,
     collect_data_root_global_inventory,
+    collect_site_storage_inventory,
     main,
 )
 from scripts.maintenance.finalize_site_storage_audit import (
@@ -160,6 +161,23 @@ def test_global_inventory_excludes_sites_and_profiles_sqlite_readonly(
     assert _sha256(ignored) == ignored_hash
     assert not database.with_name(f"{database.name}-wal").exists()
     assert not database.with_name(f"{database.name}-shm").exists()
+
+
+def test_site_inventory_includes_complete_site_tree(tmp_path: Path) -> None:
+    root = tmp_path / "site-root"
+    database = root / "db" / "devices.db"
+    _create_database(database)
+    nested = root / "sites" / "evidence.txt"
+    nested.parent.mkdir(parents=True)
+    nested.write_text("site evidence", encoding="utf-8")
+
+    inventory = collect_site_storage_inventory(root)
+
+    _validate_raw_inventory(inventory)
+    paths = {str(item["path"]) for item in inventory["files"]}
+    assert inventory["inventory_scope"] == "SITE_ROOT"
+    assert inventory["safety_contract"]["sites_excluded"] is False
+    assert paths == {"db/devices.db", "sites/evidence.txt"}
 
 
 def test_global_inventory_protects_nonempty_wal_instead_of_reporting_stale_rows(

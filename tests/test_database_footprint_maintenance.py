@@ -200,6 +200,29 @@ def test_compact_replace_refuses_live_wal_sidecars(tmp_path: Path) -> None:
     assert compacted.is_file()
 
 
+def test_compact_replace_cleans_closed_wal_sidecars_and_allows_rollback(
+    tmp_path: Path,
+) -> None:
+    source = _database(tmp_path / "source.db")
+    compacted = tmp_path / "compacted.db"
+    rollback = tmp_path / "source.rollback.db"
+    service = DevelopmentDatabaseCompactService(
+        PathResolver(app_root=tmp_path, data_root=tmp_path / "maintenance"),
+        site_id="line-12",
+        development_root=tmp_path,
+    )
+    service.compact(source, compacted)
+    source.with_name(f"{source.name}-wal").write_bytes(b"")
+    source.with_name(f"{source.name}-shm").write_bytes(b"\0" * 32768)
+
+    service.replace(source, compacted, rollback)
+    restored = service.rollback(source, rollback)
+
+    assert restored["rolled_back"] is True
+    assert not source.with_name(f"{source.name}-wal").exists()
+    assert not source.with_name(f"{source.name}-shm").exists()
+
+
 def test_development_path_guard_fails_closed(tmp_path: Path) -> None:
     assert assert_development_path(
         tmp_path / "allowed.db", development_root=tmp_path

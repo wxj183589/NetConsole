@@ -117,6 +117,7 @@ class HistoryLegacyMigrationService:
         history_root: Path,
         diagnostics_dir: Path,
         immutable_source: bool = False,
+        isolated_rehearsal: bool = False,
         clock: Callable[[], datetime] | None = None,
         sleep: Callable[[float], None] | None = None,
     ) -> None:
@@ -125,6 +126,17 @@ class HistoryLegacyMigrationService:
         self.source_database = Path(source_database).resolve()
         self.history_root = Path(history_root).resolve()
         self.diagnostics_dir = Path(diagnostics_dir).resolve()
+        self.isolated_rehearsal = bool(isolated_rehearsal)
+        if self.isolated_rehearsal:
+            if not immutable_source:
+                raise ValueError("isolated rehearsal requires immutable_source")
+            for path in (
+                self.paths.data_root,
+                self.source_database,
+                self.history_root,
+                self.diagnostics_dir,
+            ):
+                assert_development_path(path)
         self.source = LegacyHistorySourceRepository(
             self.source_database, immutable=immutable_source
         )
@@ -254,7 +266,8 @@ class HistoryLegacyMigrationService:
         after_target_commit: Callable[[str, int], None] | None = None,
         after_checkpoint: Callable[[str, int], None] | None = None,
     ) -> dict[str, Any]:
-        safe_chunk_rows = max(1, min(int(chunk_rows), 500))
+        maximum_chunk_rows = 5000 if self.isolated_rehearsal else 500
+        safe_chunk_rows = max(1, min(int(chunk_rows), maximum_chunk_rows))
         inventory = self.inventory(exact_counts=True)
         if inventory["classification_counts"]["UNKNOWN_SCHEMA"]:
             return self._not_ready("unknown legacy history schema", inventory=inventory)
@@ -286,11 +299,21 @@ class HistoryLegacyMigrationService:
         self._write_json(MIGRATION_REPORT_FILE_NAME, result)
         return result
 
-    def resume(self, migration_id: str, **kwargs: Any) -> dict[str, Any]:
+    def resume(
+        self,
+        migration_id: str,
+        *,
+        chunk_rows: int | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
         record = self.journal.get(migration_id)
         if record is None:
             raise ValueError(f"unknown migration: {migration_id}")
-        return self.start(migration_id=migration_id, chunk_rows=record.chunk_rows, **kwargs)
+        return self.start(
+            migration_id=migration_id,
+            chunk_rows=record.chunk_rows if chunk_rows is None else chunk_rows,
+            **kwargs,
+        )
 
     def pause(self, migration_id: str) -> dict[str, Any]:
         self.journal.set_requested_state(migration_id, "PAUSED", now=self._now())
@@ -1333,8 +1356,37 @@ class HistoryLegacyMigrationService:
             raise ValueError("query parity requires shard authority")
         if spec.canonical_source:
             if checkpoint.authority_state == "SOURCE_DELETED":
+                canonical_checkpoint = self._required_table(
+                    migration_id, spec.canonical_source
+                )
+                if canonical_checkpoint.authority_state not in {
+                    "SHARD_AUTHORITY",
+                    "SOURCE_DELETE_ELIGIBLE",
+                    "SOURCE_DELETED",
+                }:
+                    raise ValueError("projection canonical target is not authoritative")
+                projection_ranges = [
+                    record
+                    for record in self.journal.range_records(migration_id)
+                    if str(record["source_table"]) == source_table
+                    and str(record["target_month"]) != "INVALID"
+                ]
+                if (
+                    not projection_ranges
+                    or checkpoint.duplicate_count != checkpoint.verified_count
+                    or sum(int(record["verified_count"]) for record in projection_ranges)
+                    != checkpoint.verified_count
+                    or any(
+                        str(record["status"]) != "VERIFIED"
+                        or int(record["source_count"]) != int(record["verified_count"])
+                        or int(record["duplicate_count"]) != int(record["source_count"])
+                        or str(record["source_digest"]) != str(record["target_digest"])
+                        for record in projection_ranges
+                    )
+                ):
+                    raise RuntimeError("projection post-delete provenance is incomplete")
                 evidence = self._validate_post_delete_target(
-                    checkpoint,
+                    canonical_checkpoint,
                     kind=spec.entity_type,
                     expected_source_table=spec.canonical_source,
                 )
@@ -1344,8 +1396,12 @@ class HistoryLegacyMigrationService:
                     "projection_duplicate": True,
                     "canonical_source": spec.canonical_source,
                     "verified_rows": checkpoint.verified_count,
-                    "canonical_mapping_rows": evidence["target_rows"],
+                    "canonical_mapping_rows": checkpoint.verified_count,
+                    "canonical_target_rows": evidence["target_rows"],
                     "canonical_mapping_hash": evidence["mapping_hash"],
+                    "projection_provenance_digest": self._stable_digest(
+                        projection_ranges
+                    ),
                     "post_delete": True,
                     "target_query": evidence,
                     "result": "PASS",

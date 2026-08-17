@@ -49,7 +49,12 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         help="write the command result as new JSON evidence below D:/study",
     )
-    parser.add_argument("--chunk-rows", type=int, default=250, choices=(100, 250, 500))
+    parser.add_argument(
+        "--chunk-rows",
+        type=int,
+        default=None,
+        choices=(100, 250, 500, 1000, 2500, 5000),
+    )
     parser.add_argument("--delete-batch-rows", type=int, default=500, choices=(250, 500, 1000))
     parser.add_argument("--expected-plan-digest")
     parser.add_argument("--expected-source-identity")
@@ -57,6 +62,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-elapsed-seconds", type=float, default=2.0)
     parser.add_argument("--slow-storage-delay-seconds", type=float, default=0.0)
     parser.add_argument("--immutable-source", action="store_true")
+    parser.add_argument("--isolated-rehearsal", action="store_true")
     parser.add_argument("--unattended-active", action="store_true")
     parser.add_argument(
         "--light",
@@ -94,6 +100,7 @@ def _service(args: argparse.Namespace) -> HistoryLegacyMigrationService:
         history_root=history_root,
         diagnostics_dir=diagnostics,
         immutable_source=args.immutable_source,
+        isolated_rehearsal=args.isolated_rehearsal,
     )
 
 
@@ -119,7 +126,7 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "start":
         result = service.start(
             migration_id=args.migration_id,
-            chunk_rows=args.chunk_rows,
+            chunk_rows=args.chunk_rows or 250,
             max_elapsed_seconds=args.max_elapsed_seconds,
             slow_storage_delay_seconds=args.slow_storage_delay_seconds,
             unattended_active=lambda: bool(args.unattended_active),
@@ -133,6 +140,7 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit("resume requires --migration-id")
         result = service.resume(
             args.migration_id,
+            chunk_rows=args.chunk_rows,
             max_elapsed_seconds=args.max_elapsed_seconds,
             slow_storage_delay_seconds=args.slow_storage_delay_seconds,
             unattended_active=lambda: bool(args.unattended_active),

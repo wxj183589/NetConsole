@@ -80,6 +80,48 @@ def _target_count(service: HistoryLegacyMigrationService) -> int:
     return total
 
 
+def test_large_chunks_require_immutable_isolated_rehearsal(tmp_path: Path) -> None:
+    default_root = tmp_path / "default"
+    default_source = _source_database(
+        default_root, rows=[(1, "a", "2026-08-01T00:00:00")]
+    )
+    default_result = _service(default_root, default_source).start(
+        chunk_rows=5000, max_elapsed_seconds=0
+    )
+    assert default_result["migration"]["chunk_rows"] == 500
+
+    isolated_root = tmp_path / "isolated"
+    isolated_source = _source_database(
+        isolated_root, rows=[(1, "a", "2026-08-01T00:00:00")]
+    )
+    paths = PathResolver(
+        app_root=isolated_root,
+        data_root=isolated_root / "runtime",
+    )
+    service = HistoryLegacyMigrationService(
+        paths,
+        site_id="site-a",
+        source_database=isolated_source,
+        history_root=isolated_root / "target" / "history",
+        diagnostics_dir=isolated_root / "diagnostics",
+        immutable_source=True,
+        isolated_rehearsal=True,
+    )
+    isolated_result = service.start(chunk_rows=5000, max_elapsed_seconds=0)
+    assert isolated_result["migration"]["chunk_rows"] == 5000
+
+    with pytest.raises(ValueError, match="immutable_source"):
+        HistoryLegacyMigrationService(
+            paths,
+            site_id="site-a",
+            source_database=isolated_source,
+            history_root=isolated_root / "mutable" / "history",
+            diagnostics_dir=isolated_root / "mutable" / "diagnostics",
+            immutable_source=False,
+            isolated_rehearsal=True,
+        )
+
+
 def test_inventory_classifies_supported_unsupported_and_unknown_schema(tmp_path: Path) -> None:
     source = _source_database(tmp_path)
     with sqlite3.connect(source) as conn:
@@ -752,6 +794,102 @@ def test_source_delete_applies_exact_plan_and_preserves_unsupported_rows(
         assert connection.execute(
             "SELECT COUNT(*) FROM ac_fit_ap_unauthenticated_history"
         ).fetchone()[0] == 1
+
+
+def test_post_delete_projection_revalidates_larger_canonical_target(
+    tmp_path: Path,
+) -> None:
+    source = _source_database(
+        tmp_path,
+        rows=[(1, "a", "2026-08-01T00:00:00")],
+    )
+    with sqlite3.connect(source) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE ac_fit_ap_optical_history (
+                id INTEGER PRIMARY KEY, ac_device_uuid TEXT NOT NULL, ap_uuid TEXT NOT NULL,
+                interface_name TEXT, rx_power TEXT, tx_power TEXT, collected_at TEXT, created_at TEXT
+            );
+            CREATE TABLE ap_optical_history (
+                id INTEGER PRIMARY KEY, history_uuid TEXT, ap_uuid TEXT NOT NULL, side TEXT,
+                device_uuid TEXT, interface_name TEXT, rx_power TEXT, tx_power TEXT,
+                alarm_status TEXT, collected_at TEXT, data_source TEXT, is_latest INTEGER,
+                created_at TEXT
+            );
+            INSERT INTO ac_fit_ap_optical_history VALUES
+                (1, 'ac-1', 'ap-1', 'GE1/0/1', '-10', '-2',
+                 '2026-08-01T00:00:00', '2026-08-01T00:00:00');
+            INSERT INTO ac_fit_ap_optical_history VALUES
+                (2, 'ac-1', 'ap-2', 'GE1/0/2', '-11', '-3',
+                 '2026-08-01T00:01:00', '2026-08-01T00:01:00');
+            INSERT INTO ap_optical_history VALUES
+                (9, 'history-9', 'ap-1', 'A', 'ac-1', 'GE1/0/1', '-10', '-2',
+                 'normal', '2026-08-01T00:00:00', 'legacy', 1,
+                 '2026-08-01T00:00:00');
+            """
+        )
+        connection.commit()
+    service = _service(tmp_path, source, immutable_source=False)
+    service.start(migration_id="projection-post-delete", max_elapsed_seconds=0)
+    for table in (
+        "device_facts_history",
+        "ac_fit_ap_optical_history",
+        "ap_optical_history",
+    ):
+        checkpoint = next(
+            item
+            for item in service.status("projection-post-delete")["tables"]
+            if item["source_table"] == table
+        )
+        service.cutover(
+            "projection-post-delete",
+            table,
+            expected_revision=int(checkpoint["cutover_revision"]),
+            reason="isolated verification passed",
+        )
+        checkpoint = next(
+            item
+            for item in service.status("projection-post-delete")["tables"]
+            if item["source_table"] == table
+        )
+        service.evaluate_delete_eligibility(
+            "projection-post-delete",
+            table,
+            expected_revision=int(checkpoint["cutover_revision"]),
+            observation={
+                "query_validation": True,
+                "consumer_validation": True,
+                "integrity_mismatch": False,
+            },
+            reason="isolated observation passed",
+        )
+    plan = service.preview_delete_plan("projection-post-delete")
+    revisions = {
+        str(item["source_table"]): int(item["cutover_revision"])
+        for item in plan["tables"]
+    }
+    service.delete_source(
+        plan,
+        expected_plan_digest=str(plan["plan_digest"]),
+        expected_source_identity=str(plan["source_database_identity"]),
+        expected_table_revisions=revisions,
+        batch_rows=250,
+        apply=True,
+        allow_development_root_only=True,
+        development_root=tmp_path,
+    )
+
+    parity = service.validate_query_parity(
+        "projection-post-delete", "ap_optical_history"
+    )
+
+    assert parity["result"] == "PASS"
+    assert parity["post_delete"] is True
+    assert parity["verified_rows"] == 1
+    assert parity["canonical_mapping_rows"] == 1
+    assert parity["canonical_target_rows"] == 2
+    assert parity["target_query"]["target_rows"] == 2
+    assert len(parity["projection_provenance_digest"]) == 64
 
 
 def test_source_delete_revalidates_identity_inside_single_write_transaction(

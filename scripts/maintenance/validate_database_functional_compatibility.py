@@ -1247,12 +1247,12 @@ def _parity_kind(
             path.stem,
             *(str(value.get(key) or "") for key in ("phase", "stage", "check_id", "test_id", "name", "kind", "format")),
         ]
-    ).upper().replace("-", "_")
+    ).upper().replace("-", "_").replace("POST_FINAL_REPLACE", "POST_REPLACE")
     has_status = "result" in value or "status" in value
     node_marker = " ".join(
         str(value.get(key) or "")
         for key in ("phase", "stage", "check_id", "test_id", "name", "kind", "format")
-    ).upper().replace("-", "_")
+    ).upper().replace("-", "_").replace("POST_FINAL_REPLACE", "POST_REPLACE")
     if has_status and "POST_REPLACE" in marker and "PARITY" in marker and (
         pointer == "$" or "POST_REPLACE" in node_marker
     ):

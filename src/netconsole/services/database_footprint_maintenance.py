@@ -26,21 +26,22 @@ SNAPSHOT_FORMAT = "netconsole-sqlite-online-backup-v1"
 
 
 def _assert_sqlite_sidecars_quiescent(path: Path) -> None:
-    """Refuse main-file replacement while WAL shared state may still be live."""
+    """Refuse live WAL and remove closed-connection sidecars before replacement."""
 
-    active = [
-        sidecar
-        for sidecar in (
-            path.with_name(f"{path.name}-wal"),
-            path.with_name(f"{path.name}-shm"),
-        )
-        if sidecar.exists() and sidecar.stat().st_size > 0
-    ]
-    if active:
-        names = ", ".join(sidecar.name for sidecar in active)
+    wal = path.with_name(f"{path.name}-wal")
+    shm = path.with_name(f"{path.name}-shm")
+    if wal.exists() and wal.stat().st_size > 0:
         raise sqlite3.OperationalError(
-            f"database sidecars must be checkpointed and closed before replacement: {names}"
+            f"database sidecars must be checkpointed and closed before replacement: {wal.name}"
         )
+    for sidecar in (wal, shm):
+        try:
+            sidecar.unlink(missing_ok=True)
+        except OSError as exc:
+            raise sqlite3.OperationalError(
+                "database sidecars must be checkpointed and closed before replacement: "
+                f"{sidecar.name}"
+            ) from exc
 
 
 def _remove_sqlite_sidecars(path: Path) -> None:
@@ -217,7 +218,11 @@ def sqlite_online_backup_readonly(
     }
 
 
-def sqlite_quick_profile(path: str | Path) -> dict[str, Any]:
+def sqlite_quick_profile(
+    path: str | Path,
+    *,
+    immutable: bool = False,
+) -> dict[str, Any]:
     database = Path(path).resolve()
     result: dict[str, Any] = {
         "size_bytes": database.stat().st_size if database.is_file() else 0,
@@ -233,7 +238,7 @@ def sqlite_quick_profile(path: str | Path) -> dict[str, Any]:
     }
     if database.is_symlink() or not database.is_file() or result["size_bytes"] <= 0:
         return result
-    with closing(_connect_readonly(database)) as connection:
+    with closing(_connect_readonly(database, immutable=immutable)) as connection:
         result["quick_check"] = str(connection.execute("PRAGMA quick_check").fetchone()[0])
         result["page_count"] = int(connection.execute("PRAGMA page_count").fetchone()[0])
         result["page_size"] = int(connection.execute("PRAGMA page_size").fetchone()[0])
@@ -648,6 +653,7 @@ class DevelopmentDatabaseCompactService:
             active = sqlite_quick_profile(source_path)
             active["content_fingerprint"] = sqlite_content_fingerprint(source_path)
             self._assert_equivalent(before, active)
+            _assert_sqlite_sidecars_quiescent(source_path)
         except Exception:
             if compacted_path.exists():
                 active = sqlite_quick_profile(source_path)
@@ -702,11 +708,14 @@ class DevelopmentDatabaseCompactService:
             displaced,
             development_root=self.development_root,
         )
+        _assert_sqlite_sidecars_quiescent(source_path)
+        _assert_sqlite_sidecars_quiescent(rollback_path)
         _atomic_replace(rollback_path, source_path)
         _fsync_parent_directory(source_path)
         restored = sqlite_quick_profile(source_path)
         restored["content_fingerprint"] = sqlite_content_fingerprint(source_path)
         self._assert_equivalent(previous, restored)
+        _assert_sqlite_sidecars_quiescent(source_path)
         return {
             "rolled_back": True,
             "active": str(source_path),
@@ -728,8 +737,11 @@ class DevelopmentDatabaseCompactService:
                 raise sqlite3.DatabaseError(f"database compact fingerprint mismatch: {field}")
 
 
-def _connect_readonly(path: Path) -> sqlite3.Connection:
-    connection = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True, timeout=30)
+def _connect_readonly(path: Path, *, immutable: bool = False) -> sqlite3.Connection:
+    immutable_query = "&immutable=1" if immutable else ""
+    connection = sqlite3.connect(
+        f"{path.as_uri()}?mode=ro{immutable_query}", uri=True, timeout=30
+    )
     connection.execute("PRAGMA query_only = ON")
     connection.execute("PRAGMA busy_timeout = 30000")
     return connection
