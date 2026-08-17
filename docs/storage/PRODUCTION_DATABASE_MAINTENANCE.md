@@ -9,12 +9,27 @@ NetConsole 的生产数据库维护能力是独立安全边界，不复用或放
 
 - `PRODUCTION_STORAGE_CUTOVER_READY = FALSE`
 - `PRODUCTION_MUTATION = NONE`
+- `PRODUCTION_CUTOVER_AUTHORIZED = FALSE`
 - `FAIL_CLOSED = TRUE`
 
 代码能力已实现，但当前 production rollback owner 仍为
 `PENDING_PRODUCTION_BACKUP`，没有 VERIFIED production rollback set，也没有生产
 cutover 授权。不得把 capability 存在、隔离 rehearsal 通过或 manifest 生成解释为
 已执行生产迁移。
+
+当前 implementation 与历史 rehearsal evidence 是两个不同身份：
+
+- `CURRENT_IMPLEMENTATION_HEAD` 从实际 Git repository 或 packaged build metadata
+  读取，不能由 caller 自报；
+- `REHEARSAL_EVIDENCE_HEAD` 只记录上游隔离 rehearsal 的 provenance，不能冒充当前
+  implementation validation。
+
+CLI 仍要求 `--git-head`，但该值只作为 caller claim。它与实际 repository/build HEAD
+不一致时立即返回 `CURRENT_HEAD_MISMATCH`，且不会生成 manifest 或进入 preflight。
+`--rehearsal-evidence-head` 独立记录历史 evidence HEAD。底层 manifest build/publish
+helper 同样必须接收 runtime-derived evidence binding，不再接受 caller 提供的生成 HEAD。
+source worktree 或 packaged build metadata 还必须明确 `build_dirty=false`；dirty 或无法
+确认 clean 的实现没有可用的 `CURRENT_IMPLEMENTATION_HEAD`，立即失败关闭。
 
 ## 固定作用域
 
@@ -55,6 +70,10 @@ manifest，并默认登记 rollback owner、production backup、writer quiescenc
 authorization 阻塞项。即使 source/candidate identity 与全部自动化测试一致，preflight
 也会拒绝该 manifest；只有在真实生产前置条件均已建立后，由受控授权流程生成无阻塞项
 的 `EXECUTABLE` manifest，才可能进入后续 gate。
+
+manifest 转为 `EXECUTABLE` 时，`generated_git_head` 必须等于运行时重新解析的
+`CURRENT_IMPLEMENTATION_HEAD`。旧 rehearsal HEAD 只能出现在 authorization evidence
+的 `rehearsal_evidence_head`，不能继续生成可执行 manifest。
 
 manifest 和命令输出文件均为 create-only；既有路径或 `--output` 与 `--manifest`
 相同一律在任何操作前拒绝。production preflight 在确认不存在非空 WAL 后使用
@@ -100,8 +119,39 @@ mutation 入口必须同时具备：
 11. 所有 production gate 为 PASS。
 12. replacement 后 restart 与 functional gate 为 PASS。
 
+静态 writer quiescence evidence 必须明确记录 runtime writer stopped、database owner
+inactive、WAL zero 与 SQLite sidecar quiescent。进入 maintenance lock 后、atomic replace
+之前还会获取 Backend 排他锁，并重新验证：
+
+- repository/build HEAD 未变化；
+- runtime writer 已停止且数据库 owner 不活动；
+- WAL 为零且 sidecar 可安全收敛；
+- source SHA-256、size、schema fingerprint 与 manifest/preflight 完全一致；
+- replacement candidate identity 未变化。
+
+任一 execution-time recheck 失败都记录 journal 并在 switch 前失败关闭。
+
+production authorization evidence 必须同时记录：
+
+- `current_implementation_head`
+- `rehearsal_evidence_head`
+- `source_snapshot_identity`
+- `manifest_generated_head`
+- `storage_registry_sha256`
+- `production_maintenance_script_sha256`
+
+最终 gate 不接受 `key=true` 这类 caller 布尔值。每个 gate 必须提供
+`production-current-head-gate-v1` evidence，状态为 `PASS`，并绑定同一
+`current_implementation_head`。最终授权至少覆盖 TARGETED、FAST、CONSUMER、FULL、
+Renderer、Electron、Architecture、No-Reinflation 与 functional compatibility；旧
+rehearsal evidence 只保留为 provenance。本阶段不重复运行完整 gate，等当前生产快照、
+exact manifest、VERIFIED rollback owner 与 maintenance gate 全部准备完成后，再针对最终
+integrated HEAD 统一重跑。
+
 restart 或 functional gate 失败时必须使用已验证 rollback authority 恢复，并保留
-失败数据库和 journal；不得以清理失败现场代替恢复。
+失败数据库和 journal；自动 rollback 在恢复替换前也必须重新取得 Backend 排他锁、
+复核当前 HEAD 和 rollback owner。无法证明 writer/owner 已静默时拒绝恢复替换并保留
+失败现场，不得以并发改写或清理失败现场代替恢复。
 
 ## Backup 生命周期
 

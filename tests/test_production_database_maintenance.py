@@ -4,13 +4,18 @@ import json
 import sqlite3
 from contextlib import closing
 from pathlib import Path
+from typing import Any, Callable
 
 import pytest
 
+import netconsole.services.production_database_maintenance as production_maintenance_module
+from netconsole.core.backend_instance_lock import BackendInstanceInUseError
+from netconsole.core.build_metadata import current_build_metadata
 from netconsole.core.paths import PathResolver
 from netconsole.services.production_database_maintenance import (
     PRODUCTION_AUTHORIZATION_TOKEN,
     PRODUCTION_GATE_KEYS,
+    ProductionEvidenceBinding,
     ProductionMaintenanceCapability,
     ProductionMaintenanceError,
     ProductionRollbackOwner,
@@ -19,11 +24,42 @@ from netconsole.services.production_database_maintenance import (
 )
 from netconsole.services.database_footprint_maintenance import sqlite_quick_profile
 from netconsole.services.database_upgrade.sqlite_consistency import sqlite_backup
-from scripts.maintenance.production_database_maintenance import main as production_main
+from scripts.maintenance.production_database_maintenance import (
+    _evidence_pass,
+    main as production_main,
+)
 
 
-HEAD = "ce2f0d98f9e8305b36a004ef0b7bdbc6fd2ad237"
 ROOT = Path(__file__).resolve().parents[1]
+HEAD = str(current_build_metadata(ROOT)["git_commit_full"])
+REHEARSAL_HEAD = "ce2f0d98f9e8305b36a004ef0b7bdbc6fd2ad237"
+_REAL_BUILD_METADATA = current_build_metadata
+
+
+@pytest.fixture(autouse=True)
+def _clean_build_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
+    def read_clean_metadata(root: Path) -> dict[str, Any]:
+        metadata = dict(_REAL_BUILD_METADATA(root))
+        metadata["build_dirty"] = False
+        return metadata
+
+    monkeypatch.setattr(
+        production_maintenance_module,
+        "current_build_metadata",
+        read_clean_metadata,
+    )
+
+
+def _binding(paths: PathResolver, *, claimed_head: str = HEAD) -> ProductionEvidenceBinding:
+    return ProductionEvidenceBinding.from_runtime(
+        paths,
+        claimed_current_head=claimed_head,
+        rehearsal_evidence_head=REHEARSAL_HEAD,
+        storage_registry=ROOT / "config" / "storage_registry.yaml",
+        production_maintenance_script=(
+            ROOT / "scripts" / "maintenance" / "production_database_maintenance.py"
+        ),
+    )
 
 
 def _site(tmp_path: Path) -> tuple[PathResolver, Path, Path]:
@@ -114,6 +150,7 @@ def _capability(
     *,
     operation_id: str = "test-operation",
     source_identity: str = "snapshot-identity",
+    runtime_lock_factory: Callable[[PathResolver], Any] | None = None,
 ) -> ProductionMaintenanceCapability:
     site = paths.data_root / "sites" / "宁波地铁12号线" / "db"
     profiles = {
@@ -124,10 +161,13 @@ def _capability(
         name: _backup(paths, name)[1]
         for name in ("devices.db", "tasks.db")
     }
+    kwargs = {}
+    if runtime_lock_factory is not None:
+        kwargs["runtime_lock_factory"] = runtime_lock_factory
     return ProductionMaintenanceCapability(
         paths,
         site_id="legacy-dfd356e96ea0",
-        authoritative_git_head=HEAD,
+        evidence_binding=_binding(paths),
         rollback_owners={
             ("legacy-dfd356e96ea0", "devices.db"): _owner(
                 "devices.db",
@@ -150,22 +190,28 @@ def _capability(
                 backup_relative_path=backups["tasks.db"]["relative"],
             ),
         },
+        **kwargs,
     )
 
 
 def _manifest(tmp_path: Path, database: Path, *, candidate: Path | None = None) -> Path:
+    binding = _binding(PathResolver(data_root=tmp_path / "binding-data-root"))
     value = build_exact_manifest(
         database,
         candidate=candidate or database,
         site_id="legacy-dfd356e96ea0",
         row_identity={"table": "records", "key": "id"},
         expected_count=2,
-        generated_git_head=HEAD,
+        evidence_binding=binding,
         plan_kind="test",
         execution_status="EXECUTABLE",
         blocking_prerequisites=(),
     )
-    return write_exact_manifest(tmp_path / "manifest.json", value)
+    return write_exact_manifest(
+        tmp_path / "manifest.json",
+        value,
+        evidence_binding=binding,
+    )
 
 
 def _candidate(paths: PathResolver, operation_id: str, database: str) -> Path:
@@ -179,8 +225,57 @@ def _candidate(paths: PathResolver, operation_id: str, database: str) -> Path:
     return path
 
 
-def _gates() -> dict[str, bool]:
-    return {key: True for key in PRODUCTION_GATE_KEYS}
+def _gates() -> dict[str, dict[str, str]]:
+    return {
+        key: {
+            "status": "PASS",
+            "current_implementation_head": HEAD,
+            "evidence_sha256": "a" * 64,
+        }
+        for key in PRODUCTION_GATE_KEYS
+    }
+
+
+class _RejectedRuntimeLock:
+    def __init__(self, paths: PathResolver) -> None:
+        self.paths = paths
+
+    def acquire(self) -> None:
+        raise BackendInstanceInUseError(self.paths.data_root, {"pid": 1234})
+
+    def release(self) -> None:
+        raise AssertionError("rejected runtime lock must not be released")
+
+
+class _DriftingRuntimeLock:
+    def __init__(self, active: Path) -> None:
+        self.active = active
+
+    def acquire(self) -> None:
+        with closing(sqlite3.connect(self.active)) as connection:
+            connection.execute("INSERT INTO records(value) VALUES ('late-writer')")
+            connection.commit()
+
+    def release(self) -> None:
+        return None
+
+
+class _CountingRuntimeLock:
+    def __init__(self, state: dict[str, int], *, reject_on: int = 0) -> None:
+        self.state = state
+        self.reject_on = reject_on
+        self.acquired = False
+
+    def acquire(self) -> None:
+        self.state["acquires"] += 1
+        if self.state["acquires"] == self.reject_on:
+            raise BackendInstanceInUseError(Path("D:/test-data"), {"pid": 1234})
+        self.acquired = True
+
+    def release(self) -> None:
+        if self.acquired:
+            self.state["releases"] += 1
+            self.acquired = False
 
 
 def test_production_capability_requires_exact_allowlist(tmp_path: Path) -> None:
@@ -189,7 +284,96 @@ def test_production_capability_requires_exact_allowlist(tmp_path: Path) -> None:
         ProductionMaintenanceCapability(
             paths,
             site_id="other-site",
-            authoritative_git_head=HEAD,
+            evidence_binding=_binding(paths),
+        )
+
+
+def test_evidence_binding_rejects_registry_or_script_content_drift(
+    tmp_path: Path,
+) -> None:
+    paths, _site_path, _root = _site(tmp_path)
+    registry = tmp_path / "storage_registry.yaml"
+    script = tmp_path / "production_database_maintenance.py"
+    registry.write_text('{"version": 1}\n', encoding="utf-8")
+    script.write_text("# production boundary\n", encoding="utf-8")
+    binding = ProductionEvidenceBinding.from_runtime(
+        paths,
+        claimed_current_head=HEAD,
+        rehearsal_evidence_head=REHEARSAL_HEAD,
+        storage_registry=registry,
+        production_maintenance_script=script,
+    )
+
+    registry.write_text('{"version": 2}\n', encoding="utf-8")
+    with pytest.raises(ProductionMaintenanceError, match="EVIDENCE_BINDING_CHANGED"):
+        binding.assert_current(paths)
+
+    registry.write_text('{"version": 1}\n', encoding="utf-8")
+    script.write_text("# changed production boundary\n", encoding="utf-8")
+    with pytest.raises(ProductionMaintenanceError, match="EVIDENCE_BINDING_CHANGED"):
+        binding.assert_current(paths)
+
+
+def test_evidence_binding_rejects_dirty_implementation_head(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, _site_path, _root = _site(tmp_path)
+    metadata = dict(_REAL_BUILD_METADATA(ROOT))
+    metadata["build_dirty"] = True
+    monkeypatch.setattr(
+        production_maintenance_module,
+        "current_build_metadata",
+        lambda _root: metadata,
+    )
+
+    with pytest.raises(ProductionMaintenanceError, match="CURRENT_HEAD_DIRTY"):
+        _binding(paths)
+
+
+def test_quiescence_evidence_requires_all_execution_safety_fields(
+    tmp_path: Path,
+) -> None:
+    paths, _site_path, _root = _site(tmp_path)
+    evidence = tmp_path / "quiescence.json"
+    value = {
+        "evidence_type": "production-writer-quiescence-v1",
+        "status": "PASS",
+        "site_id": "legacy-dfd356e96ea0",
+        "operation_id": "op-quiescence",
+        "current_implementation_head": HEAD,
+        "rehearsal_evidence_head": REHEARSAL_HEAD,
+        "verified_at": "2026-08-17T00:00:00Z",
+        "runtime_writer_stopped": True,
+        "database_owner_inactive": True,
+        "wal_zero": True,
+        "sqlite_sidecars_quiescent": True,
+    }
+    evidence.write_text(json.dumps(value), encoding="utf-8")
+    binding = _binding(paths)
+    assert _evidence_pass(
+        evidence,
+        label="production-writer-quiescence-v1",
+        site_id="legacy-dfd356e96ea0",
+        operation_id="op-quiescence",
+        binding=binding,
+    )
+
+    for key in (
+        "runtime_writer_stopped",
+        "database_owner_inactive",
+        "wal_zero",
+        "sqlite_sidecars_quiescent",
+    ):
+        invalid = dict(value)
+        invalid[key] = False
+        evidence.write_text(json.dumps(invalid), encoding="utf-8")
+        assert not _evidence_pass(
+            evidence,
+            label="production-writer-quiescence-v1",
+            site_id="legacy-dfd356e96ea0",
+            operation_id="op-quiescence",
+            binding=binding,
         )
 
 
@@ -237,7 +421,7 @@ def test_preflight_rejects_tampered_manifest_missing_owner_and_active_writer(
     without_owner = ProductionMaintenanceCapability(
         paths,
         site_id="legacy-dfd356e96ea0",
-        authoritative_git_head=HEAD,
+        evidence_binding=_binding(paths),
     )
     with pytest.raises(ProductionMaintenanceError, match="owner is not registered"):
         without_owner.preflight(
@@ -266,6 +450,65 @@ def test_preflight_rejects_tampered_manifest_missing_owner_and_active_writer(
         )
 
 
+def test_preflight_rejects_gate_evidence_from_rehearsal_head(tmp_path: Path) -> None:
+    paths, site, _ = _site(tmp_path)
+    manifest = _manifest(tmp_path, site / "db" / "devices.db")
+    source_identity = json.loads(manifest.read_text(encoding="utf-8"))[
+        "database_identity"
+    ]
+    capability = _capability(paths, source_identity=source_identity)
+    gates = _gates()
+    gates["full"]["current_implementation_head"] = REHEARSAL_HEAD
+
+    with pytest.raises(ProductionMaintenanceError, match="not current-HEAD PASS"):
+        capability.preflight(
+            manifest,
+            mode="production",
+            writer_quiescent=True,
+            gates=gates,
+        )
+
+
+def test_preflight_rejects_executable_manifest_from_rehearsal_head(
+    tmp_path: Path,
+) -> None:
+    paths, site, _ = _site(tmp_path)
+    active = site / "db" / "devices.db"
+    binding = _binding(paths)
+    value = build_exact_manifest(
+        active,
+        candidate=active,
+        site_id="legacy-dfd356e96ea0",
+        row_identity={"table": "records", "key": "id"},
+        expected_count=2,
+        evidence_binding=binding,
+        plan_kind="stale-executable",
+        execution_status="EXECUTABLE",
+        blocking_prerequisites=(),
+    )
+    value["generated_git_head"] = REHEARSAL_HEAD
+    with pytest.raises(ProductionMaintenanceError, match="CURRENT_HEAD_MISMATCH"):
+        write_exact_manifest(
+            tmp_path / "rejected-stale-manifest.json",
+            value,
+            evidence_binding=binding,
+        )
+    manifest = tmp_path / "stale-manifest.json"
+    manifest.write_text(json.dumps(value), encoding="utf-8")
+    capability = _capability(
+        paths,
+        source_identity=value["database_identity"],
+    )
+
+    with pytest.raises(ProductionMaintenanceError, match="generated Git HEAD mismatch"):
+        capability.preflight(
+            manifest,
+            mode="production",
+            writer_quiescent=True,
+            gates=_gates(),
+        )
+
+
 def test_execute_replace_requires_explicit_authorization_and_supports_rollback(tmp_path: Path) -> None:
     paths, site, _ = _site(tmp_path)
     active = site / "db" / "devices.db"
@@ -277,7 +520,8 @@ def test_execute_replace_requires_explicit_authorization_and_supports_rollback(t
         )
         connection.commit()
     manifest = _manifest(tmp_path, active, candidate=candidate)
-    source_identity = json.loads(manifest.read_text(encoding="utf-8"))["database_identity"]
+    manifest_value = json.loads(manifest.read_text(encoding="utf-8"))
+    source_identity = manifest_value["database_identity"]
     capability = _capability(
         paths,
         operation_id="op-replace",
@@ -311,6 +555,26 @@ def test_execute_replace_requires_explicit_authorization_and_supports_rollback(t
         functional_gate=lambda: True,
     )
     assert result["replaced"] is True
+    assert result["execution_time_recheck"] == {
+        "runtime_writer_stopped": True,
+        "database_owner_inactive": True,
+        "wal_zero": True,
+        "sqlite_sidecars_quiescent": True,
+        "source_sha256": manifest_value["source_sha256"],
+        "source_size": manifest_value["source_size"],
+        "schema_fingerprint": manifest_value["schema_fingerprint"],
+        "status": "PASS",
+    }
+    assert result["evidence_binding"] == {
+        "current_implementation_head": HEAD,
+        "rehearsal_evidence_head": REHEARSAL_HEAD,
+        "source_snapshot_identity": source_identity,
+        "manifest_generated_head": HEAD,
+        "storage_registry_sha256": _binding(paths).storage_registry_sha256,
+        "production_maintenance_script_sha256": _binding(
+            paths
+        ).production_maintenance_script_sha256,
+    }
     with closing(sqlite3.connect(active)) as connection:
         assert connection.execute("SELECT value FROM records").fetchone()[0] == "candidate"
     restored = capability.rollback(
@@ -340,10 +604,12 @@ def test_post_switch_restart_failure_rolls_back_and_finalizes_journal(tmp_path: 
         connection.commit()
     manifest = _manifest(tmp_path, active, candidate=candidate)
     source_identity = json.loads(manifest.read_text(encoding="utf-8"))["database_identity"]
+    lock_state = {"acquires": 0, "releases": 0}
     capability = _capability(
         paths,
         operation_id="op-restart-failure",
         source_identity=source_identity,
+        runtime_lock_factory=lambda _paths: _CountingRuntimeLock(lock_state),
     )
     rollback_path = _backup(paths, "devices.db")[0]
     rollback_sha = sqlite_quick_profile(rollback_path)["sha256"]
@@ -374,8 +640,70 @@ def test_post_switch_restart_failure_rolls_back_and_finalizes_journal(tmp_path: 
     )
     assert journal["stage"] == "failed_rolled_back"
     assert journal["rollback_performed"] is True
+    assert lock_state == {"acquires": 2, "releases": 2}
     assert rollback_path.is_file()
     assert sqlite_quick_profile(rollback_path)["sha256"] == rollback_sha
+
+
+def test_post_switch_rollback_rejects_active_runtime_owner(tmp_path: Path) -> None:
+    paths, site, root = _site(tmp_path)
+    active = site / "db" / "devices.db"
+    candidate = _candidate(paths, "op-rollback-runtime-active", "devices.db")
+    with closing(sqlite3.connect(candidate)) as connection:
+        connection.execute("CREATE TABLE records (id INTEGER PRIMARY KEY, value TEXT)")
+        connection.executemany(
+            "INSERT INTO records(value) VALUES (?)", [("candidate",), ("candidate-2",)]
+        )
+        connection.commit()
+    manifest = _manifest(tmp_path, active, candidate=candidate)
+    source_identity = json.loads(manifest.read_text(encoding="utf-8"))[
+        "database_identity"
+    ]
+    lock_state = {"acquires": 0, "releases": 0}
+    capability = _capability(
+        paths,
+        operation_id="op-rollback-runtime-active",
+        source_identity=source_identity,
+        runtime_lock_factory=lambda _paths: _CountingRuntimeLock(
+            lock_state,
+            reject_on=2,
+        ),
+    )
+    rollback_path = _backup(paths, "devices.db")[0]
+
+    with pytest.raises(
+        ProductionMaintenanceError,
+        match="post-switch verification and rollback both failed",
+    ):
+        capability.execute_replace(
+            manifest,
+            candidate=candidate,
+            rollback=rollback_path,
+            mode="production",
+            authorization=PRODUCTION_AUTHORIZATION_TOKEN,
+            writer_quiescent=True,
+            gates=_gates(),
+            operation_id="op-rollback-runtime-active",
+            restart_verifier=lambda: False,
+            functional_gate=lambda: True,
+        )
+
+    with closing(sqlite3.connect(active)) as connection:
+        assert connection.execute("SELECT value FROM records ORDER BY id").fetchall() == [
+            ("candidate",),
+            ("candidate-2",),
+        ]
+    journal = json.loads(
+        (
+            root
+            / "runtime"
+            / "database_upgrade"
+            / "op-rollback-runtime-active.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert journal["stage"] == "failed"
+    assert journal["rollback_error_type"] == "ProductionMaintenanceError"
+    assert lock_state == {"acquires": 2, "releases": 1}
 
 
 def test_execute_rejects_candidate_content_drift_with_same_total_rows(
@@ -418,6 +746,78 @@ def test_execute_rejects_candidate_content_drift_with_same_total_rows(
         )
 
     assert sqlite_quick_profile(active)["sha256"] == active_sha
+
+
+def test_execute_rechecks_runtime_owner_before_atomic_replace(tmp_path: Path) -> None:
+    paths, site, _ = _site(tmp_path)
+    active = site / "db" / "devices.db"
+    candidate = _candidate(paths, "op-runtime-active", "devices.db")
+    sqlite_backup(active, candidate)
+    manifest = _manifest(tmp_path, active, candidate=candidate)
+    source_identity = json.loads(manifest.read_text(encoding="utf-8"))[
+        "database_identity"
+    ]
+    capability = _capability(
+        paths,
+        operation_id="op-runtime-active",
+        source_identity=source_identity,
+        runtime_lock_factory=_RejectedRuntimeLock,
+    )
+    rollback_path = _backup(paths, "devices.db")[0]
+    active_sha = sqlite_quick_profile(active)["sha256"]
+
+    with pytest.raises(ProductionMaintenanceError, match="EXECUTION_QUIESCENCE_FAILED"):
+        capability.execute_replace(
+            manifest,
+            candidate=candidate,
+            rollback=rollback_path,
+            mode="production",
+            authorization=PRODUCTION_AUTHORIZATION_TOKEN,
+            writer_quiescent=True,
+            gates=_gates(),
+            operation_id="op-runtime-active",
+            restart_verifier=lambda: True,
+            functional_gate=lambda: True,
+        )
+
+    assert sqlite_quick_profile(active)["sha256"] == active_sha
+    assert candidate.is_file()
+
+
+def test_execute_rechecks_source_identity_inside_runtime_lock(tmp_path: Path) -> None:
+    paths, site, _ = _site(tmp_path)
+    active = site / "db" / "devices.db"
+    candidate = _candidate(paths, "op-late-writer", "devices.db")
+    sqlite_backup(active, candidate)
+    manifest = _manifest(tmp_path, active, candidate=candidate)
+    source_identity = json.loads(manifest.read_text(encoding="utf-8"))[
+        "database_identity"
+    ]
+    capability = _capability(
+        paths,
+        operation_id="op-late-writer",
+        source_identity=source_identity,
+        runtime_lock_factory=lambda _paths: _DriftingRuntimeLock(active),
+    )
+    rollback_path = _backup(paths, "devices.db")[0]
+
+    with pytest.raises(ProductionMaintenanceError, match="STALE_SOURCE"):
+        capability.execute_replace(
+            manifest,
+            candidate=candidate,
+            rollback=rollback_path,
+            mode="production",
+            authorization=PRODUCTION_AUTHORIZATION_TOKEN,
+            writer_quiescent=True,
+            gates=_gates(),
+            operation_id="op-late-writer",
+            restart_verifier=lambda: True,
+            functional_gate=lambda: True,
+        )
+
+    with closing(sqlite3.connect(active)) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM records").fetchone()[0] == 3
+    assert candidate.is_file()
 
 
 def test_preflight_uses_immutable_reads_and_rejects_nonempty_wal(tmp_path: Path) -> None:
@@ -470,6 +870,8 @@ def test_manifest_cli_refuses_conflicting_or_existing_output(tmp_path: Path) -> 
         str(manifest),
         "--git-head",
         HEAD,
+        "--rehearsal-evidence-head",
+        REHEARSAL_HEAD,
         "--expected-count",
         "2",
         "--row-identity",
@@ -487,6 +889,38 @@ def test_manifest_cli_refuses_conflicting_or_existing_output(tmp_path: Path) -> 
     with pytest.raises(FileExistsError, match="output already exists"):
         production_main([*common, "--output", str(output)])
     assert output.read_text(encoding="utf-8") == "preserve"
+    assert not manifest.exists()
+
+
+def test_manifest_cli_rejects_caller_head_mismatch(tmp_path: Path) -> None:
+    _paths, site, root = _site(tmp_path)
+    manifest = root / "manifest.json"
+
+    with pytest.raises(ProductionMaintenanceError, match="CURRENT_HEAD_MISMATCH"):
+        production_main(
+            [
+                "manifest",
+                "--data-root",
+                str(root),
+                "--site-id",
+                "legacy-dfd356e96ea0",
+                "--source",
+                str(site / "db" / "devices.db"),
+                "--candidate",
+                str(site / "db" / "devices.db"),
+                "--manifest",
+                str(manifest),
+                "--git-head",
+                REHEARSAL_HEAD,
+                "--rehearsal-evidence-head",
+                REHEARSAL_HEAD,
+                "--expected-count",
+                "2",
+                "--row-identity-json",
+                json.dumps({"table_counts": {"records": 2}}),
+            ]
+        )
+
     assert not manifest.exists()
 
 
@@ -511,6 +945,8 @@ def test_manifest_cli_accepts_structured_identity_and_stays_not_executable(
             str(manifest),
             "--git-head",
             HEAD,
+            "--rehearsal-evidence-head",
+            REHEARSAL_HEAD,
             "--expected-count",
             "2",
             "--row-identity-json",
@@ -518,6 +954,7 @@ def test_manifest_cli_accepts_structured_identity_and_stays_not_executable(
         ]
     ) == 0
     value = json.loads(manifest.read_text(encoding="utf-8"))
+    assert value["generated_git_head"] == HEAD
     assert value["execution_status"] == "NOT_EXECUTABLE"
     assert value["blocking_prerequisites"]
 

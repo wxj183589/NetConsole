@@ -21,6 +21,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
+from netconsole.core.backend_instance_lock import (
+    BackendInstanceInUseError,
+    BackendInstanceLock,
+)
+from netconsole.core.build_metadata import current_build_metadata
 from netconsole.core.paths import PathResolver
 from netconsole.services.database_footprint_maintenance import (
     assert_development_path,
@@ -44,6 +49,7 @@ DEFAULT_MANIFEST_BLOCKERS = (
     "PRODUCTION_ROLLBACK_OWNER",
     "PRODUCTION_BACKUP_VERIFIED",
     "PRODUCTION_WRITER_QUIESCENCE",
+    "FINAL_CURRENT_HEAD_GATES",
     "PRODUCTION_CUTOVER_AUTHORIZATION",
 )
 PRODUCTION_GATE_KEYS = (
@@ -57,6 +63,12 @@ PRODUCTION_GATE_KEYS = (
     "functional_compatibility",
     "site_package",
     "restart",
+    "targeted",
+    "fast",
+    "consumer",
+    "renderer",
+    "electron",
+    "architecture",
     "no_reinflation",
     "full",
 )
@@ -78,6 +90,41 @@ def _digest(value: object) -> str:
 def _is_sha256(value: object) -> bool:
     text = str(value or "").casefold()
     return len(text) == 64 and set(text) <= _HEX64
+
+
+def _is_git_head(value: object) -> bool:
+    text = str(value or "").casefold()
+    return len(text) == 40 and set(text) <= _HEX64
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _actual_implementation_head(implementation_root: Path) -> str:
+    metadata = current_build_metadata(implementation_root)
+    head = str(metadata.get("git_commit_full") or "").casefold()
+    if not _is_git_head(head):
+        raise ProductionMaintenanceError(
+            "CURRENT_HEAD_UNAVAILABLE: repository/build HEAD is not verifiable"
+        )
+    if metadata.get("build_dirty") is not False:
+        raise ProductionMaintenanceError(
+            "CURRENT_HEAD_DIRTY: repository/build content is not bound to HEAD"
+        )
+    component_heads = {
+        str(metadata.get("frontend_commit") or "").casefold(),
+        str(metadata.get("backend_commit") or "").casefold(),
+    }
+    if component_heads != {head}:
+        raise ProductionMaintenanceError(
+            "CURRENT_HEAD_MISMATCH: build component HEADs do not match"
+        )
+    return head
 
 
 def _safe_identifier(value: object) -> str:
@@ -178,7 +225,7 @@ def _candidate_identity(profile: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _assert_sidecars_quiescent(path: Path) -> None:
+def _assert_sidecars_quiescent(path: Path) -> dict[str, Any]:
     wal = path.with_name(f"{path.name}-wal")
     shm = path.with_name(f"{path.name}-shm")
     if wal.is_file() and wal.stat().st_size > 0:
@@ -192,6 +239,14 @@ def _assert_sidecars_quiescent(path: Path) -> None:
             raise ProductionMaintenanceError(
                 f"SQLite writer/runtime sidecars are active: {sidecar.name}"
             ) from exc
+    if wal.exists() or shm.exists():
+        raise ProductionMaintenanceError("SQLite sidecar quiescence could not be verified")
+    return {
+        "wal_zero": True,
+        "sqlite_sidecars_quiescent": True,
+        "wal_path": str(wal),
+        "shm_path": str(shm),
+    }
 
 
 def _atomic_replace(source: Path, destination: Path) -> None:
@@ -239,6 +294,98 @@ def _sqlite_backup_readonly(source: Path, destination: Path) -> dict[str, Any]:
         gc.collect()
         temporary.unlink(missing_ok=True)
     return _sqlite_immutable_profile(destination)
+
+
+@dataclass(frozen=True)
+class ProductionEvidenceBinding:
+    """Runtime-derived implementation identity plus rehearsal provenance."""
+
+    current_implementation_head: str
+    rehearsal_evidence_head: str
+    storage_registry_sha256: str
+    production_maintenance_script_sha256: str
+    implementation_root: Path
+    storage_registry_path: Path
+    production_maintenance_script_path: Path
+
+    @classmethod
+    def from_runtime(
+        cls,
+        paths: PathResolver,
+        *,
+        claimed_current_head: str,
+        rehearsal_evidence_head: str,
+        storage_registry: str | Path,
+        production_maintenance_script: str | Path,
+    ) -> "ProductionEvidenceBinding":
+        implementation_root = Path(paths.app_root).resolve()
+        actual = _actual_implementation_head(implementation_root)
+        claimed = str(claimed_current_head or "").casefold()
+        if claimed != actual:
+            raise ProductionMaintenanceError(
+                "CURRENT_HEAD_MISMATCH: caller HEAD does not match repository/build HEAD"
+            )
+        rehearsal = str(rehearsal_evidence_head or "").casefold()
+        if not _is_git_head(rehearsal):
+            raise ProductionMaintenanceError("rehearsal evidence HEAD is invalid")
+        registry = Path(storage_registry).resolve(strict=True)
+        script = Path(production_maintenance_script).resolve(strict=True)
+        if not registry.is_file() or not script.is_file():
+            raise ProductionMaintenanceError("production evidence source is not a file")
+        return cls(
+            current_implementation_head=actual,
+            rehearsal_evidence_head=rehearsal,
+            storage_registry_sha256=_sha256_file(registry),
+            production_maintenance_script_sha256=_sha256_file(script),
+            implementation_root=implementation_root,
+            storage_registry_path=registry,
+            production_maintenance_script_path=script,
+        )
+
+    def assert_current(self, paths: PathResolver | None = None) -> None:
+        if (
+            paths is not None
+            and Path(paths.app_root).resolve() != self.implementation_root
+        ):
+            raise ProductionMaintenanceError(
+                "CURRENT_HEAD_MISMATCH: implementation root changed during execution"
+            )
+        if (
+            _actual_implementation_head(self.implementation_root)
+            != self.current_implementation_head
+        ):
+            raise ProductionMaintenanceError(
+                "CURRENT_HEAD_MISMATCH: repository/build HEAD changed during execution"
+            )
+        try:
+            registry_sha256 = _sha256_file(self.storage_registry_path)
+            script_sha256 = _sha256_file(self.production_maintenance_script_path)
+        except OSError as exc:
+            raise ProductionMaintenanceError(
+                "EVIDENCE_BINDING_CHANGED: bound source is unavailable"
+            ) from exc
+        if (
+            registry_sha256 != self.storage_registry_sha256
+            or script_sha256 != self.production_maintenance_script_sha256
+        ):
+            raise ProductionMaintenanceError(
+                "EVIDENCE_BINDING_CHANGED: registry or maintenance script changed"
+            )
+
+    def authorization_evidence(
+        self,
+        manifest: "ProductionManifest",
+    ) -> dict[str, str]:
+        return {
+            "current_implementation_head": self.current_implementation_head,
+            "rehearsal_evidence_head": self.rehearsal_evidence_head,
+            "source_snapshot_identity": manifest.database_identity,
+            "manifest_generated_head": manifest.generated_git_head,
+            "storage_registry_sha256": self.storage_registry_sha256,
+            "production_maintenance_script_sha256": (
+                self.production_maintenance_script_sha256
+            ),
+        }
 
 
 @dataclass(frozen=True)
@@ -493,13 +640,14 @@ def build_exact_manifest(
     site_id: str,
     row_identity: Mapping[str, Any],
     expected_count: int,
-    generated_git_head: str,
+    evidence_binding: ProductionEvidenceBinding,
     plan_kind: str,
     execution_status: str = "NOT_EXECUTABLE",
     blocking_prerequisites: Sequence[str] = DEFAULT_MANIFEST_BLOCKERS,
 ) -> dict[str, Any]:
     """Build a deterministic manifest from a rehearsal database profile."""
 
+    evidence_binding.assert_current()
     source_path = Path(database).resolve()
     candidate_path = Path(candidate).resolve()
     profile = _sqlite_immutable_profile(source_path)
@@ -535,7 +683,7 @@ def build_exact_manifest(
         "row_identity": dict(row_identity),
         "expected_count": int(expected_count),
         "candidate_identity": _candidate_identity(candidate_profile),
-        "generated_git_head": str(generated_git_head),
+        "generated_git_head": evidence_binding.current_implementation_head,
         "plan_kind": str(plan_kind),
         "execution_status": str(execution_status),
         "blocking_prerequisites": [
@@ -544,14 +692,26 @@ def build_exact_manifest(
     }
     body["plan_digest"] = _digest(body)
     body["manifest_digest"] = _digest(body)
+    evidence_binding.assert_current()
     return body
 
 
-def write_exact_manifest(path: str | Path, manifest: Mapping[str, Any]) -> Path:
+def write_exact_manifest(
+    path: str | Path,
+    manifest: Mapping[str, Any],
+    *,
+    evidence_binding: ProductionEvidenceBinding,
+) -> Path:
+    evidence_binding.assert_current()
     target = assert_development_path(path)
     if target.exists():
         raise FileExistsError(f"manifest already exists: {target}")
     parsed = ProductionManifest.from_mapping(manifest)
+    if parsed.generated_git_head != evidence_binding.current_implementation_head:
+        raise ProductionMaintenanceError(
+            "CURRENT_HEAD_MISMATCH: manifest generation HEAD is not current"
+        )
+    evidence_binding.assert_current()
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(
         json.dumps(parsed.as_dict(), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
@@ -568,19 +728,20 @@ class ProductionMaintenanceCapability:
         paths: PathResolver,
         *,
         site_id: str,
-        authoritative_git_head: str,
+        evidence_binding: ProductionEvidenceBinding,
         rollback_owners: Mapping[tuple[str, str], ProductionRollbackOwner] | None = None,
         journal_factory: Callable[[PathResolver, str], DatabaseUpgradeJournal] = DatabaseUpgradeJournal,
+        runtime_lock_factory: Callable[[PathResolver], Any] = BackendInstanceLock,
     ) -> None:
         self.paths = paths
         self.site_id = str(site_id).strip()
-        self.authoritative_git_head = str(authoritative_git_head).strip()
+        self.evidence_binding = evidence_binding
         self._rollback_owners = dict(rollback_owners or {})
         self._journal_factory = journal_factory
+        self._runtime_lock_factory = runtime_lock_factory
         if self.site_id not in PRODUCTION_SITE_ALLOWLIST:
             raise ProductionMaintenanceError("site is not in the production allowlist")
-        if not self.authoritative_git_head:
-            raise ProductionMaintenanceError("authoritative Git HEAD is required")
+        self.evidence_binding.assert_current(self.paths)
 
     @staticmethod
     def load_rollback_owners(path: str | Path) -> dict[tuple[str, str], ProductionRollbackOwner]:
@@ -653,6 +814,7 @@ class ProductionMaintenanceCapability:
         return target
 
     def _read_manifest(self, path: str | Path) -> ProductionManifest:
+        self.evidence_binding.assert_current(self.paths)
         source = Path(path).resolve()
         raw = json.loads(source.read_text(encoding="utf-8"))
         if not isinstance(raw, Mapping):
@@ -660,7 +822,10 @@ class ProductionMaintenanceCapability:
         manifest = ProductionManifest.from_mapping(raw)
         if manifest.site_id != self.site_id:
             raise ProductionMaintenanceError("manifest site_id mismatch")
-        if manifest.generated_git_head != self.authoritative_git_head:
+        if (
+            manifest.generated_git_head
+            != self.evidence_binding.current_implementation_head
+        ):
             raise ProductionMaintenanceError("STALE_PLAN: generated Git HEAD mismatch")
         if manifest.manifest_digest:
             body = dict(raw)
@@ -671,6 +836,20 @@ class ProductionMaintenanceCapability:
             if plan != _digest(body):
                 raise ProductionMaintenanceError("STALE_PLAN: plan digest mismatch")
         return manifest
+
+    def _acquire_runtime_quiescence_lock(self) -> Any:
+        runtime_lock = self._runtime_lock_factory(self.paths)
+        try:
+            runtime_lock.acquire()
+        except BackendInstanceInUseError as exc:
+            raise ProductionMaintenanceError(
+                "EXECUTION_QUIESCENCE_FAILED: runtime writer or database owner is active"
+            ) from exc
+        except Exception as exc:
+            raise ProductionMaintenanceError(
+                "EXECUTION_QUIESCENCE_FAILED: runtime inactivity cannot be verified"
+            ) from exc
+        return runtime_lock
 
     def _validate_rollback_owner(
         self,
@@ -726,13 +905,76 @@ class ProductionMaintenanceCapability:
             )
         return profile
 
+    def _validate_gate_evidence(
+        self,
+        gates: Mapping[str, Mapping[str, Any]],
+    ) -> dict[str, dict[str, str]]:
+        missing = [key for key in PRODUCTION_GATE_KEYS if key not in gates]
+        extras = sorted(set(gates) - set(PRODUCTION_GATE_KEYS))
+        if missing or extras:
+            details = [*(f"missing:{key}" for key in missing), *(f"unknown:{key}" for key in extras)]
+            raise ProductionMaintenanceError(
+                "production gate evidence is incomplete: " + ", ".join(details)
+            )
+        validated: dict[str, dict[str, str]] = {}
+        for key in PRODUCTION_GATE_KEYS:
+            item = gates[key]
+            if not isinstance(item, Mapping):
+                raise ProductionMaintenanceError(
+                    f"production gate evidence is invalid: {key}"
+                )
+            head = str(item.get("current_implementation_head") or "").casefold()
+            digest = str(item.get("evidence_sha256") or "").casefold()
+            if (
+                str(item.get("status") or "") != "PASS"
+                or head != self.evidence_binding.current_implementation_head
+                or not _is_sha256(digest)
+            ):
+                raise ProductionMaintenanceError(
+                    f"production gate is not current-HEAD PASS: {key}"
+                )
+            validated[key] = {
+                "status": "PASS",
+                "current_implementation_head": head,
+                "evidence_sha256": digest,
+            }
+        return validated
+
+    def _execution_time_recheck(
+        self,
+        manifest: ProductionManifest,
+        database: Path,
+        preflight: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        self.evidence_binding.assert_current(self.paths)
+        sidecars = _assert_sidecars_quiescent(database)
+        source = self._validate_source(manifest, database)
+        if (
+            str(source["sha256"]) != str(preflight["source_sha256"])
+            or int(source["size_bytes"]) != int(preflight["source_size"])
+            or str(source["schema_digest"]) != str(preflight["schema_fingerprint"])
+        ):
+            raise ProductionMaintenanceError(
+                "STALE_SOURCE: source identity changed after static preflight"
+            )
+        return {
+            "runtime_writer_stopped": True,
+            "database_owner_inactive": True,
+            "wal_zero": sidecars["wal_zero"],
+            "sqlite_sidecars_quiescent": sidecars["sqlite_sidecars_quiescent"],
+            "source_sha256": str(source["sha256"]),
+            "source_size": int(source["size_bytes"]),
+            "schema_fingerprint": str(source["schema_digest"]),
+            "status": "PASS",
+        }
+
     def preflight(
         self,
         manifest_path: str | Path,
         *,
         mode: str,
         writer_quiescent: bool,
-        gates: Mapping[str, bool],
+        gates: Mapping[str, Mapping[str, Any]],
     ) -> dict[str, Any]:
         manifest = self._read_manifest(manifest_path)
         _, site = self._site_and_database(manifest.database)
@@ -752,15 +994,13 @@ class ProductionMaintenanceCapability:
         *,
         mode: str,
         writer_quiescent: bool,
-        gates: Mapping[str, bool],
+        gates: Mapping[str, Mapping[str, Any]],
     ) -> dict[str, Any]:
         if mode != "production":
             raise ProductionMaintenanceError("production capability requires explicit mode=production")
         if writer_quiescent is not True:
             raise ProductionMaintenanceError("writer/runtime quiescence preflight failed")
-        missing = [key for key in PRODUCTION_GATE_KEYS if gates.get(key) is not True]
-        if missing:
-            raise ProductionMaintenanceError(f"production gate failed: {', '.join(missing)}")
+        validated_gates = self._validate_gate_evidence(gates)
         manifest = self._read_manifest(manifest_path)
         if manifest.execution_status != "EXECUTABLE":
             blockers = ", ".join(manifest.blocking_prerequisites) or "UNSPECIFIED"
@@ -784,7 +1024,8 @@ class ProductionMaintenanceCapability:
             "source_size": manifest.source_size,
             "schema_fingerprint": manifest.schema_fingerprint,
             "owner": owner.backup_set_id,
-            "gates": {key: True for key in PRODUCTION_GATE_KEYS},
+            "gates": validated_gates,
+            "evidence_binding": self.evidence_binding.authorization_evidence(manifest),
             "second_source_verification": "PASS",
             "mutation": "NONE",
         }
@@ -798,7 +1039,7 @@ class ProductionMaintenanceCapability:
         mode: str,
         authorization: str,
         writer_quiescent: bool,
-        gates: Mapping[str, bool],
+        gates: Mapping[str, Mapping[str, Any]],
         operation_id: str,
         restart_verifier: Callable[[], bool],
         functional_gate: Callable[[], bool],
@@ -838,8 +1079,6 @@ class ProductionMaintenanceCapability:
                 gates=gates,
             )
             candidate_profile = self._validate_candidate(manifest, candidate_path)
-            _assert_sidecars_quiescent(database)
-            _assert_sidecars_quiescent(candidate_path)
             journal = self._journal_factory(self.paths, operation_id)
             lock_key = site_database_maintenance_key(site.site_id)
             journal.update(
@@ -863,18 +1102,31 @@ class ProductionMaintenanceCapability:
                     raise ProductionMaintenanceError("rollback path does not match registered owner")
                 self._validate_rollback_owner(manifest, site, owner)
                 journal.update("backup_verified")
-                second = self._validate_source(manifest, database)
-                if second["sha256"] != manifest.source_sha256:
-                    raise ProductionMaintenanceError(
-                        "STALE_SOURCE: second source identity mismatch"
+                runtime_lock = self._acquire_runtime_quiescence_lock()
+                execution_recheck: dict[str, Any] | None = None
+                try:
+                    execution_recheck = self._execution_time_recheck(
+                        manifest,
+                        database,
+                        preflight,
                     )
-                second_candidate = self._validate_candidate(manifest, candidate_path)
-                if second_candidate["sha256"] != candidate_profile["sha256"]:
-                    raise ProductionMaintenanceError(
-                        "STALE_PLAN: candidate identity changed during second verification"
+                    _assert_sidecars_quiescent(candidate_path)
+                    second_candidate = self._validate_candidate(
+                        manifest,
+                        candidate_path,
                     )
-                _atomic_replace(candidate_path, database)
-                switched = True
+                    if second_candidate["sha256"] != candidate_profile["sha256"]:
+                        raise ProductionMaintenanceError(
+                            "STALE_PLAN: candidate identity changed during execution recheck"
+                        )
+                    journal.update(
+                        "execution_quiescence_verified",
+                        execution_time_recheck=execution_recheck,
+                    )
+                    _atomic_replace(candidate_path, database)
+                    switched = True
+                finally:
+                    runtime_lock.release()
                 journal.update("switched", switched=True)
                 if not restart_verifier():
                     raise ProductionMaintenanceError("restart verification failed")
@@ -891,7 +1143,14 @@ class ProductionMaintenanceCapability:
                     )
                     raise
                 try:
-                    self._rollback_locked(database, rollback_path, journal)
+                    rollback_runtime_lock = self._acquire_runtime_quiescence_lock()
+                    try:
+                        self.evidence_binding.assert_current(self.paths)
+                        self._validate_rollback_owner(manifest, site, owner)
+                        _assert_sidecars_quiescent(database)
+                        self._rollback_locked(database, rollback_path, journal)
+                    finally:
+                        rollback_runtime_lock.release()
                 except Exception as rollback_exc:
                     journal.update(
                         "failed",
@@ -922,6 +1181,10 @@ class ProductionMaintenanceCapability:
                 "rollback": str(rollback_path),
                 "restart": "PASS",
                 "functional_gate": "PASS",
+                "execution_time_recheck": execution_recheck,
+                "evidence_binding": self.evidence_binding.authorization_evidence(
+                    manifest
+                ),
             }
 
     def rollback(
@@ -942,6 +1205,7 @@ class ProductionMaintenanceCapability:
         owner = self._owner(database)
         rollback_path = Path(rollback).resolve()
         with database_maintenance_lock(self.paths, site_database_maintenance_key(site.site_id)):
+            self.evidence_binding.assert_current(self.paths)
             journal = self._journal_factory(self.paths, operation_id)
             journal.update(
                 "created",
@@ -953,16 +1217,24 @@ class ProductionMaintenanceCapability:
                 maintenance_lock=site_database_maintenance_key(site.site_id),
                 switched=True,
             )
-            rollback_profile = _sqlite_immutable_profile(rollback_path)
-            if (
-                not rollback_profile["valid"]
-                or str(rollback_profile["schema_digest"]) != owner.schema_fingerprint
-                or str(rollback_profile["sha256"]) != owner.backup_sha256
-                or int(rollback_profile["size_bytes"]) != owner.backup_size
-                or rollback_path != self._rollback_path(site, owner)
-            ):
-                raise ProductionMaintenanceError("rollback owner identity does not match rollback database")
-            result = self._rollback_locked(active, rollback_path, journal)
+            runtime_lock = self._acquire_runtime_quiescence_lock()
+            try:
+                _assert_sidecars_quiescent(active)
+                rollback_profile = _sqlite_immutable_profile(rollback_path)
+                if (
+                    not rollback_profile["valid"]
+                    or str(rollback_profile["schema_digest"])
+                    != owner.schema_fingerprint
+                    or str(rollback_profile["sha256"]) != owner.backup_sha256
+                    or int(rollback_profile["size_bytes"]) != owner.backup_size
+                    or rollback_path != self._rollback_path(site, owner)
+                ):
+                    raise ProductionMaintenanceError(
+                        "rollback owner identity does not match rollback database"
+                    )
+                result = self._rollback_locked(active, rollback_path, journal)
+            finally:
+                runtime_lock.release()
             journal.update("completed", rollback="PASS")
             return {"operation_id": operation_id, "site_id": site.site_id, **result}
 
@@ -1007,6 +1279,7 @@ __all__ = [
     "PRODUCTION_DATABASE_ALLOWLIST",
     "PRODUCTION_GATE_KEYS",
     "PRODUCTION_SITE_ALLOWLIST",
+    "ProductionEvidenceBinding",
     "ProductionMaintenanceCapability",
     "ProductionMaintenanceError",
     "ProductionManifest",

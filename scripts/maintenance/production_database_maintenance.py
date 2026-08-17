@@ -3,12 +3,13 @@
 The command is intentionally fail-closed.  ``preflight`` is read-only;
 ``execute`` and ``rollback`` require ``--mode production``, the exact
 authorization token, a verified owner in the storage registry, and every
-production gate set to ``true``.
+production gate backed by current-HEAD PASS evidence.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 from uuid import uuid4
@@ -17,6 +18,7 @@ from netconsole.core.paths import PathResolver
 from netconsole.services.database_footprint_maintenance import assert_development_path
 from netconsole.services.production_database_maintenance import (
     PRODUCTION_GATE_KEYS,
+    ProductionEvidenceBinding,
     ProductionMaintenanceCapability,
     build_exact_manifest,
     write_exact_manifest,
@@ -36,6 +38,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", type=Path)
     parser.add_argument("--registry", type=Path, default=Path("config/storage_registry.yaml"))
     parser.add_argument("--git-head", required=True)
+    parser.add_argument("--rehearsal-evidence-head", required=True)
     parser.add_argument("--plan-kind", default="production-database-maintenance")
     parser.add_argument("--expected-count", type=int, default=0)
     parser.add_argument("--row-identity", action="append", default=[])
@@ -49,17 +52,53 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--restart-evidence", type=Path)
     parser.add_argument("--functional-evidence", type=Path)
     parser.add_argument("--operation-id", default=f"production-maintenance-{uuid4().hex[:12]}")
-    parser.add_argument("--gate", action="append", default=[])
+    parser.add_argument("--gate-evidence", type=Path, action="append", default=[])
     return parser
 
 
-def _gates(values: list[str]) -> dict[str, bool]:
-    parsed: dict[str, bool] = {}
-    for value in values:
-        key, separator, raw = str(value).partition("=")
-        if not separator or key not in PRODUCTION_GATE_KEYS or raw.casefold() not in {"true", "false"}:
-            raise SystemExit(f"--gate must use known-key=true|false: {value}")
-        parsed[key] = raw.casefold() == "true"
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _gate_evidence(
+    paths: list[Path],
+    *,
+    binding: ProductionEvidenceBinding,
+) -> dict[str, dict[str, str]]:
+    parsed: dict[str, dict[str, str]] = {}
+    for raw_path in paths:
+        source = assert_development_path(raw_path)
+        if not source.is_file():
+            raise SystemExit(f"production gate evidence is not a file: {source}")
+        try:
+            value = json.loads(source.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise SystemExit(f"invalid production gate evidence: {source}") from exc
+        if not isinstance(value, dict):
+            raise SystemExit(f"production gate evidence must be an object: {source}")
+        key = str(value.get("gate") or "")
+        if key not in PRODUCTION_GATE_KEYS or key in parsed:
+            raise SystemExit(f"unknown or duplicate production gate evidence: {key}")
+        if (
+            str(value.get("evidence_type") or "")
+            != "production-current-head-gate-v1"
+            or str(value.get("status") or "") != "PASS"
+            or str(value.get("current_implementation_head") or "").casefold()
+            != binding.current_implementation_head
+            or str(value.get("rehearsal_evidence_head") or "").casefold()
+            != binding.rehearsal_evidence_head
+            or not str(value.get("verified_at") or "").strip()
+        ):
+            raise SystemExit(f"production gate evidence is not current-HEAD PASS: {key}")
+        parsed[key] = {
+            "status": "PASS",
+            "current_implementation_head": binding.current_implementation_head,
+            "evidence_sha256": _sha256_file(source),
+        }
     return parsed
 
 
@@ -80,7 +119,7 @@ def _evidence_pass(
     label: str,
     site_id: str,
     operation_id: str,
-    git_head: str,
+    binding: ProductionEvidenceBinding,
 ) -> bool:
     if path is None:
         return False
@@ -95,14 +134,36 @@ def _evidence_pass(
         and str(value.get("status") or "") == "PASS"
         and str(value.get("site_id") or "") == site_id
         and str(value.get("operation_id") or "") == operation_id
-        and str(value.get("generated_git_head") or "") == git_head
+        and str(value.get("current_implementation_head") or "").casefold()
+        == binding.current_implementation_head
+        and str(value.get("rehearsal_evidence_head") or "").casefold()
+        == binding.rehearsal_evidence_head
         and str(value.get("verified_at") or "").strip()
+        and (
+            label != "production-writer-quiescence-v1"
+            or all(
+                value.get(key) is True
+                for key in (
+                    "runtime_writer_stopped",
+                    "database_owner_inactive",
+                    "wal_zero",
+                    "sqlite_sidecars_quiescent",
+                )
+            )
+        )
     )
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     paths = PathResolver(data_root=args.data_root)
+    binding = ProductionEvidenceBinding.from_runtime(
+        paths,
+        claimed_current_head=args.git_head,
+        rehearsal_evidence_head=args.rehearsal_evidence_head,
+        storage_registry=args.registry,
+        production_maintenance_script=Path(__file__),
+    )
     output = assert_development_path(args.output) if args.output is not None else None
     if output is not None and output.exists():
         raise FileExistsError(f"output already exists: {output}")
@@ -137,10 +198,15 @@ def main(argv: list[str] | None = None) -> int:
             site_id=args.site_id,
             row_identity=row_identity,
             expected_count=args.expected_count,
-            generated_git_head=args.git_head,
+            evidence_binding=binding,
             plan_kind=args.plan_kind,
         )
-        write_exact_manifest(manifest_path, value)
+        binding.assert_current(paths)
+        write_exact_manifest(
+            manifest_path,
+            value,
+            evidence_binding=binding,
+        )
         _write_output(output, value)
         print(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True))
         return 0
@@ -151,16 +217,16 @@ def main(argv: list[str] | None = None) -> int:
     capability = ProductionMaintenanceCapability(
         paths,
         site_id=args.site_id,
-        authoritative_git_head=args.git_head,
+        evidence_binding=binding,
         rollback_owners=owners,
     )
-    gates = _gates(args.gate)
+    gates = _gate_evidence(args.gate_evidence, binding=binding)
     writer_quiescent = _evidence_pass(
         args.quiescence_evidence,
         label="production-writer-quiescence-v1",
         site_id=args.site_id,
         operation_id=args.operation_id,
-        git_head=args.git_head,
+        binding=binding,
     )
     if args.command == "preflight":
         if args.manifest is None:
@@ -188,14 +254,14 @@ def main(argv: list[str] | None = None) -> int:
                 label="production-restart-v1",
                 site_id=args.site_id,
                 operation_id=args.operation_id,
-                git_head=args.git_head,
+                binding=binding,
             ),
             functional_gate=lambda: _evidence_pass(
                 args.functional_evidence,
                 label="production-functional-gate-v1",
                 site_id=args.site_id,
                 operation_id=args.operation_id,
-                git_head=args.git_head,
+                binding=binding,
             ),
         )
     else:
