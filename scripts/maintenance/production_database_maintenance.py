@@ -101,6 +101,39 @@ def _validate_gate_source_semantics(
 ) -> None:
     if not reports:
         raise SystemExit(f"production gate evidence has no source reports: {key}")
+    if key == "current_exact_plans":
+        if len(reports) != 2:
+            raise SystemExit(
+                "production exact plan gate requires devices and tasks reports"
+            )
+        databases = set()
+        for report in reports:
+            generated_head = str(report.get("generated_git_head") or "").casefold()
+            database = Path(str(report.get("database") or "")).name
+            manifest_digest = str(report.get("manifest_digest") or "").casefold()
+            body = dict(report)
+            body.pop("manifest_digest", None)
+            if (
+                database not in {"devices.db", "tasks.db"}
+                or generated_head != binding.current_implementation_head
+                or str(report.get("execution_status") or "") != "NOT_EXECUTABLE"
+                or str(report.get("source_revision") or "") != str(report.get("source_sha256") or "")
+                or len(manifest_digest) != 64
+                or manifest_digest != hashlib.sha256(
+                    json.dumps(
+                        body,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        default=str,
+                    ).encode("utf-8")
+                ).hexdigest()
+            ):
+                raise SystemExit("production exact manifest source is invalid")
+            databases.add(database)
+        if databases != {"devices.db", "tasks.db"}:
+            raise SystemExit("production exact plan gate is missing devices or tasks")
+        return
     for report in reports:
         status, head = _source_status_and_head(report)
         if status != "PASS" or head != binding.current_implementation_head:
@@ -113,10 +146,50 @@ def _validate_gate_source_semantics(
             raise SystemExit(
                 f"production gate source report mode does not match gate: {key}"
             )
+        required_suites = {
+            "targeted": {"storage-targeted"},
+            "fast": {
+                "change-impact",
+                "ruff-changed",
+                "python-direct",
+                "renderer-direct",
+                "electron-direct",
+                "architecture-targeted",
+                "git-diff-check",
+            },
+            "consumer": {
+                "change-impact",
+                "ruff-changed",
+                "python-direct",
+                "renderer-direct",
+                "electron-direct",
+                "architecture-targeted",
+                "git-diff-check",
+                "renderer-full",
+                "python-full",
+                "electron-contract",
+                "architecture-guards",
+                "main-contract-smoke",
+            },
+            "full": {
+                "renderer-full",
+                "python-full",
+                "electron-contract",
+                "architecture-guards",
+                "main-contract-smoke",
+                "ruff-full",
+                "docs-path-guards",
+                "git-diff-check",
+            },
+        }[key]
         if report.get("failed") or report.get("not_run"):
             raise SystemExit(f"production gate source report is incomplete: {key}")
+        required = {str(item) for item in report.get("required_suites", [])}
+        passed = {str(item) for item in report.get("passed", [])}
+        if required != required_suites or not required_suites <= passed:
+            raise SystemExit(f"production gate source report suites failed: {key}")
         suites = report.get("executed_suites")
-        if not isinstance(suites, list) or not suites or any(
+        if isinstance(suites, list) and any(
             not isinstance(item, dict)
             or str(item.get("status") or "").upper() != "PASS"
             for item in suites
@@ -185,8 +258,6 @@ def _validate_gate_source_semantics(
         ):
             raise SystemExit("production No-Reinflation report is incomplete")
         return
-    if key == "current_exact_plans" and len(reports) != 2:
-        raise SystemExit("production exact plan gate requires devices and tasks reports")
     if any(str(report.get("gate") or "") != key for report in reports):
         raise SystemExit(f"production gate source report gate does not match: {key}")
 

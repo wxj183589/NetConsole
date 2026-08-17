@@ -392,9 +392,8 @@ def test_gate_evidence_is_bound_to_actual_current_head_pass_report(
                 "head_sha": HEAD,
                 "failed": [],
                 "not_run": [],
-                "executed_suites": [
-                    {"suite_id": "storage-targeted", "status": "PASS"}
-                ],
+                "required_suites": ["storage-targeted"],
+                "passed": ["storage-targeted"],
             }
         ),
         encoding="utf-8",
@@ -443,8 +442,23 @@ def test_gate_evidence_rejects_missing_changed_or_stale_source_report(
                 "head_sha": HEAD,
                 "failed": [],
                 "not_run": [],
-                "executed_suites": [
-                    {"suite_id": "python-full", "status": "PASS"}
+                "required_suites": [
+                    "change-impact",
+                    "ruff-changed",
+                    "python-direct",
+                    "renderer-direct",
+                    "electron-direct",
+                    "architecture-targeted",
+                    "git-diff-check",
+                ],
+                "passed": [
+                    "change-impact",
+                    "ruff-changed",
+                    "python-direct",
+                    "renderer-direct",
+                    "electron-direct",
+                    "architecture-targeted",
+                    "git-diff-check",
                 ],
             }
         ),
@@ -505,9 +519,8 @@ def test_gate_evidence_rejects_source_report_for_wrong_gate_semantics(
                 "head_sha": HEAD,
                 "failed": [],
                 "not_run": [],
-                "executed_suites": [
-                    {"suite_id": "python-full", "status": "PASS"}
-                ],
+                "required_suites": ["python-full"],
+                "passed": ["python-full"],
             }
         ),
         encoding="utf-8",
@@ -553,8 +566,23 @@ def test_bind_gate_cli_writes_create_only_source_bound_evidence(
                 "head_sha": HEAD,
                 "failed": [],
                 "not_run": [],
-                "executed_suites": [
-                    {"suite_id": "storage-targeted", "status": "PASS"}
+                "required_suites": [
+                    "change-impact",
+                    "ruff-changed",
+                    "python-direct",
+                    "renderer-direct",
+                    "electron-direct",
+                    "architecture-targeted",
+                    "git-diff-check",
+                ],
+                "passed": [
+                    "change-impact",
+                    "ruff-changed",
+                    "python-direct",
+                    "renderer-direct",
+                    "electron-direct",
+                    "architecture-targeted",
+                    "git-diff-check",
                 ],
             }
         ),
