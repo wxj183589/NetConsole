@@ -26,6 +26,7 @@ from netconsole.services.production_database_maintenance import (
 from netconsole.services.database_footprint_maintenance import sqlite_quick_profile
 from netconsole.services.database_upgrade.sqlite_consistency import sqlite_backup
 from scripts.maintenance.production_database_maintenance import (
+    _build_gate_wrapper,
     _evidence_pass,
     _gate_evidence,
     main as production_main,
@@ -227,15 +228,277 @@ def _candidate(paths: PathResolver, operation_id: str, database: str) -> Path:
     return path
 
 
-def _gates() -> dict[str, dict[str, str]]:
-    return {
-        key: {
-            "status": "PASS",
-            "current_implementation_head": HEAD,
-            "evidence_sha256": "a" * 64,
-        }
-        for key in PRODUCTION_GATE_KEYS
+def _json_digest(value: object) -> str:
+    return hashlib.sha256(
+        json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
+    ).hexdigest()
+
+
+def _gate_report(key: str) -> dict[str, object]:
+    suites = {
+        "targeted": {"storage-targeted"},
+        "fast": {
+            "change-impact",
+            "ruff-changed",
+            "python-direct",
+            "renderer-direct",
+            "electron-direct",
+            "architecture-targeted",
+            "git-diff-check",
+        },
+        "consumer": {
+            "change-impact",
+            "ruff-changed",
+            "python-direct",
+            "renderer-direct",
+            "electron-direct",
+            "architecture-targeted",
+            "git-diff-check",
+            "renderer-full",
+            "python-full",
+            "electron-contract",
+            "architecture-guards",
+            "main-contract-smoke",
+        },
+        "full": {
+            "renderer-full",
+            "python-full",
+            "electron-contract",
+            "architecture-guards",
+            "main-contract-smoke",
+            "ruff-full",
+            "docs-path-guards",
+            "git-diff-check",
+        },
     }
+    if key in suites:
+        return {
+            "mode": key,
+            "result": "PASS",
+            "head_sha": HEAD,
+            "failed": [],
+            "not_run": [],
+            "required_suites": sorted(suites[key]),
+            "passed": sorted(suites[key]),
+            "executed_suites": [
+                {"suite_id": suite, "status": "PASS"} for suite in sorted(suites[key])
+            ],
+        }
+    if key in {"renderer", "electron", "architecture"}:
+        return {
+            "mode": "full",
+            "result": "PASS",
+            "head_sha": HEAD,
+            "executed_suites": [
+                {"suite_id": suite, "status": "PASS"}
+                for suite in ("renderer-full", "electron-contract", "architecture-guards")
+            ],
+        }
+    if key == "current_snapshot_rehearsal":
+        return {
+            "source_preserved": True,
+            "devices": {
+                "format": "netconsole-sqlite-online-backup-v1",
+                "valid": True,
+                "quick_check": "ok",
+                "size_bytes": 100,
+                "sha256": "1" * 64,
+                "table_counts": {"records": 2},
+            },
+            "tasks": {
+                "format": "netconsole-sqlite-online-backup-v1",
+                "valid": True,
+                "quick_check": "ok",
+                "size_bytes": 100,
+                "sha256": "2" * 64,
+                "table_counts": {"records": 2},
+            },
+        }
+    if key == "current_task_rollout":
+        return {
+            **{
+                consumer: "PASS"
+                for consumer in (
+                    "Agent",
+                    "Artifact",
+                    "Ground",
+                    "Online MR",
+                    "REST",
+                    "Site Package",
+                    "Task Center",
+                    "WebSocket",
+                )
+            },
+            "restart": "PASS",
+            "task_results_verified": 2,
+            "site_package_counts": {"task_results": 2},
+        }
+    if key == "functional_compatibility":
+        matrix = [{"id": f"consumer-{index}", "status": "PASS"} for index in range(29)]
+        return {
+            "artifact": "FUNCTIONAL_COMPATIBILITY",
+            "status": "PASS",
+            "git_head": HEAD,
+            "audit_mode": "FINAL_EVIDENCE",
+            "generator": {"git_head": HEAD},
+            "final_evidence": {"git_head": HEAD},
+            "summary": {"consumer_check_count": 29, "passed_count": 29, "failed_count": 0},
+            "consumer_matrix": matrix,
+        }
+    if key == "site_package":
+        return {
+            "format": "netconsole-integrated-site-package-validation-v1",
+            "status": "PASS",
+            "git_head": HEAD,
+            "package": {"sha256": "3" * 64},
+            "parity": {
+                "operational": {"devices": True},
+                "authorities": {"history": True},
+                "repository_api": {"tasks": True},
+                "registered_storage": {"status": "PASS"},
+            },
+            "imported": {"restart": "PASS"},
+            "staging_cleanup": {
+                "export_success": True,
+                "import_success": True,
+                "import_failure": True,
+                "failure_rollback": True,
+                "interruption_recovery": {"status": "PASS"},
+                "interruption_remaining": [],
+            },
+        }
+    if key == "no_reinflation":
+        scenario_ids = (
+            "task_progress_and_result",
+            "ground_current_state",
+            "online_mr_raw_authority",
+            "ground_ping_syslog_raw_growth",
+            "device_lldp_ap_state",
+            "mesh_source_and_reparse",
+            "site_package_staging",
+            "backup_same_revision",
+        )
+        return {
+            "format": "netconsole-storage-no-reinflation",
+            "status": "PASS",
+            "git_head": HEAD,
+            "generator": {"git_head": HEAD},
+            "summary": {"scenario_count": 8, "passed": 8, "failed": 0},
+            "scenarios": [
+                {
+                    "scenario_id": scenario_id,
+                    "status": "PASS",
+                    "storage_amplification": {
+                        "measurement_status": "PASS",
+                        "total_physical_bytes": 1,
+                    },
+                    "cleanup": {"status": "PASS"},
+                }
+                for scenario_id in scenario_ids
+            ],
+        }
+    if key in {
+        "production_rollback_owner",
+        "production_backup_verified",
+        "production_maintenance_gate",
+        "restart",
+    }:
+        artifact = {
+            "production_rollback_owner": "PRODUCTION_ROLLBACK_OWNER",
+            "production_backup_verified": "PRODUCTION_BACKUP_VERIFIED",
+            "production_maintenance_gate": "PRODUCTION_MAINTENANCE_PREFLIGHT",
+            "restart": "PRODUCTION_RESTART_EVIDENCE",
+        }[key]
+        return {
+            "artifact": artifact,
+            "status": "PASS",
+            "git_head": HEAD,
+            "source_snapshot_identity": "4" * 64,
+            "site_id": "legacy-dfd356e96ea0",
+            "database": "devices.db",
+        }
+    raise AssertionError(f"unsupported gate report: {key}")
+
+
+def _exact_manifest_source(database: str) -> dict[str, object]:
+    value: dict[str, object] = {
+        "site_id": "legacy-dfd356e96ea0",
+        "database": database,
+        "database_identity": "5" * 64,
+        "source_size": 100,
+        "source_sha256": "6" * 64,
+        "schema_fingerprint": "7" * 64,
+        "source_revision": "6" * 64,
+        "row_identity": {"table_counts": {"records": 2}},
+        "expected_count": 2,
+        "candidate_identity": {
+            "sha256": "8" * 64,
+            "size_bytes": 100,
+            "schema_fingerprint": "9" * 64,
+            "table_counts": {"records": 2},
+        },
+        "generated_git_head": HEAD,
+        "plan_kind": "test",
+        "manifest_version": 2,
+        "immutable": True,
+        "execution_status": "NOT_EXECUTABLE",
+        "blocking_prerequisites": ["PENDING"],
+    }
+    value["plan_digest"] = _json_digest(value)
+    manifest_body = dict(value)
+    value["manifest_digest"] = _json_digest(manifest_body)
+    return value
+
+
+def _history_report(table: str) -> dict[str, object]:
+    return {
+        "result": "PASS",
+        "post_delete": True,
+        "source_table": table,
+        "target_query": {
+            "query_mode": "POST_DELETE_CANONICAL_TARGET_REQUERY",
+            "history_health": {"status": "ready"},
+            "expected_rows": 2,
+            "target_rows": 2,
+            "page_one_rows": 1,
+            "page_two_rows": 1,
+        },
+    }
+
+
+def _gates(paths: PathResolver) -> dict[str, dict[str, object]]:
+    source_root = paths.data_root / "diagnostics" / "gate-evidence"
+    source_root.mkdir(parents=True, exist_ok=True)
+    binding = _binding(paths)
+    gates: dict[str, dict[str, object]] = {}
+    history_tables = (
+        "ac_fit_ap_lldp_history",
+        "ac_fit_ap_optical_history",
+        "ac_fit_ap_radio_history",
+        "ac_fit_ap_resource_history",
+        "ap_lldp_history",
+        "ap_optical_history",
+        "device_facts_history",
+        "device_interfaces_history",
+        "device_lldp_neighbors_history",
+        "device_optical_modules_history",
+    )
+    for key in PRODUCTION_GATE_KEYS:
+        if key == "current_exact_plans":
+            reports = [_exact_manifest_source(database) for database in ("devices.db", "tasks.db")]
+        elif key == "current_history_copy_verify":
+            reports = [_history_report(table) for table in history_tables]
+        else:
+            reports = [_gate_report(key)]
+        source_paths: list[Path] = []
+        for index, report in enumerate(reports):
+            source = source_root / f"{key}-{index}.json"
+            source.write_text(json.dumps(report, ensure_ascii=False), encoding="utf-8")
+            source_paths.append(source)
+        gates[key] = _build_gate_wrapper(key, source_paths, binding=binding)
+    return gates
 
 
 class _RejectedRuntimeLock:
@@ -409,6 +672,9 @@ def test_gate_evidence_is_bound_to_actual_current_head_pass_report(
                 "current_implementation_head": HEAD,
                 "rehearsal_evidence_head": REHEARSAL_HEAD,
                 "verified_at": "2026-08-17T00:00:00Z",
+                "evidence_sha256": hashlib.sha256(
+                    json.dumps([source_sha256], separators=(",", ":")).encode("utf-8")
+                ).hexdigest(),
                 "source_reports": [
                     {
                         "path": str(source_report.resolve()),
@@ -553,6 +819,33 @@ def test_gate_evidence_rejects_source_report_for_wrong_gate_semantics(
         _gate_evidence([wrapper], binding=_binding(paths))
 
 
+def test_gate_evidence_rejects_exact_manifest_with_invalid_plan_digest(
+    tmp_path: Path,
+) -> None:
+    paths, _site_path, _root = _site(tmp_path)
+    gates = _gates(paths)
+    wrapper_value = gates["current_exact_plans"]
+    source_specs = wrapper_value["source_reports"]
+    assert isinstance(source_specs, list)
+    first = source_specs[0]
+    assert isinstance(first, dict)
+    manifest_path = Path(str(first["path"]))
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["plan_digest"] = "0" * 64
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    first["sha256"] = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    wrapper_value["evidence_sha256"] = hashlib.sha256(
+        json.dumps(
+            [str(item["sha256"]) for item in source_specs], separators=(",", ":")
+        ).encode("utf-8")
+    ).hexdigest()
+    wrapper = tmp_path / "exact-plans-wrapper.json"
+    wrapper.write_text(json.dumps(wrapper_value), encoding="utf-8")
+
+    with pytest.raises(SystemExit, match="exact manifest source is invalid"):
+        _gate_evidence([wrapper], binding=_binding(paths))
+
+
 def test_bind_gate_cli_writes_create_only_source_bound_evidence(
     tmp_path: Path,
 ) -> None:
@@ -642,14 +935,14 @@ def test_preflight_rejects_stale_source_and_requires_production_mode(tmp_path: P
             manifest,
             mode="development",
             writer_quiescent=True,
-            gates=_gates(),
+            gates=_gates(paths),
         )
     with pytest.raises(ProductionMaintenanceError, match="STALE_SOURCE"):
         capability.preflight(
             manifest,
             mode="production",
             writer_quiescent=True,
-            gates=_gates(),
+            gates=_gates(paths),
         )
 
 
@@ -668,7 +961,7 @@ def test_preflight_rejects_tampered_manifest_missing_owner_and_active_writer(
             manifest,
             mode="production",
             writer_quiescent=True,
-            gates=_gates(),
+            gates=_gates(paths),
         )
     capability = _capability(paths)
     with pytest.raises(ProductionMaintenanceError, match="quiescence"):
@@ -676,7 +969,7 @@ def test_preflight_rejects_tampered_manifest_missing_owner_and_active_writer(
             manifest,
             mode="production",
             writer_quiescent=False,
-            gates=_gates(),
+            gates=_gates(paths),
         )
     value = json.loads(manifest.read_text(encoding="utf-8"))
     value["expected_count"] = 3
@@ -686,7 +979,7 @@ def test_preflight_rejects_tampered_manifest_missing_owner_and_active_writer(
             manifest,
             mode="production",
             writer_quiescent=True,
-            gates=_gates(),
+            gates=_gates(paths),
         )
 
 
@@ -697,8 +990,29 @@ def test_preflight_rejects_gate_evidence_from_rehearsal_head(tmp_path: Path) -> 
         "database_identity"
     ]
     capability = _capability(paths, source_identity=source_identity)
-    gates = _gates()
+    gates = _gates(paths)
     gates["full"]["current_implementation_head"] = REHEARSAL_HEAD
+
+    with pytest.raises(ProductionMaintenanceError, match="not current-HEAD PASS"):
+        capability.preflight(
+            manifest,
+            mode="production",
+            writer_quiescent=True,
+            gates=gates,
+        )
+
+
+def test_preflight_rejects_unbound_gate_summary_at_service_boundary(tmp_path: Path) -> None:
+    paths, site, _ = _site(tmp_path)
+    manifest = _manifest(tmp_path, site / "db" / "devices.db")
+    source_identity = json.loads(manifest.read_text(encoding="utf-8"))["database_identity"]
+    capability = _capability(paths, source_identity=source_identity)
+    gates = _gates(paths)
+    gates["production_rollback_owner"] = {
+        "status": "PASS",
+        "current_implementation_head": HEAD,
+        "evidence_sha256": "a" * 64,
+    }
 
     with pytest.raises(ProductionMaintenanceError, match="not current-HEAD PASS"):
         capability.preflight(
@@ -745,7 +1059,7 @@ def test_preflight_rejects_executable_manifest_from_rehearsal_head(
             manifest,
             mode="production",
             writer_quiescent=True,
-            gates=_gates(),
+            gates=_gates(paths),
         )
 
 
@@ -777,7 +1091,7 @@ def test_execute_replace_requires_explicit_authorization_and_supports_rollback(t
             mode="production",
             authorization="",
             writer_quiescent=True,
-            gates=_gates(),
+            gates=_gates(paths),
             operation_id="op-no-auth",
             restart_verifier=lambda: True,
             functional_gate=lambda: True,
@@ -789,7 +1103,7 @@ def test_execute_replace_requires_explicit_authorization_and_supports_rollback(t
         mode="production",
         authorization=PRODUCTION_AUTHORIZATION_TOKEN,
         writer_quiescent=True,
-        gates=_gates(),
+        gates=_gates(paths),
         operation_id="op-replace",
         restart_verifier=lambda: True,
         functional_gate=lambda: True,
@@ -862,7 +1176,7 @@ def test_post_switch_restart_failure_rolls_back_and_finalizes_journal(tmp_path: 
             mode="production",
             authorization=PRODUCTION_AUTHORIZATION_TOKEN,
             writer_quiescent=True,
-            gates=_gates(),
+            gates=_gates(paths),
             operation_id="op-restart-failure",
             restart_verifier=lambda: False,
             functional_gate=lambda: True,
@@ -922,7 +1236,7 @@ def test_post_switch_rollback_rejects_active_runtime_owner(tmp_path: Path) -> No
             mode="production",
             authorization=PRODUCTION_AUTHORIZATION_TOKEN,
             writer_quiescent=True,
-            gates=_gates(),
+            gates=_gates(paths),
             operation_id="op-rollback-runtime-active",
             restart_verifier=lambda: False,
             functional_gate=lambda: True,
@@ -979,7 +1293,7 @@ def test_execute_rejects_candidate_content_drift_with_same_total_rows(
             mode="production",
             authorization=PRODUCTION_AUTHORIZATION_TOKEN,
             writer_quiescent=True,
-            gates=_gates(),
+            gates=_gates(paths),
             operation_id="op-candidate-drift",
             restart_verifier=lambda: True,
             functional_gate=lambda: True,
@@ -1014,7 +1328,7 @@ def test_execute_rechecks_runtime_owner_before_atomic_replace(tmp_path: Path) ->
             mode="production",
             authorization=PRODUCTION_AUTHORIZATION_TOKEN,
             writer_quiescent=True,
-            gates=_gates(),
+            gates=_gates(paths),
             operation_id="op-runtime-active",
             restart_verifier=lambda: True,
             functional_gate=lambda: True,
@@ -1049,7 +1363,7 @@ def test_execute_rechecks_source_identity_inside_runtime_lock(tmp_path: Path) ->
             mode="production",
             authorization=PRODUCTION_AUTHORIZATION_TOKEN,
             writer_quiescent=True,
-            gates=_gates(),
+            gates=_gates(paths),
             operation_id="op-late-writer",
             restart_verifier=lambda: True,
             functional_gate=lambda: True,
@@ -1075,7 +1389,7 @@ def test_preflight_uses_immutable_reads_and_rejects_nonempty_wal(tmp_path: Path)
         manifest,
         mode="production",
         writer_quiescent=True,
-        gates=_gates(),
+        gates=_gates(paths),
     )
     assert not wal.exists()
     assert not shm.exists()
@@ -1086,7 +1400,7 @@ def test_preflight_uses_immutable_reads_and_rejects_nonempty_wal(tmp_path: Path)
             manifest,
             mode="production",
             writer_quiescent=True,
-            gates=_gates(),
+            gates=_gates(paths),
         )
     assert wal.read_bytes() == b"active-wal"
     assert not shm.exists()
@@ -1207,5 +1521,5 @@ def test_manifest_cli_accepts_structured_identity_and_stays_not_executable(
             manifest,
             mode="production",
             writer_quiescent=True,
-            gates=_gates(),
+            gates=_gates(paths),
         )

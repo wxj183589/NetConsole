@@ -21,7 +21,9 @@ from netconsole.services.production_database_maintenance import (
     PRODUCTION_GATE_KEYS,
     ProductionEvidenceBinding,
     ProductionMaintenanceCapability,
+    ProductionMaintenanceError,
     build_exact_manifest,
+    validate_bound_production_gate,
     write_exact_manifest,
 )
 
@@ -294,8 +296,7 @@ def _build_gate_wrapper(
                 "current_implementation_head": head,
             }
         )
-    _validate_gate_source_semantics(key, reports, binding=binding)
-    return {
+    value: dict[str, object] = {
         "evidence_type": "production-current-head-gate-v2",
         "gate": key,
         "status": "PASS",
@@ -303,15 +304,25 @@ def _build_gate_wrapper(
         "rehearsal_evidence_head": binding.rehearsal_evidence_head,
         "verified_at": datetime.now(UTC).isoformat(),
         "source_reports": source_specs,
+        "evidence_sha256": hashlib.sha256(
+            json.dumps([item["sha256"] for item in source_specs], separators=(",", ":")).encode(
+                "utf-8"
+            )
+        ).hexdigest(),
     }
+    try:
+        validate_bound_production_gate(key, value, binding=binding)
+    except ProductionMaintenanceError as exc:
+        raise SystemExit(str(exc)) from exc
+    return value
 
 
 def _gate_evidence(
     paths: list[Path],
     *,
     binding: ProductionEvidenceBinding,
-) -> dict[str, dict[str, str]]:
-    parsed: dict[str, dict[str, str]] = {}
+) -> dict[str, dict[str, object]]:
+    parsed: dict[str, dict[str, object]] = {}
     for raw_path in paths:
         source = assert_development_path(raw_path)
         if not source.is_file():
@@ -339,8 +350,6 @@ def _gate_evidence(
         source_specs = value.get("source_reports")
         if not isinstance(source_specs, list) or not source_specs:
             raise SystemExit(f"production gate evidence is not source-bound: {key}")
-        source_values: list[dict[str, object]] = []
-        source_hashes: list[str] = []
         for source_spec in source_specs:
             if not isinstance(source_spec, dict):
                 raise SystemExit(f"production gate source binding is invalid: {key}")
@@ -372,17 +381,11 @@ def _gate_evidence(
                 raise SystemExit(
                     f"production gate source binding does not match report: {key}"
                 )
-            source_values.append(source_value)
-            source_hashes.append(declared_sha256)
-        _validate_gate_source_semantics(key, source_values, binding=binding)
-        evidence_sha256 = hashlib.sha256(
-            json.dumps(source_hashes, separators=(",", ":")).encode("utf-8")
-        ).hexdigest()
-        parsed[key] = {
-            "status": "PASS",
-            "current_implementation_head": binding.current_implementation_head,
-            "evidence_sha256": evidence_sha256,
-        }
+        try:
+            validate_bound_production_gate(key, value, binding=binding)
+        except ProductionMaintenanceError as exc:
+            raise SystemExit(str(exc)) from exc
+        parsed[key] = dict(value)
     return parsed
 
 

@@ -73,6 +73,80 @@ PRODUCTION_GATE_KEYS = (
     "full",
 )
 _HEX64 = frozenset("0123456789abcdef")
+_FINAL_GATE_REQUIRED_SUITES: dict[str, frozenset[str]] = {
+    "targeted": frozenset({"storage-targeted"}),
+    "fast": frozenset(
+        {
+            "change-impact",
+            "ruff-changed",
+            "python-direct",
+            "renderer-direct",
+            "electron-direct",
+            "architecture-targeted",
+            "git-diff-check",
+        }
+    ),
+    "consumer": frozenset(
+        {
+            "change-impact",
+            "ruff-changed",
+            "python-direct",
+            "renderer-direct",
+            "electron-direct",
+            "architecture-targeted",
+            "git-diff-check",
+            "renderer-full",
+            "python-full",
+            "electron-contract",
+            "architecture-guards",
+            "main-contract-smoke",
+        }
+    ),
+    "full": frozenset(
+        {
+            "renderer-full",
+            "python-full",
+            "electron-contract",
+            "architecture-guards",
+            "main-contract-smoke",
+            "ruff-full",
+            "docs-path-guards",
+            "git-diff-check",
+        }
+    ),
+}
+_NO_REINFLATION_SCENARIOS = frozenset(
+    {
+        "task_progress_and_result",
+        "ground_current_state",
+        "online_mr_raw_authority",
+        "ground_ping_syslog_raw_growth",
+        "device_lldp_ap_state",
+        "mesh_source_and_reparse",
+        "site_package_staging",
+        "backup_same_revision",
+    }
+)
+_HISTORY_SOURCE_TABLES = frozenset(
+    {
+        "ac_fit_ap_lldp_history",
+        "ac_fit_ap_optical_history",
+        "ac_fit_ap_radio_history",
+        "ac_fit_ap_resource_history",
+        "ap_lldp_history",
+        "ap_optical_history",
+        "device_facts_history",
+        "device_interfaces_history",
+        "device_lldp_neighbors_history",
+        "device_optical_modules_history",
+    }
+)
+_DEDICATED_GATE_ARTIFACTS = {
+    "production_rollback_owner": "PRODUCTION_ROLLBACK_OWNER",
+    "production_backup_verified": "PRODUCTION_BACKUP_VERIFIED",
+    "production_maintenance_gate": "PRODUCTION_MAINTENANCE_PREFLIGHT",
+    "restart": "PRODUCTION_RESTART_EVIDENCE",
+}
 
 
 class ProductionMaintenanceError(RuntimeError):
@@ -386,6 +460,448 @@ class ProductionEvidenceBinding:
                 self.production_maintenance_script_sha256
             ),
         }
+
+
+def _source_status_and_head(value: Mapping[str, Any]) -> tuple[str, str]:
+    status = str(
+        value.get("result") or value.get("status") or value.get("overall_status") or ""
+    ).upper()
+    head = str(
+        value.get("current_implementation_head")
+        or value.get("git_head")
+        or value.get("head_sha")
+        or ""
+    ).casefold()
+    return status, head
+
+
+def _suite_pass(value: Mapping[str, Any], suite_id: str) -> bool:
+    suites = value.get("executed_suites")
+    return isinstance(suites, list) and any(
+        isinstance(item, Mapping)
+        and str(item.get("suite_id") or "") == suite_id
+        and str(item.get("status") or "").upper() == "PASS"
+        for item in suites
+    )
+
+
+def _all_true_mapping(value: object) -> bool:
+    return isinstance(value, Mapping) and bool(value) and all(
+        item is True for item in value.values()
+    )
+
+
+def _require_current_head_pass(
+    key: str,
+    reports: Sequence[Mapping[str, Any]],
+    binding: ProductionEvidenceBinding,
+) -> None:
+    for report in reports:
+        status, head = _source_status_and_head(report)
+        if status != "PASS" or head != binding.current_implementation_head:
+            raise ProductionMaintenanceError(
+                f"production gate source report is not current-HEAD PASS: {key}"
+            )
+
+
+def _validate_exact_manifest_source(
+    report: Mapping[str, Any],
+    binding: ProductionEvidenceBinding,
+) -> str:
+    required = {
+        "site_id",
+        "database",
+        "database_identity",
+        "source_size",
+        "source_sha256",
+        "schema_fingerprint",
+        "source_revision",
+        "row_identity",
+        "expected_count",
+        "candidate_identity",
+        "plan_digest",
+        "generated_git_head",
+        "manifest_digest",
+        "manifest_version",
+        "immutable",
+        "execution_status",
+        "blocking_prerequisites",
+    }
+    if not required <= set(report):
+        raise ProductionMaintenanceError("production exact manifest source is incomplete")
+    database = Path(str(report.get("database") or "")).name
+    candidate = report.get("candidate_identity")
+    row_identity = report.get("row_identity")
+    manifest_digest = str(report.get("manifest_digest") or "").casefold()
+    plan_digest = str(report.get("plan_digest") or "").casefold()
+    manifest_body = dict(report)
+    manifest_body.pop("manifest_digest", None)
+    plan_body = dict(manifest_body)
+    plan_body.pop("plan_digest", None)
+    if (
+        database not in PRODUCTION_DATABASE_ALLOWLIST
+        or str(report.get("generated_git_head") or "").casefold()
+        != binding.current_implementation_head
+        or int(report.get("manifest_version") or 0) != 2
+        or report.get("immutable") is not True
+        or str(report.get("execution_status") or "") != "NOT_EXECUTABLE"
+        or not _is_sha256(str(report.get("database_identity") or ""))
+        or int(report.get("source_size") or 0) <= 0
+        or not _is_sha256(str(report.get("source_sha256") or ""))
+        or str(report.get("source_revision") or "") != str(report.get("source_sha256") or "")
+        or not _is_sha256(str(report.get("schema_fingerprint") or ""))
+        or not isinstance(row_identity, Mapping)
+        or not isinstance(candidate, Mapping)
+        or int(report.get("expected_count") or 0) <= 0
+        or not _is_sha256(str(candidate.get("sha256") or ""))
+        or int(candidate.get("size_bytes") or 0) <= 0
+        or not _is_sha256(str(candidate.get("schema_fingerprint") or ""))
+        or not isinstance(candidate.get("table_counts"), Mapping)
+        or not _is_sha256(plan_digest)
+        or not _is_sha256(manifest_digest)
+        or plan_digest != _digest(plan_body)
+        or manifest_digest != _digest(manifest_body)
+    ):
+        raise ProductionMaintenanceError("production exact manifest source is invalid")
+    return database
+
+
+def _validate_gate_source_semantics(
+    key: str,
+    reports: Sequence[Mapping[str, Any]],
+    *,
+    binding: ProductionEvidenceBinding,
+) -> None:
+    if not reports:
+        raise ProductionMaintenanceError(f"production gate evidence has no source reports: {key}")
+    if key == "current_exact_plans":
+        if len(reports) != 2 or {
+            _validate_exact_manifest_source(report, binding) for report in reports
+        } != PRODUCTION_DATABASE_ALLOWLIST:
+            raise ProductionMaintenanceError(
+                "production exact plan gate is missing devices or tasks"
+            )
+        return
+    if key == "current_snapshot_rehearsal":
+        if len(reports) != 1:
+            raise ProductionMaintenanceError("production snapshot rehearsal report is invalid")
+        report = reports[0]
+        profiles = [report.get(name) for name in ("devices", "tasks")]
+        if (
+            report.get("source_preserved") is not True
+            or any(not isinstance(profile, Mapping) for profile in profiles)
+            or any(
+                str(profile.get("format") or "") != "netconsole-sqlite-online-backup-v1"
+                or profile.get("valid") is not True
+                or str(profile.get("quick_check") or "").casefold() != "ok"
+                or int(profile.get("size_bytes") or 0) <= 0
+                or not _is_sha256(profile.get("sha256"))
+                or not isinstance(profile.get("table_counts"), Mapping)
+                for profile in profiles
+                if isinstance(profile, Mapping)
+            )
+        ):
+            raise ProductionMaintenanceError("production snapshot rehearsal report is incomplete")
+        return
+    if key == "current_history_copy_verify":
+        tables: set[str] = set()
+        for report in reports:
+            query = report.get("target_query")
+            table = str(report.get("source_table") or "")
+            health = query.get("history_health") if isinstance(query, Mapping) else None
+            if (
+                str(report.get("result") or "").upper() != "PASS"
+                or report.get("post_delete") is not True
+                or table not in _HISTORY_SOURCE_TABLES
+                or not isinstance(query, Mapping)
+                or str(query.get("query_mode") or "")
+                != "POST_DELETE_CANONICAL_TARGET_REQUERY"
+                or not isinstance(health, Mapping)
+                or str(health.get("status") or "")
+                != "ready"
+                or int(query.get("expected_rows") or -1) != int(query.get("target_rows") or -2)
+                or int(query.get("page_one_rows") or 0) <= 0
+                or int(query.get("page_two_rows") or 0) <= 0
+            ):
+                raise ProductionMaintenanceError("production history verification report is invalid")
+            tables.add(table)
+        if tables != _HISTORY_SOURCE_TABLES:
+            raise ProductionMaintenanceError("production history verification is incomplete")
+        return
+    if key == "current_task_rollout":
+        if len(reports) != 1:
+            raise ProductionMaintenanceError("production task rollout report is invalid")
+        report = reports[0]
+        consumers = {
+            "Agent",
+            "Artifact",
+            "Ground",
+            "Online MR",
+            "REST",
+            "Site Package",
+            "Task Center",
+            "WebSocket",
+        }
+        counts = report.get("site_package_counts")
+        if (
+            any(str(report.get(consumer) or "") != "PASS" for consumer in consumers)
+            or str(report.get("restart") or "") != "PASS"
+            or int(report.get("task_results_verified") or 0) <= 0
+            or not isinstance(counts, Mapping)
+            or int(counts.get("task_results") or 0)
+            != int(report.get("task_results_verified") or -1)
+        ):
+            raise ProductionMaintenanceError("production task rollout report is incomplete")
+        return
+
+    _require_current_head_pass(key, reports, binding)
+    if key in _FINAL_GATE_REQUIRED_SUITES:
+        if len(reports) != 1 or str(reports[0].get("mode") or "").casefold() != key:
+            raise ProductionMaintenanceError(
+                f"production gate source report mode does not match gate: {key}"
+            )
+        report = reports[0]
+        required = _FINAL_GATE_REQUIRED_SUITES[key]
+        passed = {str(item) for item in report.get("passed", [])}
+        declared = {str(item) for item in report.get("required_suites", [])}
+        suites = report.get("executed_suites")
+        if (
+            report.get("failed")
+            or report.get("not_run")
+            or declared != required
+            or not required <= passed
+            or (
+                isinstance(suites, list)
+                and any(
+                    not isinstance(item, Mapping)
+                    or str(item.get("status") or "").upper() != "PASS"
+                    for item in suites
+                )
+            )
+        ):
+            raise ProductionMaintenanceError(
+                f"production gate source report suites failed: {key}"
+            )
+        return
+    if key in {"renderer", "electron", "architecture"}:
+        required_suite = {
+            "renderer": "renderer-full",
+            "electron": "electron-contract",
+            "architecture": "architecture-guards",
+        }[key]
+        if len(reports) != 1 or not _suite_pass(reports[0], required_suite):
+            raise ProductionMaintenanceError(
+                f"production gate source report is missing PASS suite: {key}"
+            )
+        return
+    if key == "functional_compatibility":
+        if len(reports) != 1:
+            raise ProductionMaintenanceError("production functional compatibility report is invalid")
+        report = reports[0]
+        summary = report.get("summary")
+        matrix = report.get("consumer_matrix")
+        final_evidence = report.get("final_evidence")
+        generator = report.get("generator")
+        if (
+            str(report.get("artifact") or "") != "FUNCTIONAL_COMPATIBILITY"
+            or str(report.get("audit_mode") or "") != "FINAL_EVIDENCE"
+            or not isinstance(summary, Mapping)
+            or int(summary.get("consumer_check_count") or 0) != 29
+            or int(summary.get("passed_count") or 0) != 29
+            or int(summary.get("failed_count") or 0) != 0
+            or not isinstance(matrix, list)
+            or len(matrix) != 29
+            or len({str(item.get("id") or "") for item in matrix if isinstance(item, Mapping)}) != 29
+            or any(
+                not isinstance(item, Mapping)
+                or str(item.get("status") or "").upper() != "PASS"
+                for item in matrix
+            )
+            or not isinstance(final_evidence, Mapping)
+            or str(final_evidence.get("git_head") or "").casefold()
+            != binding.current_implementation_head
+            or not isinstance(generator, Mapping)
+            or str(generator.get("git_head") or "").casefold()
+            != binding.current_implementation_head
+        ):
+            raise ProductionMaintenanceError("production functional compatibility report is incomplete")
+        return
+    if key == "site_package":
+        if len(reports) != 1:
+            raise ProductionMaintenanceError("production Site Package report is invalid")
+        report = reports[0]
+        parity = report.get("parity")
+        cleanup = report.get("staging_cleanup")
+        interruption = cleanup.get("interruption_recovery") if isinstance(cleanup, Mapping) else None
+        package = report.get("package")
+        registered_storage = parity.get("registered_storage") if isinstance(parity, Mapping) else None
+        imported = report.get("imported")
+        if (
+            str(report.get("format") or "")
+            != "netconsole-integrated-site-package-validation-v1"
+            or not isinstance(package, Mapping)
+            or not _is_sha256(package.get("sha256"))
+            or not isinstance(parity, Mapping)
+            or not _all_true_mapping(parity.get("operational"))
+            or not _all_true_mapping(parity.get("authorities"))
+            or not _all_true_mapping(parity.get("repository_api"))
+            or not isinstance(registered_storage, Mapping)
+            or str(registered_storage.get("status") or "") != "PASS"
+            or not isinstance(imported, Mapping)
+            or str(imported.get("restart") or "") != "PASS"
+            or not isinstance(cleanup, Mapping)
+            or any(
+                cleanup.get(name) is not True
+                for name in (
+                    "export_success",
+                    "import_success",
+                    "import_failure",
+                    "failure_rollback",
+                )
+            )
+            or not isinstance(interruption, Mapping)
+            or str(interruption.get("status") or "") != "PASS"
+            or not isinstance(cleanup.get("interruption_remaining"), list)
+            or cleanup.get("interruption_remaining")
+        ):
+            raise ProductionMaintenanceError("production Site Package report is incomplete")
+        return
+    if key == "no_reinflation":
+        if len(reports) != 1:
+            raise ProductionMaintenanceError("production No-Reinflation report is invalid")
+        report = reports[0]
+        summary = report.get("summary")
+        scenarios = report.get("scenarios")
+        generator = report.get("generator")
+        if (
+            str(report.get("format") or "") != "netconsole-storage-no-reinflation"
+            or not isinstance(summary, Mapping)
+            or int(summary.get("scenario_count") or 0) != 8
+            or int(summary.get("passed") or 0) != 8
+            or int(summary.get("failed") or 0) != 0
+            or not isinstance(generator, Mapping)
+            or str(generator.get("git_head") or "").casefold()
+            != binding.current_implementation_head
+            or not isinstance(scenarios, list)
+            or {str(item.get("scenario_id") or "") for item in scenarios if isinstance(item, Mapping)}
+            != _NO_REINFLATION_SCENARIOS
+            or any(
+                not isinstance(item, Mapping)
+                or str(item.get("status") or "") != "PASS"
+                or not isinstance(item.get("storage_amplification"), Mapping)
+                or not isinstance(item.get("cleanup"), Mapping)
+                or str(item["storage_amplification"].get("measurement_status") or "")
+                != "PASS"
+                or int(item["storage_amplification"].get("total_physical_bytes") or 0)
+                <= 0
+                or str(item["cleanup"].get("status") or "") != "PASS"
+                for item in scenarios
+            )
+        ):
+            raise ProductionMaintenanceError("production No-Reinflation report is incomplete")
+        return
+    if key in _DEDICATED_GATE_ARTIFACTS:
+        if len(reports) != 1:
+            raise ProductionMaintenanceError(f"production gate source report is invalid: {key}")
+        report = reports[0]
+        if (
+            str(report.get("artifact") or "") != _DEDICATED_GATE_ARTIFACTS[key]
+            or not _is_sha256(str(report.get("source_snapshot_identity") or ""))
+            or not str(report.get("site_id") or "").strip()
+            or not str(report.get("database") or "").strip()
+        ):
+            raise ProductionMaintenanceError(
+                f"production gate source report is not canonical: {key}"
+            )
+        return
+    raise ProductionMaintenanceError(f"production gate source report is unsupported: {key}")
+
+
+def validate_bound_production_gate(
+    key: str,
+    value: Mapping[str, Any],
+    *,
+    binding: ProductionEvidenceBinding,
+) -> dict[str, str]:
+    if (
+        str(value.get("evidence_type") or "") != "production-current-head-gate-v2"
+        or str(value.get("gate") or "") != key
+        or str(value.get("status") or "") != "PASS"
+        or str(value.get("current_implementation_head") or "").casefold()
+        != binding.current_implementation_head
+        or str(value.get("rehearsal_evidence_head") or "").casefold()
+        != binding.rehearsal_evidence_head
+        or not str(value.get("verified_at") or "").strip()
+    ):
+        raise ProductionMaintenanceError(f"production gate evidence is not current-HEAD PASS: {key}")
+    source_specs = value.get("source_reports")
+    if not isinstance(source_specs, list) or not source_specs:
+        raise ProductionMaintenanceError(f"production gate evidence is not source-bound: {key}")
+    source_values: list[Mapping[str, Any]] = []
+    source_hashes: list[str] = []
+    for source_spec in source_specs:
+        if not isinstance(source_spec, Mapping):
+            raise ProductionMaintenanceError(f"production gate source binding is invalid: {key}")
+        raw_path = Path(str(source_spec.get("path") or ""))
+        expected_sha256 = str(source_spec.get("sha256") or "").casefold()
+        if not raw_path.is_absolute() or not _is_sha256(expected_sha256):
+            raise ProductionMaintenanceError(f"production gate source binding is invalid: {key}")
+        report_path = assert_development_path(raw_path)
+        if not report_path.is_file() or _sha256_file(report_path) != expected_sha256:
+            raise ProductionMaintenanceError(
+                f"production gate source report is missing or changed: {key}"
+            )
+        try:
+            source_value = json.loads(report_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ProductionMaintenanceError(
+                f"production gate source report is invalid: {key}"
+            ) from exc
+        if not isinstance(source_value, Mapping):
+            raise ProductionMaintenanceError(
+                f"production gate source report must be an object: {key}"
+            )
+        status, head = _source_status_and_head(source_value)
+        if (
+            str(source_spec.get("status") or "").upper() != status
+            or str(source_spec.get("current_implementation_head") or "").casefold()
+            != head
+        ):
+            raise ProductionMaintenanceError(
+                f"production gate source binding does not match report: {key}"
+            )
+        source_values.append(source_value)
+        source_hashes.append(expected_sha256)
+    _validate_gate_source_semantics(key, source_values, binding=binding)
+    evidence_sha256 = _digest(source_hashes)
+    if str(value.get("evidence_sha256") or "").casefold() != evidence_sha256:
+        raise ProductionMaintenanceError(f"production gate evidence digest is invalid: {key}")
+    return {
+        "status": "PASS",
+        "current_implementation_head": binding.current_implementation_head,
+        "evidence_sha256": evidence_sha256,
+    }
+
+
+def validate_production_gate_evidence(
+    gates: Mapping[str, Mapping[str, Any]],
+    *,
+    binding: ProductionEvidenceBinding,
+) -> dict[str, dict[str, str]]:
+    missing = [key for key in PRODUCTION_GATE_KEYS if key not in gates]
+    extras = sorted(set(gates) - set(PRODUCTION_GATE_KEYS))
+    if missing or extras:
+        details = [
+            *(f"missing:{key}" for key in missing),
+            *(f"unknown:{key}" for key in extras),
+        ]
+        raise ProductionMaintenanceError(
+            "production gate evidence is incomplete: " + ", ".join(details)
+        )
+    return {
+        key: validate_bound_production_gate(key, gates[key], binding=binding)
+        for key in PRODUCTION_GATE_KEYS
+    }
 
 
 @dataclass(frozen=True)
@@ -909,36 +1425,10 @@ class ProductionMaintenanceCapability:
         self,
         gates: Mapping[str, Mapping[str, Any]],
     ) -> dict[str, dict[str, str]]:
-        missing = [key for key in PRODUCTION_GATE_KEYS if key not in gates]
-        extras = sorted(set(gates) - set(PRODUCTION_GATE_KEYS))
-        if missing or extras:
-            details = [*(f"missing:{key}" for key in missing), *(f"unknown:{key}" for key in extras)]
-            raise ProductionMaintenanceError(
-                "production gate evidence is incomplete: " + ", ".join(details)
-            )
-        validated: dict[str, dict[str, str]] = {}
-        for key in PRODUCTION_GATE_KEYS:
-            item = gates[key]
-            if not isinstance(item, Mapping):
-                raise ProductionMaintenanceError(
-                    f"production gate evidence is invalid: {key}"
-                )
-            head = str(item.get("current_implementation_head") or "").casefold()
-            digest = str(item.get("evidence_sha256") or "").casefold()
-            if (
-                str(item.get("status") or "") != "PASS"
-                or head != self.evidence_binding.current_implementation_head
-                or not _is_sha256(digest)
-            ):
-                raise ProductionMaintenanceError(
-                    f"production gate is not current-HEAD PASS: {key}"
-                )
-            validated[key] = {
-                "status": "PASS",
-                "current_implementation_head": head,
-                "evidence_sha256": digest,
-            }
-        return validated
+        return validate_production_gate_evidence(
+            gates,
+            binding=self.evidence_binding,
+        )
 
     def _execution_time_recheck(
         self,
