@@ -32,12 +32,23 @@ class DatabaseUpgradeJournal:
         root = paths.database_upgrade_journal_dir.resolve()
         root.mkdir(parents=True, exist_ok=True)
         self.path = root / f"{operation_id}.json"
-        self._data: dict[str, Any] = {
+        self._data = self._load_existing(operation_id) or {
             "operation_id": operation_id,
             "schema_version": 1,
             "stage": "created",
             "updated_at": datetime.now(UTC).isoformat(),
         }
+
+    def _load_existing(self, operation_id: str) -> dict[str, Any] | None:
+        if not self.path.is_file() or self.path.is_symlink():
+            return None
+        try:
+            value = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"database upgrade journal is invalid: {self.path}") from exc
+        if not isinstance(value, dict) or str(value.get("operation_id") or "") != operation_id:
+            raise RuntimeError(f"database upgrade journal identity mismatch: {self.path}")
+        return dict(value)
 
     @property
     def data(self) -> dict[str, Any]:
@@ -90,6 +101,8 @@ def recover_incomplete_upgrades(paths: PathResolver) -> list[dict[str, Any]]:
         except (OSError, json.JSONDecodeError):
             continue
         if not isinstance(value, dict) or str(value.get("stage") or "") in _TERMINAL_STAGES:
+            continue
+        if value.get("recovery_strategy") == "component_resume":
             continue
         try:
             lock_key = str(

@@ -323,21 +323,33 @@ class SiteAuditService:
             if progress:
                 progress(index, len(selected), f"已审计局点 {directory.name}")
         manifest_id = f"site-audit-{datetime.now().strftime('%Y%m%d_%H%M%S')}-{uuid.uuid4().hex[:8]}"
-        manifest_path = self.paths.migrations_dir / "site-audits" / f"{manifest_id}.json"
+        internal_manifest = self.paths.migrations_dir / "site-audits" / f"{manifest_id}.json"
+        external_output = output.resolve() if output is not None else None
+        persist_internal = external_output is None or external_output.is_relative_to(
+            self.paths.data_root.resolve()
+        )
+        manifest_path = internal_manifest if persist_internal else external_output
+        if manifest_path is None:
+            raise RuntimeError("site audit output path resolution failed")
         payload: dict[str, Any] = {
             "schema_version": AUDIT_SCHEMA_VERSION,
             "manifest_id": manifest_id,
-            "manifest_path": _relative(self.paths.data_root, manifest_path),
+            "manifest_path": (
+                _relative(self.paths.data_root, manifest_path)
+                if persist_internal
+                else str(manifest_path)
+            ),
             "generated_at": _now(),
             "data_root": str(self.paths.data_root.resolve()),
             "site_count": len(results),
             "sites": results,
         }
         _atomic_json(manifest_path, payload)
-        latest = self.paths.migrations_dir / "site-audits" / "latest.json"
-        _atomic_json(latest, payload)
-        if output is not None and output.resolve() != manifest_path.resolve():
-            _atomic_json(output, payload)
+        if persist_internal:
+            latest = self.paths.migrations_dir / "site-audits" / "latest.json"
+            _atomic_json(latest, payload)
+            if external_output is not None and external_output != manifest_path.resolve():
+                _atomic_json(external_output, payload)
         return payload
 
     def latest(self, site_id: str | None = None) -> dict[str, Any] | None:

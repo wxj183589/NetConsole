@@ -9,6 +9,8 @@ from scripts.architecture.checks import (
     direct_sql_findings,
     dynamic_chart_stability_findings,
     forbidden_import_findings,
+    history_migration_contract_findings,
+    production_database_boundary_findings,
     orphan_module_findings,
     product_architecture_findings,
     removed_feature_findings,
@@ -31,6 +33,8 @@ CHECKS: dict[str, Callable[[], list[Finding]]] = {
     "orphan-modules": orphan_module_findings,
     "product-architecture": product_architecture_findings,
     "storage-registry": storage_registry_findings,
+    "history-migration-contracts": history_migration_contract_findings,
+    "production-database-boundary": production_database_boundary_findings,
 }
 
 

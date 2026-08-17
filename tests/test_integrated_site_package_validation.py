@@ -25,6 +25,8 @@ from scripts.maintenance.validate_integrated_site_package import (
     _registered_authority_parity,
     _registered_authority_profile,
     _registered_export_contract,
+    _registered_store_coverage,
+    _registered_store_files,
     _require_inside,
     _readonly_connection,
     _rows_by_sequence,
@@ -487,6 +489,50 @@ def test_registered_authority_profile_fails_closed_for_unregistered_file(
         "ambiguous_files": {},
     }
     assert contract["status"] == "FAIL"
+
+
+def test_repository_registry_owns_sqlite_runtime_sidecars_exactly_once(
+    tmp_path: Path,
+) -> None:
+    registry = Path(__file__).resolve().parents[1] / "config" / "storage_registry.yaml"
+    stores = _load_site_storage_registry(registry)
+    site_root = tmp_path / "site"
+    expected = {
+        "files/rail_transit/ground_unattended/index.sqlite-wal": "site.ground.index_sidecars",
+        "files/rail_transit/mr_raw_mesh/catalog.sqlite-shm": "site.mesh.catalog_sidecars",
+        "files/network_tools/traffic/parsed/traffic_runs.sqlite-wal": "site.traffic.runs_sidecars",
+        "files/network_tools/iperf/parsed/iperf_results.sqlite-shm": "site.traffic.iperf_results_sidecars",
+        "files/network_tools/wireless_scan/parsed/wireless_scan.sqlite-wal": "site.wireless_scan.results_sidecars",
+        "sync/wps_sync.sqlite-shm": "site.wps.sync_sidecars",
+        (
+            "files/rail_transit/online_mr/train/sessions/session/parsed/retired/"
+            "online_diagnosis.previous.sqlite-wal"
+        ): "site.online_mr.session_parsed_rollback_sidecars",
+    }
+    for relative in expected:
+        path = site_root / Path(relative)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"runtime")
+
+    discovered = _registered_store_files(site_root, stores)
+    assert _registered_store_coverage(site_root, discovered) == {
+        "status": "PASS",
+        "files": len(expected),
+        "unregistered_files": [],
+        "ambiguous_files": {},
+    }
+    for relative, store_id in expected.items():
+        assert [
+            current_id
+            for current_id, paths in discovered.items()
+            if (site_root / Path(relative)).resolve() in paths
+        ] == [store_id]
+
+    registered = {str(store["id"]): store for store in stores}
+    for store_id in expected.values():
+        store = registered[store_id]
+        assert store["policy_class"] == "EXCLUDED"
+        assert "SQLite Online Backup" in str(store["site_package_policy"])
 
 
 def test_registered_authority_profile_covers_unknown_protected_site_store(

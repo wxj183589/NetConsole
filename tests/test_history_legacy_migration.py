@@ -9,7 +9,9 @@ from pathlib import Path
 import pytest
 
 from netconsole.core.paths import PathResolver
+from netconsole.core.database import Database
 from netconsole.core.sqlite_utils import connect_sqlite
+from netconsole.repositories.ac_repository import AcRepository
 from netconsole.services import history_legacy_migration as migration_module
 from netconsole.services.database_upgrade.coordinator import (
     site_database_maintenance_key,
@@ -80,7 +82,49 @@ def _target_count(service: HistoryLegacyMigrationService) -> int:
     return total
 
 
-def test_inventory_classifies_supported_unsupported_and_unknown_schema(tmp_path: Path) -> None:
+def test_large_chunks_require_immutable_isolated_rehearsal(tmp_path: Path) -> None:
+    default_root = tmp_path / "default"
+    default_source = _source_database(
+        default_root, rows=[(1, "a", "2026-08-01T00:00:00")]
+    )
+    default_result = _service(default_root, default_source).start(
+        chunk_rows=5000, max_elapsed_seconds=0
+    )
+    assert default_result["migration"]["chunk_rows"] == 500
+
+    isolated_root = tmp_path / "isolated"
+    isolated_source = _source_database(
+        isolated_root, rows=[(1, "a", "2026-08-01T00:00:00")]
+    )
+    paths = PathResolver(
+        app_root=isolated_root,
+        data_root=isolated_root / "runtime",
+    )
+    service = HistoryLegacyMigrationService(
+        paths,
+        site_id="site-a",
+        source_database=isolated_source,
+        history_root=isolated_root / "target" / "history",
+        diagnostics_dir=isolated_root / "diagnostics",
+        immutable_source=True,
+        isolated_rehearsal=True,
+    )
+    isolated_result = service.start(chunk_rows=5000, max_elapsed_seconds=0)
+    assert isolated_result["migration"]["chunk_rows"] == 5000
+
+    with pytest.raises(ValueError, match="immutable_source"):
+        HistoryLegacyMigrationService(
+            paths,
+            site_id="site-a",
+            source_database=isolated_source,
+            history_root=isolated_root / "mutable" / "history",
+            diagnostics_dir=isolated_root / "mutable" / "diagnostics",
+            immutable_source=False,
+            isolated_rehearsal=True,
+        )
+
+
+def test_inventory_classifies_registered_contract_and_unknown_schema(tmp_path: Path) -> None:
     source = _source_database(tmp_path)
     with sqlite3.connect(source) as conn:
         conn.executescript(
@@ -101,12 +145,147 @@ def test_inventory_classifies_supported_unsupported_and_unknown_schema(tmp_path:
         item["table_name"]: item["classification"] for item in result["tables"]
     }
     assert classifications == {
-        "ac_fit_ap_unauthenticated_history": "UNSUPPORTED",
+        "ac_fit_ap_unauthenticated_history": "SUPPORTED",
         "device_facts_history": "SUPPORTED",
         "future_probe_history": "UNKNOWN_SCHEMA",
     }
+    contract_status = {
+        item["table_name"]: item["contract_status"] for item in result["tables"]
+    }
+    assert contract_status["ac_fit_ap_unauthenticated_history"] == "SUPPORTED_CANONICAL"
+    assert result["contract_status_counts"]["UNSUPPORTED_REQUIRED_SOURCE"] == 0
     assert (tmp_path / "diagnostics" / "LEGACY_HISTORY_INVENTORY.json").is_file()
     assert service.start()["result"] == "NOT_READY"
+
+
+def test_real_ac_history_contracts_preserve_query_parity_after_retirement(
+    tmp_path: Path,
+) -> None:
+    source = _source_database(tmp_path)
+    with sqlite3.connect(source) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE ac_fit_ap_unauthenticated_history (
+                id INTEGER PRIMARY KEY,
+                ac_device_uuid TEXT NOT NULL,
+                ap_name TEXT,
+                apid TEXT,
+                state TEXT,
+                state_raw TEXT,
+                state_display TEXT,
+                model TEXT,
+                serial_number TEXT,
+                dev_type TEXT,
+                work_mode TEXT,
+                inferred_ap_mac TEXT,
+                collect_run_uuid TEXT,
+                raw_log_path TEXT,
+                collected_at TEXT NOT NULL,
+                updated_at TEXT,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE ac_station_online_summary_history (
+                id INTEGER PRIMARY KEY,
+                site_name TEXT NOT NULL,
+                ap_total INTEGER NOT NULL,
+                online_count INTEGER NOT NULL,
+                offline_count INTEGER NOT NULL,
+                online_rate TEXT,
+                remark TEXT,
+                collected_at TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            INSERT INTO ac_fit_ap_unauthenticated_history VALUES
+                (1, 'ac-1', 'AP-1', '1', 'I', NULL, 'Idle', NULL, 'SN-1',
+                 NULL, 'fit', NULL, 'run-1', NULL,
+                 '2026-08-01T00:00:00', NULL, '2026-08-01T00:00:01'),
+                (2, 'ac-1', 'AP-2', '2', 'R', 'R/M', 'Online', 'WA6638',
+                 NULL, 'AP', NULL, '0000-1111-2222', 'run-2', 'raw-2.log',
+                 '2026-08-02T00:00:00', '2026-08-02T00:00:01',
+                 '2026-08-02T00:00:01'),
+                (3, 'ac-2', 'AP-3', NULL, NULL, NULL, NULL, NULL, NULL,
+                 NULL, NULL, NULL, NULL, NULL,
+                 '2026-08-02T00:00:00', NULL, '2026-08-02T00:00:01');
+            INSERT INTO ac_station_online_summary_history VALUES
+                (1, 'Station A', 10, 8, 2, '80%', NULL,
+                 '2026-08-01T00:00:00', '2026-08-01T00:00:01'),
+                (2, 'Station A', 10, 9, 1, '90%', 'restored',
+                 '2026-08-02T00:00:00', '2026-08-02T00:00:01'),
+                (3, 'Station A', 10, 7, 3, '70%', 'same-time-later-id',
+                 '2026-08-02T00:00:00', '2026-08-02T00:00:01'),
+                (4, 'Station B', 5, 5, 0, '100%', NULL,
+                 '2026-08-03T00:00:00', '2026-08-03T00:00:01');
+            """
+        )
+        connection.commit()
+    repository = AcRepository(Database(source))
+    unauthenticated_before = repository.list_fit_ap_unauthenticated_history("ac-1")
+    station_before = repository.list_station_online_summary_history("Station A", 10)
+    assert [row["id"] for row in station_before] == [3, 2, 1]
+
+    service = _service(tmp_path, source, immutable_source=False)
+    repository.history_store.history_root = service.history_root
+    result = service.start(migration_id="real-ac-contracts", max_elapsed_seconds=0)
+    assert result["inventory"]["contract_status_counts"]["UNSUPPORTED_REQUIRED_SOURCE"] == 0
+    for table in (
+        "ac_fit_ap_unauthenticated_history",
+        "ac_station_online_summary_history",
+    ):
+        checkpoint = next(
+            item
+            for item in service.status("real-ac-contracts")["tables"]
+            if item["source_table"] == table
+        )
+        service.cutover(
+            "real-ac-contracts",
+            table,
+            expected_revision=int(checkpoint["cutover_revision"]),
+            reason="query parity passed",
+        )
+        checkpoint = next(
+            item
+            for item in service.status("real-ac-contracts")["tables"]
+            if item["source_table"] == table
+        )
+        service.evaluate_delete_eligibility(
+            "real-ac-contracts",
+            table,
+            expected_revision=int(checkpoint["cutover_revision"]),
+            observation={
+                "query_validation": True,
+                "consumer_validation": True,
+                "integrity_mismatch": False,
+            },
+            reason="consumer parity passed",
+        )
+        assert service.validate_query_parity("real-ac-contracts", table)["result"] == "PASS"
+
+    assert repository.list_fit_ap_unauthenticated_history("ac-1") == unauthenticated_before
+    assert repository.list_station_online_summary_history("Station A", 2, 1) == station_before[1:3]
+    assert repository.count_station_online_summary_history("Station A") == 3
+
+    plan = service.preview_delete_plan(
+        "real-ac-contracts",
+        source_tables=[
+            "ac_fit_ap_unauthenticated_history",
+            "ac_station_online_summary_history",
+        ],
+    )
+    service.delete_source(
+        plan,
+        expected_plan_digest=str(plan["plan_digest"]),
+        expected_source_identity=str(plan["source_database_identity"]),
+        expected_table_revisions={
+            str(item["source_table"]): int(item["cutover_revision"])
+            for item in plan["tables"]
+        },
+        batch_rows=250,
+        apply=True,
+        allow_development_root_only=True,
+        development_root=tmp_path,
+    )
+    assert repository.list_fit_ap_unauthenticated_history("ac-1") == unauthenticated_before
+    assert repository.list_station_online_summary_history("Station A", 10) == station_before
 
 
 def test_copy_only_migrates_cross_month_and_year_without_exposing_duplicate_queries(
@@ -487,7 +666,7 @@ def test_per_table_cutover_query_authority_persists_and_rolls_back(
         )
 
 
-def test_delete_eligibility_plan_excludes_unsupported_and_verifies_projection(
+def test_delete_eligibility_plan_includes_new_contract_and_verifies_projection(
     tmp_path: Path,
 ) -> None:
     source = _source_database(
@@ -529,6 +708,7 @@ def test_delete_eligibility_plan_excludes_unsupported_and_verifies_projection(
     for table in (
         "device_facts_history",
         "ac_fit_ap_optical_history",
+        "ac_fit_ap_unauthenticated_history",
         "ap_optical_history",
     ):
         checkpoint = service.status("delete-plan")["tables"]
@@ -562,13 +742,13 @@ def test_delete_eligibility_plan_excludes_unsupported_and_verifies_projection(
     assert plan["source_delete_executed"] is False
     assert len(plan["plan_digest"]) == 64
     assert service.validate_delete_plan(plan)["valid"] is True
-    unsupported = next(
+    unauthenticated = next(
         item
-        for item in plan["excluded_sources"]
+        for item in plan["tables"]
         if item["source_table"] == "ac_fit_ap_unauthenticated_history"
     )
-    assert unsupported["eligibility"] is False
-    assert unsupported["row_count"] == 1
+    assert unauthenticated["eligibility"] is True
+    assert unauthenticated["row_count"] == 1
     projection = next(
         item for item in plan["tables"] if item["source_table"] == "ap_optical_history"
     )
@@ -752,6 +932,102 @@ def test_source_delete_applies_exact_plan_and_preserves_unsupported_rows(
         assert connection.execute(
             "SELECT COUNT(*) FROM ac_fit_ap_unauthenticated_history"
         ).fetchone()[0] == 1
+
+
+def test_post_delete_projection_revalidates_larger_canonical_target(
+    tmp_path: Path,
+) -> None:
+    source = _source_database(
+        tmp_path,
+        rows=[(1, "a", "2026-08-01T00:00:00")],
+    )
+    with sqlite3.connect(source) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE ac_fit_ap_optical_history (
+                id INTEGER PRIMARY KEY, ac_device_uuid TEXT NOT NULL, ap_uuid TEXT NOT NULL,
+                interface_name TEXT, rx_power TEXT, tx_power TEXT, collected_at TEXT, created_at TEXT
+            );
+            CREATE TABLE ap_optical_history (
+                id INTEGER PRIMARY KEY, history_uuid TEXT, ap_uuid TEXT NOT NULL, side TEXT,
+                device_uuid TEXT, interface_name TEXT, rx_power TEXT, tx_power TEXT,
+                alarm_status TEXT, collected_at TEXT, data_source TEXT, is_latest INTEGER,
+                created_at TEXT
+            );
+            INSERT INTO ac_fit_ap_optical_history VALUES
+                (1, 'ac-1', 'ap-1', 'GE1/0/1', '-10', '-2',
+                 '2026-08-01T00:00:00', '2026-08-01T00:00:00');
+            INSERT INTO ac_fit_ap_optical_history VALUES
+                (2, 'ac-1', 'ap-2', 'GE1/0/2', '-11', '-3',
+                 '2026-08-01T00:01:00', '2026-08-01T00:01:00');
+            INSERT INTO ap_optical_history VALUES
+                (9, 'history-9', 'ap-1', 'A', 'ac-1', 'GE1/0/1', '-10', '-2',
+                 'normal', '2026-08-01T00:00:00', 'legacy', 1,
+                 '2026-08-01T00:00:00');
+            """
+        )
+        connection.commit()
+    service = _service(tmp_path, source, immutable_source=False)
+    service.start(migration_id="projection-post-delete", max_elapsed_seconds=0)
+    for table in (
+        "device_facts_history",
+        "ac_fit_ap_optical_history",
+        "ap_optical_history",
+    ):
+        checkpoint = next(
+            item
+            for item in service.status("projection-post-delete")["tables"]
+            if item["source_table"] == table
+        )
+        service.cutover(
+            "projection-post-delete",
+            table,
+            expected_revision=int(checkpoint["cutover_revision"]),
+            reason="isolated verification passed",
+        )
+        checkpoint = next(
+            item
+            for item in service.status("projection-post-delete")["tables"]
+            if item["source_table"] == table
+        )
+        service.evaluate_delete_eligibility(
+            "projection-post-delete",
+            table,
+            expected_revision=int(checkpoint["cutover_revision"]),
+            observation={
+                "query_validation": True,
+                "consumer_validation": True,
+                "integrity_mismatch": False,
+            },
+            reason="isolated observation passed",
+        )
+    plan = service.preview_delete_plan("projection-post-delete")
+    revisions = {
+        str(item["source_table"]): int(item["cutover_revision"])
+        for item in plan["tables"]
+    }
+    service.delete_source(
+        plan,
+        expected_plan_digest=str(plan["plan_digest"]),
+        expected_source_identity=str(plan["source_database_identity"]),
+        expected_table_revisions=revisions,
+        batch_rows=250,
+        apply=True,
+        allow_development_root_only=True,
+        development_root=tmp_path,
+    )
+
+    parity = service.validate_query_parity(
+        "projection-post-delete", "ap_optical_history"
+    )
+
+    assert parity["result"] == "PASS"
+    assert parity["post_delete"] is True
+    assert parity["verified_rows"] == 1
+    assert parity["canonical_mapping_rows"] == 1
+    assert parity["canonical_target_rows"] == 2
+    assert parity["target_query"]["target_rows"] == 2
+    assert len(parity["projection_provenance_digest"]) == 64
 
 
 def test_source_delete_revalidates_identity_inside_single_write_transaction(

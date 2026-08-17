@@ -31,12 +31,16 @@ classified as `SUPPORTED`, `UNSUPPORTED`, or `UNKNOWN_SCHEMA` and records its
 schema, primary key, indexes, entity mapping, timestamp, identity and nullable
 columns, source schema version, target shard schema, row count and time range.
 
-The ten Phase 1 mappings already supported by `HistoryStore` are accepted only
-when their required `id`, timestamp and business identity columns exist.
-`ac_fit_ap_unauthenticated_history` and
-`ac_station_online_summary_history` are explicitly unsupported because no
-target event contract exists. Any other history schema is unknown and makes a
-run `NOT_READY`; rows are never guessed into a target shape.
+The twelve registered mappings are accepted only when their required `id`,
+timestamp and business identity columns exist. The two formerly missing
+contracts are now explicit: `ac_fit_ap_unauthenticated_history` uses
+`ac_device_uuid` and kind `fit_ap_unauthenticated`;
+`ac_station_online_summary_history` uses `site_name` and kind
+`station_online_summary`. Their complete legacy rows are retained in the
+canonical payload, including nullable fields. Any other history schema is
+unknown and makes a run `NOT_READY`; rows are never guessed into a target
+shape. The inventory also emits `contract_status` values
+`SUPPORTED_CANONICAL`, `SUPPORTED_PROJECTION` and `PROTECTED_UNKNOWN`.
 
 ## Identity And Duplicate Projections
 
@@ -98,7 +102,7 @@ LEGACY_AUTHORITY -> SHARD_VERIFIED -> SHARD_AUTHORITY
                                      -> SOURCE_DELETE_ELIGIBLE
 ```
 
-`SOURCE_DELETED` can be entered only by the isolated exact-plan executor after
+`SOURCE_DELETED` can be entered only by the exact-plan executor after
 all planned keys are absent and protected row counts remain unchanged.
 `SHARD_VERIFIED` is set only after the table and all ranges verify.
 `cutover` requires an expected revision and reason, then changes only that
@@ -118,14 +122,16 @@ event both revalidate.
 source key ranges, row/verified counts, per-range digests, authority revision,
 eligibility and exclusions. `validate-delete-plan` rechecks the source database
 identity, current range proof, revision and stable plan digest. `delete-source`
-additionally requires the expected plan digest, source identity, per-table
-revision evidence, `--apply` and `--allow-development-root-only`. It opens one
-`BEGIN IMMEDIATE` transaction for the exact plan, revalidates source identity
-inside that transaction, and processes planned primary keys in bounded
-250/500/1000-row selects. This closes the plan-validation-to-delete TOCTOU
-window while keeping batch memory bounded; authority journal transitions publish
-only after the source transaction commits.
-Unsupported tables and rows absent from the plan are never selected.
+remains the development-only rehearsal API and still requires
+`--allow-development-root-only`. Production retirement is a separate
+`ProductionHistoryRetirementExecutor` created only by
+`ProductionMaintenanceCapability`. It binds the plan to the current
+implementation HEAD, verified rollback owner, source/schema identity, writer
+quiescence and the shared maintenance/backend locks. Each exact key batch is
+committed with an affected-row assertion and written to the operation journal;
+resume proves that already-missing keys account for the recorded table delta
+before selecting the next batch. Unknown, conflict or out-of-plan rows are
+never selected.
 
 ## Priority And Commands
 
@@ -138,8 +144,11 @@ same key. Site Retention acquires it before its narrower storage lock.
 state; a running process observes it after the current transaction/checkpoint.
 An active unattended callback pauses before admitting another chunk. The
 elapsed budget likewise decides whether another chunk may start and never
-interrupts a SQLite transaction. Chunk sizes are restricted to 100, 250 or
-500 rows.
+interrupts a SQLite transaction. Normal/production-capable runs remain capped
+at 500 rows. `--isolated-rehearsal` may use 1,000, 2,500 or 5,000 rows only
+when DataRoot, immutable source, history target and diagnostics all resolve
+below `D:\study`; the service rejects mutable or out-of-root inputs before
+opening the migration.
 
 ```powershell
 $env:PYTHONPATH = "$PWD\src;$PWD"
@@ -151,7 +160,7 @@ $env:PYTHONPATH = "$PWD\src;$PWD"
   --site-id "<registered-test-site>" --source-db "D:\study\test-data\NetConsole\device-history-migration\<run-id>\devices.db" `
   --history-root "D:\study\test-data\NetConsole\device-history-migration\<run-id>\history" `
   --diagnostics-dir "D:\study\diagnostic\NetConsole\device-history-migration\<run-id>" `
-  --immutable-source --chunk-rows 500 --apply
+  --immutable-source --isolated-rehearsal --chunk-rows 5000 --apply
 
 & ".\.venv\Scripts\python.exe" -m scripts.maintenance.migrate_device_history cutover `
   --data-root "<isolated-data-root>" --site-id "<site-id>" `
@@ -191,5 +200,7 @@ keeps `SERVER_HDD_STORAGE_V2_TEST=PENDING`.
   substitute.
 - Query cutover, rollback, re-cutover and exact source deletion are implemented,
   but no operation has been enabled against production data.
-- Production source DELETE, DROP, retention, VACUUM and physical replacement
-  remain unavailable and require a separate production maintenance gate.
+- 独立 production maintenance capability 已实现，约束见
+  [Production Database Maintenance](./PRODUCTION_DATABASE_MAINTENANCE.md)。当前
+  rollback owner 仍未建立 VERIFIED backup set，production authorization 和真实
+  DELETE、DROP、retention、VACUUM、source retirement、physical replacement 均未执行。

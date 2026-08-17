@@ -16,10 +16,12 @@
 - `clean_test_artifacts.py`：清理明确白名单内的历史测试临时项。
 - `clean_generated_artifacts.py`：回收明确白名单内、可重新生成的构建产物；`build-temporary` 只处理 `dist/_build`，默认 dry-run，发布目录和 Electron/Agent 输出不在该目标内。
 - `check_desktop_bootstrap.py`：只读检查 Electron bootstrap；`--repair` 先备份并原子修复临时/失效的数据根和局点引用，不移动业务数据。
-- `audit_sites.py`：只读扫描局点文件、SQLite 完整性、业务记录和 Registry/bootstrap 引用，并把审计 manifest 写入当前数据根；不移动或删除局点。
+- `audit_sites.py`：只读扫描局点文件、SQLite 完整性、业务记录和 Registry/bootstrap 引用；默认把审计 manifest 写入当前数据根，显式外部 `--output` 时只写该外部路径，不移动或删除局点。
+- `collect_global_storage_inventory.py`：仅按 SQLite header 识别，并以 `mode=ro&immutable=1` 审计 data-root 全局域或显式 `--scope site-root` 的单局点域；非空 WAL fail-closed，报告只能写到被审计根之外。
 - `rebuild_mesh_parsed_data.py`：在 schema 变更后从受保护 raw 日志重建 MESH 派生 SQLite；默认仅输出计划，`--apply` 必须在 NetConsole 完全退出后执行。
 - `remap_mesh_identity.py`：扫描健康的 MESH parsed 来源并规划/执行 identity-only remap；默认 dry-run，只有显式 `--apply` 才逐来源复用 `MeshSourceRebuildService` 写入，经数据库回读验证后才发布 ready。
 - `migrate_device_history.py`：显式 inventory/start/pause/resume/status 的 legacy history COPY-only 迁移，以及逐表 cutover/rollback/observation eligibility/delete-plan preview；状态切换必须 `--apply`。精确源删除执行器还必须提供 plan/source/revision 摘要和 `--allow-development-root-only`，且只接受 `D:\study` 隔离副本；生产 `DELETE`、`DROP` 或 `VACUUM` 始终不可用。`--output` 可把单次结果保存为新的 JSON 证据且拒绝覆盖既有文件。
+- `production_database_maintenance.py`：唯一 production cutover capability 入口。`bootstrap-rollback`、`orchestrate` 和 `promote` 只接受 allowlist、显式 production mode/authorization、quiescence evidence、共享 maintenance/backend lock、VERIFIED rollback 和 immutable manifest；不会提供 `--force-executable` 或任意 `--apply` 路径。真实生产 root 仍只读，隔离 rehearsal 必须把 DataRoot 放在 `D:\study`。
 - `validate_history_provenance.py`：默认以 SQLite read-only 连接审计隔离 `devices.db`、History catalog 和全部登记 shard 的 quick/integrity/foreign-key、event/provenance 数量、missing/duplicate source identity、`WITHOUT ROWID` 与 provenance 索引布局；只有同时提供 `--apply-backfill --allow-development-root-only` 才调用幂等 provenance backfill。数据库、History 根和新建 JSON 证据必须解析在 `D:\study` 下，既有输出拒绝覆盖。
 - `benchmark_device_history_legacy_migration.py`：只在 `D:\study` 隔离数据上测量迁移吞吐、chunk latency、commit/checkpoint 和 target growth。
 - `profile_device_history_storage.py`：只读剖析隔离 legacy/V1 history 的表、payload、envelope、索引和 fragmentation；`--decompose` 的 VACUUM 只作用于 diagnostics scratch。

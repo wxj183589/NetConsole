@@ -47,7 +47,13 @@ class ExceptionEntry:
 
 
 def relative_path(path: Path) -> str:
-    return path.resolve().relative_to(ROOT).as_posix()
+    resolved = path.resolve()
+    try:
+        return resolved.relative_to(ROOT).as_posix()
+    except ValueError:
+        # Architecture unit tests may pass an isolated registry/fixture outside
+        # the repository; keep diagnostics usable instead of failing the guard.
+        return resolved.as_posix()
 
 
 def load_json_yaml(path: Path) -> Any:

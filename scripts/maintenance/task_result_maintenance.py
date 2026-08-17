@@ -29,7 +29,17 @@ from netconsole.services.database_upgrade.coordinator import (
 BACKFILL_CLASSIFICATIONS = frozenset(
     {"MATCHED", "SNAPSHOT_ONLY", "EVENT_ONLY", "CONFLICT", "INVALID"}
 )
+_PRODUCTION_ROLLOUT_PERMIT = object()
 _TERMINAL_STATUSES = ("COMPLETED", "FAILED", "CANCELLED")
+
+
+def _production_profile(path: Path) -> dict[str, Any]:
+    """Checkpoint WAL created by our bounded writes before immutable verification."""
+
+    with sqlite3.connect(path, timeout=60) as connection:
+        connection.execute("PRAGMA busy_timeout = 60000")
+        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    return sqlite_quick_profile(path, immutable=True)
 
 
 @dataclass(frozen=True)
@@ -54,15 +64,23 @@ class TaskResultMaintenanceService:
         site_id: str,
         tasks_database: str | Path,
         development_root: str | Path = DEVELOPMENT_ROOT,
+        _production_permit: object | None = None,
     ) -> None:
         self.paths = paths
         self.site_id = str(site_id or "").strip()
         if not self.site_id:
             raise ValueError("site_id is required")
         self.development_root = Path(development_root).resolve()
-        self.tasks_database = assert_development_path(
-            tasks_database, development_root=self.development_root
-        )
+        self._production_mode = _production_permit is _PRODUCTION_ROLLOUT_PERMIT
+        if self._production_mode:
+            target = Path(tasks_database).resolve()
+            if target.name != "tasks.db" or target.parent.name != "db":
+                raise ValueError("production task rollout requires the registered tasks.db")
+            self.tasks_database = target
+        else:
+            self.tasks_database = assert_development_path(
+                tasks_database, development_root=self.development_root
+            )
         self.repository = TaskRepository(self.tasks_database)
 
     def analyze_backfill(self) -> dict[str, Any]:
@@ -233,6 +251,37 @@ class TaskResultMaintenanceService:
             ),
         }
 
+    def backfill_production(
+        self,
+        *,
+        authorization: str,
+        expected_source_revision: str,
+        batch_rows: int = 250,
+    ) -> dict[str, Any]:
+        """Run the existing idempotent backfill through the production permit.
+
+        The constructor permit is intentionally private and is only issued by
+        ``ProductionTaskRolloutExecutor``.  The development API above keeps
+        its original root guard and remains the supported local rehearsal API.
+        """
+
+        if not self._production_mode:
+            raise ValueError("production task rollout requires the production permit")
+        if authorization != "PRODUCTION_MAINTENANCE_AUTHORIZED":
+            raise ValueError("explicit production authorization is required")
+        profile = sqlite_quick_profile(self.tasks_database, immutable=True)
+        if not profile.get("valid") or str(profile.get("sha256")) != str(expected_source_revision):
+            raise ValueError("STALE_SOURCE: tasks.db revision changed before backfill")
+        result = self.backfill(
+            apply=True,
+            allow_development_root_only=True,
+            batch_rows=batch_rows,
+        )
+        after = _production_profile(self.tasks_database)
+        if not after.get("valid"):
+            raise ValueError("tasks.db verification failed after backfill")
+        return {**result, "source_revision_before": str(expected_source_revision), "source_revision_after": str(after.get("sha256"))}
+
     def enable_ref_authority(
         self,
         *,
@@ -286,6 +335,36 @@ class TaskResultMaintenanceService:
             "revision": current.revision,
             **strip,
         }
+
+    def enable_ref_authority_production(
+        self,
+        *,
+        authorization: str,
+        expected_source_revision: str,
+        expected_revision: int,
+        reason: str,
+        updated_by: str,
+        batch_rows: int = 500,
+    ) -> dict[str, Any]:
+        if not self._production_mode:
+            raise ValueError("production task rollout requires the production permit")
+        if authorization != "PRODUCTION_MAINTENANCE_AUTHORIZED":
+            raise ValueError("explicit production authorization is required")
+        before = _production_profile(self.tasks_database)
+        if not before.get("valid") or str(before.get("sha256")) != str(expected_source_revision):
+            raise ValueError("STALE_SOURCE: tasks.db revision changed before authority transition")
+        result = self.enable_ref_authority(
+            expected_revision=expected_revision,
+            reason=reason,
+            updated_by=updated_by,
+            apply=True,
+            allow_development_root_only=True,
+            batch_rows=batch_rows,
+        )
+        after = _production_profile(self.tasks_database)
+        if not after.get("valid"):
+            raise ValueError("tasks.db verification failed after authority transition")
+        return {**result, "source_revision_before": str(expected_source_revision), "source_revision_after": str(after.get("sha256"))}
 
     def _strip_full_result_copies(self, *, batch_rows: int) -> dict[str, int]:
         snapshot_rows = 0

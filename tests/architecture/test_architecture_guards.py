@@ -15,6 +15,7 @@ from scripts.architecture.checks import (
     _load_theme_literal_allowlist,
     _load_sql_inventory,
     dynamic_chart_stability_findings,
+    history_migration_contract_findings,
     orphan_module_findings,
     storage_registry_findings,
     typescript_records,
@@ -36,6 +37,30 @@ def test_all_architecture_checks_have_no_unwaived_findings() -> None:
         if (unwaived := apply_exceptions(check(), exceptions)[0])
     }
     assert active == {}
+
+
+def test_history_migration_contract_guard_rejects_registry_only_source(
+    tmp_path: Path,
+) -> None:
+    registry = json.loads(
+        (ROOT / "config" / "storage_registry.yaml").read_text(encoding="utf-8")
+    )
+    devices = next(store for store in registry["stores"] if store["id"] == "site.devices.current")
+    managed = next(
+        rule
+        for rule in devices["table_rules"]
+        if rule["lifecycle_owner"] == "HistoryLegacyMigrationService"
+    )
+    managed["tables"].append("future_required_history")
+    path = tmp_path / "storage_registry.json"
+    path.write_text(json.dumps(registry, ensure_ascii=False), encoding="utf-8")
+
+    findings = history_migration_contract_findings(path)
+
+    assert [finding.rule_id for finding in findings] == [
+        "HISTORY_MIGRATION_CONTRACT_MISSING"
+    ]
+    assert "future_required_history" in findings[0].message
 
 
 def test_storage_registry_guard_rejects_a_new_unregistered_sqlite(tmp_path: Path) -> None:
@@ -366,4 +391,4 @@ def test_run_all_works_from_repository_root() -> None:
         check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "11/11 passed" in result.stdout
+    assert "13/13 passed" in result.stdout

@@ -326,8 +326,11 @@
         "src/netconsole/core/storage_manifest.py",
         "src/netconsole/core/database.py",
         "src/netconsole/services/database_upgrade/**",
+        "src/netconsole/services/production_database_maintenance.py",
         "src/netconsole/services/site_storage.py",
         "src/netconsole/services/job_center/handlers/site_jobs.py",
+        "config/storage_registry.yaml",
+        "scripts/maintenance/production_database_maintenance.py",
         "scripts/maintenance/migrate_unified_data_root.py",
         "apps/desktop_electron/src/main/data-root-configuration.ts",
         "apps/desktop_electron/src/main/development-data-root.ts"

@@ -218,6 +218,8 @@ LEGACY_HISTORY_TABLES = frozenset(
         "ac_fit_ap_radio_history",
         "ac_fit_ap_lldp_history",
         "ac_fit_ap_optical_history",
+        "ac_fit_ap_unauthenticated_history",
+        "ac_station_online_summary_history",
         "ap_lldp_history",
         "ap_optical_history",
     }
@@ -232,6 +234,8 @@ KIND_CANONICAL_LEGACY_SOURCE = {
     "fit_ap_radio": "ac_fit_ap_radio_history",
     "fit_ap_lldp": "ac_fit_ap_lldp_history",
     "fit_ap_optical": "ac_fit_ap_optical_history",
+    "fit_ap_unauthenticated": "ac_fit_ap_unauthenticated_history",
+    "station_online_summary": "ac_station_online_summary_history",
 }
 
 
@@ -371,6 +375,12 @@ _LEGACY_SOURCE_SPECS = {
     "ac_fit_ap_lldp_history": _LegacySourceSpec("fit_ap_lldp", ("ap_uuid",)),
     "ap_lldp_history": _LegacySourceSpec("fit_ap_lldp", ("ap_uuid",)),
     "ac_fit_ap_optical_history": _LegacySourceSpec("fit_ap_optical", ("ap_uuid",)),
+    "ac_fit_ap_unauthenticated_history": _LegacySourceSpec(
+        "fit_ap_unauthenticated", ("ac_device_uuid",)
+    ),
+    "ac_station_online_summary_history": _LegacySourceSpec(
+        "station_online_summary", ("site_name",)
+    ),
     "ap_optical_history": _LegacySourceSpec("fit_ap_optical", ("ap_uuid",)),
 }
 

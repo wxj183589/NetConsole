@@ -92,6 +92,18 @@ def test_audit_classifies_legacy_empty_shell_and_demo_data(tmp_path: Path) -> No
     assert shell_item["duplicate_candidates"] == ["legacy-784dcd2b63e3"]
 
 
+def test_audit_external_output_does_not_persist_inside_data_root(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    DemoSiteSeedService(paths).seed()
+    output = tmp_path / "diagnostics" / "site-audit.json"
+
+    report = SiteAuditService(paths).audit_all(site_id="demo", output=output)
+
+    assert output.is_file()
+    assert report["manifest_path"] == str(output.resolve())
+    assert not (paths.migrations_dir / "site-audits").exists()
+
+
 def test_cleanup_moves_empty_shell_and_updates_registry(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     manager = SiteManager(paths)

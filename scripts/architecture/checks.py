@@ -31,6 +31,7 @@ SQL_CLASSIFICATIONS = {
     "VIOLATION",
 }
 STORAGE_REGISTRY_PATH = ROOT / "config" / "storage_registry.yaml"
+HISTORY_MIGRATION_SOURCE = ROOT / "src" / "netconsole" / "services" / "history_legacy_migration.py"
 STORAGE_REQUIRED_FIELDS = {
     "id",
     "relative_path",
@@ -710,6 +711,115 @@ def storage_registry_findings(
                         display,
                         database_literals,
                         registered_database_patterns=source_database_patterns,
+                    )
+                )
+    return findings
+
+
+def history_migration_contract_findings(
+    registry_path: Path = STORAGE_REGISTRY_PATH,
+    *,
+    migration_source: Path = HISTORY_MIGRATION_SOURCE,
+) -> list[Finding]:
+    """Require an explicit migration contract for every registry-owned source."""
+
+    try:
+        registry = load_json_yaml(registry_path)
+        tree = ast.parse(migration_source.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError, ValueError) as exc:
+        return [
+            Finding(
+                "HISTORY_MIGRATION_CONTRACT_INVALID",
+                relative_path(registry_path),
+                0,
+                str(exc),
+            )
+        ]
+    supported: set[str] = set()
+    for node in tree.body:
+        if not isinstance(node, ast.Assign) or not any(
+            isinstance(target, ast.Name) and target.id == "SUPPORTED_SPECS"
+            for target in node.targets
+        ):
+            continue
+        if isinstance(node.value, ast.Dict):
+            supported = {
+                str(key.value)
+                for key in node.value.keys
+                if isinstance(key, ast.Constant) and isinstance(key.value, str)
+            }
+        break
+    if not supported:
+        return [
+            Finding(
+                "HISTORY_MIGRATION_CONTRACT_INVALID",
+                relative_path(migration_source),
+                0,
+                "SUPPORTED_SPECS is missing or not an explicit mapping",
+            )
+        ]
+    findings: list[Finding] = []
+    stores = registry.get("stores", []) if isinstance(registry, dict) else []
+    for store_index, store in enumerate(stores, start=1):
+        if not isinstance(store, dict):
+            continue
+        for rule in store.get("table_rules", []):
+            if not isinstance(rule, dict):
+                continue
+            if (
+                rule.get("data_class") != "HISTORICAL_RAW_FACT"
+                or rule.get("lifecycle_owner") != "HistoryLegacyMigrationService"
+            ):
+                continue
+            for table in rule.get("tables", []):
+                name = str(table)
+                if name not in supported:
+                    findings.append(
+                        Finding(
+                            "HISTORY_MIGRATION_CONTRACT_MISSING",
+                            relative_path(registry_path),
+                            store_index,
+                            f"{name} is owned by HistoryLegacyMigrationService but has no SUPPORTED_SPECS contract",
+                        )
+                    )
+    return findings
+
+
+def production_database_boundary_findings(
+    source: Path = ROOT / "src" / "netconsole" / "services" / "production_database_maintenance.py",
+    cli_source: Path = ROOT / "scripts" / "maintenance" / "production_database_maintenance.py",
+) -> list[Finding]:
+    """Keep production destructive components separate from development guards."""
+
+    findings: list[Finding] = []
+    try:
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+        cli_text = cli_source.read_text(encoding="utf-8")
+    except (OSError, SyntaxError) as exc:
+        return [Finding("PRODUCTION_BOUNDARY_INVALID", relative_path(source), 0, str(exc))]
+    if "--force-executable" in cli_text or "--ignore-blocker" in cli_text:
+        findings.append(
+            Finding(
+                "PRODUCTION_MANIFEST_BYPASS",
+                relative_path(cli_source),
+                0,
+                "production maintenance CLI must not expose force/ignore manifest bypasses",
+            )
+        )
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef) or not node.name.startswith("Production"):
+            continue
+        for child in ast.walk(node):
+            if not isinstance(child, ast.Call):
+                continue
+            function_name = child.func.id if isinstance(child.func, ast.Name) else ""
+            if function_name == "assert_development_path":
+                findings.append(
+                    Finding(
+                        "PRODUCTION_DEVELOPMENT_GUARD_BYPASS",
+                        relative_path(source),
+                        int(getattr(child, "lineno", 0)),
+                        f"{node.name} directly calls assert_development_path",
                     )
                 )
     return findings

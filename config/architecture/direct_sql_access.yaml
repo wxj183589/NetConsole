@@ -145,5 +145,8 @@
   {"path":"tests/test_integrated_site_package_validation.py","classification":"TEST_ONLY","owner":"test","reason":"FULL Site Package 集成验证测试仅在 pytest 临时目录构造 SQLite fixture 和 isolated data roots。"},
   {"path":"scripts/maintenance/collect_global_storage_inventory.py","classification":"READ_ONLY_DATA_GATEWAY","owner":"storage","reason":"全局 storage inventory 仅按 SQLite header 识别，并以 mode=ro/immutable=1 审计 data-root 全局域；非空 WAL fail-closed，不创建或修改业务数据库。"},
   {"path":"tests/test_collect_global_storage_inventory.py","classification":"TEST_ONLY","owner":"test","reason":"全局 storage inventory 测试仅在 pytest 临时目录构造 SQLite、WAL 与 ZIP fixture。"},
-  {"path":"scripts/maintenance/benchmark_database_functional_queries.py","classification":"TEST_ONLY","owner":"storage","reason":"最终功能透明性能比较仅以 mode=ro/immutable=1 读取 D:\\study 下的真实隔离副本、History shards 与 Site Package 导入副本，并输出 p50/p95/max；不访问或修改生产数据库。"}
+  {"path":"scripts/maintenance/benchmark_database_functional_queries.py","classification":"TEST_ONLY","owner":"storage","reason":"最终功能透明性能比较仅以 mode=ro/immutable=1 读取 D:\\study 下的真实隔离副本、History shards 与 Site Package 导入副本，并输出 p50/p95/max；不访问或修改生产数据库。"},
+  {"path":"src/netconsole/services/production_database_maintenance.py","classification":"MIGRATION_TOOL","owner":"storage","reason":"独立 production maintenance 边界只在精确 Site/数据库 allowlist、VERIFIED rollback owner、不可变 manifest、writer quiescence、维护锁和显式授权全部通过后使用 SQLite Online Backup 与原子替换；默认 preflight 只读并失败关闭。"},
+  {"path":"scripts/maintenance/task_result_maintenance.py","classification":"MIGRATION_TOOL","owner":"job-center","reason":"Task result production rollout 的受控 WAL checkpoint、幂等 backfill 与 authority transition；仅由 ProductionMaintenanceCapability 私有 permit 调用，不接受普通 CLI 生产写入。"},
+  {"path":"tests/test_production_database_maintenance.py","classification":"TEST_ONLY","owner":"test","reason":"production maintenance allowlist、stale source/plan、rollback owner、writer quiescence、journal 和故障回滚测试只在 pytest 隔离数据根构造 SQLite fixture。"}
 ]

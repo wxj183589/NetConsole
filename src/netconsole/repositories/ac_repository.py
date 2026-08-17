@@ -994,7 +994,19 @@ class AcRepository:
                 """,
                 params,
             ).fetchall()
-        return [dict(row) for row in rows]
+        return self._merge_history_rows(
+            self.history_store.filter_legacy_rows(
+                "ac_fit_ap_unauthenticated_history", (dict(row) for row in rows)
+            ),
+            self._legacy_payload_rows(
+                self.history_store.query_events(
+                    kind="fit_ap_unauthenticated",
+                    entity_key=ac_device_uuid if ac_device_uuid else None,
+                    limit=limit,
+                )
+            ),
+            limit=limit,
+        )
 
     def get_fit_ap_unauthenticated_summary(self, ac_device_uuid: str) -> dict[str, object | None] | None:
         with self.database.connect() as conn:
@@ -2676,7 +2688,10 @@ class AcRepository:
             clauses.append("site_name = ?")
             params.append(site_name)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        params.extend((max(int(limit), 1), max(int(offset), 0)))
+        safe_limit = max(int(limit), 1)
+        safe_offset = max(int(offset), 0)
+        requested = safe_limit + safe_offset
+        params.extend((requested, 0))
         with self.database.connect() as conn:
             rows = conn.execute(
                 f"""
@@ -2687,7 +2702,20 @@ class AcRepository:
                 """,
                 params,
             ).fetchall()
-        return [dict(row) for row in rows]
+        combined = self._merge_history_rows(
+            self.history_store.filter_legacy_rows(
+                "ac_station_online_summary_history", (dict(row) for row in rows)
+            ),
+            self._legacy_payload_rows(
+                self.history_store.query_events(
+                    kind="station_online_summary",
+                    entity_key=site_name if site_name else None,
+                    limit=requested,
+                )
+            ),
+            limit=requested,
+        )
+        return combined[safe_offset : safe_offset + safe_limit]
 
     def count_station_online_summary_history(self, site_name: str | None = None) -> int:
         clauses: list[str] = []
@@ -2698,7 +2726,17 @@ class AcRepository:
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         with self.database.connect() as conn:
             row = conn.execute(f"SELECT COUNT(*) AS total FROM ac_station_online_summary_history {where}", params).fetchone()
-        return int(row["total"] if row is not None else 0)
+        legacy_total = (
+            int(row["total"] if row is not None else 0)
+            if self.history_store.legacy_source_is_authoritative(
+                "ac_station_online_summary_history"
+            )
+            else 0
+        )
+        return legacy_total + self.history_store.count_events(
+            kind="station_online_summary",
+            entity_key=site_name if site_name else None,
+        )
 
     def _resolve_ap_uuid(self, value: str, ac_device_uuid: str | None = None) -> str | None:
         with self.database.connect() as conn:
@@ -3860,11 +3898,26 @@ class AcRepository:
             [*legacy_rows, *normalized_events],
             key=lambda row: (
                 str(row.get("collected_at") or ""),
-                str(row.get("event_id") or ""),
                 _int_value(row.get("id")),
+                str(row.get("event_id") or ""),
             ),
             reverse=True,
         )[: max(1, int(limit))]
+
+    @staticmethod
+    def _legacy_payload_rows(
+        events: list[dict[str, object | None]],
+    ) -> list[dict[str, object | None]]:
+        envelope = {
+            "event_id",
+            "event_type",
+            "legacy_source_table",
+            "legacy_source_id",
+        }
+        return [
+            {key: value for key, value in event.items() if key not in envelope}
+            for event in events
+        ]
 
 
 def _latest_rows_by_ap_identity(rows: list[dict[str, object | None]]) -> list[dict[str, object | None]]:

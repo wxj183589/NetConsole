@@ -17,6 +17,7 @@ from typing import Any, Mapping, Sequence
 
 
 INVENTORY_SCOPE = "DATA_ROOT_GLOBAL_EXCLUDING_SITES"
+SITE_INVENTORY_SCOPE = "SITE_ROOT"
 SQLITE_HEADER = b"SQLite format 3\x00"
 UNKNOWN_CLASS = "UNKNOWN"
 UNKNOWN_POLICY = "PROTECT"
@@ -84,9 +85,34 @@ class _FileSnapshot:
 def collect_data_root_global_inventory(data_root: str | Path) -> dict[str, Any]:
     """Collect a read-only data-root inventory while excluding ``sites/**``."""
 
-    root = _validated_data_root(data_root)
+    return _collect_storage_inventory(
+        data_root,
+        inventory_scope=INVENTORY_SCOPE,
+        exclude_sites=True,
+    )
+
+
+def collect_site_storage_inventory(site_root: str | Path) -> dict[str, Any]:
+    """Collect a read-only inventory of one exact registered site root."""
+
+    return _collect_storage_inventory(
+        site_root,
+        inventory_scope=SITE_INVENTORY_SCOPE,
+        exclude_sites=False,
+    )
+
+
+def _collect_storage_inventory(
+    source_root: str | Path,
+    *,
+    inventory_scope: str,
+    exclude_sites: bool,
+) -> dict[str, Any]:
+    """Profile one filesystem tree without following links or writing beside it."""
+
+    root = _validated_data_root(source_root)
     started = time.monotonic()
-    before, skipped_before = _snapshot_files(root)
+    before, skipped_before = _snapshot_files(root, exclude_sites=exclude_sites)
     files: list[dict[str, Any]] = []
     databases: list[dict[str, Any]] = []
     zip_archives: list[dict[str, Any]] = []
@@ -98,7 +124,7 @@ def collect_data_root_global_inventory(data_root: str | Path) -> dict[str, Any]:
         if record["zip_header"]:
             zip_archives.append(_profile_zip(snapshot))
 
-    after, skipped_after = _snapshot_files(root)
+    after, skipped_after = _snapshot_files(root, exclude_sites=exclude_sites)
     verification = _compare_snapshots(before, after)
     if not verification["unchanged"]:
         raise InventoryChangedError(
@@ -114,14 +140,14 @@ def collect_data_root_global_inventory(data_root: str | Path) -> dict[str, Any]:
     sqlite_bytes = sum(int(item["bytes"]) for item in databases)
     return {
         "schema_version": 1,
-        "inventory_scope": INVENTORY_SCOPE,
+        "inventory_scope": inventory_scope,
         "generated_at_utc": datetime.now(UTC).isoformat(timespec="seconds"),
         "site_root": str(root),
         "safety_contract": {
             "production_access": "READ_ONLY",
             "writes_to_data_root": 0,
             "sqlite_open_contract": "mode=ro&immutable=1",
-            "sites_excluded": True,
+            "sites_excluded": exclude_sites,
             "symlinks_and_reparse_points_followed": False,
             "unknown_policy": UNKNOWN_POLICY,
         },
@@ -177,6 +203,8 @@ def _validated_data_root(value: str | Path) -> Path:
 
 def _snapshot_files(
     root: Path,
+    *,
+    exclude_sites: bool = True,
 ) -> tuple[list[_FileSnapshot], list[dict[str, str]]]:
     files: list[_FileSnapshot] = []
     skipped: list[dict[str, str]] = []
@@ -194,7 +222,7 @@ def _snapshot_files(
         for entry in entries:
             path = Path(entry.path)
             relative = path.relative_to(root).as_posix()
-            if directory == root and entry.name.casefold() == "sites":
+            if exclude_sites and directory == root and entry.name.casefold() == "sites":
                 skipped.append({"path": relative, "reason": "SITES_EXCLUDED"})
                 continue
             try:
@@ -751,19 +779,28 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-root", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument(
+        "--scope",
+        choices=("global", "site-root"),
+        default="global",
+    )
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     root = _validated_data_root(args.data_root)
-    inventory = collect_data_root_global_inventory(root)
+    inventory = (
+        collect_site_storage_inventory(root)
+        if args.scope == "site-root"
+        else collect_data_root_global_inventory(root)
+    )
     _write_output(args.output, inventory, data_root=root)
     print(
         json.dumps(
             {
                 "status": "PASS",
-                "scope": INVENTORY_SCOPE,
+                "scope": inventory["inventory_scope"],
                 "output": str(Path(args.output).resolve()),
                 "files": inventory["totals"]["files"],
                 "bytes": inventory["totals"]["bytes"],

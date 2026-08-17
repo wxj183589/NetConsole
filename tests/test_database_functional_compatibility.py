@@ -22,6 +22,7 @@ from scripts.maintenance.task_result_maintenance import (
 from scripts.maintenance.validate_database_functional_compatibility import (
     FunctionalCompatibilityError,
     OUTPUT_FILENAMES,
+    _profile_history_evidence,
     validate_database_functional_compatibility,
 )
 from scripts.maintenance.finalize_functional_compatibility import MATRIX_DEFINITIONS
@@ -29,6 +30,27 @@ from scripts.maintenance.finalize_functional_compatibility import MATRIX_DEFINIT
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_final_replace_history_evidence_is_post_replace_parity(tmp_path: Path) -> None:
+    evidence = tmp_path / "POST_FINAL_REPLACE_PARITY-device_facts_history.json"
+    evidence.write_text(
+        json.dumps(
+            {
+                "source_table": "device_facts_history",
+                "expected_count": 1,
+                "actual_count": 1,
+                "result": "PASS",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    profile = _profile_history_evidence(tmp_path)
+
+    assert profile["status"] == "PASS"
+    assert profile["post_replace_parity_count"] == 1
+    assert profile["migration_parity_count"] == 0
 
 
 def _checkpoint_task_inputs(inputs: dict[str, Path]) -> None:

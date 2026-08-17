@@ -1515,7 +1515,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     source_artifacts = _artifact_reconciliation(source_paths, site_name, source_task_rows)
     source_registered = _registered_authority_profile(source_site, stores)
 
-    package.parent.mkdir(parents=True)
+    package.parent.mkdir(parents=True, exist_ok=True)
     export_result = SitePackageService(source_paths, source_sites).export_site(
         source_record.site_id,
         package,
