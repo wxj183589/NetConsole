@@ -14,6 +14,7 @@ from netconsole.services.production_database_maintenance import (
     PRODUCTION_GATE_KEYS,
     ProductionMaintenanceCapability,
     ProductionMaintenanceError,
+    ProductionHistoryRetirementExecutor,
     ProductionRollbackOwner,
     build_exact_manifest,
     write_exact_manifest,
@@ -184,6 +185,23 @@ def _candidate(paths: PathResolver, operation_id: str, database: str) -> Path:
 
 def _gates() -> dict[str, bool]:
     return {key: True for key in PRODUCTION_GATE_KEYS}
+
+
+def test_history_retirement_resume_proof_requires_a_planned_missing_prefix() -> None:
+    planned = [1, 2, 3, 4]
+    assert ProductionHistoryRetirementExecutor._resume_absent_count(
+        planned,
+        [3, 4],
+        rows_before=4,
+        before_count=2,
+    ) == 2
+    with pytest.raises(ProductionMaintenanceError, match="out-of-plan"):
+        ProductionHistoryRetirementExecutor._resume_absent_count(
+            planned,
+            [1, 3, 4],
+            rows_before=4,
+            before_count=3,
+        )
 
 
 def _promoted_manifest(

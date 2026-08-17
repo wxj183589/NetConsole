@@ -1064,6 +1064,22 @@ class ProductionHistoryRetirementExecutor:
             raise ProductionMaintenanceError("retirement source ranges overlap")
         return sorted(keys)
 
+    @staticmethod
+    def _resume_absent_count(
+        planned: list[int],
+        existing_keys: list[int],
+        *,
+        rows_before: int,
+        before_count: int,
+    ) -> int:
+        absent = len(planned) - len(existing_keys)
+        total_delta = int(rows_before) - int(before_count)
+        if absent != total_delta or existing_keys != planned[absent:]:
+            raise ProductionMaintenanceError(
+                "retirement resume proof detected out-of-plan deletion"
+            )
+        return absent
+
     def execute(
         self,
         plan: Mapping[str, Any],
@@ -1157,35 +1173,54 @@ class ProductionHistoryRetirementExecutor:
                     if len(planned) != int(item.get("row_count") or 0):
                         raise ProductionMaintenanceError("retirement exact key count mismatch")
                     state = dict(progress[table])
-                    while True:
+                    # Prove the already-missing keys once per table, then delete
+                    # the remaining planned prefix in bounded batches. Repeating
+                    # the full planned-key scan for every batch is O(n^2).
+                    with closing(sqlite3.connect(source, timeout=60)) as connection:
+                        connection.execute("PRAGMA busy_timeout = 60000")
+                        connection.execute("PRAGMA foreign_keys = ON")
+                        connection.execute("BEGIN IMMEDIATE")
+                        before_count = int(
+                            connection.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
+                        )
+                        existing_keys: list[int] = []
+                        for offset in range(0, len(planned), safe_batch):
+                            chunk = planned[offset : offset + safe_batch]
+                            rows = connection.execute(
+                                f'SELECT id FROM "{table}" WHERE id IN '
+                                f'({",".join("?" for _ in chunk)}) ORDER BY id',
+                                chunk,
+                            ).fetchall()
+                            existing_keys.extend(int(row[0]) for row in rows)
+                        try:
+                            absent = self._resume_absent_count(
+                                planned,
+                                existing_keys,
+                                rows_before=int(state["rows_before"]),
+                                before_count=before_count,
+                            )
+                        except ProductionMaintenanceError:
+                            connection.rollback()
+                            raise
+                        connection.rollback()
+                    state["deleted_rows"] = absent
+                    while int(state["deleted_rows"]) < len(planned):
+                        start = int(state["deleted_rows"])
+                        batch = planned[start : start + safe_batch]
                         with closing(sqlite3.connect(source, timeout=60)) as connection:
                             connection.execute("PRAGMA busy_timeout = 60000")
                             connection.execute("PRAGMA foreign_keys = ON")
                             connection.execute("BEGIN IMMEDIATE")
-                            before_count = int(
-                                connection.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
-                            )
-                            existing_keys: list[int] = []
-                            for offset in range(0, len(planned), safe_batch):
-                                chunk = planned[offset : offset + safe_batch]
-                                rows = connection.execute(
-                                    f'SELECT id FROM "{table}" WHERE id IN '
-                                    f'({",".join("?" for _ in chunk)}) ORDER BY id',
-                                    chunk,
-                                ).fetchall()
-                                existing_keys.extend(int(row[0]) for row in rows)
-                            absent = len(planned) - len(existing_keys)
-                            total_delta = int(state["rows_before"]) - before_count
-                            if absent != total_delta:
+                            rows = connection.execute(
+                                f'SELECT id FROM "{table}" WHERE id IN '
+                                f'({",".join("?" for _ in batch)}) ORDER BY id',
+                                batch,
+                            ).fetchall()
+                            if [int(row[0]) for row in rows] != batch:
                                 connection.rollback()
                                 raise ProductionMaintenanceError(
-                                    "retirement resume proof detected out-of-plan deletion"
+                                    "retirement batch identity mismatch"
                                 )
-                            if not existing_keys:
-                                connection.rollback()
-                                state["deleted_rows"] = absent
-                                break
-                            batch = existing_keys[:safe_batch]
                             cursor = connection.execute(
                                 f'DELETE FROM "{table}" WHERE id IN '
                                 f'({",".join("?" for _ in batch)})',
@@ -1197,7 +1232,7 @@ class ProductionHistoryRetirementExecutor:
                                     "retirement batch affected-row mismatch"
                                 )
                             connection.commit()
-                        state["deleted_rows"] = absent + len(batch)
+                        state["deleted_rows"] = start + len(batch)
                         state["batches"] = int(state.get("batches") or 0) + 1
                         progress[table] = state
                         journal.update(
