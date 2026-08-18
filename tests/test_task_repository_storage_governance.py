@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 from dataclasses import replace
 from pathlib import Path
@@ -199,3 +200,103 @@ def test_sampled_progress_is_still_broadcast_to_live_task_subscribers(tmp_path: 
     assert [event["type"] for event in persisted] == ["state", "progress"]
     assert persisted[1]["id"] == "live-progress-1"
     stream.close()
+
+
+def test_list_resolves_immutable_task_result_reference(tmp_path: Path) -> None:
+    path = tmp_path / "tasks.db"
+    repository = TaskRepository(path)
+    canonical_result = '{"rows":2}'
+    result_hash = hashlib.sha256(canonical_result.encode("utf-8")).hexdigest()
+    result_id = "tr-" + hashlib.sha256(
+        f"task-with-result\0finished\0{result_hash}".encode("utf-8")
+    ).hexdigest()
+    snapshot = _snapshot(
+        task_id="task-with-result",
+        status=TaskState.COMPLETED,
+        finished_time="2026-08-15T00:01:00Z",
+        updated_time="2026-08-15T00:01:00Z",
+        result={"rows": 2},
+        result_id=result_id,
+        result_hash=result_hash,
+    )
+
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            """
+            INSERT INTO task_results (
+                result_id, task_id, terminal_event_type, canonical_json,
+                sha256, byte_size, schema_version, created_time
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                result_id,
+                "task-with-result",
+                "finished",
+                canonical_result,
+                result_hash,
+                len(canonical_result.encode("utf-8")),
+                1,
+                "2026-08-15T00:01:00Z",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO task_snapshots (
+                task_id, task_type, task_name, created_time, started_time,
+                finished_time, status, progress, stage, current, total, message,
+                owner, device, agent, result_path, error_message, result_json,
+                result_id, result_hash, result_summary_json, source, site_name,
+                owner_pid, resource_keys_json, text_integrity,
+                text_integrity_reason, text_integrity_updated_at, text_schema_version,
+                producer_kind, producer_version, producer_commit, expires_at,
+                acknowledged_at, dismissed_at, dismissed_by, dismiss_reason,
+                updated_time
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                snapshot.task_id,
+                snapshot.task_type,
+                snapshot.task_name,
+                snapshot.created_time,
+                snapshot.started_time,
+                snapshot.finished_time,
+                snapshot.status.value,
+                snapshot.progress,
+                snapshot.stage,
+                snapshot.current,
+                snapshot.total,
+                snapshot.message,
+                snapshot.owner,
+                snapshot.device,
+                snapshot.agent,
+                snapshot.result_path,
+                snapshot.error_message,
+                '{"rows":2}',
+                snapshot.result_id,
+                snapshot.result_hash,
+                "{}",
+                snapshot.source,
+                snapshot.site_name,
+                snapshot.owner_pid,
+                "[]",
+                snapshot.text_integrity,
+                snapshot.text_integrity_reason,
+                snapshot.text_integrity_updated_at,
+                snapshot.text_schema_version,
+                snapshot.producer_kind,
+                snapshot.producer_version,
+                snapshot.producer_commit,
+                snapshot.expires_at,
+                snapshot.acknowledged_at,
+                snapshot.dismissed_at,
+                snapshot.dismissed_by,
+                snapshot.dismiss_reason,
+                snapshot.updated_time,
+            ),
+        )
+        conn.commit()
+
+    listed = repository.list()
+    assert len(listed) == 1
+    assert listed[0].result == {"rows": 2}

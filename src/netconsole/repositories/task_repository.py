@@ -1,19 +1,14 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import sqlite3
 from collections.abc import Collection
-from dataclasses import asdict, replace
+from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from netconsole.core.sqlite_utils import connect_sqlite, initialize_sqlite_wal, run_sqlite_with_retry
-from netconsole.models.task_result_rollout import (
-    TaskResultRolloutStatus,
-    TaskResultStorageState,
-)
 from netconsole.models.task_state import TaskState
 from netconsole.models.task_snapshot import (
     TEXT_INTEGRITY_VALUES,
@@ -388,6 +383,17 @@ class TaskRepository:
 
         run_sqlite_with_retry(operation)
         return recorded
+
+    @staticmethod
+    def _prepare_terminal_result(
+        conn,
+        snapshot: TaskSnapshot,
+        event: TaskEvent,
+    ) -> tuple[TaskSnapshot, TaskEvent]:
+        """Keep legacy dual-write inputs intact while result authority is disabled."""
+
+        del conn
+        return snapshot, event
 
     def get(self, task_id: str) -> TaskSnapshot | None:
         with self._connect() as conn:
@@ -1454,6 +1460,41 @@ class TaskRepository:
             )
             event["payload"] = payload
         return event
+
+    @staticmethod
+    def _canonical_result_json(result: dict[str, Any]) -> str:
+        return json.dumps(
+            result,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+
+    @staticmethod
+    def _result_summary(result: dict[str, Any], *, byte_size: int) -> dict[str, Any]:
+        keys = sorted(str(key) for key in result)
+        return {
+            "byte_size": int(byte_size),
+            "field_count": len(keys),
+            "keys": keys[:32],
+            "keys_truncated": len(keys) > 32,
+        }
+
+    @classmethod
+    def _verified_result_row(cls, row: dict[str, object]) -> dict[str, Any]:
+        return verify_task_result_row(dict(row))
+
+    def _verified_result_for_read(self, row: dict[str, object]) -> dict[str, Any]:
+        result_id = str(row.get("result_id") or "")
+        if result_id:
+            cached = self._verified_result_cache.get(result_id)
+            if cached is not None:
+                return cached
+        verified = self._verified_result_row(row)
+        if result_id:
+            self._verified_result_cache[result_id] = verified
+        return verified
 
     def _result_row(self, conn, result_id: str) -> dict[str, Any] | sqlite3.Row | None:
         row = conn.execute(
