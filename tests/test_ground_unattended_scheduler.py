@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+from concurrent.futures import Future
 from types import SimpleNamespace
 
 from netconsole.models.api.ground_unattended import GroundUnattendedTrainDTO
@@ -163,6 +165,59 @@ def test_deep_fping_is_forced_and_ct_cw_keep_independent_targets() -> None:
     assert ct.interval_ms == cw.interval_ms == profile.deep_fping.interval_ms
 
 
+def test_force_stop_supersedes_pending_normal_stop_and_collects_failures() -> None:
+    operation_id = "operation-pending-stop"
+    allocation_state = {"active": True}
+    events: list[dict] = []
+    force_calls: list[str] = []
+
+    def force_stop(current_operation_id: str, **_kwargs):
+        force_calls.append(current_operation_id)
+        raise RuntimeError("force stop failed")
+
+    allocation = SimpleNamespace(
+        automated=True,
+        operation=SimpleNamespace(controller_task_id=operation_id),
+    )
+    scheduler = object.__new__(DeepMrCollectionScheduler)
+    scheduler.site_id = "site-a"
+    scheduler.repository = SimpleNamespace(add_event=lambda **values: events.append(values))
+    scheduler.application_service = SimpleNamespace(force_stop_operation=force_stop)
+    scheduler.policy = SimpleNamespace(
+        allocations=lambda *_args: [allocation] if allocation_state["active"] else []
+    )
+    scheduler._active_operations = lambda: []
+    scheduler._lock = threading.RLock()
+    scheduler._stop_executor = _ImmediateExecutor()
+    normal_future = Future()
+    scheduler._stop_futures = {operation_id: normal_future}
+    scheduler._force_stop_futures = {}
+    scheduler._superseded_stop_operation_ids = set()
+
+    assert scheduler.force_stop_all("run-a", reason="deadline") == [operation_id]
+    assert force_calls == [operation_id]
+    assert operation_id in scheduler._superseded_stop_operation_ids
+
+    assert scheduler.force_stop_all("run-a", reason="deadline") == []
+    assert force_calls == [operation_id]
+
+    allocation_state["active"] = False
+    scheduler._collect_finished_stop_futures("run-a")
+    assert scheduler.has_active_automated() is False
+    assert scheduler.active_automated_operation_ids() == []
+    assert any(
+        event["event_type"] == "deep_collection_force_stop_failed"
+        for event in events
+    )
+
+    normal_future.set_exception(RuntimeError("normal stop failed"))
+    scheduler._collect_finished_stop_futures("run-a")
+    assert any(
+        event["event_type"] == "deep_collection_stop_failed" for event in events
+    )
+    assert operation_id not in scheduler._superseded_stop_operation_ids
+
+
 def test_train_coverage_waits_for_both_endpoints_and_is_counted_once(tmp_path) -> None:
     repository = GroundUnattendedRepository(tmp_path / "index.sqlite", site_id="site-a")
     run = repository.create_or_get_run(
@@ -260,3 +315,14 @@ class _CompletedApplicationService:
     @staticmethod
     def get_operation(*_args, **_kwargs):
         return SimpleNamespace(duration_minutes=12)
+
+
+class _ImmediateExecutor:
+    @staticmethod
+    def submit(callback, *args, **kwargs):
+        future = Future()
+        try:
+            future.set_result(callback(*args, **kwargs))
+        except BaseException as exc:
+            future.set_exception(exc)
+        return future

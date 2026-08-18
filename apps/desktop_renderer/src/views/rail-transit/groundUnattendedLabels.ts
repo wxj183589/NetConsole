@@ -200,7 +200,9 @@ const severityLabels: Record<string, string> = {
 
 const operationStageLabels: Record<string, string> = {
   STOP_REQUESTED: '已提交停止请求',
-  STOPPING_DEEP_COLLECTION: '正在停止深度采集',
+    STOPPING_DEEP_COLLECTION: '正在停止深度采集',
+    FORCE_STOPPING_DEEP_COLLECTION: '正在强制停止深度采集',
+    WAITING_DEEP_COLLECTION_TERMINAL: '等待深度采集进入终态',
   STOPPING_AC_POLLER: '正在停止 AC 常驻轮询',
   STOPPING_PING: '正在停止长 Ping',
   STOPPING_SYSLOG: '正在停止 Syslog 接收',

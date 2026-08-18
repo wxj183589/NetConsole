@@ -197,6 +197,13 @@ try {
     Write-Step "构建并验证 $Edition Windows 安装包"
     Invoke-Native $pnpmPath @("run", $packageScript) $desktopRoot
 
+    $finalDirty = Invoke-NativeCapture $gitPath @("status", "--porcelain", "--untracked-files=all") $projectRoot
+    $finalHead = Invoke-NativeCapture $gitPath @("rev-parse", "HEAD") $projectRoot
+    $finalUpstream = Invoke-NativeCapture $gitPath @("rev-parse", "@{upstream}") $projectRoot
+    if ($finalDirty -or $finalHead -ne $head -or $finalUpstream -ne $head) {
+        throw "构建结束时源码状态已变化，拒绝交付。frozen=$head，HEAD=$finalHead，upstream=$finalUpstream"
+    }
+
     Write-Step "复核双版本发布清单与安装包"
     $manifests = @(
         Get-ChildItem -LiteralPath $artifactRoot -Filter "*.exe.release.json" -File |
@@ -226,6 +233,9 @@ try {
         }
         if ($releaseManifest.packaged_dirty -ne $false) {
             throw "$edition 发布清单标记 packaged_dirty=true，拒绝交付。"
+        }
+        if ($releaseManifest.backend_commit -ne $head -or $releaseManifest.frontend_commit -ne $head) {
+            throw "$edition 发布清单的 Backend/Frontend commit 与 Installer commit 不一致。"
         }
         if (
             [string]::IsNullOrWhiteSpace([string]$releaseManifest.version) -or

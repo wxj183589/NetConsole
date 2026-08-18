@@ -32,6 +32,7 @@ import CurrentSiteIndicator from '../components/CurrentSiteIndicator.vue'
 import WorkspaceTabBar from '../components/workspace/WorkspaceTabBar.vue'
 import GlobalTaskCenter from '../task-center/components/GlobalTaskCenter.vue'
 import { navigationTitle, t } from '../i18n/runtime'
+import { visibleVersionIdentity } from '../platform/buildIdentity'
 import {
   getPlatformAdapter,
   onPlatformRuntimeStatusChanged,
@@ -204,10 +205,9 @@ async function refreshBackendHealth(): Promise<void> {
   try {
     const health = await getHealth()
     if (generation !== backendHealthGeneration) return
-    const developmentIdentity = health.build_id.match(/^[^+]+\+([0-9a-f]{8})[0-9a-f]*(?:-(dirty))?$/i)
-    version.value = import.meta.env.DEV && developmentIdentity
-      ? `${health.version}-<${developmentIdentity[1]}${developmentIdentity[2] ? '-dirty' : ''}>`
-      : health.version
+    if (import.meta.env.DEV) {
+      version.value = visibleVersionIdentity(health.version, health.build_id)
+    }
     backendBuildId.value = health.build_id
     backendOnline.value = health.status === 'ok'
   } catch {
@@ -263,6 +263,7 @@ onMounted(async () => {
     try {
       const metadata = await getRendererBuildMeta()
       frontendBuildId.value = metadata.build_id
+      version.value = visibleVersionIdentity(metadata.app_version, metadata.build_id)
       frontendMetaLoaded.value = true
     } catch {
       frontendMetaLoaded.value = false

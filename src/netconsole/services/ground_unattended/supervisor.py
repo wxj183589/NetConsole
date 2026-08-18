@@ -184,6 +184,8 @@ class GroundUnattendedSupervisor:
         self._tick_error_last_at = 0.0
         self._tick_error_summary_at = 0.0
         self._tick_error_count = 0
+        self._tick_consecutive_failure_count = 0
+        self._syslog_recovery_pending = False
 
     def start(self) -> None:
         with self._lock:
@@ -277,7 +279,7 @@ class GroundUnattendedSupervisor:
                         message=f"{exc.__class__.__name__}: {exc}",
                     )
                     if run:
-                        self._ensure_stop_operation(
+                        operation = self._ensure_stop_operation(
                             run,
                             archive=False,
                             stop_trigger="FATAL_ERROR",
@@ -288,14 +290,22 @@ class GroundUnattendedSupervisor:
                             requested_by="supervisor",
                             previous_state=str(run.get("state") or ""),
                             next_state="ERROR",
-                        )
-                        self.repository.update_run(
-                            str(run["run_id"]),
-                            state="ERROR",
+                            run_state="ERROR",
                             requested_action="fatal_error",
-                            error_code="GROUND_UNATTENDED_TICK_FAILED",
-                            error_message=str(exc),
                         )
+                        if self._operation_is_user_stop(operation):
+                            self.repository.update_run(
+                                str(run["run_id"]),
+                                state="STOPPING",
+                                error_code="GROUND_UNATTENDED_TICK_FAILED",
+                                error_message=str(exc),
+                            )
+                        else:
+                            self.repository.update_run(
+                                str(run["run_id"]),
+                                error_code="GROUND_UNATTENDED_TICK_FAILED",
+                                error_message=str(exc),
+                            )
                 self._wake_event.wait(self.tick_seconds)
                 self._wake_event.clear()
         finally:
@@ -303,6 +313,10 @@ class GroundUnattendedSupervisor:
 
     def _record_tick_failure(self, exc: Exception) -> bool:
         now = time.monotonic()
+        self._tick_consecutive_failure_count += 1
+        became_fatal = (
+            self._tick_consecutive_failure_count == _TICK_FATAL_THRESHOLD
+        )
         fingerprint = f"{exc.__class__.__name__}:{_normalize_error(str(exc))}"
         same_incident = (
             fingerprint == self._tick_error_fingerprint
@@ -316,9 +330,8 @@ class GroundUnattendedSupervisor:
             self._tick_error_summary_at = now
             self._tick_error_count = 0
             LOGGER.exception("地面无人值守调度周期失败：site=%s", self.site_id)
-            return False
+            return became_fatal
         self._tick_error_count += 1
-        became_fatal = self._tick_error_count == _TICK_FATAL_THRESHOLD - 1
         if became_fatal:
             LOGGER.error(
                 "地面无人值守调度周期连续失败，进入安全收口：site=%s count=%s",
@@ -354,6 +367,7 @@ class GroundUnattendedSupervisor:
         self._tick_error_last_at = 0.0
         self._tick_error_summary_at = 0.0
         self._tick_error_count = 0
+        self._tick_consecutive_failure_count = 0
 
     def _recover_on_start(self) -> None:
         run = self.repository.get_active_run()
@@ -379,6 +393,46 @@ class GroundUnattendedSupervisor:
         active_operation = self.repository.latest_operation(
             run_id=str(run["run_id"]), active_only=True
         )
+        latest_operation = self.repository.latest_operation(run_id=str(run["run_id"]))
+        if (
+            state == "ERROR"
+            and active_operation is None
+            and latest_operation is not None
+            and str(latest_operation.get("operation_state") or "").upper() == "FAILED"
+        ):
+            archive_retry = (
+                str(latest_operation.get("operation_type") or "").upper()
+                == "STOP_AND_ARCHIVE"
+            )
+            active_operation = self._ensure_stop_operation(
+                run,
+                archive=archive_retry,
+                stop_trigger="RECOVERY",
+                stop_reason="升级恢复旧版本失败的停止流程并继续安全收口",
+                requested_by="supervisor_recovery",
+                previous_state="ERROR",
+                next_state="FINALIZING",
+                run_state="STOPPING",
+                requested_action=(
+                    "stop_and_archive" if archive_retry else "recovery_finalize"
+                ),
+            )
+            run = self.repository.get_run(str(run["run_id"])) or run
+            state = "STOPPING"
+            self.repository.add_event(
+                run_id=str(run["run_id"]),
+                event_type="failed_stop_recovery_started",
+                severity="warning",
+                title="已重新接管旧版本失败的停止流程",
+                details={
+                    "previous_operation_id": str(
+                        latest_operation.get("operation_id") or ""
+                    ),
+                    "recovery_operation_id": str(
+                        active_operation.get("operation_id") or ""
+                    ),
+                },
+            )
         if active_operation is not None and self._operation_is_user_stop(
             active_operation
         ):
@@ -387,6 +441,25 @@ class GroundUnattendedSupervisor:
                 if str(active_operation.get("operation_type") or "").upper()
                 == "STOP_AND_ARCHIVE"
                 else "stop"
+            )
+            self.repository.update_run(
+                str(run["run_id"]),
+                state="STOPPING",
+                requested_action=requested_action,
+            )
+            run = self.repository.get_run(str(run["run_id"])) or run
+            state = "STOPPING"
+        elif active_operation is not None and state not in {
+            "STOPPING",
+            "FINALIZING",
+            "ARCHIVING",
+            "ERROR",
+        }:
+            requested_action = (
+                "stop_and_archive"
+                if str(active_operation.get("operation_type") or "").upper()
+                == "STOP_AND_ARCHIVE"
+                else "recovery_finalize"
             )
             self.repository.update_run(
                 str(run["run_id"]),
@@ -500,16 +573,99 @@ class GroundUnattendedSupervisor:
             self._restore_processed_snapshot_ids(run)
             self.inventory_sync.synchronize()
             self._start_fleet_ping(run, profile)
+            recovered_ping_targets = self._restore_fleet_ping_targets(
+                run, profile, now
+            )
             self._start_syslog(run, profile)
             self._ensure_ac_resident_pollers(run, profile)
+            latest_wmesh_events = self.repository.list_wmesh_events(
+                run_id=str(run["run_id"]), limit=1
+            )
+            latest_wmesh = (
+                latest_wmesh_events[0] if latest_wmesh_events else {}
+            )
+            latest_wmesh_at = self._parse_datetime(
+                str(latest_wmesh.get("receive_time") or "")
+            )
+            main_link_fresh = bool(
+                latest_wmesh_at is not None
+                and max(
+                    0.0,
+                    (now - latest_wmesh_at.astimezone(now.tzinfo)).total_seconds(),
+                )
+                <= profile.ac_stale_grace_seconds
+            )
+            main_link_state = (
+                self._main_link_recovery_state(latest_wmesh)
+                if main_link_fresh
+                else "STALE"
+                if latest_wmesh
+                else "NO_PERSISTED_EVENT"
+            )
+            ap_identity_revision = max(
+                (
+                    int(
+                        dict(row.get("ap_identity_diagnostics") or {}).get(
+                            "identity_revision"
+                        )
+                        or 0
+                    )
+                    for row in self.repository.list_train_runs(
+                        str(run["run_id"])
+                    )
+                ),
+                default=0,
+            )
+            run_summary = dict(run.get("summary") or {})
+            run_summary.update(
+                {
+                    "recovered_from_restart": True,
+                    "recovery_at": now.isoformat(timespec="milliseconds"),
+                    "ping_recovered_target_count": recovered_ping_targets,
+                    "ping_segment_count": sum(
+                        1
+                        for row in self.repository.list_raw_files_for_run(
+                            str(run["run_id"])
+                        )
+                        if str(row.get("data_type") or "") == "ping"
+                    ),
+                    "main_link_recovered": bool(
+                        main_link_fresh
+                        and main_link_state not in {"DISCONNECTED", "STALE"}
+                    ),
+                    "main_link_state": main_link_state,
+                    "main_link_last_event_at": str(
+                        latest_wmesh.get("receive_time") or ""
+                    ),
+                    "ap_identity_revision": ap_identity_revision,
+                }
+            )
             self.repository.update_run(
-                str(run["run_id"]), state="RUNNING", error_code="", error_message=""
+                str(run["run_id"]),
+                state="RUNNING",
+                error_code="",
+                error_message="",
+                summary_json=run_summary,
             )
             self.repository.add_event(
                 run_id=str(run["run_id"]),
                 event_type="run_recovered",
                 title="软件重启后恢复无人值守运行",
                 message="当前仍在配置运行窗口内，长 Ping 与深度调度将从持久化状态恢复。",
+                details={
+                    "recovered_from_restart": True,
+                    "recovery_at": now.isoformat(timespec="milliseconds"),
+                    "ping_recovered_target_count": recovered_ping_targets,
+                    "ping_segment_count": run_summary["ping_segment_count"],
+                    "main_link_recovered": run_summary[
+                        "main_link_recovered"
+                    ],
+                    "main_link_state": run_summary["main_link_state"],
+                    "main_link_last_event_at": run_summary[
+                        "main_link_last_event_at"
+                    ],
+                    "ap_identity_revision": ap_identity_revision,
+                },
             )
             self._last_ac_poll_monotonic = 0.0
             if self.deep_scheduler is not None:
@@ -544,6 +700,21 @@ class GroundUnattendedSupervisor:
                 state="FINALIZING",
                 requested_action="restart_after_window",
             )
+
+    @staticmethod
+    def _main_link_recovery_state(event: dict[str, Any]) -> str:
+        if not event:
+            return "NO_PERSISTED_EVENT"
+        event_type = str(event.get("event_type") or "").upper()
+        if event_type == "MESH_LINKDOWN":
+            return "DISCONNECTED"
+        endpoint = str(
+            event.get("peer_ap_name")
+            or event.get("peer_name")
+            or event.get("peer_mac")
+            or ""
+        )
+        return f"{event_type}:{endpoint}" if endpoint else event_type
 
     def _reconcile_incomplete_operations_without_active_run(self) -> None:
         completed_at = self._now().isoformat(timespec="milliseconds")
@@ -803,7 +974,11 @@ class GroundUnattendedSupervisor:
                     )
                     continue
                 self._manual_start = True
-            elif command.action == "pause" and run is not None:
+            elif (
+                command.action == "pause"
+                and run is not None
+                and str(run.get("state") or "").upper() == "RUNNING"
+            ):
                 self.repository.update_run(
                     str(run["run_id"]), state="PAUSED", paused=True
                 )
@@ -813,7 +988,11 @@ class GroundUnattendedSupervisor:
                     title="深度采集调度已暂停",
                     message="全车长 Ping 与 AC 轮询继续运行。",
                 )
-            elif command.action == "resume" and run is not None:
+            elif (
+                command.action == "resume"
+                and run is not None
+                and str(run.get("state") or "").upper() == "PAUSED"
+            ):
                 self.repository.update_run(
                     str(run["run_id"]), state="RUNNING", paused=False
                 )
@@ -825,13 +1004,15 @@ class GroundUnattendedSupervisor:
             elif command.action == "stop" and run is not None:
                 self._manual_start = False
                 if command.operation_id:
+                    operation = self.repository.get_operation(command.operation_id) or {}
                     self.repository.update_operation(
                         command.operation_id,
                         operation_state="RUNNING",
                         operation_stage="STOP_REQUESTED",
                         progress_percent=5,
                         message="已提交停止请求",
-                        previous_state=str(run.get("state") or ""),
+                        previous_state=str(operation.get("previous_state") or "")
+                        or str(run.get("state") or ""),
                         next_state="STOPPING",
                     )
                 self.repository.update_run(
@@ -915,6 +1096,25 @@ class GroundUnattendedSupervisor:
     def _poll_if_due(self, run, profile, now, *, scheduling_paused: bool) -> None:
         import time
 
+        if self._syslog_recovery_pending:
+            replay = getattr(self.syslog_receiver, "replay_pending_events", None)
+            if callable(replay):
+                try:
+                    replay_result = dict(replay(max_records=500) or {})
+                except Exception as replay_exc:
+                    self.repository.add_health_event(
+                        run_id=str(run["run_id"]),
+                        component="syslog_recovery",
+                        severity="warning",
+                        code="SYSLOG_RAW_REPLAY_FAILED",
+                        message=(
+                            f"{replay_exc.__class__.__name__}: {replay_exc}"
+                        ),
+                    )
+                else:
+                    self._syslog_recovery_pending = bool(
+                        int(replay_result.get("files_pending") or 0)
+                    )
         self._ensure_ac_resident_pollers(run, profile)
         current = time.monotonic()
         if current - self._last_ac_poll_monotonic < min(
@@ -936,6 +1136,7 @@ class GroundUnattendedSupervisor:
                 state="PAUSED" if scheduling_paused else "RUNNING",
                 ac_freshness_status="NO_DATA",
             )
+            self._expire_recovered_ping_targets(run, profile, now)
             return
         new_snapshots = [
             snapshot
@@ -966,6 +1167,7 @@ class GroundUnattendedSupervisor:
                 ac_last_updated_at=received_at,
                 ac_freshness_status="FRESH" if fresh else "STALE",
             )
+            self._expire_recovered_ping_targets(run, profile, now)
             return
 
         mesh_rows = self._mesh_rows_for_snapshots(snapshots)
@@ -1404,6 +1606,112 @@ class GroundUnattendedSupervisor:
             except (TypeError, ValueError):
                 continue
 
+    def _restore_fleet_ping_targets(
+        self,
+        run: dict[str, Any],
+        profile: GroundUnattendedProfileDTO,
+        now: datetime,
+    ) -> int:
+        recovered: dict[str, tuple[FleetPingTarget, datetime]] = {}
+        run_id = str(run["run_id"])
+        for train in self.repository.list_train_runs(run_id):
+            if not bool(train.get("ping_eligible")):
+                continue
+            try:
+                last_valid_at = datetime.fromisoformat(
+                    str(train.get("ac_received_at") or train.get("updated_at") or "")
+                )
+            except (TypeError, ValueError):
+                continue
+            if last_valid_at.tzinfo is None:
+                last_valid_at = last_valid_at.replace(tzinfo=now.tzinfo)
+            elapsed = max(
+                0.0,
+                (now - last_valid_at.astimezone(now.tzinfo)).total_seconds(),
+            )
+            if elapsed > profile.ac_stale_grace_seconds:
+                continue
+            for endpoint in list(train.get("endpoints") or []):
+                if not isinstance(endpoint, dict) or not bool(
+                    endpoint.get("ping_target_eligible")
+                ):
+                    continue
+                target_ip = str(endpoint.get("management_ip") or "").strip()
+                endpoint_code = str(endpoint.get("endpoint") or "").upper()
+                if not target_ip or endpoint_code not in {"CT", "CW"}:
+                    continue
+                target = FleetPingTarget(
+                    target_ip=target_ip,
+                    train_id=str(train.get("train_id") or ""),
+                    train_no=str(train.get("train_no") or ""),
+                    mr_id=str(endpoint.get("mr_id") or ""),
+                    mr_name=str(endpoint.get("mr_name") or ""),
+                    mr_position_code=endpoint_code,
+                    device_id=endpoint.get("device_id"),
+                    ac_snapshot_id=train.get("ac_snapshot_id"),
+                    ac_received_at=str(train.get("ac_received_at") or ""),
+                    current_ap_identity=str(
+                        train.get("current_ap_identity") or ""
+                    ),
+                    current_ap_name=str(train.get("current_ap_name") or ""),
+                    current_ap_mac=str(train.get("current_ap_mac") or ""),
+                    station=str(train.get("station") or ""),
+                    section=str(train.get("section") or ""),
+                    mileage=str(train.get("mileage") or ""),
+                    rssi=train.get("rssi"),
+                    same_ap_since=str(train.get("same_ap_since") or ""),
+                )
+                if target_ip in recovered:
+                    self.repository.add_event(
+                        run_id=run_id,
+                        event_type="ping_target_recovery_duplicate_skipped",
+                        severity="warning",
+                        train_id=target.train_id,
+                        mr_id=target.mr_id,
+                        title="重启恢复时跳过重复长 Ping 目标",
+                        details={"target_ip": target_ip},
+                    )
+                    continue
+                recovered[target_ip] = (target, last_valid_at)
+        self._last_valid_ping_targets = recovered
+        self.fleet_ping.update_targets(
+            [target for target, _last_valid_at in recovered.values()]
+        )
+        return len(recovered)
+
+    def _expire_recovered_ping_targets(
+        self,
+        run: dict[str, Any],
+        profile: GroundUnattendedProfileDTO,
+        now: datetime,
+    ) -> None:
+        for address, (target, last_valid_at) in tuple(
+            self._last_valid_ping_targets.items()
+        ):
+            elapsed = max(
+                0.0,
+                (now - last_valid_at.astimezone(now.tzinfo)).total_seconds(),
+            )
+            if elapsed <= profile.ac_stale_grace_seconds:
+                continue
+            self._last_valid_ping_targets.pop(address, None)
+            self.repository.add_event(
+                run_id=str(run["run_id"]),
+                event_type="ping_target_grace_expired",
+                severity="warning",
+                train_id=target.train_id,
+                mr_id=target.mr_id,
+                title="AC 异常宽限期已结束，停止重启恢复的长 Ping",
+                details={
+                    "target_ip": address,
+                    "grace_seconds": profile.ac_stale_grace_seconds,
+                    "recovered_from_restart": True,
+                },
+            )
+        self.fleet_ping.update_targets(
+            [target for target, _last_valid_at in self._last_valid_ping_targets.values()]
+        )
+
     def _ensure_stop_operation(
         self,
         run: dict[str, Any],
@@ -1414,14 +1722,13 @@ class GroundUnattendedSupervisor:
         requested_by: str,
         previous_state: str,
         next_state: str,
+        run_state: str | None = None,
+        requested_action: str | None = None,
     ) -> dict[str, Any]:
         run_id = str(run["run_id"])
-        existing = self.repository.latest_operation(run_id=run_id, active_only=True)
-        if existing is not None:
-            return existing
         now = self._now().isoformat(timespec="milliseconds")
         operation_id = f"groundop_{uuid.uuid4().hex}"
-        return self.repository.save_operation(
+        operation, _created = self.repository.create_active_operation_if_absent(
             {
                 "operation_id": operation_id,
                 "site_id": self.site_id,
@@ -1440,8 +1747,11 @@ class GroundUnattendedSupervisor:
                 "triggered_at": now,
                 "started_at": now,
                 "updated_at": now,
-            }
+            },
+            run_state=run_state,
+            requested_action=requested_action,
         )
+        return operation
 
     @staticmethod
     def _stop_metadata(run: dict[str, Any], archive: bool) -> tuple[str, str, str]:
@@ -1471,6 +1781,8 @@ class GroundUnattendedSupervisor:
             return True
         if str(operation.get("requested_by") or "") == "local_user":
             return True
+        if trigger not in {"", "UNKNOWN"}:
+            return False
         if str(operation.get("operation_type") or "").upper() == "STOP_AND_ARCHIVE":
             return True
         if (
@@ -1506,7 +1818,15 @@ class GroundUnattendedSupervisor:
                 next_state="FINALIZING",
             )
         operation_id = str(operation["operation_id"])
-        component_failures: list[dict[str, Any]] = []
+        component_failures: list[dict[str, Any]] = [
+            dict(item)
+            for item in list(
+                dict(operation.get("result_summary") or {}).get("stop_failures")
+                or []
+            )
+            if isinstance(item, dict)
+        ]
+        deep_cleanup_pending = False
         self._operation_progress(
             operation_id,
             stage="STOPPING_DEEP_COLLECTION",
@@ -1601,6 +1921,31 @@ class GroundUnattendedSupervisor:
                         "active_operation_ids": active_ids,
                     },
                 )
+                force_stop_all = getattr(
+                    self.deep_scheduler, "force_stop_all", None
+                )
+                force_requested_ids = (
+                    list(
+                        force_stop_all(
+                            run_id,
+                            reason="normal_stop_deadline_exceeded",
+                        )
+                    )
+                    if callable(force_stop_all)
+                    else []
+                )
+                deep_cleanup_pending = self.deep_scheduler.has_active_automated()
+                if deep_cleanup_pending:
+                    self._operation_progress(
+                        operation_id,
+                        stage="FORCE_STOPPING_DEEP_COLLECTION",
+                        percent=21,
+                        message="深度采集正常停止超时，正在受控强制停止；其余组件继续收口",
+                        result={
+                            "deep_collection_stop_state": "FORCE_STOPPING",
+                            "force_stop_requested_ids": force_requested_ids,
+                        },
+                    )
             else:
                 self._operation_progress(
                     operation_id,
@@ -1675,7 +2020,7 @@ class GroundUnattendedSupervisor:
                 message="当前运行没有 AC 常驻轮询服务",
                 result={"ac_resident_stop_state": "SKIPPED"},
             )
-        if self.deep_scheduler is not None:
+        if self.deep_scheduler is not None and not deep_cleanup_pending:
             for train in self.repository.list_train_runs(run_id):
                 if train.get("coverage_status") not in {"COLLECTING", "WAITING"}:
                     continue
@@ -1792,19 +2137,34 @@ class GroundUnattendedSupervisor:
             )
             or {}
         )
+        unique_failures: list[dict[str, Any]] = []
+        seen_failures: set[tuple[str, str]] = set()
+        for failure in component_failures:
+            key = (str(failure.get("component") or ""), str(failure.get("code") or ""))
+            if key in seen_failures:
+                continue
+            seen_failures.add(key)
+            unique_failures.append(failure)
+        component_failures = unique_failures
         result_summary.update({
             "run_id": run_id,
-            "ping_sample_count": int(ping_result.get("sample_count") or 0),
-            "syslog_record_count": int(
-                syslog_result.get("received_count") or 0
+            "ping_sample_count": max(
+                int(result_summary.get("ping_sample_count") or 0),
+                int(ping_result.get("sample_count") or 0),
             ),
-            "closed_file_count": int(
-                syslog_result.get("closed_file_count") or 0
-            )
-            + int(ping_result.get("closed_file_count") or 0)
-            + recovered_file_count,
-            "queue_dropped_count": int(
-                syslog_result.get("dropped_count") or 0
+            "syslog_record_count": max(
+                int(result_summary.get("syslog_record_count") or 0),
+                int(syslog_result.get("received_count") or 0),
+            ),
+            "closed_file_count": max(
+                int(result_summary.get("closed_file_count") or 0),
+                int(syslog_result.get("closed_file_count") or 0)
+                + int(ping_result.get("closed_file_count") or 0)
+                + recovered_file_count,
+            ),
+            "queue_dropped_count": max(
+                int(result_summary.get("queue_dropped_count") or 0),
+                int(syslog_result.get("dropped_count") or 0),
             ),
             "unarchived_file_count": self.repository.count_unarchived_raw_files(
                 run_id
@@ -1824,12 +2184,28 @@ class GroundUnattendedSupervisor:
             message="正在保存运行汇总",
             result=result_summary,
         )
+        if deep_cleanup_pending:
+            self._operation_progress(
+                operation_id,
+                stage="WAITING_DEEP_COLLECTION_TERMINAL",
+                percent=90,
+                message="长 Ping、Syslog 与 AC 已收口，等待深度采集映射进入终态",
+                result={
+                    "deep_collection_stop_state": "FORCE_STOPPING",
+                    "stop_failures": component_failures,
+                },
+            )
+            return
         should_archive = archive and not component_failures
         self.repository.update_run(
             run_id,
             state="ARCHIVING" if should_archive else "COMPLETED",
             actual_ended_at=ended_at,
-            ping_sample_count=int(ping_result.get("sample_count") or 0),
+            ping_sample_count=max(
+                int(run.get("ping_sample_count") or 0),
+                int(result_summary.get("ping_sample_count") or 0),
+                int(ping_result.get("sample_count") or 0),
+            ),
             error_code=(
                 str(component_failures[0]["code"]) if component_failures else ""
             ),
@@ -1960,6 +2336,7 @@ class GroundUnattendedSupervisor:
         self._manual_start = False
         self._last_valid_ping_targets = {}
         self._last_processed_snapshot_id_by_controller = {}
+        self._syslog_recovery_pending = False
 
     def _operation_progress(
         self,
@@ -2074,6 +2451,29 @@ class GroundUnattendedSupervisor:
                 event_batch_interval_seconds=profile.event_batch_interval_seconds,
             )
             self.syslog_receiver.refresh_ap_identity()
+            replay = getattr(self.syslog_receiver, "replay_pending_events", None)
+            if callable(replay):
+                try:
+                    replay_result = dict(replay(max_records=5_000) or {})
+                except Exception as replay_exc:
+                    self.repository.add_health_event(
+                        run_id=str(run["run_id"]),
+                        component="syslog_recovery",
+                        severity="warning",
+                        code="SYSLOG_RAW_REPLAY_FAILED",
+                        message=f"{replay_exc.__class__.__name__}: {replay_exc}",
+                    )
+                else:
+                    self._syslog_recovery_pending = bool(
+                        int(replay_result.get("files_pending") or 0)
+                    )
+                    if int(replay_result.get("records_processed") or 0):
+                        self.repository.add_event(
+                            run_id=str(run["run_id"]),
+                            event_type="syslog_raw_recovery_replayed",
+                            title="已从原始 Syslog 恢复结构化 WMESH 事件",
+                            details=replay_result,
+                        )
         except Exception as exc:
             self.repository.add_health_event(
                 run_id=str(run["run_id"]),

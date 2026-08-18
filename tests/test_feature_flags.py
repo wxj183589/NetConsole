@@ -8,6 +8,8 @@ import pytest
 from netconsole.core import atomic_file
 from netconsole.core.feature_flags import (
     PACKAGED_CORE_FEATURE_IDS,
+    PACKAGED_FULL_ONLY_FEATURE_IDS,
+    PACKAGED_FULL_REQUIRED_FEATURE_IDS,
     PACKAGED_PRODUCTION_FEATURE_IDS,
     FeatureDisabledError,
     FeatureGate,
@@ -60,6 +62,7 @@ FORMALIZED_PRODUCTION_FEATURE_IDS = (
     "capability.trackside_ap.plan",
     "capability.trackside_ap.plan_write",
     "capability.trackside_ap.plan_export",
+    "capability.trackside_ap.wps_sync",
     "module.online_mr_analysis",
     "capability.rail_base_data.write",
 )
@@ -113,6 +116,19 @@ def test_feature_registry_lists_expected_features() -> None:
     assert trackside_update.default_visible is True
     assert trackside_update.default_enabled is True
     assert trackside_update.default_client_package is True
+    wps_sync = FEATURE_BY_ID["capability.trackside_ap.wps_sync"]
+    assert wps_sync.parent_id == "module.trackside_ap"
+    assert wps_sync.status is FeatureStatus.ENABLED
+    assert wps_sync.default_visible is True
+    assert wps_sync.default_enabled is True
+    assert wps_sync.default_client_package is True
+    assert dependencies_of(wps_sync.feature_id) == ("internal.rail_task_control",)
+    assert delivery_dependencies_of(wps_sync.feature_id) == (
+        "internal.rail_task_control",
+    )
+    assert wps_sync.feature_id in PACKAGED_FULL_ONLY_FEATURE_IDS
+    assert wps_sync.feature_id in PACKAGED_FULL_REQUIRED_FEATURE_IDS
+    assert wps_sync.feature_id not in PACKAGED_PRODUCTION_FEATURE_IDS
     assert FEATURE_BY_ID["ac.mesh_link.refresh"].parent_id == "module.train_online"
     assert FEATURE_BY_ID["capability.devices.connection_test"].parent_id == "module.devices"
     form_test = FEATURE_BY_ID["capability.devices.form_connection_test"]
@@ -703,6 +719,9 @@ def test_packaged_runtime_falls_back_to_registry_when_baseline_unavailable(
     for feature_id in PACKAGED_PRODUCTION_FEATURE_IDS:
         assert gate.is_visible(feature_id)
         assert gate.is_enabled(feature_id)
+    assert not gate.is_visible("capability.trackside_ap.wps_sync")
+    assert not gate.is_enabled("capability.trackside_ap.wps_sync")
+    assert not gate.is_in_client_package("capability.trackside_ap.wps_sync")
     assert not gate.is_visible("internal.feature_switch")
 
 

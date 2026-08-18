@@ -12,6 +12,7 @@ from netconsole.core.version import APP_VERSION
 FRONTEND_BUILD_META_FILE = "desktop-renderer-build-meta.json"
 FRONTEND_MISMATCH_MESSAGE = "当前 Desktop Renderer 资源与后端版本不一致，请重新构建 Renderer 资源。"
 _BUILD_ID_RE = re.compile(r"[A-Za-z0-9._+-]{1,128}")
+_FULL_GIT_SHA_RE = re.compile(r"[0-9a-f]{40}")
 
 
 def backend_build_id(project_root: Path) -> str:
@@ -41,3 +42,28 @@ def frontend_build_id(metadata: dict[str, Any]) -> str:
     commit = str(metadata.get("git_commit") or "").strip()
     derived = f"{version}+{commit}" if version and commit else ""
     return derived if _BUILD_ID_RE.fullmatch(derived) else ""
+
+
+def verified_frontend_commit(metadata: dict[str, Any]) -> str:
+    """Return the Renderer commit only when its embedded identity is self-consistent."""
+
+    full = str(metadata.get("git_commit_full") or "").strip()
+    if _FULL_GIT_SHA_RE.fullmatch(full) is None:
+        return "unknown"
+    if any(
+        str(metadata.get(key) or "").strip() != full
+        for key in ("frontend_commit", "backend_commit")
+    ):
+        return "unknown"
+    if str(metadata.get("git_commit_short") or "").strip() != full[:8]:
+        return "unknown"
+    dirty = metadata.get("build_dirty")
+    if not isinstance(dirty, bool):
+        return "unknown"
+    identity = f"{full}-dirty" if dirty else full
+    if str(metadata.get("git_commit") or "").strip() != identity:
+        return "unknown"
+    version = str(metadata.get("app_version") or "").strip()
+    if not version or str(metadata.get("build_id") or "").strip() != f"{version}+{identity}":
+        return "unknown"
+    return full

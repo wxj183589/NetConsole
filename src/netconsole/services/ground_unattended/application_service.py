@@ -495,6 +495,12 @@ class GroundUnattendedApplicationService:
 
     def pause(self, site_id: str) -> GroundActionResponseDTO:
         run = self._active(site_id)
+        if str(run.get("state") or "").upper() != "RUNNING":
+            raise GroundUnattendedError(
+                "RUN_NOT_PAUSABLE",
+                "仅运行中的无人值守任务可以暂停",
+                status_code=409,
+            )
         self.supervisor.request("pause")
         return GroundActionResponseDTO(
             state="PAUSED",
@@ -504,6 +510,12 @@ class GroundUnattendedApplicationService:
 
     def resume(self, site_id: str) -> GroundActionResponseDTO:
         run = self._active(site_id)
+        if str(run.get("state") or "").upper() != "PAUSED":
+            raise GroundUnattendedError(
+                "RUN_NOT_RESUMABLE",
+                "仅已暂停的无人值守任务可以继续",
+                status_code=409,
+            )
         self.supervisor.request("resume")
         return GroundActionResponseDTO(
             state="RUNNING", run_id=str(run["run_id"]), message="深度采集调度将继续"
@@ -512,16 +524,6 @@ class GroundUnattendedApplicationService:
     def stop(self, site_id: str, *, archive: bool) -> GroundActionResponseDTO:
         run = self._active(site_id)
         run_id = str(run["run_id"])
-        existing = self.repository.latest_operation(
-            run_id=run_id, active_only=True
-        )
-        if existing is not None:
-            return GroundActionResponseDTO(
-                state="STOPPING",
-                run_id=run_id,
-                operation_id=str(existing["operation_id"]),
-                message=str(existing.get("message") or "停止请求正在处理"),
-            )
         now = datetime.now().astimezone().isoformat(timespec="milliseconds")
         operation_id = f"groundop_{uuid.uuid4().hex}"
         request_id = f"groundreq_{uuid.uuid4().hex}"
@@ -529,7 +531,7 @@ class GroundUnattendedApplicationService:
             "USER_STOP_AND_ARCHIVE" if archive else "USER_NORMAL_STOP"
         )
         stop_reason = "用户请求停止并归档" if archive else "用户请求正常停止"
-        self.repository.save_operation(
+        operation, created = self.repository.create_active_operation_if_absent(
             {
                 "operation_id": operation_id,
                 "site_id": self.site_id,
@@ -552,13 +554,17 @@ class GroundUnattendedApplicationService:
                 "triggered_at": now,
                 "started_at": now,
                 "updated_at": now,
-            }
-        )
-        self.repository.update_run(
-            run_id,
-            state="STOPPING",
+            },
+            run_state="STOPPING",
             requested_action="stop_and_archive" if archive else "stop",
         )
+        if not created:
+            return GroundActionResponseDTO(
+                state="STOPPING",
+                run_id=run_id,
+                operation_id=str(operation["operation_id"]),
+                message=str(operation.get("message") or "停止请求正在处理"),
+            )
         self.supervisor.request(
             "stop", archive=archive, operation_id=operation_id
         )
@@ -2948,10 +2954,13 @@ class GroundUnattendedApplicationService:
             operations[(str(row["train_id"]), str(row["mr_position_code"]))] = row
         profile = self.repository.get_profile()
         endpoint_snapshot = self.repository.train_endpoint_snapshot(
-            endpoint.mr_id
-            for train in trains
-            for endpoint in train.endpoints
-            if endpoint.mr_id
+            (
+                endpoint.mr_id
+                for train in trains
+                for endpoint in train.endpoints
+                if endpoint.mr_id
+            ),
+            run_id=run_id,
         )
         boot_by_device = dict(endpoint_snapshot["boot_by_device"])
         wmesh_by_device = dict(endpoint_snapshot["wmesh_by_device"])
@@ -2959,6 +2968,7 @@ class GroundUnattendedApplicationService:
         radio_by_device = dict(endpoint_snapshot["radio_by_device"])
         audit_by_device = dict(endpoint_snapshot["audit_by_device"])
         result = []
+        now = datetime.now().astimezone()
         for train in trains:
             endpoints = []
             for endpoint in train.endpoints:
@@ -2978,6 +2988,30 @@ class GroundUnattendedApplicationService:
                     else []
                 )
                 config_audit = audit_by_device.get(endpoint.mr_id)
+                wmesh_received_at = self._parse_datetime(
+                    (wmesh or {}).get("receive_time")
+                )
+                wmesh_age_seconds = (
+                    max(
+                        0.0,
+                        (
+                            now
+                            - wmesh_received_at.astimezone(now.tzinfo)
+                        ).total_seconds(),
+                    )
+                    if wmesh_received_at is not None
+                    else None
+                )
+                wmesh_fresh = bool(
+                    wmesh_received_at is not None
+                    and wmesh_age_seconds is not None
+                    and wmesh_age_seconds <= profile.ac_stale_grace_seconds
+                )
+                wmesh_active = bool(
+                    wmesh_fresh
+                    and str((wmesh or {}).get("event_type") or "").upper()
+                    != "MESH_LINKDOWN"
+                )
                 info_center = dict((boot or {}).get("info_center_metrics") or {})
                 managed_ip = str(profile.syslog_server_ip or "")
                 managed_port = int(profile.syslog_server_port)
@@ -3052,7 +3086,7 @@ class GroundUnattendedApplicationService:
                             ),
                             "current_active_peer": str(
                                 (wmesh or {}).get("peer_name") or ""
-                            ),
+                            ) if wmesh_active else "",
                             "last_link_switch_at": str(
                                 (wmesh or {}).get("receive_time") or ""
                             )

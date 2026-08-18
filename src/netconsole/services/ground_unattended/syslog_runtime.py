@@ -9,7 +9,8 @@ import socket
 import threading
 import time
 import uuid
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -69,6 +70,10 @@ _ACTIVE_LINK_ENDPOINT_RE = re.compile(
     r"(?P<peer>[0-9A-Fa-f]{4}[-:.][0-9A-Fa-f]{4}[-:.][0-9A-Fa-f]{4})"
     r"\((?P<rssi>-?\d+)\)$"
 )
+_ACTIVE_LINK_SINGLE_MAC_ENDPOINT_RE = re.compile(
+    r"^(?:.*?)_?(?P<peer>[0-9A-Fa-f]{4}[-:.][0-9A-Fa-f]{4}[-:.][0-9A-Fa-f]{4})"
+    r"\((?P<rssi>-?\d+)\)$"
+)
 _IFNET_PHY_RE = re.compile(
     r"physical\s+state\s+on\s+the\s+interface\s+(?P<interface>\S+)\s+changed\s+to\s+(?P<state>up|down)\b",
     re.IGNORECASE,
@@ -109,6 +114,8 @@ class _OpenRawFile:
     handle: Any
     start_time: str
     record_count: int = 0
+    flushed_record_count: int = 0
+    last_flush_at: float = field(default_factory=time.monotonic)
 
 
 class RawStreamWriter:
@@ -138,7 +145,6 @@ class RawStreamWriter:
         self.flush_interval_seconds = max(0.1, float(flush_interval_seconds))
         self._generation = uuid.uuid4().hex[:8]
         self._files: dict[tuple[str, str, str], _OpenRawFile] = {}
-        self._last_flush = time.monotonic()
         self.records_written = 0
         self.bytes_written = 0
         self.last_write_duration_ms = 0.0
@@ -146,6 +152,12 @@ class RawStreamWriter:
     @property
     def open_file_count(self) -> int:
         return len(self._files)
+
+    @property
+    def file_checkpoints(self) -> dict[str, int]:
+        return {
+            current.file_id: current.record_count for current in self._files.values()
+        }
 
     def write(self, record: dict[str, Any], received_at: datetime) -> tuple[str, int]:
         started = time.perf_counter()
@@ -166,12 +178,36 @@ class RawStreamWriter:
         self.bytes_written += len(encoded)
         if (
             current.record_count % self.flush_records == 0
-            or time.monotonic() - self._last_flush >= self.flush_interval_seconds
+            or time.monotonic() - current.last_flush_at
+            >= self.flush_interval_seconds
         ):
             current.handle.flush()
-            self._last_flush = time.monotonic()
+            current.flushed_record_count = current.record_count
+            current.last_flush_at = time.monotonic()
         self.last_write_duration_ms = (time.perf_counter() - started) * 1000
         return current.file_id, current.record_count
+
+    def flush_through(self, checkpoints: Mapping[str, int]) -> None:
+        """Make checkpointed raw lines visible before derived SQLite commits."""
+
+        required = {
+            str(file_id): max(0, int(line_number))
+            for file_id, line_number in checkpoints.items()
+            if str(file_id)
+        }
+        if not required:
+            return
+        for current in self._files.values():
+            line_number = required.get(current.file_id)
+            if line_number is None:
+                continue
+            if line_number > current.record_count:
+                raise ValueError("raw checkpoint exceeds written record count")
+            if line_number <= current.flushed_record_count:
+                continue
+            current.handle.flush()
+            current.flushed_record_count = current.record_count
+            current.last_flush_at = time.monotonic()
 
     def close(self) -> int:
         closed = len(self._files)
@@ -199,6 +235,7 @@ class RawStreamWriter:
             relative_path=relative,
             handle=path.open("a", encoding="utf-8", newline="\n"),
             start_time=started_at,
+            last_flush_at=time.monotonic(),
         )
         self._files[key] = current
         self.repository.upsert_raw_file(
@@ -243,7 +280,11 @@ class RawStreamWriter:
                 "sha256": _sha256(current.path),
                 "status": "CLOSED",
                 "archive_status": "PENDING",
-                "parse_status": "PARSED" if self.data_type == "syslog" else "SUMMARIZED",
+                "parse_status": (
+                    "PENDING_RECOVERY"
+                    if self.data_type == "syslog"
+                    else "SUMMARIZED"
+                ),
             }
         )
 
@@ -442,6 +483,7 @@ class SyslogUdpReceiver:
         self._last_error = ""
         self._event_batch: list[dict[str, Any]] = []
         self._timeline_batch: list[dict[str, Any]] = []
+        self._raw_checkpoints: dict[str, int] = {}
         self._event_batch_size = 100
         self._event_batch_interval = 1.0
         self._last_batch_at = time.monotonic()
@@ -570,22 +612,24 @@ class SyslogUdpReceiver:
             }
         self._recv_thread = self._process_thread = None
         self._drain_remaining()
-        self._flush_events()
         closed_file_count = 0
         if self._writer is not None:
+            self._raw_checkpoints.update(self._writer.file_checkpoints)
             closed_file_count = self._writer.close()
+        projection_flushed = self._flush_events()
         self._writer = None
         self._run_id = ""
         self._listen_address = ""
         self._listen_host = ""
         self._listen_port = 0
         return {
-            "success": self._queue.empty() and udp_port_released,
+            "success": self._queue.empty() and udp_port_released and projection_flushed,
             "udp_port_released": udp_port_released,
             "alive_thread_names": [],
             "queue_empty": self._queue.empty(),
             "queue_length": self._queue.qsize(),
             "closed_file_count": closed_file_count,
+            "projection_flushed": projection_flushed,
             "received_count": self._received_count,
             "dropped_count": self._dropped_count,
         }
@@ -845,8 +889,12 @@ class SyslogUdpReceiver:
         if self._writer is None:
             return
         file_id, line_number = self._writer.write(record, receive_time)
+        self._raw_checkpoints[file_id] = line_number
         if parsed is None:
             return
+        use_device_time = quality not in {"CLOCK_OFFSET", "CLOCK_JUMP"} and bool(
+            parsed.get("device_time")
+        )
         event = {
             **parsed,
             "run_id": self._run_id,
@@ -863,10 +911,10 @@ class SyslogUdpReceiver:
             "raw_file_id": file_id,
             "raw_line_number": line_number,
             "event_time": str(
-                parsed.get("device_time") or envelope.receive_time
+                parsed.get("device_time") if use_device_time else envelope.receive_time
             ),
             "event_time_source": (
-                "DEVICE_TIME" if parsed.get("device_time") else "RECEIVE_TIME"
+                "DEVICE_TIME" if use_device_time else "RECEIVE_TIME"
             ),
             "details": {
                 **dict(parsed.get("details") or {}),
@@ -913,6 +961,7 @@ class SyslogUdpReceiver:
                     "mr_id": record["device_uuid"],
                     "title": _event_title(str(parsed["event_type"])),
                     "message": _event_message(parsed),
+                    "dedup_key": f"raw-syslog:{file_id}:{line_number}",
                     "details": {
                         "data_quality": quality,
                         "identity_status": identity_status,
@@ -1033,21 +1082,254 @@ class SyslogUdpReceiver:
                     "message": f"新增丢弃 {added} 条，累计 {self._dropped_count} 条",
                 }
             )
+        projection_pending = bool(
+            self._event_batch or self._timeline_batch or self._raw_checkpoints
+        )
         if len(self._event_batch) >= self._event_batch_size or (
-            self._event_batch and time.monotonic() - self._last_batch_at >= self._event_batch_interval
+            projection_pending
+            and time.monotonic() - self._last_batch_at >= self._event_batch_interval
         ):
             self._flush_events()
 
-    def _flush_events(self) -> None:
-        if not self._event_batch and not self._timeline_batch:
-            return
+    def _flush_events(self) -> bool:
+        if (
+            not self._event_batch
+            and not self._timeline_batch
+            and not self._raw_checkpoints
+        ):
+            return True
         started = time.perf_counter()
-        events, timeline = self._event_batch, self._timeline_batch
-        self._event_batch, self._timeline_batch = [], []
-        self.repository.insert_wmesh_events(events)
-        self.repository.add_events_batch(timeline)
+        events = list(self._event_batch)
+        timeline = list(self._timeline_batch)
+        checkpoints = dict(self._raw_checkpoints)
+        try:
+            if self._writer is not None:
+                self._writer.flush_through(checkpoints)
+            self.repository.commit_wmesh_projection_batch(
+                events,
+                timeline,
+                raw_checkpoints=checkpoints,
+                complete_closed_files=True,
+            )
+        except Exception as exc:
+            self._last_error = f"{exc.__class__.__name__}: {exc}"
+            return False
+        del self._event_batch[: len(events)]
+        del self._timeline_batch[: len(timeline)]
+        for file_id, line_number in checkpoints.items():
+            if self._raw_checkpoints.get(file_id, 0) <= line_number:
+                self._raw_checkpoints.pop(file_id, None)
         self._batch_duration_ms = (time.perf_counter() - started) * 1000
         self._last_batch_at = time.monotonic()
+        return True
+
+    def replay_pending_events(self, *, max_records: int = 5_000) -> dict[str, int]:
+        """Boundedly rebuild structured WMESH projections from crash-safe raw files."""
+
+        root = self.repository.db_path.parent.resolve()
+        remaining = max(1, int(max_records))
+        files_completed = 0
+        records_processed = 0
+        events_projected = 0
+        candidates = [
+            row
+            for row in self.repository.list_raw_files_for_run(self._run_id)
+            if str(row.get("data_type") or "") == "syslog"
+            and str(row.get("parse_status") or "").startswith("PENDING_RECOVERY")
+        ]
+        for row in candidates:
+            if remaining <= 0:
+                break
+            relative_path = str(row.get("relative_path") or "")
+            path = _managed_regular_file(root, relative_path)
+            if path is None:
+                self.repository.upsert_raw_file(
+                    {**row, "status": "MISSING", "parse_status": "MISSING"}
+                )
+                continue
+            parse_status = str(row.get("parse_status") or "")
+            persisted_cursor, persisted_offset = _parse_recovery_cursor(parse_status)
+            file_id = str(row.get("file_id") or "")
+            event_batch: list[dict[str, Any]] = []
+            timeline_batch: list[dict[str, Any]] = []
+            file_size = path.stat().st_size
+            with path.open("rb") as handle:
+                cursor, last_processed_offset = _seek_recovery_cursor(
+                    handle,
+                    line_cursor=persisted_cursor,
+                    byte_offset=persisted_offset,
+                    file_size=file_size,
+                )
+                last_processed_line = cursor
+                while remaining > 0:
+                    raw_line = handle.readline()
+                    if not raw_line:
+                        break
+                    line_number = last_processed_line + 1
+                    remaining -= 1
+                    records_processed += 1
+                    last_processed_line = line_number
+                    last_processed_offset = handle.tell()
+                    line = raw_line.decode("utf-8", errors="replace")
+                    try:
+                        record = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(record, dict):
+                        continue
+                    projection = self._recovered_projection(
+                        record,
+                        raw_file_id=str(row.get("file_id") or ""),
+                        raw_line_number=line_number,
+                    )
+                    if projection is None:
+                        continue
+                    event, timeline = projection
+                    event_batch.append(event)
+                    timeline_batch.append(timeline)
+                    if len(event_batch) >= 100:
+                        events_projected += (
+                            self.repository.commit_wmesh_projection_batch(
+                                event_batch,
+                                timeline_batch,
+                                raw_checkpoints={file_id: last_processed_line},
+                            )
+                        )
+                        self._persist_recovery_offset(
+                            file_id=file_id,
+                            line_number=last_processed_line,
+                            byte_offset=last_processed_offset,
+                        )
+                        event_batch, timeline_batch = [], []
+            completed = last_processed_offset >= file_size
+            events_projected += self.repository.commit_wmesh_projection_batch(
+                event_batch,
+                timeline_batch,
+                raw_checkpoints={file_id: last_processed_line},
+                completed_raw_file_ids=(file_id,) if completed else (),
+            )
+            if completed:
+                files_completed += 1
+            else:
+                self._persist_recovery_offset(
+                    file_id=file_id,
+                    line_number=last_processed_line,
+                    byte_offset=last_processed_offset,
+                )
+        return {
+            "files_completed": files_completed,
+            "records_processed": records_processed,
+            "events_projected": events_projected,
+            "files_pending": max(0, len(candidates) - files_completed),
+        }
+
+    def _persist_recovery_offset(
+        self,
+        *,
+        file_id: str,
+        line_number: int,
+        byte_offset: int,
+    ) -> None:
+        row = self.repository.get_raw_file(file_id)
+        if row is None:
+            raise ValueError("ground unattended raw file not found")
+        if not str(row.get("parse_status") or "").startswith("PENDING_RECOVERY"):
+            return
+        self.repository.upsert_raw_file(
+            {
+                **row,
+                "parse_status": _format_recovery_cursor(
+                    line_number=line_number,
+                    byte_offset=byte_offset,
+                ),
+            }
+        )
+
+    def _recovered_projection(
+        self,
+        record: dict[str, Any],
+        *,
+        raw_file_id: str,
+        raw_line_number: int,
+    ) -> tuple[dict[str, Any], dict[str, Any]] | None:
+        raw_text = str(record.get("raw_text") or "")
+        try:
+            receive_time = datetime.fromisoformat(str(record.get("receive_time") or ""))
+        except (TypeError, ValueError):
+            return None
+        parsed = self.parser.parse(raw_text, receive_time=receive_time)
+        if parsed is None or str(parsed.get("event_family") or "") != "WMESH":
+            return None
+        parsed = self._ap_resolver.enrich_parsed(parsed)
+        details = {
+            **dict(parsed.get("details") or {}),
+            "facility": str(record.get("facility") or ""),
+            "severity": str(record.get("severity") or ""),
+            "identity_status": str(record.get("identity_status") or ""),
+            "global_receive_sequence": int(
+                record.get("global_receive_sequence") or 0
+            ),
+            "source_receive_sequence": int(
+                record.get("source_receive_sequence") or 0
+            ),
+            "recovered_from_raw": True,
+        }
+        quality = str(record.get("data_quality") or "COMPLETE")
+        use_device_time = quality not in {"CLOCK_OFFSET", "CLOCK_JUMP"} and bool(
+            parsed.get("device_time")
+        )
+        event_time = (
+            str(parsed.get("device_time"))
+            if use_device_time
+            else receive_time.isoformat(timespec="milliseconds")
+        )
+        event = {
+            **parsed,
+            "run_id": self._run_id,
+            "device_uuid": str(record.get("device_uuid") or ""),
+            "device_id": record.get("device_id"),
+            "train_id": str(record.get("train_id") or ""),
+            "mr_role": str(record.get("mr_role") or ""),
+            "receive_time": receive_time.isoformat(timespec="milliseconds"),
+            "source_ip": str(record.get("source_ip") or ""),
+            "hostname": str(record.get("hostname") or ""),
+            "data_quality": quality,
+            "receive_delay_ms": record.get("clock_offset_ms"),
+            "clock_offset_ms": record.get("clock_offset_ms"),
+            "raw_file_id": raw_file_id,
+            "raw_line_number": raw_line_number,
+            "event_time": event_time,
+            "event_time_source": (
+                "DEVICE_TIME" if use_device_time else "RECEIVE_TIME"
+            ),
+            "dedup_key": f"raw-syslog:{raw_file_id}:{raw_line_number}",
+            "station": str(parsed.get("station") or ""),
+            "section": str(parsed.get("section") or ""),
+            "details": details,
+        }
+        timeline = {
+            "run_id": self._run_id,
+            "ts": receive_time.isoformat(timespec="milliseconds"),
+            "event_type": str(parsed["event_type"]).casefold(),
+            "severity": "warning" if quality != "COMPLETE" else "info",
+            "train_id": str(record.get("train_id") or ""),
+            "mr_id": str(record.get("device_uuid") or ""),
+            "title": _event_title(str(parsed["event_type"])),
+            "message": _event_message(parsed),
+            "dedup_key": f"raw-syslog:{raw_file_id}:{raw_line_number}",
+            "details": {
+                "data_quality": quality,
+                "identity_status": str(record.get("identity_status") or ""),
+                "train_no": str(record.get("train_no") or ""),
+                "mr_name": str(record.get("mr_name") or ""),
+                "mr_position_code": str(record.get("mr_role") or ""),
+                "raw_file_id": raw_file_id,
+                "raw_line_number": raw_line_number,
+                "recovered_from_raw": True,
+                **details,
+            },
+        }
+        return event, timeline
 
 
 def _parse_device_time(raw_text: str, receive_time: datetime) -> str:
@@ -1113,14 +1395,22 @@ def _parse_active_endpoint(value: str) -> dict[str, Any]:
     if candidate.casefold() == "na_0000-0000-0000(0)":
         return {"radio_mac": "", "peer_mac": "", "rssi": None, "missing": True}
     match = _ACTIVE_LINK_ENDPOINT_RE.fullmatch(candidate)
-    if not match:
-        return {"radio_mac": "", "peer_mac": "", "rssi": None, "missing": False}
-    return {
-        "radio_mac": match.group("radio"),
-        "peer_mac": match.group("peer"),
-        "rssi": int(match.group("rssi")),
-        "missing": False,
-    }
+    if match:
+        return {
+            "radio_mac": match.group("radio"),
+            "peer_mac": match.group("peer"),
+            "rssi": int(match.group("rssi")),
+            "missing": False,
+        }
+    single = _ACTIVE_LINK_SINGLE_MAC_ENDPOINT_RE.fullmatch(candidate)
+    if single:
+        return {
+            "radio_mac": "",
+            "peer_mac": single.group("peer"),
+            "rssi": int(single.group("rssi")),
+            "missing": False,
+        }
+    return {"radio_mac": "", "peer_mac": "", "rssi": None, "missing": False}
 
 
 def _linkdown_reason_code(reason: str) -> str:
@@ -1260,15 +1550,26 @@ def recover_raw_files(
             continue
         path = _managed_regular_file(root, relative)
         valid = path is not None
+        record_count = (
+            _line_count(path) if path else int(row.get("record_count") or 0)
+        )
+        parse_status = (
+            _pending_recovery_parse_status(
+                row.get("parse_status"),
+                record_count=record_count,
+            )
+            if valid
+            else "MISSING"
+        )
         repository.upsert_raw_file(
             {
                 **row,
                 "end_time": now,
-                "record_count": _line_count(path) if path else int(row.get("record_count") or 0),
+                "record_count": record_count,
                 "size_bytes": path.stat().st_size if path else 0,
                 "sha256": _sha256(path) if path else "",
                 "status": "RECOVERED" if valid else "MISSING",
-                "parse_status": "PENDING_RECOVERY" if valid else "MISSING",
+                "parse_status": parse_status,
             }
         )
         recovered += 1
@@ -1302,6 +1603,62 @@ def recover_raw_files(
         )
         recovered += 1
     return recovered
+
+
+def _pending_recovery_parse_status(value: object, *, record_count: int) -> str:
+    parse_status = str(value or "")
+    if not parse_status.startswith("STREAMING@"):
+        return "PENDING_RECOVERY"
+    cursor, _byte_offset = _parse_recovery_cursor(parse_status)
+    if not parse_status.partition("@")[2].partition(":")[0].isdigit():
+        return "PENDING_RECOVERY"
+    return f"PENDING_RECOVERY@{min(cursor, max(0, int(record_count)))}"
+
+
+def _parse_recovery_cursor(value: object) -> tuple[int, int | None]:
+    payload = str(value or "").partition("@")[2]
+    line_text, separator, offset_text = payload.partition(":")
+    try:
+        line_number = max(0, int(line_text or 0))
+    except ValueError:
+        return 0, None
+    if not separator:
+        return line_number, None
+    try:
+        return line_number, max(0, int(offset_text))
+    except ValueError:
+        return line_number, None
+
+
+def _format_recovery_cursor(*, line_number: int, byte_offset: int) -> str:
+    return (
+        f"PENDING_RECOVERY@{max(0, int(line_number))}:"
+        f"{max(0, int(byte_offset))}"
+    )
+
+
+def _seek_recovery_cursor(
+    handle: Any,
+    *,
+    line_cursor: int,
+    byte_offset: int | None,
+    file_size: int,
+) -> tuple[int, int]:
+    if byte_offset is not None and 0 <= byte_offset <= file_size:
+        boundary_valid = byte_offset == 0
+        if byte_offset > 0:
+            handle.seek(byte_offset - 1)
+            boundary_valid = handle.read(1) == b"\n"
+        if boundary_valid:
+            handle.seek(byte_offset)
+            return max(0, int(line_cursor)), byte_offset
+    handle.seek(0)
+    actual_line = 0
+    while actual_line < max(0, int(line_cursor)):
+        if not handle.readline():
+            break
+        actual_line += 1
+    return actual_line, handle.tell()
 
 
 def _line_count(path: Path) -> int:

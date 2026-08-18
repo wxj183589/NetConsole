@@ -32,6 +32,11 @@ def test_windows_package_script_rechecks_the_final_artifact() -> None:
     assert '"netconsole.installer-release.v1"' in script
     assert "installer_git_commit -eq $head" in script
     assert "packaged_dirty -ne $false" in script
+    assert "backend_commit -ne $head" in script
+    assert "frontend_commit -ne $head" in script
+    assert "$finalDirty" in script
+    assert "$finalHead -ne $head" in script
+    assert "$finalUpstream -ne $head" in script
     assert 'real_windows_install_status -ne "PENDING"' in script
     assert 'server_installation_status -ne "PENDING"' in script
     assert 'package_smoke -ne "PASS"' in script
@@ -40,6 +45,22 @@ def test_windows_package_script_rechecks_the_final_artifact() -> None:
     assert "Get-Sha256Hex -Path $artifactPath" in script
     assert "[System.Security.Cryptography.SHA256]::Create()" in script
     assert "artifact.Length -ne [int64]$releaseManifest.artifact_size" in script
+
+
+def test_local_release_publish_rechecks_source_and_inner_commits() -> None:
+    script = (
+        ROOT / "scripts" / "build" / "package_local.ps1"
+    ).read_text(encoding="utf-8-sig")
+
+    assert "$manifest.backend_commit -ne $Head" in script
+    assert "$manifest.frontend_commit -ne $Head" in script
+    assert "$finalDirty" in script
+    assert "$finalHead -ne $head" in script
+    assert "$finalUpstream -ne $head" in script
+    assert "$publishDirty" in script
+    assert script.index("$publishDirty") < script.index(
+        "Publish-VerifiedArtifacts -ProjectRoot"
+    )
 
 
 def test_windows_package_launcher_only_calls_the_powershell_orchestrator() -> None:
@@ -52,3 +73,18 @@ def test_windows_package_launcher_only_calls_the_powershell_orchestrator() -> No
     assert "%*" in launcher
     for forbidden in ("git reset", "git clean", "git push", "pnpm package"):
         assert forbidden not in launcher
+
+
+def test_package_smoke_uses_the_same_default_edition_as_package_prepare() -> None:
+    package_prepare = (
+        ROOT / "apps" / "desktop_electron" / "scripts" / "package.mjs"
+    ).read_text(encoding="utf-8")
+    package_smoke = (
+        ROOT / "apps" / "desktop_electron" / "scripts" / "package-smoke.mjs"
+    ).read_text(encoding="utf-8")
+
+    expected_default = "process.env.NETCONSOLE_BUILD_EDITION || 'full'"
+    assert expected_default in package_prepare
+    assert expected_default in package_smoke
+    assert "const buildEdition =" in package_smoke
+    assert "const edition = buildEdition" in package_smoke

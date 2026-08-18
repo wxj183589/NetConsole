@@ -167,6 +167,8 @@ def prepare_installer_identity(*, require_synced: bool) -> dict[str, Any]:
             f'!define NETCONSOLE_INSTALLER_GIT_SHORT "{short}"',
             f'!define NETCONSOLE_INSTALLER_BUILD_TIME "{build_time}"',
             f'!define NETCONSOLE_INSTALLER_BUILD_ID "{build_id}"',
+            '!define NETCONSOLE_INSTALLER_EDITION "unscoped"',
+            '!define NETCONSOLE_INSTALLER_FEATURE_PROFILE "unscoped"',
             f'!define NETCONSOLE_INSTALLER_POLICY "{POLICY_VERSION}"',
             f'!define NETCONSOLE_INSTALLER_POLICY_SHA256 "{manifest["installer_policy_source_sha256"]}"',
             f'!define NETCONSOLE_INSTALLER_MANIFEST_PATH "{_nsis_path(INSTALLER_BUILD_MANIFEST_PATH)}"',
@@ -215,6 +217,13 @@ def verify_installer_artifact(path: Path) -> dict[str, Any]:
         "InstallerPolicy": str(manifest["installer_policy"]),
         "InstallerPolicySHA256": str(manifest["installer_policy_source_sha256"]),
     }
+    if manifest.get("edition"):
+        expected_version_strings["InstallerEdition"] = str(
+            manifest["edition"]
+        )
+        expected_version_strings["InstallerFeatureProfile"] = str(
+            manifest.get("feature_profile") or ""
+        )
     for key, expected in expected_version_strings.items():
         if version_strings.get(key) != expected:
             raise InstallerBuildError(f"最终 EXE 版本资源 {key} 不匹配")
@@ -259,6 +268,10 @@ def verify_installer_artifact(path: Path) -> dict[str, Any]:
         raise InstallerBuildError("最终 EXE 内 Backend 标记为 dirty")
     if frontend_metadata.get("build_dirty") is not False:
         raise InstallerBuildError("最终 EXE 内 Frontend 标记为 dirty")
+
+    require_clean_synced_git()
+    if _git("rev-parse", "HEAD") != commit:
+        raise InstallerBuildError("最终校验时 Git HEAD 已偏离冻结的 Installer commit")
 
     result = {
         "schema": "netconsole.installer-release.v1",

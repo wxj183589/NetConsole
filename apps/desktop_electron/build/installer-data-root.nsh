@@ -16,6 +16,8 @@
   VIAddVersionKey /LANG=1033 "InstallerGitShort" "${NETCONSOLE_INSTALLER_GIT_SHORT}"
   VIAddVersionKey /LANG=1033 "InstallerBuildTime" "${NETCONSOLE_INSTALLER_BUILD_TIME}"
   VIAddVersionKey /LANG=1033 "InstallerBuildId" "${NETCONSOLE_INSTALLER_BUILD_ID}"
+  VIAddVersionKey /LANG=1033 "InstallerEdition" "${NETCONSOLE_INSTALLER_EDITION}"
+  VIAddVersionKey /LANG=1033 "InstallerFeatureProfile" "${NETCONSOLE_INSTALLER_FEATURE_PROFILE}"
   VIAddVersionKey /LANG=1033 "InstallerPolicy" "${NETCONSOLE_INSTALLER_POLICY}"
   VIAddVersionKey /LANG=1033 "InstallerPolicySHA256" "${NETCONSOLE_INSTALLER_POLICY_SHA256}"
 !macroend

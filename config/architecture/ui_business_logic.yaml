@@ -81,7 +81,8 @@
   {"path":"apps/desktop_renderer/src/utils/dateTime.ts","symbol":"parseUtcDateTime","classification":"DISPLAY_ONLY","reason":"仅解析任务时间用于前端展示和排序，不计算业务事实。","test":"apps/desktop_renderer/src/utils/dateTime.test.ts"},
   {"path":"apps/desktop_renderer/src/workspace/route-identity.ts","symbol":"resolveWorkspacePolicy","classification":"FALSE_POSITIVE","reason":"解析路由元数据中的工作区基础设施策略。","test":"apps/desktop_renderer/src/workspace/route-identity.test.ts"},
   {"path":"apps/desktop_renderer/src/workspace/route-identity.ts","symbol":"normalizeParam","classification":"FALSE_POSITIVE","reason":"规范化路由参数以生成稳定的工作区标识。","test":"apps/desktop_renderer/src/workspace/route-identity.test.ts"},
-  {"path":"apps/desktop_renderer/src/api/client.ts","symbol":"normalizeQueryTimeout","classification":"FALSE_POSITIVE","reason":"仅规范化客户端请求超时参数，属于传输层边界校验，不计算业务事实。","test":"apps/desktop_renderer/src/api/client.test.ts"}
+  {"path":"apps/desktop_renderer/src/api/client.ts","symbol":"normalizeQueryTimeout","classification":"FALSE_POSITIVE","reason":"仅规范化客户端请求超时参数，属于传输层边界校验，不计算业务事实。","test":"apps/desktop_renderer/src/api/client.test.ts"},
+  {"path":"apps/desktop_renderer/src/platform/buildIdentity.ts","symbol":"parseRendererBuildMetadata","classification":"FALSE_POSITIVE","reason":"仅校验随 Renderer 静态资源发布的构建元数据是否自洽，属于发布身份传输边界，不计算产品业务事实。","test":"apps/desktop_renderer/src/platform/buildIdentity.test.ts"}
 ,
   {"path":"apps/desktop_renderer/src/stores/onlineMrAnalysis.ts","symbol":"runDeduped","classification":"DISPLAY_ONLY","reason":"仅协调去重请求与前端状态，不计算或持久化业务事实。","test":"apps/desktop_renderer/src/stores/onlineMrAnalysis.test.ts"},
   {"path":"apps/desktop_renderer/src/views/rail-transit/RailTransitBaseDataView.vue","symbol":"resolveDirtyBeforeLeaving","classification":"DISPLAY_ONLY","reason":"仅处理页面离开前的编辑确认。","test":"apps/desktop_renderer/src/views/rail-transit/RailTransitBaseDataView.behavior.test.ts"},

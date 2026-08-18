@@ -305,8 +305,8 @@ FEATURES: tuple[FeatureItem, ...] = (
         "轨旁 AP 业务 WPS 云同步",
         "module.trackside_ap",
         "action",
-        default_client_package=False,
-        status=FeatureStatus.DEVELOPMENT,
+        requires=("internal.rail_task_control",),
+        delivery_requires=("internal.rail_task_control",),
     ),
     FeatureItem(
         "rail.zte_trackside_switch_adapter",

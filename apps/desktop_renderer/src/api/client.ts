@@ -2,6 +2,12 @@ export interface HealthResponse {
   status: string
   version: string
   build_id: string
+  backend_commit?: string
+  frontend_commit?: string
+  commit_sha_short?: string
+  edition?: string
+  packaged_dirty?: boolean
+  build_timestamp?: string
   performance_mode?: string
   unattended_status?: string
   unattended_ready?: boolean
@@ -16,21 +22,19 @@ export interface HealthResponse {
   history_budget_overrun?: boolean
 }
 
-export interface RendererBuildMeta {
-  app_version: string
-  git_commit: string
-  build_time: string
-  navigation_schema_version: number
-  build_id: string
-}
-
 import {
   getRuntimeConfig,
   refreshPlatformRuntimeConfig,
   resolveApiUrl,
   resolveFrontendAssetUrl,
 } from '../platform/runtime'
+import {
+  parseRendererBuildMetadata,
+  type RendererBuildMetadata,
+} from '../platform/buildIdentity'
 import { t } from '../i18n/runtime'
+
+export type RendererBuildMeta = RendererBuildMetadata
 
 const DESKTOP_SESSION_HEADER = 'X-NetConsole-Session'
 const DEFAULT_QUERY_TIMEOUT_MS = 15_000
@@ -394,5 +398,5 @@ export function getHealth(): Promise<HealthResponse> {
 export async function getRendererBuildMeta(): Promise<RendererBuildMeta> {
   const response = await fetch(resolveFrontendAssetUrl('/desktop-renderer-build-meta.json'), { cache: 'no-store' })
   if (!response.ok) throw new Error(`前端构建元数据不可用 (${response.status})`)
-  return (await response.json()) as RendererBuildMeta
+  return parseRendererBuildMetadata(await response.json())
 }

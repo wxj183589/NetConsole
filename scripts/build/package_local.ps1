@@ -285,6 +285,9 @@ function Get-VerifiedArtifacts {
         if ($manifest.packaged_dirty -ne $false) {
             throw "$expectedEdition 发布清单标记 packaged_dirty=true。"
         }
+        if ($manifest.backend_commit -ne $Head -or $manifest.frontend_commit -ne $Head) {
+            throw "$expectedEdition 发布清单的 Backend/Frontend commit 与 Installer commit 不一致。"
+        }
         if (
             [string]::IsNullOrWhiteSpace([string]$manifest.version) -or
             $manifest.build_commit -ne $manifest.installer_git_commit -or
@@ -637,9 +640,19 @@ try {
     Write-StageComplete 6 "安装包构建"
     Write-StageComplete 7 "安装包和发布清单验证"
 
+    $finalDirty = Invoke-NativeCapture $gitPath @("status", "--porcelain", "--untracked-files=all") $projectRoot
+    $finalHead = Invoke-NativeCapture $gitPath @("rev-parse", "HEAD") $projectRoot
+    $finalUpstream = Invoke-NativeCapture $gitPath @("rev-parse", "@{upstream}") $projectRoot
+    if ($finalDirty -or $finalHead -ne $head -or $finalUpstream -ne $head) {
+        throw "构建结束时源码状态已变化，拒绝发布。frozen=$head，HEAD=$finalHead，upstream=$finalUpstream"
+    }
     $expectedEditions = Get-ExpectedEditions -BuildEdition $Edition
     $artifactRoot = Join-Path $projectRoot "dist\electron"
     $verified = Get-VerifiedArtifacts -ArtifactRoot $artifactRoot -Head $head -ExpectedEditions $expectedEditions
+    $publishDirty = Invoke-NativeCapture $gitPath @("status", "--porcelain", "--untracked-files=all") $projectRoot
+    if ($publishDirty -or (Invoke-NativeCapture $gitPath @("rev-parse", "HEAD") $projectRoot) -ne $head -or (Invoke-NativeCapture $gitPath @("rev-parse", "@{upstream}") $projectRoot) -ne $head) {
+        throw "发布前源码状态已变化，拒绝写入正式发布目录。"
+    }
     $appVersion = Get-AppVersion -PythonPath $pythonPath -ProjectRoot $projectRoot
     $completedAt = Get-Date
     $published = Publish-VerifiedArtifacts -ProjectRoot $projectRoot -AppVersion $appVersion -Head $head `

@@ -617,7 +617,7 @@
     "capability.trackside_ap.wps_sync": {
       "visible": true,
       "enabled": true,
-      "client_package": false,
+      "client_package": true,
       "internal_only": false
     },
     "rail.zte_trackside_switch_adapter": {

@@ -239,6 +239,7 @@ class FleetPingSupervisor:
         self._switch_after_seconds = 5
         self._correlator: GroundUnattendedTimelineCorrelator | None = None
         self._sample_count = 0
+        self._persisted_target_stats: dict[str, _Stats] = {}
         self._started_at: dict[str, str] = {}
         self._transition_at: dict[str, str] = {}
         self._backend_warnings: list[str] = []
@@ -267,6 +268,8 @@ class FleetPingSupervisor:
                     + ", ".join(stop_result["alive_worker_ids"])
                 )
         self._recover_open_segments(run_id)
+        persisted_run = self.repository.get_run(run_id) or {}
+        persisted_daily = self.repository.list_ping_summaries(run_id)
         with self._lock:
             if self._run_id == run_id:
                 return
@@ -275,7 +278,12 @@ class FleetPingSupervisor:
             self._stats = {}
             self._buckets = {}
             self._dirty_buckets = set()
-            self._sample_count = 0
+            self._sample_count = int(persisted_run.get("ping_sample_count") or 0)
+            self._persisted_target_stats = {
+                str(row.get("target_ip") or ""): self._stats_from_summary(row)
+                for row in persisted_daily
+                if str(row.get("target_ip") or "")
+            }
             self._started_at = {}
             self._transition_at = {}
             self._backend_warnings = []
@@ -365,6 +373,11 @@ class FleetPingSupervisor:
                         )
                     desired[address] = current
             self._targets = desired
+            for address in desired:
+                if address not in self._stats and address in self._persisted_target_stats:
+                    self._stats[address] = self._copy_stats(
+                        self._persisted_target_stats[address]
+                    )
             self._transition_at = {
                 address: value
                 for address, value in self._transition_at.items()
@@ -751,9 +764,18 @@ class FleetPingSupervisor:
             )
             for kind, bucket_start, ap_identity in self._bucket_keys(ts, target):
                 key = (kind, bucket_start, sample.target, ap_identity)
-                self._buckets.setdefault(key, _Stats()).add(
-                    sample, ignored=warmup_ignored
-                )
+                stats = self._buckets.get(key)
+                if stats is None:
+                    persisted = self.repository.get_ping_summary(
+                        self._run_id,
+                        bucket_kind=kind,
+                        bucket_start=bucket_start,
+                        target_ip=sample.target,
+                        ap_identity=ap_identity,
+                    )
+                    stats = self._stats_from_summary(persisted or {})
+                    self._buckets[key] = stats
+                stats.add(sample, ignored=warmup_ignored)
                 self._dirty_buckets.add(key)
             if self._correlator and not warmup_ignored:
                 context = {
@@ -826,6 +848,34 @@ class FleetPingSupervisor:
                 stats.max_loss * self._period_ms / 1000, 3
             ),
         }
+
+    @staticmethod
+    def _stats_from_summary(row: dict[str, Any]) -> _Stats:
+        success = int(row.get("success_count") or 0)
+        average = row.get("avg_rtt_ms")
+        return _Stats(
+            raw=int(row.get("raw_sample_count") or 0),
+            ignored=int(row.get("warmup_ignored_count") or 0),
+            sent=int(row.get("sent_count") or 0),
+            success=success,
+            loss=int(row.get("loss_count") or 0),
+            rtt_sum=float(average or 0.0) * success,
+            min_rtt=(
+                float(row["min_rtt_ms"])
+                if row.get("min_rtt_ms") is not None
+                else None
+            ),
+            max_rtt=(
+                float(row["max_rtt_ms"])
+                if row.get("max_rtt_ms") is not None
+                else None
+            ),
+            max_loss=int(row.get("continuous_loss_max_count") or 0),
+        )
+
+    @staticmethod
+    def _copy_stats(stats: _Stats) -> _Stats:
+        return _Stats(**stats.__dict__)
 
     def _is_warmup(self, ts: datetime, activated_at: str) -> bool:
         if self._warmup_seconds <= 0 or not activated_at:

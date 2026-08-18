@@ -35,8 +35,10 @@ from netconsole.backend.web_build import (
     backend_build_id,
     frontend_build_id,
     read_frontend_build_meta,
+    verified_frontend_commit,
 )
 from netconsole.core.database import Database
+from netconsole.core.build_metadata import current_build_metadata
 from netconsole.core.paths import PathResolver
 from netconsole.core.feature_flags import FeatureGate
 from netconsole.core.resources import package_resource_path
@@ -780,6 +782,7 @@ def create_app(
         f"unattended_priority={capability_policy.unattended_priority}",
     )
     app.state.paths = paths
+    app.state.build_metadata = current_build_metadata(paths.app_root)
     app.state.backend_build_id = backend_build_id(paths.app_root)
     app.state.task_service = task_service
     app.state.site_application_service = site_application_service
@@ -1080,9 +1083,11 @@ def create_app(
     app.state.frontend_source_type = "override" if frontend_dist is not None else _frontend_source_type()
     app.state.frontend_build_meta = read_frontend_build_meta(dist)
     app.state.frontend_build_id = frontend_build_id(app.state.frontend_build_meta)
+    app.state.frontend_commit = verified_frontend_commit(app.state.frontend_build_meta)
     app.state.frontend_build_mismatch = (
         app.state.frontend_build_id != app.state.backend_build_id
     )
+    _log_build_identity(app)
     if (dist / "index.html").is_file():
         assets = dist / "assets"
         if assets.is_dir():
@@ -1113,6 +1118,26 @@ def create_app(
 </html>"""
 
     return app
+
+
+def _log_build_identity(app: FastAPI) -> None:
+    metadata = dict(getattr(app.state, "build_metadata", {}) or {})
+    feature_gate = getattr(app.state, "feature_gate", None)
+    app_logger.log_info(
+        "BUILD_IDENTITY",
+        " ".join(
+            (
+                f"product_version={metadata.get('app_version') or 'unknown'}",
+                f"commit_sha_full={metadata.get('git_commit_full') or 'unknown'}",
+                f"commit_sha_short={metadata.get('git_commit_short') or 'unknown'}",
+                f"backend_commit={metadata.get('backend_commit') or 'unknown'}",
+                f"frontend_commit={getattr(app.state, 'frontend_commit', 'unknown') or 'unknown'}",
+                f"edition={getattr(feature_gate, 'edition', 'unknown') or 'unknown'}",
+                f"packaged_dirty={str(bool(metadata.get('build_dirty', True))).lower()}",
+                f"build_timestamp={metadata.get('build_time_utc') or ''}",
+            )
+        ),
+    )
 
 
 def _current_site_name(

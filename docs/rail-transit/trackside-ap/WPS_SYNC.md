@@ -7,6 +7,8 @@
 
 轨旁 AP 页面只提供“同步云文档”“打开云文档”和“配置云文档”。连接地址、Webhook、脚本令牌、Binding、部署身份和诊断按局点独立保存。Windows 使用 DPAPI 加密保存脚本令牌，API、任务参数、日志、错误详情和持久化请求载荷都不得包含明文令牌。
 
+正式 Feature ID 固定为 `capability.trackside_ap.wps_sync`。该能力随 Full 安装包交付并启用，Customer 安装包保持不交付、不可见和不可用；包内 Profile 缺失或损坏时 Customer 仍按 Full-only 保护关闭。不得恢复旧 `web.*` ID，也不得通过外部运行时覆盖改变包内交付边界。
+
 ## 已验收基线
 
 普通在线表格的正式脚本是：

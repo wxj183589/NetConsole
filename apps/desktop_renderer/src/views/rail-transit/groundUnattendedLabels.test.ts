@@ -17,6 +17,8 @@ describe('ground unattended Chinese labels', () => {
     expect(groundSeverityLabel('critical')).toBe('严重')
     expect(groundOperationStageLabel('STOPPING_SYSLOG')).toBe('正在停止 Syslog 接收')
     expect(groundOperationStageLabel('STOPPING_DEEP_COLLECTION')).toBe('正在停止深度采集')
+    expect(groundOperationStageLabel('FORCE_STOPPING_DEEP_COLLECTION')).toBe('正在强制停止深度采集')
+    expect(groundOperationStageLabel('WAITING_DEEP_COLLECTION_TERMINAL')).toBe('等待深度采集进入终态')
     expect(groundOperationStageLabel('STOPPING_AC_POLLER')).toBe('正在停止 AC 常驻轮询')
     expect(groundStopTriggerLabel('BACKEND_SHUTDOWN')).toBe('Backend 生命周期触发')
     expect(groundStopTriggerLabel('UNKNOWN')).toBe('历史记录未保存触发来源')

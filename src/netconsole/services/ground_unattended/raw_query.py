@@ -44,6 +44,7 @@ MAX_SYSLOG_QUERY_SECONDS = 8.0
 MAX_MIXED_DEDUP_KEYS = 250_000
 MAX_INCREMENTAL_POINTS = 500
 MAX_CURSOR_FILES = 32
+WMESH_COMPLETE_CLOCK_SKEW_SECONDS = 5
 
 
 class GroundRawQueryError(ValueError):
@@ -121,6 +122,8 @@ class GroundRawStreamQueryService:
         position_segments: list[dict[str, Any]] = []
         last_position: dict[str, tuple[str, str, str, str]] = {}
         observed_signatures: set[tuple[str, str]] = set()
+        latest_sample_key: tuple[str, int] = ("", -1)
+        latest_sample_segment = ""
 
         for item in self._records(
             data_type="ping",
@@ -141,6 +144,13 @@ class GroundRawStreamQueryService:
                 observed_signatures,
             )
             counts["raw"] += 1
+            sample_key = (
+                str(item.get("ts") or ""),
+                _optional_int(item.get("seq")) or -1,
+            )
+            if sample_key >= latest_sample_key:
+                latest_sample_key = sample_key
+                latest_sample_segment = str(item.get("raw_file_id") or "")
             ignored = bool(item.get("warmup_ignored"))
             if ignored:
                 counts["ignored"] += 1
@@ -260,6 +270,12 @@ class GroundRawStreamQueryService:
             data_type="ping",
         )
         diagnostics["matched_count"] = counts["raw"]
+        diagnostics["segment_count"] = diagnostics["files_scanned"]
+        diagnostics["active_segment"] = latest_sample_segment
+        diagnostics["last_persisted_sample_at"] = latest_sample_key[0]
+        diagnostics["last_query_sample_at"] = datetime.now().astimezone().isoformat(
+            timespec="milliseconds"
+        )
         if counts["raw"] == 0 and diagnostics["files_scanned"]:
             diagnostics["no_data_reason"] = (
                 "PING_TARGET_NOT_FOUND" if target_ip else "NO_SAMPLES"
@@ -534,11 +550,24 @@ class GroundRawStreamQueryService:
         sample which happened to land in the same millisecond.
         """
 
+        lower = start - timedelta(seconds=5)
+        upper = end + timedelta(seconds=5)
+        receive_lower = lower - timedelta(
+            seconds=WMESH_COMPLETE_CLOCK_SKEW_SECONDS
+        )
+        receive_upper = upper + timedelta(
+            seconds=WMESH_COMPLETE_CLOCK_SKEW_SECONDS
+        )
         events = [
             event
-            for event in self.repository.list_wmesh_events(
+            for event in self.repository.list_wmesh_events_for_identity(
                 run_id=run_id,
-                limit=2_000,
+                train_id=train_id,
+                mr_id=mr_id,
+                mr_role=mr_role,
+                source_ip=management_ip,
+                start_time=receive_lower.isoformat(timespec="milliseconds"),
+                end_time=receive_upper.isoformat(timespec="milliseconds"),
             )
             if _wmesh_event_matches_identity(
                 event,
@@ -550,8 +579,6 @@ class GroundRawStreamQueryService:
         ]
         if not events:
             return
-        lower = start - timedelta(seconds=5)
-        upper = end + timedelta(seconds=5)
         scoped: list[dict[str, Any]] = []
         for event in events:
             moment = _wmesh_event_time(event)
@@ -1708,6 +1735,11 @@ def _resolved_wmesh_mr_id(identity: GroundResolvedPingIdentity) -> str:
 
 
 def _wmesh_event_time(event: Mapping[str, Any]) -> datetime | None:
+    if str(event.get("data_quality") or "").upper() in {
+        "CLOCK_OFFSET",
+        "CLOCK_JUMP",
+    }:
+        return _parse_time(str(event.get("receive_time") or ""))
     return _parse_time(
         str(event.get("event_time") or event.get("device_time") or event.get("receive_time") or "")
     )

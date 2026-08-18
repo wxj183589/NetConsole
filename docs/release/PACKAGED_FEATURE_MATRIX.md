@@ -6,7 +6,7 @@
 
 | 运行环境 | 功能基线来源 | 外部 runtime 配置 | 基线缺失或损坏 |
 | --- | --- | --- | --- |
-| 正式 Electron 包 | 包内只读 `customer/production` 基线 | 忽略外部 `build_info.json`、任意 schema 版本的 `feature_flags.json` 及 `feature_flags.local.json` | 回退 Feature Registry 的稳定生产默认，并记录 `PACKAGED_FEATURE_POLICY_FALLBACK` |
+| 正式 Electron 包 | 包内只读 `full/full` 或 `customer/customer` 基线 | 忽略外部 `build_info.json`、任意 schema 版本的 `feature_flags.json` 及 `feature_flags.local.json` | 回退 Feature Registry 的稳定生产默认；Full-only 能力在 Customer 下继续关闭，并记录 `PACKAGED_FEATURE_POLICY_FALLBACK` |
 | 源码开发态 | 开发构建信息、外部 runtime 配置与 Registry | 按现有开发配置语义读取；支持本地可见性/启用状态覆盖 | 回退开发态 Registry 默认 |
 
 因此，正式包不能通过外部 schema 禁用固定生产功能，也不能重新启用 `DEVELOPMENT`、`HIDDEN`、`DISABLED` 或 internal-only 能力。`client_package` 仍只表示构建/发布元数据，不是正式运行时的通用权限开关。
@@ -42,6 +42,7 @@
 | `capability.mesh.import` | MESH 导入与重建 | `ENABLED` | 是 | 是 | 否 | 是 | 可预览、导入和重建 | `/api/rail-transit/mesh-analysis/import-*` | MESH 分析页 | `test_mesh_web_contract.py` | `PENDING` |
 | `capability.mesh.report_export` | MESH 报告与导出 | `ENABLED` | 是 | 是 | 否 | 是 | 可生成/下载派生报告 | `/api/rail-transit/mesh-analysis/*/report` | MESH 分析页 | `test_mesh_web_contract.py`、`test_rail_task_export_contract.py` | `PENDING` |
 | `module.trackside_ap` | 轨旁 AP 业务 | `ENABLED` | 是 | 是 | 否 | 是 | 光衰更新与导出可用 | `/api/rail-transit/trackside-ap-business/*` | `/rail-transit/trackside-ap-business` | `test_trackside_ap_business_export_web.py` | `PENDING` |
+| `capability.trackside_ap.wps_sync` | 轨旁 AP WPS 云文档同步 | `ENABLED` | 是 | 是 | 否 | Full 是 / Customer 否 | Full 显示配置、打开与同步入口；Customer 保持关闭 | `/api/rail-transit/trackside-ap-business/wps/*` | 轨旁 AP 业务页 | `test_trackside_ap_wps_feature_delivery.py`、`TracksideApBusinessView.test.ts`、package smoke | `PENDING` |
 | `module.system_settings` | 系统设置与环境自检 | `ENABLED` | 是 | 是 | 否 | 是 | 设置、局点管理和自检可用 | `/api/settings/*`、`/api/settings/self-check` | `/settings` | `test_system_settings_web_api.py`、`SystemSettingsView.test.ts` | `PENDING` |
 
 局点管理当前是 `module.system_settings` 内的正式面板，不建立第二个 Feature ID。其 API 位于 `/api/sites` 与局点包相关路由；v4 未加密完整包凭据恢复、无迁移密码/无 `payload.enc`、脱敏包清洗、checksum 篡改零发布和 `needs_reentry` 闭环由 `test_site_storage.py / test_site_storage_api.py` 验证。设备凭据显式查看和旧字段保存兼容由 `test_device_management_web_api.py / DeviceManagementView*.test.ts` 验证。

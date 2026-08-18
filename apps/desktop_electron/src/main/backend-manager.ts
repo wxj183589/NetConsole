@@ -18,6 +18,16 @@ export interface BackendRuntimeInfo {
   apiToken: string
 }
 
+interface BackendBuildIdentity {
+  status?: unknown
+  build_id?: unknown
+  backend_commit?: unknown
+  frontend_commit?: unknown
+  edition?: unknown
+  packaged_dirty?: unknown
+  build_timestamp?: unknown
+}
+
 export interface BackendStartupProgress {
   stage: string
   elapsedMs: number
@@ -274,12 +284,23 @@ export class PythonBackendManager {
       const runtime = await runtimeAnnouncement
       this.options.onStartupMilestone?.('backend.handshake_received')
       this.runtime = runtime
-      await this.pollUntilReady(child, runtime)
+      const buildIdentity = await this.pollUntilReady(child, runtime)
       this.options.onStartupMilestone?.('backend.health_ready')
       if (this.stopRequested) throw new Error('Python backend startup was cancelled')
       this.error = undefined
       this.transition('ready')
       this.options.logger('ELECTRON_BACKEND_READY', `base_url=${runtime.baseUrl}`)
+      this.options.logger(
+        'ELECTRON_BUILD_IDENTITY',
+        [
+          `build_id=${String(buildIdentity.build_id ?? 'unknown')}`,
+          `backend_commit=${String(buildIdentity.backend_commit ?? 'unknown')}`,
+          `frontend_commit=${String(buildIdentity.frontend_commit ?? 'unknown')}`,
+          `edition=${String(buildIdentity.edition ?? 'unknown')}`,
+          `packaged_dirty=${String(buildIdentity.packaged_dirty ?? 'unknown')}`,
+          `build_timestamp=${String(buildIdentity.build_timestamp ?? '')}`,
+        ].join(' '),
+      )
       return { ...runtime }
     } catch (cause) {
       const message = this.safeError(cause, apiToken)
@@ -410,7 +431,7 @@ export class PythonBackendManager {
   private async pollUntilReady(
     child: ManagedChildProcess,
     runtime: BackendRuntimeInfo,
-  ): Promise<void> {
+  ): Promise<BackendBuildIdentity> {
     while (true) {
       if (this.stopRequested) throw new Error('Python backend startup was cancelled')
       if (this.startupFailure) throw this.startupFailure
@@ -436,8 +457,8 @@ export class PythonBackendManager {
           signal: controller.signal,
         })
         if (response.ok) {
-          const payload = await response.json() as { status?: unknown }
-          if (payload.status === 'ok') return
+          const payload = await response.json() as BackendBuildIdentity
+          if (payload.status === 'ok') return payload
         }
       } catch {
         // 连接拒绝和启动期短超时均由下一轮重试处理。

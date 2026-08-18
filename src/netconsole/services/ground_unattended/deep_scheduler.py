@@ -79,6 +79,8 @@ class DeepMrCollectionScheduler:
             max_workers=8, thread_name_prefix="ground-mr-finalize"
         )
         self._stop_futures: dict[str, Future] = {}
+        self._force_stop_futures: dict[str, Future] = {}
+        self._superseded_stop_operation_ids: set[str] = set()
         self._last_batch_at = 0.0
 
     def recover(self, run_id: str) -> None:
@@ -139,7 +141,13 @@ class DeepMrCollectionScheduler:
             for allocation in self.policy.allocations(
                 self.site_id, self._active_operations()
             )
-        ) or any(not future.done() for future in self._stop_futures.values())
+        ) or any(
+            not future.done()
+            for operation_id, future in self._stop_futures.items()
+            if operation_id not in self._superseded_stop_operation_ids
+        ) or any(
+            not future.done() for future in self._force_stop_futures.values()
+        )
 
     def active_automated_operation_ids(self) -> list[str]:
         operation_ids = {
@@ -153,8 +161,68 @@ class DeepMrCollectionScheduler:
             operation_id
             for operation_id, future in self._stop_futures.items()
             if not future.done()
+            and operation_id not in self._superseded_stop_operation_ids
+        )
+        operation_ids.update(
+            operation_id
+            for operation_id, future in self._force_stop_futures.items()
+            if not future.done()
         )
         return sorted(operation_ids)
+
+    def force_stop_all(self, run_id: str, *, reason: str) -> list[str]:
+        """Request bounded force-stop for every automated operation after deadline."""
+
+        with self._lock:
+            operation_ids = sorted(
+                {
+                    allocation.operation.controller_task_id
+                    for allocation in self.policy.allocations(
+                        self.site_id, self._active_operations()
+                    )
+                    if allocation.automated
+                }
+            )
+            submitted_ids: list[str] = []
+            for operation_id in operation_ids:
+                force_future = self._force_stop_futures.get(operation_id)
+                if force_future is not None:
+                    continue
+                normal_future = self._stop_futures.get(operation_id)
+                normal_stop_pending = bool(
+                    normal_future is not None and not normal_future.done()
+                )
+                if normal_future is not None and not normal_stop_pending:
+                    self._stop_futures.pop(operation_id, None)
+                    self._superseded_stop_operation_ids.discard(operation_id)
+                    try:
+                        normal_future.result()
+                    except Exception as exc:
+                        self.repository.add_event(
+                            run_id=run_id,
+                            event_type="deep_collection_stop_failed",
+                            severity="error",
+                            title="无人值守深度采集停止失败",
+                            message=f"{exc.__class__.__name__}: {exc}",
+                            details={"operation_id": operation_id},
+                        )
+                self._force_stop_futures[operation_id] = self._stop_executor.submit(
+                    self.application_service.force_stop_operation,
+                    operation_id,
+                    site_id=self.site_id,
+                    stop_reason=f"ground_unattended:{reason}",
+                )
+                if normal_stop_pending:
+                    self._superseded_stop_operation_ids.add(operation_id)
+                submitted_ids.append(operation_id)
+                self.repository.add_event(
+                    run_id=run_id,
+                    event_type="deep_collection_force_stop_requested",
+                    severity="warning",
+                    title="深度采集已超过正常停止预算，开始受控强制停止",
+                    details={"operation_id": operation_id, "reason": reason},
+                )
+            return submitted_ids
 
     def close(self) -> None:
         self._stop_executor.shutdown(wait=True, cancel_futures=False)
@@ -462,7 +530,7 @@ class DeepMrCollectionScheduler:
                 finalizing += 1
 
     def _submit_stop(self, run_id: str, operation_id: str, reason: str) -> None:
-        if operation_id in self._stop_futures:
+        if operation_id in self._stop_futures or operation_id in self._force_stop_futures:
             return
         self._stop_futures[operation_id] = self._stop_executor.submit(
             self.application_service.stop_operation,
@@ -478,21 +546,35 @@ class DeepMrCollectionScheduler:
         )
 
     def _collect_finished_stop_futures(self, run_id: str) -> None:
-        for operation_id, future in tuple(self._stop_futures.items()):
-            if not future.done():
-                continue
-            self._stop_futures.pop(operation_id, None)
-            try:
-                future.result()
-            except Exception as exc:
-                self.repository.add_event(
-                    run_id=run_id,
-                    event_type="deep_collection_stop_failed",
-                    severity="error",
-                    title="无人值守深度采集停止失败",
-                    message=f"{exc.__class__.__name__}: {exc}",
-                    details={"operation_id": operation_id},
-                )
+        for futures, forced in (
+            (self._stop_futures, False),
+            (self._force_stop_futures, True),
+        ):
+            for operation_id, future in tuple(futures.items()):
+                if not future.done():
+                    continue
+                futures.pop(operation_id, None)
+                if not forced:
+                    self._superseded_stop_operation_ids.discard(operation_id)
+                try:
+                    future.result()
+                except Exception as exc:
+                    self.repository.add_event(
+                        run_id=run_id,
+                        event_type=(
+                            "deep_collection_force_stop_failed"
+                            if forced
+                            else "deep_collection_stop_failed"
+                        ),
+                        severity="error",
+                        title=(
+                            "无人值守深度采集强制停止失败"
+                            if forced
+                            else "无人值守深度采集停止失败"
+                        ),
+                        message=f"{exc.__class__.__name__}: {exc}",
+                        details={"operation_id": operation_id},
+                    )
 
     def _synchronize_operations(self, run_id: str, profile) -> None:
         operations = {

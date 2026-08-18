@@ -12,7 +12,7 @@ from pathlib import Path
 from netconsole.core.feature_flags import (
     PACKAGED_CORE_FEATURE_IDS,
     PACKAGED_ENABLED_ONLY_FEATURE_IDS,
-    PACKAGED_PRODUCTION_FEATURE_IDS,
+    PACKAGED_FULL_REQUIRED_FEATURE_IDS,
     FeatureGate,
     engineer_package_enabled,
     install_runtime_feature_files,
@@ -383,7 +383,7 @@ def validate_packaged_core_features(gate: FeatureGate) -> None:
     required_visible = (
         PACKAGED_CORE_FEATURE_IDS
         if gate.profile == "customer"
-        else PACKAGED_PRODUCTION_FEATURE_IDS
+        else PACKAGED_FULL_REQUIRED_FEATURE_IDS
     )
     for feature_id in required_visible:
         if not gate.is_visible(feature_id) or not gate.is_enabled(feature_id):

@@ -32,6 +32,12 @@ class HealthResponse(ApiModel):
     status: str = "ok"
     version: str
     build_id: str
+    backend_commit: str = "unknown"
+    frontend_commit: str = "unknown"
+    commit_sha_short: str = "unknown"
+    edition: str = "dev"
+    packaged_dirty: bool = True
+    build_timestamp: str = ""
     data_root: str
     active_site_id: str
     storage_schema_version: int

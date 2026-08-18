@@ -392,6 +392,35 @@ def test_electron_runtime_authenticates_http_with_ephemeral_header(tmp_path, mon
     assert response.json()["status"] == "ok"
 
 
+def test_electron_runtime_build_app_emits_the_shared_backend_identity_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from netconsole.backend import electron_runtime
+    from netconsole.backend.api import main as api_main
+
+    original_create_app = electron_runtime.create_app
+    events: list[tuple[str, str]] = []
+
+    def isolated_create_app(*args, **kwargs):
+        kwargs["paths"] = PathResolver(tmp_path)
+        kwargs["frontend_dist"] = tmp_path / "missing-web-dist"
+        return original_create_app(*args, **kwargs)
+
+    monkeypatch.setattr(electron_runtime, "create_app", isolated_create_app)
+    monkeypatch.setattr(
+        api_main.app_logger,
+        "log_info",
+        lambda event, detail="", **_kwargs: events.append((event, detail)),
+    )
+
+    build_app(ElectronRuntimeOptions("127.0.0.1", 43123), TOKEN)
+
+    identity_events = [detail for event, detail in events if event == "BUILD_IDENTITY"]
+    assert len(identity_events) == 1
+    assert "frontend_commit=unknown" in identity_events[0]
+
+
 def test_electron_backend_initializes_legacy_active_site_before_device_query(
     tmp_path: Path,
 ) -> None:

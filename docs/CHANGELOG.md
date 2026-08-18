@@ -28,6 +28,7 @@
 
 - Feature Registry V2 成为唯一正式功能注册表，正式业务代码、Frontend、Backend 和 Customer/Full Profile 不再使用 `web.*` Feature ID；旧 Web Profile、旧 customer.json、Legacy Alias 和长期兼容层不进入新架构。
 - Customer/Full Profile 直接按 V2 生成并保持完整 Registry ID 集合；Customer 不扩权、Full 不缩水。未保存设备表单连接测试继续仅向 Full 开放。
+- 修复 Full 正式包把轨旁 AP WPS 云文档同步误判为开发能力并隐藏入口的问题；WPS 现作为 Full 正式能力交付，Customer 继续保持不交付和隐藏，Backend、Renderer 与 package smoke 使用同一 Feature ID 校验。
 - Renderer 在 Feature 快照尚未加载、强制刷新以及 Full 切回 Customer 的等待阶段统一 fail-closed，避免 Full-only 菜单或按钮短暂显示；加载完成后按当前 Profile 恢复授权界面。
 - Renderer 标题、侧栏文案、存储键和 CI 构建说明统一使用 Desktop Renderer 语义，不改业务页面、Router、Store、REST、WebSocket 或 Native Bridge 数据链。
 
@@ -40,6 +41,8 @@
 - MESH schema、parser、derived analysis 与 Identity projection 状态拆分展示；打开来源不再自动提交身份重建，身份刷新和 parser 重解析改为两个显式维护动作。身份 remap 记录数校验改用写入后去重事实，避免原日志重复行被误报为记录数变化。
 - MESH 海量图表查询新增 SQL 候选集、全局 Response Budget 和多级 LOD：点、事件、站点带、series 与 frame 共同受控，目标响应 4 MiB、16 MiB 为最终硬阈值。切换事件改为默认 100 条服务端分页和 SQL 筛选，轨旁未加载状态始终提供当前窗口加载动作，详情页取消整卡灰色遮罩。
 - 无人值守深度采集接入标准 Online MR fping 契约，按 CT/CW 独立确认运行态后再开始 SSH；工具、目标或启动失败时不会误报为正常采集，完成校验要求存在非空 fping samples。
+- 修复无人值守重启后的 Long Ping 目标丢失、多文件 flush 饥饿、WMESH 单 MAC 主链被显示为“无→无”以及 Crash raw 无消费者；恢复流程从持久事实重建目标并按 grace 过期，旧/新分段合并查询，Syslog 按 file/line 有界幂等重放。停止状态机增加持久 trigger/reason、原子 stop claim、旧失败恢复和深采强停终态等待，不再把应用重启或收尾卡住统一显示为“正常停止 22%”。
+- 正式版本身份在 Renderer、health、Backend 日志、Electron 日志和 release manifest 中统一暴露同一 Git SHA；正式构建在最终 EXE 校验前和持久发布前重新执行 clean/HEAD/upstream 门禁，防止构建中源码变化仍被标记为 clean。
 - 修复 Online MR 实时页面切换后的 MR 选择状态回退，并增强 iPerf debug 原始输出、生命周期写入、派生快照限频与 Windows 原子替换重试；快照或 callback 降级不再终止 iPerf 客户端。
 
 ## v1.4.8 - 2026-08-07

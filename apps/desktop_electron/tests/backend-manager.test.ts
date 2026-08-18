@@ -186,6 +186,33 @@ describe('PythonBackendManager', () => {
     expect(manager.getStatus()).toEqual({ state: 'stopped' })
   })
 
+  it('records the packaged build identity returned by backend health', async () => {
+    const logger = vi.fn()
+    const commit = '29541dda879049c54ace0730c44fc6f3eb92b872'
+    const { manager } = createManager({
+      logger,
+      fetchImpl: vi.fn(async () => new Response(JSON.stringify({
+        status: 'ok',
+        build_id: `v1.4.9+${commit}`,
+        backend_commit: commit,
+        frontend_commit: commit,
+        edition: 'full',
+        packaged_dirty: false,
+        build_timestamp: '2026-08-14T08:00:00Z',
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })) as typeof fetch,
+    })
+
+    await manager.start()
+
+    expect(logger).toHaveBeenCalledWith(
+      'ELECTRON_BUILD_IDENTITY',
+      `build_id=v1.4.9+${commit} backend_commit=${commit} frontend_commit=${commit} edition=full packaged_dirty=false build_timestamp=2026-08-14T08:00:00Z`,
+    )
+  })
+
   it('enables the fixed loopback development API only with an explicit development environment', async () => {
     const developmentToken = 'codex-development-token-abcdefghijklmnopqrstuvwxyz'
     const { manager, child, spawnCalls } = createManager({
