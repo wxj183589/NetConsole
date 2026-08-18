@@ -44,7 +44,11 @@
     "scripts/maintenance/validate_database_functional_compatibility.py",
     "scripts/maintenance/finalize_functional_compatibility.py",
     "scripts/maintenance/validate_integrated_site_package.py",
-    "scripts/maintenance/validate_storage_no_reinflation.py"
+    "scripts/maintenance/validate_storage_no_reinflation.py",
+    "scripts/maintenance/benchmark_device_history_legacy_migration.py",
+    "scripts/maintenance/benchmark_device_history_storage_queries.py",
+    "scripts/maintenance/production_cutover_runtime_smoke.py",
+    "scripts/maintenance/profile_device_history_storage.py"
   ],
   "production_rollback_owners": [
     {

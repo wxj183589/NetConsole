@@ -736,19 +736,33 @@ def history_migration_contract_findings(
             )
         ]
     supported: set[str] = set()
+    unsupported: set[str] = set()
     for node in tree.body:
-        if not isinstance(node, ast.Assign) or not any(
-            isinstance(target, ast.Name) and target.id == "SUPPORTED_SPECS"
-            for target in node.targets
-        ):
+        if not isinstance(node, ast.Assign):
             continue
+        names = {
+            target.id
+            for target in node.targets
+            if isinstance(target, ast.Name)
+        }
         if isinstance(node.value, ast.Dict):
-            supported = {
+            values = {
                 str(key.value)
                 for key in node.value.keys
                 if isinstance(key, ast.Constant) and isinstance(key.value, str)
             }
-        break
+            if "SUPPORTED_SPECS" in names:
+                supported = values
+            if "UNSUPPORTED_TABLES" in names:
+                unsupported = values
+        elif isinstance(node.value, (ast.Set, ast.Tuple, ast.List)):
+            values = {
+                str(item.value)
+                for item in node.value.elts
+                if isinstance(item, ast.Constant) and isinstance(item.value, str)
+            }
+            if "UNSUPPORTED_TABLES" in names:
+                unsupported = values
     if not supported:
         return [
             Finding(
@@ -773,7 +787,7 @@ def history_migration_contract_findings(
                 continue
             for table in rule.get("tables", []):
                 name = str(table)
-                if name not in supported:
+                if name not in supported and name not in unsupported:
                     findings.append(
                         Finding(
                             "HISTORY_MIGRATION_CONTRACT_MISSING",

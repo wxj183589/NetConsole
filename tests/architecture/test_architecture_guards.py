@@ -57,9 +57,8 @@ def test_history_migration_contract_guard_rejects_registry_only_source(
 
     findings = history_migration_contract_findings(path)
 
-    assert [finding.rule_id for finding in findings] == [
-        "HISTORY_MIGRATION_CONTRACT_MISSING"
-    ]
+    assert len(findings) == 1
+    assert findings[0].rule_id == "HISTORY_MIGRATION_CONTRACT_MISSING"
     assert "future_required_history" in findings[0].message
 
 
