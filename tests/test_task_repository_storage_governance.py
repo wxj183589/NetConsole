@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
@@ -119,12 +120,15 @@ def test_concurrent_duplicate_event_id_commits_one_snapshot_and_event(
         replace(_snapshot(message="winner-a"), updated_time="2026-08-15T00:00:01Z"),
         replace(_snapshot(message="winner-b"), updated_time="2026-08-15T00:00:02Z"),
     ]
+    barrier = threading.Barrier(2)
+
+    def record_after_barrier(snapshot: TaskSnapshot) -> bool:
+        barrier.wait()
+        return repository.record(snapshot, event)
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         results = list(
-            executor.map(
-                lambda snapshot: repository.record(snapshot, event), candidates
-            )
+            executor.map(record_after_barrier, candidates)
         )
 
     assert sorted(results) == [False, True]
