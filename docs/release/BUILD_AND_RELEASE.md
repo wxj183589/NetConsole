@@ -1,6 +1,6 @@
 # 构建与发布
 
-NetConsole v1.4.9 的正式桌面产品只有 Electron + Vue + Python Backend。Python Backend 使用 PyInstaller 生成受 Electron 管理的 `NetConsoleBackend.exe`；PyInstaller、测试工具和许可证/SBOM 工具只属于构建环境，不属于产品运行时依赖。
+NetConsole v1.5.0 的正式桌面产品只有 Electron + Vue + Python Backend。Python Backend 使用 PyInstaller 生成受 Electron 管理的 `NetConsoleBackend.exe`；PyInstaller、测试工具和许可证/SBOM 工具只属于构建环境，不属于产品运行时依赖。
 
 安装包升级和卸载不得删除 Electron `userData/bootstrap.json` 或用户选择的数据根。electron-builder 的既有 NSIS 安装器必须分别显示程序安装目录与数据存放目录；数据根在完成路径、磁盘、可写/重命名、SQLite 锁与空间校验后，由打包 Backend 在空根或含无冲突普通文件的目录中原子初始化标准结构与 `storage-manifest.json`，或验证已有 manifest 兼容性，最后才写入 `HKLM\Software\NetConsole\DataRoot`。初始化/兼容性校验失败不得发布指针，也不得覆盖已有 manifest 或普通文件。发布 smoke 在唯一 `D:\study\test-data\NetConsole\<run-id>` 中以 `RuntimeMode.TEST` 运行并自动清理，绝不读取机器级指针或真实数据根；同时确认仓库根没有生成 `data/` 或新的 `.local/` 运行数据。
 
@@ -51,7 +51,7 @@ python -m pip check
 python -m scripts.build.build_release --backend pyinstaller --release
 ```
 
-该入口会重新构建 `apps/desktop_renderer`、生成干净 PyInstaller spec、只从入口 import graph 收集 Python 模块、复制白名单外部工具，并将临时 PyInstaller build/spec/dist 写入 `dist/_build/pyinstaller/`，供 Electron 消费的 Backend 输出写入 `dist/_build/backend-release/v1.4.9/pyinstaller/NetConsoleBackend/`。该目录仍是可再生构建中间产物，不是正式制品。`dist/build/` 和 `dist/v<版本>/` 不是当前构建目录，出现时属于旧残留。默认 `requirements.txt` 是构建兼容别名，实际指向 `requirements-build.txt`。
+该入口会重新构建 `apps/desktop_renderer`、生成干净 PyInstaller spec、只从入口 import graph 收集 Python 模块、复制白名单外部工具，并将临时 PyInstaller build/spec/dist 写入 `dist/_build/pyinstaller/`，供 Electron 消费的 Backend 输出写入 `dist/_build/backend-release/v1.5.0/pyinstaller/NetConsoleBackend/`。该目录仍是可再生构建中间产物，不是正式制品。`dist/build/` 和 `dist/v<版本>/` 不是当前构建目录，出现时属于旧残留。默认 `requirements.txt` 是构建兼容别名，实际指向 `requirements-build.txt`。
 
 完成 Backend、Electron 和安装包验收后，可以通过固定白名单清理临时构建区：
 

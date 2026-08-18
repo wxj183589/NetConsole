@@ -15,7 +15,7 @@ describe('Electron-only packaging', () => {
     expect(packageJson.scripts['package:all']).toBe('node scripts/build-edition-installer.mjs both')
     expect(packageJson.scripts).not.toHaveProperty('package:legacy')
     expect(packageJson.scripts['smoke:package']).toContain('package-smoke.mjs')
-    expect(packageJson.build.productName).toBe('NetConsole v1.4.9 by wxj')
+    expect(packageJson.build.productName).toBe('NetConsole v1.5.0 by wxj')
     expect(packageJson.build.win.executableName).toBe('NetConsole')
     expect(packageJson.build.electronDist).toBe('node_modules/electron/dist')
     expect(packageJson.build.extraResources).toContainEqual({

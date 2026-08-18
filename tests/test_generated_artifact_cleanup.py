@@ -90,7 +90,7 @@ def test_all_build_output_cleanup_never_touches_durable_release(tmp_path: Path) 
     generated = root / "dist" / "electron" / "setup.exe"
     generated.parent.mkdir(parents=True)
     generated.write_bytes(b"build")
-    durable = tmp_path / "release" / "NetConsole" / "v1.4.9" / "setup.exe"
+    durable = tmp_path / "release" / "NetConsole" / "v1.5.0" / "setup.exe"
     durable.parent.mkdir(parents=True)
     durable.write_bytes(b"release")
 

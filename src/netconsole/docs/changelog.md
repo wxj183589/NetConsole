@@ -1,3 +1,6 @@
+v1.5.0
+- 修复生产切换重启恢复锁、生产任务结果最终化回填与无效任务保护，以及生产历史退休批次扫描。
+
 v1.4.9
 - 正式产品收敛为 Electron Desktop Only：`apps/desktop_renderer` 是唯一 Vue Renderer，继续通过 REST/WebSocket 使用 Python Backend 与原有业务数据契约；独立 Browser Production Runtime 和正式 `web.*` Feature 体系已移除。
 - Feature Registry V2 成为唯一正式功能注册表，Customer/Full Profile 直接使用 V2 ID，不保留旧 Web Profile、Legacy Alias 或迁移框架；Feature 快照未加载及 Customer 重新锁定期间采用 fail-closed，避免受限功能短暂显示。
