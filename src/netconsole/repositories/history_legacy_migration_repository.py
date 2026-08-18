@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import hashlib
 import sqlite3
 from contextlib import closing
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
@@ -13,18 +12,6 @@ from netconsole.core.sqlite_utils import connect_sqlite
 
 
 MIGRATION_STATUSES = frozenset({"PENDING", "COPYING", "VERIFYING", "VERIFIED", "FAILED"})
-AUTHORITY_STATES = frozenset(
-    {
-        "LEGACY_AUTHORITY",
-        "SHARD_VERIFIED",
-        "SHARD_AUTHORITY",
-        "SOURCE_DELETE_ELIGIBLE",
-        "SOURCE_DELETED",
-    }
-)
-SHARD_QUERY_AUTHORITY_STATES = frozenset(
-    {"SHARD_AUTHORITY", "SOURCE_DELETE_ELIGIBLE", "SOURCE_DELETED"}
-)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS legacy_history_migrations (
@@ -55,14 +42,6 @@ CREATE TABLE IF NOT EXISTS legacy_history_migration_tables (
     duplicate_count INTEGER NOT NULL DEFAULT 0,
     error_count INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL,
-    authority_state TEXT NOT NULL DEFAULT 'LEGACY_AUTHORITY',
-    cutover_at TEXT NOT NULL DEFAULT '',
-    cutover_revision INTEGER NOT NULL DEFAULT 0,
-    authority_reason TEXT NOT NULL DEFAULT '',
-    rollback_at TEXT NOT NULL DEFAULT '',
-    rollback_reason TEXT NOT NULL DEFAULT '',
-    delete_eligible_at TEXT NOT NULL DEFAULT '',
-    delete_plan_digest TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL,
     last_error TEXT NOT NULL DEFAULT '',
     PRIMARY KEY(migration_id, source_table),
@@ -94,18 +73,6 @@ CREATE TABLE IF NOT EXISTS legacy_history_migration_ranges (
 );
 CREATE INDEX IF NOT EXISTS idx_legacy_history_ranges_status
     ON legacy_history_migration_ranges(migration_id, status, source_table, source_start_key);
-CREATE TABLE IF NOT EXISTS legacy_history_authority_transitions (
-    migration_id TEXT NOT NULL,
-    source_table TEXT NOT NULL,
-    revision INTEGER NOT NULL,
-    from_state TEXT NOT NULL,
-    to_state TEXT NOT NULL,
-    reason TEXT NOT NULL,
-    transitioned_at TEXT NOT NULL,
-    PRIMARY KEY(migration_id, source_table, revision),
-    FOREIGN KEY(migration_id, source_table)
-        REFERENCES legacy_history_migration_tables(migration_id, source_table)
-);
 """
 
 
@@ -142,14 +109,6 @@ class TableCheckpoint:
     status: str
     updated_at: str
     last_error: str = ""
-    authority_state: str = "LEGACY_AUTHORITY"
-    cutover_at: str = ""
-    cutover_revision: int = 0
-    authority_reason: str = ""
-    rollback_at: str = ""
-    rollback_reason: str = ""
-    delete_eligible_at: str = ""
-    delete_plan_digest: str = ""
 
 
 class HistoryLegacyMigrationRepository:
@@ -162,27 +121,6 @@ class HistoryLegacyMigrationRepository:
         self.catalog_path.parent.mkdir(parents=True, exist_ok=True)
         with closing(connect_sqlite(self.catalog_path, foreign_keys=True)) as conn:
             conn.executescript(_SCHEMA)
-            columns = {
-                str(row[1])
-                for row in conn.execute(
-                    "PRAGMA table_info(legacy_history_migration_tables)"
-                )
-            }
-            for name, definition in {
-                "authority_state": "TEXT NOT NULL DEFAULT 'LEGACY_AUTHORITY'",
-                "cutover_at": "TEXT NOT NULL DEFAULT ''",
-                "cutover_revision": "INTEGER NOT NULL DEFAULT 0",
-                "authority_reason": "TEXT NOT NULL DEFAULT ''",
-                "rollback_at": "TEXT NOT NULL DEFAULT ''",
-                "rollback_reason": "TEXT NOT NULL DEFAULT ''",
-                "delete_eligible_at": "TEXT NOT NULL DEFAULT ''",
-                "delete_plan_digest": "TEXT NOT NULL DEFAULT ''",
-            }.items():
-                if name not in columns:
-                    conn.execute(
-                        f"ALTER TABLE legacy_history_migration_tables "
-                        f"ADD COLUMN {name} {definition}"
-                    )
             conn.commit()
 
     def create_or_load(
@@ -281,17 +219,14 @@ class HistoryLegacyMigrationRepository:
 
     def upsert_table_checkpoint(self, checkpoint: TableCheckpoint) -> None:
         self._validate_status(checkpoint.status)
-        self._validate_authority_state(checkpoint.authority_state)
         with closing(connect_sqlite(self.catalog_path, foreign_keys=True)) as conn:
             conn.execute(
                 """
                 INSERT INTO legacy_history_migration_tables
                     (migration_id, source_table, source_range, last_source_key,
                      copied_count, verified_count, duplicate_count, error_count,
-                     status, updated_at, last_error, authority_state, cutover_at,
-                     cutover_revision, authority_reason, rollback_at,
-                     rollback_reason, delete_eligible_at, delete_plan_digest)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     status, updated_at, last_error)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(migration_id, source_table) DO UPDATE SET
                     source_range=excluded.source_range,
                     last_source_key=excluded.last_source_key,
@@ -303,209 +238,9 @@ class HistoryLegacyMigrationRepository:
                     updated_at=excluded.updated_at,
                     last_error=excluded.last_error
                 """,
-                (
-                    checkpoint.migration_id,
-                    checkpoint.source_table,
-                    checkpoint.source_range,
-                    checkpoint.last_source_key,
-                    checkpoint.copied_count,
-                    checkpoint.verified_count,
-                    checkpoint.duplicate_count,
-                    checkpoint.error_count,
-                    checkpoint.status,
-                    checkpoint.updated_at,
-                    checkpoint.last_error,
-                    checkpoint.authority_state,
-                    checkpoint.cutover_at,
-                    checkpoint.cutover_revision,
-                    checkpoint.authority_reason,
-                    checkpoint.rollback_at,
-                    checkpoint.rollback_reason,
-                    checkpoint.delete_eligible_at,
-                    checkpoint.delete_plan_digest,
-                ),
+                tuple(asdict(checkpoint).values()),
             )
             conn.commit()
-
-    def transition_authority(
-        self,
-        migration_id: str,
-        source_table: str,
-        *,
-        to_state: str,
-        expected_revision: int,
-        reason: str,
-        now: str,
-    ) -> TableCheckpoint:
-        target = str(to_state or "").upper()
-        self._validate_authority_state(target)
-        explanation = str(reason or "").strip()
-        if not explanation:
-            raise ValueError("authority transition reason is required")
-        allowed = {
-            "LEGACY_AUTHORITY": {"SHARD_VERIFIED"},
-            "SHARD_VERIFIED": {"SHARD_AUTHORITY", "LEGACY_AUTHORITY"},
-            "SHARD_AUTHORITY": {"SOURCE_DELETE_ELIGIBLE", "LEGACY_AUTHORITY"},
-            "SOURCE_DELETE_ELIGIBLE": {"LEGACY_AUTHORITY", "SOURCE_DELETED"},
-            "SOURCE_DELETED": set(),
-        }
-        self.ensure_schema()
-        with closing(connect_sqlite(self.catalog_path, foreign_keys=True)) as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            row = conn.execute(
-                "SELECT * FROM legacy_history_migration_tables "
-                "WHERE migration_id=? AND source_table=?",
-                (migration_id, source_table),
-            ).fetchone()
-            if row is None:
-                conn.rollback()
-                raise ValueError(f"unknown migration source table: {source_table}")
-            current = self._table_checkpoint(dict(row))
-            if current.cutover_revision != int(expected_revision):
-                conn.rollback()
-                raise ValueError("cutover revision mismatch")
-            if target not in allowed[current.authority_state]:
-                conn.rollback()
-                raise ValueError(
-                    f"invalid authority transition: {current.authority_state} -> {target}"
-                )
-            if target == "SHARD_VERIFIED" and (
-                current.status != "VERIFIED" or current.error_count != 0
-            ):
-                conn.rollback()
-                raise ValueError("source table copy verification is incomplete")
-            revision = current.cutover_revision + 1
-            rollback = target == "LEGACY_AUTHORITY"
-            conn.execute(
-                """
-                UPDATE legacy_history_migration_tables
-                SET authority_state=?, cutover_revision=?, authority_reason=?,
-                    cutover_at=CASE WHEN ?='SHARD_AUTHORITY' THEN ? ELSE cutover_at END,
-                    rollback_at=CASE WHEN ? THEN ? ELSE rollback_at END,
-                    rollback_reason=CASE WHEN ? THEN ? ELSE rollback_reason END,
-                    delete_eligible_at=CASE WHEN ?='SOURCE_DELETE_ELIGIBLE' THEN ? ELSE '' END,
-                    delete_plan_digest='', updated_at=?
-                WHERE migration_id=? AND source_table=?
-                """,
-                (
-                    target,
-                    revision,
-                    explanation,
-                    target,
-                    now,
-                    int(rollback),
-                    now,
-                    int(rollback),
-                    explanation,
-                    target,
-                    now,
-                    now,
-                    migration_id,
-                    source_table,
-                ),
-            )
-            conn.execute(
-                """
-                INSERT INTO legacy_history_authority_transitions
-                    (migration_id, source_table, revision, from_state, to_state,
-                     reason, transitioned_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    migration_id,
-                    source_table,
-                    revision,
-                    current.authority_state,
-                    target,
-                    explanation,
-                    now,
-                ),
-            )
-            updated = conn.execute(
-                "SELECT * FROM legacy_history_migration_tables "
-                "WHERE migration_id=? AND source_table=?",
-                (migration_id, source_table),
-            ).fetchone()
-            conn.commit()
-        assert updated is not None
-        return self._table_checkpoint(dict(updated))
-
-    def set_delete_plan_digest(
-        self,
-        migration_id: str,
-        source_table: str,
-        *,
-        expected_revision: int,
-        digest: str,
-        now: str,
-    ) -> TableCheckpoint:
-        value = str(digest or "").strip().lower()
-        if len(value) != 64 or any(
-            character not in "0123456789abcdef" for character in value
-        ):
-            raise ValueError("invalid delete plan digest")
-        with closing(connect_sqlite(self.catalog_path, foreign_keys=True)) as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            cursor = conn.execute(
-                """
-                UPDATE legacy_history_migration_tables
-                SET delete_plan_digest=?, updated_at=?
-                WHERE migration_id=? AND source_table=?
-                  AND authority_state='SOURCE_DELETE_ELIGIBLE'
-                  AND cutover_revision=?
-                """,
-                (value, now, migration_id, source_table, int(expected_revision)),
-            )
-            if cursor.rowcount != 1:
-                conn.rollback()
-                raise ValueError("delete plan authority or revision is stale")
-            row = conn.execute(
-                "SELECT * FROM legacy_history_migration_tables "
-                "WHERE migration_id=? AND source_table=?",
-                (migration_id, source_table),
-            ).fetchone()
-            conn.commit()
-        assert row is not None
-        return self._table_checkpoint(dict(row))
-
-    def authority_transitions(
-        self, migration_id: str, source_table: str
-    ) -> list[dict[str, Any]]:
-        if not self.catalog_path.is_file():
-            return []
-        with closing(self._connect_readonly()) as conn:
-            if not self._table_exists(conn, "legacy_history_authority_transitions"):
-                return []
-            rows = conn.execute(
-                "SELECT * FROM legacy_history_authority_transitions "
-                "WHERE migration_id=? AND source_table=? ORDER BY revision",
-                (migration_id, source_table),
-            ).fetchall()
-        return [dict(row) for row in rows]
-
-    def effective_authority_state(self, source_table: str) -> str:
-        if not self.catalog_path.is_file():
-            return "LEGACY_AUTHORITY"
-        try:
-            with closing(self._connect_readonly()) as conn:
-                if not self._table_exists(conn, "legacy_history_migration_tables"):
-                    return "LEGACY_AUTHORITY"
-                rows = conn.execute(
-                    """
-                    SELECT authority_state
-                    FROM legacy_history_migration_tables
-                    WHERE source_table=?
-                    ORDER BY cutover_revision DESC, updated_at DESC, migration_id DESC
-                    """,
-                    (source_table,),
-                ).fetchall()
-        except (OSError, sqlite3.Error):
-            return "LEGACY_AUTHORITY"
-        states = [str(row[0] or "LEGACY_AUTHORITY") for row in rows]
-        authoritative = [
-            state for state in states if state in SHARD_QUERY_AUTHORITY_STATES
-        ]
-        return authoritative[0] if len(authoritative) == 1 else "LEGACY_AUTHORITY"
 
     def record_range(self, values: dict[str, Any]) -> None:
         self._validate_status(str(values["status"]))
@@ -606,11 +341,6 @@ class HistoryLegacyMigrationRepository:
             raise ValueError(f"invalid migration status: {status}")
 
     @staticmethod
-    def _validate_authority_state(state: str) -> None:
-        if state not in AUTHORITY_STATES:
-            raise ValueError(f"invalid history authority state: {state}")
-
-    @staticmethod
     def _migration(row: dict[str, Any]) -> MigrationRecord:
         return MigrationRecord(**{field: row[field] for field in MigrationRecord.__dataclass_fields__})
 
@@ -676,21 +406,6 @@ class LegacyHistorySourceRepository:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def fetch_range(
-        self, table: str, source_start_key: int, source_end_key: int
-    ) -> list[dict[str, Any]]:
-        name = self._validated_table(table)
-        start = int(source_start_key)
-        end = int(source_end_key)
-        if start > end:
-            raise ValueError("invalid source key range")
-        with closing(self.connect()) as conn:
-            rows = conn.execute(
-                f'SELECT * FROM "{name}" WHERE id BETWEEN ? AND ? ORDER BY id ASC',
-                (start, end),
-            ).fetchall()
-        return [dict(row) for row in rows]
-
     def anchor_rows(self, table: str) -> list[dict[str, Any]]:
         name = self._validated_table(table)
         with closing(self.connect()) as conn:
@@ -700,30 +415,6 @@ class LegacyHistorySourceRepository:
                 "ORDER BY id"
             ).fetchall()
         return [dict(row) for row in rows]
-
-    def find_rows_by_event_ids(
-        self, table: str, event_ids: set[str]
-    ) -> dict[str, dict[str, Any]]:
-        """Resolve a bounded query sample to legacy rows without mutable indexes."""
-
-        name = self._validated_table(table)
-        wanted = {str(value) for value in event_ids if str(value)}
-        found: dict[str, dict[str, Any]] = {}
-        with closing(self.connect()) as conn:
-            cursor = conn.execute(f'SELECT * FROM "{name}" ORDER BY id')
-            while wanted:
-                rows = cursor.fetchmany(2000)
-                if not rows:
-                    break
-                for row in rows:
-                    value = dict(row)
-                    event_id = hashlib.sha256(
-                        f"legacy|{name}|{int(value.get('id') or 0)}".encode()
-                    ).hexdigest()
-                    if event_id in wanted:
-                        found[event_id] = value
-                        wanted.remove(event_id)
-        return found
 
     def projection_matches(
         self,
@@ -825,11 +516,9 @@ class LegacyHistorySourceRepository:
 
 
 __all__ = [
-    "AUTHORITY_STATES",
     "HistoryLegacyMigrationRepository",
     "LegacyHistorySourceRepository",
     "MIGRATION_STATUSES",
     "MigrationRecord",
-    "SHARD_QUERY_AUTHORITY_STATES",
     "TableCheckpoint",
 ]

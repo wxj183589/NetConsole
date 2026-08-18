@@ -18,7 +18,6 @@ NSIS 安装器把程序安装位置和数据存放位置分开选择。业务数
 - [局点数据保留与清理](./SITE_RETENTION.md)：扫描令牌、数据库分类、Online MR 原始数据、任务事件和保护边界。
 - [History Storage V2](./HISTORY_STORAGE_V2.md)：月分片 V2 格式、V1/mixed 兼容、物理基线和真实 snapshot/query 结果。
 - [Legacy History COPY-only 迁移](./LEGACY_HISTORY_MIGRATION.md)：inventory、identity、checkpoint、verify、resume 和源数据保护边界。
-- [生产数据库维护](./PRODUCTION_DATABASE_MAINTENANCE.md)：精确 allowlist、immutable manifest、rollback owner、journal、二次 identity 校验与授权门。
 - [安全边界](./SECURITY.md)：路径、ZIP、API 和 Electron IPC 约束。
 
 机器可读的 owner、authority、分类、package/backup/migration policy 位于
