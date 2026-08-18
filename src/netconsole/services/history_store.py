@@ -1,4 +1,4 @@
-"""Compatibility facade for the repository-owned History Storage V2 implementation."""
+"""Compatibility facade for the repository-owned History Storage V2 implementation.
 
 The primary database remains authoritative for current state.  History events
 are first committed to a small outbox in that same transaction and are later
@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from netconsole.repositories import history_store as _implementation
+from netconsole.core.sqlite_utils import connect_sqlite
 
 DEFAULT_HEARTBEAT_SECONDS = {
     "device_fact": 3600,

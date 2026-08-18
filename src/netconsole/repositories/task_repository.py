@@ -275,13 +275,13 @@ class TaskRepository:
                     ) VALUES (?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        stored_event.event_id,
-                        stored_event.task_id,
-                        stored_event.type,
-                        stored_event.time,
-                        stored_event.source,
+                        event.event_id,
+                        event.task_id,
+                        event.type,
+                        event.time,
+                        event.source,
                         json.dumps(
-                            stored_event.payload,
+                            event.payload,
                             ensure_ascii=False,
                             separators=(",", ":"),
                         ),
