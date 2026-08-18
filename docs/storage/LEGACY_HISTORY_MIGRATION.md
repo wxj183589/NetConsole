@@ -35,9 +35,13 @@ columns, source schema version, target shard schema, row count and time range.
 The ten Phase 1 mappings already supported by `HistoryStore` are accepted only
 when their required `id`, timestamp and business identity columns exist.
 `ac_fit_ap_unauthenticated_history` and
-`ac_station_online_summary_history` are explicitly unsupported because no
-target event contract exists. Any other history schema is unknown and makes a
-run `NOT_READY`; rows are never guessed into a target shape.
+`ac_station_online_summary_history` remain explicitly unsupported for generic
+migration because no target event contract exists. This is a fail-closed
+migration classification, not a claim that the tables have no consumers:
+their producer/read/export contract is recorded in
+[`UNSUPPORTED_HISTORY_CONSUMER_CONTRACT.md`](./UNSUPPORTED_HISTORY_CONSUMER_CONTRACT.md).
+Any other history schema is unknown and makes a run `NOT_READY`; rows are
+never guessed into a target shape.
 
 ## Identity And Duplicate Projections
 

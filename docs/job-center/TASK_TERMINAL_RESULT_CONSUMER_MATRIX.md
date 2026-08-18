@@ -29,11 +29,11 @@
 | Device/Config/File/Network/Export 等领域 Service | 是，完成后刷新、下载和业务部分成功判断 | 少量流程读取事件历史，不应假设完整结果永久存在 | 部分 | 是 | 间接 | 部分 | 部分 |
 
 关键结论：当前绝大多数长期读取依赖 snapshot，但 Online MR live 协调、通用事件 API 和
-Site Return Package 仍要求 terminal event 可解释。当前
-`site_sync._merge_tasks_database()` 只合并 `task_snapshots/task_events`，不会合并
-`online_mr_task_sessions`；因此回传后丢失 Online MR mapping 是已确认兼容缺口，未来引入
-`task_results` 前必须先定义 mapping/result 的包格式与冲突策略。不能只删除 event payload 或
-只删除 snapshot result。
+Site Return Package 仍要求 terminal event 可解释。当前回传合并已经在
+`site_sync._preview_task_merge()` / `_apply_task_merge()` 中校验并合并
+`online_mr_task_sessions`；旧版“不会合并 mapping”的描述已由实现和
+[`Online MR Task Session Contract`](../rail-transit/online-mr/TASK_SESSION_CONTRACT.md) 收口。
+不能只删除 event payload 或只删除 snapshot result。
 
 ## 方案比较
 
