@@ -79,6 +79,10 @@ tools/windows-x64/ipop/*.exe
 *.env.*
 config/profiles/features/.*.lock
 
+# Local Production Cutover runtime state
+/config/production_cutover_pending_owner_devices.json
+/config/production_cutover_pending_owner_tasks.json
+
 # Operating system
 Thumbs.db
 Desktop.ini
