@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 
 from netconsole.repositories.online_mr_task_session_repository import (
@@ -55,7 +54,7 @@ def test_session_mapping_schema_keeps_operational_identity_and_no_credentials(
 ) -> None:
     database = tmp_path / "tasks.db"
     repository = OnlineMrTaskSessionRepository(database, site_id="site-a")
-    with sqlite3.connect(database) as connection:
+    with repository._connect() as connection:
         columns = {
             str(row[1])
             for row in connection.execute(
