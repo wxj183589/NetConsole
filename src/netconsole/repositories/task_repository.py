@@ -3,12 +3,16 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Collection
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from netconsole.core.sqlite_utils import connect_sqlite, initialize_sqlite_wal, run_sqlite_with_retry
+from netconsole.models.task_result_rollout import (
+    TaskResultRolloutStatus,
+    TaskResultStorageState,
+)
 from netconsole.models.task_state import TaskState
 from netconsole.models.task_snapshot import (
     TEXT_INTEGRITY_VALUES,
@@ -160,6 +164,11 @@ CREATE INDEX IF NOT EXISTS idx_task_events_task_sequence
 """
 
 PROGRESS_EVENT_HEARTBEAT_SECONDS = 30
+TASK_RESULT_SCHEMA_VERSION = 1
+TERMINAL_RESULT_EVENT_TYPES = frozenset({"finished", "error", "cancelled"})
+# Persisted rollout rows remain available for historical maintenance, but they
+# cannot alter the current writer until a separately approved rollout phase.
+TASK_RESULT_RUNTIME_WRITE_STATE = TaskResultStorageState.LEGACY_DUAL_FULL
 
 
 class TaskRepository:
@@ -260,7 +269,12 @@ class TaskRepository:
                     conn.rollback()
                     recorded = True
                     return
-                if not self._upsert(conn, snapshot, allowed_from=allowed_from):
+                stored_snapshot, stored_event = self._prepare_terminal_result(
+                    conn, snapshot, event
+                )
+                if not self._upsert(
+                    conn, stored_snapshot, allowed_from=allowed_from
+                ):
                     conn.rollback()
                     return
                 conn.execute(
@@ -270,13 +284,13 @@ class TaskRepository:
                     ) VALUES (?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        event.event_id,
-                        event.task_id,
-                        event.type,
-                        event.time,
-                        event.source,
+                        stored_event.event_id,
+                        stored_event.task_id,
+                        stored_event.type,
+                        stored_event.time,
+                        stored_event.source,
                         json.dumps(
-                            event.payload,
+                            stored_event.payload,
                             ensure_ascii=False,
                             separators=(",", ":"),
                         ),
@@ -390,10 +404,131 @@ class TaskRepository:
         snapshot: TaskSnapshot,
         event: TaskEvent,
     ) -> tuple[TaskSnapshot, TaskEvent]:
-        """Keep legacy dual-write inputs intact while result authority is disabled."""
+        """Keep full result updates from retaining an obsolete authority ref."""
 
+        if TASK_RESULT_RUNTIME_WRITE_STATE != TaskResultStorageState.LEGACY_DUAL_FULL:
+            raise RuntimeError("unsupported task result runtime write policy")
         del conn
-        return snapshot, event
+        result = event.payload.get("result")
+        if not isinstance(result, dict) or not result or not snapshot.result_id:
+            return snapshot, event
+        return (
+            replace(snapshot, result_id="", result_hash="", result_summary={}),
+            event,
+        )
+
+    def get_result(self, result_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = self._result_row(conn, str(result_id))
+            if row is None:
+                return None
+            return self._verified_result_for_read(dict(row))
+
+    def task_result_rollout_status(self) -> TaskResultRolloutStatus:
+        with self._connect() as conn:
+            return self._task_result_rollout_status_from_connection(conn)
+
+    def task_result_count(self) -> int:
+        with self._connect() as conn:
+            row = conn.execute("SELECT COUNT(*) AS count FROM task_results").fetchone()
+            return int(row["count"]) if row is not None else 0
+
+    def compare_and_set_task_result_rollout(
+        self,
+        *,
+        expected_state: TaskResultStorageState,
+        expected_revision: int,
+        target_state: TaskResultStorageState,
+        updated_by: str,
+        reason: str,
+        allow_advanced: bool = False,
+    ) -> TaskResultRolloutStatus | None:
+        production_transitions = {
+            (
+                TaskResultStorageState.LEGACY_DUAL_FULL,
+                TaskResultStorageState.TASK_RESULTS_DUAL_WRITE,
+            ),
+            (
+                TaskResultStorageState.TASK_RESULTS_DUAL_WRITE,
+                TaskResultStorageState.LEGACY_DUAL_FULL,
+            ),
+        }
+        advanced_transitions = {
+            (
+                TaskResultStorageState.TASK_RESULTS_DUAL_WRITE,
+                TaskResultStorageState.TASK_RESULTS_VERIFIED,
+            ),
+            (
+                TaskResultStorageState.TASK_RESULTS_VERIFIED,
+                TaskResultStorageState.RESULT_REF_AUTHORITY,
+            ),
+        }
+        transition = (expected_state, target_state)
+        if transition not in production_transitions and not (
+            allow_advanced and transition in advanced_transitions
+        ):
+            raise ValueError("task result rollout persistence transition is blocked")
+        updated: TaskResultRolloutStatus | None = None
+
+        def operation() -> None:
+            nonlocal updated
+            with self._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                changed_at = utc_now_iso()
+                next_revision = int(expected_revision) + 1
+                cursor = conn.execute(
+                    """
+                    UPDATE task_result_storage_rollout
+                    SET state = ?, revision = ?, updated_at = ?, updated_by = ?,
+                        reason = ?, schema_version = 4
+                    WHERE singleton_id = 1 AND state = ? AND revision = ?
+                    """,
+                    (
+                        target_state.value,
+                        next_revision,
+                        changed_at,
+                        updated_by,
+                        reason,
+                        expected_state.value,
+                        int(expected_revision),
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    conn.rollback()
+                    return
+                conn.execute(
+                    """
+                    INSERT INTO task_result_storage_rollout_audit (
+                        revision, from_state, to_state, changed_at,
+                        changed_by, reason, schema_version
+                    ) VALUES (?, ?, ?, ?, ?, ?, 4)
+                    """,
+                    (
+                        next_revision,
+                        expected_state.value,
+                        target_state.value,
+                        changed_at,
+                        updated_by,
+                        reason,
+                    ),
+                )
+                updated = self._task_result_rollout_status_from_connection(conn)
+                conn.commit()
+
+        run_sqlite_with_retry(operation)
+        return updated
+
+    def list_task_result_rollout_audit(self) -> list[dict[str, object]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT revision, from_state, to_state, changed_at,
+                       changed_by, reason, schema_version
+                FROM task_result_storage_rollout_audit
+                ORDER BY revision
+                """
+            ).fetchall()
+            return [dict(row) for row in rows]
 
     def get(self, task_id: str) -> TaskSnapshot | None:
         with self._connect() as conn:
@@ -1015,6 +1150,34 @@ class TaskRepository:
                 changed.append(updated)
         return changed
 
+    @staticmethod
+    def _task_result_rollout_status_from_connection(
+        conn,
+    ) -> TaskResultRolloutStatus:
+        row = conn.execute(
+            """
+            SELECT state, revision, updated_at, updated_by, reason, schema_version
+            FROM task_result_storage_rollout
+            WHERE singleton_id = 1
+            """
+        ).fetchone()
+        if row is None:
+            raise sqlite3.DatabaseError("task result storage rollout state is missing")
+        try:
+            state = TaskResultStorageState(str(row["state"]))
+        except ValueError as exc:
+            raise sqlite3.DatabaseError(
+                "task result storage rollout state is invalid"
+            ) from exc
+        return TaskResultRolloutStatus(
+            state=state,
+            revision=int(row["revision"]),
+            updated_at=str(row["updated_at"]),
+            updated_by=str(row["updated_by"]),
+            reason=str(row["reason"]),
+            schema_version=int(row["schema_version"]),
+        )
+
     @classmethod
     def _ensure_schema_compat(cls, conn) -> None:
         columns = {
@@ -1195,19 +1358,24 @@ class TaskRepository:
                 error_message=excluded.error_message,
                 result_json=CASE
                     WHEN excluded.result_id <> '' THEN excluded.result_json
+                    WHEN excluded.result_json NOT IN ('', '{{}}', 'null')
+                        THEN excluded.result_json
                     WHEN task_snapshots.result_id <> '' THEN task_snapshots.result_json
                     ELSE excluded.result_json
                 END,
                 result_id=CASE
                     WHEN excluded.result_id <> '' THEN excluded.result_id
+                    WHEN excluded.result_json NOT IN ('', '{{}}', 'null') THEN ''
                     ELSE task_snapshots.result_id
                 END,
                 result_hash=CASE
                     WHEN excluded.result_hash <> '' THEN excluded.result_hash
+                    WHEN excluded.result_json NOT IN ('', '{{}}', 'null') THEN ''
                     ELSE task_snapshots.result_hash
                 END,
                 result_summary_json=CASE
                     WHEN excluded.result_id <> '' THEN excluded.result_summary_json
+                    WHEN excluded.result_json NOT IN ('', '{{}}', 'null') THEN '{{}}'
                     ELSE task_snapshots.result_summary_json
                 END,
                 source=excluded.source,

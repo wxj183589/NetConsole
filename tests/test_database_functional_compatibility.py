@@ -560,6 +560,17 @@ def test_functional_compatibility_fails_closed_on_wrong_result_reference(
         time="2026-08-01T00:02:00Z",
     )
     assert repository.record(_task_snapshot(excluded_task_id), excluded_event)
+    # Historical authority rows are created only by the explicit maintenance
+    # pass; the current runtime writer remains legacy-full even in this state.
+    maintenance = TaskResultMaintenanceService(
+        PathResolver(app_root=root, data_root=root / "runtime"),
+        site_id="line-12",
+        tasks_database=inputs["after_tasks"],
+        development_root=root,
+    )
+    assert maintenance.backfill(
+        apply=True, allow_development_root_only=True
+    )["new_result_rows"] == 1
     excluded = repository.get(excluded_task_id)
     assert excluded is not None and excluded.result_id
     with closing(Database(inputs["after_tasks"]).connect()) as connection:

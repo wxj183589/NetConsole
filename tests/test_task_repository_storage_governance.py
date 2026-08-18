@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 from dataclasses import replace
 from pathlib import Path
+
+import pytest
 
 from netconsole.core.paths import PathResolver
 from netconsole.models.task_snapshot import TaskEvent, TaskSnapshot
@@ -43,6 +46,37 @@ def _event(event_id: str, event_time: str, payload: dict[str, object]) -> TaskEv
 def _event_count(path: Path) -> int:
     with sqlite3.connect(path) as conn:
         return int(conn.execute("SELECT COUNT(*) FROM task_events").fetchone()[0])
+
+
+def _result_reference(
+    task_id: str,
+    result: dict[str, object],
+    *,
+    terminal_event_type: str = "finished",
+    created_time: str = "2026-08-15T00:01:00Z",
+) -> dict[str, object]:
+    canonical = json.dumps(
+        result,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    encoded = canonical.encode("utf-8")
+    digest = hashlib.sha256(encoded).hexdigest()
+    result_id = "tr-" + hashlib.sha256(
+        f"{task_id}\0{terminal_event_type}\0{digest}".encode("utf-8")
+    ).hexdigest()
+    return {
+        "result_id": result_id,
+        "task_id": task_id,
+        "terminal_event_type": terminal_event_type,
+        "canonical_json": canonical,
+        "sha256": digest,
+        "byte_size": len(encoded),
+        "schema_version": 1,
+        "created_time": created_time,
+    }
 
 
 def test_duplicate_event_id_does_not_rewrite_snapshot(tmp_path: Path) -> None:
@@ -300,3 +334,123 @@ def test_list_resolves_immutable_task_result_reference(tmp_path: Path) -> None:
     listed = repository.list()
     assert len(listed) == 1
     assert listed[0].result == {"rows": 2}
+
+
+def test_snapshot_and_event_resolve_result_from_history_store_fallback(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "tasks.db"
+    repository = TaskRepository(path)
+    task_id = "history-result-task"
+    result = {"rows": 4, "status": "ok", "设备": "宁波"}
+    reference = _result_reference(task_id, result)
+    summary = repository._result_summary(
+        result, byte_size=int(reference["byte_size"])
+    )
+    snapshot = _snapshot(
+        task_id=task_id,
+        status=TaskState.COMPLETED,
+        finished_time=str(reference["created_time"]),
+        updated_time=str(reference["created_time"]),
+        result={},
+        result_id=str(reference["result_id"]),
+        result_hash=str(reference["sha256"]),
+        result_summary={},
+    )
+    event = TaskEvent(
+        event_id="history-result-event",
+        task_id=task_id,
+        type="finished",
+        time=str(reference["created_time"]),
+        source="test",
+        payload={
+            "message": "done",
+            "result_id": str(reference["result_id"]),
+            "result_hash": str(reference["sha256"]),
+            "result_summary": summary,
+        },
+    )
+
+    assert repository.record(snapshot, event)
+    inserted, verified = repository.task_history.archive_result_rows([reference])
+    assert (inserted, verified) == (1, 1)
+
+    loaded = repository.get(task_id)
+    assert loaded is not None
+    assert loaded.result == result
+    assert loaded.result_hash == reference["sha256"]
+    assert loaded.result_summary == summary
+    listed = repository.list()
+    assert len(listed) == 1
+    assert listed[0].result == result
+    events = repository.list_events(task_id)
+    assert events[0]["payload"]["result"] == result
+    assert events[0]["payload"]["result_hash"] == reference["sha256"]
+
+
+def test_result_reference_missing_from_task_db_and_history_fails_loudly(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "tasks.db"
+    repository = TaskRepository(path)
+    task_id = "missing-history-result"
+    reference = _result_reference(task_id, {"rows": 1})
+    snapshot = _snapshot(
+        task_id=task_id,
+        status=TaskState.COMPLETED,
+        finished_time=str(reference["created_time"]),
+        updated_time=str(reference["created_time"]),
+        result={},
+        result_id=str(reference["result_id"]),
+        result_hash=str(reference["sha256"]),
+    )
+    event = TaskEvent(
+        event_id="missing-history-event",
+        task_id=task_id,
+        type="finished",
+        time=str(reference["created_time"]),
+        source="test",
+        payload={
+            "result_id": str(reference["result_id"]),
+            "result_hash": str(reference["sha256"]),
+        },
+    )
+    assert repository.record(snapshot, event)
+
+    with pytest.raises(sqlite3.DatabaseError, match="task snapshot result reference is missing"):
+        repository.get(task_id)
+    with pytest.raises(sqlite3.DatabaseError, match="task snapshot result reference is missing"):
+        repository.list()
+    with pytest.raises(sqlite3.DatabaseError, match="task event result reference is missing"):
+        repository.list_events(task_id)
+
+
+def test_history_store_result_task_binding_mismatch_fails_loudly(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "tasks.db"
+    repository = TaskRepository(path)
+    reference = _result_reference("original-task", {"rows": 2})
+    repository.task_history.archive_result_rows([reference])
+    mismatched_task = "different-task"
+    snapshot = _snapshot(
+        task_id=mismatched_task,
+        status=TaskState.COMPLETED,
+        finished_time=str(reference["created_time"]),
+        updated_time=str(reference["created_time"]),
+        result={},
+        result_id=str(reference["result_id"]),
+        result_hash=str(reference["sha256"]),
+    )
+    event = TaskEvent(
+        event_id="mismatched-history-event",
+        task_id=mismatched_task,
+        type="finished",
+        time=str(reference["created_time"]),
+        source="test",
+        payload={},
+    )
+    assert repository.record(snapshot, event)
+
+    with pytest.raises(sqlite3.DatabaseError, match="task snapshot result task binding mismatch"):
+        repository.get(mismatched_task)

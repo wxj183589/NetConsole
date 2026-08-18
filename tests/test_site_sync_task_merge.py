@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from netconsole.core.paths import PathResolver
 from netconsole.models.online_mr_application import (
     OnlineMrExecutorKind,
     OnlineMrMappingState,
@@ -24,6 +25,7 @@ from netconsole.services.job_center.task_result_rollout import (
 )
 from netconsole.services.site_storage import SiteStorageError
 from netconsole.services.site_sync import _apply_task_merge, _preview_task_merge
+from scripts.maintenance.task_result_maintenance import TaskResultMaintenanceService
 
 
 def _terminal_task(
@@ -65,6 +67,17 @@ def _terminal_task(
         payload={"message": "done", "result": result},
     )
     assert repository.record(snapshot, event)
+    # Seed historical task_results explicitly; current runtime terminal writes
+    # intentionally remain full legacy payloads regardless of rollout state.
+    maintenance = TaskResultMaintenanceService(
+        PathResolver(app_root=path.parent, data_root=path.parent / "data"),
+        site_id="demo",
+        tasks_database=path,
+        development_root=path.parent,
+    )
+    assert maintenance.backfill(
+        apply=True, allow_development_root_only=True
+    )["new_result_rows"] == 1
     return repository
 
 
@@ -227,9 +240,10 @@ def test_site_return_preserves_artifact_projection_result_authority(
     snapshot = repository.get("artifact-projection")
     assert snapshot is not None
     assert snapshot.result == projection
-    authority = repository.get_result(snapshot.result_id)
-    assert authority["terminal_event_type"] == "artifact_finalized"
-    assert authority["result"] == projection
+    assert snapshot.result_id == ""
+    # Historical result rows are retained; the active snapshot no longer
+    # points at the obsolete terminal result after the full projection update.
+    assert repository.task_result_count() == 1
 
 
 @pytest.mark.parametrize(
