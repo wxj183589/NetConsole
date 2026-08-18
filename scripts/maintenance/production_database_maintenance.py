@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from pathlib import Path
 from uuid import uuid4
 
@@ -114,6 +115,30 @@ def _evidence_pass(
         and str(value.get("generated_git_head") or "") == git_head
         and str(value.get("verified_at") or "").strip()
     )
+
+
+def _wait_evidence_pass(
+    path: Path | None,
+    *,
+    label: str,
+    site_id: str,
+    operation_id: str,
+    git_head: str,
+    timeout_seconds: float = 240.0,
+) -> bool:
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        if _evidence_pass(
+            path,
+            label=label,
+            site_id=site_id,
+            operation_id=operation_id,
+            git_head=git_head,
+        ):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.1)
 
 
 def _json_object(path: Path, *, label: str) -> dict[str, object]:
@@ -249,7 +274,7 @@ def main(argv: list[str] | None = None) -> int:
             gates=gates,
             perform_replace=args.perform_replace,
             restart_verifier=(
-                lambda: _evidence_pass(
+                lambda: _wait_evidence_pass(
                     args.restart_evidence,
                     label="production-restart-v1",
                     site_id=args.site_id,
@@ -258,7 +283,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
             ),
             functional_gate=(
-                lambda: _evidence_pass(
+                lambda: _wait_evidence_pass(
                     args.functional_evidence,
                     label="production-functional-gate-v1",
                     site_id=args.site_id,
@@ -288,14 +313,14 @@ def main(argv: list[str] | None = None) -> int:
             writer_quiescent=writer_quiescent,
             gates=gates,
             operation_id=args.operation_id,
-            restart_verifier=lambda: _evidence_pass(
+            restart_verifier=lambda: _wait_evidence_pass(
                 args.restart_evidence,
                 label="production-restart-v1",
                 site_id=args.site_id,
                 operation_id=args.operation_id,
                 git_head=args.git_head,
             ),
-            functional_gate=lambda: _evidence_pass(
+            functional_gate=lambda: _wait_evidence_pass(
                 args.functional_evidence,
                 label="production-functional-gate-v1",
                 site_id=args.site_id,

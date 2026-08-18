@@ -719,12 +719,15 @@ def _backend_exclusive(method: Callable[..., Any]) -> Callable[..., Any]:
         depth = int(getattr(self, "_backend_lock_depth", 0))
         if depth:
             return method(self, *args, **kwargs)
-        with BackendInstanceLock(self.paths):
+        backend_lock = BackendInstanceLock(self.paths)
+        self._active_backend_instance_lock = backend_lock
+        with backend_lock:
             self._backend_lock_depth = 1
             try:
                 return method(self, *args, **kwargs)
             finally:
                 self._backend_lock_depth = 0
+                self._active_backend_instance_lock = None
 
     return guarded
 
@@ -1488,6 +1491,13 @@ class ProductionMaintenanceCapability:
         if not self.authoritative_git_head:
             raise ProductionMaintenanceError("authoritative Git HEAD is required")
 
+    def _release_backend_lock_for_restart(self) -> None:
+        """Allow the real restarted Backend to acquire its instance lock."""
+
+        lock = getattr(self, "_active_backend_instance_lock", None)
+        if lock is not None:
+            lock.release()
+
     @staticmethod
     def load_rollback_owners(path: str | Path) -> dict[tuple[str, str], ProductionRollbackOwner]:
         source = Path(path).resolve()
@@ -2146,6 +2156,9 @@ class ProductionMaintenanceCapability:
             lock_key = site_database_maintenance_key(site.site_id)
             journal.update(
                 "created",
+                # The executor owns post-switch restart verification and rollback.
+                # Backend startup must not independently recover this live operation.
+                recovery_strategy="component_resume",
                 **preflight,
                 active_path=str(database),
                 shadow_path=str(candidate_path),
@@ -2178,6 +2191,7 @@ class ProductionMaintenanceCapability:
                 _atomic_replace(candidate_path, database)
                 switched = True
                 journal.update("switched", switched=True)
+                self._release_backend_lock_for_restart()
                 if not restart_verifier():
                     raise ProductionMaintenanceError("restart verification failed")
                 journal.update("restart_verified")

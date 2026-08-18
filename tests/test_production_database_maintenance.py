@@ -509,7 +509,7 @@ def test_preflight_rejects_tampered_manifest_missing_owner_and_active_writer(
 
 
 def test_execute_replace_requires_explicit_authorization_and_supports_rollback(tmp_path: Path) -> None:
-    paths, site, _ = _site(tmp_path)
+    paths, site, root = _site(tmp_path)
     active = site / "db" / "devices.db"
     candidate = _candidate(paths, "op-replace", "devices.db")
     with closing(sqlite3.connect(candidate)) as connection:
@@ -556,6 +556,12 @@ def test_execute_replace_requires_explicit_authorization_and_supports_rollback(t
         functional_gate=lambda: True,
     )
     assert result["replaced"] is True
+    journal = json.loads(
+        (root / "runtime" / "database_upgrade" / "op-replace.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert journal["recovery_strategy"] == "component_resume"
     with closing(sqlite3.connect(active)) as connection:
         assert connection.execute("SELECT value FROM records").fetchone()[0] == "candidate"
     restored = capability.rollback(
