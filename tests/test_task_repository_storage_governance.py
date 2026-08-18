@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 
@@ -104,6 +105,35 @@ def test_duplicate_event_id_does_not_rewrite_snapshot(tmp_path: Path) -> None:
     assert _event_count(path) == 1
 
 
+def test_concurrent_duplicate_event_id_commits_one_snapshot_and_event(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "tasks.db"
+    repository = TaskRepository(path)
+    event = _event(
+        "event-concurrent-duplicate",
+        "2026-08-15T00:00:01Z",
+        {"current": 1, "total": 10},
+    )
+    candidates = [
+        replace(_snapshot(message="winner-a"), updated_time="2026-08-15T00:00:01Z"),
+        replace(_snapshot(message="winner-b"), updated_time="2026-08-15T00:00:02Z"),
+    ]
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(
+            executor.map(
+                lambda snapshot: repository.record(snapshot, event), candidates
+            )
+        )
+
+    assert sorted(results) == [False, True]
+    persisted = repository.get(event.task_id)
+    assert persisted is not None
+    assert persisted.message in {"winner-a", "winner-b"}
+    assert _event_count(path) == 1
+
+
 def test_identical_progress_keeps_current_snapshot_and_samples_event_history(
     tmp_path: Path,
 ) -> None:
@@ -143,14 +173,75 @@ def test_identical_progress_keeps_current_snapshot_and_samples_event_history(
     assert _event_count(path) == 3
 
 
-def test_non_progress_events_are_never_sampled(tmp_path: Path) -> None:
+def test_identical_progress_heartbeat_boundaries_are_exact(tmp_path: Path) -> None:
+    path = tmp_path / "tasks.db"
+    repository = TaskRepository(path)
+    snapshot = _snapshot()
+    payload = {"stage": "collect", "current": 1, "total": 10, "message": "same"}
+    timestamps = [
+        "2026-08-15T00:00:00.000Z",
+        "2026-08-15T00:00:29.999Z",
+        "2026-08-15T00:00:30.000Z",
+        "2026-08-15T00:00:59.999Z",
+        "2026-08-15T00:01:00.000Z",
+    ]
+    expected_event_counts = [1, 1, 2, 2, 3]
+
+    for index, (timestamp, expected_count) in enumerate(
+        zip(timestamps, expected_event_counts, strict=True), start=1
+    ):
+        assert repository.record(
+            replace(snapshot, updated_time=timestamp),
+            _event(f"heartbeat-{index}", timestamp, payload),
+        )
+        assert _event_count(path) == expected_count
+
+    persisted = repository.get(snapshot.task_id)
+    assert persisted is not None
+    assert persisted.updated_time == timestamps[-1]
+
+
+def test_progress_payload_field_change_is_durable(tmp_path: Path) -> None:
+    path = tmp_path / "tasks.db"
+    repository = TaskRepository(path)
+    snapshot = _snapshot()
+    first_payload = {
+        "stage": "collect",
+        "current": 1,
+        "total": 10,
+        "message": "正在采集",
+        "details": {"ap": "ap-1", "rssi": -61},
+    }
+    changed_payload = {**first_payload, "details": {"ap": "ap-1", "rssi": -62}}
+
+    assert repository.record(
+        snapshot,
+        _event("payload-field-1", "2026-08-15T00:00:00Z", first_payload),
+    )
+    assert repository.record(
+        replace(snapshot, updated_time="2026-08-15T00:00:01Z"),
+        _event("payload-field-2", "2026-08-15T00:00:01Z", changed_payload),
+    )
+
+    assert _event_count(path) == 2
+    events = repository.list_events(snapshot.task_id)
+    assert events[-1]["payload"] == changed_payload
+
+
+@pytest.mark.parametrize(
+    "event_type",
+    ["state", "finished", "error", "cancelled", "log", "notification", "artifact_finalized"],
+)
+def test_non_progress_events_are_never_sampled(
+    tmp_path: Path, event_type: str
+) -> None:
     path = tmp_path / "tasks.db"
     repository = TaskRepository(path)
     snapshot = _snapshot()
     first = TaskEvent(
         event_id="log-1",
         task_id=snapshot.task_id,
-        type="log",
+        type=event_type,
         time="2026-08-15T00:00:00Z",
         payload={"message": "same"},
     )
@@ -234,6 +325,40 @@ def test_sampled_progress_is_still_broadcast_to_live_task_subscribers(tmp_path: 
     assert [event["type"] for event in persisted] == ["state", "progress"]
     assert persisted[1]["id"] == "live-progress-1"
     stream.close()
+
+
+def test_task_results_rows_are_immutable(tmp_path: Path) -> None:
+    path = tmp_path / "tasks.db"
+    repository = TaskRepository(path)
+    reference = _result_reference("immutable-result-task", {"rows": 2})
+
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            """
+            INSERT INTO task_results (
+                result_id, task_id, terminal_event_type, canonical_json,
+                sha256, byte_size, schema_version, created_time
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            tuple(reference.values()),
+        )
+        conn.commit()
+
+    with pytest.raises(sqlite3.IntegrityError, match="task_results rows are immutable"):
+        with sqlite3.connect(path) as conn:
+            conn.execute(
+                "UPDATE task_results SET canonical_json=? WHERE result_id=?",
+                ('{"rows":3}', reference["result_id"]),
+            )
+            conn.commit()
+
+    with sqlite3.connect(path) as conn:
+        row = conn.execute(
+            "SELECT canonical_json, sha256 FROM task_results WHERE result_id=?",
+            (reference["result_id"],),
+        ).fetchone()
+    assert row == (reference["canonical_json"], reference["sha256"])
+    assert repository.get_result(str(reference["result_id"]))["result"] == {"rows": 2}
 
 
 def test_list_resolves_immutable_task_result_reference(tmp_path: Path) -> None:
