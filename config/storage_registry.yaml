@@ -1604,25 +1604,6 @@
       "source_locations": ["src/netconsole/services/production_database_maintenance.py", "config/storage_registry.yaml", "docs/storage/PRODUCTION_DATABASE_MAINTENANCE.md"]
     },
     {
-      "id": "runtime.production_maintenance.staging",
-      "relative_path": "staging/production-maintenance/{operation_id}/**",
-      "owner": "ProductionMaintenanceCapability",
-      "code_owners": ["data", "storage"],
-      "data_type": "STAGING_TEMPORARY",
-      "authority": "non-authoritative verified compact candidate and immutable manifest staging",
-      "producer": ["ProductionCompactCandidateBuilder", "ProductionMaintenanceCapability"],
-      "consumers": ["production maintenance manifest promotion", "atomic replacement"],
-      "retention_owner": "ProductionMaintenanceCapability",
-      "rebuildable": true,
-      "site_package_policy": "exclude; never package production maintenance staging",
-      "backup_policy": "none; the VERIFIED production rollback owner is the recovery authority",
-      "migration_policy": "resume from operation journal or cleanup only after terminal completion and observation",
-      "schema_version": "production-maintenance-staging-v1",
-      "allowed_data_classes": ["STAGING_TEMPORARY"],
-      "forbidden_data_classes": ["OPERATIONAL_CURRENT", "HISTORICAL_RAW_FACT", "ARTIFACT_OR_RAW_FILE", "BACKUP_ROLLBACK", "UNKNOWN"],
-      "source_locations": ["src/netconsole/services/production_database_maintenance.py", "docs/storage/PRODUCTION_DATABASE_MAINTENANCE.md"]
-    },
-    {
       "id": "site.backups.device_type_migration",
       "relative_path": "sites/{site_id}/files/backups/device-type-migrations/**",
       "owner": "DeviceManagementWebService",
