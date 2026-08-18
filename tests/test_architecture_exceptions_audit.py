@@ -22,7 +22,7 @@ def test_exception_inventory_matches_audit_document() -> None:
             "WEB_STATUS_COLOR_TOKEN": 1,
         }
     )
-    audit = (ROOT / "docs/architecture/EXCEPTIONS_AUDIT.md").read_text(encoding="utf-8")
+    audit = (ROOT / "docs/architecture/ARCHITECTURE_EXCEPTIONS.md").read_text(encoding="utf-8")
     assert "总数为 39" in audit
     assert "maintenance CLI-only" in audit
 
