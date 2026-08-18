@@ -9,13 +9,20 @@ and mixed V1/V2 shards remain readable. It is
 explicitly invoked, defaults to off, and never runs during application startup
 or installation.
 
-Phase 1 is COPY-only:
+Migration remains COPY-only for source data. After a verified copy, query authority
+can be switched explicitly for one source table in an isolated catalog:
 
-- source rows remain authoritative and are never updated or deleted;
+- source rows remain preserved and are never updated or deleted; their query
+  authority is selected only by the recorded per-table authority state;
 - migrated shard events use `event_type=legacy` and remain hidden from normal
-  HistoryStore queries, preventing legacy + shard duplicate results;
+  HistoryStore queries while that table has legacy query authority, preventing legacy
+  + shard duplicate results;
+- a `VERIFIED`, error-free table first reaches `SHARD_VERIFIED`; an explicit,
+  revision-CAS protected cutover with a non-empty reason may change it to
+  `SHARD_AUTHORITY`, and explicit rollback returns it to `LEGACY_AUTHORITY`;
 - there is no source-delete, table-drop, compaction, replacement, or VACUUM API;
-- a future source cutover/delete design requires separate approval.
+- there is no automatic or production cutover; production authorization and any
+  source-delete design require separate approval.
 
 ## Inventory
 
@@ -66,8 +73,10 @@ The existing history `catalog.db` owns three additive migration tables:
 
 V2 does not repeat `legacy_source_table` and `legacy_source_id` in every target
 payload. The range journal is the durable provenance for source table, source
-key range, month, digest and sample; a future cutover must require a `VERIFIED`
-range instead of inferring provenance from duplicated payload metadata.
+key range, month, digest and sample; an explicit cutover requires a `VERIFIED`
+range instead of inferring provenance from duplicated payload metadata. The same
+catalog owns each table's authority state, monotonic cutover revision, reason,
+timestamps and append-only authority transition audit row.
 
 Only `PENDING`, `COPYING`, `VERIFYING`, `VERIFIED` and `FAILED` are valid. A
 chunk writes one target-month transaction at a time, verifies exact event IDs,
@@ -75,6 +84,12 @@ stable digests and deterministic samples, then advances the source checkpoint.
 If the process exits after target commit but before checkpoint, resume repeats
 at most the last chunk and `INSERT OR IGNORE` makes it idempotent. If it exits
 after checkpoint, resume starts after the durable last source key.
+
+Authority is independent of the migration status. Successful verification moves a
+table from `LEGACY_AUTHORITY` to `SHARD_VERIFIED`; the explicit cutover and rollback
+operations run under the existing maintenance lock and require the caller's expected
+revision and a reason. Both operations retain the legacy source table and report
+`DELETE=NO`, `DROP=NO`, `VACUUM=NO`.
 
 Invalid timestamps and unsupported row shapes are not dropped silently. Only
 source table, source key and a reason code are written to
@@ -127,6 +142,7 @@ diagnostic scratch databases and never applies to the source snapshot.
 - Real Windows Server HDD long-duration migration remains pending until a
   separately approved maintenance window; SSD/synthetic delay is not an HDD
   substitute.
-- Normal query cutover remains disabled, so copied events intentionally do not
-  replace legacy reads.
+- Isolated-catalog query cutover compatibility is covered by regression tests, but
+  no automatic or production cutover workflow is authorized. Source tables must
+  remain intact and readable so an explicit rollback can restore legacy authority.
 - Source delete design, retention and physical file shrink are not started.

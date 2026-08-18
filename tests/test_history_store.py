@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import sqlite3
+import subprocess
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
@@ -54,6 +58,44 @@ def _stored_event_count(conn) -> int:
         ).fetchone():
             total += int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
     return total
+
+
+def _archive_event(index: int) -> dict[str, object]:
+    collected_at = f"2026-08-01T10:{index % 60:02d}:{index % 60:02d}"
+    return {
+        "event_id": hashlib.sha256(f"history-event-{index}".encode()).hexdigest(),
+        "kind": "device_interface",
+        "entity_key": f"device-{index}:GE1/0/1",
+        "event_type": "change",
+        "collected_at": collected_at,
+        "payload_json": json.dumps(
+            {"device_uuid": f"device-{index}", "sample": index},
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        "created_at": collected_at,
+    }
+
+
+def _physical_event_ids(history_root) -> list[str]:
+    event_ids: list[str] = []
+    for shard_path in sorted(history_root.glob("devices-*.db")):
+        with connect_sqlite(shard_path, foreign_keys=True) as shard:
+            if shard.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='history_events'"
+            ).fetchone():
+                event_ids.extend(
+                    str(row[0])
+                    for row in shard.execute("SELECT event_id FROM history_events")
+                )
+            if shard.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='history_events_v2'"
+            ).fetchone():
+                event_ids.extend(
+                    str(row[0]).lower()
+                    for row in shard.execute("SELECT hex(event_id) FROM history_events_v2")
+                )
+    return event_ids
 
 
 def test_change_aware_history_records_one_initial_event_then_per_kind_heartbeat(tmp_path):
@@ -127,147 +169,6 @@ def test_history_store_rotates_month_shards_without_losing_or_duplicating_events
         }
     assert catalog["2026-07"]["period_end"] == "2026-07-31"
     assert catalog["2026-08"]["status"] == "OPEN"
-
-
-def test_storage_v2_is_versioned_and_round_trips_compact_payload(tmp_path):
-    store = _store(tmp_path)
-    payload = {
-        "device_uuid": "device-1",
-        "interface_name": "GE1/0/1",
-        "description": "uplink" * 40,
-        "collected_at": "2026-08-01T10:00:00",
-        "created_at": "2026-08-01T10:00:00",
-    }
-    with connect_sqlite(store.database_path, foreign_keys=True) as conn:
-        assert store.record_event(
-            conn,
-            kind="device_interface",
-            entity_key="device-1:GE1/0/1",
-            payload=payload,
-            collected_at="2026-08-01T10:00:00",
-            meaningful_fields=("device_uuid", "interface_name", "description"),
-        )
-        conn.commit()
-
-    assert store.drain(limit=1).written == 1
-
-    shard_path = store.history_root / "devices-2026-08.db"
-    with connect_sqlite(shard_path, foreign_keys=True) as shard:
-        metadata = dict(shard.execute("SELECT key, value FROM history_storage_metadata"))
-        assert metadata == {
-            "payload_schema_version": "2",
-            "storage_schema_version": "2",
-        }
-        row = shard.execute(
-            """
-            SELECT e.payload_codec, length(e.payload), s.fields_json
-            FROM history_events_v2 AS e
-            JOIN history_payload_schemas_v2 AS s
-              ON s.payload_schema_id=e.payload_schema_id
-            """
-        ).fetchone()
-        assert int(row["payload_codec"]) == history_store_module.PAYLOAD_CODEC_ZLIB_JSON
-        assert int(row[1]) < len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
-        assert "collected_at" not in json.loads(str(row["fields_json"]))
-        assert "created_at" in json.loads(str(row["fields_json"]))
-    events = store.query_events(kind="device_interface")
-    assert events == [
-        {
-            **payload,
-            "event_id": events[0]["event_id"],
-            "event_type": "change",
-        }
-    ]
-
-
-def test_storage_v2_rejects_newer_storage_and_payload_versions(tmp_path):
-    shard_path = tmp_path / "newer.db"
-    with connect_sqlite(shard_path, foreign_keys=True) as shard:
-        shard.execute("PRAGMA user_version = 3")
-        with pytest.raises(sqlite3.DatabaseError, match="storage schema version"):
-            HistoryStore._ensure_shard(shard)
-
-    valid_row = {
-        "payload_schema_version": history_store_module.PAYLOAD_SCHEMA_VERSION,
-        "payload_codec": history_store_module.PAYLOAD_CODEC_JSON,
-        "payload": b'["value"]',
-        "fields_json": '["field"]',
-    }
-    with pytest.raises(ValueError, match="payload schema version"):
-        HistoryStore._decode_payload_v2(
-            {**valid_row, "payload_schema_version": 3}
-        )
-    with pytest.raises(ValueError, match="payload codec"):
-        HistoryStore._decode_payload_v2({**valid_row, "payload_codec": 99})
-    with pytest.raises(ValueError, match="invalid History Storage V2 payload"):
-        HistoryStore._decode_payload_v2(
-            {
-                **valid_row,
-                "payload_codec": history_store_module.PAYLOAD_CODEC_ZLIB_JSON,
-                "payload": b"not-zlib",
-            }
-        )
-
-
-def test_v1_shard_is_read_compatible_and_v2_write_is_cross_version_idempotent(tmp_path):
-    store = _store(tmp_path)
-    store.history_root.mkdir(parents=True)
-    shard_path = store.history_root / "devices-2026-08.db"
-    catalog_path = store.history_root / "catalog.db"
-    old_event = {
-        "event_id": "a" * 64,
-        "kind": "device_fact",
-        "entity_key": "device-1",
-        "event_type": "change",
-        "collected_at": "2026-08-01T10:00:00",
-        "payload_json": '{"device_uuid":"device-1","model":"V1"}',
-        "created_at": "2026-08-01T10:00:00",
-    }
-    with connect_sqlite(catalog_path, foreign_keys=True) as catalog:
-        catalog.executescript(history_store_module.CATALOG_SCHEMA)
-        catalog.execute(
-            """
-            INSERT INTO history_catalog
-                (shard_id, site_id, period_start, period_end, relative_path,
-                 schema_version, status, row_count, created_at)
-            VALUES ('2026-08', 'demo', '2026-08-01', '2026-08-31',
-                    'devices-2026-08.db', 1, 'ACTIVE', 1, '2026-08-01T10:00:00')
-            """
-        )
-        catalog.commit()
-    with connect_sqlite(shard_path, foreign_keys=True) as shard:
-        shard.executescript(history_store_module.SHARD_SCHEMA_V1)
-        shard.execute(
-            """
-            INSERT INTO history_events
-                (event_id, kind, entity_key, event_type, collected_at, payload_json, created_at)
-            VALUES (:event_id, :kind, :entity_key, :event_type, :collected_at,
-                    :payload_json, :created_at)
-            """,
-            old_event,
-        )
-        shard.commit()
-
-    assert store._write_shard_batch([old_event]) == 0
-    new_event = {
-        **old_event,
-        "event_id": "b" * 64,
-        "collected_at": "2026-08-01T11:00:00",
-        "created_at": "2026-08-01T11:00:00",
-        "payload_json": '{"device_uuid":"device-1","model":"V2"}',
-    }
-    assert store._write_shard_batch([new_event]) == 1
-
-    events = store.query_events(kind="device_fact", entity_key="device-1")
-    assert [event["model"] for event in events] == ["V2", "V1"]
-    assert all("created_at" not in event for event in events)
-    assert store.count_events(kind="device_fact", entity_key="device-1") == 2
-    stored = store.read_legacy_migration_events([new_event])
-    assert len(stored) == 1
-    assert "created_at" not in json.loads(stored[0]["payload_json"])
-    with connect_sqlite(shard_path, foreign_keys=True) as shard:
-        assert shard.execute("SELECT COUNT(*) FROM history_events").fetchone()[0] == 1
-        assert shard.execute("SELECT COUNT(*) FROM history_events_v2").fetchone()[0] == 1
 
 
 def test_storage_v2_is_versioned_and_round_trips_compact_payload(tmp_path):

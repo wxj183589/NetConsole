@@ -293,6 +293,72 @@ class HistoryLegacyMigrationService:
             "destructive_operations": {"DELETE": "NO", "DROP": "NO", "VACUUM": "NO"},
         }
 
+    def cutover(
+        self,
+        migration_id: str,
+        source_table: str,
+        *,
+        expected_revision: int,
+        reason: str,
+    ) -> dict[str, Any]:
+        """Switch a verified source table to shard query authority without deleting it."""
+
+        lock_key = f"{MAINTENANCE_EXCLUSIVE_CLASS}:{self.site_id}"
+        with database_maintenance_lock(self.paths, lock_key):
+            self._assert_current_source(migration_id)
+            checkpoint = self._required_table(migration_id, source_table)
+            if checkpoint.authority_state == "LEGACY_AUTHORITY":
+                checkpoint = self.journal.transition_authority(
+                    migration_id,
+                    source_table,
+                    to_state="SHARD_VERIFIED",
+                    expected_revision=expected_revision,
+                    reason=f"{reason}; restore verified shard candidate",
+                    now=self._now(),
+                )
+            updated = self.journal.transition_authority(
+                migration_id,
+                source_table,
+                to_state="SHARD_AUTHORITY",
+                expected_revision=checkpoint.cutover_revision,
+                reason=reason,
+                now=self._now(),
+            )
+        return {
+            "migration_id": migration_id,
+            "table": asdict(updated),
+            "source_preserved": True,
+            "destructive_operations": {"DELETE": "NO", "DROP": "NO", "VACUUM": "NO"},
+        }
+
+    def rollback_cutover(
+        self,
+        migration_id: str,
+        source_table: str,
+        *,
+        expected_revision: int,
+        reason: str,
+    ) -> dict[str, Any]:
+        """Return one table to legacy query authority while the source is preserved."""
+
+        lock_key = f"{MAINTENANCE_EXCLUSIVE_CLASS}:{self.site_id}"
+        with database_maintenance_lock(self.paths, lock_key):
+            self._assert_current_source(migration_id)
+            updated = self.journal.transition_authority(
+                migration_id,
+                source_table,
+                to_state="LEGACY_AUTHORITY",
+                expected_revision=expected_revision,
+                reason=reason,
+                now=self._now(),
+            )
+        return {
+            "migration_id": migration_id,
+            "table": asdict(updated),
+            "source_preserved": True,
+            "destructive_operations": {"DELETE": "NO", "DROP": "NO", "VACUUM": "NO"},
+        }
+
     def _run(
         self,
         migration_id: str,
@@ -431,6 +497,21 @@ class HistoryLegacyMigrationService:
                     if budget_exceeded:
                         return self._result(migration_id, inventory, budget_exceeded=True)
             tables = self.journal.list_table_checkpoints(migration_id)
+            for checkpoint in tables:
+                if (
+                    checkpoint.status == "VERIFIED"
+                    and checkpoint.error_count == 0
+                    and checkpoint.authority_state == "LEGACY_AUTHORITY"
+                ):
+                    self.journal.transition_authority(
+                        migration_id,
+                        checkpoint.source_table,
+                        to_state="SHARD_VERIFIED",
+                        expected_revision=checkpoint.cutover_revision,
+                        reason="copy verification completed",
+                        now=self._now(),
+                    )
+            tables = self.journal.list_table_checkpoints(migration_id)
             status = "FAILED" if any(item.status == "FAILED" for item in tables) else "VERIFIED"
             self._update_totals(
                 migration_id,
@@ -541,6 +622,23 @@ class HistoryLegacyMigrationService:
             target = target_by_id[str(event["event_id"])]
             if self._digest_events([event]) != self._digest_events([target]):
                 raise RuntimeError("target sample does not match source event")
+
+    def _assert_current_source(self, migration_id: str) -> MigrationRecord:
+        record = self.journal.get(migration_id)
+        if record is None:
+            raise ValueError(f"unknown migration: {migration_id}")
+        current = self.source_database_identity(
+            self.inventory(exact_counts=True, write_report=False)
+        )
+        if current != record.source_database_identity:
+            raise ValueError("migration source database identity changed")
+        return record
+
+    def _required_table(self, migration_id: str, source_table: str) -> TableCheckpoint:
+        checkpoint = self.journal.table_checkpoint(migration_id, source_table)
+        if checkpoint is None:
+            raise ValueError(f"unknown migration source table: {source_table}")
+        return checkpoint
 
     @staticmethod
     def _digest_events(events: list[dict[str, Any]]) -> str:

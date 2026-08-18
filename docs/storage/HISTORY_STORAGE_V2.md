@@ -9,7 +9,9 @@ Repository、启动迁移或自动 compact。
 - 新写统一进入 `history_events_v2`。
 - 既有 `history_events` V1 表不重写、不删除，V1-only 和同月 V1/V2 mixed shard 均继续可读。
 - `event_type=legacy` 的迁移副本仍不进入普通历史查询，源 legacy table 在 cutover 前保持事实源。
-- 本阶段没有 source delete、DROP、生产 VACUUM 或正式数据根写入。
+- 已验证且无错误的单个源表可在隔离环境中，经维护锁、reason 和 revision-CAS 显式切换为
+  shard 查询事实源；该切换保留源表，并可显式回滚为 legacy 查询事实源。
+- 没有自动 cutover、source delete、DROP、生产 VACUUM 或正式数据根写入；生产切换仍需单独授权。
 
 ## 物理基线
 
@@ -57,7 +59,7 @@ zlib level 1 压缩时为 6,657,930 B（原 payload 的 25.4473%）。
 
 `collected_at`、`legacy_source_table` 和 `legacy_source_id` 不再逐行重复进入 compact payload。
 legacy source table、source key range、month、digest 和 deterministic sample 由 catalog range journal
-持久化；未来 cutover 设计必须以 `VERIFIED` range provenance 为依据。读取未知 payload codec/version
+持久化；显式 cutover 必须以 `VERIFIED` range provenance 为依据。读取未知 payload codec/version
 或写入更高 storage version 会显式失败，不会静默降级。payload 原本没有 `created_at` 时，V2 读取也
 不会新增该字段，保持 V1 shape。
 
@@ -102,5 +104,7 @@ V2 exact-entity plan 使用 `idx_history_events_v2_entity_time`，kind/time plan
 - `SERVER_HDD_STORAGE_V2_TEST=PENDING`：开发机 snapshot 结果不能替代真实 Windows Server HDD
   长时运行和无人值守并发验收。
 - `STORAGE_V2_READY` 只表示新写格式、兼容读取和隔离 snapshot 验证完成。
+- 已验证隔离 catalog 支持逐表、可审计且可回滚的查询 authority cutover；它不是自动化或生产
+  切换授权，切换前必须保留可读取的源表。
 - `SOURCE_DELETE_DESIGN_READY` 只允许进入删除方案设计；任何 source delete、DROP、VACUUM、替换
   `devices.db` 或修改 `D:\NetConsoleData` 仍需单独授权。

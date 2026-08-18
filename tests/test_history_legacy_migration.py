@@ -9,6 +9,9 @@ import pytest
 
 from netconsole.core.paths import PathResolver
 from netconsole.core.sqlite_utils import connect_sqlite
+from netconsole.repositories.history_legacy_migration_repository import (
+    HistoryLegacyMigrationRepository,
+)
 from netconsole.services.history_legacy_migration import HistoryLegacyMigrationService
 from netconsole.services.history_store import HistoryStore
 
@@ -395,3 +398,103 @@ def test_large_batch_uses_bounded_commits_and_verifies_every_row(tmp_path: Path)
     assert result["migration"]["verified_count"] == 1_000
     assert result["migration"]["checkpoint_commits"] == 4
     assert _target_count(service) == 1_000
+
+
+def test_catalog_authority_schema_upgrade_preserves_legacy_default(tmp_path: Path) -> None:
+    catalog = tmp_path / "history" / "catalog.db"
+    catalog.parent.mkdir(parents=True)
+    with sqlite3.connect(catalog) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE legacy_history_migration_tables (
+                migration_id TEXT NOT NULL,
+                source_table TEXT NOT NULL,
+                source_range TEXT NOT NULL,
+                last_source_key INTEGER NOT NULL DEFAULT 0,
+                copied_count INTEGER NOT NULL DEFAULT 0,
+                verified_count INTEGER NOT NULL DEFAULT 0,
+                duplicate_count INTEGER NOT NULL DEFAULT 0,
+                error_count INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_error TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY(migration_id, source_table)
+            );
+            """
+        )
+    repository = HistoryLegacyMigrationRepository(catalog)
+
+    repository.ensure_schema()
+
+    with sqlite3.connect(catalog) as conn:
+        columns = {
+            row[1]
+            for row in conn.execute(
+                "PRAGMA table_info(legacy_history_migration_tables)"
+            )
+        }
+    assert {
+        "authority_state",
+        "cutover_at",
+        "cutover_revision",
+        "authority_reason",
+        "rollback_at",
+        "rollback_reason",
+    }.issubset(columns)
+    assert repository.effective_authority_state("device_facts_history") == "LEGACY_AUTHORITY"
+
+
+def test_per_table_cutover_query_authority_persists_and_rolls_back(
+    tmp_path: Path,
+) -> None:
+    source = _source_database(
+        tmp_path,
+        rows=[
+            (1, "a", "2025-12-31T23:59:59"),
+            (2, "b", "2026-01-01T00:00:00"),
+        ],
+    )
+    service = _service(tmp_path, source)
+
+    migrated = service.start(migration_id="authority", max_elapsed_seconds=0)
+
+    checkpoint = migrated["tables"][0]
+    assert checkpoint["authority_state"] == "SHARD_VERIFIED"
+    assert checkpoint["cutover_revision"] == 1
+    assert service.store.query_events(kind="device_fact") == []
+
+    cutover = service.cutover(
+        "authority",
+        "device_facts_history",
+        expected_revision=1,
+        reason="consumer validation passed",
+    )
+
+    assert cutover["table"]["authority_state"] == "SHARD_AUTHORITY"
+    assert cutover["table"]["cutover_revision"] == 2
+    assert [
+        row["collected_at"]
+        for row in service.store.query_events(kind="device_fact")
+    ] == ["2026-01-01T00:00:00", "2025-12-31T23:59:59"]
+    assert not service.store.legacy_source_is_authoritative("device_facts_history")
+
+    restarted = HistoryStore(source, site_id="site-a", history_root=service.history_root)
+    assert len(restarted.query_events(kind="device_fact")) == 2
+
+    rolled_back = service.rollback_cutover(
+        "authority",
+        "device_facts_history",
+        expected_revision=2,
+        reason="consumer mismatch",
+    )
+
+    assert rolled_back["table"]["authority_state"] == "LEGACY_AUTHORITY"
+    assert rolled_back["table"]["cutover_revision"] == 3
+    assert service.store.query_events(kind="device_fact") == []
+    with pytest.raises(ValueError, match="revision mismatch"):
+        service.cutover(
+            "authority",
+            "device_facts_history",
+            expected_revision=1,
+            reason="stale operator request",
+        )

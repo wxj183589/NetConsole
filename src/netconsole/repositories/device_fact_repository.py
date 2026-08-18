@@ -772,7 +772,9 @@ class DeviceFactRepository:
             params.extend(device_uuids)
         params.append(limit)
         with self.database.connect() as conn:
-            rows = conn.execute(
+            legacy = self.history_store.query_legacy_rows(
+                conn,
+                "device_optical_modules_history",
                 f"""
                 SELECT * FROM device_optical_modules_history
                 {where}
@@ -780,10 +782,7 @@ class DeviceFactRepository:
                 LIMIT ?
                 """,
                 params,
-            ).fetchall()
-        legacy = self.history_store.filter_legacy_rows(
-            "device_optical_modules_history", (dict(row) for row in rows)
-        )
+            )
         events = self.history_store.query_events(
             kind="device_optical",
             limit=max(1, min(int(limit), 100000)),
@@ -822,7 +821,9 @@ class DeviceFactRepository:
             before_clause = "AND collected_at < ?"
             params.append(before_collected_at)
         with self.database.connect() as conn:
-            row = conn.execute(
+            legacy_rows = self.history_store.query_legacy_rows(
+                conn,
+                "device_optical_modules_history",
                 f"""
                 SELECT * FROM device_optical_modules_history
                 WHERE device_uuid = ?
@@ -835,11 +836,7 @@ class DeviceFactRepository:
                 LIMIT 1
                 """,
                 params,
-            ).fetchone()
-        legacy_rows = self.history_store.filter_legacy_rows(
-            "device_optical_modules_history",
-            ([dict(row)] if row is not None else []),
-        )
+            )
         legacy = legacy_rows[0] if legacy_rows else None
         events = self.history_store.query_events(
             kind="device_optical",
@@ -893,7 +890,9 @@ class DeviceFactRepository:
         safe_limit = max(1, min(int(limit), 200))
         safe_offset = max(0, int(offset))
         with self.database.connect() as conn:
-            rows = conn.execute(
+            legacy_rows = self.history_store.query_legacy_rows(
+                conn,
+                table,
                 f"SELECT * FROM {table} WHERE device_uuid = ? AND {object_field} = ? "
                 "ORDER BY collected_at DESC, id DESC LIMIT ?",
                 (
@@ -901,10 +900,7 @@ class DeviceFactRepository:
                     object_name,
                     safe_limit + safe_offset,
                 ),
-            ).fetchall()
-        legacy_rows = self.history_store.filter_legacy_rows(
-            table, (dict(row) for row in rows)
-        )
+            )
         mapped = self._merge_history(
             _history_kind_to_store_kind(history_kind),
             _history_kind_entity_key(history_kind, device_uuid, object_name),
@@ -924,15 +920,13 @@ class DeviceFactRepository:
     ) -> int:
         table, object_field = _device_object_history_source(history_kind)
         with self.database.connect() as conn:
-            row = conn.execute(
+            rows = self.history_store.query_legacy_rows(
+                conn,
+                table,
                 f"SELECT COUNT(*) AS total FROM {table} WHERE device_uuid = ? AND {object_field} = ?",
                 (device_uuid, object_name),
-            ).fetchone()
-        legacy_total = (
-            int(row["total"] if row is not None else 0)
-            if self.history_store.legacy_source_is_authoritative(table)
-            else 0
-        )
+            )
+        legacy_total = int(rows[0]["total"] if rows else 0)
         return legacy_total + self.history_store.count_events(
             kind=_history_kind_to_store_kind(history_kind),
             entity_key=_history_kind_entity_key(history_kind, device_uuid, object_name),
@@ -1101,11 +1095,12 @@ class DeviceFactRepository:
         self, table: str, where: str, params: tuple[object, ...]
     ) -> list[dict[str, object | None]]:
         with self.database.connect() as conn:
-            rows = conn.execute(
+            return self.history_store.query_legacy_rows(
+                conn,
+                table,
                 f"SELECT * FROM {table} WHERE {where} ORDER BY collected_at DESC, id DESC",
                 params,
-            ).fetchall()
-        return self.history_store.filter_legacy_rows(table, (dict(row) for row in rows))
+            )
 
     def _merge_history(
         self,

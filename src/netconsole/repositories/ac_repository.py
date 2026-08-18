@@ -985,7 +985,9 @@ class AcRepository:
             params.append(ac_device_uuid)
         params.append(limit)
         with self.database.connect() as conn:
-            rows = conn.execute(
+            rows = self._query_legacy_history_rows(
+                conn,
+                "ac_fit_ap_unauthenticated_history",
                 f"""
                 SELECT * FROM ac_fit_ap_unauthenticated_history
                 {where}
@@ -993,11 +995,9 @@ class AcRepository:
                 LIMIT ?
                 """,
                 params,
-            ).fetchall()
+            )
         return self._merge_history_rows(
-            self.history_store.filter_legacy_rows(
-                "ac_fit_ap_unauthenticated_history", (dict(row) for row in rows)
-            ),
+            rows,
             self._legacy_payload_rows(
                 self.history_store.query_events(
                     kind="fit_ap_unauthenticated",
@@ -1020,7 +1020,9 @@ class AcRepository:
         self, ac_device_uuid: str, limit: int = 10000
     ) -> list[dict[str, object | None]]:
         with self.database.connect() as conn:
-            rows = conn.execute(
+            rows = self._query_legacy_history_rows(
+                conn,
+                "ac_fit_ap_resource_history",
                 """
                 SELECT * FROM ac_fit_ap_resource_history
                 WHERE ac_device_uuid = ?
@@ -1028,11 +1030,9 @@ class AcRepository:
                 LIMIT ?
                 """,
                 (ac_device_uuid, limit),
-            ).fetchall()
+            )
         return self._merge_history_rows(
-            self.history_store.filter_legacy_rows(
-                "ac_fit_ap_resource_history", (dict(row) for row in rows)
-            ),
+            rows,
             self.history_store.query_events(
                 kind="fit_ap_resource",
                 entity_prefix=f"{ac_device_uuid}:",
@@ -1045,18 +1045,18 @@ class AcRepository:
         self, limit: int = 100000
     ) -> list[dict[str, object | None]]:
         with self.database.connect() as conn:
-            rows = conn.execute(
+            rows = self._query_legacy_history_rows(
+                conn,
+                "ac_fit_ap_resource_history",
                 """
                 SELECT * FROM ac_fit_ap_resource_history
                 ORDER BY collected_at DESC, id DESC
                 LIMIT ?
                 """,
                 (limit,),
-            ).fetchall()
+            )
         return self._merge_history_rows(
-            self.history_store.filter_legacy_rows(
-                "ac_fit_ap_resource_history", (dict(row) for row in rows)
-            ),
+            rows,
             self.history_store.query_events(kind="fit_ap_resource", limit=limit),
             limit=limit,
         )
@@ -1780,10 +1780,13 @@ class AcRepository:
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         params.append(limit)
         with self.database.connect() as conn:
-            rows = conn.execute(
-                f"SELECT * FROM ac_fit_ap_optical_history {where} ORDER BY collected_at DESC, id DESC LIMIT ?",
+            rows = self._query_legacy_history_rows(
+                conn,
+                "ac_fit_ap_optical_history",
+                f"SELECT * FROM ac_fit_ap_optical_history {where} "
+                "ORDER BY collected_at DESC, id DESC LIMIT ?",
                 params,
-            ).fetchall()
+            )
         if ap_uuid:
             events = self.history_store.query_events(
                 kind="fit_ap_optical", entity_key=str(ap_uuid), limit=limit
@@ -1799,9 +1802,7 @@ class AcRepository:
         else:
             events = self.history_store.query_events(kind="fit_ap_optical", limit=limit)
         return self._merge_history_rows(
-            self.history_store.filter_legacy_rows(
-                "ac_fit_ap_optical_history", (dict(row) for row in rows)
-            ),
+            rows,
             events,
             limit=limit,
         )
@@ -1813,7 +1814,9 @@ class AcRepository:
         self, ap_uuid: str, limit: int = 100
     ) -> list[dict[str, object | None]]:
         with self.database.connect() as conn:
-            rows = conn.execute(
+            rows = self._query_legacy_history_rows(
+                conn,
+                "ac_fit_ap_radio_history",
                 """
                 SELECT * FROM ac_fit_ap_radio_history
                 WHERE ap_uuid = ?
@@ -1821,11 +1824,9 @@ class AcRepository:
                 LIMIT ?
                 """,
                 (ap_uuid, limit),
-            ).fetchall()
+            )
         return self._merge_history_rows(
-            self.history_store.filter_legacy_rows(
-                "ac_fit_ap_radio_history", (dict(row) for row in rows)
-            ),
+            rows,
             self.history_store.query_events(
                 kind="fit_ap_radio", entity_prefix=f"{ap_uuid}:", limit=limit
             ),
@@ -1836,7 +1837,9 @@ class AcRepository:
         self, ap_uuid: str, limit: int = 100
     ) -> list[dict[str, object | None]]:
         with self.database.connect() as conn:
-            rows = conn.execute(
+            rows = self._query_legacy_history_rows(
+                conn,
+                "ac_fit_ap_lldp_history",
                 """
                 SELECT * FROM ac_fit_ap_lldp_history
                 WHERE ap_uuid = ?
@@ -1844,11 +1847,9 @@ class AcRepository:
                 LIMIT ?
                 """,
                 (ap_uuid, limit),
-            ).fetchall()
+            )
         return self._merge_history_rows(
-            self.history_store.filter_legacy_rows(
-                "ac_fit_ap_lldp_history", (dict(row) for row in rows)
-            ),
+            rows,
             self.history_store.query_events(
                 kind="fit_ap_lldp", entity_key=str(ap_uuid), limit=limit
             ),
@@ -1866,10 +1867,12 @@ class AcRepository:
         table = _fit_ap_history_table(history_kind)
         normalized_kind = str(history_kind or "").strip().casefold()
         with self.database.connect() as conn:
-            rows = conn.execute(
+            rows = self._query_legacy_history_rows(
+                conn,
+                table,
                 f"SELECT * FROM {table} WHERE ap_uuid = ? ORDER BY collected_at DESC, id DESC LIMIT ? OFFSET ?",
                 (ap_uuid, max(1, int(limit) + max(0, int(offset))), 0),
-            ).fetchall()
+            )
         events = self.history_store.query_events(
             kind=f"fit_ap_{normalized_kind}",
             entity_prefix=f"{ap_uuid}:" if normalized_kind == "radio" else None,
@@ -1877,7 +1880,7 @@ class AcRepository:
             limit=max(1, int(limit) + max(0, int(offset))),
         )
         combined = self._merge_history_rows(
-            self.history_store.filter_legacy_rows(table, (dict(row) for row in rows)),
+            rows,
             events,
             limit=max(1, int(limit) + max(0, int(offset))),
         )
@@ -1886,19 +1889,18 @@ class AcRepository:
     def count_fit_ap_history(self, history_kind: str, ap_uuid: str) -> int:
         table = _fit_ap_history_table(history_kind)
         with self.database.connect() as conn:
-            row = conn.execute(
-                f"SELECT COUNT(*) AS total FROM {table} WHERE ap_uuid = ?", (ap_uuid,)
-            ).fetchone()
+            rows = self._query_legacy_history_rows(
+                conn,
+                table,
+                f"SELECT COUNT(*) AS total FROM {table} WHERE ap_uuid = ?",
+                (ap_uuid,),
+            )
+        legacy_total = int(rows[0]["total"] if rows else 0)
         normalized_kind = str(history_kind or "").strip().casefold()
         events = self.history_store.count_events(
             kind=f"fit_ap_{normalized_kind}",
             entity_prefix=f"{ap_uuid}:" if normalized_kind == "radio" else None,
             entity_key=str(ap_uuid) if normalized_kind != "radio" else None,
-        )
-        legacy_total = (
-            int(row["total"] if row is not None else 0)
-            if self.history_store.legacy_source_is_authoritative(table)
-            else 0
         )
         return legacy_total + events
 
@@ -1906,7 +1908,9 @@ class AcRepository:
         self, limit: int = 100000
     ) -> list[dict[str, object | None]]:
         with self.database.connect() as conn:
-            entity_rows = conn.execute(
+            entity_rows = self._query_legacy_history_rows(
+                conn,
+                "ap_optical_history",
                 """
                 SELECT id, ap_uuid, NULL AS ap_name, NULL AS ap_mac, side, device_uuid,
                        interface_name, rx_power, tx_power, alarm_status AS optical_alarm_status,
@@ -1917,8 +1921,10 @@ class AcRepository:
                 LIMIT ?
                 """,
                 (limit,),
-            ).fetchall()
-            fit_rows = conn.execute(
+            )
+            fit_rows = self._query_legacy_history_rows(
+                conn,
+                "ac_fit_ap_optical_history",
                 """
                 SELECT id, ap_uuid, ap_name, ap_mac, 'ap' AS side, ac_device_uuid AS device_uuid,
                        interface_name, rx_power, tx_power,
@@ -1929,15 +1935,10 @@ class AcRepository:
                 LIMIT ?
                 """,
                 (limit,),
-            ).fetchall()
+            )
         events = self.history_store.query_events(kind="fit_ap_optical", limit=limit)
         return self._merge_history_rows(
-            self.history_store.filter_legacy_rows(
-                "ap_optical_history", (dict(row) for row in entity_rows)
-            )
-            + self.history_store.filter_legacy_rows(
-                "ac_fit_ap_optical_history", (dict(row) for row in fit_rows)
-            ),
+            entity_rows + fit_rows,
             events,
             limit=limit,
         )
@@ -1955,7 +1956,9 @@ class AcRepository:
                 if before_collected_at:
                     before_clause = "AND collected_at < ?"
                     params.append(before_collected_at)
-                row = conn.execute(
+                rows = self._query_legacy_history_rows(
+                    conn,
+                    "ap_optical_history",
                     f"""
                     SELECT * FROM ap_optical_history
                     WHERE side = 'ap'
@@ -1965,12 +1968,9 @@ class AcRepository:
                     LIMIT 1
                     """,
                     params,
-                ).fetchone()
-                projection_rows = self.history_store.filter_legacy_rows(
-                    "ap_optical_history", ([dict(row)] if row is not None else [])
                 )
-                if projection_rows:
-                    legacy_row = projection_rows[0]
+                if rows:
+                    legacy_row = rows[0]
             if legacy_row is None:
                 clauses, params = self._ap_identity_clauses(
                     identity, allowed=("ap_uuid", "ap_mac")
@@ -1980,7 +1980,9 @@ class AcRepository:
                     if before_collected_at:
                         before_clause = "AND collected_at < ?"
                         params.append(before_collected_at)
-                    row = conn.execute(
+                    rows = self._query_legacy_history_rows(
+                        conn,
+                        "ac_fit_ap_optical_history",
                         f"""
                         SELECT * FROM ac_fit_ap_optical_history
                         WHERE ({" OR ".join(clauses)})
@@ -1992,12 +1994,8 @@ class AcRepository:
                         LIMIT 1
                         """,
                         params,
-                    ).fetchone()
-                    canonical_rows = self.history_store.filter_legacy_rows(
-                        "ac_fit_ap_optical_history",
-                        ([dict(row)] if row is not None else []),
                     )
-                    legacy_row = canonical_rows[0] if canonical_rows else None
+                    legacy_row = rows[0] if rows else None
         ap_uuid = str(identity.get("ap_uuid") or "")
         events = (
             self.history_store.query_events(
@@ -2036,7 +2034,9 @@ class AcRepository:
             params.append(before_collected_at)
         legacy_row: dict[str, object | None] | None = None
         with self.database.connect() as conn:
-            row = conn.execute(
+            rows = self._query_legacy_history_rows(
+                conn,
+                "ap_lldp_history",
                 f"""
                 SELECT * FROM ap_lldp_history
                 WHERE ({" OR ".join(clauses)})
@@ -2046,12 +2046,9 @@ class AcRepository:
                 LIMIT 1
                 """,
                 params,
-            ).fetchone()
-            projection_rows = self.history_store.filter_legacy_rows(
-                "ap_lldp_history", ([dict(row)] if row is not None else [])
             )
-            if projection_rows:
-                legacy_row = projection_rows[0]
+            if rows:
+                legacy_row = rows[0]
             if legacy_row is None:
                 clauses, params = self._ap_identity_clauses(
                     identity, allowed=("ap_uuid", "ap_mac")
@@ -2060,7 +2057,9 @@ class AcRepository:
                 if before_collected_at:
                     before_clause = "AND collected_at < ?"
                     params.append(before_collected_at)
-                row = conn.execute(
+                rows = self._query_legacy_history_rows(
+                    conn,
+                    "ac_fit_ap_lldp_history",
                     f"""
                     SELECT * FROM ac_fit_ap_lldp_history
                     WHERE ({" OR ".join(clauses)})
@@ -2070,12 +2069,8 @@ class AcRepository:
                     LIMIT 1
                     """,
                     params,
-                ).fetchone()
-                canonical_rows = self.history_store.filter_legacy_rows(
-                    "ac_fit_ap_lldp_history",
-                    ([dict(row)] if row is not None else []),
                 )
-                legacy_row = canonical_rows[0] if canonical_rows else None
+                legacy_row = rows[0] if rows else None
         ap_uuid = str(identity.get("ap_uuid") or "")
         events = (
             self.history_store.query_events(
@@ -2102,7 +2097,9 @@ class AcRepository:
         self, ap_uuid: str
     ) -> dict[str, object | None] | None:
         with self.database.connect() as conn:
-            row = conn.execute(
+            legacy_rows = self._query_legacy_history_rows(
+                conn,
+                "ap_lldp_history",
                 """
                 SELECT * FROM ap_lldp_history
                 WHERE ap_uuid = ?
@@ -2110,12 +2107,9 @@ class AcRepository:
                 LIMIT 1
                 """,
                 (ap_uuid,),
-            ).fetchone()
+            )
         events = self.history_store.query_events(
             kind="fit_ap_lldp", entity_key=str(ap_uuid), limit=1
-        )
-        legacy_rows = self.history_store.filter_legacy_rows(
-            "ap_lldp_history", ([dict(row)] if row is not None else [])
         )
         return (
             self._merge_history_rows(legacy_rows, events, limit=1)[0]
@@ -2127,7 +2121,9 @@ class AcRepository:
         self, limit: int = 100000
     ) -> list[dict[str, object | None]]:
         with self.database.connect() as conn:
-            entity_rows = conn.execute(
+            entity_rows = self._query_legacy_history_rows(
+                conn,
+                "ap_lldp_history",
                 """
                 SELECT id, ap_uuid, ap_mac, ap_name, serial_number,
                        neighbor_switch_name AS neighbor_device_name,
@@ -2142,8 +2138,10 @@ class AcRepository:
                 LIMIT ?
                 """,
                 (limit,),
-            ).fetchall()
-            fit_rows = conn.execute(
+            )
+            fit_rows = self._query_legacy_history_rows(
+                conn,
+                "ac_fit_ap_lldp_history",
                 """
                 SELECT id, ap_uuid, ap_mac, ap_name, NULL AS serial_number,
                        neighbor_device_name,
@@ -2158,12 +2156,8 @@ class AcRepository:
                 LIMIT ?
                 """,
                 (limit,),
-            ).fetchall()
-        rows = self.history_store.filter_legacy_rows(
-            "ap_lldp_history", (dict(row) for row in entity_rows)
-        ) + self.history_store.filter_legacy_rows(
-            "ac_fit_ap_lldp_history", (dict(row) for row in fit_rows)
-        )
+            )
+        rows = entity_rows + fit_rows
         latest: dict[tuple[str, str], dict[str, object | None]] = {}
         passthrough: list[dict[str, object | None]] = []
         for row in rows:
@@ -2183,7 +2177,9 @@ class AcRepository:
         self, limit: int = 100000
     ) -> list[dict[str, object | None]]:
         with self.database.connect() as conn:
-            entity_rows = conn.execute(
+            entity_rows = self._query_legacy_history_rows(
+                conn,
+                "ap_lldp_history",
                 """
                 SELECT id, ap_uuid, ap_mac, ap_name, serial_number,
                        neighbor_switch_name AS neighbor_device_name,
@@ -2198,8 +2194,10 @@ class AcRepository:
                 LIMIT ?
                 """,
                 (limit,),
-            ).fetchall()
-            fit_rows = conn.execute(
+            )
+            fit_rows = self._query_legacy_history_rows(
+                conn,
+                "ac_fit_ap_lldp_history",
                 """
                 SELECT id, ap_uuid, ap_mac, ap_name, NULL AS serial_number,
                        neighbor_device_name,
@@ -2214,14 +2212,9 @@ class AcRepository:
                 LIMIT ?
                 """,
                 (limit,),
-            ).fetchall()
-        return self._merge_history_rows(
-            self.history_store.filter_legacy_rows(
-                "ap_lldp_history", (dict(row) for row in entity_rows)
             )
-            + self.history_store.filter_legacy_rows(
-                "ac_fit_ap_lldp_history", (dict(row) for row in fit_rows)
-            ),
+        return self._merge_history_rows(
+            entity_rows + fit_rows,
             self.history_store.query_events(kind="fit_ap_lldp", limit=limit),
             limit=limit,
         )
@@ -2693,7 +2686,9 @@ class AcRepository:
         requested = safe_limit + safe_offset
         params.extend((requested, 0))
         with self.database.connect() as conn:
-            rows = conn.execute(
+            rows = self._query_legacy_history_rows(
+                conn,
+                "ac_station_online_summary_history",
                 f"""
                 SELECT * FROM ac_station_online_summary_history
                 {where}
@@ -2701,11 +2696,9 @@ class AcRepository:
                 LIMIT ? OFFSET ?
                 """,
                 params,
-            ).fetchall()
+            )
         combined = self._merge_history_rows(
-            self.history_store.filter_legacy_rows(
-                "ac_station_online_summary_history", (dict(row) for row in rows)
-            ),
+            rows,
             self._legacy_payload_rows(
                 self.history_store.query_events(
                     kind="station_online_summary",
@@ -2725,14 +2718,13 @@ class AcRepository:
             params.append(site_name)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         with self.database.connect() as conn:
-            row = conn.execute(f"SELECT COUNT(*) AS total FROM ac_station_online_summary_history {where}", params).fetchone()
-        legacy_total = (
-            int(row["total"] if row is not None else 0)
-            if self.history_store.legacy_source_is_authoritative(
-                "ac_station_online_summary_history"
+            rows = self._query_legacy_history_rows(
+                conn,
+                "ac_station_online_summary_history",
+                f"SELECT COUNT(*) AS total FROM ac_station_online_summary_history {where}",
+                params,
             )
-            else 0
-        )
+        legacy_total = int(rows[0]["total"] if rows else 0)
         return legacy_total + self.history_store.count_events(
             kind="station_online_summary",
             entity_key=site_name if site_name else None,
@@ -2850,7 +2842,12 @@ class AcRepository:
     def _lldp_history_changed(self, conn, ap_uuid: object, payload: dict[str, object | None]) -> int:
         if not ap_uuid:
             return 1
-        previous = conn.execute(
+        events = self.history_store.query_events(
+            kind="fit_ap_lldp", entity_key=str(ap_uuid), limit=1
+        )
+        previous_rows = events or self._query_legacy_history_rows(
+            conn,
+            "ac_fit_ap_lldp_history",
             """
             SELECT * FROM ac_fit_ap_lldp_history
             WHERE ap_uuid = ?
@@ -2858,19 +2855,41 @@ class AcRepository:
             LIMIT 1
             """,
             (ap_uuid,),
-        ).fetchone()
-        if previous is None:
+        )
+        if not previous_rows:
             return 1
-        prev = dict(previous)
-        current = normalize_lldp_payload(payload, str(payload.get("lldp_source") or payload.get("source") or "unknown"))
-        previous_neighbor_name = str(prev.get("neighbor_name") or prev.get("neighbor_device_name") or prev.get("lldp_neighbor") or "")
-        current_neighbor_name = str(current.get("lldp_neighbor_name") or "")
-        return 0 if (
-            str(prev.get("local_interface_normalized") or "") == str(current.get("lldp_local_interface_normalized") or "")
-            and str(prev.get("neighbor_mac_normalized") or "") == str(current.get("lldp_neighbor_mac_normalized") or "")
-            and normalize_interface_key(prev.get("neighbor_interface")) == normalize_interface_key(current.get("lldp_neighbor_interface"))
-            and previous_neighbor_name == current_neighbor_name
-        ) else 1
+        prev = dict(previous_rows[0])
+        def normalized(row: dict[str, object | None]) -> dict[str, object | None]:
+            return normalize_lldp_payload(
+                {
+                    **row,
+                    "lldp_local_interface": row.get("lldp_local_interface")
+                    or row.get("local_interface"),
+                    "lldp_neighbor_name": row.get("lldp_neighbor_name")
+                    or row.get("neighbor_name")
+                    or row.get("neighbor_device_name")
+                    or row.get("lldp_neighbor"),
+                    "lldp_neighbor_mac": row.get("lldp_neighbor_mac")
+                    or row.get("neighbor_mac"),
+                    "lldp_neighbor_interface": row.get("lldp_neighbor_interface")
+                    or row.get("neighbor_interface"),
+                },
+                str(row.get("lldp_source") or row.get("source") or "unknown"),
+            )
+
+        previous = normalized(prev)
+        current = normalized(payload)
+        same = (
+            str(previous.get("lldp_local_interface_normalized") or "")
+            == str(current.get("lldp_local_interface_normalized") or "")
+            and str(previous.get("lldp_neighbor_mac_normalized") or "")
+            == str(current.get("lldp_neighbor_mac_normalized") or "")
+            and normalize_interface_key(previous.get("lldp_neighbor_interface"))
+            == normalize_interface_key(current.get("lldp_neighbor_interface"))
+            and str(previous.get("lldp_neighbor_name") or "")
+            == str(current.get("lldp_neighbor_name") or "")
+        )
+        return 0 if same else 1
 
     def _append_radio_history(self, conn, payload: dict[str, object | None]) -> None:
         for rid in (1, 2, 3):
@@ -3026,6 +3045,7 @@ class AcRepository:
         ap_uuid = str(row.get("ap_uuid") or "")
         if not ap_uuid:
             return
+        row["is_changed"] = self._lldp_history_changed(conn, ap_uuid, row)
         self.history_store.record_event(
             conn,
             kind="fit_ap_lldp",
@@ -3880,6 +3900,15 @@ class AcRepository:
     @staticmethod
     def _now() -> str:
         return datetime.now().isoformat(timespec="seconds")
+
+    def _query_legacy_history_rows(
+        self,
+        conn,
+        source_table: str,
+        query: str,
+        params: list[object] | tuple[object, ...] = (),
+    ) -> list[dict[str, object | None]]:
+        return self.history_store.query_legacy_rows(conn, source_table, query, params)
 
     @staticmethod
     def _merge_history_rows(

@@ -1857,6 +1857,22 @@ class HistoryStore:
     ) -> list[dict[str, Any]]:
         return list(rows) if self.legacy_source_is_authoritative(source_table) else []
 
+    def query_legacy_rows(
+        self,
+        conn: sqlite3.Connection,
+        source_table: str,
+        query: str,
+        params: Iterable[Any] = (),
+    ) -> list[dict[str, Any]]:
+        """Read a legacy source only when it exists and remains authoritative."""
+
+        source = self._validate_legacy_source(source_table)
+        if not self.legacy_source_is_authoritative(source):
+            return []
+        if not self._table_exists(conn, source):
+            return []
+        return [dict(row) for row in conn.execute(query, tuple(params)).fetchall()]
+
     def _kind_uses_shard_authority(self, kind: str) -> bool:
         source = KIND_CANONICAL_LEGACY_SOURCE.get(str(kind or ""))
         return bool(source and not self.legacy_source_is_authoritative(source))

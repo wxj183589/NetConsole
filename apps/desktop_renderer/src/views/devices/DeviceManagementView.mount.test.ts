@@ -82,6 +82,7 @@ vi.mock('element-plus', async (importOriginal) => ({
 }))
 
 import DeviceManagementView from './DeviceManagementView.vue'
+import { ApiRequestError } from '../../api/client'
 import NcDataTable from '../../components/table/NcDataTable.vue'
 import {
   resetUserSelectedExportForTests,
@@ -515,6 +516,32 @@ describe('DeviceManagementView mounted interactions', () => {
     expect(wrapper.get('.state-alert').attributes('title')).toBe(
       '设备数据库升级未完成，请重启后端或查看数据库迁移日志。',
     )
+    expect(wrapper.find('.device-table-host .el-empty').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it.each([
+    {
+      name: 'transport interruption',
+      error: new ApiRequestError('Backend 连接中断，请重试。', 0, 'BACKEND_CONNECTION_INTERRUPTED'),
+      message: 'Backend 连接中断，请重试。',
+    },
+    {
+      name: 'device database unavailable',
+      error: new ApiRequestError('Backend 连接中断，请重试。', 503, 'DEVICE_DATABASE_UNAVAILABLE'),
+      message: '设备数据暂时不可读，请查看日志后重试。',
+    },
+    {
+      name: 'other HTTP 503',
+      error: new ApiRequestError('Backend 连接中断，请重试。', 503, 'DEVICE_QUERY_UNAVAILABLE'),
+      message: 'Backend 已连接，但当前业务服务暂不可用。',
+    },
+  ])('classifies $name device list failures', async ({ error, message }) => {
+    mocks.listDevices.mockRejectedValueOnce(error)
+
+    const wrapper = await renderView()
+
+    expect(wrapper.get('.state-alert').attributes('title')).toBe(message)
     expect(wrapper.find('.device-table-host .el-empty').exists()).toBe(false)
     wrapper.unmount()
   })

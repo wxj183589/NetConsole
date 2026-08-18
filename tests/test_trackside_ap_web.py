@@ -551,6 +551,65 @@ def test_trackside_snapshot_keeps_switch_rows_when_fit_ap_resources_fail(
     assert snapshot.unavailable_sources[0]["code"] == "FIT_AP_RESOURCES_UNAVAILABLE"
 
 
+def test_trackside_snapshot_reads_history_store_after_lldp_legacy_tables_are_retired(
+    tmp_path: Path,
+) -> None:
+    database = Database(tmp_path / "retired-lldp-history.sqlite")
+    database.initialize()
+    repository = DeviceRepository(database)
+    _seed_trackside_switch(
+        repository,
+        name="SW-A",
+        station="站点A",
+        address="192.0.2.11",
+    )
+    ac_repository = AcRepository(database)
+    _seed_effective_trackside_scope(
+        ac_repository,
+        [("站点A", 1, 1, 1, "")],
+        numbered_display=False,
+    )
+    with database.connect() as conn:
+        conn.execute("DROP TABLE ap_lldp_history")
+        conn.execute("DROP TABLE ac_fit_ap_lldp_history")
+        ac_repository.history_store.record_event(
+            conn,
+            kind="fit_ap_lldp",
+            entity_key="ap-1-0",
+            payload={
+                "ac_device_uuid": "ac-fixture",
+                "ap_uuid": "ap-1-0",
+                "ap_name": "AP-01-000",
+                "local_interface": "GigabitEthernet1/0/1",
+                "local_interface_normalized": "ge1/0/1",
+                "lldp_neighbor": "SW-A",
+                "neighbor_name": "SW-A",
+                "neighbor_device_name": "SW-A",
+                "neighbor_interface": "XGE1/0/1",
+                "neighbor_mac": "00:11:22:33:44:55",
+                "neighbor_mac_normalized": "001122334455",
+            },
+            collected_at="2026-08-01T10:00:00",
+            meaningful_fields=(
+                "ap_uuid",
+                "local_interface_normalized",
+                "neighbor_interface",
+                "neighbor_mac_normalized",
+            ),
+        )
+        conn.commit()
+
+    snapshot = load_trackside_ap_business_snapshot(repository, "demo", 1)
+
+    assert snapshot.source_statuses["ap_lldp_history"] == "loaded"
+    assert not any(
+        item["code"] == "AP_LLDP_HISTORY_UNAVAILABLE"
+        for item in snapshot.unavailable_sources
+    )
+    assert snapshot.partial_data is False
+    assert any(row.get("ap_uuid") == "ap-1-0" for row in snapshot.rows)
+
+
 def test_trackside_snapshot_uses_device_and_ac_without_base_data(
     tmp_path: Path,
 ) -> None:

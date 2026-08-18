@@ -4,6 +4,7 @@ import { ElButton, ElMessage, ElNotification } from 'element-plus'
 import { useRouter } from 'vue-router'
 import { Connection, CopyDocument, Delete, Download, Edit, FolderOpened, Hide, Plus, Refresh, Upload, View } from '@element-plus/icons-vue'
 
+import { ApiRequestError } from '../../api/client'
 import { isFeatureEnabled } from '../../features'
 import {
   getDeviceEditProfile,
@@ -521,7 +522,7 @@ async function loadDevices(resetPage = false, preserveSelection = false): Promis
       selectedUuids.value = []
     }
   } catch (cause) {
-    error.value = errorMessage(cause, '设备列表加载失败')
+    error.value = deviceListErrorMessage(cause)
     pageData.value = emptyPage()
   } finally {
     loading.value = false
@@ -1894,6 +1895,17 @@ function workScopeStatusLabel(value: WorkScopeStatus): string {
 
 function errorMessage(cause: unknown, fallback: string): string {
   return cause instanceof Error ? cause.message : fallback
+}
+
+function deviceListErrorMessage(cause: unknown): string {
+  if (!(cause instanceof ApiRequestError)) return errorMessage(cause, '设备列表加载失败')
+  if (cause.code === 'DEVICE_DATABASE_UNAVAILABLE') {
+    return '设备数据暂时不可读，请查看日志后重试。'
+  }
+  if (cause.status === 503) {
+    return 'Backend 已连接，但当前业务服务暂不可用。'
+  }
+  return cause.message
 }
 </script>
 
