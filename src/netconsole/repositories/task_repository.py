@@ -10,6 +10,7 @@ from typing import Any
 
 from netconsole.core.sqlite_utils import connect_sqlite, initialize_sqlite_wal, run_sqlite_with_retry
 from netconsole.models.task_result_rollout import (
+    TASK_RESULT_RUNTIME_WRITE_STATE as MODEL_TASK_RESULT_RUNTIME_WRITE_STATE,
     TaskResultRolloutStatus,
     TaskResultStorageState,
 )
@@ -168,7 +169,7 @@ TASK_RESULT_SCHEMA_VERSION = 1
 TERMINAL_RESULT_EVENT_TYPES = frozenset({"finished", "error", "cancelled"})
 # Persisted rollout rows remain available for historical maintenance, but they
 # cannot alter the current writer until a separately approved rollout phase.
-TASK_RESULT_RUNTIME_WRITE_STATE = TaskResultStorageState.LEGACY_DUAL_FULL
+TASK_RESULT_RUNTIME_WRITE_STATE = MODEL_TASK_RESULT_RUNTIME_WRITE_STATE
 
 
 class TaskRepository:
@@ -398,19 +399,34 @@ class TaskRepository:
         run_sqlite_with_retry(operation)
         return recorded
 
-    @staticmethod
     def _prepare_terminal_result(
+        self,
         conn,
         snapshot: TaskSnapshot,
         event: TaskEvent,
     ) -> tuple[TaskSnapshot, TaskEvent]:
-        """Keep full result updates from retaining an obsolete authority ref."""
+        """Detach a stale ref only when a new full snapshot result replaces it."""
 
         if TASK_RESULT_RUNTIME_WRITE_STATE != TaskResultStorageState.LEGACY_DUAL_FULL:
             raise RuntimeError("unsupported task result runtime write policy")
-        del conn
-        result = event.payload.get("result")
-        if not isinstance(result, dict) or not result or not snapshot.result_id:
+        incoming_result = snapshot.result
+        result_id = str(snapshot.result_id or "")
+        if not isinstance(incoming_result, dict) or not incoming_result or not result_id:
+            return snapshot, event
+
+        referenced = self._result_row(conn, result_id)
+        if referenced is None:
+            # A full current result can repair an active snapshot whose old
+            # historical reference has already been archived or is missing.
+            return replace(snapshot, result_id="", result_hash="", result_summary={}), event
+
+        verified = self._verified_result_for_read(dict(referenced))
+        if str(verified["task_id"]) != str(snapshot.task_id):
+            raise sqlite3.DatabaseError("task snapshot result task binding mismatch")
+        stored_hash = str(snapshot.result_hash or "")
+        if stored_hash and stored_hash != str(verified["sha256"]):
+            return replace(snapshot, result_id="", result_hash="", result_summary={}), event
+        if self._canonical_result_json(incoming_result) == str(verified["canonical_json"]):
             return snapshot, event
         return (
             replace(snapshot, result_id="", result_hash="", result_summary={}),

@@ -38,7 +38,7 @@ def _terminal_task(
     repository = TaskRepository(path)
     rollout = TaskResultRolloutService(path)
     rollout_status = rollout.status()
-    if not bool(rollout_status["dual_write_active"]):
+    if rollout_status["task_result_storage_state"] == "LEGACY_DUAL_FULL":
         rollout.enable_dual_write(
             expected_revision=int(rollout_status["revision"]),
             reason="Site Return Package task_results fixture",

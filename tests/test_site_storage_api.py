@@ -76,9 +76,15 @@ def test_task_result_storage_diagnostics_defaults_off_and_exposes_no_payload(
     assert payload == {
         "schema_version": 4,
         "task_result_storage_state": "LEGACY_DUAL_FULL",
+        "persisted_rollout_state": "LEGACY_DUAL_FULL",
         "revision": 1,
         "updated_at": payload["updated_at"],
         "task_results_rows": 0,
+        "persisted_dual_write_active": False,
+        "persisted_ref_authority_active": False,
+        "runtime_write_state": "LEGACY_DUAL_FULL",
+        "runtime_dual_write_active": False,
+        "runtime_ref_authority_active": False,
         "dual_write_active": False,
         "ref_authority_active": False,
     }

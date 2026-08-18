@@ -40,6 +40,12 @@ def _service(args: argparse.Namespace) -> TaskResultRolloutService:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    if args.command == "enable-dual-write" and args.apply:
+        raise SystemExit(
+            "TASK_RESULT_RUNTIME_ROLLOUT_DISABLED: current runtime writer "
+            "is fixed at LEGACY_DUAL_FULL; enable-dual-write is not an "
+            "effective production operation"
+        )
     service = _service(args)
     if args.command == "status":
         result = service.status()
@@ -51,18 +57,11 @@ def main(argv: list[str] | None = None) -> int:
                 "rollout transitions require --expected-revision and --reason"
             )
         try:
-            if args.command == "enable-dual-write":
-                service.enable_dual_write(
-                    expected_revision=args.expected_revision,
-                    reason=args.reason,
-                    updated_by="maintenance-cli",
-                )
-            else:
-                service.disable_dual_write(
-                    expected_revision=args.expected_revision,
-                    reason=args.reason,
-                    updated_by="maintenance-cli",
-                )
+            service.disable_dual_write(
+                expected_revision=args.expected_revision,
+                reason=args.reason,
+                updated_by="maintenance-cli",
+            )
         except TaskResultRolloutError as exc:
             raise SystemExit(f"{exc.code}: {exc}") from exc
         result = service.status()

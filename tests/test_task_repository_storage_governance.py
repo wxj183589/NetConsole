@@ -388,6 +388,164 @@ def test_snapshot_and_event_resolve_result_from_history_store_fallback(
     assert events[0]["payload"]["result_hash"] == reference["sha256"]
 
 
+def test_full_snapshot_replacement_clears_stale_result_reference_without_event_result(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "tasks.db"
+    repository = TaskRepository(path)
+    task_id = "stale-result-replacement"
+    original = {"rows": 1}
+    replacement = {"rows": 2}
+    reference = _result_reference(task_id, original)
+    repository.task_history.archive_result_rows([reference])
+    timestamp = str(reference["created_time"])
+    initial = _snapshot(
+        task_id=task_id,
+        status=TaskState.COMPLETED,
+        finished_time=timestamp,
+        updated_time=timestamp,
+        result={},
+        result_id=str(reference["result_id"]),
+        result_hash=str(reference["sha256"]),
+    )
+    assert repository.record(
+        initial,
+        TaskEvent(
+            event_id="stale-result-initial",
+            task_id=task_id,
+            type="finished",
+            time=timestamp,
+            source="test",
+            payload={"message": "done"},
+        ),
+    )
+
+    updated = replace(
+        initial,
+        result=replacement,
+        updated_time="2026-08-15T00:02:00Z",
+        message="updated",
+    )
+    assert repository.record(
+        updated,
+        TaskEvent(
+            event_id="stale-result-artifact",
+            task_id=task_id,
+            type="artifact_finalized",
+            time="2026-08-15T00:02:00Z",
+            source="test",
+            payload={"message": "updated"},
+        ),
+    )
+
+    persisted = repository.get(task_id)
+    assert persisted is not None
+    assert persisted.result == replacement
+    assert persisted.result_id == ""
+    assert persisted.result_hash == ""
+    assert persisted.result_summary == {}
+    assert repository.task_result_count() == 0
+    assert repository.task_history.get_result(str(reference["result_id"])) is not None
+
+
+def test_ref_only_snapshot_update_preserves_history_result_reference(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "tasks.db"
+    repository = TaskRepository(path)
+    task_id = "ref-only-progress"
+    result = {"rows": 1}
+    reference = _result_reference(task_id, result)
+    repository.task_history.archive_result_rows([reference])
+    timestamp = str(reference["created_time"])
+    snapshot = _snapshot(
+        task_id=task_id,
+        status=TaskState.COMPLETED,
+        finished_time=timestamp,
+        updated_time=timestamp,
+        result={},
+        result_id=str(reference["result_id"]),
+        result_hash=str(reference["sha256"]),
+    )
+    assert repository.record(
+        snapshot,
+        TaskEvent(
+            event_id="ref-only-finished",
+            task_id=task_id,
+            type="finished",
+            time=timestamp,
+            source="test",
+            payload={"message": "done"},
+        ),
+    )
+    assert repository.record(
+        replace(snapshot, message="still available", updated_time="2026-08-15T00:02:00Z"),
+        TaskEvent(
+            event_id="ref-only-progress",
+            task_id=task_id,
+            type="progress",
+            time="2026-08-15T00:02:00Z",
+            source="test",
+            payload={"message": "still available"},
+        ),
+    )
+
+    persisted = repository.get(task_id)
+    assert persisted is not None
+    assert persisted.result == result
+    assert persisted.result_id == str(reference["result_id"])
+    assert persisted.result_hash == str(reference["sha256"])
+
+
+def test_full_snapshot_matching_result_reference_keeps_compatibility_reference(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "tasks.db"
+    repository = TaskRepository(path)
+    task_id = "same-result-reference"
+    result = {"rows": 1}
+    reference = _result_reference(task_id, result)
+    repository.task_history.archive_result_rows([reference])
+    timestamp = str(reference["created_time"])
+    snapshot = _snapshot(
+        task_id=task_id,
+        status=TaskState.COMPLETED,
+        finished_time=timestamp,
+        updated_time=timestamp,
+        result={},
+        result_id=str(reference["result_id"]),
+        result_hash=str(reference["sha256"]),
+    )
+    assert repository.record(
+        snapshot,
+        TaskEvent(
+            event_id="same-result-finished",
+            task_id=task_id,
+            type="finished",
+            time=timestamp,
+            source="test",
+            payload={"message": "done"},
+        ),
+    )
+    assert repository.record(
+        replace(snapshot, result=result, updated_time="2026-08-15T00:02:00Z"),
+        TaskEvent(
+            event_id="same-result-artifact",
+            task_id=task_id,
+            type="artifact_finalized",
+            time="2026-08-15T00:02:00Z",
+            source="test",
+            payload={"message": "same result"},
+        ),
+    )
+
+    persisted = repository.get(task_id)
+    assert persisted is not None
+    assert persisted.result == result
+    assert persisted.result_id == str(reference["result_id"])
+    assert persisted.result_hash == str(reference["sha256"])
+
+
 def test_result_reference_missing_from_task_db_and_history_fails_loudly(
     tmp_path: Path,
 ) -> None:

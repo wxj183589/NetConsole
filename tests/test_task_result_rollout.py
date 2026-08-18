@@ -71,9 +71,15 @@ def test_new_database_defaults_to_legacy_dual_full(tmp_path: Path) -> None:
     assert status == {
         "schema_version": 4,
         "task_result_storage_state": "LEGACY_DUAL_FULL",
+        "persisted_rollout_state": "LEGACY_DUAL_FULL",
         "revision": 1,
         "updated_at": status["updated_at"],
         "task_results_rows": 0,
+        "persisted_dual_write_active": False,
+        "persisted_ref_authority_active": False,
+        "runtime_write_state": "LEGACY_DUAL_FULL",
+        "runtime_dual_write_active": False,
+        "runtime_ref_authority_active": False,
         "dual_write_active": False,
         "ref_authority_active": False,
     }
@@ -170,6 +176,11 @@ def test_rollout_state_does_not_change_legacy_full_terminal_writes(
     restarted = TaskResultRolloutService(path)
     status = restarted.status()
     assert status["task_result_storage_state"] == "TASK_RESULTS_DUAL_WRITE"
+    assert status["persisted_rollout_state"] == "TASK_RESULTS_DUAL_WRITE"
+    assert status["persisted_dual_write_active"] is True
+    assert status["runtime_write_state"] == "LEGACY_DUAL_FULL"
+    assert status["runtime_dual_write_active"] is False
+    assert status["dual_write_active"] is False
     assert status["revision"] == 2
 
     snapshot, event = _terminal("dual-task")
@@ -256,6 +267,10 @@ def test_historical_ref_authority_state_is_ignored_by_current_writer(
 
     restarted = TaskResultRolloutService(path)
     assert restarted.status()["task_result_storage_state"] == "RESULT_REF_AUTHORITY"
+    assert restarted.status()["persisted_ref_authority_active"] is True
+    assert restarted.status()["runtime_write_state"] == "LEGACY_DUAL_FULL"
+    assert restarted.status()["runtime_ref_authority_active"] is False
+    assert restarted.status()["ref_authority_active"] is False
     snapshot, event = _terminal("stale-ref-authority")
     assert restarted.repository.record(snapshot, event)
 
@@ -950,17 +965,19 @@ def test_rollout_cli_requires_explicit_apply_and_persists_state(
                 "controlled test rollout",
             ]
         )
-    assert rollout_cli_main(
-        [
-            "enable-dual-write",
-            *common,
-            "--expected-revision",
-            "1",
-            "--reason",
-            "controlled test rollout",
-            "--apply",
-        ]
-    ) == 0
-    enabled = json.loads(capsys.readouterr().out)
-    assert enabled["task_result_storage_state"] == "TASK_RESULTS_DUAL_WRITE"
-    assert enabled["revision"] == 2
+    with pytest.raises(SystemExit, match="TASK_RESULT_RUNTIME_ROLLOUT_DISABLED"):
+        rollout_cli_main(
+            [
+                "enable-dual-write",
+                *common,
+                "--expected-revision",
+                "1",
+                "--reason",
+                "controlled test rollout",
+                "--apply",
+            ]
+        )
+    assert capsys.readouterr().out == ""
+    assert TaskResultRolloutService(
+        site_root / "db" / "tasks.db"
+    ).status()["task_result_storage_state"] == "LEGACY_DUAL_FULL"

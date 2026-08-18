@@ -39,9 +39,15 @@ class TaskResultRolloutService:
         return {
             "schema_version": rollout.schema_version,
             "task_result_storage_state": rollout.state.value,
+            "persisted_rollout_state": rollout.persisted_rollout_state,
             "revision": rollout.revision,
             "updated_at": rollout.updated_at,
             "task_results_rows": self.repository.task_result_count(),
+            "persisted_dual_write_active": rollout.persisted_dual_write_active,
+            "persisted_ref_authority_active": rollout.persisted_ref_authority_active,
+            "runtime_write_state": rollout.runtime_write_state.value,
+            "runtime_dual_write_active": rollout.runtime_dual_write_active,
+            "runtime_ref_authority_active": rollout.runtime_ref_authority_active,
             "dual_write_active": rollout.dual_write_active,
             "ref_authority_active": rollout.ref_authority_active,
         }
