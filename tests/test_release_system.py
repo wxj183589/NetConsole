@@ -2,6 +2,7 @@ from pathlib import Path
 import inspect
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -21,7 +22,7 @@ from netconsole.build.clean_build_lock import (
     validate_pyinstaller_command,
 )
 from netconsole.core.resources import get_changelog_path
-from netconsole.core.version import APP_VERSION
+from netconsole.core.version import APP_BYLINE, APP_NAME, APP_VERSION
 
 
 TEST_COMMIT = "1" * 40
@@ -65,7 +66,40 @@ def _write_clean_build_tool_files(app_dist: Path) -> None:
 
 
 def test_version_file_exposes_only_product_version_metadata():
-    assert APP_VERSION == "v1.5.0"
+    assert re.fullmatch(r"v\d+\.\d+\.\d+", APP_VERSION)
+
+
+def test_release_identity_matches_desktop_manifests_and_changelogs():
+    root = Path(__file__).resolve().parents[1]
+    package = json.loads(
+        (root / "apps" / "desktop_electron" / "package.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    version_without_prefix = APP_VERSION.removeprefix("v")
+    product_name = f"{APP_NAME} {APP_VERSION} {APP_BYLINE.lower()}"
+
+    assert package["version"] == version_without_prefix
+    assert package["build"]["productName"] == product_name
+
+    renderer_index = (
+        root / "apps" / "desktop_renderer" / "index.html"
+    ).read_text(encoding="utf-8")
+    assert f"<title>{product_name}</title>" in renderer_index
+
+    release_changelog = (root / "docs" / "CHANGELOG.md").read_text(
+        encoding="utf-8"
+    )
+    latest_release = re.search(
+        r"^## (v\d+\.\d+\.\d+) - ", release_changelog, re.MULTILINE
+    )
+    assert latest_release is not None
+    assert latest_release.group(1) == APP_VERSION
+
+    packaged_changelog = (
+        root / "src" / "netconsole" / "docs" / "changelog.md"
+    ).read_text(encoding="utf-8")
+    assert packaged_changelog.lstrip().startswith(APP_VERSION)
 
 
 def test_release_version_defaults_to_app_version_without_tag_scan():

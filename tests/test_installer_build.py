@@ -9,6 +9,7 @@ from uuid import uuid4
 
 import pytest
 
+from netconsole.core.version import APP_VERSION
 from scripts.build import build_edition_installers, build_installer
 
 
@@ -108,6 +109,7 @@ def test_prepare_identity_uses_unique_commit_artifact_and_source_hash(
         identity_root / "installer-build.json",
     )
     monkeypatch.setattr(build_installer, "INSTALLER_POLICY_SOURCE", policy)
+    monkeypatch.setattr(build_installer, "PYTHON_APP_VERSION", "v1.4.3")
     monkeypatch.setattr(build_installer, "_git", lambda *args: "a" * 40)
 
     manifest = build_installer.prepare_installer_identity(require_synced=False)
@@ -121,6 +123,28 @@ def test_prepare_identity_uses_unique_commit_artifact_and_source_hash(
     assert '!define NETCONSOLE_INSTALLER_GIT_SHORT "aaaaaaaa"' in identity
     assert '!define NETCONSOLE_INSTALLER_EDITION "unscoped"' in identity
     assert manifest["installer_policy_source_sha256"] in identity
+
+
+def test_prepare_identity_rejects_version_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    desktop = tmp_path / "apps" / "desktop_electron"
+    policy = desktop / "build" / "installer-data-root.nsh"
+    policy.parent.mkdir(parents=True)
+    policy.write_text(
+        build_installer.REQUIRED_INSTALLER_TEXT + "\nkernel32::GetFullPathNameW\n",
+        encoding="utf-8",
+    )
+    (desktop / "package.json").write_text(
+        json.dumps({"version": "9.9.9"}), encoding="utf-8"
+    )
+
+    monkeypatch.setattr(build_installer, "DESKTOP_ROOT", desktop)
+    monkeypatch.setattr(build_installer, "INSTALLER_POLICY_SOURCE", policy)
+    monkeypatch.setattr(build_installer, "PYTHON_APP_VERSION", APP_VERSION)
+
+    with pytest.raises(build_installer.InstallerBuildError, match="APP_VERSION"):
+        build_installer.prepare_installer_identity(require_synced=False)
 
 
 def test_generated_tree_cleanup_rejects_paths_outside_whitelist(tmp_path: Path) -> None:
