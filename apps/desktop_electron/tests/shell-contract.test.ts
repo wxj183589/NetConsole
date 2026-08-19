@@ -126,6 +126,29 @@ describe('Electron shell product contract', () => {
     expect(devSource).toContain("process.env.NETCONSOLE_ELECTRON_SMOKE_TEST === '1'")
   })
 
+  it('keeps Codex backend coordinates identical for persistent and isolated development', () => {
+    expect(devSource).toContain('resolveCodexBackendPort(process.env.NETCONSOLE_DEV_BACKEND_PORT)')
+    expect(devSource).toContain('resolveCodexSessionToken(process.env.NETCONSOLE_DEV_SESSION_TOKEN)')
+    expect(devSource).toContain("NETCONSOLE_DEV_BACKEND_PORT: String(codexBackendPort)")
+    expect(devSource).toContain("NETCONSOLE_DEV_SESSION_TOKEN: codexSessionToken")
+    const isolatedBlock = devSource.slice(
+      devSource.indexOf('...(isolated ? {'),
+      devSource.indexOf('...(codex ? {', devSource.indexOf('...(isolated ? {')),
+    )
+    expect(isolatedBlock).not.toContain('NETCONSOLE_DEV_BACKEND_PORT')
+    expect(isolatedBlock).not.toContain('NETCONSOLE_DEV_SESSION_TOKEN')
+  })
+
+  it('warms the renderer entry before Electron starts', () => {
+    expect(devSource).toContain("process.stdout.write('Vite process started\\n')")
+    expect(devSource).toContain("process.stdout.write('Vite HTTP ready\\n')")
+    expect(devSource).toContain("process.stdout.write('Vite warmup ready\\n')")
+    expect(devSource).toContain('await warmRendererModules()')
+    expect(devSource.indexOf('await waitForVite(vite)')).toBeLessThan(
+      devSource.indexOf("process.stdout.write('Electron starting\\n')"),
+    )
+  })
+
   it('opens the task center in the main renderer without creating a dedicated BrowserWindow', () => {
     const taskCenterSource = source.slice(
       source.indexOf('async function openTaskWindow'),

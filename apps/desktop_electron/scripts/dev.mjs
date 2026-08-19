@@ -30,10 +30,29 @@ if (isolatedDataArgument >= 0 && !explicitIsolatedDataRoot) {
   throw new Error('--isolated-test-data requires an absolute D:\\study\\test-data\\NetConsole\\<run-id> path')
 }
 const isolated = smoke || taskCenterSmoke || workspaceTraySmoke || Boolean(explicitIsolatedDataRoot)
-const codexBackendPort = 8000
-const codexBackendUrl = `http://127.0.0.1:${codexBackendPort}`
-const codexSessionToken = codex ? randomBytes(32).toString('base64url') : ''
+const codexBackendPort = codex ? resolveCodexBackendPort(process.env.NETCONSOLE_DEV_BACKEND_PORT) : 0
+const codexBackendUrl = codex ? `http://127.0.0.1:${codexBackendPort}` : ''
+const codexSessionToken = codex
+  ? resolveCodexSessionToken(process.env.NETCONSOLE_DEV_SESSION_TOKEN)
+  : ''
 let isolatedRuntime
+
+function resolveCodexBackendPort(value) {
+  if (value == null || value.trim() === '') return 8000
+  const port = Number(value)
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+    throw new Error('NETCONSOLE_DEV_BACKEND_PORT must be between 1 and 65535')
+  }
+  return port
+}
+
+function resolveCodexSessionToken(value) {
+  const token = value?.trim() || randomBytes(32).toString('base64url')
+  if (!/^[A-Za-z0-9_-]{32,256}$/.test(token)) {
+    throw new Error('NETCONSOLE_DEV_SESSION_TOKEN must contain 32-256 URL-safe characters')
+  }
+  return token
+}
 
 function spawnNode(args, options = {}) {
   return spawn(process.execPath, args, {
@@ -70,6 +89,8 @@ function commonWorktreeRoot() {
 
 async function waitForVite(vite, timeoutMs = 20_000) {
   const deadline = Date.now() + timeoutMs
+  let httpReady = false
+  let warmupError
   while (Date.now() < deadline) {
     if (vite.exitCode !== null || vite.signalCode !== null) {
       throw new Error('Vite exited before becoming ready')
@@ -77,16 +98,50 @@ async function waitForVite(vite, timeoutMs = 20_000) {
     try {
       const response = await fetch(`${devUrl}/@vite/client`)
       if (response.ok && (await response.text()).includes('vite')) {
-        await new Promise((resolvePromise) => setTimeout(resolvePromise, 100))
-        if (vite.exitCode === null && vite.signalCode === null) return
-        throw new Error('Vite exited before becoming ready')
+        if (!httpReady) {
+          httpReady = true
+          process.stdout.write('Vite HTTP ready\n')
+        }
+        try {
+          await warmRendererModules()
+          if (vite.exitCode === null && vite.signalCode === null) {
+            process.stdout.write('Vite warmup ready\n')
+            return
+          }
+          throw new Error('Vite exited before becoming ready')
+        } catch (cause) {
+          warmupError = cause instanceof Error ? cause.message : String(cause)
+        }
       }
     } catch {
       // Vite 尚未监听。
     }
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 100))
   }
-  throw new Error(`Vite did not become ready at ${devUrl}`)
+  throw new Error(`Vite did not become ready at ${devUrl}${warmupError ? `; warmup=${warmupError}` : ''}`)
+}
+
+async function warmRendererModules() {
+  const modules = [
+    '/',
+    '/src/main.ts',
+    '/src/App.vue',
+    '/src/router/index.ts',
+    '/src/router/routes.ts',
+    '/src/layouts/AppLayout.vue',
+    '/src/views/DashboardView.vue',
+    '/src/components/feedback/NcConfirmDialog.vue',
+  ]
+  for (const path of modules) {
+    const response = await fetch(`${devUrl}${path}`, { cache: 'no-store' })
+    const body = await response.text()
+    if (!response.ok) {
+      throw new Error(`Renderer warmup failed: ${path} HTTP ${response.status}`)
+    }
+    if (/Failed to resolve import|Internal server error|Cannot find module/i.test(body)) {
+      throw new Error(`Renderer warmup failed: ${path}`)
+    }
+  }
 }
 
 async function warmTaskCenterModules() {
@@ -245,6 +300,7 @@ try {
       } : {}),
     },
   })
+  process.stdout.write('Vite process started\n')
   await waitForVite(vite)
   if (taskCenterSmoke) await warmTaskCenterModules()
   const electronExecutable = require('electron')
@@ -253,6 +309,7 @@ try {
   delete electronEnv.NETCONSOLE_DEV_TEMP_DATA_ROOT
   delete electronEnv.NETCONSOLE_DEV_TEMP_USER_DATA_ROOT
   delete electronEnv.NETCONSOLE_STORAGE_MODE
+  if (codex) process.stdout.write('Electron starting\n')
   electron = spawn(electronExecutable, [appRoot], {
     cwd: projectRoot,
     stdio: 'inherit',
@@ -269,10 +326,10 @@ try {
         NETCONSOLE_DATA_ROOT: isolatedRuntime.dataRoot,
         NETCONSOLE_DEV_TEMP_DATA_ROOT: '1',
         ...(taskCenterSmoke || workspaceTraySmoke ? { NETCONSOLE_ISOLATED_SMOKE: '1' } : {}),
-        ...(codex ? {
+      } : {}),
+      ...(codex ? {
         NETCONSOLE_DEV_BACKEND_PORT: String(codexBackendPort),
         NETCONSOLE_DEV_SESSION_TOKEN: codexSessionToken,
-        } : {}),
       } : {}),
       ...(smoke ? { NETCONSOLE_ELECTRON_SMOKE_TEST: '1' } : {}),
       ...(taskCenterSmoke ? { NETCONSOLE_ELECTRON_TASK_CENTER_SMOKE: '1' } : {}),

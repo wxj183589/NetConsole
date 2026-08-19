@@ -724,6 +724,27 @@ class AcRepository:
                     (ac_device_uuid,),
                 ).fetchall()
             ]
+            # Read identity/LLDP history once per refresh.  Calling the
+            # history store for every AP repeatedly opens SQLite connections
+            # and decodes the same JSON rows during a large snapshot write.
+            history_keys = {
+                str(row.get("ap_uuid") or "").strip()
+                for row in rows
+                if str(row.get("ap_uuid") or "").strip()
+            }
+            history_keys.update(
+                str(row.get("ap_uuid") or "").strip()
+                for row in continuity_resources
+                if str(row.get("ap_uuid") or "").strip()
+            )
+            identity_history_cache = self._load_fit_ap_identity_history_cache(
+                conn,
+                history_keys,
+            )
+            lldp_history_cache = self._load_fit_ap_lldp_history_cache(
+                conn,
+                history_keys,
+            )
             incoming_name_counts = Counter(
                 name.casefold()
                 for row in rows
@@ -739,6 +760,8 @@ class AcRepository:
                     continuity_resources=continuity_resources,
                     continuity_entities=continuity_entities,
                     incoming_name_counts=incoming_name_counts,
+                    identity_history_cache=identity_history_cache,
+                    lldp_history_cache=lldp_history_cache,
                 )
                 current_uuids.append(str(payload["ap_uuid"]))
             if current_uuids:
@@ -769,6 +792,8 @@ class AcRepository:
         continuity_resources: list[dict[str, object | None]] | None = None,
         continuity_entities: list[dict[str, object | None]] | None = None,
         incoming_name_counts: Counter[str] | None = None,
+        identity_history_cache: dict[str, dict[str, str]] | None = None,
+        lldp_history_cache: dict[str, list[dict[str, object | None]]] | None = None,
     ) -> dict[str, object | None]:
         ap_uuid = self._resolve_fit_ap_entity_uuid(
             conn,
@@ -783,6 +808,7 @@ class AcRepository:
             conn,
             resource_data,
             ap_uuid,
+            identity_history_cache=identity_history_cache,
         )
         station = normalize_station_value(resource_data)
         if station and not str(resource_data.get("site") or "").strip():
@@ -842,7 +868,15 @@ class AcRepository:
         self._append_resource_history(conn, payload)
         self._upsert_ap_entity(conn, payload)
         self._append_radio_history(conn, payload)
-        self._append_resource_lldp_history(conn, payload)
+        self._append_resource_lldp_history(
+            conn,
+            payload,
+            previous_history=(
+                lldp_history_cache.get(ap_uuid)
+                if lldp_history_cache is not None
+                else None
+            ),
+        )
         if preserved_fields:
             app_logger.log_info(
                 "FIT_AP_STATIC_IDENTITY_PRESERVED",
@@ -2839,23 +2873,31 @@ class AcRepository:
             [updates[field] for field in fields] + [ac_device_uuid, ap_uuid],
         )
 
-    def _lldp_history_changed(self, conn, ap_uuid: object, payload: dict[str, object | None]) -> int:
+    def _lldp_history_changed(
+        self,
+        conn,
+        ap_uuid: object,
+        payload: dict[str, object | None],
+        *,
+        previous_rows: list[dict[str, object | None]] | None = None,
+    ) -> int:
         if not ap_uuid:
             return 1
-        events = self.history_store.query_events(
-            kind="fit_ap_lldp", entity_key=str(ap_uuid), limit=1
-        )
-        previous_rows = events or self._query_legacy_history_rows(
-            conn,
-            "ac_fit_ap_lldp_history",
-            """
-            SELECT * FROM ac_fit_ap_lldp_history
-            WHERE ap_uuid = ?
-            ORDER BY collected_at DESC, id DESC
-            LIMIT 1
-            """,
-            (ap_uuid,),
-        )
+        if previous_rows is None:
+            events = self.history_store.query_events(
+                kind="fit_ap_lldp", entity_key=str(ap_uuid), limit=1
+            )
+            previous_rows = events or self._query_legacy_history_rows(
+                conn,
+                "ac_fit_ap_lldp_history",
+                """
+                SELECT * FROM ac_fit_ap_lldp_history
+                WHERE ap_uuid = ?
+                ORDER BY collected_at DESC, id DESC
+                LIMIT 1
+                """,
+                (ap_uuid,),
+            )
         if not previous_rows:
             return 1
         prev = dict(previous_rows[0])
@@ -3007,7 +3049,13 @@ class AcRepository:
             ),
         )
 
-    def _append_resource_lldp_history(self, conn, payload: dict[str, object | None]) -> None:
+    def _append_resource_lldp_history(
+        self,
+        conn,
+        payload: dict[str, object | None],
+        *,
+        previous_history: list[dict[str, object | None]] | None = None,
+    ) -> None:
         if not any(
             payload.get(field) not in (None, "")
             for field in (
@@ -3045,7 +3093,12 @@ class AcRepository:
         ap_uuid = str(row.get("ap_uuid") or "")
         if not ap_uuid:
             return
-        row["is_changed"] = self._lldp_history_changed(conn, ap_uuid, row)
+        row["is_changed"] = self._lldp_history_changed(
+            conn,
+            ap_uuid,
+            row,
+            previous_rows=previous_history,
+        )
         self.history_store.record_event(
             conn,
             kind="fit_ap_lldp",
@@ -3239,6 +3292,8 @@ class AcRepository:
         conn,
         incoming: dict[str, object | None],
         ap_uuid: str,
+        *,
+        identity_history_cache: dict[str, dict[str, str]] | None = None,
     ) -> tuple[dict[str, object | None], list[str]]:
         merged = dict(incoming)
         sources: list[dict[str, object | None]] = []
@@ -3273,6 +3328,7 @@ class AcRepository:
                     conn,
                     ap_uuid,
                     field,
+                    cache=identity_history_cache,
                 )
             if incoming_value:
                 merged[field] = incoming_value
@@ -3288,9 +3344,13 @@ class AcRepository:
         conn,
         ap_uuid: str,
         field: str,
+        *,
+        cache: dict[str, dict[str, str]] | None = None,
     ) -> str:
         if field not in FIT_AP_STABLE_IDENTITY_FIELDS:
             return ""
+        if cache is not None:
+            return str(cache.get(ap_uuid, {}).get(field) or "")
         has_outbox = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'history_outbox'"
         ).fetchone()
@@ -3342,6 +3402,147 @@ class AcRepository:
                 if value:
                     return value
         return ""
+
+    def _load_fit_ap_identity_history_cache(
+        self,
+        conn,
+        ap_uuids: set[str],
+    ) -> dict[str, dict[str, str]]:
+        """Load the latest stable identity evidence once for a refresh.
+
+        This mirrors ``_latest_fit_ap_identity_history_value`` precedence:
+        current history outbox first, then the two retained legacy tables.
+        The cache is scoped to the caller's write transaction and is never
+        persisted or shared between jobs.
+        """
+
+        cache: dict[str, dict[str, str]] = {}
+        fields = tuple(FIT_AP_STABLE_IDENTITY_FIELDS)
+        outbox_exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'history_outbox'"
+        ).fetchone()
+        if outbox_exists is not None:
+            rows = conn.execute(
+                """
+                SELECT payload_json
+                FROM history_outbox
+                WHERE kind = 'fit_ap_resource'
+                ORDER BY collected_at DESC, event_id DESC
+                """
+            ).fetchall()
+            for item in rows:
+                try:
+                    event = json.loads(str(item["payload_json"] or "{}"))
+                except (TypeError, ValueError):
+                    continue
+                if not isinstance(event, dict):
+                    continue
+                ap_uuid = str(event.get("ap_uuid") or "").strip()
+                if not ap_uuid:
+                    continue
+                values = cache.setdefault(ap_uuid, {})
+                for field in fields:
+                    if field in values:
+                        continue
+                    value = (
+                        self._mac_from_text(event.get(field))
+                        if field == "ap_mac"
+                        else self._clean_identity_value(event.get(field))
+                    )
+                    if value:
+                        values[field] = value
+
+        for table, table_fields in (
+            ("ac_fit_ap_resource_history", FIT_AP_RESOURCE_HISTORY_FIELDS),
+            ("ap_resource_snapshots", AP_RESOURCE_SNAPSHOT_FIELDS),
+        ):
+            if conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+                (table,),
+            ).fetchone() is None:
+                continue
+            available = [field for field in fields if field in table_fields]
+            if not available:
+                continue
+            selected = ", ".join(("ap_uuid", *available))
+            keys = sorted(ap_uuids)
+            if not keys:
+                continue
+            key_placeholders = ", ".join("?" for _ in keys)
+            for item in conn.execute(
+                f"""
+                SELECT {selected}
+                FROM {table}
+                WHERE ap_uuid IN ({key_placeholders})
+                ORDER BY id DESC
+                """,
+                keys,
+            ).fetchall():
+                ap_uuid = str(item["ap_uuid"] or "").strip()
+                if not ap_uuid:
+                    continue
+                values = cache.setdefault(ap_uuid, {})
+                for field in available:
+                    if field in values:
+                        continue
+                    value = (
+                        self._mac_from_text(item[field])
+                        if field == "ap_mac"
+                        else self._clean_identity_value(item[field])
+                    )
+                    if value:
+                        values[field] = value
+        return cache
+
+    def _load_fit_ap_lldp_history_cache(
+        self,
+        conn,
+        ap_uuids: set[str],
+    ) -> dict[str, list[dict[str, object | None]]]:
+        """Read canonical LLDP history for all refresh candidates in one pass."""
+
+        cache: dict[str, list[dict[str, object | None]]] = {
+            ap_uuid: [] for ap_uuid in ap_uuids if ap_uuid
+        }
+        if not cache:
+            return cache
+        events = self.history_store.query_events_for_entities(
+            kind="fit_ap_lldp",
+            entity_keys=cache,
+        )
+        for event in events:
+            ap_uuid = str(event.get("ap_uuid") or "").strip()
+            if ap_uuid in cache:
+                cache[ap_uuid].append(dict(event))
+        for ap_uuid in cache:
+            cache[ap_uuid].sort(
+                key=lambda item: (
+                    str(item.get("collected_at") or ""),
+                    str(item.get("event_id") or ""),
+                ),
+                reverse=True,
+            )
+        legacy_table = "ac_fit_ap_lldp_history"
+        if conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (legacy_table,),
+        ).fetchone() is not None:
+            keys = sorted(cache)
+            placeholders = ", ".join("?" for _ in keys)
+            legacy_rows = conn.execute(
+                f"""
+                SELECT *
+                FROM {legacy_table}
+                WHERE ap_uuid IN ({placeholders})
+                ORDER BY collected_at DESC, id DESC
+                """,
+                keys,
+            ).fetchall()
+            for item in legacy_rows:
+                ap_uuid = str(item["ap_uuid"] or "").strip()
+                if ap_uuid in cache and not cache[ap_uuid]:
+                    cache[ap_uuid].append(dict(item))
+        return cache
 
     def _upsert_ap_entity(self, conn, payload: dict[str, object | None]) -> None:
         now = self._now()

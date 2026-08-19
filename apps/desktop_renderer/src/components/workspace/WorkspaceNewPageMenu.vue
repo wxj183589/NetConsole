@@ -9,9 +9,7 @@ const emit = defineEmits<{ select: [path: string] }>()
 
 <template>
   <el-dropdown trigger="click" placement="bottom-start">
-    <el-tooltip content="新建页面" placement="bottom">
-      <el-button text circle :icon="Plus" aria-label="新建页面" />
-    </el-tooltip>
+    <el-button text circle :icon="Plus" title="新建页面" aria-label="新建页面" />
     <template #dropdown>
       <el-dropdown-menu class="workspace-new-page-menu">
         <template v-for="entry in items" :key="entry.navigation_id">

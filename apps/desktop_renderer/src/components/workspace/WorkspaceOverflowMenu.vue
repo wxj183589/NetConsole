@@ -9,9 +9,7 @@ const emit = defineEmits<{ activate: [tabId: string] }>()
 
 <template>
   <el-dropdown trigger="click" placement="bottom-end">
-    <el-tooltip content="全部标签" placement="bottom">
-      <el-button text circle :icon="ArrowDown" aria-label="全部标签" />
-    </el-tooltip>
+    <el-button text circle :icon="ArrowDown" title="全部标签" aria-label="全部标签" />
     <template #dropdown>
       <el-dropdown-menu class="workspace-overflow-menu">
         <el-dropdown-item
