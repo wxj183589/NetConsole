@@ -113,6 +113,7 @@ class _OpenRawFile:
     relative_path: str
     handle: Any
     start_time: str
+    last_record_time: str
     record_count: int = 0
     flushed_record_count: int = 0
     last_flush_at: float = field(default_factory=time.monotonic)
@@ -174,6 +175,9 @@ class RawStreamWriter:
         encoded = (json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
         current.handle.write(encoded.decode("utf-8"))
         current.record_count += 1
+        received_at_text = received_at.isoformat(timespec="milliseconds")
+        if received_at_text > current.last_record_time:
+            current.last_record_time = received_at_text
         self.records_written += 1
         self.bytes_written += len(encoded)
         if (
@@ -235,6 +239,7 @@ class RawStreamWriter:
             relative_path=relative,
             handle=path.open("a", encoding="utf-8", newline="\n"),
             start_time=started_at,
+            last_record_time=started_at,
             last_flush_at=time.monotonic(),
         )
         self._files[key] = current
@@ -274,7 +279,7 @@ class RawStreamWriter:
                 "data_type": self.data_type,
                 "relative_path": current.relative_path,
                 "start_time": current.start_time,
-                "end_time": ended_at,
+                "end_time": current.last_record_time or ended_at,
                 "record_count": current.record_count,
                 "size_bytes": size,
                 "sha256": _sha256(current.path),
