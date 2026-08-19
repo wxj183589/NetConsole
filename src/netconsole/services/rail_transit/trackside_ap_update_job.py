@@ -97,6 +97,7 @@ def run_trackside_ap_optical_update(context: JobContext) -> dict[str, object]:
         getattr(result, "warning_reason_counts", {}) or {}
     )
     warnings = [str(value) for value in (getattr(result, "warnings", []) or [])]
+    persistence_errors = [dict(value) for value in (getattr(result, "persistence_errors", []) or [])]
     port_errors = [
         dict(value)
         for value in (getattr(result, "port_errors", []) or [])
@@ -127,6 +128,18 @@ def run_trackside_ap_optical_update(context: JobContext) -> dict[str, object]:
         "warning_count": warning_count,
         "warning_reason_counts": warning_reason_counts,
         "has_warning": warning_count > 0,
+        "error_code": "TRACKSIDE_PERSISTENCE_FAILED" if persistence_errors else "",
+        "error_message": (
+            "; ".join(
+                f"{item.get('stage')}: {item.get('exception_type')} "
+                f"{item.get('sqlite_errorname') or item.get('message') or ''} "
+                f"rows={item.get('rows_attempted')} db={item.get('db_path')}"
+                for item in persistence_errors
+            )
+            if persistence_errors
+            else ""
+        ),
+        "persistence_errors": persistence_errors,
         "warnings": warnings,
         "port_errors": port_errors,
         "concurrency": result.concurrency,

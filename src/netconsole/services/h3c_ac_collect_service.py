@@ -198,6 +198,7 @@ class FitApOpticalCollectResult:
     effective_concurrency: int = 0
     platform_concurrency_limit: int = 0
     round_summaries: list[dict[str, object]] = field(default_factory=list)
+    optical_rows: list[dict[str, object | None]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -945,6 +946,7 @@ def collect_h3c_fit_ap_optical(
     target_ap_macs: list[str] | None = None,
     target_ap_names: list[str] | None = None,
     target_stations: list[str] | None = None,
+    persist: bool = True,
 ) -> FitApOpticalCollectResult:
     progress = progress or (lambda _message: None)
     should_cancel = should_cancel or (lambda: False)
@@ -1130,8 +1132,9 @@ def collect_h3c_fit_ap_optical(
         progress("\u6b63\u5728\u89e3\u6790\u5149\u6a21\u5757\u6570\u636e...")
         _raise_if_cancelled(should_cancel)
         rows = _final_fit_ap_optical_rows(rows)
-        progress("\u6b63\u5728\u5199\u5165\u6570\u636e\u5e93...")
-        if not _persist_successful_fit_ap_optical_rows(repository, str(ac_device.device_uuid), rows):
+        if persist:
+            progress("\u6b63\u5728\u5199\u5165\u6570\u636e\u5e93...")
+        if persist and not _persist_successful_fit_ap_optical_rows(repository, str(ac_device.device_uuid), rows):
             _safe_log_warning("FIT_AP_OPTICAL_DB_SAVE_SKIPPED", _detail(ac_device, collect_run_uuid, error="no successful AP optical rows; keeping previous data"))
     except CollectionCancelled as exc:
         rows.extend(exc.completed_rows)
@@ -1140,7 +1143,7 @@ def collect_h3c_fit_ap_optical(
         _safe_log_warning("FIT_AP_OPTICAL_CANCELLED", _detail(ac_device, collect_run_uuid))
         failed = sum(1 for row in rows if row.get("status") != "success")
         try:
-            if _persist_successful_fit_ap_optical_rows(repository, str(ac_device.device_uuid), rows):
+            if persist and _persist_successful_fit_ap_optical_rows(repository, str(ac_device.device_uuid), rows):
                 _safe_log_info("FIT_AP_OPTICAL_CANCELLED_PARTIAL_DB_SAVED", _detail(ac_device, collect_run_uuid, count=len(rows)))
         except Exception as save_exc:
             save_message = sanitize_sensitive_text(str(save_exc), ac_device)
@@ -1160,6 +1163,7 @@ def collect_h3c_fit_ap_optical(
             effective_concurrency=worker_count,
             platform_concurrency_limit=platform_concurrency_limit,
             round_summaries=round_summaries,
+            optical_rows=rows,
         )
     _safe_log_info("FIT_AP_OPTICAL_DB_SAVED", _detail(ac_device, collect_run_uuid, count=len(rows)))
     failed = sum(1 for row in rows if row.get("status") != "success")
@@ -1188,6 +1192,7 @@ def collect_h3c_fit_ap_optical(
         effective_concurrency=worker_count,
         platform_concurrency_limit=platform_concurrency_limit,
         round_summaries=round_summaries,
+        optical_rows=rows,
     )
 
 
@@ -1249,6 +1254,7 @@ def _fit_ap_optical_result(
     effective_concurrency: int = 0,
     platform_concurrency_limit: int = 0,
     round_summaries: list[dict[str, object]] | None = None,
+    optical_rows: list[dict[str, object | None]] | None = None,
 ) -> FitApOpticalCollectResult:
     return FitApOpticalCollectResult(
         success,
@@ -1263,6 +1269,7 @@ def _fit_ap_optical_result(
         effective_concurrency,
         platform_concurrency_limit,
         list(round_summaries or []),
+        list(optical_rows or []),
     )
 
 

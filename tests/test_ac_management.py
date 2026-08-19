@@ -1,5 +1,4 @@
 import json
-import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -995,6 +994,41 @@ def test_fit_ap_optical_telemetry_jitter_does_not_create_change_event(tmp_path):
     assert pending == 2
 
 
+def test_fit_ap_optical_identical_refresh_is_incremental_and_change_only(tmp_path):
+    repository = AcRepository(make_database(tmp_path))
+    resources = [
+        {"ap_uuid": f"ap-{index}", "ap_name": f"AP-{index}", "ap_mac": f"0011-2233-{index:04x}"}
+        for index in range(981)
+    ]
+    repository.replace_fit_ap_resources("ac-1", resources)
+    rows = [
+        {"ap_uuid": item["ap_uuid"], "ap_name": item["ap_name"], "rx_power": "-10.00", "tx_power": "-5.00", "status": "success"}
+        for item in resources
+    ]
+    repository.replace_fit_ap_optical("ac-1", rows)
+    with repository.database.connect() as conn:
+        first_events = conn.execute("SELECT COUNT(*) FROM history_outbox WHERE kind = 'fit_ap_optical'").fetchone()[0]
+    repository.replace_fit_ap_optical("ac-1", rows)
+    assert len(repository.list_fit_ap_optical("ac-1")) == 981
+    with repository.database.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM ac_fit_ap_optical WHERE ac_device_uuid = 'ac-1'").fetchone()[0] == 981
+        assert conn.execute("SELECT COUNT(*) FROM history_outbox WHERE kind = 'fit_ap_optical'").fetchone()[0] == first_events
+
+
+def test_fit_ap_optical_history_power_tolerance_and_status_change(tmp_path):
+    repository = AcRepository(make_database(tmp_path))
+    repository.replace_fit_ap_resources("ac-1", [{"ap_uuid": "ap-1", "ap_name": "AP-1"}])
+    base = {"ap_uuid": "ap-1", "rx_power": "-10.00", "tx_power": "-5.00", "status": "success"}
+    repository.replace_fit_ap_optical("ac-1", [base])
+    repository.replace_fit_ap_optical("ac-1", [{**base, "rx_power": "-10.05"}])
+    with repository.database.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM history_outbox WHERE kind = 'fit_ap_optical'").fetchone()[0] == 1
+    repository.replace_fit_ap_optical("ac-1", [{**base, "rx_power": "-10.25"}])
+    repository.replace_fit_ap_optical("ac-1", [{**base, "rx_power": "-10.26", "optical_alarm_status": "alarm"}])
+    with repository.database.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM history_outbox WHERE kind = 'fit_ap_optical'").fetchone()[0] == 3
+
+
 def test_fit_ap_lldp_history_is_appended_and_sorted(tmp_path):
     repository = AcRepository(make_database(tmp_path))
     repository.replace_fit_ap_resources(
@@ -1090,12 +1124,11 @@ def test_fit_ap_resource_lldp_merges_ap_direct_and_marks_history_changes(tmp_pat
     assert resource["optical_interface"] == "GigabitEthernet1/0/2"
     assert resource["optical_rx_power"] == -7.55
     assert resource["optical_match_status"] == "matched"
-    assert [row["source"] for row in history[:3]] == [
-        "ap_direct_lldp",
+    assert [row["source"] for row in history[:2]] == [
         "ap_direct_lldp",
         "ac_bulk_lldp",
     ]
-    assert history[0]["is_changed"] == 0
+    assert history[0]["is_changed"] == 1
     assert history[1]["is_changed"] == 1
     with repository.database.connect() as conn:
         legacy_count = conn.execute(
@@ -5348,13 +5381,7 @@ def test_trackside_optical_collection_runs_commands_writes_database_and_skips_ra
     parsed_dir = PathResolver(tmp_path).trackside_ap_update_parsed_session_dir(
         "demo", result.session_id
     )
-    with sqlite3.connect(parsed_dir / "trackside_update_results.sqlite") as conn:
-        rows = conn.execute(
-            "SELECT device_name, rx_power, error_message FROM optical_results"
-        ).fetchall()
-    assert len(rows) >= 2
-    assert any(row[1] == "-6.10" for row in rows)
-    assert any(row[2] for row in rows)
+    assert not (parsed_dir / "trackside_update_results.sqlite").exists()
     ok_device = next(device for device in repository.list() if device.name == "OK")
     interfaces = DeviceFactRepository(database).list_device_interfaces(
         ok_device.device_uuid

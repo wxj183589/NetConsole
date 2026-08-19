@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import inspect
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -29,7 +30,6 @@ from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
-from netconsole.repositories.trackside_optical_result_repository import TracksideOpticalResultRepository
 from netconsole.services import netmiko_connection
 from netconsole.services.ap_identity.normalizers import normalize_mac
 from netconsole.services.ac.fit_ap_optical_concurrency import (
@@ -218,6 +218,7 @@ class TracksideOpticalSessionResult:
     warnings: list[str] = field(default_factory=list)
     port_errors: list[dict[str, str]] = field(default_factory=list)
     warning_reason_counts: dict[str, int] = field(default_factory=dict)
+    persistence_errors: list[dict[str, object]] = field(default_factory=list)
 
 
 ProgressCallback = Callable[..., None]
@@ -749,27 +750,29 @@ def collect_trackside_optical(
                     progress_tracker.mark_switch_skipped(result)
                     continue
                 results.append(result)
-                progress_tracker.emit_stage(
-                    "trackside_ap.switch.persist",
-                    f"正在保存交换机侧光模块：{result.target.name}",
-                    phase="switch_optical",
-                    event="switch_persist_started",
-                    target_name=result.target.name,
-                    device_uuid=result.target.device_uuid or "",
-                    input_rows=len(result.rows),
-                )
-                persist_started = time.monotonic()
-                _persist_result(repository, ac_repository, result, parsed_dir / "trackside_update_results.sqlite")
                 progress_tracker.mark_switch_completed(
                     result,
-                    persist_elapsed_ms=max(
-                        0,
-                        int((time.monotonic() - persist_started) * 1000),
-                    ),
                 )
         stage("trackside_ap.fit_ap.collect")
         fit_ap_results, fit_ap_total, fit_ap_skipped = fit_future.result()
         progress_tracker.mark_fit_ap_branch_done()
+    persistence_errors: list[dict[str, object]] = []
+    persistence_started = time.monotonic()
+    for result in results:
+        try:
+            _persist_result(repository, ac_repository, result)
+        except Exception as exc:
+            persistence_errors.append(_persistence_error("switch_optical.persist", exc, repository.database.path, "switch_optical_upsert", len(result.rows), persistence_started))
+    fit_rows_by_ac: dict[str, list[dict[str, object | None]]] = {}
+    for result in fit_ap_results:
+        fit_rows_by_ac.setdefault(str(result.ac_device_uuid or ""), []).extend(result.optical_rows)
+    for ac_device_uuid, rows in fit_rows_by_ac.items():
+        if not ac_device_uuid or not rows:
+            continue
+        try:
+            ac_repository.replace_fit_ap_optical(ac_device_uuid, rows)
+        except Exception as exc:
+            persistence_errors.append(_persistence_error("fit_ap_optical.persist", exc, repository.database.path, "fit_ap_optical_upsert", len(rows), persistence_started))
     fit_ap_effective_concurrency = max(
         (int(getattr(result, "effective_concurrency", 0) or 0) for result in fit_ap_results),
         default=0,
@@ -811,6 +814,8 @@ def collect_trackside_optical(
         for item in result.port_errors
     ]
     warning_count = len(switch_warnings) + len(switch_port_errors)
+    if persistence_errors:
+        failed_count += len(persistence_errors)
     warning_reason_counts = _snapshot_warning_reason_counts(results)
     actionable_skipped_count, ignored_skipped_count, skipped_reason_counts = classify_trackside_skipped(skipped)
     status = _trackside_update_status(
@@ -818,8 +823,10 @@ def collect_trackside_optical(
         failed_count=failed_count,
         actionable_skipped_count=actionable_skipped_count,
         cancelled=cancel_event.is_set(),
-        warning_count=warning_count,
+        warning_count=warning_count + len(persistence_errors),
     )
+    if persistence_errors and not cancel_event.is_set():
+        status = "FAILED"
     coverage = _trackside_update_coverage(
         repository,
         ac_repository,
@@ -846,7 +853,7 @@ def collect_trackside_optical(
             **coverage,
             "success_count": success_count,
             "failed_count": failed_count,
-            "warning_count": warning_count,
+            "warning_count": warning_count + len(persistence_errors),
             "warning_reason_counts": warning_reason_counts,
             "warnings": switch_warnings,
             "port_errors": switch_port_errors,
@@ -869,6 +876,7 @@ def collect_trackside_optical(
             "target_ap_offline": target_ap_offline,
             "switch_scope": switch_scope,
             "switch_scope_reason": switch_scope_reason,
+            "persistence_errors": persistence_errors,
         },
     )
     progress_tracker.mark_completed()
@@ -914,6 +922,7 @@ def collect_trackside_optical(
         warnings=switch_warnings,
         port_errors=switch_port_errors,
         warning_reason_counts=warning_reason_counts,
+        persistence_errors=persistence_errors,
     )
 
 
@@ -1186,9 +1195,9 @@ def _collect_fit_ap_optical_subtasks(
                 }
             )
 
-        result = collect_h3c_fit_ap_optical(
-            ac_device,
-            site_name,
+        fit_collect_kwargs = dict(
+            ac_device=ac_device,
+            site_name=site_name,
             repository=ac_repository,
             paths=paths,
             max_workers=concurrency,
@@ -1205,6 +1214,11 @@ def _collect_fit_ap_optical_subtasks(
             target_ap_names=[target_ap_name] if target_ap_name else None,
             target_stations=[target_station] if target_station else None,
             should_cancel=cancel_event.is_set,
+        )
+        if "persist" in inspect.signature(collect_h3c_fit_ap_optical).parameters:
+            fit_collect_kwargs["persist"] = False
+        result = collect_h3c_fit_ap_optical(
+            **fit_collect_kwargs,
         )
         results.append(result)
     return results, total, skipped
@@ -1539,8 +1553,7 @@ def _snapshot_can_replace(
     return True
 
 
-def _persist_result(repository: DeviceRepository, ac_repository: AcRepository, result: TracksideDeviceCollectionResult, db_path: Path) -> None:
-    _write_sqlite_rows(db_path, result)
+def _persist_result(repository: DeviceRepository, ac_repository: AcRepository, result: TracksideDeviceCollectionResult) -> None:
     if result.target.target_type == "SWITCH":
         fact_repository = DeviceFactRepository(repository.database)
         device_uuid = str(result.target.device_uuid or "")
@@ -1624,28 +1637,27 @@ def _persist_result(repository: DeviceRepository, ac_repository: AcRepository, r
         if result.lldp_rows:
             fact_repository.replace_lldp_neighbors(device_uuid, [{**row, **metadata} for row in result.lldp_rows])
         return
-    if result.target.ac_device_uuid:
-        existing = ac_repository.list_fit_ap_optical(result.target.ac_device_uuid)
-        by_key = {str(row.get("ap_uuid") or row.get("ap_name") or row.get("interface_name") or ""): dict(row) for row in existing}
-        for row in result.rows:
-            key = str(result.target.ap_uuid or result.target.ap_name or row.get("interface_name") or "")
-            by_key[key] = {**by_key.get(key, {}), **row}
-        ac_repository.replace_fit_ap_optical(result.target.ac_device_uuid, list(by_key.values()))
 
 
-def _write_sqlite_rows(db_path: Path, result: TracksideDeviceCollectionResult) -> None:
-    rows = result.rows or [
-        {
-            "device_name": result.target.name,
-            "device_ip": result.target.host,
-            "device_type": result.target.target_type,
-            "group_name": result.target.group_name,
-            "error_message": result.error_message,
-            "raw_log_path": result.raw_log_path,
-            "collected_at": _now(),
-        }
-    ]
-    TracksideOpticalResultRepository(db_path).append_rows(rows)
+def _persistence_error(
+    stage: str,
+    exc: BaseException,
+    db_path: Path,
+    operation: str,
+    rows_attempted: int,
+    started_at: float,
+) -> dict[str, object]:
+    return {
+        "stage": stage,
+        "exception_type": type(exc).__name__,
+        "message": sanitize_sensitive_text(str(exc), None)[:500],
+        "sqlite_errorcode": getattr(exc, "sqlite_errorcode", None),
+        "sqlite_errorname": getattr(exc, "sqlite_errorname", None),
+        "db_path": str(db_path),
+        "operation": operation,
+        "rows_attempted": int(rows_attempted),
+        "elapsed_ms": max(0, int((time.monotonic() - started_at) * 1000)),
+    }
 
 
 def _result_row(

@@ -41,7 +41,7 @@ DEFAULT_HEARTBEAT_SECONDS = {
     "fit_ap_lldp": 1800,
 }
 DYNAMIC_CHANGE_ONLY_KINDS = frozenset(
-    {"device_interface", "device_optical", "device_lldp"}
+    {"device_interface", "device_optical", "device_lldp", "fit_ap_optical"}
 )
 DYNAMIC_HISTORY_LIMIT = 10
 

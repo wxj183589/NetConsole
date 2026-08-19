@@ -1587,6 +1587,7 @@ class AcRepository:
                     merged[key] = current
                 else:
                     passthrough.append(current)
+            previous_by_key = dict(merged)
 
             current_payloads: list[dict[str, object | None]] = []
             success_count = 0
@@ -1617,12 +1618,14 @@ class AcRepository:
                 current_payloads.append(payload)
                 key = _fit_ap_optical_merge_key(payload)
                 current = merged.get(key) if key else None
-                if current is not None and _fit_ap_optical_prefer_score(current) > _fit_ap_optical_prefer_score(payload):
+                if current is not None and _fit_ap_optical_prefer_score(current)[0] > _fit_ap_optical_prefer_score(payload)[0]:
                     merged[key] = _merge_failed_fit_ap_optical_payload(current, payload)
                     continue
                 if _is_fit_ap_optical_success_payload(payload):
                     success_count += 1
                     if key:
+                        if key in merged and merged[key].get("id") is not None:
+                            payload["id"] = merged[key]["id"]
                         merged[key] = payload
                     else:
                         passthrough.append(payload)
@@ -1636,20 +1639,31 @@ class AcRepository:
 
             if rows and success_count == 0:
                 app_logger.log_warning(
-                    "FIT_AP_OPTICAL_DB_SAVE_SKIPPED",
-                    f"ac_device_uuid={ac_device_uuid}, error=no successful AP optical rows; keeping previous data",
+                    "FIT_AP_OPTICAL_DB_SAVE_PARTIAL",
+                    f"ac_device_uuid={ac_device_uuid}, error=no successful AP optical rows; preserving valid telemetry and recording failure metadata",
                 )
-                return
 
-            conn.execute("DELETE FROM ac_fit_ap_optical WHERE ac_device_uuid = ?", (ac_device_uuid,))
             columns = ", ".join(FIT_AP_OPTICAL_FIELDS)
             placeholders = ", ".join("?" for _ in FIT_AP_OPTICAL_FIELDS)
             for payload in [*merged.values(), *passthrough]:
-                conn.execute(f"INSERT INTO ac_fit_ap_optical ({columns}) VALUES ({placeholders})", [payload[field] for field in FIT_AP_OPTICAL_FIELDS])
+                key = _fit_ap_optical_merge_key(payload)
+                current = previous_by_key.get(key) if key else None
+                current_id = _int_value(current.get("id")) if current else 0
+                if current_id:
+                    conn.execute(
+                        f"UPDATE ac_fit_ap_optical SET {', '.join(f'{field} = ?' for field in FIT_AP_OPTICAL_FIELDS if field != 'ac_device_uuid')} WHERE id = ? AND ac_device_uuid = ?",
+                        [payload[field] for field in FIT_AP_OPTICAL_FIELDS if field != "ac_device_uuid"] + [current_id, ac_device_uuid],
+                    )
+                else:
+                    conn.execute(f"INSERT INTO ac_fit_ap_optical ({columns}) VALUES ({placeholders})", [payload[field] for field in FIT_AP_OPTICAL_FIELDS])
                 self._update_fit_ap_resource_link_info(conn, ac_device_uuid, payload)
             for payload in current_payloads:
-                self._record_fit_ap_optical_history(conn, payload)
-                self._append_resource_lldp_history(conn, payload)
+                key = _fit_ap_optical_merge_key(payload)
+                previous = previous_by_key.get(key) if key else None
+                if previous is None or _fit_ap_optical_history_changed(previous, payload):
+                    self._record_fit_ap_optical_history(conn, payload)
+                if previous is None or _fit_ap_lldp_changed(previous, payload):
+                    self._append_resource_lldp_history(conn, payload)
             conn.commit()
 
     def list_fit_ap_optical(self, ac_device_uuid: str) -> list[dict[str, object | None]]:
@@ -3044,9 +3058,11 @@ class AcRepository:
                 "rx_low_alarm",
                 "rx_high_alarm", "tx_low_alarm", "tx_high_alarm", "rx_low_warning", "rx_high_warning",
                 "tx_low_warning", "tx_high_warning", "optical_alarm_status", "status", "error_message",
+                "rx_power", "tx_power",
                 "module_model", "module_serial_number", "module_vendor", "wavelength",
                 "transmission_distance", "connector_type",
             ),
+            state_changed=_fit_ap_optical_history_changed,
         )
 
     def _append_resource_lldp_history(
@@ -3110,6 +3126,7 @@ class AcRepository:
                 "local_interface_normalized", "lldp_neighbor", "neighbor_interface", "neighbor_mac",
                 "neighbor_mac_normalized", "neighbor_device_name", "neighbor_name", "conflict_flag",
             ),
+            state_changed=_fit_ap_lldp_changed,
         )
 
     def _append_resource_history(self, conn, payload: dict[str, object | None]) -> None:
@@ -4210,12 +4227,12 @@ def _ap_identity_key(row: dict[str, object | None]) -> tuple[str, str] | None:
 
 def _fit_ap_optical_merge_key(row: dict[str, object | None]) -> tuple[str, str] | None:
     ac_uuid = str(row.get("ac_device_uuid") or "").strip()
-    apid = str(row.get("apid") or row.get("ap_id") or "").strip()
-    if ac_uuid and apid and apid not in {"-", "N/A", "n/a"}:
-        return "apid", f"{ac_uuid.casefold()}:{apid.casefold()}"
     value = str(row.get("ap_uuid") or "").strip()
     if value and value not in {"-", "N/A", "n/a"}:
         return "ap_uuid", value.casefold()
+    apid = str(row.get("apid") or row.get("ap_id") or "").strip()
+    if ac_uuid and apid and apid not in {"-", "N/A", "n/a"}:
+        return "apid", f"{ac_uuid.casefold()}:{apid.casefold()}"
     mac = AcRepository._mac_from_text(row.get("ap_mac"))
     if mac:
         return "ap_mac", mac.casefold()
@@ -4230,17 +4247,47 @@ def _merge_failed_fit_ap_optical_payload(
     new: dict[str, object | None],
 ) -> dict[str, object | None]:
     merged = {**old, **new}
-    for field in (
-        "ap_mac",
-        "ap_name",
-        "neighbor_device_name",
-        "neighbor_interface",
-        "rx_power",
-        "tx_power",
-    ):
+    for field in FIT_AP_OPTICAL_FIELDS:
+        if field in {"ac_device_uuid", "ap_uuid", "collected_at", "updated_at", "collect_run_uuid", "raw_log_path"}:
+            continue
         if _is_empty_identity_value(new.get(field)) and not _is_empty_identity_value(old.get(field)):
             merged[field] = old.get(field)
     return merged
+
+
+_FIT_AP_OPTICAL_HISTORY_FIELDS = tuple(
+    field for field in FIT_AP_OPTICAL_FIELDS
+    if field not in {"ac_device_uuid", "ap_uuid", "collected_at", "updated_at", "collect_run_uuid", "raw_log_path"}
+)
+
+
+def _fit_ap_optical_history_changed(previous: dict[str, object | None], current: dict[str, object | None]) -> bool:
+    for field in _FIT_AP_OPTICAL_HISTORY_FIELDS:
+        left, right = previous.get(field), current.get(field)
+        if field in {"rx_power", "tx_power"}:
+            try:
+                if left is None or right is None:
+                    if str(left or "") != str(right or ""):
+                        return True
+                elif abs(float(str(left).split()[0]) - float(str(right).split()[0])) >= (0.20 - 1e-9):
+                    return True
+            except (TypeError, ValueError):
+                if str(left or "") != str(right or ""):
+                    return True
+            continue
+        if str(left or "") != str(right or ""):
+            return True
+    return False
+
+
+def _fit_ap_lldp_changed(previous: dict[str, object | None], current: dict[str, object | None]) -> bool:
+    fields = (
+        "lldp_neighbor", "lldp_local_interface", "lldp_local_interface_normalized",
+        "lldp_neighbor_name", "lldp_neighbor_mac", "lldp_neighbor_mac_normalized",
+        "lldp_neighbor_interface", "neighbor_interface", "neighbor_mac",
+        "neighbor_device_name", "link_match_status", "lldp_match_status",
+    )
+    return any(str(previous.get(field) or "") != str(current.get(field) or "") for field in fields)
 
 
 def _is_fit_ap_optical_success_payload(row: dict[str, object | None]) -> bool:

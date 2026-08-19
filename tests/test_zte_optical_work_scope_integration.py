@@ -336,7 +336,6 @@ def test_zte_trackside_update_replaces_stale_down_interface_snapshot(
         repository,
         AcRepository(repository.database),
         result,
-        tmp_path / "parsed" / "trackside_update_results.sqlite",
     )
 
     current = facts.list_device_interfaces(str(device.device_uuid))[0]
@@ -441,7 +440,6 @@ def test_zte_invalid_interface_snapshot_is_not_presented_as_current(
         repository,
         AcRepository(repository.database),
         result,
-        tmp_path / "parsed" / "trackside_update_results.sqlite",
     )
 
     snapshot = load_trackside_ap_business_snapshot(repository, "demo", generation=1)
@@ -531,7 +529,6 @@ def test_zte_connection_failure_does_not_present_old_realtime_state(
         repository,
         AcRepository(repository.database),
         result,
-        tmp_path / "parsed" / "trackside_update_results.sqlite",
     )
 
     snapshot = load_trackside_ap_business_snapshot(repository, "demo", generation=1)
