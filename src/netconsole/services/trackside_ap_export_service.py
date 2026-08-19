@@ -1087,6 +1087,22 @@ def export_trackside_ap_business_prepare_and_render(
     snapshot_path: Path | None = None
     try:
         database = _ReadOnlyDatabase(Path(database_path))
+        context = TracksideApScopeContext.from_metadata(site_name, scope_context)
+        revision_context = _scope_context_payload(context)
+        emit("export_revision_preflight", "正在快速校验轨旁 AP 业务版本")
+        current_revision = build_business_revision(
+            site_name,
+            read_trackside_ap_source_revisions(
+                database,
+                scope_context=revision_context,
+            ),
+        )
+        if expected_revision and expected_revision != current_revision:
+            raise TracksideApBusinessSnapshotError(
+                "TRACKSIDE_AP_SNAPSHOT_STALE",
+                "轨旁 AP 数据已更新，请刷新后重新导出。",
+            )
+        emit("export_business_snapshot", "正在构建轨旁 AP 业务快照")
         payload = build_trackside_ap_business_export_snapshot(
             DeviceRepository(database),
             site_name,
@@ -1096,12 +1112,8 @@ def export_trackside_ap_business_prepare_and_render(
             optical_anomaly_only=False,
             selected_row_ids=selected_row_ids,
         )
-        current_revision = str(payload.get("business_revision") or "")
-        if expected_revision and expected_revision != current_revision:
-            raise TracksideApBusinessSnapshotError(
-                "TRACKSIDE_AP_SNAPSHOT_STALE",
-                "轨旁 AP 数据已更新，请刷新后重新导出。",
-            )
+        emit("export_history_enrichment", "轨旁 AP 导出历史增强已完成")
+        emit("export_snapshot_freeze", "正在冻结轨旁 AP 导出快照")
         snapshot_path, snapshot_sha256 = write_export_snapshot(
             Path(snapshot_staging_root),
             site_id=site_name,
@@ -1201,7 +1213,7 @@ def _render_trackside_ap_business_export(
             "TRACKSIDE_AP_SNAPSHOT_INVALID",
             "轨旁 AP 导出快照离线统计无效，请重新导出。",
         )
-    emit("prepare", 0, len(business_rows), "正在校验冻结快照")
+    emit("export_xlsx_render", 0, len(business_rows), "正在渲染轨旁 AP 工作簿")
     check_cancel()
     render_started = perf_counter()
     export_trackside_ap_business_xlsx(
@@ -1262,6 +1274,7 @@ def _render_trackside_ap_business_export(
             },
         },
     )
+    emit("export_publish", len(business_rows), len(business_rows), "正在发布轨旁 AP 导出文件")
     os.replace(tmp, output)
     result = {
         "path": str(output),

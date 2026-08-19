@@ -1124,7 +1124,7 @@ onBeforeUnmount(() => {
           <template #cell-actions="{ row }"><el-button link type="primary" :disabled="updateTaskRunning || !row.site || !updateFeatureEnabled" @click="updateStation(row)">更新站点</el-button><el-button link type="primary" :title="hasApIdentity(row) ? '' : '缺少 AP 身份，无法定向更新'" :disabled="updateTaskRunning || !hasApIdentity(row) || !updateFeatureEnabled" @click="updateAp(row)">更新 AP</el-button></template>
         </NcDataTable>
       </div>
-      <div class="pagination"><span>共 {{ page?.total || 0 }} 条</span><el-pagination :current-page="page?.page || filters.page" :page-size="filters.page_size" :page-sizes="[20, 50, 100, 200]" layout="sizes, prev, pager, next" :total="page?.total || 0" @current-change="(value: number) => { filters.page = value; loadRows() }" @size-change="(value: number) => { filters.page_size = value; filters.page = 1; loadRows() }" /></div>
+      <div class="pagination"><span>共 {{ page ? page.total : '—' }} 条</span><el-pagination :current-page="page?.page || filters.page" :page-size="filters.page_size" :page-sizes="[20, 50, 100, 200]" layout="sizes, prev, pager, next" :total="page?.total || 0" @current-change="(value: number) => { filters.page = value; loadRows() }" @size-change="(value: number) => { filters.page_size = value; filters.page = 1; loadRows() }" /></div>
     </div>
     <el-dialog
       v-model="onlineStatusVisible"
