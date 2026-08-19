@@ -8,7 +8,7 @@ import dashboard from '../views/DashboardView.vue?raw'
 
 describe('desktop renderer product copy', () => {
   it('uses the branded title, favicon, and sidebar logo without internal migration labels', () => {
-    expect(html).toContain('<title>NetConsole v1.5.1 by wxj</title>')
+    expect(html).toContain('<title>NetConsole v1.5.2 by wxj</title>')
     expect(html).toContain('<link rel="icon" type="image/png" href="/branding/netconsole.png" />')
     expect(layout).toContain('class="brand-logo"')
     expect(layout).toContain("const BRAND_LOGO_URL = '/branding/netconsole.png'")
