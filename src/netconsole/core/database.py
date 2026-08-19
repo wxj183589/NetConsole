@@ -347,6 +347,32 @@ END;
 """
 
 
+_TRACKSIDE_AP_REVISION_GROUPS = {
+    "trackside_ap_switch_facts_revision": (
+        "device_facts",
+        "device_interfaces",
+        "device_optical_modules",
+    ),
+    "trackside_ap_lldp_revision": ("device_lldp_neighbors",),
+    "trackside_ap_fit_ap_resource_revision": (
+        "ac_fit_ap_resources",
+        "ac_fit_ap_metadata",
+        "ac_fit_ap_unauthenticated",
+    ),
+    "trackside_ap_optical_revision": ("ac_fit_ap_optical",),
+    "trackside_ap_history_revision": (
+        "ap_lldp_history",
+        "ac_fit_ap_lldp_history",
+        "ac_fit_ap_unauthenticated_history",
+    ),
+    "trackside_ap_export_history_revision": (
+        "ac_fit_ap_resource_history",
+        "ac_fit_ap_optical_history",
+        "device_optical_modules_history",
+    ),
+}
+
+
 def _trackside_ap_revision_schema() -> str:
     """Maintain cheap semantic counters for Trackside AP snapshots.
 
@@ -354,30 +380,7 @@ def _trackside_ap_revision_schema() -> str:
     the revision boundary in the same SQLite transaction as direct writers.
     """
 
-    groups = {
-        "trackside_ap_switch_facts_revision": (
-            "device_facts",
-            "device_interfaces",
-            "device_optical_modules",
-        ),
-        "trackside_ap_lldp_revision": ("device_lldp_neighbors",),
-        "trackside_ap_fit_ap_resource_revision": (
-            "ac_fit_ap_resources",
-            "ac_fit_ap_metadata",
-            "ac_fit_ap_unauthenticated",
-        ),
-        "trackside_ap_optical_revision": ("ac_fit_ap_optical",),
-        "trackside_ap_history_revision": (
-            "ap_lldp_history",
-            "ac_fit_ap_lldp_history",
-            "ac_fit_ap_unauthenticated_history",
-        ),
-        "trackside_ap_export_history_revision": (
-            "ac_fit_ap_resource_history",
-            "ac_fit_ap_optical_history",
-            "device_optical_modules_history",
-        ),
-    }
+    groups = _TRACKSIDE_AP_REVISION_GROUPS
     statements = [
         "INSERT OR IGNORE INTO schema_metadata (key, value, created_at, updated_at) "
         "VALUES ('trackside_ap_business_revision', '0', "
@@ -2057,6 +2060,7 @@ class Database:
                         or identity_schema_migration
                         or trackside_ap_location_migration
                         or rail_base_identity_migration
+                        or self._requires_trackside_ap_revision_schema(conn)
                         or self._requires_legacy_schema_compatibility_repair(conn)
                         or self._requires_device_credential_state_repair(conn)
                     )
@@ -2235,6 +2239,39 @@ class Database:
         if required.issubset(columns):
             return False
         return True
+
+    @staticmethod
+    def _requires_trackside_ap_revision_schema(conn: sqlite3.Connection) -> bool:
+        """Detect old same-version databases missing revision-counter wiring."""
+
+        if not Database._table_exists(conn, "schema_metadata"):
+            return True
+        metadata_keys = {
+            str(row["key"])
+            for row in conn.execute(
+                "SELECT key FROM schema_metadata WHERE key LIKE 'trackside_ap_%_revision'"
+            ).fetchall()
+        }
+        required_keys = {
+            "trackside_ap_business_revision",
+            *_TRACKSIDE_AP_REVISION_GROUPS,
+        }
+        if not required_keys <= metadata_keys:
+            return True
+        trigger_names = {
+            str(row["name"])
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='trigger' AND name LIKE 'trg_trackside_ap_%'"
+            ).fetchall()
+        }
+        required_triggers = {
+            f"trg_{key}_{table}_{operation.casefold()}"
+            for key, tables in _TRACKSIDE_AP_REVISION_GROUPS.items()
+            for table in tables
+            for operation in ("INSERT", "UPDATE", "DELETE")
+        }
+        return not required_triggers <= trigger_names
 
     @staticmethod
     def _requires_device_credential_state_repair(conn: sqlite3.Connection) -> bool:

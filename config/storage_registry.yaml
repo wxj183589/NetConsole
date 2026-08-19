@@ -1030,7 +1030,7 @@
       "schema_version": "trackside optical repository",
       "allowed_data_classes": ["HISTORICAL_RAW_FACT"],
       "forbidden_data_classes": ["ARTIFACT_OR_RAW_FILE", "STAGING_TEMPORARY"],
-      "source_locations": ["src/netconsole/repositories/trackside_optical_result_repository.py", "src/netconsole/services/rail_transit/trackside_optical_collection.py"]
+      "source_locations": ["src/netconsole/services/rail_transit/trackside_optical_collection.py"]
     },
     {
       "id": "site.trackside.raw",

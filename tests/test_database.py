@@ -7,6 +7,7 @@ from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_repository import DeviceRepository
+from netconsole.repositories.history_store import HistoryStore
 from netconsole.repositories.rail_transit_base_data_repository import RailTransitBaseDataRepository
 
 
@@ -81,6 +82,128 @@ def test_schema_migration_checkpoints_once_then_returns_to_fast_path(tmp_path, m
     db.initialize()
     assert checkpoint_calls == [True]
 
+
+def test_same_version_database_repairs_missing_trackside_revision_schema(tmp_path):
+    db = Database(tmp_path / "devices.db")
+    db.initialize()
+    with db.connect() as conn:
+        conn.execute(
+            "DELETE FROM schema_metadata WHERE key LIKE 'trackside_ap_%_revision'"
+        )
+        conn.execute(
+            "DROP TRIGGER IF EXISTS "
+            "trg_trackside_ap_switch_facts_revision_device_interfaces_insert"
+        )
+        conn.commit()
+
+    db.initialize()
+
+    with db.connect() as conn:
+        keys = {
+            str(row["key"])
+            for row in conn.execute(
+                "SELECT key FROM schema_metadata WHERE key LIKE 'trackside_ap_%_revision'"
+            ).fetchall()
+        }
+        trigger = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='trigger' AND name=?",
+            (
+                "trg_trackside_ap_switch_facts_revision_device_interfaces_insert",
+            ),
+        ).fetchone()
+    assert {
+        "trackside_ap_business_revision",
+        "trackside_ap_switch_facts_revision",
+        "trackside_ap_lldp_revision",
+        "trackside_ap_fit_ap_resource_revision",
+        "trackside_ap_optical_revision",
+        "trackside_ap_history_revision",
+        "trackside_ap_export_history_revision",
+    } <= keys
+    assert trigger is not None
+
+
+def test_trackside_revision_domains_are_transactional_and_history_is_separate(tmp_path):
+    db = Database(tmp_path / "devices.db")
+    db.initialize()
+    history = HistoryStore(db.path, site_id="demo")
+
+    with db.connect() as conn:
+        baseline = {
+            str(row["key"]): str(row["value"])
+            for row in conn.execute(
+                "SELECT key, value FROM schema_metadata "
+                "WHERE key IN ('trackside_ap_business_revision', "
+                "'trackside_ap_switch_facts_revision', 'trackside_ap_history_revision')"
+            ).fetchall()
+        }
+        conn.execute(
+            """
+            INSERT INTO device_interfaces(
+                device_uuid, interface_name, link_status, collected_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            ("device-1", "GE1/0/1", "up", "2026-08-20T00:00:00", "2026-08-20T00:00:00"),
+        )
+        conn.commit()
+        current_write = {
+            str(row["key"]): str(row["value"])
+            for row in conn.execute(
+                "SELECT key, value FROM schema_metadata "
+                "WHERE key IN ('trackside_ap_business_revision', "
+                "'trackside_ap_switch_facts_revision', 'trackside_ap_history_revision')"
+            ).fetchall()
+        }
+
+        history.record_event(
+            conn,
+            kind="device_interface",
+            entity_key="device-1:GE1/0/1",
+            payload={"link_status": "up", "device_uuid": "device-1"},
+            collected_at="2026-08-20T00:00:00",
+            meaningful_fields=("device_uuid", "link_status"),
+        )
+        conn.commit()
+        history_write = {
+            str(row["key"]): str(row["value"])
+            for row in conn.execute(
+                "SELECT key, value FROM schema_metadata "
+                "WHERE key IN ('trackside_ap_business_revision', "
+                "'trackside_ap_switch_facts_revision', 'trackside_ap_history_revision')"
+            ).fetchall()
+        }
+
+        conn.execute("BEGIN")
+        conn.execute(
+            "UPDATE device_interfaces SET link_status='down' "
+            "WHERE device_uuid='device-1' AND interface_name='GE1/0/1'"
+        )
+        conn.rollback()
+        rollback = {
+            str(row["key"]): str(row["value"])
+            for row in conn.execute(
+                "SELECT key, value FROM schema_metadata "
+                "WHERE key IN ('trackside_ap_business_revision', "
+                "'trackside_ap_switch_facts_revision', 'trackside_ap_history_revision')"
+            ).fetchall()
+        }
+
+    assert int(current_write["trackside_ap_business_revision"]) == int(
+        baseline["trackside_ap_business_revision"]
+    ) + 1
+    assert int(current_write["trackside_ap_switch_facts_revision"]) == int(
+        baseline["trackside_ap_switch_facts_revision"]
+    ) + 1
+    assert history_write["trackside_ap_business_revision"] == current_write[
+        "trackside_ap_business_revision"
+    ]
+    assert history_write["trackside_ap_switch_facts_revision"] == current_write[
+        "trackside_ap_switch_facts_revision"
+    ]
+    assert int(history_write["trackside_ap_history_revision"]) > int(
+        current_write["trackside_ap_history_revision"]
+    )
+    assert rollback == history_write
 
 def test_base_data_revision_counter_tracks_committed_base_data_only(tmp_path):
     paths = PathResolver(data_root=tmp_path)
