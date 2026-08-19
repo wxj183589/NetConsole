@@ -50,6 +50,35 @@ def test_windows_package_script_rechecks_the_final_artifact() -> None:
     assert "artifact.Length -ne [int64]$releaseManifest.artifact_size" in script
 
 
+def test_windows_package_script_scopes_parallel_gate_to_web_tests() -> None:
+    script = (
+        ROOT / "scripts" / "build" / "package_windows.ps1"
+    ).read_text(encoding="utf-8-sig")
+
+    web_step = script.index('Write-Step "运行 Web 测试"')
+    capture_gate = script.index(
+        "$hadVitestParallelGate = Test-Path Env:NETCONSOLE_VITEST_PARALLEL_GATE"
+    )
+    save_gate = script.index(
+        "$previousVitestParallelGate = $env:NETCONSOLE_VITEST_PARALLEL_GATE"
+    )
+    enable_gate = script.index('$env:NETCONSOLE_VITEST_PARALLEL_GATE = "1"')
+    web_test = script.index('Invoke-Native $pnpmPath @("test") $rendererRoot')
+    finally_gate = script.index("finally {", web_test)
+    restore_gate = script.index(
+        "$env:NETCONSOLE_VITEST_PARALLEL_GATE = $previousVitestParallelGate"
+    )
+    remove_gate = script.index(
+        "Remove-Item Env:NETCONSOLE_VITEST_PARALLEL_GATE -ErrorAction SilentlyContinue"
+    )
+    electron_step = script.index('Write-Step "运行 Electron 测试"')
+    electron_test = script.index('Invoke-Native $pnpmPath @("test") $desktopRoot')
+
+    assert web_step < capture_gate < save_gate < enable_gate < web_test
+    assert web_test < finally_gate < restore_gate < electron_step < electron_test
+    assert web_test < finally_gate < remove_gate < electron_step < electron_test
+
+
 def test_local_release_publish_rechecks_source_and_inner_commits() -> None:
     script = (
         ROOT / "scripts" / "build" / "package_local.ps1"

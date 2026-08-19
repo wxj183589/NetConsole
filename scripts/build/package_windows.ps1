@@ -193,7 +193,20 @@ try {
     }
 
     Write-Step "运行 Web 测试"
-    Invoke-Native $pnpmPath @("test") $rendererRoot
+    $hadVitestParallelGate = Test-Path Env:NETCONSOLE_VITEST_PARALLEL_GATE
+    $previousVitestParallelGate = $env:NETCONSOLE_VITEST_PARALLEL_GATE
+    try {
+        $env:NETCONSOLE_VITEST_PARALLEL_GATE = "1"
+        Invoke-Native $pnpmPath @("test") $rendererRoot
+    }
+    finally {
+        if ($hadVitestParallelGate) {
+            $env:NETCONSOLE_VITEST_PARALLEL_GATE = $previousVitestParallelGate
+        }
+        else {
+            Remove-Item Env:NETCONSOLE_VITEST_PARALLEL_GATE -ErrorAction SilentlyContinue
+        }
+    }
 
     Write-Step "运行 Electron 测试"
     Invoke-Native $pnpmPath @("test") $desktopRoot

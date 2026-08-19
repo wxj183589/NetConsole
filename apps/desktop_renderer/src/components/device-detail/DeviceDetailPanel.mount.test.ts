@@ -2,13 +2,16 @@
 
 import { computed, defineComponent, h, inject, provide, reactive, useAttrs, type Component, type ComputedRef, type PropType } from 'vue'
 import { flushPromises, mount } from '@vue/test-utils'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
   getDeviceOverview: vi.fn(),
   getDeviceDetailSection: vi.fn(),
+  getDeviceDetailHistory: vi.fn(),
   getDeviceInterfaceDetail: vi.fn(),
   refreshDeviceDetails: vi.fn(),
+  fetch: vi.fn(async () => { throw new Error('UNEXPECTED_NETWORK_REQUEST') }),
+  webSocket: vi.fn(() => { throw new Error('UNEXPECTED_WEBSOCKET_REQUEST') }),
   taskStore: null as null | {
     tasks: Array<Record<string, unknown>>
     refresh: ReturnType<typeof vi.fn>
@@ -19,10 +22,10 @@ const mocks = vi.hoisted(() => ({
   messages: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
 }))
 
-vi.mock('../../api/deviceManagement', async (importOriginal) => ({
-  ...await importOriginal<typeof import('../../api/deviceManagement')>(),
+vi.mock('../../api/deviceManagement', () => ({
   getDeviceOverview: mocks.getDeviceOverview,
   getDeviceDetailSection: mocks.getDeviceDetailSection,
+  getDeviceDetailHistory: mocks.getDeviceDetailHistory,
   getDeviceInterfaceDetail: mocks.getDeviceInterfaceDetail,
   refreshDeviceDetails: mocks.refreshDeviceDetails,
 }))
@@ -32,10 +35,36 @@ vi.mock('../../platform/runtime', () => ({
   getRuntimeConfig: () => ({ hostType: 'browser', apiBaseUrl: '', apiToken: '' }),
   getPlatformAdapter: () => ({ openExternalUrl: vi.fn() }),
 }))
-vi.mock('element-plus', async (importOriginal) => ({
-  ...await importOriginal<typeof import('element-plus')>(),
-  ElMessage: mocks.messages,
-}))
+vi.mock('element-plus', async () => {
+  const { defineComponent, h } = await import('vue')
+  const namedStub = (name: string) => defineComponent({
+    name,
+    inheritAttrs: false,
+    setup(_props, { attrs, slots }) {
+      return () => h('div', attrs, [slots.default?.(), slots.content?.()])
+    },
+  })
+  return {
+    ElAlert: namedStub('ElAlert'),
+    ElButton: namedStub('ElButton'),
+    ElCheckbox: namedStub('ElCheckbox'),
+    ElDescriptions: namedStub('ElDescriptions'),
+    ElDescriptionsItem: namedStub('ElDescriptionsItem'),
+    ElDialog: namedStub('ElDialog'),
+    ElInput: namedStub('ElInput'),
+    ElLoadingDirective: {},
+    ElMessage: mocks.messages,
+    ElOption: namedStub('ElOption'),
+    ElPagination: namedStub('ElPagination'),
+    ElPopover: namedStub('ElPopover'),
+    ElSelect: namedStub('ElSelect'),
+    ElTable: namedStub('ElTable'),
+    ElTableColumn: namedStub('ElTableColumn'),
+    ElTabPane: namedStub('ElTabPane'),
+    ElTabs: namedStub('ElTabs'),
+    ElTooltip: namedStub('ElTooltip'),
+  }
+})
 
 import DeviceDetailPanel from './DeviceDetailPanel.vue'
 import type { DeviceOverviewResponse } from '../../types/deviceManagement'
@@ -63,6 +92,26 @@ const inputStub = defineComponent({
   emits: ['update:modelValue'],
   setup(props, { attrs, emit }) {
     return () => h('input', { ...attrs, value: props.modelValue, onInput: (event: Event) => emit('update:modelValue', (event.target as HTMLInputElement).value) })
+  },
+})
+
+const checkboxStub = defineComponent({
+  inheritAttrs: false,
+  props: { modelValue: Boolean },
+  emits: ['update:modelValue', 'change'],
+  setup(props, { attrs, emit, slots }) {
+    return () => h('label', attrs, [
+      h('input', {
+        type: 'checkbox',
+        checked: props.modelValue,
+        onChange: (event: Event) => {
+          const checked = (event.target as HTMLInputElement).checked
+          emit('update:modelValue', checked)
+          emit('change', checked)
+        },
+      }),
+      slots.default?.(),
+    ])
   },
 })
 
@@ -116,6 +165,7 @@ const tableColumnStub = defineComponent({
 const elementStubs: Record<string, Component | boolean> = {
   ElAlert: passthrough,
   ElButton: buttonStub,
+  ElCheckbox: checkboxStub,
   ElDescriptions: passthrough,
   ElDescriptionsItem: passthrough,
   ElDialog: dialogStub,
@@ -145,10 +195,18 @@ const overview: DeviceOverviewResponse = {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  vi.stubGlobal('fetch', mocks.fetch)
+  vi.stubGlobal('WebSocket', mocks.webSocket)
   mocks.taskStore = reactive({ tasks: [], refresh: vi.fn(async () => undefined), acquirePolling: vi.fn(), releasePolling: vi.fn() })
   mocks.getDeviceOverview.mockResolvedValue(overview)
   mocks.getDeviceDetailSection.mockResolvedValue({ items: [{ name: 'GigabitEthernet1/0/1', status: null }], total: 1, page: 1, page_size: 50, total_pages: 1, source: { available: true, source: 'snapshot', collected_at: '', reason: null } })
   mocks.refreshDeviceDetails.mockResolvedValue({ task_id: 'refresh-1', operation_id: 'device.inventory.collect', status: 'PENDING', reused: false, message: '等待执行' })
+})
+
+afterEach(() => {
+  expect(mocks.fetch).not.toHaveBeenCalled()
+  expect(mocks.webSocket).not.toHaveBeenCalled()
+  vi.unstubAllGlobals()
 })
 
 async function renderPanel(withOverview = true) {
