@@ -472,6 +472,32 @@ class HistoryStore:
                     "ALTER TABLE history_state ADD COLUMN state_json TEXT NOT NULL DEFAULT '{}'"
                 )
             self._history_state_schema_checked = True
+        # These tables are created lazily, after the main schema scripts. Keep
+        # their revision counter transactional and out of business_revision.
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO schema_metadata (key, value, created_at, updated_at)
+            VALUES ('trackside_ap_history_revision', '0',
+                    strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                    strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            """
+        )
+        for table in ("history_outbox", "history_state"):
+            for operation in ("INSERT", "UPDATE", "DELETE"):
+                suffix = operation.casefold()
+                conn.execute(
+                    f"""
+                    CREATE TRIGGER IF NOT EXISTS
+                        trg_trackside_ap_history_revision_{table}_{suffix}
+                    AFTER {operation} ON {table}
+                    BEGIN
+                        UPDATE schema_metadata
+                        SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT),
+                            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                        WHERE key = 'trackside_ap_history_revision';
+                    END
+                    """
+                )
 
     def record_event(
         self,

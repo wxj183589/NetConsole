@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import threading
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
@@ -81,6 +82,10 @@ _WINDOWS_INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f\x7f\u202a-\u
 _TRACKSIDE_AP_BUSINESS_SUFFIX = ".xlsx"
 _TRACKSIDE_AP_BUSINESS_MARK = "_轨旁AP业务_"
 _MAX_TRACKSIDE_AP_BUSINESS_NAME_LENGTH = 180
+_SNAPSHOT_CACHE_LOCK = threading.RLock()
+_SNAPSHOT_CACHE: dict[str, TracksideApBusinessLoadResult] = {}
+_SNAPSHOT_INFLIGHT: dict[str, threading.Event] = {}
+_SNAPSHOT_CACHE_LIMIT = 64
 
 
 class _ReadOnlyDatabase(Database):
@@ -192,68 +197,141 @@ def load_trackside_ap_business_snapshot(
             repository.database,
             scope_context=context_payload,
         )
-        snapshot = _load_trackside_ap_business_snapshot_once(
+        business_revision = build_business_revision(site_name, source_revisions)
+        cache_key = _snapshot_cache_key(
             repository,
             site_name,
-            generation,
-            scope_context=context,
-            identity_query_macs=identity_query_macs,
+            context_payload,
+            identity_query_macs,
+            business_revision,
         )
-        confirmed_revisions = read_trackside_ap_source_revisions(
-            repository.database,
-            scope_context=context_payload,
-        )
-        # A complete read is already usable; normal telemetry may advance the
-        # live revision before the final confirmation.
-        if source_revisions == confirmed_revisions or (
-            attempt + 1 == attempts and not snapshot.partial_data
-        ):
-            rows = tuple(
-                MappingProxyType(dict(row))
-                for row in snapshot.rows
+        builder = False
+        with _SNAPSHOT_CACHE_LOCK:
+            cached = _SNAPSHOT_CACHE.get(cache_key)
+            if cached is not None:
+                # Preserve the historical per-request snapshot_id contract
+                # while reusing the immutable rows and revision-built data.
+                return replace(
+                    cached,
+                    generation=generation,
+                    snapshot_id=uuid4().hex,
+                )
+            event = _SNAPSHOT_INFLIGHT.get(cache_key)
+            if event is None:
+                event = threading.Event()
+                _SNAPSHOT_INFLIGHT[cache_key] = event
+                builder = True
+        if not builder:
+            # Another request owns this site+revision build.  Once it
+            # publishes, retry the cheap preflight and pick up the immutable
+            # result instead of rebuilding concurrently.
+            event.wait(timeout=60)
+            continue
+        try:
+            snapshot = _load_trackside_ap_business_snapshot_once(
+                repository,
+                site_name,
+                generation,
+                scope_context=context,
+                identity_query_macs=identity_query_macs,
             )
-            revision = build_business_revision(site_name, confirmed_revisions)
-            created_at = datetime.now().astimezone().isoformat(timespec="milliseconds")
-            if snapshot.scope is not None:
-                snapshot.scope.unmatched_online_items = [
-                    replace(
-                        item,
-                        source_revisions=dict(confirmed_revisions),
-                        snapshot_revision=revision,
-                        snapshot_created_at=created_at,
-                    )
-                    for item in snapshot.scope.unmatched_online_items
-                ]
-            stable_snapshot = replace(
-                snapshot,
-                rows=rows,
-                snapshot_id=uuid4().hex,
-                business_revision=revision,
-                source_revisions=MappingProxyType(dict(confirmed_revisions)),
-                created_at=created_at,
-                content_sha256=content_sha256(rows),
-                snapshot_retry_count=attempt,
-                identity_query_entities=MappingProxyType(
-                    dict(snapshot.identity_query_entities)
-                ),
+            confirmed_revisions = read_trackside_ap_source_revisions(
+                repository.database,
+                scope_context=context_payload,
             )
-            app_logger.log_info(
-                "TRACKSIDE_AP_SNAPSHOT_BUILT",
-                (
-                    f"site={site_name} revision={revision[:12]} rows={len(rows)} "
-                    f"snapshot_build_ms={snapshot.query_ms + snapshot.build_ms} "
-                    f"snapshot_retry_count={attempt} "
-                    f"source_revision_count={len(confirmed_revisions)} "
-                    f"identity_distinct_count={snapshot.identity_distinct_count}"
-                ),
-            )
-            return stable_snapshot
-        if attempt + 1 < attempts:
-            sleep(0.02 * (attempt + 1))
+            # A complete read is already usable; normal telemetry may advance
+            # the live revision before the final confirmation.
+            if source_revisions == confirmed_revisions or (
+                attempt + 1 == attempts and not snapshot.partial_data
+            ):
+                rows = tuple(
+                    MappingProxyType(dict(row))
+                    for row in snapshot.rows
+                )
+                revision = build_business_revision(site_name, confirmed_revisions)
+                created_at = datetime.now().astimezone().isoformat(timespec="milliseconds")
+                if snapshot.scope is not None:
+                    snapshot.scope.unmatched_online_items = [
+                        replace(
+                            item,
+                            source_revisions=dict(confirmed_revisions),
+                            snapshot_revision=revision,
+                            snapshot_created_at=created_at,
+                        )
+                        for item in snapshot.scope.unmatched_online_items
+                    ]
+                stable_snapshot = replace(
+                    snapshot,
+                    rows=rows,
+                    snapshot_id=uuid4().hex,
+                    business_revision=revision,
+                    source_revisions=MappingProxyType(dict(confirmed_revisions)),
+                    created_at=created_at,
+                    content_sha256=content_sha256(rows),
+                    snapshot_retry_count=attempt,
+                    identity_query_entities=MappingProxyType(
+                        dict(snapshot.identity_query_entities)
+                    ),
+                )
+                _cache_snapshot(
+                    _snapshot_cache_key(
+                        repository,
+                        site_name,
+                        context_payload,
+                        identity_query_macs,
+                        revision,
+                    ),
+                    stable_snapshot,
+                )
+                app_logger.log_info(
+                    "TRACKSIDE_AP_SNAPSHOT_BUILT",
+                    (
+                        f"site={site_name} revision={revision[:12]} rows={len(rows)} "
+                        f"snapshot_build_ms={snapshot.query_ms + snapshot.build_ms} "
+                        f"snapshot_retry_count={attempt} "
+                        f"source_revision_count={len(confirmed_revisions)} "
+                        f"identity_distinct_count={snapshot.identity_distinct_count}"
+                    ),
+                )
+                return stable_snapshot
+            if attempt + 1 < attempts:
+                sleep(0.02 * (attempt + 1))
+        finally:
+            with _SNAPSHOT_CACHE_LOCK:
+                current = _SNAPSHOT_INFLIGHT.pop(cache_key, None)
+                if current is not None:
+                    current.set()
     raise TracksideApBusinessSnapshotError(
         "TRACKSIDE_AP_SNAPSHOT_UNSTABLE",
         "轨旁 AP 数据正在刷新，暂时无法形成一致快照，请稍后重试。",
     )
+
+
+def _snapshot_cache_key(
+    repository: DeviceRepository,
+    site_name: str,
+    context_payload: Mapping[str, object],
+    identity_query_macs: Sequence[object],
+    business_revision: str,
+) -> str:
+    database_path = str(repository.database.path.resolve())
+    query = [str(value or "").strip() for value in identity_query_macs]
+    return content_sha256(
+        {
+            "database": database_path,
+            "site_id": str(site_name or ""),
+            "scope": dict(context_payload),
+            "identity_query_macs": query,
+            "business_revision": str(business_revision or ""),
+        }
+    )
+
+
+def _cache_snapshot(key: str, snapshot: TracksideApBusinessLoadResult) -> None:
+    with _SNAPSHOT_CACHE_LOCK:
+        _SNAPSHOT_CACHE[key] = snapshot
+        while len(_SNAPSHOT_CACHE) > _SNAPSHOT_CACHE_LIMIT:
+            _SNAPSHOT_CACHE.pop(next(iter(_SNAPSHOT_CACHE)))
 
 
 def _load_trackside_ap_business_snapshot_once(

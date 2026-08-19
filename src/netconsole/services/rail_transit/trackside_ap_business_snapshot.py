@@ -47,6 +47,17 @@ _CURRENT_SOURCE_TABLES: dict[str, tuple[str, ...]] = {
         "history_state",
     ),
 }
+_SOURCE_REVISION_METADATA_KEYS = {
+    "switch_facts_revision": "trackside_ap_switch_facts_revision",
+    "lldp_revision": "trackside_ap_lldp_revision",
+    "fit_ap_resource_revision": "trackside_ap_fit_ap_resource_revision",
+    "optical_data_revision": "trackside_ap_optical_revision",
+    "ap_history_revision": "trackside_ap_history_revision",
+}
+_BUSINESS_REVISION_EXCLUDED_KEYS = {
+    "ap_history_revision",
+    "export_history_revision",
+}
 _EXPORT_HISTORY_TABLES = (
     "ac_fit_ap_resource_history",
     "ac_fit_ap_optical_history",
@@ -111,11 +122,15 @@ def read_trackside_ap_source_revisions(
             "ap_identity_revision": identity_state.revision_token,
         }
         for source, tables in _CURRENT_SOURCE_TABLES.items():
-            revisions[source] = _tables_revision(connection, tables)
+            metadata_key = _SOURCE_REVISION_METADATA_KEYS.get(source)
+            if metadata_key:
+                revisions[source] = _metadata_value(connection, metadata_key)
+            else:
+                revisions[source] = _tables_revision(connection, tables)
         if include_export_history:
-            revisions["export_history_revision"] = _tables_revision(
+            revisions["export_history_revision"] = _metadata_value(
                 connection,
-                _EXPORT_HISTORY_TABLES,
+                "trackside_ap_export_history_revision",
             )
         connection.commit()
     return dict(sorted(revisions.items()))
@@ -125,7 +140,7 @@ def build_business_revision(site_id: str, source_revisions: Mapping[str, str]) -
     current_revisions = {
         key: value
         for key, value in source_revisions.items()
-        if key != "export_history_revision"
+        if key not in _BUSINESS_REVISION_EXCLUDED_KEYS
     }
     return content_sha256(
         {
@@ -278,27 +293,34 @@ def _metadata_value(connection: sqlite3.Connection, key: str) -> str:
 
 
 def _tables_revision(connection: sqlite3.Connection, tables: Sequence[str]) -> str:
+    """Return a cheap legacy fallback for databases without counters.
+
+    Current databases use trigger-maintained counters above.  The fallback is
+    deliberately an aggregate summary, never a per-row JSON/sha256 scan.
+    """
     digest = hashlib.sha256()
     for table in tables:
         digest.update(table.encode("utf-8"))
         if not _table_exists(connection, table):
             digest.update(b"\0missing\0")
             continue
-        columns = [
+        columns = {
             str(row["name"])
             for row in connection.execute(f'PRAGMA table_info("{table}")').fetchall()
-            if not any(marker in str(row["name"]).casefold() for marker in _SENSITIVE_COLUMN_MARKERS)
+        }
+        timestamp_columns = [
+            name
+            for name in ("updated_at", "collected_at", "created_at", "last_recorded_at")
+            if name in columns
         ]
-        if not columns:
-            digest.update(b"\0empty-schema\0")
-            continue
-        quoted = ", ".join(f'"{column}"' for column in columns)
-        cursor = connection.execute(f'SELECT {quoted} FROM "{table}" ORDER BY rowid')
-        digest.update(canonical_json_bytes(columns))
-        while batch := cursor.fetchmany(500):
-            for row in batch:
-                digest.update(canonical_json_bytes([row[column] for column in columns]))
-                digest.update(b"\n")
+        aggregates = ["COUNT(*) AS row_count", "COALESCE(MAX(rowid), 0) AS max_rowid"]
+        aggregates.extend(
+            f'MAX("{name}") AS "max_{name}"' for name in timestamp_columns
+        )
+        row = connection.execute(
+            f'SELECT {", ".join(aggregates)} FROM "{table}"'
+        ).fetchone()
+        digest.update(canonical_json_bytes(dict(row) if row else {}))
     return digest.hexdigest()
 
 

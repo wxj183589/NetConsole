@@ -573,7 +573,6 @@ async function loadRows(reset = false, forceNewRevision = false): Promise<boolea
     filters.page = 1
     void loadRows(true)
   }
-  if (succeeded) void loadOnlineStatus(forceNewRevision)
   return succeeded
 }
 
@@ -944,8 +943,7 @@ onMounted(() => {
   window.addEventListener(BEFORE_SITE_SWITCH_EVENT, handleBeforeSiteSwitch)
   window.addEventListener(SITE_CONTEXT_CHANGED_EVENT, handleSiteContextChanged)
   void Promise.all([
-    loadRows(),
-    loadOnlineStatus(),
+    loadRows().then(() => loadOnlineStatus()),
     taskStore.refresh().then(() => {
       currentTaskId.value = taskStore.tasks.find(
         (item) => businessTaskTypes.has(item.type) && activeStates.has(item.status),

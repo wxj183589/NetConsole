@@ -346,6 +346,62 @@ BEGIN
 END;
 """
 
+
+def _trackside_ap_revision_schema() -> str:
+    """Maintain cheap semantic counters for Trackside AP snapshots.
+
+    Snapshot reads must not fingerprint every fact row.  These triggers keep
+    the revision boundary in the same SQLite transaction as direct writers.
+    """
+
+    groups = {
+        "trackside_ap_switch_facts_revision": (
+            "device_facts",
+            "device_interfaces",
+            "device_optical_modules",
+        ),
+        "trackside_ap_lldp_revision": ("device_lldp_neighbors",),
+        "trackside_ap_fit_ap_resource_revision": (
+            "ac_fit_ap_resources",
+            "ac_fit_ap_metadata",
+            "ac_fit_ap_unauthenticated",
+        ),
+        "trackside_ap_optical_revision": ("ac_fit_ap_optical",),
+        "trackside_ap_history_revision": (
+            "ap_lldp_history",
+            "ac_fit_ap_lldp_history",
+            "ac_fit_ap_unauthenticated_history",
+        ),
+        "trackside_ap_export_history_revision": (
+            "ac_fit_ap_resource_history",
+            "ac_fit_ap_optical_history",
+            "device_optical_modules_history",
+        ),
+    }
+    statements = [
+        "INSERT OR IGNORE INTO schema_metadata (key, value, created_at, updated_at) "
+        "VALUES ('trackside_ap_business_revision', '0', "
+        "strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), "
+        "strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));"
+    ]
+    for key, tables in groups.items():
+        statements.append(
+            "INSERT OR IGNORE INTO schema_metadata (key, value, created_at, updated_at) "
+            f"VALUES ('{key}', '0', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), "
+            "strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));"
+        )
+        for table in tables:
+            for operation in ("INSERT", "UPDATE", "DELETE"):
+                suffix = operation.casefold()
+                statements.append(
+                    f"CREATE TRIGGER IF NOT EXISTS trg_{key}_{table}_{suffix} "
+                    f"AFTER {operation} ON {table} BEGIN "
+                    "UPDATE schema_metadata SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT), "
+                    "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') "
+                    f"WHERE key IN ('{key}', 'trackside_ap_business_revision'); END;"
+                )
+    return "\n".join(statements)
+
 DEVICES_SCHEMA = """
 CREATE TABLE IF NOT EXISTS devices (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3476,6 +3532,7 @@ class Database:
             CONFIG_SNAPSHOTS_SCHEMA,
             _ap_identity_source_revision_schema(),
             BASE_DATA_REVISION_SCHEMA,
+            _trackside_ap_revision_schema(),
         ]
         if include_device_address_index:
             scripts.insert(2, DEVICE_PRIMARY_ADDRESS_INDEX_SCHEMA)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -250,6 +251,32 @@ def test_source_revisions_include_history_outbox_without_opening_history_shards(
     )
 
 
+def test_source_revision_uses_metadata_counters_without_row_scan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = _database(tmp_path)
+    with database.connect() as connection:
+        connection.execute(
+            "UPDATE schema_metadata SET value='41' WHERE key='trackside_ap_business_revision'"
+        )
+        connection.execute(
+            "UPDATE schema_metadata SET value='7' WHERE key='trackside_ap_optical_revision'"
+        )
+        connection.commit()
+
+    def fail_scan(*_args, **_kwargs):
+        raise AssertionError("revision fallback must not scan current tables")
+
+    monkeypatch.setattr(
+        "netconsole.services.rail_transit.trackside_ap_business_snapshot._tables_revision",
+        fail_scan,
+    )
+    revisions = read_trackside_ap_source_revisions(database)
+    assert revisions["optical_data_revision"] == "7"
+    assert revisions["ap_history_revision"] == "0"
+
+
 def test_stable_snapshot_retries_once_and_is_deterministic(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -312,6 +339,40 @@ def test_business_revision_and_content_hash_are_idempotent(tmp_path: Path) -> No
 
     with pytest.raises(TypeError):
         first.source_revisions["base_data_revision"] = "changed"  # type: ignore[index]
+
+
+def test_same_revision_snapshot_build_is_single_flight(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = _database(tmp_path)
+    calls = 0
+    original = export_service._load_trackside_ap_business_snapshot_once
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(
+        export_service,
+        "_load_trackside_ap_business_snapshot_once",
+        counted,
+    )
+
+    def load() -> TracksideApBusinessLoadResult:
+        return load_trackside_ap_business_snapshot(
+            DeviceRepository(database),
+            "single-flight",
+            0,
+        )
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        snapshots = list(executor.map(lambda _index: load(), range(4)))
+
+    assert calls == 1
+    assert len({item.business_revision for item in snapshots}) == 1
+    assert len({item.snapshot_id for item in snapshots}) == 4
 
 
 def test_stable_snapshot_rows_and_identity_queries_are_immutable(

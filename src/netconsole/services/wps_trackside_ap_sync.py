@@ -36,8 +36,13 @@ from netconsole.models.wps_sync import (
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.repositories.wps_sync_repository import WpsSyncRepository
 from netconsole.services.rail_transit.trackside_ap_business_snapshot import (
+    build_business_revision,
     canonical_json_bytes,
     content_sha256,
+    read_trackside_ap_source_revisions,
+)
+from netconsole.services.rail_transit.effective_trackside_ap_scope import (
+    TracksideApScopeContext,
 )
 from netconsole.services.trackside_ap_export_service import (
     _render_trackside_ap_business_export,
@@ -1232,13 +1237,17 @@ class TracksideApWpsSyncService:
 
         if should_cancel is not None:
             should_cancel()
+        if expected_revision:
+            if progress is not None:
+                progress("wps_revision_preflight", 2, 100, "正在快速校验轨旁 AP 业务版本")
+            current_revision = self._business_revision_preflight(site_id)
+            if current_revision != expected_revision:
+                raise WpsSyncError("TRACKSIDE_AP_SNAPSHOT_STALE", "轨旁 AP 数据已更新，请刷新后重试")
         if progress is not None:
             progress("wps_snapshot", 5, 100, "正在冻结轨旁 AP 业务快照")
         snapshot = self._build_snapshot(site_id)
         revision = str(snapshot.get("business_revision") or "")
         business_content_sha256 = str(snapshot.get("content_sha256") or "")
-        if expected_revision and revision != expected_revision:
-            raise WpsSyncError("TRACKSIDE_AP_SNAPSHOT_STALE", "轨旁 AP 数据已更新，请刷新后重试")
         batch_id = f"wps_{uuid4().hex}"
         workbook, snapshot_sha256, payload_size, source_format_manifest = self._build_workbook_dto(
             site_id,
@@ -1816,18 +1825,36 @@ class TracksideApWpsSyncService:
         return repository.recent_batches(TRACKSIDE_AP_WPS_BUSINESS_KEY, limit)
 
     def _build_snapshot(self, site_id: str) -> dict[str, object]:
-        metadata = SiteManager(self.paths).load_site_metadata(site_id)
-        scope_context = {
-            **metadata,
-            "site_id": site_id,
-            "site_display_name": self._site_display_name(site_id),
-            "generated_at": _now(),
-        }
+        scope_context = self._snapshot_scope_context(site_id)
         return build_trackside_ap_business_export_snapshot(
             DeviceRepository(Database(self.paths.site_db_path(site_id))),
             site_id,
             scope_context=scope_context,
         )
+
+    def _snapshot_scope_context(self, site_id: str) -> dict[str, object]:
+        metadata = SiteManager(self.paths).load_site_metadata(site_id)
+        return {
+            **metadata,
+            "site_id": site_id,
+            "site_display_name": self._site_display_name(site_id),
+            "generated_at": _now(),
+        }
+
+    def _business_revision_preflight(self, site_id: str) -> str:
+        metadata = SiteManager(self.paths).load_site_metadata(site_id)
+        context = TracksideApScopeContext.from_metadata(site_id, metadata)
+        context_payload = {
+            "site_id": context.site_id,
+            "project_id": context.project_id,
+            "line_name": context.line_name,
+            "project_phase": context.project_phase,
+        }
+        revisions = read_trackside_ap_source_revisions(
+            Database(self.paths.site_db_path(site_id)),
+            scope_context=context_payload,
+        )
+        return build_business_revision(site_id, revisions)
 
     def _build_workbook_dto(
         self,
