@@ -981,11 +981,11 @@ onBeforeUnmount(() => {
         >更新全部光衰</el-button>
         <el-button
           :loading="taskSubmitting"
-          :disabled="updateTaskRunning || exportTaskRunning || !isFeatureEnabled('capability.trackside_ap.export') || !isFeatureEnabled('capability.rail_transit.task_control')"
+          :disabled="exportTaskRunning || !isFeatureEnabled('capability.trackside_ap.export') || !isFeatureEnabled('capability.rail_transit.task_control')"
           @click="exportBusiness"
         >导出表格</el-button>
         <template v-if="wpsSyncFeatureEnabled">
-          <el-button type="success" :loading="wpsSyncing" :disabled="wpsSyncing || wpsTaskRunning || updateTaskRunning || !wpsDocumentReady" @click="syncWpsDocument">同步云文档</el-button>
+          <el-button type="success" :loading="wpsSyncing" :disabled="wpsSyncing || wpsTaskRunning || !wpsDocumentReady" @click="syncWpsDocument">同步云文档</el-button>
           <el-button link type="info" :disabled="wpsSyncing || wpsTaskRunning" @click="openWpsDocument">打开云文档</el-button>
           <el-button link type="warning" :disabled="wpsSyncing || wpsTaskRunning" @click="openWpsConfiguration">配置云文档</el-button>
         </template>

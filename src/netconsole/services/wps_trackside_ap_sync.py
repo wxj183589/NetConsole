@@ -1236,6 +1236,7 @@ class TracksideApWpsSyncService:
             progress("wps_snapshot", 5, 100, "正在冻结轨旁 AP 业务快照")
         snapshot = self._build_snapshot(site_id)
         revision = str(snapshot.get("business_revision") or "")
+        business_content_sha256 = str(snapshot.get("content_sha256") or "")
         if expected_revision and revision != expected_revision:
             raise WpsSyncError("TRACKSIDE_AP_SNAPSHOT_STALE", "轨旁 AP 数据已更新，请刷新后重试")
         batch_id = f"wps_{uuid4().hex}"
@@ -1271,6 +1272,7 @@ class TracksideApWpsSyncService:
             "business_key": TRACKSIDE_AP_WPS_BUSINESS_KEY,
             "snapshot_revision": revision,
             "snapshot_sha256": snapshot_sha256,
+            "content_sha256": business_content_sha256,
             "snapshot_generated_at": generated_at,
             "payload_bytes": payload_size,
             "sheet_count": len(workbook.sheets),
@@ -1304,6 +1306,7 @@ class TracksideApWpsSyncService:
                 "business_key": TRACKSIDE_AP_WPS_BUSINESS_KEY,
                 "snapshot_revision": revision,
                 "snapshot_sha256": snapshot_sha256,
+                "content_sha256": business_content_sha256,
                 "snapshot_generated_at": generated_at,
                 "requested_at": _now(),
                 "format_mirror_enabled": WPS_STANDARD_FORMAT_MIRROR_ENABLED,
@@ -1542,6 +1545,11 @@ class TracksideApWpsSyncService:
             ),
             "snapshot_revision": revision,
             "snapshot_sha256": str(batch.get("snapshot_sha256") or ""),
+            "content_sha256": str(
+                persisted_summary.get("content_sha256")
+                or batch.get("content_sha256")
+                or ""
+            ),
             "snapshot_generated_at": str(batch.get("snapshot_generated_at") or ""),
             "payload_bytes": int(persisted_summary.get("payload_bytes") or batch.get("payload_bytes") or 0),
             "sheet_count": int(persisted_summary.get("sheet_count") or batch.get("sheet_count") or 0),
@@ -1850,6 +1858,7 @@ class TracksideApWpsSyncService:
                 "site_id": site_id,
                 "business_key": TRACKSIDE_AP_WPS_BUSINESS_KEY,
                 "snapshot_revision": str(snapshot.get("business_revision") or ""),
+                "content_sha256": str(snapshot.get("content_sha256") or ""),
                 "workbook": workbook.to_dict(),
             }
             serialized = canonical_json_bytes(digest_payload)

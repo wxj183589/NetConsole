@@ -1785,13 +1785,13 @@ describe('TracksideApBusinessView mounted behavior', () => {
     exportWrapper.unmount()
   })
 
-  it('does not start an export while a trackside update is running', async () => {
+  it('keeps export available while a trackside update is running', async () => {
     taskApi.listTasks.mockResolvedValueOnce([
       globalTask('update-running', 'RUNNING'),
     ])
     const wrapper = await mountView()
 
-    expect(button(wrapper, '导出表格').attributes('disabled')).toBeDefined()
+    expect(button(wrapper, '导出表格').attributes('disabled')).toBeUndefined()
     expect(api.getTracksideApBusinessExportProposal).not.toHaveBeenCalled()
     expect(api.startTracksideApBusinessExport).not.toHaveBeenCalled()
     wrapper.unmount()

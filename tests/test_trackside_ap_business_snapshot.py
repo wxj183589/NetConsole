@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -80,6 +81,25 @@ def _empty_export_payload() -> dict[str, object]:
             "unmatched_online_rows": [],
         },
     }
+
+
+def _one_row_export_payload() -> dict[str, object]:
+    payload = _empty_export_payload()
+    row = {
+        "site": "普通测试站",
+        "device_name": "SW-ORDINARY",
+        "interface_name": "XGE1/0/1",
+        "ap_name": "AP-ORDINARY",
+        "ap_mac": "0011-2233-4455",
+    }
+    payload["business_rows"] = [row]
+    workbook = dict(payload["workbook"])
+    workbook["rows"] = [row]
+    payload["workbook"] = workbook
+    payload["row_count"] = 1
+    payload["content_sha256"] = content_sha256([row])
+    payload["export_content_sha256"] = content_sha256([row])
+    return payload
 
 
 def test_source_revisions_track_runtime_content_but_ignore_unrelated_metadata(
@@ -254,7 +274,7 @@ def test_stable_snapshot_retries_once_and_is_deterministic(
     assert snapshot.content_sha256
 
 
-def test_stable_snapshot_has_finite_retries(
+def test_complete_snapshot_survives_continuous_revision_changes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -273,10 +293,11 @@ def test_stable_snapshot_has_finite_retries(
         lambda *_args, **_kwargs: TracksideApBusinessLoadResult(0, "demo", [], 0, 0, 0),
     )
 
-    with pytest.raises(TracksideApBusinessSnapshotError) as error:
-        load_trackside_ap_business_snapshot(repository, "demo", 0)
+    snapshot = load_trackside_ap_business_snapshot(repository, "demo", 0)
 
-    assert error.value.code == "TRACKSIDE_AP_SNAPSHOT_UNSTABLE"
+    assert snapshot.snapshot_id
+    assert snapshot.business_revision
+    assert snapshot.content_sha256
     assert counter == 6
 
 
@@ -778,3 +799,113 @@ def test_snapshot_errors_have_structured_http_contract(
 
     assert raised.value.status_code == expected_status
     assert raised.value.detail == {"code": code, "message": "snapshot error"}
+
+
+def test_export_freezes_complete_payload_when_live_revision_keeps_moving(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = DeviceRepository(_database(tmp_path))
+    revision_counter = 0
+
+    def changing_revisions(*_args, **_kwargs):
+        nonlocal revision_counter
+        revision_counter += 1
+        return {"base_data_revision": str(revision_counter)}
+
+    monkeypatch.setattr(
+        export_service,
+        "read_trackside_ap_source_revisions",
+        changing_revisions,
+    )
+    monkeypatch.setattr(
+        export_service,
+        "_build_trackside_ap_business_export_snapshot_once",
+        lambda *_args, **_kwargs: _one_row_export_payload(),
+    )
+
+    payload = build_trackside_ap_business_export_snapshot(repository, "ordinary-site")
+    snapshot_path, snapshot_sha256 = write_export_snapshot(
+        tmp_path / "staging",
+        site_id="ordinary-site",
+        task_id="moving-revision",
+        payload=payload,
+    )
+    output = tmp_path / "moving-revision.xlsx"
+    result = export_trackside_ap_business_from_snapshot(
+        snapshot_path=snapshot_path,
+        snapshot_sha256=snapshot_sha256,
+        output_path=output,
+        tmp_path=tmp_path / "moving-revision.xlsx.tmp",
+    )
+
+    assert output.is_file()
+    assert result["business_revision"] == payload["business_revision"]
+    assert result["content_sha256"] == payload["content_sha256"]
+    assert result["row_count"] == 1
+    assert revision_counter >= 6
+
+
+def test_wps_workbook_uses_already_frozen_payload_without_live_reads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = PathResolver(tmp_path)
+    paths.ensure_site_dirs("ordinary-site")
+    payload = _one_row_export_payload()
+    from netconsole.models.wps_sync import TRACKSIDE_AP_WPS_BUSINESS_KEY
+    from netconsole.services.wps_trackside_ap_sync import TracksideApWpsSyncService
+
+    service = TracksideApWpsSyncService(paths)
+    monkeypatch.setattr(service, "_build_snapshot", lambda _site_id: payload)
+    frozen = service._build_snapshot("ordinary-site")
+    assert frozen is payload
+    workbook, snapshot_sha256, _payload_size, _manifest = service._build_workbook_dto(
+        "ordinary-site",
+        "frozen-wps",
+        frozen,
+    )
+
+    expected_sha256 = content_sha256(
+        {
+            "site_id": "ordinary-site",
+            "business_key": TRACKSIDE_AP_WPS_BUSINESS_KEY,
+            "snapshot_revision": payload["business_revision"],
+            "content_sha256": payload["content_sha256"],
+            "workbook": workbook.to_dict(),
+        }
+    )
+    assert snapshot_sha256 == expected_sha256
+    snapshot_path, snapshot_file_sha256 = write_export_snapshot(
+        tmp_path / "staging",
+        site_id="ordinary-site",
+        task_id="wps-and-excel",
+        payload=payload,
+    )
+    excel_result = export_trackside_ap_business_from_snapshot(
+        snapshot_path=snapshot_path,
+        snapshot_sha256=snapshot_file_sha256,
+        output_path=tmp_path / "wps-and-excel.xlsx",
+        tmp_path=tmp_path / "wps-and-excel.xlsx.tmp",
+    )
+    assert excel_result["business_revision"] == payload["business_revision"]
+    assert excel_result["content_sha256"] == payload["content_sha256"]
+    assert excel_result["row_count"] == 1
+
+
+def test_snapshot_read_failure_is_not_converted_to_unstable_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = DeviceRepository(_database(tmp_path))
+
+    def fail_read(*_args, **_kwargs):
+        raise sqlite3.OperationalError("database is malformed")
+
+    monkeypatch.setattr(
+        export_service,
+        "_load_trackside_ap_business_snapshot_once",
+        fail_read,
+    )
+    with pytest.raises(sqlite3.OperationalError, match="malformed"):
+        load_trackside_ap_business_snapshot(repository, "ordinary-site", 0)

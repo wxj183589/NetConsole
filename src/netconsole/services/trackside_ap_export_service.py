@@ -203,7 +203,11 @@ def load_trackside_ap_business_snapshot(
             repository.database,
             scope_context=context_payload,
         )
-        if source_revisions == confirmed_revisions:
+        # A complete read is already usable; normal telemetry may advance the
+        # live revision before the final confirmation.
+        if source_revisions == confirmed_revisions or (
+            attempt + 1 == attempts and not snapshot.partial_data
+        ):
             rows = tuple(
                 MappingProxyType(dict(row))
                 for row in snapshot.rows
@@ -749,7 +753,9 @@ def build_trackside_ap_business_export_snapshot(
             scope_context=revision_context,
             include_export_history=True,
         )
-        if revisions == confirmed:
+        # The nested builder rejects partial sources, so keep its complete
+        # payload after the final short retry even if telemetry advanced.
+        if revisions == confirmed or attempt + 1 == attempts:
             payload["source_revisions"] = confirmed
             payload["export_revision"] = content_sha256(
                 {
