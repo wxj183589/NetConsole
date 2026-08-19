@@ -493,17 +493,27 @@ class TaskApplicationService:
         if delete_artifacts:
             raise ValueError("任务中心清理不允许删除日志、采集文件或导出结果")
         repository = self.repository(site_name)
-        result = repository.cleanup_history(
-            cleanup_type,
-            include_states=include_states,
-            exclude_states=exclude_states,
-            dismissed_by=dismissed_by,
-            dry_run=dry_run,
-        )
+        if cleanup_type == "bounded_retention":
+            result = repository.retain_recent_terminal_tasks(dry_run=dry_run)
+            result.setdefault("dismissed", 0)
+            result.setdefault("skipped_unacknowledged", 0)
+            result.setdefault("artifacts_deleted", 0)
+            result.setdefault(
+                "counts",
+                {"completed": 0, "cancelled": 0, "expired": 0, "alerts": 0},
+            )
+        else:
+            result = repository.cleanup_history(
+                cleanup_type,
+                include_states=include_states,
+                exclude_states=exclude_states,
+                dismissed_by=dismissed_by,
+                dry_run=dry_run,
+            )
         ids = list(result.get("task_ids") or [])
         if ids:
             self._publish_history_event(
-                "tasks.dismissed",
+                "tasks.retention_applied" if cleanup_type == "bounded_retention" else "tasks.dismissed",
                 task_ids=ids,
                 site_name=site_name,
                 payload={"summary": repository.visible_attention_summary()},

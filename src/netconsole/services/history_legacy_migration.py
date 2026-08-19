@@ -53,6 +53,12 @@ SUPPORTED_SPECS = {
     "ac_fit_ap_radio_history": LegacyTableSpec("fit_ap_radio", ("ap_uuid", "rid")),
     "ac_fit_ap_lldp_history": LegacyTableSpec("fit_ap_lldp", ("ap_uuid",)),
     "ac_fit_ap_optical_history": LegacyTableSpec("fit_ap_optical", ("ap_uuid",)),
+    "ac_fit_ap_unauthenticated_history": LegacyTableSpec(
+        "fit_ap_unauthenticated", ("ac_device_uuid",)
+    ),
+    "ac_station_online_summary_history": LegacyTableSpec(
+        "station_online_summary", ("site_name",)
+    ),
     "ap_lldp_history": LegacyTableSpec(
         "fit_ap_lldp", ("ap_uuid",), canonical_source="ac_fit_ap_lldp_history"
     ),
@@ -60,10 +66,7 @@ SUPPORTED_SPECS = {
         "fit_ap_optical", ("ap_uuid",), canonical_source="ac_fit_ap_optical_history"
     ),
 }
-UNSUPPORTED_TABLES = {
-    "ac_fit_ap_unauthenticated_history": "no target history entity contract",
-    "ac_station_online_summary_history": "aggregate summary has no target event contract",
-}
+UNSUPPORTED_TABLES: dict[str, str] = {}
 SOURCE_ORDER = tuple(
     name for name in SUPPORTED_SPECS if not SUPPORTED_SPECS[name].canonical_source
 ) + tuple(name for name in SUPPORTED_SPECS if SUPPORTED_SPECS[name].canonical_source)

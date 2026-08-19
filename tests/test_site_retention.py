@@ -424,21 +424,27 @@ def test_task_retention_is_typed_preview_only_and_keeps_events_unchanged(
 ) -> None:
     paths, root = _site(tmp_path)
     task_db = root / "db" / "tasks.db"
-    TaskRepository(task_db)
+    repository = TaskRepository(task_db)
+    for index in range(11):
+        stamp = f"2026-08-{index + 1:02d}T00:00:00Z"
+        repository.save(
+            TaskSnapshot(
+                task_id=f"terminal-{index}",
+                task_type="device_collect",
+                task_name="设备采集",
+                status=TaskState.COMPLETED,
+                created_time=stamp,
+                finished_time=stamp,
+                updated_time=stamp,
+                site_name="line-12",
+            )
+        )
     with closing(sqlite3.connect(task_db)) as connection:
         connection.execute(
             """
             INSERT INTO task_events(
                 event_id, task_id, event_type, event_time, source, payload_json
-            ) VALUES ('old-event', 'old-task', 'log', '2026-04-01T00:00:00Z', 'test', '{}')
-            """
-        )
-        connection.commit()
-        connection.execute(
-            """
-            INSERT INTO task_events(
-                event_id, task_id, event_type, event_time, source, payload_json
-            ) VALUES ('recent-event', 'recent-task', 'log', '2026-08-01T00:00:00Z', 'test', '{}')
+            ) VALUES ('old-event', 'terminal-0', 'log', '2026-04-01T00:00:00Z', 'test', '{}')
             """
         )
         connection.commit()
@@ -451,13 +457,12 @@ def test_task_retention_is_typed_preview_only_and_keeps_events_unchanged(
     )
     assert candidate["safe"] is False
     assert candidate["recommended_action"] == "preview"
-    assert candidate["status"] == "USER_POLICY_REQUIRED"
+    assert candidate["status"] == "KEEP_LAST_10_EFFECTIVE"
     assert candidate["details"]["apply_enabled"] is False  # type: ignore[index]
     assert candidate["details"]["vacuum"] is False  # type: ignore[index]
-    event_breakdown = candidate["details"]["task_event_breakdown"]  # type: ignore[index]
-    log_preview = next(item for item in event_breakdown if item["event_type"] == "log")
-    assert log_preview["retention_days"] == 30
-    assert log_preview["would_delete_rows"] == 1
+    assert candidate["details"]["would_delete_tasks"] == 1  # type: ignore[index]
+    assert candidate["details"]["task_snapshot_rows"] == 1  # type: ignore[index]
+    assert candidate["details"]["task_event_rows"] == 1  # type: ignore[index]
     assert int(candidate["details"]["would_delete_bytes_estimate"]) > 0  # type: ignore[index]
 
     with pytest.raises(SiteStorageError) as blocked:
@@ -473,7 +478,7 @@ def test_task_retention_is_typed_preview_only_and_keeps_events_unchanged(
             "SELECT event_id FROM task_events ORDER BY event_id"
         ).fetchall()
         quick_check = connection.execute("PRAGMA quick_check").fetchone()[0]
-    assert rows == [("old-event",), ("recent-event",)]
+    assert rows == [("old-event",)]
     assert quick_check == "ok"
 
 
@@ -521,6 +526,20 @@ def test_task_retention_preview_breaks_down_type_status_and_authority_result(
         allow_development_root_only=True,
     )
     assert backfill["new_result_rows"] == 1
+    for index in range(10):
+        stamp = f"2026-08-{index + 1:02d}T00:00:00Z"
+        repository.save(
+            TaskSnapshot(
+                task_id=f"new-terminal-{index}",
+                task_type="ac_fit_ap_resources_refresh",
+                task_name="刷新 FIT-AP 资源",
+                status=TaskState.COMPLETED,
+                created_time=stamp,
+                finished_time=stamp,
+                updated_time=stamp,
+                site_name="line-12",
+            )
+        )
     repository.save(
         TaskSnapshot(
             task_id="active-task",
@@ -540,25 +559,13 @@ def test_task_retention_preview_breaks_down_type_status_and_authority_result(
         if isinstance(item, dict) and item.get("category") == "task_history"
     )
     details = candidate["details"]
-    snapshots = details["task_snapshot_breakdown"]
-    completed = next(
-        item for item in snapshots if item["task_type"] == "ac_fit_ap_resources_refresh"
-    )
-    active = next(item for item in snapshots if item["task_type"] == "device_collect")
-    assert completed["status"] == "COMPLETED"
-    assert completed["would_delete_rows"] == 1
-    assert active["policy"] == "NEVER_WHILE_ACTIVE"
-    assert active["would_delete_rows"] == 0
-    results = details["task_result_breakdown"]
-    assert len(results) == 1
-    result_preview = results[0]
-    assert result_preview["terminal_event_type"] == "finished"
-    assert result_preview["total_rows"] == 1
-    assert result_preview["retention_days"] == 90
-    assert result_preview["cutoff"] == "2026-05-15T12:00:00+00:00"
-    assert result_preview["would_delete_rows"] == 1
-    assert result_preview["would_delete_bytes_estimate"] > 0
-    assert result_preview["authority_copies_after_retention"] == 1
+    assert details["would_delete_tasks"] == 1
+    assert details["protected_tasks"] == 0
+    assert details["skipped_active_tasks"] == 1
+    assert details["task_snapshot_rows"] == 1
+    assert details["task_event_rows"] == 1
+    assert details["task_result_rows"] == 1
+    assert details["would_delete_bytes_estimate"] > 0
 
 
 def test_retention_database_lock_wraps_storage_lock(

@@ -133,6 +133,27 @@ def test_fit_ap_unauthenticated_snapshot_can_clear_without_deleting_history(tmp_
     assert repository.get_fit_ap_unauthenticated_summary("ac-1")["connected_auto_aps"] == 0
 
 
+def test_fit_ap_unauthenticated_history_is_change_only_per_ap_and_reads_by_ac(tmp_path):
+    repository = make_ac_repository(tmp_path)
+    first = {"ap_name": "AP-1", "serial_number": "SN-1", "apid": "1", "state": "R/M", "collected_at": "2026-01-01T00:00:00"}
+    second = {"ap_name": "AP-2", "serial_number": "SN-2", "apid": "2", "state": "R/M", "collected_at": "2026-01-01T00:00:00"}
+    repository.replace_fit_ap_unauthenticated("ac-1", {"connected_auto_aps": 2}, [first, second])
+    repository.replace_fit_ap_unauthenticated("ac-1", {"connected_auto_aps": 2}, [{**first, "collected_at": "2026-01-01T00:05:00"}, {**second, "collected_at": "2026-01-01T00:05:00"}])
+    repository.replace_fit_ap_unauthenticated("ac-1", {"connected_auto_aps": 2}, [{**first, "state": "I", "collected_at": "2026-01-01T00:10:00"}, {**second, "collected_at": "2026-01-01T00:10:00"}])
+
+    history = repository.list_fit_ap_unauthenticated_history("ac-1")
+
+    assert len(history) == 3
+    assert {(row["serial_number"], row["state"]) for row in history} == {
+        ("SN-1", "I"),
+        ("SN-1", "R/M"),
+        ("SN-2", "R/M"),
+    }
+    with repository.database.connect() as conn:
+        states = conn.execute("SELECT entity_key, last_recorded_at, last_seen_at FROM history_state WHERE kind='fit_ap_unauthenticated' ORDER BY entity_key").fetchall()
+    assert [(row[0], row[1], row[2]) for row in states] == [("ac-1:serial:sn-1", "2026-01-01T00:10:00", "2026-01-01T00:10:00"), ("ac-1:serial:sn-2", "2026-01-01T00:00:00", "2026-01-01T00:10:00")]
+
+
 def test_fit_ap_resources_derive_unauthenticated_register_status(tmp_path):
     repository = make_ac_repository(tmp_path)
     repository.replace_fit_ap_resources(

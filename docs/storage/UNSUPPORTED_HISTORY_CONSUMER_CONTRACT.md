@@ -1,10 +1,10 @@
 # Unsupported History Consumer Contract
 
-状态：`CONFIRMED`（代码消费者存在）；迁移状态：`BLOCKED_BY_TARGET_EVENT_CONTRACT`。
+状态：`CONFIRMED`（代码消费者存在）；迁移状态：`SUPPORTED_TARGET_EVENT_CONTRACT`。
 
 `ac_fit_ap_unauthenticated_history` 和 `ac_station_online_summary_history` 不能继续标成“无消费者”。
-两者目前仍是 legacy projection，HistoryStore 尚未为其定义稳定的 target event schema，因此本轮不
-执行 source retirement、删除或自动迁移。
+两者仍保留 legacy source 作为兼容事实源，同时已定义稳定的 HistoryStore target event contract；
+新写入按实体进入 bounded change history，legacy source 不在本轮删除。
 
 ## Consumer audit
 
@@ -15,7 +15,7 @@
 
 ## Migration contract
 
-- Authority remains the legacy table until a reviewed HistoryStore event contract exists.
+- Legacy tables remain available for compatibility; HistoryStore is the target read contract for new writes.
 - Proposed target kinds are `fit_ap_unauthenticated` (entity key `ac_device_uuid`) and
   `station_online_summary` (entity key `site_name`), matching the existing HistoryStore kind aliases.
 - Every target event must preserve source table/id provenance, `collected_at`, canonical payload,
@@ -25,15 +25,14 @@
 - Rebuild from current tables is **not** supported. A rebuildable diagnostic view may read legacy rows,
   but it is not an authority and must not be used to mark source deletion eligible.
 
-The existing `UNSUPPORTED` classification in `HistoryLegacyMigrationService` is therefore a safety gate,
-not evidence that the tables are dead. It must remain fail-closed until the target event schema and all
-consumer migrations are implemented.
+Invalid rows fail closed with diagnostics; valid rows use the supported target contract. Source retirement
+and physical cleanup remain separately gated and are not part of this change.
 
 ## Required evidence
 
 - `tests/test_ac_unauthenticated_and_trackside_merge.py` and `tests/test_ac_management.py` prove write,
   read, enrichment and station-history pagination behavior.
-- `tests/test_history_legacy_migration.py` proves both tables remain `UNSUPPORTED` and are not copied by
-  the generic migration.
+- `tests/test_history_legacy_migration.py` proves both tables are registered as `SUPPORTED` targets and
+  invalid rows are not emitted.
 - `tests/test_unsupported_history_contract.py` verifies this contract against the producer/consumer paths.
 

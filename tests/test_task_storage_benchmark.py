@@ -43,7 +43,7 @@ def test_task_storage_benchmark_compares_all_result_layouts(tmp_path: Path) -> N
     large = next(item for item in size_samples if item["result_profile"] == "large")
     assert 4_000_000 <= large["result_canonical_bytes"] <= 5_000_000
     assert "potential" in report["terminal_result_storage"]["space_claim"].lower()
-    assert report["retention"] == "PREVIEW_ONLY_USER_POLICY_REQUIRED"
+    assert report["retention"] == "KEEP_LAST_10_EFFECTIVE"
     assert report["destructive_operations"] == {
         "DELETE": "NO",
         "DROP": "NO",

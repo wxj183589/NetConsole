@@ -72,54 +72,30 @@ Site Return Package 仍要求 terminal event 可解释。当前回传合并已�
 
 ## Retention 设计
 
-当前代码事实必须与未来候选区分：
+当前代码事实：
 
-- `task_snapshots.expires_at` 只驱动任务历史软隐藏：成功/取消默认 7 天，失败/业务告警默认
-  30 天；快照、事件、结果和 Artifact 不因此物理删除。
-- `SiteRetentionService` 当前存在“统一删除 90 天以前全部 task_events + VACUUM”的显式
-  用户选择流程，不区分 progress、state、log 或 terminal。B2 没有调用、修改或批准该流程。
-  未来分级策略必须替换/升级这个既有 owner，不能新增一个并列 retention 路径。
+- `task_snapshots.expires_at` 只驱动任务历史软隐藏；它不会物理删除快照、事件、结果或 Artifact。
+- `TaskRepository.retain_recent_terminal_tasks()` 是普通终态 Task Center 物理 retention 的唯一 owner。
+  它按 `site_name + task_type` 保留最近 10 条，并在一个事务中删除被淘汰任务的 event、snapshot
+  和无引用 result。
+- `SiteRetentionService` 只调用同一个 owner 的 dry-run 规则展示候选统计，不能从局点清理入口
+  执行 Task 删除、Artifact 删除或 `VACUUM`。
+- Online MR mapping、Online MR/Ground/MESH 任务与明确业务资源引用、所有非终态任务均受保护。
 
-未来细分策略建议如下，所有期限均为 `USER_POLICY_REQUIRED`：
+当前生命周期策略统一为：长期业务证据 `LONG_TERM_MANUAL_DELETE`、权威当前态 `CURRENT_STATE`、普通变化历史 `KEEP_LAST_10_EFFECTIVE`。Task Center 普通终态任务按 `site_name + task_type` 保留最近 10 条；终态结果与事件随被淘汰任务事务删除，Online MR/Ground/MESH 业务来源及 mapping 受保护。
 
 | Data | Candidate | Safety rule |
 | --- | --- | --- |
 | PENDING/STARTING/RUNNING/STOPPING snapshot/event | 永不自动 retention | 活动任务、协作取消和资源键必须保留 |
-| sampled progress event | 14 天 | 仅终态任务；保留首条、heartbeat、阶段变化和终态前最后一条 |
-| 普通 state/log/notification | 30 天 | 错误、取消、协议损坏、人工审计事件另按 terminal metadata |
-| terminal enriched event/result payload | 90 天候选 | 到期后只允许收敛为最小审计记录，不直接删除终态身份 |
-| terminal minimal audit record | 推荐永久保留 | 仅含 type/time/task/final status/result id/hash/summary；是否允许有限期限仍为 `USER_POLICY_REQUIRED` |
-| terminal snapshot summary | 90 天候选 | 有 mapping、Artifact、Site Package 或领域关系时不得删除 |
-| 完整 terminal result | 只保留一个权威副本 | Online MR 等领域按 session/package 生命周期，不使用统一天数 |
+| ordinary terminal task | 每个 `site_name + task_type` 最近 10 条 | 不存在长期领域保护时，事件、快照和无引用 result 一并删除 |
+| active/non-terminal task | 永不自动 retention | 保持运行、取消与恢复语义 |
+| Online MR/Ground/MESH task or protected resource | 长期保留 | 由 session/source/archive 的显式删除流程管理 |
+| Artifact metadata/file | 由领域 Artifact policy 管理 | Task retention 不删除 Artifact 文件 |
 | Artifact metadata/file | 由领域 Artifact policy 管理 | task event retention 不删除 Artifact 文件 |
-
-这里的最终建议是：富 terminal payload 可按用户批准的候选期限收敛，最小终态审计记录默认永久
-保留。若产品要求最小审计记录也有限期删除，必须由用户明确批准，不能沿用现有统一 90 天事件
-DELETE 作为默认答案。
 
 Ground Unattended 的 run/session/archive 事实源不在 terminal event payload，但关联 Task 的活动状态、
 资源占用和最小终态审计仍需保留。Online MR result 与 `online_mr_task_sessions`、session metadata、
 完整包和显式会话删除绑定；存在任一关系时不得由通用 Task retention 删除。
-
-## Retention 索引提案
-
-当前 `task_events` 只有 `(task_id, sequence DESC)`，不适合按时间/类型分批 retention；
-`task_snapshots` 的 `(status, updated_time DESC)` 也不等价于物理清理索引。
-
-未来 schema migration 建议先增加可验证的 `event_time_epoch_ms INTEGER NULL`，只为合法时间写值，
-非法时间和回退证据保持 `NULL` 并禁止自动删除。候选索引为：
-
-```sql
-CREATE INDEX idx_task_events_retention
-ON task_events(event_type, event_time_epoch_ms, sequence);
-
-CREATE INDEX idx_task_snapshots_retention
-ON task_snapshots(status, expires_at, task_id);
-```
-
-如果最终政策只有统一 90 天 cutoff，应通过真实副本的 `EXPLAIN QUERY PLAN` 和批量 DELETE benchmark
-比较 `(event_time_epoch_ms, sequence)`，不要同时保留两个重叠索引。迁移前还必须定义 batch size、
-WAL 上限、取消点、失败恢复和 compact 独立阶段。B2 未创建这些列或索引。
 
 ## Maintenance Exclusive Class
 
@@ -136,16 +112,14 @@ History migration、升级后的 site/task retention 和 large compact 必须复
 `database_maintenance_lock` 在外、领域 `storage_lock` 在内，避免反向获取造成死锁。锁内还需复核
 活动任务、候选 token、数据库 identity、WAL 状态和取消边界。
 
-现有 `SiteRetentionService` 的统一 90 天 task-event purge 必须由原 owner 原位升级为分级策略，
-不能保留旧 purge 再增加第二个 Task retention Service。该统一是后续
-`SHARED_CHANGE_REQUIRED`，B2 只记录设计，不修改现有 retention 执行路径。
+Task Center retention 由 `TaskRepository` 统一实现；局点存储扫描只做同一规则的只读预览，
+不保留第二个按日期清理或维护执行路径。
 
 ## 实施前 Gate
 
 任何物理 retention 或 terminal result cutover 必须满足：
 
-1. 用户确认保留期限，状态从 `USER_POLICY_REQUIRED` 转为明确产品政策。
-2. 所有矩阵消费者改为 result reference/read-through，并完成旧库与 Site Package 双向兼容。
-3. 在隔离副本验证并发写、崩溃恢复、WAL、分批清理、失败回滚和磁盘空间上限。
-4. 在最终集成 commit 运行 L3/L4 Consumer 与 FULL Gate；真实 Electron、设备、长时 Ground/
-   Online MR 和 HDD compact 仍单独验收。
+1. bounded retention owner、保护引用和消费者回归已经明确并通过隔离测试。
+2. 在隔离副本验证事务回滚、WAL 和被淘汰 task 的 event/snapshot/result 同步删除。
+3. 在最终集成 commit 运行 L3/L4 Consumer 与 FULL Gate；真实 Electron、设备、长时 Ground/
+   Online MR 和正式安装包仍单独验收。

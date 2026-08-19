@@ -83,16 +83,10 @@ export interface SiteRetentionReport {
     backup_archive_days: number
     backup_delete_days: number
     online_mr_raw_archive_days: number
-    task_event_retention_days: number
-    task_retention_status: 'USER_POLICY_REQUIRED' | string
+    task_retention_status: 'LONG_TERM_MANUAL_DELETE' | 'CURRENT_STATE' | 'KEEP_LAST_10_EFFECTIVE' | string
     typed_task_retention_apply_enabled: boolean
-    typed_task_retention_proposal: {
-      progress_event_days: number
-      ordinary_event_days: number
-      terminal_metadata_days: number
-      terminal_snapshot_days: number
-      terminal_result_days: number
-    }
+    typed_task_retention_owner: string
+    typed_task_retention_keep_per_scope: number
     rollback_keep_count: number
   }
   summary: {

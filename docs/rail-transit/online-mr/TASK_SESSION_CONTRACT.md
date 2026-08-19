@@ -34,7 +34,7 @@ session 的一一映射、执行器、远端 task/package 身份、生命周期�
 4. `task_results` 是终态结果 authority；mapping 是 session identity/lifecycle authority，两者不能互相替代。
 5. Agent 远端终态在 package 安全导入前不能把 Controller task 或 mapping 标为完成。
 6. `force_stop`、`STALE`、`TASK_ONLY_FAILED` 等终态必须保留停止原因/错误摘要；不得伪造正常 ZIP。
-7. 物理删除需要显式会话动作和隔离目录演练；生产 retention policy 仍为 `USER_POLICY_REQUIRED`。
+7. Online MR session/raw/analysis data 属于 `LONG_TERM_MANUAL_DELETE`；物理删除需要显式会话动作和隔离目录演练。
 
 ## Required regression evidence
 

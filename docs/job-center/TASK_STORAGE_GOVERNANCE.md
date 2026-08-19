@@ -2,9 +2,9 @@
 
 ## Phase 1 Result
 
-Task storage governance starts with read-only profiling. Phase 1 does not
-delete, archive, compact, VACUUM, change the user-visible retention period or
-split `tasks.db`.
+Task storage governance began with read-only profiling. That Phase 1 evidence
+remains below as capacity context; the current retention policy is the bounded
+Task Center rule documented in [Bounded Retention](#bounded-retention).
 
 The production snapshot assessed on 2026-08-15 is 419,778,560 bytes with
 102,485 4-KiB pages, `freelist_count=0` and a zero-byte WAL. Its size is live
@@ -18,7 +18,7 @@ The duplicate terminal representation is not changed in Phase 1. Event replay,
 WebSocket recovery, Online MR reconciliation and Site Package merge contracts
 consume it, so removing one copy requires a separate shared-contract design.
 The recommended current option is D: bound proven write amplification first,
-then define retention policy with the user.
+then implement the now-confirmed bounded retention policy.
 
 ## Read-only Profiler
 
@@ -77,11 +77,18 @@ databases under `D:\study`. It covers 100/1,000/10,000 terminal tasks, one
 a large terminal result. It reports DB/WAL bytes, event rows, events/task,
 throughput and commit latency percentiles.
 
+## Bounded Retention
+
+普通终态 Task Center 记录按 `site_name + task_type` 保留最近 10 个有效任务。
+`TaskRepository.retain_recent_terminal_tasks()` 在事务中删除旧任务的
+`task_events`、`task_snapshots` 和无引用 `task_results`；活动任务、Online MR
+mapping、Ground/MESH/Online MR 业务引用保持不变。该操作不删除 Artifact、raw、
+MESH source、Online MR session 或 Ground archive。
+
 ## Deferred Work
 
-- Destructive retention is `NOT STARTED`.
-- Retention periods are `USER_POLICY_REQUIRED`; soft-dismiss expiry does not
-  authorize physical deletion.
+- 生产 DataRoot 的 DELETE、DROP、VACUUM、数据库 replacement 和 backup retirement
+  仍不执行；本轮只完成实现与隔离测试。
 - Terminal result representation, event archive/shards and database split are
   unchanged.
 - Artifact filesystem truth remains owned by

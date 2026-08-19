@@ -28,6 +28,7 @@ from netconsole.models.task_history_policy import (
     task_requires_attention,
     utc_time_reached,
 )
+from netconsole.core.data_lifecycle import KEEP_LAST_EFFECTIVE_COUNT
 from netconsole.repositories.history_store import TaskHistoryStore, verify_task_result_row
 
 
@@ -958,6 +959,240 @@ class TaskRepository:
             "task_ids": [] if dry_run else matched_ids,
             "counts": counts,
         }
+
+    def retain_recent_terminal_tasks(
+        self,
+        *,
+        keep_per_scope: int = KEEP_LAST_EFFECTIVE_COUNT,
+        dry_run: bool = False,
+    ) -> dict[str, object]:
+        """Physically bound ordinary Task Center history.
+
+        This operation is deliberately separate from the user-facing soft
+        dismiss flow.  It removes only old terminal task-center rows, never
+        active tasks, Online MR mapping rows, or tasks carrying an explicit
+        long-lived domain resource reference.
+        """
+
+        keep = max(1, int(keep_per_scope))
+        retention_plan: dict[str, object] = {}
+
+        def operation() -> None:
+            nonlocal retention_plan
+            with self._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                retention_plan = self._recent_terminal_task_retention_plan(
+                    conn, keep_per_scope=keep
+                )
+                candidates = list(retention_plan["candidate_task_ids"])
+                if not dry_run and candidates:
+                    placeholders = ",".join("?" for _ in candidates)
+                    conn.execute(
+                        f"DELETE FROM task_events WHERE task_id IN ({placeholders})",
+                        candidates,
+                    )
+                    conn.execute(
+                        f"DELETE FROM task_snapshots WHERE task_id IN ({placeholders})",
+                        candidates,
+                    )
+                    # A result is owned by one task.  Remove it only after its
+                    # snapshot is gone and only when no remaining snapshot
+                    # references it.
+                    conn.execute(
+                        """
+                        DELETE FROM task_results
+                        WHERE task_id IN ({ids})
+                          AND NOT EXISTS (
+                              SELECT 1 FROM task_snapshots s
+                              WHERE s.result_id = task_results.result_id
+                          )
+                        """.format(ids=placeholders),
+                        candidates,
+                    )
+                conn.commit()
+
+        run_sqlite_with_retry(operation)
+        return {
+            "matched": int(retention_plan["matched"]),
+            "deleted": 0 if dry_run else int(retention_plan["matched"]),
+            "retained": int(retention_plan["retained"]),
+            "protected": int(retention_plan["protected"]),
+            "skipped_active": int(retention_plan["skipped_active"]),
+            "task_ids": [] if dry_run else list(retention_plan["candidate_task_ids"]),
+        }
+
+    @classmethod
+    def preview_recent_terminal_tasks(
+        cls,
+        db_path: str | Path,
+        *,
+        keep_per_scope: int = KEEP_LAST_EFFECTIVE_COUNT,
+    ) -> dict[str, object]:
+        """Read the exact bounded-retention plan without initializing or writing a DB."""
+
+        path = Path(db_path)
+        if not path.is_file() or path.is_symlink():
+            return {"available": False}
+        uri = f"file:{path.resolve().as_posix()}?mode=ro"
+        with sqlite3.connect(uri, uri=True, timeout=10) as conn:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA query_only = ON")
+            conn.execute("PRAGMA busy_timeout = 10000")
+            if not cls._table_exists(conn, "task_snapshots"):
+                return {"available": False}
+            plan = cls._recent_terminal_task_retention_plan(
+                conn, keep_per_scope=max(1, int(keep_per_scope))
+            )
+            estimates = cls._retention_size_estimates(
+                conn, list(plan["candidate_task_ids"])
+            )
+        return {"available": True, **plan, **estimates}
+
+    @classmethod
+    def _recent_terminal_task_retention_plan(
+        cls,
+        conn: sqlite3.Connection,
+        *,
+        keep_per_scope: int,
+    ) -> dict[str, object]:
+        mapping_ids = {
+            str(row[0])
+            for row in conn.execute(
+                "SELECT controller_task_id FROM online_mr_task_sessions"
+            ).fetchall()
+        } if cls._table_exists(conn, "online_mr_task_sessions") else set()
+        rows = conn.execute(
+            """
+            SELECT task_id, task_type, status, site_name, updated_time,
+                   resource_keys_json, result_json
+            FROM task_snapshots
+            ORDER BY site_name, task_type, updated_time DESC, task_id DESC
+            """
+        ).fetchall()
+        candidates: list[str] = []
+        protected = 0
+        skipped_active = 0
+        retained = 0
+        ordinary_by_scope: dict[tuple[str, str], list[str]] = {}
+        for row in rows:
+            task_id = str(row["task_id"])
+            status = str(row["status"] or "").upper()
+            if status in ACTIVE_TASK_STATE_VALUES:
+                skipped_active += 1
+                continue
+            if status not in TERMINAL_TASK_STATE_VALUES:
+                continue
+            if cls._task_retention_protected(row, mapping_ids):
+                protected += 1
+                continue
+            scope = (str(row["site_name"] or ""), str(row["task_type"] or ""))
+            ordinary_by_scope.setdefault(scope, []).append(task_id)
+        for task_ids in ordinary_by_scope.values():
+            retained += min(keep_per_scope, len(task_ids))
+            candidates.extend(task_ids[keep_per_scope:])
+        return {
+            "candidate_task_ids": candidates,
+            "keep_per_scope": keep_per_scope,
+            "matched": len(candidates),
+            "retained": retained + protected,
+            "protected": protected,
+            "skipped_active": skipped_active,
+        }
+
+    @classmethod
+    def _retention_size_estimates(
+        cls,
+        conn: sqlite3.Connection,
+        task_ids: list[str],
+    ) -> dict[str, int]:
+        if not task_ids:
+            return {
+                "snapshot_rows": 0,
+                "event_rows": 0,
+                "result_rows": 0,
+                "would_delete_bytes_estimate": 0,
+            }
+        placeholders = ",".join("?" for _ in task_ids)
+        snapshot = conn.execute(
+            """
+            SELECT COUNT(*), COALESCE(SUM(
+                LENGTH(task_id) + LENGTH(task_type) + LENGTH(task_name) +
+                LENGTH(status) + LENGTH(updated_time) + LENGTH(result_json) + 128
+            ), 0)
+            FROM task_snapshots WHERE task_id IN ({ids})
+            """.format(ids=placeholders),
+            task_ids,
+        ).fetchone()
+        event = conn.execute(
+            """
+            SELECT COUNT(*), COALESCE(SUM(
+                LENGTH(event_id) + LENGTH(task_id) + LENGTH(event_type) +
+                LENGTH(event_time) + LENGTH(source) + LENGTH(payload_json) + 64
+            ), 0)
+            FROM task_events WHERE task_id IN ({ids})
+            """.format(ids=placeholders),
+            task_ids,
+        ).fetchone() if cls._table_exists(conn, "task_events") else (0, 0)
+        result = conn.execute(
+            """
+            SELECT COUNT(*), COALESCE(SUM(byte_size + 256), 0)
+            FROM task_results
+            WHERE task_id IN ({ids})
+              AND NOT EXISTS (
+                  SELECT 1 FROM task_snapshots s
+                  WHERE s.result_id = task_results.result_id
+                    AND s.task_id NOT IN ({ids})
+              )
+            """.format(ids=placeholders),
+            [*task_ids, *task_ids],
+        ).fetchone() if cls._table_exists(conn, "task_results") else (0, 0)
+        return {
+            "snapshot_rows": int(snapshot[0] or 0),
+            "event_rows": int(event[0] or 0),
+            "result_rows": int(result[0] or 0),
+            "would_delete_bytes_estimate": int(snapshot[1] or 0)
+            + int(event[1] or 0)
+            + int(result[1] or 0),
+        }
+
+    @staticmethod
+    def _task_retention_protected(row: sqlite3.Row, mapping_ids: set[str]) -> bool:
+        task_id = str(row["task_id"])
+        if task_id in mapping_ids:
+            return True
+        task_type = str(row["task_type"] or "").casefold()
+        if any(token in task_type for token in ("online_mr", "ground_unattended", "mesh")):
+            return True
+        try:
+            resource_keys = json.loads(str(row["resource_keys_json"] or "[]"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            resource_keys = []
+        if isinstance(resource_keys, list):
+            protected_prefixes = (
+                "online_mr_session:",
+                "online_mr:",
+                "ground_unattended:",
+                "ground-unattended:",
+                "mesh_source:",
+                "mesh-import:",
+            )
+            if any(str(key).startswith(protected_prefixes) for key in resource_keys):
+                return True
+        try:
+            result_json = str(row["result_json"] or "").casefold()
+        except (KeyError, TypeError):
+            result_json = ""
+        if any(marker in result_json for marker in ("online_mr_session", "ground_unattended", "mesh_source")):
+            return True
+        return False
+
+    @staticmethod
+    def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+        row = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
+            (str(table),),
+        ).fetchone()
+        return row is not None
 
     def visible_attention_summary(self) -> dict[str, int]:
         summary = {"running": 0, "queued": 0, "failed": 0, "warning": 0}

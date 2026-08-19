@@ -60,6 +60,21 @@ def _stored_event_count(conn) -> int:
     return total
 
 
+def test_change_only_history_updates_last_seen_without_rewriting_last_recorded(tmp_path):
+    store = _store(tmp_path)
+
+    assert _record(store, collected_at="2026-08-01T10:00:00", value="up")
+    assert not _record(store, collected_at="2026-08-01T10:05:00", value="up")
+
+    with connect_sqlite(store.database_path, foreign_keys=True) as conn:
+        row = conn.execute(
+            "SELECT last_recorded_at, last_seen_at FROM history_state "
+            "WHERE kind='device_interface' AND entity_key='device-1:GE1/0/1'"
+        ).fetchone()
+        assert tuple(row) == ("2026-08-01T10:00:00", "2026-08-01T10:05:00")
+        assert conn.execute("SELECT COUNT(*) FROM history_outbox").fetchone()[0] == 1
+
+
 def _archive_event(index: int) -> dict[str, object]:
     collected_at = f"2026-08-01T10:{index % 60:02d}:{index % 60:02d}"
     return {

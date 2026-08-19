@@ -104,6 +104,7 @@ JobCenterCleanupType = Literal[
     "completed_and_expired",
     "resolved_alerts",
     "all_history",
+    "bounded_retention",
 ]
 
 
@@ -126,6 +127,9 @@ class JobCenterCleanupCountsDTO(ApiModel):
 class JobCenterCleanupResultDTO(ApiModel):
     matched: int = 0
     dismissed: int = 0
+    deleted: int = 0
+    retained: int = 0
+    protected: int = 0
     skipped_active: int = 0
     skipped_unacknowledged: int = 0
     artifacts_deleted: int = 0

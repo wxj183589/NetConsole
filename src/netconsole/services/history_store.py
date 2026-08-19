@@ -9,6 +9,7 @@ from netconsole.repositories.history_store import (
     HistoryRetentionPolicy,
     HistoryStore,
     TaskHistoryStore,
+    fit_ap_unauthenticated_entity_key,
     fingerprint,
     verify_task_result_row,
 )
@@ -19,6 +20,7 @@ __all__ = [
     "HistoryRetentionPolicy",
     "HistoryStore",
     "TaskHistoryStore",
+    "fit_ap_unauthenticated_entity_key",
     "verify_task_result_row",
     "fingerprint",
 ]

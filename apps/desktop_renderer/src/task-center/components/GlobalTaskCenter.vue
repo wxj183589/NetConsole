@@ -249,7 +249,7 @@ async function cleanupHistory(cleanupType: TaskCleanupType): Promise<void> {
           ElMessage.success(t(
             'job_center.cleanup.done',
             '已清理 {count} 个任务记录',
-          ).replace('{count}', String(result.dismissed)))
+          ).replace('{count}', String(result.deleted ?? result.dismissed)))
         } catch (cause) {
           ElMessage.error(cause instanceof Error ? cause.message : t('job_center.cleanup.failed', '任务清理失败'))
           throw cause
@@ -269,6 +269,7 @@ function cleanupMessage(cleanupType: TaskCleanupType, count: number): string {
     completed_and_expired: t('job_center.cleanup.message_completed_expired', '将从任务中心移除 {count} 个已完成或已过期任务。'),
     resolved_alerts: t('job_center.cleanup.message_resolved_alerts', '将从任务中心移除 {count} 个已处理的失败或警告任务。'),
     all_history: t('job_center.cleanup.message_all_history', '将从任务中心移除 {count} 个历史任务。'),
+    bounded_retention: t('job_center.cleanup.message_bounded_retention', '按每类任务保留最近 10 个终态任务，移除 {count} 个旧记录。'),
   }
   return labels[cleanupType].replace('{count}', String(count))
 }
@@ -482,6 +483,7 @@ function terminalTitle(task: TaskItem, kind: 'success' | 'warning' | 'failure'):
                 <el-dropdown-item command="expired">{{ t('job_center.cleanup.expired', '清理已过期任务') }}</el-dropdown-item>
                 <el-dropdown-item command="resolved_alerts" divided>{{ t('job_center.cleanup.resolved_alerts', '清理已处理的失败和告警') }}</el-dropdown-item>
                 <el-dropdown-item command="all_history">{{ t('job_center.cleanup.all_history', '清理全部历史任务') }}</el-dropdown-item>
+                <el-dropdown-item command="bounded_retention">{{ t('job_center.cleanup.bounded_retention', '保留最近 10 个任务') }}</el-dropdown-item>
               </el-dropdown-menu>
             </template>
           </el-dropdown>

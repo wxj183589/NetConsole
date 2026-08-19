@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from netconsole.core import app_logger
 from netconsole.core.database import Database
+from netconsole.core.optical_severity_engine import optical_history_state_changed
 from netconsole.parsers.h3c.ac.state_mapper import classify_fit_ap_state
 from netconsole.services.ap_extension_import import normalize_ap_mac
 from netconsole.services.fit_ap_link_info import (
@@ -18,7 +19,10 @@ from netconsole.services.fit_ap_link_info import (
     resolve_fit_ap_link_info,
     resolve_optical_match_status,
 )
-from netconsole.services.history_store import HistoryStore
+from netconsole.services.history_store import (
+    HistoryStore,
+    fit_ap_unauthenticated_entity_key,
+)
 from netconsole.services.trackside_ap_business import parse_vlan_set
 from netconsole.utils.mileage import parse_mileage_to_meters
 from netconsole.utils.station_normalize import normalize_station_value
@@ -327,8 +331,6 @@ FIT_AP_UNAUTHENTICATED_FIELDS = (
     "collected_at",
     "updated_at",
 )
-
-FIT_AP_UNAUTHENTICATED_HISTORY_FIELDS = (*FIT_AP_UNAUTHENTICATED_FIELDS, "created_at")
 
 FIT_AP_UNAUTHENTICATED_SUMMARY_FIELDS = (
     "ac_device_uuid",
@@ -994,8 +996,32 @@ class AcRepository:
                 payload["collected_at"] = payload.get("collected_at") or summary_payload["collected_at"] or now
                 payload["updated_at"] = payload.get("updated_at") or now
                 self._insert(conn, "ac_fit_ap_unauthenticated", FIT_AP_UNAUTHENTICATED_FIELDS, payload)
-                history_payload = self._payload(FIT_AP_UNAUTHENTICATED_HISTORY_FIELDS, {**payload, "created_at": now})
-                self._insert(conn, "ac_fit_ap_unauthenticated_history", FIT_AP_UNAUTHENTICATED_HISTORY_FIELDS, history_payload)
+                history_payload = {**payload, "created_at": now}
+                entity_key = fit_ap_unauthenticated_entity_key(history_payload)
+                if not entity_key:
+                    raise ValueError(
+                        "unauthenticated AP history requires serial number, MAC, or APID"
+                    )
+                self.history_store.record_event(
+                    conn,
+                    kind="fit_ap_unauthenticated",
+                    entity_key=entity_key,
+                    payload=history_payload,
+                    collected_at=str(payload["collected_at"]),
+                    meaningful_fields=(
+                        "ac_device_uuid",
+                        "ap_name",
+                        "apid",
+                        "state",
+                        "state_raw",
+                        "state_display",
+                        "model",
+                        "serial_number",
+                        "dev_type",
+                        "work_mode",
+                        "inferred_ap_mac",
+                    ),
+                )
             conn.commit()
 
     def list_fit_ap_unauthenticated(self, ac_device_uuid: str) -> list[dict[str, object | None]]:
@@ -1035,7 +1061,7 @@ class AcRepository:
             self._legacy_payload_rows(
                 self.history_store.query_events(
                     kind="fit_ap_unauthenticated",
-                    entity_key=ac_device_uuid if ac_device_uuid else None,
+                    entity_prefix=(f"{ac_device_uuid}:" if ac_device_uuid else None),
                     limit=limit,
                 )
             ),
@@ -1658,12 +1684,10 @@ class AcRepository:
                     conn.execute(f"INSERT INTO ac_fit_ap_optical ({columns}) VALUES ({placeholders})", [payload[field] for field in FIT_AP_OPTICAL_FIELDS])
                 self._update_fit_ap_resource_link_info(conn, ac_device_uuid, payload)
             for payload in current_payloads:
-                key = _fit_ap_optical_merge_key(payload)
-                previous = previous_by_key.get(key) if key else None
-                if previous is None or _fit_ap_optical_history_changed(previous, payload):
-                    self._record_fit_ap_optical_history(conn, payload)
-                if previous is None or _fit_ap_lldp_changed(previous, payload):
-                    self._append_resource_lldp_history(conn, payload)
+                # HistoryStore decides whether a state event is new and updates
+                # last_seen_at when the collection confirms the same state.
+                self._record_fit_ap_optical_history(conn, payload)
+                self._append_resource_lldp_history(conn, payload)
             conn.commit()
 
     def list_fit_ap_optical(self, ac_device_uuid: str) -> list[dict[str, object | None]]:
@@ -2701,22 +2725,31 @@ class AcRepository:
         payload_rows = [row for row in rows if str(row.get("site") or "") != "合计"]
         with self.database.connect() as conn:
             for row in payload_rows:
-                conn.execute(
-                    """
-                    INSERT INTO ac_station_online_summary_history (
-                        site_name, ap_total, online_count, offline_count, online_rate, remark, collected_at, created_at
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        str(row.get("site") or ""),
-                        int(row.get("total") or 0),
-                        int(row.get("online") or 0),
-                        int(row.get("offline") or 0),
-                        str(row.get("online_rate") or ""),
-                        str(row.get("remark") or ""),
-                        stamp,
-                        now,
+                site_name = str(row.get("site") or "").strip()
+                if not site_name:
+                    raise ValueError("station online summary history requires a site name")
+                history_payload = {
+                    "site_name": site_name,
+                    "ap_total": int(row.get("total") or 0),
+                    "online_count": int(row.get("online") or 0),
+                    "offline_count": int(row.get("offline") or 0),
+                    "online_rate": str(row.get("online_rate") or ""),
+                    "remark": str(row.get("remark") or ""),
+                    "created_at": now,
+                }
+                self.history_store.record_event(
+                    conn,
+                    kind="station_online_summary",
+                    entity_key=site_name,
+                    payload=history_payload,
+                    collected_at=stamp,
+                    meaningful_fields=(
+                        "site_name",
+                        "ap_total",
+                        "online_count",
+                        "offline_count",
+                        "online_rate",
+                        "remark",
                     ),
                 )
             conn.commit()
@@ -3062,7 +3095,7 @@ class AcRepository:
                 "module_model", "module_serial_number", "module_vendor", "wavelength",
                 "transmission_distance", "connector_type",
             ),
-            state_changed=_fit_ap_optical_history_changed,
+            state_changed=optical_history_state_changed,
         )
 
     def _append_resource_lldp_history(

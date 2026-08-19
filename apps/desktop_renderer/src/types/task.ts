@@ -122,6 +122,7 @@ export type TaskCleanupType =
   | 'completed_and_expired'
   | 'resolved_alerts'
   | 'all_history'
+  | 'bounded_retention'
 
 export interface TaskCleanupCounts {
   completed: number
@@ -133,6 +134,9 @@ export interface TaskCleanupCounts {
 export interface TaskCleanupResult {
   matched: number
   dismissed: number
+  deleted?: number
+  retained?: number
+  protected?: number
   skipped_active: number
   skipped_unacknowledged: number
   artifacts_deleted: number

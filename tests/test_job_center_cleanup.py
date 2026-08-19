@@ -22,11 +22,14 @@ def _snapshot(
     finished_time: str = "",
     error_message: str = "",
     result: dict[str, object] | None = None,
+    task_type: str = "cleanup_test",
+    site_name: str = "demo",
+    resource_keys: list[str] | None = None,
 ) -> TaskSnapshot:
     updated_time = finished_time or "2026-07-29T01:00:00Z"
     return TaskSnapshot(
         task_id=task_id,
-        task_type="cleanup_test",
+        task_type=task_type,
         task_name=task_id,
         status=status,
         created_time="2026-07-01T00:00:00Z",
@@ -35,7 +38,8 @@ def _snapshot(
         updated_time=updated_time,
         error_message=error_message,
         result=dict(result or {}),
-        site_name="demo",
+        site_name=site_name,
+        resource_keys=list(resource_keys or []),
     )
 
 
@@ -268,3 +272,106 @@ def test_cleanup_api_publishes_incremental_event_and_rejects_file_deletion(
         "failed": 0,
         "warning": 0,
     }
+
+
+def test_bounded_retention_keeps_recent_scope_and_protected_domain_tasks(
+    tmp_path: Path,
+) -> None:
+    _paths, repository = _repository(tmp_path)
+    for index in range(12):
+        repository.save(
+            _snapshot(
+                f"ordinary-{index}",
+                TaskState.COMPLETED,
+                finished_time=f"2026-07-{index + 1:02d}T00:00:00Z",
+            )
+        )
+    repository.save(
+        _snapshot(
+            "other-scope",
+            TaskState.COMPLETED,
+            finished_time="2026-08-01T00:00:00Z",
+            task_type="other_task",
+        )
+    )
+    repository.save(
+        _snapshot(
+            "mesh-import",
+            TaskState.COMPLETED,
+            finished_time="2020-01-01T00:00:00Z",
+            task_type="mesh_log_import",
+            resource_keys=["mesh_source:source-1"],
+        )
+    )
+    repository.save(_snapshot("active", TaskState.RUNNING))
+    repository.record(
+        _snapshot(
+            "ordinary-1",
+            TaskState.COMPLETED,
+            finished_time="2026-07-02T00:00:00Z",
+        ),
+        TaskEvent(
+            event_id="ordinary-1-event",
+            task_id="ordinary-1",
+            type="finished",
+            time="2026-07-02T00:00:00Z",
+            payload={"result": {"old": True}},
+        ),
+    )
+    with sqlite3.connect(repository.db_path) as conn:
+        conn.execute(
+            "CREATE TABLE online_mr_task_sessions (controller_task_id TEXT PRIMARY KEY)"
+        )
+        conn.execute(
+            "INSERT INTO online_mr_task_sessions(controller_task_id) VALUES (?)",
+            ("mapped",),
+        )
+        conn.commit()
+    repository.save(
+        _snapshot(
+            "mapped",
+            TaskState.COMPLETED,
+            finished_time="2020-01-01T00:00:00Z",
+            task_type="ordinary_task",
+        )
+    )
+
+    preview = repository.retain_recent_terminal_tasks(dry_run=True)
+    assert preview["matched"] == 2
+    assert preview["protected"] == 2
+    assert preview["skipped_active"] == 1
+
+    result = repository.retain_recent_terminal_tasks()
+    assert result["deleted"] == 2
+    assert repository.get("ordinary-0") is None
+    assert repository.get("ordinary-1") is None
+    assert repository.get("ordinary-2") is not None
+    assert repository.get("mesh-import") is not None
+    assert repository.get("mapped") is not None
+    assert repository.get("active") is not None
+    with sqlite3.connect(repository.db_path) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM task_events WHERE task_id='ordinary-0'"
+        ).fetchone()[0] == 0
+
+
+def test_job_center_owner_exposes_bounded_retention_without_soft_dismiss_event(
+    tmp_path: Path,
+) -> None:
+    paths, repository = _repository(tmp_path)
+    for index in range(11):
+        repository.save(
+            _snapshot(
+                f"owner-{index}",
+                TaskState.COMPLETED,
+                finished_time=f"2026-07-{index + 1:02d}T00:00:00Z",
+            )
+        )
+    service = TaskApplicationService(paths=paths, site_name="demo", reconcile_on_start=False)
+    stream = service.events.open_stream()
+    result = service.cleanup_history_tasks("bounded_retention", site_name="demo")
+    assert result["deleted"] == 1
+    assert result["dismissed"] == 0
+    event = stream.get(timeout=1)
+    stream.close()
+    assert event["type"] == "tasks.retention_applied"

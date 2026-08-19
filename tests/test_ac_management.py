@@ -1721,6 +1721,27 @@ def test_station_online_summary_history_save_and_list_desc(tmp_path):
     assert history[0]["online_count"] == 4
 
 
+def test_station_online_summary_history_is_change_only_and_bounded_per_station(tmp_path):
+    repository = AcRepository(make_database(tmp_path))
+    for index in range(15):
+        repository.save_station_online_summary_history(
+            [
+                {"site": "Station A", "total": 10, "online": index, "offline": 10 - index, "online_rate": f"{index * 10}.0%", "remark": ""},
+                {"site": "Station B", "total": 10, "online": 10, "offline": 0, "online_rate": "100.0%", "remark": ""},
+            ],
+            collected_at=f"2026-01-{index + 1:02d}T00:00:00",
+        )
+
+    station_a = repository.list_station_online_summary_history("Station A", limit=20)
+    station_b = repository.list_station_online_summary_history("Station B", limit=20)
+
+    assert [row["online_count"] for row in station_a] == list(range(14, 4, -1))
+    assert [row["online_count"] for row in station_b] == [10]
+    with repository.database.connect() as conn:
+        station_b_state = conn.execute("SELECT last_recorded_at, last_seen_at FROM history_state WHERE kind='station_online_summary' AND entity_key='Station B'").fetchone()
+    assert tuple(station_b_state) == ("2026-01-01T00:00:00", "2026-01-15T00:00:00")
+
+
 def test_station_ap_capacity_overrides_incomplete_planned_total(tmp_path):
     repository = AcRepository(make_database(tmp_path))
     repository.upsert_station_ap_capacity("Station A", 56)

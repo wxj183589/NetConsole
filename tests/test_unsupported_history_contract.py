@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from netconsole.services.history_legacy_migration import UNSUPPORTED_TABLES
+from netconsole.services.history_legacy_migration import SUPPORTED_SPECS
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -18,9 +18,9 @@ def test_unsupported_history_contract_documents_real_consumers() -> None:
         "ac_station_online_summary_history",
     ):
         assert table in contract
-        assert table in UNSUPPORTED_TABLES
+        assert table in SUPPORTED_SPECS
     assert "不能继续标成“无消费者”" in contract
-    assert "BLOCKED_BY_TARGET_EVENT_CONTRACT" in contract
+    assert "SUPPORTED_TARGET_EVENT_CONTRACT" in contract
 
 
 def test_unsupported_tables_have_producer_and_reader_evidence() -> None:
@@ -45,17 +45,20 @@ def test_unsupported_tables_have_producer_and_reader_evidence() -> None:
     assert "ac_fit_ap_unauthenticated_history" in snapshot
 
 
-def test_unsupported_history_is_not_generic_migration_input() -> None:
+def test_supported_history_has_explicit_target_contract() -> None:
     migration = (ROOT / "src/netconsole/services/history_legacy_migration.py").read_text(
         encoding="utf-8"
     )
-    assert 'classification = "UNSUPPORTED"' in migration
-    assert "UNSUPPORTED_TABLES" in migration
-    # Keep the machine-readable registry and the explicit safety gate aligned.
+    assert 'classification = "SUPPORTED"' in migration
+    assert "SUPPORTED_SPECS" in migration
+    # Keep the machine-readable registry and the explicit target contract aligned.
     registry = json.loads(
         (ROOT / "config/storage_registry.yaml").read_text(encoding="utf-8")
     )
     text = json.dumps(registry, ensure_ascii=False)
-    for table in UNSUPPORTED_TABLES:
+    for table in (
+        "ac_fit_ap_unauthenticated_history",
+        "ac_station_online_summary_history",
+    ):
         assert table in text
 

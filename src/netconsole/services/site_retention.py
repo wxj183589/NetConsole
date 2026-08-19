@@ -25,6 +25,7 @@ from netconsole.services.database_footprint_maintenance import (
     DEVELOPMENT_ROOT,
     assert_development_path,
 )
+from netconsole.repositories.task_repository import TaskRepository
 from netconsole.services.history_store import TaskHistoryStore, verify_task_result_row
 from netconsole.services.site_storage import (
     SiteRegistryRepository,
@@ -36,7 +37,6 @@ from netconsole.services.site_storage import (
 BACKUP_ARCHIVE_DAYS = 30
 BACKUP_DELETE_DAYS = 90
 ONLINE_MR_RAW_ARCHIVE_DAYS = 30
-TASK_EVENT_RETENTION_DAYS = 90
 ROLLBACK_KEEP_COUNT = 2
 
 _DATABASE_SUFFIXES = {".db", ".sqlite", ".sqlite3"}
@@ -141,16 +141,10 @@ class SiteRetentionService:
                 "backup_archive_days": BACKUP_ARCHIVE_DAYS,
                 "backup_delete_days": BACKUP_DELETE_DAYS,
                 "online_mr_raw_archive_days": ONLINE_MR_RAW_ARCHIVE_DAYS,
-                "task_event_retention_days": TASK_EVENT_RETENTION_DAYS,
-                "task_retention_status": "USER_POLICY_REQUIRED",
+                "task_retention_status": "KEEP_LAST_10_EFFECTIVE",
                 "typed_task_retention_apply_enabled": False,
-                "typed_task_retention_proposal": {
-                    "progress_event_days": 14,
-                    "ordinary_event_days": 30,
-                    "terminal_metadata_days": 90,
-                    "terminal_snapshot_days": 90,
-                    "terminal_result_days": 90,
-                },
+                "typed_task_retention_owner": "TaskRepository.retain_recent_terminal_tasks",
+                "typed_task_retention_keep_per_scope": 10,
                 "rollback_keep_count": ROLLBACK_KEEP_COUNT,
             },
             "summary": {
@@ -263,8 +257,8 @@ class SiteRetentionService:
                         result = self._apply_online_mr_raw(root, item)
                     elif category == "task_history":
                         raise SiteStorageError(
-                            "USER_POLICY_REQUIRED",
-                            "任务存储 retention 仅支持预览，尚未启用 apply",
+                            "RETENTION_OWNER_TASK_REPOSITORY",
+                            "任务存储由 Job Center bounded retention owner 管理",
                         )
                     else:
                         raise SiteStorageError(
@@ -471,7 +465,7 @@ class SiteRetentionService:
                 "online_mr_session": "PRESERVE",
                 "ground_reference": "PRESERVE",
                 "artifact_files": "PRESERVE",
-                "permanent_retention": "USER_POLICY_REQUIRED",
+                "permanent_retention": "LONG_TERM_MANUAL_DELETE",
             },
             "archive_event_sequence_ranges": self._compress_integer_keys(archive_event_keys),
             "archive_event_sequence_digest": self._stable_json_digest(archive_event_keys),
@@ -1055,188 +1049,44 @@ class SiteRetentionService:
         return result
 
     def _scan_task_history(self, root: Path, now: datetime) -> dict[str, object] | None:
+        del now
         path = root / "db" / "tasks.db"
         if not path.is_file() or path.is_symlink():
             return None
-        cutoffs = {
-            days: (now - timedelta(days=days)).isoformat(timespec="seconds")
-            for days in (14, 30, 90)
-        }
-        snapshot_breakdown: list[dict[str, object]] = []
-        event_breakdown: list[dict[str, object]] = []
-        result_breakdown: list[dict[str, object]] = []
-        would_delete_rows = 0
-        would_delete_bytes = 0
         try:
-            with closing(self._connect_readonly(path)) as connection:
-                tables = {
-                    str(row[0])
-                    for row in connection.execute(
-                        "SELECT name FROM sqlite_master WHERE type = 'table'"
-                    )
-                }
-                if not tables.intersection(
-                    {"task_snapshots", "task_events", "task_results"}
-                ):
-                    return None
-                if "task_snapshots" in tables:
-                    groups = connection.execute(
-                        """
-                        SELECT task_type, status, COUNT(*) AS total_rows
-                        FROM task_snapshots
-                        GROUP BY task_type, status
-                        ORDER BY task_type, status
-                        """
-                    ).fetchall()
-                    for task_type, status, total_rows in groups:
-                        normalized_status = str(status or "").upper()
-                        retention_days = (
-                            90
-                            if normalized_status in {"COMPLETED", "FAILED", "CANCELLED"}
-                            else None
-                        )
-                        eligible_rows = 0
-                        eligible_bytes = 0
-                        cutoff = cutoffs[90] if retention_days else ""
-                        if retention_days:
-                            eligible = connection.execute(
-                                """
-                                SELECT COUNT(*),
-                                       COALESCE(SUM(
-                                           LENGTH(task_id) + LENGTH(task_type) +
-                                           LENGTH(task_name) + LENGTH(status) +
-                                           LENGTH(updated_time) + LENGTH(result_json) + 128
-                                       ), 0)
-                                FROM task_snapshots
-                                WHERE task_type = ? AND status = ?
-                                  AND COALESCE(NULLIF(finished_time, ''), updated_time) < ?
-                                """,
-                                (task_type, status, cutoff),
-                            ).fetchone()
-                            eligible_rows = int(eligible[0] if eligible else 0)
-                            eligible_bytes = int(eligible[1] if eligible else 0)
-                        would_delete_rows += eligible_rows
-                        would_delete_bytes += eligible_bytes
-                        snapshot_breakdown.append(
-                            {
-                                "task_type": str(task_type or ""),
-                                "status": normalized_status,
-                                "total_rows": int(total_rows or 0),
-                                "retention_days": retention_days,
-                                "cutoff": cutoff,
-                                "would_delete_rows": eligible_rows,
-                                "would_delete_bytes_estimate": eligible_bytes,
-                                "policy": (
-                                    "PROPOSAL_90_DAYS"
-                                    if retention_days
-                                    else "NEVER_WHILE_ACTIVE"
-                                ),
-                            }
-                        )
-
-                if "task_events" in tables:
-                    event_types = connection.execute(
-                        """
-                        SELECT event_type, COUNT(*) AS total_rows
-                        FROM task_events
-                        GROUP BY event_type
-                        ORDER BY event_type
-                        """
-                    ).fetchall()
-                    for event_type, total_rows in event_types:
-                        normalized_type = str(event_type or "")
-                        retention_days = (
-                            14
-                            if normalized_type == "progress"
-                            else 90
-                            if normalized_type in {"finished", "error", "cancelled"}
-                            else 30
-                        )
-                        cutoff = cutoffs[retention_days]
-                        eligible = connection.execute(
-                            """
-                            SELECT COUNT(*),
-                                   COALESCE(SUM(
-                                       LENGTH(event_id) + LENGTH(task_id) +
-                                       LENGTH(event_type) + LENGTH(event_time) +
-                                       LENGTH(source) + LENGTH(payload_json) + 64
-                                   ), 0)
-                            FROM task_events
-                            WHERE event_type = ? AND event_time < ?
-                            """,
-                            (event_type, cutoff),
-                        ).fetchone()
-                        eligible_rows = int(eligible[0] if eligible else 0)
-                        eligible_bytes = int(eligible[1] if eligible else 0)
-                        would_delete_rows += eligible_rows
-                        would_delete_bytes += eligible_bytes
-                        event_breakdown.append(
-                            {
-                                "event_type": normalized_type,
-                                "total_rows": int(total_rows or 0),
-                                "retention_days": retention_days,
-                                "cutoff": cutoff,
-                                "would_delete_rows": eligible_rows,
-                                "would_delete_bytes_estimate": eligible_bytes,
-                            }
-                        )
-
-                if "task_results" in tables:
-                    result_types = connection.execute(
-                        """
-                        SELECT terminal_event_type, COUNT(*) AS total_rows
-                        FROM task_results
-                        GROUP BY terminal_event_type
-                        ORDER BY terminal_event_type
-                        """
-                    ).fetchall()
-                    for terminal_event_type, total_rows in result_types:
-                        eligible = connection.execute(
-                            """
-                            SELECT COUNT(*), COALESCE(SUM(byte_size + 256), 0)
-                            FROM task_results
-                            WHERE terminal_event_type = ? AND created_time < ?
-                            """,
-                            (terminal_event_type, cutoffs[90]),
-                        ).fetchone()
-                        eligible_rows = int(eligible[0] if eligible else 0)
-                        eligible_bytes = int(eligible[1] if eligible else 0)
-                        would_delete_rows += eligible_rows
-                        would_delete_bytes += eligible_bytes
-                        result_breakdown.append(
-                            {
-                                "terminal_event_type": str(terminal_event_type or ""),
-                                "total_rows": int(total_rows or 0),
-                                "retention_days": 90,
-                                "cutoff": cutoffs[90],
-                                "would_delete_rows": eligible_rows,
-                                "would_delete_bytes_estimate": eligible_bytes,
-                                "authority_copies_after_retention": 1,
-                            }
-                        )
+            preview = TaskRepository.preview_recent_terminal_tasks(path)
         except sqlite3.Error:
             return None
+        if not bool(preview.get("available")):
+            return None
         stat = path.stat()
+        matched = int(preview["matched"])
+        bytes_estimate = int(preview["would_delete_bytes_estimate"])
         return self._candidate(
             category="task_history",
             relative_path="db/tasks.db#typed-retention-preview",
-            display_name=f"任务存储 typed retention 预览（{would_delete_rows} 行）",
-            size_bytes=would_delete_bytes,
+            display_name=f"任务存储 bounded retention 预览（{matched} 个任务）",
+            size_bytes=bytes_estimate,
             modified_ns=0,
-            age_days=90 if would_delete_rows else 0,
-            status="USER_POLICY_REQUIRED",
+            age_days=0,
+            status="KEEP_LAST_10_EFFECTIVE",
             action="preview",
             safe=False,
-            reason="USER_POLICY_REQUIRED：当前仅提供 typed retention 估算，apply 未启用",
+            reason="KEEP_LAST_10_EFFECTIVE：任务中心按 scope 保留最近 10 个终态任务",
             details={
-                "policy_status": "USER_POLICY_REQUIRED",
+                "policy_status": "KEEP_LAST_10_EFFECTIVE",
                 "proposal_only": True,
                 "apply_enabled": False,
-                "would_delete_rows": would_delete_rows,
-                "would_delete_bytes_estimate": would_delete_bytes,
-                "task_snapshot_breakdown": snapshot_breakdown,
-                "task_event_breakdown": event_breakdown,
-                "task_result_breakdown": result_breakdown,
+                "retention_owner": "TaskRepository.retain_recent_terminal_tasks",
+                "keep_per_scope": int(preview["keep_per_scope"]),
+                "would_delete_tasks": matched,
+                "retained_tasks": int(preview["retained"]),
+                "protected_tasks": int(preview["protected"]),
+                "skipped_active_tasks": int(preview["skipped_active"]),
+                "task_snapshot_rows": int(preview["snapshot_rows"]),
+                "task_event_rows": int(preview["event_rows"]),
+                "task_result_rows": int(preview["result_rows"]),
+                "would_delete_bytes_estimate": bytes_estimate,
                 "vacuum": False,
                 "database_size_bytes": stat.st_size,
             },
@@ -1440,8 +1290,8 @@ class SiteRetentionService:
     ) -> dict[str, object]:
         del root, candidate
         raise SiteStorageError(
-            "USER_POLICY_REQUIRED",
-            "宽泛任务历史清理已禁用；仅允许精确 typed retention 计划",
+            "RETENTION_OWNER_TASK_REPOSITORY",
+            "宽泛任务历史清理由 TaskRepository bounded retention owner 管理",
         )
 
     def _ensure_no_other_active_tasks(
@@ -1753,7 +1603,6 @@ class SiteRetentionService:
                 BACKUP_ARCHIVE_DAYS,
                 BACKUP_DELETE_DAYS,
                 ONLINE_MR_RAW_ARCHIVE_DAYS,
-                TASK_EVENT_RETENTION_DAYS,
                 ROLLBACK_KEEP_COUNT,
             ],
             "candidates": [
@@ -2035,11 +1884,6 @@ class SiteRetentionService:
         return max(0, int((now - modified).total_seconds() // 86400))
 
     @staticmethod
-    def _task_cutoff(now: datetime) -> str:
-        cutoff_date = (now - timedelta(days=TASK_EVENT_RETENTION_DAYS)).date()
-        return f"{cutoff_date.isoformat()}T00:00:00Z"
-
-    @staticmethod
     def _timestamp(value: float) -> str:
         return datetime.fromtimestamp(value, UTC).isoformat(timespec="seconds")
 
@@ -2059,5 +1903,4 @@ __all__ = [
     "ONLINE_MR_RAW_ARCHIVE_DAYS",
     "ROLLBACK_KEEP_COUNT",
     "SiteRetentionService",
-    "TASK_EVENT_RETENTION_DAYS",
 ]

@@ -44,18 +44,17 @@
 
 ### 任务历史
 
-产品 UI/API 的任务历史仍仅提供 typed retention preview，不执行清理。现有
-`SiteRetentionService` 是唯一 owner，没有新增平行 Task Retention Service。
-数据库治理 CLI 另提供只允许 `D:\study` 隔离副本的 rehearsal executor，
-用于验证精确计划和测量空间；它不构成生产策略批准。
+普通终态 Task Center 记录按 `site_name + task_type` 保留最近 10 个有效任务。
+`TaskRepository.retain_recent_terminal_tasks()` 在事务中删除旧任务的
+`task_events`、`task_snapshots` 和无引用的 `task_results`，不会删除 Artifact
+文件或业务来源。
 
-- `PENDING/STARTING/RUNNING/STOPPING` snapshot 候选为永不自动清理；终态 snapshot 使用 90 天提案。
-- `progress` event 使用 14 天提案，普通 state/log/notification 使用 30 天提案，terminal event 使用 90 天提案。
-- `task_results` 完整权威结果使用 90 天候选，仅用于计算；Artifact 和 Online MR mapping/session 仍由领域 lifecycle 管理。
-- preview 按 task type/status/event type/result type 输出总行数、would-delete rows 和估算字节数。
-- 产品入口中的所有期限仍为 `USER_POLICY_REQUIRED`；候选固定
-  `safe=false`、`action=preview`、`apply_enabled=false`、`vacuum=false`。
-- 将 task preview candidate 提交到 apply 会被拒绝，不执行 Task DELETE、checkpoint 或 VACUUM。
+- `PENDING/STARTING/RUNNING/STOPPING` 永远保护；非终态记录不会进入候选。
+- `online_mr_task_sessions` 映射、Online MR/Ground/MESH 任务类型，以及明确的
+  `online_mr:*`、`ground_unattended:*`、`mesh_source:*` 等资源引用永远保护。
+- `dry_run=true` 只返回候选与保护计数；实际执行不执行 `VACUUM`、Artifact 删除
+  或真实数据根迁移。
+- 任务中心软 dismiss (`cleanup_history`) 与物理 bounded retention 是两条独立路径。
 
 隔离 rehearsal plan 使用固定格式、数据库逻辑内容摘要、主文件 SHA、精确
 event sequence ranges、snapshot/result 主键列表、各集合 digest 和 expected
@@ -70,11 +69,10 @@ counts。apply 在取得 `site-database-maintenance:<site_id>` 后重算逻辑�
 ## 固定保护规则
 
 - 当前数据库、未知数据库、当前活动任务数据、解析失败或证据不完整的 raw、人工保留数据不进入自动候选。
-- `USER_POLICY_REQUIRED` 的 task history preview 不进入可执行候选。
 - 执行只接受扫描报告中后端签发的候选 ID；路径必须再次解析到当前局点白名单子树，且拒绝符号链接和路径逃逸。
 - 归档先写临时 ZIP并执行 CRC/大小校验，再原子发布；成功后才移除原备份。
 - 真实局点开发验收只允许 scan-only，除非用户明确授权执行并已完成备份复核。
 
 ## 延后范围
 
-MESH 原始导入、无人值守 active/archive、设备采集历史、FIT AP radio、LLDP、光模块历史、高频快照降采样和 task history 实际执行尚未接入通用局点清理。它们各自有索引、引用和事实源契约；在领域级恢复读取、保留标记、运行门禁和回归测试完成前保持不自动清理。
+MESH 原始导入、无人值守 active/archive、设备采集历史、FIT AP radio、LLDP、光模块历史和高频快照降采样仍由各领域生命周期拥有，不接入通用局点清理。

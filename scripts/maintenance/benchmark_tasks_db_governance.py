@@ -567,7 +567,7 @@ def run_benchmark(
             ),
         },
         "online_mr_heartbeat_contract": "same 30-second identical-progress sampling",
-        "retention": "PREVIEW_ONLY_USER_POLICY_REQUIRED",
+        "retention": "KEEP_LAST_10_EFFECTIVE",
         "destructive_operations": {
             "DELETE": "NO",
             "DROP": "NO",

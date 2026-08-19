@@ -40,7 +40,7 @@ describe('GlobalTaskCenter', () => {
     expect(source).toContain('onConfirm: async () =>')
     expect(source).toContain('await store.cleanupHistory(cleanupType)')
     expect(source).toContain("'job_center.cleanup.done'")
-    expect(source).toContain("String(result.dismissed)")
+    expect(source).toContain("String(result.deleted ?? result.dismissed)")
     expect(source).not.toContain('window.confirm')
     expect(source).not.toContain('window.alert')
     expect(source).not.toContain('drawerVisible.value = false\n    await confirm')

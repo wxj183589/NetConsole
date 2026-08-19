@@ -99,7 +99,7 @@ def test_inventory_classifies_supported_unsupported_and_unknown_schema(tmp_path:
         item["table_name"]: item["classification"] for item in result["tables"]
     }
     assert classifications == {
-        "ac_fit_ap_unauthenticated_history": "UNSUPPORTED",
+        "ac_fit_ap_unauthenticated_history": "SUPPORTED",
         "device_facts_history": "SUPPORTED",
         "future_probe_history": "UNKNOWN_SCHEMA",
     }

@@ -25,6 +25,7 @@ from typing import Any
 
 from netconsole.core.interprocess_lock import interprocess_file_lock
 from netconsole.core.sqlite_utils import connect_sqlite
+from netconsole.core.data_lifecycle import KEEP_LAST_EFFECTIVE_COUNT
 from netconsole.repositories.history_legacy_migration_repository import (
     HistoryLegacyMigrationRepository,
     SHARD_QUERY_AUTHORITY_STATES,
@@ -41,9 +42,19 @@ DEFAULT_HEARTBEAT_SECONDS = {
     "fit_ap_lldp": 1800,
 }
 DYNAMIC_CHANGE_ONLY_KINDS = frozenset(
-    {"device_interface", "device_optical", "device_lldp", "fit_ap_optical"}
+    {
+        "device_interface",
+        "device_optical",
+        "device_lldp",
+        "fit_ap_resource",
+        "fit_ap_radio",
+        "fit_ap_optical",
+        "fit_ap_lldp",
+        "fit_ap_unauthenticated",
+        "station_online_summary",
+    }
 )
-DYNAMIC_HISTORY_LIMIT = 10
+DYNAMIC_HISTORY_LIMIT = KEEP_LAST_EFFECTIVE_COUNT
 
 # A heartbeat is the sampling policy for continuous telemetry.  Discrete
 # state/configuration fields are passed explicitly by each producer and are
@@ -79,6 +90,7 @@ CREATE TABLE IF NOT EXISTS history_state (
     entity_key TEXT NOT NULL,
     fingerprint TEXT NOT NULL,
     last_recorded_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
     state_json TEXT NOT NULL DEFAULT '{}',
     PRIMARY KEY(kind, entity_key)
 );
@@ -305,6 +317,28 @@ def fingerprint(
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def fit_ap_unauthenticated_entity_key(payload: dict[str, Any]) -> str:
+    """Return the stable history key for one unauthenticated AP observation."""
+
+    ac_device_uuid = str(payload.get("ac_device_uuid") or "").strip()
+    if not ac_device_uuid:
+        return ""
+
+    serial_number = str(payload.get("serial_number") or "").strip()
+    if serial_number and serial_number.casefold() not in {"-", "n/a", "na", "null"}:
+        return f"{ac_device_uuid}:serial:{serial_number.casefold()}"
+
+    for field in ("inferred_ap_mac", "ap_mac", "mac"):
+        normalized_mac = re.sub(r"[^0-9a-fA-F]", "", str(payload.get(field) or ""))
+        if len(normalized_mac) == 12:
+            return f"{ac_device_uuid}:mac:{normalized_mac.casefold()}"
+
+    apid = str(payload.get("apid") or payload.get("ap_id") or "").strip()
+    if apid and apid.casefold() not in {"-", "n/a", "na", "null"}:
+        return f"{ac_device_uuid}:apid:{apid.casefold()}"
+    return ""
+
+
 @dataclass(frozen=True)
 class HistoryDrainResult:
     written: int = 0
@@ -360,6 +394,7 @@ class HistoryMigrationResult:
 class _LegacySourceSpec:
     kind: str
     entity_fields: tuple[str, ...]
+    entity_key_factory: Callable[[dict[str, Any]], str] | None = None
 
 
 _LEGACY_SOURCE_SPECS = {
@@ -381,7 +416,9 @@ _LEGACY_SOURCE_SPECS = {
     "ap_lldp_history": _LegacySourceSpec("fit_ap_lldp", ("ap_uuid",)),
     "ac_fit_ap_optical_history": _LegacySourceSpec("fit_ap_optical", ("ap_uuid",)),
     "ac_fit_ap_unauthenticated_history": _LegacySourceSpec(
-        "fit_ap_unauthenticated", ("ac_device_uuid",)
+        "fit_ap_unauthenticated",
+        ("ac_device_uuid",),
+        fit_ap_unauthenticated_entity_key,
     ),
     "ac_station_online_summary_history": _LegacySourceSpec(
         "station_online_summary", ("site_name",)
@@ -461,6 +498,7 @@ class HistoryStore:
                 entity_key TEXT NOT NULL,
                 fingerprint TEXT NOT NULL,
                 last_recorded_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
                 state_json TEXT NOT NULL DEFAULT '{}',
                 PRIMARY KEY(kind, entity_key)
             )
@@ -470,6 +508,14 @@ class HistoryStore:
             if not self._column_exists(conn, "history_state", "state_json"):
                 conn.execute(
                     "ALTER TABLE history_state ADD COLUMN state_json TEXT NOT NULL DEFAULT '{}'"
+                )
+            if not self._column_exists(conn, "history_state", "last_seen_at"):
+                conn.execute(
+                    "ALTER TABLE history_state ADD COLUMN last_seen_at TEXT NOT NULL DEFAULT ''"
+                )
+                conn.execute(
+                    "UPDATE history_state SET last_seen_at=last_recorded_at "
+                    "WHERE last_seen_at=''"
                 )
             self._history_state_schema_checked = True
         # These tables are created lazily, after the main schema scripts. Keep
@@ -538,6 +584,10 @@ class HistoryStore:
         )
         if not should_record:
             if kind in DYNAMIC_CHANGE_ONLY_KINDS:
+                conn.execute(
+                    "UPDATE history_state SET last_seen_at=? WHERE kind=? AND entity_key=?",
+                    (now, kind, entity_key),
+                )
                 return False
             interval = int(
                 heartbeat_seconds
@@ -553,6 +603,10 @@ class HistoryStore:
             )
             event_type = "heartbeat"
         if not should_record:
+            conn.execute(
+                "UPDATE history_state SET last_seen_at=? WHERE kind=? AND entity_key=?",
+                (now, kind, entity_key),
+            )
             return False
         created_at = self._now().isoformat(timespec="seconds")
         # `collected_at` is commonly second-granularity.  A dynamic resource
@@ -585,18 +639,20 @@ class HistoryStore:
         conn.execute(
             """
             INSERT INTO history_state(
-                kind, entity_key, fingerprint, last_recorded_at, state_json
+                kind, entity_key, fingerprint, last_recorded_at, last_seen_at, state_json
             )
-            VALUES (?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(kind, entity_key) DO UPDATE SET
                 fingerprint=excluded.fingerprint,
                 last_recorded_at=excluded.last_recorded_at,
+                last_seen_at=excluded.last_seen_at,
                 state_json=excluded.state_json
             """,
             (
                 kind,
                 entity_key,
                 digest,
+                now,
                 now,
                 json.dumps(
                     state_payload,
@@ -2453,7 +2509,12 @@ class HistoryStore:
         if source_id <= 0:
             raise ValueError(f"legacy history row has no stable id: {source_table}")
         entity_values = [str(row.get(field) or "").strip() for field in spec.entity_fields]
-        if not all(entity_values):
+        entity_key = (
+            spec.entity_key_factory(row)
+            if spec.entity_key_factory is not None
+            else ":".join(entity_values) if all(entity_values) else ""
+        )
+        if not entity_key:
             raise ValueError(
                 f"legacy history row has no stable entity key: {source_table}:{source_id}"
             )
@@ -2471,7 +2532,7 @@ class HistoryStore:
         return {
             "event_id": hashlib.sha256(canonical_identity.encode()).hexdigest(),
             "kind": spec.kind,
-            "entity_key": ":".join(entity_values),
+            "entity_key": entity_key,
             "event_type": "legacy",
             "collected_at": collected_at,
             "payload_json": json.dumps(
@@ -3527,6 +3588,7 @@ __all__ = [
     "HistoryRetentionPolicy",
     "HistoryStore",
     "TaskHistoryStore",
+    "fit_ap_unauthenticated_entity_key",
     "verify_task_result_row",
     "fingerprint",
 ]
