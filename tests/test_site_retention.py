@@ -24,6 +24,9 @@ from netconsole.services.online_mr.query_service import OnlineMrQueryService
 from netconsole.services.job_center.task_result_rollout import (
     TaskResultRolloutService,
 )
+from scripts.maintenance.task_result_maintenance import (
+    TaskResultMaintenanceService,
+)
 from netconsole.services.site_retention import SiteRetentionService
 from netconsole.services.site_storage import SiteApplicationService, SiteStorageError
 
@@ -508,6 +511,16 @@ def test_task_retention_preview_breaks_down_type_status_and_authority_result(
         payload={"result": result},
     )
     assert repository.record(snapshot, event)
+    backfill = TaskResultMaintenanceService(
+        paths,
+        site_id="line-12",
+        tasks_database=task_db,
+        development_root=tmp_path,
+    ).backfill(
+        apply=True,
+        allow_development_root_only=True,
+    )
+    assert backfill["new_result_rows"] == 1
     repository.save(
         TaskSnapshot(
             task_id="active-task",
@@ -663,6 +676,16 @@ def test_typed_task_retention_exact_apply_preserves_active_mr_ground_and_artifac
     terminal("mr-old", "online_mr_collect", {"rows": 20})
     terminal("ground-old", "ground_unattended_collect", {"rows": 30})
     terminal("artifact-old", "report_export", {"artifact_id": "artifact-1"})
+    backfill = TaskResultMaintenanceService(
+        paths,
+        site_id="line-12",
+        tasks_database=task_db,
+        development_root=tmp_path,
+    ).backfill(
+        apply=True,
+        allow_development_root_only=True,
+    )
+    assert backfill["new_result_rows"] == 4
     repository.save(
         TaskSnapshot(
             task_id="active-old",
