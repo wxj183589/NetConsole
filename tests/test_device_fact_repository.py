@@ -228,6 +228,29 @@ def test_list_interface_history_orders_by_collected_at_desc(tmp_path):
     assert [item["link_status"] for item in repository.list_interface_history("device-1", "GE1/0/1")] == ["NEW", "OLD"]
 
 
+def test_interface_history_records_only_up_down_changes_and_keeps_ten(tmp_path):
+    repository = make_repository(tmp_path)
+    for sequence in range(20):
+        repository.replace_device_interfaces(
+            "device-1",
+            [
+                {
+                    "interface_name": "GE1/0/1",
+                    "link_status": "UP" if sequence % 2 == 0 else "DOWN",
+                    "collected_at": f"2026-08-01T10:{sequence:02d}:00",
+                }
+            ],
+        )
+
+    history = repository.list_interface_history("device-1", "GE1/0/1")
+    assert len(history) == 10
+    assert history[0]["link_status"] == "DOWN"
+    with repository.database.connect() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM history_outbox WHERE kind='device_interface'"
+        ).fetchone()[0] == 10
+
+
 def test_replace_and_list_optical_modules(tmp_path):
     repository = make_repository(tmp_path)
     repository.replace_optical_modules("device-1", [{"interface_name": "GE1/0/2", "rx_power": "-3.2 dBm"}])
@@ -314,6 +337,72 @@ def test_list_optical_history_orders_by_collected_at_desc(tmp_path):
     assert [item["rx_power"] for item in repository.list_optical_history("device-1", "GE1/0/1")] == ["-3.21 dBm", "-3.45 dBm"]
 
 
+def test_optical_history_uses_power_tolerance_and_keeps_module_changes(tmp_path):
+    repository = make_repository(tmp_path)
+
+    def save(**values):
+        repository.replace_optical_modules(
+            "device-1",
+            [{"interface_name": "GE1/0/1", **values}],
+        )
+
+    save(
+        rx_power="-10.00 dBm",
+        tx_power="-4.00 dBm",
+        module_serial_number="S1",
+        status="normal",
+        collected_at="2026-08-01T10:00:00",
+    )
+    save(
+        rx_power="-10.19 dBm",
+        tx_power="-4.19 dBm",
+        module_serial_number="S1",
+        status="normal",
+        collected_at="2026-08-01T10:01:00",
+    )
+    save(
+        rx_power="-10.20 dBm",
+        tx_power="-4.20 dBm",
+        module_serial_number="S1",
+        status="normal",
+        collected_at="2026-08-01T10:02:00",
+    )
+    save(
+        rx_power="-10.20 dBm",
+        tx_power="-4.20 dBm",
+        module_serial_number="S2",
+        status="normal",
+        collected_at="2026-08-01T10:03:00",
+    )
+    save(
+        module_serial_number=None,
+        status="no_module",
+        collected_at="2026-08-01T10:04:00",
+    )
+    save(
+        module_serial_number="S3",
+        status="normal",
+        collected_at="2026-08-01T10:05:00",
+    )
+
+    history = repository.list_optical_history("device-1", "GE1/0/1")
+    assert len(history) == 5
+    assert [row["status"] for row in history] == [
+        "normal",
+        "no_module",
+        "normal",
+        "normal",
+        "normal",
+    ]
+    assert [row["module_serial_number"] for row in history] == [
+        "S3",
+        None,
+        "S2",
+        "S1",
+        "S1",
+    ]
+
+
 def test_replace_lldp_neighbors_replaces_only_target_device(tmp_path):
     repository = make_repository(tmp_path)
     repository.replace_lldp_neighbors("device-1", [{"local_interface": "GE1/0/1", "neighbor_sysname": "OLD"}])
@@ -324,6 +413,47 @@ def test_replace_lldp_neighbors_replaces_only_target_device(tmp_path):
     neighbors = repository.list_lldp_neighbors("device-1")
     assert [(item["local_interface"], item["neighbor_sysname"]) for item in neighbors] == [("GE1/0/1", "OLD"), ("GE1/0/2", "NEW")]
     assert repository.list_lldp_neighbors("device-2")[0]["neighbor_sysname"] == "OTHER"
+
+
+def test_lldp_history_records_neighbor_change_missing_and_recovery(tmp_path, monkeypatch):
+    repository = make_repository(tmp_path)
+    monkeypatch.setattr(repository, "_now", lambda: "2026-08-01T10:02:00")
+    repository.replace_lldp_neighbors(
+        "device-1",
+        [{
+            "local_interface": "GE1/0/1",
+            "neighbor_sysname": "SW-B",
+            "collected_at": "2026-08-01T10:00:00",
+        }],
+        preserve_existing=False,
+    )
+    repository.replace_lldp_neighbors(
+        "device-1",
+        [{
+            "local_interface": "GE1/0/1",
+            "neighbor_sysname": "SW-C",
+            "collected_at": "2026-08-01T10:01:00",
+        }],
+        preserve_existing=False,
+    )
+    repository.replace_lldp_neighbors(
+        "device-1",
+        [],
+        preserve_existing=False,
+    )
+    repository.replace_lldp_neighbors(
+        "device-1",
+        [{
+            "local_interface": "GE1/0/1",
+            "neighbor_sysname": "SW-B",
+            "collected_at": "2026-08-01T10:03:00",
+        }],
+        preserve_existing=False,
+    )
+
+    history = repository.list_lldp_history("device-1", "GE1/0/1")
+    assert len(history) == 4
+    assert [row["neighbor_sysname"] for row in history] == ["SW-B", None, "SW-C", "SW-B"]
 
 
 def test_replace_lldp_neighbors_preserves_ports_missing_from_partial_collect(tmp_path):

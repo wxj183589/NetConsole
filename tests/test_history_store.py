@@ -98,7 +98,7 @@ def _physical_event_ids(history_root) -> list[str]:
     return event_ids
 
 
-def test_change_aware_history_records_one_initial_event_then_per_kind_heartbeat(tmp_path):
+def test_dynamic_history_records_only_effective_changes_without_heartbeat(tmp_path):
     store = _store(tmp_path)
 
     assert _record(store, collected_at="2026-08-01T10:00:00", value="up")
@@ -108,17 +108,58 @@ def test_change_aware_history_records_one_initial_event_then_per_kind_heartbeat(
             collected_at=f"2026-08-01T10:{minute % 60:02d}:00",
             value="up",
         )
-    assert _record(store, collected_at="2026-08-01T11:00:00", value="up")
+    assert not _record(store, collected_at="2026-08-01T11:00:00", value="up")
     assert _record(store, collected_at="2026-08-01T11:01:00", value="down")
 
     result = store.drain(limit=20)
 
-    assert (result.written, result.pending, result.degraded) == (3, 0, False)
+    assert (result.written, result.pending, result.degraded) == (2, 0, False)
     assert [event["event_type"] for event in store.query_events(kind="device_interface")] == [
         "change",
-        "heartbeat",
         "change",
     ]
+
+
+def test_dynamic_history_keeps_ten_latest_changes_per_entity(tmp_path):
+    store = _store(tmp_path)
+    for sequence in range(20):
+        assert _record(
+            store,
+            collected_at=f"2026-08-01T10:{sequence:02d}:00",
+            value="up" if sequence % 2 == 0 else "down",
+        )
+
+    with connect_sqlite(store.database_path, foreign_keys=True) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM history_outbox WHERE kind='device_interface'"
+        ).fetchone()[0] == 10
+    assert store.drain(limit=100).written == 10
+    assert [row["link_status"] for row in store.query_events(
+        kind="device_interface", entity_key="device-1:GE1/0/1", limit=100
+    )] == ["down", "up"] * 5
+    assert store.count_events(
+        kind="device_interface", entity_key="device-1:GE1/0/1"
+    ) == 10
+    assert store.query_events(
+        kind="device_interface", entity_key="device-1:GE1/0/1", offset=10
+    ) == []
+
+
+def test_dynamic_history_keeps_distinct_same_second_state_transitions(tmp_path):
+    store = _store(tmp_path)
+    collected_at = "2026-08-01T10:00:00"
+
+    for value in ("up", "down", "up", "down"):
+        assert _record(store, collected_at=collected_at, value=value)
+
+    assert store.drain(limit=10).written == 4
+    events = store.query_events(
+        kind="device_interface", entity_key="device-1:GE1/0/1", limit=10
+    )
+    assert len(events) == 4
+    assert [event["link_status"] for event in events].count("up") == 2
+    assert [event["link_status"] for event in events].count("down") == 2
+    assert len({event["event_id"] for event in events}) == 4
 
 
 def test_telemetry_only_changes_are_sampled_and_latest_payload_is_kept(tmp_path):
@@ -568,7 +609,7 @@ def test_history_query_paginates_600_cross_month_events_with_global_time_order(t
             )
             assert store.record_event(
                 conn,
-                kind="device_interface",
+                kind="device_fact",
                 entity_key=entity_key,
                 payload={
                     "device_uuid": "device-1",
@@ -582,12 +623,12 @@ def test_history_query_paginates_600_cross_month_events_with_global_time_order(t
 
     assert store.drain(limit=500).written == 500
     assert store.drain(limit=500).written == 100
-    assert store.count_events(kind="device_interface", entity_key=entity_key) == 600
+    assert store.count_events(kind="device_fact", entity_key=entity_key) == 600
 
     # Pagination must aggregate known shards globally before slicing.  The
     # current API has no offset yet; this call defines the required contract.
     last_page = store.query_events(
-        kind="device_interface",
+        kind="device_fact",
         entity_key=entity_key,
         limit=100,
         offset=500,
@@ -598,7 +639,7 @@ def test_history_query_paginates_600_cross_month_events_with_global_time_order(t
         (row["collected_at"] for row in last_page), reverse=True
     )
     bounded = store.query_events(
-        kind="device_interface",
+        kind="device_fact",
         entity_key=entity_key,
         limit=100,
         collected_to=(start + timedelta(minutes=50)).isoformat(timespec="seconds"),

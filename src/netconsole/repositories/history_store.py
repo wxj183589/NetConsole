@@ -40,6 +40,10 @@ DEFAULT_HEARTBEAT_SECONDS = {
     "fit_ap_optical": 900,
     "fit_ap_lldp": 1800,
 }
+DYNAMIC_CHANGE_ONLY_KINDS = frozenset(
+    {"device_interface", "device_optical", "device_lldp"}
+)
+DYNAMIC_HISTORY_LIMIT = 10
 
 # A heartbeat is the sampling policy for continuous telemetry.  Discrete
 # state/configuration fields are passed explicitly by each producer and are
@@ -75,6 +79,7 @@ CREATE TABLE IF NOT EXISTS history_state (
     entity_key TEXT NOT NULL,
     fingerprint TEXT NOT NULL,
     last_recorded_at TEXT NOT NULL,
+    state_json TEXT NOT NULL DEFAULT '{}',
     PRIMARY KEY(kind, entity_key)
 );
 """
@@ -410,6 +415,7 @@ class HistoryStore:
             raise ValueError("history segment_max_bytes must be a positive integer")
         self.segment_max_bytes = configured_segment_bytes
         self._last_query_errors: tuple[str, ...] = ()
+        self._history_state_schema_checked = False
 
     def _now(self) -> datetime:
         value = (self._clock or _local_now)()
@@ -455,10 +461,17 @@ class HistoryStore:
                 entity_key TEXT NOT NULL,
                 fingerprint TEXT NOT NULL,
                 last_recorded_at TEXT NOT NULL,
+                state_json TEXT NOT NULL DEFAULT '{}',
                 PRIMARY KEY(kind, entity_key)
             )
             """
         )
+        if not self._history_state_schema_checked:
+            if not self._column_exists(conn, "history_state", "state_json"):
+                conn.execute(
+                    "ALTER TABLE history_state ADD COLUMN state_json TEXT NOT NULL DEFAULT '{}'"
+                )
+            self._history_state_schema_checked = True
 
     def record_event(
         self,
@@ -470,6 +483,7 @@ class HistoryStore:
         collected_at: str,
         heartbeat_seconds: int | None = None,
         meaningful_fields: Iterable[str] | None = None,
+        state_changed: Callable[[dict[str, Any], dict[str, Any]], bool] | None = None,
     ) -> bool:
         """Queue only changes or a per-kind low-frequency heartbeat."""
 
@@ -479,14 +493,26 @@ class HistoryStore:
         if not kind or not entity_key:
             return False
         now = str(collected_at or _local_now().isoformat(timespec="seconds"))
-        digest = fingerprint(payload, meaningful_fields=meaningful_fields)
+        state_payload = self._meaningful_payload(
+            payload, meaningful_fields=meaningful_fields
+        )
+        digest = fingerprint(state_payload)
         previous = conn.execute(
-            "SELECT fingerprint, last_recorded_at FROM history_state WHERE kind=? AND entity_key=?",
+            "SELECT fingerprint, last_recorded_at, state_json "
+            "FROM history_state WHERE kind=? AND entity_key=?",
             (kind, entity_key),
         ).fetchone()
+        previous_fingerprint = str(previous[0]) if previous else ""
         event_type = "change"
-        should_record = previous is None or str(previous[0]) != digest
+        previous_state = self._decode_state_json(previous[2] if previous else None)
+        should_record = previous is None or (
+            state_changed(previous_state, state_payload)
+            if state_changed is not None
+            else str(previous[0]) != digest
+        )
         if not should_record:
+            if kind in DYNAMIC_CHANGE_ONLY_KINDS:
+                return False
             interval = int(
                 heartbeat_seconds
                 if heartbeat_seconds is not None
@@ -503,8 +529,23 @@ class HistoryStore:
         if not should_record:
             return False
         created_at = self._now().isoformat(timespec="seconds")
+        # `collected_at` is commonly second-granularity.  A dynamic resource
+        # can legitimately alternate more than once in that second, so retain
+        # a per-transition nonce instead of collapsing a later A -> B into an
+        # earlier one with the same fingerprints.  Other kinds retain their
+        # established deterministic event identity.
+        transition_nonce = (
+            str(time.time_ns())
+            if kind in DYNAMIC_CHANGE_ONLY_KINDS and event_type == "change"
+            else ""
+        )
+        event_identity = (
+            f"{kind}|{entity_key}|{previous_fingerprint}|{digest}|{event_type}|{now}"
+        )
+        if transition_nonce:
+            event_identity += f"|{transition_nonce}"
         event_id = hashlib.sha256(
-            f"{kind}|{entity_key}|{digest}|{event_type}|{now}".encode()
+            event_identity.encode()
         ).hexdigest()
         encoded = json.dumps(_json_value(payload), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         conn.execute(
@@ -517,15 +558,79 @@ class HistoryStore:
         )
         conn.execute(
             """
-            INSERT INTO history_state(kind, entity_key, fingerprint, last_recorded_at)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO history_state(
+                kind, entity_key, fingerprint, last_recorded_at, state_json
+            )
+            VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(kind, entity_key) DO UPDATE SET
                 fingerprint=excluded.fingerprint,
-                last_recorded_at=excluded.last_recorded_at
+                last_recorded_at=excluded.last_recorded_at,
+                state_json=excluded.state_json
             """,
-            (kind, entity_key, digest, now),
+            (
+                kind,
+                entity_key,
+                digest,
+                now,
+                json.dumps(
+                    state_payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+            ),
         )
+        if kind in DYNAMIC_CHANGE_ONLY_KINDS:
+            self._prune_outbox_entity(conn, kind=kind, entity_key=entity_key)
         return True
+
+    @staticmethod
+    def _meaningful_payload(
+        payload: dict[str, Any], *, meaningful_fields: Iterable[str] | None
+    ) -> dict[str, Any]:
+        selected = set(meaningful_fields or ())
+        ignored = {
+            "id",
+            "created_at",
+            "updated_at",
+            "collected_at",
+            "collect_run_uuid",
+            "raw_log_path",
+            "session_id",
+            "snapshot_uuid",
+            "history_uuid",
+        }
+        return {
+            key: _json_value(value)
+            for key, value in payload.items()
+            if key not in ignored and (not selected or key in selected)
+        }
+
+    @staticmethod
+    def _decode_state_json(value: object) -> dict[str, Any]:
+        try:
+            decoded = json.loads(str(value or "{}"))
+        except (TypeError, json.JSONDecodeError):
+            return {}
+        return dict(decoded) if isinstance(decoded, dict) else {}
+
+    @staticmethod
+    def _prune_outbox_entity(
+        conn: sqlite3.Connection, *, kind: str, entity_key: str
+    ) -> None:
+        conn.execute(
+            """
+            DELETE FROM history_outbox
+            WHERE event_id IN (
+                SELECT event_id
+                FROM history_outbox
+                WHERE kind=? AND entity_key=? AND event_type!='legacy'
+                ORDER BY collected_at DESC, event_id DESC
+                LIMIT -1 OFFSET ?
+            )
+            """,
+            (kind, entity_key, DYNAMIC_HISTORY_LIMIT),
+        )
 
     def pending_count(self) -> int:
         if not self.database_path.is_file():
@@ -844,7 +949,227 @@ class HistoryStore:
             shard_path=shard_path,
             profile=profile,
         )
+        dynamic_entities = {
+            (str(row["kind"]), str(row["entity_key"]))
+            for row in pending
+            if str(row.get("kind") or "") in DYNAMIC_CHANGE_ONLY_KINDS
+            and str(row.get("event_type") or "") != "legacy"
+        }
+        if dynamic_entities:
+            self._prune_dynamic_entities_locked(dynamic_entities)
         return inserted
+
+    def _prune_dynamic_entities_locked(
+        self, entities: set[tuple[str, str]]
+    ) -> None:
+        catalog_path = self.history_root / "catalog.db"
+        with closing(self._connect_readonly(catalog_path)) as catalog:
+            catalog_rows = [
+                dict(row)
+                for row in catalog.execute(
+                    "SELECT * FROM history_catalog WHERE status IN ("
+                    + ",".join("?" for _ in CATALOG_WRITABLE_STATES)
+                    + ")"
+                    + self._catalog_order_by(catalog, descending=True),
+                    sorted(CATALOG_WRITABLE_STATES),
+                ).fetchall()
+            ]
+
+        shard_paths: list[tuple[dict[str, Any], Path]] = []
+        for catalog_row in catalog_rows:
+            path = self._safe_shard_path(
+                str(catalog_row.get("relative_path") or "")
+            )
+            if path is not None and path.is_file():
+                shard_paths.append((catalog_row, path))
+
+        candidates_by_entity: dict[tuple[str, str], list[tuple[str, str]]] = {
+            entity: [] for entity in entities
+        }
+        for _catalog_row, path in shard_paths:
+            with closing(self._connect_readonly(path)) as shard:
+                for entity, candidates in self._recent_dynamic_entity_event_ids(
+                    shard, entities
+                ).items():
+                    candidates_by_entity[entity].extend(candidates)
+        keep_ids_by_entity = {
+            entity: {
+                event_id
+                for _collected_at, event_id in sorted(candidates, reverse=True)[
+                    :DYNAMIC_HISTORY_LIMIT
+                ]
+            }
+            for entity, candidates in candidates_by_entity.items()
+        }
+
+        changed_shards: set[str] = set()
+        for catalog_row, path in shard_paths:
+            with closing(connect_sqlite(path, foreign_keys=True)) as shard:
+                deleted = sum(
+                    self._delete_entity_events_except(
+                        shard,
+                        kind=kind,
+                        entity_key=entity_key,
+                        keep_ids=keep_ids_by_entity[(kind, entity_key)],
+                    )
+                    for kind, entity_key in entities
+                )
+                if deleted:
+                    shard.commit()
+                    changed_shards.add(str(catalog_row["shard_id"]))
+
+        for catalog_row, path in shard_paths:
+            if str(catalog_row["shard_id"]) not in changed_shards:
+                continue
+            profile = self._shard_profile(path)
+            self._publish_shard(
+                shard_id=str(catalog_row["shard_id"]),
+                period=str(catalog_row["period_start"])[:7],
+                segment=int(catalog_row.get("segment") or 1),
+                shard_path=path,
+                profile=profile,
+            )
+
+    @classmethod
+    def _recent_dynamic_entity_event_ids(
+        cls, conn: sqlite3.Connection, entities: set[tuple[str, str]]
+    ) -> dict[tuple[str, str], list[tuple[str, str]]]:
+        """Read dynamic candidates per writable shard without reopening it per port."""
+
+        result: dict[tuple[str, str], list[tuple[str, str]]] = {
+            entity: [] for entity in entities
+        }
+        by_kind: dict[str, list[str]] = {}
+        for kind, entity_key in entities:
+            by_kind.setdefault(kind, []).append(entity_key)
+
+        for kind, entity_keys in by_kind.items():
+            for start in range(0, len(entity_keys), 400):
+                chunk = entity_keys[start : start + 400]
+                placeholders = ",".join("?" for _ in chunk)
+                if cls._table_exists(conn, "history_events"):
+                    for row in conn.execute(
+                        "SELECT entity_key, collected_at, event_id FROM history_events "
+                        "WHERE kind=? AND entity_key IN ("
+                        + placeholders
+                        + ") AND event_type!='legacy'",
+                        (kind, *chunk),
+                    ).fetchall():
+                        result[(kind, str(row["entity_key"]))].append(
+                            (str(row["collected_at"]), str(row["event_id"]))
+                        )
+                if not cls._table_exists(conn, "history_events_v2"):
+                    continue
+                kind_id = cls._lookup_v2_id(
+                    conn,
+                    table="history_kinds_v2",
+                    id_column="kind_id",
+                    value_column="name",
+                    value=kind,
+                )
+                if kind_id is None:
+                    continue
+                entity_rows = conn.execute(
+                    "SELECT entity_id, entity_key FROM history_entities_v2 "
+                    "WHERE kind_id=? AND entity_key IN ("
+                    + placeholders
+                    + ")",
+                    (kind_id, *chunk),
+                ).fetchall()
+                entity_lookup = {
+                    int(row["entity_id"]): str(row["entity_key"])
+                    for row in entity_rows
+                }
+                if not entity_lookup:
+                    continue
+                entity_placeholders = ",".join("?" for _ in entity_lookup)
+                legacy_type = cls._lookup_v2_id(
+                    conn,
+                    table="history_event_types_v2",
+                    id_column="event_type_id",
+                    value_column="name",
+                    value="legacy",
+                )
+                clauses = [f"entity_id IN ({entity_placeholders})"]
+                params: list[Any] = list(entity_lookup)
+                if legacy_type is not None:
+                    clauses.append("event_type_id!=?")
+                    params.append(legacy_type)
+                for row in conn.execute(
+                    "SELECT entity_id, collected_at, event_id FROM history_events_v2 "
+                    "INDEXED BY idx_history_events_v2_entity_time WHERE "
+                    + " AND ".join(clauses),
+                    params,
+                ).fetchall():
+                    result[(kind, entity_lookup[int(row["entity_id"])])].append(
+                        (
+                            str(row["collected_at"]),
+                            cls._event_id_text(row["event_id"]),
+                        )
+                    )
+        return result
+
+    @classmethod
+    def _delete_entity_events_except(
+        cls,
+        conn: sqlite3.Connection,
+        *,
+        kind: str,
+        entity_key: str,
+        keep_ids: set[str],
+    ) -> int:
+        deleted = 0
+        keep = sorted(keep_ids)
+        placeholders = ",".join("?" for _ in keep)
+        keep_clause = f" AND event_id NOT IN ({placeholders})" if keep else ""
+        if cls._table_exists(conn, "history_events"):
+            cursor = conn.execute(
+                "DELETE FROM history_events WHERE kind=? AND entity_key=? "
+                "AND event_type!='legacy'"
+                + keep_clause,
+                [kind, entity_key, *keep],
+            )
+            deleted += max(0, cursor.rowcount)
+        if cls._table_exists(conn, "history_events_v2"):
+            kind_id = cls._lookup_v2_id(
+                conn,
+                table="history_kinds_v2",
+                id_column="kind_id",
+                value_column="name",
+                value=kind,
+            )
+            if kind_id is None:
+                return deleted
+            entity_row = conn.execute(
+                "SELECT entity_id FROM history_entities_v2 "
+                "WHERE kind_id=? AND entity_key=?",
+                (kind_id, entity_key),
+            ).fetchone()
+            if entity_row is None:
+                return deleted
+            legacy_type = cls._lookup_v2_id(
+                conn,
+                table="history_event_types_v2",
+                id_column="event_type_id",
+                value_column="name",
+                value="legacy",
+            )
+            clauses = ["entity_id=?"]
+            params: list[Any] = [int(entity_row[0])]
+            if legacy_type is not None:
+                clauses.append("event_type_id!=?")
+                params.append(legacy_type)
+            if keep:
+                clauses.append(
+                    "event_id NOT IN (" + ",".join("?" for _ in keep) + ")"
+                )
+                params.extend(cls._event_id_bytes(value) for value in keep)
+            cursor = conn.execute(
+                "DELETE FROM history_events_v2 WHERE " + " AND ".join(clauses),
+                params,
+            )
+            deleted += max(0, cursor.rowcount)
+        return deleted
 
     def _catalog_event_rows_locked(
         self, period: str, event_ids: list[str]
@@ -1530,6 +1855,10 @@ class HistoryStore:
         # that preserves global ordering without materializing every shard.
         safe_limit = max(1, int(limit))
         safe_offset = max(0, int(offset))
+        if kind in DYNAMIC_CHANGE_ONLY_KINDS and entity_key is not None:
+            if safe_offset >= DYNAMIC_HISTORY_LIMIT:
+                return []
+            safe_limit = min(safe_limit, DYNAMIC_HISTORY_LIMIT - safe_offset)
         requested = safe_limit + safe_offset
         include_legacy = self._kind_uses_shard_authority(kind)
         if self.database_path.is_file():
@@ -1788,7 +2117,9 @@ class HistoryStore:
                     if not self._table_exists(catalog, "history_catalog"):
                         errors.append("catalog:missing_schema")
                         self._last_query_errors = tuple(errors)
-                        return total
+                        return self._bounded_dynamic_entity_count(
+                            total, kind=kind, entity_key=entity_key
+                        )
                     clauses = [
                         "status IN ('ACTIVE','CLOSED','ARCHIVED','OPEN','SEALING','SEALED','VERIFIED')"
                     ]
@@ -1841,6 +2172,16 @@ class HistoryStore:
             except (OSError, sqlite3.Error) as exc:
                 errors.append(f"catalog:{exc.__class__.__name__}")
         self._last_query_errors = tuple(errors)
+        return self._bounded_dynamic_entity_count(
+            total, kind=kind, entity_key=entity_key
+        )
+
+    @staticmethod
+    def _bounded_dynamic_entity_count(
+        total: int, *, kind: str, entity_key: str | None
+    ) -> int:
+        if kind in DYNAMIC_CHANGE_ONLY_KINDS and entity_key is not None:
+            return min(total, DYNAMIC_HISTORY_LIMIT)
         return total
 
     def legacy_source_is_authoritative(self, source_table: str) -> bool:

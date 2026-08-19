@@ -78,7 +78,7 @@ Electron 的 `userData`、`sessionData`、`cache`、`logs`、`crashDumps` 和 `t
 
 Phase 2 的目标是先停止 `devices.db` 因高频快照持续增长，同时保持旧局点可原样升级和查询。当前态继续写入 `devices.db`；新的设备采集历史在同一 current-state 事务中先写入小型 `history_outbox`，READY 后由有界后台 drain 以 [History Storage V2](./HISTORY_STORAGE_V2.md) 写入 `db/history/devices-YYYY-MM.db`。分片和 catalog 不属于 `Database.initialize()` 的启动工作：启动不会扫描、校验、迁移、checkpoint、retention 或 VACUUM 任一历史分片。
 
-`history_state` 只保存每个 `kind + entity_key` 最近一次有业务意义的指纹和记录时间。变化立即入 outbox；无变化时才按类型独立 heartbeat 周期低频记录。采集时间、采集批次 UUID、raw 路径和其他运行元数据不得单独造成 change。当前实现的默认周期为 device fact/interface 60 分钟、device LLDP 30 分钟、device optical 15 分钟；FIT AP resource/LLDP 30 分钟、FIT AP optical 15 分钟、FIT AP radio 30 分钟。实际历史事件的业务字段由各 producer 显式选择，不能用整行字符串比较。
+`history_state` 只保存每个 `kind + entity_key` 最近一次有业务意义的指纹和业务状态。变化立即入 outbox；采集时间、采集批次 UUID、raw 路径和其他运行元数据不得单独造成 change。设备接口、设备 LLDP 和设备光模块三类动态历史只记录有效变化，不产生 heartbeat；每个资源的新链路最多保留最近 10 条有效变化记录。光模块 RX/TX 采用独立的 0.20 dB 历史抖动容差，不改变现有告警阈值；模块插拔、序列号、状态和告警变化即使数值变化很小也会记录。其余 kind 仍按 producer 选择的字段和 sampling 周期处理，不能用整行字符串比较。
 
 | 数据类别 | 当前态 producer / storage | 新历史写入路径 | 兼容 consumer / legacy 表 | 业务语义与索引 |
 | --- | --- | --- | --- | --- |
@@ -101,7 +101,7 @@ Phase 2 的目标是先停止 `devices.db` 因高频快照持续增长，同时�
 - legacy migration 是独立 maintenance，必须在 Backend READY 后显式调度，以 source table + last source id journal、bounded batch、copy/verify checkpoint、幂等 resume 实现。无法无损确定业务实体键或采集时间的旧行不会被猜测写入新历史，而是记录 source id + reason；源行始终保留。逐 source table authority 允许验证后显式 cutover 到 shard query，并可在源未删除时回退到 legacy；unsupported/invalid rows 不进入 delete eligibility。`ap_resource_snapshots` 是站点包/AP 实体快照兼容证据，不作为通用 AC 资源历史迁移源。精确 source-delete executor 仅供 `D:\study` 下隔离副本的显式 maintenance 演练，要求 authority、source identity/revision、delete-plan digest、expected counts、maintenance lock 与 `--apply` 同时成立；现场 `D:\NetConsoleData` 的 DELETE、DROP、自动 VACUUM 和物理替换仍未授权。
 - `SERVER_UNATTENDED ACTIVE` 时必须暂停 legacy migration、retention、aggregation 和旧分片维护，保留 Syslog、MR、Ping 和当前任务 persistence 的 I/O 优先级。history drain 仍按自身可写性运行，不依赖整体 `runtime_services_ready`：根据 pending 数量、最老事件年龄和单批耗时在 100/250/500 条之间自适应，并设置单批时间上限；不使用未接入生产的 `disk_busy` 信号。暂停不丢弃 outbox，恢复后可继续 bounded drain；磁盘并发维持为 1 或现有 capability policy 更低值。
 
-Phase 2.1 收口了写入语义：`device_fact.uptime`、接口配置采集时间、LLDP `holdtime/ttl`、光衰 RX/TX/温度/电压/偏置电流，以及 FIT-AP Radio 的 usage/clients/tx_power、FIT-AP Optical 的连续量只作为 heartbeat payload，不参与普通 change fingerprint。设备/AP 身份、型号、版本、链路/邻居、channel/bandwidth、status/alarm、阈值和冲突状态仍在变化时立即记录。各 kind 继续使用独立 sampling 周期，heartbeat 仍保留最新 telemetry payload。
+Phase 2.1 收口了写入语义：`device_fact.uptime`、接口配置采集时间、LLDP `holdtime/ttl`、光衰 RX/TX/温度/电压/偏置电流，以及 FIT-AP Radio 的 usage/clients/tx_power、FIT-AP Optical 的连续量只作为 heartbeat payload，不参与普通 change fingerprint。设备/AP 身份、型号、版本、链路/邻居、channel/bandwidth、status/alarm、阈值和冲突状态仍在变化时立即记录。设备接口、设备 LLDP、设备光模块已进一步切换为 change-only，并按资源保留最近 10 条；旧 legacy history 和已封存分片不自动清理，兼容查询只限制新链路返回窗口。FIT-AP 等其他 kind 继续使用独立 sampling 周期，heartbeat 仍保留最新 telemetry payload。
 
 无人值守期间 history 以低频、较大但有界的事务批次排空：基础批次 100 条，积压或年龄升高时提升到 250/500 条，目标调度预算为 2 秒。已开始的 SQLite chunk 必须安全完成；chunk 完成后若已超出预算，本轮不再启动下一 chunk，不强制中断事务。`/api/health` 暴露 `history_status`、`history_pending`、`history_oldest_pending_age_seconds`、`history_pressure`、`history_last_drain_elapsed_ms`、`history_last_drain_written` 和 `history_budget_overrun`。History drain 不因 Agent/Traffic/File Management 等 deferred runtime 未 ready 而停滞。
 

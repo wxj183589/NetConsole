@@ -8,6 +8,7 @@ from netconsole.core.database import Database
 from netconsole.core.optical_severity_engine import (
     is_zte_optical_record,
     normalize_zte_optical_record,
+    optical_history_state_changed,
 )
 from netconsole.services.history_store import HistoryStore
 from netconsole.utils.interface_normalize import normalize_interface_name
@@ -131,6 +132,67 @@ FACT_HISTORY_FIELDS = (*FACT_FIELDS, "created_at")
 INTERFACE_HISTORY_FIELDS = (*INTERFACE_FIELDS, "created_at")
 OPTICAL_MODULE_HISTORY_FIELDS = (*OPTICAL_MODULE_FIELDS, "created_at")
 LLDP_HISTORY_FIELDS = (*LLDP_FIELDS, "created_at")
+
+INTERFACE_HISTORY_STATE_FIELDS = tuple(
+    field
+    for field in INTERFACE_FIELDS
+    if field
+    not in {
+        "collected_at",
+        "collect_run_uuid",
+        "raw_log_path",
+        "updated_at",
+        "vlan_config_collected_at",
+    }
+)
+OPTICAL_HISTORY_STATE_FIELDS = (
+    "device_uuid",
+    "interface_name",
+    "module_present",
+    "rx_power",
+    "tx_power",
+    "module_model",
+    "module_serial_number",
+    "module_vendor",
+    "wavelength",
+    "transmission_distance",
+    "connector_type",
+    "device_vendor",
+    "device_reported_status",
+    "threshold_source",
+    "transceiver_mode",
+    "vendor_part_number",
+    "vendor_revision",
+    "vendor_serial_number",
+    "status",
+    "rx_low_alarm",
+    "rx_high_alarm",
+    "tx_low_alarm",
+    "tx_high_alarm",
+    "rx_low_warning",
+    "rx_high_warning",
+    "tx_low_warning",
+    "tx_high_warning",
+)
+LLDP_HISTORY_STATE_FIELDS = (
+    "device_uuid",
+    "local_interface",
+    "scope",
+    "chassis_type",
+    "chassis_id",
+    "neighbor_sysname",
+    "neighbor_mac",
+    "port_id_type",
+    "neighbor_interface",
+    "neighbor_ip",
+    "port_description",
+    "system_description",
+    "system_capabilities",
+    "pvid",
+    "operational_mau",
+    "max_frame_size",
+    "neighbor_device_uuid",
+)
 
 COLLECT_RUN_FIELDS = (
     "collect_run_uuid",
@@ -343,13 +405,7 @@ class DeviceFactRepository:
                     entity_key=f"{device_uuid}:{payload.get('interface_name')}",
                     payload=payload,
                     collected_at=str(payload["collected_at"]),
-                    meaningful_fields=tuple(
-                        field for field in INTERFACE_FIELDS
-                        if field not in {
-                            "collected_at", "collect_run_uuid", "raw_log_path", "updated_at",
-                            "vlan_config_collected_at",
-                        }
-                    ),
+                    meaningful_fields=INTERFACE_HISTORY_STATE_FIELDS,
                 )
             conn.commit()
 
@@ -427,13 +483,7 @@ class DeviceFactRepository:
                 entity_key=f"{payload.get('device_uuid')}:{payload.get('interface_name')}",
                 payload=payload,
                 collected_at=str(payload["collected_at"]),
-                meaningful_fields=tuple(
-                    field for field in INTERFACE_FIELDS
-                    if field not in {
-                        "collected_at", "collect_run_uuid", "raw_log_path", "updated_at",
-                        "vlan_config_collected_at",
-                    }
-                ),
+                meaningful_fields=INTERFACE_HISTORY_STATE_FIELDS,
             )
             conn.commit()
 
@@ -449,6 +499,7 @@ class DeviceFactRepository:
                 if is_zte_optical_record(item):
                     item = normalize_zte_optical_record(item)
                 payload = self._payload(OPTICAL_MODULE_FIELDS, {**item, "device_uuid": device_uuid})
+                self._preserve_optical_module_presence(payload, item)
                 payload["collected_at"] = payload.get("collected_at") or now
                 payload["updated_at"] = payload.get("updated_at") or now
                 self._insert(conn, "device_optical_modules", OPTICAL_MODULE_FIELDS, payload)
@@ -458,15 +509,8 @@ class DeviceFactRepository:
                     entity_key=f"{device_uuid}:{payload.get('interface_name')}",
                     payload=payload,
                     collected_at=str(payload["collected_at"]),
-                    meaningful_fields=(
-                        "device_uuid", "interface_name", "module_model", "module_serial_number",
-                        "module_vendor", "wavelength", "transmission_distance", "connector_type",
-                        "device_vendor", "device_reported_status", "threshold_source", "transceiver_mode",
-                        "vendor_part_number", "vendor_revision", "vendor_serial_number", "status",
-                        "rx_low_alarm", "rx_high_alarm",
-                        "tx_low_alarm", "tx_high_alarm", "rx_low_warning", "rx_high_warning",
-                        "tx_low_warning", "tx_high_warning",
-                    ),
+                    meaningful_fields=OPTICAL_HISTORY_STATE_FIELDS,
+                    state_changed=optical_history_state_changed,
                 )
             conn.commit()
 
@@ -548,6 +592,7 @@ class DeviceFactRepository:
         if is_zte_optical_record(data):
             data = normalize_zte_optical_record(data)
         payload = self._payload(OPTICAL_MODULE_HISTORY_FIELDS, data)
+        self._preserve_optical_module_presence(payload, data)
         self._set_required_defaults(payload, ("collected_at", "created_at"))
         with self.database.connect() as conn:
             self.history_store.record_event(
@@ -556,15 +601,8 @@ class DeviceFactRepository:
                 entity_key=f"{payload.get('device_uuid')}:{payload.get('interface_name')}",
                 payload=payload,
                 collected_at=str(payload["collected_at"]),
-                meaningful_fields=(
-                    "device_uuid", "interface_name", "module_model", "module_serial_number",
-                    "module_vendor", "wavelength", "transmission_distance", "connector_type",
-                    "device_vendor", "device_reported_status", "threshold_source", "transceiver_mode",
-                    "vendor_part_number", "vendor_revision", "vendor_serial_number", "status",
-                    "rx_low_alarm", "rx_high_alarm",
-                    "tx_low_alarm", "tx_high_alarm", "rx_low_warning", "rx_high_warning",
-                    "tx_low_warning", "tx_high_warning",
-                ),
+                meaningful_fields=OPTICAL_HISTORY_STATE_FIELDS,
+                state_changed=optical_history_state_changed,
             )
             conn.commit()
 
@@ -577,26 +615,20 @@ class DeviceFactRepository:
     ) -> None:
         now = self._now()
         with self.database.connect() as conn:
-            existing_rows = (
-                conn.execute(
-                    "SELECT * FROM device_lldp_neighbors WHERE device_uuid = ?",
-                    (device_uuid,),
-                ).fetchall()
-                if preserve_existing
-                else ()
-            )
+            existing_rows = conn.execute(
+                "SELECT * FROM device_lldp_neighbors WHERE device_uuid = ?",
+                (device_uuid,),
+            ).fetchall()
             merged: dict[str, dict[str, object | None]] = {}
             passthrough: list[dict[str, object | None]] = []
-            for row in existing_rows:
-                item = dict(row)
-                key = _lldp_neighbor_key(
-                    item,
-                    include_neighbor=not preserve_existing,
-                )
-                if key:
-                    merged[key] = item
-                else:
-                    passthrough.append(item)
+            if preserve_existing:
+                for row in existing_rows:
+                    item = dict(row)
+                    key = _lldp_neighbor_key(item, include_neighbor=False)
+                    if key:
+                        merged[key] = item
+                    else:
+                        passthrough.append(item)
             current_payloads: list[dict[str, object | None]] = []
             for item in neighbors:
                 payload = self._payload(LLDP_FIELDS, {**item, "device_uuid": device_uuid})
@@ -611,6 +643,28 @@ class DeviceFactRepository:
                 else:
                     passthrough.append(payload)
                 current_payloads.append(payload)
+            if not preserve_existing:
+                observed_interfaces = {
+                    normalize_interface_name(payload.get("local_interface")).casefold()
+                    for payload in current_payloads
+                }
+                for row in existing_rows:
+                    previous = dict(row)
+                    local_interface = normalize_interface_name(
+                        previous.get("local_interface")
+                    )
+                    if not local_interface or local_interface.casefold() in observed_interfaces:
+                        continue
+                    missing = self._payload(
+                        LLDP_FIELDS,
+                        {
+                            "device_uuid": device_uuid,
+                            "local_interface": previous.get("local_interface"),
+                            "collected_at": now,
+                            "updated_at": now,
+                        },
+                    )
+                    current_payloads.append(missing)
             conn.execute("DELETE FROM device_lldp_neighbors WHERE device_uuid = ?", (device_uuid,))
             for payload in [*merged.values(), *passthrough]:
                 self._insert(conn, "device_lldp_neighbors", LLDP_FIELDS, payload)
@@ -621,13 +675,7 @@ class DeviceFactRepository:
                     entity_key=f"{device_uuid}:{payload.get('local_interface')}",
                     payload=payload,
                     collected_at=str(payload["collected_at"]),
-                    meaningful_fields=(
-                        "device_uuid", "local_interface", "scope", "chassis_type", "chassis_id",
-                        "neighbor_sysname", "neighbor_mac", "port_id_type", "neighbor_interface",
-                        "neighbor_ip", "port_description", "system_description",
-                        "system_capabilities", "pvid", "operational_mau", "max_frame_size",
-                        "neighbor_device_uuid",
-                    ),
+                    meaningful_fields=LLDP_HISTORY_STATE_FIELDS,
                 )
             conn.commit()
 
@@ -714,13 +762,7 @@ class DeviceFactRepository:
                 entity_key=f"{payload.get('device_uuid')}:{payload.get('local_interface')}",
                 payload=payload,
                 collected_at=str(payload["collected_at"]),
-                meaningful_fields=(
-                    "device_uuid", "local_interface", "scope", "chassis_type", "chassis_id",
-                    "neighbor_sysname", "neighbor_mac", "port_id_type", "neighbor_interface",
-                    "neighbor_ip", "port_description", "system_description",
-                    "system_capabilities", "pvid", "operational_mau", "max_frame_size",
-                    "neighbor_device_uuid",
-                ),
+                meaningful_fields=LLDP_HISTORY_STATE_FIELDS,
             )
             conn.commit()
 
@@ -927,10 +969,16 @@ class DeviceFactRepository:
                 (device_uuid, object_name),
             )
         legacy_total = int(rows[0]["total"] if rows else 0)
-        return legacy_total + self.history_store.count_events(
-            kind=_history_kind_to_store_kind(history_kind),
+        store_kind = _history_kind_to_store_kind(history_kind)
+        total = legacy_total + self.history_store.count_events(
+            kind=store_kind,
             entity_key=_history_kind_entity_key(history_kind, device_uuid, object_name),
         )
+        return min(total, 10) if store_kind in {
+            "device_interface",
+            "device_optical",
+            "device_lldp",
+        } else total
 
     def _current_page(
         self,
@@ -1077,6 +1125,18 @@ class DeviceFactRepository:
             payload[field] = payload.get(field) or now
 
     @staticmethod
+    def _preserve_optical_module_presence(
+        payload: dict[str, object | None], source: dict[str, object | None]
+    ) -> None:
+        """Keep explicit module presence in history without changing current schema."""
+
+        presence = source.get("module_present")
+        if presence is None:
+            presence = source.get("has_module")
+        if presence is not None:
+            payload["module_present"] = presence
+
+    @staticmethod
     def _insert(conn, table: str, fields: tuple[str, ...], payload: dict[str, object | None]) -> None:
         columns = ", ".join(fields)
         placeholders = ", ".join("?" for _ in fields)
@@ -1116,7 +1176,7 @@ class DeviceFactRepository:
             limit=max(1, int(limit)),
         )
         combined = [*legacy_rows, *events]
-        return sorted(
+        combined = sorted(
             combined,
             key=lambda row: (
                 str(row.get("collected_at") or ""),
@@ -1125,6 +1185,9 @@ class DeviceFactRepository:
             ),
             reverse=True,
         )
+        if kind in {"device_interface", "device_optical", "device_lldp"}:
+            return combined[:10]
+        return combined
 
     @staticmethod
     def _now() -> str:

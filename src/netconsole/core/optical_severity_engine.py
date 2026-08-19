@@ -7,6 +7,9 @@ from datetime import datetime, timedelta, timezone
 
 DERIVED_WARNING_DELTA_DB = 2.01
 MAINTENANCE_MARGIN_DB = 3.0
+# History-only tolerance.  This is deliberately separate from optical alarm
+# thresholds: it suppresses telemetry jitter without changing health status.
+OPTICAL_HISTORY_POWER_DELTA_DB = 0.20
 AP_DEFAULT_OPTICAL_THRESHOLD_PROFILE = {
     "alarm_low": -19.00,
     "warning_low": -16.99,
@@ -380,6 +383,44 @@ def normalize_zte_optical_record(record: dict) -> dict:
     return normalized
 
 
+def optical_history_state_changed(
+    previous: dict[str, object], current: dict[str, object]
+) -> bool:
+    """Compare optical business state while ignoring sub-tolerance power jitter."""
+
+    for field in (
+        "module_present",
+        "module_model",
+        "module_serial_number",
+        "module_vendor",
+        "wavelength",
+        "transmission_distance",
+        "connector_type",
+        "device_vendor",
+        "device_reported_status",
+        "threshold_source",
+        "transceiver_mode",
+        "vendor_part_number",
+        "vendor_revision",
+        "vendor_serial_number",
+        "status",
+        "rx_low_alarm",
+        "rx_high_alarm",
+        "tx_low_alarm",
+        "tx_high_alarm",
+        "rx_low_warning",
+        "rx_high_warning",
+        "tx_low_warning",
+        "tx_high_warning",
+    ):
+        if _history_text(previous.get(field)) != _history_text(current.get(field)):
+            return True
+    return any(
+        _optical_history_power_changed(previous.get(field), current.get(field))
+        for field in ("rx_power", "tx_power")
+    )
+
+
 def worse_optical_severity(left: str, right: str) -> str:
     return left if SEVERITY_RANK.get(left, 0) >= SEVERITY_RANK.get(right, 0) else right
 
@@ -468,6 +509,22 @@ def _to_float(value: object) -> float | None:
         return float(match.group(0))
     except ValueError:
         return None
+
+
+def _optical_history_power_changed(previous: object, current: object) -> bool:
+    previous_value = _to_float(previous)
+    current_value = _to_float(current)
+    if previous_value is None or current_value is None:
+        return _history_text(previous) != _history_text(current)
+    return abs(current_value - previous_value) >= OPTICAL_HISTORY_POWER_DELTA_DB
+
+
+def _history_text(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value).strip().casefold()
 
 
 def _is_false(value: object) -> bool:
