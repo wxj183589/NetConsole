@@ -213,6 +213,8 @@ def test_agent_mr_collector_prefers_project_venv_pyinstaller() -> None:
     ).read_text(encoding="utf-8")
 
     assert 'set "PYTHON_EXE=%REPO_ROOT%\\.venv\\Scripts\\python.exe"' in text
+    assert 'set "PYINSTALLER_CONFIG_DIR=%BUILD_ROOT%\\pyinstaller-cache"' in text
     assert '"%PYTHON_EXE%" -m PyInstaller --version' in text
     assert '"%PYTHON_EXE%" -m PyInstaller --clean --onefile' in text
+    assert text.index('set "PYINSTALLER_CONFIG_DIR=') < text.index('"%PYTHON_EXE%" -m PyInstaller --clean')
     assert text.index('if exist "%PYTHON_EXE%"') < text.index("where pyinstaller")
