@@ -145,6 +145,9 @@ try {
     $nodeVersion = Invoke-NativeCapture $nodePath @("--version") $projectRoot
     $pnpmVersion = Invoke-NativeCapture $pnpmPath @("--version") $projectRoot
     $goVersion = Invoke-NativeCapture $goPath @("version") $projectRoot
+    if ($pythonVersion -notmatch "^Python 3\.13\.9$") {
+        throw "正式 Backend 构建要求 CPython 3.13.9；当前检测到：$pythonVersion"
+    }
     if ($goVersion -notmatch "\bgo1\.26\.5\b") {
         throw "正式 Electron 构建要求 Go 1.26.5；当前检测到：$goVersion"
     }
