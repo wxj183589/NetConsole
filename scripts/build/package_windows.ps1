@@ -110,6 +110,7 @@ try {
     $gitPath = Resolve-NativeCommand "git.exe"
     $nodePath = Resolve-NativeCommand "node.exe"
     $pnpmPath = Resolve-NativeCommand "pnpm.cmd"
+    $goPath = Resolve-NativeCommand "go.exe"
 
     foreach ($requiredPath in @(
         $pythonPath,
@@ -143,10 +144,15 @@ try {
     $pythonVersion = Invoke-NativeCapture $pythonPath @("--version") $projectRoot
     $nodeVersion = Invoke-NativeCapture $nodePath @("--version") $projectRoot
     $pnpmVersion = Invoke-NativeCapture $pnpmPath @("--version") $projectRoot
+    $goVersion = Invoke-NativeCapture $goPath @("version") $projectRoot
+    if ($goVersion -notmatch "\bgo1\.26\.5\b") {
+        throw "正式 Electron 构建要求 Go 1.26.5；当前检测到：$goVersion"
+    }
     Write-Host "Git HEAD : $head"
     Write-Host "Python   : $pythonVersion"
     Write-Host "Node.js  : $nodeVersion"
     Write-Host "pnpm     : $pnpmVersion"
+    Write-Host "Go       : $goVersion"
 
     Invoke-Native $pythonPath @("-m", "pip", "check") $projectRoot
 
