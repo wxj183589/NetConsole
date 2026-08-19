@@ -10,6 +10,7 @@ NetConsole 测试按风险等级、共享契约和消费者选择，不按历史
 - 自动化证据、Electron GUI、真实设备、正式安装包和长时运行分别报告，不能互相替代。
 - 默认 PR 离线运行，不连接真实设备、不要求 Windows GUI、不读取正式数据根。
 - 本地 `scripts.quality.local_gate` 是主要开发验证入口；GitHub Actions 只提供可选远端复核。
+- 副机以代码修复、新功能和定向验证为主；PyInstaller、NSIS、Full/Customer package smoke 和正式制品发布转到主机执行，详见[副机开发与验证流程](../development/SECONDARY_MACHINE_WORKFLOW.md)。
 
 ## 测试层级
 

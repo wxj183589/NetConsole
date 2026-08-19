@@ -9,6 +9,7 @@
 - [Change Impact Framework](./CHANGE_IMPACT_FRAMEWORK.md)：L1-L4、共享契约、消费者和合并后验证。
 - [API / Application 边界](./API_APPLICATION_BOUNDARY.md)：FastAPI Router、Service、Repository 与传输职责。
 - [仓库目录规范](./repository-layout.md)：源码、测试、脚本、运行数据和构建产物归位。
+- [副机开发与验证流程](./SECONDARY_MACHINE_WORKFLOW.md)：副机允许的代码/定向测试范围，以及必须转到主机的正式构建边界。
 - [Self-hosted CI](./SELF_HOSTED_CI.md)：本地 Runner 与 CI 安全边界。
 - [Codex Skills](./CODEX_SKILLS.md)：项目 Skill 路由和维护规则。
 

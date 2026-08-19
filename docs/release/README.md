@@ -8,5 +8,6 @@
 - [第三方依赖](./THIRD_PARTY_DEPENDENCIES.md)
 - [Windows Server 验收](./WINDOWS_SERVER_TEST_CHECKLIST.md)
 - [IPOP v4.1 许可说明](./IPOP_v4.1_NOTICE.md)
+- [副机开发与验证流程](../development/SECONDARY_MACHINE_WORKFLOW.md)：副机与主机的职责边界。
 
 历史迁移记录不构成当前发布门；版本、脚本、清单和制品 smoke 以当前代码为准。
