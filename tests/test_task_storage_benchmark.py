@@ -28,7 +28,11 @@ def test_task_storage_benchmark_compares_all_result_layouts(tmp_path: Path) -> N
     assert layouts["legacy_dual_full"]["results"] == 0
     assert layouts["guarded_default"]["results"] == 0
     assert layouts["guarded_default"]["measurement_state"] == "checkpointed"
-    assert layouts["task_results_dual_write"]["results"] == 2
+    dual_write = layouts["task_results_dual_write"]
+    assert dual_write["results"] == 0
+    assert dual_write["persisted_rollout_state"] == "TASK_RESULTS_DUAL_WRITE"
+    assert dual_write["runtime_write_state"] == "LEGACY_DUAL_FULL"
+    assert dual_write["read_path"] == "legacy_full"
     assert layouts["future_ref_only"]["results"] == 2
     assert layouts["future_ref_only"]["read_path"] == "task_results_read_through"
     assert comparisons[0]["storage_comparison"][
