@@ -285,6 +285,9 @@ function Get-VerifiedArtifacts {
         if ($manifest.packaged_dirty -ne $false) {
             throw "$expectedEdition 发布清单标记 packaged_dirty=true。"
         }
+        if ($manifest.published -ne $false) {
+            throw "$expectedEdition 本地构建不得标记 published=true。"
+        }
         if ($manifest.backend_commit -ne $Head -or $manifest.frontend_commit -ne $Head) {
             throw "$expectedEdition 发布清单的 Backend/Frontend commit 与 Installer commit 不一致。"
         }
@@ -390,6 +393,7 @@ function Write-ReleaseSummary {
         git_commit = $Head
         git_short = $Head.Substring(0, 8)
         app_version = $AppVersion
+        published = $false
         edition_selection = $EditionSelection
         tests_passed = $true
         package_smoke = "PASS"
@@ -440,7 +444,7 @@ function Publish-VerifiedArtifacts {
     }
     New-Item -ItemType Directory -Path $releaseRoot -Force | Out-Null
     $stagingRoot = Join-Path $releaseRoot (".staging-" + [guid]::NewGuid().ToString("N"))
-    $finalRoot = Join-Path $releaseRoot $AppVersion
+    $finalRoot = Join-Path (Join-Path $releaseRoot $AppVersion) ("build-{0}-{1}" -f $script:BuildNumber, $Head.Substring(0, 8))
     if (Test-Path -LiteralPath $finalRoot) {
         throw "正式版本目录已存在，拒绝覆盖或混入新候选：$finalRoot"
     }
@@ -654,6 +658,11 @@ try {
         throw "发布前源码状态已变化，拒绝写入正式发布目录。"
     }
     $appVersion = Get-AppVersion -PythonPath $pythonPath -ProjectRoot $projectRoot
+    $rawBuildNumber = if ([string]::IsNullOrWhiteSpace($env:NETCONSOLE_BUILD_NUMBER)) { "0" } else { $env:NETCONSOLE_BUILD_NUMBER }
+    $script:BuildNumber = 0
+    if (-not [int]::TryParse($rawBuildNumber, [ref]$script:BuildNumber) -or $script:BuildNumber -lt 0 -or $script:BuildNumber -gt 65535) {
+        throw "NETCONSOLE_BUILD_NUMBER 必须位于 0..65535。"
+    }
     $completedAt = Get-Date
     $published = Publish-VerifiedArtifacts -ProjectRoot $projectRoot -AppVersion $appVersion -Head $head `
         -ExpectedEditions $expectedEditions -VerifiedArtifacts $verified -StartedAt $startedAt -CompletedAt $completedAt

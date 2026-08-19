@@ -43,6 +43,7 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 
 - 仓库内 `D:\study\NetConsole\dist\` 只保存可由源码、锁文件和构建脚本重新生成的临时输出，包括 Renderer、Electron、PyInstaller、Agent、日志和 smoke 中间产物；它不是正式制品库，可由受控清理整体删除。
 - 正式发布制品的唯一持久根是 `D:\study\release\NetConsole\<version>\`。正式打包入口必须在全部 Gate 通过后，把安装包、release manifest、SHA-256 清单和构建摘要一起原子发布到该目录；已存在的版本目录不得覆盖或混入另一候选。
+- 普通 `build`、`package`、`rebuild` 只读取当前 `APP_VERSION`，不得自动 `+1`、修改版本源或写入 `published=true`；同版本构建使用 `Build Number + Git short SHA` 区分。自动更新只接受 `published=true` 且更高的三段 `ProductVersion`。
 - 禁止把 `C:\NetConsoleRelease`、`D:\NetConsoleRelease`、仓库内 `dist\release` 或 `dist\v<version>` 用作持久发布目录。PyInstaller Backend 中间输出统一位于 `dist\_build\backend-release\`。
 - 普通构建清理只能清理仓库内 `dist\`，不得触碰 `D:\study\release\NetConsole`。正式制品的归档或删除必须有用户明确授权，并先核对文件名、大小、SHA-256、Installer/Backend/Frontend commit、`packaged_dirty=false`、edition 和发布状态。
 

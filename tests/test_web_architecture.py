@@ -87,6 +87,10 @@ def test_fastapi_app_exposes_registered_web_modules() -> None:
     assert health_response(build_id).model_dump() == {
         "status": "ok",
         "version": APP_VERSION.removeprefix("v"),
+        "product_version": APP_VERSION.removeprefix("v"),
+        "build_number": 0,
+        "file_version": f"{APP_VERSION.removeprefix('v')}.0",
+        "published": False,
         "build_id": build_id,
         "backend_commit": "unknown",
         "frontend_commit": "unknown",

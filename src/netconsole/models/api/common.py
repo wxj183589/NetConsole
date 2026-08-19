@@ -31,6 +31,10 @@ class ErrorResponse(ApiModel):
 class HealthResponse(ApiModel):
     status: str = "ok"
     version: str
+    product_version: str = ""
+    build_number: int = 0
+    file_version: str = ""
+    published: bool = False
     build_id: str
     backend_commit: str = "unknown"
     frontend_commit: str = "unknown"

@@ -46,6 +46,9 @@ def source_build_metadata(project_root: Path) -> dict[str, Any]:
     short = full[:8] if full != UNKNOWN_BUILD_VALUE else UNKNOWN_BUILD_VALUE
     return {
         "app_version": APP_VERSION,
+        "product_version": APP_VERSION.removeprefix("v"),
+        "build_number": 0,
+        "file_version": f"{APP_VERSION.removeprefix('v')}.0",
         "git_commit_full": full,
         "git_commit_short": short,
         "build_time_utc": "",
@@ -53,6 +56,7 @@ def source_build_metadata(project_root: Path) -> dict[str, Any]:
         "build_source": "source-worktree",
         "frontend_commit": full,
         "backend_commit": full,
+        "published": False,
     }
 
 

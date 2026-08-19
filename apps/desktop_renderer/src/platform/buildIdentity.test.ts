@@ -5,6 +5,9 @@ import { parseRendererBuildMetadata, visibleVersionIdentity } from './buildIdent
 function metadata(commit = '29541dda879049c54ace0730c44fc6f3eb92b872') {
   return {
     app_version: 'v1.4.9',
+    product_version: '1.4.9',
+    build_number: 0,
+    file_version: '1.4.9.0',
     git_commit: commit,
     git_commit_full: commit,
     git_commit_short: commit.slice(0, 8),
@@ -16,6 +19,7 @@ function metadata(commit = '29541dda879049c54ace0730c44fc6f3eb92b872') {
     backend_commit: commit,
     navigation_schema_version: 1,
     build_id: `v1.4.9+${commit}`,
+    published: true,
   }
 }
 

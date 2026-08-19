@@ -34,6 +34,9 @@ def _build_metadata(
 ) -> dict[str, object]:
     return {
         "app_version": APP_VERSION,
+        "product_version": APP_VERSION.removeprefix("v"),
+        "build_number": 0,
+        "file_version": f"{APP_VERSION.removeprefix('v')}.0",
         "git_commit_full": commit,
         "git_commit_short": commit[:8],
         "build_time_utc": TEST_BUILD_TIME,
@@ -41,6 +44,7 @@ def _build_metadata(
         "build_source": "git-development" if dirty else "git-release",
         "frontend_commit": commit,
         "backend_commit": commit,
+        "published": not dirty,
     }
 
 
@@ -103,7 +107,8 @@ def test_release_identity_matches_desktop_manifests_and_changelogs():
 
 
 def test_release_version_defaults_to_app_version_without_tag_scan():
-    assert release.get_release_version() == APP_VERSION
+    with pytest.raises(ValueError, match="显式指定"):
+        release.get_release_version()
     assert release.get_release_version("v9.9.9") == "v9.9.9"
     assert not hasattr(release, "next_patch_version")
     assert not hasattr(release, "get_next_version")

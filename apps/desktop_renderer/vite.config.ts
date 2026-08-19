@@ -48,6 +48,10 @@ interface BuildMetadata {
   build_source: string
   frontend_commit: string
   backend_commit: string
+  product_version: string
+  build_number: number
+  file_version: string
+  published: boolean
 }
 
 function currentBuildMetadata(): BuildMetadata {
@@ -59,6 +63,8 @@ function currentBuildMetadata(): BuildMetadata {
       || metadata.frontend_commit !== metadata.git_commit_full
       || metadata.backend_commit !== metadata.git_commit_full
       || metadata.git_commit_short !== metadata.git_commit_full.slice(0, 8)
+      || metadata.product_version !== appVersion.replace(/^v/i, '')
+      || metadata.file_version !== `${metadata.product_version}.${metadata.build_number}`
     ) throw new Error('统一构建元数据不一致')
     return metadata
   }
@@ -73,6 +79,10 @@ function currentBuildMetadata(): BuildMetadata {
     build_source: 'git-development',
     frontend_commit: revision,
     backend_commit: revision,
+    product_version: appVersion!.replace(/^v/i, ''),
+    build_number: Number(process.env.NETCONSOLE_BUILD_NUMBER || 0),
+    file_version: `${appVersion!.replace(/^v/i, '')}.${Number(process.env.NETCONSOLE_BUILD_NUMBER || 0)}`,
+    published: process.env.NETCONSOLE_PUBLISHED === '1',
   }
 }
 

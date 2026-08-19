@@ -132,8 +132,11 @@ def prepare_installer_identity(*, require_synced: bool) -> dict[str, Any]:
     short = commit[:8]
     now = datetime.now(UTC)
     build_time = now.isoformat(timespec="seconds").replace("+00:00", "Z")
+    build_number = _read_build_number()
+    product_version = app_version
+    file_version = f"{product_version}.{build_number}"
     build_id = f"netconsole-{app_version}-{short}-{now.strftime('%Y%m%dT%H%M%SZ')}"
-    artifact_name = f"NetConsole-{app_version}-{short}-x64-setup.exe"
+    artifact_name = f"NetConsole-{app_version}.{build_number}-{short}-x64-setup.exe"
     standard_name = f"NetConsole-{app_version}-x64-setup.exe"
     policy_bytes = INSTALLER_POLICY_SOURCE.read_bytes()
     policy_text = policy_bytes.decode("utf-8")
@@ -142,6 +145,10 @@ def prepare_installer_identity(*, require_synced: bool) -> dict[str, Any]:
     manifest = {
         "schema": "netconsole.installer-build.v1",
         "app_version": app_version,
+        "product_version": product_version,
+        "build_number": build_number,
+        "file_version": file_version,
+        "published": os.environ.get("NETCONSOLE_PUBLISHED") == "1",
         "installer_git_commit": commit,
         "installer_git_short": short,
         "installer_build_time_utc": build_time,
@@ -276,6 +283,15 @@ def verify_installer_artifact(path: Path) -> dict[str, Any]:
         raise InstallerBuildError("最终 EXE 内 Backend 标记为 dirty")
     if frontend_metadata.get("build_dirty") is not False:
         raise InstallerBuildError("最终 EXE 内 Frontend 标记为 dirty")
+    for nested in (backend_metadata, frontend_metadata):
+        if str(nested.get("product_version") or "") != str(manifest["product_version"]):
+            raise InstallerBuildError("最终 EXE 内 ProductVersion 与 Installer 不一致")
+        if int(nested.get("build_number", -1)) != int(manifest["build_number"]):
+            raise InstallerBuildError("最终 EXE 内 Build Number 与 Installer 不一致")
+        if str(nested.get("file_version") or "") != str(manifest["file_version"]):
+            raise InstallerBuildError("最终 EXE 内 FileVersion 与 Installer 不一致")
+        if bool(nested.get("published", False)) is not bool(manifest.get("published", False)):
+            raise InstallerBuildError("最终 EXE 内 published 状态与 Installer 不一致")
 
     require_clean_synced_git()
     if _git("rev-parse", "HEAD") != commit:
@@ -284,6 +300,10 @@ def verify_installer_artifact(path: Path) -> dict[str, Any]:
     result = {
         "schema": "netconsole.installer-release.v1",
         "version": manifest["app_version"],
+        "product_version": manifest["product_version"],
+        "build_number": manifest["build_number"],
+        "file_version": manifest["file_version"],
+        "published": bool(manifest.get("published", False)),
         "artifact_name": artifact.name,
         "artifact_sha256": first_hash,
         "artifact_size": artifact_stat.st_size,
@@ -435,6 +455,17 @@ def _read_nested_build_metadata(
             r"resources\backend\_internal\netconsole\assets\desktop_renderer\desktop-renderer-build-meta.json",
         )
         return backend, frontend
+
+
+def _read_build_number() -> int:
+    raw = os.environ.get("NETCONSOLE_BUILD_NUMBER", "0")
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise InstallerBuildError("NETCONSOLE_BUILD_NUMBER 必须是非负整数") from exc
+    if value < 0 or value > 65535:
+        raise InstallerBuildError("NETCONSOLE_BUILD_NUMBER 必须位于 0..65535")
+    return value
 
 
 def _extract_stdout(seven_zip: Path, artifact: Path, member: str) -> bytes:

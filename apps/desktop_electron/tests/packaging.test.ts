@@ -15,7 +15,7 @@ describe('Electron-only packaging', () => {
     expect(packageJson.scripts['package:all']).toBe('node scripts/build-edition-installer.mjs both')
     expect(packageJson.scripts).not.toHaveProperty('package:legacy')
     expect(packageJson.scripts['smoke:package']).toContain('package-smoke.mjs')
-    expect(packageJson.build.productName).toBe('NetConsole v1.5.2 by wxj')
+    expect(packageJson.build.productName).toBe('NetConsole v1.5.1 by wxj')
     expect(packageJson.build.win.executableName).toBe('NetConsole')
     expect(packageJson.build.electronDist).toBe('node_modules/electron/dist')
     expect(packageJson.build.extraResources).toContainEqual({
@@ -56,7 +56,7 @@ describe('Electron-only packaging', () => {
     expect(launcher).toContain('{ cwd: projectRoot, env, stdio: \'inherit\' }')
     expect(builder).toContain('NETCONSOLE_PNPM_PATH')
     expect(builder).toContain('_resolve_pnpm_command()')
-    expect(builder).toContain('NetConsole-{label}-{app_version}-{short}-x64-setup.exe')
+    expect(builder).toContain('NetConsole-{label}-{app_version}.{build_number}-{short}-x64-setup.exe')
     expect(builder).toContain('electron-builder')
     expect(builder).toContain('--config.win.artifactName=')
     expect(baseBuilder).toContain('SubType = NSIS-3 Unicode')

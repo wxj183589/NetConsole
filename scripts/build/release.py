@@ -92,11 +92,9 @@ def check_git_remote(remote: str = "nas") -> bool:
 
 
 def get_release_version(explicit_version: str | None = None) -> str:
-    if explicit_version:
-        return explicit_version
-    from netconsole.core.version import APP_VERSION
-
-    return APP_VERSION
+    if not explicit_version:
+        raise ValueError("正式发布必须显式指定 --version，例如 --version v1.5.2")
+    return explicit_version
 
 
 def render_version_py(version: str, build_time: str = "", git_commit: str = "") -> str:
@@ -274,7 +272,7 @@ def _version_numbers(version: str) -> tuple[int, int, int, int]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="NetConsole release automation")
-    parser.add_argument("--version", help="release version, e.g. v1.2.0")
+    parser.add_argument("--version", required=True, help="release version, e.g. v1.2.0")
     parser.add_argument("--dry-run", action="store_true", help="print actions without changing git")
     args = parser.parse_args()
     result = release(version=args.version, dry_run=args.dry_run)

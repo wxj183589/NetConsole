@@ -114,7 +114,7 @@ def test_prepare_identity_uses_unique_commit_artifact_and_source_hash(
 
     manifest = build_installer.prepare_installer_identity(require_synced=False)
 
-    assert manifest["artifact_name"] == "NetConsole-1.4.3-aaaaaaaa-x64-setup.exe"
+    assert manifest["artifact_name"] == "NetConsole-1.4.3.0-aaaaaaaa-x64-setup.exe"
     assert manifest["standard_artifact_name"] == "NetConsole-1.4.3-x64-setup.exe"
     assert manifest["installer_git_commit"] == "a" * 40
     assert manifest["expected_artifact_absent_before_build"] is True

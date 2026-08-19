@@ -77,6 +77,7 @@ def main() -> int:
             config.root,
             app_version=config.app_version,
             release=args.release,
+            published=os.environ.get("NETCONSOLE_PUBLISHED") == "1",
         )
         clean_build_spec.set_build_metadata(build_metadata)
         print(f"APP_NAME={config.app_name}")
@@ -85,6 +86,8 @@ def main() -> int:
         print(f"SOURCE_GIT_HEAD={build_metadata['git_commit_full']}")
         print(f"BUILD_TIME_UTC={build_metadata['build_time_utc']}")
         print(f"BUILD_DIRTY={str(build_metadata['build_dirty']).lower()}")
+        print(f"BUILD_NUMBER={build_metadata['build_number']}")
+        print(f"PUBLISHED={str(build_metadata['published']).lower()}")
         if args.dry_run:
             print_command_plan(config)
             return 0

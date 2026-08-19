@@ -126,6 +126,9 @@ beforeEach(() => {
   })
   vi.mocked(getRendererBuildMeta).mockResolvedValue({
     app_version: 'v1.4.9',
+    product_version: '1.4.9',
+    build_number: 0,
+    file_version: '1.4.9.0',
     git_commit: '99bba059c3359d409673286a9093503fe9d09255',
     git_commit_full: '99bba059c3359d409673286a9093503fe9d09255',
     git_commit_short: '99bba059',
@@ -137,6 +140,7 @@ beforeEach(() => {
     backend_commit: '99bba059c3359d409673286a9093503fe9d09255',
     navigation_schema_version: 1,
     build_id: 'v1.4.9+99bba059c3359d409673286a9093503fe9d09255',
+    published: true,
   })
 })
 

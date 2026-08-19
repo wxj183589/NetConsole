@@ -21,6 +21,9 @@ def _renderer_build_metadata(commit: str, *, dirty: bool = False) -> dict[str, o
     identity = f"{commit}-dirty" if dirty else commit
     return {
         "app_version": APP_VERSION,
+        "product_version": APP_VERSION.removeprefix("v"),
+        "build_number": 0,
+        "file_version": f"{APP_VERSION.removeprefix('v')}.0",
         "git_commit": identity,
         "git_commit_full": commit,
         "git_commit_short": commit[:8],
@@ -30,6 +33,7 @@ def _renderer_build_metadata(commit: str, *, dirty: bool = False) -> dict[str, o
         "build_source": "git-development" if dirty else "git-release",
         "frontend_commit": commit,
         "backend_commit": commit,
+        "published": not dirty,
         "navigation_schema_version": 1,
         "build_id": f"{APP_VERSION}+{identity}",
     }

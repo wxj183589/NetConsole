@@ -1,6 +1,10 @@
 export interface HealthResponse {
   status: string
   version: string
+  product_version?: string
+  build_number?: number
+  file_version?: string
+  published?: boolean
   build_id: string
   backend_commit?: string
   frontend_commit?: string

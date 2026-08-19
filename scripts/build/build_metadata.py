@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,6 +20,10 @@ BUILD_METADATA_FIELDS = frozenset(
         "build_source",
         "frontend_commit",
         "backend_commit",
+        "product_version",
+        "build_number",
+        "file_version",
+        "published",
     }
 )
 
@@ -32,6 +38,8 @@ def collect_build_metadata(
     app_version: str,
     release: bool,
     build_time_utc: str | None = None,
+    build_number: int | None = None,
+    published: bool | None = None,
 ) -> dict[str, Any]:
     project_root = Path(root).resolve()
     full = _git(project_root, "rev-parse", "HEAD")
@@ -43,8 +51,13 @@ def collect_build_metadata(
     timestamp = build_time_utc or datetime.now(UTC).isoformat(timespec="seconds").replace(
         "+00:00", "Z"
     )
+    normalized_version = str(app_version).removeprefix("v")
+    selected_build_number = _build_number(build_number)
     payload = {
         "app_version": str(app_version),
+        "product_version": normalized_version,
+        "build_number": selected_build_number,
+        "file_version": f"{normalized_version}.{selected_build_number}",
         "git_commit_full": full,
         "git_commit_short": full[:8],
         "build_time_utc": timestamp,
@@ -52,6 +65,7 @@ def collect_build_metadata(
         "build_source": "git-release" if release else "git-development",
         "frontend_commit": full,
         "backend_commit": full,
+        "published": bool(release) if published is None else bool(published),
     }
     validate_build_metadata(payload, release=release)
     return payload
@@ -72,6 +86,21 @@ def validate_build_metadata(payload: dict[str, Any], *, release: bool) -> None:
         raise BuildMetadataError("构建时间必须使用 ISO 8601 UTC")
     if release and bool(payload.get("build_dirty")):
         raise BuildMetadataError("正式 release 构建不能标记为 dirty")
+    product_version = str(payload.get("product_version") or "")
+    if not re.fullmatch(r"\d+\.\d+\.\d+", product_version):
+        raise BuildMetadataError("ProductVersion 必须是三段正式版本号")
+    if str(payload.get("app_version") or "").removeprefix("v") != product_version:
+        raise BuildMetadataError("ProductVersion 与 APP_VERSION 不一致")
+    try:
+        build_number = int(payload.get("build_number"))
+    except (TypeError, ValueError) as exc:
+        raise BuildMetadataError("Build Number 必须是非负整数") from exc
+    if build_number < 0 or build_number > 65535:
+        raise BuildMetadataError("Build Number 必须位于 0..65535")
+    if str(payload.get("file_version") or "") != f"{product_version}.{build_number}":
+        raise BuildMetadataError("FileVersion 与 ProductVersion/Build Number 不一致")
+    if not isinstance(payload.get("published"), bool):
+        raise BuildMetadataError("published 必须是布尔值")
 
 
 def encode_build_metadata(payload: dict[str, Any]) -> str:
@@ -112,6 +141,17 @@ def _git(root: Path, *args: str) -> str:
         ).stdout.strip()
     except (OSError, subprocess.SubprocessError) as exc:
         raise BuildMetadataError(f"无法读取 Git 构建事实：{' '.join(args)}") from exc
+
+
+def _build_number(value: int | None) -> int:
+    raw = os.environ.get("NETCONSOLE_BUILD_NUMBER", "0") if value is None else value
+    try:
+        result = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise BuildMetadataError("NETCONSOLE_BUILD_NUMBER 必须是非负整数") from exc
+    if result < 0 or result > 65535:
+        raise BuildMetadataError("NETCONSOLE_BUILD_NUMBER 必须位于 0..65535")
+    return result
 
 
 __all__ = [

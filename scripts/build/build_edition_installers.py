@@ -180,12 +180,13 @@ def _write_edition_identity(
     commit = str(manifest.get("installer_git_commit") or "")
     short = str(manifest.get("installer_git_short") or "")
     build_time = str(manifest.get("installer_build_time_utc") or "")
+    build_number = int(manifest.get("build_number") or 0)
     if not all((app_version, commit, short, build_time)):
         raise EditionInstallerError("基础 Installer 身份清单不完整")
 
     label = EDITION_LABELS[edition]
     profile = edition
-    artifact_name = f"NetConsole-{label}-{app_version}-{short}-x64-setup.exe"
+    artifact_name = f"NetConsole-{label}-{app_version}.{build_number}-{short}-x64-setup.exe"
     standard_name = f"NetConsole-{label}-{app_version}-x64-setup.exe"
     manifest.update(
         {

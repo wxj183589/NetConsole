@@ -8,7 +8,7 @@ NSIS 必须显式启用 Unicode 安装器，并先在零写入状态下识别候
 
 正式 NSIS 构建只能从已提交、工作区 clean 且 `HEAD` 已推送到当前 upstream 的状态开始。`pnpm package` 会清理白名单内的 `dist/electron/`、`dist/_build/` 和 `apps/desktop_electron/dist/`，为 electron-builder 分配本轮独立临时目录，并生成 `NetConsole-<version>-<git-short>-x64-setup.exe`；固定名称 `NetConsole-<version>-x64-setup.exe` 或同名唯一制品在构建前存在时直接失败，避免覆盖旧包后仅按修改时间误判。
 
-构建开始时冻结完整 commit，最终 EXE Gate 前以及向 `D:\study\release\NetConsole\v<version>` 持久发布前都必须再次检查 tracked/untracked 工作区、HEAD 与 upstream；任一处变化立即失败，不生成或发布宣称 `dirty=false` 的正式制品。外层 PowerShell 还要显式复核 release manifest 中的 Backend/Frontend commit 均等于冻结 commit。
+构建开始时冻结完整 commit，最终 EXE Gate 前以及向 `D:\study\release\NetConsole\v<version>\build-<number>-<short-sha>` 持久化构建制品前都必须再次检查 tracked/untracked 工作区、HEAD 与 upstream；任一处变化立即失败，不生成或发布宣称 `dirty=false` 的正式制品。普通 `build/package/rebuild` 不修改 `APP_VERSION`，也不自动生成下一个版本目录。
 
 外层 NSIS 必须把 app 版本、完整/短 Git commit、UTC 构建时间、build ID、数据根策略版本及策略源码 SHA-256 写入 PE 版本资源，并在数据根页面显示可核对的短身份。最终 EXE 还必须内嵌本轮 installer manifest 和实际参与编译的数据根 include 源码。post-build Gate 使用支持 NSIS handler 的完整 7-Zip 直接打开最终 `setup.exe`，复核 `NSIS-3 Unicode`、PE 身份、内嵌 manifest/源码哈希、新文案存在、三段旧阻止文案不存在、EXE 晚于策略源码和本轮构建开始时间、两次 SHA-256 一致，以及内层 Backend/Frontend commit 均等于 Installer commit 且 `dirty=false`。构建机可安装完整版 7-Zip，或通过 `NETCONSOLE_7Z` 指向支持 `Nsis` format handler 的 `7z.exe`；electron-builder 缓存中的精简 `7za.exe` 不满足此门禁。
 
@@ -49,9 +49,9 @@ python -m pip check
 
 ## Backend 构建
 
-正式发布的身份事实来自构建开始时的 Git，而不是 `src/netconsole/core/version.py` 中的手工提交号或时间。`scripts/build/build_metadata.py` 在一次发布调用中读取 `git rev-parse HEAD` 与 `git status --porcelain`，生成并复用 `app_version / git_commit_full / git_commit_short / build_time_utc / build_dirty / build_source / frontend_commit / backend_commit`；时间固定为 ISO 8601 UTC。Vite、PyInstaller、Backend 自检、Electron package smoke 共用这一快照，分阶段校验时还会重新确认快照对应当前 Git 来源。
+正式发布的身份事实来自构建开始时的 Git，而不是 `src/netconsole/core/version.py` 中的手工提交号或时间。`scripts/build/build_metadata.py` 在一次发布调用中读取 `git rev-parse HEAD` 与 `git status --porcelain`，生成并复用 `app_version / product_version / build_number / file_version / git_commit_full / git_commit_short / build_time_utc / build_dirty / build_source / frontend_commit / backend_commit / published`；时间固定为 ISO 8601 UTC。`ProductVersion` 是三段正式版本，`FileVersion` 是 `ProductVersion.BuildNumber`，Build Number 只读取显式 `NETCONSOLE_BUILD_NUMBER`，默认 `0`。Vite、PyInstaller、Backend 自检、Electron package smoke 共用这一快照，分阶段校验时还会重新确认快照对应当前 Git 来源。
 
-正式候选必须按“修改与验证完成 → 中文提交 → 确认工作区 clean → 推送最终提交 → 读取最终 HEAD → 构建 Desktop Renderer/Backend/Electron/NSIS → package smoke 比较包内元数据与实际 HEAD”的顺序执行。`--release` 遇到 tracked 或 untracked 修改会直接失败；开发构建允许 `build_dirty=true`，但其 `build_source=git-development`，不能冒充正式包。最终包级输出必须包含 `SOURCE_GIT_HEAD / PACKAGED_BACKEND_COMMIT / PACKAGED_FRONTEND_COMMIT / SELF_CHECK_COMMIT / PACKAGED_BUILD_TIME / PACKAGED_DIRTY`，提交号不一致或 dirty 不为 false 都必须停止发布。
+正式候选必须按“修改与验证完成 → 中文提交 → 确认工作区 clean → 推送最终提交 → 读取最终 HEAD → 构建 Desktop Renderer/Backend/Electron/NSIS → package smoke 比较包内元数据与实际 HEAD”的顺序执行。只有显式 `python -m scripts.build.release --version vX.Y.Z` 才允许修改正式版本、创建新版本目录并将清单标记为 `published=true`。`--release` 遇到 tracked 或 untracked 修改会直接失败；开发构建允许 `build_dirty=true`，但其 `build_source=git-development`，不能冒充正式包。最终包级输出必须包含 `SOURCE_GIT_HEAD / PACKAGED_BACKEND_COMMIT / PACKAGED_FRONTEND_COMMIT / SELF_CHECK_COMMIT / PACKAGED_BUILD_TIME / PACKAGED_DIRTY`，提交号不一致或 dirty 不为 false 都必须停止发布。
 
 先在仓库根目录执行：
 

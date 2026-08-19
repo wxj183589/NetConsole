@@ -12,6 +12,10 @@ export interface RendererBuildMetadata {
   build_source: string
   frontend_commit: string
   backend_commit: string
+  product_version: string
+  build_number: number
+  file_version: string
+  published: boolean
   navigation_schema_version: number
   build_id: string
 }
@@ -37,6 +41,10 @@ export function parseRendererBuildMetadata(value: unknown): RendererBuildMetadat
     || stringField(metadata, 'git_commit_short') !== full.slice(0, 8)
     || stringField(metadata, 'frontend_commit') !== full
     || stringField(metadata, 'backend_commit') !== full
+    || stringField(metadata, 'product_version') !== version.replace(/^v/i, '')
+    || !Number.isInteger(metadata.build_number)
+    || stringField(metadata, 'file_version') !== `${stringField(metadata, 'product_version')}.${metadata.build_number}`
+    || typeof metadata.published !== 'boolean'
   ) {
     throw new Error('Renderer 构建提交身份不一致')
   }
