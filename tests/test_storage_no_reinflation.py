@@ -121,18 +121,6 @@ def test_terminal_result_replay_keeps_one_canonical_full_payload(
         reason="No-Reinflation result fixture",
         updated_by="pytest",
     )
-    TaskResultMaintenanceService(
-        paths,
-        site_id="line-12",
-        tasks_database=database,
-        development_root=tmp_path,
-    ).enable_ref_authority(
-        expected_revision=2,
-        reason="No-Reinflation result reference authority",
-        updated_by="pytest",
-        apply=True,
-        allow_development_root_only=True,
-    )
     result = {
         "status": "COMPLETED",
         "rows": 100,
@@ -159,6 +147,26 @@ def test_terminal_result_replay_keeps_one_canonical_full_payload(
             payload={"message": "done", "result": result},
         )
         assert repository.record(snapshot, event)
+
+    maintenance = TaskResultMaintenanceService(
+        paths,
+        site_id="line-12",
+        tasks_database=database,
+        development_root=tmp_path,
+    )
+    backfill = maintenance.backfill(
+        apply=True,
+        allow_development_root_only=True,
+    )
+    assert backfill["new_result_rows"] == 1
+    authority = maintenance.enable_ref_authority(
+        expected_revision=2,
+        reason="No-Reinflation result reference authority",
+        updated_by="pytest",
+        apply=True,
+        allow_development_root_only=True,
+    )
+    assert authority["state"] == "RESULT_REF_AUTHORITY"
 
     with sqlite3.connect(database) as connection:
         result_rows = connection.execute(
