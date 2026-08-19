@@ -6,9 +6,16 @@ import html from '../../index.html?raw'
 import layout from '../layouts/AppLayout.vue?raw'
 import dashboard from '../views/DashboardView.vue?raw'
 
+const versionSource = readFileSync(
+  fileURLToPath(new URL('../../../../src/netconsole/core/version.py', import.meta.url)),
+  'utf-8',
+)
+const appVersion = versionSource.match(/^APP_VERSION\s*=\s*["']([^"']+)["']/m)?.[1]
+
 describe('desktop renderer product copy', () => {
   it('uses the branded title, favicon, and sidebar logo without internal migration labels', () => {
-    expect(html).toContain('<title>NetConsole v1.5.2 by wxj</title>')
+    expect(appVersion).toBeDefined()
+    expect(html).toContain(`<title>NetConsole ${appVersion} by wxj</title>`)
     expect(html).toContain('<link rel="icon" type="image/png" href="/branding/netconsole.png" />')
     expect(layout).toContain('class="brand-logo"')
     expect(layout).toContain("const BRAND_LOGO_URL = '/branding/netconsole.png'")
