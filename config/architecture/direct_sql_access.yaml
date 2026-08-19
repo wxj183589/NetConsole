@@ -18,8 +18,8 @@
   {"path":"src/netconsole/services/site_lifecycle.py","classification":"REPOSITORY_REQUIRED","owner":"storage","reason":"局点审计、可恢复清理和 Demo 重建的存储生命周期所有者；只读审计业务表，并在受控 staging 发布前 checkpoint SQLite。"},
   {"path":"src/netconsole/services/site_retention.py","classification":"REPOSITORY_REQUIRED","owner":"storage","reason":"局点保留扫描和受控清理的 SQLite、WAL、ZIP 与数据库生命周期所有者；只接受服务端候选令牌。"},
   {"path":"src/netconsole/services/site_sync.py","classification":"REPOSITORY_REQUIRED","owner":"storage","reason":"局点包导出、回传预检合并、SQLite Backup、凭据清洗和失败恢复的存储生命周期所有者。"},
-  {"path":"src/netconsole/services/history_store.py","classification":"REPOSITORY_REQUIRED","owner":"data","reason":"devices.db history outbox、按月 shard、catalog 与显式 legacy copy/verify checkpoint 的存储生命周期所有者；不在 startup 扫描历史。"},
   {"path":"src/netconsole/repositories/history_legacy_migration_repository.py","classification":"REPOSITORY_REQUIRED","owner":"data","reason":"显式 legacy history COPY-only 迁移的只读源访问与 durable catalog journal Repository；不提供源删除、DROP 或 VACUUM 能力。"},
+  {"path":"src/netconsole/repositories/history_store.py","classification":"REPOSITORY_REQUIRED","owner":"data","reason":"HistoryStore 的 devices.db outbox、月分片与 catalog 连接均由 Repository 生命周期管理。"},
   {"path":"scripts/build/smoke_frozen_device_database.py","classification":"TEST_ONLY","owner":"release","reason":"冻结 Backend 发布 smoke 在隔离测试根构造旧库，并在迁移后只读校验完整性；不参与产品运行。"},
   {"path":"scripts/maintenance/benchmark_mesh_analysis_loading.py","classification":"TEST_ONLY","owner":"mesh","reason":"MESH 加载性能基准只在显式测试根构造临时 fixture，并在完成后删除；不访问正式业务数据库。"},
   {"path":"scripts/maintenance/check_online_mr_session_state.py","classification":"READ_ONLY_DATA_GATEWAY","owner":"online-mr","reason":"只读会话诊断脚本。"},
@@ -129,7 +129,6 @@
   {"path":"scripts/maintenance/validate_database_functional_compatibility.py","classification":"READ_ONLY_DATA_GATEWAY","owner":"storage","reason":"Before/After 功能透明验收只接受已 checkpoint 的 D:\\study 隔离快照，以 mode=ro/immutable=1 读取；非空 WAL 失败关闭且不得创建或修改输入 sidecar。"},
   {"path":"scripts/maintenance/validate_integrated_site_package.py","classification":"TEST_ONLY","owner":"storage","reason":"FULL Site Package 集成验证只在显式 D:\\study 隔离根创建 SQLite Online Backup 副本、导出/导入 staging 与重启 fixture；源副本使用 mode=ro/immutable 并校验前后 SHA-256。"},
   {"path":"src/netconsole/services/database_footprint_maintenance.py","classification":"REPOSITORY_REQUIRED","owner":"storage","reason":"统一只读 snapshot、SQLite footprint、Safe Compact 与原子替换边界，仅允许 D:\\study 开发目标执行破坏性操作。"},
-  {"path":"src/netconsole/services/history_legacy_migration.py","classification":"MIGRATION_TOOL","owner":"data","reason":"显式 Legacy History COPY/verify/source-delete 编排；默认 COPY-only，删除阶段要求隔离开发根和精确计划。"},
   {"path":"tests/test_backup_lifecycle.py","classification":"TEST_ONLY","owner":"test","reason":"Backup lifecycle revision reuse、UNKNOWN protect、stale/empty plan 与开发副本 retirement fixture。"},
   {"path":"tests/test_database_footprint_maintenance.py","classification":"TEST_ONLY","owner":"test","reason":"只读 snapshot、Safe Compact、WAL preflight、replace/rollback fault-injection fixture。"},
   {"path":"tests/test_storage_no_reinflation.py","classification":"TEST_ONLY","owner":"test","reason":"Task、Ground、MESH、Site Package 与 backup No-Reinflation 测试仅在 pytest 临时目录构造 SQLite fixture。"}
@@ -139,5 +138,15 @@
   {"path":"tests/test_collect_global_storage_inventory.py","classification":"TEST_ONLY","owner":"test","reason":"全局 storage inventory 测试仅在 pytest 临时目录构造 SQLite、WAL 与 ZIP fixture。"},
   {"path":"scripts/maintenance/benchmark_database_functional_queries.py","classification":"TEST_ONLY","owner":"storage","reason":"最终功能透明性能比较仅以 mode=ro/immutable=1 读取 D:\\study 下的真实隔离副本、History shards 与 Site Package 导入副本，并输出 p50/p95/max；不访问或修改生产数据库。"},
   {"path":"src/netconsole/services/production_database_maintenance.py","classification":"MIGRATION_TOOL","owner":"storage","reason":"独立 production maintenance 边界只在精确 Site/数据库 allowlist、VERIFIED rollback owner、不可变 manifest、writer quiescence、维护锁和显式授权全部通过后使用 SQLite Online Backup 与原子替换；默认 preflight 只读并失败关闭。"},
-  {"path":"tests/test_production_database_maintenance.py","classification":"TEST_ONLY","owner":"test","reason":"production maintenance allowlist、stale source/plan、rollback owner、writer quiescence、journal 和故障回滚测试只在 pytest 隔离数据根构造 SQLite fixture。"}
+  {"path":"tests/test_production_database_maintenance.py","classification":"TEST_ONLY","owner":"test","reason":"production maintenance allowlist、stale source/plan、rollback owner、writer quiescence、journal 和故障回滚测试只在 pytest 隔离数据根构造 SQLite fixture。"},
+  {"path":"scripts/maintenance/benchmark_device_history_legacy_migration.py","classification":"TEST_ONLY","owner":"data","reason":"legacy history migration benchmark only creates isolated D:\\study fixtures."},
+  {"path":"scripts/maintenance/benchmark_device_history_storage_queries.py","classification":"TEST_ONLY","owner":"data","reason":"history storage query benchmark only reads isolated snapshots."},
+  {"path":"scripts/maintenance/production_cutover_runtime_smoke.py","classification":"READ_ONLY_DATA_GATEWAY","owner":"storage","reason":"production cutover smoke reads an isolated snapshot and never mutates production."},
+  {"path":"scripts/maintenance/profile_device_history_storage.py","classification":"READ_ONLY_DATA_GATEWAY","owner":"data","reason":"history storage profiler is read-only and requires an isolated snapshot."},
+  {"path":"scripts/maintenance/task_result_maintenance.py","classification":"MIGRATION_TOOL","owner":"job-center","reason":"explicit task result maintenance tool with isolated rehearsal boundaries."},
+  {"path":"scripts/maintenance/validate_history_provenance.py","classification":"READ_ONLY_DATA_GATEWAY","owner":"data","reason":"history provenance validator reads immutable source and shard snapshots."},
+  {"path":"src/netconsole/services/site_package_staging.py","classification":"REPOSITORY_REQUIRED","owner":"storage","reason":"site package staging owns SQLite staging and validation connections."},
+  {"path":"tests/test_site_sync_task_merge.py","classification":"TEST_ONLY","owner":"test","reason":"site sync task merge tests use temporary SQLite fixtures."},
+  {"path":"tests/test_task_result_rollout.py","classification":"TEST_ONLY","owner":"test","reason":"task result rollout tests use temporary SQLite fixtures."},
+  {"path":"tests/test_validate_history_provenance.py","classification":"TEST_ONLY","owner":"test","reason":"history provenance tests use temporary SQLite fixtures."}
 ]

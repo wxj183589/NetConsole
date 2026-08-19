@@ -13,6 +13,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from netconsole.core.version import APP_VERSION as PYTHON_APP_VERSION
+
 ROOT = Path(__file__).resolve().parents[2]
 DESKTOP_ROOT = ROOT / "apps" / "desktop_electron"
 ELECTRON_DIST = ROOT / "dist" / "electron"
@@ -119,6 +121,12 @@ def prepare_installer_identity(*, require_synced: bool) -> dict[str, Any]:
     app_version = str(package.get("version") or "")
     if not app_version:
         raise InstallerBuildError("Electron package.json 缺少 version")
+    expected_version = PYTHON_APP_VERSION.removeprefix("v")
+    if app_version != expected_version:
+        raise InstallerBuildError(
+            "Electron package.json version 与 Python APP_VERSION 不一致："
+            f"{app_version!r} != {expected_version!r}"
+        )
 
     commit = _git("rev-parse", "HEAD")
     short = commit[:8]

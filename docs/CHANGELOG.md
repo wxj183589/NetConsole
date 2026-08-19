@@ -1,5 +1,11 @@
 # NetConsole 更新日志
 
+## v1.5.1 - 2026-08-19
+
+### 发布身份统一
+
+- 统一 Python、Electron、Renderer、安装器和 Full/Customer 制品使用的产品版本身份。
+
 ## v1.5.0 - 2026-08-18
 
 ### 生产切换与任务持久化
