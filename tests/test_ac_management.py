@@ -982,7 +982,13 @@ def test_fit_ap_optical_telemetry_jitter_does_not_create_change_event(tmp_path):
         pending = conn.execute(
             "SELECT COUNT(*) FROM history_outbox WHERE kind='fit_ap_optical'"
         ).fetchone()[0]
+        state = conn.execute(
+            "SELECT last_recorded_at, last_seen_at FROM history_state "
+            "WHERE kind='fit_ap_optical' AND entity_key=?",
+            (ap_uuid,),
+        ).fetchone()
     assert pending == 1
+    assert tuple(state) == ("2026-01-01T00:00:00", "2026-01-01T00:01:00")
 
     repository.replace_fit_ap_optical(
         "ac-1", [{"ap_uuid": ap_uuid, "rx_power": "-10.6", "optical_alarm_status": "no_light", "collected_at": "2026-01-01T00:02:00"}]
