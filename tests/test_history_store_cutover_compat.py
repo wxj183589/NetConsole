@@ -353,6 +353,17 @@ def test_fit_ap_refresh_uses_history_store_after_legacy_tables_are_retired(tmp_p
         {**row, "collected_at": "2026-08-01T00:31:00"} for row in first_round
     ]
     repository.replace_fit_ap_resources("ac-1", second_round)
+    ap_one = str(resources["AP-1"]["ap_uuid"])
+    with repository.database.connect() as conn:
+        repeated_state = conn.execute(
+            "SELECT last_recorded_at, last_seen_at FROM history_state "
+            "WHERE kind='fit_ap_lldp' AND entity_key=?",
+            (ap_one,),
+        ).fetchone()
+    assert tuple(repeated_state) == (
+        "2026-08-01T00:00:00",
+        "2026-08-01T00:31:00",
+    )
     third_round = [
         {
             **row,
@@ -382,12 +393,21 @@ def test_fit_ap_refresh_uses_history_store_after_legacy_tables_are_retired(tmp_p
         ],
     )
 
-    ap_one = str(resources["AP-1"]["ap_uuid"])
     history = repository.list_fit_ap_lldp_history_by_ap(ap_one, limit=10)
     by_time = {str(row["collected_at"]): row for row in history}
     assert by_time["2026-08-01T00:00:00"]["is_changed"] == 1
-    assert by_time["2026-08-01T00:31:00"]["is_changed"] == 0
+    assert "2026-08-01T00:31:00" not in by_time
     assert by_time["2026-08-01T00:32:00"]["is_changed"] == 1
+    with repository.database.connect() as conn:
+        changed_state = conn.execute(
+            "SELECT last_recorded_at, last_seen_at FROM history_state "
+            "WHERE kind='fit_ap_lldp' AND entity_key=?",
+            (ap_one,),
+        ).fetchone()
+    assert tuple(changed_state) == (
+        "2026-08-01T00:32:00",
+        "2026-08-01T00:32:00",
+    )
     assert repository.list_fit_ap_radio_history_by_ap(ap_one)
     assert repository.list_fit_ap_optical_history_by_ap(ap_one)
     assert repository.list_fit_ap_resource_history("ac-1")

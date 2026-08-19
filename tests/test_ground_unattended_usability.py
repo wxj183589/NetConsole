@@ -167,11 +167,10 @@ def test_ping_query_unions_segments_created_before_and_after_restart(
     )
     active = repository.db_path.parent / "active" / "2026-07-28"
     now = datetime.now().astimezone().replace(
-        hour=12,
-        minute=0,
+        minute=15,
         second=0,
         microsecond=0,
-    )
+    ) - timedelta(hours=1)
     segment_ids: list[str] = []
     initial_cursor = ""
 
