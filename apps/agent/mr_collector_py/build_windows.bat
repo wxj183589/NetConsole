@@ -8,7 +8,8 @@ if not defined BUILD_ROOT set "BUILD_ROOT=%~dp0..\..\..\dist\agent\.build-window
 if exist "%BUILD_ROOT%" rmdir /s /q "%BUILD_ROOT%"
 mkdir "%BUILD_ROOT%" || exit /b 1
 set "PYINSTALLER_CONFIG_DIR=%BUILD_ROOT%\pyinstaller-cache"
-set "PYTHON_EXE=%REPO_ROOT%\.venv\Scripts\python.exe"
+if not defined NETCONSOLE_PYTHON_EXE set "NETCONSOLE_PYTHON_EXE=%REPO_ROOT%\.venv\Scripts\python.exe"
+set "PYTHON_EXE=%NETCONSOLE_PYTHON_EXE%"
 if exist "%PYTHON_EXE%" (
   "%PYTHON_EXE%" -m PyInstaller --version >nul 2>nul
   if not errorlevel 1 goto pyinstaller_module
