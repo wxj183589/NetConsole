@@ -14,6 +14,8 @@ def test_windows_package_script_reuses_the_formal_release_entry() -> None:
     assert 'Resolve-NativeCommand "git.exe"' in script
     assert 'Resolve-NativeCommand "node.exe"' in script
     assert 'Resolve-NativeCommand "pnpm.cmd"' in script
+    assert 'Resolve-NativeCommand "go.exe"' in script
+    assert 'go1\\.26\\.5' in script
     assert '".venv\\Scripts\\python.exe"' in script
     assert '@("status", "--porcelain", "--untracked-files=all")' in script
     assert '@("rev-parse", "@{upstream}")' in script
