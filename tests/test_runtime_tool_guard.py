@@ -212,7 +212,8 @@ def test_agent_mr_collector_prefers_project_venv_pyinstaller() -> None:
         ROOT / "apps" / "agent" / "mr_collector_py" / "build_windows.bat"
     ).read_text(encoding="utf-8")
 
-    assert 'set "PYTHON_EXE=%REPO_ROOT%\\.venv\\Scripts\\python.exe"' in text
+    assert 'if not defined NETCONSOLE_PYTHON_EXE set "NETCONSOLE_PYTHON_EXE=%REPO_ROOT%\\.venv\\Scripts\\python.exe"' in text
+    assert 'set "PYTHON_EXE=%NETCONSOLE_PYTHON_EXE%"' in text
     assert 'set "PYINSTALLER_CONFIG_DIR=%BUILD_ROOT%\\pyinstaller-cache"' in text
     assert '"%PYTHON_EXE%" -m PyInstaller --version' in text
     assert '"%PYTHON_EXE%" -m PyInstaller --clean --onefile' in text
