@@ -2670,6 +2670,9 @@ def test_h3c_ac_collect_service_emits_progress_stages(monkeypatch, tmp_path):
     assert any("display wlan ap all" in message for message in messages)
     assert any("正在解析FIT-AP资源" in message for message in messages)
     assert any("正在写入数据库" in message for message in messages)
+    assert any("正在保存 FIT-AP 主资源" in message for message in messages)
+    assert any("FIT-AP 主资源保存完成" in message for message in messages)
+    assert any("AP Identity 更新完成" in message for message in messages)
     assert any("更新完成" in message for message in messages)
 
 
@@ -5666,7 +5669,10 @@ def test_trackside_progress_tracker_prevents_switch_branch_from_reaching_full_pr
 
     tracker.handle_fit_ap_event({"event": "plan_ready", "phase": "fit_ap_optical", "total": 974, "ac_device_uuid": "ac-1"})
     for _index in range(26):
-        tracker.mark_switch_completed(trackside_optical_collection.TracksideDeviceCollectionResult(target, True))
+        tracker.mark_switch_completed(
+            trackside_optical_collection.TracksideDeviceCollectionResult(target, True),
+            persist_elapsed_ms=125,
+        )
 
     current, total, details = events[-1]
     assert details["logical_total"] == 1000
@@ -5674,6 +5680,7 @@ def test_trackside_progress_tracker_prevents_switch_branch_from_reaching_full_pr
     assert total == 1001
     assert current < total
     assert details["prevent_running_100"] is True
+    assert details["elapsed_ms"] == 125
 
 
 def test_trackside_progress_tracker_counts_retried_ap_only_once():

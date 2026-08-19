@@ -463,12 +463,36 @@ def collect_h3c_fit_ap_resources(
         )
         resources_persisted = bool(resource_commands_ok and resources)
         if resources_persisted:
+            persist_started = time.monotonic()
+            progress(f"正在保存 FIT-AP 主资源：{len(resources)} 条...")
             if deep_refresh:
                 repository.upsert_fit_ap_resource(str(ac_device.device_uuid), resources[0])
             else:
                 repository.replace_fit_ap_resources(str(ac_device.device_uuid), resources)
+            persist_elapsed_ms = max(0, int((time.monotonic() - persist_started) * 1000))
+            progress(f"FIT-AP 主资源保存完成：{persist_elapsed_ms / 1000:.2f}s")
+            app_logger.log_info(
+                "FIT_AP_RESOURCES_PERSISTED",
+                _detail(
+                    ac_device,
+                    collect_run_uuid,
+                    error=f"rows={len(resources)}, elapsed_ms={persist_elapsed_ms}",
+                ),
+            )
+            identity_started = time.monotonic()
+            progress("正在更新 AP Identity...")
             ApIdentityQueryService(repository.database).rebuild_index(
                 "ac_fit_ap_refresh_succeeded"
+            )
+            identity_elapsed_ms = max(0, int((time.monotonic() - identity_started) * 1000))
+            progress(f"AP Identity 更新完成：{identity_elapsed_ms / 1000:.2f}s")
+            app_logger.log_info(
+                "FIT_AP_IDENTITY_REBUILT",
+                _detail(
+                    ac_device,
+                    collect_run_uuid,
+                    error=f"rows={len(resources)}, elapsed_ms={identity_elapsed_ms}",
+                ),
             )
         unauth_result = next((result for result in command_results if result.command == "display wlan ap unauthenticated"), None)
         unauthenticated_updated = False
@@ -483,11 +507,15 @@ def collect_h3c_fit_ap_resources(
                 "collected_at": started_at,
                 "updated_at": _now(),
             }
+            unauth_started = time.monotonic()
+            progress(f"正在保存未认证 AP：{len(unauth_rows)} 条...")
             repository.replace_fit_ap_unauthenticated(
                 str(ac_device.device_uuid),
                 {**unauth_summary, **metadata},
                 [{**row, **metadata} for row in unauth_rows],
             )
+            unauth_elapsed_ms = max(0, int((time.monotonic() - unauth_started) * 1000))
+            progress(f"未认证 AP 保存完成：{unauth_elapsed_ms / 1000:.2f}s")
             unauthenticated_updated = True
             unauthenticated_rows_updated = len(unauth_rows)
             app_logger.log_info("FIT_AP_UNAUTHENTICATED_UPDATED", _detail(ac_device, collect_run_uuid, count=len(unauth_rows)))

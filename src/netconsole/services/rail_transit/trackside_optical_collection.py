@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -267,7 +268,12 @@ class TracksideOpticalProgressTracker:
         with self._lock:
             self._emit_locked(stage, message, details)
 
-    def mark_switch_completed(self, result: TracksideDeviceCollectionResult) -> None:
+    def mark_switch_completed(
+        self,
+        result: TracksideDeviceCollectionResult,
+        *,
+        persist_elapsed_ms: int = 0,
+    ) -> None:
         status = "success" if result.success else "failed"
         with self._lock:
             self.switch_completed = min(self.switch_total, self.switch_completed + 1)
@@ -287,6 +293,7 @@ class TracksideOpticalProgressTracker:
                     "target_ip": result.target.host,
                     "device_uuid": result.target.device_uuid or "",
                     "error_message": result.error_message or "",
+                    "elapsed_ms": max(0, int(persist_elapsed_ms)),
                 },
             )
 
@@ -742,9 +749,24 @@ def collect_trackside_optical(
                     progress_tracker.mark_switch_skipped(result)
                     continue
                 results.append(result)
-                stage("trackside_ap.switch.persist")
+                progress_tracker.emit_stage(
+                    "trackside_ap.switch.persist",
+                    f"正在保存交换机侧光模块：{result.target.name}",
+                    phase="switch_optical",
+                    event="switch_persist_started",
+                    target_name=result.target.name,
+                    device_uuid=result.target.device_uuid or "",
+                    input_rows=len(result.rows),
+                )
+                persist_started = time.monotonic()
                 _persist_result(repository, ac_repository, result, parsed_dir / "trackside_update_results.sqlite")
-                progress_tracker.mark_switch_completed(result)
+                progress_tracker.mark_switch_completed(
+                    result,
+                    persist_elapsed_ms=max(
+                        0,
+                        int((time.monotonic() - persist_started) * 1000),
+                    ),
+                )
         stage("trackside_ap.fit_ap.collect")
         fit_ap_results, fit_ap_total, fit_ap_skipped = fit_future.result()
         progress_tracker.mark_fit_ap_branch_done()
