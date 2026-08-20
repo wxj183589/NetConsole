@@ -2,7 +2,7 @@
 
 简体中文 | [English](README_EN.md)
 
-[![Quality gate](https://github.com/wxj183589/NetConsole/actions/workflows/quality-gate.yml/badge.svg)](https://github.com/wxj183589/NetConsole/actions/workflows/quality-gate.yml) [![Python 3.13](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)](https://www.python.org/) [![Windows desktop](https://img.shields.io/badge/desktop-Windows-0078D6?logo=windows&logoColor=white)](https://github.com/wxj183589/NetConsole)
+[![Quality gate](https://github.com/wxj183589/NetConsole/actions/workflows/quality-gate.yml/badge.svg)](https://github.com/wxj183589/NetConsole/actions/workflows/quality-gate.yml) [![Python 3.13.9](https://img.shields.io/badge/Python-3.13.9-3776AB?logo=python&logoColor=white)](https://www.python.org/) [![Windows desktop](https://img.shields.io/badge/desktop-Windows-0078D6?logo=windows&logoColor=white)](https://github.com/wxj183589/NetConsole)
 
 **轨道交通 WLAN 工程诊断与数据分析工具**
 
@@ -124,11 +124,11 @@ Infrastructure & Network Tooling 路线会持续补充更多厂商适配、交�
 
 ## 开发运行
 
-当前开发与构建目标为 Windows 11、CPython 3.13、Node.js 24 和 pnpm 11。下面的快速启动使用隔离测试根，不读取或修改正式业务数据。普通 `pnpm dev` 才使用持久化数据根，其规则见 [数据根](docs/storage/DATA_ROOT.md)。不要把运行数据、凭据或真实现场日志放入仓库。
+当前开发与构建目标为 Windows 11、CPython 3.13.9 x64、Node.js 24 和 pnpm 11。下面的快速启动使用隔离测试根，不读取或修改正式业务数据。普通 `pnpm dev` 才使用持久化数据根，其规则见 [数据根](docs/storage/DATA_ROOT.md)。不要把运行数据、凭据或真实现场日志放入仓库。
 
 ```powershell
 # 1. 创建项目虚拟环境，并安装锁定的开发依赖
-py -3.13 -m venv .venv
+py -3.13.9 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -c constraints.txt -r requirements-dev.txt
 .\.venv\Scripts\python.exe -m pip install -e . --no-deps
 

@@ -27,7 +27,7 @@ Runner 机器不得保存 GitHub PAT、SSH 私钥、设备真实密码、SNMP co
 
 ## 维护清单
 
-- 定期更新 Windows、Python 3.13、Node 24、pnpm 11.9 和 Git，并确认自定义标签仍存在。
+- 定期更新 Windows、Python 3.13.9、Node 24、pnpm 11.9 和 Git，并确认自定义标签仍存在。
 - Runner 断线时先查看 **Actions → Runners**，不要通过修改 Workflow 绕过门禁。
 - 任何让外部 PR 使用 Self-hosted 的改动都必须先完成安全评审；本仓库默认禁止该路径。
 

@@ -1,7 +1,7 @@
 {
   "schema": "netconsole.pyinstaller-approved-distributions.v1",
   "platform": "windows-x64",
-  "python_version": "3.13",
+  "python_version": "3.13.9",
   "distributions": [
     {
       "name": "annotated-doc",

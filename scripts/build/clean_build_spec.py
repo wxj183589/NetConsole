@@ -48,6 +48,10 @@ from scripts.build.pyinstaller_artifact_inventory import (
     load_approved_distributions,
     write_inventory,
 )
+from scripts.build.python_runtime_contract import (
+    assert_current_python_runtime,
+    load_python_runtime_version,
+)
 from scripts.build.web_frontend_meta import validate_web_frontend_meta
 from scripts.build.build_metadata import (
     BUILD_METADATA_ENV,
@@ -782,10 +786,11 @@ def validate_packaged_runtime_feature_policy(app_dist: Path) -> None:
 
 
 def load_packaged_distribution_approval() -> dict[str, str]:
+    assert_current_python_runtime(ROOT)
     approved = load_approved_distributions(
         APPROVED_DISTRIBUTIONS_PATH,
         platform="windows-x64",
-        python_version=f"{sys.version_info.major}.{sys.version_info.minor}",
+        python_version=load_python_runtime_version(ROOT),
     )
     allowed = required_python_component_versions(ROOT)
     unapproved = sorted(

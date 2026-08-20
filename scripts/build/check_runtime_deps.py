@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import re
-import sys
 from dataclasses import dataclass
 from importlib import metadata, util
 from pathlib import Path
@@ -22,6 +21,10 @@ from scripts.build.pyinstaller_artifact_inventory import (
     ArtifactInventoryError,
     load_approved_distributions,
     load_inventory,
+)
+from scripts.build.python_runtime_contract import (
+    assert_current_python_runtime,
+    load_python_runtime_version,
 )
 
 
@@ -232,9 +235,7 @@ def check_runtime_deps(
                 approved = load_approved_distributions(
                     PROJECT_ROOT / "config" / "pyinstaller-approved-distributions.json",
                     platform="windows-x64",
-                    python_version=(
-                        f"{sys.version_info.major}.{sys.version_info.minor}"
-                    ),
+                    python_version=load_python_runtime_version(PROJECT_ROOT),
                 )
                 artifact_distributions = load_inventory(
                     compliance_paths[3],
@@ -297,6 +298,10 @@ def check_locked_environment(
     *,
     distributions: Iterable[object] | None = None,
 ) -> RuntimeCheckResult:
+    try:
+        assert_current_python_runtime(PROJECT_ROOT)
+    except RuntimeError as exc:
+        return RuntimeCheckResult(False, (f"[ERROR] {exc}",))
     requirements_path = Path(requirements_path).resolve()
     constraints_path = Path(constraints_path).resolve()
     try:

@@ -1201,7 +1201,7 @@ function validatePythonArtifactInventory(backendRoot, sbom) {
   if (
     approval.schema !== 'netconsole.pyinstaller-approved-distributions.v1'
     || approval.platform !== 'windows-x64'
-    || approval.python_version !== '3.13'
+    || !/^\d+\.\d+\.\d+$/.test(approval.python_version)
   ) {
     throw new Error('Electron 包 PyInstaller distribution 批准锁平台或版本不匹配。')
   }

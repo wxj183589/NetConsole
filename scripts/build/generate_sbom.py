@@ -20,6 +20,11 @@ from packaging.requirements import InvalidRequirement, Requirement
 from packaging.version import InvalidVersion, Version
 from license_expression import ExpressionError, get_spdx_licensing
 
+from scripts.build.python_runtime_contract import (
+    assert_current_python_runtime,
+    load_python_runtime_version,
+)
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 NOTICE_RELATIVE = Path("src/netconsole/assets/open_source_notices.json")
@@ -555,7 +560,8 @@ def _verify_notice_fact_sources(
         for item in notices
         if item.get("name")
     }
-    expected_versions = {"python": platform.python_version()}
+    assert_current_python_runtime(project_root)
+    expected_versions = {"python": load_python_runtime_version(project_root)}
     expected_versions.update(_electron_runtime_versions(project_root))
     installed = _installed_distributions()
     _validate_packaged_python_license_sources(

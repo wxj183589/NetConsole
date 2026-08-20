@@ -35,7 +35,7 @@ Gate 成功后在安装包旁生成同名 `.exe.release.json`，记录文件名�
 
 ## 依赖安装
 
-目标环境是 Windows 11、CPython 3.13。Electron 构建环境还必须提供可用的 Go，用于生成 Windows x64 工具提升 helper；该 helper 以 `CGO_ENABLED=0` 构建，正式客户机运行不需要 Go。Python 依赖按职责拆分，并由单一 `constraints.txt` 精确锁定：
+目标环境是 Windows 11、CPython 3.13.9 x64。Electron 构建环境还必须提供可用的 Go，用于生成 Windows x64 工具提升 helper；该 helper 以 `CGO_ENABLED=0` 构建，正式客户机运行不需要 Go。Python 依赖按职责拆分，并由单一 `constraints.txt` 精确锁定：
 
 ```powershell
 python -m pip install -r requirements-runtime.txt -c constraints.txt

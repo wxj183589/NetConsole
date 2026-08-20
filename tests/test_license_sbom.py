@@ -19,6 +19,7 @@ from scripts.build.pyinstaller_artifact_inventory import (
     load_approved_distributions,
     write_inventory,
 )
+from scripts.build.python_runtime_contract import load_python_runtime_version
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -268,7 +269,7 @@ def _make_packaged_runtime(tmp_path: Path) -> Path:
     approved = load_approved_distributions(
         ROOT / "config" / "pyinstaller-approved-distributions.json",
         platform="windows-x64",
-        python_version="3.13",
+        python_version=load_python_runtime_version(ROOT),
     )
     (internal / "sbom.cdx.json").write_text(
         json.dumps(_valid_sbom(approved)),
@@ -598,7 +599,7 @@ def test_packaged_sbom_matches_the_approved_actual_artifact_exactly(
     approved = load_approved_distributions(
         ROOT / "config" / "pyinstaller-approved-distributions.json",
         platform="windows-x64",
-        python_version="3.13",
+        python_version=load_python_runtime_version(ROOT),
     )
     path = write_runtime_sbom(
         tmp_path / "packaged.cdx.json",

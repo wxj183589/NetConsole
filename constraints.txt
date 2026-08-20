@@ -1,4 +1,4 @@
-# Python lock set for CPython 3.13 / Windows x64.
+# Python lock set for CPython 3.13.9 / Windows x64.
 # 产品版本唯一来源为 src/netconsole/core/version.py；requirements*.txt 保留职责分层，
 # 本文件只负责解析后的精确版本约束，不绑定产品版本。
 pytest==9.1.1

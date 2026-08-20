@@ -36,7 +36,7 @@ NetConsole/
 ├─ requirements-build.txt   # PyInstaller、许可证与 SBOM 构建依赖层
 ├─ requirements-dev.txt     # 完整开发工具依赖层
 ├─ requirements.txt         # 指向 requirements-build.txt 的兼容构建入口
-├─ constraints.txt          # CPython 3.13 / Windows x64 精确版本约束
+├─ constraints.txt          # CPython 3.13.9 / Windows x64 精确版本约束
 ├─ AGENTS.md
 ├─ README.md
 └─ LICENSE

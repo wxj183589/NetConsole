@@ -2,7 +2,7 @@
 
 [简体中文](./README.md) | English
 
-[![Quality gate](https://github.com/wxj183589/NetConsole/actions/workflows/quality-gate.yml/badge.svg)](https://github.com/wxj183589/NetConsole/actions/workflows/quality-gate.yml) [![Python 3.13](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)](https://www.python.org/) [![Windows desktop](https://img.shields.io/badge/desktop-Windows-0078D6?logo=windows&logoColor=white)](https://github.com/wxj183589/NetConsole)
+[![Quality gate](https://github.com/wxj183589/NetConsole/actions/workflows/quality-gate.yml/badge.svg)](https://github.com/wxj183589/NetConsole/actions/workflows/quality-gate.yml) [![Python 3.13.9](https://img.shields.io/badge/Python-3.13.9-3776AB?logo=python&logoColor=white)](https://www.python.org/) [![Windows desktop](https://img.shields.io/badge/desktop-Windows-0078D6?logo=windows&logoColor=white)](https://github.com/wxj183589/NetConsole)
 
 **Rail Transit WLAN Engineering Diagnostics & Data Analysis Toolkit**
 
@@ -125,11 +125,11 @@ The repository does not currently publish a stable installer. Historical Git tag
 
 ## Development
 
-The current development and build target is Windows 11 with CPython 3.13, Node.js 24, and pnpm 11. The quick-start path below uses an isolated test root and does not read or modify persistent application data. A normal `pnpm dev` run uses the configured persistent data root described in [Data root](./docs/storage/DATA_ROOT.md). Do not place credentials, runtime data, or real field logs in the repository.
+The current development and build target is Windows 11 with CPython 3.13.9 x64, Node.js 24, and pnpm 11. The quick-start path below uses an isolated test root and does not read or modify persistent application data. A normal `pnpm dev` run uses the configured persistent data root described in [Data root](./docs/storage/DATA_ROOT.md). Do not place credentials, runtime data, or real field logs in the repository.
 
 ```powershell
 # 1. Create a virtual environment and install locked Python dependencies
-py -3.13 -m venv .venv
+py -3.13.9 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -c constraints.txt -r requirements-dev.txt
 .\.venv\Scripts\python.exe -m pip install -e . --no-deps
 

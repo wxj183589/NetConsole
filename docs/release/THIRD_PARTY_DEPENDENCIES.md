@@ -10,7 +10,7 @@ NetConsole v1.5.1 的正式桌面产品是 Electron + Vue + Python Backend；产
 | `requirements-test.txt` | 运行时依赖 + pytest | 否 |
 | `requirements-build.txt` | 运行时依赖 + PyInstaller、pip-licenses、cyclonedx-bom | 否 |
 | `requirements-dev.txt` | 测试、构建和 Ruff/mypy 的完整开发环境 | 否 |
-| `constraints.txt` | CPython 3.13 / Windows x64 的精确版本约束 | 不单独安装 |
+| `constraints.txt` | CPython 3.13.9 / Windows x64 的精确版本约束 | 不单独安装 |
 
 安装命令必须显式选择职责，并同时使用约束文件：
 

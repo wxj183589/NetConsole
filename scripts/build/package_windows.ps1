@@ -141,10 +141,12 @@ try {
     }
 
     $pythonVersion = Invoke-NativeCapture $pythonPath @("--version") $projectRoot
+    $pythonRuntimeContract = Invoke-NativeCapture $pythonPath @("-m", "scripts.build.python_runtime_contract", "--check-current") $projectRoot
     $nodeVersion = Invoke-NativeCapture $nodePath @("--version") $projectRoot
     $pnpmVersion = Invoke-NativeCapture $pnpmPath @("--version") $projectRoot
     Write-Host "Git HEAD : $head"
     Write-Host "Python   : $pythonVersion"
+    Write-Host "Contract : CPython $pythonRuntimeContract x64"
     Write-Host "Node.js  : $nodeVersion"
     Write-Host "pnpm     : $pnpmVersion"
 
