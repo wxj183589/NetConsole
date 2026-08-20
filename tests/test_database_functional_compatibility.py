@@ -303,6 +303,7 @@ def _enable_result_ref_authority(
     root: Path, inputs: dict[str, Path]
 ) -> dict[str, object]:
     tasks = inputs["after_tasks"]
+    _restore_legacy_full_only_task(tasks, task_id="task-real")
     TaskResultRolloutService(tasks).enable_dual_write(
         expected_revision=1,
         reason="functional authority fixture",
@@ -326,6 +327,35 @@ def _enable_result_ref_authority(
         allow_development_root_only=True,
     )
     return {"backfill": backfill, "ref": ref}
+
+
+def _restore_legacy_full_only_task(database: Path, *, task_id: str) -> None:
+    """Make one isolated fixture row represent the pre-authority storage contract."""
+
+    snapshot = _task_snapshot(task_id)
+    event = _task_event(task_id)
+    with closing(Database(database).connect()) as connection:
+        connection.execute(
+            "DELETE FROM task_results WHERE task_id=?",
+            (task_id,),
+        )
+        connection.execute(
+            "UPDATE task_snapshots SET result_json=?, result_id='', "
+            "result_hash='', result_summary_json='{}' WHERE task_id=?",
+            (
+                json.dumps(snapshot.result, ensure_ascii=False, separators=(",", ":")),
+                task_id,
+            ),
+        )
+        connection.execute(
+            "UPDATE task_events SET payload_json=? WHERE task_id=? "
+            "AND event_type='finished'",
+            (
+                json.dumps(event.payload, ensure_ascii=False, separators=(",", ":")),
+                task_id,
+            ),
+        )
+        connection.commit()
 
 
 def test_functional_compatibility_passes_repository_readthrough_without_payload_leak(
@@ -560,8 +590,7 @@ def test_functional_compatibility_fails_closed_on_wrong_result_reference(
         time="2026-08-01T00:02:00Z",
     )
     assert repository.record(_task_snapshot(excluded_task_id), excluded_event)
-    # Historical authority rows are created only by the explicit maintenance
-    # pass; the current runtime writer remains legacy-full even in this state.
+    _restore_legacy_full_only_task(inputs["after_tasks"], task_id=excluded_task_id)
     maintenance = TaskResultMaintenanceService(
         PathResolver(app_root=root, data_root=root / "runtime"),
         site_id="line-12",

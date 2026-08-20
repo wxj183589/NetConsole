@@ -1016,7 +1016,7 @@
     {
       "id": "site.trackside.optical_results",
       "relative_path": "sites/{site_id}/files/rail_transit/trackside_ap/parsed/update_sessions/{session_id}/*.sqlite",
-      "owner": "TracksideOpticalResultRepository",
+      "owner": "TracksideOpticalHistoryService",
       "code_owners": ["rail-transit"],
       "data_type": "HISTORICAL_RAW_FACT",
       "authority": "timestamp-precise optical/state collection facts",
@@ -1027,10 +1027,10 @@
       "site_package_policy": "include selected sessions or explicit history reference",
       "backup_policy": "no per-row backup; session rollback only",
       "migration_policy": "state change optimization only after before/after parity",
-      "schema_version": "trackside optical repository",
+      "schema_version": "trackside optical history service",
       "allowed_data_classes": ["HISTORICAL_RAW_FACT"],
       "forbidden_data_classes": ["ARTIFACT_OR_RAW_FILE", "STAGING_TEMPORARY"],
-      "source_locations": ["src/netconsole/repositories/trackside_optical_result_repository.py", "src/netconsole/services/rail_transit/trackside_optical_collection.py"]
+      "source_locations": ["src/netconsole/services/rail_transit/trackside_optical_history.py", "src/netconsole/services/rail_transit/trackside_optical_collection.py", "src/netconsole/repositories/device_fact_repository.py"]
     },
     {
       "id": "site.trackside.raw",

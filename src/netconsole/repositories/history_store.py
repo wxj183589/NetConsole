@@ -434,6 +434,7 @@ class HistoryStore:
         # share the caller's current-state transaction, so install this small
         # additive schema statement-by-statement.  IF NOT EXISTS makes first
         # collection writes safe when several workers reach a new site at once.
+        self._ensure_revision_metadata_schema(conn)
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS history_outbox (
@@ -497,6 +498,33 @@ class HistoryStore:
                         WHERE key = 'trackside_ap_history_revision';
                     END
                     """
+                )
+
+    @classmethod
+    def _ensure_revision_metadata_schema(cls, conn: sqlite3.Connection) -> None:
+        """Install only the metadata shape required by history revision triggers."""
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS schema_metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        columns = {
+            str(row[1])
+            for row in conn.execute("PRAGMA table_info(schema_metadata)").fetchall()
+        }
+        if not {"key", "value"}.issubset(columns):
+            raise sqlite3.DatabaseError("schema_metadata key/value columns are missing")
+        for column in ("created_at", "updated_at"):
+            if column not in columns:
+                conn.execute(
+                    f"ALTER TABLE schema_metadata "
+                    f"ADD COLUMN {column} TEXT NOT NULL DEFAULT ''"
                 )
 
     def record_event(

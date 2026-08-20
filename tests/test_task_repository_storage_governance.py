@@ -741,3 +741,266 @@ def test_history_store_result_task_binding_mismatch_fails_loudly(
 
     with pytest.raises(sqlite3.DatabaseError, match="task snapshot result task binding mismatch"):
         repository.get(mismatched_task)
+
+
+def _record_retention_terminal(
+    repository: TaskRepository,
+    path: Path,
+    *,
+    task_id: str,
+    ordinal: int,
+    site_name: str,
+    task_type: str = "ordinary_collect",
+    result: dict[str, object] | None = None,
+    resource_keys: tuple[str, ...] = (),
+) -> None:
+    timestamp = f"2026-08-16T00:00:{ordinal:02d}Z"
+    payload = dict(result or {})
+    snapshot = TaskSnapshot(
+        task_id=task_id,
+        task_type=task_type,
+        task_name=task_id,
+        status=TaskState.COMPLETED,
+        created_time=timestamp,
+        finished_time=timestamp,
+        updated_time=timestamp,
+        result=payload,
+        resource_keys=resource_keys,
+        site_name=site_name,
+    )
+    assert repository.record(
+        snapshot,
+        TaskEvent(
+            event_id=f"finished-{task_id}",
+            task_id=task_id,
+            type="finished",
+            time=timestamp,
+            source="pytest",
+            payload={"result": payload},
+        ),
+    )
+    reference = _result_reference(task_id, payload, created_time=timestamp)
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO task_results (
+                result_id, task_id, terminal_event_type, canonical_json,
+                sha256, byte_size, schema_version, created_time
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            tuple(reference.values()),
+        )
+        conn.commit()
+
+
+def test_terminal_history_retention_keeps_ten_per_site_and_type_and_protects_business_links(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "tasks.db"
+    repository = TaskRepository(path)
+    ordinary_ids = [f"ordinary-{index:02d}" for index in range(1, 16)]
+    empty_site_ids = [f"empty-site-{index:02d}" for index in range(1, 16)]
+    for index, task_id in enumerate(ordinary_ids, start=1):
+        _record_retention_terminal(
+            repository,
+            path,
+            task_id=task_id,
+            ordinal=index,
+            site_name="site-a",
+        )
+    for index, task_id in enumerate(empty_site_ids, start=1):
+        _record_retention_terminal(
+            repository,
+            path,
+            task_id=task_id,
+            ordinal=index,
+            site_name="",
+        )
+    _record_retention_terminal(
+        repository,
+        path,
+        task_id="other-site-old",
+        ordinal=1,
+        site_name="site-b",
+    )
+    _record_retention_terminal(
+        repository,
+        path,
+        task_id="other-type-old",
+        ordinal=1,
+        site_name="site-a",
+        task_type="different_collect",
+    )
+    _record_retention_terminal(
+        repository,
+        path,
+        task_id="mapped-online-mr",
+        ordinal=1,
+        site_name="site-a",
+    )
+    _record_retention_terminal(
+        repository,
+        path,
+        task_id="mesh-source-linked",
+        ordinal=1,
+        site_name="site-a",
+        result={"mesh_source_id": "mesh-source-1"},
+    )
+    _record_retention_terminal(
+        repository,
+        path,
+        task_id="ground-session-linked",
+        ordinal=1,
+        site_name="site-a",
+        resource_keys=("ground-unattended:site-a:run-1",),
+    )
+    repository.save(
+        TaskSnapshot(
+            task_id="active-old",
+            task_type="ordinary_collect",
+            task_name="active-old",
+            status=TaskState.RUNNING,
+            created_time="2026-08-16T00:00:01Z",
+            updated_time="2026-08-16T00:00:01Z",
+            site_name="site-a",
+        )
+    )
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE online_mr_task_sessions (
+                controller_task_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO online_mr_task_sessions VALUES (?, ?)",
+            ("mapped-online-mr", "online-session-1"),
+        )
+        conn.commit()
+
+    result = repository.enforce_terminal_history_retention()
+
+    expected_deleted = {
+        *ordinary_ids[:5],
+        *empty_site_ids[:5],
+    }
+    assert result["limit_per_scope"] == 10
+    assert set(result["deleted_task_ids"]) == expected_deleted
+    assert result["deleted"] == {
+        "task_snapshots": 10,
+        "task_events": 10,
+        "task_results": 10,
+    }
+    assert result["protected"] == {
+        "active": 1,
+        "online_mr_mapping": 1,
+        "long_term_reference": 2,
+        "unreadable_metadata": 0,
+    }
+    with sqlite3.connect(path) as conn:
+        remaining_snapshots = {
+            str(row[0]) for row in conn.execute("SELECT task_id FROM task_snapshots")
+        }
+        event_task_ids = {
+            str(row[0]) for row in conn.execute("SELECT DISTINCT task_id FROM task_events")
+        }
+        result_task_ids = {
+            str(row[0]) for row in conn.execute("SELECT DISTINCT task_id FROM task_results")
+        }
+        mapped_rows = conn.execute(
+            "SELECT controller_task_id FROM online_mr_task_sessions"
+        ).fetchall()
+
+    assert not expected_deleted & remaining_snapshots
+    assert not expected_deleted & event_task_ids
+    assert not expected_deleted & result_task_ids
+    assert {"active-old", "mapped-online-mr", "mesh-source-linked", "ground-session-linked"} <= remaining_snapshots
+    assert {"other-site-old", "other-type-old", *ordinary_ids[5:], *empty_site_ids[5:]} <= remaining_snapshots
+    assert mapped_rows == [("mapped-online-mr",)]
+
+
+def test_terminal_history_retention_rolls_back_events_results_and_snapshots_together(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "tasks.db"
+    repository = TaskRepository(path)
+    task_ids = [f"rollback-{index:02d}" for index in range(1, 16)]
+    for index, task_id in enumerate(task_ids, start=1):
+        _record_retention_terminal(
+            repository,
+            path,
+            task_id=task_id,
+            ordinal=index,
+            site_name="site-a",
+        )
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            """
+            CREATE TRIGGER abort_terminal_retention
+            BEFORE DELETE ON task_snapshots
+            WHEN OLD.task_id = 'rollback-01'
+            BEGIN
+                SELECT RAISE(ABORT, 'retention rollback fixture');
+            END
+            """
+        )
+        conn.commit()
+
+    with pytest.raises(sqlite3.IntegrityError, match="retention rollback fixture"):
+        repository.enforce_terminal_history_retention()
+
+    with sqlite3.connect(path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM task_snapshots").fetchone()[0] == 15
+        assert conn.execute("SELECT COUNT(*) FROM task_events").fetchone()[0] == 15
+        assert conn.execute("SELECT COUNT(*) FROM task_results").fetchone()[0] == 15
+
+
+def test_terminal_history_retention_tombstone_blocks_old_event_reinflation(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "tasks.db"
+    repository = TaskRepository(path)
+    task_ids = ["retired"] + [f"retained-{index:02d}" for index in range(10)]
+    for ordinal, task_id in enumerate(task_ids):
+        _record_retention_terminal(
+            repository,
+            path,
+            task_id=task_id,
+            ordinal=ordinal + 1,
+            site_name="site-a",
+        )
+
+    retention = repository.enforce_terminal_history_retention()
+    assert retention["deleted_task_ids"] == ["retired"]
+
+    snapshot = _snapshot(
+        task_id="retired",
+        status=TaskState.COMPLETED,
+        finished_time="2026-08-16T00:00:01Z",
+        updated_time="2026-08-16T00:00:01Z",
+        result={},
+    )
+    event = TaskEvent(
+        event_id="replayed-retired-original",
+        task_id="retired",
+        type="finished",
+        time="2026-08-16T00:00:01Z",
+        source="pytest",
+        payload={},
+    )
+    assert not repository.record(
+        snapshot,
+        replace(event, event_id="replayed-retired"),
+    )
+    with sqlite3.connect(path) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM task_snapshots WHERE task_id='retired'"
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM task_results WHERE task_id='retired'"
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT reason FROM task_retention_tombstones WHERE task_id='retired'"
+        ).fetchone()[0] == "terminal_history_retention"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from collections.abc import Collection
@@ -23,8 +24,11 @@ from netconsole.models.task_snapshot import (
 )
 from netconsole.models.task_history_policy import (
     ACTIVE_TASK_STATE_VALUES,
+    TASK_HISTORY_SCOPE_LIMIT,
     TERMINAL_TASK_STATE_VALUES,
     task_expires_at,
+    task_has_long_term_reference,
+    task_history_scope,
     task_requires_attention,
     utc_time_reached,
 )
@@ -162,6 +166,12 @@ CREATE TABLE IF NOT EXISTS task_events (
 );
 CREATE INDEX IF NOT EXISTS idx_task_events_task_sequence
     ON task_events(task_id, sequence DESC);
+
+CREATE TABLE IF NOT EXISTS task_retention_tombstones (
+    task_id TEXT PRIMARY KEY,
+    retired_at TEXT NOT NULL,
+    reason TEXT NOT NULL
+);
 """
 
 PROGRESS_EVENT_HEARTBEAT_SECONDS = 30
@@ -266,6 +276,9 @@ class TaskRepository:
                 if exists is not None:
                     conn.rollback()
                     return
+                if self._is_retention_tombstoned(conn, event.task_id):
+                    conn.rollback()
+                    return
                 if self._sample_repeated_progress(conn, event):
                     conn.rollback()
                     recorded = True
@@ -368,6 +381,9 @@ class TaskRepository:
                 if exists is not None:
                     conn.rollback()
                     return
+                if self._is_retention_tombstoned(conn, event.task_id):
+                    conn.rollback()
+                    return
                 stored_snapshot, stored_event = self._prepare_terminal_result(
                     conn, snapshot, event
                 )
@@ -405,33 +421,134 @@ class TaskRepository:
         snapshot: TaskSnapshot,
         event: TaskEvent,
     ) -> tuple[TaskSnapshot, TaskEvent]:
-        """Detach a stale ref only when a new full snapshot result replaces it."""
+        """Persist one immutable authority row for every terminal task event."""
 
-        if TASK_RESULT_RUNTIME_WRITE_STATE != TaskResultStorageState.LEGACY_DUAL_FULL:
-            raise RuntimeError("unsupported task result runtime write policy")
+        terminal_event_type = self._terminal_event_type_for_status(snapshot.status)
+        if terminal_event_type != str(event.type):
+            incoming_result = snapshot.result
+            result_id = str(snapshot.result_id or "")
+            if not isinstance(incoming_result, dict) or not incoming_result or not result_id:
+                return snapshot, event
+
+            referenced = self._result_row(conn, result_id)
+            if referenced is None:
+                # A new full projection supersedes an unavailable historical
+                # reference; the immutable authority row itself is untouched.
+                return replace(
+                    snapshot, result_id="", result_hash="", result_summary={}
+                ), event
+
+            verified = self._verified_result_for_read(dict(referenced))
+            if str(verified["task_id"]) != str(snapshot.task_id):
+                raise sqlite3.DatabaseError("task snapshot result task binding mismatch")
+            stored_hash = str(snapshot.result_hash or "")
+            if stored_hash and stored_hash != str(verified["sha256"]):
+                return replace(
+                    snapshot, result_id="", result_hash="", result_summary={}
+                ), event
+            if self._canonical_result_json(incoming_result) == str(
+                verified["canonical_json"]
+            ):
+                return snapshot, event
+            return replace(
+                snapshot, result_id="", result_hash="", result_summary={}
+            ), event
+
         incoming_result = snapshot.result
-        result_id = str(snapshot.result_id or "")
-        if not isinstance(incoming_result, dict) or not incoming_result or not result_id:
+        if not isinstance(incoming_result, dict):
+            incoming_result = {}
+        explicit_result_id = str(snapshot.result_id or "")
+        if explicit_result_id:
+            # Legacy/ref-only snapshots already identify their immutable
+            # authority. Preserve the reference so reads can validate the
+            # task binding and resolve from TaskHistoryStore when necessary.
             return snapshot, event
+        event_payload = dict(event.payload or {})
+        payload_result = event_payload.get("result")
+        if not incoming_result and isinstance(payload_result, dict):
+            incoming_result = dict(payload_result)
 
-        referenced = self._result_row(conn, result_id)
-        if referenced is None:
-            # A full current result can repair an active snapshot whose old
-            # historical reference has already been archived or is missing.
-            return replace(snapshot, result_id="", result_hash="", result_summary={}), event
+        existing = conn.execute(
+            """
+            SELECT * FROM task_results
+            WHERE task_id = ? AND terminal_event_type = ?
+            ORDER BY created_time, result_id
+            LIMIT 1
+            """,
+            (snapshot.task_id, terminal_event_type),
+        ).fetchone()
+        if existing is not None:
+            verified = self._verified_result_for_read(dict(existing))
+            result = dict(verified["result"])
+        else:
+            result = dict(incoming_result)
+            canonical_json = self._canonical_result_json(result)
+            encoded = canonical_json.encode("utf-8")
+            digest = hashlib.sha256(encoded).hexdigest()
+            result_id = "tr-" + hashlib.sha256(
+                f"{snapshot.task_id}\0{terminal_event_type}\0{digest}".encode("utf-8")
+            ).hexdigest()
+            created_time = str(
+                event.time or snapshot.finished_time or snapshot.updated_time or utc_now_iso()
+            )
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO task_results (
+                    result_id, task_id, terminal_event_type, canonical_json,
+                    sha256, byte_size, schema_version, created_time
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    result_id,
+                    snapshot.task_id,
+                    terminal_event_type,
+                    canonical_json,
+                    digest,
+                    len(encoded),
+                    TASK_RESULT_SCHEMA_VERSION,
+                    created_time,
+                ),
+            )
+            verified = self._verified_result_for_read(
+                dict(
+                    conn.execute(
+                        "SELECT * FROM task_results WHERE result_id = ?",
+                        (result_id,),
+                    ).fetchone()
+                )
+            )
+            result = dict(verified["result"])
 
-        verified = self._verified_result_for_read(dict(referenced))
-        if str(verified["task_id"]) != str(snapshot.task_id):
-            raise sqlite3.DatabaseError("task snapshot result task binding mismatch")
-        stored_hash = str(snapshot.result_hash or "")
-        if stored_hash and stored_hash != str(verified["sha256"]):
-            return replace(snapshot, result_id="", result_hash="", result_summary={}), event
-        if self._canonical_result_json(incoming_result) == str(verified["canonical_json"]):
-            return snapshot, event
-        return (
-            replace(snapshot, result_id="", result_hash="", result_summary={}),
-            event,
+        result_id = str(verified["result_id"])
+        result_hash = str(verified["sha256"])
+        result_summary = self._result_summary(
+            result, byte_size=int(verified["byte_size"])
         )
+        event_payload.pop("result", None)
+        event_payload.update(
+            {
+                "result_id": result_id,
+                "result_hash": result_hash,
+                "result_summary": result_summary,
+            }
+        )
+        stored_snapshot = replace(
+            snapshot,
+            result={},
+            result_id=result_id,
+            result_hash=result_hash,
+            result_summary=result_summary,
+        )
+        stored_event = replace(event, payload=event_payload)
+        return stored_snapshot, stored_event
+
+    @staticmethod
+    def _is_retention_tombstoned(conn, task_id: str) -> bool:
+        row = conn.execute(
+            "SELECT 1 FROM task_retention_tombstones WHERE task_id = ?",
+            (str(task_id),),
+        ).fetchone()
+        return row is not None
 
     def get_result(self, result_id: str) -> dict[str, Any] | None:
         with self._connect() as conn:
@@ -958,6 +1075,266 @@ class TaskRepository:
             "task_ids": [] if dry_run else matched_ids,
             "counts": counts,
         }
+
+    def enforce_terminal_history_retention(self) -> dict[str, object]:
+        """Keep recent ordinary terminal tasks and remove their three DB rows atomically.
+
+        The method is intentionally limited to ``tasks.db``. It neither archives
+        to ``TaskHistoryStore`` nor touches artifact files, source logs, or Online
+        MR mapping rows. A task is protected only by an active lifecycle state,
+        a concrete Online MR mapping, or explicit durable-session metadata.
+        """
+
+        deleted = {"task_snapshots": 0, "task_events": 0, "task_results": 0}
+        protected = {
+            "active": 0,
+            "online_mr_mapping": 0,
+            "long_term_reference": 0,
+            "unreadable_metadata": 0,
+        }
+        result: dict[str, object] = {
+            "limit_per_scope": TASK_HISTORY_SCOPE_LIMIT,
+            "scopes": 0,
+            "retained_terminal": 0,
+            "deleted_task_ids": [],
+            "deleted": deleted,
+            "protected": protected,
+        }
+
+        def operation() -> None:
+            with self._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                tables = {
+                    str(row["name"])
+                    for row in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type = 'table'"
+                    ).fetchall()
+                }
+                if "task_snapshots" not in tables:
+                    conn.rollback()
+                    return
+
+                online_mr_task_ids = self._online_mr_mapped_task_ids(conn, tables)
+                result_authority_by_id = self._task_result_authority_by_id(
+                    conn, tables
+                )
+                rows = conn.execute(
+                    """
+                    SELECT task_id, task_type, site_name, status, finished_time,
+                           updated_time, result_json, result_id,
+                           result_summary_json, resource_keys_json
+                    FROM task_snapshots
+                    ORDER BY site_name, task_type, finished_time DESC,
+                             updated_time DESC, task_id DESC
+                    """
+                ).fetchall()
+                ordinary_by_scope: dict[tuple[str, str], list[tuple[str, str]]] = {}
+                for raw in rows:
+                    row = dict(raw)
+                    task_id = str(row["task_id"])
+                    status = str(row["status"] or "").upper()
+                    protection = self._terminal_retention_protection(
+                        row, online_mr_task_ids, result_authority_by_id
+                    )
+                    if protection:
+                        protected[protection] += 1
+                        continue
+                    if status not in TERMINAL_TASK_STATE_VALUES:
+                        continue
+                    scope = task_history_scope(row["site_name"], row["task_type"])
+                    timestamp = str(
+                        row["finished_time"] or row["updated_time"] or ""
+                    )
+                    ordinary_by_scope.setdefault(scope, []).append(
+                        (timestamp, task_id)
+                    )
+
+                result["scopes"] = len(ordinary_by_scope)
+                retained_task_ids: set[str] = set()
+                deleted_task_ids: list[str] = []
+                for candidates in ordinary_by_scope.values():
+                    task_ids = [
+                        task_id
+                        for _timestamp, task_id in sorted(
+                            candidates, reverse=True
+                        )
+                    ]
+                    retained_task_ids.update(task_ids[:TASK_HISTORY_SCOPE_LIMIT])
+                    deleted_task_ids.extend(task_ids[TASK_HISTORY_SCOPE_LIMIT:])
+                result["retained_terminal"] = len(retained_task_ids)
+                if not deleted_task_ids:
+                    conn.commit()
+                    return
+
+                retired_at = utc_now_iso()
+                conn.executemany(
+                    """
+                    INSERT OR IGNORE INTO task_retention_tombstones(
+                        task_id, retired_at, reason
+                    ) VALUES (?, ?, ?)
+                    """,
+                    [
+                        (task_id, retired_at, "terminal_history_retention")
+                        for task_id in deleted_task_ids
+                    ],
+                )
+                for start in range(0, len(deleted_task_ids), 500):
+                    chunk = deleted_task_ids[start : start + 500]
+                    placeholders = ",".join("?" for _ in chunk)
+                    if "task_results" in tables:
+                        cursor = conn.execute(
+                            f"DELETE FROM task_results WHERE task_id IN ({placeholders})",
+                            chunk,
+                        )
+                        deleted["task_results"] += max(0, int(cursor.rowcount))
+                    if "task_events" in tables:
+                        cursor = conn.execute(
+                            f"DELETE FROM task_events WHERE task_id IN ({placeholders})",
+                            chunk,
+                        )
+                        deleted["task_events"] += max(0, int(cursor.rowcount))
+                    cursor = conn.execute(
+                        f"DELETE FROM task_snapshots WHERE task_id IN ({placeholders})",
+                        chunk,
+                    )
+                    deleted["task_snapshots"] += max(0, int(cursor.rowcount))
+                result["deleted_task_ids"] = deleted_task_ids
+                conn.commit()
+
+        run_sqlite_with_retry(operation)
+        return result
+
+    @classmethod
+    def _online_mr_mapped_task_ids(cls, conn, tables: set[str]) -> set[str]:
+        if "online_mr_task_sessions" not in tables:
+            return set()
+        columns = {
+            str(row["name"])
+            for row in conn.execute(
+                "PRAGMA table_info(online_mr_task_sessions)"
+            ).fetchall()
+        }
+        task_column = next(
+            (
+                column
+                for column in ("controller_task_id", "task_id")
+                if column in columns
+            ),
+            "",
+        )
+        if not task_column:
+            return set()
+        rows = conn.execute(
+            f"SELECT \"{task_column}\" AS task_id FROM online_mr_task_sessions "
+            f"WHERE \"{task_column}\" IS NOT NULL AND \"{task_column}\" <> ''"
+        ).fetchall()
+        return {str(row["task_id"]) for row in rows}
+
+    @staticmethod
+    def _task_result_authority_by_id(
+        conn, tables: set[str]
+    ) -> dict[str, dict[str, object] | None]:
+        if "task_results" not in tables:
+            return {}
+        columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(task_results)").fetchall()
+        }
+        required = {
+            "result_id",
+            "task_id",
+            "terminal_event_type",
+            "canonical_json",
+            "sha256",
+            "byte_size",
+            "schema_version",
+            "created_time",
+        }
+        if not required.issubset(columns):
+            return {}
+        rows = conn.execute(
+            "SELECT result_id, task_id, terminal_event_type, canonical_json, "
+            "sha256, byte_size, schema_version, created_time FROM task_results"
+        ).fetchall()
+        authority: dict[str, dict[str, object] | None] = {}
+        for raw in rows:
+            row = dict(raw)
+            result_id = str(row.get("result_id") or "")
+            if not result_id:
+                continue
+            try:
+                authority[result_id] = verify_task_result_row(row)
+            except sqlite3.DatabaseError:
+                authority[result_id] = None
+        return authority
+
+    @classmethod
+    def _terminal_retention_protection(
+        cls,
+        row: dict[str, object],
+        online_mr_task_ids: set[str],
+        result_authority_by_id: dict[str, dict[str, object] | None],
+    ) -> str:
+        status = str(row.get("status") or "").upper()
+        if status in ACTIVE_TASK_STATE_VALUES:
+            return "active"
+        if str(row.get("task_id") or "") in online_mr_task_ids:
+            return "online_mr_mapping"
+        if status in TERMINAL_TASK_STATE_VALUES and cls._event_datetime(
+            str(row.get("finished_time") or row.get("updated_time") or "")
+        ) is None:
+            return "unreadable_metadata"
+        resource_keys, resource_keys_valid = cls._retention_json_list(
+            row.get("resource_keys_json")
+        )
+        task_result, result_valid = cls._retention_json_object(
+            row.get("result_json")
+        )
+        result_summary, summary_valid = cls._retention_json_object(
+            row.get("result_summary_json")
+        )
+        if not resource_keys_valid or not result_valid or not summary_valid:
+            return "unreadable_metadata"
+        result_id = str(row.get("result_id") or "")
+        authority_result: dict[str, object] = {}
+        if result_id:
+            raw_authority = result_authority_by_id.get(result_id)
+            if raw_authority is None:
+                return "unreadable_metadata"
+            else:
+                if str(raw_authority.get("task_id") or "") != str(
+                    row.get("task_id") or ""
+                ):
+                    return "unreadable_metadata"
+                authority_result = dict(raw_authority.get("result") or {})
+        if task_has_long_term_reference(
+            resource_keys=resource_keys,
+            result={**authority_result, **result_summary, **task_result},
+        ):
+            return "long_term_reference"
+        return ""
+
+    @staticmethod
+    def _retention_json_list(value: object) -> tuple[list[object], bool]:
+        raw = str(value or "").strip()
+        if raw in {"", "null"}:
+            return [], True
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError):
+            return [], False
+        return (list(parsed), True) if isinstance(parsed, list) else ([], False)
+
+    @staticmethod
+    def _retention_json_object(value: object) -> tuple[dict[str, object], bool]:
+        raw = str(value or "").strip()
+        if raw in {"", "null"}:
+            return {}, True
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError):
+            return {}, False
+        return (dict(parsed), True) if isinstance(parsed, dict) else ({}, False)
 
     def visible_attention_summary(self) -> dict[str, int]:
         summary = {"running": 0, "queued": 0, "failed": 0, "warning": 0}

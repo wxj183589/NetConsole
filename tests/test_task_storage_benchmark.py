@@ -26,20 +26,20 @@ def test_task_storage_benchmark_compares_all_result_layouts(tmp_path: Path) -> N
         "future_ref_only",
     }
     assert layouts["legacy_dual_full"]["results"] == 0
-    assert layouts["guarded_default"]["results"] == 0
+    assert layouts["guarded_default"]["results"] == 2
     assert layouts["guarded_default"]["measurement_state"] == "checkpointed"
     assert layouts["task_results_dual_write"]["results"] == 2
     assert layouts["future_ref_only"]["results"] == 2
     assert layouts["future_ref_only"]["read_path"] == "task_results_read_through"
     assert comparisons[0]["storage_comparison"][
         "guarded_default_vs_legacy_percent"
-    ] == 0
+    ] > 0
 
     size_samples = report["terminal_result_storage"]["result_size_samples"]
     large = next(item for item in size_samples if item["result_profile"] == "large")
     assert 4_000_000 <= large["result_canonical_bytes"] <= 5_000_000
-    assert "potential" in report["terminal_result_storage"]["space_claim"].lower()
-    assert report["retention"] == "PREVIEW_ONLY_USER_POLICY_REQUIRED"
+    assert "authority" in report["terminal_result_storage"]["space_claim"].lower()
+    assert report["retention"] == "KEEP_LAST_10_EFFECTIVE"
     assert report["destructive_operations"] == {
         "DELETE": "NO",
         "DROP": "NO",

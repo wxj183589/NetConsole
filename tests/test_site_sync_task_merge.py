@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pytest
 
-from netconsole.core.paths import PathResolver
 from netconsole.models.online_mr_application import (
     OnlineMrExecutorKind,
     OnlineMrMappingState,
@@ -25,7 +24,6 @@ from netconsole.services.job_center.task_result_rollout import (
 )
 from netconsole.services.site_storage import SiteStorageError
 from netconsole.services.site_sync import _apply_task_merge, _preview_task_merge
-from scripts.maintenance.task_result_maintenance import TaskResultMaintenanceService
 
 
 def _terminal_task(
@@ -67,17 +65,10 @@ def _terminal_task(
         payload={"message": "done", "result": result},
     )
     assert repository.record(snapshot, event)
-    # Seed historical task_results explicitly; current runtime terminal writes
-    # intentionally remain full legacy payloads regardless of rollout state.
-    maintenance = TaskResultMaintenanceService(
-        PathResolver(app_root=path.parent, data_root=path.parent / "data"),
-        site_id="demo",
-        tasks_database=path,
-        development_root=path.parent,
-    )
-    assert maintenance.backfill(
-        apply=True, allow_development_root_only=True
-    )["new_result_rows"] == 1
+    # Current terminal writes create the immutable authority directly. Historical
+    # full-only rows are covered by the dedicated rollout maintenance tests.
+    persisted = repository.get(task_id)
+    assert persisted is not None and persisted.result_id
     return repository
 
 

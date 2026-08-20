@@ -64,6 +64,36 @@ def _enable(service: TaskResultRolloutService) -> None:
     )
 
 
+def _strip_runtime_authority(
+    path: Path,
+    task_id: str,
+    *,
+    snapshot_result: dict[str, object],
+    event_payload: dict[str, object],
+    event_id: str | None = None,
+) -> None:
+    """Turn a current writer row into an isolated legacy full-only fixture."""
+    with sqlite3.connect(path) as connection:
+        connection.execute("DELETE FROM task_results WHERE task_id=?", (task_id,))
+        connection.execute(
+            "UPDATE task_snapshots SET result_json=?, result_id='', result_hash='', "
+            "result_summary_json='{}' WHERE task_id=?",
+            (
+                json.dumps(snapshot_result, ensure_ascii=False, separators=(",", ":")),
+                task_id,
+            ),
+        )
+        event_filter = "event_id=?" if event_id else "task_id=?"
+        connection.execute(
+            f"UPDATE task_events SET payload_json=? WHERE {event_filter}",
+            (
+                json.dumps(event_payload, ensure_ascii=False, separators=(",", ":")),
+                event_id or task_id,
+            ),
+        )
+        connection.commit()
+
+
 def test_new_database_defaults_to_legacy_dual_full(tmp_path: Path) -> None:
     service = TaskResultRolloutService(tmp_path / "tasks.db")
     status = service.status()
@@ -86,7 +116,7 @@ def test_new_database_defaults_to_legacy_dual_full(tmp_path: Path) -> None:
     assert str(status["updated_at"])
 
 
-def test_old_database_upgrade_adds_capability_but_keeps_rollout_off(
+def test_old_database_upgrade_adds_capability_and_writes_authority(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "tasks.db"
@@ -129,13 +159,15 @@ def test_old_database_upgrade_adds_capability_but_keeps_rollout_off(
         ).fetchone()[0]
         result_count = conn.execute("SELECT COUNT(*) FROM task_results").fetchone()[0]
     assert schema_version == "4"
-    assert result_count == 0
+    assert result_count == 1
     assert status.state == TaskResultStorageState.LEGACY_DUAL_FULL
-    assert repository.get("upgraded-task").result == snapshot.result
+    persisted = repository.get("upgraded-task")
+    assert persisted is not None and persisted.result == snapshot.result
+    assert persisted.result_id
 
 
 @pytest.mark.parametrize("count", [10, 100, 1_000])
-def test_default_terminal_tasks_never_write_task_results(
+def test_default_terminal_tasks_write_task_results_authority(
     tmp_path: Path,
     count: int,
 ) -> None:
@@ -151,22 +183,28 @@ def test_default_terminal_tasks_never_write_task_results(
             "SELECT COUNT(*) FROM task_snapshots"
         ).fetchone()[0]
         event_count = conn.execute("SELECT COUNT(*) FROM task_events").fetchone()[0]
-        snapshot_result = json.loads(
-            conn.execute(
-                "SELECT result_json FROM task_snapshots ORDER BY task_id LIMIT 1"
-            ).fetchone()[0]
-        )
-        event_result = json.loads(
+        snapshot_row = conn.execute(
+            "SELECT result_json, result_id FROM task_snapshots ORDER BY task_id LIMIT 1"
+        ).fetchone()
+        event_payload = json.loads(
             conn.execute(
                 "SELECT payload_json FROM task_events ORDER BY sequence LIMIT 1"
             ).fetchone()[0]
-        )["result"]
-    assert result_count == 0
+        )
+    assert result_count == count
     assert snapshot_count == event_count == count
-    assert snapshot_result == event_result
+    assert json.loads(snapshot_row[0]) == {}
+    assert snapshot_row[1]
+    assert event_payload["result_id"]
+    assert "result" not in event_payload
+    assert repository.get("task-0000").result == {
+        "task": "task-0000",
+        "rows": 3,
+        "status": "ok",
+    }
 
 
-def test_rollout_state_does_not_change_legacy_full_terminal_writes(
+def test_rollout_state_does_not_disable_terminal_authority_writes(
     tmp_path: Path,
 ) -> None:
     assert TASK_RESULT_RUNTIME_WRITE_STATE == TaskResultStorageState.LEGACY_DUAL_FULL
@@ -189,8 +227,8 @@ def test_rollout_state_does_not_change_legacy_full_terminal_writes(
     persisted = restarted.repository.get("dual-task")
     assert persisted is not None
     assert persisted.result == snapshot.result
-    assert persisted.result_id == ""
-    assert restarted.repository.task_result_count() == 0
+    assert persisted.result_id
+    assert restarted.repository.task_result_count() == 1
     with sqlite3.connect(path) as connection:
         raw_snapshot = json.loads(
             connection.execute(
@@ -202,9 +240,9 @@ def test_rollout_state_does_not_change_legacy_full_terminal_writes(
                 "SELECT payload_json FROM task_events WHERE task_id='dual-task'"
             ).fetchone()[0]
         )
-    assert raw_snapshot == snapshot.result
-    assert raw_event["result"] == snapshot.result
-    assert "result_id" not in raw_event
+    assert raw_snapshot == {}
+    assert raw_event["result_id"] == persisted.result_id
+    assert "result" not in raw_event
     assert restarted.repository.list_task_result_rollout_audit() == [
         {
             "revision": 2,
@@ -226,7 +264,7 @@ def test_rollout_state_does_not_change_legacy_full_terminal_writes(
     assert stale.value.code == "TASK_RESULT_ROLLOUT_REVISION_CONFLICT"
 
 
-def test_rollout_rollback_keeps_legacy_full_runtime_writes(
+def test_rollout_rollback_keeps_terminal_authority_writes(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "tasks.db"
@@ -235,7 +273,7 @@ def test_rollout_rollback_keeps_legacy_full_runtime_writes(
     first_snapshot, first_event = _terminal("before-rollback")
     assert service.repository.record(first_snapshot, first_event)
     first = service.repository.get("before-rollback")
-    assert first is not None and first.result_id == ""
+    assert first is not None and first.result_id
 
     service.disable_dual_write(
         expected_revision=2,
@@ -245,13 +283,13 @@ def test_rollout_rollback_keeps_legacy_full_runtime_writes(
     second_snapshot, second_event = _terminal("after-rollback")
     assert service.repository.record(second_snapshot, second_event)
 
-    assert service.repository.task_result_count() == 0
-    assert service.repository.get("after-rollback").result_id == ""
+    assert service.repository.task_result_count() == 2
+    assert service.repository.get("after-rollback").result_id
     assert service.repository.get("after-rollback").result == second_snapshot.result
     assert service.status()["revision"] == 3
 
 
-def test_historical_ref_authority_state_is_ignored_by_current_writer(
+def test_historical_ref_authority_state_does_not_disable_current_writer(
     tmp_path: Path,
 ) -> None:
     assert TASK_RESULT_RUNTIME_WRITE_STATE == TaskResultStorageState.LEGACY_DUAL_FULL
@@ -277,8 +315,8 @@ def test_historical_ref_authority_state_is_ignored_by_current_writer(
     persisted = restarted.repository.get("stale-ref-authority")
     assert persisted is not None
     assert persisted.result == snapshot.result
-    assert persisted.result_id == ""
-    assert restarted.repository.task_result_count() == 0
+    assert persisted.result_id
+    assert restarted.repository.task_result_count() == 1
     with sqlite3.connect(path) as connection:
         raw_snapshot = json.loads(
             connection.execute(
@@ -292,9 +330,9 @@ def test_historical_ref_authority_state_is_ignored_by_current_writer(
                 "WHERE task_id='stale-ref-authority'"
             ).fetchone()[0]
         )
-    assert raw_snapshot == snapshot.result
-    assert raw_event["result"] == snapshot.result
-    assert "result_id" not in raw_event
+    assert raw_snapshot == {}
+    assert raw_event["result_id"] == persisted.result_id
+    assert "result" not in raw_event
 
 
 @pytest.mark.parametrize(
@@ -335,22 +373,52 @@ def test_historical_backfill_is_classified_idempotent_and_ref_read_through(
 
     matched_snapshot, matched_event = _terminal("matched")
     assert repository.record(matched_snapshot, matched_event)
+    _strip_runtime_authority(
+        path,
+        "matched",
+        snapshot_result=matched_snapshot.result,
+        event_payload=matched_event.payload,
+    )
     snapshot_only, snapshot_event = _terminal("snapshot-only")
     snapshot_event = replace(snapshot_event, payload={"message": "done"})
     assert repository.record(snapshot_only, snapshot_event)
+    _strip_runtime_authority(
+        path,
+        "snapshot-only",
+        snapshot_result=snapshot_only.result,
+        event_payload=snapshot_event.payload,
+    )
     event_only, event_only_event = _terminal("event-only")
     event_only = replace(event_only, result={})
     assert repository.record(event_only, event_only_event)
+    _strip_runtime_authority(
+        path,
+        "event-only",
+        snapshot_result={},
+        event_payload=event_only_event.payload,
+    )
     conflict, conflict_event = _terminal("conflict")
     conflict_event = replace(
         conflict_event,
         payload={"result": {"task": "conflict", "rows": 999}},
     )
     assert repository.record(conflict, conflict_event)
+    _strip_runtime_authority(
+        path,
+        "conflict",
+        snapshot_result=conflict.result,
+        event_payload=conflict_event.payload,
+    )
     invalid, invalid_event = _terminal("invalid")
     invalid = replace(invalid, result={})
     invalid_event = replace(invalid_event, payload={"message": "done"})
     assert repository.record(invalid, invalid_event)
+    _strip_runtime_authority(
+        path,
+        "invalid",
+        snapshot_result={},
+        event_payload=invalid_event.payload,
+    )
 
     TaskResultRolloutService(path).enable_dual_write(
         expected_revision=1,
@@ -445,6 +513,12 @@ def test_backfill_prefers_verified_artifact_finalization_over_pending_terminal(
         payload={"message": "ready", "result": final},
     )
     assert repository.record(finalized_snapshot, finalized_event)
+    _strip_runtime_authority(
+        path,
+        finalized_snapshot.task_id,
+        snapshot_result=final,
+        event_payload=finalized_event.payload,
+    )
 
     maintenance = TaskResultMaintenanceService(
         PathResolver(app_root=tmp_path, data_root=tmp_path / "runtime"),
@@ -499,6 +573,13 @@ def test_backfill_binds_only_final_finished_result_after_null_error(
     )
     assert repository.record(error_snapshot, error_event)
     assert repository.record(final_snapshot, finished_event)
+    _strip_runtime_authority(
+        path,
+        final_snapshot.task_id,
+        snapshot_result=final_snapshot.result,
+        event_payload=finished_event.payload,
+        event_id=finished_event.event_id,
+    )
 
     TaskResultRolloutService(path).enable_dual_write(
         expected_revision=1,
@@ -606,6 +687,12 @@ def test_backfill_preserves_failed_snapshot_result_from_finished_event(
         payload={"message": "legacy terminal result", "result": result},
     )
     assert repository.record(snapshot, finished_event)
+    _strip_runtime_authority(
+        path,
+        snapshot.task_id,
+        snapshot_result=result,
+        event_payload=finished_event.payload,
+    )
 
     maintenance = TaskResultMaintenanceService(
         PathResolver(app_root=tmp_path, data_root=tmp_path / "runtime"),
@@ -788,6 +875,12 @@ def test_backfill_keeps_event_only_result_out_of_empty_cancelled_snapshot(
         payload={"message": "worker stopped", "result": event_result},
     )
     assert repository.record(snapshot, event)
+    _strip_runtime_authority(
+        path,
+        task_id,
+        snapshot_result={},
+        event_payload=event.payload,
+    )
     TaskResultRolloutService(path).enable_dual_write(
         expected_revision=1,
         reason="event-only result regression",
@@ -828,7 +921,7 @@ def test_backfill_keeps_event_only_result_out_of_empty_cancelled_snapshot(
     )
 
 
-def test_historical_ref_authority_keeps_terminal_and_artifact_live_payloads_full(
+def test_historical_ref_authority_keeps_terminal_authority_and_live_payloads(
     tmp_path: Path,
 ) -> None:
     data_root = tmp_path / "data"
@@ -871,7 +964,7 @@ def test_historical_ref_authority_keeps_terminal_and_artifact_live_payloads_full
     live = stream.get(timeout=1)
     stream.close()
 
-    assert snapshot.result == result and snapshot.result_id == ""
+    assert snapshot.result == result and snapshot.result_id
     assert live["payload"]["result"] == result
     artifact_stream = service.events.open_stream()
     projection = {"artifact_id": "report-ref", "available": True, "rows": 11}
@@ -889,7 +982,7 @@ def test_historical_ref_authority_keeps_terminal_and_artifact_live_payloads_full
     assert projected.result == projection
     assert projected.result_id == ""
     assert artifact_live["payload"]["result"] == projection
-    assert service.repository("demo").task_result_count() == 0
+    assert service.repository("demo").task_result_count() == 1
     with sqlite3.connect(task_db) as connection:
         stored_snapshot = connection.execute(
             "SELECT result_json FROM task_snapshots WHERE task_id='ref-live-result'"
@@ -905,13 +998,12 @@ def test_historical_ref_authority_keeps_terminal_and_artifact_live_payloads_full
             ).fetchone()[0]
         )
     assert json.loads(stored_snapshot) in (result, projection)
-    assert stored_event["result"] == result
+    assert "result" not in stored_event
+    assert stored_event["result_id"] == snapshot.result_id
     assert stored_artifact_event["result"] == projection
-    assert "result_id" not in stored_event
-    assert "result_id" not in stored_artifact_event
 
 
-def test_default_websocket_terminal_payload_remains_full(tmp_path: Path) -> None:
+def test_default_websocket_terminal_payload_has_authority_reference(tmp_path: Path) -> None:
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path / "data")
     service = TaskApplicationService(paths, site_name="demo", reconcile_on_start=False)
     service.create_external_task(
@@ -933,9 +1025,9 @@ def test_default_websocket_terminal_payload_remains_full(tmp_path: Path) -> None
     live = stream.get(timeout=1)
     stream.close()
 
-    assert snapshot.result == result and snapshot.result_id == ""
+    assert snapshot.result == result and snapshot.result_id
     assert live["payload"]["result"] == result
-    assert service.repository("demo").task_result_count() == 0
+    assert service.repository("demo").task_result_count() == 1
 
 
 def test_rollout_cli_requires_explicit_apply_and_persists_state(

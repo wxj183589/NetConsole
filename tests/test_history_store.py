@@ -98,6 +98,100 @@ def _physical_event_ids(history_root) -> list[str]:
     return event_ids
 
 
+def _record_metadata_fixture(database_path: Path) -> None:
+    store = HistoryStore(database_path, site_id="demo")
+    with connect_sqlite(database_path, foreign_keys=True) as conn:
+        assert store.record_event(
+            conn,
+            kind="device_fact",
+            entity_key="device-1",
+            payload={"device_uuid": "device-1", "model": "S6520"},
+            collected_at="2026-08-01T10:00:00",
+        )
+        conn.commit()
+
+
+def test_history_store_initializes_revision_metadata_for_empty_database(tmp_path):
+    database_path = tmp_path / "empty" / "devices.db"
+
+    _record_metadata_fixture(database_path)
+
+    with connect_sqlite(database_path, foreign_keys=True) as conn:
+        columns = {
+            str(row[1])
+            for row in conn.execute("PRAGMA table_info(schema_metadata)").fetchall()
+        }
+        rows = conn.execute(
+            "SELECT key, value FROM schema_metadata ORDER BY key"
+        ).fetchall()
+    assert columns == {"key", "value", "created_at", "updated_at"}
+    assert [tuple(row) for row in rows] == [("trackside_ap_history_revision", "2")]
+
+
+def test_history_store_upgrades_legacy_two_column_revision_metadata(tmp_path):
+    database_path = tmp_path / "legacy" / "devices.db"
+    with connect_sqlite(database_path, foreign_keys=True) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE schema_metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            INSERT INTO schema_metadata VALUES ('schema_version', 'legacy');
+            """
+        )
+
+    _record_metadata_fixture(database_path)
+
+    with connect_sqlite(database_path, foreign_keys=True) as conn:
+        columns = {
+            str(row[1])
+            for row in conn.execute("PRAGMA table_info(schema_metadata)").fetchall()
+        }
+        schema_version = conn.execute(
+            "SELECT value FROM schema_metadata WHERE key='schema_version'"
+        ).fetchone()[0]
+        revision = conn.execute(
+            "SELECT value FROM schema_metadata "
+            "WHERE key='trackside_ap_history_revision'"
+        ).fetchone()[0]
+    assert columns == {"key", "value", "created_at", "updated_at"}
+    assert schema_version == "legacy"
+    assert revision == "2"
+
+
+def test_history_store_keeps_current_revision_metadata_schema(tmp_path):
+    database_path = tmp_path / "current" / "devices.db"
+    with connect_sqlite(database_path, foreign_keys=True) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE schema_metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            INSERT INTO schema_metadata VALUES (
+                'schema_version', 'current', 'created', 'updated'
+            );
+            """
+        )
+
+    _record_metadata_fixture(database_path)
+
+    with connect_sqlite(database_path, foreign_keys=True) as conn:
+        schema_row = conn.execute(
+            "SELECT value, created_at, updated_at FROM schema_metadata "
+            "WHERE key='schema_version'"
+        ).fetchone()
+        revision = conn.execute(
+            "SELECT value FROM schema_metadata "
+            "WHERE key='trackside_ap_history_revision'"
+        ).fetchone()[0]
+    assert tuple(schema_row) == ("current", "created", "updated")
+    assert revision == "2"
+
+
 def test_dynamic_history_records_only_effective_changes_without_heartbeat(tmp_path):
     store = _store(tmp_path)
 

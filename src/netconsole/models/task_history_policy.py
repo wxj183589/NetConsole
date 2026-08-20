@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from datetime import UTC, datetime, timedelta
 from dataclasses import dataclass
 from typing import Any
@@ -21,6 +21,38 @@ TERMINAL_TASK_STATE_VALUES = frozenset(
         TaskState.COMPLETED.value,
         TaskState.FAILED.value,
         TaskState.CANCELLED.value,
+    }
+)
+
+# Task Center 的普通终态记录按局点和任务类型分别保留最近十条。长期
+# 业务会话不属于普通 Task Center 历史，必须有明确的 mapping、资源键或
+# 结果引用才会被保护，不能以 owner/source 或宽泛 task_type 猜测。
+TASK_HISTORY_SCOPE_LIMIT = 10
+LONG_TERM_TASK_RESOURCE_PREFIXES = (
+    "online_mr_session:",
+    "online-mr:",
+    "ground-unattended:",
+    "ground_unattended:",
+    "mesh-import:",
+    "mesh-source:",
+    "mesh_source:",
+    "mesh-session:",
+    "mesh_session:",
+)
+LONG_TERM_TASK_RESULT_REFERENCE_FIELDS = frozenset(
+    {
+        "online_mr_session_id",
+        "online_mr_session_ids",
+        "ground_session_id",
+        "ground_session_ids",
+        "ground_unattended_session_id",
+        "ground_unattended_session_ids",
+        "ground_run_id",
+        "ground_operation_id",
+        "mesh_session_id",
+        "mesh_session_ids",
+        "mesh_source_id",
+        "mesh_source_ids",
     }
 )
 
@@ -300,6 +332,56 @@ def task_expires_at(
     return _utc_iso(finished + timedelta(days=retention_days))
 
 
+def task_history_scope(site_name: object, task_type: object) -> tuple[str, str]:
+    """Return the fixed ordinary-history scope for a terminal task.
+
+    Empty ``site_name`` deliberately groups only by ``task_type``. Owner and
+    source are presentation metadata, not retention keys.
+    """
+
+    return (str(site_name or "").strip(), str(task_type or "").strip())
+
+
+def task_has_long_term_reference(
+    *,
+    resource_keys: Collection[object] = (),
+    result: Mapping[str, Any] | None = None,
+) -> bool:
+    """Whether explicit task metadata links the task to durable business data."""
+
+    for value in resource_keys:
+        key = str(value or "").strip().casefold()
+        if key.startswith(LONG_TERM_TASK_RESOURCE_PREFIXES):
+            return True
+    return _has_long_term_result_reference(dict(result or {}))
+
+
+def _has_long_term_result_reference(value: object) -> bool:
+    if isinstance(value, Mapping):
+        for key, nested in value.items():
+            normalized = str(key or "").strip().casefold()
+            if normalized in LONG_TERM_TASK_RESULT_REFERENCE_FIELDS and _has_value(
+                nested
+            ):
+                return True
+            if _has_long_term_result_reference(nested):
+                return True
+        return False
+    if isinstance(value, (list, tuple, set)):
+        return any(_has_long_term_result_reference(item) for item in value)
+    return False
+
+
+def _has_value(value: object) -> bool:
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, Mapping):
+        return bool(value)
+    if isinstance(value, (list, tuple, set)):
+        return bool(value)
+    return value is not None
+
+
 def utc_time_reached(value: str, *, now: datetime | None = None) -> bool:
     target = _parse_utc(value)
     if target is None:
@@ -337,9 +419,14 @@ def _optional_int(value: object) -> int:
 __all__ = [
     "ACTIVE_TASK_STATE_VALUES",
     "BusinessResultProjection",
+    "LONG_TERM_TASK_RESOURCE_PREFIXES",
+    "LONG_TERM_TASK_RESULT_REFERENCE_FIELDS",
+    "TASK_HISTORY_SCOPE_LIMIT",
     "TERMINAL_TASK_STATE_VALUES",
     "business_result_has_warning",
     "project_business_result",
+    "task_has_long_term_reference",
+    "task_history_scope",
     "task_expires_at",
     "task_requires_attention",
     "utc_time_reached",
