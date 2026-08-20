@@ -8,7 +8,10 @@ from pathlib import Path
 from typing import Mapping
 
 from netconsole.core.paths import PathResolver
-from netconsole.core.runtime_environment import data_root as default_data_root
+from netconsole.core.runtime_environment import (
+    data_root as default_data_root,
+    require_data_root_write_allowed,
+)
 from netconsole.repositories.mesh_mr_repository import MeshMrRepository
 from netconsole.services.ap_identity.normalizers import normalize_mac, normalize_mac_key
 from netconsole.services.mesh_peer_mapping_service import MeshPeerMappingService
@@ -387,6 +390,11 @@ def main() -> int:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true")
     mode.add_argument("--apply", action="store_true")
+    parser.add_argument(
+        "--allow-production-write",
+        action="store_true",
+        help="明确授权对 production 数据根执行身份重建",
+    )
     args = parser.parse_args()
     if args.source is not None and not args.profile:
         parser.error("--source 必须与 --profile 一起使用")
@@ -398,6 +406,11 @@ def main() -> int:
         source_filter=args.source,
     )
     if args.apply:
+        require_data_root_write_allowed(
+            paths.data_root,
+            "remap_mesh_identity",
+            allow_production_write=args.allow_production_write,
+        )
         result = apply_plan(paths, args.site, planned)
         _print(result)
         return 1 if result["failed"] else 0

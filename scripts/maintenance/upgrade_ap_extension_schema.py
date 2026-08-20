@@ -7,6 +7,10 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+from netconsole.core.runtime_environment import (
+    data_root_for_path,
+    require_data_root_write_allowed,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -98,11 +102,26 @@ def main() -> int:
     parser.add_argument("--all-sites", action="store_true", help="升级数据根 sites/ 下所有局点数据库")
     parser.add_argument("--no-backup", action="store_true", help="不自动备份数据库")
     parser.add_argument("--force", action="store_true", help="跳过源版本检查，仅补本次新增表并写入当前版本")
+    parser.add_argument(
+        "--allow-production-write",
+        action="store_true",
+        help="明确授权对 production 数据根执行 schema 补齐",
+    )
     args = parser.parse_args()
     try:
         if args.all_sites:
+            require_data_root_write_allowed(
+                args.data_dir,
+                "upgrade_ap_extension_schema",
+                allow_production_write=args.allow_production_write,
+            )
             results = upgrade_all_site_databases(args.data_dir, backup=not args.no_backup, force=args.force)
         elif args.db:
+            require_data_root_write_allowed(
+                data_root_for_path(args.db),
+                "upgrade_ap_extension_schema",
+                allow_production_write=args.allow_production_write,
+            )
             results = [(args.db, upgrade_database(args.db, backup=not args.no_backup, force=args.force))]
         else:
             parser.error("请指定 --db 或 --all-sites")

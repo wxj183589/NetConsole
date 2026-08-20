@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 
 from netconsole.core.storage_manifest import CURRENT_STORAGE_SCHEMA_VERSION
+from netconsole.core.runtime_environment import production_write_allowed
 from netconsole.core.version import APP_VERSION
 from netconsole.models.api import HealthResponse
 
@@ -17,6 +18,10 @@ def health(request: Request) -> HealthResponse:
     return health_response(
         str(request.app.state.backend_build_id),
         data_root=str(request.app.state.paths.data_root),
+        data_environment=str(request.app.state.data_environment.mode.value),
+        data_environment_label=str(request.app.state.data_environment.label),
+        production_write_allowed=production_write_allowed(),
+        production_write_warning=bool(request.app.state.data_environment.readonly_warning),
         active_site_id=sites.active_site_id(),
         storage_schema_version=CURRENT_STORAGE_SCHEMA_VERSION,
         product_version=str(metadata.get("product_version") or APP_VERSION.removeprefix("v")),
@@ -53,6 +58,10 @@ def health_response(
     build_id: str,
     *,
     data_root: str = "",
+    data_environment: str = "test",
+    data_environment_label: str = "TEST",
+    production_write_allowed: bool = False,
+    production_write_warning: bool = False,
     active_site_id: str = "",
     storage_schema_version: int = CURRENT_STORAGE_SCHEMA_VERSION,
     product_version: str = APP_VERSION.removeprefix("v"),
@@ -84,10 +93,10 @@ def health_response(
     return HealthResponse(
         status="ok",
         version=APP_VERSION.removeprefix("v"),
-            product_version=product_version,
-            build_number=max(0, int(build_number)),
-            file_version=file_version,
-            published=bool(published),
+        product_version=product_version,
+        build_number=max(0, int(build_number)),
+        file_version=file_version,
+        published=bool(published),
         build_id=build_id,
         backend_commit=backend_commit,
         frontend_commit=frontend_commit,
@@ -96,6 +105,10 @@ def health_response(
         packaged_dirty=packaged_dirty,
         build_timestamp=build_timestamp,
         data_root=data_root,
+        data_environment=data_environment,
+        data_environment_label=data_environment_label,
+        production_write_allowed=bool(production_write_allowed),
+        production_write_warning=bool(production_write_warning),
         active_site_id=active_site_id,
         storage_schema_version=storage_schema_version,
         runtime_services_status=runtime_services_status,

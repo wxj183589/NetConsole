@@ -6,6 +6,7 @@ import sqlite3
 import sys
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -121,9 +122,21 @@ def prepare_installation_data_root(
         candidate, installation_root=installation_root
     )
     from netconsole.core.paths import PathResolver
+    from netconsole.core.runtime_environment import write_data_environment
+    from netconsole.core.runtime_mode import DataEnvironmentInfo, DataEnvironmentMode
     from netconsole.core.storage_manifest import prepare_storage_manifest
 
-    prepare_storage_manifest(PathResolver(data_root=root))
+    paths = PathResolver(data_root=root)
+    prepare_storage_manifest(paths)
+    if not paths.runtime_mode_path.exists():
+        write_data_environment(
+            root,
+            DataEnvironmentInfo(
+                DataEnvironmentMode.PRODUCTION,
+                created_time=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                readonly_warning=True,
+            ),
+        )
     return root
 
 

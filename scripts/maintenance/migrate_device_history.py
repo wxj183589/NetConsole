@@ -7,6 +7,7 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+from netconsole.core.runtime_environment import require_data_root_write_allowed
 from netconsole.core.paths import PathResolver
 from netconsole.services.history_legacy_migration import HistoryLegacyMigrationService
 from netconsole.services.site_storage import SiteRegistryRepository
@@ -28,6 +29,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--unattended-active", action="store_true")
     parser.add_argument("--light", action="store_true", help="skip exact COUNT/MIN/MAX inventory queries")
     parser.add_argument("--apply", action="store_true", help="required for start/resume")
+    parser.add_argument(
+        "--allow-production-write",
+        action="store_true",
+        help="明确授权对 production 数据根执行历史迁移",
+    )
     return parser
 
 
@@ -53,6 +59,12 @@ def _service(args: argparse.Namespace) -> HistoryLegacyMigrationService:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    if args.command in {"start", "resume"}:
+        require_data_root_write_allowed(
+            args.data_root,
+            "migrate_device_history",
+            allow_production_write=args.allow_production_write,
+        )
     service = _service(args)
     if args.command in {"start", "resume"} and not args.apply:
         raise SystemExit("start/resume require explicit --apply; source deletion is not implemented")

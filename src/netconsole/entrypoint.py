@@ -192,6 +192,9 @@ def _set_runtime_performance_mode_from_installer(arguments: list[str]) -> int:
 
 
 def main() -> int:
+    if "--allow-production-write" in sys.argv[1:]:
+        os.environ["NETCONSOLE_ALLOW_PRODUCTION_WRITE"] = "1"
+        sys.argv = [item for item in sys.argv if item != "--allow-production-write"]
     if os.environ.get("NETCONSOLE_SMOKE_TEST") == "1":
         return 0
     _enable_faulthandler()

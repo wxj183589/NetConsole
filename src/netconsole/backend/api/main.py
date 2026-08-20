@@ -42,8 +42,12 @@ from netconsole.core.build_metadata import current_build_metadata
 from netconsole.core.paths import PathResolver
 from netconsole.core.feature_flags import FeatureGate
 from netconsole.core.resources import package_resource_path
-from netconsole.core.runtime_environment import is_packaged_runtime
-from netconsole.core.runtime_mode import RuntimeMode
+from netconsole.core.runtime_environment import (
+    data_environment,
+    is_packaged_runtime,
+    production_write_allowed,
+)
+from netconsole.core.runtime_mode import DataEnvironmentInfo, DataEnvironmentMode, RuntimeMode
 from netconsole.core.runtime_profile import (
     RuntimeCapabilityPolicy,
     read_host_environment_profile,
@@ -257,6 +261,49 @@ class RuntimeServicesAdmissionMiddleware:
         await self.app(scope, receive, send)
 
 
+class ProductionMaintenanceAdmissionMiddleware:
+    """Block destructive maintenance routes on production unless explicitly authorized."""
+
+    _BLOCKED_MARKERS = (
+        "/batch-delete",
+        "/cleanup",
+        "/delete",
+        "/local-rebuild",
+        "/maintenance",
+        "/rebuild",
+        "/retention",
+        "/restore",
+        "/syslog-delete",
+        "/database-upgrades/",
+    )
+
+    def __init__(self, app, *, state) -> None:
+        self.app = app
+        self.state = state
+
+    async def __call__(self, scope, receive, send) -> None:
+        path = str(scope.get("path") or "")
+        method = str(scope.get("method") or "").upper()
+        normalized_path = path.casefold()
+        blocked = method in {"POST", "PUT", "PATCH", "DELETE"} and any(
+            marker in normalized_path for marker in self._BLOCKED_MARKERS
+        )
+        environment = getattr(self.state, "data_environment", None)
+        if blocked and getattr(environment, "is_production", False) and not production_write_allowed():
+            response = JSONResponse(
+                status_code=409,
+                content={
+                    "detail": {
+                        "code": "PRODUCTION_WRITE_CONFIRMATION_REQUIRED",
+                        "message": "当前连接真实生产数据；该维护/删除操作已阻止。请显式指定 --allow-production-write。",
+                    }
+                },
+            )
+            await response(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
+
+
 def create_app(
     runtime_mode: RuntimeMode = RuntimeMode.SERVER,
     *,
@@ -284,6 +331,25 @@ def create_app(
     startup_stage: Callable[[str], None] | None = None,
 ) -> FastAPI:
     paths = paths or PathResolver()
+    if hasattr(paths, "app_log_path"):
+        app_logger.configure_path_resolver(paths)
+    environment = getattr(paths, "data_environment", None)
+    if environment is None:
+        environment = (
+            DataEnvironmentInfo(DataEnvironmentMode.TEST)
+            if runtime_mode is RuntimeMode.TEST
+            else data_environment(getattr(paths, "data_root"))
+        )
+    app_logger.log_warning(
+        "DATA_ROOT_CONTEXT" if environment.is_production else "DATA_ROOT_CONTEXT",
+        f"data_root={getattr(paths, 'data_root', '<test>')} environment={environment.label} "
+        f"production_write_allowed={str(production_write_allowed()).lower()}",
+    )
+    if environment.is_production:
+        app_logger.log_warning(
+            "PRODUCTION_DATA_ROOT_ACTIVE",
+            "当前连接真实生产数据；采集、查看、分析、导出允许，维护/删除操作默认阻止。",
+        )
     host_profile = read_host_environment_profile(paths.host_environment_profile_path)
     performance_mode = read_runtime_performance_mode(paths.settings_path)
     capability_policy = RuntimeCapabilityPolicy.from_profile(host_profile, mode=performance_mode)
@@ -738,6 +804,7 @@ def create_app(
         redoc_url="/redoc" if api_documentation_enabled else None,
     )
     app.state.runtime_mode = runtime_mode
+    app.state.data_environment = environment
     app.state.api_documentation_enabled = bool(api_documentation_enabled)
     app.state.development_api_enabled = bool(development_api_enabled)
     app.state.development_runtime_label = str(development_runtime_label)
@@ -746,6 +813,7 @@ def create_app(
     app.state.accepting_work = True
     app.add_middleware(DesktopShutdownAdmissionMiddleware, state=app.state)
     app.add_middleware(RuntimeServicesAdmissionMiddleware, state=app.state)
+    app.add_middleware(ProductionMaintenanceAdmissionMiddleware, state=app.state)
     app.state.online_mr_web_control_enabled = online_mr_web_control_enabled
     app.state.online_mr_agent_executor_enabled = online_mr_agent_executor_enabled
     app.state.runtime_services_ready = False

@@ -7,7 +7,10 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from netconsole.core.paths import PathResolver
-from netconsole.core.runtime_environment import data_root as default_data_root
+from netconsole.core.runtime_environment import (
+    data_root as default_data_root,
+    require_data_root_write_allowed,
+)
 from netconsole.repositories.mesh_mr_repository import SCHEMA_VERSION
 from netconsole.services.mesh_derived_data_maintenance_service import MeshDerivedDataMaintenanceService
 
@@ -126,10 +129,20 @@ def main() -> int:
     parser.add_argument("--mr-id", action="append", default=[])
     parser.add_argument("--manifest", type=Path)
     parser.add_argument("--apply", action="store_true", help="执行重建；默认仅输出计划")
+    parser.add_argument(
+        "--allow-production-write",
+        action="store_true",
+        help="明确授权对 production 数据根执行重建",
+    )
     args = parser.parse_args()
     paths = PathResolver(data_root=(args.data_root or default_data_root()).resolve())
     planned = build_plan(paths, args.site, set(args.mr_id) or None)
     if args.apply:
+        require_data_root_write_allowed(
+            paths.data_root,
+            "rebuild_mesh_parsed_data",
+            allow_production_write=args.allow_production_write,
+        )
         completed = apply_plan(paths, args.site, planned)
         _write_manifest(manifest(completed, applied=True, site_name=args.site), args.manifest)
         return 0

@@ -56,6 +56,9 @@ const backendBuildId = ref('')
 const frontendBuildId = ref('')
 const frontendMetaLoaded = ref(false)
 const backendOnline = ref(false)
+const dataRoot = ref('')
+const dataEnvironmentLabel = ref('')
+const productionDataWarning = ref(false)
 const serverBuildWarningPresent = ref(Boolean(document.querySelector('[data-netconsole-build-warning]')))
 const viewportWidth = ref(window.innerWidth)
 const manualCollapsed = ref(sessionStorage.getItem(COLLAPSED_KEY) === '1')
@@ -210,6 +213,9 @@ async function refreshBackendHealth(): Promise<void> {
     }
     backendBuildId.value = health.build_id
     backendOnline.value = health.status === 'ok'
+    dataRoot.value = String(health.data_root || '')
+    dataEnvironmentLabel.value = String(health.data_environment_label || '')
+    productionDataWarning.value = Boolean(health.production_write_warning)
   } catch {
     if (generation === backendHealthGeneration) backendOnline.value = false
   }
@@ -362,6 +368,14 @@ onBeforeUnmount(() => {
       </el-header>
       <WorkspaceTabBar />
       <el-main class="app-main">
+        <el-alert
+          v-if="dataEnvironmentLabel"
+          class="data-environment-warning"
+          :title="`当前数据根：${dataRoot} | 运行模式：${dataEnvironmentLabel}`"
+          :type="productionDataWarning ? 'warning' : 'info'"
+          show-icon
+          :closable="false"
+        />
         <el-alert
           v-if="frontendMismatch"
           class="frontend-build-warning"

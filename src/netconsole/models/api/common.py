@@ -43,6 +43,10 @@ class HealthResponse(ApiModel):
     packaged_dirty: bool = True
     build_timestamp: str = ""
     data_root: str
+    data_environment: str = "test"
+    data_environment_label: str = "TEST"
+    production_write_allowed: bool = False
+    production_write_warning: bool = False
     active_site_id: str
     storage_schema_version: int
     runtime_services_status: str = "ready"

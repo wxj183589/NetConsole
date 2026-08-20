@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, BinaryIO, Sequence
 from netconsole.core import app_logger
 from netconsole.core.backend_instance_lock import BackendInstanceInUseError, BackendInstanceLock
 from netconsole.core.paths import PathResolver
+from netconsole.core.runtime_environment import data_environment
 from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.core.storage_manifest import prepare_storage_manifest
 
@@ -22,6 +23,7 @@ class LaunchOptions:
     mode: str
     host: str
     port: int
+    allow_production_write: bool = False
 
 
 class SingleInstanceGuard:
@@ -74,13 +76,17 @@ def parse_launch_options(argv: Sequence[str]) -> LaunchOptions:
     parser.add_argument("--mode", choices=("server",), default="server")
     parser.add_argument("--host", type=_loopback_host, default="127.0.0.1")
     parser.add_argument("--port", type=_valid_port, default=8000)
+    parser.add_argument("--allow-production-write", action="store_true")
     values = parser.parse_args(list(argv))
-    return LaunchOptions(values.mode, values.host, values.port)
+    if values.allow_production_write:
+        os.environ["NETCONSOLE_ALLOW_PRODUCTION_WRITE"] = "1"
+    return LaunchOptions(values.mode, values.host, values.port, values.allow_production_write)
 
 
 def launch(argv: Sequence[str] | None = None) -> int:
     options = parse_launch_options(sys.argv[1:] if argv is None else argv)
     paths = PathResolver()
+    data_environment(paths.data_root)
     instance = BackendInstanceLock(paths)
     try:
         instance.acquire()
