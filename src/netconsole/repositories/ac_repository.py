@@ -1904,6 +1904,51 @@ class AcRepository:
             limit=limit,
         )
 
+    def list_current_fit_ap_lldp_by_ap(
+        self, ap_uuid: str, limit: int = 10
+    ) -> list[dict[str, object | None]]:
+        """Return the latest valid LLDP relation for each AP/link identity.
+
+        This is a read-time projection only.  The complete history remains
+        available through ``list_fit_ap_lldp_history_by_ap`` and the history
+        page APIs.  A relation is valid for the current view only when all
+        four identity fields are present: AP MAC, local interface, neighbor
+        MAC, and neighbor interface.
+        """
+        rows = self.list_fit_ap_lldp_history_by_ap(ap_uuid, limit=100_000)
+        latest: dict[tuple[str, str, str, str], dict[str, object | None]] = {}
+        for source in rows:
+            row = dict(source)
+            ap_mac = normalize_ap_mac(row.get("ap_mac")).normalized
+            local_interface = normalize_interface_key(
+                row.get("local_interface") or row.get("lldp_local_interface")
+            )
+            neighbor_mac = normalize_ap_mac(
+                row.get("neighbor_mac") or row.get("lldp_neighbor_mac")
+            ).normalized
+            neighbor_interface = normalize_interface_key(
+                row.get("neighbor_interface") or row.get("lldp_neighbor_interface")
+            )
+            if not all((ap_mac, local_interface, neighbor_mac, neighbor_interface)):
+                continue
+            key = (ap_mac, local_interface, neighbor_mac, neighbor_interface)
+            row["ap_mac"] = row.get("ap_mac") or ap_mac
+            row["local_interface"] = row.get("local_interface") or row.get(
+                "lldp_local_interface"
+            )
+            row["neighbor_mac"] = row.get("neighbor_mac") or row.get(
+                "lldp_neighbor_mac"
+            )
+            row["neighbor_interface"] = row.get("neighbor_interface") or row.get(
+                "lldp_neighbor_interface"
+            )
+            current = latest.get(key)
+            if current is None or _current_lldp_row_score(row) > _current_lldp_row_score(current):
+                latest[key] = row
+        return sorted(
+            latest.values(), key=_current_lldp_row_score, reverse=True
+        )[: max(1, min(int(limit), 10))]
+
     def list_fit_ap_history_page(
         self,
         history_kind: str,
@@ -4378,6 +4423,15 @@ def _latest_row_score(row: dict[str, object | None]) -> tuple[str, str, int]:
         str(row.get("collected_at") or ""),
         str(row.get("updated_at") or ""),
         _int_value(row.get("id")),
+    )
+
+
+def _current_lldp_row_score(row: dict[str, object | None]) -> tuple[str, str, int, str]:
+    return (
+        str(row.get("collected_at") or row.get("collected_time") or ""),
+        str(row.get("updated_at") or ""),
+        _int_value(row.get("id")),
+        str(row.get("event_id") or ""),
     )
 
 

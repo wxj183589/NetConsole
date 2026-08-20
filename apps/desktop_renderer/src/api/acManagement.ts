@@ -4,6 +4,7 @@ import type {
   AcApHistoryPage,
   AcApPage,
   AcApQuery,
+  AcCurrentLldp,
   AcConfigContent,
   AcConfigDiff,
   AcConfigSnapshotPage,
@@ -42,6 +43,10 @@ export function getAcApHistory(
   return apiRequest<AcApHistoryPage>(
     `${root}/aps/${encodeURIComponent(apId)}/history/${kind}${queryString({ page, page_size: pageSize })}`,
   )
+}
+
+export function getAcApCurrentLldp(apId: string): Promise<AcCurrentLldp[]> {
+  return apiRequest<AcCurrentLldp[]>(`${root}/aps/${encodeURIComponent(apId)}/lldp/current`)
 }
 
 export function listAcConfigSnapshots(values: {

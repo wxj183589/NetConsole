@@ -105,6 +105,20 @@ class AcLldpDTO(ApiModel):
     updated_at: str = ""
 
 
+class AcCurrentLldpDTO(ApiModel):
+    """One converged, currently valid AP-to-switch LLDP relation."""
+
+    ap_mac: str = ""
+    local_interface: str = ""
+    neighbor_mac: str = ""
+    neighbor_interface: str = ""
+    lldp_neighbor: str = ""
+    neighbor_device_name: str = ""
+    neighbor_name: str = ""
+    source: str = ""
+    collected_at: str = ""
+
+
 class AcApDTO(ApiModel):
     id: str
     ac_id: str
@@ -519,6 +533,7 @@ __all__ = [
     "AcConfigSnapshotDTO",
     "AcConfigSnapshotPageDTO",
     "AcConnectionRecordDTO",
+    "AcCurrentLldpDTO",
     "AcLldpDTO",
     "AcManagementSummaryDTO",
     "AcOpticalDTO",

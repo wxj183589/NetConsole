@@ -41,6 +41,7 @@ from netconsole.models.api.ac_management import (
     AcConfigSnapshotDTO,
     AcConfigSnapshotPageDTO,
     AcConnectionRecordDTO,
+    AcCurrentLldpDTO,
     AcLldpDTO,
     AcManagementSummaryDTO,
     AcOpticalDTO,
@@ -565,6 +566,38 @@ class AcManagementQueryService:
     def get_ap_lldp(self, site_id: str, ap_id: str) -> AcLldpDTO | None:
         detail = self.get_ap_detail(site_id, ap_id)
         return detail.lldp if detail else None
+
+    def get_ap_current_lldp(
+        self, site_id: str, ap_id: str
+    ) -> list[AcCurrentLldpDTO] | None:
+        record = self._find_ap(site_id, ap_id)
+        if record is None:
+            return None
+        repository = AcRepository(_ReadonlyDatabase(self._db_path(site_id)))  # type: ignore[arg-type]
+        return [
+            AcCurrentLldpDTO(
+                ap_mac=str(row.get("ap_mac") or ""),
+                local_interface=str(
+                    row.get("local_interface") or row.get("lldp_local_interface") or ""
+                ),
+                neighbor_mac=str(
+                    row.get("neighbor_mac") or row.get("lldp_neighbor_mac") or ""
+                ),
+                neighbor_interface=str(
+                    row.get("neighbor_interface")
+                    or row.get("lldp_neighbor_interface")
+                    or ""
+                ),
+                lldp_neighbor=str(row.get("lldp_neighbor") or row.get("lldp_neighbor_name") or ""),
+                neighbor_device_name=str(row.get("neighbor_device_name") or ""),
+                neighbor_name=str(row.get("neighbor_name") or ""),
+                source=str(row.get("source") or row.get("lldp_source") or ""),
+                collected_at=str(
+                    row.get("collected_at") or row.get("collected_time") or ""
+                ),
+            )
+            for row in repository.list_current_fit_ap_lldp_by_ap(record[0].id)
+        ]
 
     def get_ap_optical(self, site_id: str, ap_id: str) -> AcOpticalDTO | None:
         detail = self.get_ap_detail(site_id, ap_id)

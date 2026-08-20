@@ -1076,6 +1076,58 @@ def test_fit_ap_lldp_history_is_appended_and_sorted(tmp_path):
     assert history[0]["neighbor_device_name"] == "HX_2"
 
 
+def test_current_fit_ap_lldp_converges_repeated_relation_to_one(tmp_path):
+    repository = AcRepository(make_database(tmp_path))
+    rows = [
+        {
+            "ap_uuid": "ap-1",
+            "ap_mac": "0011-2233-4455",
+            "local_interface": "GigabitEthernet1/0/1",
+            "neighbor_mac": "aa11-bbcc-ddee",
+            "neighbor_interface": "GE1/0/48",
+            "lldp_neighbor": "SW-1",
+            "collected_at": f"2026-08-01T00:{index:02d}:00",
+            "id": index,
+        }
+        for index in range(100)
+    ]
+    repository.list_fit_ap_lldp_history_by_ap = lambda ap_uuid, limit=100: rows  # type: ignore[method-assign]
+
+    current = repository.list_current_fit_ap_lldp_by_ap("ap-1")
+
+    assert len(current) == 1
+    assert current[0]["collected_at"] == "2026-08-01T00:99:00"
+
+
+def test_current_fit_ap_lldp_keeps_latest_relations_after_switch_change(tmp_path):
+    repository = AcRepository(make_database(tmp_path))
+    rows = [
+        {
+            "ap_uuid": "ap-1",
+            "ap_mac": "0011-2233-4455",
+            "local_interface": "GE1/0/1",
+            "neighbor_mac": neighbor_mac,
+            "neighbor_interface": "GE1/0/48",
+            "lldp_neighbor": neighbor_name,
+            "collected_at": collected_at,
+            "id": index,
+        }
+        for index, (neighbor_mac, neighbor_name, collected_at) in enumerate(
+            (
+                ("aa11-bbcc-ddee", "SW-1", "2026-08-01T00:00:00"),
+                ("ff11-2233-4455", "SW-2", "2026-08-01T00:01:00"),
+            ),
+            start=1,
+        )
+    ]
+    repository.list_fit_ap_lldp_history_by_ap = lambda ap_uuid, limit=100: rows  # type: ignore[method-assign]
+
+    current = repository.list_current_fit_ap_lldp_by_ap("ap-1")
+
+    assert len(current) == 2
+    assert {row["lldp_neighbor"] for row in current} == {"SW-1", "SW-2"}
+
+
 def test_fit_ap_resource_lldp_merges_ap_direct_and_marks_history_changes(tmp_path):
     repository = AcRepository(make_database(tmp_path))
     repository.replace_fit_ap_resources(
