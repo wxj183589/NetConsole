@@ -114,13 +114,14 @@ def audit_site(
     excluded = Path(excluded_path).expanduser().resolve() if excluded_path is not None else None
     directories: list[dict[str, Any]] = []
     largest_files: list[dict[str, Any]] = []
-    total_bytes, _ = _scan_directory(root, root, directories, largest_files, excluded)
+    total_bytes, file_count = _scan_directory(root, root, directories, largest_files, excluded)
 
     directories.sort(key=lambda item: item["path"])
     largest_files.sort(key=lambda item: (-item["size_bytes"], item["path"]))
     return {
         "root": str(root),
         "total_bytes": total_bytes,
+        "file_count": file_count,
         "directories": directories,
         "largest_files": largest_files[:largest_file_count],
     }
