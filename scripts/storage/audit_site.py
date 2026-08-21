@@ -26,6 +26,16 @@ def _relative_path(path: Path, root: Path) -> str:
     return path.relative_to(root).as_posix()
 
 
+def _is_excluded(path: Path, excluded_path: Path | None) -> bool:
+    if excluded_path is None:
+        return False
+    try:
+        path.relative_to(excluded_path)
+    except ValueError:
+        return False
+    return True
+
+
 def _scan_directory(
     directory: Path,
     root: Path,
@@ -52,7 +62,7 @@ def _scan_directory(
             try:
                 if entry.is_symlink():
                     continue
-                if excluded_path is not None and candidate == excluded_path:
+                if _is_excluded(candidate, excluded_path):
                     continue
                 if entry.is_dir(follow_symlinks=False):
                     child_bytes, child_count = _scan_directory(

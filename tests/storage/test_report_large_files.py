@@ -14,6 +14,7 @@ def test_large_file_report_matches_extensions_and_path_keywords(tmp_path: Path) 
     (tmp_path / "backup" / "archive.bak").write_bytes(b"12345678")
     (tmp_path / "logs" / "service.log").write_bytes(b"1234")
     (tmp_path / "staging" / "part.tmp").write_bytes(b"12")
+    (tmp_path / "rehearsal.part").write_bytes(b"1")
     (tmp_path / "archive.zip").write_bytes(b"12345")
     (tmp_path / "ignored.txt").write_bytes(b"123456789")
 
@@ -25,6 +26,7 @@ def test_large_file_report_matches_extensions_and_path_keywords(tmp_path: Path) 
         "logs/service.log",
         "db/tasks.db",
         "staging/part.tmp",
+        "rehearsal.part",
     ]
     by_path = {item["path"]: item for item in report["large_files"]}
     assert by_path["db/tasks.db"]["classification"] == "DATABASE"
@@ -33,3 +35,6 @@ def test_large_file_report_matches_extensions_and_path_keywords(tmp_path: Path) 
     assert by_path["logs/service.log"]["classification"] == "LOG"
     assert by_path["archive.zip"]["classification"] == "ARCHIVE"
     assert by_path["staging/part.tmp"]["classification"] == "BACKUP_LIKE"
+    assert by_path["rehearsal.part"]["classification"] == "BACKUP_LIKE"
+    assert by_path["rehearsal.part"]["size_bytes"] == 1
+    assert by_path["rehearsal.part"]["modified_time"]

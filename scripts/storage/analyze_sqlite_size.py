@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 
-REPORT_FILE_NAME = "SQLite_SPACE_REPORT.json"
+REPORT_FILE_NAME = "SQLITE_SPACE_REPORT.json"
 
 
 class SQLiteSpaceReportError(ValueError):
@@ -33,6 +33,12 @@ def _allocation(connection: sqlite3.Connection, name: str) -> tuple[int, int]:
         (name,),
     ).fetchone()
     return int(row["page_count"] or 0), int(row["size_bytes"] or 0)
+
+
+def _row_count(connection: sqlite3.Connection, name: str) -> int:
+    identifier = '"' + name.replace('"', '""') + '"'
+    row = connection.execute(f"SELECT COUNT(*) FROM {identifier}").fetchone()
+    return int(row[0] or 0)
 
 
 def analyze_sqlite_size(database: Path | str) -> dict[str, Any]:
@@ -62,41 +68,61 @@ def analyze_sqlite_size(database: Path | str) -> dict[str, Any]:
                 errors.append(f"dbstat unavailable: {dbstat_error}")
             else:
                 dbstat_supported = True
-                objects = connection.execute(
-                    "SELECT type, name, tbl_name FROM sqlite_schema "
-                    "WHERE type IN ('table', 'index') AND name NOT LIKE 'sqlite_%' "
-                    "ORDER BY type, name"
-                ).fetchall()
-                for row in objects:
-                    object_type = str(row["type"])
-                    name = str(row["name"])
+            objects = connection.execute(
+                "SELECT type, name, tbl_name FROM sqlite_schema "
+                "WHERE type IN ('table', 'index') AND name NOT LIKE 'sqlite_%' "
+                "ORDER BY type, name"
+            ).fetchall()
+            for row in objects:
+                object_type = str(row["type"])
+                name = str(row["name"])
+                object_page_count = 0
+                size_bytes = 0
+                if dbstat_supported:
                     object_page_count, size_bytes = _allocation(connection, name)
-                    if object_type == "table":
-                        tables.append(
-                            {
-                                "table_name": name,
-                                "page_count": object_page_count,
-                                "size_bytes": size_bytes,
-                            }
+                if object_type == "table":
+                    try:
+                        row_count = _row_count(connection, name)
+                    except sqlite3.Error as exc:
+                        row_count = 0
+                        errors.append(
+                            f"row count unavailable for {name}: "
+                            f"{exc.__class__.__name__}: {exc}"
                         )
-                    else:
-                        indexes.append(
-                            {
-                                "index_name": name,
-                                "table_name": str(row["tbl_name"]),
-                                "page_count": object_page_count,
-                                "size_bytes": size_bytes,
-                            }
-                        )
+                    tables.append(
+                        {
+                            "table_name": name,
+                            "row_count": row_count,
+                            "page_count": object_page_count,
+                            "size_bytes": size_bytes,
+                        }
+                    )
+                else:
+                    indexes.append(
+                        {
+                            "index_name": name,
+                            "table_name": str(row["tbl_name"]),
+                            "page_count": object_page_count,
+                            "size_bytes": size_bytes,
+                        }
+                    )
     except (OSError, sqlite3.Error) as exc:
         raise SQLiteSpaceReportError(f"cannot read SQLite file: {path}") from exc
+
+    database_size_bytes = path.stat().st_size
+    for table in tables:
+        table["percentage"] = (
+            round(table["size_bytes"] * 100 / database_size_bytes, 2)
+            if database_size_bytes
+            else 0.0
+        )
 
     tables.sort(key=lambda item: (-item["size_bytes"], item["table_name"]))
     indexes.sort(key=lambda item: (-item["size_bytes"], item["index_name"]))
     return {
         "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "database_path": str(path),
-        "database_size_bytes": path.stat().st_size,
+        "database_size_bytes": database_size_bytes,
         "page_size": page_size,
         "page_count": page_count,
         "dbstat_supported": dbstat_supported,

@@ -15,8 +15,16 @@ DATABASE_EXTENSIONS = {".db", ".sqlite", ".sqlite3"}
 BACKUP_EXTENSIONS = {".bak", ".backup", ".candidate", ".rollback"}
 ARCHIVE_EXTENSIONS = {".zip"}
 LOG_EXTENSIONS = {".log"}
-TEMP_EXTENSIONS = {".tmp"}
-PATH_KEYWORDS = ("backup", "migration", "staging", "snapshot", "rollback", "candidate")
+TEMP_EXTENSIONS = {".tmp", ".part"}
+PATH_KEYWORDS = (
+    "backup",
+    "migration",
+    "rollback",
+    "candidate",
+    "snapshot",
+    "staging",
+    "rehearsal",
+)
 ALL_EXTENSIONS = (
     DATABASE_EXTENSIONS
     | BACKUP_EXTENSIONS
@@ -34,6 +42,10 @@ def _relative(path: Path, root: Path) -> str:
     return path.relative_to(root).as_posix()
 
 
+def _modified_time(timestamp: float) -> str:
+    return datetime.fromtimestamp(timestamp, tz=UTC).isoformat(timespec="seconds")
+
+
 def _classify(extension: str, matched_keywords: list[str]) -> str:
     if extension in BACKUP_EXTENSIONS or matched_keywords:
         return "BACKUP_LIKE"
@@ -48,12 +60,17 @@ def _classify(extension: str, matched_keywords: list[str]) -> str:
     return "UNKNOWN"
 
 
-def scan_large_files(path: Path | str) -> tuple[list[dict[str, Any]], list[str]]:
+def scan_large_files(
+    path: Path | str,
+    *,
+    excluded_path: Path | str | None = None,
+) -> tuple[list[dict[str, Any]], list[str]]:
     root = Path(path).expanduser().resolve()
     if not root.exists():
         raise LargeFileReportError(f"path does not exist: {root}")
     if not root.is_dir():
         raise LargeFileReportError(f"path is not a directory: {root}")
+    excluded = Path(excluded_path).expanduser().resolve() if excluded_path is not None else None
 
     files: list[dict[str, Any]] = []
     errors: list[str] = []
@@ -73,6 +90,13 @@ def scan_large_files(path: Path | str) -> tuple[list[dict[str, Any]], list[str]]
             try:
                 if entry.is_symlink():
                     continue
+                if excluded is not None:
+                    try:
+                        candidate.relative_to(excluded)
+                    except ValueError:
+                        pass
+                    else:
+                        continue
                 if entry.is_dir(follow_symlinks=False):
                     pending.append(candidate)
                     continue
@@ -96,21 +120,28 @@ def scan_large_files(path: Path | str) -> tuple[list[dict[str, Any]], list[str]]
             files.append(
                 {
                     "path": relative,
+                    "size_bytes": int(stat_result.st_size),
+                    # Keep the first report's key for callers that consumed it.
                     "size": int(stat_result.st_size),
+                    "modified_time": _modified_time(stat_result.st_mtime),
                     "extension": extension,
                     "matched_keywords": matched_keywords,
                     "classification": _classify(extension, matched_keywords),
                 }
             )
 
-    files.sort(key=lambda item: (-item["size"], item["path"]))
+    files.sort(key=lambda item: (-item["size_bytes"], item["path"]))
     errors.sort()
     return files, errors
 
 
-def large_files_report(path: Path | str) -> dict[str, Any]:
+def large_files_report(
+    path: Path | str,
+    *,
+    excluded_path: Path | str | None = None,
+) -> dict[str, Any]:
     root = Path(path).expanduser().resolve()
-    files, errors = scan_large_files(root)
+    files, errors = scan_large_files(root, excluded_path=excluded_path)
     return {
         "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "root_path": str(root),

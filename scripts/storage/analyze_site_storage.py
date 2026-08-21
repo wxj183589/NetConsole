@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -42,12 +42,15 @@ def analyze_site_storage(
     *,
     depth: int = 1,
     top_count: int = 20,
+    paths: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """Return non-overlapping directory shares from an inventory report.
 
     ``depth=1`` selects direct children of the audited root.  Set ``depth=2``
     to compare second-level paths such as ``files/backups`` and
-    ``files/imports`` without adding their parent directory again.
+    ``files/imports`` without adding their parent directory again.  When
+    ``paths`` is provided, those exact relative paths are returned, including
+    zero-sized entries for directories that were not present in the inventory.
     """
 
     if depth < 1:
@@ -61,19 +64,39 @@ def analyze_site_storage(
         raise SiteStorageAnalysisError("inventory directories must be a list")
 
     total_size = int(inventory.get("total_size_bytes", inventory.get("total_bytes", 0)) or 0)
-    errors = [str(item) for item in inventory.get("errors", []) or []]
-    selected: list[dict[str, Any]] = []
+    raw_errors = inventory.get("errors", []) or []
+    if isinstance(raw_errors, Sequence) and not isinstance(raw_errors, (str, bytes)):
+        errors = [str(item) for item in raw_errors]
+    else:
+        errors = [str(raw_errors)]
+
+    directory_by_path: dict[str, Mapping[str, Any]] = {}
     for item in directories:
         if not isinstance(item, Mapping):
             errors.append("invalid directory entry: expected object")
             continue
-        segments = _relative_segments(item.get("path"))
-        if len(segments) != depth:
-            continue
+        normalized = "/".join(_relative_segments(item.get("path")))
+        directory_by_path[normalized] = item
+
+    selected: list[dict[str, Any]] = []
+    if paths is None:
+        candidates = [
+            "/".join(_relative_segments(item.get("path")))
+            for item in directories
+            if isinstance(item, Mapping)
+            and len(_relative_segments(item.get("path"))) == depth
+        ]
+    else:
+        candidates = sorted(
+            {"/".join(_relative_segments(value)) for value in paths if _relative_segments(value)}
+        )
+
+    for path in candidates:
+        item = directory_by_path.get(path, {})
         size_bytes = int(item.get("size_bytes", 0) or 0)
         selected.append(
             {
-                "path": "/".join(segments),
+                "path": path,
                 "size_bytes": size_bytes,
                 "percentage": round(size_bytes * 100 / total_size, 2) if total_size else 0.0,
             }
