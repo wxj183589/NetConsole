@@ -5,6 +5,8 @@ import time
 from pathlib import Path
 from typing import Callable, TypeVar
 
+from netconsole.core.performance_profiling import ProfilingConnection
+
 
 DEFAULT_SQLITE_TIMEOUT_SECONDS = 30.0
 DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 10_000
@@ -23,7 +25,7 @@ def connect_sqlite(
 ) -> sqlite3.Connection:
     db_path = Path(path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path, timeout=timeout)
+    conn = sqlite3.connect(db_path, timeout=timeout, factory=ProfilingConnection)
     if row_factory:
         conn.row_factory = sqlite3.Row
     configure_sqlite_connection(

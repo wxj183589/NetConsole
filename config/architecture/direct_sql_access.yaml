@@ -131,6 +131,7 @@
   {"path":"tests/test_storage_no_reinflation.py","classification":"TEST_ONLY","owner":"test","reason":"Task、Ground、MESH、Site Package 与 backup No-Reinflation 测试仅在 pytest 临时目录构造 SQLite fixture。"}
 ,
   {"path":"tests/test_integrated_site_package_validation.py","classification":"TEST_ONLY","owner":"test","reason":"FULL Site Package 集成验证测试仅在 pytest 临时目录构造 SQLite fixture 和 isolated data roots。"},
+  {"path":"tests/test_performance_profiling.py","classification":"TEST_ONLY","owner":"test","reason":"请求级 SQL profiling 测试只在 pytest 临时目录构造 SQLite fixture。"},
   {"path":"scripts/maintenance/collect_global_storage_inventory.py","classification":"READ_ONLY_DATA_GATEWAY","owner":"storage","reason":"全局 storage inventory 仅按 SQLite header 识别，并以 mode=ro/immutable=1 审计 data-root 全局域；非空 WAL fail-closed，不创建或修改业务数据库。"},
   {"path":"tests/test_collect_global_storage_inventory.py","classification":"TEST_ONLY","owner":"test","reason":"全局 storage inventory 测试仅在 pytest 临时目录构造 SQLite、WAL 与 ZIP fixture。"},
   {"path":"scripts/maintenance/benchmark_database_functional_queries.py","classification":"TEST_ONLY","owner":"storage","reason":"最终功能透明性能比较仅以 mode=ro/immutable=1 读取 D:\\study 下的真实隔离副本、History shards 与 Site Package 导入副本，并输出 p50/p95/max；不访问或修改生产数据库。"},

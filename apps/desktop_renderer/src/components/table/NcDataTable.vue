@@ -24,6 +24,7 @@ import {
 } from './tablePreferences'
 import { calculateTableColumnWidths, useAutoColumnWidth } from './useAutoColumnWidth'
 import { clearTextMeasurementCache } from './textMeasurement'
+import { reportTableRenderPerformance } from '../../platform/performanceProfiling'
 import {
   calculateNcDataTableContextMenuPosition,
   type NcDataTableContext,
@@ -206,6 +207,11 @@ const { widths, recalculate, schedule } = useAutoColumnWidth({
 const resolvedTableWidth = computed(() => Object.values(widths.value).reduce((total, width) => total + width, 0))
 const tableStyle = computed(() => ({ width: '100%' }))
 const tableData = computed(() => rebuildingColumnLayout.value ? [] : props.data)
+
+watch(() => props.data, (data) => {
+  const startedAt = performance.now()
+  void reportTableRenderPerformance(props.tableId, data.length, startedAt)
+}, { flush: 'pre' })
 
 const settingColumns = computed<NcColumnSettingItem[]>(() => resolvedColumns.value.map((column) => ({
   key: column.key,

@@ -37,6 +37,7 @@ import {
   type RendererBuildMetadata,
 } from '../platform/buildIdentity'
 import { t } from '../i18n/runtime'
+import { reportApiPerformance } from '../platform/performanceProfiling'
 
 export type RendererBuildMeta = RendererBuildMetadata
 
@@ -289,6 +290,7 @@ function waitForQueryRetry(path: string, attempt: number, signal?: AbortSignal |
 }
 
 async function apiRequestInternal<T>(path: string, options: ApiRequestOptions = {}): Promise<T> {
+  const profileStartedAt = performance.now()
   const baseHeaders = new Headers(options.headers)
   const formData = typeof FormData !== 'undefined' && options.body instanceof FormData
   if (!formData && !baseHeaders.has('Content-Type')) baseHeaders.set('Content-Type', 'application/json')
@@ -369,8 +371,25 @@ async function apiRequestInternal<T>(path: string, options: ApiRequestOptions = 
       original_message: details.original_message || message,
     })
   }
-  if (method === 'HEAD') return undefined as T
-  return readJsonResponse<T>(response, path, 'INVALID_JSON_RESPONSE')
+  if (method === 'HEAD') {
+    reportApiPerformance({
+      path,
+      method,
+      totalMs: performance.now() - profileStartedAt,
+      requestId: response.headers?.get?.('X-Request-ID') || '',
+      serverTiming: response.headers?.get?.('Server-Timing') || '',
+    })
+    return undefined as T
+  }
+  const payload = await readJsonResponse<T>(response, path, 'INVALID_JSON_RESPONSE')
+  reportApiPerformance({
+    path,
+    method,
+    totalMs: performance.now() - profileStartedAt,
+    requestId: response.headers?.get?.('X-Request-ID') || '',
+    serverTiming: response.headers?.get?.('Server-Timing') || '',
+  })
+  return payload
 }
 
 export function apiRequest<T>(path: string, options: ApiRequestOptions = {}): Promise<T> {

@@ -48,6 +48,16 @@ export interface SiteSwitchCoordinator {
 
 export type SiteSwitchResult = 'completed' | 'cancelled' | 'blocked'
 
+function siteSwitchStage(name: string, startedAt: number, targetSiteId: string): number {
+  const now = performance.now()
+  console.info('SITE_SWITCH_PROFILE', {
+    target_site_id: targetSiteId,
+    stage: name,
+    duration_ms: Math.round((now - startedAt) * 100) / 100,
+  })
+  return now
+}
+
 /**
  * The Settings panel and a tray-originated request must share the same
  * confirmation, preflight, workspace snapshot, activation, and rollback path.
@@ -60,9 +70,11 @@ export async function coordinateSiteSwitch(
   if (!await coordinator.confirm(target)) return 'cancelled'
 
   let checkpoint: unknown
+  let stageStartedAt = performance.now()
   coordinator.onSwitchingChanged?.(true)
   try {
     await coordinator.preflight(target.siteId)
+    stageStartedAt = siteSwitchStage('preflight', stageStartedAt, target.siteId)
     const focusQuery = new URLSearchParams({
       section: 'site-storage',
       site_focus: `site-switch-${Date.now()}`,
@@ -71,8 +83,11 @@ export async function coordinateSiteSwitch(
       target.siteId,
       `/settings?${focusQuery}`,
     )
+    stageStartedAt = siteSwitchStage('metadata_workspace', stageStartedAt, target.siteId)
     await coordinator.activate(target.siteId)
+    stageStartedAt = siteSwitchStage('activate', stageStartedAt, target.siteId)
     await coordinator.restart(target.siteId)
+    siteSwitchStage('backend_restart', stageStartedAt, target.siteId)
     return 'completed'
   } catch (cause) {
     if (cause instanceof SiteSwitchCancelled) return 'cancelled'

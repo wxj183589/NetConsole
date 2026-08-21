@@ -5,6 +5,8 @@ from pathlib import Path
 from threading import Event
 
 import pytest
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
 import netconsole.backend.api.main as main_module
@@ -38,6 +40,43 @@ from scripts.architecture.checks import (
     ui_business_logic_findings,
 )
 from scripts.architecture.guard_core import apply_exceptions, load_exceptions
+
+
+def test_performance_middleware_returns_request_and_server_timings() -> None:
+    app = FastAPI()
+    app.add_middleware(main_module.PerformanceProfilingMiddleware)
+
+    @app.get("/profile")
+    def profile() -> dict[str, bool]:
+        return {"ok": True}
+
+    with TestClient(app) as client:
+        response = client.get("/profile", headers={"X-Request-ID": "profile-request"})
+
+    assert response.status_code == 200
+    assert response.headers["x-request-id"] == "profile-request"
+    assert "app;dur=" in response.headers["server-timing"]
+    assert "sql;dur=" in response.headers["server-timing"]
+    assert "repository;dur=" in response.headers["server-timing"]
+
+
+def test_performance_middleware_preserves_domain_request_id() -> None:
+    app = FastAPI()
+    app.add_middleware(main_module.PerformanceProfilingMiddleware)
+
+    @app.get("/profile-domain-request-id")
+    def profile() -> JSONResponse:
+        return JSONResponse(
+            {"request_id": "domain-request-id"},
+            headers={"X-Request-ID": "domain-request-id"},
+        )
+
+    with TestClient(app) as client:
+        response = client.get("/profile-domain-request-id")
+
+    assert response.status_code == 200
+    assert response.headers["x-request-id"] == "domain-request-id"
+    assert response.json()["request_id"] == "domain-request-id"
 
 
 def test_runtime_mode_and_api_dtos_are_stable() -> None:

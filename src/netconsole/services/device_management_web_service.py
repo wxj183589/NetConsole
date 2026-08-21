@@ -26,6 +26,7 @@ from netconsole.application.web_export_process_adapter import WebExportProcessAd
 from netconsole.core import app_logger
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
+from netconsole.core.performance_profiling import profile_repository
 from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.core.settings import SettingsStore, normalize_external_terminal_type
 from netconsole.core.sites import SiteManager
@@ -387,55 +388,119 @@ class DeviceManagementWebService:
     ) -> DevicePageDTO:
         site = self.current_site_id()
         device_repository, group_repository, fact_repository = self._repositories(site)
-        groups = group_repository.list()
+        with profile_repository("devices.groups"):
+            groups = group_repository.list()
         group_names = {
             int(group.id): group.name for group in groups if group.id is not None
         }
-        station_display_names = self._base_station_display_names(site)
-        tasks = self._owned_web_tasks(
-            self.task_service.repository(site).list(limit=1000),
-            site,
-            frozenset({DEVICE_CONNECTION_TEST_TASK_TYPE, DEVICE_COLLECT_TASK_TYPE}),
-        )
-        facts = {
-            str(row.get("device_uuid") or ""): row
-            for row in fact_repository.list_device_facts()
-        }
-        devices = device_repository.list(
-            search=search.strip() or None,
-            vendor=vendor.strip() or None,
-            device_type=device_type.strip() or None,
-            group_filter="__ungrouped__" if ungrouped else group_id,
-            project_phase=project_phase,
-            work_scope_status=work_scope_status,
-        )
-        items = [
-            self._list_item(
-                device,
-                group_names,
-                self._latest_test(tasks, device),
-                latest_collect=self._latest_collect(tasks, device),
-                fact=facts.get(str(device.device_uuid or "")),
-                station_display_names=station_display_names,
+        with profile_repository("devices.station_metadata"):
+            station_display_names = self._base_station_display_names(site)
+        with profile_repository("devices.list"):
+            devices = device_repository.list(
+                search=search.strip() or None,
+                vendor=vendor.strip() or None,
+                device_type=device_type.strip() or None,
+                group_filter="__ungrouped__" if ungrouped else group_id,
+                project_phase=project_phase,
+                work_scope_status=work_scope_status,
             )
-            for device in devices
-        ]
         selected_status = connection_status.strip().upper()
-        if selected_status:
-            items = [
-                item for item in items if item.connection_status == selected_status
-            ]
         try:
             sort_key = SORT_FIELDS[sort_by]
         except KeyError as exc:
             raise ValueError("不支持的设备排序字段") from exc
-        items.sort(key=sort_key, reverse=sort_order == "desc")
-        total = len(items)
+        requires_full_projection = bool(selected_status) or sort_by in {
+            "last_collected_at",
+            "last_collect_status",
+            "status",
+        }
+        tasks: list[TaskSnapshot]
+        facts: dict[str, dict[str, object | None]]
+        if requires_full_projection:
+            with profile_repository("devices.recent_tasks"):
+                tasks = self._owned_web_tasks(
+                    self.task_service.repository(site).list(limit=1000),
+                    site,
+                    frozenset({DEVICE_CONNECTION_TEST_TASK_TYPE, DEVICE_COLLECT_TASK_TYPE}),
+                )
+            with profile_repository("devices.facts"):
+                facts = {
+                    str(row.get("device_uuid") or ""): row
+                    for row in fact_repository.list_device_facts()
+                }
+            projected = [
+                (
+                    device,
+                    self._list_item(
+                        device,
+                        group_names,
+                        self._latest_test(tasks, device),
+                        latest_collect=self._latest_collect(tasks, device),
+                        fact=facts.get(str(device.device_uuid or "")),
+                        station_display_names=station_display_names,
+                    ),
+                )
+                for device in devices
+            ]
+            if selected_status:
+                projected = [
+                    pair for pair in projected if pair[1].connection_status == selected_status
+                ]
+        else:
+            projected = [
+                (
+                    device,
+                    self._list_item(
+                        device,
+                        group_names,
+                        None,
+                        station_display_names=station_display_names,
+                    ),
+                )
+                for device in devices
+            ]
+        projected.sort(key=lambda pair: sort_key(pair[1]), reverse=sort_order == "desc")
+        total = len(projected)
         total_pages = max(1, math.ceil(total / page_size))
         selected_page = min(max(1, page), total_pages)
         start = (selected_page - 1) * page_size
+        page_pairs = projected[start : start + page_size]
+        if not requires_full_projection:
+            page_devices = [device for device, _item in page_pairs]
+            page_device_uuids = [str(device.device_uuid or "") for device in page_devices]
+            with profile_repository("devices.page_tasks"):
+                tasks = self._owned_web_tasks(
+                    self.task_service.repository(site).list_filtered(
+                        owner=WEB_TASK_OWNER,
+                        source="local",
+                        site_name=site,
+                        task_types={DEVICE_CONNECTION_TEST_TASK_TYPE, DEVICE_COLLECT_TASK_TYPE},
+                        device_aliases=page_device_uuids,
+                        limit=1000,
+                    ),
+                    site,
+                    frozenset({DEVICE_CONNECTION_TEST_TASK_TYPE, DEVICE_COLLECT_TASK_TYPE}),
+                )
+            with profile_repository("devices.page_facts"):
+                facts = {
+                    str(row.get("device_uuid") or ""): row
+                    for row in fact_repository.list_device_facts_for_uuids(page_device_uuids)
+                }
+            items = [
+                self._list_item(
+                    device,
+                    group_names,
+                    self._latest_test(tasks, device),
+                    latest_collect=self._latest_collect(tasks, device),
+                    fact=facts.get(str(device.device_uuid or "")),
+                    station_display_names=station_display_names,
+                )
+                for device in page_devices
+            ]
+        else:
+            items = [item for _device, item in page_pairs]
         return DevicePageDTO(
-            items=items[start : start + page_size],
+            items=items,
             groups=[
                 DeviceGroupOptionDTO(id=int(group.id), name=group.name)
                 for group in groups

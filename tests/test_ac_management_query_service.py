@@ -62,6 +62,42 @@ def test_ac_query_service_reads_summary_filters_and_details_without_writes(tmp_p
     assert _fingerprint(db_path) == before
 
 
+def test_fit_ap_list_loads_detail_projection_for_current_page_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, db_path, _files = build_ac_management_fixture(tmp_path)
+    AcRepository(Database(db_path)).upsert_fit_ap_detail(
+        {
+            "ap_uuid": "ap-online",
+            "ac_device_uuid": "ac-1",
+            "ap_name": "AP-Online",
+            "software_version": "V7.1",
+        }
+    )
+    requested_macs: list[list[str]] = []
+    original = AcRepository.list_fit_ap_details_for_macs
+
+    def tracked(self: AcRepository, macs: list[str]):
+        requested_macs.append(list(macs))
+        return original(self, macs)
+
+    monkeypatch.setattr(AcRepository, "list_fit_ap_details_for_macs", tracked)
+
+    page = AcManagementQueryService(paths).list_aps(
+        "demo",
+        page=1,
+        page_size=1,
+        status="online",
+        sort_by="name",
+    )
+
+    assert len(page.items) == 1
+    assert requested_macs == [[page.items[0].mac]]
+    assert page.items[0].detail_available is True
+    assert page.items[0].software_version == "V7.1"
+
+
 def test_ac_query_service_coalesces_unmatched_unauthenticated_duplicate_by_serial(
     tmp_path: Path,
 ) -> None:

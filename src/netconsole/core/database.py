@@ -2003,10 +2003,13 @@ class Database:
         if not self.path.is_file():
             raise sqlite3.OperationalError(f"unable to open database file: {self.path}")
         uri = f"{self.path.resolve().as_uri()}?mode=ro"
+        from netconsole.core.performance_profiling import ProfilingConnection
+
         connection = sqlite3.connect(
             uri,
             uri=True,
             timeout=DEFAULT_SQLITE_TIMEOUT_SECONDS,
+            factory=ProfilingConnection,
         )
         connection.row_factory = sqlite3.Row
         configure_sqlite_connection(

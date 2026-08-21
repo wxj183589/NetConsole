@@ -4,6 +4,7 @@ from collections.abc import Mapping, Sequence
 
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
+from netconsole.core.performance_profiling import profile_repository
 from netconsole.core.sites import SiteManager
 from netconsole.models.api.trackside_ap_business import (
     TracksideApBusinessPageDTO,
@@ -17,6 +18,7 @@ from netconsole.adapters.trackside_switch import resolve_trackside_switch_adapte
 from netconsole.parsers.h3c.ac.state_mapper import classify_fit_ap_state
 from netconsole.models.device_address import normalize_ip_address
 from netconsole.services.netmiko_connection import connection_targets
+from netconsole.services.ap_identity.normalizers import normalize_mac_key
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
 from netconsole.services.trackside_ap_business import (
     count_current_optical_abnormal_aps,
@@ -92,16 +94,18 @@ class TracksideApBusinessQueryService:
     ) -> TracksideApBusinessPageDTO:
         database = Database(self.paths.site_db_path(site_id))
         repository = DeviceRepository(database)
-        snapshot = load_trackside_ap_business_snapshot(
-            repository,
-            site_id,
-            generation=0,
-            scope_context=TracksideApScopeContext.from_metadata(
+        identity_query_macs = (query,) if normalize_mac_key(query) else ()
+        with profile_repository("trackside.business_snapshot"):
+            snapshot = load_trackside_ap_business_snapshot(
+                repository,
                 site_id,
-                SiteManager(self.paths).load_site_metadata(site_id),
-            ),
-            identity_query_macs=(query,),
-        )
+                generation=0,
+                scope_context=TracksideApScopeContext.from_metadata(
+                    site_id,
+                    SiteManager(self.paths).load_site_metadata(site_id),
+                ),
+                identity_query_macs=identity_query_macs,
+            )
         if expected_revision and expected_revision != snapshot.business_revision:
             raise TracksideApBusinessSnapshotError(
                 "TRACKSIDE_AP_SNAPSHOT_STALE",
