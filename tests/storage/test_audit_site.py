@@ -35,6 +35,33 @@ def test_multiple_files_and_nested_directory_are_reported(tmp_path: Path) -> Non
     ]
 
 
+def test_extension_statistics_are_aggregated_and_stably_sorted(tmp_path: Path) -> None:
+    (tmp_path / "first.DB").write_bytes(b"1234")
+    (tmp_path / "second.db").write_bytes(b"567")
+    (tmp_path / "readme.txt").write_bytes(b"12")
+
+    report = audit_site(tmp_path)
+
+    assert report["extensions"] == [
+        {"extension": ".db", "size_bytes": 7, "file_count": 2},
+        {"extension": ".txt", "size_bytes": 2, "file_count": 1},
+    ]
+
+
+def test_json_output_is_stable_except_for_generation_timestamp(tmp_path: Path) -> None:
+    (tmp_path / "data.bin").write_bytes(b"payload")
+    output = tmp_path / "SITE_STORAGE_INVENTORY.json"
+
+    assert main(["--path", str(tmp_path), "--output", str(output)]) == 0
+    first = json.loads(output.read_text(encoding="utf-8"))
+    assert main(["--path", str(tmp_path), "--output", str(output)]) == 0
+    second = json.loads(output.read_text(encoding="utf-8"))
+
+    first.pop("generated_at")
+    second.pop("generated_at")
+    assert first == second
+
+
 def test_largest_file_limit_and_size_statistics(tmp_path: Path) -> None:
     for name, content in (("a.bin", b"a"), ("b.bin", b"bb"), ("c.bin", b"ccc")):
         (tmp_path / name).write_bytes(content)
