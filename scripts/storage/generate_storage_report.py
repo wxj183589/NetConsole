@@ -12,6 +12,20 @@ from typing import Any
 
 from .analyze_site_storage import analyze_site_storage
 from .analyze_sqlite_size import SQLiteSpaceReportError, analyze_sqlite_size
+from .analyze_sites_root import (
+    ALL_SQLITE_DATABASES_FILE_NAME,
+    BACKUP_INVENTORY_FILE_NAME,
+    ROOT_STORAGE_FINDINGS_FILE_NAME,
+    SITES_SUMMARY_FILE_NAME,
+    TOP_TABLE_USAGE_FILE_NAME,
+    all_sqlite_databases,
+    analyze_sites_root,
+    backup_inventory,
+    directory_contribution,
+    render_root_findings,
+    SitesRootAnalysisError,
+    top_table_usage,
+)
 from .audit_site import AuditError, audit_site
 from .report_large_files import LargeFileReportError, large_files_report
 
@@ -315,11 +329,14 @@ def generate_storage_report(
         raise StorageReportError("report directory cannot be the Site directory")
 
     try:
-        inventory = audit_site(root, excluded_path=output)
-        analysis = analyze_site_storage(inventory, paths=DIRECTORY_PATHS)
+        inventory = audit_site(root, largest_file_count=50, excluded_path=output)
+        if root.name.casefold() == "sites":
+            analysis = directory_contribution(inventory)
+        else:
+            analysis = analyze_site_storage(inventory, paths=DIRECTORY_PATHS)
         large_files = large_files_report(root, excluded_path=output)
         sqlite_report, sqlite_errors = _sqlite_report(root, output)
-    except (AuditError, LargeFileReportError, OSError) as exc:
+    except (AuditError, LargeFileReportError, SitesRootAnalysisError, OSError) as exc:
         raise StorageReportError(str(exc)) from exc
 
     try:
@@ -328,7 +345,23 @@ def generate_storage_report(
         _write_json(output / ANALYSIS_REPORT_FILE_NAME, analysis)
         _write_json(output / LARGE_FILES_FILE_NAME, large_files)
         _write_json(output / SQLITE_FILE_NAME, sqlite_report)
-    except OSError as exc:
+        root_reports: dict[str, Any] = {}
+        if root.name.casefold() == "sites":
+            sites_summary = analyze_sites_root(inventory)
+            backups = backup_inventory(root, excluded_path=output)
+            sqlite_databases = all_sqlite_databases(root, excluded_path=output)
+            table_usage = top_table_usage(root, excluded_path=output)
+            root_reports = {
+                "sites": sites_summary,
+                "backups": backups,
+                "sqlite_databases": sqlite_databases,
+                "table_usage": table_usage,
+            }
+            _write_json(output / SITES_SUMMARY_FILE_NAME, sites_summary)
+            _write_json(output / BACKUP_INVENTORY_FILE_NAME, backups)
+            _write_json(output / ALL_SQLITE_DATABASES_FILE_NAME, sqlite_databases)
+            _write_json(output / TOP_TABLE_USAGE_FILE_NAME, table_usage)
+    except (OSError, SitesRootAnalysisError) as exc:
         raise StorageReportError(f"cannot write report directory: {output}") from exc
 
     all_errors = [
@@ -340,6 +373,16 @@ def generate_storage_report(
     ]
     summary = _summary_markdown(inventory, analysis, large_files, sqlite_report, all_errors)
     try:
+        if root.name.casefold() == "sites":
+            root_findings = render_root_findings(
+                inventory,
+                root_reports["sites"],
+                analysis,
+                root_reports["backups"],
+                root_reports["sqlite_databases"],
+                root_reports["table_usage"],
+            )
+            (output / ROOT_STORAGE_FINDINGS_FILE_NAME).write_text(root_findings, encoding="utf-8")
         (output / "SUMMARY.md").write_text(summary, encoding="utf-8")
     except OSError as exc:
         raise StorageReportError(f"cannot write report summary: {output / 'SUMMARY.md'}") from exc
@@ -350,6 +393,7 @@ def generate_storage_report(
         "large_files": large_files,
         "sqlite": sqlite_report,
         "summary": summary,
+        "root_reports": root_reports,
     }
 
 
