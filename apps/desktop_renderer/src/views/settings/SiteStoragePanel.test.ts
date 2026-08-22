@@ -397,7 +397,7 @@ describe('SiteStoragePanel', () => {
     expect(workspace.restoreAfterFailedSiteSwitch).toHaveBeenCalledWith(workspace.checkpoint)
   })
 
-  it('prepares the workspace before activation and reports success only after Backend ready', async () => {
+  it('enters the metadata workspace before preflight and reports success only after Backend ready', async () => {
     vi.spyOn(ElMessageBox, 'confirm').mockResolvedValueOnce('confirm' as never)
     vi.mocked(api.listSites).mockResolvedValue([
       site(),
@@ -417,9 +417,9 @@ describe('SiteStoragePanel', () => {
     expect(api.preflightSiteActivation).toHaveBeenCalledWith('line-12')
     expect(api.activateSite).toHaveBeenCalledWith('line-12')
     expect(adapter.restartBackend).toHaveBeenCalledWith({ activeSiteId: 'line-12' })
-    expect(vi.mocked(api.preflightSiteActivation).mock.invocationCallOrder[0])
-      .toBeLessThan(workspace.prepareForSiteSwitch.mock.invocationCallOrder[0])
     expect(workspace.prepareForSiteSwitch.mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(api.preflightSiteActivation).mock.invocationCallOrder[0])
+    expect(vi.mocked(api.preflightSiteActivation).mock.invocationCallOrder[0])
       .toBeLessThan(vi.mocked(api.activateSite).mock.invocationCallOrder[0])
     expect(vi.mocked(api.activateSite).mock.invocationCallOrder[0])
       .toBeLessThan(adapter.restartBackend.mock.invocationCallOrder[0])

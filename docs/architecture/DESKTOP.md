@@ -20,7 +20,7 @@ Electron 复用同一 Vue Renderer、FastAPI 会话和 `TaskApplicationService -
 
 每次新进程创建主窗口时，`BrowserWindow` 仅接收 `1280x800` 安全默认尺寸和既有 `1024x680` 最小约束，不接收历史坐标。首次 `ready-to-show` 按当时 `screen.getPrimaryDisplay().workArea` 将窗口放入当前主显示器，再执行 `maximize -> show -> focus`；窗口保持 `frame=true`、`fullscreen=false`，最大化使用 Windows 工作区而不是无边框全屏。启动完成后用户可正常还原、移动、调整尺寸或最小化。托盘和第二实例恢复只对仍在运行的同一窗口执行 `restore/show/focus`，不会重新最大化；完整退出、异常退出、升级启动和 `app.relaunch()` 创建的新进程才重新应用启动默认值。
 
-局点重启前，Renderer 先把当前进程快照收敛为仅保留 Dashboard 与系统设置；`WorkspaceWindowController` 再对所有受管窗口执行同一局点边界清理并在内存中保留回滚副本。`PythonBackendManager` ready 后，Main 读取新 Backend 的当前局点再次核对目标；不一致或启动失败会恢复原 Backend 和进程内窗口快照。成功时才清除旧 MESH Renderer recovery/workload 并重新加载所有窗口，避免旧 `session_id`、KeepAlive 实例或多窗口业务标签跨局点恢复。
+局点切换前，Renderer 先把当前进程快照收敛为仅保留 Dashboard 与系统设置，并立即显示目标局点 metadata 与“加载中”状态；`WorkspaceWindowController` 再对所有受管窗口执行同一局点边界清理并在内存中保留回滚副本。FastAPI `create_app()` 中存在绑定启动局点数据库和目录的 Service/Repository，因此 Main 不在原进程内强改 SiteContext，而是执行 warm handoff：旧 Backend 继续承载当前 Renderer，新 Backend 使用目标局点和独立动态回环端口后台启动；ready 后先核对目标局点，再原子切换 Runtime、内存令牌、Cookie、Bootstrap 和 Renderer，最后安全停止旧进程。同一数据根仅允许持有当前 owner `instance_id` 且目标局点不同的候选进程进入 transition lock，旧进程释放主锁后候选进程才提升为新 owner；第三个进程与伪造 owner 仍失败关闭。新 Backend 不一致或启动失败时保持旧 Backend 并恢复原局点与进程内窗口快照。成功时才清除旧 MESH Renderer recovery/workload 并重新加载所有窗口，避免旧 `session_id`、KeepAlive 实例或多窗口业务标签跨局点恢复。
 
 Windows 下启动时会创建 `TrayController`，图标统一由 `resolveTrayIconPath()` 解析：源码态取仓库 `resources/branding/netconsole.ico`，安装包从 `extraResources/branding/netconsole.ico` 读取。菜单包含打开主窗口、新建工作区、打开任务中心、运行/失败任务数量、脱敏的 Backend/当前局点状态、关闭到通知区域开关和“退出 NetConsole”。Vue 只向 Main 推送聚合计数；Main 不查询任务数据库。前台终态使用显式加载样式、挂载到 `document.body` 的 Vue Notification，后台终态使用有界 Windows 原生通知；两类通知的详情入口都恢复/保留当前主页面并直接打开任务详情抽屉。图标不可用或创建失败时托盘设置运行时不可用，主窗口不会被隐藏，避免留下无法恢复的后台进程。
 

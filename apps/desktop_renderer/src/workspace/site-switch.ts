@@ -1,5 +1,6 @@
 export const BEFORE_SITE_SWITCH_EVENT = 'netconsole:before-site-switch'
 export const SITE_CONTEXT_CHANGED_EVENT = 'netconsole:site-context-changed'
+export const SITE_SWITCH_METADATA_EVENT = 'netconsole:site-switch-metadata'
 
 export interface BeforeSiteSwitchDetail {
   targetSiteId: string
@@ -33,6 +34,16 @@ export async function notifyBeforeSiteSwitch(targetSiteId: string): Promise<bool
 export interface SiteSwitchTarget {
   siteId: string
   displayName: string
+}
+
+export interface SiteSwitchMetadataDetail extends SiteSwitchTarget {
+  state: 'loading' | 'rollback'
+}
+
+function notifySiteSwitchMetadata(target: SiteSwitchTarget, state: SiteSwitchMetadataDetail['state']): void {
+  window.dispatchEvent(new CustomEvent<SiteSwitchMetadataDetail>(SITE_SWITCH_METADATA_EVENT, {
+    detail: { ...target, state },
+  }))
 }
 
 export interface SiteSwitchCoordinator {
@@ -70,11 +81,13 @@ export async function coordinateSiteSwitch(
   if (!await coordinator.confirm(target)) return 'cancelled'
 
   let checkpoint: unknown
+  let metadataPublished = false
   let stageStartedAt = performance.now()
   coordinator.onSwitchingChanged?.(true)
   try {
-    await coordinator.preflight(target.siteId)
-    stageStartedAt = siteSwitchStage('preflight', stageStartedAt, target.siteId)
+    notifySiteSwitchMetadata(target, 'loading')
+    metadataPublished = true
+    stageStartedAt = siteSwitchStage('metadata_visible', stageStartedAt, target.siteId)
     const focusQuery = new URLSearchParams({
       section: 'site-storage',
       site_focus: `site-switch-${Date.now()}`,
@@ -84,12 +97,15 @@ export async function coordinateSiteSwitch(
       `/settings?${focusQuery}`,
     )
     stageStartedAt = siteSwitchStage('metadata_workspace', stageStartedAt, target.siteId)
+    await coordinator.preflight(target.siteId)
+    stageStartedAt = siteSwitchStage('preflight', stageStartedAt, target.siteId)
     await coordinator.activate(target.siteId)
     stageStartedAt = siteSwitchStage('activate', stageStartedAt, target.siteId)
     await coordinator.restart(target.siteId)
-    siteSwitchStage('backend_restart', stageStartedAt, target.siteId)
+    siteSwitchStage('backend_handoff', stageStartedAt, target.siteId)
     return 'completed'
   } catch (cause) {
+    if (metadataPublished) notifySiteSwitchMetadata(target, 'rollback')
     if (cause instanceof SiteSwitchCancelled) return 'cancelled'
     if (checkpoint) {
       try {

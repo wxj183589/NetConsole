@@ -143,7 +143,7 @@ async function switchSite(site: SiteRecord): Promise<void> {
         confirm: (target) => confirmAction({
           type: 'WARNING',
           title: '切换当前局点',
-          message: `切换到“${target.displayName}”并重启本地 Backend？`,
+          message: `切换到“${target.displayName}”？目标局点将在后台就绪后自动接管。`,
           confirmText: '确认切换局点',
         }),
         preflight: async (siteId) => { await preflightSiteActivation(siteId) },
@@ -151,7 +151,7 @@ async function switchSite(site: SiteRecord): Promise<void> {
         activate: async (siteId) => { await activateSite(siteId) },
         restart: async (siteId) => {
           const restart = await getPlatformAdapter().restartBackend({ activeSiteId: siteId })
-          if (!restart.success) throw new Error(restart.error || 'Backend 重启失败')
+          if (!restart.success) throw new Error(restart.error || 'Backend 切换失败')
         },
         restoreWorkspace: async (checkpoint) => {
           await workspace.restoreAfterFailedSiteSwitch(

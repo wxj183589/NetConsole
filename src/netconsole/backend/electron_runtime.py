@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import socket
 import sys
@@ -25,6 +26,7 @@ from netconsole.core.runtime_profile import read_host_environment_profile
 
 
 _SESSION_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{32,256}$")
+_WARM_HANDOFF_OWNER_RE = re.compile(r"^[a-f0-9]{32}$")
 
 
 @dataclass(frozen=True)
@@ -33,6 +35,12 @@ class ElectronRuntimeOptions:
     port: int
     renderer_origin: str | None = None
     development: bool = False
+
+
+@dataclass(frozen=True)
+class ElectronRuntimeHandshake:
+    session_token: str
+    warm_handoff_owner_id: str = ""
 
 
 def parse_options(argv: list[str] | None = None) -> ElectronRuntimeOptions:
@@ -47,7 +55,7 @@ def parse_options(argv: list[str] | None = None) -> ElectronRuntimeOptions:
     return ElectronRuntimeOptions(values.host, values.port, values.renderer_origin, values.dev_mode)
 
 
-def read_session_token(stream: TextIO) -> str:
+def read_runtime_handshake(stream: TextIO) -> ElectronRuntimeHandshake:
     raw = stream.readline(4097)
     if not raw or len(raw) > 4096:
         raise ValueError("missing or oversized Electron runtime handshake")
@@ -58,7 +66,14 @@ def read_session_token(stream: TextIO) -> str:
     token = payload.get("session_token") if isinstance(payload, dict) else None
     if not isinstance(token, str) or _SESSION_TOKEN_RE.fullmatch(token) is None:
         raise ValueError("invalid Electron runtime session token")
-    return token
+    owner_id = payload.get("warm_handoff_owner_id", "") if isinstance(payload, dict) else ""
+    if not isinstance(owner_id, str) or (owner_id and _WARM_HANDOFF_OWNER_RE.fullmatch(owner_id) is None):
+        raise ValueError("invalid Electron runtime warm handoff owner")
+    return ElectronRuntimeHandshake(token, owner_id)
+
+
+def read_session_token(stream: TextIO) -> str:
+    return read_runtime_handshake(stream).session_token
 
 
 def build_app(
@@ -97,7 +112,8 @@ def build_app(
 def main(argv: list[str] | None = None, *, stdin: TextIO | None = None) -> int:
     options = parse_options(argv)
     control_stream = stdin or sys.stdin
-    session_token = read_session_token(control_stream)
+    handshake = read_runtime_handshake(control_stream)
+    session_token = handshake.session_token
     started_at = monotonic()
     try:
         _emit_startup_stage("paths_resolving", started_at)
@@ -105,11 +121,19 @@ def main(argv: list[str] | None = None, *, stdin: TextIO | None = None) -> int:
         _emit_startup_stage("paths_resolved", started_at)
         _log_host_environment_summary(paths)
         _emit_startup_stage("instance_lock_acquiring", started_at)
-        with BackendInstanceLock(paths):
+        active_site_id = str(os.environ.get("NETCONSOLE_ACTIVE_SITE_ID") or "").strip()
+        with BackendInstanceLock(
+            paths,
+            active_site_id=active_site_id,
+            warm_handoff_owner_id=handshake.warm_handoff_owner_id,
+        ) as instance_lock:
             _emit_startup_stage("instance_lock_acquired", started_at)
-            _emit_startup_stage("storage_manifest_preparing", started_at)
-            prepare_storage_manifest(paths)
-            _emit_startup_stage("storage_manifest_ready", started_at)
+            if getattr(instance_lock, "warm_handoff", False):
+                _emit_startup_stage("storage_manifest_reused", started_at)
+            else:
+                _emit_startup_stage("storage_manifest_preparing", started_at)
+                prepare_storage_manifest(paths)
+                _emit_startup_stage("storage_manifest_ready", started_at)
             _emit_startup_stage("listener_binding", started_at)
             listener = socket.create_server((options.host, options.port), family=socket.AF_INET)
             actual_port = int(listener.getsockname()[1])
@@ -423,6 +447,7 @@ if __name__ == "__main__":
 
 __all__ = [
     "ElectronRuntimeOptions",
+    "ElectronRuntimeHandshake",
     "build_app",
     "emit_shutdown_complete",
     "emit_shutdown_ack",
@@ -430,6 +455,7 @@ __all__ = [
     "emit_shutdown_progress",
     "main",
     "parse_options",
+    "read_runtime_handshake",
     "read_session_token",
     "wait_for_exit_command",
     "watch_control_stream",

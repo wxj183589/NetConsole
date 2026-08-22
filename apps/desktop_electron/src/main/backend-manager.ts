@@ -61,6 +61,7 @@ export interface PythonBackendManagerOptions {
   projectRoot: string
   dataRoot: string
   activeSiteId?: string
+  warmHandoffOwnerId?: string
   runtimeMode: 'desktop-development' | 'desktop-packaged'
   storageMode?: DesktopStorageMode
   pythonPath?: string
@@ -228,6 +229,9 @@ export class PythonBackendManager {
     if (!/^[A-Za-z0-9_-]{32,256}$/.test(apiToken)) {
       throw new Error('Python backend token generator returned an invalid token')
     }
+    if (this.options.warmHandoffOwnerId && !/^[a-f0-9]{32}$/.test(this.options.warmHandoffOwnerId)) {
+      throw new Error('Python backend warm handoff owner is invalid')
+    }
     const requestedPort = developmentMode
       ? parseDevelopmentPort(
         this.options.environment?.NETCONSOLE_DEV_BACKEND_PORT ?? process.env.NETCONSOLE_DEV_BACKEND_PORT,
@@ -280,7 +284,12 @@ export class PythonBackendManager {
       this.child = child
       this.attachProcessHandlers(child, apiToken)
       const runtimeAnnouncement = this.waitForRuntimeAnnouncement(child, apiToken, requestedPort, spawnedAt)
-      child.stdin.write(`${JSON.stringify({ session_token: apiToken })}\n`, 'utf8')
+      child.stdin.write(`${JSON.stringify({
+        session_token: apiToken,
+        ...(this.options.warmHandoffOwnerId
+          ? { warm_handoff_owner_id: this.options.warmHandoffOwnerId }
+          : {}),
+      })}\n`, 'utf8')
       const runtime = await runtimeAnnouncement
       this.options.onStartupMilestone?.('backend.handshake_received')
       this.runtime = runtime
