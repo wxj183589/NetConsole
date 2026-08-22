@@ -94,6 +94,12 @@ def test_sites_root_generator_writes_global_reports_and_findings(tmp_path: Path)
         "ALL_SQLITE_DATABASES.json",
         "TOP_TABLE_USAGE.json",
         "ROOT_STORAGE_FINDINGS.md",
+        "RAIL_TRANSIT_ANALYSIS.json",
+        "RAIL_TRANSIT_TIMELINE.json",
+        "BACKUP_ANALYSIS.json",
+        "BACKUP_DUPLICATE_ANALYSIS.json",
+        "HISTORY_DB_ANALYSIS.json",
+        "STORAGE_DEEP_ANALYSIS.md",
     }
     assert {path.name for path in output.iterdir()} == expected
 

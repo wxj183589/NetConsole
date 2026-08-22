@@ -26,6 +26,7 @@ from .analyze_sites_root import (
     SitesRootAnalysisError,
     top_table_usage,
 )
+from .generate_storage_deep_analysis import DeepStorageAnalysisError, generate_deep_analysis
 from .audit_site import AuditError, audit_site
 from .report_large_files import LargeFileReportError, large_files_report
 
@@ -336,7 +337,7 @@ def generate_storage_report(
             analysis = analyze_site_storage(inventory, paths=DIRECTORY_PATHS)
         large_files = large_files_report(root, excluded_path=output)
         sqlite_report, sqlite_errors = _sqlite_report(root, output)
-    except (AuditError, LargeFileReportError, SitesRootAnalysisError, OSError) as exc:
+    except (AuditError, LargeFileReportError, SitesRootAnalysisError, DeepStorageAnalysisError, OSError) as exc:
         raise StorageReportError(str(exc)) from exc
 
     try:
@@ -357,11 +358,12 @@ def generate_storage_report(
                 "sqlite_databases": sqlite_databases,
                 "table_usage": table_usage,
             }
+            root_reports["deep"] = generate_deep_analysis(root, output, inventory=inventory)
             _write_json(output / SITES_SUMMARY_FILE_NAME, sites_summary)
             _write_json(output / BACKUP_INVENTORY_FILE_NAME, backups)
             _write_json(output / ALL_SQLITE_DATABASES_FILE_NAME, sqlite_databases)
             _write_json(output / TOP_TABLE_USAGE_FILE_NAME, table_usage)
-    except (OSError, SitesRootAnalysisError) as exc:
+    except (OSError, SitesRootAnalysisError, DeepStorageAnalysisError) as exc:
         raise StorageReportError(f"cannot write report directory: {output}") from exc
 
     all_errors = [
