@@ -30,6 +30,7 @@ DIRECTORY_PATHS = (
     "files/backups",
     "files/backups/production-maintenance",
     "files/backups/database-migrations",
+    "files/rail_transit",
     "rail_transit",
     "imports",
     "sync",
@@ -111,6 +112,7 @@ def _sqlite_report(
             report = {
                 "database_path": str(database_path),
                 "database_size_bytes": database_size_bytes,
+                "allocation_source": "unavailable",
                 "tables": [],
                 "indexes": [],
                 "errors": [reason],
@@ -160,7 +162,7 @@ def _format_bytes(value: int) -> str:
 
 
 def _format_directory_lines(analysis: dict[str, Any]) -> list[str]:
-    lines = ["## Directory contribution", ""]
+    lines = ["## Top Directories", ""]
     for item in analysis.get("top_directories", []):
         lines.append(
             f"- `{item['path']}`: {_format_bytes(int(item['size_bytes']))} "
@@ -183,6 +185,8 @@ def _summary_markdown(
     lines = [
         "# NetConsole Site Storage Audit Report",
         "",
+        "## Storage Overview",
+        "",
         f"- Scan path: `{inventory.get('root_path', '')}`",
         f"- Generated at: `{inventory.get('generated_at', '')}`",
         f"- Total capacity: **{_format_bytes(total_size)}**",
@@ -191,7 +195,7 @@ def _summary_markdown(
     ]
     lines.extend(_format_directory_lines(analysis))
 
-    lines.extend(["## Largest files TOP20", ""])
+    lines.extend(["## Top Files", ""])
     largest = inventory.get("largest_files", [])[:20]
     if largest:
         for item in largest:
@@ -200,7 +204,39 @@ def _summary_markdown(
         lines.append("- No files found.")
     lines.append("")
 
-    lines.extend(["## SQLite TOP10 tables", ""])
+    lines.extend(["## SQLite Usage", ""])
+    databases = sqlite_report.get("databases", [])
+    if databases:
+        ranked_databases = sorted(
+            databases,
+            key=lambda item: (-int(item.get("database_size_bytes", 0)), item.get("database_path", "")),
+        )
+        selected_databases = [
+            database
+            for database in databases
+            if Path(database.get("database_path", "")).name.casefold() == "tasks.db"
+        ]
+        selected_databases.extend(
+            database for database in ranked_databases if database not in selected_databases
+        )
+        selected_databases = selected_databases[:10]
+    else:
+        selected_databases = []
+    for database in selected_databases:
+        database_path = Path(database.get("database_path", ""))
+        try:
+            database_name = database_path.relative_to(Path(inventory["root_path"])).as_posix()
+        except (KeyError, ValueError):
+            database_name = str(database_path)
+        lines.append(
+            f"- Database `{database_name}`: "
+            f"{_format_bytes(int(database.get('database_size_bytes', 0)))}"
+        )
+    if len(databases) > len(selected_databases):
+        lines.append(f"- Additional SQLite files: {len(databases) - len(selected_databases)}")
+    if selected_databases:
+        lines.append("")
+    lines.extend(["Largest tables (TOP10):", ""])
     tables = sqlite_report.get("database", {}).get("tables", [])[:10]
     if tables:
         for item in tables:
@@ -220,10 +256,37 @@ def _summary_markdown(
 
     lines.extend(["## Exceptions", ""])
     unique_errors = sorted(set(str(error) for error in errors if error))
-    if unique_errors:
-        lines.extend(f"- {error}" for error in unique_errors)
-    else:
+    dbstat_errors = [error for error in unique_errors if "dbstat unavailable:" in error]
+    other_errors = [error for error in unique_errors if error not in dbstat_errors]
+    if dbstat_errors:
+        lines.append(
+            f"- `dbstat` unavailable for {len(dbstat_errors)} database report entries; "
+            "the SQLite report records the explicit reason and uses its read-only fallback when available."
+        )
+    if other_errors:
+        lines.extend(f"- {error}" for error in other_errors)
+    if not dbstat_errors and not other_errors:
         lines.append("- None.")
+    lines.append("")
+
+    lines.extend(["## Observations", ""])
+    if total_size:
+        lines.append(
+            f"- The scanned Site contains {_format_bytes(total_size)} across "
+            f"{int(inventory.get('total_files', 0) or 0)} files."
+        )
+    if large_files.get("large_files"):
+        lines.append(
+            f"- The large-file classifier matched {len(large_files['large_files'])} files "
+            "by extension or path keyword."
+        )
+    allocation_sources = sorted(
+        {str(item.get("allocation_source", "unknown")) for item in databases}
+    )
+    if allocation_sources:
+        lines.append(f"- SQLite allocation sources observed: {', '.join(allocation_sources)}.")
+    if not total_size and not large_files.get("large_files") and not allocation_sources:
+        lines.append("- No storage entries were observed.")
     lines.append("")
 
     lines.extend(

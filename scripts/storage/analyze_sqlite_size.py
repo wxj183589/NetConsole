@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import mmap
 import sqlite3
 from contextlib import closing
 from datetime import UTC, datetime
@@ -41,6 +42,114 @@ def _row_count(connection: sqlite3.Connection, name: str) -> int:
     return int(row[0] or 0)
 
 
+def _read_varint(data: mmap.mmap, offset: int) -> tuple[int, int]:
+    value = 0
+    for index in range(9):
+        byte = data[offset + index]
+        if index == 8:
+            return (value << 8) | byte, offset + index + 1
+        value = (value << 7) | (byte & 0x7F)
+        if byte < 0x80:
+            return value, offset + index + 1
+    raise ValueError("invalid SQLite varint")
+
+
+def _u16(data: mmap.mmap, offset: int) -> int:
+    return int.from_bytes(data[offset : offset + 2], "big")
+
+
+def _u32(data: mmap.mmap, offset: int) -> int:
+    return int.from_bytes(data[offset : offset + 4], "big")
+
+
+def _local_payload(payload_size: int, usable_size: int, *, index: bool) -> int:
+    max_local = ((usable_size - 12) * (64 if index else 32)) // 255 - 23
+    max_payload = usable_size - (12 if index else 35)
+    if payload_size <= max_payload:
+        return payload_size
+    min_local = max_local
+    local = min_local + (payload_size - min_local) % (usable_size - 4)
+    return min_local if local > max_payload else local
+
+
+def _raw_allocations(
+    path: Path,
+    objects: list[sqlite3.Row],
+    page_size: int,
+) -> dict[str, tuple[int, int]]:
+    """Estimate physical object allocation by traversing SQLite B-trees.
+
+    This is a read-only fallback for Python builds without the optional dbstat
+    virtual table. It counts each reachable B-tree and overflow page once.
+    """
+
+    allocations: dict[str, tuple[int, int]] = {}
+    file_size = path.stat().st_size
+    if page_size <= 0 or file_size < page_size:
+        raise ValueError("invalid SQLite page size or file size")
+
+    with path.open("rb") as stream, mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
+        reserved = data[20]
+        usable_size = page_size - reserved
+        page_limit = min(file_size // page_size, _u32(data, 28) or file_size // page_size)
+
+        def page_offset(page_number: int) -> int:
+            if page_number < 1 or page_number > page_limit:
+                raise ValueError(f"SQLite page out of range: {page_number}")
+            return (page_number - 1) * page_size
+
+        def walk_overflow(page_number: int, visited: set[int]) -> None:
+            while page_number:
+                if page_number in visited:
+                    return
+                visited.add(page_number)
+                page_number = _u32(data, page_offset(page_number))
+
+        def walk_btree(page_number: int, visited: set[int], *, index: bool) -> None:
+            if page_number in visited:
+                return
+            visited.add(page_number)
+            offset = page_offset(page_number)
+            header = offset + (100 if page_number == 1 else 0)
+            page_type = data[header]
+            cell_count = _u16(data, header + 3)
+            if page_type in (0x05, 0x02):
+                for index_in_page in range(cell_count):
+                    cell_pointer = _u16(data, header + 12 + index_in_page * 2)
+                    cell_offset = offset + cell_pointer
+                    child_page = _u32(data, cell_offset)
+                    walk_btree(child_page, visited, index=page_type == 0x02)
+                rightmost = _u32(data, header + 8)
+                walk_btree(rightmost, visited, index=page_type == 0x02)
+                return
+            if page_type not in (0x0D, 0x0A):
+                raise ValueError(f"unsupported SQLite B-tree page type: {page_type:#x}")
+            for index_in_page in range(cell_count):
+                cell_pointer = _u16(data, header + 8 + index_in_page * 2)
+                cell_offset = offset + cell_pointer
+                payload_size, payload_offset = _read_varint(data, cell_offset)
+                if not index:
+                    _, payload_offset = _read_varint(data, payload_offset)
+                local_size = _local_payload(
+                    payload_size,
+                    usable_size,
+                    index=index,
+                )
+                if payload_size > local_size:
+                    overflow_offset = payload_offset + local_size
+                    walk_overflow(_u32(data, overflow_offset), visited)
+
+        for object_row in objects:
+            root_page = int(object_row["rootpage"] or 0)
+            if not root_page:
+                allocations[str(object_row["name"])] = (0, 0)
+                continue
+            visited: set[int] = set()
+            walk_btree(root_page, visited, index=str(object_row["type"]) == "index")
+            allocations[str(object_row["name"])] = (len(visited), len(visited) * page_size)
+    return allocations
+
+
 def analyze_sqlite_size(database: Path | str) -> dict[str, Any]:
     """Return physical table/index page allocation without modifying ``database``."""
 
@@ -55,6 +164,7 @@ def analyze_sqlite_size(database: Path | str) -> dict[str, Any]:
     indexes: list[dict[str, Any]] = []
     dbstat_supported = False
     dbstat_error = ""
+    allocation_source = "dbstat"
     page_size = 0
     page_count = 0
     try:
@@ -69,10 +179,21 @@ def analyze_sqlite_size(database: Path | str) -> dict[str, Any]:
             else:
                 dbstat_supported = True
             objects = connection.execute(
-                "SELECT type, name, tbl_name FROM sqlite_schema "
+                "SELECT type, name, tbl_name, rootpage FROM sqlite_schema "
                 "WHERE type IN ('table', 'index') AND name NOT LIKE 'sqlite_%' "
                 "ORDER BY type, name"
             ).fetchall()
+            raw_allocations: dict[str, tuple[int, int]] = {}
+            if not dbstat_supported:
+                allocation_source = "raw_btree"
+                try:
+                    raw_allocations = _raw_allocations(path, objects, page_size)
+                except (OSError, ValueError) as exc:
+                    allocation_source = "unavailable"
+                    errors.append(
+                        "raw SQLite page allocation unavailable: "
+                        f"{exc.__class__.__name__}: {exc}"
+                    )
             for row in objects:
                 object_type = str(row["type"])
                 name = str(row["name"])
@@ -80,6 +201,8 @@ def analyze_sqlite_size(database: Path | str) -> dict[str, Any]:
                 size_bytes = 0
                 if dbstat_supported:
                     object_page_count, size_bytes = _allocation(connection, name)
+                elif raw_allocations:
+                    object_page_count, size_bytes = raw_allocations.get(name, (0, 0))
                 if object_type == "table":
                     try:
                         row_count = _row_count(connection, name)
@@ -119,6 +242,7 @@ def analyze_sqlite_size(database: Path | str) -> dict[str, Any]:
 
     tables.sort(key=lambda item: (-item["size_bytes"], item["table_name"]))
     indexes.sort(key=lambda item: (-item["size_bytes"], item["index_name"]))
+    allocated_size_bytes = sum(item["size_bytes"] for item in tables + indexes)
     return {
         "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "database_path": str(path),
@@ -127,9 +251,11 @@ def analyze_sqlite_size(database: Path | str) -> dict[str, Any]:
         "page_count": page_count,
         "dbstat_supported": dbstat_supported,
         "dbstat_error": dbstat_error,
+        "allocation_source": allocation_source,
         "tables": tables,
         "indexes": indexes,
-        "dbstat_size_bytes": sum(item["size_bytes"] for item in tables + indexes),
+        "dbstat_size_bytes": allocated_size_bytes if dbstat_supported else 0,
+        "allocated_size_bytes": allocated_size_bytes,
         "errors": sorted(errors),
     }
 

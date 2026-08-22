@@ -29,3 +29,7 @@ def test_sqlite_table_space_report_is_read_only(tmp_path: Path) -> None:
     else:
         assert report["dbstat_error"]
         assert report["errors"]
+        table = next(item for item in report["tables"] if item["table_name"] == "task_snapshots")
+        assert table["row_count"] == 2
+        assert table["size_bytes"] > 0
+        assert report["allocation_source"] == "raw_btree"

@@ -35,7 +35,12 @@ def test_empty_site_generates_all_reports_and_zero_directory_entries(tmp_path: P
 def test_multiple_directories_are_reported_with_explicit_paths(tmp_path: Path) -> None:
     site = tmp_path / "site"
     (site / "files" / "backups" / "production-maintenance").mkdir(parents=True)
+    (site / "files" / "backups" / "database-migrations").mkdir(parents=True)
+    (site / "files" / "rail_transit").mkdir(parents=True)
+    (site / "db" / "history").mkdir(parents=True)
     (site / "HistoryStore").mkdir()
+    (site / "imports").mkdir()
+    (site / "sync").mkdir()
     (site / "files" / "backups" / "production-maintenance" / "backup.zip").write_bytes(b"12345")
     (site / "HistoryStore" / "history.log").write_bytes(b"123")
     output = tmp_path / "report"
@@ -46,6 +51,9 @@ def test_multiple_directories_are_reported_with_explicit_paths(tmp_path: Path) -
     by_path = {item["path"]: item for item in analysis["top_directories"]}
     assert by_path["files/backups/production-maintenance"]["size_bytes"] == 5
     assert by_path["HistoryStore"]["size_bytes"] == 3
+    assert "files/rail_transit" in by_path
+    assert "db/history" in by_path
+    assert "files/backups/database-migrations" in by_path
     assert by_path["db"]["size_bytes"] == 0
 
 
@@ -87,9 +95,12 @@ def test_summary_contains_factual_sections_and_top_files(tmp_path: Path) -> None
 
     summary = (output / "SUMMARY.md").read_text(encoding="utf-8")
     assert "# NetConsole Site Storage Audit Report" in summary
-    assert "## Largest files TOP20" in summary
+    assert "## Storage Overview" in summary
+    assert "## Top Directories" in summary
+    assert "## Top Files" in summary
     assert "`large.log`" in summary
-    assert "## SQLite TOP10 tables" in summary
+    assert "## SQLite Usage" in summary
+    assert "## Observations" in summary
     assert "## Exceptions" in summary
     assert "## Conclusion" in summary
 
