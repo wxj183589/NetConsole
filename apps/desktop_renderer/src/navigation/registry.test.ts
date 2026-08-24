@@ -23,6 +23,7 @@ describe('Web navigation registry', () => {
       '任务中心',
       'Agent 管理',
       '日志中心',
+      '存储管理',
       '系统设置',
       '版本与功能交付',
     ])
