@@ -753,7 +753,11 @@ def test_trackside_snapshot_keeps_other_devices_when_one_interface_source_fails(
             raise RuntimeError("device reset")
         return original(fact_repository, device_uuid)
 
+    def bulk_interfaces(*_args, **_kwargs):
+        raise RuntimeError("bulk reader unavailable")
+
     monkeypatch.setattr(DeviceFactRepository, "list_device_interfaces", list_interfaces)
+    monkeypatch.setattr(DeviceFactRepository, "list_device_interfaces_for_uuids", bulk_interfaces)
 
     snapshot = load_trackside_ap_business_snapshot(repository, "demo", 1)
 

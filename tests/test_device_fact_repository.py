@@ -101,6 +101,45 @@ def test_replace_device_interfaces_replaces_only_target_device(tmp_path):
     assert [item["interface_name"] for item in repository.list_device_interfaces("device-2")] == ["GE1/0/9"]
 
 
+def test_bulk_current_fact_reads_match_per_device_reads(tmp_path):
+    repository = make_repository(tmp_path)
+    repository.replace_device_interfaces(
+        "device-1",
+        [{"interface_name": "GE1/0/10"}, {"interface_name": "GE1/0/2"}],
+    )
+    repository.replace_device_interfaces(
+        "device-2", [{"interface_name": "GE1/0/9"}]
+    )
+    repository.replace_optical_modules(
+        "device-1", [{"interface_name": "GE1/0/2", "rx_power": "-3.2 dBm"}]
+    )
+    repository.replace_optical_modules(
+        "device-2", [{"interface_name": "GE1/0/9", "rx_power": "-9.9 dBm"}]
+    )
+    repository.replace_lldp_neighbors(
+        "device-1",
+        [{"local_interface": "GE1/0/2", "neighbor_sysname": "AP-2"}],
+    )
+    repository.replace_lldp_neighbors(
+        "device-2",
+        [{"local_interface": "GE1/0/9", "neighbor_sysname": "AP-9"}],
+    )
+
+    device_ids = ["device-1", "device-2", "missing"]
+    assert repository.list_device_interfaces_for_uuids(device_ids) == {
+        device_id: repository.list_device_interfaces(device_id)
+        for device_id in device_ids
+    }
+    assert repository.list_optical_modules_for_uuids(device_ids) == {
+        device_id: repository.list_optical_modules(device_id)
+        for device_id in device_ids
+    }
+    assert repository.list_lldp_neighbors_for_uuids(device_ids) == {
+        device_id: repository.list_lldp_neighbors(device_id)
+        for device_id in device_ids
+    }
+
+
 def test_zte_interface_semantics_are_persisted_to_current_and_history(tmp_path):
     repository = make_repository(tmp_path)
     repository.replace_device_interfaces(

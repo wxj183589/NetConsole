@@ -433,6 +433,19 @@ class DeviceFactRepository:
         latest = _latest_rows_by_interface([dict(row) for row in rows], "interface_name")
         return sorted(latest, key=lambda row: interface_sort_key(row.get("interface_name")))
 
+    def list_device_interfaces_for_uuids(
+        self, device_uuids: list[str]
+    ) -> dict[str, list[dict[str, object | None]]]:
+        values = self._normalized_device_uuids(device_uuids)
+        grouped = self._list_current_rows_for_devices("device_interfaces", values)
+        return {
+            device_uuid: sorted(
+                _latest_rows_by_interface(rows, "interface_name"),
+                key=lambda row: interface_sort_key(row.get("interface_name")),
+            )
+            for device_uuid, rows in grouped.items()
+        }
+
     def list_device_interfaces_page(
         self,
         device_uuid: str,
@@ -539,6 +552,21 @@ class DeviceFactRepository:
             _latest_rows_by_interface([dict(row) for row in rows], "interface_name")
         )
         return sorted(latest, key=lambda row: interface_sort_key(row.get("interface_name")))
+
+    def list_optical_modules_for_uuids(
+        self, device_uuids: list[str]
+    ) -> dict[str, list[dict[str, object | None]]]:
+        values = self._normalized_device_uuids(device_uuids)
+        grouped = self._list_current_rows_for_devices("device_optical_modules", values)
+        return {
+            device_uuid: sorted(
+                _normalize_optical_rows(
+                    _latest_rows_by_interface(rows, "interface_name")
+                ),
+                key=lambda row: interface_sort_key(row.get("interface_name")),
+            )
+            for device_uuid, rows in grouped.items()
+        }
 
     def list_optical_modules_page(
         self,
@@ -709,6 +737,54 @@ class DeviceFactRepository:
                 int(row.get("id") or 0),
             ),
         )
+
+    def list_lldp_neighbors_for_uuids(
+        self, device_uuids: list[str]
+    ) -> dict[str, list[dict[str, object | None]]]:
+        values = self._normalized_device_uuids(device_uuids)
+        grouped = self._list_current_rows_for_devices("device_lldp_neighbors", values)
+        return {
+            device_uuid: sorted(
+                rows,
+                key=lambda row: (
+                    interface_sort_key(row.get("local_interface")),
+                    natural_text_key(row.get("neighbor_sysname")),
+                    interface_sort_key(row.get("neighbor_interface")),
+                    int(row.get("id") or 0),
+                ),
+            )
+            for device_uuid, rows in grouped.items()
+        }
+
+    @staticmethod
+    def _normalized_device_uuids(device_uuids: list[str]) -> list[str]:
+        return sorted(
+            {
+                str(device_uuid).strip()
+                for device_uuid in device_uuids
+                if str(device_uuid).strip()
+            }
+        )
+
+    def _list_current_rows_for_devices(
+        self,
+        table: str,
+        device_uuids: list[str],
+    ) -> dict[str, list[dict[str, object | None]]]:
+        grouped = {device_uuid: [] for device_uuid in device_uuids}
+        if not device_uuids:
+            return grouped
+        placeholders = ", ".join("?" for _ in device_uuids)
+        with self.database.connect() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM {table} WHERE device_uuid IN ({placeholders})",
+                device_uuids,
+            ).fetchall()
+        for row in rows:
+            device_uuid = str(row["device_uuid"] or "").strip()
+            if device_uuid in grouped:
+                grouped[device_uuid].append(dict(row))
+        return grouped
 
     def list_lldp_neighbors_page(
         self,

@@ -1792,6 +1792,7 @@ class MeshAnalysisQueryService:
                 include_standby=True,
             )
         repository = self._chart_repository(context)
+        repository_series_budget = self._trackside_repository_series_budget(max_points)
         payload = repository.query_trackside_link_chart_segment(
             source_file_id=context.detail_source_id,
             radio=radio,
@@ -1799,7 +1800,7 @@ class MeshAnalysisQueryService:
             time_to=time_to,
             max_rows=_MAX_TRACKSIDE_LINK_POINTS,
             max_frames=min(max_points, _MAX_CHART_RENDER_POINTS),
-            max_series=_MAX_TRACKSIDE_SERIES,
+            max_series=repository_series_budget,
             max_events=_MAX_CHART_EVENTS,
         )
         result = self._trackside_signal_chart_dto(
@@ -1812,6 +1813,20 @@ class MeshAnalysisQueryService:
             max_points=max_points,
         )
         return self._with_chart_metrics(result, started)
+
+    @staticmethod
+    def _trackside_repository_series_budget(max_points: int) -> int:
+        """Bound source materialization to the requested chart resolution.
+
+        The response fitter already reduces the default 1,000-point chart to
+        128 AP/Radio series when the payload approaches its target size.  Keep
+        that same lower bound in the repository query so wide real-world
+        default charts do not materialize hundreds of series that will be
+        discarded immediately afterwards.  Higher point requests retain the
+        existing public limit so detailed callers keep their full series set.
+        """
+        requested = min(max(int(max_points), 10), _MAX_CHART_RENDER_POINTS)
+        return 128 if requested <= 1_000 else _MAX_TRACKSIDE_SERIES
 
     def get_peer_segment_chart(
         self,

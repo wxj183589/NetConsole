@@ -402,6 +402,17 @@ def test_trackside_repository_applies_frame_budget_at_exact_row_cap(tmp_path: Pa
     assert not any(row.get("_trackside_break_before") for row in rows)
 
 
+@pytest.mark.parametrize(
+    ("max_points", "expected"),
+    ((10, 128), (1_000, 128), (2_000, 512), (20_000, 512)),
+)
+def test_trackside_repository_series_budget_follows_chart_resolution(
+    max_points: int,
+    expected: int,
+) -> None:
+    assert MeshAnalysisQueryService._trackside_repository_series_budget(max_points) == expected
+
+
 def test_trackside_repository_marks_ap_reappearance_after_missing_frames(tmp_path: Path) -> None:
     paths, session_id, detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
     sequence = (

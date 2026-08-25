@@ -445,8 +445,23 @@ def _load_trackside_ap_business_snapshot_once(
         label: str,
         code: str,
         loader: Callable[[str], list[dict[str, object | None]]],
+        bulk_loader: Callable[
+            [list[str]], dict[str, list[dict[str, object | None]]]
+        ] | None = None,
     ) -> dict[str, list[dict[str, object | None]]]:
         values: dict[str, list[dict[str, object | None]]] = {}
+        device_ids = [str(device.device_uuid or "") for device in devices]
+        if bulk_loader is not None:
+            try:
+                bulk_values = bulk_loader(device_ids)
+                return {
+                    device_id: list(bulk_values.get(device_id, []))
+                    for device_id in device_ids
+                }
+            except Exception:
+                # Retain the existing per-device degradation boundary if a
+                # bulk reader cannot serve this database version.
+                pass
         failed = 0
         for device in devices:
             device_id = str(device.device_uuid or "")
@@ -473,18 +488,21 @@ def _load_trackside_ap_business_snapshot_once(
         "交换机接口事实",
         "SWITCH_INTERFACES_UNAVAILABLE",
         fact_repository.list_device_interfaces,
+        fact_repository.list_device_interfaces_for_uuids,
     )
     optical_by_device = device_facts(
         "switch_optical",
         "交换机光模块事实",
         "SWITCH_OPTICAL_UNAVAILABLE",
         fact_repository.list_optical_modules,
+        fact_repository.list_optical_modules_for_uuids,
     )
     lldp_by_device = device_facts(
         "lldp",
         "交换机 LLDP 事实",
         "SWITCH_LLDP_UNAVAILABLE",
         fact_repository.list_lldp_neighbors,
+        fact_repository.list_lldp_neighbors_for_uuids,
     )
     try:
         # AC runtime facts are a primary business source. Base-data scope only
@@ -527,11 +545,12 @@ def _load_trackside_ap_business_snapshot_once(
         switch_lldp_rows=runtime_station_rows,
         optical_rows=fit_ap_optical_rows,
     )
+    station_rows = ac_repository.list_ap_extension_points()
     scope = resolve_effective_trackside_ap_scope(
         context=context,
-        station_rows=ac_repository.list_ap_extension_points(),
+        station_rows=station_rows,
         plan_rows=ac_repository.list_trackside_ap_plan(TRACKSIDE_AP_PLAN_MODE),
-        reference_rows=ac_repository.list_ap_extension_points(),
+        reference_rows=station_rows,
         resource_rows=fit_ap_resource_input,
         runtime_station_rows=runtime_station_rows,
         switch_identity_rows=ac_repository.list_trackside_switch_identity_rows(),
