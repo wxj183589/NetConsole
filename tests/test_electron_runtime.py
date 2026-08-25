@@ -19,6 +19,7 @@ from netconsole.backend.electron_runtime import (
     _start_shutdown_progress_monitor,
     _stop_shutdown_progress_monitor,
     parse_options,
+    read_runtime_handshake,
     read_session_token,
     wait_for_exit_command,
     watch_control_stream,
@@ -103,6 +104,16 @@ def test_session_token_is_read_from_bounded_stdin_json() -> None:
     assert read_session_token(io.StringIO(f'{{"session_token":"{TOKEN}"}}\n')) == TOKEN
 
 
+def test_runtime_handshake_accepts_a_bounded_warm_handoff_owner() -> None:
+    handshake = read_runtime_handshake(io.StringIO(json.dumps({
+        "session_token": TOKEN,
+        "warm_handoff_owner_id": "a" * 32,
+    }) + "\n"))
+
+    assert handshake.session_token == TOKEN
+    assert handshake.warm_handoff_owner_id == "a" * 32
+
+
 @pytest.mark.parametrize(
     "payload",
     [
@@ -110,6 +121,7 @@ def test_session_token_is_read_from_bounded_stdin_json() -> None:
         "not-json\n",
         '{"session_token":"short"}\n',
         '{"session_token":"contains spaces and is deliberately long enough"}\n',
+        f'{{"session_token":"{TOKEN}","warm_handoff_owner_id":"invalid"}}\n',
     ],
 )
 def test_session_token_rejects_invalid_handshake(payload: str) -> None:
@@ -218,7 +230,7 @@ def test_startup_failure_protocol_is_ascii_and_preserves_chinese(monkeypatch, ca
     from netconsole.core.storage_manifest import StorageCompatibilityError
 
     class InstanceLock:
-        def __init__(self, _paths) -> None:
+        def __init__(self, _paths, **_kwargs) -> None:
             pass
 
         def __enter__(self):
@@ -260,7 +272,7 @@ def test_slow_storage_manifest_is_announced_before_work_starts(monkeypatch, caps
     from netconsole.core.storage_manifest import StorageCompatibilityError
 
     class InstanceLock:
-        def __init__(self, _paths) -> None:
+        def __init__(self, _paths, **_kwargs) -> None:
             pass
 
         def __enter__(self):

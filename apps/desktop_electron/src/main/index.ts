@@ -1,10 +1,11 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, nativeTheme, Notification as ElectronNotification, screen, shell, Tray } from 'electron'
 import { spawn } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 import { DESKTOP_IPC, DESKTOP_SESSION_COOKIE, DESKTOP_SESSION_HEADER, type CloseToTrayState, type NativeActionResult, type RendererHostReport, type RendererRecoveryState, type RendererWorkloadReport, type SiteStorageRestartRequest, type TaskWindowContext, type WorkspaceWindowOpenRequest, type WorkspaceWindowSnapshot, type WorkspaceWindowStateResult } from '../shared/bridge'
 import { PythonBackendManager, type BackendRuntimeInfo } from './backend-manager'
+import { prepareWarmBackendHandoff } from './backend-handoff'
 import { DesktopBootstrapStore } from './bootstrap'
 import { DESKTOP_SAFE_BACKGROUND_COLOR, isDevelopmentMenuEnabled, loadDesktopConfig, resolveDesktopBackgroundColor } from './config'
 import { registerDesktopIpc, type DesktopIpcRegistration } from './ipc'
@@ -78,6 +79,9 @@ let trayAvailable = false
 let closeToTrayEnabled = true
 let explicitQuitRequested = false
 let backend: PythonBackendManager | undefined
+let createManagedBackend: ((dataRoot: string, activeSiteId: string, warmReplacement?: boolean) => PythonBackendManager) | undefined
+let backendStatusUnsubscribe: (() => void) | undefined
+const retiringBackends = new Set<PythonBackendManager>()
 let allowQuit = false
 let shuttingDown = false
 let requestedExitCode = 0
@@ -176,17 +180,24 @@ async function startDesktop(): Promise<void> {
   if (bootstrapResult.rejectedEphemeralRoot) logger('ELECTRON_BOOTSTRAP_EPHEMERAL_ROOT_REJECTED')
   startupTimeline = new StartupTimeline(logger, startupStartedAt)
   startupTimeline.mark('electron.app_ready')
-  backend = new PythonBackendManager({
+  createManagedBackend = (dataRoot, activeSiteId, warmReplacement = false) => new PythonBackendManager({
     executable: config.backendExecutable,
     argumentsPrefix: config.backendArgumentsPrefix,
     projectRoot: config.projectRoot,
-    dataRoot: config.dataRoot,
-    activeSiteId: config.activeSiteId,
+    dataRoot,
+    ...(activeSiteId ? { activeSiteId } : {}),
     runtimeMode: config.runtimeMode,
     storageMode: config.storageMode,
     pythonPath: config.backendPythonPath,
     rendererOrigin: config.rendererOrigin,
     startupTimeoutMs: config.startupTimeoutMs,
+    // A warm replacement cannot bind the fixed development port still owned
+    // by the serving Backend. Port 0 keeps production behavior unchanged and
+    // asks the development replacement to announce a free loopback port.
+    ...(warmReplacement ? {
+      environment: { NETCONSOLE_DEV_BACKEND_PORT: '' },
+      warmHandoffOwnerId: readWarmHandoffOwnerId(dataRoot, activeSiteId),
+    } : {}),
     logger,
     onStartupMilestone: (event) => startupTimeline?.mark(event),
     onStartupProgress: (progress) => {
@@ -203,6 +214,7 @@ async function startDesktop(): Promise<void> {
       )
     },
   })
+  backend = createManagedBackend(config.dataRoot, config.activeSiteId ?? '')
   const developmentMenu = isDevelopmentMenuEnabled(config.devServerUrl)
   if (!developmentMenu) Menu.setApplicationMenu(null)
   rendererDevelopment = Boolean(config.devServerUrl)
@@ -363,7 +375,10 @@ async function startDesktop(): Promise<void> {
       platform: process.platform,
       isPackaged: app.isPackaged,
     },
-    backend,
+    backend: {
+      getStatus: () => requireManagedBackend().getStatus(),
+      getRuntimeInfo: () => requireManagedBackend().getRuntimeInfo(),
+    },
     pathRegistry,
     isTrustedSender: (event) => getAllDesktopWindows().some((window) => (
       isTrustedRendererSender(event, window, [...rendererOrigins])
@@ -375,21 +390,7 @@ async function startDesktop(): Promise<void> {
     uiPreferenceStore,
     externalToolService,
   })
-  backend.onStatusChange((status) => {
-    logger('ELECTRON_BACKEND_STATUS', `state=${status.state}`)
-    const publicStatus = {
-      state: status.state,
-      ...(status.baseUrl ? { baseUrl: status.baseUrl } : {}),
-      ...(status.error ? { error: '本地后端不可用' } : {}),
-    }
-    trayController?.updateContext({ backendState: status.state })
-    for (const window of getAllDesktopWindows()) {
-      if (window && !window.isDestroyed()) window.webContents.send(DESKTOP_IPC.backendStatusChanged, publicStatus)
-    }
-    if (process.env.NETCONSOLE_ELECTRON_SMOKE_TEST === '1' && status.state === 'failed') {
-      requestExit(2)
-    }
-  })
+  bindManagedBackendStatus(backend)
 
   startupProgressPage = new StartupProgressPage({
     window: mainWindow,
@@ -592,46 +593,172 @@ function createMainWindow(
 async function restartManagedBackend(update: SiteStorageRestartRequest): Promise<void> {
   if (shuttingDown) throw new Error('NetConsole 正在安全退出，无法切换局点')
   const cookieWindow = getAllDesktopWindows()[0]
-  if (!backend || !cookieWindow || !bootstrapStore) throw new Error('desktop runtime is unavailable')
+  if (!backend || !createManagedBackend || !cookieWindow || !bootstrapStore) throw new Error('desktop runtime is unavailable')
   if (!desktopStorageContext.persistent) throw new Error('隔离测试模式不允许修改正式局点或数据根')
+  const currentBackend = backend
+  const previousRuntime = currentBackend.getRuntimeInfo()
   const previousRoot = desktopDataRoot
   const previousSite = desktopActiveSiteId
   const nextRoot = update.dataRoot ?? previousRoot
   const nextSite = update.activeSiteId ?? previousSite
   logger('SITE_SWITCH_STARTED', `site_changed=${nextSite !== previousSite} data_root_changed=${nextRoot !== previousRoot}`)
-  await backend.stop()
-  let workspaceCheckpoint: Map<string, WorkspaceWindowSnapshot | null> | undefined
+  if (nextRoot !== previousRoot) {
+    await restartManagedBackendForDataRoot(currentBackend, previousRoot, previousSite, nextRoot, nextSite)
+    return
+  }
+  const workspaceCheckpoint = workspaceWindowController?.prepareSiteSwitchSnapshots()
+  const candidate = createManagedBackend(nextRoot, nextSite, true)
+  let candidateContext: DesktopSiteContext | null = null
   try {
-    workspaceCheckpoint = workspaceWindowController?.prepareSiteSwitchSnapshots()
-    backend.configureStorage(nextRoot, nextSite)
-    const runtime = await backend.start()
+    const handoffStartedAt = Date.now()
+    await prepareWarmBackendHandoff({
+      current: currentBackend,
+      candidate,
+      verify: async (runtime) => {
+        candidateContext = await readBackendSiteContext(runtime.baseUrl, runtime.apiToken)
+        if (!candidateContext || candidateContext.activeSiteId !== nextSite) {
+          throw new Error('Backend ready 后返回的当前局点与目标局点不一致')
+        }
+      },
+      commit: async (active, runtime) => {
+        await applyManagedBackendRuntime(runtime, nextRoot, nextSite)
+        backend = active
+        bindManagedBackendStatus(active)
+        publishManagedBackendStatus(active.getStatus())
+        applyDesktopSiteContext(candidateContext!)
+      },
+      rollback: async () => {
+        backend = currentBackend
+        bindManagedBackendStatus(currentBackend)
+        await applyManagedBackendRuntime(previousRuntime, previousRoot, previousSite)
+        publishManagedBackendStatus(currentBackend.getStatus())
+        const previousContext = await readBackendSiteContext(previousRuntime.baseUrl, previousRuntime.apiToken)
+        if (previousContext) applyDesktopSiteContext(previousContext)
+      },
+    })
+    if (nextSite !== previousSite) {
+      rendererRecoveries.clear()
+      latestRendererWorkloads.clear()
+    }
+    logger(
+      'SITE_SWITCH_BACKEND_HANDOFF_READY',
+      `site_changed=${nextSite !== previousSite} data_root_changed=${nextRoot !== previousRoot} elapsed_ms=${Date.now() - handoffStartedAt}`,
+    )
+    setImmediate(() => {
+      void reloadManagedRenderersAfterBackendRestart()
+        .finally(() => retireManagedBackend(currentBackend))
+    })
+  } catch (cause) {
+    if (candidate.isOwnedProcessAlive()) await retireManagedBackend(candidate)
+    try {
+      await restoreBackendSiteContext(previousRuntime, previousSite)
+      const restored = await readBackendSiteContext(previousRuntime.baseUrl, previousRuntime.apiToken)
+      if (!restored || restored.activeSiteId !== previousSite) throw new Error('previous site verification failed')
+      applyDesktopSiteContext(restored)
+    } catch (restoreCause) {
+      if (workspaceCheckpoint) workspaceWindowController?.restoreSiteSwitchSnapshots(workspaceCheckpoint)
+      logger('SITE_SWITCH_FAILED', `stage=warm_handoff_restore restored=false type=${restoreCause instanceof Error ? restoreCause.name : 'unknown'}`)
+      throw new Error('Backend 切换失败，原局点恢复失败，请重新启动应用。')
+    }
+    if (workspaceCheckpoint) workspaceWindowController?.restoreSiteSwitchSnapshots(workspaceCheckpoint)
+    logger('SITE_SWITCH_FAILED', `stage=warm_handoff restored=true type=${cause instanceof Error ? cause.name : 'unknown'}`)
+    throw new Error('Backend 切换失败，已恢复原局点。')
+  }
+}
+
+async function restartManagedBackendForDataRoot(
+  currentBackend: PythonBackendManager,
+  previousRoot: string,
+  previousSite: string,
+  nextRoot: string,
+  nextSite: string,
+): Promise<void> {
+  await currentBackend.stop()
+  const workspaceCheckpoint = workspaceWindowController?.prepareSiteSwitchSnapshots()
+  try {
+    currentBackend.configureStorage(nextRoot, nextSite)
+    const runtime = await currentBackend.start()
     await applyManagedBackendRuntime(runtime, nextRoot, nextSite)
     const verified = await refreshTraySiteContext(runtime, '')
     if (!verified || verified.activeSiteId !== nextSite) {
       throw new Error('Backend ready 后返回的当前局点与目标局点不一致')
     }
-    if (nextSite !== previousSite) {
-      rendererRecoveries.clear()
-      latestRendererWorkloads.clear()
-    }
-    logger('SITE_SWITCH_BACKEND_RESTARTED', `site_changed=${nextSite !== previousSite} data_root_changed=${nextRoot !== previousRoot}`)
+    logger('DATA_ROOT_BACKEND_RESTARTED')
     setImmediate(() => { void reloadManagedRenderersAfterBackendRestart() })
   } catch (cause) {
     try {
-      await backend.stop()
-      backend.configureStorage(previousRoot, previousSite)
-      const restoredRuntime = await backend.start()
+      await currentBackend.stop()
+      currentBackend.configureStorage(previousRoot, previousSite)
+      const restoredRuntime = await currentBackend.start()
       await applyManagedBackendRuntime(restoredRuntime, previousRoot, previousSite)
       await refreshTraySiteContext(restoredRuntime, previousSite)
     } catch (restoreCause) {
       if (workspaceCheckpoint) workspaceWindowController?.restoreSiteSwitchSnapshots(workspaceCheckpoint)
-      logger('SITE_SWITCH_FAILED', `stage=backend_restore restored=false type=${restoreCause instanceof Error ? restoreCause.name : 'unknown'}`)
-      throw new Error('Backend 重启失败，原局点恢复失败，请重新启动应用。')
+      logger('SITE_SWITCH_FAILED', `stage=data_root_restore restored=false type=${restoreCause instanceof Error ? restoreCause.name : 'unknown'}`)
+      throw new Error('数据根切换失败，原 Backend 恢复失败，请重新启动应用。')
     }
     if (workspaceCheckpoint) workspaceWindowController?.restoreSiteSwitchSnapshots(workspaceCheckpoint)
-    logger('SITE_SWITCH_FAILED', `stage=backend_start restored=true type=${cause instanceof Error ? cause.name : 'unknown'}`)
-    throw new Error('Backend 重启失败，已恢复原局点。')
+    logger('SITE_SWITCH_FAILED', `stage=data_root_restart restored=true type=${cause instanceof Error ? cause.name : 'unknown'}`)
+    throw new Error('数据根切换失败，已恢复原 Backend。')
   }
+}
+
+function requireManagedBackend(): PythonBackendManager {
+  if (!backend) throw new Error('desktop runtime is unavailable')
+  return backend
+}
+
+function readWarmHandoffOwnerId(dataRoot: string, targetSiteId: string): string {
+  const path = resolve(dataRoot, 'runtime', 'locks', 'netconsole-backend.lock')
+  let value: unknown
+  try {
+    value = JSON.parse(readFileSync(path, 'utf8'))
+  } catch {
+    throw new Error('当前 Backend 缺少可验证的 warm handoff owner')
+  }
+  if (!value || typeof value !== 'object') throw new Error('当前 Backend owner 无效')
+  const owner = value as Record<string, unknown>
+  const instanceId = typeof owner.instance_id === 'string' ? owner.instance_id : ''
+  const activeSiteId = typeof owner.active_site_id === 'string' ? owner.active_site_id : ''
+  const ownerRoot = typeof owner.data_root === 'string' ? owner.data_root : ''
+  if (
+    !/^[a-f0-9]{32}$/.test(instanceId)
+    || !activeSiteId
+    || activeSiteId === targetSiteId
+    || resolve(ownerRoot) !== resolve(dataRoot)
+  ) throw new Error('当前 Backend owner 与目标局点不满足 warm handoff 条件')
+  return instanceId
+}
+
+function bindManagedBackendStatus(value: PythonBackendManager): void {
+  backendStatusUnsubscribe?.()
+  backendStatusUnsubscribe = value.onStatusChange(publishManagedBackendStatus)
+}
+
+function publishManagedBackendStatus(status: ReturnType<PythonBackendManager['getStatus']>): void {
+  logger('ELECTRON_BACKEND_STATUS', `state=${status.state}`)
+  const publicStatus = {
+    state: status.state,
+    ...(status.baseUrl ? { baseUrl: status.baseUrl } : {}),
+    ...(status.error ? { error: '本地后端不可用' } : {}),
+  }
+  trayController?.updateContext({ backendState: status.state })
+  for (const window of getAllDesktopWindows()) {
+    if (window && !window.isDestroyed()) window.webContents.send(DESKTOP_IPC.backendStatusChanged, publicStatus)
+  }
+  if (process.env.NETCONSOLE_ELECTRON_SMOKE_TEST === '1' && status.state === 'failed') requestExit(2)
+}
+
+function retireManagedBackend(value: PythonBackendManager): Promise<void> {
+  retiringBackends.add(value)
+  return value.stop()
+    .then(() => {
+      retiringBackends.delete(value)
+      logger('SITE_SWITCH_RETIRED_BACKEND_STOPPED')
+    })
+    .catch((cause) => {
+      logger('SITE_SWITCH_RETIRED_BACKEND_STOP_FAILED', `type=${cause instanceof Error ? cause.name : 'unknown'}`)
+    })
 }
 
 async function applyManagedBackendRuntime(runtime: BackendRuntimeInfo, dataRoot: string, activeSiteId: string): Promise<void> {
@@ -709,20 +836,40 @@ async function refreshTraySiteContext(
       currentRuntime.apiToken,
     )
     if (!context) return null
-    desktopActiveSiteId = context.activeSiteId || fallbackSiteId
-    desktopActiveSiteName = context.activeSiteName
-    desktopSites = context.sites
-    trayController?.updateContext({
-      activeSiteId: desktopActiveSiteId,
-      activeSiteName: desktopActiveSiteName,
-      sites: desktopSites,
-      siteSwitching: false,
+    applyDesktopSiteContext({
+      ...context,
+      activeSiteId: context.activeSiteId || fallbackSiteId,
     })
     return context
   } catch {
     logger('ELECTRON_TRAY_SITE_CONTEXT_REFRESH_FAILED')
     return null
   }
+}
+
+function applyDesktopSiteContext(context: DesktopSiteContext): void {
+  desktopActiveSiteId = context.activeSiteId
+  desktopActiveSiteName = context.activeSiteName
+  desktopSites = context.sites
+  trayController?.updateContext({
+    activeSiteId: desktopActiveSiteId,
+    activeSiteName: desktopActiveSiteName,
+    sites: desktopSites,
+    siteSwitching: false,
+  })
+}
+
+async function restoreBackendSiteContext(runtime: BackendRuntimeInfo, siteId: string): Promise<void> {
+  const response = await fetch(`${runtime.baseUrl}/api/v1/sites/${encodeURIComponent(siteId)}/activate`, {
+    method: 'POST',
+    cache: 'no-store',
+    headers: {
+      [DESKTOP_SESSION_HEADER]: runtime.apiToken,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ confirmed: true }),
+  })
+  if (!response.ok) throw new Error(`previous site restore failed: HTTP ${response.status}`)
 }
 
 async function readBackendSiteContext(
@@ -1277,8 +1424,15 @@ async function shutdown(): Promise<boolean> {
   try {
     logger('ELECTRON_SHUTDOWN_STAGE', 'stage=stopping_backend')
     shutdownProgressPage?.update('正在停止本地核心服务')
-    await backend?.stop()
-    if (backend?.isOwnedProcessAlive()) throw new Error('owned backend process is still alive')
+    const managedBackends = new Set([
+      ...(backend ? [backend] : []),
+      ...retiringBackends,
+    ])
+    await Promise.all([...managedBackends].map((value) => value.stop()))
+    if ([...managedBackends].some((value) => value.isOwnedProcessAlive())) {
+      throw new Error('owned backend process is still alive')
+    }
+    retiringBackends.clear()
     backendStopped = true
     logger('ELECTRON_BACKEND_STOPPED')
     traceSmoke('BACKEND_STOPPED')
@@ -1288,6 +1442,7 @@ async function shutdown(): Promise<boolean> {
   }
   if (!backendStopped) {
     const backendAlive = backend?.isOwnedProcessAlive() === true
+      || [...retiringBackends].some((value) => value.isOwnedProcessAlive())
     if (backendAlive) logger('ELECTRON_BACKEND_PROCESS_STILL_ALIVE')
     logger('ELECTRON_SHUTDOWN_INCOMPLETE', `backend_alive=${backendAlive}`)
     shutdownProgressPage?.update('安全退出未完成，本地核心服务仍在运行，请查看日志')

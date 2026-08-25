@@ -142,6 +142,27 @@ describe('CurrentSiteIndicator', () => {
     expect(runtime.unsubscribe).toHaveBeenCalledOnce()
   })
 
+  it('shows target site metadata while the warm Backend starts in the background', async () => {
+    const { wrapper } = await mounted()
+    await flushPromises()
+
+    window.dispatchEvent(new CustomEvent('netconsole:site-switch-metadata', {
+      detail: { siteId: 'site-b', displayName: '测试局点-B网', state: 'loading' },
+    }))
+    await nextTick()
+
+    expect(wrapper.text()).toContain('当前局点：测试局点-B网（加载中…）')
+    expect(wrapper.get('button').attributes('class')).toContain('is-switching')
+    expect(api.getActiveSite).toHaveBeenCalledOnce()
+
+    vi.mocked(api.getActiveSite).mockResolvedValueOnce(activeSite('测试局点-B网', 'site-b'))
+    runtime.listener?.({ state: 'ready' })
+    await flushPromises()
+    expect(wrapper.text()).toContain('当前局点：测试局点-B网')
+    expect(wrapper.text()).not.toContain('（加载中…）')
+    wrapper.unmount()
+  })
+
   it('reloads the current name after site information changes without restarting Backend', async () => {
     const { wrapper } = await mounted()
     await flushPromises()

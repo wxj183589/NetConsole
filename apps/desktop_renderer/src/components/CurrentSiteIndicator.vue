@@ -7,9 +7,13 @@ import { useRouter } from 'vue-router'
 import { getActiveSite, type SiteRecord } from '../api/siteStorage'
 import { onPlatformRuntimeStatusChanged } from '../platform/runtime'
 import { useWorkspaceStore } from '../stores/workspace'
-import { SITE_CONTEXT_CHANGED_EVENT } from '../workspace/site-switch'
+import {
+  SITE_CONTEXT_CHANGED_EVENT,
+  SITE_SWITCH_METADATA_EVENT,
+  type SiteSwitchMetadataDetail,
+} from '../workspace/site-switch'
 
-type LoadState = 'loading' | 'ready' | 'error'
+type LoadState = 'loading' | 'switching' | 'ready' | 'error'
 
 const router = useRouter()
 const workspace = useWorkspaceStore()
@@ -19,11 +23,22 @@ let loadSequence = 0
 let focusSequence = 0
 let unsubscribe: (() => void) | undefined
 const handleSiteContextChanged = () => { void loadCurrentSite() }
+const handleSiteSwitchMetadata = (event: Event) => {
+  const detail = (event as CustomEvent<SiteSwitchMetadataDetail>).detail
+  if (!detail || detail.state === 'rollback') {
+    void loadCurrentSite()
+    return
+  }
+  ++loadSequence
+  activeSite.value = { site_id: detail.siteId, display_name: detail.displayName }
+  loadState.value = 'switching'
+}
 
 const siteName = computed(() => {
   if (loadState.value === 'loading') return '加载中…'
   if (loadState.value === 'error') return '读取失败'
-  return activeSite.value?.display_name?.trim() || activeSite.value?.site_id?.trim() || '未选择'
+  const name = activeSite.value?.display_name?.trim() || activeSite.value?.site_id?.trim() || '未选择'
+  return loadState.value === 'switching' ? `${name}（加载中…）` : name
 })
 const fullLabel = computed(() => `当前局点：${siteName.value}`)
 
@@ -64,6 +79,7 @@ async function openSiteStorage(): Promise<void> {
 
 onMounted(() => {
   window.addEventListener(SITE_CONTEXT_CHANGED_EVENT, handleSiteContextChanged)
+  window.addEventListener(SITE_SWITCH_METADATA_EVENT, handleSiteSwitchMetadata)
   unsubscribe = onPlatformRuntimeStatusChanged((status) => {
     if (status.state === 'ready') {
       void loadCurrentSite()
@@ -79,6 +95,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   ++loadSequence
   window.removeEventListener(SITE_CONTEXT_CHANGED_EVENT, handleSiteContextChanged)
+  window.removeEventListener(SITE_SWITCH_METADATA_EVENT, handleSiteSwitchMetadata)
   unsubscribe?.()
 })
 </script>
@@ -86,7 +103,7 @@ onBeforeUnmount(() => {
 <template>
   <button
     class="current-site-indicator"
-    :class="{ 'is-error': loadState === 'error' }"
+    :class="{ 'is-error': loadState === 'error', 'is-switching': loadState === 'switching' }"
     type="button"
     :title="fullLabel"
     :aria-label="`${fullLabel}，进入局点与数据管理`"
@@ -127,6 +144,10 @@ onBeforeUnmount(() => {
 
 .current-site-indicator.is-error {
   border-color: var(--el-color-warning-light-3);
+}
+
+.current-site-indicator.is-switching {
+  border-color: var(--el-color-primary-light-3);
 }
 
 .current-site-indicator__icon {
