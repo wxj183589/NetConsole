@@ -152,7 +152,7 @@ const terminalTaskRefreshes = new Set<string>()
 const businessColumns: NcTableColumn<TracksideApBusinessRow>[] = [
   { key: 'selection', label: '', type: 'selection', valueType: 'selection', width: 48, fixed: 'left', hideable: false },
   { key: 'site', label: '站点', valueType: 'name', fixed: 'left' },
-  { key: 'device_name', label: '车站交换机', valueType: 'name', fixed: 'left' },
+  { key: 'device_name', label: '车站交换机', valueType: 'name' },
   { key: 'switch_vendor', label: '交换机厂商', valueType: 'name', displayValue: (row) => displaySwitchVendor(row.switch_vendor) },
   { key: 'interface_name', label: '接口', valueType: 'port', displayValue: (row) => displayTracksideValue(displayInterfaceName(row.interface_name)) },
   { key: 'lldp_match_status', label: 'LLDP 状态', valueType: 'status', displayValue: (row) => displayLldpStatus(row.lldp_match_status) },

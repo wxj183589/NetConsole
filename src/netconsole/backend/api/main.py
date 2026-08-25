@@ -6,9 +6,11 @@ import os
 import re
 import secrets
 import sqlite3
+import uuid
 from contextlib import asynccontextmanager
 from http.cookies import SimpleCookie
 from pathlib import Path
+from time import perf_counter
 from typing import Callable
 from urllib.parse import parse_qs
 
@@ -40,6 +42,10 @@ from netconsole.backend.web_build import (
 from netconsole.core.database import Database
 from netconsole.core.build_metadata import current_build_metadata
 from netconsole.core.paths import PathResolver
+from netconsole.core.performance_profiling import (
+    begin_request_profile,
+    end_request_profile,
+)
 from netconsole.core.feature_flags import FeatureGate
 from netconsole.core.resources import package_resource_path
 from netconsole.core.runtime_environment import is_packaged_runtime
@@ -134,6 +140,7 @@ _DESKTOP_DEFERRED_RUNTIME_DELAY_SECONDS = 1.0
 _HISTORY_DRAIN_INITIAL_DELAY_SECONDS = 5.0
 _HISTORY_DRAIN_NORMAL_INTERVAL_SECONDS = 10.0
 _HISTORY_DRAIN_UNATTENDED_INTERVAL_SECONDS = 60.0
+_SLOW_API_THRESHOLD_MS = 250.0
 
 
 def _unattended_run_active(repository: GroundUnattendedRepository | None) -> bool:
@@ -256,6 +263,83 @@ class RuntimeServicesAdmissionMiddleware:
             await response(scope, receive, send)
             return
         await self.app(scope, receive, send)
+
+
+class PerformanceProfilingMiddleware:
+    """Attach bounded API/SQL/Repository timings without logging query data."""
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+        headers = {key.lower(): value for key, value in scope.get("headers", [])}
+        supplied = headers.get(b"x-request-id", b"").decode("ascii", errors="ignore")
+        request_id = supplied[:64] if supplied else uuid.uuid4().hex
+        profile, token = begin_request_profile(
+            request_id,
+            str(scope.get("method") or ""),
+            str(scope.get("path") or ""),
+        )
+        response_status = 500
+
+        async def send_profiled(message) -> None:
+            nonlocal request_id, response_status
+            if message.get("type") == "http.response.start":
+                response_status = int(message.get("status") or 0)
+                existing_request_id = next(
+                    (
+                        value.decode("ascii", errors="ignore")[:64]
+                        for key, value in (message.get("headers") or [])
+                        if key.lower() == b"x-request-id"
+                    ),
+                    "",
+                )
+                if existing_request_id:
+                    request_id = existing_request_id
+                    profile.request_id = existing_request_id
+                total_ms = (perf_counter() - profile.started_at) * 1000
+                timing = (
+                    f"app;dur={total_ms:.2f}, "
+                    f"sql;dur={profile.sql_ms:.2f};desc=\"{profile.sql_count} queries\", "
+                    f"repository;dur={profile.repository_ms:.2f}"
+                )
+                response_headers = [
+                    (key, value)
+                    for key, value in (message.get("headers") or [])
+                    if key.lower() not in {b"x-request-id", b"server-timing"}
+                ]
+                response_headers.extend(
+                    (
+                        (b"x-request-id", request_id.encode("ascii")),
+                        (b"server-timing", timing.encode("ascii")),
+                    )
+                )
+                message = {**message, "headers": response_headers}
+            await send(message)
+
+        try:
+            await self.app(scope, receive, send_profiled)
+        finally:
+            total_ms = (perf_counter() - profile.started_at) * 1000
+            if total_ms >= _SLOW_API_THRESHOLD_MS:
+                repository_stages = ",".join(
+                    f"{name}:{duration:.2f}"
+                    for name, duration in sorted(profile.repository_calls.items())
+                )
+                app_logger.log_info(
+                    "API_PERFORMANCE_PROFILE",
+                    (
+                        f"request_id={request_id} method={profile.method} path={profile.path} "
+                        f"status={response_status} total_ms={total_ms:.2f} "
+                        f"sql_count={profile.sql_count} sql_ms={profile.sql_ms:.2f} "
+                        f"repository_ms={profile.repository_ms:.2f} "
+                        f"repository_stages={repository_stages or '-'}"
+                    ),
+                )
+            end_request_profile(token)
 
 
 def create_app(
@@ -747,6 +831,7 @@ def create_app(
     app.state.accepting_work = True
     app.add_middleware(DesktopShutdownAdmissionMiddleware, state=app.state)
     app.add_middleware(RuntimeServicesAdmissionMiddleware, state=app.state)
+    app.add_middleware(PerformanceProfilingMiddleware)
     app.state.online_mr_web_control_enabled = online_mr_web_control_enabled
     app.state.online_mr_agent_executor_enabled = online_mr_agent_executor_enabled
     app.state.runtime_services_ready = False

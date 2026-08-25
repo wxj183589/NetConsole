@@ -371,6 +371,34 @@ def test_list_supports_filter_sort_pagination_and_never_returns_credentials(
     assert "community" not in response.text.lower()
 
 
+def test_default_device_list_loads_facts_for_current_page_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, _service, _adapter, _devices, _facts, _mr, _sw = _fixture(tmp_path)
+    requested_uuids: list[list[str]] = []
+    original = DeviceFactRepository.list_device_facts_for_uuids
+
+    def tracked(self: DeviceFactRepository, device_uuids: list[str]):
+        requested_uuids.append(list(device_uuids))
+        return original(self, device_uuids)
+
+    def reject_full_scan(_self: DeviceFactRepository):
+        raise AssertionError("default list must not scan every device fact")
+
+    monkeypatch.setattr(DeviceFactRepository, "list_device_facts_for_uuids", tracked)
+    monkeypatch.setattr(DeviceFactRepository, "list_device_facts", reject_full_scan)
+
+    response = client.get(
+        "/api/device-management/devices",
+        params={"sort_by": "name", "page": 1, "page_size": 1},
+    )
+
+    assert response.status_code == 200
+    assert len(response.json()["items"]) == 1
+    assert requested_uuids == [[response.json()["items"][0]["device_uuid"]]]
+
+
 def test_detail_returns_only_existing_fact_task_collection_and_sanitized_errors(
     tmp_path: Path,
 ) -> None:

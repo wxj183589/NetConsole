@@ -359,6 +359,21 @@ class DeviceFactRepository:
             rows = conn.execute("SELECT * FROM device_facts ORDER BY sysname, device_uuid").fetchall()
         return [dict(row) for row in rows]
 
+    def list_device_facts_for_uuids(
+        self, device_uuids: list[str]
+    ) -> list[dict[str, object | None]]:
+        values = sorted({str(value).strip() for value in device_uuids if str(value).strip()})
+        if not values:
+            return []
+        placeholders = ", ".join("?" for _ in values)
+        with self.database.connect() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM device_facts WHERE device_uuid IN ({placeholders}) "
+                "ORDER BY sysname, device_uuid",
+                values,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def append_fact_history(self, data: dict[str, object | None]) -> None:
         payload = self._payload(FACT_HISTORY_FIELDS, data)
         self._set_required_defaults(payload, ("collected_at", "created_at"))

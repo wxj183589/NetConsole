@@ -341,6 +341,41 @@ def test_business_revision_and_content_hash_are_idempotent(tmp_path: Path) -> No
         first.source_revisions["base_data_revision"] = "changed"  # type: ignore[index]
 
 
+def test_trackside_text_query_reuses_base_snapshot_identity_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = PathResolver(tmp_path)
+    paths.ensure_site_dirs("demo")
+    SiteManager(paths).save_site_metadata("demo", {"display_name": "测试局点"})
+    captured: list[tuple[object, ...]] = []
+    snapshot = TracksideApBusinessLoadResult(
+        0,
+        "demo",
+        [],
+        0,
+        0,
+        0,
+        snapshot_id="snapshot-1",
+        business_revision="revision-1",
+    )
+
+    def load(*_args, **kwargs):
+        captured.append(tuple(kwargs.get("identity_query_macs") or ()))
+        return snapshot
+
+    monkeypatch.setattr(
+        "netconsole.services.rail_transit.trackside_ap_business_query_service.load_trackside_ap_business_snapshot",
+        load,
+    )
+    service = TracksideApBusinessQueryService(paths)
+
+    service.list_rows("demo", query="车站A")
+    service.list_rows("demo", query="0011-2233-4455")
+
+    assert captured == [(), ("0011-2233-4455",)]
+
+
 def test_same_revision_snapshot_build_is_single_flight(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

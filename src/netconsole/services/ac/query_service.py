@@ -27,6 +27,7 @@ from netconsole.core.optical_rx_threshold import (
     parse_optical_rx_dbm,
 )
 from netconsole.core.paths import PathResolver
+from netconsole.core.performance_profiling import ProfilingConnection, profile_repository
 from netconsole.core.sites import SiteManager
 from netconsole.core.sources.ap_source import compute_ap_status
 from netconsole.core.sources.switch_source import compute_switch_status
@@ -260,7 +261,8 @@ class AcManagementQueryService:
         sort_by: str = "topology",
         sort_order: str = "asc",
     ) -> AcApPageDTO:
-        records = self._ap_records(site_id, ac_id=ac_id)
+        with profile_repository("ac.fit_ap.list_projection"):
+            records = self._ap_records(site_id, ac_id=ac_id, include_details=False)
         all_items = [record[0] for record in records]
         items = self._apply_identity_query(site_id, all_items, query)
         if items is not all_items:
@@ -277,11 +279,35 @@ class AcManagementQueryService:
             sort_by=sort_by,
             sort_order=sort_order,
         )
-        return self._page(
+        page_result = self._page(
             items,
             page,
             page_size,
             filter_options=self._ap_filter_options(all_items),
+        )
+        return self._enrich_ap_page_details(site_id, page_result)
+
+    def _enrich_ap_page_details(self, site_id: str, page: AcApPageDTO) -> AcApPageDTO:
+        repository = AcRepository(_ReadonlyDatabase(self._db_path(site_id)))  # type: ignore[arg-type]
+        details = {
+            str(row.get("ap_uuid") or ""): row
+            for row in repository.list_fit_ap_details_for_macs([item.mac for item in page.items])
+        }
+        return page.model_copy(
+            update={
+                "items": [
+                    item.model_copy(
+                        update={
+                            "software_version": str(details.get(item.id, {}).get("software_version") or ""),
+                            "hardware_version": str(details.get(item.id, {}).get("hardware_version") or ""),
+                            "boot_version": str(details.get(item.id, {}).get("boot_version") or ""),
+                            "detail_updated_at": str(details.get(item.id, {}).get("updated_at") or ""),
+                            "detail_available": item.id in details,
+                        }
+                    )
+                    for item in page.items
+                ]
+            }
         )
 
     def _apply_identity_query(self, site_id: str, items: list[AcApDTO], query: str) -> list[AcApDTO]:
@@ -735,6 +761,7 @@ class AcManagementQueryService:
         site_id: str,
         *,
         ac_id: str = "",
+        include_details: bool = True,
     ) -> list[tuple[AcApDTO, dict[str, object | None], AcOpticalDTO, AcLldpDTO]]:
         db_path = self._db_path(site_id)
         if not db_path.is_file():
@@ -757,13 +784,19 @@ class AcManagementQueryService:
         with closing(self._connect(db_path)) as conn:
             context = self._switch_context(conn)
             ac_names = {str(row["device_uuid"]): str(row["name"] or row["device_uuid"]) for row in self._safe_devices(conn)}
-        context["fit_ap_details_by_uuid"] = {
-            str(row.get("ap_uuid") or ""): row
-            for row in repository.list_fit_ap_details(ac_id)
-        } if ac_id else {
-            str(row.get("ap_uuid") or ""): row
-            for row in self._list_all_fit_ap_details(repository)
-        }
+        context["fit_ap_details_by_uuid"] = (
+            {
+                str(row.get("ap_uuid") or ""): row
+                for row in repository.list_fit_ap_details(ac_id)
+            }
+            if ac_id and include_details
+            else {
+                str(row.get("ap_uuid") or ""): row
+                for row in self._list_all_fit_ap_details(repository)
+            }
+            if include_details
+            else {}
+        )
         records = []
         for row in resources:
             optical = self._optical_for(row, optical_by_ap, context)
@@ -1661,7 +1694,12 @@ class AcManagementQueryService:
 
     @staticmethod
     def _connect(db_path: Path) -> sqlite3.Connection:
-        conn = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True, timeout=5.0)
+        conn = sqlite3.connect(
+            f"{db_path.resolve().as_uri()}?mode=ro",
+            uri=True,
+            timeout=5.0,
+            factory=ProfilingConnection,
+        )
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA query_only = ON")
         conn.execute("PRAGMA busy_timeout = 5000")
