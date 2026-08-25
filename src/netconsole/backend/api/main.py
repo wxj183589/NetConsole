@@ -123,6 +123,7 @@ from netconsole.services.site_storage import (
     SiteRegistryRepository,
     SiteStorageError,
 )
+from netconsole.services.storage_audit import StorageAuditService
 
 
 _ABSOLUTE_PATH_RE = re.compile(r"(?i)(?:file://[^\s\"']+|[a-z]:[\\/][^\s\"']+|\\\\[^\\/\s]+[\\/][^\s\"']+)")
@@ -782,6 +783,7 @@ def create_app(
         f"unattended_priority={capability_policy.unattended_priority}",
     )
     app.state.paths = paths
+    app.state.storage_audit_service = StorageAuditService(paths.data_root)
     app.state.build_metadata = current_build_metadata(paths.app_root)
     app.state.backend_build_id = backend_build_id(paths.app_root)
     app.state.task_service = task_service
