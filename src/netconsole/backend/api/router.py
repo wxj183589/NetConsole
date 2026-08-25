@@ -35,6 +35,7 @@ from netconsole.backend.api.traffic_router import router as traffic_router
 from netconsole.backend.api.system_settings_router import router as system_settings_router
 from netconsole.backend.api.system_network_router import router as system_network_router
 from netconsole.backend.api.site_storage_router import router as site_storage_router
+from netconsole.backend.api.storage_audit_router import router as storage_audit_router
 from netconsole.backend.api.traffic_router import ws_router as traffic_ws_router
 
 
@@ -51,6 +52,7 @@ api_router.include_router(
     dependencies=[Depends(require_feature("module.ground_unattended"))],
 )
 api_router.include_router(site_storage_router)
+api_router.include_router(storage_audit_router)
 api_router.include_router(
     command_reference_router,
     dependencies=[Depends(require_feature("module.command_reference"))],
