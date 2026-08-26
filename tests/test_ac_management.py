@@ -943,7 +943,8 @@ def test_fit_ap_optical_history_is_appended_and_sorted(tmp_path):
     )
 
     history = repository.list_fit_ap_optical_history_by_ap(ap_uuid)
-    assert [row["rx_power"] for row in history[:2]] == ["-7", "-8"]
+    assert [row["rx_power"] for row in history] == ["-7", "-7"]
+    assert {row["side"] for row in history} == {"ap", "switch"}
     assert history[0]["ap_mac"] == "0011-2233-4455"
     assert history[0]["voltage"] == "3.31"
     assert history[0]["bias_current"] == "5.10"
@@ -953,6 +954,7 @@ def test_fit_ap_optical_history_is_appended_and_sorted(tmp_path):
     assert history[0]["wavelength"] == "1310 nm"
     assert history[0]["transmission_distance"] == "10 km"
     assert history[0]["connector_type"] == "LC"
+    assert repository.list_fit_ap_optical("ac-1")[0]["rx_power"] == "-7"
     with repository.database.connect() as conn:
         legacy_count = conn.execute(
             "SELECT COUNT(*) FROM ac_fit_ap_optical_history WHERE ap_uuid = ?",
@@ -980,7 +982,8 @@ def test_fit_ap_optical_telemetry_jitter_does_not_create_change_event(tmp_path):
     )
     with repository.database.connect() as conn:
         pending = conn.execute(
-            "SELECT COUNT(*) FROM history_outbox WHERE kind='fit_ap_optical'"
+            "SELECT COUNT(*) FROM optical_history WHERE ap_identity = ? AND side = 'AP'",
+            (ap_uuid,),
         ).fetchone()[0]
     assert pending == 1
 
@@ -989,7 +992,8 @@ def test_fit_ap_optical_telemetry_jitter_does_not_create_change_event(tmp_path):
     )
     with repository.database.connect() as conn:
         pending = conn.execute(
-            "SELECT COUNT(*) FROM history_outbox WHERE kind='fit_ap_optical'"
+            "SELECT COUNT(*) FROM optical_history WHERE ap_identity = ? AND side = 'AP'",
+            (ap_uuid,),
         ).fetchone()[0]
     assert pending == 2
 
@@ -1007,12 +1011,12 @@ def test_fit_ap_optical_identical_refresh_is_incremental_and_change_only(tmp_pat
     ]
     repository.replace_fit_ap_optical("ac-1", rows)
     with repository.database.connect() as conn:
-        first_events = conn.execute("SELECT COUNT(*) FROM history_outbox WHERE kind = 'fit_ap_optical'").fetchone()[0]
+        first_events = conn.execute("SELECT COUNT(*) FROM optical_history WHERE side = 'AP'").fetchone()[0]
     repository.replace_fit_ap_optical("ac-1", rows)
     assert len(repository.list_fit_ap_optical("ac-1")) == 981
     with repository.database.connect() as conn:
         assert conn.execute("SELECT COUNT(*) FROM ac_fit_ap_optical WHERE ac_device_uuid = 'ac-1'").fetchone()[0] == 981
-        assert conn.execute("SELECT COUNT(*) FROM history_outbox WHERE kind = 'fit_ap_optical'").fetchone()[0] == first_events
+        assert conn.execute("SELECT COUNT(*) FROM optical_history WHERE side = 'AP'").fetchone()[0] == first_events
 
 
 def test_fit_ap_optical_history_power_tolerance_and_status_change(tmp_path):
@@ -1022,11 +1026,15 @@ def test_fit_ap_optical_history_power_tolerance_and_status_change(tmp_path):
     repository.replace_fit_ap_optical("ac-1", [base])
     repository.replace_fit_ap_optical("ac-1", [{**base, "rx_power": "-10.05"}])
     with repository.database.connect() as conn:
-        assert conn.execute("SELECT COUNT(*) FROM history_outbox WHERE kind = 'fit_ap_optical'").fetchone()[0] == 1
+        assert conn.execute(
+            "SELECT COUNT(*) FROM optical_history WHERE ap_identity = 'ap-1' AND side = 'AP'"
+        ).fetchone()[0] == 1
     repository.replace_fit_ap_optical("ac-1", [{**base, "rx_power": "-10.25"}])
     repository.replace_fit_ap_optical("ac-1", [{**base, "rx_power": "-10.26", "optical_alarm_status": "alarm"}])
     with repository.database.connect() as conn:
-        assert conn.execute("SELECT COUNT(*) FROM history_outbox WHERE kind = 'fit_ap_optical'").fetchone()[0] == 3
+        assert conn.execute(
+            "SELECT COUNT(*) FROM optical_history WHERE ap_identity = 'ap-1' AND side = 'AP'"
+        ).fetchone()[0] == 3
 
 
 def test_fit_ap_lldp_history_is_appended_and_sorted(tmp_path):
@@ -1071,9 +1079,12 @@ def test_fit_ap_lldp_history_is_appended_and_sorted(tmp_path):
 
     history = repository.list_fit_ap_lldp_history_by_ap(ap_uuid)
 
-    assert [row["lldp_neighbor"] for row in history[:2]] == ["SW02", "SW01"]
+    assert [row["lldp_neighbor"] for row in history] == ["SW02"]
     assert history[0]["local_interface"] == "GigabitEthernet1/0/2"
     assert history[0]["neighbor_device_name"] == "HX_2"
+    current = repository.list_current_ap_lldp_states([ap_uuid])
+    assert len(current) == 1
+    assert current[0]["lldp_neighbor"] == "SW02"
 
 
 def test_fit_ap_resource_lldp_merges_ap_direct_and_marks_history_changes(tmp_path):
@@ -1124,12 +1135,8 @@ def test_fit_ap_resource_lldp_merges_ap_direct_and_marks_history_changes(tmp_pat
     assert resource["optical_interface"] == "GigabitEthernet1/0/2"
     assert resource["optical_rx_power"] == -7.55
     assert resource["optical_match_status"] == "matched"
-    assert [row["source"] for row in history[:2]] == [
-        "ap_direct_lldp",
-        "ac_bulk_lldp",
-    ]
-    assert history[0]["is_changed"] == 1
-    assert history[1]["is_changed"] == 1
+    assert [row["source"] for row in history[:1]] == ["merged"]
+    assert history[0]["change_kind"] == "change"
     with repository.database.connect() as conn:
         legacy_count = conn.execute(
             "SELECT COUNT(*) FROM ac_fit_ap_lldp_history WHERE ap_uuid = ?",
@@ -6253,7 +6260,7 @@ def test_fit_ap_association_repair_is_dry_run_by_default_and_keeps_history(tmp_p
     result = repository.repair_invalid_fit_ap_association_projection("ac-1", apply=True)
     assert result["applied"] is True
     assert result["cleared_optical_rows"] == 1
-    assert repository.list_fit_ap_optical("ac-1")[0]["neighbor_interface"] == ""
+    assert repository.list_fit_ap_optical("ac-1") == []
     assert repository.get_fit_ap_resource_by_uuid("ac-1", "ap-1")["lldp_neighbor_interface"] == ""
     assert len(repository.list_fit_ap_optical_history_by_ap("ap-1")) == before_history
 

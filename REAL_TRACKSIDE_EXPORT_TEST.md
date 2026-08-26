@@ -2,7 +2,18 @@
 
 日期：2026-08-26
 
-数据根：`D:\NetConsoleData-dev`；测试局点：宁波 12 号线；最终代码：`02fde6e9c9487b7d8edee2a0ff556f56c0f3d847`。
+数据根：`D:\NetConsoleData-dev`；测试局点：宁波 12 号线；验收起点 HEAD：`e8b826b9b6d3e799fc2bd71afe07ece07b4b2769`。
+
+## 当前 bounded treatment 只读导出补充
+
+直接调用正式 `export_trackside_ap_business_prepare_and_render`，输入仅为 `D:\NetConsoleData-dev\sites\宁波地铁12号线\db\devices.db`，输出写入 `D:\study\diagnostic\NetConsole\real-acceptance`：
+
+- row_count：1,247；persisted treatment sheet：101 行。
+- total：28,140.38ms；snapshot build：25,289ms；render：1,895ms。
+- output：141,151 bytes；`content_sha256=42a168ecfdb0174384ee1932142da6486afe51d7f108b84bacdbf53e71d59275d`。
+- abnormal：55；unresolved：302；ambiguous：0；partial：false。
+
+相对历史约 77.4s 有改善，但 snapshot/enrichment 仍为 25.29s 热点，不能宣称达到目标。
 
 ## 真实导出过程
 
@@ -23,4 +34,4 @@
 
 ## 结论
 
-**PARTIAL**：任务、progress、Artifact 和文件完整性通过，但总耗时仍接近历史 77.4s，snapshot build 约 69.7s，未达到消除全量 build 的目标。DEV Artifact 保留在 DEV 根，未复制到生产目录。
+**PARTIAL**：正式任务、progress、Artifact 和文件完整性通过；当前直接导出约 28.14s，历史正式任务仍约 74.8s，snapshot build 仍为主要热点。DEV Artifact/诊断输出保留在 DEV 或诊断根，未复制到生产目录。

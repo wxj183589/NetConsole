@@ -980,6 +980,10 @@ def _build_trackside_ap_business_export_snapshot_once(
         resource_history_rows,
         offline_ledger_rows=offline_ledger_rows,
     )
+    if ac_repository.is_bounded_optical_authority_enabled():
+        optical_treatment_rows = _export_persisted_optical_treatments(
+            ac_repository.list_ap_optical_treatments()
+        )
     return {
         "snapshot_id": snapshot.snapshot_id,
         "site_id": site_name,
@@ -1022,6 +1026,66 @@ def _build_trackside_ap_business_export_snapshot_once(
             ],
         },
     }
+
+
+def _export_persisted_optical_treatments(
+    treatment_rows: Sequence[Mapping[str, object | None]],
+) -> list[dict[str, object | None]]:
+    """Adapt the one-row-per-AP treatment authority to the workbook contract."""
+
+    result: list[dict[str, object | None]] = []
+    for source in treatment_rows:
+        side = str(source.get("current_abnormal_side") or "").upper()
+        if side == "AP":
+            side_label = "AP侧"
+        elif side == "SWITCH":
+            side_label = "交换机侧"
+        elif side == "BOTH":
+            side_label = "AP侧/交换机侧"
+        else:
+            side_label = ""
+        current_status = str(source.get("current_status") or "").upper()
+        is_resolved = current_status in {"NORMAL", "RECOVERED"} or str(
+            source.get("treatment_status") or ""
+        ).upper() == "RESOLVED"
+        treatment_status = "已处理" if is_resolved else "未处理"
+        status = str(
+            source.get("current_ap_status")
+            or source.get("current_switch_status")
+            or ""
+        ).casefold()
+        issue_type = {
+            "notice": "光衰预警",
+            "warning": "光衰预警",
+            "alarm": "光衰告警",
+            "link_abnormal": "链路异常",
+            "link_down": "链路异常",
+            "no_light": "无光",
+        }.get(status, "光衰异常" if not is_resolved else "")
+        current_rx = source.get("current_ap_rx_dbm") or source.get("current_switch_rx_dbm")
+        first_rx = source.get("first_ap_rx_dbm") or source.get("first_switch_rx_dbm")
+        fixed_rx = source.get("recovered_ap_rx_dbm") or source.get("recovered_switch_rx_dbm")
+        result.append(
+            {
+                "site": source.get("station_name") or source.get("site_id"),
+                "ap_name": source.get("ap_name"),
+                "ap_mac": source.get("ap_mac"),
+                "serial_number": source.get("serial_number"),
+                "side": side_label,
+                "device_name": source.get("switch_name"),
+                "interface_name": source.get("switch_interface"),
+                "issue_type": issue_type,
+                "first_found_at": source.get("first_detected_at"),
+                "first_rx_power": first_rx,
+                "fixed_rx_power": fixed_rx,
+                "current_rx_power": current_rx,
+                "current_status": source.get("current_status"),
+                "treatment_status": treatment_status,
+                "remark": source.get("remark") or "",
+                "completed_at": source.get("last_resolved_at") or source.get("first_resolved_at") or "",
+            }
+        )
+    return result
 
 
 def export_trackside_ap_business_from_snapshot(

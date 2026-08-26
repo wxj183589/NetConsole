@@ -143,6 +143,9 @@ def _drop_legacy_history_tables(repository: AcRepository) -> None:
     with repository.database.connect() as conn:
         for table in LEGACY_HISTORY_TABLES:
             conn.execute(f"DROP TABLE {table}")
+        conn.execute(
+            "UPDATE optical_retention_meta SET value='legacy' WHERE key='authority'"
+        )
         conn.commit()
 
 
@@ -384,10 +387,13 @@ def test_fit_ap_refresh_uses_history_store_after_legacy_tables_are_retired(tmp_p
 
     ap_one = str(resources["AP-1"]["ap_uuid"])
     history = repository.list_fit_ap_lldp_history_by_ap(ap_one, limit=10)
-    by_time = {str(row["collected_at"]): row for row in history}
-    assert by_time["2026-08-01T00:00:00"]["is_changed"] == 1
-    assert by_time["2026-08-01T00:31:00"]["is_changed"] == 0
-    assert by_time["2026-08-01T00:32:00"]["is_changed"] == 1
+    by_time = {str(row["changed_at"]): row for row in history}
+    assert sorted(by_time) == ["2026-08-01T00:32:00"]
+    assert by_time["2026-08-01T00:32:00"]["change_kind"] == "change"
+    current = repository.list_current_ap_lldp_states([ap_one])
+    assert len(current) == 1
+    assert current[0]["collected_at"] == "2026-08-01T00:32:00"
+    assert current[0]["neighbor_interface"] == "GigabitEthernet1/0/9"
     assert repository.list_fit_ap_radio_history_by_ap(ap_one)
     assert repository.list_fit_ap_optical_history_by_ap(ap_one)
     assert repository.list_fit_ap_resource_history("ac-1")

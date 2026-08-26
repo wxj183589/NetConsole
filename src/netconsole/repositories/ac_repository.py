@@ -19,6 +19,14 @@ from netconsole.services.fit_ap_link_info import (
     resolve_optical_match_status,
 )
 from netconsole.services.history_store import HistoryStore
+from netconsole.services.lldp_retention import (
+    upsert_lldp_current_and_history,
+)
+from netconsole.services.optical_retention import (
+    merge_optical_current_rows,
+    update_ap_optical_treatment,
+    upsert_optical_current_and_history,
+)
 from netconsole.services.trackside_ap_business import parse_vlan_set
 from netconsole.utils.mileage import parse_mileage_to_meters
 from netconsole.utils.station_normalize import normalize_station_value
@@ -633,6 +641,10 @@ class AcRepository:
         self.database = database
         self.history_store = HistoryStore(database.path)
 
+    @property
+    def site_id(self) -> str:
+        return self.database.path.parent.parent.name or self.database.path.parent.name
+
     def upsert_ac_ap_summary(self, data: dict[str, object | None]) -> dict[str, object | None]:
         payload = self._payload(SUMMARY_FIELDS, data)
         self._set_time_defaults(payload)
@@ -741,10 +753,6 @@ class AcRepository:
                 conn,
                 history_keys,
             )
-            lldp_history_cache = self._load_fit_ap_lldp_history_cache(
-                conn,
-                history_keys,
-            )
             incoming_name_counts = Counter(
                 name.casefold()
                 for row in rows
@@ -761,7 +769,6 @@ class AcRepository:
                     continuity_entities=continuity_entities,
                     incoming_name_counts=incoming_name_counts,
                     identity_history_cache=identity_history_cache,
-                    lldp_history_cache=lldp_history_cache,
                 )
                 current_uuids.append(str(payload["ap_uuid"]))
             if current_uuids:
@@ -793,7 +800,6 @@ class AcRepository:
         continuity_entities: list[dict[str, object | None]] | None = None,
         incoming_name_counts: Counter[str] | None = None,
         identity_history_cache: dict[str, dict[str, str]] | None = None,
-        lldp_history_cache: dict[str, list[dict[str, object | None]]] | None = None,
     ) -> dict[str, object | None]:
         ap_uuid = self._resolve_fit_ap_entity_uuid(
             conn,
@@ -871,11 +877,6 @@ class AcRepository:
         self._append_resource_lldp_history(
             conn,
             payload,
-            previous_history=(
-                lldp_history_cache.get(ap_uuid)
-                if lldp_history_cache is not None
-                else None
-            ),
         )
         if preserved_fields:
             app_logger.log_info(
@@ -1660,13 +1661,20 @@ class AcRepository:
             for payload in current_payloads:
                 key = _fit_ap_optical_merge_key(payload)
                 previous = previous_by_key.get(key) if key else None
-                if previous is None or _fit_ap_optical_history_changed(previous, payload):
-                    self._record_fit_ap_optical_history(conn, payload)
+                self._record_fit_ap_optical_history(conn, payload)
                 if previous is None or _fit_ap_lldp_changed(previous, payload):
                     self._append_resource_lldp_history(conn, payload)
             conn.commit()
 
     def list_fit_ap_optical(self, ac_device_uuid: str) -> list[dict[str, object | None]]:
+        with self.database.connect_readonly() as conn:
+            if self._bounded_optical_authority_enabled(conn):
+                rows = conn.execute("SELECT * FROM optical_current ORDER BY ap_name, id").fetchall()
+                merged = merge_optical_current_rows([dict(row) for row in rows])
+                return [
+                    row for row in merged
+                    if str(row.get("ac_device_uuid") or "") == str(ac_device_uuid)
+                ]
         return sorted(
             _latest_rows_by_ap_identity(self._list_rows("ac_fit_ap_optical", ac_device_uuid, "ap_name, id")),
             key=lambda row: (str(row.get("ap_name") or ""), _int_value(row.get("id"))),
@@ -1745,6 +1753,18 @@ class AcRepository:
                 )
             result["cleared_optical_rows"] = len(candidate_ids)
 
+            bounded_optical = self._bounded_optical_authority_enabled(conn)
+            if bounded_optical and candidate_ap_uuids:
+                placeholders = ", ".join("?" for _ in candidate_ap_uuids)
+                conn.execute(
+                    f"DELETE FROM optical_current WHERE site_id = ? AND ap_uuid IN ({placeholders})",
+                    [self.site_id, *candidate_ap_uuids],
+                )
+                conn.execute(
+                    f"DELETE FROM ap_optical_treatment WHERE site_id = ? AND ap_uuid IN ({placeholders})",
+                    [self.site_id, *candidate_ap_uuids],
+                )
+
             resource_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(ac_fit_ap_resources)")}
             resource_updates = {key: value for key, value in projection.items() if key in resource_columns}
             resource_assignments = ", ".join(f"{key} = ?" for key in resource_updates)
@@ -1761,6 +1781,10 @@ class AcRepository:
             return result
 
     def list_all_fit_ap_optical(self) -> list[dict[str, object | None]]:
+        with self.database.connect_readonly() as conn:
+            if self._bounded_optical_authority_enabled(conn):
+                rows = conn.execute("SELECT * FROM optical_current ORDER BY ap_name, id").fetchall()
+                return merge_optical_current_rows([dict(row) for row in rows])
         with self.database.connect() as conn:
             rows = conn.execute("SELECT * FROM ac_fit_ap_optical ORDER BY neighbor_device_name, neighbor_interface, ap_name, id").fetchall()
         return sorted(
@@ -1817,6 +1841,24 @@ class AcRepository:
     def list_fit_ap_optical_history(
         self, ap_uuid: str | None = None, ap_name: str | None = None, limit: int = 100
     ) -> list[dict[str, object | None]]:
+        bounded_limit = max(1, min(10, int(limit)))
+        with self.database.connect_readonly() as conn:
+            if self._bounded_optical_authority_enabled(conn):
+                clauses = ["site_id = ?"]
+                params: list[object] = [self.site_id]
+                if ap_uuid:
+                    clauses.append("ap_identity = ?")
+                    params.append(str(ap_uuid))
+                elif ap_name:
+                    clauses.append("ap_name = ?")
+                    params.append(str(ap_name))
+                rows = conn.execute(
+                    "SELECT * FROM optical_history WHERE "
+                    + " AND ".join(clauses)
+                    + " ORDER BY changed_at DESC, id DESC LIMIT ?",
+                    [*params, bounded_limit],
+                ).fetchall()
+                return [self._bounded_optical_history_row(row) for row in rows]
         clauses: list[str] = []
         params: list[object] = []
         if ap_uuid:
@@ -1858,6 +1900,36 @@ class AcRepository:
     def list_fit_ap_optical_history_by_ap(self, ap_uuid: str, limit: int = 100) -> list[dict[str, object | None]]:
         return self.list_fit_ap_optical_history(ap_uuid=ap_uuid, limit=limit)
 
+    def list_optical_current(self, ap_uuid: str | None = None) -> list[dict[str, object | None]]:
+        with self.database.connect_readonly() as conn:
+            if not self._bounded_optical_authority_enabled(conn):
+                return []
+            clauses = ["site_id = ?"]
+            params: list[object] = [self.site_id]
+            if ap_uuid:
+                clauses.append("ap_identity = ?")
+                params.append(str(ap_uuid))
+            rows = conn.execute(
+                "SELECT * FROM optical_current WHERE " + " AND ".join(clauses)
+                + " ORDER BY ap_name, ap_identity, side",
+                params,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_ap_optical_treatments(self) -> list[dict[str, object | None]]:
+        with self.database.connect_readonly() as conn:
+            if not self._bounded_optical_authority_enabled(conn):
+                return []
+            rows = conn.execute(
+                "SELECT * FROM ap_optical_treatment WHERE site_id = ? ORDER BY ap_name, ap_identity",
+                (self.site_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def is_bounded_optical_authority_enabled(self) -> bool:
+        with self.database.connect_readonly() as conn:
+            return self._bounded_optical_authority_enabled(conn)
+
     def list_fit_ap_radio_history_by_ap(
         self, ap_uuid: str, limit: int = 100
     ) -> list[dict[str, object | None]]:
@@ -1885,24 +1957,94 @@ class AcRepository:
         self, ap_uuid: str, limit: int = 100
     ) -> list[dict[str, object | None]]:
         with self.database.connect() as conn:
-            rows = self._query_legacy_history_rows(
-                conn,
-                "ac_fit_ap_lldp_history",
+            if not self._bounded_lldp_authority_enabled(conn):
+                legacy_rows = self._query_legacy_history_rows(
+                    conn,
+                    "ac_fit_ap_lldp_history",
+                    """
+                    SELECT * FROM ac_fit_ap_lldp_history
+                    WHERE ap_uuid = ?
+                    ORDER BY collected_at DESC, id DESC
+                    LIMIT ?
+                    """,
+                    (ap_uuid, max(1, int(limit))),
+                )
+                events = self.history_store.query_events(
+                    kind="fit_ap_lldp", entity_key=str(ap_uuid), limit=limit
+                )
+                return self._merge_history_rows(legacy_rows, events, limit=limit)
+            rows = conn.execute(
                 """
-                SELECT * FROM ac_fit_ap_lldp_history
-                WHERE ap_uuid = ?
-                ORDER BY collected_at DESC, id DESC
+                SELECT * FROM fit_ap_lldp_history
+                WHERE resource_key = ?
+                ORDER BY changed_at DESC, id DESC
                 LIMIT ?
                 """,
-                (ap_uuid, limit),
-            )
-        return self._merge_history_rows(
-            rows,
-            self.history_store.query_events(
-                kind="fit_ap_lldp", entity_key=str(ap_uuid), limit=limit
-            ),
-            limit=limit,
-        )
+                (str(ap_uuid), max(1, int(limit))),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    @staticmethod
+    def _bounded_lldp_authority_enabled(conn) -> bool:
+        try:
+            row = conn.execute(
+                "SELECT value FROM fit_ap_lldp_retention_meta WHERE key='authority'"
+            ).fetchone()
+        except Exception:
+            return False
+        return str(row[0] if row is not None else "") == "bounded_v1"
+
+    @staticmethod
+    def _bounded_optical_authority_enabled(conn) -> bool:
+        try:
+            row = conn.execute(
+                "SELECT value FROM optical_retention_meta WHERE key='authority'"
+            ).fetchone()
+        except Exception:
+            return False
+        return str(row[0] if row is not None else "") == "bounded_v1"
+
+    @staticmethod
+    def _bounded_optical_history_row(row) -> dict[str, object | None]:
+        result = dict(row)
+        try:
+            payload = json.loads(str(result.get("payload_json") or "{}"))
+        except json.JSONDecodeError:
+            payload = {}
+        if isinstance(payload, dict):
+            result = {**payload, **result}
+        side = str(result.get("side") or "").upper()
+        result["rx_power"] = result.get("rx_dbm")
+        result["tx_power"] = result.get("tx_dbm")
+        result["optical_alarm_status"] = result.get("status")
+        result["collected_at"] = result.get("changed_at") or result.get("collected_at")
+        result["side"] = side.casefold()
+        return result
+
+    def list_current_ap_lldp_states(
+        self, ap_uuids: list[str] | None = None
+    ) -> list[dict[str, object | None]]:
+        """Read the bounded LLDP current authority without touching history."""
+
+        with self.database.connect_readonly() as conn:
+            if ap_uuids:
+                keys = sorted({str(value).strip() for value in ap_uuids if str(value).strip()})
+                if not keys:
+                    return []
+                placeholders = ", ".join("?" for _ in keys)
+                rows = conn.execute(
+                    f"""
+                    SELECT * FROM fit_ap_lldp_current
+                    WHERE resource_key IN ({placeholders})
+                    ORDER BY ap_name, resource_key
+                    """,
+                    keys,
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM fit_ap_lldp_current ORDER BY ap_name, resource_key"
+                ).fetchall()
+        return [dict(row) for row in rows]
 
     def list_fit_ap_history_page(
         self,
@@ -1914,6 +2056,42 @@ class AcRepository:
     ) -> list[dict[str, object | None]]:
         table = _fit_ap_history_table(history_kind)
         normalized_kind = str(history_kind or "").strip().casefold()
+        if normalized_kind == "lldp":
+            with self.database.connect() as conn:
+                if not self._bounded_lldp_authority_enabled(conn):
+                    rows = self._query_legacy_history_rows(
+                        conn,
+                        "ac_fit_ap_lldp_history",
+                        """
+                        SELECT * FROM ac_fit_ap_lldp_history
+                        WHERE ap_uuid = ?
+                        ORDER BY collected_at DESC, id DESC
+                        LIMIT ?
+                        """,
+                        (ap_uuid, max(1, int(limit) + max(0, int(offset)))),
+                    )
+                    events = self.history_store.query_events(
+                        kind="fit_ap_lldp", entity_key=str(ap_uuid),
+                        limit=max(1, int(limit) + max(0, int(offset))),
+                    )
+                    combined = self._merge_history_rows(
+                        rows,
+                        events,
+                        limit=max(1, int(limit) + max(0, int(offset))),
+                    )
+                    return combined[
+                        max(0, int(offset)) : max(0, int(offset)) + max(1, int(limit))
+                    ]
+                rows = conn.execute(
+                    """
+                    SELECT * FROM fit_ap_lldp_history
+                    WHERE resource_key = ?
+                    ORDER BY changed_at DESC, id DESC
+                    LIMIT ? OFFSET ?
+                    """,
+                    (str(ap_uuid), max(1, int(limit)), max(0, int(offset))),
+                ).fetchall()
+            return [dict(row) for row in rows]
         with self.database.connect() as conn:
             rows = self._query_legacy_history_rows(
                 conn,
@@ -1936,6 +2114,23 @@ class AcRepository:
 
     def count_fit_ap_history(self, history_kind: str, ap_uuid: str) -> int:
         table = _fit_ap_history_table(history_kind)
+        if str(history_kind or "").strip().casefold() == "lldp":
+            with self.database.connect() as conn:
+                if not self._bounded_lldp_authority_enabled(conn):
+                    legacy_rows = self._query_legacy_history_rows(
+                        conn,
+                        "ac_fit_ap_lldp_history",
+                        "SELECT COUNT(*) AS total FROM ac_fit_ap_lldp_history WHERE ap_uuid = ?",
+                        (ap_uuid,),
+                    )
+                    return int(legacy_rows[0]["total"] if legacy_rows else 0) + self.history_store.count_events(
+                        kind="fit_ap_lldp", entity_key=str(ap_uuid)
+                    )
+                row = conn.execute(
+                    "SELECT COUNT(*) AS total FROM fit_ap_lldp_history WHERE resource_key = ?",
+                    (str(ap_uuid),),
+                ).fetchone()
+            return int(row["total"] if row is not None else 0)
         with self.database.connect() as conn:
             rows = self._query_legacy_history_rows(
                 conn,
@@ -1955,6 +2150,14 @@ class AcRepository:
     def list_all_ap_optical_history(
         self, limit: int = 100000
     ) -> list[dict[str, object | None]]:
+        with self.database.connect_readonly() as conn:
+            if self._bounded_optical_authority_enabled(conn):
+                rows = conn.execute(
+                    "SELECT * FROM optical_history WHERE site_id=? "
+                    "ORDER BY changed_at DESC, id DESC LIMIT ?",
+                    (self.site_id, max(1, min(100000, int(limit)))),
+                ).fetchall()
+                return [self._bounded_optical_history_row(row) for row in rows]
         with self.database.connect() as conn:
             entity_rows = self._query_legacy_history_rows(
                 conn,
@@ -1996,6 +2199,21 @@ class AcRepository:
         identity: dict[str, str],
         before_collected_at: str | None = None,
     ) -> dict[str, object | None] | None:
+        ap_uuid = str(identity.get("ap_uuid") or "").strip()
+        if ap_uuid:
+            with self.database.connect_readonly() as conn:
+                if self._bounded_optical_authority_enabled(conn):
+                    clause = "site_id=? AND ap_identity=?"
+                    params: list[object] = [self.site_id, ap_uuid]
+                    if before_collected_at:
+                        clause += " AND changed_at < ?"
+                        params.append(before_collected_at)
+                    row = conn.execute(
+                        "SELECT * FROM optical_history WHERE " + clause
+                        + " ORDER BY changed_at DESC, id DESC LIMIT 1",
+                        params,
+                    ).fetchone()
+                    return dict(row) if row is not None else None
         legacy_row: dict[str, object | None] | None = None
         with self.database.connect() as conn:
             clauses, params = self._ap_identity_clauses(identity, allowed=("ap_uuid",))
@@ -2067,6 +2285,42 @@ class AcRepository:
         return candidates[0] if candidates else None
 
     def get_previous_ap_lldp_history(
+        self,
+        identity: dict[str, str],
+        before_collected_at: str | None = None,
+    ) -> dict[str, object | None] | None:
+        ap_uuid = str(identity.get("ap_uuid") or "").strip()
+        if not ap_uuid:
+            return None
+        with self.database.connect_readonly() as conn:
+            if not self._bounded_lldp_authority_enabled(conn):
+                return self._legacy_get_previous_ap_lldp_history(
+                    identity,
+                    before_collected_at,
+                )
+            if before_collected_at:
+                row = conn.execute(
+                    """
+                    SELECT * FROM fit_ap_lldp_history
+                    WHERE resource_key = ? AND changed_at < ?
+                    ORDER BY changed_at DESC, id DESC
+                    LIMIT 1
+                    """,
+                    (ap_uuid, before_collected_at),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    """
+                    SELECT * FROM fit_ap_lldp_history
+                    WHERE resource_key = ?
+                    ORDER BY changed_at DESC, id DESC
+                    LIMIT 1
+                    """,
+                    (ap_uuid,),
+                ).fetchone()
+        return dict(row) if row is not None else None
+
+    def _legacy_get_previous_ap_lldp_history(
         self,
         identity: dict[str, str],
         before_collected_at: str | None = None,
@@ -2145,27 +2399,35 @@ class AcRepository:
         self, ap_uuid: str
     ) -> dict[str, object | None] | None:
         with self.database.connect() as conn:
-            legacy_rows = self._query_legacy_history_rows(
-                conn,
-                "ap_lldp_history",
-                """
-                SELECT * FROM ap_lldp_history
-                WHERE ap_uuid = ?
-                ORDER BY is_latest DESC, collected_at DESC, id DESC
-                LIMIT 1
-                """,
-                (ap_uuid,),
-            )
-        events = self.history_store.query_events(
-            kind="fit_ap_lldp", entity_key=str(ap_uuid), limit=1
-        )
-        return (
-            self._merge_history_rows(legacy_rows, events, limit=1)[0]
-            if legacy_rows or events
-            else None
-        )
+            if not self._bounded_lldp_authority_enabled(conn):
+                legacy_rows = self._query_legacy_history_rows(
+                    conn,
+                    "ap_lldp_history",
+                    """
+                    SELECT * FROM ap_lldp_history
+                    WHERE ap_uuid = ?
+                    ORDER BY is_latest DESC, collected_at DESC, id DESC
+                    LIMIT 1
+                    """,
+                    (ap_uuid,),
+                )
+                events = self.history_store.query_events(
+                    kind="fit_ap_lldp", entity_key=str(ap_uuid), limit=1
+                )
+                combined = self._merge_history_rows(legacy_rows, events, limit=1)
+                return combined[0] if combined else None
+        rows = self.list_current_ap_lldp_states([str(ap_uuid)])
+        return rows[0] if rows else None
 
     def list_latest_ap_lldp_histories(
+        self, limit: int = 100000
+    ) -> list[dict[str, object | None]]:
+        with self.database.connect() as conn:
+            if not self._bounded_lldp_authority_enabled(conn):
+                return self._legacy_list_latest_ap_lldp_histories(limit)
+        return self.list_current_ap_lldp_states()[: max(1, int(limit))]
+
+    def _legacy_list_latest_ap_lldp_histories(
         self, limit: int = 100000
     ) -> list[dict[str, object | None]]:
         with self.database.connect() as conn:
@@ -2222,6 +2484,23 @@ class AcRepository:
         )
 
     def list_all_ap_lldp_history(
+        self, limit: int = 100000
+    ) -> list[dict[str, object | None]]:
+        with self.database.connect() as conn:
+            if not self._bounded_lldp_authority_enabled(conn):
+                return self._legacy_list_all_ap_lldp_history(limit)
+        with self.database.connect_readonly() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM fit_ap_lldp_history
+                ORDER BY changed_at DESC, id DESC
+                LIMIT ?
+                """,
+                (max(1, int(limit)),),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def _legacy_list_all_ap_lldp_history(
         self, limit: int = 100000
     ) -> list[dict[str, object | None]]:
         with self.database.connect() as conn:
@@ -3035,6 +3314,25 @@ class AcRepository:
         ap_uuid = str(payload.get("ap_uuid") or "")
         if not ap_uuid:
             return
+        if self._bounded_optical_authority_enabled(conn):
+            now = self._now()
+            for side in ("AP", "SWITCH"):
+                projection = upsert_optical_current_and_history(
+                    conn,
+                    payload,
+                    site_id=self.site_id,
+                    side=side,
+                    now=now,
+                )
+                if projection is not None:
+                    update_ap_optical_treatment(
+                        conn,
+                        site_id=self.site_id,
+                        ap_identity=str(projection["ap_identity"]),
+                        source_row=payload,
+                        now=now,
+                    )
+            return
         row = self._payload(
             FIT_AP_OPTICAL_HISTORY_FIELDS,
             {
@@ -3082,51 +3380,15 @@ class AcRepository:
             )
         ):
             return
-        row = self._payload(
-            FIT_AP_LLDP_HISTORY_FIELDS,
+        upsert_lldp_current_and_history(
+            conn,
             {
-                "ac_device_uuid": payload.get("ac_device_uuid"),
-                "ap_uuid": payload.get("ap_uuid"),
-                "ap_name": payload.get("ap_name"),
-                "ap_mac": payload.get("ap_mac"),
-                "source": payload.get("_history_lldp_source") or payload.get("lldp_source") or "ac_bulk_lldp",
-                "local_interface": payload.get("lldp_local_interface"),
-                "local_interface_normalized": payload.get("lldp_local_interface_normalized"),
-                "lldp_neighbor": payload.get("lldp_neighbor_name"),
-                "neighbor_name": payload.get("lldp_neighbor_name"),
-                "neighbor_interface": payload.get("lldp_neighbor_interface"),
-                "neighbor_mac": payload.get("lldp_neighbor_mac"),
-                "neighbor_mac_normalized": payload.get("lldp_neighbor_mac_normalized"),
-                "neighbor_device_name": payload.get("neighbor_device_name") or payload.get("lldp_neighbor_name"),
-                "session_id": payload.get("collect_run_uuid"),
-                "is_changed": 1,
-                "conflict_flag": 1 if str(payload.get("lldp_match_status") or "") == "conflict" else 0,
-                "collected_at": payload.get("collected_at"),
-                "collect_run_uuid": payload.get("collect_run_uuid"),
-                "raw_log_path": payload.get("raw_log_path"),
+                **payload,
+                "source": payload.get("_history_lldp_source")
+                or payload.get("lldp_source")
+                or "ac_bulk_lldp",
             },
-        )
-        ap_uuid = str(row.get("ap_uuid") or "")
-        if not ap_uuid:
-            return
-        row["is_changed"] = self._lldp_history_changed(
-            conn,
-            ap_uuid,
-            row,
-            previous_rows=previous_history,
-        )
-        self.history_store.record_event(
-            conn,
-            kind="fit_ap_lldp",
-            entity_key=ap_uuid,
-            payload=row,
-            collected_at=str(row.get("collected_at") or self._now()),
-            meaningful_fields=(
-                "ac_device_uuid", "ap_uuid", "ap_name", "ap_mac", "source", "local_interface",
-                "local_interface_normalized", "lldp_neighbor", "neighbor_interface", "neighbor_mac",
-                "neighbor_mac_normalized", "neighbor_device_name", "neighbor_name", "conflict_flag",
-            ),
-            state_changed=_fit_ap_lldp_changed,
+            now=self._now(),
         )
 
     def _append_resource_history(self, conn, payload: dict[str, object | None]) -> None:

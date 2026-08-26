@@ -151,6 +151,9 @@ class _ReadonlyDatabase:
     def connect(self) -> sqlite3.Connection:
         return AcManagementQueryService._connect(self.path)
 
+    def connect_readonly(self) -> sqlite3.Connection:
+        return self.connect()
+
 
 class AcManagementQueryService:
     """AC 管理 Web 页面的 GET-only 查询边界。"""

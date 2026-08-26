@@ -1,0 +1,115 @@
+{
+  "generated_at": "2026-08-26T12:37:10+08:00",
+  "mode": "dry_run",
+  "data_root": "D:\\NetConsoleData-dev",
+  "candidate_root": "D:\\study\\diagnostic\\NetConsole\\lldp-optical-migration",
+  "production_data_touched": false,
+  "sites": [
+    {
+      "site_id": "宁波地铁12号线",
+      "source_database": "D:\\NetConsoleData-dev\\sites\\宁波地铁12号线\\db\\devices.db",
+      "source_manifest_before": {
+        "D:\\NetConsoleData-dev\\sites\\宁波地铁12号线\\db\\devices.db": {
+          "size": 92807168,
+          "mtime_ns": 1787192348231376200,
+          "sha256": "c445a35054454675d6b5a9c782e92897778493be2183ff455cecabab8895af7d"
+        },
+        "D:\\NetConsoleData-dev\\sites\\宁波地铁12号线\\db\\history\\catalog.db": {
+          "size": 2187264,
+          "mtime_ns": 1787192348231376200,
+          "sha256": "c9ee21110823ee5ba951e7bdddae4370276a5c87d5c146731a637d71af666358"
+        },
+        "D:\\NetConsoleData-dev\\sites\\宁波地铁12号线\\db\\history\\devices-2026-06.db": {
+          "size": 227373056,
+          "mtime_ns": 1787003225701360400,
+          "sha256": "7aa226210413a3f79a0afd66562115804d8a1e92be9466bbc525664b8a26d2a3"
+        },
+        "D:\\NetConsoleData-dev\\sites\\宁波地铁12号线\\db\\history\\devices-2026-07.db": {
+          "size": 652722176,
+          "mtime_ns": 1787003214540096100,
+          "sha256": "83457216b69d938bd1853c23d01613df0572f3546a121ba1b68fb5dc338b7619"
+        },
+        "D:\\NetConsoleData-dev\\sites\\宁波地铁12号线\\db\\history\\devices-2026-08.db": {
+          "size": 270946304,
+          "mtime_ns": 1787192345817143500,
+          "sha256": "2f350fdc7d7cb873b0c0bc2845961a8305a97ca71611db674baa611594b01a25"
+        }
+      },
+      "lldp": {
+        "source_rows": 277485,
+        "invalid_rows": 0,
+        "current_rows": 992,
+        "true_change_events": 9314,
+        "retained_history_rows": 8377,
+        "max_history_per_ap": 27
+      },
+      "optical": {
+        "source_rows": 195748,
+        "skipped_rows": 6484,
+        "current_rows": 1892,
+        "current_ap_rows": 946,
+        "current_switch_rows": 946,
+        "true_change_events": 109037,
+        "retained_history_rows": 18907,
+        "max_history_per_ap_side": 123,
+        "aps_with_abnormal_observation": 101
+      },
+      "source_table_counts": {
+        "ac_ap_summary": 1,
+        "ac_fit_ap_details": 992,
+        "ac_fit_ap_metadata": 5,
+        "ac_fit_ap_optical": 992,
+        "ac_fit_ap_radio_details": 1984,
+        "ac_fit_ap_radio_history": 0,
+        "ac_fit_ap_resource_history": 0,
+        "ac_fit_ap_resources": 992,
+        "ac_fit_ap_unauthenticated": 0,
+        "ac_fit_ap_unauthenticated_history": 0,
+        "ac_fit_ap_unauthenticated_summary": 1,
+        "ac_station_ap_capacity": 11,
+        "ac_station_online_summary_history": 0,
+        "ac_trackside_ap_plan": 11,
+        "ac_trackside_ap_plan_settings": 1,
+        "ap_entities": 992,
+        "ap_extension_import_batches": 1,
+        "ap_extension_points": 993,
+        "ap_identity_conflicts": 0,
+        "ap_identity_entities": 1940,
+        "ap_identity_h3c_prefixes": 0,
+        "ap_identity_index_state": 1,
+        "ap_identity_mac_aliases": 4959,
+        "ap_identity_radio_evidence": 1982,
+        "ap_identity_source_state": 1,
+        "ap_resource_snapshots": 157423,
+        "cloud_sync_documents": 0,
+        "cloud_sync_profiles": 1,
+        "cloud_sync_runs": 0,
+        "collect_runs": 1933,
+        "config_snapshots": 77,
+        "device_credential_states": 26,
+        "device_facts": 51,
+        "device_facts_history": 0,
+        "device_groups": 5,
+        "device_interfaces": 3538,
+        "device_interfaces_history": 0,
+        "device_lldp_neighbors": 1161,
+        "device_lldp_neighbors_history": 0,
+        "device_optical_modules": 1589,
+        "device_optical_modules_history": 0,
+        "devices": 100,
+        "rail_ap_vlan_allocations": 0,
+        "rail_ap_vlan_assignments": 0,
+        "rail_ap_vlan_group_members": 11,
+        "rail_ap_vlan_groups": 11,
+        "rail_ap_vlan_plans": 1,
+        "schema_metadata": 3,
+        "sqlite_sequence": 35,
+        "trackside_ap_view_cache": 0,
+        "wifi_floor_plans": 0,
+        "wifi_observations": 0,
+        "wifi_survey_points": 0,
+        "wifi_survey_sessions": 0
+      }
+    }
+  ]
+}

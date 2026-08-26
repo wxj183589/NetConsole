@@ -1,0 +1,73 @@
+{
+  "data_root": "D:\\NetConsoleData-dev",
+  "production_data_touched": false,
+  "scope": "DEV 中所有含 devices.db 的局点；LLDP 历史重点审计 hzl10 与宁波地铁12号线",
+  "resource_key": "ap_uuid",
+  "canonicalization": "现有 normalize_lldp_payload + normalize_interface_key；current 资源行作为当前状态校验样本",
+  "sites": [
+    {
+      "site": "hzl10",
+      "database_size_bytes": 424132608,
+      "current_resource_rows": 491,
+      "current_resource_rows_with_lldp": 491,
+      "legacy_ac_fit_ap_lldp_history_rows": 62792,
+      "legacy_ap_lldp_history_rows": 35496,
+      "history_state_fit_ap_lldp_rows": 492,
+      "history_shards": [
+        {"shard": "2026-07", "file_size_bytes": 65536, "fit_ap_lldp_rows": 1, "event_types": {"change": 1}, "compressed_bytes": 245, "min_timestamp": "2026-07-28T19:11:08", "max_timestamp": "2026-07-28T19:11:08"},
+        {"shard": "2026-08", "file_size_bytes": 36126720, "fit_ap_lldp_rows": 14025, "event_types": {"change": 13540, "heartbeat": 485}, "compressed_bytes": 3292304, "min_timestamp": "2026-08-03T18:03:23", "max_timestamp": "2026-08-21T13:44:42"}
+      ],
+      "raw_source_events": 76818,
+      "history_shard_compressed_bytes": 3292549,
+      "history_shard_estimated_decoded_bytes": 5361303,
+      "observed_resources": 492,
+      "exact_duplicate_events": 22732,
+      "no_change_events": 76767,
+      "true_change_events": 50,
+      "state_observations_after_change_collapse": 492,
+      "events_after_retention_10": 50,
+      "resources_with_0_change": 0,
+      "resources_with_1_to_10_changes": 492,
+      "resources_with_over_10_changes": 0,
+      "max_changes_per_resource": 8,
+      "decode_errors": 0,
+      "unknown_state_observations": 12,
+      "ambiguous_state_observations": 0
+    },
+    {
+      "site": "宁波地铁12号线",
+      "database_size_bytes": 92807168,
+      "current_resource_rows": 992,
+      "current_resource_rows_with_lldp": 992,
+      "legacy_ac_fit_ap_lldp_history_rows": 0,
+      "legacy_ap_lldp_history_rows": 0,
+      "history_state_fit_ap_lldp_rows": 981,
+      "history_shards": [
+        {"shard": "2026-06", "file_size_bytes": 227373056, "fit_ap_lldp_rows": 28647, "event_types": {"legacy": 28647}, "compressed_bytes": 6073425, "min_timestamp": "2026-06-23T21:41:08", "max_timestamp": "2026-06-30T18:42:15"},
+        {"shard": "2026-07", "file_size_bytes": 652722176, "fit_ap_lldp_rows": 172224, "event_types": {"legacy": 172224}, "compressed_bytes": 37821232, "min_timestamp": "2026-07-01T12:38:58", "max_timestamp": "2026-07-31T19:14:02"},
+        {"shard": "2026-08", "file_size_bytes": 270946304, "fit_ap_lldp_rows": 75622, "event_types": {"change": 985, "heartbeat": 3922, "legacy": 70715}, "compressed_bytes": 17719119, "min_timestamp": "2026-08-01T02:27:14", "max_timestamp": "2026-08-20T10:13:35"}
+      ],
+      "raw_source_events": 276493,
+      "history_shard_compressed_bytes": 61613776,
+      "history_shard_estimated_decoded_bytes": 99931454,
+      "observed_resources": 992,
+      "exact_duplicate_events": 87911,
+      "no_change_events": 267179,
+      "true_change_events": 9314,
+      "state_observations_after_change_collapse": 992,
+      "events_after_retention_10": 8377,
+      "resources_with_0_change": 0,
+      "resources_with_1_to_10_changes": 646,
+      "resources_with_over_10_changes": 346,
+      "max_changes_per_resource": 27,
+      "decode_errors": 0,
+      "unknown_state_observations": 1806,
+      "ambiguous_state_observations": 0
+    }
+  ],
+  "notes": [
+    "true_change_events/no_change_events include reconciliation of the current resource row against the historical sequence; raw_source_events excludes that synthetic reconciliation row.",
+    "宁波12号线 2026-08 fit_ap_lldp compressed_bytes 分项为 change 224302 + heartbeat 892152 + legacy 16602665 = 17719119; aggregate history_shard_compressed_bytes is measured over all three shards and is authoritative for this baseline.",
+    "unknown_state_observations 是现有 match_status 的业务分类，不是不可解码 payload；decode_errors=0。"
+  ]
+}

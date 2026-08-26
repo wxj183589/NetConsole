@@ -26,7 +26,7 @@ from netconsole.core.sqlite_utils import (
 from netconsole.models.device_address import InvalidDeviceAddressError, normalize_ip_address
 
 
-CURRENT_SCHEMA_VERSION = "2026.08.16.ap_identity_radio_evidence"
+CURRENT_SCHEMA_VERSION = "2026.08.26.lldp_optical_bounded_current_history"
 
 DEVICE_CLASSIFICATION_COLUMNS = (
     "project_phase",
@@ -371,6 +371,11 @@ def _trackside_ap_revision_schema() -> str:
             "ap_lldp_history",
             "ac_fit_ap_lldp_history",
             "ac_fit_ap_unauthenticated_history",
+            "fit_ap_lldp_current",
+            "fit_ap_lldp_history",
+            "optical_current",
+            "optical_history",
+            "ap_optical_treatment",
         ),
         "trackside_ap_export_history_revision": (
             "ac_fit_ap_resource_history",
@@ -1440,6 +1445,207 @@ CREATE TABLE IF NOT EXISTS ac_fit_ap_lldp_history (
 );
 CREATE INDEX IF NOT EXISTS idx_fit_ap_lldp_history_ap_time
     ON ac_fit_ap_lldp_history(ap_uuid, collected_at DESC, id DESC);
+"""
+
+FIT_AP_LLDP_BOUNDED_SCHEMA = """
+CREATE TABLE IF NOT EXISTS fit_ap_lldp_retention_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+INSERT OR IGNORE INTO fit_ap_lldp_retention_meta(key, value)
+VALUES ('authority', 'legacy');
+
+CREATE TABLE IF NOT EXISTS fit_ap_lldp_current (
+    resource_key TEXT PRIMARY KEY,
+    ac_device_uuid TEXT NOT NULL DEFAULT '',
+    ap_uuid TEXT NOT NULL UNIQUE,
+    ap_name TEXT NOT NULL DEFAULT '',
+    ap_mac TEXT NOT NULL DEFAULT '',
+    ap_mac_normalized TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL DEFAULT '',
+    lldp_confidence INTEGER NOT NULL DEFAULT 0,
+    local_interface TEXT NOT NULL DEFAULT '',
+    local_interface_normalized TEXT NOT NULL DEFAULT '',
+    lldp_neighbor TEXT NOT NULL DEFAULT '',
+    neighbor_interface TEXT NOT NULL DEFAULT '',
+    neighbor_interface_normalized TEXT NOT NULL DEFAULT '',
+    neighbor_mac TEXT NOT NULL DEFAULT '',
+    neighbor_mac_normalized TEXT NOT NULL DEFAULT '',
+    neighbor_device_name TEXT NOT NULL DEFAULT '',
+    neighbor_name TEXT NOT NULL DEFAULT '',
+    lldp_match_status TEXT NOT NULL DEFAULT '',
+    conflict_flag INTEGER NOT NULL DEFAULT 0,
+    collected_at TEXT NOT NULL DEFAULT '',
+    collect_run_uuid TEXT NOT NULL DEFAULT '',
+    raw_log_path TEXT NOT NULL DEFAULT '',
+    state_json TEXT NOT NULL DEFAULT '{}',
+    state_fingerprint TEXT NOT NULL DEFAULT '',
+    first_seen_at TEXT NOT NULL DEFAULT '',
+    last_seen_at TEXT NOT NULL DEFAULT '',
+    changed_at TEXT,
+    source_revision TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_fit_ap_lldp_current_mac
+    ON fit_ap_lldp_current(ap_mac_normalized);
+CREATE INDEX IF NOT EXISTS idx_fit_ap_lldp_current_interface
+    ON fit_ap_lldp_current(local_interface_normalized);
+
+CREATE TABLE IF NOT EXISTS fit_ap_lldp_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    resource_key TEXT NOT NULL,
+    ac_device_uuid TEXT NOT NULL DEFAULT '',
+    ap_uuid TEXT NOT NULL,
+    ap_name TEXT NOT NULL DEFAULT '',
+    ap_mac TEXT NOT NULL DEFAULT '',
+    ap_mac_normalized TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL DEFAULT '',
+    lldp_confidence INTEGER NOT NULL DEFAULT 0,
+    local_interface TEXT NOT NULL DEFAULT '',
+    local_interface_normalized TEXT NOT NULL DEFAULT '',
+    lldp_neighbor TEXT NOT NULL DEFAULT '',
+    neighbor_interface TEXT NOT NULL DEFAULT '',
+    neighbor_interface_normalized TEXT NOT NULL DEFAULT '',
+    neighbor_mac TEXT NOT NULL DEFAULT '',
+    neighbor_mac_normalized TEXT NOT NULL DEFAULT '',
+    neighbor_device_name TEXT NOT NULL DEFAULT '',
+    neighbor_name TEXT NOT NULL DEFAULT '',
+    lldp_match_status TEXT NOT NULL DEFAULT '',
+    conflict_flag INTEGER NOT NULL DEFAULT 0,
+    collected_at TEXT NOT NULL DEFAULT '',
+    collect_run_uuid TEXT NOT NULL DEFAULT '',
+    raw_log_path TEXT NOT NULL DEFAULT '',
+    previous_state_json TEXT NOT NULL DEFAULT '{}',
+    state_json TEXT NOT NULL DEFAULT '{}',
+    state_fingerprint TEXT NOT NULL DEFAULT '',
+    changed_at TEXT NOT NULL DEFAULT '',
+    source_revision TEXT NOT NULL DEFAULT '',
+    change_kind TEXT NOT NULL DEFAULT 'change',
+    created_at TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_fit_ap_lldp_history_resource_time
+    ON fit_ap_lldp_history(resource_key, changed_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_fit_ap_lldp_history_ap_time
+    ON fit_ap_lldp_history(ap_uuid, changed_at DESC, id DESC);
+"""
+
+OPTICAL_BOUNDED_SCHEMA = """
+CREATE TABLE IF NOT EXISTS optical_retention_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+INSERT OR IGNORE INTO optical_retention_meta(key, value)
+VALUES ('authority', 'bounded_v1');
+
+CREATE TABLE IF NOT EXISTS optical_current (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    site_id TEXT NOT NULL,
+    ap_identity TEXT NOT NULL,
+    ap_uuid TEXT NOT NULL DEFAULT '',
+    ap_name TEXT NOT NULL DEFAULT '',
+    ap_mac TEXT NOT NULL DEFAULT '',
+    ap_mac_normalized TEXT NOT NULL DEFAULT '',
+    serial_number TEXT NOT NULL DEFAULT '',
+    side TEXT NOT NULL,
+    switch_device_id TEXT NOT NULL DEFAULT '',
+    switch_name TEXT NOT NULL DEFAULT '',
+    switch_interface TEXT NOT NULL DEFAULT '',
+    rx_dbm TEXT NOT NULL DEFAULT '',
+    tx_dbm TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'unknown',
+    source TEXT NOT NULL DEFAULT '',
+    collected_at TEXT NOT NULL DEFAULT '',
+    last_seen_at TEXT NOT NULL DEFAULT '',
+    state_json TEXT NOT NULL DEFAULT '{}',
+    state_fingerprint TEXT NOT NULL DEFAULT '',
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    source_revision TEXT NOT NULL DEFAULT '',
+    first_seen_at TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT '',
+    UNIQUE(site_id, ap_identity, side),
+    CHECK (side IN ('AP', 'SWITCH'))
+);
+CREATE INDEX IF NOT EXISTS idx_optical_current_ap
+    ON optical_current(site_id, ap_identity, side);
+CREATE INDEX IF NOT EXISTS idx_optical_current_status
+    ON optical_current(site_id, status, side);
+
+CREATE TABLE IF NOT EXISTS optical_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    site_id TEXT NOT NULL,
+    ap_identity TEXT NOT NULL,
+    ap_uuid TEXT NOT NULL DEFAULT '',
+    ap_name TEXT NOT NULL DEFAULT '',
+    ap_mac TEXT NOT NULL DEFAULT '',
+    ap_mac_normalized TEXT NOT NULL DEFAULT '',
+    serial_number TEXT NOT NULL DEFAULT '',
+    side TEXT NOT NULL,
+    switch_device_id TEXT NOT NULL DEFAULT '',
+    switch_name TEXT NOT NULL DEFAULT '',
+    switch_interface TEXT NOT NULL DEFAULT '',
+    rx_dbm TEXT NOT NULL DEFAULT '',
+    tx_dbm TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'unknown',
+    source TEXT NOT NULL DEFAULT '',
+    collected_at TEXT NOT NULL DEFAULT '',
+    last_seen_at TEXT NOT NULL DEFAULT '',
+    state_json TEXT NOT NULL DEFAULT '{}',
+    state_fingerprint TEXT NOT NULL DEFAULT '',
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    source_revision TEXT NOT NULL DEFAULT '',
+    previous_state_json TEXT NOT NULL DEFAULT '{}',
+    changed_at TEXT NOT NULL DEFAULT '',
+    change_kind TEXT NOT NULL DEFAULT 'change',
+    created_at TEXT NOT NULL DEFAULT '',
+    CHECK (side IN ('AP', 'SWITCH'))
+);
+CREATE INDEX IF NOT EXISTS idx_optical_history_resource_time
+    ON optical_history(site_id, ap_identity, side, changed_at DESC, id DESC);
+
+CREATE TABLE IF NOT EXISTS ap_optical_treatment (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    site_id TEXT NOT NULL,
+    ap_identity TEXT NOT NULL,
+    ap_uuid TEXT NOT NULL DEFAULT '',
+    ap_name TEXT NOT NULL DEFAULT '',
+    ap_mac TEXT NOT NULL DEFAULT '',
+    ap_mac_normalized TEXT NOT NULL DEFAULT '',
+    serial_number TEXT NOT NULL DEFAULT '',
+    station_id TEXT NOT NULL DEFAULT '',
+    station_name TEXT NOT NULL DEFAULT '',
+    switch_device_id TEXT NOT NULL DEFAULT '',
+    switch_name TEXT NOT NULL DEFAULT '',
+    switch_interface TEXT NOT NULL DEFAULT '',
+    first_detected_at TEXT NOT NULL DEFAULT '',
+    last_abnormal_at TEXT NOT NULL DEFAULT '',
+    first_ap_rx_dbm TEXT NOT NULL DEFAULT '',
+    first_switch_rx_dbm TEXT NOT NULL DEFAULT '',
+    current_ap_rx_dbm TEXT NOT NULL DEFAULT '',
+    current_switch_rx_dbm TEXT NOT NULL DEFAULT '',
+    current_ap_tx_dbm TEXT NOT NULL DEFAULT '',
+    current_switch_tx_dbm TEXT NOT NULL DEFAULT '',
+    recovered_ap_rx_dbm TEXT NOT NULL DEFAULT '',
+    recovered_switch_rx_dbm TEXT NOT NULL DEFAULT '',
+    first_abnormal_side TEXT NOT NULL DEFAULT 'UNKNOWN',
+    current_abnormal_side TEXT NOT NULL DEFAULT 'UNKNOWN',
+    current_ap_status TEXT NOT NULL DEFAULT 'unknown',
+    current_switch_status TEXT NOT NULL DEFAULT 'unknown',
+    current_status TEXT NOT NULL DEFAULT 'ABNORMAL',
+    treatment_status TEXT NOT NULL DEFAULT 'PENDING',
+    first_resolved_at TEXT NOT NULL DEFAULT '',
+    last_resolved_at TEXT NOT NULL DEFAULT '',
+    recurrence_count INTEGER NOT NULL DEFAULT 0,
+    last_collected_at TEXT NOT NULL DEFAULT '',
+    remark TEXT NOT NULL DEFAULT '',
+    source_revision TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT '',
+    UNIQUE(site_id, ap_identity)
+);
+CREATE INDEX IF NOT EXISTS idx_ap_optical_treatment_status
+    ON ap_optical_treatment(site_id, current_status, treatment_status);
 """
 
 AC_FIT_AP_RADIO_HISTORY_SCHEMA = """
@@ -3531,6 +3737,8 @@ class Database:
             AC_STATION_ONLINE_SUMMARY_HISTORY_SCHEMA,
             AC_FIT_AP_OPTICAL_HISTORY_SCHEMA,
             AC_FIT_AP_LLDP_HISTORY_SCHEMA,
+            FIT_AP_LLDP_BOUNDED_SCHEMA,
+            OPTICAL_BOUNDED_SCHEMA,
             AC_FIT_AP_RADIO_HISTORY_SCHEMA,
             CONFIG_SNAPSHOTS_SCHEMA,
             _ap_identity_source_revision_schema(),
