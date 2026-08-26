@@ -145,10 +145,56 @@ def build_offline_ap_ledger(
     return build_offline_ap_stats(resources, ledger), ledger
 
 
+def build_current_ap_history_indexes(
+    current_lldp_rows: list[dict[str, object | None]],
+    resources: list[dict[str, object | None]],
+) -> tuple[dict[str, dict[str, object | None]], dict[str, dict[str, object | None]]]:
+    """Build offline-AP indexes from the bounded Current snapshot only.
+
+    Trackside page/export paths must not reconstruct a current view by scanning
+    Legacy HistoryStore or the recent-history table.  The bounded LLDP Current
+    rows are already the authoritative projection for this purpose.
+    """
+
+    current_by_key: dict[str, dict[str, object | None]] = {}
+    for row in current_lldp_rows or []:
+        for key in _ap_key_candidates(row):
+            current_by_key.setdefault(key, row)
+        resource_key = str(row.get("resource_key") or "").strip().casefold()
+        if resource_key:
+            current_by_key.setdefault(f"uuid:{resource_key}", row)
+
+    lldp: dict[str, dict[str, object | None]] = {}
+    for resource in resources or []:
+        if not is_fit_ap_offline(resource):
+            continue
+        key = _ap_key(resource)
+        if not key:
+            continue
+        current = next(
+            (
+                current_by_key[candidate]
+                for candidate in _ap_key_candidates(resource)
+                if candidate in current_by_key
+            ),
+            None,
+        )
+        if current:
+            lldp[key] = current
+    return lldp, {}
+
+
 def build_latest_ap_history_indexes(
     repository,
     resources: list[dict[str, object | None]],
 ) -> tuple[dict[str, dict[str, object | None]], dict[str, dict[str, object | None]]]:
+    """Compatibility helper for non-trackside legacy callers.
+
+    New trackside page/export code uses :func:`build_current_ap_history_indexes`.
+    This wrapper remains only for old task handlers and migration-era callers
+    that have not yet been moved to an explicit Current snapshot input.
+    """
+
     lldp: dict[str, dict[str, object | None]] = {}
     for resource in resources:
         if not is_fit_ap_offline(resource):

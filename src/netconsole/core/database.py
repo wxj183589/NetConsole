@@ -26,7 +26,7 @@ from netconsole.core.sqlite_utils import (
 from netconsole.models.device_address import InvalidDeviceAddressError, normalize_ip_address
 
 
-CURRENT_SCHEMA_VERSION = "2026.08.26.lldp_optical_bounded_current_history"
+CURRENT_SCHEMA_VERSION = "2026.08.26.engineering_current_history_v2"
 
 DEVICE_CLASSIFICATION_COLUMNS = (
     "project_phase",
@@ -546,6 +546,13 @@ CREATE TABLE IF NOT EXISTS device_interfaces (
     collect_run_uuid TEXT,
     raw_log_path TEXT,
     updated_at TEXT NOT NULL,
+    site_id TEXT NOT NULL DEFAULT '',
+    state_json TEXT NOT NULL DEFAULT '{}',
+    state_fingerprint TEXT NOT NULL DEFAULT '',
+    first_seen_at TEXT NOT NULL DEFAULT '',
+    last_seen_at TEXT NOT NULL DEFAULT '',
+    changed_at TEXT,
+    source_revision TEXT NOT NULL DEFAULT '',
     UNIQUE(device_uuid, interface_name)
 );
 """
@@ -585,7 +592,14 @@ CREATE TABLE IF NOT EXISTS device_optical_modules (
     collected_at TEXT NOT NULL,
     collect_run_uuid TEXT,
     raw_log_path TEXT,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    site_id TEXT NOT NULL DEFAULT '',
+    state_json TEXT NOT NULL DEFAULT '{}',
+    state_fingerprint TEXT NOT NULL DEFAULT '',
+    first_seen_at TEXT NOT NULL DEFAULT '',
+    last_seen_at TEXT NOT NULL DEFAULT '',
+    changed_at TEXT,
+    source_revision TEXT NOT NULL DEFAULT ''
 );
 """
 
@@ -614,7 +628,14 @@ CREATE TABLE IF NOT EXISTS device_lldp_neighbors (
     collected_at TEXT NOT NULL,
     collect_run_uuid TEXT,
     raw_log_path TEXT,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    site_id TEXT NOT NULL DEFAULT '',
+    state_json TEXT NOT NULL DEFAULT '{}',
+    state_fingerprint TEXT NOT NULL DEFAULT '',
+    first_seen_at TEXT NOT NULL DEFAULT '',
+    last_seen_at TEXT NOT NULL DEFAULT '',
+    changed_at TEXT,
+    source_revision TEXT NOT NULL DEFAULT ''
 );
 """
 
@@ -673,10 +694,26 @@ CREATE TABLE IF NOT EXISTS device_interfaces_history (
     collect_run_uuid TEXT,
     raw_log_path TEXT,
     updated_at TEXT,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    site_id TEXT NOT NULL DEFAULT '',
+    state_json TEXT NOT NULL DEFAULT '{}',
+    state_fingerprint TEXT NOT NULL DEFAULT '',
+    previous_state_json TEXT NOT NULL DEFAULT '{}',
+    changed_at TEXT,
+    source_revision TEXT NOT NULL DEFAULT '',
+    change_kind TEXT NOT NULL DEFAULT 'change'
 );
 CREATE INDEX IF NOT EXISTS idx_device_interfaces_history_device_interface_time
     ON device_interfaces_history(device_uuid, interface_name, collected_at DESC, id DESC);
+"""
+
+DEVICE_INTERFACE_BOUNDED_SCHEMA = """
+CREATE TABLE IF NOT EXISTS device_interface_retention_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+INSERT OR IGNORE INTO device_interface_retention_meta(key, value)
+VALUES ('authority', 'legacy');
 """
 
 DEVICE_OPTICAL_MODULES_HISTORY_SCHEMA = """
@@ -715,7 +752,14 @@ CREATE TABLE IF NOT EXISTS device_optical_modules_history (
     collect_run_uuid TEXT,
     raw_log_path TEXT,
     updated_at TEXT,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    site_id TEXT NOT NULL DEFAULT '',
+    state_json TEXT NOT NULL DEFAULT '{}',
+    state_fingerprint TEXT NOT NULL DEFAULT '',
+    previous_state_json TEXT NOT NULL DEFAULT '{}',
+    changed_at TEXT,
+    source_revision TEXT NOT NULL DEFAULT '',
+    change_kind TEXT NOT NULL DEFAULT 'change'
 );
 CREATE INDEX IF NOT EXISTS idx_device_optical_history_device_interface_time
     ON device_optical_modules_history(device_uuid, interface_name, collected_at DESC, id DESC);
@@ -747,10 +791,35 @@ CREATE TABLE IF NOT EXISTS device_lldp_neighbors_history (
     collect_run_uuid TEXT,
     raw_log_path TEXT,
     updated_at TEXT,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    site_id TEXT NOT NULL DEFAULT '',
+    state_json TEXT NOT NULL DEFAULT '{}',
+    state_fingerprint TEXT NOT NULL DEFAULT '',
+    previous_state_json TEXT NOT NULL DEFAULT '{}',
+    changed_at TEXT,
+    source_revision TEXT NOT NULL DEFAULT '',
+    change_kind TEXT NOT NULL DEFAULT 'change'
 );
 CREATE INDEX IF NOT EXISTS idx_device_lldp_history_device_interface_time
     ON device_lldp_neighbors_history(device_uuid, local_interface, collected_at DESC, id DESC);
+"""
+
+DEVICE_LLDP_BOUNDED_SCHEMA = """
+CREATE TABLE IF NOT EXISTS device_lldp_retention_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+INSERT OR IGNORE INTO device_lldp_retention_meta(key, value)
+VALUES ('authority', 'legacy');
+"""
+
+DEVICE_OPTICAL_BOUNDED_SCHEMA = """
+CREATE TABLE IF NOT EXISTS device_optical_retention_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+INSERT OR IGNORE INTO device_optical_retention_meta(key, value)
+VALUES ('authority', 'legacy');
 """
 
 AC_AP_SUMMARY_SCHEMA = """
@@ -1673,6 +1742,79 @@ CREATE INDEX IF NOT EXISTS idx_fit_ap_radio_history_ap_time
     ON ac_fit_ap_radio_history(ap_uuid, collected_at DESC, id DESC);
 """
 
+FIT_AP_RADIO_BOUNDED_SCHEMA = """
+CREATE TABLE IF NOT EXISTS fit_ap_radio_retention_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+INSERT OR IGNORE INTO fit_ap_radio_retention_meta(key, value)
+VALUES ('authority', 'legacy');
+
+CREATE TABLE IF NOT EXISTS fit_ap_radio_current (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    site_id TEXT NOT NULL,
+    ap_identity TEXT NOT NULL,
+    ap_uuid TEXT NOT NULL,
+    ap_name TEXT NOT NULL DEFAULT '',
+    ap_mac TEXT NOT NULL DEFAULT '',
+    radio_id INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT '',
+    mode TEXT NOT NULL DEFAULT '',
+    band TEXT NOT NULL DEFAULT '',
+    channel TEXT NOT NULL DEFAULT '',
+    bandwidth TEXT NOT NULL DEFAULT '',
+    usage TEXT NOT NULL DEFAULT '',
+    tx_power TEXT NOT NULL DEFAULT '',
+    clients INTEGER,
+    bbssid TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL DEFAULT '',
+    collected_at TEXT NOT NULL DEFAULT '',
+    last_seen_at TEXT NOT NULL DEFAULT '',
+    state_json TEXT NOT NULL DEFAULT '{}',
+    state_fingerprint TEXT NOT NULL DEFAULT '',
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    source_revision TEXT NOT NULL DEFAULT '',
+    first_seen_at TEXT NOT NULL DEFAULT '',
+    changed_at TEXT,
+    created_at TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT '',
+    UNIQUE(site_id, ap_identity, radio_id)
+);
+CREATE INDEX IF NOT EXISTS idx_fit_ap_radio_current_ap
+    ON fit_ap_radio_current(site_id, ap_identity, radio_id);
+
+CREATE TABLE IF NOT EXISTS fit_ap_radio_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    site_id TEXT NOT NULL,
+    ap_identity TEXT NOT NULL,
+    ap_uuid TEXT NOT NULL,
+    ap_name TEXT NOT NULL DEFAULT '',
+    ap_mac TEXT NOT NULL DEFAULT '',
+    radio_id INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT '',
+    mode TEXT NOT NULL DEFAULT '',
+    band TEXT NOT NULL DEFAULT '',
+    channel TEXT NOT NULL DEFAULT '',
+    bandwidth TEXT NOT NULL DEFAULT '',
+    usage TEXT NOT NULL DEFAULT '',
+    tx_power TEXT NOT NULL DEFAULT '',
+    clients INTEGER,
+    bbssid TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL DEFAULT '',
+    collected_at TEXT NOT NULL DEFAULT '',
+    state_json TEXT NOT NULL DEFAULT '{}',
+    state_fingerprint TEXT NOT NULL DEFAULT '',
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    source_revision TEXT NOT NULL DEFAULT '',
+    previous_state_json TEXT NOT NULL DEFAULT '{}',
+    changed_at TEXT NOT NULL DEFAULT '',
+    change_kind TEXT NOT NULL DEFAULT 'change',
+    created_at TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_fit_ap_radio_history_key_time
+    ON fit_ap_radio_history(site_id, ap_identity, radio_id, changed_at DESC, id DESC);
+"""
+
 AP_ENTITIES_SCHEMA = """
 CREATE TABLE IF NOT EXISTS ap_entities (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2503,6 +2645,68 @@ class Database:
     def _apply_additive_schema_updates(self, conn: sqlite3.Connection) -> None:
         if self._requires_device_address_migration(conn):
             self._apply_device_address_migration(conn)
+
+        interface_retention_columns = {
+            "site_id": "TEXT NOT NULL DEFAULT ''",
+            "state_json": "TEXT NOT NULL DEFAULT '{}'",
+            "state_fingerprint": "TEXT NOT NULL DEFAULT ''",
+            "first_seen_at": "TEXT NOT NULL DEFAULT ''",
+            "last_seen_at": "TEXT NOT NULL DEFAULT ''",
+            "changed_at": "TEXT",
+            "source_revision": "TEXT NOT NULL DEFAULT ''",
+        }
+        for column, definition in interface_retention_columns.items():
+            if self._table_exists(conn, "device_interfaces") and not self._column_exists(
+                conn, "device_interfaces", column
+            ):
+                conn.execute(
+                    f"ALTER TABLE device_interfaces ADD COLUMN {column} {definition}"
+                )
+            if self._table_exists(conn, "device_interfaces_history") and not self._column_exists(
+                conn, "device_interfaces_history", column
+            ):
+                conn.execute(
+                    f"ALTER TABLE device_interfaces_history ADD COLUMN {column} {definition}"
+                )
+        interface_history_columns = {
+            "previous_state_json": "TEXT NOT NULL DEFAULT '{}'",
+            "change_kind": "TEXT NOT NULL DEFAULT 'change'",
+        }
+        for column, definition in interface_history_columns.items():
+            if self._table_exists(conn, "device_interfaces_history") and not self._column_exists(
+                conn, "device_interfaces_history", column
+            ):
+                conn.execute(
+                    "ALTER TABLE device_interfaces_history ADD COLUMN "
+                    f"{column} {definition}"
+                )
+        if self._table_exists(conn, "device_interfaces_history"):
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_device_interfaces_bounded_history_key_time "
+                "ON device_interfaces_history(site_id, device_uuid, interface_name, changed_at DESC, id DESC)"
+            )
+
+        for table in ("device_lldp_neighbors", "device_optical_modules"):
+            for column, definition in interface_retention_columns.items():
+                if self._table_exists(conn, table) and not self._column_exists(conn, table, column):
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+        for table in ("device_lldp_neighbors_history", "device_optical_modules_history"):
+            for column, definition in interface_retention_columns.items():
+                if self._table_exists(conn, table) and not self._column_exists(conn, table, column):
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+            for column, definition in interface_history_columns.items():
+                if self._table_exists(conn, table) and not self._column_exists(conn, table, column):
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+        if self._table_exists(conn, "device_lldp_neighbors_history"):
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_device_lldp_bounded_history_key_time "
+                "ON device_lldp_neighbors_history(site_id, device_uuid, local_interface, changed_at DESC, id DESC)"
+            )
+        if self._table_exists(conn, "device_optical_modules_history"):
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_device_optical_bounded_history_key_time "
+                "ON device_optical_modules_history(site_id, device_uuid, interface_name, changed_at DESC, id DESC)"
+            )
 
         if self._table_exists(conn, "ac_fit_ap_metadata"):
             metadata_columns = {
@@ -3706,8 +3910,11 @@ class Database:
             DEVICE_LLDP_NEIGHBORS_SCHEMA,
             DEVICE_FACTS_HISTORY_SCHEMA,
             DEVICE_INTERFACES_HISTORY_SCHEMA,
+            DEVICE_INTERFACE_BOUNDED_SCHEMA,
             DEVICE_OPTICAL_MODULES_HISTORY_SCHEMA,
             DEVICE_LLDP_NEIGHBORS_HISTORY_SCHEMA,
+            DEVICE_LLDP_BOUNDED_SCHEMA,
+            DEVICE_OPTICAL_BOUNDED_SCHEMA,
             AC_AP_SUMMARY_SCHEMA,
             AC_FIT_AP_RESOURCES_SCHEMA,
             AC_FIT_AP_METADATA_SCHEMA,
@@ -3740,6 +3947,7 @@ class Database:
             FIT_AP_LLDP_BOUNDED_SCHEMA,
             OPTICAL_BOUNDED_SCHEMA,
             AC_FIT_AP_RADIO_HISTORY_SCHEMA,
+            FIT_AP_RADIO_BOUNDED_SCHEMA,
             CONFIG_SNAPSHOTS_SCHEMA,
             _ap_identity_source_revision_schema(),
             BASE_DATA_REVISION_SCHEMA,

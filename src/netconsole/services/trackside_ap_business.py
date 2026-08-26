@@ -3126,14 +3126,23 @@ def enrich_trackside_export_rows(
     switch_optical_history_rows: list[dict[str, object | None]] | None = None,
     ap_optical_history_rows: list[dict[str, object | None]] | None = None,
     ap_lldp_history_rows: list[dict[str, object | None]] | None = None,
+    current_only: bool = False,
 ) -> list[dict[str, object | None]]:
     switch_history_by_interface = _switch_optical_history_by_interface(switch_optical_history_rows or [])
     ap_history_by_identity = _ap_optical_history_by_identity(ap_optical_history_rows or [])
     enriched: list[dict[str, object | None]] = []
     for row in rows:
         item = dict(row)
-        _apply_switch_optical_change(item, fact_repository, switch_history_by_interface)
-        _apply_ap_optical_change(item, ac_repository, ap_history_by_identity)
+        _apply_switch_optical_change(
+            item,
+            fact_repository if not current_only else None,
+            switch_history_by_interface,
+        )
+        _apply_ap_optical_change(
+            item,
+            ac_repository if not current_only else None,
+            ap_history_by_identity,
+        )
         enriched.append(item)
     return enriched
 

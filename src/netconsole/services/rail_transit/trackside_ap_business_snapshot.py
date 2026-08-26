@@ -37,32 +37,16 @@ _CURRENT_SOURCE_TABLES: dict[str, tuple[str, ...]] = {
         "ac_fit_ap_unauthenticated",
     ),
     "optical_data_revision": ("ac_fit_ap_optical",),
-    "ap_history_revision": (
-        "ap_lldp_history",
-        "ac_fit_ap_lldp_history",
-        "ac_fit_ap_unauthenticated_history",
-        # Phase 2 history compatibility: only the current DB's small outbox
-        # lineage participates here. Monthly shards are never scanned.
-        "history_outbox",
-        "history_state",
-    ),
 }
 _SOURCE_REVISION_METADATA_KEYS = {
     "switch_facts_revision": "trackside_ap_switch_facts_revision",
     "lldp_revision": "trackside_ap_lldp_revision",
     "fit_ap_resource_revision": "trackside_ap_fit_ap_resource_revision",
     "optical_data_revision": "trackside_ap_optical_revision",
-    "ap_history_revision": "trackside_ap_history_revision",
 }
 _BUSINESS_REVISION_EXCLUDED_KEYS = {
-    "ap_history_revision",
     "export_history_revision",
 }
-_EXPORT_HISTORY_TABLES = (
-    "ac_fit_ap_resource_history",
-    "ac_fit_ap_optical_history",
-    "device_optical_modules_history",
-)
 _SENSITIVE_COLUMN_MARKERS = (
     "password",
     "credential",

@@ -143,6 +143,8 @@
   {"path":"scripts/maintenance/profile_device_history_storage.py","classification":"READ_ONLY_DATA_GATEWAY","owner":"data","reason":"history storage profiler is read-only and requires an isolated snapshot."},
   {"path":"scripts/maintenance/task_result_maintenance.py","classification":"MIGRATION_TOOL","owner":"job-center","reason":"explicit task result maintenance tool with isolated rehearsal boundaries."},
   {"path":"scripts/maintenance/validate_history_provenance.py","classification":"READ_ONLY_DATA_GATEWAY","owner":"data","reason":"history provenance validator reads immutable source and shard snapshots."},
+  {"path":"scripts/storage/audit_engineering_state.py","classification":"READ_ONLY_DATA_GATEWAY","owner":"data","reason":"DEV-only engineering-state inventory uses mode=ro SQLite connections and never writes the data root."},
+  {"path":"src/netconsole/storage/engineering_recent10_migration.py","classification":"MIGRATION_TOOL","owner":"data","reason":"Candidate-first engineering Current/recent10 migration is guarded to NetConsoleData-dev and verifies before DEV cutover."},
   {"path":"src/netconsole/services/site_package_staging.py","classification":"REPOSITORY_REQUIRED","owner":"storage","reason":"site package staging owns SQLite staging and validation connections."},
   {"path":"tests/test_site_sync_task_merge.py","classification":"TEST_ONLY","owner":"test","reason":"site sync task merge tests use temporary SQLite fixtures."},
   {"path":"tests/test_task_result_rollout.py","classification":"TEST_ONLY","owner":"test","reason":"task result rollout tests use temporary SQLite fixtures."},

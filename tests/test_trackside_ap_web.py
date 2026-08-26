@@ -551,7 +551,7 @@ def test_trackside_snapshot_keeps_switch_rows_when_fit_ap_resources_fail(
     assert snapshot.unavailable_sources[0]["code"] == "FIT_AP_RESOURCES_UNAVAILABLE"
 
 
-def test_trackside_snapshot_reads_history_store_after_lldp_legacy_tables_are_retired(
+def test_trackside_snapshot_does_not_read_history_store_after_lldp_legacy_tables_are_retired(
     tmp_path: Path,
 ) -> None:
     database = Database(tmp_path / "retired-lldp-history.sqlite")
@@ -607,7 +607,9 @@ def test_trackside_snapshot_reads_history_store_after_lldp_legacy_tables_are_ret
         for item in snapshot.unavailable_sources
     )
     assert snapshot.partial_data is False
-    assert any(row.get("ap_uuid") == "ap-1-0" for row in snapshot.rows)
+    # Trackside Current no longer reconstructs business rows from a retired
+    # HistoryStore event; only the bounded Current LLDP projection is valid.
+    assert not any(row.get("ap_uuid") == "ap-1-0" for row in snapshot.rows)
 
 
 def test_trackside_snapshot_uses_device_and_ac_without_base_data(

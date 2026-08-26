@@ -48,7 +48,10 @@
     "scripts/maintenance/benchmark_device_history_legacy_migration.py",
     "scripts/maintenance/benchmark_device_history_storage_queries.py",
     "scripts/maintenance/production_cutover_runtime_smoke.py",
-    "scripts/maintenance/profile_device_history_storage.py"
+    "scripts/maintenance/profile_device_history_storage.py",
+    "scripts/storage/audit_engineering_state.py",
+    "src/netconsole/storage/engineering_recent10_migration.py",
+    "src/netconsole/storage/lldp_optical_retention_migration.py"
   ],
   "production_rollback_owners": [
     {

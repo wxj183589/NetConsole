@@ -42,7 +42,9 @@ def test_unsupported_tables_have_producer_and_reader_evidence() -> None:
     assert "list_station_online_summary_history" in ac_repository
     assert "ac_overview_history_snapshot" in handlers
     assert "list_station_online_summary_history" in exporters
-    assert "ac_fit_ap_unauthenticated_history" in snapshot
+    # The independent unauthenticated history remains classified and owned by
+    # its repository, but Trackside Current snapshot code must not consume it.
+    assert "ac_fit_ap_unauthenticated_history" not in snapshot
 
 
 def test_unsupported_history_is_not_generic_migration_input() -> None:

@@ -541,6 +541,8 @@ class HistoryStore:
     ) -> bool:
         """Queue only changes or a per-kind low-frequency heartbeat."""
 
+        if not self.legacy_history_authority_enabled(conn):
+            return False
         self.ensure_outbox(conn)
         kind = str(kind).strip()
         entity_key = str(entity_key).strip()
@@ -637,6 +639,24 @@ class HistoryStore:
         if kind in DYNAMIC_CHANGE_ONLY_KINDS:
             self._prune_outbox_entity(conn, kind=kind, entity_key=entity_key)
         return True
+
+    @staticmethod
+    def legacy_history_authority_enabled(conn: sqlite3.Connection) -> bool:
+        """Return whether this DB still permits the retired event writer.
+
+        Missing metadata preserves compatibility for pre-migration test and
+        user databases.  The DEV migration writes ``retired`` atomically into
+        the candidate before cutover, so production code cannot recreate
+        ``history_outbox`` or monthly shards after retirement.
+        """
+
+        try:
+            row = conn.execute(
+                "SELECT value FROM schema_metadata WHERE key='engineering_history_authority'"
+            ).fetchone()
+        except sqlite3.Error:
+            return True
+        return str(row[0] if row is not None else "active") != "retired"
 
     @staticmethod
     def _meaningful_payload(

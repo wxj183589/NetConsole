@@ -19,6 +19,9 @@ from netconsole.services.fit_ap_link_info import (
     resolve_optical_match_status,
 )
 from netconsole.services.history_store import HistoryStore
+from netconsole.services.radio_retention import (
+    upsert_radio_current_and_history,
+)
 from netconsole.services.lldp_retention import (
     upsert_lldp_current_and_history,
 )
@@ -1933,6 +1936,16 @@ class AcRepository:
     def list_fit_ap_radio_history_by_ap(
         self, ap_uuid: str, limit: int = 100
     ) -> list[dict[str, object | None]]:
+        bounded_limit = max(1, min(10, int(limit)))
+        with self.database.connect_readonly() as conn:
+            if self._bounded_radio_authority_enabled(conn):
+                rows = conn.execute(
+                    "SELECT * FROM fit_ap_radio_history "
+                    "WHERE site_id=? AND ap_identity=? "
+                    "ORDER BY changed_at DESC, id DESC LIMIT ?",
+                    (self.site_id, str(ap_uuid), bounded_limit),
+                ).fetchall()
+                return [self._bounded_radio_history_row(row) for row in rows]
         with self.database.connect() as conn:
             rows = self._query_legacy_history_rows(
                 conn,
@@ -1952,6 +1965,13 @@ class AcRepository:
             ),
             limit=limit,
         )
+
+    @staticmethod
+    def _bounded_radio_history_row(row) -> dict[str, object | None]:
+        result = dict(row)
+        result["rid"] = result.get("radio_id")
+        result["collected_at"] = result.get("changed_at") or result.get("collected_at")
+        return result
 
     def list_fit_ap_lldp_history_by_ap(
         self, ap_uuid: str, limit: int = 100
@@ -1999,6 +2019,16 @@ class AcRepository:
         try:
             row = conn.execute(
                 "SELECT value FROM optical_retention_meta WHERE key='authority'"
+            ).fetchone()
+        except Exception:
+            return False
+        return str(row[0] if row is not None else "") == "bounded_v1"
+
+    @staticmethod
+    def _bounded_radio_authority_enabled(conn) -> bool:
+        try:
+            row = conn.execute(
+                "SELECT value FROM fit_ap_radio_retention_meta WHERE key='authority'"
             ).fetchone()
         except Exception:
             return False
@@ -2056,6 +2086,21 @@ class AcRepository:
     ) -> list[dict[str, object | None]]:
         table = _fit_ap_history_table(history_kind)
         normalized_kind = str(history_kind or "").strip().casefold()
+        if normalized_kind == "radio":
+            with self.database.connect_readonly() as conn:
+                if self._bounded_radio_authority_enabled(conn):
+                    rows = conn.execute(
+                        "SELECT * FROM fit_ap_radio_history "
+                        "WHERE site_id=? AND ap_identity=? "
+                        "ORDER BY changed_at DESC, id DESC LIMIT ? OFFSET ?",
+                        (
+                            self.site_id,
+                            str(ap_uuid),
+                            max(1, int(limit)),
+                            max(0, int(offset)),
+                        ),
+                    ).fetchall()
+                    return [self._bounded_radio_history_row(row) for row in rows]
         if normalized_kind == "lldp":
             with self.database.connect() as conn:
                 if not self._bounded_lldp_authority_enabled(conn):
@@ -2114,7 +2159,17 @@ class AcRepository:
 
     def count_fit_ap_history(self, history_kind: str, ap_uuid: str) -> int:
         table = _fit_ap_history_table(history_kind)
-        if str(history_kind or "").strip().casefold() == "lldp":
+        normalized_kind = str(history_kind or "").strip().casefold()
+        if normalized_kind == "radio":
+            with self.database.connect_readonly() as conn:
+                if self._bounded_radio_authority_enabled(conn):
+                    row = conn.execute(
+                        "SELECT COUNT(*) AS total FROM fit_ap_radio_history "
+                        "WHERE site_id=? AND ap_identity=?",
+                        (self.site_id, str(ap_uuid)),
+                    ).fetchone()
+                    return int(row["total"] if row is not None else 0)
+        if normalized_kind == "lldp":
             with self.database.connect() as conn:
                 if not self._bounded_lldp_authority_enabled(conn):
                     legacy_rows = self._query_legacy_history_rows(
@@ -2139,7 +2194,6 @@ class AcRepository:
                 (ap_uuid,),
             )
         legacy_total = int(rows[0]["total"] if rows else 0)
-        normalized_kind = str(history_kind or "").strip().casefold()
         events = self.history_store.count_events(
             kind=f"fit_ap_{normalized_kind}",
             entity_prefix=f"{ap_uuid}:" if normalized_kind == "radio" else None,
@@ -3263,17 +3317,31 @@ class AcRepository:
             ap_uuid = str(row.get("ap_uuid") or "")
             if not ap_uuid:
                 continue
-            self.history_store.record_event(
-                conn,
-                kind="fit_ap_radio",
-                entity_key=f"{ap_uuid}:{rid}",
-                payload=row,
-                collected_at=str(row.get("collected_at") or self._now()),
-                meaningful_fields=(
-                    "ac_device_uuid", "ap_uuid", "ap_name", "rid", "status", "mode", "band",
-                    "channel", "bandwidth", "bbssid",
-                ),
-            )
+            if self._bounded_radio_authority_enabled(conn):
+                upsert_radio_current_and_history(
+                    conn,
+                    {
+                        **row,
+                        "ap_mac": payload.get("ap_mac"),
+                        "source": "fit_ap_resource",
+                        "source_revision": payload.get("collect_run_uuid"),
+                    },
+                    site_id=self.site_id,
+                    radio_id=rid,
+                    now=str(row.get("collected_at") or self._now()),
+                )
+            else:
+                self.history_store.record_event(
+                    conn,
+                    kind="fit_ap_radio",
+                    entity_key=f"{ap_uuid}:{rid}",
+                    payload=row,
+                    collected_at=str(row.get("collected_at") or self._now()),
+                    meaningful_fields=(
+                        "ac_device_uuid", "ap_uuid", "ap_name", "rid", "status", "mode", "band",
+                        "channel", "bandwidth", "bbssid",
+                    ),
+                )
             if not normalized_bbssid.normalized:
                 continue
             existing = conn.execute(
@@ -4181,7 +4249,18 @@ class AcRepository:
         if not resources:
             return resources
         current_rows = self.list_fit_ap_unauthenticated(ac_device_uuid) if ac_device_uuid else self.list_all_fit_ap_unauthenticated()
-        history_rows = self.list_fit_ap_unauthenticated_history(ac_device_uuid)
+        # After the DEV engineering-state cutover, trackside projections must
+        # stay on Current sources.  The unauthenticated history table is an
+        # independent legacy timeline and is classified separately for later
+        # product work; it must not be scanned while building the page/export
+        # Current snapshot.
+        with self.database.connect_readonly() as conn:
+            legacy_authority = self.history_store.legacy_history_authority_enabled(conn)
+        history_rows = (
+            self.list_fit_ap_unauthenticated_history(ac_device_uuid)
+            if legacy_authority
+            else []
+        )
         current_index = _unauthenticated_identity_index(current_rows)
         history_index = _unauthenticated_identity_index(history_rows)
         enriched: list[dict[str, object | None]] = []

@@ -965,7 +965,7 @@ def _ac_overview_refresh(params: dict[str, Any], progress: ProgressCallback | No
     from netconsole.repositories.ac_repository import AcRepository
     from netconsole.repositories.device_repository import DeviceRepository
     from netconsole.services.ap_online_overview import ApOnlineOverviewService
-    from netconsole.services.offline_ap_ledger import build_device_lookup_by_name, build_latest_ap_history_indexes, build_offline_ap_ledger
+    from netconsole.services.offline_ap_ledger import build_current_ap_history_indexes, build_device_lookup_by_name, build_offline_ap_ledger
 
     _emit(progress, "ac_overview_refresh", 0, 4, "正在读取 FIT-AP 资源")
     _check_cancel(should_cancel)
@@ -989,7 +989,9 @@ def _ac_overview_refresh(params: dict[str, Any], progress: ProgressCallback | No
     )
     _emit(progress, "ac_overview_refresh", 2, 4, "正在计算离线 AP 台账")
     _check_cancel(should_cancel)
-    latest_lldp, _latest_optical = build_latest_ap_history_indexes(repository, resources)
+    latest_lldp, _latest_optical = build_current_ap_history_indexes(
+        repository.list_current_ap_lldp_states(), resources
+    )
     devices = DeviceRepository(database).list()
     stats, ledger = build_offline_ap_ledger(
         fit_ap_resources=resources,
@@ -1280,7 +1282,7 @@ def _ac_trackside_business_refresh(params: dict[str, Any], progress: ProgressCal
     from netconsole.repositories.ac_repository import AcRepository
     from netconsole.repositories.device_fact_repository import DeviceFactRepository
     from netconsole.repositories.device_repository import DeviceRepository
-    from netconsole.services.offline_ap_ledger import build_device_lookup_by_name, build_latest_ap_history_indexes, build_offline_ap_ledger
+    from netconsole.services.offline_ap_ledger import build_current_ap_history_indexes, build_device_lookup_by_name, build_offline_ap_ledger
     from netconsole.services.trackside_ap_business import build_trackside_ap_business_rows, filter_station_switch_devices
     from netconsole.services.rail_transit.effective_trackside_ap_scope import resolve_effective_trackside_ap_scope_from_database
 
@@ -1312,7 +1314,9 @@ def _ac_trackside_business_refresh(params: dict[str, Any], progress: ProgressCal
     lookup = build_switch_data_lookup(devices, optical_by_device)
     _emit(progress, "ac_trackside_business_refresh", 3, 5, "正在读取 FIT-AP 和离线台账")
     resources = ac_repository.list_fit_ap_resources_with_metadata(ac_uuid) if ac_uuid else ac_repository.list_all_fit_ap_resources_with_metadata()
-    latest_lldp, _latest_optical = build_latest_ap_history_indexes(ac_repository, resources)
+    latest_lldp, _latest_optical = build_current_ap_history_indexes(
+        ac_repository.list_current_ap_lldp_states(), resources
+    )
     _stats, ledger = build_offline_ap_ledger(
         fit_ap_resources=resources,
         latest_lldp_by_ap=latest_lldp,

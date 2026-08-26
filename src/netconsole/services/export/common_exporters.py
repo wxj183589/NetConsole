@@ -855,7 +855,7 @@ def _build_ap_online_overview_payload(payload: Mapping[str, Any]) -> dict[str, A
     from netconsole.repositories.ac_repository import AcRepository
     from netconsole.repositories.device_repository import DeviceRepository
     from netconsole.services.ap_online_overview import ApOnlineOverviewService
-    from netconsole.services.offline_ap_ledger import build_device_lookup_by_name, build_latest_ap_history_indexes, build_offline_ap_ledger
+    from netconsole.services.offline_ap_ledger import build_current_ap_history_indexes, build_device_lookup_by_name, build_offline_ap_ledger
 
     ac_uuid = str(payload.get("ac_uuid") or "").strip()
     database = Database(Path(str(payload.get("db_path") or "")))
@@ -871,7 +871,9 @@ def _build_ap_online_overview_payload(payload: Mapping[str, Any]) -> dict[str, A
         optical_rows=optical_rows,
         capacity_details=capacity_details,
     )
-    latest_lldp, _latest_optical = build_latest_ap_history_indexes(repository, resources)
+    latest_lldp, _latest_optical = build_current_ap_history_indexes(
+        repository.list_current_ap_lldp_states(), resources
+    )
     stats, ledger = build_offline_ap_ledger(
         fit_ap_resources=resources,
         latest_lldp_by_ap=latest_lldp,

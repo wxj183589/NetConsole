@@ -11,6 +11,16 @@ from netconsole.core.optical_severity_engine import (
     optical_history_state_changed,
 )
 from netconsole.services.history_store import HistoryStore
+from netconsole.services.interface_retention import (
+    interface_retention_authority_enabled,
+    upsert_interface_current_and_history,
+)
+from netconsole.services.device_state_retention import (
+    device_lldp_retention_authority_enabled,
+    device_optical_retention_authority_enabled,
+    upsert_device_lldp_current_and_history,
+    upsert_device_optical_current_and_history,
+)
 from netconsole.utils.interface_normalize import normalize_interface_name
 from netconsole.utils.interface_sort import interface_sort_key
 from netconsole.utils.natural_sort import natural_text_key
@@ -398,6 +408,33 @@ class DeviceFactRepository:
             raise ValueError("接口快照包含空接口名，保留上一份有效数据")
         now = self._now()
         with self.database.connect() as conn:
+            if interface_retention_authority_enabled(conn):
+                site_id = self.database.path.parent.parent.name or self.database.path.parent.name
+                current_names: list[str] = []
+                for item in interfaces:
+                    payload = self._payload(INTERFACE_FIELDS, {**item, "device_uuid": device_uuid})
+                    for field in ("tagged_vlans", "untagged_vlans", "vlan_warnings"):
+                        value = payload.get(field)
+                        if isinstance(value, (list, tuple)):
+                            payload[field] = json.dumps(
+                                list(value), ensure_ascii=False, separators=(",", ":")
+                            )
+                    if payload.get("pvid_verified") is not None:
+                        payload["pvid_verified"] = int(bool(payload["pvid_verified"]))
+                    payload["collected_at"] = payload.get("collected_at") or now
+                    payload["updated_at"] = payload.get("updated_at") or now
+                    current_names.append(str(payload["interface_name"]))
+                    upsert_interface_current_and_history(
+                        conn, payload, site_id=site_id, now=now
+                    )
+                placeholders = ", ".join("?" for _ in current_names)
+                conn.execute(
+                    f"DELETE FROM device_interfaces WHERE device_uuid=? "
+                    f"AND interface_name NOT IN ({placeholders})",
+                    [device_uuid, *current_names],
+                )
+                conn.commit()
+                return
             conn.execute("DELETE FROM device_interfaces WHERE device_uuid = ?", (device_uuid,))
             for item in interfaces:
                 payload = self._payload(INTERFACE_FIELDS, {**item, "device_uuid": device_uuid})
@@ -505,6 +542,13 @@ class DeviceFactRepository:
         payload = self._payload(INTERFACE_HISTORY_FIELDS, data)
         self._set_required_defaults(payload, ("collected_at", "created_at"))
         with self.database.connect() as conn:
+            if interface_retention_authority_enabled(conn):
+                site_id = self.database.path.parent.parent.name or self.database.path.parent.name
+                upsert_interface_current_and_history(
+                    conn, payload, site_id=site_id, now=str(payload["updated_at"] or self._now())
+                )
+                conn.commit()
+                return
             self.history_store.record_event(
                 conn,
                 kind="device_interface",
@@ -522,6 +566,28 @@ class DeviceFactRepository:
             raise ValueError("光模块快照包含空接口名，保留上一份有效数据")
         now = self._now()
         with self.database.connect() as conn:
+            if device_optical_retention_authority_enabled(conn):
+                site_id = self.database.path.parent.parent.name or self.database.path.parent.name
+                current_names: list[str] = []
+                for item in modules:
+                    if is_zte_optical_record(item):
+                        item = normalize_zte_optical_record(item)
+                    payload = self._payload(OPTICAL_MODULE_FIELDS, {**item, "device_uuid": device_uuid})
+                    self._preserve_optical_module_presence(payload, item)
+                    payload["collected_at"] = payload.get("collected_at") or now
+                    payload["updated_at"] = payload.get("updated_at") or now
+                    current_names.append(str(payload["interface_name"]))
+                    upsert_device_optical_current_and_history(
+                        conn, payload, site_id=site_id, now=now
+                    )
+                placeholders = ", ".join("?" for _ in current_names)
+                conn.execute(
+                    f"DELETE FROM device_optical_modules WHERE device_uuid=? "
+                    f"AND interface_name NOT IN ({placeholders})",
+                    [device_uuid, *current_names],
+                )
+                conn.commit()
+                return
             conn.execute("DELETE FROM device_optical_modules WHERE device_uuid = ?", (device_uuid,))
             for item in modules:
                 if is_zte_optical_record(item):
@@ -638,6 +704,13 @@ class DeviceFactRepository:
         self._preserve_optical_module_presence(payload, data)
         self._set_required_defaults(payload, ("collected_at", "created_at"))
         with self.database.connect() as conn:
+            if device_optical_retention_authority_enabled(conn):
+                site_id = self.database.path.parent.parent.name or self.database.path.parent.name
+                upsert_device_optical_current_and_history(
+                    conn, payload, site_id=site_id, now=str(payload["collected_at"])
+                )
+                conn.commit()
+                return
             self.history_store.record_event(
                 conn,
                 kind="device_optical",
@@ -708,6 +781,22 @@ class DeviceFactRepository:
                         },
                     )
                     current_payloads.append(missing)
+            if device_lldp_retention_authority_enabled(conn):
+                site_id = self.database.path.parent.parent.name or self.database.path.parent.name
+                if not preserve_existing:
+                    conn.execute(
+                        "DELETE FROM device_lldp_neighbors WHERE device_uuid = ?",
+                        (device_uuid,),
+                    )
+                    rows_to_upsert = current_payloads
+                else:
+                    rows_to_upsert = [*merged.values(), *passthrough]
+                for payload in rows_to_upsert:
+                    upsert_device_lldp_current_and_history(
+                        conn, payload, site_id=site_id, now=now
+                    )
+                conn.commit()
+                return
             conn.execute("DELETE FROM device_lldp_neighbors WHERE device_uuid = ?", (device_uuid,))
             for payload in [*merged.values(), *passthrough]:
                 self._insert(conn, "device_lldp_neighbors", LLDP_FIELDS, payload)
@@ -847,6 +936,13 @@ class DeviceFactRepository:
         payload = self._payload(LLDP_HISTORY_FIELDS, data)
         self._set_required_defaults(payload, ("collected_at", "created_at"))
         with self.database.connect() as conn:
+            if device_lldp_retention_authority_enabled(conn):
+                site_id = self.database.path.parent.parent.name or self.database.path.parent.name
+                upsert_device_lldp_current_and_history(
+                    conn, payload, site_id=site_id, now=str(payload["collected_at"])
+                )
+                conn.commit()
+                return
             self.history_store.record_event(
                 conn,
                 kind="device_lldp",
@@ -865,6 +961,16 @@ class DeviceFactRepository:
         )
 
     def list_interface_history(self, device_uuid: str, interface_name: str) -> list[dict[str, object | None]]:
+        with self.database.connect_readonly() as conn:
+            if interface_retention_authority_enabled(conn):
+                site_id = self.database.path.parent.parent.name or self.database.path.parent.name
+                rows = conn.execute(
+                    "SELECT * FROM device_interfaces_history "
+                    "WHERE site_id=? AND device_uuid=? AND interface_name=? "
+                    "ORDER BY changed_at DESC, id DESC LIMIT 10",
+                    (site_id, device_uuid, interface_name),
+                ).fetchall()
+                return [dict(row) for row in rows]
         return self._merge_history(
             "device_interface", f"{device_uuid}:{interface_name}",
             self._list_history(
@@ -876,6 +982,16 @@ class DeviceFactRepository:
         )
 
     def list_optical_history(self, device_uuid: str, interface_name: str) -> list[dict[str, object | None]]:
+        with self.database.connect_readonly() as conn:
+            if device_optical_retention_authority_enabled(conn):
+                site_id = self.database.path.parent.parent.name or self.database.path.parent.name
+                rows = conn.execute(
+                    "SELECT * FROM device_optical_modules_history WHERE site_id=? "
+                    "AND device_uuid=? AND interface_name=? "
+                    "ORDER BY changed_at DESC, id DESC LIMIT 10",
+                    (site_id, device_uuid, interface_name),
+                ).fetchall()
+                return _normalize_optical_rows([dict(row) for row in rows])
         return _normalize_optical_rows(self._merge_history(
             "device_optical", f"{device_uuid}:{interface_name}",
             self._list_history(
@@ -889,6 +1005,24 @@ class DeviceFactRepository:
     def list_all_optical_history(
         self, device_uuids: list[str] | None = None, limit: int = 100000
     ) -> list[dict[str, object | None]]:
+        with self.database.connect_readonly() as conn:
+            if device_optical_retention_authority_enabled(conn):
+                clauses = ["site_id = ?"]
+                params: list[object] = [self.database.path.parent.parent.name or self.database.path.parent.name]
+                if device_uuids:
+                    values = [str(value) for value in device_uuids if str(value).strip()]
+                    if not values:
+                        return []
+                    placeholders = ", ".join("?" for _ in values)
+                    clauses.append(f"device_uuid IN ({placeholders})")
+                    params.extend(values)
+                rows = conn.execute(
+                    "SELECT * FROM device_optical_modules_history WHERE "
+                    + " AND ".join(clauses)
+                    + " ORDER BY changed_at DESC, id DESC LIMIT ?",
+                    [*params, max(1, min(int(limit), 100000))],
+                ).fetchall()
+                return _normalize_optical_rows([dict(row) for row in rows])
         params: list[object] = []
         where = ""
         if device_uuids is not None:
@@ -948,6 +1082,20 @@ class DeviceFactRepository:
     ) -> dict[str, object | None] | None:
         if not device_uuid or not interface_name:
             return None
+        with self.database.connect_readonly() as conn:
+            if device_optical_retention_authority_enabled(conn):
+                site_id = self.database.path.parent.parent.name or self.database.path.parent.name
+                clause = "site_id=? AND device_uuid=? AND interface_name=?"
+                params: list[object] = [site_id, device_uuid, interface_name]
+                if before_collected_at:
+                    clause += " AND changed_at < ?"
+                    params.append(before_collected_at)
+                row = conn.execute(
+                    "SELECT * FROM device_optical_modules_history WHERE "
+                    + clause + " ORDER BY changed_at DESC, id DESC LIMIT 1",
+                    params,
+                ).fetchone()
+                return _normalize_optical_row(dict(row)) if row is not None else None
         params: list[object] = [device_uuid, interface_name]
         before_clause = ""
         if before_collected_at:
@@ -1000,6 +1148,16 @@ class DeviceFactRepository:
         return _normalize_optical_row(candidates[0]) if candidates else None
 
     def list_lldp_history(self, device_uuid: str, local_interface: str) -> list[dict[str, object | None]]:
+        with self.database.connect_readonly() as conn:
+            if device_lldp_retention_authority_enabled(conn):
+                site_id = self.database.path.parent.parent.name or self.database.path.parent.name
+                rows = conn.execute(
+                    "SELECT * FROM device_lldp_neighbors_history WHERE site_id=? "
+                    "AND device_uuid=? AND local_interface=? "
+                    "ORDER BY changed_at DESC, id DESC LIMIT 10",
+                    (site_id, device_uuid, local_interface),
+                ).fetchall()
+                return [dict(row) for row in rows]
         return self._merge_history(
             "device_lldp", f"{device_uuid}:{local_interface}",
             self._list_history(
@@ -1022,6 +1180,36 @@ class DeviceFactRepository:
         table, object_field = _device_object_history_source(history_kind)
         safe_limit = max(1, min(int(limit), 200))
         safe_offset = max(0, int(offset))
+        normalized_kind = str(history_kind or "").strip().casefold()
+        if normalized_kind in {"interface", "optical", "optical_module", "lldp"}:
+            with self.database.connect_readonly() as conn:
+                authority_enabled = (
+                    interface_retention_authority_enabled(conn)
+                    if normalized_kind == "interface"
+                    else device_optical_retention_authority_enabled(conn)
+                    if normalized_kind in {"optical", "optical_module"}
+                    else device_lldp_retention_authority_enabled(conn)
+                )
+                if authority_enabled:
+                    site_id = self.database.path.parent.parent.name or self.database.path.parent.name
+                    table_name, object_column = {
+                        "interface": ("device_interfaces_history", "interface_name"),
+                        "optical": ("device_optical_modules_history", "interface_name"),
+                        "optical_module": ("device_optical_modules_history", "interface_name"),
+                        "lldp": ("device_lldp_neighbors_history", "local_interface"),
+                    }[normalized_kind]
+                    rows = conn.execute(
+                        f"SELECT * FROM {table_name} "
+                        f"WHERE site_id=? AND device_uuid=? AND {object_column}=? "
+                        "ORDER BY changed_at DESC, id DESC LIMIT ? OFFSET ?",
+                        (site_id, device_uuid, object_name, safe_limit, safe_offset),
+                    ).fetchall()
+                    rows_as_dict = [dict(row) for row in rows]
+                    return (
+                        _normalize_optical_rows(rows_as_dict)
+                        if normalized_kind in {"optical", "optical_module"}
+                        else rows_as_dict
+                    )
         with self.database.connect() as conn:
             legacy_rows = self.history_store.query_legacy_rows(
                 conn,
@@ -1052,6 +1240,30 @@ class DeviceFactRepository:
         self, history_kind: str, device_uuid: str, object_name: str
     ) -> int:
         table, object_field = _device_object_history_source(history_kind)
+        normalized_kind = str(history_kind or "").strip().casefold()
+        if normalized_kind in {"interface", "optical", "optical_module", "lldp"}:
+            with self.database.connect_readonly() as conn:
+                authority_enabled = (
+                    interface_retention_authority_enabled(conn)
+                    if normalized_kind == "interface"
+                    else device_optical_retention_authority_enabled(conn)
+                    if normalized_kind in {"optical", "optical_module"}
+                    else device_lldp_retention_authority_enabled(conn)
+                )
+                if authority_enabled:
+                    site_id = self.database.path.parent.parent.name or self.database.path.parent.name
+                    table_name, object_column = {
+                        "interface": ("device_interfaces_history", "interface_name"),
+                        "optical": ("device_optical_modules_history", "interface_name"),
+                        "optical_module": ("device_optical_modules_history", "interface_name"),
+                        "lldp": ("device_lldp_neighbors_history", "local_interface"),
+                    }[normalized_kind]
+                    row = conn.execute(
+                        f"SELECT COUNT(*) AS total FROM {table_name} "
+                        f"WHERE site_id=? AND device_uuid=? AND {object_column}=?",
+                        (site_id, device_uuid, object_name),
+                    ).fetchone()
+                    return int(row["total"] if row is not None else 0)
         with self.database.connect() as conn:
             rows = self.history_store.query_legacy_rows(
                 conn,

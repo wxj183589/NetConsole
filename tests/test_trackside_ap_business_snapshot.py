@@ -191,10 +191,9 @@ def test_source_revisions_track_runtime_content_but_ignore_unrelated_metadata(
         )
         connection.commit()
     unauthenticated_changed = read_trackside_ap_source_revisions(database)
-    assert (
-        unauthenticated_changed["ap_history_revision"]
-        != base_changed["ap_history_revision"]
-    )
+    # Trackside Current revisions intentionally exclude the retired
+    # unauthenticated/history timelines.
+    assert unauthenticated_changed == base_changed
 
     before_export_history = read_trackside_ap_source_revisions(
         database,
@@ -245,7 +244,7 @@ def test_source_revisions_include_history_outbox_without_opening_history_shards(
         connection.commit()
 
     after = read_trackside_ap_source_revisions(database)
-    assert after["ap_history_revision"] != before["ap_history_revision"]
+    assert after == before
     assert (history_root / "catalog.db").read_bytes() == (
         b"must not be opened by current-db revision"
     )
@@ -274,7 +273,7 @@ def test_source_revision_uses_metadata_counters_without_row_scan(
     )
     revisions = read_trackside_ap_source_revisions(database)
     assert revisions["optical_data_revision"] == "7"
-    assert revisions["ap_history_revision"] == "0"
+    assert "ap_history_revision" not in revisions
 
 
 def test_stable_snapshot_retries_once_and_is_deterministic(

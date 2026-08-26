@@ -28,7 +28,7 @@ from netconsole.services.offline_ap_ledger import (
     OFFLINE_AP_LEDGER_COLUMNS,
     OFFLINE_AP_STATS_COLUMNS,
     build_device_lookup_by_name,
-    build_latest_ap_history_indexes,
+    build_current_ap_history_indexes,
     build_offline_ap_ledger,
     offline_ap_headers,
 )
@@ -519,9 +519,9 @@ def _load_trackside_ap_business_snapshot_once(
         )
     fit_ap_resource_rows = fit_ap_resource_input
     try:
-        historical_lldp_rows = ac_repository.list_latest_ap_lldp_histories()
+        current_lldp_rows = ac_repository.list_current_ap_lldp_states()
     except Exception as exc:
-        historical_lldp_rows = []
+        current_lldp_rows = []
         source_statuses["ap_lldp_history"] = "failed"
         source_failure(
             "ap_lldp_history",
@@ -558,8 +558,8 @@ def _load_trackside_ap_business_snapshot_once(
     )
     switch_lookup = build_switch_data_lookup(devices, optical_by_device)
     try:
-        latest_lldp, latest_optical = build_latest_ap_history_indexes(
-            ac_repository,
+        latest_lldp, latest_optical = build_current_ap_history_indexes(
+            current_lldp_rows,
             fit_ap_resource_rows,
         )
     except Exception as exc:
@@ -600,7 +600,7 @@ def _load_trackside_ap_business_snapshot_once(
             switch_lookup,
             active_plan,
             offline_ledger_rows,
-            historical_lldp_rows,
+            current_lldp_rows,
             station_names=scope.station_names,
             latest_switch_collect_runs=latest_switch_collect_runs,
             runtime_snapshot=runtime_snapshot,
@@ -914,16 +914,15 @@ def _build_trackside_ap_business_export_snapshot_once(
         }
         for row in resources
     ]
-    resource_history_rows = ac_repository.list_all_fit_ap_resource_history()
-    ap_optical_history_rows = scope.filter_identity_rows(
-        ac_repository.list_all_ap_optical_history()
-    )
-    ap_lldp_history_rows = scope.filter_identity_rows(
-        ac_repository.list_all_ap_lldp_history()
-    )
+    # The export is a projection of the already captured Current snapshot.
+    # Historical scans here reintroduced unbounded work and made export results
+    # depend on Legacy HistoryStore state, so they are intentionally empty.
+    resource_history_rows: list[dict[str, object | None]] = []
+    ap_optical_history_rows: list[dict[str, object | None]] = []
+    ap_lldp_history_rows: list[dict[str, object | None]] = []
     overview_rows = scope.overview_export_rows()
-    latest_lldp, latest_optical = build_latest_ap_history_indexes(
-        ac_repository,
+    latest_lldp, latest_optical = build_current_ap_history_indexes(
+        ac_repository.list_current_ap_lldp_states(),
         resources,
     )
     devices = filter_station_switch_devices(
@@ -932,9 +931,7 @@ def _build_trackside_ap_business_export_snapshot_once(
         site_name,
         project_phase=scope.context.project_phase,
     )
-    switch_optical_history_rows = fact_repository.list_all_optical_history(
-        [str(device.device_uuid or "") for device in devices]
-    )
+    switch_optical_history_rows: list[dict[str, object | None]] = []
     offline_stats, offline_ledger_rows = build_offline_ap_ledger(
         fit_ap_resources=resources,
         latest_lldp_by_ap=latest_lldp,
@@ -959,6 +956,7 @@ def _build_trackside_ap_business_export_snapshot_once(
             switch_optical_history_rows=switch_optical_history_rows,
             ap_optical_history_rows=ap_optical_history_rows,
             ap_lldp_history_rows=ap_lldp_history_rows,
+            current_only=True,
         )
     ]
     requested_ids = tuple(
