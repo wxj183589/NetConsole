@@ -2,6 +2,7 @@
 
 ## 环境
 
+- main commit：`afa35c06`
 - data_root：`D:\NetConsoleData-dev`
 - active migration targets：9；site directories：11
 - devices.db：只读验收；9/9 quick_check ok

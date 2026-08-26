@@ -3,6 +3,7 @@
 日期：2026-08-26
 数据根：`D:\NetConsoleData-dev`
 代码基线：`538db1c3`
+最终 main commit：`afa35c06`
 生产保护：`PRODUCTION_DATA_TOUCHED=NO`
 
 ## 结果

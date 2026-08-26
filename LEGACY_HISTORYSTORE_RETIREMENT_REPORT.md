@@ -2,6 +2,8 @@
 
 ## 状态
 
+最终 main commit：`afa35c06`
+
 `db/history` 对本轮四类工程态已在 DEV 完成退役：Before `748,883,968` bytes，After `0` bytes；事件行 Before `1,319,693`，After `0`。生产目录没有读取、写入、复制、删除或迁移。
 
 ## 防再生

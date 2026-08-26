@@ -2,6 +2,8 @@
 
 ## 模型
 
+最终 main commit：`afa35c06`
+
 唯一键：`site_id + ap_identity + radio_id`。状态指纹包含 status/mode/band/channel/bandwidth/usage/tx_power/clients/bbssid；采集时间、collect run 和 raw path 仅为元数据。
 
 ## DEV 结果

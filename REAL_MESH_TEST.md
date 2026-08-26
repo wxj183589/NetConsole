@@ -3,6 +3,7 @@
 日期：2026-08-26
 数据根：`D:\NetConsoleData-dev`
 局点：宁波地铁6号线
+最终 main commit：`afa35c06`
 生产保护：`PRODUCTION_DATA_TOUCHED=NO`
 
 ## 数据与查询

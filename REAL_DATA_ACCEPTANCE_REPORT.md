@@ -3,6 +3,7 @@
 日期：2026-08-26
 Branch：`main`
 验收基线：`538db1c3`
+最终 main commit：`afa35c06`
 data_root：`D:\NetConsoleData-dev`
 生产保护：`PRODUCTION_DATA_TOUCHED=NO`
 

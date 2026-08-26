@@ -2,6 +2,8 @@
 
 ## Current 与台账
 
+最终 main commit：`afa35c06`
+
 AP Optical Current 使用 `site_id + ap_identity + side`；Treatment 使用唯一键 `site_id + ap_identity`，AP/SW 两侧合并为一行，避免同一 AP 重复工单。Recent 每个资源最多 10 条有效变化。
 
 ## DEV 结果

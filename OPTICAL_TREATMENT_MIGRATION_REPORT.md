@@ -2,6 +2,7 @@
 
 日期：2026-08-26
 数据根：`D:\NetConsoleData-dev`
+main commit：`afa35c06`
 生产保护：`PRODUCTION_DATA_TOUCHED=NO`
 
 ## 执行边界
