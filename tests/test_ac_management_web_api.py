@@ -5,7 +5,10 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from tests.support.ac_management_web_fixture import build_ac_management_fixture
+from tests.support.ac_management_web_fixture import (
+    build_ac_management_fixture,
+    seed_ac_management_radio_current_for_history,
+)
 from netconsole.backend.api.main import create_app
 from netconsole.core.database import Database
 from netconsole.core.runtime_mode import RuntimeMode
@@ -29,6 +32,7 @@ def test_ac_management_get_api_is_read_only_and_redacts_serial_number(tmp_path: 
     repository = AcRepository(Database(db_path))
     ap = repository.get_fit_ap_resource_by_uuid("ac-1", "ap-online")
     assert ap is not None
+    seed_ac_management_radio_current_for_history(db_path, "ap-online")
     repository.upsert_fit_ap_resource("ac-1", ap)
     with Database(db_path).connect() as conn:
         conn.execute("UPDATE ac_ap_summary SET cpu_usage = '16%', memory_usage = '47%' WHERE ac_device_uuid = 'ac-1'")

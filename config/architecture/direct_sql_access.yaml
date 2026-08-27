@@ -154,6 +154,12 @@
   {"path":"scripts/storage/audit_engineering_state.py","classification":"READ_ONLY_DATA_GATEWAY","owner":"data","reason":"DEV-only engineering-state inventory uses mode=ro SQLite connections and never writes the data root."},
   {"path":"src/netconsole/storage/engineering_recent10_migration.py","classification":"MIGRATION_TOOL","owner":"data","reason":"Candidate-first engineering Current/recent10 migration is guarded to NetConsoleData-dev and verifies before DEV cutover."},
   {"path":"src/netconsole/services/site_package_staging.py","classification":"REPOSITORY_REQUIRED","owner":"storage","reason":"site package staging owns SQLite staging and validation connections."},
+  {"path":"scripts/storage/analyze_sqlite_size.py","classification":"READ_ONLY_DATA_GATEWAY","owner":"storage","reason":"Storage analysis reads an explicitly supplied SQLite database in read-only mode and only emits a report; it does not mutate the database."},
+  {"path":"src/netconsole/storage/lldp_optical_retention_migration.py","classification":"MIGRATION_TOOL","owner":"data","reason":"DEV-only candidate-first LLDP/optical retention migration owns isolated candidate reconstruction and verification; production cutover is explicit and guarded."},
+  {"path":"tests/storage/test_analyze_sqlite_size.py","classification":"TEST_ONLY","owner":"test","reason":"Storage size analysis test creates a pytest temporary SQLite fixture and verifies read-only reporting."},
+  {"path":"tests/storage/test_deep_storage_analysis.py","classification":"TEST_ONLY","owner":"test","reason":"Deep storage analysis tests create isolated temporary SQLite and file fixtures only."},
+  {"path":"tests/storage/test_generate_storage_report.py","classification":"TEST_ONLY","owner":"test","reason":"Storage report tests create isolated temporary site and SQLite fixtures only."},
+  {"path":"tests/storage/test_sites_root_analysis.py","classification":"TEST_ONLY","owner":"test","reason":"Sites-root storage analysis tests create isolated temporary SQLite fixtures only."},
   {"path":"tests/test_site_sync_task_merge.py","classification":"TEST_ONLY","owner":"test","reason":"site sync task merge tests use temporary SQLite fixtures."},
   {"path":"tests/test_task_result_rollout.py","classification":"TEST_ONLY","owner":"test","reason":"task result rollout tests use temporary SQLite fixtures."},
   {"path":"tests/test_validate_history_provenance.py","classification":"TEST_ONLY","owner":"test","reason":"history provenance tests use temporary SQLite fixtures."}

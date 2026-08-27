@@ -6,6 +6,59 @@ from pathlib import Path
 
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
+from netconsole.repositories.ac_repository import AcRepository
+from netconsole.services.radio_retention import upsert_radio_current_and_history
+
+
+def sync_ac_management_optical_current(db_path: Path, ac_device_uuid: str = "ac-1") -> None:
+    """Replay raw AC optical rows into the bounded query authority for tests."""
+
+    database = Database(db_path)
+    with database.connect_readonly() as conn:
+        rows = [
+            dict(row)
+            for row in conn.execute(
+                "SELECT * FROM ac_fit_ap_optical WHERE ac_device_uuid = ?",
+                (ac_device_uuid,),
+            ).fetchall()
+        ]
+    AcRepository(database).replace_fit_ap_optical(ac_device_uuid, rows)
+
+
+def seed_ac_management_radio_current_for_history(db_path: Path, ap_uuid: str) -> None:
+    """Prepare a changed bounded radio current state without changing raw resources."""
+
+    database = Database(db_path)
+    with database.connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM ac_fit_ap_resources WHERE ap_uuid = ?",
+            (ap_uuid,),
+        ).fetchone()
+        assert row is not None
+        resource = dict(row)
+        for rid in (1, 2):
+            clients = int(resource.get(f"rid{rid}_clients") or 0) + 1
+            upsert_radio_current_and_history(
+                conn,
+                {
+                    "ap_uuid": ap_uuid,
+                    "ap_name": resource.get("ap_name"),
+                    "ap_mac": resource.get("ap_mac"),
+                    "status": resource.get(f"rid{rid}_status"),
+                    "mode": resource.get(f"rid{rid}_mode"),
+                    "band": resource.get(f"rid{rid}_band"),
+                    "channel": resource.get(f"rid{rid}_channel"),
+                    "bandwidth": resource.get(f"rid{rid}_bandwidth"),
+                    "usage": resource.get(f"rid{rid}_usage"),
+                    "tx_power": resource.get(f"rid{rid}_tx_power"),
+                    "clients": clients,
+                    "bbssid": resource.get(f"rid{rid}_bbssid"),
+                    "collected_at": resource.get("collected_at"),
+                },
+                site_id="demo",
+                radio_id=rid,
+                now=str(resource.get("collected_at") or ""),
+            )
 
 
 def build_ac_management_fixture(
@@ -256,6 +309,7 @@ def build_ac_management_fixture(
                 (snapshot_type, relative, digest, now),
             )
         conn.commit()
+    sync_ac_management_optical_current(db_path)
     with database.connect() as conn:
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     return paths, db_path, {"running": running, "saved": saved, "diff": diff}

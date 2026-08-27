@@ -50,6 +50,7 @@
     "scripts/maintenance/production_cutover_runtime_smoke.py",
     "scripts/maintenance/profile_device_history_storage.py",
     "scripts/storage/audit_engineering_state.py",
+    "scripts/storage/analyze_sqlite_size.py",
     "src/netconsole/storage/engineering_recent10_migration.py",
     "src/netconsole/storage/lldp_optical_retention_migration.py"
   ],

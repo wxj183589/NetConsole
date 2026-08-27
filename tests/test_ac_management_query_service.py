@@ -5,7 +5,10 @@ from pathlib import Path
 
 import pytest
 
-from tests.support.ac_management_web_fixture import build_ac_management_fixture
+from tests.support.ac_management_web_fixture import (
+    build_ac_management_fixture,
+    sync_ac_management_optical_current,
+)
 from netconsole.core.database import Database
 from netconsole.models.api.ac_management import AcApDTO, AcLldpDTO, AcOpticalDTO
 from netconsole.repositories.ac_repository import AcRepository
@@ -276,6 +279,7 @@ def test_ac_optical_reports_switch_side_alarm_without_coloring_ap_rx(tmp_path: P
             """
         )
         conn.commit()
+    sync_ac_management_optical_current(db_path)
 
     optical = AcManagementQueryService(paths).get_ap_optical("demo", "ap-online")
 
@@ -308,6 +312,7 @@ def test_ac_optical_reports_ap_side_alarm_without_switch_alarm(tmp_path: Path) -
             """
         )
         conn.commit()
+    sync_ac_management_optical_current(db_path)
 
     optical = AcManagementQueryService(paths).get_ap_optical("demo", "ap-online")
 
@@ -329,6 +334,7 @@ def test_ac_optical_reports_both_sides_normal_and_no_data_status(tmp_path: Path)
             "UPDATE device_optical_modules SET rx_power = '-8.64', rx_low_alarm = '-19 dBm', rx_low_warning = '-17 dBm' WHERE interface_name = 'GigabitEthernet1/0/1'"
         )
         conn.commit()
+    sync_ac_management_optical_current(db_path)
 
     service = AcManagementQueryService(paths)
     normal = service.get_ap_optical("demo", "ap-online")
@@ -355,6 +361,7 @@ def test_ac_optical_fixed_threshold_overrides_backend_normal_status(tmp_path: Pa
             "UPDATE device_optical_modules SET rx_power = '-8.63', rx_low_alarm = '-19', rx_low_warning = '-17' WHERE interface_name = 'GigabitEthernet1/0/1'"
         )
         conn.commit()
+    sync_ac_management_optical_current(db_path)
 
     service = AcManagementQueryService(paths)
     optical = service.get_ap_optical("demo", "ap-online")
@@ -380,6 +387,7 @@ def test_ac_optical_switch_fixed_threshold_drives_combined_critical_status(
             "UPDATE device_optical_modules SET rx_power = '-19.10', rx_low_alarm = '-25', rx_low_warning = '-23', status = 'normal' WHERE interface_name = 'GigabitEthernet1/0/1'"
         )
         conn.commit()
+    sync_ac_management_optical_current(db_path)
 
     service = AcManagementQueryService(paths)
     optical = service.get_ap_optical("demo", "ap-online")
@@ -407,6 +415,7 @@ def test_ac_optical_one_normal_side_and_one_missing_side_is_no_data(
             "UPDATE device_optical_modules SET rx_power = NULL, status = 'success' WHERE interface_name = 'GigabitEthernet1/0/1'"
         )
         conn.commit()
+    sync_ac_management_optical_current(db_path)
 
     optical = AcManagementQueryService(paths).get_ap_optical("demo", "ap-online")
 
@@ -460,6 +469,7 @@ def test_ac_optical_missing_or_invalid_ap_rx_is_not_collected(
             "UPDATE device_optical_modules SET rx_power = NULL, status = 'success' WHERE interface_name = 'GigabitEthernet1/0/1'"
         )
         conn.commit()
+    sync_ac_management_optical_current(db_path)
 
     optical = AcManagementQueryService(paths).get_ap_optical("demo", "ap-online")
 
@@ -487,6 +497,7 @@ def test_ac_optical_online_general_alarm_is_current_anomaly_and_stale_data_is_no
             """
         )
         conn.commit()
+    sync_ac_management_optical_current(db_path)
 
     service = AcManagementQueryService(paths)
     optical = service.get_ap_optical("demo", "ap-online")
@@ -505,6 +516,7 @@ def test_ac_optical_online_general_alarm_is_current_anomaly_and_stale_data_is_no
         conn.execute("UPDATE ac_fit_ap_optical SET collected_at = '2020-01-01T00:00:00+00:00', updated_at = '2020-01-01T00:00:00+00:00' WHERE ap_uuid = 'ap-online'")
         conn.execute("UPDATE device_optical_modules SET collected_at = '2020-01-01T00:00:00+00:00', updated_at = '2020-01-01T00:00:00+00:00' WHERE interface_name = 'GigabitEthernet1/0/1'")
         conn.commit()
+    sync_ac_management_optical_current(db_path)
 
     stale = service.get_ap_optical("demo", "ap-online")
     assert stale is not None
@@ -529,6 +541,7 @@ def test_ac_optical_offline_with_normal_power_and_explicit_no_module_are_not_ano
         conn.execute("UPDATE ac_fit_ap_optical SET optical_alarm_status = 'no_module', rx_power = NULL WHERE ap_uuid = 'ap-online'")
         conn.execute("UPDATE device_optical_modules SET status = 'no_module', rx_power = NULL WHERE interface_name = 'GigabitEthernet1/0/1'")
         conn.commit()
+    sync_ac_management_optical_current(db_path)
 
     service = AcManagementQueryService(paths)
     offline = service.get_ap_optical("demo", "ap-offline")

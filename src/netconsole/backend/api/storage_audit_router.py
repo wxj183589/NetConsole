@@ -1,9 +1,13 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request
+from typing import TYPE_CHECKING
+
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from netconsole.backend.api.site_storage_router import _desktop
-from netconsole.services.storage_audit import StorageAuditService
+
+if TYPE_CHECKING:
+    from netconsole.services.storage_audit import StorageAuditService
 
 
 router = APIRouter(prefix="/v1/storage-audit", tags=["storage-audit"])
@@ -12,8 +16,7 @@ router = APIRouter(prefix="/v1/storage-audit", tags=["storage-audit"])
 def _service(request: Request) -> StorageAuditService:
     service = getattr(request.app.state, "storage_audit_service", None)
     if service is None:
-        service = StorageAuditService(request.app.state.paths.data_root)
-        request.app.state.storage_audit_service = service
+        raise HTTPException(status_code=503, detail="存储审计服务未接线")
     return service
 
 
