@@ -616,9 +616,12 @@ class SiteRetentionService:
                 disposable_events = self._task_rows_by_integer_keys(
                     readonly, "task_events", "sequence", disposable_event_keys
                 )
-                archive_results = self._task_rows_by_text_keys(
-                    readonly, "task_results", "result_id", archive_result_ids
-                )
+                archive_results = [
+                    verify_task_result_authority(readonly, row)
+                    for row in self._task_rows_by_text_keys(
+                        readonly, "task_results", "result_id", archive_result_ids
+                    )
+                ]
             if TaskHistoryStore.source_row_digest(archive_events) != str(
                 plan["archive_event_content_digest"]
             ):
