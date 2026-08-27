@@ -6,7 +6,7 @@
 
 - commit：`474c8fe6f99d1acf892f53d3c431569a99707628`
 - 作用：Phase1 数据加载性能基础与 profiling；收窄 FIT-AP 当前页详情读取、设备当前页 facts/tasks、轨旁 snapshot cache/revision 复用，并补 API/SQL/Repository/Renderer 计时。
-- 修改模块：`apps/desktop_renderer` API/table/site-switch、Backend profiling、AC Query Service、Device/Trackside query、测试和 `PERFORMANCE_REPORT.md`。
+- 修改模块：`apps/desktop_renderer` API/table/site-switch、Backend profiling、AC Query Service、Device/Trackside query、测试和 `docs/archive/performance/2026-08/PERFORMANCE_REPORT.md`。
 - 依赖：基于 `f21b67dfdce8b068e9b12b2992d58545799ba29d`；属于 4a13213e 的性能基础。
 - 是否可进入 main：已进入 main，保留为 merge parent `31aab267` 的祖先链。
 - 风险：L4，共享 profiling、SQLite 连接、Renderer API、NcDataTable 和 Export/Artifact 消费者；合并后必须重跑消费者套件。

@@ -31,4 +31,4 @@
 - `tests/test_device_fact_repository.py` 覆盖三类批量读取与逐设备读取结果一致性。
 - Trackside 相关测试：109 passed。
 - Ruff、compileall、diff check：通过。
-- DEV 导出真实结果见 `REAL_TRACKSIDE_EXPORT_TEST.md`；导出端到端仍受 snapshot build 影响。
+- DEV 导出真实结果见 `docs/archive/evidence/2026-08/REAL_TRACKSIDE_EXPORT_TEST.md`；导出端到端仍受 snapshot build 影响。

@@ -107,6 +107,19 @@ jobs:
         shell: pwsh
         run: Remove-Item -LiteralPath $env:NETCONSOLE_DATA_ROOT -Recurse -Force -ErrorAction SilentlyContinue
 
+  repository-root-layout:
+    name: Repository root layout
+    needs: runner-preflight
+    runs-on: *netconsole_windows_runner
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Enforce repository-root file allowlist
+        run: python -m scripts.quality.check_repository_root_layout
+
   change-impact:
     name: Change impact audit
     needs: runner-preflight

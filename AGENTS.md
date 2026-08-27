@@ -91,6 +91,7 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 ## 仓库目录约束
 
 - 新业务代码不得直接建立在仓库根目录；新增顶层目录前必须先更新 [仓库目录规范](./docs/development/repository-layout.md) 并说明唯一职责。
+- 任务生成的 report、audit、acceptance、migration、handoff、benchmark、test evidence、investigation result、spec、baseline 或 diagnostic summary，如果用户未明确指定输出路径，禁止直接写入仓库根目录；创建前必须先检查 [仓库目录规范](./docs/development/repository-layout.md)，默认归入 `docs/development/`、`docs/architecture/`、`docs/investigations/`、`docs/archive/` 或对应领域目录。任务要求生成 `XXX_REPORT.md` 不等于允许创建根目录裸文件。
 - Electron、Web、Agent 分别进入 `apps/desktop_electron`、`apps/desktop_renderer`、`apps/agent`；共享 Python 业务代码进入 `src/netconsole`。不得重新创建 `apps/desktop` 或 `src/netconsole/ui`；`apps/desktop_electron` 只放 main/preload/shared 和必要打包元数据，不复制 Vue 或 Python Core。
 - 不为符合架构示意图创建空的 `domain/application/infrastructure` 层，也不机械搬移现有包；按真实用例逐步收敛依赖。
 - 配置、版本化资源、测试 fixtures 和脚本分别进入 `config`、`resources`、`tests`、`scripts/build|dev|maintenance`，不得创建 `misc`、`temp`、`new`、`project` 等模糊目录。

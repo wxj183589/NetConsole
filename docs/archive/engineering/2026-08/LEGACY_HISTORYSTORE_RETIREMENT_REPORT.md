@@ -15,4 +15,4 @@
 
 ## 未做的事
 
-MESH/MR raw、Syslog、PCAP、导入文件、MESH catalog/parsed DB 和未认证/站点在线摘要等 own history 没有被强行归入四类，也没有删除。它们已在 `ENGINEERING_STATE_STORAGE_AUDIT.md` 中分类，后续需单独决定，不在本提交现场扩展范围。
+MESH/MR raw、Syslog、PCAP、导入文件、MESH catalog/parsed DB 和未认证/站点在线摘要等 own history 没有被强行归入四类，也没有删除。它们已在 `docs/archive/engineering/2026-08/ENGINEERING_STATE_STORAGE_AUDIT.md` 中分类，后续需单独决定，不在本提交现场扩展范围。

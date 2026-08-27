@@ -23,6 +23,7 @@ REPORT_ROOT = ROOT / ".local-reports"
 TEST_BASE_ROOT = Path(r"D:\study\test-data\NetConsole")
 MODES = ("auto", "fast", "consumer", "full")
 FAST_SUITES = (
+    "root-layout",
     "change-impact",
     "ruff-changed",
     "python-direct",
@@ -32,6 +33,7 @@ FAST_SUITES = (
     "git-diff-check",
 )
 FULL_SUITES = (
+    "root-layout",
     "renderer-full",
     "python-full",
     "electron-contract",
@@ -283,6 +285,16 @@ def _change_impact(context: GateContext) -> Sequence[CommandStep]:
     )
 
 
+def _root_layout(context: GateContext) -> Sequence[CommandStep]:
+    del context
+    return (
+        CommandStep(
+            "root-layout",
+            (sys.executable, "-m", "scripts.quality.check_repository_root_layout"),
+        ),
+    )
+
+
 def _ruff_changed(context: GateContext) -> Sequence[CommandStep]:
     paths = tuple(path for path in context.changed_paths if path.endswith(".py") and (ROOT / path).is_file())
     return (CommandStep("ruff-changed", (sys.executable, "-m", "ruff", "check", *paths)),) if paths else ()
@@ -364,6 +376,7 @@ def _git_diff_check(context: GateContext) -> Sequence[CommandStep]:
 
 
 SUITE_EXECUTORS: dict[str, Executor] = {
+    "root-layout": _root_layout,
     "python-full": _python_full,
     "renderer-full": _renderer_full,
     "electron-contract": _electron_contract,

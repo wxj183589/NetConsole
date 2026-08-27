@@ -15,8 +15,8 @@ AC FIT-AP 列表、详情、历史页、Trackside snapshot/export 使用 bounded
 
 ## 证据
 
-- `LLDP_CANONICAL_STATE_SPEC.md`：canonical 字段与变化判定。
-- `LLDP_RETENTION_MIGRATION_REPORT.json`：候选、cutover、回滚和 post-check 证据。
+- `docs/rail-transit/trackside-ap/LLDP_CANONICAL_STATE_SPEC.md`：canonical 字段与变化判定。
+- `docs/archive/migrations/2026-08/evidence/LLDP_RETENTION_MIGRATION_REPORT.json`：候选、cutover、回滚和 post-check 证据。
 - DEV 9 site `quick_check=ok`；LLDP history 最大深度 `10`（demo 2、空局点 0）。
 - `tests/test_lldp_retention.py`、AC/Trackside 相关回归包含首次、同值、变化、裁剪、兼容读场景。
 

@@ -55,6 +55,28 @@ NetConsole/
 - 在代码评审中说明原因；
 - 同步更新本文件和必要的 README/AGENTS 说明。
 
+### 根目录文件白名单与工程证据策略
+
+仓库根目录不是验收 Evidence 目录，也不是临时工程报告输出目录。当前正式的根文件 allowlist 为：
+
+- `.gitattributes`、`.gitignore`、`AGENTS.md`、`README.md`、`README_EN.md`、`LICENSE`；
+- `main.py`、`pyproject.toml`、`pytest.ini`、`constraints.txt`；
+- `requirements.txt` 与 `requirements-*.txt`；
+- `一键打包安装包.cmd`。
+
+机器检查器 [`scripts/quality/check_repository_root_layout.py`](../../scripts/quality/check_repository_root_layout.py) 按文件名白名单检查根目录，包含未跟踪文件；未知 root file 直接失败。`requirements-*.txt` 是唯一保留的项目级文件名模式，其他新根文件必须先经过 review 并同步更新 allowlist。
+
+- 临时或阶段性工程报告、性能记录、验收和调查证据进入 `docs/archive/`；
+- 当前仍有效的规范进入 `docs/architecture/`、`docs/development/` 或对应领域目录；
+- migration JSON、baseline、preview 和其他 evidence 不得散落在根目录，进入对应的 `docs/archive/migrations/<yyyy-mm>/evidence/` 或诊断输出根；
+- 根布局静态 Gate 会阻止违规提交，Local Quality Gate 的 FAST/CONSUMER/FULL 路径都会执行该检查。
+
+新增或生成文件前先运行：
+
+```powershell
+.\.venv\Scripts\python.exe -m scripts.quality.check_repository_root_layout
+```
+
 ## 4. 应用边界
 
 - `apps/agent` 只放独立 Windows Go Agent、Python MR sidecar、Agent Web 静态文件、示例配置和 Agent 构建脚本；Agent 的开发与交付运行数据统一写入 `D:\NetConsoleData\agents\local`，测试使用显式测试根的 `agents/` 子树。

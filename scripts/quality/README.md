@@ -10,11 +10,12 @@
 
 ## 用途与边界
 
-这里维护仓库质量门禁，不参与产品运行。当前检查目录 README 覆盖、固定排除类别、重大目录的结构化小节，以及共享层 Change Impact/Consumer Matrix。
+这里维护仓库质量门禁，不参与产品运行。当前检查根目录文件 allowlist、目录 README 覆盖、固定排除类别、重大目录的结构化小节，以及共享层 Change Impact/Consumer Matrix。
 
 ## 主要入口
 
 - `check_directory_readmes.py`：从仓库根按 Python module 运行；`tests/quality/test_directory_readmes.py` 覆盖分类、排序、结构和退出码。
+- `check_repository_root_layout.py`：检查仓库根目录文件 allowlist；未知文件返回非零码，`tests/quality/test_repository_root_layout.py` 覆盖合法根文件、报告/JSON 违规和 `docs/archive` 归档。
 - `check_change_impact.py`：读取 `config/architecture/change_impact_matrix.json`，按显式路径或 Git 提交范围输出最低风险等级与消费者套件。
 - `local_gate.py`：执行 AUTO、FAST、CONSUMER、FULL，并将 Registry suite ID 映射到实际子进程；默认比较主线，不使用 feature branch 自身的 tracking upstream。
 - `run_main_contract_smoke.py`：在隔离测试根执行固定 12 个主线入口契约。
@@ -29,7 +30,7 @@
 
 ## 测试与修改
 
-修改排除/重大目录规则必须增加合成路径测试，并运行质量测试、项目 Markdown 链接测试、Ruff 和 py_compile。修改影响矩阵时还要分别用一个普通领域路径、一个 L3 路径和一个 L4 路径检查分类结果。
+修改根文件/排除/重大目录规则必须增加合成路径测试，并运行质量测试、项目 Markdown 链接测试、Ruff 和 py_compile。修改影响矩阵时还要分别用一个普通领域路径、一个 L3 路径和一个 L4 路径检查分类结果。
 
 ## 生成与清理
 

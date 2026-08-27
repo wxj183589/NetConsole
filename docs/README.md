@@ -52,4 +52,4 @@
 
 ## Maintenance
 
-提交前运行 Markdown 相对链接检查和适用的文档 Guard。活动文档不得引用已删除的 standalone Renderer 目录；除 `docs/archive/` 与 `docs/investigations/` 外，任何活动文档目录都不得新增 Assessment、Audit、Observation Plan、Migration Plan、Handoff、Status Report 或临时 Investigation 过程文件。真正的业务规划文档（例如 Trackside AP Planning）使用明确的领域名称，不按通用 `PLAN` 关键字误杀；历史迁移资料不得写成当前架构。
+提交前运行 Markdown 相对链接检查、根文件 allowlist Gate 和适用的文档 Guard。活动文档不得引用已删除的 standalone Renderer 目录；除 `docs/archive/` 与 `docs/investigations/` 外，任何活动文档目录都不得新增 Assessment、Audit、Observation Plan、Migration Plan、Handoff、Status Report 或临时 Investigation 过程文件。真正的业务规划文档（例如 Trackside AP Planning）使用明确的领域名称，不按通用 `PLAN` 关键字误杀；历史迁移资料不得写成当前架构。

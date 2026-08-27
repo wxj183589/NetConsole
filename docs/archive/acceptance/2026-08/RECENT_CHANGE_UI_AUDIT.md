@@ -19,12 +19,12 @@
 
 | 页面 | 当前入口 | 数据类型 | API | 是否可能 Recent=0 | 建议 | 状态 |
 | --- | --- | --- | --- | --- | --- | --- |
-| [`AcManagementView.vue`](apps/desktop_renderer/src/views/ac-management/AcManagementView.vue) | FIT-AP 详情的 Mesh Radio Current 区块 | Radio | `/api/ac-management/aps/{ap_id}`；点击 `/history/radio` | 是 | 详情响应一次返回计数；0 显示“最近变化：暂无”，>0 显示数量并点击加载，错误显示失败态 | `CONFIRMED` |
-| [`AcManagementView.vue`](apps/desktop_renderer/src/views/ac-management/AcManagementView.vue) | FIT-AP 详情的 LLDP/端口 Current 区块 | LLDP | `/api/ac-management/aps/{ap_id}`；点击 `/history/lldp` | 是 | 保持 Current 直接展示；Recent 仅按需加载，最多 10 条 | `CONFIRMED` |
-| [`AcManagementView.vue`](apps/desktop_renderer/src/views/ac-management/AcManagementView.vue) | FIT-AP 详情的光衰 Current 区块 | Optical | `/api/ac-management/aps/{ap_id}`；点击 `/history/optical` | 是 | 保持当前 Tx/Rx 与判定；无变化不打开空抽屉 | `CONFIRMED` |
-| [`DeviceDetailPanel.vue`](apps/desktop_renderer/src/components/device-detail/DeviceDetailPanel.vue) | 设备详情接口 Current 表 | Interface | `/interfaces`；计数 `/recent-change-counts`；点击兼容 `/history?kind=interface` | 是 | 计数 O(1) 汇总；0 为正常空态，>0 点击加载 Recent10 | `CONFIRMED` |
-| [`DeviceDetailPanel.vue`](apps/desktop_renderer/src/components/device-detail/DeviceDetailPanel.vue) | 设备详情光模块 Current 表 | Optical | `/transceivers`；计数 `/recent-change-counts`；点击兼容 `/history?kind=optical` | 是 | 继续保留光衰诊断价值；错误与空态分开 | `CONFIRMED` |
-| [`DeviceDetailPanel.vue`](apps/desktop_renderer/src/components/device-detail/DeviceDetailPanel.vue) | 设备详情 LLDP Current 表 | LLDP | `/lldp`；计数 `/recent-change-counts`；点击兼容 `/history?kind=lldp` | 是 | Current 不受 Recent 请求影响；Recent 按 changed_at DESC 展示 | `CONFIRMED` |
+| [`AcManagementView.vue`](../../../../apps/desktop_renderer/src/views/ac-management/AcManagementView.vue) | FIT-AP 详情的 Mesh Radio Current 区块 | Radio | `/api/ac-management/aps/{ap_id}`；点击 `/history/radio` | 是 | 详情响应一次返回计数；0 显示“最近变化：暂无”，>0 显示数量并点击加载，错误显示失败态 | `CONFIRMED` |
+| [`AcManagementView.vue`](../../../../apps/desktop_renderer/src/views/ac-management/AcManagementView.vue) | FIT-AP 详情的 LLDP/端口 Current 区块 | LLDP | `/api/ac-management/aps/{ap_id}`；点击 `/history/lldp` | 是 | 保持 Current 直接展示；Recent 仅按需加载，最多 10 条 | `CONFIRMED` |
+| [`AcManagementView.vue`](../../../../apps/desktop_renderer/src/views/ac-management/AcManagementView.vue) | FIT-AP 详情的光衰 Current 区块 | Optical | `/api/ac-management/aps/{ap_id}`；点击 `/history/optical` | 是 | 保持当前 Tx/Rx 与判定；无变化不打开空抽屉 | `CONFIRMED` |
+| [`DeviceDetailPanel.vue`](../../../../apps/desktop_renderer/src/components/device-detail/DeviceDetailPanel.vue) | 设备详情接口 Current 表 | Interface | `/interfaces`；计数 `/recent-change-counts`；点击兼容 `/history?kind=interface` | 是 | 计数 O(1) 汇总；0 为正常空态，>0 点击加载 Recent10 | `CONFIRMED` |
+| [`DeviceDetailPanel.vue`](../../../../apps/desktop_renderer/src/components/device-detail/DeviceDetailPanel.vue) | 设备详情光模块 Current 表 | Optical | `/transceivers`；计数 `/recent-change-counts`；点击兼容 `/history?kind=optical` | 是 | 继续保留光衰诊断价值；错误与空态分开 | `CONFIRMED` |
+| [`DeviceDetailPanel.vue`](../../../../apps/desktop_renderer/src/components/device-detail/DeviceDetailPanel.vue) | 设备详情 LLDP Current 表 | LLDP | `/lldp`；计数 `/recent-change-counts`；点击兼容 `/history?kind=lldp` | 是 | Current 不受 Recent 请求影响；Recent 按 changed_at DESC 展示 | `CONFIRMED` |
 
 ## 主列表、Treatment 与其他页面
 
