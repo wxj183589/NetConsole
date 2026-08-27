@@ -231,6 +231,7 @@
       "backup_policy": "revision-aware bounded rollback",
       "migration_policy": "TaskResult rollout guard and owner lifecycle plan",
       "schema_version": "task_schema_meta",
+      "database_name_patterns": ["tasks.db", "*.tasks.compact.candidate.db", "*.vacuum.db"],
       "allowed_data_classes": ["OPERATIONAL_CURRENT", "HISTORICAL_RAW_FACT"],
       "forbidden_data_classes": ["ARTIFACT_OR_RAW_FILE", "CACHE_REBUILDABLE", "STAGING_TEMPORARY"],
       "table_rules": [
@@ -245,17 +246,17 @@
           "source_locations": ["src/netconsole/repositories/online_mr_task_session_repository.py", "src/netconsole/repositories/task_repository.py", "src/netconsole/services/job_center/task_application_service.py", "src/netconsole/services/site_retention.py", "scripts/maintenance/check_online_mr_session_state.py"]
         },
         {
-          "tables": ["task_events", "task_results"],
+          "tables": ["task_events", "task_results", "task_result_blobs"],
           "data_class": "HISTORICAL_RAW_FACT",
-          "authority": "canonical task event and full terminal-result fact authority before archive-first retirement",
-          "producer": ["TaskRepository"],
+          "authority": "immutable task event and terminal-result identity; new result bodies are content-addressed in task_result_blobs, while legacy canonical_json remains compatibility evidence",
+          "producer": ["TaskRepository", "task result migration tool for isolated candidates"],
           "consumers": ["TaskRepository read-through", "Task Center", "REST", "WebSocket", "Site Package"],
-          "lifecycle_owner": "TaskHistoryStore and SiteRetentionService",
+          "lifecycle_owner": "TaskRepository, TaskHistoryStore and SiteRetentionService",
           "rebuildable": false,
-          "source_locations": ["src/netconsole/repositories/task_repository.py", "src/netconsole/repositories/history_store.py", "src/netconsole/services/site_retention.py", "scripts/maintenance/task_result_maintenance.py"]
+          "source_locations": ["src/netconsole/repositories/task_repository.py", "src/netconsole/repositories/task_result_blob_repository.py", "src/netconsole/repositories/history_store.py", "src/netconsole/services/job_center/query_service.py", "src/netconsole/services/job_center/task_cleanup_service.py", "src/netconsole/services/site_retention.py", "src/netconsole/services/site_sync.py", "scripts/maintenance/task_result_maintenance.py", "scripts/maintenance/audit_tasks_db_space.py", "scripts/maintenance/audit_task_storage_integrity.py", "scripts/maintenance/migrate_task_result_blobs.py", "scripts/maintenance/compact_task_result_storage.py"]
         }
       ],
-      "source_locations": ["src/netconsole/repositories/task_repository.py", "src/netconsole/services/job_center/task_application_service.py", "src/netconsole/services/job_center/query_service.py", "scripts/maintenance/check_online_mr_session_state.py", "scripts/maintenance/manage_task_result_rollout.py", "scripts/maintenance/profile_tasks_db.py", "scripts/maintenance/task_result_maintenance.py"]
+      "source_locations": ["src/netconsole/repositories/task_repository.py", "src/netconsole/repositories/task_result_blob_repository.py", "src/netconsole/services/job_center/task_application_service.py", "src/netconsole/services/job_center/query_service.py", "src/netconsole/services/job_center/task_cleanup_service.py", "src/netconsole/services/site_retention.py", "src/netconsole/services/site_sync.py", "scripts/maintenance/check_online_mr_session_state.py", "scripts/maintenance/manage_task_result_rollout.py", "scripts/maintenance/profile_tasks_db.py", "scripts/maintenance/task_result_maintenance.py", "scripts/maintenance/audit_tasks_db_space.py", "scripts/maintenance/audit_task_storage_integrity.py", "scripts/maintenance/migrate_task_result_blobs.py", "scripts/maintenance/compact_task_result_storage.py"]
     },
     {
       "id": "site.agents",

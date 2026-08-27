@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
@@ -304,7 +305,16 @@ def _enable_result_ref_authority(
 ) -> dict[str, object]:
     tasks = inputs["after_tasks"]
     _restore_legacy_full_only_task(tasks, task_id="task-real")
-    TaskResultRolloutService(tasks).enable_dual_write(
+    rollout = TaskResultRolloutService(tasks)
+    if rollout.status()["task_result_storage_state"] != "LEGACY_DUAL_FULL":
+        with sqlite3.connect(tasks) as connection:
+            connection.execute(
+                "UPDATE task_result_storage_rollout SET state='LEGACY_DUAL_FULL', "
+                "revision=1, updated_by='pytest-fixture', reason='legacy fixture' "
+                "WHERE singleton_id=1"
+            )
+            connection.commit()
+    rollout.enable_dual_write(
         expected_revision=1,
         reason="functional authority fixture",
         updated_by="pytest",

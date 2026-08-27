@@ -56,10 +56,20 @@ def _terminal(task_id: str) -> tuple[TaskSnapshot, TaskEvent]:
     )
 
 
-def _enable(service: TaskResultRolloutService) -> None:
+def _enable(
+    service: TaskResultRolloutService, *, reason: str = "isolated rollout test"
+) -> None:
+    if service.status()["task_result_storage_state"] != "LEGACY_DUAL_FULL":
+        with sqlite3.connect(service.repository.db_path) as connection:
+            connection.execute(
+                "UPDATE task_result_storage_rollout SET state='LEGACY_DUAL_FULL', "
+                "revision=1, updated_by='pytest-fixture', reason='legacy fixture' "
+                "WHERE singleton_id=1"
+            )
+            connection.commit()
     service.enable_dual_write(
         expected_revision=1,
-        reason="isolated rollout test",
+        reason=reason,
         updated_by="pytest",
     )
 
@@ -94,24 +104,24 @@ def _strip_runtime_authority(
         connection.commit()
 
 
-def test_new_database_defaults_to_legacy_dual_full(tmp_path: Path) -> None:
+def test_new_database_defaults_to_result_reference_authority(tmp_path: Path) -> None:
     service = TaskResultRolloutService(tmp_path / "tasks.db")
     status = service.status()
 
     assert status == {
-        "schema_version": 4,
-        "task_result_storage_state": "LEGACY_DUAL_FULL",
-        "persisted_rollout_state": "LEGACY_DUAL_FULL",
+        "schema_version": 5,
+        "task_result_storage_state": "RESULT_REF_AUTHORITY",
+        "persisted_rollout_state": "RESULT_REF_AUTHORITY",
         "revision": 1,
         "updated_at": status["updated_at"],
         "task_results_rows": 0,
         "persisted_dual_write_active": False,
-        "persisted_ref_authority_active": False,
-        "runtime_write_state": "LEGACY_DUAL_FULL",
+        "persisted_ref_authority_active": True,
+        "runtime_write_state": "RESULT_REF_AUTHORITY",
         "runtime_dual_write_active": False,
-        "runtime_ref_authority_active": False,
+        "runtime_ref_authority_active": True,
         "dual_write_active": False,
-        "ref_authority_active": False,
+        "ref_authority_active": True,
     }
     assert str(status["updated_at"])
 
@@ -158,9 +168,9 @@ def test_old_database_upgrade_adds_capability_and_writes_authority(
             "SELECT value FROM task_schema_meta WHERE key='schema_version'"
         ).fetchone()[0]
         result_count = conn.execute("SELECT COUNT(*) FROM task_results").fetchone()[0]
-    assert schema_version == "4"
+    assert schema_version == "5"
     assert result_count == 1
-    assert status.state == TaskResultStorageState.LEGACY_DUAL_FULL
+    assert status.state == TaskResultStorageState.RESULT_REF_AUTHORITY
     persisted = repository.get("upgraded-task")
     assert persisted is not None and persisted.result == snapshot.result
     assert persisted.result_id
@@ -207,7 +217,7 @@ def test_default_terminal_tasks_write_task_results_authority(
 def test_rollout_state_does_not_disable_terminal_authority_writes(
     tmp_path: Path,
 ) -> None:
-    assert TASK_RESULT_RUNTIME_WRITE_STATE == TaskResultStorageState.LEGACY_DUAL_FULL
+    assert TASK_RESULT_RUNTIME_WRITE_STATE == TaskResultStorageState.RESULT_REF_AUTHORITY
     path = tmp_path / "tasks.db"
     service = TaskResultRolloutService(path)
     _enable(service)
@@ -216,8 +226,9 @@ def test_rollout_state_does_not_disable_terminal_authority_writes(
     assert status["task_result_storage_state"] == "TASK_RESULTS_DUAL_WRITE"
     assert status["persisted_rollout_state"] == "TASK_RESULTS_DUAL_WRITE"
     assert status["persisted_dual_write_active"] is True
-    assert status["runtime_write_state"] == "LEGACY_DUAL_FULL"
+    assert status["runtime_write_state"] == "RESULT_REF_AUTHORITY"
     assert status["runtime_dual_write_active"] is False
+    assert status["runtime_ref_authority_active"] is True
     assert status["dual_write_active"] is False
     assert status["revision"] == 2
 
@@ -251,7 +262,7 @@ def test_rollout_state_does_not_disable_terminal_authority_writes(
             "changed_at": status["updated_at"],
             "changed_by": "pytest",
             "reason": "isolated rollout test",
-            "schema_version": 4,
+            "schema_version": 5,
         }
     ]
 
@@ -292,7 +303,7 @@ def test_rollout_rollback_keeps_terminal_authority_writes(
 def test_historical_ref_authority_state_does_not_disable_current_writer(
     tmp_path: Path,
 ) -> None:
-    assert TASK_RESULT_RUNTIME_WRITE_STATE == TaskResultStorageState.LEGACY_DUAL_FULL
+    assert TASK_RESULT_RUNTIME_WRITE_STATE == TaskResultStorageState.RESULT_REF_AUTHORITY
     path = tmp_path / "tasks.db"
     TaskResultRolloutService(path)
     with sqlite3.connect(path) as connection:
@@ -306,9 +317,9 @@ def test_historical_ref_authority_state_does_not_disable_current_writer(
     restarted = TaskResultRolloutService(path)
     assert restarted.status()["task_result_storage_state"] == "RESULT_REF_AUTHORITY"
     assert restarted.status()["persisted_ref_authority_active"] is True
-    assert restarted.status()["runtime_write_state"] == "LEGACY_DUAL_FULL"
-    assert restarted.status()["runtime_ref_authority_active"] is False
-    assert restarted.status()["ref_authority_active"] is False
+    assert restarted.status()["runtime_write_state"] == "RESULT_REF_AUTHORITY"
+    assert restarted.status()["runtime_ref_authority_active"] is True
+    assert restarted.status()["ref_authority_active"] is True
     snapshot, event = _terminal("stale-ref-authority")
     assert restarted.repository.record(snapshot, event)
 
@@ -340,11 +351,11 @@ def test_historical_ref_authority_state_does_not_disable_current_writer(
     [
         (
             TaskResultStorageState.TASK_RESULTS_VERIFIED,
-            "TASK_RESULT_VERIFIED_APPLY_DISABLED",
+            "TASK_RESULT_ROLLOUT_TRANSITION_INVALID",
         ),
         (
             TaskResultStorageState.RESULT_REF_AUTHORITY,
-            "TASK_RESULT_REF_AUTHORITY_DISABLED",
+            "TASK_RESULT_ROLLOUT_TRANSITION_INVALID",
         ),
     ],
 )
@@ -362,7 +373,7 @@ def test_future_rollout_states_cannot_be_applied(
             updated_by="pytest",
         )
     assert blocked.value.code == code
-    assert service.status()["task_result_storage_state"] == "LEGACY_DUAL_FULL"
+    assert service.status()["task_result_storage_state"] == "RESULT_REF_AUTHORITY"
 
 
 def test_historical_backfill_is_classified_idempotent_and_ref_read_through(
@@ -420,10 +431,8 @@ def test_historical_backfill_is_classified_idempotent_and_ref_read_through(
         event_payload=invalid_event.payload,
     )
 
-    TaskResultRolloutService(path).enable_dual_write(
-        expected_revision=1,
-        reason="isolated historical backfill",
-        updated_by="pytest",
+    _enable(
+        TaskResultRolloutService(path), reason="isolated historical backfill"
     )
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path / "runtime")
     maintenance = TaskResultMaintenanceService(
@@ -581,11 +590,7 @@ def test_backfill_binds_only_final_finished_result_after_null_error(
         event_id=finished_event.event_id,
     )
 
-    TaskResultRolloutService(path).enable_dual_write(
-        expected_revision=1,
-        reason="event binding regression",
-        updated_by="pytest",
-    )
+    _enable(TaskResultRolloutService(path), reason="event binding regression")
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path / "runtime")
     maintenance = TaskResultMaintenanceService(
         paths,
@@ -669,11 +674,7 @@ def test_backfill_preserves_failed_snapshot_result_from_finished_event(
 ) -> None:
     path = tmp_path / "tasks.db"
     repository = TaskRepository(path)
-    TaskResultRolloutService(path).enable_dual_write(
-        expected_revision=1,
-        reason="legacy failed snapshot fixture",
-        updated_by="pytest",
-    )
+    _enable(TaskResultRolloutService(path), reason="legacy failed snapshot fixture")
     result = {"data_persisted": False, "worker_exit_code": 1}
     snapshot, finished_event = _terminal("failed-with-finished-result")
     snapshot = replace(
@@ -759,11 +760,7 @@ def test_backfill_does_not_replace_empty_cancelled_result_from_later_event(
     )
     assert repository.record(cancelled_snapshot, cancelled_event)
     assert repository.record(cancelled_snapshot, later_finished)
-    TaskResultRolloutService(path).enable_dual_write(
-        expected_revision=1,
-        reason="cancelled binding regression",
-        updated_by="pytest",
-    )
+    _enable(TaskResultRolloutService(path), reason="cancelled binding regression")
     maintenance = TaskResultMaintenanceService(
         PathResolver(app_root=tmp_path, data_root=tmp_path / "runtime"),
         site_id="line-12",
@@ -881,11 +878,7 @@ def test_backfill_keeps_event_only_result_out_of_empty_cancelled_snapshot(
         snapshot_result={},
         event_payload=event.payload,
     )
-    TaskResultRolloutService(path).enable_dual_write(
-        expected_revision=1,
-        reason="event-only result regression",
-        updated_by="pytest",
-    )
+    _enable(TaskResultRolloutService(path), reason="event-only result regression")
     maintenance = TaskResultMaintenanceService(
         PathResolver(app_root=tmp_path, data_root=tmp_path / "runtime"),
         site_id="line-12",
@@ -927,11 +920,7 @@ def test_historical_ref_authority_keeps_terminal_authority_and_live_payloads(
     data_root = tmp_path / "data"
     paths = PathResolver(app_root=tmp_path, data_root=data_root)
     task_db = paths.site_tasks_db_path("demo")
-    TaskResultRolloutService(task_db).enable_dual_write(
-        expected_revision=1,
-        reason="isolated ref fixture",
-        updated_by="pytest",
-    )
+    _enable(TaskResultRolloutService(task_db), reason="isolated ref fixture")
     TaskResultMaintenanceService(
         paths,
         site_id="demo",
@@ -1043,7 +1032,7 @@ def test_rollout_cli_requires_explicit_apply_and_persists_state(
     common = ["--data-root", str(data_root), "--site-id", "demo"]
     assert rollout_cli_main(["status", *common]) == 0
     assert json.loads(capsys.readouterr().out)["task_result_storage_state"] == (
-        "LEGACY_DUAL_FULL"
+        "RESULT_REF_AUTHORITY"
     )
 
     with pytest.raises(SystemExit, match="explicit --apply"):
@@ -1072,4 +1061,4 @@ def test_rollout_cli_requires_explicit_apply_and_persists_state(
     assert capsys.readouterr().out == ""
     assert TaskResultRolloutService(
         site_root / "db" / "tasks.db"
-    ).status()["task_result_storage_state"] == "LEGACY_DUAL_FULL"
+    ).status()["task_result_storage_state"] == "RESULT_REF_AUTHORITY"

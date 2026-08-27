@@ -737,10 +737,10 @@ def test_history_store_result_task_binding_mismatch_fails_loudly(
         source="test",
         payload={},
     )
-    assert repository.record(snapshot, event)
-
-    with pytest.raises(sqlite3.DatabaseError, match="task snapshot result task binding mismatch"):
-        repository.get(mismatched_task)
+    with pytest.raises(
+        sqlite3.DatabaseError, match="task snapshot result task binding mismatch"
+    ):
+        repository.record(snapshot, event)
 
 
 def _record_retention_terminal(

@@ -28,7 +28,7 @@ Job Center 是普通后台任务的统一调度层；Export Process 是共享同
 - `task_application_service.py`：任务应用层、快照更新、恢复核对和跨进程协作取消。
 - `repositories/task_repository.py`：每局点 `tasks.db` 的快照、事件、WAL 和查询。
 - `repositories/online_mr_task_session_repository.py`：复用同一局点 `tasks.db` 保存 Online MR Controller Task 与 Session 的最小映射，不保存连接配置或凭据。
-- 任务存储第一阶段治理的只读 profiler、400 MiB 根因、连续相同 progress 的 30 秒采样、事务幂等修复和明确延后的 retention/result 契约见 [Task Storage Governance](./TASK_STORAGE_GOVERNANCE.md)。本阶段不删除、归档、VACUUM 或修改用户可见保留期限。
+- 任务存储治理的只读 profiler、400 MiB 根因、连续相同 progress 的 30 秒采样、事务幂等修复和 DEV-only 结果 Blob authority/候选 compact 见 [Task Storage Governance](./TASK_STORAGE_GOVERNANCE.md)。新终态只在 `task_result_blobs` 保存完整结果，旧 `canonical_json` 仍可兼容读取；本阶段不做 Production migration、通用 retention、历史归档或 TaskHistoryStore 切换。
 - 历史 `src/netconsole/ui/job_process_manager.py` 已删除；其状态、取消和事件职责分别由永久 Service/Runtime/Adapter 承担，旧路径只在冻结迁移矩阵中追溯。
 - `local_process_adapter.py`：纯 Python Worker 进程宿主，复用同一 `TaskApplicationService/TaskRuntime`，供非 Qt 应用层启动本地 Job；stdout/stderr 使用可用字节增量读取，不能等到 64 KiB 缓冲区填满或进程退出后才发布 JSONL 事件。Windows 下使用 Job Object 回收子进程树，并通过完成回调同步外部业务 Run 终态。`force_stop_job()` 只在业务层有界协作停止失败后立即 terminate/kill 进程树，不替代普通取消。
 - `handlers/`：AC、配置、数据库升级、设备、文件、Mesh、网络、在线 MR、轨道交通、Traffic 领域分区；网络工具无线扫描的既有任务由独立兼容 handler 承接。
@@ -131,7 +131,7 @@ LOCAL 入口通过 Worker 内纯 Python `OnlineMrTrafficCoordinator` 管理 fpin
 - `POST /api/job-center/tasks/{id}/dismiss`：从任务中心移除单条终态记录；失败或告警必须先标记为已处理；
 - `delete_artifacts=true` 固定拒绝。任务中心历史管理不删除事件、日志、采集文件、raw、导出结果或 Artifact。
 
-`tasks.db` schema v3 继续复用既有 `finished_time`，不建立重复的 `finished_at`，并为快照增加 `expires_at / acknowledged_at / dismissed_at / dismissed_by / dismiss_reason`。成功与取消默认保留 7 天，失败及业务告警默认保留 30 天；`expires_at` 由 Backend 在写入终态和旧库幂等升级时计算，Vue 不根据本机时间推断。默认任务列表只查询 `dismissed_at = ''`，软清理后的快照、事件和关联结果仍可供审计或领域关系使用。
+`tasks.db` schema v5 继续复用既有 `finished_time`，不建立重复的 `finished_at`，并为快照增加 `expires_at / acknowledged_at / dismissed_at / dismissed_by / dismiss_reason`。成功与取消默认保留 7 天，失败及业务告警默认保留 30 天；`expires_at` 由 Backend 在写入终态和旧库幂等升级时计算，Vue 不根据本机时间推断。默认任务列表只查询 `dismissed_at = ''`，软清理后的快照、事件和关联结果仍可供审计或领域关系使用。物理清理仅接受显式 preview 后的安全候选，由 Repository 在事务内删除 task-owned rows；它不删除 Ground、Online MR、历史、Artifact 或 raw 文件。
 
 清理策略在 SQLite `BEGIN IMMEDIATE` 事务内再次校验状态。`PENDING / STARTING / RUNNING / STOPPING` 永远不会更新 `dismissed_at`；未确认的 `FAILED` 或 `COMPLETED + WARNING/PARTIAL_SUCCESS` 不进入普通完成、过期或全部历史清理。清理后 Event Hub 发送 `tasks.dismissed`，确认后发送 `tasks.acknowledged`，Vue Store 按任务 ID 增量更新；这两类 UI 管理事件不写入 Worker 的五类执行事件流。
 

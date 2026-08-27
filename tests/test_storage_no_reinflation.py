@@ -29,9 +29,6 @@ from netconsole.repositories.ground_unattended_repository import (
 )
 from netconsole.repositories.mesh_mr_repository import MeshMrRepository
 from netconsole.repositories.task_repository import TaskRepository
-from netconsole.services.job_center.task_result_rollout import (
-    TaskResultRolloutService,
-)
 from netconsole.services.ground_unattended.syslog_runtime import RawStreamWriter
 from netconsole.services.mesh_import_service import MeshImportService
 from netconsole.services.mesh_source_rebuild_service import MeshSourceRebuildService
@@ -109,25 +106,20 @@ class _OnlineMrRawAuthorityConnection(_OnlineMrConnection):
         return f"{command}\nOK"
 
 
-def test_terminal_result_replay_keeps_one_canonical_full_payload(
+def test_terminal_result_replay_keeps_one_result_authority_payload(
     tmp_path: Path,
 ) -> None:
     data_root = tmp_path / "data"
     paths = PathResolver(app_root=tmp_path, data_root=data_root)
     database = paths.site_tasks_db_path("line-12")
     repository = TaskRepository(database)
-    TaskResultRolloutService(database).enable_dual_write(
-        expected_revision=1,
-        reason="No-Reinflation result fixture",
-        updated_by="pytest",
-    )
     TaskResultMaintenanceService(
         paths,
         site_id="line-12",
         tasks_database=database,
         development_root=tmp_path,
     ).enable_ref_authority(
-        expected_revision=2,
+        expected_revision=1,
         reason="No-Reinflation result reference authority",
         updated_by="pytest",
         apply=True,
@@ -162,7 +154,7 @@ def test_terminal_result_replay_keeps_one_canonical_full_payload(
 
     with sqlite3.connect(database) as connection:
         result_rows = connection.execute(
-            "SELECT canonical_json, byte_size FROM task_results"
+            "SELECT canonical_json, byte_size, blob_ready FROM task_results"
         ).fetchall()
         snapshot_result = connection.execute(
             "SELECT result_json FROM task_snapshots WHERE task_id=?",
@@ -176,7 +168,11 @@ def test_terminal_result_replay_keeps_one_canonical_full_payload(
             ).fetchall()
         ]
     assert len(result_rows) == 1
-    assert result_rows[0][1] == len(str(result_rows[0][0]).encode("utf-8"))
+    assert result_rows[0][0] == ""
+    assert result_rows[0][1] == len(
+        json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    )
+    assert result_rows[0][2] == 1
     assert snapshot_result == ("{}",)
     assert len(event_payloads) == 100
     assert all("result" not in payload and payload["result_id"] for payload in event_payloads)

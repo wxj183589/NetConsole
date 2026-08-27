@@ -78,7 +78,7 @@ authority boundaries without replacing that map.
 | Domain | Operational/current authority | History, raw, or derived authority | Lifecycle owner |
 | --- | --- | --- | --- |
 | Devices | `devices.db`, including current state and History outbox | `db/history/catalog.db` plus verified monthly shards | `DeviceRepository`, `HistoryStore`, `SiteRetentionService` |
-| Tasks | `tasks.db`, active state, lightweight snapshots, result references, recovery | shared history catalog/shards for archived events and canonical terminal results | `TaskRepository`, `TaskHistoryStore`, `SiteRetentionService` |
+| Tasks | `tasks.db`, active state, lightweight snapshots, immutable result references and recovery | `task_result_blobs` is the current terminal-result body authority; legacy full rows and future HistoryStore archives remain compatibility/history evidence | `TaskRepository`, `TaskResultBlobRepository`, `TaskHistoryStore`, `SiteRetentionService` |
 | Agent | `agents.db`; Agent-local acknowledged/unacknowledged task package state is separate | Agent packages remain outside Controller Site Package authority | `AgentRepository`, Windows Go Agent lifecycle |
 | Ground/Unattended | `ground_unattended/index.sqlite` for recovery, current schedule, and structured references | active NDJSON is raw authority until a verified READY archive; the READY ZIP is historical raw authority | Ground repository, raw lifecycle, and archive service |
 | MESH | `catalog.sqlite` owns source fingerprint and selected projection metadata | raw logs are evidence authority; `mesh.sqlite` and per-source `*.mesh.sqlite` are rebuildable projections | MESH catalog/storage and derived-data maintenance services |
@@ -164,7 +164,7 @@ The following distinctions are mandatory when reporting storage work:
 | --- | --- |
 | Registry classification and architecture guard | Implemented in the current tree; it detects unregistered SQLite/DDL source locations and validates `UNKNOWN_PROTECT` and lifecycle fields |
 | Devices History V2 and legacy COPY/verify/query-authority tooling | Implemented with V1/mixed compatibility and isolated snapshot evidence; no production source deletion or physical replacement is authorized |
-| Task result authority | Additive `task_results` dual-write/read compatibility exists; removal of full snapshot/event copies and production retention remain gated |
+| Task result authority | DEV-only Blob-first authority is integrated: new rows keep the body in `task_result_blobs`, old full-only/dual rows remain readable; Production migration and broad retention remain gated |
 | Site Package SQLite suffix and managed staging handling | Current code covers `.db`, `.sqlite`, and `.sqlite3`; full/return/field authority boundaries remain intentionally different |
 | Shared database-upgrade framework | Partial adoption; `mesh_derived` is the first adapter, while other stores retain domain-specific migration paths |
 | Complete Site-wide No-Reinflation proof | Required by [Storage Testing Guide](./STORAGE_TESTING_GUIDE.md); do not infer completion from one snapshot, one database, or registry presence |

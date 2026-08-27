@@ -644,7 +644,7 @@ def test_task_repository_initialization_preserves_existing_tables(
             conn.execute(
                 "SELECT value FROM task_schema_meta WHERE key = 'schema_version'"
             ).fetchone()[0]
-            == "4"
+            == "5"
         )
 
 

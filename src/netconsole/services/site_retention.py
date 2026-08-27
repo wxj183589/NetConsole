@@ -25,7 +25,10 @@ from netconsole.services.database_footprint_maintenance import (
     DEVELOPMENT_ROOT,
     assert_development_path,
 )
-from netconsole.services.history_store import TaskHistoryStore, verify_task_result_row
+from netconsole.services.history_store import TaskHistoryStore
+from netconsole.repositories.task_result_blob_repository import (
+    verify_task_result_authority,
+)
 from netconsole.services.site_storage import (
     SiteRegistryRepository,
     SiteStorageError,
@@ -328,10 +331,9 @@ class SiteRetentionService:
             result_authority: dict[str, dict[str, Any]] = {}
             if "task_results" in tables:
                 for raw in connection.execute(
-                    "SELECT result_id, task_id, terminal_event_type, canonical_json, "
-                    "sha256, byte_size, schema_version, created_time FROM task_results"
+                    "SELECT * FROM task_results"
                 ).fetchall():
-                    verified = verify_task_result_row(dict(raw))
+                    verified = verify_task_result_authority(connection, dict(raw))
                     result_authority[str(verified["result_id"])] = verified
             task_history = TaskHistoryStore(database, site_id=str(site_id))
             for row in snapshots:
@@ -406,11 +408,9 @@ class SiteRetentionService:
             archive_results: list[dict[str, Any]] = []
             if "task_results" in tables:
                 for raw in connection.execute(
-                    "SELECT result_id, task_id, terminal_event_type, canonical_json, "
-                    "sha256, byte_size, schema_version, created_time "
-                    "FROM task_results ORDER BY result_id"
+                    "SELECT * FROM task_results ORDER BY result_id"
                 ).fetchall():
-                    row = dict(raw)
+                    row = verify_task_result_authority(connection, dict(raw))
                     task_id = str(row.get("task_id") or "")
                     created = self._parse_datetime(row.get("created_time"))
                     if (

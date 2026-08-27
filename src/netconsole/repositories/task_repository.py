@@ -28,11 +28,17 @@ from netconsole.models.task_history_policy import (
     TERMINAL_TASK_STATE_VALUES,
     task_expires_at,
     task_has_long_term_reference,
-    task_history_scope,
     task_requires_attention,
+    task_history_scope,
     utc_time_reached,
 )
 from netconsole.repositories.history_store import TaskHistoryStore, verify_task_result_row
+from netconsole.repositories.task_result_blob_repository import (
+    TASK_RESULT_BLOB_CODEC_ZLIB,
+    TaskResultBlobError,
+    ensure_blob,
+    read_blob,
+)
 
 
 TASK_SCHEMA = """
@@ -40,7 +46,7 @@ CREATE TABLE IF NOT EXISTS task_schema_meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
-INSERT OR IGNORE INTO task_schema_meta(key, value) VALUES ('schema_version', '4');
+INSERT OR IGNORE INTO task_schema_meta(key, value) VALUES ('schema_version', '5');
 
 CREATE TABLE IF NOT EXISTS task_result_storage_rollout (
     singleton_id INTEGER PRIMARY KEY CHECK(singleton_id = 1),
@@ -60,12 +66,12 @@ INSERT OR IGNORE INTO task_result_storage_rollout (
     singleton_id, state, revision, updated_at, updated_by, reason, schema_version
 ) VALUES (
     1,
-    'LEGACY_DUAL_FULL',
+    'RESULT_REF_AUTHORITY',
     1,
     strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
     'schema',
-    'default rollout guard',
-    4
+    'result authority and blob storage rollout',
+    5
 );
 
 CREATE TABLE IF NOT EXISTS task_result_storage_rollout_audit (
@@ -144,12 +150,43 @@ CREATE TABLE IF NOT EXISTS task_results (
     byte_size INTEGER NOT NULL,
     schema_version INTEGER NOT NULL,
     created_time TEXT NOT NULL,
+    content_sha256 TEXT NOT NULL DEFAULT '',
+    blob_codec TEXT NOT NULL DEFAULT '',
+    blob_ready INTEGER NOT NULL DEFAULT 0 CHECK(blob_ready IN (0, 1)),
     UNIQUE(task_id, terminal_event_type, sha256)
 );
 CREATE INDEX IF NOT EXISTS idx_task_results_task_created
     ON task_results(task_id, created_time DESC, result_id);
+CREATE TABLE IF NOT EXISTS task_result_blobs (
+    content_sha256 TEXT PRIMARY KEY,
+    codec TEXT NOT NULL CHECK(codec IN ('zlib')),
+    compressed_blob BLOB NOT NULL,
+    uncompressed_bytes INTEGER NOT NULL,
+    compressed_bytes INTEGER NOT NULL,
+    created_time TEXT NOT NULL,
+    verified_at TEXT NOT NULL DEFAULT ''
+);
 CREATE TRIGGER IF NOT EXISTS trg_task_results_immutable
 BEFORE UPDATE ON task_results
+WHEN NOT (
+    OLD.result_id = NEW.result_id
+    AND OLD.task_id = NEW.task_id
+    AND OLD.terminal_event_type = NEW.terminal_event_type
+    AND OLD.canonical_json = NEW.canonical_json
+    AND OLD.sha256 = NEW.sha256
+    AND OLD.byte_size = NEW.byte_size
+    AND OLD.schema_version = NEW.schema_version
+    AND OLD.created_time = NEW.created_time
+    AND (
+        (OLD.content_sha256 = NEW.content_sha256
+         AND OLD.blob_codec = NEW.blob_codec
+         AND OLD.blob_ready = NEW.blob_ready)
+        OR (OLD.blob_ready = 0
+            AND NEW.blob_ready = 1
+            AND NEW.content_sha256 = OLD.sha256
+            AND NEW.blob_codec = 'zlib')
+    )
+)
 BEGIN
     SELECT RAISE(ABORT, 'task_results rows are immutable');
 END;
@@ -200,6 +237,11 @@ class TaskRepository:
             with self._connect() as conn:
                 initialize_sqlite_wal(conn)
                 conn.executescript(TASK_SCHEMA)
+                # ``executescript`` runs DDL in its own implicit transaction.
+                # Serialize the compatibility pass separately so concurrent
+                # Task Center workers cannot race a trigger recreation.
+                conn.commit()
+                conn.execute("BEGIN IMMEDIATE")
                 self._ensure_schema_compat(conn)
                 conn.commit()
 
@@ -208,7 +250,32 @@ class TaskRepository:
     def save(self, snapshot: TaskSnapshot) -> None:
         def operation() -> None:
             with self._connect() as conn:
-                self._upsert(conn, snapshot)
+                stored_snapshot = snapshot
+                terminal_event_type = self._terminal_event_type_for_status(
+                    snapshot.status
+                )
+                if (
+                    terminal_event_type
+                    and isinstance(snapshot.result, dict)
+                    and snapshot.result
+                ):
+                    stored_snapshot, _ = self._prepare_terminal_result(
+                        conn,
+                        snapshot,
+                        TaskEvent(
+                            event_id=f"save-{snapshot.task_id}",
+                            task_id=snapshot.task_id,
+                            type=terminal_event_type,
+                            time=(
+                                snapshot.finished_time
+                                or snapshot.updated_time
+                                or utc_now_iso()
+                            ),
+                            source="repository.save",
+                            payload={"result": dict(snapshot.result)},
+                        ),
+                    )
+                self._upsert(conn, stored_snapshot)
                 conn.commit()
 
         run_sqlite_with_retry(operation)
@@ -438,7 +505,7 @@ class TaskRepository:
                     snapshot, result_id="", result_hash="", result_summary={}
                 ), event
 
-            verified = self._verified_result_for_read(dict(referenced))
+            verified = self._verified_result_for_read(dict(referenced), conn=conn)
             if str(verified["task_id"]) != str(snapshot.task_id):
                 raise sqlite3.DatabaseError("task snapshot result task binding mismatch")
             stored_hash = str(snapshot.result_hash or "")
@@ -462,6 +529,24 @@ class TaskRepository:
             # Legacy/ref-only snapshots already identify their immutable
             # authority. Preserve the reference so reads can validate the
             # task binding and resolve from TaskHistoryStore when necessary.
+            referenced = self._result_row(conn, explicit_result_id)
+            if referenced is None:
+                # A legacy producer may commit the snapshot before its sealed
+                # history row is copied.  Keep the reference intact so the
+                # reader fails closed until that authority becomes available;
+                # never synthesize a new full payload here.
+                return snapshot, event
+            verified = self._verified_result_for_read(dict(referenced), conn=conn)
+            if str(verified["task_id"]) != str(snapshot.task_id):
+                raise sqlite3.DatabaseError("task snapshot result task binding mismatch")
+            if str(snapshot.result_hash or "") not in {"", str(verified["sha256"])}:
+                raise sqlite3.DatabaseError("task snapshot result hash mismatch")
+            if incoming_result and self._canonical_result_json(incoming_result) != str(
+                verified["canonical_json"]
+            ):
+                raise sqlite3.DatabaseError("task snapshot result content mismatch")
+            if self._is_local_result_row(conn, explicit_result_id):
+                verified = self._ensure_result_blob_for_row(conn, verified)
             return snapshot, event
         event_payload = dict(event.payload or {})
         payload_result = event_payload.get("result")
@@ -478,7 +563,8 @@ class TaskRepository:
             (snapshot.task_id, terminal_event_type),
         ).fetchone()
         if existing is not None:
-            verified = self._verified_result_for_read(dict(existing))
+            verified = self._verified_result_for_read(dict(existing), conn=conn)
+            verified = self._ensure_result_blob_for_row(conn, verified)
             result = dict(verified["result"])
         else:
             result = dict(incoming_result)
@@ -491,22 +577,43 @@ class TaskRepository:
             created_time = str(
                 event.time or snapshot.finished_time or snapshot.updated_time or utc_now_iso()
             )
+            self._ensure_result_blob(
+                conn,
+                canonical_json=canonical_json,
+                content_sha256=digest,
+                created_time=created_time,
+                verified_at=created_time,
+            )
+            # Once the shared blob is the runtime authority, do not recreate a
+            # second full payload projection in ``task_results``.  The legacy
+            # column remains readable for pre-existing rows and for the
+            # migration tool, while new rows keep only immutable metadata here.
+            stored_canonical_json = (
+                ""
+                if TASK_RESULT_RUNTIME_WRITE_STATE
+                == TaskResultStorageState.RESULT_REF_AUTHORITY
+                else canonical_json
+            )
             conn.execute(
                 """
                 INSERT OR IGNORE INTO task_results (
                     result_id, task_id, terminal_event_type, canonical_json,
-                    sha256, byte_size, schema_version, created_time
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    sha256, byte_size, schema_version, created_time,
+                    content_sha256, blob_codec, blob_ready
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     result_id,
                     snapshot.task_id,
                     terminal_event_type,
-                    canonical_json,
+                    stored_canonical_json,
                     digest,
                     len(encoded),
                     TASK_RESULT_SCHEMA_VERSION,
                     created_time,
+                    digest,
+                    TASK_RESULT_BLOB_CODEC_ZLIB,
+                    1,
                 ),
             )
             verified = self._verified_result_for_read(
@@ -515,8 +622,10 @@ class TaskRepository:
                         "SELECT * FROM task_results WHERE result_id = ?",
                         (result_id,),
                     ).fetchone()
-                )
+                ),
+                conn=conn,
             )
+            verified = self._ensure_result_blob_for_row(conn, verified)
             result = dict(verified["result"])
 
         result_id = str(verified["result_id"])
@@ -555,7 +664,7 @@ class TaskRepository:
             row = self._result_row(conn, str(result_id))
             if row is None:
                 return None
-            return self._verified_result_for_read(dict(row))
+            return self._verified_result_for_read(dict(row), conn=conn)
 
     def task_result_rollout_status(self) -> TaskResultRolloutStatus:
         with self._connect() as conn:
@@ -613,7 +722,7 @@ class TaskRepository:
                     """
                     UPDATE task_result_storage_rollout
                     SET state = ?, revision = ?, updated_at = ?, updated_by = ?,
-                        reason = ?, schema_version = 4
+                        reason = ?, schema_version = 5
                     WHERE singleton_id = 1 AND state = ? AND revision = ?
                     """,
                     (
@@ -634,7 +743,7 @@ class TaskRepository:
                     INSERT INTO task_result_storage_rollout_audit (
                         revision, from_state, to_state, changed_at,
                         changed_by, reason, schema_version
-                    ) VALUES (?, ?, ?, ?, ?, ?, 4)
+                    ) VALUES (?, ?, ?, ?, ?, ?, 5)
                     """,
                     (
                         next_revision,
@@ -813,6 +922,7 @@ class TaskRepository:
                 rows = conn.execute(
                     """
                     SELECT task_id, status, error_message, result_json
+                           , result_summary_json
                     FROM task_snapshots
                     WHERE dismissed_at = '' AND acknowledged_at = ''
                     """
@@ -827,7 +937,7 @@ class TaskRepository:
                     if not task_requires_attention(
                         status,
                         error_message=str(row["error_message"] or ""),
-                        result=self._json_object(row["result_json"]),
+                        result=self._policy_result(conn, row),
                     ):
                         continue
                     cursor = conn.execute(
@@ -869,7 +979,8 @@ class TaskRepository:
                 conn.execute("BEGIN IMMEDIATE")
                 row = conn.execute(
                     """
-                    SELECT task_id, status, error_message, result_json, acknowledged_at
+                    SELECT task_id, status, error_message, result_json,
+                           result_summary_json, acknowledged_at
                     FROM task_snapshots
                     WHERE task_id = ? AND dismissed_at = ''
                     """,
@@ -886,7 +997,7 @@ class TaskRepository:
                 attention = task_requires_attention(
                     status,
                     error_message=str(row["error_message"] or ""),
-                    result=self._json_object(row["result_json"]),
+                    result=self._policy_result(conn, row),
                 )
                 if attention and not str(row["acknowledged_at"] or ""):
                     skipped_unacknowledged = 1
@@ -972,7 +1083,7 @@ class TaskRepository:
                 rows = conn.execute(
                     """
                     SELECT task_id, status, finished_time, updated_time, error_message,
-                           result_json, expires_at, acknowledged_at
+                           result_json, result_summary_json, expires_at, acknowledged_at
                     FROM task_snapshots
                     WHERE dismissed_at = ''
                     ORDER BY updated_time DESC, task_id DESC
@@ -990,7 +1101,7 @@ class TaskRepository:
                         continue
                     if status in excluded:
                         continue
-                    result = self._json_object(row["result_json"])
+                    result = self._policy_result(conn, row)
                     attention = task_requires_attention(
                         status,
                         error_message=str(row["error_message"] or ""),
@@ -1076,13 +1187,203 @@ class TaskRepository:
             "counts": counts,
         }
 
-    def enforce_terminal_history_retention(self) -> dict[str, object]:
-        """Keep recent ordinary terminal tasks and remove their three DB rows atomically.
+    def delete_task_owned_rows(
+        self,
+        task_ids: Collection[str],
+        *,
+        reason: str = "explicit_task_cleanup",
+    ) -> dict[str, object]:
+        """Delete explicitly approved task-owned rows in one repository transaction.
 
-        The method is intentionally limited to ``tasks.db``. It neither archives
-        to ``TaskHistoryStore`` nor touches artifact files, source logs, or Online
-        MR mapping rows. A task is protected only by an active lifecycle state,
-        a concrete Online MR mapping, or explicit durable-session metadata.
+        The caller owns the business/reference decision.  This method owns the
+        SQLite mutation boundary and rechecks that every candidate is still a
+        terminal task before deleting its events, result metadata and snapshot.
+        It never touches Online MR, Ground, history or artifact files.
+        """
+
+        normalized = list(dict.fromkeys(str(task_id).strip() for task_id in task_ids if str(task_id).strip()))
+        deleted = {"task_events": 0, "task_snapshots": 0, "task_results": 0}
+        deleted_ids: list[str] = []
+        orphan_blobs_removed = 0
+        orphan_blob_bytes_removed = 0
+        quick_check = "not_run"
+
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            tables = {
+                str(row[0])
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+            if normalized and "task_snapshots" in tables:
+                placeholders = ",".join("?" for _ in normalized)
+                rows = conn.execute(
+                    f"SELECT task_id, status FROM task_snapshots WHERE task_id IN ({placeholders})",
+                    normalized,
+                ).fetchall()
+                deleted_ids = [
+                    str(row[0])
+                    for row in rows
+                    if str(row[1] or "").upper() in TERMINAL_TASK_STATE_VALUES
+                ]
+                for start in range(0, len(deleted_ids), 500):
+                    chunk = deleted_ids[start : start + 500]
+                    chunk_placeholders = ",".join("?" for _ in chunk)
+                    if "task_events" in tables:
+                        cursor = conn.execute(
+                            f"DELETE FROM task_events WHERE task_id IN ({chunk_placeholders})",
+                            chunk,
+                        )
+                        deleted["task_events"] += max(0, int(cursor.rowcount))
+                    if "task_results" in tables:
+                        cursor = conn.execute(
+                            f"DELETE FROM task_results WHERE task_id IN ({chunk_placeholders})",
+                            chunk,
+                        )
+                        deleted["task_results"] += max(0, int(cursor.rowcount))
+                    cursor = conn.execute(
+                        f"DELETE FROM task_snapshots WHERE task_id IN ({chunk_placeholders})",
+                        chunk,
+                    )
+                    deleted["task_snapshots"] += max(0, int(cursor.rowcount))
+                    if "task_retention_tombstones" in tables:
+                        conn.executemany(
+                            "INSERT OR IGNORE INTO task_retention_tombstones"
+                            "(task_id, retired_at, reason) VALUES (?, ?, ?)",
+                            [(task_id, utc_now_iso(), reason) for task_id in chunk],
+                        )
+            if "task_result_blobs" in tables and "task_results" in tables:
+                orphan_rows = conn.execute(
+                    "SELECT content_sha256, compressed_bytes FROM task_result_blobs "
+                    "WHERE NOT EXISTS (SELECT 1 FROM task_results "
+                    "WHERE blob_ready=1 AND content_sha256=task_result_blobs.content_sha256)"
+                ).fetchall()
+                if orphan_rows:
+                    conn.executemany(
+                        "DELETE FROM task_result_blobs WHERE content_sha256=?",
+                        [(str(row[0]),) for row in orphan_rows],
+                    )
+                    orphan_blobs_removed = len(orphan_rows)
+                    orphan_blob_bytes_removed = sum(
+                        int(row[1] or 0) for row in orphan_rows
+                    )
+            conn.commit()
+            quick_check = str(conn.execute("PRAGMA quick_check").fetchone()[0])
+
+        return {
+            "deleted_task_ids": deleted_ids,
+            "deleted": deleted,
+            "orphan_blobs_removed": orphan_blobs_removed,
+            "orphan_blob_bytes_removed": orphan_blob_bytes_removed,
+            "quick_check": quick_check,
+        }
+
+    def read_task_cleanup_context(self, task_id: str) -> dict[str, object] | None:
+        """Read the repository-owned facts needed for a cleanup decision.
+
+        The cleanup service may inspect Ground and Artifact authorities, but it
+        must not open or query ``tasks.db`` itself.  Keeping this projection in
+        the repository also makes Blob-first result verification identical for
+        Task Center, maintenance and cleanup callers.
+        """
+
+        normalized = str(task_id or "").strip()
+        if not normalized:
+            return None
+        with self._connect() as conn:
+            tables = {
+                str(row[0])
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+            if "task_snapshots" not in tables:
+                return None
+            raw = conn.execute(
+                "SELECT * FROM task_snapshots WHERE task_id=?", (normalized,)
+            ).fetchone()
+            if raw is None:
+                return None
+            row = dict(raw)
+            online_mapping = False
+            if "online_mr_task_sessions" in tables:
+                online_mapping = (
+                    conn.execute(
+                        "SELECT 1 FROM online_mr_task_sessions "
+                        "WHERE controller_task_id=? LIMIT 1",
+                        (normalized,),
+                    ).fetchone()
+                    is not None
+                )
+
+            result: dict[str, object] | None = None
+            result_valid = True
+            result_id = str(row.get("result_id") or "")
+            if result_id:
+                authority = (
+                    conn.execute(
+                        "SELECT * FROM task_results WHERE result_id=?", (result_id,)
+                    ).fetchone()
+                    if "task_results" in tables
+                    else None
+                )
+                if authority is None:
+                    result_valid = False
+                else:
+                    try:
+                        result = self._verified_result_for_read(
+                            dict(authority), conn=conn
+                        ).get("result")
+                    except (sqlite3.DatabaseError, TaskResultBlobError):
+                        result_valid = False
+            else:
+                try:
+                    parsed = json.loads(str(row.get("result_json") or "{}"))
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    parsed = None
+                    result_valid = False
+                if isinstance(parsed, dict):
+                    result = dict(parsed)
+                elif parsed is not None:
+                    result_valid = False
+
+            event_rows = (
+                int(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM task_events WHERE task_id=?",
+                        (normalized,),
+                    ).fetchone()[0]
+                )
+                if "task_events" in tables
+                else 0
+            )
+            result_rows = 0
+            result_bytes = 0
+            if "task_results" in tables:
+                result_count = conn.execute(
+                    "SELECT COUNT(*), COALESCE(SUM(byte_size), 0) "
+                    "FROM task_results WHERE task_id=?",
+                    (normalized,),
+                ).fetchone()
+                result_rows = int(result_count[0])
+                result_bytes = int(result_count[1])
+            return {
+                "snapshot": row,
+                "online_mapping": online_mapping,
+                "result": result,
+                "result_valid": result_valid,
+                "event_rows": event_rows,
+                "result_rows": result_rows,
+                "result_bytes": result_bytes,
+            }
+
+    def enforce_terminal_history_retention(self) -> dict[str, object]:
+        """Keep recent ordinary terminal tasks and remove only safe DB rows atomically.
+
+        This compatibility entrypoint remains repository-owned.  It neither
+        archives to ``TaskHistoryStore`` nor touches artifact files, Ground
+        data, Online MR mappings or external raw evidence.
         """
 
         deleted = {"task_snapshots": 0, "task_events": 0, "task_results": 0}
@@ -1107,98 +1408,67 @@ class TaskRepository:
                 tables = {
                     str(row["name"])
                     for row in conn.execute(
-                        "SELECT name FROM sqlite_master WHERE type = 'table'"
+                        "SELECT name FROM sqlite_master WHERE type='table'"
                     ).fetchall()
                 }
                 if "task_snapshots" not in tables:
                     conn.rollback()
                     return
-
                 online_mr_task_ids = self._online_mr_mapped_task_ids(conn, tables)
-                result_authority_by_id = self._task_result_authority_by_id(
-                    conn, tables
-                )
+                result_authority_by_id = self._task_result_authority_by_id(conn, tables)
                 rows = conn.execute(
-                    """
-                    SELECT task_id, task_type, site_name, status, finished_time,
-                           updated_time, result_json, result_id,
-                           result_summary_json, resource_keys_json
-                    FROM task_snapshots
-                    ORDER BY site_name, task_type, finished_time DESC,
-                             updated_time DESC, task_id DESC
-                    """
+                    "SELECT task_id, task_type, site_name, status, finished_time, "
+                    "updated_time, result_json, result_id, result_summary_json, "
+                    "resource_keys_json FROM task_snapshots ORDER BY site_name, "
+                    "task_type, finished_time DESC, updated_time DESC, task_id DESC"
                 ).fetchall()
                 ordinary_by_scope: dict[tuple[str, str], list[tuple[str, str]]] = {}
                 for raw in rows:
                     row = dict(raw)
-                    task_id = str(row["task_id"])
-                    status = str(row["status"] or "").upper()
                     protection = self._terminal_retention_protection(
                         row, online_mr_task_ids, result_authority_by_id
                     )
                     if protection:
                         protected[protection] += 1
                         continue
-                    if status not in TERMINAL_TASK_STATE_VALUES:
+                    if str(row["status"] or "").upper() not in TERMINAL_TASK_STATE_VALUES:
                         continue
                     scope = task_history_scope(row["site_name"], row["task_type"])
-                    timestamp = str(
-                        row["finished_time"] or row["updated_time"] or ""
-                    )
-                    ordinary_by_scope.setdefault(scope, []).append(
-                        (timestamp, task_id)
-                    )
-
+                    timestamp = str(row["finished_time"] or row["updated_time"] or "")
+                    ordinary_by_scope.setdefault(scope, []).append((timestamp, str(row["task_id"])))
                 result["scopes"] = len(ordinary_by_scope)
                 retained_task_ids: set[str] = set()
-                deleted_task_ids: list[str] = []
+                delete_ids: list[str] = []
                 for candidates in ordinary_by_scope.values():
-                    task_ids = [
-                        task_id
-                        for _timestamp, task_id in sorted(
-                            candidates, reverse=True
-                        )
-                    ]
-                    retained_task_ids.update(task_ids[:TASK_HISTORY_SCOPE_LIMIT])
-                    deleted_task_ids.extend(task_ids[TASK_HISTORY_SCOPE_LIMIT:])
+                    ordered = [task_id for _stamp, task_id in sorted(candidates, reverse=True)]
+                    retained_task_ids.update(ordered[:TASK_HISTORY_SCOPE_LIMIT])
+                    delete_ids.extend(ordered[TASK_HISTORY_SCOPE_LIMIT:])
                 result["retained_terminal"] = len(retained_task_ids)
-                if not deleted_task_ids:
+                if not delete_ids:
                     conn.commit()
                     return
-
                 retired_at = utc_now_iso()
                 conn.executemany(
-                    """
-                    INSERT OR IGNORE INTO task_retention_tombstones(
-                        task_id, retired_at, reason
-                    ) VALUES (?, ?, ?)
-                    """,
-                    [
-                        (task_id, retired_at, "terminal_history_retention")
-                        for task_id in deleted_task_ids
-                    ],
+                    "INSERT OR IGNORE INTO task_retention_tombstones"
+                    "(task_id, retired_at, reason) VALUES (?, ?, ?)",
+                    [(task_id, retired_at, "terminal_history_retention") for task_id in delete_ids],
                 )
-                for start in range(0, len(deleted_task_ids), 500):
-                    chunk = deleted_task_ids[start : start + 500]
+                for start in range(0, len(delete_ids), 500):
+                    chunk = delete_ids[start : start + 500]
                     placeholders = ",".join("?" for _ in chunk)
-                    if "task_results" in tables:
+                    for table, key in (
+                        ("task_results", "task_results"),
+                        ("task_events", "task_events"),
+                        ("task_snapshots", "task_snapshots"),
+                    ):
+                        if table not in tables:
+                            continue
                         cursor = conn.execute(
-                            f"DELETE FROM task_results WHERE task_id IN ({placeholders})",
+                            f"DELETE FROM {table} WHERE task_id IN ({placeholders})",
                             chunk,
                         )
-                        deleted["task_results"] += max(0, int(cursor.rowcount))
-                    if "task_events" in tables:
-                        cursor = conn.execute(
-                            f"DELETE FROM task_events WHERE task_id IN ({placeholders})",
-                            chunk,
-                        )
-                        deleted["task_events"] += max(0, int(cursor.rowcount))
-                    cursor = conn.execute(
-                        f"DELETE FROM task_snapshots WHERE task_id IN ({placeholders})",
-                        chunk,
-                    )
-                    deleted["task_snapshots"] += max(0, int(cursor.rowcount))
-                result["deleted_task_ids"] = deleted_task_ids
+                        deleted[key] += max(0, int(cursor.rowcount))
+                result["deleted_task_ids"] = delete_ids
                 conn.commit()
 
         run_sqlite_with_retry(operation)
@@ -1230,9 +1500,9 @@ class TaskRepository:
         ).fetchall()
         return {str(row["task_id"]) for row in rows}
 
-    @staticmethod
+    @classmethod
     def _task_result_authority_by_id(
-        conn, tables: set[str]
+        cls, conn, tables: set[str]
     ) -> dict[str, dict[str, object] | None]:
         if "task_results" not in tables:
             return {}
@@ -1252,9 +1522,13 @@ class TaskRepository:
         }
         if not required.issubset(columns):
             return {}
+        blob_columns = ""
+        if {"content_sha256", "blob_codec", "blob_ready"}.issubset(columns):
+            blob_columns = ", content_sha256, blob_codec, blob_ready"
         rows = conn.execute(
             "SELECT result_id, task_id, terminal_event_type, canonical_json, "
-            "sha256, byte_size, schema_version, created_time FROM task_results"
+            "sha256, byte_size, schema_version, created_time"
+            f"{blob_columns} FROM task_results"
         ).fetchall()
         authority: dict[str, dict[str, object] | None] = {}
         for raw in rows:
@@ -1263,8 +1537,16 @@ class TaskRepository:
             if not result_id:
                 continue
             try:
+                if int(row.get("blob_ready") or 0):
+                    row["canonical_json"] = read_blob(
+                        conn,
+                        content_sha256=str(
+                            row.get("content_sha256") or row.get("sha256") or ""
+                        ),
+                        expected_bytes=int(row.get("byte_size") or -1),
+                    )
                 authority[result_id] = verify_task_result_row(row)
-            except sqlite3.DatabaseError:
+            except (sqlite3.DatabaseError, TaskResultBlobError):
                 authority[result_id] = None
         return authority
 
@@ -1342,31 +1624,32 @@ class TaskRepository:
             rows = conn.execute(
                 """
                 SELECT status, error_message, result_json, acknowledged_at
+                       , result_summary_json
                 FROM task_snapshots
                 WHERE dismissed_at = ''
                 """
             ).fetchall()
-        for row in rows:
-            status = str(row["status"]).upper()
-            if status == TaskState.PENDING.value:
-                summary["queued"] += 1
-            elif status in {
-                TaskState.STARTING.value,
-                TaskState.RUNNING.value,
-                TaskState.STOPPING.value,
-            }:
-                summary["running"] += 1
-            if str(row["acknowledged_at"] or ""):
-                continue
-            result = self._json_object(row["result_json"])
-            if status == TaskState.FAILED.value:
-                summary["failed"] += 1
-            elif task_requires_attention(
-                status,
-                error_message=str(row["error_message"] or ""),
-                result=result,
-            ):
-                summary["warning"] += 1
+            for row in rows:
+                status = str(row["status"]).upper()
+                if status == TaskState.PENDING.value:
+                    summary["queued"] += 1
+                elif status in {
+                    TaskState.STARTING.value,
+                    TaskState.RUNNING.value,
+                    TaskState.STOPPING.value,
+                }:
+                    summary["running"] += 1
+                if str(row["acknowledged_at"] or ""):
+                    continue
+                result = self._policy_result(conn, row)
+                if status == TaskState.FAILED.value:
+                    summary["failed"] += 1
+                elif task_requires_attention(
+                    status,
+                    error_message=str(row["error_message"] or ""),
+                    result=result,
+                ):
+                    summary["warning"] += 1
         return summary
 
     def list_events(
@@ -1573,6 +1856,48 @@ class TaskRepository:
 
     @classmethod
     def _ensure_schema_compat(cls, conn) -> None:
+        result_columns = {
+            "content_sha256": "TEXT NOT NULL DEFAULT ''",
+            "blob_codec": "TEXT NOT NULL DEFAULT ''",
+            "blob_ready": "INTEGER NOT NULL DEFAULT 0 CHECK(blob_ready IN (0, 1))",
+        }
+        for column, definition in result_columns.items():
+            if not cls._column_exists(conn, "task_results", column):
+                conn.execute(
+                    f"ALTER TABLE task_results ADD COLUMN {column} {definition}"
+                )
+        # Older databases already have the unconditional immutable trigger.
+        # Recreate it so the migration may fill blob metadata exactly once while
+        # keeping the canonical authority row immutable thereafter.
+        conn.execute("DROP TRIGGER IF EXISTS trg_task_results_immutable")
+        conn.execute(
+            """
+            CREATE TRIGGER trg_task_results_immutable
+            BEFORE UPDATE ON task_results
+            WHEN NOT (
+                OLD.result_id = NEW.result_id
+                AND OLD.task_id = NEW.task_id
+                AND OLD.terminal_event_type = NEW.terminal_event_type
+                AND OLD.canonical_json = NEW.canonical_json
+                AND OLD.sha256 = NEW.sha256
+                AND OLD.byte_size = NEW.byte_size
+                AND OLD.schema_version = NEW.schema_version
+                AND OLD.created_time = NEW.created_time
+                AND (
+                    (OLD.content_sha256 = NEW.content_sha256
+                     AND OLD.blob_codec = NEW.blob_codec
+                     AND OLD.blob_ready = NEW.blob_ready)
+                    OR (OLD.blob_ready = 0
+                        AND NEW.blob_ready = 1
+                        AND NEW.content_sha256 = OLD.sha256
+                        AND NEW.blob_codec = 'zlib')
+                )
+            )
+            BEGIN
+                SELECT RAISE(ABORT, 'task_results rows are immutable');
+            END;
+            """
+        )
         columns = {
             "resource_keys_json": "TEXT NOT NULL DEFAULT '[]'",
             "result_id": "TEXT NOT NULL DEFAULT ''",
@@ -1603,8 +1928,11 @@ class TaskRepository:
             "ON task_snapshots(dismissed_at, updated_time DESC)"
         )
         conn.execute(
-            "INSERT INTO task_schema_meta(key, value) VALUES ('schema_version', '4') "
+            "INSERT INTO task_schema_meta(key, value) VALUES ('schema_version', '5') "
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+        )
+        conn.execute(
+            "UPDATE task_result_storage_rollout SET schema_version = 5 WHERE singleton_id = 1"
         )
 
     @classmethod
@@ -1839,7 +2167,7 @@ class TaskRepository:
                     finished_time=snapshot.finished_time,
                     updated_time=snapshot.updated_time,
                     error_message=snapshot.error_message,
-                    result=snapshot.result,
+                    result=snapshot.result or snapshot.result_summary,
                 ),
                 snapshot.acknowledged_at,
                 snapshot.dismissed_at,
@@ -1859,7 +2187,7 @@ class TaskRepository:
             result = self._result_row(conn, result_id)
             if result is None:
                 raise sqlite3.DatabaseError("task snapshot result reference is missing")
-            verified = self._verified_result_for_read(dict(result))
+            verified = self._verified_result_for_read(dict(result), conn=conn)
             if str(verified["task_id"]) != str(row["task_id"]):
                 raise sqlite3.DatabaseError("task snapshot result task binding mismatch")
             if str(row.get("result_hash") or "") not in {"", str(verified["sha256"])}:
@@ -1886,6 +2214,35 @@ class TaskRepository:
                     separators=(",", ":"),
                 )
         return self._snapshot_from_row(row)
+
+    def _policy_result(
+        self, conn: sqlite3.Connection, row: sqlite3.Row | dict[str, object]
+    ) -> dict[str, Any]:
+        """Return bounded task-policy metadata, with authority as a fallback.
+
+        Terminal snapshots intentionally keep ``result_json`` empty after the
+        Blob migration. Cleanup and attention policy still needs business
+        outcome fields, so use the compact summary first and consult the
+        immutable authority only for legacy rows whose summary is unavailable.
+        """
+
+        values = dict(row)
+        summary = self._json_object(values.get("result_summary_json"))
+        legacy = self._json_object(values.get("result_json"))
+        result_id = str(values.get("result_id") or "")
+        if result_id and not summary:
+            try:
+                authority = self._result_row(conn, result_id)
+                if authority is not None:
+                    verified = self._verified_result_for_read(
+                        dict(authority), conn=conn
+                    )
+                    return {**legacy, **dict(verified.get("result") or {})}
+            except (sqlite3.DatabaseError, TaskResultBlobError):
+                # A broken authority must not make a failed task look healthy;
+                # callers still retain lifecycle status/error metadata.
+                pass
+        return {**legacy, **summary}
 
     @classmethod
     def _snapshot_from_row(cls, row: dict[str, object]) -> TaskSnapshot:
@@ -1992,7 +2349,7 @@ class TaskRepository:
             row = self._result_row(conn, result_id)
             if row is None:
                 raise sqlite3.DatabaseError("task event result reference is missing")
-            verified = self._verified_result_for_read(dict(row))
+            verified = self._verified_result_for_read(dict(row), conn=conn)
             if str(verified["task_id"]) != str(event["task_id"]):
                 raise sqlite3.DatabaseError("task event result task binding mismatch")
             if str(verified["terminal_event_type"]) != str(event["type"]):
@@ -2035,20 +2392,94 @@ class TaskRepository:
     @staticmethod
     def _result_summary(result: dict[str, Any], *, byte_size: int) -> dict[str, Any]:
         keys = sorted(str(key) for key in result)
-        return {
+        summary: dict[str, Any] = {
             "byte_size": int(byte_size),
             "field_count": len(keys),
             "keys": keys[:32],
             "keys_truncated": len(keys) > 32,
         }
+        for key in (
+            "business_status",
+            "business_outcome",
+            "success_count",
+            "failed_count",
+            "skipped_count",
+            "warning_count",
+            "partial_success",
+            "artifact_id",
+            "artifact_ref",
+            "artifact_path",
+            "artifact_name",
+            "artifact_source",
+            "artifact_type",
+            "available",
+            "display_name",
+            "download_ref",
+            "filename",
+            "name",
+            "size",
+            "size_bytes",
+            "sha256",
+            "result_ref",
+            "records_count",
+            "snapshot_id",
+        ):
+            value = result.get(key)
+            if isinstance(value, (str, int, bool)):
+                summary[key] = value
+        for key in (
+            "failure_reason_counts",
+            "skipped_reason_counts",
+            "warning_reason_counts",
+        ):
+            value = result.get(key)
+            if isinstance(value, dict):
+                summary[key] = {
+                    str(reason): int(count)
+                    for reason, count in sorted(
+                        value.items(), key=lambda item: str(item[0])
+                    )[:32]
+                    if isinstance(count, int) and count >= 0
+                }
+        reason = result.get("primary_failure_reason") or result.get("error_code")
+        if isinstance(reason, str) and reason:
+            summary["primary_failure_reason"] = reason[:500]
+        return summary
 
     @classmethod
     def _verified_result_row(cls, row: dict[str, object]) -> dict[str, Any]:
         return verify_task_result_row(dict(row))
 
-    def _verified_result_for_read(self, row: dict[str, object]) -> dict[str, Any]:
+    def _verified_result_for_read(
+        self,
+        row: dict[str, object],
+        *,
+        conn: sqlite3.Connection | None = None,
+    ) -> dict[str, Any]:
+        row = dict(row)
+        content_sha256 = str(row.get("content_sha256") or "")
+        sha256 = str(row.get("sha256") or "")
+        if content_sha256 and content_sha256 != sha256:
+            raise sqlite3.DatabaseError("task result content hash metadata mismatch")
+        try:
+            blob_ready = int(row.get("blob_ready") or 0)
+        except (TypeError, ValueError) as exc:
+            raise sqlite3.DatabaseError("task result blob readiness is invalid") from exc
+        if blob_ready:
+            if conn is None:
+                raise sqlite3.DatabaseError("task result blob read requires a database connection")
+            try:
+                row["canonical_json"] = read_blob(
+                    conn,
+                    content_sha256=content_sha256 or sha256,
+                    expected_bytes=int(row.get("byte_size") or -1),
+                )
+            except TaskResultBlobError as exc:
+                raise sqlite3.DatabaseError(str(exc)) from exc
+        elif content_sha256:
+            raise sqlite3.DatabaseError("task result blob is not ready")
         result_id = str(row.get("result_id") or "")
-        if result_id:
+        if result_id and not blob_ready:
             cached = self._verified_result_cache.get(result_id)
             if cached is not None:
                 return cached
@@ -2056,6 +2487,63 @@ class TaskRepository:
         if result_id:
             self._verified_result_cache[result_id] = verified
         return verified
+
+    @staticmethod
+    def _is_local_result_row(conn, result_id: str) -> bool:
+        return (
+            conn.execute(
+                "SELECT 1 FROM task_results WHERE result_id=?", (str(result_id),)
+            ).fetchone()
+            is not None
+        )
+
+    @staticmethod
+    def _ensure_result_blob(
+        conn: sqlite3.Connection,
+        *,
+        canonical_json: str,
+        content_sha256: str,
+        created_time: str,
+        verified_at: str,
+    ) -> None:
+        try:
+            ensure_blob(
+                conn,
+                canonical_json=canonical_json,
+                content_sha256=content_sha256,
+                created_time=created_time,
+                verified_at=verified_at,
+            )
+        except TaskResultBlobError as exc:
+            raise sqlite3.DatabaseError(str(exc)) from exc
+
+    def _ensure_result_blob_for_row(
+        self,
+        conn: sqlite3.Connection,
+        row: dict[str, Any],
+    ) -> dict[str, Any]:
+        canonical_json = str(row.get("canonical_json") or "")
+        digest = str(row.get("sha256") or "")
+        created_time = str(row.get("created_time") or utc_now_iso())
+        self._ensure_result_blob(
+            conn,
+            canonical_json=canonical_json,
+            content_sha256=digest,
+            created_time=created_time,
+            verified_at=utc_now_iso(),
+        )
+        conn.execute(
+            "UPDATE task_results SET content_sha256=?, blob_codec=?, blob_ready=1 "
+            "WHERE result_id=? AND blob_ready=0",
+            (digest, TASK_RESULT_BLOB_CODEC_ZLIB, str(row.get("result_id") or "")),
+        )
+        updated = dict(
+            conn.execute(
+                "SELECT * FROM task_results WHERE result_id=?",
+                (str(row.get("result_id") or ""),),
+            ).fetchone()
+        )
+        return self._verified_result_for_read(updated, conn=conn)
 
     def _result_row(self, conn, result_id: str) -> dict[str, Any] | sqlite3.Row | None:
         row = conn.execute(

@@ -1,10 +1,12 @@
 # Task Storage Governance
 
-## Phase 1 Result
+## Current Result
 
-Task storage governance starts with read-only profiling. Phase 1 does not
-delete, archive, compact, VACUUM, change the user-visible retention period or
-split `tasks.db`.
+The original Phase 1 profiling and write-amplification work is complete. The
+current DEV-only integration also completes a bounded terminal-result
+authority migration and candidate compaction contract. It does not migrate
+Production, change the user-visible retention period, split `tasks.db`, or
+claim that all task history has moved to `TaskHistoryStore`.
 
 The production snapshot assessed on 2026-08-15 is 419,778,560 bytes with
 102,485 4-KiB pages, `freelist_count=0` and a zero-byte WAL. Its size is live
@@ -14,11 +16,19 @@ large terminal results occur in both the current snapshot and latest
 `finished` event, and high-frequency producers append consecutive identical
 progress events.
 
-The duplicate terminal representation is not changed in Phase 1. Event replay,
-WebSocket recovery, Online MR reconciliation and Site Package merge contracts
-consume it, so removing one copy requires a separate shared-contract design.
-The recommended current option is D: bound proven write amplification first,
-then define retention policy with the user.
+The shared compressed `task_result_blobs` row is now the canonical body for new
+terminal results. `task_snapshots` and terminal events retain only the result
+reference and bounded summary; pre-existing full-only or dual-write
+`task_results.canonical_json` rows remain readable through compatibility
+read-through. New runtime writes do not populate that retired full-body
+projection, so a later compacted database cannot reinflate duplicate payloads.
+Snapshot/event replay, WebSocket recovery, Online MR reconciliation and Site
+Package merge continue to validate the same immutable result identity.
+
+The explicit `TaskCleanupService` preview/cleanup path can remove only
+task-owned rows after reference checks and a terminal-state recheck. It never
+deletes Ground, Online MR, history, raw evidence or external Artifact files.
+Soft-dismiss remains reversible UI state and is not physical deletion.
 
 ## Read-only Profiler
 
@@ -77,15 +87,28 @@ databases under `D:\study`. It covers 100/1,000/10,000 terminal tasks, one
 a large terminal result. It reports DB/WAL bytes, event rows, events/task,
 throughput and commit latency percentiles.
 
+## Completed In This Integration
+
+- DEV candidate migration and `VACUUM INTO` compaction for shared result blobs,
+  with hash/byte/parity/quick-check verification and atomic replacement.
+- Exact duplicate result-body retirement without deleting task, event or
+  snapshot rows; old result rows remain readable.
+- Task Center list/detail/restart recovery and site-sync compatibility tests for
+  blob-first result authority.
+- Explicit cleanup preview and repository-owned transactional deletion of
+  task-owned rows, with tombstones preventing old-event reinflation.
+
 ## Deferred Work
 
-- Destructive retention is `NOT STARTED`.
-- Retention periods are `USER_POLICY_REQUIRED`; soft-dismiss expiry does not
-  authorize physical deletion.
-- Terminal result representation, event archive/shards and database split are
-  unchanged.
+- Generic retention policy and arbitrary task deletion remain `NOT_STARTED`;
+  `TASK_HISTORY_SCOPE_LIMIT` is not a user-facing deletion authorization.
+- Broad `task_events`/`task_snapshots` retention, event archive/sharding,
+  `TaskHistoryStore` cutover and database splitting remain deferred.
 - Artifact filesystem truth remains owned by
-  `ArtifactReconciliationService`; the profiler reports DB references only.
-- Adding an `event_time` retention index is a schema migration and is deferred.
-- Site Return Package treatment of `online_mr_task_sessions` requires a product
-  contract decision.
+  `ArtifactReconciliationService`; cleanup protects references but never
+  deletes external files or manifests.
+- Production migration, Production compact and physical Production cleanup are
+  not enabled. Any future operation requires a separately approved isolated
+  candidate, parity evidence and release/operations ownership.
+- Adding an `event_time` retention index and changing Site Return Package
+  treatment of `online_mr_task_sessions` remain separate contract decisions.

@@ -20,6 +20,10 @@ from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.repositories.history_store import TaskHistoryStore
 from netconsole.repositories.task_repository import TaskRepository
+from netconsole.repositories.task_result_blob_repository import (
+    TaskResultBlobError,
+    verify_task_result_authority,
+)
 from netconsole.services.ap_identity import ApIdentityQueryService
 from netconsole.services.job_center.artifact_reconciliation import (
     ArtifactReconciliationService,
@@ -1120,9 +1124,11 @@ def _rows_by_sequence(database: Path, sequences: list[int]) -> list[dict[str, An
 def _canonical_task_rows(database: Path) -> list[dict[str, Any]]:
     with _readonly_connection(database) as connection:
         results = {
-            str(row["result_id"]): json.loads(str(row["canonical_json"]))
+            str(row["result_id"]): verify_task_result_authority(
+                connection, dict(row)
+            )["result"]
             for row in connection.execute(
-                "SELECT result_id,canonical_json FROM task_results ORDER BY result_id"
+                "SELECT * FROM task_results ORDER BY result_id"
             )
         }
         rows = connection.execute(
@@ -1295,11 +1301,10 @@ def _task_contract(database: Path, archived_rows: list[dict[str, Any]]) -> dict[
     profile = _sqlite_profile(database)
     with _readonly_connection(database) as connection:
         invalid_results = 0
-        for row in connection.execute(
-            "SELECT canonical_json,sha256,byte_size FROM task_results"
-        ):
-            encoded = str(row[0]).encode("utf-8")
-            if hashlib.sha256(encoded).hexdigest() != str(row[1]) or len(encoded) != int(row[2]):
+        for row in connection.execute("SELECT * FROM task_results"):
+            try:
+                verify_task_result_authority(connection, dict(row))
+            except (sqlite3.DatabaseError, TaskResultBlobError, TypeError, ValueError):
                 invalid_results += 1
         missing_result_refs = int(
             connection.execute(

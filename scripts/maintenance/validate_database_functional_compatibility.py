@@ -60,7 +60,7 @@ TASK_MAINTENANCE_TABLES = frozenset(
     }
 )
 TASK_REPOSITORY_AUTHORITY_TABLES = frozenset(
-    {"task_snapshots", "task_events", "task_results"}
+    {"task_snapshots", "task_events", "task_results", "task_result_blobs"}
 )
 
 DEVICE_TABLE_TEST_IDS = (
@@ -752,7 +752,9 @@ def _profile_task_storage_authority(
                     continue
                 counts["result_rows"] += 1
                 try:
-                    verified = repository._verified_result_row(row)
+                    verified = repository._verified_result_for_read(
+                        row, conn=connection
+                    )
                 except (KeyError, TypeError, ValueError, sqlite3.DatabaseError):
                     errors["task_result_row_invalid"] += 1
                     continue
@@ -892,7 +894,7 @@ def _verified_bound_result(
         errors["result_ref_missing"] += 1
         return None
     try:
-        verified = repository._verified_result_row(dict(row))
+        verified = repository._verified_result_for_read(dict(row), conn=connection)
     except (KeyError, TypeError, ValueError, sqlite3.DatabaseError):
         errors["result_ref_authority_invalid"] += 1
         return None

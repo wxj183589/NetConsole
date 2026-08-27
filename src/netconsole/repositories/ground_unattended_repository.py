@@ -804,6 +804,45 @@ class GroundUnattendedRepository:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.initialize()
 
+    @staticmethod
+    def find_task_references_readonly(db_path: Path, task_id: str) -> list[str]:
+        """Find Ground task references without opening the writable repository.
+
+        Cleanup decisions must inspect Ground state but must never initialize or
+        mutate the Ground database as a side effect of a Task Center action.
+        """
+
+        path = Path(db_path)
+        if not path.is_file():
+            return []
+        uri = f"{path.resolve().as_uri()}?mode=ro"
+        with sqlite3.connect(uri, uri=True, timeout=2) as conn:
+            names = [
+                str(item[0])
+                for item in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            ]
+            refs: list[str] = []
+            for table in names:
+                quoted_table = table.replace(chr(34), chr(34) * 2)
+                columns = {
+                    str(item[1])
+                    for item in conn.execute(
+                        f'PRAGMA table_info("{quoted_table}")'
+                    ).fetchall()
+                }
+                for column in sorted(columns & {"task_id", "controller_task_id"}):
+                    quoted_column = column.replace(chr(34), chr(34) * 2)
+                    hit = conn.execute(
+                        f'SELECT 1 FROM "{quoted_table}" '
+                        f'WHERE "{quoted_column}"=? LIMIT 1',
+                        (str(task_id),),
+                    ).fetchone()
+                    if hit is not None:
+                        refs.append(f"{table}.{column}")
+            return refs
+
     def initialize(self) -> None:
         with self._connection() as conn:
             conn.executescript(SCHEMA)

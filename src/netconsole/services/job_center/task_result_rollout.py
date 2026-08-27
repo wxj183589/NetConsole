@@ -28,6 +28,14 @@ class TaskResultRolloutService:
                 TaskResultStorageState.TASK_RESULTS_DUAL_WRITE,
                 TaskResultStorageState.LEGACY_DUAL_FULL,
             ),
+            (
+                TaskResultStorageState.TASK_RESULTS_DUAL_WRITE,
+                TaskResultStorageState.TASK_RESULTS_VERIFIED,
+            ),
+            (
+                TaskResultStorageState.TASK_RESULTS_VERIFIED,
+                TaskResultStorageState.RESULT_REF_AUTHORITY,
+            ),
         }
     )
 
@@ -111,16 +119,6 @@ class TaskResultRolloutService:
                 "TASK_RESULT_ROLLOUT_REVISION_CONFLICT",
                 "task result storage rollout revision changed; refresh status",
             )
-        if target == TaskResultStorageState.RESULT_REF_AUTHORITY:
-            raise TaskResultRolloutError(
-                "TASK_RESULT_REF_AUTHORITY_DISABLED",
-                "RESULT_REF_AUTHORITY requires a separate approved migration phase",
-            )
-        if target == TaskResultStorageState.TASK_RESULTS_VERIFIED:
-            raise TaskResultRolloutError(
-                "TASK_RESULT_VERIFIED_APPLY_DISABLED",
-                "TASK_RESULTS_VERIFIED requires a separate validation evidence gate",
-            )
         if (current.state, target) not in self._ALLOWED_TRANSITIONS:
             raise TaskResultRolloutError(
                 "TASK_RESULT_ROLLOUT_TRANSITION_INVALID",
@@ -134,6 +132,11 @@ class TaskResultRolloutService:
             target_state=target,
             updated_by=normalized_actor,
             reason=normalized_reason,
+            allow_advanced=target
+            in {
+                TaskResultStorageState.TASK_RESULTS_VERIFIED,
+                TaskResultStorageState.RESULT_REF_AUTHORITY,
+            },
         )
         if updated is None:
             raise TaskResultRolloutError(
