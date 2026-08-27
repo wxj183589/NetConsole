@@ -241,3 +241,121 @@ Update All 在 DEV 发起两次，均返回 202 并进入 Job Center。实际 AC
 3. 单独处理 `demo` 站点 5 条同指纹遗留记录：先定义导入/重复语义，再做可回滚的 DEV-only 清理；本轮不删除。
 4. 单独清理或收敛 Legacy HistoryStore 源码兼容层，必须先做 Change Impact 和回归，不把 TaskHistoryStore 一并删除。
 5. 在独立 MESH 任务中继续 GUI 首屏、滚动、long-task、heap、chart/report export 验收；本报告不把 MESH GUI 标记为已完成。
+## 2026-08-27 Engineering Current/Recent10 与 Update All Closure
+
+本节是本轮“剩余三个阻塞项”收口结果，覆盖 Legacy engineering fallback/writer、demo Recent10 重复和 Update All partial/current/snapshot 语义。它不执行数据库迁移，不进入 Production；本节结论覆盖并更新上文相同阻塞项的旧状态。
+
+### Scope / data boundary
+
+```text
+DATA_ROOT=D:\NetConsoleData-dev
+PRODUCTION_DATA_TOUCHED=NO
+PRODUCTION_MIGRATION=NOT_RUN
+PRODUCTION_VALIDATION=NOT_RUN
+DEV_DATA_REPAIR=DEV_ONLY
+```
+
+- 未读取、复制、写入、删除或迁移 `D:\NetConsoleData`。
+- 没有重复整套数据库迁移；没有新增 `db/history`、catalog 或月分片。
+- `demo` 精确去重前创建了 DEV 备份：`D:\study\backup\NetConsole\dev-demo-dedupe-20260827-devices.db`。仅删除 5 条由同一 `demo-collect-run-0001`、同一时间戳和同一 fingerprint 共同证明为重复的历史行；没有 VACUUM、迁移或跨站点清理。
+
+### Legacy engineering authority
+
+```text
+ENGINEERING_TARGET_LEGACY_READERS=0
+ENGINEERING_TARGET_LEGACY_WRITERS=0
+LEGACY_ENGINEERING_FALLBACK=0
+LEGACY_HISTORYSTORE_RECREATED=NO
+NON_TARGET_HISTORYSTORE=RETAINED
+```
+
+- Interface、Device LLDP、Device Optical、FIT-AP Radio/LLDP/Optical 的运行时读写统一落在 bounded Current + Recent10 表；首次 Current 建立不创建 Recent，只有语义变化才写入 Recent。
+- Trackside Snapshot/Export/Update All 只消费 Current/active snapshot；四类工程事实不再向 `HistoryStore` 回退或写入 `history_outbox`。
+- `HistoryStore` 仍保留给非本次四类范围的既有 owner（例如 device fact、资源/未认证历史）；本轮没有扩大删除范围。
+- 静态 cutover guard、Legacy compatibility 回归和运行后 `db/history` 扫描通过；活动 DEV 数据库没有重新生成 Legacy 文件。
+
+### Demo Recent10 parity
+
+```text
+DEMO_RECENT10_PARITY=PASS
+DEMO_DUPLICATE_GROUPS=0
+DEMO_DUPLICATE_ROWS_REMOVED=5
+RECENT_MAX_VIOLATIONS=0
+```
+
+Demo fixture 已改为稳定身份字段和明确的状态变化序列；相同状态重放不产生 Recent。DEV 仅对可证明的 5 条历史重复行做了精确删除。收口后的 34 个活动站点数据库中，LLDP/Radio/Interface/Device Optical/AP Optical 每资源 Recent 最大值均不超过 10，实际最大值为 10。
+
+### Real DEV Update All
+
+后端源码以显式 `NETCONSOLE_DATA_ROOT=D:\NetConsoleData-dev` 启动；活动局点为 DEV 现有宁波 12 号线数据。每轮均由真实 Update All 任务执行并从 Job Center 读取最终业务结果：
+
+| Round | Task | Duration | Result counts | Business result |
+|---|---|---:|---|---|
+| 1 | `rail-web-2014f79382b7419989c273987b0ffc76` | 201.1s | target 1019 / success 965 / skipped 54 / failed 0 | `PARTIAL_SUCCESS` |
+| 2 | `rail-web-6e5a16940ffd48da823a2b6442544443` | 201.7s | target 1019 / success 965 / skipped 54 / failed 0 | `PARTIAL_SUCCESS` |
+| 3 | `rail-web-a490944a09454e81a0d965813b9949ac` | 171.1s | target 1019 / success 965 / skipped 53 / failed 0 | `PARTIAL_SUCCESS` |
+| 4 | `rail-web-0f8b6aaa028440e6a7281dea112d61c4` | 176.5s | target 1019 / success 965 / skipped 54 / failed 0 | `PARTIAL_SUCCESS` |
+
+```text
+REAL_UPDATE_ALL_RUNS=4
+REAL_UPDATE_ALL_SOFTWARE_FAILURES=0
+REAL_UPDATE_ALL_FAILED_DEVICE_COUNT=0
+REAL_UPDATE_ALL_FAILURE_REASON_COUNTS={}
+REAL_UPDATE_ALL_SKIPS=EXTERNAL_CONNECTION_INCOMPLETE
+CONCURRENCY_ROUNDS=3
+DATABASE_LOCK_ERRORS=0
+SQLITE_BUSY_COUNT=0
+API_500_COUNT=0
+API_TIMEOUT_COUNT=0
+```
+
+Round 2/3/4 同时执行 Trackside rows 查询和 Export；rows 请求均 HTTP 200，Export 均约 2.1s 完成并生成可读 Artifact（Round 3 Artifact 293057 bytes）。没有观察到 SQLite lock、`SQLITE_BUSY`、HTTP 500 或超时。DEV 设备没有产生真实 failed-device 样本，因此“失败设备保留旧 Current”由自动化测试覆盖，而不冒充真实设备证据；失败/无效快照测试已通过。
+
+Update All 的业务状态保持 `PARTIAL_SUCCESS`，因为 DEV 现有 AP 资源存在不可连接目标；没有把“跳过”伪装为成功，也没有覆盖失败或无效采集对应的既有 Current。AC resource、switch、FIT-AP、persistence 失败均使用结构化 `target/device/ip/stage/exception/message/duration` 明细，当前四轮真实运行的 software failure count 为 0。
+
+### DEV invariants
+
+```text
+DEV_SITE_COUNT=11
+DEV_ACTIVE_DATABASE_COUNT=34
+ALL_SQLITE_QUICK_CHECK=PASS (34/34)
+RECENT10_MAX=10
+TREATMENT_ROWS=330
+TREATMENT_DUPLICATES=0
+ACTIVE_SITE_AP_COUNT=3367
+```
+
+活动数据库范围为各站点的 `agents.db`、`devices.db`、`snmp.db` 和 `tasks.db`；不把旧备份或原始采集数据库混入活动库统计。运行后 Legacy audit 报告为 `history_bytes=0`、`history_files=0`、`events=0`、`history_dirs=0`。
+
+### Final automated verification
+
+```text
+CLOSURE_TARGETED_PYTHON=PASS (303 passed)
+PYTHON_FULL=4491 passed, 27 failed, 2 skipped
+BASELINE_FAILURE_SET=28 failures (one TypeScript AST environment failure)
+NEW_TEST_FAILURES=0
+RENDERER=175 files / 1218 tests passed
+ELECTRON=35 files / 282 tests passed
+RENDERER_BUILD=PASS
+ELECTRON_TYPECHECK=PASS
+RUFF=PASS
+PY_COMPILE=PASS
+GIT_DIFF_CHECK=PASS
+CHANGE_IMPACT=L3
+```
+
+Python Full 的 27 个失败均可在独立 baseline failure set 中复现，集中于既有 architecture/direct-SQL/README、AC optical 旧 fixture、Ground/Site lifecycle 和其他未纳入本轮的存量门禁；不包含本轮新增失败。`local_gate --mode full` 的最终组合结果另在交付回复中如实报告，不将 baseline failure 写成全量 PASS。
+
+`local_gate --mode full` 实际结果为 `FAIL`：Renderer/Electron/Ruff 通过；`python-full` 复现上述 27 个 baseline failures；`architecture-guards` 受既有 `storage_audit_router`、未分类 direct SQL 以及工作区未跟踪 tasks.db compaction 文件影响；`main-contract-smoke` 复现 AC optical 旧 fixture；`docs-path-guards` 复现 `tests/storage/README.md` 缺失；`git-diff-check` 仅报告既有 dirty 文件的行尾/EOF 问题。没有通过放宽断言、删测或 skip 隐藏这些结果。
+
+### Closure / push fields
+
+```text
+LOCAL_MAIN_SHA=d5c6c4a163aaa14f86b4c8eda1a69cb522935bf1
+REMOTE_MAIN_SHA=d5c6c4a163aaa14f86b4c8eda1a69cb522935bf1
+MAIN_PUSHED=YES
+PRODUCTION_CUTOVER_READY=NO
+MESH_GUI_SCOPE=NOT_IN_THIS_TASK
+```
+
+代码收口提交 `d5c6c4a163aaa14f86b4c8eda1a69cb522935bf1` 已推送到 `github/main`；本节报告元数据提交晚于该代码 SHA。Production cutover 仍需另行授权和另行任务，本报告不宣称 Production 已验证或可自动迁移。
