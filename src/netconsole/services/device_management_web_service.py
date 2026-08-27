@@ -87,6 +87,8 @@ from netconsole.models.api.device_detail import (
     DeviceDetailSourceDTO,
     DeviceHistoryPageDTO,
     DeviceHistoryRecordDTO,
+    DeviceRecentChangeCountDTO,
+    DeviceRecentChangeCountsDTO,
 )
 from netconsole.models.device import (
     Device,
@@ -382,7 +384,7 @@ class DeviceManagementWebService:
         project_phase: str = "all",
         work_scope_status: str = "included",
         page: int = 1,
-        page_size: int = 50,
+        page_size: int = 10,
         sort_by: str = "name",
         sort_order: str = "asc",
     ) -> DevicePageDTO:
@@ -636,7 +638,9 @@ class DeviceManagementWebService:
         name = str(object_name or "").strip()
         if normalized_kind not in {"interface", "optical", "lldp"}:
             raise ValueError("不支持的设备历史类型")
-        size = max(1, min(int(page_size), 200))
+        # The engineering detail contract is Current + Recent10. Keep smaller
+        # legacy page sizes working, but never expose more than ten rows.
+        size = max(1, min(int(page_size), 10))
         total = facts.count_object_history(normalized_kind, device_uuid, name)
         total_pages = max(1, math.ceil(total / size))
         selected_page = min(max(1, page), total_pages)
@@ -728,6 +732,15 @@ class DeviceManagementWebService:
                 source="device_management_web_service",
                 collected_at=items[0].collected_at if items else None,
             ),
+        )
+
+    def get_device_recent_change_counts(
+        self, device_uuid: str
+    ) -> DeviceRecentChangeCountsDTO:
+        devices, _groups, facts = self._repositories(self.current_site_id())
+        self._require_device(devices, device_uuid)
+        return DeviceRecentChangeCountsDTO(
+            items=[DeviceRecentChangeCountDTO(**row) for row in facts.list_object_history_counts(device_uuid)]
         )
 
     def list_groups(self) -> list[DeviceGroupDTO]:

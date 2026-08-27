@@ -473,6 +473,16 @@ export interface DeviceDetailHistoryPage {
   source: DeviceDetailSource
 }
 
+export interface DeviceRecentChangeCount {
+  kind: 'interface' | 'optical' | 'lldp'
+  object_name: string
+  recent_count: number
+}
+
+export interface DeviceRecentChangeCounts {
+  items: DeviceRecentChangeCount[]
+}
+
 export type DeviceDetailSection =
   | 'overview'
   | 'interfaces'

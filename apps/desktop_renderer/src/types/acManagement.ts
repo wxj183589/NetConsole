@@ -170,6 +170,7 @@ export interface AcApDetail {
     connected_at: string
     updated_at: string
   }
+  recent_change_counts?: Partial<Record<'radio' | 'lldp' | 'optical', number>>
 }
 
 export interface AcApHistoryPage {

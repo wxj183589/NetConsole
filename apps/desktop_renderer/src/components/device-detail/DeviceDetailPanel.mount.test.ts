@@ -7,7 +7,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const mocks = vi.hoisted(() => ({
   getDeviceOverview: vi.fn(),
   getDeviceDetailSection: vi.fn(),
-  getDeviceDetailHistory: vi.fn(),
+  getDeviceRecentChanges: vi.fn(),
+  getDeviceRecentChangeCounts: vi.fn(),
   getDeviceInterfaceDetail: vi.fn(),
   refreshDeviceDetails: vi.fn(),
   fetch: vi.fn(async () => { throw new Error('UNEXPECTED_NETWORK_REQUEST') }),
@@ -25,7 +26,8 @@ const mocks = vi.hoisted(() => ({
 vi.mock('../../api/deviceManagement', () => ({
   getDeviceOverview: mocks.getDeviceOverview,
   getDeviceDetailSection: mocks.getDeviceDetailSection,
-  getDeviceDetailHistory: mocks.getDeviceDetailHistory,
+  getDeviceRecentChanges: mocks.getDeviceRecentChanges,
+  getDeviceRecentChangeCounts: mocks.getDeviceRecentChangeCounts,
   getDeviceInterfaceDetail: mocks.getDeviceInterfaceDetail,
   refreshDeviceDetails: mocks.refreshDeviceDetails,
 }))
@@ -200,6 +202,7 @@ beforeEach(() => {
   mocks.taskStore = reactive({ tasks: [], refresh: vi.fn(async () => undefined), acquirePolling: vi.fn(), releasePolling: vi.fn() })
   mocks.getDeviceOverview.mockResolvedValue(overview)
   mocks.getDeviceDetailSection.mockResolvedValue({ items: [{ name: 'GigabitEthernet1/0/1', status: null }], total: 1, page: 1, page_size: 50, total_pages: 1, source: { available: true, source: 'snapshot', collected_at: '', reason: null } })
+  mocks.getDeviceRecentChangeCounts.mockResolvedValue({ items: [] })
   mocks.refreshDeviceDetails.mockResolvedValue({ task_id: 'refresh-1', operation_id: 'device.inventory.collect', status: 'PENDING', reused: false, message: '等待执行' })
 })
 
@@ -217,6 +220,81 @@ async function renderPanel(withOverview = true) {
   await flushPromises()
   return wrapper
 }
+
+describe('Device detail recent-change states', () => {
+  const sectionByKind = {
+    interface: 'interfaces',
+    optical: 'optical',
+    lldp: 'lldp',
+  } as const
+
+  const scenarios = [
+    { count: 0, label: '最近变化：暂无' },
+    { count: 1, label: '最近变化 (1)' },
+    { count: 10, label: '最近变化 (10)' },
+  ] as const
+
+  it.each(Object.entries(sectionByKind))('renders %s Recent=0/1/10 without empty-modal requests', async (kind, section) => {
+    for (const scenario of scenarios) {
+      mocks.getDeviceRecentChangeCounts.mockReset().mockResolvedValue({
+        items: [{ kind, object_name: kind === 'lldp' ? 'GE1/0/1' : 'GE1/0/1', recent_count: scenario.count }],
+      })
+      mocks.getDeviceRecentChanges.mockReset()
+      mocks.getDeviceDetailSection.mockReset().mockResolvedValue({
+        items: [kind === 'lldp' ? { local_interface: 'GE1/0/1' } : { interface_name: 'GE1/0/1' }],
+        total: 1,
+        page: 1,
+        page_size: 50,
+        total_pages: 1,
+        source: { available: true, source: 'snapshot', collected_at: '', reason: null },
+      })
+      const wrapper = await renderPanel()
+      await wrapper.get(`[data-testid="tab-${section}"]`).trigger('click')
+      await flushPromises()
+
+      expect(wrapper.text()).toContain(scenario.label)
+      const action = wrapper.findAll('button').find((button) => button.text() === scenario.label)
+      if (scenario.count === 0) {
+        expect(action).toBeUndefined()
+        expect(mocks.getDeviceRecentChanges).not.toHaveBeenCalled()
+      } else {
+        expect(action).toBeTruthy()
+        mocks.getDeviceRecentChanges.mockResolvedValueOnce({
+          items: [],
+          total: scenario.count,
+          page: 1,
+          page_size: 10,
+          total_pages: 1,
+          source: { available: true, source: 'snapshot', collected_at: '', reason: null },
+        })
+        await action!.trigger('click')
+        await flushPromises()
+        expect(mocks.getDeviceRecentChanges).toHaveBeenCalledWith('device-1', kind, 'GE1/0/1', 1, 10)
+      }
+      wrapper.unmount()
+    }
+  })
+
+  it.each(Object.entries(sectionByKind))('keeps %s count API errors distinct from empty', async (kind, section) => {
+    mocks.getDeviceRecentChangeCounts.mockReset().mockRejectedValue(new Error('COUNT_API_ERROR'))
+    mocks.getDeviceRecentChanges.mockReset()
+    mocks.getDeviceDetailSection.mockReset().mockResolvedValue({
+      items: [kind === 'lldp' ? { local_interface: 'GE1/0/1' } : { interface_name: 'GE1/0/1' }],
+      total: 1,
+      page: 1,
+      page_size: 50,
+      total_pages: 1,
+      source: { available: true, source: 'snapshot', collected_at: '', reason: null },
+    })
+    const wrapper = await renderPanel()
+    await wrapper.get(`[data-testid="tab-${section}"]`).trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('加载最近变化失败')
+    expect(wrapper.text()).not.toContain('最近变化：暂无')
+    expect(mocks.getDeviceRecentChanges).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+})
 
 describe('DeviceDetailPanel mounted interactions', () => {
   it('renders backend-visible tabs, loads a section lazily once, and paginates', async () => {

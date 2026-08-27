@@ -4,7 +4,7 @@ import { Download, Refresh, View } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { useRoute } from 'vue-router'
 
-import { getAcApHistory } from '../../api/acManagement'
+import { getAcApRecentChanges } from '../../api/acManagement'
 import { listStations } from '../../api/railTransitBaseData'
 import {
   confirmAcActionPlan,
@@ -70,11 +70,11 @@ const desktopHost = computed(() => getRuntimeConfig().hostType === 'electron')
 const pollingConsumer = 'ac-management-view'
 const metadataForm = reactive({ station_id: '', station_override_enabled: false, site_name: '', mileage: '', location_note: '', direction: '' })
 const stations = ref<Station[]>([])
-const historyVisible = ref(false)
-const historyLoading = ref(false)
-const historyError = ref('')
-const historyPage = ref<AcApHistoryPage | null>(null)
-const historyKind = ref<'radio' | 'lldp' | 'optical'>('radio')
+const recentVisible = ref(false)
+const recentLoading = ref(false)
+const recentError = ref('')
+const recentPage = ref<AcApHistoryPage | null>(null)
+const recentKind = ref<'radio' | 'lldp' | 'optical'>('radio')
 const actionPlanStorageKey = 'netconsole.ac-management.action-plan'
 const actionPlan = ref<AcActionPlan | null>(null)
 const actionAudit = ref<AcActionAudit | null>(null)
@@ -85,7 +85,20 @@ const omniPeekScopeIds = ref<string[]>([])
 const resourceExportBusy = ref(false)
 const resourceExportSaving = ref(false)
 const lastResourceExportTask = ref<AcWebTask | null>(null)
-const historyTitle = computed(() => ({ radio: 'Radio 历史', lldp: 'LLDP 历史', optical: '光衰历史' }[historyKind.value]))
+const recentInvariantWarnings = new Set<string>()
+const recentTitle = computed(() => ({ radio: 'Radio 最近变化', lldp: 'LLDP 最近变化', optical: '光衰最近变化' }[recentKind.value]))
+
+function recentChangeCount(kind: 'radio' | 'lldp' | 'optical'): number {
+  const count = Number(store.selected?.recent_change_counts?.[kind] || 0)
+  if (count > 10) {
+    const warningKey = `ac:${kind}`
+    if (!recentInvariantWarnings.has(warningKey)) {
+      recentInvariantWarnings.add(warningKey)
+      console.warn(`[RECENT_CHANGE_UI_INVARIANT] ${warningKey} has ${count} recent changes; expected <=10`)
+    }
+  }
+  return Number.isFinite(count) && count > 0 ? count : 0
+}
 
 function acColumn<Row extends object>(
   key: string,
@@ -149,7 +162,7 @@ const currentActionLoading = computed(() => {
   const actionId = actionPlan.value?.action_id
   return actionId === 'persist_auto_ap' || actionId === 'enable_ap_remote_login' ? actionLoading[actionId] : false
 })
-const historyColumns = computed<NcTableColumn<Record<string, unknown>>[]>(() => ({
+const recentColumns = computed<NcTableColumn<Record<string, unknown>>[]>(() => ({
   radio: [
     ['collected_at', '采集时间'], ['ap_name', 'AP 名称'], ['rid', 'Radio ID'], ['status', '状态'], ['mode', '模式'], ['band', '频段'],
     ['channel', '信道'], ['bandwidth', '带宽'], ['usage', '利用率'], ['tx_power', '功率'], ['clients', '客户端'], ['bbssid', 'BSSID'],
@@ -167,7 +180,7 @@ const historyColumns = computed<NcTableColumn<Record<string, unknown>>[]>(() => 
     ['module_model', '模块型号'], ['module_vendor', '厂商'],
     ['wavelength', '波长'], ['transmission_distance', '传输距离'], ['connector_type', '连接器'], ['status', '状态'], ['error_message', '错误'],
   ],
-}[historyKind.value] as string[][]).map(([key, label]) => acColumn(key, label, key === 'collected_at' ? 'datetime' : key.includes('interface') ? 'port' : key.includes('mac') || key === 'bbssid' ? 'mac' : key.includes('error') ? 'error' : 'text', {
+}[recentKind.value] as string[][]).map(([key, label]) => acColumn(key, label, key === 'collected_at' ? 'datetime' : key.includes('interface') ? 'port' : key.includes('mac') || key === 'bbssid' ? 'mac' : key.includes('error') ? 'error' : 'text', {
   displayValue: (row) => displayColumnValue(key, row[key]),
   ...(key.includes('error') ? { align: 'left' as const, alignmentReason: 'long-text' } : {}),
 })))
@@ -414,18 +427,20 @@ function clearManualStationOverride(): void {
   metadataForm.site_name = ''
 }
 
-async function openHistory(kind: 'radio' | 'lldp' | 'optical', page = 1): Promise<void> {
+async function openRecentChanges(kind: 'radio' | 'lldp' | 'optical'): Promise<void> {
   if (!store.selected) return
-  historyKind.value = kind
-  historyVisible.value = true
-  historyLoading.value = true
-  historyError.value = ''
+  if (recentChangeCount(kind) <= 0) return
+  recentKind.value = kind
+  recentPage.value = null
+  recentVisible.value = true
+  recentLoading.value = true
+  recentError.value = ''
   try {
-    historyPage.value = await getAcApHistory(store.selected.ap.id, kind, page)
+    recentPage.value = await getAcApRecentChanges(store.selected.ap.id, kind)
   } catch (cause) {
-    historyError.value = cause instanceof Error ? cause.message : 'FIT-AP 历史加载失败'
+    recentError.value = cause instanceof Error ? cause.message : 'FIT-AP 最近变化加载失败'
   } finally {
-    historyLoading.value = false
+    recentLoading.value = false
   }
 }
 
@@ -999,10 +1014,10 @@ function opticalEvidenceTitle(label: string, value: unknown, status: string, opt
             <el-descriptions-item label="数据更新时间">{{ formatTime(store.selected.connection.updated_at) }}</el-descriptions-item>
           </el-descriptions>
 
-          <div class="section-heading"><h3>Mesh Radio 1 / 2</h3><el-button v-if="isFeatureEnabled('capability.ac.fit_ap.history')" link type="primary" @click="openHistory('radio')">查看历史</el-button></div>
+          <div class="section-heading"><h3>Mesh Radio 1 / 2</h3><el-button v-if="isFeatureEnabled('capability.ac.fit_ap.history') && recentChangeCount('radio') > 0" link type="primary" @click="openRecentChanges('radio')">最近变化 ({{ recentChangeCount('radio') }})</el-button><span v-else-if="isFeatureEnabled('capability.ac.fit_ap.history')" class="recent-change-empty">最近变化：暂无</span></div>
           <NcDataTable table-id="ac-fit-ap-radios" route-key="/ac-management" :data="detailRadios" :columns="radioColumns" :show-column-settings="false" border />
 
-          <div class="section-heading"><h3>LLDP / 端口</h3><el-button v-if="isFeatureEnabled('capability.ac.fit_ap.history')" link type="primary" @click="openHistory('lldp')">查看历史</el-button></div>
+          <div class="section-heading"><h3>LLDP / 端口</h3><el-button v-if="isFeatureEnabled('capability.ac.fit_ap.history') && recentChangeCount('lldp') > 0" link type="primary" @click="openRecentChanges('lldp')">最近变化 ({{ recentChangeCount('lldp') }})</el-button><span v-else-if="isFeatureEnabled('capability.ac.fit_ap.history')" class="recent-change-empty">最近变化：暂无</span></div>
           <el-descriptions :column="2" border>
             <el-descriptions-item label="交换机">{{ display(store.selected.lldp.switch_name) }}</el-descriptions-item>
             <el-descriptions-item label="交换机 IP">{{ display(store.selected.lldp.switch_ip) }}</el-descriptions-item>
@@ -1014,7 +1029,7 @@ function opticalEvidenceTitle(label: string, value: unknown, status: string, opt
             <el-descriptions-item label="LLDP 状态">{{ display(store.selected.lldp.match_status) }}</el-descriptions-item>
           </el-descriptions>
 
-          <div class="section-heading"><h3>光衰</h3><el-button v-if="isFeatureEnabled('capability.ac.fit_ap.history')" link type="primary" @click="openHistory('optical')">查看历史</el-button></div>
+          <div class="section-heading"><h3>光衰台账</h3></div>
           <el-alert :title="opticalAlertTitle(store.selected.optical)" :type="detailApOpticalPresentation(store.selected.optical).tagType" :closable="false" show-icon />
           <el-descriptions :column="2" border class="optical-detail">
             <el-descriptions-item label="Tx Power">
@@ -1071,13 +1086,12 @@ function opticalEvidenceTitle(label: string, value: unknown, status: string, opt
       </div>
     </el-drawer>
 
-    <el-drawer v-model="historyVisible" :title="historyTitle" size="min(1100px, 96vw)">
-      <div v-loading="historyLoading">
-        <el-alert v-if="historyError" :title="historyError" type="error" :closable="false" show-icon />
-        <NcDataTable table-id="ac-fit-ap-history" route-key="/ac-management" :preference-scope="historyKind" :data="historyPage?.items || []" :columns="historyColumns" empty-text="暂无历史记录" height="calc(100vh - 190px)" />
+    <el-drawer v-model="recentVisible" :title="recentTitle" size="min(1100px, 96vw)">
+      <div v-loading="recentLoading">
+        <el-alert v-if="recentError" :title="recentError" type="error" :closable="false" show-icon />
+        <NcDataTable table-id="ac-fit-ap-recent-changes" route-key="/ac-management" :preference-scope="recentKind" :data="recentPage?.items || []" :columns="recentColumns" empty-text="暂无变化记录" height="calc(100vh - 190px)" />
         <div class="pagination-row">
-          <span>共 {{ historyPage?.total || 0 }} 条</span>
-          <el-pagination :current-page="historyPage?.page || 1" :page-size="historyPage?.page_size || 100" layout="prev, pager, next" :total="historyPage?.total || 0" @current-change="openHistory(historyKind, $event)" />
+          <span>共 {{ recentPage?.total || 0 }} 条最近变化</span>
         </div>
       </div>
     </el-drawer>
@@ -1135,6 +1149,7 @@ function opticalEvidenceTitle(label: string, value: unknown, status: string, opt
 .metadata-field { width: 100%; }
 .metadata-field small { display: block; margin-top: 4px; color: var(--el-color-info); line-height: 1.4; }
 .section-heading { display: flex; align-items: center; justify-content: space-between; margin: 23px 0 10px; }
+.recent-change-empty { color: var(--el-text-color-secondary); font-size: 12px; }
 .section-heading h3, .metadata-editor .section-heading { margin: 0; }
 .optical-detail { margin-top: 12px; }
 .optical-value-normal { color: var(--el-color-success); }

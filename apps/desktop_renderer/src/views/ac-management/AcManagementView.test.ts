@@ -20,10 +20,11 @@ describe('AC Management resource view', () => {
     expect(source).toContain('批量删除')
     expect(source).not.toContain('导入 AP 元数据')
     expect(source).toContain('保存手工覆盖')
-    expect(source).toContain("openHistory('radio')")
-    expect(source).toContain("openHistory('lldp')")
-    expect(source).toContain("openHistory('optical')")
-    expect(source).toContain('getAcApHistory')
+    expect(source).toContain("openRecentChanges('radio')")
+    expect(source).toContain("openRecentChanges('lldp')")
+    expect(source).toContain('getAcApRecentChanges')
+    expect(source).toContain('最近变化：暂无')
+    expect(source).toContain('recent_change_counts')
     expect(source).not.toContain('accept=".csv,.xlsx"')
     expect(source).toContain('选择本页')
     expect(source).toContain('反选本页')
@@ -53,6 +54,22 @@ describe('AC Management resource view', () => {
     expect(source).toContain('getAcActionPlan')
     expect(source).toContain('getAcActionAudit')
     expect(source).not.toContain('save force')
+  })
+
+  it.each([
+    ['radio', 'Radio 最近变化'],
+    ['lldp', 'LLDP 最近变化'],
+  ] as const)('uses count-driven %s recent changes for Recent=0/1/10', (kind, label) => {
+    expect(source).toContain(`recentChangeCount('${kind}') > 0`)
+    expect(source).toContain(`openRecentChanges('${kind}')`)
+    expect(source).toContain(label)
+    expect(source).toContain('recent_change_counts')
+    expect(source).toContain('expected <=10')
+  })
+
+  it('keeps AP optical as the current site/AP ledger without a history entry', () => {
+    expect(source).toContain('<h3>光衰台账</h3>')
+    expect(source).not.toContain("openRecentChanges('optical')")
   })
 
   it('removes the page-level AC task banner without leaving its legacy task-window entry', () => {
@@ -150,7 +167,7 @@ describe('AC Management resource view', () => {
     expect(source).toContain('table-id="ac-fit-ap-resources"')
     expect(source).toContain('table-id="ac-config-snapshots"')
     expect(source).toContain('table-id="ac-fit-ap-radios"')
-    expect(source).toContain('table-id="ac-fit-ap-history"')
+    expect(source).toContain('table-id="ac-fit-ap-recent-changes"')
     expect(source).not.toContain('<el-table')
     expect(source).not.toContain('columnVisibility')
   })

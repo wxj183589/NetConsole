@@ -67,6 +67,7 @@ from netconsole.models.api.device_detail import (
     DeviceInterfacePageDTO,
     DeviceLldpPageDTO,
     DeviceOverviewDTO,
+    DeviceRecentChangeCountsDTO,
     DeviceRefreshRequestDTO,
     DeviceRefreshTaskDTO,
     DeviceTransceiverPageDTO,
@@ -125,7 +126,7 @@ def list_devices(
         pattern="^(all|included|excluded)$",
     ),
     page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=50, ge=1, le=200),
+    page_size: int = Query(default=10, ge=1, le=200),
     sort_by: str = Query(
         default="name",
         pattern="^(name|system_name|primary_address|station|device_type|updated_at|metadata_updated_at|last_collected_at|last_collect_status|status)$",
@@ -326,6 +327,21 @@ def refresh_optical(request: Request, device_uuid: str) -> DeviceTaskReferenceDT
 def device_overview(request: Request, device_uuid: str) -> DeviceOverviewDTO:
     return _not_found(
         lambda: _detail_service(request).overview(device_uuid), "设备不存在"
+    )
+
+
+@router.get(
+    "/devices/{device_uuid}/recent-change-counts",
+    response_model=DeviceRecentChangeCountsDTO,
+    summary="读取设备详情最近变化计数",
+    responses=_DEVICE_DETAIL_ERROR_RESPONSES,
+)
+def device_recent_change_counts(
+    request: Request, device_uuid: str
+) -> DeviceRecentChangeCountsDTO:
+    return _not_found(
+        lambda: _service(request).get_device_recent_change_counts(device_uuid),
+        "设备不存在",
     )
 
 
@@ -841,7 +857,7 @@ def device_detail(request: Request, device_uuid: str) -> DeviceDetailDTO:
 @router.get(
     "/devices/{device_uuid}/history",
     response_model=DeviceHistoryPageDTO,
-    summary="分页读取设备详情历史",
+    summary="读取设备详情最近变化（兼容 history URL）",
     responses=_DEVICE_DETAIL_ERROR_RESPONSES,
 )
 def device_history(
@@ -850,7 +866,7 @@ def device_history(
     kind: str = Query(pattern="^(interface|optical|lldp)$"),
     object_name: str = Query(min_length=1, max_length=255),
     page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=50, ge=1, le=200),
+    page_size: int = Query(default=10, ge=1, le=200),
 ) -> DeviceHistoryPageDTO:
     return _not_found(
         lambda: _service(request).get_device_history(

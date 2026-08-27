@@ -145,6 +145,7 @@ def ap_detail(request: Request, ap_id: str) -> AcApDetailDTO:
 @router.get(
     "/aps/{ap_id}/history/{history_kind}",
     response_model=AcApHistoryPageDTO,
+    summary="读取 FIT-AP 详情最近变化（兼容 history URL）",
     dependencies=[Depends(require_feature("capability.ac.fit_ap.history"))],
 )
 def ap_history(
@@ -152,7 +153,7 @@ def ap_history(
     ap_id: str,
     history_kind: str,
     page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=100, ge=1, le=200),
+    page_size: int = Query(default=10, ge=1, le=200),
 ) -> AcApHistoryPageDTO:
     result = _query(
         lambda: _service(request).get_ap_history(

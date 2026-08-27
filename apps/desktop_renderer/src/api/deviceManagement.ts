@@ -24,6 +24,7 @@ import type {
   DeviceImportMatchStrategy,
   DeviceImportWriteMode,
   DeviceHistoryPage,
+  DeviceRecentChangeCounts,
   DeviceOverviewResponse,
   DeviceListQuery,
   DeviceClassificationUpdateRequest,
@@ -66,6 +67,13 @@ export function revealDeviceCredential(deviceUuid: string, credentialField: stri
 
 export function getDeviceOverview(deviceUuid: string, signal?: AbortSignal): Promise<DeviceOverviewResponse> {
   return apiRequest<DeviceOverviewResponse>(`/api/device-management/devices/${encodeURIComponent(deviceUuid)}/overview`, signal ? { signal } : undefined)
+}
+
+export function getDeviceRecentChangeCounts(deviceUuid: string, signal?: AbortSignal): Promise<DeviceRecentChangeCounts> {
+  return apiRequest<DeviceRecentChangeCounts>(
+    `/api/device-management/devices/${encodeURIComponent(deviceUuid)}/recent-change-counts`,
+    signal ? { signal } : undefined,
+  )
 }
 
 export function getDeviceDetailSection(
@@ -115,12 +123,12 @@ export function refreshDeviceDetails(deviceUuid: string, idempotencyKey?: string
   )
 }
 
-export function getDeviceDetailHistory(
+export function getDeviceRecentChanges(
   deviceUuid: string,
   kind: 'interface' | 'optical' | 'lldp',
   objectName: string,
   page = 1,
-  pageSize = 50,
+  pageSize = 10,
   signal?: AbortSignal,
 ): Promise<DeviceDetailHistoryPage> {
   const params = new URLSearchParams({ kind, object_name: objectName, page: String(page), page_size: String(pageSize) })
@@ -209,7 +217,7 @@ export function getDeviceHistory(
   kind: 'interface' | 'optical' | 'lldp',
   objectName: string,
   page = 1,
-  pageSize = 50,
+  pageSize = 10,
 ): Promise<DeviceHistoryPage> {
   const params = new URLSearchParams({
     kind,

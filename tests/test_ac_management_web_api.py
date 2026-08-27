@@ -90,6 +90,8 @@ def test_ac_management_get_api_is_read_only_and_redacts_serial_number(tmp_path: 
     assert detail.json()["optical"]["ap_online_status"] == "offline"
     assert detail.json()["optical"]["is_current_anomaly"] is True
     assert detail.json()["optical"]["data_freshness"] == "fresh"
+    assert set(detail.json()["recent_change_counts"]) == {"radio", "lldp", "optical"}
+    assert all(0 <= count <= 10 for count in detail.json()["recent_change_counts"].values())
     assert [item["id"] for item in optical_anomalies.json()["items"]] == ["ap-online", "ap-offline"]
     assert "serial" not in detail.text.casefold()
     assert "SECRET-SN" not in detail.text
@@ -157,3 +159,22 @@ def test_ac_management_router_exposes_only_fixed_controlled_posts(tmp_path: Path
     assert all(method in {"GET", "POST", "PUT"} for _path, method in routes)
     assert all(not path.endswith(("/collect", "/persistent", "/save", "/command")) for path, _method in routes)
     assert {path for path, _method in routes if "delete" in path} == {"/api/ac-management/fit-aps/delete"}
+
+
+def test_ac_ap_detail_exposes_bounded_recent_change_counts(tmp_path: Path) -> None:
+    paths, _db_path, _files = build_ac_management_fixture(tmp_path)
+    app = create_app(
+        RuntimeMode.SERVER,
+        paths=paths,
+        agent_service=_NoopAsyncService(),  # type: ignore[arg-type]
+        traffic_service=_NoopAsyncService(),  # type: ignore[arg-type]
+        frontend_dist=tmp_path / "missing",
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/api/ac-management/aps/ap-online")
+
+    assert response.status_code == 200
+    counts = response.json()["recent_change_counts"]
+    assert set(counts) == {"radio", "lldp", "optical"}
+    assert all(0 <= value <= 10 for value in counts.values())

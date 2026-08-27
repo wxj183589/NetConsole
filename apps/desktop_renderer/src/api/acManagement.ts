@@ -33,11 +33,11 @@ export function getAcApDetail(apId: string): Promise<AcApDetail> {
   return apiRequest<AcApDetail>(`${root}/aps/${encodeURIComponent(apId)}`)
 }
 
-export function getAcApHistory(
+export function getAcApRecentChanges(
   apId: string,
   kind: 'radio' | 'lldp' | 'optical',
   page = 1,
-  pageSize = 100,
+  pageSize = 10,
 ): Promise<AcApHistoryPage> {
   return apiRequest<AcApHistoryPage>(
     `${root}/aps/${encodeURIComponent(apId)}/history/${kind}${queryString({ page, page_size: pageSize })}`,

@@ -358,11 +358,21 @@ class DeviceHistoryRecordDTO(ApiModel):
     values: dict[str, Any] = Field(default_factory=dict)
 
 
+class DeviceRecentChangeCountDTO(ApiModel):
+    kind: Literal["interface", "optical", "lldp"]
+    object_name: str
+    recent_count: int = Field(default=0, ge=0)
+
+
+class DeviceRecentChangeCountsDTO(ApiModel):
+    items: list[DeviceRecentChangeCountDTO] = Field(default_factory=list)
+
+
 class DeviceHistoryPageDTO(ApiModel):
     items: list[DeviceHistoryRecordDTO] = Field(default_factory=list)
     total: int = 0
     page: int = 1
-    page_size: int = 50
+    page_size: int = 10
     total_pages: int = 1
     source: DeviceDetailSourceDTO
 

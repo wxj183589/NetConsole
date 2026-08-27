@@ -413,6 +413,7 @@ class AcManagementQueryService:
         repository = AcRepository(_ReadonlyDatabase(self._db_path(site_id)))  # type: ignore[arg-type]
         detail = repository.get_fit_ap_detail(item.id) or {}
         radio_details = repository.list_fit_ap_radio_details(item.id)
+        recent_change_counts = repository.get_fit_ap_recent_change_counts(item.id)
         return AcApDetailDTO(
             ap=item,
             radios=self._radios(raw),
@@ -421,6 +422,7 @@ class AcManagementQueryService:
             connection=self._connection(raw),
             detail=detail,
             radio_details=radio_details,
+            recent_change_counts=recent_change_counts,
         )
 
     def get_ap_history(
@@ -430,7 +432,7 @@ class AcManagementQueryService:
         history_kind: str,
         *,
         page: int = 1,
-        page_size: int = 100,
+        page_size: int = 10,
     ) -> AcApHistoryPageDTO | None:
         record = self._find_ap(site_id, ap_id)
         if record is None:
@@ -440,7 +442,9 @@ class AcManagementQueryService:
             fields = _AP_HISTORY_FIELDS[kind]
         except KeyError as exc:
             raise ValueError("不支持的 FIT-AP 历史类型") from exc
-        size = max(1, min(int(page_size), 200))
+        # The engineering detail contract is Current + Recent10. Keep smaller
+        # legacy page sizes working, but never expose more than ten rows.
+        size = max(1, min(int(page_size), 10))
         repository = AcRepository(_ReadonlyDatabase(self._db_path(site_id)))  # type: ignore[arg-type]
         total = repository.count_fit_ap_history(kind, record[0].id)
         total_pages = max((total + size - 1) // size, 1)

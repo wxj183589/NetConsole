@@ -184,7 +184,7 @@ class AcApHistoryPageDTO(ApiModel):
     items: list[dict[str, object | None]] = Field(default_factory=list)
     total: int = 0
     page: int = 1
-    page_size: int = 100
+    page_size: int = 10
 
 
 class AcApDetailDTO(ApiModel):
@@ -195,6 +195,7 @@ class AcApDetailDTO(ApiModel):
     connection: AcConnectionRecordDTO = Field(default_factory=AcConnectionRecordDTO)
     detail: dict[str, object | None] = Field(default_factory=dict)
     radio_details: list[dict[str, object | None]] = Field(default_factory=list)
+    recent_change_counts: dict[str, int] = Field(default_factory=dict)
 
 
 class AcConfigSnapshotDTO(ApiModel):

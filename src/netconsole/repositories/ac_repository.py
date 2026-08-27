@@ -2057,7 +2057,10 @@ class AcRepository:
                     f"SELECT COUNT(*) AS total FROM {table} WHERE site_id=? AND {identity_column}=?",
                     (self.site_id, str(ap_uuid)),
                 ).fetchone()
-        return int(row["total"] if row is not None else 0)
+        # The detail contract is Current + Recent10.  The list query already
+        # bounds each page, so keep its reported total aligned with the rows
+        # that the UI can actually expose.
+        return min(10, int(row["total"] if row is not None else 0))
 
     def get_fit_ap_recent_change_counts(self, ap_uuid: str) -> dict[str, int]:
         counts = {"radio": 0, "lldp": 0, "optical": 0}
@@ -2083,7 +2086,7 @@ class AcRepository:
         with self.database.connect_readonly() as conn:
             for kind, (sql, params) in queries.items():
                 row = conn.execute(sql, params).fetchone()
-                counts[kind] = int(row["total"] if row is not None else 0)
+                counts[kind] = min(10, int(row["total"] if row is not None else 0))
         return counts
 
     def list_all_ap_optical_history(

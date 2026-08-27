@@ -1027,7 +1027,7 @@ class DeviceFactRepository:
                 f"WHERE site_id=? AND device_uuid=? AND LOWER(TRIM({object_column})) IN ({placeholders})",
                 (site_id, device_uuid, *aliases),
             ).fetchone()
-        return int(row["total"] if row is not None else 0)
+        return min(10, int(row["total"] if row is not None else 0))
 
     def list_object_history_counts(self, device_uuid: str) -> list[dict[str, object]]:
         specs = (
@@ -1050,7 +1050,7 @@ class DeviceFactRepository:
                     {
                         "kind": kind,
                         "object_name": str(row["object_name"] or ""),
-                        "recent_count": int(row["recent_count"] or 0),
+                        "recent_count": min(10, int(row["recent_count"] or 0)),
                     }
                     for row in rows
                 )

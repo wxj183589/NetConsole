@@ -7,7 +7,8 @@ import { useRouter } from 'vue-router'
 import { configArtifactDownloadRequest, submitSnapshotConfigDiff } from '../../api/configCollection'
 import {
   getDeviceDetailSection,
-  getDeviceDetailHistory,
+  getDeviceRecentChanges,
+  getDeviceRecentChangeCounts,
   getDeviceInterfaceDetail,
   getDeviceOverview,
   refreshDeviceDetails,
@@ -28,6 +29,7 @@ import type {
   DeviceDetailSection,
   DeviceDetailSectionPage,
   DeviceDetailHistoryPage,
+  DeviceRecentChangeCount,
   DeviceOverviewResponse,
   DeviceTaskReference,
 } from '../../types/deviceManagement'
@@ -44,7 +46,7 @@ interface Props {
   connectionTest?: DeviceConnectionTest | null
 }
 
-interface HistoryViewPage extends DeviceDetailHistoryPage {
+interface RecentChangesPage extends DeviceDetailHistoryPage {
   kind: 'interface' | 'optical' | 'lldp'
   object_name: string
 }
@@ -96,13 +98,20 @@ const selectedRecordSection = ref<DeviceDetailSection>('overview')
 const recordDetailVisible = ref(false)
 const configurationSelection = ref<number[]>([])
 const savedArtifactCapability = ref('')
-const historyVisible = ref(false)
-const historyLoading = ref(false)
-const historyPage = ref<HistoryViewPage | null>(null)
+const recentVisible = ref(false)
+const recentLoading = ref(false)
+const recentError = ref('')
+const recentPage = ref<RecentChangesPage | null>(null)
+const recentChangeCounts = ref<DeviceRecentChangeCount[]>([])
+const recentChangeSummaryLoading = ref(false)
+const recentChangeSummaryError = ref('')
+const recentChangeSummaryReady = ref(false)
+const recentInvariantWarnings = new Set<string>()
 const refreshTaskId = ref('')
 let loadGeneration = 0
 let sectionLoadGeneration = 0
-let historyLoadGeneration = 0
+let recentLoadGeneration = 0
+let recentChangeSummaryGeneration = 0
 let interfaceDetailGeneration = 0
 let interfaceDetailAbortController: AbortController | null = null
 const pollingConsumer = 'device-detail-panel'
@@ -275,12 +284,12 @@ const currentTableColumns = computed<NcTableColumn<DeviceDetailRecord>[]>(() => 
     label: '操作',
     valueType: 'actions' as const,
     cellKind: 'actions' as const,
-    actionLabels: ['历史', '详情', '任务中心', '下载'],
+    actionLabels: ['最近变化', '详情', '任务中心', '下载'],
   }] : []),
 ])
-const historyRows = computed(() => (historyPage.value?.items ?? []) as unknown as DeviceDetailRecord[])
-const historyColumns = computed<NcTableColumn<DeviceDetailRecord>[]>(() => {
-  const kind = historyPage.value?.kind
+const recentRows = computed(() => (recentPage.value?.items ?? []) as unknown as DeviceDetailRecord[])
+const recentColumns = computed<NcTableColumn<DeviceDetailRecord>[]>(() => {
+  const kind = recentPage.value?.kind
   if (kind === 'interface') return [
     detailColumn('采集时间', 'collected_at', 'datetime'), detailColumn('接口', 'interface_name', 'port'),
     detailColumn('综合状态', 'link_status', 'status'), detailColumn('管理状态', 'admin_status', 'status'),
@@ -395,7 +404,8 @@ onBeforeUnmount(() => {
   interfaceDetailAbortController = null
   refreshTaskId.value = ''
   sectionLoadGeneration += 1
-  historyLoadGeneration += 1
+  recentLoadGeneration += 1
+  recentChangeSummaryGeneration += 1
   taskStore.releasePolling(pollingConsumer)
 })
 
@@ -405,6 +415,7 @@ async function initialize(): Promise<void> {
   selectedSection.value = 'overview'
   error.value = ''
   connectionTest.value = props.connectionTest ?? null
+  void loadRecentChangeCounts()
   if (props.overview) {
     overview.value = props.overview
     return
@@ -423,7 +434,10 @@ async function initialize(): Promise<void> {
 
 function clearSectionState(): void {
   sectionLoadGeneration += 1
-  historyLoadGeneration += 1
+  recentLoadGeneration += 1
+  recentVisible.value = false
+  recentPage.value = null
+  recentError.value = ''
   sectionPages.value = {}
   sectionCache.clear()
   for (const key of Object.keys(sectionLoading)) delete sectionLoading[key]
@@ -679,46 +693,84 @@ async function openTaskWindow(taskId = '', status?: TaskStatus): Promise<boolean
   return true
 }
 
-async function openHistory(section: DeviceDetailSection, row: DeviceDetailRecord): Promise<void> {
-  const kind = section === 'interfaces' ? 'interface' : section === 'optical' ? 'optical' : section === 'lldp' ? 'lldp' : null
-  const objectName = recordText(row, section === 'lldp' ? 'local_interface' : 'interface_name')
+function recentKindForSection(section: DeviceDetailSection): 'interface' | 'optical' | 'lldp' | null {
+  return section === 'interfaces' ? 'interface' : section === 'optical' ? 'optical' : section === 'lldp' ? 'lldp' : null
+}
+
+function recentObjectName(section: DeviceDetailSection, row: DeviceDetailRecord): string {
+  return recordText(row, section === 'lldp' ? 'local_interface' : 'interface_name')
+}
+
+const recentChangeCountMap = computed(() => new Map(
+  recentChangeCounts.value.map((item) => [
+    `${item.kind}:${item.object_name.trim().toLowerCase()}`,
+    Number(item.recent_count) || 0,
+  ]),
+))
+
+function recentCount(section: DeviceDetailSection, row: DeviceDetailRecord): number {
+  const kind = recentKindForSection(section)
+  const objectName = recentObjectName(section, row)
+  if (!kind || !objectName) return 0
+  const count = recentChangeCountMap.value.get(`${kind}:${objectName.trim().toLowerCase()}`) || 0
+  if (count > 10) {
+    const warningKey = `${kind}:${objectName.trim().toLowerCase()}`
+    if (!recentInvariantWarnings.has(warningKey)) {
+      recentInvariantWarnings.add(warningKey)
+      console.warn(`[RECENT_CHANGE_UI_INVARIANT] ${warningKey} has ${count} recent changes; expected <=10`)
+    }
+  }
+  return count
+}
+
+function recentSummaryText(): string {
+  if (recentChangeSummaryError.value) return '加载最近变化失败'
+  if (recentChangeSummaryLoading.value || !recentChangeSummaryReady.value) return '最近变化加载中'
+  return '最近变化：暂无'
+}
+
+async function loadRecentChangeCounts(): Promise<void> {
+  const generation = ++recentChangeSummaryGeneration
+  recentChangeSummaryLoading.value = true
+  recentChangeSummaryError.value = ''
+  recentChangeSummaryReady.value = false
+  recentChangeCounts.value = []
+  try {
+    const result = await getDeviceRecentChangeCounts(props.deviceUuid)
+    if (generation === recentChangeSummaryGeneration) {
+      recentChangeCounts.value = result.items || []
+      recentChangeSummaryReady.value = true
+    }
+  } catch (cause) {
+    if (generation === recentChangeSummaryGeneration) {
+      recentChangeSummaryError.value = errorMessage(cause, '加载最近变化失败')
+    }
+  } finally {
+    if (generation === recentChangeSummaryGeneration) recentChangeSummaryLoading.value = false
+  }
+}
+
+async function openRecentChanges(section: DeviceDetailSection, row: DeviceDetailRecord): Promise<void> {
+  const kind = recentKindForSection(section)
+  const objectName = recentObjectName(section, row)
   if (!kind || !objectName) return
-  historyVisible.value = true
-  historyLoading.value = true
-  historyPage.value = null
-  const generation = ++historyLoadGeneration
+  if (recentCount(section, row) <= 0) return
+  recentVisible.value = true
+  recentLoading.value = true
+  recentError.value = ''
+  recentPage.value = null
+  const generation = ++recentLoadGeneration
   try {
-    const result = await getDeviceDetailHistory(props.deviceUuid, kind, objectName, 1, 50)
-    if (generation === historyLoadGeneration) historyPage.value = flattenHistoryPage(result, kind, objectName)
+    const result = await getDeviceRecentChanges(props.deviceUuid, kind, objectName, 1, 10)
+    if (generation === recentLoadGeneration) recentPage.value = flattenRecentPage(result, kind, objectName)
   } catch (cause) {
-    if (generation === historyLoadGeneration) ElMessage.error(errorMessage(cause, '设备历史加载失败'))
+    if (generation === recentLoadGeneration) recentError.value = errorMessage(cause, '加载最近变化失败')
   } finally {
-    if (generation === historyLoadGeneration) historyLoading.value = false
+    if (generation === recentLoadGeneration) recentLoading.value = false
   }
 }
 
-async function loadHistoryPage(page = 1): Promise<void> {
-  const current = historyPage.value
-  if (!current) return
-  historyLoading.value = true
-  const generation = ++historyLoadGeneration
-  try {
-    const result = await getDeviceDetailHistory(props.deviceUuid, current.kind, current.object_name, page, current.page_size)
-    if (generation === historyLoadGeneration) historyPage.value = flattenHistoryPage(result, current.kind, current.object_name)
-  } catch (cause) {
-    if (generation === historyLoadGeneration) ElMessage.error(errorMessage(cause, '设备历史加载失败'))
-  } finally {
-    if (generation === historyLoadGeneration) historyLoading.value = false
-  }
-}
-
-async function changeHistoryPageSize(pageSize: number): Promise<void> {
-  if (!historyPage.value) return
-  historyPage.value = { ...historyPage.value, page_size: pageSize }
-  await loadHistoryPage(1)
-}
-
-function flattenHistoryPage(page: DeviceDetailHistoryPage, kind: HistoryViewPage['kind'], objectName: string): HistoryViewPage {
+function flattenRecentPage(page: DeviceDetailHistoryPage, kind: RecentChangesPage['kind'], objectName: string): RecentChangesPage {
   return {
     ...page,
     kind,
@@ -1280,7 +1332,12 @@ function errorMessage(cause: unknown, fallback: string): string {
                     <template #cell-status="{ row, columnDefinition }"><span :class="businessStatusClass(section, row)">{{ section === 'business' ? businessStatusText(row) : formatEnumeratedValue(columnDefinition.key, row[columnDefinition.key], row) }}</span></template>
                     <template #cell-rx_power="{ row, columnDefinition }"><span :class="opticalRxPowerClass(section, columnDefinition.key, row)">{{ formatEnumeratedValue(columnDefinition.key, row[columnDefinition.key], row) }}</span></template>
                     <template #cell-actions="{ row }">
-                      <el-button v-if="['interfaces', 'optical', 'lldp'].includes(section)" link :icon="View" @click="openHistory(section, row)">历史</el-button>
+                      <template v-if="['interfaces', 'optical', 'lldp'].includes(section)">
+                        <el-button v-if="recentChangeSummaryError" link disabled :icon="View">加载最近变化失败</el-button>
+                        <el-button v-else-if="!recentChangeSummaryReady" link disabled :icon="View">最近变化加载中</el-button>
+                        <el-button v-else-if="recentCount(section, row) > 0" link :icon="View" @click="openRecentChanges(section, row)">最近变化 ({{ recentCount(section, row) }})</el-button>
+                        <span v-else class="recent-change-empty">{{ recentSummaryText() }}</span>
+                      </template>
                       <el-button v-if="section !== 'tasks'" link :icon="CopyDocument" @click="openRowDetail(section, row)">详情</el-button>
                       <el-button v-if="section === 'tasks'" link @click="openTaskWindow(recordText(row, 'task_id'))">任务中心</el-button>
                       <el-button v-if="section === 'configuration'" link @click="downloadConfigurationArtifact(row)">下载</el-button>
@@ -1295,20 +1352,21 @@ function errorMessage(cause: unknown, fallback: string): string {
       </template>
     </div>
 
-    <el-dialog v-model="historyVisible" :title="`历史数据 · ${formatValue(historyPage?.object_name)}`" width="min(1180px, 96vw)">
-      <div v-loading="historyLoading">
+    <el-dialog v-model="recentVisible" :title="`最近变化 · ${formatValue(recentPage?.object_name)}`" width="min(1180px, 96vw)">
+      <div v-loading="recentLoading">
+        <el-alert v-if="recentError" :title="recentError" type="error" show-icon :closable="false" />
         <NcDataTable
-          table-id="device-detail-history"
+          table-id="device-detail-recent-changes"
           route-key="/devices/:deviceId"
-          :preference-scope="historyPage?.kind || 'unknown'"
-          :data="historyRows"
-          :columns="historyColumns"
+          :preference-scope="recentPage?.kind || 'unknown'"
+          :data="recentRows"
+          :columns="recentColumns"
           :max-height="620"
-          empty-text="暂无历史数据"
+          empty-text="暂无变化记录"
         />
-        <el-pagination v-if="historyPage?.total" :current-page="historyPage.page" :page-size="historyPage.page_size" :total="historyPage.total" layout="total, prev, pager, next" @current-change="loadHistoryPage" @size-change="changeHistoryPageSize" />
+        <span v-if="recentPage">共 {{ recentPage.total }} 条最近变化</span>
       </div>
-      <template #footer><el-button @click="historyVisible = false">关闭</el-button></template>
+      <template #footer><el-button @click="recentVisible = false">关闭</el-button></template>
     </el-dialog>
 
     <el-dialog v-model="recordDetailVisible" title="详情" width="min(760px, 94vw)">
@@ -1331,6 +1389,7 @@ function errorMessage(cause: unknown, fallback: string): string {
 .device-detail-section-pane { display: flex; height: 100%; min-height: 0; flex-direction: column; overflow: hidden; }
 .device-detail-table-host { display: flex; min-height: 0; flex: 1; flex-direction: column; overflow: hidden; }
 .detail-heading h2, .detail-section h3 { margin: 0; }
+.recent-change-empty { color: var(--el-text-color-secondary); font-size: 12px; }
 .detail-heading p { margin: 5px 0 0; color: var(--el-text-color-secondary); font-size: 12px; }
 .heading-actions, .section-actions, .section-toolbar, .metadata-row, .section-metadata { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .section-actions { margin-bottom: 14px; }

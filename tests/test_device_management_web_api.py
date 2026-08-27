@@ -589,6 +589,37 @@ def test_device_recent_change_counts_are_grouped_by_current_object(tmp_path: Pat
     ]
 
 
+def test_device_recent_change_counts_are_capped_at_ten(tmp_path: Path) -> None:
+    client, _service, _adapter, _devices, facts, mr, _sw = _fixture(tmp_path)
+    for index in range(11):
+        facts.append_interface_history(
+            {
+                "device_uuid": str(mr.device_uuid),
+                "interface_name": "GE1/0/10",
+                "collected_at": f"2026-07-16T{index:02d}:00:00",
+                "link_status": "UP" if index % 2 else "DOWN",
+            }
+        )
+
+    response = client.get(
+        f"/api/device-management/devices/{mr.device_uuid}/recent-change-counts"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["items"] == [
+        {"kind": "interface", "object_name": "ge1/0/10", "recent_count": 10}
+    ]
+
+    history = client.get(
+        f"/api/device-management/devices/{mr.device_uuid}/history",
+        params={"kind": "interface", "object_name": "GE1/0/10", "page_size": 50},
+    )
+    assert history.status_code == 200
+    assert history.json()["total"] == 10
+    assert history.json()["total_pages"] == 1
+    assert len(history.json()["items"]) == 10
+
+
 def test_real_edit_is_validated_and_persisted(
     tmp_path: Path,
 ) -> None:
