@@ -140,7 +140,7 @@ def test_bulk_current_fact_reads_match_per_device_reads(tmp_path):
     }
 
 
-def test_zte_interface_semantics_are_persisted_to_current_and_history(tmp_path):
+def test_zte_interface_semantics_are_persisted_to_current_without_initial_history(tmp_path):
     repository = make_repository(tmp_path)
     repository.replace_device_interfaces(
         "device-1",
@@ -171,8 +171,8 @@ def test_zte_interface_semantics_are_persisted_to_current_and_history(tmp_path):
     )
 
     current = repository.list_device_interfaces("device-1")[0]
-    history = repository.list_interface_history("device-1", "gei-0/3/0/6")[0]
-    for row in (current, history):
+    assert repository.list_interface_history("device-1", "gei-0/3/0/6") == []
+    for row in (current,):
         assert row["admin_status"] == "up"
         assert row["physical_status"] == "down"
         assert row["protocol_status"] == "down"
@@ -206,7 +206,10 @@ def test_empty_or_failed_interface_snapshot_preserves_previous_rows(
     def fail_insert(*_args, **_kwargs):
         raise RuntimeError("simulated insert failure")
 
-    monkeypatch.setattr(repository, "_insert", fail_insert)
+    monkeypatch.setattr(
+        "netconsole.repositories.device_fact_repository.upsert_interface_current_and_history",
+        fail_insert,
+    )
     with pytest.raises(RuntimeError, match="simulated insert failure"):
         repository.replace_device_interfaces(
             "device-1",
@@ -262,9 +265,10 @@ def test_device_interface_paging_sorts_complete_filtered_result_before_slicing(
 def test_list_interface_history_orders_by_collected_at_desc(tmp_path):
     repository = make_repository(tmp_path)
     repository.append_interface_history({"device_uuid": "device-1", "interface_name": "GE1/0/1", "collected_at": "2026-06-13T09:00:00", "link_status": "OLD"})
+    repository.append_interface_history({"device_uuid": "device-1", "interface_name": "GE1/0/1", "collected_at": "2026-06-13T10:00:00", "link_status": "MIDDLE"})
     repository.append_interface_history({"device_uuid": "device-1", "interface_name": "GE1/0/1", "collected_at": "2026-06-13T11:00:00", "link_status": "NEW"})
 
-    assert [item["link_status"] for item in repository.list_interface_history("device-1", "GE1/0/1")] == ["NEW", "OLD"]
+    assert [item["link_status"] for item in repository.list_interface_history("device-1", "GE1/0/1")] == ["NEW", "MIDDLE"]
 
 
 def test_interface_history_records_only_up_down_changes_and_keeps_ten(tmp_path):
@@ -286,7 +290,7 @@ def test_interface_history_records_only_up_down_changes_and_keeps_ten(tmp_path):
     assert history[0]["link_status"] == "DOWN"
     with repository.database.connect() as conn:
         assert conn.execute(
-            "SELECT COUNT(*) FROM history_outbox WHERE kind='device_interface'"
+            "SELECT COUNT(*) FROM device_interfaces_history"
         ).fetchone()[0] == 10
 
 
@@ -371,9 +375,10 @@ def test_optical_module_paging_uses_natural_order_before_slicing(tmp_path):
 def test_list_optical_history_orders_by_collected_at_desc(tmp_path):
     repository = make_repository(tmp_path)
     repository.append_optical_history({"device_uuid": "device-1", "interface_name": "GE1/0/1", "collected_at": "2026-06-13T09:00:00", "rx_power": "-3.45 dBm"})
+    repository.append_optical_history({"device_uuid": "device-1", "interface_name": "GE1/0/1", "collected_at": "2026-06-13T10:00:00", "rx_power": "-3.30 dBm"})
     repository.append_optical_history({"device_uuid": "device-1", "interface_name": "GE1/0/1", "collected_at": "2026-06-13T11:00:00", "rx_power": "-3.21 dBm"})
 
-    assert [item["rx_power"] for item in repository.list_optical_history("device-1", "GE1/0/1")] == ["-3.21 dBm", "-3.45 dBm"]
+    assert [item["rx_power"] for item in repository.list_optical_history("device-1", "GE1/0/1")] == ["-3.21 dBm", "-3.30 dBm"]
 
 
 def test_optical_history_uses_power_tolerance_and_keeps_module_changes(tmp_path):
@@ -491,8 +496,8 @@ def test_lldp_history_records_neighbor_change_missing_and_recovery(tmp_path, mon
     )
 
     history = repository.list_lldp_history("device-1", "GE1/0/1")
-    assert len(history) == 4
-    assert [row["neighbor_sysname"] for row in history] == ["SW-B", None, "SW-C", "SW-B"]
+    assert len(history) == 3
+    assert [row["neighbor_sysname"] for row in history] == ["SW-B", None, "SW-C"]
 
 
 def test_replace_lldp_neighbors_preserves_ports_missing_from_partial_collect(tmp_path):
@@ -655,9 +660,10 @@ def test_device_detail_custom_sort_is_global_and_cancel_can_restore_default(tmp_
 def test_list_lldp_history_orders_by_collected_at_desc(tmp_path):
     repository = make_repository(tmp_path)
     repository.append_lldp_history({"device_uuid": "device-1", "local_interface": "GE1/0/1", "collected_at": "2026-06-13T09:00:00", "neighbor_sysname": "OLD"})
+    repository.append_lldp_history({"device_uuid": "device-1", "local_interface": "GE1/0/1", "collected_at": "2026-06-13T10:00:00", "neighbor_sysname": "MIDDLE"})
     repository.append_lldp_history({"device_uuid": "device-1", "local_interface": "GE1/0/1", "collected_at": "2026-06-13T11:00:00", "neighbor_sysname": "NEW"})
 
-    assert [item["neighbor_sysname"] for item in repository.list_lldp_history("device-1", "GE1/0/1")] == ["NEW", "OLD"]
+    assert [item["neighbor_sysname"] for item in repository.list_lldp_history("device-1", "GE1/0/1")] == ["NEW", "MIDDLE"]
 
 
 def test_create_collect_run_can_be_read(tmp_path):

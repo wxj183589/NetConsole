@@ -279,6 +279,11 @@ const businessReasonRows = computed(() => {
   }
   return rows
 })
+const businessFailures = computed(() => {
+  const failures = selectedDetails.value.failures
+  if (!Array.isArray(failures)) return []
+  return failures.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object'))
+})
 const businessLogSummaryLines = computed(() => {
   if (!showTracksideBusinessResult.value) return []
   const lines: Array<{ key: string; label: string; value: string; tone: 'warning' | 'error' | 'info' }> = []
@@ -748,6 +753,12 @@ function handleClosed(): void {
           <ul v-if="businessReasonRows.length" class="business-reasons">
             <li v-for="row in businessReasonRows" :key="`${row.category}:${row.key}`">
               <span>{{ row.category }} · {{ row.label }}</span><strong>{{ row.count }}</strong>
+            </li>
+          </ul>
+          <ul v-if="businessFailures.length" class="business-reasons business-failure-details">
+            <li v-for="(failure, index) in businessFailures" :key="`${String(failure.device_uuid || failure.device_name || 'failure')}:${index}`">
+              <span>{{ failure.target_type || '目标' }} · {{ failure.device_name || failure.device_uuid || '--' }} · {{ failure.host || '--' }} · {{ failure.stage || '--' }}</span>
+              <strong>{{ failure.exception_type || 'Error' }}：{{ failure.message || '--' }}（{{ failure.duration_ms ?? 0 }} ms）</strong>
             </li>
           </ul>
         </section>

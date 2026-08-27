@@ -1,12 +1,10 @@
 from __future__ import annotations
 
+import inspect
+
 from netconsole.core.database import Database
 from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
-from netconsole.repositories.history_legacy_migration_repository import (
-    HistoryLegacyMigrationRepository,
-    TableCheckpoint,
-)
 
 
 LEGACY_HISTORY_TABLES = (
@@ -43,51 +41,6 @@ def _record_event(
             meaningful_fields=tuple(sorted(payload)),
         )
         conn.commit()
-
-
-def _mark_shard_authoritative(repository: AcRepository, *source_tables: str) -> None:
-    journal = HistoryLegacyMigrationRepository(
-        repository.history_store.history_root / "catalog.db"
-    )
-    journal.create_or_load(
-        migration_id="cutover",
-        source_database_identity="fixture",
-        source_schema_version="fixture",
-        site_id="fixture",
-        chunk_rows=1,
-        now="2026-08-01T00:00:00",
-    )
-    for source_table in source_tables:
-        journal.upsert_table_checkpoint(
-            TableCheckpoint(
-                migration_id="cutover",
-                source_table=source_table,
-                source_range="0..0",
-                last_source_key=0,
-                copied_count=0,
-                verified_count=0,
-                duplicate_count=0,
-                error_count=0,
-                status="VERIFIED",
-                updated_at="2026-08-01T00:00:00",
-            )
-        )
-        verified = journal.transition_authority(
-            "cutover",
-            source_table,
-            to_state="SHARD_VERIFIED",
-            expected_revision=0,
-            reason="fixture copy verified",
-            now="2026-08-01T00:00:01",
-        )
-        journal.transition_authority(
-            "cutover",
-            source_table,
-            to_state="SHARD_AUTHORITY",
-            expected_revision=verified.cutover_revision,
-            reason="fixture consumer validation",
-            now="2026-08-01T00:00:02",
-        )
 
 
 def _insert_legacy_lldp(repository: AcRepository, ap_uuid: str) -> None:
@@ -149,6 +102,53 @@ def _drop_legacy_history_tables(repository: AcRepository) -> None:
         conn.commit()
 
 
+def test_engineering_runtime_has_no_legacy_historystore_dependency() -> None:
+    device_methods = (
+        "replace_device_interfaces",
+        "append_interface_history",
+        "replace_optical_modules",
+        "append_optical_history",
+        "replace_lldp_neighbors",
+        "append_lldp_history",
+        "list_interface_history",
+        "list_optical_history",
+        "list_all_optical_history",
+        "get_previous_optical_history",
+        "list_lldp_history",
+        "list_object_history_page",
+        "count_object_history",
+        "list_object_history_counts",
+    )
+    ac_methods = (
+        "list_fit_ap_optical",
+        "list_all_fit_ap_optical",
+        "list_fit_ap_optical_history",
+        "list_fit_ap_optical_history_by_ap",
+        "list_fit_ap_radio_history_by_ap",
+        "list_fit_ap_lldp_history_by_ap",
+        "list_fit_ap_history_page",
+        "count_fit_ap_history",
+        "list_all_ap_optical_history",
+        "get_previous_ap_optical_history",
+        "get_previous_ap_lldp_history",
+        "list_latest_ap_lldp_history",
+        "list_latest_ap_lldp_histories",
+        "list_all_ap_lldp_history",
+        "_append_radio_history",
+        "_record_fit_ap_optical_history",
+        "_append_resource_lldp_history",
+    )
+
+    for owner, methods in (
+        (DeviceFactRepository, device_methods),
+        (AcRepository, ac_methods),
+    ):
+        for method_name in methods:
+            source = inspect.getsource(getattr(owner, method_name))
+            assert "history_store" not in source, f"{owner.__name__}.{method_name}"
+            assert "_query_legacy_history_rows" not in source, f"{owner.__name__}.{method_name}"
+
+
 def _lldp_payload(ap_uuid: str, neighbor: str = "SW-HISTORY") -> dict[str, object]:
     return {
         "ac_device_uuid": "ac-1",
@@ -165,29 +165,24 @@ def _lldp_payload(ap_uuid: str, neighbor: str = "SW-HISTORY") -> dict[str, objec
     }
 
 
-def test_legacy_authority_reads_legacy_lldp_without_history_events(tmp_path) -> None:
+def test_engineering_history_readers_ignore_legacy_lldp_rows(tmp_path) -> None:
     repository = _repository(tmp_path)
     ap_uuid = "ap-legacy"
     _insert_legacy_lldp(repository, ap_uuid)
 
-    assert repository.list_fit_ap_lldp_history_by_ap(ap_uuid)[0]["lldp_neighbor"] == "SW-LEGACY"
-    assert repository.list_fit_ap_history_page("lldp", ap_uuid)[0]["lldp_neighbor"] == "SW-LEGACY"
-    assert repository.count_fit_ap_history("lldp", ap_uuid) == 1
-    assert repository.list_latest_ap_lldp_history(ap_uuid)["neighbor_interface"] == "GigabitEthernet1/0/2"
-    assert repository.list_latest_ap_lldp_histories()[0]["ap_uuid"] == ap_uuid
-    assert repository.list_all_ap_lldp_history()[0]["ap_uuid"] == ap_uuid
-    assert repository.get_previous_ap_lldp_history({"ap_uuid": ap_uuid}) is not None
+    assert repository.list_fit_ap_lldp_history_by_ap(ap_uuid) == []
+    assert repository.list_fit_ap_history_page("lldp", ap_uuid) == []
+    assert repository.count_fit_ap_history("lldp", ap_uuid) == 0
+    assert repository.list_latest_ap_lldp_history(ap_uuid) is None
+    assert repository.list_latest_ap_lldp_histories() == []
+    assert repository.list_all_ap_lldp_history() == []
+    assert repository.get_previous_ap_lldp_history({"ap_uuid": ap_uuid}) is None
 
 
-def test_shard_authority_excludes_existing_legacy_lldp_rows(tmp_path) -> None:
+def test_engineering_history_readers_ignore_history_store_events(tmp_path) -> None:
     repository = _repository(tmp_path)
     ap_uuid = "ap-cutover"
     _insert_legacy_lldp(repository, ap_uuid)
-    _mark_shard_authoritative(
-        repository,
-        "ac_fit_ap_lldp_history",
-        "ap_lldp_history",
-    )
     _record_event(
         repository,
         kind="fit_ap_lldp",
@@ -195,16 +190,16 @@ def test_shard_authority_excludes_existing_legacy_lldp_rows(tmp_path) -> None:
         payload=_lldp_payload(ap_uuid),
     )
 
-    assert [row["lldp_neighbor"] for row in repository.list_fit_ap_lldp_history_by_ap(ap_uuid)] == ["SW-HISTORY"]
-    assert [row["lldp_neighbor"] for row in repository.list_fit_ap_history_page("lldp", ap_uuid)] == ["SW-HISTORY"]
-    assert repository.count_fit_ap_history("lldp", ap_uuid) == 1
-    assert repository.list_latest_ap_lldp_history(ap_uuid)["lldp_neighbor"] == "SW-HISTORY"
-    assert [row["lldp_neighbor"] for row in repository.list_latest_ap_lldp_histories()] == ["SW-HISTORY"]
-    assert [row["lldp_neighbor"] for row in repository.list_all_ap_lldp_history()] == ["SW-HISTORY"]
-    assert repository.get_previous_ap_lldp_history({"ap_uuid": ap_uuid})["lldp_neighbor"] == "SW-HISTORY"
+    assert repository.list_fit_ap_lldp_history_by_ap(ap_uuid) == []
+    assert repository.list_fit_ap_history_page("lldp", ap_uuid) == []
+    assert repository.count_fit_ap_history("lldp", ap_uuid) == 0
+    assert repository.list_latest_ap_lldp_history(ap_uuid) is None
+    assert repository.list_latest_ap_lldp_histories() == []
+    assert repository.list_all_ap_lldp_history() == []
+    assert repository.get_previous_ap_lldp_history({"ap_uuid": ap_uuid}) is None
 
 
-def test_dropped_legacy_tables_read_history_store_and_keep_counts_consistent(tmp_path) -> None:
+def test_dropped_legacy_tables_do_not_restore_engineering_history_from_events(tmp_path) -> None:
     repository = _repository(tmp_path)
     ap_uuid = "ap-dropped"
     _drop_legacy_history_tables(repository)
@@ -234,16 +229,16 @@ def test_dropped_legacy_tables_read_history_store_and_keep_counts_consistent(tmp
     )
 
     assert repository.list_fit_ap_resource_history("ac-1")[0]["ap_uuid"] == ap_uuid
-    assert repository.list_fit_ap_radio_history_by_ap(ap_uuid)[0]["rid"] == 1
-    assert repository.list_fit_ap_optical_history_by_ap(ap_uuid)[0]["rx_power"] == "-8.1"
-    assert repository.list_all_ap_optical_history()[0]["ap_uuid"] == ap_uuid
-    assert repository.list_fit_ap_lldp_history_by_ap(ap_uuid)[0]["lldp_neighbor"] == "SW-HISTORY"
-    assert repository.list_fit_ap_history_page("lldp", ap_uuid)[0]["ap_uuid"] == ap_uuid
-    assert repository.count_fit_ap_history("lldp", ap_uuid) == 1
-    assert repository.list_latest_ap_lldp_history(ap_uuid)["ap_uuid"] == ap_uuid
-    assert repository.list_latest_ap_lldp_histories()[0]["ap_uuid"] == ap_uuid
-    assert repository.list_all_ap_lldp_history()[0]["ap_uuid"] == ap_uuid
-    assert repository.get_previous_ap_lldp_history({"ap_uuid": ap_uuid}) is not None
+    assert repository.list_fit_ap_radio_history_by_ap(ap_uuid) == []
+    assert repository.list_fit_ap_optical_history_by_ap(ap_uuid) == []
+    assert repository.list_all_ap_optical_history() == []
+    assert repository.list_fit_ap_lldp_history_by_ap(ap_uuid) == []
+    assert repository.list_fit_ap_history_page("lldp", ap_uuid) == []
+    assert repository.count_fit_ap_history("lldp", ap_uuid) == 0
+    assert repository.list_latest_ap_lldp_history(ap_uuid) is None
+    assert repository.list_latest_ap_lldp_histories() == []
+    assert repository.list_all_ap_lldp_history() == []
+    assert repository.get_previous_ap_lldp_history({"ap_uuid": ap_uuid}) is None
     with repository.database.connect() as conn:
         assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
 
@@ -265,17 +260,11 @@ def test_dropped_legacy_tables_without_history_events_return_empty_results(tmp_p
     assert repository.get_previous_ap_lldp_history({"ap_uuid": "missing"}) is None
 
 
-def test_device_fact_history_reads_history_store_after_legacy_tables_are_retired(tmp_path) -> None:
+def test_device_fact_history_keeps_fact_compatibility_without_engineering_fallback(tmp_path) -> None:
     repository = _repository(tmp_path)
     facts = DeviceFactRepository(repository.database)
     with repository.database.connect() as conn:
-        for table in (
-            "device_facts_history",
-            "device_interfaces_history",
-            "device_optical_modules_history",
-            "device_lldp_neighbors_history",
-        ):
-            conn.execute(f"DROP TABLE {table}")
+        conn.execute("DROP TABLE device_facts_history")
         conn.commit()
     _record_event(
         repository,
@@ -283,44 +272,17 @@ def test_device_fact_history_reads_history_store_after_legacy_tables_are_retired
         entity_key="device-1",
         payload={"device_uuid": "device-1", "model": "S6520"},
     )
-    _record_event(
-        repository,
-        kind="device_interface",
-        entity_key="device-1:GE1/0/1",
-        payload={"device_uuid": "device-1", "interface_name": "GE1/0/1"},
-    )
-    _record_event(
-        repository,
-        kind="device_optical",
-        entity_key="device-1:GE1/0/1",
-        payload={
-            "device_uuid": "device-1",
-            "interface_name": "GE1/0/1",
-            "rx_power": "-8.1",
-        },
-    )
-    _record_event(
-        repository,
-        kind="device_lldp",
-        entity_key="device-1:GE1/0/1",
-        payload={
-            "device_uuid": "device-1",
-            "local_interface": "GE1/0/1",
-            "neighbor_interface": "GE1/0/2",
-        },
-    )
-
     assert facts.list_fact_history("device-1")[0]["model"] == "S6520"
-    assert facts.list_interface_history("device-1", "GE1/0/1")
-    assert facts.list_optical_history("device-1", "GE1/0/1")[0]["rx_power"] == "-8.1"
-    assert facts.list_all_optical_history()[0]["device_uuid"] == "device-1"
-    assert facts.get_previous_optical_history("device-1", "GE1/0/1") is not None
-    assert facts.list_lldp_history("device-1", "GE1/0/1")
-    assert facts.list_object_history_page("optical", "device-1", "GE1/0/1")
-    assert facts.count_object_history("optical", "device-1", "GE1/0/1") == 1
+    assert facts.list_interface_history("device-1", "GE1/0/1") == []
+    assert facts.list_optical_history("device-1", "GE1/0/1") == []
+    assert facts.list_all_optical_history() == []
+    assert facts.get_previous_optical_history("device-1", "GE1/0/1") is None
+    assert facts.list_lldp_history("device-1", "GE1/0/1") == []
+    assert facts.list_object_history_page("optical", "device-1", "GE1/0/1") == []
+    assert facts.count_object_history("optical", "device-1", "GE1/0/1") == 0
 
 
-def test_fit_ap_refresh_uses_history_store_after_legacy_tables_are_retired(tmp_path) -> None:
+def test_fit_ap_refresh_uses_bounded_history_after_legacy_tables_are_retired(tmp_path) -> None:
     repository = _repository(tmp_path)
     _drop_legacy_history_tables(repository)
     first_round = [
@@ -394,6 +356,6 @@ def test_fit_ap_refresh_uses_history_store_after_legacy_tables_are_retired(tmp_p
     assert len(current) == 1
     assert current[0]["collected_at"] == "2026-08-01T00:32:00"
     assert current[0]["neighbor_interface"] == "GigabitEthernet1/0/9"
-    assert repository.list_fit_ap_radio_history_by_ap(ap_one)
-    assert repository.list_fit_ap_optical_history_by_ap(ap_one)
+    assert repository.list_fit_ap_radio_history_by_ap(ap_one) == []
+    assert repository.list_fit_ap_optical_history_by_ap(ap_one) == []
     assert repository.list_fit_ap_resource_history("ac-1")

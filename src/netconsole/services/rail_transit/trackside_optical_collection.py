@@ -175,6 +175,7 @@ class TracksideDeviceCollectionResult:
     collect_run_uuid: str = field(default_factory=lambda: uuid4().hex)
     interface_snapshot_status: str = ""
     optical_snapshot_status: str = ""
+    duration_ms: int = 0
 
 
 @dataclass
@@ -219,6 +220,9 @@ class TracksideOpticalSessionResult:
     port_errors: list[dict[str, str]] = field(default_factory=list)
     warning_reason_counts: dict[str, int] = field(default_factory=dict)
     persistence_errors: list[dict[str, object]] = field(default_factory=list)
+    failure_reason_counts: dict[str, int] = field(default_factory=dict)
+    failures: list[dict[str, object]] = field(default_factory=list)
+    fit_ap_resource_failed_count: int = 0
 
 
 ProgressCallback = Callable[..., None]
@@ -754,7 +758,7 @@ def collect_trackside_optical(
                     result,
                 )
         stage("trackside_ap.fit_ap.collect")
-        fit_ap_results, fit_ap_total, fit_ap_skipped = fit_future.result()
+        fit_ap_results, fit_ap_total, fit_ap_skipped, fit_ap_resource_failures = fit_future.result()
         progress_tracker.mark_fit_ap_branch_done()
     persistence_errors: list[dict[str, object]] = []
     persistence_started = time.monotonic()
@@ -786,16 +790,38 @@ def collect_trackside_optical(
     )
     target_ap_offline = bool(target_ap_update and target_ap_resource and is_fit_ap_offline(target_ap_resource))
     skipped.extend(fit_ap_skipped)
+    failures: list[dict[str, object]] = [*fit_ap_resource_failures]
+    failures.extend(_switch_failure_details(results))
+    failures.extend(_fit_ap_failure_details(fit_ap_results))
+    for error in persistence_errors:
+        failures.append(
+            {
+                "target_type": "PERSISTENCE",
+                "device_uuid": "",
+                "device_name": "",
+                "host": "",
+                "stage": str(error.get("stage") or "persist"),
+                "exception_type": str(error.get("exception_type") or "PersistenceError"),
+                "message": str(error.get("message") or ""),
+                "reason_code": "persistence_failed",
+                "duration_ms": int(error.get("elapsed_ms") or 0),
+            }
+        )
     stage("trackside_ap.aggregate")
     progress_tracker.emit_stage("trackside_ap.aggregate", "正在聚合轨旁 AP 光衰结果", phase="aggregate", event="aggregate_started")
     fit_success = sum(max(int(result.optical_rows_updated or 0) - int(result.failed_aps or 0), 0) for result in fit_ap_results)
     fit_failed = sum(int(result.failed_aps or 0) for result in fit_ap_results)
     fit_failures = sum(1 for result in fit_ap_results if not result.success and not result.partial_success and int(result.optical_rows_updated or 0) == 0)
-    total_units = fit_ap_total + len(targets)
+    total_units = fit_ap_total + len(targets) + len(fit_ap_resource_failures)
     stage("trackside_ap.persist")
     progress_tracker.mark_persisting()
     success_count = fit_success + sum(1 for result in results if result.success)
-    failed_count = fit_failed + fit_failures + sum(1 for result in results if not result.success)
+    failed_count = (
+        fit_failed
+        + fit_failures
+        + len(fit_ap_resource_failures)
+        + sum(1 for result in results if not result.success)
+    )
     switch_warnings = [
         warning
         for result in results
@@ -817,6 +843,13 @@ def collect_trackside_optical(
     if persistence_errors:
         failed_count += len(persistence_errors)
     warning_reason_counts = _snapshot_warning_reason_counts(results)
+    failure_reason_counts = _failure_reason_counts(
+        results=results,
+        fit_failed=fit_failed,
+        fit_failures=fit_failures,
+        fit_ap_resource_failures=len(fit_ap_resource_failures),
+        persistence_errors=len(persistence_errors),
+    )
     actionable_skipped_count, ignored_skipped_count, skipped_reason_counts = classify_trackside_skipped(skipped)
     status = _trackside_update_status(
         success_count=success_count,
@@ -833,6 +866,35 @@ def collect_trackside_optical(
         [target.device for target in targets],
         results,
     )
+    fit_ap_resource_status = (
+        "PARTIAL"
+        if fit_ap_resource_failures and (fit_ap_results or fit_ap_total)
+        else "FAILED"
+        if fit_ap_resource_failures
+        else "DONE"
+        if fit_ap_results or fit_ap_total
+        else "SKIPPED"
+    )
+    fit_ap_optical_status = (
+        "FAILED"
+        if fit_failed + fit_failures and not fit_success
+        else "PARTIAL"
+        if fit_failed + fit_failures
+        else "DONE"
+        if fit_ap_results
+        else "FAILED"
+        if fit_ap_resource_failures
+        else "SKIPPED"
+    )
+    station_switch_status = (
+        "PARTIAL"
+        if results and any(not result.success for result in results)
+        else "FAILED"
+        if targets and not results
+        else "DONE"
+        if results
+        else "SKIPPED"
+    )
     _write_session_meta(
         session_dir / "session_meta.json",
         {
@@ -843,11 +905,12 @@ def collect_trackside_optical(
             "target_count": total_units,
             "fit_ap_total": fit_ap_total,
             "fit_ap_resource_count": fit_ap_total,
-            "fit_ap_resource_status": "DONE" if fit_ap_results or fit_ap_total else "SKIPPED",
-            "fit_ap_optical_status": "DONE" if fit_ap_results else "SKIPPED",
-            "station_switch_optical_status": "DONE" if results else "SKIPPED",
+            "fit_ap_resource_status": fit_ap_resource_status,
+            "fit_ap_optical_status": fit_ap_optical_status,
+            "station_switch_optical_status": station_switch_status,
             "fit_ap_optical_success_count": fit_success,
             "fit_ap_optical_failed_count": fit_failed,
+            "fit_ap_resource_failed_count": len(fit_ap_resource_failures),
             "station_switch_success_count": sum(1 for result in results if result.success),
             "station_switch_total": len(targets),
             **coverage,
@@ -877,6 +940,8 @@ def collect_trackside_optical(
             "switch_scope": switch_scope,
             "switch_scope_reason": switch_scope_reason,
             "persistence_errors": persistence_errors,
+            "failure_reason_counts": failure_reason_counts,
+            "failures": failures,
         },
     )
     progress_tracker.mark_completed()
@@ -907,8 +972,8 @@ def collect_trackside_optical(
         current_lldp_port_count=int(coverage.get("current_lldp_port_count") or 0),
         preserved_lldp_port_count=int(coverage.get("preserved_lldp_port_count") or 0),
         fit_ap_resource_count=int(coverage.get("fit_ap_resource_count") or 0),
-        fit_ap_optical_success_count=int(coverage.get("fit_ap_optical_success_count") or fit_success),
-        fit_ap_optical_failed_count=int(coverage.get("fit_ap_optical_failed_count") or fit_failed),
+        fit_ap_optical_success_count=fit_success,
+        fit_ap_optical_failed_count=fit_failed,
         trackside_rows_total=int(coverage.get("trackside_rows_total") or 0),
         rows_with_ap_identity=int(coverage.get("rows_with_ap_identity") or 0),
         rows_without_ap_identity=int(coverage.get("rows_without_ap_identity") or 0),
@@ -923,6 +988,9 @@ def collect_trackside_optical(
         port_errors=switch_port_errors,
         warning_reason_counts=warning_reason_counts,
         persistence_errors=persistence_errors,
+        failure_reason_counts=failure_reason_counts,
+        failures=failures,
+        fit_ap_resource_failed_count=len(fit_ap_resource_failures),
     )
 
 
@@ -940,7 +1008,7 @@ def _trackside_update_coverage(
     fit_ap_optical_rows = ac_repository.list_all_fit_ap_optical()
     fit_ap_resource_rows = ac_repository.list_all_fit_ap_resources_with_metadata()
     active_plan = ac_repository.get_active_trackside_pvid_plan()
-    historical_lldp_rows = ac_repository.list_latest_ap_lldp_histories()
+    current_lldp_rows = ac_repository.list_current_ap_lldp_states()
     latest_switch_collect_runs = {
         str(row.get("device_uuid") or ""): str(row.get("collect_run_uuid") or "")
         for row in fact_repository.list_device_facts()
@@ -956,7 +1024,7 @@ def _trackside_update_coverage(
         None,
         active_plan,
         [],
-        historical_lldp_rows,
+        current_lldp_rows,
         latest_switch_collect_runs=latest_switch_collect_runs,
     )
     candidate_ap_interface_count = sum(
@@ -1065,6 +1133,83 @@ def classify_trackside_skipped(
     return len(skipped) - ignored_count, ignored_count, reason_counts
 
 
+def _switch_failure_details(
+    results: list[TracksideDeviceCollectionResult],
+) -> list[dict[str, object]]:
+    return [
+        {
+            "target_type": result.target.target_type,
+            "device_uuid": str(result.target.device_uuid or ""),
+            "device_name": result.target.name,
+            "host": result.target.host,
+            "stage": "trackside_ap.switch.collect",
+            "exception_type": "CollectionError",
+            "message": str(result.error_message or "交换机采集失败"),
+            "reason_code": "device_collection_failed",
+            "duration_ms": int(result.duration_ms or 0),
+        }
+        for result in results
+        if not result.success
+    ]
+
+
+def _fit_ap_failure_details(results: list[object]) -> list[dict[str, object]]:
+    failures: list[dict[str, object]] = []
+    for result in results:
+        failed_rows = [
+            row
+            for row in (getattr(result, "optical_rows", []) or [])
+            if str(row.get("status") or "").casefold() != "success"
+        ]
+        if failed_rows:
+            for row in failed_rows:
+                failures.append(
+                    {
+                        "target_type": "FIT_AP",
+                        "device_uuid": str(getattr(result, "ac_device_uuid", "") or ""),
+                        "device_name": str(row.get("ap_name") or row.get("ap_uuid") or "FIT-AP"),
+                        "host": str(row.get("ap_ip") or ""),
+                        "stage": "trackside_ap.fit_ap.collect",
+                        "exception_type": "FitApOpticalCollectionError",
+                        "message": str(row.get("error_message") or "AP 光衰采集失败"),
+                        "reason_code": "fit_ap_collection_failed",
+                        "duration_ms": int(row.get("duration_ms") or 0),
+                    }
+                )
+        elif not bool(getattr(result, "success", False)):
+            failures.append(
+                {
+                    "target_type": "FIT_AP",
+                    "device_uuid": str(getattr(result, "ac_device_uuid", "") or ""),
+                    "device_name": str(getattr(result, "ac_device_uuid", "") or "FIT-AP"),
+                    "host": "",
+                    "stage": "trackside_ap.fit_ap.collect",
+                    "exception_type": "FitApOpticalCollectionError",
+                    "message": str(getattr(result, "error_message", "") or "AP 光衰采集失败"),
+                    "reason_code": "fit_ap_collection_failed",
+                    "duration_ms": 0,
+                }
+            )
+    return failures
+
+
+def _failure_reason_counts(
+    *,
+    results: list[TracksideDeviceCollectionResult],
+    fit_failed: int,
+    fit_failures: int,
+    fit_ap_resource_failures: int,
+    persistence_errors: int,
+) -> dict[str, int]:
+    counts = {
+        "device_collection_failed": sum(1 for result in results if not result.success),
+        "fit_ap_collection_failed": int(fit_failed) + int(fit_failures),
+        "fit_ap_resource_failed": int(fit_ap_resource_failures),
+        "persistence_failed": int(persistence_errors),
+    }
+    return {key: value for key, value in counts.items() if value > 0}
+
+
 def _safe_trackside_concurrency(value: object, platform_limit: int) -> int:
     return max(1, min(_positive_int_setting(value, DEFAULT_TRACKSIDE_OPTICAL_CONCURRENCY), int(platform_limit or 1)))
 
@@ -1111,6 +1256,7 @@ def _collect_fit_ap_optical_subtasks(
     ac_repository = AcRepository(repository.database)
     results = []
     skipped: list[TracksideSkippedTarget] = []
+    failures: list[dict[str, object]] = []
     total = 0
     summaries = {str(row.get("ac_device_uuid") or ""): row for row in ac_repository.list_ac_ap_summaries()}
     ac_devices = sorted(
@@ -1143,6 +1289,7 @@ def _collect_fit_ap_optical_subtasks(
             )
 
         emit_ac_progress(f"正在刷新 AC {ac_index}/{ac_total} FIT-AP 资源：{ac_name}", event="ac_resource_refresh_started")
+        resource_started_at = time.monotonic()
         resource_result = collect_h3c_ac_resources(
             ac_device,
             site_name,
@@ -1154,7 +1301,19 @@ def _collect_fit_ap_optical_subtasks(
         )
         if not resource_result.success:
             emit_ac_progress(f"AC {ac_name} FIT-AP 资源刷新失败", event="ac_resource_refresh_failed")
-            skipped.append(TracksideSkippedTarget(ac_device.name, "AC", "fit_ap_resource_failed", ac_device.primary_address))
+            failures.append(
+                {
+                    "target_type": "AC",
+                    "device_uuid": str(ac_device.device_uuid or ""),
+                    "device_name": ac_name,
+                    "host": str(ac_device.primary_address or ""),
+                    "stage": "trackside_ap.ac_resource_refresh",
+                    "exception_type": "AcResourceCollectionError",
+                    "message": str(resource_result.error_message or "AC FIT-AP 资源刷新失败"),
+                    "reason_code": "fit_ap_resource_failed",
+                    "duration_ms": max(0, int((time.monotonic() - resource_started_at) * 1000)),
+                }
+            )
             continue
         resources = _filter_scoped_fit_ap_resources(
             ac_repository.list_fit_ap_resources_with_metadata(str(ac_device.device_uuid or "")),
@@ -1221,7 +1380,7 @@ def _collect_fit_ap_optical_subtasks(
             **fit_collect_kwargs,
         )
         results.append(result)
-    return results, total, skipped
+    return results, total, skipped, failures
 
 
 def _station_for_target_ap(ac_repository: AcRepository, ap_uuid: str | None, ap_mac: str | None, ap_name: str | None) -> str:
@@ -1428,6 +1587,7 @@ def _collect_one_target(
     cancel_event: Event | None = None,
     repository: DeviceRepository | None = None,
 ) -> TracksideDeviceCollectionResult:
+    started_at = time.monotonic()
     connection = None
     try:
         current_device = target.device
@@ -1498,12 +1658,18 @@ def _collect_one_target(
             lldp_status=collected.lldp_status,
             interface_snapshot_status=interface_snapshot_status,
             optical_snapshot_status=optical_snapshot_status,
+            duration_ms=max(0, int((time.monotonic() - started_at) * 1000)),
         )
     except CommandCancelled:
         if cancel_event is not None:
             cancel_event.set()
         return TracksideDeviceCollectionResult(
-            target, False, str(artifact_dir or ""), 0, "采集已取消"
+            target,
+            False,
+            str(artifact_dir or ""),
+            0,
+            "采集已取消",
+            duration_ms=max(0, int((time.monotonic() - started_at) * 1000)),
         )
     except CommandOutputLimitExceeded:
         return TracksideDeviceCollectionResult(
@@ -1512,11 +1678,17 @@ def _collect_one_target(
             str(artifact_dir or ""),
             0,
             "ZTE_OUTPUT_LIMIT_EXCEEDED",
+            duration_ms=max(0, int((time.monotonic() - started_at) * 1000)),
         )
     except Exception as exc:
         message = sanitize_sensitive_text(str(exc), target.device)
         return TracksideDeviceCollectionResult(
-            target, False, str(artifact_dir or ""), 0, message
+            target,
+            False,
+            str(artifact_dir or ""),
+            0,
+            message,
+            duration_ms=max(0, int((time.monotonic() - started_at) * 1000)),
         )
     finally:
         if connection is not None:

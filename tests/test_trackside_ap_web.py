@@ -956,6 +956,19 @@ def test_trackside_update_job_calls_existing_collection_service(monkeypatch, tmp
         warning_reason_counts = {"switch_interface_snapshot_invalid": 1}
         warnings = ["接口摘要无效"]
         port_errors = []
+        failure_reason_counts = {"fit_ap_resource_failed": 1}
+        failures = [{
+            "target_type": "AC",
+            "device_uuid": "ac-1",
+            "device_name": "AC-1",
+            "host": "10.0.0.1",
+            "stage": "trackside_ap.ac_resource_refresh",
+            "exception_type": "AcResourceCollectionError",
+            "message": "SSH 连接失败",
+            "reason_code": "fit_ap_resource_failed",
+            "duration_ms": 123,
+        }]
+        fit_ap_resource_failed_count = 1
 
     def collect(repository, site_id, paths, rows, **kwargs):
         captured.update(repository=repository, site_id=site_id, paths=paths, rows=rows, **kwargs)
@@ -993,6 +1006,10 @@ def test_trackside_update_job_calls_existing_collection_service(monkeypatch, tmp
     assert result["warning_reason_counts"] == {
         "switch_interface_snapshot_invalid": 1
     }
+    assert result["failure_reason_counts"] == {"fit_ap_resource_failed": 1}
+    assert result["failures"][0]["host"] == "10.0.0.1"
+    assert result["failures"][0]["duration_ms"] == 123
+    assert result["fit_ap_resource_failed_count"] == 1
     assert result["has_warning"] is True
     assert progress[-1] == ("trackside_ap_optical_update", 1, 2, "正在更新轨旁 AP 光衰")
     assert identity_rebuilds == ["trackside_ap_optical_refresh_succeeded"]

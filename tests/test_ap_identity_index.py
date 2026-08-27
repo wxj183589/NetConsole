@@ -1246,8 +1246,11 @@ def test_radio_evidence_changes_only_for_semantic_bbssid_changes(
                     "WHERE site_id='current'"
                 ).fetchone()[0]
             )
-            outbox_count = int(
-                connection.execute("SELECT COUNT(*) FROM history_outbox").fetchone()[0]
+            history_count = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM fit_ap_radio_history "
+                    "WHERE ap_uuid='ap-runtime' AND radio_id=1"
+                ).fetchone()[0]
             )
             evidence = connection.execute(
                 """
@@ -1256,16 +1259,16 @@ def test_radio_evidence_changes_only_for_semantic_bbssid_changes(
                 WHERE ap_uuid='ap-runtime' AND rid=1
                 """
             ).fetchone()
-        return revision, outbox_count, str(evidence["bbssid"]), str(evidence["updated_at"])
+        return revision, history_count, str(evidence["bbssid"]), str(evidence["updated_at"])
 
     first = append("48:73:97:cc:e9:af", "2026-08-01T00:00:00+00:00")
     repeated = append("4873.97cc.e9af", "2026-08-01T00:01:00+00:00")
     changed = append("4873-97cc-e9bf", "2026-08-01T00:02:00+00:00")
 
-    assert first[1:] == (1, "4873-97cc-e9af", first[3])
+    assert first[1:] == (0, "4873-97cc-e9af", first[3])
     assert repeated == first
     assert changed[0] == first[0] + 1
-    assert changed[1] == 2
+    assert changed[1] == 1
     assert changed[2] == "4873-97cc-e9bf"
 
 

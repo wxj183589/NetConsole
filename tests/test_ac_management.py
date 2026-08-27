@@ -1493,12 +1493,12 @@ def test_fit_ap_radio_history_is_appended_from_resource_rows(tmp_path):
     history = repository.list_fit_ap_radio_history_by_ap(ap_uuid)
 
     assert history[0]["rid"] == 1
-    assert [row["channel"] for row in history[:2]] == ["153", "149"]
+    assert [row["channel"] for row in history] == ["153"]
     assert history[0]["bandwidth"] == "80"
     assert history[0]["tx_power"] == "25"
 
 
-def test_fit_ap_radio_telemetry_jitter_does_not_create_change_event(tmp_path):
+def test_fit_ap_radio_state_change_creates_one_bounded_event(tmp_path):
     repository = AcRepository(make_database(tmp_path))
     repository.replace_fit_ap_resources(
         "ac-1", [{"ap_name": "ap-a", "serial_number": "SN-001", "rid1_channel": "149", "rid1_usage": "10", "rid1_clients": "2"}]
@@ -1507,11 +1507,10 @@ def test_fit_ap_radio_telemetry_jitter_does_not_create_change_event(tmp_path):
     repository.replace_fit_ap_resources(
         "ac-1", [{"ap_uuid": ap_uuid, "ap_name": "ap-a", "serial_number": "SN-001", "rid1_channel": "149", "rid1_usage": "20", "rid1_clients": "3", "collected_at": "2026-01-01T00:01:00"}]
     )
-    with repository.database.connect() as conn:
-        pending = conn.execute(
-            "SELECT COUNT(*) FROM history_outbox WHERE kind='fit_ap_radio'"
-        ).fetchone()[0]
-    assert pending == 1
+    history = repository.list_fit_ap_radio_history_by_ap(ap_uuid)
+    assert len(history) == 1
+    assert history[0]["usage"] == "20"
+    assert history[0]["clients"] == 3
 
 
 def test_fit_ap_resource_history_is_appended_from_resource_rows(tmp_path):
@@ -5281,7 +5280,7 @@ def test_trackside_fit_ap_branch_skips_without_resources_instead_of_failing(
         lambda *_args, **_kwargs: pytest.fail("无 FIT-AP 资源时不应启动 AP 光衰采集"),
     )
 
-    results, total, skipped = trackside_optical_collection._collect_fit_ap_optical_subtasks(
+    results, total, skipped, failures = trackside_optical_collection._collect_fit_ap_optical_subtasks(
         repository,
         "demo",
         PathResolver(tmp_path),
@@ -5291,9 +5290,101 @@ def test_trackside_fit_ap_branch_skips_without_resources_instead_of_failing(
 
     assert results == []
     assert total == 0
+    assert failures == []
     assert [(item.target_type, item.reason) for item in skipped] == [
         ("FIT_AP", "no_fit_ap_resource")
     ]
+
+
+def test_trackside_fit_ap_branch_reports_ac_resource_failure_as_failure(
+    tmp_path,
+    monkeypatch,
+):
+    database = make_database(tmp_path)
+    repository = DeviceRepository(database)
+    ac = repository.create(
+        Device(
+            name="AC-FAIL",
+            device_type="AC",
+            device_vendor="H3C",
+            ip_address="10.0.0.21",
+            ssh_username="u",
+            ssh_password="p",
+        )
+    )
+    monkeypatch.setattr(
+        trackside_optical_collection,
+        "collect_h3c_ac_resources",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            success=False,
+            error_message="SSH 连接失败",
+        ),
+    )
+
+    results, total, skipped, failures = trackside_optical_collection._collect_fit_ap_optical_subtasks(
+        repository,
+        "demo",
+        PathResolver(tmp_path),
+        concurrency=1,
+        cancel_event=trackside_optical_collection.Event(),
+    )
+
+    assert results == []
+    assert total == 0
+    assert skipped == []
+    assert len(failures) == 1
+    assert failures[0]["device_uuid"] == str(ac.device_uuid)
+    assert failures[0]["host"] == "10.0.0.21"
+    assert failures[0]["stage"] == "trackside_ap.ac_resource_refresh"
+    assert failures[0]["reason_code"] == "fit_ap_resource_failed"
+    assert failures[0]["message"] == "SSH 连接失败"
+
+
+def test_trackside_collection_aggregates_ac_resource_failure_as_failed_unit(
+    tmp_path,
+    monkeypatch,
+):
+    database = make_database(tmp_path)
+    repository = DeviceRepository(database)
+    ac = repository.create(
+        Device(
+            name="AC-FAIL",
+            device_type="AC",
+            device_vendor="H3C",
+            ip_address="10.0.0.22",
+            ssh_username="u",
+            ssh_password="p",
+        )
+    )
+    monkeypatch.setattr(
+        trackside_optical_collection,
+        "collect_h3c_ac_resources",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            success=False,
+            error_message="AC 资源刷新失败",
+        ),
+    )
+
+    result = collect_trackside_optical(
+        repository,
+        "demo",
+        PathResolver(tmp_path),
+        [],
+        concurrency=1,
+    )
+
+    assert result.status == "FAILED"
+    assert result.target_count == 1
+    assert result.success_count == 0
+    assert result.failed_count == 1
+    assert result.fit_ap_resource_failed_count == 1
+    assert result.failure_reason_counts == {"fit_ap_resource_failed": 1}
+    assert result.failures[0]["device_uuid"] == str(ac.device_uuid)
+    assert result.failures[0]["host"] == "10.0.0.22"
+    with (result.session_dir / "session_meta.json").open(encoding="utf-8") as handle:
+        session_meta = json.load(handle)
+    assert session_meta["fit_ap_resource_status"] == "FAILED"
+    assert session_meta["fit_ap_optical_status"] == "FAILED"
 
 
 def test_trackside_collection_dedupes_by_device_id_and_uses_default_concurrency(
@@ -5373,6 +5464,11 @@ def test_trackside_optical_collection_runs_commands_writes_database_and_skips_ra
     assert result.requested_concurrency == 64
     assert result.success_count == 1
     assert result.failed_count == 1
+    assert result.failure_reason_counts == {"device_collection_failed": 1}
+    assert len(result.failures) == 1
+    assert result.failures[0]["device_name"] == "FAIL"
+    assert result.failures[0]["host"] == "10.0.0.99"
+    assert result.failures[0]["stage"] == "trackside_ap.switch.collect"
     expected_commands = [
         "screen-length disable",
         "display interface brief",
@@ -5395,6 +5491,66 @@ def test_trackside_optical_collection_runs_commands_writes_database_and_skips_ra
     )
     assert interfaces[0]["pvid"] == "921"
     assert interfaces[0]["description"] == "To AP"
+
+
+def test_trackside_update_preserves_current_on_failed_or_invalid_snapshot(
+    tmp_path,
+):
+    database = make_database(tmp_path)
+    repository = DeviceRepository(database)
+    switch = create_station_switch(
+        repository,
+        "demo",
+        name="SW-PRESERVE",
+        ip_address="10.0.0.30",
+    )
+    facts = DeviceFactRepository(database)
+    facts.replace_device_interfaces(
+        str(switch.device_uuid),
+        [{"interface_name": "GE1/0/1", "link_status": "UP", "pvid": "100"}],
+    )
+    facts.replace_optical_modules(
+        str(switch.device_uuid),
+        [{"interface_name": "GE1/0/1", "rx_power": "-7.00", "module_serial_number": "OLD"}],
+    )
+    target = trackside_optical_collection.TracksideOpticalTarget(
+        key="device:1",
+        name=switch.name,
+        host="10.0.0.30",
+        port=22,
+        protocol="ssh",
+        target_type="SWITCH",
+        group_name="车站",
+        device=switch,
+        device_uuid=str(switch.device_uuid),
+    )
+
+    trackside_optical_collection._persist_result(
+        repository,
+        AcRepository(database),
+        trackside_optical_collection.TracksideDeviceCollectionResult(
+            target,
+            False,
+            error_message="SSH 连接失败",
+        ),
+    )
+    assert facts.list_device_interfaces(str(switch.device_uuid))[0]["pvid"] == "100"
+    assert facts.list_optical_modules(str(switch.device_uuid))[0]["rx_power"] == "-7.00"
+
+    trackside_optical_collection._persist_result(
+        repository,
+        AcRepository(database),
+        trackside_optical_collection.TracksideDeviceCollectionResult(
+            target,
+            True,
+            interfaces=[{"interface_name": "GE1/0/1", "link_status": "DOWN", "pvid": "200"}],
+            rows=[{"interface_name": "GE1/0/1", "rx_power": "-20.00"}],
+            interface_snapshot_status="PARTIAL",
+            optical_snapshot_status="EMPTY",
+        ),
+    )
+    assert facts.list_device_interfaces(str(switch.device_uuid))[0]["pvid"] == "100"
+    assert facts.list_optical_modules(str(switch.device_uuid))[0]["rx_power"] == "-7.00"
 
 
 def test_trackside_update_combines_fit_ap_service_and_station_switch_collection(

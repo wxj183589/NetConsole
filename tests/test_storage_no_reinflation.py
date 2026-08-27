@@ -792,26 +792,18 @@ def test_device_lldp_ap_association_replay_records_only_semantic_change(
                     ("switch-01",),
                 ).fetchone()[0]
             ),
-            "pending_history": int(
+            "bounded_history": int(
                 connection.execute(
-                    "SELECT COUNT(*) FROM history_outbox "
-                    "WHERE kind='device_lldp' AND entity_key=?",
-                    ("switch-01:GigabitEthernet1/0/1",),
-                ).fetchone()[0]
-            ),
-            "state": int(
-                connection.execute(
-                    "SELECT COUNT(*) FROM history_state "
-                    "WHERE kind='device_lldp' AND entity_key=?",
-                    ("switch-01:GigabitEthernet1/0/1",),
+                    "SELECT COUNT(*) FROM device_lldp_neighbors_history "
+                    "WHERE device_uuid=? AND lower(local_interface)=?",
+                    ("switch-01", "gigabitethernet1/0/1"),
                 ).fetchone()[0]
             ),
         }
-    assert before_counts == {"current": 1, "pending_history": 1, "state": 1}
-    assert len(current) == len(history) == 1
-    assert current[0]["neighbor_device_uuid"] == history[0]["neighbor_device_uuid"] == (
-        "ap-01"
-    )
+    assert before_counts == {"current": 1, "bounded_history": 0}
+    assert len(current) == 1
+    assert history == []
+    assert current[0]["neighbor_device_uuid"] == "ap-01"
 
     changed = {
         **unchanged,
@@ -830,15 +822,7 @@ def test_device_lldp_ap_association_replay_records_only_semantic_change(
         "switch-01", "GigabitEthernet1/0/1"
     )
     assert len(current_after) == 1 and current_after[0]["neighbor_device_uuid"] == "ap-02"
-    assert [row["neighbor_device_uuid"] for row in history_after] == ["ap-02", "ap-01"]
-    with database.connect() as connection:
-        assert int(
-            connection.execute(
-                "SELECT COUNT(*) FROM history_outbox "
-                "WHERE kind='device_lldp' AND entity_key=?",
-                ("switch-01:GigabitEthernet1/0/1",),
-            ).fetchone()[0]
-        ) == 2
+    assert [row["neighbor_device_uuid"] for row in history_after] == ["ap-02"]
 
 
 def test_mesh_repeat_import_and_reparse_keep_one_source_authority(

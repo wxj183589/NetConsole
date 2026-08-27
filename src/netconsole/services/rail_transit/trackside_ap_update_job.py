@@ -84,14 +84,18 @@ def run_trackside_ap_optical_update(context: JobContext) -> dict[str, object]:
         for item in skipped_items
         if str(getattr(item, "target_type", "") or "").upper() in {"AP", "FIT_AP", "AC"}
     )
-    failure_reason_counts = {
-        key: value
-        for key, value in {
-            "device_collection_failed": switch_failed_count,
-            "fit_ap_collection_failed": max(int(result.failed_count or 0) - switch_failed_count, 0),
-        }.items()
-        if value > 0
-    }
+    failure_reason_counts = dict(
+        getattr(result, "failure_reason_counts", {}) or {}
+    )
+    if not failure_reason_counts:
+        failure_reason_counts = {
+            key: value
+            for key, value in {
+                "device_collection_failed": switch_failed_count,
+                "fit_ap_collection_failed": max(int(result.failed_count or 0) - switch_failed_count, 0),
+            }.items()
+            if value > 0
+        }
     warning_count = int(getattr(result, "warning_count", 0) or 0)
     warning_reason_counts = dict(
         getattr(result, "warning_reason_counts", {}) or {}
@@ -101,6 +105,11 @@ def run_trackside_ap_optical_update(context: JobContext) -> dict[str, object]:
     port_errors = [
         dict(value)
         for value in (getattr(result, "port_errors", []) or [])
+        if isinstance(value, Mapping)
+    ]
+    failures = [
+        dict(value)
+        for value in (getattr(result, "failures", []) or [])
         if isinstance(value, Mapping)
     ]
     return {
@@ -125,6 +134,7 @@ def run_trackside_ap_optical_update(context: JobContext) -> dict[str, object]:
         "fit_ap_failed_count": result.fit_ap_optical_failed_count,
         "fit_ap_skipped_count": fit_ap_skipped_count,
         "failure_reason_counts": failure_reason_counts,
+        "failures": failures,
         "warning_count": warning_count,
         "warning_reason_counts": warning_reason_counts,
         "has_warning": warning_count > 0,
@@ -151,6 +161,7 @@ def run_trackside_ap_optical_update(context: JobContext) -> dict[str, object]:
         "fit_ap_resource_count": result.fit_ap_resource_count,
         "fit_ap_optical_success_count": result.fit_ap_optical_success_count,
         "fit_ap_optical_failed_count": result.fit_ap_optical_failed_count,
+        "fit_ap_resource_failed_count": int(getattr(result, "fit_ap_resource_failed_count", 0) or 0),
         "candidate_ap_interface_count": result.candidate_ap_interface_count,
         "current_lldp_port_count": result.current_lldp_port_count,
         "preserved_lldp_port_count": result.preserved_lldp_port_count,

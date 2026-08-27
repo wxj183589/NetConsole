@@ -470,6 +470,7 @@ def test_device_detail_requests_device_threshold_projection(
 def test_device_history_uses_real_fact_repository_and_paginates(tmp_path: Path) -> None:
     client, _service, _adapter, _devices, facts, mr, _sw = _fixture(tmp_path)
     for collected_at, link_status in (
+        ("2026-07-16T09:00:00", "UNKNOWN"),
         ("2026-07-16T10:00:00", "DOWN"),
         ("2026-07-16T11:00:00", "UP"),
     ):
@@ -492,6 +493,15 @@ def test_device_history_uses_real_fact_repository_and_paginates(tmp_path: Path) 
         offset=0,
     )
     assert repository_rows[0]["last_change"] == "2026-07-16T11:00:00"
+    facts.append_optical_history(
+        {
+            "device_uuid": str(mr.device_uuid),
+            "interface_name": "GE1/0/1",
+            "collected_at": "2026-07-16T11:00:00",
+            "status": "normal",
+            "rx_power": "-10 dBm",
+        }
+    )
     facts.append_optical_history(
         {
             "device_uuid": str(mr.device_uuid),
@@ -536,6 +546,47 @@ def test_device_history_uses_real_fact_repository_and_paginates(tmp_path: Path) 
     assert optical_response.status_code == 200
     assert optical_response.json()["items"][0]["values"]["rx_power"] == "-40 dBm"
     assert "status" not in optical_response.json()["items"][0]["values"]
+
+    recent_counts = client.get(
+        f"/api/device-management/devices/{mr.device_uuid}/recent-change-counts"
+    )
+    assert recent_counts.status_code == 200
+    count_by_kind = {
+        (item["kind"], item["object_name"]): item["recent_count"]
+        for item in recent_counts.json()["items"]
+    }
+    assert count_by_kind[("interface", "ge1/0/1")] >= 2
+    assert count_by_kind[("optical", "ge1/0/1")] >= 1
+    assert all(0 <= item["recent_count"] <= 10 for item in recent_counts.json()["items"])
+
+
+def test_device_recent_change_counts_are_grouped_by_current_object(tmp_path: Path) -> None:
+    client, _service, _adapter, _devices, facts, mr, _sw = _fixture(tmp_path)
+    facts.append_interface_history(
+        {
+            "device_uuid": str(mr.device_uuid),
+            "interface_name": "GE1/0/9",
+            "collected_at": "2026-07-16T11:00:00",
+            "link_status": "DOWN",
+        }
+    )
+    facts.append_interface_history(
+        {
+            "device_uuid": str(mr.device_uuid),
+            "interface_name": "GE1/0/9",
+            "collected_at": "2026-07-16T12:00:00",
+            "link_status": "UP",
+        }
+    )
+
+    response = client.get(
+        f"/api/device-management/devices/{mr.device_uuid}/recent-change-counts"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["items"] == [
+        {"kind": "interface", "object_name": "ge1/0/9", "recent_count": 1}
+    ]
 
 
 def test_real_edit_is_validated_and_persisted(

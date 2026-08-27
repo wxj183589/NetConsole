@@ -212,13 +212,18 @@ def test_ac_query_service_returns_allowlisted_radio_history_without_raw_paths(tm
     ap = repository.get_fit_ap_resource_by_uuid("ac-1", "ap-online")
     assert ap is not None
     repository.upsert_fit_ap_resource("ac-1", ap)
+    changed = dict(ap)
+    changed["rid1_clients"] = int(changed.get("rid1_clients") or 0) + 1
+    changed["rid2_clients"] = int(changed.get("rid2_clients") or 0) + 1
+    changed["collected_at"] = "2026-08-01T00:01:00+00:00"
+    repository.upsert_fit_ap_resource("ac-1", changed)
     service = AcManagementQueryService(paths)
 
     history = service.get_ap_history("demo", "ap-online", "radio")
 
     assert history is not None
     assert history.total == 2
-    assert {int(row["rid"]): int(row["clients"] or 0) for row in history.items} == {1: 3, 2: 1}
+    assert {int(row["rid"]): int(row["clients"] or 0) for row in history.items} == {1: 4, 2: 2}
     assert all("ap_name" in row and "status" in row and "usage" in row for row in history.items)
     assert all("raw_log_path" not in row for row in history.items)
     with pytest.raises(ValueError, match="不支持"):

@@ -81,6 +81,7 @@ TRACKSIDE_AP_RESULT_DETAIL_KEYS = (
     "target_count",
     "skipped_reason_counts",
     "failure_reason_counts",
+    "failures",
     "warning_reason_counts",
     "snapshot_id",
     "business_revision",

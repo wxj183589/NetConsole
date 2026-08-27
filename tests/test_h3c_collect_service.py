@@ -191,9 +191,9 @@ def test_collect_service_skips_raw_log_by_default_and_writes_repository_data(mon
     assert optical["module_serial_number"] == "OPT-MANU-0001"
     assert repository.list_lldp_neighbors("11111111-1111-4111-8111-111111111111")[0]["neighbor_sysname"] == "AC-DEMO"
     assert len(repository.list_fact_history("11111111-1111-4111-8111-111111111111")) == 1
-    assert len(repository.list_interface_history("11111111-1111-4111-8111-111111111111", "GigabitEthernet1/0/1")) == 1
-    assert len(repository.list_optical_history("11111111-1111-4111-8111-111111111111", "GigabitEthernet1/0/1")) == 1
-    assert len(repository.list_lldp_history("11111111-1111-4111-8111-111111111111", "GigabitEthernet1/0/1")) == 1
+    assert len(repository.list_interface_history("11111111-1111-4111-8111-111111111111", "GigabitEthernet1/0/1")) == 0
+    assert len(repository.list_optical_history("11111111-1111-4111-8111-111111111111", "GigabitEthernet1/0/1")) == 0
+    assert len(repository.list_lldp_history("11111111-1111-4111-8111-111111111111", "GigabitEthernet1/0/1")) == 0
 
 
 def test_zte_collect_uses_fixture_verified_commands_and_persists_dom(

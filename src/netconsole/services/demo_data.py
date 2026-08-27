@@ -315,9 +315,9 @@ def insert_demo_history(fact_repository: DeviceFactRepository, sw01_uuid: str, s
         ("2026-06-13T10:00:00", "-3.38 dBm"),
         ("2026-06-13T11:00:00", "-3.21 dBm"),
     )
-    for device_uuid, interface_name, neighbor_name, neighbor_ip in (
-        (sw01_uuid, "GigabitEthernet1/0/2", "SW02-DEMO", "10.0.0.53"),
-        (sw02_uuid, "GigabitEthernet1/0/1", "SW01-DEMO", "10.0.0.52"),
+    for device_uuid, interface_name, neighbor_name, neighbor_ip, neighbor_device_uuid in (
+        (sw01_uuid, "GigabitEthernet1/0/2", "SW02-DEMO", "10.0.0.53", sw02_uuid),
+        (sw02_uuid, "GigabitEthernet1/0/1", "SW01-DEMO", "10.0.0.52", sw01_uuid),
     ):
         for index, (collected_at, rx_power) in enumerate(samples, start=1):
             history_run_uuid = f"demo-history-{device_uuid[-4:]}-{index}"
@@ -329,13 +329,13 @@ def insert_demo_history(fact_repository: DeviceFactRepository, sw01_uuid: str, s
                     "UP",
                     "1000M",
                     "full",
-                    "二层",
+                    "L2",
                     "trunk",
-                    "1",
-                    "Demo historical interface",
+                    str(index),
+                    f"Demo historical interface v{index}",
                     "",
-                    f"00:11:22:33:{device_uuid[-2:]}:{index:02d}",
-                    "Tagged VLANs: 10,20",
+                    f"00:11:22:33:{device_uuid[-2:]}:02",
+                    "1,10,20",
                     history_run_uuid,
                     device_uuid,
                     collected_at,
@@ -350,26 +350,26 @@ def insert_demo_history(fact_repository: DeviceFactRepository, sw01_uuid: str, s
                     "38.5 C",
                     "3.31 V",
                     "6.2 mA",
-                    f"DEMO-HIST-OPT-{index}",
+                    "DEMO-HIST-OPT-0001",
                     history_run_uuid,
                     device_uuid,
                     collected_at,
                     raw_log_path=raw_log_path,
                 )
             )
-            fact_repository.append_lldp_history(
-                _demo_lldp(
-                    interface_name,
-                    neighbor_name,
-                    "GigabitEthernet1/0/1",
-                    neighbor_ip,
-                    "",
-                    history_run_uuid,
-                    device_uuid,
-                    collected_at,
-                    raw_log_path=raw_log_path,
-                )
+            lldp_sample = _demo_lldp(
+                interface_name,
+                neighbor_name,
+                "GigabitEthernet1/0/1",
+                neighbor_ip,
+                neighbor_device_uuid,
+                history_run_uuid,
+                device_uuid,
+                collected_at,
+                raw_log_path=raw_log_path,
             )
+            lldp_sample["holdtime"] = str(120 + index)
+            fact_repository.append_lldp_history(lldp_sample)
 
 
 def _demo_interface(

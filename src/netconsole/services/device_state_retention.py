@@ -7,6 +7,8 @@ import json
 from datetime import datetime
 from typing import Any
 
+from netconsole.utils.interface_normalize import normalize_interface_name
+
 DEVICE_LLDP_HISTORY_LIMIT = 10
 DEVICE_OPTICAL_HISTORY_LIMIT = 10
 RETENTION_AUTHORITY = "bounded_v1"
@@ -106,9 +108,9 @@ def _projection(row: dict[str, Any], *, site_id: str, fields: tuple[str, ...], s
 def _lldp_key(row: dict[str, Any]) -> tuple[str, str, str, str]:
     return (
         _text(row.get("device_uuid")),
-        _text(row.get("local_interface")).casefold(),
+        normalize_interface_name(row.get("local_interface")).casefold(),
         _text(row.get("chassis_id") or row.get("neighbor_mac")).casefold(),
-        _text(row.get("neighbor_interface")).casefold(),
+        normalize_interface_name(row.get("neighbor_interface")).casefold(),
     )
 
 
@@ -129,16 +131,31 @@ def _insert_history(conn, table: str, fields: tuple[str, ...], projection: dict[
     )
 
 
-def upsert_device_lldp_current_and_history(conn, row: dict[str, Any], *, site_id: str, now: str = "") -> dict[str, Any]:
+def upsert_device_lldp_current_and_history(
+    conn,
+    row: dict[str, Any],
+    *,
+    site_id: str,
+    now: str = "",
+    replace_local: bool = False,
+) -> dict[str, Any]:
     timestamp = now or _now()
     projection = _projection(row, site_id=site_id, fields=LLDP_COLUMNS, state_fields=LLDP_STATE_COLUMNS, now=timestamp)
     _set_authority(conn, "device_lldp_retention_meta")
     key = _lldp_key(projection)
     candidates = conn.execute(
-        "SELECT * FROM device_lldp_neighbors WHERE device_uuid=? AND lower(local_interface)=?",
-        (key[0], key[1]),
+        "SELECT * FROM device_lldp_neighbors WHERE device_uuid=?",
+        (key[0],),
     ).fetchall()
     current = next((item for item in candidates if _lldp_key(dict(item)) == key), None)
+    if current is None and replace_local:
+        same_interface = [
+            item
+            for item in candidates
+            if normalize_interface_name(dict(item).get("local_interface")).casefold() == key[1]
+        ]
+        if len(same_interface) == 1:
+            current = same_interface[0]
     if current is None:
         fields = (*LLDP_COLUMNS, "site_id", "state_json", "state_fingerprint", "first_seen_at", "last_seen_at", "changed_at", "source_revision")
         values = [projection.get(field) for field in fields]
@@ -158,15 +175,24 @@ def upsert_device_lldp_current_and_history(conn, row: dict[str, Any], *, site_id
     conn.execute(f"UPDATE device_lldp_neighbors SET {assignments} WHERE id=?", values)
     if changed:
         history_key = (projection["site_id"], *key)
-        conn.execute(
-            "DELETE FROM device_lldp_neighbors_history WHERE site_id=? AND device_uuid=? "
-            "AND lower(local_interface)=? AND lower(COALESCE(chassis_id, neighbor_mac, ''))=? "
-            "AND lower(COALESCE(neighbor_interface, ''))=? AND id NOT IN ("
-            "SELECT id FROM device_lldp_neighbors_history WHERE site_id=? AND device_uuid=? "
-            "AND lower(local_interface)=? AND lower(COALESCE(chassis_id, neighbor_mac, ''))=? "
-            "AND lower(COALESCE(neighbor_interface, ''))=? ORDER BY changed_at DESC, id DESC LIMIT ?)",
-            (*history_key, *history_key, DEVICE_LLDP_HISTORY_LIMIT),
-        )
+        history_rows = conn.execute(
+            "SELECT * FROM device_lldp_neighbors_history "
+            "WHERE site_id=? AND device_uuid=? ORDER BY changed_at DESC, id DESC",
+            (history_key[0], history_key[1]),
+        ).fetchall()
+        matching_ids = [
+            int(item["id"])
+            for item in history_rows
+            if _lldp_key(dict(item)) == key
+        ]
+        drop_ids = matching_ids[DEVICE_LLDP_HISTORY_LIMIT:]
+        if drop_ids:
+            placeholders = ", ".join("?" for _ in drop_ids)
+            conn.execute(
+                "DELETE FROM device_lldp_neighbors_history "
+                f"WHERE site_id=? AND device_uuid=? AND id IN ({placeholders})",
+                (history_key[0], history_key[1], *drop_ids),
+            )
     return {**current_data, **projection, "last_seen_at": projection["collected_at"]}
 
 

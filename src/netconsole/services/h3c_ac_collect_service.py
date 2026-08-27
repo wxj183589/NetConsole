@@ -2126,6 +2126,7 @@ def _collect_single_fit_ap_optical(
     fit_ap_dir: Path,
     paths: PathResolver,
 ) -> dict[str, object | None]:
+    started_at = time.monotonic()
     ap_name = str(ap_row.get("ap_name") or ap_row.get("ap_ip") or "fit_ap")
     ap_ip = str(ap_row.get("ap_ip") or "")
     raw_log_file = fit_ap_dir / f"{_safe_filename(ap_name)}.log"
@@ -2228,7 +2229,13 @@ def _collect_single_fit_ap_optical(
         if error_message:
             error_message = _fit_ap_optical_error_message(_fit_ap_optical_error_category(error_message), error_message)
         _safe_log_info("FIT_AP_OPTICAL_AP_SUCCESS" if success else "FIT_AP_OPTICAL_AP_FAILED", _detail(ac_device, collect_run_uuid, ap=ap_name, error="" if success else error_message or "no optical data parsed"))
-        return {**base, **parsed, "status": status, "error_message": error_message}
+        return {
+            **base,
+            **parsed,
+            "status": status,
+            "error_message": error_message,
+            "duration_ms": max(0, int((time.monotonic() - started_at) * 1000)),
+        }
     except Exception as exc:
         message = sanitize_sensitive_text(str(exc), temp_device)
         category = _fit_ap_optical_error_category(message)
@@ -2239,7 +2246,18 @@ def _collect_single_fit_ap_optical(
             raw_message = sanitize_sensitive_text(str(raw_exc), temp_device)
             _safe_log_warning("FIT_AP_OPTICAL_RAW_LOG_WRITE_FAILED", _detail(ac_device, collect_run_uuid, ap=ap_name, error=raw_message))
         _safe_log_error("FIT_AP_OPTICAL_AP_FAILED", _detail(ac_device, collect_run_uuid, ap=ap_name, error=f"category={category}, error={message}, traceback={trace}"))
-        return {**base, **_failed_fit_ap_optical_row(ac_device, ap_row, collect_run_uuid, category, message, raw_log_path=relative_raw_log_path)}
+        return {
+            **base,
+            **_failed_fit_ap_optical_row(
+                ac_device,
+                ap_row,
+                collect_run_uuid,
+                category,
+                message,
+                raw_log_path=relative_raw_log_path,
+            ),
+            "duration_ms": max(0, int((time.monotonic() - started_at) * 1000)),
+        }
     finally:
         if connection is not None:
             _disconnect(connection)
