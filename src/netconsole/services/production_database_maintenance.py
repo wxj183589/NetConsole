@@ -1572,7 +1572,7 @@ class ProductionMaintenanceCapability:
             journal = self._journal_factory(self.paths, operation_id)
             lock_key = site_database_maintenance_key(site.site_id)
             journal.update(
-                "created",
+                "production_preflight",
                 **preflight,
                 active_path=str(database),
                 shadow_path=str(candidate_path),
@@ -1617,10 +1617,14 @@ class ProductionMaintenanceCapability:
                     switched = True
                 finally:
                     runtime_lock.release()
-                journal.update("switched", switched=True)
+                # A validated production replacement is safe for the normal
+                # startup recovery scanner to observe while the external
+                # restart/functional callbacks run.  The capability still
+                # rolls it back if either callback fails.
+                journal.update("production_switched", switched=True)
                 if not restart_verifier():
                     raise ProductionMaintenanceError("restart verification failed")
-                journal.update("restart_verified")
+                journal.update("production_switched", restart_verified=True)
                 if not functional_gate():
                     raise ProductionMaintenanceError("functional gate failed")
                 journal.update("completed", functional_gate="PASS")

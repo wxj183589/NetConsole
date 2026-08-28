@@ -15,6 +15,9 @@ from netconsole.services.database_upgrade.sqlite_consistency import sqlite_backu
 
 _TERMINAL_STAGES = {
     "completed",
+    "production_preflight",
+    "production_switched",
+    "production_rolled_back",
     "failed_before_switch",
     "failed_rolled_back",
     "diagnostic_retention_failed",
