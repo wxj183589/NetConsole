@@ -43,6 +43,20 @@ source worktree 或 packaged build metadata 还必须明确 `build_dirty=false`�
 SQLite 文件。符号链接、越界路径、未登记 Site、显示名不一致和额外数据库一律
 失败关闭。
 
+候选迁移与完整性审计只遍历 SiteRegistry 登记的 `relative_path`。`sites/` 下未登记
+的目录或数据库不属于 cutover 作用域，必须保留并单独分类；不得因为未登记而自动
+删除、移动或纳入全局迁移。候选路径解析还会拒绝符号链接、越界路径、重复
+`site_id` 和缺失的登记目录。
+
+Task Blob rollout 的 `RESULT_REF_AUTHORITY` 只在物理 schema、结果引用、Blob、父任务
+关系和内容哈希全部审计通过时才可作为候选证据。迁移会在批次失败时回滚该批次，且
+不会通过脚本直接翻转 rollout 状态；生产 `tasks.db` 仍须在受控切换门内替换。
+
+旧 `component_resume` journal 是恢复证据，不是默认清理目标。已终态的 journal 保留
+原文件并记录大小、SHA-256、错误和候选/回滚制品；仍有活动制品或越界制品时必须
+fail-closed。runtime smoke 只读盘点，不自动归档、隔离、移动或删除生产 journal、
+staging、数据库和 WAL；后续 quarantine 必须是独立授权操作。
+
 ## Manifest 契约
 
 destructive manifest 必须由当前隔离 snapshot 生成并标记 immutable，至少绑定：

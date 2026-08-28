@@ -553,6 +553,22 @@ def test_production_capability_requires_exact_allowlist(tmp_path: Path) -> None:
         )
 
 
+def test_production_capability_targets_only_authority_databases(
+    tmp_path: Path,
+) -> None:
+    paths, site, _root = _site(tmp_path)
+    capability = ProductionMaintenanceCapability(
+        paths,
+        site_id="legacy-dfd356e96ea0",
+        evidence_binding=_binding(paths),
+    )
+
+    external = site / "db" / "history.db"
+    external.write_bytes(b"external database")
+    with pytest.raises(ProductionMaintenanceError, match="allowlist"):
+        capability._site_and_database("history.db")
+
+
 def test_evidence_binding_rejects_registry_or_script_content_drift(
     tmp_path: Path,
 ) -> None:

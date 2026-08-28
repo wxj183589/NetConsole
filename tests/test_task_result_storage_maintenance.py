@@ -102,3 +102,45 @@ def test_migrate_then_compact_preserves_result_and_retires_body_projection(
     finally:
         connection.close()
     assert blob == canonical
+
+
+def test_migrate_repairs_authority_metadata_when_physical_schema_is_legacy(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "tasks.db"
+    result_id, _, digest = _legacy_result_database(database)
+    with sqlite3.connect(database) as connection:
+        connection.execute("CREATE TABLE task_snapshots (task_id TEXT PRIMARY KEY)")
+        connection.execute("INSERT INTO task_snapshots(task_id) VALUES (?)", ("task-legacy",))
+        connection.execute(
+            "CREATE TABLE task_result_storage_rollout ("
+            "singleton_id INTEGER PRIMARY KEY, state TEXT NOT NULL)"
+        )
+        connection.execute(
+            "INSERT INTO task_result_storage_rollout(singleton_id,state) VALUES (1, 'RESULT_REF_AUTHORITY')"
+        )
+        connection.commit()
+
+    migrated = migrate_database(
+        "demo",
+        database,
+        apply=True,
+        limit=None,
+        batch_size=10,
+        verify=True,
+        resume=False,
+    )
+
+    assert migrated["status"] == "PASS"
+    assert migrated["authority"]["rollout_state"] == "RESULT_REF_AUTHORITY"
+    assert migrated["authority"]["physical_schema_ready"] is True
+    assert migrated["authority"]["missing_blob"] == 0
+    assert migrated["authority"]["hash_mismatch"] == 0
+    assert migrated["authority"]["task_result_parent_orphans"] == 0
+    with sqlite3.connect(database) as connection:
+        row = connection.execute(
+            "SELECT content_sha256, blob_ready FROM task_results WHERE result_id=?",
+            (result_id,),
+        ).fetchone()
+        assert row == (digest, 1)
+        assert connection.execute("SELECT COUNT(*) FROM task_result_blobs").fetchone()[0] == 1

@@ -468,13 +468,43 @@ def _resolve_data_root(value: str) -> Path:
 
 
 def _active_sites(data_root: Path, selected: set[str] | None) -> list[tuple[str, Path]]:
+    registry_path = data_root / "config" / "site_registry.json"
+    try:
+        value = json.loads(registry_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(
+            f"site registry is required; refusing to scan unregistered directories: {registry_path}"
+        ) from exc
+    raw_sites = value.get("sites") if isinstance(value, dict) else None
+    if not isinstance(raw_sites, list):
+        raise ValueError("site registry has no sites; refusing to scan unregistered directories")
+    sites_root = (data_root / "sites").resolve()
     result: list[tuple[str, Path]] = []
-    for db in sorted(data_root.glob("sites/*/db/devices.db")):
-        site_id = db.parent.parent.name
-        if selected and site_id not in selected:
+    seen: set[str] = set()
+    for item in raw_sites:
+        if not isinstance(item, dict):
             continue
-        result.append((site_id, db))
-    return result
+        site_id = str(item.get("site_id") or "").strip().casefold()
+        relative = Path(str(item.get("relative_path") or f"sites/{site_id}"))
+        if not site_id or relative.is_absolute() or ".." in relative.parts:
+            raise ValueError("site registry contains an invalid site identity or path")
+        raw_root = data_root / relative
+        site_root = raw_root.resolve()
+        if (
+            raw_root.is_symlink()
+            or site_root.parent != sites_root
+            or not site_root.is_dir()
+        ):
+            raise ValueError(f"site registry path is invalid: {site_id}")
+        if site_id in seen:
+            raise ValueError(f"site registry contains duplicate site_id: {site_id}")
+        seen.add(site_id)
+        if selected and site_id not in selected and site_root.name not in selected:
+            continue
+        database = site_root / "db" / "devices.db"
+        if database.is_file() and not database.is_symlink():
+            result.append((site_id, database))
+    return sorted(result, key=lambda item: item[0])
 
 
 def migrate(
@@ -551,7 +581,7 @@ def _cutover_candidates(data_root: Path, candidate_root: Path, report: dict[str,
     try:
         for site in report["sites"]:
             site_id = str(site["site_id"])
-            source_db = data_root / "sites" / site_id / "db" / "devices.db"
+            source_db = Path(str(site["source_database"])).resolve()
             candidate_db = candidate_root / "sites" / site_id / "db" / "devices.db"
             if not candidate_db.is_file():
                 raise RuntimeError(f"missing candidate database: {candidate_db}")
@@ -610,7 +640,7 @@ def main() -> int:
         candidate_root = Path(args.candidate_root).resolve()
         for site in report.get("sites", []):
             site_id = str(site["site_id"])
-            source_db = data_root / "sites" / site_id / "db" / "devices.db"
+            source_db = Path(str(site["source_database"])).resolve()
             source_history = source_db.parent / "history"
             source_manifest = _manifest(
                 [source_db, source_history / "catalog.db", *sorted(source_history.glob("devices-*.db"))]

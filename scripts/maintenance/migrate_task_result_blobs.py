@@ -20,10 +20,12 @@ from netconsole.repositories.task_result_blob_repository import (
     TaskResultBlobError,
     ensure_blob,
     read_blob,
+    verify_task_result_authority,
 )
 
 
 DEV_ROOT = Path(r"D:\NetConsoleData-dev")
+ISOLATED_DEV_ROOT_PARENT = Path(r"D:\study\test-data\NetConsole")
 SCHEMA_COLUMNS = {
     "content_sha256": "TEXT NOT NULL DEFAULT ''",
     "blob_codec": "TEXT NOT NULL DEFAULT ''",
@@ -45,6 +47,16 @@ def _is_under(path: Path, root: Path) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _is_allowed_apply_root(root: Path) -> bool:
+    resolved = root.resolve()
+    if resolved == DEV_ROOT.resolve():
+        return True
+    return (
+        resolved.name == "NetConsoleData-dev"
+        and _is_under(resolved, ISOLATED_DEV_ROOT_PARENT)
+    )
 
 
 def _open(path: Path, *, read_only: bool) -> sqlite3.Connection:
@@ -222,6 +234,120 @@ def _verify_existing(conn: sqlite3.Connection, row: sqlite3.Row) -> None:
     read_blob(conn, content_sha256=digest, expected_bytes=int(row["byte_size"] or -1))
 
 
+def _rollout_state(conn: sqlite3.Connection) -> str:
+    if not _table_exists(conn, "task_result_storage_rollout"):
+        return "LEGACY_UNTRACKED"
+    row = conn.execute(
+        "SELECT state FROM task_result_storage_rollout WHERE singleton_id=1"
+    ).fetchone()
+    return str(row[0] or "LEGACY_UNTRACKED") if row is not None else "LEGACY_UNTRACKED"
+
+
+def _authority_audit(conn: sqlite3.Connection) -> dict[str, Any]:
+    """Return a fail-closed physical/reference audit after migration.
+
+    A rollout flag is only meaningful together with its physical schema.  The
+    audit deliberately verifies every ready Blob instead of trusting the
+    legacy ``canonical_json`` projection as a fallback.
+    """
+
+    required_blob_columns = {
+        "content_sha256",
+        "codec",
+        "compressed_blob",
+        "uncompressed_bytes",
+        "compressed_bytes",
+        "created_time",
+        "verified_at",
+    }
+    required_result_columns = {"content_sha256", "blob_codec", "blob_ready"}
+    result_columns = {
+        str(row["name"])
+        for row in conn.execute("PRAGMA table_info(task_results)").fetchall()
+    } if _table_exists(conn, "task_results") else set()
+    blob_columns = {
+        str(row["name"])
+        for row in conn.execute("PRAGMA table_info(task_result_blobs)").fetchall()
+    } if _table_exists(conn, "task_result_blobs") else set()
+    schema_ready = required_result_columns <= result_columns and required_blob_columns <= blob_columns
+    audit: dict[str, Any] = {
+        "rollout_state": _rollout_state(conn),
+        "physical_schema_ready": schema_ready,
+        "task_result_blobs_exists": _table_exists(conn, "task_result_blobs"),
+        "task_result_columns": sorted(result_columns),
+        "task_blob_columns": sorted(blob_columns),
+        "task_result_parent_orphans": 0,
+        "task_blob_orphans": 0,
+        "missing_blob": 0,
+        "hash_mismatch": 0,
+        "not_ready_rows": 0,
+        "invalid_authority_rows": 0,
+    }
+    if not _table_exists(conn, "task_results"):
+        audit["status"] = "PASS"
+        return audit
+    if not schema_ready:
+        audit["status"] = "FAIL"
+        return audit
+
+    audit["task_result_parent_orphans"] = int(
+        conn.execute(
+            "SELECT COUNT(*) FROM task_results r "
+            "LEFT JOIN task_snapshots s ON s.task_id=r.task_id "
+            "WHERE s.task_id IS NULL"
+        ).fetchone()[0]
+    ) if _table_exists(conn, "task_snapshots") else int(
+        conn.execute("SELECT COUNT(*) FROM task_results").fetchone()[0]
+    )
+    audit["missing_blob"] = int(
+        conn.execute(
+            "SELECT COUNT(*) FROM task_results r "
+            "LEFT JOIN task_result_blobs b ON b.content_sha256=r.content_sha256 "
+            "WHERE r.blob_ready=1 AND (r.content_sha256='' OR b.content_sha256 IS NULL)"
+        ).fetchone()[0]
+    )
+    audit["not_ready_rows"] = int(
+        conn.execute("SELECT COUNT(*) FROM task_results WHERE blob_ready<>1").fetchone()[0]
+    )
+    audit["task_blob_orphans"] = int(
+        conn.execute(
+            "SELECT COUNT(*) FROM task_result_blobs b "
+            "WHERE NOT EXISTS ("
+            "SELECT 1 FROM task_results r "
+            "WHERE r.blob_ready=1 AND r.content_sha256=b.content_sha256)"
+        ).fetchone()[0]
+    )
+    for raw in conn.execute("SELECT * FROM task_results ORDER BY result_id").fetchall():
+        row = dict(raw)
+        try:
+            if int(row.get("blob_ready") or 0) != 1:
+                audit["invalid_authority_rows"] += 1
+                continue
+            if (
+                str(row.get("content_sha256") or "") != str(row.get("sha256") or "")
+                or str(row.get("blob_codec") or "") != TASK_RESULT_BLOB_CODEC_ZLIB
+            ):
+                audit["hash_mismatch"] += 1
+                continue
+            verified = verify_task_result_authority(conn, row)
+            if str(verified.get("sha256") or "") != str(row.get("sha256") or ""):
+                audit["hash_mismatch"] += 1
+        except (TaskResultBlobError, sqlite3.DatabaseError, TypeError, ValueError):
+            audit["hash_mismatch"] += 1
+    audit["status"] = "PASS" if not any(
+        int(audit[key])
+        for key in (
+            "task_result_parent_orphans",
+            "task_blob_orphans",
+            "missing_blob",
+            "hash_mismatch",
+            "not_ready_rows",
+            "invalid_authority_rows",
+        )
+    ) else "FAIL"
+    return audit
+
+
 def migrate_database(
     site: str,
     db_path: Path,
@@ -238,12 +364,15 @@ def migrate_database(
             return {"site": site, "db_path": str(db_path), "total_results": 0, "status": "NO_TASK_RESULTS"}
         if not apply:
             metrics = _canonical_metrics(_rows(connection, limit=limit, resume=resume))
+            authority = _authority_audit(connection)
             return {
                 "site": site,
                 "db_path": str(db_path),
                 "mode": "DRY_RUN",
                 **_task_row_metrics(connection),
                 **metrics,
+                "status": "PASS" if authority["status"] == "PASS" else "FAIL",
+                "authority": authority,
             }
 
         connection.execute("BEGIN IMMEDIATE")
@@ -264,9 +393,11 @@ def migrate_database(
         if batch:
             _apply_batch(connection, batch, metrics, verify=verify)
             processed += len(batch)
+        authority = _authority_audit(connection)
         metrics["processed_rows"] = processed
         metrics["mode"] = "APPLY"
-        return {"site": site, "db_path": str(db_path), **metrics}
+        metrics["status"] = "PASS" if authority["status"] == "PASS" else "FAIL"
+        return {"site": site, "db_path": str(db_path), **metrics, "authority": authority}
     finally:
         connection.close()
 
@@ -279,6 +410,7 @@ def _apply_batch(
     verify: bool,
 ) -> None:
     connection.execute("BEGIN IMMEDIATE")
+    first_error: Exception | None = None
     try:
         for row in rows:
             try:
@@ -292,10 +424,16 @@ def _apply_batch(
                 digest = hashlib.sha256(encoded).hexdigest()
                 if digest != str(row["sha256"] or "") or len(encoded) != int(row["byte_size"] or -1):
                     metrics["hash_mismatch"] += 1
+                    first_error = first_error or TaskResultBlobError(
+                        f"task result hash/size mismatch: {row['result_id']}"
+                    )
                     continue
                 parsed = json.loads(canonical)
                 if not isinstance(parsed, dict):
                     metrics["failed"] += 1
+                    first_error = first_error or TaskResultBlobError(
+                        f"task result JSON is not an object: {row['result_id']}"
+                    )
                     continue
                 ensure_blob(
                     connection,
@@ -313,8 +451,14 @@ def _apply_batch(
                 if verify:
                     read_blob(connection, content_sha256=digest, expected_bytes=len(encoded))
                 metrics["written_blobs"] += 1
-            except (TaskResultBlobError, json.JSONDecodeError, sqlite3.DatabaseError):
+            except (TaskResultBlobError, json.JSONDecodeError, sqlite3.DatabaseError) as exc:
                 metrics["failed"] += 1
+                first_error = first_error or exc
+        if first_error is not None:
+            connection.rollback()
+            raise TaskResultBlobError(
+                f"task result Blob migration batch failed: {first_error}"
+            ) from first_error
         connection.commit()
     except Exception:
         connection.rollback()
@@ -322,16 +466,44 @@ def _apply_batch(
 
 
 def _resolve(root: Path, site: str | None, all_sites: bool) -> list[tuple[str, Path]]:
+    registry_path = root / "config" / "site_registry.json"
+    try:
+        registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"局点 Registry 不可读，拒绝扫描未登记目录: {registry_path}") from exc
+    raw_sites = registry.get("sites") if isinstance(registry, dict) else None
+    if not isinstance(raw_sites, list):
+        raise SystemExit("局点 Registry 缺少 sites，拒绝扫描未登记目录")
+    sites_root = (root / "sites").resolve()
+    registered: dict[str, Path] = {}
+    for item in raw_sites:
+        if not isinstance(item, dict):
+            continue
+        site_id = str(item.get("site_id") or "").strip().casefold()
+        relative = Path(str(item.get("relative_path") or f"sites/{site_id}"))
+        if not site_id or relative.is_absolute() or ".." in relative.parts:
+            raise SystemExit("局点 Registry 存在越界或空 site_id，拒绝迁移扫描")
+        site_root = (root / relative).resolve()
+        raw_root = root / relative
+        if (
+            raw_root.is_symlink()
+            or site_root.parent != sites_root
+            or not site_root.is_dir()
+        ):
+            raise SystemExit(f"局点 Registry 路径无效，拒绝迁移扫描: {site_id}")
+        if site_id in registered:
+            raise SystemExit(f"局点 Registry 存在重复 site_id: {site_id}")
+        task_db = site_root / "db" / "tasks.db"
+        if task_db.is_file() and not task_db.is_symlink():
+            registered[site_id] = task_db
     if site:
-        return [(site, _db_path(root, site))]
+        wanted = str(site).strip().casefold()
+        if wanted not in registered:
+            raise SystemExit(f"site 未登记或缺少 tasks.db，拒绝扫描: {site}")
+        return [(wanted, registered[wanted])]
     if not all_sites:
         raise SystemExit("必须指定 --site 或 --all-sites")
-    sites = root / "sites"
-    return [
-        (item.name, item / "db" / "tasks.db")
-        for item in sorted(sites.iterdir(), key=lambda path: path.name.casefold())
-        if item.is_dir() and (item / "db" / "tasks.db").is_file()
-    ]
+    return sorted(registered.items(), key=lambda item: item[0])
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -353,8 +525,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.apply and args.dry_run:
         raise SystemExit("--apply 与 --dry-run 不能同时使用")
     root = args.data_root.resolve()
-    if args.apply and root != DEV_ROOT.resolve():
-        raise SystemExit("--apply 只允许 D:\\NetConsoleData-dev")
+    if args.apply and not _is_allowed_apply_root(root):
+        raise SystemExit(
+            "--apply 只允许 D:\\NetConsoleData-dev 或 D:\\study\\test-data\\NetConsole 下的隔离 NetConsoleData-dev 副本"
+        )
     targets = _resolve(root, args.site, args.all_sites)
     reports: list[dict[str, Any]] = []
     for site, path in targets:
@@ -372,8 +546,12 @@ def main(argv: list[str] | None = None) -> int:
                 resume=bool(args.resume),
             )
         )
-    print(json.dumps({"schema": "task-result-blobs-migration/v1", "apply": bool(args.apply), "reports": reports}, ensure_ascii=False, indent=2))
-    return 0
+    status = "PASS" if all(
+        str(report.get("status") or "PASS") in {"PASS", "NO_TASK_RESULTS"}
+        for report in reports
+    ) else "FAIL"
+    print(json.dumps({"schema": "task-result-blobs-migration/v1", "apply": bool(args.apply), "status": status, "reports": reports}, ensure_ascii=False, indent=2))
+    return 0 if status == "PASS" else 1
 
 
 if __name__ == "__main__":

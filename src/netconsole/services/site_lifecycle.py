@@ -30,6 +30,17 @@ _DEFAULT_TABLES = {
     "task_result_storage_rollout",
     "online_mr_task_session_schema",
     "agent_schema_meta",
+    # These tables only store retention policy/revision metadata.  They are
+    # created by an empty database bootstrap and must not make an otherwise
+    # empty legacy shell look like it contains user/business data.  Keeping
+    # them out of the business-row calculation is also what allows the
+    # external-reference guard to run for an empty shell.
+    "device_interface_retention_meta",
+    "device_lldp_retention_meta",
+    "device_optical_retention_meta",
+    "fit_ap_lldp_retention_meta",
+    "optical_retention_meta",
+    "fit_ap_radio_retention_meta",
     "device_groups",
     "ap_identity_entities",
     "ap_identity_mac_aliases",

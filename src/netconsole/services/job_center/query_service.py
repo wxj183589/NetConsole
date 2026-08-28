@@ -399,17 +399,20 @@ class JobCenterQueryService:
         return conn
 
     def _task_select(self, conn: sqlite3.Connection, *, detail: bool) -> str:
+        has_result_id = self._column_exists(conn, "task_snapshots", "result_id")
         has_result_refs = self._table_exists(
             conn, "task_results"
-        ) and self._column_exists(conn, "task_snapshots", "result_id")
+        ) and has_result_id
         result_blob_columns = self._result_blob_metadata_columns(conn)
         result_column = (
             ", task.result_json AS legacy_result_json, '{}' AS result_json"
             if detail
-            else """
-                , NULL AS business_result_json
-                , NULL AS artifact_result_json
-            """
+            else (
+                ", CASE WHEN COALESCE(task.result_id, '') = '' "
+                "THEN task.result_json ELSE '' END AS legacy_result_json"
+                if has_result_id
+                else ", task.result_json AS legacy_result_json"
+            )
         )
         result_columns = (
             f"""
@@ -650,6 +653,10 @@ class JobCenterQueryService:
             self._verify_result_reference_metadata(row)
         result = self._json_object(row.get("result_json")) if include_result else {}
         result_summary = self._json_object(row.get("result_summary_json"))
+        if not include_result and not result_summary:
+            result_summary = self._bounded_result_summary(
+                self._json_object(row.get("legacy_result_json"))
+            )
         business_result = (
             result
             if include_result
@@ -828,6 +835,59 @@ class JobCenterQueryService:
     @classmethod
     def _business_result_has_warning(cls, result: dict[str, Any]) -> bool:
         return business_result_has_warning(result)
+
+    @staticmethod
+    def _bounded_result_summary(result: dict[str, Any]) -> dict[str, Any]:
+        """Keep legacy list projections useful without exposing full payloads."""
+
+        summary: dict[str, Any] = {}
+        for key in (
+            "business_status",
+            "business_outcome",
+            "success_count",
+            "failed_count",
+            "skipped_count",
+            "warning_count",
+            "partial_success",
+            "artifact_id",
+            "artifact_ref",
+            "artifact_path",
+            "artifact_name",
+            "artifact_source",
+            "artifact_type",
+            "available",
+            "display_name",
+            "download_ref",
+            "filename",
+            "name",
+            "size",
+            "size_bytes",
+            "sha256",
+            "result_ref",
+            "records_count",
+            "snapshot_id",
+        ):
+            value = result.get(key)
+            if isinstance(value, (str, int, bool)):
+                summary[key] = value
+        for key in (
+            "failure_reason_counts",
+            "skipped_reason_counts",
+            "warning_reason_counts",
+        ):
+            value = result.get(key)
+            if isinstance(value, dict):
+                summary[key] = {
+                    str(reason): int(count)
+                    for reason, count in sorted(
+                        value.items(), key=lambda item: str(item[0])
+                    )[:32]
+                    if isinstance(count, int) and count >= 0
+                }
+        reason = result.get("primary_failure_reason") or result.get("error_code")
+        if isinstance(reason, str) and reason:
+            summary["primary_failure_reason"] = reason[:500]
+        return summary
 
     @staticmethod
     def _module(owner: str, task_type: str) -> str:

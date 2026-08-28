@@ -12,7 +12,7 @@ from netconsole.core.paths import PathResolver
 from netconsole.repositories.history_store import verify_task_result_row
 from netconsole.repositories.task_result_blob_repository import (
     TaskResultBlobError,
-    read_blob,
+    verify_task_result_authority,
 )
 
 
@@ -86,6 +86,12 @@ def audit_database(site: str, db_path: Path, *, data_root: Path) -> dict[str, ob
         "snapshot_count": 0,
         "result_count": 0,
         "blob_count": 0,
+        "rollout_state": "LEGACY_UNTRACKED",
+        "authority_schema_ready": False,
+        "task_result_parent_orphans": 0,
+        "task_blob_orphans": 0,
+        "missing_blob": 0,
+        "hash_mismatch": 0,
         "issues": [],
         "orphan_result_ids": [],
         "orphan_blob_hashes": [],
@@ -101,6 +107,26 @@ def audit_database(site: str, db_path: Path, *, data_root: Path) -> dict[str, ob
     issues: list[dict[str, object]] = []
     with _open(db_path) as conn:
         tables = _tables(conn)
+        result_columns = _columns(conn, "task_results") if "task_results" in tables else set()
+        blob_columns = _columns(conn, "task_result_blobs") if "task_result_blobs" in tables else set()
+        if "task_result_storage_rollout" in tables:
+            rollout = conn.execute(
+                "SELECT state FROM task_result_storage_rollout WHERE singleton_id=1"
+            ).fetchone()
+            result["rollout_state"] = (
+                str(rollout[0] or "LEGACY_UNTRACKED")
+                if rollout is not None
+                else "LEGACY_UNTRACKED"
+            )
+        result["authority_schema_ready"] = bool(
+            {"content_sha256", "blob_codec", "blob_ready"} <= result_columns
+            and {
+                "content_sha256", "codec", "compressed_blob", "uncompressed_bytes",
+                "compressed_bytes", "created_time", "verified_at",
+            } <= blob_columns
+        )
+        if result["rollout_state"] == "RESULT_REF_AUTHORITY" and not result["authority_schema_ready"]:
+            issues.append({"code": "ROLLOUT_PHYSICAL_SCHEMA_MISMATCH"})
         task_ids: set[str] = set()
         if "task_snapshots" in tables:
             task_ids = {
@@ -137,14 +163,18 @@ def audit_database(site: str, db_path: Path, *, data_root: Path) -> dict[str, ob
                 if not result_id:
                     issues.append({"code": "RESULT_ID_EMPTY"})
                     continue
+                if str(row.get("task_id") or "") not in task_ids:
+                    result["task_result_parent_orphans"] += 1
+                    result["orphan_result_ids"].append(result_id)
                 try:
-                    if int(row.get("blob_ready") or 0):
-                        row["canonical_json"] = read_blob(
-                            conn,
-                            content_sha256=str(row.get("content_sha256") or ""),
-                            expected_bytes=int(row.get("byte_size") or -1),
-                        )
-                    verified = verify_task_result_row(row)
+                    ready = int(row.get("blob_ready") or 0)
+                    if ready:
+                        verified = verify_task_result_authority(conn, row)
+                    else:
+                        if result["rollout_state"] == "RESULT_REF_AUTHORITY":
+                            result["missing_blob"] += 1
+                            issues.append({"code": "RESULT_BLOB_NOT_READY", "result_id": result_id})
+                        verified = verify_task_result_row(row)
                     result_rows[result_id] = {
                         "result_id": result_id,
                         "task_id": verified.get("task_id"),
@@ -155,6 +185,8 @@ def audit_database(site: str, db_path: Path, *, data_root: Path) -> dict[str, ob
                     if str(verified.get("task_id") or "") not in task_ids:
                         issues.append({"code": "RESULT_TASK_MISSING", "result_id": result_id})
                 except (sqlite3.DatabaseError, TaskResultBlobError) as exc:
+                    if int(row.get("blob_ready") or 0):
+                        result["hash_mismatch"] += 1
                     issues.append({"code": "RESULT_AUTHORITY_INVALID", "result_id": result_id, "message": str(exc)})
         result["blob_count"] = (
             int(conn.execute("SELECT COUNT(*) FROM task_result_blobs").fetchone()[0])
@@ -199,6 +231,7 @@ def audit_database(site: str, db_path: Path, *, data_root: Path) -> dict[str, ob
                     (digest,),
                 ).fetchone():
                     result["orphan_blob_hashes"].append(digest)
+            result["task_blob_orphans"] = len(result["orphan_blob_hashes"])
 
         if "online_mr_task_sessions" in tables:
             columns = _columns(conn, "online_mr_task_sessions")
@@ -228,7 +261,15 @@ def audit_database(site: str, db_path: Path, *, data_root: Path) -> dict[str, ob
     counts = Counter(str(item.get("code") or "UNKNOWN") for item in issues)
     result["issues"] = issues
     result["counts"] = dict(sorted(counts.items()))
-    if issues or result["orphan_blob_hashes"] or result["online_mr_orphan_task_ids"]:
+    if (
+        issues
+        or result["orphan_blob_hashes"]
+        or result["online_mr_orphan_task_ids"]
+        or result["task_result_parent_orphans"]
+        or result["task_blob_orphans"]
+        or result["missing_blob"]
+        or result["hash_mismatch"]
+    ):
         result["status"] = "FAIL"
     return result
 
@@ -270,6 +311,43 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _registered_task_databases(root: Path) -> dict[str, Path]:
+    registry_path = root / "config" / "site_registry.json"
+    try:
+        value = json.loads(registry_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(
+            f"局点 Registry 不可读，拒绝扫描未登记目录: {registry_path}"
+        ) from exc
+    raw_sites = value.get("sites") if isinstance(value, dict) else None
+    if not isinstance(raw_sites, list):
+        raise SystemExit("局点 Registry 缺少 sites，拒绝扫描未登记目录")
+    sites_root = (root / "sites").resolve()
+    result: dict[str, Path] = {}
+    for item in raw_sites:
+        if not isinstance(item, dict):
+            continue
+        site_id = str(item.get("site_id") or "").strip().casefold()
+        relative = Path(str(item.get("relative_path") or f"sites/{site_id}"))
+        raw_root = root / relative
+        site_root = raw_root.resolve()
+        if (
+            not site_id
+            or relative.is_absolute()
+            or ".." in relative.parts
+            or raw_root.is_symlink()
+            or site_root.parent != sites_root
+            or not site_root.is_dir()
+        ):
+            raise SystemExit(f"局点 Registry 路径无效，拒绝扫描: {site_id or '<empty>'}")
+        if site_id in result:
+            raise SystemExit(f"局点 Registry 存在重复 site_id: {site_id}")
+        task_db = site_root / "db" / "tasks.db"
+        if task_db.is_file() and not task_db.is_symlink():
+            result[site_id] = task_db
+    return result
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     root = args.data_root.resolve()
@@ -277,12 +355,16 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("禁止审计生产数据根 D:\\NetConsoleData")
     if bool(args.site) == bool(args.all_sites):
         raise SystemExit("必须指定 --site 或 --all-sites（二选一）")
-    sites_root = root / "sites"
-    sites = [args.site] if args.site else sorted(
-        item.name for item in sites_root.iterdir() if item.is_dir()
-    )
+    registered = _registered_task_databases(root)
+    if args.site:
+        wanted = str(args.site).strip().casefold()
+        if wanted not in registered:
+            raise SystemExit(f"site 未登记或缺少 tasks.db，拒绝扫描: {args.site}")
+        sites = [wanted]
+    else:
+        sites = sorted(registered)
     reports = [
-        audit_database(site, root / "sites" / site / "db" / "tasks.db", data_root=root)
+        audit_database(site, registered[site], data_root=root)
         for site in sites
     ]
     payload = {

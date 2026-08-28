@@ -138,15 +138,24 @@ def _wait_ready(log: Path, start_offset: int, timeout: float) -> dict[str, objec
     raise TimeoutError("NetConsole did not reach backend ready and renderer interactive")
 
 
-def _archive_component_resume_journals(data_root: Path, evidence_dir: Path) -> list[str]:
+def _inspect_component_resume_journals(data_root: Path) -> dict[str, object]:
+    """Classify component-resume state without mutating production runtime data.
+
+    Old cutover journals are evidence, not disposable cleanup targets.  A
+    terminal journal may be ignored for a new operation, while a non-terminal
+    journal with a live candidate/rollback artifact must fail closed.  The
+    caller can persist this read-only inventory in its external evidence
+    directory and decide whether a separately approved quarantine is needed.
+    """
+
     terminal = {
         "completed", "failed_before_switch", "failed_rolled_back", "diagnostic_retention_failed",
         "recovered_no_switch", "recovered_rollback", "recovered_from_backup",
         "recovered_new_database", "recovered_no_existing_database",
     }
     source_root = data_root / "runtime" / "database_upgrade"
-    archive_root = evidence_dir / "archived-component-resume-journals"
-    archived: list[str] = []
+    records: list[dict[str, object]] = []
+    active: list[dict[str, object]] = []
     for path in sorted(source_root.glob("*.json")):
         try:
             value = json.loads(path.read_text(encoding="utf-8"))
@@ -154,15 +163,66 @@ def _archive_component_resume_journals(data_root: Path, evidence_dir: Path) -> l
             continue
         if not isinstance(value, dict):
             continue
-        if value.get("recovery_strategy") != "component_resume" or value.get("stage") in terminal:
+        if value.get("recovery_strategy") != "component_resume":
             continue
-        archive_root.mkdir(parents=True, exist_ok=True)
-        target = archive_root / path.name
-        if target.exists():
-            target = archive_root / f"{path.stem}-{time.time_ns()}{path.suffix}"
-        path.replace(target)
-        archived.append(str(target))
-    return archived
+        artifacts: list[dict[str, object]] = []
+        outside_data_root = False
+        for field in ("shadow_path", "rollback_path"):
+            raw = str(value.get(field) or "").strip()
+            if not raw:
+                continue
+            raw_path = Path(raw)
+            artifact = (
+                (data_root / raw_path).resolve()
+                if not raw_path.is_absolute()
+                else raw_path.resolve()
+            )
+            if artifact != data_root.resolve() and not artifact.is_relative_to(data_root.resolve()):
+                outside_data_root = True
+                artifacts.append({
+                    "field": field,
+                    "path": str(artifact),
+                    "exists": artifact.is_file(),
+                    "outside_data_root": True,
+                })
+                continue
+            item: dict[str, object] = {
+                "field": field,
+                "path": str(artifact),
+                "exists": artifact.is_file(),
+            }
+            if artifact.is_file():
+                item.update({"size": artifact.stat().st_size, "sha256": _sha256(artifact)})
+            artifacts.append(item)
+        stage = str(value.get("stage") or "")
+        has_live_artifact = any(bool(item.get("exists")) for item in artifacts)
+        switched = bool(value.get("switched"))
+        is_active = outside_data_root or (stage not in terminal and (switched or has_live_artifact))
+        record = {
+            "journal": str(path),
+            "journal_size": path.stat().st_size,
+            "journal_sha256": _sha256(path),
+            "operation_id": str(value.get("operation_id") or path.stem),
+            "stage": stage,
+            "switched": switched,
+            "error": str(value.get("error") or ""),
+            "rollback_error": str(value.get("rollback_error") or ""),
+            "artifacts": artifacts,
+            "classification": "ACTIVE_BLOCKING" if is_active else (
+                "TERMINAL_PROTECTED" if stage in terminal else "STALE_NO_ARTIFACT"
+            ),
+            "reason": "artifact is outside data root" if outside_data_root else "",
+        }
+        records.append(record)
+        if is_active:
+            active.append(record)
+    return {
+        "status": "PASS" if not active else "FAIL",
+        "active_blocking_count": len(active),
+        "active_blocking": active,
+        "journals": records,
+        "production_mutation": "NONE",
+    }
 
 
 def main() -> int:
@@ -204,7 +264,10 @@ def main() -> int:
     })
 
     _wait_replacement(devices, args.devices_size, args.timeout)
-    archived_journals = _archive_component_resume_journals(args.site.parent.parent, args.evidence_dir)
+    recovery_audit = _inspect_component_resume_journals(args.site.parent.parent)
+    _write(args.evidence_dir / "component-resume-recovery-audit.json", recovery_audit)
+    if recovery_audit["status"] != "PASS":
+        raise RuntimeError(f"component-resume recovery is still active: {recovery_audit}")
     log_path = args.site.parent.parent / "runtime" / "logs" / "electron.log"
     log_offset = log_path.stat().st_size if log_path.is_file() else 0
     process = subprocess.Popen(
@@ -218,7 +281,7 @@ def main() -> int:
         "site_id": args.site_id, "operation_id": args.operation_id,
         "generated_git_head": args.git_head, "verified_at": _now(),
         "process_id": process.pid, **ready,
-        "archived_component_resume_journals": archived_journals,
+        "component_resume_recovery_audit": recovery_audit,
     })
     device_smoke = _device_smoke(args.site)
     if device_smoke["status"] != "PASS":
