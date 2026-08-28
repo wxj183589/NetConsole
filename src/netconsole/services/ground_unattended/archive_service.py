@@ -158,7 +158,7 @@ class GroundUnattendedArchiveService:
                             "updated_at": _now(),
                         }
                     )
-                self.apply_retention(profile)
+                self.apply_retention(profile, protected_run_id=run_id)
                 _progress(
                     progress_callback,
                     "ARCHIVE_READY",
@@ -307,7 +307,7 @@ class GroundUnattendedArchiveService:
                     "updated_at": _now(),
                 }
             )
-            self.apply_retention(profile)
+            self.apply_retention(profile, protected_run_id=run_id)
             _progress(
                 progress_callback,
                 "ARCHIVE_READY",
@@ -372,13 +372,22 @@ class GroundUnattendedArchiveService:
         self.repository.purge_run_details(str(row["run_id"]))
         self.repository.delete_archive_record(archive_id)
 
-    def apply_retention(self, profile: GroundUnattendedProfileDTO) -> None:
+    def apply_retention(
+        self,
+        profile: GroundUnattendedProfileDTO,
+        *,
+        protected_run_id: str | None = None,
+    ) -> None:
         today_value = datetime.now(resolve_timezone(profile.timezone)).date()
         today = today_value.isoformat()
         for row in self.repository.list_archives():
             if (
                 row.get("archive_status") != "READY"
                 or str(row.get("retention_until") or "") >= today
+                or (
+                    protected_run_id is not None
+                    and str(row.get("run_id") or "") == protected_run_id
+                )
             ):
                 continue
             self.delete_archive(str(row["archive_id"]))

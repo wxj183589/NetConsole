@@ -340,7 +340,8 @@ def insert_demo_history(fact_repository: DeviceFactRepository, sw01_uuid: str, s
                     device_uuid,
                     collected_at,
                     raw_log_path=raw_log_path,
-                )
+                ),
+                preserve_current=True,
             )
             fact_repository.append_optical_history(
                 _demo_optical_module(
@@ -355,7 +356,8 @@ def insert_demo_history(fact_repository: DeviceFactRepository, sw01_uuid: str, s
                     device_uuid,
                     collected_at,
                     raw_log_path=raw_log_path,
-                )
+                ),
+                preserve_current=True,
             )
             lldp_sample = _demo_lldp(
                 interface_name,
@@ -369,7 +371,10 @@ def insert_demo_history(fact_repository: DeviceFactRepository, sw01_uuid: str, s
                 raw_log_path=raw_log_path,
             )
             lldp_sample["holdtime"] = str(120 + index)
-            fact_repository.append_lldp_history(lldp_sample)
+            fact_repository.append_lldp_history(
+                lldp_sample,
+                preserve_current=True,
+            )
 
 
 def _demo_interface(

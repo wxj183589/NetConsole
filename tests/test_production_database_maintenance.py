@@ -4,6 +4,7 @@ import hashlib
 import json
 import sqlite3
 from contextlib import closing
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -937,6 +938,98 @@ def test_storage_registry_has_protected_pending_production_rollback_owners() -> 
     assert all(owner.retire_state == "PROTECT" for owner in owners.values())
     assert all(owner.observation_state == "PENDING_PRODUCTION_BACKUP" for owner in owners.values())
     assert not any(owner.verified() for owner in owners.values())
+
+
+def test_rollback_owner_contract_accepts_only_registered_data_root_owner(
+    tmp_path: Path,
+) -> None:
+    paths, site, _root = _site(tmp_path)
+    active = site / "db" / "devices.db"
+    manifest = _manifest(tmp_path, active)
+    manifest_value = json.loads(manifest.read_text(encoding="utf-8"))
+    capability = _capability(
+        paths,
+        source_identity=manifest_value["database_identity"],
+    )
+    owner_key = ("legacy-dfd356e96ea0", "devices.db")
+    owner = capability._rollback_owners[owner_key]
+    owner_path = (
+        site
+        / "files"
+        / "backups"
+        / "production-maintenance"
+        / owner.backup_set_id
+        / "database.sqlite"
+    ).resolve()
+
+    preflight = capability.preflight(
+        manifest,
+        mode="production",
+        writer_quiescent=True,
+        gates=_gates(paths),
+    )
+    assert preflight["owner"] == owner.backup_set_id
+    assert owner_path.is_relative_to(paths.data_root)
+    _active, registered_site = capability._site_and_database("devices.db")
+    assert owner_path == capability._rollback_path(registered_site, owner)
+
+    external = tmp_path / "external-rollback" / "database.sqlite"
+    sqlite_backup(active, external)
+    external_profile = sqlite_quick_profile(external)
+    external_owner = _owner(
+        "devices.db",
+        operation_id=owner.operation_id,
+        source_identity=manifest_value["database_identity"],
+        source_sha256=manifest_value["source_sha256"],
+        schema_fingerprint=manifest_value["schema_fingerprint"],
+        backup_sha256=external_profile["sha256"],
+        backup_size=external_profile["size_bytes"],
+        backup_relative_path=str(external),
+    )
+    external_capability = ProductionMaintenanceCapability(
+        paths,
+        site_id="legacy-dfd356e96ea0",
+        evidence_binding=_binding(paths),
+        rollback_owners={owner_key: external_owner},
+    )
+    with pytest.raises(ProductionMaintenanceError, match="path is not canonical"):
+        external_capability.preflight(
+            manifest,
+            mode="production",
+            writer_quiescent=True,
+            gates=_gates(paths),
+        )
+
+    mismatched_owner = replace(owner, source_sha256="b" * 64, source_revision="b" * 64)
+    mismatched_capability = ProductionMaintenanceCapability(
+        paths,
+        site_id="legacy-dfd356e96ea0",
+        evidence_binding=_binding(paths),
+        rollback_owners={owner_key: mismatched_owner},
+    )
+    with pytest.raises(ProductionMaintenanceError, match="does not match current source"):
+        mismatched_capability.preflight(
+            manifest,
+            mode="production",
+            writer_quiescent=True,
+            gates=_gates(paths),
+        )
+
+    pending_capability = ProductionMaintenanceCapability(
+        paths,
+        site_id="legacy-dfd356e96ea0",
+        evidence_binding=_binding(paths),
+        rollback_owners=ProductionMaintenanceCapability.load_rollback_owners(
+            ROOT / "config" / "storage_registry.yaml"
+        ),
+    )
+    with pytest.raises(ProductionMaintenanceError, match="owner is not VERIFIED"):
+        pending_capability.preflight(
+            manifest,
+            mode="production",
+            writer_quiescent=True,
+            gates=_gates(paths),
+        )
 
 
 def test_preflight_rejects_stale_source_and_requires_production_mode(tmp_path: Path) -> None:

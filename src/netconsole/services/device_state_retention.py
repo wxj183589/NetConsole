@@ -138,6 +138,7 @@ def upsert_device_lldp_current_and_history(
     site_id: str,
     now: str = "",
     replace_local: bool = False,
+    preserve_current: bool = False,
 ) -> dict[str, Any]:
     timestamp = now or _now()
     projection = _projection(row, site_id=site_id, fields=LLDP_COLUMNS, state_fields=LLDP_STATE_COLUMNS, now=timestamp)
@@ -168,6 +169,28 @@ def upsert_device_lldp_current_and_history(
     changed = _text(current_data.get("state_fingerprint")) != projection["state_fingerprint"]
     if changed:
         _insert_history(conn, "device_lldp_neighbors_history", LLDP_COLUMNS, projection, previous_state_json=_text(current_data.get("state_json")) or "{}", now=timestamp)
+    if preserve_current:
+        if changed:
+            history_key = (projection["site_id"], *key)
+            history_rows = conn.execute(
+                "SELECT * FROM device_lldp_neighbors_history "
+                "WHERE site_id=? AND device_uuid=? ORDER BY changed_at DESC, id DESC",
+                (history_key[0], history_key[1]),
+            ).fetchall()
+            matching_ids = [
+                int(item["id"])
+                for item in history_rows
+                if _lldp_key(dict(item)) == key
+            ]
+            drop_ids = matching_ids[DEVICE_LLDP_HISTORY_LIMIT:]
+            if drop_ids:
+                placeholders = ", ".join("?" for _ in drop_ids)
+                conn.execute(
+                    "DELETE FROM device_lldp_neighbors_history "
+                    f"WHERE site_id=? AND device_uuid=? AND id IN ({placeholders})",
+                    (history_key[0], history_key[1], *drop_ids),
+                )
+        return current_data
     fields = (*LLDP_COLUMNS, "site_id", "state_json", "state_fingerprint", "last_seen_at", "changed_at", "source_revision")
     values = [projection.get(field) for field in LLDP_COLUMNS]
     values.extend([projection["site_id"], projection["state_json"], projection["state_fingerprint"], projection["collected_at"], projection["collected_at"] if changed else current_data.get("changed_at"), projection["source_revision"], current_data["id"]])
@@ -200,7 +223,14 @@ def _optical_key(row: dict[str, Any]) -> tuple[str, str]:
     return (_text(row.get("device_uuid")), _text(row.get("interface_name")).casefold())
 
 
-def upsert_device_optical_current_and_history(conn, row: dict[str, Any], *, site_id: str, now: str = "") -> dict[str, Any]:
+def upsert_device_optical_current_and_history(
+    conn,
+    row: dict[str, Any],
+    *,
+    site_id: str,
+    now: str = "",
+    preserve_current: bool = False,
+) -> dict[str, Any]:
     timestamp = now or _now()
     projection = _projection(row, site_id=site_id, fields=OPTICAL_COLUMNS, state_fields=OPTICAL_STATE_COLUMNS, now=timestamp)
     _set_authority(conn, "device_optical_retention_meta")
@@ -221,6 +251,17 @@ def upsert_device_optical_current_and_history(conn, row: dict[str, Any], *, site
     changed = _text(current_data.get("state_fingerprint")) != projection["state_fingerprint"]
     if changed:
         _insert_history(conn, "device_optical_modules_history", OPTICAL_COLUMNS, projection, previous_state_json=_text(current_data.get("state_json")) or "{}", now=timestamp)
+    if preserve_current:
+        if changed:
+            history_key = (projection["site_id"], *key)
+            conn.execute(
+                "DELETE FROM device_optical_modules_history WHERE site_id=? AND device_uuid=? "
+                "AND lower(interface_name)=? AND id NOT IN (SELECT id FROM device_optical_modules_history "
+                "WHERE site_id=? AND device_uuid=? AND lower(interface_name)=? "
+                "ORDER BY changed_at DESC, id DESC LIMIT ?)",
+                (*history_key, *history_key, DEVICE_OPTICAL_HISTORY_LIMIT),
+            )
+        return current_data
     fields = (*OPTICAL_COLUMNS, "site_id", "state_json", "state_fingerprint", "last_seen_at", "changed_at", "source_revision")
     values = [projection.get(field) for field in OPTICAL_COLUMNS]
     values.extend([projection["site_id"], projection["state_json"], projection["state_fingerprint"], projection["collected_at"], projection["collected_at"] if changed else current_data.get("changed_at"), projection["source_revision"], current_data["id"]])

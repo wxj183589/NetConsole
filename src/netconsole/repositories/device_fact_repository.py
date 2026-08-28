@@ -509,13 +509,22 @@ class DeviceFactRepository:
             "device_interfaces", "interface_name", device_uuid, interface_name
         )
 
-    def append_interface_history(self, data: dict[str, object | None]) -> None:
+    def append_interface_history(
+        self,
+        data: dict[str, object | None],
+        *,
+        preserve_current: bool = False,
+    ) -> None:
         payload = self._payload(INTERFACE_HISTORY_FIELDS, data)
         self._set_required_defaults(payload, ("collected_at", "created_at"))
         with self.database.connect() as conn:
             site_id = self.database.path.parent.parent.name or self.database.path.parent.name
             upsert_interface_current_and_history(
-                conn, payload, site_id=site_id, now=str(payload["updated_at"] or self._now())
+                conn,
+                payload,
+                site_id=site_id,
+                now=str(payload["updated_at"] or self._now()),
+                preserve_current=preserve_current,
             )
             conn.commit()
 
@@ -636,7 +645,12 @@ class DeviceFactRepository:
         )
         return _normalize_optical_row(row) if row is not None else None
 
-    def append_optical_history(self, data: dict[str, object | None]) -> None:
+    def append_optical_history(
+        self,
+        data: dict[str, object | None],
+        *,
+        preserve_current: bool = False,
+    ) -> None:
         if is_zte_optical_record(data):
             data = normalize_zte_optical_record(data)
         payload = self._payload(OPTICAL_MODULE_HISTORY_FIELDS, data)
@@ -645,7 +659,11 @@ class DeviceFactRepository:
         with self.database.connect() as conn:
             site_id = self.database.path.parent.parent.name or self.database.path.parent.name
             upsert_device_optical_current_and_history(
-                conn, payload, site_id=site_id, now=str(payload["collected_at"])
+                conn,
+                payload,
+                site_id=site_id,
+                now=str(payload["collected_at"]),
+                preserve_current=preserve_current,
             )
             conn.commit()
 
@@ -854,13 +872,22 @@ class DeviceFactRepository:
         total = int(total_row["total"] if total_row is not None else 0)
         return [dict(row) for row in rows], total, total > len(rows)
 
-    def append_lldp_history(self, data: dict[str, object | None]) -> None:
+    def append_lldp_history(
+        self,
+        data: dict[str, object | None],
+        *,
+        preserve_current: bool = False,
+    ) -> None:
         payload = self._payload(LLDP_HISTORY_FIELDS, data)
         self._set_required_defaults(payload, ("collected_at", "created_at"))
         with self.database.connect() as conn:
             site_id = self.database.path.parent.parent.name or self.database.path.parent.name
             upsert_device_lldp_current_and_history(
-                conn, payload, site_id=site_id, now=str(payload["collected_at"])
+                conn,
+                payload,
+                site_id=site_id,
+                now=str(payload["collected_at"]),
+                preserve_current=preserve_current,
             )
             conn.commit()
 

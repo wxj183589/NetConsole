@@ -187,6 +187,7 @@ def upsert_interface_current_and_history(
     *,
     site_id: str,
     now: str = "",
+    preserve_current: bool = False,
 ) -> dict[str, Any]:
     timestamp = now or _now_iso()
     projection = build_interface_projection(row, site_id=site_id, now=timestamp)
@@ -212,6 +213,22 @@ def upsert_interface_current_and_history(
             previous_state_json=str(current_data.get("state_json") or "{}"),
             now=timestamp,
         )
+    if preserve_current:
+        if changed:
+            conn.execute(
+                "DELETE FROM device_interfaces_history WHERE site_id=? AND device_uuid=? AND interface_name=? "
+                "AND id NOT IN (SELECT id FROM device_interfaces_history "
+                "WHERE site_id=? AND device_uuid=? AND interface_name=? "
+                "ORDER BY changed_at DESC, id DESC LIMIT ?)",
+                (
+                    projection["site_id"],
+                    *key_values,
+                    projection["site_id"],
+                    *key_values,
+                    INTERFACE_HISTORY_LIMIT,
+                ),
+            )
+        return current_data
     update_fields = (*INTERFACE_COLUMNS, "site_id", "state_json", "state_fingerprint", "last_seen_at", "changed_at", "source_revision")
     assignments = ", ".join(f"{field}=?" for field in update_fields)
     values = [projection.get(field) for field in INTERFACE_COLUMNS]

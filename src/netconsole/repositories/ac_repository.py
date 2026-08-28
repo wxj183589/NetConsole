@@ -753,7 +753,8 @@ class AcRepository:
             )
             identity_history_cache = self._load_fit_ap_identity_history_cache(
                 conn,
-                history_keys,
+                ac_device_uuid=ac_device_uuid,
+                ap_uuids=history_keys,
             )
             incoming_name_counts = Counter(
                 name.casefold()
@@ -3226,6 +3227,8 @@ class AcRepository:
     def _load_fit_ap_identity_history_cache(
         self,
         conn,
+        *,
+        ac_device_uuid: str,
         ap_uuids: set[str],
     ) -> dict[str, dict[str, str]]:
         """Load the latest stable identity evidence once for a refresh.
@@ -3238,6 +3241,28 @@ class AcRepository:
 
         cache: dict[str, dict[str, str]] = {}
         fields = tuple(FIT_AP_STABLE_IDENTITY_FIELDS)
+        if ap_uuids:
+            for event in self.history_store.query_events_for_entities(
+                kind="fit_ap_resource",
+                entity_keys=(
+                    f"{ac_device_uuid}:{ap_uuid}"
+                    for ap_uuid in sorted(ap_uuids)
+                ),
+            ):
+                ap_uuid = str(event.get("ap_uuid") or "").strip()
+                if ap_uuid not in ap_uuids:
+                    continue
+                values = cache.setdefault(ap_uuid, {})
+                for field in fields:
+                    if field in values:
+                        continue
+                    value = (
+                        self._mac_from_text(event.get(field))
+                        if field == "ap_mac"
+                        else self._clean_identity_value(event.get(field))
+                    )
+                    if value:
+                        values[field] = value
         outbox_exists = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'history_outbox'"
         ).fetchone()

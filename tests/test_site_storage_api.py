@@ -74,19 +74,19 @@ def test_task_result_storage_diagnostics_defaults_off_and_exposes_no_payload(
 
     assert response.status_code == 200, response.text
     assert payload == {
-        "schema_version": 4,
-        "task_result_storage_state": "LEGACY_DUAL_FULL",
-        "persisted_rollout_state": "LEGACY_DUAL_FULL",
+        "schema_version": 5,
+        "task_result_storage_state": "RESULT_REF_AUTHORITY",
+        "persisted_rollout_state": "RESULT_REF_AUTHORITY",
         "revision": 1,
         "updated_at": payload["updated_at"],
         "task_results_rows": 0,
         "persisted_dual_write_active": False,
-        "persisted_ref_authority_active": False,
-        "runtime_write_state": "LEGACY_DUAL_FULL",
+        "persisted_ref_authority_active": True,
+        "runtime_write_state": "RESULT_REF_AUTHORITY",
         "runtime_dual_write_active": False,
-        "runtime_ref_authority_active": False,
+        "runtime_ref_authority_active": True,
         "dual_write_active": False,
-        "ref_authority_active": False,
+        "ref_authority_active": True,
     }
     assert str(payload["updated_at"])
 
