@@ -39,9 +39,9 @@ SCENARIOS = (
         ),
         node_ids=(
             "tests/test_task_repository_storage_governance.py::"
-            "test_identical_progress_replay_does_not_reinflate_operational_history",
+            "test_identical_progress_keeps_current_snapshot_and_samples_event_history",
             "tests/test_storage_no_reinflation.py::"
-            "test_terminal_result_replay_keeps_one_canonical_full_payload",
+            "test_terminal_result_replay_keeps_one_result_authority_payload",
         ),
         declared_input_events=11_200,
     ),
