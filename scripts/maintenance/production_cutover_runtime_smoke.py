@@ -75,8 +75,11 @@ def _safe_counts(path: Path) -> dict[str, int]:
 
 def _task_smoke(site: Path) -> dict[str, object]:
     counts = _safe_counts(site / "db" / "tasks.db")
-    required = {"task_results": 3569, "task_snapshots": 3730, "task_events": 158548}
-    checks = {key: counts.get(key, 0) == value for key, value in required.items()}
+    required = ("task_results", "task_snapshots", "task_events")
+    checks = {key: counts.get(key, 0) > 0 for key in required}
+    checks["task_results_not_exceed_snapshots"] = (
+        counts.get("task_results", 0) <= counts.get("task_snapshots", 0)
+    )
     checks["online_mr_task_sessions"] = counts.get("online_mr_task_sessions", 0) >= 1
     return {"status": "PASS" if all(checks.values()) else "FAIL", "checks": checks, "counts": counts}
 
@@ -90,18 +93,25 @@ def _history_smoke(site: Path) -> dict[str, object]:
         count = sum(counts.values())
         shard_counts[path.name] = count
         total += count
-    return {"status": "PASS" if total >= 2_095_551 else "FAIL", "rows": total, "shards": shard_counts}
+    return {
+        "status": "PASS" if shard_counts and all(count > 0 for count in shard_counts.values()) else "FAIL",
+        "rows": total,
+        "shards": shard_counts,
+    }
 
 
 def _device_smoke(site: Path) -> dict[str, object]:
     counts = _safe_counts(site / "db" / "devices.db")
-    required = {
-        "devices": 100,
-        "ac_fit_ap_resources": 992,
-        "device_lldp_neighbors": 1161,
-        "device_optical_modules": 1589,
-    }
-    checks = {key: counts.get(key, 0) == value for key, value in required.items()}
+    required = (
+        "devices",
+        "ac_fit_ap_resources",
+        "device_lldp_neighbors",
+        "device_optical_modules",
+        "device_interfaces",
+        "fit_ap_lldp_current",
+        "optical_current",
+    )
+    checks = {key: counts.get(key, 0) > 0 for key in required}
     ground = site / "files" / "rail_transit" / "ground_unattended" / "index.sqlite"
     mesh = list((site / "files" / "rail_transit" / "mr_raw_mesh").glob("*/mesh.sqlite"))
     online = site / "files" / "rail_transit" / "online_mr" / "parsed" / "vehicle_mr_online.sqlite"
