@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import sqlite3
+from pathlib import Path
 
 from netconsole.core.database import Database
-from scripts.maintenance.retire_legacy_history_store import prepare
+from scripts.maintenance.retire_legacy_history_store import _sqlite_backup, prepare
 
 
 def test_candidate_drops_only_legacy_history_runtime_tables(tmp_path) -> None:
@@ -59,3 +61,13 @@ def test_candidate_drops_only_legacy_history_runtime_tables(tmp_path) -> None:
         "history_state": 1,
     }
     assert item["verification"]["legacy_runtime_tables"] == []
+
+    candidate_db = item["candidate_database"]
+    copied_db = tmp_path / "copied-main.db"
+    _sqlite_backup(Path(candidate_db), copied_db)
+    with sqlite3.connect(copied_db) as conn:
+        tables = {
+            row[0]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+    assert not {"history_outbox", "history_state"} & tables

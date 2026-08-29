@@ -530,7 +530,7 @@ def apply(data_root: Path, candidate_root: Path, backup_root: Path) -> dict[str,
                 shutil.copytree(source_history, backup_history, symlinks=False)
             changed.append({**item, "production_database": str(db_path), "backup": str(backup_root / str(item["relative_path"]))})
             temporary = db_path.with_name(f".{db_path.name}.history-retirement.tmp")
-            shutil.copy2(candidate_db, temporary)
+            _sqlite_backup(candidate_db, temporary)
             os.replace(temporary, db_path)
             if source_history.exists():
                 shutil.rmtree(_safe_history_root(site_root))
