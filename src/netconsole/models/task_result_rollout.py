@@ -11,9 +11,12 @@ class TaskResultStorageState(StrEnum):
     RESULT_REF_AUTHORITY = "RESULT_REF_AUTHORITY"
 
 
-# The current runtime deliberately remains on the legacy full-result writer.
-# Persisted rollout rows are historical maintenance state and do not change it.
-TASK_RESULT_RUNTIME_WRITE_STATE = TaskResultStorageState.LEGACY_DUAL_FULL
+# The runtime writer now uses the immutable result reference as the snapshot and
+# event authority.  ``canonical_json`` remains in ``task_results`` during the
+# compatibility period, while new terminal rows also write/verify the shared
+# compressed blob.  Persisted rollout rows are still retained for audit history;
+# they do not change this single runtime state.
+TASK_RESULT_RUNTIME_WRITE_STATE = TaskResultStorageState.RESULT_REF_AUTHORITY
 
 
 @dataclass(frozen=True)

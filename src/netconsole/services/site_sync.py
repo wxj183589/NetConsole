@@ -23,6 +23,10 @@ from netconsole.core.paths import PathResolver
 from netconsole.core.sqlite_utils import connect_sqlite
 from netconsole.core.version import APP_VERSION
 from netconsole.services.site_package_staging import SitePackageStagingLifecycle
+from netconsole.repositories.task_result_blob_repository import (
+    TaskResultBlobError,
+    verify_task_result_authority,
+)
 
 
 FULL_MIGRATION = "full_migration"
@@ -1235,6 +1239,20 @@ def _apply_task_merge(
                     f"回传任务数据存在不可覆盖冲突：{conflict.entity_type}/{conflict.entity_id}",
                 )
 
+            for returned_blob in _rows_for_table(
+                returned_db, "task_result_blobs", order_by="content_sha256"
+            ):
+                if "task_result_blobs" not in _table_names(local_db):
+                    break
+                digest = str(returned_blob.get("content_sha256") or "")
+                if not digest or _row_by_key(
+                    local_db, "task_result_blobs", "content_sha256", digest
+                ) is not None:
+                    continue
+                _insert_compatible_row(
+                    local_db, "task_result_blobs", returned_blob, skip=set()
+                )
+
             for returned_result in _rows_for_table(
                 returned_db, "task_results", order_by="result_id"
             ):
@@ -1396,14 +1414,22 @@ def _validate_task_merge_references(
 ) -> None:
     from netconsole.repositories.task_repository import TaskRepository
 
-    local_results = {
-        str(row.get("result_id") or ""): row
-        for row in _rows_for_table(local_db, "task_results")
-    }
-    returned_results = {
-        str(row.get("result_id") or ""): row
-        for row in _rows_for_table(returned_db, "task_results")
-    }
+    local_results: dict[str, dict[str, object]] = {}
+    for row in _rows_for_table(local_db, "task_results"):
+        result_id = str(row.get("result_id") or "")
+        if result_id:
+            try:
+                local_results[result_id] = _verified_result_row(local_db, row)
+            except (sqlite3.Error, TypeError, ValueError) as exc:
+                _raise(
+                    "SITE_IMPORT_TASK_RESULT_INVALID",
+                    f"本地 task_results 身份校验失败：{result_id} ({exc})",
+                )
+    returned_results: dict[str, dict[str, object]] = {}
+    for row in _rows_for_table(returned_db, "task_results"):
+        result_id = str(row.get("result_id") or "")
+        if result_id:
+            returned_results[result_id] = _verified_result_row(returned_db, row)
     for result_id, row in returned_results.items():
         if not result_id:
             _raise(
@@ -1574,9 +1600,25 @@ def _rows_for_table(
     if table not in _table_names(connection):
         return []
     order = f" ORDER BY {_quote(order_by)}" if order_by else ""
-    return [
+    rows = [
         dict(row) for row in connection.execute(f"SELECT * FROM {_quote(table)}{order}")
     ]
+    return rows
+
+
+def _verified_result_row(
+    connection: sqlite3.Connection, row: dict[str, object]
+) -> dict[str, object]:
+    try:
+        verified = verify_task_result_authority(connection, row)
+    except TaskResultBlobError as exc:
+        raise sqlite3.DatabaseError(str(exc)) from exc
+    return {
+        **row,
+        "canonical_json": verified["canonical_json"],
+        "sha256": verified["sha256"],
+        "byte_size": verified["byte_size"],
+    }
 
 
 def _row_by_key(
@@ -1625,7 +1667,6 @@ def _result_semantics(row: dict[str, object]) -> dict[str, object]:
             "result_id",
             "task_id",
             "terminal_event_type",
-            "canonical_json",
             "sha256",
             "byte_size",
             "schema_version",

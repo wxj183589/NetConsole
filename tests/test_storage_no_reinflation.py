@@ -29,9 +29,6 @@ from netconsole.repositories.ground_unattended_repository import (
 )
 from netconsole.repositories.mesh_mr_repository import MeshMrRepository
 from netconsole.repositories.task_repository import TaskRepository
-from netconsole.services.job_center.task_result_rollout import (
-    TaskResultRolloutService,
-)
 from netconsole.services.ground_unattended.syslog_runtime import RawStreamWriter
 from netconsole.services.mesh_import_service import MeshImportService
 from netconsole.services.mesh_source_rebuild_service import MeshSourceRebuildService
@@ -116,18 +113,13 @@ def test_terminal_result_replay_keeps_one_canonical_full_payload(
     paths = PathResolver(app_root=tmp_path, data_root=data_root)
     database = paths.site_tasks_db_path("line-12")
     repository = TaskRepository(database)
-    TaskResultRolloutService(database).enable_dual_write(
-        expected_revision=1,
-        reason="No-Reinflation result fixture",
-        updated_by="pytest",
-    )
     TaskResultMaintenanceService(
         paths,
         site_id="line-12",
         tasks_database=database,
         development_root=tmp_path,
     ).enable_ref_authority(
-        expected_revision=2,
+        expected_revision=1,
         reason="No-Reinflation result reference authority",
         updated_by="pytest",
         apply=True,

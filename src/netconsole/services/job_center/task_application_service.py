@@ -23,6 +23,7 @@ from netconsole.repositories.task_repository import TaskRepository
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.job_center.runtime.task_event_hub import TaskEventHub
 from netconsole.services.job_center.runtime.task_runtime import TaskLaunch, TaskRuntime
+from netconsole.services.job_center.task_cleanup_service import TaskCleanupService
 from netconsole.services.job_center.web_export_event_safety import (
     is_web_export_task,
     sanitize_web_export_event,
@@ -465,7 +466,12 @@ class TaskApplicationService:
         dismissed_by: str = "local-user",
     ) -> dict[str, object]:
         repository = self.repository(site_name)
-        result = repository.dismiss_task(
+        cleanup = TaskCleanupService(
+            repository,
+            paths=self.paths,
+            site_name=site_name,
+        )
+        result = cleanup.dismiss_task(
             task_id,
             dismissed_by=dismissed_by,
         )
@@ -493,7 +499,12 @@ class TaskApplicationService:
         if delete_artifacts:
             raise ValueError("任务中心清理不允许删除日志、采集文件或导出结果")
         repository = self.repository(site_name)
-        result = repository.cleanup_history(
+        cleanup = TaskCleanupService(
+            repository,
+            paths=self.paths,
+            site_name=site_name,
+        )
+        result = cleanup.dismiss_history(
             cleanup_type,
             include_states=include_states,
             exclude_states=exclude_states,
@@ -509,6 +520,34 @@ class TaskApplicationService:
                 payload={"summary": repository.visible_attention_summary()},
             )
         return result
+
+    def preview_task_cleanup(
+        self,
+        task_ids: list[str],
+        *,
+        site_name: str | None = None,
+    ) -> dict[str, object]:
+        selected_site = str(site_name or self.site_name or "demo")
+        repository = self.repository(selected_site)
+        return TaskCleanupService(
+            repository,
+            paths=self.paths,
+            site_name=selected_site,
+        ).preview_cleanup(task_ids)
+
+    def cleanup_tasks(
+        self,
+        task_ids: list[str],
+        *,
+        site_name: str | None = None,
+    ) -> dict[str, object]:
+        selected_site = str(site_name or self.site_name or "demo")
+        repository = self.repository(selected_site)
+        return TaskCleanupService(
+            repository,
+            paths=self.paths,
+            site_name=selected_site,
+        ).cleanup_tasks(task_ids)
 
     def reconcile_orphaned_local_tasks(self) -> list[TaskSnapshot]:
         return self.repository().reconcile_orphaned_local_tasks(self._is_process_alive)

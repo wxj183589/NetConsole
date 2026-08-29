@@ -15,6 +15,9 @@ from netconsole.repositories.task_repository import (
     TERMINAL_RESULT_EVENT_TYPES,
     TaskRepository,
 )
+from netconsole.repositories.task_result_blob_repository import (
+    verify_task_result_authority,
+)
 from netconsole.services.database_footprint_maintenance import (
     DEVELOPMENT_ROOT,
     assert_development_path,
@@ -899,7 +902,7 @@ class TaskResultMaintenanceService:
         ).fetchone()
         if row is None:
             raise sqlite3.DatabaseError("task result reference is missing")
-        return self.repository._verified_result_row(dict(row))
+        return verify_task_result_authority(connection, dict(row))
 
     def _terminal_snapshots(self, connection: sqlite3.Connection) -> list[dict[str, Any]]:
         rows = connection.execute(

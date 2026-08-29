@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sqlite3
 from dataclasses import replace
 from pathlib import Path
@@ -141,7 +142,7 @@ def test_site_return_tasks_merge_all_four_tables_and_is_idempotent(
     assert source.get("controller-1") is not None
     assert (
         TaskResultRolloutService(local).status()["task_result_storage_state"]
-        == "LEGACY_DUAL_FULL"
+        == "RESULT_REF_AUTHORITY"
     )
 
 
@@ -338,26 +339,31 @@ def test_site_return_result_conflict_fails_closed_without_partial_tasks_merge(
     snapshot = source.get("controller-conflict")
     assert snapshot is not None
     TaskRepository(local)
+    conflicting_canonical = '{"rows":8}'
+    conflicting_hash = hashlib.sha256(conflicting_canonical.encode("utf-8")).hexdigest()
     with sqlite3.connect(local) as conn:
         authority = source.get_result(snapshot.result_id)
         conn.execute(
             """
-            INSERT INTO task_results VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO task_results (
+                result_id, task_id, terminal_event_type, canonical_json,
+                sha256, byte_size, schema_version, created_time
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 snapshot.result_id,
                 "controller-conflict",
                 "finished",
-                '{"rows":8}',
-                authority["sha256"],
-                authority["byte_size"],
+                conflicting_canonical,
+                conflicting_hash,
+                len(conflicting_canonical.encode("utf-8")),
                 authority["schema_version"],
                 authority["created_time"],
             ),
         )
         conn.commit()
 
-    with pytest.raises(SiteStorageError, match="不可覆盖冲突"):
+    with pytest.raises(SiteStorageError, match="身份校验失败"):
         _apply_task_merge(local, returned, {}, site_id="demo")
     with sqlite3.connect(local) as conn:
         assert conn.execute("SELECT COUNT(*) FROM task_snapshots").fetchone()[0] == 0

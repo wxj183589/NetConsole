@@ -68,6 +68,10 @@ from netconsole.models.task_history_policy import (
     project_business_result,
 )
 from netconsole.repositories.history_store import TaskHistoryStore
+from netconsole.repositories.task_result_blob_repository import (
+    TaskResultBlobError,
+    read_blob,
+)
 
 AC_WEB_OWNER = "web_ac"
 RAIL_WEB_OWNER = "web_rail_transit"
@@ -185,7 +189,7 @@ class JobCenterQueryService:
                 (max(1, min(int(limit), 1000)),),
             ).fetchall()
         values = [dict(row) for row in rows]
-        self._hydrate_result_references(db_path, values)
+        self._hydrate_result_references(db_path, values, include_result=False)
         tasks = [self._task_from_row(row) for row in values]
         normalized_statuses = {str(value).upper() for value in statuses or set() if value}
         if normalized_statuses:
@@ -226,7 +230,7 @@ class JobCenterQueryService:
                     (str(task_id),),
                     ).fetchall()
                 ]
-        self._hydrate_result_references(db_path, [values])
+        self._hydrate_result_references(db_path, [values], include_result=True)
         archived_progress = TaskHistoryStore(db_path).list_events_for_tasks(
             [str(task_id)], event_types=["progress"]
         ).get(str(task_id), [])
@@ -277,16 +281,10 @@ class JobCenterQueryService:
             has_result_refs = self._table_exists(
                 conn, "task_results"
             ) and self._column_exists(conn, "task_snapshots", "result_id")
-            result_expression = self._result_expression(has_result_refs)
-            result_join = (
-                "LEFT JOIN task_results result ON result.result_id=task.result_id"
-                if has_result_refs
-                else ""
-            )
+            result_blob_columns = self._result_blob_metadata_columns(conn)
             authority_columns = (
-                """
+                f"""
                 , task.task_id AS authority_owner_task_id
-                , task.result_json AS legacy_result_json
                 , task.result_id AS result_reference_id
                 , task.result_hash AS result_reference_hash
                 , result.result_id AS authority_result_id
@@ -294,7 +292,7 @@ class JobCenterQueryService:
                 , result.terminal_event_type AS authority_terminal_event_type
                 , result.sha256 AS authority_result_hash
                 , result.byte_size AS authority_result_bytes
-                , result.canonical_json AS authority_result_json
+                {result_blob_columns}
                 , CASE WHEN task.result_id <> '' THEN 1 ELSE 0 END
                   AS result_reference_present
                 """
@@ -303,10 +301,10 @@ class JobCenterQueryService:
             )
             rows = conn.execute(
                 f"""
-                SELECT {result_expression} AS result_json, task.updated_time
+                SELECT task.result_json AS legacy_result_json, task.updated_time
                        {authority_columns}
                 FROM task_snapshots task
-                {result_join}
+                LEFT JOIN task_results result ON result.result_id=task.result_id
                 WHERE task.task_type = ? AND task.status = ? AND task.site_name = ?
                 ORDER BY task.updated_time DESC
                 LIMIT ?
@@ -319,7 +317,7 @@ class JobCenterQueryService:
                 ),
             ).fetchall()
         values = [dict(row) for row in rows]
-        self._hydrate_result_references(db_path, values)
+        self._hydrate_result_references(db_path, values, include_result=True)
         for row in values:
             self._verify_result_reference(row)
         return [
@@ -404,20 +402,18 @@ class JobCenterQueryService:
         has_result_refs = self._table_exists(
             conn, "task_results"
         ) and self._column_exists(conn, "task_snapshots", "result_id")
-        result_expression = self._result_expression(has_result_refs)
+        result_blob_columns = self._result_blob_metadata_columns(conn)
         result_column = (
-            f", {result_expression} AS result_json"
+            ", task.result_json AS legacy_result_json, '{}' AS result_json"
             if detail
-            else f"""
-                , {result_expression} AS business_result_json
-                , CASE WHEN task.status = 'COMPLETED' THEN {result_expression} ELSE NULL END
-                  AS artifact_result_json
+            else """
+                , NULL AS business_result_json
+                , NULL AS artifact_result_json
             """
         )
         result_columns = (
-            """
+            f"""
                 , task.task_id AS authority_owner_task_id
-                , task.result_json AS legacy_result_json
                 , task.result_id AS result_reference_id
                 , task.result_hash AS result_reference_hash
                 , result.result_id AS authority_result_id
@@ -425,7 +421,8 @@ class JobCenterQueryService:
                 , result.terminal_event_type AS authority_terminal_event_type
                 , result.sha256 AS authority_result_hash
                 , result.byte_size AS authority_result_bytes
-                , result.canonical_json AS authority_result_json
+                {result_blob_columns}
+                , task.result_summary_json AS result_summary_json
                 , CASE WHEN task.result_id <> '' THEN 1 ELSE 0 END
                   AS result_reference_present
                 , CASE WHEN task.result_json = '' AND task.result_id <> '' THEN 1 ELSE 0 END
@@ -435,7 +432,10 @@ class JobCenterQueryService:
             else """
                 , NULL AS authority_result_hash
                 , NULL AS authority_result_bytes
-                , NULL AS authority_result_json
+                , NULL AS authority_content_sha256
+                , NULL AS authority_blob_codec
+                , 0 AS authority_blob_ready
+                , task.result_summary_json AS result_summary_json
                 , NULL AS authority_owner_task_id
                 , NULL AS legacy_result_json
                 , NULL AS result_reference_id
@@ -516,43 +516,79 @@ class JobCenterQueryService:
             END
         """
 
-    @staticmethod
+    @classmethod
+    def _result_blob_metadata_columns(cls, conn: sqlite3.Connection) -> str:
+        if not cls._table_exists(conn, "task_results"):
+            return ", '' AS authority_content_sha256, '' AS authority_blob_codec, 0 AS authority_blob_ready"
+        content = "result.content_sha256" if cls._column_exists(conn, "task_results", "content_sha256") else "''"
+        codec = "result.blob_codec" if cls._column_exists(conn, "task_results", "blob_codec") else "''"
+        ready = "result.blob_ready" if cls._column_exists(conn, "task_results", "blob_ready") else "0"
+        return (
+            f", {content} AS authority_content_sha256, "
+            f"{codec} AS authority_blob_codec, {ready} AS authority_blob_ready"
+        )
+
+    @classmethod
     def _hydrate_result_references(
-        db_path: Path, rows: list[dict[str, object]]
+        cls,
+        db_path: Path,
+        rows: list[dict[str, object]],
+        *,
+        include_result: bool,
     ) -> None:
-        history: TaskHistoryStore | None = None
         for row in rows:
+            if include_result and not str(row.get("result_reference_id") or ""):
+                if "legacy_result_json" in row:
+                    row["result_json"] = row.get("legacy_result_json") or "{}"
+                continue
             if not bool(row.get("result_reference_present")):
                 continue
-            if not str(row.get("authority_result_id") or ""):
-                history = history or TaskHistoryStore(db_path)
-                archived = history.get_result(str(row.get("result_reference_id") or ""))
-                if archived is not None:
-                    row.update(
-                        {
-                            "authority_result_id": archived["result_id"],
-                            "authority_result_task_id": archived["task_id"],
-                            "authority_terminal_event_type": archived[
-                                "terminal_event_type"
-                            ],
-                            "authority_result_hash": archived["sha256"],
-                            "authority_result_bytes": archived["byte_size"],
-                            "authority_result_json": archived["canonical_json"],
-                        }
-                    )
-            canonical = str(row.get("authority_result_json") or "")
-            if not canonical:
-                continue
-            if "result_json" in row:
+            reference_id = str(row.get("result_reference_id") or "")
+            if not include_result and not str(row.get("authority_result_id") or ""):
+                raise sqlite3.DatabaseError("task result read-through reference is missing")
+            if include_result:
+                with closing(cls._connect(db_path)) as conn:
+                    has_content_sha = cls._column_exists(conn, "task_results", "content_sha256")
+                    has_blob_ready = cls._column_exists(conn, "task_results", "blob_ready")
+                    content_column = "content_sha256" if has_content_sha else "''"
+                    ready_column = "blob_ready" if has_blob_ready else "0"
+                    authority = conn.execute(
+                        f"SELECT canonical_json, {content_column} AS content_sha256, "
+                        f"{ready_column} AS blob_ready, byte_size "
+                        "FROM task_results WHERE result_id=?",
+                        (reference_id,),
+                    ).fetchone()
+                    if authority is None:
+                        # Sealed TaskHistoryStore rows remain a read-only
+                        # compatibility source for detail/result consumers.
+                        # List queries never enter this branch and therefore
+                        # never materialize an archived full payload.
+                        archived = TaskHistoryStore(db_path).get_result(reference_id)
+                        if archived is None:
+                            raise sqlite3.DatabaseError(
+                                "task result read-through reference is missing"
+                            )
+                        row["authority_result_id"] = archived["result_id"]
+                        row["authority_result_task_id"] = archived["task_id"]
+                        row["authority_terminal_event_type"] = archived[
+                            "terminal_event_type"
+                        ]
+                        row["authority_result_hash"] = archived["sha256"]
+                        row["authority_result_bytes"] = archived["byte_size"]
+                        canonical = str(archived["canonical_json"] or "")
+                    elif int(authority["blob_ready"] or 0):
+                        try:
+                            canonical = read_blob(
+                                conn,
+                                content_sha256=str(authority["content_sha256"] or ""),
+                                expected_bytes=int(authority["byte_size"] or -1),
+                            )
+                        except TaskResultBlobError as exc:
+                            raise sqlite3.DatabaseError(str(exc)) from exc
+                    else:
+                        canonical = str(authority["canonical_json"] or "")
+                row["authority_result_json"] = canonical
                 row["result_json"] = canonical
-            if "business_result_json" in row:
-                row["business_result_json"] = canonical
-            if "artifact_result_json" in row:
-                row["artifact_result_json"] = (
-                    canonical
-                    if str(row.get("status") or "").upper() == "COMPLETED"
-                    else None
-                )
 
     @staticmethod
     def _verify_result_reference(row: dict[str, object]) -> None:
@@ -582,20 +618,47 @@ class JobCenterQueryService:
         ):
             raise sqlite3.DatabaseError("task result read-through identity mismatch")
 
+    @staticmethod
+    def _verify_result_reference_metadata(row: dict[str, object]) -> None:
+        if not bool(row.get("result_reference_present")):
+            return
+        reference_id = str(row.get("result_reference_id") or "")
+        authority_id = str(row.get("authority_result_id") or "")
+        owner_task_id = str(row.get("authority_owner_task_id") or "")
+        authority_task_id = str(row.get("authority_result_task_id") or "")
+        terminal_event_type = str(row.get("authority_terminal_event_type") or "")
+        authority_hash = str(row.get("authority_result_hash") or "")
+        reference_hash = str(row.get("result_reference_hash") or "")
+        if not reference_id or not authority_id or authority_id != reference_id:
+            raise sqlite3.DatabaseError("task result read-through reference is missing")
+        if not owner_task_id or authority_task_id != owner_task_id or not terminal_event_type:
+            raise sqlite3.DatabaseError("task result read-through identity mismatch")
+        if reference_hash and reference_hash != authority_hash:
+            raise sqlite3.DatabaseError("task result reference hash mismatch")
+        expected_id = "tr-" + hashlib.sha256(
+            f"{owner_task_id}\0{terminal_event_type}\0{authority_hash}".encode("utf-8")
+        ).hexdigest()
+        if expected_id != reference_id or not authority_hash:
+            raise sqlite3.DatabaseError("task result read-through identity mismatch")
+
     def _task_from_row(
         self, row: dict[str, object], *, include_result: bool = False
     ) -> JobCenterTaskDTO:
-        self._verify_result_reference(row)
+        if include_result:
+            self._verify_result_reference(row)
+        else:
+            self._verify_result_reference_metadata(row)
         result = self._json_object(row.get("result_json")) if include_result else {}
+        result_summary = self._json_object(row.get("result_summary_json"))
         business_result = (
             result
             if include_result
-            else self._json_object(row.get("business_result_json"))
+            else result_summary
         )
         artifact_result = (
             result
             if include_result
-            else self._json_object(row.get("artifact_result_json"))
+            else result_summary
         )
         status = str(row.get("status") or "UNKNOWN").upper()
         error_summary = redact_web_task_text(
