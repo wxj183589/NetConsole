@@ -73,6 +73,8 @@ PACKAGED_DEVICE_COMMAND_PROFILE_OPERATION = "device.inventory.collect"
 RUNTIME_DYNAMIC_IMPORTS = (
     "uvicorn.loops.auto",
     "uvicorn.loops.asyncio",
+    "uvicorn.protocols.http.auto",
+    "uvicorn.protocols.websockets.auto",
 )
 APPROVED_DISTRIBUTIONS_PATH = (
     ROOT / "config" / "pyinstaller-approved-distributions.json"
