@@ -1,39 +1,40 @@
-# Unsupported History Consumer Contract
+# Formerly Unsupported History Consumer Contract
 
-状态：`CONFIRMED`（代码消费者存在）；迁移状态：`BLOCKED_BY_TARGET_EVENT_CONTRACT`。
+状态：`RETIRED_AND_MIGRATED`（2026-08-29）
 
-`ac_fit_ap_unauthenticated_history` 和 `ac_station_online_summary_history` 不能继续标成“无消费者”。
-两者目前仍是 legacy projection，HistoryStore 尚未为其定义稳定的 target event schema，因此本轮不
-执行 source retirement、删除或自动迁移。
+`ac_fit_ap_unauthenticated_history` 和 `ac_station_online_summary_history` 曾因
+没有稳定的 HistoryStore target event contract 被标记为 unsupported。该限制已由
+本次专用 Current + Recent10 模型解决；旧表只保留为显式 maintenance 输入，不能
+再作为运行时 authority。
 
 ## Consumer audit
 
-| 表 | producer / writer | readers / export | 语义结论 |
+| 数据类别 | runtime writer | runtime reader | 新 authority |
 | --- | --- | --- | --- |
-| `ac_fit_ap_unauthenticated_history` | `AcRepository.replace_fit_ap_unauthenticated()`；H3C AC collector 写入当前快照并追加历史行 | `list_fit_ap_unauthenticated_history()`；`_enrich_resources_with_unauthenticated_status()`；轨旁 AP business snapshot；AC/FIT-AP tests | 有业务价值：用于判断“历史新上线/已固化”及最后一次未认证证据。仅从当前 `ac_fit_ap_unauthenticated` 无法重建历史时间序列。 |
-| `ac_station_online_summary_history` | `AcRepository.save_station_online_summary_history()`；legacy task `ac_overview_history_snapshot` | `list_station_online_summary_history()`、分页/count handler、`common_exporters.py` 导出；AC management tests | 有业务价值：站点级在线率历史。当前 overview 只能重建最新快照，不能重建历史采样。 |
+| FIT AP unauthenticated | `AcRepository.replace_fit_ap_unauthenticated()` | `list_fit_ap_unauthenticated_history()`、`_enrich_resources_with_unauthenticated_status()`、Trackside AP snapshot | `ac_fit_ap_unauthenticated` + `fit_ap_unauthenticated_recent` |
+| Station online summary | `AcRepository.save_station_online_summary_history()` | station summary list/page/count 与相关导出 | `station_online_summary_current` + `station_online_summary_recent` |
+
+两类 reader 都只调用 `devices.db` 本地 projection。缺少旧 source rows 不会触发
+HistoryStore fallback，也不会自动创建 `<site>/db/history`。
 
 ## Migration contract
 
-- Authority remains the legacy table until a reviewed HistoryStore event contract exists.
-- Proposed target kinds are `fit_ap_unauthenticated` (entity key `ac_device_uuid`) and
-  `station_online_summary` (entity key `site_name`), matching the existing HistoryStore kind aliases.
-- Every target event must preserve source table/id provenance, `collected_at`, canonical payload,
-  row counts and semantic equivalence. Invalid timestamps or shape mismatches make the run `NOT_READY`.
-- Copy/verify may be rehearsed on an isolated `D:\study` database. `SHARD_VERIFIED` and explicit CAS
-  cutover are prerequisites; no source delete, DROP, VACUUM or physical shrink is authorized.
-- Rebuild from current tables is **not** supported. A rebuildable diagnostic view may read legacy rows,
-  but it is not an authority and must not be used to mark source deletion eligible.
-
-The existing `UNSUPPORTED` classification in `HistoryLegacyMigrationService` is therefore a safety gate,
-not evidence that the tables are dead. It must remain fail-closed until the target event schema and all
-consumer migrations are implemented.
+- `scripts/maintenance/retire_legacy_history_store.py prepare` 按
+  `collected_at/updated_at/created_at` 和稳定事件 id 排序，在隔离候选库中回放；
+  当前事实进入 Current，变化窗口进入 Recent10，每个资源最多 10 条。
+- 当前值不以旧历史重建覆盖；无法确定业务身份的行不猜测写入，并在报告中计入
+  source/discarded 统计。
+- `apply` 先比较 source `devices.db` SHA-256 与 history manifest，备份后原子替换
+  候选 `devices.db`，只删除已注册站点的 `db/history`。它只接受精确
+  `D:\NetConsoleData` 和显式 `LEGACY_HISTORY_RETIREMENT_AUTHORIZED`。
+- 旧表、旧 catalog 和月分片不再参与普通查询、导出、Update All 或启动；其他
+  HistoryStore maintenance 仍需显式调用，不能被误当成 runtime consumer。
 
 ## Required evidence
 
-- `tests/test_ac_unauthenticated_and_trackside_merge.py` and `tests/test_ac_management.py` prove write,
-  read, enrichment and station-history pagination behavior.
-- `tests/test_history_legacy_migration.py` proves both tables remain `UNSUPPORTED` and are not copied by
-  the generic migration.
-- `tests/test_unsupported_history_contract.py` verifies this contract against the producer/consumer paths.
-
+- `tests/test_current_history_retention.py` 覆盖两类模型的 Current/Recent10、
+  去重、上限和新站点不创建 history。
+- `tests/test_history_store_cutover_compat.py`、`tests/test_ac_management.py`、
+  `tests/test_trackside_ap_web.py` 验证旧表/旧事件不会恢复运行时事实。
+- `docs/storage/HISTORYSTORE_RUNTIME_CONSUMER_MATRIX.md` 记录四类历史、Task Center
+  和 maintenance-only 入口的完整前后边界。

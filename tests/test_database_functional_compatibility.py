@@ -14,6 +14,7 @@ from netconsole.core.paths import PathResolver
 from netconsole.models.task_snapshot import TaskEvent, TaskSnapshot
 from netconsole.models.task_state import TaskState
 from netconsole.repositories.task_repository import TaskRepository
+from netconsole.repositories.history_store import TaskHistoryStore
 from netconsole.services.job_center.task_result_rollout import (
     TaskResultRolloutService,
 )
@@ -183,9 +184,12 @@ def _prepare_rehearsal(
                     "source, payload_json FROM task_events WHERE task_id='task-real'"
                 ).fetchall()
             ]
-        inserted, verified = after_repository.task_history.archive_event_rows(rows)
+        task_history = TaskHistoryStore(
+            after_tasks, site_id="demo", history_root=after_history
+        )
+        inserted, verified = task_history.archive_event_rows(rows)
         assert (inserted, verified) == (1, 1)
-        after_repository.task_history.store.seal_open_shards()
+        task_history.store.seal_open_shards()
         with closing(after_repository._connect()) as connection:
             connection.execute("DELETE FROM task_events WHERE task_id='task-real'")
             connection.commit()

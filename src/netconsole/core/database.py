@@ -26,7 +26,7 @@ from netconsole.core.sqlite_utils import (
 from netconsole.models.device_address import InvalidDeviceAddressError, normalize_ip_address
 
 
-CURRENT_SCHEMA_VERSION = "2026.08.26.engineering_current_history_v2"
+CURRENT_SCHEMA_VERSION = "2026.08.29.history_store_full_retirement_v1"
 
 DEVICE_CLASSIFICATION_COLUMNS = (
     "project_phase",
@@ -1431,6 +1431,102 @@ CREATE TABLE IF NOT EXISTS ac_station_online_summary_history (
     collected_at TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+"""
+
+CURRENT_RECENT10_HISTORY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS device_fact_retention_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS device_fact_recent (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_uuid TEXT NOT NULL,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    state_json TEXT NOT NULL DEFAULT '{}',
+    state_fingerprint TEXT NOT NULL DEFAULT '',
+    previous_state_json TEXT NOT NULL DEFAULT '{}',
+    changed_at TEXT NOT NULL,
+    change_kind TEXT NOT NULL DEFAULT 'change',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_device_fact_recent_key_time
+    ON device_fact_recent(device_uuid, changed_at DESC, id DESC);
+
+CREATE TABLE IF NOT EXISTS fit_ap_resource_retention_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS fit_ap_resource_recent (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ac_device_uuid TEXT NOT NULL,
+    ap_uuid TEXT NOT NULL,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    state_json TEXT NOT NULL DEFAULT '{}',
+    state_fingerprint TEXT NOT NULL DEFAULT '',
+    previous_state_json TEXT NOT NULL DEFAULT '{}',
+    changed_at TEXT NOT NULL,
+    change_kind TEXT NOT NULL DEFAULT 'change',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_fit_ap_resource_recent_key_time
+    ON fit_ap_resource_recent(ac_device_uuid, ap_uuid, changed_at DESC, id DESC);
+
+CREATE TABLE IF NOT EXISTS fit_ap_unauthenticated_retention_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS fit_ap_unauthenticated_recent (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ac_device_uuid TEXT NOT NULL,
+    identity_key TEXT NOT NULL,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    state_json TEXT NOT NULL DEFAULT '{}',
+    state_fingerprint TEXT NOT NULL DEFAULT '',
+    previous_state_json TEXT NOT NULL DEFAULT '{}',
+    changed_at TEXT NOT NULL,
+    change_kind TEXT NOT NULL DEFAULT 'change',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_fit_ap_unauth_recent_key_time
+    ON fit_ap_unauthenticated_recent(ac_device_uuid, identity_key, changed_at DESC, id DESC);
+
+CREATE TABLE IF NOT EXISTS station_online_summary_retention_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS station_online_summary_current (
+    site_name TEXT PRIMARY KEY,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    state_json TEXT NOT NULL DEFAULT '{}',
+    state_fingerprint TEXT NOT NULL DEFAULT '',
+    first_seen_at TEXT NOT NULL DEFAULT '',
+    last_seen_at TEXT NOT NULL DEFAULT '',
+    changed_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS station_online_summary_recent (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    site_name TEXT NOT NULL,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    state_json TEXT NOT NULL DEFAULT '{}',
+    state_fingerprint TEXT NOT NULL DEFAULT '',
+    previous_state_json TEXT NOT NULL DEFAULT '{}',
+    changed_at TEXT NOT NULL,
+    change_kind TEXT NOT NULL DEFAULT 'change',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_station_online_summary_recent_key_time
+    ON station_online_summary_recent(site_name, changed_at DESC, id DESC);
+
+INSERT OR IGNORE INTO device_fact_retention_meta(key, value)
+VALUES ('authority', 'bounded_v1');
+INSERT OR IGNORE INTO fit_ap_resource_retention_meta(key, value)
+VALUES ('authority', 'bounded_v1');
+INSERT OR IGNORE INTO fit_ap_unauthenticated_retention_meta(key, value)
+VALUES ('authority', 'bounded_v1');
+INSERT OR IGNORE INTO station_online_summary_retention_meta(key, value)
+VALUES ('authority', 'bounded_v1');
 """
 
 AC_FIT_AP_OPTICAL_HISTORY_SCHEMA = """
@@ -3942,6 +4038,7 @@ class Database:
             AP_MANAGEMENT_VLAN_ASSIGNMENT_SCHEMA,
             AP_MANAGEMENT_VLAN_ALLOCATION_SCHEMA,
             AC_STATION_ONLINE_SUMMARY_HISTORY_SCHEMA,
+            CURRENT_RECENT10_HISTORY_SCHEMA,
             AC_FIT_AP_OPTICAL_HISTORY_SCHEMA,
             AC_FIT_AP_LLDP_HISTORY_SCHEMA,
             FIT_AP_LLDP_BOUNDED_SCHEMA,

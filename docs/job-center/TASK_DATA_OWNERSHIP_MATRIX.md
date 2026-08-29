@@ -1,15 +1,15 @@
 # Task Center 数据所有权矩阵
 
 本矩阵是 `tasks.db` 轻量化、清理和候选库重建的边界。它不授权
-Production 操作，也不把所有历史任务宣称已迁移到 `TaskHistoryStore`。
+Production 操作，也不把运行时任务查询委托给 `TaskHistoryStore`；后者仅保留为显式维护证据工具。
 `UNKNOWN` 一律 `PROTECT`。
 
 | 数据 | CURRENT AUTHORITY | HISTORY AUTHORITY | READ OWNER | WRITE OWNER | RETENTION OWNER | DELETE AUTHORITY | COMPACTION BEHAVIOR | MIGRATION STATE |
 |---|---|---|---|---|---|---|---|---|
-| `tasks` / `task_snapshots` | `tasks.db.task_snapshots` 当前状态、恢复指针 | 现有 Task/History 兼容记录 | `TaskRepository`、Task Center Query | `TaskRepository` / TaskApplicationService | SiteRetentionService；普通软清理仍可逆 | 仅显式 cleanup 候选的 Repository 事务 | 不压缩业务状态；仅随明确批准的 task-owned cleanup 删除 | schema v5 兼容升级完成；未迁移为全量 HistoryStore |
-| `task_events` | `tasks.db.task_events` 执行与审计事件 | 已封存的历史事件由既有 HistoryStore 契约负责 | `TaskRepository`、Task Center Detail | `TaskRepository` | TaskHistoryStore / SiteRetentionService | 不按旧、Completed、dismiss 或 payload 大小推断；仅随安全 Task cleanup 删除 | 不抽样、不重写事件；compact 只回收 SQLite 空页 | 终态引用已收口；事件归档/分片未开始 |
-| terminal result metadata `task_results` | 不可变 `result_id/task_id/event/hash/size` 身份元数据 | legacy full-only/dual rows 与既有 HistoryStore 兼容证据 | `TaskRepository`、Query Service、Site Sync | `TaskRepository`；维护脚本仅显式离线运行 | TaskRepository / SiteRetentionService | 仅随已 preview 且无引用的 Task-owned cleanup 删除 | 新 rows 不写完整 body；旧 `canonical_json` 可保留并由 Blob-first 读取校验 | DEV ref-authority 已接入；Production migration 未运行 |
-| terminal result body `task_result_blobs` | `content_sha256` 内容寻址的 zlib Blob | 旧 `canonical_json` / HistoryStore 作为兼容历史来源 | `TaskResultBlobRepository`、TaskRepository | TaskRepository；migration tool 只写隔离候选 | TaskRepository orphan GC；不删仍被 ready result 引用的 Blob | 只回收无 ready 引用的 Blob；不删除业务结果 | 按内容共享压缩 Blob，hash/长度/UTF-8/JSON 失败闭合 | DEV migration/compact 工具已验证；Production 未启用 |
+| `tasks` / `task_snapshots` | `tasks.db.task_snapshots` 当前状态、恢复指针 | 当前库内兼容记录；无运行时 HistoryStore authority | `TaskRepository`、Task Center Query | `TaskRepository` / TaskApplicationService | SiteRetentionService；普通软清理仍可逆 | 仅显式 cleanup 候选的 Repository 事务 | 不压缩业务状态；仅随明确批准的 task-owned cleanup 删除 | schema v5 兼容升级完成；运行时不依赖 HistoryStore |
+| `task_events` | `tasks.db.task_events` 执行与审计事件 | 当前库内保留的事件；维护脚本可读取隔离历史证据 | `TaskRepository`、Task Center Detail | `TaskRepository` | SiteRetentionService；TaskHistoryStore 仅维护证据 | 不按旧、Completed、dismiss 或 payload 大小推断；仅随安全 Task cleanup 删除 | 不抽样、不重写事件；compact 只回收 SQLite 空页 | 运行时读 current-only；历史归档不再启动 |
+| terminal result metadata `task_results` | 不可变 `result_id/task_id/event/hash/size` 身份元数据 | legacy full-only/dual rows 仅作当前库兼容证据 | `TaskRepository`、Query Service、Site Sync | `TaskRepository`；维护脚本仅显式离线运行 | TaskRepository / SiteRetentionService | 仅随已 preview 且无引用的 Task-owned cleanup 删除 | 新 rows 不写完整 body；旧 `canonical_json` 可保留并由 Blob-first 读取校验 | runtime current-only；无 HistoryStore fallback |
+| terminal result body `task_result_blobs` | `content_sha256` 内容寻址的 zlib Blob | 旧 `canonical_json` 仅作同库兼容来源 | `TaskResultBlobRepository`、TaskRepository | TaskRepository；migration tool 只写隔离候选 | TaskRepository orphan GC；不删仍被 ready result 引用的 Blob | 只回收无 ready 引用的 Blob；不删除业务结果 | 按内容共享压缩 Blob，hash/长度/UTF-8/JSON 失败闭合 | Blob-first runtime authority 已接入 |
 | `task_result_storage_rollout` / audit | `tasks.db` 当前 rollout 与不可变审计 | rollout audit rows | TaskResultRolloutService / diagnostics | TaskResultRolloutService / schema initialization | 不自动保留清理 | 本轮不删除 | 不 compact、不重写审计 | schema v5 初始化兼容完成 |
 | `online_mr_task_sessions` | Online MR 当前 Task/Session 映射 | Online MR session/raw/parsed authority 按领域保存 | Online MR services、Task Center | Online MR session repository | Online MR lifecycle | 通用 Task cleanup 不得删除 | compact 不触碰 mapping | 仅做引用校验，未迁移/删除 |
 | Ground current mapping | Ground `index.sqlite` 的运行、深采和操作关联 | Ground active/raw/READY archive 契约 | Ground repository/services；cleanup 只读引用 | Ground repositories/services | Ground archive/raw lifecycle | Ground owner；Task cleanup 永不删除 | compact 不触碰 Ground DB、NDJSON、ZIP | 仅完成 task reference parity；无迁移 |
@@ -31,4 +31,4 @@ Production 操作，也不把所有历史任务宣称已迁移到 `TaskHistorySt
   merge 使用 Blob-first authority。旧 full-only/dual rows 保持兼容，新
   result-reference rows 不重新写回完整 `canonical_json`。
 - DEV candidate migration/compact 只在隔离库执行并保留 parity/quick-check
-  证据；本轮没有 Production migration、Production compact 或真实数据写入。
+  证据；本轮不改变 tasks.db、Task Blob、MESH、Online MR、Ground 或 Artifact 生命周期。

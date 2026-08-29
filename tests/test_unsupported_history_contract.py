@@ -19,8 +19,8 @@ def test_unsupported_history_contract_documents_real_consumers() -> None:
     ):
         assert table in contract
         assert table in UNSUPPORTED_TABLES
-    assert "不能继续标成“无消费者”" in contract
-    assert "BLOCKED_BY_TARGET_EVENT_CONTRACT" in contract
+    assert "RETIRED_AND_MIGRATED" in contract
+    assert "Current + Recent10" in contract
 
 
 def test_unsupported_tables_have_producer_and_reader_evidence() -> None:

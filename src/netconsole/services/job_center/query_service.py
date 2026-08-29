@@ -67,7 +67,6 @@ from netconsole.models.task_history_policy import (
     business_result_has_warning,
     project_business_result,
 )
-from netconsole.repositories.history_store import TaskHistoryStore
 from netconsole.repositories.task_result_blob_repository import (
     TaskResultBlobError,
     read_blob,
@@ -231,12 +230,9 @@ class JobCenterQueryService:
                     ).fetchall()
                 ]
         self._hydrate_result_references(db_path, [values], include_result=True)
-        archived_progress = TaskHistoryStore(db_path).list_events_for_tasks(
-            [str(task_id)], event_types=["progress"]
-        ).get(str(task_id), [])
         progress_by_id = {
             str(item.get("event_id") or item.get("sequence") or ""): item
-            for item in (*archived_progress, *progress_rows)
+            for item in progress_rows
         }
         for row_item in sorted(
             progress_by_id.values(),
@@ -368,12 +364,9 @@ class JobCenterQueryService:
                     (str(task_id), max(1, min(int(tail), 300))),
                     ).fetchall()
                 ]
-        archived = TaskHistoryStore(db_path).list_events_for_tasks(
-            [str(task_id)]
-        ).get(str(task_id), [])
         by_id = {
             str(item.get("event_id") or item.get("sequence") or ""): item
-            for item in (*archived, *rows)
+            for item in rows
         }
         safe_tail = max(1, min(int(tail), 300))
         merged = sorted(
@@ -562,24 +555,10 @@ class JobCenterQueryService:
                         (reference_id,),
                     ).fetchone()
                     if authority is None:
-                        # Sealed TaskHistoryStore rows remain a read-only
-                        # compatibility source for detail/result consumers.
-                        # List queries never enter this branch and therefore
-                        # never materialize an archived full payload.
-                        archived = TaskHistoryStore(db_path).get_result(reference_id)
-                        if archived is None:
-                            raise sqlite3.DatabaseError(
-                                "task result read-through reference is missing"
-                            )
-                        row["authority_result_id"] = archived["result_id"]
-                        row["authority_result_task_id"] = archived["task_id"]
-                        row["authority_terminal_event_type"] = archived[
-                            "terminal_event_type"
-                        ]
-                        row["authority_result_hash"] = archived["sha256"]
-                        row["authority_result_bytes"] = archived["byte_size"]
-                        canonical = str(archived["canonical_json"] or "")
-                    elif int(authority["blob_ready"] or 0):
+                        raise sqlite3.DatabaseError(
+                            "task result authority row is missing"
+                        )
+                    if int(authority["blob_ready"] or 0):
                         try:
                             canonical = read_blob(
                                 conn,

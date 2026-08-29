@@ -750,8 +750,9 @@ def test_typed_task_retention_exact_apply_preserves_active_mr_ground_and_artifac
     assert result["deleted"] == {
         "archived_events": 3,
         "disposable_events": 0,
-        "archived_results": 1,
+        "archived_results": 0,
     }
+    assert result["retained_result_authority"]
     assert result["active_tasks_deleted"] == 0
     assert result["artifacts_deleted"] == 0
     assert artifact.read_bytes() == b"artifact"
@@ -777,11 +778,7 @@ def test_typed_task_retention_exact_apply_preserves_active_mr_ground_and_artifac
     ordinary = restarted.get("ordinary-old")
     assert ordinary is not None
     assert ordinary.result == {"rows": 10}
-    assert [event["id"] for event in restarted.list_events("ordinary-old")] == [
-        "finished-ordinary-old",
-        "progress-ordinary",
-        "log-ordinary",
-    ]
+    assert restarted.list_events("ordinary-old") == []
     assert result["sealed_shards"]
     assert all(item["status"] == "VERIFIED" for item in result["sealed_shards"])
 

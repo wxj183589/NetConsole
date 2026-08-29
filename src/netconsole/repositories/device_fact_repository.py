@@ -9,7 +9,10 @@ from netconsole.core.optical_severity_engine import (
     is_zte_optical_record,
     normalize_zte_optical_record,
 )
-from netconsole.services.history_store import HistoryStore
+from netconsole.services.current_history_retention import (
+    list_device_fact_recent,
+    record_device_fact_change,
+)
 from netconsole.services.interface_retention import (
     upsert_interface_current_and_history,
 )
@@ -281,7 +284,6 @@ _NUMERIC_SORT_FIELDS = frozenset(
 class DeviceFactRepository:
     def __init__(self, database: Database) -> None:
         self.database = database
-        self.history_store = HistoryStore(database.path)
 
     def upsert_device_fact(self, data: dict[str, object | None]) -> dict[str, object | None]:
         payload = self._payload(FACT_FIELDS, data)
@@ -290,6 +292,10 @@ class DeviceFactRepository:
         placeholders = ", ".join("?" for _ in FACT_FIELDS)
         updates = ", ".join(f"{field} = excluded.{field}" for field in FACT_FIELDS if field != "device_uuid")
         with self.database.connect() as conn:
+            previous = conn.execute(
+                "SELECT * FROM device_facts WHERE device_uuid = ?",
+                (str(payload["device_uuid"]),),
+            ).fetchone()
             conn.execute(
                 f"""
                 INSERT INTO device_facts ({columns})
@@ -298,16 +304,11 @@ class DeviceFactRepository:
                 """,
                 [payload[field] for field in FACT_FIELDS],
             )
-            self.history_store.record_event(
+            record_device_fact_change(
                 conn,
-                kind="device_fact",
-                entity_key=str(payload["device_uuid"]),
-                payload=payload,
-                collected_at=str(payload["collected_at"]),
-                meaningful_fields=(
-                    "device_uuid", "sysname", "model", "serial_number", "mac_address",
-                    "software_version", "bootrom_version", "vendor",
-                ),
+                payload,
+                previous=dict(previous) if previous is not None else None,
+                now=str(payload["collected_at"]),
             )
             conn.commit()
         return self.get_device_fact(str(payload["device_uuid"])) or payload
@@ -384,16 +385,15 @@ class DeviceFactRepository:
         payload = self._payload(FACT_HISTORY_FIELDS, data)
         self._set_required_defaults(payload, ("collected_at", "created_at"))
         with self.database.connect() as conn:
-            self.history_store.record_event(
+            previous = conn.execute(
+                "SELECT * FROM device_facts WHERE device_uuid = ?",
+                (str(payload.get("device_uuid") or ""),),
+            ).fetchone()
+            record_device_fact_change(
                 conn,
-                kind="device_fact",
-                entity_key=str(payload.get("device_uuid") or ""),
                 payload=payload,
-                collected_at=str(payload["collected_at"]),
-                meaningful_fields=(
-                    "device_uuid", "sysname", "model", "serial_number", "mac_address",
-                    "software_version", "bootrom_version", "vendor",
-                ),
+                previous=dict(previous) if previous is not None else None,
+                now=str(payload["collected_at"]),
             )
             conn.commit()
 
@@ -892,11 +892,8 @@ class DeviceFactRepository:
             conn.commit()
 
     def list_fact_history(self, device_uuid: str) -> list[dict[str, object | None]]:
-        return self._merge_history(
-            "device_fact", device_uuid,
-            self._list_history("device_facts_history", "device_uuid = ?", (device_uuid,)),
-            limit=100_000,
-        )
+        with self.database.connect_readonly() as conn:
+            return list_device_fact_recent(conn, device_uuid, limit=10)
 
     def list_interface_history(self, device_uuid: str, interface_name: str) -> list[dict[str, object | None]]:
         aliases = _interface_name_aliases(interface_name)
@@ -1253,44 +1250,6 @@ class DeviceFactRepository:
         history_payload = {field: payload.get(field) for field in fields}
         history_payload["created_at"] = history_payload.get("created_at") or cls._now()
         cls._insert(conn, table, fields, history_payload)
-
-    def _list_history(
-        self, table: str, where: str, params: tuple[object, ...]
-    ) -> list[dict[str, object | None]]:
-        with self.database.connect() as conn:
-            return self.history_store.query_legacy_rows(
-                conn,
-                table,
-                f"SELECT * FROM {table} WHERE {where} ORDER BY collected_at DESC, id DESC",
-                params,
-            )
-
-    def _merge_history(
-        self,
-        kind: str,
-        entity_key: str,
-        legacy_rows: list[dict[str, object | None]],
-        *,
-        limit: int = 200,
-    ) -> list[dict[str, object | None]]:
-        events = self.history_store.query_events(
-            kind=kind,
-            entity_key=entity_key,
-            limit=max(1, int(limit)),
-        )
-        combined = [*legacy_rows, *events]
-        combined = sorted(
-            combined,
-            key=lambda row: (
-                str(row.get("collected_at") or ""),
-                str(row.get("event_id") or ""),
-                _int_value(row.get("id")),
-            ),
-            reverse=True,
-        )
-        if kind in {"device_interface", "device_optical", "device_lldp"}:
-            return combined[:10]
-        return combined
 
     @staticmethod
     def _now() -> str:

@@ -609,7 +609,7 @@ def test_fit_ap_resource_offline_refresh_preserves_identity_and_clears_runtime_s
     assert entities[0]["is_offline"] == 1
 
 
-def test_fit_ap_resource_refresh_restores_identity_from_snapshot_when_current_rows_are_empty(
+def test_fit_ap_resource_refresh_does_not_restore_identity_from_legacy_history(
     tmp_path,
 ):
     database = make_database(tmp_path)
@@ -648,8 +648,8 @@ def test_fit_ap_resource_refresh_restores_identity_from_snapshot_when_current_ro
     recovered = repository.list_fit_ap_resources("ac-1")[0]
 
     assert recovered["ap_uuid"] == first["ap_uuid"]
-    assert recovered["ap_mac"] == "0011-2233-4455"
-    assert recovered["serial_number"] == "SN-HISTORY"
+    assert recovered["ap_mac"] is None
+    assert recovered["serial_number"] is None
 
 
 def test_fit_ap_resource_name_continuity_does_not_guess_when_existing_name_is_ambiguous(
@@ -1150,7 +1150,7 @@ def test_fit_ap_resource_lldp_merges_ap_direct_and_marks_history_changes(tmp_pat
     assert projection_count == 0
 
 
-def test_fit_ap_resource_history_uses_change_aware_outbox_without_legacy_writes(tmp_path):
+def test_fit_ap_resource_history_uses_bounded_recent_without_legacy_writes(tmp_path):
     repository = AcRepository(make_database(tmp_path))
     sample = {
         "ap_name": "ap-change-aware",
@@ -1172,11 +1172,15 @@ def test_fit_ap_resource_history_uses_change_aware_outbox_without_legacy_writes(
             (ap_uuid,),
         ).fetchone()[0]
         outbox_count = conn.execute(
-            "SELECT COUNT(*) FROM history_outbox WHERE kind = 'fit_ap_resource' AND entity_key = ?",
-            (f"ac-1:{ap_uuid}",),
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'history_outbox'"
+        ).fetchone()[0]
+        recent_count = conn.execute(
+            "SELECT COUNT(*) FROM fit_ap_resource_recent WHERE ac_device_uuid='ac-1' AND ap_uuid = ?",
+            (ap_uuid,),
         ).fetchone()[0]
     assert legacy_count == 0
-    assert outbox_count == 1
+    assert outbox_count == 0
+    assert recent_count == 1
 
 
 def test_fit_ap_optical_failed_row_does_not_overwrite_valid_rx(tmp_path):

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import time
 from pathlib import Path
 from threading import Event
 
@@ -248,34 +247,21 @@ def test_deferred_runtime_failure_is_visible_and_blocks_service_writes(tmp_path:
     assert blocked.json()["code"] == "RUNTIME_SERVICES_DEGRADED"
 
 
-def test_history_drain_is_independent_from_deferred_runtime_readiness(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(main_module, "_HISTORY_DRAIN_INITIAL_DELAY_SECONDS", 0.0)
-    monkeypatch.setattr(main_module, "_HISTORY_DRAIN_NORMAL_INTERVAL_SECONDS", 0.01)
+def test_history_store_is_retired_from_backend_lifecycle(tmp_path: Path) -> None:
     app = create_app(
         RuntimeMode.SERVER,
         paths=PathResolver(tmp_path),
         frontend_dist=tmp_path / "missing",
     )
 
-    calls = []
-
-    def fake_drain(**kwargs):
-        calls.append(kwargs)
-        from netconsole.services.history_store import HistoryDrainResult
-
-        return HistoryDrainResult()
-
-    monkeypatch.setattr(app.state.history_store, "drain", fake_drain)
+    assert not hasattr(app.state, "history_store")
+    assert app.state.history_status == "retired"
     with TestClient(app) as client:
         app.state.runtime_services_ready = False
         app.state.runtime_services_status = "degraded"
         health = client.get("/api/health")
         assert health.status_code == 200
-        time.sleep(0.05)
-        assert calls
-        assert calls[0]["unattended_active"] is False
+        assert health.json()["history_status"] == "retired"
 
 
 @pytest.mark.parametrize("runtime_mode", [RuntimeMode.DESKTOP, RuntimeMode.SERVER])

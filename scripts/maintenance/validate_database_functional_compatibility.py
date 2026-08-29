@@ -10,7 +10,7 @@ import sqlite3
 import struct
 import subprocess
 from collections import Counter
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from contextlib import closing
 from dataclasses import fields
 from datetime import UTC, datetime
@@ -95,6 +95,52 @@ class _ReadonlyTaskRepository(TaskRepository):
 
     def _connect(self) -> sqlite3.Connection:
         return _connect_readonly(self.db_path)
+
+    def list_events_for_tasks(
+        self,
+        task_ids: Collection[str],
+        *,
+        event_types: Collection[str] | None = None,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Merge current rows with explicitly supplied maintenance evidence."""
+
+        current = super().list_events_for_tasks(task_ids, event_types=event_types)
+        archived = self.task_history.list_events_for_tasks(
+            task_ids, event_types=event_types
+        )
+        with self._connect() as conn:
+            archived_events = {
+                task_id: [
+                    self._event_from_connection_row(
+                        conn,
+                        {
+                            "sequence": row.get("sequence"),
+                            "event_id": row.get("event_id"),
+                            "task_id": row.get("task_id"),
+                            "event_type": row.get("event_type"),
+                            "event_time": row.get("event_time"),
+                            "source": row.get("source"),
+                            "payload_json": row.get("payload_json"),
+                        },
+                    )
+                    for row in rows
+                ]
+                for task_id, rows in archived.items()
+            }
+        merged: dict[str, list[dict[str, Any]]] = {}
+        for task_id in sorted({*current, *archived_events}):
+            rows = {
+                str(row["id"]): row
+                for row in [
+                    *current.get(task_id, []),
+                    *archived_events.get(task_id, []),
+                ]
+            }
+            merged[task_id] = sorted(
+                rows.values(),
+                key=lambda row: (int(row.get("sequence") or 0), str(row.get("id") or "")),
+            )
+        return merged
 
 
 def validate_database_functional_compatibility(

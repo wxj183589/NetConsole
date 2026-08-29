@@ -5,7 +5,6 @@ import html
 import os
 import re
 import secrets
-import sqlite3
 import uuid
 from contextlib import asynccontextmanager
 from http.cookies import SimpleCookie
@@ -78,7 +77,6 @@ from netconsole.services.file_management_service import FileManagementApplicatio
 from netconsole.services.job_center.task_application_service import TaskApplicationService
 from netconsole.services.job_center.query_service import JobCenterQueryService
 from netconsole.services.job_center.local_process_adapter import LocalProcessAdapter
-from netconsole.services.history_store import HistoryStore
 from netconsole.services.network_tools.application_service import NetworkToolsApplicationService
 from netconsole.services.online_mr.api_facade import OnlineMrApiFacade
 from netconsole.services.online_mr.errors import OnlineMrQueryError, OnlineMrQueryErrorCode
@@ -137,9 +135,6 @@ _SECRET_RE = re.compile(r"(?i)((?:x-agent-token|token)\s*[:=]\s*)[^\s,;]+")
 DESKTOP_SESSION_COOKIE = "netconsole_desktop_session"
 DESKTOP_SESSION_HEADER = "x-netconsole-session"
 _DESKTOP_DEFERRED_RUNTIME_DELAY_SECONDS = 1.0
-_HISTORY_DRAIN_INITIAL_DELAY_SECONDS = 5.0
-_HISTORY_DRAIN_NORMAL_INTERVAL_SECONDS = 10.0
-_HISTORY_DRAIN_UNATTENDED_INTERVAL_SECONDS = 60.0
 _SLOW_API_THRESHOLD_MS = 250.0
 
 
@@ -449,11 +444,6 @@ def create_app(
     if callable(resident_binder):
         resident_binder(ac_mesh_link_resident_service)
     web_process_adapter = LocalProcessAdapter(task_service)
-    history_store = HistoryStore(
-        paths.site_db_path(site_name),
-        site_id=site_name,
-        history_root=paths.site_history_dir(site_name),
-    )
     site_application_service = SiteApplicationService(paths, task_service)
     data_root_application_service = DataRootApplicationService(paths, site_application_service)
     site_package_service = SitePackageService(paths, site_application_service)
@@ -613,73 +603,6 @@ def create_app(
                     app_logger.log_warning("APP_AUTO_CLEANUP_FAILED", _safe_error_message(str(exc)))
                 await asyncio.sleep(LOG_POLICY.housekeeper.interval_seconds)
 
-        async def schedule_history_drain() -> None:
-            """Drain history independently from deferred runtime services."""
-
-            await asyncio.sleep(_HISTORY_DRAIN_INITIAL_DELAY_SECONDS)
-            while True:
-                if not app.state.accepting_work:
-                    return
-                try:
-                    diagnostics = await asyncio.to_thread(history_store.outbox_diagnostics)
-                    app.state.history_pending = diagnostics.pending
-                    app.state.history_oldest_pending_age_seconds = (
-                        diagnostics.oldest_pending_age_seconds
-                    )
-                    app.state.history_pressure = diagnostics.pressure
-                    if diagnostics.pressure == "degraded":
-                        app.state.history_status = "degraded"
-                    elif app.state.history_status == "idle":
-                        app.state.history_status = "ready"
-                except (OSError, sqlite3.Error) as exc:
-                    app.state.history_status = "degraded"
-                    app.state.history_error = exc.__class__.__name__
-                try:
-                    unattended_active = await asyncio.to_thread(
-                        _unattended_run_active,
-                        getattr(app.state, "ground_unattended_repository", None),
-                    )
-                    result = await asyncio.to_thread(
-                        history_store.drain,
-                        limit=100,
-                        unattended_active=unattended_active,
-                        max_elapsed_seconds=2.0 if unattended_active else None,
-                    )
-                    app.state.history_pending = result.pending
-                    app.state.history_last_drain_elapsed_ms = result.elapsed_ms
-                    app.state.history_last_drain_written = result.written
-                    app.state.history_budget_overrun = result.budget_exceeded
-                    app.state.history_oldest_pending_age_seconds = result.oldest_pending_age_seconds
-                    app.state.history_pressure = result.pressure
-                    app.state.history_status = "paused" if result.paused else (
-                        "degraded" if result.degraded else "ready"
-                    )
-                    app.state.history_error = "" if not result.degraded else "shard_write_failed"
-                    if result.degraded:
-                        app_logger.log_warning(
-                            "HISTORY_DRAIN_DEGRADED",
-                            f"pending={result.pending} written={result.written}",
-                        )
-                    elif result.budget_exceeded:
-                        app_logger.log_warning(
-                            "HISTORY_DRAIN_BUDGET_OVERRUN",
-                            f"elapsed_ms={result.elapsed_ms} written={result.written} pending={result.pending}",
-                        )
-                except (OSError, sqlite3.Error) as exc:
-                    app.state.history_status = "degraded"
-                    app.state.history_error = exc.__class__.__name__
-                    app_logger.log_warning(
-                        "HISTORY_DRAIN_DEGRADED",
-                        f"error={exc.__class__.__name__}: {_safe_error_message(str(exc))}",
-                    )
-                await asyncio.sleep(
-                    _HISTORY_DRAIN_UNATTENDED_INTERVAL_SECONDS
-                    if _unattended_run_active(
-                        getattr(app.state, "ground_unattended_repository", None)
-                    )
-                    else _HISTORY_DRAIN_NORMAL_INTERVAL_SECONDS
-                )
-
         try:
             staging_recovery = await asyncio.to_thread(
                 site_package_service.recover_orphaned_staging
@@ -709,7 +632,6 @@ def create_app(
             )
             else None
         )
-        history_drain_task = asyncio.create_task(schedule_history_drain())
         deferred_start_task: asyncio.Task[None] | None = None
         try:
             if defer_runtime_start:
@@ -748,8 +670,6 @@ def create_app(
             if auto_cleanup_task is not None:
                 auto_cleanup_task.cancel()
                 await asyncio.gather(auto_cleanup_task, return_exceptions=True)
-            history_drain_task.cancel()
-            await asyncio.gather(history_drain_task, return_exceptions=True)
             if ground_unattended_supervisor is not None:
                 try:
                     await asyncio.to_thread(ground_unattended_supervisor.close)
@@ -837,7 +757,7 @@ def create_app(
     app.state.runtime_services_ready = False
     app.state.runtime_services_status = "starting"
     app.state.runtime_services_error = ""
-    app.state.history_status = "idle"
+    app.state.history_status = "retired"
     app.state.history_pending = 0
     app.state.history_error = ""
     app.state.history_oldest_pending_age_seconds = 0
@@ -845,7 +765,6 @@ def create_app(
     app.state.history_last_drain_elapsed_ms = 0
     app.state.history_last_drain_written = 0
     app.state.history_budget_overrun = False
-    app.state.history_store = history_store
     app.state.host_environment_profile = host_profile
     app.state.performance_mode = performance_mode.value
     app.state.capability_policy = capability_policy

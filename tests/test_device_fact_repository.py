@@ -60,10 +60,10 @@ def test_uptime_growth_does_not_create_a_change_event(tmp_path):
         }
     )
     with repository.database.connect() as conn:
-        pending = conn.execute(
-            "SELECT COUNT(*) FROM history_outbox WHERE kind='device_fact'"
+        recent = conn.execute(
+            "SELECT COUNT(*) FROM device_fact_recent WHERE device_uuid='device-1'"
         ).fetchone()[0]
-    assert pending == 1
+    assert recent == 1
 
 
 def test_get_latest_raw_log_path_reads_device_fact_path(tmp_path):

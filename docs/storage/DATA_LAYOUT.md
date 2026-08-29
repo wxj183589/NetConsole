@@ -51,9 +51,6 @@ Electron 的 `userData`、`sessionData`、`cache`、`logs`、`crashDumps` 和 `t
 <data_root>/sites/<site>/
 ├─ db/
 │  ├─ devices.db
-│  ├─ history/                   # Phase 2 新历史：按月分片，不参与正常启动维护
-│  │  ├─ catalog.db              # 只记录已知分片，不扫描目录发现历史库
-│  │  └─ devices-YYYY-MM.db      # append-only change/heartbeat event shard
 │  ├─ tasks.db
 │  └─ agents.db
 ├─ files/
@@ -74,32 +71,25 @@ Electron 的 `userData`、`sessionData`、`cache`、`logs`、`crashDumps` 和 `t
 
 `tasks.db` schema version 5 增加不可变 `task_results` 与按内容寻址的 `task_result_blobs`。B3 对含对象结果的 `finished/error/cancelled` 在同一 `BEGIN IMMEDIATE` 中写 result reference、blob authority、snapshot 和 terminal event；确定性 `result_id` 绑定 task、真实结果生产事件类型和 canonical JSON SHA-256。Snapshot 当前状态不能替代结果生产事件身份：legacy 数据中的 `FAILED snapshot + finished result event` 按 task/hash 读取，后续 Artifact finalization 可更新 snapshot 的兼容投影而不改写 terminal authority；event ref 仍精确校验 task、event type 和 Blob 内容。旧 full-only、dual-write 和 ref-only 数据均可读；新 runtime rows 不再把完整 body 写回 `task_results.canonical_json`。Site Return Package 以单事务合并 `task_results -> task_snapshots -> task_events -> online_mr_task_sessions`，不可变结果、事件或 mapping 冲突失败关闭。历史 backfill、ref authority、精确 retention、DELETE 和 compact 仅允许在 `D:\study` 隔离候选库演练；生产入口仍未启用。
 
-## devices.db 当前态与历史态（Phase 2）
+## devices.db 当前态与历史态（HistoryStore 退役）
 
-Phase 2 的目标是先停止 `devices.db` 因高频快照持续增长，同时保持旧局点可原样升级和查询。当前态继续写入 `devices.db`；新的设备采集历史在同一 current-state 事务中先写入小型 `history_outbox`，READY 后由有界后台 drain 以 [History Storage V2](./HISTORY_STORAGE_V2.md) 写入 `db/history/devices-YYYY-MM.db`。分片和 catalog 不属于 `Database.initialize()` 的启动工作：启动不会扫描、校验、迁移、checkpoint、retention 或 VACUUM 任一历史分片。
-
-`history_state` 只保存每个 `kind + entity_key` 最近一次有业务意义的指纹和业务状态。变化立即入 outbox；采集时间、采集批次 UUID、raw 路径和其他运行元数据不得单独造成 change。设备接口、设备 LLDP 和设备光模块三类动态历史只记录有效变化，不产生 heartbeat；每个资源的新链路最多保留最近 10 条有效变化记录。光模块 RX/TX 采用独立的 0.20 dB 历史抖动容差，不改变现有告警阈值；模块插拔、序列号、状态和告警变化即使数值变化很小也会记录。其余 kind 仍按 producer 选择的字段和 sampling 周期处理，不能用整行字符串比较。
+正式运行时不再创建、打开或排空外部 `db/history`。`HistoryStore` 的 catalog、月分片和 lock 是已退役的 maintenance-only 输入；新站点初始化也不会创建该目录。四类曾依赖外部 HistoryStore 的事实在 `devices.db` 内使用 Current + change-only Recent10 projection：`fit_ap_resource`、`device_fact`、`fit_ap_unauthenticated` 和 `station_online_summary`。Current 保留最新业务事实，Recent10 只保留每个稳定资源最近 10 条有效变化；采集时间、批次 UUID、raw 路径和 uptime 等 heartbeat 元数据不得单独造成 change。
 
 | 数据类别 | 当前态 producer / storage | 新历史写入路径 | 兼容 consumer / legacy 表 | 业务语义与索引 |
 | --- | --- | --- | --- | --- |
-| Device fact | `DeviceFactRepository.upsert_device_fact` -> `device_facts` | `device_fact` outbox -> 月分片 | `list_fact_history` + `device_facts_history` | 设备型号、版本、MAC 等事实变化；legacy 按 device/time 查询 |
-| Device interface | `replace_device_interfaces` -> `device_interfaces` | `device_interface` outbox -> 月分片 | `list_interface_history` + `device_interfaces_history` | 链路、VLAN、端口和地址语义；`device_uuid, interface_name, collected_at, id` |
-| Device optical | `replace_optical_modules` -> `device_optical_modules` | `device_optical` outbox -> 月分片 | `list_optical_history` + `device_optical_modules_history` | RX/TX、阈值、告警和状态；`device_uuid, interface_name, collected_at, id` |
-| Device LLDP | `replace_lldp_neighbors` -> `device_lldp_neighbors` | `device_lldp` outbox -> 月分片 | `list_lldp_history` + `device_lldp_neighbors_history` | 邻居、端口、MAC、PVID 等拓扑变化；`device_uuid, local_interface, collected_at, id` |
-| FIT AP resource | `AcRepository.replace_fit_ap_resources` -> `ac_fit_ap_resources` / `ap_entities` | `fit_ap_resource` outbox -> 月分片 | `list_fit_ap_resource_history` + `ac_fit_ap_resource_history`；`ap_resource_snapshots` 仍供站点同步/兼容身份证据 | 前者为 AC 全量资源时间线，后者为带 `snapshot_uuid` 的 AP 实体快照；不得假设可删或已合并 |
-| FIT AP LLDP | AC resource/optical collection current projection | `fit_ap_lldp` outbox -> 月分片 | `list_fit_ap_lldp_history`、`list_all_ap_lldp_history`、轨旁导出/离线账本；`ac_fit_ap_lldp_history` 与 `ap_lldp_history` | 前者是 AC 采集来源历史，后者维护 latest 标志并供 AP/轨旁消费者；本阶段仅统一新写路径，不删除双轨旧数据 |
-| FIT AP optical | `replace_fit_ap_optical` -> `ac_fit_ap_optical` | `fit_ap_optical` outbox -> 月分片 | `ApOpticalHistoryService`、轨旁导出；`ac_fit_ap_optical_history` 与 `ap_optical_history` | 前者为 AC optical 采集历史，后者为 AP/side 投影和 latest 标志；RX/TX/alarm 是变化字段 |
-| FIT AP radio | FIT AP resource collection current projection | `fit_ap_radio` outbox -> 月分片 | `list_fit_ap_radio_history` + `ac_fit_ap_radio_history` | radio state、mode、channel、signal/usage 等；`ap_uuid, collected_at, id` |
-| FIT AP unauthenticated | `replace_fit_ap_unauthenticated` -> `ac_fit_ap_unauthenticated` | 本阶段暂不切换，继续 legacy | `list_fit_ap_unauthenticated_history` + `ac_fit_ap_unauthenticated_history` | 未知/未认证 AP 证据，字段与身份推断耦合；后续单独定义迁移语义 |
+| Device fact | `DeviceFactRepository.upsert_device_fact` -> `device_facts` | `device_fact_recent`（每设备最多 10 条） | `list_fact_history` 只读本地 Recent10 | 设备型号、版本、MAC 等有效事实变化；Current 不丢失 |
+| Device interface / optical / LLDP | 各自 current repository | 既有领域 history 表按原有兼容策略保留；本次不把它们接入外部 HistoryStore | 各自 repository 当前/既有 bounded projection | 不属于本次四类外部 HistoryStore source retirement |
+| FIT AP resource | `AcRepository.replace_fit_ap_resources` -> `ac_fit_ap_resources` / `ap_entities` | `fit_ap_resource_recent`（每 `ac_device_uuid + ap_uuid` 最多 10 条） | AC 资源历史、身份补全和 Trackside AP 只读本地 Recent10 | AC 资源有效变化；`ap_resource_snapshots` 仍是独立快照实体 |
+| FIT AP unauthenticated | `replace_fit_ap_unauthenticated` -> `ac_fit_ap_unauthenticated` | `fit_ap_unauthenticated_recent`（每 AC 与稳定推断身份最多 10 条） | 未认证历史和资源 enrichment 只读本地 Recent10 | 保留“历史新上线/已固化”证据，不回溯已删除的外部源 |
+| Station online summary | `save_station_online_summary_history` -> Current | `station_online_summary_current` + `station_online_summary_recent`（每站最多 10 条） | 在线率列表、分页/count 只读本地 Current/Recent10 | 站点级有效变化；heartbeat 不增长 Recent |
 | AP resource snapshot | 站点包/身份兼容写入 | 本阶段不进入通用 history shard | `site_sync` + `ap_resource_snapshots` | `snapshot_uuid` 是快照实体，不是 AC 资源时间线；不得与 `fit_ap_resource` 合并 |
 | Station online summary | 站点聚合保存 | 本阶段暂不切换，继续 legacy | `list_station_online_summary_history` + `ac_station_online_summary_history` | 站点级聚合快照，不应按 AP 资源 change-aware 规则去重 |
 
-### rollout、迁移与无人值守边界
+### 迁移与无人值守边界
 
-- Phase 2A/2B 已实现的边界是路径、catalog/outbox、按月分片、change-aware 新写和 query compatibility；新分片写入 Storage V2，既有 V1-only 与同月 V1/V2 mixed shard 继续可读，不做 eager rewrite。旧 history table、旧索引和当前态表均保留。`devices.db` 中旧历史不会在启动时批量迁移，840 MiB 的旧库可以直接打开。
-- Phase 2C 的已接入查询接口可合并相关 legacy history 与新 outbox/shard 事件。没有 dual-write 回 legacy table：切换后的新 producer 仅在 current transaction 内写 outbox；尚未接入 producer 的历史继续保持 legacy 行为，不能因此推断该表已完成切换。轨旁业务快照的轻量 revision 只读取 current DB 中的 `history_outbox/history_state`；`catalog.db` 和月分片仍不参与正常快照或启动扫描，站点包同步暂仍以 legacy 表作为兼容事实源。
-- legacy migration 是独立 maintenance，必须在 Backend READY 后显式调度，以 source table + last source id journal、bounded batch、copy/verify checkpoint、幂等 resume 实现。无法无损确定业务实体键或采集时间的旧行不会被猜测写入新历史，而是记录 source id + reason；源行始终保留。逐 source table authority 允许验证后显式 cutover 到 shard query，并可在源未删除时回退到 legacy；unsupported/invalid rows 不进入 delete eligibility。`ap_resource_snapshots` 是站点包/AP 实体快照兼容证据，不作为通用 AC 资源历史迁移源。精确 source-delete executor 仅供 `D:\study` 下隔离副本的显式 maintenance 演练，要求 authority、source identity/revision、delete-plan digest、expected counts、maintenance lock 与 `--apply` 同时成立；现场 `D:\NetConsoleData` 的 DELETE、DROP、自动 VACUUM 和物理替换仍未授权。
-- `SERVER_UNATTENDED ACTIVE` 时必须暂停 legacy migration、retention、aggregation 和旧分片维护，保留 Syslog、MR、Ping 和当前任务 persistence 的 I/O 优先级。history drain 仍按自身可写性运行，不依赖整体 `runtime_services_ready`：根据 pending 数量、最老事件年龄和单批耗时在 100/250/500 条之间自适应，并设置单批时间上限；不使用未接入生产的 `disk_busy` 信号。暂停不丢弃 outbox，恢复后可继续 bounded drain；磁盘并发维持为 1 或现有 capability policy 更低值。
+- 本次退役将四类外部 HistoryStore legacy rows 在候选 `devices.db` 中按时间排序回放为 Current + Recent10；Current 事实先保留，Recent10 只保留有效变化窗口。源行超出窗口的部分按用户授权丢弃，Production 物理回收前写入候选报告和独立 rollback backup。
+- 迁移只由 `scripts/maintenance/retire_legacy_history_store.py` 显式执行。`prepare` 只读 Production 源并使用 SQLite Backup API 构建候选库；`apply` 只接受精确 `D:\NetConsoleData`、来源 manifest 未变化、候选 quick/integrity check 通过和明确 authorization token。正常启动、安装、Update All 和无人值守任务不会调用它。
+- `SERVER_UNATTENDED ACTIVE` 不改变运行时边界：没有 history drain，也不会创建 `db/history`。维护迁移和退役必须在独立维护窗口完成；任务、MESH、Online MR、Ground、Artifact retention 和未注册站点不在本次范围。
 
 Phase 2.1 收口了写入语义：`device_fact.uptime`、接口配置采集时间、LLDP `holdtime/ttl`、光衰 RX/TX/温度/电压/偏置电流，以及 FIT-AP Radio 的 usage/clients/tx_power 只作为 heartbeat payload，不参与普通 change fingerprint。设备/AP 身份、型号、版本、链路/邻居、channel/bandwidth、status/alarm、阈值和冲突状态仍在变化时立即记录。设备接口、设备 LLDP、设备光模块以及 FIT-AP Optical 已切换为 change-only；FIT-AP Optical 的 RX/TX 变化至少 0.20 dB 才计为连续量变化，并按资源保留最近 10 条。旧 legacy history 和已封存分片不自动清理，兼容查询只限制新链路返回窗口；FIT-AP Resource/Radio 等其他 kind 继续使用既有独立 sampling 周期。
 
@@ -113,40 +103,31 @@ History growth benchmark 使用统一虚拟时钟按分钟推进 collector 与 h
 
 ```mermaid
 flowchart LR
-    C["设备 / AC 采集"] --> S["devices.db current state"]
-    C --> O["同一事务: history_outbox + history_state"]
-    O -->|"READY 后，100/250/500 行\n按积压、年龄和 2 秒软预算自适应 drain"| M["devices-YYYY-MM.db"]
-    M --> K["catalog.db\n已知月分片"]
-    U["SERVER_UNATTENDED ACTIVE"] -."暂停 maintenance".-> O
-    U -."暂停 maintenance".-> M
+    C["设备 / AC 采集"] --> S["devices.db Current"]
+    C --> R["同一事务: bounded Recent10 projection"]
+    R --> Q["历史查询 / enrichment / 导出"]
+    U["SERVER_UNATTENDED ACTIVE"] -."不创建外部 HistoryStore".-> R
 ```
 
 ```mermaid
 flowchart LR
-    Q["历史 API / Export"] --> L["legacy devices.db history table"]
-    Q --> O["未 drain 的 current outbox"]
-    Q --> K["catalog 仅定位必要月份"]
-    K --> M["目标月 shard"]
-    L --> R["按 collected_at 合并、排序、分页"]
-    O --> R
-    M --> R
+    Q["历史 API / Export"] --> C["Current + Recent10"]
+    C --> R["按 changed_at / collected_at 排序、分页"]
 ```
 
 ```mermaid
 flowchart TD
-    A["Backend READY 后显式 maintenance job"] --> B{"SERVER_UNATTENDED ACTIVE?"}
-    B -->|"是"| P["暂停，不改变 checkpoint"]
-    B -->|"否"| C["按 source id 读取最多 500 legacy rows"]
-    C --> D["以 deterministic event_id 写入月 shard"]
-    D --> E["回读并校验 event_id"]
-    E --> F["提交 copy/verify checkpoint"]
-    F --> G["下一有界批次 / 崩溃后 resume"]
-    G --> H["逐表 SHARD_VERIFIED"]
-    H -."显式、非破坏 cutover".-> I["SHARD_AUTHORITY / 可回退"]
-    I -."本阶段禁止".-> X["删除 legacy row / DROP / VACUUM"]
+    A["显式 maintenance prepare"] --> B["SQLite Backup API 候选库"]
+    B --> C["回放四类 legacy rows"]
+    C --> D["Current + Recent10"]
+    D --> E["quick_check + integrity_check + digest"]
+    E --> F{"授权且 Production 源未变化?"}
+    F -->|"否"| X["停止，不删除"]
+    F -->|"是"| G["备份后原子替换 devices.db"]
+    G --> H["删除注册站点 db/history"]
 ```
 
-迁移基础设施提供显式 maintenance CLI 的 inventory、start、pause、resume、status 和 COPY/verify 批次，默认关闭且没有自动调度或 source deletion。迁移总表、逐源表 checkpoint 和逐月 range journal 保存 source database identity、source table/key range、稳定 digest、sample、计数与 commit/budget telemetry；Storage V2 不再把 `legacy_source_table/id` 重复存入每行 payload。复制成功的 legacy event 以 `source_table + source PK` 确定性 ID 保存在 shard 内供校验与未来 cutover 使用。两组已确认重复的 AP 投影不再写 event：权威来源先完整复制，投影逐批匹配并验证对应的权威 target event 后只计 duplicate，不折叠权威表内的不同源行。在逐表 cutover 尚未启用前，普通兼容查询刻意排除全部 `event_type=legacy` 副本，继续以 legacy table 为事实源，避免双份返回。完整约束见 [Legacy Device History COPY-only Migration](./LEGACY_HISTORY_MIGRATION.md)。`tasks.db` 不在本阶段范围内。
+完整的运行时前后消费者与维护边界见 [HISTORYSTORE_RUNTIME_CONSUMER_MATRIX.md](./HISTORYSTORE_RUNTIME_CONSUMER_MATRIX.md)。`tasks.db` 的 Current Task Result Blob authority 不在本次 HistoryStore 退役范围内。
 
 每个局点的 `sync/wps_sync.sqlite` 保存 WPS 云文档配置、DPAPI 加密凭据、同步批次和远端异步任务恢复状态；`sync/baselines/**` 与 `sync/imports/**` 分别保存现场回传基准和幂等导入审计。三者都是 FULL_MIGRATION 必须 round-trip 的 operational authority，metadata-only/脱敏包可以省略；WPS SQLite 必须通过 Backup API 快照，Token 不得解密后写入包。正式 Workbook 请求在提交前以不含 Token 的 JSON 持久化，完整远端 `task_id` 仅保存在该库；API、任务参数和日志只输出脱敏 ID。常规升级只做幂等增量迁移，不删除、重建或覆盖当前云文档的配置、凭据和历史。产品功能明确退役时允许精确删除对应本地目标及运行状态：必须在同一事务内按稳定旧代码匹配、先处理外键运行记录、保留混合批次中的当前目标历史，并仅在无剩余引用时删除凭据；迁移重复运行必须为 no-op，且不得访问或修改远端文档。程序重启后以原 `target_batch_id + remote_task_id` 恢复查询，不能因本地 Worker 丢失重复提交已取得 ID 的任务。
 

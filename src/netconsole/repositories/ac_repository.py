@@ -17,7 +17,16 @@ from netconsole.services.fit_ap_link_info import (
     resolve_fit_ap_link_info,
     resolve_optical_match_status,
 )
-from netconsole.services.history_store import HistoryStore
+from netconsole.services.current_history_retention import (
+    count_station_online_summary_recent,
+    list_fit_ap_resource_recent,
+    list_fit_ap_unauthenticated_recent,
+    list_station_online_summary_recent,
+    record_fit_ap_resource_change,
+    record_fit_ap_unauthenticated_change,
+    unauthenticated_identity_key,
+    upsert_station_online_summary,
+)
 from netconsole.services.radio_retention import (
     upsert_radio_current_and_history,
 )
@@ -641,7 +650,6 @@ AP_OPTICAL_ENTITY_HISTORY_FIELDS = (
 class AcRepository:
     def __init__(self, database: Database) -> None:
         self.database = database
-        self.history_store = HistoryStore(database.path)
 
     @property
     def site_id(self) -> str:
@@ -738,24 +746,6 @@ class AcRepository:
                     (ac_device_uuid,),
                 ).fetchall()
             ]
-            # Read identity/LLDP history once per refresh.  Calling the
-            # history store for every AP repeatedly opens SQLite connections
-            # and decodes the same JSON rows during a large snapshot write.
-            history_keys = {
-                str(row.get("ap_uuid") or "").strip()
-                for row in rows
-                if str(row.get("ap_uuid") or "").strip()
-            }
-            history_keys.update(
-                str(row.get("ap_uuid") or "").strip()
-                for row in continuity_resources
-                if str(row.get("ap_uuid") or "").strip()
-            )
-            identity_history_cache = self._load_fit_ap_identity_history_cache(
-                conn,
-                ac_device_uuid=ac_device_uuid,
-                ap_uuids=history_keys,
-            )
             incoming_name_counts = Counter(
                 name.casefold()
                 for row in rows
@@ -771,7 +761,6 @@ class AcRepository:
                     continuity_resources=continuity_resources,
                     continuity_entities=continuity_entities,
                     incoming_name_counts=incoming_name_counts,
-                    identity_history_cache=identity_history_cache,
                 )
                 current_uuids.append(str(payload["ap_uuid"]))
             if current_uuids:
@@ -802,7 +791,6 @@ class AcRepository:
         continuity_resources: list[dict[str, object | None]] | None = None,
         continuity_entities: list[dict[str, object | None]] | None = None,
         incoming_name_counts: Counter[str] | None = None,
-        identity_history_cache: dict[str, dict[str, str]] | None = None,
     ) -> dict[str, object | None]:
         ap_uuid = self._resolve_fit_ap_entity_uuid(
             conn,
@@ -817,7 +805,6 @@ class AcRepository:
             conn,
             resource_data,
             ap_uuid,
-            identity_history_cache=identity_history_cache,
         )
         station = normalize_station_value(resource_data)
         if station and not str(resource_data.get("site") or "").strip():
@@ -874,7 +861,11 @@ class AcRepository:
             """,
             [payload[field] for field in FIT_AP_RESOURCE_FIELDS],
         )
-        self._append_resource_history(conn, payload)
+        self._append_resource_history(
+            conn,
+            payload,
+            previous=dict(existing_resource) if existing_resource is not None else None,
+        )
         self._upsert_ap_entity(conn, payload)
         self._append_radio_history(conn, payload)
         self._append_resource_lldp_history(
@@ -980,6 +971,13 @@ class AcRepository:
             summary_payload = self._payload(FIT_AP_UNAUTHENTICATED_SUMMARY_FIELDS, {**summary, "ac_device_uuid": ac_device_uuid})
             summary_payload["collected_at"] = summary_payload.get("collected_at") or now
             summary_payload["updated_at"] = summary_payload.get("updated_at") or now
+            previous_rows_by_identity = {
+                unauthenticated_identity_key(dict(item)): dict(item)
+                for item in conn.execute(
+                    "SELECT * FROM ac_fit_ap_unauthenticated WHERE ac_device_uuid = ?",
+                    (ac_device_uuid,),
+                ).fetchall()
+            }
             columns = ", ".join(FIT_AP_UNAUTHENTICATED_SUMMARY_FIELDS)
             placeholders = ", ".join("?" for _ in FIT_AP_UNAUTHENTICATED_SUMMARY_FIELDS)
             updates = ", ".join(f"{field} = excluded.{field}" for field in FIT_AP_UNAUTHENTICATED_SUMMARY_FIELDS if field != "ac_device_uuid")
@@ -997,9 +995,16 @@ class AcRepository:
                 payload["inferred_ap_mac"] = self._mac_from_text(payload.get("inferred_ap_mac")) or None
                 payload["collected_at"] = payload.get("collected_at") or summary_payload["collected_at"] or now
                 payload["updated_at"] = payload.get("updated_at") or now
+                identity_key = unauthenticated_identity_key(payload)
+                previous = previous_rows_by_identity.get(identity_key)
                 self._insert(conn, "ac_fit_ap_unauthenticated", FIT_AP_UNAUTHENTICATED_FIELDS, payload)
-                history_payload = self._payload(FIT_AP_UNAUTHENTICATED_HISTORY_FIELDS, {**payload, "created_at": now})
-                self._insert(conn, "ac_fit_ap_unauthenticated_history", FIT_AP_UNAUTHENTICATED_HISTORY_FIELDS, history_payload)
+                record_fit_ap_unauthenticated_change(
+                    conn,
+                    payload,
+                    previous=previous,
+                    identity_key=identity_key,
+                    now=now,
+                )
             conn.commit()
 
     def list_fit_ap_unauthenticated(self, ac_device_uuid: str) -> list[dict[str, object | None]]:
@@ -1016,35 +1021,10 @@ class AcRepository:
         return [dict(row) for row in rows]
 
     def list_fit_ap_unauthenticated_history(self, ac_device_uuid: str | None = None, limit: int = 100000) -> list[dict[str, object | None]]:
-        params: list[object] = []
-        where = ""
-        if ac_device_uuid:
-            where = "WHERE ac_device_uuid = ?"
-            params.append(ac_device_uuid)
-        params.append(limit)
-        with self.database.connect() as conn:
-            rows = self._query_legacy_history_rows(
-                conn,
-                "ac_fit_ap_unauthenticated_history",
-                f"""
-                SELECT * FROM ac_fit_ap_unauthenticated_history
-                {where}
-                ORDER BY collected_at DESC, id DESC
-                LIMIT ?
-                """,
-                params,
+        with self.database.connect_readonly() as conn:
+            return list_fit_ap_unauthenticated_recent(
+                conn, ac_device_uuid, limit=min(max(int(limit), 1), 100_000)
             )
-        return self._merge_history_rows(
-            rows,
-            self._legacy_payload_rows(
-                self.history_store.query_events(
-                    kind="fit_ap_unauthenticated",
-                    entity_key=ac_device_uuid if ac_device_uuid else None,
-                    limit=limit,
-                )
-            ),
-            limit=limit,
-        )
 
     def get_fit_ap_unauthenticated_summary(self, ac_device_uuid: str) -> dict[str, object | None] | None:
         with self.database.connect() as conn:
@@ -1057,47 +1037,18 @@ class AcRepository:
     def list_fit_ap_resource_history(
         self, ac_device_uuid: str, limit: int = 10000
     ) -> list[dict[str, object | None]]:
-        with self.database.connect() as conn:
-            rows = self._query_legacy_history_rows(
-                conn,
-                "ac_fit_ap_resource_history",
-                """
-                SELECT * FROM ac_fit_ap_resource_history
-                WHERE ac_device_uuid = ?
-                ORDER BY collected_at DESC, id DESC
-                LIMIT ?
-                """,
-                (ac_device_uuid, limit),
+        with self.database.connect_readonly() as conn:
+            return list_fit_ap_resource_recent(
+                conn, ac_device_uuid, limit=min(max(int(limit), 1), 10)
             )
-        return self._merge_history_rows(
-            rows,
-            self.history_store.query_events(
-                kind="fit_ap_resource",
-                entity_prefix=f"{ac_device_uuid}:",
-                limit=limit,
-            ),
-            limit=limit,
-        )
 
     def list_all_fit_ap_resource_history(
         self, limit: int = 100000
     ) -> list[dict[str, object | None]]:
-        with self.database.connect() as conn:
-            rows = self._query_legacy_history_rows(
-                conn,
-                "ac_fit_ap_resource_history",
-                """
-                SELECT * FROM ac_fit_ap_resource_history
-                ORDER BY collected_at DESC, id DESC
-                LIMIT ?
-                """,
-                (limit,),
+        with self.database.connect_readonly() as conn:
+            return list_fit_ap_resource_recent(
+                conn, limit=min(max(int(limit), 1), 100_000)
             )
-        return self._merge_history_rows(
-            rows,
-            self.history_store.query_events(kind="fit_ap_resource", limit=limit),
-            limit=limit,
-        )
 
     def list_ap_entities(self, ac_device_uuid: str | None = None) -> list[dict[str, object | None]]:
         params: list[object] = []
@@ -2607,87 +2558,24 @@ class AcRepository:
         }
 
     def save_station_online_summary_history(self, rows: list[dict[str, object | None]], collected_at: str | None = None) -> int:
-        now = self._now()
-        stamp = collected_at or now
         payload_rows = [row for row in rows if str(row.get("site") or "") != "合计"]
         with self.database.connect() as conn:
             for row in payload_rows:
-                conn.execute(
-                    """
-                    INSERT INTO ac_station_online_summary_history (
-                        site_name, ap_total, online_count, offline_count, online_rate, remark, collected_at, created_at
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        str(row.get("site") or ""),
-                        int(row.get("total") or 0),
-                        int(row.get("online") or 0),
-                        int(row.get("offline") or 0),
-                        str(row.get("online_rate") or ""),
-                        str(row.get("remark") or ""),
-                        stamp,
-                        now,
-                    ),
+                upsert_station_online_summary(
+                    conn, row, collected_at=collected_at, now=self._now()
                 )
             conn.commit()
         return len(payload_rows)
 
     def list_station_online_summary_history(self, site_name: str | None = None, limit: int = 500, offset: int = 0) -> list[dict[str, object | None]]:
-        clauses: list[str] = []
-        params: list[object] = []
-        if site_name:
-            clauses.append("site_name = ?")
-            params.append(site_name)
-        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        safe_limit = max(int(limit), 1)
-        safe_offset = max(int(offset), 0)
-        requested = safe_limit + safe_offset
-        params.extend((requested, 0))
-        with self.database.connect() as conn:
-            rows = self._query_legacy_history_rows(
-                conn,
-                "ac_station_online_summary_history",
-                f"""
-                SELECT * FROM ac_station_online_summary_history
-                {where}
-                ORDER BY collected_at DESC, id DESC
-                LIMIT ? OFFSET ?
-                """,
-                params,
+        with self.database.connect_readonly() as conn:
+            return list_station_online_summary_recent(
+                conn, site_name, limit=max(int(limit), 1), offset=max(int(offset), 0)
             )
-        combined = self._merge_history_rows(
-            rows,
-            self._legacy_payload_rows(
-                self.history_store.query_events(
-                    kind="station_online_summary",
-                    entity_key=site_name if site_name else None,
-                    limit=requested,
-                )
-            ),
-            limit=requested,
-        )
-        return combined[safe_offset : safe_offset + safe_limit]
 
     def count_station_online_summary_history(self, site_name: str | None = None) -> int:
-        clauses: list[str] = []
-        params: list[object] = []
-        if site_name:
-            clauses.append("site_name = ?")
-            params.append(site_name)
-        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        with self.database.connect() as conn:
-            rows = self._query_legacy_history_rows(
-                conn,
-                "ac_station_online_summary_history",
-                f"SELECT COUNT(*) AS total FROM ac_station_online_summary_history {where}",
-                params,
-            )
-        legacy_total = int(rows[0]["total"] if rows else 0)
-        return legacy_total + self.history_store.count_events(
-            kind="station_online_summary",
-            entity_key=site_name if site_name else None,
-        )
+        with self.database.connect_readonly() as conn:
+            return count_station_online_summary_recent(conn, site_name)
 
     def _resolve_ap_uuid(self, value: str, ac_device_uuid: str | None = None) -> str | None:
         with self.database.connect() as conn:
@@ -2933,29 +2821,18 @@ class AcRepository:
             now=self._now(),
         )
 
-    def _append_resource_history(self, conn, payload: dict[str, object | None]) -> None:
-        row = self._payload(
-            FIT_AP_RESOURCE_HISTORY_FIELDS,
-            {
-                **payload,
-                "site_name": payload.get("site_name") or payload.get("site"),
-            },
-        )
-        row["collected_at"] = row.get("collected_at") or self._now()
-        ac_device_uuid = str(row.get("ac_device_uuid") or "")
-        ap_uuid = str(row.get("ap_uuid") or "")
-        if not ac_device_uuid or not ap_uuid:
-            return
-        self.history_store.record_event(
+    def _append_resource_history(
+        self,
+        conn,
+        payload: dict[str, object | None],
+        *,
+        previous: dict[str, object | None] | None,
+    ) -> None:
+        record_fit_ap_resource_change(
             conn,
-            kind="fit_ap_resource",
-            entity_key=f"{ac_device_uuid}:{ap_uuid}",
-            payload=row,
-            collected_at=str(row["collected_at"]),
-            meaningful_fields=(
-                "ac_device_uuid", "ap_uuid", "ap_name", "ap_mac", "ap_ip", "serial_number",
-                "state_raw", "state_display", "site_name",
-            ),
+            {**payload, "site_name": payload.get("site_name") or payload.get("site")},
+            previous=previous,
+            now=str(payload.get("collected_at") or self._now()),
         )
 
     def _resolve_fit_ap_entity_uuid(
@@ -3113,8 +2990,6 @@ class AcRepository:
         conn,
         incoming: dict[str, object | None],
         ap_uuid: str,
-        *,
-        identity_history_cache: dict[str, dict[str, str]] | None = None,
     ) -> tuple[dict[str, object | None], list[str]]:
         merged = dict(incoming)
         sources: list[dict[str, object | None]] = []
@@ -3144,13 +3019,6 @@ class AcRepository:
                     ),
                     "",
                 )
-            if not incoming_value and not fallback:
-                fallback = self._latest_fit_ap_identity_history_value(
-                    conn,
-                    ap_uuid,
-                    field,
-                    cache=identity_history_cache,
-                )
             if incoming_value:
                 merged[field] = incoming_value
             elif fallback:
@@ -3159,185 +3027,6 @@ class AcRepository:
             else:
                 merged[field] = None
         return merged, preserved_fields
-
-    def _latest_fit_ap_identity_history_value(
-        self,
-        conn,
-        ap_uuid: str,
-        field: str,
-        *,
-        cache: dict[str, dict[str, str]] | None = None,
-    ) -> str:
-        if field not in FIT_AP_STABLE_IDENTITY_FIELDS:
-            return ""
-        if cache is not None:
-            return str(cache.get(ap_uuid, {}).get(field) or "")
-        has_outbox = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'history_outbox'"
-        ).fetchone()
-        outbox_rows = conn.execute(
-            """
-            SELECT payload_json FROM history_outbox
-            WHERE kind = 'fit_ap_resource'
-            ORDER BY collected_at DESC, event_id DESC
-            """
-        ).fetchall() if has_outbox else []
-        for outbox_row in outbox_rows:
-            try:
-                event = json.loads(str(outbox_row["payload_json"]))
-            except (TypeError, ValueError):
-                continue
-            if not isinstance(event, dict) or str(event.get("ap_uuid") or "") != ap_uuid:
-                continue
-            value = (
-                self._mac_from_text(event.get(field))
-                if field == "ap_mac"
-                else self._clean_identity_value(event.get(field))
-            )
-            if value:
-                return value
-        history_tables = (
-            ("ac_fit_ap_resource_history", FIT_AP_RESOURCE_HISTORY_FIELDS),
-            ("ap_resource_snapshots", AP_RESOURCE_SNAPSHOT_FIELDS),
-        )
-        for table, fields in history_tables:
-            if field not in fields:
-                continue
-            rows = conn.execute(
-                f"""
-                SELECT {field}
-                FROM {table}
-                WHERE ap_uuid = ?
-                  AND {field} IS NOT NULL
-                  AND lower(trim({field})) NOT IN ('', '-', 'n/a', 'na', 'null')
-                ORDER BY id DESC
-                """,
-                (ap_uuid,),
-            ).fetchall()
-            for row in rows:
-                value = (
-                    self._mac_from_text(row[field])
-                    if field == "ap_mac"
-                    else self._clean_identity_value(row[field])
-                )
-                if value:
-                    return value
-        return ""
-
-    def _load_fit_ap_identity_history_cache(
-        self,
-        conn,
-        *,
-        ac_device_uuid: str,
-        ap_uuids: set[str],
-    ) -> dict[str, dict[str, str]]:
-        """Load the latest stable identity evidence once for a refresh.
-
-        This mirrors ``_latest_fit_ap_identity_history_value`` precedence:
-        current history outbox first, then the two retained legacy tables.
-        The cache is scoped to the caller's write transaction and is never
-        persisted or shared between jobs.
-        """
-
-        cache: dict[str, dict[str, str]] = {}
-        fields = tuple(FIT_AP_STABLE_IDENTITY_FIELDS)
-        if ap_uuids:
-            for event in self.history_store.query_events_for_entities(
-                kind="fit_ap_resource",
-                entity_keys=(
-                    f"{ac_device_uuid}:{ap_uuid}"
-                    for ap_uuid in sorted(ap_uuids)
-                ),
-            ):
-                ap_uuid = str(event.get("ap_uuid") or "").strip()
-                if ap_uuid not in ap_uuids:
-                    continue
-                values = cache.setdefault(ap_uuid, {})
-                for field in fields:
-                    if field in values:
-                        continue
-                    value = (
-                        self._mac_from_text(event.get(field))
-                        if field == "ap_mac"
-                        else self._clean_identity_value(event.get(field))
-                    )
-                    if value:
-                        values[field] = value
-        outbox_exists = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'history_outbox'"
-        ).fetchone()
-        if outbox_exists is not None:
-            rows = conn.execute(
-                """
-                SELECT payload_json
-                FROM history_outbox
-                WHERE kind = 'fit_ap_resource'
-                ORDER BY collected_at DESC, event_id DESC
-                """
-            ).fetchall()
-            for item in rows:
-                try:
-                    event = json.loads(str(item["payload_json"] or "{}"))
-                except (TypeError, ValueError):
-                    continue
-                if not isinstance(event, dict):
-                    continue
-                ap_uuid = str(event.get("ap_uuid") or "").strip()
-                if not ap_uuid:
-                    continue
-                values = cache.setdefault(ap_uuid, {})
-                for field in fields:
-                    if field in values:
-                        continue
-                    value = (
-                        self._mac_from_text(event.get(field))
-                        if field == "ap_mac"
-                        else self._clean_identity_value(event.get(field))
-                    )
-                    if value:
-                        values[field] = value
-
-        for table, table_fields in (
-            ("ac_fit_ap_resource_history", FIT_AP_RESOURCE_HISTORY_FIELDS),
-            ("ap_resource_snapshots", AP_RESOURCE_SNAPSHOT_FIELDS),
-        ):
-            if conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-                (table,),
-            ).fetchone() is None:
-                continue
-            available = [field for field in fields if field in table_fields]
-            if not available:
-                continue
-            selected = ", ".join(("ap_uuid", *available))
-            keys = sorted(ap_uuids)
-            if not keys:
-                continue
-            key_placeholders = ", ".join("?" for _ in keys)
-            for item in conn.execute(
-                f"""
-                SELECT {selected}
-                FROM {table}
-                WHERE ap_uuid IN ({key_placeholders})
-                ORDER BY id DESC
-                """,
-                keys,
-            ).fetchall():
-                ap_uuid = str(item["ap_uuid"] or "").strip()
-                if not ap_uuid:
-                    continue
-                values = cache.setdefault(ap_uuid, {})
-                for field in available:
-                    if field in values:
-                        continue
-                    value = (
-                        self._mac_from_text(item[field])
-                        if field == "ap_mac"
-                        else self._clean_identity_value(item[field])
-                    )
-                    if value:
-                        values[field] = value
-        return cache
 
     def _upsert_ap_entity(self, conn, payload: dict[str, object | None]) -> None:
         now = self._now()
@@ -3641,18 +3330,7 @@ class AcRepository:
         if not resources:
             return resources
         current_rows = self.list_fit_ap_unauthenticated(ac_device_uuid) if ac_device_uuid else self.list_all_fit_ap_unauthenticated()
-        # After the DEV engineering-state cutover, trackside projections must
-        # stay on Current sources.  The unauthenticated history table is an
-        # independent legacy timeline and is classified separately for later
-        # product work; it must not be scanned while building the page/export
-        # Current snapshot.
-        with self.database.connect_readonly() as conn:
-            legacy_authority = self.history_store.legacy_history_authority_enabled(conn)
-        history_rows = (
-            self.list_fit_ap_unauthenticated_history(ac_device_uuid)
-            if legacy_authority
-            else []
-        )
+        history_rows = self.list_fit_ap_unauthenticated_history(ac_device_uuid)
         current_index = _unauthenticated_identity_index(current_rows)
         history_index = _unauthenticated_identity_index(history_rows)
         enriched: list[dict[str, object | None]] = []
@@ -3851,53 +3529,6 @@ class AcRepository:
     @staticmethod
     def _now() -> str:
         return datetime.now().isoformat(timespec="seconds")
-
-    def _query_legacy_history_rows(
-        self,
-        conn,
-        source_table: str,
-        query: str,
-        params: list[object] | tuple[object, ...] = (),
-    ) -> list[dict[str, object | None]]:
-        return self.history_store.query_legacy_rows(conn, source_table, query, params)
-
-    @staticmethod
-    def _merge_history_rows(
-        legacy_rows: list[dict[str, object | None]],
-        events: list[dict[str, object | None]],
-        *,
-        limit: int,
-    ) -> list[dict[str, object | None]]:
-        normalized_events: list[dict[str, object | None]] = []
-        for event in events:
-            row = dict(event)
-            if "is_changed" in row:
-                row["is_changed"] = 0 if row.get("event_type") == "heartbeat" else 1
-            normalized_events.append(row)
-        return sorted(
-            [*legacy_rows, *normalized_events],
-            key=lambda row: (
-                str(row.get("collected_at") or ""),
-                _int_value(row.get("id")),
-                str(row.get("event_id") or ""),
-            ),
-            reverse=True,
-        )[: max(1, int(limit))]
-
-    @staticmethod
-    def _legacy_payload_rows(
-        events: list[dict[str, object | None]],
-    ) -> list[dict[str, object | None]]:
-        envelope = {
-            "event_id",
-            "event_type",
-            "legacy_source_table",
-            "legacy_source_id",
-        }
-        return [
-            {key: value for key, value in event.items() if key not in envelope}
-            for event in events
-        ]
 
 
 def _latest_rows_by_ap_identity(rows: list[dict[str, object | None]]) -> list[dict[str, object | None]]:

@@ -13,6 +13,7 @@ import pytest
 from netconsole.core.paths import PathResolver
 from netconsole.models.task_snapshot import TaskEvent, TaskSnapshot
 from netconsole.models.task_state import TaskState
+from netconsole.repositories.history_store import TaskHistoryStore
 from netconsole.repositories.task_repository import TaskRepository
 from netconsole.services.job_center.task_application_service import TaskApplicationService
 
@@ -465,7 +466,7 @@ def test_list_resolves_immutable_task_result_reference(tmp_path: Path) -> None:
     assert listed[0].result == {"rows": 2}
 
 
-def test_snapshot_and_event_resolve_result_from_history_store_fallback(
+def test_snapshot_and_event_do_not_resolve_result_from_history_store_fallback(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "tasks.db"
@@ -501,20 +502,13 @@ def test_snapshot_and_event_resolve_result_from_history_store_fallback(
     )
 
     assert repository.record(snapshot, event)
-    inserted, verified = repository.task_history.archive_result_rows([reference])
+    inserted, verified = TaskHistoryStore(
+        path, history_root=tmp_path / "legacy-history"
+    ).archive_result_rows([reference])
     assert (inserted, verified) == (1, 1)
 
-    loaded = repository.get(task_id)
-    assert loaded is not None
-    assert loaded.result == result
-    assert loaded.result_hash == reference["sha256"]
-    assert loaded.result_summary == summary
-    listed = repository.list()
-    assert len(listed) == 1
-    assert listed[0].result == result
-    events = repository.list_events(task_id)
-    assert events[0]["payload"]["result"] == result
-    assert events[0]["payload"]["result_hash"] == reference["sha256"]
+    with pytest.raises(sqlite3.DatabaseError, match="task snapshot result reference is missing"):
+        repository.get(task_id)
 
 
 def test_full_snapshot_replacement_clears_stale_result_reference_without_event_result(
@@ -526,7 +520,9 @@ def test_full_snapshot_replacement_clears_stale_result_reference_without_event_r
     original = {"rows": 1}
     replacement = {"rows": 2}
     reference = _result_reference(task_id, original)
-    repository.task_history.archive_result_rows([reference])
+    TaskHistoryStore(path, history_root=tmp_path / "legacy-history").archive_result_rows(
+        [reference]
+    )
     timestamp = str(reference["created_time"])
     initial = _snapshot(
         task_id=task_id,
@@ -574,10 +570,12 @@ def test_full_snapshot_replacement_clears_stale_result_reference_without_event_r
     assert persisted.result_hash == ""
     assert persisted.result_summary == {}
     assert repository.task_result_count() == 0
-    assert repository.task_history.get_result(str(reference["result_id"])) is not None
+    assert TaskHistoryStore(
+        path, history_root=tmp_path / "legacy-history"
+    ).get_result(str(reference["result_id"])) is not None
 
 
-def test_ref_only_snapshot_update_preserves_history_result_reference(
+def test_ref_only_snapshot_update_does_not_read_history_result_reference(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "tasks.db"
@@ -585,7 +583,9 @@ def test_ref_only_snapshot_update_preserves_history_result_reference(
     task_id = "ref-only-progress"
     result = {"rows": 1}
     reference = _result_reference(task_id, result)
-    repository.task_history.archive_result_rows([reference])
+    TaskHistoryStore(path, history_root=tmp_path / "legacy-history").archive_result_rows(
+        [reference]
+    )
     timestamp = str(reference["created_time"])
     snapshot = _snapshot(
         task_id=task_id,
@@ -619,14 +619,11 @@ def test_ref_only_snapshot_update_preserves_history_result_reference(
         ),
     )
 
-    persisted = repository.get(task_id)
-    assert persisted is not None
-    assert persisted.result == result
-    assert persisted.result_id == str(reference["result_id"])
-    assert persisted.result_hash == str(reference["sha256"])
+    with pytest.raises(sqlite3.DatabaseError, match="task snapshot result reference is missing"):
+        repository.get(task_id)
 
 
-def test_full_snapshot_matching_result_reference_keeps_compatibility_reference(
+def test_full_snapshot_matching_result_reference_clears_retired_reference(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "tasks.db"
@@ -634,7 +631,9 @@ def test_full_snapshot_matching_result_reference_keeps_compatibility_reference(
     task_id = "same-result-reference"
     result = {"rows": 1}
     reference = _result_reference(task_id, result)
-    repository.task_history.archive_result_rows([reference])
+    TaskHistoryStore(path, history_root=tmp_path / "legacy-history").archive_result_rows(
+        [reference]
+    )
     timestamp = str(reference["created_time"])
     snapshot = _snapshot(
         task_id=task_id,
@@ -671,8 +670,8 @@ def test_full_snapshot_matching_result_reference_keeps_compatibility_reference(
     persisted = repository.get(task_id)
     assert persisted is not None
     assert persisted.result == result
-    assert persisted.result_id == str(reference["result_id"])
-    assert persisted.result_hash == str(reference["sha256"])
+    assert persisted.result_id == ""
+    assert persisted.result_hash == ""
 
 
 def test_result_reference_missing_from_task_db_and_history_fails_loudly(
@@ -712,13 +711,15 @@ def test_result_reference_missing_from_task_db_and_history_fails_loudly(
         repository.list_events(task_id)
 
 
-def test_history_store_result_task_binding_mismatch_fails_loudly(
+def test_history_store_result_task_binding_is_not_a_runtime_authority(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "tasks.db"
     repository = TaskRepository(path)
     reference = _result_reference("original-task", {"rows": 2})
-    repository.task_history.archive_result_rows([reference])
+    TaskHistoryStore(path, history_root=tmp_path / "legacy-history").archive_result_rows(
+        [reference]
+    )
     mismatched_task = "different-task"
     snapshot = _snapshot(
         task_id=mismatched_task,
@@ -737,10 +738,9 @@ def test_history_store_result_task_binding_mismatch_fails_loudly(
         source="test",
         payload={},
     )
-    with pytest.raises(
-        sqlite3.DatabaseError, match="task snapshot result task binding mismatch"
-    ):
-        repository.record(snapshot, event)
+    assert repository.record(snapshot, event)
+    with pytest.raises(sqlite3.DatabaseError, match="task snapshot result reference is missing"):
+        repository.get(mismatched_task)
 
 
 def _record_retention_terminal(

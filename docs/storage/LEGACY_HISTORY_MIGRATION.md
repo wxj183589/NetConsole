@@ -1,152 +1,85 @@
-# Legacy Device History COPY-only Migration
+# Legacy HistoryStore Maintenance Boundary
 
 ## Status
 
-This maintenance capability copies supported legacy `*_history` rows from one
-resolved `devices.db` into the existing monthly HistoryStore shards. New target
-writes use [History Storage V2](./HISTORY_STORAGE_V2.md), while existing V1-only
-and mixed V1/V2 shards remain readable. It is
-explicitly invoked, defaults to off, and never runs during application startup
-or installation.
+运行时已经彻底退出 `HistoryStore`。Backend startup、普通采集、查询、导出和
+Update All 不创建或读取 `<site>/db/history`，也不再写入 `history_outbox`。
+四类业务历史改由 `devices.db` 的 Current + change-only Recent10 projection
+承载，完整前后消费者见 [HISTORYSTORE_RUNTIME_CONSUMER_MATRIX.md](./HISTORYSTORE_RUNTIME_CONSUMER_MATRIX.md)。
 
-Migration remains COPY-only for source data. After a verified copy, query authority
-can be switched explicitly for one source table in an isolated catalog:
+本文件描述仍保留的 maintenance-only 能力：旧 `*_history` 表、旧
+`HistoryStore` catalog/month shard 只可作为明确迁移或回滚证据读取，不能被
+运行时服务注入。`scripts/maintenance/retire_legacy_history_store.py` 是本次
+Production 退役的唯一物理删除入口，使用候选库、源 manifest、SQLite Backup
+API、quick/integrity check 和独立 rollback backup。
 
-- source rows remain preserved and are never updated or deleted; their query
-  authority is selected only by the recorded per-table authority state;
-- migrated shard events use `event_type=legacy` and remain hidden from normal
-  HistoryStore queries while that table has legacy query authority, preventing legacy
-  + shard duplicate results;
-- a `VERIFIED`, error-free table first reaches `SHARD_VERIFIED`; an explicit,
-  revision-CAS protected cutover with a non-empty reason may change it to
-  `SHARD_AUTHORITY`, and explicit rollback returns it to `LEGACY_AUTHORITY`;
-- there is no source-delete, table-drop, compaction, replacement, or VACUUM API;
-- there is no automatic or production cutover; production authorization and any
-  source-delete design require separate approval.
+Production `apply` 同时要求：精确数据根 `D:\NetConsoleData`、候选验证为
+`PASS`、源数据库和 history manifest 未变化，以及显式
+`LEGACY_HISTORY_RETIREMENT_AUTHORIZED` token。失败即停止并保留源；不允许
+猜测实体、静默删除未注册站点或触碰 tasks.db、Task Result Blob、MESH、Online
+MR、Ground、Artifact 和其他存储。
 
 ## Inventory
 
-`HistoryLegacyMigrationService.inventory()` discovers every table whose name
-ends in `_history` and writes `LEGACY_HISTORY_INVENTORY.json`. Each table is
-classified as `SUPPORTED`, `UNSUPPORTED`, or `UNKNOWN_SCHEMA` and records its
-schema, primary key, indexes, entity mapping, timestamp, identity and nullable
-columns, source schema version, target shard schema, row count and time range.
+`HistoryLegacyMigrationService.inventory()` 仍可发现名称以 `_history` 结尾的表并
+写入 `LEGACY_HISTORY_INVENTORY.json`。它是审计/迁移输入，不是运行时注册；每张
+表记录 schema、主键、索引、实体映射、时间字段、身份字段、源版本、行数和时间范围。
 
-The ten Phase 1 mappings already supported by `HistoryStore` are accepted only
-when their required `id`, timestamp and business identity columns exist.
-`ac_fit_ap_unauthenticated_history` and
-`ac_station_online_summary_history` remain explicitly unsupported for generic
-migration because no target event contract exists. This is a fail-closed
-migration classification, not a claim that the tables have no consumers:
-their producer/read/export contract is recorded in
-[`UNSUPPORTED_HISTORY_CONSUMER_CONTRACT.md`](./UNSUPPORTED_HISTORY_CONSUMER_CONTRACT.md).
-Any other history schema is unknown and makes a run `NOT_READY`; rows are
-never guessed into a target shape.
+旧通用 COPY 迁移仍然只接受具备明确 id、时间和业务身份字段的输入；未知 schema
+或无法确定身份的行必须 fail closed，不得猜测写入。此前被标为 unsupported 的
+`ac_fit_ap_unauthenticated_history` 和 `ac_station_online_summary_history` 已由
+本次专用脚本迁移到本地 Current/Recent10，不再需要目标月分片。
 
 ## Identity And Duplicate Projections
 
-The durable source database identity combines the site identity, schema
-version, page size, discovered history schemas, primary-key ranges and the
-first/last stable source rows. It does not depend only on a path and does not
-hash the entire database. A migration ID cannot resume against another source
-identity, site or schema version.
+本次退役的源身份由注册站点、`devices.db` SHA-256 和 history 文件 manifest
+共同确定；它不只依赖路径。候选 apply 前再次比较 manifest，任何生产写入或源文件
+变化都会停止，不会在旧源上继续替换。
 
-Most target event IDs use `source_table + source primary key`. Two retired AP
-projection pairs require a canonical business identity:
-
-- `ac_fit_ap_lldp_history` / `ap_lldp_history`;
-- `ac_fit_ap_optical_history` / `ap_optical_history`.
-
-The authoritative `ac_fit_ap_*` source is always copied first and every
-authoritative row keeps its own `source_table + source PK` event identity. A
-retired projection row is matched to an authoritative source row using the
-shared normalized business fields, then verifies that authoritative target
-event without writing another event. It increments `duplicate_count` without
-collapsing distinct authoritative rows or overwriting their payloads.
+旧 AP projection 的身份匹配规则仍适用于旧 COPY maintenance：必须使用明确的
+规范化业务字段，不能用模糊名称匹配或猜测 AP。新的四类 Recent10 projection
+分别使用 device、AC+AP、AC+稳定推断身份和 site 作为资源键。
 
 ## Journal And Recovery
 
-The existing history `catalog.db` owns three additive migration tables:
+旧 HistoryStore `catalog.db` 中已有的迁移表仍只用于旧维护审计。它们不再是新
+运行时的 authority；本次退役脚本在候选库中完成一次性回放，并记录 source rows、
+discarded rows、Current/Recent counts、quick/integrity check 和 source manifest，
+不会生成新的外部 HistoryStore shard。
 
-- `legacy_history_migrations`: migration/source identity, requested state,
-  totals, commit telemetry and overall status;
-- `legacy_history_migration_tables`: per-source-table range, last source key,
-  counts, error and status;
-- `legacy_history_migration_ranges`: source key range + target month, stable
-  source/target digests, deterministic samples, counts, latency and budget.
+运行时 authority 不再依赖旧表状态。候选验证成功后，Production 退役脚本先备份
+`devices.db` 和 history 目录，再原子替换候选数据库，最后仅删除注册站点的
+`db/history`；backup 保留回滚所需的旧源，且不自动 VACUUM 其他数据库。
 
-V2 does not repeat `legacy_source_table` and `legacy_source_id` in every target
-payload. The range journal is the durable provenance for source table, source
-key range, month, digest and sample; an explicit cutover requires a `VERIFIED`
-range instead of inferring provenance from duplicated payload metadata. The same
-catalog owns each table's authority state, monotonic cutover revision, reason,
-timestamps and append-only authority transition audit row.
-
-Only `PENDING`, `COPYING`, `VERIFYING`, `VERIFIED` and `FAILED` are valid. A
-chunk writes one target-month transaction at a time, verifies exact event IDs,
-stable digests and deterministic samples, then advances the source checkpoint.
-If the process exits after target commit but before checkpoint, resume repeats
-at most the last chunk and `INSERT OR IGNORE` makes it idempotent. If it exits
-after checkpoint, resume starts after the durable last source key.
-
-Authority is independent of the migration status. Successful verification moves a
-table from `LEGACY_AUTHORITY` to `SHARD_VERIFIED`; the explicit cutover and rollback
-operations run under the existing maintenance lock and require the caller's expected
-revision and a reason. Both operations retain the legacy source table and report
-`DELETE=NO`, `DROP=NO`, `VACUUM=NO`.
-
-Invalid timestamps and unsupported row shapes are not dropped silently. Only
-source table, source key and a reason code are written to
-`LEGACY_HISTORY_INVALID_ROWS.jsonl`; any such row makes the result `NOT_READY`.
+Invalid timestamps、unsupported row shapes 和缺少业务身份的行不得静默变成
+Current/Recent 事实；脚本会跳过无法安全归属的行并在候选报告中反映 source rows
+与 migrated/discarded counts，Production apply 只接受候选验证为 `PASS` 的结果。
 
 ## Priority And Commands
 
-The maintenance class is `site-database-maintenance`. The implementation
-reuses the existing cross-process database maintenance lock for its own run.
-SiteRetention currently uses a different lock family, so unifying all future
-retention and migration operations remains `SHARED_CHANGE_REQUIRED` and is not
-claimed by this branch.
+维护分类为 `site-database-maintenance`。本次脚本不在 Backend startup 中注册，
+必须由人工维护窗口显式调用；SiteRetention 的任务归档锁族仍保持原边界。
 
-`start` and `resume` require explicit `--apply`. `pause` changes the requested
-state; a running process observes it after the current transaction/checkpoint.
-An active unattended callback pauses before admitting another chunk. The
-elapsed budget likewise decides whether another chunk may start and never
-interrupts a SQLite transaction. Chunk sizes are restricted to 100, 250 or
-500 rows.
+唯一的退役命令为 `prepare`、`apply` 和 `verify`。`prepare` 只读源并创建隔离
+候选库；`apply` 需要显式 authorization，`verify` 只检查注册站点 Current/Recent
+和 history 目录状态。无人值守运行不调用这些命令。
 
 ```powershell
-$env:PYTHONPATH = "D:\study\worktrees\NetConsole\device-history-legacy-migration\src;D:\study\worktrees\NetConsole\device-history-legacy-migration"
-& "D:\study\NetConsole\.venv\Scripts\python.exe" -m scripts.maintenance.migrate_device_history inventory `
-  --data-root "D:\NetConsoleData" --site-id "<site-id>" --light
+$env:PYTHONPATH = "D:\study\worktrees\NetConsole\history-store-full-retirement\src;D:\study\worktrees\NetConsole\history-store-full-retirement"
+& "D:\study\NetConsole\.venv\Scripts\python.exe" -m scripts.maintenance.retire_legacy_history_store prepare `
+  --data-root "D:\NetConsoleData" `
+  --candidate-root "D:\study\diagnostic\NetConsole\history-store-retirement\<run-id>"
 
-& "D:\study\NetConsole\.venv\Scripts\python.exe" -m scripts.maintenance.migrate_device_history start `
-  --data-root "D:\study\test-data\NetConsole\device-history-migration\<run-id>\runtime" `
-  --site-id "<registered-test-site>" --source-db "D:\study\test-data\NetConsole\device-history-migration\<run-id>\devices.db" `
-  --history-root "D:\study\test-data\NetConsole\device-history-migration\<run-id>\history" `
-  --diagnostics-dir "D:\study\diagnostic\NetConsole\device-history-migration\<run-id>" `
-  --immutable-source --chunk-rows 500 --apply
+& "D:\study\NetConsole\.venv\Scripts\python.exe" -m scripts.maintenance.retire_legacy_history_store apply `
+  --data-root "D:\NetConsoleData" `
+  --candidate-root "D:\study\diagnostic\NetConsole\history-store-retirement\<run-id>" `
+  --backup-root "D:\study\backup\NetConsole\history-store-retirement\<run-id>" `
+  --authorization LEGACY_HISTORY_RETIREMENT_AUTHORIZED
 ```
-
-The benchmark entry supports isolated synthetic or snapshot runs and reports
-rows/second, source/target bytes, chunk latency, target/checkpoint commits,
-months, duplicates and errors:
-
-```powershell
-& "D:\study\NetConsole\.venv\Scripts\python.exe" -m scripts.maintenance.benchmark_device_history_legacy_migration `
-  --synthetic-rows 10000 --chunk-rows 500 `
-  --output-dir "D:\study\diagnostic\NetConsole\device-history-migration\<run-id>\benchmark-medium"
-```
-
-Storage profiling and V1/V2 query comparison are separate read-only tools. Both
-accept only paths under `D:\study`; profiling VACUUM is limited to rebuildable
-diagnostic scratch databases and never applies to the source snapshot.
 
 ## Remaining Gates
 
-- Real Windows Server HDD long-duration migration remains pending until a
-  separately approved maintenance window; SSD/synthetic delay is not an HDD
-  substitute.
-- Isolated-catalog query cutover compatibility is covered by regression tests, but
-  no automatic or production cutover workflow is authorized. Source tables must
-  remain intact and readable so an explicit rollback can restore legacy authority.
-- Source delete design, retention and physical file shrink are not started.
+- Production apply 必须在应用正常停止后完成；重新启动、Update All 和运行时
+  smoke 之后再次 verify，确认没有重建 `db/history`。
+- GUI 可交互性、真实设备可达性和现场业务验收仍是独立门禁；自动化测试通过不
+  代表设备或 Electron GUI 已完成现场验收。

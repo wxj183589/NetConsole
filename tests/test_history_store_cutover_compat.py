@@ -5,6 +5,7 @@ import inspect
 from netconsole.core.database import Database
 from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
+from netconsole.repositories.history_store import HistoryStore
 
 
 LEGACY_HISTORY_TABLES = (
@@ -32,7 +33,10 @@ def _record_event(
     collected_at: str = "2026-08-01T10:00:00",
 ) -> None:
     with repository.database.connect() as conn:
-        repository.history_store.record_event(
+        HistoryStore(
+            repository.database.path,
+            history_root=repository.database.path.parent / "legacy-history",
+        ).record_event(
             conn,
             kind=kind,
             entity_key=entity_key,
@@ -228,7 +232,7 @@ def test_dropped_legacy_tables_do_not_restore_engineering_history_from_events(tm
         payload={"ac_device_uuid": "ac-1", "ap_uuid": ap_uuid, "rx_power": "-8.1"},
     )
 
-    assert repository.list_fit_ap_resource_history("ac-1")[0]["ap_uuid"] == ap_uuid
+    assert repository.list_fit_ap_resource_history("ac-1") == []
     assert repository.list_fit_ap_radio_history_by_ap(ap_uuid) == []
     assert repository.list_fit_ap_optical_history_by_ap(ap_uuid) == []
     assert repository.list_all_ap_optical_history() == []
@@ -272,7 +276,7 @@ def test_device_fact_history_keeps_fact_compatibility_without_engineering_fallba
         entity_key="device-1",
         payload={"device_uuid": "device-1", "model": "S6520"},
     )
-    assert facts.list_fact_history("device-1")[0]["model"] == "S6520"
+    assert facts.list_fact_history("device-1") == []
     assert facts.list_interface_history("device-1", "GE1/0/1") == []
     assert facts.list_optical_history("device-1", "GE1/0/1") == []
     assert facts.list_all_optical_history() == []

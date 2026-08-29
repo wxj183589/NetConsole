@@ -316,6 +316,42 @@
       ]
     },
     {
+      "id": "history-store-retirement",
+      "owner": "data_platform",
+      "level": "L4",
+      "patterns": [
+        "src/netconsole/core/database.py",
+        "src/netconsole/services/current_history_retention.py",
+        "src/netconsole/repositories/ac_repository.py",
+        "src/netconsole/repositories/device_fact_repository.py",
+        "src/netconsole/repositories/task_repository.py",
+        "src/netconsole/services/job_center/query_service.py",
+        "src/netconsole/backend/api/main.py",
+        "scripts/maintenance/retire_legacy_history_store.py",
+        "config/storage_registry.yaml",
+        "docs/storage/HISTORYSTORE_RUNTIME_CONSUMER_MATRIX.md"
+      ],
+      "consumers": [
+        "devices",
+        "ac_fit_ap",
+        "trackside_ap",
+        "task_job",
+        "export",
+        "data_platform",
+        "electron_runtime",
+        "ground_unattended"
+      ],
+      "compatibility_risks": [
+        "Current 事实、Recent10 变化窗口、Task Result authority、启动生命周期和 Production source retirement 不能互相漂移"
+      ],
+      "suites": [
+        "python-full",
+        "architecture-guards",
+        "main-contract-smoke",
+        "electron-contract"
+      ]
+    },
+    {
       "id": "data-root-and-migration",
       "owner": "data_platform",
       "level": "L4",

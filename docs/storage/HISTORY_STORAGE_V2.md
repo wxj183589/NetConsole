@@ -2,16 +2,18 @@
 
 ## 状态与边界
 
-History Storage V2 是月分片的新写格式。`history_outbox`、实时 producer、legacy
-COPY-only migration、catalog、查询和计数仍由同一个 `HistoryStore` 管理；没有新增第二套
-Repository、启动迁移或自动 compact。
+History Storage V2 是已退役的月分片候选格式，不再是运行时写入或查询格式。`HistoryStore`
+及其 catalog、查询、计数和 COPY-only migration 仅作为显式维护、审计和回滚工具保留；
+运行时不创建 `history_outbox`，不启动历史 drain，也不对 `db/history` 做 fallback。
 
-- 新写统一进入 `history_events_v2`。
+- 旧候选工具的新写统一进入 `history_events_v2`；正式运行时四类业务事实写入
+  `devices.db` 的 Current/Recent10 模型。
 - 既有 `history_events` V1 表不重写、不删除，V1-only 和同月 V1/V2 mixed shard 均继续可读。
-- `event_type=legacy` 的迁移副本仍不进入普通历史查询，源 legacy table 在 cutover 前保持事实源。
-- 已验证且无错误的单个源表可在隔离环境中，经维护锁、reason 和 revision-CAS 显式切换为
-  shard 查询事实源；该切换保留源表，并可显式回滚为 legacy 查询事实源。
-- 没有自动 cutover、source delete、DROP、生产 VACUUM 或正式数据根写入；生产切换仍需单独授权。
+- `event_type=legacy` 的迁移副本仍不进入普通历史查询；源 legacy table 只在显式维护迁移期间读取。
+- 已验证且无错误的单个源表只能在隔离候选库中执行维护工具验证；正式运行时不切换为
+  shard 查询事实源，也不保留 HistoryStore 作为业务 fallback。
+- Production 删除由独立的 candidate/apply/verify 工具按显式授权完成；该工具只迁移
+  Current/Recent10 并删除已注册站点的旧 `db/history`，不触碰其他存储域。
 
 ## 物理基线
 
@@ -104,7 +106,6 @@ V2 exact-entity plan 使用 `idx_history_events_v2_entity_time`，kind/time plan
 - `SERVER_HDD_STORAGE_V2_TEST=PENDING`：开发机 snapshot 结果不能替代真实 Windows Server HDD
   长时运行和无人值守并发验收。
 - `STORAGE_V2_READY` 只表示新写格式、兼容读取和隔离 snapshot 验证完成。
-- 已验证隔离 catalog 支持逐表、可审计且可回滚的查询 authority cutover；它不是自动化或生产
-  切换授权，切换前必须保留可读取的源表。
-- `SOURCE_DELETE_DESIGN_READY` 只允许进入删除方案设计；任何 source delete、DROP、VACUUM、替换
-  `devices.db` 或修改 `D:\NetConsoleData` 仍需单独授权。
+- 已验证隔离 catalog 的历史查询能力仅供维护工具审计；它不是运行时业务 authority。
+- `SOURCE_DELETE_DESIGN_READY` 不代表自动删除；Production 的 `devices.db` 替换和旧目录删除
+  必须由本任务的显式授权、候选报告、备份和 post-verify 闭合。

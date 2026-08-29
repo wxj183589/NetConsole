@@ -1145,7 +1145,7 @@ def test_legacy_migration_resumes_10000_rows_exactly_once_after_checkpoint(
         assert conn.execute("SELECT COUNT(*) FROM device_facts_history").fetchone()[0] == 10_000
 
 
-def test_legacy_history_remains_queryable_alongside_new_outbox_history(tmp_path):
+def test_runtime_history_reads_ignore_legacy_history_and_outbox(tmp_path):
     database = Database(tmp_path / "devices.db")
     database.initialize()
     repository = DeviceFactRepository(database)
@@ -1169,10 +1169,12 @@ def test_legacy_history_remains_queryable_alongside_new_outbox_history(tmp_path)
 
     history = repository.list_fact_history("device-1")
 
-    assert [row["sysname"] for row in history] == ["CURRENT", "LEGACY"]
+    assert [row["sysname"] for row in history] == ["CURRENT"]
     with database.connect() as conn:
         assert conn.execute("SELECT COUNT(*) FROM device_facts_history").fetchone()[0] == 1
-        assert conn.execute("SELECT COUNT(*) FROM history_outbox").fetchone()[0] == 1
+        assert conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='history_outbox'"
+        ).fetchone() is None
 
 
 def test_history_shard_seal_is_windows_safe_and_restart_idempotent(tmp_path):

@@ -32,6 +32,7 @@ from netconsole.repositories.ac_repository import AcRepository, TRACKSIDE_AP_PLA
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
+from netconsole.repositories.history_store import HistoryStore
 
 
 def _stable_station_id(node_uid: str) -> str:
@@ -572,7 +573,10 @@ def test_trackside_snapshot_does_not_read_history_store_after_lldp_legacy_tables
     with database.connect() as conn:
         conn.execute("DROP TABLE ap_lldp_history")
         conn.execute("DROP TABLE ac_fit_ap_lldp_history")
-        ac_repository.history_store.record_event(
+        HistoryStore(
+            database.path,
+            history_root=tmp_path / "legacy-history",
+        ).record_event(
             conn,
             kind="fit_ap_lldp",
             entity_key="ap-1-0",

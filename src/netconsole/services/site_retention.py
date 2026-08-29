@@ -335,7 +335,6 @@ class SiteRetentionService:
                 ).fetchall():
                     verified = verify_task_result_authority(connection, dict(raw))
                     result_authority[str(verified["result_id"])] = verified
-            task_history = TaskHistoryStore(database, site_id=str(site_id))
             for row in snapshots:
                 result_id = str(row.get("result_id") or "")
                 result_json = str(row.get("result_json") or "").strip()
@@ -343,9 +342,11 @@ class SiteRetentionService:
                     continue
                 authority = result_authority.get(result_id)
                 if authority is None:
-                    authority = task_history.get_result(result_id)
-                if authority is not None:
-                    row["result_json"] = str(authority["canonical_json"])
+                    raise SiteStorageError(
+                        "TASK_RESULT_AUTHORITY_MISSING",
+                        f"任务结果本地权威缺失：{result_id}",
+                    )
+                row["result_json"] = str(authority["canonical_json"])
             snapshot_by_id = {str(row["task_id"]): row for row in snapshots}
             online_mr_ids: set[str] = set()
             if "online_mr_task_sessions" in tables:
@@ -676,7 +677,21 @@ class SiteRetentionService:
                         keys,
                     )
                     deleted["disposable_events"] += int(cursor.rowcount or 0)
-                for keys in self._chunks(archive_result_ids, 500):
+                referenced_result_ids = {
+                    str(row[0])
+                    for keys in self._chunks(archive_result_ids, 500)
+                    for row in connection.execute(
+                        "SELECT result_id FROM task_snapshots WHERE result_id IN "
+                        f"({','.join('?' for _ in keys)})",
+                        keys,
+                    ).fetchall()
+                }
+                deletable_result_ids = [
+                    result_id
+                    for result_id in archive_result_ids
+                    if result_id not in referenced_result_ids
+                ]
+                for keys in self._chunks(deletable_result_ids, 500):
                     cursor = connection.execute(
                         "DELETE FROM task_results WHERE result_id IN "
                         f"({','.join('?' for _ in keys)})",
@@ -689,7 +704,11 @@ class SiteRetentionService:
                 expected = {
                     "archived_events": expected_counts["archive_events"],
                     "disposable_events": expected_counts["disposable_events"],
-                    "archived_results": expected_counts["archive_results"],
+                    "archived_results": max(
+                        0,
+                        expected_counts["archive_results"]
+                        - len(referenced_result_ids),
+                    ),
                 }
                 if deleted != expected:
                     connection.rollback()
@@ -732,6 +751,7 @@ class SiteRetentionService:
             "implicit_vacuum": False,
             "history_root": str(history.history_root),
             "sealed_shards": sealed_shards,
+            "retained_result_authority": sorted(referenced_result_ids),
         }
 
     def _storage_totals(

@@ -32,7 +32,7 @@ from netconsole.models.task_history_policy import (
     task_history_scope,
     utc_time_reached,
 )
-from netconsole.repositories.history_store import TaskHistoryStore, verify_task_result_row
+from netconsole.repositories.history_store import verify_task_result_row
 from netconsole.repositories.task_result_blob_repository import (
     TASK_RESULT_BLOB_CODEC_ZLIB,
     TaskResultBlobError,
@@ -226,7 +226,6 @@ class TaskRepository:
         # Cache verified canonical payloads so a task detail read does not
         # re-hash one large result for the snapshot and each terminal event.
         self._verified_result_cache: dict[str, dict[str, Any]] = {}
-        self.task_history = TaskHistoryStore(self.db_path)
         self.initialize()
 
     def _connect(self):
@@ -526,9 +525,8 @@ class TaskRepository:
             incoming_result = {}
         explicit_result_id = str(snapshot.result_id or "")
         if explicit_result_id:
-            # Legacy/ref-only snapshots already identify their immutable
-            # authority. Preserve the reference so reads can validate the
-            # task binding and resolve from TaskHistoryStore when necessary.
+            # Ref-only snapshots identify their immutable local authority.
+            # Reads fail closed when that authority row is unavailable.
             referenced = self._result_row(conn, explicit_result_id)
             if referenced is None:
                 # A legacy producer may commit the snapshot before its sealed
@@ -1381,8 +1379,8 @@ class TaskRepository:
     def enforce_terminal_history_retention(self) -> dict[str, object]:
         """Keep recent ordinary terminal tasks and remove only safe DB rows atomically.
 
-        This compatibility entrypoint remains repository-owned.  It neither
-        archives to ``TaskHistoryStore`` nor touches artifact files, Ground
+        This compatibility entrypoint remains repository-owned.  It does not
+        touch artifact files, Ground
         data, Online MR mappings or external raw evidence.
         """
 
@@ -1669,16 +1667,7 @@ class TaskRepository:
                 (task_id, safe_after, safe_limit),
             ).fetchall()
             current = [self._event_from_connection_row(conn, dict(row)) for row in rows]
-            archived_rows = self.task_history.list_events(
-                task_id, after_sequence=safe_after, limit=safe_limit
-            )
-            archived = [
-                self._event_from_connection_row(conn, row) for row in archived_rows
-            ]
-        merged = {str(event["id"]): event for event in (*archived, *current)}
-        return sorted(
-            merged.values(), key=lambda event: (int(event["sequence"]), str(event["id"]))
-        )[:safe_limit]
+        return current
 
     def list_events_for_tasks(
         self,
@@ -1717,14 +1706,7 @@ class TaskRepository:
                 for row in rows:
                     event = self._event_from_connection_row(conn, dict(row))
                     grouped.setdefault(str(event["task_id"]), []).append(event)
-            archived_by_task = self.task_history.list_events_for_tasks(
-                ids,
-                event_types=types,
-            )
             for task_id in ids:
-                for row in archived_by_task.get(task_id, []):
-                    event = self._event_from_connection_row(conn, row)
-                    grouped.setdefault(task_id, []).append(event)
                 deduplicated = {
                     str(event["id"]): event for event in grouped.get(task_id, [])
                 }
@@ -2551,7 +2533,7 @@ class TaskRepository:
         ).fetchone()
         if row is not None:
             return row
-        return self.task_history.get_result(str(result_id))
+        return None
 
 def _contains_replacement_character(value: object) -> bool:
     if isinstance(value, str):
