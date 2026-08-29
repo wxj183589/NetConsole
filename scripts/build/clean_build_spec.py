@@ -71,10 +71,16 @@ PACKAGED_FEATURE_FLAGS_SOURCE = "resources/runtime/feature_flags.json"
 PACKAGED_BUILD_METADATA_SOURCE = "resources/runtime/build-metadata.json"
 PACKAGED_DEVICE_COMMAND_PROFILE_OPERATION = "device.inventory.collect"
 RUNTIME_DYNAMIC_IMPORTS = (
+    "uvicorn.lifespan.off",
+    "uvicorn.lifespan.on",
     "uvicorn.loops.auto",
     "uvicorn.loops.asyncio",
     "uvicorn.protocols.http.auto",
+    "uvicorn.protocols.http.h11_impl",
+    "uvicorn.protocols.http.httptools_impl",
     "uvicorn.protocols.websockets.auto",
+    "uvicorn.protocols.websockets.websockets_impl",
+    "uvicorn.protocols.websockets.websockets_sansio_impl",
 )
 APPROVED_DISTRIBUTIONS_PATH = (
     ROOT / "config" / "pyinstaller-approved-distributions.json"
