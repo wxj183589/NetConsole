@@ -4,7 +4,13 @@ import json
 
 import pytest
 
-from netconsole.core.feature_flags import default_profile, verify_admin_unlock_password
+from netconsole.core.feature_flags import (
+    CUSTOMER_UNLOCK_PASSWORD_DEFAULT,
+    CUSTOMER_UNLOCK_PASSWORD_ENV,
+    default_profile,
+    resolve_customer_unlock_password,
+    verify_admin_unlock_password,
+)
 from scripts.build import prepare_electron_edition as prepare_module
 from scripts.build.prepare_electron_edition import (
     EditionPreparationError,
@@ -59,6 +65,54 @@ def test_prepare_full_edition_has_no_customer_password_hash(tmp_path) -> None:
     }
 
 
+@pytest.mark.parametrize("environment_value", (None, ""))
+def test_customer_unlock_resolver_falls_back_to_builtin_default(
+    monkeypatch, environment_value: str | None
+) -> None:
+    if environment_value is None:
+        monkeypatch.delenv(CUSTOMER_UNLOCK_PASSWORD_ENV, raising=False)
+    else:
+        monkeypatch.setenv(CUSTOMER_UNLOCK_PASSWORD_ENV, environment_value)
+
+    resolved = resolve_customer_unlock_password()
+
+    assert resolved.value == CUSTOMER_UNLOCK_PASSWORD_DEFAULT
+    assert resolved.source == "BUILTIN_DEFAULT"
+
+
+def test_customer_unlock_resolver_prefers_non_empty_environment_override(monkeypatch) -> None:
+    monkeypatch.setenv(CUSTOMER_UNLOCK_PASSWORD_ENV, "TestOverride123!")
+
+    resolved = resolve_customer_unlock_password()
+
+    assert resolved.value == "TestOverride123!"
+    assert resolved.source == "ENVIRONMENT"
+
+
+def test_prepare_customer_edition_uses_builtin_default_when_environment_is_missing(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.delenv(CUSTOMER_UNLOCK_PASSWORD_ENV, raising=False)
+    root = _backend_root(tmp_path)
+
+    prepare_electron_edition(root, edition="customer")
+
+    path, build_info = _embedded_build_info(root)
+    assert verify_admin_unlock_password(build_info, CUSTOMER_UNLOCK_PASSWORD_DEFAULT)
+    assert CUSTOMER_UNLOCK_PASSWORD_DEFAULT not in path.read_text(encoding="utf-8")
+
+
+def test_prepare_customer_edition_uses_environment_override(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv(CUSTOMER_UNLOCK_PASSWORD_ENV, "TestOverride123!")
+    root = _backend_root(tmp_path)
+
+    prepare_electron_edition(root, edition="customer")
+
+    _, build_info = _embedded_build_info(root)
+    assert verify_admin_unlock_password(build_info, "TestOverride123!")
+    assert verify_admin_unlock_password(build_info, CUSTOMER_UNLOCK_PASSWORD_DEFAULT) is False
+
+
 def test_prepare_customer_edition_stores_only_verifiable_hash(tmp_path) -> None:
     root = _backend_root(tmp_path)
     password = "customer-maintenance-password"
@@ -110,7 +164,7 @@ def test_prepared_edition_embeds_the_wps_full_only_delivery_contract(
     }
 
 
-def test_prepare_customer_edition_rejects_missing_or_weak_password(tmp_path) -> None:
+def test_prepare_customer_edition_rejects_weak_password(tmp_path) -> None:
     root = _backend_root(tmp_path)
 
     with pytest.raises(EditionPreparationError, match="至少 8 位"):

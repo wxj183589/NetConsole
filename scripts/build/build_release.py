@@ -18,6 +18,7 @@ from netconsole.core.feature_flags import (
     install_runtime_feature_files,
     load_profile,
     profiles_dir,
+    resolve_customer_unlock_password,
 )
 from netconsole.core.feature_registry import FeatureStatus, list_features
 from netconsole.services.tool_smoke_test import run_tool_smoke_tests
@@ -256,6 +257,11 @@ def create_edition_releases(
     make_zip: bool,
     admin_unlock_password: str | None = None,
 ) -> None:
+    resolved_customer_password = (
+        resolve_customer_unlock_password(admin_unlock_password).value
+        if "customer" in selected_editions(build_editions)
+        else None
+    )
     for edition in selected_editions(build_editions):
         profile = feature_profile or (
             "full" if edition in {"internal", "engineer"} else "customer"
@@ -264,7 +270,7 @@ def create_edition_releases(
         remove_tree(destination)
         copy_tree(payload, destination)
         remove_copied_zip_files(destination)
-        unlock_password = admin_unlock_password if edition == "customer" else None
+        unlock_password = resolved_customer_password if edition == "customer" else None
         install_runtime_feature_files(
             destination,
             edition=edition,

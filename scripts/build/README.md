@@ -10,7 +10,7 @@
 
 ## 主要入口
 
-`package_windows.ps1` 是 Windows 安装包链路，`package_windows.bat` 可用于从传统终端启动。项目根目录的 `一键打包安装包.cmd` 调用 `package_local.ps1`，负责 SecureString 密码、单实例、日志，并在全部 Gate 通过后以 `D:\study\release\NetConsole\<version>\build-<number>-<short-sha>` 保存构建制品；它不会自动升级版本或将构建标记为正式发布。只有显式 release 命令才允许发布新版本并更新自动更新清单。
+`package_windows.ps1` 是 Windows 安装包链路，`package_windows.bat` 可用于从传统终端启动。项目根目录的 `一键打包安装包.cmd` 调用 `package_local.ps1`，负责单实例、日志，并在全部 Gate 通过后以 `D:\study\release\NetConsole\<version>\build-<number>-<short-sha>` 保存构建制品；Customer 密码由 Core 统一解析器提供环境变量覆盖或内置默认值。它不会自动升级版本或将构建标记为正式发布。只有显式 release 命令才允许发布新版本并更新自动更新清单。
 
 `build_release.py`/`release.py` 编排底层发布，`check_packaged_runtime.py`、`check_runtime_deps.py`、`pyinstaller_artifact_inventory.py` 和工具校验脚本提供门禁。
 

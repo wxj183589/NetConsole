@@ -11,6 +11,7 @@ from netconsole.backend.api.edition_access import (
     unlock_customer_edition,
 )
 from netconsole.core.feature_flags import (
+    CUSTOMER_UNLOCK_PASSWORD_DEFAULT,
     FeatureGate,
     default_profile,
     hash_admin_unlock_password,
@@ -85,6 +86,19 @@ def test_customer_unlock_is_session_only_and_relock_restores_packaged_gate(tmp_p
     assert app.state.settings_application_service.feature_gate is locked
 
 
+def test_customer_unlock_accepts_builtin_default_password(tmp_path) -> None:
+    app = _app_with_gate(
+        tmp_path,
+        edition="customer",
+        password=CUSTOMER_UNLOCK_PASSWORD_DEFAULT,
+    )
+
+    unlocked = unlock_customer_edition(app, CUSTOMER_UNLOCK_PASSWORD_DEFAULT)
+
+    assert unlocked.profile == "full"
+    assert unlocked.is_session_override_active() is True
+
+
 def test_customer_unlock_rejects_wrong_password_without_replacing_gate(tmp_path) -> None:
     app = _app_with_gate(
         tmp_path,
@@ -98,3 +112,29 @@ def test_customer_unlock_rejects_wrong_password_without_replacing_gate(tmp_path)
 
     assert app.state.feature_gate is original
     assert app.state.settings_application_service.feature_gate is original
+
+
+@pytest.mark.parametrize(
+    "wrong_password",
+    (
+        CUSTOMER_UNLOCK_PASSWORD_DEFAULT[0].lower()
+        + CUSTOMER_UNLOCK_PASSWORD_DEFAULT[1:],
+        CUSTOMER_UNLOCK_PASSWORD_DEFAULT[:-1],
+        CUSTOMER_UNLOCK_PASSWORD_DEFAULT.replace("@", ""),
+        CUSTOMER_UNLOCK_PASSWORD_DEFAULT + "7",
+        "",
+        f" {CUSTOMER_UNLOCK_PASSWORD_DEFAULT}",
+        f"{CUSTOMER_UNLOCK_PASSWORD_DEFAULT} ",
+    ),
+)
+def test_customer_unlock_rejects_default_password_variants(
+    tmp_path, wrong_password: str
+) -> None:
+    app = _app_with_gate(
+        tmp_path,
+        edition="customer",
+        password=CUSTOMER_UNLOCK_PASSWORD_DEFAULT,
+    )
+
+    with pytest.raises(EditionUnlockPasswordError, match="维护密码不正确"):
+        unlock_customer_edition(app, wrong_password)

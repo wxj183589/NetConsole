@@ -499,16 +499,16 @@ describe('Local Windows packaging launcher', () => {
     expect(formalScript).toContain('[switch]$NoOpenOutput')
   })
 
-  it('keeps the customer password in SecureString/process scope only', () => {
-    expect(localScript).toContain('Read-Host "请输入客户版维护密码" -AsSecureString')
-    expect(localScript).toContain('请再次输入客户版维护密码')
-    expect(localScript).toContain('ZeroFreeBSTR')
-    expect(localScript).toContain('NETCONSOLE_CUSTOMER_UNLOCK_PASSWORD')
-    expect(localScript).toContain('"Process"')
-    expect(localScript).toContain('finally')
-    expect(localScript).toContain('Remove-Item -LiteralPath $environmentPath')
+  it('delegates customer password resolution to the canonical Core authority', () => {
+    expect(localScript).not.toContain('Read-CustomerPassword')
+    expect(localScript).not.toContain('Read-Host')
+    expect(localScript).not.toContain('CUSTOMER_UNLOCK_PASSWORD')
     expect(localScript).not.toContain('--password')
     expect(localScript).not.toContain('-Password')
+    expect(formalScript).toContain('resolve_customer_unlock_password')
+    expect(formalScript).toContain('CUSTOMER_PASSWORD_SOURCE=')
+    expect(formalScript).toContain('CUSTOMER_BUILD_PREFLIGHT=PASS')
+    expect(formalScript).not.toContain('构建客户版前必须设置 NETCONSOLE_CUSTOMER_UNLOCK_PASSWORD')
     expect(cmd).not.toContain('CUSTOMER_UNLOCK_PASSWORD')
   })
 

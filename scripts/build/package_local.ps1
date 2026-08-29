@@ -13,9 +13,7 @@ $utf8 = [System.Text.UTF8Encoding]::new($false)
 [Console]::OutputEncoding = $utf8
 $OutputEncoding = $utf8
 
-$script:MinimumPasswordLength = 8
 $script:MinimumFreeBytes = 10GB
-$script:PasswordEnvironmentName = "NETCONSOLE_CUSTOMER_UNLOCK_PASSWORD"
 $script:PnpmPathEnvironmentName = "NETCONSOLE_PNPM_PATH"
 $script:MutexName = "Global\NetConsoleLocalInstallerBuild"
 $script:CorepackPnpmVersion = "11.16.0"
@@ -185,55 +183,6 @@ function Invoke-PackageWindows {
     finally {
         Pop-Location
     }
-}
-
-function Convert-SecureStringToPlainText {
-    param([Parameter(Mandatory = $true)][System.Security.SecureString]$SecureString)
-
-    $bstr = [IntPtr]::Zero
-    try {
-        $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecureString)
-        return [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
-    }
-    finally {
-        if ($bstr -ne [IntPtr]::Zero) {
-            [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
-        }
-    }
-}
-
-function Read-CustomerPassword {
-    param([Parameter(Mandatory = $true)][int]$MinimumLength)
-
-    for ($attempt = 1; $attempt -le 3; $attempt++) {
-        $first = $null
-        $second = $null
-        $firstPlain = $null
-        $secondPlain = $null
-        try {
-            $first = Read-Host "请输入客户版维护密码" -AsSecureString
-            $second = Read-Host "请再次输入客户版维护密码" -AsSecureString
-            $firstPlain = Convert-SecureStringToPlainText $first
-            $secondPlain = Convert-SecureStringToPlainText $second
-            if (
-                -not [string]::IsNullOrWhiteSpace($firstPlain) -and
-                $firstPlain.Length -ge $MinimumLength -and
-                $firstPlain -ceq $secondPlain
-            ) {
-                return $firstPlain
-            }
-        }
-        finally {
-            if ($null -ne $first) { $first.Dispose() }
-            if ($null -ne $second) { $second.Dispose() }
-            $firstPlain = $null
-            $secondPlain = $null
-        }
-        if ($attempt -lt 3) {
-            Write-Warning "两次输入不一致或不符合密码要求，请重新输入。"
-        }
-    }
-    throw "客户版维护密码确认失败。"
 }
 
 function Get-ExpectedEditions {
@@ -497,8 +446,6 @@ function Publish-VerifiedArtifacts {
 $mutex = $null
 $mutexAcquired = $false
 $transcriptStarted = $false
-$originalPasswordPresent = Test-Path "Env:$script:PasswordEnvironmentName"
-$originalPassword = if ($originalPasswordPresent) { [Environment]::GetEnvironmentVariable($script:PasswordEnvironmentName, "Process") } else { $null }
 $startedAt = Get-Date
 $logPath = $null
 $childLogPath = $null
@@ -618,20 +565,14 @@ try {
         exit 0
     }
 
-    $needsCustomerPassword = $Edition -eq "customer" -or $Edition -eq "both"
-    Write-Stage 3 "准备客户版维护密码"
-    if ($needsCustomerPassword) {
-        $currentPassword = [Environment]::GetEnvironmentVariable($script:PasswordEnvironmentName, "Process")
-        if ([string]::IsNullOrWhiteSpace($currentPassword) -or $currentPassword.Length -lt $script:MinimumPasswordLength) {
-            $currentPassword = Read-CustomerPassword -MinimumLength $script:MinimumPasswordLength
-        }
-        [Environment]::SetEnvironmentVariable($script:PasswordEnvironmentName, $currentPassword, "Process")
-        $currentPassword = $null
-    }
-    else {
+    Write-Stage 3 "校验客户版维护密码来源"
+    if ($Edition -eq "full") {
         Write-Host "Full-only 构建不需要客户版维护密码。"
     }
-    Write-StageComplete 3 "客户版维护密码"
+    else {
+        Write-Host "Customer 密码由 Python canonical resolver 解析（环境变量覆盖或内置默认值）。"
+    }
+    Write-StageComplete 3 "客户版维护密码来源"
 
     Write-Stage 4 "安装锁定依赖"
     Write-Stage 5 "运行 Web 与 Electron 测试"
@@ -728,13 +669,6 @@ finally {
                 Remove-Item -LiteralPath $resolvedShimContainer -Force -ErrorAction SilentlyContinue
             }
         }
-    }
-    if ($originalPasswordPresent) {
-        [Environment]::SetEnvironmentVariable($script:PasswordEnvironmentName, $originalPassword, "Process")
-    }
-    else {
-        $environmentPath = "Env:$script:PasswordEnvironmentName"
-        Remove-Item -LiteralPath $environmentPath -ErrorAction SilentlyContinue
     }
     if ($mutexAcquired -and $null -ne $mutex) {
         try { $mutex.ReleaseMutex() } catch { }

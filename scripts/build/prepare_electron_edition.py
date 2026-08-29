@@ -7,19 +7,19 @@ from pathlib import Path
 from typing import Any
 
 from netconsole.core.feature_flags import (
+    CUSTOMER_UNLOCK_PASSWORD_MIN_LENGTH,
     default_profile,
     embedded_runtime_dir,
     hash_admin_unlock_password,
     install_embedded_feature_files,
     profiles_dir,
+    resolve_customer_unlock_password,
     validate_feature_profile_payload,
     verify_admin_unlock_password,
 )
 
 BUILD_EDITIONS = ("full", "customer")
 EDITION_ENV = "NETCONSOLE_BUILD_EDITION"
-CUSTOMER_PASSWORD_ENV = "NETCONSOLE_CUSTOMER_UNLOCK_PASSWORD"
-MINIMUM_CUSTOMER_PASSWORD_LENGTH = 8
 
 
 class EditionPreparationError(RuntimeError):
@@ -41,11 +41,13 @@ def prepare_electron_edition(
     if not target.is_dir() or not (target / "NetConsoleBackend.exe").is_file():
         raise EditionPreparationError(f"Electron Backend 载荷不存在：{target}")
 
-    password = customer_password or ""
-    if normalized_edition == "customer" and len(password) < MINIMUM_CUSTOMER_PASSWORD_LENGTH:
+    password = ""
+    if normalized_edition == "customer":
+        resolved_password = resolve_customer_unlock_password(customer_password)
+        password = resolved_password.value
+    if normalized_edition == "customer" and len(password) < CUSTOMER_UNLOCK_PASSWORD_MIN_LENGTH:
         raise EditionPreparationError(
-            f"客户版必须通过 {CUSTOMER_PASSWORD_ENV} 提供至少 "
-            f"{MINIMUM_CUSTOMER_PASSWORD_LENGTH} 位维护密码"
+            f"客户版维护密码必须至少 {CUSTOMER_UNLOCK_PASSWORD_MIN_LENGTH} 位"
         )
 
     profile = normalized_edition
@@ -170,12 +172,10 @@ def main() -> int:
     parser.add_argument("--edition", choices=BUILD_EDITIONS)
     args = parser.parse_args()
     edition = args.edition or os.environ.get(EDITION_ENV, "full")
-    password = os.environ.get(CUSTOMER_PASSWORD_ENV)
     try:
         prepare_electron_edition(
             args.backend_root,
             edition=edition,
-            customer_password=password,
         )
         return 0
     except EditionPreparationError as exc:

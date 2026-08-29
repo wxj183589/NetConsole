@@ -106,6 +106,32 @@ PACKAGED_ENABLED_ONLY_FEATURE_IDS = frozenset(
 )
 FEATURE_STATE_KEYS = ("visible", "enabled", "client_package", "internal_only")
 FEATURE_PROFILE_SCHEMA_VERSION = 2
+CUSTOMER_UNLOCK_PASSWORD_ENV = "NETCONSOLE_CUSTOMER_UNLOCK_PASSWORD"
+CUSTOMER_UNLOCK_PASSWORD_DEFAULT = "Admin@123456"
+CUSTOMER_UNLOCK_PASSWORD_MIN_LENGTH = 8
+
+
+class CustomerUnlockPassword(NamedTuple):
+    value: str
+    source: str
+
+
+def resolve_customer_unlock_password(
+    supplied_value: str | None = None,
+) -> CustomerUnlockPassword:
+    """Resolve the one Customer maintenance password authority.
+
+    A non-empty explicit value is used by controlled callers such as tests or
+    build orchestration. Normal callers leave it unset so the process
+    environment remains the only override over the built-in default.
+    """
+
+    if supplied_value:
+        return CustomerUnlockPassword(supplied_value, "ARGUMENT")
+    environment_value = os.environ.get(CUSTOMER_UNLOCK_PASSWORD_ENV)
+    if environment_value:
+        return CustomerUnlockPassword(environment_value, "ENVIRONMENT")
+    return CustomerUnlockPassword(CUSTOMER_UNLOCK_PASSWORD_DEFAULT, "BUILTIN_DEFAULT")
 
 
 @dataclass(frozen=True)

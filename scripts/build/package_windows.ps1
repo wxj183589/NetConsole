@@ -150,19 +150,19 @@ try {
 
     Invoke-Native $pythonPath @("-m", "pip", "check") $projectRoot
 
+    if ($Edition -ne "full") {
+        $passwordSource = Invoke-NativeCapture $pythonPath @(
+            "-c",
+            "from netconsole.core.feature_flags import resolve_customer_unlock_password; print(resolve_customer_unlock_password().source)"
+        ) $projectRoot
+        Write-Host "CUSTOMER_PASSWORD_SOURCE=$passwordSource"
+        Write-Host "CUSTOMER_BUILD_PREFLIGHT=PASS"
+    }
+
     if ($PreflightOnly) {
         Write-Host ""
         Write-Host "预检通过；未安装依赖、未运行测试、未生成安装包。" -ForegroundColor Green
         exit 0
-    }
-
-    if ($Edition -ne "full") {
-        if ([string]::IsNullOrWhiteSpace($env:NETCONSOLE_CUSTOMER_UNLOCK_PASSWORD)) {
-            throw "构建客户版前必须设置 NETCONSOLE_CUSTOMER_UNLOCK_PASSWORD。"
-        }
-        if ($env:NETCONSOLE_CUSTOMER_UNLOCK_PASSWORD.Length -lt 8) {
-            throw "NETCONSOLE_CUSTOMER_UNLOCK_PASSWORD 至少需要 8 位。"
-        }
     }
 
     Write-Step "安装 Web 锁定依赖"

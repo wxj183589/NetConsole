@@ -10,10 +10,13 @@ import time
 from pathlib import Path
 from typing import Any
 
+from netconsole.core.feature_flags import (
+    CUSTOMER_UNLOCK_PASSWORD_ENV,
+    resolve_customer_unlock_password,
+)
 from scripts.build import build_installer as installer
 from scripts.build.prepare_electron_edition import (
     BUILD_EDITIONS,
-    CUSTOMER_PASSWORD_ENV,
     EditionPreparationError,
     prepare_electron_edition,
 )
@@ -48,11 +51,9 @@ def main() -> int:
 
 def build_edition_installers(selection: str) -> list[dict[str, Any]]:
     editions = _selected_editions(selection)
-    customer_password = os.environ.get(CUSTOMER_PASSWORD_ENV, "")
-    if "customer" in editions and not customer_password:
-        raise EditionInstallerError(
-            f"构建客户版前必须设置环境变量 {CUSTOMER_PASSWORD_ENV}"
-        )
+    customer_password = (
+        resolve_customer_unlock_password().value if "customer" in editions else ""
+    )
 
     installer.require_clean_synced_git()
     installer.clean_installer_outputs()
@@ -65,9 +66,9 @@ def build_edition_installers(selection: str) -> list[dict[str, Any]]:
     prepare_env = os.environ.copy()
     prepare_env["NETCONSOLE_BUILD_EDITION"] = initial_edition
     if initial_edition == "customer":
-        prepare_env[CUSTOMER_PASSWORD_ENV] = customer_password
+        prepare_env[CUSTOMER_UNLOCK_PASSWORD_ENV] = customer_password
     else:
-        prepare_env.pop(CUSTOMER_PASSWORD_ENV, None)
+        prepare_env.pop(CUSTOMER_UNLOCK_PASSWORD_ENV, None)
     _configure_temporary_directory(prepare_env, suffix="prepare")
     installer._run(
         [pnpm, "run", "package:prepare"],
@@ -98,7 +99,7 @@ def build_edition_installers(selection: str) -> list[dict[str, Any]]:
 
             build_env = os.environ.copy()
             build_env["NETCONSOLE_BUILD_EDITION"] = edition
-            build_env.pop(CUSTOMER_PASSWORD_ENV, None)
+            build_env.pop(CUSTOMER_UNLOCK_PASSWORD_ENV, None)
             _configure_temporary_directory(build_env, suffix=edition)
             installer._run(
                 [

@@ -40,10 +40,10 @@ Backend 的检查接口返回结构化依赖问题，页面按缺失依赖聚合
 
 正式构建仍要求 Windows、干净工作区、最终提交已推送到 upstream，以及完整的既有发布门禁。
 
-构建两个版本前，在当前 PowerShell 会话设置客户版维护密码：
+如需覆盖项目内置的客户版维护密码，可在当前 PowerShell 会话设置环境变量；不设置或设置为空时，统一解析器使用内置默认值：
 
 ```powershell
-$env:NETCONSOLE_CUSTOMER_UNLOCK_PASSWORD = "使用独立的维护密码"
+$env:NETCONSOLE_CUSTOMER_UNLOCK_PASSWORD = "使用环境变量覆盖值"
 .\scripts\build\package_windows.ps1
 ```
 
@@ -70,7 +70,7 @@ pnpm package:customer
 一键打包安装包.cmd preflight
 ```
 
-Customer 或 `both` 构建如果当前进程没有有效的 `NETCONSOLE_CUSTOMER_UNLOCK_PASSWORD`，脚本会使用 SecureString 安全读取并要求确认，密码只在当前 PowerShell 进程及其构建子进程中存在。构建结束或失败后都会恢复原环境变量；密码不会写入命令行、日志、JSON、摘要、脚本或 Git 配置。Full-only 构建不要求客户版密码。
+Customer 或 `both` 构建统一调用 Core 的客户版维护密码解析器：非空 `NETCONSOLE_CUSTOMER_UNLOCK_PASSWORD` 作为环境变量覆盖值，不存在或为空时使用内置默认值。构建流程不会交互询问密码；实际密码只在当前构建进程及其必要子进程中存在，不会写入命令行、日志、JSON、摘要、脚本或 Git 配置。Full-only 构建不依赖客户版密码。
 
 每次运行会在 `dist/package-logs/` 生成独立的 `package-YYYYMMDD-HHmmss.log`。验证通过的制品先写入 `D:\study\release\NetConsole\.staging-<唯一 ID>`，全部校验完成后再原子重命名为 `D:\study\release\NetConsole\v<版本>`，目录内包含本次选择对应的安装包、`.exe.release.json`、`SHA256SUMS.txt`、`BUILD_SUMMARY.json` 和 `BUILD_SUMMARY.md`。目标版本目录已存在时立即停止，禁止覆盖或混入另一候选。成功后自动打开该目录；Explorer 打开失败不会改变构建结果。失败只清理本次 staging，不删除已有正式发布目录、其他构建输出或业务数据。
 

@@ -18,6 +18,10 @@ def test_windows_package_script_reuses_the_formal_release_entry() -> None:
     assert '@("status", "--porcelain", "--untracked-files=all")' in script
     assert '@("rev-parse", "@{upstream}")' in script
     assert '@("-m", "pip", "check")' in script
+    assert "resolve_customer_unlock_password" in script
+    assert 'CUSTOMER_PASSWORD_SOURCE=' in script
+    assert 'CUSTOMER_BUILD_PREFLIGHT=PASS' in script
+    assert "构建客户版前必须设置 NETCONSOLE_CUSTOMER_UNLOCK_PASSWORD" not in script
     assert script.count('@("install", "--frozen-lockfile")') == 2
     assert script.count('@("test")') == 2
     assert 'Invoke-Native $pnpmPath @("run", $packageScript) $desktopRoot' in script
