@@ -14,6 +14,7 @@ import json
 import os
 import shutil
 import sqlite3
+from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,7 @@ from netconsole.services.current_history_retention import (
 
 AUTHORIZATION_TOKEN = "LEGACY_HISTORY_RETIREMENT_AUTHORIZED"
 TARGET_PRODUCTION_ROOT = Path(r"D:\NetConsoleData")
+TARGET_DEVELOPMENT_ROOT = Path(r"D:\NetConsoleData-dev")
 LEGACY_KINDS = (
     "fit_ap_resource",
     "device_fact",
@@ -181,7 +183,7 @@ def _read_events(db_path: Path, history_root: Path) -> dict[str, list[dict[str, 
 
 
 def _business_current_columns(path: Path) -> dict[str, tuple[str, ...]]:
-    with Database(path).connect_readonly() as conn:
+    with closing(Database(path).connect_readonly()) as conn:
         result: dict[str, tuple[str, ...]] = {}
         for table in BUSINESS_CURRENT_TABLES:
             if not _table_exists(conn, table):
@@ -198,7 +200,7 @@ def _business_current_digest(
     path: Path, *, columns_by_table: dict[str, tuple[str, ...]] | None = None
 ) -> str:
     digest = hashlib.sha256()
-    with Database(path).connect_readonly() as conn:
+    with closing(Database(path).connect_readonly()) as conn:
         tables: list[dict[str, Any]] = []
         for table in BUSINESS_CURRENT_TABLES:
             source_columns = (
@@ -328,7 +330,7 @@ def _retire_legacy_runtime_tables(conn: sqlite3.Connection) -> dict[str, int]:
 
 def _verify_candidate(path: Path) -> dict[str, Any]:
     database = Database(path)
-    with database.connect_readonly() as conn:
+    with closing(database.connect_readonly()) as conn:
         quick_check = str(conn.execute("PRAGMA quick_check").fetchone()[0])
         integrity_check = str(conn.execute("PRAGMA integrity_check").fetchone()[0])
         counts = _current_counts(conn)
@@ -415,7 +417,7 @@ def prepare(data_root: Path, candidate_root: Path) -> dict[str, Any]:
         )
         _sqlite_backup(source_db, candidate_db)
         Database(candidate_db).initialize()
-        with Database(candidate_db).connect() as conn:
+        with closing(Database(candidate_db).connect()) as conn:
             stats = _replay_events(conn, events)
             legacy_runtime_tables_removed = _retire_legacy_runtime_tables(conn)
             conn.execute(
@@ -481,10 +483,10 @@ def _assert_source_unchanged(data_root: Path, item: dict[str, Any]) -> None:
     db_path = site_root / "db" / "devices.db"
     expected = str(item.get("source_manifest", {}).get("devices_sha256") or "")
     if expected and _sha256(db_path) != expected:
-        raise RuntimeError(f"Production devices.db changed after candidate preparation: {db_path}")
+        raise RuntimeError(f"devices.db changed after candidate preparation: {db_path}")
     actual_history = _history_manifest(site_root / "db" / "history")
     if actual_history != item.get("source_manifest", {}).get("history", {}):
-        raise RuntimeError(f"Production HistoryStore source changed after candidate preparation: {site_root}")
+        raise RuntimeError(f"HistoryStore source changed after candidate preparation: {site_root}")
 
 
 def _safe_history_root(site_root: Path) -> Path:
@@ -564,6 +566,118 @@ def apply(data_root: Path, candidate_root: Path, backup_root: Path) -> dict[str,
     return result
 
 
+def apply_development(
+    data_root: Path, candidate_root: Path, backup_root: Path
+) -> dict[str, Any]:
+    """Apply a verified candidate to the long-lived development authority.
+
+    Development data is intentionally handled separately from Production:
+    only one SQLite backup per registered site is retained during the
+    operation, and a non-empty external HistoryStore is rejected instead of
+    creating a second long-lived copy of it.  The temporary backup is removed
+    after the complete post-apply verification succeeds.
+    """
+
+    data_root = data_root.resolve()
+    candidate_root = candidate_root.resolve()
+    backup_root = backup_root.resolve()
+    if data_root != TARGET_DEVELOPMENT_ROOT.resolve():
+        raise RuntimeError(
+            f"development apply only accepts the exact development root {TARGET_DEVELOPMENT_ROOT}"
+        )
+    if candidate_root == data_root or data_root in candidate_root.parents:
+        raise RuntimeError("development candidate must be outside the data root")
+    if backup_root == data_root or data_root in backup_root.parents:
+        raise RuntimeError("development temporary backup must be outside the data root")
+    if backup_root.exists():
+        raise RuntimeError(f"development temporary backup already exists: {backup_root}")
+
+    report_path = candidate_root / "retirement-candidate.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    if report.get("status") != "PASS":
+        raise RuntimeError("candidate verification did not pass")
+    if Path(str(report.get("data_root") or "")).resolve() != data_root:
+        raise RuntimeError("candidate data root does not match the development authority")
+
+    items = [
+        item
+        for item in report.get("sites", [])
+        if str(item.get("status")) != "SKIPPED_NO_DEVICES_DB"
+    ]
+    for item in items:
+        _assert_source_unchanged(data_root, item)
+        site_root = data_root / str(item["relative_path"])
+        history = _history_manifest(site_root / "db" / "history")
+        if history.get("bytes", 0):
+            raise RuntimeError(
+                "development apply refuses a non-empty external HistoryStore "
+                "because it would require a long-lived full-history rollback copy"
+            )
+        candidate_db = Path(str(item["candidate_database"]))
+        if not candidate_db.is_file() or candidate_db.is_symlink():
+            raise RuntimeError(f"candidate database is missing or unsafe: {candidate_db}")
+
+    changed: list[dict[str, Any]] = []
+    backup_root.mkdir(parents=True, exist_ok=False)
+    try:
+        for item in items:
+            site_root = data_root / str(item["relative_path"])
+            db_path = site_root / "db" / "devices.db"
+            candidate_db = Path(str(item["candidate_database"]))
+            backup_db = backup_root / str(item["relative_path"]) / "db" / "devices.db"
+            _sqlite_backup(db_path, backup_db)
+            with closing(sqlite3.connect(str(backup_db))) as backup_conn:
+                backup_conn.execute("PRAGMA foreign_keys=ON")
+                if str(backup_conn.execute("PRAGMA quick_check").fetchone()[0]).lower() != "ok":
+                    raise RuntimeError(f"development temporary backup failed quick_check: {backup_db}")
+            changed.append(
+                {
+                    **item,
+                    "development_database": str(db_path),
+                    "temporary_backup": str(backup_db),
+                    "history_directory_present_before": (site_root / "db" / "history").exists(),
+                }
+            )
+            temporary = db_path.with_name(f".{db_path.name}.history-retirement.tmp")
+            _sqlite_backup(candidate_db, temporary)
+            os.replace(temporary, db_path)
+            history_root = site_root / "db" / "history"
+            if history_root.exists():
+                shutil.rmtree(_safe_history_root(site_root))
+
+        post = verify_production(data_root)
+        if post["status"] != "PASS":
+            raise RuntimeError(f"development post-apply verification failed: {post}")
+        result = {
+            "schema_version": REPORT_SCHEMA_VERSION,
+            "status": "PASS",
+            "mode": "development_apply",
+            "generated_at": _now(),
+            "data_root": str(data_root),
+            "temporary_backup_root": str(backup_root),
+            "temporary_backup_retired": False,
+            "sites": changed,
+            "post_verification": post,
+        }
+        shutil.rmtree(backup_root)
+        result["temporary_backup_retired"] = True
+        return result
+    except Exception:
+        for item in reversed(changed):
+            site_root = data_root / str(item["relative_path"])
+            source_db = site_root / "db" / "devices.db"
+            backup_db = Path(str(item["temporary_backup"]))
+            if backup_db.is_file():
+                temporary = source_db.with_name(f".{source_db.name}.history-retirement.restore.tmp")
+                _sqlite_backup(backup_db, temporary)
+                os.replace(temporary, source_db)
+            history_root = site_root / "db" / "history"
+            if item.get("history_directory_present_before") and not history_root.exists():
+                history_root.mkdir(parents=True, exist_ok=True)
+        shutil.rmtree(backup_root, ignore_errors=True)
+        raise
+
+
 def verify_production(data_root: Path) -> dict[str, Any]:
     data_root = data_root.resolve()
     sites = _registered_sites(data_root)
@@ -610,6 +724,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--candidate-root", type=Path, required=False)
     parser.add_argument("--backup-root", type=Path, required=False)
     parser.add_argument("--authorization", default="")
+    parser.add_argument(
+        "--development",
+        action="store_true",
+        help="apply 仅允许使用 D:\\NetConsoleData-dev，并使用短生命周期逐库备份",
+    )
     parser.add_argument("--output", type=Path, required=False)
     return parser
 
@@ -623,11 +742,15 @@ def main() -> int:
         result = verify_production(args.data_root)
     else:
         if args.authorization != AUTHORIZATION_TOKEN:
-            raise SystemExit("production apply requires --authorization LEGACY_HISTORY_RETIREMENT_AUTHORIZED")
+            raise SystemExit("apply requires --authorization LEGACY_HISTORY_RETIREMENT_AUTHORIZED")
         if args.candidate_root is None:
             raise SystemExit("apply requires --candidate-root")
-        backup_root = args.backup_root or Path("D:/study/backup/NetConsole/history-store-retirement") / datetime.now().strftime("%Y%m%d-%H%M%S")
-        result = apply(args.data_root, args.candidate_root, backup_root)
+        if args.development:
+            backup_root = args.backup_root or Path("D:/study/NetConsole/.local/tmp/history-store-retirement-dev") / datetime.now().strftime("%Y%m%d-%H%M%S")
+            result = apply_development(args.data_root, args.candidate_root, backup_root)
+        else:
+            backup_root = args.backup_root or Path("D:/study/backup/NetConsole/history-store-retirement") / datetime.now().strftime("%Y%m%d-%H%M%S")
+            result = apply(args.data_root, args.candidate_root, backup_root)
     output = args.output
     if output is not None:
         output.parent.mkdir(parents=True, exist_ok=True)

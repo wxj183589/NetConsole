@@ -10,14 +10,16 @@ Update All 不创建或读取 `<site>/db/history`，也不再写入 `history_out
 本文件描述仍保留的 maintenance-only 能力：旧 `*_history` 表、旧
 `HistoryStore` catalog/month shard 只可作为明确迁移或回滚证据读取，不能被
 运行时服务注入。`scripts/maintenance/retire_legacy_history_store.py` 是本次
-Production 退役的唯一物理删除入口，使用候选库、源 manifest、SQLite Backup
-API、quick/integrity check 和独立 rollback backup。
+退役的唯一物理删除入口，使用逐库候选、源 manifest、SQLite Backup API、
+quick/integrity check 和按环境控制的备份生命周期。
 
 Production `apply` 同时要求：精确数据根 `D:\NetConsoleData`、候选验证为
 `PASS`、源数据库和 history manifest 未变化，以及显式
-`LEGACY_HISTORY_RETIREMENT_AUTHORIZED` token。失败即停止并保留源；不允许
-猜测实体、静默删除未注册站点或触碰 tasks.db、Task Result Blob、MESH、Online
-MR、Ground、Artifact 和其他存储。
+`LEGACY_HISTORY_RETIREMENT_AUTHORIZED` token。开发 Authority 必须额外使用
+`--development`，只接受精确 `D:\NetConsoleData-dev`；仅保留逐库短生命周期
+备份，成功验证后立即退役该备份，并拒绝非空外部 HistoryStore。失败即停止并
+恢复已切换的数据库；不允许猜测实体、静默删除未注册站点或触碰 tasks.db、
+Task Result Blob、MESH、Online MR、Ground、Artifact 和其他存储。
 
 ## Inventory
 
@@ -60,9 +62,10 @@ Current/Recent 事实；脚本会跳过无法安全归属的行并在候选报�
 维护分类为 `site-database-maintenance`。本次脚本不在 Backend startup 中注册，
 必须由人工维护窗口显式调用；SiteRetention 的任务归档锁族仍保持原边界。
 
-唯一的退役命令为 `prepare`、`apply` 和 `verify`。`prepare` 只读源并创建隔离
-候选库；`apply` 需要显式 authorization，`verify` 只检查注册站点 Current/Recent
-和 history 目录状态。无人值守运行不调用这些命令。
+唯一的退役命令为 `prepare`、`apply` 和 `verify`。`prepare` 只读源并创建逐库
+隔离候选库；`apply` 需要显式 authorization，Production 使用默认模式，开发
+Authority 使用 `--development`；`verify` 只检查注册站点 Current/Recent 和
+history 目录状态。无人值守运行不调用这些命令。
 
 ```powershell
 $env:PYTHONPATH = "D:\study\worktrees\NetConsole\history-store-full-retirement\src;D:\study\worktrees\NetConsole\history-store-full-retirement"
@@ -74,6 +77,15 @@ $env:PYTHONPATH = "D:\study\worktrees\NetConsole\history-store-full-retirement\s
   --data-root "D:\NetConsoleData" `
   --candidate-root "D:\study\diagnostic\NetConsole\history-store-retirement\<run-id>" `
   --backup-root "D:\study\backup\NetConsole\history-store-retirement\<run-id>" `
+  --authorization LEGACY_HISTORY_RETIREMENT_AUTHORIZED
+
+# 开发 Authority：candidate/temporary backup 必须位于 D:\study\NetConsole\.local\tmp
+# 等任务临时目录；不得复制整个 Site 或非空 HistoryStore。
+& "D:\study\NetConsole\.venv\Scripts\python.exe" -m scripts.maintenance.retire_legacy_history_store apply `
+  --development `
+  --data-root "D:\NetConsoleData-dev" `
+  --candidate-root "D:\study\NetConsole\.local\tmp\history-store-retirement-dev\<run-id>" `
+  --backup-root "D:\study\NetConsole\.local\tmp\history-store-retirement-dev-backup\<run-id>" `
   --authorization LEGACY_HISTORY_RETIREMENT_AUTHORIZED
 ```
 

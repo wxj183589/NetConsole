@@ -88,7 +88,7 @@ Electron 的 `userData`、`sessionData`、`cache`、`logs`、`crashDumps` 和 `t
 ### 迁移与无人值守边界
 
 - 本次退役将四类外部 HistoryStore legacy rows 在候选 `devices.db` 中按时间排序回放为 Current + Recent10；Current 事实先保留，Recent10 只保留有效变化窗口。源行超出窗口的部分按用户授权丢弃，Production 物理回收前写入候选报告和独立 rollback backup。
-- 迁移只由 `scripts/maintenance/retire_legacy_history_store.py` 显式执行。`prepare` 只读 Production 源并使用 SQLite Backup API 构建候选库；`apply` 只接受精确 `D:\NetConsoleData`、来源 manifest 未变化、候选 quick/integrity check 通过和明确 authorization token。正常启动、安装、Update All 和无人值守任务不会调用它。
+- 迁移只由 `scripts/maintenance/retire_legacy_history_store.py` 显式执行。`prepare` 只读源并使用 SQLite Backup API 构建逐库候选；默认 `apply` 只接受精确 `D:\NetConsoleData`、来源 manifest 未变化、候选 quick/integrity check 通过和明确 authorization token。开发 Authority 使用显式 `--development` apply，仅接受精确 `D:\NetConsoleData-dev`，只保留逐库短生命周期备份，并拒绝需要复制非空外部 HistoryStore 的操作。正常启动、安装、Update All 和无人值守任务不会调用它。
 - `SERVER_UNATTENDED ACTIVE` 不改变运行时边界：没有 history drain，也不会创建 `db/history`。维护迁移和退役必须在独立维护窗口完成；任务、MESH、Online MR、Ground、Artifact retention 和未注册站点不在本次范围。
 
 Phase 2.1 收口了写入语义：`device_fact.uptime`、接口配置采集时间、LLDP `holdtime/ttl`、光衰 RX/TX/温度/电压/偏置电流，以及 FIT-AP Radio 的 usage/clients/tx_power 只作为 heartbeat payload，不参与普通 change fingerprint。设备/AP 身份、型号、版本、链路/邻居、channel/bandwidth、status/alarm、阈值和冲突状态仍在变化时立即记录。设备接口、设备 LLDP、设备光模块以及 FIT-AP Optical 已切换为 change-only；FIT-AP Optical 的 RX/TX 变化至少 0.20 dB 才计为连续量变化，并按资源保留最近 10 条。旧 legacy history 和已封存分片不自动清理，兼容查询只限制新链路返回窗口；FIT-AP Resource/Radio 等其他 kind 继续使用既有独立 sampling 周期。

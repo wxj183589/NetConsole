@@ -29,12 +29,12 @@
 
 以下入口不属于运行时消费者，不能被 Backend startup、普通采集、查询或导出调用：
 
-- `scripts/maintenance/retire_legacy_history_store.py`：候选库迁移、来源 manifest 校验、Production 授权退役和回滚备份。
+- `scripts/maintenance/retire_legacy_history_store.py`：逐库候选迁移、来源 manifest 校验、Production 授权退役和开发 Authority 的短生命周期退役；运行时不调用。
 - `src/netconsole/services/history_legacy_migration.py`、`src/netconsole/repositories/history_legacy_migration_repository.py`：既有 COPY/verify 维护审计。
 - `src/netconsole/repositories/history_store.py`、`src/netconsole/services/history_store.py`：维护工具和隔离测试使用的旧实现；无运行时 owner。
 - `src/netconsole/services/site_retention.py` 的 `TaskHistoryStore`：任务保留/归档维护路径，不是任务查询 fallback；当前任务结果 authority 缺失时查询直接失败关闭。
 
-维护入口不享有生产自动删除权限。只有本次显式退役脚本、精确 Production 根和授权 token 同时成立时，才允许删除已核验的注册站点 `db/history` 目录；`tasks.db`、Task Result Blob、MESH、Online MR、Ground、Artifact 和未注册站点不在删除范围。
+维护入口不享有自动删除权限。Production 只有本次显式退役脚本、精确 Production 根和授权 token 同时成立时，才允许删除已核验的注册站点 `db/history` 目录；开发 Authority 必须额外显式 `--development`，并且仅允许逐库短生命周期备份、拒绝非空外部 HistoryStore。`tasks.db`、Task Result Blob、MESH、Online MR、Ground、Artifact 和未注册站点不在删除范围。
 
 ## 验收断言
 
