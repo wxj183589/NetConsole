@@ -78,6 +78,27 @@ def _candidate(report: dict[str, object], name: str) -> dict[str, object]:
     )
 
 
+def _enable_legacy_dual_write_fixture(task_db: Path, *, reason: str) -> None:
+    """Seed the historical rollout state before testing typed retention."""
+    TaskResultRolloutService(task_db)
+    with sqlite3.connect(task_db) as connection:
+        connection.execute(
+            """
+            UPDATE task_result_storage_rollout
+            SET state='LEGACY_DUAL_FULL', revision=1,
+                updated_by='pytest-fixture', reason=?
+            WHERE singleton_id=1
+            """,
+            (reason,),
+        )
+        connection.commit()
+    TaskResultRolloutService(task_db).enable_dual_write(
+        expected_revision=1,
+        reason=reason,
+        updated_by="pytest",
+    )
+
+
 def test_scan_keeps_current_and_recent_rollbacks_but_deletes_old_version(
     tmp_path: Path,
 ) -> None:
@@ -480,10 +501,8 @@ def test_task_retention_preview_breaks_down_type_status_and_authority_result(
     paths, root = _site(tmp_path)
     task_db = root / "db" / "tasks.db"
     repository = TaskRepository(task_db)
-    TaskResultRolloutService(task_db).enable_dual_write(
-        expected_revision=1,
-        reason="typed retention authority fixture",
-        updated_by="pytest",
+    _enable_legacy_dual_write_fixture(
+        task_db, reason="typed retention authority fixture"
     )
     old_time = "2026-04-01T00:00:00Z"
     result = {"producer": "ac_fit_ap_resources_refresh", "rows": 500}
@@ -627,12 +646,7 @@ def test_typed_task_retention_exact_apply_preserves_active_mr_ground_and_artifac
 ) -> None:
     paths = _paths(tmp_path)
     task_db = tmp_path / "rehearsal" / "tasks.db"
-    rollout = TaskResultRolloutService(task_db)
-    rollout.enable_dual_write(
-        expected_revision=1,
-        reason="typed retention fixture",
-        updated_by="pytest",
-    )
+    _enable_legacy_dual_write_fixture(task_db, reason="typed retention fixture")
     repository = TaskRepository(task_db)
     old_time = "2026-01-01T00:00:00Z"
 
