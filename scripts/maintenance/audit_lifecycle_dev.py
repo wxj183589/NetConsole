@@ -518,7 +518,7 @@ def main() -> int:
     _write_json(output / REPORT_NAMES[0], tasks)
     _write_json(output / REPORT_NAMES[1], lldp)
     _write_json(output / REPORT_NAMES[2], history)
-    doc = Path(__file__).resolve().parents[2] / "docs" / "storage" / "LIFECYCLE_AUDIT_DEV.md"
+    doc = Path(__file__).resolve().parents[2] / "docs" / "investigations" / "LIFECYCLE_AUDIT_DEV.md"
     doc.write_text(_markdown(root, generated, tasks, lldp, history), encoding="utf-8")
     print(json.dumps({"reports": [str(output / name) for name in REPORT_NAMES], "document": str(doc), "WRITE_OPERATION_COUNT": 0}, ensure_ascii=False, indent=2))
     return 0

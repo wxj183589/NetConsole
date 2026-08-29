@@ -40,3 +40,4 @@
 1. 由负责人确认 producer、history cleanup job 和 result/artifact 引用的生命周期契约。
 2. 在 DEV COPY 建立按 collect_run/task 版本的增长基线，先做 COPY/verify 演练，再单独审批修复或清理。
 3. 本审计未执行清理、修复、压缩、迁移、删除或 schema 修改；等待负责人确认后再进入下一阶段。
+

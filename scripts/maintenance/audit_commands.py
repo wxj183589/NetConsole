@@ -36,6 +36,22 @@ EXPECTED_NON_COMMAND_LITERALS = {
         "display wlan ap unauthenticated failed",
     ),
     (
+        "src/netconsole/services/h3c_ac_collect_service.py",
+        "display wlan ap all connection-record output is not parseable",
+    ),
+    (
+        "src/netconsole/services/h3c_ac_collect_service.py",
+        "display wlan ap all connection-record failed",
+    ),
+    (
+        "src/netconsole/services/h3c_ac_collect_service.py",
+        "display wlan ap unauthenticated output is not parseable",
+    ),
+    (
+        "src/netconsole/repositories/ac_repository.py",
+        "display name fallback",
+    ),
+    (
         "src/netconsole/services/netmiko_connection.py",
         "display clock failed",
     ),

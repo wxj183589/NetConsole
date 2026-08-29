@@ -161,7 +161,7 @@
           "source_locations": ["src/netconsole/core/database.py", "src/netconsole/services/rail_transit/trackside_ap_business_query_service.py"]
         }
       ],
-      "source_locations": ["src/netconsole/core/database.py", "src/netconsole/core/device_credential_store.py", "src/netconsole/repositories/device_repository.py", "src/netconsole/repositories/rail_transit_base_data_repository.py", "src/netconsole/services/ac/query_service.py", "src/netconsole/services/device_compatibility/service.py", "src/netconsole/services/device_detail_query_service.py", "src/netconsole/services/rail_transit/base_data_query_service.py", "src/netconsole/services/rail_transit/station_source_discovery_service.py", "scripts/maintenance/backfill_trackside_ap_station_identity.py", "scripts/maintenance/migrate_device_history.py", "scripts/maintenance/test_rail_transit_base_data_apply.py", "scripts/maintenance/test_trackside_ap_plan_endpoint_stability.py", "scripts/maintenance/upgrade_ap_extension_schema.py", "scripts/maintenance/validate_history_provenance.py"]
+      "source_locations": ["src/netconsole/core/database.py", "src/netconsole/core/device_credential_store.py", "src/netconsole/repositories/device_repository.py", "src/netconsole/repositories/rail_transit_base_data_repository.py", "src/netconsole/services/ac/query_service.py", "src/netconsole/services/device_compatibility/service.py", "src/netconsole/services/device_detail_query_service.py", "src/netconsole/services/rail_transit/base_data_query_service.py", "src/netconsole/services/rail_transit/station_source_discovery_service.py", "scripts/maintenance/backfill_trackside_ap_station_identity.py", "scripts/maintenance/migrate_device_history.py", "scripts/maintenance/test_rail_transit_base_data_apply.py", "scripts/maintenance/test_trackside_ap_plan_endpoint_stability.py", "scripts/maintenance/upgrade_ap_extension_schema.py", "scripts/maintenance/validate_history_provenance.py", "scripts/maintenance/audit_lifecycle_dev.py"]
     },
     {
       "id": "site.history.catalog",
@@ -242,7 +242,7 @@
       "backup_policy": "revision-aware bounded rollback",
       "migration_policy": "TaskResult rollout guard and owner lifecycle plan",
       "schema_version": "task_schema_meta",
-      "database_name_patterns": ["tasks.db", "*.tasks.compact.candidate.db", "*.vacuum.db"],
+      "database_name_patterns": ["tasks.db", "*.tasks.compact.candidate.db", "*.vacuum.db", "source.tasks.db", "candidate.tasks.db", "tasks.compact.candidate.db"],
       "allowed_data_classes": ["OPERATIONAL_CURRENT", "HISTORICAL_RAW_FACT"],
       "forbidden_data_classes": ["ARTIFACT_OR_RAW_FILE", "CACHE_REBUILDABLE", "STAGING_TEMPORARY"],
       "table_rules": [
@@ -267,7 +267,7 @@
           "source_locations": ["src/netconsole/repositories/task_repository.py", "src/netconsole/repositories/task_result_blob_repository.py", "src/netconsole/repositories/history_store.py", "src/netconsole/services/job_center/query_service.py", "src/netconsole/services/job_center/task_cleanup_service.py", "src/netconsole/services/site_retention.py", "src/netconsole/services/site_sync.py", "scripts/maintenance/task_result_maintenance.py", "scripts/maintenance/audit_tasks_db_space.py", "scripts/maintenance/audit_task_storage_integrity.py", "scripts/maintenance/migrate_task_result_blobs.py", "scripts/maintenance/compact_task_result_storage.py", "scripts/maintenance/close_task_result_ref_only.py", "scripts/maintenance/compact_task_result_production.py"]
         }
       ],
-      "source_locations": ["src/netconsole/repositories/task_repository.py", "src/netconsole/repositories/task_result_blob_repository.py", "src/netconsole/services/job_center/task_application_service.py", "src/netconsole/services/job_center/query_service.py", "src/netconsole/services/job_center/task_cleanup_service.py", "src/netconsole/services/site_retention.py", "src/netconsole/services/site_sync.py", "scripts/maintenance/check_online_mr_session_state.py", "scripts/maintenance/manage_task_result_rollout.py", "scripts/maintenance/profile_tasks_db.py", "scripts/maintenance/task_result_maintenance.py", "scripts/maintenance/audit_tasks_db_space.py", "scripts/maintenance/audit_task_storage_integrity.py", "scripts/maintenance/migrate_task_result_blobs.py", "scripts/maintenance/compact_task_result_storage.py", "scripts/maintenance/close_task_result_ref_only.py", "scripts/maintenance/compact_task_result_production.py"]
+      "source_locations": ["src/netconsole/repositories/task_repository.py", "src/netconsole/repositories/task_result_blob_repository.py", "src/netconsole/services/job_center/task_application_service.py", "src/netconsole/services/job_center/query_service.py", "src/netconsole/services/job_center/task_cleanup_service.py", "src/netconsole/services/site_retention.py", "src/netconsole/services/site_sync.py", "scripts/maintenance/check_online_mr_session_state.py", "scripts/maintenance/manage_task_result_rollout.py", "scripts/maintenance/profile_tasks_db.py", "scripts/maintenance/task_result_maintenance.py", "scripts/maintenance/audit_tasks_db_space.py", "scripts/maintenance/audit_task_storage_integrity.py", "scripts/maintenance/migrate_task_result_blobs.py", "scripts/maintenance/compact_task_result_storage.py", "scripts/maintenance/close_task_result_ref_only.py", "scripts/maintenance/compact_task_result_production.py", "scripts/maintenance/analyze_task_payloads_dev.py", "scripts/maintenance/audit_lifecycle_dev.py", "scripts/maintenance/tasks_db_compaction.py"]
     },
     {
       "id": "site.agents",
@@ -387,7 +387,7 @@
           "source_locations": ["src/netconsole/repositories/ground_unattended_repository.py"]
         }
       ],
-      "source_locations": ["src/netconsole/repositories/ground_unattended_repository.py", "src/netconsole/services/ground_unattended/supervisor.py", "src/netconsole/services/ground_unattended/application_service.py"]
+      "source_locations": ["src/netconsole/repositories/ground_unattended_repository.py", "src/netconsole/services/ground_unattended/supervisor.py", "src/netconsole/services/ground_unattended/application_service.py", "scripts/maintenance/tasks_db_compaction.py"]
     },
     {
       "id": "site.ground.active_raw",
@@ -504,7 +504,7 @@
           "source_locations": ["src/netconsole/repositories/mesh_mr_repository.py", "src/netconsole/services/mesh_parsed_rebuild_service.py", "src/netconsole/services/mesh_peer_mapping_service.py"]
         }
       ],
-      "source_locations": ["src/netconsole/repositories/mesh_mr_repository.py", "src/netconsole/services/mesh_analysis_report.py", "src/netconsole/services/mesh_derived_data_maintenance_service.py", "src/netconsole/services/mesh_parsed_rebuild_service.py", "src/netconsole/services/mesh_report_process.py", "src/netconsole/services/mesh_source_rebuild_service.py", "src/netconsole/services/mesh_bundle_import_service.py", "src/netconsole/services/rail_transit/mesh_analysis_query_service.py", "scripts/maintenance/remap_mesh_identity.py"]
+      "source_locations": ["src/netconsole/repositories/mesh_mr_repository.py", "src/netconsole/services/mesh_analysis_report.py", "src/netconsole/services/mesh_derived_data_maintenance_service.py", "src/netconsole/services/mesh_parsed_rebuild_service.py", "src/netconsole/services/mesh_report_process.py", "src/netconsole/services/mesh_source_rebuild_service.py", "src/netconsole/services/mesh_bundle_import_service.py", "src/netconsole/services/rail_transit/mesh_analysis_query_service.py", "scripts/maintenance/remap_mesh_identity.py", "scripts/maintenance/analyze_task_payloads_dev.py"]
     },
     {
       "id": "site.mesh.legacy_analysis",

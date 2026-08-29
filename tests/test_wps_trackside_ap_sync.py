@@ -1182,19 +1182,19 @@ def test_workbook_dto_emits_stable_layout_types_for_real_business_columns(
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "轨旁AP业务"
-    sheet.append([f"字段{index}" for index in range(1, 17)])
-    sheet.append([f"值{index}" for index in range(1, 17)])
-    for column in range(1, 17):
+    sheet.append([f"字段{index}" for index in range(1, 15)])
+    sheet.append([f"值{index}" for index in range(1, 15)])
+    for column in range(1, 15):
         sheet.column_dimensions[chr(64 + column)].width = 18
     workbook.save(path)
     workbook.close()
 
     dto = workbook_dto_from_xlsx(path, include_format_mirror=True).sheets[0]
 
-    assert dto.auto_fit_columns == tuple(chr(64 + column) for column in range(1, 17))
+    assert dto.auto_fit_columns == tuple(chr(64 + column) for column in range(1, 15))
     assert dto.column_layouts["G"]["layout_type"] == "identifier"
     assert dto.column_layouts["L"]["layout_type"] == "datetime"
-    assert dto.column_layouts["P"] == {
+    assert dto.column_layouts["N"] == {
         "layout_type": "long_text",
         "min_width": 16.0,
         "max_width": 48.0,

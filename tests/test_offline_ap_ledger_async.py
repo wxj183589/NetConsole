@@ -103,7 +103,9 @@ def test_offline_ledger_is_simplified_and_prefers_device_station(tmp_path):
         "ap_mac",
         "serial_number",
         "ap_status",
-        "offline_at",
+        "last_online_time",
+        "offline_time",
+        "connection_state",
         "historical_switch_name",
         "historical_switch_interface",
     ]
@@ -111,7 +113,7 @@ def test_offline_ledger_is_simplified_and_prefers_device_station(tmp_path):
     assert "offline_with_optical" not in stats
     assert ledger[0]["ap_name"] == "AP-OFF"
     assert ledger[0]["ap_mac"] == "0011-2233-4455"
-    assert ledger[0]["ap_status"] == "Idle"
+    assert ledger[0]["ap_status"] == "Offline"
     assert ledger[0]["site"] == "Device DB Site"
     assert ledger[0]["historical_switch_name"] == "SW-1"
     assert ledger[0]["historical_switch_interface"] == "GigabitEthernet1/0/1"
@@ -155,6 +157,7 @@ def test_offline_ledger_offline_at_uses_current_offline_period_and_sorts():
             "ap_name": "AP-A1",
             "ap_mac": "00aa-bbcc-0001",
             "serial_number": "SN-A1",
+            "site": "A",
             "state_raw": "R/M",
             "collected_at": "2026-06-30 08:00:00",
         },
@@ -163,6 +166,7 @@ def test_offline_ledger_offline_at_uses_current_offline_period_and_sorts():
             "ap_name": "AP-A1",
             "ap_mac": "00aa-bbcc-0001",
             "serial_number": "SN-A1",
+            "site": "A",
             "state_raw": "Idle",
             "collected_at": "2026-06-30 09:00:00",
         },
@@ -171,6 +175,7 @@ def test_offline_ledger_offline_at_uses_current_offline_period_and_sorts():
             "ap_name": "AP-A2",
             "ap_mac": "00aa-bbcc-0003",
             "serial_number": "SN-A2",
+            "site": "A",
             "state_raw": "Idle",
             "collected_at": "2026-06-30 07:00:00",
         },
@@ -179,6 +184,7 @@ def test_offline_ledger_offline_at_uses_current_offline_period_and_sorts():
             "ap_name": "AP-B",
             "ap_mac": "00aa-bbcc-0002",
             "serial_number": "SN-B",
+            "site": "B",
             "state_raw": "R/M",
             "collected_at": "2026-06-30 06:00:00",
         },
@@ -187,6 +193,7 @@ def test_offline_ledger_offline_at_uses_current_offline_period_and_sorts():
             "ap_name": "AP-B",
             "ap_mac": "00aa-bbcc-0002",
             "serial_number": "SN-B",
+            "site": "B",
             "state_raw": "Idle",
             "collected_at": "2026-06-30 11:00:00",
         },

@@ -169,5 +169,9 @@
   {"path":"tests/test_task_result_rollout.py","classification":"TEST_ONLY","owner":"test","reason":"task result rollout tests use temporary SQLite fixtures."},
   {"path":"tests/test_close_task_result_ref_only.py","classification":"TEST_ONLY","owner":"test","reason":"ref-only task result closure tests use temporary SQLite fixtures and never open production data."},
   {"path":"tests/test_compact_task_result_production.py","classification":"TEST_ONLY","owner":"test","reason":"production compaction gate tests use temporary SQLite fixtures and monkeypatch the production root; no production data is opened."},
-  {"path":"tests/test_validate_history_provenance.py","classification":"TEST_ONLY","owner":"test","reason":"history provenance tests use temporary SQLite fixtures."}
+  {"path":"tests/test_validate_history_provenance.py","classification":"TEST_ONLY","owner":"test","reason":"history provenance tests use temporary SQLite fixtures."},
+  {"path":"scripts/maintenance/analyze_task_payloads_dev.py","classification":"READ_ONLY_DATA_GATEWAY","owner":"job-center","reason":"DEV COPY payload analysis uses mode=ro SQLite connections and only emits an audit report."},
+  {"path":"scripts/maintenance/audit_lifecycle_dev.py","classification":"READ_ONLY_DATA_GATEWAY","owner":"storage","reason":"DEV COPY lifecycle audit uses mode=ro SQLite connections and never mutates the data root."},
+  {"path":"scripts/maintenance/tasks_db_compaction.py","classification":"MIGRATION_TOOL","owner":"job-center","reason":"DEV-only candidate-first tasks.db compaction uses isolated copies, parity checks and atomic replacement; it never opens production data."},
+  {"path":"tests/test_tasks_db_compaction.py","classification":"TEST_ONLY","owner":"test","reason":"tasks.db compaction tests construct isolated SQLite fixtures only."}
 ]

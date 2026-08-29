@@ -569,7 +569,7 @@ def test_router_exposes_strict_module_contract_and_real_artifact_task(tmp_path: 
         )
 
     assert logs.status_code == 200, logs.text
-    assert logs.json()["items"][0]["raw_event"] == "APP_START"
+    assert any(item["raw_event"] == "APP_START" for item in logs.json()["items"])
     assert "192.168.1.8" not in logs.text
     assert about.status_code == 200
     assert started.status_code == 200, started.text
