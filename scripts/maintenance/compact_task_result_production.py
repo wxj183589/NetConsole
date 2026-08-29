@@ -552,7 +552,7 @@ def apply_compaction_plan(
         "backup": backup_record,
         "physical_bytes_before": int(source_before["profile"]["physical_bytes"]),
         "physical_bytes_after": int(after["profile"]["physical_bytes"]),
-        "reclaimed_bytes": int(expected_snapshot["profile"]["physical_bytes"])
+        "reclaimed_bytes": int(source_before["profile"]["physical_bytes"])
         - int(after["profile"]["physical_bytes"]),
         "page_size": int(after["profile"]["page_size"]),
         "page_count": int(after["profile"]["page_count"]),
