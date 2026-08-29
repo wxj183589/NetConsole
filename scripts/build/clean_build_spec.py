@@ -70,6 +70,10 @@ PACKAGED_BUILD_INFO_SOURCE = "resources/runtime/build_info.json"
 PACKAGED_FEATURE_FLAGS_SOURCE = "resources/runtime/feature_flags.json"
 PACKAGED_BUILD_METADATA_SOURCE = "resources/runtime/build-metadata.json"
 PACKAGED_DEVICE_COMMAND_PROFILE_OPERATION = "device.inventory.collect"
+RUNTIME_DYNAMIC_IMPORTS = (
+    "uvicorn.loops.auto",
+    "uvicorn.loops.asyncio",
+)
 APPROVED_DISTRIBUTIONS_PATH = (
     ROOT / "config" / "pyinstaller-approved-distributions.json"
 )
@@ -289,7 +293,9 @@ VERSION_INFO_FILE = BUILD_ROOT / "version_info.txt"
 
 def scan_import_graph() -> list[str]:
     return sorted(
-        set(build_runtime_module_map()) | set(build_direct_runtime_hidden_imports())
+        set(build_runtime_module_map())
+        | set(build_direct_runtime_hidden_imports())
+        | set(RUNTIME_DYNAMIC_IMPORTS)
     )
 
 

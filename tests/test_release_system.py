@@ -505,6 +505,8 @@ def test_clean_build_spec_scans_runtime_import_graph():
         "netconsole.launcher.launcher",
         "netconsole.launcher.runtime_supervisor",
         "netconsole.launcher.web_server",
+        "uvicorn.loops.auto",
+        "uvicorn.loops.asyncio",
     } <= set(imports)
     assert not any(
         item == "netconsole.ui" or item.startswith("netconsole.ui.") for item in imports
