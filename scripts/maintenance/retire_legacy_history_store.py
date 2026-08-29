@@ -36,6 +36,7 @@ LEGACY_KINDS = (
     "fit_ap_unauthenticated",
     "station_online_summary",
 )
+LEGACY_RUNTIME_TABLES = ("history_outbox", "history_state")
 SITE_REGISTRY_NAME = "site_registry.json"
 REPORT_SCHEMA_VERSION = 1
 BUSINESS_CURRENT_TABLES = (
@@ -313,12 +314,27 @@ def _current_counts(conn: sqlite3.Connection) -> dict[str, int]:
     return result
 
 
+def _retire_legacy_runtime_tables(conn: sqlite3.Connection) -> dict[str, int]:
+    """Drop only the two tables owned exclusively by the retired HistoryStore."""
+    removed: dict[str, int] = {}
+    for table in LEGACY_RUNTIME_TABLES:
+        if not _table_exists(conn, table):
+            removed[table] = 0
+            continue
+        removed[table] = int(conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0])
+        conn.execute(f'DROP TABLE "{table}"')
+    return removed
+
+
 def _verify_candidate(path: Path) -> dict[str, Any]:
     database = Database(path)
     with database.connect_readonly() as conn:
         quick_check = str(conn.execute("PRAGMA quick_check").fetchone()[0])
         integrity_check = str(conn.execute("PRAGMA integrity_check").fetchone()[0])
         counts = _current_counts(conn)
+        legacy_runtime_tables = [
+            table for table in LEGACY_RUNTIME_TABLES if _table_exists(conn, table)
+        ]
         limits = {
             "fit_ap_resource": int(
                 conn.execute(
@@ -356,8 +372,10 @@ def _verify_candidate(path: Path) -> dict[str, Any]:
         if quick_check.lower() == "ok"
         and integrity_check.lower() == "ok"
         and max(limits.values(), default=0) <= MAX_RECENT_PER_RESOURCE
+        and not legacy_runtime_tables
         and not history_dir.exists()
         else "FAIL",
+        "legacy_runtime_tables": legacy_runtime_tables,
     }
 
 
@@ -399,6 +417,7 @@ def prepare(data_root: Path, candidate_root: Path) -> dict[str, Any]:
         Database(candidate_db).initialize()
         with Database(candidate_db).connect() as conn:
             stats = _replay_events(conn, events)
+            legacy_runtime_tables_removed = _retire_legacy_runtime_tables(conn)
             conn.execute(
                 "INSERT INTO schema_metadata(key,value,created_at,updated_at) VALUES ('history_store_authority','retired',?,?) "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
@@ -428,6 +447,8 @@ def prepare(data_root: Path, candidate_root: Path) -> dict[str, Any]:
             "legacy_rows_discarded": max(0, source_rows - recent_rows),
             **stats,
             "verification": verification,
+            "legacy_runtime_tables_removed": legacy_runtime_tables_removed,
+            "legacy_runtime_rows_discarded": sum(legacy_runtime_tables_removed.values()),
         }
         report["sites"].append(item)
         if verification["status"] != "PASS":

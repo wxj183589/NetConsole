@@ -10,6 +10,8 @@ History Storage V2 是已退役的月分片候选格式，不再是运行时写�
   `devices.db` 的 Current/Recent10 模型。
 - 既有 `history_events` V1 表不重写、不删除，V1-only 和同月 V1/V2 mixed shard 均继续可读。
 - `event_type=legacy` 的迁移副本仍不进入普通历史查询；源 legacy table 只在显式维护迁移期间读取。
+- 旧 `history_outbox`/`history_state` 仅属于 HistoryStore 生命周期；候选迁移完成后删除这两个内部表，
+  不删除仍承担 bounded Current/Recent10 语义的专用 `*_history` 表。
 - 已验证且无错误的单个源表只能在隔离候选库中执行维护工具验证；正式运行时不切换为
   shard 查询事实源，也不保留 HistoryStore 作为业务 fallback。
 - Production 删除由独立的 candidate/apply/verify 工具按显式授权完成；该工具只迁移

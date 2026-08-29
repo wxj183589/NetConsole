@@ -19,7 +19,7 @@
 | 入口 | 退役前 | 退役后 |
 | --- | --- | --- |
 | Backend startup / lifespan | 创建 `HistoryStore`、启动 drain、运行时排空 outbox | 不创建、不 drain；health 仅报告 `history_status=retired` |
-| `devices.db` current write | current + `history_outbox` / HistoryStore 事件 | current + 同一事务中的 Current/Recent10 projection |
+| `devices.db` current write | current + `history_outbox` / HistoryStore 事件 | current + 同一事务中的 Current/Recent10 projection；候选迁移删除旧 outbox/state |
 | AC / Device history query | legacy table、outbox、HistoryStore shard 合并 | 只读本地 Current/Recent10；超出窗口不回溯旧源 |
 | Task Center event/result | `TaskHistoryStore` archived event/result fallback | 只读 `tasks.db` current authority；缺失时 fail closed |
 | Trackside AP / export | 可能经 Repository 间接使用旧历史 fallback | 经 Repository 使用新模型；不直接访问 `db/history` |
@@ -39,7 +39,7 @@
 ## 验收断言
 
 - 运行时代码不存在四类 legacy HistoryStore writer、reader 或 fallback。
-- `history_outbox` 不再由新运行时写入；旧表只作为显式维护输入证据。
+- `history_outbox`/`history_state` 不再由新运行时写入；候选迁移只按精确表名删除这两个旧内部表，其他 bounded `*_history` 表不受影响。
 - 9 个注册站点的 `db/history` 均不存在，`catalog.db` 和月分片数量均为 0。
 - 新建站点并执行初始化、Current 写入和查询后，仍不存在 `db/history`。
 - Current 事实不因物理退役丢失；每个资源的 Recent10 上限为 10，未变化 heartbeat 不产生新记录。
