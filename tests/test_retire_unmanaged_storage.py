@@ -77,6 +77,25 @@ def test_retirement_plan_apply_verifies_hash_and_manifest(tmp_path: Path) -> Non
     )
 
 
+def test_retirement_plan_apply_accepts_zero_byte_candidate(tmp_path: Path) -> None:
+    root = tmp_path / "NetConsoleData"
+    root.mkdir()
+    (root / "runtime_mode.json").write_bytes(b"")
+    spec = _spec(root / "runtime_mode.json")
+    destination = tmp_path / "NetConsoleData-retired-20260829-010206"
+    plan = build_retirement_plan(root, spec, destination, generated_at="2026-08-29T01:02:03Z")
+    plan_path = write_retirement_plan(plan, tmp_path / "plan.json")
+
+    result = apply_retirement_plan(
+        plan_path,
+        expected_plan_digest=plan["plan_digest"],
+        retired_at="2026-08-29T01:03:00Z",
+    )
+
+    assert result["retired_files"] == 1
+    assert (destination / "runtime_mode.json").read_bytes() == b""
+
+
 def test_retirement_rejects_path_traversal_and_unknown(tmp_path: Path) -> None:
     root = tmp_path / "NetConsoleData"
     root.mkdir()

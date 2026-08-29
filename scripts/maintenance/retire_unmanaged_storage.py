@@ -353,8 +353,14 @@ def apply_retirement_plan(
             if _is_reparse_or_symlink(source) or not source.is_file():
                 raise StorageRetirementError(f"retirement source changed or disappeared: {source}")
             stat = source.stat()
-            expected_size = int(item.get("size_bytes") or -1)
-            expected_mtime_ns = int(item.get("mtime_ns") or -1)
+            expected_size_value = item.get("size_bytes")
+            expected_mtime_value = item.get("mtime_ns")
+            expected_size = int(
+                expected_size_value if expected_size_value is not None else -1
+            )
+            expected_mtime_ns = int(
+                expected_mtime_value if expected_mtime_value is not None else -1
+            )
             expected_sha256 = str(item.get("sha256") or "")
             if (
                 stat.st_size != expected_size
