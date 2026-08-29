@@ -10,10 +10,12 @@ fails.
 from __future__ import annotations
 
 import argparse
+import gc
 import hashlib
 import json
 import os
 import sqlite3
+import time
 import uuid
 from contextlib import closing
 from datetime import UTC, datetime
@@ -260,8 +262,13 @@ def _snapshot(site_id: str, path: Path, data_root: Path) -> dict[str, Any]:
 
 def _logical(snapshot: Mapping[str, Any]) -> dict[str, Any]:
     profile = snapshot["profile"]
+    schema = dict(profile["schema"])
+    # VACUUM INTO rebuilds sqlite_master and therefore may advance the
+    # connection-local schema_version.  user_version and the normalized DDL
+    # digest remain the protected schema contract.
+    schema.pop("schema_version", None)
     return {
-        "schema": profile["schema"],
+        "schema": schema,
         "tables": profile["tables"],
         "authority_digest": profile["authority_digest"],
         "task_result_rows": profile["task_result_rows"],
@@ -269,6 +276,24 @@ def _logical(snapshot: Mapping[str, Any]) -> dict[str, Any]:
         "canonical_bytes": profile["canonical_bytes"],
         "audit": snapshot["audit"],
     }
+
+
+def _cleanup_candidate(path: Path) -> None:
+    """Best-effort cleanup for a candidate after every validation path."""
+
+    targets = [
+        path.with_name(f"{path.name}-wal"),
+        path.with_name(f"{path.name}-shm"),
+        path,
+    ]
+    for target in targets:
+        for _ in range(5):
+            try:
+                target.unlink(missing_ok=True)
+                break
+            except PermissionError:
+                gc.collect()
+                time.sleep(0.2)
 
 
 def _candidate_path(root: Path, operation_id: str) -> Path:
@@ -378,15 +403,18 @@ def _build_candidate(source: Path, candidate: Path) -> None:
         vacuumed.unlink(missing_ok=True)
 
 
-def _remove_zero_sidecars(path: Path) -> None:
-    for sidecar in (
-        path.with_name(f"{path.name}-wal"),
-        path.with_name(f"{path.name}-shm"),
-    ):
-        if sidecar.is_file():
-            if sidecar.stat().st_size:
-                raise TaskResultCompactionError(f"non-empty SQLite sidecar: {sidecar}")
-            sidecar.unlink()
+def _remove_inactive_sidecars(path: Path) -> None:
+    """Remove sidecars only after proving there is no WAL to preserve."""
+
+    wal = path.with_name(f"{path.name}-wal")
+    shm = path.with_name(f"{path.name}-shm")
+    if wal.is_file() and wal.stat().st_size:
+        raise TaskResultCompactionError(f"non-empty SQLite WAL sidecar: {wal}")
+    # A non-empty -shm can remain after a WAL has been fully checkpointed.  It
+    # is shared-memory metadata, not durable database content; with writers
+    # stopped and no WAL present it must not block candidate replacement.
+    wal.unlink(missing_ok=True)
+    shm.unlink(missing_ok=True)
 
 
 def _restore(backup: Path, destination: Path) -> None:
@@ -397,7 +425,7 @@ def _restore(backup: Path, destination: Path) -> None:
     ) as target_connection:
         source_connection.backup(target_connection)
         target_connection.commit()
-    _remove_zero_sidecars(destination)
+    _remove_inactive_sidecars(destination)
     os.replace(temporary, destination)
     temporary.unlink(missing_ok=True)
 
@@ -470,7 +498,12 @@ def apply_compaction_plan(
                 expected_snapshot["profile"]["physical_bytes"]
             ):
                 raise TaskResultCompactionError("TASK_COMPACT_NO_PHYSICAL_RECLAIM")
-            _remove_zero_sidecars(source)
+            # sqlite3 connections created by the read-only validation helpers
+            # are closed by their context managers.  Collect any finalizer
+            # references before Windows' atomic rename, which rejects a
+            # candidate that still has an open native handle.
+            gc.collect()
+            _remove_inactive_sidecars(source)
             os.replace(candidate, source)
             switched = True
             after = _snapshot(str(raw["site_id"]), source, root)
@@ -486,7 +519,7 @@ def apply_compaction_plan(
                 ) from restore_error
         raise exc
     finally:
-        candidate.unlink(missing_ok=True)
+        _cleanup_candidate(candidate)
         try:
             candidate.parent.rmdir()
         except OSError:
