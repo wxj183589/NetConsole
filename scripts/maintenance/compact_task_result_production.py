@@ -278,6 +278,23 @@ def _logical(snapshot: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _snapshot_matches(actual: Mapping[str, Any], expected: Mapping[str, Any]) -> bool:
+    """Compare durable source state while ignoring read-only SQLite sidecars."""
+
+    def contract(snapshot: Mapping[str, Any]) -> dict[str, Any]:
+        state = dict(snapshot["state"])
+        state.pop("shm_bytes", None)
+        profile = dict(snapshot["profile"])
+        profile.pop("physical_bytes", None)
+        return {
+            "state": state,
+            "profile": profile,
+            "audit": snapshot["audit"],
+        }
+
+    return contract(actual) == contract(expected)
+
+
 def _cleanup_candidate(path: Path) -> None:
     """Best-effort cleanup for a candidate after every validation path."""
 
@@ -473,8 +490,9 @@ def apply_compaction_plan(
     if not isinstance(expected_snapshot, Mapping):
         raise TaskResultCompactionError("compaction source snapshot is missing")
     current = _snapshot(str(raw["site_id"]), source, root)
-    if current != expected_snapshot:
+    if not _snapshot_matches(current, expected_snapshot):
         raise TaskResultCompactionError("STALE_SOURCE: target tasks.db changed after preview")
+    source_before = current
     backup_record = _backup(source, backup)
     operation_id = (
         f"task-result-compact-{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}-"
@@ -488,14 +506,15 @@ def apply_compaction_plan(
             resolver, site_database_maintenance_key(str(raw["site_id"]))
         ):
             current = _snapshot(str(raw["site_id"]), source, root)
-            if current != expected_snapshot:
+            if not _snapshot_matches(current, expected_snapshot):
                 raise TaskResultCompactionError("STALE_SOURCE: target changed before candidate build")
+            source_before = current
             _build_candidate(source, candidate)
             candidate_snapshot = _snapshot(str(raw["site_id"]), candidate, root)
             if _logical(candidate_snapshot) != _logical(expected_snapshot):
                 raise TaskResultCompactionError("TASK_COMPACT_LOGICAL_PARITY_FAILED")
             if int(candidate_snapshot["profile"]["physical_bytes"]) >= int(
-                expected_snapshot["profile"]["physical_bytes"]
+                source_before["profile"]["physical_bytes"]
             ):
                 raise TaskResultCompactionError("TASK_COMPACT_NO_PHYSICAL_RECLAIM")
             # sqlite3 connections created by the read-only validation helpers
@@ -531,7 +550,7 @@ def apply_compaction_plan(
         "database": str(source),
         "compacted": True,
         "backup": backup_record,
-        "physical_bytes_before": int(expected_snapshot["profile"]["physical_bytes"]),
+        "physical_bytes_before": int(source_before["profile"]["physical_bytes"]),
         "physical_bytes_after": int(after["profile"]["physical_bytes"]),
         "reclaimed_bytes": int(expected_snapshot["profile"]["physical_bytes"])
         - int(after["profile"]["physical_bytes"]),
