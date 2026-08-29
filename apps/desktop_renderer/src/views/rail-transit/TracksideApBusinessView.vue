@@ -219,6 +219,9 @@ const onlineStatusColumns: NcTableColumn<TracksideApOnlineStatusRow>[] = [
   { key: 'actual_online_count', label: '实际在线', valueType: 'number', width: 110 },
   { key: 'offline_count', label: '离线', valueType: 'number', width: 90 },
   { key: 'online_rate', label: '上线率', valueType: 'number', width: 100, displayValue: (row) => formatOnlineRate(row.online_rate) },
+  { key: 'reonline_count', label: '再上线数', valueType: 'number', width: 110, displayValue: (row) => String(row.reonline_count ?? 0) },
+  { key: 'reonline_rate', label: '再上线率', valueType: 'number', width: 110, displayValue: (row) => formatOnlineRate(row.reonline_rate ?? null) },
+  { key: 'optical_problem_count', label: '光衰问题数', valueType: 'number', width: 120, displayValue: (row) => String(row.optical_problem_count ?? 0) },
   { key: 'status', label: '状态', valueType: 'status', width: 150, displayValue: (row) => onlineStatusLabel(row) },
   { key: 'warning', label: '告警', valueType: 'description', minWidth: 280, align: 'left', alignmentReason: 'long-text', showOverflowTooltip: true },
 ]
@@ -277,6 +280,8 @@ const onlineOverviewValues = computed(() => ({
   unmatchedOnline: onlineStatus.value?.fit_ap_unmatched_online_count ?? page.value?.fit_ap_unmatched_online_count,
   offline: onlineStatus.value?.fit_ap_offline_total_count ?? page.value?.fit_ap_offline_total_count,
   unknown: onlineStatus.value?.fit_ap_unknown_total_count ?? page.value?.fit_ap_unknown_total_count,
+  reonline: onlineStatus.value?.reonline_count ?? 0,
+  opticalProblem: onlineStatus.value?.optical_problem_count ?? 0,
 }))
 const onlineOverviewRate = computed(() => {
   const rate = onlineStatus.value?.online_rate
@@ -310,6 +315,9 @@ const onlineStatusSummary = computed(() => {
     actualOnlineCount: status.actual_online_count,
     offlineCount: status.offline_count,
     onlineRate: status.online_rate,
+    reonlineCount: status.reonline_count ?? 0,
+    reonlineRate: status.reonline_rate ?? null,
+    opticalProblemCount: status.optical_problem_count ?? 0,
     stationCount: status.scope_station_count ?? status.items.length,
   }
 })
@@ -327,6 +335,9 @@ function onlineStatusSummaryMethod({ columns }: { columns: Array<{ property: str
     if (column.property === 'actual_online_count') return String(status.actual_online_count)
     if (column.property === 'offline_count') return String(status.offline_count)
     if (column.property === 'online_rate') return formatOnlineRate(status.online_rate)
+    if (column.property === 'reonline_count') return String(status.reonline_count ?? 0)
+    if (column.property === 'reonline_rate') return formatOnlineRate(status.reonline_rate ?? null)
+    if (column.property === 'optical_problem_count') return String(status.optical_problem_count ?? 0)
     if (column.property === 'status') {
       const presentation = onlineStatusOverallPresentation(status)
       return h(ElTag, { type: presentation.tagType }, presentation.label)
@@ -1146,6 +1157,9 @@ onBeforeUnmount(() => {
           <span><small>实际在线</small><b>{{ onlineStatusSummary.actualOnlineCount }}</b></span>
           <span :class="{ 'online-status-summary-offline': onlineStatusSummary.offlineCount > 0 }"><small>离线</small><b>{{ onlineStatusSummary.offlineCount }}</b></span>
           <span><small>上线率</small><b>{{ formatOnlineRate(onlineStatusSummary.onlineRate) }}</b></span>
+          <span><small>再上线数</small><b>{{ onlineStatusSummary.reonlineCount }}</b></span>
+          <span><small>再上线率</small><b>{{ formatOnlineRate(onlineStatusSummary.reonlineRate) }}</b></span>
+          <span><small>光衰问题数</small><b>{{ onlineStatusSummary.opticalProblemCount }}</b></span>
           <span><small>站点</small><b>{{ onlineStatusSummary.stationCount }}</b></span>
         </div>
         <el-alert v-if="onlineStatusError" :title="onlineStatusError" type="warning" show-icon :closable="false" />
@@ -1162,6 +1176,7 @@ onBeforeUnmount(() => {
             empty-text="暂无站点上线数据"
           >
             <template #cell-online_rate="{ row }">{{ formatOnlineRate(row.online_rate) }}</template>
+            <template #cell-reonline_rate="{ row }">{{ formatOnlineRate(row.reonline_rate ?? null) }}</template>
             <template #cell-status="{ row }"><el-tag :type="onlineStatusTagType(row)">{{ onlineStatusLabel(row) }}</el-tag></template>
             <template #cell-warning="{ row }"><span>{{ row.warning || row.remark || '—' }}</span></template>
           </NcDataTable>

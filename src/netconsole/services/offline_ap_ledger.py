@@ -21,7 +21,9 @@ OFFLINE_AP_LEDGER_COLUMNS = (
     ("ac.ap_mac", "ap_mac"),
     ("trackside.export.ap_serial_number", "serial_number"),
     ("field.status", "ap_status"),
-    ("trackside.export.offline_at", "offline_at"),
+    ("trackside.export.last_online_time", "last_online_time"),
+    ("trackside.export.offline_at", "offline_time"),
+    ("trackside.export.connection_state", "connection_state"),
     ("ac.historical_switch", "historical_switch_name"),
     ("ac.historical_interface", "historical_switch_interface"),
 )
@@ -44,6 +46,8 @@ OFFLINE_AP_HEADER_LABELS = {
     "field.status": "AP状态",
     "ac.station": "归属站点",
     "trackside.export.offline_at": "离线时间",
+    "trackside.export.last_online_time": "最后上线时间",
+    "trackside.export.connection_state": "当前状态",
     "ac.historical_switch": "历史邻居交换机",
     "ac.historical_interface": "历史邻居接口",
     "ac.ap_total": "AP总数",
@@ -92,13 +96,13 @@ def build_offline_ap_ledger(
     online_keys = {
         key
         for resource in resources
-        if not is_fit_ap_offline(resource)
+        if not is_connection_offline(resource)
         for key in _ap_key_candidates(resource)
     }
 
     ledger: list[dict[str, object | None]] = []
     for resource in resources:
-        if not is_fit_ap_offline(resource):
+        if not is_connection_offline(resource):
             continue
         if any(key in online_keys for key in _ap_key_candidates(resource)):
             continue
@@ -116,8 +120,11 @@ def build_offline_ap_ledger(
                 "ap_mac": _ap_mac(resource, lldp),
                 "ap_ip": resource.get("ap_ip"),
                 "serial_number": resource.get("serial_number"),
-                "ap_status": "Idle",
+                "ap_status": str(resource.get("connection_state") or "Offline"),
+                "last_online_time": _last_online_time(resource),
+                "offline_time": _offline_at_for_resource(resource, offline_at_index),
                 "offline_at": _offline_at_for_resource(resource, offline_at_index),
+                "connection_state": str(resource.get("connection_state") or "Offline"),
                 "site": site,
                 "device_uuid": switch_device.get("device_uuid"),
                 "historical_switch_name": switch_name,
@@ -166,7 +173,7 @@ def build_current_ap_history_indexes(
 
     lldp: dict[str, dict[str, object | None]] = {}
     for resource in resources or []:
-        if not is_fit_ap_offline(resource):
+        if not is_connection_offline(resource):
             continue
         key = _ap_key(resource)
         if not key:
@@ -331,6 +338,15 @@ def is_fit_ap_offline(row: dict[str, object | None]) -> bool:
     return fit_ap_online_status(row) == "offline"
 
 
+def is_connection_offline(row: dict[str, object | None]) -> bool:
+    """Use connection-record state when available, with FIT-AP fallback."""
+
+    state = str(row.get("connection_state") or "").strip().casefold()
+    if state:
+        return state == "offline"
+    return is_fit_ap_offline(row)
+
+
 def fit_ap_online_status(row: dict[str, object | None]) -> str:
     return classify_fit_ap_state(
         row.get("state"),
@@ -363,19 +379,25 @@ def _current_offline_started_at(rows: list[dict[str, object | None]]) -> str:
     latest_transition_at = ""
     for row in ordered:
         collected_at = str(row.get("collected_at") or row.get("created_at") or "")
-        if is_fit_ap_offline(row):
+        connection_state = str(row.get("connection_state") or "").strip().casefold()
+        offline = connection_state == "offline" if connection_state else is_fit_ap_offline(row)
+        online = connection_state == "run" if connection_state else _is_fit_ap_online(row)
+        if offline:
             if not first_offline_at:
                 first_offline_at = collected_at
             if previous_online:
                 latest_transition_at = collected_at
             previous_online = False
             continue
-        if _is_fit_ap_online(row):
+        if online:
             previous_online = True
     return latest_transition_at or first_offline_at
 
 
 def _offline_at_for_resource(resource: dict[str, object | None], offline_at_index: dict[tuple[str, str], str]) -> str:
+    persisted = str(resource.get("offline_time") or "").strip()
+    if persisted:
+        return persisted
     for key in _ap_identity_keys(resource):
         offline_at = offline_at_index.get(key)
         if offline_at:
@@ -383,17 +405,33 @@ def _offline_at_for_resource(resource: dict[str, object | None], offline_at_inde
     return str(resource.get("updated_at") or resource.get("collected_at") or "")
 
 
+def _last_online_time(resource: dict[str, object | None]) -> str:
+    return str(
+        resource.get("last_online_time")
+        or resource.get("connection_record_resolved_time")
+        or resource.get("last_online_at")
+        or ""
+    )
+
+
 def _ap_identity_keys(row: dict[str, object | None]) -> list[tuple[str, str]]:
     keys: list[tuple[str, str]] = []
+    site_key = next(
+        (
+            str(row.get(field) or "").strip().casefold()
+            for field in ("site_key", "site_id", "station_id", "station_name", "station", "site")
+            if str(row.get(field) or "").strip()
+        ),
+        "",
+    )
     serial = str(row.get("serial_number") or "").strip()
     if serial:
-        keys.append(("serial", serial.casefold()))
+        if site_key:
+            keys.append(("site_serial", f"{site_key}:{serial.casefold()}"))
     mac = _mac_from_text(row.get("ap_mac") or row.get("mac"))
     if mac:
-        keys.append(("mac", mac.casefold()))
-    name = str(row.get("ap_name") or "").strip()
-    if name:
-        keys.append(("name", name.casefold()))
+        if site_key:
+            keys.append(("site_mac", f"{site_key}:{mac.casefold()}"))
     return keys
 
 

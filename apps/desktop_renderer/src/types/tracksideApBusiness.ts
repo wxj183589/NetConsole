@@ -127,6 +127,7 @@ export interface TracksideApPlanRow {
 export interface TracksideApOnlineStatusRow {
   station_id: string; station_name: string; planned_ap_count: number
   actual_online_count: number; offline_count: number; online_rate: number | null
+  reonline_count?: number; reonline_rate?: number | null; optical_problem_count?: number
   remark: string; planning_missing?: boolean; count_anomaly: boolean
   status?: 'normal' | 'planning_missing' | 'unplanned_online' | 'over_planned'
   warning: string
@@ -163,6 +164,7 @@ export interface TracksideApOnlineStatus {
   items: TracksideApOnlineStatusRow[]
   planned_ap_count: number; actual_online_count: number; offline_count: number
   online_rate: number | null
+  reonline_count?: number; reonline_rate?: number | null; optical_problem_count?: number
   unassigned_count: number; unassigned_items: TracksideApUnassigned[]
   updated_at: string; warning: string; count_anomaly?: boolean; status?: 'normal' | 'anomaly'
   scope_description?: string; scope_station_count?: number; scope_device_count?: number

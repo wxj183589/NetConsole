@@ -96,6 +96,10 @@ FIT_AP_RESOURCE_FIELDS = (
     "connection_ip",
     "connection_state",
     "connection_time",
+    "site_key",
+    "connection_record_raw_time",
+    "connection_record_resolved_time",
+    "connection_record_collected_at",
     "site",
     "mileage",
     "location_note",
@@ -331,6 +335,8 @@ FIT_AP_UNAUTHENTICATED_FIELDS = (
     "serial_number",
     "dev_type",
     "work_mode",
+    "ap_mac",
+    "site_key",
     "inferred_ap_mac",
     "collect_run_uuid",
     "raw_log_path",
@@ -356,6 +362,7 @@ FIT_AP_UNAUTHENTICATED_SUMMARY_FIELDS = (
     "server_ap_licenses",
     "remaining_local_ap_licenses",
     "sync_ap_licenses",
+    "snapshot_status",
     "collect_run_uuid",
     "raw_log_path",
     "collected_at",
@@ -514,6 +521,10 @@ FIT_AP_OPTIONAL_DETAIL_FIELDS = (
     "connection_ip",
     "connection_state",
     "connection_time",
+    "site_key",
+    "connection_record_raw_time",
+    "connection_record_resolved_time",
+    "connection_record_collected_at",
     *(f"rid{rid}_{field}" for rid in (1, 2, 3) for field in ("status", "mode", "band", "usage", "clients", "bbssid")),
 )
 
@@ -527,6 +538,7 @@ FIT_AP_STABLE_IDENTITY_FIELDS = (
 AP_ENTITY_FIELDS = (
     "ap_uuid",
     "site_id",
+    "site_key",
     "ac_device_uuid",
     "ap_name",
     "ap_mac",
@@ -547,6 +559,15 @@ AP_ENTITY_FIELDS = (
     "last_seen_at",
     "last_online_at",
     "last_resource_update_at",
+    "connection_state",
+    "connection_record_raw_time",
+    "connection_record_resolved_time",
+    "connection_record_collected_at",
+    "last_online_time",
+    "offline_time",
+    "last_state_change_at",
+    "last_connection_record_seen_at",
+    "connection_reonline_count",
     "is_offline",
     "source",
     "created_at",
@@ -819,6 +840,7 @@ class AcRepository:
             ap_uuid,
             identity_history_cache=identity_history_cache,
         )
+        resource_data["site_key"] = resource_data.get("site_key") or self.site_id
         station = normalize_station_value(resource_data)
         if station and not str(resource_data.get("site") or "").strip():
             resource_data["site"] = station
@@ -856,6 +878,9 @@ class AcRepository:
             )
             resource_data["lldp_neighbor"] = resource_data.get("lldp_neighbor_name")
         payload = self._payload(FIT_AP_RESOURCE_FIELDS, resource_data)
+        payload["connection_record_observed"] = bool(
+            row.get("connection_record_observed")
+        )
         payload["serial_number"] = self._clean_identity_value(payload.get("serial_number")) or None
         payload["collected_at"] = payload.get("collected_at") or now
         payload["updated_at"] = payload.get("updated_at") or now
@@ -906,6 +931,13 @@ class AcRepository:
             rows = conn.execute(
                 """
                 SELECT r.*,
+                       e.station AS entity_station,
+                       e.connection_state,
+                       e.last_online_time,
+                       e.offline_time,
+                       e.last_state_change_at,
+                       e.last_connection_record_seen_at,
+                       e.connection_reonline_count,
                        m_uuid.site_name AS site_name,
                        m_uuid.station_id AS metadata_station_id,
                        m_uuid.station_override_enabled AS metadata_station_override_enabled,
@@ -920,9 +952,12 @@ class AcRepository:
                        m_uuid.location_note AS metadata_location_note,
                        m_uuid.direction AS metadata_direction
                 FROM ac_fit_ap_resources r
+                LEFT JOIN ap_entities e
+                  ON e.site_id = ? AND e.ap_uuid = r.ap_uuid
                 LEFT JOIN ac_fit_ap_metadata m_uuid ON m_uuid.ap_uuid = r.ap_uuid
                 ORDER BY r.ap_name, r.id
-                """
+                """,
+                (self.site_id,),
             ).fetchall()
         rows = self._enrich_resources_with_extensions([self._resource_with_metadata(dict(row)) for row in rows])
         return self._enrich_resources_with_unauthenticated_status(rows)
@@ -947,6 +982,13 @@ class AcRepository:
             rows = conn.execute(
                 f"""
                 SELECT r.*,
+                       e.station AS entity_station,
+                       e.connection_state,
+                       e.last_online_time,
+                       e.offline_time,
+                       e.last_state_change_at,
+                       e.last_connection_record_seen_at,
+                       e.connection_reonline_count,
                        m_uuid.site_name AS site_name,
                        m_uuid.station_id AS metadata_station_id,
                        m_uuid.station_override_enabled AS metadata_station_override_enabled,
@@ -961,11 +1003,13 @@ class AcRepository:
                        m_uuid.location_note AS metadata_location_note,
                        m_uuid.direction AS metadata_direction
                 FROM ac_fit_ap_resources r
+                LEFT JOIN ap_entities e
+                  ON e.site_id = ? AND e.ap_uuid = r.ap_uuid
                 LEFT JOIN ac_fit_ap_metadata m_uuid ON m_uuid.ap_uuid = r.ap_uuid
                 WHERE {expression} IN ({placeholders})
                 ORDER BY r.ap_name, r.id
                 """,
-                normalized,
+                [self.site_id, *normalized],
             ).fetchall()
         return [self._resource_with_metadata(dict(row)) for row in rows]
 
@@ -977,7 +1021,15 @@ class AcRepository:
     ) -> None:
         now = self._now()
         with self.database.connect() as conn:
-            summary_payload = self._payload(FIT_AP_UNAUTHENTICATED_SUMMARY_FIELDS, {**summary, "ac_device_uuid": ac_device_uuid})
+            summary_payload = self._payload(
+                FIT_AP_UNAUTHENTICATED_SUMMARY_FIELDS,
+                {
+                    **summary,
+                    "ac_device_uuid": ac_device_uuid,
+                    "snapshot_status": summary.get("snapshot_status")
+                    or ("SUCCESS_WITH_ROWS" if rows else "SUCCESS_EMPTY"),
+                },
+            )
             summary_payload["collected_at"] = summary_payload.get("collected_at") or now
             summary_payload["updated_at"] = summary_payload.get("updated_at") or now
             columns = ", ".join(FIT_AP_UNAUTHENTICATED_SUMMARY_FIELDS)
@@ -993,7 +1045,20 @@ class AcRepository:
             )
             conn.execute("DELETE FROM ac_fit_ap_unauthenticated WHERE ac_device_uuid = ?", (ac_device_uuid,))
             for row in rows:
-                payload = self._payload(FIT_AP_UNAUTHENTICATED_FIELDS, {**row, "ac_device_uuid": ac_device_uuid})
+                payload = self._payload(
+                    FIT_AP_UNAUTHENTICATED_FIELDS,
+                    {
+                        **row,
+                        "ac_device_uuid": ac_device_uuid,
+                        "ap_mac": self._mac_from_text(
+                            row.get("ap_mac")
+                            or row.get("inferred_ap_mac")
+                            or row.get("ap_name")
+                        )
+                        or None,
+                        "site_key": row.get("site_key") or self.site_id,
+                    },
+                )
                 payload["inferred_ap_mac"] = self._mac_from_text(payload.get("inferred_ap_mac")) or None
                 payload["collected_at"] = payload.get("collected_at") or summary_payload["collected_at"] or now
                 payload["updated_at"] = payload.get("updated_at") or now
@@ -1008,12 +1073,19 @@ class AcRepository:
                 "SELECT * FROM ac_fit_ap_unauthenticated WHERE ac_device_uuid = ? ORDER BY ap_name, id",
                 (ac_device_uuid,),
             ).fetchall()
-        return [dict(row) for row in rows]
+        result = [dict(row) for row in rows]
+        for row in result:
+            row["site_key"] = row.get("site_key") or self.site_id
+            row["station"] = row.get("entity_station") or ""
+        return result
 
     def list_all_fit_ap_unauthenticated(self) -> list[dict[str, object | None]]:
         with self.database.connect() as conn:
             rows = conn.execute("SELECT * FROM ac_fit_ap_unauthenticated ORDER BY ac_device_uuid, ap_name, id").fetchall()
-        return [dict(row) for row in rows]
+        result = [dict(row) for row in rows]
+        for row in result:
+            row["site_key"] = row.get("site_key") or self.site_id
+        return result
 
     def list_fit_ap_unauthenticated_history(self, ac_device_uuid: str | None = None, limit: int = 100000) -> list[dict[str, object | None]]:
         params: list[object] = []
@@ -1118,7 +1190,7 @@ class AcRepository:
 
     def list_offline_ap_entities(self, ac_device_uuid: str | None = None) -> list[dict[str, object | None]]:
         params: list[object] = []
-        where = "WHERE is_offline = 1"
+        where = "WHERE (LOWER(TRIM(COALESCE(connection_state, ''))) = 'offline' OR (TRIM(COALESCE(connection_state, '')) = '' AND is_offline = 1))"
         if ac_device_uuid:
             where += " AND ac_device_uuid = ?"
             params.append(ac_device_uuid)
@@ -1216,18 +1288,117 @@ class AcRepository:
         with self.database.connect_readonly() as conn:
             rows = conn.execute(
                 """
-                SELECT id, ac_device_uuid, ap_uuid, apid, ap_name, ap_mac,
-                       state, state_raw, state_display, site, collected_at,
-                       lldp_neighbor_name, lldp_neighbor_mac,
-                       lldp_neighbor_mac_normalized, lldp_neighbor_interface,
-                       lldp_local_interface, lldp_collected_at,
-                       lldp_match_status,
-                       updated_at
-                FROM ac_fit_ap_resources
-                ORDER BY id
-                """
+                SELECT r.id, r.ac_device_uuid, r.ap_uuid, r.apid, r.ap_name, r.ap_mac,
+                       r.serial_number, r.model, r.state, r.state_raw, r.state_display, r.site,
+                       r.collected_at, r.site_key,
+                       r.lldp_neighbor_name, r.lldp_neighbor_mac,
+                       r.lldp_neighbor_mac_normalized, r.lldp_neighbor_interface,
+                       r.lldp_local_interface, r.lldp_collected_at,
+                       r.lldp_match_status,
+                       r.updated_at,
+                       e.station AS entity_station,
+                       e.connection_state,
+                       e.last_online_time,
+                       e.offline_time,
+                       e.last_state_change_at,
+                       e.last_connection_record_seen_at,
+                       e.connection_reonline_count
+                FROM ac_fit_ap_resources r
+                LEFT JOIN ap_entities e
+                  ON e.site_id = ? AND e.ap_uuid = r.ap_uuid
+                ORDER BY r.id
+                """,
+                (self.site_id,),
             ).fetchall()
-        return [dict(row) for row in rows]
+        result = [dict(row) for row in rows]
+        for row in result:
+            row["site_key"] = row.get("site_key") or self.site_id
+        return result
+
+    def apply_fit_ap_connection_records(
+        self,
+        ac_device_uuid: str,
+        rows: list[dict[str, object | None]],
+    ) -> int:
+        """Persist one successful connection-record snapshot independently.
+
+        The connection-record command is optional to the FIT-AP resource
+        command family, but authoritative for AP connection state and time.
+        It therefore updates matching resources/entities without deleting or
+        replacing the FIT-AP Current projection.
+        """
+
+        if not rows:
+            return 0
+        with self.database.connect() as conn:
+            resources = [
+                dict(row)
+                for row in conn.execute(
+                    """
+                    SELECT * FROM ac_fit_ap_resources
+                    WHERE ac_device_uuid = ?
+                      AND (site_key = ? OR site_key IS NULL OR site_key = '')
+                    """,
+                    (ac_device_uuid, self.site_id),
+                ).fetchall()
+            ]
+            entities = [
+                dict(row)
+                for row in conn.execute(
+                    """
+                    SELECT * FROM ap_entities
+                    WHERE ac_device_uuid = ? AND site_id = ?
+                    """,
+                    (ac_device_uuid, self.site_id),
+                ).fetchall()
+            ]
+            updated = 0
+            for source in rows:
+                target = _find_connection_identity_target(source, resources, entities)
+                ap_uuid = str((target or {}).get("ap_uuid") or uuid4())
+                payload = {
+                    **(target or {}),
+                    **source,
+                    "ac_device_uuid": ac_device_uuid,
+                    "ap_uuid": ap_uuid,
+                    "site_key": source.get("site_key") or self.site_id,
+                    "connection_ip": source.get("connection_ip") or source.get("ip_address"),
+                    "connection_state": source.get("connection_state") or source.get("state"),
+                    "connection_time": source.get("connection_time") or source.get("raw_time"),
+                    "connection_record_raw_time": source.get("raw_time") or source.get("connection_time"),
+                    "connection_record_resolved_time": source.get("resolved_time"),
+                    "connection_record_collected_at": source.get("collected_at"),
+                    "connection_record_observed": True,
+                }
+                if target and any(
+                    str(item.get("ap_uuid") or "") == ap_uuid for item in resources
+                ):
+                    conn.execute(
+                        """
+                        UPDATE ac_fit_ap_resources
+                        SET connection_ip = ?, connection_state = ?, connection_time = ?,
+                            site_key = ?, connection_record_raw_time = ?,
+                            connection_record_resolved_time = ?,
+                            connection_record_collected_at = ?, updated_at = ?
+                        WHERE ac_device_uuid = ? AND ap_uuid = ?
+                        """,
+                        (
+                            source.get("connection_ip") or source.get("ip_address"),
+                            source.get("connection_state") or source.get("state"),
+                            source.get("connection_time") or source.get("raw_time"),
+                            payload["site_key"],
+                            source.get("raw_time") or source.get("connection_time"),
+                            source.get("resolved_time"),
+                            source.get("collected_at"),
+                            self._now(),
+                            ac_device_uuid,
+                            ap_uuid,
+                        ),
+                    )
+                self._upsert_ap_entity(conn, payload)
+                updated += 1
+            conn.commit()
+        return updated
 
     def list_trackside_switch_identity_rows(
         self,
@@ -1334,6 +1505,28 @@ class AcRepository:
                 FROM ac_fit_ap_resources
                 """
             ).fetchone()
+            unauthenticated = conn.execute(
+                """
+                SELECT COUNT(*) AS row_count, COALESCE(MAX(updated_at), '') AS updated_at
+                FROM ac_fit_ap_unauthenticated
+                """
+            ).fetchone()
+            entities = conn.execute(
+                """
+                SELECT COUNT(*) AS row_count, COALESCE(MAX(updated_at), '') AS updated_at
+                FROM ap_entities
+                WHERE site_id = ?
+                """,
+                (self.site_id,),
+            ).fetchone()
+            optical_treatments = conn.execute(
+                """
+                SELECT COUNT(*) AS row_count, COALESCE(MAX(updated_at), '') AS updated_at
+                FROM ap_optical_treatment
+                WHERE site_id = ?
+                """,
+                (self.site_id,),
+            ).fetchone()
             station_switches = conn.execute(
                 """
                 SELECT COUNT(*) AS row_count, COALESCE(MAX(d.updated_at), '') AS updated_at
@@ -1403,6 +1596,12 @@ class AcRepository:
             "reference_updated_at": str(references["updated_at"] or ""),
             "fit_ap_count": int(resources["row_count"] or 0),
             "fit_ap_updated_at": str(resources["updated_at"] or ""),
+            "unauthenticated_count": int(unauthenticated["row_count"] or 0),
+            "unauthenticated_updated_at": str(unauthenticated["updated_at"] or ""),
+            "ap_entity_count": int(entities["row_count"] or 0),
+            "ap_entity_updated_at": str(entities["updated_at"] or ""),
+            "optical_treatment_count": int(optical_treatments["row_count"] or 0),
+            "optical_treatment_updated_at": str(optical_treatments["updated_at"] or ""),
             "station_switch_count": int(station_switches["row_count"] or 0),
             "station_switch_updated_at": str(station_switches["updated_at"] or ""),
             "switch_identity_count": int(switch_identities["row_count"] or 0),
@@ -1567,8 +1766,8 @@ class AcRepository:
         assignments = ", ".join(f"{field} = ?" for field in values)
         with self.database.connect() as conn:
             count = conn.execute(
-                f"UPDATE ap_entities SET {assignments} WHERE lower(ap_mac) = ?",
-                [*values.values(), normalized_mac.casefold()],
+                f"UPDATE ap_entities SET {assignments} WHERE site_id = ? AND lower(ap_mac) = ?",
+                [*values.values(), self.site_id, normalized_mac.casefold()],
             ).rowcount
             conn.commit()
         return int(count or 0)
@@ -1601,6 +1800,17 @@ class AcRepository:
                 payload["ap_uuid"] = payload.get("ap_uuid") or resource.get("ap_uuid") or str(uuid4())
                 payload["ap_name"] = payload.get("ap_name") or resource.get("ap_name")
                 payload["ap_mac"] = payload.get("ap_mac") or resource.get("ap_mac")
+                payload["serial_number"] = payload.get("serial_number") or resource.get("serial_number")
+                payload["ap_id"] = payload.get("ap_id") or resource.get("apid") or resource.get("ap_id")
+                payload["station_id"] = payload.get("station_id") or resource.get("metadata_station_id")
+                payload["station_name"] = (
+                    payload.get("station_name")
+                    or resource.get("entity_station")
+                    or resource.get("metadata_station_name")
+                    or resource.get("site_name")
+                )
+                payload["section_name"] = payload.get("section_name") or resource.get("metadata_section_name")
+                payload["direction"] = payload.get("direction") or resource.get("metadata_direction")
                 payload["ap_ip"] = payload.get("ap_ip") or resource.get("ap_ip")
                 payload["site"] = payload.get("site") or resource.get("site_name") or resource.get("site")
                 if _has_lldp_payload(payload):
@@ -1887,6 +2097,27 @@ class AcRepository:
                 (self.site_id,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def list_current_optical_problem_counts_by_station(self) -> dict[str, int]:
+        """Return one batch count from the current abnormal optical projection."""
+
+        with self.database.connect_readonly() as conn:
+            rows = conn.execute(
+                """
+                SELECT station_id, station_name, ap_identity
+                FROM ap_optical_treatment
+                WHERE site_id = ?
+                  AND UPPER(TRIM(COALESCE(current_status, ''))) = 'ABNORMAL'
+                """,
+                (self.site_id,),
+            ).fetchall()
+        grouped: dict[str, set[str]] = {}
+        for row in rows:
+            station = str(row["station_name"] or row["station_id"] or "未归属").strip() or "未归属"
+            identity = str(row["ap_identity"] or "").strip()
+            if identity:
+                grouped.setdefault(station, set()).add(identity)
+        return {station: len(identities) for station, identities in grouped.items()}
 
     def is_bounded_optical_authority_enabled(self) -> bool:
         with self.database.connect_readonly() as conn:
@@ -2968,7 +3199,7 @@ class AcRepository:
         continuity_entities: list[dict[str, object | None]] | None = None,
         incoming_name_counts: Counter[str] | None = None,
     ) -> str:
-        site_id = str(row.get("site_id") or "demo")
+        site_id = str(row.get("site_id") or self.site_id or "demo")
         requested_uuid = str(row.get("ap_uuid") or "").strip()
         if requested_uuid:
             found = conn.execute("SELECT ap_uuid FROM ap_entities WHERE ap_uuid = ?", (requested_uuid,)).fetchone()
@@ -3346,12 +3577,67 @@ class AcRepository:
         existing_data = dict(existing) if existing is not None else {}
         state_display = payload.get("state_display") or self._state_display(payload.get("state") or payload.get("state_raw"))
         is_offline = 1 if self._is_ap_offline(payload.get("state") or payload.get("state_raw") or state_display) else 0
+        connection_observed = bool(
+            payload.get("connection_record_observed")
+            or payload.get("connection_record_collected_at")
+            or payload.get("connection_record_resolved_time")
+        )
+        previous_connection_state = _normalize_connection_state(
+            existing_data.get("connection_state")
+        )
+        incoming_connection_state = _normalize_connection_state(
+            payload.get("connection_state")
+        )
+        connection_state = (
+            incoming_connection_state
+            if connection_observed and incoming_connection_state
+            else previous_connection_state
+        )
+        observation_at = self._clean_identity_value(
+            payload.get("connection_record_collected_at")
+        ) or self._clean_identity_value(payload.get("collected_at")) or now
+        resolved_time = self._clean_identity_value(
+            payload.get("connection_record_resolved_time")
+        )
+        previous_last_online = self._clean_identity_value(
+            existing_data.get("last_online_time")
+            or existing_data.get("last_online_at")
+        )
+        last_online_time = previous_last_online
+        offline_time = self._clean_identity_value(existing_data.get("offline_time"))
+        last_state_change_at = self._clean_identity_value(
+            existing_data.get("last_state_change_at")
+        )
+        last_connection_record_seen_at = self._clean_identity_value(
+            existing_data.get("last_connection_record_seen_at")
+        )
+        reonline_count = int(existing_data.get("connection_reonline_count") or 0)
+        if connection_observed:
+            last_connection_record_seen_at = observation_at
+            if resolved_time and connection_state == "Run":
+                last_online_time = resolved_time
+            if connection_state and connection_state != previous_connection_state:
+                last_state_change_at = observation_at
+                if connection_state == "Offline":
+                    offline_time = observation_at
+                elif previous_connection_state == "Offline":
+                    offline_time = ""
+                    reonline_count += 1
+            elif connection_state == "Offline" and not offline_time:
+                offline_time = observation_at
+        effective_offline = (
+            connection_state == "Offline"
+            if connection_state
+            else bool(is_offline)
+        )
+        station = self._clean_identity_value(existing_data.get("station")) or _station_from_ap_payload(payload)
         row = self._payload(
             AP_ENTITY_FIELDS,
             {
                 **existing_data,
                 "ap_uuid": ap_uuid,
-                "site_id": existing_data.get("site_id") or payload.get("site_id") or "demo",
+                "site_id": existing_data.get("site_id") or payload.get("site_id") or self.site_id,
+                "site_key": existing_data.get("site_key") or payload.get("site_key") or self.site_id,
                 "ac_device_uuid": payload.get("ac_device_uuid") or existing_data.get("ac_device_uuid"),
                 "ap_name": self._non_empty(payload.get("ap_name"), existing_data.get("ap_name")),
                 "ap_mac": self._non_empty(self._normalized_ap_mac(payload), existing_data.get("ap_mac")),
@@ -3364,15 +3650,36 @@ class AcRepository:
                 "state": payload.get("state") or existing_data.get("state"),
                 "state_raw": payload.get("state_raw") or payload.get("state") or existing_data.get("state_raw"),
                 "state_display": state_display or existing_data.get("state_display"),
-                "station": self._non_empty(existing_data.get("station"), normalize_station_value(payload)),
+                "station": station,
                 "milestone": self._non_empty(existing_data.get("milestone"), payload.get("mileage")),
                 "direction": self._non_empty(existing_data.get("direction"), payload.get("direction")),
                 "location_note": self._non_empty(existing_data.get("location_note"), payload.get("location_note")),
                 "first_seen_at": existing_data.get("first_seen_at") or payload.get("collected_at") or now,
                 "last_seen_at": payload.get("collected_at") or now,
-                "last_online_at": (payload.get("collected_at") or now) if not is_offline else existing_data.get("last_online_at"),
+                "last_online_at": last_online_time or existing_data.get("last_online_at"),
                 "last_resource_update_at": payload.get("collected_at") or now,
-                "is_offline": is_offline,
+                "connection_state": connection_state or existing_data.get("connection_state"),
+                "connection_record_raw_time": (
+                    self._clean_identity_value(payload.get("connection_record_raw_time"))
+                    if connection_observed
+                    else existing_data.get("connection_record_raw_time")
+                ),
+                "connection_record_resolved_time": (
+                    resolved_time
+                    if connection_observed and resolved_time
+                    else existing_data.get("connection_record_resolved_time")
+                ),
+                "connection_record_collected_at": (
+                    observation_at
+                    if connection_observed
+                    else existing_data.get("connection_record_collected_at")
+                ),
+                "last_online_time": last_online_time,
+                "offline_time": offline_time,
+                "last_state_change_at": last_state_change_at,
+                "last_connection_record_seen_at": last_connection_record_seen_at,
+                "connection_reonline_count": reonline_count,
+                "is_offline": 1 if effective_offline else 0,
                 "source": "fit_ap_resource",
                 "created_at": existing_data.get("created_at") or now,
                 "updated_at": now,
@@ -3446,8 +3753,13 @@ class AcRepository:
     def _resource_for_payload(self, conn, ac_device_uuid: str, row: dict[str, object | None]) -> dict[str, object | None]:
         if row.get("ap_uuid"):
             found = conn.execute(
-                "SELECT r.*, m.site_name FROM ac_fit_ap_resources r LEFT JOIN ac_fit_ap_metadata m ON m.ap_uuid = r.ap_uuid WHERE r.ac_device_uuid = ? AND r.ap_uuid = ? ORDER BY r.id DESC LIMIT 1",
-                (ac_device_uuid, row.get("ap_uuid")),
+                "SELECT r.*, m.site_name, m.station_id AS metadata_station_id, "
+                "m.belong_section AS metadata_section_name, m.direction AS metadata_direction, "
+                "e.station AS entity_station FROM ac_fit_ap_resources r "
+                "LEFT JOIN ac_fit_ap_metadata m ON m.ap_uuid = r.ap_uuid "
+                "LEFT JOIN ap_entities e ON e.site_id = ? AND e.ap_uuid = r.ap_uuid "
+                "WHERE r.ac_device_uuid = ? AND r.ap_uuid = ? ORDER BY r.id DESC LIMIT 1",
+                (self.site_id, ac_device_uuid, row.get("ap_uuid")),
             ).fetchone()
             if found:
                 return dict(found)
@@ -3456,8 +3768,13 @@ class AcRepository:
             matches = [
                 dict(candidate)
                 for candidate in conn.execute(
-                    "SELECT r.*, m.site_name FROM ac_fit_ap_resources r LEFT JOIN ac_fit_ap_metadata m ON m.ap_uuid = r.ap_uuid WHERE r.ac_device_uuid = ?",
-                    (ac_device_uuid,),
+                    "SELECT r.*, m.site_name, m.station_id AS metadata_station_id, "
+                    "m.belong_section AS metadata_section_name, m.direction AS metadata_direction, "
+                    "e.station AS entity_station FROM ac_fit_ap_resources r "
+                    "LEFT JOIN ac_fit_ap_metadata m ON m.ap_uuid = r.ap_uuid "
+                    "LEFT JOIN ap_entities e ON e.site_id = ? AND e.ap_uuid = r.ap_uuid "
+                    "WHERE r.ac_device_uuid = ?",
+                    (self.site_id, ac_device_uuid),
                 ).fetchall()
                 if self._mac_from_text(candidate["ap_mac"]) == mac
             ]
@@ -3566,9 +3883,10 @@ class AcRepository:
             enriched.append(item)
         return enriched
 
-    @staticmethod
-    def _resource_with_metadata(item: dict[str, object | None]) -> dict[str, object | None]:
+    def _resource_with_metadata(self, item: dict[str, object | None]) -> dict[str, object | None]:
         item["resource_station_text"] = item.get("site")
+        item["site_key"] = item.get("site_key") or self.site_id
+        item["station"] = item.get("entity_station") or item.get("station") or ""
         item["manual_station_id"] = item.get("metadata_station_id") or ""
         item["manual_station_name"] = item.get("site_name") or ""
         item["manual_override_enabled"] = bool(item.get("metadata_station_override_enabled")) or bool(
@@ -3935,18 +4253,105 @@ def _find_unauthenticated_match(
     return {}
 
 
+def _normalize_connection_state(value: object) -> str:
+    normalized = str(value or "").strip().casefold()
+    return {
+        "discovery": "Discovery",
+        "join": "Join",
+        "offline": "Offline",
+        "run": "Run",
+    }.get(normalized, str(value or "").strip())
+
+
+def _station_from_ap_payload(row: dict[str, object | None]) -> str:
+    """Return an AP station, never the project/line display name fallback."""
+
+    site_key = str(row.get("site_key") or "").strip().casefold()
+    for field in ("station_name", "station", "ap_station", "ownership_station", "site"):
+        value = str(row.get(field) or "").strip()
+        if not value or value.casefold() in {"-", "n/a", "none", "未归属"}:
+            continue
+        if site_key and value.casefold() == site_key:
+            continue
+        return value
+    return ""
+
+
+def _find_connection_identity_target(
+    source: dict[str, object | None],
+    resources: list[dict[str, object | None]],
+    entities: list[dict[str, object | None]],
+) -> dict[str, object | None]:
+    candidates_by_uuid: dict[str, dict[str, object | None]] = {}
+    for item in [*resources, *entities]:
+        item_uuid = str(item.get("ap_uuid") or "").strip()
+        if item_uuid:
+            candidates_by_uuid.setdefault(item_uuid, item)
+    candidates = list(candidates_by_uuid.values())
+    requested_uuid = str(source.get("ap_uuid") or "").strip()
+    if requested_uuid:
+        for item in candidates:
+            if str(item.get("ap_uuid") or "").strip() == requested_uuid:
+                return item
+    source_site = str(source.get("site_key") or "").strip().casefold()
+    source_mac = AcRepository._mac_from_text(source.get("ap_mac") or source.get("ap_name"))
+    if source_mac:
+        matches = [
+            item
+            for item in candidates
+            if (not source_site or str(item.get("site_key") or "").strip().casefold() in {"", source_site})
+            and AcRepository._mac_from_text(item.get("ap_mac")) == source_mac
+        ]
+        if len(matches) == 1:
+            return matches[0]
+    source_serial = str(source.get("serial_number") or "").strip().casefold()
+    if source_serial and source_serial not in {"-", "n/a"}:
+        matches = [
+            item
+            for item in candidates
+            if (not source_site or str(item.get("site_key") or "").strip().casefold() in {"", source_site})
+            and str(item.get("serial_number") or "").strip().casefold() == source_serial
+        ]
+        if len(matches) == 1:
+            return matches[0]
+    source_apid = str(source.get("apid") or source.get("ap_id") or "").strip().casefold()
+    source_ac = str(source.get("ac_device_uuid") or "").strip().casefold()
+    if source_apid and source_ac:
+        matches = [
+            item for item in candidates
+            if str(item.get("ac_device_uuid") or "").strip().casefold() == source_ac
+            and str(item.get("apid") or item.get("ap_id") or "").strip().casefold() == source_apid
+        ]
+        if len(matches) == 1:
+            return matches[0]
+    source_name = str(source.get("ap_name") or "").strip().casefold()
+    if source_name:
+        matches = [
+            item for item in candidates
+            if str(item.get("ap_name") or "").strip().casefold() == source_name
+            and (
+                not source_site
+                or str(item.get("site_key") or "").strip().casefold() in {"", source_site}
+            )
+        ]
+        if len(matches) == 1:
+            return matches[0]
+    return {}
+
+
 def _unauthenticated_identity_keys(row: dict[str, object | None]) -> list[tuple[str, str]]:
     keys: list[tuple[str, str]] = []
+    site_key = str(row.get("site_key") or row.get("site_id") or "").strip().casefold()
+    mac = AcRepository._mac_from_text(row.get("ap_mac") or row.get("inferred_ap_mac") or row.get("mac"))
+    if mac and site_key:
+        keys.append(("site_mac", f"{site_key}:{mac.casefold()}"))
     serial = str(row.get("serial_number") or row.get("serial") or "").strip()
-    if serial and serial not in {"-", "N/A", "n/a"}:
-        keys.append(("serial", serial.casefold()))
-    mac = AcRepository._mac_from_text(row.get("inferred_ap_mac") or row.get("ap_mac") or row.get("mac"))
-    if mac:
-        keys.append(("mac", mac.casefold()))
+    if serial and serial not in {"-", "N/A", "n/a"} and site_key:
+        keys.append(("site_serial", f"{site_key}:{serial.casefold()}"))
     ac_device_uuid = str(row.get("ac_device_uuid") or "").strip()
     apid = str(row.get("apid") or row.get("ap_id") or "").strip()
-    if ac_device_uuid and apid:
-        keys.append(("apid", f"{ac_device_uuid.casefold()}:{apid.casefold()}"))
+    if ac_device_uuid and apid and site_key:
+        keys.append(("site_apid", f"{site_key}:{ac_device_uuid.casefold()}:{apid.casefold()}"))
     return keys
 
 

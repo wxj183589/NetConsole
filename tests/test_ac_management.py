@@ -29,6 +29,7 @@ from netconsole.parsers.h3c.ac.state_mapper import (
 from netconsole.parsers.h3c.ac.system_usage_parser import parse_cpu_usage, parse_memory
 from netconsole.parsers.h3c.ac.wlan_ap_address_parser import parse_wlan_ap_addresses
 from netconsole.parsers.h3c.ac.wlan_ap_connection_record_parser import (
+    parse_wlan_ap_connection_record_rows,
     parse_wlan_ap_connection_records,
 )
 from netconsole.parsers.h3c.ac.wlan_ap_parser import (
@@ -109,6 +110,7 @@ from netconsole.services.trackside_ap_business import (
     build_new_online_ap_overview_rows,
     build_trackside_ap_business_rows,
     count_current_optical_abnormal_aps,
+    count_current_optical_abnormal_by_site,
     description_contains_ap,
     enrich_trackside_export_rows,
     export_trackside_ap_business_xlsx,
@@ -1995,6 +1997,105 @@ ap1                      2    Up        Down         802.11n(2.4GHz)
     assert radio_types["ap1"]["rid2_band"] == "2.4GHz"
 
 
+def test_wlan_ap_connection_record_rows_keep_raw_time_and_resolve_cross_year():
+    rows = parse_wlan_ap_connection_record_rows(
+        """
+AP name                          IP address    State      Time
+0011-2233-4455                   10.0.0.1      Run        12-31 23:59:58
+AP-2                             N/A           Offline    01-01 00:00:03
+""",
+        collected_at="2026-01-01 00:00:10",
+        ac_id="ac-1",
+        site_key="NBO12",
+    )
+
+    assert rows == [
+        {
+            "ap_name": "0011-2233-4455",
+            "ap_mac": "001122334455",
+            "ip_address": "10.0.0.1",
+            "state": "Run",
+            "connection_ip": "10.0.0.1",
+            "connection_state": "Run",
+            "connection_time": "12-31 23:59:58",
+            "raw_time": "12-31 23:59:58",
+            "resolved_time": "2025-12-31 23:59:58",
+            "ac_id": "ac-1",
+            "site_key": "NBO12",
+            "collected_at": "2026-01-01 00:00:10",
+            "raw_line": "0011-2233-4455                   10.0.0.1      Run        12-31 23:59:58",
+        },
+        {
+            "ap_name": "AP-2",
+            "ap_mac": None,
+            "ip_address": None,
+            "state": "Offline",
+            "connection_ip": None,
+            "connection_state": "Offline",
+            "connection_time": "01-01 00:00:03",
+            "raw_time": "01-01 00:00:03",
+            "resolved_time": "2026-01-01 00:00:03",
+            "ac_id": "ac-1",
+            "site_key": "NBO12",
+            "collected_at": "2026-01-01 00:00:10",
+            "raw_line": "AP-2                             N/A           Offline    01-01 00:00:03",
+        },
+    ]
+
+
+def test_connection_record_authority_persists_stable_transitions(tmp_path):
+    repository = AcRepository(make_database(tmp_path))
+    repository.replace_fit_ap_resources(
+        "ac-1",
+        [
+            {
+                "ap_uuid": "ap-1",
+                "ap_name": "AP-1",
+                "ap_mac": "0011-2233-4455",
+                "serial_number": "SN-1",
+                "site_key": "NBO12",
+                "state": "R/M",
+                "collected_at": "2026-01-01 10:00:00",
+            }
+        ],
+    )
+
+    def apply(state: str, collected_at: str, resolved_time: str) -> None:
+        repository.apply_fit_ap_connection_records(
+            "ac-1",
+            [
+                {
+                    "ap_name": "AP-1",
+                    "ap_mac": "0011-2233-4455",
+                    "state": state,
+                    "connection_state": state,
+                    "raw_time": resolved_time[5:],
+                    "resolved_time": resolved_time,
+                    "collected_at": collected_at,
+                    "site_key": "NBO12",
+                }
+            ],
+        )
+
+    apply("Run", "2026-01-01 10:05:00", "2026-01-01 10:00:00")
+    apply("Offline", "2026-01-01 11:05:00", "2026-01-01 11:00:00")
+    offline = repository.list_offline_ap_entities("ac-1")
+    assert len(offline) == 1
+    assert offline[0]["connection_state"] == "Offline"
+    assert offline[0]["last_online_time"] == "2026-01-01 10:00:00"
+    assert offline[0]["offline_time"] == "2026-01-01 11:05:00"
+
+    apply("Run", "2026-01-01 12:05:00", "2026-01-01 12:00:00")
+    entity = next(row for row in repository.list_ap_entities("ac-1") if row["ap_uuid"] == "ap-1")
+    assert entity["connection_state"] == "Run"
+    assert entity["last_online_time"] == "2026-01-01 12:00:00"
+    assert entity["offline_time"] == ""
+    assert entity["last_state_change_at"] == "2026-01-01 12:05:00"
+    assert entity["last_connection_record_seen_at"] == "2026-01-01 12:05:00"
+    assert entity["connection_reonline_count"] == 1
+    assert repository.list_offline_ap_entities("ac-1") == []
+
+
 def test_fit_ap_optical_parser_extracts_lldp_and_power_summary():
     parsed = parse_fit_ap_optical(
         fixture("display_fit_ap_lldp.txt"),
@@ -2963,7 +3064,18 @@ def test_build_new_online_ap_overview_rows_uses_current_online_without_prior_res
     ]
 
     rows = build_new_online_ap_overview_rows(
-        current_resources, history_rows, trackside_rows
+        current_resources,
+        history_rows,
+        trackside_rows,
+        unauthenticated_rows=[
+            {
+                "site_key": "Station A",
+                "ap_name": "AP-New",
+                "ap_mac": "0011-2233-4455",
+                "serial_number": "SN-NEW",
+                "collected_at": "2026-06-30 10:00:00",
+            }
+        ],
     )
 
     assert [row["ap_name"] for row in rows] == ["AP-New"]
@@ -3088,6 +3200,7 @@ def test_trackside_ap_business_treatment_records_complete_ap_identity_and_normal
             "id": 1,
             "ap_name": "AP-GE",
             "ap_mac": "0011.2233.4455",
+            "site": "Station A",
             "rx_power": "-24.00",
             "optical_alarm_status": "warning",
             "collected_at": "2026-06-30 09:00:00",
@@ -3112,8 +3225,8 @@ def test_trackside_ap_business_treatment_records_complete_ap_identity_and_normal
         },
     ]
     resources = [
-        {"ap_name": "AP-GE", "ap_mac": "0011-2233-4455", "serial_number": "SN-GE"},
-        {"ap_name": "AP-BAGG", "ap_mac": "00aa-bbcc-ddee", "serial_number": "SN-BAGG"},
+            {"ap_name": "AP-GE", "ap_mac": "0011-2233-4455", "serial_number": "SN-GE", "site": "Station A"},
+            {"ap_name": "AP-BAGG", "ap_mac": "00aa-bbcc-ddee", "serial_number": "SN-BAGG", "site": "Station B"},
     ]
 
     records = build_ap_optical_treatment_records(
@@ -3148,7 +3261,12 @@ def test_trackside_ap_business_treatment_records_complete_identity_by_serial_onl
         }
     ]
     resources = [
-        {"serial_number": "SN-ONLY", "ap_name": "AP-SERIAL", "ap_mac": "083b.e9ec.da40"}
+        {
+            "serial_number": "SN-ONLY",
+            "ap_name": "AP-SERIAL",
+            "ap_mac": "083b.e9ec.da40",
+            "site": "Station A",
+        }
     ]
 
     records = build_ap_optical_treatment_records(trackside_rows, [], [], resources)
@@ -3692,6 +3810,9 @@ def test_ap_online_overview_rows_count_states_and_total_bottom():
         "total": 3,
         "online": 1,
         "offline": 2,
+        "reonline_count": 0,
+        "reonline_rate": "0.0%",
+        "optical_problem_count": 0,
         "remark": "",
         "online_rate": "33.3%",
     }
@@ -3700,6 +3821,9 @@ def test_ap_online_overview_rows_count_states_and_total_bottom():
         "total": 2,
         "online": 2,
         "offline": 0,
+        "reonline_count": 0,
+        "reonline_rate": "0.0%",
+        "optical_problem_count": 0,
         "remark": "",
         "online_rate": "100.0%",
     }
@@ -3708,6 +3832,9 @@ def test_ap_online_overview_rows_count_states_and_total_bottom():
         "total": 5,
         "online": 3,
         "offline": 2,
+        "reonline_count": 0,
+        "reonline_rate": "0.0%",
+        "optical_problem_count": 0,
         "remark": "",
         "online_rate": "60.0%",
     }
@@ -3851,6 +3978,9 @@ def test_ap_online_overview_uses_ap_metadata_as_total_baseline():
         "total": 30,
         "online": 26,
         "offline": 4,
+        "reonline_count": 0,
+        "reonline_rate": "0.0%",
+        "optical_problem_count": 0,
         "remark": "",
         "online_rate": "86.7%",
     }
@@ -3859,6 +3989,9 @@ def test_ap_online_overview_uses_ap_metadata_as_total_baseline():
         "total": 56,
         "online": 48,
         "offline": 8,
+        "reonline_count": 0,
+        "reonline_rate": "0.0%",
+        "optical_problem_count": 0,
         "remark": "",
         "online_rate": "85.7%",
     }
@@ -3867,6 +4000,9 @@ def test_ap_online_overview_uses_ap_metadata_as_total_baseline():
         "total": 1,
         "online": 1,
         "offline": 0,
+        "reonline_count": 0,
+        "reonline_rate": "0.0%",
+        "optical_problem_count": 0,
         "remark": "",
         "online_rate": "100.0%",
     }
@@ -3875,6 +4011,9 @@ def test_ap_online_overview_uses_ap_metadata_as_total_baseline():
         "total": 87,
         "online": 75,
         "offline": 12,
+        "reonline_count": 0,
+        "reonline_rate": "0.0%",
+        "optical_problem_count": 0,
         "remark": "",
         "online_rate": "86.2%",
     }
@@ -4200,6 +4339,9 @@ def test_ap_online_overview_standard_large_sample_matches_expected_totals():
         "total": 948,
         "online": 773,
         "offline": 175,
+        "reonline_count": 0,
+        "reonline_rate": "0.0%",
+        "optical_problem_count": 0,
         "remark": "",
         "online_rate": "81.5%",
     }
@@ -4292,7 +4434,10 @@ def test_export_ap_online_overview_xlsx_contains_colors_and_alignment(tmp_path):
         capacities={"02云龙火车站站": 1},
     )
     rows[1]["remark"] = "Need check"
-    headers = ["Station", "AP Total", "Online", "Offline", "Online Rate", "Remark"]
+    headers = [
+        "Station", "AP Total", "Online", "Offline", "Online Rate",
+        "Re-online Count", "Re-online Rate", "Optical Problems", "Remark",
+    ]
 
     export_ap_online_overview_xlsx(export_path, rows, headers)
 
@@ -4306,7 +4451,7 @@ def test_export_ap_online_overview_xlsx_contains_colors_and_alignment(tmp_path):
     assert sheet.column_dimensions["A"].width > len("车站")
     assert sheet["A2"].fill.fgColor.rgb == "FFDCFCE7"
     assert sheet["D3"].fill.fgColor.rgb == "FFFEE2E2"
-    assert sheet["F3"].value == "Need check"
+    assert sheet["I3"].value == "Need check"
 
 
 def test_trackside_ap_description_filter_is_case_insensitive():
@@ -4929,6 +5074,37 @@ def test_trackside_switch_rx_fixed_threshold_drives_business_status_and_count():
     )
     assert is_current_optical_abnormal_row(row) is True
     assert count_current_optical_abnormal_aps([row]) == 1
+
+
+def test_current_optical_problem_count_groups_by_station_and_deduplicates_ap():
+    first = normalize_trackside_ap_business_row(
+        {
+            "site_key": "NBO12",
+            "station_name": "宁波地铁12号线01",
+            "site": "宁波地铁12号线01",
+            "model": "WA6528X-E",
+            "ap_mac": "0011-2233-4455",
+            "ap_name": "AP-1",
+            "ap_rx_power": "-7.72",
+            "ap_optical_status": "normal",
+            "switch_rx_power": "-19.10",
+            "switch_optical_status": "normal",
+            "ap_side_has_data": True,
+        }
+    )
+    duplicate_side = {**first, "interface_name": "Bridge-Aggregation1"}
+    second = {
+        **first,
+        "station_name": "宁波地铁12号线02",
+        "site": "宁波地铁12号线02",
+        "ap_mac": "00aa-bbcc-ddee",
+        "ap_name": "AP-2",
+    }
+
+    assert count_current_optical_abnormal_by_site([first, duplicate_side, second]) == {
+        "宁波地铁12号线01": 1,
+        "宁波地铁12号线02": 1,
+    }
 
 
 def test_trackside_wa6522_display_is_not_applicable_before_row_normalization():

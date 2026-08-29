@@ -17,6 +17,9 @@ AP_ONLINE_OVERVIEW_COLUMNS = (
     ("ac.online", "online"),
     ("ac.offline", "offline"),
     ("ac.online_rate", "online_rate"),
+    ("trackside.reonline_count", "reonline_count"),
+    ("trackside.reonline_rate", "reonline_rate"),
+    ("trackside.optical_problem_count", "optical_problem_count"),
     ("field.remark", "remark"),
 )
 
@@ -68,6 +71,12 @@ def build_ap_online_overview_rows(
     grouped = build_station_totals(normalized_metadata, capacity_map)
     capacity_sites = {str(site or "").strip() for site in (capacity_map or {}) if str(site or "").strip()}
     stats = build_online_counts(normalized_resources, optical_indexes, metadata_indexes, grouped, capacity_sites)
+    for site, count in _station_optical_problem_counts(normalized_optical).items():
+        item = grouped.setdefault(site, {"site": site, "total": 0, "online": 0, "offline": 0, "remark": ""})
+        item["optical_problem_count"] = count
+    for site, count in (stats.get("station_reonline_counts") or {}).items():
+        item = grouped.setdefault(site, {"site": site, "total": 0, "online": 0, "offline": 0, "remark": ""})
+        item["reonline_count"] = count
     rows = build_rows(grouped)
     _log_overview_diagnostics(normalized_metadata, raw_metadata_count, normalized_resources, normalized_optical, capacity_map or {}, rows, stats)
     return rows
@@ -233,6 +242,7 @@ def build_online_counts(
         "matched_by_known_resource_site": 0,
         "unmatched_online": 0,
         "station_online_counts": {},
+        "station_reonline_counts": {},
         "unmatched_sample": [],
     }
     seen_online: set[str] = set()
@@ -267,6 +277,10 @@ def build_online_counts(
         station_counts = stats["station_online_counts"]
         if isinstance(station_counts, dict):
             station_counts[site] = int(station_counts.get(site) or 0) + 1
+        if int(resource.get("connection_reonline_count") or 0) > 0:
+            reonline_counts = stats["station_reonline_counts"]
+            if isinstance(reonline_counts, dict):
+                reonline_counts[site] = int(reonline_counts.get(site) or 0) + 1
     return stats
 
 
@@ -281,6 +295,13 @@ def build_rows(grouped: dict[str, dict[str, object | None]]) -> list[dict[str, o
             "total": total,
             "online": online,
             "offline": max(total - online, 0),
+            "reonline_count": int(row.get("reonline_count") or 0),
+            "reonline_rate": (
+                round(int(row.get("reonline_count") or 0) * 100 / total, 1)
+                if total > 0
+                else None
+            ),
+            "optical_problem_count": int(row.get("optical_problem_count") or 0),
             "remark": row.get("remark") or "",
         }
         if row.get("source"):
@@ -289,7 +310,44 @@ def build_rows(grouped: dict[str, dict[str, object | None]]) -> list[dict[str, o
     total = sum(int(row.get("total") or 0) for row in result)
     online = sum(int(row.get("online") or 0) for row in result)
     offline = sum(int(row.get("offline") or 0) for row in result)
-    return [*result, _with_online_rate({"site": TOTAL_SITE_LABEL, "total": total, "online": online, "offline": offline, "remark": ""})]
+    reonline = sum(int(row.get("reonline_count") or 0) for row in result)
+    optical_problem = sum(int(row.get("optical_problem_count") or 0) for row in result)
+    total_row = {
+        "site": TOTAL_SITE_LABEL,
+        "total": total,
+        "online": online,
+        "offline": offline,
+        "reonline_count": reonline,
+        "reonline_rate": round(reonline * 100 / total, 1) if total > 0 else None,
+        "optical_problem_count": optical_problem,
+        "remark": "",
+    }
+    return [*result, _with_online_rate(total_row)]
+
+
+def _station_optical_problem_counts(
+    optical_rows: list[dict[str, object | None]],
+) -> dict[str, int]:
+    abnormal_statuses = {"abnormal", "alarm", "warning", "notice", "link_abnormal", "link_down", "no_light"}
+    grouped: dict[str, set[str]] = {}
+    for row in optical_rows:
+        status = str(
+            row.get("current_status")
+            or row.get("optical_alarm_status")
+            or row.get("status")
+            or ""
+        ).strip().casefold()
+        station = str(row.get("_station") or "").strip()
+        identity = str(
+            row.get("_match_uuid")
+            or row.get("_match_mac")
+            or row.get("_match_serial")
+            or row.get("_match_name")
+            or ""
+        ).strip()
+        if station and identity and status in abnormal_statuses:
+            grouped.setdefault(station, set()).add(identity)
+    return {station: len(identities) for station, identities in grouped.items()}
 
 
 def is_fit_ap_online(row: dict[str, object | None]) -> bool:
@@ -532,6 +590,12 @@ def _with_online_rate(row: dict[str, object | None]) -> dict[str, object | None]
     row["online_rate"] = (
         f"{online / total:.1%}"
         if total > 0 and online <= total
+        else "—"
+    )
+    reonline = int(row.get("reonline_count") or 0)
+    row["reonline_rate"] = (
+        f"{reonline / total:.1%}"
+        if total > 0
         else "—"
     )
     return row

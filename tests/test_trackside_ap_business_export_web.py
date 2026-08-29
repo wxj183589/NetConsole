@@ -167,7 +167,7 @@ def test_trackside_export_contract_and_fill_matrix(tmp_path: Path) -> None:
     assert abnormal_headers == [
         i18n.t(key) for key, _field in CURRENT_OPTICAL_ABNORMAL_COLUMNS
     ]
-    assert len(abnormal_headers) == 19
+    assert len(abnormal_headers) == 17
     assert not {"AP业务光衰", "AP业务判定原因", "光衰判定"}.intersection(abnormal_headers)
     interface_column = abnormal_headers.index("接口名称") + 1
     assert [
@@ -698,6 +698,9 @@ def test_ap_online_history_block_has_dynamic_blank_separator() -> None:
             "online": 1,
             "offline": 1,
             "online_rate": "50.0%",
+            "reonline_count": 0,
+            "reonline_rate": "0.0%",
+            "optical_problem_count": 0,
             "remark": "",
         },
         {
@@ -706,10 +709,16 @@ def test_ap_online_history_block_has_dynamic_blank_separator() -> None:
             "online": 1,
             "offline": 1,
             "online_rate": "50.0%",
+            "reonline_count": 0,
+            "reonline_rate": "0.0%",
+            "optical_problem_count": 0,
             "remark": "",
         },
     ]
-    headers = ["归属站点", "规划AP总数量", "上线", "未上线", "上线率", "备注"]
+    headers = [
+        "归属站点", "规划AP总数量", "上线", "未上线", "上线率",
+        "再上线数", "再上线率", "光衰问题数", "备注",
+    ]
 
     block = build_ap_online_history_block(
         rows,
@@ -720,12 +729,12 @@ def test_ap_online_history_block_has_dynamic_blank_separator() -> None:
     )
 
     assert block.cells() == [
-        ["日期：2026-08-07", None, None, None, None, None],
-        ["更新时间：2026-08-07 20:15:38", None, None, None, None, None],
+        ["日期：2026-08-07", None, None, None, None, None, None, None, None],
+        ["更新时间：2026-08-07 20:15:38", None, None, None, None, None, None, None, None],
         headers,
-        ["站点A", "2", "1", "1", 0.5, "-"],
-        ["合计", "2", "1", "1", 0.5, "-"],
-        [None, None, None, None, None, None],
+        ["站点A", "2", "1", "1", 0.5, "0", "0.0%", "0", "-"],
+        ["合计", "2", "1", "1", 0.5, "0", "0.0%", "0", "-"],
+        [None, None, None, None, None, None, None, None, None],
     ]
 
 

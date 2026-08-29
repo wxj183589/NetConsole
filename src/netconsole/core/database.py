@@ -26,7 +26,7 @@ from netconsole.core.sqlite_utils import (
 from netconsole.models.device_address import InvalidDeviceAddressError, normalize_ip_address
 
 
-CURRENT_SCHEMA_VERSION = "2026.08.26.engineering_current_history_v2"
+CURRENT_SCHEMA_VERSION = "2026.08.29.trackside_ap_authority_v1"
 
 DEVICE_CLASSIFICATION_COLUMNS = (
     "project_phase",
@@ -870,6 +870,10 @@ CREATE TABLE IF NOT EXISTS ac_fit_ap_resources (
     connection_ip TEXT,
     connection_state TEXT,
     connection_time TEXT,
+    site_key TEXT,
+    connection_record_raw_time TEXT,
+    connection_record_resolved_time TEXT,
+    connection_record_collected_at TEXT,
     site TEXT,
     mileage TEXT,
     location_note TEXT,
@@ -1140,6 +1144,8 @@ CREATE TABLE IF NOT EXISTS ac_fit_ap_unauthenticated (
     serial_number TEXT,
     dev_type TEXT,
     work_mode TEXT,
+    ap_mac TEXT,
+    site_key TEXT,
     inferred_ap_mac TEXT,
     collect_run_uuid TEXT,
     raw_log_path TEXT,
@@ -1169,6 +1175,8 @@ CREATE TABLE IF NOT EXISTS ac_fit_ap_unauthenticated_history (
     serial_number TEXT,
     dev_type TEXT,
     work_mode TEXT,
+    ap_mac TEXT,
+    site_key TEXT,
     inferred_ap_mac TEXT,
     collect_run_uuid TEXT,
     raw_log_path TEXT,
@@ -1202,6 +1210,7 @@ CREATE TABLE IF NOT EXISTS ac_fit_ap_unauthenticated_summary (
     server_ap_licenses INTEGER,
     remaining_local_ap_licenses INTEGER,
     sync_ap_licenses INTEGER,
+    snapshot_status TEXT NOT NULL DEFAULT 'UNKNOWN',
     collect_run_uuid TEXT,
     raw_log_path TEXT,
     collected_at TEXT NOT NULL,
@@ -1682,6 +1691,9 @@ CREATE TABLE IF NOT EXISTS ap_optical_treatment (
     ap_mac TEXT NOT NULL DEFAULT '',
     ap_mac_normalized TEXT NOT NULL DEFAULT '',
     serial_number TEXT NOT NULL DEFAULT '',
+    ap_id TEXT NOT NULL DEFAULT '',
+    section_name TEXT NOT NULL DEFAULT '',
+    direction TEXT NOT NULL DEFAULT '',
     station_id TEXT NOT NULL DEFAULT '',
     station_name TEXT NOT NULL DEFAULT '',
     switch_device_id TEXT NOT NULL DEFAULT '',
@@ -1820,6 +1832,7 @@ CREATE TABLE IF NOT EXISTS ap_entities (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ap_uuid TEXT NOT NULL UNIQUE,
     site_id TEXT,
+    site_key TEXT,
     ac_device_uuid TEXT,
     ap_name TEXT,
     ap_mac TEXT,
@@ -1840,6 +1853,15 @@ CREATE TABLE IF NOT EXISTS ap_entities (
     last_seen_at TEXT,
     last_online_at TEXT,
     last_resource_update_at TEXT,
+    connection_state TEXT,
+    connection_record_raw_time TEXT,
+    connection_record_resolved_time TEXT,
+    connection_record_collected_at TEXT,
+    last_online_time TEXT,
+    offline_time TEXT,
+    last_state_change_at TEXT,
+    last_connection_record_seen_at TEXT,
+    connection_reonline_count INTEGER NOT NULL DEFAULT 0,
     is_offline INTEGER DEFAULT 0,
     source TEXT,
     created_at TEXT NOT NULL,
@@ -2983,6 +3005,10 @@ class Database:
             "connection_ip": "TEXT",
             "connection_state": "TEXT",
             "connection_time": "TEXT",
+            "site_key": "TEXT",
+            "connection_record_raw_time": "TEXT",
+            "connection_record_resolved_time": "TEXT",
+            "connection_record_collected_at": "TEXT",
             "rid1_status": "TEXT",
             "rid1_mode": "TEXT",
             "rid1_band": "TEXT",
@@ -3029,6 +3055,58 @@ class Database:
                         replace(replace(replace(lower(COALESCE(ap_mac, '')), ':', ''), '-', ''), ' ', '')
                     )
                 """
+            )
+        fit_ap_unauthenticated_columns = {
+            "ap_mac": "TEXT",
+            "site_key": "TEXT",
+        }
+        for table in ("ac_fit_ap_unauthenticated", "ac_fit_ap_unauthenticated_history"):
+            for column, column_type in fit_ap_unauthenticated_columns.items():
+                if self._table_exists(conn, table) and not self._column_exists(conn, table, column):
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
+        if self._table_exists(conn, "ac_fit_ap_unauthenticated_summary") and not self._column_exists(
+            conn, "ac_fit_ap_unauthenticated_summary", "snapshot_status"
+        ):
+            conn.execute(
+                "ALTER TABLE ac_fit_ap_unauthenticated_summary "
+                "ADD COLUMN snapshot_status TEXT NOT NULL DEFAULT 'UNKNOWN'"
+            )
+        if self._table_exists(conn, "ac_fit_ap_unauthenticated"):
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_ac_fit_ap_unauth_site_mac "
+                "ON ac_fit_ap_unauthenticated(site_key, ap_mac)"
+            )
+
+        if self._table_exists(conn, "ap_optical_treatment"):
+            for column, definition in {
+                "ap_id": "TEXT NOT NULL DEFAULT ''",
+                "section_name": "TEXT NOT NULL DEFAULT ''",
+                "direction": "TEXT NOT NULL DEFAULT ''",
+            }.items():
+                if not self._column_exists(conn, "ap_optical_treatment", column):
+                    conn.execute(
+                        f"ALTER TABLE ap_optical_treatment ADD COLUMN {column} {definition}"
+                    )
+
+        ap_entity_columns = {
+            "site_key": "TEXT",
+            "connection_state": "TEXT",
+            "connection_record_raw_time": "TEXT",
+            "connection_record_resolved_time": "TEXT",
+            "connection_record_collected_at": "TEXT",
+            "last_online_time": "TEXT",
+            "offline_time": "TEXT",
+            "last_state_change_at": "TEXT",
+            "last_connection_record_seen_at": "TEXT",
+            "connection_reonline_count": "INTEGER NOT NULL DEFAULT 0",
+        }
+        if self._table_exists(conn, "ap_entities"):
+            for column, column_type in ap_entity_columns.items():
+                if not self._column_exists(conn, "ap_entities", column):
+                    conn.execute(f"ALTER TABLE ap_entities ADD COLUMN {column} {column_type}")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_ap_entities_site_connection_state "
+                "ON ap_entities(site_id, connection_state)"
             )
         fit_ap_metadata_columns = {
             "belong_type": "TEXT",

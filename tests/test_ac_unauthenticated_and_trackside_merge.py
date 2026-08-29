@@ -3,7 +3,11 @@ from __future__ import annotations
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
-from netconsole.parsers.h3c.ac.wlan_ap_unauthenticated_parser import parse_wlan_ap_unauthenticated_rows, parse_wlan_ap_unauthenticated_summary
+from netconsole.parsers.h3c.ac.wlan_ap_unauthenticated_parser import (
+    classify_wlan_ap_unauthenticated_snapshot,
+    parse_wlan_ap_unauthenticated_rows,
+    parse_wlan_ap_unauthenticated_summary,
+)
 from netconsole.repositories.ac_repository import AcRepository
 from netconsole.services import h3c_ac_collect_service
 from netconsole.services.h3c_ac_collect_service import collect_h3c_ac_resources
@@ -93,6 +97,7 @@ def test_wlan_ap_unauthenticated_parser_extracts_summary_and_rows():
     assert summary["connected_auto_aps"] == 9
     assert len(rows) == 9
     assert rows[0]["ap_name"] == "30f5-277a-1780"
+    assert rows[0]["ap_mac"] == "30f5277a1780"
     assert rows[0]["apid"] == "872"
     assert rows[0]["state"] == "R/M"
     assert rows[0]["model"] == "WA6624X"
@@ -104,6 +109,18 @@ def test_wlan_ap_unauthenticated_parser_extracts_summary_and_rows():
     assert all(row["apid"] != "=" for row in rows)
     assert all(row["model"] != "DC" for row in rows)
     assert all(row["serial_number"] != "=" for row in rows)
+    assert classify_wlan_ap_unauthenticated_snapshot(UNAUTHENTICATED_SAMPLE, rows) == "SUCCESS_WITH_ROWS"
+
+
+def test_unauthenticated_parser_distinguishes_empty_and_unparseable_snapshots():
+    empty = """
+Total number of connected auto APs: 0
+AP information:
+AP name                        APID  State Model           Serial ID            Dev-Type        Work-mode
+"""
+
+    assert classify_wlan_ap_unauthenticated_snapshot(empty, []) == "SUCCESS_EMPTY"
+    assert classify_wlan_ap_unauthenticated_snapshot("SSH read timeout", []) == "FAILED"
 
 
 def test_wlan_ap_unauthenticated_parser_skips_state_legend_before_header():
@@ -176,6 +193,11 @@ def test_fit_ap_unauthenticated_apid_does_not_match_across_ac(tmp_path):
 
 def test_ac_collect_optional_unauthenticated_failure_does_not_fail_resources(monkeypatch, tmp_path):
     repository = make_ac_repository(tmp_path)
+    repository.replace_fit_ap_unauthenticated(
+        "ac-1",
+        {"connected_auto_aps": 1, "snapshot_status": "SUCCESS_WITH_ROWS"},
+        [{"ap_name": "AP-Previous", "serial_number": "SN-PREVIOUS"}],
+    )
     connection = FakeAcConnection({"display wlan ap unauthenticated": RuntimeError("optional failed")})
     monkeypatch.setattr(h3c_ac_collect_service.netmiko_connection, "ConnectHandler", lambda **_kwargs: connection)
 
@@ -191,7 +213,8 @@ def test_ac_collect_optional_unauthenticated_failure_does_not_fail_resources(mon
     assert result.fit_ap_resources_updated == 1
     assert result.unauthenticated_updated is False
     assert "failed" in result.unauthenticated_error
-    assert repository.list_fit_ap_unauthenticated("ac-1") == []
+    assert repository.list_fit_ap_unauthenticated("ac-1")[0]["ap_name"] == "AP-Previous"
+    assert repository.get_fit_ap_unauthenticated_summary("ac-1")["snapshot_status"] == "SUCCESS_WITH_ROWS"
 
 
 def test_build_new_online_ap_overview_rows_uses_only_current_unauthenticated_snapshot():

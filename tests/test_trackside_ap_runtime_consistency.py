@@ -384,11 +384,14 @@ def test_new_online_uses_identity_entity_before_name_or_station_projection():
         current_resource_rows=[{"identity_entity_id": "entity-1", "ap_name": "AP-NEW", "ap_mac": "0011-2233-4455", "state": "R/M", "collected_at": "2026-08-05"}],
         resource_history_rows=[{"identity_entity_id": "entity-1", "ap_name": "AP-OLD", "ap_mac": "0011-2233-4455", "state": "Idle", "collected_at": "2026-08-04"}],
         trackside_rows=[],
+        unauthenticated_rows=[
+            {"identity_entity_id": "entity-1", "ap_name": "AP-NEW", "ap_mac": "0011-2233-4455", "collected_at": "2026-08-05"}
+        ],
     )
     assert len(rows) == 1
     assert rows[0]["ap_name"] == "AP-NEW"
     assert rows[0]["site"] == "等待 LLDP 同步"
-    assert rows[0]["baseline_collected_at"] == "2026-08-04"
+    assert rows[0]["baseline_collected_at"] == ""
 
 
 def test_new_online_ignores_name_change_when_stable_identity_was_already_online():
@@ -405,6 +408,7 @@ def test_new_online_with_no_history_survives_missing_station_projection():
         current_resource_rows=[{"ap_name": "AP-NEW", "ap_mac": "0011-2233-4455", "state": "Online", "collected_at": "2026-08-05"}],
         resource_history_rows=[],
         trackside_rows=[],
+        unauthenticated_rows=[{"ap_name": "AP-NEW", "ap_mac": "0011-2233-4455", "collected_at": "2026-08-05"}],
     )
     assert len(rows) == 1
     assert rows[0]["site"] == "等待 LLDP 同步"
