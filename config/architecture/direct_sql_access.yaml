@@ -101,6 +101,7 @@
   {"path":"tests/test_site_storage.py","classification":"TEST_ONLY","owner":"test","reason":"局点存储和包格式测试 fixture。"},
   {"path":"tests/test_history_store.py","classification":"TEST_ONLY","owner":"test","reason":"HistoryStore 测试只在 pytest 临时目录构造 SQLite fixture。"},
   {"path":"tests/test_history_legacy_migration.py","classification":"TEST_ONLY","owner":"test","reason":"legacy history COPY-only 迁移测试只在 pytest 临时目录构造源库、catalog 与月分片 fixture。"},
+  {"path":"tests/test_retire_legacy_history_store.py","classification":"TEST_ONLY","owner":"test","reason":"HistoryStore 退役候选测试只在 pytest 临时目录构造 SQLite fixture，并验证 WAL 安全复制与旧 runtime 表清理。"},
   {"path":"tests/test_history_storage_tools.py","classification":"TEST_ONLY","owner":"test","reason":"History Storage profiler/query benchmark 测试只在 pytest 的 D:\\study 隔离目录构造 legacy、V1 和 V2 SQLite fixture。"},
   {"path":"tests/test_traffic_agent_adapter.py","classification":"TEST_ONLY","owner":"test","reason":"Traffic Agent 测试 fixture。"},
   {"path":"tests/test_traffic_local_adapter.py","classification":"TEST_ONLY","owner":"test","reason":"Traffic Local 测试 fixture。"},
