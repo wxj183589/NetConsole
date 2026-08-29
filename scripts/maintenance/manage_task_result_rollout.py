@@ -6,6 +6,7 @@ import argparse
 import json
 from pathlib import Path
 
+from netconsole.core.runtime_environment import require_data_root_write_allowed
 from netconsole.core.paths import PathResolver
 from netconsole.services.job_center.task_result_rollout import (
     TaskResultRolloutError,
@@ -28,6 +29,11 @@ def _parser() -> argparse.ArgumentParser:
         "--apply",
         action="store_true",
         help="required for an explicit persisted rollout transition",
+    )
+    parser.add_argument(
+        "--allow-production-write",
+        action="store_true",
+        help="明确授权对 production 数据根执行 rollout 变更",
     )
     return parser
 
@@ -52,6 +58,11 @@ def main(argv: list[str] | None = None) -> int:
     else:
         if not args.apply:
             raise SystemExit("rollout transitions require explicit --apply")
+        require_data_root_write_allowed(
+            args.data_root,
+            "manage_task_result_rollout",
+            allow_production_write=args.allow_production_write,
+        )
         if args.expected_revision is None or not args.reason.strip():
             raise SystemExit(
                 "rollout transitions require --expected-revision and --reason"

@@ -133,6 +133,18 @@ export interface AcLldp {
   updated_at: string
 }
 
+export interface AcCurrentLldp {
+  ap_mac: string
+  local_interface: string
+  neighbor_mac: string
+  neighbor_interface: string
+  lldp_neighbor: string
+  neighbor_device_name: string
+  neighbor_name: string
+  source: string
+  collected_at: string
+}
+
 export interface AcOptical {
   optical_applicable?: boolean
   optical_status: string

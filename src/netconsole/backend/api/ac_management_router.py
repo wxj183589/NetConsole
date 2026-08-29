@@ -17,6 +17,7 @@ from netconsole.models.api.ac_management import (
     AcConfigContentDTO,
     AcConfigDiffDTO,
     AcConfigSnapshotPageDTO,
+    AcCurrentLldpDTO,
     AcLldpDTO,
     AcManagementSummaryDTO,
     AcOpticalDTO,
@@ -183,6 +184,18 @@ def ap_radios(request: Request, ap_id: str) -> list[AcRadioDTO]:
 )
 def ap_lldp(request: Request, ap_id: str) -> AcLldpDTO:
     return _required(_query(lambda: _service(request).get_ap_lldp(_site_id(request), ap_id)), "AP 不存在")
+
+
+@router.get(
+    "/aps/{ap_id}/lldp/current",
+    response_model=list[AcCurrentLldpDTO],
+    dependencies=[Depends(require_feature("module.fit_ap"))],
+)
+def ap_current_lldp(request: Request, ap_id: str) -> list[AcCurrentLldpDTO]:
+    return _required(
+        _query(lambda: _service(request).get_ap_current_lldp(_site_id(request), ap_id)),
+        "AP 不存在",
+    )
 
 
 @router.get(

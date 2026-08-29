@@ -19,7 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from netconsole.backend.api.main import DESKTOP_SESSION_HEADER, create_app
 from netconsole.core.backend_instance_lock import BackendInstanceLock
 from netconsole.core.paths import PathResolver
-from netconsole.core.runtime_environment import is_packaged_runtime
+from netconsole.core.runtime_environment import data_environment, is_packaged_runtime
 from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.core.storage_manifest import prepare_storage_manifest
 from netconsole.core.runtime_profile import read_host_environment_profile
@@ -35,6 +35,7 @@ class ElectronRuntimeOptions:
     port: int
     renderer_origin: str | None = None
     development: bool = False
+    allow_production_write: bool = False
 
 
 @dataclass(frozen=True)
@@ -49,10 +50,21 @@ def parse_options(argv: list[str] | None = None) -> ElectronRuntimeOptions:
     parser.add_argument("--port", type=_valid_port, required=True)
     parser.add_argument("--renderer-origin", type=_loopback_http_origin)
     parser.add_argument("--dev-mode", action="store_true")
+    parser.add_argument("--allow-production-write", action="store_true")
     values = parser.parse_args(argv)
     if values.dev_mode and is_packaged_runtime():
         parser.error("development mode is unavailable in packaged runtime")
-    return ElectronRuntimeOptions(values.host, values.port, values.renderer_origin, values.dev_mode)
+    if values.allow_production_write:
+        import os
+
+        os.environ["NETCONSOLE_ALLOW_PRODUCTION_WRITE"] = "1"
+    return ElectronRuntimeOptions(
+        values.host,
+        values.port,
+        values.renderer_origin,
+        values.dev_mode,
+        values.allow_production_write,
+    )
 
 
 def read_runtime_handshake(stream: TextIO) -> ElectronRuntimeHandshake:
@@ -118,6 +130,8 @@ def main(argv: list[str] | None = None, *, stdin: TextIO | None = None) -> int:
     try:
         _emit_startup_stage("paths_resolving", started_at)
         paths = PathResolver()
+        if hasattr(paths, "data_root"):
+            data_environment(paths.data_root)
         _emit_startup_stage("paths_resolved", started_at)
         _log_host_environment_summary(paths)
         _emit_startup_stage("instance_lock_acquiring", started_at)

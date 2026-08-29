@@ -6,8 +6,10 @@ from pathlib import Path
 from netconsole.core.runtime_environment import app_root as default_app_root
 from netconsole.core.runtime_environment import data_root as default_data_root
 from netconsole.core.runtime_environment import ensure_runtime_dir
+from netconsole.core.runtime_environment import data_environment
 from netconsole.core.runtime_environment import validate_data_root
 from netconsole.core.runtime_environment import validate_runtime_write_path
+from netconsole.core.runtime_mode import DataEnvironmentInfo
 
 
 SITE_MIN_DIRS = ("db",)
@@ -38,6 +40,14 @@ class PathResolver:
         """兼容旧调用名；新布局中业务目录直接位于 data_root。"""
 
         return self.data_root
+
+    @property
+    def data_environment(self) -> DataEnvironmentInfo:
+        return data_environment(self.data_root)
+
+    @property
+    def runtime_mode_path(self) -> Path:
+        return self.data_root / "runtime_mode.json"
 
     @property
     def runtime_dir(self) -> Path:

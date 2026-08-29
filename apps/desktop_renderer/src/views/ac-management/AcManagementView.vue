@@ -4,7 +4,7 @@ import { Download, Refresh, View } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { useRoute } from 'vue-router'
 
-import { getAcApRecentChanges } from '../../api/acManagement'
+import { getAcApCurrentLldp, getAcApRecentChanges } from '../../api/acManagement'
 import { listStations } from '../../api/railTransitBaseData'
 import {
   confirmAcActionPlan,
@@ -29,7 +29,7 @@ import ConfigDiffViewer from '../../components/config-diff/ConfigDiffViewer.vue'
 import type { NcDataTableContextMenuItem } from '../../components/table/NcDataTableContextMenu'
 import type { NcColumnValueType, NcTableColumn } from '../../components/table/NcTableColumn'
 import AcOmniPeekExportDialog from './AcOmniPeekExportDialog.vue'
-import type { AcAp, AcApHistoryPage, AcConfigSnapshot, AcOptical, AcRadio } from '../../types/acManagement'
+import type { AcAp, AcApHistoryPage, AcConfigSnapshot, AcCurrentLldp, AcOptical, AcRadio } from '../../types/acManagement'
 import type { Station } from '../../types/railTransitBaseData'
 import type {
   AcActionAudit,
@@ -75,6 +75,9 @@ const recentLoading = ref(false)
 const recentError = ref('')
 const recentPage = ref<AcApHistoryPage | null>(null)
 const recentKind = ref<'radio' | 'lldp' | 'optical'>('radio')
+const currentLldpRows = ref<AcCurrentLldp[]>([])
+const currentLldpLoading = ref(false)
+const currentLldpError = ref('')
 const actionPlanStorageKey = 'netconsole.ac-management.action-plan'
 const actionPlan = ref<AcActionPlan | null>(null)
 const actionAudit = ref<AcActionAudit | null>(null)
@@ -151,6 +154,15 @@ const radioColumns: NcTableColumn<AcRadio>[] = [
   acColumn('mode', '模式'), acColumn('band', '频段'), acColumn('channel', '信道', 'number'),
   acColumn('bandwidth', '带宽', 'rate'), acColumn('usage', '利用率 (%)', 'percentage'),
   acColumn('tx_power', '功率', 'number'), acColumn('clients', '客户端', 'number'), acColumn('bssid', 'BSSID', 'mac'),
+]
+const currentLldpColumns: NcTableColumn<AcCurrentLldp>[] = [
+  acColumn('collected_at', '采集时间', 'datetime'),
+  acColumn('local_interface', '本地接口', 'port', { displayValue: (row) => displayColumnValue('local_interface', row.local_interface) }),
+  acColumn('lldp_neighbor', 'LLDP 邻居', 'name'),
+  acColumn('neighbor_device_name', '交换机', 'name'),
+  acColumn('neighbor_interface', '交换机端口', 'port', { displayValue: (row) => displayColumnValue('neighbor_interface', row.neighbor_interface) }),
+  acColumn('neighbor_mac', '邻居 MAC', 'mac'),
+  acColumn('source', '来源'),
 ]
 const detailRadios = computed(() => (store.selected?.radios || []).filter((radio) => radio.radio_id <= 2))
 const configLines = computed(() => (store.configContent?.content || '').split('\n'))
@@ -467,7 +479,17 @@ async function openDetail(row: AcAp): Promise<void> {
 
 async function openDetailById(apId: string): Promise<void> {
   detailVisible.value = true
+  currentLldpRows.value = []
+  currentLldpError.value = ''
+  currentLldpLoading.value = true
   await store.selectAp(apId)
+  try {
+    currentLldpRows.value = await getAcApCurrentLldp(apId)
+  } catch (cause) {
+    currentLldpError.value = cause instanceof Error ? cause.message : '当前 LLDP 加载失败'
+  } finally {
+    currentLldpLoading.value = false
+  }
   const ap = store.selected?.ap
   if (ap) Object.assign(metadataForm, {
     station_id: ap.manual_station_id || '',
@@ -1017,17 +1039,9 @@ function opticalEvidenceTitle(label: string, value: unknown, status: string, opt
           <div class="section-heading"><h3>Mesh Radio 1 / 2</h3><el-button v-if="isFeatureEnabled('capability.ac.fit_ap.history') && recentChangeCount('radio') > 0" link type="primary" @click="openRecentChanges('radio')">最近变化 ({{ recentChangeCount('radio') }})</el-button><span v-else-if="isFeatureEnabled('capability.ac.fit_ap.history')" class="recent-change-empty">最近变化：暂无</span></div>
           <NcDataTable table-id="ac-fit-ap-radios" route-key="/ac-management" :data="detailRadios" :columns="radioColumns" :show-column-settings="false" border />
 
-          <div class="section-heading"><h3>LLDP / 端口</h3><el-button v-if="isFeatureEnabled('capability.ac.fit_ap.history') && recentChangeCount('lldp') > 0" link type="primary" @click="openRecentChanges('lldp')">最近变化 ({{ recentChangeCount('lldp') }})</el-button><span v-else-if="isFeatureEnabled('capability.ac.fit_ap.history')" class="recent-change-empty">最近变化：暂无</span></div>
-          <el-descriptions :column="2" border>
-            <el-descriptions-item label="交换机">{{ display(store.selected.lldp.switch_name) }}</el-descriptions-item>
-            <el-descriptions-item label="交换机 IP">{{ display(store.selected.lldp.switch_ip) }}</el-descriptions-item>
-            <el-descriptions-item label="接口">{{ displayColumnValue('interface_name', store.selected.lldp.interface_name) }}</el-descriptions-item>
-            <el-descriptions-item label="LLDP 邻居">{{ display(store.selected.lldp.lldp_neighbor) }}</el-descriptions-item>
-            <el-descriptions-item label="端口状态">{{ display(store.selected.lldp.port_status) }}</el-descriptions-item>
-            <el-descriptions-item label="VLAN">{{ display(store.selected.lldp.vlan) }}</el-descriptions-item>
-            <el-descriptions-item label="光模块状态">{{ display(store.selected.lldp.optical_module_status) }}</el-descriptions-item>
-            <el-descriptions-item label="LLDP 状态">{{ display(store.selected.lldp.match_status) }}</el-descriptions-item>
-          </el-descriptions>
+          <div class="section-heading"><h3>当前 LLDP 关系（最多 10 条）</h3><el-button v-if="isFeatureEnabled('capability.ac.fit_ap.history') && recentChangeCount('lldp') > 0" link type="primary" @click="openRecentChanges('lldp')">最近变化 ({{ recentChangeCount('lldp') }})</el-button><span v-else-if="isFeatureEnabled('capability.ac.fit_ap.history')" class="recent-change-empty">最近变化：暂无</span></div>
+          <el-alert v-if="currentLldpError" :title="currentLldpError" type="error" :closable="false" show-icon />
+          <NcDataTable v-loading="currentLldpLoading" table-id="ac-fit-ap-current-lldp" route-key="/ac-management" :data="currentLldpRows" :columns="currentLldpColumns" :show-column-settings="false" border empty-text="暂无有效 LLDP 关系" />
 
           <div class="section-heading"><h3>光衰台账</h3></div>
           <el-alert :title="opticalAlertTitle(store.selected.optical)" :type="detailApOpticalPresentation(store.selected.optical).tagType" :closable="false" show-icon />

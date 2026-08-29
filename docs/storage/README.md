@@ -16,6 +16,7 @@ NSIS 安装器把程序安装位置和数据存放位置分开选择。业务数
 - [局点包格式](./SITE_PACKAGE_FORMAT.md)：未加密完整迁移、脱敏分享、现场采集、采集回传、manifest、checksum、凭据边界和安全合并。
 - [备份恢复](./BACKUP_AND_RESTORE.md)：替换导入、旧数据保留和恢复策略。
 - [局点数据保留与清理](./SITE_RETENTION.md)：扫描令牌、数据库分类、Online MR 原始数据、任务事件和保护边界。
+- [真实数据根验证](./DATA_ROOT_VALIDATION.md)：Production/Dev Copy 隔离、复制流程和生命周期审计结果。
 - [History Storage V2](./HISTORY_STORAGE_V2.md)：月分片 V2 格式、V1/mixed 兼容、物理基线和真实 snapshot/query 结果。
 - [Legacy History COPY-only 迁移](./LEGACY_HISTORY_MIGRATION.md)：inventory、identity、checkpoint、verify、resume 和源数据保护边界。
 - [安全边界](./SECURITY.md)：路径、ZIP、API 和 Electron IPC 约束。

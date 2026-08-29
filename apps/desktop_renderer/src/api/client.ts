@@ -12,6 +12,11 @@ export interface HealthResponse {
   edition?: string
   packaged_dirty?: boolean
   build_timestamp?: string
+  data_root?: string
+  data_environment?: string
+  data_environment_label?: string
+  production_write_allowed?: boolean
+  production_write_warning?: boolean
   performance_mode?: string
   unattended_status?: string
   unattended_ready?: boolean
