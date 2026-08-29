@@ -172,3 +172,36 @@ The following distinctions are mandatory when reporting storage work:
 
 The registry is a design and guardrail source. It does not itself prove that production data has
 been migrated, that every consumer passed parity, or that a retention action is safe.
+
+## Production Storage Audit And Retirement Gate
+
+The production root is audited as one ownership graph: global stores, every physical site,
+registered and unregistered paths, SQLite sidecars, runtime files, backups, staging, reports,
+and legacy Agent material are included. `config/storage_registry.yaml` is the allowlist and
+source-of-truth for known paths; an unregistered path or table is `UNKNOWN_PROTECT`, even when
+its name looks temporary or rebuildable. A registry entry does not authorize deletion.
+
+`scripts/maintenance/retire_unmanaged_storage.py` accepts only an explicit candidate specification
+whose classification is `UNMANAGED_EXTERNAL` or `LEGACY_MANAGED`, with no active references and
+an identified writer/reader or a documented absence of both. It creates a sibling
+`<data-root>-retired-<timestamp>` directory, binds the operation to a target-scoped
+hash/size/mtime plan, the storage-registry revision, an active-authority manifest and the
+current rollback-owner identity, copies and verifies every file, writes
+`retirement-manifest.json`, and removes the source only after verification. It rejects path
+traversal, reparse points, `UNKNOWN`, active references, protection drift, source drift, and an
+existing retirement directory. Failure rolls back the files already moved; no broad age/size
+cleanup is permitted.
+
+`scripts/maintenance/compact_task_result_production.py` is the separate target-scoped physical
+`tasks.db` gate. It is candidate-first, creates an external recovery copy, runs `VACUUM INTO`
+only on a closed candidate, verifies every user table and task-result authority plus related
+orphan checks, and atomically replaces only the target database when the configured freelist
+threshold is met. Runtime logs, unrelated sites, and retirement candidates are not part of its
+source digest.
+
+An ownership scan that observes external production changes must stop only the affected target
+operation. The old and new target records, exact changed paths and hashes, and missing provenance
+must be retained for review; do not copy data back from a development root. Unrelated log/cache
+growth or another site's database does not invalidate an unchanged target. Production restart,
+storage-management, Task Center, FIT-AP, and Current/recent smoke checks remain separate
+acceptance gates.

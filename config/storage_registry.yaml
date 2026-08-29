@@ -254,10 +254,10 @@
           "consumers": ["TaskRepository read-through", "Task Center", "REST", "WebSocket", "Site Package"],
           "lifecycle_owner": "TaskRepository, TaskHistoryStore and SiteRetentionService",
           "rebuildable": false,
-          "source_locations": ["src/netconsole/repositories/task_repository.py", "src/netconsole/repositories/task_result_blob_repository.py", "src/netconsole/repositories/history_store.py", "src/netconsole/services/job_center/query_service.py", "src/netconsole/services/job_center/task_cleanup_service.py", "src/netconsole/services/site_retention.py", "src/netconsole/services/site_sync.py", "scripts/maintenance/task_result_maintenance.py", "scripts/maintenance/audit_tasks_db_space.py", "scripts/maintenance/audit_task_storage_integrity.py", "scripts/maintenance/migrate_task_result_blobs.py", "scripts/maintenance/compact_task_result_storage.py"]
+          "source_locations": ["src/netconsole/repositories/task_repository.py", "src/netconsole/repositories/task_result_blob_repository.py", "src/netconsole/repositories/history_store.py", "src/netconsole/services/job_center/query_service.py", "src/netconsole/services/job_center/task_cleanup_service.py", "src/netconsole/services/site_retention.py", "src/netconsole/services/site_sync.py", "scripts/maintenance/task_result_maintenance.py", "scripts/maintenance/audit_tasks_db_space.py", "scripts/maintenance/audit_task_storage_integrity.py", "scripts/maintenance/migrate_task_result_blobs.py", "scripts/maintenance/compact_task_result_storage.py", "scripts/maintenance/close_task_result_ref_only.py", "scripts/maintenance/compact_task_result_production.py"]
         }
       ],
-      "source_locations": ["src/netconsole/repositories/task_repository.py", "src/netconsole/repositories/task_result_blob_repository.py", "src/netconsole/services/job_center/task_application_service.py", "src/netconsole/services/job_center/query_service.py", "src/netconsole/services/job_center/task_cleanup_service.py", "src/netconsole/services/site_retention.py", "src/netconsole/services/site_sync.py", "scripts/maintenance/check_online_mr_session_state.py", "scripts/maintenance/manage_task_result_rollout.py", "scripts/maintenance/profile_tasks_db.py", "scripts/maintenance/task_result_maintenance.py", "scripts/maintenance/audit_tasks_db_space.py", "scripts/maintenance/audit_task_storage_integrity.py", "scripts/maintenance/migrate_task_result_blobs.py", "scripts/maintenance/compact_task_result_storage.py"]
+      "source_locations": ["src/netconsole/repositories/task_repository.py", "src/netconsole/repositories/task_result_blob_repository.py", "src/netconsole/services/job_center/task_application_service.py", "src/netconsole/services/job_center/query_service.py", "src/netconsole/services/job_center/task_cleanup_service.py", "src/netconsole/services/site_retention.py", "src/netconsole/services/site_sync.py", "scripts/maintenance/check_online_mr_session_state.py", "scripts/maintenance/manage_task_result_rollout.py", "scripts/maintenance/profile_tasks_db.py", "scripts/maintenance/task_result_maintenance.py", "scripts/maintenance/audit_tasks_db_space.py", "scripts/maintenance/audit_task_storage_integrity.py", "scripts/maintenance/migrate_task_result_blobs.py", "scripts/maintenance/compact_task_result_storage.py", "scripts/maintenance/close_task_result_ref_only.py", "scripts/maintenance/compact_task_result_production.py"]
     },
     {
       "id": "site.agents",
@@ -2051,6 +2051,25 @@
       "source_locations": ["docs/archive/migrations/qt-to-electron/MIGRATION_MATRIX.md", "docs/storage/STORAGE_ARCHITECTURE.md"]
     },
     {
+      "id": "global.backups.database_upgrade_recovery",
+      "relative_path": "backups/database_upgrade/_recovery/**",
+      "owner": "DatabaseUpgradeJournal and DatabaseUpgradeManagementService",
+      "code_owners": ["storage"],
+      "data_type": "BACKUP_ROLLBACK",
+      "authority": "database-upgrade recovery journal and recovered rollback database evidence",
+      "producer": ["DatabaseUpgradeJournal", "DatabaseUpgradeManagementService"],
+      "consumers": ["upgrade recovery", "rollback diagnosis", "storage audit"],
+      "retention_owner": "Database upgrade framework",
+      "rebuildable": false,
+      "site_package_policy": "exclude; preserve as DataRoot recovery evidence",
+      "backup_policy": "preserve until the referenced upgrade operation is terminal and its recovery evidence is explicitly reviewed",
+      "migration_policy": "do not retire while a recovery journal, rollback owner or acceptance review references the operation",
+      "schema_version": "database upgrade recovery evidence",
+      "allowed_data_classes": ["BACKUP_ROLLBACK"],
+      "forbidden_data_classes": ["CACHE_REBUILDABLE", "STAGING_TEMPORARY", "DISPOSABLE_DERIVED"],
+      "source_locations": ["src/netconsole/services/database_upgrade/journal.py", "src/netconsole/services/database_upgrade/management_service.py", "src/netconsole/core/paths.py"]
+    },
+    {
       "id": "global.migrations.conflicts",
       "relative_path": "migrations/conflicts/**",
       "owner": "Unified DataRoot migration",
@@ -2183,6 +2202,25 @@
       "allowed_data_classes": ["HISTORICAL_RAW_FACT"],
       "forbidden_data_classes": ["CACHE_REBUILDABLE", "STAGING_TEMPORARY", "DISPOSABLE_DERIVED"],
       "source_locations": ["src/netconsole/services/site_lifecycle.py", "src/netconsole/core/paths.py"]
+    },
+    {
+      "id": "global.storage_audit.report",
+      "relative_path": "storage-audit-report/**",
+      "owner": "StorageAuditService and storage audit maintenance",
+      "code_owners": ["storage"],
+      "data_type": "HISTORICAL_RAW_FACT",
+      "authority": "read-only storage inventory, SQLite footprint and duplicate audit evidence",
+      "producer": ["scripts.storage.generate_storage_report"],
+      "consumers": ["StorageAuditService", "storage governance review", "retirement planning"],
+      "retention_owner": "Storage audit lifecycle",
+      "rebuildable": true,
+      "site_package_policy": "exclude; reports are DataRoot-scoped audit evidence",
+      "backup_policy": "retain the latest verified report set and archive only bounded prior sets",
+      "migration_policy": "atomically publish a report set; keep latest plus bounded audit history; never use reports as business authority",
+      "schema_version": "storage audit report set",
+      "allowed_data_classes": ["HISTORICAL_RAW_FACT"],
+      "forbidden_data_classes": ["OPERATIONAL_CURRENT", "BACKUP_ROLLBACK", "DISPOSABLE_DERIVED"],
+      "source_locations": ["scripts/storage/generate_storage_report.py", "src/netconsole/services/storage_audit.py", "docs/storage/STORAGE_TESTING_GUIDE.md"]
     },
     {
       "id": "global.migrations.site_cleanup",

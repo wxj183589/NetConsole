@@ -185,6 +185,8 @@ def test_storage_registry_covers_global_persistent_lifecycle_roots() -> None:
         "global.migrations.source_archives": "BACKUP_ROLLBACK",
         "global.migrations.unclassified": "UNKNOWN",
         "global.legacy.mib_archive": "ARTIFACT_OR_RAW_FILE",
+        "global.backups.database_upgrade_recovery": "BACKUP_ROLLBACK",
+        "global.storage_audit.report": "HISTORICAL_RAW_FACT",
         "global.runtime.logs": "HISTORICAL_RAW_FACT",
         "global.runtime.background_jobs": "OPERATIONAL_CURRENT",
         "global.runtime.export_jobs": "OPERATIONAL_CURRENT",

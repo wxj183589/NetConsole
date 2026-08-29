@@ -34,6 +34,8 @@
   {"path":"scripts/maintenance/audit_task_storage_integrity.py","classification":"READ_ONLY_DATA_GATEWAY","owner":"job-center","reason":"Task storage integrity gate 只读检查 result/blob/reference parity；不可读或未知 ownership fail-closed。"},
   {"path":"scripts/maintenance/migrate_task_result_blobs.py","classification":"MIGRATION_TOOL","owner":"job-center","reason":"显式 task result Blob migration 只对受保护隔离候选库执行，默认 dry-run，拒绝 Production data root。"},
   {"path":"scripts/maintenance/compact_task_result_storage.py","classification":"MIGRATION_TOOL","owner":"job-center","reason":"显式 candidate-first tasks.db compact 使用 VACUUM INTO、parity/quick-check 和原子替换，不属于运行时 Service。"},
+  {"path":"scripts/maintenance/close_task_result_ref_only.py","classification":"MIGRATION_TOOL","owner":"job-center","reason":"显式 digest-bound task result ref-only 逻辑收口只更新已验证的 canonical_json，不删除任务、事件、快照、结果或 Blob。"},
+  {"path":"scripts/maintenance/compact_task_result_production.py","classification":"MIGRATION_TOOL","owner":"job-center","reason":"显式授权的 target-scoped tasks.db candidate-first 物理压缩；外部 recovery、全表/authority/orphan 校验后原子替换。"},
   {"path":"src/netconsole/services/mesh_parsed_rebuild_service.py","classification":"ANALYSIS_DB_OWNER","owner":"mesh","reason":"在 Job Worker 中归档、重建、校验并失败回滚 MESH 派生 SQLite；原始日志只读保留。"},
   {"path":"src/netconsole/services/database_upgrade/sqlite_consistency.py","classification":"REPOSITORY_REQUIRED","owner":"data","reason":"统一数据库升级框架的 SQLite Backup、WAL checkpoint 和只读完整性校验边界。"},
   {"path":"src/netconsole/services/mesh_derived_data_maintenance_service.py","classification":"ANALYSIS_DB_OWNER","owner":"mesh","reason":"MESH 派生数据库维护状态与来源恢复的 SQLite 生命周期所有者。"},
@@ -163,5 +165,7 @@
   {"path":"tests/storage/test_sites_root_analysis.py","classification":"TEST_ONLY","owner":"test","reason":"Sites-root storage analysis tests create isolated temporary SQLite fixtures only."},
   {"path":"tests/test_site_sync_task_merge.py","classification":"TEST_ONLY","owner":"test","reason":"site sync task merge tests use temporary SQLite fixtures."},
   {"path":"tests/test_task_result_rollout.py","classification":"TEST_ONLY","owner":"test","reason":"task result rollout tests use temporary SQLite fixtures."},
+  {"path":"tests/test_close_task_result_ref_only.py","classification":"TEST_ONLY","owner":"test","reason":"ref-only task result closure tests use temporary SQLite fixtures and never open production data."},
+  {"path":"tests/test_compact_task_result_production.py","classification":"TEST_ONLY","owner":"test","reason":"production compaction gate tests use temporary SQLite fixtures and monkeypatch the production root; no production data is opened."},
   {"path":"tests/test_validate_history_provenance.py","classification":"TEST_ONLY","owner":"test","reason":"history provenance tests use temporary SQLite fixtures."}
 ]

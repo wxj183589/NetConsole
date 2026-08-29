@@ -107,8 +107,25 @@ throughput and commit latency percentiles.
 - Artifact filesystem truth remains owned by
   `ArtifactReconciliationService`; cleanup protects references but never
   deletes external files or manifests.
-- Production migration, Production compact and physical Production cleanup are
-  not enabled. Any future operation requires a separately approved isolated
-  candidate, parity evidence and release/operations ownership.
+- Production migration and generic physical cleanup remain disabled. The
+  production-safe ref-only closure tool is an explicit, target-scoped,
+  digest-bound maintenance operation. Generate a preview with
+  `scripts/maintenance/close_task_result_ref_only.py preview`, review every
+  authority/hash/count check, and apply only with an external SQLite backup,
+  `PRODUCTION_MAINTENANCE_AUTHORIZED`, and the exact plan digest. The operation
+  updates only `task_results.canonical_json`; it does not delete tasks, events,
+  snapshots, result rows, or blobs. It does not run `VACUUM`; physical
+  compaction is a separate target gate.
+- When a target `tasks.db` has at least 16 MiB or 5% freelist after ref-only,
+  `scripts/maintenance/compact_task_result_production.py` may build a
+  `VACUUM INTO` candidate under production staging. It requires an external
+  recovery copy and validates full user-table parity, result/Blob authority,
+  and task/Online-MR/Ground/Artifact orphan checks before atomic replacement.
+  A post-replace mismatch restores that external copy; the existing rollback
+  owner is not modified.
+- A target database change, WAL, authority, hash, count, consumer, or restart
+  failure aborts only the affected target phase. Unrelated log/cache growth or
+  another site's database does not invalidate an otherwise unchanged target.
+  Do not infer ownership from a filename or use generic task/event retention.
 - Adding an `event_time` retention index and changing Site Return Package
   treatment of `online_mr_task_sessions` remain separate contract decisions.
