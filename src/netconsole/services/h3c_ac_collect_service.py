@@ -24,13 +24,20 @@ from netconsole.parsers.h3c.device_parser import parse_device
 from netconsole.parsers.h3c.ac.fit_ap_optical_parser import parse_fit_ap_optical
 from netconsole.parsers.h3c.ac.system_usage_parser import parse_cpu_usage, parse_memory
 from netconsole.parsers.h3c.ac.wlan_ap_address_parser import parse_wlan_ap_addresses
-from netconsole.parsers.h3c.ac.wlan_ap_connection_record_parser import parse_wlan_ap_connection_records
+from netconsole.parsers.h3c.ac.wlan_ap_connection_record_parser import (
+    is_wlan_ap_connection_record_output_parseable,
+    parse_wlan_ap_connection_records,
+)
 from netconsole.parsers.h3c.ac.wlan_ap_lldp_parser import parse_wlan_ap_lldp
 from netconsole.parsers.h3c.ac.wlan_ap_parser import parse_wlan_ap_list, parse_wlan_ap_summary
 from netconsole.parsers.h3c.ac.wlan_ap_radio_parser import parse_wlan_ap_radios
 from netconsole.parsers.h3c.ac.wlan_ap_radio_type_parser import parse_wlan_ap_radio_types
 from netconsole.parsers.h3c.ac.wlan_ap_radio_verbose_parser import parse_wlan_ap_radio_verbose_bbssid
-from netconsole.parsers.h3c.ac.wlan_ap_unauthenticated_parser import parse_wlan_ap_unauthenticated_rows, parse_wlan_ap_unauthenticated_summary
+from netconsole.parsers.h3c.ac.wlan_ap_unauthenticated_parser import (
+    classify_wlan_ap_unauthenticated_snapshot,
+    parse_wlan_ap_unauthenticated_rows,
+    parse_wlan_ap_unauthenticated_summary,
+)
 from netconsole.parsers.h3c.ac.wlan_ap_verbose_parser import parse_wlan_ap_verbose
 from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
@@ -175,6 +182,10 @@ class AcResourceCollectResult:
     detail_rows_updated: int = 0
     detail_failed_count: int = 0
     detail_mode: str = ""
+    unauthenticated_status: str = "not_collected"
+    connection_record_rows_updated: int = 0
+    connection_record_status: str = "not_collected"
+    connection_record_error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -260,6 +271,10 @@ def collect_h3c_ac_resources(
         lldp_rows_parsed=resource_result.lldp_rows_parsed,
         bbssid_collect_status=resource_result.bbssid_collect_status,
         bbssid_error=resource_result.bbssid_error,
+        unauthenticated_status=resource_result.unauthenticated_status,
+        connection_record_rows_updated=resource_result.connection_record_rows_updated,
+        connection_record_status=resource_result.connection_record_status,
+        connection_record_error=resource_result.connection_record_error,
     )
 
 
@@ -432,7 +447,49 @@ def collect_h3c_fit_ap_resources(
         )
         _raise_if_cancelled(should_cancel)
         progress("正在解析FIT-AP资源...")
-        summary, resources = parse_ac_resource_outputs(outputs, str(ac_device.device_uuid), collect_run_uuid, relative_raw_log_path)
+        connection_result = next(
+            (
+                result
+                for result in command_results
+                if result.command == "display wlan ap all connection-record"
+            ),
+            None,
+        )
+        connection_record_output = outputs.get(
+            "display wlan ap all connection-record", ""
+        )
+        connection_record_parseable = is_wlan_ap_connection_record_output_parseable(
+            connection_record_output
+        )
+        summary, resources = parse_ac_resource_outputs(
+            outputs,
+            str(ac_device.device_uuid),
+            collect_run_uuid,
+            relative_raw_log_path,
+            collected_at=started_at,
+            site_key=site_name,
+            connection_record_success=(
+                bool(
+                    connection_result is not None
+                    and connection_result.success
+                    and connection_record_parseable
+                )
+            ),
+        )
+        connection_records = (
+            list(
+                parse_wlan_ap_connection_records(
+                    connection_record_output,
+                    collected_at=started_at,
+                    ac_id=str(ac_device.device_uuid),
+                    site_key=site_name,
+                ).values()
+            )
+            if connection_result is not None
+            and connection_result.success
+            and connection_record_parseable
+            else []
+        )
         if target_resource is not None:
             target_name = str(target_resource.get("ap_name") or "").strip().casefold()
             resources = [row for row in resources if str(row.get("ap_name") or "").strip().casefold() == target_name]
@@ -499,29 +556,81 @@ def collect_h3c_fit_ap_resources(
         unauthenticated_updated = False
         unauthenticated_rows_updated = 0
         unauthenticated_error = None
+        unauthenticated_status = "not_collected"
+        connection_record_rows_updated = 0
+        connection_record_status = "not_collected"
+        connection_record_error = None
+        if not deep_refresh and connection_result is not None:
+            if connection_result.success and connection_record_parseable:
+                connection_record_rows_updated = repository.apply_fit_ap_connection_records(
+                    str(ac_device.device_uuid),
+                    connection_records,
+                )
+                connection_record_status = (
+                    "SUCCESS_WITH_ROWS" if connection_records else "SUCCESS_EMPTY"
+                )
+            else:
+                connection_record_status = "FAILED"
+                connection_record_error = (
+                    connection_result.error_message
+                    or (
+                        "display wlan ap all connection-record output is not parseable"
+                        if not connection_record_parseable
+                        else ""
+                    )
+                    or "display wlan ap all connection-record failed"
+                )
         if not deep_refresh and unauth_result and unauth_result.success:
             unauth_summary = parse_wlan_ap_unauthenticated_summary(unauth_result.output)
-            unauth_rows = parse_wlan_ap_unauthenticated_rows(unauth_result.output)
-            metadata = {
-                "collect_run_uuid": collect_run_uuid,
-                "raw_log_path": relative_raw_log_path,
-                "collected_at": started_at,
-                "updated_at": _now(),
-            }
-            unauth_started = time.monotonic()
-            progress(f"正在保存未认证 AP：{len(unauth_rows)} 条...")
-            repository.replace_fit_ap_unauthenticated(
-                str(ac_device.device_uuid),
-                {**unauth_summary, **metadata},
-                [{**row, **metadata} for row in unauth_rows],
+            unauth_rows = parse_wlan_ap_unauthenticated_rows(
+                unauth_result.output,
+                collected_at=started_at,
+                ac_id=str(ac_device.device_uuid),
+                site_key=site_name,
             )
-            unauth_elapsed_ms = max(0, int((time.monotonic() - unauth_started) * 1000))
-            progress(f"未认证 AP 保存完成：{unauth_elapsed_ms / 1000:.2f}s")
-            unauthenticated_updated = True
-            unauthenticated_rows_updated = len(unauth_rows)
-            app_logger.log_info("FIT_AP_UNAUTHENTICATED_UPDATED", _detail(ac_device, collect_run_uuid, count=len(unauth_rows)))
+            unauthenticated_status = classify_wlan_ap_unauthenticated_snapshot(
+                unauth_result.output,
+                unauth_rows,
+            )
+            if unauthenticated_status == "FAILED":
+                unauthenticated_error = (
+                    "display wlan ap unauthenticated output is not parseable"
+                )
+                app_logger.log_warning(
+                    "FIT_AP_UNAUTHENTICATED_FAILED",
+                    _detail(
+                        ac_device,
+                        collect_run_uuid,
+                        error=unauthenticated_error,
+                    ),
+                )
+                unauth_rows = []
+            else:
+                metadata = {
+                    "collect_run_uuid": collect_run_uuid,
+                    "raw_log_path": relative_raw_log_path,
+                    "collected_at": started_at,
+                    "updated_at": _now(),
+                }
+                unauth_started = time.monotonic()
+                progress(f"正在保存未认证 AP：{len(unauth_rows)} 条...")
+                repository.replace_fit_ap_unauthenticated(
+                    str(ac_device.device_uuid),
+                    {
+                        **unauth_summary,
+                        **metadata,
+                        "snapshot_status": unauthenticated_status,
+                    },
+                    [{**row, **metadata} for row in unauth_rows],
+                )
+                unauth_elapsed_ms = max(0, int((time.monotonic() - unauth_started) * 1000))
+                progress(f"未认证 AP 保存完成：{unauth_elapsed_ms / 1000:.2f}s")
+                unauthenticated_updated = True
+                unauthenticated_rows_updated = len(unauth_rows)
+                app_logger.log_info("FIT_AP_UNAUTHENTICATED_UPDATED", _detail(ac_device, collect_run_uuid, count=len(unauth_rows)))
         elif not deep_refresh and unauth_result:
             unauthenticated_error = unauth_result.error_message or "display wlan ap unauthenticated failed"
+            unauthenticated_status = "FAILED"
             app_logger.log_warning("FIT_AP_UNAUTHENTICATED_FAILED", _detail(ac_device, collect_run_uuid, error=unauthenticated_error))
         bbssid = parse_wlan_ap_radio_verbose_bbssid(outputs.get("display wlan ap all radio verbose filter bbssid", ""))
         lldp = parse_wlan_ap_lldp(outputs.get("display wlan ap all lldp", ""))
@@ -589,6 +698,13 @@ def collect_h3c_fit_ap_resources(
             lldp_rows,
             bbssid_collect_status,
             bbssid_error,
+            0,
+            0,
+            "",
+            unauthenticated_status,
+            connection_record_rows_updated,
+            connection_record_status,
+            connection_record_error,
         )
     except CollectionCancelled:
         message = "用户已取消更新"
@@ -1897,9 +2013,13 @@ def parse_ac_resource_outputs(
     ac_device_uuid: str,
     collect_run_uuid: str,
     raw_log_path: str,
+    *,
+    collected_at: object | None = None,
+    site_key: str = "",
+    connection_record_success: bool | None = None,
 ) -> tuple[dict[str, object | None], list[dict[str, object | None]]]:
-    collected_at = _now()
-    metadata = {"collected_at": collected_at, "updated_at": collected_at, "collect_run_uuid": collect_run_uuid, "raw_log_path": raw_log_path}
+    observation_time = str(collected_at or _now())
+    metadata = {"collected_at": observation_time, "updated_at": _now(), "collect_run_uuid": collect_run_uuid, "raw_log_path": raw_log_path}
     ap_all = outputs.get("display wlan ap all", "")
     device_facts = parse_device(
         outputs.get("display version", ""),
@@ -1919,27 +2039,56 @@ def parse_ac_resource_outputs(
     ap_rows = parse_wlan_ap_list(ap_all)
     address_rows = parse_wlan_ap_addresses(outputs.get("display wlan ap all address", ""))
     radio_rows = parse_wlan_ap_radios(outputs.get("display wlan ap all radio", ""))
-    connection_rows = parse_wlan_ap_connection_records(outputs.get("display wlan ap all connection-record", ""))
+    connection_rows = (
+        parse_wlan_ap_connection_records(
+            outputs.get("display wlan ap all connection-record", ""),
+            collected_at=observation_time,
+            ac_id=ac_device_uuid,
+            site_key=site_key,
+        )
+        if connection_record_success is not False
+        else {}
+    )
     radio_type_rows = parse_wlan_ap_radio_types(outputs.get("display wlan ap all radio type", ""))
     bbssid_rows = parse_wlan_ap_radio_verbose_bbssid(outputs.get("display wlan ap all radio verbose filter bbssid", ""))
     lldp_rows = parse_wlan_ap_lldp(outputs.get("display wlan ap all lldp", ""))
     resources: list[dict[str, object | None]] = []
     for row in ap_rows:
         ap_name = str(row.get("ap_name") or "")
+        connection = _connection_record_for_ap(row, connection_rows)
         resources.append(
             {
                 "ac_device_uuid": ac_device_uuid,
+                "site_key": site_key,
                 **row,
                 **address_rows.get(ap_name, {}),
                 **radio_rows.get(ap_name, {}),
-                **connection_rows.get(ap_name, {}),
+                **connection,
                 **radio_type_rows.get(ap_name, {}),
                 **bbssid_rows.get(ap_name, {}),
                 **lldp_rows.get(ap_name, {}),
                 **metadata,
             }
         )
+        if connection:
+            resources[-1]["connection_record_observed"] = True
     return summary, resources
+
+
+def _connection_record_for_ap(
+    resource: dict[str, object | None],
+    connection_rows: dict[str, dict[str, object | None]],
+) -> dict[str, object | None]:
+    name = str(resource.get("ap_name") or "").strip()
+    direct = connection_rows.get(name)
+    if direct:
+        return direct
+    resource_mac = _normalize_mac_text(resource.get("ap_mac"))
+    if resource_mac:
+        for row in connection_rows.values():
+            if _normalize_mac_text(row.get("ap_mac")) == resource_mac:
+                return row
+    return {}
 
 
 def _can_update_dynamic_summary(command_results: list[CommandResult], summary: dict[str, object | None]) -> bool:

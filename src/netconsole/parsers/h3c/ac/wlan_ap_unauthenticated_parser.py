@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 
 from netconsole.parsers.h3c.ac.state_mapper import map_fit_ap_state
+from netconsole.services.ap_identity.normalizers import normalize_mac_key
 
 
 SUMMARY_FIELD_PATTERNS = {
@@ -33,7 +34,40 @@ def parse_wlan_ap_unauthenticated_summary(output: str) -> dict[str, int | None]:
     return summary
 
 
-def parse_wlan_ap_unauthenticated_rows(output: str) -> list[dict[str, object | None]]:
+def classify_wlan_ap_unauthenticated_snapshot(
+    output: str,
+    rows: list[dict[str, object | None]] | None = None,
+) -> str:
+    """Classify one command output without turning parser failures into empty data."""
+
+    if not is_wlan_ap_unauthenticated_output_parseable(output):
+        return "FAILED"
+    parsed_rows = rows if rows is not None else parse_wlan_ap_unauthenticated_rows(output)
+    expected = parse_wlan_ap_unauthenticated_summary(output).get("connected_auto_aps")
+    if expected is not None and expected != len(parsed_rows):
+        return "FAILED"
+    return "SUCCESS_WITH_ROWS" if parsed_rows else "SUCCESS_EMPTY"
+
+
+def is_wlan_ap_unauthenticated_output_parseable(output: str) -> bool:
+    in_ap_information = False
+    for raw_line in str(output or "").splitlines():
+        line = raw_line.strip()
+        if line.casefold().startswith("ap information"):
+            in_ap_information = True
+            continue
+        if in_ap_information and _is_unauthenticated_ap_header(line):
+            return True
+    return False
+
+
+def parse_wlan_ap_unauthenticated_rows(
+    output: str,
+    *,
+    collected_at: object | None = None,
+    ac_id: object | None = None,
+    site_key: object | None = None,
+) -> list[dict[str, object | None]]:
     rows: list[dict[str, object | None]] = []
     state = "waiting_ap_information"
     for raw_line in str(output or "").splitlines():
@@ -61,19 +95,26 @@ def parse_wlan_ap_unauthenticated_rows(output: str) -> list[dict[str, object | N
         if not _is_valid_unauthenticated_ap_row(parts):
             continue
         ap_name, apid, state_raw, model, serial_number, dev_type, work_mode = parts[:7]
+        normalized_mac = normalize_mac_key(ap_name) or None
         rows.append(
             {
                 "ap_name": ap_name,
                 "apid": apid,
+                "ap_id": apid,
                 "state": state_raw,
                 "state_raw": state_raw,
                 "state_display": map_fit_ap_state(state_raw),
                 "model": model,
                 "serial_number": serial_number,
+                "serial_id": serial_number,
                 "dev_type": dev_type,
                 "work_mode": work_mode,
-                # AP name may look like a MAC, but it is not a physical MAC observation.
+                "ap_mac": normalized_mac,
+                # Retain the legacy field; the normalized MAC is now explicit.
                 "inferred_ap_mac": None,
+                "ac_id": str(ac_id or "").strip(),
+                "site_key": str(site_key or "").strip(),
+                "collected_at": str(collected_at or "").strip(),
                 "raw_line": stripped,
             }
         )

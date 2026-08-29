@@ -1167,6 +1167,7 @@ class RailTransitWebApplicationService:
         fit_ap_started = time.perf_counter()
         resources = repository.list_fit_ap_online_scope_rows()
         fit_ap_ms = (time.perf_counter() - fit_ap_started) * 1000
+        optical_problem_counts = repository.list_current_optical_problem_counts_by_station()
         aggregation_started = time.perf_counter()
         scope = resolve_effective_trackside_ap_scope(
             context=TracksideApScopeContext.from_metadata(site_id, metadata),
@@ -1176,6 +1177,7 @@ class RailTransitWebApplicationService:
             resource_rows=resources,
             runtime_station_rows=runtime_station_rows,
             switch_identity_rows=switch_identity_rows,
+            optical_problem_counts=optical_problem_counts,
             detail_limit=0,
         )
         confirmed_revision, _confirmed_source_revision = (
@@ -1200,6 +1202,8 @@ class RailTransitWebApplicationService:
         planned_total = sum(row.planned_ap_count for row in result)
         matched_online_total = sum(row.actual_online_count for row in result)
         actual_online_total = min(matched_online_total, planned_total)
+        reonline_total = sum(row.reonline_count for row in result)
+        optical_problem_total = sum(row.optical_problem_count for row in result)
         anomaly = any(row.count_anomaly for row in result)
         warning_parts = []
         if unmatched_summary := scope.unmatched_online_summary():
@@ -1218,6 +1222,13 @@ class RailTransitWebApplicationService:
                 if planned_total and not anomaly
                 else None
             ),
+            reonline_count=reonline_total,
+            reonline_rate=(
+                round(reonline_total * 100 / planned_total, 1)
+                if planned_total
+                else None
+            ),
+            optical_problem_count=optical_problem_total,
             unassigned_count=scope.fit_ap_unmatched_online_count,
             unassigned_items=[],
             updated_at=scope.updated_at,

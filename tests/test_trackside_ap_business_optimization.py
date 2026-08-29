@@ -57,15 +57,15 @@ def test_trackside_interface_requires_layer2_port_before_description_or_pvid_mat
     assert is_trackside_ap_interface(device, {"interface_name": "Bridge-Aggregation1", "port_status": "trunk", "pvid": "921"}, plan) == (True, "pvid")
 
 
-def test_export_columns_exclude_ui_only_fields_and_port_change_fields():
+def test_export_columns_exclude_ui_only_fields_and_optical_change_fields():
     fields = [field for _key, field in TRACKSIDE_AP_BUSINESS_EXPORT_COLUMNS]
 
     assert "port_type" not in fields
     assert "description" not in fields
     assert "pvid" not in fields
     assert "vlan" not in fields
-    assert "switch_optical_change" in fields
-    assert "ap_optical_change" in fields
+    assert "switch_optical_change" not in fields
+    assert "ap_optical_change" not in fields
     for field in (
         "ap_port_change",
         "ap_port_change_reason",
@@ -92,8 +92,6 @@ def test_trackside_export_columns_keep_fixed_business_order():
         "ap_device_optical_status",
         "ap_optical_status",
         "updated_at",
-        "switch_optical_change",
-        "ap_optical_change",
         "ap_business_threshold_dbm",
         "ap_business_reason",
     ]

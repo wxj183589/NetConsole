@@ -255,6 +255,7 @@ class EffectiveTracksideApScope:
     runtime_snapshot: TracksideApRuntimeSnapshot = field(
         default_factory=TracksideApRuntimeSnapshot
     )
+    optical_problem_counts: dict[str, int] = field(default_factory=dict)
 
     @property
     def eligible_station_ids(self) -> set[str]:
@@ -554,8 +555,17 @@ class EffectiveTracksideApScope:
             return station_id
         return ""
 
-    def station_statistics(self) -> list[dict[str, object | None]]:
+    def station_statistics(
+        self,
+        optical_problem_counts: Mapping[str, int] | None = None,
+    ) -> list[dict[str, object | None]]:
         online_by_station: dict[str, int] = defaultdict(int)
+        reonline_by_station: dict[str, int] = defaultdict(int)
+        optical_counts = optical_problem_counts or self.optical_problem_counts
+        for resource in self.resources:
+            station_id = str(resource.get("station_id") or "").strip()
+            if station_id and int(resource.get("connection_reonline_count") or 0) > 0:
+                reonline_by_station[station_id] += 1
         for reference_id in self.online_reference_ids:
             reference = self._reference_by_id.get(reference_id)
             if reference is not None:
@@ -574,6 +584,13 @@ class EffectiveTracksideApScope:
             planned = max(int(plan.get("ap_count") or 0), 0)
             observed_online = online_by_station.get(station_id, 0)
             actual = min(observed_online, planned)
+            station_name = self.station_names.get(station_id, "")
+            optical_problem_count = int(
+                optical_counts.get(station_id)
+                or optical_counts.get(station_name)
+                or 0
+            )
+            reonline_count = reonline_by_station.get(station_id, 0)
             status = "normal"
             warning = ""
             if planned == 0 and observed_online > 0:
@@ -586,7 +603,7 @@ class EffectiveTracksideApScope:
             rows.append(
                 {
                     "station_id": station_id,
-                    "station_name": self.station_names.get(station_id, ""),
+                    "station_name": station_name,
                     "planned_ap_count": planned,
                     "actual_online_count": actual,
                     "offline_count": max(planned - actual, 0),
@@ -595,6 +612,13 @@ class EffectiveTracksideApScope:
                         if planned > 0 and status == "normal"
                         else None
                     ),
+                    "reonline_count": reonline_count,
+                    "reonline_rate": (
+                        round(reonline_count * 100 / planned, 1)
+                        if planned > 0
+                        else None
+                    ),
+                    "optical_problem_count": optical_problem_count,
                     "remark": str((plan or {}).get("remark") or ""),
                     "planning_missing": planning_missing,
                     "count_anomaly": count_anomaly,
@@ -604,8 +628,11 @@ class EffectiveTracksideApScope:
             )
         return rows
 
-    def overview_export_rows(self) -> list[dict[str, object | None]]:
-        station_rows = self.station_statistics()
+    def overview_export_rows(
+        self,
+        optical_problem_counts: Mapping[str, int] | None = None,
+    ) -> list[dict[str, object | None]]:
+        station_rows = self.station_statistics(optical_problem_counts)
         result: list[dict[str, object | None]] = []
         for row in station_rows:
             remark = str(row.get("remark") or "")
@@ -625,6 +652,13 @@ class EffectiveTracksideApScope:
                         if row.get("online_rate") is not None
                         else "—"
                     ),
+                    "reonline_count": row["reonline_count"],
+                    "reonline_rate": (
+                        f"{float(row['reonline_rate']):.1f}%"
+                        if row.get("reonline_rate") is not None
+                        else "—"
+                    ),
+                    "optical_problem_count": row["optical_problem_count"],
                     "remark": "；".join(value for value in (remark, warning) if value),
                     "status": row["status"],
                 }
@@ -641,6 +675,10 @@ class EffectiveTracksideApScope:
             + self.fit_ap_switch_data_incomplete_count
         )
         online_total = min(matched_online_total, planned_total)
+        reonline_total = sum(int(row.get("reonline_count") or 0) for row in station_rows)
+        optical_problem_total = sum(
+            int(row.get("optical_problem_count") or 0) for row in station_rows
+        )
         total_anomaly = any(bool(row.get("count_anomaly")) for row in station_rows)
         total_remark = (
             f"AC AP 资源 {self.fit_ap_resource_total_count} 个；"
@@ -668,6 +706,13 @@ class EffectiveTracksideApScope:
                     if planned_total > 0 and not total_anomaly
                     else "—"
                 ),
+                "reonline_count": reonline_total,
+                "reonline_rate": (
+                    f"{reonline_total / planned_total:.1%}"
+                    if planned_total > 0
+                    else "—"
+                ),
+                "optical_problem_count": optical_problem_total,
                 "remark": total_remark,
                 "status": "anomaly" if total_anomaly else "normal",
             }
@@ -684,6 +729,7 @@ def resolve_effective_trackside_ap_scope_from_database(
     runtime_station_rows: Iterable[Mapping[str, object | None]] | None = None,
     switch_identity_rows: Iterable[Mapping[str, object | None]] | None = None,
     lightweight: bool = False,
+    optical_problem_counts: Mapping[str, int] | None = None,
     detail_limit: int | None = None,
 ) -> EffectiveTracksideApScope:
     repository = AcRepository(database)
@@ -715,6 +761,7 @@ def resolve_effective_trackside_ap_scope_from_database(
             if switch_identity_rows is not None
             else repository.list_trackside_switch_identity_rows()
         ),
+        optical_problem_counts=optical_problem_counts,
         detail_limit=detail_limit,
     )
 
@@ -729,6 +776,7 @@ def resolve_effective_trackside_ap_scope(
     runtime_station_rows: Iterable[Mapping[str, object | None]] | None = None,
     switch_identity_rows: Iterable[Mapping[str, object | None]] | None = None,
     runtime_snapshot: TracksideApRuntimeSnapshot | None = None,
+    optical_problem_counts: Mapping[str, int] | None = None,
     detail_limit: int | None = None,
 ) -> EffectiveTracksideApScope:
     all_station_rows = [dict(row) for row in station_rows]
@@ -1290,6 +1338,7 @@ def resolve_effective_trackside_ap_scope(
         _all_reference_by_id=all_references,
         _all_identity_index=all_identity_index,
         runtime_snapshot=snapshot,
+        optical_problem_counts=dict(optical_problem_counts or {}),
     )
 
 

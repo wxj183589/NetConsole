@@ -141,8 +141,6 @@ TRACKSIDE_AP_BUSINESS_EXPORT_COLUMNS = (
     ("trackside.ap_device_optical_status", "ap_device_optical_status"),
     ("trackside.ap_optical_status", "ap_optical_status"),
     ("trackside_ap.last_collected_at", "updated_at"),
-    ("trackside.export.switch_optical_change", "switch_optical_change"),
-    ("trackside.export.ap_optical_change", "ap_optical_change"),
     ("trackside.ap_business_threshold", "ap_business_threshold_dbm"),
     ("trackside.ap_business_reason", "ap_business_reason"),
 )
@@ -163,8 +161,6 @@ CURRENT_OPTICAL_ABNORMAL_COLUMNS = (
     ("trackside.export.abnormal_level", "level"),
     ("trackside.export.abnormal_reason", "reason"),
     ("trackside_ap.last_collected_at", "updated_at"),
-    ("trackside.export.switch_optical_change", "switch_optical_change"),
-    ("trackside.export.ap_optical_change", "ap_optical_change"),
     ("trackside.ap_business_threshold", "ap_business_threshold_dbm"),
     ("trackside.export.abnormal_detail", "detail"),
 )
@@ -246,6 +242,9 @@ AP_OPTICAL_TREATMENT_RECORD_COLUMNS = (
     ("ac.ap_name", "ap_name"),
     ("ac.ap_mac", "ap_mac"),
     ("ap.serial_number", "serial_number"),
+    ("ac.ap_id", "ap_id"),
+    ("trackside.section_name", "section_name"),
+    ("trackside.direction", "direction"),
     ("trackside.export.side", "side"),
     ("ac.indoor_switch", "device_name"),
     ("details.interface_name", "interface_name"),
@@ -1448,6 +1447,19 @@ def ap_identity_key(row: dict[str, object | None] | None) -> tuple[str, str] | N
     mac = normalize_mac_key(row.get("ap_mac") or row.get("mac"))
     if mac:
         return ("mac", mac.casefold())
+    serial = str(row.get("serial_number") or row.get("serial") or "").strip()
+    if serial and serial.casefold() not in {"-", "n/a", "na", "none"}:
+        scope = str(
+            row.get("site_key")
+            or row.get("site_id")
+            or row.get("station_id")
+            or row.get("station_name")
+            or row.get("station")
+            or row.get("site")
+            or row.get("ac_device_uuid")
+            or ""
+        ).strip().casefold()
+        return ("serial", f"{scope}:{serial.casefold()}" if scope else serial.casefold())
     return None
 
 
@@ -1522,35 +1534,16 @@ def build_new_online_ap_overview_rows(
     unauthenticated_rows: list[dict[str, object | None]] | None = None,
     unauthenticated_history_rows: list[dict[str, object | None]] | None = None,
 ) -> list[dict[str, object | None]]:
-    del unauthenticated_history_rows
-    transition_rows = _build_runtime_transition_new_online_rows(
-        current_resource_rows,
-        resource_history_rows,
-        trackside_rows,
-    )
+    del resource_history_rows, unauthenticated_history_rows
+    # ``display wlan ap unauthenticated`` Current is the sole membership
+    # authority.  FIT-AP resources and their history may enrich a row, but
+    # runtime transitions are deliberately not promoted to "new online".
     if unauthenticated_rows is None:
-        return transition_rows
-    unauthenticated = _build_unauthenticated_new_online_rows(
+        return []
+    return _build_unauthenticated_new_online_rows(
         current_resource_rows,
         trackside_rows,
         unauthenticated_rows or [],
-    )
-    merged = _new_online_identity_index(unauthenticated)
-    rows = list(unauthenticated)
-    for row in transition_rows:
-        keys = _new_online_identity_keys(row)
-        if keys and keys[0] in merged:
-            continue
-        rows.append(row)
-        for key in keys:
-            merged[key] = row
-    return sorted(
-        rows,
-        key=lambda row: (
-            str(row.get("site") or ""),
-            str(row.get("ap_name") or ""),
-            str(row.get("ap_mac") or ""),
-        ),
     )
 
 
@@ -1669,7 +1662,11 @@ def _build_unauthenticated_new_online_rows(
                 "register_status": "未固化",
                 "new_online_status": "当前新上线Auto AP",
                 "site": (
-                    (resource or {}).get("site")
+                    (resource or {}).get("station")
+                    or (resource or {}).get("station_name")
+                    or trackside.get("station_name")
+                    or trackside.get("station")
+                    or (resource or {}).get("site")
                     or (resource or {}).get("site_name")
                     or trackside.get("site")
                     or "等待 LLDP 同步"
@@ -1685,6 +1682,7 @@ def _build_unauthenticated_new_online_rows(
                 "switch_optical_status": trackside.get("switch_optical_status") or "-",
                 "ap_mac": (
                     format_mac((resource or {}).get("ap_mac"))
+                    or format_mac(source.get("ap_mac"))
                     or format_mac(source.get("inferred_ap_mac"))
                     or "-"
                 ),
@@ -1722,32 +1720,34 @@ def _new_online_identity_index(rows: list[dict[str, object | None]]) -> dict[tup
 
 def _new_online_identity_keys(row: dict[str, object | None]) -> list[tuple[str, str]]:
     keys: list[tuple[str, str]] = []
+    site_key = next(
+        (
+            str(row.get(field) or "").strip().casefold()
+            for field in ("site_key", "site_id", "station_name", "station", "site")
+            if str(row.get(field) or "").strip()
+        ),
+        "",
+    )
     entity_id = str(
         row.get("identity_entity_id")
         or row.get("ap_identity_entity_id")
         or row.get("identity_entity_uuid")
         or ""
     ).strip()
+    mac = normalize_mac_key(row.get("ap_mac") or row.get("inferred_ap_mac") or row.get("mac"))
+    if mac:
+        if site_key:
+            keys.append(("site_mac", f"{site_key}:{mac.casefold()}"))
     if entity_id:
         keys.append(("entity", entity_id.casefold()))
-    mac = normalize_mac_key(
-        row.get("inferred_ap_mac")
-        or row.get("ap_mac")
-        or row.get("mac")
-        or row.get("ap_name")
-    )
-    if mac:
-        keys.append(("mac", mac.casefold()))
     serial = str(row.get("serial_number") or row.get("serial") or "").strip()
     if serial and serial not in {"-", "N/A", "n/a"}:
-        keys.append(("serial", serial.casefold()))
+        if site_key:
+            keys.append(("site_serial", f"{site_key}:{serial.casefold()}"))
     ac_uuid = str(row.get("ac_device_uuid") or "").strip()
     apid = str(row.get("apid") or row.get("ap_id") or "").strip()
-    if ac_uuid and apid:
-        keys.append(("apid", f"{ac_uuid.casefold()}:{apid.casefold()}"))
-    ap_name = str(row.get("ap_name") or "").strip()
-    if ap_name and ap_name not in {"-", "N/A", "n/a"}:
-        keys.append(("name", ap_name.casefold()))
+    if site_key and ac_uuid and apid:
+        keys.append(("site_apid", f"{site_key}:{ac_uuid.casefold()}:{apid.casefold()}"))
     return keys
 
 
@@ -1882,6 +1882,9 @@ def _new_treatment_record(
         "ap_name": trackside.get("ap_name"),
         "ap_mac": trackside.get("ap_mac"),
         "serial_number": trackside.get("serial_number"),
+        "ap_id": trackside.get("ap_id") or trackside.get("apid"),
+        "section_name": trackside.get("section_name") or trackside.get("belong_section"),
+        "direction": trackside.get("direction"),
         "side": side_label,
         "device_name": trackside.get("device_name"),
         "interface_name": trackside.get("interface_name"),
@@ -1961,12 +1964,27 @@ def _ap_identity_payload(row: dict[str, object | None], source: str = "") -> dic
     ap_mac = format_mac(row.get("ap_mac"))
     if not ap_mac:
         ap_mac = format_mac(ap_name)
+    site_key = str(row.get("site_key") or row.get("site_id") or "").strip()
+    station_key = next(
+        (
+            str(row.get(field) or "").strip()
+            for field in ("station_name", "station", "ap_station", "ownership_station", "site")
+            if str(row.get(field) or "").strip()
+            and str(row.get(field) or "").strip().casefold() != site_key.casefold()
+        ),
+        "",
+    )
     return {
         "ap_uuid": row.get("ap_uuid"),
         "ap_name": ap_name,
         "ap_mac": ap_mac,
         "serial_number": row.get("serial_number"),
-        "site": row.get("site") or row.get("site_name") or row.get("station"),
+        "ap_id": row.get("ap_id") or row.get("apid"),
+        "section_name": row.get("section_name") or row.get("belong_section"),
+        "direction": row.get("direction"),
+        "site_key": site_key,
+        "station_key": station_key,
+        "site": station_key,
         "device_name": row.get("device_name") or row.get("historical_switch_name"),
         "interface_name": row.get("interface_name") or row.get("historical_switch_interface"),
         "_source": source,
@@ -2030,18 +2048,24 @@ def _offline_ledger_rows_by_switch_interface(rows: list[dict[str, object | None]
 
 def _ap_identity_keys(row: dict[str, object | None]) -> list[tuple[str, str]]:
     keys: list[tuple[str, str]] = []
-    serial = str(row.get("serial_number") or row.get("serial") or "").strip()
-    if serial and serial not in {"-", "N/A", "n/a"}:
-        keys.append(("serial", serial.casefold()))
+    site_root = str(row.get("site_key") or row.get("site_id") or "").strip().casefold()
+    scope_keys: list[str] = []
+    for field in ("site_key", "site_id"):
+        value = str(row.get(field) or "").strip().casefold()
+        if value and value not in scope_keys:
+            scope_keys.append(value)
+    for field in ("station_key", "station_name", "station", "site"):
+        value = str(row.get(field) or "").strip().casefold()
+        if value and value != site_root and value not in scope_keys:
+            scope_keys.append(value)
     mac = normalize_mac_key(row.get("ap_mac") or row.get("mac"))
     if mac:
-        keys.append(("mac", mac.casefold()))
-    name = str(row.get("ap_name") or "").strip()
-    if name and name not in {"-", "N/A", "n/a"}:
-        keys.append(("name", name.casefold()))
-        name_as_mac = normalize_mac_key(name)
-        if not mac and name_as_mac:
-            keys.append(("mac", name_as_mac.casefold()))
+        for scope_key in scope_keys:
+            keys.append(("site_mac", f"{scope_key}:{mac.casefold()}"))
+    serial = str(row.get("serial_number") or row.get("serial") or "").strip()
+    if serial and serial not in {"-", "N/A", "n/a"}:
+        for scope_key in scope_keys:
+            keys.append(("site_serial", f"{scope_key}:{serial.casefold()}"))
     ap_uuid = str(row.get("ap_uuid") or "").strip()
     if ap_uuid:
         keys.append(("uuid", ap_uuid.casefold()))
@@ -2053,7 +2077,20 @@ def _merge_ap_identity_payload(
     secondary: dict[str, object | None],
 ) -> dict[str, object | None]:
     result = dict(primary)
-    for field in ("ap_uuid", "ap_name", "ap_mac", "serial_number", "site", "device_name", "interface_name"):
+    for field in (
+        "ap_uuid",
+        "ap_name",
+        "ap_mac",
+        "serial_number",
+        "ap_id",
+        "section_name",
+        "direction",
+        "site_key",
+        "station_key",
+        "site",
+        "device_name",
+        "interface_name",
+    ):
         if _is_missing_display(result.get(field)) and not _is_missing_display(secondary.get(field)):
             result[field] = secondary.get(field)
     if _is_missing_display(result.get("_source")) and not _is_missing_display(secondary.get("_source")):
@@ -2072,7 +2109,15 @@ def _complete_treatment_record_ap_identity(
             break
     if not matched:
         return
-    for field in ("ap_name", "ap_mac", "serial_number"):
+    for field in (
+        "ap_name",
+        "ap_mac",
+        "serial_number",
+        "ap_id",
+        "section_name",
+        "direction",
+        "site",
+    ):
         if _is_missing_display(record.get(field)) and not _is_missing_display(matched.get(field)):
             record[field] = matched.get(field)
     if _is_missing_display(record.get("ap_mac")):
@@ -2151,7 +2196,15 @@ def enrich_treatment_record_ap_identity(
 
 
 def _fill_treatment_record_identity(record: dict[str, object | None], source: dict[str, object | None]) -> None:
-    for field in ("ap_name", "ap_mac", "serial_number", "site"):
+    for field in (
+        "ap_name",
+        "ap_mac",
+        "serial_number",
+        "ap_id",
+        "section_name",
+        "direction",
+        "site",
+    ):
         if _is_missing_display(record.get(field)) and not _is_missing_display(source.get(field)):
             record[field] = source.get(field)
 
@@ -3790,6 +3843,37 @@ def is_current_optical_abnormal_export_row(row: dict[str, object | None]) -> boo
 def count_current_optical_abnormal_aps(rows: list[dict[str, object | None]]) -> int:
     """Count current optical alarms by bound AP identity, not by interface rows."""
     return len({key for row in rows if is_current_optical_abnormal_row(row) if (key := ap_identity_key(row)) is not None})
+
+
+def count_current_optical_abnormal_by_site(
+    rows: list[dict[str, object | None]],
+) -> dict[str, int]:
+    """Group the current-abnormal sheet population by actual AP station.
+
+    The AP identity is part of the grouping key so one AP with both switch and
+    AP side alarms is counted once.  ``site_key`` keeps same-named stations in
+    separate site databases from being accidentally merged by callers.
+    """
+
+    grouped: dict[tuple[str, str], set[tuple[str, str]]] = {}
+    for row in rows or []:
+        if not is_current_optical_abnormal_row(row):
+            continue
+        identity = ap_identity_key(row)
+        if identity is None:
+            continue
+        site_key = str(row.get("site_key") or row.get("site_id") or "").strip().casefold()
+        station = str(
+            row.get("station_name")
+            or row.get("station")
+            or row.get("site")
+            or "未归属"
+        ).strip() or "未归属"
+        grouped.setdefault((site_key, station), set()).add(identity)
+    result: dict[str, int] = {}
+    for (_site_key, station), identities in grouped.items():
+        result[station] = result.get(station, 0) + len(identities)
+    return result
 
 
 

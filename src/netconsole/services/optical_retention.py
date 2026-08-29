@@ -272,16 +272,33 @@ def update_ap_optical_treatment(
         [_text(row.get("collected_at")) for row in rows.values() if _text(row.get("collected_at"))]
         or [_text(source_row.get("collected_at")) or now]
     )
+    station_name = _text(
+        source_row.get("station_name")
+        or source_row.get("station")
+        or source_row.get("site")
+        or (ap_row or {}).get("station_name")
+    )
+    if station_name.casefold() == _text(site_id).casefold():
+        station_name = ""
+    station_name = station_name or _text((previous or {}).get("station_name"))
+    previous_data = previous or {}
     metadata = {
         "site_id": site_id,
         "ap_identity": ap_identity,
-        "ap_uuid": _text(source_row.get("ap_uuid")) or _text((ap_row or {}).get("ap_uuid")),
-        "ap_name": _text(source_row.get("ap_name")) or _text((ap_row or {}).get("ap_name")),
-        "ap_mac": _text(source_row.get("ap_mac")) or _text((ap_row or {}).get("ap_mac")),
-        "ap_mac_normalized": normalize_mac_key(source_row.get("ap_mac") or (ap_row or {}).get("ap_mac")) or "",
-        "serial_number": _text(source_row.get("serial_number")) or _text((ap_row or {}).get("serial_number")),
-        "station_id": _text(source_row.get("station_id")),
-        "station_name": _text(source_row.get("station_name") or source_row.get("site")),
+        "ap_uuid": _text(source_row.get("ap_uuid")) or _text((ap_row or {}).get("ap_uuid")) or _text(previous_data.get("ap_uuid")),
+        "ap_name": _text(source_row.get("ap_name")) or _text((ap_row or {}).get("ap_name")) or _text(previous_data.get("ap_name")),
+        "ap_mac": _text(source_row.get("ap_mac")) or _text((ap_row or {}).get("ap_mac")) or _text(previous_data.get("ap_mac")),
+        "ap_mac_normalized": normalize_mac_key(
+            source_row.get("ap_mac")
+            or (ap_row or {}).get("ap_mac")
+            or previous_data.get("ap_mac")
+        ) or _text(previous_data.get("ap_mac_normalized")),
+        "serial_number": _text(source_row.get("serial_number")) or _text((ap_row or {}).get("serial_number")) or _text(previous_data.get("serial_number")),
+        "ap_id": _text(source_row.get("ap_id") or source_row.get("apid")) or _text((ap_row or {}).get("ap_id")) or _text(previous_data.get("ap_id")),
+        "section_name": _text(source_row.get("section_name") or source_row.get("belong_section")) or _text((ap_row or {}).get("section_name")) or _text(previous_data.get("section_name")),
+        "direction": _text(source_row.get("direction")) or _text((ap_row or {}).get("direction")) or _text(previous_data.get("direction")),
+        "station_id": _text(source_row.get("station_id")) or _text(previous_data.get("station_id")),
+        "station_name": station_name,
         "switch_device_id": _text((switch_row or {}).get("switch_device_id")),
         "switch_name": _text((switch_row or {}).get("switch_name")),
         "switch_interface": _text((switch_row or {}).get("switch_interface")),

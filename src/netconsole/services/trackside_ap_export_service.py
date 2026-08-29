@@ -41,6 +41,7 @@ from netconsole.services.trackside_ap_business import (
     TracksideApExportCancelled,
     build_ap_optical_treatment_records,
     build_new_online_ap_overview_rows,
+    count_current_optical_abnormal_by_site,
     build_trackside_ap_business_rows,
     enrich_trackside_export_rows,
     export_trackside_ap_business_xlsx,
@@ -920,7 +921,6 @@ def _build_trackside_ap_business_export_snapshot_once(
     resource_history_rows: list[dict[str, object | None]] = []
     ap_optical_history_rows: list[dict[str, object | None]] = []
     ap_lldp_history_rows: list[dict[str, object | None]] = []
-    overview_rows = scope.overview_export_rows()
     latest_lldp, latest_optical = build_current_ap_history_indexes(
         ac_repository.list_current_ap_lldp_states(),
         resources,
@@ -959,6 +959,8 @@ def _build_trackside_ap_business_export_snapshot_once(
             current_only=True,
         )
     ]
+    optical_problem_counts = count_current_optical_abnormal_by_site(snapshot.rows)
+    overview_rows = scope.overview_export_rows(optical_problem_counts)
     requested_ids = tuple(
         dict.fromkeys(str(value or "").strip() for value in selected_row_ids)
     )
@@ -1065,10 +1067,15 @@ def _export_persisted_optical_treatments(
         fixed_rx = source.get("recovered_ap_rx_dbm") or source.get("recovered_switch_rx_dbm")
         result.append(
             {
-                "site": source.get("station_name") or source.get("site_id"),
+                # ``site_id`` identifies the database/project, not the AP's
+                # physical station; never expose it as the station fallback.
+                "site": source.get("station_name") or "未归属",
                 "ap_name": source.get("ap_name"),
                 "ap_mac": source.get("ap_mac"),
                 "serial_number": source.get("serial_number"),
+                "ap_id": source.get("ap_id"),
+                "section_name": source.get("section_name"),
+                "direction": source.get("direction"),
                 "side": side_label,
                 "device_name": source.get("switch_name"),
                 "interface_name": source.get("switch_interface"),
