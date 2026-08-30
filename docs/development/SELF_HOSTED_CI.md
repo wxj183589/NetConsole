@@ -23,7 +23,7 @@ Self-hosted Runner 离线时，选择它的任务会保持排队，直到 Runner
 
 Runner 机器不得保存 GitHub PAT、SSH 私钥、设备真实密码、SNMP community 或生产共享凭据；不得连接现场生产网络、NAS 或真实设备，也不得读取 `D:\NetConsoleData`。不要把 Runner 与日常开发工作区复用，保留 GitHub Runner 自己的工作目录，让 `actions/checkout` 管理该目录。
 
-仓库测试已经由 `tests/conftest.py` 强制使用 `RuntimeMode.TEST` 和唯一的 `D:\study\test-data\NetConsole\<run-id>`，并在会话结束时只清理自己的目录。Runner 预检还会拒绝把测试根设为 checkout 工作区；它只报告 OS、架构和 Python/Node/pnpm/Git 版本，不创建或删除业务数据。
+仓库测试已经由 `tests/conftest.py` 强制使用 `RuntimeMode.TEST` 和唯一的 `D:\study\NetConsole-Workspace\test-data\NetConsole\<run-id>`，并在会话结束时只清理自己的目录。Runner 预检还会拒绝把测试根设为 checkout 工作区；它只报告 OS、架构和 Python/Node/pnpm/Git 版本，不创建或删除业务数据。
 
 ## 维护清单
 

@@ -174,5 +174,5 @@ observation、分类、精确退役。分类仅允许
 `ACTIVE_ROLLBACK_REQUIRED`、`OBSERVATION_REQUIRED`、`SUPERSEDED`、
 `EXACT_DUPLICATE`、`EXPIRED_ROLLBACK`、`UNKNOWN`；`UNKNOWN = PROTECT`。
 
-开发/测试使用唯一 `D:\study\test-data\NetConsole\<run-id>`，不得用真实生产根验证
+开发/测试使用唯一 `D:\study\NetConsole-Workspace\test-data\NetConsole\<run-id>`，不得用真实生产根验证
 DELETE、DROP、VACUUM、source retirement、database replacement 或 backup retirement。

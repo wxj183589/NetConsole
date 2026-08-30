@@ -17,7 +17,7 @@ from netconsole.core.runtime_mode import (
 
 FORBIDDEN_RUNTIME_DIR_NAMES = frozenset({"docs", "tests", "project"})
 STORAGE_MODES = frozenset({"persistent", "isolated_test"})
-WINDOWS_TEST_DATA_ROOT = Path(r"D:\study\test-data\NetConsole")
+WINDOWS_TEST_DATA_ROOT = Path(r"D:\study\NetConsole-Workspace\test-data\NetConsole")
 RUNTIME_MODE_FILE_NAME = "runtime_mode.json"
 ALLOW_PRODUCTION_WRITE_ENV = "NETCONSOLE_ALLOW_PRODUCTION_WRITE"
 
@@ -251,7 +251,7 @@ def _validate_windows_data_root(candidate: Path, mode: RuntimeMode) -> None:
         test_root = WINDOWS_TEST_DATA_ROOT.resolve()
         if candidate == test_root or not candidate.is_relative_to(test_root):
             raise RuntimeError(
-                "测试数据根必须位于 D:\\study\\test-data\\NetConsole\\<run-id>，且不能直接使用测试根目录"
+                "测试数据根必须位于 D:\\study\\NetConsole-Workspace\\test-data\\NetConsole\\<run-id>，且不能直接使用测试根目录"
             )
         return
     system_drive = str(os.environ.get("SystemDrive") or "C:").rstrip("\\/").casefold()

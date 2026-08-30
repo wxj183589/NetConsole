@@ -69,23 +69,23 @@ history 目录状态。无人值守运行不调用这些命令。
 
 ```powershell
 $env:PYTHONPATH = "D:\study\worktrees\NetConsole\history-store-full-retirement\src;D:\study\worktrees\NetConsole\history-store-full-retirement"
-& "D:\study\NetConsole\.venv\Scripts\python.exe" -m scripts.maintenance.retire_legacy_history_store prepare `
+& "D:\study\NetConsole-Workspace\NetConsole\.venv\Scripts\python.exe" -m scripts.maintenance.retire_legacy_history_store prepare `
   --data-root "D:\NetConsoleData" `
   --candidate-root "D:\study\diagnostic\NetConsole\history-store-retirement\<run-id>"
 
-& "D:\study\NetConsole\.venv\Scripts\python.exe" -m scripts.maintenance.retire_legacy_history_store apply `
+& "D:\study\NetConsole-Workspace\NetConsole\.venv\Scripts\python.exe" -m scripts.maintenance.retire_legacy_history_store apply `
   --data-root "D:\NetConsoleData" `
   --candidate-root "D:\study\diagnostic\NetConsole\history-store-retirement\<run-id>" `
   --backup-root "D:\study\backup\NetConsole\history-store-retirement\<run-id>" `
   --authorization LEGACY_HISTORY_RETIREMENT_AUTHORIZED
 
-# 开发 Authority：candidate/temporary backup 必须位于 D:\study\NetConsole\.local\tmp
+# 开发 Authority：candidate/temporary backup 必须位于 D:\study\NetConsole-Workspace\NetConsole\.local\tmp
 # 等任务临时目录；不得复制整个 Site 或非空 HistoryStore。
-& "D:\study\NetConsole\.venv\Scripts\python.exe" -m scripts.maintenance.retire_legacy_history_store apply `
+& "D:\study\NetConsole-Workspace\NetConsole\.venv\Scripts\python.exe" -m scripts.maintenance.retire_legacy_history_store apply `
   --development `
   --data-root "D:\NetConsoleData-dev" `
-  --candidate-root "D:\study\NetConsole\.local\tmp\history-store-retirement-dev\<run-id>" `
-  --backup-root "D:\study\NetConsole\.local\tmp\history-store-retirement-dev-backup\<run-id>" `
+  --candidate-root "D:\study\NetConsole-Workspace\NetConsole\.local\tmp\history-store-retirement-dev\<run-id>" `
+  --backup-root "D:\study\NetConsole-Workspace\NetConsole\.local\tmp\history-store-retirement-dev-backup\<run-id>" `
   --authorization LEGACY_HISTORY_RETIREMENT_AUTHORIZED
 ```
 

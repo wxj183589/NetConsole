@@ -533,7 +533,7 @@ def _temporary_smoke_data_root(prefix: str) -> tempfile.TemporaryDirectory[str]:
 
 
 def _smoke_data_root_base() -> Path:
-    return Path(r"D:\study\test-data\NetConsole")
+    return Path(r"D:\study\NetConsole-Workspace\test-data\NetConsole")
 
 
 def _smoke_environment(data_root: Path) -> dict[str, str]:

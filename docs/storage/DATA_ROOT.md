@@ -36,7 +36,7 @@ D:\NetConsoleData
 
 优先级为：显式 `NETCONSOLE_DATA_ROOT`、安装器写入的 `HKLM\Software\NetConsole\DataRoot`。Electron bootstrap 只保存局点/界面上下文，不是数据根事实源；未配置机器级根时直接失败。候选根必须是绝对路径、可写、非系统本地固定盘、不在 AppData/Temp/仓库/安装目录内；不满足时直接失败，绝不新建 C 盘、用户目录或源码目录的回退数据。
 
-自动化测试必须以 `RuntimeMode.TEST` 显式设置 `NETCONSOLE_DATA_ROOT=D:\study\test-data\NetConsole\<run-id>`。未设置、直接使用测试根、或位于该根以外都会失败；测试结束仅清理自己的 `run-id`。源码开发默认仍使用正式根，只有开发者明确传入该测试根时才会进入隔离测试模式。
+自动化测试必须以 `RuntimeMode.TEST` 显式设置 `NETCONSOLE_DATA_ROOT=D:\study\NetConsole-Workspace\test-data\NetConsole\<run-id>`。未设置、直接使用测试根、或位于该根以外都会失败；测试结束仅清理自己的 `run-id`。源码开发默认仍使用正式根，只有开发者明确传入该测试根时才会进入隔离测试模式。
 
 Electron 在 `app.whenReady()` 前将 `userData`、`sessionData`、`cache`、`logs`、`crashDumps` 与 `temp` 全部重定向到 `runtime/`。同一根的主 Backend 使用 `runtime/locks/netconsole-backend.lock` 排他运行；锁记录 PID、启动时间、版本、可执行文件和数据根。仍存活的持锁进程不会被删除锁文件，陈旧锁由文件锁机制安全回收。
 

@@ -15,7 +15,7 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_TEST_ROOT = Path("D:/study/test-data/NetConsole")
+DEFAULT_TEST_ROOT = Path("D:/study/NetConsole-Workspace/test-data/NetConsole")
 DEFAULT_DEVELOPMENT_ROOT = Path("D:/study")
 TARGETS = (
     "tests/test_history_store.py",

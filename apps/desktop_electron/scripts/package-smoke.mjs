@@ -8,7 +8,7 @@ import { isDeepStrictEqual } from 'node:util'
 const appRoot = resolve(import.meta.dirname, '..')
 const projectRoot = resolve(appRoot, '..', '..')
 const unpackedRoot = resolve(projectRoot, 'dist', 'electron', 'win-unpacked')
-const WINDOWS_TEST_DATA_ROOT = 'D:\\study\\test-data\\NetConsole'
+const WINDOWS_TEST_DATA_ROOT = 'D:\\study\\NetConsole-Workspace\\test-data\\NetConsole'
 const buildEdition = String(process.env.NETCONSOLE_BUILD_EDITION || 'full').trim().toLowerCase()
 if (!['full', 'customer'].includes(buildEdition)) {
   throw new Error(`NETCONSOLE_BUILD_EDITION 仅允许 full/customer，当前为：${buildEdition}`)

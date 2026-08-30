@@ -52,12 +52,12 @@ uses actual page allocation automatically.
 
 ```powershell
 $env:PYTHONPATH = "D:\study\worktrees\NetConsole\tasks-db-governance\src;D:\study\worktrees\NetConsole\tasks-db-governance"
-& "D:\study\NetConsole\.venv\Scripts\python.exe" -m scripts.maintenance.profile_tasks_db `
+& "D:\study\NetConsole-Workspace\NetConsole\.venv\Scripts\python.exe" -m scripts.maintenance.profile_tasks_db `
   --data-root "D:\NetConsoleData" --site-id "<site-id>"
 
-& "D:\study\NetConsole\.venv\Scripts\python.exe" -m scripts.maintenance.profile_tasks_db `
+& "D:\study\NetConsole-Workspace\NetConsole\.venv\Scripts\python.exe" -m scripts.maintenance.profile_tasks_db `
   --data-root "D:\NetConsoleData" --site-id "<site-id>" --deep `
-  --database "D:\study\test-data\NetConsole\tasks-db-governance\<run-id>\tasks.db" `
+  --database "D:\study\NetConsole-Workspace\test-data\NetConsole\tasks-db-governance\<run-id>\tasks.db" `
   --output-dir "D:\study\diagnostic\NetConsole\tasks-db-governance\<run-id>"
 ```
 

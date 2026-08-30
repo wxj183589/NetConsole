@@ -41,7 +41,7 @@ description: "SQLite schema、Repository、数据库 locked/WAL、PathResolver�
 3. 数据访问进入 Repository；UI 不写复杂 SQL。每线程/进程独立创建和关闭 connection，不跨线程共享。
 4. 根据现有 helper 配置 WAL、busy timeout 和事务；不要用吞异常掩盖 locked。
 5. 所有路径由 `PathResolver`/领域路径服务解析，不硬编码局点或用户路径。
-6. 本地质量门和数据库测试统一覆盖 `RuntimeMode.TEST` 与唯一 `D:/study/test-data/NetConsole/<run-id>`；不得继承正式 `D:/NetConsoleData`，也不得让报告、缓存或临时数据库回写仓库。
+6. 本地质量门和数据库测试统一覆盖 `RuntimeMode.TEST` 与唯一 `D:/study/NetConsole-Workspace/test-data/NetConsole/<run-id>`；不得继承正式 `D:/NetConsoleData`，也不得让报告、缓存或临时数据库回写仓库。
 6. 临时文件与正式文件分离；原子替换成功后再清理，失败保留原数据库/raw/正式报告。
 7. 自动清理使用白名单和已验证项目数据根；递归删除前解析绝对目标并确认位于允许目录，禁止处理不可信路径。
 

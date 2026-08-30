@@ -5,7 +5,7 @@ const activeSite = {
   display_name: '杭州地铁10号线',
   line_name: '杭州地铁10号线',
   project_type: 'PIS车地无线系统',
-  path: 'D:\\study\\test-data\\NetConsole\\visual\\sites\\line-10',
+  path: 'D:\\study\\NetConsole-Workspace\\test-data\\NetConsole\\visual\\sites\\line-10',
   created_at: '2026-08-01T09:00:00',
   updated_at: '2026-08-06T09:00:00',
   remark: '',
@@ -27,7 +27,7 @@ const legacySite = {
   display_name: '历史二号线局点',
   line_name: null,
   project_type: null,
-  path: 'D:\\study\\test-data\\NetConsole\\visual\\sites\\历史二号线局点',
+  path: 'D:\\study\\NetConsole-Workspace\\test-data\\NetConsole\\visual\\sites\\历史二号线局点',
   active: false,
   size_bytes: 82_313_420,
   site_kind: 'legacy',
@@ -44,8 +44,8 @@ async function mockSiteStorage(page: Page): Promise<void> {
   await page.route('**/api/v1/storage/data-root', (route) => route.fulfill({
     contentType: 'application/json',
     body: JSON.stringify({
-      data_root: 'D:\\study\\test-data\\NetConsole\\visual',
-      default_data_root: 'D:\\study\\test-data\\NetConsole\\visual',
+      data_root: 'D:\\study\\NetConsole-Workspace\\test-data\\NetConsole\\visual',
+      default_data_root: 'D:\\study\\NetConsole-Workspace\\test-data\\NetConsole\\visual',
       site_count: 2,
       active_site_id: 'line-10',
       storage_mode: 'persistent',

@@ -746,7 +746,7 @@ def main() -> int:
         if args.candidate_root is None:
             raise SystemExit("apply requires --candidate-root")
         if args.development:
-            backup_root = args.backup_root or Path("D:/study/NetConsole/.local/tmp/history-store-retirement-dev") / datetime.now().strftime("%Y%m%d-%H%M%S")
+            backup_root = args.backup_root or Path("D:/study/NetConsole-Workspace/NetConsole/.local/tmp/history-store-retirement-dev") / datetime.now().strftime("%Y%m%d-%H%M%S")
             result = apply_development(args.data_root, args.candidate_root, backup_root)
         else:
             backup_root = args.backup_root or Path("D:/study/backup/NetConsole/history-store-retirement") / datetime.now().strftime("%Y%m%d-%H%M%S")

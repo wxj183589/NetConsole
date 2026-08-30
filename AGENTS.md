@@ -37,11 +37,11 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 - Windows 安装包的程序目录只保存 EXE、DLL、Python/Electron 运行时、前端资源、内置工具和只读默认配置；SQLite、局点文件、MESH 日志、报告、缓存和用户配置必须位于独立业务数据根。
 - 业务数据根的唯一持久化指针是安装器写入的 `HKLM\Software\NetConsole\DataRoot`；源码、Electron 开发、Python Backend、打包验证与正式安装包都通过同一解析器读取。`NETCONSOLE_DATA_ROOT` 只可作为显式覆盖，未配置持久根时停止启动，绝不回退 LocalAppData、用户目录、仓库、安装目录或系统 Temp。
 - 安装器必须拒绝系统盘、网络/可移动盘、程序目录、用户 Profile 与 NetConsole 必需路径发生真实冲突的目录；允许含无冲突普通文件的目录并保留原内容。升级和修复默认沿用既有根。更改根必须先完成受控迁移，再更新指针；普通卸载保留业务数据和指针。
-- 自动化测试必须显式 `RuntimeMode.TEST` 和 `D:\study\test-data\NetConsole\<run-id>`，不得读取机器级指针或真实根。
+- 自动化测试必须显式 `RuntimeMode.TEST` 和 `D:\study\NetConsole-Workspace\test-data\NetConsole\<run-id>`，不得读取机器级指针或真实根。
 
 ## 构建产物与正式发布目录
 
-- 仓库内 `D:\study\NetConsole\dist\` 只保存可由源码、锁文件和构建脚本重新生成的临时输出，包括 Renderer、Electron、PyInstaller、Agent、日志和 smoke 中间产物；它不是正式制品库，可由受控清理整体删除。
+- 仓库内 `D:\study\NetConsole-Workspace\NetConsole\dist\` 只保存可由源码、锁文件和构建脚本重新生成的临时输出，包括 Renderer、Electron、PyInstaller、Agent、日志和 smoke 中间产物；它不是正式制品库，可由受控清理整体删除。
 - 正式发布制品的唯一持久根是 `D:\study\release\NetConsole\<version>\`。正式打包入口必须在全部 Gate 通过后，把安装包、release manifest、SHA-256 清单和构建摘要一起原子发布到该目录；已存在的版本目录不得覆盖或混入另一候选。
 - 普通 `build`、`package`、`rebuild` 只读取当前 `APP_VERSION`，不得自动 `+1`、修改版本源或写入 `published=true`；同版本构建使用 `Build Number + Git short SHA` 区分。自动更新只接受 `published=true` 且更高的三段 `ProductVersion`。
 - 禁止把 `C:\NetConsoleRelease`、`D:\NetConsoleRelease`、仓库内 `dist\release` 或 `dist\v<version>` 用作持久发布目录。PyInstaller Backend 中间输出统一位于 `dist\_build\backend-release\`。

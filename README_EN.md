@@ -143,7 +143,7 @@ pnpm install --frozen-lockfile
 pnpm dev:codex
 ```
 
-`pnpm dev:codex` and `pnpm smoke:dev` use a temporary `D:\study\test-data\NetConsole\<run-id>` root and do not read the persistent application root. Use `pnpm dev` only when the machine has a configured persistent data root and you intend to retain development data. Example targeted tests:
+`pnpm dev:codex` and `pnpm smoke:dev` use a temporary `D:\study\NetConsole-Workspace\test-data\NetConsole\<run-id>` root and do not read the persistent application root. Use `pnpm dev` only when the machine has a configured persistent data root and you intend to retain development data. Example targeted tests:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests\test_web_architecture.py tests\test_mesh_analysis_web_api.py -q

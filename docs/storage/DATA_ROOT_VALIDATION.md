@@ -14,7 +14,7 @@
 
 生产根和现场已有开发副本均保留完整数据根布局，包含 `config`、`sites`、`runtime`、`agents`、`migrations`、`staging`，以及各局点下的 `db`、`history`、`artifact`、`imports`、`exports`、`files` 等目录。现场已有开发副本的 `config/storage-manifest.json.data_root` 已指向自身；任务要求的带空格目标目录尚未在本轮创建。
 
-启动不根据目录名猜测环境。持久化根必须包含有效的 `runtime_mode.json`；缺失、损坏、`test` 标记或生产根关闭只读警告时拒绝启动。测试进程仍使用显式 `RuntimeMode.TEST` 和 `D:\study\test-data\NetConsole\<run-id>`，不写持久化 marker。
+启动不根据目录名猜测环境。持久化根必须包含有效的 `runtime_mode.json`；缺失、损坏、`test` 标记或生产根关闭只读警告时拒绝启动。测试进程仍使用显式 `RuntimeMode.TEST` 和 `D:\study\NetConsole-Workspace\test-data\NetConsole\<run-id>`，不写持久化 marker。
 
 Backend 启动日志和 `/api/health` 返回数据根、`PRODUCTION`/`DEV COPY`/`TEST` 标签及生产写入授权状态；Renderer 顶部状态区展示当前数据根和运行模式。生产模式会显示“当前连接真实生产数据”的警告。
 

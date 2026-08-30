@@ -26,7 +26,7 @@
 
 ## 数据与状态
 
-静态检查只读取 Git 跟踪路径、提交差异、现有 README 和影响矩阵，不修改索引或工作树。Local Gate 强制 `RuntimeMode.TEST` 和唯一 `D:\study\test-data\NetConsole\<run-id>`，结束后清理自有测试根；不得继承正式 DataRoot。
+静态检查只读取 Git 跟踪路径、提交差异、现有 README 和影响矩阵，不修改索引或工作树。Local Gate 强制 `RuntimeMode.TEST` 和唯一 `D:\study\NetConsole-Workspace\test-data\NetConsole\<run-id>`，结束后清理自有测试根；不得继承正式 DataRoot。
 
 ## 测试与修改
 

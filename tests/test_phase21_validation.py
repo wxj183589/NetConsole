@@ -122,7 +122,7 @@ def test_isolated_backend_rejects_real_data_root(tmp_path: Path) -> None:
 def test_default_validation_root_is_an_isolated_test_run(tmp_path: Path) -> None:
     root = _default_work_root()
     if sys.platform == "win32":
-        assert root.parent == Path(r"D:\study\test-data\NetConsole").resolve()
+        assert root.parent == Path(r"D:\study\NetConsole-Workspace\test-data\NetConsole").resolve()
     assert root != Path(r"D:\NetConsoleData").resolve()
 
 

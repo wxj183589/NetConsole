@@ -25,7 +25,7 @@ from netconsole.repositories.task_result_blob_repository import (
 
 
 DEV_ROOT = Path(r"D:\NetConsoleData-dev")
-ISOLATED_DEV_ROOT_PARENT = Path(r"D:\study\test-data\NetConsole")
+ISOLATED_DEV_ROOT_PARENT = Path(r"D:\study\NetConsole-Workspace\test-data\NetConsole")
 SCHEMA_COLUMNS = {
     "content_sha256": "TEXT NOT NULL DEFAULT ''",
     "blob_codec": "TEXT NOT NULL DEFAULT ''",
@@ -527,7 +527,7 @@ def main(argv: list[str] | None = None) -> int:
     root = args.data_root.resolve()
     if args.apply and not _is_allowed_apply_root(root):
         raise SystemExit(
-            "--apply 只允许 D:\\NetConsoleData-dev 或 D:\\study\\test-data\\NetConsole 下的隔离 NetConsoleData-dev 副本"
+            "--apply 只允许 D:\\NetConsoleData-dev 或 D:\\study\\NetConsole-Workspace\\test-data\\NetConsole 下的隔离 NetConsoleData-dev 副本"
         )
     targets = _resolve(root, args.site, args.all_sites)
     reports: list[dict[str, Any]] = []

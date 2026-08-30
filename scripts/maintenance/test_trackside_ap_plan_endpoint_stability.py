@@ -26,7 +26,7 @@ COMPANION_PATHS = (
     "/api/rail-transit/base-data/issues/groups?page=1&page_size=200",
 )
 SESSION_HEADER = "x-netconsole-session"
-TEST_DATA_ROOT = Path(r"D:\study\test-data\NetConsole")
+TEST_DATA_ROOT = Path(r"D:\study\NetConsole-Workspace\test-data\NetConsole")
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -43,7 +43,7 @@ def _parser() -> argparse.ArgumentParser:
         "--test-root",
         type=Path,
         required=True,
-        help=r"新的隔离 TEST 数据根（Windows 必须位于 D:\study\test-data\NetConsole\<run-id>）",
+        help=r"新的隔离 TEST 数据根（Windows 必须位于 D:\study\NetConsole-Workspace\test-data\NetConsole\<run-id>）",
     )
     parser.add_argument("--site", default="demo")
     parser.add_argument("--count", type=int, default=100)
@@ -94,7 +94,7 @@ def _validate_paths(source: Path, test_root: Path) -> tuple[Path, Path]:
     if os.name == "nt":
         allowed = TEST_DATA_ROOT.resolve()
         if test_root == allowed or not test_root.is_relative_to(allowed):
-            raise ValueError(r"--test-root 必须位于 D:\study\test-data\NetConsole\<run-id>，且不能直接使用测试根")
+            raise ValueError(r"--test-root 必须位于 D:\study\NetConsole-Workspace\test-data\NetConsole\<run-id>，且不能直接使用测试根")
     if source == test_root or test_root in source.parents:
         raise ValueError("--test-root 与 --database-copy 不能重叠")
     return source, test_root

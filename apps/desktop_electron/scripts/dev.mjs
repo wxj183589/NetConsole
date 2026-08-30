@@ -27,7 +27,7 @@ const explicitIsolatedDataRoot = isolatedDataArgument >= 0
   ? process.argv[isolatedDataArgument + 1]
   : ''
 if (isolatedDataArgument >= 0 && !explicitIsolatedDataRoot) {
-  throw new Error('--isolated-test-data requires an absolute D:\\study\\test-data\\NetConsole\\<run-id> path')
+  throw new Error('--isolated-test-data requires an absolute D:\\study\\NetConsole-Workspace\\test-data\\NetConsole\\<run-id> path')
 }
 const isolated = smoke || taskCenterSmoke || workspaceTraySmoke || Boolean(explicitIsolatedDataRoot)
 const codexBackendPort = codex ? resolveCodexBackendPort(process.env.NETCONSOLE_DEV_BACKEND_PORT) : 0

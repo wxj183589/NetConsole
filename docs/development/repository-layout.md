@@ -124,7 +124,7 @@ Windows 源码开发态、打包态和正式包均使用安装器在 `HKLM\Softw
 - `<data_root>/runtime/logs`：应用日志；
 - `<data_root>/runtime/cache`：Job、Export 和查询缓存；
 - `<data_root>/runtime/temp`：受控临时样本和一次性导出；
-- 自动测试只能使用显式 `<D:\study\test-data\NetConsole\<run-id>>`，不依赖安装目录或当前工作目录。
+- 自动测试只能使用显式 `<D:\study\NetConsole-Workspace\test-data\NetConsole\<run-id>>`，不依赖安装目录或当前工作目录。
 
 正式报告写入用户选择的导出路径或业务 `outputs` 目录。原始日志、数据库、会话、备份和正式报告不得静默删除。仓库 `.local` 和根 `data` 若存在，只能作为历史迁移源；活动进程不得读写，迁移核验后应移出仓库归档或删除。迁移和测试残留清理必须使用 `scripts/maintenance/` 的 dry-run/manifest/白名单工具，不得直接递归删除未知内容。
 
@@ -139,7 +139,7 @@ Windows 源码开发态、打包态和正式包均使用安装器在 `HKLM\Softw
 - 单元测试和集成测试放在 `tests/`，测试样本放在 `tests/fixtures/`；不得把测试样本放入生产 `resources`。
 - 大体积日志样本必须脱敏，不能包含真实密码、Token、community、私钥或生产敏感地址。
 - 测试不得依赖开发者机器绝对路径；使用 `tmp_path`、显式 `PathResolver` 或项目根定位。
-- 测试生成的数据库、日志、报告、缓存和临时文件必须位于 `D:\study\test-data\NetConsole\<run-id>`，不能写回源码树或真实数据根。
+- 测试生成的数据库、日志、报告、缓存和临时文件必须位于 `D:\study\NetConsole-Workspace\test-data\NetConsole\<run-id>`，不能写回源码树或真实数据根。
 
 ## 8. 脚本目录规则
 

@@ -5,7 +5,7 @@
 在仓库工作树中使用项目虚拟环境执行：
 
 ```powershell
-& 'D:\study\NetConsole\.venv\Scripts\python.exe' -m pytest `
+& 'D:\study\NetConsole-Workspace\NetConsole\.venv\Scripts\python.exe' -m pytest `
   tests/test_device_work_scope_status.py `
   tests/test_device_management_web_api.py `
   tests/test_device_import_export.py `

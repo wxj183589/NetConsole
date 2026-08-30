@@ -41,7 +41,7 @@ D:\NetConsoleData\agents\local\targets.json
 
 源码启动脚本从 `apps/agent/resources/config/` 复制模板；交付包脚本从包内的 `config.example.json` 和 `targets.example.json` 复制。已有真实配置绝不会被覆盖。首次初始化后按提示编辑上述统一数据根文件，再填入现场 MR / iPerf 目标；真实配置不得提交到 Git。
 
-源码联调同样使用正式数据根；只有自动测试才可显式改用 `D:\study\test-data\NetConsole\<run-id>`：
+源码联调同样使用正式数据根；只有自动测试才可显式改用 `D:\study\NetConsole-Workspace\test-data\NetConsole\<run-id>`：
 
 ```powershell
 $agentHome = 'D:\NetConsoleData\agents\local'

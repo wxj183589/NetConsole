@@ -11,7 +11,7 @@ from scripts.quality.local_gate import remove_owned_test_root
 
 
 ROOT = Path(__file__).resolve().parents[2]
-TEST_BASE_ROOT = Path(r"D:\study\test-data\NetConsole")
+TEST_BASE_ROOT = Path(r"D:\study\NetConsole-Workspace\test-data\NetConsole")
 MAIN_CONTRACT_TESTS = (
     "tests/test_electron_runtime.py::test_electron_runtime_accepts_only_loopback_configuration",
     "tests/test_sites.py::test_site_manager_creates_demo_and_chinese_site",
@@ -32,7 +32,7 @@ def _owned_test_root(run_id: str) -> Path:
     target = (TEST_BASE_ROOT / run_id).resolve()
     base = TEST_BASE_ROOT.resolve()
     if target == base or not target.is_relative_to(base):
-        raise ValueError(r"main smoke test root must be inside D:\study\test-data\NetConsole\<run-id>")
+        raise ValueError(r"main smoke test root must be inside D:\study\NetConsole-Workspace\test-data\NetConsole\<run-id>")
     return target
 
 

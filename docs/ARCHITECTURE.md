@@ -82,7 +82,7 @@ flowchart LR
 - 版本唯一来源：`src/netconsole/core/version.py`。
 - Feature 唯一来源：`src/netconsole/core/feature_registry.py`。
 - 路径唯一来源：`src/netconsole/core/paths.py`。
-- 源码开发、打包验证和正式安装包均使用唯一数据根 `D:\NetConsoleData`；自动测试只使用显式的 `D:\study\test-data\NetConsole\<run-id>`，运行数据不得写回源码或系统应用数据目录。
+- 源码开发、打包验证和正式安装包均使用唯一数据根 `D:\NetConsoleData`；自动测试只使用显式的 `D:\study\NetConsole-Workspace\test-data\NetConsole\<run-id>`，运行数据不得写回源码或系统应用数据目录。
 - 主应用、Task、Agent、Traffic、Online MR 与 MESH 数据各有独立 Repository/领域路径，不跨线程或进程共享 SQLite connection。
 - 随包 fping/iPerf 唯一来源为 `resources/tools/`，构建不得联网下载业务工具。
 

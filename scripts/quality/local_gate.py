@@ -20,7 +20,7 @@ from scripts.quality.check_change_impact import DEFAULT_CONFIG, Impact, _load_co
 
 ROOT = Path(__file__).resolve().parents[2]
 REPORT_ROOT = ROOT / ".local-reports"
-TEST_BASE_ROOT = Path(r"D:\study\test-data\NetConsole")
+TEST_BASE_ROOT = Path(r"D:\study\NetConsole-Workspace\test-data\NetConsole")
 MODES = ("auto", "fast", "consumer", "full")
 FAST_SUITES = (
     "root-layout",

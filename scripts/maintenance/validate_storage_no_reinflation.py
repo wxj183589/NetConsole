@@ -16,7 +16,7 @@ from typing import Callable, Sequence
 from netconsole.services.database_footprint_maintenance import assert_development_path
 
 
-TEST_DATA_ROOT = Path("D:/study/test-data/NetConsole")
+TEST_DATA_ROOT = Path("D:/study/NetConsole-Workspace/test-data/NetConsole")
 REPORT_NAME = "STORAGE_NO_REINFLATION.json"
 
 
@@ -439,7 +439,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--run-root",
         required=True,
         type=Path,
-        help="New isolated directory below D:/study/test-data/NetConsole",
+        help="New isolated directory below D:/study/NetConsole-Workspace/test-data/NetConsole",
     )
     parser.add_argument(
         "--python",
