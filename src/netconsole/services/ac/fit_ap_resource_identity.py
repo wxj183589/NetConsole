@@ -36,7 +36,9 @@ def coalesce_fit_ap_resource_rows(
     """
 
     groups: list[_ResourceGroup] = []
-    token_to_group: dict[tuple[str, str], int] = {}
+    # Resource identity is AC-scoped.  The same physical serial/MAC is
+    # intentionally allowed to remain in two groups when two ACs observe it.
+    token_to_group: dict[tuple[str, tuple[str, str]], int] = {}
     weak_rows: list[tuple[int, dict[str, object | None]]] = []
 
     for index, source in enumerate(rows):
@@ -46,7 +48,13 @@ def coalesce_fit_ap_resource_rows(
             weak_rows.append((index, row))
             continue
 
-        group_ids = {token_to_group[token] for token in tokens if token in token_to_group}
+        scope = _scope_key(row)
+        scoped_tokens = {(scope, token) for token in tokens}
+        group_ids = {
+            token_to_group[token]
+            for token in scoped_tokens
+            if token in token_to_group
+        }
         if not group_ids:
             groups.append(
                 _ResourceGroup(
@@ -71,7 +79,7 @@ def coalesce_fit_ap_resource_rows(
         group = groups[group_id]
         _merge_row(group, row, index)
         for token in group.tokens:
-            token_to_group[token] = group_id
+            token_to_group[(group.scope, token)] = group_id
 
     group_by_name: dict[tuple[str, str], list[int]] = {}
     for group_id, group in enumerate(groups):

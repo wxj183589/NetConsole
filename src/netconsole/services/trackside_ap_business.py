@@ -922,6 +922,7 @@ def build_trackside_ap_business_rows(
     fit_ap_optical_by_name_mac: dict[str, dict[str, object | None]] = {}
     fit_ap_resource_by_mac: dict[str, dict[str, object | None]] = {}
     fit_ap_resource_by_identity: dict[tuple[str, str], dict[str, object | None]] = {}
+    fit_ap_resources_by_identity: dict[tuple[str, str], list[dict[str, object | None]]] = {}
     fit_ap_resources_by_ip: dict[str, list[dict[str, object | None]]] = {}
     fit_ap_resources_by_mac: dict[str, list[dict[str, object | None]]] = {}
     fit_ap_resources_by_name: dict[str, list[dict[str, object | None]]] = {}
@@ -944,7 +945,9 @@ def build_trackside_ap_business_rows(
     for row in fit_ap_resource_rows or []:
         mac = normalize_mac_key(row.get("ap_mac"))
         if mac:
-            fit_ap_resource_by_mac[mac] = row
+            current = fit_ap_resource_by_mac.get(mac)
+            if current is None or _fit_ap_prefer_score(row) >= _fit_ap_prefer_score(current):
+                fit_ap_resource_by_mac[mac] = row
             fit_ap_resources_by_mac.setdefault(mac, []).append(row)
         ap_ip = _normalize_ip(row.get("ap_ip") or row.get("management_ip"))
         if ap_ip:
@@ -954,7 +957,10 @@ def build_trackside_ap_business_rows(
             fit_ap_resources_by_name.setdefault(ap_name, []).append(row)
         identity = ap_identity_key(row)
         if identity:
-            fit_ap_resource_by_identity[identity] = row
+            current = fit_ap_resource_by_identity.get(identity)
+            if current is None or _fit_ap_prefer_score(row) >= _fit_ap_prefer_score(current):
+                fit_ap_resource_by_identity[identity] = row
+            fit_ap_resources_by_identity.setdefault(identity, []).append(row)
     historical_lldp_index = _build_historical_lldp_index(historical_lldp_rows or [])
 
     result: list[dict[str, object | None]] = []
@@ -1295,6 +1301,20 @@ def build_trackside_ap_business_rows(
                     **attenuation,
                     **pvid_projection,
                 }
+            source_resources = _fit_ap_resource_sources(
+                fit_ap,
+                fit_ap_resources_by_mac,
+                fit_ap_resources_by_identity,
+            )
+            source_ac_device_uuids = sorted(
+                {
+                    str(source.get("ac_device_uuid") or "").strip()
+                    for source in source_resources
+                    if str(source.get("ac_device_uuid") or "").strip()
+                }
+            )
+            if source_ac_device_uuids:
+                row["source_ac_device_uuids"] = source_ac_device_uuids
             _ensure_ap_optical_status(row)
             if runtime_snapshot is not None and not lldp:
                 if runtime_snapshot.snapshot_status == "lldp_stale":
@@ -1345,7 +1365,7 @@ def merge_fit_ap_rows_by_identity(rows: list[dict[str, object | None]]) -> list[
     merged: dict[tuple[str, str], dict[str, object | None]] = {}
     passthrough: list[dict[str, object | None]] = []
     for row in rows or []:
-        key = ap_identity_key(row)
+        key = _ac_scoped_fit_ap_identity_key(row)
         if not key:
             passthrough.append(dict(row))
             continue
@@ -1452,6 +1472,9 @@ def _log_trackside_identity_coverage(
 def ap_identity_key(row: dict[str, object | None] | None) -> tuple[str, str] | None:
     if not row:
         return None
+    ap_uuid = str(row.get("ap_uuid") or row.get("ap_identity") or "").strip()
+    if ap_uuid and not ap_uuid.casefold().startswith("unauth-"):
+        return ("uuid", ap_uuid.casefold())
     mac = normalize_mac_key(row.get("ap_mac") or row.get("mac"))
     if mac:
         return ("mac", mac.casefold())
@@ -1469,6 +1492,42 @@ def ap_identity_key(row: dict[str, object | None] | None) -> tuple[str, str] | N
         ).strip().casefold()
         return ("serial", f"{scope}:{serial.casefold()}" if scope else serial.casefold())
     return None
+
+
+def _ac_scoped_fit_ap_identity_key(
+    row: dict[str, object | None],
+) -> tuple[str, str] | None:
+    identity = ap_identity_key(row)
+    if identity is None:
+        return None
+    ac_device_uuid = str(
+        row.get("ac_device_uuid") or row.get("device_uuid") or ""
+    ).strip().casefold()
+    if not ac_device_uuid:
+        return identity
+    return ("ac-resource", f"{ac_device_uuid}:{identity[0]}:{identity[1]}")
+
+
+def _fit_ap_resource_sources(
+    row: dict[str, object | None],
+    by_mac: dict[str, list[dict[str, object | None]]],
+    by_identity: dict[tuple[str, str], list[dict[str, object | None]]],
+) -> list[dict[str, object | None]]:
+    candidates: list[dict[str, object | None]] = []
+    identity = ap_identity_key(row)
+    if identity:
+        candidates.extend(by_identity.get(identity, []))
+    mac = normalize_mac_key(row.get("ap_mac") or row.get("mac"))
+    if mac:
+        candidates.extend(by_mac.get(mac, []))
+    unique: dict[tuple[str, str], dict[str, object | None]] = {}
+    for candidate in candidates:
+        key = (
+            str(candidate.get("ac_device_uuid") or ""),
+            str(candidate.get("ap_uuid") or candidate.get("ap_name") or ""),
+        )
+        unique[key] = candidate
+    return list(unique.values())
 
 
 def _fit_ap_prefer_score(row: dict[str, object | None]) -> tuple[int, int, int, str]:
@@ -3203,6 +3262,30 @@ def _merge_trackside_row(target: dict[str, object | None], source: dict[str, obj
     if normalize_link_state(source.get("link_status")) == "DOWN":
         target["link_status"] = "DOWN"
     target["port_type"] = _port_type(target.get("port_type") or source.get("port_type") or target.get("port_status") or source.get("port_status"))
+    source_ac_device_uuids = sorted(
+        {
+            *(
+                str(value).strip()
+                for value in target.get("source_ac_device_uuids", []) or []
+                if str(value).strip()
+            ),
+            *(
+                str(value).strip()
+                for value in source.get("source_ac_device_uuids", []) or []
+                if str(value).strip()
+            ),
+            *(
+                value
+                for value in (
+                    str(target.get("ac_device_uuid") or "").strip(),
+                    str(source.get("ac_device_uuid") or "").strip(),
+                )
+                if value
+            ),
+        }
+    )
+    if source_ac_device_uuids:
+        target["source_ac_device_uuids"] = source_ac_device_uuids
 
 
 def _apply_trackside_offline_priority(row: dict[str, object | None]) -> None:

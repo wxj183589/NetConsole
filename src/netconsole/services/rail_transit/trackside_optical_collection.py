@@ -66,27 +66,10 @@ EXCLUDED_WORK_SCOPE_REASON = "设备当前工作状态为暂不参与，已自�
 IGNORED_SKIPPED_REASONS = frozenset(
     {"no_station_switches", EXCLUDED_WORK_SCOPE_REASON}
 )
-ACTIVE_AC_KEYWORDS = ("active", "master", "primary", "主用", "主控", "主")
-STANDBY_AC_KEYWORDS = ("standby", "backup", "secondary", "备机", "备用", "备")
-
-
 def rank_ac_device_for_trackside(device: Device, summary: dict[str, object | None] | None = None) -> tuple[int, int, str, str]:
-    text = " ".join(
-        str(value or "")
-        for value in (
-            getattr(device, "name", ""),
-            getattr(device, "system_name", ""),
-            getattr(device, "remark", ""),
-        )
-    ).casefold()
-    active_rank = 0
-    if any(keyword.casefold() in text for keyword in ACTIVE_AC_KEYWORDS):
-        active_rank = -1
-    elif any(keyword.casefold() in text for keyword in STANDBY_AC_KEYWORDS):
-        active_rank = 1
     online_count = _int_value((summary or {}).get("online_aps"))
     updated_at = str((summary or {}).get("updated_at") or (summary or {}).get("collected_at") or "")
-    return active_rank, -online_count, "".join(chr(255 - ord(ch)) for ch in updated_at), str(device.name or "").casefold()
+    return 0, -online_count, "".join(chr(255 - ord(ch)) for ch in updated_at), str(device.name or "").casefold()
 
 
 class UnsupportedVendor(ValueError):

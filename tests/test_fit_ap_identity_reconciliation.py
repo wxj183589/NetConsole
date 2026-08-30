@@ -239,5 +239,7 @@ def test_fit_ap_resource_serial_unique_constraint_is_kept_in_new_database(tmp_pa
             for row in unique_indexes
         }
 
-    assert ("ap_uuid",) in columns
-    assert ("ac_device_uuid", "serial_number") in columns
+    assert ("ac_device_uuid", "ap_uuid") in columns
+    assert ("ac_device_uuid", "serial_identity_key") in columns
+    assert ("ap_uuid",) not in columns
+    assert ("ac_device_uuid", "serial_number") not in columns

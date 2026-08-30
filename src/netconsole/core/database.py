@@ -28,7 +28,7 @@ from netconsole.core.sqlite_utils import (
 from netconsole.models.device_address import InvalidDeviceAddressError, normalize_ip_address
 
 
-CURRENT_SCHEMA_VERSION = "2026.08.31.fit_ap_global_serial_unique_v1"
+CURRENT_SCHEMA_VERSION = "2026.08.31.fit_ap_entity_resource_scope_v1"
 
 DEVICE_CLASSIFICATION_COLUMNS = (
     "project_phase",
@@ -861,7 +861,7 @@ AC_FIT_AP_RESOURCES_SCHEMA = """
 CREATE TABLE IF NOT EXISTS ac_fit_ap_resources (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ac_device_uuid TEXT NOT NULL,
-    ap_uuid TEXT NOT NULL UNIQUE,
+    ap_uuid TEXT NOT NULL,
     ap_name TEXT,
     apid TEXT,
     ap_ip TEXT,
@@ -934,33 +934,8 @@ CREATE TABLE IF NOT EXISTS ac_fit_ap_resources (
     collect_run_uuid TEXT,
     raw_log_path TEXT,
     updated_at TEXT NOT NULL,
-    UNIQUE(ac_device_uuid, serial_number)
+    UNIQUE(ac_device_uuid, ap_uuid)
 );
-"""
-
-AC_FIT_AP_SERIAL_IDENTITY_SCHEMA = """
-CREATE UNIQUE INDEX IF NOT EXISTS idx_ac_fit_ap_resources_serial_identity_global
-ON ac_fit_ap_resources(serial_identity_key)
-WHERE serial_identity_key IS NOT NULL
-  AND serial_identity_key <> '';
-
-CREATE TRIGGER IF NOT EXISTS trg_ac_fit_ap_resources_serial_identity_insert
-AFTER INSERT ON ac_fit_ap_resources
-WHEN NEW.serial_identity_key IS NOT netconsole_fit_ap_serial_identity(NEW.serial_number)
-BEGIN
-    UPDATE ac_fit_ap_resources
-    SET serial_identity_key = netconsole_fit_ap_serial_identity(NEW.serial_number)
-    WHERE id = NEW.id;
-END;
-
-CREATE TRIGGER IF NOT EXISTS trg_ac_fit_ap_resources_serial_identity_update
-AFTER UPDATE OF serial_number, serial_identity_key ON ac_fit_ap_resources
-WHEN NEW.serial_identity_key IS NOT netconsole_fit_ap_serial_identity(NEW.serial_number)
-BEGIN
-    UPDATE ac_fit_ap_resources
-    SET serial_identity_key = netconsole_fit_ap_serial_identity(NEW.serial_number)
-    WHERE id = NEW.id;
-END;
 """
 
 AC_FIT_AP_METADATA_SCHEMA = """
@@ -988,8 +963,8 @@ CREATE TABLE IF NOT EXISTS ac_fit_ap_metadata (
 
 AC_FIT_AP_DETAILS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS ac_fit_ap_details (
-    ap_uuid TEXT PRIMARY KEY,
     ac_device_uuid TEXT NOT NULL,
+    ap_uuid TEXT NOT NULL,
     ap_name TEXT,
     ap_group_name TEXT,
     backup_type TEXT,
@@ -1021,13 +996,15 @@ CREATE TABLE IF NOT EXISTS ac_fit_ap_details (
     collect_run_uuid TEXT,
     raw_log_path TEXT,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(ac_device_uuid, ap_uuid)
 );
 CREATE INDEX IF NOT EXISTS idx_ac_fit_ap_details_ac ON ac_fit_ap_details(ac_device_uuid, updated_at DESC);
 """
 
 AC_FIT_AP_RADIO_DETAILS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS ac_fit_ap_radio_details (
+    ac_device_uuid TEXT NOT NULL,
     ap_uuid TEXT NOT NULL,
     radio_id INTEGER NOT NULL,
     base_bssid TEXT,
@@ -1053,9 +1030,9 @@ CREATE TABLE IF NOT EXISTS ac_fit_ap_radio_details (
     collect_run_uuid TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    PRIMARY KEY(ap_uuid, radio_id)
+    PRIMARY KEY(ac_device_uuid, ap_uuid, radio_id)
 );
-CREATE INDEX IF NOT EXISTS idx_ac_fit_ap_radio_details_ap ON ac_fit_ap_radio_details(ap_uuid, radio_id);
+CREATE INDEX IF NOT EXISTS idx_ac_fit_ap_radio_details_ap ON ac_fit_ap_radio_details(ac_device_uuid, ap_uuid, radio_id);
 """
 
 AC_FIT_AP_RESOURCE_HISTORY_SCHEMA = """
@@ -1663,9 +1640,9 @@ INSERT OR IGNORE INTO fit_ap_lldp_retention_meta(key, value)
 VALUES ('authority', 'legacy');
 
 CREATE TABLE IF NOT EXISTS fit_ap_lldp_current (
-    resource_key TEXT PRIMARY KEY,
+    resource_key TEXT NOT NULL,
     ac_device_uuid TEXT NOT NULL DEFAULT '',
-    ap_uuid TEXT NOT NULL UNIQUE,
+    ap_uuid TEXT NOT NULL,
     ap_name TEXT NOT NULL DEFAULT '',
     ap_mac TEXT NOT NULL DEFAULT '',
     ap_mac_normalized TEXT NOT NULL DEFAULT '',
@@ -1692,7 +1669,8 @@ CREATE TABLE IF NOT EXISTS fit_ap_lldp_current (
     changed_at TEXT,
     source_revision TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT '',
-    updated_at TEXT NOT NULL DEFAULT ''
+    updated_at TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY(ac_device_uuid, ap_uuid)
 );
 CREATE INDEX IF NOT EXISTS idx_fit_ap_lldp_current_mac
     ON fit_ap_lldp_current(ap_mac_normalized);
@@ -1735,6 +1713,8 @@ CREATE INDEX IF NOT EXISTS idx_fit_ap_lldp_history_resource_time
     ON fit_ap_lldp_history(resource_key, changed_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_fit_ap_lldp_history_ap_time
     ON fit_ap_lldp_history(ap_uuid, changed_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_fit_ap_lldp_history_ac_resource_time
+    ON fit_ap_lldp_history(ac_device_uuid, resource_key, changed_at DESC, id DESC);
 """
 
 OPTICAL_BOUNDED_SCHEMA = """
@@ -1968,6 +1948,7 @@ CREATE TABLE IF NOT EXISTS ap_entities (
     ap_id TEXT,
     ap_ip TEXT,
     serial_number TEXT,
+    serial_identity_key TEXT,
     model TEXT,
     group_name TEXT,
     mode TEXT,
@@ -1999,9 +1980,6 @@ CREATE TABLE IF NOT EXISTS ap_entities (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_ap_entities_site_mac
     ON ap_entities(site_id, ap_mac)
     WHERE ap_mac IS NOT NULL AND trim(ap_mac) != '';
-CREATE UNIQUE INDEX IF NOT EXISTS idx_ap_entities_site_serial
-    ON ap_entities(site_id, serial_number)
-    WHERE serial_number IS NOT NULL AND trim(serial_number) != '';
 DROP INDEX IF EXISTS idx_ap_entities_site_ac_apid;
 DROP INDEX IF EXISTS idx_ap_entities_site_ac_name;
 CREATE INDEX IF NOT EXISTS idx_ap_entities_site_ac_apid_lookup
@@ -2529,7 +2507,7 @@ class Database:
             address_migration = False
             classification_migration = False
             identity_schema_migration = False
-            fit_ap_serial_unique_migration = False
+            fit_ap_entity_resource_scope_migration = False
             trackside_ap_location_migration = False
             rail_base_identity_migration = False
             maintenance_required = True
@@ -2547,7 +2525,7 @@ class Database:
                     identity_schema_migration = self._requires_ap_identity_schema_migration(
                         conn
                     )
-                    fit_ap_serial_unique_migration = (
+                    fit_ap_entity_resource_scope_migration = (
                         self._requires_fit_ap_serial_unique_migration(conn)
                     )
                     trackside_ap_location_migration = (
@@ -2561,7 +2539,7 @@ class Database:
                         or address_migration
                         or classification_migration
                         or identity_schema_migration
-                        or fit_ap_serial_unique_migration
+                        or fit_ap_entity_resource_scope_migration
                         or trackside_ap_location_migration
                         or rail_base_identity_migration
                         or self._requires_legacy_schema_compatibility_repair(conn)
@@ -2577,7 +2555,7 @@ class Database:
                     if (
                         address_migration
                         or classification_migration
-                        or fit_ap_serial_unique_migration
+                        or fit_ap_entity_resource_scope_migration
                         or trackside_ap_location_migration
                         or rail_base_identity_migration
                     ):
@@ -2588,8 +2566,8 @@ class Database:
                             if address_migration
                             else "work-scope-status"
                             if classification_migration
-                            else "fit-ap-global-serial-unique"
-                            if fit_ap_serial_unique_migration
+                            else "fit-ap-entity-resource-scope"
+                            if fit_ap_entity_resource_scope_migration
                             else "trackside-ap-location"
                             if trackside_ap_location_migration
                             else "rail-base-identity-relations",
@@ -2607,7 +2585,7 @@ class Database:
                 )
                 stage = "additive_updates"
                 self._apply_additive_schema_updates(conn)
-                stage = "fit_ap_global_serial_unique_migration"
+                stage = "fit_ap_entity_resource_scope_migration"
                 self._apply_fit_ap_serial_unique_migration(conn)
                 stage = "ap_identity_radio_evidence_backfill"
                 self._backfill_ap_identity_radio_evidence(conn)
@@ -2631,7 +2609,7 @@ class Database:
                     or address_migration
                     or classification_migration
                     or identity_schema_migration
-                    or fit_ap_serial_unique_migration
+                    or fit_ap_entity_resource_scope_migration
                     or trackside_ap_location_migration
                     or rail_base_identity_migration
                     or schema_version_before != CURRENT_SCHEMA_VERSION
@@ -2649,7 +2627,7 @@ class Database:
                 if existed and (
                     address_migration
                     or classification_migration
-                    or fit_ap_serial_unique_migration
+                    or fit_ap_entity_resource_scope_migration
                     or trackside_ap_location_migration
                     or rail_base_identity_migration
                 ):
@@ -2658,7 +2636,7 @@ class Database:
                         backup_path=backup_path,
                         address_migration=address_migration,
                         classification_migration=classification_migration,
-                        fit_ap_serial_unique_migration=fit_ap_serial_unique_migration,
+                        fit_ap_entity_resource_scope_migration=fit_ap_entity_resource_scope_migration,
                         trackside_ap_location_migration=(
                             trackside_ap_location_migration
                         ),
@@ -3235,6 +3213,7 @@ class Database:
                     )
 
         ap_entity_columns = {
+            "serial_identity_key": "TEXT",
             "site_key": "TEXT",
             "connection_state": "TEXT",
             "connection_record_raw_time": "TEXT",
@@ -3399,7 +3378,7 @@ class Database:
                 conn.execute(f"ALTER {'TABLE'} devices ADD COLUMN {column} {column_type}")
 
     def _apply_fit_ap_serial_unique_migration(self, conn: sqlite3.Connection) -> None:
-        """Backfill and enforce the global FIT-AP serial identity key."""
+        """Migrate serial identity from a resource-global to entity-global scope."""
 
         if not self._table_exists(conn, "ac_fit_ap_resources"):
             return
@@ -3407,6 +3386,10 @@ class Database:
             conn.execute(
                 "ALTER TABLE ac_fit_ap_resources ADD COLUMN serial_identity_key TEXT"
             )
+        if self._table_exists(conn, "ap_entities") and not self._column_exists(
+            conn, "ap_entities", "serial_identity_key"
+        ):
+            conn.execute("ALTER TABLE ap_entities ADD COLUMN serial_identity_key TEXT")
 
         conn.execute(
             """
@@ -3414,50 +3397,583 @@ class Database:
             SET serial_identity_key = netconsole_fit_ap_serial_identity(serial_number)
             """
         )
-        rows = conn.execute(
-            """
-            SELECT id, ap_uuid, ac_device_uuid, serial_number, serial_identity_key
-            FROM ac_fit_ap_resources
-            WHERE serial_identity_key IS NOT NULL
-              AND serial_identity_key <> ''
-            ORDER BY serial_identity_key, id
-            """
-        ).fetchall()
-        by_identity: dict[str, list[sqlite3.Row]] = {}
-        for row in rows:
-            identity_key = fit_ap_serial_identity_key(row["serial_number"])
-            if identity_key:
-                by_identity.setdefault(identity_key, []).append(row)
+        if self._table_exists(conn, "ap_entities"):
+            conn.execute(
+                """
+                UPDATE ap_entities
+                SET serial_identity_key = netconsole_fit_ap_serial_identity(serial_number)
+                """
+            )
+
+        self._validate_fit_ap_serial_identity_scope(conn)
+        self._backfill_fit_ap_entity_serial_numbers_from_resources(conn)
+        if self._table_exists(conn, "ap_entities"):
+            conn.execute(
+                """
+                UPDATE ap_entities
+                SET serial_identity_key = netconsole_fit_ap_serial_identity(serial_number)
+                """
+            )
+        self._validate_fit_ap_serial_identity_scope(conn)
+
+        if self._fit_ap_resource_table_requires_rebuild(conn):
+            self._rebuild_fit_ap_resource_table(conn)
+        else:
+            conn.execute(
+                "DROP INDEX IF EXISTS idx_ac_fit_ap_resources_serial_identity_global"
+            )
+        self._apply_fit_ap_serial_identity_objects(conn)
+        self._apply_fit_ap_scoped_current_migration(conn)
+
+    def _validate_fit_ap_serial_identity_scope(self, conn: sqlite3.Connection) -> None:
+        """Reject ambiguous physical serials and duplicate current AC resources."""
+
+        by_identity: dict[str, list[tuple[str, str, str]]] = {}
+        for table in ("ap_entities", "ac_fit_ap_resources"):
+            if not self._table_exists(conn, table):
+                continue
+            select_ac = ", ac_device_uuid" if table == "ac_fit_ap_resources" else ", '' AS ac_device_uuid"
+            rows = conn.execute(
+                f"""
+                SELECT ap_uuid, serial_number, serial_identity_key{select_ac}
+                FROM {table}
+                WHERE serial_identity_key IS NOT NULL
+                  AND serial_identity_key <> ''
+                ORDER BY serial_identity_key, ap_uuid
+                """
+            ).fetchall()
+            for row in rows:
+                identity_key = fit_ap_serial_identity_key(row["serial_number"])
+                ap_uuid = str(row["ap_uuid"] or "").strip()
+                if identity_key:
+                    by_identity.setdefault(identity_key, []).append(
+                        (table, ap_uuid, str(row["ac_device_uuid"] or ""))
+                    )
+
         conflicts = {
             identity_key: values
             for identity_key, values in by_identity.items()
-            if len(values) > 1
+            if len({ap_uuid for _table, ap_uuid, _ac in values}) > 1
         }
         if conflicts:
             details = "; ".join(
                 (
-                    f"serial_identity_key={identity_key}, rows={len(values)}, "
-                    f"ap_uuids={len({str(row['ap_uuid'] or '') for row in values})}, "
-                    f"ac_devices={len({str(row['ac_device_uuid'] or '') for row in values})}"
+                    f"serial_identity_key={identity_key}, "
+                    f"ap_uuids={sorted({ap_uuid for _table, ap_uuid, _ac in values})}, "
+                    f"sources={len(values)}"
                 )
                 for identity_key, values in list(conflicts.items())[:20]
             )
             raise FitApSerialGlobalConflictError(
-                "GLOBAL_SERIAL_CONFLICT: existing FIT-AP resources prevent "
-                f"global serial uniqueness; {details}"
+                "GLOBAL_SERIAL_CONFLICT: one valid serial maps to multiple "
+                f"canonical physical AP UUIDs; {details}"
             )
 
-        conn.executescript(AC_FIT_AP_SERIAL_IDENTITY_SCHEMA)
+        resource_duplicates = conn.execute(
+            """
+            SELECT ac_device_uuid, serial_identity_key, COUNT(*) AS row_count
+            FROM ac_fit_ap_resources
+            WHERE serial_identity_key IS NOT NULL
+              AND serial_identity_key <> ''
+            GROUP BY ac_device_uuid, serial_identity_key
+            HAVING COUNT(*) > 1
+            ORDER BY ac_device_uuid, serial_identity_key
+            """
+        ).fetchall()
+        if resource_duplicates:
+            details = "; ".join(
+                (
+                    f"ac_device_uuid={row['ac_device_uuid']}, "
+                    f"serial_identity_key={row['serial_identity_key']}, "
+                    f"rows={row['row_count']}"
+                )
+                for row in resource_duplicates[:20]
+            )
+            raise DatabaseSchemaMismatchError(
+                "AC_RESOURCE_SERIAL_CONFLICT: one AC has multiple current "
+                f"resources for one valid serial; {details}"
+            )
+
+    def _backfill_fit_ap_entity_serial_numbers_from_resources(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        """Fill missing entity serials without inventing physical entities."""
+
+        if not self._table_exists(conn, "ap_entities"):
+            return
+        conn.execute(
+            """
+            UPDATE ap_entities
+            SET serial_number = (
+                    SELECT r.serial_number
+                    FROM ac_fit_ap_resources r
+                    WHERE r.ap_uuid = ap_entities.ap_uuid
+                      AND r.serial_identity_key IS NOT NULL
+                      AND r.serial_identity_key <> ''
+                    ORDER BY r.id
+                    LIMIT 1
+                ),
+                serial_identity_key = (
+                    SELECT r.serial_identity_key
+                    FROM ac_fit_ap_resources r
+                    WHERE r.ap_uuid = ap_entities.ap_uuid
+                      AND r.serial_identity_key IS NOT NULL
+                      AND r.serial_identity_key <> ''
+                    ORDER BY r.id
+                    LIMIT 1
+                )
+            WHERE (serial_identity_key IS NULL OR serial_identity_key = '')
+              AND EXISTS (
+                    SELECT 1
+                    FROM ac_fit_ap_resources r
+                    WHERE r.ap_uuid = ap_entities.ap_uuid
+                      AND r.serial_identity_key IS NOT NULL
+                      AND r.serial_identity_key <> ''
+                )
+            """
+        )
+
+    def _apply_fit_ap_serial_identity_objects(self, conn: sqlite3.Connection) -> None:
+        """Install the final entity-global and resource-AC-scoped constraints."""
+
+        conn.execute("DROP INDEX IF EXISTS idx_ap_entities_site_serial")
+        conn.execute("DROP INDEX IF EXISTS idx_ac_fit_ap_resources_serial_identity_global")
+        for trigger_name in (
+            "trg_ap_entities_serial_identity_insert",
+            "trg_ap_entities_serial_identity_update",
+            "trg_ac_fit_ap_resources_serial_identity_insert",
+            "trg_ac_fit_ap_resources_serial_identity_update",
+        ):
+            conn.execute(f"DROP TRIGGER IF EXISTS {trigger_name}")
+
+        conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_ap_entities_serial_identity_global
+            ON ap_entities(serial_identity_key)
+            WHERE serial_identity_key IS NOT NULL
+              AND serial_identity_key <> ''
+            """
+        )
+        conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_ac_fit_ap_resources_serial_identity_ac
+            ON ac_fit_ap_resources(ac_device_uuid, serial_identity_key)
+            WHERE serial_identity_key IS NOT NULL
+              AND serial_identity_key <> ''
+            """
+        )
+        conn.execute(
+            """
+            CREATE TRIGGER trg_ap_entities_serial_identity_insert
+            AFTER INSERT ON ap_entities
+            WHEN NEW.serial_identity_key IS NOT netconsole_fit_ap_serial_identity(NEW.serial_number)
+            BEGIN
+                UPDATE ap_entities
+                SET serial_identity_key = netconsole_fit_ap_serial_identity(NEW.serial_number)
+                WHERE id = NEW.id;
+            END
+            """
+        )
+        conn.execute(
+            """
+            CREATE TRIGGER trg_ap_entities_serial_identity_update
+            AFTER UPDATE OF serial_number, serial_identity_key ON ap_entities
+            WHEN NEW.serial_identity_key IS NOT netconsole_fit_ap_serial_identity(NEW.serial_number)
+            BEGIN
+                UPDATE ap_entities
+                SET serial_identity_key = netconsole_fit_ap_serial_identity(NEW.serial_number)
+                WHERE id = NEW.id;
+            END
+            """
+        )
+        conn.execute(
+            """
+            CREATE TRIGGER trg_ac_fit_ap_resources_serial_identity_insert
+            AFTER INSERT ON ac_fit_ap_resources
+            WHEN NEW.serial_identity_key IS NOT netconsole_fit_ap_serial_identity(NEW.serial_number)
+            BEGIN
+                UPDATE ac_fit_ap_resources
+                SET serial_identity_key = netconsole_fit_ap_serial_identity(NEW.serial_number)
+                WHERE id = NEW.id;
+            END
+            """
+        )
+        conn.execute(
+            """
+            CREATE TRIGGER trg_ac_fit_ap_resources_serial_identity_update
+            AFTER UPDATE OF serial_number, serial_identity_key ON ac_fit_ap_resources
+            WHEN NEW.serial_identity_key IS NOT netconsole_fit_ap_serial_identity(NEW.serial_number)
+            BEGIN
+                UPDATE ac_fit_ap_resources
+                SET serial_identity_key = netconsole_fit_ap_serial_identity(NEW.serial_number)
+                WHERE id = NEW.id;
+            END
+            """
+        )
+
+    def _apply_fit_ap_scoped_current_migration(self, conn: sqlite3.Connection) -> None:
+        """Scope detail/radio Current rows by the AC that produced them."""
+
+        if self._fit_ap_current_table_requires_rebuild(
+            conn, "ac_fit_ap_details", ("ac_device_uuid", "ap_uuid")
+        ):
+            self._rebuild_fit_ap_current_table(
+                conn,
+                table_name="ac_fit_ap_details",
+                target_schema=AC_FIT_AP_DETAILS_SCHEMA,
+            )
+        if self._fit_ap_current_table_requires_rebuild(
+            conn, "ac_fit_ap_radio_details", ("ac_device_uuid", "ap_uuid", "radio_id")
+        ):
+            self._rebuild_fit_ap_current_table(
+                conn,
+                table_name="ac_fit_ap_radio_details",
+                target_schema=AC_FIT_AP_RADIO_DETAILS_SCHEMA,
+            )
+        if self._fit_ap_current_table_requires_rebuild(
+            conn, "fit_ap_lldp_current", ("ac_device_uuid", "ap_uuid")
+        ):
+            self._rebuild_fit_ap_current_table(
+                conn,
+                table_name="fit_ap_lldp_current",
+                target_schema=FIT_AP_LLDP_BOUNDED_SCHEMA,
+            )
+
+        if self._table_exists(conn, "ac_fit_ap_details"):
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_ac_fit_ap_details_ac "
+                "ON ac_fit_ap_details(ac_device_uuid, updated_at DESC)"
+            )
+        if self._table_exists(conn, "ac_fit_ap_radio_details"):
+            conn.execute("DROP INDEX IF EXISTS idx_ac_fit_ap_radio_details_ap")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_ac_fit_ap_radio_details_ap "
+                "ON ac_fit_ap_radio_details(ac_device_uuid, ap_uuid, radio_id)"
+            )
+
+    def _fit_ap_current_table_requires_rebuild(
+        self,
+        conn: sqlite3.Connection,
+        table_name: str,
+        expected_columns: tuple[str, ...],
+    ) -> bool:
+        if not self._table_exists(conn, table_name):
+            return False
+        if any(
+            not self._column_exists(conn, table_name, column)
+            for column in expected_columns
+        ):
+            return True
+        return not self._has_unique_index(conn, table_name, expected_columns)
+
+    def _rebuild_fit_ap_current_table(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        table_name: str,
+        target_schema: str,
+    ) -> None:
+        """Rebuild a legacy current table without dropping its observations."""
+
+        source_row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name = ?",
+            (table_name,),
+        ).fetchone()
+        source_sql = str(source_row["sql"] or "") if source_row else ""
+        if not source_sql:
+            raise DatabaseSchemaMismatchError(
+                f"无法读取 {table_name} 表结构，拒绝重建"
+            )
+        temporary_name = f"{table_name}__scope_migration"
+        if self._table_exists(conn, temporary_name):
+            raise DatabaseSchemaMismatchError(
+                f"发现未完成的 {table_name} 迁移临时表，拒绝覆盖"
+            )
+
+        index_rows = conn.execute(
+            """
+            SELECT name, sql
+            FROM sqlite_master
+            WHERE type='index' AND tbl_name=? AND sql IS NOT NULL
+            ORDER BY name
+            """,
+            (table_name,),
+        ).fetchall()
+        trigger_rows = conn.execute(
+            """
+            SELECT name, sql
+            FROM sqlite_master
+            WHERE type='trigger' AND sql IS NOT NULL
+            ORDER BY name
+            """
+        ).fetchall()
+        trigger_rows = [
+            row
+            for row in trigger_rows
+            if table_name.casefold() in str(row["sql"] or "").casefold()
+        ]
+        rebuilt_index_names = {
+            "idx_ac_fit_ap_radio_details_ap",
+        }
+        preserved_indexes = [
+            dict(row)
+            for row in index_rows
+            if str(row["name"]) not in rebuilt_index_names
+        ]
+
+        for row in trigger_rows:
+            conn.execute(f"DROP TRIGGER IF EXISTS {self._quote_identifier(row['name'])}")
+        for row in index_rows:
+            conn.execute(f"DROP INDEX IF EXISTS {self._quote_identifier(row['name'])}")
+        conn.execute(
+            f"ALTER TABLE {self._quote_identifier(table_name)} "
+            f"RENAME TO {self._quote_identifier(temporary_name)}"
+        )
+
+        target_create_sql = self._extract_create_table_sql(target_schema, table_name)
+        conn.execute(target_create_sql)
+        old_columns = {
+            str(row["name"])
+            for row in conn.execute(
+                f"PRAGMA table_info({self._quote_identifier(temporary_name)})"
+            ).fetchall()
+        }
+        target_columns = [
+            str(row["name"])
+            for row in conn.execute(
+                f"PRAGMA table_info({self._quote_identifier(table_name)})"
+            ).fetchall()
+        ]
+        source_expressions: list[str] = []
+        for column in target_columns:
+            if column in old_columns:
+                source_expressions.append(self._quote_identifier(column))
+            elif table_name == "ac_fit_ap_radio_details" and column == "ac_device_uuid":
+                source_expressions.append(
+                    "COALESCE((SELECT r.ac_device_uuid "
+                    f"FROM ac_fit_ap_resources r WHERE r.ap_uuid = "
+                    f"{self._quote_identifier(temporary_name)}.ap_uuid "
+                    "ORDER BY r.id DESC LIMIT 1), '')"
+                )
+            else:
+                raise DatabaseSchemaMismatchError(
+                    f"{table_name} 缺少可安全回填的列：{column}"
+                )
+        quoted_target_columns = ", ".join(
+            self._quote_identifier(column) for column in target_columns
+        )
+        conn.execute(
+            f"INSERT INTO {self._quote_identifier(table_name)} "
+            f"({quoted_target_columns}) SELECT {', '.join(source_expressions)} "
+            f"FROM {self._quote_identifier(temporary_name)}"
+        )
+        conn.execute(f"DROP TABLE {self._quote_identifier(temporary_name)}")
+
+        for row in preserved_indexes:
+            conn.execute(str(row["sql"]))
+        for row in trigger_rows:
+            conn.execute(str(row["sql"]))
+
+    @staticmethod
+    def _extract_create_table_sql(schema: str, table_name: str) -> str:
+        match = re.search(
+            rf"CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+"
+            rf"{re.escape(table_name)}\s*\(.*?\)\s*;",
+            schema,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if not match:
+            raise DatabaseSchemaMismatchError(
+                f"无法读取 {table_name} 目标表结构，拒绝重建"
+            )
+        return match.group(0)
+
+    def _fit_ap_resource_table_requires_rebuild(self, conn: sqlite3.Connection) -> bool:
+        """Return whether the resource table still carries legacy UNIQUE clauses."""
+
+        if not self._has_unique_index(conn, "ac_fit_ap_resources", ("ac_device_uuid", "ap_uuid")):
+            return True
+        if self._has_unique_index(conn, "ac_fit_ap_resources", ("ap_uuid",)):
+            return True
+        if self._has_unique_index(
+            conn, "ac_fit_ap_resources", ("ac_device_uuid", "serial_number")
+        ):
+            return True
+        return False
+
+    def _rebuild_fit_ap_resource_table(self, conn: sqlite3.Connection) -> None:
+        """Rebuild only the legacy resource table while preserving data and dependents."""
+
+        table_row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'ac_fit_ap_resources'"
+        ).fetchone()
+        create_sql = str(table_row["sql"] or "") if table_row else ""
+        if not create_sql:
+            raise DatabaseSchemaMismatchError("无法读取 ac_fit_ap_resources 表结构，拒绝重建")
+
+        table_name = "ac_fit_ap_resources"
+        temporary_name = "ac_fit_ap_resources__entity_scope_migration"
+        if self._table_exists(conn, temporary_name):
+            raise DatabaseSchemaMismatchError(
+                "发现未完成的 ac_fit_ap_resources 迁移临时表，拒绝覆盖"
+            )
+
+        index_rows = conn.execute(
+            """
+            SELECT name, sql
+            FROM sqlite_master
+            WHERE type = 'index' AND tbl_name = ? AND sql IS NOT NULL
+            ORDER BY name
+            """,
+            (table_name,),
+        ).fetchall()
+        trigger_rows = conn.execute(
+            """
+            SELECT name, sql
+            FROM sqlite_master
+            WHERE type = 'trigger' AND sql IS NOT NULL
+            ORDER BY name
+            """,
+        ).fetchall()
+        trigger_rows = [
+            row
+            for row in trigger_rows
+            if table_name.casefold() in str(row["sql"] or "").casefold()
+        ]
+        preserved_indexes = [
+            dict(row)
+            for row in index_rows
+            if row["name"]
+            not in {
+                "idx_ac_fit_ap_resources_serial_identity_global",
+                "idx_ac_fit_ap_resources_serial_identity_ac",
+            }
+            and tuple(self._index_columns(conn, str(row["name"])))
+            != ("ac_device_uuid", "serial_number")
+        ]
+        preserved_triggers = [
+            dict(row)
+            for row in trigger_rows
+            if row["name"]
+            not in {
+                "trg_ac_fit_ap_resources_serial_identity_insert",
+                "trg_ac_fit_ap_resources_serial_identity_update",
+            }
+        ]
+
+        for row in trigger_rows:
+            conn.execute(f"DROP TRIGGER IF EXISTS {self._quote_identifier(row['name'])}")
+        for row in index_rows:
+            conn.execute(f"DROP INDEX IF EXISTS {self._quote_identifier(row['name'])}")
+
+        conn.execute(
+            f"ALTER TABLE {self._quote_identifier(table_name)} "
+            f"RENAME TO {self._quote_identifier(temporary_name)}"
+        )
+        create_sql = re.sub(
+            r"(CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?)[`\"\[]?"
+            r"ac_fit_ap_resources[`\"\]]?",
+            r"\1ac_fit_ap_resources",
+            create_sql,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+        create_sql = re.sub(
+            r"\s+UNIQUE\s*$", "", create_sql, flags=re.IGNORECASE
+        )
+        create_sql = re.sub(
+            r",\s*UNIQUE\s*\(\s*ac_device_uuid\s*,\s*serial_number\s*\)",
+            "",
+            create_sql,
+            flags=re.IGNORECASE,
+        )
+        create_sql = re.sub(
+            r",\s*UNIQUE\s*\(\s*ap_uuid\s*\)",
+            "",
+            create_sql,
+            flags=re.IGNORECASE,
+        )
+        create_sql = re.sub(
+            r"(\bap_uuid\s+TEXT\s+NOT\s+NULL)\s+UNIQUE\b",
+            r"\1",
+            create_sql,
+            flags=re.IGNORECASE,
+        )
+        create_sql = create_sql.rstrip().rstrip(";").rstrip()
+        if not re.search(
+            r"UNIQUE\s*\(\s*ac_device_uuid\s*,\s*ap_uuid\s*\)",
+            create_sql,
+            flags=re.IGNORECASE,
+        ):
+            closing = create_sql.rfind(")")
+            if closing < 0:
+                raise DatabaseSchemaMismatchError("无法解析 ac_fit_ap_resources 表结构，拒绝重建")
+            create_sql = (
+                f"{create_sql[:closing]},\n    UNIQUE(ac_device_uuid, ap_uuid)"
+                f"{create_sql[closing:]}"
+            )
+        conn.execute(create_sql)
+
+        columns = [
+            str(row["name"])
+            for row in conn.execute(
+                f"PRAGMA table_info({self._quote_identifier(temporary_name)})"
+            ).fetchall()
+        ]
+        quoted_columns = ", ".join(self._quote_identifier(column) for column in columns)
+        conn.execute(
+            f"INSERT INTO {self._quote_identifier(table_name)} ({quoted_columns}) "
+            f"SELECT {quoted_columns} FROM {self._quote_identifier(temporary_name)}"
+        )
+        conn.execute(f"DROP TABLE {self._quote_identifier(temporary_name)}")
+
+        for row in preserved_indexes:
+            conn.execute(str(row["sql"]))
+        for row in preserved_triggers:
+            conn.execute(str(row["sql"]))
+
+    @staticmethod
+    def _has_unique_index(
+        conn: sqlite3.Connection, table_name: str, expected_columns: tuple[str, ...]
+    ) -> bool:
+        return any(
+            bool(row["unique"])
+            and tuple(Database._index_columns(conn, str(row["name"]))) == expected_columns
+            for row in conn.execute(
+                f"PRAGMA index_list({Database._quote_identifier(table_name)})"
+            ).fetchall()
+        )
+
+    @staticmethod
+    def _index_columns(conn: sqlite3.Connection, index_name: str) -> list[str]:
+        return [
+            str(row["name"])
+            for row in conn.execute(
+                f"PRAGMA index_info({Database._quote_identifier(index_name)})"
+            ).fetchall()
+            if row["name"] is not None
+        ]
+
+    @staticmethod
+    def _quote_identifier(value: object) -> str:
+        return '"' + str(value).replace('"', '""') + '"'
 
     def _requires_fit_ap_serial_unique_migration(
         self, conn: sqlite3.Connection
     ) -> bool:
-        if not self._table_exists(conn, "ac_fit_ap_resources"):
+        if not self._table_exists(conn, "ac_fit_ap_resources") or not self._table_exists(
+            conn, "ap_entities"
+        ):
             return False
-        if not self._column_exists(conn, "ac_fit_ap_resources", "serial_identity_key"):
+        if not self._column_exists(
+            conn, "ac_fit_ap_resources", "serial_identity_key"
+        ) or not self._column_exists(conn, "ap_entities", "serial_identity_key"):
             return True
         expected_objects = {
-            "idx_ac_fit_ap_resources_serial_identity_global",
+            "idx_ap_entities_serial_identity_global",
+            "idx_ac_fit_ap_resources_serial_identity_ac",
+            "trg_ap_entities_serial_identity_insert",
+            "trg_ap_entities_serial_identity_update",
             "trg_ac_fit_ap_resources_serial_identity_insert",
             "trg_ac_fit_ap_resources_serial_identity_update",
         }
@@ -3467,12 +3983,26 @@ class Database:
                 """
                 SELECT name
                 FROM sqlite_master
-                WHERE name IN (?, ?, ?)
+                WHERE name IN (?, ?, ?, ?, ?, ?)
                 """,
                 tuple(expected_objects),
             ).fetchall()
         }
-        return objects != expected_objects
+        if objects != expected_objects:
+            return True
+        if self._table_exists(conn, "ap_entities") and self._has_unique_index(
+            conn, "ap_entities", ("site_id", "serial_number")
+        ):
+            return True
+        return self._fit_ap_resource_table_requires_rebuild(
+            conn
+        ) or self._fit_ap_current_table_requires_rebuild(
+            conn, "ac_fit_ap_details", ("ac_device_uuid", "ap_uuid")
+        ) or self._fit_ap_current_table_requires_rebuild(
+            conn, "ac_fit_ap_radio_details", ("ac_device_uuid", "ap_uuid", "radio_id")
+        ) or self._fit_ap_current_table_requires_rebuild(
+            conn, "fit_ap_lldp_current", ("ac_device_uuid", "ap_uuid")
+        )
 
     def _backfill_ap_optical_treatment_serial_numbers(self, conn: sqlite3.Connection) -> None:
         """Backfill only uniquely resolvable treatment serial numbers.
@@ -4470,7 +5000,7 @@ class Database:
         backup_path: Path | None,
         address_migration: bool,
         classification_migration: bool,
-        fit_ap_serial_unique_migration: bool,
+        fit_ap_entity_resource_scope_migration: bool,
         trackside_ap_location_migration: bool,
         rail_base_identity_migration: bool,
         legacy_operation_status_counts: dict[str, int],
@@ -4486,7 +5016,8 @@ class Database:
                     f"schema_version_after={CURRENT_SCHEMA_VERSION} "
                     f"address_migration={address_migration} "
                     f"classification_migration={classification_migration} "
-                    f"fit_ap_serial_unique_migration={fit_ap_serial_unique_migration} "
+                    "fit_ap_entity_resource_scope_migration="
+                    f"{fit_ap_entity_resource_scope_migration} "
                     "trackside_ap_location_migration="
                     f"{trackside_ap_location_migration} "
                     "rail_base_identity_migration="

@@ -206,7 +206,8 @@ def test_database_initializes_devices_table_with_connection_and_snmp_fields(tmp_
     assert "idx_ap_entities_site_ac_name" not in ap_entity_indexes
     assert ap_entity_indexes["idx_ap_entities_site_ac_apid_lookup"]["unique"] == 0
     assert ap_entity_indexes["idx_ap_entities_site_ac_name_lookup"]["unique"] == 0
-    assert ["ac_device_uuid", "serial_number"] in fit_ap_resource_index_columns.values()
+    assert ["ac_device_uuid", "ap_uuid"] in fit_ap_resource_index_columns.values()
+    assert ["ac_device_uuid", "serial_identity_key"] in fit_ap_resource_index_columns.values()
     assert history_index_columns["device_interfaces_history"]["idx_device_interfaces_history_device_interface_time"] == [
         "device_uuid",
         "interface_name",

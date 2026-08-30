@@ -1303,6 +1303,7 @@ class AcWebApplicationService:
             "detail_rows_updated",
             "detail_failed_count",
             "detail_mode",
+            "fit_ap_snapshot_status",
         ):
             value = result.get(key)
             if isinstance(value, (bool, int, float, str, dict)):
@@ -1331,6 +1332,7 @@ class AcWebApplicationService:
                     "detail_rows_updated",
                     "detail_failed_count",
                     "detail_mode",
+                    "fit_ap_snapshot_status",
                     "partial_success",
                     "refresh_scope",
                     "optical_rows_updated",

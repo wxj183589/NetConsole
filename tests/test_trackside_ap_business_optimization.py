@@ -181,6 +181,7 @@ def test_trackside_business_merges_same_ap_by_identity():
     assert len(rows) == 1
     assert rows[0]["ac_device_uuid"] == "active"
     assert rows[0]["ap_ip"] == "10.0.0.10"
+    assert rows[0]["source_ac_device_uuids"] == ["active", "standby"]
 
 
 def test_trackside_business_uses_latest_current_fact_for_same_interface():

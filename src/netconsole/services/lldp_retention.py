@@ -267,8 +267,9 @@ def upsert_lldp_current_and_history(
         """
     )
     current = conn.execute(
-        "SELECT * FROM fit_ap_lldp_current WHERE resource_key = ?",
-        (projection["resource_key"],),
+        "SELECT * FROM fit_ap_lldp_current "
+        "WHERE ac_device_uuid = ? AND ap_uuid = ?",
+        (projection["ac_device_uuid"], projection["ap_uuid"]),
     ).fetchone()
     if current is None:
         _insert_projection(
@@ -295,7 +296,7 @@ def upsert_lldp_current_and_history(
                 neighbor_name=?, lldp_match_status=?, conflict_flag=?, collected_at=?,
                 collect_run_uuid=?, raw_log_path=?, last_seen_at=?, source_revision=?,
                 state_json=?, state_fingerprint=?, updated_at=?
-            WHERE resource_key=?
+            WHERE ac_device_uuid=? AND ap_uuid=?
             """,
             (
                 projection["ac_device_uuid"], projection["ap_uuid"], projection["ap_name"],
@@ -309,7 +310,7 @@ def upsert_lldp_current_and_history(
                 projection["collected_at"], projection["collect_run_uuid"],
                 projection["raw_log_path"], timestamp, projection["source_revision"],
                 projection["state_json"], projection["state_fingerprint"], updated_at,
-                projection["resource_key"],
+                projection["ac_device_uuid"], projection["ap_uuid"],
             ),
         )
         return {**current_data, **projection, "last_seen_at": timestamp}
@@ -333,7 +334,7 @@ def upsert_lldp_current_and_history(
             neighbor_name=?, lldp_match_status=?, conflict_flag=?, collected_at=?,
             collect_run_uuid=?, raw_log_path=?, last_seen_at=?, changed_at=?,
             source_revision=?, state_json=?, state_fingerprint=?, updated_at=?
-        WHERE resource_key=?
+        WHERE ac_device_uuid=? AND ap_uuid=?
         """,
         (
             projection["ac_device_uuid"], projection["ap_uuid"], projection["ap_name"],
@@ -347,20 +348,25 @@ def upsert_lldp_current_and_history(
             projection["collected_at"], projection["collect_run_uuid"],
             projection["raw_log_path"], timestamp, timestamp, projection["source_revision"],
             projection["state_json"], projection["state_fingerprint"], updated_at,
-            projection["resource_key"],
+            projection["ac_device_uuid"], projection["ap_uuid"],
         ),
     )
     conn.execute(
         """
         DELETE FROM fit_ap_lldp_history
-        WHERE resource_key=? AND id NOT IN (
+        WHERE ac_device_uuid=? AND ap_uuid=? AND id NOT IN (
             SELECT id FROM fit_ap_lldp_history
-            WHERE resource_key=?
+            WHERE ac_device_uuid=? AND ap_uuid=?
             ORDER BY changed_at DESC, id DESC
             LIMIT 10
         )
         """,
-        (projection["resource_key"], projection["resource_key"]),
+        (
+            projection["ac_device_uuid"],
+            projection["ap_uuid"],
+            projection["ac_device_uuid"],
+            projection["ap_uuid"],
+        ),
     )
     return {**current_data, **projection, "last_seen_at": timestamp, "changed_at": timestamp}
 

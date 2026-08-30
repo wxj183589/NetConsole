@@ -97,6 +97,9 @@ class AcResourceService:
             https_port=result.https_port,
             https_port_persisted=result.https_port_persisted,
             error_message=str(result.error_message or ""),
+            fit_ap_snapshot_status=str(
+                getattr(result, "fit_ap_snapshot_status", "NOT_COLLECTED")
+            ),
         )
 
     def refresh_ap_detail(
@@ -143,6 +146,9 @@ class AcResourceService:
             batch_serial_merged=int(getattr(result, "batch_serial_merged", 0)),
             serial_identity_conflicts=int(getattr(result, "serial_identity_conflicts", 0)),
             duplicate_ap_entity_created=int(getattr(result, "duplicate_ap_entity_created", 0)),
+            fit_ap_snapshot_status=str(
+                getattr(result, "fit_ap_snapshot_status", "NOT_COLLECTED")
+            ),
         )
 
     def refresh_fit_ap_verbose(
@@ -218,6 +224,9 @@ class AcResourceService:
             batch_serial_merged=int(getattr(result, "batch_serial_merged", 0)),
             serial_identity_conflicts=int(getattr(result, "serial_identity_conflicts", 0)),
             duplicate_ap_entity_created=int(getattr(result, "duplicate_ap_entity_created", 0)),
+            fit_ap_snapshot_status=str(
+                getattr(result, "fit_ap_snapshot_status", "NOT_COLLECTED")
+            ),
         )
 
     def _load_device(self, device_uuid: str) -> Device:

@@ -792,7 +792,11 @@ def test_fit_ap_resources_same_name_hardware_replacement_creates_new_identity(
         ],
     )
     second = repository.list_fit_ap_resources("ac-1")[0]
-    entities = {row["ap_uuid"]: row for row in repository.list_ap_entities("ac-1")}
+    with database.connect() as conn:
+        entities = {
+            row["ap_uuid"]: dict(row)
+            for row in conn.execute("SELECT * FROM ap_entities ORDER BY ap_uuid")
+        }
     history = repository.list_fit_ap_resource_history("ac-1")
 
     assert second["ap_uuid"] != first["ap_uuid"]
@@ -2464,6 +2468,7 @@ def test_h3c_ac_collect_service_uses_mock_netmiko(monkeypatch, tmp_path):
     assert result.success is True
     assert result.summary_updated is True
     assert result.fit_ap_resources_updated == 2
+    assert result.fit_ap_snapshot_status == "SUCCESS_WITH_ROWS"
     assert connection.commands == ["screen-length disable", *RESOURCE_COMMANDS]
     assert connection.disconnected is True
     assert Path(result.raw_log_path).is_file()
@@ -2832,6 +2837,67 @@ def test_h3c_ac_resource_only_collect_does_not_overwrite_summary_when_ap_all_fai
     assert summary["total_aps"] == 82
     assert summary["online_aps"] == 58
     assert summary["offline_aps"] == 24
+
+
+def test_h3c_ac_resource_collect_failure_preserves_current_resources(
+    monkeypatch, tmp_path
+):
+    connection = FakeConnection({"display wlan ap all": RuntimeError("command failed")})
+    monkeypatch.setattr(
+        h3c_ac_collect_service.netmiko_connection,
+        "ConnectHandler",
+        lambda **_kwargs: connection,
+    )
+    repository = AcRepository(make_database(tmp_path))
+    ac_uuid = "22222222-2222-4222-8222-222222222222"
+    repository.replace_fit_ap_resources(
+        ac_uuid,
+        [{"ap_uuid": "ap-keep", "ap_name": "AP-KEEP", "serial_number": "SN-KEEP"}],
+    )
+
+    result = collect_h3c_fit_ap_resources(
+        make_ac_device(),
+        "demo",
+        repository=repository,
+        paths=PathResolver(tmp_path),
+    )
+
+    assert result.success is False
+    assert result.fit_ap_snapshot_status == "FAILED"
+    assert [row["ap_uuid"] for row in repository.list_fit_ap_resources(ac_uuid)] == ["ap-keep"]
+
+
+def test_h3c_ac_resource_success_empty_replaces_only_that_ac_current(
+    monkeypatch, tmp_path
+):
+    empty_outputs = {
+        "display wlan ap all": "Total number of APs: 0\n",
+        "display wlan ap all address": "",
+        "display wlan ap all radio": "",
+    }
+    connection = FakeConnection(empty_outputs)
+    monkeypatch.setattr(
+        h3c_ac_collect_service.netmiko_connection,
+        "ConnectHandler",
+        lambda **_kwargs: connection,
+    )
+    repository = AcRepository(make_database(tmp_path))
+    ac_uuid = "22222222-2222-4222-8222-222222222222"
+    repository.replace_fit_ap_resources(
+        ac_uuid,
+        [{"ap_uuid": "ap-old", "ap_name": "AP-OLD", "serial_number": "SN-OLD"}],
+    )
+
+    result = collect_h3c_fit_ap_resources(
+        make_ac_device(),
+        "demo",
+        repository=repository,
+        paths=PathResolver(tmp_path),
+    )
+
+    assert result.success is True
+    assert result.fit_ap_snapshot_status == "SUCCESS_EMPTY"
+    assert repository.list_fit_ap_resources(ac_uuid) == []
 
 
 def test_wlan_ap_summary_derives_offline_from_total_minus_online():
@@ -6802,7 +6868,7 @@ def test_database_runtime_has_no_legacy_migration_chain():
         "ALTER TABLE rail_ap_vlan_allocations_reference_migration\n"
         "            RENAME TO rail_ap_vlan_allocations"
     ) in text
-    assert text.count("DROP TABLE") == 2
+    assert text.count("DROP TABLE") == 4
     assert 'conn.execute("DROP TABLE rail_ap_vlan_allocations")' in text
     assert 'conn.execute("DROP TABLE ac_fit_ap_resources")' in text
     assert 'SELECT COUNT(*) AS count FROM ac_fit_ap_resources' in text

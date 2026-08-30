@@ -59,6 +59,7 @@ class AcResourceRefreshResult:
     batch_serial_merged: int = 0
     serial_identity_conflicts: int = 0
     duplicate_ap_entity_created: int = 0
+    fit_ap_snapshot_status: str = "NOT_COLLECTED"
 
     def to_payload(self) -> dict[str, object]:
         return {
@@ -86,6 +87,7 @@ class AcResourceRefreshResult:
                 "batch_serial_merged": self.batch_serial_merged,
                 "serial_identity_conflicts": self.serial_identity_conflicts,
                 "duplicate_ap_entity_created": self.duplicate_ap_entity_created,
+                "fit_ap_snapshot_status": self.fit_ap_snapshot_status,
                 "error_message": self.error_message,
             },
         }
@@ -121,6 +123,7 @@ class AcResourceRefreshResult:
             "batch_serial_merged": int(self.batch_serial_merged),
             "serial_identity_conflicts": int(self.serial_identity_conflicts),
             "duplicate_ap_entity_created": int(self.duplicate_ap_entity_created),
+            "fit_ap_snapshot_status": str(self.fit_ap_snapshot_status),
             "error_message": str(self.error_message),
         }
         return {

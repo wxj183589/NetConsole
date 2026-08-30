@@ -193,6 +193,7 @@ class AcResourceCollectResult:
     batch_serial_merged: int = 0
     serial_identity_conflicts: int = 0
     duplicate_ap_entity_created: int = 0
+    fit_ap_snapshot_status: str = "NOT_COLLECTED"
 
 
 @dataclass(frozen=True)
@@ -286,6 +287,7 @@ def collect_h3c_ac_resources(
         batch_serial_merged=resource_result.batch_serial_merged,
         serial_identity_conflicts=resource_result.serial_identity_conflicts,
         duplicate_ap_entity_created=resource_result.duplicate_ap_entity_created,
+        fit_ap_snapshot_status=resource_result.fit_ap_snapshot_status,
     )
 
 
@@ -346,7 +348,7 @@ def collect_h3c_fit_ap_resources(
             fatal_error=message,
             force=True,
         )
-        return AcResourceCollectResult(False, str(ac_device.device_uuid), collect_run_uuid, result_raw_log_path, False, 0, None, False, False, None, message, command_results)
+        return AcResourceCollectResult(False, str(ac_device.device_uuid), collect_run_uuid, result_raw_log_path, False, 0, None, False, False, None, message, command_results, fit_ap_snapshot_status="FAILED")
     if deep_refresh and target_resource is None:
         message = "FIT-AP target does not exist in the selected AC"
         fact_repository.update_collect_run_status(collect_run_uuid, "failed", error_message=message)
@@ -359,7 +361,7 @@ def collect_h3c_fit_ap_resources(
             fatal_error=message,
             force=True,
         )
-        return AcResourceCollectResult(False, str(ac_device.device_uuid), collect_run_uuid, result_raw_log_path, False, 0, None, False, False, None, message, command_results)
+        return AcResourceCollectResult(False, str(ac_device.device_uuid), collect_run_uuid, result_raw_log_path, False, 0, None, False, False, None, message, command_results, fit_ap_snapshot_status="FAILED")
 
     try:
         profile = H3cAcCommandProfile(ac_device)
@@ -406,12 +408,12 @@ def collect_h3c_fit_ap_resources(
                         {**target_resource, **legacy_row, "ap_uuid": target_resource.get("ap_uuid")},
                     )
                     fact_repository.update_collect_run_status(collect_run_uuid, "success")
-                    return AcResourceCollectResult(True, str(ac_device.device_uuid), collect_run_uuid, result_raw_log_path, False, 1, None, False, False, None, None, command_results)
+                    return AcResourceCollectResult(True, str(ac_device.device_uuid), collect_run_uuid, result_raw_log_path, False, 1, None, False, False, None, None, command_results, fit_ap_snapshot_status="NOT_COLLECTED")
             parsed = _select_verified_verbose_ap(parsed_rows, target_resource)
             if parsed is None:
                 message = "详细回显未通过 AP 名称、MAC 或序列号校验"
                 fact_repository.update_collect_run_status(collect_run_uuid, "failed", error_message=message)
-                return AcResourceCollectResult(False, str(ac_device.device_uuid), collect_run_uuid, result_raw_log_path, False, 0, None, False, False, None, message, command_results)
+                return AcResourceCollectResult(False, str(ac_device.device_uuid), collect_run_uuid, result_raw_log_path, False, 0, None, False, False, None, message, command_results, fit_ap_snapshot_status="NOT_COLLECTED")
             detail_payload, radio_payloads = _verbose_detail_payload(
                 parsed,
                 target_resource,
@@ -421,7 +423,11 @@ def collect_h3c_fit_ap_resources(
             )
             progress("正在保存 FIT-AP 详细信息...")
             repository.upsert_fit_ap_detail(detail_payload)
-            repository.replace_fit_ap_radio_details(str(target_resource.get("ap_uuid") or ""), radio_payloads)
+            repository.replace_fit_ap_radio_details(
+                str(ac_device.device_uuid),
+                str(target_resource.get("ap_uuid") or ""),
+                radio_payloads,
+            )
             fact_repository.update_collect_run_status(collect_run_uuid, "success")
             progress("FIT-AP 详细信息已持久化")
             return AcResourceCollectResult(
@@ -509,11 +515,34 @@ def collect_h3c_fit_ap_resources(
                 # 这不是按名称跨模块匹配，名称仅用于限定本次命令回显行。
                 resources[0]["ap_uuid"] = target_resource.get("ap_uuid")
                 resources[0]["ap_mac"] = resources[0].get("ap_mac") or target_resource.get("ap_mac")
-        dynamic_summary_updated = _can_update_dynamic_summary(command_results, summary)
+        dynamic_summary_available = _can_update_dynamic_summary(command_results, summary)
         progress("正在写入数据库...")
+        resource_commands_ok = all(
+            result.success
+            for result in command_results
+            if result.command in FIT_AP_RESOURCE_REQUIRED_COMMANDS
+        )
+        resource_snapshot_is_success_empty = _is_success_empty_fit_ap_snapshot(
+            outputs, command_results, summary, resources
+        )
+        resource_snapshot_success = bool(
+            resource_commands_ok and (resources or resource_snapshot_is_success_empty)
+        )
+        resources_persisted = resource_snapshot_success
+        resource_snapshot_status = (
+            "SUCCESS_WITH_ROWS"
+            if resources
+            else "SUCCESS_EMPTY"
+            if resource_snapshot_is_success_empty
+            else "FAILED"
+        )
+        dynamic_summary_updated = bool(
+            dynamic_summary_available and resource_snapshot_success
+        )
         if dynamic_summary_updated:
-            repository.upsert_ac_ap_dynamic_summary(str(ac_device.device_uuid), _dynamic_summary_payload(summary))
-        if dynamic_summary_updated:
+            repository.upsert_ac_ap_dynamic_summary(
+                str(ac_device.device_uuid), _dynamic_summary_payload(summary)
+            )
             app_logger.log_info(
                 "AC_AP_SUMMARY_DYNAMIC_UPDATED",
                 _detail(
@@ -525,12 +554,6 @@ def collect_h3c_fit_ap_resources(
                     ),
                 ),
             )
-        resource_commands_ok = all(
-            result.success
-            for result in command_results
-            if result.command in FIT_AP_RESOURCE_REQUIRED_COMMANDS
-        )
-        resources_persisted = bool(resource_commands_ok and resources)
         persistence_result = FitApResourcePersistenceResult()
         if resources_persisted:
             persist_started = time.monotonic()
@@ -680,7 +703,7 @@ def collect_h3c_fit_ap_resources(
         else:
             bbssid_collect_status = "empty"
             bbssid_error = "BBSSID command succeeded but no valid rows were parsed"
-        status = "success" if (resources_persisted if deep_refresh else dynamic_summary_updated or resources_persisted) else "failed"
+        status = "success" if (resources_persisted if deep_refresh else resource_snapshot_success) else "failed"
         error_message = _command_error_summary([result for result in command_results if result.command not in FIT_AP_RESOURCE_OPTIONAL_COMMANDS])
         if deep_refresh and not resources_persisted and not error_message:
             error_message = "目标 FIT-AP 未从 AC 回显中解析到"
@@ -725,6 +748,7 @@ def collect_h3c_fit_ap_resources(
             persistence_result.batch_serial_merged,
             persistence_result.serial_identity_conflicts,
             persistence_result.duplicate_ap_entity_created,
+            resource_snapshot_status,
         )
     except CollectionCancelled:
         message = "用户已取消更新"
@@ -740,7 +764,7 @@ def collect_h3c_fit_ap_resources(
         fact_repository.update_collect_run_status(collect_run_uuid, "cancelled", error_message=message)
         app_logger.log_warning("AC_COLLECT_CANCELLED", _detail(ac_device, collect_run_uuid))
         progress("已取消")
-        return AcResourceCollectResult(False, str(ac_device.device_uuid), collect_run_uuid, result_raw_log_path, False, 0, None, False, False, None, message, command_results)
+        return AcResourceCollectResult(False, str(ac_device.device_uuid), collect_run_uuid, result_raw_log_path, False, 0, None, False, False, None, message, command_results, fit_ap_snapshot_status="NOT_COLLECTED")
     except Exception as exc:
         message = sanitize_sensitive_text(str(exc), ac_device)
         _write_raw_files(
@@ -755,7 +779,7 @@ def collect_h3c_fit_ap_resources(
         fact_repository.update_collect_run_status(collect_run_uuid, "failed", error_message=message)
         app_logger.log_error("AC_COLLECT_FAILED", _detail(ac_device, collect_run_uuid, error=message))
         app_logger.log_error("REAL_DEVICE_COLLECT_FAILED", _detail(ac_device, collect_run_uuid, error=message))
-        return AcResourceCollectResult(False, str(ac_device.device_uuid), collect_run_uuid, result_raw_log_path, False, 0, None, False, False, None, message, command_results)
+        return AcResourceCollectResult(False, str(ac_device.device_uuid), collect_run_uuid, result_raw_log_path, False, 0, None, False, False, None, message, command_results, fit_ap_snapshot_status="FAILED")
 
 
 def collect_h3c_fit_ap_verbose(
@@ -871,7 +895,11 @@ def collect_h3c_fit_ap_verbose(
                 continue
             detail, radios = _verbose_detail_payload(verified, resource, str(ac_device.device_uuid), collect_run_uuid, relative_raw_log_path)
             repository.upsert_fit_ap_detail(detail)
-            repository.replace_fit_ap_radio_details(str(resource.get("ap_uuid") or ""), radios)
+            repository.replace_fit_ap_radio_details(
+                str(ac_device.device_uuid),
+                str(resource.get("ap_uuid") or ""),
+                radios,
+            )
             updated += 1
         success = updated > 0 and (not resources or failed < len(resources))
         error_message = message or (_command_error_summary(command_results) if not success else "")
@@ -2124,6 +2152,32 @@ def _can_update_dynamic_summary(command_results: list[CommandResult], summary: d
             "total_ap_licenses",
             "local_ap_licenses",
             "remaining_local_ap_licenses",
+        )
+    )
+
+
+def _is_success_empty_fit_ap_snapshot(
+    outputs: dict[str, str],
+    command_results: list[CommandResult],
+    summary: dict[str, object | None],
+    resources: list[dict[str, object | None]],
+) -> bool:
+    """Accept an empty Current only after a complete, explicit zero snapshot."""
+
+    if resources or summary.get("total_aps") not in (0, "0"):
+        return False
+    required = {
+        result.command: result.success
+        for result in command_results
+        if result.command in FIT_AP_RESOURCE_REQUIRED_COMMANDS
+    }
+    if any(not required.get(command, False) for command in FIT_AP_RESOURCE_REQUIRED_COMMANDS):
+        return False
+    ap_all_output = str(outputs.get("display wlan ap all", ""))
+    return bool(
+        re.search(
+            r"(?im)^\s*(?:total\s+number\s+of\s+aps|total\s+aps?)\s*:\s*0\s*$",
+            ap_all_output,
         )
     )
 

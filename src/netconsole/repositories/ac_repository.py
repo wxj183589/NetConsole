@@ -231,6 +231,7 @@ FIT_AP_DETAIL_FIELDS = (
 )
 
 FIT_AP_RADIO_DETAIL_FIELDS = (
+    "ac_device_uuid",
     "ap_uuid",
     "radio_id",
     "base_bssid",
@@ -819,13 +820,10 @@ class AcRepository:
                     (ac_device_uuid,),
                 ).fetchall()
             ]
-            continuity_entities = [
-                dict(item)
-                for item in conn.execute(
-                    "SELECT * FROM ap_entities WHERE ac_device_uuid = ? ORDER BY id DESC",
-                    (ac_device_uuid,),
-                ).fetchall()
-            ]
+            # ap_entities is a physical identity authority.  It is deliberately
+            # not used as an AC ownership list; current resources provide the
+            # only AC-scoped continuity candidates.
+            continuity_entities: list[dict[str, object | None]] = []
             incoming_name_counts = Counter(
                 name.casefold()
                 for row in rows
@@ -928,8 +926,9 @@ class AcRepository:
         if station and not str(resource_data.get("site") or "").strip():
             resource_data["site"] = station
         existing_resource = conn.execute(
-            "SELECT * FROM ac_fit_ap_resources WHERE ap_uuid = ? ORDER BY id DESC LIMIT 1",
-            (ap_uuid,),
+            "SELECT * FROM ac_fit_ap_resources "
+            "WHERE ac_device_uuid = ? AND ap_uuid = ? ORDER BY id DESC LIMIT 1",
+            (ac_device_uuid, ap_uuid),
         ).fetchone()
         is_offline = self._is_ap_offline(
             resource_data.get("state")
@@ -978,7 +977,7 @@ class AcRepository:
             f"""
             INSERT INTO ac_fit_ap_resources ({columns})
             VALUES ({placeholders})
-            ON CONFLICT(ap_uuid) DO UPDATE SET {updates}
+            ON CONFLICT(ac_device_uuid, ap_uuid) DO UPDATE SET {updates}
             """,
             [payload[field] for field in FIT_AP_RESOURCE_FIELDS],
         )
@@ -1039,12 +1038,10 @@ class AcRepository:
                        m_uuid.location_note AS metadata_location_note,
                        m_uuid.direction AS metadata_direction
                 FROM ac_fit_ap_resources r
-                LEFT JOIN ap_entities e
-                  ON e.site_id = ? AND e.ap_uuid = r.ap_uuid
+                LEFT JOIN ap_entities e ON e.ap_uuid = r.ap_uuid
                 LEFT JOIN ac_fit_ap_metadata m_uuid ON m_uuid.ap_uuid = r.ap_uuid
                 ORDER BY r.ap_name, r.id
-                """,
-                (self.site_id,),
+                """
             ).fetchall()
         rows = self._enrich_resources_with_extensions([self._resource_with_metadata(dict(row)) for row in rows])
         return self._enrich_resources_with_unauthenticated_status(rows)
@@ -1090,13 +1087,12 @@ class AcRepository:
                        m_uuid.location_note AS metadata_location_note,
                        m_uuid.direction AS metadata_direction
                 FROM ac_fit_ap_resources r
-                LEFT JOIN ap_entities e
-                  ON e.site_id = ? AND e.ap_uuid = r.ap_uuid
+                LEFT JOIN ap_entities e ON e.ap_uuid = r.ap_uuid
                 LEFT JOIN ac_fit_ap_metadata m_uuid ON m_uuid.ap_uuid = r.ap_uuid
                 WHERE {expression} IN ({placeholders})
                 ORDER BY r.ap_name, r.id
                 """,
-                [self.site_id, *normalized],
+                normalized,
             ).fetchall()
         return [self._resource_with_metadata(dict(row)) for row in rows]
 
@@ -1227,35 +1223,49 @@ class AcRepository:
         params: list[object] = []
         where = ""
         if ac_device_uuid:
-            where = "WHERE ac_device_uuid = ?"
+            where = (
+                "WHERE EXISTS ("
+                "SELECT 1 FROM ac_fit_ap_resources r "
+                "WHERE r.ac_device_uuid = ? AND r.ap_uuid = e.ap_uuid)"
+            )
             params.append(ac_device_uuid)
         with self.database.connect() as conn:
             rows = conn.execute(
                 f"""
-                SELECT * FROM ap_entities
+                SELECT e.* FROM ap_entities e
                 {where}
-                ORDER BY ap_name, id
+                ORDER BY e.ap_name, e.id
                 """,
                 params,
             ).fetchall()
-        return [dict(row) for row in rows]
+        result = [dict(row) for row in rows]
+        for row in result:
+            row.pop("serial_identity_key", None)
+        return result
 
     def list_offline_ap_entities(self, ac_device_uuid: str | None = None) -> list[dict[str, object | None]]:
         params: list[object] = []
         where = "WHERE (LOWER(TRIM(COALESCE(connection_state, ''))) = 'offline' OR (TRIM(COALESCE(connection_state, '')) = '' AND is_offline = 1))"
         if ac_device_uuid:
-            where += " AND ac_device_uuid = ?"
+            where += (
+                " AND EXISTS ("
+                "SELECT 1 FROM ac_fit_ap_resources r "
+                "WHERE r.ac_device_uuid = ? AND r.ap_uuid = e.ap_uuid)"
+            )
             params.append(ac_device_uuid)
         with self.database.connect() as conn:
             rows = conn.execute(
                 f"""
-                SELECT * FROM ap_entities
+                SELECT e.* FROM ap_entities e
                 {where}
-                ORDER BY ap_name, id
+                ORDER BY e.ap_name, e.id
                 """,
                 params,
             ).fetchall()
-        return [dict(row) for row in rows]
+        result = [dict(row) for row in rows]
+        for row in result:
+            row.pop("serial_identity_key", None)
+        return result
 
     def list_ap_extension_points(
         self,
@@ -1356,11 +1366,9 @@ class AcRepository:
                        e.last_connection_record_seen_at,
                        e.connection_reonline_count
                 FROM ac_fit_ap_resources r
-                LEFT JOIN ap_entities e
-                  ON e.site_id = ? AND e.ap_uuid = r.ap_uuid
+                LEFT JOIN ap_entities e ON e.ap_uuid = r.ap_uuid
                 ORDER BY r.id
-                """,
-                (self.site_id,),
+                """
             ).fetchall()
         result = [dict(row) for row in rows]
         for row in result:
@@ -2079,7 +2087,7 @@ class AcRepository:
                 """,
                 normalized,
             ).fetchall()
-        return _latest_rows_by_ap_identity([dict(row) for row in rows])
+        return _latest_rows_by_ac_ap_identity([dict(row) for row in rows])
 
     def get_fit_ap_optical_by_uuid(self, ac_device_uuid: str, ap_uuid: str) -> dict[str, object | None] | None:
         with self.database.connect() as conn:
@@ -2196,19 +2204,33 @@ class AcRepository:
         return result
 
     def list_fit_ap_lldp_history_by_ap(
-        self, ap_uuid: str, limit: int = 100
+        self,
+        ap_uuid: str,
+        limit: int = 100,
+        ac_device_uuid: str | None = None,
     ) -> list[dict[str, object | None]]:
         bounded_limit = max(1, min(10, int(limit)))
         with self.database.connect_readonly() as conn:
-            rows = conn.execute(
-                """
-                SELECT * FROM fit_ap_lldp_history
-                WHERE resource_key = ?
-                ORDER BY changed_at DESC, id DESC
-                LIMIT ?
-                """,
-                (str(ap_uuid), bounded_limit),
-            ).fetchall()
+            if str(ac_device_uuid or "").strip():
+                rows = conn.execute(
+                    """
+                    SELECT * FROM fit_ap_lldp_history
+                    WHERE ac_device_uuid = ? AND resource_key = ?
+                    ORDER BY changed_at DESC, id DESC
+                    LIMIT ?
+                    """,
+                    (str(ac_device_uuid), str(ap_uuid), bounded_limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM fit_ap_lldp_history
+                    WHERE resource_key = ?
+                    ORDER BY changed_at DESC, id DESC
+                    LIMIT ?
+                    """,
+                    (str(ap_uuid), bounded_limit),
+                ).fetchall()
         return [dict(row) for row in rows]
 
     @staticmethod
@@ -2284,7 +2306,10 @@ class AcRepository:
         return [dict(row) for row in rows]
 
     def list_current_fit_ap_lldp_by_ap(
-        self, ap_uuid: str, limit: int = 10
+        self,
+        ap_uuid: str,
+        limit: int = 10,
+        ac_device_uuid: str | None = None,
     ) -> list[dict[str, object | None]]:
         """Return the latest valid LLDP relation for each AP/link identity.
 
@@ -2294,7 +2319,14 @@ class AcRepository:
         four identity fields are present: AP MAC, local interface, neighbor
         MAC, and neighbor interface.
         """
-        rows = self.list_fit_ap_lldp_history_by_ap(ap_uuid, limit=100_000)
+        if str(ac_device_uuid or "").strip():
+            rows = self.list_fit_ap_lldp_history_by_ap(
+                ap_uuid,
+                limit=100_000,
+                ac_device_uuid=ac_device_uuid,
+            )
+        else:
+            rows = self.list_fit_ap_lldp_history_by_ap(ap_uuid, limit=100_000)
         latest: dict[tuple[str, str, str, str], dict[str, object | None]] = {}
         for source in rows:
             row = dict(source)
@@ -2335,6 +2367,7 @@ class AcRepository:
         *,
         limit: int = 100,
         offset: int = 0,
+        ac_device_uuid: str | None = None,
     ) -> list[dict[str, object | None]]:
         normalized_kind = str(history_kind or "").strip().casefold()
         table, identity_column = {
@@ -2347,10 +2380,12 @@ class AcRepository:
             raise ValueError(f"不支持的 FIT-AP 历史类型：{history_kind}")
         with self.database.connect_readonly() as conn:
             if normalized_kind == "lldp":
+                scope_sql = " AND ac_device_uuid=?" if str(ac_device_uuid or "").strip() else ""
+                scope_params = (str(ac_device_uuid),) if scope_sql else ()
                 rows = conn.execute(
-                    f"SELECT * FROM {table} WHERE {identity_column}=? "
+                    f"SELECT * FROM {table} WHERE {identity_column}=?{scope_sql} "
                     "ORDER BY changed_at DESC, id DESC LIMIT ? OFFSET ?",
-                    (str(ap_uuid), max(1, int(limit)), max(0, int(offset))),
+                    (str(ap_uuid), *scope_params, max(1, int(limit)), max(0, int(offset))),
                 ).fetchall()
             else:
                 rows = conn.execute(
@@ -2365,7 +2400,12 @@ class AcRepository:
             return [self._bounded_optical_history_row(row) for row in rows]
         return mapped
 
-    def count_fit_ap_history(self, history_kind: str, ap_uuid: str) -> int:
+    def count_fit_ap_history(
+        self,
+        history_kind: str,
+        ap_uuid: str,
+        ac_device_uuid: str | None = None,
+    ) -> int:
         normalized_kind = str(history_kind or "").strip().casefold()
         table, identity_column = {
             "radio": ("fit_ap_radio_history", "ap_identity"),
@@ -2377,9 +2417,11 @@ class AcRepository:
             raise ValueError(f"不支持的 FIT-AP 历史类型：{history_kind}")
         with self.database.connect_readonly() as conn:
             if normalized_kind == "lldp":
+                scope_sql = " AND ac_device_uuid=?" if str(ac_device_uuid or "").strip() else ""
+                scope_params = (str(ac_device_uuid),) if scope_sql else ()
                 row = conn.execute(
-                    f"SELECT COUNT(*) AS total FROM {table} WHERE {identity_column}=?",
-                    (str(ap_uuid),),
+                    f"SELECT COUNT(*) AS total FROM {table} WHERE {identity_column}=?{scope_sql}",
+                    (str(ap_uuid), *scope_params),
                 ).fetchone()
             else:
                 row = conn.execute(
@@ -2424,28 +2466,31 @@ class AcRepository:
         before_collected_at: str | None = None,
     ) -> dict[str, object | None] | None:
         ap_uuid = str(identity.get("ap_uuid") or "").strip()
+        ac_device_uuid = str(identity.get("ac_device_uuid") or "").strip()
         if not ap_uuid:
             return None
         with self.database.connect_readonly() as conn:
             if before_collected_at:
+                scope_sql = " AND ac_device_uuid = ?" if ac_device_uuid else ""
                 row = conn.execute(
-                    """
+                    f"""
                     SELECT * FROM fit_ap_lldp_history
-                    WHERE resource_key = ? AND changed_at < ?
+                    WHERE resource_key = ?{scope_sql} AND changed_at < ?
                     ORDER BY changed_at DESC, id DESC
                     LIMIT 1
                     """,
-                    (ap_uuid, before_collected_at),
+                    (ap_uuid, *((ac_device_uuid,) if ac_device_uuid else ()), before_collected_at),
                 ).fetchone()
             else:
+                scope_sql = " AND ac_device_uuid = ?" if ac_device_uuid else ""
                 row = conn.execute(
-                    """
+                    f"""
                     SELECT * FROM fit_ap_lldp_history
-                    WHERE resource_key = ?
+                    WHERE resource_key = ?{scope_sql}
                     ORDER BY changed_at DESC, id DESC
                     LIMIT 1
                     """,
-                    (ap_uuid,),
+                    (ap_uuid, *((ac_device_uuid,) if ac_device_uuid else ())),
                 ).fetchone()
         return dict(row) if row is not None else None
 
@@ -2615,19 +2660,31 @@ class AcRepository:
                 f"""
                 INSERT INTO ac_fit_ap_details ({columns})
                 VALUES ({placeholders})
-                ON CONFLICT(ap_uuid) DO UPDATE SET {updates}
+                ON CONFLICT(ac_device_uuid, ap_uuid) DO UPDATE SET {updates}
                 """,
                 [payload[field] for field in FIT_AP_DETAIL_FIELDS],
             )
             conn.commit()
-        return self.get_fit_ap_detail(str(payload["ap_uuid"])) or payload
+        return self.get_fit_ap_detail(
+            str(payload["ap_uuid"]), str(payload["ac_device_uuid"])
+        ) or payload
 
-    def get_fit_ap_detail(self, ap_uuid: str) -> dict[str, object | None] | None:
+    def get_fit_ap_detail(
+        self, ap_uuid: str, ac_device_uuid: str | None = None
+    ) -> dict[str, object | None] | None:
         with self.database.connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM ac_fit_ap_details WHERE ap_uuid = ?",
-                (str(ap_uuid),),
-            ).fetchone()
+            if ac_device_uuid:
+                row = conn.execute(
+                    "SELECT * FROM ac_fit_ap_details "
+                    "WHERE ac_device_uuid = ? AND ap_uuid = ?",
+                    (str(ac_device_uuid), str(ap_uuid)),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT * FROM ac_fit_ap_details WHERE ap_uuid = ? "
+                    "ORDER BY updated_at DESC, ac_device_uuid LIMIT 1",
+                    (str(ap_uuid),),
+                ).fetchone()
         return dict(row) if row is not None else None
 
     def list_fit_ap_details(self, ac_device_uuid: str) -> list[dict[str, object | None]]:
@@ -2638,7 +2695,9 @@ class AcRepository:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def list_fit_ap_details_for_macs(self, macs: list[str]) -> list[dict[str, object | None]]:
+    def list_fit_ap_details_for_macs(
+        self, macs: list[str], ac_device_uuid: str | None = None
+    ) -> list[dict[str, object | None]]:
         """按当前页 AP MAC 批量读取详细信息索引，避免列表页逐 AP 查询。"""
         normalized = sorted(
             {
@@ -2651,30 +2710,38 @@ class AcRepository:
             return []
         placeholders = ", ".join("?" for _ in normalized)
         expression = "replace(replace(replace(replace(lower(COALESCE(r.ap_mac, '')), ':', ''), '-', ''), '.', ''), ' ', '')"
+        ac_scope = " AND d.ac_device_uuid = ?" if ac_device_uuid else ""
+        query_params = [*normalized, str(ac_device_uuid)] if ac_device_uuid else normalized
         with self.database.connect() as conn:
             rows = conn.execute(
                 f"""
                 SELECT d.*
                 FROM ac_fit_ap_details d
-                JOIN ac_fit_ap_resources r ON r.ap_uuid = d.ap_uuid
-                WHERE {expression} IN ({placeholders})
+                JOIN ac_fit_ap_resources r
+                  ON r.ac_device_uuid = d.ac_device_uuid AND r.ap_uuid = d.ap_uuid
+                WHERE {expression} IN ({placeholders}){ac_scope}
                 """,
-                normalized,
+                query_params,
             ).fetchall()
         return [dict(row) for row in rows]
 
     def replace_fit_ap_radio_details(
         self,
+        ac_device_uuid: str,
         ap_uuid: str,
         rows: list[dict[str, object | None]],
     ) -> None:
         now = self._now()
         with self.database.connect() as conn:
-            conn.execute("DELETE FROM ac_fit_ap_radio_details WHERE ap_uuid = ?", (str(ap_uuid),))
+            conn.execute(
+                "DELETE FROM ac_fit_ap_radio_details "
+                "WHERE ac_device_uuid = ? AND ap_uuid = ?",
+                (str(ac_device_uuid), str(ap_uuid)),
+            )
             for row in rows:
                 payload = self._payload(
                     FIT_AP_RADIO_DETAIL_FIELDS,
-                    {**row, "ap_uuid": str(ap_uuid)},
+                    {**row, "ac_device_uuid": str(ac_device_uuid), "ap_uuid": str(ap_uuid)},
                 )
                 payload["collected_at"] = payload.get("collected_at") or now
                 payload["created_at"] = payload.get("created_at") or now
@@ -2687,12 +2754,22 @@ class AcRepository:
                 )
             conn.commit()
 
-    def list_fit_ap_radio_details(self, ap_uuid: str) -> list[dict[str, object | None]]:
+    def list_fit_ap_radio_details(
+        self, ap_uuid: str, ac_device_uuid: str | None = None
+    ) -> list[dict[str, object | None]]:
         with self.database.connect() as conn:
-            rows = conn.execute(
-                "SELECT * FROM ac_fit_ap_radio_details WHERE ap_uuid = ? ORDER BY radio_id",
-                (str(ap_uuid),),
-            ).fetchall()
+            if ac_device_uuid:
+                rows = conn.execute(
+                    "SELECT * FROM ac_fit_ap_radio_details "
+                    "WHERE ac_device_uuid = ? AND ap_uuid = ? ORDER BY radio_id",
+                    (str(ac_device_uuid), str(ap_uuid)),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM ac_fit_ap_radio_details "
+                    "WHERE ap_uuid = ? ORDER BY ac_device_uuid, radio_id",
+                    (str(ap_uuid),),
+                ).fetchall()
         return [dict(row) for row in rows]
 
     def delete_fit_aps(self, ac_device_uuid: str, ap_uuids: list[str]) -> int:
@@ -2706,8 +2783,16 @@ class AcRepository:
                 [ac_device_uuid, *ap_uuids],
             ).rowcount
             conn.execute(f"DELETE FROM ac_fit_ap_optical WHERE ac_device_uuid = ? AND ap_uuid IN ({placeholders})", [ac_device_uuid, *ap_uuids])
-            conn.execute(f"DELETE FROM ac_fit_ap_details WHERE ap_uuid IN ({placeholders})", ap_uuids)
-            conn.execute(f"DELETE FROM ac_fit_ap_radio_details WHERE ap_uuid IN ({placeholders})", ap_uuids)
+            conn.execute(
+                f"DELETE FROM ac_fit_ap_details WHERE ac_device_uuid = ? "
+                f"AND ap_uuid IN ({placeholders})",
+                [ac_device_uuid, *ap_uuids],
+            )
+            conn.execute(
+                f"DELETE FROM ac_fit_ap_radio_details WHERE ac_device_uuid = ? "
+                f"AND ap_uuid IN ({placeholders})",
+                [ac_device_uuid, *ap_uuids],
+            )
             conn.execute(f"DELETE FROM ac_fit_ap_metadata WHERE ap_uuid IN ({placeholders})", ap_uuids)
             conn.commit()
         return int(count or 0)
@@ -3566,15 +3651,9 @@ class AcRepository:
             for item in resources
             if self._clean_identity_value(item.get("ap_name")).casefold() == name_key
         ]
-        entities = continuity_entities
-        if entities is None:
-            entities = [
-                dict(item)
-                for item in conn.execute(
-                    "SELECT * FROM ap_entities WHERE ac_device_uuid = ? ORDER BY id DESC",
-                    (ac_device_uuid,),
-                ).fetchall()
-            ]
+        # The entity's legacy ac_device_uuid is only last-seen metadata and
+        # cannot establish current resource ownership.
+        entities = continuity_entities or []
         entity_candidates = [
             item
             for item in entities
@@ -3627,14 +3706,20 @@ class AcRepository:
         ap_uuid: str,
     ) -> tuple[dict[str, object | None], list[str]]:
         merged = dict(incoming)
-        sources: list[dict[str, object | None]] = []
-        for table in ("ac_fit_ap_resources", "ap_entities"):
-            item = conn.execute(
-                f"SELECT * FROM {table} WHERE ap_uuid = ? ORDER BY id DESC LIMIT 1",
-                (ap_uuid,),
-            ).fetchone()
-            if item is not None:
-                sources.append(dict(item))
+        resource_sources: list[dict[str, object | None]] = []
+        resource = conn.execute(
+            "SELECT * FROM ac_fit_ap_resources "
+            "WHERE ac_device_uuid = ? AND ap_uuid = ? ORDER BY id DESC LIMIT 1",
+            (incoming.get("ac_device_uuid"), ap_uuid),
+        ).fetchone()
+        if resource is not None:
+            resource_sources.append(dict(resource))
+        entity = conn.execute(
+            "SELECT * FROM ap_entities WHERE ap_uuid = ? ORDER BY id DESC LIMIT 1",
+            (ap_uuid,),
+        ).fetchone()
+        entity_sources = [dict(entity)] if entity is not None else []
+        sources = [*resource_sources, *entity_sources]
 
         preserved_fields: list[str] = []
         for field in FIT_AP_STABLE_IDENTITY_FIELDS:
@@ -3649,7 +3734,9 @@ class AcRepository:
                 fallback = next(
                     (
                         self._clean_identity_value(source.get(field))
-                        for source in sources
+                        for source in (
+                            resource_sources if field == "ap_name" else sources
+                        )
                         if self._clean_identity_value(source.get(field))
                     ),
                     "",
@@ -3939,15 +4026,29 @@ class AcRepository:
                 )
 
     def _resource_for_payload(self, conn, ac_device_uuid: str, row: dict[str, object | None]) -> dict[str, object | None]:
+        resource_select = (
+            "SELECT r.*, m.site_name, m.station_id AS metadata_station_id, "
+            "m.belong_section AS metadata_section_name, m.direction AS metadata_direction, "
+            "e.station AS entity_station FROM ac_fit_ap_resources r "
+            "LEFT JOIN ac_fit_ap_metadata m ON m.ap_uuid = r.ap_uuid "
+            "LEFT JOIN ap_entities e ON e.ap_uuid = r.ap_uuid "
+        )
         if row.get("ap_uuid"):
             found = conn.execute(
-                "SELECT r.*, m.site_name, m.station_id AS metadata_station_id, "
-                "m.belong_section AS metadata_section_name, m.direction AS metadata_direction, "
-                "e.station AS entity_station FROM ac_fit_ap_resources r "
-                "LEFT JOIN ac_fit_ap_metadata m ON m.ap_uuid = r.ap_uuid "
-                "LEFT JOIN ap_entities e ON e.site_id = ? AND e.ap_uuid = r.ap_uuid "
-                "WHERE r.ac_device_uuid = ? AND r.ap_uuid = ? ORDER BY r.id DESC LIMIT 1",
-                (self.site_id, ac_device_uuid, row.get("ap_uuid")),
+                resource_select
+                + "WHERE r.ac_device_uuid = ? AND r.ap_uuid = ? "
+                "ORDER BY r.id DESC LIMIT 1",
+                (ac_device_uuid, row.get("ap_uuid")),
+            ).fetchone()
+            if found:
+                return dict(found)
+        serial_key = self._serial_identity_key(row.get("serial_number"))
+        if serial_key:
+            found = conn.execute(
+                resource_select
+                + "WHERE r.ac_device_uuid = ? AND r.serial_identity_key = ? "
+                "ORDER BY r.id DESC LIMIT 1",
+                (ac_device_uuid, serial_key),
             ).fetchone()
             if found:
                 return dict(found)
@@ -3956,13 +4057,8 @@ class AcRepository:
             matches = [
                 dict(candidate)
                 for candidate in conn.execute(
-                    "SELECT r.*, m.site_name, m.station_id AS metadata_station_id, "
-                    "m.belong_section AS metadata_section_name, m.direction AS metadata_direction, "
-                    "e.station AS entity_station FROM ac_fit_ap_resources r "
-                    "LEFT JOIN ac_fit_ap_metadata m ON m.ap_uuid = r.ap_uuid "
-                    "LEFT JOIN ap_entities e ON e.site_id = ? AND e.ap_uuid = r.ap_uuid "
-                    "WHERE r.ac_device_uuid = ?",
-                    (self.site_id, ac_device_uuid),
+                    resource_select + "WHERE r.ac_device_uuid = ?",
+                    (ac_device_uuid,),
                 ).fetchall()
                 if self._mac_from_text(candidate["ap_mac"]) == mac
             ]
@@ -4361,6 +4457,22 @@ def _latest_rows_by_ap_identity(rows: list[dict[str, object | None]]) -> list[di
         if not key:
             passthrough.append(row)
             continue
+        current = latest.get(key)
+        if current is None or _latest_row_prefer_score(row) >= _latest_row_prefer_score(current):
+            latest[key] = row
+    return [*latest.values(), *passthrough]
+
+
+def _latest_rows_by_ac_ap_identity(rows: list[dict[str, object | None]]) -> list[dict[str, object | None]]:
+    latest: dict[tuple[str, str, str], dict[str, object | None]] = {}
+    passthrough: list[dict[str, object | None]] = []
+    for row in rows:
+        identity = _ap_identity_key(row)
+        if not identity:
+            passthrough.append(row)
+            continue
+        ac_device_uuid = str(row.get("ac_device_uuid") or "").strip().casefold()
+        key = (ac_device_uuid, identity[0], identity[1])
         current = latest.get(key)
         if current is None or _latest_row_prefer_score(row) >= _latest_row_prefer_score(current):
             latest[key] = row

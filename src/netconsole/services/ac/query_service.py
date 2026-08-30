@@ -294,19 +294,31 @@ class AcManagementQueryService:
     def _enrich_ap_page_details(self, site_id: str, page: AcApPageDTO) -> AcApPageDTO:
         repository = AcRepository(_ReadonlyDatabase(self._db_path(site_id)))  # type: ignore[arg-type]
         details = {
-            str(row.get("ap_uuid") or ""): row
-            for row in repository.list_fit_ap_details_for_macs([item.mac for item in page.items])
+            (str(item.ac_id or ""), str(row.get("ap_uuid") or "")): row
+            for item in page.items
+            for row in repository.list_fit_ap_details_for_macs(
+                [item.mac]
+            )
+            if str(row.get("ac_device_uuid") or "") == str(item.ac_id or "")
         }
         return page.model_copy(
             update={
                 "items": [
                     item.model_copy(
                         update={
-                            "software_version": str(details.get(item.id, {}).get("software_version") or ""),
-                            "hardware_version": str(details.get(item.id, {}).get("hardware_version") or ""),
-                            "boot_version": str(details.get(item.id, {}).get("boot_version") or ""),
-                            "detail_updated_at": str(details.get(item.id, {}).get("updated_at") or ""),
-                            "detail_available": item.id in details,
+                            "software_version": str(
+                                details.get((item.ac_id, item.id), {}).get("software_version") or ""
+                            ),
+                            "hardware_version": str(
+                                details.get((item.ac_id, item.id), {}).get("hardware_version") or ""
+                            ),
+                            "boot_version": str(
+                                details.get((item.ac_id, item.id), {}).get("boot_version") or ""
+                            ),
+                            "detail_updated_at": str(
+                                details.get((item.ac_id, item.id), {}).get("updated_at") or ""
+                            ),
+                            "detail_available": (item.ac_id, item.id) in details,
                         }
                     )
                     for item in page.items
@@ -412,8 +424,9 @@ class AcManagementQueryService:
             return None
         item, raw, optical, lldp = record
         repository = AcRepository(_ReadonlyDatabase(self._db_path(site_id)))  # type: ignore[arg-type]
-        detail = repository.get_fit_ap_detail(item.id) or {}
-        radio_details = repository.list_fit_ap_radio_details(item.id)
+        ac_device_uuid = str(raw.get("ac_device_uuid") or "")
+        detail = repository.get_fit_ap_detail(item.id, ac_device_uuid) or {}
+        radio_details = repository.list_fit_ap_radio_details(item.id, ac_device_uuid)
         recent_change_counts = repository.get_fit_ap_recent_change_counts(item.id)
         return AcApDetailDTO(
             ap=item,
@@ -447,7 +460,12 @@ class AcManagementQueryService:
         # legacy page sizes working, but never expose more than ten rows.
         size = max(1, min(int(page_size), 10))
         repository = AcRepository(_ReadonlyDatabase(self._db_path(site_id)))  # type: ignore[arg-type]
-        total = repository.count_fit_ap_history(kind, record[0].id)
+        ac_device_uuid = str(record[1].get("ac_device_uuid") or "")
+        total = repository.count_fit_ap_history(
+            kind,
+            record[0].id,
+            ac_device_uuid=ac_device_uuid,
+        )
         total_pages = max((total + size - 1) // size, 1)
         current_page = min(max(int(page), 1), total_pages)
         rows = repository.list_fit_ap_history_page(
@@ -455,6 +473,7 @@ class AcManagementQueryService:
             record[0].id,
             limit=size,
             offset=(current_page - 1) * size,
+            ac_device_uuid=ac_device_uuid,
         )
         items = [{field: row.get(field) for field in fields} for row in rows]
         return AcApHistoryPageDTO(
@@ -468,13 +487,16 @@ class AcManagementQueryService:
 
     def list_all_ap_details(self, site_id: str) -> list[AcApDetailDTO]:
         repository = AcRepository(_ReadonlyDatabase(self._db_path(site_id)))  # type: ignore[arg-type]
-        details = {str(row.get("ap_uuid") or ""): row for row in repository.list_fit_ap_details("")}
+        details = {
+            (str(row.get("ac_device_uuid") or ""), str(row.get("ap_uuid") or "")): row
+            for row in repository.list_fit_ap_details("")
+        }
         # list_fit_ap_details is AC-scoped; use a direct latest index for the cross-AC export path.
         if not details:
             with closing(self._connect(self._db_path(site_id))) as conn:
                 if self._table_exists(conn, "ac_fit_ap_details"):
                     details = {
-                        str(row["ap_uuid"]): dict(row)
+                        (str(row["ac_device_uuid"] or ""), str(row["ap_uuid"] or "")): dict(row)
                         for row in conn.execute("SELECT * FROM ac_fit_ap_details")
                     }
         return [
@@ -484,8 +506,12 @@ class AcManagementQueryService:
                 lldp=lldp,
                 optical=optical,
                 connection=self._connection(raw),
-                detail=details.get(item.id, {}),
-                radio_details=repository.list_fit_ap_radio_details(item.id),
+                detail=details.get(
+                    (str(raw.get("ac_device_uuid") or ""), item.id), {}
+                ),
+                radio_details=repository.list_fit_ap_radio_details(
+                    item.id, str(raw.get("ac_device_uuid") or "")
+                ),
             )
             for item, raw, optical, lldp in self._ap_records(site_id)
         ]
@@ -513,7 +539,10 @@ class AcManagementQueryService:
                 for row in self._safe_devices(conn)
             }
         context["fit_ap_details_by_uuid"] = {
-            str(row.get("ap_uuid") or ""): row
+            (
+                str(row.get("ac_device_uuid") or ""),
+                str(row.get("ap_uuid") or ""),
+            ): row
             for row in repository.list_fit_ap_details_for_macs(normalized)
         } if hasattr(repository, "list_fit_ap_details_for_macs") else {}
         result: list[AcApDetailDTO] = []
@@ -527,8 +556,17 @@ class AcManagementQueryService:
                     lldp=lldp,
                     optical=optical,
                     connection=self._connection(row),
-                    detail=context["fit_ap_details_by_uuid"].get(str(row.get("ap_uuid") or ""), {}),
-                    radio_details=repository.list_fit_ap_radio_details(str(row.get("ap_uuid") or "")),
+                    detail=context["fit_ap_details_by_uuid"].get(
+                        (
+                            str(row.get("ac_device_uuid") or ""),
+                            str(row.get("ap_uuid") or ""),
+                        ),
+                        {},
+                    ),
+                    radio_details=repository.list_fit_ap_radio_details(
+                        str(row.get("ap_uuid") or ""),
+                        str(row.get("ac_device_uuid") or ""),
+                    ),
                 )
             )
         return result
@@ -566,8 +604,12 @@ class AcManagementQueryService:
                 lldp=by_id[item.id][3],
                 optical=by_id[item.id][2],
                 connection=self._connection(by_id[item.id][1]),
-                detail=self._detail_for_ap(site_id, item.id),
-                radio_details=self._radio_details_for_ap(site_id, item.id),
+                detail=self._detail_for_ap(
+                    site_id, item.id, str(by_id[item.id][1].get("ac_device_uuid") or "")
+                ),
+                radio_details=self._radio_details_for_ap(
+                    site_id, item.id, str(by_id[item.id][1].get("ac_device_uuid") or "")
+                ),
             )
             for item in items
         ]
@@ -629,7 +671,10 @@ class AcManagementQueryService:
                     row.get("collected_at") or row.get("collected_time") or ""
                 ),
             )
-            for row in repository.list_current_fit_ap_lldp_by_ap(record[0].id)
+            for row in repository.list_current_fit_ap_lldp_by_ap(
+                record[0].id,
+                ac_device_uuid=str(record[1].get("ac_device_uuid") or ""),
+            )
         ]
 
     def get_ap_optical(self, site_id: str, ap_id: str) -> AcOpticalDTO | None:
@@ -826,12 +871,18 @@ class AcManagementQueryService:
             ac_names = {str(row["device_uuid"]): str(row["name"] or row["device_uuid"]) for row in self._safe_devices(conn)}
         context["fit_ap_details_by_uuid"] = (
             {
-                str(row.get("ap_uuid") or ""): row
+                (
+                    str(row.get("ac_device_uuid") or ""),
+                    str(row.get("ap_uuid") or ""),
+                ): row
                 for row in repository.list_fit_ap_details(ac_id)
             }
             if ac_id and include_details
             else {
-                str(row.get("ap_uuid") or ""): row
+                (
+                    str(row.get("ac_device_uuid") or ""),
+                    str(row.get("ap_uuid") or ""),
+                ): row
                 for row in self._list_all_fit_ap_details(repository)
             }
             if include_details
@@ -851,13 +902,17 @@ class AcManagementQueryService:
                 return []
             return [dict(row) for row in conn.execute("SELECT * FROM ac_fit_ap_details")]
 
-    def _detail_for_ap(self, site_id: str, ap_id: str) -> dict[str, object | None]:
+    def _detail_for_ap(
+        self, site_id: str, ap_id: str, ac_device_uuid: str = ""
+    ) -> dict[str, object | None]:
         repository = AcRepository(_ReadonlyDatabase(self._db_path(site_id)))  # type: ignore[arg-type]
-        return repository.get_fit_ap_detail(ap_id) or {}
+        return repository.get_fit_ap_detail(ap_id, ac_device_uuid) or {}
 
-    def _radio_details_for_ap(self, site_id: str, ap_id: str) -> list[dict[str, object | None]]:
+    def _radio_details_for_ap(
+        self, site_id: str, ap_id: str, ac_device_uuid: str = ""
+    ) -> list[dict[str, object | None]]:
         repository = AcRepository(_ReadonlyDatabase(self._db_path(site_id)))  # type: ignore[arg-type]
-        return repository.list_fit_ap_radio_details(ap_id)
+        return repository.list_fit_ap_radio_details(ap_id, ac_device_uuid)
 
     def _find_ap(
         self,
@@ -886,7 +941,10 @@ class AcManagementQueryService:
             "base_ap_mac": "metadata",
             "ac_resource": "resource",
         }.get(station_source_detail, station_source_detail)
-        detail = context.get("fit_ap_details_by_uuid", {}).get(str(row.get("ap_uuid") or ""), {})
+        detail = context.get("fit_ap_details_by_uuid", {}).get(
+            (str(row.get("ac_device_uuid") or ""), str(row.get("ap_uuid") or "")),
+            {},
+        )
         topology = station_info.get("topology")
         resolved_section = (
             topology.section.value
