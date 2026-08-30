@@ -5,11 +5,14 @@ import re
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
-import unicodedata
 from uuid import uuid4
 
 from netconsole.core import app_logger
 from netconsole.core.database import Database
+from netconsole.core.fit_ap_serial_identity import (
+    clean_fit_ap_serial,
+    fit_ap_serial_identity_key,
+)
 from netconsole.parsers.h3c.ac.state_mapper import classify_fit_ap_state
 from netconsole.parsers.h3c.ac.wlan_ap_unauthenticated_parser import (
     WLAN_AP_UNAUTHENTICATED_SOURCE,
@@ -549,11 +552,6 @@ FIT_AP_STABLE_IDENTITY_FIELDS = (
     "serial_number",
     "model",
 )
-
-FIT_AP_INVALID_IDENTITY_VALUES = frozenset(
-    {"-", "--", "n/a", "na", "none", "null", "unknown"}
-)
-
 
 class FitApIdentityConflict(RuntimeError):
     """A FIT-AP row contains incompatible strong-identity evidence."""
@@ -2544,7 +2542,11 @@ class AcRepository:
     def get_fit_ap_resource_by_name_any_ac(self, ap_name: str) -> dict[str, object | None] | None:
         with self.database.connect() as conn:
             row = conn.execute("SELECT * FROM ac_fit_ap_resources WHERE ap_name = ? ORDER BY id DESC LIMIT 1", (ap_name,)).fetchone()
-        return dict(row) if row is not None else None
+        if row is None:
+            return None
+        result = dict(row)
+        result.pop("serial_identity_key", None)
+        return result
 
     def list_fit_ap_metadata(self) -> list[dict[str, object | None]]:
         with self.database.connect() as conn:
@@ -2713,7 +2715,11 @@ class AcRepository:
     def get_fit_ap_resource_by_uuid_any_ac(self, ap_uuid: str) -> dict[str, object | None] | None:
         with self.database.connect() as conn:
             row = conn.execute("SELECT * FROM ac_fit_ap_resources WHERE ap_uuid = ? ORDER BY id DESC LIMIT 1", (ap_uuid,)).fetchone()
-        return dict(row) if row is not None else None
+        if row is None:
+            return None
+        result = dict(row)
+        result.pop("serial_identity_key", None)
+        return result
 
     def upsert_station_ap_capacity(self, site_name: str, ap_total: int | None) -> None:
         if not site_name or site_name == "合计":
@@ -3186,7 +3192,15 @@ class AcRepository:
                 **history_payload,
                 "site_name": history_payload.get("site_name") or history_payload.get("site"),
             },
-            previous=previous,
+            previous=(
+                {
+                    key: value
+                    for key, value in (previous or {}).items()
+                    if key != "serial_identity_key"
+                }
+                if previous is not None
+                else None
+            ),
             now=str(payload.get("collected_at") or self._now()),
         )
 
@@ -3962,7 +3976,10 @@ class AcRepository:
                 f"SELECT * FROM {table} WHERE ac_device_uuid = ? ORDER BY {order_by}",
                 (ac_device_uuid,),
             ).fetchall()
-        return [dict(row) for row in rows]
+        result = [dict(row) for row in rows]
+        for item in result:
+            item.pop("serial_identity_key", None)
+        return result
 
     def _list_fit_ap_resources(self, ac_device_uuid: str, include_metadata: bool) -> list[dict[str, object | None]]:
         if not include_metadata:
@@ -4058,6 +4075,7 @@ class AcRepository:
         return enriched
 
     def _resource_with_metadata(self, item: dict[str, object | None]) -> dict[str, object | None]:
+        item.pop("serial_identity_key", None)
         item["resource_station_text"] = item.get("site")
         item["site_key"] = item.get("site_key") or self.site_id
         item["station"] = item.get("entity_station") or item.get("station") or ""
@@ -4230,21 +4248,18 @@ class AcRepository:
 
     @staticmethod
     def _non_empty(primary: object, fallback: object = None) -> object:
-        text = unicodedata.normalize("NFKC", str(primary or "")).strip()
-        if text and text.casefold() not in FIT_AP_INVALID_IDENTITY_VALUES:
+        text = clean_fit_ap_serial(primary)
+        if text:
             return text
         return fallback
 
     @staticmethod
     def _clean_identity_value(value: object) -> str:
-        text = unicodedata.normalize("NFKC", str(value or "")).strip()
-        if text and text.casefold() not in FIT_AP_INVALID_IDENTITY_VALUES:
-            return text
-        return ""
+        return clean_fit_ap_serial(value)
 
     @classmethod
     def _serial_identity_key(cls, value: object) -> str:
-        return cls._clean_identity_value(value).casefold()
+        return fit_ap_serial_identity_key(value)
 
     @staticmethod
     def _state_display(value: object) -> str:

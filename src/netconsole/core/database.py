@@ -17,6 +17,7 @@ from netconsole.core.device_credential_store import (
     credential_is_complete,
     repair_device_credential_states,
 )
+from netconsole.core.fit_ap_serial_identity import fit_ap_serial_identity_key
 from netconsole.core.sqlite_utils import (
     DEFAULT_SQLITE_BUSY_TIMEOUT_MS,
     DEFAULT_SQLITE_TIMEOUT_SECONDS,
@@ -27,7 +28,7 @@ from netconsole.core.sqlite_utils import (
 from netconsole.models.device_address import InvalidDeviceAddressError, normalize_ip_address
 
 
-CURRENT_SCHEMA_VERSION = "2026.08.30.ap_optical_treatment_serial_backfill_v1"
+CURRENT_SCHEMA_VERSION = "2026.08.31.fit_ap_global_serial_unique_v1"
 
 DEVICE_CLASSIFICATION_COLUMNS = (
     "project_phase",
@@ -73,6 +74,10 @@ class DatabaseSchemaMismatchError(RuntimeError):
 
 class DeviceAddressMigrationError(RuntimeError):
     """Raised when historical device addresses prevent a safe additive migration."""
+
+
+class FitApSerialGlobalConflictError(DatabaseSchemaMismatchError):
+    """Raised when existing FIT-AP resources block global serial uniqueness."""
 
 
 SCHEMA_METADATA_SCHEMA = """
@@ -863,6 +868,7 @@ CREATE TABLE IF NOT EXISTS ac_fit_ap_resources (
     ap_mac TEXT,
     model TEXT,
     serial_number TEXT,
+    serial_identity_key TEXT,
     state TEXT,
     state_raw TEXT,
     state_display TEXT,
@@ -930,6 +936,31 @@ CREATE TABLE IF NOT EXISTS ac_fit_ap_resources (
     updated_at TEXT NOT NULL,
     UNIQUE(ac_device_uuid, serial_number)
 );
+"""
+
+AC_FIT_AP_SERIAL_IDENTITY_SCHEMA = """
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ac_fit_ap_resources_serial_identity_global
+ON ac_fit_ap_resources(serial_identity_key)
+WHERE serial_identity_key IS NOT NULL
+  AND serial_identity_key <> '';
+
+CREATE TRIGGER IF NOT EXISTS trg_ac_fit_ap_resources_serial_identity_insert
+AFTER INSERT ON ac_fit_ap_resources
+WHEN NEW.serial_identity_key IS NOT netconsole_fit_ap_serial_identity(NEW.serial_number)
+BEGIN
+    UPDATE ac_fit_ap_resources
+    SET serial_identity_key = netconsole_fit_ap_serial_identity(NEW.serial_number)
+    WHERE id = NEW.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_ac_fit_ap_resources_serial_identity_update
+AFTER UPDATE OF serial_number, serial_identity_key ON ac_fit_ap_resources
+WHEN NEW.serial_identity_key IS NOT netconsole_fit_ap_serial_identity(NEW.serial_number)
+BEGIN
+    UPDATE ac_fit_ap_resources
+    SET serial_identity_key = netconsole_fit_ap_serial_identity(NEW.serial_number)
+    WHERE id = NEW.id;
+END;
 """
 
 AC_FIT_AP_METADATA_SCHEMA = """
@@ -2498,6 +2529,7 @@ class Database:
             address_migration = False
             classification_migration = False
             identity_schema_migration = False
+            fit_ap_serial_unique_migration = False
             trackside_ap_location_migration = False
             rail_base_identity_migration = False
             maintenance_required = True
@@ -2515,6 +2547,9 @@ class Database:
                     identity_schema_migration = self._requires_ap_identity_schema_migration(
                         conn
                     )
+                    fit_ap_serial_unique_migration = (
+                        self._requires_fit_ap_serial_unique_migration(conn)
+                    )
                     trackside_ap_location_migration = (
                         self._requires_trackside_ap_location_migration(conn)
                     )
@@ -2526,6 +2561,7 @@ class Database:
                         or address_migration
                         or classification_migration
                         or identity_schema_migration
+                        or fit_ap_serial_unique_migration
                         or trackside_ap_location_migration
                         or rail_base_identity_migration
                         or self._requires_legacy_schema_compatibility_repair(conn)
@@ -2541,6 +2577,7 @@ class Database:
                     if (
                         address_migration
                         or classification_migration
+                        or fit_ap_serial_unique_migration
                         or trackside_ap_location_migration
                         or rail_base_identity_migration
                     ):
@@ -2551,6 +2588,8 @@ class Database:
                             if address_migration
                             else "work-scope-status"
                             if classification_migration
+                            else "fit-ap-global-serial-unique"
+                            if fit_ap_serial_unique_migration
                             else "trackside-ap-location"
                             if trackside_ap_location_migration
                             else "rail-base-identity-relations",
@@ -2568,6 +2607,8 @@ class Database:
                 )
                 stage = "additive_updates"
                 self._apply_additive_schema_updates(conn)
+                stage = "fit_ap_global_serial_unique_migration"
+                self._apply_fit_ap_serial_unique_migration(conn)
                 stage = "ap_identity_radio_evidence_backfill"
                 self._backfill_ap_identity_radio_evidence(conn)
                 stage = "ap_optical_treatment_serial_backfill"
@@ -2590,6 +2631,7 @@ class Database:
                     or address_migration
                     or classification_migration
                     or identity_schema_migration
+                    or fit_ap_serial_unique_migration
                     or trackside_ap_location_migration
                     or rail_base_identity_migration
                     or schema_version_before != CURRENT_SCHEMA_VERSION
@@ -2607,6 +2649,7 @@ class Database:
                 if existed and (
                     address_migration
                     or classification_migration
+                    or fit_ap_serial_unique_migration
                     or trackside_ap_location_migration
                     or rail_base_identity_migration
                 ):
@@ -2615,6 +2658,7 @@ class Database:
                         backup_path=backup_path,
                         address_migration=address_migration,
                         classification_migration=classification_migration,
+                        fit_ap_serial_unique_migration=fit_ap_serial_unique_migration,
                         trackside_ap_location_migration=(
                             trackside_ap_location_migration
                         ),
@@ -3102,6 +3146,7 @@ class Database:
                 """
             )
         fit_ap_resource_columns = {
+            "serial_identity_key": "TEXT",
             "connection_ip": "TEXT",
             "connection_state": "TEXT",
             "connection_time": "TEXT",
@@ -3352,6 +3397,82 @@ class Database:
         for column, column_type in device_snmp_columns.items():
             if self._table_exists(conn, "devices") and not self._column_exists(conn, "devices", column):
                 conn.execute(f"ALTER {'TABLE'} devices ADD COLUMN {column} {column_type}")
+
+    def _apply_fit_ap_serial_unique_migration(self, conn: sqlite3.Connection) -> None:
+        """Backfill and enforce the global FIT-AP serial identity key."""
+
+        if not self._table_exists(conn, "ac_fit_ap_resources"):
+            return
+        if not self._column_exists(conn, "ac_fit_ap_resources", "serial_identity_key"):
+            conn.execute(
+                "ALTER TABLE ac_fit_ap_resources ADD COLUMN serial_identity_key TEXT"
+            )
+
+        conn.execute(
+            """
+            UPDATE ac_fit_ap_resources
+            SET serial_identity_key = netconsole_fit_ap_serial_identity(serial_number)
+            """
+        )
+        rows = conn.execute(
+            """
+            SELECT id, ap_uuid, ac_device_uuid, serial_number, serial_identity_key
+            FROM ac_fit_ap_resources
+            WHERE serial_identity_key IS NOT NULL
+              AND serial_identity_key <> ''
+            ORDER BY serial_identity_key, id
+            """
+        ).fetchall()
+        by_identity: dict[str, list[sqlite3.Row]] = {}
+        for row in rows:
+            identity_key = fit_ap_serial_identity_key(row["serial_number"])
+            if identity_key:
+                by_identity.setdefault(identity_key, []).append(row)
+        conflicts = {
+            identity_key: values
+            for identity_key, values in by_identity.items()
+            if len(values) > 1
+        }
+        if conflicts:
+            details = "; ".join(
+                (
+                    f"serial_identity_key={identity_key}, rows={len(values)}, "
+                    f"ap_uuids={len({str(row['ap_uuid'] or '') for row in values})}, "
+                    f"ac_devices={len({str(row['ac_device_uuid'] or '') for row in values})}"
+                )
+                for identity_key, values in list(conflicts.items())[:20]
+            )
+            raise FitApSerialGlobalConflictError(
+                "GLOBAL_SERIAL_CONFLICT: existing FIT-AP resources prevent "
+                f"global serial uniqueness; {details}"
+            )
+
+        conn.executescript(AC_FIT_AP_SERIAL_IDENTITY_SCHEMA)
+
+    def _requires_fit_ap_serial_unique_migration(
+        self, conn: sqlite3.Connection
+    ) -> bool:
+        if not self._table_exists(conn, "ac_fit_ap_resources"):
+            return False
+        if not self._column_exists(conn, "ac_fit_ap_resources", "serial_identity_key"):
+            return True
+        expected_objects = {
+            "idx_ac_fit_ap_resources_serial_identity_global",
+            "trg_ac_fit_ap_resources_serial_identity_insert",
+            "trg_ac_fit_ap_resources_serial_identity_update",
+        }
+        objects = {
+            str(row["name"])
+            for row in conn.execute(
+                """
+                SELECT name
+                FROM sqlite_master
+                WHERE name IN (?, ?, ?)
+                """,
+                tuple(expected_objects),
+            ).fetchall()
+        }
+        return objects != expected_objects
 
     def _backfill_ap_optical_treatment_serial_numbers(self, conn: sqlite3.Connection) -> None:
         """Backfill only uniquely resolvable treatment serial numbers.
@@ -4349,6 +4470,7 @@ class Database:
         backup_path: Path | None,
         address_migration: bool,
         classification_migration: bool,
+        fit_ap_serial_unique_migration: bool,
         trackside_ap_location_migration: bool,
         rail_base_identity_migration: bool,
         legacy_operation_status_counts: dict[str, int],
@@ -4364,6 +4486,7 @@ class Database:
                     f"schema_version_after={CURRENT_SCHEMA_VERSION} "
                     f"address_migration={address_migration} "
                     f"classification_migration={classification_migration} "
+                    f"fit_ap_serial_unique_migration={fit_ap_serial_unique_migration} "
                     "trackside_ap_location_migration="
                     f"{trackside_ap_location_migration} "
                     "rail_base_identity_migration="

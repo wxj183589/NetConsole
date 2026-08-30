@@ -5,6 +5,9 @@ import time
 from pathlib import Path
 from typing import Callable, TypeVar
 
+from netconsole.core.fit_ap_serial_identity import (
+    fit_ap_serial_identity_key,
+)
 from netconsole.core.performance_profiling import ProfilingConnection
 
 
@@ -49,6 +52,12 @@ def configure_sqlite_connection(
         conn.execute("PRAGMA foreign_keys = ON")
     if temp_store_memory:
         conn.execute("PRAGMA temp_store = MEMORY")
+    conn.create_function(
+        "netconsole_fit_ap_serial_identity",
+        1,
+        lambda value: fit_ap_serial_identity_key(value) or None,
+        deterministic=True,
+    )
 
 
 def initialize_sqlite_wal(conn: sqlite3.Connection) -> None:
