@@ -73,7 +73,7 @@ Electron 的 `userData`、`sessionData`、`cache`、`logs`、`crashDumps` 和 `t
 
 ## devices.db 当前态与历史态（HistoryStore 退役）
 
-正式运行时不再创建、打开或排空外部 `db/history`。`HistoryStore` 的 catalog、月分片和 lock 是已退役的 maintenance-only 输入；新站点初始化也不会创建该目录。四类曾依赖外部 HistoryStore 的事实在 `devices.db` 内使用 Current + change-only Recent10 projection：`fit_ap_resource`、`device_fact`、`fit_ap_unauthenticated` 和 `station_online_summary`。Current 保留最新业务事实，Recent10 只保留每个稳定资源最近 10 条有效变化；采集时间、批次 UUID、raw 路径和 uptime 等 heartbeat 元数据不得单独造成 change。
+正式运行时不再创建、打开或排空外部 `db/history`。Legacy external HistoryStore 的 catalog、月分片、lock 和迁移/退役命令均已退役；新站点初始化也不会创建该目录。四类曾依赖外部 HistoryStore 的事实在 `devices.db` 内使用 Current + change-only Recent10 projection：`fit_ap_resource`、`device_fact`、`fit_ap_unauthenticated` 和 `station_online_summary`。Current 保留最新业务事实，Recent10 只保留每个稳定资源最近 10 条有效变化；采集时间、批次 UUID、raw 路径和 uptime 等 heartbeat 元数据不得单独造成 change。
 
 | 数据类别 | 当前态 producer / storage | 新历史写入路径 | 兼容 consumer / legacy 表 | 业务语义与索引 |
 | --- | --- | --- | --- | --- |
@@ -83,21 +83,13 @@ Electron 的 `userData`、`sessionData`、`cache`、`logs`、`crashDumps` 和 `t
 | FIT AP unauthenticated | `replace_fit_ap_unauthenticated` -> `ac_fit_ap_unauthenticated` | `fit_ap_unauthenticated_recent`（每 AC 与稳定推断身份最多 10 条） | 未认证历史和资源 enrichment 只读本地 Recent10 | 保留“历史新上线/已固化”证据，不回溯已删除的外部源 |
 | Station online summary | `save_station_online_summary_history` -> Current | `station_online_summary_current` + `station_online_summary_recent`（每站最多 10 条） | 在线率列表、分页/count 只读本地 Current/Recent10 | 站点级有效变化；heartbeat 不增长 Recent |
 | AP resource snapshot | 站点包/身份兼容写入 | 本阶段不进入通用 history shard | `site_sync` + `ap_resource_snapshots` | `snapshot_uuid` 是快照实体，不是 AC 资源时间线；不得与 `fit_ap_resource` 合并 |
-| Station online summary（历史记录） | 站点聚合保存 | 已退役；仅供显式维护/历史证据读取 | `list_station_online_summary_history` + `ac_station_online_summary_history` | 当前运行时不读取，不应按 AP 资源 change-aware 规则去重 |
+| Station online summary（历史记录） | 站点聚合保存 | 领域内历史表；不接入外部 HistoryStore | `list_station_online_summary_history` + `ac_station_online_summary_history` | 当前运行时不读取外部 HistoryStore，不应按 AP 资源 change-aware 规则去重 |
 
-### 迁移与无人值守边界
+### 退役边界
 
-- 本次退役将四类外部 HistoryStore legacy rows 在候选 `devices.db` 中按时间排序回放为 Current + Recent10；Current 事实先保留，Recent10 只保留有效变化窗口。源行超出窗口的部分按用户授权丢弃，Production 物理回收前写入候选报告和独立 rollback backup。
-- 迁移只由 `scripts/maintenance/retire_legacy_history_store.py` 显式执行。`prepare` 只读源并使用 SQLite Backup API 构建逐库候选；默认 `apply` 只接受精确 `D:\NetConsoleData`、来源 manifest 未变化、候选 quick/integrity check 通过和明确 authorization token。开发 Authority 使用显式 `--development` apply，仅接受精确 `D:\NetConsoleData-dev`，只保留逐库短生命周期备份，并拒绝需要复制非空外部 HistoryStore 的操作。正常启动、安装、Update All 和无人值守任务不会调用它。
-- `SERVER_UNATTENDED ACTIVE` 不改变运行时边界：没有 history drain，也不会创建 `db/history`。维护迁移和退役必须在独立维护窗口完成；任务、MESH、Online MR、Ground、Artifact retention 和未注册站点不在本次范围。
+Legacy external HistoryStore 已完成退役：不存在迁移、退役、drain、scheduler、catalog rollover 或 History maintenance CLI。正常启动、安装、Update All 和无人值守任务均不得创建或读取外部 `db/history`。
 
-Phase 2.1 收口了写入语义：`device_fact.uptime`、接口配置采集时间、LLDP `holdtime/ttl`、光衰 RX/TX/温度/电压/偏置电流，以及 FIT-AP Radio 的 usage/clients/tx_power 只作为 heartbeat payload，不参与普通 change fingerprint。设备/AP 身份、型号、版本、链路/邻居、channel/bandwidth、status/alarm、阈值和冲突状态仍在变化时立即记录。设备接口、设备 LLDP、设备光模块以及 FIT-AP Optical 已切换为 change-only；FIT-AP Optical 的 RX/TX 变化至少 0.20 dB 才计为连续量变化，并按资源保留最近 10 条。旧 legacy history 和已封存分片不自动清理，兼容查询只限制新链路返回窗口；FIT-AP Resource/Radio 等其他 kind 继续使用既有独立 sampling 周期。
-
-无人值守期间 history 以低频、较大但有界的事务批次排空：基础批次 100 条，积压或年龄升高时提升到 250/500 条，目标调度预算为 2 秒。已开始的 SQLite chunk 必须安全完成；chunk 完成后若已超出预算，本轮不再启动下一 chunk，不强制中断事务。`/api/health` 暴露 `history_status`、`history_pending`、`history_oldest_pending_age_seconds`、`history_pressure`、`history_last_drain_elapsed_ms`、`history_last_drain_written` 和 `history_budget_overrun`。History drain 不因 Agent/Traffic/File Management 等 deferred runtime 未 ready 而停滞。
-
-Catalog rollover 会在新月份写入时将其它 ACTIVE 分片收口为 CLOSED，并以真实月份末日填充 `period_end`（包括闰年二月）。
-
-History growth benchmark 使用统一虚拟时钟按分钟推进 collector 与 history scheduler；验收以 unattended 阶段的 `pending_before_catchup`、最老 pending age、drain cycles 和 elapsed 为准。结束后的 catch-up 仅用于临时 fixture 清理，不代表无人值守排空能力。
+Current、Recent10 和各领域有界 `*_history` 仍按其现有 repository 规则运行。`TaskHistoryStore` 是 Task Center 的任务归档能力，与 Legacy external HistoryStore 无关，保留不变。
 
 ### 写入、查询与升级流程
 
@@ -115,19 +107,7 @@ flowchart LR
     C --> R["按 changed_at / collected_at 排序、分页"]
 ```
 
-```mermaid
-flowchart TD
-    A["显式 maintenance prepare"] --> B["SQLite Backup API 候选库"]
-    B --> C["回放四类 legacy rows"]
-    C --> D["Current + Recent10"]
-    D --> E["quick_check + integrity_check + digest"]
-    E --> F{"授权且 Production 源未变化?"}
-    F -->|"否"| X["停止，不删除"]
-    F -->|"是"| G["备份后原子替换 devices.db"]
-    G --> H["删除注册站点 db/history"]
-```
-
-完整的运行时前后消费者与维护边界见 [HISTORYSTORE_RUNTIME_CONSUMER_MATRIX.md](./HISTORYSTORE_RUNTIME_CONSUMER_MATRIX.md)。`tasks.db` 的 Current Task Result Blob authority 不在本次 HistoryStore 退役范围内。
+`tasks.db` 的 Current Task Result Blob authority 不在本次 Legacy HistoryStore 退役范围内。
 
 每个局点的 `sync/wps_sync.sqlite` 保存 WPS 云文档配置、DPAPI 加密凭据、同步批次和远端异步任务恢复状态；`sync/baselines/**` 与 `sync/imports/**` 分别保存现场回传基准和幂等导入审计。三者都是 FULL_MIGRATION 必须 round-trip 的 operational authority，metadata-only/脱敏包可以省略；WPS SQLite 必须通过 Backup API 快照，Token 不得解密后写入包。正式 Workbook 请求在提交前以不含 Token 的 JSON 持久化，完整远端 `task_id` 仅保存在该库；API、任务参数和日志只输出脱敏 ID。常规升级只做幂等增量迁移，不删除、重建或覆盖当前云文档的配置、凭据和历史。产品功能明确退役时允许精确删除对应本地目标及运行状态：必须在同一事务内按稳定旧代码匹配、先处理外键运行记录、保留混合批次中的当前目标历史，并仅在无剩余引用时删除凭据；迁移重复运行必须为 no-op，且不得访问或修改远端文档。程序重启后以原 `target_batch_id + remote_task_id` 恢复查询，不能因本地 Worker 丢失重复提交已取得 ID 的任务。
 

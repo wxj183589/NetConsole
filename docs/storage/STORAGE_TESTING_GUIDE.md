@@ -31,7 +31,7 @@ storage report to the Git HEAD, storage-registry SHA-256, and finalizer-script S
 | `DATA_LIFECYCLE_CLASSIFICATION.json` | every file and database table mapped to one mandatory lifecycle class, with unresolved content remaining `UNKNOWN_PROTECT` |
 | `SITE_STORAGE_FOOTPRINT.json` | recursive site plus data-root-global before/after/history/duplicate/protected bytes, authority, and future growth behavior by required storage group |
 
-### Functional reports
+### Historical functional reports (retired)
 
 | Report | Minimum content |
 | --- | --- |
@@ -39,23 +39,9 @@ storage report to the Git HEAD, storage-registry SHA-256, and finalizer-script S
 | `FUNCTIONAL_AFTER.json` | the same observations against the isolated optimized copy, bound to the matching baseline and final HEAD |
 | `FUNCTIONAL_COMPATIBILITY.json` | per-consumer semantic, ordering, precision, recovery, API/export, and performance comparison with fail-closed overall status |
 
-`scripts/maintenance/validate_database_functional_compatibility.py` first produces the direct
-database Before/After core comparison. `scripts/maintenance/benchmark_database_functional_queries.py`
-then records p50/p95/max and deterministic result hashes for the real isolated Device, FIT-AP,
-LLDP, History, Task, MESH, and Ground query paths. Final reports are published only by
-`scripts/maintenance/finalize_functional_compatibility.py`, which requires PASS evidence for the
-core comparison, integrated Site Package, No-Reinflation, performance, final Storage footprint,
-and separate TARGETED/FAST/CONSUMER/FULL Gate reports bound to the same Git HEAD. The TARGETED
-report is produced by `scripts/quality/run_storage_targeted_gate.py` in an isolated test data root.
-Before the core comparison, `scripts/maintenance/collect_functional_consumer_observations.py`
-binds every final consumer to canonical results from the integrated Site Package, performance,
-and No-Reinflation evidence. The final consumer matrix rejects any Before/After query-digest
-difference even when both individual observation manifests claim PASS.
-
-Before/After SQLite inputs must be quiescent isolated snapshots produced by the Backup API or an
-explicit checkpoint. The functional validator opens them with immutable read-only connections and
-fails closed on a non-empty WAL; validation must never recover, checkpoint, or create sidecars next
-to evidence inputs.
+该 Before/After report 工具链仅服务于已完成的 Legacy external HistoryStore cutover，现已退役。
+当前存储验证以领域定向 pytest、Site Package 验证、No-Reinflation 和已注册的存储架构 guard
+为准；不得再生成或依赖 Legacy HistoryStore functional report。
 
 Each SQLite table must report, where applicable:
 

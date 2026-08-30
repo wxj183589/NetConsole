@@ -28,7 +28,6 @@ Backend 启动日志和 `/api/health` 返回数据根、`PRODUCTION`/`DEVELOPMEN
 
 - `scripts/maintenance/rebuild_mesh_parsed_data.py`
 - `scripts/maintenance/remap_mesh_identity.py`
-- `scripts/maintenance/migrate_device_history.py`
 - `scripts/maintenance/manage_task_result_rollout.py`
 - `scripts/maintenance/upgrade_ap_extension_schema.py`
 
@@ -68,7 +67,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\sync_data_root.ps1  # 历史�
 - 当前设备表的大多数站点没有发现重复设备记录；设备名称、型号、序列号、接口、IP、版本等当前态仍由当前表保存，未改变模型。
 - 宁波地铁 6 号线的 `device_lldp_neighbors` 发现 2 组 `device_uuid/local_interface` 重复组。这是当前态一致性问题，需要基于采集批次和唯一业务键进一步定位，不能在本任务中猜测删除。
 - 旧 legacy history 表没有统一生效“每个资源只保留最近 10 次”：观测到 `hzl10` 接口 68、LLDP 20、光模块 73、AP LLDP 214；宁波地铁 10 号线接口/LLDP/光模块最高 49/49/80；宁波地铁 6 号线 LLDP 最高 156。现有代码只对新 change-aware history 路径提供 bounded retention，旧表和已封存分片按兼容策略保留。
-- 建议：先在开发副本上按表、资源键和 producer 版本复现超限来源，确认查询消费者后，再单独设计 legacy retention 迁移；本轮不扩大历史删除范围，也不重构 `HistoryStore`。
+- 该历史建议已失效：Legacy external HistoryStore maintenance 已完成退役；Current、Recent10 与领域内有界历史的现行边界见 [DATA_LAYOUT.md](./DATA_LAYOUT.md)。
 
 ### `tasks.db`
 

@@ -3,23 +3,21 @@
 ## 状态与边界
 
 分类：HISTORICAL_RECORD。本文保留 V2 候选格式、隔离迁移和查询结果的历史技术记录，不是当前运行时规范。当前运行时边界以
-[HistoryStore Runtime Consumer Matrix](./HISTORYSTORE_RUNTIME_CONSUMER_MATRIX.md) 和
+[Data Layout](./DATA_LAYOUT.md) 和
 [Storage Architecture](./STORAGE_ARCHITECTURE.md) 为准。
 
 History Storage V2 是已退役的月分片候选格式，不再是运行时写入或查询格式。`HistoryStore`
-及其 catalog、查询、计数和 COPY-only migration 仅作为显式维护、审计和回滚工具保留；
-运行时不创建 `history_outbox`，不启动历史 drain，也不对 `db/history` 做 fallback。
+及其 catalog、查询、计数和 COPY-only migration 工具均已退役；运行时不创建
+`history_outbox`，不启动历史 drain，也不对 `db/history` 做 fallback。
 
 - 旧候选工具的新写统一进入 `history_events_v2`；正式运行时四类业务事实写入
   `devices.db` 的 Current/Recent10 模型。
 - 既有 `history_events` V1 表不重写、不删除，V1-only 和同月 V1/V2 mixed shard 均继续可读。
-- `event_type=legacy` 的迁移副本仍不进入普通历史查询；源 legacy table 只在显式维护迁移期间读取。
+- `event_type=legacy` 的迁移副本属于已完成迁移的历史记录；源 legacy table 不再被读取。
 - 旧 `history_outbox`/`history_state` 仅属于 HistoryStore 生命周期；候选迁移完成后删除这两个内部表，
   不删除仍承担 bounded Current/Recent10 语义的专用 `*_history` 表。
-- 已验证且无错误的单个源表只能在隔离候选库中执行维护工具验证；正式运行时不切换为
-  shard 查询事实源，也不保留 HistoryStore 作为业务 fallback。
-- Production 删除由独立的 candidate/apply/verify 工具按显式授权完成；该工具只迁移
-  Current/Recent10 并删除已注册站点的旧 `db/history`，不触碰其他存储域。
+- 已验证且无错误的单个源表不再有维护工具；正式运行时不切换为 shard 查询事实源，
+  也不保留 HistoryStore 作为业务 fallback。
 
 ## 物理基线
 

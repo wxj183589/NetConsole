@@ -4,8 +4,8 @@
 
 `ac_fit_ap_unauthenticated_history` 和 `ac_station_online_summary_history` 曾因
 没有稳定的 HistoryStore target event contract 被标记为 unsupported。该限制已由
-本次专用 Current + Recent10 模型解决；旧表只保留为显式 maintenance 输入，不能
-再作为运行时 authority。
+本次专用 Current + Recent10 模型解决；旧表不再作为外部 HistoryStore 的迁移输入或
+运行时 authority。
 
 ## Consumer audit
 
@@ -17,18 +17,11 @@
 两类 reader 都只调用 `devices.db` 本地 projection。缺少旧 source rows 不会触发
 HistoryStore fallback，也不会自动创建 `<site>/db/history`。
 
-## Migration contract
+## Retirement contract
 
-- `scripts/maintenance/retire_legacy_history_store.py prepare` 按
-  `collected_at/updated_at/created_at` 和稳定事件 id 排序，在隔离候选库中回放；
-  当前事实进入 Current，变化窗口进入 Recent10，每个资源最多 10 条。
-- 当前值不以旧历史重建覆盖；无法确定业务身份的行不猜测写入，并在报告中计入
-  source/discarded 统计。
-- `apply` 先比较 source `devices.db` SHA-256 与 history manifest，备份后原子替换
-  候选 `devices.db`，只删除已注册站点的 `db/history`。它只接受精确
-  `D:\NetConsoleData` 和显式 `LEGACY_HISTORY_RETIREMENT_AUTHORIZED`。
-- 旧表、旧 catalog 和月分片不再参与普通查询、导出、Update All 或启动；其他
-  HistoryStore maintenance 仍需显式调用，不能被误当成 runtime consumer。
+Legacy external HistoryStore 的迁移、回放、验证和 retirement CLI 均已删除。旧表、旧
+catalog 和月分片不参与普通查询、导出、Update All、启动或任何 maintenance workflow；
+它们不会触发 fallback，也不会创建 `<site>/db/history`。
 
 ## Required evidence
 
@@ -36,5 +29,5 @@ HistoryStore fallback，也不会自动创建 `<site>/db/history`。
   去重、上限和新站点不创建 history。
 - `tests/test_history_store_cutover_compat.py`、`tests/test_ac_management.py`、
   `tests/test_trackside_ap_web.py` 验证旧表/旧事件不会恢复运行时事实。
-- `docs/storage/HISTORYSTORE_RUNTIME_CONSUMER_MATRIX.md` 记录四类历史、Task Center
-  和 maintenance-only 入口的完整前后边界。
+- [DATA_LAYOUT.md](./DATA_LAYOUT.md) 记录 Current/Recent10、TaskHistoryStore 与 Legacy
+  external HistoryStore 的当前边界。

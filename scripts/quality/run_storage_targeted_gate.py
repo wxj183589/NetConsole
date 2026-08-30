@@ -18,22 +18,15 @@ ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_TEST_ROOT = Path("D:/study/NetConsole-Workspace/test-data/NetConsole")
 DEFAULT_DEVELOPMENT_ROOT = Path("D:/study")
 TARGETS = (
-    "tests/test_history_store.py",
-    "tests/test_history_legacy_migration.py",
     "tests/test_database_footprint_maintenance.py",
     "tests/test_task_repository_storage_governance.py",
     "tests/test_task_result_rollout.py",
     "tests/test_site_retention.py",
     "tests/test_site_storage.py",
     "tests/test_backup_lifecycle.py",
-    "tests/test_database_functional_compatibility.py",
-    "tests/test_finalize_functional_compatibility.py",
-    "tests/test_benchmark_database_functional_queries.py",
-    "tests/test_collect_functional_consumer_observations.py",
     "tests/test_collect_global_storage_inventory.py",
     "tests/test_finalize_site_storage_audit.py",
     "tests/test_build_site_storage_optimization_impact.py",
-    "tests/test_validate_history_provenance.py",
     "tests/test_integrated_site_package_validation.py",
     "tests/test_storage_no_reinflation.py",
     "tests/test_validate_storage_no_reinflation.py",

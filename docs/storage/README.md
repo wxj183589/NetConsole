@@ -20,7 +20,7 @@ Canonical 目录定义见[仓库目录规范](../development/repository-layout.m
 - [局点数据保留与清理](./SITE_RETENTION.md)：扫描令牌、数据库分类、Online MR 原始数据、任务事件和保护边界。
 - [真实数据根验证](./DATA_ROOT_VALIDATION.md)：2026-08-21 Production/Development 历史验证记录；当前 Authority 以[数据根](./DATA_ROOT.md)为准。
 - [History Storage V2](./HISTORY_STORAGE_V2.md)：月分片 V2 格式、V1/mixed 兼容、物理基线和真实 snapshot/query 结果。
-- [Legacy History COPY-only 迁移](./LEGACY_HISTORY_MIGRATION.md)：inventory、identity、checkpoint、verify、resume 和源数据保护边界。
+- [数据布局](./DATA_LAYOUT.md)：Legacy external HistoryStore 已退役；Current/Recent10 与 TaskHistoryStore 的当前边界。
 - [安全边界](./SECURITY.md)：路径、ZIP、API 和 Electron IPC 约束。
 
 机器可读的 owner、authority、分类、package/backup/migration policy 位于

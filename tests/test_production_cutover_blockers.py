@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 
 from scripts.maintenance.migrate_task_result_blobs import _resolve
-from netconsole.storage.lldp_optical_retention_migration import _active_sites
 
 
 def _registry(root: Path) -> None:
@@ -38,12 +37,3 @@ def test_task_blob_migration_resolves_only_registered_sites(tmp_path: Path) -> N
     resolved = _resolve(tmp_path, None, True)
 
     assert resolved == [("registered-site", tmp_path / "sites" / "registered" / "db" / "tasks.db")]
-
-
-def test_engineering_migration_resolves_only_registered_sites(tmp_path: Path) -> None:
-    root = tmp_path / "NetConsoleData-dev"
-    _registry(root)
-
-    resolved = _active_sites(root, None)
-
-    assert resolved == [("registered-site", root / "sites" / "registered" / "db" / "devices.db")]

@@ -40,9 +40,8 @@ projection.
 
 `devices.db` and `tasks.db` stay operational. The runtime HistoryStore has been fully retired:
 current state, recovery metadata, and the four bounded device/AC history projections remain in the
-operational databases. Legacy HistoryStore/catalog/shard material is maintenance-only evidence;
-any source retirement is separately authorized and does not move active state or unresolved
-compatibility data.
+operational databases. Legacy external HistoryStore/catalog/shard material is a historical retirement
+record only: no runtime, fallback, migration, or retirement command remains.
 
 Ground `index.sqlite` remains operational because unattended restart, active schedules, event
 references, and session queries depend on it. Historical Ping/Syslog/MR facts move only under the

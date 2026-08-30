@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
-from netconsole.services.history_legacy_migration import UNSUPPORTED_TABLES
-
-
 ROOT = Path(__file__).resolve().parents[1]
+UNSUPPORTED_TABLES = (
+    "ac_fit_ap_unauthenticated_history",
+    "ac_station_online_summary_history",
+)
 
 
 def test_unsupported_history_contract_documents_real_consumers() -> None:
@@ -47,17 +47,11 @@ def test_unsupported_tables_have_producer_and_reader_evidence() -> None:
     assert "ac_fit_ap_unauthenticated_history" not in snapshot
 
 
-def test_unsupported_history_is_not_generic_migration_input() -> None:
-    migration = (ROOT / "src/netconsole/services/history_legacy_migration.py").read_text(
-        encoding="utf-8"
-    )
-    assert 'classification = "UNSUPPORTED"' in migration
-    assert "UNSUPPORTED_TABLES" in migration
-    # Keep the machine-readable registry and the explicit safety gate aligned.
-    registry = json.loads(
-        (ROOT / "config/storage_registry.yaml").read_text(encoding="utf-8")
-    )
-    text = json.dumps(registry, ensure_ascii=False)
-    for table in UNSUPPORTED_TABLES:
-        assert table in text
+def test_unsupported_history_has_no_legacy_migration_entrypoint() -> None:
+    for relative in (
+        "src/netconsole/services/history_legacy_migration.py",
+        "scripts/maintenance/migrate_device_history.py",
+        "scripts/maintenance/retire_legacy_history_store.py",
+    ):
+        assert not (ROOT / relative).exists()
 

@@ -326,9 +326,8 @@
         "src/netconsole/repositories/task_repository.py",
         "src/netconsole/services/job_center/query_service.py",
         "src/netconsole/backend/api/main.py",
-        "scripts/maintenance/retire_legacy_history_store.py",
         "config/storage_registry.yaml",
-        "docs/storage/HISTORYSTORE_RUNTIME_CONSUMER_MATRIX.md"
+        "docs/storage/DATA_LAYOUT.md"
       ],
       "consumers": [
         "devices",

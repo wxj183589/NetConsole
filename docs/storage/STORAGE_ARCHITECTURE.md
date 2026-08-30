@@ -77,8 +77,8 @@ authority boundaries without replacing that map.
 
 | Domain | Operational/current authority | History, raw, or derived authority | Lifecycle owner |
 | --- | --- | --- | --- |
-| Devices | `devices.db`, including current state and bounded Recent10 change records | No external HistoryStore runtime authority; old `db/history` is retired and retained only in explicit rollback/maintenance evidence | `DeviceRepository`, current-history retention, retirement maintenance tool |
-| Tasks | `tasks.db`, active state, lightweight snapshots, immutable result references and recovery | `task_result_blobs` is the current terminal-result body authority; legacy rows are current-database compatibility evidence and are never read through a runtime HistoryStore fallback | `TaskRepository`, `TaskResultBlobRepository`; HistoryStore is maintenance-only |
+| Devices | `devices.db`, including current state and bounded Recent10 change records | No external HistoryStore runtime authority; old `db/history` is retired with no remaining maintenance entrypoint | `DeviceRepository`, current-history retention |
+| Tasks | `tasks.db`, active state, lightweight snapshots, immutable result references and recovery | `task_result_blobs` is the current terminal-result body authority; `TaskHistoryStore` remains the task-domain archive path and is not Legacy external HistoryStore | `TaskRepository`, `TaskResultBlobRepository`, `TaskHistoryStore` |
 | Agent | `agents.db`; Agent-local acknowledged/unacknowledged task package state is separate | Agent packages remain outside Controller Site Package authority | `AgentRepository`, Windows Go Agent lifecycle |
 | Ground/Unattended | `ground_unattended/index.sqlite` for recovery, current schedule, and structured references | active NDJSON is raw authority until a verified READY archive; the READY ZIP is historical raw authority | Ground repository, raw lifecycle, and archive service |
 | MESH | `catalog.sqlite` owns source fingerprint and selected projection metadata | raw logs are evidence authority; `mesh.sqlite` and per-source `*.mesh.sqlite` are rebuildable projections | MESH catalog/storage and derived-data maintenance services |
@@ -168,7 +168,7 @@ The following distinctions are mandatory when reporting storage work:
 | Site Package SQLite suffix and managed staging handling | Current code covers `.db`, `.sqlite`, and `.sqlite3`; full/return/field authority boundaries remain intentionally different |
 | Shared database-upgrade framework | Partial adoption; `mesh_derived` is the first adapter, while other stores retain domain-specific migration paths |
 | Complete Site-wide No-Reinflation proof | Required by [Storage Testing Guide](./STORAGE_TESTING_GUIDE.md); do not infer completion from one snapshot, one database, or registry presence |
-| Production cutover, HDD observation, production delete/VACUUM | HistoryStore retirement is candidate-verified and separately authorized; unrelated HDD/VACUUM work remains gated |
+| Production cutover, HDD observation, production delete/VACUUM | Legacy external HistoryStore retirement is complete; unrelated HDD/VACUUM work remains gated |
 
 The registry is a design and guardrail source. It does not itself prove that production data has
 been migrated, that every consumer passed parity, or that a retention action is safe.

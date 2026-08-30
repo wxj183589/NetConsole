@@ -17,7 +17,7 @@ from netconsole.core.sites import SiteManager
 from netconsole.backend.api.trackside_ap_business_router import _raise_snapshot_error
 from netconsole.models.ap_identity_index import ApIdentityBatchResult, ApIdentityMatch
 from netconsole.repositories.device_repository import DeviceRepository
-from netconsole.services.history_store import HistoryStore
+from netconsole.repositories.history_store import HistoryStore
 from netconsole.services.job_center.task_application_service import TaskApplicationService
 from netconsole.services.rail_transit.effective_trackside_ap_scope import (
     TracksideApScopeContext,

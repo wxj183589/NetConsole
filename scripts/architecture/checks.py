@@ -31,7 +31,6 @@ SQL_CLASSIFICATIONS = {
     "VIOLATION",
 }
 STORAGE_REGISTRY_PATH = ROOT / "config" / "storage_registry.yaml"
-HISTORY_MIGRATION_SOURCE = ROOT / "src" / "netconsole" / "services" / "history_legacy_migration.py"
 STORAGE_REQUIRED_FIELDS = {
     "id",
     "relative_path",
@@ -713,89 +712,6 @@ def storage_registry_findings(
                         registered_database_patterns=source_database_patterns,
                     )
                 )
-    return findings
-
-
-def history_migration_contract_findings(
-    registry_path: Path = STORAGE_REGISTRY_PATH,
-    *,
-    migration_source: Path = HISTORY_MIGRATION_SOURCE,
-) -> list[Finding]:
-    """Require an explicit migration contract for every registry-owned source."""
-
-    try:
-        registry = load_json_yaml(registry_path)
-        tree = ast.parse(migration_source.read_text(encoding="utf-8"))
-    except (OSError, SyntaxError, ValueError) as exc:
-        return [
-            Finding(
-                "HISTORY_MIGRATION_CONTRACT_INVALID",
-                relative_path(registry_path),
-                0,
-                str(exc),
-            )
-        ]
-    supported: set[str] = set()
-    unsupported: set[str] = set()
-    for node in tree.body:
-        if not isinstance(node, ast.Assign):
-            continue
-        names = {
-            target.id
-            for target in node.targets
-            if isinstance(target, ast.Name)
-        }
-        if isinstance(node.value, ast.Dict):
-            values = {
-                str(key.value)
-                for key in node.value.keys
-                if isinstance(key, ast.Constant) and isinstance(key.value, str)
-            }
-            if "SUPPORTED_SPECS" in names:
-                supported = values
-            if "UNSUPPORTED_TABLES" in names:
-                unsupported = values
-        elif isinstance(node.value, (ast.Set, ast.Tuple, ast.List)):
-            values = {
-                str(item.value)
-                for item in node.value.elts
-                if isinstance(item, ast.Constant) and isinstance(item.value, str)
-            }
-            if "UNSUPPORTED_TABLES" in names:
-                unsupported = values
-    if not supported:
-        return [
-            Finding(
-                "HISTORY_MIGRATION_CONTRACT_INVALID",
-                relative_path(migration_source),
-                0,
-                "SUPPORTED_SPECS is missing or not an explicit mapping",
-            )
-        ]
-    findings: list[Finding] = []
-    stores = registry.get("stores", []) if isinstance(registry, dict) else []
-    for store_index, store in enumerate(stores, start=1):
-        if not isinstance(store, dict):
-            continue
-        for rule in store.get("table_rules", []):
-            if not isinstance(rule, dict):
-                continue
-            if (
-                rule.get("data_class") != "HISTORICAL_RAW_FACT"
-                or rule.get("lifecycle_owner") != "HistoryLegacyMigrationService"
-            ):
-                continue
-            for table in rule.get("tables", []):
-                name = str(table)
-                if name not in supported and name not in unsupported:
-                    findings.append(
-                        Finding(
-                            "HISTORY_MIGRATION_CONTRACT_MISSING",
-                            relative_path(registry_path),
-                            store_index,
-                            f"{name} is owned by HistoryLegacyMigrationService but has no SUPPORTED_SPECS contract",
-                        )
-                    )
     return findings
 
 

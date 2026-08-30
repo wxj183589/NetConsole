@@ -33,27 +33,17 @@
     "src/netconsole/services/site_sync.py",
     "src/netconsole/services/runtime_self_check_service.py",
     "scripts/maintenance/check_desktop_bootstrap.py",
-    "scripts/maintenance/benchmark_database_functional_queries.py",
-    "scripts/maintenance/collect_functional_consumer_observations.py",
     "scripts/maintenance/collect_global_storage_inventory.py",
     "scripts/maintenance/diagnose_server_hdd.py",
     "scripts/maintenance/migrate_legacy_runtime_data.py",
     "scripts/maintenance/migrate_unified_data_root.py",
     "scripts/maintenance/rehearse_database_footprint.py",
     "scripts/maintenance/production_database_maintenance.py",
-    "scripts/maintenance/validate_database_functional_compatibility.py",
-    "scripts/maintenance/finalize_functional_compatibility.py",
     "scripts/maintenance/validate_integrated_site_package.py",
     "scripts/maintenance/validate_storage_no_reinflation.py",
-    "scripts/maintenance/benchmark_device_history_legacy_migration.py",
-    "scripts/maintenance/benchmark_device_history_storage_queries.py",
     "scripts/maintenance/production_cutover_runtime_smoke.py",
-    "scripts/maintenance/profile_device_history_storage.py",
-    "scripts/maintenance/retire_legacy_history_store.py",
     "scripts/storage/audit_engineering_state.py",
-    "scripts/storage/analyze_sqlite_size.py",
-    "src/netconsole/storage/engineering_recent10_migration.py",
-    "src/netconsole/storage/lldp_optical_retention_migration.py"
+    "scripts/storage/analyze_sqlite_size.py"
   ],
   "production_rollback_owners": [
     {
@@ -113,7 +103,7 @@
       "rebuildable": false,
       "site_package_policy": "FULL_MIGRATION snapshot; SANITIZED_SHARE snapshot with credential redaction",
       "backup_policy": "revision-aware bounded rollback through registered backup owners",
-      "migration_policy": "database-upgrade framework and explicit History COPY/verify/source-delete",
+      "migration_policy": "database-upgrade framework",
       "schema_version": "schema_metadata",
       "allowed_data_classes": ["OPERATIONAL_CURRENT", "HISTORICAL_RAW_FACT", "CACHE_REBUILDABLE"],
       "forbidden_data_classes": ["ARTIFACT_OR_RAW_FILE", "STAGING_TEMPORARY"],
@@ -131,14 +121,14 @@
         {
           "tables": ["ac_fit_ap_lldp_history", "ac_fit_ap_optical_history", "ac_fit_ap_radio_history", "ac_fit_ap_resource_history", "ac_fit_ap_unauthenticated_history", "ac_station_online_summary_history", "ap_lldp_history", "ap_optical_history", "device_facts_history", "device_interfaces_history", "device_lldp_neighbors_history", "device_optical_modules_history"],
           "data_class": "HISTORICAL_RAW_FACT",
-          "authority": "retired legacy in-DB history tables; retained only as migration input evidence",
+          "authority": "retired legacy in-DB history tables; no runtime or maintenance consumer",
           "producer": ["NO_ACTIVE_PRODUCER_PROVEN"],
-          "consumers": ["explicit maintenance migration only"],
-          "lifecycle_owner": "HistoryLegacyMigrationService",
+          "consumers": ["NO_ACTIVE_CONSUMER"],
+          "lifecycle_owner": "NO_ACTIVE_OWNER",
           "rebuildable": true,
           "lifecycle": "LEGACY_RETIRED",
           "runtime_access": "FORBIDDEN",
-          "source_locations": ["src/netconsole/core/database.py", "src/netconsole/services/history_legacy_migration.py", "scripts/maintenance/retire_legacy_history_store.py"]
+          "source_locations": ["src/netconsole/core/database.py"]
         },
         {
           "tables": ["ap_extension_import_batches", "ap_resource_snapshots", "cloud_sync_runs", "collect_runs", "config_snapshots"],
@@ -161,7 +151,7 @@
           "source_locations": ["src/netconsole/core/database.py", "src/netconsole/services/rail_transit/trackside_ap_business_query_service.py"]
         }
       ],
-      "source_locations": ["src/netconsole/core/database.py", "src/netconsole/core/device_credential_store.py", "src/netconsole/repositories/device_repository.py", "src/netconsole/repositories/rail_transit_base_data_repository.py", "src/netconsole/services/ac/query_service.py", "src/netconsole/services/device_compatibility/service.py", "src/netconsole/services/device_detail_query_service.py", "src/netconsole/services/rail_transit/base_data_query_service.py", "src/netconsole/services/rail_transit/station_source_discovery_service.py", "scripts/maintenance/backfill_trackside_ap_station_identity.py", "scripts/maintenance/migrate_device_history.py", "scripts/maintenance/test_rail_transit_base_data_apply.py", "scripts/maintenance/test_trackside_ap_plan_endpoint_stability.py", "scripts/maintenance/upgrade_ap_extension_schema.py", "scripts/maintenance/validate_history_provenance.py", "scripts/maintenance/audit_lifecycle_dev.py"]
+      "source_locations": ["src/netconsole/core/database.py", "src/netconsole/core/device_credential_store.py", "src/netconsole/repositories/device_repository.py", "src/netconsole/repositories/rail_transit_base_data_repository.py", "src/netconsole/services/ac/query_service.py", "src/netconsole/services/device_compatibility/service.py", "src/netconsole/services/device_detail_query_service.py", "src/netconsole/services/rail_transit/base_data_query_service.py", "src/netconsole/services/rail_transit/station_source_discovery_service.py", "scripts/maintenance/backfill_trackside_ap_station_identity.py", "scripts/maintenance/test_rail_transit_base_data_apply.py", "scripts/maintenance/test_trackside_ap_plan_endpoint_stability.py", "scripts/maintenance/upgrade_ap_extension_schema.py", "scripts/maintenance/audit_lifecycle_dev.py"]
     },
     {
       "id": "site.history.catalog",
@@ -172,18 +162,18 @@
       "data_type": "HISTORICAL_RAW_FACT",
       "authority": "retired external HistoryStore catalog; no production authority",
       "producer": ["NO_ACTIVE_PRODUCER_PROVEN"],
-      "consumers": ["explicit maintenance migration input only"],
-      "retention_owner": "Production storage governance",
+      "consumers": ["NO_ACTIVE_CONSUMER"],
+      "retention_owner": "NO_ACTIVE_OWNER",
       "rebuildable": true,
       "lifecycle": "LEGACY_RETIRED",
       "runtime_access": "FORBIDDEN",
       "site_package_policy": "exclude",
-      "backup_policy": "preserve only in the explicit rollback backup for this retirement",
-      "migration_policy": "candidate verify, then exact registered-site source retirement",
+      "backup_policy": "historical retirement record only",
+      "migration_policy": "no active migration or retirement command",
       "schema_version": 2,
       "allowed_data_classes": ["HISTORICAL_RAW_FACT"],
       "forbidden_data_classes": ["ARTIFACT_OR_RAW_FILE", "STAGING_TEMPORARY", "BACKUP_ROLLBACK"],
-      "source_locations": ["src/netconsole/repositories/history_store.py", "src/netconsole/services/history_store.py", "src/netconsole/services/history_legacy_migration.py", "scripts/maintenance/retire_legacy_history_store.py", "scripts/maintenance/validate_history_provenance.py"]
+      "source_locations": ["src/netconsole/repositories/history_store.py"]
     },
     {
       "id": "site.history.shard",
@@ -193,18 +183,18 @@
       "data_type": "HISTORICAL_RAW_FACT",
       "authority": "retired external HistoryStore month shards; no production authority",
       "producer": ["NO_ACTIVE_PRODUCER_PROVEN"],
-      "consumers": ["explicit maintenance migration input only"],
-      "retention_owner": "Production storage governance",
+      "consumers": ["NO_ACTIVE_CONSUMER"],
+      "retention_owner": "NO_ACTIVE_OWNER",
       "rebuildable": true,
       "lifecycle": "LEGACY_RETIRED",
       "runtime_access": "FORBIDDEN",
       "site_package_policy": "exclude",
-      "backup_policy": "preserve only in the explicit rollback backup for this retirement",
-      "migration_policy": "candidate verify, then exact registered-site source retirement",
+      "backup_policy": "historical retirement record only",
+      "migration_policy": "no active migration or retirement command",
       "schema_version": 2,
       "allowed_data_classes": ["HISTORICAL_RAW_FACT"],
       "forbidden_data_classes": ["ARTIFACT_OR_RAW_FILE", "STAGING_TEMPORARY", "BACKUP_ROLLBACK"],
-      "source_locations": ["src/netconsole/repositories/history_store.py", "src/netconsole/services/history_store.py", "src/netconsole/services/history_legacy_migration.py", "src/netconsole/repositories/history_legacy_migration_repository.py", "scripts/maintenance/migrate_device_history.py", "scripts/maintenance/retire_legacy_history_store.py"]
+      "source_locations": ["src/netconsole/repositories/history_store.py"]
     },
     {
       "id": "site.history.runtime_lock",
@@ -214,14 +204,14 @@
       "data_type": "STAGING_TEMPORARY",
       "authority": "retired external HistoryStore lock marker",
       "producer": ["NO_ACTIVE_PRODUCER_PROVEN"],
-      "consumers": ["explicit maintenance migration input only"],
-      "retention_owner": "Production storage governance",
+      "consumers": ["NO_ACTIVE_CONSUMER"],
+      "retention_owner": "NO_ACTIVE_OWNER",
       "rebuildable": true,
       "lifecycle": "LEGACY_RETIRED",
       "runtime_access": "FORBIDDEN",
       "site_package_policy": "exclude",
-      "backup_policy": "preserve only in the explicit rollback backup for this retirement",
-      "migration_policy": "cleanup/delete only with the containing registered-site history directory after rollback backup",
+      "backup_policy": "historical retirement record only",
+      "migration_policy": "no active migration; no path creation or cleanup command remains",
       "schema_version": "empty lock marker",
       "allowed_data_classes": ["STAGING_TEMPORARY"],
       "forbidden_data_classes": ["OPERATIONAL_CURRENT", "HISTORICAL_RAW_FACT", "BACKUP_ROLLBACK"],

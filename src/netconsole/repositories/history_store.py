@@ -25,10 +25,6 @@ from typing import Any
 
 from netconsole.core.interprocess_lock import interprocess_file_lock
 from netconsole.core.sqlite_utils import connect_sqlite
-from netconsole.repositories.history_legacy_migration_repository import (
-    HistoryLegacyMigrationRepository,
-    SHARD_QUERY_AUTHORITY_STATES,
-)
 
 DEFAULT_HEARTBEAT_SECONDS = {
     "device_fact": 3600,
@@ -541,8 +537,6 @@ class HistoryStore:
     ) -> bool:
         """Queue only changes or a per-kind low-frequency heartbeat."""
 
-        if not self.legacy_history_authority_enabled(conn):
-            return False
         self.ensure_outbox(conn)
         kind = str(kind).strip()
         entity_key = str(entity_key).strip()
@@ -639,24 +633,6 @@ class HistoryStore:
         if kind in DYNAMIC_CHANGE_ONLY_KINDS:
             self._prune_outbox_entity(conn, kind=kind, entity_key=entity_key)
         return True
-
-    @staticmethod
-    def legacy_history_authority_enabled(conn: sqlite3.Connection) -> bool:
-        """Return whether this DB still permits the retired event writer.
-
-        Missing metadata preserves compatibility for pre-migration test and
-        user databases.  The DEV migration writes ``retired`` atomically into
-        the candidate before cutover, so production code cannot recreate
-        ``history_outbox`` or monthly shards after retirement.
-        """
-
-        try:
-            row = conn.execute(
-                "SELECT value FROM schema_metadata WHERE key='engineering_history_authority'"
-            ).fetchone()
-        except sqlite3.Error:
-            return True
-        return str(row[0] if row is not None else "active") != "retired"
 
     @staticmethod
     def _meaningful_payload(
@@ -1732,18 +1708,6 @@ class HistoryStore:
         shard.execute("VACUUM")
         return True
 
-    def copy_legacy_migration_events(
-        self, events: list[dict[str, Any]]
-    ) -> tuple[int, int]:
-        """Write and durably verify an explicit COPY-only migration chunk."""
-
-        for event in events:
-            if str(event.get("event_type") or "") != "legacy":
-                raise ValueError("migration events must use event_type=legacy")
-        if not events:
-            return 0, 0
-        return self.copy_verified_events(events)
-
     def copy_verified_events(
         self, events: list[dict[str, Any]]
     ) -> tuple[int, int]:
@@ -1798,13 +1762,6 @@ class HistoryStore:
             inserted += self._write_shard_batch(batch)
         self._verify_shard_event_content(normalized)
         return inserted, len(normalized)
-
-    def read_legacy_migration_events(
-        self, events: list[dict[str, Any]]
-    ) -> list[dict[str, Any]]:
-        """Read exact copied events for digest/sample verification."""
-
-        return self.read_verified_events(events)
 
     def read_verified_events(
         self, events: list[dict[str, Any]]
@@ -1902,12 +1859,6 @@ class HistoryStore:
         normalized["collected_at"] = str(event["collected_at"])
         return normalized
 
-    @staticmethod
-    def legacy_migration_event(source_table: str, row: dict[str, Any]) -> dict[str, Any]:
-        """Build the stable shard event used by the maintenance migration."""
-
-        return HistoryStore._legacy_event(source_table, row)
-
     def query_events(
         self,
         *,
@@ -1934,7 +1885,7 @@ class HistoryStore:
                 return []
             safe_limit = min(safe_limit, DYNAMIC_HISTORY_LIMIT - safe_offset)
         requested = safe_limit + safe_offset
-        include_legacy = self._kind_uses_shard_authority(kind)
+        include_legacy = False
         if self.database_path.is_file():
             try:
                 with closing(self._connect_readonly(self.database_path)) as current:
@@ -2053,7 +2004,7 @@ class HistoryStore:
 
         events: list[dict[str, Any]] = []
         errors: list[str] = []
-        include_legacy = self._kind_uses_shard_authority(kind)
+        include_legacy = False
 
         def read_database(path: Path, *, current: bool = False) -> None:
             try:
@@ -2144,7 +2095,7 @@ class HistoryStore:
         total = 0
         errors: list[str] = []
 
-        include_legacy = self._kind_uses_shard_authority(kind)
+        include_legacy = False
 
         def count_rows(
             conn: sqlite3.Connection, table: str, *, allow_legacy: bool
@@ -2257,40 +2208,6 @@ class HistoryStore:
         if kind in DYNAMIC_CHANGE_ONLY_KINDS and entity_key is not None:
             return min(total, DYNAMIC_HISTORY_LIMIT)
         return total
-
-    def legacy_source_is_authoritative(self, source_table: str) -> bool:
-        """Return whether ordinary readers should still include this legacy table."""
-
-        source = self._validate_legacy_source(source_table)
-        state = HistoryLegacyMigrationRepository(
-            self.history_root / "catalog.db"
-        ).effective_authority_state(source)
-        return state not in SHARD_QUERY_AUTHORITY_STATES
-
-    def filter_legacy_rows(
-        self, source_table: str, rows: Iterable[dict[str, Any]]
-    ) -> list[dict[str, Any]]:
-        return list(rows) if self.legacy_source_is_authoritative(source_table) else []
-
-    def query_legacy_rows(
-        self,
-        conn: sqlite3.Connection,
-        source_table: str,
-        query: str,
-        params: Iterable[Any] = (),
-    ) -> list[dict[str, Any]]:
-        """Read a legacy source only when it exists and remains authoritative."""
-
-        source = self._validate_legacy_source(source_table)
-        if not self.legacy_source_is_authoritative(source):
-            return []
-        if not self._table_exists(conn, source):
-            return []
-        return [dict(row) for row in conn.execute(query, tuple(params)).fetchall()]
-
-    def _kind_uses_shard_authority(self, kind: str) -> bool:
-        source = KIND_CANONICAL_LEGACY_SOURCE.get(str(kind or ""))
-        return bool(source and not self.legacy_source_is_authoritative(source))
 
     def _safe_shard_path(self, relative_path: str) -> Path | None:
         """Resolve catalog paths without allowing reads outside the history root."""
@@ -3570,10 +3487,6 @@ class HistoryRetentionPolicy:
 
 
 __all__ = [
-    "HistoryDrainResult",
-    "HistoryMigrationCheckpoint",
-    "HistoryRetentionPolicy",
-    "HistoryStore",
     "TaskHistoryStore",
     "verify_task_result_row",
     "fingerprint",
