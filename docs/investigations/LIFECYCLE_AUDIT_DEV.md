@@ -1,4 +1,4 @@
-# DEV COPY 生命周期审计
+# Development 数据根生命周期审计
 
 ## 环境
 
@@ -17,7 +17,7 @@
 
 ## LLDP
 
-- 分析范围：宁波地铁6号线 DEV COPY `devices.db` 的全部 LLDP 相关表。
+- 分析范围：宁波地铁6号线 development 数据根 `devices.db` 的全部 LLDP 相关表。
 - 所有 LLDP 表按五字段键合计重复组：2527；其中当前 `device_lldp_neighbors` 的完整五字段重复组为 0，另有 2 个同设备/本地端口槽位包含多邻居记录。
 - 当前表没有覆盖完整 LLDP 业务键的 UNIQUE 约束，这是 B 类结构性风险；但本快照未证明 A 类相同采集重复写入，也未证明 C 类迁移遗留。历史表中的重复键是跨采集时间的历史记录，不能直接当作当前态重复。
 - 详细重复键、首末时间、样本和约束证据见 `LLDP_DUPLICATE_REPORT.json`。
@@ -38,5 +38,5 @@
 ## 下一步建议
 
 1. 由负责人确认 producer、history cleanup job 和 result/artifact 引用的生命周期契约。
-2. 在 DEV COPY 建立按 collect_run/task 版本的增长基线，先做 COPY/verify 演练，再单独审批修复或清理。
+2. 在 development 数据根建立按 collect_run/task 版本的增长基线，先做 COPY/verify 演练，再单独审批修复或清理。
 3. 本审计未执行清理、修复、压缩、迁移、删除或 schema 修改；等待负责人确认后再进入下一阶段。

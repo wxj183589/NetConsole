@@ -134,7 +134,7 @@
   {"path":"scripts/maintenance/validate_database_functional_compatibility.py","classification":"READ_ONLY_DATA_GATEWAY","owner":"storage","reason":"Before/After 功能透明验收只接受已 checkpoint 的 D:\\study 隔离快照，以 mode=ro/immutable=1 读取；非空 WAL 失败关闭且不得创建或修改输入 sidecar。"},
   {"path":"scripts/maintenance/validate_integrated_site_package.py","classification":"TEST_ONLY","owner":"storage","reason":"FULL Site Package 集成验证只在显式 D:\\study 隔离根创建 SQLite Online Backup 副本、导出/导入 staging 与重启 fixture；源副本使用 mode=ro/immutable 并校验前后 SHA-256。"},
   {"path":"src/netconsole/services/database_footprint_maintenance.py","classification":"REPOSITORY_REQUIRED","owner":"storage","reason":"统一只读 snapshot、SQLite footprint、Safe Compact 与原子替换边界，仅允许 D:\\study 开发目标执行破坏性操作。"},
-  {"path":"tests/test_backup_lifecycle.py","classification":"TEST_ONLY","owner":"test","reason":"Backup lifecycle revision reuse、UNKNOWN protect、stale/empty plan 与开发副本 retirement fixture。"},
+  {"path":"tests/test_backup_lifecycle.py","classification":"TEST_ONLY","owner":"test","reason":"Backup lifecycle revision reuse、UNKNOWN protect、stale/empty plan 与 development-root retirement fixture。"},
   {"path":"tests/test_database_footprint_maintenance.py","classification":"TEST_ONLY","owner":"test","reason":"只读 snapshot、Safe Compact、WAL preflight、replace/rollback fault-injection fixture。"},
   {"path":"tests/test_storage_no_reinflation.py","classification":"TEST_ONLY","owner":"test","reason":"Task、Ground、MESH、Site Package 与 backup No-Reinflation 测试仅在 pytest 临时目录构造 SQLite fixture。"}
 ,
@@ -170,8 +170,8 @@
   {"path":"tests/test_close_task_result_ref_only.py","classification":"TEST_ONLY","owner":"test","reason":"ref-only task result closure tests use temporary SQLite fixtures and never open production data."},
   {"path":"tests/test_compact_task_result_production.py","classification":"TEST_ONLY","owner":"test","reason":"production compaction gate tests use temporary SQLite fixtures and monkeypatch the production root; no production data is opened."},
   {"path":"tests/test_validate_history_provenance.py","classification":"TEST_ONLY","owner":"test","reason":"history provenance tests use temporary SQLite fixtures."},
-  {"path":"scripts/maintenance/analyze_task_payloads_dev.py","classification":"READ_ONLY_DATA_GATEWAY","owner":"job-center","reason":"DEV COPY payload analysis uses mode=ro SQLite connections and only emits an audit report."},
-  {"path":"scripts/maintenance/audit_lifecycle_dev.py","classification":"READ_ONLY_DATA_GATEWAY","owner":"storage","reason":"DEV COPY lifecycle audit uses mode=ro SQLite connections and never mutates the data root."},
+  {"path":"scripts/maintenance/analyze_task_payloads_dev.py","classification":"READ_ONLY_DATA_GATEWAY","owner":"job-center","reason":"Development data-root payload analysis uses mode=ro SQLite connections and only emits an audit report."},
+  {"path":"scripts/maintenance/audit_lifecycle_dev.py","classification":"READ_ONLY_DATA_GATEWAY","owner":"storage","reason":"Development data-root lifecycle audit uses mode=ro SQLite connections and never mutates the data root."},
   {"path":"scripts/maintenance/tasks_db_compaction.py","classification":"MIGRATION_TOOL","owner":"job-center","reason":"DEV-only candidate-first tasks.db compaction uses isolated copies, parity checks and atomic replacement; it never opens production data."},
   {"path":"tests/test_tasks_db_compaction.py","classification":"TEST_ONLY","owner":"test","reason":"tasks.db compaction tests construct isolated SQLite fixtures only."}
 ]

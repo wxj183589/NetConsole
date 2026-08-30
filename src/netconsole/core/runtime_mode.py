@@ -29,7 +29,7 @@ class DataEnvironmentInfo:
     def label(self) -> str:
         return {
             DataEnvironmentMode.PRODUCTION: "PRODUCTION",
-            DataEnvironmentMode.DEVELOPMENT: "DEV COPY",
+            DataEnvironmentMode.DEVELOPMENT: "DEVELOPMENT",
             DataEnvironmentMode.TEST: "TEST",
         }[self.mode]
 

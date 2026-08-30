@@ -113,7 +113,7 @@ def data_environment(data_root: Path | None = None) -> DataEnvironmentInfo:
     except FileNotFoundError as exc:
         raise RuntimeError(
             f"数据根缺少 {RUNTIME_MODE_FILE_NAME}，拒绝启动：{root}。"
-            "请先使用受控复制/初始化流程明确标记 production 或 development。"
+            "请先使用受控初始化/环境标记流程明确标记 production 或 development。"
         ) from exc
     except (OSError, json.JSONDecodeError, TypeError) as exc:
         raise RuntimeError(f"数据根环境标记无效：{marker}") from exc

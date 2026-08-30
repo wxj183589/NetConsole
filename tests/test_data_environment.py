@@ -20,7 +20,7 @@ from netconsole.backend.api.main import ProductionMaintenanceAdmissionMiddleware
 
 def test_persistent_root_requires_an_explicit_marker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("NETCONSOLE_RUNTIME_MODE", "desktop-development")
-    with pytest.raises(RuntimeError, match="runtime_mode.json"):
+    with pytest.raises(RuntimeError, match="受控初始化/环境标记流程"):
         data_environment(tmp_path)
 
 
@@ -37,8 +37,21 @@ def test_environment_marker_round_trip_and_path_resolver_view(tmp_path: Path, mo
 
     info = PathResolver(app_root=tmp_path / "app", data_root=tmp_path).data_environment
     assert info.mode is DataEnvironmentMode.DEVELOPMENT
-    assert info.label == "DEV COPY"
+    assert info.label == "DEVELOPMENT"
+    assert info.readonly_warning is False
     assert json.loads((tmp_path / "runtime_mode.json").read_text(encoding="utf-8"))["created_from"] == r"D:\NetConsoleData"
+
+
+def test_production_marker_preserves_readonly_warning(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NETCONSOLE_RUNTIME_MODE", "desktop-development")
+    write_data_environment(
+        tmp_path,
+        DataEnvironmentInfo(DataEnvironmentMode.PRODUCTION, readonly_warning=True),
+    )
+
+    info = data_environment(tmp_path)
+    assert info.mode is DataEnvironmentMode.PRODUCTION
+    assert info.readonly_warning is True
 
 
 def test_production_write_requires_explicit_process_authorization(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -55,7 +68,7 @@ def test_production_write_requires_explicit_process_authorization(tmp_path: Path
     require_production_write_allowed(tmp_path, "test-maintenance")
 
 
-def test_development_copy_allows_maintenance_without_production_override(
+def test_development_environment_allows_maintenance_without_production_override(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("NETCONSOLE_RUNTIME_MODE", "desktop-development")

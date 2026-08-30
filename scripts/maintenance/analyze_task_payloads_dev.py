@@ -1,4 +1,4 @@
-"""Read-only payload composition analysis for the NetConsole DEV COPY."""
+"""Read-only payload composition analysis for the NetConsole development root."""
 
 from __future__ import annotations
 

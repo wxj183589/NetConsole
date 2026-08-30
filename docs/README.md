@@ -7,7 +7,7 @@
 - [总体架构](./ARCHITECTURE.md)：当前分层、运行形态、任务、导出、数据与安全边界。
 - [架构专题](./architecture/README.md)：Electron Desktop、Backend Runtime、Native Bridge、Feature 与重构地图。
 - [数据布局](./storage/DATA_LAYOUT.md)：业务数据根、局点目录、运行数据与生命周期。
-- [真实数据根验证](./storage/DATA_ROOT_VALIDATION.md)：Production/Dev Copy 隔离、复制流程和生命周期审计结果。
+- [真实数据根验证](./storage/DATA_ROOT_VALIDATION.md)：2026-08-21 Production/Development 历史验证记录；当前 Authority 以活动数据根文档为准。
 
 ## Development
 
