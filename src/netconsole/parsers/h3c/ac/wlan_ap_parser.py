@@ -162,7 +162,7 @@ def _state_token(value: object) -> str:
 
 def _empty_if_na(value: object) -> object | None:
     text = str(value or "").strip()
-    return None if text.upper() in {"", "N/A", "NA", "-"} else value
+    return None if text.casefold() in {"", "n/a", "na", "-", "--", "none", "null", "unknown"} else value
 
 
 def _parse_group_and_online_time(tail: list[str]) -> tuple[str | None, str | None]:

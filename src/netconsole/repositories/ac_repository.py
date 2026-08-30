@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import re
 from collections import Counter
+from dataclasses import dataclass
 from datetime import datetime
+import unicodedata
 from uuid import uuid4
 
 from netconsole.core import app_logger
@@ -548,6 +550,57 @@ FIT_AP_STABLE_IDENTITY_FIELDS = (
     "model",
 )
 
+FIT_AP_INVALID_IDENTITY_VALUES = frozenset(
+    {"-", "--", "n/a", "na", "none", "null", "unknown"}
+)
+
+
+class FitApIdentityConflict(RuntimeError):
+    """A FIT-AP row contains incompatible strong-identity evidence."""
+
+    code = "IDENTITY_CONFLICT"
+
+    def __init__(
+        self,
+        *,
+        ac_device_uuid: str,
+        serial_number: str,
+        reason: str,
+        canonical_uuid: str = "",
+        incoming_uuid: str = "",
+        canonical_mac: str = "",
+        incoming_mac: str = "",
+    ) -> None:
+        self.ac_device_uuid = ac_device_uuid
+        self.serial_number = serial_number
+        self.reason = reason
+        self.canonical_uuid = canonical_uuid
+        self.incoming_uuid = incoming_uuid
+        self.canonical_mac = canonical_mac
+        self.incoming_mac = incoming_mac
+        super().__init__(
+            "IDENTITY_CONFLICT: "
+            f"ac_device_uuid={ac_device_uuid}, serial_number={serial_number}, "
+            f"reason={reason}, canonical_ap_uuid={canonical_uuid}, "
+            f"incoming_ap_uuid={incoming_uuid}"
+        )
+
+
+@dataclass(frozen=True)
+class FitApResourcePersistenceResult:
+    batch_serial_duplicates: int = 0
+    batch_serial_merged: int = 0
+    serial_identity_conflicts: int = 0
+    duplicate_ap_entity_created: int = 0
+
+    def to_payload(self) -> dict[str, int]:
+        return {
+            "batch_serial_duplicates": self.batch_serial_duplicates,
+            "batch_serial_merged": self.batch_serial_merged,
+            "serial_identity_conflicts": self.serial_identity_conflicts,
+            "duplicate_ap_entity_created": self.duplicate_ap_entity_created,
+        }
+
 AP_ENTITY_FIELDS = (
     "ap_uuid",
     "site_id",
@@ -752,9 +805,13 @@ class AcRepository:
             rows = conn.execute("SELECT * FROM ac_ap_summary ORDER BY updated_at DESC, ac_device_uuid").fetchall()
         return [dict(row) for row in rows]
 
-    def replace_fit_ap_resources(self, ac_device_uuid: str, rows: list[dict[str, object | None]]) -> None:
+    def replace_fit_ap_resources(
+        self,
+        ac_device_uuid: str,
+        rows: list[dict[str, object | None]],
+    ) -> FitApResourcePersistenceResult:
         now = self._now()
-        rows = self._dedupe_fit_ap_resource_rows(rows)
+        rows, batch_metrics = self._prepare_fit_ap_resource_rows(rows)
         self._warn_duplicate_apid_identities(ac_device_uuid, rows)
         with self.database.connect() as conn:
             continuity_resources = [
@@ -776,24 +833,59 @@ class AcRepository:
                 for row in rows
                 if (name := self._clean_identity_value(row.get("ap_name")))
             )
+            identity_cache = self._build_fit_ap_identity_cache(conn)
             current_uuids: list[str] = []
             for row in rows:
-                payload = self._upsert_fit_ap_resource(
-                    conn,
-                    ac_device_uuid,
-                    row,
-                    now,
-                    continuity_resources=continuity_resources,
-                    continuity_entities=continuity_entities,
-                    incoming_name_counts=incoming_name_counts,
-                )
+                try:
+                    payload = self._upsert_fit_ap_resource(
+                        conn,
+                        ac_device_uuid,
+                        row,
+                        now,
+                        continuity_resources=continuity_resources,
+                        continuity_entities=continuity_entities,
+                        incoming_name_counts=incoming_name_counts,
+                        identity_cache=identity_cache,
+                    )
+                except FitApIdentityConflict as exc:
+                    batch_metrics["serial_identity_conflicts"] += 1
+                    if exc.canonical_uuid:
+                        current_uuids.append(exc.canonical_uuid)
+                    continue
                 current_uuids.append(str(payload["ap_uuid"]))
-            if current_uuids:
+                self._register_fit_ap_identity_cache(identity_cache, payload)
+                duplicate_count = int(row.get("_batch_serial_duplicate_count") or 0)
+                if duplicate_count:
+                    self._log_fit_ap_identity_event(
+                        "SERIAL_IDENTITY_MERGED",
+                        ac_device_uuid=ac_device_uuid,
+                        canonical_uuid=str(payload["ap_uuid"]),
+                        incoming_uuid=self._clean_identity_value(row.get("ap_uuid")),
+                        serial_number=self._clean_identity_value(row.get("serial_number")),
+                        incoming_mac=self._normalized_explicit_ap_mac(row),
+                    )
+            if batch_metrics["serial_identity_conflicts"]:
+                # A partial snapshot with unresolved identity evidence must not
+                # delete previously known APs that were not safely reconciled.
+                pass
+            elif current_uuids:
                 placeholders = ", ".join("?" for _ in current_uuids)
                 conn.execute(f"DELETE FROM ac_fit_ap_resources WHERE ac_device_uuid = ? AND ap_uuid NOT IN ({placeholders})", [ac_device_uuid, *current_uuids])
             else:
                 conn.execute("DELETE FROM ac_fit_ap_resources WHERE ac_device_uuid = ?", (ac_device_uuid,))
             conn.commit()
+        result = FitApResourcePersistenceResult(**batch_metrics)
+        app_logger.log_info(
+            "FIT_AP_BATCH_IDENTITY_RECONCILED",
+            (
+                f"ac_device_uuid={ac_device_uuid}, "
+                f"BATCH_SERIAL_DUPLICATES={result.batch_serial_duplicates}, "
+                f"BATCH_SERIAL_MERGED={result.batch_serial_merged}, "
+                f"SERIAL_IDENTITY_CONFLICT={result.serial_identity_conflicts}, "
+                f"DUPLICATE_AP_ENTITY_CREATED={result.duplicate_ap_entity_created}"
+            ),
+        )
+        return result
 
     def upsert_fit_ap_resource(
         self,
@@ -816,6 +908,7 @@ class AcRepository:
         continuity_resources: list[dict[str, object | None]] | None = None,
         continuity_entities: list[dict[str, object | None]] | None = None,
         incoming_name_counts: Counter[str] | None = None,
+        identity_cache: dict[str, dict[str, list[dict[str, object | None]]]] | None = None,
     ) -> dict[str, object | None]:
         ap_uuid = self._resolve_fit_ap_entity_uuid(
             conn,
@@ -824,6 +917,7 @@ class AcRepository:
             continuity_resources=continuity_resources,
             continuity_entities=continuity_entities,
             incoming_name_counts=incoming_name_counts,
+            identity_cache=identity_cache,
         )
         resource_data = {**row, "ac_device_uuid": ac_device_uuid, "ap_uuid": ap_uuid}
         resource_data, preserved_fields = self._merge_fit_ap_resource_identity(
@@ -3105,41 +3199,136 @@ class AcRepository:
         continuity_resources: list[dict[str, object | None]] | None = None,
         continuity_entities: list[dict[str, object | None]] | None = None,
         incoming_name_counts: Counter[str] | None = None,
+        identity_cache: dict[str, dict[str, list[dict[str, object | None]]]] | None = None,
     ) -> str:
-        site_id = str(row.get("site_id") or self.site_id or "demo")
         requested_uuid = str(row.get("ap_uuid") or "").strip()
-        if requested_uuid:
-            found = conn.execute("SELECT ap_uuid FROM ap_entities WHERE ap_uuid = ?", (requested_uuid,)).fetchone()
-            if found and found["ap_uuid"]:
-                return str(found["ap_uuid"])
-
         serial_number = self._clean_identity_value(row.get("serial_number"))
-        if serial_number:
-            matches = conn.execute(
-                "SELECT ap_uuid FROM ap_entities WHERE site_id = ? AND serial_number = ? ORDER BY id DESC",
-                (site_id, serial_number),
-            ).fetchall()
-            if len(matches) == 1 and matches[0]["ap_uuid"]:
-                return str(matches[0]["ap_uuid"])
-            if len(matches) > 1:
-                app_logger.log_warning(
-                    "FIT_AP_ENTITY_SERIAL_AMBIGUOUS",
-                    f"ac_device_uuid={ac_device_uuid}, site_id={site_id}, serial_number={serial_number}, count={len(matches)}",
-                )
-
         normalized_mac = self._normalized_explicit_ap_mac(row)
-        if normalized_mac:
-            matches = conn.execute(
-                "SELECT ap_uuid FROM ap_entities WHERE site_id = ? AND ap_mac = ? ORDER BY id DESC",
-                (site_id, normalized_mac),
-            ).fetchall()
-            if len(matches) == 1 and matches[0]["ap_uuid"]:
-                return str(matches[0]["ap_uuid"])
-            if len(matches) > 1:
-                app_logger.log_warning(
-                    "FIT_AP_ENTITY_MAC_AMBIGUOUS",
-                    f"ac_device_uuid={ac_device_uuid}, site_id={site_id}, ap_mac={normalized_mac}, count={len(matches)}",
+        if serial_number:
+            serial_matches = self._fit_ap_identity_matches_by_serial(
+                conn, serial_number, identity_cache=identity_cache
+            )
+            serial_uuids = sorted({str(item["ap_uuid"]) for item in serial_matches})
+            if len(serial_uuids) > 1:
+                self._raise_fit_ap_identity_conflict(
+                    ac_device_uuid=ac_device_uuid,
+                    serial_number=serial_number,
+                    reason="serial_maps_to_multiple_entities",
+                    incoming_uuid=requested_uuid,
+                    incoming_mac=normalized_mac,
                 )
+            if row.get("_batch_serial_identity_conflict"):
+                self._raise_fit_ap_identity_conflict(
+                    ac_device_uuid=ac_device_uuid,
+                    serial_number=serial_number,
+                    reason="batch_serial_has_multiple_macs",
+                    canonical_uuid=serial_uuids[0] if serial_uuids else "",
+                    incoming_uuid=requested_uuid,
+                    incoming_mac=normalized_mac,
+                )
+            if serial_uuids:
+                canonical_uuid = serial_uuids[0]
+                mac_matches = (
+                    self._fit_ap_identity_matches_by_mac(
+                        conn, normalized_mac, identity_cache=identity_cache
+                    )
+                    if normalized_mac
+                    else []
+                )
+                mac_uuids = {str(item["ap_uuid"]) for item in mac_matches}
+                if mac_uuids - {canonical_uuid}:
+                    self._raise_fit_ap_identity_conflict(
+                        ac_device_uuid=ac_device_uuid,
+                        serial_number=serial_number,
+                        reason="serial_and_mac_map_to_different_entities",
+                        canonical_uuid=canonical_uuid,
+                        incoming_uuid=requested_uuid,
+                        incoming_mac=normalized_mac,
+                    )
+                canonical_macs = {
+                    self._normalized_explicit_ap_mac(item)
+                    for item in serial_matches
+                    if self._normalized_explicit_ap_mac(item)
+                }
+                identity_merged = (
+                    requested_uuid != canonical_uuid
+                    or bool(normalized_mac and normalized_mac not in canonical_macs)
+                )
+                if identity_merged and requested_uuid != canonical_uuid:
+                    self._log_fit_ap_identity_event(
+                        "SERIAL_IDENTITY_RESOLVED",
+                        ac_device_uuid=ac_device_uuid,
+                        canonical_uuid=canonical_uuid,
+                        incoming_uuid=requested_uuid,
+                        serial_number=serial_number,
+                        incoming_mac=normalized_mac,
+                    )
+                if identity_merged:
+                    self._log_fit_ap_identity_event(
+                        "SERIAL_IDENTITY_MERGED",
+                        ac_device_uuid=ac_device_uuid,
+                        canonical_uuid=canonical_uuid,
+                        incoming_uuid=requested_uuid,
+                        serial_number=serial_number,
+                        incoming_mac=normalized_mac,
+                    )
+                return canonical_uuid
+
+        requested_found = self._fit_ap_identity_exists(
+            conn, requested_uuid, identity_cache=identity_cache
+        )
+        if requested_uuid and requested_found:
+            existing_serials = {
+                self._serial_identity_key(item.get("serial_number"))
+                for item in self._fit_ap_identity_rows_by_uuid(
+                    conn, requested_uuid, identity_cache=identity_cache
+                )
+                if self._serial_identity_key(item.get("serial_number"))
+            }
+            if serial_number and existing_serials and self._serial_identity_key(serial_number) not in existing_serials:
+                self._raise_fit_ap_identity_conflict(
+                    ac_device_uuid=ac_device_uuid,
+                    serial_number=serial_number,
+                    reason="requested_uuid_has_different_serial",
+                    canonical_uuid=requested_uuid,
+                    incoming_uuid=requested_uuid,
+                    incoming_mac=normalized_mac,
+                )
+            return requested_uuid
+
+        if normalized_mac:
+            mac_matches = self._fit_ap_identity_matches_by_mac(
+                conn, normalized_mac, identity_cache=identity_cache
+            )
+            mac_uuids = sorted({str(item["ap_uuid"]) for item in mac_matches})
+            if len(mac_uuids) > 1:
+                self._raise_fit_ap_identity_conflict(
+                    ac_device_uuid=ac_device_uuid,
+                    serial_number=serial_number,
+                    reason="mac_maps_to_multiple_entities",
+                    canonical_uuid="",
+                    incoming_uuid=requested_uuid,
+                    incoming_mac=normalized_mac,
+                )
+            if mac_uuids:
+                mac_uuid = mac_uuids[0]
+                existing_serials = {
+                    self._serial_identity_key(item.get("serial_number"))
+                    for item in self._fit_ap_identity_rows_by_uuid(
+                        conn, mac_uuid, identity_cache=identity_cache
+                    )
+                    if self._serial_identity_key(item.get("serial_number"))
+                }
+                if serial_number and existing_serials:
+                    self._raise_fit_ap_identity_conflict(
+                        ac_device_uuid=ac_device_uuid,
+                        serial_number=serial_number,
+                        reason="new_serial_reuses_existing_mac",
+                        canonical_uuid=mac_uuid,
+                        incoming_uuid=requested_uuid,
+                        incoming_mac=normalized_mac,
+                    )
+                return mac_uuid
 
         continuity_uuid = self._resolve_fit_ap_resource_continuity_uuid(
             conn,
@@ -3154,6 +3343,177 @@ class AcRepository:
         if requested_uuid:
             return requested_uuid
         return str(uuid4())
+
+    def _fit_ap_identity_matches_by_serial(
+        self,
+        conn,
+        serial_number: str,
+        *,
+        identity_cache: dict[str, dict[str, list[dict[str, object | None]]]] | None = None,
+    ) -> list[dict[str, object | None]]:
+        serial_key = self._serial_identity_key(serial_number)
+        if identity_cache is not None:
+            return list(identity_cache["serial"].get(serial_key, []))
+        matches: list[dict[str, object | None]] = []
+        for table in ("ac_fit_ap_resources", "ap_entities"):
+            rows = conn.execute(
+                f"SELECT * FROM {table} WHERE serial_number IS NOT NULL"
+            ).fetchall()
+            for raw_row in rows:
+                row = dict(raw_row)
+                if (
+                    self._serial_identity_key(row.get("serial_number")) == serial_key
+                    and self._clean_identity_value(row.get("ap_uuid"))
+                ):
+                    matches.append(row)
+        return matches
+
+    def _fit_ap_identity_matches_by_mac(
+        self,
+        conn,
+        normalized_mac: str,
+        *,
+        identity_cache: dict[str, dict[str, list[dict[str, object | None]]]] | None = None,
+    ) -> list[dict[str, object | None]]:
+        if not normalized_mac:
+            return []
+        if identity_cache is not None:
+            return list(identity_cache["mac"].get(normalized_mac, []))
+        matches: list[dict[str, object | None]] = []
+        for table in ("ac_fit_ap_resources", "ap_entities"):
+            rows = conn.execute(
+                f"SELECT * FROM {table} WHERE ap_mac IS NOT NULL"
+            ).fetchall()
+            for raw_row in rows:
+                row = dict(raw_row)
+                if (
+                    self._normalized_explicit_ap_mac(row) == normalized_mac
+                    and self._clean_identity_value(row.get("ap_uuid"))
+                ):
+                    matches.append(row)
+        return matches
+
+    def _fit_ap_identity_rows_by_uuid(
+        self,
+        conn,
+        ap_uuid: str,
+        *,
+        identity_cache: dict[str, dict[str, list[dict[str, object | None]]]] | None = None,
+    ) -> list[dict[str, object | None]]:
+        if not ap_uuid:
+            return []
+        if identity_cache is not None:
+            return list(identity_cache["uuid"].get(ap_uuid, []))
+        rows: list[dict[str, object | None]] = []
+        for table in ("ac_fit_ap_resources", "ap_entities"):
+            rows.extend(
+                dict(row)
+                for row in conn.execute(
+                    f"SELECT * FROM {table} WHERE ap_uuid = ?",
+                    (ap_uuid,),
+                ).fetchall()
+            )
+        return rows
+
+    def _fit_ap_identity_exists(
+        self,
+        conn,
+        ap_uuid: str,
+        *,
+        identity_cache: dict[str, dict[str, list[dict[str, object | None]]]] | None = None,
+    ) -> bool:
+        return bool(
+            ap_uuid
+            and self._fit_ap_identity_rows_by_uuid(
+                conn, ap_uuid, identity_cache=identity_cache
+            )
+        )
+
+    def _build_fit_ap_identity_cache(
+        self,
+        conn,
+    ) -> dict[str, dict[str, list[dict[str, object | None]]]]:
+        cache: dict[str, dict[str, list[dict[str, object | None]]]] = {
+            "serial": {},
+            "mac": {},
+            "uuid": {},
+        }
+        for table in ("ac_fit_ap_resources", "ap_entities"):
+            for raw_row in conn.execute(
+                f"SELECT ap_uuid, serial_number, ap_mac, ac_device_uuid{', site_id' if table == 'ap_entities' else ''} FROM {table}"
+            ).fetchall():
+                row = dict(raw_row)
+                ap_uuid = self._clean_identity_value(row.get("ap_uuid"))
+                if not ap_uuid:
+                    continue
+                cache["uuid"].setdefault(ap_uuid, []).append(row)
+                serial_key = self._serial_identity_key(row.get("serial_number"))
+                if serial_key:
+                    cache["serial"].setdefault(serial_key, []).append(row)
+                normalized_mac = self._normalized_explicit_ap_mac(row)
+                if normalized_mac:
+                    cache["mac"].setdefault(normalized_mac, []).append(row)
+        return cache
+
+    def _register_fit_ap_identity_cache(
+        self,
+        cache: dict[str, dict[str, list[dict[str, object | None]]]],
+        payload: dict[str, object | None],
+    ) -> None:
+        row = {
+            "ap_uuid": payload.get("ap_uuid"),
+            "serial_number": payload.get("serial_number"),
+            "ap_mac": payload.get("ap_mac"),
+            "ac_device_uuid": payload.get("ac_device_uuid"),
+            "site_id": payload.get("site_id") or self.site_id,
+        }
+        ap_uuid = self._clean_identity_value(row.get("ap_uuid"))
+        if not ap_uuid:
+            return
+        cache["uuid"].setdefault(ap_uuid, []).append(row)
+        serial_key = self._serial_identity_key(row.get("serial_number"))
+        if serial_key:
+            cache["serial"].setdefault(serial_key, []).append(row)
+        normalized_mac = self._normalized_explicit_ap_mac(row)
+        if normalized_mac:
+            cache["mac"].setdefault(normalized_mac, []).append(row)
+
+    def _raise_fit_ap_identity_conflict(self, **kwargs: object) -> None:
+        conflict = FitApIdentityConflict(**kwargs)
+        self._log_fit_ap_identity_conflict(conflict)
+        raise conflict
+
+    def _log_fit_ap_identity_event(
+        self,
+        event: str,
+        *,
+        ac_device_uuid: str,
+        canonical_uuid: str,
+        incoming_uuid: str,
+        serial_number: str,
+        incoming_mac: str,
+    ) -> None:
+        app_logger.log_info(
+            event,
+            (
+                f"site_id={self.site_id}, ac_device_uuid={ac_device_uuid}, "
+                f"canonical_ap_uuid={canonical_uuid}, "
+                f"incoming_ap_uuid={incoming_uuid}, serial_number={serial_number}, "
+                f"incoming_mac={incoming_mac}"
+            ),
+        )
+
+    def _log_fit_ap_identity_conflict(self, conflict: FitApIdentityConflict) -> None:
+        app_logger.log_warning(
+            "SERIAL_IDENTITY_CONFLICT",
+            (
+                f"site_id={self.site_id}, ac_device_uuid={conflict.ac_device_uuid}, "
+                f"canonical_ap_uuid={conflict.canonical_uuid}, "
+                f"incoming_ap_uuid={conflict.incoming_uuid}, serial_number={conflict.serial_number}, "
+                f"canonical_mac={conflict.canonical_mac}, incoming_mac={conflict.incoming_mac}, "
+                f"reason={conflict.reason}"
+            ),
+        )
 
     def _resolve_fit_ap_resource_continuity_uuid(
         self,
@@ -3435,22 +3795,117 @@ class AcRepository:
         placeholders = ", ".join("?" for _ in AP_RESOURCE_SNAPSHOT_FIELDS)
         conn.execute(f"INSERT INTO ap_resource_snapshots ({columns}) VALUES ({placeholders})", [row[field] for field in AP_RESOURCE_SNAPSHOT_FIELDS])
 
-    def _dedupe_fit_ap_resource_rows(self, rows: list[dict[str, object | None]]) -> list[dict[str, object | None]]:
-        keyed: dict[tuple[str, str], dict[str, object | None]] = {}
-        passthrough: list[dict[str, object | None]] = []
+    def _prepare_fit_ap_resource_rows(
+        self,
+        rows: list[dict[str, object | None]],
+    ) -> tuple[list[dict[str, object | None]], dict[str, int]]:
+        """Normalize and reconcile one full-collection batch before SQL writes.
+
+        Serial numbers are the only batch-level strong identity. MAC is used to
+        merge complementary rows, but a serial group containing multiple MACs
+        is retained as an explicit conflict instead of selecting one silently.
+        """
+
+        metrics = {
+            "batch_serial_duplicates": 0,
+            "batch_serial_merged": 0,
+            "serial_identity_conflicts": 0,
+            "duplicate_ap_entity_created": 0,
+        }
+        normalized_rows: list[dict[str, object | None]] = []
         for row in rows:
+            normalized = dict(row)
+            normalized["serial_number"] = self._clean_identity_value(
+                row.get("serial_number")
+            ) or None
             normalized_mac = self._normalized_explicit_ap_mac(row)
-            serial_number = self._clean_identity_value(row.get("serial_number"))
-            key: tuple[str, str] | None = None
             if normalized_mac:
-                key = ("mac", normalized_mac)
-            elif serial_number:
-                key = ("serial", serial_number)
-            if key is None:
-                passthrough.append(dict(row))
-            else:
-                keyed[key] = dict(row)
-        return [*keyed.values(), *passthrough]
+                normalized["ap_mac"] = normalized_mac
+            normalized_rows.append(normalized)
+
+        ordered_groups: list[tuple[str, str] | dict[str, object | None]] = []
+        serial_groups: dict[str, list[dict[str, object | None]]] = {}
+        mac_groups: dict[str, list[dict[str, object | None]]] = {}
+        for row in normalized_rows:
+            serial_key = self._serial_identity_key(row.get("serial_number"))
+            if serial_key:
+                group_key = ("serial", serial_key)
+                if serial_key not in serial_groups:
+                    serial_groups[serial_key] = []
+                    ordered_groups.append(group_key)
+                serial_groups[serial_key].append(row)
+                continue
+            normalized_mac = self._normalized_explicit_ap_mac(row)
+            if normalized_mac:
+                group_key = ("mac", normalized_mac)
+                if normalized_mac not in mac_groups:
+                    mac_groups[normalized_mac] = []
+                    ordered_groups.append(group_key)
+                mac_groups[normalized_mac].append(row)
+                continue
+            ordered_groups.append(row)
+
+        prepared: list[dict[str, object | None]] = []
+        for group in ordered_groups:
+            if isinstance(group, dict):
+                prepared.append(group)
+                continue
+            kind, identity_key = group
+            source_rows = (
+                serial_groups[identity_key]
+                if kind == "serial"
+                else mac_groups[identity_key]
+            )
+            if len(source_rows) == 1:
+                prepared.append(source_rows[0])
+                continue
+            if kind != "serial":
+                prepared.append(self._merge_fit_ap_batch_rows(source_rows))
+                continue
+
+            metrics["batch_serial_duplicates"] += len(source_rows) - 1
+            valid_macs = {
+                self._normalized_explicit_ap_mac(item)
+                for item in source_rows
+                if self._normalized_explicit_ap_mac(item)
+            }
+            explicit_uuids = {
+                self._clean_identity_value(item.get("ap_uuid"))
+                for item in source_rows
+                if self._clean_identity_value(item.get("ap_uuid"))
+            }
+            merged = self._merge_fit_ap_batch_rows(source_rows)
+            merged["_batch_serial_duplicate_count"] = len(source_rows) - 1
+            if len(valid_macs) > 1 and len(explicit_uuids) > 1:
+                merged["_batch_serial_identity_conflict"] = True
+            elif len(valid_macs) > 1 and not explicit_uuids:
+                merged["_batch_serial_identity_conflict"] = True
+            if not merged.get("_batch_serial_identity_conflict"):
+                metrics["batch_serial_merged"] += len(source_rows) - 1
+            prepared.append(merged)
+        return prepared, metrics
+
+    @staticmethod
+    def _merge_fit_ap_batch_rows(
+        rows: list[dict[str, object | None]],
+    ) -> dict[str, object | None]:
+        merged = dict(rows[0])
+        for row in rows[1:]:
+            for key, value in row.items():
+                if key.startswith("_") or value in (None, ""):
+                    continue
+                if merged.get(key) in (None, ""):
+                    merged[key] = value
+        return merged
+
+    def _dedupe_fit_ap_resource_rows(
+        self,
+        rows: list[dict[str, object | None]],
+    ) -> list[dict[str, object | None]]:
+        """Compatibility wrapper for callers that only need prepared rows."""
+
+        prepared, _metrics = self._prepare_fit_ap_resource_rows(rows)
+        return prepared
 
     def _warn_duplicate_apid_identities(self, ac_device_uuid: str, rows: list[dict[str, object | None]]) -> None:
         identities_by_apid: dict[str, set[tuple[str, str]]] = {}
@@ -3775,17 +4230,21 @@ class AcRepository:
 
     @staticmethod
     def _non_empty(primary: object, fallback: object = None) -> object:
-        text = str(primary or "").strip()
-        if text and text.casefold() not in {"-", "n/a", "na", "null"}:
-            return primary
+        text = unicodedata.normalize("NFKC", str(primary or "")).strip()
+        if text and text.casefold() not in FIT_AP_INVALID_IDENTITY_VALUES:
+            return text
         return fallback
 
     @staticmethod
     def _clean_identity_value(value: object) -> str:
-        text = str(value or "").strip()
-        if text and text.casefold() not in {"-", "n/a", "na", "null"}:
+        text = unicodedata.normalize("NFKC", str(value or "")).strip()
+        if text and text.casefold() not in FIT_AP_INVALID_IDENTITY_VALUES:
             return text
         return ""
+
+    @classmethod
+    def _serial_identity_key(cls, value: object) -> str:
+        return cls._clean_identity_value(value).casefold()
 
     @staticmethod
     def _state_display(value: object) -> str:

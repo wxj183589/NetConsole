@@ -927,7 +927,8 @@ CREATE TABLE IF NOT EXISTS ac_fit_ap_resources (
     collected_at TEXT NOT NULL,
     collect_run_uuid TEXT,
     raw_log_path TEXT,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    UNIQUE(ac_device_uuid, serial_number)
 );
 """
 

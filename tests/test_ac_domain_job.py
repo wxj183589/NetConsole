@@ -284,6 +284,10 @@ def test_ac_fit_ap_collect_terminal_payload_is_bounded_for_large_snapshot() -> N
             "detail_rows_updated": 0,
             "detail_failed_count": 0,
             "detail_mode": "",
+            "batch_serial_duplicates": 0,
+            "batch_serial_merged": 0,
+            "serial_identity_conflicts": 0,
+            "duplicate_ap_entity_created": 0,
             "error_message": "",
         },
     }

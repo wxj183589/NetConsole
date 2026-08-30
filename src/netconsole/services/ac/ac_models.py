@@ -55,6 +55,10 @@ class AcResourceRefreshResult:
     detail_rows_updated: int = 0
     detail_failed_count: int = 0
     detail_mode: str = ""
+    batch_serial_duplicates: int = 0
+    batch_serial_merged: int = 0
+    serial_identity_conflicts: int = 0
+    duplicate_ap_entity_created: int = 0
 
     def to_payload(self) -> dict[str, object]:
         return {
@@ -78,6 +82,10 @@ class AcResourceRefreshResult:
                 "detail_rows_updated": self.detail_rows_updated,
                 "detail_failed_count": self.detail_failed_count,
                 "detail_mode": self.detail_mode,
+                "batch_serial_duplicates": self.batch_serial_duplicates,
+                "batch_serial_merged": self.batch_serial_merged,
+                "serial_identity_conflicts": self.serial_identity_conflicts,
+                "duplicate_ap_entity_created": self.duplicate_ap_entity_created,
                 "error_message": self.error_message,
             },
         }
@@ -109,6 +117,10 @@ class AcResourceRefreshResult:
             "detail_rows_updated": int(self.detail_rows_updated),
             "detail_failed_count": int(self.detail_failed_count),
             "detail_mode": str(self.detail_mode),
+            "batch_serial_duplicates": int(self.batch_serial_duplicates),
+            "batch_serial_merged": int(self.batch_serial_merged),
+            "serial_identity_conflicts": int(self.serial_identity_conflicts),
+            "duplicate_ap_entity_created": int(self.duplicate_ap_entity_created),
             "error_message": str(self.error_message),
         }
         return {

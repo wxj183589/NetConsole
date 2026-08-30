@@ -139,6 +139,10 @@ class AcResourceService:
             detail_rows_updated=int(getattr(result, "detail_rows_updated", 0)),
             detail_failed_count=int(getattr(result, "detail_failed_count", 0)),
             detail_mode=str(getattr(result, "detail_mode", "") or ""),
+            batch_serial_duplicates=int(getattr(result, "batch_serial_duplicates", 0)),
+            batch_serial_merged=int(getattr(result, "batch_serial_merged", 0)),
+            serial_identity_conflicts=int(getattr(result, "serial_identity_conflicts", 0)),
+            duplicate_ap_entity_created=int(getattr(result, "duplicate_ap_entity_created", 0)),
         )
 
     def refresh_fit_ap_verbose(
@@ -210,6 +214,10 @@ class AcResourceService:
             bbssid_error=str(getattr(result, "bbssid_error", "") or ""),
             failed_commands=[item.command for item in getattr(result, "command_results", []) if not item.success],
             error_message=str(result.error_message or ""),
+            batch_serial_duplicates=int(getattr(result, "batch_serial_duplicates", 0)),
+            batch_serial_merged=int(getattr(result, "batch_serial_merged", 0)),
+            serial_identity_conflicts=int(getattr(result, "serial_identity_conflicts", 0)),
+            duplicate_ap_entity_created=int(getattr(result, "duplicate_ap_entity_created", 0)),
         )
 
     def _load_device(self, device_uuid: str) -> Device:

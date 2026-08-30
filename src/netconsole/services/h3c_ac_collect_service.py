@@ -39,7 +39,10 @@ from netconsole.parsers.h3c.ac.wlan_ap_unauthenticated_parser import (
     parse_wlan_ap_unauthenticated_summary,
 )
 from netconsole.parsers.h3c.ac.wlan_ap_verbose_parser import parse_wlan_ap_verbose
-from netconsole.repositories.ac_repository import AcRepository
+from netconsole.repositories.ac_repository import (
+    AcRepository,
+    FitApResourcePersistenceResult,
+)
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.ac.fit_ap_optical_concurrency import (
@@ -186,6 +189,10 @@ class AcResourceCollectResult:
     connection_record_rows_updated: int = 0
     connection_record_status: str = "not_collected"
     connection_record_error: str | None = None
+    batch_serial_duplicates: int = 0
+    batch_serial_merged: int = 0
+    serial_identity_conflicts: int = 0
+    duplicate_ap_entity_created: int = 0
 
 
 @dataclass(frozen=True)
@@ -275,6 +282,10 @@ def collect_h3c_ac_resources(
         connection_record_rows_updated=resource_result.connection_record_rows_updated,
         connection_record_status=resource_result.connection_record_status,
         connection_record_error=resource_result.connection_record_error,
+        batch_serial_duplicates=resource_result.batch_serial_duplicates,
+        batch_serial_merged=resource_result.batch_serial_merged,
+        serial_identity_conflicts=resource_result.serial_identity_conflicts,
+        duplicate_ap_entity_created=resource_result.duplicate_ap_entity_created,
     )
 
 
@@ -520,13 +531,18 @@ def collect_h3c_fit_ap_resources(
             if result.command in FIT_AP_RESOURCE_REQUIRED_COMMANDS
         )
         resources_persisted = bool(resource_commands_ok and resources)
+        persistence_result = FitApResourcePersistenceResult()
         if resources_persisted:
             persist_started = time.monotonic()
             progress(f"正在保存 FIT-AP 主资源：{len(resources)} 条...")
             if deep_refresh:
                 repository.upsert_fit_ap_resource(str(ac_device.device_uuid), resources[0])
             else:
-                repository.replace_fit_ap_resources(str(ac_device.device_uuid), resources)
+                persistence_value = repository.replace_fit_ap_resources(
+                    str(ac_device.device_uuid), resources
+                )
+                if isinstance(persistence_value, FitApResourcePersistenceResult):
+                    persistence_result = persistence_value
             persist_elapsed_ms = max(0, int((time.monotonic() - persist_started) * 1000))
             progress(f"FIT-AP 主资源保存完成：{persist_elapsed_ms / 1000:.2f}s")
             app_logger.log_info(
@@ -705,6 +721,10 @@ def collect_h3c_fit_ap_resources(
             connection_record_rows_updated,
             connection_record_status,
             connection_record_error,
+            persistence_result.batch_serial_duplicates,
+            persistence_result.batch_serial_merged,
+            persistence_result.serial_identity_conflicts,
+            persistence_result.duplicate_ap_entity_created,
         )
     except CollectionCancelled:
         message = "用户已取消更新"
