@@ -160,19 +160,6 @@ class PathResolver:
     def site_db_path(self, site_name: str = "demo") -> Path:
         return self.site_dir(site_name) / "db" / "devices.db"
 
-    def site_history_dir(self, site_name: str = "demo") -> Path:
-        """Return the resolved site's history root without scanning it."""
-
-        return self.site_dir(site_name) / "db" / "history"
-
-    def site_history_catalog_path(self, site_name: str = "demo") -> Path:
-        return self.site_history_dir(site_name) / "catalog.db"
-
-    def site_history_shard_path(self, site_name: str, period: str) -> Path:
-        if len(period) != 7 or period[4] != "-" or not period[:4].isdigit() or not period[5:].isdigit():
-            raise ValueError("history shard period must be YYYY-MM")
-        return self.site_history_dir(site_name) / f"devices-{period}.db"
-
     def site_tasks_db_path(self, site_name: str = "demo") -> Path:
         return self.site_dir(site_name) / "db" / "tasks.db"
 
