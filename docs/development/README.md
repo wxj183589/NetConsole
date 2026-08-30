@@ -9,7 +9,7 @@
 - [Change Impact Framework](./CHANGE_IMPACT_FRAMEWORK.md)：L1-L4、共享契约、消费者和合并后验证。
 - [API / Application 边界](./API_APPLICATION_BOUNDARY.md)：FastAPI Router、Service、Repository 与传输职责。
 - [仓库目录规范](./repository-layout.md)：源码、测试、脚本、运行数据和构建产物归位。
-- [Self-hosted CI](./SELF_HOSTED_CI.md)：本地 Runner 与 CI 安全边界。
+- [本地验证与 Gate](./SELF_HOSTED_CI.md)：GitHub Actions 退役后的本地主机/副机验证边界。
 - [Codex Skills](./CODEX_SKILLS.md)：项目 Skill 路由和维护规则。
 
 ## 依赖关系

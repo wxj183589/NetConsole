@@ -2,7 +2,7 @@
 
 [简体中文](./README.md) | English
 
-[![Quality gate](https://github.com/wxj183589/NetConsole/actions/workflows/quality-gate.yml/badge.svg)](https://github.com/wxj183589/NetConsole/actions/workflows/quality-gate.yml) [![Python 3.13](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)](https://www.python.org/) [![Windows desktop](https://img.shields.io/badge/desktop-Windows-0078D6?logo=windows&logoColor=white)](https://github.com/wxj183589/NetConsole)
+[![Python 3.13](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)](https://www.python.org/) [![Windows desktop](https://img.shields.io/badge/desktop-Windows-0078D6?logo=windows&logoColor=white)](https://github.com/wxj183589/NetConsole)
 
 **Rail Transit WLAN Engineering Diagnostics & Data Analysis Toolkit**
 

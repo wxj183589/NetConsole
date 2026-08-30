@@ -44,7 +44,7 @@ description: "NetConsole Python 依赖分层/constraints、PyInstaller Backend�
 
 # 工作流程
 
-本领域变更属于 L4；编码前先组合 `netconsole-change-review-skill`，列出构建、运行时、数据根、Feature/edition、制品和 CI 消费者及合并后回归。
+本领域变更属于 L4；编码前先组合 `netconsole-change-review-skill`，列出构建、运行时、数据根、Feature/edition、制品、本地主机/副机验证消费者及合并后回归。
 
 1. 先分类为依赖、Backend 冻结、Electron 构建、NSIS、edition、package smoke、许可证/SBOM 或发布操作，明确最终制品和不可变事实源。
 2. 依赖按 runtime/test/build/dev 分层并由 `constraints.txt` 精确锁定；不随意升级，不把构建/测试工具复制进运行时。
@@ -54,7 +54,7 @@ description: "NetConsole Python 依赖分层/constraints、PyInstaller Backend�
 6. Full/Customer 模板通过 Registry status、parent、`requires`、`delivery_requires`、internal/development 泄漏门禁；维护密码只在构建进程内存在，不进入仓库、日志或明文制品。
 7. 对最终 setup.exe、内层 Backend/Frontend commit、dirty、PE/NSIS 身份、manifest、策略 hash、SHA-256、Notice/SBOM 和包内 Qt 残留执行实际制品检查。
 8. 将源码测试、unpacked/package smoke、NSIS 构建、干净安装/升级/卸载、真实设备和跨电脑验收分别记录；自动成功只写 `PENDING` 的人工状态。
-9. 日常开发以 `python -m scripts.quality.local_gate --mode auto` 为主要验证入口；只有 release/package 路径受影响时才由 FULL Gate 追加 Package Smoke。GitHub Actions 仅作可选远端复核。
+9. 日常开发以 `python -m scripts.quality.local_gate --mode auto` 为主要验证入口；只有 release/package 路径受影响时才由 FULL Gate 追加 Package Smoke。GitHub Actions 已退役，不能作为验证或发布依据。
 
 # 禁止模式与不变量
 

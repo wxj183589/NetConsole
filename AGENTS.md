@@ -66,7 +66,7 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 ## Change Impact 与共享层稳定窗口
 
 - 开始任务时先按 [`docs/development/CHANGE_IMPACT_FRAMEWORK.md`](./docs/development/CHANGE_IMPACT_FRAMEWORK.md) 判断 L1-L4；计划路径使用 `python -m scripts.quality.check_change_impact --paths ...` 获取最低等级、共享契约、消费者和回归套件。语义只能上调风险，不能下调 Registry 命中。
-- L1 是单页面 CSS/文案/局部展示；L2 是单领域 Service/Repository/Parser/页面；L3 是共享组件、Renderer API、Task/Job、Export、AP Identity；L4 是 Feature Registry、DataRoot、数据库迁移、Electron runtime、CI 和构建发布。
+- L1 是单页面 CSS/文案/局部展示；L2 是单领域 Service/Repository/Parser/页面；L3 是共享组件、Renderer API、Task/Job、Export、AP Identity；L4 是 Feature Registry、DataRoot、数据库迁移、Electron runtime 和构建发布。
 - L3/L4 编码前必须使用 `netconsole-change-review-skill` 完成 Consumer Audit，列出写入、读取、缓存、展示、导出、旧格式、并行修改和合并后复验；不得只跑当前目标模块测试。
 - Electron-only 收敛后的 1～2 个开发轮次作为共享层稳定窗口：`api/client`、NcDataTable、动态图、Task/Job、Export、AP Identity、Feature Registry、Path/DataRoot、Electron runtime 和构建发布只接受必要 Bug/安全修复。同一时间最多一个大型 L3/L4 重构，解除冻结以新的 `main` baseline 为证据。
 - 普通 worktree/分支尽量当天或 1～2 天完成。分支明显落后 `main` 时优先从最新 `main` 重建并移植本任务提交；同步 `main` 遇到不属于当前领域的共享文件冲突时标记 `out-of-scope conflict`，不得顺手解决后继续按原风险交付。

@@ -114,7 +114,7 @@ L3/L4 未列清消费者、兼容风险、测试矩阵、并行修改和合并�
 - 分支旧测试结果只证明旧组合。L3/L4 合并 main、rebase、cherry-pick 或解决冲突后，必须在最终集成 commit 重新运行 Change Impact Guard 和 consumer matrix。
 - L3 至少重跑全部登记 consumer contracts；L4 还要跑 platform/data/package gate、主线关键 smoke 和政策要求的完整基线。
 - 本地统一执行入口是 `python -m scripts.quality.local_gate`：`--mode auto` 按风险选择 FAST/CONSUMER/FULL，`--mode consumer` 执行 Registry 套件，`--mode full` 执行最终平台基线。Gate 会强制 `RuntimeMode.TEST`、唯一 `D:/study/NetConsole-Workspace/test-data/NetConsole/<run-id>` 和 `.local-reports/` 报告。
-- GitHub Actions 是可选远端复核，不替代本地 Gate；合并后必须在最终 commit 重新运行 `python -m scripts.quality.local_gate --mode full`。
+- GitHub Actions 已退役；合并后必须在最终 commit 重新运行 `python -m scripts.quality.local_gate --mode full`，并按任务范围完成主机/副机本地验证与主机集成验证。
 - 自动化完成不替代真实 Electron GUI、安装包、现场局点、真实设备或长时间运行。未执行项标记 `NOT RUN/PENDING`，不得写成 PASS。
 
 # 验证与失败报告

@@ -2,7 +2,7 @@
 
 简体中文 | [English](README_EN.md)
 
-[![Quality gate](https://github.com/wxj183589/NetConsole/actions/workflows/quality-gate.yml/badge.svg)](https://github.com/wxj183589/NetConsole/actions/workflows/quality-gate.yml) [![Python 3.13](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)](https://www.python.org/) [![Windows desktop](https://img.shields.io/badge/desktop-Windows-0078D6?logo=windows&logoColor=white)](https://github.com/wxj183589/NetConsole)
+[![Python 3.13](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)](https://www.python.org/) [![Windows desktop](https://img.shields.io/badge/desktop-Windows-0078D6?logo=windows&logoColor=white)](https://github.com/wxj183589/NetConsole)
 
 **轨道交通 WLAN 工程诊断与数据分析工具**
 
@@ -155,7 +155,7 @@ pnpm dev:codex
 .\.venv\Scripts\python.exe -m scripts.quality.local_gate --mode full
 ```
 
-本地 Gate 使用唯一 `D:\study\NetConsole-Workspace\test-data\NetConsole\<run-id>`，不会读取正式业务根。GitHub Actions 保持为可选远端复核。
+本地 Gate 使用唯一 `D:\study\NetConsole-Workspace\test-data\NetConsole\<run-id>`，不会读取正式业务根。后续 Gate 以主机/副机本地定向测试、主机集成验证、必要的真实 `D:\NetConsoleData-dev` 验收和 Release Gate 为准；GitHub Actions 已退役。
 
 完整开发、测试和打包要求分别见 [开发规则](docs/DEVELOPMENT_RULES.md)、[测试基线](docs/testing/BASELINE.md) 和 [构建与发布](docs/release/BUILD_AND_RELEASE.md)。
 

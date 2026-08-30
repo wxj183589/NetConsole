@@ -1,6 +1,6 @@
 # 测试基线
 
-NetConsole 测试按风险等级、共享契约和消费者选择，不按历史 Bug 数量增长。详细风险与 Consumer Matrix 见 [Change Impact Framework](../development/CHANGE_IMPACT_FRAMEWORK.md)。测试资产只有在生产入口、消费者、CI、共享 fixture 与独有断言均确认被替代后才能删除。
+NetConsole 测试按风险等级、共享契约和消费者选择，不按历史 Bug 数量增长。详细风险与 Consumer Matrix 见 [Change Impact Framework](../development/CHANGE_IMPACT_FRAMEWORK.md)。测试资产只有在生产入口、消费者、共享 fixture 与独有断言均确认被替代后才能删除。
 
 ## 永久原则
 
@@ -9,7 +9,7 @@ NetConsole 测试按风险等级、共享契约和消费者选择，不按历史
 - 开发分支先跑定向测试，L3/L4 在最终合并 commit 上重新验证。
 - 自动化证据、Electron GUI、真实设备、正式安装包和长时运行分别报告，不能互相替代。
 - 默认 PR 离线运行，不连接真实设备、不要求 Windows GUI、不读取正式数据根。
-- 本地 `scripts.quality.local_gate` 是主要开发验证入口；GitHub Actions 只提供可选远端复核。
+- 本地 `scripts.quality.local_gate` 是主要开发验证入口；主机/副机本地定向测试、主机集成验证、必要的真实 `D:\NetConsoleData-dev` 验收和 Release Gate 构成后续验证权威链路。
 
 ## 测试层级
 
@@ -150,11 +150,10 @@ Desktop startup -> Site/DataRoot -> Devices -> AC/FIT-AP
 
 ## PR 与合并后验证
 
-- Pull Request 可运行 Change Impact Audit、快速质量门和当前完整自动基线；本地 Gate 是主要开发事实源，GitHub Actions 作为可选远端复核。
-- `python-full-regression.yml` 继续在 PR、`main` push、手动和定时任务运行完整 pytest。
+- Pull Request 和主线合并前后以 Change Impact Audit、本地主机/副机定向测试和主机集成验证为准；必要时补充真实 `D:\NetConsoleData-dev` 验收和 Release Gate。
 - L3/L4 的分支结果在合并后失效；最终 `main` commit 必须重新运行 Registry 指定 consumer suites。
 - L4 还必须执行完整支持基线和适用 platform/package gate，并记录 GUI/设备/安装包缺口。
-- Workflow 只能提供检查结果，不能替代 Branch protection，也不能把未启动或因额度跳过写成通过。
+- 自动化检查只能提供检查结果，不能把未启动或未执行的 GUI、设备、安装包或长时运行验收写成通过。
 
 ## 架构门
 

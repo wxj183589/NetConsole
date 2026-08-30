@@ -40,8 +40,7 @@
       "label": "完整 Python 领域与 API 回归",
       "executor": "python-full",
       "required_evidence": [
-        "pytest.ini",
-        ".github/workflows/python-full-regression.yml"
+        "pytest.ini"
       ]
     },
     "renderer-full": {
@@ -495,8 +494,7 @@
       "level": "L4",
       "patterns": [
         "config/architecture/change_impact_matrix.json",
-        "scripts/quality/check_change_impact.py",
-        ".github/workflows/*.yml"
+        "scripts/quality/check_change_impact.py"
       ],
       "consumers": [
         "architecture_governance",

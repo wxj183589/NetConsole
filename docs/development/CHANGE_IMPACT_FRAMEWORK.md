@@ -89,7 +89,7 @@ AP Identity 当前不是“全部 shadow”，也不是“全部消费者已接�
 .\.venv\Scripts\python.exe -m scripts.quality.local_gate --mode full
 ```
 
-Gate 强制使用 `RuntimeMode.TEST` 与唯一 `D:/study/NetConsole-Workspace/test-data/NetConsole/<run-id>`，报告写入 `.local-reports/`。GitHub Actions 保持为可选远端复核，不替代本地 Gate，也不把未执行的 GUI、设备、安装包或长时运行验收写成通过。
+Gate 强制使用 `RuntimeMode.TEST` 与唯一 `D:/study/NetConsole-Workspace/test-data/NetConsole/<run-id>`，报告写入 `.local-reports/`。GitHub Actions 已退役；后续验证以主机/副机本地定向测试、主机集成验证、必要的真实 `D:\NetConsoleData-dev` 验收和 Release Gate 为准，也不得把未执行的 GUI、设备、安装包或长时运行验收写成通过。
 
 输出必须稳定列出：
 
