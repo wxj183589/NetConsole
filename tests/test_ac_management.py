@@ -131,6 +131,9 @@ from netconsole.services.trackside_ap_business import (
     pvid_matches_trackside_plan,
     trackside_row_status,
 )
+from netconsole.parsers.h3c.ac.wlan_ap_unauthenticated_parser import (
+    WLAN_AP_UNAUTHENTICATED_SOURCE,
+)
 from netconsole.core.optical_severity_engine import display_optical_status
 
 
@@ -3129,6 +3132,7 @@ def test_build_new_online_ap_overview_rows_uses_current_online_without_prior_res
                 "ap_name": "AP-New",
                 "ap_mac": "0011-2233-4455",
                 "serial_number": "SN-NEW",
+                "source": WLAN_AP_UNAUTHENTICATED_SOURCE,
                 "collected_at": "2026-06-30 10:00:00",
             }
         ],
@@ -3332,13 +3336,13 @@ def test_trackside_ap_business_treatment_records_complete_identity_by_serial_onl
     assert records[0]["ap_mac"] == "083b-e9ec-da40"
 
 
-def test_trackside_ap_business_treatment_records_use_ap_name_mac_as_fallback():
+def test_trackside_ap_business_treatment_records_do_not_guess_mac_or_serial_from_name():
     trackside_rows = [
         {
             "site": "Station A",
             "ap_name": "30f5-277a-0ea0",
             "ap_mac": "",
-            "serial_number": "SN-MAC-NAME",
+            "serial_number": "",
             "device_uuid": "sw-1",
             "device_name": "SW-1",
             "interface_name": "GigabitEthernet2/0/1",
@@ -3351,7 +3355,8 @@ def test_trackside_ap_business_treatment_records_use_ap_name_mac_as_fallback():
     records = build_ap_optical_treatment_records(trackside_rows, [], [], [])
 
     assert records[0]["ap_name"] == "30f5-277a-0ea0"
-    assert records[0]["ap_mac"] == "30f5-277a-0ea0"
+    assert records[0]["ap_mac"] == ""
+    assert records[0]["serial_number"] == ""
 
 
 def test_trackside_ap_business_treatment_records_use_offline_ledger_by_serial():
@@ -3418,7 +3423,61 @@ def test_trackside_ap_business_treatment_records_use_offline_ledger_by_switch_in
 
     assert records[0]["ap_name"] == "AP-PORT"
     assert records[0]["ap_mac"] == "083b-e9ec-da40"
-    assert records[0]["serial_number"] == "SN-PORT"
+    # Offline LLDP/interface history may recover display identity, but it is
+    # not an AP Identity/FIT-AP current source for the canonical serial.
+    assert records[0]["serial_number"] == ""
+
+
+def test_trackside_ap_business_treatment_records_leave_serial_blank_when_identity_is_ambiguous_or_unmatched():
+    trackside_rows = [
+        {
+            "site": "Station A",
+            "ap_name": "AP-1",
+            "ap_mac": "0011-2233-4455",
+            "serial_number": "",
+            "device_uuid": "sw-1",
+            "device_name": "SW-1",
+            "interface_name": "GigabitEthernet2/0/1",
+            "switch_rx_power": "-24.00",
+            "switch_optical_status": "warning",
+            "updated_at": "2026-06-30 10:00:00",
+        },
+        {
+            "site": "Station B",
+            "ap_name": "AP-2",
+            "ap_mac": "00aa-bbcc-ddee",
+            "serial_number": "",
+            "device_uuid": "sw-2",
+            "device_name": "SW-2",
+            "interface_name": "GigabitEthernet2/0/2",
+            "switch_rx_power": "-24.00",
+            "switch_optical_status": "warning",
+            "updated_at": "2026-06-30 10:00:00",
+        },
+    ]
+    resources = [
+        {
+            "site": "Station A",
+            "ap_mac": "0011-2233-4455",
+            "serial_number": "SN-A",
+        },
+        {
+            "site": "Station B",
+            "ap_mac": "00aa-bbcc-ddee",
+            "serial_number": "SN-B1",
+        },
+        {
+            "site": "Station B",
+            "ap_mac": "00aa-bbcc-ddee",
+            "serial_number": "SN-B2",
+        },
+    ]
+
+    records = build_ap_optical_treatment_records(trackside_rows, [], [], resources)
+
+    by_site = {row["site"]: row for row in records}
+    assert by_site["Station A"]["serial_number"] == "SN-A"
+    assert by_site["Station B"]["serial_number"] == ""
 
 
 def test_trackside_ap_business_treatment_records_ignore_unmatched_switch_history():
@@ -3717,7 +3776,7 @@ def test_current_optical_abnormal_keeps_stale_latest_valid_observation():
     assert not is_current_optical_abnormal_row(stale_normal)
 
 
-def test_current_optical_abnormal_uses_latest_valid_history_and_ignores_failed_attempt():
+def test_current_optical_abnormal_does_not_consume_retired_history():
     base = {
         "ap_uuid": "ap-cache",
         "ap_mac": "30f5-2787-ab03",
@@ -3739,14 +3798,11 @@ def test_current_optical_abnormal_uses_latest_valid_history_and_ignores_failed_a
         "collected_at": "2026-08-09T17:45:20",
     }
 
-    cached = enrich_trackside_export_rows([base], ap_optical_history_rows=[old_abnormal])[0]
-    assert cached["ap_rx_power"] == "-26.99"
-    assert cached["ap_last_valid_collected_at"] == "2026-08-06T17:45:20"
-    assert is_current_optical_abnormal_row(cached)
-
-    recovered = enrich_trackside_export_rows([base], ap_optical_history_rows=[old_abnormal, newer_normal])[0]
-    assert recovered["ap_rx_power"] == "-7.10"
-    assert not is_current_optical_abnormal_row(recovered)
+    cached = enrich_trackside_export_rows(
+        [base], ap_optical_history_rows=[old_abnormal, newer_normal]
+    )[0]
+    assert cached == base
+    assert not is_current_optical_abnormal_row(cached)
 
 
 def test_current_optical_abnormal_does_not_reuse_cache_after_explicit_no_module():
@@ -3762,7 +3818,7 @@ def test_current_optical_abnormal_does_not_reuse_cache_after_explicit_no_module(
     history = [{"ap_uuid": "ap-no-module", "rx_power": "-26.99", "collected_at": "2026-08-06T17:45:20"}]
 
     enriched = enrich_trackside_export_rows([row], ap_optical_history_rows=history)[0]
-    assert enriched["ap_rx_power"] == "-"
+    assert enriched == row
     assert not is_current_optical_abnormal_row(enriched)
     assert not is_current_optical_abnormal_row(
         {
@@ -6217,79 +6273,6 @@ def test_trackside_ap_business_export_formats_missing_ap_side_as_dash(tmp_path):
     assert sheet.cell(2, ap_rx_column).value == "-"
     assert sheet.cell(2, alarm_column).value != "无光模块"
     assert sheet.cell(3, alarm_column).value == "未知"
-
-
-def test_trackside_export_backfills_latest_valid_ap_rx_from_history():
-    rows = [
-        {
-            "site": "Station A",
-            "ap_uuid": "ap-10",
-            "ap_mac": "bc5a-3457-cbe0",
-            "ap_name": "AP10",
-            "ap_rx_power": "-",
-            "ap_optical_status": "no_light",
-            "collection_status": "timeout",
-            "updated_at": "2026-01-03T00:00:00",
-        }
-    ]
-    history = [
-        {
-            "ap_uuid": "ap-10",
-            "ap_mac": "bc5a-3457-cbe0",
-            "ap_name": "AP10",
-            "rx_power": "-7.34",
-            "status": "success",
-            "collected_at": "2026-01-02T00:00:00",
-        }
-    ]
-
-    enriched = enrich_trackside_export_rows(rows, ap_optical_history_rows=history)
-
-    assert enriched[0]["ap_rx_power"] == "-7.34"
-    assert enriched[0]["ap_last_valid_rx_power"] == "-7.34"
-    assert enriched[0]["ap_last_valid_collected_at"] == "2026-01-02T00:00:00"
-    assert enriched[0]["ap_optical_missing_reason"] == "overwritten_by_failed_row"
-
-
-def test_trackside_export_backfills_latest_valid_switch_rx_from_history(tmp_path):
-    from openpyxl import load_workbook
-
-    rows = [{
-        "device_uuid": "switch-10",
-        "device_name": "SW-10",
-        "interface_name": "GigabitEthernet2/0/10",
-        "ap_mac": "bc5a-3457-cbe0",
-        "ap_name": "AP10",
-        "switch_rx_power": "-",
-        "switch_optical_status": "not_collected",
-        "updated_at": "2026-08-10T09:00:00",
-    }]
-    history = [{
-        "id": 1,
-        "device_uuid": "switch-10",
-        "interface_name": "GigabitEthernet2/0/10",
-        "rx_power": "-28.20",
-        "collected_at": "2026-08-06T17:45:20",
-    }]
-
-    enriched = enrich_trackside_export_rows(rows, switch_optical_history_rows=history)[0]
-
-    assert enriched["switch_rx_power"] == "-28.20"
-    assert enriched["switch_last_valid_collected_at"] == "2026-08-06T17:45:20"
-    assert is_current_optical_abnormal_row(enriched)
-
-    export_path = tmp_path / "switch_current_abnormal.xlsx"
-    export_trackside_ap_business_xlsx(
-        export_path,
-        [enriched],
-        TRACKSIDE_AP_BUSINESS_COLUMNS,
-        [I18n("zh_CN").t(key) for key, _field in TRACKSIDE_AP_BUSINESS_COLUMNS],
-    )
-    workbook = load_workbook(export_path)
-    sheet = workbook["当前异常光衰"]
-    headers = [cell.value for cell in sheet[1]]
-    updated_at_column = headers.index("最后采集时间") + 1
-    assert sheet.cell(2, updated_at_column).value == "2026-08-06T17:45:20"
 
 
 def test_demo_data_contains_ac_management_rows(tmp_path):

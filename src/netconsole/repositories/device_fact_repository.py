@@ -925,53 +925,6 @@ class DeviceFactRepository:
             ).fetchall()
         return _normalize_optical_rows([dict(row) for row in rows])
 
-    def list_all_optical_history(
-        self, device_uuids: list[str] | None = None, limit: int = 100000
-    ) -> list[dict[str, object | None]]:
-        with self.database.connect_readonly() as conn:
-            clauses = ["site_id = ?"]
-            params: list[object] = [self.database.path.parent.parent.name or self.database.path.parent.name]
-            if device_uuids is not None:
-                values = [str(value) for value in device_uuids if str(value).strip()]
-                if not values:
-                    return []
-                placeholders = ", ".join("?" for _ in values)
-                clauses.append(f"device_uuid IN ({placeholders})")
-                params.extend(values)
-            rows = conn.execute(
-                "SELECT * FROM device_optical_modules_history WHERE "
-                + " AND ".join(clauses)
-                + " ORDER BY changed_at DESC, id DESC LIMIT ?",
-                [*params, max(1, min(int(limit), 100000))],
-            ).fetchall()
-        return _normalize_optical_rows([dict(row) for row in rows])
-
-    def get_previous_optical_history(
-        self,
-        device_uuid: str,
-        interface_name: str,
-        before_collected_at: str | None = None,
-    ) -> dict[str, object | None] | None:
-        if not device_uuid or not interface_name:
-            return None
-        aliases = _interface_name_aliases(interface_name)
-        if not aliases:
-            return None
-        with self.database.connect_readonly() as conn:
-            site_id = self.database.path.parent.parent.name or self.database.path.parent.name
-            placeholders = ", ".join("?" for _ in aliases)
-            clause = f"site_id=? AND device_uuid=? AND LOWER(TRIM(interface_name)) IN ({placeholders})"
-            params: list[object] = [site_id, device_uuid, *aliases]
-            if before_collected_at:
-                clause += " AND changed_at < ?"
-                params.append(before_collected_at)
-            row = conn.execute(
-                "SELECT * FROM device_optical_modules_history WHERE "
-                + clause + " ORDER BY changed_at DESC, id DESC LIMIT 1",
-                params,
-            ).fetchone()
-        return _normalize_optical_row(dict(row)) if row is not None else None
-
     def list_lldp_history(self, device_uuid: str, local_interface: str) -> list[dict[str, object | None]]:
         aliases = _interface_name_aliases(local_interface)
         if not aliases:

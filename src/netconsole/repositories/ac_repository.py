@@ -9,6 +9,9 @@ from uuid import uuid4
 from netconsole.core import app_logger
 from netconsole.core.database import Database
 from netconsole.parsers.h3c.ac.state_mapper import classify_fit_ap_state
+from netconsole.parsers.h3c.ac.wlan_ap_unauthenticated_parser import (
+    WLAN_AP_UNAUTHENTICATED_SOURCE,
+)
 from netconsole.services.ap_extension_import import normalize_ap_mac
 from netconsole.services.fit_ap_link_info import (
     merge_lldp_payload,
@@ -1083,6 +1086,7 @@ class AcRepository:
         for row in result:
             row["site_key"] = row.get("site_key") or self.site_id
             row["station"] = row.get("entity_station") or ""
+            row["source"] = WLAN_AP_UNAUTHENTICATED_SOURCE
         return result
 
     def list_all_fit_ap_unauthenticated(self) -> list[dict[str, object | None]]:
@@ -1091,13 +1095,17 @@ class AcRepository:
         result = [dict(row) for row in rows]
         for row in result:
             row["site_key"] = row.get("site_key") or self.site_id
+            row["source"] = WLAN_AP_UNAUTHENTICATED_SOURCE
         return result
 
     def list_fit_ap_unauthenticated_history(self, ac_device_uuid: str | None = None, limit: int = 100000) -> list[dict[str, object | None]]:
         with self.database.connect_readonly() as conn:
-            return list_fit_ap_unauthenticated_recent(
+            result = list_fit_ap_unauthenticated_recent(
                 conn, ac_device_uuid, limit=min(max(int(limit), 1), 100_000)
             )
+        for row in result:
+            row["source"] = WLAN_AP_UNAUTHENTICATED_SOURCE
+        return result
 
     def get_fit_ap_unauthenticated_summary(self, ac_device_uuid: str) -> dict[str, object | None] | None:
         with self.database.connect() as conn:
@@ -2317,38 +2325,6 @@ class AcRepository:
                 row = conn.execute(sql, params).fetchone()
                 counts[kind] = min(10, int(row["total"] if row is not None else 0))
         return counts
-
-    def list_all_ap_optical_history(
-        self, limit: int = 100000
-    ) -> list[dict[str, object | None]]:
-        with self.database.connect_readonly() as conn:
-            rows = conn.execute(
-                "SELECT * FROM optical_history WHERE site_id=? "
-                "ORDER BY changed_at DESC, id DESC LIMIT ?",
-                (self.site_id, max(1, min(100000, int(limit)))),
-            ).fetchall()
-        return [self._bounded_optical_history_row(row) for row in rows]
-
-    def get_previous_ap_optical_history(
-        self,
-        identity: dict[str, str],
-        before_collected_at: str | None = None,
-    ) -> dict[str, object | None] | None:
-        ap_uuid = str(identity.get("ap_uuid") or "").strip()
-        if not ap_uuid:
-            return None
-        with self.database.connect_readonly() as conn:
-            clause = "site_id=? AND ap_identity=?"
-            params: list[object] = [self.site_id, ap_uuid]
-            if before_collected_at:
-                clause += " AND changed_at < ?"
-                params.append(before_collected_at)
-            row = conn.execute(
-                "SELECT * FROM optical_history WHERE " + clause
-                + " ORDER BY changed_at DESC, id DESC LIMIT 1",
-                params,
-            ).fetchone()
-        return dict(row) if row is not None else None
 
     def get_previous_ap_lldp_history(
         self,

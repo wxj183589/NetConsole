@@ -6,6 +6,8 @@ from netconsole.parsers.h3c.ac.state_mapper import map_fit_ap_state
 from netconsole.services.ap_identity.normalizers import normalize_mac_key
 
 
+WLAN_AP_UNAUTHENTICATED_SOURCE = "wlan_ap_unauthenticated"
+
 SUMMARY_FIELD_PATTERNS = {
     "total_aps": r"Total number of APs:\s*(\d+)",
     "connected_aps": r"Total number of connected APs:\s*(\d+)",
@@ -112,6 +114,7 @@ def parse_wlan_ap_unauthenticated_rows(
                 "ap_mac": normalized_mac,
                 # Retain the legacy field; the normalized MAC is now explicit.
                 "inferred_ap_mac": None,
+                "source": WLAN_AP_UNAUTHENTICATED_SOURCE,
                 "ac_id": str(ac_id or "").strip(),
                 "site_key": str(site_key or "").strip(),
                 "collected_at": str(collected_at or "").strip(),

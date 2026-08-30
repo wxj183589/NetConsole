@@ -370,6 +370,67 @@ def test_database_initialize_auto_updates_additive_schema(tmp_path):
     assert "idx_fit_ap_radio_history_ap_time" in radio_history_indexes
 
 
+def test_database_migration_backfills_treatment_serial_only_when_identity_is_unique(tmp_path):
+    db = Database(tmp_path / "devices.db")
+    db.initialize()
+    with db.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO ac_fit_ap_resources (
+                ac_device_uuid, ap_uuid, ap_mac, serial_number, collected_at, updated_at
+            )
+            VALUES ('ac-1', 'ap-matched', '0011-2233-4455', 'SN-MATCHED', '2026-08-30T00:00:00Z', '2026-08-30T00:00:00Z')
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO ac_fit_ap_resources (
+                ac_device_uuid, ap_uuid, ap_mac, serial_number, collected_at, updated_at
+            )
+            VALUES
+                ('ac-1', 'ap-ambiguous-a', '00:aa:bb:cc:dd:ee', 'SN-A', '2026-08-30T00:00:00Z', '2026-08-30T00:00:00Z'),
+                ('ac-1', 'ap-ambiguous-b', '00:aa:bb:cc:dd:ee', 'SN-B', '2026-08-30T00:00:00Z', '2026-08-30T00:00:00Z')
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO ap_optical_treatment (site_id, ap_identity, ap_uuid, ap_mac, serial_number)
+            VALUES
+                ('demo', 'ap-matched', 'ap-matched', '0011-2233-4455', ''),
+                ('demo', 'ap-ambiguous', '', '00:aa:bb:cc:dd:ee', ''),
+                ('demo', 'ap-unmatched', '', '', '')
+            """
+        )
+        conn.execute(
+            "UPDATE schema_metadata SET value = '2026.08.29.history_store_full_retirement_v1' "
+            "WHERE key = 'schema_version'"
+        )
+        conn.commit()
+
+    db.initialize()
+
+    with db.connect() as conn:
+        rows = {
+            row["ap_identity"]: row["serial_number"]
+            for row in conn.execute(
+                "SELECT ap_identity, serial_number FROM ap_optical_treatment"
+            )
+        }
+        stats = __import__("json").loads(
+            conn.execute(
+                "SELECT value FROM schema_metadata "
+                "WHERE key = 'ap_optical_treatment_serial_backfill'"
+            ).fetchone()["value"]
+        )
+
+    assert rows == {
+        "ap-matched": "SN-MATCHED",
+        "ap-ambiguous": "",
+        "ap-unmatched": "",
+    }
+    assert stats == {"MATCHED": 1, "UNMATCHED": 1, "AMBIGUOUS": 1}
+
+
 def test_database_initialize_recreates_empty_legacy_fit_ap_resource_table(tmp_path):
     db = Database(tmp_path / "devices.db")
     db.initialize()

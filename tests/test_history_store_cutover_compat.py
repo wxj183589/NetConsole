@@ -116,8 +116,6 @@ def test_engineering_runtime_has_no_legacy_historystore_dependency() -> None:
         "append_lldp_history",
         "list_interface_history",
         "list_optical_history",
-        "list_all_optical_history",
-        "get_previous_optical_history",
         "list_lldp_history",
         "list_object_history_page",
         "count_object_history",
@@ -132,8 +130,6 @@ def test_engineering_runtime_has_no_legacy_historystore_dependency() -> None:
         "list_fit_ap_lldp_history_by_ap",
         "list_fit_ap_history_page",
         "count_fit_ap_history",
-        "list_all_ap_optical_history",
-        "get_previous_ap_optical_history",
         "get_previous_ap_lldp_history",
         "list_latest_ap_lldp_history",
         "list_latest_ap_lldp_histories",
@@ -235,7 +231,6 @@ def test_dropped_legacy_tables_do_not_restore_engineering_history_from_events(tm
     assert repository.list_fit_ap_resource_history("ac-1") == []
     assert repository.list_fit_ap_radio_history_by_ap(ap_uuid) == []
     assert repository.list_fit_ap_optical_history_by_ap(ap_uuid) == []
-    assert repository.list_all_ap_optical_history() == []
     assert repository.list_fit_ap_lldp_history_by_ap(ap_uuid) == []
     assert repository.list_fit_ap_history_page("lldp", ap_uuid) == []
     assert repository.count_fit_ap_history("lldp", ap_uuid) == 0
@@ -254,7 +249,6 @@ def test_dropped_legacy_tables_without_history_events_return_empty_results(tmp_p
     assert repository.list_fit_ap_resource_history("ac-1") == []
     assert repository.list_fit_ap_radio_history_by_ap("missing") == []
     assert repository.list_fit_ap_optical_history_by_ap("missing") == []
-    assert repository.list_all_ap_optical_history() == []
     assert repository.list_fit_ap_lldp_history_by_ap("missing") == []
     assert repository.list_fit_ap_history_page("lldp", "missing") == []
     assert repository.count_fit_ap_history("lldp", "missing") == 0
@@ -279,8 +273,6 @@ def test_device_fact_history_keeps_fact_compatibility_without_engineering_fallba
     assert facts.list_fact_history("device-1") == []
     assert facts.list_interface_history("device-1", "GE1/0/1") == []
     assert facts.list_optical_history("device-1", "GE1/0/1") == []
-    assert facts.list_all_optical_history() == []
-    assert facts.get_previous_optical_history("device-1", "GE1/0/1") is None
     assert facts.list_lldp_history("device-1", "GE1/0/1") == []
     assert facts.list_object_history_page("optical", "device-1", "GE1/0/1") == []
     assert facts.count_object_history("optical", "device-1", "GE1/0/1") == 0

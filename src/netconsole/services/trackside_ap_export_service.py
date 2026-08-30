@@ -344,8 +344,8 @@ def _load_trackside_ap_business_snapshot_once(
     identity_query_macs: Sequence[object] = (),
 ) -> TracksideApBusinessLoadResult:
     query_start = perf_counter()
-    fact_repository = DeviceFactRepository(repository.database)
     ac_repository = AcRepository(repository.database)
+    fact_repository = DeviceFactRepository(repository.database)
     source_statuses: dict[str, str] = {
         "switch_devices": "loaded",
         "switch_collection_attempts": "loaded",
@@ -886,7 +886,6 @@ def _build_trackside_ap_business_export_snapshot_once(
 ) -> dict[str, object]:
     started = perf_counter()
     ac_repository = AcRepository(repository.database)
-    fact_repository = DeviceFactRepository(repository.database)
     snapshot = load_trackside_ap_business_snapshot(
         repository,
         site_name,
@@ -919,8 +918,6 @@ def _build_trackside_ap_business_export_snapshot_once(
     # Historical scans here reintroduced unbounded work and made export results
     # depend on Legacy HistoryStore state, so they are intentionally empty.
     resource_history_rows: list[dict[str, object | None]] = []
-    ap_optical_history_rows: list[dict[str, object | None]] = []
-    ap_lldp_history_rows: list[dict[str, object | None]] = []
     latest_lldp, latest_optical = build_current_ap_history_indexes(
         ac_repository.list_current_ap_lldp_states(),
         resources,
@@ -931,7 +928,6 @@ def _build_trackside_ap_business_export_snapshot_once(
         site_name,
         project_phase=scope.context.project_phase,
     )
-    switch_optical_history_rows: list[dict[str, object | None]] = []
     offline_stats, offline_ledger_rows = build_offline_ap_ledger(
         fit_ap_resources=resources,
         latest_lldp_by_ap=latest_lldp,
@@ -951,12 +947,6 @@ def _build_trackside_ap_business_export_snapshot_once(
         normalize_trackside_ap_business_row(row)
         for row in enrich_trackside_export_rows(
             business_rows,
-            fact_repository,
-            ac_repository,
-            switch_optical_history_rows=switch_optical_history_rows,
-            ap_optical_history_rows=ap_optical_history_rows,
-            ap_lldp_history_rows=ap_lldp_history_rows,
-            current_only=True,
         )
     ]
     optical_problem_counts = count_current_optical_abnormal_by_site(snapshot.rows)
@@ -974,8 +964,8 @@ def _build_trackside_ap_business_export_snapshot_once(
     )
     optical_treatment_rows = build_ap_optical_treatment_records(
         rows,
-        ap_optical_history_rows,
-        switch_optical_history_rows,
+        [],
+        [],
         resources,
         resource_history_rows,
         offline_ledger_rows=offline_ledger_rows,

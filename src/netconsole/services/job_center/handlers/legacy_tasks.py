@@ -1865,8 +1865,6 @@ def _device_detail_load_all(params: dict[str, Any], progress: ProgressCallback |
 
 
 def _fit_ap_detail_load(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
-    from netconsole.services.ap_optical_history_service import ApOpticalHistoryService
-
     repository = _ac_repository(params)
     ac_uuid = str(params.get("ac_uuid") or "")
     ap_key = str(params.get("ap_key") or "")
@@ -1874,7 +1872,7 @@ def _fit_ap_detail_load(params: dict[str, Any], progress: ProgressCallback | Non
     ap_uuid = str(resource.get("ap_uuid") or ap_key)
     optical = repository.get_fit_ap_optical_by_uuid(ac_uuid, ap_uuid) or {}
     metadata = repository.get_fit_ap_metadata_by_uuid(ap_uuid) or {}
-    summary = ApOpticalHistoryService(repository).get_latest_optical_summary(ac_uuid, ap_uuid) or {}
+    summary = dict(optical)
     return {"resource": resource, "optical": optical, "metadata": metadata, "optical_summary": summary, "ap_uuid": ap_uuid}
 
 

@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 
 from netconsole.parsers.h3c.ac.state_mapper import classify_fit_ap_state, map_fit_ap_state
+from netconsole.parsers.h3c.ac.wlan_ap_unauthenticated_parser import (
+    WLAN_AP_UNAUTHENTICATED_SOURCE,
+)
 from netconsole.services.ap_online_overview import is_fit_ap_online
 from netconsole.services.rail_transit.effective_trackside_ap_scope import (
     TracksideApScopeContext,
@@ -385,7 +388,7 @@ def test_new_online_uses_identity_entity_before_name_or_station_projection():
         resource_history_rows=[{"identity_entity_id": "entity-1", "ap_name": "AP-OLD", "ap_mac": "0011-2233-4455", "state": "Idle", "collected_at": "2026-08-04"}],
         trackside_rows=[],
         unauthenticated_rows=[
-            {"identity_entity_id": "entity-1", "ap_name": "AP-NEW", "ap_mac": "0011-2233-4455", "collected_at": "2026-08-05"}
+            {"identity_entity_id": "entity-1", "ap_name": "AP-NEW", "ap_mac": "0011-2233-4455", "source": WLAN_AP_UNAUTHENTICATED_SOURCE, "collected_at": "2026-08-05"}
         ],
     )
     assert len(rows) == 1
@@ -408,7 +411,7 @@ def test_new_online_with_no_history_survives_missing_station_projection():
         current_resource_rows=[{"ap_name": "AP-NEW", "ap_mac": "0011-2233-4455", "state": "Online", "collected_at": "2026-08-05"}],
         resource_history_rows=[],
         trackside_rows=[],
-        unauthenticated_rows=[{"ap_name": "AP-NEW", "ap_mac": "0011-2233-4455", "collected_at": "2026-08-05"}],
+        unauthenticated_rows=[{"ap_name": "AP-NEW", "ap_mac": "0011-2233-4455", "source": WLAN_AP_UNAUTHENTICATED_SOURCE, "collected_at": "2026-08-05"}],
     )
     assert len(rows) == 1
     assert rows[0]["site"] == "等待 LLDP 同步"

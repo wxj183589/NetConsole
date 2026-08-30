@@ -4,6 +4,7 @@ from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
 from netconsole.parsers.h3c.ac.wlan_ap_unauthenticated_parser import (
+    WLAN_AP_UNAUTHENTICATED_SOURCE,
     classify_wlan_ap_unauthenticated_snapshot,
     parse_wlan_ap_unauthenticated_rows,
     parse_wlan_ap_unauthenticated_summary,
@@ -105,6 +106,7 @@ def test_wlan_ap_unauthenticated_parser_extracts_summary_and_rows():
     assert rows[0]["dev_type"] == "COMMON"
     assert rows[0]["work_mode"] == "FitAP"
     assert rows[0]["inferred_ap_mac"] is None
+    assert rows[0]["source"] == WLAN_AP_UNAUTHENTICATED_SOURCE
     assert all(row["ap_name"] != "C" for row in rows)
     assert all(row["apid"] != "=" for row in rows)
     assert all(row["model"] != "DC" for row in rows)
@@ -222,7 +224,7 @@ def test_build_new_online_ap_overview_rows_uses_only_current_unauthenticated_sna
         [{"ac_device_uuid": "ac-1", "ap_name": "AP-Pending", "serial_number": "SN-PENDING", "site": "Station A"}],
         [],
         [{"ap_name": "AP-Pending", "serial_number": "SN-PENDING", "device_name": "SW-1", "interface_name": "GE1/0/1"}],
-        unauthenticated_rows=[{"ac_device_uuid": "ac-1", "ap_name": "AP-Pending", "serial_number": "SN-PENDING", "collected_at": "2026-01-02T00:00:00"}],
+        unauthenticated_rows=[{"ac_device_uuid": "ac-1", "ap_name": "AP-Pending", "serial_number": "SN-PENDING", "source": WLAN_AP_UNAUTHENTICATED_SOURCE, "collected_at": "2026-01-02T00:00:00"}],
         unauthenticated_history_rows=[
             {"ac_device_uuid": "ac-1", "ap_name": "AP-Confirmed", "serial_number": "SN-CONFIRMED", "collected_at": "2026-01-01T00:00:00"},
             {"ac_device_uuid": "ac-1", "ap_name": "AP-Gone", "serial_number": "SN-GONE", "collected_at": "2026-01-01T00:00:00"},
@@ -234,6 +236,7 @@ def test_build_new_online_ap_overview_rows_uses_only_current_unauthenticated_sna
     assert by_name["AP-Pending"]["register_status"] == "未固化"
     assert by_name["AP-Pending"]["new_online_status"] == "当前新上线Auto AP"
     assert by_name["AP-Pending"]["identity_source"] == "AC未固化Auto AP"
+    assert by_name["AP-Pending"]["source"] == WLAN_AP_UNAUTHENTICATED_SOURCE
 
 
 def test_build_new_online_ap_overview_rows_empty_current_snapshot_ignores_history():
@@ -248,6 +251,43 @@ def test_build_new_online_ap_overview_rows_empty_current_snapshot_ignores_histor
     )
 
     assert rows == []
+
+
+def test_build_new_online_ap_overview_rows_rejects_non_unauthenticated_sources():
+    rows = build_new_online_ap_overview_rows(
+        [{"ap_name": "FIT-DIFF", "serial_number": "SN-DIFF", "site": "Station A"}],
+        [{"ap_name": "FIT-DIFF", "serial_number": "SN-DIFF"}],
+        [],
+        unauthenticated_rows=[
+            {
+                "ap_name": "FIT-DIFF",
+                "serial_number": "SN-DIFF",
+                "source": "fit_ap_diff",
+            }
+        ],
+    )
+
+    assert rows == []
+
+
+def test_fit_ap_unauthenticated_recent_is_bounded_to_ten_changes(tmp_path):
+    repository = make_ac_repository(tmp_path)
+    for index in range(12):
+        repository.replace_fit_ap_unauthenticated(
+            "ac-1",
+            {"connected_auto_aps": 1, "collected_at": f"2026-01-{index + 1:02d}T00:00:00"},
+            [{
+                "ap_name": "AP-RECENT",
+                "serial_number": "SN-RECENT",
+                "apid": "1",
+                "state": "R/M" if index % 2 else "I",
+                "collected_at": f"2026-01-{index + 1:02d}T00:00:00",
+            }],
+        )
+
+    recent = repository.list_fit_ap_unauthenticated_history("ac-1")
+    assert len(recent) == 10
+    assert all(row["source"] == WLAN_AP_UNAUTHENTICATED_SOURCE for row in recent)
 
 
 def test_trackside_ap_business_current_lldp_neighbor_mac_never_displays_dash():

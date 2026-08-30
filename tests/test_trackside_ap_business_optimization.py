@@ -20,7 +20,6 @@ from netconsole.services.trackside_ap_business import (
     format_trackside_display_value,
     is_trackside_ap_interface,
     merge_fit_ap_rows_by_identity,
-    optical_change_text,
     trackside_row_status,
 )
 from netconsole.core.paths import PathResolver
@@ -149,14 +148,6 @@ BAGG1                DOWN auto    A      T    1    Uplink
 def test_new_trackside_commands_are_whitelisted():
     assert command_guard.is_command_allowed("display interface brief", "optical_refresh")
     assert command_guard.is_command_allowed("display interface brief", "fit_ap_collect")
-
-
-def test_history_change_helpers_only_report_normal_abnormal_transitions():
-    assert optical_change_text("normal", "warning") == "正常 → 不正常"
-    assert optical_change_text("alarm", "normal") == "不正常 → 正常"
-    assert optical_change_text("warning", "alarm") == "-"
-    assert optical_change_text("normal", "normal") == "-"
-    assert optical_change_text("failed", "alarm") == "-"
 
 
 def test_multi_ac_rows_without_mac_are_not_merged_by_name_or_serial():
@@ -367,44 +358,32 @@ def test_ac_resource_collect_failure_keeps_existing_resources(monkeypatch, tmp_p
     assert [row["ap_name"] for row in repository.list_fit_ap_resources(str(ac.device_uuid))] == ["old-ap"]
 
 
-def test_trackside_optical_change_uses_latest_status_boundary():
-    rows = [{"device_uuid": "sw-1", "interface_name": "GE1/0/1", "switch_optical_status": "alarm", "updated_at": "2026-01-04"}]
-    history = [
-        {"device_uuid": "sw-1", "interface_name": "GE1/0/1", "alarm_status": "normal", "collected_at": "2026-01-01", "id": 1},
-        {"device_uuid": "sw-1", "interface_name": "GE1/0/1", "alarm_status": "warning", "collected_at": "2026-01-02", "id": 2},
-        {"device_uuid": "sw-1", "interface_name": "GE1/0/1", "alarm_status": "alarm", "collected_at": "2026-01-03", "id": 3},
-    ]
+def test_trackside_export_does_not_consume_retired_optical_change_history():
+    rows = [{
+        "device_uuid": "sw-1",
+        "interface_name": "GE1/0/1",
+        "switch_rx_power": None,
+        "switch_optical_status": "alarm",
+        "ap_rx_power": None,
+        "ap_optical_status": "normal",
+        "updated_at": "2026-01-04",
+    }]
+    history = [{
+        "device_uuid": "sw-1",
+        "interface_name": "GE1/0/1",
+        "alarm_status": "normal",
+        "collected_at": "2026-01-01",
+    }]
 
-    enriched = enrich_trackside_export_rows(rows, switch_optical_history_rows=history)
+    enriched = enrich_trackside_export_rows(
+        rows,
+        switch_optical_history_rows=history,
+        ap_optical_history_rows=history,
+    )
 
-    assert enriched[0]["switch_optical_change"] == optical_change_text("normal", "alarm")
-    assert enriched[0]["history_compared_at"] == "2026-01-01"
-
-
-def test_trackside_optical_change_ignores_same_abnormal_boundary_without_normal():
-    rows = [{"device_uuid": "sw-1", "interface_name": "GE1/0/1", "switch_optical_status": "warning", "updated_at": "2026-01-03"}]
-    history = [
-        {"device_uuid": "sw-1", "interface_name": "GE1/0/1", "alarm_status": "alarm", "collected_at": "2026-01-01", "id": 1},
-        {"device_uuid": "sw-1", "interface_name": "GE1/0/1", "alarm_status": "warning", "collected_at": "2026-01-02", "id": 2},
-    ]
-
-    enriched = enrich_trackside_export_rows(rows, switch_optical_history_rows=history)
-
-    assert enriched[0]["switch_optical_change"] == "-"
-
-
-def test_trackside_optical_change_reports_recovery_from_earlier_abnormal():
-    rows = [{"ap_uuid": "ap-1", "ap_name": "AP1", "ap_mac": "0011-2233-4455", "ap_rx_power": "-10", "ap_optical_status": "normal", "updated_at": "2026-01-04"}]
-    history = [
-        {"ap_uuid": "ap-1", "ap_name": "AP1", "ap_mac": "0011-2233-4455", "rx_power": "-17.80", "optical_alarm_status": "alarm", "collected_at": "2026-01-01", "id": 1},
-        {"ap_uuid": "ap-1", "ap_name": "AP1", "ap_mac": "0011-2233-4455", "rx_power": "-10", "optical_alarm_status": "normal", "collected_at": "2026-01-02", "id": 2},
-        {"ap_uuid": "ap-1", "ap_name": "AP1", "ap_mac": "0011-2233-4455", "rx_power": "-10", "optical_alarm_status": "normal", "collected_at": "2026-01-03", "id": 3},
-    ]
-
-    enriched = enrich_trackside_export_rows(rows, ap_optical_history_rows=history)
-
-    assert enriched[0]["ap_optical_change"] == optical_change_text("abnormal", "normal")
-    assert enriched[0]["history_compared_at"] == "2026-01-01"
+    assert enriched == rows
+    assert "switch_optical_change" not in enriched[0]
+    assert "ap_optical_change" not in enriched[0]
 
 
 def test_trackside_export_no_longer_calculates_ap_port_change_from_lldp_history():

@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import re
 import sqlite3
 import threading
 from time import monotonic
@@ -26,7 +27,7 @@ from netconsole.core.sqlite_utils import (
 from netconsole.models.device_address import InvalidDeviceAddressError, normalize_ip_address
 
 
-CURRENT_SCHEMA_VERSION = "2026.08.29.history_store_full_retirement_v1"
+CURRENT_SCHEMA_VERSION = "2026.08.30.ap_optical_treatment_serial_backfill_v1"
 
 DEVICE_CLASSIFICATION_COLUMNS = (
     "project_phase",
@@ -2568,6 +2569,8 @@ class Database:
                 self._apply_additive_schema_updates(conn)
                 stage = "ap_identity_radio_evidence_backfill"
                 self._backfill_ap_identity_radio_evidence(conn)
+                stage = "ap_optical_treatment_serial_backfill"
+                self._backfill_ap_optical_treatment_serial_numbers(conn)
                 stage = "rail_base_master_identity_backfill"
                 self._backfill_rail_base_master_ids(conn)
                 stage = "classification_validation"
@@ -3175,6 +3178,7 @@ class Database:
 
         if self._table_exists(conn, "ap_optical_treatment"):
             for column, definition in {
+                "serial_number": "TEXT NOT NULL DEFAULT ''",
                 "ap_id": "TEXT NOT NULL DEFAULT ''",
                 "section_name": "TEXT NOT NULL DEFAULT ''",
                 "direction": "TEXT NOT NULL DEFAULT ''",
@@ -3347,6 +3351,107 @@ class Database:
         for column, column_type in device_snmp_columns.items():
             if self._table_exists(conn, "devices") and not self._column_exists(conn, "devices", column):
                 conn.execute(f"ALTER {'TABLE'} devices ADD COLUMN {column} {column_type}")
+
+    def _backfill_ap_optical_treatment_serial_numbers(self, conn: sqlite3.Connection) -> None:
+        """Backfill only uniquely resolvable treatment serial numbers.
+
+        Treatment rows are historical business records, while FIT-AP resources
+        and AP entities are the current identity authority. UUID and explicit
+        MAC matches are safe; AP names are intentionally never used here.
+        """
+
+        counts = {"MATCHED": 0, "UNMATCHED": 0, "AMBIGUOUS": 0}
+        if not self._table_exists(conn, "ap_optical_treatment"):
+            return
+
+        source_rows: list[sqlite3.Row] = []
+        for table in ("ac_fit_ap_resources", "ap_entities"):
+            if not (
+                self._table_exists(conn, table)
+                and self._column_exists(conn, table, "ap_uuid")
+                and self._column_exists(conn, table, "serial_number")
+            ):
+                continue
+            source_rows.extend(
+                conn.execute(
+                    f"SELECT ap_uuid, ap_mac, serial_number FROM {table}"
+                ).fetchall()
+            )
+
+        by_uuid: dict[str, set[str]] = {}
+        by_mac: dict[str, set[str]] = {}
+        for source in source_rows:
+            serial = self._clean_migration_identity_value(source["serial_number"])
+            if not serial:
+                continue
+            ap_uuid = self._clean_migration_identity_value(source["ap_uuid"])
+            if ap_uuid:
+                by_uuid.setdefault(ap_uuid.casefold(), set()).add(serial)
+            ap_mac = self._normalize_migration_mac(source["ap_mac"])
+            if ap_mac:
+                by_mac.setdefault(ap_mac, set()).add(serial)
+
+        for treatment in conn.execute(
+            "SELECT id, ap_uuid, ap_identity, ap_mac, serial_number "
+            "FROM ap_optical_treatment WHERE trim(coalesce(serial_number, '')) = ''"
+        ).fetchall():
+            candidate_sets: list[set[str]] = []
+            ap_uuid = self._clean_migration_identity_value(
+                treatment["ap_uuid"] or treatment["ap_identity"]
+            )
+            if ap_uuid and by_uuid.get(ap_uuid.casefold()):
+                candidate_sets.append(by_uuid[ap_uuid.casefold()])
+            ap_mac = self._normalize_migration_mac(treatment["ap_mac"])
+            if ap_mac and by_mac.get(ap_mac):
+                candidate_sets.append(by_mac[ap_mac])
+            candidates = set().union(*candidate_sets) if candidate_sets else set()
+            if len(candidates) == 1:
+                serial = next(iter(candidates))
+                conn.execute(
+                    "UPDATE ap_optical_treatment SET serial_number = ? WHERE id = ?",
+                    (serial, treatment["id"]),
+                )
+                counts["MATCHED"] += 1
+            elif len(candidates) > 1:
+                counts["AMBIGUOUS"] += 1
+            else:
+                counts["UNMATCHED"] += 1
+
+        now = datetime.now().isoformat(timespec="seconds")
+        conn.execute(
+            """
+            INSERT INTO schema_metadata (key, value, created_at, updated_at)
+            VALUES ('ap_optical_treatment_serial_backfill', ?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+            """,
+            (json.dumps(counts, ensure_ascii=True, sort_keys=True), now, now),
+        )
+        try:
+            from netconsole.core import app_logger
+
+            app_logger.log_info(
+                "AP_OPTICAL_TREATMENT_SERIAL_BACKFILL",
+                " ".join(f"{key.lower()}={value}" for key, value in counts.items()),
+            )
+        except Exception:
+            pass
+
+    @staticmethod
+    def _clean_migration_identity_value(value: object) -> str:
+        text = str(value or "").strip()
+        return "" if text.casefold() in {"", "-", "--", "n/a", "na", "none", "null", "unknown"} else text
+
+    @staticmethod
+    def _normalize_migration_mac(value: object) -> str:
+        text = str(value or "").strip().casefold()
+        if not re.fullmatch(
+            r"(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}"
+            r"|(?:[0-9a-f]{4}[.-]){2}[0-9a-f]{4}"
+            r"|[0-9a-f]{12}",
+            text,
+        ):
+            return ""
+        return re.sub(r"[-:.]", "", text)
 
     def _apply_device_address_migration(self, conn: sqlite3.Connection) -> None:
         if not self._table_exists(conn, "devices"):

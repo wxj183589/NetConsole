@@ -31,6 +31,9 @@ from netconsole.parsers.h3c.ac.state_mapper import (
     classify_fit_ap_state,
     normalize_fit_ap_state_token,
 )
+from netconsole.parsers.h3c.ac.wlan_ap_unauthenticated_parser import (
+    WLAN_AP_UNAUTHENTICATED_SOURCE,
+)
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.services.ap_online_overview import (
     AP_ONLINE_OVERVIEW_COLUMNS,
@@ -74,6 +77,10 @@ _PRESERVED_SWITCH_MODULE_STATUSES = {
 _TRACKSIDE_NATIVE_PVID_SEGMENT_RE = re.compile(
     r"^native\s*/\s*pvid\s*[:=]?\s*\d{1,4}$",
     re.IGNORECASE,
+)
+_AP_IDENTITY_AMBIGUOUS = "_ambiguous"
+_TREATMENT_SERIAL_IDENTITY_SOURCES = frozenset(
+    {"trackside_row", "fit_ap_resource"}
 )
 
 
@@ -187,6 +194,7 @@ NEW_ONLINE_AP_OVERVIEW_COLUMNS = (
     ("ac.register_status", "register_status"),
     ("ac.new_online_status", "new_online_status"),
     ("trackside.export.identity_source", "identity_source"),
+    ("ac.new_online_source", "source"),
     ("ac.current_unauthenticated", "current_unauthenticated"),
     ("ac.current_resource_exists", "current_resource_exists"),
     ("ac.last_unauthenticated_at", "last_unauthenticated_at"),
@@ -1547,98 +1555,6 @@ def build_new_online_ap_overview_rows(
     )
 
 
-def _build_runtime_transition_new_online_rows(
-    current_resource_rows: list[dict[str, object | None]],
-    resource_history_rows: list[dict[str, object | None]],
-    trackside_rows: list[dict[str, object | None]],
-) -> list[dict[str, object | None]]:
-    history_by_identity: dict[tuple[str, str], list[dict[str, object | None]]] = {}
-    for row in resource_history_rows or []:
-        for key in _new_online_identity_keys(row):
-            history_by_identity.setdefault(key, []).append(row)
-    trackside_by_identity = _trackside_rows_by_online_identity(trackside_rows)
-    rows: list[dict[str, object | None]] = []
-    for resource in current_resource_rows or []:
-        if _ap_state(resource) != "online":
-            continue
-        keys = _new_online_identity_keys(resource)
-        if not keys:
-            continue
-        current_collect_run = str(resource.get("collect_run_uuid") or "")
-        current_collected_at = str(resource.get("collected_at") or resource.get("updated_at") or "")
-        previous_rows: list[dict[str, object | None]] = []
-        for key in keys:
-            candidates = history_by_identity.get(key, [])
-            if candidates:
-                previous_rows = candidates
-                break
-        eligible_history: list[dict[str, object | None]] = []
-        for history in previous_rows:
-            if current_collect_run and str(history.get("collect_run_uuid") or "") == current_collect_run:
-                continue
-            history_collected_at = str(history.get("collected_at") or history.get("created_at") or "")
-            if current_collected_at and history_collected_at >= current_collected_at:
-                continue
-            eligible_history.append(history)
-        baseline = max(eligible_history, key=_new_online_history_sort_key, default=None)
-        if baseline is not None and _ap_state(baseline) != "offline":
-            continue
-        trackside = next(
-            (trackside_by_identity.get(candidate_key, {}) for candidate_key in keys if trackside_by_identity.get(candidate_key)),
-            {},
-        )
-        rows.append(
-            {
-                "site": resource.get("site") or resource.get("site_name") or trackside.get("site") or "等待 LLDP 同步",
-                "device_name": trackside.get("device_name") or "-",
-                "interface_name": trackside.get("interface_name") or "-",
-                "link_status": trackside.get("link_status") or "-",
-                "port_type": trackside.get("port_type") or "-",
-                "description": trackside.get("description") or "-",
-                "pvid": trackside.get("pvid") or "-",
-                "vlan": trackside.get("vlan") or "-",
-                "switch_rx_power": trackside.get("switch_rx_power") or "-",
-                "switch_optical_status": trackside.get("switch_optical_status") or "-",
-                "ap_mac": format_mac(resource.get("ap_mac")) or "-",
-                "ap_name": resource.get("ap_name") or "-",
-                "ap_rx_power": trackside.get("ap_rx_power") or "-",
-                "ap_optical_status": trackside.get("ap_optical_status") or "-",
-                "updated_at": resource.get("updated_at") or resource.get("collected_at"),
-                "register_status": resource.get("register_status") or "-",
-                "new_online_status": resource.get("new_online_status") or "当前新上线Auto AP",
-                "identity_source": resource.get("new_online_source") or "-",
-                "current_unauthenticated": resource.get("current_unauthenticated") or "-",
-                "current_resource_exists": "是",
-                "last_unauthenticated_at": resource.get("last_unauthenticated_at") or "",
-                "first_seen_at": resource.get("collected_at") or resource.get("updated_at"),
-                "ac_device_name": resource.get("ac_device_name") or resource.get("device_name") or resource.get("ac_device_uuid"),
-                "apid": resource.get("apid"),
-                "ap_ip": resource.get("ap_ip"),
-                "model": resource.get("model"),
-                "serial_number": resource.get("serial_number"),
-                "group_name": resource.get("group_name"),
-                "state_display": resource.get("state_display") or resource.get("state_raw") or resource.get("state"),
-                "identity_entity_id": resource.get("identity_entity_id") or resource.get("ap_identity_entity_id") or "",
-                "baseline_collected_at": (
-                    str(baseline.get("collected_at") or baseline.get("created_at") or "")
-                    if baseline is not None
-                    else ""
-                ),
-                "current_collected_at": current_collected_at,
-                "suggestion": "新上线Auto AP，确认点位后在AC手动固化AP",
-            }
-        )
-    return sorted(rows, key=lambda row: (str(row.get("site") or ""), str(row.get("ap_name") or ""), str(row.get("ap_mac") or "")))
-
-
-def _new_online_history_sort_key(row: dict[str, object | None]) -> tuple[str, str, int]:
-    return (
-        str(row.get("collected_at") or row.get("created_at") or ""),
-        str(row.get("created_at") or ""),
-        _int_value(row.get("id")),
-    )
-
-
 def _build_unauthenticated_new_online_rows(
     current_resource_rows: list[dict[str, object | None]],
     trackside_rows: list[dict[str, object | None]],
@@ -1649,6 +1565,9 @@ def _build_unauthenticated_new_online_rows(
     rows: list[dict[str, object | None]] = []
     emitted: set[tuple[str, str] | tuple[str, int]] = set()
     for index, source in enumerate(unauthenticated_rows):
+        source_name = str(source.get("source") or "").strip()
+        if source_name != WLAN_AP_UNAUTHENTICATED_SOURCE:
+            continue
         keys = _new_online_identity_keys(source)
         primary_key: tuple[str, str] | tuple[str, int] = keys[0] if keys else ("row", index)
         if primary_key in emitted:
@@ -1659,6 +1578,7 @@ def _build_unauthenticated_new_online_rows(
         rows.append(
             {
                 "identity_source": "AC未固化Auto AP",
+                "source": WLAN_AP_UNAUTHENTICATED_SOURCE,
                 "register_status": "未固化",
                 "new_online_status": "当前新上线Auto AP",
                 "site": (
@@ -1962,8 +1882,7 @@ def _ap_identity_lookup_with_sources(
 def _ap_identity_payload(row: dict[str, object | None], source: str = "") -> dict[str, object | None]:
     ap_name = row.get("ap_name")
     ap_mac = format_mac(row.get("ap_mac"))
-    if not ap_mac:
-        ap_mac = format_mac(ap_name)
+    serial_number = row.get("serial_number")
     site_key = str(row.get("site_key") or row.get("site_id") or "").strip()
     station_key = next(
         (
@@ -1978,7 +1897,7 @@ def _ap_identity_payload(row: dict[str, object | None], source: str = "") -> dic
         "ap_uuid": row.get("ap_uuid"),
         "ap_name": ap_name,
         "ap_mac": ap_mac,
-        "serial_number": row.get("serial_number"),
+        "serial_number": serial_number,
         "ap_id": row.get("ap_id") or row.get("apid"),
         "section_name": row.get("section_name") or row.get("belong_section"),
         "direction": row.get("direction"),
@@ -1987,6 +1906,7 @@ def _ap_identity_payload(row: dict[str, object | None], source: str = "") -> dic
         "site": station_key,
         "device_name": row.get("device_name") or row.get("historical_switch_name"),
         "interface_name": row.get("interface_name") or row.get("historical_switch_interface"),
+        "_serial_source": source if not _is_missing_display(serial_number) else "",
         "_source": source,
     }
 
@@ -2058,6 +1978,9 @@ def _ap_identity_keys(row: dict[str, object | None]) -> list[tuple[str, str]]:
         value = str(row.get(field) or "").strip().casefold()
         if value and value != site_root and value not in scope_keys:
             scope_keys.append(value)
+    ap_uuid = str(row.get("ap_uuid") or "").strip()
+    if ap_uuid:
+        keys.append(("uuid", ap_uuid.casefold()))
     mac = normalize_mac_key(row.get("ap_mac") or row.get("mac"))
     if mac:
         for scope_key in scope_keys:
@@ -2066,9 +1989,6 @@ def _ap_identity_keys(row: dict[str, object | None]) -> list[tuple[str, str]]:
     if serial and serial not in {"-", "N/A", "n/a"}:
         for scope_key in scope_keys:
             keys.append(("site_serial", f"{scope_key}:{serial.casefold()}"))
-    ap_uuid = str(row.get("ap_uuid") or "").strip()
-    if ap_uuid:
-        keys.append(("uuid", ap_uuid.casefold()))
     return keys
 
 
@@ -2077,6 +1997,15 @@ def _merge_ap_identity_payload(
     secondary: dict[str, object | None],
 ) -> dict[str, object | None]:
     result = dict(primary)
+    if result.get(_AP_IDENTITY_AMBIGUOUS):
+        return result
+    primary_serial = result.get("serial_number")
+    secondary_serial = secondary.get("serial_number")
+    for field in ("ap_uuid", "ap_mac", "serial_number"):
+        first = str(result.get(field) or "").strip().casefold()
+        second = str(secondary.get(field) or "").strip().casefold()
+        if first and second and first != second:
+            return {_AP_IDENTITY_AMBIGUOUS: True}
     for field in (
         "ap_uuid",
         "ap_name",
@@ -2093,37 +2022,26 @@ def _merge_ap_identity_payload(
     ):
         if _is_missing_display(result.get(field)) and not _is_missing_display(secondary.get(field)):
             result[field] = secondary.get(field)
+    if (
+        _is_missing_display(primary_serial)
+        and not _is_missing_display(secondary_serial)
+    ):
+        result["_serial_source"] = secondary.get("_serial_source") or secondary.get("_source") or ""
+    primary_serial_source = str(
+        result.get("_serial_source") or result.get("_source") or ""
+    )
+    secondary_serial_source = str(
+        secondary.get("_serial_source") or secondary.get("_source") or ""
+    )
+    if (
+        not _is_missing_display(secondary.get("serial_number"))
+        and secondary_serial_source in _TREATMENT_SERIAL_IDENTITY_SOURCES
+        and primary_serial_source not in _TREATMENT_SERIAL_IDENTITY_SOURCES
+    ):
+        result["_serial_source"] = secondary_serial_source
     if _is_missing_display(result.get("_source")) and not _is_missing_display(secondary.get("_source")):
         result["_source"] = secondary.get("_source")
     return result
-
-
-def _complete_treatment_record_ap_identity(
-    record: dict[str, object | None],
-    identity_lookup: dict[tuple[str, str], dict[str, object | None]],
-) -> None:
-    matched: dict[str, object | None] = {}
-    for key in _ap_identity_keys(record):
-        matched = identity_lookup.get(key, {})
-        if matched:
-            break
-    if not matched:
-        return
-    for field in (
-        "ap_name",
-        "ap_mac",
-        "serial_number",
-        "ap_id",
-        "section_name",
-        "direction",
-        "site",
-    ):
-        if _is_missing_display(record.get(field)) and not _is_missing_display(matched.get(field)):
-            record[field] = matched.get(field)
-    if _is_missing_display(record.get("ap_mac")):
-        name_as_mac = format_mac(record.get("ap_name"))
-        if name_as_mac:
-            record["ap_mac"] = name_as_mac
 
 
 def enrich_treatment_record_ap_identity(
@@ -2138,7 +2056,7 @@ def enrich_treatment_record_ap_identity(
     source = "not_found"
     for key in _ap_identity_keys(record):
         matched = identity_lookup.get(key)
-        if matched:
+        if matched and not matched.get(_AP_IDENTITY_AMBIGUOUS):
             _fill_treatment_record_identity(record, matched)
             source = f"{matched.get('_source') or 'identity'}_{key[0]}"
             break
@@ -2153,12 +2071,6 @@ def enrich_treatment_record_ap_identity(
             if matched:
                 _fill_treatment_record_identity(record, _ap_identity_payload(matched, "offline_ledger"))
                 source = "offline_ledger_interface"
-    if _is_missing_display(record.get("ap_mac")):
-        name_as_mac = format_mac(record.get("ap_name"))
-        if name_as_mac:
-            record["ap_mac"] = name_as_mac
-            if source == "not_found":
-                source = "ap_name_mac_fallback"
     changed = before_ap_name != record.get("ap_name") or before_ap_mac != record.get("ap_mac")
     if changed:
         app_logger.log_info(
@@ -2196,17 +2108,24 @@ def enrich_treatment_record_ap_identity(
 
 
 def _fill_treatment_record_identity(record: dict[str, object | None], source: dict[str, object | None]) -> None:
-    for field in (
+    fields = (
         "ap_name",
         "ap_mac",
-        "serial_number",
         "ap_id",
         "section_name",
         "direction",
         "site",
-    ):
+    )
+    for field in fields:
         if _is_missing_display(record.get(field)) and not _is_missing_display(source.get(field)):
             record[field] = source.get(field)
+    serial_source = str(source.get("_serial_source") or source.get("_source") or "")
+    if (
+        serial_source in _TREATMENT_SERIAL_IDENTITY_SOURCES
+        and _is_missing_display(record.get("serial_number"))
+        and not _is_missing_display(source.get("serial_number"))
+    ):
+        record["serial_number"] = source.get("serial_number")
 
 
 def _record_identity_missing(record: dict[str, object | None]) -> bool:
@@ -2223,15 +2142,6 @@ def _trackside_rows_by_ap_identity(rows: list[dict[str, object | None]]) -> dict
         key = ap_identity_key(row)
         if key and (key not in result or _trackside_ap_row_prefer_score(row) >= _trackside_ap_row_prefer_score(result[key])):
             result[key] = row
-    return result
-
-
-def _trackside_rows_by_online_identity(rows: list[dict[str, object | None]]) -> dict[tuple[str, str], dict[str, object | None]]:
-    result: dict[tuple[str, str], dict[str, object | None]] = {}
-    for row in rows or []:
-        for key in _new_online_identity_keys(row):
-            if key not in result or _trackside_ap_row_prefer_score(row) >= _trackside_ap_row_prefer_score(result[key]):
-                result[key] = row
     return result
 
 
@@ -3174,223 +3084,12 @@ def _is_switch_collection_offline(value: object) -> bool:
 
 def enrich_trackside_export_rows(
     rows: list[dict[str, object | None]],
-    fact_repository=None,
-    ac_repository=None,
-    switch_optical_history_rows: list[dict[str, object | None]] | None = None,
-    ap_optical_history_rows: list[dict[str, object | None]] | None = None,
-    ap_lldp_history_rows: list[dict[str, object | None]] | None = None,
-    current_only: bool = False,
+    *_retired_args: object,
+    **_retired_kwargs: object,
 ) -> list[dict[str, object | None]]:
-    switch_history_by_interface = _switch_optical_history_by_interface(switch_optical_history_rows or [])
-    ap_history_by_identity = _ap_optical_history_by_identity(ap_optical_history_rows or [])
-    enriched: list[dict[str, object | None]] = []
-    for row in rows:
-        item = dict(row)
-        _apply_switch_optical_change(
-            item,
-            fact_repository if not current_only else None,
-            switch_history_by_interface,
-        )
-        _apply_ap_optical_change(
-            item,
-            ac_repository if not current_only else None,
-            ap_history_by_identity,
-        )
-        enriched.append(item)
-    return enriched
+    """Copy current rows without consulting optical history or deriving changes."""
 
-
-def optical_change_text(previous_status: object, current_status: object) -> str:
-    previous = _normal_abnormal_state(previous_status)
-    current = _normal_abnormal_state(current_status)
-    if previous and current and previous != current:
-        return f"{previous} → {current}"
-    return "-"
-
-
-def _apply_switch_optical_change(
-    row: dict[str, object | None],
-    fact_repository,
-    history_by_interface: dict[tuple[str, str], list[dict[str, object | None]]] | None = None,
-) -> None:
-    row.setdefault("switch_optical_change", "-")
-    history_rows = (history_by_interface or {}).get((
-        str(row.get("device_uuid") or ""),
-        normalize_interface_name(row.get("interface_name")).casefold(),
-    ), [])
-    latest_valid = _latest_valid_optical_observation(history_rows)
-    if (
-        not _has_valid_rx_power(row.get("switch_rx_power"))
-        and latest_valid
-        and not _has_current_no_module_fact(row)
-    ):
-        row["switch_rx_power"] = latest_valid.get("rx_power")
-        row["switch_alarm_low"] = latest_valid.get("rx_low_alarm") or row.get("switch_alarm_low")
-        row["switch_alarm_high"] = latest_valid.get("rx_high_alarm") or row.get("switch_alarm_high")
-        row["switch_last_valid_rx_power"] = latest_valid.get("rx_power")
-        row["switch_last_valid_collected_at"] = latest_valid.get("collected_at") or latest_valid.get("created_at")
-        row["switch_optical_data_source"] = "沿用历史"
-        row["switch_optical_updated_at"] = row["switch_last_valid_collected_at"]
-    device_uuid = str(row.get("device_uuid") or "")
-    interface_key = normalize_interface_name(row.get("interface_name")).casefold()
-    baseline = _optical_transition_baseline_before(
-        (history_by_interface or {}).get((device_uuid, interface_key), []),
-        row.get("updated_at"),
-        row.get("switch_optical_status"),
-        "switch",
-    )
-    if baseline:
-        baseline_status = _optical_status_from_history(baseline, "switch")
-        row["switch_optical_change"] = optical_change_text(baseline_status, row.get("switch_optical_status"))
-        row["history_compared_at"] = baseline.get("collected_at") or baseline.get("created_at") or row.get("history_compared_at")
-        return
-    if fact_repository is None:
-        return
-    getter = getattr(fact_repository, "get_previous_optical_history", None)
-    if not callable(getter):
-        return
-    previous = getter(str(row.get("device_uuid") or ""), str(row.get("interface_name") or ""), str(row.get("updated_at") or ""))
-    if not previous:
-        return
-    previous_status = _optical_status_from_history(previous, "switch")
-    row["switch_optical_change"] = optical_change_text(previous_status, row.get("switch_optical_status"))
-    if row["switch_optical_change"] != "-":
-        row["history_compared_at"] = previous.get("collected_at") or previous.get("created_at") or row.get("history_compared_at")
-
-
-def _apply_ap_optical_change(
-    row: dict[str, object | None],
-    ac_repository,
-    history_by_identity: dict[tuple[str, str], list[dict[str, object | None]]] | None = None,
-) -> None:
-    row.setdefault("ap_optical_change", "-")
-    history_rows = _ap_history_for_trackside(row, history_by_identity or {})
-    latest_valid = _latest_valid_ap_optical_history(history_rows)
-    if (
-        _is_missing_display(row.get("ap_rx_power"))
-        and latest_valid
-        and not _is_missing_display(latest_valid.get("rx_power"))
-        and not _has_current_no_module_fact(row)
-    ):
-        row["ap_rx_power"] = latest_valid.get("rx_power")
-        row["ap_rx_low_alarm"] = latest_valid.get("rx_low_alarm") or row.get("ap_rx_low_alarm")
-        row["ap_rx_low_warning"] = latest_valid.get("rx_low_warning") or row.get("ap_rx_low_warning")
-        row["ap_last_valid_rx_power"] = latest_valid.get("rx_power")
-        row["ap_last_valid_collected_at"] = latest_valid.get("collected_at") or latest_valid.get("created_at")
-        row["ap_optical_data_source"] = "沿用历史"
-        row["ap_optical_missing_reason"] = "not_collected" if str(row.get("collection_status") or "").casefold() in {"", "not_collected"} else "overwritten_by_failed_row"
-        _ensure_ap_optical_status(row)
-    current_status = evaluate_ap_business_rx(
-        row.get("ap_rx_power"),
-        data_freshness=(
-            row.get("ap_optical_data_freshness") or row.get("data_freshness")
-        ),
-    )
-    baseline = _optical_transition_baseline_before(
-        history_rows,
-        row.get("updated_at"),
-        current_status,
-        "ap",
-    )
-    if baseline:
-        baseline_status = _optical_status_from_history(baseline, "ap")
-        row["ap_optical_change"] = optical_change_text(baseline_status, current_status)
-        row["history_compared_at"] = baseline.get("collected_at") or baseline.get("created_at") or row.get("history_compared_at")
-        return
-    if ac_repository is None:
-        return
-    getter = getattr(ac_repository, "get_previous_ap_optical_history", None)
-    if not callable(getter):
-        return
-    previous = getter(ap_identity_filter(row), str(row.get("updated_at") or ""))
-    if not previous:
-        return
-    previous_status = _optical_status_from_history(previous, "ap")
-    row["ap_optical_change"] = optical_change_text(previous_status, current_status)
-    if row["ap_optical_change"] != "-":
-        row["history_compared_at"] = previous.get("collected_at") or previous.get("created_at") or row.get("history_compared_at")
-
-
-def _previous_row_before(rows: list[dict[str, object | None]], before: object) -> dict[str, object | None] | None:
-    candidates = _history_rows_before(rows, before)
-    if not candidates:
-        return None
-    return candidates[0]
-
-
-def _history_rows_before(rows: list[dict[str, object | None]], before: object) -> list[dict[str, object | None]]:
-    before_text = str(before or "")
-    candidates = [
-        row
-        for row in rows or []
-        if not before_text or str(row.get("collected_at") or row.get("created_at") or "") < before_text
-    ]
-    return sorted(
-        candidates,
-        key=lambda row: (str(row.get("collected_at") or row.get("created_at") or ""), _int_value(row.get("id"))),
-        reverse=True,
-    )
-
-
-def _optical_transition_baseline_before(
-    rows: list[dict[str, object | None]],
-    before: object,
-    current_status: object,
-    side: str,
-) -> dict[str, object | None] | None:
-    current_state = _normal_abnormal_key(current_status)
-    if not current_state:
-        return None
-    target_state = "abnormal" if current_state == "normal" else "normal"
-    for row in _history_rows_before(rows, before):
-        status = _normal_abnormal_key(_optical_status_from_history(row, side))
-        if status == target_state:
-            return row
-    return None
-
-
-def _latest_valid_ap_optical_history(rows: list[dict[str, object | None]]) -> dict[str, object | None] | None:
-    return _latest_valid_optical_observation(rows)
-
-
-def _latest_valid_optical_observation(rows: list[dict[str, object | None]]) -> dict[str, object | None] | None:
-    candidates = [row for row in rows or [] if _has_valid_rx_power(row.get("rx_power"))]
-    if not candidates:
-        return None
-    return max(
-        candidates,
-        key=lambda row: (
-            str(row.get("collected_at") or row.get("updated_at") or row.get("created_at") or ""),
-            _int_value(row.get("id")),
-        ),
-    )
-
-
-def ap_identity_filter(row: dict[str, object | None]) -> dict[str, str]:
-    return {
-        "ap_uuid": str(row.get("ap_uuid") or "").strip(),
-        "serial_number": str(row.get("serial_number") or "").strip(),
-        "ap_mac": normalize_mac_key(row.get("ap_mac")) or "",
-        "ap_name": str(row.get("ap_name") or "").strip(),
-    }
-
-
-def _normal_abnormal_key(status: object) -> str:
-    text = str(status or "").strip().casefold()
-    if not text or text in {"unknown", "not_collected", "not_applicable", "skipped", "offline", "failed", "timeout", "no_module", "-"}:
-        return ""
-    if text == "normal":
-        return "normal"
-    return "abnormal"
-
-
-def _normal_abnormal_state(status: object) -> str:
-    text = str(status or "").strip().casefold()
-    if not text or text in {"unknown", "not_collected", "not_applicable", "skipped", "offline", "failed", "timeout", "no_module", "-"}:
-        return ""
-    if text == "normal":
-        return "正常"
-    return "不正常"
+    return [dict(row) for row in rows]
 
 
 def _optical_status_from_history(row: dict[str, object | None], device_type: str) -> str:
@@ -3585,20 +3284,6 @@ def _explicit_no_module(row: dict[str, object | None]) -> bool:
     if not text:
         return False
     return any(token in text for token in ("no_module", "no module", "no transceiver", "no-transceiver", "\u65e0\u5149\u6a21\u5757"))
-
-
-def _has_current_no_module_fact(row: dict[str, object | None]) -> bool:
-    if _explicit_no_module(row):
-        return True
-    return any(
-        _normalized_optical_status(row.get(field)) == "no_module"
-        for field in (
-            "ap_optical_status",
-            "ap_device_optical_status",
-            "switch_optical_status",
-            "switch_device_optical_status",
-        )
-    )
 
 
 def _is_missing_display(value: object) -> bool:
