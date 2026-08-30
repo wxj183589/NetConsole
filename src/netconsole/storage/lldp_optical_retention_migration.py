@@ -576,7 +576,7 @@ def migrate(
 
 
 def _cutover_candidates(data_root: Path, candidate_root: Path, report: dict[str, Any]) -> None:
-    rollback_root = Path(r"D:\study\backup\NetConsole") / f"lldp-optical-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    rollback_root = Path(r"D:\study\NetConsole-Workspace\NetConsole\.local\tmp\lldp-optical") / datetime.now().strftime("%Y%m%d-%H%M%S")
     moved: list[tuple[Path, Path]] = []
     try:
         for site in report["sites"]:
@@ -621,7 +621,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="DEV-only bounded LLDP/optical retention migration")
     parser.add_argument("--data-root", required=True)
     parser.add_argument("--output", default="LLDP_RETENTION_MIGRATION_PREVIEW.json")
-    parser.add_argument("--candidate-root", default=r"D:\study\diagnostic\NetConsole\lldp-optical-migration")
+    parser.add_argument("--candidate-root", default=r"D:\study\NetConsole-Workspace\diagnostic\lldp-optical-migration")
     parser.add_argument("--site", action="append", dest="sites")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--cutover", action="store_true")

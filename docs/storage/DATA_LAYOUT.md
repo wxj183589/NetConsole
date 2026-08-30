@@ -83,7 +83,7 @@ Electron 的 `userData`、`sessionData`、`cache`、`logs`、`crashDumps` 和 `t
 | FIT AP unauthenticated | `replace_fit_ap_unauthenticated` -> `ac_fit_ap_unauthenticated` | `fit_ap_unauthenticated_recent`（每 AC 与稳定推断身份最多 10 条） | 未认证历史和资源 enrichment 只读本地 Recent10 | 保留“历史新上线/已固化”证据，不回溯已删除的外部源 |
 | Station online summary | `save_station_online_summary_history` -> Current | `station_online_summary_current` + `station_online_summary_recent`（每站最多 10 条） | 在线率列表、分页/count 只读本地 Current/Recent10 | 站点级有效变化；heartbeat 不增长 Recent |
 | AP resource snapshot | 站点包/身份兼容写入 | 本阶段不进入通用 history shard | `site_sync` + `ap_resource_snapshots` | `snapshot_uuid` 是快照实体，不是 AC 资源时间线；不得与 `fit_ap_resource` 合并 |
-| Station online summary | 站点聚合保存 | 本阶段暂不切换，继续 legacy | `list_station_online_summary_history` + `ac_station_online_summary_history` | 站点级聚合快照，不应按 AP 资源 change-aware 规则去重 |
+| Station online summary（历史记录） | 站点聚合保存 | 已退役；仅供显式维护/历史证据读取 | `list_station_online_summary_history` + `ac_station_online_summary_history` | 当前运行时不读取，不应按 AP 资源 change-aware 规则去重 |
 
 ### 迁移与无人值守边界
 

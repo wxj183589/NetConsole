@@ -26,7 +26,7 @@ from netconsole.repositories.task_result_blob_repository import (
 
 DEV_ROOT = Path(r"D:\NetConsoleData-dev")
 PRODUCTION_ROOT = Path(r"D:\NetConsoleData")
-DEFAULT_STAGING = Path(r"D:\study\diagnostic\NetConsole\tasks-db-compaction-candidates")
+DEFAULT_STAGING = Path(r"D:\study\NetConsole-Workspace\diagnostic\tasks-db-compaction-candidates")
 
 
 def _quote(value: str) -> str:

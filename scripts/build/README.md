@@ -10,7 +10,7 @@
 
 ## 主要入口
 
-`package_windows.ps1` 是 Windows 安装包链路，`package_windows.bat` 可用于从传统终端启动。项目根目录的 `一键打包安装包.cmd` 调用 `package_local.ps1`，负责单实例、日志，并在全部 Gate 通过后以 `D:\study\release\NetConsole\<version>\build-<number>-<short-sha>` 保存构建制品；Customer 密码由 Core 统一解析器提供环境变量覆盖或内置默认值。它不会自动升级版本或将构建标记为正式发布。只有显式 release 命令才允许发布新版本并更新自动更新清单。
+`package_windows.ps1` 是 Windows 安装包链路，`package_windows.bat` 可用于从传统终端启动。项目根目录的 `一键打包安装包.cmd` 调用 `package_local.ps1`，负责单实例、日志，并在全部 Gate 通过后以 `D:\study\NetConsole-Workspace\release\<version>\build-<number>-<short-sha>` 保存构建制品；Customer 密码由 Core 统一解析器提供环境变量覆盖或内置默认值。它不会自动升级版本或将构建标记为正式发布。只有显式 release 命令才允许发布新版本并更新自动更新清单。
 
 `build_release.py`/`release.py` 编排底层发布，`check_packaged_runtime.py`、`check_runtime_deps.py`、`pyinstaller_artifact_inventory.py` 和工具校验脚本提供门禁。
 
@@ -20,7 +20,7 @@
 
 ## 数据与状态
 
-输入为源码、锁定依赖、版本和审计清单；构建状态、spec、日志和中间制品只进入 `dist/` 下的受控临时路径，不写入 `src/`。PyInstaller Backend 中间输出固定在 `dist/_build/backend-release/`，正式安装包及其元数据只持久化到 `D:\study\release\NetConsole\<version>`。
+输入为源码、锁定依赖、版本和审计清单；构建状态、spec、日志和中间制品只进入 `dist/` 下的受控临时路径，不写入 `src/`。PyInstaller Backend 中间输出固定在 `dist/_build/backend-release/`，正式安装包及其元数据只持久化到 `D:\study\NetConsole-Workspace\release\<version>`。
 
 ## 测试与修改
 
@@ -28,7 +28,7 @@
 
 ## 生成与清理
 
-允许生成 `dist/agent`、PyInstaller 临时 build/spec、安装包和 SBOM；失败或验收后使用已有清理脚本清除临时输出。`all-build-output` 可以清理整个仓库 `dist/`，但不得删除 `D:\study\release\NetConsole` 或用户数据。
+允许生成 `dist/agent`、PyInstaller 临时 build/spec、安装包和 SBOM；失败或验收后使用已有清理脚本清除临时输出。`all-build-output` 可以清理整个仓库 `dist/`，但不得删除 `D:\study\NetConsole-Workspace\release` 或用户数据。
 
 ## 相关文档
 

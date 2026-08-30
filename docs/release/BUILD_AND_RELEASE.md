@@ -8,7 +8,7 @@ NSIS 必须显式启用 Unicode 安装器，并先在零写入状态下识别候
 
 正式 NSIS 构建只能从已提交、工作区 clean 且 `HEAD` 已推送到当前 upstream 的状态开始。`pnpm package` 会清理白名单内的 `dist/electron/`、`dist/_build/` 和 `apps/desktop_electron/dist/`，为 electron-builder 分配本轮独立临时目录，并生成 `NetConsole-<version>-<git-short>-x64-setup.exe`；固定名称 `NetConsole-<version>-x64-setup.exe` 或同名唯一制品在构建前存在时直接失败，避免覆盖旧包后仅按修改时间误判。
 
-构建开始时冻结完整 commit，最终 EXE Gate 前以及向 `D:\study\release\NetConsole\v<version>\build-<number>-<short-sha>` 持久化构建制品前都必须再次检查 tracked/untracked 工作区、HEAD 与 upstream；任一处变化立即失败，不生成或发布宣称 `dirty=false` 的正式制品。普通 `build/package/rebuild` 不修改 `APP_VERSION`，也不自动生成下一个版本目录。
+构建开始时冻结完整 commit，最终 EXE Gate 前以及向 `D:\study\NetConsole-Workspace\release\v<version>\build-<number>-<short-sha>` 持久化构建制品前都必须再次检查 tracked/untracked 工作区、HEAD 与 upstream；任一处变化立即失败，不生成或发布宣称 `dirty=false` 的正式制品。普通 `build/package/rebuild` 不修改 `APP_VERSION`，也不自动生成下一个版本目录。
 
 外层 NSIS 必须把 app 版本、完整/短 Git commit、UTC 构建时间、build ID、数据根策略版本及策略源码 SHA-256 写入 PE 版本资源，并在数据根页面显示可核对的短身份。最终 EXE 还必须内嵌本轮 installer manifest 和实际参与编译的数据根 include 源码。post-build Gate 使用支持 NSIS handler 的完整 7-Zip 直接打开最终 `setup.exe`，复核 `NSIS-3 Unicode`、PE 身份、内嵌 manifest/源码哈希、新文案存在、三段旧阻止文案不存在、EXE 晚于策略源码和本轮构建开始时间、两次 SHA-256 一致，以及内层 Backend/Frontend commit 均等于 Installer commit 且 `dirty=false`。构建机可安装完整版 7-Zip，或通过 `NETCONSOLE_7Z` 指向支持 `Nsis` format handler 的 `7z.exe`；electron-builder 缓存中的精简 `7za.exe` 不满足此门禁。
 
@@ -69,7 +69,7 @@ python -m scripts.maintenance.clean_generated_artifacts --target build-temporary
   --manifest "D:\NetConsoleData\migrations\generated-cleanup-build-temporary.json"
 ```
 
-`all-build-output` 目标只允许删除仓库内整个 `dist/`；`build-intermediate` 只删除 `dist/_build/`。两者都不会处理外部正式制品根 `D:\study\release\NetConsole`、仓库数据或用户数据根。`setuptools-residue` 只能存在于临时构建期间，构建验收完成后应随 `_build` 一并清理。
+`all-build-output` 目标只允许删除仓库内整个 `dist/`；`build-intermediate` 只删除 `dist/_build/`。两者都不会处理外部正式制品根 `D:\study\NetConsole-Workspace\release`、仓库数据或用户数据根。`setuptools-residue` 只能存在于临时构建期间，构建验收完成后应随 `_build` 一并清理。
 
 默认安装会同时传入 `-c constraints.txt`。无论是否使用 `--skip-install`，构建 preflight 都会从 `requirements-build.txt` 遍历已安装 distribution 的完整依赖闭包，并逐项核对 constraints 的精确版本；缺包、版本漂移、传递依赖未锁定或无效 metadata 均直接失败。Electron `package.mjs` 在调用 `--skip-install` 前还会单独执行同一 Guard，不能把开发机 `.venv` 的偶然可用状态当成发布环境。
 

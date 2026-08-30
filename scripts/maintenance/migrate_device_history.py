@@ -45,7 +45,7 @@ def _service(args: argparse.Namespace) -> HistoryLegacyMigrationService:
     run_id = datetime.now(UTC).astimezone().strftime("%Y%m%dT%H%M%S%z")
     diagnostics = (
         args.diagnostics_dir
-        or Path("D:/study/diagnostic/NetConsole/device-history-migration") / run_id
+        or Path("D:/study/NetConsole-Workspace/diagnostic/device-history-migration") / run_id
     ).resolve()
     return HistoryLegacyMigrationService(
         paths,

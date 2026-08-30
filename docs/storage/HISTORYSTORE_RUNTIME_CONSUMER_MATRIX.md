@@ -2,6 +2,8 @@
 
 状态：`FULLY_RETIRED_FROM_RUNTIME`（2026-08-29）
 
+`HISTORYSTORE_FULL_RETIREMENT=PASS`
+
 本矩阵是本次退役的运行时边界。`HistoryStore`、`TaskHistoryStore` 和旧
 `*_history` 表仍可被显式维护工具读取，用于候选迁移、回滚证据或既有维护流程；它们不再是 Backend、Repository、查询服务、导出或启动生命周期的运行时事实源。
 

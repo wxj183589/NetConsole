@@ -6,6 +6,20 @@
 
 本文件与 `AGENTS.md` 是强制约束；README 只提供简明导航。目录职责不明确时先审计内容、Git 跟踪状态、代码引用、测试引用和构建引用，再决定位置。
 
+## 1.1 项目 Workspace 与 Authority
+
+| 名称 | Canonical 路径 | 用途 |
+| --- | --- | --- |
+| WORKSPACE | D:\study\NetConsole-Workspace | NetConsole 项目级源码、发布和按需诊断 Workspace |
+| REPO | D:\study\NetConsole-Workspace\NetConsole | 当前 Git 仓库 |
+| DEVSTATUS | D:\study\NetConsole-Workspace\NetConsole-DevStatus | 开发状态/交接记录，不存源码或业务数据 |
+| RELEASE | D:\study\NetConsole-Workspace\release | 稳定正式发布制品 |
+| DIAGNOSTIC | D:\study\NetConsole-Workspace\diagnostic | 按需诊断证据，任务完成后退役 |
+| PRODUCTION_DATA | D:\NetConsoleData | 正式运行数据 Authority |
+| DEV_REAL_DATA | D:\NetConsoleData-dev | 长期真实开发数据 Authority，不是 fixture、备份或临时副本 |
+
+D:\study\fping 是独立上游项目 checkout，不属于 NetConsole，不迁入本 Workspace。不得把 D:\NetConsoleData-dev 全量复制到仓库 .local、diagnostic、acceptance、validation、test-data、worktree 或 tmp；自动化测试必须使用独立测试根。
+
 ## 2. 标准目录树
 
 ```text
@@ -118,7 +132,7 @@ apps/agent/
 
 ## 6. 运行数据规则
 
-Windows 源码开发态、打包态和正式包均使用安装器在 `HKLM\Software\NetConsole\DataRoot` 中登记的唯一根（当前机器为 `D:\NetConsoleData`），通过 `PathResolver` 生成实际子目录。程序安装目录不能保存运行数据：
+正式包和安装态通过 `HKLM\Software\NetConsole\DataRoot` 使用 `D:\NetConsoleData`；源码/Electron 的真实开发验收显式使用 `D:\NetConsoleData-dev` 这一长期开发 Authority。两者都通过 `PathResolver` 生成实际子目录，程序安装目录不能保存运行数据：
 
 - `<data_root>/sites`：SQLite、局点数据、原始采集、解析库和正式业务文件；
 - `<data_root>/runtime/logs`：应用日志；
@@ -126,7 +140,7 @@ Windows 源码开发态、打包态和正式包均使用安装器在 `HKLM\Softw
 - `<data_root>/runtime/temp`：受控临时样本和一次性导出；
 - 自动测试只能使用显式 `<D:\study\NetConsole-Workspace\test-data\NetConsole\<run-id>>`，不依赖安装目录或当前工作目录。
 
-正式报告写入用户选择的导出路径或业务 `outputs` 目录。原始日志、数据库、会话、备份和正式报告不得静默删除。仓库 `.local` 和根 `data` 若存在，只能作为历史迁移源；活动进程不得读写，迁移核验后应移出仓库归档或删除。迁移和测试残留清理必须使用 `scripts/maintenance/` 的 dry-run/manifest/白名单工具，不得直接递归删除未知内容。
+正式报告写入用户选择的导出路径或业务 `outputs` 目录。原始日志、数据库、会话、备份和正式报告不得静默删除。仓库 `.local` 和根 `data` 若存在，只能作为历史迁移源或受控短期工具状态；不得承载 `D:\NetConsoleData-dev` 的完整副本。活动进程不得把业务数据写入这些目录，迁移核验后应移出仓库归档或删除。迁移和测试残留清理必须使用 `scripts/maintenance/` 的 dry-run/manifest/白名单工具，不得直接递归删除未知内容。
 
 ### 历史运行目录隔离
 
@@ -196,4 +210,4 @@ Windows 源码开发态、打包态和正式包均使用安装器在 `HKLM\Softw
 | 历史根 `data/` | `D:\NetConsoleData` | 无覆盖迁移；冲突保留并审计 |
 | 历史 `.local/data/` | `D:\NetConsoleData` | 开发业务数据迁移源 |
 | 历史 `.local/runtime/` | `D:\NetConsoleData\runtime` | 运行日志/缓存迁移源 |
-| 根 `release/` | `dist/` | 构建产物，忽略且不提交 |
+| 根 `release/` | `D:\study\NetConsole-Workspace\release/` | 稳定正式制品；仓库 `dist/` 仍是可再生构建产物 |

@@ -20,7 +20,7 @@ def test_formal_release_has_one_external_durable_root() -> None:
         encoding="utf-8-sig"
     )
 
-    assert '$script:DurableReleaseRoot = "D:\\study\\release\\NetConsole"' in local_script
+    assert '$script:DurableReleaseRoot = "D:\\study\\NetConsole-Workspace\\release"' in local_script
     assert 'Join-Path $releaseRoot $AppVersion' in local_script
     assert 'Join-Path $ProjectRoot "dist\\release"' not in local_script
     assert "C:\\NetConsoleRelease" not in local_script

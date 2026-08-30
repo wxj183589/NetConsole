@@ -15,7 +15,7 @@ from typing import Any, Iterable
 
 
 DEFAULT_ROOT = Path(r"D:\NetConsoleData-dev")
-DEFAULT_OUTPUT = Path(r"D:\study\diagnostic\NetConsole\lifecycle-audit-dev-20260821")
+DEFAULT_OUTPUT = Path(r"D:\study\NetConsole-Workspace\diagnostic\lifecycle-audit-dev-20260821")
 REPORT_NAME = "TASK_PAYLOAD_ANALYSIS_REPORT.json"
 PAYLOAD_COLUMNS = (
     ("task_events", "payload_json"),

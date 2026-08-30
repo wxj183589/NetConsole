@@ -72,9 +72,9 @@ pnpm package:customer
 
 Customer 或 `both` 构建统一调用 Core 的客户版维护密码解析器：非空 `NETCONSOLE_CUSTOMER_UNLOCK_PASSWORD` 作为环境变量覆盖值，不存在或为空时使用内置默认值。构建流程不会交互询问密码；实际密码只在当前构建进程及其必要子进程中存在，不会写入命令行、日志、JSON、摘要、脚本或 Git 配置。Full-only 构建不依赖客户版密码。
 
-每次运行会在 `dist/package-logs/` 生成独立的 `package-YYYYMMDD-HHmmss.log`。验证通过的制品先写入 `D:\study\release\NetConsole\.staging-<唯一 ID>`，全部校验完成后再原子重命名为 `D:\study\release\NetConsole\v<版本>`，目录内包含本次选择对应的安装包、`.exe.release.json`、`SHA256SUMS.txt`、`BUILD_SUMMARY.json` 和 `BUILD_SUMMARY.md`。目标版本目录已存在时立即停止，禁止覆盖或混入另一候选。成功后自动打开该目录；Explorer 打开失败不会改变构建结果。失败只清理本次 staging，不删除已有正式发布目录、其他构建输出或业务数据。
+每次运行会在 `dist/package-logs/` 生成独立的 `package-YYYYMMDD-HHmmss.log`。验证通过的制品先写入 `D:\study\NetConsole-Workspace\release\.staging-<唯一 ID>`，全部校验完成后再原子重命名为 `D:\study\NetConsole-Workspace\release\v<版本>`，目录内包含本次选择对应的安装包、`.exe.release.json`、`SHA256SUMS.txt`、`BUILD_SUMMARY.json` 和 `BUILD_SUMMARY.md`。目标版本目录已存在时立即停止，禁止覆盖或混入另一候选。成功后自动打开该目录；Explorer 打开失败不会改变构建结果。失败只清理本次 staging，不删除已有正式发布目录、其他构建输出或业务数据。
 
-仓库内 `dist/` 只是 Renderer、Electron、PyInstaller、Agent、日志和 smoke 的可再生构建输出；`D:\study\release\NetConsole` 是唯一正式制品库。普通构建清理可以删除整个 `dist/`，但不得触碰外部正式制品库。
+仓库内 `dist/` 只是 Renderer、Electron、PyInstaller、Agent、日志和 smoke 的可再生构建输出；`D:\study\NetConsole-Workspace\release` 是唯一正式制品库。普通构建清理可以删除整个 `dist/`，但不得触碰外部正式制品库。
 
 脚本会阻止脏工作树、HEAD 未与 upstream 对齐、Git/Node/Corepack/pnpm/`.venv` 不可用、依赖或磁盘预检失败以及并行打包。`preflight` 只执行环境与 Git 检查，不安装依赖、不运行测试、不生成安装包。摘要明确记录“自动构建和包内校验已通过；真实 Windows GUI 安装验收仍为 PENDING。”，自动成功不等同于真实安装验收通过。
 

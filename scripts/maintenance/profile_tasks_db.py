@@ -584,7 +584,7 @@ def main(argv: list[str] | None = None) -> int:
     database = (args.database or (site.root_path / "db" / "tasks.db")).resolve()
     run_id = datetime.now(UTC).astimezone().strftime("%Y%m%dT%H%M%S%z")
     output_dir = args.output_dir or (
-        Path("D:/study/diagnostic/NetConsole/tasks-db-governance") / run_id
+        Path("D:/study/NetConsole-Workspace/diagnostic/tasks-db-governance") / run_id
     )
     report = profile_tasks_database(database, deep=args.deep)
     report.update({"site_id": site.site_id, "site_display_name": site.display_name})

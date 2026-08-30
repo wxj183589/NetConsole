@@ -19,7 +19,7 @@ from typing import Any, Iterable
 
 EXPECTED_MAX = 10
 DEFAULT_ROOT = Path(r"D:\NetConsoleData-dev")
-DEFAULT_OUTPUT = Path(r"D:\study\diagnostic\NetConsole")
+DEFAULT_OUTPUT = Path(r"D:\study\NetConsole-Workspace\diagnostic")
 REPORT_NAMES = (
     "TASK_DB_USAGE_REPORT.json",
     "LLDP_DUPLICATE_REPORT.json",

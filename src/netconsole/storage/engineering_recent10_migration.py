@@ -457,7 +457,7 @@ def migrate(*, data_root: Path, output: Path, candidate_root: Path, selected_sit
 
 
 def _cutover(root: Path, candidate_root: Path, report: dict[str, Any]) -> None:
-    rollback_root = Path(r"D:\study\backup\NetConsole") / f"engineering-recent10-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    rollback_root = Path(r"D:\study\NetConsole-Workspace\NetConsole\.local\tmp\engineering-recent10") / datetime.now().strftime("%Y%m%d-%H%M%S")
     moved: list[tuple[Path, Path]] = []
     try:
         for site in report["sites"]:
@@ -495,7 +495,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="DEV-only engineering Current + Recent10 migration")
     parser.add_argument("--data-root", required=True)
     parser.add_argument("--output", default="ENGINEERING_RECENT10_MIGRATION_REPORT.json")
-    parser.add_argument("--candidate-root", default=r"D:\study\diagnostic\NetConsole\engineering-recent10-candidates")
+    parser.add_argument("--candidate-root", default=r"D:\study\NetConsole-Workspace\diagnostic\engineering-recent10-candidates")
     parser.add_argument("--site", action="append", dest="sites")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--cutover", action="store_true")

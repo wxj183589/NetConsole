@@ -307,7 +307,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--data-root", type=Path, default=DEFAULT_DEV_ROOT)
     parser.add_argument("--site")
     parser.add_argument("--all-sites", action="store_true")
-    parser.add_argument("--output-dir", type=Path, default=Path(r"D:\study\diagnostic\NetConsole\tasks-db-space-audit"))
+    parser.add_argument("--output-dir", type=Path, default=Path(r"D:\study\NetConsole-Workspace\diagnostic\tasks-db-space-audit"))
     return parser
 
 

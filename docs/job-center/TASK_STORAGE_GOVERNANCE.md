@@ -51,14 +51,14 @@ values as exact page attribution. If `dbstat` is available on another host, it
 uses actual page allocation automatically.
 
 ```powershell
-$env:PYTHONPATH = "D:\study\worktrees\NetConsole\tasks-db-governance\src;D:\study\worktrees\NetConsole\tasks-db-governance"
+$env:PYTHONPATH = "D:\study\NetConsole-Workspace\NetConsole\src;D:\study\NetConsole-Workspace\NetConsole"
 & "D:\study\NetConsole-Workspace\NetConsole\.venv\Scripts\python.exe" -m scripts.maintenance.profile_tasks_db `
   --data-root "D:\NetConsoleData" --site-id "<site-id>"
 
 & "D:\study\NetConsole-Workspace\NetConsole\.venv\Scripts\python.exe" -m scripts.maintenance.profile_tasks_db `
   --data-root "D:\NetConsoleData" --site-id "<site-id>" --deep `
   --database "D:\study\NetConsole-Workspace\test-data\NetConsole\tasks-db-governance\<run-id>\tasks.db" `
-  --output-dir "D:\study\diagnostic\NetConsole\tasks-db-governance\<run-id>"
+  --output-dir "D:\study\NetConsole-Workspace\diagnostic\tasks-db-governance\<run-id>"
 ```
 
 ## Safe Write Fix

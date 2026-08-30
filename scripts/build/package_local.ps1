@@ -17,7 +17,7 @@ $script:MinimumFreeBytes = 10GB
 $script:PnpmPathEnvironmentName = "NETCONSOLE_PNPM_PATH"
 $script:MutexName = "Global\NetConsoleLocalInstallerBuild"
 $script:CorepackPnpmVersion = "11.16.0"
-$script:DurableReleaseRoot = "D:\study\release\NetConsole"
+$script:DurableReleaseRoot = "D:\study\NetConsole-Workspace\release"
 
 function Write-Stage {
     param(

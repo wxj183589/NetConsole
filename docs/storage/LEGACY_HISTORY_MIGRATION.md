@@ -68,15 +68,15 @@ Authority 使用 `--development`；`verify` 只检查注册站点 Current/Recent
 history 目录状态。无人值守运行不调用这些命令。
 
 ```powershell
-$env:PYTHONPATH = "D:\study\worktrees\NetConsole\history-store-full-retirement\src;D:\study\worktrees\NetConsole\history-store-full-retirement"
+$env:PYTHONPATH = "D:\study\NetConsole-Workspace\NetConsole\src;D:\study\NetConsole-Workspace\NetConsole"
 & "D:\study\NetConsole-Workspace\NetConsole\.venv\Scripts\python.exe" -m scripts.maintenance.retire_legacy_history_store prepare `
   --data-root "D:\NetConsoleData" `
-  --candidate-root "D:\study\diagnostic\NetConsole\history-store-retirement\<run-id>"
+  --candidate-root "D:\study\NetConsole-Workspace\diagnostic\history-store-retirement\<run-id>"
 
 & "D:\study\NetConsole-Workspace\NetConsole\.venv\Scripts\python.exe" -m scripts.maintenance.retire_legacy_history_store apply `
   --data-root "D:\NetConsoleData" `
-  --candidate-root "D:\study\diagnostic\NetConsole\history-store-retirement\<run-id>" `
-  --backup-root "D:\study\backup\NetConsole\history-store-retirement\<run-id>" `
+  --candidate-root "D:\study\NetConsole-Workspace\diagnostic\history-store-retirement\<run-id>" `
+  --backup-root "D:\study\NetConsole-Workspace\NetConsole\.local\tmp\history-store-retirement\<run-id>" `
   --authorization LEGACY_HISTORY_RETIREMENT_AUTHORIZED
 
 # 开发 Authority：candidate/temporary backup 必须位于 D:\study\NetConsole-Workspace\NetConsole\.local\tmp

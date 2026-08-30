@@ -53,7 +53,7 @@ dry-run 不写 parsed DB、raw 或 catalog，并兼容缺少后续可选身份�
 - `diagnose_server_hdd.py`：只读采集 Windows Server/HDD 主机、卷容量、Backend PID、devices.db/WAL/SHM、History health 和启动阶段；旧系统性能计数器不可用时返回 `unknown`。
 - `validate_phase21_snapshot.py`：仅对用户提供的离线 `devices.db` 副本执行 SQLite Backup API 隔离验证，确认 current-schema fast path 和新 History shard 写入；未提供副本时明确 `NOT_EXECUTED`。
 
-History HDD 证据校验与 Task 结果布局 benchmark 均只向 `D:\study` 写报告：
+History HDD 证据校验与 Task 结果布局 benchmark 均只向项目 Workspace 的按需诊断目录写报告：
 
 ```powershell
 $env:PYTHONPATH = "$PWD\src;$PWD"
@@ -61,10 +61,10 @@ $env:PYTHONPATH = "$PWD\src;$PWD"
   --migration-benchmark "<migration-report.json>" `
   --host-diagnostic "<host-diagnostic.json>" `
   --operational-observation "<observation.json>" `
-  --output-dir "D:\study\diagnostic\NetConsole\device-history-cutover\<run-id>"
+  --output-dir "D:\study\NetConsole-Workspace\diagnostic\device-history-cutover\<run-id>"
 
 .\.venv\Scripts\python.exe -m scripts.maintenance.benchmark_tasks_db_governance `
-  --output-dir "D:\study\diagnostic\NetConsole\tasks-db-governance\<run-id>"
+  --output-dir "D:\study\NetConsole-Workspace\diagnostic\tasks-db-governance\<run-id>"
 ```
 
 清理测试只在 `D:\study\NetConsole-Workspace\test-data\NetConsole\<run-id>` 构造目标，禁止对真实 `D:\NetConsoleData`、历史 `data/`、`.local/` 或 LocalAppData 目录做破坏性测试。

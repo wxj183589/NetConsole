@@ -26,7 +26,7 @@ from typing import Any, Iterable
 
 
 DEVELOPMENT_DATA_ROOT = Path("D:/NetConsoleData-dev").resolve()
-DIAGNOSTIC_ROOT = Path("D:/study/diagnostic/NetConsole").resolve()
+DIAGNOSTIC_ROOT = Path("D:/study/NetConsole-Workspace/diagnostic").resolve()
 TERMINAL_STATUSES = frozenset({"COMPLETED", "FAILED", "CANCELLED"})
 ACTIVE_STATUSES = frozenset(
     {"PENDING", "STARTING", "RUNNING", "STOPPING", "PAUSED", "RECOVERY"}

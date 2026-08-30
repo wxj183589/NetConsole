@@ -1,6 +1,10 @@
-# History Storage V2
+# History Storage V2（历史退役候选格式）
 
 ## 状态与边界
+
+分类：HISTORICAL_RECORD。本文保留 V2 候选格式、隔离迁移和查询结果的历史技术记录，不是当前运行时规范。当前运行时边界以
+[HistoryStore Runtime Consumer Matrix](./HISTORYSTORE_RUNTIME_CONSUMER_MATRIX.md) 和
+[Storage Architecture](./STORAGE_ARCHITECTURE.md) 为准。
 
 History Storage V2 是已退役的月分片候选格式，不再是运行时写入或查询格式。`HistoryStore`
 及其 catalog、查询、计数和 COPY-only migration 仅作为显式维护、审计和回滚工具保留；

@@ -1,5 +1,10 @@
 # Windows Server/HDD Phase 2.1 验收 Runbook
 
+> 分类：HISTORICAL_RECORD。本文保留 Phase 2.1 旧现场验收流程；其中 legacy history/outbox
+> 的运行时描述不代表当前实现。当前 HistoryStore 边界以
+> [HISTORYSTORE_RUNTIME_CONSUMER_MATRIX.md](../storage/HISTORYSTORE_RUNTIME_CONSUMER_MATRIX.md)
+> 为准。
+
 本流程用于 Windows Server 2016 + 机械硬盘/硬件 RAID 现场。它验证 Phase 2.1 的
 兼容性和启动行为，不执行 Phase 2.2，也不自动迁移、删除或压缩 legacy history。
 

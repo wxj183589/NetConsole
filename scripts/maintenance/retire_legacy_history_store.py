@@ -736,7 +736,7 @@ def _parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = _parser().parse_args()
     if args.command == "prepare":
-        candidate_root = args.candidate_root or Path("D:/study/diagnostic/NetConsole/history-store-retirement-candidate")
+        candidate_root = args.candidate_root or Path("D:/study/NetConsole-Workspace/diagnostic/history-store-retirement-candidate")
         result = prepare(args.data_root, candidate_root)
     elif args.command == "verify":
         result = verify_production(args.data_root)
@@ -749,7 +749,7 @@ def main() -> int:
             backup_root = args.backup_root or Path("D:/study/NetConsole-Workspace/NetConsole/.local/tmp/history-store-retirement-dev") / datetime.now().strftime("%Y%m%d-%H%M%S")
             result = apply_development(args.data_root, args.candidate_root, backup_root)
         else:
-            backup_root = args.backup_root or Path("D:/study/backup/NetConsole/history-store-retirement") / datetime.now().strftime("%Y%m%d-%H%M%S")
+            backup_root = args.backup_root or Path("D:/study/NetConsole-Workspace/NetConsole/.local/tmp/history-store-retirement") / datetime.now().strftime("%Y%m%d-%H%M%S")
             result = apply(args.data_root, args.candidate_root, backup_root)
     output = args.output
     if output is not None:

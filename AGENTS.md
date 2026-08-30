@@ -7,6 +7,22 @@
 - Windows Go Agent V1 已位于 `apps/agent/`，包含独立 API、内嵌 Web、fping/iPerf、MR sidecar 和采集包；Traffic REST/WebSocket 与 Vue 流量测试页面已接入，CentOS 离线部署、主动注册和多 Controller 仍未实现。
 - 开发前先读当前代码、测试和 `docs/README.md`，不依赖旧会话或旧项目假设。
 
+## Workspace 与 Authority 定义
+
+本项目的 Canonical 目录和数据 Authority 固定如下：
+
+| 名称 | 路径 | 边界 |
+| --- | --- | --- |
+| WORKSPACE | D:\study\NetConsole-Workspace | NetConsole 源码、项目级制品和按需诊断的统一 Workspace |
+| REPO | D:\study\NetConsole-Workspace\NetConsole | 当前 Git 主仓库 |
+| DEVSTATUS | D:\study\NetConsole-Workspace\NetConsole-DevStatus | 仅用于开发状态和交接，不是代码、数据库或备份仓库 |
+| RELEASE | D:\study\NetConsole-Workspace\release | 稳定正式发布制品；按版本和 build 身份保存，不覆盖既有目录 |
+| DIAGNOSTIC | D:\study\NetConsole-Workspace\diagnostic | 按需诊断/证据输出；任务完成并验收后退役，不作为长期数据仓库 |
+| PRODUCTION_DATA | D:\NetConsoleData | 当前正式运行数据，禁止被开发任务复制、迁移、清理或测试使用 |
+| DEV_REAL_DATA | D:\NetConsoleData-dev | 长期真实开发数据 Authority；不是 fixture、备份或临时复制品 |
+
+D:\NetConsoleData-dev 的完整内容不得复制到 .local、diagnostic、acceptance、validation、test-data、worktree 或 tmp。隔离测试只能使用明确的测试根；需要真实开发验收时直接使用该 Authority，并按任务边界保护其业务数据。D:\study\fping 是独立的上游 GitHub 项目 checkout，不属于 NetConsole Workspace，不得移动、清理、改写或纳入本项目治理。
+
 ## 语言与编码
 
 - 默认使用中文回复，保留中文 UI、注释和日志。
@@ -35,17 +51,17 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 ## 安装目录与业务数据根
 
 - Windows 安装包的程序目录只保存 EXE、DLL、Python/Electron 运行时、前端资源、内置工具和只读默认配置；SQLite、局点文件、MESH 日志、报告、缓存和用户配置必须位于独立业务数据根。
-- 业务数据根的唯一持久化指针是安装器写入的 `HKLM\Software\NetConsole\DataRoot`；源码、Electron 开发、Python Backend、打包验证与正式安装包都通过同一解析器读取。`NETCONSOLE_DATA_ROOT` 只可作为显式覆盖，未配置持久根时停止启动，绝不回退 LocalAppData、用户目录、仓库、安装目录或系统 Temp。
+- 正式包、安装态和正式运行数据根的唯一持久化指针是安装器写入的 `HKLM\Software\NetConsole\DataRoot`，当前为 `D:\NetConsoleData`；源码/Electron 的真实开发验收显式使用长期 Authority `D:\NetConsoleData-dev`，不得把两者混同。`NETCONSOLE_DATA_ROOT` 只可作为受控显式覆盖，未配置持久根时停止启动，绝不回退 LocalAppData、用户目录、仓库、安装目录或系统 Temp。
 - 安装器必须拒绝系统盘、网络/可移动盘、程序目录、用户 Profile 与 NetConsole 必需路径发生真实冲突的目录；允许含无冲突普通文件的目录并保留原内容。升级和修复默认沿用既有根。更改根必须先完成受控迁移，再更新指针；普通卸载保留业务数据和指针。
 - 自动化测试必须显式 `RuntimeMode.TEST` 和 `D:\study\NetConsole-Workspace\test-data\NetConsole\<run-id>`，不得读取机器级指针或真实根。
 
 ## 构建产物与正式发布目录
 
 - 仓库内 `D:\study\NetConsole-Workspace\NetConsole\dist\` 只保存可由源码、锁文件和构建脚本重新生成的临时输出，包括 Renderer、Electron、PyInstaller、Agent、日志和 smoke 中间产物；它不是正式制品库，可由受控清理整体删除。
-- 正式发布制品的唯一持久根是 `D:\study\release\NetConsole\<version>\`。正式打包入口必须在全部 Gate 通过后，把安装包、release manifest、SHA-256 清单和构建摘要一起原子发布到该目录；已存在的版本目录不得覆盖或混入另一候选。
+- 正式发布制品的唯一持久根是 `D:\study\NetConsole-Workspace\release\<version>\`。正式打包入口必须在全部 Gate 通过后，把安装包、release manifest、SHA-256 清单和构建摘要一起原子发布到该目录；已存在的版本目录不得覆盖或混入另一候选。
 - 普通 `build`、`package`、`rebuild` 只读取当前 `APP_VERSION`，不得自动 `+1`、修改版本源或写入 `published=true`；同版本构建使用 `Build Number + Git short SHA` 区分。自动更新只接受 `published=true` 且更高的三段 `ProductVersion`。
 - 禁止把 `C:\NetConsoleRelease`、`D:\NetConsoleRelease`、仓库内 `dist\release` 或 `dist\v<version>` 用作持久发布目录。PyInstaller Backend 中间输出统一位于 `dist\_build\backend-release\`。
-- 普通构建清理只能清理仓库内 `dist\`，不得触碰 `D:\study\release\NetConsole`。正式制品的归档或删除必须有用户明确授权，并先核对文件名、大小、SHA-256、Installer/Backend/Frontend commit、`packaged_dirty=false`、edition 和发布状态。
+- 普通构建清理只能清理仓库内 `dist\`，不得触碰 `D:\study\NetConsole-Workspace\release`。正式制品的归档或删除必须有用户明确授权，并先核对文件名、大小、SHA-256、Installer/Backend/Frontend commit、`packaged_dirty=false`、edition 和发布状态。
 
 ## 全局开发规则
 
