@@ -2773,36 +2773,53 @@ class Database:
     def _prepare_legacy_schema_compatibility(self, conn: sqlite3.Connection) -> None:
         """Repair only empty, clearly incomplete legacy tables before triggers/indexes run."""
 
-        if not self._table_exists(conn, "ac_fit_ap_resources"):
-            return
-        columns = {
-            str(row["name"])
-            for row in conn.execute("PRAGMA table_info(ac_fit_ap_resources)").fetchall()
-        }
-        required = {"ac_device_uuid", "ap_uuid"}
-        if required.issubset(columns):
-            return
-        row = conn.execute("SELECT COUNT(*) AS count FROM ac_fit_ap_resources").fetchone()
-        if row is None or int(row["count"] or 0) != 0:
-            raise DatabaseSchemaMismatchError(
-                "旧 ac_fit_ap_resources 表缺少身份字段，且包含数据，拒绝无损迁移"
-            )
-        conn.execute("DROP TABLE ac_fit_ap_resources")
-        conn.executescript(AC_FIT_AP_RESOURCES_SCHEMA)
+        legacy_tables = (
+            (
+                "ac_fit_ap_resources",
+                {"ac_device_uuid", "ap_uuid"},
+                AC_FIT_AP_RESOURCES_SCHEMA,
+            ),
+            ("ap_entities", {"ap_uuid"}, AP_ENTITIES_SCHEMA),
+        )
+        for table_name, required, target_schema in legacy_tables:
+            if not self._table_exists(conn, table_name):
+                continue
+            columns = {
+                str(row["name"])
+                for row in conn.execute(
+                    f"PRAGMA table_info({self._quote_identifier(table_name)})"
+                ).fetchall()
+            }
+            if required.issubset(columns):
+                continue
+            row = conn.execute(
+                f"SELECT COUNT(*) AS count FROM {self._quote_identifier(table_name)}"
+            ).fetchone()
+            if row is None or int(row["count"] or 0) != 0:
+                raise DatabaseSchemaMismatchError(
+                    f"旧 {table_name} 表缺少身份字段，且包含数据，拒绝无损迁移"
+                )
+            conn.execute(f"DROP TABLE {self._quote_identifier(table_name)}")
+            conn.executescript(target_schema)
 
     def _requires_legacy_schema_compatibility_repair(
         self, conn: sqlite3.Connection
     ) -> bool:
-        if not self._table_exists(conn, "ac_fit_ap_resources"):
-            return True
-        columns = {
-            str(row["name"])
-            for row in conn.execute("PRAGMA table_info(ac_fit_ap_resources)").fetchall()
-        }
-        required = {"ac_device_uuid", "ap_uuid"}
-        if required.issubset(columns):
-            return False
-        return True
+        for table_name, required in (
+            ("ac_fit_ap_resources", {"ac_device_uuid", "ap_uuid"}),
+            ("ap_entities", {"ap_uuid"}),
+        ):
+            if not self._table_exists(conn, table_name):
+                return True
+            columns = {
+                str(row["name"])
+                for row in conn.execute(
+                    f"PRAGMA table_info({self._quote_identifier(table_name)})"
+                ).fetchall()
+            }
+            if not required.issubset(columns):
+                return True
+        return False
 
     @staticmethod
     def _requires_device_credential_state_repair(conn: sqlite3.Connection) -> bool:

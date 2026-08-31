@@ -451,6 +451,37 @@ def test_database_initialize_recreates_empty_legacy_fit_ap_resource_table(tmp_pa
     assert {"ac_device_uuid", "ap_uuid"}.issubset(columns)
 
 
+def test_database_initialize_recreates_empty_legacy_ap_entity_table(tmp_path):
+    db = Database(tmp_path / "devices.db")
+    db.initialize()
+    with db.connect() as conn:
+        conn.execute("DROP TABLE ap_entities")
+        conn.execute(
+            """
+            CREATE TABLE ap_entities (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                site_id TEXT,
+                ac_device_uuid TEXT,
+                ap_id TEXT,
+                ap_name TEXT,
+                ap_mac TEXT,
+                serial_number TEXT
+            )
+            """
+        )
+        conn.commit()
+
+    db.initialize()
+
+    with db.connect() as conn:
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(ap_entities)").fetchall()
+        }
+
+    assert {"ap_uuid", "serial_identity_key"}.issubset(columns)
+
+
 def test_database_initialize_rejects_nonempty_legacy_fit_ap_resource_table(tmp_path):
     db = Database(tmp_path / "devices.db")
     db.initialize()
@@ -471,6 +502,55 @@ def test_database_initialize_rejects_nonempty_legacy_fit_ap_resource_table(tmp_p
         count = conn.execute("SELECT COUNT(*) AS count FROM ac_fit_ap_resources").fetchone()["count"]
 
     assert columns == {"id"}
+    assert count == 1
+
+
+def test_database_initialize_rejects_nonempty_legacy_ap_entity_table(tmp_path):
+    db = Database(tmp_path / "devices.db")
+    db.initialize()
+    with db.connect() as conn:
+        conn.execute("DROP TABLE ap_entities")
+        conn.execute(
+            """
+            CREATE TABLE ap_entities (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                site_id TEXT,
+                ac_device_uuid TEXT,
+                ap_id TEXT,
+                ap_name TEXT,
+                ap_mac TEXT,
+                serial_number TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO ap_entities (
+                site_id, ac_device_uuid, ap_id, ap_name, ap_mac, serial_number
+            ) VALUES ('legacy', 'ac-legacy', '1', '旧 AP', '00:11:22:33:44:55', 'SN-1')
+            """
+        )
+        conn.commit()
+
+    with pytest.raises(DatabaseSchemaMismatchError, match="旧 ap_entities 表缺少身份字段"):
+        db.initialize()
+
+    with db.connect() as conn:
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(ap_entities)").fetchall()
+        }
+        count = conn.execute("SELECT COUNT(*) AS count FROM ap_entities").fetchone()["count"]
+
+    assert columns == {
+        "id",
+        "site_id",
+        "ac_device_uuid",
+        "ap_id",
+        "ap_name",
+        "ap_mac",
+        "serial_number",
+    }
     assert count == 1
 
 
