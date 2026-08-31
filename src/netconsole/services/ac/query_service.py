@@ -52,6 +52,7 @@ from netconsole.models.api.ac_management import (
 from netconsole.parsers.h3c.ac.state_mapper import classify_fit_ap_state
 from netconsole.repositories.ac_repository import AcRepository
 from netconsole.services.ac.fit_ap_resource_identity import coalesce_fit_ap_resource_rows
+from netconsole.services.ac.ac_models import is_ac_device_type
 from netconsole.services.ap_extension_import import normalize_ap_mac
 from netconsole.services.ap_identity import ApIdentityQueryService
 from netconsole.services.ap_identity.normalizers import normalize_mac_key
@@ -696,7 +697,10 @@ class AcManagementQueryService:
         with closing(self._connect(db_path)) as conn:
             if not self._table_exists(conn, "config_snapshots"):
                 return AcConfigSnapshotPageDTO(page=page, page_size=page_size)
-            clauses = ["(upper(coalesce(d.device_type, '')) = 'AC' OR s.ac_device_uuid IS NOT NULL)"]
+            clauses = [
+                "(upper(replace(coalesce(d.device_type, ''), '-', '_')) IN ('AC', 'WIRELESS_CONTROLLER') "
+                "OR s.ac_device_uuid IS NOT NULL)"
+            ]
             params: list[object] = []
             if ac_id:
                 clauses.append("snapshot.device_uuid = ?")
@@ -1621,7 +1625,9 @@ class AcManagementQueryService:
             for row in conn.execute("SELECT * FROM ac_ap_summary")
         } if self._table_exists(conn, "ac_ap_summary") else {}
         devices = {str(row["device_uuid"]): dict(row) for row in self._safe_devices(conn)}
-        ids = {uuid for uuid, row in devices.items() if str(row.get("device_type") or "").upper() == "AC"} | set(summaries)
+        ids = {
+            uuid for uuid, row in devices.items() if is_ac_device_type(row.get("device_type"))
+        } | set(summaries)
         rows: list[dict[str, object]] = []
         for device_uuid in sorted(ids, key=lambda value: str(devices.get(value, {}).get("name") or value)):
             device = devices.get(device_uuid, {})
@@ -1707,7 +1713,7 @@ class AcManagementQueryService:
                 LEFT JOIN devices d ON d.device_uuid = snapshot.device_uuid
                 LEFT JOIN ac_ap_summary s ON s.ac_device_uuid = snapshot.device_uuid
                 WHERE snapshot.id = ?
-                  AND (upper(coalesce(d.device_type, '')) = 'AC' OR s.ac_device_uuid IS NOT NULL)
+                  AND (upper(replace(coalesce(d.device_type, ''), '-', '_')) IN ('AC', 'WIRELESS_CONTROLLER') OR s.ac_device_uuid IS NOT NULL)
                 LIMIT 1
                 """,
                 (int(snapshot_id),),

@@ -5,6 +5,26 @@ from dataclasses import dataclass, field
 from netconsole.services.ac.fit_ap_optical_concurrency import DEFAULT_FIT_AP_OPTICAL_CONCURRENCY
 
 
+AC_DEVICE_TYPES = frozenset({"ac", "wireless_controller"})
+FIT_AP_SNAPSHOT_STATUS_NOT_COLLECTED = "NOT_COLLECTED"
+FIT_AP_SNAPSHOT_STATUS_SUCCESS_WITH_ROWS = "SUCCESS_WITH_ROWS"
+FIT_AP_SNAPSHOT_STATUS_SUCCESS_EMPTY = "SUCCESS_EMPTY"
+FIT_AP_SNAPSHOT_STATUS_FAILED = "FAILED"
+FIT_AP_SNAPSHOT_STATUSES = frozenset(
+    {
+        FIT_AP_SNAPSHOT_STATUS_NOT_COLLECTED,
+        FIT_AP_SNAPSHOT_STATUS_SUCCESS_WITH_ROWS,
+        FIT_AP_SNAPSHOT_STATUS_SUCCESS_EMPTY,
+        FIT_AP_SNAPSHOT_STATUS_FAILED,
+    }
+)
+
+
+def is_ac_device_type(value: object) -> bool:
+    normalized = str(value or "").strip().casefold().replace("-", "_")
+    return normalized in AC_DEVICE_TYPES
+
+
 @dataclass(frozen=True)
 class AcResourceRefreshRequest:
     device_uuid: str
@@ -59,11 +79,12 @@ class AcResourceRefreshResult:
     batch_serial_merged: int = 0
     serial_identity_conflicts: int = 0
     duplicate_ap_entity_created: int = 0
-    fit_ap_snapshot_status: str = "NOT_COLLECTED"
+    fit_ap_snapshot_status: str = FIT_AP_SNAPSHOT_STATUS_NOT_COLLECTED
 
     def to_payload(self) -> dict[str, object]:
         return {
             **self.snapshot.to_payload(),
+            "fit_ap_snapshot_status": str(self.fit_ap_snapshot_status),
             "collection": {
                 "success": self.success,
                 "source": self.source,
@@ -142,6 +163,7 @@ class AcResourceRefreshResult:
             "failed_commands": failed_commands,
             "summary_updated": bool(self.summary_updated),
             "snapshot_revision": str(snapshot_revision),
+            "fit_ap_snapshot_status": str(self.fit_ap_snapshot_status),
             "data_persisted": bool(self.success),
             "reload_required": bool(self.success),
             "collection": collection,

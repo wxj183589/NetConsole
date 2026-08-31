@@ -237,6 +237,9 @@ def test_ac_fit_ap_collect_terminal_payload_is_bounded_for_large_snapshot() -> N
     )
 
     payload = result.to_terminal_payload()
+    full_payload = result.to_payload()
+    assert full_payload["fit_ap_snapshot_status"] == "NOT_COLLECTED"
+    assert full_payload["collection"]["fit_ap_snapshot_status"] == "NOT_COLLECTED"
     frame = json.dumps(
         {
             "type": "finished",
@@ -264,6 +267,7 @@ def test_ac_fit_ap_collect_terminal_payload_is_bounded_for_large_snapshot() -> N
         "failed_commands": [],
         "summary_updated": True,
         "snapshot_revision": "r-974",
+        "fit_ap_snapshot_status": "NOT_COLLECTED",
         "data_persisted": True,
         "reload_required": True,
         "collection": {

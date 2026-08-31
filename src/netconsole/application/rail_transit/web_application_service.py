@@ -68,6 +68,7 @@ from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.ap_identity.normalizers import normalize_mac
 from netconsole.repositories.mesh_catalog_repository import MeshCatalogRepository
 from netconsole.services.ac.fit_ap_optical_task_guard import fit_ap_optical_resource_keys
+from netconsole.services.ac.ac_models import is_ac_device_type
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.export.export_job import ExportJob
 from netconsole.services.export.export_task_builders import (
@@ -2616,11 +2617,8 @@ class RailTransitWebApplicationService:
         try:
             return [
                 str(device.device_uuid or "")
-                for device in DeviceRepository(database).list(
-                    vendor="H3C",
-                    device_type="AC",
-                    work_scope_status="included",
-                )
+                for device in DeviceRepository(database).list(vendor="H3C", work_scope_status="included")
+                if is_ac_device_type(device.device_type)
                 if str(device.device_uuid or "").strip()
             ]
         except sqlite3.OperationalError as exc:

@@ -36,6 +36,7 @@ from netconsole.services.ac.fit_ap_optical_concurrency import (
     DEFAULT_FIT_AP_OPTICAL_CONCURRENCY,
     fit_ap_optical_platform_concurrency_limit,
 )
+from netconsole.services.ac.ac_models import is_ac_device_type
 from netconsole.services.h3c_ac_collect_service import collect_h3c_ac_resources, collect_h3c_fit_ap_optical
 from netconsole.services.h3c_optical_refresh_service import merge_existing_optical_modules
 from netconsole.services.netmiko_connection import (
@@ -1245,7 +1246,8 @@ def _collect_fit_ap_optical_subtasks(
     ac_devices = sorted(
         [
             device
-            for device in repository.list(vendor="H3C", device_type="AC")
+            for device in repository.list(vendor="H3C", work_scope_status="included")
+            if is_ac_device_type(device.device_type)
             if not _is_excluded_device(device)
         ],
         key=lambda item: rank_ac_device_for_trackside(item, summaries.get(str(item.device_uuid or ""))),

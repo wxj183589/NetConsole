@@ -9,7 +9,12 @@ from netconsole.models.device import Device
 from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_repository import DeviceRepository
-from netconsole.services.ac.ac_models import AcOpticalRefreshRequest, AcOpticalRefreshResult, AcOpticalSnapshot
+from netconsole.services.ac.ac_models import (
+    AcOpticalRefreshRequest,
+    AcOpticalRefreshResult,
+    AcOpticalSnapshot,
+    is_ac_device_type,
+)
 from netconsole.services.h3c_ac_collect_service import FitApOpticalCollectResult, collect_h3c_fit_ap_optical
 from netconsole.services.ac.fit_ap_optical_partial_success import install_fit_ap_optical_partial_success
 from netconsole.services.offline_ap_ledger import OFFLINE_AP_STATUS_TEXT, is_fit_ap_offline
@@ -251,7 +256,12 @@ class AcOpticalService:
 
     def _load_device(self, device_uuid: str) -> Device:
         device = next(
-            (item for item in self.device_repository.list(device_type="AC") if str(item.device_uuid or "") == device_uuid),
+            (
+                item
+                for item in self.device_repository.list()
+                if is_ac_device_type(item.device_type)
+                and str(item.device_uuid or "") == device_uuid
+            ),
             None,
         )
         if device is None:

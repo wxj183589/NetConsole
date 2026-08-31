@@ -1765,8 +1765,13 @@ def _online_mr_report_export(params: dict[str, Any], progress: ProgressCallback 
 def _ac_devices_refresh(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
     from netconsole.core.database import Database
     from netconsole.repositories.device_repository import DeviceRepository
+    from netconsole.services.ac.ac_models import is_ac_device_type
 
-    devices = DeviceRepository(Database(Path(str(params.get("db_path") or "")))).list(vendor="H3C", device_type="AC")
+    devices = [
+        device
+        for device in DeviceRepository(Database(Path(str(params.get("db_path") or "")))).list(vendor="H3C")
+        if is_ac_device_type(device.device_type)
+    ]
     return {"devices": [device.to_record() for device in devices]}
 
 

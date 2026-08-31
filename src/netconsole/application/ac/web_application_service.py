@@ -40,6 +40,7 @@ from netconsole.models.task_state import TERMINAL_TASK_STATES, TaskState
 from netconsole.repositories.ac_repository import AcRepository, TRACKSIDE_AP_PLAN_MODE
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.ac.fit_ap_optical_task_guard import fit_ap_optical_resource_key
+from netconsole.services.ac.ac_models import is_ac_device_type
 from netconsole.services.ac.fit_ap_resource_export import make_fit_ap_resource_filename
 from netconsole.services.ac.query_service import AcManagementQueryService
 from netconsole.services.background_job import BackgroundJob
@@ -1410,7 +1411,7 @@ class AcWebApplicationService:
         if not target_id:
             raise AcWebActionError("TARGET_REQUIRED", "AC 动作缺少目标")
         device = DeviceRepository(Database(self.paths.site_db_path(self._site(site_id)))).get_by_uuid(target_id)
-        if device is None or str(device.device_type or "").upper() != "AC":
+        if device is None or not is_ac_device_type(device.device_type):
             raise AcWebActionError("TARGET_NOT_AUTHORIZED", "目标 AC 在当前局点不存在")
         return device
 

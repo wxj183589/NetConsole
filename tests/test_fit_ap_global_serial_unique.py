@@ -261,6 +261,45 @@ def test_batch_optical_lookup_keeps_same_physical_ap_for_each_ac(tmp_path):
     }
 
 
+def test_fit_ap_optical_current_authority_is_ac_scoped_not_bounded_site_projection(tmp_path):
+    database = _database(tmp_path)
+    repository = AcRepository(database)
+    repository.replace_fit_ap_resources(
+        "ac-a",
+        [{"ap_uuid": "incoming-a", "ap_mac": "0000-0000-0001", "serial_number": "SN001"}],
+    )
+    repository.replace_fit_ap_resources(
+        "ac-b",
+        [{"ap_uuid": "incoming-b", "ap_mac": "0000-0000-0001", "serial_number": "SN001"}],
+    )
+    repository.replace_fit_ap_optical(
+        "ac-a",
+        [{"ap_name": "AP-A", "ap_mac": "0000-0000-0001", "rx_power": "-8.1"}],
+    )
+    repository.replace_fit_ap_optical(
+        "ac-b",
+        [{"ap_name": "AP-B", "ap_mac": "0000-0000-0001", "rx_power": "-18.2"}],
+    )
+    with database.connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO optical_current (
+                site_id, ap_identity, ap_uuid, ap_name, side, rx_dbm
+            ) VALUES ('site-a', 'ap-x', 'ap-x', 'SITE-PHYSICAL', 'AP', '-99')
+            """
+        )
+        connection.commit()
+
+    ac_rows = repository.list_fit_ap_optical("ac-a")
+    all_rows = repository.list_all_fit_ap_optical()
+
+    assert [(row["ac_device_uuid"], row["rx_power"]) for row in ac_rows] == [("ac-a", "-8.1")]
+    assert {(row["ac_device_uuid"], row["rx_power"]) for row in all_rows} == {
+        ("ac-a", "-8.1"),
+        ("ac-b", "-18.2"),
+    }
+
+
 def test_repository_full_replace_isolated_to_one_ac(tmp_path):
     database = _database(tmp_path)
     repository = AcRepository(database)

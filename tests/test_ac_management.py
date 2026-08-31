@@ -5650,6 +5650,92 @@ def test_trackside_fit_ap_branch_skips_without_resources_instead_of_failing(
     ]
 
 
+def test_trackside_fit_ap_default_collection_enumerates_all_h3c_ac_roles(
+    tmp_path,
+    monkeypatch,
+):
+    database = make_database(tmp_path)
+    repository = DeviceRepository(database)
+    ac_a = repository.create(
+        Device(
+            name="AC-A",
+            device_type="AC",
+            device_vendor="H3C",
+            ip_address="10.0.0.30",
+            ssh_username="u",
+            ssh_password="p",
+        )
+    )
+    ac_b = repository.create(
+        Device(
+            name="AC-B",
+            device_type="wireless_controller",
+            device_vendor="H3C",
+            ip_address="10.0.0.31",
+            ssh_username="u",
+            ssh_password="p",
+        )
+    )
+    repository.create(
+        Device(
+            name="SW-IGNORED",
+            device_type="SW",
+            device_vendor="H3C",
+            ip_address="10.0.0.32",
+            ssh_username="u",
+            ssh_password="p",
+        )
+    )
+    resource_calls: list[str] = []
+    optical_calls: list[str] = []
+    progress_events: list[dict[str, object]] = []
+
+    def fake_resource_collect(device, *_args, **_kwargs):
+        device_uuid = str(device.device_uuid)
+        resource_calls.append(device_uuid)
+        AcRepository(database).replace_fit_ap_resources(
+            device_uuid,
+            [{"ap_uuid": f"{device_uuid}-ap", "ap_name": device.name, "ap_ip": "10.0.1.1"}],
+        )
+        return SimpleNamespace(success=True, error_message="")
+
+    def fake_optical_collect(**kwargs):
+        device_uuid = str(kwargs["ac_device"].device_uuid)
+        optical_calls.append(device_uuid)
+        return SimpleNamespace(success=True, ac_device_uuid=device_uuid, optical_rows=[])
+
+    monkeypatch.setattr(
+        trackside_optical_collection,
+        "collect_h3c_ac_resources",
+        fake_resource_collect,
+    )
+    monkeypatch.setattr(
+        trackside_optical_collection,
+        "collect_h3c_fit_ap_optical",
+        fake_optical_collect,
+    )
+
+    results, total, skipped, failures = trackside_optical_collection._collect_fit_ap_optical_subtasks(
+        repository,
+        "demo",
+        PathResolver(tmp_path),
+        concurrency=1,
+        cancel_event=trackside_optical_collection.Event(),
+        ac_progress_callback=progress_events.append,
+    )
+
+    expected = {str(ac_a.device_uuid), str(ac_b.device_uuid)}
+    assert set(resource_calls) == expected
+    assert set(optical_calls) == expected
+    assert len(resource_calls) == len(optical_calls) == 2
+    assert total == 2
+    assert len(results) == 2
+    assert skipped == []
+    assert failures == []
+    assert {event["ac_device_uuid"] for event in progress_events} == expected
+    assert {event["ac_total"] for event in progress_events} == {2}
+
+
 def test_trackside_fit_ap_branch_reports_ac_resource_failure_as_failure(
     tmp_path,
     monkeypatch,
@@ -6697,7 +6783,10 @@ def test_fit_ap_association_repair_is_dry_run_by_default_and_keeps_history(tmp_p
     result = repository.repair_invalid_fit_ap_association_projection("ac-1", apply=True)
     assert result["applied"] is True
     assert result["cleared_optical_rows"] == 1
-    assert repository.list_fit_ap_optical("ac-1") == []
+    repaired = repository.list_fit_ap_optical("ac-1")
+    assert len(repaired) == 1
+    assert repaired[0]["rx_power"] == "-7.1"
+    assert repaired[0]["neighbor_interface"] == ""
     assert repository.get_fit_ap_resource_by_uuid("ac-1", "ap-1")["lldp_neighbor_interface"] == ""
     assert len(repository.list_fit_ap_optical_history_by_ap("ap-1")) == before_history
 

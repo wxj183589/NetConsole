@@ -18,6 +18,22 @@ Task 的失败终态，不再发生在 Task 生命周期之外。
 
 ## 数据源矩阵
 
+### FIT-AP 多 AC 与 Site 物理投影边界
+
+FIT-AP 采集范围是 AC，轨旁 AP 业务范围是 Site。业务快照先读取当前 Site
+下全部 AC 的 `ac_fit_ap_resources`、`ac_fit_ap_optical` 及其 AC 侧事实，再
+按 canonical physical identity 聚合；同一 physical AP 跨 AC 出现时物理业务
+行只计一台，但保留全部 `ac_device_uuid` 来源证据。
+
+没有车站/AP 定向条件的 Site 更新默认枚举所有纳入范围的 H3C `AC` 或
+`wireless_controller`，每台 AC 独立采集和提交；单 AC 更新是局部补采。Site
+汇总只表示多 AC 的结果集合，不改变既有轨旁 AP 基础资料/规划过滤。
+
+`ac_fit_ap_optical` 是 AC 光衰 Current 权威；`optical_current` 是 Site 物理
+AP/交换机两侧的有界投影，不能反向作为 AC 光衰 Current 的读取来源。类似地，
+`fit_ap_radio_current` 只表示 Site 物理范围投影，AC Radio Current 仍由 AC
+作用域表提供。
+
 以下存储位置均在当前局点主库，即 `PathResolver.site_db_path(site_id)`；局点上下文
 来自 `SiteManager` 管理的局点 metadata。表中“R1/R2”表示数据行不在一个跨来源
 事务内长期锁定，而是在构建前后比较来源 revision，发生变化时丢弃本轮结果。

@@ -39,6 +39,33 @@ SQLite。单 AP 日志耗时从线程实际执行时计算，不再包含等待�
 时间；Windows 并发上限保持 64，AP 控制台启用、三条 Telnet 采集命令和
 超时不变。
 
+## FIT-AP Current 权威与作用域
+
+AC 采集得到的 Current 按 `ac_device_uuid` 隔离，正式权威表为：
+
+- `ac_fit_ap_resources`：AC 资源 Current；
+- `ac_fit_ap_details`、`ac_fit_ap_radio_details`：AC 详情和 Radio 详情 Current；
+- `fit_ap_lldp_current`：AC 侧 FIT-AP LLDP Current；
+- `ac_fit_ap_optical`：AC 侧 FIT-AP 光衰 Current。
+
+`AcRepository.list_fit_ap_optical()` 和
+`AcRepository.list_all_fit_ap_optical()` 只读取 `ac_fit_ap_optical`，并按
+`(ac_device_uuid, AP Identity)` 保留各 AC 的观测。`optical_current` 与
+`fit_ap_radio_current` 是按当前 Site、物理 AP 聚合的有界投影，分别通过
+`list_optical_current()` 等明确的 Site 物理查询入口读取；表名中的
+`current` 不代表它们可以替代 AC Current 权威。
+
+`fit_ap_snapshot_status` 是采集终态契约，允许值为
+`NOT_COLLECTED`、`SUCCESS_WITH_ROWS`、`SUCCESS_EMPTY`、`FAILED`。状态同时
+出现在终态回执顶层和 `collection` 兼容摘要中；失败只保留上一次成功 Current，
+只有确认完整成功且确实无 AP 时才使用 `SUCCESS_EMPTY` 并替换为空。
+
+轨旁 AP 的 Site 级更新在没有车站/AP 定向条件时，枚举当前局点全部纳入范围的
+H3C AC 角色（设备类型 `AC` 或 `wireless_controller`），逐台独立刷新并汇总
+结果；单 AC 定向刷新仍是局部补采，不等同于 Site 全量更新。多 AC 结果允许
+`PARTIAL_SUCCESS`，一个 AC 失败不得回滚或清空其他 AC 的 Current，也不引入
+HA/Master/Backup 推断。
+
 AC 总览、轨旁 AP 业务和 AP 扩展的本地重建终态也只保留行数、总览统计和
 有界 AP Identity 聚合；完整总览、离线台账、业务行和扩展行由现有查询接口
 读取。终态完成不再等价于把页面明细复制进任务结果。

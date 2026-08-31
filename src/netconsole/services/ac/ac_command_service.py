@@ -8,7 +8,11 @@ from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
 from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.device_repository import DeviceRepository
-from netconsole.services.ac.ac_models import AcCommandExecutionResult, AcCommandRequest
+from netconsole.services.ac.ac_models import (
+    AcCommandExecutionResult,
+    AcCommandRequest,
+    is_ac_device_type,
+)
 from netconsole.services.h3c_ac_collect_service import AcCommandActionResult, run_h3c_ac_action
 
 
@@ -158,7 +162,12 @@ class AcCommandService:
 
     def _load_device(self, device_uuid: str) -> Device:
         device = next(
-            (item for item in self.device_repository.list(device_type="AC") if str(item.device_uuid or "") == device_uuid),
+            (
+                item
+                for item in self.device_repository.list()
+                if is_ac_device_type(item.device_type)
+                and str(item.device_uuid or "") == device_uuid
+            ),
             None,
         )
         if device is None:

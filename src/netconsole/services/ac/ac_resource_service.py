@@ -11,6 +11,7 @@ from netconsole.services.ac.ac_models import (
     AcResourceRefreshRequest,
     AcResourceRefreshResult,
     AcResourceSnapshot,
+    is_ac_device_type,
 )
 from netconsole.services.h3c_ac_collect_service import (
     AcResourceCollectResult,
@@ -231,7 +232,12 @@ class AcResourceService:
 
     def _load_device(self, device_uuid: str) -> Device:
         device = next(
-            (item for item in self.device_repository.list(device_type="AC") if str(item.device_uuid or "") == device_uuid),
+            (
+                item
+                for item in self.device_repository.list()
+                if is_ac_device_type(item.device_type)
+                and str(item.device_uuid or "") == device_uuid
+            ),
             None,
         )
         if device is None:

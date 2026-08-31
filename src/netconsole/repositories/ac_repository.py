@@ -43,7 +43,6 @@ from netconsole.services.lldp_retention import (
     upsert_lldp_current_and_history,
 )
 from netconsole.services.optical_retention import (
-    merge_optical_current_rows,
     update_ap_optical_treatment,
     upsert_optical_current_and_history,
 )
@@ -1941,21 +1940,11 @@ class AcRepository:
 
     def list_fit_ap_optical(self, ac_device_uuid: str) -> list[dict[str, object | None]]:
         with self.database.connect_readonly() as conn:
-            rows = conn.execute("SELECT * FROM optical_current ORDER BY ap_name, id").fetchall()
-            allowed = {
-                str(row["ap_uuid"] or "")
-                for row in conn.execute(
-                    "SELECT ap_uuid FROM ac_fit_ap_resources WHERE ac_device_uuid = ?",
-                    (str(ac_device_uuid),),
-                ).fetchall()
-                if str(row["ap_uuid"] or "")
-            }
-        merged = merge_optical_current_rows([dict(row) for row in rows])
-        return [
-            row for row in merged
-            if str(row.get("ac_device_uuid") or "") == str(ac_device_uuid)
-            or str(row.get("ap_uuid") or row.get("ap_identity") or "") in allowed
-        ]
+            rows = conn.execute(
+                "SELECT * FROM ac_fit_ap_optical WHERE ac_device_uuid = ? ORDER BY ap_name, id",
+                (str(ac_device_uuid),),
+            ).fetchall()
+        return _latest_rows_by_ac_ap_identity([dict(row) for row in rows])
 
     def repair_invalid_fit_ap_association_projection(
         self,
@@ -2059,8 +2048,10 @@ class AcRepository:
 
     def list_all_fit_ap_optical(self) -> list[dict[str, object | None]]:
         with self.database.connect_readonly() as conn:
-            rows = conn.execute("SELECT * FROM optical_current ORDER BY ap_name, id").fetchall()
-        return merge_optical_current_rows([dict(row) for row in rows])
+            rows = conn.execute(
+                "SELECT * FROM ac_fit_ap_optical ORDER BY ac_device_uuid, ap_name, id"
+            ).fetchall()
+        return _latest_rows_by_ac_ap_identity([dict(row) for row in rows])
 
     def list_fit_ap_optical_for_macs(
         self,
