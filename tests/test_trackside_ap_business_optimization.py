@@ -63,6 +63,8 @@ def test_export_columns_exclude_ui_only_fields_and_optical_change_fields():
     assert "description" not in fields
     assert "pvid" not in fields
     assert "vlan" not in fields
+    assert "recognition_status" not in fields
+    assert "primary_reason_code" not in fields
     assert "switch_optical_change" not in fields
     assert "ap_optical_change" not in fields
     for field in (
@@ -83,8 +85,6 @@ def test_trackside_export_columns_keep_fixed_business_order():
         "device_name",
         "interface_name",
         "link_status",
-        "recognition_status",
-        "primary_reason_code",
         "switch_rx_power",
         "switch_optical_status",
         "ap_mac",

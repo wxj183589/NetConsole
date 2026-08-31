@@ -39,7 +39,6 @@ from netconsole.services.trackside_ap_business import (
     TRACKSIDE_AP_BUSINESS_EXPORT_COLUMNS,
     TRACKSIDE_AP_UNMATCHED_ONLINE_COLUMNS,
     TracksideApExportCancelled,
-    build_ap_optical_treatment_records,
     build_new_online_ap_overview_rows,
     count_current_optical_abnormal_by_site,
     build_trackside_ap_business_rows,
@@ -1001,18 +1000,16 @@ def _build_trackside_ap_business_export_snapshot_once(
         snapshot.rows,
         unauthenticated_rows,
     )
-    optical_treatment_rows = build_ap_optical_treatment_records(
-        rows,
-        [],
-        [],
-        resources,
-        resource_history_rows,
-        offline_ledger_rows=offline_ledger_rows,
+    # The treatment workbook is a projection of the persisted one-row-per-AP
+    # ledger.  The current business snapshot may enrich blank display fields
+    # by exact AP UUID, but it must never filter, rebuild, or supplement the
+    # treatment population.  In particular, a legacy/non-authority database
+    # must not regenerate historical rows from current abnormal interfaces.
+    persisted_treatments = ac_repository.list_ap_optical_treatments()
+    optical_treatment_rows = _export_persisted_optical_treatments(
+        persisted_treatments,
+        business_rows=snapshot.rows,
     )
-    if ac_repository.is_bounded_optical_authority_enabled():
-        optical_treatment_rows = _export_persisted_optical_treatments(
-            ac_repository.list_ap_optical_treatments()
-        )
     return {
         "snapshot_id": snapshot.snapshot_id,
         "site_id": site_name,
@@ -1060,11 +1057,40 @@ def _build_trackside_ap_business_export_snapshot_once(
 
 def _export_persisted_optical_treatments(
     treatment_rows: Sequence[Mapping[str, object | None]],
+    *,
+    business_rows: Sequence[Mapping[str, object | None]] = (),
 ) -> list[dict[str, object | None]]:
-    """Adapt the one-row-per-AP treatment authority to the workbook contract."""
+    """Adapt the persisted treatment authority to the workbook contract.
+
+    ``business_rows`` is display-only enrichment.  It is keyed by the exact
+    canonical AP UUID and is never used to add, remove, or merge treatment
+    records; switch-side records therefore remain exportable with blank AP
+    fields when the ledger has no AP identity details.
+    """
+
+    business_by_ap_uuid: dict[str, Mapping[str, object | None]] = {}
+    for row in business_rows:
+        ap_uuid = str(row.get("ap_uuid") or "").strip().casefold()
+        if ap_uuid:
+            business_by_ap_uuid.setdefault(ap_uuid, row)
 
     result: list[dict[str, object | None]] = []
     for source in treatment_rows:
+        enrichment = business_by_ap_uuid.get(
+            str(source.get("ap_uuid") or "").strip().casefold(),
+            {},
+        )
+
+        def display_value(*fields: str) -> object | None:
+            for field_name in fields:
+                value = source.get(field_name)
+                if value not in (None, ""):
+                    return value
+                value = enrichment.get(field_name)
+                if value not in (None, ""):
+                    return value
+            return None
+
         side = str(source.get("current_abnormal_side") or "").upper()
         if side == "AP":
             side_label = "AP侧"
@@ -1099,16 +1125,16 @@ def _export_persisted_optical_treatments(
             {
                 # ``site_id`` identifies the database/project, not the AP's
                 # physical station; never expose it as the station fallback.
-                "site": source.get("station_name") or "未归属",
+                "site": display_value("station_name", "station", "site") or "未归属",
                 "ap_name": source.get("ap_name"),
                 "ap_mac": source.get("ap_mac"),
                 "serial_number": source.get("serial_number"),
                 "ap_id": source.get("ap_id"),
-                "section_name": source.get("section_name"),
-                "direction": source.get("direction"),
+                "section_name": display_value("section_name", "belong_section"),
+                "direction": display_value("direction"),
                 "side": side_label,
-                "device_name": source.get("switch_name"),
-                "interface_name": source.get("switch_interface"),
+                "device_name": display_value("switch_name", "device_name"),
+                "interface_name": display_value("switch_interface", "interface_name"),
                 "issue_type": issue_type,
                 "first_found_at": source.get("first_detected_at"),
                 "first_rx_power": first_rx,

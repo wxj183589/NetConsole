@@ -4724,6 +4724,8 @@ def test_export_ap_online_overview_xlsx_contains_colors_and_alignment(tmp_path):
         fit_ap_resources=resource_rows,
         capacities={"02云龙火车站站": 1},
     )
+    rows[0]["optical_problem_count"] = 1
+    rows[-1]["optical_problem_count"] = 1
     rows[1]["remark"] = "Need check"
     headers = [
         "Station", "AP Total", "Online", "Offline", "Online Rate",
@@ -4742,6 +4744,9 @@ def test_export_ap_online_overview_xlsx_contains_colors_and_alignment(tmp_path):
     assert sheet.column_dimensions["A"].width > len("车站")
     assert sheet["A2"].fill.fgColor.rgb == "FFDCFCE7"
     assert sheet["D3"].fill.fgColor.rgb == "FFFEE2E2"
+    assert sheet["F2"].fill.fgColor.rgb == "FFFEE2E2"
+    assert sheet["F3"].fill.fgColor.rgb != "FFFEE2E2"
+    assert sheet["F4"].fill.fgColor.rgb == "FFFEE2E2"
     assert sheet["G3"].value == "Need check"
 
 

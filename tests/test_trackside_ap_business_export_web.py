@@ -46,7 +46,10 @@ from netconsole.services.trackside_ap_business import (
 from netconsole.services.rail_transit.trackside_ap_business_snapshot import (
     TracksideApBusinessSnapshotError,
 )
-from netconsole.services.trackside_ap_export_service import build_trackside_ap_business_export_name
+from netconsole.services.trackside_ap_export_service import (
+    _export_persisted_optical_treatments,
+    build_trackside_ap_business_export_name,
+)
 from netconsole.utils.interface_normalize import display_interface_name
 
 
@@ -669,6 +672,136 @@ def test_trackside_business_workbook_preserves_sheets_and_export_style(
     ledger_headers = [cell.value for cell in ledger[1]]
     historical_interface_column = ledger_headers.index("历史邻居接口") + 1
     assert ledger.cell(2, historical_interface_column).value == "25GE1/0/2"
+
+
+def test_trackside_overview_highlights_only_positive_optical_problem_cells(
+    tmp_path: Path,
+) -> None:
+    i18n = I18n("zh_CN")
+    output = tmp_path / "trackside-overview-optical-style.xlsx"
+    overview_rows = [
+        {
+            "site": "站点A",
+            "total": 2,
+            "online": 2,
+            "offline": 0,
+            "online_rate": "100.0%",
+            "optical_problem_count": 1,
+            "remark": "",
+        },
+        {
+            "site": "站点B",
+            "total": 2,
+            "online": 2,
+            "offline": 0,
+            "online_rate": "100.0%",
+            "optical_problem_count": 0,
+            "remark": "",
+        },
+        {
+            "site": "合计",
+            "total": 4,
+            "online": 4,
+            "offline": 0,
+            "online_rate": "100.0%",
+            "optical_problem_count": 1,
+            "remark": "",
+        },
+    ]
+
+    export_trackside_ap_business_xlsx(
+        output,
+        [],
+        TRACKSIDE_AP_BUSINESS_EXPORT_COLUMNS,
+        [i18n.t(key) for key, _field in TRACKSIDE_AP_BUSINESS_EXPORT_COLUMNS],
+        overview_rows,
+        AP_ONLINE_OVERVIEW_COLUMNS,
+        [i18n.t(key) for key, _field in AP_ONLINE_OVERVIEW_COLUMNS],
+    )
+
+    workbook = load_workbook(output)
+    sheet = workbook["AP上线情况概览"]
+    optical_column = next(
+        index
+        for index, (_key, field) in enumerate(AP_ONLINE_OVERVIEW_COLUMNS, start=1)
+        if field == "optical_problem_count"
+    )
+    assert sheet.cell(4, optical_column).fill.fgColor.rgb == "FFFEE2E2"
+    assert sheet.cell(6, optical_column).fill.fgColor.rgb == "FFFEE2E2"
+    assert sheet.cell(5, optical_column).fill.fgColor.rgb != "FFFEE2E2"
+    assert sheet.cell(4, 1).fill.fgColor.rgb == "FFDCFCE7"
+    assert sheet.cell(6, 1).fill.fgColor.rgb == "FFDBEAFE"
+
+
+def test_persisted_optical_treatment_export_keeps_complete_ledger_population() -> None:
+    persisted_rows = [
+        {
+            "ap_uuid": "ap-active",
+            "ap_name": "AP-ACTIVE",
+            "ap_mac": "0011-2233-4455",
+            "serial_number": "SN-ACTIVE",
+            "station_name": "",
+            "current_abnormal_side": "AP",
+            "current_ap_status": "alarm",
+            "current_status": "ABNORMAL",
+            "treatment_status": "PENDING",
+            "first_detected_at": "2026-08-30T10:00:00",
+            "first_ap_rx_dbm": "-24.00",
+            "current_ap_rx_dbm": "-25.00",
+        },
+        {
+            "ap_uuid": "ap-recovered",
+            "ap_name": "AP-RECOVERED",
+            "ap_mac": "0011-2233-4466",
+            "serial_number": "SN-RECOVERED",
+            "station_name": "站点B",
+            "current_abnormal_side": "NONE",
+            "current_status": "RECOVERED",
+            "treatment_status": "RESOLVED",
+            "last_resolved_at": "2026-08-31T10:00:00",
+        },
+        {
+            "ap_uuid": "",
+            "ap_name": "",
+            "ap_mac": "",
+            "serial_number": "",
+            "station_name": "",
+            "current_abnormal_side": "SWITCH",
+            "current_switch_status": "warning",
+            "current_status": "ABNORMAL",
+            "treatment_status": "PENDING",
+            "switch_name": "SW-ONLY",
+            "switch_interface": "XGE1/0/9",
+        },
+    ]
+
+    exported = _export_persisted_optical_treatments(
+        persisted_rows,
+        business_rows=[
+            {
+                "ap_uuid": "ap-active",
+                "site": "站点A",
+                "device_name": "SW-A",
+                "interface_name": "XGE1/0/1",
+            },
+            {
+                "ap_uuid": "ap-extra-current-only",
+                "site": "站点C",
+                "optical_severity": "alarm",
+            },
+        ],
+    )
+
+    assert len(exported) == len(persisted_rows)
+    assert exported[0]["site"] == "站点A"
+    assert exported[0]["treatment_status"] == "未处理"
+    assert exported[1]["treatment_status"] == "已处理"
+    assert exported[2]["side"] == "交换机侧"
+    assert exported[2]["device_name"] == "SW-ONLY"
+    assert exported[2]["interface_name"] == "XGE1/0/9"
+    assert exported[2]["ap_name"] == ""
+    assert exported[2]["ap_mac"] == ""
+    assert exported[2]["serial_number"] == ""
 
 
 def test_trackside_business_sheet_registry_keeps_overview_identities_distinct() -> None:

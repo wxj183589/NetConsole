@@ -375,6 +375,14 @@ def write_ap_online_overview_sheet(sheet, rows: list[dict[str, object | None]], 
     from openpyxl.styles import PatternFill
 
     sheet.append(headers)
+    optical_problem_column = next(
+        (
+            column_index
+            for column_index, (_key, field) in enumerate(AP_ONLINE_OVERVIEW_COLUMNS, start=1)
+            if field == "optical_problem_count"
+        ),
+        None,
+    )
     for row in rows:
         sheet.append([_display_value(row.get(field)) for _key, field in AP_ONLINE_OVERVIEW_COLUMNS])
         fill = overview_row_fill(row)
@@ -383,6 +391,13 @@ def write_ap_online_overview_sheet(sheet, rows: list[dict[str, object | None]], 
                 cell.fill = fill
         if int(row.get("offline") or 0) > 0:
             sheet.cell(sheet.max_row, 4).fill = PatternFill(
+                fill_type="solid",
+                fgColor="FFFEE2E2",
+            )
+        if optical_problem_column is not None and int(
+            row.get("optical_problem_count") or 0
+        ) > 0:
+            sheet.cell(sheet.max_row, optical_problem_column).fill = PatternFill(
                 fill_type="solid",
                 fgColor="FFFEE2E2",
             )

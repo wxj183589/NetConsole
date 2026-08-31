@@ -236,8 +236,6 @@ TRACKSIDE_AP_BUSINESS_EXPORT_COLUMNS = (
     ("ac.indoor_switch", "device_name"),
     ("details.interface_name", "interface_name"),
     ("details.link", "link_status"),
-    ("trackside.recognition_status", "recognition_status"),
-    ("trackside.primary_reason_code", "primary_reason_code"),
     ("ac.indoor_switch_rx_power", "switch_rx_power"),
     ("trackside.switch_optical_status", "switch_optical_status"),
     ("ac.ap_mac", "ap_mac"),
@@ -4263,6 +4261,14 @@ def _append_ap_overview_sheet(
     if online_rate_column is not None:
         for row_index in range(4, 4 + len(display_rows)):
             sheet.cell(row=row_index, column=online_rate_column).number_format = "0.0%"
+    optical_problem_column = next(
+        (
+            column_index
+            for column_index, (_key, field) in enumerate(display_columns, start=1)
+            if field == "optical_problem_count"
+        ),
+        None,
+    )
     from openpyxl.styles import PatternFill
 
     for row_index, source_row in enumerate(display_rows, start=4):
@@ -4272,6 +4278,13 @@ def _append_ap_overview_sheet(
                 cell.fill = fill
         if int(source_row.get("offline") or 0) > 0:
             sheet.cell(row_index, 4).fill = PatternFill(
+                fill_type="solid",
+                fgColor=_opaque_argb("FEE2E2"),
+            )
+        if optical_problem_column is not None and int(
+            source_row.get("optical_problem_count") or 0
+        ) > 0:
+            sheet.cell(row_index, optical_problem_column).fill = PatternFill(
                 fill_type="solid",
                 fgColor=_opaque_argb("FEE2E2"),
             )
