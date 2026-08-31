@@ -382,8 +382,6 @@ class TracksideApOnlineStatusRowDTO(ApiModel):
     actual_online_count: int = Field(default=0, ge=0)
     offline_count: int = Field(default=0, ge=0)
     online_rate: float | None = None
-    reonline_count: int = Field(default=0, ge=0)
-    reonline_rate: float | None = None
     optical_problem_count: int = Field(default=0, ge=0)
     remark: str = ""
     planning_missing: bool = False
@@ -411,8 +409,6 @@ class TracksideApOnlineStatusDTO(ApiModel):
     actual_online_count: int = Field(default=0, ge=0)
     offline_count: int = Field(default=0, ge=0)
     online_rate: float | None = None
-    reonline_count: int = Field(default=0, ge=0)
-    reonline_rate: float | None = None
     optical_problem_count: int = Field(default=0, ge=0)
     unassigned_count: int = 0
     unassigned_items: list[TracksideApUnassignedDTO] = Field(default_factory=list)

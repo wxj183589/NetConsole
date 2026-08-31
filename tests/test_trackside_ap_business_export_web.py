@@ -623,9 +623,11 @@ def test_trackside_business_workbook_preserves_sheets_and_export_style(
     overview = workbook["AP上线情况概览"]
     assert overview["A1"].value == "日期：2026-08-07"
     assert overview["A2"].value == "更新时间：2026-08-07 20:15:38"
-    assert [cell.value for cell in overview[3]] == [
+    overview_headers = [cell.value for cell in overview[3]]
+    assert overview_headers == [
         i18n.t(key) for key, _field in AP_ONLINE_OVERVIEW_COLUMNS
     ]
+    assert not any("再上线" in str(value) for value in overview_headers)
     assert overview["E4"].value == 0.5
     assert overview["E4"].number_format == "0.0%"
     assert overview["E5"].value == 0.5
@@ -698,8 +700,6 @@ def test_ap_online_history_block_has_dynamic_blank_separator() -> None:
             "online": 1,
             "offline": 1,
             "online_rate": "50.0%",
-            "reonline_count": 0,
-            "reonline_rate": "0.0%",
             "optical_problem_count": 0,
             "remark": "",
         },
@@ -709,15 +709,13 @@ def test_ap_online_history_block_has_dynamic_blank_separator() -> None:
             "online": 1,
             "offline": 1,
             "online_rate": "50.0%",
-            "reonline_count": 0,
-            "reonline_rate": "0.0%",
             "optical_problem_count": 0,
             "remark": "",
         },
     ]
     headers = [
         "归属站点", "规划AP总数量", "上线", "未上线", "上线率",
-        "再上线数", "再上线率", "光衰问题数", "备注",
+        "光衰问题数", "备注",
     ]
 
     block = build_ap_online_history_block(
@@ -729,12 +727,12 @@ def test_ap_online_history_block_has_dynamic_blank_separator() -> None:
     )
 
     assert block.cells() == [
-        ["日期：2026-08-07", None, None, None, None, None, None, None, None],
-        ["更新时间：2026-08-07 20:15:38", None, None, None, None, None, None, None, None],
+        ["日期：2026-08-07", None, None, None, None, None, None],
+        ["更新时间：2026-08-07 20:15:38", None, None, None, None, None, None],
         headers,
-        ["站点A", "2", "1", "1", 0.5, "0", "0.0%", "0", "-"],
-        ["合计", "2", "1", "1", 0.5, "0", "0.0%", "0", "-"],
-        [None, None, None, None, None, None, None, None, None],
+        ["站点A", "2", "1", "1", 0.5, "0", "-"],
+        ["合计", "2", "1", "1", 0.5, "0", "-"],
+        [None, None, None, None, None, None, None],
     ]
 
 

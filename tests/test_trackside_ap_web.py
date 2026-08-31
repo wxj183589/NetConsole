@@ -2273,6 +2273,12 @@ def test_trackside_ap_online_status_uses_planned_targets_and_weighted_total(
     assert status.excluded_items == []
     assert status.unmatched_online_items == []
     assert status.unassigned_items == []
+    assert "reonline_count" not in status.model_dump()
+    assert "reonline_rate" not in status.model_dump()
+    assert all(
+        "reonline_count" not in row.model_dump() and "reonline_rate" not in row.model_dump()
+        for row in status.items
+    )
     cached_status = service.get_trackside_ap_online_status("demo")
     assert cached_status.cache_hit is True
     assert cached_status.revision == status.revision

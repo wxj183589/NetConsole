@@ -226,11 +226,13 @@ function onlineStatus() {
       {
         station_id: 'station-a', station_name: '站点A', planned_ap_count: 24,
         actual_online_count: 24, offline_count: 0, online_rate: 100,
+        optical_problem_count: 2,
         remark: '', planning_missing: false, count_anomaly: false, status: 'normal', warning: '',
       },
       {
         station_id: 'station-b', station_name: '站点B', planned_ap_count: 28,
         actual_online_count: 27, offline_count: 1, online_rate: 96.4,
+        optical_problem_count: 1,
         remark: '存在离线 AP', planning_missing: false, count_anomaly: true, status: 'normal', warning: '存在离线 AP',
       },
     ],
@@ -251,6 +253,7 @@ function onlineStatus() {
     fit_ap_unmatched_online_count: 46,
     fit_ap_offline_total_count: 14,
     fit_ap_unknown_total_count: 0,
+    optical_problem_count: 3,
   }
 }
 
@@ -261,6 +264,7 @@ function onlineStatusColumnsForTest(): Array<{ property: string }> {
     'actual_online_count',
     'offline_count',
     'online_rate',
+    'optical_problem_count',
     'status',
     'warning',
   ].map((property) => ({ property }))
@@ -1058,9 +1062,10 @@ describe('TracksideApBusinessView mounted behavior', () => {
 
     expect(api.getTracksideApOnlineStatus).toHaveBeenCalledOnce()
     const overview = wrapper.get('[data-testid="trackside-online-overview"]')
-    for (const expected of ['FIT-AP 总数992', '实际在线978', '上线率98.6%', '已关联上线932', '未完成关联在线 AP46', '实际离线14', '状态未知0']) {
+    for (const expected of ['FIT-AP 总数992', '实际在线978', '上线率98.6%', '光衰问题3', '已关联上线932', '未完成关联在线 AP46', '实际离线14', '状态未知0']) {
       expect(overview.text()).toContain(expected)
     }
+    expect(onlineStatus().items.reduce((total, row) => total + (row.optical_problem_count ?? 0), 0)).toBe(onlineStatus().optical_problem_count)
 
     await button(wrapper, '查看站点明细').trigger('click')
     await flushPromises()
@@ -1070,9 +1075,10 @@ describe('TracksideApBusinessView mounted behavior', () => {
     expect(dialog.attributes('data-align-center')).toBe('true')
     expect(dialog.find('.online-status-dialog-body').exists()).toBe(true)
     const summary = wrapper.get('[data-testid="trackside-online-status-summary"]')
-    for (const expected of ['总计', '规划 AP992', '实际在线978', '离线14', '上线率98.6%', '站点11']) {
+    for (const expected of ['总计', '规划 AP992', '实际在线978', '离线14', '上线率98.6%', '光衰问题数3', '站点11']) {
       expect(summary.text()).toContain(expected)
     }
+    expect(summary.text()).not.toContain('再上线')
     const detailTable = wrapper.findAllComponents(NcDataTableStub).find(
       (table) => table.props('tableId') === 'trackside-ap-business-online-status',
     )
@@ -1086,6 +1092,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
       expect.objectContaining({ key: 'actual_online_count' }),
       expect.objectContaining({ key: 'offline_count' }),
       expect.objectContaining({ key: 'online_rate' }),
+      expect.objectContaining({ key: 'optical_problem_count' }),
       expect.objectContaining({ key: 'status' }),
       expect.objectContaining({ key: 'warning' }),
     ]))
@@ -1117,12 +1124,12 @@ describe('TracksideApBusinessView mounted behavior', () => {
     })
 
     expect(footer.slice(0, 5)).toEqual(['合计', '945', '932', '13', '98.6%'])
-    expect(footer[5]).toMatchObject({ props: { type: 'warning' }, children: '存在离线' })
-    expect(footer[6]).toBe('—')
+    expect(footer[5]).toBe('3')
+    expect(footer[6]).toMatchObject({ props: { type: 'warning' }, children: '存在告警' })
     expect(summaryMethod({
       columns: onlineStatusColumnsForTest().filter((column) => column.property !== 'warning'),
       data: onlineStatus().items,
-    })).toHaveLength(6)
+    })).toHaveLength(7)
     wrapper.unmount()
   })
 
@@ -1132,6 +1139,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
       actual_online_count: 992,
       offline_count: 0,
       online_rate: 100,
+      optical_problem_count: 0,
     })
     const wrapper = await mountView()
 
@@ -1146,7 +1154,38 @@ describe('TracksideApBusinessView mounted behavior', () => {
     }) => Array<string | { props?: { type?: string }; children?: string }>
     const footer = summaryMethod({ columns: onlineStatusColumnsForTest(), data: onlineStatus().items })
 
-    expect(footer[5]).toMatchObject({ props: { type: 'success' }, children: '正常' })
+    expect(footer[6]).toMatchObject({ props: { type: 'success' }, children: '正常' })
+    expect(wrapper.get('[data-testid="trackside-online-overview"]').text()).toContain('光衰问题0')
+    wrapper.unmount()
+  })
+
+  it('marks a station with optical problems even when it has no offline AP', async () => {
+    const status = onlineStatus()
+    api.getTracksideApOnlineStatus.mockResolvedValue({
+      ...status,
+      offline_count: 0,
+      optical_problem_count: 2,
+      items: [{
+        ...status.items[0],
+        offline_count: 0,
+        optical_problem_count: 2,
+        warning: '',
+        count_anomaly: false,
+      }],
+    })
+    const wrapper = await mountView()
+
+    await button(wrapper, '查看站点明细').trigger('click')
+    await flushPromises()
+    const detailTable = wrapper.findAllComponents(NcDataTableStub).find(
+      (table) => table.props('tableId') === 'trackside-ap-business-online-status',
+    )
+    const statusColumn = (detailTable?.props('columns') as Array<{
+      key: string
+      displayValue?: (row: typeof status.items[number]) => string
+    }>).find((column) => column.key === 'status')
+
+    expect(statusColumn?.displayValue?.(status.items[0])).toBe('存在光衰问题')
     wrapper.unmount()
   })
 
@@ -1280,10 +1319,48 @@ describe('TracksideApBusinessView mounted behavior', () => {
     host.unmount()
   })
 
+  it('refreshes the business page and online overview from the manual refresh button', async () => {
+    const wrapper = await mountView()
+    const nextStatus = {
+      ...onlineStatus(),
+      actual_online_count: 104,
+      offline_count: 1,
+      online_rate: 99,
+      fit_ap_online_total_count: 104,
+      fit_ap_offline_total_count: 1,
+      optical_problem_count: 3,
+    }
+    api.listTracksideApBusiness.mockClear()
+    api.getTracksideApOnlineStatus.mockClear()
+    api.listTracksideApBusiness.mockResolvedValue(page(rows))
+    api.getTracksideApOnlineStatus.mockResolvedValue(nextStatus)
+
+    await button(wrapper, '刷新').trigger('click')
+    await flushPromises()
+
+    expect(api.listTracksideApBusiness).toHaveBeenCalledOnce()
+    expect(api.getTracksideApOnlineStatus).toHaveBeenCalledOnce()
+    const overview = wrapper.get('[data-testid="trackside-online-overview"]')
+    expect(overview.text()).toContain('实际在线104')
+    expect(overview.text()).toContain('实际离线1')
+    expect(overview.text()).toContain('光衰问题3')
+    wrapper.unmount()
+  })
+
   it('refreshes once after a related task completes while the page is inactive', async () => {
     const host = await mountCachedView()
     api.listTracksideApBusiness.mockClear()
+    api.getTracksideApOnlineStatus.mockClear()
     api.listTracksideApBusiness.mockResolvedValue(page(rows))
+    api.getTracksideApOnlineStatus.mockResolvedValue({
+      ...onlineStatus(),
+      actual_online_count: 104,
+      offline_count: 1,
+      online_rate: 99,
+      fit_ap_online_total_count: 104,
+      fit_ap_offline_total_count: 1,
+      optical_problem_count: 3,
+    })
 
     ;(host.vm as unknown as { active: boolean }).active = false
     await host.vm.$nextTick()
@@ -1297,13 +1374,47 @@ describe('TracksideApBusinessView mounted behavior', () => {
     ;(host.vm as unknown as { active: boolean }).active = true
     await flushPromises()
     expect(api.listTracksideApBusiness).toHaveBeenCalledTimes(1)
+    expect(api.getTracksideApOnlineStatus).toHaveBeenCalledTimes(1)
+    expect(host.getComponent(TracksideApBusinessView).text()).toContain('实际在线104')
+    expect(host.getComponent(TracksideApBusinessView).text()).toContain('光衰问题3')
 
     ;(host.vm as unknown as { active: boolean }).active = false
     await host.vm.$nextTick()
     ;(host.vm as unknown as { active: boolean }).active = true
     await flushPromises()
     expect(api.listTracksideApBusiness).toHaveBeenCalledTimes(1)
+    expect(api.getTracksideApOnlineStatus).toHaveBeenCalledTimes(1)
     host.unmount()
+  })
+
+  it('refreshes the online overview after a failed terminal projection task', async () => {
+    const wrapper = await mountView()
+    api.listTracksideApBusiness.mockClear()
+    api.getTracksideApOnlineStatus.mockClear()
+    api.listTracksideApBusiness.mockResolvedValue(page(rows))
+    api.getTracksideApOnlineStatus.mockResolvedValue({
+      ...onlineStatus(),
+      actual_online_count: 103,
+      offline_count: 2,
+      online_rate: 98.1,
+      fit_ap_online_total_count: 103,
+      fit_ap_offline_total_count: 2,
+      optical_problem_count: 4,
+    })
+    taskApi.listTasks.mockResolvedValueOnce([
+      globalTask('failed-optical-refresh', 'FAILED', 'ac_fit_ap_optical_refresh'),
+    ])
+
+    await useTaskStore().refresh()
+    await flushPromises()
+
+    expect(api.listTracksideApBusiness).toHaveBeenCalledOnce()
+    expect(api.getTracksideApOnlineStatus).toHaveBeenCalledOnce()
+    const overview = wrapper.get('[data-testid="trackside-online-overview"]')
+    expect(overview.text()).toContain('实际在线103')
+    expect(overview.text()).toContain('实际离线2')
+    expect(overview.text()).toContain('光衰问题4')
+    wrapper.unmount()
   })
 
   it('discards the current site page and ignores a request that finishes after site switch', async () => {
@@ -1859,6 +1970,16 @@ describe('TracksideApBusinessView mounted behavior', () => {
     ;(wrapper.vm as unknown as { filters: { query: string; page: number } }).filters.query = 'AP-A'
     ;(wrapper.vm as unknown as { filters: { page: number } }).filters.page = 2
     api.listTracksideApBusiness.mockClear()
+    api.getTracksideApOnlineStatus.mockClear()
+    api.getTracksideApOnlineStatus.mockResolvedValue({
+      ...onlineStatus(),
+      actual_online_count: 104,
+      offline_count: 1,
+      online_rate: 99,
+      fit_ap_online_total_count: 104,
+      fit_ap_offline_total_count: 1,
+      optical_problem_count: 3,
+    })
 
     await button(wrapper, '更新全部光衰').trigger('click')
     await flushPromises()
@@ -1875,6 +1996,10 @@ describe('TracksideApBusinessView mounted behavior', () => {
       page: 2,
       page_size: 50,
     })
+    expect(api.listTracksideApBusiness).toHaveBeenCalledTimes(1)
+    expect(api.getTracksideApOnlineStatus).toHaveBeenCalledOnce()
+    expect(wrapper.get('[data-testid="trackside-online-overview"]').text()).toContain('实际在线104')
+    expect(wrapper.get('[data-testid="trackside-online-overview"]').text()).toContain('光衰问题3')
     expect(wrapper.text()).not.toContain('轨旁 AP 光衰数据已刷新')
     expect((wrapper.find('.station-select').element as HTMLSelectElement).value).toBe('02-云龙火车站')
     wrapper.unmount()

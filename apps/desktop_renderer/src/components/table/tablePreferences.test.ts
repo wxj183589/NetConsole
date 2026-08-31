@@ -58,6 +58,36 @@ describe('table preferences', () => {
       .toEqual(['name', 'status', 'actions'])
   })
 
+  it('drops retired columns from saved overview layouts', () => {
+    const currentColumns = [
+      { key: 'station_name', visible: true, hideable: true },
+      { key: 'planned_ap_count', visible: true, hideable: true },
+      { key: 'optical_problem_count', visible: true, hideable: true },
+      { key: 'status', visible: true, hideable: true },
+      { key: 'warning', visible: true, hideable: true },
+    ]
+
+    const normalized = reconcileTablePreferences(currentColumns, {
+      version: 1,
+      order: ['station_name', 'reonline_count', 'reonline_rate', 'optical_problem_count', 'status', 'warning'],
+      columns: [
+        { key: 'station_name', visible: true },
+        { key: 'reonline_count', visible: false },
+        { key: 'reonline_rate', visible: true },
+        { key: 'optical_problem_count', visible: true },
+        { key: 'status', visible: true },
+        { key: 'warning', visible: true },
+      ],
+    })
+
+    expect(normalized.order).toEqual([
+      'station_name', 'optical_problem_count', 'status', 'warning', 'planned_ap_count',
+    ])
+    expect(normalized.columns.map((column) => column.key)).toEqual([
+      'station_name', 'optical_problem_count', 'status', 'warning', 'planned_ap_count',
+    ])
+  })
+
   it('falls back to defaults when a saved column contains invalid runtime values', () => {
     const normalized = reconcileTablePreferences(columns, {
       version: 1,

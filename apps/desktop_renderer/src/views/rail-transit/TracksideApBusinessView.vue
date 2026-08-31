@@ -224,8 +224,6 @@ const onlineStatusColumns: NcTableColumn<TracksideApOnlineStatusRow>[] = [
   { key: 'actual_online_count', label: '实际在线', valueType: 'number', width: 110 },
   { key: 'offline_count', label: '离线', valueType: 'number', width: 90 },
   { key: 'online_rate', label: '上线率', valueType: 'number', width: 100, displayValue: (row) => formatOnlineRate(row.online_rate) },
-  { key: 'reonline_count', label: '再上线数', valueType: 'number', width: 110, displayValue: (row) => String(row.reonline_count ?? 0) },
-  { key: 'reonline_rate', label: '再上线率', valueType: 'number', width: 110, displayValue: (row) => formatOnlineRate(row.reonline_rate ?? null) },
   { key: 'optical_problem_count', label: '光衰问题数', valueType: 'number', width: 120, displayValue: (row) => String(row.optical_problem_count ?? 0) },
   { key: 'status', label: '状态', valueType: 'status', width: 150, displayValue: (row) => onlineStatusLabel(row) },
   { key: 'warning', label: '告警', valueType: 'description', minWidth: 280, align: 'left', alignmentReason: 'long-text', showOverflowTooltip: true },
@@ -285,7 +283,6 @@ const onlineOverviewValues = computed(() => ({
   unmatchedOnline: onlineStatus.value?.fit_ap_unmatched_online_count ?? page.value?.fit_ap_unmatched_online_count,
   offline: onlineStatus.value?.fit_ap_offline_total_count ?? page.value?.fit_ap_offline_total_count,
   unknown: onlineStatus.value?.fit_ap_unknown_total_count ?? page.value?.fit_ap_unknown_total_count,
-  reonline: onlineStatus.value?.reonline_count ?? 0,
   opticalProblem: onlineStatus.value?.optical_problem_count ?? 0,
 }))
 const onlineOverviewRate = computed(() => {
@@ -320,14 +317,12 @@ const onlineStatusSummary = computed(() => {
     actualOnlineCount: status.actual_online_count,
     offlineCount: status.offline_count,
     onlineRate: status.online_rate,
-    reonlineCount: status.reonline_count ?? 0,
-    reonlineRate: status.reonline_rate ?? null,
     opticalProblemCount: status.optical_problem_count ?? 0,
     stationCount: status.scope_station_count ?? status.items.length,
   }
 })
 function onlineStatusOverallPresentation(status: TracksideApOnlineStatus): { label: string; tagType: 'success' | 'warning' } {
-  if (status.status === 'anomaly' || status.warning) return { label: '存在告警', tagType: 'warning' }
+  if (status.status === 'anomaly' || status.warning || (status.optical_problem_count ?? 0) > 0) return { label: '存在告警', tagType: 'warning' }
   if (status.offline_count > 0) return { label: '存在离线', tagType: 'warning' }
   return { label: '正常', tagType: 'success' }
 }
@@ -340,8 +335,6 @@ function onlineStatusSummaryMethod({ columns }: { columns: Array<{ property: str
     if (column.property === 'actual_online_count') return String(status.actual_online_count)
     if (column.property === 'offline_count') return String(status.offline_count)
     if (column.property === 'online_rate') return formatOnlineRate(status.online_rate)
-    if (column.property === 'reonline_count') return String(status.reonline_count ?? 0)
-    if (column.property === 'reonline_rate') return formatOnlineRate(status.reonline_rate ?? null)
     if (column.property === 'optical_problem_count') return String(status.optical_problem_count ?? 0)
     if (column.property === 'status') {
       const presentation = onlineStatusOverallPresentation(status)
@@ -505,6 +498,7 @@ function onlineStatusLabel(row: TracksideApOnlineStatusRow): string {
   if (row.status === 'unplanned_online') return '存在未关联'
   if (row.status === 'planning_missing') return '规划缺失'
   if (row.offline_count > 0) return '存在离线'
+  if ((row.optical_problem_count ?? 0) > 0) return '存在光衰问题'
   if (row.warning || row.count_anomaly) return '存在告警'
   return '正常'
 }
@@ -513,7 +507,7 @@ function onlineStatusRowKey(row: TracksideApOnlineStatusRow): string {
 }
 function onlineStatusTagType(row: TracksideApOnlineStatusRow): 'success' | 'warning' | 'danger' | 'info' {
   if (row.status === 'over_planned' || row.status === 'unplanned_online') return 'danger'
-  if (row.status === 'planning_missing' || row.warning || row.offline_count > 0 || row.count_anomaly) return 'warning'
+  if (row.status === 'planning_missing' || row.warning || row.offline_count > 0 || row.count_anomaly || (row.optical_problem_count ?? 0) > 0) return 'warning'
   return 'success'
 }
 async function loadOnlineStatus(force = false): Promise<void> {
@@ -590,6 +584,19 @@ async function loadRows(reset = false, forceNewRevision = false): Promise<boolea
     void loadRows(true)
   }
   return succeeded
+}
+
+interface BusinessProjectionRefreshOptions {
+  reset?: boolean
+  forceNewRevision?: boolean
+}
+
+async function refreshBusinessProjection(options: BusinessProjectionRefreshOptions = {}): Promise<void> {
+  const { reset = false, forceNewRevision = true } = options
+  await Promise.all([
+    loadRows(reset, forceNewRevision),
+    loadOnlineStatus(true),
+  ])
 }
 
 function tableScrollElement(): HTMLElement | null {
@@ -911,7 +918,7 @@ watch(
     if (!newlyCompleted.length) return
     for (const item of newlyCompleted) terminalTaskRefreshes.add(item.id)
     if (newlyCompleted.some((item) => item.type === 'trackside_ap_wps_sync')) void loadWpsTargets()
-    if (pageActive.value) void loadRows(false, true)
+    if (pageActive.value) void refreshBusinessProjection({ forceNewRevision: true })
     else markPageDirty('轨旁 AP 业务相关任务已完成')
   },
 )
@@ -945,11 +952,11 @@ onActivated(() => {
   void restoreTableScroll()
   if (initialLoading.value) return
   if (!page.value) {
-    void loadRows()
+    void refreshBusinessProjection({ forceNewRevision: true })
     return
   }
   if (pageDirty.value || Date.now() - lastLoadedAt.value > BUSINESS_PAGE_STALE_MS) {
-    void loadRows()
+    void refreshBusinessProjection({ forceNewRevision: true })
   }
 })
 
@@ -963,7 +970,7 @@ onMounted(() => {
   window.addEventListener(BEFORE_SITE_SWITCH_EVENT, handleBeforeSiteSwitch)
   window.addEventListener(SITE_CONTEXT_CHANGED_EVENT, handleSiteContextChanged)
   void Promise.all([
-    loadRows().then(() => loadOnlineStatus()),
+    refreshBusinessProjection({ forceNewRevision: true }),
     taskStore.refresh().then(() => {
       currentTaskId.value = taskStore.tasks.find(
         (item) => businessTaskTypes.has(item.type) && activeStates.has(item.status),
@@ -990,7 +997,7 @@ onBeforeUnmount(() => {
     <header class="page-heading">
       <div><p class="eyebrow">RAIL TRANSIT · TRACKSIDE AP</p><h1>轨旁 AP 业务</h1><p>AP 与交换机两侧接收光功率统一按固定业务门限判定，任意一侧越界即计入业务光衰异常。</p></div>
       <div class="actions">
-        <el-button :loading="refreshing" :disabled="initialLoading" @click="loadRows(false, true)">刷新</el-button>
+        <el-button :loading="refreshing" :disabled="initialLoading" @click="refreshBusinessProjection({ forceNewRevision: true })">刷新</el-button>
         <el-button
           type="primary"
           :loading="taskSubmitting"
@@ -1076,6 +1083,7 @@ onBeforeUnmount(() => {
         <span><small>实际物理AP</small><strong>{{ metricValue(page?.physical_ap_total, ['fit_ap_resources']) }}</strong></span>
         <span><small>实际在线</small><strong>{{ metricValue(onlineOverviewValues.actualOnline, ['fit_ap_resources']) }}</strong></span>
         <span><small>上线率</small><strong>{{ onlineOverviewRate }}</strong></span>
+        <span><small>光衰问题</small><strong>{{ metricValue(onlineOverviewValues.opticalProblem, ['fit_ap_resources']) }}</strong></span>
         <span><small>已关联上线</small><strong>{{ metricValue(onlineOverviewValues.matchedOnline, ['fit_ap_resources']) }}</strong></span>
         <span><small>未完成关联在线 AP</small><strong>{{ metricValue(onlineOverviewValues.unmatchedOnline, ['fit_ap_resources']) }}</strong></span>
         <span><small>实际离线</small><strong>{{ metricValue(onlineOverviewValues.offline, ['fit_ap_resources']) }}</strong></span>
@@ -1170,8 +1178,6 @@ onBeforeUnmount(() => {
           <span><small>实际在线</small><b>{{ onlineStatusSummary.actualOnlineCount }}</b></span>
           <span :class="{ 'online-status-summary-offline': onlineStatusSummary.offlineCount > 0 }"><small>离线</small><b>{{ onlineStatusSummary.offlineCount }}</b></span>
           <span><small>上线率</small><b>{{ formatOnlineRate(onlineStatusSummary.onlineRate) }}</b></span>
-          <span><small>再上线数</small><b>{{ onlineStatusSummary.reonlineCount }}</b></span>
-          <span><small>再上线率</small><b>{{ formatOnlineRate(onlineStatusSummary.reonlineRate) }}</b></span>
           <span><small>光衰问题数</small><b>{{ onlineStatusSummary.opticalProblemCount }}</b></span>
           <span><small>站点</small><b>{{ onlineStatusSummary.stationCount }}</b></span>
         </div>
@@ -1189,7 +1195,6 @@ onBeforeUnmount(() => {
             empty-text="暂无站点上线数据"
           >
             <template #cell-online_rate="{ row }">{{ formatOnlineRate(row.online_rate) }}</template>
-            <template #cell-reonline_rate="{ row }">{{ formatOnlineRate(row.reonline_rate ?? null) }}</template>
             <template #cell-status="{ row }"><el-tag :type="onlineStatusTagType(row)">{{ onlineStatusLabel(row) }}</el-tag></template>
             <template #cell-warning="{ row }"><span>{{ row.warning || row.remark || '—' }}</span></template>
           </NcDataTable>

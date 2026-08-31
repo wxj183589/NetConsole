@@ -569,12 +569,7 @@ class EffectiveTracksideApScope:
         optical_problem_counts: Mapping[str, int] | None = None,
     ) -> list[dict[str, object | None]]:
         online_by_station: dict[str, int] = defaultdict(int)
-        reonline_by_station: dict[str, int] = defaultdict(int)
         optical_counts = optical_problem_counts or self.optical_problem_counts
-        for resource in self.resources:
-            station_id = str(resource.get("station_id") or "").strip()
-            if station_id and int(resource.get("connection_reonline_count") or 0) > 0:
-                reonline_by_station[station_id] += 1
         for reference_id in self.online_reference_ids:
             reference = self._reference_by_id.get(reference_id)
             if reference is not None:
@@ -599,7 +594,6 @@ class EffectiveTracksideApScope:
                 or optical_counts.get(station_name)
                 or 0
             )
-            reonline_count = reonline_by_station.get(station_id, 0)
             status = "normal"
             warning = ""
             if planned == 0 and observed_online > 0:
@@ -619,12 +613,6 @@ class EffectiveTracksideApScope:
                     "online_rate": (
                         round(actual * 100 / planned, 1)
                         if planned > 0 and status == "normal"
-                        else None
-                    ),
-                    "reonline_count": reonline_count,
-                    "reonline_rate": (
-                        round(reonline_count * 100 / planned, 1)
-                        if planned > 0
                         else None
                     ),
                     "optical_problem_count": optical_problem_count,
@@ -661,12 +649,6 @@ class EffectiveTracksideApScope:
                         if row.get("online_rate") is not None
                         else "—"
                     ),
-                    "reonline_count": row["reonline_count"],
-                    "reonline_rate": (
-                        f"{float(row['reonline_rate']):.1f}%"
-                        if row.get("reonline_rate") is not None
-                        else "—"
-                    ),
                     "optical_problem_count": row["optical_problem_count"],
                     "remark": "；".join(value for value in (remark, warning) if value),
                     "status": row["status"],
@@ -684,7 +666,6 @@ class EffectiveTracksideApScope:
             + self.fit_ap_switch_data_incomplete_count
         )
         online_total = min(matched_online_total, planned_total)
-        reonline_total = sum(int(row.get("reonline_count") or 0) for row in station_rows)
         optical_problem_total = sum(
             int(row.get("optical_problem_count") or 0) for row in station_rows
         )
@@ -713,12 +694,6 @@ class EffectiveTracksideApScope:
                 "online_rate": (
                     f"{online_total / planned_total:.1%}"
                     if planned_total > 0 and not total_anomaly
-                    else "—"
-                ),
-                "reonline_count": reonline_total,
-                "reonline_rate": (
-                    f"{reonline_total / planned_total:.1%}"
-                    if planned_total > 0
                     else "—"
                 ),
                 "optical_problem_count": optical_problem_total,

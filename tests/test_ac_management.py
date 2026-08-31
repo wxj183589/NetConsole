@@ -4098,7 +4098,12 @@ def test_optical_color_legend_does_not_expose_threshold_rules():
 
 def test_ap_online_overview_rows_count_states_and_total_bottom():
     rows = [
-        {"ap_name": "AP-2-1", "site": "02云龙火车站站", "state": "R/M"},
+        {
+            "ap_name": "AP-2-1",
+            "site": "02云龙火车站站",
+            "state": "R/M",
+            "connection_reonline_count": 10,
+        },
         {"ap_name": "AP-2-2", "site": "02云龙火车站站", "state": "R/B"},
         {"ap_name": "AP-1-1", "site": "01小洋江站", "state": "I"},
         {"ap_name": "AP-1-2", "site": "01小洋江站", "state": "JA"},
@@ -4112,8 +4117,6 @@ def test_ap_online_overview_rows_count_states_and_total_bottom():
         "total": 3,
         "online": 1,
         "offline": 2,
-        "reonline_count": 0,
-        "reonline_rate": "0.0%",
         "optical_problem_count": 0,
         "remark": "",
         "online_rate": "33.3%",
@@ -4123,8 +4126,6 @@ def test_ap_online_overview_rows_count_states_and_total_bottom():
         "total": 2,
         "online": 2,
         "offline": 0,
-        "reonline_count": 0,
-        "reonline_rate": "0.0%",
         "optical_problem_count": 0,
         "remark": "",
         "online_rate": "100.0%",
@@ -4134,8 +4135,6 @@ def test_ap_online_overview_rows_count_states_and_total_bottom():
         "total": 5,
         "online": 3,
         "offline": 2,
-        "reonline_count": 0,
-        "reonline_rate": "0.0%",
         "optical_problem_count": 0,
         "remark": "",
         "online_rate": "60.0%",
@@ -4280,8 +4279,6 @@ def test_ap_online_overview_uses_ap_metadata_as_total_baseline():
         "total": 30,
         "online": 26,
         "offline": 4,
-        "reonline_count": 0,
-        "reonline_rate": "0.0%",
         "optical_problem_count": 0,
         "remark": "",
         "online_rate": "86.7%",
@@ -4291,8 +4288,6 @@ def test_ap_online_overview_uses_ap_metadata_as_total_baseline():
         "total": 56,
         "online": 48,
         "offline": 8,
-        "reonline_count": 0,
-        "reonline_rate": "0.0%",
         "optical_problem_count": 0,
         "remark": "",
         "online_rate": "85.7%",
@@ -4302,8 +4297,6 @@ def test_ap_online_overview_uses_ap_metadata_as_total_baseline():
         "total": 1,
         "online": 1,
         "offline": 0,
-        "reonline_count": 0,
-        "reonline_rate": "0.0%",
         "optical_problem_count": 0,
         "remark": "",
         "online_rate": "100.0%",
@@ -4313,8 +4306,6 @@ def test_ap_online_overview_uses_ap_metadata_as_total_baseline():
         "total": 87,
         "online": 75,
         "offline": 12,
-        "reonline_count": 0,
-        "reonline_rate": "0.0%",
         "optical_problem_count": 0,
         "remark": "",
         "online_rate": "86.2%",
@@ -4641,8 +4632,6 @@ def test_ap_online_overview_standard_large_sample_matches_expected_totals():
         "total": 948,
         "online": 773,
         "offline": 175,
-        "reonline_count": 0,
-        "reonline_rate": "0.0%",
         "optical_problem_count": 0,
         "remark": "",
         "online_rate": "81.5%",
@@ -4738,7 +4727,7 @@ def test_export_ap_online_overview_xlsx_contains_colors_and_alignment(tmp_path):
     rows[1]["remark"] = "Need check"
     headers = [
         "Station", "AP Total", "Online", "Offline", "Online Rate",
-        "Re-online Count", "Re-online Rate", "Optical Problems", "Remark",
+        "Optical Problems", "Remark",
     ]
 
     export_ap_online_overview_xlsx(export_path, rows, headers)
@@ -4753,7 +4742,7 @@ def test_export_ap_online_overview_xlsx_contains_colors_and_alignment(tmp_path):
     assert sheet.column_dimensions["A"].width > len("车站")
     assert sheet["A2"].fill.fgColor.rgb == "FFDCFCE7"
     assert sheet["D3"].fill.fgColor.rgb == "FFFEE2E2"
-    assert sheet["I3"].value == "Need check"
+    assert sheet["G3"].value == "Need check"
 
 
 def test_trackside_ap_description_filter_is_case_insensitive():

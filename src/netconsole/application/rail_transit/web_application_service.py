@@ -1203,7 +1203,6 @@ class RailTransitWebApplicationService:
         planned_total = sum(row.planned_ap_count for row in result)
         matched_online_total = sum(row.actual_online_count for row in result)
         actual_online_total = min(matched_online_total, planned_total)
-        reonline_total = sum(row.reonline_count for row in result)
         optical_problem_total = sum(row.optical_problem_count for row in result)
         anomaly = any(row.count_anomaly for row in result)
         warning_parts = []
@@ -1221,12 +1220,6 @@ class RailTransitWebApplicationService:
             online_rate=(
                 round(actual_online_total * 100 / planned_total, 1)
                 if planned_total and not anomaly
-                else None
-            ),
-            reonline_count=reonline_total,
-            reonline_rate=(
-                round(reonline_total * 100 / planned_total, 1)
-                if planned_total
                 else None
             ),
             optical_problem_count=optical_problem_total,

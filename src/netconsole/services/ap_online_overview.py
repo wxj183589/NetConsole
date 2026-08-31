@@ -17,8 +17,6 @@ AP_ONLINE_OVERVIEW_COLUMNS = (
     ("ac.online", "online"),
     ("ac.offline", "offline"),
     ("ac.online_rate", "online_rate"),
-    ("trackside.reonline_count", "reonline_count"),
-    ("trackside.reonline_rate", "reonline_rate"),
     ("trackside.optical_problem_count", "optical_problem_count"),
     ("field.remark", "remark"),
 )
@@ -74,9 +72,6 @@ def build_ap_online_overview_rows(
     for site, count in _station_optical_problem_counts(normalized_optical).items():
         item = grouped.setdefault(site, {"site": site, "total": 0, "online": 0, "offline": 0, "remark": ""})
         item["optical_problem_count"] = count
-    for site, count in (stats.get("station_reonline_counts") or {}).items():
-        item = grouped.setdefault(site, {"site": site, "total": 0, "online": 0, "offline": 0, "remark": ""})
-        item["reonline_count"] = count
     rows = build_rows(grouped)
     _log_overview_diagnostics(normalized_metadata, raw_metadata_count, normalized_resources, normalized_optical, capacity_map or {}, rows, stats)
     return rows
@@ -242,7 +237,6 @@ def build_online_counts(
         "matched_by_known_resource_site": 0,
         "unmatched_online": 0,
         "station_online_counts": {},
-        "station_reonline_counts": {},
         "unmatched_sample": [],
     }
     seen_online: set[str] = set()
@@ -277,10 +271,6 @@ def build_online_counts(
         station_counts = stats["station_online_counts"]
         if isinstance(station_counts, dict):
             station_counts[site] = int(station_counts.get(site) or 0) + 1
-        if int(resource.get("connection_reonline_count") or 0) > 0:
-            reonline_counts = stats["station_reonline_counts"]
-            if isinstance(reonline_counts, dict):
-                reonline_counts[site] = int(reonline_counts.get(site) or 0) + 1
     return stats
 
 
@@ -295,12 +285,6 @@ def build_rows(grouped: dict[str, dict[str, object | None]]) -> list[dict[str, o
             "total": total,
             "online": online,
             "offline": max(total - online, 0),
-            "reonline_count": int(row.get("reonline_count") or 0),
-            "reonline_rate": (
-                round(int(row.get("reonline_count") or 0) * 100 / total, 1)
-                if total > 0
-                else None
-            ),
             "optical_problem_count": int(row.get("optical_problem_count") or 0),
             "remark": row.get("remark") or "",
         }
@@ -310,15 +294,12 @@ def build_rows(grouped: dict[str, dict[str, object | None]]) -> list[dict[str, o
     total = sum(int(row.get("total") or 0) for row in result)
     online = sum(int(row.get("online") or 0) for row in result)
     offline = sum(int(row.get("offline") or 0) for row in result)
-    reonline = sum(int(row.get("reonline_count") or 0) for row in result)
     optical_problem = sum(int(row.get("optical_problem_count") or 0) for row in result)
     total_row = {
         "site": TOTAL_SITE_LABEL,
         "total": total,
         "online": online,
         "offline": offline,
-        "reonline_count": reonline,
-        "reonline_rate": round(reonline * 100 / total, 1) if total > 0 else None,
         "optical_problem_count": optical_problem,
         "remark": "",
     }
@@ -590,12 +571,6 @@ def _with_online_rate(row: dict[str, object | None]) -> dict[str, object | None]
     row["online_rate"] = (
         f"{online / total:.1%}"
         if total > 0 and online <= total
-        else "—"
-    )
-    reonline = int(row.get("reonline_count") or 0)
-    row["reonline_rate"] = (
-        f"{reonline / total:.1%}"
-        if total > 0
         else "—"
     )
     return row
