@@ -83,6 +83,8 @@ def test_trackside_export_columns_keep_fixed_business_order():
         "device_name",
         "interface_name",
         "link_status",
+        "recognition_status",
+        "primary_reason_code",
         "switch_rx_power",
         "switch_optical_status",
         "ap_mac",

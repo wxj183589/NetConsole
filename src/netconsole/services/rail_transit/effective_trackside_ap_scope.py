@@ -278,6 +278,15 @@ class EffectiveTracksideApScope:
         return len(self.references)
 
     @property
+    def planned_ap_total(self) -> int:
+        """Total AP records in the active trackside planning scope."""
+
+        return sum(
+            max(int(plan.get("ap_count") or 0), 0)
+            for plan in self.plans_by_station.values()
+        )
+
+    @property
     def fit_ap_matched_count(self) -> int:
         return len(self.resources)
 

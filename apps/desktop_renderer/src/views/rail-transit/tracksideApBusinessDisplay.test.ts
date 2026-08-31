@@ -2,11 +2,14 @@ import { describe, expect, it } from 'vitest'
 
 import {
   displayLldpStatus,
+  displayTracksideApReason,
+  displayTracksideApRecognitionStatus,
   displaySwitchVendor,
   displayTracksideSnapshotTime,
   displayTracksideValue,
   tracksideBusinessOpticalPresentation,
   tracksideDeviceOpticalPresentation,
+  tracksideApRecognitionPresentation,
   tracksideOpticalPresentation,
   tracksideRxPresentation,
 } from './tracksideApBusinessDisplay'
@@ -42,6 +45,20 @@ describe('trackside AP business display', () => {
   it('formats ZTE vendor and LLDP verification semantics', () => {
     expect(displaySwitchVendor('ZTE')).toBe('中兴 ZTE')
     expect(displayLldpStatus('SAMPLE_REQUIRED')).toBe('待真实样本验证')
+  })
+
+  it('keeps configured empty ports neutral and explains unidentified reasons', () => {
+    expect(displayTracksideApRecognitionStatus('unidentified')).toBe('未识别')
+    expect(displayTracksideApReason('EMPTY_CONFIGURED_PORT')).toBe('空闲/未接 AP')
+    expect(displayTracksideApReason('LLDP_STALE')).toBe('LLDP 数据过旧')
+    expect(tracksideApRecognitionPresentation('unidentified')).toMatchObject({
+      label: '未识别',
+      tagType: 'info',
+    })
+    expect(tracksideApRecognitionPresentation('identified')).toMatchObject({
+      label: '已识别',
+      tagType: 'success',
+    })
   })
 
   it('marks stale switch snapshots without presenting them as current', () => {

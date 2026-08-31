@@ -15,6 +15,43 @@ export interface TracksideOpticalPresentation {
   className: string
 }
 
+export type TracksideApRecognitionTagType = 'success' | 'warning' | 'info'
+
+export interface TracksideApRecognitionPresentation {
+  label: string
+  tagType: TracksideApRecognitionTagType
+  className: string
+}
+
+const tracksideApReasonLabels: Record<string, string> = {
+  EMPTY_CONFIGURED_PORT: '空闲/未接 AP',
+  AP_OFFLINE_NO_IDENTITY: 'AP 离线，Identity 不足',
+  FIT_AP_NOT_MATCHED: '未匹配 FIT-AP',
+  LLDP_MISSING: '缺少 LLDP',
+  LLDP_STALE: 'LLDP 数据过旧',
+  PLANNING_NOT_MATCHED: '未匹配 AP 规划',
+  IDENTITY_INSUFFICIENT: 'Identity 证据不足',
+  OTHER: '其他',
+}
+
+export function displayTracksideApRecognitionStatus(value: unknown): string {
+  return String(value || '').trim().toLowerCase() === 'identified' ? '已识别' : '未识别'
+}
+
+export function displayTracksideApReason(value: unknown): string {
+  const code = String(value || '').trim()
+  return tracksideApReasonLabels[code] || code || '—'
+}
+
+export function tracksideApRecognitionPresentation(value: unknown): TracksideApRecognitionPresentation {
+  const identified = String(value || '').trim().toLowerCase() === 'identified'
+  return {
+    label: identified ? '已识别' : '未识别',
+    tagType: identified ? 'success' : 'info',
+    className: identified ? 'recognition-identified' : 'recognition-unidentified',
+  }
+}
+
 const classByStatus: Record<string, string> = {
   normal: 'optical-normal',
   notice: 'optical-notice',

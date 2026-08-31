@@ -47,9 +47,12 @@ import { activeTaskStatuses } from '../../utils/taskStatus'
 import {
   displayLldpStatus,
   displayPowerThreshold,
+  displayTracksideApReason,
+  displayTracksideApRecognitionStatus,
   displaySwitchVendor,
   displayTracksideSnapshotTime,
   displayTracksideValue,
+  tracksideApRecognitionPresentation,
   tracksideBusinessOpticalPresentation,
   tracksideDeviceOpticalPresentation,
   tracksideRxPresentation,
@@ -155,6 +158,8 @@ const businessColumns: NcTableColumn<TracksideApBusinessRow>[] = [
   { key: 'device_name', label: '车站交换机', valueType: 'name' },
   { key: 'switch_vendor', label: '交换机厂商', valueType: 'name', displayValue: (row) => displaySwitchVendor(row.switch_vendor) },
   { key: 'interface_name', label: '接口', valueType: 'port', displayValue: (row) => displayTracksideValue(displayInterfaceName(row.interface_name)) },
+  { key: 'recognition_status', label: '识别状态', valueType: 'status', cellKind: 'tag', displayValue: (row) => displayTracksideApRecognitionStatus(row.recognition_status) },
+  { key: 'primary_reason_code', label: '未识别原因', valueType: 'description', displayValue: (row) => displayTracksideApReason(row.primary_reason_code), showOverflowTooltip: true },
   { key: 'lldp_match_status', label: 'LLDP 状态', valueType: 'status', displayValue: (row) => displayLldpStatus(row.lldp_match_status) },
   { key: 'link_status', label: '链路', valueType: 'status' },
   { key: 'switch_interface_updated_at', label: t('trackside.snapshot.interface_time', '接口采集时间'), valueType: 'datetime', displayValue: (row) => displayTracksideSnapshotTime(row.switch_interface_updated_at, row.switch_interface_data_status) },
@@ -1053,10 +1058,10 @@ onBeforeUnmount(() => {
     </div>
     <div class="summary-grid" data-testid="trackside-core-summary">
       <article data-metric="switch-devices"><span>站点交换机</span><strong>{{ metricValue(page?.device_count, ['switch_devices']) }}</strong></article>
-      <article data-metric="candidate-interfaces"><span>候选 AP 端口</span><strong>{{ metricValue(page?.candidate_interface_count, ['switch_devices', 'interfaces', 'planning']) }}</strong></article>
+      <article data-metric="configured-ap-ports"><span>AP配置端口数</span><strong>{{ metricValue(page?.configured_ap_port_total ?? page?.candidate_interface_count, ['switch_devices', 'interfaces', 'planning']) }}</strong></article>
       <article data-metric="fit-ap-resources"><span>AC AP 资源</span><strong>{{ metricValue(page?.fit_ap_resource_count, ['fit_ap_resources']) }}</strong></article>
-      <article data-metric="fit-ap-online"><span>实际在线</span><strong>{{ metricValue(onlineOverviewValues.actualOnline, ['fit_ap_resources']) }}</strong></article>
-      <article data-metric="optical-abnormal"><span>业务光衰异常</span><strong>{{ metricValue(page?.optical_abnormal_count, ['interfaces', 'switch_optical', 'fit_ap_optical']) }}</strong></article>
+      <article data-metric="identified-ap-ports"><span>已识别AP端口</span><strong>{{ metricValue(page?.identified_ap_port_total, ['switch_devices', 'interfaces', 'planning']) }}</strong></article>
+      <article data-metric="unidentified-ap-ports"><span>未识别/空闲端口</span><strong>{{ metricValue(page?.unidentified_ap_port_total, ['switch_devices', 'interfaces', 'planning']) }}</strong></article>
     </div>
     <section class="online-overview" data-testid="trackside-online-overview">
       <div class="online-overview-heading">
@@ -1067,6 +1072,8 @@ onBeforeUnmount(() => {
       </div>
       <div class="online-overview-metrics">
         <span><small>FIT-AP 总数</small><strong>{{ metricValue(onlineOverviewValues.fitTotal, ['fit_ap_resources']) }}</strong></span>
+        <span><small>规划AP数</small><strong>{{ metricValue(page?.planned_ap_total, ['planning']) }}</strong></span>
+        <span><small>实际物理AP</small><strong>{{ metricValue(page?.physical_ap_total, ['fit_ap_resources']) }}</strong></span>
         <span><small>实际在线</small><strong>{{ metricValue(onlineOverviewValues.actualOnline, ['fit_ap_resources']) }}</strong></span>
         <span><small>上线率</small><strong>{{ onlineOverviewRate }}</strong></span>
         <span><small>已关联上线</small><strong>{{ metricValue(onlineOverviewValues.matchedOnline, ['fit_ap_resources']) }}</strong></span>
@@ -1130,6 +1137,8 @@ onBeforeUnmount(() => {
         >
           <template #cell-switch_rx_power="{ row }"><span data-testid="trackside-switch-rx" :class="switchRxPresentation(row).className">{{ displayTracksideValue(row.switch_rx_power) }}</span></template>
           <template #cell-switch_tx_power="{ row }"><span data-testid="trackside-switch-tx">{{ displayTracksideValue(row.switch_tx_power) }}</span></template>
+          <template #cell-recognition_status="{ row }"><el-tag :type="tracksideApRecognitionPresentation(row.recognition_status).tagType" :class="tracksideApRecognitionPresentation(row.recognition_status).className">{{ tracksideApRecognitionPresentation(row.recognition_status).label }}</el-tag></template>
+          <template #cell-primary_reason_code="{ row }"><span data-testid="trackside-recognition-reason" :title="row.primary_reason_code || ''" :class="row.primary_reason_code === 'EMPTY_CONFIGURED_PORT' ? 'recognition-reason-neutral' : 'recognition-reason-info'">{{ displayTracksideApReason(row.primary_reason_code) }}</span></template>
           <template #cell-switch_optical_status="{ row }"><el-tag :type="switchRxPresentation(row).tagType" :class="switchRxPresentation(row).className">{{ switchRxPresentation(row).label }}</el-tag></template>
           <template #cell-ap_rx_power="{ row }"><span data-testid="trackside-ap-rx" :class="apRxPresentation(row).className">{{ displayTracksideValue(row.ap_rx_power) }}</span></template>
           <template #cell-ap_tx_power="{ row }"><span data-testid="trackside-ap-tx">{{ displayTracksideValue(row.ap_tx_power) }}</span></template>
@@ -1236,7 +1245,7 @@ onBeforeUnmount(() => {
 .online-overview{display:flex;min-width:0;flex:none;align-items:center;gap:14px;padding:8px 12px}.online-overview-heading{display:flex;flex:none;align-items:center;gap:8px;white-space:nowrap}.online-overview-heading strong{font-size:14px}.online-overview-heading .el-button{padding:0}.online-overview-metrics{display:flex;min-width:0;flex:1;align-items:center;justify-content:space-between;gap:14px;overflow-x:auto}.online-overview-metrics span{display:flex;align-items:baseline;gap:5px;white-space:nowrap}.online-overview-metrics small{color:var(--el-text-color-secondary);font-size:12px}.online-overview-metrics strong{font-size:16px;line-height:1.2}.online-status-error{max-width:220px;overflow:hidden;color:var(--el-color-danger);font-size:12px;text-overflow:ellipsis;white-space:nowrap}
 .diagnostic-summary{display:flex;min-width:0;flex:none;align-items:center;gap:10px;padding:6px 10px}.diagnostic-title{flex:none;font-size:13px}.diagnostic-items{display:flex;min-width:0;flex:1;align-items:center;gap:4px;overflow:hidden}.diagnostic-item{border:0;background:transparent;color:var(--el-text-color-secondary);cursor:pointer;font:inherit;font-size:12px;line-height:22px;padding:0 6px;white-space:nowrap}.diagnostic-item:not(:last-child)::after{content:'|';margin-left:10px;color:var(--el-border-color)}.diagnostic-item b{font-weight:600}.diagnostic-warning{color:var(--el-color-warning)}.diagnostic-danger{color:var(--el-color-danger)}.diagnostic-toggle{flex:none;padding:0;white-space:nowrap}
 .content-card{display:flex;min-height:0;min-width:0;flex:1;flex-direction:column;padding:10px 12px;overflow:hidden}.business-table-host{min-height:0;min-width:0;flex:1;overflow:hidden}.toolbar{flex:none;margin-bottom:8px}.toolbar .el-input{width:230px}.station-select{width:260px}.refresh-indicator{color:var(--el-color-primary);font-size:13px}.work-scope-filter-hint{color:var(--el-text-color-secondary);font-size:12px}.pagination{flex-wrap:wrap;padding-top:8px}.optical-normal{color:var(--el-color-success)}.optical-notice,.optical-warning{color:var(--el-color-warning)}.optical-alarm,.optical-link-abnormal,.optical-link-down,.optical-no-light,.optical-offline{color:var(--el-color-danger);font-weight:600}.optical-no-module,.optical-missing,.optical-skipped,.optical-not-collected,.optical-unknown{color:var(--el-text-color-secondary)}
-.online-status-dialog-meta{display:flex;flex:none;justify-content:space-between;gap:12px;color:var(--el-text-color-secondary);font-size:12px}.online-status-dialog-content{display:flex;min-width:0;min-height:0;flex:1;flex-direction:column;gap:10px}.online-status-summary{display:flex;min-width:0;flex:none;align-items:center;flex-wrap:wrap;gap:8px 14px;padding:8px 12px;background:var(--el-fill-color-light);border-radius:6px}.online-status-summary-title{font-size:13px}.online-status-summary span{display:flex;align-items:baseline;gap:5px;white-space:nowrap}.online-status-summary small{color:var(--el-text-color-secondary);font-size:12px}.online-status-summary b{font-size:14px}.online-status-summary-offline b{color:var(--el-color-warning)}.online-status-table-host{min-width:0;min-height:0;flex:1;overflow:hidden}:deep(.online-status-table-host .el-table__footer-wrapper){border-top:1px solid var(--el-border-color)}:deep(.online-status-table-host .el-table__footer-wrapper td.el-table__cell){background:var(--el-fill-color-light);font-weight:600}:deep(.online-status-table-host .el-table__footer-wrapper .el-tag){vertical-align:middle}:deep(.online-status-dialog){display:flex;box-sizing:border-box;width:min(1100px,94vw);height:min(680px,86vh);min-width:min(760px,94vw);min-height:min(460px,82vh);max-width:96vw;max-height:92vh;flex-direction:column;overflow:hidden;resize:both}:deep(.online-status-dialog .el-dialog__header){flex:none}:deep(.online-status-dialog .el-dialog__body){display:flex;min-width:0;min-height:0;flex:1;overflow:hidden}.source-warning details{display:grid;gap:4px;margin-top:6px}.source-warning summary{cursor:pointer}.source-warning details span{display:block}
+.recognition-identified{color:var(--el-color-success)}.recognition-unidentified{color:var(--el-text-color-secondary)}.recognition-reason-neutral{color:var(--el-text-color-secondary)}.recognition-reason-info{color:var(--el-color-info)}
 @media(max-width:1300px){.online-overview{align-items:flex-start;flex-direction:column;gap:6px}.online-overview-heading{width:100%;justify-content:space-between}.online-overview-metrics{width:100%;justify-content:flex-start}.diagnostic-items{overflow-x:auto}}
 @media(max-width:1000px){.page-heading{align-items:flex-start;flex-direction:column}.summary-grid{grid-template-columns:repeat(2,minmax(130px,1fr))}.content-card{padding:8px}.online-status-dialog-meta{align-items:flex-start;flex-direction:column;gap:4px}}
 </style>

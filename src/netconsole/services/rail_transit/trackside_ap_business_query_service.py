@@ -21,6 +21,7 @@ from netconsole.services.netmiko_connection import connection_targets
 from netconsole.services.ap_identity.normalizers import normalize_mac_key
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
 from netconsole.services.trackside_ap_business import (
+    build_trackside_ap_business_statistics,
     count_current_optical_abnormal_aps,
     normalize_trackside_ap_business_row,
     trackside_station_options,
@@ -115,6 +116,14 @@ class TracksideApBusinessQueryService:
             normalize_trackside_ap_business_row(row)
             for row in snapshot.rows
         ]
+        scope = snapshot.scope
+        statistics = build_trackside_ap_business_statistics(
+            business_rows,
+            planned_ap_total=(
+                snapshot.planned_ap_total
+                or (scope.planned_ap_total if scope is not None else 0)
+            ),
+        )
         station_options = trackside_station_options(business_rows)
         rows = select_trackside_ap_business_rows(
             business_rows,
@@ -132,7 +141,6 @@ class TracksideApBusinessQueryService:
             self._row(row, severity, terminal_devices)
             for row, severity in enriched[start : start + size]
         ]
-        scope = snapshot.scope
         return TracksideApBusinessPageDTO(
             items=items,
             total=len(enriched),
@@ -142,6 +150,12 @@ class TracksideApBusinessQueryService:
             station_options=station_options,
             device_count=snapshot.device_count,
             candidate_interface_count=snapshot.candidate_ap_interface_count,
+            configured_ap_port_total=statistics.configured_ap_port_total,
+            planned_ap_total=statistics.planned_ap_total,
+            identified_ap_port_total=statistics.identified_ap_port_total,
+            unidentified_ap_port_total=statistics.unidentified_ap_port_total,
+            physical_ap_total=statistics.physical_ap_total,
+            unidentified_reason_counts=dict(statistics.unidentified_reason_counts),
             optical_abnormal_count=count_current_optical_abnormal_aps(business_rows),
             fit_ap_resource_count=snapshot.fit_ap_resource_count,
             fit_ap_resource_total_count=snapshot.fit_ap_resource_total_count,
@@ -367,6 +381,9 @@ class TracksideApBusinessQueryService:
             ap_identity_entity_id=str(row.get("ap_identity_entity_id") or ""),
             identity_match_status=str(row.get("identity_match_status") or "unresolved"),
             identity_match_rule=str(row.get("identity_match_rule") or ""),
+            recognition_status=str(row.get("recognition_status") or "unidentified"),
+            primary_reason_code=str(row.get("primary_reason_code") or ""),
+            primary_reason_label=str(row.get("primary_reason_label") or ""),
             lldp_observed_neighbor_mac=observed_neighbor_mac,
             lldp_match_status=lldp_match_status,
             lldp_history_status=str(row.get("lldp_history_status") or "no_current_evidence"),

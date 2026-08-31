@@ -1,6 +1,6 @@
 ﻿from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from ipaddress import ip_address
@@ -83,6 +83,55 @@ _TREATMENT_SERIAL_IDENTITY_SOURCES = frozenset(
     {"trackside_row", "fit_ap_resource"}
 )
 
+TRACKSIDE_AP_UNIDENTIFIED_REASON_CODES = (
+    "EMPTY_CONFIGURED_PORT",
+    "AP_OFFLINE_NO_IDENTITY",
+    "FIT_AP_NOT_MATCHED",
+    "LLDP_MISSING",
+    "LLDP_STALE",
+    "PLANNING_NOT_MATCHED",
+    "IDENTITY_INSUFFICIENT",
+    "OTHER",
+)
+
+TRACKSIDE_AP_UNIDENTIFIED_REASON_LABELS = {
+    "EMPTY_CONFIGURED_PORT": "空闲/未接 AP",
+    "AP_OFFLINE_NO_IDENTITY": "AP 离线，Identity 不足",
+    "FIT_AP_NOT_MATCHED": "未匹配 FIT-AP",
+    "LLDP_MISSING": "缺少 LLDP",
+    "LLDP_STALE": "LLDP 数据过旧",
+    "PLANNING_NOT_MATCHED": "未匹配 AP 规划",
+    "IDENTITY_INSUFFICIENT": "Identity 证据不足",
+    "OTHER": "其他",
+}
+
+
+@dataclass(frozen=True)
+class TracksideApBusinessStatistics:
+    """Counts for configured AP ports and canonical physical AP identities.
+
+    ``configured_ap_port_total`` is deliberately a port-row count.  It is
+    not an AP count and must not be compared to ``planned_ap_total`` as if
+    the two described the same business object.
+    """
+
+    configured_ap_port_total: int
+    planned_ap_total: int
+    identified_ap_port_total: int
+    unidentified_ap_port_total: int
+    physical_ap_total: int
+    unidentified_reason_counts: dict[str, int]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "configured_ap_port_total": self.configured_ap_port_total,
+            "planned_ap_total": self.planned_ap_total,
+            "identified_ap_port_total": self.identified_ap_port_total,
+            "unidentified_ap_port_total": self.unidentified_ap_port_total,
+            "physical_ap_total": self.physical_ap_total,
+            "unidentified_reason_counts": dict(self.unidentified_reason_counts),
+        }
+
 
 def normalize_mac(value: object) -> str | None:
     """Compatibility display helper for trackside AP user-facing rows."""
@@ -140,6 +189,8 @@ TRACKSIDE_AP_BUSINESS_EXPORT_COLUMNS = (
     ("ac.indoor_switch", "device_name"),
     ("details.interface_name", "interface_name"),
     ("details.link", "link_status"),
+    ("trackside.recognition_status", "recognition_status"),
+    ("trackside.primary_reason_code", "primary_reason_code"),
     ("ac.indoor_switch_rx_power", "switch_rx_power"),
     ("trackside.switch_optical_status", "switch_optical_status"),
     ("ac.ap_mac", "ap_mac"),
@@ -2276,6 +2327,203 @@ def has_trackside_export_ap_evidence(row: dict[str, object | None]) -> bool:
     return history_status not in {"", "no_current_evidence", "none", "unknown", "-"}
 
 
+def _trackside_truthy(value: object) -> bool:
+    if isinstance(value, str):
+        return value.strip().casefold() not in {
+            "",
+            "0",
+            "false",
+            "no",
+            "none",
+            "null",
+            "-",
+        }
+    return bool(value)
+
+
+def _trackside_status_tokens(row: Mapping[str, object | None], fields: tuple[str, ...]) -> str:
+    return " ".join(
+        str(row.get(field) or "").strip().casefold()
+        for field in fields
+        if str(row.get(field) or "").strip()
+    )
+
+
+def _trackside_port_has_stable_identity(row: Mapping[str, object | None]) -> bool:
+    return (
+        str(row.get("identity_match_status") or "").strip().casefold() == "matched"
+        and _has_trackside_export_identity(row.get("ap_identity_entity_id"))
+    )
+
+
+def _trackside_port_is_offline_without_identity(
+    row: Mapping[str, object | None],
+) -> bool:
+    if _trackside_truthy(row.get("is_ap_offline")):
+        return True
+    if str(row.get("offline_reason") or "").strip().casefold() in {
+        "switch_offline",
+        "ac_idle",
+        "ac_offline",
+    }:
+        return True
+    return _ap_state(dict(row)) in {"offline", "idle"}
+
+
+def _trackside_port_has_explicit_fit_ap_mismatch(
+    row: Mapping[str, object | None],
+) -> bool:
+    for field in ("fit_ap_match_status", "fit_ap_association_status"):
+        if str(row.get(field) or "").strip().casefold() in {
+            "unmatched",
+            "not_matched",
+            "not-found",
+            "not_found",
+        }:
+            return True
+    tokens = _trackside_status_tokens(
+        row,
+        (
+            "fit_ap_match_status",
+            "fit_ap_association_status",
+            "association_status",
+            "reason_code",
+            "failure_stage",
+        ),
+    )
+    return any(
+        marker in tokens
+        for marker in (
+            "fit_ap_not_matched",
+            "fit_ap_unmatched",
+            "fit-ap-not-matched",
+            "fit-ap-unmatched",
+            "ap_not_matched",
+            "ap_unmatched",
+        )
+    )
+
+
+def _trackside_port_is_planning_unmatched(
+    row: Mapping[str, object | None],
+) -> bool:
+    has_planning = row.get("has_planning")
+    if has_planning is not None and not _trackside_truthy(has_planning):
+        return True
+    planning_status = str(row.get("planning_match_status") or "").strip().casefold()
+    if planning_status in {"missing", "unmatched", "not_found", "not_matched"}:
+        return True
+    pvid_status = str(row.get("pvid_plan_status") or "").strip().casefold()
+    if pvid_status in {"missing", "unmatched", "not_found", "not_matched"}:
+        return True
+    if pvid_status == "unresolved":
+        return not any(
+            _trackside_truthy(row.get(field))
+            for field in (
+                "planning_record_id",
+                "planning_station_id",
+                "planned_management_vlan",
+                "vlan_group_id",
+            )
+        )
+    return False
+
+
+def classify_trackside_ap_port_reason(
+    row: Mapping[str, object | None],
+) -> tuple[str, str]:
+    """Return one recognition state and one primary reason for a port row.
+
+    The order is intentional: a configured port with no AP evidence is an
+    idle/neutral row even when the global LLDP snapshot is stale.  A stale or
+    missing LLDP reason is only used when the row contains AP evidence, so
+    freshness protection is preserved without turning empty ports into
+    device alarms.
+    """
+
+    if _trackside_port_has_stable_identity(row):
+        return "identified", ""
+    if not has_trackside_export_ap_evidence(dict(row)):
+        return "unidentified", "EMPTY_CONFIGURED_PORT"
+    if _trackside_port_is_offline_without_identity(row):
+        return "unidentified", "AP_OFFLINE_NO_IDENTITY"
+
+    lldp_tokens = _trackside_status_tokens(
+        row,
+        ("lldp_match_status", "lldp_history_status", "runtime_snapshot_status"),
+    )
+    if any(
+        marker in lldp_tokens
+        for marker in ("stale", "snapshot_stale", "lldp_stale")
+    ):
+        return "unidentified", "LLDP_STALE"
+    if not _trackside_truthy(row.get("has_current_lldp")):
+        return "unidentified", "LLDP_MISSING"
+    if _trackside_port_has_explicit_fit_ap_mismatch(row):
+        return "unidentified", "FIT_AP_NOT_MATCHED"
+    if _trackside_port_is_planning_unmatched(row):
+        return "unidentified", "PLANNING_NOT_MATCHED"
+    if str(row.get("identity_match_status") or "").strip().casefold() in {
+        "",
+        "unresolved",
+        "ambiguous",
+    }:
+        return "unidentified", "IDENTITY_INSUFFICIENT"
+    return "unidentified", "OTHER"
+
+
+def classify_trackside_ap_port_rows(
+    rows: Sequence[Mapping[str, object | None]],
+) -> list[dict[str, object | None]]:
+    """Copy rows and attach stable UI/export recognition fields."""
+
+    result: list[dict[str, object | None]] = []
+    for row in rows:
+        classified = dict(row)
+        recognition_status, reason_code = classify_trackside_ap_port_reason(row)
+        classified["recognition_status"] = recognition_status
+        classified["primary_reason_code"] = reason_code
+        classified["primary_reason_label"] = (
+            TRACKSIDE_AP_UNIDENTIFIED_REASON_LABELS.get(reason_code, "")
+            if reason_code
+            else ""
+        )
+        result.append(classified)
+    return result
+
+
+def build_trackside_ap_business_statistics(
+    rows: Sequence[Mapping[str, object | None]],
+    *,
+    planned_ap_total: int = 0,
+) -> TracksideApBusinessStatistics:
+    """Calculate port-row, planned-AP, and deduplicated physical-AP counts."""
+
+    classified_rows = classify_trackside_ap_port_rows(rows)
+    reason_counts = {code: 0 for code in TRACKSIDE_AP_UNIDENTIFIED_REASON_CODES}
+    physical_identity_keys: set[str] = set()
+    identified_count = 0
+    for row in classified_rows:
+        if row["recognition_status"] == "identified":
+            identified_count += 1
+            identity_key = str(row.get("ap_identity_entity_id") or "").strip()
+            if identity_key:
+                physical_identity_keys.add(identity_key)
+            continue
+        reason_code = str(row.get("primary_reason_code") or "OTHER")
+        reason_counts[reason_code] = reason_counts.get(reason_code, 0) + 1
+    configured_count = len(classified_rows)
+    unidentified_count = configured_count - identified_count
+    return TracksideApBusinessStatistics(
+        configured_ap_port_total=configured_count,
+        planned_ap_total=max(int(planned_ap_total or 0), 0),
+        identified_ap_port_total=identified_count,
+        unidentified_ap_port_total=unidentified_count,
+        physical_ap_total=len(physical_identity_keys),
+        unidentified_reason_counts=reason_counts,
+    )
+
+
 def _trackside_export_switch_statuses(row: dict[str, object | None]) -> set[str]:
     statuses = {
         _normalized_optical_status(row.get(field))
@@ -2400,6 +2648,13 @@ def format_trackside_display_value(field: str, row: dict[str, object | None], la
             f"AP Rx ≥ {AP_BUSINESS_RX_MIN_DBM:.2f} dBm 且"
             f"交换机 Rx ≥ {AP_BUSINESS_RX_MIN_DBM:.2f} dBm"
         )
+    if field == "recognition_status":
+        return {
+            "identified": "已识别",
+            "unidentified": "未识别",
+        }.get(str(row.get(field) or "").strip().casefold(), AP_SIDE_MISSING_DISPLAY)
+    if field == "primary_reason_code":
+        return str(row.get(field) or AP_SIDE_MISSING_DISPLAY)
     if field in AP_SIDE_DISPLAY_FIELDS and not has_ap_side_optical_data(row):
         return AP_SIDE_MISSING_DISPLAY
     value = row.get(field)

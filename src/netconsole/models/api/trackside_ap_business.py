@@ -67,6 +67,9 @@ class TracksideApBusinessRowDTO(ApiModel):
     ap_identity_entity_id: str = ""
     identity_match_status: str = "unresolved"
     identity_match_rule: str = ""
+    recognition_status: Literal["identified", "unidentified"] = "unidentified"
+    primary_reason_code: str = ""
+    primary_reason_label: str = ""
     lldp_observed_neighbor_mac: str = ""
     lldp_match_status: str = ""
     lldp_history_status: str = "no_current_evidence"
@@ -170,13 +173,43 @@ class TracksideApDataSourceIssueDTO(ApiModel):
 
 class TracksideApBusinessPageDTO(ApiModel):
     items: list[TracksideApBusinessRowDTO] = Field(default_factory=list)
-    total: int = 0
+    total: int = Field(
+        default=0,
+        description="当前查询结果的轨旁 AP 配置端口业务行数，兼容字段，不是物理 AP 数。",
+    )
     page: int = 1
     page_size: int = 50
     site_id: str
     station_options: list[str] = Field(default_factory=list)
     device_count: int = 0
-    candidate_interface_count: int = 0
+    candidate_interface_count: int = Field(
+        default=0,
+        description="现有候选 AP 接口规则识别出的端口行数，兼容字段。",
+    )
+    configured_ap_port_total: int = Field(
+        default=0,
+        description="当前轨旁 AP 业务范围内已按业务规则配置的交换机 AP 端口数。",
+    )
+    planned_ap_total: int = Field(
+        default=0,
+        description="当前有效轨旁 AP 规划中的 AP 记录数。",
+    )
+    identified_ap_port_total: int = Field(
+        default=0,
+        description="已关联稳定 canonical Physical AP Identity 的配置端口数。",
+    )
+    unidentified_ap_port_total: int = Field(
+        default=0,
+        description="没有稳定 Physical AP Identity 的配置端口数；不默认表示故障。",
+    )
+    physical_ap_total: int = Field(
+        default=0,
+        description="按 canonical Physical AP Identity 去重后的物理 AP 数。",
+    )
+    unidentified_reason_counts: dict[str, int] = Field(
+        default_factory=dict,
+        description="未识别配置端口的唯一主原因码统计，合计等于 unidentified_ap_port_total。",
+    )
     optical_abnormal_count: int = 0
     fit_ap_resource_count: int = 0
     fit_ap_resource_total_count: int = 0
@@ -200,7 +233,10 @@ class TracksideApBusinessPageDTO(ApiModel):
     fit_ap_plan_station_missing_count: int = 0
     fit_ap_plan_station_invalid_count: int = 0
     runtime_snapshot: dict[str, object] = Field(default_factory=dict)
-    business_row_count: int = 0
+    business_row_count: int = Field(
+        default=0,
+        description="兼容字段，表示轨旁 AP 配置端口业务行数，等于 configured_ap_port_total（未筛选时）。",
+    )
     query_ms: int = 0
     build_ms: int = 0
     empty_reason: str = ""

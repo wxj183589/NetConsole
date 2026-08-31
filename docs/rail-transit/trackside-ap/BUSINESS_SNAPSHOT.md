@@ -122,6 +122,30 @@ ambiguous 不选择候选。
 忽略页面的 `optical_anomaly_only`。两者都对规范化业务行 JSON 计算，因此相同
 revision 和正式范围得到确定性结果。
 
+### 端口与物理 AP 统计口径
+
+页面和导出快照同时返回以下互不混用的统计：
+
+- `configured_ap_port_total`（AP配置端口数）：当前轨旁 AP 业务范围内，按
+  `is_trackside_ap_interface` 既有规则识别出的交换机 AP 配置端口业务行数；
+  这不是实际安装或在线的物理 AP 数。旧的 `total`、`business_row_count` 和
+  `candidate_interface_count` 兼容字段仍表示端口业务行数。
+- `planned_ap_total`（规划 AP 数）：有效轨旁 AP 规划中的 AP 记录数量，和端口数
+  没有强制相等关系。
+- `identified_ap_port_total` 与 `unidentified_ap_port_total`：配置端口行中分别
+  已关联稳定 canonical Physical AP Identity、尚未形成稳定 Identity 的数量；两者
+  之和必须等于配置端口数。
+- `physical_ap_total`（实际物理 AP 数）：仅对已识别行按 canonical Identity 去重，
+  因此不大于已识别 AP 端口数。
+
+未识别端口行携带唯一的 `primary_reason_code`，只使用
+`EMPTY_CONFIGURED_PORT`、`AP_OFFLINE_NO_IDENTITY`、`FIT_AP_NOT_MATCHED`、
+`LLDP_MISSING`、`LLDP_STALE`、`PLANNING_NOT_MATCHED`、
+`IDENTITY_INSUFFICIENT`、`OTHER` 八类之一；`unidentified_reason_counts` 的合计
+必须等于未识别端口数。没有 AP 证据的配置端口归为 `EMPTY_CONFIGURED_PORT`，是
+中性信息状态而不是告警；有证据但 LLDP 快照过旧的行归为 `LLDP_STALE`，继续保留
+stale 保护，不强行恢复当前关联。歧义 Identity 仍保持未绑定，不选择候选 AP。
+
 未完成关联项返回互斥 `association_status/reason_code`，并携带 AP MAC 原始/规范值、
 规划记录和站点、LLDP 身份与时间、交换机候选和最终 device ID、失败阶段、来源
 revisions、业务 revision 与快照生成时间。页面明细、上线概览分页诊断和 XLSX

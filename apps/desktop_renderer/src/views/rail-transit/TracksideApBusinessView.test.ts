@@ -205,6 +205,12 @@ function page(items = rows, pageNo = 1, stationOptions = stationOptionsFor(items
     station_options: stationOptions,
     device_count: 2,
     candidate_interface_count: 2,
+    configured_ap_port_total: 2,
+    planned_ap_total: 2,
+    identified_ap_port_total: 1,
+    unidentified_ap_port_total: 1,
+    physical_ap_total: 1,
+    unidentified_reason_counts: { EMPTY_CONFIGURED_PORT: 1 },
     optical_abnormal_count: 1,
     fit_ap_resource_count: 2,
     query_ms: 1,
@@ -383,6 +389,8 @@ const NcDataTableStub = defineComponent({
       <div v-for="(row, index) in data" :key="index" class="table-row">
         <slot name="cell-switch_rx_power" :row="row" />
         <slot name="cell-switch_tx_power" :row="row" />
+        <slot name="cell-recognition_status" :row="row" />
+        <slot name="cell-primary_reason_code" :row="row" />
         <slot name="cell-switch_optical_status" :row="row" />
         <slot name="cell-ap_rx_power" :row="row" />
         <slot name="cell-ap_tx_power" :row="row" />
@@ -590,6 +598,47 @@ describe('TracksideApBusinessView mounted behavior', () => {
     expect(wrapper.find('[data-table-id="trackside-ap-business-task-result"]').exists()).toBe(false)
     expect(wrapper.find('input[placeholder="站点"]').exists()).toBe(false)
     expect(wrapper.find('select').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('renders the explicit port statistics and neutral empty-port reason', async () => {
+    const items = rows.map((row, index) => index === 0
+      ? {
+          ...row,
+          recognition_status: 'identified' as const,
+          primary_reason_code: '',
+          ap_identity_entity_id: 'ac:ap-1',
+          identity_match_status: 'matched',
+        }
+      : {
+          ...row,
+          recognition_status: 'unidentified' as const,
+          primary_reason_code: 'EMPTY_CONFIGURED_PORT',
+          primary_reason_label: '空闲/未接 AP',
+          identity_match_status: 'unresolved',
+        })
+    api.listTracksideApBusiness.mockResolvedValueOnce({
+      ...page(items),
+      configured_ap_port_total: 956,
+      planned_ap_total: 673,
+      identified_ap_port_total: 621,
+      unidentified_ap_port_total: 335,
+      physical_ap_total: 621,
+      unidentified_reason_counts: { EMPTY_CONFIGURED_PORT: 334, LLDP_STALE: 1 },
+    })
+
+    const wrapper = await mountView()
+
+    expect(wrapper.text()).toContain('AP配置端口数956')
+    expect(wrapper.text()).toContain('规划AP数673')
+    expect(wrapper.text()).toContain('已识别AP端口621')
+    expect(wrapper.text()).toContain('未识别/空闲端口335')
+    expect(wrapper.text()).toContain('实际物理AP621')
+    expect(wrapper.text()).toContain('空闲/未接 AP')
+    expect(wrapper.find('.recognition-reason-neutral').exists()).toBe(true)
+    const columns = wrapper.getComponent(NcDataTableStub).props('columns') as Array<Record<string, unknown>>
+    expect(columns.find((column) => column.key === 'recognition_status')).toMatchObject({ label: '识别状态' })
+    expect(columns.find((column) => column.key === 'primary_reason_code')).toMatchObject({ label: '未识别原因' })
     wrapper.unmount()
   })
 
@@ -1356,7 +1405,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
     const cards = wrapper.findAll('.summary-grid article').map((item) => item.text())
     expect(cards).toContain('AC AP 资源加载失败')
     expect(wrapper.find('[data-testid="trackside-online-overview"]').text()).toContain('加载失败')
-    expect(cards).toContain('候选 AP 端口2')
+    expect(cards).toContain('AP配置端口数2')
     wrapper.unmount()
   })
 

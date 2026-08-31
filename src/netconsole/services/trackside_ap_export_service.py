@@ -43,6 +43,8 @@ from netconsole.services.trackside_ap_business import (
     build_new_online_ap_overview_rows,
     count_current_optical_abnormal_by_site,
     build_trackside_ap_business_rows,
+    build_trackside_ap_business_statistics,
+    classify_trackside_ap_port_rows,
     enrich_trackside_export_rows,
     export_trackside_ap_business_xlsx,
     filter_trackside_ap_business_rows,
@@ -151,6 +153,12 @@ class TracksideApBusinessLoadResult:
     snapshot_retry_count: int = 0
     identity_distinct_count: int = 0
     identity_query_entities: Mapping[str, str] = field(default_factory=dict)
+    configured_ap_port_total: int = 0
+    planned_ap_total: int = 0
+    identified_ap_port_total: int = 0
+    unidentified_ap_port_total: int = 0
+    physical_ap_total: int = 0
+    unidentified_reason_counts: dict[str, int] = field(default_factory=dict)
 
 
 def build_trackside_ap_business_export_name(site_display_name: str, created_at: datetime) -> str:
@@ -613,6 +621,11 @@ def _load_trackside_ap_business_snapshot_once(
         repository.database,
         identity_query_macs=identity_query_macs,
     )
+    rows = classify_trackside_ap_port_rows(rows)
+    statistics = build_trackside_ap_business_statistics(
+        rows,
+        planned_ap_total=scope.planned_ap_total,
+    )
     try:
         identity_shadow = TracksideApIdentityShadowService().shadow_rows(rows, fit_ap_resource_rows).to_payload()
     except Exception as exc:
@@ -678,6 +691,12 @@ def _load_trackside_ap_business_snapshot_once(
         ambiguous_count=identity_counts["ambiguous"],
         identity_distinct_count=identity_counts["distinct"],
         identity_query_entities=identity_query_entities,
+        configured_ap_port_total=statistics.configured_ap_port_total,
+        planned_ap_total=statistics.planned_ap_total,
+        identified_ap_port_total=statistics.identified_ap_port_total,
+        unidentified_ap_port_total=statistics.unidentified_ap_port_total,
+        physical_ap_total=statistics.physical_ap_total,
+        unidentified_reason_counts=statistics.unidentified_reason_counts,
     )
 
 
@@ -949,6 +968,10 @@ def _build_trackside_ap_business_export_snapshot_once(
             business_rows,
         )
     ]
+    statistics = build_trackside_ap_business_statistics(
+        business_rows,
+        planned_ap_total=scope.planned_ap_total,
+    )
     optical_problem_counts = count_current_optical_abnormal_by_site(snapshot.rows)
     overview_rows = scope.overview_export_rows(optical_problem_counts)
     requested_ids = tuple(
@@ -994,6 +1017,7 @@ def _build_trackside_ap_business_export_snapshot_once(
         ),
         "snapshot_retry_count": snapshot.snapshot_retry_count,
         "identity_distinct_count": snapshot.identity_distinct_count,
+        "statistics": statistics.to_dict(),
         "export_kind": "trackside_ap_business",
         "filters": {
             "station": station,
@@ -1349,6 +1373,7 @@ def _render_trackside_ap_business_export(
                 "snapshot_id": str(payload.get("snapshot_id") or ""),
                 "business_revision": str(payload.get("business_revision") or ""),
                 "content_sha256": str(payload.get("content_sha256") or ""),
+                "statistics": dict(payload.get("statistics") or {}),
             },
         },
     )
@@ -1369,6 +1394,7 @@ def _render_trackside_ap_business_export(
         "unresolved_count": int(payload.get("unresolved_count") or 0),
         "ambiguous_count": int(payload.get("ambiguous_count") or 0),
         "identity_distinct_count": int(payload.get("identity_distinct_count") or 0),
+        "statistics": dict(payload.get("statistics") or {}),
         "snapshot_created_at": str(payload.get("created_at") or ""),
         "snapshot_build_ms": int(payload.get("snapshot_build_ms") or 0),
         "snapshot_retry_count": int(payload.get("snapshot_retry_count") or 0),

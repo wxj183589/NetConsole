@@ -20,6 +20,7 @@ export interface TracksideApBusinessRow {
   ap_optical_status: string
   ap_match_source: string; ap_match_confidence: number; lldp_match_status: string
   ap_identity_entity_id?: string; identity_match_status?: string; identity_match_rule?: string; lldp_observed_neighbor_mac?: string
+  recognition_status?: 'identified' | 'unidentified'; primary_reason_code?: string; primary_reason_label?: string
   lldp_history_status?: string; runtime_snapshot_status?: string; fit_ap_snapshot_collected_at?: string
     lldp_snapshot_collected_at?: string; lldp_snapshot_generation?: string
   local_rx_power_dbm: unknown; local_tx_power_dbm: unknown; remote_rx_power_dbm: unknown; remote_tx_power_dbm: unknown
@@ -32,6 +33,9 @@ export interface TracksideApBusinessPage {
   items: TracksideApBusinessRow[]; total: number; page: number; page_size: number; site_id: string
   station_options: string[]
   device_count: number; candidate_interface_count: number; optical_abnormal_count: number
+  configured_ap_port_total?: number; planned_ap_total?: number; identified_ap_port_total?: number
+  unidentified_ap_port_total?: number; physical_ap_total?: number
+  unidentified_reason_counts?: Record<string, number>
   fit_ap_resource_count: number; fit_ap_resource_total_count?: number; fit_ap_matched_count?: number
   fit_ap_matched_online_count?: number; fit_ap_online_total_count?: number
   fit_ap_offline_total_count?: number; fit_ap_unknown_total_count?: number
