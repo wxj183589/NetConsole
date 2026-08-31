@@ -73,7 +73,26 @@ _PRESERVED_SWITCH_MODULE_STATUSES = {
     "dom_unavailable",
     "offline",
     "no_module",
+    "no_light",
 }
+_COLLECTION_FAILED_STATUSES = frozenset(
+    {
+        "failed",
+        "failure",
+        "error",
+        "cancelled",
+        "timeout",
+        "auth_failed",
+        "authentication_failed",
+        "tcp_failed",
+        "tcp_connection_failed",
+        "ssh_failed",
+        "connection_failed",
+        "unreachable",
+        "device_unreachable",
+        "collection_failed",
+    }
+)
 _TRACKSIDE_NATIVE_PVID_SEGMENT_RE = re.compile(
     r"^native\s*/\s*pvid\s*[:=]?\s*\d{1,4}$",
     re.IGNORECASE,
@@ -150,6 +169,8 @@ TRACKSIDE_AP_BUSINESS_INTERNAL_FIELDS = {
     "status_reason",
     "data_source",
     "switch_collection_status",
+    "switch_optical_collection_status",
+    "switch_optical_collection_error",
     "ap_rx_low_alarm",
     "ap_rx_low_warning",
     "switch_system_name",
@@ -620,10 +641,11 @@ def normalize_trackside_ap_business_row(
 
     normalized = dict(row)
     normalized["vlan"] = normalize_trackside_vlan_display(normalized.get("vlan"))
+    switch_collection_failed = _is_switch_optical_collection_failed(normalized)
     if normalized.get("switch_interface_data_status") in {"stale", "missing"}:
         normalized["link_status"] = "-"
         normalized["protocol_status"] = None
-    if normalized.get("switch_optical_data_status") in {"stale", "missing"}:
+    if normalized.get("switch_optical_data_status") in {"stale", "missing"} and not switch_collection_failed:
         for field in (
             "switch_rx_power",
             "switch_tx_power",
@@ -637,6 +659,9 @@ def normalize_trackside_ap_business_row(
     switch_device_status = _normalized_optical_status(
         normalized.get("switch_optical_status")
     )
+    if switch_collection_failed:
+        switch_device_status = "collection_failed"
+        normalized["switch_device_optical_status"] = switch_device_status
     normalized["switch_device_optical_status"] = (
         _normalized_optical_status(normalized.get("switch_device_optical_status"))
         or switch_device_status
@@ -688,6 +713,16 @@ def normalize_trackside_ap_business_row(
     normalized["ap_business_threshold_dbm"] = evaluation.threshold_dbm
     normalized["ap_business_reason"] = evaluation.reason
     normalized["ap_optical_status"] = evaluation.ap_status
+    if switch_collection_failed:
+        normalized["switch_device_optical_status"] = "collection_failed"
+        normalized["switch_optical_status"] = "collection_failed"
+        normalized["ap_business_optical_status"] = "unknown"
+        normalized["ap_business_reason"] = (
+            f"{evaluation.reason}；交换机本轮光衰采集失败，"
+            "上一轮有效光衰已保留并标记过期"
+        )
+        normalized["optical_severity"] = "collection_failed"
+        return normalized
     normalized["switch_optical_status"] = evaluation.switch_status
     normalized["optical_severity"] = trackside_row_status(normalized)
     return normalized
@@ -951,6 +986,7 @@ def build_trackside_ap_business_rows(
     historical_lldp_rows: list[dict[str, object | None]] | None = None,
     station_names: Mapping[str, str] | None = None,
     latest_switch_collect_runs: Mapping[str, str] | None = None,
+    latest_switch_collection_attempts: Mapping[str, Mapping[str, object | None]] | None = None,
     runtime_snapshot: TracksideApRuntimeSnapshot | None = None,
     business_projection: bool = True,
 ) -> list[dict[str, object | None]]:
@@ -1020,6 +1056,12 @@ def build_trackside_ap_business_rows(
         latest_switch_collect_run = str(
             (latest_switch_collect_runs or {}).get(device_uuid) or ""
         )
+        collection_attempt = dict(
+            (latest_switch_collection_attempts or {}).get(device_uuid) or {}
+        )
+        collection_failed = _is_failed_collection_attempt(
+            collection_attempt.get("status")
+        )
         lldp_snapshot_present = device_uuid in (lldp_by_device or {})
         try:
             adapter = resolve_trackside_switch_adapter(device)
@@ -1060,6 +1102,7 @@ def build_trackside_ap_business_rows(
                 latest_switch_collect_run,
             )
             optical = stored_optical if optical_data_status == "current" else {}
+            optical_for_display = stored_optical if collection_failed else optical
             lldp = lldp_index.get(normalized_interface, {})
             historical_lldp = _find_historical_lldp_row(historical_lldp_index, device_names, interface_name)
             neighbor_mac = normalize_mac_key(lldp.get("neighbor_mac"))
@@ -1152,6 +1195,11 @@ def build_trackside_ap_business_rows(
                 current_interface,
                 optical,
             )
+            switch_collection_error = str(
+                collection_attempt.get("error_message") or ""
+            ).strip()
+            if collection_failed:
+                switch_collection_status = "collection_failed"
             if device.vendor_key == "zte":
                 optical = normalize_zte_optical_record(optical)
                 switch_result = compute_zte_optical_severity(optical)
@@ -1169,11 +1217,14 @@ def build_trackside_ap_business_rows(
                     }
                 )
             collected_module_status = str(optical.get("status") or "").strip().casefold()
-            switch_status = (
-                collected_module_status
-                if collected_module_status in _PRESERVED_SWITCH_MODULE_STATUSES
-                else switch_result.severity
-            )
+            if collection_failed:
+                switch_status = "collection_failed"
+            elif collected_module_status in _PRESERVED_SWITCH_MODULE_STATUSES:
+                switch_status = collected_module_status
+            elif not _has_valid_rx_power(optical.get("rx_power")) and not _explicit_no_module(optical):
+                switch_status = "not_collected"
+            else:
+                switch_status = switch_result.severity
             switch_offline = _is_switch_collection_offline(switch_collection_status)
             ap_candidate = {
                 "ap_mac": format_mac(fit_ap.get("ap_mac") or neighbor_mac),
@@ -1226,8 +1277,8 @@ def build_trackside_ap_business_rows(
                 )
                 ap_status = ap_result.severity
             local_sample_time = (
-                optical.get("updated_at")
-                or optical.get("collected_at")
+                optical_for_display.get("updated_at")
+                or optical_for_display.get("collected_at")
                 or current_interface.get("updated_at")
                 or current_interface.get("collected_at")
             )
@@ -1308,18 +1359,27 @@ def build_trackside_ap_business_rows(
                     "pvid": interface.get("pvid"),
                     "match_source": match_source,
                     "vlan": interface.get("vlan"),
-                    "switch_rx_power": optical.get("rx_power"),
-                    "switch_tx_power": optical.get("tx_power"),
-                    "switch_rx_low_alarm": optical.get("rx_low_alarm"),
-                    "switch_rx_high_alarm": optical.get("rx_high_alarm"),
-                    "switch_tx_low_alarm": optical.get("tx_low_alarm"),
-                    "switch_tx_high_alarm": optical.get("tx_high_alarm"),
+                    "switch_rx_power": optical_for_display.get("rx_power"),
+                    "switch_tx_power": optical_for_display.get("tx_power"),
+                    "switch_rx_low_alarm": optical_for_display.get("rx_low_alarm"),
+                    "switch_rx_high_alarm": optical_for_display.get("rx_high_alarm"),
+                    "switch_tx_low_alarm": optical_for_display.get("tx_low_alarm"),
+                    "switch_tx_high_alarm": optical_for_display.get("tx_high_alarm"),
                     "switch_device_optical_status": switch_status,
                     "switch_optical_status": switch_status,
                     "switch_interface_updated_at": interface.get("updated_at") or interface.get("collected_at"),
                     "switch_optical_updated_at": stored_optical.get("updated_at") or stored_optical.get("collected_at"),
                     "switch_interface_data_status": interface_data_status,
                     "switch_optical_data_status": optical_data_status,
+                    "switch_optical_collection_status": (
+                        "failed"
+                        if collection_failed
+                        else str(
+                            collection_attempt.get("status")
+                            or ("success" if optical else "not_collected")
+                        )
+                    ),
+                    "switch_optical_collection_error": switch_collection_error,
                     "ap_mac": ap_candidate["ap_mac"],
                     "ap_name": ap_candidate["ap_name"],
                     "ap_ip": fit_ap.get("ap_ip"),
@@ -1332,7 +1392,7 @@ def build_trackside_ap_business_rows(
                     "ap_optical_status": ap_status,
                     "ap_optical_data_freshness": fit_ap.get("data_freshness"),
                     "ap_side_has_data": ap_side_has_data,
-                    "updated_at": fit_ap.get("updated_at") or optical.get("updated_at") or interface.get("updated_at") or interface.get("collected_at"),
+                    "updated_at": fit_ap.get("updated_at") or optical_for_display.get("updated_at") or interface.get("updated_at") or interface.get("collected_at"),
                     "source_device": fit_ap.get("device_name") or fit_ap.get("neighbor_device_name") or device.name,
                     "collection_status": fit_ap.get("status") or ("success" if optical else "not_collected"),
                     "switch_collection_status": switch_collection_status,
@@ -1392,6 +1452,7 @@ def build_trackside_ap_business_rows(
             interfaces_by_device,
             optical_by_device,
             latest_switch_collect_runs,
+            latest_switch_collection_attempts,
         )
     )
     result = [
@@ -2274,6 +2335,8 @@ def _trackside_row_status_with_ap_status(
         or _is_switch_collection_offline(row.get("switch_collection_status"))
     ):
         return "offline"
+    if _is_switch_optical_collection_failed(row):
+        return "collection_failed"
     if normalize_link_state(row.get("link_status")) == "DOWN":
         return "link_down"
     switch_status = _normalized_optical_status(row.get("switch_optical_status"))
@@ -2290,6 +2353,8 @@ def trackside_row_status(row: dict[str, object | None]) -> str:
         or _is_switch_collection_offline(row.get("switch_collection_status"))
     ):
         return "offline"
+    if _is_switch_optical_collection_failed(row):
+        return "collection_failed"
     if normalize_link_state(row.get("link_status")) == "DOWN":
         return "link_down"
     status = _normalized_optical_status(row.get("ap_business_optical_status"))
@@ -2659,6 +2724,8 @@ def format_trackside_display_value(field: str, row: dict[str, object | None], la
         return AP_SIDE_MISSING_DISPLAY
     value = row.get(field)
     if field == "switch_optical_status":
+        if _is_switch_optical_collection_failed(row):
+            return display_optical_status("collection_failed", language)
         if row.get("offline_reason") == "switch_offline" or _is_switch_collection_offline(row.get("switch_collection_status")):
             return "交换机离线" if not language.startswith("en") else "Switch Offline"
         evaluation = evaluate_dual_rx_business_detail(
@@ -3226,6 +3293,7 @@ def _offline_ledger_to_trackside_rows(
     interfaces_by_device: dict[str, list[dict[str, object | None]]] | None = None,
     optical_by_device: dict[str, list[dict[str, object | None]]] | None = None,
     latest_switch_collect_runs: Mapping[str, str] | None = None,
+    latest_switch_collection_attempts: Mapping[str, Mapping[str, object | None]] | None = None,
 ) -> list[dict[str, object | None]]:
     result: list[dict[str, object | None]] = []
     interface_indexes = {device_uuid: _latest_rows_by_normalized_interface(items, "interface_name") for device_uuid, items in (interfaces_by_device or {}).items()}
@@ -3234,6 +3302,12 @@ def _offline_ledger_to_trackside_rows(
         device_uuid = str(row.get("device_uuid") or "")
         interface_key = normalize_interface_name(row.get("historical_switch_interface")).casefold()
         interface = interface_indexes.get(device_uuid, {}).get(interface_key, {})
+        collection_attempt = dict(
+            (latest_switch_collection_attempts or {}).get(device_uuid) or {}
+        )
+        collection_failed = _is_failed_collection_attempt(
+            collection_attempt.get("status")
+        )
         latest_switch_collect_run = str(
             (latest_switch_collect_runs or {}).get(device_uuid) or ""
         )
@@ -3248,6 +3322,7 @@ def _offline_ledger_to_trackside_rows(
             latest_switch_collect_run,
         )
         optical = stored_optical if optical_data_status == "current" else {}
+        optical_for_display = stored_optical if collection_failed else optical
         link_state = normalize_link_state(
             current_interface.get("link_status") or current_interface.get("link")
         )
@@ -3256,19 +3331,24 @@ def _offline_ledger_to_trackside_rows(
             or current_interface.get("switch_collection_status")
             or current_interface.get("collection_status")
         )
-        switch_result = compute_optical_severity(
-            {
-                "module_present": bool(_has_optical_module_data(optical)),
-                "no_module": _explicit_no_module(optical),
-                "switch_rx_power": optical.get("rx_power"),
-                "switch_port_status": optical.get("port_status"),
-                "alarm_low": optical.get("rx_low_alarm"),
-                "alarm_high": optical.get("rx_high_alarm"),
-                "warning_low": optical.get("rx_low_warning"),
-                "device_type": "switch",
-            }
-        )
-        switch_status = switch_result.severity
+        if collection_failed:
+            switch_status = "collection_failed"
+        elif not _has_valid_rx_power(optical.get("rx_power")) and not _explicit_no_module(optical):
+            switch_status = "not_collected"
+        else:
+            switch_result = compute_optical_severity(
+                {
+                    "module_present": bool(_has_optical_module_data(optical)),
+                    "no_module": _explicit_no_module(optical),
+                    "switch_rx_power": optical.get("rx_power"),
+                    "switch_port_status": optical.get("port_status"),
+                    "alarm_low": optical.get("rx_low_alarm"),
+                    "alarm_high": optical.get("rx_high_alarm"),
+                    "warning_low": optical.get("rx_low_warning"),
+                    "device_type": "switch",
+                }
+            )
+            switch_status = switch_result.severity
         result.append(
             {
                 "site": row.get("site"),
@@ -3285,13 +3365,24 @@ def _offline_ledger_to_trackside_rows(
                 "pvid": interface.get("pvid"),
                 "match_source": "historical",
                 "vlan": interface.get("vlan"),
-                "switch_rx_power": optical.get("rx_power"),
-                "switch_tx_power": optical.get("tx_power"),
+                "switch_rx_power": optical_for_display.get("rx_power"),
+                "switch_tx_power": optical_for_display.get("tx_power"),
                 "switch_optical_status": switch_status,
                 "switch_interface_updated_at": interface.get("updated_at") or interface.get("collected_at"),
                 "switch_optical_updated_at": stored_optical.get("updated_at") or stored_optical.get("collected_at"),
                 "switch_interface_data_status": interface_data_status,
                 "switch_optical_data_status": optical_data_status,
+                "switch_optical_collection_status": (
+                    "failed"
+                    if collection_failed
+                    else str(
+                        collection_attempt.get("status")
+                        or ("success" if optical else "not_collected")
+                    )
+                ),
+                "switch_optical_collection_error": str(
+                    collection_attempt.get("error_message") or ""
+                ).strip(),
                 "ap_mac": row.get("ap_mac"),
                 "ap_name": row.get("ap_name"),
                 "ap_ip": row.get("ap_ip"),
@@ -3308,7 +3399,9 @@ def _offline_ledger_to_trackside_rows(
                 "offline_reason": row.get("offline_reason") or "ac_idle",
                 "status_reason": row.get("status_reason") or "AC FIT-AP状态为Idle，轨旁AP离线",
                 "data_source": row.get("data_source") or "historical",
-                "switch_collection_status": switch_collection_status,
+                "switch_collection_status": (
+                    "collection_failed" if collection_failed else switch_collection_status
+                ),
                 "offline_remark": row.get("offline_remark"),
             }
         )
@@ -3374,6 +3467,22 @@ def _snapshot_data_status(
         return "current"
     actual = str(row.get("collect_run_uuid") or "").strip()
     return "current" if actual == expected else "stale"
+
+
+def _is_failed_collection_attempt(value: object) -> bool:
+    return str(value or "").strip().casefold() in _COLLECTION_FAILED_STATUSES
+
+
+def _is_switch_optical_collection_failed(row: Mapping[str, object | None]) -> bool:
+    return any(
+        _is_failed_collection_attempt(row.get(field))
+        for field in (
+            "switch_optical_collection_status",
+            "switch_collection_status",
+            "switch_optical_status",
+            "switch_device_optical_status",
+        )
+    )
 
 
 def _switch_collection_status(device: Device, interface: dict[str, object | None], optical: dict[str, object | None]) -> str:

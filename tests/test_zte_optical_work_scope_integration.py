@@ -536,6 +536,7 @@ def test_zte_connection_failure_does_not_present_old_realtime_state(
     assert result.success is False
     latest_fact = facts.get_device_fact(device_uuid)
     assert latest_fact["collect_run_uuid"] == result.collect_run_uuid
+    assert facts.get_collect_run(result.collect_run_uuid)["status"] == "failed"
     assert latest_fact["raw_log_path"] == (
         "files/rail_transit/trackside_ap/raw/old-run"
     )
@@ -543,9 +544,12 @@ def test_zte_connection_failure_does_not_present_old_realtime_state(
     assert row["link_status"] == "-"
     assert row["protocol_status"] is None
     assert row["switch_optical_data_status"] == "stale"
-    assert row["switch_rx_power"] is None
-    assert row["switch_tx_power"] is None
-    assert row["switch_optical_status"] == "unknown"
+    assert row["switch_rx_power"] == "-7.10"
+    assert row["switch_tx_power"] == "-4.90"
+    assert row["switch_optical_status"] == "collection_failed"
+    assert row["switch_device_optical_status"] == "collection_failed"
+    assert row["switch_optical_collection_status"] == "failed"
+    assert row["switch_optical_collection_error"] == "connection failed"
     assert row["switch_interface_updated_at"] == "2026-08-02T10:00:00+08:00"
     assert row["switch_optical_updated_at"] == "2026-08-02T10:00:00+08:00"
 

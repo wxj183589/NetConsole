@@ -70,6 +70,7 @@ const classByStatus: Record<string, string> = {
   not_applicable: 'optical-not-collected',
   unknown: 'optical-unknown',
   offline: 'optical-offline',
+  collection_failed: 'optical-warning',
 }
 
 const missingPresentation: TracksideOpticalPresentation = {

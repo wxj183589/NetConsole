@@ -46,6 +46,8 @@ class TracksideApBusinessRowDTO(ApiModel):
     switch_optical_updated_at: str = ""
     switch_interface_data_status: Literal["current", "stale", "missing", "unknown"] = "unknown"
     switch_optical_data_status: Literal["current", "stale", "missing", "unknown"] = "unknown"
+    switch_optical_collection_status: str = ""
+    switch_optical_collection_error: str = ""
     ap_uuid: str = ""
     ap_mac: str = ""
     ap_name: str = ""

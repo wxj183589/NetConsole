@@ -674,3 +674,19 @@ def test_create_collect_run_can_be_read(tmp_path):
     fetched = repository.get_collect_run(created["collect_run_uuid"])
     assert fetched["collect_type"] == "device_facts"
     assert fetched["status"] == "success"
+
+
+def test_get_collect_runs_reads_multiple_attempts(tmp_path):
+    repository = make_repository(tmp_path)
+    first = repository.create_collect_run({"collect_type": "trackside_switch_optical", "status": "failed"})
+    second = repository.create_collect_run({"collect_type": "trackside_switch_optical", "status": "success"})
+
+    attempts = repository.get_collect_runs([
+        first["collect_run_uuid"],
+        second["collect_run_uuid"],
+        "missing",
+    ])
+
+    assert attempts[first["collect_run_uuid"]]["status"] == "failed"
+    assert attempts[second["collect_run_uuid"]]["status"] == "success"
+    assert "missing" not in attempts

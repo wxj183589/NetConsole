@@ -280,10 +280,44 @@ def test_trackside_business_keeps_link_up_with_light_normal():
     assert rows[0]["switch_optical_status"] == "normal"
 
 
+def test_trackside_business_retains_historical_optical_values_after_failed_collection():
+    switch = Device(device_uuid="sw-1", name="SW1", station="Station A", device_type="SW")
+    rows = build_trackside_ap_business_rows(
+        [switch],
+        {"sw-1": [{"interface_name": "GigabitEthernet1/0/1", "description": "To AP", "port_status": "access", "collect_run_uuid": "old-run"}]},
+        {"sw-1": [{"interface_name": "GigabitEthernet1/0/1", "rx_power": "-8.00", "tx_power": "-3.00", "collect_run_uuid": "old-run", "collected_at": "2026-08-30T10:00:00+08:00"}]},
+        [],
+        latest_switch_collect_runs={"sw-1": "failed-run"},
+        latest_switch_collection_attempts={"sw-1": {"status": "failed", "error_message": "SSH 认证失败"}},
+    )
+
+    assert rows[0]["switch_rx_power"] == "-8.00"
+    assert rows[0]["switch_tx_power"] == "-3.00"
+    assert rows[0]["switch_optical_data_status"] == "stale"
+    assert rows[0]["switch_optical_status"] == "collection_failed"
+    assert rows[0]["switch_optical_collection_error"] == "SSH 认证失败"
+    assert rows[0]["optical_severity"] == "collection_failed"
+
+
+def test_trackside_business_never_collected_is_not_no_light():
+    switch = Device(device_uuid="sw-1", name="SW1", station="Station A", device_type="SW")
+    rows = build_trackside_ap_business_rows(
+        [switch],
+        {"sw-1": [{"interface_name": "GigabitEthernet1/0/1", "description": "To AP", "port_status": "access"}]},
+        {"sw-1": []},
+        [],
+    )
+
+    assert rows[0]["switch_rx_power"] is None
+    assert rows[0]["switch_tx_power"] is None
+    assert rows[0]["switch_optical_status"] in {"not_collected", "unknown"}
+    assert rows[0]["switch_optical_status"] not in {"no_light", "no_module"}
+
+
 @pytest.mark.parametrize(
     ("optical", "expected"),
     [
-        ({"rx_power": None, "rx_low_warning": "-20", "rx_low_alarm": "-25"}, "no_light"),
+        ({"rx_power": None, "rx_low_warning": "-20", "rx_low_alarm": "-25"}, {"not_collected", "unknown"}),
         ({"rx_power": "-36.00", "rx_low_warning": "-20", "rx_low_alarm": "-25"}, "no_light"),
         ({"rx_power": "-7.77", "status": "no_module"}, "no_module"),
     ],
@@ -297,7 +331,8 @@ def test_trackside_business_does_not_mark_link_down_without_valid_light(optical,
         [],
     )
 
-    assert rows[0]["switch_optical_status"] == expected
+    expected_statuses = expected if isinstance(expected, set) else {expected}
+    assert rows[0]["switch_optical_status"] in expected_statuses
     assert rows[0]["optical_severity"] == "link_down"
 
 

@@ -74,7 +74,7 @@ LLDP 关联 FIT-AP 只接受规范化后的完整 AP 邻居/Chassis MAC 精确�
 
 当交换机侧尚无 AP MAC 记录、但 AC/FIT-AP 已保存上联 LLDP 身份时，可在同一局点内按稳定交换机 UUID、唯一 Chassis/MAC、唯一管理地址、唯一规范化 system name、明确设备别名的顺序解析上联交换机。该 system name/IP/MAC 只识别交换机，不直接识别 AP，也不跨局点或以模糊相似度匹配；多候选返回 `SWITCH_IDENTITY_AMBIGUOUS`。交换机站点和逐站规划有效后生成 `ac_lldp_switch_identity` 只读投影。该投影不写入基础资料、设备绑定、规划或 AP Identity，也不把交换机接口提升为 AP 身份。每个业务请求固定一次 AP Identity 健康状态，逐行解析只读索引且不触发 rebuild。
 
-FIT-AP 运行态由 AC 原始状态统一判定：`R/M`、`R/B` 为在线，其余明确状态为离线，完全没有状态证据才为未知。轨旁业务从 FIT-AP 光衰事实读取最新 AP Rx，并通过共享业务函数按严格小于 `-13.90 dBm` 判异常；等于门限正常，空值、无效值和过期值未知。兼容字段 `ap_optical_status` 表示 AP 业务光衰，`ap_device_optical_status` 单独保留模块自身门限结果；交换机模块状态仍按交换机原生门限判断。固定门限不进入设备管理、AC/FIT-AP 资源或通用光模块状态。
+FIT-AP 运行态由 AC 原始状态统一判定：`R/M`、`R/B` 为在线，其余明确状态为离线，完全没有状态证据才为未知。轨旁业务从 FIT-AP 光衰事实读取最新 AP Rx，并通过共享业务函数按严格小于 `-13.90 dBm` 判异常；等于门限正常，空值、无效值和过期值未知。兼容字段 `ap_optical_status` 表示 AP 业务光衰，`ap_device_optical_status` 单独保留模块自身门限结果；交换机模块状态仍按交换机原生门限判断。交换机连接成功且明确返回无光模块时才可判定无光/无光模块；连接成功并采到 RX/TX 时按实际功率判定。TCP/SSH/认证/超时等连接或采集失败不得推导为无光，也不得清空上一轮成功 Current：业务行保留上一轮 RX/TX，并同时标记 `switch_optical_data_status=stale` 与 `switch_optical_status=collection_failed`；从未成功采集的端口保持 `not_collected`/`unknown`。固定门限不进入设备管理、AC/FIT-AP 资源或通用光模块状态。
 
 轨旁 AP 全部、站点和单 AP 更新均刷新目标 ZTE 交换机的接口 brief 与光模块 brief。接口 brief 的当前管理、物理和协议状态覆盖旧运行态；该命令不返回的 PVID、Native/Tagged/Untagged VLAN 和端口模式继续按规范化接口名继承最近有效快照。轻量更新不追加逐端口详情命令，也不以空或解析失败的接口结果覆盖上一份有效接口数据。
 

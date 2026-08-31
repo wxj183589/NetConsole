@@ -993,11 +993,30 @@ def _trackside_update_coverage(
     fit_ap_resource_rows = ac_repository.list_all_fit_ap_resources_with_metadata()
     active_plan = ac_repository.get_active_trackside_pvid_plan()
     current_lldp_rows = ac_repository.list_current_ap_lldp_states()
+    device_fact_rows = fact_repository.list_device_facts()
     latest_switch_collect_runs = {
         str(row.get("device_uuid") or ""): str(row.get("collect_run_uuid") or "")
-        for row in fact_repository.list_device_facts()
+        for row in device_fact_rows
         if row.get("device_uuid") and row.get("collect_run_uuid")
     }
+    collect_runs = fact_repository.get_collect_runs(
+        list(latest_switch_collect_runs.values())
+    )
+    latest_switch_collection_attempts = {
+        device_uuid: collect_runs[collect_run_uuid]
+        for device_uuid, collect_run_uuid in latest_switch_collect_runs.items()
+        if collect_run_uuid in collect_runs
+    }
+    latest_switch_collection_attempts.update(
+        {
+            str(result.target.device_uuid or ""): {
+                "status": "success" if result.success else "failed",
+                "error_message": result.error_message or "",
+            }
+            for result in results
+            if result.target.device_uuid
+        }
+    )
     rows = build_trackside_ap_business_rows(
         devices,
         interfaces_by_device,
@@ -1010,6 +1029,7 @@ def _trackside_update_coverage(
         [],
         current_lldp_rows,
         latest_switch_collect_runs=latest_switch_collect_runs,
+        latest_switch_collection_attempts=latest_switch_collection_attempts,
     )
     candidate_ap_interface_count = sum(
         1
@@ -1714,6 +1734,24 @@ def _persist_result(repository: DeviceRepository, ac_repository: AcRepository, r
     if result.target.target_type == "SWITCH":
         fact_repository = DeviceFactRepository(repository.database)
         device_uuid = str(result.target.device_uuid or "")
+        collect_status = "success" if result.success else "failed"
+        collect_run = fact_repository.get_collect_run(result.collect_run_uuid)
+        if collect_run is None:
+            fact_repository.create_collect_run(
+                {
+                    "collect_run_uuid": result.collect_run_uuid,
+                    "collect_type": "trackside_switch_optical",
+                    "status": collect_status,
+                    "raw_log_dir": result.raw_log_path or None,
+                    "error_message": result.error_message if not result.success else None,
+                }
+            )
+        else:
+            fact_repository.update_collect_run_status(
+                result.collect_run_uuid,
+                collect_status,
+                error_message=result.error_message if not result.success else None,
+            )
         fact_repository.mark_device_collection_attempt(
             device_uuid,
             result.collect_run_uuid,

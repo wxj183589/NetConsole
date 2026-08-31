@@ -1147,6 +1147,30 @@ class DeviceFactRepository:
             ).fetchone()
         return dict(row) if row is not None else None
 
+    def get_collect_runs(
+        self, collect_run_uuids: list[str]
+    ) -> dict[str, dict[str, object | None]]:
+        values = sorted(
+            {
+                str(collect_run_uuid).strip()
+                for collect_run_uuid in collect_run_uuids
+                if str(collect_run_uuid).strip()
+            }
+        )
+        if not values:
+            return {}
+        placeholders = ", ".join("?" for _ in values)
+        with self.database.connect_readonly() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM collect_runs WHERE collect_run_uuid IN ({placeholders})",
+                values,
+            ).fetchall()
+        return {
+            str(row["collect_run_uuid"]): dict(row)
+            for row in rows
+            if row["collect_run_uuid"]
+        }
+
     def update_collect_run_status(
         self,
         collect_run_uuid: str,

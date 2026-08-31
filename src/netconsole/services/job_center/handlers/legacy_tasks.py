@@ -1311,6 +1311,14 @@ def _ac_trackside_business_refresh(params: dict[str, Any], progress: ProgressCal
         for row in fact_repository.list_device_facts()
         if row.get("device_uuid") and row.get("collect_run_uuid")
     }
+    collect_runs = fact_repository.get_collect_runs(
+        list(latest_switch_collect_runs.values())
+    )
+    latest_switch_collection_attempts = {
+        device_uuid: collect_runs[collect_run_uuid]
+        for device_uuid, collect_run_uuid in latest_switch_collect_runs.items()
+        if collect_run_uuid in collect_runs
+    }
     lookup = build_switch_data_lookup(devices, optical_by_device)
     _emit(progress, "ac_trackside_business_refresh", 3, 5, "正在读取 FIT-AP 和离线台账")
     resources = ac_repository.list_fit_ap_resources_with_metadata(ac_uuid) if ac_uuid else ac_repository.list_all_fit_ap_resources_with_metadata()
@@ -1342,6 +1350,7 @@ def _ac_trackside_business_refresh(params: dict[str, Any], progress: ProgressCal
         ledger,
         station_names=scope.station_names,
         latest_switch_collect_runs=latest_switch_collect_runs,
+        latest_switch_collection_attempts=latest_switch_collection_attempts,
     )
     try:
         from netconsole.services.rail_transit.trackside_ap_identity_shadow import TracksideApIdentityShadowService
@@ -1844,6 +1853,11 @@ def _device_detail_load_all(params: dict[str, Any], progress: ProgressCallback |
     interfaces = repository.list_device_interfaces(device_uuid)
     optical_modules = repository.list_optical_modules(device_uuid)
     lldp = repository.list_lldp_neighbors(device_uuid)
+    latest_attempt = (
+        repository.get_collect_run(str(fact.get("collect_run_uuid") or ""))
+        if fact and fact.get("collect_run_uuid")
+        else None
+    )
     _check_cancel(should_cancel)
     ac_repository = AcRepository(database)
     lookup = build_switch_data_lookup([device], {device_uuid: optical_modules})
@@ -1865,6 +1879,9 @@ def _device_detail_load_all(params: dict[str, Any], progress: ProgressCallback |
         latest_switch_collect_runs={
             device_uuid: str((fact or {}).get("collect_run_uuid") or "")
         },
+        latest_switch_collection_attempts=(
+            {device_uuid: latest_attempt} if latest_attempt else {}
+        ),
     )
     return {"fact": fact, "interfaces": interfaces, "optical_modules": optical_modules, "lldp": lldp, "trackside": trackside}
 

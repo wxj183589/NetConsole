@@ -54,6 +54,7 @@ const statusPresentations: Record<string, Omit<OpticalStatusPresentation, 'statu
   abnormal: { label: '光衰大', tagType: 'danger', tone: 'danger' },
   unverified: { label: '状态未知/第三方模块', tagType: 'warning', tone: 'warning' },
   dom_unavailable: { label: '不支持 DOM', tagType: 'info', tone: 'muted' },
+  collection_failed: { label: '采集失败/设备不可达', tagType: 'warning', tone: 'warning' },
   skipped: { label: '未检查', tagType: 'info', tone: 'muted' },
   not_collected: { label: '光诊断未采集', tagType: 'info', tone: 'muted' },
   no_data: { label: '光诊断未采集', tagType: 'info', tone: 'muted' },
@@ -110,7 +111,7 @@ export function opticalRxStatusPresentation(input: OpticalRxPresentationInput): 
   let presentation: OpticalStatusPresentation
   if (isExplicitOpticalFault(backendStatus)) {
     presentation = opticalStatusPresentation(backendStatus)
-  } else if (['no_module', 'unverified', 'dom_unavailable', 'skipped', 'offline'].includes(backendStatus)) {
+  } else if (['no_module', 'unverified', 'dom_unavailable', 'skipped', 'offline', 'collection_failed'].includes(backendStatus)) {
     presentation = opticalStatusPresentation(backendStatus)
   } else if (rxPower !== null && rxPower < AP_BUSINESS_RX_MIN_DBM) {
     presentation = opticalStatusPresentation('abnormal')
@@ -167,6 +168,8 @@ export function dualOpticalStatusPresentation(input: DualOpticalPresentationInpu
     )
   } else if (ap.status === 'normal' && switchSide.status === 'normal') {
     overall = opticalStatusPresentation('normal')
+  } else if (ap.status === 'collection_failed' || switchSide.status === 'collection_failed') {
+    overall = opticalStatusPresentation('collection_failed')
   } else {
     overall = opticalStatusPresentation('not_collected')
   }

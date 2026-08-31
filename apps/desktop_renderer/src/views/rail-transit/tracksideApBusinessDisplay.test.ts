@@ -31,6 +31,7 @@ describe('trackside AP business display', () => {
     ['not_collected', '光诊断未采集', 'info'],
     ['unknown', '未知', 'info'],
     ['offline', '离线', 'danger'],
+    ['collection_failed', '采集失败/设备不可达', 'warning'],
   ])('maps %s to a Chinese label and explicit color', (status, label, tagType) => {
     expect(tracksideOpticalPresentation(status)).toMatchObject({ label, tagType })
   })
@@ -83,6 +84,22 @@ describe('trackside AP business display', () => {
       switch_rx_power: '-19.10',
       switch_device_optical_status: 'normal',
     })).toMatchObject({ label: '光衰大', tagType: 'danger' })
+  })
+
+  it('keeps historical power visible while marking a failed switch collection', () => {
+    expect(tracksideRxPresentation('-8.00', 'collection_failed', 'stale')).toMatchObject({
+      label: '采集失败/设备不可达（数据已过期）',
+      tagType: 'warning',
+    })
+    expect(tracksideBusinessOpticalPresentation({
+      model: 'WA6528X-E',
+      switch_rx_power: '-8.00',
+      switch_device_optical_status: 'collection_failed',
+      switch_optical_data_status: 'stale',
+    })).toMatchObject({
+      label: '采集失败/设备不可达（数据已过期）',
+      tagType: 'warning',
+    })
   })
 
   it('keeps WA6522 out of both side and combined optical alarms', () => {

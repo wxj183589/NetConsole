@@ -96,6 +96,7 @@ SEVERITY_RANK = {
     "no_light": 6,
     "unverified": 0,
     "dom_unavailable": 0,
+    "collection_failed": 0,
 }
 
 OPTICAL_HEALTH_WARNING_STATUSES = frozenset({"notice", "warning", "alarm", "abnormal"})
@@ -111,6 +112,7 @@ OPTICAL_HEALTH_NO_DATA_STATUSES = frozenset(
         "no_module",
         "unverified",
         "dom_unavailable",
+        "collection_failed",
     }
 )
 OPTICAL_DATA_STALE_AFTER = timedelta(hours=24)
@@ -132,6 +134,7 @@ STATUS_COLORS = {
     "unknown": "F3F4F6",
     "unverified": "FEF9C3",
     "dom_unavailable": "F3F4F6",
+    "collection_failed": "FEF9C3",
 }
 
 OPTICAL_STATUS_LABELS: dict[str, dict[str, str]] = {
@@ -151,6 +154,7 @@ OPTICAL_STATUS_LABELS: dict[str, dict[str, str]] = {
         "unknown": "未知",
         "unverified": "状态未知/第三方模块",
         "dom_unavailable": "不支持 DOM",
+        "collection_failed": "采集失败/设备不可达",
     },
     "en": {
         "normal": "Normal",
@@ -168,6 +172,7 @@ OPTICAL_STATUS_LABELS: dict[str, dict[str, str]] = {
         "unknown": "Unknown",
         "unverified": "Unverified / Third-party Module",
         "dom_unavailable": "DOM Unavailable",
+        "collection_failed": "Collection Failed / Device Unreachable",
     },
 }
 

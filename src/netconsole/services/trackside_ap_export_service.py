@@ -432,15 +432,30 @@ def _load_trackside_ap_business_snapshot_once(
         )
 
     try:
+        device_fact_rows = fact_repository.list_device_facts()
         latest_switch_collect_runs = {
             str(row.get("device_uuid") or ""): str(
                 row.get("collect_run_uuid") or ""
             )
-            for row in fact_repository.list_device_facts()
+            for row in device_fact_rows
             if row.get("device_uuid") and row.get("collect_run_uuid")
+        }
+        collect_runs = fact_repository.get_collect_runs(
+            [
+                str(row.get("collect_run_uuid") or "")
+                for row in device_fact_rows
+            ]
+        )
+        latest_switch_collection_attempts = {
+            str(row.get("device_uuid") or ""): collect_runs[str(row["collect_run_uuid"])]
+            for row in device_fact_rows
+            if row.get("device_uuid")
+            and row.get("collect_run_uuid")
+            and str(row["collect_run_uuid"]) in collect_runs
         }
     except Exception as exc:
         latest_switch_collect_runs = {}
+        latest_switch_collection_attempts = {}
         source_statuses["switch_collection_attempts"] = "failed"
         source_failure(
             "switch_collection_attempts",
@@ -612,6 +627,7 @@ def _load_trackside_ap_business_snapshot_once(
             current_lldp_rows,
             station_names=scope.station_names,
             latest_switch_collect_runs=latest_switch_collect_runs,
+            latest_switch_collection_attempts=latest_switch_collection_attempts,
             runtime_snapshot=runtime_snapshot,
         ),
         switch_device_ids={str(device.device_uuid or "") for device in devices},
