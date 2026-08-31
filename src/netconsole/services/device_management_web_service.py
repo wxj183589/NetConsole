@@ -126,6 +126,10 @@ from netconsole.services.external_terminal import (
     build_external_terminal_command,
 )
 from netconsole.services.file_contract import attach_export_metadata
+from netconsole.services.h3c_only_capability import (
+    H3C_ONLY_DIAGNOSTIC_MESSAGE,
+    require_h3c_device,
+)
 from netconsole.services.job_center.job_context import JobContext
 from netconsole.services.job_center.local_process_adapter import LocalProcessAdapter
 from netconsole.services.job_center.task_application_service import (
@@ -1467,7 +1471,8 @@ class DeviceManagementWebService:
         devices, _groups, _facts = self._repositories(site)
         selected_uuids = self._unique_ids(device_uuids)
         for value in selected_uuids:
-            self._require_device(devices, value)
+            device = self._require_device(devices, value)
+            require_h3c_device(device, H3C_ONLY_DIAGNOSTIC_MESSAGE)
         task_id = f"device-diagnostic-{uuid.uuid4().hex}"
         artifact_id = f"device-diagnostic-{uuid.uuid4().hex}"
         job = BackgroundJob(
@@ -4563,6 +4568,8 @@ def run_device_diagnostic_download(context: JobContext) -> dict[str, object]:
         DeviceManagementWebService._require_device(repository, value)
         for value in values
     ]
+    for device in devices:
+        require_h3c_device(device, H3C_ONLY_DIAGNOSTIC_MESSAGE)
     context.check_cancelled()
     context.progress(
         "device_diagnostic_download", 0, len(devices), "正在下载设备诊断信息"

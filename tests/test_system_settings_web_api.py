@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from netconsole.backend.api import system_settings_router
@@ -14,6 +16,7 @@ from netconsole.core.i18n import TRANSLATIONS
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.services.external_tool_service import ExternalToolLaunchResult
+from netconsole.services import runtime_self_check_service as self_check_module
 
 
 TOKEN = "settings-test-session-token-123456"
@@ -117,6 +120,33 @@ def test_runtime_self_check_returns_safe_unicode_and_release_contract(tmp_path: 
         "unicode_round_trip",
     } <= checks.keys()
     assert str(_paths.data_root) not in response.text
+
+
+def test_runtime_self_check_marks_slow_item_without_blocking_endpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, _paths = _client(tmp_path)
+    service = client.app.state.runtime_self_check_service
+    monkeypatch.setattr(self_check_module, "SELF_CHECK_TIMEOUT_SECONDS", 0.05)
+    original_tool = service._tool
+
+    def slow_tool(name: str, title: str):
+        time.sleep(0.2)
+        return original_tool(name, title)
+
+    monkeypatch.setattr(service, "_tool", slow_tool)
+    started = time.perf_counter()
+
+    snapshot = service.run(backend_build_id="", frontend_build_id="")
+
+    elapsed = time.perf_counter() - started
+    assert elapsed < 0.15
+    timed_out = {
+        item.check_id
+        for item in snapshot.items
+        if "超时" in item.message
+    }
+    assert {"tool_fping", "tool_iperf3"} <= timed_out
 
 
 def test_rejects_malicious_tool_paths_and_stale_versions(tmp_path: Path) -> None:

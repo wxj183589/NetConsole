@@ -945,6 +945,58 @@ def test_site_package_sanitizes_credentials_and_has_checksums(tmp_path: Path) ->
     ]
 
 
+def test_lightweight_package_contains_four_exports_and_keeps_import_disabled(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    sites = SiteApplicationService(paths)
+    sites.create_site("site-one", "一号线")
+    secret = "Lightweight-Device-Password-123"
+    with sqlite3.connect(paths.site_db_path("site-one")) as connection:
+        connection.execute(
+            "INSERT INTO devices (device_uuid, name, primary_address, device_vendor, "
+            "device_type, username, password, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
+            ("device-1", "H3C-AC", "192.0.2.20", "H3C", "AC", "admin", secret),
+        )
+        connection.commit()
+    package = tmp_path / "exports" / "site-lightweight.zip"
+
+    result = SitePackageService(paths, sites).export_site(
+        "site-one", package, package_type="lightweight"
+    )
+
+    assert result["contains_credentials"] is True
+    assert result["device_passwords_included"] is True
+    with zipfile.ZipFile(package) as archive:
+        names = set(archive.namelist())
+        manifest_bytes = archive.read("manifest.json")
+        manifest = json.loads(manifest_bytes)
+        device_csv = archive.read("device-management/devices.csv").decode(
+            "utf-8-sig"
+        )
+    assert "device-management/devices.csv" in names
+    assert "ac-management/fit-ap-resources.csv" in names
+    assert any(name.startswith("trackside-ap-business/") for name in names)
+    assert any(name.startswith("rail-transit-base-data/") for name in names)
+    assert "manifest.json" in names
+    assert secret in device_csv
+    assert secret not in manifest_bytes.decode("utf-8")
+    assert not any(
+        any(part.casefold() in {"logs", "history", "raw", "backup", "cache"}
+            for part in name.split("/"))
+        for name in names
+    )
+    assert manifest["package_type"] == "lightweight"
+    assert manifest["contains_credentials"] is True
+    assert manifest["device_passwords_included"] is True
+    inspected = SitePackageService(paths, sites).inspect_package(package)
+    assert inspected["can_import"] is False
+    with pytest.raises(SiteStorageError) as exc_info:
+        SitePackageService(paths, sites).import_site(package)
+    assert exc_info.value.code == "SITE_IMPORT_UNSUPPORTED"
+
+
 @pytest.mark.parametrize("package_type", ["full_migration", "sanitized_share"])
 def test_site_package_excludes_online_mr_transient_and_rollback_files(
     tmp_path: Path,

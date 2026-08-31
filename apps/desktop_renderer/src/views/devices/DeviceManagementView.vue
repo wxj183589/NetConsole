@@ -134,6 +134,10 @@ const writeConnectionLoading = ref(false)
 const writeConnectionTest = ref<DeviceConnectionTest | null>(null)
 const writeTestProtocol = ref<DeviceConnectionProtocol>('SSH')
 const selectedUuids = ref<string[]>([])
+const selectedDiagnosticHasUnsupportedVendor = computed(() => pageData.value.items.some((item) => (
+  selectedUuids.value.includes(item.device_uuid)
+  && String(item.device_vendor || '').trim().toLowerCase() !== 'h3c'
+)))
 const batchRefreshSubmitting = ref(false)
 const batchRefreshTargetCount = ref(0)
 const batchRefresh = ref<DeviceTaskBatch | null>(null)
@@ -1701,6 +1705,10 @@ async function downloadDiagnostics(): Promise<void> {
     ElMessage.warning('请先选择设备')
     return
   }
+  if (selectedDiagnosticHasUnsupportedVendor.value) {
+    ElMessage.warning('设备诊断当前仅支持 H3C 设备')
+    return
+  }
   try {
     const selectedCount = selectedUuids.value.length
     const submitted = await userSelectedExport.submitExportAfterDestinationSelected({
@@ -1957,6 +1965,9 @@ function deviceListErrorMessage(cause: unknown): string {
 
     <div class="content-card action-bar">
       <span>已选 {{ selectedUuids.length }} 台</span>
+      <el-button class="device-action-secondary" type="primary" plain :icon="Connection" :disabled="!selectedUuids.length || !isFeatureEnabled('capability.devices.connection_test')" @click="startSelectedConnectionTests">测试连接</el-button>
+      <el-button class="device-action-secondary" type="primary" plain data-testid="batch-refresh-details" :icon="Refresh" :loading="batchRefreshSubmitting" :disabled="!selectedUuids.length || batchRefreshSubmitting || !isFeatureEnabled('capability.devices.collect')" @click="refreshSelectedDetails">批量更新详情</el-button>
+      <el-button class="device-action-secondary" type="primary" plain :icon="FolderOpened" :disabled="!desktopHost || !selectedUuids.length || !isFeatureEnabled('capability.devices.desktop_actions')" @click="requestTerminal()">外部终端</el-button>
       <el-button :icon="Edit" :disabled="selectedUuids.length !== 1 || !isFeatureEnabled('capability.devices.write')" @click="editSelected">编辑</el-button>
       <el-button :icon="CopyDocument" :disabled="selectedUuids.length !== 1 || !isFeatureEnabled('capability.devices.write')" @click="duplicateSelected">复制</el-button>
       <el-button :icon="Delete" type="danger" plain :disabled="!selectedUuids.length || !isFeatureEnabled('capability.devices.write')" @click="deleteSelected">批量删除</el-button>
@@ -1964,11 +1975,8 @@ function deviceListErrorMessage(cause: unknown): string {
       <el-button :disabled="!selectedUuids.length || !isFeatureEnabled('capability.devices.write')" @click="openClassificationDialog('phase')">设置建设阶段</el-button>
       <el-button :disabled="!selectedUuids.length || !isFeatureEnabled('capability.devices.write')" @click="openClassificationDialog('status')">设置当前工作状态</el-button>
       <el-button :icon="Plus" :disabled="!isFeatureEnabled('capability.devices.write')" @click="groupVisible = true">分组管理</el-button>
-      <el-button :icon="Connection" :disabled="!selectedUuids.length || !isFeatureEnabled('capability.devices.connection_test')" @click="startSelectedConnectionTests">测试连接</el-button>
-      <el-button :icon="FolderOpened" :disabled="!desktopHost || !selectedUuids.length || !isFeatureEnabled('capability.devices.desktop_actions')" @click="requestTerminal()">外部终端</el-button>
-      <el-button data-testid="batch-refresh-details" :icon="Refresh" :loading="batchRefreshSubmitting" :disabled="!selectedUuids.length || batchRefreshSubmitting || !isFeatureEnabled('capability.devices.collect')" @click="refreshSelectedDetails">批量更新详情</el-button>
       <span v-if="batchRefreshSubmitting">{{ batchRefreshProgressText || `正在更新 0/${batchRefreshTargetCount} 台设备` }}</span>
-      <el-button :icon="Download" :disabled="!selectedUuids.length || !isFeatureEnabled('capability.devices.collect')" @click="downloadDiagnostics">下载诊断</el-button>
+      <el-button :icon="Download" :title="selectedDiagnosticHasUnsupportedVendor ? '设备诊断当前仅支持 H3C 设备' : undefined" :disabled="!selectedUuids.length || !isFeatureEnabled('capability.devices.collect')" @click="downloadDiagnostics">下载诊断</el-button>
       <el-button :icon="Upload" :disabled="!isFeatureEnabled('capability.devices.import')" @click="openImportDialog('UPDATE_ONLY')">批量更新设备</el-button>
       <el-button :icon="Upload" :disabled="!isFeatureEnabled('capability.devices.import')" @click="openImportDialog('UPSERT')">导入 CSV</el-button>
       <el-button

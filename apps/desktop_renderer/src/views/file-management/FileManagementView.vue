@@ -284,6 +284,10 @@ function applySftpConnectionError(reason: ApiRequestError, fallback: string): vo
 
 async function connectDevice(): Promise<void> {
   if (!selectedDeviceId.value) return
+  if (selectedDevice.value?.file_download_supported === false) {
+    remoteError.value = selectedDevice.value?.file_download_unavailable_reason || '设备文件下载当前仅支持 H3C 设备'
+    return
+  }
   remoteLoading.value = true
   remoteError.value = ''
   sftpSetupTaskId.value = ''
@@ -602,7 +606,7 @@ function connectionRouteText(value: FileConnection): string {
         <el-option v-for="group in deviceGroups" :key="group" :label="group" :value="group" />
       </el-select>
       <el-select v-model="selectedDeviceId" clearable filterable :loading="deviceLoading" placeholder="选择设备（决定默认本地目录）" @change="deviceChanged">
-        <el-option v-for="device in filteredDevices" :key="device.device_id" :label="`${device.name} · ${device.address}`" :value="device.device_id" />
+        <el-option v-for="device in filteredDevices" :key="device.device_id" :disabled="device.file_download_supported === false" :label="`${device.name} · ${device.address}${device.file_download_supported === false ? '（仅支持 H3C）' : ''}`" :value="device.device_id" />
       </el-select>
       <span>{{ selectedDevice ? `当前设备：${selectedDevice.name}` : '当前为局点下载根目录' }}</span>
       <template v-if="isFeatureEnabled('capability.file_management.remote')">

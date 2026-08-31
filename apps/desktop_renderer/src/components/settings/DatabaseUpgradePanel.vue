@@ -9,9 +9,12 @@ import {
   openDatabaseBackupDirectory,
   organizeLegacyDatabaseArchives,
   restoreDatabaseBackup,
+  startDatabaseBatchBackup,
+  startDatabaseBatchUpgrade,
   startDatabaseUpgrade,
   validateDatabaseBackup,
   type DatabaseBackup,
+  type DatabaseStatus,
   type DatabaseTaskReference,
   type DatabaseUpgradeSnapshot,
 } from '../../api/databaseUpgrades'
@@ -28,6 +31,9 @@ const error = ref('')
 const { confirm } = useConfirm()
 const databases = computed(() => snapshot.value?.databases || [])
 const backups = computed(() => snapshot.value?.backups || [])
+const selectedDatabases = ref<DatabaseStatus[]>([])
+const databaseTable = ref<{ clearSelection(): void; toggleAllSelection(): void } | null>(null)
+const selectedProfileIds = computed(() => selectedDatabases.value.map((item) => item.mr_id).filter(Boolean))
 
 onMounted(() => { void reload() })
 
@@ -52,6 +58,26 @@ async function runTask(key: string, operation: () => Promise<DatabaseTaskReferen
 async function upgrade(profileId: string): Promise<void> {
   await runTask(`upgrade:${profileId}`, () => startDatabaseUpgrade(profileId), t('database_upgrade.upgrade_submitted', '数据库升级任务已提交'))
 }
+
+async function batchBackup(): Promise<void> {
+  if (!selectedProfileIds.value.length) return
+  await runTask('batch-backup', () => startDatabaseBatchBackup(selectedProfileIds.value), '批量数据库备份任务已提交')
+}
+
+async function batchUpgrade(): Promise<void> {
+  if (!selectedProfileIds.value.length) return
+  const accepted = await confirm({
+    type: 'WARNING',
+    title: '批量升级数据库',
+    message: `将按顺序处理 ${selectedProfileIds.value.length} 个数据库；版本兼容的数据库会跳过，不兼容数据库会先自动备份再升级。是否继续？`,
+    confirmText: '确认批量升级',
+    closeOnEscape: false,
+  })
+  if (!accepted) return
+  await runTask('batch-upgrade', () => startDatabaseBatchUpgrade(selectedProfileIds.value), '批量数据库升级任务已提交')
+}
+
+function onDatabaseSelectionChange(rows: DatabaseStatus[]): void { selectedDatabases.value = rows }
 
 async function organizeLegacy(): Promise<void> {
   await runTask('organize', organizeLegacyDatabaseArchives, t('database_upgrade.organize_submitted', '历史数据库归档整理任务已提交'))
@@ -146,6 +172,10 @@ function showError(cause: unknown, fallback: string): void {
     <div class="panel-heading">
       <div><h2>{{ t('database_upgrade.title', '数据库升级与备份') }}</h2></div>
       <div class="panel-actions">
+        <span class="selection-summary">已选 {{ selectedDatabases.length }} / {{ databases.length }} 个数据库</span>
+        <el-button v-if="isFeatureEnabled('capability.database_upgrade.start')" size="small" :disabled="!selectedProfileIds.length || !!actionId" :loading="actionId === 'batch-backup'" @click="batchBackup">批量备份</el-button>
+        <el-button v-if="isFeatureEnabled('capability.database_upgrade.start')" type="primary" size="small" :disabled="!selectedProfileIds.length || !!actionId" :loading="actionId === 'batch-upgrade'" @click="batchUpgrade">批量升级</el-button>
+        <el-button size="small" :disabled="!databases.length" @click="databaseTable?.toggleAllSelection()">全选 / 取消全选</el-button>
         <el-button v-if="isFeatureEnabled('capability.database_upgrade.legacy_archive_organize')" :icon="Upload" :loading="actionId === 'organize'" @click="organizeLegacy">{{ t('database_upgrade.organize_legacy', '整理历史归档') }}</el-button>
         <el-button :icon="Refresh" :loading="loading" circle :title="t('common.refresh', '刷新')" :aria-label="t('common.refresh', '刷新')" @click="reload" />
       </div>
@@ -159,7 +189,8 @@ function showError(cause: unknown, fallback: string): void {
     <el-tabs>
       <el-tab-pane :label="t('database_upgrade.status_tab', '数据库状态')">
         <div class="table-wrap">
-          <el-table :data="databases" min-width="900" :empty-text="t('database_upgrade.no_databases', '当前局点没有已登记的数据库')">
+          <el-table ref="databaseTable" :data="databases" min-width="900" :empty-text="t('database_upgrade.no_databases', '当前局点没有已登记的数据库')" @selection-change="onDatabaseSelectionChange">
+            <el-table-column type="selection" width="52" />
             <el-table-column :label="t('database_upgrade.database', '数据库')" min-width="150"><template #default="{ row }"><strong>{{ databaseLabel(row.database_kind) }}</strong></template></el-table-column>
             <el-table-column prop="display_name" :label="t('database_upgrade.profile', 'Profile')" min-width="170" />
             <el-table-column :label="t('database_upgrade.current_version', '当前版本')" min-width="170"><template #default="{ row }"><code :title="row.current_version">{{ shortVersion(row.current_version) }}</code></template></el-table-column>

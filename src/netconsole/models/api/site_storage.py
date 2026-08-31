@@ -42,7 +42,7 @@ class SiteMigrateRequest(ApiModel):
 class SiteExportRequest(ApiModel):
     destination_path: str = Field(default="", max_length=32_767)
     package_type: Literal[
-        "full_migration", "sanitized_share", "field_collection", "collection_return"
+        "full_migration", "sanitized_share", "field_collection", "collection_return", "lightweight"
     ] = "full_migration"
 
 

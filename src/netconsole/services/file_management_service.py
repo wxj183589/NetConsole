@@ -61,6 +61,10 @@ from netconsole.services.file_transfer_service import (
     parent_remote_path,
     safe_device_name,
 )
+from netconsole.services.h3c_only_capability import (
+    H3C_ONLY_FILE_DOWNLOAD_MESSAGE,
+    require_h3c_device,
+)
 from netconsole.services.host_key_trust_service import (
     HostKeyDetails,
     HostKeyTrustGrant,
@@ -458,26 +462,28 @@ class FileManagementApplicationService:
             for group in DeviceGroupRepository(database, site).list()
             if group.id is not None
         }
-        return [
-            FileRemoteDeviceDTO(
+        result: list[FileRemoteDeviceDTO] = []
+        for device in devices:
+            if not (device.device_uuid or device.id) or not (device.primary_address or device.backup_address) or not bool(device.ssh_enabled):
+                continue
+            extra = {}
+            if device.vendor_key != "h3c":
+                extra = {
+                    "device_vendor": str(device.device_vendor or ""),
+                    "file_download_supported": False,
+                    "file_download_unavailable_reason": H3C_ONLY_FILE_DOWNLOAD_MESSAGE,
+                }
+            result.append(FileRemoteDeviceDTO(
                 device_id=str(device.device_uuid or device.id or ""),
-                name=str(
-                    device.name
-                    or device.system_name
-                    or device.primary_address
-                    or device.backup_address
-                ),
+                name=str(device.name or device.system_name or device.primary_address or device.backup_address),
                 address=str(device.primary_address or device.backup_address or ""),
                 group_id=device.group_id,
                 group_name=groups.get(int(device.group_id), "") if device.group_id is not None else "",
                 device_type=str(device.device_type or ""),
                 station=str(device.station or ""),
-            )
-            for device in devices
-            if (device.device_uuid or device.id)
-            and (device.primary_address or device.backup_address)
-            and bool(device.ssh_enabled)
-        ]
+                **extra,
+            ))
+        return result
 
     def connect_device(
         self,
@@ -488,6 +494,7 @@ class FileManagementApplicationService:
     ) -> FileConnectionDTO:
         site = self._site_id(site_id)
         device = self._resolve_device(site, device_id)
+        require_h3c_device(device, H3C_ONLY_FILE_DOWNLOAD_MESSAGE)
         device_key = str(device.device_uuid or device_id)
         self._close_device_sessions(site, device_key)
         transfer = self._new_transfer(
@@ -1217,6 +1224,7 @@ class FileManagementApplicationService:
             }
         else:
             session = self._session(site, connection_id)
+            require_h3c_device(session.device, H3C_ONLY_FILE_DOWNLOAD_MESSAGE)
             with session.lock:
                 self._assert_session_active(session)
                 entry = session.entries.get(str(remote_entry_id or ""))
@@ -1256,6 +1264,7 @@ class FileManagementApplicationService:
         if not values or len(values) > 100:
             raise FileManagementError("每个下载批次必须包含 1 到 100 个文件")
         session = self._session(site, connection_id)
+        require_h3c_device(session.device, H3C_ONLY_FILE_DOWNLOAD_MESSAGE)
         active_keys = self._active_remote_keys(site)
         batch_id = f"fb1_{uuid4().hex}"
         tasks: list[FileDownloadTaskDTO] = []

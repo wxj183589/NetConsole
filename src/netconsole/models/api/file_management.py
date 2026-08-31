@@ -97,6 +97,9 @@ class FileRemoteDeviceDTO(ApiModel):
     group_name: str = ""
     device_type: str = ""
     station: str = ""
+    device_vendor: str = Field(default="", exclude_if=lambda value: not str(value or "").strip())
+    file_download_supported: bool = Field(default=True, exclude_if=lambda value: value is True)
+    file_download_unavailable_reason: str = Field(default="", exclude_if=lambda value: not str(value or "").strip())
 
 
 class FileConnectionAttemptDTO(ApiModel):

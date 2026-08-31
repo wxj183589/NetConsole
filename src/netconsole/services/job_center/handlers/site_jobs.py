@@ -143,7 +143,7 @@ def site_export(context: JobContext) -> dict[str, object]:
     destination = str(context.params.get("destination_path") or "")
     if not destination:
         record = sites.registry.get(str(context.params.get("site_id") or ""))
-        suffix = ".ncresult" if package_type == "collection_return" else ".ncsite"
+        suffix = ".ncresult" if package_type == "collection_return" else ".zip" if package_type == "lightweight" else ".ncsite"
         destination = str(
             record.root_path / "files" / "exports" / f"{record.site_id}{suffix}"
         )

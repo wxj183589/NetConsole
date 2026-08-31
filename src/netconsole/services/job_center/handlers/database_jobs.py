@@ -9,6 +9,8 @@ DATABASE_UPGRADE_OWNER = "database-upgrade"
 DATABASE_UPGRADE_TASK_TYPES = frozenset(
     {
         "database_upgrade",
+        "database_batch_upgrade",
+        "database_batch_backup",
         "database_backup_validation",
         "legacy_database_archive_migration",
         "database_backup_restore",
@@ -33,6 +35,40 @@ def database_upgrade(context: JobContext) -> dict[str, object]:
         progress=context.progress,
         should_cancel=context.should_cancel,
     )
+
+
+def database_batch_upgrade(context: JobContext) -> dict[str, object]:
+    context.check_cancelled()
+    site_id = str(context.params.get("site_id") or "")
+    profile_ids = [str(value) for value in context.params.get("profile_ids") or []]
+    if not site_id or not profile_ids:
+        raise ValueError("批量数据库升级缺少局点或 Profile 标识")
+    result = DatabaseUpgradeManagementService(context.paths).batch_upgrade(
+        site_id,
+        profile_ids,
+        task_id=context.job_id,
+        progress=context.progress,
+        should_cancel=context.should_cancel,
+    )
+    context.progress("database_batch_upgrade", int(result["total"]), int(result["total"]), "批量数据库升级完成")
+    return result
+
+
+def database_batch_backup(context: JobContext) -> dict[str, object]:
+    context.check_cancelled()
+    site_id = str(context.params.get("site_id") or "")
+    profile_ids = [str(value) for value in context.params.get("profile_ids") or []]
+    if not site_id or not profile_ids:
+        raise ValueError("批量数据库备份缺少局点或 Profile 标识")
+    result = DatabaseUpgradeManagementService(context.paths).batch_backup(
+        site_id,
+        profile_ids,
+        task_id=context.job_id,
+        progress=context.progress,
+        should_cancel=context.should_cancel,
+    )
+    context.progress("database_batch_backup", int(result["total"]), int(result["total"]), "批量数据库备份完成")
+    return result
 
 
 def database_backup_validation(context: JobContext) -> dict[str, object]:
@@ -78,6 +114,8 @@ def database_backup_delete(context: JobContext) -> dict[str, object]:
 
 HANDLERS = {
     "database_upgrade": database_upgrade,
+    "database_batch_upgrade": database_batch_upgrade,
+    "database_batch_backup": database_batch_backup,
     "database_backup_validation": database_backup_validation,
     "legacy_database_archive_migration": legacy_database_archive_migration,
     "database_backup_restore": database_backup_restore,

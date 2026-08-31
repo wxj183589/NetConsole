@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from netconsole.backend.api.feature_access import require_feature
 from netconsole.models.api.database_upgrade import (
     DatabaseBackupActionRequest,
+    DatabaseBatchRequest,
     DatabaseTaskReferenceDTO,
     DatabaseUpgradeRequest,
 )
@@ -52,6 +53,42 @@ def start_database_upgrade(request: Request, payload: DatabaseUpgradeRequest) ->
             "site_id": site_id,
         },
         resource_keys=[f"mesh-import:{site_id}", f"database-upgrade:{site_id}:{payload.profile_id}"],
+    )
+
+
+@router.post(
+    "/upgrade/batch",
+    response_model=DatabaseTaskReferenceDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(require_feature("capability.database_upgrade.start"))],
+)
+def start_database_batch_upgrade(request: Request, payload: DatabaseBatchRequest) -> DatabaseTaskReferenceDTO:
+    if not payload.confirmed:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="批量升级数据库前必须明确确认")
+    site_id = _site_id(request)
+    selected = _validate_batch_profiles(request, site_id, payload.profile_ids)
+    return _submit(
+        request,
+        "database_batch_upgrade",
+        {"database_kind": payload.database_kind, "profile_ids": selected, "site_id": site_id},
+        resource_keys=[f"mesh-import:{site_id}", f"database-upgrade-batch:{site_id}"],
+    )
+
+
+@router.post(
+    "/backups/batch",
+    response_model=DatabaseTaskReferenceDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(require_feature("capability.database_upgrade.start"))],
+)
+def start_database_batch_backup(request: Request, payload: DatabaseBatchRequest) -> DatabaseTaskReferenceDTO:
+    site_id = _site_id(request)
+    selected = _validate_batch_profiles(request, site_id, payload.profile_ids)
+    return _submit(
+        request,
+        "database_batch_backup",
+        {"database_kind": payload.database_kind, "profile_ids": selected, "site_id": site_id},
+        resource_keys=[f"database-backup-center:{site_id}", f"database-upgrade-batch:{site_id}"],
     )
 
 
@@ -154,6 +191,8 @@ def _submit(
     site_id = _site_id(request)
     names = {
         "database_upgrade": "升级数据库",
+        "database_batch_upgrade": "批量升级数据库",
+        "database_batch_backup": "批量备份数据库",
         "database_backup_validation": "验证数据库备份",
         "legacy_database_archive_migration": "整理历史数据库归档",
         "database_backup_restore": "恢复数据库备份",
@@ -185,6 +224,18 @@ def _run(callback):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except OSError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="数据库备份中心暂时不可用") from exc
+
+
+def _validate_batch_profiles(request: Request, site_id: str, profile_ids: list[str]) -> list[str]:
+    selected = list(dict.fromkeys(str(value).strip() for value in profile_ids if str(value).strip()))
+    if not selected:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="至少选择一个数据库")
+    snapshot = _run(lambda: _service(request).list_status(site_id))
+    available = {str(item.get("mr_id") or "") for item in snapshot.get("databases", []) if isinstance(item, dict)}
+    missing = [value for value in selected if value not in available]
+    if missing:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"当前局点的 MESH Profile 不存在：{', '.join(missing)}")
+    return selected
 
 
 __all__ = ["router"]

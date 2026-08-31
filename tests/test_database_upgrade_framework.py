@@ -16,6 +16,7 @@ from netconsole.services.database_upgrade.journal import DatabaseUpgradeJournal,
 from netconsole.services.database_upgrade.management_service import DatabaseUpgradeManagementService
 from netconsole.services.database_upgrade.models import DatabaseDescriptor, DatabaseUpgradeStrategy
 from netconsole.services.database_upgrade.sqlite_consistency import validate_sqlite
+from netconsole.services.mesh_storage_service import MeshStorageService
 
 
 @dataclass
@@ -95,6 +96,33 @@ def _descriptor(paths: PathResolver, path: Path, adapter: _Adapter, *, smoke=Non
 def _marker(path: Path) -> str:
     with closing(sqlite3.connect(path)) as conn:
         return str(conn.execute("SELECT value FROM marker LIMIT 1").fetchone()[0])
+
+
+def test_batch_upgrade_preflights_profiles_and_auto_backups_each_incompatible_database(
+    tmp_path: Path,
+) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    storage = MeshStorageService("demo", paths)
+    incompatible = storage.create_mr_profile("列车07-MR-CT")
+    compatible = storage.create_mr_profile("列车07-MR-CW")
+    incompatible_index = paths.mesh_mr_db_path("demo", incompatible.safe_folder_name)
+    with closing(sqlite3.connect(incompatible_index)) as connection:
+        connection.execute("UPDATE schema_meta SET value = 'old' WHERE key = 'schema_version'")
+        connection.execute("UPDATE meta SET value = 'old' WHERE key = 'schema_version'")
+        connection.commit()
+
+    result = DatabaseUpgradeManagementService(paths).batch_upgrade(
+        "demo",
+        [incompatible.mr_id, compatible.mr_id],
+        task_id="batch-upgrade-test",
+    )
+
+    statuses = {item["profile_id"]: item["status"] for item in result["results"]}
+    assert result["total"] == 2
+    assert statuses == {incompatible.mr_id: "success", compatible.mr_id: "skipped"}
+    assert result["failed"] == 0
+    assert result["partial"] is False
+    assert len(list(paths.database_upgrade_backups_dir.rglob("manifest.json"))) == 1
 
 
 def test_wal_data_is_in_verified_backup_and_old_database_is_retained(tmp_path: Path) -> None:

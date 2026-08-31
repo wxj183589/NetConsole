@@ -54,6 +54,12 @@ export const getDatabaseUpgradeSnapshot = () => apiRequest<DatabaseUpgradeSnapsh
 export const startDatabaseUpgrade = (profileId: string) => apiRequest<DatabaseTaskReference>(`${root}/upgrade`, {
   method: 'POST', body: JSON.stringify({ database_kind: 'mesh_derived', profile_id: profileId }),
 })
+export const startDatabaseBatchUpgrade = (profileIds: string[]) => apiRequest<DatabaseTaskReference>(`${root}/upgrade/batch`, {
+  method: 'POST', body: JSON.stringify({ database_kind: 'mesh_derived', profile_ids: profileIds, confirmed: true }),
+})
+export const startDatabaseBatchBackup = (profileIds: string[]) => apiRequest<DatabaseTaskReference>(`${root}/backups/batch`, {
+  method: 'POST', body: JSON.stringify({ database_kind: 'mesh_derived', profile_ids: profileIds, confirmed: true }),
+})
 export const organizeLegacyDatabaseArchives = () => apiRequest<DatabaseTaskReference>(`${root}/legacy-archives/organize`, { method: 'POST' })
 export const validateDatabaseBackup = (backupId: string) => apiRequest<DatabaseTaskReference>(`${root}/backups/${encodeURIComponent(backupId)}/validate`, { method: 'POST' })
 export const restoreDatabaseBackup = (backupId: string) => apiRequest<DatabaseTaskReference>(`${root}/backups/${encodeURIComponent(backupId)}/restore`, { method: 'POST', body: JSON.stringify({ confirmed: true }) })

@@ -458,12 +458,22 @@ async function exportCurrent(packageType: SitePackageType): Promise<void> {
   if (packageType === 'full_migration') {
     ElMessage.warning('完整迁移包包含设备用户名和密码，且未加密，请仅保存到可信位置并妥善保管。')
   }
+  if (packageType === 'lightweight') {
+    try {
+      await ElMessageBox.confirm(
+        '轻量包会包含设备连接密码，并汇总设备、AC、轨旁 AP 和轨道交通基础资料。请仅保存到可信位置；manifest 不包含密码值，脱敏包仍会继续脱敏。',
+        '导出轻量包确认',
+        { type: 'warning', confirmButtonText: '确认导出', cancelButtonText: '取消', closeOnClickModal: false, closeOnPressEscape: false },
+      )
+    } catch { return }
+  }
   const date = new Date().toISOString().slice(0, 10).replaceAll('-', '')
   const names: Record<SitePackageType, string> = {
     full_migration: `${current.display_name}_完整迁移包_${date}.ncsite`,
     sanitized_share: `${current.display_name}_脱敏分享包_${date}.ncsite`,
     field_collection: `${current.display_name}_现场采集包_${date}.ncsite`,
     collection_return: `${current.display_name}_采集回传包_${date}.ncresult`,
+    lightweight: `${current.display_name}_轻量包_${date}.zip`,
   }
   const selected = await getPlatformAdapter().selectSiteExportDestination(names[packageType])
   if (selected.cancelled || !selected.path) return
@@ -632,7 +642,7 @@ function deleteDisabledReason(site: SiteRecord): string {
   if (site.classification === 'empty_shell') return '空壳局点请使用“清理空壳局点”'
   return ''
 }
-function packageTypeLabel(value: SitePackageType): string { return ({ full_migration: '完整迁移包', sanitized_share: '脱敏分享包', field_collection: '现场采集包', collection_return: '采集回传包' } as const)[value] }
+function packageTypeLabel(value: SitePackageType): string { return ({ full_migration: '完整迁移包', sanitized_share: '脱敏分享包', field_collection: '现场采集包', collection_return: '采集回传包', lightweight: '轻量包' } as const)[value] }
 function displayValue(value: unknown): string { if (value === null || value === undefined || value === '') return '空'; if (typeof value === 'object') return JSON.stringify(value); return String(value) }
 </script>
 
@@ -662,6 +672,7 @@ function displayValue(value: unknown): string { if (value === null || value === 
               <el-dropdown-item command="sanitized_share">导出脱敏分享包</el-dropdown-item>
               <el-dropdown-item command="field_collection">导出现场采集包</el-dropdown-item>
               <el-dropdown-item command="collection_return">导出采集回传包</el-dropdown-item>
+              <el-dropdown-item command="lightweight" divided>导出轻量包（含设备密码）</el-dropdown-item>
             </el-dropdown-menu>
           </template>
         </el-dropdown>

@@ -169,6 +169,9 @@ export interface FileRemoteDevice {
   group_name: string
   device_type: string
   station: string
+  device_vendor?: string
+  file_download_supported?: boolean
+  file_download_unavailable_reason?: string
 }
 
 export interface RemoteFileEntry {

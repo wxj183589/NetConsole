@@ -122,7 +122,7 @@ export interface DataRootSnapshot {
 export interface SiteTaskResponse { task_id: string; task_type: string }
 export interface SiteTrashResponse { site_id: string; display_name: string; trash_path: string; recoverable: boolean }
 
-export type SitePackageType = 'full_migration' | 'sanitized_share' | 'field_collection' | 'collection_return'
+export type SitePackageType = 'full_migration' | 'sanitized_share' | 'field_collection' | 'collection_return' | 'lightweight'
 export type SiteConflictChoice = 'local' | 'returned' | 'manual'
 
 export interface SitePackageConflict {

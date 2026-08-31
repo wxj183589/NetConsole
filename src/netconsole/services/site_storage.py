@@ -37,10 +37,12 @@ from netconsole.services.ap_identity import ApIdentityQueryService
 from netconsole.services.job_center.task_result_rollout import (
     TaskResultRolloutService,
 )
+from netconsole.services.job_center.job_context import BackgroundTaskCancelled
 from netconsole.services.site_sync import (
     COLLECTION_RETURN,
     FIELD_COLLECTION,
     FULL_MIGRATION,
+    LIGHTWEIGHT,
     PACKAGE_FORMAT_VERSION,
     PACKAGE_TYPES,
     SANITIZED_SHARE,
@@ -151,6 +153,19 @@ _LOCKS_GUARD = RLock()
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _lightweight_should_cancel(
+    check_cancel: Callable[[], None] | None,
+) -> Callable[[], bool] | None:
+    if check_cancel is None:
+        return None
+
+    def callback() -> bool:
+        result = check_cancel()
+        return bool(result)
+
+    return callback
 
 
 def _atomic_json(path: Path, value: object) -> None:
@@ -1215,6 +1230,12 @@ class SitePackageService:
                 destination,
                 check_cancel=check_cancel,
             )
+        if normalized_type == LIGHTWEIGHT:
+            return self._export_lightweight_site(
+                site_id,
+                destination,
+                check_cancel=check_cancel,
+            )
         if normalized_type != SANITIZED_SHARE:
             raise SiteStorageError("SITE_EXPORT_TYPE_INVALID", "不支持的局点数据包类型")
         site = self.sites.registry.get(site_id)
@@ -1411,6 +1432,241 @@ class SitePackageService:
         finally:
             self.staging_lifecycle.finish_publish_path(staging, staging_journal)
 
+    def _export_lightweight_site(
+        self,
+        site_id: str,
+        destination: Path,
+        *,
+        check_cancel: Callable[[], None] | None,
+    ) -> dict[str, object]:
+        """Publish the four business exports without copying the site tree.
+
+        The device CSV deliberately uses the existing sensitive exporter.  The
+        other three files use their existing read-only exporters; if a module
+        has no usable source data, a safe status file keeps the package
+        inspectable while making the missing module explicit.
+        """
+
+        site = self.sites.registry.get(site_id)
+        sync = SiteSyncService(self.paths, self.sites)
+        identity = sync.ensure_sync_identity(site, require_legacy_audit=False)
+        destination = Path(destination).expanduser().resolve()
+        if destination.suffix.casefold() != ".zip":
+            destination = destination.with_suffix(".zip")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        staging, staging_journal = self.staging_lifecycle.begin_publish_path(destination)
+        try:
+            self.paths.temp_dir.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(
+                prefix="netconsole-lightweight-export-", dir=self.paths.temp_dir
+            ) as temp:
+                root = Path(temp)
+                module_roots = {
+                    "device_management": root / "device-management",
+                    "ac_management": root / "ac-management",
+                    "trackside_ap_business": root / "trackside-ap-business",
+                    "rail_transit_base_data": root / "rail-transit-base-data",
+                }
+                for module_root in module_roots.values():
+                    module_root.mkdir(parents=True, exist_ok=True)
+                components: dict[str, str] = {}
+
+                self._lightweight_export_device_csv(
+                    module_roots["device_management"] / "devices.csv",
+                    site,
+                    check_cancel=check_cancel,
+                )
+                components["device_management"] = "devices.csv"
+
+                self._lightweight_export_ac_csv(
+                    module_roots["ac_management"] / "fit-ap-resources.csv",
+                    site,
+                    check_cancel=check_cancel,
+                )
+                components["ac_management"] = "fit-ap-resources.csv"
+
+                self._lightweight_export_trackside(
+                    module_roots["trackside_ap_business"] / "trackside-ap-business.xlsx",
+                    site,
+                    root / "trackside-ap-business.tmp.xlsx",
+                    check_cancel=check_cancel,
+                )
+                components["trackside_ap_business"] = "trackside-ap-business.xlsx"
+
+                self._lightweight_export_base_data(
+                    module_roots["rail_transit_base_data"] / "rail-transit-base-data.xlsx",
+                    site,
+                    check_cancel=check_cancel,
+                )
+                components["rail_transit_base_data"] = "rail-transit-base-data.xlsx"
+
+                manifest_files = {
+                    item.relative_to(root).as_posix(): _sha256(item)
+                    for item in root.rglob("*")
+                    if item.is_file()
+                }
+                manifest = {
+                    "format": "netconsole-lightweight-package",
+                    "format_version": 1,
+                    "package_id": str(uuid.uuid4()),
+                    "package_type": LIGHTWEIGHT,
+                    "app_version": APP_VERSION.removeprefix("v"),
+                    "site_id": site.site_id,
+                    "site_uuid": identity["site_uuid"],
+                    "site_name": site.display_name,
+                    "line_name": site.line_name,
+                    "project_type": site.project_type,
+                    "base_revision": identity["revision"],
+                    "created_at": _now(),
+                    "source_platform": "windows" if os.name == "nt" else os.name,
+                    "components": components,
+                    "checksums": manifest_files,
+                    "contains_credentials": True,
+                    "contains_sensitive_credentials": True,
+                    "device_passwords_included": True,
+                    "encrypted": False,
+                    "can_import": False,
+                }
+                _atomic_json(root / "manifest.json", manifest)
+                with zipfile.ZipFile(
+                    staging, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True
+                ) as archive:
+                    for item in root.rglob("*"):
+                        if item.is_file():
+                            archive.write(item, item.relative_to(root).as_posix())
+            self.inspect_package(staging, validate_extension=False)
+            os.replace(staging, destination)
+            return {
+                "package_name": destination.name,
+                "package_type": LIGHTWEIGHT,
+                "site_uuid": identity["site_uuid"],
+                "base_revision": identity["revision"],
+                "size_bytes": destination.stat().st_size,
+                "contains_credentials": True,
+                "device_passwords_included": True,
+                "encrypted": False,
+            }
+        finally:
+            self.staging_lifecycle.finish_publish_path(staging, staging_journal)
+
+    def _lightweight_export_device_csv(
+        self,
+        target: Path,
+        site: SiteRecord,
+        *,
+        check_cancel: Callable[[], None] | None,
+    ) -> None:
+        if check_cancel:
+            check_cancel()
+        from netconsole.services.export.common_exporters import export_device_csv
+
+        try:
+            export_device_csv(
+                target,
+                {
+                    "db_path": str(self.paths.site_db_path(site.site_id)),
+                    "site_name": site.site_id,
+                    "omit_credentials": False,
+                },
+                should_cancel=_lightweight_should_cancel(check_cancel),
+            )
+        except BackgroundTaskCancelled:
+            raise
+        except Exception:
+            self._write_lightweight_unavailable(target.parent, "设备清单导出暂不可用")
+
+    def _lightweight_export_ac_csv(
+        self,
+        target: Path,
+        site: SiteRecord,
+        *,
+        check_cancel: Callable[[], None] | None,
+    ) -> None:
+        if check_cancel:
+            check_cancel()
+        try:
+            from netconsole.core.database import Database
+            from netconsole.repositories.ac_repository import AcRepository
+            from netconsole.services.fit_ap_import_export import FitApImportExportService
+
+            database = Database(self.paths.site_db_path(site.site_id))
+            rows = AcRepository(database).list_all_fit_ap_resources_with_metadata()
+            FitApImportExportService(AcRepository(database)).export_ap_csv(target, rows)
+        except BackgroundTaskCancelled:
+            raise
+        except Exception:
+            self._write_lightweight_unavailable(target.parent, "AC 资源导出暂不可用")
+
+    def _lightweight_export_trackside(
+        self,
+        target: Path,
+        site: SiteRecord,
+        tmp_path: Path,
+        *,
+        check_cancel: Callable[[], None] | None,
+    ) -> None:
+        if check_cancel:
+            check_cancel()
+        try:
+            from netconsole.services.trackside_ap_export_service import (
+                export_trackside_ap_business_prepare_and_render,
+            )
+
+            export_trackside_ap_business_prepare_and_render(
+                database_path=self.paths.site_db_path(site.site_id),
+                site_name=site.site_id,
+                task_id=f"lightweight-{uuid.uuid4().hex}",
+                snapshot_staging_root=self.paths.staging_dir,
+                output_path=target,
+                tmp_path=tmp_path,
+                scope_context={
+                    "site_id": site.site_id,
+                    "display_name": site.display_name,
+                    "line_name": site.line_name or "",
+                    "project_type": site.project_type or "",
+                },
+                should_cancel=_lightweight_should_cancel(check_cancel),
+            )
+        except BackgroundTaskCancelled:
+            raise
+        except Exception:
+            self._write_lightweight_unavailable(target.parent, "轨旁 AP 业务导出暂不可用")
+
+    def _lightweight_export_base_data(
+        self,
+        target: Path,
+        site: SiteRecord,
+        *,
+        check_cancel: Callable[[], None] | None,
+    ) -> None:
+        if check_cancel:
+            check_cancel()
+        try:
+            from netconsole.services.trackside_ap_base_export import (
+                export_trackside_ap_base_xlsx_task,
+            )
+
+            export_trackside_ap_base_xlsx_task(
+                target,
+                {
+                    "site_id": site.site_id,
+                    "app_root": str(self.paths.app_root),
+                    "data_root": str(self.paths.data_root),
+                },
+                should_cancel=_lightweight_should_cancel(check_cancel),
+            )
+        except BackgroundTaskCancelled:
+            raise
+        except Exception:
+            self._write_lightweight_unavailable(target.parent, "轨道交通基础资料导出暂不可用")
+
+    @staticmethod
+    def _write_lightweight_unavailable(directory: Path, message: str) -> None:
+        _atomic_json(
+            directory / "export-status.json",
+            {"status": "unavailable", "message": message},
+        )
+
     def inspect_package(
         self,
         package: Path,
@@ -1451,6 +1707,15 @@ class SitePackageService:
                 if not isinstance(manifest, dict):
                     raise SiteStorageError(
                         "SITE_IMPORT_INVALID_PACKAGE", "局点包 manifest 格式无效"
+                    )
+                if manifest.get("format") == "netconsole-lightweight-package":
+                    return self._inspect_lightweight_package(
+                        archive,
+                        manifest,
+                        infos,
+                        total,
+                        package,
+                        validate_extension=validate_extension,
                     )
                 try:
                     version = int(manifest.get("format_version") or 0)
@@ -1573,6 +1838,95 @@ class SitePackageService:
                 "SITE_IMPORT_INVALID_PACKAGE", "局点包不是有效 ZIP"
             ) from exc
 
+    @staticmethod
+    def _inspect_lightweight_package(
+        archive: zipfile.ZipFile,
+        manifest: dict[str, object],
+        infos: list[zipfile.ZipInfo],
+        total: int,
+        package: Path,
+        *,
+        validate_extension: bool,
+    ) -> dict[str, object]:
+        package_type = str(manifest.get("package_type") or "")
+        if package_type != LIGHTWEIGHT or (
+            validate_extension and package.suffix.casefold() != ".zip"
+        ):
+            raise SiteStorageError(
+                "SITE_IMPORT_INVALID_PACKAGE", "轻量包类型或扩展名无效"
+            )
+        required_prefixes = (
+            "device-management/",
+            "ac-management/",
+            "trackside-ap-business/",
+            "rail-transit-base-data/",
+        )
+        names = {info.filename.rstrip("/") for info in infos}
+        for prefix in required_prefixes:
+            if not any(name.startswith(prefix) for name in names):
+                raise SiteStorageError(
+                    "SITE_IMPORT_INVALID_PACKAGE", "轻量包缺少业务模块导出"
+                )
+        forbidden_parts = {
+            "logs",
+            "history",
+            "raw",
+            "backup",
+            "backups",
+            "cache",
+            "runtime",
+            "credentials",
+            "token",
+        }
+        for name in names:
+            if name == "manifest.json":
+                continue
+            if forbidden_parts.intersection(part.casefold() for part in name.split("/")):
+                raise SiteStorageError(
+                    "SITE_IMPORT_INVALID_PACKAGE", "轻量包包含禁止的日志、历史或运行时数据"
+                )
+        checksums = manifest.get("checksums")
+        if not isinstance(checksums, dict) or not checksums:
+            raise SiteStorageError(
+                "SITE_IMPORT_INVALID_PACKAGE", "轻量包缺少 checksum"
+            )
+        for name, expected in checksums.items():
+            _validate_archive_name(str(name))
+            try:
+                actual = hashlib.sha256(archive.read(str(name))).hexdigest()
+            except KeyError as exc:
+                raise SiteStorageError(
+                    "SITE_IMPORT_CHECKSUM_FAILED", "轻量包文件缺失"
+                ) from exc
+            if actual != str(expected):
+                raise SiteStorageError(
+                    "SITE_IMPORT_CHECKSUM_FAILED", "轻量包完整性校验失败"
+                )
+        if manifest.get("contains_credentials") is not True or manifest.get("device_passwords_included") is not True:
+            raise SiteStorageError(
+                "SITE_IMPORT_INVALID_PACKAGE", "轻量包必须明确标记设备连接凭据"
+            )
+        return {
+            "site_id": str(manifest.get("site_id") or ""),
+            "site_uuid": str(manifest.get("site_uuid") or ""),
+            "site_name": str(manifest.get("site_name") or ""),
+            "line_name": _read_optional_site_info(manifest.get("line_name")),
+            "project_type": _read_optional_site_info(manifest.get("project_type")),
+            "package_type": LIGHTWEIGHT,
+            "package_id": str(manifest.get("package_id") or ""),
+            "base_revision": int(manifest.get("base_revision") or 1),
+            "file_count": len(infos),
+            "contains_credentials": True,
+            "device_passwords_included": True,
+            "encrypted": False,
+            "credential_reentry_count": 0,
+            "conflict_count": 0,
+            "conflicts": [],
+            "invalid_count": 0,
+            "estimated_additional_bytes": total,
+            "can_import": False,
+        }
+
     @_with_site_package_operation_lease
     def import_site(
         self,
@@ -1590,6 +1944,10 @@ class SitePackageService:
         )
         manifest = self._read_manifest(package)
         package_type = str(info.get("package_type") or FULL_MIGRATION)
+        if package_type == LIGHTWEIGHT:
+            raise SiteStorageError(
+                "SITE_IMPORT_UNSUPPORTED", "轻量包仅用于跨模块交付，不能直接恢复为局点"
+            )
         if package_type == COLLECTION_RETURN:
             return SiteSyncService(self.paths, self.sites).import_return_package(
                 Path(package).resolve(),

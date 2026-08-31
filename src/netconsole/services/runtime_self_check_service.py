@@ -3,9 +3,10 @@ from __future__ import annotations
 import sqlite3
 import sys
 import uuid
+from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
+from typing import Callable, Literal
 
 from netconsole.core import app_logger
 from netconsole.core.build_metadata import current_build_metadata
@@ -27,6 +28,7 @@ from netconsole.services.tool_path_resolver import resolve_network_tool
 
 _UNICODE_SAMPLE = "宁波地铁1号线 · 中文设备 · 任务已完成"
 SelfCheckStatus = Literal["normal", "warning", "error"]
+SELF_CHECK_TIMEOUT_SECONDS = 4.0
 
 
 class RuntimeSelfCheckService:
@@ -47,27 +49,55 @@ class RuntimeSelfCheckService:
         frontend_build_id: str,
     ) -> RuntimeSelfCheckSnapshotDTO:
         packaged = is_packaged_runtime()
-        items = [
-            self._backend_executable(packaged),
-            self._build_contract(backend_build_id, frontend_build_id, packaged),
-            self._feature_policy(packaged),
-            self._current_site(),
-            self._data_root_write(),
-            self._database(
+        checks: list[tuple[str, str, Callable[[], RuntimeSelfCheckItemDTO]]] = [
+            ("backend_executable", "Backend 可执行文件", lambda: self._backend_executable(packaged)),
+            ("build_contract", "前后端构建一致性", lambda: self._build_contract(backend_build_id, frontend_build_id, packaged)),
+            ("production_feature_policy", "生产功能策略", lambda: self._feature_policy(packaged)),
+            ("current_site", "当前局点", self._current_site),
+            ("data_root_writable", "数据根可写", self._data_root_write),
+            (
                 "tasks_database",
                 "任务数据库",
-                self.paths.site_tasks_db_path(self.site_name),
+                lambda: self._database("tasks_database", "任务数据库", self.paths.site_tasks_db_path(self.site_name)),
             ),
-            self._database(
+            (
                 "devices_database",
                 "设备数据库",
-                self.paths.site_db_path(self.site_name),
+                lambda: self._database("devices_database", "设备数据库", self.paths.site_db_path(self.site_name)),
             ),
-            self._credential_storage(),
-            self._tool("fping", "fping"),
-            self._tool("iperf3", "iPerf3"),
-            self._unicode_round_trip(),
+            ("credential_storage", "设备凭据状态", self._credential_storage),
+            ("tool_fping", "fping", lambda: self._tool("fping", "fping")),
+            ("tool_iperf3", "iPerf3", lambda: self._tool("iperf3", "iPerf3")),
+            ("unicode_round_trip", "Windows 中文编码", self._unicode_round_trip),
         ]
+        executor = ThreadPoolExecutor(max_workers=len(checks), thread_name_prefix="netconsole-self-check")
+        futures = {executor.submit(callback): (check_id, title) for check_id, title, callback in checks}
+        _done, pending = wait(tuple(futures), timeout=SELF_CHECK_TIMEOUT_SECONDS)
+        items: list[RuntimeSelfCheckItemDTO] = []
+        for future in futures:
+            check_id, title = futures[future]
+            if future in pending:
+                future.cancel()
+                items.append(_item(
+                    check_id,
+                    title,
+                    "warning",
+                    f"{title}检查超时，已跳过本次自检。",
+                    "请确认本地数据库或组件未被其他程序占用后单独重试。",
+                ))
+                continue
+            try:
+                items.append(future.result())
+            except Exception as exc:
+                app_logger.log_error("CLEAN_INSTALL_SELF_CHECK_ITEM_FAILED", f"check={check_id}; error={type(exc).__name__}: {exc}")
+                items.append(_item(
+                    check_id,
+                    title,
+                    "error",
+                    f"{title}检查失败。",
+                    "请查看任务日志并重试。",
+                ))
+        executor.shutdown(wait=False, cancel_futures=True)
         overall = _overall_status(items)
         app_logger.log_info(
             "CLEAN_INSTALL_SELF_CHECK_COMPLETED",

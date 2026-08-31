@@ -16,6 +16,10 @@ from netconsole.services.device_command_profile_service import (
     DeviceCommandProfileNotFound,
     resolve_device_capability_commands,
 )
+from netconsole.services.h3c_only_capability import (
+    H3C_ONLY_DIAGNOSTIC_MESSAGE,
+    is_h3c_device,
+)
 from netconsole.services.netmiko_connection import safe_send_command, sanitize_sensitive_text
 from netconsole.utils.text_encoding import clean_h3c_device_text
 
@@ -51,6 +55,11 @@ class DiagnosticDownloadService:
         output_parts: list[str] = []
         file_path: Path | None = None
         try:
+            # Keep the established unsupported-vendor diagnostic while the
+            # backend admission gate exposes the explicit H3C-only policy.
+            if not is_h3c_device(device):
+                resolve_device_capability_commands(device, "diagnostic_bundle")
+                raise DeviceCommandProfileNotFound(H3C_ONLY_DIAGNOSTIC_MESSAGE)
             resolve_device_capability_commands(device, "diagnostic_bundle")
         except DeviceCommandProfileNotFound as exc:
             message = str(exc)

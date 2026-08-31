@@ -12,6 +12,12 @@ class DatabaseUpgradeRequest(ApiModel):
     profile_id: str = Field(min_length=1, max_length=160)
 
 
+class DatabaseBatchRequest(ApiModel):
+    database_kind: Literal["mesh_derived"] = "mesh_derived"
+    profile_ids: list[str] = Field(min_length=1, max_length=100)
+    confirmed: bool = False
+
+
 class DatabaseBackupActionRequest(ApiModel):
     confirmed: bool = False
 
@@ -23,6 +29,7 @@ class DatabaseTaskReferenceDTO(ApiModel):
 
 __all__ = [
     "DatabaseBackupActionRequest",
+    "DatabaseBatchRequest",
     "DatabaseTaskReferenceDTO",
     "DatabaseUpgradeRequest",
 ]

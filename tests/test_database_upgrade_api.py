@@ -63,6 +63,42 @@ def test_database_status_and_upgrade_submission_are_scoped_to_current_site(tmp_p
     assert process.jobs[-1].params["owner"] == "database-upgrade"
 
 
+def test_batch_database_actions_deduplicate_selection_and_require_upgrade_confirmation(
+    tmp_path: Path,
+) -> None:
+    client, paths, process = _client(tmp_path)
+    first = MeshStorageService("demo", paths).create_mr_profile("列车07-MR-CT")
+    second = MeshStorageService("demo", paths).create_mr_profile("列车08-MR-CT")
+    first_database = paths.mesh_mr_db_path("demo", first.safe_folder_name)
+    MeshMrRepository(first_database)
+    with closing(sqlite3.connect(first_database)) as connection:
+        connection.execute("UPDATE schema_meta SET value = 'old' WHERE key = 'schema_version'")
+        connection.execute("UPDATE meta SET value = 'old' WHERE key = 'schema_version'")
+        connection.commit()
+
+    rejected = client.post(
+        "/api/database-upgrades/upgrade/batch",
+        json={"profile_ids": [first.mr_id], "confirmed": False},
+    )
+    assert rejected.status_code == 422
+
+    upgraded = client.post(
+        "/api/database-upgrades/upgrade/batch",
+        json={"profile_ids": [first.mr_id, second.mr_id, second.mr_id], "confirmed": True},
+    )
+    assert upgraded.status_code == 202, upgraded.text
+    assert process.jobs[-1].task_type == "database_batch_upgrade"
+    assert process.jobs[-1].params["profile_ids"] == [first.mr_id, second.mr_id]
+
+    backed_up = client.post(
+        "/api/database-upgrades/backups/batch",
+        json={"profile_ids": [first.mr_id, second.mr_id, first.mr_id]},
+    )
+    assert backed_up.status_code == 202, backed_up.text
+    assert process.jobs[-1].task_type == "database_batch_backup"
+    assert process.jobs[-1].params["profile_ids"] == [first.mr_id, second.mr_id]
+
+
 def test_restore_and_delete_require_confirmation_and_submit_backup_id_only(tmp_path: Path) -> None:
     client, paths, process = _client(tmp_path)
     database = tmp_path / "data" / "sites" / "demo" / "files" / "mesh.sqlite"

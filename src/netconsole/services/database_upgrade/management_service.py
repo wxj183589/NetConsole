@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+from threading import RLock
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -17,6 +18,10 @@ from netconsole.services.database_upgrade.history import LegacyDatabaseArchiveSe
 from netconsole.services.database_upgrade.journal import list_upgrade_journals
 from netconsole.services.database_upgrade.models import DatabaseDescriptor, DatabaseUpgradeStrategy
 from netconsole.services.database_upgrade.sqlite_consistency import sqlite_backup, validate_sqlite
+from netconsole.services.job_center.job_context import BackgroundTaskCancelled
+
+
+_DATABASE_BATCH_LOCK = RLock()
 
 
 class DatabaseUpgradeManagementService:
@@ -25,6 +30,136 @@ class DatabaseUpgradeManagementService:
         self.backups = DatabaseBackupStore(paths)
         self.backup_lifecycle = BackupLifecycleService(paths)
         self.history = LegacyDatabaseArchiveService(paths, backup_store=self.backups)
+
+    def batch_backup(
+        self,
+        site_id: str,
+        profile_ids: list[str] | tuple[str, ...],
+        *,
+        task_id: str,
+        progress: Callable[[str, int, int, str], None] | None = None,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> dict[str, Any]:
+        """Create checked backups serially and retain a result for every Profile."""
+
+        selected = _unique_profile_ids(profile_ids)
+        inspection = self._mesh_inspection(site_id)
+        profiles = {
+            str(item.get("mr_id") or ""): dict(item)
+            for item in inspection.get("profiles", [])
+            if isinstance(item, dict)
+        }
+        results: list[dict[str, Any]] = []
+        cancel_check = _batch_cancel_check(should_cancel)
+        with _DATABASE_BATCH_LOCK:
+            for index, profile_id in enumerate(selected, start=1):
+                cancel_check()
+                profile = profiles.get(profile_id)
+                if profile is None:
+                    results.append({"profile_id": profile_id, "status": "failed", "message": "MESH Profile 不存在"})
+                else:
+                    safe_name = str(profile.get("safe_folder_name") or profile_id)
+                    scope_id = f"{site_id}:{safe_name}"
+                    try:
+                        backup = self.backups.create(
+                            source_path=self.paths.mesh_mr_db_path(site_id, safe_name),
+                            database_kind="mesh_derived",
+                            scope_type="site_profile",
+                            scope_id=scope_id,
+                            task_id=task_id,
+                            old_version=str(profile.get("current_version") or "unknown"),
+                            target_version=str(profile.get("required_version") or "unknown"),
+                            strategy="BATCH_BACKUP",
+                            reason="用户批量备份数据库",
+                            metadata={"profile_id": profile_id, "profile_name": str(profile.get("display_name") or "")},
+                        )
+                        results.append({
+                            "profile_id": profile_id,
+                            "profile_name": str(profile.get("display_name") or ""),
+                            "status": "success",
+                            "backup_id": str(backup.get("backup_id") or ""),
+                            "result_status": str(backup.get("result_status") or ""),
+                            "message": "数据库备份完成",
+                        })
+                    except Exception as exc:
+                        results.append({
+                            "profile_id": profile_id,
+                            "profile_name": str(profile.get("display_name") or ""),
+                            "status": "failed",
+                            "message": str(exc),
+                        })
+                if progress:
+                    progress("database_batch_backup", index, len(selected), f"已处理 {index}/{len(selected)} 个数据库")
+        summary = _batch_summary(site_id, "backup", results)
+        self._audit("database_batch_backup", {"site_id": site_id, "task_id": task_id, **summary})
+        return summary
+
+    def batch_upgrade(
+        self,
+        site_id: str,
+        profile_ids: list[str] | tuple[str, ...],
+        *,
+        task_id: str,
+        progress: Callable[[str, int, int, str], None] | None = None,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> dict[str, Any]:
+        """Preflight then repair each incompatible Profile one at a time."""
+
+        selected = _unique_profile_ids(profile_ids)
+        inspection = self._mesh_inspection(site_id)
+        profiles = {
+            str(item.get("mr_id") or ""): dict(item)
+            for item in inspection.get("profiles", [])
+            if isinstance(item, dict)
+        }
+        results: list[dict[str, Any]] = []
+        from netconsole.services.mesh_derived_data_maintenance_service import MeshDerivedDataMaintenanceService
+
+        cancel_check = _batch_cancel_check(should_cancel)
+        with _DATABASE_BATCH_LOCK:
+            for index, profile_id in enumerate(selected, start=1):
+                cancel_check()
+                profile = profiles.get(profile_id)
+                if profile is None:
+                    results.append({"profile_id": profile_id, "status": "failed", "message": "MESH Profile 不存在"})
+                elif str(profile.get("status") or "") != "incompatible":
+                    results.append({
+                        "profile_id": profile_id,
+                        "profile_name": str(profile.get("display_name") or ""),
+                        "status": "skipped",
+                        "message": "数据库版本兼容，无需升级",
+                    })
+                else:
+                    try:
+                        result = MeshDerivedDataMaintenanceService(self.paths).repair(
+                            site_id,
+                            profile_ids=[profile_id],
+                            progress=_batch_progress(progress, index, len(selected), profile_id),
+                            should_cancel=cancel_check,
+                        )
+                        repaired = list(result.get("repaired_profiles") or [])
+                        detail = dict(repaired[0]) if repaired else {}
+                        results.append({
+                            "profile_id": profile_id,
+                            "profile_name": str(profile.get("display_name") or ""),
+                            "status": "success",
+                            "backup_id": str(detail.get("backup_id") or ""),
+                            "message": "数据库升级完成",
+                        })
+                    except BackgroundTaskCancelled:
+                        raise
+                    except Exception as exc:
+                        results.append({
+                            "profile_id": profile_id,
+                            "profile_name": str(profile.get("display_name") or ""),
+                            "status": "failed",
+                            "message": str(exc),
+                        })
+                if progress:
+                    progress("database_batch_upgrade", index, len(selected), f"已处理 {index}/{len(selected)} 个数据库")
+        summary = _batch_summary(site_id, "upgrade", results)
+        self._audit("database_batch_upgrade", {"site_id": site_id, "task_id": task_id, **summary})
+        return summary
 
     def list_status(self, site_id: str) -> dict[str, Any]:
         inspection = self._mesh_inspection(site_id)
@@ -277,6 +412,50 @@ class _BackupRestoreAdapter:
             raise RuntimeError("备份目录中的 rollback 文件已存在")
         rollback_path.replace(target)
         return {"rollback_path": str(target)}
+
+
+def _unique_profile_ids(values: list[str] | tuple[str, ...]) -> list[str]:
+    return list(dict.fromkeys(str(value).strip() for value in values if str(value).strip()))
+
+
+def _batch_cancel_check(
+    should_cancel: Callable[[], bool] | None,
+) -> Callable[[], bool]:
+    def check() -> bool:
+        if should_cancel and should_cancel():
+            raise BackgroundTaskCancelled("批量数据库维护任务已取消")
+        return False
+
+    return check
+
+
+def _batch_progress(
+    progress: Callable[[str, int, int, str], None] | None,
+    index: int,
+    total: int,
+    profile_id: str,
+) -> Callable[[str, int, int, str], None] | None:
+    if progress is None:
+        return None
+
+    def emit(stage: str, current: int, stage_total: int, message: str) -> None:
+        progress(stage, index - 1, total, f"{profile_id}：{message}")
+
+    return emit
+
+
+def _batch_summary(site_id: str, action: str, results: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "site_id": str(site_id),
+        "action": action,
+        "total": len(results),
+        "success": sum(item.get("status") == "success" for item in results),
+        "skipped": sum(item.get("status") == "skipped" for item in results),
+        "failed": sum(item.get("status") == "failed" for item in results),
+        "partial": any(item.get("status") == "failed" for item in results)
+        and any(item.get("status") == "success" for item in results),
+        "results": results,
+    }
 
 
 __all__ = ["DatabaseUpgradeManagementService"]
