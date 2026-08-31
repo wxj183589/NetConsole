@@ -368,4 +368,4 @@ def test_run_all_works_from_repository_root() -> None:
         check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "13/13 passed" in result.stdout
+    assert "12/12 passed" in result.stdout

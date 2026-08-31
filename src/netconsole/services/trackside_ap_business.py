@@ -355,9 +355,11 @@ AP_OPTICAL_TREATMENT_RECORD_COLUMNS = (
     ("trackside.export.issue_type", "issue_type"),
     ("trackside.export.first_found_at", "first_found_at"),
     ("trackside.export.first_rx_power", "first_rx_power"),
+    ("trackside.export.worst_rx_power", "worst_rx_power"),
     ("trackside.export.fixed_rx_power", "fixed_rx_power"),
     ("trackside.export.current_rx_power", "current_rx_power"),
     ("trackside.export.current_status", "current_status"),
+    ("trackside.export.event_status", "event_status"),
     ("trackside.export.treatment_status", "treatment_status"),
     ("trackside.export.remark", "remark"),
     ("trackside.export.completed_at", "completed_at"),
@@ -4211,6 +4213,11 @@ def _sort_ap_optical_treatment_rows(rows: list[dict[str, object | None]]) -> lis
 
 
 def _ap_optical_treatment_row_fill_status(row: dict[str, object | None]) -> str:
+    event_status = str(row.get("event_status") or "").upper()
+    if event_status == "RESOLVED":
+        return "normal"
+    if event_status == "OPEN":
+        return "alarm"
     if row.get("treatment_status") == TREATMENT_CLOSED_LABEL:
         return "normal"
     status_text = " ".join(str(row.get(field) or "") for field in ("current_status", "issue_type")).casefold()

@@ -4,6 +4,7 @@ import hashlib
 import json
 from decimal import Decimal, InvalidOperation
 from typing import Any
+from uuid import uuid4
 
 from netconsole.services.ap_business_optical import evaluate_ap_business_rx
 from netconsole.services.ap_identity.normalizers import normalize_mac_key
@@ -15,7 +16,22 @@ OPTICAL_ISSUE_STATUSES = frozenset(
     {"abnormal", "alarm", "link_abnormal", "link_down", "no_light", "notice", "warning"}
 )
 OPTICAL_NO_DATA_STATUSES = frozenset(
-    {"", "unknown", "not_collected", "not_applicable", "skipped", "offline", "no_module", "failed", "timeout"}
+    {
+        "",
+        "unknown",
+        "not_collected",
+        "not_applicable",
+        "skipped",
+        "offline",
+        "no_module",
+        "failed",
+        "timeout",
+        "stale",
+        "collection_failed",
+        "connection_failed",
+        "authentication_failed",
+        "empty_configured_port",
+    }
 )
 _OPTICAL_KEYS = ("site_id", "ap_identity", "side")
 _OPTICAL_COLUMNS = (
@@ -244,6 +260,332 @@ def _side_rx(rows: dict[str, dict[str, Any]], side: str) -> str:
     return _text(rows.get(side, {}).get("rx_dbm"))
 
 
+def _source_observation_is_non_valid(source_row: dict[str, Any]) -> bool:
+    for field in (
+        "status",
+        "ap_optical_status",
+        "switch_optical_status",
+        "neighbor_optical_status",
+        "collection_status",
+        "connection_status",
+    ):
+        value = _canonical_status(source_row.get(field))
+        if value and value in OPTICAL_NO_DATA_STATUSES:
+            return True
+    for field in ("primary_reason_code", "reason_code", "failure_stage"):
+        if _canonical_status(source_row.get(field)) == "empty_configured_port":
+            return True
+    return False
+
+
+_EVENT_SEVERITY_ORDER = {
+    "notice": 1,
+    "warning": 2,
+    "abnormal": 3,
+    "link_abnormal": 4,
+    "link_down": 4,
+    "no_light": 5,
+    "alarm": 6,
+}
+_EVENT_METADATA_FIELDS = (
+    "ap_uuid",
+    "ap_name",
+    "ap_mac",
+    "ap_mac_normalized",
+    "serial_number",
+    "ap_id",
+    "station_id",
+    "station_name",
+    "section_name",
+    "direction",
+    "switch_device_id",
+    "switch_name",
+    "switch_interface",
+)
+
+
+def _event_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    return {field: metadata.get(field, "") for field in _EVENT_METADATA_FIELDS}
+
+
+def _event_issue_status(*statuses: str) -> str:
+    valid = [status for status in statuses if status in OPTICAL_ISSUE_STATUSES]
+    if not valid:
+        return ""
+    return max(valid, key=lambda status: _EVENT_SEVERITY_ORDER.get(status, 0))
+
+
+def _event_worse_rx(previous: object, current: object) -> str:
+    previous_text = _number_text(previous)
+    current_text = _number_text(current)
+    if not previous_text:
+        return current_text
+    if not current_text:
+        return previous_text
+    try:
+        return previous_text if Decimal(previous_text) <= Decimal(current_text) else current_text
+    except InvalidOperation:
+        return previous_text
+
+
+def _event_join_revisions(previous: object, current: object) -> str:
+    values: list[str] = []
+    for value in (previous, current):
+        for token in _text(value).split(";"):
+            if token and token not in values:
+                values.append(token)
+    return ";".join(values)
+
+
+def _event_side_name(ap_abnormal: bool, switch_abnormal: bool) -> str:
+    if ap_abnormal and switch_abnormal:
+        return "BOTH"
+    if ap_abnormal:
+        return "AP"
+    if switch_abnormal:
+        return "SWITCH"
+    return "NONE"
+
+
+def _event_merge_side(previous: object, current: object) -> str:
+    sides = {
+        value
+        for value in (_text(previous).upper(), _text(current).upper())
+        if value in {"AP", "SWITCH", "BOTH"}
+    }
+    if "BOTH" in sides or len(sides) > 1:
+        return "BOTH"
+    return next(iter(sides), "UNKNOWN")
+
+
+def _event_fingerprint(
+    rows: dict[str, dict[str, Any]],
+    source_row: dict[str, Any],
+) -> str:
+    payload = {
+        "source_revision": _text(
+            source_row.get("source_revision") or source_row.get("collect_run_uuid")
+        ),
+        "sides": {
+            side: {
+                "state_fingerprint": _text(row.get("state_fingerprint")),
+                "status": _canonical_status(row.get("status")),
+                "rx_dbm": _text(row.get("rx_dbm")),
+                "tx_dbm": _text(row.get("tx_dbm")),
+                "collected_at": _text(row.get("collected_at")),
+            }
+            for side, row in sorted(rows.items())
+        },
+    }
+    return hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
+    ).hexdigest()
+
+
+def _event_count(conn, site_id: str, ap_identity: str) -> int:
+    row = conn.execute(
+        "SELECT COUNT(*) AS count FROM ap_optical_treatment_events "
+        "WHERE site_id=? AND ap_identity=?",
+        (site_id, ap_identity),
+    ).fetchone()
+    return int(row["count"] or 0) if row else 0
+
+
+def _event_summary_seed(conn, site_id: str, ap_identity: str) -> dict[str, Any] | None:
+    row = conn.execute(
+        "SELECT * FROM ap_optical_treatment_events "
+        "WHERE site_id=? AND ap_identity=? ORDER BY first_detected_at, id LIMIT 1",
+        (site_id, ap_identity),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def _record_ap_optical_treatment_event(
+    conn,
+    *,
+    site_id: str,
+    ap_identity: str,
+    source_row: dict[str, Any],
+    rows: dict[str, dict[str, Any]],
+    metadata: dict[str, Any],
+    abnormal_side: str,
+    latest_collected: str,
+    now: str,
+) -> dict[str, Any] | None:
+    """Persist one valid optical lifecycle transition.
+
+    This function is deliberately called from the bounded optical writer.  It
+    never treats no-data/failure rows as lifecycle boundaries and keeps the
+    one-open-event invariant in SQLite as a final concurrency guard.
+    """
+
+    ap_row = rows.get("AP") or {}
+    switch_row = rows.get("SWITCH") or {}
+    ap_status = _canonical_status(ap_row.get("status"))
+    switch_status = _canonical_status(switch_row.get("status"))
+    ap_abnormal = ap_status in OPTICAL_ISSUE_STATUSES
+    switch_abnormal = switch_status in OPTICAL_ISSUE_STATUSES
+    source_revision = _text(
+        source_row.get("source_revision") or source_row.get("collect_run_uuid")
+    )
+    observation_fingerprint = _event_fingerprint(rows, source_row)
+    issue_type = _event_issue_status(ap_status, switch_status)
+    severity = issue_type
+    first_ap_rx = _side_rx(rows, "AP") if ap_abnormal else ""
+    first_switch_rx = _side_rx(rows, "SWITCH") if switch_abnormal else ""
+    current_ap_rx = _side_rx(rows, "AP")
+    current_switch_rx = _side_rx(rows, "SWITCH")
+
+    open_row = conn.execute(
+        "SELECT * FROM ap_optical_treatment_events "
+        "WHERE site_id=? AND ap_identity=? AND event_status='OPEN' "
+        "ORDER BY id DESC LIMIT 1",
+        (site_id, ap_identity),
+    ).fetchone()
+    if abnormal_side != "NONE":
+        if open_row is not None:
+            current = dict(open_row)
+            if current.get("last_observation_fingerprint") == observation_fingerprint:
+                return current
+            values = {
+                **current,
+                **_event_metadata(metadata),
+                "event_status": "OPEN",
+                "last_abnormal_at": max(
+                    _text(current.get("last_abnormal_at")), latest_collected
+                ),
+                "last_abnormal_side": abnormal_side,
+                "worst_abnormal_side": _event_merge_side(
+                    current.get("worst_abnormal_side"), abnormal_side
+                ),
+                "issue_type": issue_type or _text(current.get("issue_type")),
+                "worst_severity": max(
+                    _text(current.get("worst_severity")), severity,
+                    key=lambda value: _EVENT_SEVERITY_ORDER.get(value, 0),
+                ),
+                "first_ap_rx_dbm": _text(current.get("first_ap_rx_dbm")) or first_ap_rx,
+                "worst_ap_rx_dbm": _event_worse_rx(
+                    current.get("worst_ap_rx_dbm"), first_ap_rx
+                ),
+                "first_switch_rx_dbm": _text(current.get("first_switch_rx_dbm"))
+                or first_switch_rx,
+                "worst_switch_rx_dbm": _event_worse_rx(
+                    current.get("worst_switch_rx_dbm"),
+                    first_switch_rx,
+                ),
+                "first_rx_dbm": _text(current.get("first_rx_dbm"))
+                or first_ap_rx
+                or first_switch_rx,
+                "worst_rx_dbm": _event_worse_rx(
+                    current.get("worst_rx_dbm"), first_ap_rx or first_switch_rx
+                ),
+                "source_revision_last": _event_join_revisions(
+                    current.get("source_revision_last"), source_revision
+                ),
+                "last_observation_fingerprint": observation_fingerprint,
+                "updated_at": now,
+            }
+            fields = tuple(
+                field
+                for field in values
+                if field not in {"id", "event_uuid", "site_id", "ap_identity", "created_at"}
+            )
+            conn.execute(
+                "UPDATE ap_optical_treatment_events SET "
+                + ", ".join(f"{field}=?" for field in fields)
+                + " WHERE id=?",
+                [values[field] for field in fields] + [current["id"]],
+            )
+            return values
+
+        values = {
+            **_event_metadata(metadata),
+            "event_uuid": uuid4().hex,
+            "site_id": site_id,
+            "ap_identity": ap_identity,
+            "first_abnormal_side": abnormal_side,
+            "worst_abnormal_side": abnormal_side,
+            "last_abnormal_side": abnormal_side,
+            "issue_type": issue_type,
+            "initial_severity": severity,
+            "worst_severity": severity,
+            "first_detected_at": latest_collected,
+            "last_abnormal_at": latest_collected,
+            "resolved_at": "",
+            "first_ap_rx_dbm": first_ap_rx,
+            "worst_ap_rx_dbm": first_ap_rx,
+            "recovered_ap_rx_dbm": "",
+            "first_switch_rx_dbm": first_switch_rx,
+            "worst_switch_rx_dbm": first_switch_rx,
+            "recovered_switch_rx_dbm": "",
+            "first_rx_dbm": first_ap_rx or first_switch_rx,
+            "worst_rx_dbm": first_ap_rx or first_switch_rx,
+            "recovered_rx_dbm": "",
+            "event_status": "OPEN",
+            "treatment_status": "PENDING",
+            "remark": "",
+            "source_revision_first": source_revision,
+            "source_revision_last": source_revision,
+            "backfill_key": "",
+            "backfill_source": "",
+            "evidence_quality": "RUNTIME",
+            "evidence_json": json.dumps(
+                {"backfill_keys": [], "source": "RUNTIME"},
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            "last_observation_fingerprint": observation_fingerprint,
+            "created_at": now,
+            "updated_at": now,
+        }
+        fields = tuple(values)
+        conn.execute(
+            "INSERT INTO ap_optical_treatment_events ("
+            + ", ".join(fields)
+            + ") VALUES ("
+            + ", ".join("?" for _ in fields)
+            + ")",
+            [values[field] for field in fields],
+        )
+        return values
+
+    if open_row is None:
+        return None
+    current = dict(open_row)
+    if current.get("last_observation_fingerprint") == observation_fingerprint:
+        return current
+    values = {
+        **current,
+        **_event_metadata(metadata),
+        "event_status": "RESOLVED",
+        "resolved_at": latest_collected,
+        "recovered_ap_rx_dbm": current_ap_rx,
+        "recovered_switch_rx_dbm": current_switch_rx,
+        "recovered_rx_dbm": current_ap_rx or current_switch_rx,
+        "last_abnormal_side": _text(current.get("last_abnormal_side")) or abnormal_side,
+        "source_revision_last": _event_join_revisions(
+            current.get("source_revision_last"), source_revision
+        ),
+        "last_observation_fingerprint": observation_fingerprint,
+        "updated_at": now,
+    }
+    fields = tuple(
+        field
+        for field in values
+        if field not in {"id", "event_uuid", "site_id", "ap_identity", "created_at"}
+    )
+    conn.execute(
+        "UPDATE ap_optical_treatment_events SET "
+        + ", ".join(f"{field}=?" for field in fields)
+        + " WHERE id=?",
+        [values[field] for field in fields] + [current["id"]],
+    )
+    return values
+
+
 def update_ap_optical_treatment(
     conn,
     *,
@@ -259,6 +601,13 @@ def update_ap_optical_treatment(
     switch_status = _canonical_status(switch_row.get("status") if switch_row else "")
     ap_abnormal = ap_status in OPTICAL_ISSUE_STATUSES
     switch_abnormal = switch_status in OPTICAL_ISSUE_STATUSES
+    if not (ap_abnormal or switch_abnormal) and _source_observation_is_non_valid(source_row):
+        return None
+    if not (ap_abnormal or switch_abnormal) and any(
+        _canonical_status(row.get("status")) in OPTICAL_NO_DATA_STATUSES
+        for row in rows.values()
+    ):
+        return None
     if not (ap_abnormal or switch_abnormal) and not any(_has_real_data(row) for row in rows.values()):
         return None
     abnormal_side = "BOTH" if ap_abnormal and switch_abnormal else "AP" if ap_abnormal else "SWITCH" if switch_abnormal else "NONE"
@@ -312,25 +661,39 @@ def update_ap_optical_treatment(
         "last_collected_at": latest_collected,
         "updated_at": now,
     }
+    _record_ap_optical_treatment_event(
+        conn,
+        site_id=site_id,
+        ap_identity=ap_identity,
+        source_row=source_row,
+        rows=rows,
+        metadata=metadata,
+        abnormal_side=abnormal_side,
+        latest_collected=latest_collected,
+        now=now,
+    )
+    recurrence_count = max(_event_count(conn, site_id, ap_identity) - 1, 0)
+    event_seed = _event_summary_seed(conn, site_id, ap_identity)
     if abnormal_side != "NONE":
-        was_resolved = bool(previous and str(previous.get("treatment_status") or "") == "RESOLVED")
-        recurrence_count = int(previous.get("recurrence_count") or 0) if previous else 0
-        if was_resolved:
-            recurrence_count += 1
         if previous is None:
+            seeded_first_detected = _text((event_seed or {}).get("first_detected_at"))
+            seeded_first_resolved = _text((event_seed or {}).get("resolved_at"))
             values = {
                 **metadata,
-                "first_detected_at": latest_collected,
+                "first_detected_at": seeded_first_detected or latest_collected,
                 "last_abnormal_at": latest_collected,
-                "first_ap_rx_dbm": metadata["current_ap_rx_dbm"],
-                "first_switch_rx_dbm": metadata["current_switch_rx_dbm"],
+                "first_ap_rx_dbm": _text((event_seed or {}).get("first_ap_rx_dbm"))
+                or metadata["current_ap_rx_dbm"],
+                "first_switch_rx_dbm": _text((event_seed or {}).get("first_switch_rx_dbm"))
+                or metadata["current_switch_rx_dbm"],
                 "recovered_ap_rx_dbm": "",
                 "recovered_switch_rx_dbm": "",
-                "first_abnormal_side": abnormal_side,
+                "first_abnormal_side": _text((event_seed or {}).get("first_abnormal_side"))
+                or abnormal_side,
                 "current_status": current_status,
                 "treatment_status": "RECURRENT" if recurrence_count else "PENDING",
-                "first_resolved_at": "",
-                "last_resolved_at": "",
+                "first_resolved_at": seeded_first_resolved,
+                "last_resolved_at": seeded_first_resolved,
                 "recurrence_count": recurrence_count,
                 "remark": "",
                 "source_revision": _text(source_row.get("source_revision") or source_row.get("collect_run_uuid")),
@@ -347,7 +710,7 @@ def update_ap_optical_treatment(
             **metadata,
             "last_abnormal_at": latest_collected,
             "current_status": current_status,
-            "treatment_status": "RECURRENT" if was_resolved else str(previous.get("treatment_status") or "PENDING"),
+            "treatment_status": "RECURRENT" if recurrence_count else str(previous.get("treatment_status") or "PENDING"),
             "recurrence_count": recurrence_count,
             "source_revision": _text(source_row.get("source_revision") or source_row.get("collect_run_uuid")),
         }

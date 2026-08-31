@@ -28,7 +28,7 @@ from netconsole.core.sqlite_utils import (
 from netconsole.models.device_address import InvalidDeviceAddressError, normalize_ip_address
 
 
-CURRENT_SCHEMA_VERSION = "2026.08.31.fit_ap_entity_resource_scope_v1"
+CURRENT_SCHEMA_VERSION = "2026.09.01.ap_optical_treatment_event_history_v1"
 
 DEVICE_CLASSIFICATION_COLUMNS = (
     "project_phase",
@@ -387,6 +387,9 @@ def _trackside_ap_revision_schema() -> str:
             "ac_fit_ap_resource_history",
             "ac_fit_ap_optical_history",
             "device_optical_modules_history",
+        ),
+        "trackside_ap_treatment_event_revision": (
+            "ap_optical_treatment_events",
         ),
     }
     statements = [
@@ -1836,6 +1839,76 @@ CREATE TABLE IF NOT EXISTS ap_optical_treatment (
 );
 CREATE INDEX IF NOT EXISTS idx_ap_optical_treatment_status
     ON ap_optical_treatment(site_id, current_status, treatment_status);
+
+CREATE TABLE IF NOT EXISTS ap_optical_treatment_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_uuid TEXT NOT NULL UNIQUE,
+    site_id TEXT NOT NULL,
+    ap_identity TEXT NOT NULL,
+    ap_uuid TEXT NOT NULL DEFAULT '',
+    ap_name TEXT NOT NULL DEFAULT '',
+    ap_mac TEXT NOT NULL DEFAULT '',
+    ap_mac_normalized TEXT NOT NULL DEFAULT '',
+    serial_number TEXT NOT NULL DEFAULT '',
+    ap_id TEXT NOT NULL DEFAULT '',
+    station_id TEXT NOT NULL DEFAULT '',
+    station_name TEXT NOT NULL DEFAULT '',
+    section_name TEXT NOT NULL DEFAULT '',
+    direction TEXT NOT NULL DEFAULT '',
+    first_abnormal_side TEXT NOT NULL DEFAULT 'UNKNOWN',
+    worst_abnormal_side TEXT NOT NULL DEFAULT 'UNKNOWN',
+    last_abnormal_side TEXT NOT NULL DEFAULT 'UNKNOWN',
+    switch_device_id TEXT NOT NULL DEFAULT '',
+    switch_name TEXT NOT NULL DEFAULT '',
+    switch_interface TEXT NOT NULL DEFAULT '',
+    issue_type TEXT NOT NULL DEFAULT '',
+    initial_severity TEXT NOT NULL DEFAULT '',
+    worst_severity TEXT NOT NULL DEFAULT '',
+    first_detected_at TEXT NOT NULL DEFAULT '',
+    last_abnormal_at TEXT NOT NULL DEFAULT '',
+    resolved_at TEXT NOT NULL DEFAULT '',
+    first_ap_rx_dbm TEXT NOT NULL DEFAULT '',
+    worst_ap_rx_dbm TEXT NOT NULL DEFAULT '',
+    recovered_ap_rx_dbm TEXT NOT NULL DEFAULT '',
+    first_switch_rx_dbm TEXT NOT NULL DEFAULT '',
+    worst_switch_rx_dbm TEXT NOT NULL DEFAULT '',
+    recovered_switch_rx_dbm TEXT NOT NULL DEFAULT '',
+    first_rx_dbm TEXT NOT NULL DEFAULT '',
+    worst_rx_dbm TEXT NOT NULL DEFAULT '',
+    recovered_rx_dbm TEXT NOT NULL DEFAULT '',
+    event_status TEXT NOT NULL DEFAULT 'OPEN'
+        CHECK (event_status IN ('OPEN', 'RESOLVED')),
+    treatment_status TEXT NOT NULL DEFAULT 'PENDING'
+        CHECK (treatment_status IN ('PENDING', 'IN_PROGRESS', 'COMPLETED', 'IGNORED')),
+    remark TEXT NOT NULL DEFAULT '',
+    source_revision_first TEXT NOT NULL DEFAULT '',
+    source_revision_last TEXT NOT NULL DEFAULT '',
+    backfill_key TEXT NOT NULL DEFAULT '',
+    backfill_source TEXT NOT NULL DEFAULT '',
+    evidence_quality TEXT NOT NULL DEFAULT 'RUNTIME',
+    evidence_json TEXT NOT NULL DEFAULT '{}',
+    last_observation_fingerprint TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_ap_optical_treatment_events_identity_time
+    ON ap_optical_treatment_events(site_id, ap_identity, first_detected_at, id);
+CREATE INDEX IF NOT EXISTS idx_ap_optical_treatment_events_status
+    ON ap_optical_treatment_events(site_id, event_status);
+CREATE INDEX IF NOT EXISTS idx_ap_optical_treatment_events_treatment
+    ON ap_optical_treatment_events(site_id, treatment_status);
+CREATE INDEX IF NOT EXISTS idx_ap_optical_treatment_events_ap_uuid
+    ON ap_optical_treatment_events(ap_uuid);
+CREATE INDEX IF NOT EXISTS idx_ap_optical_treatment_events_serial
+    ON ap_optical_treatment_events(serial_number);
+CREATE INDEX IF NOT EXISTS idx_ap_optical_treatment_events_switch
+    ON ap_optical_treatment_events(switch_device_id, switch_interface);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ap_optical_treatment_events_backfill_key
+    ON ap_optical_treatment_events(site_id, backfill_key)
+    WHERE trim(backfill_key) <> '';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ap_optical_treatment_events_one_open
+    ON ap_optical_treatment_events(site_id, ap_identity)
+    WHERE event_status = 'OPEN';
 """
 
 AC_FIT_AP_RADIO_HISTORY_SCHEMA = """
@@ -3210,6 +3283,43 @@ class Database:
                 if not self._column_exists(conn, "ap_optical_treatment", column):
                     conn.execute(
                         f"ALTER TABLE ap_optical_treatment ADD COLUMN {column} {definition}"
+                    )
+
+        if self._table_exists(conn, "ap_optical_treatment_events"):
+            for column, definition in {
+                "ap_id": "TEXT NOT NULL DEFAULT ''",
+                "station_id": "TEXT NOT NULL DEFAULT ''",
+                "station_name": "TEXT NOT NULL DEFAULT ''",
+                "section_name": "TEXT NOT NULL DEFAULT ''",
+                "direction": "TEXT NOT NULL DEFAULT ''",
+                "first_abnormal_side": "TEXT NOT NULL DEFAULT 'UNKNOWN'",
+                "worst_abnormal_side": "TEXT NOT NULL DEFAULT 'UNKNOWN'",
+                "last_abnormal_side": "TEXT NOT NULL DEFAULT 'UNKNOWN'",
+                "issue_type": "TEXT NOT NULL DEFAULT ''",
+                "initial_severity": "TEXT NOT NULL DEFAULT ''",
+                "worst_severity": "TEXT NOT NULL DEFAULT ''",
+                "first_detected_at": "TEXT NOT NULL DEFAULT ''",
+                "last_abnormal_at": "TEXT NOT NULL DEFAULT ''",
+                "resolved_at": "TEXT NOT NULL DEFAULT ''",
+                "first_ap_rx_dbm": "TEXT NOT NULL DEFAULT ''",
+                "worst_ap_rx_dbm": "TEXT NOT NULL DEFAULT ''",
+                "recovered_ap_rx_dbm": "TEXT NOT NULL DEFAULT ''",
+                "first_switch_rx_dbm": "TEXT NOT NULL DEFAULT ''",
+                "worst_switch_rx_dbm": "TEXT NOT NULL DEFAULT ''",
+                "recovered_switch_rx_dbm": "TEXT NOT NULL DEFAULT ''",
+                "first_rx_dbm": "TEXT NOT NULL DEFAULT ''",
+                "worst_rx_dbm": "TEXT NOT NULL DEFAULT ''",
+                "recovered_rx_dbm": "TEXT NOT NULL DEFAULT ''",
+                "backfill_key": "TEXT NOT NULL DEFAULT ''",
+                "backfill_source": "TEXT NOT NULL DEFAULT ''",
+                "evidence_quality": "TEXT NOT NULL DEFAULT 'RUNTIME'",
+                "evidence_json": "TEXT NOT NULL DEFAULT '{}'",
+                "last_observation_fingerprint": "TEXT NOT NULL DEFAULT ''",
+            }.items():
+                if not self._column_exists(conn, "ap_optical_treatment_events", column):
+                    conn.execute(
+                        "ALTER TABLE ap_optical_treatment_events "
+                        f"ADD COLUMN {column} {definition}"
                     )
 
         ap_entity_columns = {

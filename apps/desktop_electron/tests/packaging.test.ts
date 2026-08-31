@@ -236,7 +236,7 @@ describe('Electron-only packaging', () => {
   it('runs the packaged Electron smoke only in a unique D-drive test root', () => {
     const script = readFileSync(resolve(appRoot, 'scripts', 'package-smoke.mjs'), 'utf8')
 
-    expect(script).toContain("const WINDOWS_TEST_DATA_ROOT = 'D:\\\\study\\\\test-data\\\\NetConsole'")
+    expect(script).toContain("const WINDOWS_TEST_DATA_ROOT = 'D:\\\\study\\\\NetConsole-Workspace\\\\test-data\\\\NetConsole'")
     expect(script).toContain("mkdtempSync(join(WINDOWS_TEST_DATA_ROOT, 'NetConsole-package-smoke-'))")
     expect(script).toContain("NETCONSOLE_RUNTIME_MODE: 'test'")
     expect(script).toContain("NETCONSOLE_STORAGE_MODE: 'isolated_test'")
@@ -546,7 +546,7 @@ describe('Local Windows packaging launcher', () => {
   })
 
   it('creates an atomic, self-contained release directory and summary', () => {
-    expect(localScript).toContain('D:\\study\\release\\NetConsole')
+    expect(localScript).toContain('D:\\study\\NetConsole-Workspace\\release')
     expect(localScript).not.toContain('dist\\release')
     expect(localScript).not.toContain('C:\\NetConsoleRelease')
     expect(localScript).not.toContain('D:\\NetConsoleRelease')

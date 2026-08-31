@@ -2149,6 +2149,24 @@ class AcRepository:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def list_ap_optical_treatment_events(self) -> list[dict[str, object | None]]:
+        """List the historical AP optical lifecycle authority.
+
+        The current treatment summary remains available through
+        ``list_ap_optical_treatments``.  Event-history consumers must use this
+        method so a recurring AP is never collapsed to one summary row.
+        """
+
+        with self.database.connect_readonly() as conn:
+            if not self._bounded_optical_authority_enabled(conn):
+                return []
+            rows = conn.execute(
+                "SELECT * FROM ap_optical_treatment_events "
+                "WHERE site_id = ? ORDER BY ap_name, ap_identity, first_detected_at, id",
+                (self.site_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def list_current_optical_problem_counts_by_station(self) -> dict[str, int]:
         """Return one batch count from the current abnormal optical projection."""
 

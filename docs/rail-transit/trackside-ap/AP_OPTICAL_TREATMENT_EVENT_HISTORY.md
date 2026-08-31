@@ -1,4 +1,4 @@
-# 轨旁 AP 光衰 Treatment Event History 设计
+# 轨旁 AP 光衰 Treatment Event History 实施说明
 
 ## 结论
 
@@ -8,12 +8,13 @@
 - 新增 `ap_optical_treatment_events`，一条真实异常生命周期一行，允许同一 AP
   保存多个已解决或正在发生的事件；
 - summary 是事件历史的当前投影和查询优化，不再承担完整历史事件明细；
-- 本文只完成来源追踪和设计，不执行 schema migration、真实 backfill 或 runtime
-  改造。
+- 本文记录已完成的 schema migration、runtime 生命周期、Development 回填和导出
+  验收结果。
 
-本设计由 2026-08-31 对开发数据 `hzl10` 的只读审计支撑。旧有效候选中有
+本实施由 2026-08-31 对开发数据 `hzl10` 的只读审计支撑。实施前旧有效候选中有
 `CANONICAL_MISSING_CURRENT_RECORD=42`，另有 `RECURRENCE_EVENT=26`；当前
-`ap_optical_treatment` 为 55 行，`recurrence_count` 总和为 0。证据矩阵交付在
+`ap_optical_treatment` 为 55 行，`recurrence_count` 总和为 0；该值已在回填后按
+事件数重建。证据矩阵交付在
 Workspace 的 diagnostic 目录，未纳入 Git。
 
 ## 1. 当前问题和边界
@@ -33,18 +34,25 @@ Workspace 的 diagnostic 目录，未纳入 Git。
 | `CANONICAL_MISSING_CURRENT_RECORD` | 42 |
 | `IDENTITY_UNRESOLVED` | 2 |
 
-`102 - 55 = 47` 是净行数差，不是 physical AP 的一一对应差异数。本设计不把旧
+`102 - 55 = 47` 是净行数差，不是 physical AP 的一一对应差异数。本实现不把旧
 Excel 的行数直接当数据库行数，也不把旧导出结果直接当 canonical authority。
 
-本轮安全边界：
+本轮执行边界：
 
-- 只读 `D:\NetConsoleData-dev\sites\hzl10\db\devices.db`，SQLite 使用
-  `mode=ro` 和 `PRAGMA query_only=ON`；
-- 未对 Development 或 Production 执行 `INSERT`、`UPDATE`、`DELETE`、DDL 或真实
-  回填；
+- schema migration、runtime 写入和受控 backfill 只作用于
+  `D:\NetConsoleData-dev\sites\hzl10\db\devices.db`；
+- 回填工具默认 dry-run，只有显式 `--apply` 才写入；本轮 Development apply 在
+  事务中完成，当前 summary 仍为 55 行；
 - 不使用 AP 名、站点名、旧行号、端口顺序或相似度匹配推断身份；
-- `D:\NetConsoleData` 只作为越界路径标记，不读取其文件内容；
+- `D:\NetConsoleData` 只作为越界路径拒绝规则，不读取其文件内容；
 - 不重做 `optical_current` / `optical_history` 的 Current + bounded Recent 架构。
+
+Development 实施结果：`ap_optical_treatment_events` 共 113 行，其中 51 行
+`OPEN`、62 行 `RESOLVED`；42 条 canonical missing 中 35 条完整回填、7 条部分
+回填、0 条未恢复；26 条 recurrence 中 24 条回填、2 条 legacy-only 保留为跳过。
+8 条 recurrence 证据落在当前 summary 的权威生命周期内并合并到该 event，另新增
+16 条 recurrence event，因此总事件数不是按候选数机械相加。第二次 dry-run 为
+零新增、零更新，冲突和 unresolved 均为 0。
 
 ## 2. 42 条 canonical missing 来源追踪结论
 
@@ -159,7 +167,7 @@ ledger 等来源扫描时间线并生成多条投影记录。bounded v1 收口�
 
 ## 4. Authority 和来源优先级
 
-未来 event backfill/runtime 读取应使用以下优先级，优先级高的来源可否定低优先级
+当前 event backfill/runtime 读取使用以下优先级，优先级高的来源可否定低优先级
 的冲突推断；冲突不得静默覆盖：
 
 1. canonical persisted `optical_history`，在其 bounded coverage 内作为有效异常
@@ -176,11 +184,12 @@ ledger 等来源扫描时间线并生成多条投影记录。bounded v1 收口�
 旧 Excel 只有在后续另行批准的受控导入任务中才可能成为 candidate input；本设计
 不授权从 Excel 直接 `INSERT`。
 
-## 5. Proposed schema
+## 5. Implemented schema
 
 ### 5.1 事件表
 
-建议新增：
+已新增并由 `2026.09.01.ap_optical_treatment_event_history_v1` schema version
+管理：
 
 ```sql
 CREATE TABLE ap_optical_treatment_events (
@@ -216,18 +225,30 @@ CREATE TABLE ap_optical_treatment_events (
     first_switch_rx_dbm TEXT NOT NULL DEFAULT '',
     worst_switch_rx_dbm TEXT NOT NULL DEFAULT '',
     recovered_switch_rx_dbm TEXT NOT NULL DEFAULT '',
-    event_status TEXT NOT NULL DEFAULT 'OPEN',
-    treatment_status TEXT NOT NULL DEFAULT 'PENDING',
+    first_rx_dbm TEXT NOT NULL DEFAULT '',
+    worst_rx_dbm TEXT NOT NULL DEFAULT '',
+    recovered_rx_dbm TEXT NOT NULL DEFAULT '',
+    event_status TEXT NOT NULL DEFAULT 'OPEN'
+        CHECK (event_status IN ('OPEN', 'RESOLVED')),
+    treatment_status TEXT NOT NULL DEFAULT 'PENDING'
+        CHECK (treatment_status IN ('PENDING', 'IN_PROGRESS', 'COMPLETED', 'IGNORED')),
     remark TEXT NOT NULL DEFAULT '',
     source_revision_first TEXT NOT NULL DEFAULT '',
     source_revision_last TEXT NOT NULL DEFAULT '',
+    backfill_key TEXT NOT NULL DEFAULT '',
+    backfill_source TEXT NOT NULL DEFAULT '',
+    evidence_quality TEXT NOT NULL DEFAULT 'RUNTIME',
+    evidence_json TEXT NOT NULL DEFAULT '{}',
+    last_observation_fingerprint TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL DEFAULT ''
 );
 ```
 
-实际 migration 时应为状态字段增加 CHECK/enum 约束，并按项目已有 migration
-convention 处理 schema version。字段名可按最终 domain model 微调，但不得重新
+实际 migration 已按项目已有 additive migration convention 处理 schema version，
+并为状态字段增加 CHECK/enum 约束。另有 `backfill_key` 非空唯一索引作为回填幂等
+键，以及 `(site_id, ap_identity)` 的非空 `OPEN` partial unique index，数据库层阻止
+同一 AP 同时存在多个 OPEN event。字段名可按最终 domain model 微调，但不得重新
 加入 `UNIQUE(site_id, ap_identity)`；同一 AP 必须能有 event 1、event 2、event 3。
 
 事件唯一由 `event_uuid` / `id` 管理。`site_id + ap_identity + first_detected_at`
@@ -235,7 +256,7 @@ convention 处理 schema version。字段名可按最终 domain model 微调，�
 
 ### 5.2 索引
 
-建议至少建立：
+已建立：
 
 ```text
 INDEX(site_id, ap_identity, first_detected_at)
@@ -244,10 +265,13 @@ INDEX(site_id, treatment_status)
 INDEX(ap_uuid)
 INDEX(serial_number)
 INDEX(switch_device_id, switch_interface)
+UNIQUE(site_id, backfill_key) WHERE trim(backfill_key) <> ''
+UNIQUE(site_id, ap_identity) WHERE event_status = 'OPEN'
 ```
 
-如果真实 source revision 不能保证完整去重，应增加 observation/dedup ledger，或
-使用唯一指纹约束：
+runtime 使用 `last_observation_fingerprint` 去重同一 snapshot；回填使用
+`backfill_key` 和 evidence JSON 持久化来源。source revision 不能单独作为 event
+identity：
 
 ```text
 (event_uuid, source_revision, collected_at, side, observation_fingerprint)
@@ -341,36 +365,48 @@ normal -> alarm -> normal       event-3 RESOLVED
   派生或由同一生命周期事务同步维护；
 - 不允许仅凭 summary 反向生成不存在的历史 event。
 
-## 8. 从现有 55 条 summary 回填的设计
+## 8. 从现有 55 条 summary 回填
 
-本节是未来任务的设计，不是本轮执行结果。
+回填工具为 `scripts/backfill_ap_optical_treatment_events.py`，默认 dry-run，
+只接受 Development 数据库和已审计的 persisted evidence JSON。它先把 55 条
+summary 变成当前状态 event，再按精确 identity、时间和 evidence provenance 处理
+42 条 canonical missing 与 26 条 recurrence candidate；不会从旧 Excel 直接写入。
 
 ### 8.1 回填规则
 
-- `current_status=ABNORMAL` 且 `first_detected_at` 有可靠来源：可生成 OPEN event
-  candidate；缺少身份、时间或发生证据时输出 unresolved/conflict；
+- `current_status=ABNORMAL` 且 `first_detected_at` 有可靠来源：生成 OPEN event；
+  缺少身份、时间或发生证据时输出 unresolved/conflict；
 - `RESOLVED` 且 `first_detected_at` 与 `first_resolved_at/last_resolved_at` 可确认：
-  可生成 RESOLVED event candidate；
+  生成 RESOLVED event；部分 evidence 可以确认已经结束但不能精确定位恢复时刻，
+  此时保持 `resolved_at` 为空并将质量标记为 PARTIAL；
 - `recurrence_count > 0`：必须结合 `optical_history` 和其它按优先级排序的持久化
   evidence 拆分多个 event，不能把 count 机械复制成多行；
 - `recurrence_count=0` 不证明没有复发；当前结果已经证明旧复发可能没有回放；
-- 42 条 missing 只允许使用达到本设计 authority 顺序的 persisted evidence；
+- 42 条 missing 只允许使用达到本实现 authority 顺序的 persisted evidence；
   `LEGACY_ONLY_EVIDENCE`、`IDENTITY_UNRESOLVED` 和 conflict 不自动 INSERT；
 - 旧 Excel 只能保留为 candidate/legacy evidence，不能直接成为数据库 authority。
 
-### 8.2 迁移阶段
+### 8.2 Development 执行结果
 
-1. Phase 1：新增 schema、event repository/service 和 summary projection；
-2. Phase 2：纯内存/synthetic lifecycle tests；
-3. Phase 3：Development dry-run backfill；
-4. Phase 4：逐条审计 backfill candidate、冲突和 unresolved；
-5. Phase 5：经批准后只对 Development apply；
-6. Phase 6：真实 GUI、页面统计和 event-based export 验收；
-7. Production 另行审批、另行 dry-run、另行窗口，不由 Development 任务自动推广。
+| 检查项 | 结果 |
+| --- | ---: |
+| `ap_optical_treatment` summary | 55 行，apply 前后保持不变 |
+| `ap_optical_treatment_events` | 113 行 |
+| canonical missing | 35 完整、7 部分、0 未恢复 |
+| recurrence | 24 回填、2 legacy-only 跳过 |
+| 合并 | 8 条 recurrence 合并到当前 summary 权威 event，16 条生成新 event |
+| 第一次 dry-run | `would_create=113`, `would_update=0` |
+| apply | 事务成功 |
+| 第二次 dry-run | `would_create=0`, `would_update=0` |
+| conflicts / unresolved | 0 / 0 |
+
+部分 event 的证据、分类、来源 revision 和回填键写入 `evidence_json`、
+`evidence_quality`、`backfill_source`、`backfill_key`。未知侧别不猜测，RX 只写
+通用字段；能确认事件已结束但恢复边界不精确时使用 `RESOLVED + resolved_at=''`。
 
 ## 9. Dry-run 约束
 
-未来迁移工具必须默认为 dry-run，例如：
+迁移工具默认为 dry-run，例如：
 
 ```text
 python scripts/... --site hzl10
@@ -389,16 +425,19 @@ conflicts
 candidate 数量核对和失败可恢复策略。工具不得默认修改数据库，也不得从旧 Excel
 直接 INSERT。
 
-## 10. 未来导出边界
+## 10. 导出边界
 
-“AP 光衰处理记录”未来应从 `ap_optical_treatment_events` 导出，一条历史事件一行。
+“AP 光衰处理记录”当前从 `ap_optical_treatment_events` 导出，一条历史事件一行。
 如仍需要当前视图，另提供“AP 光衰当前处理状态”导出，来源为
 `ap_optical_treatment`。不能把一个 AP 的当前 summary 当作完整事件历史，也不能
 在导出层根据当前值重新猜测已结束事件。
 
-## 11. 必须补充的测试设计
+Development 导出验收通过：事件明细 113 行，单个 AP 可导出多行历史事件，输出含
+首次/最差/恢复 RX、event status 和处理状态；事件 status 同步控制记录行样式。
 
-在 schema/runtime 实施阶段，至少覆盖以下用例：
+## 11. 测试和验收覆盖
+
+已覆盖以下用例：
 
 1. `normal -> alarm`：创建一个 OPEN event；
 2. `alarm -> warning`：更新同一 event，不新增；
@@ -411,26 +450,28 @@ candidate 数量核对和失败可恢复策略。工具不得默认修改数据�
 9. 同一 AP 三次异常/恢复：得到 3 行 event；
 10. 同一 AP 的 summary：仍只有 1 行。
 
-还应增加身份冲突、跨 AC 同 physical AP、AP/SWITCH 侧别切换、warning/alarm
-severity 演进、stale、无中间 NORMAL 的长时间缺采样和 source revision 重放测试。
+同时覆盖身份精确绑定、AP/SWITCH 侧别切换、warning/alarm severity 演进、stale、
+采集失败/未采集、source fingerprint 重放、schema quick_check、回填 dry-run/apply
+和第二次 dry-run 幂等。
 
 ## 12. 当前决策清单
 
 ```text
 CURRENT_TREATMENT_SUMMARY_MODEL=ONE_ROW_PER_AP_IDENTITY
 EVENT_HISTORY_REQUIRED=YES
-PROPOSED_EVENT_TABLE=ap_optical_treatment_events
+EVENT_TABLE=ap_optical_treatment_events
 CURRENT_SUMMARY_TABLE=ap_optical_treatment
 SUMMARY_REPLACED=NO
-EVENT_LIFECYCLE_DESIGN=PASS
+EVENT_LIFECYCLE=PASS
 FAILURE_CREATES_EVENT=NO
 FAILURE_RESOLVES_EVENT=NO
 STALE_CREATES_EVENT=NO
 REPEATED_SNAPSHOT_DUPLICATE_EVENT=NO
-EVENT_IDEMPOTENCY_DESIGN=PASS
+EVENT_IDEMPOTENCY=PASS
 LEGACY_EXCEL_AS_DATABASE_AUTHORITY=NO
-BACKFILL_IMPLEMENTED=NO
-SCHEMA_MIGRATION_EXECUTED=NO
+BACKFILL_IMPLEMENTED=YES
+SCHEMA_MIGRATION_EXECUTED=YES
+EXPORT_AUTHORITY=EVENT_HISTORY
 ```
 
 最终只推荐方案 B：**Current Summary + Event History 双层模型**。方案 A 继续扩展

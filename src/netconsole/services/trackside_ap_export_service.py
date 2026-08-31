@@ -1005,7 +1005,7 @@ def _build_trackside_ap_business_export_snapshot_once(
     # by exact AP UUID, but it must never filter, rebuild, or supplement the
     # treatment population.  In particular, a legacy/non-authority database
     # must not regenerate historical rows from current abnormal interfaces.
-    persisted_treatments = ac_repository.list_ap_optical_treatments()
+    persisted_treatments = ac_repository.list_ap_optical_treatment_events()
     optical_treatment_rows = _export_persisted_optical_treatments(
         persisted_treatments,
         business_rows=snapshot.rows,
@@ -1091,7 +1091,13 @@ def _export_persisted_optical_treatments(
                     return value
             return None
 
-        side = str(source.get("current_abnormal_side") or "").upper()
+        is_event = bool(str(source.get("event_uuid") or "").strip())
+        side = str(
+            source.get("worst_abnormal_side")
+            if is_event
+            else source.get("current_abnormal_side")
+            or ""
+        ).upper()
         if side == "AP":
             side_label = "AP侧"
         elif side == "SWITCH":
@@ -1100,13 +1106,26 @@ def _export_persisted_optical_treatments(
             side_label = "AP侧/交换机侧"
         else:
             side_label = ""
-        current_status = str(source.get("current_status") or "").upper()
-        is_resolved = current_status in {"NORMAL", "RECOVERED"} or str(
-            source.get("treatment_status") or ""
-        ).upper() == "RESOLVED"
-        treatment_status = "已处理" if is_resolved else "未处理"
+        current_status = str(
+            source.get("event_status") if is_event else source.get("current_status") or ""
+        ).upper()
+        is_resolved = (
+            current_status in {"NORMAL", "RECOVERED", "RESOLVED"}
+            or (not is_event and str(source.get("treatment_status") or "").upper() == "RESOLVED")
+        )
+        treatment_value = str(source.get("treatment_status") or "").upper()
+        if not is_event:
+            treatment_status = "已处理" if is_resolved else "未处理"
+        else:
+            treatment_status = {
+                "COMPLETED": "已处理",
+                "IN_PROGRESS": "处理中",
+                "IGNORED": "已忽略",
+            }.get(treatment_value, "未处理")
         status = str(
-            source.get("current_ap_status")
+            source.get("issue_type")
+            if is_event
+            else source.get("current_ap_status")
             or source.get("current_switch_status")
             or ""
         ).casefold()
@@ -1118,9 +1137,26 @@ def _export_persisted_optical_treatments(
             "link_down": "链路异常",
             "no_light": "无光",
         }.get(status, "光衰异常" if not is_resolved else "")
-        current_rx = source.get("current_ap_rx_dbm") or source.get("current_switch_rx_dbm")
-        first_rx = source.get("first_ap_rx_dbm") or source.get("first_switch_rx_dbm")
-        fixed_rx = source.get("recovered_ap_rx_dbm") or source.get("recovered_switch_rx_dbm")
+        current_rx = (
+            source.get("current_ap_rx_dbm") or source.get("current_switch_rx_dbm")
+            if not is_event
+            else ""
+        )
+        first_rx = (
+            source.get("first_rx_dbm")
+            or source.get("first_ap_rx_dbm")
+            or source.get("first_switch_rx_dbm")
+        )
+        worst_rx = (
+            source.get("worst_rx_dbm")
+            or source.get("worst_ap_rx_dbm")
+            or source.get("worst_switch_rx_dbm")
+        )
+        fixed_rx = (
+            source.get("recovered_rx_dbm")
+            or source.get("recovered_ap_rx_dbm")
+            or source.get("recovered_switch_rx_dbm")
+        )
         result.append(
             {
                 # ``site_id`` identifies the database/project, not the AP's
@@ -1138,12 +1174,18 @@ def _export_persisted_optical_treatments(
                 "issue_type": issue_type,
                 "first_found_at": source.get("first_detected_at"),
                 "first_rx_power": first_rx,
+                "worst_rx_power": worst_rx,
                 "fixed_rx_power": fixed_rx,
                 "current_rx_power": current_rx,
-                "current_status": source.get("current_status"),
+                "current_status": source.get("current_status") if not is_event else source.get("event_status"),
+                "event_status": source.get("event_status") if is_event else ("RESOLVED" if is_resolved else "OPEN"),
                 "treatment_status": treatment_status,
                 "remark": source.get("remark") or "",
-                "completed_at": source.get("last_resolved_at") or source.get("first_resolved_at") or "",
+                "completed_at": (
+                    source.get("resolved_at")
+                    if is_event
+                    else source.get("last_resolved_at") or source.get("first_resolved_at") or ""
+                ) or "",
             }
         )
     return result

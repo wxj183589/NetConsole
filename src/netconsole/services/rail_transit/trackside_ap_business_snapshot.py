@@ -37,12 +37,14 @@ _CURRENT_SOURCE_TABLES: dict[str, tuple[str, ...]] = {
         "ac_fit_ap_unauthenticated",
     ),
     "optical_data_revision": ("ac_fit_ap_optical",),
+    "treatment_event_revision": ("ap_optical_treatment_events",),
 }
 _SOURCE_REVISION_METADATA_KEYS = {
     "switch_facts_revision": "trackside_ap_switch_facts_revision",
     "lldp_revision": "trackside_ap_lldp_revision",
     "fit_ap_resource_revision": "trackside_ap_fit_ap_resource_revision",
     "optical_data_revision": "trackside_ap_optical_revision",
+    "treatment_event_revision": "trackside_ap_treatment_event_revision",
 }
 _BUSINESS_REVISION_EXCLUDED_KEYS = {
     "export_history_revision",
