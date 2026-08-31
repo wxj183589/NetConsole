@@ -260,6 +260,8 @@ def test_trackside_terminal_targets_use_exact_switch_and_fit_ap_ids() -> None:
             "ap_mac": "0011-2233-4455",
             "ap_ip": "192.0.2.20",
             "ap_state": "R/M",
+            "switch_optical_collection_status": "failed",
+            "switch_optical_collection_error": "SSH 认证失败",
         },
         "normal",
         terminal_devices,
@@ -269,6 +271,8 @@ def test_trackside_terminal_targets_use_exact_switch_and_fit_ap_ids() -> None:
     assert linked_row.ap_terminal_ac_id == "ac-device-1"
     assert linked_row.ap_terminal_ap_id == "fit-ap-1"
     assert linked_row.ap_terminal_available is True
+    assert linked_row.switch_optical_collection_status == "failed"
+    assert linked_row.switch_optical_collection_error == "SSH 认证失败"
 
     missing_row = trackside_ap_business_query_service.TracksideApBusinessQueryService._row(
         {

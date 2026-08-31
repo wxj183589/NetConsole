@@ -350,6 +350,12 @@ class TracksideApBusinessQueryService:
             switch_optical_data_status=str(
                 row.get("switch_optical_data_status") or "unknown"
             ),
+            switch_optical_collection_status=str(
+                row.get("switch_optical_collection_status") or ""
+            ),
+            switch_optical_collection_error=str(
+                row.get("switch_optical_collection_error") or ""
+            ),
             ap_uuid=str(row.get("ap_uuid") or ""),
             ap_mac=str(row.get("ap_mac") or ""),
             ap_name=str(row.get("ap_name") or ""),

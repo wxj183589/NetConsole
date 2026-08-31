@@ -1098,7 +1098,7 @@ def _call(callback):
 
 def _syslog_log_detail(**values: object) -> str:
     return " ".join(
-        f"{key}={str(value).replace(chr(13), r'\r').replace(chr(10), r'\n')}"
+        f"{key}={str(value).replace(chr(13), chr(92) + 'r').replace(chr(10), chr(92) + 'n')}"
         for key, value in values.items()
     )
 
