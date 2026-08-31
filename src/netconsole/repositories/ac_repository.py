@@ -2310,7 +2310,34 @@ class AcRepository:
         four identity fields are present: AP MAC, local interface, neighbor
         MAC, and neighbor interface.
         """
-        if str(ac_device_uuid or "").strip():
+        bounded_rows: list[dict[str, object | None]] = []
+        bounded_authority = False
+        with self.database.connect_readonly() as conn:
+            bounded_authority = self._bounded_lldp_authority_enabled(conn)
+            if bounded_authority:
+                scope_sql = (
+                    " AND ac_device_uuid = ?"
+                    if str(ac_device_uuid or "").strip()
+                    else ""
+                )
+                params: tuple[object, ...] = (str(ap_uuid),)
+                if scope_sql:
+                    params += (str(ac_device_uuid),)
+                bounded_rows = [
+                    dict(row)
+                    for row in conn.execute(
+                        "SELECT * FROM fit_ap_lldp_current "
+                        "WHERE ap_uuid = ?" + scope_sql,
+                        params,
+                    ).fetchall()
+                ]
+
+        # Once bounded current is authoritative, an empty/invalid current row
+        # must not resurrect stale history in the detail view.  The fallback
+        # keeps legacy fixtures and pre-cutover databases readable.
+        if bounded_authority:
+            rows = bounded_rows
+        elif str(ac_device_uuid or "").strip():
             rows = self.list_fit_ap_lldp_history_by_ap(
                 ap_uuid,
                 limit=100_000,

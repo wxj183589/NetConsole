@@ -1123,6 +1123,50 @@ def test_current_fit_ap_lldp_converges_repeated_relation_to_one(tmp_path):
     assert current[0]["collected_at"] == "2026-08-01T00:99:00"
 
 
+def test_current_fit_ap_lldp_reads_bounded_current_with_ac_scope(tmp_path):
+    repository = AcRepository(make_database(tmp_path))
+    repository.replace_fit_ap_resources(
+        "ac-a",
+        [
+            {
+                "ap_uuid": "ap-shared",
+                "ap_name": "AP-shared",
+                "ap_mac": "0011-2233-4455",
+                "lldp_source": "ac_bulk_lldp",
+                "lldp_local_interface": "GigabitEthernet1/0/1",
+                "lldp_neighbor_name": "SW-A",
+                "lldp_neighbor_mac": "aa11-bbcc-ddee",
+                "lldp_neighbor_interface": "GE1/0/1",
+                "collected_at": "2026-08-01T00:00:00",
+            }
+        ],
+    )
+    repository.replace_fit_ap_resources(
+        "ac-b",
+        [
+            {
+                "ap_uuid": "ap-shared",
+                "ap_name": "AP-shared",
+                "ap_mac": "0011-2233-4455",
+                "lldp_source": "ac_bulk_lldp",
+                "lldp_local_interface": "GigabitEthernet1/0/2",
+                "lldp_neighbor_name": "SW-B",
+                "lldp_neighbor_mac": "ff11-2233-4455",
+                "lldp_neighbor_interface": "GE1/0/2",
+                "collected_at": "2026-08-01T00:01:00",
+            }
+        ],
+    )
+
+    current = repository.list_current_fit_ap_lldp_by_ap(
+        "ap-shared", ac_device_uuid="ac-a"
+    )
+
+    assert len(current) == 1
+    assert current[0]["lldp_neighbor"] == "SW-A"
+    assert current[0]["local_interface"] == "GigabitEthernet1/0/1"
+
+
 def test_current_fit_ap_lldp_keeps_latest_relations_after_switch_change(tmp_path):
     repository = AcRepository(make_database(tmp_path))
     rows = [
