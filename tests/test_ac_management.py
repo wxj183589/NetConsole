@@ -155,6 +155,7 @@ class FakeConnection:
         self.calls = []
         self.disconnected = False
         self.outputs = outputs or {}
+        self.output_history = {}
 
     def send_command(self, command, read_timeout=None):
         self.commands.append(command)
@@ -163,8 +164,9 @@ class FakeConnection:
             value = self.outputs[command]
             if isinstance(value, Exception):
                 raise value
+            self.output_history[command] = value
             return value
-        return {
+        value = {
             "screen-length disable": "",
             "display wlan ap all": fixture("display_wlan_ap_all.txt"),
             "display wlan ap all address": fixture("display_wlan_ap_all_address.txt"),
@@ -180,6 +182,8 @@ class FakeConnection:
             "display device": fixture("display_device_ac.txt"),
             "display device manuinfo": fixture("display_device_manuinfo.txt"),
         }[command]
+        self.output_history[command] = value
+        return value
 
     def disconnect(self):
         self.disconnected = True
@@ -2707,6 +2711,7 @@ def test_h3c_fit_ap_deep_refresh_uses_verified_verbose_command_and_only_upserts_
     )
 
     assert result.success is True
+    assert result.fit_ap_snapshot_status == "NOT_COLLECTED"
     assert "display wlan ap all radio verbose filter bbssid" in connection.commands
     assert "display wlan ap unauthenticated" not in connection.commands
     assert (
@@ -2865,6 +2870,81 @@ def test_h3c_ac_resource_collect_failure_preserves_current_resources(
     assert result.success is False
     assert result.fit_ap_snapshot_status == "FAILED"
     assert [row["ap_uuid"] for row in repository.list_fit_ap_resources(ac_uuid)] == ["ap-keep"]
+
+
+def test_h3c_ac_resource_partial_rows_with_required_command_failure_preserves_current(
+    monkeypatch, tmp_path
+):
+    connection = FakeConnection(
+        {"display wlan ap all address": RuntimeError("address command failed")}
+    )
+    monkeypatch.setattr(
+        h3c_ac_collect_service.netmiko_connection,
+        "ConnectHandler",
+        lambda **_kwargs: connection,
+    )
+    repository = AcRepository(make_database(tmp_path))
+    ac_uuid = "22222222-2222-4222-8222-222222222222"
+    repository.replace_fit_ap_resources(
+        ac_uuid,
+        [
+            {"ap_uuid": "ap-sn001", "ap_name": "AP-SN001", "serial_number": "SN001"},
+            {"ap_uuid": "ap-sn002", "ap_name": "AP-SN002", "serial_number": "SN002"},
+        ],
+    )
+
+    result = collect_h3c_fit_ap_resources(
+        make_ac_device(),
+        "demo",
+        repository=repository,
+        paths=PathResolver(tmp_path),
+    )
+
+    current = repository.list_fit_ap_resources(ac_uuid)
+    assert parse_wlan_ap_list(connection.output_history["display wlan ap all"])
+    assert result.success is False
+    assert result.fit_ap_snapshot_status == "FAILED"
+    assert result.fit_ap_resources_updated == 0
+    assert "display wlan ap all address" in [
+        item.command for item in result.command_results if not item.success
+    ]
+    assert sorted(row["serial_number"] for row in current) == ["SN001", "SN002"]
+
+
+def test_h3c_ac_resource_invalid_snapshot_is_failed_without_empty_replace(
+    monkeypatch, tmp_path
+):
+    connection = FakeConnection(
+        {
+            "display wlan ap all": "AP output cannot be parsed\n",
+            "display wlan ap all address": "",
+            "display wlan ap all radio": "",
+        }
+    )
+    monkeypatch.setattr(
+        h3c_ac_collect_service.netmiko_connection,
+        "ConnectHandler",
+        lambda **_kwargs: connection,
+    )
+    repository = AcRepository(make_database(tmp_path))
+    ac_uuid = "22222222-2222-4222-8222-222222222222"
+    repository.replace_fit_ap_resources(
+        ac_uuid,
+        [{"ap_uuid": "ap-old", "ap_name": "AP-OLD", "serial_number": "SN-OLD"}],
+    )
+
+    result = collect_h3c_fit_ap_resources(
+        make_ac_device(),
+        "demo",
+        repository=repository,
+        paths=PathResolver(tmp_path),
+    )
+
+    assert result.success is False
+    assert result.fit_ap_snapshot_status == "FAILED"
+    assert [row["serial_number"] for row in repository.list_fit_ap_resources(ac_uuid)] == [
+        "SN-OLD"
+    ]
 
 
 def test_h3c_ac_resource_success_empty_replaces_only_that_ac_current(

@@ -50,7 +50,12 @@ from netconsole.services.ac.fit_ap_optical_concurrency import (
     clamp_fit_ap_optical_concurrency,
     fit_ap_optical_platform_concurrency_limit,
 )
-from netconsole.services.ac.ac_models import is_ac_device_type
+from netconsole.services.ac.ac_models import (
+    FIT_AP_SNAPSHOT_STATUS_FAILED,
+    FIT_AP_SNAPSHOT_STATUS_SUCCESS_EMPTY,
+    FIT_AP_SNAPSHOT_STATUS_SUCCESS_WITH_ROWS,
+    is_ac_device_type,
+)
 from netconsole.services import command_guard
 from netconsole.services import netmiko_connection
 from netconsole.services.ap_identity import ApIdentityQueryService
@@ -531,11 +536,11 @@ def collect_h3c_fit_ap_resources(
         )
         resources_persisted = resource_snapshot_success
         resource_snapshot_status = (
-            "SUCCESS_WITH_ROWS"
+            FIT_AP_SNAPSHOT_STATUS_FAILED
+            if not resource_snapshot_success
+            else FIT_AP_SNAPSHOT_STATUS_SUCCESS_WITH_ROWS
             if resources
-            else "SUCCESS_EMPTY"
-            if resource_snapshot_is_success_empty
-            else "FAILED"
+            else FIT_AP_SNAPSHOT_STATUS_SUCCESS_EMPTY
         )
         dynamic_summary_updated = bool(
             dynamic_summary_available and resource_snapshot_success

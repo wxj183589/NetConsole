@@ -13,6 +13,10 @@ from netconsole.services.ac.ac_models import (
     AcResourceRefreshRequest,
     AcResourceRefreshResult,
     AcResourceSnapshot,
+    FIT_AP_SNAPSHOT_STATUS_FAILED,
+    FIT_AP_SNAPSHOT_STATUS_NOT_COLLECTED,
+    FIT_AP_SNAPSHOT_STATUS_SUCCESS_EMPTY,
+    FIT_AP_SNAPSHOT_STATUS_SUCCESS_WITH_ROWS,
 )
 from netconsole.services.ac.ac_resource_service import AcResourceRefreshCancelled, AcResourceService
 from netconsole.services.background_job import BackgroundJob
@@ -240,6 +244,9 @@ def test_ac_fit_ap_collect_terminal_payload_is_bounded_for_large_snapshot() -> N
     full_payload = result.to_payload()
     assert full_payload["fit_ap_snapshot_status"] == "NOT_COLLECTED"
     assert full_payload["collection"]["fit_ap_snapshot_status"] == "NOT_COLLECTED"
+    assert payload["fit_ap_snapshot_status"] == "NOT_COLLECTED"
+    assert payload["collection"]["fit_ap_snapshot_status"] == "NOT_COLLECTED"
+    assert payload["fit_ap_snapshot_status"] == payload["collection"]["fit_ap_snapshot_status"]
     frame = json.dumps(
         {
             "type": "finished",
@@ -296,6 +303,35 @@ def test_ac_fit_ap_collect_terminal_payload_is_bounded_for_large_snapshot() -> N
             "error_message": "",
         },
     }
+
+
+@pytest.mark.parametrize(
+    "status",
+    (
+        FIT_AP_SNAPSHOT_STATUS_NOT_COLLECTED,
+        FIT_AP_SNAPSHOT_STATUS_SUCCESS_WITH_ROWS,
+        FIT_AP_SNAPSHOT_STATUS_SUCCESS_EMPTY,
+        FIT_AP_SNAPSHOT_STATUS_FAILED,
+    ),
+)
+def test_ac_fit_ap_snapshot_status_is_consistent_in_full_and_terminal_payloads(
+    status: str,
+) -> None:
+    result = AcResourceRefreshResult(
+        True,
+        "cli",
+        AcResourceSnapshot("ac-001", {"total_aps": 1}, [{"ap_name": "AP-01"}]),
+        fit_ap_snapshot_status=status,
+    )
+
+    full_payload = result.to_payload()
+    terminal_payload = result.to_terminal_payload()
+    assert full_payload["fit_ap_snapshot_status"] == status
+    assert full_payload["collection"]["fit_ap_snapshot_status"] == status
+    assert terminal_payload["fit_ap_snapshot_status"] == status
+    assert terminal_payload["collection"]["fit_ap_snapshot_status"] == status
+    assert full_payload["fit_ap_snapshot_status"] == full_payload["collection"]["fit_ap_snapshot_status"]
+    assert terminal_payload["fit_ap_snapshot_status"] == terminal_payload["collection"]["fit_ap_snapshot_status"]
 
 
 def test_ac_fit_ap_resource_job_keeps_legacy_load_mode(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

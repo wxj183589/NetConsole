@@ -57,8 +57,10 @@ AC 采集得到的 Current 按 `ac_device_uuid` 隔离，正式权威表为：
 
 `fit_ap_snapshot_status` 是采集终态契约，允许值为
 `NOT_COLLECTED`、`SUCCESS_WITH_ROWS`、`SUCCESS_EMPTY`、`FAILED`。状态同时
-出现在终态回执顶层和 `collection` 兼容摘要中；失败只保留上一次成功 Current，
-只有确认完整成功且确实无 AP 时才使用 `SUCCESS_EMPTY` 并替换为空。
+出现在终态回执顶层和 `collection` 兼容摘要中，且两处必须一致。它描述的是本次
+FIT-AP Resource snapshot 是否完整可提交，而不是解析器是否碰巧得到行；必需命令
+失败、快照不完整或无法判定时即使存在部分 rows 也必须为 `FAILED`，并保留上一次
+成功 Current。只有确认完整成功且确实无 AP 时才使用 `SUCCESS_EMPTY` 并替换为空。
 
 轨旁 AP 的 Site 级更新在没有车站/AP 定向条件时，枚举当前局点全部纳入范围的
 H3C AC 角色（设备类型 `AC` 或 `wireless_controller`），逐台独立刷新并汇总
