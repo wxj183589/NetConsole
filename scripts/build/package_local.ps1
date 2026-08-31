@@ -393,7 +393,8 @@ function Publish-VerifiedArtifacts {
     }
     New-Item -ItemType Directory -Path $releaseRoot -Force | Out-Null
     $stagingRoot = Join-Path $releaseRoot (".staging-" + [guid]::NewGuid().ToString("N"))
-    $finalRoot = Join-Path (Join-Path $releaseRoot $AppVersion) ("build-{0}-{1}" -f $script:BuildNumber, $Head.Substring(0, 8))
+    $versionRoot = Join-Path $releaseRoot $AppVersion
+    $finalRoot = Join-Path $versionRoot ("build-{0}-{1}" -f $script:BuildNumber, $Head.Substring(0, 8))
     if (Test-Path -LiteralPath $finalRoot) {
         throw "正式版本目录已存在，拒绝覆盖或混入新候选：$finalRoot"
     }
@@ -429,6 +430,7 @@ function Publish-VerifiedArtifacts {
             -ProjectRoot $ProjectRoot -Branch $script:Branch -Head $Head -AppVersion $AppVersion `
             -EditionSelection $script:EditionSelection -Artifacts $stagedArtifacts
 
+        New-Item -ItemType Directory -Path $versionRoot -Force | Out-Null
         Move-Item -LiteralPath $stagingRoot -Destination $finalRoot
         return [PSCustomObject]@{
             FinalRoot = $finalRoot
