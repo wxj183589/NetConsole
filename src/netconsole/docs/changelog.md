@@ -1,3 +1,12 @@
+v1.5.2 - 2026-09-01
+- AP 光衰处理记录升级为完整事件历史，同一 AP 的多次异常、恢复和再次异常可分别保留，并支持 AP 侧、交换机侧及双侧异常生命周期。
+- 支持多 AC 独立管理：每个 AC 独立维护 FIT-AP，站点级轨旁 AP 业务聚合多个 AC 的结果；有效 FIT-AP 序列号作为强物理身份，APID 继续保持 AC 作用域。
+- AP 上线情况概览移除“再上线数/再上线率”，增加统一口径的站点光衰问题数；新增 AP 上线检测统一依据 AC 未认证 AP 列表，避免普通上线或重连被误判。
+- 轨旁 AP Excel 导出增加光衰问题浅红提示、移除主业务表识别诊断列，并将 AP 光衰处理记录切换为完整事件历史导出。
+- 修复 FIT-AP 采集失败错误更新或清空 Current、光衰历史覆盖和站点光衰统计不一致问题；明确区分成功有数据、成功为空、失败和未采集。
+- 新增 `2026.09.01.ap_optical_treatment_event_history_v1` schema migration 与受控旧数据迁移能力；保留当前摘要查询模型。
+- 旧外部 HistoryStore 已从运行时退役，相关数据统一使用 Current、Recent10 和既有有界历史；Task Center 的 TaskHistoryStore 保持不变。
+
 v1.5.1
 - 统一 Python、Electron、Renderer、安装器和 Full/Customer 制品使用的产品版本身份。
 
