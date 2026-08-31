@@ -11,6 +11,7 @@ from openpyxl import Workbook, load_workbook
 
 from tests.support.job_process_test_support import FakeExportProcessAdapter, FakeLocalProcessAdapter
 from netconsole.application.rail_transit.web_application_service import RailTransitWebApplicationService, RailTransitWebError
+from netconsole.application.rail_transit import web_application_service as web_application_service_module
 from netconsole.application.web_artifacts import WebArtifactError
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
@@ -20,6 +21,10 @@ from netconsole.services.job_center.job_registry import registered_task_types
 from netconsole.services.job_center.task_application_service import TaskApplicationService
 from netconsole.services.export.export_handlers import run_generic_export_handler
 from netconsole.services.rail_transit import trackside_ap_business_query_service, trackside_ap_update_job, trackside_optical_collection
+from netconsole.services.rail_transit.effective_trackside_ap_scope import (
+    TracksideApScopeContext,
+    resolve_effective_trackside_ap_scope,
+)
 from netconsole.services.trackside_ap_export_service import (
     TracksideApBusinessLoadResult,
     load_trackside_ap_business_snapshot,
@@ -2350,6 +2355,83 @@ def test_trackside_ap_online_status_uses_planned_targets_and_weighted_total(
     assert overview["E13"].number_format == "0.0%"
     assert overview["E13"].font.bold is True
     workbook.close()
+
+
+def test_trackside_ap_online_status_uses_final_business_rows_for_optical_counts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    paths.ensure_site_dirs("demo")
+    database = Database(paths.site_db_path("demo"))
+    database.initialize()
+    repository = AcRepository(database)
+    station_ids = _seed_base_stations(repository, ["站点A"])
+    repository.replace_trackside_ap_plan_rows(
+        TRACKSIDE_AP_PLAN_MODE,
+        [{
+            "station_id": station_ids["站点A"],
+            "station_name": "站点A",
+            "ap_count": 1,
+            "sequence_no": 1,
+        }],
+    )
+    scope = resolve_effective_trackside_ap_scope(
+        context=TracksideApScopeContext(site_id="demo", project_id="demo"),
+        station_rows=repository.list_ap_extension_points(),
+        plan_rows=repository.list_trackside_ap_plan(TRACKSIDE_AP_PLAN_MODE),
+        reference_rows=[],
+        resource_rows=[],
+    )
+    snapshot = TracksideApBusinessLoadResult(
+        generation=0,
+        site_name="demo",
+        rows=[
+            {
+                "site": "站点A",
+                "model": "WA6528X-E",
+                "ap_uuid": "ap-1",
+                "ap_mac": "0011-2233-4455",
+                "ap_name": "AP-1",
+                "ap_identity_entity_id": "entity-1",
+                "identity_match_status": "matched",
+                "switch_rx_power": "-19.10",
+                "switch_optical_status": "abnormal",
+                "switch_device_optical_status": "abnormal",
+                "ap_side_has_data": True,
+                "ap_rx_power": "-7.72",
+                "ap_optical_status": "normal",
+            }
+        ],
+        device_count=0,
+        query_ms=1,
+        build_ms=1,
+        scope=scope,
+    )
+    monkeypatch.setattr(
+        web_application_service_module,
+        "load_trackside_ap_business_snapshot",
+        lambda *_args, **_kwargs: snapshot,
+    )
+    monkeypatch.setattr(
+        AcRepository,
+        "list_current_optical_problem_counts_by_station",
+        lambda _self: pytest.fail("online status must not read the independent optical table"),
+    )
+    tasks = TaskApplicationService(paths=paths, site_name="demo")
+    service = RailTransitWebApplicationService(
+        paths,
+        tasks,
+        process_adapter=FakeLocalProcessAdapter(tasks),  # type: ignore[arg-type]
+        export_adapter=FakeExportProcessAdapter(tasks),  # type: ignore[arg-type]
+    )
+
+    status = service.get_trackside_ap_online_status("demo")
+
+    assert status.optical_problem_count == 1
+    assert status.items[0].optical_problem_count == 1
+    assert "光衰问题" in status.items[0].warning
+    assert "光衰问题" in status.warning
 
 
 def test_trackside_online_status_refreshes_from_exact_switch_lldp_station_evidence(

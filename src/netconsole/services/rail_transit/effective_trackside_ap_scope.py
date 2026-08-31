@@ -595,13 +595,17 @@ class EffectiveTracksideApScope:
                 or 0
             )
             status = "normal"
-            warning = ""
+            warning_parts: list[str] = []
             if planned == 0 and observed_online > 0:
                 status = "unplanned_online"
-                warning = "存在未纳入规划的在线 AP。"
+                warning_parts.append("存在未纳入规划的在线 AP。")
             elif observed_online > planned:
                 status = "over_planned"
-                warning = "实际上线 AP 数量超过当前规划数量，请检查规划资料或 AP 归属关系。"
+                warning_parts.append(
+                    "实际上线 AP 数量超过当前规划数量，请检查规划资料或 AP 归属关系。"
+                )
+            if optical_problem_count > 0:
+                warning_parts.append(f"存在 {optical_problem_count} 个光衰问题 AP。")
             count_anomaly = status in {"unplanned_online", "over_planned"}
             rows.append(
                 {
@@ -620,7 +624,27 @@ class EffectiveTracksideApScope:
                     "planning_missing": planning_missing,
                     "count_anomaly": count_anomaly,
                     "status": status,
-                    "warning": warning,
+                    "warning": "；".join(warning_parts),
+                }
+            )
+        unassigned_optical_problem_count = int(
+            optical_counts.get("未归属") or optical_counts.get("") or 0
+        )
+        if unassigned_optical_problem_count > 0:
+            rows.append(
+                {
+                    "station_id": "",
+                    "station_name": "未归属",
+                    "planned_ap_count": 0,
+                    "actual_online_count": 0,
+                    "offline_count": 0,
+                    "online_rate": None,
+                    "optical_problem_count": unassigned_optical_problem_count,
+                    "remark": "",
+                    "planning_missing": False,
+                    "count_anomaly": False,
+                    "status": "normal",
+                    "warning": "存在未归属的光衰问题 AP。",
                 }
             )
         return rows

@@ -93,6 +93,32 @@ _COLLECTION_FAILED_STATUSES = frozenset(
         "collection_failed",
     }
 )
+_OPTICAL_NO_CURRENT_DATA_STATUSES = frozenset(
+    {
+        "unknown",
+        "not_collected",
+        "failed",
+        "failure",
+        "error",
+        "cancelled",
+        "timeout",
+        "auth_failed",
+        "authentication_failed",
+        "tcp_failed",
+        "tcp_connection_failed",
+        "ssh_failed",
+        "connection_failed",
+        "unreachable",
+        "device_unreachable",
+        "collection_failed",
+        "offline",
+        "no_module",
+        "not_applicable",
+        "skipped",
+        "unverified",
+        "dom_unavailable",
+    }
+)
 _TRACKSIDE_NATIVE_PVID_SEGMENT_RE = re.compile(
     r"^native\s*/\s*pvid\s*[:=]?\s*\d{1,4}$",
     re.IGNORECASE,
@@ -3868,6 +3894,8 @@ def _is_ap_side_current_abnormal(row: dict[str, object | None]) -> bool:
         return False
     if not has_valid_ap_binding(row):
         return False
+    if _has_explicit_optical_no_current_data(row, "ap"):
+        return False
     status = _current_optical_export_evaluation(row).ap_status
     return is_optical_health_abnormal(status)
 
@@ -3913,7 +3941,36 @@ def _is_switch_side_current_abnormal(row: dict[str, object | None]) -> bool:
         return False
     if not has_valid_ap_binding(row):
         return False
+    if _has_explicit_optical_no_current_data(row, "switch"):
+        return False
     return is_optical_health_abnormal(_current_optical_export_evaluation(row).switch_status)
+
+
+def _has_explicit_optical_no_current_data(
+    row: Mapping[str, object | None],
+    side: str,
+) -> bool:
+    fields = (
+        (
+            "ap_business_optical_status",
+            "ap_device_optical_status",
+            "ap_optical_status",
+            "collection_status",
+        )
+        if side == "ap"
+        else (
+            "switch_optical_status",
+            "switch_device_optical_status",
+            "switch_optical_collection_status",
+            "switch_collection_status",
+            "switch_optical_data_status",
+        )
+    )
+    return any(
+        str(row.get(field) or "").strip().casefold() in _OPTICAL_NO_CURRENT_DATA_STATUSES
+        for field in fields
+        if str(row.get(field) or "").strip()
+    )
 
 
 def current_optical_abnormal_reason(row: dict[str, object | None]) -> dict[str, str]:
@@ -3960,7 +4017,22 @@ def _current_optical_observed_at(row: dict[str, object | None]) -> object:
 
 
 def is_current_optical_abnormal_export_row(row: dict[str, object | None]) -> bool:
+    """Return the single business-row optical problem predicate.
+
+    This predicate is shared by the top-level business count and station
+    aggregation.  Collection/identity quality states are deliberately kept
+    out of the optical-problem population even when an older RX value is
+    still present on the row.
+    """
+
     if not is_ap_optical_applicable(row.get("model") or row.get("ap_model")):
+        return False
+    identity_status = str(row.get("identity_match_status") or "").strip().casefold()
+    if identity_status and identity_status != "matched":
+        return False
+    if str(row.get("primary_reason_code") or "").strip().casefold() == "empty_configured_port":
+        return False
+    if _is_switch_optical_collection_failed(row):
         return False
     switch_statuses = _trackside_export_switch_statuses(row)
     if "no_module" in switch_statuses or _explicit_no_module(row):

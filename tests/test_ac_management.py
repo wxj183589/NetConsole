@@ -5398,6 +5398,87 @@ def test_current_optical_problem_count_groups_by_station_and_deduplicates_ap():
     }
 
 
+def test_current_optical_problem_uses_one_business_predicate_and_excludes_non_problems():
+    def row(**overrides: object) -> dict[str, object | None]:
+        result: dict[str, object | None] = {
+            "site": "站点A",
+            "station_name": "站点A",
+            "model": "WA6528X-E",
+            "ap_uuid": "ap-1",
+            "ap_mac": "0011-2233-4455",
+            "ap_name": "AP-1",
+            "ap_identity_entity_id": "entity-1",
+            "identity_match_status": "matched",
+            "ap_side_has_data": True,
+            "ap_rx_power": "-7.72",
+            "ap_business_optical_status": "normal",
+            "ap_device_optical_status": "normal",
+            "ap_optical_status": "normal",
+            "switch_rx_power": "-19.10",
+            "switch_optical_status": "abnormal",
+            "switch_device_optical_status": "abnormal",
+        }
+        result.update(overrides)
+        return result
+
+    valid = row()
+    duplicate_side = row(interface_name="Bridge-Aggregation1")
+    ap_side_valid = row(
+        ap_uuid="ap-2",
+        ap_mac="0011-2233-4456",
+        ap_name="AP-2",
+        ap_identity_entity_id="entity-2",
+        ap_rx_power="-19.10",
+        ap_business_optical_status="abnormal",
+        ap_device_optical_status="abnormal",
+        ap_optical_status="abnormal",
+        switch_rx_power="-7.72",
+        switch_optical_status="normal",
+        switch_device_optical_status="normal",
+    )
+
+    assert count_current_optical_abnormal_aps([valid, duplicate_side, ap_side_valid]) == 2
+    assert count_current_optical_abnormal_by_site(
+        [valid, duplicate_side, ap_side_valid]
+    ) == {"站点A": 2}
+
+    excluded_rows = [
+        row(
+            switch_optical_status="collection_failed",
+            switch_device_optical_status="collection_failed",
+        ),
+        row(
+            switch_optical_status="not_collected",
+            switch_device_optical_status="not_collected",
+        ),
+        row(
+            switch_optical_status="unknown",
+            switch_device_optical_status="unknown",
+        ),
+        row(primary_reason_code="EMPTY_CONFIGURED_PORT"),
+        row(identity_match_status="unresolved"),
+        row(
+            switch_rx_power="-7.72",
+            switch_optical_status="normal",
+            switch_device_optical_status="normal",
+            lldp_match_status="LLDP_SNAPSHOT_STALE",
+        ),
+    ]
+    assert count_current_optical_abnormal_aps(excluded_rows) == 0
+    assert count_current_optical_abnormal_by_site(excluded_rows) == {}
+
+    unassigned = row(
+        ap_uuid="ap-unassigned",
+        ap_mac="0011-2233-4466",
+        ap_name="AP-未归属",
+        ap_identity_entity_id="entity-unassigned",
+        site="",
+        station_name="",
+        station="",
+    )
+    assert count_current_optical_abnormal_by_site([unassigned]) == {"未归属": 1}
+
+
 def test_trackside_wa6522_display_is_not_applicable_before_row_normalization():
     row = {
         "model": "WA6522",

@@ -102,7 +102,6 @@ from netconsole.services.online_mr.session_lifecycle import online_mr_session_re
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
 from netconsole.services.rail_transit.effective_trackside_ap_scope import (
     TracksideApScopeContext,
-    resolve_effective_trackside_ap_scope,
     resolve_effective_trackside_ap_scope_from_database,
 )
 from netconsole.services.rail_transit.car_network_diagnostic import (
@@ -152,6 +151,10 @@ from netconsole.services.rail_transit.ap_management_vlan_planning import (
 )
 from netconsole.services.trackside_ap_export_service import (
     build_trackside_ap_business_export_name,
+    load_trackside_ap_business_snapshot,
+)
+from netconsole.services.trackside_ap_business import (
+    count_current_optical_abnormal_by_site,
 )
 from netconsole.services.rail_transit.trackside_ap_business_snapshot import (
     TracksideApBusinessSnapshotError,
@@ -1153,34 +1156,29 @@ class RailTransitWebApplicationService:
             return result
 
         metadata = SiteManager(self.paths).load_site_metadata(site_id)
-        planning_started = time.perf_counter()
-        selected_plans = repository.list_trackside_ap_plan(
-            TRACKSIDE_AP_PLAN_MODE
+        snapshot = load_trackside_ap_business_snapshot(
+            DeviceRepository(database),
+            site_id,
+            generation=0,
+            scope_context=TracksideApScopeContext.from_metadata(
+                site_id,
+                metadata,
+            ),
         )
-        planning_ms = (time.perf_counter() - planning_started) * 1000
-        identity_started = time.perf_counter()
-        references = repository.list_trackside_ap_scope_reference_rows()
-        runtime_station_rows = (
-            repository.list_trackside_ap_runtime_station_evidence_rows()
+        planning_ms = 0.0
+        fit_ap_ms = 0.0
+        identity_ms = 0.0
+        scope = snapshot.scope
+        if scope is None:
+            raise TracksideApBusinessSnapshotError(
+                "TRACKSIDE_AP_SNAPSHOT_SCOPE_MISSING",
+                "轨旁 AP 数据快照缺少有效统计范围，请刷新后重试。",
+            )
+        business_rows = [dict(row) for row in snapshot.rows]
+        optical_problem_counts = count_current_optical_abnormal_by_site(
+            business_rows
         )
-        switch_identity_rows = repository.list_trackside_switch_identity_rows()
-        identity_ms = (time.perf_counter() - identity_started) * 1000
-        fit_ap_started = time.perf_counter()
-        resources = repository.list_fit_ap_online_scope_rows()
-        fit_ap_ms = (time.perf_counter() - fit_ap_started) * 1000
-        optical_problem_counts = repository.list_current_optical_problem_counts_by_station()
         aggregation_started = time.perf_counter()
-        scope = resolve_effective_trackside_ap_scope(
-            context=TracksideApScopeContext.from_metadata(site_id, metadata),
-            station_rows=references,
-            plan_rows=selected_plans,
-            reference_rows=references,
-            resource_rows=resources,
-            runtime_station_rows=runtime_station_rows,
-            switch_identity_rows=switch_identity_rows,
-            optical_problem_counts=optical_problem_counts,
-            detail_limit=0,
-        )
         confirmed_revision, _confirmed_source_revision = (
             self._trackside_online_revision(site_id, repository)
         )
@@ -1198,7 +1196,7 @@ class RailTransitWebApplicationService:
         serialization_started = time.perf_counter()
         result = [
             TracksideApOnlineStatusRowDTO.model_validate(row)
-            for row in scope.station_statistics()
+            for row in scope.station_statistics(optical_problem_counts)
         ]
         planned_total = sum(row.planned_ap_count for row in result)
         matched_online_total = sum(row.actual_online_count for row in result)
@@ -1211,6 +1209,10 @@ class RailTransitWebApplicationService:
         if scope.excluded_device_count:
             warning_parts.append(
                 f"已按项目、当前工作状态、站点关联和稳定身份排除 {scope.excluded_device_count} 项。"
+            )
+        if optical_problem_total:
+            warning_parts.append(
+                f"当前业务范围存在 {optical_problem_total} 个光衰问题 AP。"
             )
         dto = TracksideApOnlineStatusDTO(
             items=result,

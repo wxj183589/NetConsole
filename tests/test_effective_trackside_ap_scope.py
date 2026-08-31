@@ -272,6 +272,25 @@ def test_missing_plan_with_online_ap_marks_total_anomalous() -> None:
     assert overview[-1]["online"] == 0
 
 
+def test_station_statistics_retains_unassigned_optical_problem_count() -> None:
+    station = _station(100, "01-站点A", "node-a", 1)
+    scope = _resolve(
+        stations=[station],
+        plans=[{"station_name": "站点A", "ap_count": 1, "sequence_no": 1}],
+        references=[],
+        resources=[],
+    )
+
+    rows = scope.station_statistics({"01-站点A": 1, "未归属": 2})
+    by_name = {str(row["station_name"]): row for row in rows}
+
+    assert by_name["01-站点A"]["optical_problem_count"] == 1
+    assert by_name["01-站点A"]["warning"] == "存在 1 个光衰问题 AP。"
+    assert by_name["未归属"]["planned_ap_count"] == 0
+    assert by_name["未归属"]["optical_problem_count"] == 2
+    assert by_name["未归属"]["warning"] == "存在未归属的光衰问题 AP。"
+
+
 def test_scope_excludes_non_service_cross_project_and_ambiguous_station_rows() -> None:
     stations = [
         _station(100, "16-双陈站", "node-shuangchen", 16),
