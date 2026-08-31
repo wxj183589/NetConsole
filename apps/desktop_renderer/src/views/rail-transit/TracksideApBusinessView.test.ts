@@ -1324,8 +1324,8 @@ describe('TracksideApBusinessView mounted behavior', () => {
     expect(terminalMocks.launchDeviceTerminalTargets).toHaveBeenCalledTimes(1)
     expect(terminalMocks.requestFitApTerminal).toHaveBeenNthCalledWith(1, { acId: 'ac-1', apId: 'ap-1' })
     expect(terminalMocks.requestFitApTerminal).toHaveBeenNthCalledWith(2, { acId: 'ac-1', apId: 'ap-1' })
-    expect(navigator.clipboard.writeText).toHaveBeenCalledWith('bc5a-3457-8cc0')
-    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(expect.stringContaining('SW-A\tXGE1/0/1'))
+    expect(platformMocks.writeClipboardText).toHaveBeenCalledWith('bc5a-3457-8cc0')
+    expect(platformMocks.writeClipboardText).toHaveBeenCalledWith(expect.stringContaining('SW-A\tXGE1/0/1'))
     wrapper.unmount()
   })
 

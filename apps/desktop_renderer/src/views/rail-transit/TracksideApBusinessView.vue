@@ -646,7 +646,11 @@ async function openFitApExternalTerminal(row: TracksideApBusinessRow): Promise<v
 }
 
 async function copyText(value: string): Promise<void> {
-  await navigator.clipboard.writeText(value)
+  const result = await getPlatformAdapter().writeClipboardText(value)
+  if (!result.success) {
+    ElMessage.error(result.error || t('common.copy_failed', '复制失败'))
+    return
+  }
   ElMessage.success(t('common.copied', '已复制'))
 }
 
