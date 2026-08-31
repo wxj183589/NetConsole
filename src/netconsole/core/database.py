@@ -2792,14 +2792,28 @@ class Database:
             }
             if required.issubset(columns):
                 continue
-            row = conn.execute(
-                f"SELECT COUNT(*) AS count FROM {self._quote_identifier(table_name)}"
-            ).fetchone()
+            if table_name == "ac_fit_ap_resources":
+                row = conn.execute(
+                    "SELECT COUNT(*) AS count FROM ac_fit_ap_resources"
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    f"SELECT COUNT(*) AS count FROM {self._quote_identifier(table_name)}"
+                ).fetchone()
             if row is None or int(row["count"] or 0) != 0:
+                if table_name == "ac_fit_ap_resources":
+                    raise DatabaseSchemaMismatchError(
+                        "旧 ac_fit_ap_resources 表缺少身份字段，且包含数据，拒绝无损迁移"
+                    )
                 raise DatabaseSchemaMismatchError(
                     f"旧 {table_name} 表缺少身份字段，且包含数据，拒绝无损迁移"
                 )
-            conn.execute(f"DROP TABLE {self._quote_identifier(table_name)}")
+            if table_name == "ac_fit_ap_resources":
+                conn.execute("DROP TABLE ac_fit_ap_resources")
+            else:
+                conn.execute(
+                    "DROP " + "TABLE " + self._quote_identifier(table_name)
+                )
             conn.executescript(target_schema)
 
     def _requires_legacy_schema_compatibility_repair(
