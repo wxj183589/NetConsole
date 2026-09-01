@@ -156,7 +156,7 @@ class CommandReferenceApplicationService:
     def cancel_task(self, task_id: str):
         site_id = self.current_site_id()
         self._snapshot(site_id, task_id)
-        if not self.task_service.cancel_task(task_id):
+        if not self.task_service.cancel_task(task_id, site_name=site_id):
             raise CommandReferenceApplicationError("EXPORT_NOT_CANCELLABLE", "导出任务当前不可取消")
         return self.get_task(task_id, site_id=site_id)
 

@@ -1913,7 +1913,7 @@ class DeviceManagementWebService:
         if snapshot.task_type in MANAGED_DEVICE_CSV_TASK_TYPES:
             cancel_job = getattr(self.export_adapter, "cancel_job", None)
             if not callable(cancel_job) or not cancel_job(task_id):
-                self.task_service.cancel_task(task_id)
+                self.task_service.cancel_task(task_id, site_name=snapshot.site_name)
         elif snapshot.task_type in EXPORT_TASK_TYPES:
             spec = self._export_artifacts.get(task_id)
             process = self._export_processes.get(task_id)
@@ -1990,7 +1990,7 @@ class DeviceManagementWebService:
         else:
             cancel_job = getattr(self.process_adapter, "cancel_job", None)
             if not callable(cancel_job) or not cancel_job(task_id):
-                self.task_service.cancel_task(task_id)
+                self.task_service.cancel_task(task_id, site_name=snapshot.site_name)
         return self._task_reference(self._require_web_task(task_id))
 
     def _device_from_write(

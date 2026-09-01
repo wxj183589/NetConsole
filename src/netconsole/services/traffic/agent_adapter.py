@@ -690,7 +690,10 @@ class AgentTrafficAdapter:
                     updated_at=now,
                 )
             )
-        task = self.task_service.get_task(run.controller_task_id)
+        task = self.task_service.get_task(
+            run.controller_task_id,
+            site_name=self.site_name,
+        )
         if task is not None and task.status is state:
             return
         self.task_service.record_external_event(
@@ -799,7 +802,10 @@ class AgentTrafficAdapter:
         return run
 
     def _is_start_failure_cleanup(self, run: TrafficRun) -> bool:
-        task = self.task_service.get_task(run.controller_task_id)
+        task = self.task_service.get_task(
+            run.controller_task_id,
+            site_name=self.site_name,
+        )
         return (
             run.status in {TaskState.STOPPING, TaskState.FAILED}
             and bool(run.error_code)

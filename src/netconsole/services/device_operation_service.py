@@ -297,7 +297,7 @@ class DeviceOperationService:
         adapter_cancel = getattr(self.process_adapter, "cancel_job", None)
         if callable(adapter_cancel):
             return bool(adapter_cancel(snapshot.task_id))
-        return bool(self.task_service.cancel_task(snapshot.task_id))
+        return bool(self.task_service.cancel_task(snapshot.task_id, site_name=selected_site))
 
     @staticmethod
     def _platform_facts(

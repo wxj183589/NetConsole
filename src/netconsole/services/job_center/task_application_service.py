@@ -87,6 +87,21 @@ class TaskApplicationService:
                 repository.reconcile_orphaned_local_tasks(self._is_process_alive)
         return repository
 
+    def _task_site(self, task_id: str, site_name: str | None = None) -> str:
+        """Resolve a task's repository without scanning other site databases.
+
+        An explicit site is authoritative for history queries.  Active tasks
+        retain their site in ``_job_sites`` so a current-site change cannot
+        redirect a worker callback or a local control operation.
+        """
+
+        return str(
+            site_name
+            or self._job_sites.get(str(task_id))
+            or self.site_name
+            or "demo"
+        )
+
     def prepare(self, job: BackgroundJob) -> TaskLaunch:
         self._ensure_accepting_work()
         job_id = job.job_id or uuid.uuid4().hex
@@ -216,9 +231,7 @@ class TaskApplicationService:
     ) -> TaskSnapshot:
         """先持久化外部任务事件，再广播同一事件；持久化失败会直接上抛。"""
 
-        selected_site = str(
-            site_name or self._job_sites.get(task_id) or self.site_name or "demo"
-        )
+        selected_site = self._task_site(task_id, site_name)
         repository = self.repository(selected_site)
         snapshot = repository.get(task_id)
         if snapshot is None:
@@ -260,21 +273,17 @@ class TaskApplicationService:
 
     def feed_stdout(self, job_id: str, chunk: bytes) -> bool:
         fatal = self.runtime.feed_stdout(job_id, chunk)
-        if fatal:
-            self._job_sites.pop(job_id, None)
         return fatal
 
     def feed_stderr(self, job_id: str, chunk: bytes) -> bool:
         fatal = self.runtime.feed_stderr(job_id, chunk)
-        if fatal:
-            self._job_sites.pop(job_id, None)
         return fatal
 
     def request_cancel(self, job_id: str) -> int:
         return self.runtime.request_cancel(job_id)
 
-    def cancel_task(self, job_id: str) -> bool:
-        snapshot = self.get_task(job_id)
+    def cancel_task(self, job_id: str, *, site_name: str | None = None) -> bool:
+        snapshot = self.get_task(job_id, site_name=site_name)
         if snapshot is None or snapshot.status in {TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELLED}:
             return False
         if snapshot.source != "local":
@@ -404,21 +413,41 @@ class TaskApplicationService:
     def is_running(self, job_id: str) -> bool:
         return self.runtime.is_running(job_id)
 
-    def list_tasks(self, *, statuses: set[TaskState] | None = None, limit: int = 200) -> list[TaskSnapshot]:
-        return [sanitize_web_export_snapshot(item) for item in self.repository().list(statuses=statuses, limit=limit)]
+    def list_tasks(
+        self,
+        *,
+        statuses: set[TaskState] | None = None,
+        limit: int = 200,
+        site_name: str | None = None,
+    ) -> list[TaskSnapshot]:
+        repository = self.repository(site_name)
+        return [sanitize_web_export_snapshot(item) for item in repository.list(statuses=statuses, limit=limit)]
 
-    def get_task(self, task_id: str) -> TaskSnapshot | None:
-        snapshot = self.repository().get(task_id)
+    def get_task(self, task_id: str, *, site_name: str | None = None) -> TaskSnapshot | None:
+        snapshot = self.repository(self._task_site(task_id, site_name)).get(task_id)
         return sanitize_web_export_snapshot(snapshot) if snapshot is not None else None
 
-    def list_events(self, task_id: str, *, after_sequence: int = 0, limit: int = 500) -> list[dict[str, Any]]:
-        repository = self.repository()
+    def list_events(
+        self,
+        task_id: str,
+        *,
+        after_sequence: int = 0,
+        limit: int = 500,
+        site_name: str | None = None,
+    ) -> list[dict[str, Any]]:
+        repository = self.repository(self._task_site(task_id, site_name))
         events = repository.list_events(task_id, after_sequence=after_sequence, limit=limit)
         snapshot = repository.get(task_id)
         return self._public_events(events, snapshot)
 
-    def list_all_events(self, *, after_sequence: int = 0, limit: int = 500) -> list[dict[str, Any]]:
-        repository = self.repository()
+    def list_all_events(
+        self,
+        *,
+        after_sequence: int = 0,
+        limit: int = 500,
+        site_name: str | None = None,
+    ) -> list[dict[str, Any]]:
+        repository = self.repository(site_name)
         events = repository.list_all_events(after_sequence=after_sequence, limit=limit)
         task_types: dict[str, str] = {}
         sanitized: list[dict[str, Any]] = []
@@ -430,8 +459,8 @@ class TaskApplicationService:
             sanitized.append(self._public_event(event, task_types[task_id]))
         return sanitized
 
-    def last_event_sequence(self) -> int:
-        return self.repository().last_event_sequence()
+    def last_event_sequence(self, *, site_name: str | None = None) -> int:
+        return self.repository(site_name).last_event_sequence()
 
     def acknowledge_history_tasks(
         self,
@@ -647,7 +676,7 @@ class TaskApplicationService:
             if not task_id:
                 return False
             payload = dict(envelope.get("payload") or {})
-            site_name = self._job_sites.get(task_id, self.site_name)
+            site_name = self._task_site(task_id)
             repository = self.repository(site_name)
             snapshot = repository.get(task_id)
             if snapshot is None:

@@ -237,6 +237,7 @@ class TrafficTestApplicationService:
             "state",
             {"state": TaskState.STOPPING.value, "message": "正在停止 Agent 流量任务"},
             source="traffic",
+            site_name=self.site_name,
         )
         try:
             await _maybe_await(self.agent_adapter.stop(mapping))
@@ -514,6 +515,7 @@ class TrafficTestApplicationService:
                     "error_code": run.error_code,
                 },
                 source="traffic",
+                site_name=self.site_name,
             )
         except KeyError:
             return
@@ -537,7 +539,10 @@ class TrafficTestApplicationService:
     def _reconcile_local_runs(self) -> None:
         active = {TaskState.PENDING, TaskState.STARTING, TaskState.RUNNING, TaskState.STOPPING}
         for run in self.repository.list(statuses=active, executor_kind=ExecutionTargetKind.LOCAL, limit=2_000):
-            snapshot = self.task_service.get_task(run.controller_task_id)
+            snapshot = self.task_service.get_task(
+                run.controller_task_id,
+                site_name=self.site_name,
+            )
             if snapshot is not None and snapshot.status in active:
                 continue
             if snapshot is not None and snapshot.status is TaskState.COMPLETED:
