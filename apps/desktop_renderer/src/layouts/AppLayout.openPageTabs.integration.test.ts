@@ -11,6 +11,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { useWorkspaceStore } from '../stores/workspace'
+import AppLayout from './AppLayout.vue'
 
 const counters = vi.hoisted(() => ({
   activeChartRequests: vi.fn(),
@@ -687,4 +688,86 @@ describe('AppLayout workspace tabs with real async routes', () => {
     wrapper.unmount()
     workspace.dispose()
   }, 30_000)
+
+  it('renders MESH after direct navigation replaces a device route in the active workspace tab', async () => {
+    const setWorkspaceWindowTitle = vi.fn((title: string) => {
+      if (title.length > 80) throw new TypeError('workspace title is invalid')
+    })
+    Object.defineProperty(window, 'netconsoleDesktop', {
+      configurable: true,
+      value: { setWorkspaceWindowTitle },
+    })
+    const DevicePage = defineComponent({
+      name: 'DeviceManagementView',
+      template: '<section data-device-page>设备管理页面</section>',
+    })
+    const MeshPage = defineComponent({
+      name: 'MeshAnalysisView',
+      template: '<section data-mesh-page>MESH 页面</section>',
+    })
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{
+        path: '/',
+        component: AppLayout,
+        children: [
+          {
+            path: 'network/devices',
+            name: 'device-management',
+            component: DevicePage,
+            meta: { navigationId: 'devices', title: '设备管理' },
+          },
+          {
+            path: 'rail-transit/mesh-analysis',
+            name: 'mesh-analysis',
+            component: MeshPage,
+            meta: {
+              navigationId: 'rail.mesh-analysis',
+              title: '轨道交通 / MR 原始 MESH 日志分析',
+              workspace: { cache: true },
+            },
+          },
+        ],
+      }],
+    })
+    await router.push('/network/devices')
+    await router.isReady()
+    const pinia = createPinia()
+    const workspace = useWorkspaceStore(pinia)
+    await workspace.initialize(router)
+    const Root = defineComponent({ template: '<RouterView />' })
+    const wrapper = mount(Root, {
+      global: {
+        plugins: [pinia, router, ElementPlus],
+        stubs: {
+          CurrentSiteIndicator: true,
+          DesktopRuntimeStatus: true,
+          GlobalTaskCenter: true,
+          WorkspaceTabBar: true,
+        },
+      },
+    })
+    await flushPromises()
+
+    expect(wrapper.get('[data-device-page]').text()).toBe('设备管理页面')
+    const deviceCacheKey = workspace.activeTab?.cacheKey
+
+    await router.push('/rail-transit/mesh-analysis')
+    await flushPromises()
+
+    expect(router.currentRoute.value.name).toBe('mesh-analysis')
+    expect(workspace.activeTab?.routeName).toBe('mesh-analysis')
+    expect(workspace.activeTab?.cacheKey).toBe(deviceCacheKey)
+    expect(wrapper.find('[data-device-page]').exists()).toBe(false)
+    expect(wrapper.get('[data-mesh-page]').text()).toBe('MESH 页面')
+
+    await router.push('/network/devices')
+    await flushPromises()
+    expect(wrapper.get('[data-device-page]').text()).toBe('设备管理页面')
+    expect(wrapper.find('[data-mesh-page]').exists()).toBe(false)
+
+    wrapper.unmount()
+    workspace.dispose()
+    Reflect.deleteProperty(window, 'netconsoleDesktop')
+  })
 })

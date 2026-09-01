@@ -18,7 +18,12 @@ import type { Component, VNode } from 'vue'
 import { useWorkspaceStore } from '../stores/workspace'
 
 const workspace = useWorkspaceStore()
-const cachedRouteComponents = new Map<string, Component>()
+type CachedRouteComponent = {
+  sourceType: VNode['type']
+  wrapper: Component
+}
+
+const cachedRouteComponents = new Map<string, CachedRouteComponent>()
 const cachedWorkspaceComponentNames = computed(() => (
   workspace.cachedTabs.map((tab) => cacheComponentName(tab.cacheKey))
 ))
@@ -29,12 +34,12 @@ function cacheComponentName(cacheKey: string): string {
 
 function cachedRouteComponent(component: VNode, cacheKey: string): Component {
   const existing = cachedRouteComponents.get(cacheKey)
-  if (existing) return existing
+  if (existing?.sourceType === component.type) return existing.wrapper
   const cached = defineComponent({
     name: cacheComponentName(cacheKey),
     setup: () => () => cloneVNode(component),
   })
-  cachedRouteComponents.set(cacheKey, cached)
+  cachedRouteComponents.set(cacheKey, { sourceType: component.type, wrapper: cached })
   return cached
 }
 

@@ -3,6 +3,7 @@ import type { NativeActionResult } from '../../../desktop_electron/src/shared/br
 import { sanitizeWorkspaceTitle } from './route-identity'
 
 export const WORKSPACE_TITLE_EVENT = 'netconsole:workspace-title'
+const MAX_NATIVE_WORKSPACE_TITLE_LENGTH = 80
 
 export interface WorkspaceWindowTitleContext {
   dataRoot: string
@@ -52,7 +53,8 @@ export function composeWorkspaceWindowTitle(
   const dataRoot = String(context.dataRoot || '').trim()
   const runtimeMode = String(context.runtimeMode || '').trim()
   if (!dataRoot || !runtimeMode) return brandedPageTitle
-  return `${brandedPageTitle} | 当前数据根：${dataRoot} | 运行模式：${runtimeMode}`
+  const contextSuffix = ` | 当前数据根：${dataRoot} | 运行模式：${runtimeMode}`
+  return `${brandedPageTitle}${contextSuffix}`.slice(0, MAX_NATIVE_WORKSPACE_TITLE_LENGTH)
 }
 
 export function requestWorkspaceTabTitle(title: string): void {

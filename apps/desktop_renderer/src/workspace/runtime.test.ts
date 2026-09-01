@@ -37,4 +37,15 @@ describe('workspace native title context', () => {
       '轨旁 AP 业务 - NetConsole | 当前数据根：D:\\NetConsoleData-dev | 运行模式：DEVELOPMENT',
     )
   })
+
+  it('bounds long page and environment titles to the native bridge contract', () => {
+    const title = composeWorkspaceWindowTitle('轨道交通 / MR 原始 MESH 日志分析', {
+      dataRoot: 'D:\\NetConsoleData-dev',
+      runtimeMode: 'DEVELOPMENT',
+    })
+
+    expect(title.length).toBeLessThanOrEqual(80)
+    expect(title).toContain('轨道交通 / MR 原始 MESH 日志分析')
+    expect(title).toContain(' - NetConsole')
+  })
 })
