@@ -63,6 +63,17 @@ class CleanupDecision:
         }
 
 
+@dataclass(frozen=True)
+class _ArtifactManifestIndex:
+    references_by_site_task: dict[tuple[str, str], tuple[str, ...]]
+    unreadable_sites: frozenset[str]
+
+    def references_for(self, site: str, task_id: str) -> list[str]:
+        if site in self.unreadable_sites:
+            return ["artifact_manifest_unreadable"]
+        return list(self.references_by_site_task.get((site, task_id), ()))
+
+
 class TaskCleanupService:
     """Own explicit Task Center cleanup without deleting business authorities.
 
@@ -90,7 +101,7 @@ class TaskCleanupService:
 
     def preview_cleanup(self, task_ids: list[str] | tuple[str, ...] | set[str]) -> dict[str, object]:
         ids = self._normalize_ids(task_ids)
-        decisions = [self._decision(task_id) for task_id in ids]
+        decisions = self._decisions(ids)
         return self._preview_payload(ids, decisions)
 
     def cleanup_tasks(
@@ -98,7 +109,7 @@ class TaskCleanupService:
         task_ids: list[str] | tuple[str, ...] | set[str],
     ) -> dict[str, object]:
         ids = self._normalize_ids(task_ids)
-        decisions = [self._decision(task_id) for task_id in ids]
+        decisions = self._decisions(ids)
         eligible = [item.task_id for item in decisions if item.can_cleanup]
         deletion = self.repository.delete_task_owned_rows(eligible)
         deleted = dict(deletion["deleted"])
@@ -148,10 +159,33 @@ class TaskCleanupService:
 
         return self.repository.enforce_terminal_history_retention()
 
-    def _decision(self, task_id: str) -> CleanupDecision:
+    def _decisions(self, task_ids: list[str]) -> list[CleanupDecision]:
+        contexts: dict[str, dict[str, object]] = {}
+        for task_id in task_ids:
+            context = self.repository.read_task_cleanup_context(task_id)
+            if context is not None:
+                contexts[task_id] = context
+        manifest_index = self._build_artifact_manifest_index(contexts)
+        return [
+            self._decision(
+                task_id,
+                context=contexts.get(task_id),
+                manifest_index=manifest_index,
+            )
+            for task_id in task_ids
+        ]
+
+    def _decision(
+        self,
+        task_id: str,
+        *,
+        context: dict[str, object] | None = None,
+        manifest_index: _ArtifactManifestIndex | None = None,
+    ) -> CleanupDecision:
         if not task_id:
             return CleanupDecision(task_id, False, reasons=("TASK_NOT_FOUND",))
-        context = self.repository.read_task_cleanup_context(task_id)
+        if context is None:
+            context = self.repository.read_task_cleanup_context(task_id)
         if context is None:
             return CleanupDecision(task_id, False, reasons=("TASK_NOT_FOUND",))
         values = dict(context["snapshot"])
@@ -170,7 +204,9 @@ class TaskCleanupService:
         if ground_refs:
             reasons.append("GROUND_CURRENT_MAPPING")
             protected.extend(ground_refs)
-        artifact_refs = self._artifact_references(values, task_id)
+        artifact_refs = self._artifact_references(
+            values, task_id, manifest_index=manifest_index
+        )
         if artifact_refs:
             reasons.append("ARTIFACT_MANIFEST_REFERENCE")
             protected.extend(artifact_refs)
@@ -233,7 +269,13 @@ class TaskCleanupService:
         except (OSError, sqlite3.DatabaseError):
             return ["ground_unreadable"]
 
-    def _artifact_references(self, row: dict[str, object], task_id: str) -> list[str]:
+    def _artifact_references(
+        self,
+        row: dict[str, object],
+        task_id: str,
+        *,
+        manifest_index: _ArtifactManifestIndex | None = None,
+    ) -> list[str]:
         """Protect task-linked manifests without owning external file deletion."""
 
         if self.paths is None:
@@ -241,28 +283,68 @@ class TaskCleanupService:
         site = str(row.get("site_name") or self.site_name or "").strip()
         if not site:
             return ["artifact_scope_unknown"]
+        if manifest_index is None:
+            manifest_index = self._build_artifact_manifest_index(
+                {task_id: {"snapshot": row}}
+            )
+        return manifest_index.references_for(site, task_id)
+
+    def _build_artifact_manifest_index(
+        self, contexts: dict[str, dict[str, object]]
+    ) -> _ArtifactManifestIndex:
+        tasks_by_site: dict[str, set[str]] = {}
+        for task_id, context in contexts.items():
+            row = dict(context["snapshot"])
+            site = str(row.get("site_name") or self.site_name or "").strip()
+            if site:
+                tasks_by_site.setdefault(site, set()).add(task_id)
+
+        if self.paths is None:
+            return _ArtifactManifestIndex({}, frozenset())
+
+        references: dict[tuple[str, str], tuple[str, ...]] = {}
+        unreadable_sites: set[str] = set()
+        for site, task_ids in tasks_by_site.items():
+            site_references, unreadable = self._scan_artifact_manifests(
+                site, task_ids
+            )
+            if unreadable:
+                unreadable_sites.add(site)
+                continue
+            references.update(
+                {(site, task_id): paths for task_id, paths in site_references.items()}
+            )
+        return _ArtifactManifestIndex(references, frozenset(unreadable_sites))
+
+    def _scan_artifact_manifests(
+        self, site: str, task_ids: set[str]
+    ) -> tuple[dict[str, tuple[str, ...]], bool]:
         roots = (
             self.paths.rail_transit_root(site) / "web_artifacts" / "manifests",
             self.paths.config_center_root(site) / "outputs",
         )
-        references: list[str] = []
+        references: dict[str, list[str]] = {}
         for root in roots:
-            if not root.is_dir():
-                continue
             try:
+                if not root.is_dir():
+                    continue
                 manifest_paths = sorted(root.glob("*.json"), key=lambda path: path.name)
             except OSError:
-                return ["artifact_manifest_unreadable"]
+                return {}, True
             for manifest_path in manifest_paths:
-                if manifest_path.is_symlink():
-                    continue
                 try:
+                    if manifest_path.is_symlink():
+                        continue
                     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
                 except (OSError, UnicodeError, TypeError, ValueError, json.JSONDecodeError):
-                    return ["artifact_manifest_unreadable"]
-                if isinstance(manifest, dict) and str(manifest.get("task_id") or "") == task_id:
-                    references.append(str(manifest_path))
-        return references
+                    return {}, True
+                if isinstance(manifest, dict):
+                    task_id = str(manifest.get("task_id") or "")
+                    if task_id in task_ids:
+                        references.setdefault(task_id, []).append(str(manifest_path))
+        return {
+            task_id: tuple(paths) for task_id, paths in references.items()
+        }, False
 
 
     @staticmethod

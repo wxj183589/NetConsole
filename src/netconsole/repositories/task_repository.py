@@ -2461,12 +2461,15 @@ class TaskRepository:
         elif content_sha256:
             raise sqlite3.DatabaseError("task result blob is not ready")
         result_id = str(row.get("result_id") or "")
-        if result_id and not blob_ready:
+        # The shared Blob is the authority for ready rows.  Only legacy rows
+        # with an inline canonical body may use this compatibility cache.
+        legacy_inline_result = not blob_ready and not content_sha256
+        if result_id and legacy_inline_result:
             cached = self._verified_result_cache.get(result_id)
             if cached is not None:
                 return cached
         verified = self._verified_result_row(row)
-        if result_id:
+        if result_id and legacy_inline_result:
             self._verified_result_cache[result_id] = verified
         return verified
 

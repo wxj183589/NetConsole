@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import zlib
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -138,6 +140,76 @@ def test_blob_ready_result_fails_closed_without_canonical_fallback(tmp_path: Pat
         ).fetchone()[0]
     with pytest.raises(sqlite3.DatabaseError, match="task result blob"):
         repository.get_result(result_id)
+    assert result_id not in repository._verified_result_cache
+
+
+def test_legacy_result_cache_is_used_only_for_inline_compatibility_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "tasks.db"
+    repository = TaskRepository(path)
+    canonical = json.dumps(
+        {"status": "SUCCESS", "legacy": True},
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    result_id = "tr-" + hashlib.sha256(
+        f"legacy-task\0finished\0{digest}".encode("utf-8")
+    ).hexdigest()
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            """
+            INSERT INTO task_results (
+                result_id, task_id, terminal_event_type, canonical_json,
+                sha256, byte_size, schema_version, created_time
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                result_id,
+                "legacy-task",
+                "finished",
+                canonical,
+                digest,
+                len(canonical.encode("utf-8")),
+                1,
+                "2026-08-27T01:00:00Z",
+            ),
+        )
+
+    first = repository.get_result(result_id)
+    assert first["result"] == {"status": "SUCCESS", "legacy": True}
+    assert result_id in repository._verified_result_cache
+
+    original = repository._verified_result_row
+    calls = 0
+
+    def counted(row: dict[str, object]) -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        return original(row)
+
+    monkeypatch.setattr(repository, "_verified_result_row", counted)
+    second = repository.get_result(result_id)
+    assert second == first
+    assert calls == 0
+
+
+def test_blob_ready_result_is_not_retained_in_verified_result_cache(
+    tmp_path: Path,
+) -> None:
+    repository = TaskRepository(tmp_path / "tasks.db")
+    snapshot, event = _terminal("blob-cache-boundary", result={"rows": 2})
+
+    assert repository.record(snapshot, event)
+    with sqlite3.connect(tmp_path / "tasks.db") as connection:
+        result_id = connection.execute(
+            "SELECT result_id FROM task_results WHERE task_id=?",
+            ("blob-cache-boundary",),
+        ).fetchone()[0]
+    assert repository.get_result(result_id)["result"] == {"rows": 2}
+    assert repository._verified_result_cache == {}
 
 
 def test_task_center_list_does_not_select_full_result_body(tmp_path: Path) -> None:
@@ -239,3 +311,78 @@ def test_task_cleanup_protects_active_references_and_deletes_only_explicit_safe_
     assert repository.get("ground-cleanup") is not None
     assert repository.get("manifest-cleanup") is not None
     assert repository.get("active-cleanup") is not None
+
+
+def test_task_cleanup_scans_manifests_once_per_batch_and_keeps_preview_parity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    repository = TaskRepository(paths.site_tasks_db_path("demo"))
+    safe_snapshot, safe_event = _terminal("batch-safe")
+    manifest_snapshot, manifest_event = _terminal("batch-manifest")
+    assert repository.record(safe_snapshot, safe_event)
+    assert repository.record(manifest_snapshot, manifest_event)
+
+    manifest_root = paths.rail_transit_root("demo") / "web_artifacts" / "manifests"
+    manifest_root.mkdir(parents=True, exist_ok=True)
+    (manifest_root / "batch-manifest.json").write_text(
+        json.dumps({"task_id": "batch-manifest"}), encoding="utf-8"
+    )
+    cleanup = TaskCleanupService(repository, paths=paths, site_name="demo")
+    original_scan = cleanup._scan_artifact_manifests
+    scan_count = 0
+
+    def counted_scan(
+        site: str, task_ids: set[str]
+    ) -> tuple[dict[str, tuple[str, ...]], bool]:
+        nonlocal scan_count
+        scan_count += 1
+        return original_scan(site, task_ids)
+
+    monkeypatch.setattr(cleanup, "_scan_artifact_manifests", counted_scan)
+    task_ids = ["batch-safe", "batch-manifest"]
+    preview = cleanup.preview_cleanup(task_ids)
+    assert scan_count == 1
+    preview_decisions = {
+        item["task_id"]: item for item in preview["decisions"]
+    }
+    assert preview_decisions["batch-safe"]["can_cleanup"] is True
+    assert preview_decisions["batch-manifest"]["can_cleanup"] is False
+    assert "ARTIFACT_MANIFEST_REFERENCE" in preview_decisions["batch-manifest"]["reasons"]
+
+    result = cleanup.cleanup_tasks(task_ids)
+    assert scan_count == 2
+    skipped = {item["task_id"]: item for item in result["skipped"]}
+    assert result["deleted_task_ids"] == ["batch-safe"]
+    assert skipped["batch-manifest"]["reasons"] == preview_decisions["batch-manifest"]["reasons"]
+
+
+def test_task_cleanup_fails_safe_for_unreadable_and_unknown_manifest_scope(
+    tmp_path: Path,
+) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    repository = TaskRepository(paths.site_tasks_db_path("demo"))
+    unreadable_snapshot, unreadable_event = _terminal("unreadable-manifest")
+    unknown_snapshot, unknown_event = _terminal("unknown-manifest-scope")
+    unknown_snapshot = replace(unknown_snapshot, site_name="")
+    assert repository.record(unreadable_snapshot, unreadable_event)
+    assert repository.record(unknown_snapshot, unknown_event)
+
+    manifest_root = paths.rail_transit_root("demo") / "web_artifacts" / "manifests"
+    manifest_root.mkdir(parents=True, exist_ok=True)
+    (manifest_root / "unreadable.json").write_text("{not-json", encoding="utf-8")
+    cleanup = TaskCleanupService(repository, paths=paths, site_name="")
+
+    preview = cleanup.preview_cleanup(
+        ["unreadable-manifest", "unknown-manifest-scope"]
+    )
+    decisions = {item["task_id"]: item for item in preview["decisions"]}
+    assert decisions["unreadable-manifest"]["can_cleanup"] is False
+    assert "ARTIFACT_MANIFEST_REFERENCE" in decisions["unreadable-manifest"]["reasons"]
+    assert "artifact_manifest_unreadable" in decisions["unreadable-manifest"]["protected_resources"]
+    assert decisions["unknown-manifest-scope"]["can_cleanup"] is False
+    assert "ARTIFACT_MANIFEST_REFERENCE" in decisions["unknown-manifest-scope"]["reasons"]
+    assert "artifact_scope_unknown" in decisions["unknown-manifest-scope"]["protected_resources"]
+
+    result = cleanup.cleanup_tasks(["unreadable-manifest", "unknown-manifest-scope"])
+    assert result["deleted_task_ids"] == []
