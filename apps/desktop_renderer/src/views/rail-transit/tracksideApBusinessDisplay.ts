@@ -161,6 +161,16 @@ export function displayTracksideValue(value: unknown): string {
   return value === null || value === undefined || value === '' ? '—' : String(value)
 }
 
+const opticalEventStatusLabels: Record<string, string> = {
+  OPEN: '未恢复',
+  RESOLVED: '已恢复',
+}
+
+export function formatOpticalEventStatus(status: unknown): string {
+  const normalized = String(status || '').trim().toUpperCase()
+  return opticalEventStatusLabels[normalized] || '未知'
+}
+
 export function displaySwitchVendor(value: unknown): string {
   const vendor = String(value || '').trim().toUpperCase()
   if (vendor === 'ZTE') return '中兴 ZTE'

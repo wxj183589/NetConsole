@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   displayLldpStatus,
+  formatOpticalEventStatus,
   displayTracksideApReason,
   displayTracksideApRecognitionStatus,
   displaySwitchVendor,
@@ -15,6 +16,18 @@ import {
 } from './tracksideApBusinessDisplay'
 
 describe('trackside AP business display', () => {
+  it.each([
+    ['OPEN', '未恢复'],
+    ['RESOLVED', '已恢复'],
+  ])('formats optical event status %s as %s', (status, label) => {
+    expect(formatOpticalEventStatus(status)).toBe(label)
+  })
+
+  it('does not expose unknown optical event status values', () => {
+    expect(formatOpticalEventStatus('INTERNAL_UNKNOWN')).toBe('未知')
+    expect(formatOpticalEventStatus(null)).toBe('未知')
+  })
+
   it.each([
     ['normal', '正常', 'success'],
     ['notice', '偏低关注', 'warning'],

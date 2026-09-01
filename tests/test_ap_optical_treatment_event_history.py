@@ -16,6 +16,7 @@ from netconsole.services.trackside_ap_business import (
     TRACKSIDE_AP_BUSINESS_EXPORT_COLUMNS,
     _ap_optical_treatment_row_fill_status,
     export_trackside_ap_business_xlsx,
+    format_optical_event_status,
 )
 from netconsole.services.trackside_ap_export_service import (
     _export_persisted_optical_treatments,
@@ -252,6 +253,219 @@ def test_event_history_export_keeps_three_events_for_one_ap(tmp_path: Path) -> N
     assert _ap_optical_treatment_row_fill_status(
         {"event_status": "RESOLVED", "treatment_status": "未处理"}
     ) == "normal"
+
+
+def test_optical_treatment_export_uses_current_side_specific_runtime_value() -> None:
+    common = {
+        "station_name": "站点A",
+        "serial_number": "SN-1",
+        "event_status": "OPEN",
+        "treatment_status": "PENDING",
+        "first_detected_at": "2026-09-01T00:00:00",
+    }
+    ap_open = {
+        **common,
+        "event_uuid": "event-ap-open",
+        "ap_uuid": "ap-open",
+        "ap_name": "AP-OPEN",
+        "worst_abnormal_side": "AP",
+        "first_ap_rx_dbm": "-20.0",
+        "worst_ap_rx_dbm": "-22.0",
+        "recovered_ap_rx_dbm": "",
+    }
+    switch_open = {
+        **common,
+        "event_uuid": "event-switch-open",
+        "ap_uuid": "switch-open",
+        "ap_name": "AP-SWITCH",
+        "worst_abnormal_side": "SWITCH",
+        "first_switch_rx_dbm": "-18.0",
+        "worst_switch_rx_dbm": "-19.0",
+        "recovered_switch_rx_dbm": "",
+    }
+    resolved = {
+        **common,
+        "event_uuid": "event-resolved",
+        "ap_uuid": "ap-resolved",
+        "ap_name": "AP-RESOLVED",
+        "worst_abnormal_side": "AP",
+        "first_ap_rx_dbm": "-17",
+        "worst_ap_rx_dbm": "-20",
+        "recovered_ap_rx_dbm": "-10",
+        "event_status": "RESOLVED",
+        "resolved_at": "2026-09-01T00:05:00",
+    }
+
+    exported = _export_persisted_optical_treatments(
+        [ap_open, switch_open, resolved],
+        business_rows=[
+            {
+                "ap_uuid": "ap-open",
+                "ap_rx_power": "-18.0",
+                "ap_optical_status": "alarm",
+            },
+            {
+                "ap_uuid": "switch-open",
+                "ap_rx_power": "-8.0",
+                "switch_rx_power": "-16.0",
+                "switch_optical_status": "warning",
+            },
+            {
+                "ap_uuid": "ap-resolved",
+                "ap_rx_power": "-8",
+                "ap_optical_status": "normal",
+            },
+        ],
+        current_optical_rows=[
+            {"ap_identity": "ap-open", "side": "AP", "rx_dbm": "-19.0", "status": "abnormal"},
+            {"ap_identity": "switch-open", "side": "SWITCH", "rx_dbm": "-15.0", "status": "abnormal"},
+            {"ap_identity": "ap-resolved", "side": "AP", "rx_dbm": "-7", "status": "normal"},
+        ],
+    )
+
+    assert exported[0]["first_rx_power"] == "-20.0"
+    assert exported[0]["worst_rx_power"] == "-22.0"
+    assert exported[0]["fixed_rx_power"] is None
+    assert exported[0]["current_rx_power"] == "-18.0"
+    assert exported[0]["event_status"] == "OPEN"
+    assert exported[1]["current_rx_power"] == "-16.0"
+    assert exported[1]["current_rx_power"] != "-8.0"
+    assert exported[2]["first_rx_power"] == "-17"
+    assert exported[2]["worst_rx_power"] == "-20"
+    assert exported[2]["fixed_rx_power"] == "-10"
+    assert exported[2]["current_rx_power"] == "-8"
+    assert exported[2]["event_status"] == "RESOLVED"
+
+
+def test_optical_event_status_is_chinese_only_in_user_visible_workbook(tmp_path: Path) -> None:
+    rows = _export_persisted_optical_treatments(
+        [
+            {"event_uuid": "open", "ap_uuid": "ap-open", "event_status": "OPEN", "treatment_status": "PENDING"},
+            {"event_uuid": "resolved", "ap_uuid": "ap-resolved", "event_status": "RESOLVED", "treatment_status": "PENDING"},
+            {"event_uuid": "unknown", "ap_uuid": "ap-unknown", "event_status": "INTERNAL_UNKNOWN", "treatment_status": "PENDING"},
+        ]
+    )
+    assert format_optical_event_status("OPEN") == "未恢复"
+    assert format_optical_event_status("RESOLVED") == "已恢复"
+    assert format_optical_event_status("INTERNAL_UNKNOWN") == "未知"
+
+    output = tmp_path / "localized-event-status.xlsx"
+    i18n = I18n("zh_CN")
+    export_trackside_ap_business_xlsx(
+        output,
+        [],
+        TRACKSIDE_AP_BUSINESS_EXPORT_COLUMNS,
+        [i18n.t(key) for key, _field in TRACKSIDE_AP_BUSINESS_EXPORT_COLUMNS],
+        ap_optical_treatment_rows=rows,
+        ap_optical_treatment_columns=AP_OPTICAL_TREATMENT_RECORD_COLUMNS,
+        ap_optical_treatment_headers=[
+            i18n.t(key) for key, _field in AP_OPTICAL_TREATMENT_RECORD_COLUMNS
+        ],
+    )
+    sheet = load_workbook(output, data_only=True)["AP光衰处理记录"]
+    event_status_column = 14
+    visible_statuses = [sheet.cell(row, event_status_column).value for row in range(2, 5)]
+    assert visible_statuses == ["未恢复", "已恢复", "未知"]
+    visible_values = [cell.value for row in sheet.iter_rows() for cell in row]
+    assert "OPEN" not in visible_values
+    assert "RESOLVED" not in visible_values
+
+
+def test_optical_treatment_export_falls_back_to_matching_switch_side() -> None:
+    exported = _export_persisted_optical_treatments(
+        [
+            {
+                "event_uuid": "event-switch-fallback",
+                "ap_uuid": "ap-switch-fallback",
+                "worst_abnormal_side": "SWITCH",
+                "first_switch_rx_dbm": "-18",
+                "worst_switch_rx_dbm": "-19",
+                "event_status": "OPEN",
+                "treatment_status": "PENDING",
+            }
+        ],
+        current_optical_rows=[
+            {"ap_identity": "ap-switch-fallback", "side": "AP", "rx_dbm": "-8", "status": "normal"},
+            {"ap_identity": "ap-switch-fallback", "side": "SWITCH", "rx_dbm": "-16", "status": "normal"},
+        ],
+        persisted_summary_rows=[
+            {"ap_identity": "ap-switch-fallback", "current_switch_rx_dbm": "-15", "current_switch_status": "normal"},
+        ],
+    )
+
+    assert exported[0]["current_rx_power"] == "-16"
+
+
+def test_optical_treatment_export_uses_dash_for_invalid_current_value() -> None:
+    exported = _export_persisted_optical_treatments(
+        [
+            {
+                "event_uuid": "event-offline",
+                "ap_uuid": "ap-offline-current",
+                "worst_abnormal_side": "AP",
+                "first_ap_rx_dbm": "-24.2",
+                "worst_ap_rx_dbm": "-24.2",
+                "event_status": "OPEN",
+                "treatment_status": "PENDING",
+            }
+        ],
+        business_rows=[
+            {
+                "ap_uuid": "ap-offline-current",
+                "ap_rx_power": "0",
+                "ap_optical_status": "AP Offline",
+            }
+        ],
+    )
+
+    assert exported[0]["current_rx_power"] == "-"
+    assert exported[0]["current_rx_power"] not in {0, "0", "0.00", "-0.00"}
+
+    normal_placeholder = _export_persisted_optical_treatments(
+        [
+            {
+                "event_uuid": "event-zero-placeholder",
+                "ap_uuid": "ap-zero-placeholder",
+                "worst_abnormal_side": "AP",
+                "first_ap_rx_dbm": "-20",
+                "worst_ap_rx_dbm": "-20",
+                "event_status": "OPEN",
+                "treatment_status": "PENDING",
+            }
+        ],
+        business_rows=[
+            {
+                "ap_uuid": "ap-zero-placeholder",
+                "ap_rx_power": "0.00 dBm",
+                "ap_optical_status": "normal",
+            }
+        ],
+    )
+    assert normal_placeholder[0]["current_rx_power"] == "-"
+
+
+def test_optical_treatment_record_columns_have_only_business_fields() -> None:
+    fields = [field for _key, field in AP_OPTICAL_TREATMENT_RECORD_COLUMNS]
+    assert fields == [
+        "site",
+        "ap_name",
+        "ap_mac",
+        "serial_number",
+        "side",
+        "device_name",
+        "interface_name",
+        "issue_type",
+        "first_found_at",
+        "first_rx_power",
+        "worst_rx_power",
+        "fixed_rx_power",
+        "current_rx_power",
+        "event_status",
+        "treatment_status",
+        "remark",
+        "completed_at",
+    ]
+    assert "current_status" not in fields
 
 
 def test_backfill_plan_is_dry_run_by_default_and_idempotent(tmp_path: Path) -> None:

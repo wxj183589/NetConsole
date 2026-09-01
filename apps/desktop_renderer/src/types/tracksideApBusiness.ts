@@ -70,6 +70,7 @@ export interface TracksideApDataSourceIssue {
 export interface TracksideApUpdateRequest {
   station?: string; ap_uuid?: string; ap_mac?: string; ap_name?: string; concurrency?: number
 }
+
 export interface TracksideApBusinessExportProposal {
   site_id: string; site_display_name: string; generated_at: string; suggested_name: string
 }
@@ -125,7 +126,7 @@ export interface TracksideSwitchSampleRequest {
 }
 
 export interface TracksideApPlanRow {
-  station_id: string; sequence_no: number; station_name: string; planned_ap_count: number
+  station_id: string; sequence_no: number; planning_order?: number | null; display_order?: number | null; station_name: string; planned_ap_count: number
   management_vlan: number | null; remark: string
   relation_status?: 'resolved' | 'missing' | 'ambiguous' | 'stale'
   candidate_station_ids?: string[]

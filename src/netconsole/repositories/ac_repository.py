@@ -26,6 +26,9 @@ from netconsole.services.fit_ap_link_info import (
     resolve_fit_ap_link_info,
     resolve_optical_match_status,
 )
+from netconsole.services.rail_transit.station_ordering import (
+    canonicalize_trackside_ap_plan_rows,
+)
 from netconsole.services.current_history_retention import (
     count_station_online_summary_recent,
     list_fit_ap_resource_recent,
@@ -57,6 +60,7 @@ TRACKSIDE_PLAN_FIELDS = (
     "mode",
     "station_id",
     "sequence_no",
+    "planning_order",
     "station_name",
     "ap_count",
     "ap_start_address",
@@ -2931,17 +2935,29 @@ class AcRepository:
                 """,
                 params,
             ).fetchall()
-        return [dict(row) for row in rows]
+        result = [dict(row) for row in rows]
+        if mode == TRACKSIDE_AP_PLAN_MODE:
+            return canonicalize_trackside_ap_plan_rows(
+                result,
+                self._trackside_ap_plan_station_rows(),
+            )
+        return result
 
     def replace_trackside_ap_plan_rows(self, mode: str, rows: list[dict[str, object | None]]) -> None:
         mode = self._normalize_trackside_plan_mode(mode)
         now = self._now()
-        saved_payloads: list[dict[str, object | None]] = []
+        rows_to_save = (
+            canonicalize_trackside_ap_plan_rows(
+                rows,
+                self._trackside_ap_plan_station_rows(),
+            )
+            if mode == TRACKSIDE_AP_PLAN_MODE
+            else rows
+        )
         with self.database.connect() as conn:
             conn.execute("DELETE FROM ac_trackside_ap_plan WHERE mode = ?", (mode,))
-            for index, row in enumerate(rows):
+            for index, row in enumerate(rows_to_save):
                 payload = self._trackside_plan_payload(mode, row, index, now)
-                saved_payloads.append(payload)
                 columns = ", ".join(TRACKSIDE_PLAN_FIELDS)
                 placeholders = ", ".join("?" for _ in TRACKSIDE_PLAN_FIELDS)
                 conn.execute(
@@ -4431,6 +4447,12 @@ class AcRepository:
             if row.get("sequence_no") not in (None, "")
             else int(row.get("sort_order") or sort_order) + 1
         )
+        raw_planning_order = row.get("planning_order")
+        payload["planning_order"] = (
+            None
+            if raw_planning_order in (None, "")
+            else int(raw_planning_order)
+        )
         payload["station_name"] = station_name
         payload["ap_count"] = max(int(row.get("ap_count") or 0), 0)
         payload["mask_length"] = row.get("mask_length")
@@ -4472,7 +4494,41 @@ class AcRepository:
                 """,
                 (mode,),
             ).fetchall()
-        return [dict(row) for row in rows]
+        return canonicalize_trackside_ap_plan_rows(
+            [dict(row) for row in rows],
+            self._trackside_ap_plan_station_rows(),
+        )
+
+    def _trackside_ap_plan_station_rows(self) -> list[dict[str, object | None]]:
+        with self.database.connect_readonly() as conn:
+            rows = conn.execute(
+                """
+                SELECT station_id, station_name, raw_payload_json
+                FROM ap_extension_points
+                WHERE belong_type = '__base_station__'
+                """
+            ).fetchall()
+        result: list[dict[str, object | None]] = []
+        for row in rows:
+            try:
+                metadata = json.loads(str(row["raw_payload_json"] or "{}"))
+            except (TypeError, json.JSONDecodeError):
+                metadata = {}
+            if not isinstance(metadata, dict):
+                metadata = {}
+            result.append(
+                {
+                    **metadata,
+                    "id": str(row["station_id"] or "").strip(),
+                    "name": str(row["station_name"] or "").strip(),
+                    "node_type": str(metadata.get("node_type") or "station"),
+                    "participates_in_direction": metadata.get(
+                        "participates_in_direction",
+                        str(metadata.get("node_type") or "station") == "station",
+                    ),
+                }
+            )
+        return result
 
     @classmethod
     def _set_time_defaults(cls, payload: dict[str, object | None]) -> None:

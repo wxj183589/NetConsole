@@ -346,9 +346,6 @@ AP_OPTICAL_TREATMENT_RECORD_COLUMNS = (
     ("ac.ap_name", "ap_name"),
     ("ac.ap_mac", "ap_mac"),
     ("ap.serial_number", "serial_number"),
-    ("ac.ap_id", "ap_id"),
-    ("trackside.section_name", "section_name"),
-    ("trackside.direction", "direction"),
     ("trackside.export.side", "side"),
     ("ac.indoor_switch", "device_name"),
     ("details.interface_name", "interface_name"),
@@ -358,12 +355,23 @@ AP_OPTICAL_TREATMENT_RECORD_COLUMNS = (
     ("trackside.export.worst_rx_power", "worst_rx_power"),
     ("trackside.export.fixed_rx_power", "fixed_rx_power"),
     ("trackside.export.current_rx_power", "current_rx_power"),
-    ("trackside.export.current_status", "current_status"),
     ("trackside.export.event_status", "event_status"),
     ("trackside.export.treatment_status", "treatment_status"),
     ("trackside.export.remark", "remark"),
     ("trackside.export.completed_at", "completed_at"),
 )
+
+_OPTICAL_EVENT_STATUS_LABELS = {
+    "OPEN": "未恢复",
+    "RESOLVED": "已恢复",
+}
+
+
+def format_optical_event_status(status: object) -> str:
+    """Format the internal optical event status for user-visible output."""
+
+    normalized = str(status or "").strip().upper()
+    return _OPTICAL_EVENT_STATUS_LABELS.get(normalized, "未知")
 
 OPTICAL_TREATMENT_ISSUE_STATUSES = {
     "abnormal",
@@ -2719,6 +2727,8 @@ def _float_value(value: object) -> float | None:
 
 
 def format_trackside_display_value(field: str, row: dict[str, object | None], language: str = "zh") -> str:
+    if field == "event_status":
+        return format_optical_event_status(row.get(field))
     if field == "match_source":
         return _match_source_label(row.get(field), language)
     if field == "port_type":

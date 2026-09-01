@@ -6,6 +6,7 @@ import threading
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from time import perf_counter, sleep
 from types import MappingProxyType
@@ -1009,6 +1010,8 @@ def _build_trackside_ap_business_export_snapshot_once(
     optical_treatment_rows = _export_persisted_optical_treatments(
         persisted_treatments,
         business_rows=snapshot.rows,
+        current_optical_rows=ac_repository.list_optical_current(),
+        persisted_summary_rows=ac_repository.list_ap_optical_treatments(),
     )
     return {
         "snapshot_id": snapshot.snapshot_id,
@@ -1059,6 +1062,8 @@ def _export_persisted_optical_treatments(
     treatment_rows: Sequence[Mapping[str, object | None]],
     *,
     business_rows: Sequence[Mapping[str, object | None]] = (),
+    current_optical_rows: Sequence[Mapping[str, object | None]] = (),
+    persisted_summary_rows: Sequence[Mapping[str, object | None]] = (),
 ) -> list[dict[str, object | None]]:
     """Adapt the persisted treatment authority to the workbook contract.
 
@@ -1073,6 +1078,121 @@ def _export_persisted_optical_treatments(
         ap_uuid = str(row.get("ap_uuid") or "").strip().casefold()
         if ap_uuid:
             business_by_ap_uuid.setdefault(ap_uuid, row)
+
+    def identity_keys(row: Mapping[str, object | None]) -> tuple[str, ...]:
+        values: list[str] = []
+        for identity_field in ("ap_identity", "ap_uuid", "ap_id"):
+            value = str(row.get(identity_field) or "").strip().casefold()
+            if value and value not in values:
+                values.append(value)
+        mac = normalize_mac_key(row.get("ap_mac"))
+        if mac:
+            for value in (mac, f"mac:{mac}"):
+                if value not in values:
+                    values.append(value)
+        return tuple(values)
+
+    def add_identity_index(
+        target: dict[str, list[Mapping[str, object | None]]],
+        rows: Sequence[Mapping[str, object | None]],
+    ) -> None:
+        for row in rows:
+            for key in identity_keys(row):
+                target.setdefault(key, []).append(row)
+
+    current_by_identity: dict[str, list[Mapping[str, object | None]]] = {}
+    add_identity_index(current_by_identity, current_optical_rows)
+    summary_by_identity: dict[str, list[Mapping[str, object | None]]] = {}
+    add_identity_index(summary_by_identity, persisted_summary_rows)
+
+    def first_indexed_row(
+        index: Mapping[str, Sequence[Mapping[str, object | None]]],
+        row: Mapping[str, object | None],
+    ) -> Mapping[str, object | None]:
+        for key in identity_keys(row):
+            matches = index.get(key)
+            if matches:
+                return matches[0]
+        return {}
+
+    def valid_rx(value: object, status: object = "") -> object | None:
+        text = str(value or "").strip()
+        if not text or text in {"-", "—", "N/A", "未知"}:
+            return None
+        status_text = str(status or "").strip().casefold()
+        status_token = status_text.replace("-", "_").replace(" ", "_")
+        if (
+            status_token in {
+                "offline", "ap_offline", "down", "port_down", "link_down",
+                "no_light", "nolight", "no_optical", "no_module", "unknown",
+                "no_data", "no_signal", "not_applicable", "unavailable", "empty", "no_rx",
+                "not_collected", "not_available", "failed", "timeout", "stale",
+                "collection_failed", "connection_failed", "无光", "离线", "端口_down",
+            }
+            or "no_light" in status_token
+            or "offline" in status_token
+            or "port_down" in status_token
+            or "link_down" in status_token
+            or "无光" in status_text
+            or "离线" in status_text
+        ):
+            return None
+        try:
+            numeric = Decimal(text.split()[0])
+        except (InvalidOperation, ValueError, IndexError):
+            return None
+        if numeric == 0:
+            return None
+        return value
+
+    def current_rx_power(
+        source: Mapping[str, object | None],
+        enrichment: Mapping[str, object | None],
+        side: str,
+    ) -> object | None:
+        if side == "AP":
+            candidates = (
+                (enrichment.get("ap_rx_power"), enrichment.get("ap_optical_status")),
+                (enrichment.get("current_ap_rx_dbm"), enrichment.get("current_ap_status")),
+            )
+        else:
+            candidates = (
+                (enrichment.get("switch_rx_power"), enrichment.get("switch_optical_status")),
+                (enrichment.get("current_switch_rx_dbm"), enrichment.get("current_switch_status")),
+            )
+        # ``enrichment`` contains the current runtime business snapshot and is
+        # intentionally checked first. The optical-current table is the next
+        # most recent collected value, followed by the persisted summary.
+        current_row: Mapping[str, object | None] = {}
+        for key in identity_keys(source):
+            current_row = next(
+                (
+                    candidate
+                    for candidate in current_by_identity.get(key, ())
+                    if str(candidate.get("side") or "").upper() == side
+                ),
+                {},
+            )
+            if current_row:
+                break
+        if current_row:
+            candidates += ((current_row.get("rx_dbm"), current_row.get("status")),)
+        summary_row = first_indexed_row(summary_by_identity, source)
+        if side == "AP":
+            candidates += (
+                (source.get("current_ap_rx_dbm"), source.get("current_ap_status")),
+                (summary_row.get("current_ap_rx_dbm"), summary_row.get("current_ap_status")),
+            )
+        else:
+            candidates += (
+                (source.get("current_switch_rx_dbm"), source.get("current_switch_status")),
+                (summary_row.get("current_switch_rx_dbm"), summary_row.get("current_switch_status")),
+            )
+        for value, status in candidates:
+            valid = valid_rx(value, status)
+            if valid is not None:
+                return valid
+        return None
 
     result: list[dict[str, object | None]] = []
     for source in treatment_rows:
@@ -1138,25 +1258,60 @@ def _export_persisted_optical_treatments(
             "no_light": "无光",
         }.get(status, "光衰异常" if not is_resolved else "")
         current_rx = (
-            source.get("current_ap_rx_dbm") or source.get("current_switch_rx_dbm")
-            if not is_event
-            else ""
+            current_rx_power(source, enrichment, "AP")
+            if side == "AP"
+            else current_rx_power(source, enrichment, "SWITCH")
+            if side == "SWITCH"
+            else None
         )
-        first_rx = (
-            source.get("first_rx_dbm")
-            or source.get("first_ap_rx_dbm")
-            or source.get("first_switch_rx_dbm")
-        )
-        worst_rx = (
-            source.get("worst_rx_dbm")
-            or source.get("worst_ap_rx_dbm")
-            or source.get("worst_switch_rx_dbm")
-        )
-        fixed_rx = (
-            source.get("recovered_rx_dbm")
-            or source.get("recovered_ap_rx_dbm")
-            or source.get("recovered_switch_rx_dbm")
-        )
+        if side == "BOTH":
+            ap_current = current_rx_power(source, enrichment, "AP")
+            switch_current = current_rx_power(source, enrichment, "SWITCH")
+            current_rx = (
+                f"AP侧: {ap_current}; 交换机侧: {switch_current}"
+                if ap_current is not None or switch_current is not None
+                else None
+            )
+
+        def event_value(kind: str, side_name: str) -> object | None:
+            side_field = {
+                ("first", "AP"): "first_ap_rx_dbm",
+                ("first", "SWITCH"): "first_switch_rx_dbm",
+                ("worst", "AP"): "worst_ap_rx_dbm",
+                ("worst", "SWITCH"): "worst_switch_rx_dbm",
+                ("fixed", "AP"): "recovered_ap_rx_dbm",
+                ("fixed", "SWITCH"): "recovered_switch_rx_dbm",
+            }.get((kind, side_name))
+            if side_field:
+                value = source.get(side_field)
+                if value not in (None, ""):
+                    return value
+            return source.get({"first": "first_rx_dbm", "worst": "worst_rx_dbm", "fixed": "recovered_rx_dbm"}[kind])
+
+        def both_event_value(kind: str) -> object | None:
+            ap_value = event_value(kind, "AP")
+            switch_value = event_value(kind, "SWITCH")
+            if ap_value in (None, "") and switch_value in (None, ""):
+                return None
+            return (
+                f"AP侧: {ap_value if ap_value not in (None, '') else '-'}; "
+                f"交换机侧: {switch_value if switch_value not in (None, '') else '-'}"
+            )
+
+        if is_event:
+            first_rx = both_event_value("first") if side == "BOTH" else event_value("first", side)
+            worst_rx = both_event_value("worst") if side == "BOTH" else event_value("worst", side)
+            fixed_rx = both_event_value("fixed") if side == "BOTH" else event_value("fixed", side)
+        else:
+            first_rx = source.get("first_ap_rx_dbm") if side == "AP" else source.get("first_switch_rx_dbm")
+            worst_rx = source.get("worst_ap_rx_dbm") if side == "AP" else source.get("worst_switch_rx_dbm")
+            fixed_rx = source.get("recovered_ap_rx_dbm") if side == "AP" else source.get("recovered_switch_rx_dbm")
+        if is_event:
+            normalized_event_status = (
+                current_status if current_status in {"OPEN", "RESOLVED"} else ""
+            )
+        else:
+            normalized_event_status = "RESOLVED" if is_resolved else "OPEN"
         result.append(
             {
                 # ``site_id`` identifies the database/project, not the AP's
@@ -1176,9 +1331,9 @@ def _export_persisted_optical_treatments(
                 "first_rx_power": first_rx,
                 "worst_rx_power": worst_rx,
                 "fixed_rx_power": fixed_rx,
-                "current_rx_power": current_rx,
+                "current_rx_power": current_rx if current_rx is not None else "-",
                 "current_status": source.get("current_status") if not is_event else source.get("event_status"),
-                "event_status": source.get("event_status") if is_event else ("RESOLVED" if is_resolved else "OPEN"),
+                "event_status": normalized_event_status if is_event else ("RESOLVED" if is_resolved else "OPEN"),
                 "treatment_status": treatment_status,
                 "remark": source.get("remark") or "",
                 "completed_at": (

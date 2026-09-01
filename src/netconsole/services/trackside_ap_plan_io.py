@@ -376,6 +376,7 @@ def normalize_trackside_plan_row(
     return {
         "station_id": str(value.get("station_id") or "").strip(),
         "sequence_no": sequence_no,
+        "planning_order": sequence_no,
         "station_name": station,
         "ap_count": ap_count,
         "management_vlan": management_vlan,

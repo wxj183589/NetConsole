@@ -5,7 +5,7 @@ import { computed, nextTick, ref, watch } from 'vue'
 import type { TracksideApPlanRow } from '../../../types/tracksideApBusiness'
 import NcDataTable from '../../table/NcDataTable.vue'
 import type { NcTableColumn } from '../../table/NcTableColumn'
-import type { PlanningStation } from './tracksideApPlanDraft'
+import { sortRailStations, sortTracksideApPlanRows, type PlanningStation } from './tracksideApPlanDraft'
 
 interface ValidationIssue {
   rowIndex: number
@@ -33,11 +33,9 @@ const emit = defineEmits<{
 
 const selectedRows = ref<TracksideApPlanRow[]>([])
 let editingBaseline: { rowIndex: number; field: EditableField; value: unknown } | null = null
-const rows = computed(() => props.modelValue)
+const rows = computed(() => sortTracksideApPlanRows(props.modelValue, props.stations))
 const editable = computed(() => props.editing && !props.readonly && !props.saving)
-const orderedStations = computed(() => [...props.stations].sort((left, right) =>
-  (left.sort_order ?? Number.MAX_SAFE_INTEGER) - (right.sort_order ?? Number.MAX_SAFE_INTEGER)
-  || left.id.localeCompare(right.id)))
+const orderedStations = computed(() => sortRailStations(props.stations))
 const linkedRows = computed(() => rows.value.filter((row) => row.relation_status === 'resolved'))
 const pendingRows = computed(() => rows.value.filter((row) => row.relation_status !== 'resolved'))
 
@@ -54,17 +52,20 @@ const planColumns = computed<NcTableColumn<TracksideApPlanRow>[]>(() => [
 ])
 
 function copyRows(): TracksideApPlanRow[] {
+  // Mutations address the parent model's identity/order; publish() applies
+  // the canonical display order after the mutation.
   return JSON.parse(JSON.stringify(props.modelValue)) as TracksideApPlanRow[]
 }
 
 function publish(next: TracksideApPlanRow[]): void {
-  const issues = validate(next)
-  emit('update:modelValue', next)
+  const ordered = sortTracksideApPlanRows(next, props.stations)
+  const issues = validate(ordered)
+  emit('update:modelValue', ordered)
   emit('validation-change', issues.length === 0, issues)
 }
 
 function updateRow(row: TracksideApPlanRow, patch: Partial<TracksideApPlanRow>): void {
-  const index = props.modelValue.indexOf(row)
+  const index = rowIndex(row)
   if (index < 0) return
   const next = copyRows()
   next[index] = { ...next[index], ...patch }
@@ -78,11 +79,16 @@ function updateRequiredNumber(
 ): void {
   const normalized = Number(value)
   if (!Number.isFinite(normalized)) return
-  updateRow(row, { [field]: normalized })
+  updateRow(row, {
+    [field]: normalized,
+    ...(field === 'sequence_no'
+      ? { planning_order: normalized, display_order: normalized }
+      : {}),
+  })
 }
 
 function rowIndex(row: TracksideApPlanRow): number {
-  return props.modelValue.indexOf(row)
+  return props.modelValue.findIndex((candidate) => candidate === row || candidate.station_id === row.station_id)
 }
 
 function beginCellEdit(row: TracksideApPlanRow, field: EditableField): void {
@@ -106,11 +112,11 @@ function cancelCellEdit(row: TracksideApPlanRow, field: EditableField): void {
 }
 
 function cellId(row: TracksideApPlanRow, field: EditableField): string {
-  return `${rowIndex(row)}-${field}`
+  return `${rows.value.indexOf(row)}-${field}`
 }
 
 function focusNextRow(row: TracksideApPlanRow, field: EditableField): void {
-  const nextIndex = rowIndex(row) + 1
+  const nextIndex = rows.value.indexOf(row) + 1
   if (nextIndex >= rows.value.length) return
   void nextTick(() => document.querySelector<HTMLInputElement>(`[data-plan-cell="${nextIndex}-${field}"] input`)?.focus())
 }
@@ -124,6 +130,8 @@ function assignPastedValue(row: TracksideApPlanRow, field: EditableField, value:
     row.station_name = station?.name ?? text
     row.station_id = station?.id ?? ''
     row.sequence_no = station?.sort_order ?? row.sequence_no
+    row.planning_order = null
+    row.display_order = station?.sort_order ?? null
     row.relation_status = station ? 'resolved' : 'missing'
     row.candidate_station_ids = []
   } else row.remark = value
@@ -132,6 +140,8 @@ function assignPastedValue(row: TracksideApPlanRow, field: EditableField, value:
 function blankRow(source: TracksideApPlanRow[] = rows.value): TracksideApPlanRow {
   return {
     station_id: '', station_name: '', sequence_no: Math.max(0, ...source.map((row) => Number(row.sequence_no) || 0)) + 1,
+    planning_order: null,
+    display_order: null,
     planned_ap_count: 0, management_vlan: null, remark: '', relation_status: 'missing', candidate_station_ids: [],
   }
 }
@@ -164,6 +174,8 @@ function selectStation(row: TracksideApPlanRow, stationId: string): void {
     station_id: stationId,
     station_name: station?.name ?? '',
     sequence_no: station?.sort_order ?? row.sequence_no,
+    planning_order: null,
+    display_order: station?.sort_order ?? null,
     relation_status: station ? 'resolved' : 'missing',
     candidate_station_ids: [],
   })
@@ -175,7 +187,9 @@ function addRow(): void {
   publish([...copyRows(), {
     station_id: station?.id ?? '',
     station_name: station?.name ?? '',
-    sequence_no: station?.sort_order ?? rows.value.length + 1,
+    sequence_no: station?.sort_order ?? Math.max(0, ...rows.value.map((row) => Number(row.sequence_no) || 0)) + 1,
+    planning_order: null,
+    display_order: station?.sort_order ?? null,
     planned_ap_count: 0,
     management_vlan: null,
     remark: '',
@@ -191,7 +205,7 @@ function removeRows(targets: TracksideApPlanRow[]): void {
 }
 
 function removeRow(row: TracksideApPlanRow): void {
-  const index = props.modelValue.indexOf(row)
+  const index = rowIndex(row)
   if (index < 0) return
   const next = copyRows()
   next.splice(index, 1)

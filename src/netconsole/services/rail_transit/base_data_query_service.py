@@ -66,6 +66,10 @@ from netconsole.services.rail_transit.station_source_utils import (
     normalize_station_source_value,
     parse_station_source_value,
 )
+from netconsole.services.rail_transit.station_ordering import (
+    canonicalize_trackside_ap_plan_rows,
+    sort_rail_stations,
+)
 from netconsole.services.rail_transit.trackside_ap_location import (
     NON_MAINLINE_LOCATION_CLASSES,
     resolve_trackside_ap_location,
@@ -243,7 +247,7 @@ class RailTransitBaseDataQueryService:
         station_ids_by_name: dict[str, list[str]] = defaultdict(list)
         for station in stations:
             station_ids_by_name[station.name].append(station.id)
-        plans: list[BaseDataTracksideApPlanRowDTO] = []
+        plan_rows: list[dict[str, Any]] = []
         for row in raw["plan_rows"]:
             station_id = str(row.get("station_id") or "")
             stored_name = str(row.get("station_name") or "")
@@ -259,19 +263,37 @@ class RailTransitBaseDataQueryService:
             else:
                 relation_status = "ambiguous" if len(candidates) > 1 else "missing"
                 station_name = stored_name
-            plans.append(
-                BaseDataTracksideApPlanRowDTO(
-                    station_id=station_id,
-                    sequence_no=int(row.get("sequence_no") or 0),
-                    station_name=station_name,
-                    planned_ap_count=int(row.get("ap_count") or 0),
-                    management_vlan=self._int_or_none(row.get("management_vlan")),
-                    remark=str(row.get("remark") or ""),
-                    relation_status=relation_status,
-                    candidate_station_ids=candidates,
-                )
+            plan_rows.append(
+                {
+                    **dict(row),
+                    "station_id": station_id,
+                    "station_name": station_name,
+                    "planned_ap_count": int(row.get("ap_count") or 0),
+                    "management_vlan": self._int_or_none(row.get("management_vlan")),
+                    "relation_status": relation_status,
+                    "candidate_station_ids": candidates,
+                }
             )
-        plans.sort(key=lambda item: (item.sequence_no, item.station_id))
+        plans = [
+            BaseDataTracksideApPlanRowDTO.model_validate(
+                {
+                    field: row.get(field)
+                    for field in (
+                        "station_id",
+                        "sequence_no",
+                        "planning_order",
+                        "display_order",
+                        "station_name",
+                        "planned_ap_count",
+                        "management_vlan",
+                        "remark",
+                        "relation_status",
+                        "candidate_station_ids",
+                    )
+                }
+            )
+            for row in canonicalize_trackside_ap_plan_rows(plan_rows, stations)
+        ]
         leading_end = str(metadata.get("increasing_direction_leading_end") or "unknown")
         if leading_end not in {"car_1_end", "car_6_end", "unknown"}:
             leading_end = "unknown"
@@ -394,7 +416,7 @@ class RailTransitBaseDataQueryService:
         if query:
             needle = query.casefold()
             items = [item for item in items if needle in f"{item.name} {item.code} {item.source_station_value}".casefold()]
-        items.sort(key=lambda item: (item.sort_order is None, item.sort_order or 0, item.name), reverse=sort_order == "desc")
+        items = sort_rail_stations(items, reverse=sort_order == "desc")
         selected, current, size = self._page(items, page, page_size)
         return StationPageDTO(items=selected, total=len(items), page=current, page_size=size)
 
@@ -2099,12 +2121,12 @@ class RailTransitBaseDataQueryService:
                 )
             )
         source_key_counts = Counter(station.source_station_key for station in result if station.source_station_key)
-        return [
+        return sort_rail_stations([
             station.model_copy(update={"source_sync_status": "conflict"})
             if station.source_station_key and source_key_counts[station.source_station_key] > 1
             else station
             for station in result
-        ]
+        ])
 
     def _sections(self, aps: list[TracksideApDTO]) -> list[SectionDTO]:
         result: list[SectionDTO] = []

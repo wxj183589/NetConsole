@@ -28,7 +28,7 @@ from netconsole.core.sqlite_utils import (
 from netconsole.models.device_address import InvalidDeviceAddressError, normalize_ip_address
 
 
-CURRENT_SCHEMA_VERSION = "2026.09.01.ap_optical_treatment_event_history_v1"
+CURRENT_SCHEMA_VERSION = "2026.09.01.rail_station_display_order_v1"
 
 DEVICE_CLASSIFICATION_COLUMNS = (
     "project_phase",
@@ -1311,6 +1311,7 @@ CREATE TABLE IF NOT EXISTS ac_trackside_ap_plan (
     mode TEXT NOT NULL,
     station_id TEXT NOT NULL DEFAULT '',
     sequence_no INTEGER NOT NULL DEFAULT 0,
+    planning_order INTEGER,
     station_name TEXT NOT NULL,
     ap_count INTEGER NOT NULL DEFAULT 0,
     ap_start_address TEXT,
@@ -3153,15 +3154,63 @@ class Database:
         trackside_plan_columns = {
             "station_id": "TEXT NOT NULL DEFAULT ''",
             "sequence_no": "INTEGER NOT NULL DEFAULT 0",
+            "planning_order": "INTEGER",
             "subnet_mask": "TEXT NOT NULL DEFAULT ''",
             "management_vlan": "INTEGER",
         }
         if self._table_exists(conn, "ac_trackside_ap_plan"):
+            planning_order_added = False
             for column, definition in trackside_plan_columns.items():
                 if not self._column_exists(conn, "ac_trackside_ap_plan", column):
                     conn.execute(
                         f"ALTER TABLE ac_trackside_ap_plan ADD COLUMN {column} {definition}"
                     )
+                    planning_order_added = planning_order_added or column == "planning_order"
+            if planning_order_added:
+                station_metadata: dict[str, dict[str, object]] = {}
+                for station_row in conn.execute(
+                    """
+                    SELECT station_id, station_name, raw_payload_json
+                    FROM ap_extension_points
+                    WHERE belong_type = '__base_station__'
+                    """
+                ).fetchall():
+                    try:
+                        metadata = json.loads(str(station_row["raw_payload_json"] or "{}"))
+                    except (TypeError, json.JSONDecodeError):
+                        metadata = {}
+                    if not isinstance(metadata, dict):
+                        metadata = {}
+                    station_id = str(station_row["station_id"] or "").strip()
+                    if station_id:
+                        station_metadata[station_id] = {
+                            **metadata,
+                            "station_name": str(station_row["station_name"] or ""),
+                        }
+                mainline_orders = [
+                    int(metadata["sort_order"])
+                    for metadata in station_metadata.values()
+                    if str(metadata.get("node_type") or "station") not in {"depot", "parking_lot", "connection_point", "other"}
+                    and metadata.get("sort_order") not in (None, "")
+                    and str(metadata.get("sort_order")).strip().lstrip("-").isdigit()
+                    and int(metadata["sort_order"]) >= 0
+                ]
+                max_mainline_order = max(mainline_orders, default=0)
+                for plan_row in conn.execute(
+                    """
+                    SELECT id, station_id, sequence_no
+                    FROM ac_trackside_ap_plan
+                    WHERE planning_order IS NULL
+                    """
+                ).fetchall():
+                    sequence_no = int(plan_row["sequence_no"] or 0)
+                    if sequence_no <= 0:
+                        continue
+                    if max_mainline_order <= 0 or sequence_no > max_mainline_order:
+                        conn.execute(
+                            "UPDATE ac_trackside_ap_plan SET planning_order = ? WHERE id = ?",
+                            (sequence_no, int(plan_row["id"])),
+                        )
             sequence_rows = conn.execute(
                 """
                 SELECT id, sequence_no, sort_order, station_name

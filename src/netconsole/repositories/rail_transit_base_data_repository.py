@@ -25,6 +25,9 @@ from netconsole.services.rail_transit.trackside_ap_location import (
 from netconsole.services.rail_transit.station_source_utils import (
     format_station_display_name,
 )
+from netconsole.services.rail_transit.station_ordering import (
+    canonicalize_trackside_ap_plan_rows,
+)
 from netconsole.utils.mileage import parse_track_mileage
 
 
@@ -261,6 +264,7 @@ class RailTransitBaseDataRepository:
         plan_fields = (
             "station_id",
             "sequence_no",
+            "planning_order",
             "station_name",
             "ap_count",
             "management_vlan",
@@ -1614,6 +1618,45 @@ class RailTransitBaseDataRepository:
         rows = values.get("rows")
         if isinstance(rows, list):
             now = self._now()
+            resolved_rows: list[dict[str, Any]] = []
+            for row in rows:
+                if not isinstance(row, Mapping):
+                    raise RailTransitBaseDataConstraintError(
+                        "轨旁 AP 规划行格式无效"
+                    )
+                station_id = str(row.get("station_id") or "")
+                station, repaired = self._resolve_plan_station(
+                    connection,
+                    site_id=site_id,
+                    station_id=station_id,
+                    station_name=str(row.get("station_name") or ""),
+                )
+                if station is None:
+                    raise RailTransitBaseDataConstraintError(
+                        "轨旁 AP 规划引用的 station_id 不存在："
+                        f"{station_id or '<empty>'}（展示名：{str(row.get('station_name') or '<empty>')}）"
+                    )
+                normalized = dict(row)
+                normalized["station_id"] = station_id
+                normalized["station_name"] = str(station["station_name"] or "")
+                normalized["_station_id_repaired"] = repaired
+                resolved_rows.append(normalized)
+
+            station_rows = [
+                dict(station_row)
+                for station_row in connection.execute(
+                    """
+                    SELECT station_id AS id, station_id, station_name AS name,
+                           station_name, raw_payload_json
+                    FROM ap_extension_points
+                    WHERE belong_type = '__base_station__'
+                    """
+                ).fetchall()
+            ]
+            canonical_rows = canonicalize_trackside_ap_plan_rows(
+                resolved_rows,
+                station_rows,
+            )
             existing_created_at = {
                 (
                     str(row["station_id"] or ""),
@@ -1634,6 +1677,7 @@ class RailTransitBaseDataRepository:
                 "mode",
                 "station_id",
                 "sequence_no",
+                "planning_order",
                 "station_name",
                 "ap_count",
                 "ap_start_address",
@@ -1648,26 +1692,17 @@ class RailTransitBaseDataRepository:
                 "updated_at",
             )
             repaired_count = 0
-            for row in rows:
-                if not isinstance(row, Mapping):
-                    raise RailTransitBaseDataConstraintError(
-                        "轨旁 AP 规划行格式无效"
-                    )
+            for row in canonical_rows:
                 station_id = str(row.get("station_id") or "")
-                station, repaired = self._resolve_plan_station(
-                    connection,
-                    site_id=site_id,
-                    station_id=station_id,
-                    station_name=str(row.get("station_name") or ""),
-                )
-                repaired_count += int(repaired)
-                if station is None:
-                    raise RailTransitBaseDataConstraintError(
-                        "轨旁 AP 规划引用的 station_id 不存在："
-                        f"{station_id or '<empty>'}（展示名：{str(row.get('station_name') or '<empty>')}）"
-                    )
-                station_name = str(station["station_name"] or "")
+                station_name = str(row.get("station_name") or "")
+                repaired_count += int(bool(row.pop("_station_id_repaired", False)))
                 sequence_no = int(row.get("sequence_no") or 0)
+                raw_planning_order = row.get("planning_order")
+                planning_order = (
+                    None
+                    if raw_planning_order in (None, "")
+                    else int(raw_planning_order)
+                )
                 raw_management_vlan = row.get("management_vlan")
                 management_vlan = (
                     None
@@ -1687,6 +1722,7 @@ class RailTransitBaseDataRepository:
                         "unified",
                         station_id,
                         sequence_no,
+                        planning_order,
                         station_name,
                         int(row.get("ap_count") or 0),
                         str(row.get("ap_start_address") or ""),

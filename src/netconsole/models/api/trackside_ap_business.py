@@ -364,6 +364,8 @@ class TracksideSwitchSampleRequestDTO(ApiModel):
 class TracksideApPlanRowDTO(ApiModel):
     station_id: str = ""
     sequence_no: int = 0
+    planning_order: int | None = None
+    display_order: int | None = None
     station_name: str = ""
     planned_ap_count: int = Field(
         default=0,

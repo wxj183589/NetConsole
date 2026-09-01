@@ -23,7 +23,11 @@ import NcDataTable from '../../components/table/NcDataTable.vue'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import SubPageEditToolbar from '../../components/rail-transit/base-data/SubPageEditToolbar.vue'
 import TracksideApPlanningTab from '../../components/rail-transit/base-data/TracksideApPlanningTab.vue'
-import { reconcileTracksideApPlans } from '../../components/rail-transit/base-data/tracksideApPlanDraft'
+import {
+  reconcileTracksideApPlans,
+  sortRailStations,
+  sortTracksideApPlanRows,
+} from '../../components/rail-transit/base-data/tracksideApPlanDraft'
 import { useRailTransitBaseDataStore } from '../../stores/railTransitBaseData'
 import { useTaskStore } from '../../stores/tasks'
 import { BEFORE_SITE_SWITCH_EVENT } from '../../workspace/site-switch'
@@ -226,7 +230,7 @@ const readOnly = computed(() => Boolean(activeEditScope.value) && editState.valu
 const saving = computed(() => editState.value === 'VALIDATING' || editState.value === 'SAVING')
 const editing = computed(() => Boolean(activeEditContext.value?.draft)
   && ['EDITING', 'DIRTY', 'VALIDATING', 'SAVING', 'SAVE_FAILED'].includes(editState.value))
-const stationRows = computed(() => currentPageDraft.value?.stations ?? store.stations)
+const stationRows = computed(() => sortRailStations(currentPageDraft.value?.stations ?? store.stations))
 const sectionRows = computed(() => currentPageDraft.value?.sections ?? store.sections)
 const apRows = computed(() => currentPageDraft.value
   ? pageRows(currentPageDraft.value.aps, editApPage.value, editApPageSize.value)
@@ -240,7 +244,10 @@ const apPageSize = computed(() => currentPageDraft.value ? editApPageSize.value 
 const mrPageTotal = computed(() => currentPageDraft.value?.mrs.length ?? store.mrTotal)
 const mrPageCurrent = computed(() => currentPageDraft.value ? editMrPage.value : store.mrFilters.page)
 const mrPageSize = computed(() => currentPageDraft.value ? editMrPageSize.value : store.mrFilters.page_size)
-const planningRows = computed(() => currentPageDraft.value?.tracksideApPlans ?? store.tracksideApPlans)
+const planningRows = computed(() => sortTracksideApPlanRows(
+  currentPageDraft.value?.tracksideApPlans ?? store.tracksideApPlans,
+  stationRows.value,
+))
 const planningDirty = computed(() => activeEditScope.value === 'trackside_ap_planning'
   && JSON.stringify(currentPageDraft.value?.tracksideApPlans ?? [])
   !== JSON.stringify(currentPageSnapshot.value?.tracksideApPlans ?? []))
@@ -1010,6 +1017,13 @@ async function saveAllChanges(successMessage = '', scope: EditableSubPage = acti
     return false
   }
   if (scope === 'trackside_ap_planning' && pageIsDirty(scope)) {
+    // Keep the payload order deterministic even when an editor component was
+    // bypassed by a batch operation. The backend applies the same canonical
+    // projection before persistence and on reload.
+    context.draft.tracksideApPlans = sortTracksideApPlanRows(
+      context.draft.tracksideApPlans,
+      context.draft.stations,
+    )
     changes.push({
       entity_type: 'trackside_ap_plan',
       action: 'replace',
@@ -1744,12 +1758,22 @@ function undoDelete(entityType: BaseDataChange['entity_type'], row: Station | Se
 function addStation(): void {
   if (!editing.value || !editingDraft.value) return
   const nodeUid = newNodeUid()
+  const maxMainlineOrder = Math.max(
+    0,
+    ...editingDraft.value.stations.map((station) => (
+      station.node_type === 'station'
+      && station.participates_in_direction !== false
+      && Number.isInteger(Number(station.sort_order))
+        ? Number(station.sort_order)
+        : 0
+    )),
+  )
   const row: Station = defaultStation({
     id: `station:${nodeUid}`,
     node_uid: nodeUid,
     line_name: store.summary?.line_name || '',
     path_code: editingDraft.value.metadata.main_path_code || 'MAIN',
-    sort_order: editingDraft.value.stations.length + 1,
+    sort_order: maxMainlineOrder + 1,
     structure_type: 'underground',
     platform_layout: 'island',
     source_kind: 'manual',

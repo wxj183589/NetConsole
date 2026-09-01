@@ -23,6 +23,9 @@ from netconsole.services.rail_transit.station_source_utils import (
     canonical_station_name,
     format_station_display_name,
 )
+from netconsole.services.rail_transit.station_ordering import (
+    canonicalize_trackside_ap_plan_rows,
+)
 from netconsole.services.rail_transit.trackside_ap_runtime_snapshot import (
     TracksideApRuntimeSnapshot,
     build_trackside_ap_runtime_snapshot,
@@ -1422,6 +1425,7 @@ def _build_station_index(
     station_sort_orders: dict[str, int] = {}
     station_aliases: dict[str, set[str]] = defaultdict(set)
     station_node_uids: dict[str, str] = {}
+    station_projections: list[dict[str, object | None]] = []
 
     for row in station_rows:
         if str(row.get("belong_type") or "") != _BASE_STATION:
@@ -1446,6 +1450,18 @@ def _build_station_index(
         station_id = str(
             row.get("station_id") or metadata.get("station_id") or ""
         ).strip() or _derived_station_id(node_uid)
+        station_projections.append(
+            {
+                **metadata,
+                "id": station_id,
+                "name": name,
+                "node_type": metadata.get("node_type") or "station",
+                "participates_in_direction": metadata.get(
+                    "participates_in_direction",
+                    metadata.get("node_type", "station") == "station",
+                ),
+            }
+        )
         station_names[station_id] = name
         station_sort_orders[station_id] = _integer(metadata.get("sort_order"), 2**31 - 1)
         station_node_uids[node_uid] = station_id
@@ -1468,8 +1484,20 @@ def _build_station_index(
                 station_id,
                 _integer(plan.get("sequence_no"), index + 1),
             )
-        if raw_station_id and raw_station_id != station_id:
-            station_node_uids[raw_station_id] = station_id
+            if raw_station_id and raw_station_id != station_id:
+                station_node_uids[raw_station_id] = station_id
+    canonical_plans = canonicalize_trackside_ap_plan_rows(plans, station_projections)
+    for plan in canonical_plans:
+        raw_station_id = str(plan.get("station_id") or "").strip()
+        station_id = station_node_uids.get(raw_station_id, raw_station_id)
+        if station_id in station_names:
+            display_order = plan.get("display_order")
+            if display_order in (None, ""):
+                display_order = plan.get("sequence_no")
+            station_sort_orders[station_id] = _integer(
+                display_order,
+                station_sort_orders.get(station_id, 2**31 - 1),
+            )
     return station_names, station_sort_orders, station_aliases, station_node_uids
 
 

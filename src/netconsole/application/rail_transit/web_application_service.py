@@ -104,6 +104,9 @@ from netconsole.services.rail_transit.effective_trackside_ap_scope import (
     TracksideApScopeContext,
     resolve_effective_trackside_ap_scope_from_database,
 )
+from netconsole.services.rail_transit.station_ordering import (
+    canonicalize_trackside_ap_plan_rows,
+)
 from netconsole.services.rail_transit.car_network_diagnostic import (
     DEFAULT_GLOBAL_CONFIG,
     CarNetworkNode,
@@ -1556,7 +1559,7 @@ class RailTransitWebApplicationService:
             if source_rows is not None
             else project_legacy_station_rows(view)
         )
-        items = []
+        items: list[dict[str, object | None]] = []
         station_by_id = {
             str(row.get("id") or row.get("station_id") or "").strip(): row
             for row in stations or []
@@ -1597,27 +1600,49 @@ class RailTransitWebApplicationService:
             else:
                 relation_status = "missing"
             items.append(
-                TracksideApPlanRowDTO(
-                    station_id=station_id,
-                    sequence_no=sequence_no,
-                    station_name=station_name,
-                    planned_ap_count=int(
+                {
+                    **item,
+                    "station_id": station_id,
+                    "sequence_no": sequence_no,
+                    "station_name": station_name,
+                    "planned_ap_count": int(
                         item.get("planned_ap_count")
                         if item.get("planned_ap_count") not in (None, "")
                         else item.get("ap_count")
                         or 0
                     ),
-                    management_vlan=management_vlan,
-                    remark=str(item.get("remark") or "").strip(),
-                    relation_status=relation_status,
-                    candidate_station_ids=candidates,
-                )
+                    "management_vlan": management_vlan,
+                    "remark": str(item.get("remark") or "").strip(),
+                    "relation_status": relation_status,
+                    "candidate_station_ids": candidates,
+                }
             )
+        items = canonicalize_trackside_ap_plan_rows(items, stations or [])
+        plan_items = [
+            TracksideApPlanRowDTO.model_validate(
+                {
+                    field: item.get(field)
+                    for field in (
+                        "station_id",
+                        "sequence_no",
+                        "planning_order",
+                        "display_order",
+                        "station_name",
+                        "planned_ap_count",
+                        "management_vlan",
+                        "remark",
+                        "relation_status",
+                        "candidate_station_ids",
+                    )
+                }
+            )
+            for item in items
+        ]
         return TracksideApPlanDTO.model_validate(
             {
                 **dict(view),
-                "items": items,
-                "total": len(items),
+                "items": plan_items,
+                "total": len(plan_items),
             }
         )
 
@@ -1788,6 +1813,7 @@ class RailTransitWebApplicationService:
         return {
             "station_id": str(row.get("station_id") or "").strip(),
             "sequence_no": row.get("sequence_no"),
+            "planning_order": row.get("planning_order"),
             "station_name": row.get("station_name"),
             "planned_ap_count": (
                 row.get("planned_ap_count")
