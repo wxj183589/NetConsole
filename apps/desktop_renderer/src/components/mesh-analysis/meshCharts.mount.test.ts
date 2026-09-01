@@ -8,7 +8,7 @@ import MeshRssiChart from './MeshRssiChart.vue'
 import MeshRssiChartWorkspace from './MeshRssiChartWorkspace.vue'
 import MeshTracksideSignalChart from './MeshTracksideSignalChart.vue'
 import MeshSwitchRssiChart from './MeshSwitchRssiChart.vue'
-import type { MeshChartEvent, MeshChartPoint, MeshTracksideSignalPointData, MeshTracksideSignalSeriesData } from '../../types/meshAnalysis'
+import type { MeshChartEvent, MeshChartPoint, MeshRssiLine, MeshTracksideSignalPointData, MeshTracksideSignalSeriesData } from '../../types/meshAnalysis'
 import type { MeshChartHandle } from './meshChartViewport'
 import type { MeshRssiLayoutMode } from './meshRssiLayout'
 import { buildTracksideSeriesCache } from './tracksideSeriesCache'
@@ -227,6 +227,49 @@ describe('MESH charts mount and render', () => {
 
     activeWrapper.unmount()
     tracksideWrapper.unmount()
+  })
+
+  it('uses same-segment context and compact full-line metrics for a non-overlay RSSI hover', async () => {
+    const first = {
+      ...chartPoint,
+      timestamp: '2026-07-20T10:00:00.123Z',
+      segment_sequence: 1,
+      segment_start: '2026-07-20T10:00:00.123Z',
+      segment_end: '2026-07-20T10:00:02.123Z',
+      peer_ap_name: 'AP0128',
+      peer_ap_mac: '000000001128',
+      peer_radio_mac: '000000002128',
+    }
+    const line: MeshRssiLine = {
+      resolution_mode: 'full',
+      total_points: 3,
+      returned_points: 3,
+      gap_count: 0,
+      points: [
+        [first.timestamp, 39, false, 43, 31, 22, 45, 27, 1],
+        ['2026-07-20T10:00:01.123Z', 41, false, 44, 31, 22, 45, 27, 1],
+        ['2026-07-20T10:00:02.123Z', 40, false, null, null, null, null, null, 1],
+      ],
+    }
+    const wrapper = mount(MeshRssiChart, { props: { points: [first], rssiLine: line } })
+    await flushPromises()
+
+    const option = echartsMock.chart.setOption.mock.calls.at(-1)?.[0] as {
+      tooltip: { formatter: (params: unknown) => string }
+      series: Array<{ data?: Array<{ value: [string, number]; fullPoint?: unknown }> }>
+    }
+    const hoverPoint = option.series[0].data?.[1]
+    const tooltipHtml = option.tooltip.formatter([{ axisValue: '2026-07-20T10:00:01.123Z', data: hoverPoint }])
+    expect(tooltipHtml).toContain('采样时间：2026-07-20T10:00:01.123Z')
+    expect(tooltipHtml).toContain('状态：ACTIVE')
+    expect(tooltipHtml).toContain('当前轨旁 AP：AP0128')
+    expect(tooltipHtml).toContain('Radio：Radio 1')
+    expect(tooltipHtml).toContain('当前轨旁 AP MAC：0000-0000-1128')
+    expect(tooltipHtml).toContain('MR / 轨旁 AP 接收信号：41 / 44')
+    expect(tooltipHtml).toContain('MR TX/RX Busy：31 % / 22 %')
+    expect(tooltipHtml).toContain('轨旁 AP TX/RX Busy：45 % / 27 %')
+    expect(tooltipHtml).not.toBe('2026-07-20T10:00:01.123Z<br>RSSI 41')
+    wrapper.unmount()
   })
 
   it('updates active switch and location overlays without rebuilding the RSSI chart instance', async () => {

@@ -1,10 +1,10 @@
-import type { MeshChartPoint, MeshCounterDeltaPoint, MeshLocationSegment, MeshRatePoint, MeshRssiLine, MeshRssiZeroRun, MeshSwitchEvent } from '../../types/meshAnalysis'
+import type { MeshChartPoint, MeshCounterDeltaPoint, MeshLocationSegment, MeshRatePoint, MeshRssiLine, MeshRssiLinePoint, MeshRssiZeroRun, MeshSwitchEvent } from '../../types/meshAnalysis'
 import { buildRssiDisplayPoints } from './rssiZeroRuns'
 
 export interface MeshRssiSeries {
   name: string
   metric: 'local_rssi' | 'peer_rssi'
-  data: Array<{ value: [string, number | null]; meta?: MeshChartPoint; zeroRun: MeshRssiZeroRun | null }>
+  data: Array<{ value: [string, number | null]; meta?: MeshChartPoint; fullPoint?: MeshRssiLinePoint; zeroRun: MeshRssiZeroRun | null }>
 }
 
 export interface MeshBusySeries {
@@ -99,12 +99,15 @@ export function buildMeshFullRssiSeries(line: MeshRssiLine): MeshRssiSeries {
   return {
     name: '当前 ACTIVE MR 侧 RSSI',
     metric: 'local_rssi',
-    data: line.points.flatMap(([timestamp, value, gapBefore], index) => [
+    data: line.points.flatMap((linePoint, index) => {
+      const [timestamp, value, gapBefore] = linePoint
+      return [
       ...(index > 0 && gapBefore
         ? [{ value: [timestamp, null] as [string, number | null], zeroRun: null }]
         : []),
-      { value: [timestamp, value] as [string, number | null], zeroRun: null },
-    ]),
+      { value: [timestamp, value] as [string, number | null], fullPoint: linePoint, zeroRun: null },
+      ]
+    }),
   }
 }
 

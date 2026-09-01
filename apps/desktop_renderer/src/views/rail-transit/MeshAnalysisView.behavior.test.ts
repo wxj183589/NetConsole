@@ -562,6 +562,12 @@ function hotfixActivePayload(
       first_sample_time: timestamp,
       last_sample_time: timeTo || timestamp,
     },
+    response_budget: {
+      lod_level: 1,
+      degraded: true,
+      returned_points: 1,
+      total_points: 1,
+    },
     time_from: timeFrom,
     time_to: timeTo,
     source_id: sessionId,
@@ -646,6 +652,12 @@ function hotfixTracksidePayload(
     include_standby: true,
     payload_bytes: 1,
     query_duration_ms: 1,
+    response_budget: {
+      lod_level: 0,
+      degraded: false,
+      returned_points: 1,
+      total_points: 1,
+    },
   }
 }
 
@@ -1338,6 +1350,15 @@ describe('Mesh analysis detail behavior', () => {
     expect(wrapper.text()).toContain('业务叠加点 4,000 / 51,324')
     expect(wrapper.text()).toContain('业务叠加精度')
     expect(wrapper.text()).not.toContain('绘图点 4,000 / 51,324')
+    const summaries = wrapper.findAll('.rssi-pane-summary')
+    expect(summaries).toHaveLength(2)
+    expect(summaries[0].text()).not.toContain('当前 PeerMac')
+    expect(summaries[0].text()).not.toContain('当前 AP')
+    expect(summaries[0].text()).not.toContain('Overlay LOD')
+    expect(summaries[0].text()).not.toContain('Radio')
+    expect(summaries[1].text()).not.toContain('LOD')
+    expect((activePayload.response_budget as { lod_level: number }).lod_level).toBe(1)
+    expect((hotfixTracksidePayload('trackside-budget-check', 0).response_budget as { lod_level: number }).lod_level).toBe(0)
     wrapper.unmount()
   })
 

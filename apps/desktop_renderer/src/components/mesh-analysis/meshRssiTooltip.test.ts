@@ -77,13 +77,20 @@ describe('MESH RSSI tooltip', () => {
       `采样时间：${point.timestamp}`,
       '<hr class="mesh-rssi-tooltip__divider" style="margin:8px 0;border:0;border-top:1px solid currentColor;opacity:.35">',
       '<strong>主链路</strong>',
+      '状态：ACTIVE',
       '当前轨旁 AP：&lt;主 AP&gt;',
+      'Radio：Radio 1',
+      'Peer MAC：main-peer',
       '当前轨旁 AP MAC：main-ap',
+      'Peer Radio MAC：—',
       'MR / 轨旁 AP 接收信号：31 / 29',
       'LinkCnt：2（△ 三角链路）',
+      '<strong>空口负载</strong>',
+      'MR TX/RX Busy：— / —',
+      '轨旁 AP TX/RX Busy：— / —',
       '归属站点 / 区间：站点&amp;一 / —',
       '建链持续时间：1 s',
-      '<hr class="mesh-rssi-tooltip__divider" style="margin:8px 0;border:0;border-top:1px solid currentColor;opacity:.35"><strong>备份链路</strong><br>1. 备份 AP<br>AP MAC：backup-ap<br>MR / 轨旁 AP 接收信号：30 / 28<br>LinkCnt：1<br>Radio：radio1<br>归属站点 / 区间：站点二 / 区间二',
+      '<hr class="mesh-rssi-tooltip__divider" style="margin:8px 0;border:0;border-top:1px solid currentColor;opacity:.35"><strong>备份链路</strong><br>1. 备份 AP<br>AP MAC：backup-ap<br>MR / 轨旁 AP 接收信号：30 / 28<br>LinkCnt：1<br>Radio：Radio 1<br>归属站点 / 区间：站点二 / 区间二',
       '',
       '</div>',
     ].join('<br>'))
@@ -174,6 +181,33 @@ describe('MESH RSSI tooltip', () => {
     expect(html).toContain('MR / 轨旁 AP 接收信号：29 / 21')
     expect(html).not.toContain('-29')
     expect(html.toLowerCase()).not.toContain('dbm')
+  })
+
+  it('renders radio, peer radio, state, and sample-level busy values without null artifacts', () => {
+    const html = buildMeshRssiTooltip({
+      ...point,
+      peer_mac: '1c9468768c6f',
+      peer_ap_mac: '40734d64e180',
+      peer_radio_mac: '001122334455',
+      local_tx_busy: 31,
+      local_rx_busy: 22,
+      peer_tx_busy: 45,
+      peer_rx_busy: 27,
+    })
+
+    expect(html).toContain('状态：ACTIVE')
+    expect(html).toContain('Radio：Radio 1')
+    expect(html).toContain('Peer MAC：1c94-6876-8c6f')
+    expect(html).toContain('当前轨旁 AP MAC：4073-4d64-e180')
+    expect(html).toContain('Peer Radio MAC：0011-2233-4455')
+    expect(html).toContain('MR TX/RX Busy：31 % / 22 %')
+    expect(html).toContain('轨旁 AP TX/RX Busy：45 % / 27 %')
+    expect(html).not.toMatch(/undefined|NaN|null%/)
+
+    const missing = buildMeshRssiTooltip({ ...point, local_tx_busy: null, local_rx_busy: null, peer_tx_busy: null, peer_rx_busy: null })
+    expect(missing).toContain('MR TX/RX Busy：— / —')
+    expect(missing).toContain('轨旁 AP TX/RX Busy：— / —')
+    expect(missing).not.toMatch(/undefined|NaN|null%/)
   })
 
   it('removes event type and duration from the independent switch RSSI chart tooltip', () => {

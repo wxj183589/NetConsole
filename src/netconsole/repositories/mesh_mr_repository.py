@@ -2378,12 +2378,17 @@ class MeshMrRepository:
                     f"""
                     SELECT s.id AS sample_id, s.sample_time, s.timestamp_tag, s.radio,
                            ml.id AS active_link_id,
-                           ml.local_rssi_db AS local_rssi
+                           ml.local_rssi_db AS local_rssi,
+                           ap.peer_rssi_db AS peer_rssi,
+                           ap.local_tx_busy, ap.local_rx_busy,
+                           ap.peer_tx_busy, ap.peer_rx_busy
                     FROM samples s
                     LEFT JOIN mesh_links ml
                       ON ml.sample_id = s.id
                      AND ml.link_state = ?
                      AND COALESCE(ml.link_count, 1) > 0
+                    LEFT JOIN active_points ap
+                      ON ap.link_id = ml.id
                     {where}
                     ORDER BY s.sample_time, s.timestamp_tag, s.radio, s.id, ml.id
                     """,

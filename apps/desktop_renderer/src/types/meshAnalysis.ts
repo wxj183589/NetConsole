@@ -279,12 +279,24 @@ export interface MeshPathChartSummary {
   sustained_zero_total_duration_ms: number; sustained_zero_longest_duration_ms: number
 }
 
+export type MeshRssiLinePoint = [
+  timestamp: string,
+  rssi: number,
+  gap_before: boolean,
+  peer_rssi?: number | null,
+  local_tx_busy?: number | null,
+  local_rx_busy?: number | null,
+  peer_tx_busy?: number | null,
+  peer_rx_busy?: number | null,
+  local_radio?: number | null,
+]
+
 export interface MeshRssiLine {
   resolution_mode: 'full' | 'high' | 'overview'
   total_points: number
   returned_points: number
   gap_count: number
-  points: Array<[timestamp: string, rssi: number, gap_before: boolean]>
+  points: MeshRssiLinePoint[]
 }
 
 export interface MeshChartResponseBudget {

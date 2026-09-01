@@ -11,7 +11,7 @@ import {
   createTimeChartInitOptions,
   createTimeChartLinePresentation,
 } from '../charts/multiSeriesTimeChart'
-import type { MeshChartEvent, MeshChartPoint, MeshLocationSegment, MeshRssiLine } from '../../types/meshAnalysis'
+import type { MeshChartEvent, MeshChartPoint, MeshLocationSegment, MeshRssiLine, MeshRssiLinePoint } from '../../types/meshAnalysis'
 import { buildMeshFullRssiSeries, buildMeshLocationBands, buildMeshRssiSeries } from './chartSeries'
 import { sampleMeshSwitchOverlayItems } from './switchOverlayBudget'
 import {
@@ -29,6 +29,12 @@ import {
   type MeshSharedTimeDomain,
 } from './meshChartViewport'
 import { buildMeshRssiQuickTooltip, buildMeshRssiTooltip } from './meshRssiTooltip'
+import {
+  createMeshRssiContextIndex,
+  decodeMeshRssiLinePoint,
+  resolveMeshRssiPoint,
+  type MeshRssiContextIndex,
+} from './meshRssiContext'
 
 const props = withDefaults(defineProps<{
   points: MeshChartPoint[]
@@ -67,7 +73,8 @@ const container = ref<HTMLDivElement | null>(null)
 let chart: EChartsType | null = null
 let resizeObserver: ResizeObserver | null = null
 let unsubscribeTheme: (() => void) | null = null
-let primarySeriesData: Array<{ value: [string, number | null]; meta?: MeshChartPoint }> = []
+let primarySeriesData: Array<{ value: [string, number | null]; meta?: MeshChartPoint; fullPoint?: MeshRssiLinePoint }> = []
+let meshRssiContextIndex: MeshRssiContextIndex = createMeshRssiContextIndex(props.points)
 let initialization: Promise<boolean> | null = null
 let resizeFrame: number | null = null
 let pendingRenderReason: 'data' | 'display' | 'theme' | 'reset' | null = null
@@ -105,18 +112,7 @@ function renderedSwitchTimestamp(event: MeshChartEvent): string {
 }
 
 function findRenderedSwitchPoint(event: MeshChartEvent): MeshChartPoint | undefined {
-  if (event.render_aligned === false) return undefined
-  const timestamp = renderedSwitchTimestamp(event)
-  const context = event.point_context
-  return props.points.find((point) => (
-    point.timestamp === timestamp
-    && (context?.link_id == null || point.link_id === context.link_id)
-    && (context?.timestamp_tag == null || point.timestamp_tag === context.timestamp_tag)
-    && (event.local_radio == null || point.local_radio === event.local_radio)
-    && point.local_rssi != null
-    && point.local_rssi !== 0
-    && !point.is_anomaly
-  ))
+  return meshRssiContextIndex.findSwitchPoint(event)
 }
 
 function switchNodeData(events: MeshChartEvent[]): Array<{ value: [string, number]; meta?: MeshChartPoint; meshEvent: MeshChartEvent; symbol: string }> {
@@ -242,7 +238,10 @@ onBeforeUnmount(() => {
   invalidateAppliedViewport()
 })
 
-watch(() => [props.points, props.rssiLine] as const, () => scheduleChartUpdate('data'))
+watch(() => [props.points, props.rssiLine] as const, () => {
+  meshRssiContextIndex = createMeshRssiContextIndex(props.points)
+  scheduleChartUpdate('data')
+})
 watch(() => [props.events, props.locationSegments] as const, () => scheduleChartUpdate('display'))
 watch(() => props.showPeer, () => scheduleChartUpdate('data'))
 watch(() => [props.showSwitchLines, props.showSwitchPoints, props.showLocationBand] as const, () => scheduleChartUpdate('display'))
@@ -511,6 +510,7 @@ function render(reason: 'data' | 'display' | 'theme' | 'reset'): void {
           const point = (item as { data?: { meta?: MeshChartPoint } }).data?.meta
           return point && (pointerMillis === null || meshTimestampMillis(point.timestamp) === pointerMillis)
         }) as { data?: { meta?: MeshChartPoint } } | undefined
+        const lineParam = params.find((item) => (item as { data?: { fullPoint?: MeshRssiLinePoint } }).data?.fullPoint) as { data?: { fullPoint?: MeshRssiLinePoint; value?: [string, number | null] } } | undefined
         const event = eventParam?.data?.meshEvent
         const point = pointParam?.data?.meta
           || eventParam?.data?.meta
@@ -518,14 +518,21 @@ function render(reason: 'data' | 'display' | 'theme' | 'reset'): void {
         const exactPoint = point && (pointerMillis === null || meshTimestampMillis(point.timestamp) === pointerMillis)
           ? point
           : undefined
+        const lineSample = lineParam?.data?.fullPoint
+          ? decodeMeshRssiLinePoint(lineParam.data.fullPoint)
+          : undefined
+        const resolved = lineSample
+          && (pointerMillis === null || meshTimestampMillis(lineSample.timestamp) === pointerMillis)
+          ? resolveMeshRssiPoint(meshRssiContextIndex, lineSample, exactPoint)
+          : undefined
         if (!point && pointerTime) {
-          const valueParam = params.find((item) => Number.isFinite((item as { data?: { value?: [string, number | null] } }).data?.value?.[1])) as { data?: { value?: [string, number | null] } } | undefined
+          const valueParam = lineParam || params.find((item) => Number.isFinite((item as { data?: { value?: [string, number | null] } }).data?.value?.[1])) as { data?: { value?: [string, number | null] } } | undefined
           const value = valueParam?.data?.value?.[1]
-          if (value != null) return `${pointerTime}<br>RSSI ${value}`
+          if (value != null && !resolved) return `${pointerTime}<br>RSSI ${value}`
         }
         return props.quickTooltip
-          ? buildMeshRssiQuickTooltip(exactPoint, event, pointerTime)
-          : buildMeshRssiTooltip(exactPoint, event, pointerTime)
+          ? buildMeshRssiQuickTooltip(resolved?.point || exactPoint, event, pointerTime)
+          : buildMeshRssiTooltip(resolved?.point || exactPoint, event, pointerTime, { backupsKnown: resolved?.exact ?? Boolean(exactPoint) })
       },
     },
     yAxis: { ...(baseOption.yAxis as Record<string, unknown>), min: 'dataMin' },

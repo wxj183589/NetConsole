@@ -10,7 +10,18 @@ export function escapeMeshTooltipHtml(value: unknown): string {
 }
 
 function metric(value: number | null | undefined, unit = ''): string {
-  return value == null ? '—' : escapeMeshTooltipHtml(`${value}${unit}`)
+  return value == null || !Number.isFinite(value) ? '—' : escapeMeshTooltipHtml(`${value}${unit}`)
+}
+
+function formatMeshMac(value: string | null | undefined): string {
+  const source = String(value || '').trim()
+  const compact = source.toLowerCase().replace(/[^0-9a-f]/g, '')
+  if (compact.length !== 12) return source
+  return `${compact.slice(0, 4)}-${compact.slice(4, 8)}-${compact.slice(8)}`
+}
+
+function radioLabel(value: number | null | undefined): string {
+  return value == null ? '—' : `Radio ${value}`
 }
 
 function divider(): string {
@@ -22,14 +33,15 @@ function linkCount(value: number | null | undefined): string {
   return value === 2 ? 'LinkCnt：2（△ 三角链路）' : `LinkCnt：${escapeMeshTooltipHtml(value)}`
 }
 
-export function buildBackupSection(backups: readonly MeshChartBackupLink[]): string {
+export function buildBackupSection(backups: readonly MeshChartBackupLink[], known = true): string {
+  if (!known) return `${divider()}<strong>备份链路：当前点未返回</strong>`
   if (!backups.length) return `${divider()}<strong>备份链路：无</strong>`
   const rows = backups.map((item, index) => [
     `${index + 1}. ${escapeMeshTooltipHtml(item.peer_ap_name || item.peer_mac)}`,
-    `AP MAC：${escapeMeshTooltipHtml(item.peer_ap_mac)}`,
+    `AP MAC：${escapeMeshTooltipHtml(formatMeshMac(item.peer_ap_mac))}`,
     `MR / 轨旁 AP 接收信号：${metric(item.local_rssi)} / ${metric(item.peer_rssi)}`,
     linkCount(item.link_count),
-    `Radio：${item.local_radio == null ? '—' : `radio${escapeMeshTooltipHtml(item.local_radio)}`}`,
+    `Radio：${escapeMeshTooltipHtml(radioLabel(item.local_radio))}`,
     `归属站点 / 区间：${escapeMeshTooltipHtml(item.station)} / ${escapeMeshTooltipHtml(item.section)}`,
   ].join('<br>'))
   return `${divider()}<strong>备份链路</strong><br>${rows.join('<br>')}`
@@ -60,7 +72,12 @@ export function buildSwitchSection(event?: MeshChartEvent): string {
   return rows.join('<br>')
 }
 
-export function buildMeshRssiTooltip(point?: MeshChartPoint, event?: MeshChartEvent, pointerTime?: string): string {
+export function buildMeshRssiTooltip(
+  point?: MeshChartPoint,
+  event?: MeshChartEvent,
+  pointerTime?: string,
+  options: { backupsKnown?: boolean } = {},
+): string {
   if (!point) {
     return `<div class="mesh-rssi-tooltip" style="${TOOLTIP_STYLE}">采样时间：${escapeMeshTooltipHtml(pointerTime || event?.render_point_timestamp || event?.point_timestamp || event?.timestamp)}${pointerTime ? '<br>当前时刻无有效采样' : ''}${buildSwitchSection(event)}</div>`
   }
@@ -69,10 +86,17 @@ export function buildMeshRssiTooltip(point?: MeshChartPoint, event?: MeshChartEv
     `采样时间：${escapeMeshTooltipHtml(point.timestamp)}`,
     divider(),
     '<strong>主链路</strong>',
+    `状态：${escapeMeshTooltipHtml(point.link_state)}`,
     `当前轨旁 AP：${escapeMeshTooltipHtml(point.peer_ap_name)}`,
-    `当前轨旁 AP MAC：${escapeMeshTooltipHtml(point.peer_ap_mac)}`,
+    `Radio：${escapeMeshTooltipHtml(radioLabel(point.local_radio))}`,
+    `Peer MAC：${escapeMeshTooltipHtml(formatMeshMac(point.peer_mac))}`,
+    `当前轨旁 AP MAC：${escapeMeshTooltipHtml(formatMeshMac(point.peer_ap_mac))}`,
+    `Peer Radio MAC：${escapeMeshTooltipHtml(formatMeshMac(point.peer_radio_mac))}`,
     `MR / 轨旁 AP 接收信号：${metric(point.local_rssi)} / ${metric(point.peer_rssi)}`,
     linkCount(point.link_count),
+    '<strong>空口负载</strong>',
+    `MR TX/RX Busy：${metric(point.local_tx_busy, ' %')} / ${metric(point.local_rx_busy, ' %')}`,
+    `轨旁 AP TX/RX Busy：${metric(point.peer_tx_busy, ' %')} / ${metric(point.peer_rx_busy, ' %')}`,
     ...(point.local_rssi_zero_run
       ? [
           '<strong>状态：持续无有效 RSSI</strong>',
@@ -83,7 +107,7 @@ export function buildMeshRssiTooltip(point?: MeshChartPoint, event?: MeshChartEv
       : []),
     `归属站点 / 区间：${escapeMeshTooltipHtml(point.station)} / ${escapeMeshTooltipHtml(point.section)}`,
     `建链持续时间：${metric(point.segment_duration_seconds, ' s')}`,
-    buildBackupSection(point.backups || []),
+    buildBackupSection(point.backups || [], options.backupsKnown !== false),
     buildSwitchSection(event),
     '</div>',
   ].join('<br>')

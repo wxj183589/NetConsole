@@ -241,6 +241,71 @@ def test_full_rssi_line_breaks_only_on_real_missing_samples() -> None:
     assert [point[2] for point in line.points] == [False, False, True, False, False, False, False]
 
 
+def test_full_rssi_line_carries_compact_sample_metrics_for_hover() -> None:
+    line = MeshAnalysisQueryService._full_rssi_line_dto({
+        "estimated_interval_seconds": 1.0,
+        "continuity_gap_seconds": 5.0,
+        "rows": [{
+            "sample_id": 1,
+            "sample_time": "2026-07-14 10:00:00.000",
+            "radio": 1,
+            "active_link_id": 1,
+            "local_rssi": 39,
+            "peer_rssi": 43,
+            "local_tx_busy": 31,
+            "local_rx_busy": 22,
+            "peer_tx_busy": 45,
+            "peer_rx_busy": 27,
+        }],
+    })
+
+    assert line.points == [(
+        "2026-07-14 10:00:00.000",
+        39,
+        False,
+        43,
+        31,
+        22,
+        45,
+        27,
+        1,
+    )]
+
+
+def test_active_chart_keeps_segment_context_when_repository_rows_are_downsampled(
+    tmp_path: Path,
+) -> None:
+    paths, session_id, _detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    service = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())  # type: ignore[arg-type]
+    context = service._context("demo", session_id)
+
+    chart = service._chart_dto(
+        "demo",
+        context,
+        {
+            "peer_segment": {"rows": []},
+            "run_segment": {
+                "repository_downsampled": True,
+                "rows": [
+                    _active_chart_row(1, "2026-07-14 10:00:00.000", "00000000001f"),
+                    _active_chart_row(2, "2026-07-14 10:00:01.000", "00000000002f"),
+                ],
+                "events": [],
+                "estimated_interval_seconds": 1,
+                "continuity_gap_seconds": 5,
+            },
+        },
+        mode="active_path",
+        max_points=10,
+        time_from="",
+        time_to="",
+    )
+
+    assert [point.segment_sequence for point in chart.points] == [1, 2]
+    assert chart.points[0].segment_start == "2026-07-14 10:00:00.000"
+    assert chart.points[0].segment_end == "2026-07-14 10:00:00.000"
+
+
 @pytest.mark.parametrize(
     "point_count",
     [2_239, 4_478, 6_717, 8_956, 17_912, 51_324],

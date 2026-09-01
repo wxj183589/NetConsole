@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import source from './MeshRssiChart.vue?raw'
+import contextSource from './meshRssiContext.ts?raw'
 import tracksideSource from './MeshTracksideSignalChart.vue?raw'
 
 describe('MeshRssiChart', () => {
@@ -27,8 +28,9 @@ describe('MeshRssiChart', () => {
     expect(source).toContain("richSeries.filter((item) => item.metric === 'peer_rssi')")
     expect(source).toContain('buildMeshRssiTooltip')
     expect(source).toContain('findRenderedSwitchPoint')
-    expect(source).toContain('point.local_rssi !== 0')
     expect(source).toContain('value: [point.timestamp, point.local_rssi]')
+    expect(contextSource).toContain('point.local_rssi !== 0')
+    expect(contextSource).toContain('!point.is_anomaly')
     expect(source).not.toContain('value: [event.point_timestamp, event.point_rssi]')
     expect(source).toContain('buildMeshLocationBands')
     expect(source).toContain('connectNulls: false')

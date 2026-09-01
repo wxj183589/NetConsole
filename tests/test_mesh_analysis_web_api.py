@@ -78,6 +78,7 @@ def test_mesh_analysis_queries_keep_analysis_files_unchanged(tmp_path: Path) -> 
     assert full_rssi_payload["resolution_mode"] == "full"
     assert full_rssi_payload["rssi_line"]["resolution_mode"] == "full"
     assert full_rssi_payload["rssi_line"]["returned_points"] == full_rssi_payload["rssi_line"]["total_points"]
+    assert full_rssi_payload["rssi_line"]["points"][0][3:] == [45, 2, 78, 1, 77, 1]
     active_chart = responses[5].json()
     assert active_chart["view_mode"] == "overview"
     assert active_chart["total_points_in_range"] == active_chart["total_points"]

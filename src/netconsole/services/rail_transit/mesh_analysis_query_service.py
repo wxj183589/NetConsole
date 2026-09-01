@@ -1709,7 +1709,7 @@ class MeshAnalysisQueryService:
         continuity_gap = cls._number(payload.get("continuity_gap_seconds"))
         estimated_interval = cls._number(payload.get("estimated_interval_seconds"))
         display_gap = cls._display_gap_seconds(continuity_gap, estimated_interval)
-        points: list[tuple[str, float, bool]] = []
+        points: list[tuple[str, float, bool, float | None, float | None, float | None, float | None, float | None, int | None]] = []
         previous_valid_time: datetime | None = None
         pending_gap = False
         for sample_rows in cls._group_full_rssi_rows(rows):
@@ -1731,7 +1731,17 @@ class MeshAnalysisQueryService:
                 gap_before = bool(points and pending_gap and row_index == 0)
                 if previous_valid_time is not None and row_index == 0:
                     gap_before = gap_before or (current_time - previous_valid_time).total_seconds() > display_gap
-                points.append((timestamp, value, gap_before))
+                points.append((
+                    timestamp,
+                    value,
+                    gap_before,
+                    cls._number(row.get("peer_rssi")),
+                    cls._number(row.get("local_tx_busy")),
+                    cls._number(row.get("local_rx_busy")),
+                    cls._number(row.get("peer_tx_busy")),
+                    cls._number(row.get("peer_rx_busy")),
+                    cls._int(row.get("radio")),
+                ))
                 previous_valid_time = current_time
             pending_gap = False
         return MeshRssiLineDTO(
@@ -3243,11 +3253,11 @@ class MeshAnalysisQueryService:
         switch_indices = {int(value) for value in (switch_values if switch_values is not None else [])}
         events_by_index = dict(chart.get("events_by_index") or {})
         repository_downsampled = bool(run_segment.get("repository_downsampled"))
-        segment_index = (
-            {}
-            if repository_downsampled
-            else self._chart_segment_index(self._build_rows(context))
-        )
+        # Repository row selection may be downsampled for the visible overlay,
+        # but the cached build order is still the authoritative, bounded source
+        # for segment identity.  Keep it available to the full RSSI line so a
+        # hover on a non-overlay sample can resolve its same-segment context.
+        segment_index = self._chart_segment_index(self._build_rows(context))
         ap_map = self._ap_map(site_id)
         metadata = dict(chart.get("metadata") or {})
         continuity_gap = self._number(metadata.get("continuity_gap_seconds"))

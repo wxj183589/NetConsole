@@ -847,12 +847,31 @@ class MeshPathChartSummaryDTO(ApiModel):
     sustained_zero_longest_duration_ms: int = 0
 
 
+MeshRssiLinePoint = (
+    tuple[str, float, bool]
+    | tuple[
+        str,
+        float,
+        bool,
+        float | None,
+        float | None,
+        float | None,
+        float | None,
+        float | None,
+        int | None,
+    ]
+)
+
+
 class MeshRssiLineDTO(ApiModel):
     resolution_mode: Literal["full", "high", "overview"] = "overview"
     total_points: int = 0
     returned_points: int = 0
     gap_count: int = 0
-    points: list[tuple[str, float, bool]] = Field(default_factory=list)
+    # The optional tail is compact per-sample hover data:
+    # peer RSSI, MR Tx/Rx Busy, AP Tx/Rx Busy, and radio.  The original
+    # three-tuple remains valid for old callers and empty/fixture rows.
+    points: list[MeshRssiLinePoint] = Field(default_factory=list)
 
 
 class MeshPathChartDTO(ApiModel):
