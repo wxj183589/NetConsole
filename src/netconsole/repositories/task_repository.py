@@ -219,6 +219,10 @@ TERMINAL_RESULT_EVENT_TYPES = frozenset({"finished", "error", "cancelled"})
 TASK_RESULT_RUNTIME_WRITE_STATE = MODEL_TASK_RESULT_RUNTIME_WRITE_STATE
 
 
+class TaskRetiredError(RuntimeError):
+    """Raised when a cleaned task id is submitted to a repository writer."""
+
+
 class TaskRepository:
     def __init__(self, db_path: str | Path) -> None:
         self.db_path = Path(db_path)
@@ -249,6 +253,8 @@ class TaskRepository:
     def save(self, snapshot: TaskSnapshot) -> None:
         def operation() -> None:
             with self._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                self._ensure_not_retired(conn, snapshot.task_id)
                 stored_snapshot = snapshot
                 terminal_event_type = self._terminal_event_type_for_status(
                     snapshot.status
@@ -297,6 +303,7 @@ class TaskRepository:
             nonlocal conflict
             with self._connect() as conn:
                 conn.execute("BEGIN IMMEDIATE")
+                self._ensure_not_retired(conn, snapshot.task_id)
                 active_values = sorted(state.value for state in active_statuses)
                 rows = conn.execute(
                     f"""
@@ -656,6 +663,13 @@ class TaskRepository:
             (str(task_id),),
         ).fetchone()
         return row is not None
+
+    @classmethod
+    def _ensure_not_retired(cls, conn, task_id: str) -> None:
+        if cls._is_retention_tombstoned(conn, task_id):
+            raise TaskRetiredError(
+                f"任务已清理并封存，禁止重新写入：{str(task_id)}"
+            )
 
     def get_result(self, result_id: str) -> dict[str, Any] | None:
         with self._connect() as conn:

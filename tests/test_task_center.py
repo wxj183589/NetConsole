@@ -16,15 +16,16 @@ from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.models.task_history_policy import project_business_result
-from netconsole.models.task_snapshot import TaskSnapshot, utc_now_iso
+from netconsole.models.task_snapshot import TaskEvent, TaskSnapshot, utc_now_iso
 from netconsole.models.task_state import TaskState
-from netconsole.repositories.task_repository import TaskRepository
+from netconsole.repositories.task_repository import TaskRepository, TaskRetiredError
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.job_center.job_events import finished_event, log_event, progress_event
 from netconsole.services.job_center.task_application_service import (
     TaskApplicationService,
     TaskResourceConflictError,
 )
+from netconsole.services.job_center.task_cleanup_service import TaskCleanupService
 from netconsole.services.job_center.query_service import JobCenterQueryService
 from netconsole.services.job_center.worker_protocol import (
     WORKER_PROTOCOL_MAX_FRAME_BYTES,
@@ -874,15 +875,22 @@ def test_snapshot_upsert_preserves_history_management_fields(tmp_path: Path) -> 
     assert restored.dismiss_reason == original.dismiss_reason
 
 
-def test_orphaned_local_task_is_reconciled_as_failed(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "starting_status",
+    [TaskState.PENDING, TaskState.STARTING, TaskState.RUNNING, TaskState.STOPPING],
+)
+def test_orphaned_local_task_is_reconciled_as_failed(
+    tmp_path: Path, starting_status: TaskState
+) -> None:
     repository = TaskRepository(PathResolver(tmp_path).site_tasks_db_path("demo"))
     now = utc_now_iso()
+    task_id = f"orphan-{starting_status.value.casefold()}"
     repository.save(
         TaskSnapshot(
-            task_id="orphan",
+            task_id=task_id,
             task_type="demo_task",
             task_name="遗留任务",
-            status=TaskState.RUNNING,
+            status=starting_status,
             created_time=now,
             updated_time=now,
             source="local",
@@ -892,8 +900,8 @@ def test_orphaned_local_task_is_reconciled_as_failed(tmp_path: Path) -> None:
 
     changed = repository.reconcile_orphaned_local_tasks(lambda _pid: False)
 
-    assert [item.task_id for item in changed] == ["orphan"]
-    restored = repository.get("orphan")
+    assert [item.task_id for item in changed] == [task_id]
+    restored = repository.get(task_id)
     assert restored is not None and restored.status is TaskState.FAILED
     assert "非正常中断" in restored.error_message
 
@@ -934,6 +942,202 @@ def test_task_restores_while_owner_process_is_alive(tmp_path: Path) -> None:
     restored = _service(tmp_path).get_task("running")
 
     assert restored is not None and restored.status is TaskState.RUNNING
+
+
+def test_runtime_ownership_wins_over_stale_pid_during_orphan_reconciliation(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    service.prepare(BackgroundJob(job_id="runtime-owned", task_type="demo_task"))
+    service.mark_running("runtime-owned")
+    persisted = service.get_task("runtime-owned")
+    assert persisted is not None
+    service.repository("demo").save(replace(persisted, owner_pid=999999))
+
+    blocking, reconciled = service.list_site_blocking_tasks("demo")
+
+    assert [item.task_id for item in blocking] == ["runtime-owned"]
+    assert reconciled == []
+    restored = service.repository("demo").get("runtime-owned")
+    assert restored is not None and restored.status is TaskState.RUNNING
+
+
+def test_cleaned_task_id_cannot_be_recreated_by_save_or_resource_guard(
+    tmp_path: Path,
+) -> None:
+    repository = TaskRepository(PathResolver(tmp_path).site_tasks_db_path("demo"))
+    now = utc_now_iso()
+    snapshot = TaskSnapshot(
+        task_id="retired-save",
+        task_type="demo_task",
+        task_name="已清理任务",
+        status=TaskState.COMPLETED,
+        created_time=now,
+        finished_time=now,
+        updated_time=now,
+    )
+    repository.save(snapshot)
+    deletion = repository.delete_task_owned_rows([snapshot.task_id])
+    assert deletion["deleted_task_ids"] == [snapshot.task_id]
+
+    with pytest.raises(TaskRetiredError):
+        repository.save(replace(snapshot, message="晚到 save"))
+    with pytest.raises(TaskRetiredError):
+        repository.save_with_resource_guard(
+            replace(snapshot, status=TaskState.PENDING, resource_keys=["task:retired"]),
+            active_statuses={TaskState.PENDING, TaskState.STARTING, TaskState.RUNNING, TaskState.STOPPING},
+        )
+
+    assert repository.get(snapshot.task_id) is None
+    with sqlite3.connect(repository.db_path) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM task_retention_tombstones WHERE task_id=?",
+            (snapshot.task_id,),
+        ).fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("writer_name", ["record", "record_once"])
+def test_cleanup_and_late_record_cannot_resurrect_task(
+    tmp_path: Path, writer_name: str
+) -> None:
+    paths = PathResolver(tmp_path)
+    repository = TaskRepository(paths.site_tasks_db_path("demo"))
+    now = utc_now_iso()
+    snapshot = TaskSnapshot(
+        task_id=f"cleanup-race-{writer_name}",
+        task_type="demo_task",
+        task_name="清理竞态任务",
+        status=TaskState.COMPLETED,
+        created_time=now,
+        finished_time=now,
+        updated_time=now,
+    )
+    seed_event = TaskEvent(
+        event_id=f"seed-{writer_name}",
+        task_id=snapshot.task_id,
+        type="finished",
+        time=now,
+        source="test",
+        payload={},
+    )
+    assert repository.record(snapshot, seed_event)
+    cleanup = TaskCleanupService(repository, paths=paths, site_name="demo")
+    late_event = TaskEvent(
+        event_id=f"late-{writer_name}",
+        task_id=snapshot.task_id,
+        type="log",
+        time=utc_now_iso(),
+        source="late-worker",
+        payload={"message": "晚到事件"},
+    )
+    barrier = threading.Barrier(2)
+    outcomes: dict[str, object] = {}
+
+    def delete() -> None:
+        barrier.wait()
+        outcomes["cleanup"] = cleanup.cleanup_tasks([snapshot.task_id])
+
+    def record() -> None:
+        barrier.wait()
+        outcomes["record"] = getattr(repository, writer_name)(snapshot, late_event)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(delete), executor.submit(record)]
+        for future in futures:
+            future.result()
+
+    assert outcomes["cleanup"]["deleted_task_ids"] == [snapshot.task_id]
+    assert repository.get(snapshot.task_id) is None
+    with sqlite3.connect(repository.db_path) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM task_snapshots WHERE task_id=?",
+            (snapshot.task_id,),
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM task_events WHERE task_id=?",
+            (snapshot.task_id,),
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM task_retention_tombstones WHERE task_id=?",
+            (snapshot.task_id,),
+        ).fetchone()[0] == 1
+
+
+def test_external_task_late_event_after_cleanup_is_rejected_without_resurrection(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    task_id = "external-cleanup-late-event"
+    service.create_external_task(
+        task_id=task_id,
+        task_type="traffic_agent_iperf_client",
+        task_name="外部晚到事件",
+        source="agent",
+        agent="agent-1",
+    )
+    service.record_external_event(
+        task_id,
+        "finished",
+        {"result": {"count": 1}},
+        source="agent",
+    )
+    assert service.cleanup_tasks([task_id])["deleted_task_ids"] == [task_id]
+
+    with pytest.raises(KeyError):
+        service.record_external_event(
+            task_id,
+            "log",
+            {"message": "晚到的 Agent 日志"},
+            source="agent",
+        )
+
+    assert service.get_task(task_id) is None
+    with sqlite3.connect(service.paths.site_tasks_db_path("demo")) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM task_retention_tombstones WHERE task_id=?",
+            (task_id,),
+        ).fetchone()[0] == 1
+
+
+def test_late_worker_event_after_cleanup_is_not_persisted_or_broadcast(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path)
+    task_id = "worker-cleanup-late-event"
+    service.create_external_task(
+        task_id=task_id,
+        task_type="traffic_agent_iperf_client",
+        task_name="Worker 清理后晚到事件",
+        source="agent",
+        agent="agent-1",
+    )
+    service.record_external_event(
+        task_id,
+        "finished",
+        {"result": {}},
+        source="agent",
+    )
+    assert service.cleanup_tasks([task_id])["deleted_task_ids"] == [task_id]
+
+    observed: list[dict[str, object]] = []
+    subscription = service.events.open_stream()
+    service.events.subscribe(observed.append)
+    try:
+        service.events.publish(
+            {
+                "type": "log",
+                "job_id": task_id,
+                "message": "晚到 Worker 日志",
+            },
+            source="worker",
+        )
+        with pytest.raises(queue.Empty):
+            subscription.get(timeout=0.05)
+    finally:
+        subscription.close()
+
+    assert observed == []
+    assert service.get_task(task_id) is None
 
 
 def test_task_resource_keys_conflict_across_service_instances_and_release_after_terminal(tmp_path: Path) -> None:
