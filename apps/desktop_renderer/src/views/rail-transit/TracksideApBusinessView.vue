@@ -6,6 +6,8 @@ import { ApiRequestError } from '../../api/client'
 import {
   getTracksideApBusinessExportProposal,
   getTracksideApOnlineStatus,
+  getTracksideApTask,
+  getTracksideApWpsTask,
   listTracksideWpsTargets,
   listTracksideApBusiness,
   testTracksideWpsTarget,
@@ -89,6 +91,9 @@ const initialLoading = ref(false)
 const refreshing = ref(false)
 const taskSubmitting = ref(false)
 const wpsSyncing = ref(false)
+const updatingAndSyncing = ref(false)
+const selectedConcurrency = ref(64)
+const concurrencyOptions = [64, 128, 256, 512]
 const wpsTargets = ref<WpsTracksideTarget[]>([])
 const wpsSiteId = ref('')
 const wpsConfigVisible = ref(false)
@@ -104,6 +109,8 @@ const diagnosticsExpanded = ref(false)
 const excludedVisible = ref(false)
 const unmatchedVisible = ref(false)
 const currentTaskId = ref('')
+const opticalUpdateTaskId = ref('')
+const wpsSyncTaskId = ref('')
 const selectedRows = ref<TracksideApBusinessRow[]>([])
 const filters = reactive({ station: '', query: '', optical_anomaly_only: false, page: 1, page_size: 50 })
 const pageActive = ref(true)
@@ -234,6 +241,7 @@ const currentTask = computed<TaskItem | null>(() => (
 const updateTaskRunning = computed(() => taskStore.tasks.some(
   (item) => item.type === 'trackside_ap_optical_update' && activeStates.has(item.status),
 ))
+const updateActionsDisabled = computed(() => updateTaskRunning.value || updatingAndSyncing.value)
 const exportTaskRunning = computed(() => taskStore.tasks.some(
   (item) => item.type === TRACKSIDE_AP_BUSINESS_EXPORT_TASK_TYPE && activeStates.has(item.status),
 ))
@@ -694,15 +702,24 @@ async function startTask(factory: () => Promise<TracksideApTask>, fallback: stri
   finally { taskSubmitting.value = false; pendingScopeKey.value = '' }
 }
 
-function updateAll(): void { void startTask(() => startTracksideApUpdate({}), '轨旁 AP 光衰更新启动失败', 'update:all') }
-function updateStation(row: TracksideApBusinessRow): void { void startTask(() => startTracksideApUpdate({ station: row.site }), '站点更新启动失败', `update:station:${row.site}`) }
+function selectedUpdateConcurrency(): number {
+  const value = Number(selectedConcurrency.value)
+  return concurrencyOptions.includes(value) ? value : 64
+}
+
+function updatePayload(payload: TracksideApUpdateRequest = {}): TracksideApUpdateRequest {
+  return { ...payload, concurrency: selectedUpdateConcurrency() }
+}
+
+function updateAll(): void { void startTask(() => startTracksideApUpdate(updatePayload()), '轨旁 AP 光衰更新启动失败', 'update:all') }
+function updateStation(row: TracksideApBusinessRow): void { void startTask(() => startTracksideApUpdate(updatePayload({ station: row.site })), '站点更新启动失败', `update:station:${row.site}`) }
 function updateAp(row: TracksideApBusinessRow): void {
   const payload = singleApUpdatePayload(row)
   if (!payload) { actionError.value = '缺少 AP 身份，无法定向更新'; return }
   const target = cleanIdentity(row.ap_mac) || cleanIdentity(row.ap_uuid)
   const scopeValue = payload.ap_uuid || payload.ap_mac || target
   void startTask(
-    () => startTracksideApUpdate(payload),
+    () => startTracksideApUpdate(updatePayload(payload)),
     'AP 更新启动失败',
     `update:ap:${scopeValue}`,
   )
@@ -788,13 +805,13 @@ async function loadWpsTargets(siteId = wpsSiteId.value): Promise<void> {
   }
 }
 
-async function syncWpsDocument(): Promise<void> {
-  if (wpsSyncing.value || wpsTaskRunning.value || !wpsSyncFeatureEnabled.value || !page.value?.business_revision) return
+async function prepareWpsSync(): Promise<{ expectedRevision: string; initializeBinding: boolean } | null> {
+  if (!wpsSyncFeatureEnabled.value || !page.value?.business_revision) return null
   let target = wpsDocumentTarget.value
   if (!target) {
     actionError.value = 'WPS 云文档连接尚未初始化，请打开“配置云文档”'
     wpsConfigVisible.value = true
-    return
+    return null
   }
   if (target.binding_status === 'UNKNOWN') {
     try {
@@ -804,33 +821,33 @@ async function syncWpsDocument(): Promise<void> {
     } catch (reason) {
       actionError.value = failure(reason, 'WPS 文档连接状态未知，请先完成连接测试')
       wpsConfigVisible.value = true
-      return
+      return null
     }
   }
   if (!target || target.runtime_capability !== 'VERIFIED') {
     actionError.value = 'WPS 运行时写入能力尚未验证；请先在“配置云文档”执行测试写入能力。'
     wpsConfigVisible.value = true
-    return
+    return null
   }
   if (!target.enabled) {
     actionError.value = '云文档同步未启用，请先在“配置云文档”中启用'
     wpsConfigVisible.value = true
-    return
+    return null
   }
   if (!target.document_open_url || !target.webhook_url) {
     actionError.value = 'WPS 在线文档连接或 webhook 尚未配置，请先完成连接配置'
     wpsConfigVisible.value = true
-    return
+    return null
   }
   if (!target.token_configured) {
     actionError.value = 'WPS 脚本令牌尚未配置，请先在“配置云文档”中保存令牌'
     wpsConfigVisible.value = true
-    return
+    return null
   }
   if (target.binding_status === 'LEGACY_BINDING_ID_MISMATCH') {
     actionError.value = 'WPS 文档仍使用旧版绑定标识，请先在“配置云文档”中升级绑定标识。'
     wpsConfigVisible.value = true
-    return
+    return null
   }
   try {
     await ElMessageBox.confirm(
@@ -839,7 +856,7 @@ async function syncWpsDocument(): Promise<void> {
       { type: 'warning', confirmButtonText: '开始同步', cancelButtonText: '取消' },
     )
   } catch {
-    return
+    return null
   }
   let initializeBinding = false
   if (target.binding_status === 'UNBOUND') {
@@ -851,31 +868,188 @@ async function syncWpsDocument(): Promise<void> {
       )
       initializeBinding = true
     } catch {
-      return
+      return null
     }
   }
   if (target.binding_status === 'UNKNOWN') {
     actionError.value = 'WPS 文档绑定状态仍然未知，请在“配置云文档”中检查连接测试结果。'
     wpsConfigVisible.value = true
-    return
+    return null
   }
   if (target.binding_status === 'MISMATCH') {
     actionError.value = 'WPS 文档已绑定到其他局点或业务，当前同步已阻止。'
     wpsConfigVisible.value = true
-    return
+    return null
   }
+  return { expectedRevision: page.value.business_revision, initializeBinding }
+}
+
+async function submitWpsSyncTask(prepared: { expectedRevision: string; initializeBinding: boolean }): Promise<TracksideApTask> {
+  const task = await syncTracksideWpsDocument({
+    expected_revision: prepared.expectedRevision,
+    initialize_binding: prepared.initializeBinding,
+  })
+  wpsSyncTaskId.value = task.task_id
+  currentTaskId.value = task.task_id
+  terminalTaskRefreshes.delete(task.task_id)
+  await taskStore.refresh()
+  return task
+}
+
+function isTerminalTaskStatus(status: string): boolean {
+  return ['SUCCESS', 'COMPLETED', 'FAILED', 'CANCELLED'].includes(String(status || '').toUpperCase())
+}
+
+function isSuccessfulTask(task: TracksideApTask): boolean {
+  const taskStatus = String(task.status || '').toUpperCase()
+  const resultStatus = String(task.result_summary?.status || '').toUpperCase()
+  return ['SUCCESS', 'COMPLETED'].includes(taskStatus)
+    && !['FAILED', 'CANCELLED'].includes(resultStatus)
+}
+
+function taskFailureDetail(task: TracksideApTask): string {
+  return String(
+    task.error_message
+    || task.result_summary?.error_message
+    || task.message
+    || task.result_summary?.message
+    || `任务状态：${task.status}`,
+  )
+}
+
+type TracksideTaskLookup = (taskId: string) => Promise<TracksideApTask>
+
+async function waitForTracksideTask(
+  started: TracksideApTask,
+  lookup: TracksideTaskLookup,
+  expectedAction: string,
+  phase: string,
+): Promise<TracksideApTask> {
+  const validateTask = (task: TracksideApTask): TracksideApTask => {
+    if (task.task_id !== started.task_id || (task.action && task.action !== expectedAction)) {
+      throw new Error(`${phase}任务标识不匹配：请求 ${started.task_id}，返回 ${task.task_id}/${task.action}`)
+    }
+    return task
+  }
+  if (isTerminalTaskStatus(started.status)) return validateTask(started)
+  const deadline = Date.now() + 10 * 60_000
+  while (Date.now() < deadline) {
+    let task: TracksideApTask
+    try {
+      task = validateTask(await lookup(started.task_id))
+    } catch (reason) {
+      console.error('TRACKSIDE_TASK_LOOKUP_FAILED', {
+        phase,
+        requested_task_id: started.task_id,
+        requested_task_type: expectedAction,
+        lookup_endpoint: '/api/rail-transit/trackside-ap-business/tasks/{task_id}',
+        known_task_ids: taskStore.tasks.map((item) => `${item.id}:${item.type}`),
+        error: reason instanceof Error ? reason.message : String(reason || '未知错误'),
+      })
+      throw reason
+    }
+    if (isTerminalTaskStatus(task.status)) return task
+    await new Promise((resolve) => setTimeout(resolve, 500))
+  }
+  throw new Error('任务等待超时，请在任务中心确认状态')
+}
+
+function waitForOpticalTask(task: TracksideApTask): Promise<TracksideApTask> {
+  return waitForTracksideTask(task, getTracksideApTask, 'trackside_ap_optical_update', 'OPTICAL_UPDATE')
+}
+
+function waitForWpsSyncTask(task: TracksideApTask): Promise<TracksideApTask> {
+  return waitForTracksideTask(task, getTracksideApWpsTask, 'trackside_ap_wps_sync', 'WPS_SYNC')
+}
+
+async function syncWpsDocument(): Promise<void> {
+  if (wpsSyncing.value || wpsTaskRunning.value || updatingAndSyncing.value) return
+  const prepared = await prepareWpsSync()
+  if (!prepared) return
   wpsSyncing.value = true
   actionError.value = ''
   try {
-    const task = await syncTracksideWpsDocument({ expected_revision: page.value.business_revision, initialize_binding: initializeBinding })
-    currentTaskId.value = task.task_id
-    await taskStore.refresh()
+    await submitWpsSyncTask(prepared)
     ElMessage.info('WPS 云文档同步任务已提交，可在任务中心查看结果')
     await loadWpsTargets()
   } catch (reason) {
     actionError.value = failure(reason, 'WPS 云文档同步失败')
   } finally {
     wpsSyncing.value = false
+  }
+}
+
+async function updateAndSync(): Promise<void> {
+  if (
+    updatingAndSyncing.value
+    || updateTaskRunning.value
+    || wpsTaskRunning.value
+    || !updateFeatureEnabled.value
+  ) return
+  updatingAndSyncing.value = true
+  actionError.value = ''
+  try {
+    const opticalTask = await startTracksideApUpdate(updatePayload())
+    opticalUpdateTaskId.value = opticalTask.task_id
+    currentTaskId.value = opticalTask.task_id
+    console.info('TRACKSIDE_UPDATE_AND_SYNC', {
+      phase: 'OPTICAL_UPDATE',
+      task_id: opticalTask.task_id,
+      status: opticalTask.status,
+    })
+    terminalTaskRefreshes.delete(opticalTask.task_id)
+    await taskStore.refresh()
+    const updateDone = await waitForOpticalTask(opticalTask)
+    await taskStore.refresh()
+    console.info('TRACKSIDE_UPDATE_AND_SYNC', {
+      phase: 'OPTICAL_UPDATE',
+      task_id: opticalTask.task_id,
+      status: updateDone.status,
+    })
+    const updateStatus = String(updateDone.status || '').toUpperCase()
+    const updateResultStatus = String(updateDone.result_summary?.status || '').toUpperCase()
+    if (updateStatus === 'CANCELLED' || updateResultStatus === 'CANCELLED') {
+      actionError.value = '光衰更新已取消，未执行云文档同步'
+      return
+    }
+    if (!isSuccessfulTask(updateDone)) {
+      actionError.value = `光衰更新失败，未执行云文档同步：${taskFailureDetail(updateDone)}`
+      return
+    }
+    const previousRevision = page.value?.business_revision || ''
+    await refreshBusinessProjection({ forceNewRevision: true })
+    console.info('TRACKSIDE_UPDATE_AND_SYNC', {
+      phase: 'BUSINESS_REFRESH',
+      previous_revision: previousRevision,
+      latest_revision: page.value?.business_revision || '',
+    })
+    const prepared = await prepareWpsSync()
+    if (!prepared) return
+    wpsSyncing.value = true
+    const wpsTask = await submitWpsSyncTask(prepared)
+    console.info('TRACKSIDE_UPDATE_AND_SYNC', {
+      phase: 'WPS_SYNC',
+      task_id: wpsTask.task_id,
+      expected_revision: prepared.expectedRevision,
+      status: wpsTask.status,
+    })
+    const syncDone = await waitForWpsSyncTask(wpsTask)
+    await taskStore.refresh()
+    if (!isSuccessfulTask(syncDone)) {
+      actionError.value = `光衰更新成功，但云文档同步失败：${taskFailureDetail(syncDone)}`
+      return
+    }
+    await loadWpsTargets()
+    ElMessage.success(
+      updateResultStatus === 'PARTIAL_SUCCESS'
+        ? '光衰更新部分成功，云文档同步完成'
+        : '光衰更新并同步完成',
+    )
+  } catch (reason) {
+    actionError.value = failure(reason, '更新光衰并同步失败')
+  } finally {
+    wpsSyncing.value = false
+    updatingAndSyncing.value = false
   }
 }
 
@@ -1001,18 +1175,34 @@ onBeforeUnmount(() => {
         <el-button
           type="primary"
           :loading="taskSubmitting"
-          :disabled="updateTaskRunning || !updateFeatureEnabled"
+          :disabled="updateActionsDisabled || !updateFeatureEnabled"
           @click="updateAll"
         >更新全部光衰</el-button>
+        <el-select
+          v-model="selectedConcurrency"
+          class="trackside-concurrency-select"
+          size="small"
+          aria-label="光衰并发数"
+          data-testid="trackside-concurrency"
+          :disabled="updateActionsDisabled"
+        >
+          <el-option v-for="value in concurrencyOptions" :key="value" :label="`${value} 并发`" :value="value" />
+        </el-select>
+        <el-button
+          type="success"
+          :loading="updatingAndSyncing"
+          :disabled="updateActionsDisabled || wpsTaskRunning || !updateFeatureEnabled || !wpsDocumentReady"
+          @click="updateAndSync"
+        >更新光衰并同步</el-button>
         <el-button
           :loading="taskSubmitting"
           :disabled="exportTaskRunning || !isFeatureEnabled('capability.trackside_ap.export') || !isFeatureEnabled('capability.rail_transit.task_control')"
           @click="exportBusiness"
         >导出表格</el-button>
         <template v-if="wpsSyncFeatureEnabled">
-          <el-button type="success" :loading="wpsSyncing" :disabled="wpsSyncing || wpsTaskRunning || !wpsDocumentReady" @click="syncWpsDocument">同步云文档</el-button>
-          <el-button link type="info" :disabled="wpsSyncing || wpsTaskRunning" @click="openWpsDocument">打开云文档</el-button>
-          <el-button link type="warning" :disabled="wpsSyncing || wpsTaskRunning" @click="openWpsConfiguration">配置云文档</el-button>
+          <el-button type="success" :loading="wpsSyncing" :disabled="wpsSyncing || wpsTaskRunning || updatingAndSyncing || !wpsDocumentReady" @click="syncWpsDocument">同步云文档</el-button>
+          <el-button link type="info" :disabled="wpsSyncing || wpsTaskRunning || updatingAndSyncing" @click="openWpsDocument">打开云文档</el-button>
+          <el-button link type="warning" :disabled="wpsSyncing || wpsTaskRunning || updatingAndSyncing" @click="openWpsConfiguration">配置云文档</el-button>
         </template>
       </div>
     </header>
@@ -1153,7 +1343,7 @@ onBeforeUnmount(() => {
           <template #cell-ap_device_optical_status="{ row }"><el-tag :type="apDeviceOpticalPresentation(row).tagType" :class="apDeviceOpticalPresentation(row).className">{{ apDeviceOpticalPresentation(row).label }}</el-tag></template>
           <template #cell-ap_optical_status="{ row }"><el-tooltip :content="row.ap_business_reason || '无业务判定说明'"><el-tag :type="apRxPresentation(row).tagType" :class="apRxPresentation(row).className">{{ apRxPresentation(row).label }}</el-tag></el-tooltip></template>
           <template #cell-optical_severity="{ row }"><el-tag :type="tracksideBusinessOpticalPresentation(row).tagType" :class="tracksideBusinessOpticalPresentation(row).className">{{ tracksideBusinessOpticalPresentation(row).label }}</el-tag></template>
-          <template #cell-actions="{ row }"><el-button link type="primary" :disabled="updateTaskRunning || !row.site || !updateFeatureEnabled" @click="updateStation(row)">更新站点</el-button><el-button link type="primary" :title="hasApIdentity(row) ? '' : '缺少 AP 身份，无法定向更新'" :disabled="updateTaskRunning || !hasApIdentity(row) || !updateFeatureEnabled" @click="updateAp(row)">更新 AP</el-button></template>
+          <template #cell-actions="{ row }"><el-button link type="primary" :disabled="updateActionsDisabled || !row.site || !updateFeatureEnabled" @click="updateStation(row)">更新站点</el-button><el-button link type="primary" :title="hasApIdentity(row) ? '' : '缺少 AP 身份，无法定向更新'" :disabled="updateActionsDisabled || !hasApIdentity(row) || !updateFeatureEnabled" @click="updateAp(row)">更新 AP</el-button></template>
         </NcDataTable>
       </div>
       <div class="pagination"><span>共 {{ page ? page.total : '—' }} 条</span><el-pagination :current-page="page?.page || filters.page" :page-size="filters.page_size" :page-sizes="[20, 50, 100, 200]" layout="sizes, prev, pager, next" :total="page?.total || 0" @current-change="(value: number) => { filters.page = value; loadRows() }" @size-change="(value: number) => { filters.page_size = value; filters.page = 1; loadRows() }" /></div>
@@ -1250,6 +1440,7 @@ onBeforeUnmount(() => {
 .online-overview{display:flex;min-width:0;flex:none;align-items:center;gap:14px;padding:8px 12px}.online-overview-heading{display:flex;flex:none;align-items:center;gap:8px;white-space:nowrap}.online-overview-heading strong{font-size:14px}.online-overview-heading .el-button{padding:0}.online-overview-metrics{display:flex;min-width:0;flex:1;align-items:center;justify-content:space-between;gap:14px;overflow-x:auto}.online-overview-metrics span{display:flex;align-items:baseline;gap:5px;white-space:nowrap}.online-overview-metrics small{color:var(--el-text-color-secondary);font-size:12px}.online-overview-metrics strong{font-size:16px;line-height:1.2}.online-status-error{max-width:220px;overflow:hidden;color:var(--el-color-danger);font-size:12px;text-overflow:ellipsis;white-space:nowrap}
 .diagnostic-summary{display:flex;min-width:0;flex:none;align-items:center;gap:10px;padding:6px 10px}.diagnostic-title{flex:none;font-size:13px}.diagnostic-items{display:flex;min-width:0;flex:1;align-items:center;gap:4px;overflow:hidden}.diagnostic-item{border:0;background:transparent;color:var(--el-text-color-secondary);cursor:pointer;font:inherit;font-size:12px;line-height:22px;padding:0 6px;white-space:nowrap}.diagnostic-item:not(:last-child)::after{content:'|';margin-left:10px;color:var(--el-border-color)}.diagnostic-item b{font-weight:600}.diagnostic-warning{color:var(--el-color-warning)}.diagnostic-danger{color:var(--el-color-danger)}.diagnostic-toggle{flex:none;padding:0;white-space:nowrap}
 .content-card{display:flex;min-height:0;min-width:0;flex:1;flex-direction:column;padding:10px 12px;overflow:hidden}.business-table-host{min-height:0;min-width:0;flex:1;overflow:hidden}.toolbar{flex:none;margin-bottom:8px}.toolbar .el-input{width:230px}.station-select{width:260px}.refresh-indicator{color:var(--el-color-primary);font-size:13px}.work-scope-filter-hint{color:var(--el-text-color-secondary);font-size:12px}.pagination{flex-wrap:wrap;padding-top:8px}.optical-normal{color:var(--el-color-success)}.optical-notice,.optical-warning{color:var(--el-color-warning)}.optical-alarm,.optical-link-abnormal,.optical-link-down,.optical-no-light,.optical-offline{color:var(--el-color-danger);font-weight:600}.optical-no-module,.optical-missing,.optical-skipped,.optical-not-collected,.optical-unknown{color:var(--el-text-color-secondary)}
+.trackside-concurrency-select{width:112px}
 .recognition-identified{color:var(--el-color-success)}.recognition-unidentified{color:var(--el-text-color-secondary)}.recognition-reason-neutral{color:var(--el-text-color-secondary)}.recognition-reason-info{color:var(--el-color-info)}
 @media(max-width:1300px){.online-overview{align-items:flex-start;flex-direction:column;gap:6px}.online-overview-heading{width:100%;justify-content:space-between}.online-overview-metrics{width:100%;justify-content:flex-start}.diagnostic-items{overflow-x:auto}}
 @media(max-width:1000px){.page-heading{align-items:flex-start;flex-direction:column}.summary-grid{grid-template-columns:repeat(2,minmax(130px,1fr))}.content-card{padding:8px}.online-status-dialog-meta{align-items:flex-start;flex-direction:column;gap:4px}}

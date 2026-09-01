@@ -322,6 +322,17 @@ describe('Job Center polling store', () => {
     expect(store.error).toContain('任务中心刷新失败')
   })
 
+  it('refreshes once after cleanup so the list remains backed by server truth', async () => {
+    vi.mocked(listTasks).mockResolvedValueOnce([])
+    const store = useTaskStore()
+
+    const result = await store.cleanupHistory('completed')
+
+    expect(result.dismissed).toBe(1)
+    expect(listTasks).toHaveBeenCalledOnce()
+    expect(store.tasks).toEqual([])
+  })
+
   it('keeps polling until main, task window and network page all release', async () => {
     vi.useFakeTimers()
     window.setTimeout = setTimeout
@@ -339,12 +350,34 @@ describe('Job Center polling store', () => {
     store.releasePolling('network-page')
     store.releasePolling('main-window')
     await vi.advanceTimersByTimeAsync(5000)
-    expect(listTasks).toHaveBeenCalledTimes(initialCalls + 2)
+    expect(listTasks).toHaveBeenCalledTimes(initialCalls + 1)
 
     const callsBeforeFinalRelease = vi.mocked(listTasks).mock.calls.length
     store.releasePolling('task-window')
     await vi.advanceTimersByTimeAsync(10000)
     expect(listTasks).toHaveBeenCalledTimes(callsBeforeFinalRelease)
+    vi.useRealTimers()
+  })
+
+  it('slows the list poll to one minute while the document is hidden', async () => {
+    vi.useFakeTimers()
+    window.setTimeout = setTimeout
+    window.clearTimeout = clearTimeout
+    window.setInterval = setInterval
+    window.clearInterval = clearInterval
+    vi.stubGlobal('document', { visibilityState: 'hidden' })
+    const store = useTaskStore()
+
+    store.acquirePolling('hidden-window')
+    await vi.runAllTicks()
+    const initialCalls = vi.mocked(listTasks).mock.calls.length
+    await vi.advanceTimersByTimeAsync(59_999)
+    expect(listTasks).toHaveBeenCalledTimes(initialCalls)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(listTasks).toHaveBeenCalledTimes(initialCalls + 1)
+
+    store.releasePolling('hidden-window')
+    vi.stubGlobal('document', { visibilityState: 'visible' })
     vi.useRealTimers()
   })
 

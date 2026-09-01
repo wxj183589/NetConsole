@@ -4,6 +4,7 @@ import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent, ref } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 
 import { ApiRequestError } from '../../api/client'
 import { resetRendererFeaturesForTest, setRendererFeaturesForTest } from '../../features'
@@ -22,6 +23,8 @@ const api = vi.hoisted(() => ({
   listTracksideApBusiness: vi.fn(),
   listTracksideWpsTargets: vi.fn(),
   getTracksideApOnlineStatus: vi.fn(),
+  getTracksideApTask: vi.fn(),
+  getTracksideApWpsTask: vi.fn(),
   getTracksideApBusinessExportProposal: vi.fn(),
   startTracksideApBusinessExport: vi.fn(),
   startTracksideApUpdate: vi.fn(),
@@ -421,7 +424,7 @@ const ElementStubs = {
     template: '<button :disabled="disabled || loading" @click="$emit(\'click\')"><slot /></button>',
   }),
   ElSelect: defineComponent({
-    props: { modelValue: String, placeholder: String, clearable: Boolean, filterable: Boolean },
+    props: { modelValue: [String, Number], placeholder: String, clearable: Boolean, filterable: Boolean },
     emits: ['update:modelValue', 'change'],
     template: `
       <select :value="modelValue || ''" @change="$emit('update:modelValue', $event.target.value); $emit('change', $event.target.value)">
@@ -446,7 +449,7 @@ const ElementStubs = {
     template: '<input type="number" :value="modelValue" @input="$emit(\'update:modelValue\', Number($event.target.value))" />',
   }),
   ElOption: defineComponent({
-    props: { label: String, value: String, title: String },
+    props: { label: String, value: [String, Number], title: String },
     template: '<option :value="value" :title="title">{{ label }}</option>',
   }),
   ElInput: defineComponent({
@@ -516,7 +519,10 @@ describe('TracksideApBusinessView mounted behavior', () => {
     })
     confirmMocks.confirm.mockReset()
     confirmMocks.confirm.mockResolvedValue(true)
+    vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue(undefined as never)
     api.syncTracksideWpsDocument.mockResolvedValue(task('wps-task', 'RUNNING', 'trackside_ap_wps_sync'))
+    api.getTracksideApTask.mockResolvedValue(task('polled-task', 'COMPLETED', 'trackside_ap_optical_update', { status: 'SUCCESS' }))
+    api.getTracksideApWpsTask.mockResolvedValue(task('wps-task', 'COMPLETED', 'trackside_ap_wps_sync', { status: 'SUCCESS' }))
     api.getTracksideApOnlineStatus.mockResolvedValue(onlineStatus())
     api.getTracksideApBusinessExportProposal.mockResolvedValue({
       site_id: 'demo',
@@ -568,6 +574,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
 
   afterEach(() => {
     resetRendererFeaturesForTest()
+    vi.mocked(ElMessageBox.confirm).mockRestore()
     vi.useRealTimers()
   })
 
@@ -1876,7 +1883,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
     await button(wrapper, '更新全部光衰').trigger('click')
     await flushPromises()
 
-    expect(api.startTracksideApUpdate).toHaveBeenLastCalledWith({})
+    expect(api.startTracksideApUpdate).toHaveBeenLastCalledWith({ concurrency: 64 })
     expect(openTaskWindow).not.toHaveBeenCalled()
     expect(taskApi.listTasks).toHaveBeenCalledTimes(2)
     expect(wrapper.text()).not.toContain('轨旁 AP 任务')
@@ -1890,12 +1897,13 @@ describe('TracksideApBusinessView mounted behavior', () => {
 
     await buttons(wrapper, '更新站点')[0].trigger('click')
     await flushPromises()
-    expect(api.startTracksideApUpdate).toHaveBeenLastCalledWith({ station: '站点A' })
+    expect(api.startTracksideApUpdate).toHaveBeenLastCalledWith({ station: '站点A', concurrency: 64 })
 
     await buttons(wrapper, '更新 AP')[0].trigger('click')
     await flushPromises()
     expect(api.startTracksideApUpdate).toHaveBeenLastCalledWith({
       ap_uuid: 'ap-1',
+      concurrency: 64,
     })
 
     expect(buttons(wrapper, '更新 AP')[1].attributes('disabled')).toBeUndefined()
@@ -1903,7 +1911,140 @@ describe('TracksideApBusinessView mounted behavior', () => {
     await flushPromises()
     expect(api.startTracksideApUpdate).toHaveBeenLastCalledWith({
       ap_mac: '305f-277a-1880',
+      concurrency: 64,
     })
+    wrapper.unmount()
+  })
+
+  it('offers the four supported concurrency values and sends the selected value', async () => {
+    const wrapper = await mountView()
+    const concurrency = wrapper.get('[data-testid="trackside-concurrency"]')
+
+    expect(concurrency.findAll('option').map((option) => option.attributes('value'))).toEqual(['', '64', '128', '256', '512'])
+    await concurrency.setValue('512')
+    await button(wrapper, '更新全部光衰').trigger('click')
+    await flushPromises()
+
+    expect(api.startTracksideApUpdate).toHaveBeenLastCalledWith({ concurrency: 512 })
+    wrapper.unmount()
+  })
+
+  it('runs update then WPS sync exactly once and reports one completion message', async () => {
+    const targets = wpsTargets(true)
+    targets[0].runtime_capability = 'VERIFIED'
+    targets[0].binding_status = 'BOUND'
+    api.listTracksideWpsTargets.mockResolvedValue(targets)
+    api.listTracksideApBusiness
+      .mockResolvedValueOnce(snapshotPage('rev-100'))
+      .mockResolvedValue(snapshotPage('rev-101'))
+    api.startTracksideApUpdate.mockResolvedValueOnce(task('update-1', 'RUNNING'))
+    api.syncTracksideWpsDocument.mockResolvedValueOnce(task('sync-1', 'RUNNING', 'trackside_ap_wps_sync'))
+    api.getTracksideApTask.mockResolvedValueOnce(task('update-1', 'COMPLETED', 'trackside_ap_optical_update', { status: 'SUCCESS' }))
+    api.getTracksideApWpsTask.mockResolvedValueOnce(task('sync-1', 'COMPLETED', 'trackside_ap_wps_sync', { status: 'SUCCESS' }))
+    const wrapper = await mountView()
+
+    await button(wrapper, '更新光衰并同步').trigger('click')
+    await flushPromises()
+
+    expect(api.startTracksideApUpdate).toHaveBeenCalledOnce()
+    expect(api.startTracksideApUpdate).toHaveBeenCalledWith({ concurrency: 64 })
+    expect(api.syncTracksideWpsDocument).toHaveBeenCalledOnce()
+    expect(api.syncTracksideWpsDocument).toHaveBeenCalledWith({ expected_revision: 'rev-101', initialize_binding: false })
+    expect(api.getTracksideApTask).toHaveBeenCalledWith('update-1')
+    expect(api.getTracksideApTask).not.toHaveBeenCalledWith('sync-1')
+    expect(api.getTracksideApWpsTask).toHaveBeenCalledWith('sync-1')
+    expect(wrapper.text()).not.toContain('结果为部分成功')
+    wrapper.unmount()
+  })
+
+  it('syncs once after an optical PARTIAL_SUCCESS and reports the partial outcome', async () => {
+    const targets = wpsTargets(true)
+    targets[0].runtime_capability = 'VERIFIED'
+    targets[0].binding_status = 'BOUND'
+    api.listTracksideWpsTargets.mockResolvedValue(targets)
+    api.listTracksideApBusiness
+      .mockResolvedValueOnce(snapshotPage('rev-100'))
+      .mockResolvedValue(snapshotPage('rev-101'))
+    api.startTracksideApUpdate.mockResolvedValueOnce(task('update-1', 'RUNNING'))
+    api.syncTracksideWpsDocument.mockResolvedValueOnce(task('sync-1', 'RUNNING', 'trackside_ap_wps_sync'))
+    api.getTracksideApTask.mockResolvedValueOnce(task('update-1', 'COMPLETED', 'trackside_ap_optical_update', {
+      status: 'PARTIAL_SUCCESS',
+      success_count: 630,
+      failed_count: 2,
+      skipped_count: 249,
+      ignored_skipped_count: 14,
+    }))
+    api.getTracksideApWpsTask.mockResolvedValueOnce(task('sync-1', 'COMPLETED', 'trackside_ap_wps_sync', { status: 'SUCCESS' }))
+    const successMessage = vi.spyOn(ElMessage, 'success').mockImplementation(() => '' as never)
+    const wrapper = await mountView()
+
+    await button(wrapper, '更新光衰并同步').trigger('click')
+    await flushPromises()
+
+    expect(api.syncTracksideWpsDocument).toHaveBeenCalledTimes(1)
+    expect(api.syncTracksideWpsDocument).toHaveBeenCalledWith({ expected_revision: 'rev-101', initialize_binding: false })
+    expect(successMessage).toHaveBeenCalledWith('光衰更新部分成功，云文档同步完成')
+    successMessage.mockRestore()
+    wrapper.unmount()
+  })
+
+  it.each([
+    ['FAILED', '光衰更新失败，未执行云文档同步'],
+    ['CANCELLED', '光衰更新已取消，未执行云文档同步'],
+  ])('does not sync after an optical update is %s', async (status, message) => {
+    const targets = wpsTargets(true)
+    targets[0].runtime_capability = 'VERIFIED'
+    targets[0].binding_status = 'BOUND'
+    api.listTracksideWpsTargets.mockResolvedValue(targets)
+    api.listTracksideApBusiness.mockResolvedValue(snapshotPage())
+    api.startTracksideApUpdate.mockResolvedValueOnce(task('update-1', 'RUNNING'))
+    api.getTracksideApTask.mockResolvedValueOnce(task('update-1', status, 'trackside_ap_optical_update', { status }))
+    const wrapper = await mountView()
+
+    await button(wrapper, '更新光衰并同步').trigger('click')
+    await flushPromises()
+
+    expect(api.syncTracksideWpsDocument).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain(message)
+    wrapper.unmount()
+  })
+
+  it('keeps a WPS failure as partial success after the optical update succeeds', async () => {
+    const targets = wpsTargets(true)
+    targets[0].runtime_capability = 'VERIFIED'
+    targets[0].binding_status = 'BOUND'
+    api.listTracksideWpsTargets.mockResolvedValue(targets)
+    api.listTracksideApBusiness.mockResolvedValue(snapshotPage())
+    api.startTracksideApUpdate.mockResolvedValueOnce(task('update-1', 'RUNNING'))
+    api.syncTracksideWpsDocument.mockResolvedValueOnce(task('sync-1', 'RUNNING', 'trackside_ap_wps_sync'))
+    api.getTracksideApTask.mockResolvedValueOnce(task('update-1', 'COMPLETED', 'trackside_ap_optical_update', { status: 'SUCCESS' }))
+    api.getTracksideApWpsTask.mockResolvedValueOnce(task('sync-1', 'FAILED', 'trackside_ap_wps_sync', { status: 'FAILED', error_message: 'webhook rejected' }))
+    const wrapper = await mountView()
+
+    await button(wrapper, '更新光衰并同步').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('光衰更新成功，但云文档同步失败')
+    expect(wrapper.text()).toContain('webhook rejected')
+    wrapper.unmount()
+  })
+
+  it('ignores a second click while the combined workflow is running', async () => {
+    const targets = wpsTargets(true)
+    targets[0].runtime_capability = 'VERIFIED'
+    targets[0].binding_status = 'BOUND'
+    api.listTracksideWpsTargets.mockResolvedValue(targets)
+    api.listTracksideApBusiness.mockResolvedValue(snapshotPage())
+    let resolveUpdate: ((value: TracksideApTask) => void) | undefined
+    api.startTracksideApUpdate.mockReturnValueOnce(new Promise((resolve) => { resolveUpdate = resolve }))
+    const wrapper = await mountView()
+
+    const first = button(wrapper, '更新光衰并同步').trigger('click')
+    await button(wrapper, '更新光衰并同步').trigger('click')
+    expect(api.startTracksideApUpdate).toHaveBeenCalledOnce()
+    resolveUpdate?.(task('update-1', 'FAILED', 'trackside_ap_optical_update', { status: 'FAILED' }))
+    await first
+    await flushPromises()
     wrapper.unmount()
   })
 

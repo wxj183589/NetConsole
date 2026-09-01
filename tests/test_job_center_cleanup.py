@@ -3,12 +3,14 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from netconsole.backend.api.main import create_app
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
-from netconsole.core.runtime_mode import RuntimeMode
+from netconsole.core.runtime_environment import write_data_environment
+from netconsole.core.runtime_mode import DataEnvironmentInfo, DataEnvironmentMode, RuntimeMode
 from netconsole.models.task_snapshot import TaskEvent, TaskSnapshot
 from netconsole.models.task_state import TaskState
 from netconsole.repositories.task_repository import TaskRepository
@@ -52,6 +54,7 @@ def test_cleanup_soft_dismisses_only_eligible_history_and_preserves_artifacts(
     artifact.parent.mkdir(parents=True)
     artifact.write_bytes(b"report")
     repository.save(_snapshot("running", TaskState.RUNNING))
+    repository.save(_snapshot("pending", TaskState.PENDING))
     repository.save(
         _snapshot(
             "success",
@@ -129,6 +132,7 @@ def test_cleanup_soft_dismisses_only_eligible_history_and_preserves_artifacts(
     }
     assert {item.task_id for item in repository.list(limit=20)} == {
         "running",
+        "pending",
         "success",
         "cancelled",
         "warning",
@@ -146,6 +150,7 @@ def test_cleanup_soft_dismisses_only_eligible_history_and_preserves_artifacts(
     assert set(result["task_ids"]) == {"success", "cancelled", "failed-resolved"}
     assert {item.task_id for item in repository.list(limit=20)} == {
         "running",
+        "pending",
         "warning",
         "failed-unread",
     }
@@ -268,3 +273,45 @@ def test_cleanup_api_publishes_incremental_event_and_rejects_file_deletion(
         "failed": 0,
         "warning": 0,
     }
+
+
+def test_cleanup_api_preserves_terminal_guard_in_production(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("NETCONSOLE_RUNTIME_MODE", "server")
+    paths, repository = _repository(tmp_path)
+    write_data_environment(
+        paths.data_root,
+        DataEnvironmentInfo(DataEnvironmentMode.PRODUCTION, readonly_warning=True),
+    )
+    repository.save(
+        _snapshot(
+            "success",
+            TaskState.COMPLETED,
+            finished_time="2026-07-28T01:00:00Z",
+        )
+    )
+    task_service = TaskApplicationService(
+        paths=paths,
+        site_name="demo",
+        reconcile_on_start=False,
+    )
+    Database(paths.site_db_path("demo")).initialize()
+    monkeypatch.delenv("NETCONSOLE_ALLOW_PRODUCTION_WRITE", raising=False)
+    app = create_app(
+        RuntimeMode.SERVER,
+        paths=paths,
+        task_service=task_service,
+        frontend_dist=tmp_path / "missing",
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/job-center/cleanup",
+            json={"cleanup_type": "completed"},
+        )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "PRODUCTION_WRITE_CONFIRMATION_REQUIRED"
+    assert repository.get("success") is not None
+    assert repository.get("success").dismissed_at == ""

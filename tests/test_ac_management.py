@@ -5886,7 +5886,7 @@ def test_trackside_fit_ap_default_collection_enumerates_all_h3c_ac_roles(
         )
     )
     resource_calls: list[str] = []
-    optical_calls: list[str] = []
+    optical_calls: list[tuple[str, int, int]] = []
     progress_events: list[dict[str, object]] = []
 
     def fake_resource_collect(device, *_args, **_kwargs):
@@ -5898,9 +5898,9 @@ def test_trackside_fit_ap_default_collection_enumerates_all_h3c_ac_roles(
         )
         return SimpleNamespace(success=True, error_message="")
 
-    def fake_optical_collect(**kwargs):
-        device_uuid = str(kwargs["ac_device"].device_uuid)
-        optical_calls.append(device_uuid)
+    def fake_optical_collect(*, ac_device, max_workers, concurrency_platform_limit, **_kwargs):
+        device_uuid = str(ac_device.device_uuid)
+        optical_calls.append((device_uuid, max_workers, concurrency_platform_limit))
         return SimpleNamespace(success=True, ac_device_uuid=device_uuid, optical_rows=[])
 
     monkeypatch.setattr(
@@ -5918,14 +5918,15 @@ def test_trackside_fit_ap_default_collection_enumerates_all_h3c_ac_roles(
         repository,
         "demo",
         PathResolver(tmp_path),
-        concurrency=1,
+        concurrency=512,
         cancel_event=trackside_optical_collection.Event(),
         ac_progress_callback=progress_events.append,
     )
 
     expected = {str(ac_a.device_uuid), str(ac_b.device_uuid)}
     assert set(resource_calls) == expected
-    assert set(optical_calls) == expected
+    assert {device_uuid for device_uuid, _max_workers, _platform_limit in optical_calls} == expected
+    assert {(max_workers, platform_limit) for _device_uuid, max_workers, platform_limit in optical_calls} == {(512, 512)}
     assert len(resource_calls) == len(optical_calls) == 2
     assert total == 2
     assert len(results) == 2
@@ -6057,8 +6058,9 @@ def test_trackside_collection_dedupes_by_device_id_and_uses_default_concurrency(
     assert switch_targets[0].device_id == shared.id
 
 
+@pytest.mark.parametrize("concurrency", [64, 128, 256, 512])
 def test_trackside_optical_collection_runs_commands_writes_database_and_skips_raw_files(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, concurrency
 ):
     database = make_database(tmp_path)
     repository = DeviceRepository(database)
@@ -6096,11 +6098,13 @@ def test_trackside_optical_collection_runs_commands_writes_database_and_skips_ra
         "demo",
         PathResolver(tmp_path),
         [],
-        concurrency=DEFAULT_TRACKSIDE_OPTICAL_CONCURRENCY,
+        concurrency=concurrency,
     )
 
-    assert result.concurrency == 64
-    assert result.requested_concurrency == 64
+    assert result.concurrency == concurrency
+    assert result.requested_concurrency == concurrency
+    assert result.effective_concurrency == 2
+    assert result.platform_concurrency_limit == 512
     assert result.success_count == 1
     assert result.failed_count == 1
     assert result.failure_reason_counts == {"device_collection_failed": 1}

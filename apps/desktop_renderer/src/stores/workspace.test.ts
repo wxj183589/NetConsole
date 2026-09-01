@@ -234,7 +234,7 @@ describe('workspace store', () => {
     await expect(store.popOutTab()).resolves.toEqual({ success: true })
     expect(openWorkspaceWindow).toHaveBeenCalledWith({
       routeFullPath: '/mesh?session_id=session-1',
-      title: 'MESH',
+      title: 'MESH - NetConsole',
     })
   })
 

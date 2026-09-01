@@ -4,6 +4,14 @@ import { sanitizeWorkspaceTitle } from './route-identity'
 
 export const WORKSPACE_TITLE_EVENT = 'netconsole:workspace-title'
 
+export interface WorkspaceWindowTitleContext {
+  dataRoot: string
+  runtimeMode: string
+}
+
+let titleContext: WorkspaceWindowTitleContext = { dataRoot: '', runtimeMode: '' }
+let currentPageTitle = 'NetConsole'
+
 export async function openWorkspaceWindow(
   routeFullPath: string,
   title: string,
@@ -11,7 +19,7 @@ export async function openWorkspaceWindow(
   if (window.netconsoleDesktop?.openWorkspaceWindow) {
     return window.netconsoleDesktop.openWorkspaceWindow({
       routeFullPath,
-      title: sanitizeWorkspaceTitle(title),
+      title: composeWorkspaceWindowTitle(title),
     })
   }
   const opened = window.open(routeFullPath, '_blank', 'noopener,noreferrer')
@@ -21,7 +29,30 @@ export async function openWorkspaceWindow(
 }
 
 export function updateDesktopWorkspaceTitle(title: string): void {
-  window.netconsoleDesktop?.setWorkspaceWindowTitle?.(sanitizeWorkspaceTitle(title))
+  currentPageTitle = sanitizeWorkspaceTitle(title)
+  window.netconsoleDesktop?.setWorkspaceWindowTitle?.(composeWorkspaceWindowTitle(currentPageTitle))
+}
+
+export function setWorkspaceWindowTitleContext(dataRoot: string, runtimeMode: string): void {
+  titleContext = {
+    dataRoot: String(dataRoot || '').trim(),
+    runtimeMode: String(runtimeMode || '').trim(),
+  }
+  updateDesktopWorkspaceTitle(currentPageTitle)
+}
+
+export function composeWorkspaceWindowTitle(
+  pageTitle: string,
+  context: WorkspaceWindowTitleContext = titleContext,
+): string {
+  const base = sanitizeWorkspaceTitle(pageTitle) || 'NetConsole'
+  const brandedPageTitle = base === 'Dashboard'
+    ? 'NetConsole'
+    : base.endsWith(' - NetConsole') ? base : `${base} - NetConsole`
+  const dataRoot = String(context.dataRoot || '').trim()
+  const runtimeMode = String(context.runtimeMode || '').trim()
+  if (!dataRoot || !runtimeMode) return brandedPageTitle
+  return `${brandedPageTitle} | 当前数据根：${dataRoot} | 运行模式：${runtimeMode}`
 }
 
 export function requestWorkspaceTabTitle(title: string): void {

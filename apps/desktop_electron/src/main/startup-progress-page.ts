@@ -11,7 +11,6 @@ export interface StartupProgressPageOptions {
 export class StartupProgressPage {
   private loaded = false
   private disposed = false
-  private readonly startedAt = Date.now()
 
   constructor(private readonly options: StartupProgressPageOptions) {}
 
@@ -25,7 +24,7 @@ export class StartupProgressPage {
     const nonce = randomBytes(18).toString('base64')
     const window = this.options.window
     window.setBackgroundColor(background)
-    const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'"><title>正在启动 NetConsole</title><style>body{display:grid;place-items:center;min-height:100vh;margin:0;background:${background};color:${text};font-family:Segoe UI,Microsoft YaHei,sans-serif}main{width:min(520px,calc(100vw - 48px));padding:36px;border:1px solid ${border};border-radius:8px;background:${panel};text-align:center}h1{font-size:22px;margin:0 0 10px}.brand{font-size:16px;font-weight:600;margin:0 0 26px}.spinner{width:28px;height:28px;margin:0 auto 20px;border:3px solid ${border};border-top-color:#0078d4;border-radius:50%;animation:spin 1s linear infinite}.stage{min-height:28px;font-size:16px}.hint,.elapsed{min-height:24px;color:${muted};line-height:1.6;margin-top:8px}.bar{height:4px;margin:22px 0 18px;overflow:hidden;background:${border};border-radius:2px}.bar::after{display:block;width:38%;height:100%;background:#0078d4;content:'';animation:slide 1.5s ease-in-out infinite}@keyframes spin{to{transform:rotate(360deg)}}@keyframes slide{0%{transform:translateX(-110%)}100%{transform:translateX(290%)}}@media (prefers-reduced-motion:reduce){.spinner{animation:none}.bar::after{animation:none;transform:translateX(80%)}}</style></head><body><main><p class="brand">NetConsole</p><h1>正在启动 NetConsole</h1><div class="spinner" aria-hidden="true"></div><div id="stage" class="stage">正在准备桌面环境</div><div class="bar" aria-hidden="true"></div><div id="elapsed" class="elapsed">已用时 0 秒</div><div id="hint" class="hint">正在启动本地核心服务</div></main><script nonce="${nonce}">let timer;function hint(s){if(s>=40)return'启动时间较长，程序仍在继续处理。';if(s>=20)return'正在处理本地数据，请勿关闭 NetConsole。';if(s>=10)return'大型局点启动可能需要更多时间。';return'正在启动本地核心服务';}function tick(started){const s=Math.max(0,Math.floor((Date.now()-started)/1000));document.getElementById('elapsed').textContent='已用时 '+s+' 秒';document.getElementById('hint').textContent=hint(s)}function startTimer(started){if(timer!==undefined)clearInterval(timer);const start=Number(started)||Date.now();timer=setInterval(()=>tick(start),1000);tick(start)}function dispose(){if(timer!==undefined){clearInterval(timer);timer=undefined}}window.netconsoleStartup={setStage(value){document.getElementById('stage').textContent=value},dispose};window.netconsoleStartup.startTimer(${this.startedAt});window.addEventListener('beforeunload',()=>window.netconsoleStartup.dispose(),{once:true});</script></body></html>`
+    const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'"><title>正在启动 NetConsole</title><style>body{display:grid;place-items:center;min-height:100vh;margin:0;background:${background};color:${text};font-family:Segoe UI,Microsoft YaHei,sans-serif}main{width:min(520px,calc(100vw - 48px));padding:36px;border:1px solid ${border};border-radius:8px;background:${panel};text-align:center}h1{font-size:22px;margin:0 0 10px}.brand{font-size:16px;font-weight:600;margin:0 0 26px}.spinner{width:28px;height:28px;margin:0 auto 20px;border:3px solid ${border};border-top-color:#0078d4;border-radius:50%;animation:spin 1s linear infinite}.stage{min-height:28px;font-size:16px}.percent{min-height:24px;color:${muted};line-height:1.6;margin-top:8px}.bar{height:4px;margin:22px 0 18px;overflow:hidden;background:${border};border-radius:2px}.bar-fill{width:8%;height:100%;background:#0078d4;transition:none}@keyframes spin{to{transform:rotate(360deg)}}@media (prefers-reduced-motion:reduce){.spinner{animation:none}}</style></head><body><main><p class="brand">NetConsole</p><h1>正在启动 NetConsole</h1><div class="spinner" aria-hidden="true"></div><div id="stage" class="stage">正在准备桌面环境</div><div class="bar" aria-hidden="true"><div id="bar-fill" class="bar-fill"></div></div><div id="percent" class="percent" aria-live="polite">8%</div></main><script nonce="${nonce}">window.netconsoleStartup={setStage(value,percent){document.getElementById('stage').textContent=value;document.getElementById('bar-fill').style.width=String(percent)+'%';document.getElementById('percent').textContent=String(percent)+'%';document.querySelector('.bar').setAttribute('aria-valuenow',String(percent))},dispose(){}};document.querySelector('.bar').setAttribute('role','progressbar');document.querySelector('.bar').setAttribute('aria-valuemin','0');document.querySelector('.bar').setAttribute('aria-valuemax','100');window.addEventListener('beforeunload',()=>window.netconsoleStartup.dispose(),{once:true});</script></body></html>`
     await window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
     this.loaded = true
   }
@@ -33,8 +32,10 @@ export class StartupProgressPage {
   update(stage: string): void {
     if (!this.loaded || this.disposed || this.options.window.isDestroyed()) return
     const encoded = JSON.stringify(stage)
+    const percent = startupStagePercent(stage)
+    const encodedPercent = JSON.stringify(percent)
     void this.options.window.webContents.executeJavaScript(
-      `window.netconsoleStartup && window.netconsoleStartup.setStage(${encoded})`,
+      `window.netconsoleStartup && window.netconsoleStartup.setStage(${encoded},${encodedPercent})`,
       true,
     ).catch(() => undefined)
   }
@@ -43,6 +44,16 @@ export class StartupProgressPage {
     if (this.disposed) return
     this.disposed = true
   }
+}
+
+export function startupStagePercent(stage: string): number {
+  const normalized = String(stage || '').trim()
+  if (['ready', 'renderer.ready', 'desktop.interactive'].includes(normalized)) return 100
+  if (['loading_workspace', 'renderer.navigation_started', 'renderer.dom_ready'].includes(normalized)) return 78
+  if (['backend_ready', 'backend.health_ready', 'backend.handshake_received', 'listener_ready'].includes(normalized)) return 55
+  if (['backend_starting', 'backend.spawn_started', 'application_building', 'application_built'].includes(normalized)) return 30
+  if (['waiting_backend', 'electron.app_ready', 'paths_resolved', 'paths_resolving', 'instance_lock_acquired', 'instance_lock_acquiring', 'storage_manifest_preparing', 'storage_manifest_ready', 'upgrade_recovery_complete', 'upgrade_recovery_started', 'active_site_resolving', 'active_site_resolved', 'application_services_initializing', 'active_site_database_ready', 'active_site_database_initializing', 'ap_identity_index_ready', 'ap_identity_index_initializing', 'routers_registered'].includes(normalized)) return 15
+  return 8
 }
 
 export function startupStageLabel(stage: string): string {

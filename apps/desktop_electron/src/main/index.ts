@@ -20,8 +20,9 @@ import { ExternalToolService } from './external-tool-service'
 import { launchExternalToolElevated } from './elevated-tool-launcher'
 import { readExternalToolSystemSettings } from './external-tool-settings'
 import { StartupTimeline } from './startup-timeline'
-import { StartupProgressPage, startupStageLabel } from './startup-progress-page'
+import { StartupProgressPage } from './startup-progress-page'
 import { ShutdownProgressPage } from './shutdown-progress-page'
+import { getManagedWindowTitle, setManagedWindowTitle } from './window-title'
 import {
   installRendererDiagnostics,
   safeDiagnosticUrl,
@@ -202,7 +203,7 @@ async function startDesktop(): Promise<void> {
     onStartupMilestone: (event) => startupTimeline?.mark(event),
     onStartupProgress: (progress) => {
       logger('ELECTRON_BACKEND_STARTUP_STAGE', `stage=${progress.stage} elapsed_ms=${progress.elapsedMs} pid=${progress.pid ?? 'none'}`)
-      startupProgressPage?.update(startupStageLabel(progress.stage))
+      startupProgressPage?.update(progress.stage)
     },
     onShutdownProgress: (progress) => {
       const counts = [
@@ -210,6 +211,7 @@ async function startDesktop(): Promise<void> {
         progress.activeWorkers == null ? undefined : `工作进程 ${progress.activeWorkers}`,
       ].filter((value): value is string => Boolean(value))
       shutdownProgressPage?.update(
+        progress.phase,
         counts.length > 0 ? `正在安全停止后台任务（${counts.join('，')}）` : '正在安全停止后台任务',
       )
     },
@@ -400,9 +402,9 @@ async function startDesktop(): Promise<void> {
   startupTimeline.mark('electron.loading_view_shown')
 
   try {
-    startupProgressPage.update(startupStageLabel('backend.spawn_started'))
+    startupProgressPage.update('backend.spawn_started')
     const runtime = await backend.start()
-    startupProgressPage.update(startupStageLabel('backend.health_ready'))
+    startupProgressPage.update('backend.health_ready')
     await refreshTraySiteContext(runtime, desktopActiveSiteId)
     const backendOrigin = new URL(runtime.baseUrl).origin
     rendererUrl = config.devServerUrl ?? runtime.baseUrl
@@ -444,7 +446,8 @@ async function startDesktop(): Promise<void> {
     rememberManagedRendererTarget(mainWindow, mainRendererTarget)
     startSmokeWatchdog()
     startupTimeline.mark('renderer.navigation_started')
-    startupProgressPage.update(startupStageLabel('renderer.navigation_started'))
+    startupProgressPage.update('renderer.navigation_started')
+    startupProgressPage.update('ready')
     startupProgressPage.dispose()
     startupProgressPage = undefined
     const rendererWindow = mainWindow
@@ -520,9 +523,9 @@ function createMainWindow(
   })
   window.on('page-title-updated', (event) => {
     event.preventDefault()
-    window.setTitle(title)
+    setManagedWindowTitle(window, getManagedWindowTitle(window, title))
   })
-  window.setTitle(title)
+  setManagedWindowTitle(window, title)
   if (!bounds) {
     installMainWindowStartup(
       window,
@@ -1402,7 +1405,7 @@ async function shutdown(): Promise<boolean> {
   smokeRendererLoading = false
   smokeMainWindowStartupValidated = false
   logger('ELECTRON_SHUTDOWN_STARTED')
-  shutdownProgressPage?.update('正在停止新的后台任务')
+  shutdownProgressPage?.update('blocking_new_work', '正在停止新的后台任务')
   logger('ELECTRON_SHUTDOWN_STAGE', 'stage=blocking_new_work')
   traceSmoke('SHUTDOWN_STARTED')
   let backendStopped = false
@@ -1414,7 +1417,7 @@ async function shutdown(): Promise<boolean> {
   }
   try {
     logger('ELECTRON_SHUTDOWN_STAGE', 'stage=draining_downloads')
-    shutdownProgressPage?.update('正在结束文件保存')
+    shutdownProgressPage?.update('draining_downloads', '正在结束文件保存')
     await desktopIpc?.shutdown()
     logger('ELECTRON_DOWNLOADS_STOPPED')
     traceSmoke('DOWNLOADS_STOPPED')
@@ -1423,7 +1426,7 @@ async function shutdown(): Promise<boolean> {
   }
   try {
     logger('ELECTRON_SHUTDOWN_STAGE', 'stage=stopping_backend')
-    shutdownProgressPage?.update('正在停止本地核心服务')
+    shutdownProgressPage?.update('stopping_backend', '正在停止本地核心服务')
     const managedBackends = new Set([
       ...(backend ? [backend] : []),
       ...retiringBackends,
@@ -1436,6 +1439,7 @@ async function shutdown(): Promise<boolean> {
     backendStopped = true
     logger('ELECTRON_BACKEND_STOPPED')
     traceSmoke('BACKEND_STOPPED')
+    shutdownProgressPage?.update('backend_stopped', '本地核心服务已停止')
   } catch {
     // BackendManager has already moved to the failed state and logged the reason.
     requestedExitCode = Math.max(requestedExitCode, 1)
@@ -1445,12 +1449,12 @@ async function shutdown(): Promise<boolean> {
       || [...retiringBackends].some((value) => value.isOwnedProcessAlive())
     if (backendAlive) logger('ELECTRON_BACKEND_PROCESS_STILL_ALIVE')
     logger('ELECTRON_SHUTDOWN_INCOMPLETE', `backend_alive=${backendAlive}`)
-    shutdownProgressPage?.update('安全退出未完成，本地核心服务仍在运行，请查看日志')
+    shutdownProgressPage?.update('shutdown_incomplete', '退出过程中部分后台服务未及时结束，请查看日志')
     await flushShutdownLogs()
     return false
   }
   logger('ELECTRON_SHUTDOWN_STAGE', 'stage=finalizing_windows')
-  shutdownProgressPage?.update('正在完成退出')
+  shutdownProgressPage?.update('finalizing_windows', '正在完成退出')
   workspaceWindowController?.closeAllForQuit()
   trayController?.dispose()
   const preCompleteLogFlush = await flushShutdownLogs()
@@ -1468,6 +1472,7 @@ async function shutdown(): Promise<boolean> {
     )
     if ((await flushShutdownLogs()) === false) requestedExitCode = Math.max(requestedExitCode, 1)
   }
+  shutdownProgressPage?.update('complete', '退出完成')
   shutdownProgressPage?.dispose()
   shutdownProgressPage = undefined
   return true

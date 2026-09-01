@@ -176,7 +176,7 @@ body { overflow: hidden; color: var(--nc-text-primary); background: var(--nc-bg-
 .header-title, .header-subtitle { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .header-title { color: var(--nc-text-primary); font-size: var(--nc-font-size-title); font-weight: 700; }
 .header-subtitle { margin-top: var(--nc-space-1); color: var(--nc-text-tertiary); font-size: var(--nc-font-size-xs); }
-.current-site-slot { flex: 0 1 280px; min-width: 150px; }
+.current-site-slot { flex: 0 1 420px; min-width: 0; overflow: hidden; }
 .header-status { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; color: var(--nc-text-secondary); font-size: var(--nc-font-size-sm); white-space: nowrap; }
 .desktop-runtime-tag { margin-right: 14px; cursor: pointer; }
 .desktop-runtime-panel strong { color: var(--nc-text-primary); }
@@ -239,7 +239,7 @@ body { overflow: hidden; color: var(--nc-text-primary); background: var(--nc-bg-
 
 @media (max-width: 1180px) {
   .app-header { gap: 10px; }
-  .current-site-slot { flex-basis: 220px; min-width: 140px; }
+  .current-site-slot { flex-basis: 280px; }
   .metric-grid { grid-template-columns: repeat(2, 1fr); }
 }
 
@@ -249,7 +249,7 @@ body { overflow: hidden; color: var(--nc-text-primary); background: var(--nc-bg-
   .app-workspace { width: 100%; }
   .app-header { padding: 0 14px; }
   .header-subtitle { display: none; }
-  .current-site-slot { flex-basis: 190px; }
+  .current-site-slot { flex-basis: 210px; }
   .header-status .el-divider, .header-status > span:last-child { display: none; }
   .app-main.el-main { padding: 16px; }
 }

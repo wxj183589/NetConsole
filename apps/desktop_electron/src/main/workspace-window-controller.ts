@@ -14,6 +14,7 @@ import {
   type PersistedWorkspaceWindow,
   type WorkspaceWindowBounds,
 } from './workspace-layout-store'
+import { setManagedWindowTitle } from './window-title'
 
 export interface WorkspaceWindowWebContentsLike {
   id: number
@@ -228,7 +229,7 @@ export class WorkspaceWindowController {
   setWindowTitle(sourceWindow: unknown, title: string): void {
     const managed = this.findByWindow(sourceWindow)
     if (!managed || managed.window.isDestroyed()) throw new Error('工作区窗口未注册')
-    managed.window.setTitle(title === 'Dashboard' ? 'NetConsole' : `${title} - NetConsole`)
+    setManagedWindowTitle(managed.window, title === 'Dashboard' ? 'NetConsole' : title)
   }
 
   acceptRendererReport(report: RendererHostReport, sourceWindow: unknown): void {

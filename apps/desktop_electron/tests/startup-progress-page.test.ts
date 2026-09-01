@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
-import { startupStageLabel } from '../src/main/startup-progress-page'
+import { StartupProgressPage, startupStageLabel, startupStagePercent } from '../src/main/startup-progress-page'
 
 describe('startup progress stage labels', () => {
   it.each([
@@ -17,5 +17,45 @@ describe('startup progress stage labels', () => {
 
   it('does not expose an internal stage as a fallback label', () => {
     expect(startupStageLabel('unexpected_internal_stage')).toBe('正在初始化本地核心服务')
+  })
+
+  it.each([
+    ['waiting_backend', 15],
+    ['backend_starting', 30],
+    ['backend_ready', 55],
+    ['loading_workspace', 78],
+    ['ready', 100],
+  ])('maps %s to a fixed stage percentage', (stage, percent) => {
+    expect(startupStagePercent(stage)).toBe(percent)
+  })
+
+  it('uses a matching initial percentage and jumps the bar without an elapsed timer', async () => {
+    const executeJavaScript = vi.fn(async () => undefined)
+    const loadURL = vi.fn(async (_url: string) => undefined)
+    const window = {
+      setBackgroundColor: vi.fn(),
+      loadURL,
+      isDestroyed: () => false,
+      webContents: { executeJavaScript },
+    } as never
+    const page = new StartupProgressPage({ window, isDark: () => false })
+
+    await page.load()
+    const html = decodeURIComponent(String(loadURL.mock.calls[0][0]))
+    expect(html).toContain('width:8%')
+    expect(html).toContain('>8%</div>')
+    expect(html).not.toContain('已用时')
+    expect(html).not.toContain('setInterval')
+
+    page.update('backend_ready')
+    expect(executeJavaScript).toHaveBeenLastCalledWith(
+      expect.stringContaining('setStage("backend_ready",55)'),
+      true,
+    )
+    page.update('ready')
+    expect(executeJavaScript).toHaveBeenLastCalledWith(
+      expect.stringContaining('setStage("ready",100)'),
+      true,
+    )
   })
 })

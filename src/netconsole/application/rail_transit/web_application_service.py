@@ -2415,6 +2415,7 @@ class RailTransitWebApplicationService:
         ap_uuid: str = "",
         ap_mac: str = "",
         ap_name: str = "",
+        concurrency: int | None = None,
     ) -> RailTransitTaskDTO:
         site_id = self._site(site_id)
         params = self._trackside_ap_update_scope_params(
@@ -2424,6 +2425,8 @@ class RailTransitWebApplicationService:
             ap_mac=ap_mac,
             ap_name=ap_name,
         )
+        if concurrency is not None:
+            params["concurrency"] = max(1, min(int(concurrency), 512))
         ac_uuids = self._trackside_ap_optical_ac_uuids(
             site_id,
             station=params.get("station", ""),

@@ -88,9 +88,9 @@ describe('Device Management Web view', () => {
     expect(source).toContain('startBatchRefreshDetails(targets)')
     expect(source).toContain('getBatchRefresh(batchId)')
     expect(source).toContain('await loadDevices(false, true)')
-    expect(source).toContain('showBatchRefreshNotification')
-    expect(source).toContain('batch-refresh-details-notification')
-    expect(source).toContain('查看结果明细')
+    expect(source).not.toContain('showBatchRefreshNotification')
+    expect(source).not.toContain('batch-refresh-details-notification')
+    expect(source).toContain('批量更新完成：成功')
   })
 
   it('matches current-page selection and row operations', () => {

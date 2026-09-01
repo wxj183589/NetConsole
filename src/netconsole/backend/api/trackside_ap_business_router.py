@@ -48,6 +48,7 @@ from netconsole.services.rail_transit.trackside_ap_business_snapshot import (
 router = APIRouter(prefix="/rail-transit/trackside-ap-business", tags=["trackside-ap-business"])
 _ACTIONS = {
     "trackside_ap_optical_update",
+    "trackside_ap_wps_sync",
     "trackside_ap_business_export",
     "trackside_ap_plan_save",
     "trackside_ap_plan_export",
@@ -663,6 +664,7 @@ def update(request: Request, payload: TracksideApUpdateRequestDTO) -> RailTransi
             ap_uuid=payload.ap_uuid,
             ap_mac=payload.ap_mac,
             ap_name=payload.ap_name,
+            concurrency=payload.concurrency,
         )
     except RailTransitWebError as exc:
         _raise_error(exc)

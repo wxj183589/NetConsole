@@ -34,7 +34,6 @@ from netconsole.services import netmiko_connection
 from netconsole.services.ap_identity.normalizers import normalize_mac
 from netconsole.services.ac.fit_ap_optical_concurrency import (
     DEFAULT_FIT_AP_OPTICAL_CONCURRENCY,
-    fit_ap_optical_platform_concurrency_limit,
 )
 from netconsole.services.ac.ac_models import is_ac_device_type
 from netconsole.services.h3c_ac_collect_service import collect_h3c_ac_resources, collect_h3c_fit_ap_optical
@@ -59,6 +58,8 @@ TRACKSIDE_OPTICAL_COMMANDS = (
     "display interface brief",
 )
 DEFAULT_TRACKSIDE_OPTICAL_CONCURRENCY = DEFAULT_FIT_AP_OPTICAL_CONCURRENCY
+TRACKSIDE_OPTICAL_CONCURRENCY_OPTIONS = (64, 128, 256, 512)
+TRACKSIDE_OPTICAL_MAX_CONCURRENCY = max(TRACKSIDE_OPTICAL_CONCURRENCY_OPTIONS)
 TRACKSIDE_MAX_DEVICE_CONCURRENCY_KEY = "trackside_ap/max_device_concurrency"
 TRACKSIDE_MAX_SWITCH_CONCURRENCY_KEY = "trackside_ap/max_switch_concurrency"
 TRACKSIDE_MAX_FIT_AP_CONCURRENCY_KEY = "trackside_ap/max_fit_ap_concurrency"
@@ -649,19 +650,21 @@ def collect_trackside_optical(
         directory.mkdir(parents=True, exist_ok=True)
     started_at = _now()
     cancel_event = cancel_event or Event()
-    platform_concurrency_limit = fit_ap_optical_platform_concurrency_limit()
+    platform_concurrency_limit = TRACKSIDE_OPTICAL_MAX_CONCURRENCY
     concurrency_settings = _trackside_concurrency_settings(paths)
     requested_concurrency = _positive_int_setting(
         concurrency if concurrency is not None else concurrency_settings["device"],
         concurrency_settings["device"],
     )
     safe_requested_concurrency = _safe_trackside_concurrency(requested_concurrency, platform_concurrency_limit)
+    # An explicit request is the per-run operator choice.  The persisted
+    # settings remain the default for legacy callers that omit concurrency.
     switch_concurrency = _safe_trackside_concurrency(
-        concurrency_settings["switch"] or safe_requested_concurrency,
+        safe_requested_concurrency if concurrency is not None else concurrency_settings["switch"],
         platform_concurrency_limit,
     )
     fit_ap_concurrency = _safe_trackside_concurrency(
-        concurrency_settings["fit_ap"] or safe_requested_concurrency,
+        safe_requested_concurrency if concurrency is not None else concurrency_settings["fit_ap"],
         platform_concurrency_limit,
     )
     max_workers = max(1, min(safe_requested_concurrency, switch_concurrency, len(targets) or 1))
@@ -1072,18 +1075,17 @@ def _has_trackside_ap_identity(row: dict[str, object | None]) -> bool:
 
 def _trackside_concurrency_settings(paths: PathResolver) -> dict[str, int]:
     settings = SettingsStore(paths)
-    platform_limit = fit_ap_optical_platform_concurrency_limit()
     device = _safe_trackside_concurrency(
         settings.get_value(TRACKSIDE_MAX_DEVICE_CONCURRENCY_KEY, DEFAULT_TRACKSIDE_OPTICAL_CONCURRENCY),
-        platform_limit,
+        TRACKSIDE_OPTICAL_MAX_CONCURRENCY,
     )
     switch = _safe_trackside_concurrency(
         settings.get_value(TRACKSIDE_MAX_SWITCH_CONCURRENCY_KEY, device),
-        platform_limit,
+        TRACKSIDE_OPTICAL_MAX_CONCURRENCY,
     )
     fit_ap = _safe_trackside_concurrency(
         settings.get_value(TRACKSIDE_MAX_FIT_AP_CONCURRENCY_KEY, device),
-        platform_limit,
+        TRACKSIDE_OPTICAL_MAX_CONCURRENCY,
     )
     return {"device": device, "switch": switch, "fit_ap": fit_ap}
 
@@ -1381,6 +1383,8 @@ def _collect_fit_ap_optical_subtasks(
         )
         if "persist" in inspect.signature(collect_h3c_fit_ap_optical).parameters:
             fit_collect_kwargs["persist"] = False
+        if "concurrency_platform_limit" in inspect.signature(collect_h3c_fit_ap_optical).parameters:
+            fit_collect_kwargs["concurrency_platform_limit"] = TRACKSIDE_OPTICAL_MAX_CONCURRENCY
         result = collect_h3c_fit_ap_optical(
             **fit_collect_kwargs,
         )

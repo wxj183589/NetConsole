@@ -34,7 +34,7 @@ export const useTaskStore = defineStore('tasks', () => {
   const logsExpanded = ref(true)
   const pollingConsumers = new Set<string>()
   let detailVisible = false
-  let listBusy = false
+  let listRefreshInFlight: Promise<void> | null = null
   let detailBusy = false
   let detailContextGeneration = 0
   let logContextGeneration = 0
@@ -60,8 +60,17 @@ export const useTaskStore = defineStore('tasks', () => {
   ))
 
   async function refresh(): Promise<void> {
-    if (listBusy) return
-    listBusy = true
+    if (listRefreshInFlight) return listRefreshInFlight
+    const request = refreshTaskList()
+    listRefreshInFlight = request
+    try {
+      await request
+    } finally {
+      if (listRefreshInFlight === request) listRefreshInFlight = null
+    }
+  }
+
+  async function refreshTaskList(): Promise<void> {
     loading.value = !tasks.value.length
     try {
       tasks.value = await listTasks()
@@ -72,7 +81,6 @@ export const useTaskStore = defineStore('tasks', () => {
       if (failures.value >= 3) error.value = '任务中心刷新失败，请检查主程序服务。已降低刷新频率。'
     } finally {
       loading.value = false
-      listBusy = false
     }
   }
 
@@ -191,6 +199,7 @@ export const useTaskStore = defineStore('tasks', () => {
   async function cleanupHistory(cleanupType: TaskCleanupType): Promise<TaskCleanupResult> {
     const result = await cleanupTasks(cleanupType)
     applyDismissed(result.task_ids)
+    await refresh()
     return result
   }
 
@@ -324,9 +333,17 @@ export const useTaskStore = defineStore('tasks', () => {
   }
 
   function scheduleListRefresh(): void {
-    if (!pollingConsumers.size) return
-    const delay = failures.value >= 3 ? 10_000 : runningCount.value ? 2_000 : 5_000
+    if (!pollingConsumers.size || listTimer !== null) return
+    const hidden = typeof document !== 'undefined' && document.visibilityState === 'hidden'
+    const delay = hidden
+      ? 60_000
+      : failures.value >= 3
+        ? 10_000
+        : runningCount.value
+          ? 4_000
+          : 25_000
     listTimer = window.setTimeout(async () => {
+      listTimer = null
       await refresh()
       scheduleListRefresh()
     }, delay)

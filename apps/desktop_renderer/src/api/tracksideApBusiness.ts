@@ -161,6 +161,10 @@ export function getTracksideApTask(taskId: string): Promise<TracksideApTask> {
   return apiRequest(`${root}/tasks/${encodeURIComponent(taskId)}`)
 }
 
+export function getTracksideApWpsTask(taskId: string): Promise<TracksideApTask> {
+  return apiRequest(`${root}/tasks/${encodeURIComponent(taskId)}`)
+}
+
 export function cancelTracksideApTask(taskId: string): Promise<TracksideApTask> {
   return apiRequest(`${root}/tasks/${encodeURIComponent(taskId)}/cancel`, { method: 'POST' })
 }

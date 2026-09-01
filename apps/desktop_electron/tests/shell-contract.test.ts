@@ -32,7 +32,7 @@ describe('Electron shell product contract', () => {
     expect(source).toContain('icon: resolveDesktopIconPath')
     expect(source).toContain("window.on('page-title-updated'")
     expect(source).toContain('event.preventDefault()')
-    expect(source).toContain('window.setTitle(title)')
+    expect(source).toContain('setManagedWindowTitle(window, title)')
     expect(source).not.toContain('NETCONSOLE_TASK_WINDOW_TITLE')
     expect(source).not.toContain("title: 'NetConsole'")
     expect(source).not.toContain("window.setTitle('NetConsole 任务中心')")

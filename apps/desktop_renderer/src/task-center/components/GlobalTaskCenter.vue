@@ -3,6 +3,7 @@ import { computed, h, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox, ElNotification } from 'element-plus'
 import { Check, Close, Delete, Loading, MoreFilled, Tickets, View } from '@element-plus/icons-vue'
 
+import { ApiRequestError } from '../../api/client'
 import { t } from '../../i18n/runtime'
 import { useConfirm } from '../../components/feedback/useConfirm'
 import { getPlatformAdapter } from '../../platform/runtime'
@@ -21,6 +22,10 @@ const GLOBAL_POLLING_CONSUMER = 'global-task-center'
 const TERMINAL_STATUSES = new Set(['COMPLETED', 'FAILED', 'CANCELLED', 'ABORTED', 'STOPPED'])
 const QUEUED_STATUSES = new Set(['CREATED', 'QUEUED', 'PENDING'])
 const RUNNING_STATUSES = new Set(['STARTING', 'RUNNING', 'STOPPING'])
+const BATCH_NOTIFICATION_TASK_TYPES = new Set(['device_connection_test', 'device_detail_collect'])
+const TERMINAL_NOTIFICATION_BUFFER_MS = 800
+
+type NotificationKind = 'success' | 'warning' | 'failure'
 
 const store = useTaskStore()
 const workspace = useWorkspaceStore()
@@ -33,8 +38,11 @@ const drawerFilter = ref<'all' | 'active' | 'attention' | 'completed' | 'running
 const focusedTaskId = ref('')
 const floatingMinimized = ref(false)
 const floatingDismissedSignature = ref('')
+const cleanupBusy = ref(false)
 const notificationStates = new Map<string, string>()
+const pendingTerminalNotifications = new Map<string, TaskItem>()
 let notificationsReady = false
+let terminalNotificationTimer: number | null = null
 let removeLocalOpenListener: (() => void) | undefined
 let removeNativeOpenListener: (() => void) | undefined
 
@@ -136,6 +144,9 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   notificationsReady = false
+  if (terminalNotificationTimer !== null) window.clearTimeout(terminalNotificationTimer)
+  terminalNotificationTimer = null
+  pendingTerminalNotifications.clear()
   removeLocalOpenListener?.()
   removeNativeOpenListener?.()
   store.releasePolling(GLOBAL_POLLING_CONSUMER)
@@ -177,6 +188,7 @@ function openTaskSummaryDrawer(): void {
   detailVisible.value = false
   focusedTaskId.value = ''
   drawerVisible.value = true
+  void store.refresh()
 }
 
 function openTaskDetail(
@@ -227,10 +239,18 @@ async function cancelTask(task: TaskItem): Promise<void> {
 }
 
 async function cleanupHistory(cleanupType: TaskCleanupType): Promise<void> {
+  if (cleanupBusy.value) return
+  cleanupBusy.value = true
+  let feedbackShown = false
+  const showCleanupError = (cause: unknown): void => {
+    if (feedbackShown) return
+    feedbackShown = true
+    ElMessage.error(cleanupErrorMessage(cause))
+  }
   try {
     const preview = await store.previewCleanup(cleanupType)
     if (!preview.matched) {
-      ElMessage.info(t('job_center.cleanup.empty', '没有符合条件的历史任务'))
+      ElMessage.info(t('job_center.cleanup.empty', '当前没有可清理的已结束任务'))
       return
     }
     await confirm({
@@ -246,19 +266,36 @@ async function cleanupHistory(cleanupType: TaskCleanupType): Promise<void> {
       onConfirm: async () => {
         try {
           const result = await store.cleanupHistory(cleanupType)
+          if (!result.dismissed) {
+            ElMessage.info(t('job_center.cleanup.empty', '当前没有可清理的已结束任务'))
+            return
+          }
           ElMessage.success(t(
             'job_center.cleanup.done',
-            '已清理 {count} 个任务记录',
+            '已清理 {count} 条已结束任务',
           ).replace('{count}', String(result.dismissed)))
         } catch (cause) {
-          ElMessage.error(cause instanceof Error ? cause.message : t('job_center.cleanup.failed', '任务清理失败'))
-          throw cause
+          showCleanupError(cause)
         }
       },
     })
   } catch (cause) {
-    ElMessage.error(cause instanceof Error ? cause.message : t('job_center.cleanup.failed', '任务清理失败'))
+    showCleanupError(cause)
+  } finally {
+    cleanupBusy.value = false
   }
+}
+
+function cleanupErrorMessage(cause: unknown): string {
+  if (cause instanceof ApiRequestError && cause.code === 'PRODUCTION_WRITE_CONFIRMATION_REQUIRED') {
+    return '生产模式已阻止任务清理：当前操作需要授权维护模式。'
+  }
+  if (cause instanceof ApiRequestError && cause.status === 409 && cause.message) {
+    return cause.message
+  }
+  return cause instanceof Error && cause.message
+    ? cause.message
+    : t('job_center.cleanup.failed', '任务清理失败')
 }
 
 function cleanupMessage(cleanupType: TaskCleanupType, count: number): string {
@@ -365,7 +402,7 @@ function handleTaskStateChanges(): void {
     const previous = notificationStates.get(task.id)
     notificationStates.set(task.id, key)
     if (previous === key || !TERMINAL_STATUSES.has(task.status)) continue
-    notifyTaskTerminal(task)
+    queueTerminalNotification(task)
   }
   for (const id of notificationStates.keys()) {
     if (!currentIds.has(id)) notificationStates.delete(id)
@@ -376,21 +413,118 @@ function notificationKey(task: TaskItem): string {
   return `${task.status}:${task.has_warning ? 'warning' : 'normal'}`
 }
 
+function queueTerminalNotification(task: TaskItem): void {
+  pendingTerminalNotifications.set(task.id, task)
+  if (terminalNotificationTimer !== null) return
+  terminalNotificationTimer = window.setTimeout(flushTerminalNotifications, TERMINAL_NOTIFICATION_BUFFER_MS)
+}
+
+function flushTerminalNotifications(): void {
+  terminalNotificationTimer = null
+  if (!notificationsReady) {
+    pendingTerminalNotifications.clear()
+    return
+  }
+  const currentTasks = new Map(store.tasks.map((task) => [task.id, task]))
+  const pending = [...pendingTerminalNotifications.values()]
+    .map((task) => currentTasks.get(task.id) || task)
+    .filter((task) => TERMINAL_STATUSES.has(task.status))
+  pendingTerminalNotifications.clear()
+
+  const batches = new Map<string, TaskItem[]>()
+  const individual: TaskItem[] = []
+  for (const task of pending) {
+    if (!BATCH_NOTIFICATION_TASK_TYPES.has(task.type)) {
+      individual.push(task)
+      continue
+    }
+    const batchKey = `${task.type}:${task.site_name || ''}`
+    const batch = batches.get(batchKey) || []
+    batch.push(task)
+    batches.set(batchKey, batch)
+  }
+  for (const task of individual) notifyTaskTerminal(task)
+  for (const batch of batches.values()) {
+    if (batch.length > 1) notifyTaskBatchTerminal(batch)
+    else notifyTaskTerminal(batch[0])
+  }
+}
+
 function notifyTaskTerminal(task: TaskItem): void {
-  const kind = task.status === 'FAILED' || task.status === 'ABORTED'
+  const kind = taskNotificationKind(task)
+  const title = terminalTitle(task, kind)
+  const body = task.error_summary || task.message || taskStatusLabel(task.status)
+  notifyTask(
+    task.id,
+    title,
+    body,
+    kind,
+    () => openTaskDetail(task.id, 'notification'),
+    undefined,
+    task.status === 'CANCELLED' || task.status === 'STOPPED',
+  )
+}
+
+function notifyTaskBatchTerminal(tasks: TaskItem[]): void {
+  const representative = tasks[0]
+  const kind = batchNotificationKind(tasks)
+  const allCancelled = tasks.every((task) => task.status === 'CANCELLED' || task.status === 'STOPPED')
+  const label = batchNotificationLabel(representative)
+  const title = `${label} · 批量完成`
+  const body = batchNotificationSummary(tasks)
+  const eventId = `batch:${representative.type}:${representative.site_name || 'site'}:${tasks.length}:${tasks
+    .map((task) => task.id)
+    .sort()
+    .join(',')}`
+  notifyTask(representative.id, title, body, kind, openTaskSummaryDrawer, eventId, allCancelled)
+}
+
+function taskNotificationKind(task: TaskItem): NotificationKind {
+  return task.status === 'FAILED' || task.status === 'ABORTED'
     ? 'failure'
     : task.has_warning
       ? 'warning'
       : 'success'
-  const title = terminalTitle(task, kind)
-  const body = task.error_summary || task.message || taskStatusLabel(task.status)
+}
+
+function batchNotificationKind(tasks: TaskItem[]): NotificationKind {
+  return tasks.some((task) => task.status === 'FAILED' || task.status === 'ABORTED')
+    ? 'failure'
+    : tasks.some((task) => task.has_warning || task.status === 'CANCELLED' || task.status === 'STOPPED')
+      ? 'warning'
+      : 'success'
+}
+
+function batchNotificationLabel(task: TaskItem): string {
+  return task.name.split(' · ')[0].trim() || task.type || '批量任务'
+}
+
+function batchNotificationSummary(tasks: TaskItem[]): string {
+  const failed = tasks.filter((task) => task.status === 'FAILED' || task.status === 'ABORTED').length
+  const warning = tasks.filter((task) => (
+    !['FAILED', 'ABORTED'].includes(task.status)
+    && (task.has_warning || task.status === 'CANCELLED' || task.status === 'STOPPED')
+  )).length
+  const success = tasks.length - failed - warning
+  return `共 ${tasks.length} 个子任务：成功 ${success}，失败 ${failed}${warning ? `，告警/取消 ${warning}` : ''}`
+}
+
+function notifyTask(
+  taskId: string,
+  title: string,
+  body: string,
+  kind: NotificationKind,
+  openDetails: () => void,
+  eventIdOverride?: string,
+  suppressNative = false,
+): void {
   const foreground = document.visibilityState === 'visible' && document.hasFocus()
 
   if (foreground) {
     let notification: ReturnType<typeof ElNotification> | undefined
     const showDetail = () => {
       notification?.close()
-      openTaskDetail(task.id, 'notification')
+      openDetails()
     }
     notification = ElNotification({
       title,
@@ -399,7 +533,7 @@ function notifyTaskTerminal(task: TaskItem): void {
         h('button', {
           type: 'button',
           class: 'nc-task-notification__detail',
-          'aria-label': `查看任务 ${task.name || task.id} 详情`,
+          'aria-label': `查看任务 ${title} 详情`,
           onClick: (event: MouseEvent) => {
             event.stopPropagation()
             showDetail()
@@ -414,15 +548,15 @@ function notifyTaskTerminal(task: TaskItem): void {
     })
     return
   }
-  if (task.status === 'CANCELLED' || task.status === 'STOPPED') return
+  if (suppressNative) return
   const runtime = getPlatformAdapter()
   if (runtime.hostType !== 'electron') return
-  const eventId = `${task.id}:${task.status}:${task.updated_time || task.finished_time}`
+  const eventId = (eventIdOverride || `${taskId}:${title}:${body}`)
     .replace(/[^A-Za-z0-9_.:-]/g, '_')
     .slice(0, 180)
   void runtime.showTaskNotification({
     eventId,
-    taskId: task.id,
+    taskId,
     title,
     body,
     kind,
@@ -470,8 +604,8 @@ function terminalTitle(task: TaskItem, kind: 'success' | 'warning' | 'failure'):
       <template #header>
         <div class="task-drawer-header">
           <strong>{{ t('job_center.title', '任务中心') }}</strong>
-          <el-dropdown trigger="click" @command="cleanupHistory">
-            <el-button :icon="Delete">
+          <el-dropdown trigger="click" :disabled="cleanupBusy" @command="cleanupHistory">
+            <el-button :icon="Delete" :loading="cleanupBusy" :disabled="cleanupBusy">
               {{ t('job_center.cleanup.label', '清理') }}
             </el-button>
             <template #dropdown>

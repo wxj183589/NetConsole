@@ -111,8 +111,11 @@ onBeforeUnmount(() => {
     @click="openSiteStorage"
   >
     <el-icon class="current-site-indicator__icon"><Location /></el-icon>
-    <span class="current-site-indicator__label">当前局点：</span>
-    <span class="current-site-name">{{ siteName }}</span>
+    <span class="current-site-context">
+      <span class="current-site-context__site" :title="`当前局点：${siteName}`">
+        当前局点：<span class="current-site-name">{{ siteName }}</span>
+      </span>
+    </span>
   </button>
 </template>
 
@@ -121,7 +124,7 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   width: 100%;
-  max-width: 280px;
+  max-width: 260px;
   min-width: 0;
   height: 34px;
   padding: 0 10px;
@@ -156,8 +159,22 @@ onBeforeUnmount(() => {
   color: var(--nc-primary);
 }
 
-.current-site-indicator__label {
-  flex: 0 0 auto;
+.current-site-context {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  min-width: 0;
+  gap: 6px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.current-site-context__site {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .current-site-name {

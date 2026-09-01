@@ -3,8 +3,9 @@
 import { defineComponent, h, nextTick } from 'vue'
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia } from 'pinia'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { ApiRequestError } from '../../api/client'
 import { useTaskStore } from '../../stores/tasks'
 import { useWorkspaceStore } from '../../stores/workspace'
 import type { TaskItem } from '../../types/task'
@@ -14,23 +15,30 @@ import TaskDetailDrawer from './TaskDetailDrawer.vue'
 
 const mocks = vi.hoisted(() => ({
   listTasks: vi.fn(),
+  cleanupTasks: vi.fn(),
   getTask: vi.fn(),
   getTaskLogs: vi.fn(),
   notification: vi.fn(),
   notificationClose: vi.fn(),
   setTray: vi.fn(),
+  confirm: vi.fn(),
+  messages: { success: vi.fn(), error: vi.fn(), info: vi.fn() },
   nativeOpenListener: undefined as ((context: { taskId?: string }) => void) | undefined,
 }))
 
 vi.mock('../../api/tasks', () => ({
   listTasks: mocks.listTasks,
+  cleanupTasks: mocks.cleanupTasks,
   getTask: mocks.getTask,
   getTaskLogs: mocks.getTaskLogs,
   cancelTask: vi.fn(),
-  cleanupTasks: vi.fn(),
   dismissTask: vi.fn(),
   acknowledgeTask: vi.fn(),
   acknowledgeAllTaskAlerts: vi.fn(),
+}))
+
+vi.mock('../../components/feedback/useConfirm', () => ({
+  useConfirm: () => ({ confirm: mocks.confirm }),
 }))
 
 vi.mock('../../platform/runtime', () => ({
@@ -57,6 +65,7 @@ vi.mock('element-plus', async (importOriginal) => {
   const actual = await importOriginal<typeof import('element-plus')>()
   return {
     ...actual,
+    ElMessage: mocks.messages,
     ElNotification: mocks.notification,
   }
 })
@@ -118,6 +127,20 @@ const passthrough = defineComponent({
   },
 })
 
+const dropdownStub = defineComponent({
+  inheritAttrs: false,
+  setup(_props, { attrs, slots }) {
+    return () => h(
+      'div',
+      {
+        class: 'dropdown-stub',
+        onClick: () => (attrs.onCommand as ((command: string) => void) | undefined)?.('completed'),
+      },
+      slots.default?.(),
+    )
+  },
+})
+
 function mountGlobal(pinia: ReturnType<typeof createPinia>) {
   return mount(GlobalTaskCenter, {
     global: {
@@ -127,7 +150,8 @@ function mountGlobal(pinia: ReturnType<typeof createPinia>) {
         ElBadge: passthrough,
         ElButton: passthrough,
         ElDrawer: passthrough,
-        ElDropdown: passthrough,
+        ElDropdown: dropdownStub,
+        'el-dropdown': dropdownStub,
         ElDropdownItem: passthrough,
         ElDropdownMenu: passthrough,
         ElEmpty: passthrough,
@@ -148,6 +172,19 @@ describe('GlobalTaskCenter behavior', () => {
     vi.clearAllMocks()
     mocks.nativeOpenListener = undefined
     mocks.listTasks.mockResolvedValue([runningTask])
+    mocks.cleanupTasks.mockImplementation((_type: string, options?: { dryRun?: boolean }) => Promise.resolve({
+      matched: 1,
+      dismissed: options?.dryRun ? 0 : 1,
+      skipped_active: 0,
+      skipped_unacknowledged: 0,
+      artifacts_deleted: 0,
+      task_ids: options?.dryRun ? [] : ['task-1'],
+      counts: { completed: 1, cancelled: 0, expired: 0, alerts: 0 },
+    }))
+    mocks.confirm.mockImplementation(async (options: { onConfirm?: () => Promise<void> }) => {
+      await options.onConfirm?.()
+      return true
+    })
     mocks.getTask.mockImplementation(async (id: string) => ({ ...runningTask, id }))
     mocks.getTaskLogs.mockResolvedValue({ task_id: runningTask.id, lines: [], message: '' })
     mocks.notification.mockImplementation(() => ({ close: mocks.notificationClose }))
@@ -156,7 +193,12 @@ describe('GlobalTaskCenter behavior', () => {
     vi.stubGlobal('WebSocket', undefined)
   })
 
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
   it('emits one styled failure notification whose detail button opens the global drawer in place', async () => {
+    vi.useFakeTimers()
     const pinia = createPinia()
     const workspace = useWorkspaceStore(pinia)
     const navigate = vi.spyOn(workspace, 'openOrActivateRoute').mockResolvedValue(workspaceTab)
@@ -173,6 +215,7 @@ describe('GlobalTaskCenter behavior', () => {
       cancellable: false,
     }]
     await nextTick()
+    await vi.advanceTimersByTimeAsync(800)
 
     expect(mocks.notification).toHaveBeenCalledOnce()
     const options = mocks.notification.mock.calls[0][0]
@@ -202,13 +245,155 @@ describe('GlobalTaskCenter behavior', () => {
     wrapper.unmount()
   })
 
+  it('collapses terminal device connection subtasks into one summary notification', async () => {
+    vi.useFakeTimers()
+    const pinia = createPinia()
+    const wrapper = mountGlobal(pinia)
+    await flushPromises()
+    const store = useTaskStore(pinia)
+
+    store.tasks = Array.from({ length: 50 }, (_, offset) => offset + 1).map((index) => ({
+      ...runningTask,
+      id: `device-test-${index}`,
+      type: 'device_connection_test',
+      name: `设备连接测试 · 设备-${index} · SSH`,
+      status: index > 48 ? 'FAILED' : 'COMPLETED',
+      has_warning: false,
+      error_summary: index > 48 ? '连接超时' : '',
+      updated_time: '2026-07-29T08:02:00Z',
+      cancellable: false,
+    }))
+    await nextTick()
+    await vi.advanceTimersByTimeAsync(800)
+
+    expect(mocks.notification).toHaveBeenCalledOnce()
+    const options = mocks.notification.mock.calls[0][0]
+    expect(options.title).toBe('设备连接测试 · 批量完成')
+    expect(options.type).toBe('error')
+    expect(options.message.children[0].children).toBe('共 50 个子任务：成功 48，失败 2')
+    options.message.children[1].props.onClick(new MouseEvent('click'))
+    await nextTick()
+    expect(wrapper.find('[data-testid="task-center-drawer"]').exists()).toBe(true)
+    expect(wrapper.findComponent(TaskDetailDrawer).props('modelValue')).toBe(false)
+
+    store.tasks = store.tasks.map((task) => ({ ...task }))
+    await nextTick()
+    await vi.advanceTimersByTimeAsync(800)
+    expect(mocks.notification).toHaveBeenCalledOnce()
+    wrapper.unmount()
+  })
+
+  it('keeps a single device terminal task as one notification', async () => {
+    vi.useFakeTimers()
+    const pinia = createPinia()
+    const wrapper = mountGlobal(pinia)
+    await flushPromises()
+    const store = useTaskStore(pinia)
+
+    store.tasks = [{
+      ...runningTask,
+      id: 'device-test-single',
+      type: 'device_connection_test',
+      name: '设备连接测试 · 设备-1 · SSH',
+      status: 'COMPLETED',
+      progress: 100,
+      updated_time: '2026-07-29T08:02:00Z',
+      cancellable: false,
+    }]
+    await nextTick()
+    await vi.advanceTimersByTimeAsync(800)
+
+    expect(mocks.notification).toHaveBeenCalledOnce()
+    expect(mocks.notification.mock.calls[0][0].title).toBe('设备连接测试 · 设备-1 · SSH已完成')
+    wrapper.unmount()
+  })
+
+  it('gives cleanup one outcome message and refreshes once after success', async () => {
+    const pinia = createPinia()
+    const wrapper = mountGlobal(pinia)
+    await flushPromises()
+    const initialListCalls = mocks.listTasks.mock.calls.length
+
+    await (wrapper.vm as unknown as { cleanupHistory: (type: 'completed') => Promise<void> }).cleanupHistory('completed')
+    await flushPromises()
+
+    expect(mocks.cleanupTasks).toHaveBeenCalledTimes(2)
+    expect(mocks.messages.success).toHaveBeenCalledOnce()
+    expect(mocks.messages.success).toHaveBeenCalledWith('已清理 1 条已结束任务')
+    expect(mocks.messages.error).not.toHaveBeenCalled()
+    expect(mocks.listTasks).toHaveBeenCalledTimes(initialListCalls + 1)
+    wrapper.unmount()
+  })
+
+  it('reports an empty cleanup and the production guard without generic duplicate errors', async () => {
+    const pinia = createPinia()
+    const wrapper = mountGlobal(pinia)
+    await flushPromises()
+
+    mocks.cleanupTasks.mockResolvedValueOnce({
+      matched: 0,
+      dismissed: 0,
+      skipped_active: 0,
+      skipped_unacknowledged: 0,
+      artifacts_deleted: 0,
+      task_ids: [],
+      counts: { completed: 0, cancelled: 0, expired: 0, alerts: 0 },
+    })
+    await (wrapper.vm as unknown as { cleanupHistory: (type: 'completed') => Promise<void> }).cleanupHistory('completed')
+    await flushPromises()
+    expect(mocks.messages.info).toHaveBeenCalledWith('当前没有可清理的已结束任务')
+    expect(mocks.messages.error).not.toHaveBeenCalled()
+
+    mocks.cleanupTasks.mockRejectedValueOnce(new ApiRequestError(
+      '当前连接真实生产数据；该维护/删除操作已阻止。',
+      409,
+      'PRODUCTION_WRITE_CONFIRMATION_REQUIRED',
+    ))
+    await (wrapper.vm as unknown as { cleanupHistory: (type: 'completed') => Promise<void> }).cleanupHistory('completed')
+    await flushPromises()
+    expect(mocks.messages.error).toHaveBeenCalledOnce()
+    expect(mocks.messages.error).toHaveBeenCalledWith('生产模式已阻止任务清理：当前操作需要授权维护模式。')
+    wrapper.unmount()
+  })
+
+  it('allows at most one cleanup request while the preview is in flight', async () => {
+    let resolvePreview!: (value: unknown) => void
+    mocks.cleanupTasks.mockImplementationOnce(() => new Promise((resolve) => {
+      resolvePreview = resolve
+    }))
+    const pinia = createPinia()
+    const wrapper = mountGlobal(pinia)
+    await flushPromises()
+    const cleanup = (wrapper.vm as unknown as { cleanupHistory: (type: 'completed') => Promise<void> }).cleanupHistory
+
+    const first = cleanup('completed')
+    await Promise.resolve()
+    await cleanup('completed')
+    expect(mocks.cleanupTasks).toHaveBeenCalledOnce()
+
+    resolvePreview({
+      matched: 0,
+      dismissed: 0,
+      skipped_active: 0,
+      skipped_unacknowledged: 0,
+      artifacts_deleted: 0,
+      task_ids: [],
+      counts: { completed: 0, cancelled: 0, expired: 0, alerts: 0 },
+    })
+    await first
+    wrapper.unmount()
+  })
+
   it('keeps REST and live task updates on the same business-time display path', async () => {
     const pinia = createPinia()
     const wrapper = mountGlobal(pinia)
     await flushPromises()
+    const listCallsBeforeOpen = mocks.listTasks.mock.calls.length
     await wrapper.find('[data-testid="global-task-indicator"]').trigger('click')
+    await flushPromises()
     await nextTick()
 
+    expect(mocks.listTasks).toHaveBeenCalledTimes(listCallsBeforeOpen + 1)
     expect(wrapper.text()).toContain('2026-07-29 16:01:00')
     expect(wrapper.text()).not.toContain('2026-07-29T08:01:00Z')
 

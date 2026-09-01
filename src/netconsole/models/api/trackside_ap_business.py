@@ -277,6 +277,7 @@ class TracksideApUpdateRequestDTO(ApiModel):
     ap_uuid: str = ""
     ap_mac: str = ""
     ap_name: str = ""
+    concurrency: int | None = Field(default=None, ge=1, le=512)
 
 
 class TracksideApBusinessExportProposalDTO(ApiModel):

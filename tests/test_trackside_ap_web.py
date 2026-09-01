@@ -13,9 +13,11 @@ from tests.support.job_process_test_support import FakeExportProcessAdapter, Fak
 from netconsole.application.rail_transit.web_application_service import RailTransitWebApplicationService, RailTransitWebError
 from netconsole.application.rail_transit import web_application_service as web_application_service_module
 from netconsole.application.web_artifacts import WebArtifactError
+from netconsole.backend.api import trackside_ap_business_router
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
+from netconsole.models.api.trackside_ap_business import TracksideApUpdateRequestDTO
 from netconsole.services.job_center.job_context import JobContext
 from netconsole.services.job_center.job_registry import registered_task_types
 from netconsole.services.job_center.task_application_service import TaskApplicationService
@@ -38,6 +40,34 @@ from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.repositories.history_store import HistoryStore
+
+
+def test_trackside_task_route_accepts_wps_sync_tasks() -> None:
+    assert "trackside_ap_optical_update" in trackside_ap_business_router._ACTIONS
+    assert "trackside_ap_wps_sync" in trackside_ap_business_router._ACTIONS
+
+
+def test_trackside_task_recovery_returns_one_wps_snapshot_without_duplicate(tmp_path: Path) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    wps = SimpleNamespace(task_id="wps-1", action="trackside_ap_wps_sync")
+    other = SimpleNamespace(task_id="other-1", action="unrelated_task")
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                paths=paths,
+                trackside_ap_business_query_service=SimpleNamespace(
+                    current_site_id=lambda: "demo",
+                ),
+                rail_transit_web_application_service=SimpleNamespace(
+                    recover_tasks=lambda _site_id: [wps, other],
+                ),
+            ),
+        ),
+    )
+
+    recovered = trackside_ap_business_router.recover_tasks(request)
+
+    assert [item.task_id for item in recovered] == ["wps-1"]
 
 
 def _stable_station_id(node_uid: str) -> str:
@@ -992,7 +1022,7 @@ def test_trackside_update_job_calls_existing_collection_service(monkeypatch, tmp
     context = JobContext(
         "task-1",
         "trackside_ap_optical_update",
-        {"site_name": "demo", "db_path": str(tmp_path / "site.sqlite"), "station": "站点A"},
+        {"site_name": "demo", "db_path": str(tmp_path / "site.sqlite"), "station": "站点A", "concurrency": 512},
         lambda stage, current, total, message: progress.append((stage, current, total, message)),
         lambda: False,
         PathResolver(app_root=tmp_path, data_root=tmp_path),
@@ -1002,6 +1032,7 @@ def test_trackside_update_job_calls_existing_collection_service(monkeypatch, tmp
 
     assert captured["site_id"] == "demo"
     assert captured["target_station"] == "站点A"
+    assert captured["concurrency"] == 512
     assert captured["rows"] == _snapshot().rows
     assert result["session_id"] == "session-1"
     assert result["status"] == "PARTIAL_SUCCESS"
@@ -1161,6 +1192,22 @@ def test_trackside_application_starts_scoped_update(tmp_path: Path) -> None:
     assert len(process.jobs) == 1
     assert update_job.task_type == "trackside_ap_optical_update"
     assert update_job.params["station"] == "站点A"
+    assert "concurrency" not in update_job.params
+
+    process.complete(update.task_id, {"success_count": 1})
+    explicit = service.start_trackside_ap_update("demo", station="站点B", concurrency=512)
+    assert process.jobs[explicit.task_id].params["concurrency"] == 512
+
+
+@pytest.mark.parametrize("value", [64, 128, 256, 512])
+def test_trackside_update_request_accepts_supported_concurrency(value: int) -> None:
+    assert TracksideApUpdateRequestDTO(concurrency=value).concurrency == value
+
+
+def test_trackside_update_request_keeps_concurrency_optional_and_bounded() -> None:
+    assert TracksideApUpdateRequestDTO().concurrency is None
+    with pytest.raises(ValueError):
+        TracksideApUpdateRequestDTO(concurrency=513)
 
 
 def test_trackside_application_lists_zte_adapter_and_finalizes_sample_artifact(

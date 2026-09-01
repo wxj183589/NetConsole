@@ -64,6 +64,7 @@ def run_trackside_ap_optical_update(context: JobContext) -> dict[str, object]:
         target_ap_uuid=str(context.params.get("ap_uuid") or "") or None,
         target_ap_mac=str(context.params.get("ap_mac") or "") or None,
         target_ap_name=str(context.params.get("ap_name") or "") or None,
+        concurrency=context.params.get("concurrency"),
     )
     if int(result.fit_ap_optical_success_count or 0) > 0:
         ApIdentityQueryService(database).rebuild_index(

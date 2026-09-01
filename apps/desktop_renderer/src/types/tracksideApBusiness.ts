@@ -67,7 +67,9 @@ export interface TracksideApDataSourceIssue {
   source: string; label: string; code: string; message: string; device_id?: string
 }
 
-export interface TracksideApUpdateRequest { station?: string; ap_uuid?: string; ap_mac?: string; ap_name?: string }
+export interface TracksideApUpdateRequest {
+  station?: string; ap_uuid?: string; ap_mac?: string; ap_name?: string; concurrency?: number
+}
 export interface TracksideApBusinessExportProposal {
   site_id: string; site_display_name: string; generated_at: string; suggested_name: string
 }

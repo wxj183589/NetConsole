@@ -12,6 +12,7 @@ import {
   getTracksideApOnlineStatus,
   getTracksideApPlan,
   getTracksideApTask,
+  getTracksideApWpsTask,
   listTracksideWpsTargets,
   listTracksideSwitchAdapters,
   listTracksideApBusiness,
@@ -78,6 +79,7 @@ describe('trackside AP business API', () => {
       requested_commands: [],
     })
     await getTracksideApTask('task-1')
+    await getTracksideApWpsTask('wps-task-1')
     await cancelTracksideApTask('task-1')
     await recoverTracksideApTasks()
     await getTracksideApPlan()
@@ -93,6 +95,7 @@ describe('trackside AP business API', () => {
       '/api/rail-transit/trackside-ap-business/switch-adapters',
       '/api/rail-transit/trackside-ap-business/switch-adapters/sample',
       '/api/rail-transit/trackside-ap-business/tasks/task-1',
+      '/api/rail-transit/trackside-ap-business/tasks/wps-task-1',
       '/api/rail-transit/trackside-ap-business/tasks/task-1/cancel',
       '/api/rail-transit/trackside-ap-business/tasks/recover',
       '/api/rail-transit/trackside-ap-business/plan',

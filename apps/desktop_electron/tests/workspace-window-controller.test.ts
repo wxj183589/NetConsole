@@ -210,8 +210,9 @@ describe('WorkspaceWindowController', () => {
     }
     harness.controller.saveWindowState(main, snapshot)
     expect(harness.controller.getWindowState(main).snapshot).toEqual(snapshot)
-    harness.controller.setWindowTitle(main, '设备：AC1')
-    expect(harness.windows[0].getTitle()).toBe('设备：AC1 - NetConsole')
+    const title = '设备：AC1 - NetConsole | 当前数据根：D:\\NetConsoleData-dev | 运行模式：DEVELOPMENT'
+    harness.controller.setWindowTitle(main, title)
+    expect(harness.windows[0].getTitle()).toBe(title)
   })
 
   it('removes site-scoped routes from every window snapshot and can roll them back', () => {

@@ -167,8 +167,6 @@ const secureCrtTemplateInput = ref<HTMLInputElement | null>(null)
 const lastSubmittedTask = ref<DeviceTaskReference | null>(null)
 const savedArtifactCapability = ref('')
 let artifactNotificationHandle: { close: () => void } | null = null
-let batchRefreshNotificationKey = ''
-let batchRefreshNotificationHandle: { close: () => void } | null = null
 const deviceTaskArtifactIds = new Map<string, string>()
 let deviceTaskSnapshotInitialized = false
 const connectionTestRefreshTaskIds = ref<string[]>([])
@@ -443,25 +441,6 @@ watch(
   },
 )
 
-watch(
-  () => {
-    const current = batchRefresh.value
-    return current ? `${current.batch_id}:${current.terminal ? 'terminal' : 'running'}` : ''
-  },
-  (key) => {
-    if (!key) {
-      batchRefreshNotificationKey = ''
-      batchRefreshNotificationHandle?.close()
-      batchRefreshNotificationHandle = null
-      return
-    }
-    if (key === batchRefreshNotificationKey) return
-    batchRefreshNotificationKey = key
-    if (batchRefresh.value) showBatchRefreshNotification(batchRefresh.value)
-  },
-  { immediate: true },
-)
-
 const batchRefreshProgressText = computed(() => {
   const current = batchRefresh.value
   if (!current) return ''
@@ -482,8 +461,6 @@ onBeforeUnmount(() => {
   componentActive = false
   artifactNotificationHandle?.close()
   artifactNotificationHandle = null
-  batchRefreshNotificationHandle?.close()
-  batchRefreshNotificationHandle = null
   connectionTestRefreshTaskIds.value = []
   connectionTestRefreshQueued = false
   stopBatchRefreshPolling(true)
@@ -774,34 +751,6 @@ function showDeviceArtifactNotification(task: DevicePublicTask): void {
             ]
           : []),
       ]),
-    ]),
-  })
-}
-
-function showBatchRefreshNotification(current: DeviceTaskBatch): void {
-  const hasProblems = Boolean(current.summary.failed || current.summary.rejected)
-  batchRefreshNotificationHandle?.close()
-  batchRefreshNotificationHandle = ElNotification({
-    title: current.terminal ? '批量更新详情已结束' : '批量更新详情运行中',
-    type: current.terminal ? (hasProblems ? 'warning' : 'success') : 'info',
-    duration: 0,
-    showClose: true,
-    message: h('div', {
-      class: 'device-task-notification',
-      'data-testid': 'batch-refresh-notification',
-      'data-description': batchRefreshProgressText.value,
-      style: { display: 'grid', gap: '8px', minWidth: '240px' },
-    }, [
-      h('div', batchRefreshProgressText.value),
-      h(ElButton, {
-        link: true,
-        type: 'primary',
-        'data-testid': 'batch-refresh-details-notification',
-        onClick: () => {
-          batchRefreshNotificationHandle?.close()
-          batchRefreshDetailsVisible.value = true
-        },
-      }, { default: () => '查看结果明细' }),
     ]),
   })
 }

@@ -1117,6 +1117,7 @@ def collect_h3c_fit_ap_optical(
     target_ap_names: list[str] | None = None,
     target_stations: list[str] | None = None,
     persist: bool = True,
+    concurrency_platform_limit: int | None = None,
 ) -> FitApOpticalCollectResult:
     progress = progress or (lambda _message: None)
     should_cancel = should_cancel or (lambda: False)
@@ -1131,7 +1132,10 @@ def collect_h3c_fit_ap_optical(
     fit_ap_dir = run_dir / "fit_ap"
     settings = _fit_ap_optical_collect_settings(paths)
     requested_concurrency = _fit_ap_optical_requested_concurrency(max_workers, settings)
-    platform_concurrency_limit = fit_ap_optical_platform_concurrency_limit()
+    platform_concurrency_limit = max(
+        1,
+        int(concurrency_platform_limit or fit_ap_optical_platform_concurrency_limit()),
+    )
     round_summaries: list[dict[str, object]] = []
     fact_repository.create_collect_run(
         {
