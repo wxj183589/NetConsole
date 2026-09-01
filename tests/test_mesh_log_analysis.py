@@ -26,6 +26,7 @@ from netconsole.services.mesh_peer_mapping_service import MeshPeerMappingService
 from netconsole.services.mesh_link_analyzer import MeshLinkAnalyzer
 from netconsole.services.mesh_storage_service import MeshStorageService
 from netconsole.services.ap_identity import ApIdentityQueryService
+from netconsole.services.rail_transit.mesh_analysis_query_service import MeshAnalysisQueryService
 
 
 
@@ -934,7 +935,7 @@ def test_mesh_peer_mapping_batches_distinct_peers_and_persists_batch_revision(
             return None
 
         def index_state(self) -> dict[str, object]:
-            return {"revision": 8}
+            return {"revision": 9}
 
         def resolve_peer_macs(self, macs, *, ap_role=None):
             keys = tuple(macs)
@@ -1003,6 +1004,110 @@ def test_mesh_peer_mapping_batches_distinct_peers_and_persists_batch_revision(
     assert count == 2
     assert repository.revision == 9
     assert service.last_remap_summary["identity_index_revision"] == 9
+
+
+def test_mesh_peer_mapping_retries_once_when_identity_revision_drifts(tmp_path):
+    class DriftingIdentityQuery:
+        def __init__(self) -> None:
+            self.revision = 1
+            self.calls = 0
+
+        def ensure_index(self, _reason: str) -> None:
+            return None
+
+        def index_state(self) -> dict[str, object]:
+            return {"revision": self.revision}
+
+        def resolve_peer_macs(self, macs, *, ap_role=None):
+            del ap_role
+            self.calls += 1
+            revision = self.revision
+            if self.calls == 1:
+                self.revision = 2
+            return {
+                macs[0]: ApIdentityMatch(
+                    status="unresolved",
+                    identity_revision=revision,
+                    query_mac=macs[0],
+                    unresolved_reason="exact_alias_not_found",
+                )
+            }
+
+    class MappingRepository:
+        def __init__(self) -> None:
+            self.revisions: list[int] = []
+
+        @staticmethod
+        def distinct_peer_macs() -> list[str]:
+            return ["1011-2233-4455"]
+
+        def replace_peer_identity_mappings(self, rows, *, identity_index_revision):
+            self.revisions.append(identity_index_revision)
+            return {
+                "mapping_count": len(rows),
+                "validation_status": "passed",
+                "facts_unchanged": True,
+            }
+
+    service = MeshPeerMappingService("demo", PathResolver(tmp_path))
+    identity_query = DriftingIdentityQuery()
+    service._query_service = identity_query
+    repository = MappingRepository()
+
+    assert service.refresh_repository(repository) == 1
+    assert identity_query.calls == 2
+    assert repository.revisions == [1, 2]
+    assert service.last_remap_summary["identity_index_revision"] == 2
+    assert service.last_remap_summary["identity_revision_stable"] is True
+
+
+def test_fresh_mesh_import_persists_current_identity_projection_revision(tmp_path):
+    paths = PathResolver(tmp_path)
+    database = Database(paths.site_db_path("demo"))
+    database.initialize()
+    AcRepository(database).upsert_ap_extension_point(
+        {
+            "ap_name": "AP-FRESH-01",
+            "ap_point_code": "AP-FRESH-01",
+            "ap_vendor": "H3C",
+            "ap_mac_display": "30f5-277a-5a20",
+            "station_name": "S1",
+            "section_name": "S1-S2区间",
+        }
+    )
+    identity = ApIdentityQueryService(database)
+    identity.rebuild_index("test_fresh_import")
+    profile = MeshStorageService("demo", paths).create_mr_profile("14CW-01")
+    source = tmp_path / "fresh-meshlog.log"
+    source.write_text(
+        "[1] 2026/08/31 10:12:33.000\n" + LINE_A + "\n",
+        encoding="utf-8",
+    )
+
+    MeshImportService("demo", paths).import_files(profile, [source])
+
+    index = MeshMrRepository(paths.mesh_mr_db_path("demo", profile.safe_folder_name))
+    stored = index.list_source_files()[0]
+    current_revision = int((identity.index_state() or {}).get("revision") or 0)
+    assert stored["identity_index_revision"] == current_revision
+    assert stored["identity_mapping_status"] == "ready"
+    detail_path = Path(str(stored["parsed_db_path"]))
+    with sqlite3.connect(detail_path) as connection:
+        mapped = connection.execute(
+            "SELECT peer_ap_name, peer_ap_mac, peer_identity_status FROM mesh_links"
+        ).fetchone()
+        detail_revision = connection.execute(
+            "SELECT identity_index_revision, identity_mapping_status FROM source_files"
+        ).fetchone()
+    assert mapped == ("AP-FRESH-01", "30:f5:27:7a:5a:20", "matched")
+    assert detail_revision == (current_revision, "ready")
+
+    session = MeshAnalysisQueryService(paths).get_analysis_session(
+        "demo",
+        f"{profile.mr_id}:{stored['id']}",
+    )
+    assert "identity_mapping_stale" not in {warning.code for warning in session.warnings}
+    assert session.maintenance_state.identity_status == "ready"
 
 
 def test_mesh_peer_mapping_service_keeps_peer_and_physical_ap_mac_separate(tmp_path):

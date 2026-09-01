@@ -279,12 +279,26 @@ class MeshImportService:
             if progress:
                 progress(index, total, info.lines_read, result.parsed_record_count, info.skipped_count)
         if result.imported_count:
-            try:
-                mapped_count = MeshPeerMappingService(self.site_name, self.paths).refresh_repository(repo)
-                if mapped_count:
-                    app_logger.log_info("MESH_PEER_MAPPING_REFRESHED", f"{profile.display_name}:{mapped_count}")
-            except Exception as exc:
-                app_logger.log_error("MESH_PEER_MAPPING_REFRESH_FAILED", str(exc))
+            imported_source_ids = {
+                int(item["source_id"])
+                for item in result.source_results
+                if item.get("result") in {"imported", "recovered_existing"}
+                and item.get("source_id") is not None
+            }
+            mapping_service = MeshPeerMappingService(self.site_name, self.paths)
+            mapped_count = mapping_service.refresh_repository(
+                repo,
+                source_file_ids=imported_source_ids,
+            )
+            remap = mapping_service.last_remap_summary
+            repo.update_identity_mapping_metadata(
+                identity_index_revision=int(remap.get("identity_index_revision") or 0),
+                identity_mapped_at=str(remap.get("identity_mapped_at") or ""),
+                identity_mapping_status=str(remap.get("identity_mapping_status") or "unknown"),
+                source_file_ids=imported_source_ids,
+            )
+            if mapped_count:
+                app_logger.log_info("MESH_PEER_MAPPING_REFRESHED", f"{profile.display_name}:{mapped_count}")
             repo.rebuild_derived_analysis(should_cancel=should_cancel)
             if self.refresh_catalog:
                 self.storage.refresh_catalog_summary(profile)

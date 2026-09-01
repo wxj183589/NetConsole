@@ -13,7 +13,13 @@ from netconsole.services.ap_identity import (
 )
 
 
+class MeshIdentityRevisionUnstable(RuntimeError):
+    """AP Identity 在一次 MESH projection 期间持续变化。"""
+
+
 class MeshPeerMappingService:
+    _MAX_STABLE_PROJECTION_ATTEMPTS = 2
+
     def __init__(self, site_name: str, paths: PathResolver) -> None:
         self.site_name = site_name
         self.paths = paths
@@ -69,33 +75,88 @@ class MeshPeerMappingService:
             for peer in peers
         ]
 
-    def refresh_repository(self, repo) -> int:
-        service = self._get_query_service()
-        if service is not None:
-            service.ensure_index("mesh_peer_mapping_refresh")
-        revision_before_batch = self.current_identity_revision()
-        rows = self.build_rows(repo.distinct_peer_macs())
-        revision = (
-            self._last_batch_identity_revision
-            if self._last_batch_identity_revision is not None
-            else revision_before_batch
+    def refresh_repository(
+        self,
+        repo,
+        *,
+        source_file_ids: set[int] | None = None,
+    ) -> int:
+        """用同一 Identity snapshot 完成有限次数的来源投影。
+
+        ``source_file_ids`` 只对索引库生效，用于 fresh import 只收口本次
+        新来源；不传时保持维护任务对单个 detail repo 的原有语义。
+        """
+
+        selected_source_ids = (
+            {int(source_id) for source_id in source_file_ids}
+            if source_file_ids is not None
+            else None
         )
-        self.last_remap_summary = repo.replace_peer_identity_mappings(
-            rows,
-            identity_index_revision=revision,
+        last_snapshot_revision: int | None = None
+        last_current_revision: int | None = None
+        for attempt in range(self._MAX_STABLE_PROJECTION_ATTEMPTS):
+            service = self._get_query_service()
+            if service is not None:
+                service.ensure_index("mesh_peer_mapping_refresh")
+            revision_before_batch = self.current_identity_revision()
+            if selected_source_ids is None:
+                peer_macs = repo.distinct_peer_macs()
+            else:
+                peer_macs = repo.distinct_peer_macs(
+                    source_file_ids=selected_source_ids,
+                )
+            rows = self.build_rows(
+                peer_macs,
+            )
+            revision = (
+                self._last_batch_identity_revision
+                if self._last_batch_identity_revision is not None
+                else revision_before_batch
+            )
+            last_snapshot_revision = revision
+            if revision != revision_before_batch:
+                last_current_revision = revision_before_batch
+                if attempt + 1 < self._MAX_STABLE_PROJECTION_ATTEMPTS:
+                    continue
+                break
+
+            if selected_source_ids is None:
+                summary = repo.replace_peer_identity_mappings(
+                    rows,
+                    identity_index_revision=revision,
+                )
+            else:
+                summary = repo.replace_peer_identity_mappings(
+                    rows,
+                    identity_index_revision=revision,
+                    source_file_ids=selected_source_ids,
+                )
+            current_revision = self.current_identity_revision()
+            last_current_revision = current_revision
+            if revision != current_revision:
+                if attempt + 1 < self._MAX_STABLE_PROJECTION_ATTEMPTS:
+                    continue
+                break
+
+            remap_verified = (
+                summary.get("validation_status") == "passed"
+                and bool(summary.get("facts_unchanged"))
+            )
+            self.last_remap_summary = summary
+            self.last_remap_summary.update(
+                identity_index_revision=revision,
+                identity_mapping_status=(
+                    "ready" if revision > 0 and remap_verified else "unavailable"
+                ),
+                identity_mapped_at=datetime.now().isoformat(timespec="seconds"),
+                identity_revision_stable=True,
+            )
+            return int(self.last_remap_summary.get("mapping_count") or len(rows))
+
+        raise MeshIdentityRevisionUnstable(
+            "MESH AP Identity revision 在 projection 期间未稳定："
+            f"snapshot={last_snapshot_revision or 0}, current={last_current_revision or 0}"
         )
-        remap_verified = (
-            self.last_remap_summary.get("validation_status") == "passed"
-            and bool(self.last_remap_summary.get("facts_unchanged"))
-        )
-        self.last_remap_summary.update(
-            identity_index_revision=revision,
-            identity_mapping_status=(
-                "ready" if revision > 0 and remap_verified else "unavailable"
-            ),
-            identity_mapped_at=datetime.now().isoformat(timespec="seconds"),
-        )
-        return int(self.last_remap_summary.get("mapping_count") or len(rows))
 
     def current_identity_revision(self) -> int:
         service = self._get_query_service()

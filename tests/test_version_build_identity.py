@@ -10,7 +10,7 @@ from netconsole.core.version import APP_VERSION
 def test_update_policy_ignores_build_and_hash_changes() -> None:
     assert not should_offer_update(APP_VERSION, {"version": "v1.5.1", "published": True, "build_number": 2})
     assert not should_offer_update(APP_VERSION, {"version": "v1.5.2", "published": False, "build_number": 1})
-    assert should_offer_update(APP_VERSION, {"version": "v1.5.4", "published": True, "git_sha": "e91d47b"})
+    assert should_offer_update(APP_VERSION, {"version": "v1.5.5", "published": True, "git_sha": "e91d47b"})
 
 
 def test_build_number_is_explicit_and_does_not_change_product_version(

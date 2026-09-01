@@ -742,7 +742,10 @@ class MeshMrRepository:
     def _detail_repos(self) -> list[MeshMrRepository]:
         return [repo for _source_file_id, repo in self._detail_repo_items()]
 
-    def _detail_repo_items(self) -> list[tuple[int, MeshMrRepository]]:
+    def _detail_repo_items(
+        self,
+        source_file_ids: set[int] | None = None,
+    ) -> list[tuple[int, MeshMrRepository]]:
         if not self._is_index_database():
             return []
         with self._connect() as conn:
@@ -751,9 +754,12 @@ class MeshMrRepository:
             ).fetchall()
         repos: list[tuple[int, MeshMrRepository]] = []
         for row in rows:
+            source_file_id = int(row["id"])
+            if source_file_ids is not None and source_file_id not in source_file_ids:
+                continue
             path = Path(str(row["parsed_db_path"] or "").strip().strip("'\""))
             if path.exists():
-                repos.append((int(row["id"]), MeshMrRepository(path)))
+                repos.append((source_file_id, MeshMrRepository(path)))
         return repos
 
     def has_sha256(self, sha256: str) -> bool:
@@ -3218,10 +3224,17 @@ class MeshMrRepository:
             return [_with_synthetic_payload(row) for row in rows]
         return [dict(row) for row in rows]
 
-    def distinct_peer_macs(self) -> list[str]:
+    def distinct_peer_macs(
+        self,
+        *,
+        source_file_ids: set[int] | None = None,
+    ) -> list[str]:
         if self._is_index_database():
             values = set()
-            for repo in self._detail_repos():
+            for repo in (
+                detail_repo
+                for _source_file_id, detail_repo in self._detail_repo_items(source_file_ids)
+            ):
                 values.update(repo.distinct_peer_macs())
             return sorted(values)
         with self._connect() as conn:
@@ -3374,6 +3387,7 @@ class MeshMrRepository:
         rows: list[dict[str, object]],
         *,
         identity_index_revision: int = 0,
+        source_file_ids: set[int] | None = None,
     ) -> dict[str, object]:
         """Atomically replace only AP identity projections on parsed MESH rows."""
         if self._is_index_database():
@@ -3383,7 +3397,10 @@ class MeshMrRepository:
                 if normalize_mac_key(row.get("peer_mac_normalized"))
             }
             summaries = []
-            for repo in self._detail_repos():
+            for repo in (
+                detail_repo
+                for _source_file_id, detail_repo in self._detail_repo_items(source_file_ids)
+            ):
                 detail_rows = [
                     by_peer[peer_key]
                     for peer in repo.distinct_peer_macs()
@@ -3543,10 +3560,44 @@ class MeshMrRepository:
         identity_index_revision: int,
         identity_mapped_at: str,
         identity_mapping_status: str,
+        source_file_ids: set[int] | None = None,
     ) -> None:
         """Persist remap provenance without changing parsed MESH facts."""
         if self._is_index_database():
-            for repo in self._detail_repos():
+            with self._connect() as conn:
+                if source_file_ids is None:
+                    conn.execute(
+                        """
+                        UPDATE source_files
+                        SET identity_index_revision = ?, identity_mapped_at = ?,
+                            identity_mapping_status = ?
+                        """,
+                        (
+                            int(identity_index_revision),
+                            str(identity_mapped_at or ""),
+                            str(identity_mapping_status or "unknown"),
+                        ),
+                    )
+                elif source_file_ids:
+                    placeholders = ", ".join("?" for _ in source_file_ids)
+                    conn.execute(
+                        f"""
+                        UPDATE source_files
+                        SET identity_index_revision = ?, identity_mapped_at = ?,
+                            identity_mapping_status = ?
+                        WHERE id IN ({placeholders})
+                        """,
+                        (
+                            int(identity_index_revision),
+                            str(identity_mapped_at or ""),
+                            str(identity_mapping_status or "unknown"),
+                            *sorted(source_file_ids),
+                        ),
+                    )
+            for repo in (
+                detail_repo
+                for _source_file_id, detail_repo in self._detail_repo_items(source_file_ids)
+            ):
                 repo.update_identity_mapping_metadata(
                     identity_index_revision=identity_index_revision,
                     identity_mapped_at=identity_mapped_at,
