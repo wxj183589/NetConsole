@@ -1,5 +1,12 @@
 # NetConsole 更新日志
 
+## v1.5.5 - 2026-09-02
+
+### 修复
+
+- 修复 MESH RSSI 主用链路全量采样悬停时仅显示时间和 RSSI 的问题；补齐同一链路区段的状态、AP/Radio、MAC、RSSI、LinkCnt、站点/区间、持续时间及空口负载信息，并避免跨 AP 切换边界误取上下文。
+- 精简 MESH RSSI 对比页状态栏，移除误导性的当前 PeerMac、当前 AP、独立 Radio 和 Overlay LOD 技术徽标；保留业务统计、Payload 及后端 LOD/response_budget 逻辑。
+
 ## v1.5.4 - 2026-09-02
 
 ### 修复

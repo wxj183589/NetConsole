@@ -1,3 +1,7 @@
+v1.5.5 - 2026-09-02
+- 修复 MESH RSSI 主用链路全量采样悬停仅显示时间和 RSSI；按精确采样及同一链路区段解析状态、AP/Radio、MAC、RSSI、LinkCnt、站点/区间、持续时间和空口负载，禁止跨 AP 切换边界取上下文。
+- 精简 MESH RSSI 对比页状态栏，移除当前 PeerMac、当前 AP、独立 Radio 和 Overlay LOD 技术徽标；保留业务统计、Payload 及 LOD/response_budget 逻辑。
+
 v1.5.4 - 2026-09-02
 
 - 修复 MESH 原始日志 fresh import 完成后未收口到最终 AP Identity revision、立即显示 identity stale 的问题；导入生命周期内完成有限重试的身份投影与事实不变校验，历史来源的 stale 与手动刷新机制保持不变。

@@ -6,16 +6,22 @@ import { spawnSync } from 'node:child_process'
 import { describe, expect, it } from 'vitest'
 
 const appRoot = resolve(import.meta.dirname, '..')
+const versionSource = readFileSync(
+  resolve(appRoot, '..', '..', 'src', 'netconsole', 'core', 'version.py'),
+  'utf8',
+)
+const appVersion = versionSource.match(/^APP_VERSION\s*=\s*["']v?([^"']+)["']/m)?.[1]
 
 describe('Electron-only packaging', () => {
   it('packages the managed backend and preserves user data on uninstall', () => {
     const packageJson = JSON.parse(readFileSync(resolve(appRoot, 'package.json'), 'utf8'))
 
+    expect(appVersion).toBeDefined()
     expect(packageJson.scripts.package).toBe('pnpm run package:all')
     expect(packageJson.scripts['package:all']).toBe('node scripts/build-edition-installer.mjs both')
     expect(packageJson.scripts).not.toHaveProperty('package:legacy')
     expect(packageJson.scripts['smoke:package']).toContain('package-smoke.mjs')
-    expect(packageJson.build.productName).toBe('NetConsole v1.5.4 by wxj')
+    expect(packageJson.build.productName).toBe(`NetConsole v${appVersion} by wxj`)
     expect(packageJson.build.win.executableName).toBe('NetConsole')
     expect(packageJson.build.electronDist).toBe('node_modules/electron/dist')
     expect(packageJson.build.extraResources).toContainEqual({
