@@ -282,6 +282,8 @@ const bundlePreview = ref<MeshBundlePreview | null>(null)
 const bundleMappings = reactive<Record<string, Omit<MeshBundleMapping, 'role'> & { role: '' | 'CT' | 'CW'; confirmed: boolean }>>({})
 const batchLinkedMrId = ref('')
 const batchMappingConfirmed = ref(false)
+const batchMappingLoading = ref(false)
+const batchMappingError = ref('')
 const bundlePreviewLoading = ref(false)
 const importPreviewStage = ref('')
 const filters = reactive({ query: '', mr_role: '', has_warning: '' as '' | 'true' | 'false', page: 1, page_size: 50 })
@@ -436,6 +438,7 @@ const bundleCanApply = computed(() => Boolean(
   && bundlePreview.value.items.every((item) => Boolean(bundleMappings[item.member_id]))
   && bundlePreview.value.items.some((item) => previewImportState(item)?.duplicate_status === 'new')
   && batchMappingConfirmed.value
+  && !batchMappingLoading.value
   && bundlePreview.value.items.every((item) => bundleItemReady(item)),
 ))
 const bundleSubmitLabel = computed(() => (
@@ -3270,28 +3273,79 @@ function applyLinkedMrProfileName(): void {
   }
 }
 
-function applyBatchMrMapping(): void {
-  batchMappingConfirmed.value = false
-  const mr = baseMrs.value.find((item) => item.id === batchLinkedMrId.value)
-  if (!mr || !bundlePreview.value) return
-  const profile = profiles.value.find((item) => (
+function linkedMeshProfileForMr(mr: VehicleMr): MeshProfile | undefined {
+  return profiles.value.find((item) => (
     item.linked_device_uuid === mr.id
     || (mr.device_id !== null && item.linked_device_id === mr.device_id)
   ))
-  const role = normalizeVehicleMrRole(mr)
-  const trainNumber = String(mr.train_no || '').trim().replace(/^列车\s*/i, '')
-  if (!profile || !role || !trainNumber) {
-    ElMessage.warning('所选 MR 缺少内部归属、列车号或 CT/CW 端位，请先准备导入上下文。')
+}
+
+function clearBatchMappings(preview: MeshBundlePreview): void {
+  for (const item of preview.items) {
+    if (!canOverrideBatchMapping(item)) continue
+    const mapping = bundleMappings[item.member_id]
+    if (!mapping) continue
+    mapping.train_number = ''
+    mapping.role = ''
+    mapping.profile_id = ''
+    mapping.confirmed = false
+  }
+}
+
+function canOverrideBatchMapping(item: MeshBundlePreview['items'][number]): boolean {
+  // 仅允许用户批量覆盖尚未归档的新日志；历史重复和已归属其他 MR 的内容
+  // 必须保留原有冲突保护，不能因为下拉框选择而被“洗成”新日志。
+  return item.duplicate_status === 'new' || item.duplicate_status === 'duplicate_in_current_batch'
+}
+
+async function applyBatchMrMapping(): Promise<void> {
+  batchMappingConfirmed.value = false
+  batchMappingError.value = ''
+  const preview = bundlePreview.value
+  const mr = baseMrs.value.find((item) => item.id === batchLinkedMrId.value)
+  if (!preview) return
+  if (!mr) {
+    clearBatchMappings(preview)
     return
   }
-  for (const item of bundlePreview.value.items) {
-    bundleMappings[item.member_id] = {
-      member_id: item.member_id,
-      train_number: trainNumber,
-      role,
-      profile_id: profile.mr_id,
-      confirmed: false,
+
+  clearBatchMappings(preview)
+  const role = normalizeVehicleMrRole(mr)
+  const trainNumber = String(mr.train_no || '').trim().replace(/^列车\s*/i, '')
+  if (!role || !trainNumber) {
+    batchMappingError.value = '所选车载 MR 缺少有效列车号或 CT/CW 端位，无法建立导入映射。'
+    ElMessage.warning(batchMappingError.value)
+    return
+  }
+
+  batchMappingLoading.value = true
+  try {
+    let profile = linkedMeshProfileForMr(mr)
+    if (!profile) {
+      // 导入上下文默认保持轻量；只有用户明确选择了尚未建立归属的 MR 时，
+      // 才通过现有安全同步入口创建/刷新精确关联的 MESH Profile。
+      await prepareImportContext()
+      if (batchLinkedMrId.value !== mr.id || bundlePreview.value !== preview) return
+      profile = linkedMeshProfileForMr(mr)
     }
+    if (!profile) {
+      batchMappingError.value = '所选车载 MR 尚未建立有效的 MESH 内部归属，请先在“高级：无法匹配时创建内部归属”中创建后重试。'
+      ElMessage.warning(batchMappingError.value)
+      return
+    }
+
+    for (const item of preview.items) {
+      if (!canOverrideBatchMapping(item)) continue
+      bundleMappings[item.member_id] = {
+        member_id: item.member_id,
+        train_number: trainNumber,
+        role,
+        profile_id: profile.mr_id,
+        confirmed: false,
+      }
+    }
+  } finally {
+    batchMappingLoading.value = false
   }
 }
 
@@ -3363,6 +3417,7 @@ function chooseFiles(event: Event): void {
   bundlePreview.value = null
   batchLinkedMrId.value = ''
   batchMappingConfirmed.value = false
+  batchMappingError.value = ''
   for (const key of Object.keys(bundleMappings)) delete bundleMappings[key]
   input.value = ''
   if (selectedFiles.value.length) void previewImportFiles()
@@ -3379,6 +3434,7 @@ async function previewImportFiles(): Promise<void> {
   importPreviewError.value = ''
   bundlePreview.value = null
   batchMappingConfirmed.value = false
+  batchMappingError.value = ''
   for (const key of Object.keys(bundleMappings)) delete bundleMappings[key]
   error.value = ''
   try {
@@ -3484,6 +3540,7 @@ function clearImportSelection(): void {
   bundlePreview.value = null
   batchLinkedMrId.value = ''
   batchMappingConfirmed.value = false
+  batchMappingError.value = ''
   importPreviewError.value = ''
   for (const key of Object.keys(bundleMappings)) delete bundleMappings[key]
   if (fileInput.value) fileInput.value.value = ''
@@ -4289,10 +4346,11 @@ function exportTimestamp(now = new Date()): string {
         <template v-if="bundlePreview">
           <el-divider content-position="left">日志自动映射</el-divider>
           <el-form-item label="批量归属到车载 MR">
-            <el-select v-model="batchLinkedMrId" filterable clearable placeholder="选择一次，自动应用列车号、端位和内部归属" @change="applyBatchMrMapping">
+            <el-select v-model="batchLinkedMrId" filterable clearable :disabled="batchMappingLoading" placeholder="选择一次，自动应用列车号、端位和内部归属" @change="applyBatchMrMapping">
               <el-option v-for="mr in baseMrs" :key="mr.id" :label="vehicleMrOptionLabel(mr)" :value="mr.id" />
             </el-select>
           </el-form-item>
+          <el-alert v-if="batchMappingError" :title="batchMappingError" type="error" :closable="false" show-icon />
           <el-alert :title="bundleValidationMessage" :type="bundleCanApply ? 'success' : 'warning'" :closable="false" show-icon />
           <div class="bundle-table-wrap">
             <table class="bundle-table"><thead><tr><th>原始文件 / 内容指纹</th><th>首条日志时间</th><th>预计归档文件名</th><th>自动映射</th><th>重复状态</th></tr></thead><tbody>

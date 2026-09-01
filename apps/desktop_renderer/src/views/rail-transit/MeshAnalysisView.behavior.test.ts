@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   prepareContext: vi.fn(),
   getImportContext: vi.fn(),
   createProfile: vi.fn(),
+  applyBundleImport: vi.fn(),
   previewImport: vi.fn(),
   recoverTasks: vi.fn(),
   getTask: vi.fn(),
@@ -66,7 +67,7 @@ const mocks = vi.hoisted(() => ({
 }))
 
 vi.mock('../../api/meshAnalysis', () => ({
-  applyMeshBundleImport: vi.fn(),
+  applyMeshBundleImport: mocks.applyBundleImport,
   batchDeleteMeshSources: mocks.batchDeleteSources,
   createMeshProfile: mocks.createProfile,
   deleteMeshSource: mocks.deleteSource,
@@ -363,6 +364,12 @@ beforeEach(() => {
     updated_count: 0,
     skipped_count: 0,
     warnings: [],
+  })
+  mocks.applyBundleImport.mockResolvedValue({
+    task_id: 'mesh-import-task',
+    action: 'mesh_bundle_import',
+    status: 'PENDING',
+    message: '已提交',
   })
   mocks.createProfile.mockResolvedValue({
     mr_id: 'profile-new',
@@ -707,7 +714,299 @@ async function toggleRssiPresentation(wrapper: ReturnType<typeof mount>, label: 
   await flushPromises()
 }
 
+function importPreviewItem(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    member_id: 'mesh-member-1',
+    original_name: '2026_08_31_1meshlog(1).log.gz',
+    original_relative_path: '',
+    safe_name: '2026_08_31_1meshlog(1).log.gz',
+    size_bytes: 256,
+    sha256: 'a'.repeat(64),
+    raw_sha256: 'a'.repeat(64),
+    content_sha256: 'b'.repeat(64),
+    first_log_timestamp: '2026-08-31T00:07:16.712000',
+    last_log_timestamp: '2026-08-31T00:08:16.712000',
+    log_date: '2026-08-31',
+    stored_filename: '2026_08_31_1meshlog.log.gz',
+    daily_sequence: 1,
+    rename_status: 'renamed_by_log_date_sequence',
+    rename_warning: '',
+    duplicate_status: 'new',
+    batch_duplicate_of: '',
+    import_allowed: true,
+    existing_source_id: null,
+    existing_stored_filename: '',
+    existing_session_id: '',
+    existing_profile_id: '',
+    existing_profile_name: '',
+    train_number: '41',
+    role: 'CT',
+    match_status: 'matched',
+    selected_profile_id: 'profile-41-ct',
+    selected_profile_name: '列车41-MR-CT',
+    profile_import_states: [],
+    candidates: [],
+    ...overrides,
+  }
+}
+
 describe('Mesh analysis import context behavior', () => {
+  it('applies the selected MR to a direct .log.gz preview after safely syncing its profile', async () => {
+    const selectedMr = {
+      id: 'uuid-40-cw',
+      device_id: 40,
+      name: '列车40-MR-CW',
+      train_id: 'train-40',
+      train_no: '40',
+      role: 'CW',
+      mr_position_code: 'CW',
+    }
+    const selectedProfile = {
+      mr_id: 'profile-40-cw',
+      display_name: '列车40-MR-CW',
+      safe_folder_name: '列车40-MR-CW',
+      linked_device_id: 40,
+      linked_device_uuid: 'uuid-40-cw',
+    }
+    mocks.getImportContext
+      .mockResolvedValueOnce({ site_id: 'demo', revision: 'before-prepare', profiles: [], vehicle_mrs: [selectedMr] })
+      .mockResolvedValueOnce({ site_id: 'demo', revision: 'after-prepare', profiles: [selectedProfile], vehicle_mrs: [selectedMr] })
+    mocks.previewImport.mockResolvedValueOnce({
+      preview_id: 'preview-log-gz',
+      items: [importPreviewItem()],
+    })
+
+    const wrapper = mount(MeshAnalysisView, { global: { stubs, directives: { loading: () => undefined } } })
+    await flushPromises()
+    await wrapper.findAll('button').find((button) => button.text().includes('导入原始 MESH 日志'))!.trigger('click')
+    await flushPromises()
+
+    const file = new File(['mesh'], '2026_08_31_1meshlog(1).log.gz', { type: 'application/gzip' })
+    const fileInput = wrapper.findAll('input[type="file"]')[0]
+    Object.defineProperty(fileInput.element, 'files', { configurable: true, value: [file] })
+    await fileInput.trigger('change')
+    await flushPromises()
+    expect(mocks.previewImport).toHaveBeenCalledWith([file], expect.any(AbortSignal))
+
+    const batchSelect = wrapper.findAllComponents(selectStub).find((select) => (
+      select.props('placeholder') === '选择一次，自动应用列车号、端位和内部归属'
+    ))!
+    await batchSelect.vm.$emit('update:modelValue', selectedMr.id)
+    await batchSelect.vm.$emit('change', selectedMr.id)
+    await flushPromises()
+
+    expect(mocks.prepareContext).toHaveBeenCalledTimes(1)
+    expect(mocks.getImportContext).toHaveBeenCalledTimes(2)
+    expect(wrapper.find('.bundle-table tbody tr').text()).toContain('40 · CW')
+    expect(wrapper.find('.bundle-table tbody tr').text()).toContain('列车40-MR-CW')
+
+    ;(wrapper.vm as unknown as { batchMappingConfirmed: boolean }).batchMappingConfirmed = true
+    await nextTick()
+    const submit = wrapper.findAll('button').find((button) => button.text() === '确认导入并分析')!
+    expect(submit.attributes('disabled')).toBeUndefined()
+    await submit.trigger('click')
+    await flushPromises()
+    expect(mocks.applyBundleImport).toHaveBeenCalledWith({
+      preview_id: 'preview-log-gz',
+      mappings: [{ member_id: 'mesh-member-1', train_number: '40', role: 'CW', profile_id: 'profile-40-cw' }],
+      explicit_confirmation: true,
+    })
+    wrapper.unmount()
+  })
+
+  it('clears stale auto mapping when the selected MR still has no internal profile', async () => {
+    const selectedMr = {
+      id: 'mr-without-profile',
+      device_id: null,
+      name: '列车40-MR-CW',
+      train_id: 'train-40',
+      train_no: '40',
+      role: 'CW',
+      mr_position_code: 'CW',
+    }
+    mocks.getImportContext
+      .mockResolvedValueOnce({ site_id: 'demo', revision: 'before-prepare', profiles: [], vehicle_mrs: [selectedMr] })
+      .mockResolvedValueOnce({ site_id: 'demo', revision: 'after-prepare', profiles: [], vehicle_mrs: [selectedMr] })
+    mocks.previewImport.mockResolvedValueOnce({
+      preview_id: 'preview-no-profile',
+      items: [importPreviewItem()],
+    })
+
+    const wrapper = mount(MeshAnalysisView, { global: { stubs, directives: { loading: () => undefined } } })
+    await flushPromises()
+    await wrapper.findAll('button').find((button) => button.text().includes('导入原始 MESH 日志'))!.trigger('click')
+    await flushPromises()
+    const file = new File(['mesh'], 'unregistered.log.gz', { type: 'application/gzip' })
+    const fileInput = wrapper.findAll('input[type="file"]')[0]
+    Object.defineProperty(fileInput.element, 'files', { configurable: true, value: [file] })
+    await fileInput.trigger('change')
+    await flushPromises()
+
+    const batchSelect = wrapper.findAllComponents(selectStub).find((select) => (
+      select.props('placeholder') === '选择一次，自动应用列车号、端位和内部归属'
+    ))!
+    await batchSelect.vm.$emit('update:modelValue', selectedMr.id)
+    await batchSelect.vm.$emit('change', selectedMr.id)
+    await flushPromises()
+
+    const rowText = wrapper.find('.bundle-table tbody tr').text()
+    expect(rowText).toContain('— · —')
+    expect(rowText).not.toContain('41 · CT')
+    expect(wrapper.text()).toContain('所选车载 MR 尚未建立有效的 MESH 内部归属')
+    expect(mocks.prepareContext).toHaveBeenCalledTimes(1)
+    const submit = wrapper.findAll('button').find((button) => button.text() === '确认导入并分析')!
+    expect(submit.attributes('disabled')).toBeDefined()
+    wrapper.unmount()
+  })
+
+  it('keeps duplicate-other-MR mappings protected when a different batch MR is selected', async () => {
+    const selectedMr = {
+      id: 'uuid-40-cw',
+      device_id: 40,
+      name: '列车40-MR-CW',
+      train_id: 'train-40',
+      train_no: '40',
+      role: 'CW',
+      mr_position_code: 'CW',
+    }
+    mocks.getImportContext.mockResolvedValueOnce({
+      site_id: 'demo',
+      revision: 'test',
+      profiles: [{
+        mr_id: 'profile-41-ct',
+        display_name: '列车41-MR-CT',
+        safe_folder_name: '列车41-MR-CT',
+        linked_device_id: 41,
+        linked_device_uuid: 'uuid-41-ct',
+      }, {
+        mr_id: 'profile-40-cw',
+        display_name: '列车40-MR-CW',
+        safe_folder_name: '列车40-MR-CW',
+        linked_device_id: 40,
+        linked_device_uuid: 'uuid-40-cw',
+      }],
+      vehicle_mrs: [selectedMr],
+    })
+    mocks.previewImport.mockResolvedValueOnce({
+      preview_id: 'preview-duplicate-other',
+      items: [importPreviewItem({
+        duplicate_status: 'duplicate_other_mr',
+        selected_profile_id: 'profile-41-ct',
+        selected_profile_name: '列车41-MR-CT',
+        train_number: '41',
+        role: 'CT',
+      })],
+    })
+
+    const wrapper = mount(MeshAnalysisView, { global: { stubs, directives: { loading: () => undefined } } })
+    await flushPromises()
+    await wrapper.findAll('button').find((button) => button.text().includes('导入原始 MESH 日志'))!.trigger('click')
+    await flushPromises()
+    const file = new File(['mesh'], 'conflict.log.gz', { type: 'application/gzip' })
+    const fileInput = wrapper.findAll('input[type="file"]')[0]
+    Object.defineProperty(fileInput.element, 'files', { configurable: true, value: [file] })
+    await fileInput.trigger('change')
+    await flushPromises()
+
+    const batchSelect = wrapper.findAllComponents(selectStub).find((select) => (
+      select.props('placeholder') === '选择一次，自动应用列车号、端位和内部归属'
+    ))!
+    await batchSelect.vm.$emit('update:modelValue', selectedMr.id)
+    await batchSelect.vm.$emit('change', selectedMr.id)
+    await flushPromises()
+
+    const rowText = wrapper.find('.bundle-table tbody tr').text()
+    expect(rowText).toContain('41 · CT')
+    expect(rowText).not.toContain('40 · CW')
+    expect(wrapper.text()).toContain('内容属于其他 MR')
+    const submit = wrapper.findAll('button').find((button) => button.text() === '确认导入并分析')!
+    expect(submit.attributes('disabled')).toBeDefined()
+    expect(mocks.prepareContext).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('maps every new member in a three-file batch while retaining duplicate-same-MR ownership', async () => {
+    const selectedMr = {
+      id: 'mr-40-cw',
+      device_id: 40,
+      name: '列车40-MR-CW',
+      train_id: 'train-40',
+      train_no: '40',
+      role: 'CW',
+      mr_position_code: 'CW',
+    }
+    mocks.getImportContext.mockResolvedValueOnce({
+      site_id: 'demo',
+      revision: 'test',
+      profiles: [{
+        mr_id: 'profile-40-cw',
+        display_name: '列车40-MR-CW',
+        safe_folder_name: '列车40-MR-CW',
+        linked_device_id: 40,
+        linked_device_uuid: 'mr-40-cw',
+      }, {
+        mr_id: 'profile-41-ct',
+        display_name: '列车41-MR-CT',
+        safe_folder_name: '列车41-MR-CT',
+        linked_device_id: 41,
+        linked_device_uuid: 'uuid-41-ct',
+      }],
+      vehicle_mrs: [selectedMr],
+    })
+    mocks.previewImport.mockResolvedValueOnce({
+      preview_id: 'preview-three-files',
+      items: [
+        importPreviewItem({ member_id: 'new-1', original_name: 'new-1.log.gz' }),
+        importPreviewItem({
+          member_id: 'same-1',
+          original_name: 'already-imported.log.gz',
+          duplicate_status: 'duplicate_same_mr',
+          selected_profile_id: 'profile-41-ct',
+          selected_profile_name: '列车41-MR-CT',
+          train_number: '41',
+          role: 'CT',
+        }),
+        importPreviewItem({ member_id: 'new-2', original_name: 'new-2.log.gz' }),
+      ],
+    })
+
+    const wrapper = mount(MeshAnalysisView, { global: { stubs, directives: { loading: () => undefined } } })
+    await flushPromises()
+    await wrapper.findAll('button').find((button) => button.text().includes('导入原始 MESH 日志'))!.trigger('click')
+    await flushPromises()
+    const files = ['new-1.log.gz', 'already-imported.log.gz', 'new-2.log.gz']
+      .map((name) => new File(['mesh'], name, { type: 'application/gzip' }))
+    const fileInput = wrapper.findAll('input[type="file"]')[0]
+    Object.defineProperty(fileInput.element, 'files', { configurable: true, value: files })
+    await fileInput.trigger('change')
+    await flushPromises()
+    expect(wrapper.findAll('.bundle-table tbody tr')).toHaveLength(3)
+
+    const batchSelect = wrapper.findAllComponents(selectStub).find((select) => (
+      select.props('placeholder') === '选择一次，自动应用列车号、端位和内部归属'
+    ))!
+    await batchSelect.vm.$emit('update:modelValue', selectedMr.id)
+    await batchSelect.vm.$emit('change', selectedMr.id)
+    await flushPromises()
+    ;(wrapper.vm as unknown as { batchMappingConfirmed: boolean }).batchMappingConfirmed = true
+    await nextTick()
+
+    const submit = wrapper.findAll('button').find((button) => button.text() === '确认导入并分析')!
+    expect(submit.attributes('disabled')).toBeUndefined()
+    await submit.trigger('click')
+    await flushPromises()
+    expect(mocks.applyBundleImport).toHaveBeenCalledWith({
+      preview_id: 'preview-three-files',
+      mappings: [
+        { member_id: 'new-1', train_number: '40', role: 'CW', profile_id: 'profile-40-cw' },
+        { member_id: 'same-1', train_number: '41', role: 'CT', profile_id: 'profile-41-ct' },
+        { member_id: 'new-2', train_number: '40', role: 'CW', profile_id: 'profile-40-cw' },
+      ],
+      explicit_confirmation: true,
+    })
+    wrapper.unmount()
+  })
+
   it('keeps four duplicate basenames as independent member mappings', async () => {
     mocks.listProfiles.mockResolvedValueOnce([{
       mr_id: 'profile-1',
