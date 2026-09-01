@@ -131,6 +131,7 @@
   {"path":"tests/test_database_footprint_maintenance.py","classification":"TEST_ONLY","owner":"test","reason":"只读 snapshot、Safe Compact、WAL preflight、replace/rollback fault-injection fixture。"},
   {"path":"tests/test_storage_no_reinflation.py","classification":"TEST_ONLY","owner":"test","reason":"Task、Ground、MESH、Site Package 与 backup No-Reinflation 测试仅在 pytest 临时目录构造 SQLite fixture。"}
 ,
+  {"path":"tests/test_sqlite_utils.py","classification":"TEST_ONLY","owner":"test","reason":"SQLite 统一连接工厂和 WAL 初始化的隔离契约测试。"},
   {"path":"tests/test_task_storage_optimization.py","classification":"TEST_ONLY","owner":"test","reason":"Task result Blob authority、no-reinflation、Task Center list/detail 和 cleanup contract 仅在 pytest 临时目录构造 SQLite fixture。"},
   {"path":"tests/test_task_result_storage_maintenance.py","classification":"TEST_ONLY","owner":"test","reason":"Task result migration/compact 流程仅在 pytest 临时目录构造 legacy SQLite fixture，并验证 Blob/parity/quick-check。"},
   {"path":"tests/test_integrated_site_package_validation.py","classification":"TEST_ONLY","owner":"test","reason":"FULL Site Package 集成验证测试仅在 pytest 临时目录构造 SQLite fixture 和 isolated data roots。"},

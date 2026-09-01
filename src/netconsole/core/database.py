@@ -3585,6 +3585,7 @@ class Database:
             """
             UPDATE ac_fit_ap_resources
             SET serial_identity_key = netconsole_fit_ap_serial_identity(serial_number)
+            WHERE serial_identity_key IS NOT netconsole_fit_ap_serial_identity(serial_number)
             """
         )
         if self._table_exists(conn, "ap_entities"):
@@ -3592,6 +3593,7 @@ class Database:
                 """
                 UPDATE ap_entities
                 SET serial_identity_key = netconsole_fit_ap_serial_identity(serial_number)
+                WHERE serial_identity_key IS NOT netconsole_fit_ap_serial_identity(serial_number)
                 """
             )
 
@@ -3602,6 +3604,7 @@ class Database:
                 """
                 UPDATE ap_entities
                 SET serial_identity_key = netconsole_fit_ap_serial_identity(serial_number)
+                WHERE serial_identity_key IS NOT netconsole_fit_ap_serial_identity(serial_number)
                 """
             )
         self._validate_fit_ap_serial_identity_scope(conn)
