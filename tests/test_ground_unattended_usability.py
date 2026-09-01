@@ -166,12 +166,10 @@ def test_ping_query_unions_segments_created_before_and_after_restart(
         tmp_path / "ground" / "index.sqlite", site_id="site-a"
     )
     active = repository.db_path.parent / "active" / "2026-07-28"
-    now = datetime.now().astimezone().replace(
-        hour=12,
-        minute=0,
-        second=0,
-        microsecond=0,
-    )
+    # The writer closes a segment with the wall-clock time at restart. Keep
+    # generated samples before that close timestamp so the registered file's
+    # persisted interval overlaps the query range on every clock hour.
+    now = datetime.now().astimezone() - timedelta(hours=1)
     segment_ids: list[str] = []
     initial_cursor = ""
 

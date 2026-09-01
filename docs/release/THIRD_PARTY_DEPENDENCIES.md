@@ -1,6 +1,6 @@
 # 第三方依赖与许可证边界
 
-NetConsole v1.5.2 的正式桌面产品是 Electron + Vue + Python Backend；产品版本唯一来源为 `src/netconsole/core/version.py`。产品运行时不安装或打包 Qt/PySide/PyQt、shiboken、QFluentWidgets、SIP 或 Qt plugins；这些名称也是 Backend 与 Electron 安装包 Guard 的阻断标记。
+NetConsole v1.5.3 的正式桌面产品是 Electron + Vue + Python Backend；产品版本唯一来源为 `src/netconsole/core/version.py`。产品运行时不安装或打包 Qt/PySide/PyQt、shiboken、QFluentWidgets、SIP 或 Qt plugins；这些名称也是 Backend 与 Electron 安装包 Guard 的阻断标记。
 
 ## Python 依赖分层
 

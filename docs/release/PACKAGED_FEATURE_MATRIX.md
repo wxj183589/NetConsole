@@ -1,6 +1,6 @@
 # 正式 Electron 包功能矩阵
 
-本矩阵用于 v1.5.2 跨电脑交付门禁。`release included=是` 表示功能代码、页面和 API 属于正式构建契约，不代表已经完成真实 Windows/真实设备人工验收。自动测试不能替代 NSIS 安装、跨电脑导入或现场 SSH。入口实现与五类验收证据的交叉视图见[迁移矩阵事实维度验收矩阵](../archive/migrations/qt-to-electron/MIGRATION_MATRIX.md#事实维度验收矩阵)。
+本矩阵用于 v1.5.3 跨电脑交付门禁。`release included=是` 表示功能代码、页面和 API 属于正式构建契约，不代表已经完成真实 Windows/真实设备人工验收。自动测试不能替代 NSIS 安装、跨电脑导入或现场 SSH。入口实现与五类验收证据的交叉视图见[迁移矩阵事实维度验收矩阵](../archive/migrations/qt-to-electron/MIGRATION_MATRIX.md#事实维度验收矩阵)。
 
 ## 功能基线解析契约
 
