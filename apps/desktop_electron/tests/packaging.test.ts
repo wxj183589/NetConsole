@@ -311,6 +311,17 @@ describe('Electron-only packaging', () => {
     expect(script).toContain('PACKAGED_FRONTEND_COMMIT=')
   })
 
+  it('guards Python, Electron, productName, and packaged versions as one contract', () => {
+    const script = readFileSync(resolve(appRoot, 'scripts', 'package-smoke.mjs'), 'utf8')
+
+    expect(script).toContain('APP_VERSION')
+    expect(script).toContain('packageJson?.version')
+    expect(script).toContain('packageJson?.build?.productName')
+    expect(script).toContain('metadata?.app_version')
+    expect(script).toContain('VERSION_CONSISTENCY=PASS')
+    expect(script).toContain('Python APP_VERSION、Electron package.json version、productName 和包内 app_version 不一致')
+  })
+
   it('verifies the frozen health response and runtime logs use the same packaged identity', () => {
     const script = readFileSync(resolve(appRoot, 'scripts', 'package-smoke.mjs'), 'utf8')
 

@@ -32,7 +32,12 @@ const emit = defineEmits<{
 }>()
 
 const selectedRows = ref<TracksideApPlanRow[]>([])
-let editingBaseline: { rowIndex: number; field: EditableField; value: unknown } | null = null
+let editingBaseline: {
+  stationId: string
+  rowSnapshot: TracksideApPlanRow
+  field: EditableField
+  value: unknown
+} | null = null
 const rows = computed(() => sortTracksideApPlanRows(props.modelValue, props.stations))
 const editable = computed(() => props.editing && !props.readonly && !props.saving)
 const orderedStations = computed(() => sortRailStations(props.stations))
@@ -52,9 +57,8 @@ const planColumns = computed<NcTableColumn<TracksideApPlanRow>[]>(() => [
 ])
 
 function copyRows(): TracksideApPlanRow[] {
-  // Mutations address the parent model's identity/order; publish() applies
-  // the canonical display order after the mutation.
-  return JSON.parse(JSON.stringify(props.modelValue)) as TracksideApPlanRow[]
+  // All row-position operations use the order currently visible in the table.
+  return JSON.parse(JSON.stringify(rows.value)) as TracksideApPlanRow[]
 }
 
 function publish(next: TracksideApPlanRow[]): void {
@@ -88,17 +92,39 @@ function updateRequiredNumber(
 }
 
 function rowIndex(row: TracksideApPlanRow): number {
-  return props.modelValue.findIndex((candidate) => candidate === row || candidate.station_id === row.station_id)
+  const displayIndex = rows.value.indexOf(row)
+  if (displayIndex >= 0) return displayIndex
+  if (!row.station_id) return -1
+  return rows.value.findIndex((candidate) => candidate.station_id === row.station_id)
 }
 
 function beginCellEdit(row: TracksideApPlanRow, field: EditableField): void {
   const index = rowIndex(row)
-  if (index >= 0) editingBaseline = { rowIndex: index, field, value: field === 'station_name' ? { ...row } : row[field] }
+  if (index >= 0) {
+    editingBaseline = {
+      stationId: row.station_id,
+      rowSnapshot: { ...row },
+      field,
+      value: field === 'station_name' ? { ...row } : row[field],
+    }
+  }
+}
+
+function editingRowIndex(row: TracksideApPlanRow): number {
+  if (!editingBaseline) return -1
+  const currentIndex = rowIndex(row)
+  if (currentIndex < 0) return -1
+  if (editingBaseline.stationId && row.station_id === editingBaseline.stationId) return currentIndex
+  const unchangedFields = editableFields.filter((field) => field !== editingBaseline?.field)
+  if (unchangedFields.every((field) => row[field] === editingBaseline?.rowSnapshot[field])) return currentIndex
+  return rows.value.findIndex((candidate) => editableFields
+    .filter((field) => field !== editingBaseline?.field)
+    .every((field) => candidate[field] === editingBaseline?.rowSnapshot[field]))
 }
 
 function cancelCellEdit(row: TracksideApPlanRow, field: EditableField): void {
-  const index = rowIndex(row)
-  if (editingBaseline && editingBaseline.rowIndex === index && editingBaseline.field === field) {
+  const index = editingRowIndex(row)
+  if (editingBaseline && index >= 0 && editingBaseline.field === field) {
     const next = copyRows()
     if (field === 'station_name') {
       next[index] = editingBaseline.value as TracksideApPlanRow

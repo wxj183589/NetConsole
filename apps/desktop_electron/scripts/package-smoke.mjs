@@ -351,6 +351,7 @@ validateDeviceCompatibilityProfiles()
 validateFrozenLogPolicy()
 validatePackagedRuntimeFeaturePolicy()
 validatePackagedBuildMetadata()
+validateVersionConsistency()
 validateElevatedLauncher()
 validateIperfDistribution()
 validateFpingDistribution()
@@ -1146,6 +1147,40 @@ function validatePackagedBuildMetadata() {
   console.log(`SELF_CHECK_COMMIT=${metadata.backend_commit}`)
   console.log(`PACKAGED_BUILD_TIME=${metadata.build_time_utc}`)
   console.log(`PACKAGED_DIRTY=${String(metadata.build_dirty).toLowerCase()}`)
+}
+
+function validateVersionConsistency() {
+  const packageJson = JSON.parse(readFileSync(resolve(appRoot, 'package.json'), 'utf8'))
+  const pythonVersionSource = readFileSync(
+    resolve(projectRoot, 'src', 'netconsole', 'core', 'version.py'),
+    'utf8',
+  )
+  const pythonVersionMatch = pythonVersionSource.match(/(?:^|\n)\s*APP_VERSION\s*=\s*["']v?(\d+\.\d+\.\d+)["']/u)
+  const productName = String(packageJson?.build?.productName ?? '')
+  const productVersionMatch = productName.match(/\bv?(\d+\.\d+\.\d+)\b/u)
+  const metadataPath = resolve(
+    unpackedRoot,
+    'resources',
+    'backend',
+    '_internal',
+    'netconsole',
+    'assets',
+    'runtime',
+    'build-metadata.json',
+  )
+  const metadata = JSON.parse(readFileSync(metadataPath, 'utf8'))
+  const versions = [
+    pythonVersionMatch?.[1] ?? '',
+    String(packageJson?.version ?? '').trim(),
+    productVersionMatch?.[1] ?? '',
+    String(metadata?.app_version ?? '').trim().replace(/^v/u, ''),
+  ]
+  if (versions.some((version) => !/^\d+\.\d+\.\d+$/u.test(version)) || new Set(versions).size !== 1) {
+    throw new Error(
+      `Python APP_VERSION、Electron package.json version、productName 和包内 app_version 不一致：${versions.join(' / ')}`,
+    )
+  }
+  console.log(`VERSION_CONSISTENCY=PASS (${versions[0]})`)
 }
 
 function validatePackagedRuntimeIdentityLogs(dataRoot) {

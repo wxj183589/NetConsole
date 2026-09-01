@@ -44,7 +44,12 @@ const DataTableStub = defineComponent({
   props: { data: { type: Array, default: () => [] } },
   setup(props, { slots }) {
     return () => h('div', { class: 'data-table' }, (props.data as TracksideApPlanRow[]).map((row, index) =>
-      h('div', { class: 'table-row', key: row.station_id }, [
+      h('div', { class: 'table-row', key: `${row.station_id}-${index}`, 'data-station-id': row.station_id }, [
+        h('div', { class: 'sequence-cell' }, slots['cell-sequence_no']?.({ row, $index: index })),
+        h('div', { class: 'station-cell' }, [
+          h('span', { class: 'station-name' }, row.station_name),
+          slots['cell-station_name']?.({ row, $index: index }),
+        ]),
         h('div', { class: 'count-cell' }, slots['cell-planned_ap_count']?.({ row, $index: index })),
         h('div', { class: 'vlan-cell' }, slots['cell-management_vlan']?.({ row, $index: index })),
       ])))
@@ -74,7 +79,7 @@ function station(id: string, name: string, order: number, overrides: Partial<Pla
   }
 }
 
-function plan(stationId: string, name: string): TracksideApPlanRow {
+function plan(stationId: string, name: string, overrides: Partial<TracksideApPlanRow> = {}): TracksideApPlanRow {
   return {
     station_id: stationId,
     station_name: name,
@@ -84,6 +89,7 @@ function plan(stationId: string, name: string): TracksideApPlanRow {
     remark: '保留值',
     relation_status: 'resolved',
     candidate_station_ids: [],
+    ...overrides,
   }
 }
 
@@ -251,6 +257,141 @@ describe('trackside AP planning controlled draft', () => {
     await nextTick()
 
     expect(draft.value.map((row) => row.management_vlan)).toEqual([921, null])
+  })
+
+  it('pastes consecutive rows in sorted display order for an out-of-order modelValue', async () => {
+    const stations = [
+      station('station:1', '01站', 1),
+      station('station:2', '02站', 2),
+      station('station:3', '03站', 3),
+      station('station:depot', '车辆段', 0, {
+        sort_order: null,
+        node_type: 'depot',
+        participates_in_direction: false,
+      }),
+    ]
+    const draft = ref([
+      plan('station:depot', '车辆段', { sequence_no: 4, display_order: 4 }),
+      plan('station:3', '03站', { sequence_no: 3, display_order: 3 }),
+      plan('station:1', '01站', { sequence_no: 1, display_order: 1 }),
+      plan('station:2', '02站', { sequence_no: 2, display_order: 2 }),
+    ])
+    const Host = defineComponent({
+      components: { TracksideApPlanningTab },
+      setup: () => ({ draft, stations }),
+      template: '<TracksideApPlanningTab v-model="draft" :stations="stations" editing :readonly="false" :saving="false" />',
+    })
+    const wrapper = mount(Host, { global: { stubs } })
+
+    expect(wrapper.findAll('.table-row').map((row) => row.attributes('data-station-id'))).toEqual([
+      'station:1', 'station:2', 'station:3', 'station:depot',
+    ])
+    await wrapper.findAll('.vlan-cell input')[0].trigger('paste', {
+      clipboardData: { getData: () => '921\n922' },
+    })
+    await nextTick()
+
+    const values = new Map(draft.value.map((row) => [row.station_id, row.management_vlan]))
+    expect(values.get('station:1')).toBe(921)
+    expect(values.get('station:2')).toBe(922)
+    expect(values.get('station:3')).toBe(120)
+    expect(values.get('station:depot')).toBe(120)
+  })
+
+  it('continues a multi-row paste from the next visible row instead of the raw array position', async () => {
+    const stations = [
+      station('station:1', '01站', 1),
+      station('station:2', '02站', 2),
+      station('station:3', '03站', 3),
+      station('station:depot', '车辆段', 0, {
+        sort_order: null,
+        node_type: 'depot',
+        participates_in_direction: false,
+      }),
+    ]
+    const draft = ref([
+      plan('station:depot', '车辆段', { sequence_no: 4, display_order: 4 }),
+      plan('station:3', '03站', { sequence_no: 3, display_order: 3 }),
+      plan('station:1', '01站', { sequence_no: 1, display_order: 1 }),
+      plan('station:2', '02站', { sequence_no: 2, display_order: 2 }),
+    ])
+    const Host = defineComponent({
+      components: { TracksideApPlanningTab },
+      setup: () => ({ draft, stations }),
+      template: '<TracksideApPlanningTab v-model="draft" :stations="stations" editing :readonly="false" :saving="false" />',
+    })
+    const wrapper = mount(Host, { global: { stubs } })
+
+    await wrapper.findAll('.table-row')[1].find('.vlan-cell input').trigger('paste', {
+      clipboardData: { getData: () => '931\n932' },
+    })
+    await nextTick()
+
+    const values = new Map(draft.value.map((row) => [row.station_id, row.management_vlan]))
+    expect(values.get('station:1')).toBe(120)
+    expect(values.get('station:2')).toBe(931)
+    expect(values.get('station:3')).toBe(932)
+    expect(values.get('station:depot')).toBe(120)
+  })
+
+  it('attaches validation errors to the matching sorted display row', async () => {
+    const stations = [
+      station('station:1', '01站', 1),
+      station('station:2', '02站', 2),
+      station('station:3', '03站', 3),
+      station('station:depot', '车辆段', 0, {
+        sort_order: null,
+        node_type: 'depot',
+        participates_in_direction: false,
+      }),
+    ]
+    const draft = ref([
+      plan('station:depot', '车辆段', { sequence_no: 4, display_order: 4 }),
+      plan('station:3', '03站', { sequence_no: 3, display_order: 3 }),
+      plan('station:2', '02站', { sequence_no: 2, display_order: 2, management_vlan: 5000 }),
+      plan('station:1', '01站', { sequence_no: 1, display_order: 1 }),
+    ])
+    const Host = defineComponent({
+      components: { TracksideApPlanningTab },
+      setup: () => ({ draft, stations }),
+      template: '<TracksideApPlanningTab v-model="draft" :stations="stations" editing :readonly="false" :saving="false" />',
+    })
+    const wrapper = mount(Host, { global: { stubs } })
+
+    const errorRows = wrapper.findAll('.table-row').filter((row) => row.find('.vlan-cell .field-error').exists())
+    expect(errorRows).toHaveLength(1)
+    expect(errorRows[0].attributes('data-station-id')).toBe('station:2')
+    expect(errorRows[0].find('.station-name').text()).toBe('02站')
+    expect(errorRows[0].find('.vlan-cell .plan-cell').attributes('title')).toContain('VLAN')
+  })
+
+  it('restores the same station after sequence editing changes its sorted display position', async () => {
+    const draft = ref([
+      plan('station:2', '02站', { sequence_no: 1, display_order: 1 }),
+      plan('station:1', '01站', { sequence_no: 2, display_order: 2 }),
+    ])
+    const stations = [station('station:1', '01站', 1), station('station:2', '02站', 2)]
+    const Host = defineComponent({
+      components: { TracksideApPlanningTab },
+      setup: () => ({ draft, stations }),
+      template: '<TracksideApPlanningTab v-model="draft" :stations="stations" editing :readonly="false" :saving="false" />',
+    })
+    const wrapper = mount(Host, { global: { stubs } })
+
+    const secondStation = wrapper.findAll('.table-row')[0].find('.sequence-cell input')
+    await secondStation.trigger('focus')
+    await secondStation.setValue('3')
+    await nextTick()
+
+    expect(wrapper.findAll('.table-row').map((row) => row.attributes('data-station-id'))).toEqual([
+      'station:1', 'station:2',
+    ])
+    await wrapper.findAll('.table-row')[1].find('.sequence-cell input').trigger('keydown', { key: 'Escape' })
+    await nextTick()
+
+    const values = new Map(draft.value.map((row) => [row.station_id, row.sequence_no]))
+    expect(values.get('station:1')).toBe(2)
+    expect(values.get('station:2')).toBe(1)
   })
 
   it('restores the focused cell baseline on Escape', async () => {
