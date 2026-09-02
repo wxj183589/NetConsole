@@ -6,6 +6,12 @@
 
 - 修复 MESH RSSI 主用链路全量采样悬停时仅显示时间和 RSSI 的问题；补齐同一链路区段的状态、AP/Radio、MAC、RSSI、LinkCnt、站点/区间、持续时间及空口负载信息，并避免跨 AP 切换边界误取上下文。
 - 精简 MESH RSSI 对比页状态栏，移除误导性的当前 PeerMac、当前 AP、独立 Radio 和 Overlay LOD 技术徽标；保留业务统计、Payload 及后端 LOD/response_budget 逻辑。
+- 修复 Production 模式下 GUI 普通维护请求被全局写保护错误拦截的问题；CLI 显式 Production 写授权仍保留，当前局点、运行任务、精确确认、事务回滚和可恢复删除等业务保护继续生效。
+- 修复 Task Center 清理、非当前 Demo 删除/重建及 MESH 来源导入、AP Identity 刷新、重解析和解析/原始来源删除在 Production GUI 场景下的业务闭环；只读 preflight 不再为缺失任务库创建空 `tasks.db`。
+
+### 新增
+
+- 新增 MESH 当前来源的原始链路 Excel 导出，接入统一 Export Process 与 Task Center；导出绑定当前 Source，并保留持久化数值 `0`、`NULL` 和原始来源字段。
 
 ## v1.5.4 - 2026-09-02
 
