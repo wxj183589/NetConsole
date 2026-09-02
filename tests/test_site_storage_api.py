@@ -7,7 +7,8 @@ from fastapi.testclient import TestClient
 from netconsole.backend.api.main import create_app
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
-from netconsole.core.runtime_mode import RuntimeMode
+from netconsole.core.runtime_environment import write_data_environment
+from netconsole.core.runtime_mode import DataEnvironmentInfo, DataEnvironmentMode, RuntimeMode
 from netconsole.models.task_snapshot import TaskSnapshot, utc_now_iso
 from netconsole.models.task_state import TaskState
 from netconsole.services.site_lifecycle import SiteAuditService
@@ -21,9 +22,14 @@ from netconsole.services.site_storage import (
 TOKEN = "site-storage-session-token-123456"
 
 
-def _client(tmp_path: Path) -> TestClient:
+def _client(tmp_path: Path, *, production: bool = False) -> TestClient:
     app_root = tmp_path / "app"
     paths = PathResolver(app_root=app_root, data_root=tmp_path / "data")
+    if production:
+        write_data_environment(
+            paths.data_root,
+            DataEnvironmentInfo(DataEnvironmentMode.PRODUCTION, readonly_warning=True),
+        )
     app = create_app(
         RuntimeMode.DESKTOP,
         paths=paths,
@@ -162,6 +168,26 @@ def test_site_trash_requires_exact_name_and_rejects_current_demo_and_tasks(
     assert blocked.json()["detail"]["code"] == "SITE_HAS_ACTIVE_TASKS"
 
 
+def test_site_trash_allows_non_current_demo_with_exact_confirmation_in_production(tmp_path: Path) -> None:
+    client = _client(tmp_path, production=True)
+    created = client.post(
+        "/api/v1/sites",
+        json={"site_id": "line-1", "display_name": "一号线", "activate": False},
+    )
+    assert created.status_code == 201, created.text
+    activated = client.post("/api/v1/sites/line-1/activate", json={"confirmed": True})
+    assert activated.status_code == 200, activated.text
+
+    deleted = client.post(
+        "/api/v1/sites/demo/trash",
+        json={"confirm_display_name": "演示局点"},
+    )
+
+    assert deleted.status_code == 200, deleted.text
+    assert deleted.json()["recoverable"] is True
+    assert all(item["site_id"] != "demo" for item in client.get("/api/v1/sites").json())
+
+
 def test_site_trash_moves_non_current_site_and_refreshes_list(tmp_path: Path) -> None:
     client = _client(tmp_path)
     display_name = "长" * 65
@@ -266,6 +292,20 @@ def test_terminal_task_history_does_not_block_site_switch(tmp_path: Path) -> Non
 
     assert response.status_code == 200, response.text
     assert client.get("/api/v1/sites/active").json()["site_id"] == "line-12"
+
+
+def test_site_preflight_does_not_create_missing_task_database(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    client.post(
+        "/api/v1/sites", json={"site_id": "line-12", "display_name": "十二号线"}
+    )
+    tasks_db = client.app.state.paths.site_tasks_db_path("line-12")
+    assert not tasks_db.exists()
+
+    response = client.post("/api/v1/sites/line-12/activate/preflight")
+
+    assert response.status_code == 200, response.text
+    assert not tasks_db.exists()
 
 
 def test_dead_local_task_is_reconciled_before_site_switch(tmp_path: Path) -> None:

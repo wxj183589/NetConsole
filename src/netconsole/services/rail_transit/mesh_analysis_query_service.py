@@ -5566,6 +5566,7 @@ class MeshAnalysisQueryService:
         expected_types = {
             "mesh_analysis_report": "web_export_mesh_analysis_report",
             "mesh_link_detail_export": "web_export_mesh_link_detail_export",
+            "mesh_raw_link_export": "web_export_mesh_raw_link_export",
         }
         artifacts: list[_BoundReportArtifact] = []
         for manifest_path in manifest_root.glob("*.json"):

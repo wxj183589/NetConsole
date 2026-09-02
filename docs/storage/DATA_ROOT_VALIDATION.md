@@ -10,7 +10,7 @@
 
 | 环境 | 数据根 | `runtime_mode.json` | 允许的默认行为 |
 | --- | --- | --- | --- |
-| Production | `D:\NetConsoleData` | `mode=production`、`readonly_warning=true` | 采集、查看、分析、导出；维护写入默认阻止 |
+| Production | `D:\NetConsoleData` | `mode=production`、`readonly_warning=true` | 采集、查看、分析、导出及已确认的正常业务操作；环境状态仍标记为真实生产数据 |
 | 旧 Development 目标（历史） | `D:\NetConsoleData - dev` | `mode=development`、`created_from=D:\NetConsoleData` | 历史上的真实数据副本验证目标 |
 | Development Authority（现场已有） | `D:\NetConsoleData-dev` | `mode=development`、`created_from=D:\NetConsoleData` | 当前长期真实开发数据根；目录名不作为环境事实源 |
 
@@ -18,11 +18,13 @@
 
 启动不根据目录名猜测环境。持久化根必须包含有效的 `runtime_mode.json`；缺失、损坏、`test` 标记或生产根关闭只读警告时拒绝启动。测试进程仍使用显式 `RuntimeMode.TEST` 和 `D:\study\NetConsole-Workspace\test-data\NetConsole\<run-id>`，不写持久化 marker。
 
-Backend 启动日志和 `/api/health` 返回数据根、`PRODUCTION`/`DEVELOPMENT`/`TEST` 标签及生产写入授权状态；Renderer 顶部状态区展示当前数据根和运行模式。生产模式会显示“当前连接真实生产数据”的警告。
+Backend 启动日志和 `/api/health` 返回数据根、`PRODUCTION`/`DEVELOPMENT`/`TEST` 标签及独立 maintenance CLI 的生产写入授权状态；Renderer 顶部状态区展示当前数据根和运行模式。Production 只作为真实数据状态标识，不在页面显示 GUI 全局写保护提示。
 
 ## 2. Production / Development 区别（历史记录）
 
-生产根的普通业务路径不受影响：设备采集、查询、分析和导出仍可用。维护、批量删除、数据库修复、派生数据重建、历史迁移和其他破坏性写操作在生产根上默认拒绝，只有进程明确收到 `--allow-production-write`（内部环境变量 `NETCONSOLE_ALLOW_PRODUCTION_WRITE=1`）才会继续。
+历史快照中的 Backend 全局 Production 写保护已不再代表当前 GUI 语义。当前 Electron GUI 的正常业务操作（例如任务中心清理、非当前 Demo 删除/受控重建、MESH 导入/归档/解析重建/AP Identity 刷新/来源删除和导出）不再依赖 `--allow-production-write`；各 ApplicationService 仍负责二次确认、活动任务/当前局点/来源边界、事务和回滚。生产根只作为真实数据环境标记展示，不被误降级成 GUI 全局只读模式。
+
+独立 maintenance CLI 仍保留显式生产写入门禁：只有进程明确收到 `--allow-production-write`（内部环境变量 `NETCONSOLE_ALLOW_PRODUCTION_WRITE=1`）才会继续。该门禁不应传播到 Electron GUI 或普通 ApplicationService。
 
 下列维护 CLI 已接入同一门禁：
 
@@ -53,10 +55,10 @@ powershell -ExecutionPolicy Bypass -File .\scripts\sync_data_root.ps1  # 历史�
 
 1. **显式 marker**：`runtime_mode.json` 是持久化环境事实源，不使用 `D:\NetConsoleData - dev` 之类的目录名启发式。
 2. **启动识别**：缺失或无效 marker 拒绝持久化启动；健康接口、日志和 UI 同时显示根路径与环境标签。
-3. **生产写入门禁**：Backend 维护路由和独立 maintenance CLI 统一调用 `require_data_root_write_allowed`；默认只读业务能力保持开放。
+3. **生产写入边界**：独立 maintenance CLI 调用 `require_data_root_write_allowed`；Electron GUI 不使用该 CLI 门禁，而由各业务 Service 的确认、依赖、事务与回滚规则控制。
 4. **复制安全（历史）**：当时同步/重置脚本拒绝驱动器根和 junction/symlink；同步/重置入口现已退役，当前开发根不得通过整根复制刷新。
 
-生产根当前未执行 `DELETE`、`DROP`、`VACUUM`、checkpoint、数据库迁移、数据修复或 MESH 重建。任何需要生产授权的动作都必须留下命令行授权和审计记录。
+本次自动化验证未向生产根执行 `DELETE`、`DROP`、`VACUUM`、checkpoint、数据库迁移、数据修复或 MESH 重建；生产 GUI 破坏性操作仍需按现场验收流程确认，其业务安全规则不能由本历史文档替代。
 
 ## 5. 数据库生命周期检查结果
 

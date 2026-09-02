@@ -12,6 +12,8 @@ from fastapi.testclient import TestClient
 
 from netconsole.backend.api.main import create_app
 from netconsole.backend.api.mesh_analysis_router import router as mesh_analysis_router
+from netconsole.core.runtime_environment import write_data_environment
+from netconsole.core.runtime_mode import DataEnvironmentInfo, DataEnvironmentMode
 from netconsole.models.api.rail_transit_web import RailTransitTaskDTO
 from netconsole.models.api.rail_transit_base_data import VehicleMrDTO, VehicleMrPageDTO
 from netconsole.services.mesh_chart_payload import MeshChartSelectionLimitError
@@ -150,6 +152,7 @@ def test_mesh_analysis_queries_keep_analysis_files_unchanged(tmp_path: Path) -> 
         "/rail-transit/mesh-analysis/sessions/{session_id}/desktop-location",
         "/rail-transit/mesh-analysis/sessions/{session_id}/report",
         "/rail-transit/mesh-analysis/sessions/{session_id}/link-details/export",
+        "/rail-transit/mesh-analysis/sessions/{session_id}/raw-links/export",
         "/rail-transit/mesh-analysis/local-scans",
         "/rail-transit/mesh-analysis/local-scans/{scan_id}/import",
         "/rail-transit/mesh-analysis/local-scans/{scan_id}/ignore",
@@ -268,6 +271,42 @@ def test_mesh_source_delete_api_submits_confirmed_scope_to_application_service(
             "explicit_confirmation": True,
         }
     ]
+
+
+def test_mesh_raw_link_export_api_binds_selected_source_to_typed_task(
+    tmp_path: Path,
+) -> None:
+    paths, session_id, _detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    paths.config_dir.mkdir(parents=True, exist_ok=True)
+    paths.app_config_path.write_text('{"current_site":"demo"}', encoding="utf-8")
+    write_data_environment(
+        paths.data_root,
+        DataEnvironmentInfo(DataEnvironmentMode.PRODUCTION, readonly_warning=True),
+    )
+    app = create_app(paths=paths, frontend_dist=tmp_path / "missing-dist")
+    calls: list[tuple[str, str, int]] = []
+
+    def start_mesh_raw_link_export(site_id: str, selected_session_id: str, source_file_id: int) -> RailTransitTaskDTO:
+        calls.append((site_id, selected_session_id, source_file_id))
+        return RailTransitTaskDTO(
+            task_id="mesh-raw-export-api",
+            status="PENDING",
+            action="mesh_raw_link_export",
+        )
+
+    app.state.rail_transit_web_application_service = SimpleNamespace(
+        start_mesh_raw_link_export=start_mesh_raw_link_export,
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            f"/api/rail-transit/mesh-analysis/sessions/{quote(session_id, safe='')}/raw-links/export",
+            json={"source_file_id": 7},
+        )
+
+    assert response.status_code == 202
+    assert response.json()["task_id"] == "mesh-raw-export-api"
+    assert calls == [("demo", session_id, 7)]
 
 
 def test_mesh_batch_delete_and_maintenance_apis_submit_one_typed_task(

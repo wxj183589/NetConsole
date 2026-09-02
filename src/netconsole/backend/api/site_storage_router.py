@@ -162,8 +162,8 @@ def update_site(
 @router.post(
     "/sites/{site_id}/trash",
     response_model=SiteTrashResponse,
-    summary="安全删除普通局点",
-    description="将非当前普通局点原子移动到数据根 .trash 后再注销 Registry。",
+    summary="安全删除局点",
+    description="将非当前且通过业务校验的局点原子移动到数据根 .trash 后再注销 Registry。",
     dependencies=[Depends(_desktop), Depends(_persistent_storage)],
 )
 def trash_site(

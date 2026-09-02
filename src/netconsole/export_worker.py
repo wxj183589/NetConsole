@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import io
+from itertools import chain
 import json
 import os
 import sys
@@ -24,7 +25,11 @@ from netconsole.services.export.common_exporters import ExportCancelled
 from netconsole.services.export import error_event, finished_event, progress_event
 from netconsole.services.export.export_handlers import GENERIC_EXPORT_TASK_TYPES, run_generic_export_handler
 from netconsole.services.export.export_job import ExportJob
-from netconsole.services.mesh_link_detail_export import MeshLinkDetailExportCancelled, export_mesh_link_details_xlsx
+from netconsole.services.mesh_link_detail_export import (
+    MeshLinkDetailExportCancelled,
+    export_mesh_link_details_xlsx,
+    export_mesh_raw_links_xlsx,
+)
 from netconsole.services.mesh_ap_coverage_export import (
     MeshApCoverageExportCancelled,
     export_mesh_ap_coverage_audit_xlsx,
@@ -329,6 +334,54 @@ def _run_mesh_link_detail_export(job: ExportJob) -> None:
     _emit(event)
 
 
+def _run_mesh_raw_link_export(job: ExportJob) -> None:
+    job.validate()
+    db_path = Path(job.db_path)
+    output_path = Path(job.output_path)
+    tmp_path = Path(job.tmp_path)
+    tmp_path.parent.mkdir(parents=True, exist_ok=True)
+    repo = MeshMrRepository(db_path, read_only=True)
+    context = dict(job.context or {})
+    source_file_id = context.get("source_file_id")
+    if source_file_id in (None, ""):
+        raise ValueError("原始链路导出必须绑定具体来源文件")
+    source_file_id = int(source_file_id)
+    _emit_progress(job, 0, 0, "mesh_analysis.export_progress_query_raw_links", "正在统计原始链路记录")
+    total = repo.count_raw_link_records(source_file_id)
+    if total <= 0:
+        raise RuntimeError("暂无可导出的原始链路数据")
+    if _should_cancel(job):
+        raise MeshLinkDetailExportCancelled("导出已取消")
+    rows = iter(repo.iter_raw_link_records(source_file_id, batch_size=2000))
+    first = next(rows, None)
+    if first is None:
+        raise RuntimeError("原始链路记录在导出前已不可用")
+    _emit_progress(job, 0, total, "mesh_analysis.export_progress_write_raw_links", f"正在导出原始链路：0 / {total}")
+    export_result = export_mesh_raw_links_xlsx(
+        tmp_path,
+        chain((first,), rows),
+        total_rows=total,
+        export_context={
+            "source_file_id": source_file_id,
+            "description": "来自当前选中的 MESH Source 的 parser 持久化 mesh_links 记录。",
+        },
+        should_cancel=lambda: _should_cancel(job),
+    )
+    exported_rows = int(export_result.get("total_rows") or 0)
+    if exported_rows != total:
+        raise RuntimeError(f"原始链路导出行数不一致：数据库 {total}，Excel {exported_rows}")
+    if _should_cancel(job):
+        raise MeshLinkDetailExportCancelled("导出已取消")
+    _emit_progress(job, total, total, "mesh_analysis.export_progress_save", "正在保存原始链路 Excel")
+    os.replace(tmp_path, output_path)
+    event = _finished(job, str(output_path), row_count=exported_rows)
+    result = event.get("result")
+    if isinstance(result, dict):
+        result.update(export_result)
+    _mark_mesh_session_index_dirty(job)
+    _emit(event)
+
+
 def _run_mesh_ap_coverage_export(job: ExportJob) -> None:
     job.validate()
     session_ids = [str(value) for value in job.params.get("session_ids", []) if str(value)]
@@ -471,6 +524,9 @@ def _run_job(job: ExportJob) -> int:
             return 0
         if job.job_type in {"mesh_link_detail", "mesh_link_detail_export"}:
             _run_mesh_link_detail_export(job)
+            return 0
+        if job.job_type == "mesh_raw_link_export":
+            _run_mesh_raw_link_export(job)
             return 0
         if job.job_type == "mesh_ap_coverage_export":
             _run_mesh_ap_coverage_export(job)

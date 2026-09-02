@@ -774,10 +774,6 @@ class SiteCleanupApplicationService:
             raise SiteStorageError(
                 "SITE_TRASH_CURRENT", "当前局点不可删除，请先切换到其他局点。"
             )
-        if record.site_id == DEFAULT_SITE:
-            raise SiteStorageError(
-                "SITE_TRASH_DEMO", "内置 Demo 局点请使用“重建 Demo”"
-            )
         audit = self.auditor.latest(record.site_id)
         if audit and str(audit.get("classification") or "") == "empty_shell":
             raise SiteStorageError(

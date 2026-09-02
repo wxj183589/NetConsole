@@ -47,6 +47,15 @@ DERIVED_ANALYSIS_KEY = "derived_analysis_version"
 MIN_NORMAL_ACTIVE_SAMPLE_COUNT = 3
 _METRIC_COLUMNS = tuple(dict.fromkeys(column for _name, left, right in PAIRED_METRICS for column in (left, right)))
 _METRIC_SELECT_COLUMNS = ", ".join(_METRIC_COLUMNS)
+_RAW_LINK_SOURCE_FIELDS = (
+    ("source_mr_id", "mr_id"),
+    ("source_original_filename", "original_filename"),
+    ("source_archived_filename", "archived_filename"),
+    ("source_sha256", "sha256"),
+    ("source_content_sha256", "content_sha256"),
+    ("source_type", "source_type"),
+    ("source_status", "source_status"),
+)
 _MESH_LINK_CHART_COLUMNS = (
     "id, sample_id, source_file_id, session_id, sample_time, radio, link_state, link_count, peer_mac_raw, peer_mac_normalized, "
     "peer_mac AS peer_mac_display, "
@@ -1603,6 +1612,122 @@ class MeshMrRepository:
                 if key not in group_indexes:
                     group_indexes[key] = len(group_indexes)
                 data["sample_group_index"] = group_indexes[key]
+                yield data
+            if len(rows) < batch_size:
+                break
+            last_row = rows[-1]
+            cursor_order = (
+                int(last_row["source_file_order"] or 0),
+                int(last_row["record_seq"] or 0),
+                int(last_row["source_line_number"] or 0),
+                int(last_row["id"] or 0),
+            )
+
+    def count_raw_link_records(self, source_file_id: int | str | None) -> int:
+        """Count persisted parser link facts for one exact source without analysis filters."""
+        if source_file_id in (None, ""):
+            return 0
+        value = int(source_file_id)
+        if self._is_index_database():
+            repo = self._detail_repo_for_source(value)
+            return repo.count_raw_link_records(1) if repo is not None else 0
+        with self._connect() as conn:
+            return int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM mesh_links WHERE source_file_id = ?",
+                    (value,),
+                ).fetchone()[0]
+                or 0
+            )
+
+    def iter_raw_link_records(
+        self,
+        source_file_id: int | str | None,
+        batch_size: int = 2000,
+    ):
+        """Yield the persisted ``mesh_links`` row authority for one source.
+
+        This deliberately bypasses synthetic payloads, identity formatting and
+        analysis filters.  The raw parser columns remain DB-native values so an
+        integer zero is distinguishable from SQL NULL in the export layer.
+        """
+        if source_file_id in (None, ""):
+            return
+        value = int(source_file_id)
+        batch_size = max(1, int(batch_size or 2000))
+        if self._is_index_database():
+            repo = self._detail_repo_for_source(value)
+            if repo is None:
+                return
+            source = self.get_source_file(value) or {}
+            for row in repo.iter_raw_link_records(1, batch_size):
+                data = dict(row)
+                data["source_file_id"] = value
+                data.update(
+                    {
+                        export_key: source.get(source_key)
+                        for export_key, source_key in _RAW_LINK_SOURCE_FIELDS
+                    }
+                )
+                yield data
+            return
+
+        with self._connect() as conn:
+            source_row = conn.execute(
+                "SELECT * FROM source_files WHERE id = ?",
+                (value,),
+            ).fetchone()
+        if source_row is None:
+            return
+        source = dict(source_row)
+        source_metadata = {
+            export_key: source.get(source_key)
+            for export_key, source_key in _RAW_LINK_SOURCE_FIELDS
+        }
+        cursor_order: tuple[int, int, int, int] | None = None
+        while True:
+            clauses = ["ml.source_file_id = ?"]
+            values: list[object] = [value]
+            if cursor_order is not None:
+                source_order, record_seq, source_line_number, link_id = cursor_order
+                clauses.append(
+                    "(ml.source_file_order > ? OR "
+                    "(ml.source_file_order = ? AND ml.record_seq > ?) OR "
+                    "(ml.source_file_order = ? AND ml.record_seq = ? AND ml.source_line_number > ?) OR "
+                    "(ml.source_file_order = ? AND ml.record_seq = ? AND ml.source_line_number = ? AND ml.id > ?))"
+                )
+                values.extend(
+                    [
+                        source_order,
+                        source_order,
+                        record_seq,
+                        source_order,
+                        record_seq,
+                        source_line_number,
+                        source_order,
+                        record_seq,
+                        source_line_number,
+                        link_id,
+                    ]
+                )
+            with self._connect() as conn:
+                rows = conn.execute(
+                    f"""
+                    SELECT ml.*, s.timestamp_tag
+                    FROM mesh_links ml
+                    LEFT JOIN samples s ON s.id = ml.sample_id
+                    WHERE {' AND '.join(clauses)}
+                    ORDER BY ml.source_file_order ASC, ml.record_seq ASC,
+                             ml.source_line_number ASC, ml.id ASC
+                    LIMIT ?
+                    """,
+                    [*values, batch_size],
+                ).fetchall()
+            if not rows:
+                break
+            for row in rows:
+                data = dict(row)
+                data.update(source_metadata)
                 yield data
             if len(rows) < batch_size:
                 break

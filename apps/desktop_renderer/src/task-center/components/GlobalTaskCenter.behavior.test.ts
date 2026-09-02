@@ -325,7 +325,7 @@ describe('GlobalTaskCenter behavior', () => {
     wrapper.unmount()
   })
 
-  it('reports an empty cleanup and the production guard without generic duplicate errors', async () => {
+  it('reports an empty cleanup and keeps business cleanup conflicts actionable', async () => {
     const pinia = createPinia()
     const wrapper = mountGlobal(pinia)
     await flushPromises()
@@ -345,14 +345,14 @@ describe('GlobalTaskCenter behavior', () => {
     expect(mocks.messages.error).not.toHaveBeenCalled()
 
     mocks.cleanupTasks.mockRejectedValueOnce(new ApiRequestError(
-      '当前连接真实生产数据；该维护/删除操作已阻止。',
+      '任务清理仍有运行依赖。',
       409,
-      'PRODUCTION_WRITE_CONFIRMATION_REQUIRED',
+      'TASK_CLEANUP_CONFLICT',
     ))
     await (wrapper.vm as unknown as { cleanupHistory: (type: 'completed') => Promise<void> }).cleanupHistory('completed')
     await flushPromises()
     expect(mocks.messages.error).toHaveBeenCalledOnce()
-    expect(mocks.messages.error).toHaveBeenCalledWith('生产模式已阻止任务清理：当前操作需要授权维护模式。')
+    expect(mocks.messages.error).toHaveBeenCalledWith('任务清理仍有运行依赖。')
     wrapper.unmount()
   })
 

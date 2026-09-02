@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
-  applyMeshBundleImport, batchDeleteMeshSources, createMeshProfile, deleteMeshArtifact, deleteMeshSource, exportMeshLinkDetails, getMeshActivePathChart, getMeshAnalysisParamsTemplate,
+  applyMeshBundleImport, batchDeleteMeshSources, createMeshProfile, deleteMeshArtifact, deleteMeshSource, exportMeshLinkDetails, exportMeshRawLinks, getMeshActivePathChart, getMeshAnalysisParamsTemplate,
   getMeshAnalysisSession, getMeshCounterDeltas, getMeshPeerSegmentChart, getMeshRateSeries, getMeshTracksideSignalChart, listMeshActiveBuildOrder, listMeshProfiles, listMeshSwitchEvents,
   getMeshLocalScan, ignoreMeshLocalScanCandidates, importMeshLocalScan, openMeshLocalScanCandidateDirectory,
   previewMeshBundle, saveMeshAnalysisParams, startMeshLocalScan, startMeshMaintenance,
@@ -135,6 +135,16 @@ describe('Mesh profile API', () => {
 
     expect(fetchMock.mock.calls[0][0]).toBe('/api/rail-transit/mesh-analysis/sessions/mr-id%3A1/link-details/export')
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ source_file_id: 7, analysis_params_override: params })
+  })
+
+  it('starts the raw link export for the selected source', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ task_id: 'raw-export-1' }) })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await exportMeshRawLinks('mr-id:1', 7)
+
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/rail-transit/mesh-analysis/sessions/mr-id%3A1/raw-links/export')
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ source_file_id: 7 })
   })
 
   it('accepts and encodes the backend compound MESH session identifier', async () => {

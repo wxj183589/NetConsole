@@ -287,9 +287,6 @@ async function cleanupHistory(cleanupType: TaskCleanupType): Promise<void> {
 }
 
 function cleanupErrorMessage(cause: unknown): string {
-  if (cause instanceof ApiRequestError && cause.code === 'PRODUCTION_WRITE_CONFIRMATION_REQUIRED') {
-    return '生产模式已阻止任务清理：当前操作需要授权维护模式。'
-  }
   if (cause instanceof ApiRequestError && cause.status === 409 && cause.message) {
     return cause.message
   }

@@ -85,6 +85,7 @@ export const startMeshMaintenance = (
   },
 )
 export const exportMeshLinkDetails = (id: string, sourceFileId: number, analysisParamsOverride?: MeshAnalysisParams): Promise<RailTransitTask> => apiRequest(`${root}/sessions/${meshSessionPathSegment(id)}/link-details/export`, { method: 'POST', body: JSON.stringify({ source_file_id: sourceFileId, ...(analysisParamsOverride ? { analysis_params_override: analysisParamsOverride } : {}) }) })
+export const exportMeshRawLinks = (id: string, sourceFileId: number): Promise<RailTransitTask> => apiRequest(`${root}/sessions/${meshSessionPathSegment(id)}/raw-links/export`, { method: 'POST', body: JSON.stringify({ source_file_id: sourceFileId }) })
 export const listMeshLinks = (id: string, values: Record<string, string | number | boolean | null | undefined>): Promise<Page<MeshLinkDetail>> => apiRequest(`${root}/sessions/${meshSessionPathSegment(id)}/links${qs(values)}`)
 export const listMeshActiveBuildOrder = (
   id: string,

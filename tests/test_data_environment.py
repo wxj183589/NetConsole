@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import asyncio
 import json
-from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -15,7 +13,6 @@ from netconsole.core.runtime_environment import (
     write_data_environment,
 )
 from netconsole.core.runtime_mode import DataEnvironmentInfo, DataEnvironmentMode
-from netconsole.backend.api.main import ProductionMaintenanceAdmissionMiddleware
 
 
 def test_persistent_root_requires_an_explicit_marker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -83,34 +80,3 @@ def test_development_environment_allows_maintenance_without_production_override(
 def test_test_environment_is_process_bound_and_does_not_require_marker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("NETCONSOLE_RUNTIME_MODE", "test")
     assert data_environment(tmp_path).mode is DataEnvironmentMode.TEST
-
-
-def test_production_middleware_blocks_rebuild_but_allows_mesh_export(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("NETCONSOLE_ALLOW_PRODUCTION_WRITE", raising=False)
-    calls: list[str] = []
-
-    async def downstream(scope, receive, send) -> None:
-        calls.append(str(scope["path"]))
-
-    middleware = ProductionMaintenanceAdmissionMiddleware(
-        downstream,
-        state=SimpleNamespace(
-            data_environment=DataEnvironmentInfo(DataEnvironmentMode.PRODUCTION, readonly_warning=True)
-        ),
-    )
-
-    async def invoke(path: str) -> list[dict]:
-        messages: list[dict] = []
-
-        async def send(message: dict) -> None:
-            messages.append(message)
-
-        await middleware({"type": "http", "method": "POST", "path": path}, None, send)
-        return messages
-
-    blocked = asyncio.run(invoke("/api/rail-transit/mesh-analysis/sessions/s1/rebuild"))
-    allowed = asyncio.run(invoke("/api/rail-transit/mesh-analysis/ap-coverage/export"))
-
-    assert blocked[0]["status"] == 409
-    assert allowed == []
-    assert calls == ["/api/rail-transit/mesh-analysis/ap-coverage/export"]

@@ -12,7 +12,7 @@ from matplotlib.dates import date2num
 
 from netconsole.core.database import Database
 from netconsole.models.ap_identity_index import ApIdentityMatch
-from netconsole.models.mesh_log_models import EVENT_ACTIVE_SWITCH, EVENT_MULTI_ACTIVE, EVENT_NO_ACTIVE
+from netconsole.models.mesh_log_models import EVENT_ACTIVE_SWITCH, EVENT_MULTI_ACTIVE, EVENT_NO_ACTIVE, PAIRED_METRICS
 from netconsole.parsers.mesh_log_parser import MeshLogParser, calculate_signal
 from netconsole.core.paths import PathResolver
 from netconsole.repositories.mesh_mr_repository import MeshMrRepository, MeshSchemaRebuildRequired
@@ -113,6 +113,21 @@ def test_parse_timestamp_and_standy(tmp_path):
     assert records[0].timestamp_tag == "3"
     assert records[0].link_state_raw == "Standy"
     assert records[0].link_state == "STANDBY"
+
+
+def test_parser_preserves_zero_metrics_and_null_derived_signal(tmp_path: Path) -> None:
+    path = tmp_path / "zero-metrics-meshlog.log"
+    zero_record = "[1] Active 30f5-277a-5a2f 2025/12/03 10:12:30 0d 00h 00m 03s 1 " + " ".join(["0/0"] * len(PAIRED_METRICS))
+    path.write_text("[1] 2025/12/03 10:12:33.000\n" + zero_record + "\n", encoding="utf-8")
+
+    info, records, issues = MeshLogParser().parse_file(path)
+
+    assert info.record_count == 1
+    assert records[0].link_count == 1
+    assert all(value == 0 for value in records[0].metrics.values())
+    assert records[0].local_signal_dbm is None
+    assert records[0].peer_signal_dbm is None
+    assert not [issue for issue in issues if issue.severity == "ERROR"]
 
 
 def test_parser_discards_entire_snapshot_when_active_linkcnt_is_zero(tmp_path: Path) -> None:
@@ -303,6 +318,30 @@ def test_mesh_import_persists_all_positive_linkcnt_facts(tmp_path: Path) -> None
         ("STANDBY", 3),
     ]
     assert [issue.issue_type for issue in result.issues] == ["扩展 LinkCnt 值", "无效主链快照"]
+
+
+def test_mesh_import_and_raw_repository_keep_zero_metrics_and_source_scope(tmp_path: Path) -> None:
+    paths = PathResolver(tmp_path)
+    profile = MeshStorageService("demo", paths).create_mr_profile("14CW-01")
+    source = tmp_path / "14CW-01-2026_08_07-meshlog.log"
+    zero_record = "[1] Active 30f5-277a-5a2f 2025/12/03 10:12:30 0d 00h 00m 03s 1 " + " ".join(["0/0"] * len(PAIRED_METRICS))
+    source.write_text("[1] 2025/12/03 10:12:33.000\n" + zero_record + "\n", encoding="utf-8")
+
+    MeshImportService("demo", paths).import_files(profile, [source])
+    repository = MeshMrRepository(paths.mesh_mr_db_path("demo", profile.safe_folder_name))
+    source_id = int(repository.list_source_files()[0]["id"])
+
+    rows = list(repository.iter_raw_link_records(source_id, batch_size=1))
+
+    assert repository.count_raw_link_records(source_id) == 1
+    assert len(rows) == 1
+    assert rows[0]["source_file_id"] == source_id
+    assert rows[0]["local_rssi_db"] == 0
+    assert rows[0]["peer_rssi_db"] == 0
+    assert rows[0]["local_rate_raw"] == 0
+    assert rows[0]["peer_rate_raw"] == 0
+    assert rows[0]["local_signal_dbm"] is None
+    assert rows[0]["peer_signal_dbm"] is None
 
 
 def test_same_timestamp_with_different_tags_remains_distinct(tmp_path):

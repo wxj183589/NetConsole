@@ -980,6 +980,12 @@ class SiteApplicationService:
         if service is None:
             return []
         directory_name = self.registry.directory_name(site_id)
+        # A pristine managed Demo does not ship a task database.  The global
+        # site-mutation preflight is read-only and must not create one merely
+        # to prove that no active tasks exist; doing so changes the Demo seed
+        # manifest before the rebuild worker can consume it.
+        if not self.paths.site_tasks_db_path(directory_name).is_file():
+            return []
         list_blocking = getattr(service, "list_site_blocking_tasks", None)
         if callable(list_blocking):
             snapshots, reconciled = list_blocking(directory_name)

@@ -205,6 +205,7 @@ class RailTransitWebApplicationService:
         "mesh_analysis_maintenance": "MESH 来源维护",
         "mesh_analysis_source_delete": "删除 MESH 来源及解析结果",
         "mesh_analysis_sources_delete": "批量删除 MESH 来源及解析结果",
+        "mesh_raw_link_export": "MESH 原始链路导出",
         "car_network_diagnostic": "车内通信检测",
         "car_network_generate_point_table": "从设备管理生成车内通信点表",
         "car_network_save_point_table": "保存车内通信点表",
@@ -227,6 +228,7 @@ class RailTransitWebApplicationService:
         "web_export_online_mr_report_xlsx",
         "web_export_mesh_analysis_report",
         "web_export_mesh_link_detail_export",
+        "web_export_mesh_raw_link_export",
         "web_export_mesh_ap_coverage_export",
         "web_export_car_network_point_table",
         "web_export_trackside_ap_business",
@@ -241,6 +243,7 @@ class RailTransitWebApplicationService:
         "online_mr_report": "web_export_online_mr_report_xlsx",
         "mesh_analysis_report": "web_export_mesh_analysis_report",
         "mesh_link_detail_export": "web_export_mesh_link_detail_export",
+        "mesh_raw_link_export": "web_export_mesh_raw_link_export",
         "mesh_ap_coverage_export": "web_export_mesh_ap_coverage_export",
         "car_network_point_table": "web_export_car_network_point_table",
         "trackside_ap_business": "web_export_trackside_ap_business",
@@ -255,6 +258,7 @@ class RailTransitWebApplicationService:
         "web_export_online_mr_report_xlsx": "online_mr_report",
         "web_export_mesh_analysis_report": "mesh_analysis_report",
         "web_export_mesh_link_detail_export": "mesh_link_detail_export",
+        "web_export_mesh_raw_link_export": "mesh_raw_link_export",
         "web_export_mesh_ap_coverage_export": "mesh_ap_coverage_export",
         "web_export_car_network_point_table": "car_network_point_table_export",
         "web_export_trackside_ap_business": "trackside_ap_business_export",
@@ -269,6 +273,7 @@ class RailTransitWebApplicationService:
         "online_mr_report": "online_mr_report",
         "mesh_analysis_report": "mesh_analysis_report",
         "mesh_link_detail_export": "mesh_link_detail_export",
+        "mesh_raw_link_export": "mesh_raw_link_export",
         "mesh_ap_coverage_export": "mesh_ap_coverage_export",
         "car_network_point_table": "car_network_point_table_export",
         "trackside_ap_business": "trackside_ap_business_export",
@@ -3434,6 +3439,59 @@ class RailTransitWebApplicationService:
         )
         return self._start_export(site_id, job, "mesh_link_detail_export", reservation)
 
+    def start_mesh_raw_link_export(
+        self,
+        site_id: str,
+        session_id: str,
+        *,
+        source_file_id: int,
+    ) -> RailTransitTaskDTO:
+        site_id = self._site(site_id)
+        try:
+            context = self.mesh_query_service._context(site_id, session_id)
+        except MeshAnalysisQueryError as exc:
+            raise RailTransitWebError("MESH_SESSION_NOT_FOUND", str(exc)) from exc
+        if int(source_file_id) != context.source_id:
+            raise RailTransitWebError("MESH_SOURCE_NOT_FOUND", "导出来源必须是当前选中的具体日志")
+        if context.detail_db is None or not context.detail_db.is_file():
+            raise RailTransitWebError("MESH_RESULT_NOT_FOUND", "MESH 结构化分析结果不存在")
+        output_root = self.paths.mesh_mr_export_dir(site_id, context.safe_folder_name).resolve()
+        self._require_within(output_root, self.paths.site_mesh_root(site_id).resolve())
+        task_id = f"rail-export-{uuid4().hex}"
+        reservation = self.artifact_store.reserve(
+            site_id=site_id,
+            owner=self._OWNER,
+            source="mesh_raw_link_export",
+            artifact_type="xlsx",
+            task_id=task_id,
+            task_type=self._ARTIFACT_TASK_TYPES["mesh_raw_link_export"],
+            output_root=output_root,
+            preferred_name=f"{context.mr_name}_mesh_raw_links_{datetime.now():%Y%m%d_%H%M%S}.xlsx",
+            context={
+                "kind": "mesh_analysis_session",
+                "session_id": session_id,
+            },
+        )
+        job = ExportJob(
+            job_id=task_id,
+            job_type="mesh_raw_link_export",
+            site_name=site_id,
+            output_path=str(reservation.output_path),
+            db_path=str(context.detail_db),
+            context={
+                "session_id": session_id,
+                "source_file_id": context.detail_source_id,
+                "site_name": site_id,
+                "mr_name": context.mr_name,
+                "source_label": str(
+                    context.source.get("original_filename")
+                    or context.source.get("archived_filename")
+                    or context.source_id
+                ),
+            },
+        )
+        return self._start_export(site_id, job, "mesh_raw_link_export", reservation)
+
     def start_mesh_ap_coverage_export(
         self,
         site_id: str,
@@ -3565,6 +3623,7 @@ class RailTransitWebApplicationService:
             "mesh_analysis_sources_delete",
             "web_export_mesh_analysis_report",
             "web_export_mesh_link_detail_export",
+            "web_export_mesh_raw_link_export",
             "web_export_mesh_ap_coverage_export",
         }
         source_key = f"mesh_source:{session_id}"
@@ -3808,6 +3867,9 @@ class RailTransitWebApplicationService:
 
     def open_mesh_link_detail_export(self, site_id: str, artifact_id: str) -> tuple[Path, str]:
         return self._open_artifact(site_id, artifact_id, "mesh_link_detail_export")
+
+    def open_mesh_raw_link_export(self, site_id: str, artifact_id: str) -> tuple[Path, str]:
+        return self._open_artifact(site_id, artifact_id, "mesh_raw_link_export")
 
     def open_mesh_ap_coverage_export(self, site_id: str, artifact_id: str) -> tuple[Path, str]:
         return self._open_artifact(site_id, artifact_id, "mesh_ap_coverage_export")

@@ -43,6 +43,7 @@ from netconsole.models.api.mesh_analysis import (
     MeshLocalScanResultDTO,
     MeshLocalScanStartDTO,
     MeshLinkDetailExportRequestDTO,
+    MeshRawLinkExportRequestDTO,
     MeshChannelBusyPageDTO,
     MeshCounterDeltaPageDTO,
     MeshDataSourceDTO,
@@ -1207,6 +1208,38 @@ def start_link_detail_export(
             session_id,
             source_file_id=payload.source_file_id,
             analysis_params_override=payload.analysis_params_override.model_dump(exclude_none=True) if payload.analysis_params_override else None,
+        )
+    except RailTransitWebError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND if exc.code.endswith("NOT_FOUND") else status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+
+
+@router.post(
+    "/sessions/{session_id}/raw-links/export",
+    response_model=RailTransitTaskDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="导出当前 MESH 来源的原始链路记录",
+    responses={
+        404: {"description": "分析会话、来源或 compact v3 结果不存在"},
+        422: {"description": "来源与当前会话不一致或导出请求无效"},
+    },
+    dependencies=[
+        Depends(require_feature("capability.mesh.report_export")),
+        Depends(require_feature("capability.rail_transit.task_control")),
+    ],
+)
+def start_raw_link_export(
+    request: Request,
+    session_id: str,
+    payload: MeshRawLinkExportRequestDTO,
+) -> RailTransitTaskDTO:
+    try:
+        return _rail_service(request).start_mesh_raw_link_export(
+            _current_site_id(request),
+            session_id,
+            source_file_id=payload.source_file_id,
         )
     except RailTransitWebError as exc:
         raise HTTPException(

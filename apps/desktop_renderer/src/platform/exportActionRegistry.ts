@@ -20,6 +20,7 @@ export const userSelectedExportDefinitions = {
   'ac.extensions': xlsxDefinition('ac', 'AP 扩展信息'),
   'rail.mesh_report': xlsxDefinition('rail', 'MESH 分析报告'),
   'rail.mesh_link_details': xlsxDefinition('rail', 'MESH 链路明细'),
+  'rail.mesh_raw_links': xlsxDefinition('rail', 'MESH 原始链路'),
   'rail.mesh_ap_coverage': xlsxDefinition('rail', 'MESH AP 覆盖核查'),
   'rail.trackside_business': xlsxDefinition('rail', '轨旁 AP 业务表'),
   'rail.trackside_base_template': xlsxDefinition('rail', '轨旁 AP 基础资料模板'),

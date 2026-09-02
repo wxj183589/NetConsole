@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from itertools import chain
 import time
 from pathlib import Path
 from typing import Callable, Iterable
@@ -546,6 +547,96 @@ def export_mesh_link_details_xlsx(
         except Exception as exc:
             diagnostics_payload = unavailable_export_identity_diagnostics("mesh_link_detail", exc)
     return {"export_identity_diagnostics": diagnostics_payload}
+
+
+def export_mesh_raw_links_xlsx(
+    path: Path,
+    rows: Iterable[dict[str, object]],
+    *,
+    total_rows: int | None = None,
+    export_context: dict[str, object] | None = None,
+    should_cancel: CancelCallback | None = None,
+) -> dict[str, object]:
+    """Export one source's persisted parser link rows without presentation transforms.
+
+    The first row supplies the DB-backed column order.  Values are written
+    directly to xlsxwriter: ``None`` becomes an empty cell while integer ``0``
+    remains numeric zero.  No analysis filtering, identity remapping or dash
+    placeholder conversion is applied here.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        import xlsxwriter
+    except ImportError as exc:  # pragma: no cover - dependency is declared in requirements.txt
+        raise RuntimeError("缺少 xlsxwriter 依赖，无法执行原始链路导出") from exc
+
+    row_iterator = iter(rows)
+    first = next(row_iterator, None)
+    if first is None:
+        raise RuntimeError("暂无可导出的原始链路数据")
+    columns = tuple((field, field) for field in first.keys())
+    specs = _xlsx_column_specs(columns)
+    widths = [column.width for column in specs]
+    workbook = xlsxwriter.Workbook(
+        str(path),
+        {
+            "constant_memory": True,
+            "strings_to_urls": False,
+            "nan_inf_to_errors": True,
+        },
+    )
+    closed = False
+    try:
+        formats = _xlsx_business_formats(workbook)
+        workbook.set_properties(
+            {
+                "title": "MESH 原始链路",
+                "subject": "Parser 持久化原始链路记录",
+                "comments": str((export_context or {}).get("description") or "不经过分析筛选或身份格式化。"),
+            }
+        )
+        sheet = workbook.add_worksheet("原始链路")
+        _write_xlsx_header(sheet, specs, formats)
+        sheet.freeze_panes(1, 0)
+        sheet.hide_gridlines(2)
+        written = 0
+        for row in chain((first,), row_iterator):
+            _raise_if_cancelled(should_cancel)
+            values = [row.get(field) for _header, field in columns]
+            default_format = formats["data"] if written % 2 == 0 else formats["zebra"]
+            column_formats: dict[int, object] = {}
+            for index, column in enumerate(specs):
+                if column.text:
+                    column_formats[index] = formats["text"] if default_format is formats["data"] else formats["zebra_text"]
+                elif column.wrap:
+                    column_formats[index] = formats["wrap"] if default_format is formats["data"] else formats["wrap_zebra"]
+            write_row(
+                sheet,
+                written + 1,
+                values,
+                default_format=default_format,
+                column_formats=column_formats,
+            )
+            if written < LINK_DETAIL_WIDTH_SAMPLE_ROWS:
+                _update_xlsx_widths(widths, specs, values)
+            written += 1
+        sheet.autofilter(0, 0, max(written, 1), len(specs) - 1)
+        _apply_xlsx_widths(sheet, widths)
+        _raise_if_cancelled(should_cancel)
+        workbook.close()
+        closed = True
+    except Exception:
+        if not closed:
+            try:
+                workbook.close()
+            except Exception:
+                pass
+        raise
+    return {
+        "total_rows": written,
+        "column_count": len(columns),
+        "source_file_id": (export_context or {}).get("source_file_id"),
+    }
 
 
 def _write_link_detail_sheet_xlsx(

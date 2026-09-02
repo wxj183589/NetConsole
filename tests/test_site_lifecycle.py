@@ -9,6 +9,8 @@ import pytest
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.core.sites import SiteManager
+from netconsole.core.runtime_environment import write_data_environment
+from netconsole.core.runtime_mode import DataEnvironmentInfo, DataEnvironmentMode
 from netconsole.services.site_lifecycle import DEMO_MAX_BYTES, DEMO_SEED_VERSION, DemoSiteSeedService, SiteAuditService, SiteCleanupApplicationService
 from netconsole.services.site_storage import SiteApplicationService, SiteRecord, SiteRegistryRepository, SiteStorageError
 
@@ -46,6 +48,24 @@ def test_demo_seed_uses_current_schema_without_legacy_credentials(tmp_path: Path
     assert [str(row["device_type"]) for row in rows[-2:]] == ["MR", "MR"]
     assert all(int(row["snmp_v1_enabled"] or 0) == 0 and int(row["snmp_v2c_enabled"] or 0) == 0 for row in rows)
     assert all(not row["ssh_password"] and not row["telnet_password"] for row in rows)
+
+
+def test_demo_rebuild_allows_production_marker_after_site_switch(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    write_data_environment(
+        paths.data_root,
+        DataEnvironmentInfo(DataEnvironmentMode.PRODUCTION, readonly_warning=True),
+    )
+    DemoSiteSeedService(paths).seed()
+    SiteManager(paths).create_site("line-a", display_name="一号线")
+
+    audited = SiteAuditService(paths).audit_all(site_id="demo")["sites"][0]
+    assert audited["safe_to_replace"] is True, audited
+
+    rebuilt = DemoSiteSeedService(paths).seed(replace=True)
+
+    assert rebuilt["status"] == "rebuilt"
+    assert paths.site_dir("demo").is_dir()
 
 
 def test_demo_rebuild_failure_restores_old_demo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -55,6 +55,7 @@ def managed_artifact_source_root(
         "online_mr_report": paths.online_mr_root(site_id),
         "mesh_analysis_report": paths.site_mesh_root(site_id),
         "mesh_link_detail_export": paths.site_mesh_root(site_id),
+        "mesh_raw_link_export": paths.site_mesh_root(site_id),
         "mesh_ap_coverage_export": paths.site_mesh_root(site_id),
         "switch_vendor_sample": paths.trackside_ap_outputs_dir(site_id)
         / "vendor_samples",

@@ -296,6 +296,10 @@ class MeshLinkDetailExportRequestDTO(ApiModel):
     analysis_params_override: MeshAnalysisParamsOverrideDTO | None = None
 
 
+class MeshRawLinkExportRequestDTO(ApiModel):
+    source_file_id: int = Field(gt=0)
+
+
 class MeshAnalysisParamsSaveRequestDTO(ApiModel):
     params: MeshAnalysisParamsDTO
 

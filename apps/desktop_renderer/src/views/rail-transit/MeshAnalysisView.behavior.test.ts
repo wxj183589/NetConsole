@@ -34,6 +34,7 @@ const mocks = vi.hoisted(() => ({
   getCounterDeltas: vi.fn(),
   listAnomalies: vi.fn(),
   exportDetails: vi.fn(),
+  exportRawLinks: vi.fn(),
   deleteSource: vi.fn(),
   batchDeleteSources: vi.fn(),
   rebuildAnalysis: vi.fn(),
@@ -72,6 +73,7 @@ vi.mock('../../api/meshAnalysis', () => ({
   createMeshProfile: mocks.createProfile,
   deleteMeshSource: mocks.deleteSource,
   exportMeshLinkDetails: mocks.exportDetails,
+  exportMeshRawLinks: mocks.exportRawLinks,
   getMeshActivePathChart: mocks.getActivePath,
   getMeshAnalysisParams: mocks.getAnalysisParams,
   getMeshAnalysisParamsTemplate: mocks.getAnalysisParamsTemplate,
@@ -444,6 +446,7 @@ beforeEach(() => {
     include_standby: true,
   })
   mocks.exportDetails.mockResolvedValue({ action: 'mesh_link_detail_export', task_id: 'mesh-export-1', status: 'RUNNING' })
+  mocks.exportRawLinks.mockResolvedValue({ action: 'mesh_raw_link_export', task_id: 'mesh-raw-export-1', status: 'RUNNING' })
   mocks.batchDeleteSources.mockResolvedValue({
     action: 'mesh_analysis_sources_delete',
     task_id: 'mesh-delete-batch-1',
@@ -2341,6 +2344,28 @@ describe('Mesh analysis detail behavior', () => {
 
     expect(mocks.exportDetails).toHaveBeenCalledWith('session-1', 1, expect.objectContaining({ link_time_window: 4000, link_hold_rssi: 22, link_establish_threshold: 4 }))
     expect(mocks.routerPush).toHaveBeenCalledWith({ name: 'tasks', query: { module: 'rail', task_id: 'mesh-export-1' } })
+    wrapper.unmount()
+  })
+
+  it('starts the raw link export for the selected source through the task center', async () => {
+    const session = {
+      session_id: 'session-1', mr_name: '列车34-MR-CW', original_filename: '34-CW.log', first_sample_time: '', last_sample_time: '',
+      parsed_status: 'ready', warning_count: 0, report_count: 0,
+    }
+    mocks.listSessions.mockResolvedValue({ items: [session], total: 1, page: 1, page_size: 50 })
+    mocks.getSession.mockResolvedValue({ session, analysis_params: {}, available_radios: [], warnings: [], sources: [{ source_file_id: 1, source_action_id: 'source-action-1', source_id: 'source-action-1', exists: true, rebuild_capability: 'ready' }] })
+    const wrapper = mount(MeshAnalysisView, { global: { stubs, directives: { loading: () => undefined } } })
+    await flushPromises()
+    await wrapper.findAll('button').find((button) => button.text() === '查看')!.trigger('click')
+    await flushPromises()
+
+    await wrapper.findAll('button').find((button) => button.text() === '导出原始链路')!.trigger('click')
+    await flushPromises()
+    await wrapper.findAll('button').find((button) => button.text() === '开始导出')!.trigger('click')
+    await flushPromises()
+
+    expect(mocks.exportRawLinks).toHaveBeenCalledWith('session-1', 1)
+    expect(mocks.routerPush).toHaveBeenCalledWith({ name: 'tasks', query: { module: 'rail', task_id: 'mesh-raw-export-1' } })
     wrapper.unmount()
   })
 

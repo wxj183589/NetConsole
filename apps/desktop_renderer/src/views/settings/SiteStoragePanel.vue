@@ -400,10 +400,6 @@ async function deleteSite(site: SiteRecord): Promise<void> {
     ElMessage.warning('当前局点不可删除，请先切换到其他局点。')
     return
   }
-  if (site.site_kind === 'demo') {
-    ElMessage.warning('内置 Demo 局点请使用“重建 Demo”')
-    return
-  }
   if (site.classification === 'empty_shell') {
     ElMessage.warning('空壳局点请使用“清理空壳局点”')
     return
@@ -635,10 +631,9 @@ function retentionStatusLabel(value: string): string { return ({ current_use: '�
 function integrityLabel(value: SiteRecord['data_integrity']): string { return ({ ok: '正常', failed: '异常', unknown: '待审计' } as const)[value] || '待审计' }
 function classificationTag(site: SiteRecord): 'success' | 'warning' | 'danger' | 'info' { const value = site.classification || 'unknown'; if (value === 'managed_demo') return 'success'; if (value === 'empty_shell') return 'danger'; if (value.startsWith('legacy')) return 'warning'; return 'info' }
 function siteInfoText(value: string | null | undefined): string { return String(value || '').trim() }
-function deleteDisabled(site: SiteRecord): boolean { return site.active || site.site_kind === 'demo' || site.classification === 'empty_shell' || busy.value }
+function deleteDisabled(site: SiteRecord): boolean { return site.active || site.classification === 'empty_shell' || busy.value }
 function deleteDisabledReason(site: SiteRecord): string {
   if (site.active) return '当前局点不可删除，请先切换到其他局点。'
-  if (site.site_kind === 'demo') return '内置 Demo 局点请使用“重建 Demo”'
   if (site.classification === 'empty_shell') return '空壳局点请使用“清理空壳局点”'
   return ''
 }

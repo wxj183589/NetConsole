@@ -620,7 +620,7 @@ describe('SiteStoragePanel', () => {
     expect(adapter.openTaskWindow).toHaveBeenCalledWith({ taskId: 'demo-1', module: 'logs' })
   })
 
-  it('keeps current and Demo sites out of the ordinary delete flow', async () => {
+  it('keeps the current Demo out of the ordinary delete flow', async () => {
     const warning = vi.spyOn(ElMessage, 'warning')
     const wrapper = mount(SiteStoragePanel)
     await flushPromises()

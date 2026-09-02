@@ -275,7 +275,7 @@ def test_cleanup_api_publishes_incremental_event_and_rejects_file_deletion(
     }
 
 
-def test_cleanup_api_preserves_terminal_guard_in_production(
+def test_cleanup_api_allows_eligible_terminal_tasks_in_production(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("NETCONSOLE_RUNTIME_MODE", "server")
@@ -311,7 +311,7 @@ def test_cleanup_api_preserves_terminal_guard_in_production(
             json={"cleanup_type": "completed"},
         )
 
-    assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "PRODUCTION_WRITE_CONFIRMATION_REQUIRED"
+    assert response.status_code == 200, response.text
+    assert response.json()["task_ids"] == ["success"]
     assert repository.get("success") is not None
-    assert repository.get("success").dismissed_at == ""
+    assert repository.get("success").dismissed_at

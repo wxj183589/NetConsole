@@ -29,7 +29,7 @@ Electron 重启传递稳定 `site_id`，Backend 启动时先通过 Registry 解�
 
 ## 普通局点安全删除
 
-`POST /api/v1/sites/{site_id}/trash` 只处理普通非当前局点。用户必须输入与当前 `display_name` 完全相同的名称；当前局点、内置 Demo、最近审计仍分类为 `empty_shell` 的局点以及存在任意运行任务的局点会被拒绝。Demo 继续使用受控重建，空壳继续使用下述二阶段清理，两种语义不合并。
+`POST /api/v1/sites/{site_id}/trash` 处理非当前且通过业务校验的局点。用户必须输入与当前 `display_name` 完全相同的名称；当前局点、最近审计仍分类为 `empty_shell` 的局点以及存在任意运行任务的局点会被拒绝。受控 Demo 也可以在已切换到其他局点后进入同一可恢复回收区；Demo 重建继续使用独立的受控重建流程，空壳继续使用下述二阶段清理，两种语义不合并。
 
 执行时在同一 `site-mutation` 互斥锁内再次复核名称、当前局点和全局任务状态，收敛 SQLite WAL 后，使用同卷原子移动把 `sites/<directory>` 变为 `.trash/<site_id>-<UTC timestamp>`；不递归删除目录，也不跟随目标目录外的符号链接。目录移动成功后才原子注销 Registry 并清理 `recent_sites`。任一 Catalog/配置/墓碑阶段失败都会把目录移回并恢复原文件；目录回滚本身失败时返回明确诊断，不能报告成功。`.trash` 不属于缓存或自动清理白名单，当前不提供永久清空或任意路径恢复 API。
 

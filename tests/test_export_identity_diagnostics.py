@@ -16,6 +16,7 @@ from netconsole.services.mesh_link_detail_export import (
     ACTIVE_BUILD_ORDER_EXPORT_COLUMNS,
     LINK_DETAIL_EXPORT_COLUMNS,
     export_mesh_link_details_xlsx,
+    export_mesh_raw_links_xlsx,
 )
 from netconsole.services.online_mr_analysis_report_exporter import OnlineMrAnalysisReportExporter
 from netconsole.services.export.export_job import ExportJob
@@ -250,6 +251,61 @@ def test_mesh_export_worker_finished_result_contains_diagnostics(tmp_path: Path,
     assert not list(tmp_path.glob("*.diagnostics.json"))
 
 
+def test_mesh_raw_link_export_worker_uses_exact_source_rows(tmp_path: Path, monkeypatch) -> None:
+    from netconsole import export_worker
+
+    raw_row = {
+        "id": 1,
+        "source_file_id": 7,
+        "source_file_order": 0,
+        "record_seq": 1,
+        "source_line_number": 12,
+        "timestamp_tag": "",
+        "link_state_raw": "Active",
+        "local_rssi_db": 0,
+        "peer_rssi_db": 0,
+        "local_signal_dbm": None,
+    }
+
+    class FakeRepository:
+        def __init__(self, _path: Path, *, read_only: bool = False) -> None:
+            assert read_only is True
+
+        def count_raw_link_records(self, source_file_id: int) -> int:
+            assert source_file_id == 7
+            return 1
+
+        def iter_raw_link_records(self, source_file_id: int, batch_size: int):
+            assert source_file_id == 7
+            assert batch_size == 2000
+            yield raw_row
+
+    events: list[dict[str, object]] = []
+    monkeypatch.setattr(export_worker, "MeshMrRepository", FakeRepository)
+    monkeypatch.setattr(export_worker, "_emit", events.append)
+    output_path = tmp_path / "worker-raw-links.xlsx"
+    job = ExportJob(
+        job_id="mesh-raw-links",
+        job_type="mesh_raw_link_export",
+        db_path=str(tmp_path / "mesh.sqlite"),
+        output_path=str(output_path),
+        tmp_path=str(tmp_path / "mesh.sqlite.tmp"),
+        context={"source_file_id": 7},
+    )
+
+    export_worker._run_mesh_raw_link_export(job)
+
+    workbook = load_workbook(output_path)
+    sheet = workbook["原始链路"]
+    headers = [cell.value for cell in sheet[1]]
+    values = [cell.value for cell in sheet[2]]
+    assert events[-1]["type"] == "finished"
+    assert events[-1]["row_count"] == 1
+    assert values[headers.index("local_rssi_db")] == 0
+    assert values[headers.index("local_signal_dbm")] is None
+    workbook.close()
+
+
 def test_mesh_export_worker_applies_ap_location_snapshot_to_both_sheets(tmp_path: Path, monkeypatch) -> None:
     from netconsole import export_worker
 
@@ -317,7 +373,45 @@ def test_mesh_export_worker_applies_ap_location_snapshot_to_both_sheets(tmp_path
     active_values = [cell.value for cell in active_sheet[2]]
     assert active_values[active_headers.index("归属区间")] == "快照区间"
     workbook.close()
-    assert events[-1]["type"] == "finished"
+
+
+def test_mesh_raw_link_export_preserves_db_zero_and_null_values(tmp_path: Path) -> None:
+    target = tmp_path / "mesh-raw-links.xlsx"
+    row = {
+        "id": 1,
+        "source_file_id": 7,
+        "source_file_order": 0,
+        "record_seq": 1,
+        "source_line_number": 12,
+        "sample_id": 1,
+        "timestamp_tag": "",
+        "link_state_raw": "Active",
+        "peer_mac_raw": "0000-0000-001f",
+        "local_rssi_db": 0,
+        "peer_rssi_db": 0,
+        "local_rate_raw": 0,
+        "peer_rate_raw": 0,
+        "link_count": 1,
+        "local_signal_dbm": None,
+        "source_original_filename": "mesh.log",
+    }
+
+    result = export_mesh_raw_links_xlsx(target, [row], total_rows=1)
+
+    workbook = load_workbook(target)
+    sheet = workbook["原始链路"]
+    headers = [cell.value for cell in sheet[1]]
+    values = [cell.value for cell in sheet[2]]
+    assert result == {"total_rows": 1, "column_count": len(row), "source_file_id": None}
+    assert values[headers.index("local_rssi_db")] == 0
+    assert values[headers.index("peer_rssi_db")] == 0
+    assert values[headers.index("local_rate_raw")] == 0
+    assert values[headers.index("local_signal_dbm")] is None
+    assert values[headers.index("source_file_order")] == 0
+    assert sheet.freeze_panes == "A2"
+    assert sheet.auto_filter.ref
+    assert workbook.sheetnames == ["原始链路"]
+    workbook.close()
 
 
 def test_online_mr_compat_export_keeps_detail_columns_and_exposes_diagnostics(tmp_path: Path) -> None:

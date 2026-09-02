@@ -56,7 +56,7 @@ import { useAvailablePanelHeight } from '../../composables/useAvailablePanelHeig
 import { useUserSelectedExport } from '../../composables/useUserSelectedExport'
 import { ApiRequestError } from '../../api/client'
 import {
-  applyMeshBundleImport, batchDeleteMeshSources, createMeshProfile, deleteMeshArtifact, exportMeshLinkDetails, getMeshActivePathChart, getMeshAnalysisOverview, getMeshAnalysisParams, getMeshAnalysisParamsTemplate, getMeshAnalysisSession, getMeshImportContext, getMeshPeerSegmentChart, getMeshRawTail, getMeshTracksideSignalChart, listMeshParseIssues,
+  applyMeshBundleImport, batchDeleteMeshSources, createMeshProfile, deleteMeshArtifact, exportMeshLinkDetails, exportMeshRawLinks, getMeshActivePathChart, getMeshAnalysisOverview, getMeshAnalysisParams, getMeshAnalysisParamsTemplate, getMeshAnalysisSession, getMeshImportContext, getMeshPeerSegmentChart, getMeshRawTail, getMeshTracksideSignalChart, listMeshParseIssues,
   listMeshActiveBuildOrder,
   listMeshArtifacts, listMeshLinks, listMeshSwitchEvents, meshArtifactDownloadRequest, previewMeshImport, rebuildMeshAnalysis,
   prepareMeshImportContext, saveMeshAnalysisParams, startMeshLocalScan, startMeshMaintenance, getMeshLocalScan, importMeshLocalScan, ignoreMeshLocalScanCandidates, openMeshLocalScanCandidateDirectory,
@@ -4103,6 +4103,35 @@ async function exportLinkDetails(): Promise<void> {
   }
 }
 
+async function exportRawLinks(): Promise<void> {
+  const sourceFileId = selectedSource.value?.source_file_id
+  if (!selected.value || typeof sourceFileId !== 'number' || !Number.isInteger(sourceFileId) || sourceFileId <= 0) {
+    ElMessage.error('当前来源缺少正式 source_file_id，请刷新或重新解析后再试。')
+    return
+  }
+  const sessionId = selected.value.session.session_id
+  const suggestedName = `${safeExportPart(selected.value.session.mr_name || 'MESH')}_mesh_raw_links_${exportTimestamp()}.xlsx`
+  taskLoading.value = true
+  error.value = ''
+  try {
+    const result = await userSelectedExport.submitExportAfterDestinationSelected({
+      action: 'rail.mesh_raw_links',
+      suggestedName,
+      context: { sessionId, sourceFileId },
+      submit: () => exportMeshRawLinks(sessionId, sourceFileId),
+    })
+    if (result.status === 'cancelled') return
+    rememberTask(result.task)
+    pollTask()
+    void openTaskWindow(result.task.task_id)
+    ElMessage.success('原始链路导出任务已提交，完成后将写入所选位置')
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : 'MESH 原始链路导出启动失败'
+  } finally {
+    taskLoading.value = false
+  }
+}
+
 async function openApCoverageAudit(): Promise<void> {
   if (selectedDeleteSessions.value.length !== 2) {
     ElMessage.warning('请选择两个 MESH 来源进行 AP 覆盖核查。')
@@ -4175,7 +4204,7 @@ async function recoverTask(): Promise<void> {
   try {
     const saved = localStorage.getItem(taskStorageKey) || ''
     const rows = await recoverRailTransitTasks()
-    const meshRows = rows.filter((item) => ['mesh_log_import', 'mesh_bundle_import', 'mesh_local_scan', 'mesh_local_scan_import', 'mesh_schema_rebuild', 'mesh_source_rebuild', 'mesh_analysis_maintenance', 'mesh_identity_projection_refresh', 'mesh_analysis_source_delete', 'mesh_analysis_sources_delete', 'mesh_analysis_report', 'mesh_link_detail_export'].includes(item.action))
+    const meshRows = rows.filter((item) => ['mesh_log_import', 'mesh_bundle_import', 'mesh_local_scan', 'mesh_local_scan_import', 'mesh_schema_rebuild', 'mesh_source_rebuild', 'mesh_analysis_maintenance', 'mesh_identity_projection_refresh', 'mesh_analysis_source_delete', 'mesh_analysis_sources_delete', 'mesh_analysis_report', 'mesh_link_detail_export', 'mesh_raw_link_export'].includes(item.action))
     const savedTask = meshRows.find((item) => item.task_id === saved && restorableTaskStates.has(item.status))
     rememberTask(savedTask || meshRows.find((item) => restorableTaskStates.has(item.status)) || null)
     pollTask()
@@ -4270,7 +4299,7 @@ function exportTimestamp(now = new Date()): string {
           当前日志：{{ selected.session.mr_name }} · Radio {{ chartRadio ?? '全部' }} · {{ selected.session.original_filename }}
         </p>
       </div>
-      <div class="jump-actions"><el-button :loading="importContextLoading" :disabled="!isFeatureEnabled('capability.mesh.import')" @click="openImportDialog">导入原始 MESH 日志</el-button><el-button :loading="localScanLoading" :disabled="!isFeatureEnabled('capability.mesh.import')" @click="scanLocalLogs">扫描本地日志</el-button><el-button v-if="localScanResult" @click="localScanVisible = true">查看扫描结果</el-button><el-button :icon="Download" :loading="taskLoading" :disabled="!selected || !selectedSource || selected.session.parsed_status !== 'ready' || !isFeatureEnabled('capability.mesh.report_export')" @click="openLinkExportDialog">导出链路明细</el-button><el-button :icon="Document" type="primary" :loading="taskLoading" :disabled="!selected || ['missing','unreadable'].includes(selected.session.parsed_status) || !isFeatureEnabled('capability.mesh.report_export')" @click="openReportDialog">生成分析报告</el-button><el-button :loading="loading || detailLoading" @click="refreshAnalysisResults()">刷新结果</el-button></div>
+      <div class="jump-actions"><el-button :loading="importContextLoading" :disabled="!isFeatureEnabled('capability.mesh.import')" @click="openImportDialog">导入原始 MESH 日志</el-button><el-button :loading="localScanLoading" :disabled="!isFeatureEnabled('capability.mesh.import')" @click="scanLocalLogs">扫描本地日志</el-button><el-button v-if="localScanResult" @click="localScanVisible = true">查看扫描结果</el-button><el-button :icon="Download" :loading="taskLoading" :disabled="!selected || !selectedSource || selected.session.parsed_status !== 'ready' || !isFeatureEnabled('capability.mesh.report_export')" @click="openLinkExportDialog">导出链路明细</el-button><el-button :icon="Download" :loading="taskLoading" :disabled="!selected || !selectedSource || selected.session.parsed_status !== 'ready' || !isFeatureEnabled('capability.mesh.report_export')" @click="exportRawLinks">导出原始链路</el-button><el-button :icon="Document" type="primary" :loading="taskLoading" :disabled="!selected || ['missing','unreadable'].includes(selected.session.parsed_status) || !isFeatureEnabled('capability.mesh.report_export')" @click="openReportDialog">生成分析报告</el-button><el-button :loading="loading || detailLoading" @click="refreshAnalysisResults()">刷新结果</el-button></div>
     </header>
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon />
 

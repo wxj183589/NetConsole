@@ -47,7 +47,7 @@ describe('GlobalTaskCenter', () => {
     expect(source).toContain('await store.cleanupHistory(cleanupType)')
     expect(source).toContain("'job_center.cleanup.done'")
     expect(source).toContain("String(result.dismissed)")
-    expect(source).toContain('PRODUCTION_WRITE_CONFIRMATION_REQUIRED')
+    expect(source).not.toContain('PRODUCTION_WRITE_CONFIRMATION_REQUIRED')
     expect(source).toContain('void store.refresh()')
     expect(source).not.toContain('window.confirm')
     expect(source).not.toContain('window.alert')
