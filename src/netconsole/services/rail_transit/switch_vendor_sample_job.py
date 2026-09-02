@@ -43,9 +43,12 @@ def run_switch_vendor_sample_collect(
     context.progress("switch_vendor_sample.connect", 0, 1, "正在连接采样设备")
     try:
         with prepared_connection_target(target) as prepared:
-            connection = netmiko_connection.ConnectHandler(
-                **build_netmiko_params(prepared)
-            )
+            with netmiko_connection.ssh_connection_context(
+                "switch_sample", "collect"
+            ):
+                connection = netmiko_connection.ConnectHandler(
+                    **build_netmiko_params(prepared)
+                )
             context.progress(
                 "switch_vendor_sample.connect", 1, 1, "采样设备连接成功"
             )

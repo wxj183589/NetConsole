@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from functools import lru_cache
 import logging
@@ -72,12 +73,224 @@ T = TypeVar("T")
 ConnectionPhaseCallback = Callable[[str, str], None]
 
 
+@dataclass(frozen=True)
+class SshConnectionContext:
+    """当前 CLI collector 的建连上下文，只用于诊断日志。"""
+
+    collector: str = "unknown"
+    phase: str = "connect"
+    device_uuid: str = ""
+
+
+_SSH_CONNECTION_CONTEXT: ContextVar[SshConnectionContext] = ContextVar(
+    "netconsole_ssh_connection_context",
+    default=SshConnectionContext(),
+)
+
+
+@contextmanager
+def ssh_connection_context(
+    collector: str,
+    phase: str,
+    *,
+    device_uuid: str = "",
+) -> Iterator[None]:
+    """为一次或多次 CLI session 建立可继承的 collector 诊断上下文。"""
+
+    token = _SSH_CONNECTION_CONTEXT.set(
+        SshConnectionContext(
+            collector=str(collector or "unknown"),
+            phase=str(phase or "connect"),
+            device_uuid=str(device_uuid or ""),
+        )
+    )
+    try:
+        yield
+    finally:
+        _SSH_CONNECTION_CONTEXT.reset(token)
+
+
 def ConnectHandler(**kwargs: object) -> Any:  # noqa: N802 - 保持 Netmiko 公共入口兼容
     try:
         from netmiko import ConnectHandler as connect_handler
     except ImportError as exc:  # pragma: no cover - exercised only when dependency is missing.
         raise RuntimeError("netmiko is not installed") from exc
-    return connect_handler(**kwargs)
+    return _connect_with_compatibility(connect_handler, kwargs)
+
+
+def _connect_with_compatibility(
+    connect_handler: Callable[..., Any],
+    kwargs: dict[str, object],
+) -> Any:
+    """为所有 H3C CLI session 统一执行 normal -> legacy ssh-rsa 协商。"""
+
+    context = _SSH_CONNECTION_CONTEXT.get()
+    normal_params = dict(kwargs)
+    _log_ssh_connection_attempt(context, normal_params, "normal", 1, "starting")
+    try:
+        connection = connect_handler(**normal_params)
+    except Exception as exc:
+        negotiation_failed = _is_host_key_negotiation_error(exc)
+        _log_ssh_connection_attempt(
+            context,
+            normal_params,
+            "normal",
+            1,
+            "negotiation_failed" if negotiation_failed else "failed",
+            exc,
+        )
+        if not negotiation_failed or not _legacy_ssh_rsa_allowed(normal_params):
+            raise
+
+        legacy_params = _legacy_ssh_rsa_params(normal_params)
+        try:
+            connection = connect_handler(**legacy_params)
+        except Exception as legacy_exc:
+            _log_ssh_connection_attempt(
+                context,
+                legacy_params,
+                "legacy_ssh_rsa",
+                2,
+                "failed",
+                legacy_exc,
+            )
+            app_logger.log_warning(
+                "ssh_compatibility_fallback",
+                _ssh_detail(
+                    context,
+                    legacy_params,
+                    "legacy_ssh_rsa",
+                    2,
+                    "host_key_algorithm",
+                    False,
+                    legacy_exc,
+                ),
+            )
+            raise
+        _log_ssh_connection_attempt(
+            context,
+            legacy_params,
+            "legacy_ssh_rsa",
+            2,
+            "success",
+        )
+        app_logger.log_warning(
+            "ssh_compatibility_fallback",
+            _ssh_detail(
+                context,
+                legacy_params,
+                "legacy_ssh_rsa",
+                2,
+                "host_key_algorithm",
+                True,
+            ),
+        )
+        return connection
+    else:
+        _log_ssh_connection_attempt(context, normal_params, "normal", 1, "success")
+        return connection
+
+
+def _legacy_ssh_rsa_allowed(params: dict[str, object]) -> bool:
+    return (
+        str(params.get("device_type") or "").strip().casefold()
+        == H3C_NETMIKO_DEVICE_TYPE.casefold()
+        and str(params.get("protocol") or "SSH").strip().casefold() != "telnet"
+    )
+
+
+def _legacy_ssh_rsa_params(params: dict[str, object]) -> dict[str, object]:
+    updated = dict(params)
+    disabled = dict(updated.get("disabled_algorithms") or {})
+    keys = list(disabled.get("keys") or ())
+    for algorithm in ("rsa-sha2-512", "rsa-sha2-256"):
+        if algorithm not in keys:
+            keys.append(algorithm)
+    disabled["keys"] = keys
+    updated["disabled_algorithms"] = disabled
+    return updated
+
+
+def _is_host_key_negotiation_error(exc: BaseException) -> bool:
+    """只识别 host-key 算法协商失败，不把认证/kex/cipher 失败当成 fallback 条件。"""
+
+    if _is_auth_exception(exc) or _is_timeout_exception(exc):
+        return False
+    text = str(exc or "").strip().casefold()
+    if not text:
+        return False
+    try:
+        from paramiko.ssh_exception import SSHException
+
+        is_ssh_exception = isinstance(exc, SSHException)
+    except Exception:  # pragma: no cover - optional dependency guard.
+        is_ssh_exception = False
+    if not is_ssh_exception and "paramiko sshexception" not in text:
+        return False
+    host_key_markers = (
+        "no matching host key",
+        "no acceptable host key",
+        "host key algorithm",
+        "hostkey algorithm",
+        "server only offered ssh-rsa",
+    )
+    if any(marker in text for marker in host_key_markers):
+        return True
+    # Paramiko/Netmiko 旧版本只暴露这个短消息。Netmiko 4.x 还可能把它
+    # 包装成 ``A paramiko SSHException occurred during connection creation:
+    # Negotiation failed.``；两种形式都仅在明确 SSHException 语义下接受，
+    # 且外层还会限制为 H3C hp_comware，避免扩展到 kex/cipher 或其它厂商。
+    if text.rstrip(".") == "negotiation failed":
+        return True
+    return bool(
+        re.search(
+            r"paramiko\s+sshexception\s+occurred\s+during\s+connection\s+creation:\s*negotiation\s+failed\.?$",
+            text,
+        )
+    )
+
+
+def _log_ssh_connection_attempt(
+    context: SshConnectionContext,
+    params: dict[str, object],
+    mode: str,
+    attempt: int,
+    result: str,
+    exc: BaseException | None = None,
+) -> None:
+    app_logger.log_info(
+        "ssh_connection_attempt",
+        _ssh_detail(context, params, mode, attempt, "", result == "success", exc, result=result),
+    )
+
+
+def _ssh_detail(
+    context: SshConnectionContext,
+    params: dict[str, object],
+    mode: str,
+    attempt: int,
+    reason: str,
+    success: bool,
+    exc: BaseException | None = None,
+    *,
+    result: str | None = None,
+) -> str:
+    values = [
+        f"collector={context.collector}",
+        f"phase={context.phase}",
+        f"device_uuid={context.device_uuid}",
+        f"host={params.get('host', '')}",
+        f"ssh_mode={mode}",
+        f"attempt={attempt}",
+        f"result={result or ('success' if success else 'failed')}",
+    ]
+    if reason:
+        values.append(f"reason={reason}")
+    if exc is not None:
+        values.append(f"error_type={exc.__class__.__name__}")
+    if mode == "legacy_ssh_rsa":
+        values.append(f"success={'true' if success else 'false'}")
+    return " ".join(values)
 
 
 @lru_cache(maxsize=1)
@@ -230,7 +443,12 @@ def test_device_connection(
                     "authenticating",
                     f"正在执行 {prepared.protocol.upper()} 用户认证",
                 )
-                connection = ConnectHandler(**_netmiko_params(prepared))
+                with ssh_connection_context(
+                    "device_connection_test",
+                    "connect",
+                    device_uuid=str(device.device_uuid or ""),
+                ):
+                    connection = ConnectHandler(**_netmiko_params(prepared))
                 _report_connection_phase(
                     phase_callback,
                     "verifying_session",
@@ -336,7 +554,12 @@ def run_netmiko_with_retry(device: Device, operation: Callable[[Any, ConnectionT
         connection: Any | None = None
         try:
             with prepared_connection_target(target) as prepared:
-                connection = ConnectHandler(**_netmiko_params(prepared))
+                with ssh_connection_context(
+                    "device_operation",
+                    "collect",
+                    device_uuid=str(device.device_uuid or ""),
+                ):
+                    connection = ConnectHandler(**_netmiko_params(prepared))
                 result = operation(connection, prepared)
                 failures.append(ConnectionAttemptLog(prepared.method, prepared.host, prepared.port, True))
                 return result
@@ -362,7 +585,12 @@ def check_device_login_with_netmiko(device: Device) -> ConnectionCheckResult:
         connection: Any | None = None
         try:
             with prepared_connection_target(target) as prepared:
-                connection = ConnectHandler(**_netmiko_params(prepared))
+                with ssh_connection_context(
+                    "device_login",
+                    "connect",
+                    device_uuid=str(device.device_uuid or ""),
+                ):
+                    connection = ConnectHandler(**_netmiko_params(prepared))
                 _safe_find_prompt(connection)
                 status = "telnet_ok" if prepared.protocol.casefold() == "telnet" else "ok"
                 detail = "Telnet 登录成功" if status == "telnet_ok" else "SSH 登录成功"

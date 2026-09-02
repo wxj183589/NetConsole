@@ -141,6 +141,7 @@ export interface SitePackageInspection {
   site_uuid: string
   site_name: string
   package_type: SitePackageType
+  package_profile?: string
   package_id: string
   base_revision: number
   local_revision?: number

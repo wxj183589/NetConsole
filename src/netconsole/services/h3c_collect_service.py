@@ -217,7 +217,12 @@ def collect_h3c_device_details(
 
     try:
         _emit_progress(progress_callback, 5, "batch_collect.stage.connecting")
-        connection = netmiko_connection.ConnectHandler(**build_netmiko_params(target))
+        with netmiko_connection.ssh_connection_context(
+            "device_detail",
+            "collect",
+            device_uuid=str(device.device_uuid or ""),
+        ):
+            connection = netmiko_connection.ConnectHandler(**build_netmiko_params(target))
         _emit_progress(progress_callback, 10, "batch_collect.stage.login_success")
         outputs: dict[str, str] = {}
         collect_steps = profile.steps

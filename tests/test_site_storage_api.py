@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from netconsole.backend.api.main import create_app
@@ -438,15 +439,21 @@ def test_full_package_export_requires_no_password_or_sensitive_bootstrap(
     assert kwargs == {}
 
 
-def test_full_package_inspect_and_import_require_no_password(
+@pytest.mark.parametrize(
+    ("package_type", "suffix"),
+    [("full_migration", ".ncsite"), ("lightweight", ".zip")],
+)
+def test_site_package_inspect_and_import_share_the_same_api_entry(
     tmp_path: Path,
+    package_type: str,
+    suffix: str,
 ) -> None:
     client = _client(tmp_path)
-    package = tmp_path / "full.ncsite"
+    package = tmp_path / f"site{suffix}"
     SitePackageService(
         client.app.state.paths,
         client.app.state.site_application_service,
-    ).export_site("demo", package)
+    ).export_site("demo", package, package_type=package_type)
 
     inspected = client.post(
         "/api/v1/sites/import/inspect",
@@ -456,6 +463,10 @@ def test_full_package_inspect_and_import_require_no_password(
     assert inspected.status_code == 200, inspected.text
     assert inspected.json()["encrypted"] is False
     assert inspected.json()["contains_credentials"] is True
+    assert inspected.json()["package_type"] == package_type
+    assert inspected.json()["package_profile"] == (
+        "full" if package_type == "full_migration" else "lightweight"
+    )
 
     captured: list[tuple[object, dict[str, object]]] = []
 
@@ -468,8 +479,8 @@ def test_full_package_inspect_and_import_require_no_password(
         "/api/v1/sites/import",
         json={
             "package_path": str(package),
-            "site_id": "restored-demo",
-            "display_name": "恢复演示局点",
+            "site_id": f"restored-demo-{package_type}",
+            "display_name": f"恢复演示局点-{package_type}",
         },
     )
 

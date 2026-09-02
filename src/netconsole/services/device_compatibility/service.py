@@ -12,6 +12,7 @@ from typing import Iterable
 
 from netconsole.core.paths import PathResolver
 from netconsole.core.resources import package_resource_path
+from netconsole.parsers.h3c.version_parser import parse_comware_version_details
 from netconsole.services.device_command_profile_service import (
     DeviceCommandProfileError,
     load_device_command_profiles,
@@ -310,8 +311,23 @@ def fingerprint_from_record(row: dict[str, object]) -> DeviceFingerprint:
     vendor = _normalize_vendor(row.get("vendor") or row.get("device_vendor"))
     role = normalize_role(row.get("role") or row.get("device_role") or row.get("device_type"))
     model = normalize_model(row.get("model"), serial_number=row.get("serial_number"))
-    platform_family = _normalize_platform_family(row.get("platform_family"))
-    platform_major = _platform_major(row.get("platform_major_version") or row.get("platform_version"))
+    version_text = next(
+        (
+            str(row.get(key) or "").strip()
+            for key in ("software_version", "version")
+            if str(row.get(key) or "").strip()
+        ),
+        "",
+    )
+    parsed_version = parse_comware_version_details(version_text)
+    platform_family = _normalize_platform_family(
+        row.get("platform_family") or ("comware" if parsed_version else "")
+    )
+    platform_major = _platform_major(
+        row.get("platform_major_version")
+        or row.get("platform_version")
+        or (parsed_version or {}).get("software_major_version")
+    )
     software_version, source = _software_version(row)
     return DeviceFingerprint(
         vendor=vendor,
@@ -506,6 +522,9 @@ def _software_version(row: dict[str, object]) -> tuple[str, str]:
             if release:
                 return release, source
             continue
+        parsed = parse_comware_version_details(value)
+        if parsed:
+            return f"R{str(parsed['software_release']).upper()}", source
         release = _RELEASE_RE.search(value)
         return (release.group(0).upper() if release else value, source)
     return UNKNOWN, UNKNOWN

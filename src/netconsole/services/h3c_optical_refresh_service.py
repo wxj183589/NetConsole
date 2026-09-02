@@ -90,7 +90,12 @@ def refresh_h3c_device_optical(
 
     try:
         command_guard.validate_command_list(OPTICAL_REFRESH_COMMANDS, "optical_refresh")
-        connection = netmiko_connection.ConnectHandler(**build_netmiko_params(target))
+        with netmiko_connection.ssh_connection_context(
+            "optical",
+            "collect",
+            device_uuid=str(device.device_uuid or ""),
+        ):
+            connection = netmiko_connection.ConnectHandler(**build_netmiko_params(target))
         outputs: dict[str, str] = {}
         for command in OPTICAL_REFRESH_COMMANDS:
             result = _run_command(connection, command, device, collect_run_uuid)

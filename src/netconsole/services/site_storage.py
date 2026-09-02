@@ -43,11 +43,13 @@ from netconsole.services.site_sync import (
     FIELD_COLLECTION,
     FULL_MIGRATION,
     LIGHTWEIGHT,
+    PACKAGE_FORMAT,
     PACKAGE_FORMAT_VERSION,
     PACKAGE_TYPES,
     SANITIZED_SHARE,
     SiteSyncService,
     is_sqlite_database_path,
+    package_profile_for_type,
 )
 from netconsole.services.site_package_staging import (
     SitePackageStagingLifecycle,
@@ -147,6 +149,38 @@ _SENSITIVE_PARTS = {
 _MAX_PACKAGE_FILES = 50_000
 _MAX_PACKAGE_BYTES = 20 * 1024 * 1024 * 1024
 _MAX_SINGLE_FILE_BYTES = 4 * 1024 * 1024 * 1024
+_LIGHTWEIGHT_COMPONENTS = (
+    "device_management",
+    "ac_management",
+    "trackside_ap_business",
+    "rail_transit_base_data",
+)
+_LIGHTWEIGHT_COMPONENT_PREFIXES = {
+    "device_management": "device-management/",
+    "ac_management": "ac-management/",
+    "trackside_ap_business": "trackside-ap-business/",
+    "rail_transit_base_data": "rail-transit-base-data/",
+}
+_LIGHTWEIGHT_FORBIDDEN_PARTS = {
+    "logs",
+    "history",
+    "raw",
+    "artifact",
+    "artifacts",
+    "backup",
+    "backups",
+    "cache",
+    "runtime",
+    "staging",
+    "temp",
+    "temporary",
+    "credentials",
+    "token",
+}
+_LIGHTWEIGHT_REQUIRED_FILES = (
+    "site/site_meta.json",
+    "site/db/devices.db",
+)
 _LOCKS: dict[str, RLock] = {}
 _LOCKS_GUARD = RLock()
 
@@ -1276,10 +1310,11 @@ class SitePackageService:
                         shutil.copy2(source, target)
                     manifest_files[f"site/{relative}"] = _sha256(target)
                 manifest = {
-                    "format": "netconsole-site-package",
+                    "format": PACKAGE_FORMAT,
                     "format_version": PACKAGE_FORMAT_VERSION,
                     "package_id": str(uuid.uuid4()),
                     "package_type": SANITIZED_SHARE,
+                    "package_profile": package_profile_for_type(SANITIZED_SHARE),
                     "app_version": APP_VERSION.removeprefix("v"),
                     "site_id": site.site_id,
                     "site_uuid": identity["site_uuid"],
@@ -1379,10 +1414,11 @@ class SitePackageService:
                         shutil.copy2(source, target)
                     manifest_files[f"site/{relative}"] = _sha256(target)
                 manifest: dict[str, object] = {
-                    "format": "netconsole-site-package",
+                    "format": PACKAGE_FORMAT,
                     "format_version": PACKAGE_FORMAT_VERSION,
                     "package_id": str(uuid.uuid4()),
                     "package_type": FULL_MIGRATION,
+                    "package_profile": package_profile_for_type(FULL_MIGRATION),
                     "app_version": APP_VERSION.removeprefix("v"),
                     "site_id": site.site_id,
                     "site_uuid": identity["site_uuid"],
@@ -1397,6 +1433,10 @@ class SitePackageService:
                         name for name in manifest_files if is_sqlite_database_path(name)
                     ],
                     "artifacts": [],
+                    "required_files": [
+                        "site/site_meta.json",
+                        "site/db/devices.db",
+                    ],
                     "checksums": manifest_files,
                     "contains_credentials": True,
                     "credential_reentry_count": 0,
@@ -1445,12 +1485,15 @@ class SitePackageService:
         *,
         check_cancel: Callable[[], None] | None,
     ) -> dict[str, object]:
-        """Publish the four business exports without copying the site tree.
+        """Publish a small, directly restorable site package.
 
         The device CSV deliberately uses the existing sensitive exporter.  The
         other three files use their existing read-only exporters; if a module
         has no usable source data, a safe status file keeps the package
-        inspectable while making the missing module explicit.
+        inspectable while making the missing module explicit.  Only the
+        current site metadata and devices database are retained as the
+        restorable core; histories, raw files, artifacts and runtime state are
+        intentionally not copied.
         """
 
         site = self.sites.registry.get(site_id)
@@ -1476,11 +1519,27 @@ class SitePackageService:
                 for module_root in module_roots.values():
                     module_root.mkdir(parents=True, exist_ok=True)
                 components: dict[str, str] = {}
+                component_paths: dict[str, str] = {}
+
+                site_root = root / "site"
+                _atomic_json(
+                    site_root / "site_meta.json",
+                    self.sites.manager.load_site_metadata(site.site_id),
+                )
+                _copy_database_snapshot(
+                    self.paths.site_db_path(site.site_id),
+                    site_root / "db" / "devices.db",
+                )
 
                 self._lightweight_export_device_csv(
                     module_roots["device_management"] / "devices.csv",
                     site,
                     check_cancel=check_cancel,
+                )
+                component_paths["device_management"] = self._lightweight_component_path(
+                    root,
+                    module_roots["device_management"],
+                    "devices.csv",
                 )
                 components["device_management"] = "devices.csv"
 
@@ -1489,13 +1548,27 @@ class SitePackageService:
                     site,
                     check_cancel=check_cancel,
                 )
+                component_paths["ac_management"] = self._lightweight_component_path(
+                    root,
+                    module_roots["ac_management"],
+                    "fit-ap-resources.csv",
+                )
                 components["ac_management"] = "fit-ap-resources.csv"
 
+                trackside_tmp = root / "trackside-ap-business.tmp.xlsx"
                 self._lightweight_export_trackside(
                     module_roots["trackside_ap_business"] / "trackside-ap-business.xlsx",
                     site,
-                    root / "trackside-ap-business.tmp.xlsx",
+                    trackside_tmp,
                     check_cancel=check_cancel,
+                )
+                trackside_tmp.unlink(missing_ok=True)
+                component_paths[
+                    "trackside_ap_business"
+                ] = self._lightweight_component_path(
+                    root,
+                    module_roots["trackside_ap_business"],
+                    "trackside-ap-business.xlsx",
                 )
                 components["trackside_ap_business"] = "trackside-ap-business.xlsx"
 
@@ -1503,6 +1576,13 @@ class SitePackageService:
                     module_roots["rail_transit_base_data"] / "rail-transit-base-data.xlsx",
                     site,
                     check_cancel=check_cancel,
+                )
+                component_paths[
+                    "rail_transit_base_data"
+                ] = self._lightweight_component_path(
+                    root,
+                    module_roots["rail_transit_base_data"],
+                    "rail-transit-base-data.xlsx",
                 )
                 components["rail_transit_base_data"] = "rail-transit-base-data.xlsx"
 
@@ -1512,10 +1592,11 @@ class SitePackageService:
                     if item.is_file()
                 }
                 manifest = {
-                    "format": "netconsole-lightweight-package",
-                    "format_version": 1,
+                    "format": PACKAGE_FORMAT,
+                    "format_version": PACKAGE_FORMAT_VERSION,
                     "package_id": str(uuid.uuid4()),
                     "package_type": LIGHTWEIGHT,
+                    "package_profile": package_profile_for_type(LIGHTWEIGHT),
                     "app_version": APP_VERSION.removeprefix("v"),
                     "site_id": site.site_id,
                     "site_uuid": identity["site_uuid"],
@@ -1525,15 +1606,23 @@ class SitePackageService:
                     "base_revision": identity["revision"],
                     "created_at": _now(),
                     "source_platform": "windows" if os.name == "nt" else os.name,
+                    "databases": ["site/db/devices.db"],
+                    "artifacts": [],
+                    "required_files": list(_LIGHTWEIGHT_REQUIRED_FILES),
                     "components": components,
+                    "component_paths": component_paths,
                     "checksums": manifest_files,
                     "contains_credentials": True,
                     "contains_sensitive_credentials": True,
                     "device_passwords_included": True,
                     "encrypted": False,
-                    "can_import": False,
                 }
                 _atomic_json(root / "manifest.json", manifest)
+                _atomic_json(root / "checksums.json", manifest_files)
+                (root / "README.txt").write_text(
+                    "NetConsole 轻量可恢复包；包含当前局点基础数据和设备凭据，不包含历史、原始文件、报告或运行时缓存。请妥善保管。\n",
+                    encoding="utf-8",
+                )
                 with zipfile.ZipFile(
                     staging, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True
                 ) as archive:
@@ -1554,6 +1643,23 @@ class SitePackageService:
             }
         finally:
             self.staging_lifecycle.finish_publish_path(staging, staging_journal)
+
+    @staticmethod
+    def _lightweight_component_path(
+        root: Path,
+        module_root: Path,
+        expected_name: str,
+    ) -> str:
+        expected = module_root / expected_name
+        if expected.is_file():
+            return expected.relative_to(root).as_posix()
+        status = module_root / "export-status.json"
+        if status.is_file():
+            return status.relative_to(root).as_posix()
+        raise SiteStorageError(
+            "SITE_EXPORT_FAILED",
+            f"轻量包缺少 {module_root.name} 模块导出结果",
+        )
 
     def _lightweight_export_device_csv(
         self,
@@ -1729,9 +1835,7 @@ class SitePackageService:
                     raise SiteStorageError(
                         "SITE_IMPORT_INVALID_PACKAGE", "局点包版本格式无效"
                     ) from exc
-                if manifest.get(
-                    "format"
-                ) != "netconsole-site-package" or version not in {
+                if manifest.get("format") != PACKAGE_FORMAT or version not in {
                     1,
                     2,
                     PACKAGE_FORMAT_VERSION,
@@ -1748,8 +1852,18 @@ class SitePackageService:
                     raise SiteStorageError(
                         "SITE_IMPORT_VERSION_UNSUPPORTED", "数据包类型不受支持"
                     )
+                expected_profile = package_profile_for_type(package_type)
+                declared_profile = manifest.get("package_profile")
+                if declared_profile is not None and str(declared_profile) != expected_profile:
+                    raise SiteStorageError(
+                        "SITE_IMPORT_INVALID_PACKAGE", "局点包 profile 与类型不一致"
+                    )
                 expected_suffix = (
-                    ".ncresult" if package_type == COLLECTION_RETURN else ".ncsite"
+                    ".ncresult"
+                    if package_type == COLLECTION_RETURN
+                    else ".zip"
+                    if package_type == LIGHTWEIGHT
+                    else ".ncsite"
                 )
                 if validate_extension and package.suffix.casefold() != expected_suffix:
                     raise SiteStorageError(
@@ -1762,6 +1876,15 @@ class SitePackageService:
                     and manifest.get("encrypted") is False
                     and manifest.get("contains_credentials") is True
                 )
+                plain_lightweight = (
+                    package_type == LIGHTWEIGHT
+                    and version == PACKAGE_FORMAT_VERSION
+                    and manifest.get("package_profile")
+                    == package_profile_for_type(LIGHTWEIGHT)
+                    and manifest.get("encrypted") is False
+                    and manifest.get("contains_credentials") is True
+                    and manifest.get("device_passwords_included") is True
+                )
                 if (
                     version == PACKAGE_FORMAT_VERSION
                     and package_type == FULL_MIGRATION
@@ -1771,7 +1894,12 @@ class SitePackageService:
                         "SITE_IMPORT_INVALID_PACKAGE",
                         "v4 完整迁移包必须原样包含凭据且不得加密",
                     )
-                if not plain_full:
+                if package_type == LIGHTWEIGHT and not plain_lightweight:
+                    raise SiteStorageError(
+                        "SITE_IMPORT_INVALID_PACKAGE",
+                        "当前轻量包必须使用 v4 lightweight profile 并明确包含设备凭据",
+                    )
+                if not plain_full and not plain_lightweight:
                     if manifest.get("contains_credentials") is not False:
                         raise SiteStorageError(
                             "SITE_IMPORT_INVALID_PACKAGE",
@@ -1785,6 +1913,13 @@ class SitePackageService:
                 if not isinstance(checksums, dict):
                     raise SiteStorageError(
                         "SITE_IMPORT_INVALID_PACKAGE", "局点包缺少 checksum"
+                    )
+                if package_type == LIGHTWEIGHT:
+                    self._validate_current_lightweight_package(
+                        archive,
+                        manifest,
+                        infos,
+                        checksums,
                     )
                 for name, expected in checksums.items():
                     _validate_archive_name(str(name))
@@ -1815,8 +1950,12 @@ class SitePackageService:
                         or manifest.get("site_revision")
                         or 1
                     ),
+                    "package_profile": str(
+                        manifest.get("package_profile")
+                        or package_profile_for_type(package_type)
+                    ),
                     "file_count": int(payload_summary["file_count"]),
-                    "contains_credentials": bool(plain_full),
+                    "contains_credentials": bool(plain_full or plain_lightweight),
                     "encrypted": False,
                     "credential_reentry_count": max(
                         0, int(manifest.get("credential_reentry_count") or 0)
@@ -1843,6 +1982,96 @@ class SitePackageService:
             raise SiteStorageError(
                 "SITE_IMPORT_INVALID_PACKAGE", "局点包不是有效 ZIP"
             ) from exc
+
+    @staticmethod
+    def _validate_current_lightweight_package(
+        archive: zipfile.ZipFile,
+        manifest: dict[str, object],
+        infos: list[zipfile.ZipInfo],
+        checksums: dict[object, object],
+    ) -> None:
+        names = {
+            info.filename
+            for info in infos
+            if not info.is_dir()
+        }
+        required_files = manifest.get("required_files")
+        if not isinstance(required_files, list) or {
+            str(value) for value in required_files
+        } != set(_LIGHTWEIGHT_REQUIRED_FILES):
+            raise SiteStorageError(
+                "SITE_IMPORT_INVALID_PACKAGE", "轻量包缺少可恢复核心文件声明"
+            )
+        for required in _LIGHTWEIGHT_REQUIRED_FILES:
+            if required not in names:
+                raise SiteStorageError(
+                    "SITE_IMPORT_INVALID_PACKAGE", "轻量包缺少可恢复核心文件"
+                )
+
+        structural = {"manifest.json", "checksums.json", "README.txt"}
+        payload_names = names - structural
+        allowed_prefixes = ("site/", *(_LIGHTWEIGHT_COMPONENT_PREFIXES.values()))
+        for name in payload_names:
+            if _LIGHTWEIGHT_FORBIDDEN_PARTS.intersection(
+                part.casefold() for part in name.split("/")
+            ):
+                raise SiteStorageError(
+                    "SITE_IMPORT_INVALID_PACKAGE",
+                    "轻量包包含禁止的日志、历史或运行时数据",
+                )
+            if not name.startswith(allowed_prefixes):
+                raise SiteStorageError(
+                    "SITE_IMPORT_INVALID_PACKAGE", "轻量包包含未声明的文件"
+                )
+
+        component_paths = manifest.get("component_paths")
+        if not isinstance(component_paths, dict) or set(component_paths) != set(
+            _LIGHTWEIGHT_COMPONENTS
+        ):
+            raise SiteStorageError(
+                "SITE_IMPORT_INVALID_PACKAGE", "轻量包缺少完整业务模块声明"
+            )
+        if len({str(path) for path in component_paths.values()}) != len(
+            _LIGHTWEIGHT_COMPONENTS
+        ):
+            raise SiteStorageError(
+                "SITE_IMPORT_INVALID_PACKAGE", "轻量包业务模块不能共用同一文件"
+            )
+        for component in _LIGHTWEIGHT_COMPONENTS:
+            path = component_paths.get(component)
+            prefix = _LIGHTWEIGHT_COMPONENT_PREFIXES[component]
+            if not isinstance(path, str) or not path.startswith(prefix):
+                raise SiteStorageError(
+                    "SITE_IMPORT_INVALID_PACKAGE", "轻量包业务模块路径无效"
+                )
+            _validate_archive_name(path)
+            if path not in payload_names:
+                raise SiteStorageError(
+                    "SITE_IMPORT_INVALID_PACKAGE", "轻量包业务模块文件缺失"
+                )
+
+        expected_payload_names = set(_LIGHTWEIGHT_REQUIRED_FILES) | {
+            str(path) for path in component_paths.values()
+        }
+        if payload_names != expected_payload_names:
+            raise SiteStorageError(
+                "SITE_IMPORT_INVALID_PACKAGE", "轻量包包含未声明的文件"
+            )
+
+        if set(str(name) for name in checksums) != payload_names:
+            raise SiteStorageError(
+                "SITE_IMPORT_CHECKSUM_FAILED", "轻量包 checksum 清单与内容不一致"
+            )
+        try:
+            checksum_file = json.loads(archive.read("checksums.json"))
+        except (KeyError, json.JSONDecodeError) as exc:
+            raise SiteStorageError(
+                "SITE_IMPORT_INVALID_PACKAGE", "轻量包缺少有效 checksum 清单"
+            ) from exc
+        if checksum_file != checksums:
+            raise SiteStorageError(
+                "SITE_IMPORT_CHECKSUM_FAILED", "轻量包 checksum 清单不一致"
+            )
 
     @staticmethod
     def _inspect_lightweight_package(
@@ -1948,12 +2177,12 @@ class SitePackageService:
             package,
             target_site_id=site_id or replace_site_id,
         )
+        if not bool(info.get("can_import")):
+            raise SiteStorageError(
+                "SITE_IMPORT_UNSUPPORTED", "该数据包仅支持检查，不能直接恢复为局点"
+            )
         manifest = self._read_manifest(package)
         package_type = str(info.get("package_type") or FULL_MIGRATION)
-        if package_type == LIGHTWEIGHT:
-            raise SiteStorageError(
-                "SITE_IMPORT_UNSUPPORTED", "轻量包仅用于跨模块交付，不能直接恢复为局点"
-            )
         if package_type == COLLECTION_RETURN:
             return SiteSyncService(self.paths, self.sites).import_return_package(
                 Path(package).resolve(),

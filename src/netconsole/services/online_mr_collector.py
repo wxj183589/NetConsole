@@ -45,6 +45,7 @@ from netconsole.services.online_mr.collection_commands import (
     stream_prepare_commands,
 )
 from netconsole.services.online_mr_session_store import OnlineMrSession, OnlineMrSessionStore
+from netconsole.services import netmiko_connection
 from netconsole.services.netmiko_connection import (
     ConnectionTarget,
     H3C_DEFAULT_ENCODING,
@@ -73,6 +74,10 @@ class OnlineMrConnectionError(RuntimeError):
     pass
 
 
+def _is_mesh_config(config: OnlineMrConnectionConfig) -> bool:
+    return str(config.safe_mr_name or "").strip().casefold() == "ac-mesh-link"
+
+
 STREAM_PREPARE_COMMANDS: tuple[str, ...] = NORMAL_DISPLAY_PREPARE_COMMANDS
 PREPARE_FAILURE_MARKERS: tuple[str, ...] = (
     "% unrecognized command",
@@ -86,17 +91,20 @@ MAX_MESH_STREAM_BUFFER_BYTES = 16 * 1024
 
 class NetmikoShellConnection(OnlineMrConnection):
     def __init__(self, config: OnlineMrConnectionConfig) -> None:
-        try:
-            from netmiko import ConnectHandler
-        except ImportError as exc:  # pragma: no cover - depends on optional runtime dependency.
-            raise OnlineMrConnectionError("netmiko is not installed") from exc
         self.connection = None
         self._tunnel_session: TunnelSession | None = None
         last_error: Exception | None = None
         for target in self._targets_from_config(config):
             try:
                 prepared = self._prepare_target(target)
-                self.connection = ConnectHandler(**build_netmiko_params(prepared))
+                with netmiko_connection.ssh_connection_context(
+                    "mesh" if _is_mesh_config(config) else "online_mr",
+                    "collect",
+                    device_uuid=str(config.mr_id or config.device_id or ""),
+                ):
+                    self.connection = netmiko_connection.ConnectHandler(
+                        **build_netmiko_params(prepared)
+                    )
                 config.connection_method = prepared.method
                 return
             except Exception as exc:

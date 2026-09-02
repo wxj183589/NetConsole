@@ -40,6 +40,16 @@ PACKAGE_TYPES = frozenset(
 PACKAGE_FORMAT = "netconsole-site-package"
 PACKAGE_FORMAT_VERSION = 4
 
+
+def package_profile_for_type(package_type: str) -> str:
+    return {
+        FULL_MIGRATION: "full",
+        SANITIZED_SHARE: "sanitized_share",
+        FIELD_COLLECTION: "field_collection",
+        COLLECTION_RETURN: "collection_return",
+        LIGHTWEIGHT: "lightweight",
+    }.get(package_type, package_type)
+
 _DATABASE_SUFFIXES = frozenset({".db", ".sqlite", ".sqlite3"})
 _EXCLUDED_PARTS = {
     "agents.db",
@@ -812,6 +822,7 @@ class SiteSyncService:
             "format_version": PACKAGE_FORMAT_VERSION,
             "package_id": str(uuid.uuid4()),
             "package_type": package_type,
+            "package_profile": package_profile_for_type(package_type),
             "app_version": APP_VERSION.removeprefix("v"),
             "database_schema_version": _database_schema_version(
                 record.root_path / "db" / "devices.db"
@@ -2111,6 +2122,7 @@ __all__ = [
     "SANITIZED_SHARE",
     "PACKAGE_FORMAT",
     "PACKAGE_FORMAT_VERSION",
+    "package_profile_for_type",
     "PACKAGE_TYPES",
     "SiteSyncService",
     "is_sqlite_database_path",

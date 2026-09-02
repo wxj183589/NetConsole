@@ -1615,7 +1615,14 @@ def _collect_one_target(
                     skipped_reason=EXCLUDED_WORK_SCOPE_REASON,
                 )
             current_device = current
-        connection = netmiko_connection.ConnectHandler(**build_netmiko_params(choose_connection_target(current_device)))  # type: ignore[arg-type]
+        with netmiko_connection.ssh_connection_context(
+            "trackside_optical",
+            "collect",
+            device_uuid=str(current_device.device_uuid or ""),
+        ):
+            connection = netmiko_connection.ConnectHandler(
+                **build_netmiko_params(choose_connection_target(current_device))
+            )  # type: ignore[arg-type]
         adapter = resolve_trackside_switch_adapter(current_device)
         collected = adapter.collect(
             connection,

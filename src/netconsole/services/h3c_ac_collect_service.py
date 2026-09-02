@@ -860,7 +860,12 @@ def collect_h3c_fit_ap_verbose(
             command_guard.validate_command_list(("screen-length disable",), "ac_fit_ap_verbose_selected_collect")
             connection = None
             try:
-                connection = netmiko_connection.ConnectHandler(**build_netmiko_params(target))
+                with netmiko_connection.ssh_connection_context(
+                    "ap_detail",
+                    "collect",
+                    device_uuid=str(ac_device.device_uuid or ""),
+                ):
+                    connection = netmiko_connection.ConnectHandler(**build_netmiko_params(target))
                 init = _run_command(connection, "screen-length disable", ac_device, collect_run_uuid, read_timeout=15, context="ac_fit_ap_verbose_selected_collect", preserve_echo=True)
                 command_results.append(init)
                 for resource in resources:
@@ -2283,7 +2288,12 @@ def _enable_fit_ap_console(ac_device: Device, collect_run_uuid: str) -> list[Com
     results: list[CommandResult] = []
     try:
         command_guard.validate_command_list(ENABLE_FIT_AP_CONSOLE_COMMANDS, "ac_enable_ap_console")
-        connection = netmiko_connection.ConnectHandler(**build_netmiko_params(target))
+        with netmiko_connection.ssh_connection_context(
+            "ac_action",
+            "collect",
+            device_uuid=str(ac_device.device_uuid or ""),
+        ):
+            connection = netmiko_connection.ConnectHandler(**build_netmiko_params(target))
         for command in ENABLE_FIT_AP_CONSOLE_COMMANDS:
             result = _run_command(
                 connection,
@@ -2325,7 +2335,12 @@ def _execute_h3c_ac_command_list(
     command_results = result_sink if result_sink is not None else []
     outputs: dict[str, str] = {}
     try:
-        connection = netmiko_connection.ConnectHandler(**build_netmiko_params(target))
+        with netmiko_connection.ssh_connection_context(
+            _ssh_collector_name(context),
+            "collect",
+            device_uuid=str(ac_device.device_uuid or ""),
+        ):
+            connection = netmiko_connection.ConnectHandler(**build_netmiko_params(target))
         for command in commands:
             _raise_if_cancelled(should_cancel)
             progress(f"正在执行 {command}...")
@@ -2397,7 +2412,12 @@ def _collect_single_fit_ap_optical(
         target = choose_connection_target(temp_device)
         if target is None:
             raise RuntimeError("AP Telnet target unavailable")
-        connection = netmiko_connection.ConnectHandler(**build_netmiko_params(target))
+        with netmiko_connection.ssh_connection_context(
+            "optical",
+            "collect",
+            device_uuid=str(ac_device.device_uuid or ""),
+        ):
+            connection = netmiko_connection.ConnectHandler(**build_netmiko_params(target))
         command_guard.validate_command_list(FIT_AP_OPTICAL_COMMANDS, "fit_ap_optical_collect")
         outputs: dict[str, str] = {}
         for command in FIT_AP_OPTICAL_COMMANDS:
@@ -2737,6 +2757,19 @@ def _detail(device: Device, collect_run_uuid: str, command: str = "", error: str
     if error:
         parts.append(f"error={error}")
     return ", ".join(parts)
+
+
+def _ssh_collector_name(context: str) -> str:
+    value = str(context or "").casefold()
+    if "verbose" in value or "detail" in value:
+        return "ap_detail"
+    if "optical" in value:
+        return "optical"
+    if "fit_ap" in value or "fit-ap" in value:
+        return "fit_ap"
+    if "info" in value:
+        return "ac_basic"
+    return "ac"
 
 
 def _safe_filename(value: str) -> str:

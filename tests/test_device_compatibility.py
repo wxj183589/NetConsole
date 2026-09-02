@@ -144,6 +144,21 @@ def test_fingerprint_normalizes_role_model_and_release_without_guessing_platform
     assert fingerprint.platform_major_version is None
 
 
+def test_fingerprint_derives_comware_v9_from_short_h3c_version_line() -> None:
+    fingerprint = fingerprint_from_record(
+        {
+            "vendor": "H3C",
+            "role": "AC",
+            "model": "WX3540X",
+            "software_version": "version 9.1.081, Release 1612P01",
+        }
+    )
+
+    assert fingerprint.platform_family == "comware"
+    assert fingerprint.platform_major_version == 9
+    assert fingerprint.software_version == "R1612P01"
+
+
 def test_incremental_scan_reports_only_unregistered_sanitized_candidates() -> None:
     exact = _profile("exact.v1", model="S5560X-54F-HI", version="R6628P47")
     rows = [

@@ -830,6 +830,7 @@ function displayValue(value: unknown): string { if (value === null || value === 
           <el-descriptions-item label="版本">基准 {{ importInspection.base_revision }}<template v-if="importInspection.local_revision !== undefined"> / 本地 {{ importInspection.local_revision }}</template></el-descriptions-item>
         </el-descriptions>
         <el-alert v-if="importInspection.package_type === 'full_migration' && importInspection.contains_credentials" title="完整迁移包包含设备用户名和密码，请妥善保管。" type="warning" :closable="false" show-icon />
+        <el-alert v-else-if="importInspection.package_type === 'lightweight'" title="轻量包可直接恢复为新局点或替换现有局点；仅包含当前基础业务数据和设备凭据，不包含历史、原始文件、报告或运行时缓存。" type="info" :closable="false" show-icon />
         <el-alert v-else-if="importInspection.credential_reentry_count > 0" title="该数据包不包含设备凭据，导入后需要重新录入。" type="warning" :closable="false" show-icon />
 
         <div v-if="importInspection.package_type === 'collection_return'" class="preflight-grid">

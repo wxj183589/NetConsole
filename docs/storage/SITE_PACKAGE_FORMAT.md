@@ -1,17 +1,18 @@
 # 局点数据包格式
 
-NetConsole 使用 ZIP 容器传递局点数据。`.ncsite` 与 `.ncresult` 均在写入前完成 manifest、SHA-256、路径、符号链接、解压大小和 SQLite 完整性校验；校验或预检阶段不会写业务目录。
+NetConsole 使用 ZIP 容器传递局点数据。`.ncsite`、`.ncresult` 与 `.zip` 均在写入前完成 manifest、SHA-256、路径、符号链接、解压大小和 SQLite 完整性校验；校验或预检阶段不会写业务目录。
 
 ## 包类型
 
 | 类型 | 扩展名 | 用途 | 导入语义 |
 | --- | --- | --- | --- |
 | `full_migration` | `.ncsite` | 用户自己的电脑之间换机、完整备份、灾难恢复 | 无需密码，直接恢复完整局点和包内设备凭据 |
+| `lightweight` | `.zip` | 数据量较小的局点交换、基础资料交付 | 与完整迁移包使用同一导入入口和恢复事务；恢复当前基础数据及设备凭据，不恢复历史、原始文件、报告或运行时数据 |
 | `sanitized_share` | `.ncsite` | 问题分析、交给其他人或公开交流 | 恢复非秘密数据，相关设备标记为需要重新录入凭据 |
 | `field_collection` | `.ncsite` | 主电脑下发现场采集资料 | 建立同一 `site_uuid` 的现场基准 |
 | `collection_return` | `.ncresult` | 现场采集后回传增量 | 对同一 `site_uuid` 预检后增量合并 |
 
-当前格式版本为 4。旧版 `format_version=1/2` 的 `.ncsite` 继续兼容读取，但只按无凭据旧包处理；它们不能因类型名称为 `full_migration` 而恢复已被旧流程清除的凭据。曾短暂生成的实验性 `format_version=3` 加密包不属于当前兼容输入；需要从仍持有原局点数据的来源端重新导出 v4 包。
+当前格式版本为 4。完整迁移包和轻量包均使用 `format=netconsole-site-package`、v4、同一 manifest/checksum 机制；差异由 `package_profile` 和内容清单表达。旧版 `format_version=1/2` 的 `.ncsite` 继续兼容读取，但只按无凭据旧包处理；它们不能因类型名称为 `full_migration` 而恢复已被旧流程清除的凭据。历史上生成的实验性 `format=netconsole-lightweight-package` v1 轻量包只有检查语义，因缺少可恢复核心文件仍不可直接导入。曾短暂生成的实验性 `format_version=3` 加密包不属于当前兼容输入；需要从仍持有原局点数据的来源端重新导出 v4 包。
 
 ## 通用 manifest
 
@@ -19,6 +20,7 @@ NetConsole 使用 ZIP 容器传递局点数据。`.ncsite` 与 `.ncresult` 均�
 
 ```text
 format / format_version / package_id / package_type
+package_profile
 site_id / site_uuid / site_name / site_revision / base_revision
 created_at / source_platform / contains_credentials / credential_reentry_count
 databases / artifacts / checksums
@@ -26,7 +28,7 @@ databases / artifacts / checksums
 
 新生成的 `full_migration` 与 `sanitized_share` v4 包还携带可选扩展 `site_scope / relation_summary`；`field_collection`、`collection_return` 继续使用各自的同步 manifest 合同。
 
-`full_migration` 还明确记录 `encrypted=false`。包中不包含加密参数、`payload.enc`、迁移密码或凭据冲突策略。
+`full_migration` 还明确记录 `encrypted=false`。包中不包含加密参数、`payload.enc`、迁移密码或凭据冲突策略。当前轻量包额外记录 `required_files`、四个业务 `component_paths` 和 `checksums.json`，用于确认可恢复核心与业务导出清单没有被删改。
 
 `site_id` 是 Registry 的稳定内部标识；`site_uuid` 是跨电脑判断“是否同一局点”的不可变标识。显示名称可修改，不能参与匹配。新局点会创建 `site_uuid`；Legacy 局点必须先完成只读审计，才允许建立同步标识和导出现场/回传包。
 
@@ -40,6 +42,8 @@ databases / artifacts / checksums
 
 完整迁移包保留设备用户名、SSH/Telnet 密码、SNMP community 和隧道凭据。WPS Token 只以 `wps_sync.sqlite` 中原有的 Windows DPAPI 密文迁移，导出过程不得解密、重加密为包内明文或复制到 manifest；跨 Windows 用户/电脑后 DPAPI 无法解密时不得把该密文视为有效凭据，必须在目标机重新配置。导入新局点或替换已有局点都直接使用包内设备数据库及其凭据，不提供 `credential_policy`，也不会因来源电脑不同设置 `needs_reentry`。它不要求或接收迁移密码，也不生成加密载荷；导出页和导入预检会明确警告“完整迁移包包含设备用户名和密码”。该包不提供机密性，必须只保存到可信位置。
 
+轻量包保留 `site/site_meta.json` 和通过 SQLite Backup API 生成的 `site/db/devices.db`，因此可沿用完整迁移包的 staging、路径/符号链接、checksum、SQLite 完整性、事务发布和失败回滚流程。包根同时保留设备清单 CSV、AC FIT-AP CSV、轨旁 AP 业务 Excel 和轨道交通基础资料 Excel；模块没有可用导出数据时，使用受控 `export-status.json` 明确标记，不伪造业务内容。轻量包与完整迁移包一样包含设备凭据，但 manifest、checksums 和说明文件不写入密码值。
+
 脱敏分享包、现场采集包和采集回传包均不包含秘密。现场采集包仅下发 `site_meta.json`、清洗后的 `db/devices.db`、配置中心资料和车内通信点表，不下发任务历史、大量原始日志或历史报告。导入现场包后，本机在 `sync/baselines/<baseline_id>/` 保存不可变基准。
 
 采集回传包包含：
@@ -50,7 +54,9 @@ databases / artifacts / checksums
 - 基准以后新增或变更的非数据库文件、其 SHA-256、来源电脑和可识别任务 ID；
 - 基准中已消失文件的删除请求。
 
-所有包都排除 SSH 主机密钥确认、本机 Agent 地址、窗口布局、运行队列、缓存、锁、`.part`、WAL/SHM 和本机运行日志。除 `full_migration` 外，其他包还必须清空 `devices` 表中的密码、SSH/Telnet 密码、SNMP community 和隧道密码。清洗前确有凭据或旧包可确认已配置认证方式的设备会获得非秘密 `needs_reentry` 标记；manifest 的 `credential_reentry_count` 只记录受影响设备数。
+所有包都排除 SSH 主机密钥确认、本机 Agent 地址、窗口布局、运行队列、缓存、锁、`.part`、WAL/SHM 和本机运行日志。除 `full_migration` 和 `lightweight` 外，其他包还必须清空 `devices` 表中的密码、SSH/Telnet 密码、SNMP community 和隧道密码。清洗前确有凭据或旧包可确认已配置认证方式的设备会获得非秘密 `needs_reentry` 标记；manifest 的 `credential_reentry_count` 只记录受影响设备数。
+
+轻量包在包层面不包含历史数据库、原始采集文件、报告/制品、缓存、临时文件、备份或 staging 内容；其 `devices.db` 只作为当前基础业务恢复核心，不等同于把这些大型目录打包进来。
 
 导入 `sanitized_share` 或旧无凭据 `.ncsite` 后，设备列表显示“需重新录入”，API 返回 `credential_status / credential_source / credential_error_code`。连接测试在创建 Job 前返回 `CREDENTIAL_REENTRY_REQUIRED`，不会使用空密码尝试认证。设备编辑时密码留空保留原值，输入新密码会替换并在凭据完整后清除重录标记，只有显式“清除已保存值”才删除秘密；普通 DTO 只返回配置状态，不回传旧明文。Electron 本机编辑页可在用户点击眼睛后，通过 Desktop/`127.0.0.1`/短期会话保护接口按字段读取，关闭编辑器即清理本次显示值。完整迁移包导入后若真实凭据完整则保持 `available / local_database`。
 

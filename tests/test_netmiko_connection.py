@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import paramiko
+
 from netconsole.models.device import Device
 from netconsole.services import netmiko_connection
 from netconsole.services.netmiko_connection import (
@@ -437,3 +439,111 @@ def test_auto_targets_fall_back_to_telnet_after_ssh_banner_failure(monkeypatch):
     assert result.status == "telnet_ok"
     assert calls[:2] == ["hp_comware", "hp_comware_telnet"]
     assert "disconnect" in calls
+
+
+def test_h3c_legacy_ssh_rsa_fallback_is_scoped_and_logged(monkeypatch):
+    calls: list[dict[str, object]] = []
+    events: list[tuple[str, str]] = []
+
+    def fake_handler(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            raise paramiko.SSHException("Negotiation failed.")
+        return object()
+
+    monkeypatch.setattr(
+        netmiko_connection.app_logger,
+        "log_info",
+        lambda event, detail="", **_kwargs: events.append((event, detail)),
+    )
+    monkeypatch.setattr(
+        netmiko_connection.app_logger,
+        "log_warning",
+        lambda event, detail="", **_kwargs: events.append((event, detail)),
+    )
+
+    with netmiko_connection.ssh_connection_context(
+        "fit_ap", "collect", device_uuid="device-uuid"
+    ):
+        result = netmiko_connection._connect_with_compatibility(
+            fake_handler,
+            {
+                "device_type": "hp_comware",
+                "host": "10.82.21.209",
+                "username": "admin",
+                "password": "secret",
+            },
+        )
+
+    assert result is not None
+    assert len(calls) == 2
+    assert "disabled_algorithms" not in calls[0]
+    assert calls[1]["disabled_algorithms"] == {
+        "keys": ["rsa-sha2-512", "rsa-sha2-256"]
+    }
+    assert any(
+        event == "ssh_compatibility_fallback"
+        and "collector=fit_ap" in detail
+        and "phase=collect" in detail
+        and "device_uuid=device-uuid" in detail
+        and "host=10.82.21.209" in detail
+        and "reason=host_key_algorithm" in detail
+        and "mode=legacy_ssh_rsa" in detail
+        and "success=true" in detail
+        for event, detail in events
+    )
+    assert any(
+        event == "ssh_connection_attempt"
+        and "ssh_mode=normal" in detail
+        and "result=negotiation_failed" in detail
+        for event, detail in events
+    )
+    assert any(
+        event == "ssh_connection_attempt"
+        and "ssh_mode=legacy_ssh_rsa" in detail
+        and "result=success" in detail
+        for event, detail in events
+    )
+    assert all("secret" not in detail for _event, detail in events)
+
+
+def test_legacy_fallback_does_not_apply_to_auth_timeout_or_other_algorithm_errors(monkeypatch):
+    for error in (
+        paramiko.AuthenticationException("Authentication failed"),
+        TimeoutError("connection timed out"),
+        paramiko.SSHException("no matching key exchange method found"),
+    ):
+        calls: list[dict[str, object]] = []
+
+        def fake_handler(**kwargs):
+            calls.append(kwargs)
+            raise error
+
+        with netmiko_connection.ssh_connection_context("fit_ap", "collect"):
+            try:
+                netmiko_connection._connect_with_compatibility(
+                    fake_handler,
+                    {"device_type": "hp_comware", "host": "10.0.0.1"},
+                )
+            except BaseException as actual:
+                assert actual is error
+            else:  # pragma: no cover - assertion keeps the fallback contract explicit.
+                raise AssertionError("connection error should be raised")
+        assert len(calls) == 1
+
+
+def test_legacy_fallback_does_not_apply_to_non_h3c_device():
+    calls = []
+
+    def fake_handler(**kwargs):
+        calls.append(kwargs)
+        raise paramiko.SSHException("Negotiation failed.")
+
+    try:
+        netmiko_connection._connect_with_compatibility(
+            fake_handler,
+            {"device_type": "zte_zxros", "host": "10.0.0.2"},
+        )
+    except paramiko.SSHException:
+        pass
+    assert len(calls) == 1

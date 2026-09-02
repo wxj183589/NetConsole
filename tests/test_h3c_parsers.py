@@ -13,7 +13,11 @@ from netconsole.parsers.h3c.transceiver_parser import (
     parse_transceiver_manuinfo,
     parse_transceivers,
 )
-from netconsole.parsers.h3c.version_parser import normalize_device_mac, parse_version
+from netconsole.parsers.h3c.version_parser import (
+    normalize_device_mac,
+    parse_comware_version_details,
+    parse_version,
+)
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "h3c"
@@ -40,6 +44,22 @@ def test_version_parser_extracts_sysname_version_and_uptime():
     assert parsed["mac_address"] == "105e-ae3e-0700"
     assert parsed["vendor"] == "H3C"
     assert parsed["uptime_precision_seconds"] == 60
+
+
+def test_version_parser_accepts_short_comware_v9_release_line():
+    parsed = parse_version(
+        "version 9.1.081, Release 1612P01\n"
+        "HZDT09X-WX3540X-AC1 uptime is 1 week, 2 days"
+    )
+
+    assert parsed["software_family"] == "Comware"
+    assert parsed["software_version"] == "Version 9.1.081 Release 1612P01"
+    assert parsed["software_major_version"] == 9
+    assert parsed["software_train"] == "9.1"
+    assert parsed["software_release"] == "1612P01"
+    assert parsed["platform_family"] == "comware"
+    assert parsed["platform_major_version"] == 9
+    assert parse_comware_version_details("Comware Software, Version 9.1.081, Release 1612P01")["software_release"] == "1612P01"
 
 
 def test_device_clock_and_reboot_reason_are_parsed_without_local_timezone() -> None:

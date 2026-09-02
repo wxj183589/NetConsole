@@ -472,7 +472,7 @@ def migrate_site(
     response_model=SiteTaskResponse,
     status_code=status.HTTP_202_ACCEPTED,
     summary="导出局点包",
-    description="完整迁移包原样包含设备凭据；脱敏包和现场包不含密码；轻量包仅包含四类业务导出且包含设备连接密码。",
+    description="完整迁移包原样包含设备凭据；脱敏包和现场包不含密码；轻量包包含当前可恢复基础数据、四类业务导出和设备连接密码，不包含历史、原始文件或运行时数据。",
     dependencies=[Depends(_desktop), Depends(_persistent_storage)],
 )
 def export_site(

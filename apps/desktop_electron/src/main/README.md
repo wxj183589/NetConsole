@@ -29,7 +29,7 @@ Main 依赖 `../shared/` 的强类型 DTO，与 Vue 仅通过 preload bridge 通
 
 系统设置工具选择器只接收共享契约中的语义 `toolId`，过滤器和 basename 白名单由 Main 派生，Renderer 不能提供扩展名或 allowlist。PuTTY 允许大小写不敏感的 `putty.exe`、`putty64.exe`；选择后 Main 先复验绝对路径和文件名，Python 保存及实际启动前再验证存在性、普通文件、非符号链接和终端类型匹配。
 
-局点/数据根 IPC 只允许原生目录、`.ncsite` 和导出路径选择，以及停稳后的 Backend 存储重配置；复制、SQLite、压缩、解压和校验仍由 Python Worker 执行。
+局点/数据根 IPC 只允许原生目录、`.ncsite`、`.ncresult`、`.zip` 和导出路径选择，以及停稳后的 Backend 存储重配置；复制、SQLite、压缩、解压和校验仍由 Python Worker 执行。
 
 ## 测试
 

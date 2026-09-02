@@ -569,14 +569,19 @@ describe('desktop IPC', () => {
     await expect(handler({ sender }, { suggestedName: '..\\unsafe.exe' })).rejects.toThrow('safe file name')
   })
 
-  it('uses the typed site-package filters for migration and collection return packages', async () => {
+  it('uses the typed site-package filters for migration, lightweight and collection return packages', async () => {
     const { ipcMain, sender, dialog } = createHarness()
     const event = { sender }
 
     await ipcMain.handlers.get(DESKTOP_IPC.selectSitePackage)!(event)
     expect(dialog.showOpenDialog).toHaveBeenLastCalledWith(
       expect.anything(),
-      expect.objectContaining({ filters: [{ name: 'NetConsole 数据包', extensions: ['ncsite', 'ncresult'] }] }),
+      expect.objectContaining({ filters: [{ name: 'NetConsole 数据包', extensions: ['ncsite', 'ncresult', 'zip'] }] }),
+    )
+    await ipcMain.handlers.get(DESKTOP_IPC.selectSiteExportDestination)!(event, '宁波地铁1号线_轻量包.zip')
+    expect(dialog.showSaveDialog).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.objectContaining({ filters: [{ name: 'NetConsole 轻量包', extensions: ['zip'] }] }),
     )
     await ipcMain.handlers.get(DESKTOP_IPC.selectSiteExportDestination)!(event, '宁波地铁1号线_采集回传包.ncresult')
     expect(dialog.showSaveDialog).toHaveBeenLastCalledWith(

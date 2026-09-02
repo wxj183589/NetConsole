@@ -816,7 +816,12 @@ class FileTransferService:
             files: list[RemoteDeviceFile] = []
             try:
                 with prepared_connection_target(target) as prepared:
-                    connection = netmiko_connection.ConnectHandler(**build_netmiko_params(prepared))
+                    with netmiko_connection.ssh_connection_context(
+                        "file_management", "collect"
+                    ):
+                        connection = netmiko_connection.ConnectHandler(
+                            **build_netmiko_params(prepared)
+                        )
                     for command in FILE_LIST_COMMANDS:
                         output = safe_send_command(
                             connection,
@@ -950,7 +955,12 @@ class FileTransferService:
         connection = None
         try:
             with prepared_connection_target(target) as prepared:
-                connection = netmiko_connection.ConnectHandler(**build_netmiko_params(prepared))
+                with netmiko_connection.ssh_connection_context(
+                    "file_management", "collect"
+                ):
+                    connection = netmiko_connection.ConnectHandler(
+                        **build_netmiko_params(prepared)
+                    )
                 file_transfer(
                     connection,
                     source_file=remote_path,

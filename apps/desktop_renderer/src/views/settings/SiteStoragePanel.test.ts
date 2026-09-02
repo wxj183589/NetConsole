@@ -324,6 +324,37 @@ describe('SiteStoragePanel', () => {
     expect(wrapper.text()).toContain('完整迁移包包含设备用户名和密码，请妥善保管')
   })
 
+  it('previews a lightweight package through the same import dialog', async () => {
+    adapter.selectSitePackage.mockResolvedValueOnce({ cancelled: false, path: 'C:\\packages\\lightweight.zip' } as never)
+    vi.mocked(api.inspectSitePackage).mockResolvedValue({
+      site_id: 'demo',
+      site_uuid: 'site-1',
+      site_name: '演示局点',
+      package_type: 'lightweight',
+      package_profile: 'lightweight',
+      package_id: 'package-lightweight',
+      base_revision: 1,
+      file_count: 8,
+      conflict_count: 0,
+      conflicts: [],
+      invalid_count: 0,
+      estimated_additional_bytes: 4096,
+      can_import: true,
+      contains_credentials: true,
+      encrypted: false,
+      credential_reentry_count: 0,
+    })
+    const wrapper = mount(SiteStoragePanel)
+    await flushPromises()
+
+    await wrapper.get('[data-testid="import-site"]').trigger('click')
+    await flushPromises()
+
+    expect(api.inspectSitePackage).toHaveBeenCalledWith('C:\\packages\\lightweight.zip')
+    expect(wrapper.text()).toContain('轻量包可直接恢复为新局点或替换现有局点')
+    expect(wrapper.text()).toContain('不包含历史、原始文件、报告或运行时缓存')
+  })
+
   it('exposes one stable focus target and applies only a visual focus state', async () => {
     const scrollIntoView = vi.spyOn(HTMLElement.prototype, 'scrollIntoView').mockImplementation(() => undefined)
     const focus = vi.spyOn(HTMLElement.prototype, 'focus').mockImplementation(() => undefined)

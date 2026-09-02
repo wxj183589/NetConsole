@@ -945,7 +945,7 @@ def test_site_package_sanitizes_credentials_and_has_checksums(tmp_path: Path) ->
     ]
 
 
-def test_lightweight_package_contains_four_exports_and_keeps_import_disabled(
+def test_lightweight_package_round_trips_core_and_four_business_exports(
     tmp_path: Path,
 ) -> None:
     paths = _paths(tmp_path)
@@ -960,9 +960,21 @@ def test_lightweight_package_contains_four_exports_and_keeps_import_disabled(
             ("device-1", "H3C-AC", "192.0.2.20", "H3C", "AC", "admin", secret),
         )
         connection.commit()
+    for relative in (
+        "history/device-history.json",
+        "raw/capture.log",
+        "artifacts/report.xlsx",
+        "cache/render.json",
+        "backup/old.sqlite",
+        "staging/partial.part",
+    ):
+        path = paths.site_dir("site-one") / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("must not be packaged", encoding="utf-8")
     package = tmp_path / "exports" / "site-lightweight.zip"
 
-    result = SitePackageService(paths, sites).export_site(
+    packages = SitePackageService(paths, sites)
+    result = packages.export_site(
         "site-one", package, package_type="lightweight"
     )
 
@@ -975,6 +987,10 @@ def test_lightweight_package_contains_four_exports_and_keeps_import_disabled(
         device_csv = archive.read("device-management/devices.csv").decode(
             "utf-8-sig"
         )
+        assert "site/site_meta.json" in names
+        assert "site/db/devices.db" in names
+        assert "checksums.json" in names
+        assert "README.txt" in names
     assert "device-management/devices.csv" in names
     assert "ac-management/fit-ap-resources.csv" in names
     assert any(name.startswith("trackside-ap-business/") for name in names)
@@ -983,18 +999,77 @@ def test_lightweight_package_contains_four_exports_and_keeps_import_disabled(
     assert secret in device_csv
     assert secret not in manifest_bytes.decode("utf-8")
     assert not any(
-        any(part.casefold() in {"logs", "history", "raw", "backup", "cache"}
+        any(part.casefold() in {"logs", "history", "raw", "artifact", "artifacts", "backup", "cache", "staging", "temp"}
             for part in name.split("/"))
         for name in names
     )
+    assert manifest["format"] == "netconsole-site-package"
+    assert manifest["format_version"] == 4
     assert manifest["package_type"] == "lightweight"
+    assert manifest["package_profile"] == "lightweight"
+    assert manifest["required_files"] == [
+        "site/site_meta.json",
+        "site/db/devices.db",
+    ]
+    assert manifest["component_paths"]["device_management"] == "device-management/devices.csv"
     assert manifest["contains_credentials"] is True
     assert manifest["device_passwords_included"] is True
-    inspected = SitePackageService(paths, sites).inspect_package(package)
-    assert inspected["can_import"] is False
-    with pytest.raises(SiteStorageError) as exc_info:
-        SitePackageService(paths, sites).import_site(package)
-    assert exc_info.value.code == "SITE_IMPORT_UNSUPPORTED"
+    inspected = packages.inspect_package(package)
+    assert inspected["can_import"] is True
+    assert inspected["package_profile"] == "lightweight"
+
+    target_paths = _paths(tmp_path / "target")
+    target_sites = SiteApplicationService(target_paths)
+    imported = SitePackageService(target_paths, target_sites).import_site(
+        package,
+        site_id="restored-site",
+        display_name="恢复轻量局点",
+    )
+    restored = DeviceRepository(
+        Database(target_paths.site_db_path("restored-site"))
+    ).get_by_uuid("device-1")
+    assert imported["package_type"] == "lightweight"
+    assert imported["requires_credentials"] is False
+    assert restored is not None
+    assert restored.password == secret
+    assert target_sites.get_site("restored-site")["display_name"] == "恢复轻量局点"
+
+
+def test_lightweight_package_rejects_missing_required_file_and_checksum_mismatch(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path / "source")
+    sites = SiteApplicationService(paths)
+    sites.create_site("site-one", "一号线")
+    package = tmp_path / "site-lightweight.zip"
+    packages = SitePackageService(paths, sites)
+    packages.export_site("site-one", package, package_type="lightweight")
+
+    missing = tmp_path / "missing-core.zip"
+    with zipfile.ZipFile(package) as source, zipfile.ZipFile(
+        missing, "w", compression=zipfile.ZIP_DEFLATED
+    ) as target:
+        for info in source.infolist():
+            if info.filename != "site/db/devices.db":
+                target.writestr(info, source.read(info.filename))
+    with pytest.raises(SiteStorageError) as missing_error:
+        packages.inspect_package(missing)
+    assert missing_error.value.code == "SITE_IMPORT_INVALID_PACKAGE"
+
+    tampered = tmp_path / "tampered-lightweight.zip"
+    with zipfile.ZipFile(package) as source, zipfile.ZipFile(
+        tampered, "w", compression=zipfile.ZIP_DEFLATED
+    ) as target:
+        for info in source.infolist():
+            value = (
+                b"tampered"
+                if info.filename == "device-management/devices.csv"
+                else source.read(info.filename)
+            )
+            target.writestr(info, value)
+    with pytest.raises(SiteStorageError) as checksum_error:
+        packages.inspect_package(tampered)
+    assert checksum_error.value.code == "SITE_IMPORT_CHECKSUM_FAILED"
 
 
 @pytest.mark.parametrize("package_type", ["full_migration", "sanitized_share"])
