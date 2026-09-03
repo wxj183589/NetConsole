@@ -4,8 +4,15 @@ import { ElMessage } from 'element-plus'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
-import { getActiveSite, type SiteRecord } from '../api/siteStorage'
 import { onPlatformRuntimeStatusChanged } from '../platform/runtime'
+import {
+  activeSiteContext,
+  clearSiteContext,
+  markSiteContextRollback,
+  markSiteContextSwitching,
+  refreshSiteContext,
+  siteContextState,
+} from '../stores/siteContext'
 import { useWorkspaceStore } from '../stores/workspace'
 import {
   SITE_CONTEXT_CHANGED_EVENT,
@@ -17,47 +24,34 @@ type LoadState = 'loading' | 'switching' | 'ready' | 'error'
 
 const router = useRouter()
 const workspace = useWorkspaceStore()
-const activeSite = ref<Pick<SiteRecord, 'site_id' | 'display_name'> | null>(null)
-const loadState = ref<LoadState>('loading')
-let loadSequence = 0
+const activeSite = activeSiteContext
+const loadState = siteContextState
 let focusSequence = 0
 let unsubscribe: (() => void) | undefined
-const handleSiteContextChanged = () => { void loadCurrentSite() }
+const handleSiteContextChanged = (event: Event) => {
+  const detail = (event as CustomEvent<unknown>).detail
+  if (detail && typeof detail === 'object') return
+  void loadCurrentSite()
+}
 const handleSiteSwitchMetadata = (event: Event) => {
   const detail = (event as CustomEvent<SiteSwitchMetadataDetail>).detail
   if (!detail || detail.state === 'rollback') {
-    void loadCurrentSite()
+    markSiteContextRollback()
     return
   }
-  ++loadSequence
-  activeSite.value = { site_id: detail.siteId, display_name: detail.displayName }
-  loadState.value = 'switching'
+  markSiteContextSwitching()
 }
 
 const siteName = computed(() => {
   if (loadState.value === 'loading') return '加载中…'
   if (loadState.value === 'error') return '读取失败'
-  const name = activeSite.value?.display_name?.trim() || activeSite.value?.site_id?.trim() || '未选择'
-  return loadState.value === 'switching' ? `${name}（加载中…）` : name
+  const name = activeSite.value?.displayName?.trim() || activeSite.value?.siteId?.trim() || '未选择'
+  return loadState.value === 'switching' ? `${name}（切换中…）` : name
 })
 const fullLabel = computed(() => `当前局点：${siteName.value}`)
 
 async function loadCurrentSite(): Promise<void> {
-  const sequence = ++loadSequence
-  loadState.value = 'loading'
-  activeSite.value = null
-  try {
-    const site = await getActiveSite()
-    if (sequence !== loadSequence) return
-    activeSite.value = site
-      ? { site_id: String(site.site_id || ''), display_name: String(site.display_name || '') }
-      : null
-    loadState.value = 'ready'
-  } catch {
-    if (sequence !== loadSequence) return
-    activeSite.value = null
-    loadState.value = 'error'
-  }
+  await refreshSiteContext().catch(() => undefined)
 }
 
 async function openSiteStorage(): Promise<void> {
@@ -85,15 +79,12 @@ onMounted(() => {
       void loadCurrentSite()
       return
     }
-    ++loadSequence
-    activeSite.value = null
-    loadState.value = status.state === 'failed' ? 'error' : 'loading'
+    clearSiteContext(status.state === 'failed' ? 'error' : 'loading')
   })
   void loadCurrentSite()
 })
 
 onBeforeUnmount(() => {
-  ++loadSequence
   window.removeEventListener(SITE_CONTEXT_CHANGED_EVENT, handleSiteContextChanged)
   window.removeEventListener(SITE_SWITCH_METADATA_EVENT, handleSiteSwitchMetadata)
   unsubscribe?.()

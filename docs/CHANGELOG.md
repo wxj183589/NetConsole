@@ -4,6 +4,8 @@
 
 ### 修复
 
+- 修复局点切换时 Renderer、系统设置卡片和顶部当前局点指示器上下文分裂的问题；切换结果现在统一以稳定 `site_id`、显示名称和 revision 提交，旧物理目录指针同步更新，失败回滚及快速连续切换不会提前显示目标局点。
+- 修复当前局点轻量包导出对历史中文目录误把稳定 ID 当物理路径、导致 `unable to open database file` 的问题；导出 Worker 冻结目标局点并通过 Registry 解析源库，使用只读 SQLite 校验和 Backup API 快照后再生成 ZIP，缺失源库不再自动创建空库。
 - 修复 MESH RSSI 主用链路全量采样悬停时仅显示时间和 RSSI 的问题；补齐同一链路区段的状态、AP/Radio、MAC、RSSI、LinkCnt、站点/区间、持续时间及空口负载信息，并避免跨 AP 切换边界误取上下文。
 - 精简 MESH RSSI 对比页状态栏，移除误导性的当前 PeerMac、当前 AP、独立 Radio 和 Overlay LOD 技术徽标；保留业务统计、Payload 及后端 LOD/response_budget 逻辑。
 - 修复 Production 模式下 GUI 普通维护请求被全局写保护错误拦截的问题；CLI 显式 Production 写授权仍保留，当前局点、运行任务、精确确认、事务回滚和可恢复删除等业务保护继续生效。

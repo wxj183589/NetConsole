@@ -1,4 +1,6 @@
 v1.5.5 - 2026-09-03
+- 修复局点切换时 Renderer、系统设置卡片和顶部当前局点指示器上下文分裂；统一以稳定 `site_id`、显示名称和 revision 提交切换结果，旧物理目录指针同步更新，失败回滚及快速连续切换不会提前显示目标局点。
+- 修复当前局点轻量包导出把稳定 ID 当历史物理目录、导致 `unable to open database file`；Worker 通过 Registry 解析源库，先只读校验并用 SQLite Backup API 创建快照，再生成 ZIP，缺失源库不自动创建空库。
 - 修复 MESH RSSI 主用链路全量采样悬停仅显示时间和 RSSI；按精确采样及同一链路区段解析状态、AP/Radio、MAC、RSSI、LinkCnt、站点/区间、持续时间和空口负载，禁止跨 AP 切换边界取上下文。
 - 精简 MESH RSSI 对比页状态栏，移除当前 PeerMac、当前 AP、独立 Radio 和 Overlay LOD 技术徽标；保留业务统计、Payload 及 LOD/response_budget 逻辑。
 - 收口轻量包与完整迁移包的数据包契约：两者统一使用 v4 manifest、SHA-256、ZIP 安全校验和“导入数据包”入口；轻量包保留当前局点基础数据及四类业务导出，可直接恢复局点，同时省略历史、原始文件、报告、缓存、临时和备份内容。

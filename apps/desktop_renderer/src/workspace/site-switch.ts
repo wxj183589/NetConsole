@@ -1,3 +1,10 @@
+import {
+  markSiteContextRollback,
+  markSiteContextSwitching,
+  setActiveSiteContext,
+  type SiteContext,
+} from '../stores/siteContext'
+
 export const BEFORE_SITE_SWITCH_EVENT = 'netconsole:before-site-switch'
 export const SITE_CONTEXT_CHANGED_EVENT = 'netconsole:site-context-changed'
 export const SITE_SWITCH_METADATA_EVENT = 'netconsole:site-switch-metadata'
@@ -7,8 +14,14 @@ export interface BeforeSiteSwitchDetail {
   waitUntil(promise: Promise<boolean>): void
 }
 
-export function notifySiteContextChanged(): void {
-  window.dispatchEvent(new CustomEvent(SITE_CONTEXT_CHANGED_EVENT))
+export interface SiteContextChangedDetail extends SiteContext {}
+
+export function notifySiteContextChanged(context?: unknown): void {
+  const committed = context ? setActiveSiteContext(context) : null
+  window.dispatchEvent(new CustomEvent<SiteContextChangedDetail | undefined>(
+    SITE_CONTEXT_CHANGED_EVENT,
+    committed ? { detail: committed } : undefined,
+  ))
 }
 
 export class SiteSwitchCancelled extends Error {
@@ -41,6 +54,8 @@ export interface SiteSwitchMetadataDetail extends SiteSwitchTarget {
 }
 
 function notifySiteSwitchMetadata(target: SiteSwitchTarget, state: SiteSwitchMetadataDetail['state']): void {
+  if (state === 'loading') markSiteContextSwitching()
+  else markSiteContextRollback()
   window.dispatchEvent(new CustomEvent<SiteSwitchMetadataDetail>(SITE_SWITCH_METADATA_EVENT, {
     detail: { ...target, state },
   }))
@@ -74,6 +89,18 @@ function siteSwitchStage(name: string, startedAt: number, targetSiteId: string):
  * confirmation, preflight, workspace snapshot, activation, and rollback path.
  */
 export async function coordinateSiteSwitch(
+  target: SiteSwitchTarget,
+  coordinator: SiteSwitchCoordinator,
+): Promise<SiteSwitchResult> {
+  const request = () => coordinateSiteSwitchInOrder(target, coordinator)
+  const queued = siteSwitchQueue.then(request, request)
+  siteSwitchQueue = queued.then(() => undefined, () => undefined)
+  return queued
+}
+
+let siteSwitchQueue: Promise<void> = Promise.resolve()
+
+async function coordinateSiteSwitchInOrder(
   target: SiteSwitchTarget,
   coordinator: SiteSwitchCoordinator,
 ): Promise<SiteSwitchResult> {
@@ -112,7 +139,10 @@ export async function coordinateSiteSwitch(
     } else {
       siteSwitchStage('runtime_rebind', stageStartedAt, target.siteId)
     }
-    notifySiteContextChanged()
+    notifySiteContextChanged(activation || {
+      site_id: target.siteId,
+      display_name: target.displayName,
+    })
     return 'completed'
   } catch (cause) {
     if (metadataPublished) notifySiteSwitchMetadata(target, 'rollback')

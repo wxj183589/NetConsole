@@ -74,22 +74,34 @@ class SiteManager:
         sites = [path.name for path in self.paths.sites_dir.iterdir() if path.is_dir()]
         return sorted(sites, key=lambda name: (name != DEFAULT_SITE, name.casefold()))
 
-    def switch_site(self, site_name: str) -> Site:
+    def switch_site(self, site_name: str, *, site_id: str = "") -> Site:
         site_name = self.validate_site_name(site_name)
         if site_name == DEFAULT_SITE:
             self.ensure_demo_site()
         if site_name not in self.list_sites():
             raise ValueError(f"Site does not exist: {site_name}")
         site = self.init_site_database(site_name, with_demo_data=(site_name == DEFAULT_SITE))
+        self.set_current_site_reference(site_name, site_id=site_id)
+        return site
+
+    def set_current_site_reference(self, site_name: str, *, site_id: str = "") -> None:
+        """Persist the physical compatibility pointer and its stable ID together."""
+
+        site_name = self.validate_site_name(site_name)
         config = self._load_config()
         config["current_site"] = site_name
+        if site_id:
+            config["active_site_id"] = str(site_id).strip()
+        else:
+            # Direct legacy callers only know the physical directory.  Do not
+            # leave a stable ID from a previous switch pointing elsewhere.
+            config.pop("active_site_id", None)
         recent_sites = [site_name]
         for name in config.get("recent_sites", []):
             if isinstance(name, str) and name != site_name and (self.paths.site_dir(name)).is_dir():
                 recent_sites.append(name)
         config["recent_sites"] = recent_sites[:10]
         self._save_config(config)
-        return site
 
     def get_current_site(self) -> str:
         config = self._load_config()
@@ -110,6 +122,12 @@ class SiteManager:
         config["recent_sites"] = self._normalize_recent_sites(config.get("recent_sites", []), current_site)
         self._save_config(config)
         return current_site
+
+    def get_current_site_id(self) -> str:
+        """Read the optional stable active-site reference without path guessing."""
+
+        value = self._load_config().get("active_site_id")
+        return str(value).strip() if isinstance(value, str) else ""
 
     def validate_site_name(self, site_name: str) -> str:
         name = site_name.strip()
@@ -210,6 +228,8 @@ class SiteManager:
             "current_site": current_site,
             "recent_sites": self._normalize_recent_sites(config.get("recent_sites", []), current_site),
         }
+        if isinstance(config.get("active_site_id"), str) and config["active_site_id"].strip():
+            normalized["active_site_id"] = config["active_site_id"].strip()
         self._save_config(normalized)
         return normalized
 

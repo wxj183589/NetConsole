@@ -180,7 +180,19 @@ export const updateSite = (siteId: string, payload: { display_name: string; line
 export const trashSite = (siteId: string, confirmDisplayName: string) => apiRequest<SiteTrashResponse>(`/api/v1/sites/${encodeURIComponent(siteId)}/trash`, { method: 'POST', body: JSON.stringify({ confirm_display_name: confirmDisplayName }) })
 export const createSite = (payload: { site_id: string; display_name: string; remark?: string; activate?: boolean }) => apiRequest<SiteRecord>('/api/v1/sites', { method: 'POST', body: JSON.stringify(payload) })
 export const preflightSiteActivation = (siteId: string) => apiRequest<{ ready: boolean; target_site_id: string; previous_site_id: string; registry_revision?: string }>(`/api/v1/sites/${encodeURIComponent(siteId)}/activate/preflight`, { method: 'POST' })
-export const activateSite = (siteId: string) => apiRequest<{ restart_required: boolean; site_root?: string; registry_revision?: string; switch_revision?: string; runtime_revision?: string }>(`/api/v1/sites/${encodeURIComponent(siteId)}/activate`, { method: 'POST', body: JSON.stringify({ confirmed: true }) })
+export interface SiteActivationResult {
+  site_id: string
+  site_name?: string
+  display_name?: string
+  revision?: string
+  restart_required: boolean
+  site_root?: string
+  registry_revision?: string
+  switch_revision?: string
+  runtime_revision?: string
+}
+
+export const activateSite = (siteId: string) => apiRequest<SiteActivationResult>(`/api/v1/sites/${encodeURIComponent(siteId)}/activate`, { method: 'POST', body: JSON.stringify({ confirmed: true }) })
 export const inspectSitePackage = (packagePath: string, targetSiteId = '') => apiRequest<SitePackageInspection>('/api/v1/sites/import/inspect', { method: 'POST', body: JSON.stringify({ package_path: packagePath, target_site_id: targetSiteId }) })
 export const exportSite = (siteId: string, destinationPath: string, packageType: SitePackageType = 'full_migration') => apiRequest<SiteTaskResponse>(`/api/v1/sites/${encodeURIComponent(siteId)}/export`, { method: 'POST', body: JSON.stringify({ destination_path: destinationPath, package_type: packageType }) })
 export const importSite = (payload: { package_path: string; site_id?: string; display_name?: string; replace_site_id?: string; activate?: boolean; raw_only?: boolean; conflict_resolutions?: SiteConflictResolution[] }) => apiRequest<SiteTaskResponse>('/api/v1/sites/import', { method: 'POST', body: JSON.stringify(payload) })

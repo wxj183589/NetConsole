@@ -8,8 +8,9 @@ import { ApiRequestError } from '../../api/client'
 import { getPlatformAdapter } from '../../platform/runtime'
 import { getTask } from '../../api/tasks'
 import { useConfirm } from '../../components/feedback/useConfirm'
+import { getSiteContextSnapshot, siteContextState } from '../../stores/siteContext'
 import { useWorkspaceStore } from '../../stores/workspace'
-import { coordinateSiteSwitch, notifySiteContextChanged } from '../../workspace/site-switch'
+import { coordinateSiteSwitch, notifySiteContextChanged, SITE_CONTEXT_CHANGED_EVENT } from '../../workspace/site-switch'
 
 const props = defineProps<{ focused?: boolean; switchBlocked?: boolean }>()
 
@@ -80,9 +81,18 @@ const selectedRetentionBytes = computed(() => selectedRetentionCandidates.value.
 
 onMounted(() => {
   panelMounted = true
+  window.addEventListener(SITE_CONTEXT_CHANGED_EVENT, handleSiteContextChanged)
   if (desktopOnly) void reload().catch(() => undefined)
 })
-onBeforeUnmount(() => { panelMounted = false })
+onBeforeUnmount(() => {
+  panelMounted = false
+  window.removeEventListener(SITE_CONTEXT_CHANGED_EVENT, handleSiteContextChanged)
+})
+
+function handleSiteContextChanged(): void {
+  if (busy.value) return
+  void reload({ reportError: false }).catch(() => undefined)
+}
 
 async function reload(options: { reportError?: boolean } = {}): Promise<void> {
   const generation = ++reloadGeneration
@@ -165,6 +175,7 @@ async function switchSite(site: SiteRecord): Promise<void> {
     if (result === 'blocked') {
       ElMessage.warning('请先保存或撤销当前系统设置，再切换局点')
     } else if (result === 'completed') {
+      await reload({ reportError: false }).catch(() => undefined)
       ElMessage.success('局点已切换')
     }
   } catch (cause) {
@@ -379,7 +390,7 @@ async function saveSiteInfo(): Promise<void> {
   }
   busy.value = true
   try {
-    await updateSite(site.site_id, {
+    const updated = await updateSite(site.site_id, {
       display_name: displayName,
       line_name: lineName || null,
       project_type: projectType || null,
@@ -387,7 +398,13 @@ async function saveSiteInfo(): Promise<void> {
     editDialogVisible.value = false
     await reload()
     await getPlatformAdapter().refreshSiteContext()
-    notifySiteContextChanged()
+    if (site.active) {
+      const currentContext = getSiteContextSnapshot()
+      notifySiteContextChanged({
+        ...updated,
+        ...(currentContext?.revision ? { revision: currentContext.revision } : {}),
+      })
+    }
     ElMessage.success(editMode.value === 'rename' ? '局点已重命名' : '局点信息已保存')
   } catch (cause) {
     showError(cause, '局点信息保存失败')
@@ -450,34 +467,57 @@ async function handleSiteAction(site: SiteRecord, command: unknown): Promise<voi
 }
 
 async function exportCurrent(packageType: SitePackageType): Promise<void> {
-  const current = sites.value.find((site) => site.active)
-  if (!current) return
-  if (packageType === 'full_migration') {
-    ElMessage.warning('完整迁移包包含设备用户名和密码，且未加密，请仅保存到可信位置并妥善保管。')
+  if (isSiteContextSwitching()) {
+    ElMessage.warning('局点切换完成前不能导出当前局点')
+    return
   }
-  if (packageType === 'lightweight') {
-    try {
+  const activeContext = getSiteContextSnapshot()
+  const activeRecord = sites.value.find((site) => site.active)
+  const context = activeContext || (activeRecord
+    ? { siteId: activeRecord.site_id, displayName: activeRecord.display_name, revision: '' }
+    : null)
+  if (!context) return
+
+  busy.value = true
+  try {
+    if (packageType === 'full_migration') {
+      ElMessage.warning('完整迁移包包含设备用户名和密码，且未加密，请仅保存到可信位置并妥善保管。')
+    }
+    if (packageType === 'lightweight') {
       await ElMessageBox.confirm(
         '轻量包会包含设备连接密码，并汇总设备、AC、轨旁 AP 和轨道交通基础资料。请仅保存到可信位置；manifest 不包含密码值，脱敏包仍会继续脱敏。',
         '导出轻量包确认',
         { type: 'warning', confirmButtonText: '确认导出', cancelButtonText: '取消', closeOnClickModal: false, closeOnPressEscape: false },
       )
-    } catch { return }
-  }
-  const date = new Date().toISOString().slice(0, 10).replaceAll('-', '')
-  const names: Record<SitePackageType, string> = {
-    full_migration: `${current.display_name}_完整迁移包_${date}.ncsite`,
-    sanitized_share: `${current.display_name}_脱敏分享包_${date}.ncsite`,
-    field_collection: `${current.display_name}_现场采集包_${date}.ncsite`,
-    collection_return: `${current.display_name}_采集回传包_${date}.ncresult`,
-    lightweight: `${current.display_name}_轻量包_${date}.zip`,
-  }
-  const selected = await getPlatformAdapter().selectSiteExportDestination(names[packageType])
-  if (selected.cancelled || !selected.path) return
-  busy.value = true
-  try { const task = await exportSite(current.site_id, selected.path, packageType); await openTask(task.task_id); ElMessage.success(`${packageTypeLabel(packageType)}导出任务已提交`) }
-  catch (cause) { showError(cause, '数据包导出失败') }
-  finally { busy.value = false }
+    }
+    const date = new Date().toISOString().slice(0, 10).replaceAll('-', '')
+    const displayName = context.displayName || activeRecord?.display_name || context.siteId
+    const names: Record<SitePackageType, string> = {
+      full_migration: `${displayName}_完整迁移包_${date}.ncsite`,
+      sanitized_share: `${displayName}_脱敏分享包_${date}.ncsite`,
+      field_collection: `${displayName}_现场采集包_${date}.ncsite`,
+      collection_return: `${displayName}_采集回传包_${date}.ncresult`,
+      lightweight: `${displayName}_轻量包_${date}.zip`,
+    }
+    const selected = await getPlatformAdapter().selectSiteExportDestination(names[packageType])
+    if (selected.cancelled || !selected.path) return
+
+    const latestContext = getSiteContextSnapshot()
+    const contextChanged = isSiteContextSwitching()
+      || !latestContext
+      || latestContext.siteId !== context.siteId
+      || Boolean(context.revision && latestContext.revision && latestContext.revision !== context.revision)
+    if (contextChanged) {
+      ElMessage.warning('局点已发生变化，已取消本次导出，请重新导出当前局点')
+      return
+    }
+    const task = await exportSite(context.siteId, selected.path, packageType)
+    await openTask(task.task_id)
+    ElMessage.success(`${packageTypeLabel(packageType)}导出任务已提交`)
+  } catch (cause) {
+    if (cause === 'cancel' || cause === 'close') return
+    showError(cause, '数据包导出失败')
+  } finally { busy.value = false }
 }
 
 async function importPackage(): Promise<void> {
@@ -662,6 +702,7 @@ function deleteDisabledReason(site: SiteRecord): string {
   return ''
 }
 function packageTypeLabel(value: SitePackageType): string { return ({ full_migration: '完整迁移包', sanitized_share: '脱敏分享包', field_collection: '现场采集包', collection_return: '采集回传包', lightweight: '轻量包' } as const)[value] }
+function isSiteContextSwitching(): boolean { return String(siteContextState.value) === 'switching' }
 function displayValue(value: unknown): string { if (value === null || value === undefined || value === '') return '空'; if (typeof value === 'object') return JSON.stringify(value); return String(value) }
 </script>
 

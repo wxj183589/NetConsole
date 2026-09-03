@@ -7,6 +7,7 @@ import { createMemoryHistory, createRouter } from 'vue-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import * as api from '../api/siteStorage'
+import { clearSiteContext } from '../stores/siteContext'
 import { useWorkspaceStore } from '../stores/workspace'
 import CurrentSiteIndicator from './CurrentSiteIndicator.vue'
 
@@ -74,6 +75,7 @@ async function mounted() {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  clearSiteContext()
   runtime.listener = undefined
   vi.mocked(api.getActiveSite).mockResolvedValue(activeSite())
 })
@@ -142,7 +144,7 @@ describe('CurrentSiteIndicator', () => {
     expect(runtime.unsubscribe).toHaveBeenCalledOnce()
   })
 
-  it('shows target site metadata while the warm Backend starts in the background', async () => {
+  it('keeps the previous site visible while the warm Backend starts in the background', async () => {
     const { wrapper } = await mounted()
     await flushPromises()
 
@@ -151,7 +153,8 @@ describe('CurrentSiteIndicator', () => {
     }))
     await nextTick()
 
-    expect(wrapper.text()).toContain('当前局点：测试局点-B网（加载中…）')
+    expect(wrapper.text()).toContain('当前局点：测试局点-A网（切换中…）')
+    expect(wrapper.text()).not.toContain('测试局点-B网')
     expect(wrapper.get('button').attributes('class')).toContain('is-switching')
     expect(api.getActiveSite).toHaveBeenCalledOnce()
 

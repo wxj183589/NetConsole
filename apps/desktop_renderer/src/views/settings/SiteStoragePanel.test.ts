@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as api from '../../api/siteStorage'
 import * as tasks from '../../api/tasks'
 import { ApiRequestError } from '../../api/client'
+import { clearSiteContext, markSiteContextSwitching, setActiveSiteContext } from '../../stores/siteContext'
 import type { SiteRecord, SiteRetentionReport } from '../../api/siteStorage'
 import SiteStoragePanel from './SiteStoragePanel.vue'
 
@@ -40,6 +41,14 @@ const adapter = {
   reportSiteSwitchState: vi.fn(),
 }
 vi.mock('../../platform/runtime', () => ({ getPlatformAdapter: () => adapter }))
+
+const mountedPanels: VueWrapper[] = []
+
+function mountPanel(options: Record<string, unknown> = {}) {
+  const wrapper = mount(SiteStoragePanel, options as never)
+  mountedPanels.push(wrapper)
+  return wrapper
+}
 
 function site(overrides: Partial<SiteRecord> = {}): SiteRecord {
   return {
@@ -155,6 +164,7 @@ async function emitSiteCommand(wrapper: VueWrapper, siteId: string, command: str
 
 beforeEach(() => {
   vi.clearAllMocks()
+  clearSiteContext()
   workspace.createSnapshot.mockReturnValue(workspace.checkpoint)
   workspace.prepareForSiteSwitch.mockResolvedValue(workspace.checkpoint)
   workspace.restoreAfterFailedSiteSwitch.mockResolvedValue(undefined)
@@ -163,11 +173,14 @@ beforeEach(() => {
   vi.mocked(api.preflightSiteActivation).mockResolvedValue({ ready: true, target_site_id: 'line-12', previous_site_id: 'demo' })
 })
 
-afterEach(() => { vi.restoreAllMocks() })
+afterEach(() => {
+  mountedPanels.splice(0).forEach((wrapper) => wrapper.unmount())
+  vi.restoreAllMocks()
+})
 
 describe('SiteStoragePanel', () => {
   it('shows the active site and controlled storage actions', async () => {
-    const wrapper = mount(SiteStoragePanel)
+    const wrapper = mountPanel()
     await flushPromises()
 
     expect(wrapper.text()).toContain('演示局点')
@@ -180,9 +193,62 @@ describe('SiteStoragePanel', () => {
     expect(wrapper.text()).toContain('项目类型未填写')
   })
 
+  it('freezes the central site context across Save As and cancels a stale export', async () => {
+    setActiveSiteContext({ site_id: 'site-b', display_name: '十二号线', revision: 'rev-b' })
+    let finishSaveAs: ((value: { cancelled: boolean; path?: string }) => void) | undefined
+    adapter.selectSiteExportDestination.mockReturnValueOnce(new Promise((resolve) => {
+      finishSaveAs = resolve
+    }) as never)
+    vi.spyOn(ElMessageBox, 'confirm').mockResolvedValueOnce('confirm' as never)
+    const warning = vi.spyOn(ElMessage, 'warning')
+    const wrapper = mountPanel()
+    await flushPromises()
+
+    const dropdown = wrapper.findComponent({ name: 'ElDropdown' })
+    dropdown.vm.$emit('command', 'lightweight')
+    await vi.waitFor(() => expect(adapter.selectSiteExportDestination).toHaveBeenCalledWith(
+      expect.stringContaining('十二号线_轻量包_'),
+    ))
+
+    setActiveSiteContext({ site_id: 'site-c', display_name: '十三号线', revision: 'rev-c' })
+    markSiteContextSwitching()
+    finishSaveAs?.({ cancelled: false, path: 'C:\\exports\\stale.zip' })
+    await flushPromises()
+
+    expect(api.exportSite).not.toHaveBeenCalled()
+    expect(warning).toHaveBeenCalledWith('局点已发生变化，已取消本次导出，请重新导出当前局点')
+  })
+
+  it('does not submit an export task when the native Save As dialog is cancelled', async () => {
+    setActiveSiteContext({ site_id: 'demo', display_name: '演示局点', revision: 'rev-demo' })
+    adapter.selectSiteExportDestination.mockResolvedValueOnce({ cancelled: true } as never)
+    vi.spyOn(ElMessageBox, 'confirm').mockResolvedValueOnce('confirm' as never)
+    const wrapper = mountPanel()
+    await flushPromises()
+
+    wrapper.findComponent({ name: 'ElDropdown' }).vm.$emit('command', 'lightweight')
+    await flushPromises()
+
+    expect(api.exportSite).not.toHaveBeenCalled()
+    expect(adapter.openTaskWindow).not.toHaveBeenCalled()
+  })
+
+  it('refreshes the settings list after another surface commits a site context', async () => {
+    const wrapper = mountPanel()
+    await flushPromises()
+    vi.mocked(api.listSites).mockResolvedValue([site({ site_id: 'line-12', display_name: '十二号线', active: true })])
+    window.dispatchEvent(new CustomEvent('netconsole:site-context-changed', {
+      detail: { siteId: 'line-12', displayName: '十二号线', revision: 'rev-12' },
+    }))
+    await flushPromises()
+
+    expect(api.listSites).toHaveBeenCalledTimes(2)
+    expect(wrapper.text()).toContain('十二号线')
+  })
+
   it('exposes a confirmed software restart action for desktop runtime recovery', async () => {
     vi.spyOn(ElMessageBox, 'confirm').mockResolvedValueOnce('confirm' as never)
-    const wrapper = mount(SiteStoragePanel)
+    const wrapper = mountPanel()
     await flushPromises()
 
     await wrapper.get('[data-testid="restart-application"]').trigger('click')
@@ -198,7 +264,7 @@ describe('SiteStoragePanel', () => {
       site({ site_id: 'line-old', display_name: '旧版局点', active: false, site_kind: 'legacy', line_name: undefined, project_type: undefined }),
     ])
 
-    const wrapper = mount(SiteStoragePanel)
+    const wrapper = mountPanel()
     await flushPromises()
 
     expect(wrapper.text()).toContain('线路：杭州地铁10号线')
@@ -214,7 +280,7 @@ describe('SiteStoragePanel', () => {
     const updated = site({ display_name: '新演示局点', line_name: '演示线路', project_type: 'PIS车地无线系统' })
     vi.mocked(api.listSites).mockResolvedValueOnce([initial]).mockResolvedValueOnce([updated])
     vi.mocked(api.updateSite).mockResolvedValue(updated)
-    const wrapper = mount(SiteStoragePanel)
+    const wrapper = mountPanel()
     await flushPromises()
 
     await emitSiteCommand(wrapper, 'demo', 'edit')
@@ -236,7 +302,7 @@ describe('SiteStoragePanel', () => {
   it('keeps the editor open and shows a duplicate-name backend error', async () => {
     vi.mocked(api.updateSite).mockRejectedValue(new ApiRequestError('局点名称已存在', 409, 'SITE_NAME_CONFLICT'))
     const message = vi.spyOn(ElMessage, 'error')
-    const wrapper = mount(SiteStoragePanel)
+    const wrapper = mountPanel()
     await flushPromises()
 
     await emitSiteCommand(wrapper, 'demo', 'rename')
@@ -254,7 +320,7 @@ describe('SiteStoragePanel', () => {
     vi.mocked(api.listSites).mockRejectedValueOnce(new Error('site list unavailable'))
     vi.mocked(api.getDataRoot).mockResolvedValueOnce({ data_root: 'D:\\partial-data', default_data_root: 'C:\\default', site_count: 1, active_site_id: 'demo', storage_mode: 'persistent', data_root_kind: 'persistent', persistent: true })
 
-    const wrapper = mount(SiteStoragePanel)
+    const wrapper = mountPanel()
     await flushPromises()
 
     expect(wrapper.text()).toContain('D:\\partial-data')
@@ -294,7 +360,7 @@ describe('SiteStoragePanel', () => {
       encrypted: false,
       credential_reentry_count: 0,
     })
-    const wrapper = mount(SiteStoragePanel)
+    const wrapper = mountPanel()
     await flushPromises()
 
     await wrapper.find('[data-testid="import-site"]').trigger('click')
@@ -324,7 +390,7 @@ describe('SiteStoragePanel', () => {
       encrypted: false,
       credential_reentry_count: 0,
     })
-    const wrapper = mount(SiteStoragePanel)
+    const wrapper = mountPanel()
     await flushPromises()
 
     await wrapper.get('[data-testid="import-site"]').trigger('click')
@@ -356,7 +422,7 @@ describe('SiteStoragePanel', () => {
       encrypted: false,
       credential_reentry_count: 0,
     })
-    const wrapper = mount(SiteStoragePanel)
+    const wrapper = mountPanel()
     await flushPromises()
 
     await wrapper.get('[data-testid="import-site"]').trigger('click')
@@ -370,7 +436,7 @@ describe('SiteStoragePanel', () => {
   it('exposes one stable focus target and applies only a visual focus state', async () => {
     const scrollIntoView = vi.spyOn(HTMLElement.prototype, 'scrollIntoView').mockImplementation(() => undefined)
     const focus = vi.spyOn(HTMLElement.prototype, 'focus').mockImplementation(() => undefined)
-    const wrapper = mount(SiteStoragePanel, { props: { focused: true } })
+    const wrapper = mountPanel({ props: { focused: true } })
     await flushPromises()
 
     expect(wrapper.get('#site-storage-management').classes()).toContain('storage-panel--focused')
@@ -388,7 +454,7 @@ describe('SiteStoragePanel', () => {
     ])
     vi.mocked(api.getDataRoot).mockResolvedValue({ data_root: 'C:\\data', default_data_root: 'C:\\default', site_count: 2, active_site_id: 'demo', storage_mode: 'persistent', data_root_kind: 'persistent', persistent: true })
 
-    const wrapper = mount(SiteStoragePanel)
+    const wrapper = mountPanel()
     await flushPromises()
 
     expect(wrapper.text()).toContain('宁波地铁12号线')
@@ -408,7 +474,7 @@ describe('SiteStoragePanel', () => {
       'SITE_HAS_ACTIVE_TASKS',
       { blocking_tasks: [{ task_id: 'task-1', task_type: 'device_collect', task_name: '设备采集', status: 'RUNNING', blocking_reason: '任务宿主仍在运行' }] },
     ))
-    const wrapper = mount(SiteStoragePanel)
+    const wrapper = mountPanel()
     await flushPromises()
 
     await wrapper.get('[data-testid="switch-site-line-12"]').trigger('click')
@@ -429,7 +495,7 @@ describe('SiteStoragePanel', () => {
     ])
     vi.mocked(api.activateSite).mockResolvedValueOnce(site({ site_id: 'line-12', active: true }) as never)
     adapter.restartBackend.mockResolvedValueOnce({ success: false, error: 'Backend 重启失败，已恢复原局点。' })
-    const wrapper = mount(SiteStoragePanel)
+    const wrapper = mountPanel()
     await flushPromises()
 
     await wrapper.get('[data-testid="switch-site-line-12"]').trigger('click')
@@ -446,8 +512,8 @@ describe('SiteStoragePanel', () => {
       site(),
       site({ site_id: 'line-12', display_name: '十二号线', active: false, site_kind: 'formal', classification: 'normal_site', managed_demo: false }),
     ])
-    vi.mocked(api.activateSite).mockResolvedValueOnce({ restart_required: true })
-    const wrapper = mount(SiteStoragePanel)
+    vi.mocked(api.activateSite).mockResolvedValueOnce({ site_id: 'line-12', restart_required: true })
+    const wrapper = mountPanel()
     await flushPromises()
 
     await wrapper.get('[data-testid="switch-site-line-12"]').trigger('click')
@@ -474,7 +540,7 @@ describe('SiteStoragePanel', () => {
       site(),
       site({ site_id: 'line-12', display_name: '十二号线', active: false, site_kind: 'formal', classification: 'normal_site', managed_demo: false }),
     ])
-    const wrapper = mount(SiteStoragePanel, { props: { switchBlocked: true } })
+    const wrapper = mountPanel({ props: { switchBlocked: true } })
     await flushPromises()
 
     await wrapper.get('[data-testid="switch-site-line-12"]').trigger('click')
@@ -489,7 +555,7 @@ describe('SiteStoragePanel', () => {
       .mockResolvedValueOnce({ value: '宁波地铁12号线' } as never)
       .mockResolvedValueOnce({ value: 'ningbo-line-12' } as never)
     vi.mocked(api.createSite).mockResolvedValue(site({ site_id: 'ningbo-line-12', display_name: '宁波地铁12号线', active: false, size_bytes: 0, site_kind: 'formal', classification: 'normal_site', managed_demo: false, demo_seed_version: '' }))
-    const wrapper = mount(SiteStoragePanel)
+    const wrapper = mountPanel()
     await flushPromises()
 
     await wrapper.find('[data-testid="create-site"]').trigger('click')
@@ -509,7 +575,7 @@ describe('SiteStoragePanel', () => {
       persistent: false,
     })
 
-    const wrapper = mount(SiteStoragePanel)
+    const wrapper = mountPanel()
     await flushPromises()
 
     expect(wrapper.find('[data-testid="isolated-storage-alert"]').exists()).toBe(true)
@@ -521,7 +587,7 @@ describe('SiteStoragePanel', () => {
   it('runs the site audit as a task and refreshes the lifecycle summary', async () => {
     vi.mocked(api.auditSite).mockResolvedValue({ task_id: 'audit-1', task_type: 'site_audit' })
     vi.mocked(tasks.getTask).mockResolvedValue({ status: 'COMPLETED' } as never)
-    const wrapper = mount(SiteStoragePanel)
+    const wrapper = mountPanel()
     await flushPromises()
 
     await wrapper.find('[data-testid="audit-site-demo"]').trigger('click')
@@ -538,7 +604,7 @@ describe('SiteStoragePanel', () => {
       .mockResolvedValueOnce(retentionReport())
     vi.mocked(api.scanSiteRetention).mockResolvedValue({ task_id: 'scan-1', task_type: 'site_retention_scan' })
     vi.mocked(tasks.getTask).mockResolvedValue({ status: 'COMPLETED' } as never)
-    const wrapper = mount(SiteStoragePanel)
+    const wrapper = mountPanel()
     await flushPromises()
 
     await wrapper.get('[data-testid="retention-site-demo"]').trigger('click')
@@ -565,7 +631,7 @@ describe('SiteStoragePanel', () => {
     vi.mocked(api.scanSiteRetention).mockResolvedValue({ task_id: 'scan-2', task_type: 'site_retention_scan' })
     vi.mocked(tasks.getTask).mockResolvedValue({ status: 'COMPLETED' } as never)
     const prompt = vi.spyOn(ElMessageBox, 'prompt').mockResolvedValue({ value: '演示局点', action: 'confirm' } as never)
-    const wrapper = mount(SiteStoragePanel)
+    const wrapper = mountPanel()
     await flushPromises()
 
     await wrapper.get('[data-testid="retention-site-demo"]').trigger('click')
@@ -608,7 +674,7 @@ describe('SiteStoragePanel', () => {
       recommended_action: 'keep_and_review', can_delete: false, safe_to_replace: true,
       physical_path: 'C:\\private\\sites\\demo', manifest_path: 'C:\\private\\audit.json',
     } as never)
-    const wrapper = mount(SiteStoragePanel)
+    const wrapper = mountPanel()
     await flushPromises()
 
     await wrapper.find('[data-testid="show-audit-demo"]').trigger('click')
@@ -628,7 +694,7 @@ describe('SiteStoragePanel', () => {
     vi.mocked(api.applySiteCleanup).mockResolvedValue({ task_id: 'cleanup-1', task_type: 'site_cleanup_apply' })
     vi.mocked(tasks.getTask).mockResolvedValue({ status: 'COMPLETED' } as never)
     vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue(undefined as never)
-    const wrapper = mount(SiteStoragePanel)
+    const wrapper = mountPanel()
     await flushPromises()
 
     await emitSiteCommand(wrapper, 'legacy-empty', 'cleanup')
@@ -641,7 +707,7 @@ describe('SiteStoragePanel', () => {
   it('does not apply a cleanup plan blocked by the backend', async () => {
     vi.mocked(api.listSites).mockResolvedValue([site({ site_id: 'legacy-current', active: false, site_kind: 'legacy', classification: 'empty_shell', managed_demo: false })])
     vi.mocked(api.prepareSiteCleanup).mockResolvedValue({ cleanup_token: '1234567890abcdef', site_id: 'legacy-current', classification: 'empty_shell', blocking_reasons: ['当前局点不能清理'], recoverable: true, can_delete: false })
-    const wrapper = mount(SiteStoragePanel)
+    const wrapper = mountPanel()
     await flushPromises()
 
     await emitSiteCommand(wrapper, 'legacy-current', 'cleanup')
@@ -654,7 +720,7 @@ describe('SiteStoragePanel', () => {
     vi.mocked(api.rebuildDemoSite).mockResolvedValue({ task_id: 'demo-1', task_type: 'site_demo_rebuild' })
     vi.mocked(tasks.getTask).mockResolvedValue({ status: 'COMPLETED' } as never)
     vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue(undefined as never)
-    const wrapper = mount(SiteStoragePanel)
+    const wrapper = mountPanel()
     await flushPromises()
 
     await emitSiteCommand(wrapper, 'demo', 'rebuild-demo')
@@ -665,7 +731,7 @@ describe('SiteStoragePanel', () => {
 
   it('keeps the current Demo out of the ordinary delete flow', async () => {
     const warning = vi.spyOn(ElMessage, 'warning')
-    const wrapper = mount(SiteStoragePanel)
+    const wrapper = mountPanel()
     await flushPromises()
 
     await emitSiteCommand(wrapper, 'demo', 'delete')
@@ -679,7 +745,7 @@ describe('SiteStoragePanel', () => {
     vi.mocked(api.listSites).mockResolvedValueOnce([normal]).mockResolvedValueOnce([])
     vi.mocked(api.trashSite).mockResolvedValue({ site_id: 'line-1', display_name: '一号线', trash_path: '.trash/line-1-20260806', recoverable: true })
     const prompt = vi.spyOn(ElMessageBox, 'prompt').mockResolvedValueOnce({ value: '一号线', action: 'confirm' } as never)
-    const wrapper = mount(SiteStoragePanel)
+    const wrapper = mountPanel()
     await flushPromises()
 
     await emitSiteCommand(wrapper, 'line-1', 'delete')
@@ -713,7 +779,7 @@ describe('SiteStoragePanel', () => {
       .mockResolvedValueOnce({ data_root: 'C:\\data', default_data_root: 'C:\\default', site_count: 1, active_site_id: 'demo', storage_mode: 'persistent', data_root_kind: 'persistent', persistent: true })
       .mockResolvedValueOnce({ data_root: 'C:\\data', default_data_root: 'C:\\default', site_count: 2, active_site_id: 'demo', storage_mode: 'persistent', data_root_kind: 'persistent', persistent: true })
     const success = vi.spyOn(ElMessage, 'success')
-    const wrapper = mount(SiteStoragePanel)
+    const wrapper = mountPanel()
     await flushPromises()
 
     await wrapper.get('[data-testid="import-site"]').trigger('click')
@@ -745,7 +811,7 @@ describe('SiteStoragePanel', () => {
     vi.mocked(api.importSite).mockResolvedValue({ task_id: 'import-6', task_type: 'site_import' })
     vi.mocked(tasks.getTask).mockResolvedValue({ status: 'FAILED' } as never)
     const success = vi.spyOn(ElMessage, 'success')
-    const wrapper = mount(SiteStoragePanel)
+    const wrapper = mountPanel()
     await flushPromises()
 
     await wrapper.get('[data-testid="import-site"]').trigger('click')

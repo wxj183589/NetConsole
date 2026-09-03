@@ -18,6 +18,8 @@ from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.wps_sync_repository import WpsSyncRepository
 from netconsole.backend.api.main import _current_site_name
+from netconsole.services.job_center.job_context import JobContext
+from netconsole.services.job_center.handlers.site_jobs import site_export as run_site_export
 from netconsole.services.ap_identity import ApIdentityQueryService
 from netconsole.services.site_storage import (
     DataRootApplicationService,
@@ -1033,6 +1035,111 @@ def test_lightweight_package_round_trips_core_and_four_business_exports(
     assert restored is not None
     assert restored.password == secret
     assert target_sites.get_site("restored-site")["display_name"] == "恢复轻量局点"
+
+
+def test_lightweight_export_uses_registry_id_and_legacy_directory_database(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    legacy_name = "宁波地铁12号线"
+    paths.ensure_site_dirs(legacy_name)
+    Database(paths.site_db_path(legacy_name)).initialize()
+    (paths.site_dir(legacy_name) / "site_meta.json").write_text(
+        json.dumps({"display_name": legacy_name}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    sites = SiteApplicationService(paths)
+    legacy = next(
+        item for item in sites.list_sites() if item["display_name"] == legacy_name
+    )
+    package = tmp_path / "导出目录 with spaces" / "当前局点.zip"
+    stages: list[str] = []
+
+    result = SitePackageService(paths, sites).export_site(
+        str(legacy["site_id"]),
+        package,
+        package_type="lightweight",
+        progress=lambda stage, _current, _total, _message: stages.append(stage),
+    )
+
+    assert result["package_type"] == "lightweight"
+    assert stages == [
+        "SOURCE_DB_OPEN",
+        "SOURCE_DB_OPEN",
+        "SNAPSHOT_DB_CREATE",
+        "SNAPSHOT_DB_CREATE",
+        "ZIP_WRITE",
+        "ARTIFACT_FINALIZE",
+    ]
+    with zipfile.ZipFile(package) as archive:
+        manifest = json.loads(archive.read("manifest.json"))
+        site_metadata = json.loads(archive.read("site/site_meta.json"))
+        snapshot = tmp_path / "snapshot.db"
+        snapshot.write_bytes(archive.read("site/db/devices.db"))
+    assert manifest["site_id"] == legacy["site_id"]
+    assert manifest["site_name"] == legacy_name
+    assert site_metadata["display_name"] == legacy_name
+    with sqlite3.connect(snapshot) as connection:
+        assert connection.execute("PRAGMA schema_version").fetchone() is not None
+
+
+def test_lightweight_export_missing_source_database_fails_without_autoinit(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    sites = SiteApplicationService(paths)
+    sites.create_site("missing-source", "缺失源库局点")
+    source = paths.site_db_path("missing-source")
+    source.unlink()
+    package = tmp_path / "exports" / "missing.zip"
+
+    with pytest.raises(SiteStorageError) as failure:
+        SitePackageService(paths, sites).export_site(
+            "missing-source", package, package_type="lightweight"
+        )
+
+    assert failure.value.code == "SITE_DB_NOT_FOUND"
+    assert not source.exists()
+    assert not package.exists()
+
+
+def test_site_export_job_reports_safe_stages_and_destination(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    sites = SiteApplicationService(paths)
+    sites.create_site("handler-site", "任务导出局点")
+    package = tmp_path / "selected output" / "handler.zip"
+    progress: list[tuple[str, object]] = []
+
+    context = JobContext(
+        "job-site-export",
+        "site_export",
+        {
+            "site_id": "handler-site",
+            "package_type": "lightweight",
+            "destination_path": str(package),
+        },
+        lambda stage, _current, _total, message: progress.append((stage, message)),
+        lambda: False,
+        paths,
+    )
+
+    result = run_site_export(context)
+
+    assert result["package_type"] == "lightweight"
+    assert package.is_file()
+    stages = [stage for stage, _message in progress]
+    assert stages[0] == "SOURCE_DB_OPEN"
+    assert "SNAPSHOT_DB_CREATE" in stages
+    assert "ZIP_WRITE" in stages
+    assert "ARTIFACT_FINALIZE" in stages
+    assert "DESTINATION_SAVE" in stages
+    destination_message = next(
+        message for stage, message in progress if stage == "DESTINATION_SAVE"
+    )
+    assert isinstance(destination_message, dict)
+    assert destination_message["destination_path"] == str(package.resolve())
 
 
 def test_lightweight_package_rejects_missing_required_file_and_checksum_mismatch(

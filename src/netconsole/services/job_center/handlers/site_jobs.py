@@ -13,6 +13,7 @@ from netconsole.services.site_storage import (
     DataRootApplicationService,
     SiteApplicationService,
     SitePackageService,
+    SiteStorageError,
 )
 
 
@@ -139,19 +140,66 @@ def site_data_root_migration(context: JobContext) -> dict[str, object]:
 def site_export(context: JobContext) -> dict[str, object]:
     context.check_cancelled()
     sites = SiteApplicationService(context.paths)
+    site_id = str(context.params.get("site_id") or "")
+    record = sites.registry.get(site_id)
+    source_db = (record.root_path / "db" / "devices.db").resolve()
+    try:
+        storage_key = record.root_path.resolve().relative_to(
+            context.paths.data_root.resolve()
+        ).as_posix()
+    except ValueError:
+        storage_key = ""
+    context.structured_progress(
+        "SOURCE_DB_OPEN",
+        0,
+        4,
+        "正在打开当前局点数据库",
+        site_id=record.site_id,
+        site_name=record.display_name,
+        storage_key=storage_key,
+        data_root=str(context.paths.data_root),
+        source_db=str(source_db),
+        worker_cwd=str(Path.cwd()),
+    )
     package_type = str(context.params.get("package_type") or "full_migration")
     destination = str(context.params.get("destination_path") or "")
     if not destination:
-        record = sites.registry.get(str(context.params.get("site_id") or ""))
         suffix = ".ncresult" if package_type == "collection_return" else ".zip" if package_type == "lightweight" else ".ncsite"
         destination = str(
             record.root_path / "files" / "exports" / f"{record.site_id}{suffix}"
         )
-    result = SitePackageService(context.paths, sites).export_site(
-        str(context.params.get("site_id") or ""),
-        Path(destination),
-        package_type=package_type,
-        check_cancel=context.check_cancelled,
+    try:
+        result = SitePackageService(context.paths, sites).export_site(
+            record.site_id,
+            Path(destination),
+            package_type=package_type,
+            check_cancel=context.check_cancelled,
+            progress=context.progress,
+        )
+    except SiteStorageError as exc:
+        context.structured_progress(
+            "EXPORT_FAILED",
+            0,
+            4,
+            "局点数据包导出失败",
+            site_id=record.site_id,
+            site_name=record.display_name,
+            storage_key=storage_key,
+            data_root=str(context.paths.data_root),
+            source_db=str(source_db),
+            worker_cwd=str(Path.cwd()),
+            error_code=exc.code,
+            error_details=exc.details,
+        )
+        raise RuntimeError(f"{exc.code}: {exc}") from exc
+    context.structured_progress(
+        "DESTINATION_SAVE",
+        1,
+        1,
+        "导出目标已保存",
+        site_id=record.site_id,
+        site_name=record.display_name,
+        destination_path=str(Path(destination).expanduser().resolve()),
     )
     context.progress("publish", 1, 1, "局点数据包导出完成")
     return result

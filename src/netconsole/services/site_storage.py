@@ -801,6 +801,14 @@ class SiteApplicationService:
         }
 
     def active_site_id(self) -> str:
+        stable_reference = self.manager.get_current_site_id()
+        if stable_reference:
+            try:
+                return self.registry.get(stable_reference).site_id
+            except SiteStorageError:
+                # A legacy installation may contain a stale optional field;
+                # fall back to the validated physical compatibility pointer.
+                pass
         selected = self.manager.get_current_site()
         try:
             return self.registry.get_by_directory_name(selected).site_id
@@ -939,22 +947,29 @@ class SiteApplicationService:
             )
             self.ensure_no_active_tasks_anywhere()
             try:
-                self.manager.switch_site(record.root_path.name)
+                self.manager.switch_site(
+                    record.root_path.name, site_id=record.site_id
+                )
                 if self._runtime_rebind_handler is not None:
                     self._runtime_rebind_handler(record.root_path.name)
+                switch_revision = uuid.uuid4().hex
                 return {
                     **record.to_public(),
+                    "site_name": record.display_name,
                     "site_root": str(record.root_path),
                     "active": True,
                     "previous_site_id": previous,
                     "registry_revision": self.registry.revision(),
-                    "switch_revision": uuid.uuid4().hex,
+                    "switch_revision": switch_revision,
+                    "revision": switch_revision,
                     "runtime_revision": uuid.uuid4().hex,
                     "restart_required": False,
                 }
             except Exception as exc:
                 try:
-                    self.manager.switch_site(previous_directory)
+                    self.manager.switch_site(
+                        previous_directory, site_id=previous
+                    )
                     if self._runtime_rebind_handler is not None:
                         self._runtime_rebind_handler(previous_directory)
                 except Exception:
@@ -1288,6 +1303,7 @@ class SitePackageService:
         *,
         package_type: str = FULL_MIGRATION,
         check_cancel: Callable[[], None] | None = None,
+        progress: Callable[[str, int, int, str], None] | None = None,
     ) -> dict[str, object]:
         normalized_type = str(package_type or FULL_MIGRATION).strip().casefold()
         if normalized_type not in PACKAGE_TYPES:
@@ -1312,6 +1328,7 @@ class SitePackageService:
                 site_id,
                 destination,
                 check_cancel=check_cancel,
+                progress=progress,
             )
         if normalized_type != SANITIZED_SHARE:
             raise SiteStorageError("SITE_EXPORT_TYPE_INVALID", "不支持的局点数据包类型")
@@ -1521,6 +1538,7 @@ class SitePackageService:
         destination: Path,
         *,
         check_cancel: Callable[[], None] | None,
+        progress: Callable[[str, int, int, str], None] | None,
     ) -> dict[str, object]:
         """Publish a small, directly restorable site package.
 
@@ -1534,19 +1552,35 @@ class SitePackageService:
         """
 
         site = self.sites.registry.get(site_id)
+        source_db = site.root_path / "db" / "devices.db"
+        if progress:
+            progress("SOURCE_DB_OPEN", 0, 4, "正在打开当前局点数据库")
+        _validate_export_source_database(source_db)
         sync = SiteSyncService(self.paths, self.sites)
         identity = sync.ensure_sync_identity(site, require_legacy_audit=False)
         destination = Path(destination).expanduser().resolve()
         if destination.suffix.casefold() != ".zip":
             destination = destination.with_suffix(".zip")
-        destination.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise SiteStorageError(
+                "EXPORT_DESTINATION_FAILED",
+                "轻量包导出目标目录不可用",
+                details={
+                    "destination_parent": str(destination.parent),
+                    "worker_cwd": os.getcwd(),
+                },
+            ) from exc
         staging, staging_journal = self.staging_lifecycle.begin_publish_path(destination)
         try:
+            if progress:
+                progress("SOURCE_DB_OPEN", 1, 4, "当前局点数据库已就绪")
             self.paths.temp_dir.mkdir(parents=True, exist_ok=True)
             with tempfile.TemporaryDirectory(
                 prefix="netconsole-lightweight-export-", dir=self.paths.temp_dir
             ) as temp:
-                root = Path(temp)
+                root = Path(temp) / "package"
                 module_roots = {
                     "device_management": root / "device-management",
                     "ac_management": root / "ac-management",
@@ -1561,12 +1595,14 @@ class SitePackageService:
                 site_root = root / "site"
                 _atomic_json(
                     site_root / "site_meta.json",
-                    self.sites.manager.load_site_metadata(site.site_id),
+                    self.sites.manager.load_site_metadata(site.root_path.name),
                 )
-                _copy_database_snapshot(
-                    self.paths.site_db_path(site.site_id),
-                    site_root / "db" / "devices.db",
-                )
+                if progress:
+                    progress("SNAPSHOT_DB_CREATE", 1, 4, "正在创建 SQLite 一致性快照")
+                snapshot_db = Path(temp) / "export-source.db"
+                _copy_database_snapshot(source_db, snapshot_db)
+                if progress:
+                    progress("SNAPSHOT_DB_CREATE", 2, 4, "SQLite 一致性快照已创建")
 
                 self._lightweight_export_device_csv(
                     module_roots["device_management"] / "devices.csv",
@@ -1613,6 +1649,10 @@ class SitePackageService:
                     module_roots["rail_transit_base_data"] / "rail-transit-base-data.xlsx",
                     site,
                     check_cancel=check_cancel,
+                )
+                _copy_database_snapshot(
+                    snapshot_db,
+                    site_root / "db" / "devices.db",
                 )
                 component_paths[
                     "rail_transit_base_data"
@@ -1663,11 +1703,15 @@ class SitePackageService:
                 with zipfile.ZipFile(
                     staging, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True
                 ) as archive:
+                    if progress:
+                        progress("ZIP_WRITE", 2, 4, "正在写入轻量包 ZIP")
                     for item in root.rglob("*"):
                         if item.is_file():
                             archive.write(item, item.relative_to(root).as_posix())
             self.inspect_package(staging, validate_extension=False)
             os.replace(staging, destination)
+            if progress:
+                progress("ARTIFACT_FINALIZE", 4, 4, "轻量包 Artifact 已完成")
             return {
                 "package_name": destination.name,
                 "package_type": LIGHTWEIGHT,
@@ -1713,8 +1757,8 @@ class SitePackageService:
             export_device_csv(
                 target,
                 {
-                    "db_path": str(self.paths.site_db_path(site.site_id)),
-                    "site_name": site.site_id,
+                    "db_path": str(site.root_path / "db" / "devices.db"),
+                    "site_name": site.root_path.name,
                     "omit_credentials": False,
                 },
                 should_cancel=_lightweight_should_cancel(check_cancel),
@@ -1738,7 +1782,7 @@ class SitePackageService:
             from netconsole.repositories.ac_repository import AcRepository
             from netconsole.services.fit_ap_import_export import FitApImportExportService
 
-            database = Database(self.paths.site_db_path(site.site_id))
+            database = Database(site.root_path / "db" / "devices.db")
             rows = AcRepository(database).list_all_fit_ap_resources_with_metadata()
             FitApImportExportService(AcRepository(database)).export_ap_csv(target, rows)
         except BackgroundTaskCancelled:
@@ -1762,8 +1806,8 @@ class SitePackageService:
             )
 
             export_trackside_ap_business_prepare_and_render(
-                database_path=self.paths.site_db_path(site.site_id),
-                site_name=site.site_id,
+                database_path=site.root_path / "db" / "devices.db",
+                site_name=site.root_path.name,
                 task_id=f"lightweight-{uuid.uuid4().hex}",
                 snapshot_staging_root=self.paths.staging_dir,
                 output_path=target,
@@ -1798,7 +1842,7 @@ class SitePackageService:
             export_trackside_ap_base_xlsx_task(
                 target,
                 {
-                    "site_id": site.site_id,
+                    "site_id": site.root_path.name,
                     "app_root": str(self.paths.app_root),
                     "data_root": str(self.paths.data_root),
                 },
@@ -2708,7 +2752,7 @@ def _is_excluded_online_mr_package_file(relative_path: Path) -> bool:
 
 def _copy_sanitized_database(source: Path, target: Path) -> int:
     target.parent.mkdir(parents=True, exist_ok=True)
-    source_connection = sqlite3.connect(source)
+    source_connection = _open_export_source_database(source)
     target_connection = sqlite3.connect(target)
     try:
         source_connection.backup(target_connection)
@@ -2981,15 +3025,80 @@ def _rebind_device_group_scope(
 
 
 def _copy_database_snapshot(source: Path, target: Path) -> None:
-    target.parent.mkdir(parents=True, exist_ok=True)
-    source_connection = sqlite3.connect(source)
-    target_connection = sqlite3.connect(target)
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise SiteStorageError(
+            "SITE_DB_SNAPSHOT_FAILED",
+            "SQLite 快照目录创建失败",
+            details={"target_parent": str(target.parent)},
+        ) from exc
+    source_connection = _open_export_source_database(source)
+    try:
+        target_connection = sqlite3.connect(target)
+    except (OSError, sqlite3.Error) as exc:
+        source_connection.close()
+        raise SiteStorageError(
+            "SITE_DB_SNAPSHOT_FAILED",
+            "SQLite 快照数据库创建失败",
+            details={"target_path": str(target.resolve())},
+        ) from exc
     try:
         source_connection.backup(target_connection)
         target_connection.commit()
     finally:
         target_connection.close()
         source_connection.close()
+
+
+def _validate_export_source_database(source: Path) -> None:
+    connection = _open_export_source_database(source)
+    try:
+        connection.execute("PRAGMA schema_version").fetchone()
+    except sqlite3.Error as exc:
+        raise SiteStorageError(
+            "SITE_DB_OPEN_FAILED",
+            "当前局点数据库无法读取",
+            details=_export_source_details(source),
+        ) from exc
+    finally:
+        connection.close()
+
+
+def _open_export_source_database(source: Path) -> sqlite3.Connection:
+    candidate = Path(source).expanduser()
+    details = _export_source_details(candidate)
+    if candidate.is_symlink() or not candidate.is_file():
+        raise SiteStorageError(
+            "SITE_DB_NOT_FOUND",
+            "当前局点设备数据库不存在",
+            details=details,
+        )
+    resolved = candidate.resolve()
+    try:
+        connection = sqlite3.connect(
+            f"{resolved.as_uri()}?mode=ro",
+            uri=True,
+            timeout=30,
+        )
+    except (OSError, sqlite3.Error) as exc:
+        raise SiteStorageError(
+            "SITE_DB_OPEN_FAILED",
+            "当前局点数据库无法打开",
+            details=details,
+        ) from exc
+    return connection
+
+
+def _export_source_details(source: Path) -> dict[str, object]:
+    resolved = Path(source).expanduser().resolve()
+    return {
+        "source_db": str(resolved),
+        "source_parent": str(resolved.parent),
+        "source_exists": resolved.is_file(),
+        "source_parent_exists": resolved.parent.is_dir(),
+        "worker_cwd": os.getcwd(),
+    }
 
 
 def _extract_outer_package(package: Path, target: Path) -> None:

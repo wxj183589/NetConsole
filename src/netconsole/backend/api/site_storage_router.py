@@ -587,13 +587,37 @@ def _submit(
     params: dict[str, object],
 ) -> SiteTaskResponse:
     task_id = uuid.uuid4().hex
+    job_params = dict(params)
+    if task_type == "site_export":
+        # Freeze the requested site before the worker starts.  The worker must
+        # resolve the stable ID through Registry, never the later active site.
+        record = _sites(request).registry.get(str(params.get("site_id") or ""))
+        try:
+            storage_key = record.root_path.resolve().relative_to(
+                request.app.state.paths.data_root.resolve()
+            ).as_posix()
+        except ValueError:
+            storage_key = ""
+        job_params.update(
+            {
+                "site_id": record.site_id,
+                "site_name": record.root_path.name,
+                "site_display_name": record.display_name,
+                "site_directory_name": record.root_path.name,
+                "site_registry_revision": _sites(request).registry.revision(),
+                "site_storage_key": storage_key,
+                "app_root": str(request.app.state.paths.app_root),
+                "data_root": str(request.app.state.paths.data_root),
+            }
+        )
+    else:
+        job_params["site_name"] = _sites(request).active_site_directory_name()
     request.app.state.site_process_adapter.start_job(
         BackgroundJob(
             job_id=task_id,
             task_type=task_type,
             params={
-                **params,
-                "site_name": _sites(request).active_site_directory_name(),
+                **job_params,
                 "task_name": {
                     "site_export": "导出局点",
                     "site_migration": "迁移单个局点",

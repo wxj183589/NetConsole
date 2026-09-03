@@ -71,11 +71,54 @@ def test_site_registry_create_list_and_activate(tmp_path: Path) -> None:
     activated = client.post("/api/v1/sites/line-12/activate", json={"confirmed": True})
     assert activated.status_code == 200, activated.text
     activated_payload = activated.json()
+    assert activated_payload["site_id"] == "line-12"
+    assert activated_payload["site_name"] == "宁波地铁12号线"
     assert activated_payload["restart_required"] is False
     assert activated_payload["site_root"].endswith("sites\\line-12")
     assert isinstance(activated_payload["registry_revision"], str)
     assert isinstance(activated_payload["switch_revision"], str)
+    assert activated_payload["revision"] == activated_payload["switch_revision"]
     assert isinstance(activated_payload["runtime_revision"], str)
+    assert client.get("/api/v1/sites/active").json()["site_id"] == "line-12"
+
+
+def test_site_export_freezes_requested_stable_context_before_worker_start(
+    tmp_path: Path,
+) -> None:
+    client = _client(tmp_path)
+    paths = client.app.state.paths
+    legacy_name = "宁波地铁12号线"
+    paths.ensure_site_dirs(legacy_name)
+    Database(paths.site_db_path(legacy_name)).initialize()
+    legacy = next(
+        item for item in client.get("/api/v1/sites").json()
+        if item["display_name"] == legacy_name
+    )
+    captured: list[object] = []
+
+    def capture(job: object, **_kwargs: object) -> str:
+        captured.append(job)
+        return str(getattr(job, "job_id"))
+
+    client.app.state.site_process_adapter.start_job = capture
+    response = client.post(
+        f"/api/v1/sites/{legacy['site_id']}/export",
+        json={
+            "destination_path": str(tmp_path / "user selected" / "宁波轻量.zip"),
+            "package_type": "lightweight",
+        },
+    )
+
+    assert response.status_code == 202, response.text
+    assert len(captured) == 1
+    params = dict(getattr(captured[0], "params"))
+    assert params["site_id"] == legacy["site_id"]
+    assert params["site_name"] == legacy_name
+    assert params["site_directory_name"] == legacy_name
+    assert params["site_display_name"] == legacy_name
+    assert params["site_storage_key"] == f"sites/{legacy_name}"
+    assert params["data_root"] == str(paths.data_root)
+    assert params["app_root"] == str(paths.app_root)
 
 
 def test_task_result_storage_diagnostics_defaults_off_and_exposes_no_payload(

@@ -1218,6 +1218,12 @@ def _current_site_name(
         try:
             selected = SiteRegistryRepository(paths).resolve_directory_name(preferred)
             if paths.site_dir(selected).is_dir():
+                # Electron/bootstrap owns the stable identity at startup. Keep
+                # the legacy physical pointer in sync for older services while
+                # retaining the stable ID as the active-context fact.
+                SiteManager(paths).set_current_site_reference(
+                    selected, site_id=preferred
+                )
                 _initialize_active_site_database(paths, selected, startup_stage=startup_stage)
                 return selected
         except (SiteStorageError, ValueError):
