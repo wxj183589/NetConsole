@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 from netconsole.models.device import (
+    DEFAULT_PROJECT_PHASE,
+    DEFAULT_WORK_SCOPE_STATUS,
     Device,
     legacy_operation_status_to_work_scope_status,
     normalize_device_vendor_text,
@@ -670,6 +672,8 @@ class DeviceImportExportService:
     def _apply_defaults(self, payload: dict[str, object]) -> None:
         payload.setdefault("device_vendor", "H3C")
         payload.setdefault("device_type", "SW")
+        payload.setdefault("project_phase", DEFAULT_PROJECT_PHASE)
+        payload.setdefault("work_scope_status", DEFAULT_WORK_SCOPE_STATUS)
         if payload.get("device_type") == "FIT-AP":
             payload["device_type"] = "Cloud-AP"
         payload["device_vendor"], payload["device_type"] = validate_device_vendor_type(

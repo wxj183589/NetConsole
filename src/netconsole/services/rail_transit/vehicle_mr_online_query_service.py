@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
@@ -12,6 +12,7 @@ from netconsole.models.api.vehicle_mr_online import (
     VehicleMrTrainMappingDTO,
     VehicleMrTrainStateDTO,
 )
+from netconsole.models.api.rail_transit_base_data import VehicleMrDTO
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.models.api.ac_mesh_link import AcMeshMrStatusDTO
 from netconsole.services.ac.mesh_link_query_service import AcMeshLinkQueryService
@@ -159,9 +160,55 @@ class VehicleMrOnlineQueryService:
             if item.train_no and self._endpoint_key(item.car_end)
         }
         state_rows = self._store(site_id).list_current_states()
-        known_trains = {
-            self._train_key(row.train_no) for row in state_rows if row.train_no
+        base_trains = self._all_base_trains(site_id)
+        base_mrs = self._all_base_mrs(site_id)
+        base_mrs_by_train: dict[str, dict[str, VehicleMrDTO]] = {}
+        for mr in base_mrs:
+            train_key = self._train_key(mr.train_no or mr.train_id)
+            endpoint = self._endpoint_key(mr.mr_position_code or mr.role)
+            if train_key and endpoint:
+                base_mrs_by_train.setdefault(train_key, {})[endpoint] = mr
+
+        # Base data is the registration source. Runtime/session rows only add
+        # state; a train must be visible before its first collection session.
+        state_by_key = {
+            self._train_key(row.train_no or row.train_id): row
+            for row in state_rows
+            if self._train_key(row.train_no or row.train_id)
         }
+        registered_rows: list[VehicleMrTrainState] = []
+        known_trains: set[str] = set()
+        for train in base_trains:
+            key = self._train_key(train.train_no or train.id)
+            if not key or key in known_trains:
+                continue
+            row = state_by_key.get(key)
+            if row is None:
+                row = VehicleMrTrainState(
+                    train_id=train.id,
+                    train_no=train.train_no,
+                    is_registered=True,
+                )
+            else:
+                row = replace(
+                    row,
+                    train_id=train.id,
+                    train_no=train.train_no,
+                    is_registered=True,
+                )
+            registered_rows.append(row)
+            known_trains.add(key)
+
+        state_rows = registered_rows + [
+            row
+            for row in state_rows
+            if self._train_key(row.train_no or row.train_id) not in known_trains
+        ]
+        known_trains.update(
+            self._train_key(row.train_no or row.train_id)
+            for row in state_rows
+            if self._train_key(row.train_no or row.train_id)
+        )
         for item in mesh_rows:
             key = self._train_key(item.train_no)
             if not key or key in known_trains:
@@ -172,7 +219,15 @@ class VehicleMrOnlineQueryService:
                 )
             )
             known_trains.add(key)
-        return [self._train(row, mesh_by_endpoint) for row in state_rows]
+        rows = [
+            self._train(
+                row,
+                mesh_by_endpoint,
+                base_mrs_by_train.get(self._train_key(row.train_no or row.train_id), {}),
+            )
+            for row in state_rows
+        ]
+        return sorted(rows, key=lambda row: (self._natural_train_key(row.train_no), row.train_id))
 
     def get_train(self, site_id: str, train_id: str) -> VehicleMrTrainStateDTO | None:
         return next(
@@ -280,10 +335,16 @@ class VehicleMrOnlineQueryService:
         self,
         row,
         mesh_by_endpoint: dict[tuple[str, str], AcMeshMrStatusDTO],
+        base_mrs: dict[str, VehicleMrDTO] | None = None,
     ) -> VehicleMrTrainStateDTO:
+        base_mrs = base_mrs or {}
         key = self._train_key(row.train_no)
-        ct = self._endpoint("CT", row.tc1, mesh_by_endpoint.get((key, "CT")))
-        tc = self._endpoint("TC", row.tc2, mesh_by_endpoint.get((key, "TC")))
+        ct = self._endpoint(
+            "CT", row.tc1, mesh_by_endpoint.get((key, "CT")), base_mrs.get("CT")
+        )
+        tc = self._endpoint(
+            "TC", row.tc2, mesh_by_endpoint.get((key, "TC")), base_mrs.get("TC")
+        )
         overall_status = self._overall_status(ct, tc)
         reason_code = str(row.status_reason or "") or None
         if overall_status == "STALE":
@@ -325,15 +386,23 @@ class VehicleMrOnlineQueryService:
         )
 
     def _endpoint(
-        self, endpoint: str, persisted, mesh: AcMeshMrStatusDTO | None
+        self,
+        endpoint: str,
+        persisted,
+        mesh: AcMeshMrStatusDTO | None,
+        base: VehicleMrDTO | None = None,
     ) -> VehicleMrEndStateDTO:
         online_status = self._online_status(
             mesh.online_status if mesh else ("stale" if persisted.seen else "unknown")
         )
         return VehicleMrEndStateDTO(
             endpoint=endpoint,
-            mr_id=(mesh.mr_device_id or mesh.mr_id or None) if mesh else None,
-            mr_name=(mesh.mr_name or None) if mesh else None,
+            mr_id=(mesh.mr_device_id or mesh.mr_id or None)
+            if mesh
+            else (base.id if base else None),
+            mr_name=(mesh.mr_name or None)
+            if mesh
+            else (base.name if base else None),
             online_status=online_status,
             current_ap_name=(mesh.peer_ap_name or None)
             if mesh
@@ -343,7 +412,7 @@ class VehicleMrOnlineQueryService:
             rssi_dbm=mesh.rssi if mesh else persisted.rssi,
             station_name=(mesh.station or None)
             if mesh
-            else (persisted.station or None),
+            else (persisted.station or None) or (base.station if base else None),
             section_name=(mesh.section or None) if mesh else None,
             mileage=(mesh.mileage or None) if mesh else None,
             direction=(mesh.line_side or None) if mesh else None,
@@ -365,6 +434,30 @@ class VehicleMrOnlineQueryService:
         page = 2
         while len(result) < first.total:
             current = self.mesh_query.list_mrs(site_id, page=page, page_size=200)
+            if not current.items:
+                break
+            result.extend(current.items)
+            page += 1
+        return result
+
+    def _all_base_trains(self, site_id: str):
+        first = self.base_query.list_trains(site_id, page=1, page_size=200)
+        result = list(first.items)
+        page = 2
+        while len(result) < first.total:
+            current = self.base_query.list_trains(site_id, page=page, page_size=200)
+            if not current.items:
+                break
+            result.extend(current.items)
+            page += 1
+        return result
+
+    def _all_base_mrs(self, site_id: str) -> list[VehicleMrDTO]:
+        first = self.base_query.list_mrs(site_id, page=1, page_size=200)
+        result = list(first.items)
+        page = 2
+        while len(result) < first.total:
+            current = self.base_query.list_mrs(site_id, page=page, page_size=200)
             if not current.items:
                 break
             result.extend(current.items)
@@ -419,6 +512,12 @@ class VehicleMrOnlineQueryService:
     @staticmethod
     def _train_key(value: str) -> str:
         return canonical_train_id_for(value) or str(value or "").strip().casefold()
+
+    @staticmethod
+    def _natural_train_key(value: str) -> tuple[object, ...]:
+        text = str(value or "").strip().casefold()
+        digits = "".join(character for character in text if character.isdigit())
+        return (0, int(digits), text) if digits else (1, text)
 
     @staticmethod
     def _endpoint_key(value: str) -> str:

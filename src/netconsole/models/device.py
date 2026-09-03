@@ -56,6 +56,13 @@ class WorkScopeStatus(StrEnum):
     EXCLUDED = "excluded"
 
 
+# Defaults for newly created assets. Historical ``unspecified`` rows are not
+# migrated by this change; these constants only apply when a new write omits
+# the fields.
+DEFAULT_PROJECT_PHASE = ProjectPhase.PHASE_1.value
+DEFAULT_WORK_SCOPE_STATUS = WorkScopeStatus.INCLUDED.value
+
+
 PROJECT_PHASE_LABELS = {
     ProjectPhase.PHASE_1.value: "一期",
     ProjectPhase.PHASE_2.value: "二期",
@@ -195,8 +202,8 @@ class Device:
     group_id: int | None = None
     device_vendor: str = "H3C"
     device_type: str | None = "SW"
-    project_phase: str = ProjectPhase.UNSPECIFIED.value
-    work_scope_status: str = WorkScopeStatus.INCLUDED.value
+    project_phase: str = DEFAULT_PROJECT_PHASE
+    work_scope_status: str = DEFAULT_WORK_SCOPE_STATUS
     work_scope_reason: str | None = None
     work_scope_updated_at: str | None = None
     work_scope_updated_by: str | None = None

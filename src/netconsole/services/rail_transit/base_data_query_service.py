@@ -53,12 +53,18 @@ from netconsole.services.ap_identity import ApIdentityQueryService
 from netconsole.services.ap_identity.normalizers import normalize_mac, normalize_mac_key
 from netconsole.services.device_scope import is_current_debug_device
 from netconsole.services.online_mr.query_service import OnlineMrQueryService
+from netconsole.services.vehicle_mr_online import is_vehicle_mr_device
 from netconsole.services.rail_transit.ap_line_side_service import (
     derive_ap_line_side,
     line_side_metadata,
 )
 from netconsole.services.rail_transit.source_policy import is_blocking_issue
-from netconsole.services.rail_transit.mr_end_role_service import mr_position
+from netconsole.services.rail_transit.vehicle_mr_reconciliation import (
+    VEHICLE_MR_TRAIN_UNRESOLVED,
+    VehicleMrReconciliationResult,
+    VehicleMrReconciliationService,
+)
+from netconsole.services.rail_transit.train_identity import canonical_train_id_for
 from netconsole.services.rail_transit.station_source_utils import (
     DEFAULT_MAIN_PATH_CODE,
     DEFAULT_STATION_SOURCE_GROUP,
@@ -177,12 +183,6 @@ _DEVICE_FIELDS = (
     "created_at",
     "updated_at",
 )
-
-
-def _parse_train_identity_from_device(device: Device):
-    from netconsole.services.vehicle_mr_online import parse_train_identity_from_device
-
-    return parse_train_identity_from_device(device)
 
 
 class RailTransitBaseDataQueryService:
@@ -1121,10 +1121,20 @@ class RailTransitBaseDataQueryService:
         return TrainPageDTO(items=selected, total=len(items), page=current, page_size=size)
 
     def get_train(self, site_id: str, train_id: str) -> TrainDetailDTO | None:
-        mrs = [item for item in self._all_mrs(site_id, include_runtime=True) if item.train_id == train_id]
+        requested_key = canonical_train_id_for(train_id)
+        mrs = [
+            item
+            for item in self._all_mrs(site_id, include_runtime=True)
+            if item.train_id == train_id
+            or canonical_train_id_for(item.train_id, item.train_no) == requested_key
+        ]
         if not mrs:
             return None
-        issues = [issue for issue in self._issues(site_id) if issue.entity_id in {train_id, *(item.id for item in mrs)}]
+        issues = [
+            issue
+            for issue in self._issues(site_id)
+            if issue.entity_id in {train_id, *(item.id for item in mrs)}
+        ]
         train = self._trains(mrs, issues)[0]
         return TrainDetailDTO(train=train, mrs=mrs, issues=issues)
 
@@ -1509,7 +1519,9 @@ class RailTransitBaseDataQueryService:
         # assets available to Device Management and historical views, but do
         # not let them re-enter the current rail-transit device selector.
         rows = [row for row in rows if is_current_debug_device(Device.from_mapping(row))]
-        has_mr_group = any("车载-MR" in name for name in groups.values())
+        reconciliation = VehicleMrReconciliationService().reconcile(
+            [Device.from_mapping(row) for row in rows], groups
+        )
         mesh_by_id: dict[str, Any] = {}
         mesh_by_name: dict[str, Any] = {}
         session_by_name: dict[str, Any] = {}
@@ -1527,20 +1539,12 @@ class RailTransitBaseDataQueryService:
             except (OSError, ValueError, sqlite3.Error):
                 pass
         result: list[VehicleMrDTO] = []
-        for row in rows:
-            group_name = groups.get(int(row.get("group_id") or 0), "")
-            device = Device.from_mapping(row)
-            identity = _parse_train_identity_from_device(device)
-            if identity is None:
-                continue
-            if has_mr_group and "车载-MR" not in group_name:
-                continue
-            if not has_mr_group and "MR" not in f"{row.get('name')} {row.get('device_type')}".upper():
-                continue
-            item_id = str(row.get("device_uuid") or f"device:{row.get('id')}")
-            position_code, physical_end, car_number = mr_position(identity.car_end)
-            mesh = mesh_by_id.get(item_id) or mesh_by_name.get(str(row.get("name") or "").casefold())
-            session = session_by_name.get(str(row.get("name") or "").casefold())
+        for relation in reconciliation.relations:
+            device = relation.device
+            identity = relation.identity
+            item_id = relation.device_binding_id
+            mesh = mesh_by_id.get(item_id) or mesh_by_name.get(device.name.casefold())
+            session = session_by_name.get(device.name.casefold())
             runtime = RelatedRuntimeStatusDTO(
                 mesh_status=mesh.online_status if mesh else "unknown",
                 mesh_related_name=mesh.peer_ap_name if mesh else "",
@@ -1551,20 +1555,20 @@ class RailTransitBaseDataQueryService:
             result.append(
                 VehicleMrDTO(
                     id=item_id,
-                    device_id=self._int_or_none(row.get("id")),
-                    name=str(row.get("name") or ""),
-                    train_id=identity.train_id,
+                    device_id=device.id,
+                    name=device.name,
+                    train_id=relation.canonical_train_id or identity.train_id,
                     train_no=identity.train_no,
                     role=identity.car_end,
-                    mr_position_code=position_code,
-                    physical_end=physical_end,
-                    car_number=car_number,
-                    management_ip=str(row.get("primary_address") or ""),
-                    station=str(row.get("station") or ""),
-                    mac=self._display_mac(row.get("mac_address")),
-                    protocol=str(row.get("protocol") or ""),
-                    port=self._int_or_none(row.get("port")),
-                    remark=str(row.get("remark") or ""),
+                    mr_position_code=relation.position_code,
+                    physical_end=relation.physical_end,
+                    car_number=relation.car_number,
+                    management_ip=device.primary_address,
+                    station=str(device.station or ""),
+                    mac=self._display_mac(device.mac_address),
+                    protocol=str(device.protocol or ""),
+                    port=device.port,
+                    remark=str(device.remark or ""),
                     runtime=runtime,
                 )
             )
@@ -1593,7 +1597,9 @@ class RailTransitBaseDataQueryService:
                 issues.append(self._issue("error", "mr_mac_duplicate", "mr", mr.id, mr.name, "mac", mr.mac, "同一局点存在重复 MR MAC", "核对车载 MR 资料"))
             if mr.train_id and mr.role and role_counts[(mr.train_id, mr.role)] > 1:
                 issues.append(self._issue("error", "mr_role_duplicate", "mr", mr.id, mr.name, "role", mr.role, "同一列车存在重复 MR 角色", "核对列车 MR 配置"))
-        issues.extend(self._unbound_mr_issues(site_id))
+        reconciliation = self._vehicle_mr_reconciliation(site_id)
+        issues.extend(self._vehicle_mr_quality_issues(reconciliation))
+        issues.extend(self._unbound_mr_issues(reconciliation))
         issues.extend(self._static_ip_issues(site_id))
         points = self._all_points(site_id, include_runtime=False)
         stations = self._stations(points, site_id=site_id)
@@ -1707,10 +1713,63 @@ class RailTransitBaseDataQueryService:
             if ap.runtime.fit_ap_match_status == "conflict"
         ]
 
-    def _unbound_mr_issues(self, site_id: str) -> list[DataQualityIssueDTO]:
+    def _unbound_mr_issues(
+        self, reconciliation: VehicleMrReconciliationResult
+    ) -> list[DataQualityIssueDTO]:
+        result = []
+        for item in reconciliation.issues:
+            if item.code not in {
+                VEHICLE_MR_TRAIN_UNRESOLVED,
+                "VEHICLE_MR_POSITION_UNRESOLVED",
+                "VEHICLE_MR_TRAIN_AMBIGUOUS",
+            }:
+                continue
+            code = "mr_train_unbound" if item.code == VEHICLE_MR_TRAIN_UNRESOLVED else item.code
+            result.append(
+                self._issue(
+                    item.severity,
+                    code,
+                    "mr",
+                    item.device_binding_id,
+                    item.device_name,
+                    "train" if item.code != "VEHICLE_MR_POSITION_UNRESOLVED" else "role",
+                    "",
+                    item.message,
+                    "核对正式 MR 命名；Agent 临时名称不得自动转为正式资产",
+                )
+            )
+        return result
+
+    def _vehicle_mr_quality_issues(
+        self, reconciliation: VehicleMrReconciliationResult
+    ) -> list[DataQualityIssueDTO]:
+        result = []
+        for item in reconciliation.issues:
+            if item.code in {
+                VEHICLE_MR_TRAIN_UNRESOLVED,
+                "VEHICLE_MR_POSITION_UNRESOLVED",
+                "VEHICLE_MR_TRAIN_AMBIGUOUS",
+            }:
+                continue
+            result.append(
+                self._issue(
+                    item.severity,
+                    item.code,
+                    "mr",
+                    item.device_binding_id,
+                    item.device_name,
+                    "role" if "POSITION" in item.code else "device_id",
+                    item.device_binding_id,
+                    item.message,
+                    "核对车载 MR 设备与列车位置关系",
+                )
+            )
+        return result
+
+    def _vehicle_mr_reconciliation(self, site_id: str) -> VehicleMrReconciliationResult:
         db_path = self.paths.site_db_path(site_id)
         if not db_path.is_file():
-            return []
+            return VehicleMrReconciliationResult()
         with closing(self._connect(db_path)) as conn:
             rows = self._select_rows(conn, "devices", _DEVICE_FIELDS)
             groups = {
@@ -1718,28 +1777,12 @@ class RailTransitBaseDataQueryService:
                 for row in self._select_rows(conn, "device_groups", ("id", "name"))
                 if row.get("id") is not None
             }
-        rows = [row for row in rows if is_current_debug_device(Device.from_mapping(row))]
-        result = []
-        for row in rows:
-            if "车载-MR" not in groups.get(int(row.get("group_id") or 0), ""):
-                continue
-            if _parse_train_identity_from_device(Device.from_mapping(row)) is not None:
-                continue
-            entity_id = str(row.get("device_uuid") or f"device:{row.get('id')}")
-            result.append(
-                self._issue(
-                    "error",
-                    "mr_train_unbound",
-                    "mr",
-                    entity_id,
-                    str(row.get("name") or ""),
-                    "train",
-                    "",
-                    "MR 名称无法关联正式列车",
-                    "核对正式 MR 命名；Agent 临时名称不得自动转为正式资产",
-                )
-            )
-        return result
+        devices = [
+            Device.from_mapping(row)
+            for row in rows
+            if is_current_debug_device(Device.from_mapping(row))
+        ]
+        return VehicleMrReconciliationService().reconcile(devices, groups)
 
     def _static_ip_issues(self, site_id: str) -> list[DataQualityIssueDTO]:
         db_path = self.paths.site_db_path(site_id)
@@ -1759,7 +1802,7 @@ class RailTransitBaseDataQueryService:
             ip = str(row.get("primary_address") or "").strip()
             device_type = str(row.get("device_type") or "").upper()
             group = groups.get(int(row.get("group_id") or 0), "")
-            is_vehicle_mr = "车载-MR" in group
+            is_vehicle_mr = is_vehicle_mr_device(Device.from_mapping(row), group)
             is_dynamic_ap = device_type in {"FIT-AP", "CLOUD-AP"} and not is_vehicle_mr
             if is_dynamic_ap or not ip:
                 continue
@@ -2239,7 +2282,7 @@ class RailTransitBaseDataQueryService:
                 TrainDTO(
                     id=train_id,
                     train_no=rows[0].train_no,
-                    name=train_id,
+                    name=f"{rows[0].train_no}车" if rows[0].train_no else train_id,
                     mr_count=len(rows),
                     roles=sorted({row.role for row in rows if row.role}),
                     mr_position_codes=sorted({row.mr_position_code for row in rows if row.mr_position_code != "unknown"}),

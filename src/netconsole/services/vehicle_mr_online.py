@@ -13,7 +13,10 @@ from netconsole.core.paths import PathResolver
 from netconsole.models.ap_identity_index import ApIdentityBatchResult, ApIdentityMatch
 from netconsole.models.device import Device
 from netconsole.models.online_mr_models import OnlineMrConnectionConfig
-from netconsole.repositories.device_group_repository import DeviceGroupRepository
+from netconsole.repositories.device_group_repository import (
+    DeviceGroupRepository,
+    canonical_device_group_name,
+)
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.ap_identity import ApIdentityQueryService
 from netconsole.services.online_mr_collector import NetmikoShellConnection
@@ -303,10 +306,20 @@ def parse_ac_clock_line(line: str, fallback: datetime | None = None) -> str:
     return f"{fallback:%Y-%m-%d} {time_text}"
 
 
-_MR_NAME_RE = re.compile(r"^(?P<train_id>.+?-LC(?P<train_no>\d+))-(?:MR|AP)-(?P<end>CT|CW)$", re.IGNORECASE)
-_CN_MR_NAME_RE = re.compile(r"^列车(?P<train_no>\d+)-(?:MR|AP)-(?P<end>CT|CW)$", re.IGNORECASE)
+_MR_NAME_RE = re.compile(
+    r"^(?P<train_id>(?:(?P<prefix>.+-)?LC(?P<train_no>\d+)))-"
+    r"(?:MR|AP)-(?P<end>CT|CW)(?:[-_ ].*)?$",
+    re.IGNORECASE,
+)
+_CN_MR_NAME_RE = re.compile(
+    r"^列车(?P<train_no>\d+)-(?:MR|AP)-(?P<end>CT|CW)(?:[-_ ].*)?$",
+    re.IGNORECASE,
+)
 _STATION_END_RE = re.compile(r"(?P<train_no>\d+)车.*(?P<end>车头|车尾|CT|CW)", re.IGNORECASE)
+_STATION_TRAIN_RE = re.compile(r"^\s*(?:列车\s*)?(?P<train_no>\d{1,3})\s*车(?:厢)?", re.IGNORECASE)
+_MR_END_RE = re.compile(r"(?:^|[-_\s])(?P<end>CT|CW)(?:$|[-_\s])", re.IGNORECASE)
 _TRAIN_NO_RE = re.compile(r"(?:LC|列车)?0*(?P<train_no>\d{1,3})车?", re.IGNORECASE)
+VEHICLE_MR_GROUP_NAME = "车载-MR"
 EMPTY_STATION_VALUES = {"", "-", "—", "未知", "unknown", "none", "null"}
 ONLINE_LINK_STATUSES = {"forwarding", "active", "up"}
 
@@ -378,12 +391,41 @@ def is_empty_station(value: object) -> bool:
     return str(value or "").strip().casefold() in EMPTY_STATION_VALUES
 
 
+def normalize_vehicle_mr_group_name(value: object) -> str:
+    """Normalize only the comparison spelling of the authoritative MR group."""
+
+    return canonical_device_group_name(value)
+
+
+def is_vehicle_mr_device(
+    device: Device,
+    group_name: object = "",
+    *,
+    allow_legacy_group: bool = False,
+) -> bool:
+    """Return whether a device belongs to the rail vehicle-MR projection.
+
+    The group is the project-level classification boundary.  Device type or a
+    name containing ``MR`` alone is deliberately insufficient because other
+    rail-side MR assets may exist.  ``车载`` is accepted only by the legacy
+    runtime builder, where older databases used that group before
+    ``车载-MR`` became canonical.
+    """
+
+    normalized_group = normalize_vehicle_mr_group_name(group_name)
+    return normalized_group == VEHICLE_MR_GROUP_NAME or (
+        allow_legacy_group and normalized_group == "车载"
+    )
+
+
 def parse_train_identity(peer_name: str) -> TrainIdentity | None:
     text = canonical_peer_name(peer_name)
     match = _MR_NAME_RE.match(text)
     if match:
-        train_id = match.group("train_id")
         train_no = normalize_train_no(match.group("train_no"))
+        train_id = match.group("train_id")
+        if not match.group("prefix"):
+            train_id = f"列车{train_no}"
         end = match.group("end").upper()
     else:
         match = _CN_MR_NAME_RE.match(text)
@@ -402,23 +444,34 @@ def parse_train_identity(peer_name: str) -> TrainIdentity | None:
 
 
 def parse_train_identity_from_device(device: Device) -> TrainIdentity | None:
-    identity = parse_train_identity(device.name)
-    if identity is not None:
-        return identity
+    name_identity = parse_train_identity(device.name)
+    name_end_match = _MR_END_RE.search(str(device.name or ""))
+    name_end = name_end_match.group("end").upper() if name_end_match else ""
     station_text = str(device.station or "").strip()
-    match = _STATION_END_RE.search(station_text)
-    if not match:
-        return None
-    end_text = match.group("end").upper()
-    end = "CT" if end_text in {"车头", "CT"} else "CW"
-    train_no = normalize_train_no(match.group("train_no"))
-    return TrainIdentity(
-        peer_name=device.name,
-        train_id=f"列车{train_no}",
-        train_no=train_no,
-        car_end=end,
-        car_end_label="TC1" if end == "CT" else "TC2",
-    )
+    station_train = _STATION_TRAIN_RE.match(station_text)
+    if station_train:
+        station_end = _STATION_END_RE.search(station_text)
+        end_text = station_end.group("end").upper() if station_end else ""
+        end = (
+            "CT"
+            if end_text in {"车头", "CT"}
+            else "CW"
+            if end_text in {"车尾", "CW"}
+            else (name_identity.car_end if name_identity is not None else name_end)
+        )
+        if not end:
+            return None
+        train_no = normalize_train_no(station_train.group("train_no"))
+        return TrainIdentity(
+            peer_name=device.name,
+            train_id=f"列车{train_no}",
+            train_no=train_no,
+            car_end=end,
+            car_end_label="TC1" if end == "CT" else "TC2",
+        )
+    if name_identity is not None:
+        return name_identity
+    return None
 
 
 def train_sort_key(train: VehicleMrTrainState | tuple[str, str]) -> tuple[object, ...]:
@@ -429,13 +482,16 @@ def train_sort_key(train: VehicleMrTrainState | tuple[str, str]) -> tuple[object
 def build_registered_trains(devices: list[Device], group_names: dict[int, str] | None = None) -> dict[str, VehicleMrTrainState]:
     result: dict[str, VehicleMrTrainState] = {}
     group_names = group_names or {}
-    has_vehicle_mr_group = any("车载-MR" in name for name in group_names.values())
+    has_vehicle_mr_group = any(
+        normalize_vehicle_mr_group_name(name) == VEHICLE_MR_GROUP_NAME
+        for name in group_names.values()
+    )
     for device in devices:
         group_name = group_names.get(int(device.group_id or 0), "")
         if has_vehicle_mr_group:
-            if "车载-MR" not in group_name:
+            if not is_vehicle_mr_device(device, group_name):
                 continue
-        elif group_name != "车载":
+        elif not is_vehicle_mr_device(device, group_name, allow_legacy_group=True):
             continue
         identity = parse_train_identity_from_device(device)
         if identity is None:

@@ -77,6 +77,12 @@ describe('Device Management Web view', () => {
     expect(source).toContain('sort_by: filters.sort_by')
   })
 
+  it('uses the shared create defaults for the initial form and reset', () => {
+    expect(source).toContain("const DEVICE_CREATE_DEFAULTS = { project_phase: 'phase_1'")
+    expect(source).toContain('...DEVICE_CREATE_DEFAULTS')
+    expect(source).not.toContain("project_phase: 'unspecified'")
+  })
+
   it('submits background connection tests to the public task center', () => {
     expect(source).toContain('startBatchConnectionTests')
     expect(source).toContain('任务已提交，但')

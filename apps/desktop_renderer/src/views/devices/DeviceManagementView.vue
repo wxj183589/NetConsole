@@ -265,7 +265,8 @@ const batchRefreshColumns: NcTableColumn<DeviceBatchRefreshItem>[] = [
   { key: 'last_collected_at', label: '采集时间', valueType: 'datetime', stretch: 'none' },
   { key: 'error_message', label: '错误信息', valueType: 'text', stretch: 'priority' },
 ]
-const writeForm = reactive<DeviceWriteRequest>({ name: '', primary_address: '', project_phase: 'unspecified', work_scope_status: 'included', work_scope_reason: '', ssh_enabled: true, ssh_port: 22, telnet_enabled: false, telnet_port: 23, snmp_enabled: true, snmp_v2c_enabled: true, snmp_port: 161 })
+const DEVICE_CREATE_DEFAULTS = { project_phase: 'phase_1' as const, work_scope_status: 'included' as const }
+const writeForm = reactive<DeviceWriteRequest>({ name: '', primary_address: '', ...DEVICE_CREATE_DEFAULTS, work_scope_reason: '', ssh_enabled: true, ssh_port: 22, telnet_enabled: false, telnet_port: 23, snmp_enabled: true, snmp_v2c_enabled: true, snmp_port: 161 })
 const filteredImportRows = computed(() => {
   const rows = importPreview.value?.rows || []
   return importActionFilter.value === 'ALL'
@@ -1019,7 +1020,7 @@ function openCreate(): void {
   writeMode.value = 'create'
   resetSecretClears()
   Object.assign(writeForm, {
-    name: '', system_name: '', station: '', location: '', group_id: null, device_vendor: 'H3C', device_type: 'SW', project_phase: 'unspecified', work_scope_status: 'included', work_scope_reason: '', primary_address: '', backup_address: '',
+    name: '', system_name: '', station: '', location: '', group_id: null, device_vendor: 'H3C', device_type: 'SW', ...DEVICE_CREATE_DEFAULTS, work_scope_reason: '', primary_address: '', backup_address: '',
     ssh_enabled: true, ssh_port: 22, ssh_username: '', ssh_password: '', telnet_enabled: false, telnet_port: 23, telnet_username: '', telnet_password: '',
     tunnel_enabled: false, tunnel1_enabled: false, tunnel1_host: '', tunnel1_port: 22, tunnel1_username: '', tunnel1_password: '', tunnel2_enabled: false, tunnel2_host: '', tunnel2_port: 22, tunnel2_username: '', tunnel2_password: '',
     snmp_enabled: true, snmp_v1_enabled: false, snmp_v2c_enabled: true, snmp_port: 161, snmp_ro_community: '', snmp_timeout_ms: 2000, snmp_retries: 1,

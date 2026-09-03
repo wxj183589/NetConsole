@@ -58,6 +58,38 @@ def test_new_trackside_ap_without_location_defaults_to_mainline() -> None:
     assert values["location_class_source"] == "DEFAULT_MAINLINE"
 
 
+def test_device_vehicle_mr_projection_is_visible_through_base_data_api(
+    tmp_path: Path,
+) -> None:
+    paths, db_path = build_rail_transit_base_data_fixture(tmp_path)
+    with Database(db_path).connect() as connection:
+        connection.execute(
+            "UPDATE devices SET name = 'LC32-MR-CT', station = '32车', primary_address = '10.82.24.232' WHERE device_uuid = 'mr-01-ct'"
+        )
+        connection.execute(
+            "UPDATE devices SET name = 'LC32-MR-CW', station = '32车', primary_address = '10.82.25.232' WHERE device_uuid = 'mr-01-cw'"
+        )
+        connection.commit()
+
+    with TestClient(_app(paths, tmp_path)) as client:
+        trains = client.get(
+            "/api/rail-transit/base-data/trains",
+            params={"site_id": "demo", "page_size": 200},
+        )
+        mrs = client.get(
+            "/api/rail-transit/base-data/mrs",
+            params={"site_id": "demo", "page_size": 200},
+        )
+
+    assert trains.status_code == 200, trains.text
+    assert mrs.status_code == 200, mrs.text
+    assert trains.json()["total"] == 1
+    assert trains.json()["items"][0]["train_no"] == "32"
+    assert trains.json()["items"][0]["mr_count"] == 2
+    assert {item["role"] for item in mrs.json()["items"]} == {"CT", "CW"}
+    assert {item["id"] for item in mrs.json()["items"]} == {"mr-01-ct", "mr-01-cw"}
+
+
 def _app(paths, tmp_path: Path):
     return create_app(
         RuntimeMode.SERVER,

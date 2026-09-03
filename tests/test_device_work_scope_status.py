@@ -7,6 +7,8 @@ import pytest
 from netconsole.core import app_logger
 from netconsole.core.database import Database, DatabaseSchemaMismatchError
 from netconsole.models.device import (
+    DEFAULT_PROJECT_PHASE,
+    DEFAULT_WORK_SCOPE_STATUS,
     Device,
     is_device_eligible_for_automatic_collection,
     legacy_operation_status_to_work_scope_status,
@@ -439,6 +441,13 @@ def test_automatic_eligibility_uses_work_scope_only():
     assert not is_device_eligible_for_automatic_collection(excluded)
 
 
+def test_new_device_defaults_are_phase_one_and_included() -> None:
+    device = Device(name="新设备")
+
+    assert device.project_phase == DEFAULT_PROJECT_PHASE == "phase_1"
+    assert device.work_scope_status == DEFAULT_WORK_SCOPE_STATUS == "included"
+
+
 def test_csv_work_scope_round_trip_and_legacy_template_compatibility(tmp_path):
     repository = _repository(tmp_path)
     service = DeviceImportExportService(repository)
@@ -508,7 +517,28 @@ def test_csv_work_scope_round_trip_and_legacy_template_compatibility(tmp_path):
     service.import_csv_atomic(identity_path)
     defaulted = repository.find_by_primary_address("192.0.2.30")
     assert defaulted is not None
+    assert defaulted.project_phase == "phase_1"
     assert defaulted.work_scope_status == "included"
+
+    explicit_path = tmp_path / "explicit-scope-template.csv"
+    explicit_values = dict(identity_values)
+    explicit_values.update(
+        {
+            "设备名称": "明确分类设备",
+            "主用地址": "192.0.2.31",
+            "建设阶段": "phase_2",
+            "当前工作状态": "excluded",
+        }
+    )
+    with explicit_path.open("w", newline="", encoding="utf-8-sig") as file:
+        writer = csv.DictWriter(file, fieldnames=DEVICE_CSV_COLUMNS)
+        writer.writeheader()
+        writer.writerow(explicit_values)
+    service.import_csv_atomic(explicit_path)
+    explicit = repository.find_by_primary_address("192.0.2.31")
+    assert explicit is not None
+    assert explicit.project_phase == "phase_2"
+    assert explicit.work_scope_status == "excluded"
     assert DEVICE_CSV_COLUMNS[-3:] == [
         "建设阶段",
         "当前工作状态",

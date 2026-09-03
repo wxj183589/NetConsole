@@ -6,8 +6,8 @@ from pydantic import Field, SecretStr, field_validator, model_validator
 
 from netconsole.models.api.common import ApiModel
 from netconsole.models.device import (
-    ProjectPhase,
-    WorkScopeStatus,
+    DEFAULT_PROJECT_PHASE,
+    DEFAULT_WORK_SCOPE_STATUS,
     normalize_device_vendor_text,
     normalize_project_phase,
     normalize_work_scope_status,
@@ -227,8 +227,8 @@ class DeviceWriteRequestDTO(ApiModel):
     group_id: int | None = Field(default=None, ge=1)
     device_vendor: str = Field(default="H3C", max_length=40)
     device_type: str = Field(default="SW", max_length=40)
-    project_phase: ProjectPhaseValue = ProjectPhase.UNSPECIFIED.value
-    work_scope_status: WorkScopeStatusValue = WorkScopeStatus.INCLUDED.value
+    project_phase: ProjectPhaseValue = DEFAULT_PROJECT_PHASE
+    work_scope_status: WorkScopeStatusValue = DEFAULT_WORK_SCOPE_STATUS
     work_scope_reason: str = Field(default="", max_length=1000)
     primary_address: str = Field(default="", max_length=255)
     backup_address: str = Field(default="", max_length=255)

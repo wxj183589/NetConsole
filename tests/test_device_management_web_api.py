@@ -764,6 +764,39 @@ def test_real_edit_is_validated_and_persisted(
     assert "snmp_v3_enabled" not in detail
     assert "snmp_rw_community" not in detail
     assert devices.get_by_uuid(str(mr.device_uuid)).name == "MR-NEW"
+    assert devices.get_by_uuid(str(mr.device_uuid)).project_phase == "phase_1"
+
+
+def test_device_create_defaults_and_duplicate_preserves_explicit_scope(
+    tmp_path: Path,
+) -> None:
+    client, _service, _adapter, devices, _facts, _mr, _sw = _fixture(tmp_path)
+
+    defaulted = client.post(
+        "/api/device-management/devices",
+        json={"name": "默认一期设备", "primary_address": "192.0.2.81"},
+    )
+    explicit = client.post(
+        "/api/device-management/devices",
+        json={
+            "name": "明确二期设备",
+            "primary_address": "192.0.2.82",
+            "project_phase": "phase_2",
+            "work_scope_status": "excluded",
+        },
+    )
+
+    assert defaulted.status_code == 201, defaulted.text
+    assert defaulted.json()["device"]["project_phase"] == "phase_1"
+    assert defaulted.json()["device"]["work_scope_status"] == "included"
+    assert explicit.status_code == 201, explicit.text
+    source_uuid = explicit.json()["device"]["device_uuid"]
+    duplicated = client.post(f"/api/device-management/devices/{source_uuid}/duplicate")
+
+    assert duplicated.status_code == 201, duplicated.text
+    assert duplicated.json()["device"]["project_phase"] == "phase_2"
+    assert duplicated.json()["device"]["work_scope_status"] == "excluded"
+    assert devices.get_by_uuid(source_uuid).project_phase == "phase_2"
 
 
 def test_edit_profile_and_write_responses_do_not_build_legacy_full_detail(
