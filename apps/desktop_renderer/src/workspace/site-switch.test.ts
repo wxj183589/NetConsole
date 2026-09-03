@@ -80,6 +80,24 @@ describe('site switch coordination', () => {
     await expect(switching).resolves.toBe('completed')
   })
 
+  it('uses the Backend runtime rebind result without restarting the Backend', async () => {
+    const coordinator = {
+      isBlocked: () => false,
+      confirm: vi.fn(async () => true),
+      preflight: vi.fn(async () => undefined),
+      prepareWorkspace: vi.fn(async () => ({ previous: true })),
+      activate: vi.fn(async () => ({ restart_required: false })),
+      restart: vi.fn(async () => undefined),
+      restoreWorkspace: vi.fn(async () => undefined),
+    }
+
+    await expect(coordinateSiteSwitch(
+      { siteId: 'line-b', displayName: '线路 B' },
+      coordinator,
+    )).resolves.toBe('completed')
+    expect(coordinator.restart).not.toHaveBeenCalled()
+  })
+
   it('restores the metadata indicator when warm handoff fails', async () => {
     const metadata: SiteSwitchMetadataDetail[] = []
     const listener = (event: Event) => {

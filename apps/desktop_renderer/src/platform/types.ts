@@ -35,6 +35,7 @@ export interface PlatformAdapter {
   selectSitePackage(): Promise<SettingsPathResult>
   selectSiteExportDestination(suggestedName: string): Promise<SettingsPathResult>
   restartBackend(request: SiteStorageRestartRequest): Promise<NativeActionResult>
+  restartApplication(): Promise<NativeActionResult>
   refreshSiteContext(): Promise<void>
   chooseSavePath(options: ChooseSavePathOptions): Promise<ChooseSavePathResult>
   downloadBackendResource(request: BackendDownloadRequest): Promise<BackendDownloadResult>

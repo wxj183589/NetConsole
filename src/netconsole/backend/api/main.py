@@ -62,6 +62,8 @@ from netconsole.core.version import APP_NAME, APP_VERSION
 from netconsole.infrastructure.desktop import LocalDesktopAdapter, UnavailableDesktopAdapter
 from netconsole.models.api.common import ErrorDetail, ErrorResponse
 from netconsole.repositories.device_detail_repository import DeviceDetailRepository
+from netconsole.repositories.agent_repository import AgentRepository
+from netconsole.repositories.traffic_run_repository import TrafficRunRepository
 from netconsole.services.ac.mesh_link_query_service import AcMeshLinkQueryService
 from netconsole.services.ac.mesh_link_refresh_service import AcMeshLinkRefreshApplicationService
 from netconsole.services.ac.mesh_link_resident_polling_service import (
@@ -824,12 +826,14 @@ def create_app(
     app.state.desktop_action_service = desktop_action_service
     app.state.database_upgrade_management_service = DatabaseUpgradeManagementService(paths)
     app.state.feature_gate = feature_gate
-    app.state.settings_application_service = SettingsApplicationService(paths, feature_gate, site_name)
-    app.state.runtime_self_check_service = RuntimeSelfCheckService(
+    settings_application_service = SettingsApplicationService(paths, feature_gate, site_name)
+    runtime_self_check_service = RuntimeSelfCheckService(
         paths,
         feature_gate,
         site_name,
     )
+    app.state.settings_application_service = settings_application_service
+    app.state.runtime_self_check_service = runtime_self_check_service
     app.state.system_network_application_service = SystemNetworkApplicationService()
     app.state.ac_management_query_service = ac_management_query_service
     app.state.ac_mesh_link_query_service = AcMeshLinkQueryService(paths)
@@ -1031,6 +1035,44 @@ def create_app(
                 f"component=ground_unattended error={exc.__class__.__name__}: "
                 f"{_safe_error_message(str(exc))}",
             )
+
+    def rebind_runtime_site(target_site_name: str) -> None:
+        """在 Backend 进程内切换所有持有 Site-scoped 状态的服务。"""
+
+        target = str(target_site_name or "demo")
+        rebind = getattr(task_service, "rebind_site", None)
+        if callable(rebind):
+            rebind(target)
+        else:
+            task_service.site_name = target
+        rebind = getattr(agent_service, "rebind_site", None)
+        if callable(rebind):
+            rebind(target)
+        rebind = getattr(device_management_service, "rebind_site", None)
+        if callable(rebind):
+            rebind(target)
+        rebind = getattr(traffic_service, "rebind_site", None)
+        if callable(rebind):
+            rebind(target)
+        rebind = getattr(file_management_service, "rebind_site", None)
+        if callable(rebind):
+            rebind(target)
+        rebind = getattr(online_mr_application_service, "rebind_site", None)
+        if callable(rebind):
+            rebind(target)
+        settings_application_service.site_name = target
+        runtime_self_check_service.site_name = target
+        desktop_action_service.resolver.replace_directory_group(
+            "config_snapshots:",
+            {f"config_snapshots:{target}": paths.config_center_snapshots_root(target)},
+        )
+        desktop_action_service.resolver.replace_directory_group(
+            "config_exports:",
+            {f"config_exports:{target}": paths.config_center_outputs_dir(target)},
+        )
+        app_logger.log_info("SITE_RUNTIME_REBOUND", f"site_name={target}")
+
+    site_application_service.set_runtime_rebind_handler(rebind_runtime_site)
     if desktop_session_token:
         app.add_middleware(DesktopSessionMiddleware, token=desktop_session_token)
 

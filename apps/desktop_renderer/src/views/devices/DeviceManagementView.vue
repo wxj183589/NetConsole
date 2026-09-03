@@ -40,7 +40,10 @@ import {
 } from '../../composables/useUserSelectedExport'
 import { useExternalTerminalLauncher } from '../../composables/useExternalTerminalLauncher'
 import { downloadBackendResource, getPlatformAdapter, getRuntimeConfig } from '../../platform/runtime'
+import { getActiveSite } from '../../api/siteStorage'
+import { useDeviceManagementQueryStore } from '../../stores/deviceManagement'
 import { useTaskStore } from '../../stores/tasks'
+import { SITE_CONTEXT_CHANGED_EVENT } from '../../workspace/site-switch'
 import DeviceDetailPanel from '../../components/device-detail/DeviceDetailPanel.vue'
 import { useConfirm } from '../../components/feedback/useConfirm'
 import NcDataTable from '../../components/table/NcDataTable.vue'
@@ -108,6 +111,7 @@ const emptyPage = (): DevicePage => ({ items: [], groups: [], site_name: '', tot
 const DEVICE_TYPE_OPTIONS = ['AC', 'SW', 'FW', 'Route', 'Cloud-AP', 'FAT-AP', 'MR', 'Other'] as const
 const router = useRouter()
 const { confirm } = useConfirm()
+const queryStore = useDeviceManagementQueryStore()
 const taskStore = useTaskStore()
 const userSelectedExport = useUserSelectedExport()
 const {
@@ -204,6 +208,9 @@ const filters = reactive({
   page: 1,
   page_size: 50,
 })
+const activeSiteId = ref('')
+let queryStateReady = false
+let siteContextGeneration = 0
 const deviceColumns: NcTableColumn<DeviceListItem>[] = [
   { key: 'selection', label: '', type: 'selection', valueType: 'selection', fixed: 'left', hideable: false, stretch: 'none' },
   { key: 'name', label: '名称', valueType: 'name', fixed: 'left', stretch: 'priority', stretchWeight: 4 },
@@ -451,10 +458,17 @@ const batchRefreshProgressText = computed(() => {
   }
   return `批量更新完成：成功 ${summary.completed}，部分成功 ${summary.partial_success}，失败 ${summary.failed}，跳过 ${summary.skipped}，取消 ${summary.cancelled}`
 })
+
+watch(filters, (state) => {
+  if (!queryStateReady || !activeSiteId.value) return
+  queryStore.save(activeSiteId.value, state)
+}, { deep: true })
+
 onMounted(async () => {
   window.addEventListener('resize', resizeDetailDrawer)
+  window.addEventListener(SITE_CONTEXT_CHANGED_EVENT, handleSiteContextChanged)
   taskStore.acquirePolling(pollingConsumer)
-  await loadDevices()
+  await initializeSiteContext()
 })
 
 onBeforeUnmount(() => {
@@ -469,7 +483,33 @@ onBeforeUnmount(() => {
   taskStore.releasePolling(pollingConsumer)
   endDrawerResize()
   window.removeEventListener('resize', resizeDetailDrawer)
+  window.removeEventListener(SITE_CONTEXT_CHANGED_EVENT, handleSiteContextChanged)
 })
+
+async function initializeSiteContext(): Promise<void> {
+  const generation = ++siteContextGeneration
+  let nextSiteId = ''
+  try {
+    nextSiteId = String((await getActiveSite()).site_id || '').trim()
+  } catch {
+    // Older or temporarily unavailable backends still expose the site in the list response.
+  }
+  if (!nextSiteId) {
+    await loadDevices()
+    nextSiteId = String(pageData.value.site_name || '').trim() || 'active-site'
+  }
+  if (!componentActive || generation !== siteContextGeneration) return
+  activeSiteId.value = nextSiteId
+  Object.assign(filters, queryStore.activateSite(nextSiteId))
+  queryStateReady = true
+  await loadDevices()
+}
+
+function handleSiteContextChanged(): void {
+  queryStateReady = false
+  selectedUuids.value = []
+  void initializeSiteContext()
+}
 
 async function loadDevices(resetPage = false, preserveSelection = false): Promise<void> {
   if (resetPage) filters.page = 1

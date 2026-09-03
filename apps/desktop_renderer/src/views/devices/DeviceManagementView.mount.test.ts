@@ -26,6 +26,15 @@ const mocks = vi.hoisted(() => ({
   openPath: vi.fn(),
   showItemInFolder: vi.fn(),
   routerPush: vi.fn(),
+  getActiveSite: vi.fn(),
+  deviceQueryStore: {
+    activateSite: vi.fn(() => ({
+      search: '', group: '', vendor: '', device_type: '', connection_status: '',
+      project_phase: 'all', work_scope_status: 'included', sort_by: 'name',
+      sort_order: 'asc', page: 1, page_size: 50,
+    })),
+    save: vi.fn(),
+  },
   openTaskWindow: vi.fn(),
   clipboardWrite: vi.fn(),
   featureEnabled: vi.fn(() => true),
@@ -60,6 +69,8 @@ vi.mock('../../api/deviceManagement', async (importOriginal) => ({
 }))
 
 vi.mock('../../features', () => ({ isFeatureEnabled: mocks.featureEnabled }))
+vi.mock('../../api/siteStorage', () => ({ getActiveSite: mocks.getActiveSite }))
+vi.mock('../../stores/deviceManagement', () => ({ useDeviceManagementQueryStore: () => mocks.deviceQueryStore }))
 vi.mock('../../stores/tasks', () => ({ useTaskStore: () => mocks.taskStore }))
 vi.mock('vue-router', () => ({ useRouter: () => ({ push: mocks.routerPush }) }))
 vi.mock('../../platform/runtime', () => ({
@@ -362,6 +373,7 @@ beforeEach(() => {
   mocks.downloadBackendResource.mockReset()
   document.body.innerHTML = ''
   window.sessionStorage.clear()
+  mocks.getActiveSite.mockResolvedValue({ site_id: 'test-site', display_name: '测试局点' })
   Object.defineProperty(navigator, 'clipboard', {
     configurable: true,
     value: { writeText: mocks.clipboardWrite },

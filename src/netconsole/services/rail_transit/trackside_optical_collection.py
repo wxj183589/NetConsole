@@ -38,6 +38,7 @@ from netconsole.services.ac.fit_ap_optical_concurrency import (
 from netconsole.services.ac.ac_models import is_ac_device_type
 from netconsole.services.h3c_ac_collect_service import collect_h3c_ac_resources, collect_h3c_fit_ap_optical
 from netconsole.services.h3c_optical_refresh_service import merge_existing_optical_modules
+from netconsole.services.device_scope import filter_current_debug_devices
 from netconsole.services.netmiko_connection import (
     CommandCancelled,
     CommandOutputLimitExceeded,
@@ -528,7 +529,9 @@ def build_trackside_ap_targets(
         for row in trackside_rows
         if normalize_mac(row.get("ap_mac"))
     }
-    devices = device_repository.list()
+    # An excluded asset remains available to Device Management/history, but it
+    # must not be selected as the live switch/AP connection owner.
+    devices = filter_current_debug_devices(device_repository.list())
     targets: list[TracksideOpticalTarget] = []
     skipped: list[TracksideSkippedTarget] = []
     for ap in ac_repository.list_all_fit_ap_resources_with_metadata():
@@ -1450,7 +1453,7 @@ def _scope_switch_targets_for_target_ap(
     if scoped:
         return scoped, "ap_switch", "historical_lldp"
 
-    devices = repository.list()
+    devices = filter_current_debug_devices(repository.list())
     scoped = _filter_switch_targets_by_identity(
         switch_targets,
         set(),

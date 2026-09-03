@@ -274,7 +274,7 @@ def test_config_collection_submits_only_readonly_job_and_persists_task_reference
     assert "config_web_snapshot_save" not in registered_task_types()
 
 
-def test_excluded_device_is_hidden_by_default_but_allows_manual_collection(
+def test_excluded_device_is_hidden_from_configuration_collection(
     tmp_path: Path,
 ) -> None:
     app, paths, device, _running, _saved, adapter = _fixture(tmp_path)
@@ -298,9 +298,9 @@ def test_excluded_device_is_hidden_by_default_but_allows_manual_collection(
     assert default_page.status_code == 200
     assert default_page.json()["items"] == []
     assert all_page.status_code == 200
-    assert [item["id"] for item in all_page.json()["items"]] == [device.id]
-    assert submitted.status_code == 202
-    assert adapter.jobs[0].params["device_uuid"] == device.device_uuid
+    assert all_page.json()["items"] == []
+    assert submitted.status_code == 422
+    assert adapter.jobs == []
 
 
 def test_config_collection_reuses_active_fetch_for_same_device(tmp_path: Path) -> None:

@@ -44,7 +44,9 @@ def run_switch_vendor_sample_collect(
     try:
         with prepared_connection_target(target) as prepared:
             with netmiko_connection.ssh_connection_context(
-                "switch_sample", "collect"
+                "switch_sample",
+                "collect",
+                device_uuid=str(device.device_uuid or device.id or ""),
             ):
                 connection = netmiko_connection.ConnectHandler(
                     **build_netmiko_params(prepared)

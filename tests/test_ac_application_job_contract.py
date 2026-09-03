@@ -75,6 +75,36 @@ CSV_CONTENT = (
     "AP-Web,0000-0000-00aa,section,车站A,A-B 区间,A,B,,,,上行,ZDK1+100,站台,上行,web\n"
 ).encode("utf-8-sig")
 
+
+def test_ac_web_result_summary_preserves_partial_component_ledger() -> None:
+    summary = AcWebApplicationService._result_summary(
+        {
+            "success": False,
+            "business_outcome": "PARTIAL_SUCCESS",
+            "partial_success": True,
+            "persisted_components": ["AC_BASIC"],
+            "failed_components": ["DEVICE_DETAIL"],
+            "skipped_components": ["RADIO"],
+            "collection": {
+                "success": False,
+                "business_outcome": "PARTIAL_SUCCESS",
+                "partial_success": True,
+                "persisted_components": ["AC_BASIC"],
+                "failed_components": ["DEVICE_DETAIL"],
+                "skipped_components": ["RADIO"],
+                "error_message": "collector failed",
+            },
+        }
+    )
+
+    assert summary["business_outcome"] == "PARTIAL_SUCCESS"
+    assert summary["partial_success"] is True
+    assert summary["persisted_components"] == ["AC_BASIC"]
+    assert summary["failed_components"] == ["DEVICE_DETAIL"]
+    assert summary["skipped_components"] == ["RADIO"]
+    assert summary["collection"]["business_outcome"] == "PARTIAL_SUCCESS"
+    assert summary["collection"]["persisted_components"] == ["AC_BASIC"]
+
 class _NoopAsyncService:
     async def start(self) -> None:
         return None

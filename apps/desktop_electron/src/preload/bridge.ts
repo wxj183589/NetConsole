@@ -154,6 +154,9 @@ export function createDesktopBridge(ipcRenderer: IpcRendererLike): NetConsoleDes
     restartBackend: (request) => ipcRenderer.invoke(
       DESKTOP_IPC.restartBackend, validateSiteStorageRestartRequest(request),
     ) as ReturnType<NetConsoleDesktopBridge['restartBackend']>,
+    restartApplication: () => ipcRenderer.invoke(
+      DESKTOP_IPC.restartApplication,
+    ) as ReturnType<NetConsoleDesktopBridge['restartApplication']>,
     chooseSavePath: (options) => ipcRenderer.invoke(
       DESKTOP_IPC.chooseSavePath,
       validateChooseSavePathOptions(options),

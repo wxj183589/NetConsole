@@ -18,6 +18,7 @@ from netconsole.adapters.trackside_switch import resolve_trackside_switch_adapte
 from netconsole.parsers.h3c.ac.state_mapper import classify_fit_ap_state
 from netconsole.models.device_address import normalize_ip_address
 from netconsole.services.netmiko_connection import connection_targets
+from netconsole.services.device_scope import filter_current_debug_devices
 from netconsole.services.ap_identity.normalizers import normalize_mac_key
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
 from netconsole.services.trackside_ap_business import (
@@ -59,7 +60,7 @@ class TracksideApBusinessQueryService:
             SiteManager(self.paths).load_site_metadata(site_id),
         )
         items: list[TracksideSwitchDeviceDTO] = []
-        for device in repository.list(device_type="SW"):
+        for device in filter_current_debug_devices(repository.list(device_type="SW")):
             if not is_trackside_device_eligible(
                 device,
                 project_phase=scope_context.project_phase,

@@ -15,6 +15,7 @@ from netconsole.services.ac.ac_models import (
     AcOpticalSnapshot,
     is_ac_device_type,
 )
+from netconsole.services.device_scope import filter_current_debug_devices, require_current_debug_device
 from netconsole.services.h3c_ac_collect_service import FitApOpticalCollectResult, collect_h3c_fit_ap_optical
 from netconsole.services.ac.fit_ap_optical_partial_success import install_fit_ap_optical_partial_success
 from netconsole.services.offline_ap_ledger import OFFLINE_AP_STATUS_TEXT, is_fit_ap_offline
@@ -216,7 +217,7 @@ class AcOpticalService:
         optical_rows = self.ac_repository.list_fit_ap_optical(ac_device_uuid)
         self._progress(progress_callback, "ac_fit_ap_optical_load", 1, 3, "正在读取交换机光模块状态")
         self._check_cancelled(should_cancel)
-        devices = self.device_repository.list()
+        devices = filter_current_debug_devices(self.device_repository.list())
         optical_by_device = {
             str(device.device_uuid or ""): self.fact_repository.list_optical_modules(str(device.device_uuid or ""))
             for device in devices
@@ -266,7 +267,7 @@ class AcOpticalService:
         )
         if device is None:
             raise KeyError(f"AC device not found: {device_uuid}")
-        return device
+        return require_current_debug_device(device)
 
     @staticmethod
     def _progress(callback: ProgressCallback | None, stage: str, current: int, total: int, message: ProgressMessage) -> None:

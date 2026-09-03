@@ -20,6 +20,7 @@ from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.repositories.online_mr_task_session_repository import OnlineMrTaskSessionRepository
 from netconsole.repositories.task_repository import TaskRepository
 from netconsole.services.online_mr.errors import OnlineMrApplicationErrorCode
+from netconsole.services.device_scope import filter_current_debug_devices
 
 
 class OnlineMrAgentDeviceResolver:
@@ -53,7 +54,7 @@ class OnlineMrAgentDeviceResolver:
                 error_code=str(OnlineMrApplicationErrorCode.AGENT_DEVICE_MATCH_NOT_FOUND),
                 message="目标局点不存在或没有设备数据库",
             )
-        devices = DeviceRepository(Database(database_path)).list()
+        devices = filter_current_debug_devices(DeviceRepository(Database(database_path)).list())
         matched = [
             device
             for device in devices

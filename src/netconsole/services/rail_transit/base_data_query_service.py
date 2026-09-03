@@ -51,6 +51,7 @@ from netconsole.services.ap_business_optical import evaluate_ap_business_rx_deta
 from netconsole.services.ap_extension_import import normalize_ap_mac
 from netconsole.services.ap_identity import ApIdentityQueryService
 from netconsole.services.ap_identity.normalizers import normalize_mac, normalize_mac_key
+from netconsole.services.device_scope import is_current_debug_device
 from netconsole.services.online_mr.query_service import OnlineMrQueryService
 from netconsole.services.rail_transit.ap_line_side_service import (
     derive_ap_line_side,
@@ -172,6 +173,7 @@ _DEVICE_FIELDS = (
     "protocol",
     "port",
     "remark",
+    "work_scope_status",
     "created_at",
     "updated_at",
 )
@@ -906,6 +908,7 @@ class RailTransitBaseDataQueryService:
                      AND s.station_id = d.station_id
                     WHERE a.entity_id IN ({placeholders})
                       AND TRIM(COALESCE(d.station_id, '')) != ''
+                      AND COALESCE(d.work_scope_status, 'included') = 'included'
                     ORDER BY n.collected_at DESC, n.device_uuid, n.local_interface
                     """,
                     [identity_query.site_id, *entity_ids],
@@ -1502,6 +1505,10 @@ class RailTransitBaseDataQueryService:
                 for row in group_rows
                 if row.get("id") is not None
             }
+        # Vehicle MR rows are operational planning targets.  Keep excluded
+        # assets available to Device Management and historical views, but do
+        # not let them re-enter the current rail-transit device selector.
+        rows = [row for row in rows if is_current_debug_device(Device.from_mapping(row))]
         has_mr_group = any("车载-MR" in name for name in groups.values())
         mesh_by_id: dict[str, Any] = {}
         mesh_by_name: dict[str, Any] = {}
@@ -1711,6 +1718,7 @@ class RailTransitBaseDataQueryService:
                 for row in self._select_rows(conn, "device_groups", ("id", "name"))
                 if row.get("id") is not None
             }
+        rows = [row for row in rows if is_current_debug_device(Device.from_mapping(row))]
         result = []
         for row in rows:
             if "车载-MR" not in groups.get(int(row.get("group_id") or 0), ""):
@@ -1744,6 +1752,7 @@ class RailTransitBaseDataQueryService:
                 for row in self._select_rows(conn, "device_groups", ("id", "name"))
                 if row.get("id") is not None
             }
+        rows = [row for row in rows if is_current_debug_device(Device.from_mapping(row))]
         candidates: list[tuple[dict[str, Any], str]] = []
         issues: list[DataQualityIssueDTO] = []
         for row in rows:
@@ -1789,10 +1798,15 @@ class RailTransitBaseDataQueryService:
             if "station" not in selected or "group_id" not in selected:
                 return {}
             placeholders = ", ".join("?" for _ in ids)
+            scope_clause = (
+                " AND COALESCE(work_scope_status, 'included') = 'included'"
+                if "work_scope_status" in columns
+                else ""
+            )
             rows = [
                 dict(row)
                 for row in conn.execute(
-                    f'SELECT {", ".join(selected)} FROM devices WHERE group_id IN ({placeholders})',
+                    f'SELECT {", ".join(selected)} FROM devices WHERE group_id IN ({placeholders}){scope_clause}',
                     ids,
                 )
             ]
@@ -1822,6 +1836,8 @@ class RailTransitBaseDataQueryService:
         grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for row in device_rows:
             if int(row.get("group_id") or 0) not in group_ids:
+                continue
+            if not is_current_debug_device(Device.from_mapping(row)):
                 continue
             key = parse_station_source_value(row.get("station")).source_station_key
             if key:

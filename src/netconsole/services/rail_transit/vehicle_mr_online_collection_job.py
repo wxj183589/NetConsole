@@ -5,6 +5,7 @@ from netconsole.models.online_mr_models import OnlineMrConnectionConfig
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.job_center.job_context import JobContext
 from netconsole.services.netmiko_connection import connection_targets
+from netconsole.services.device_scope import filter_current_debug_devices, require_current_debug_device
 from netconsole.services.vehicle_mr_online import (
     VehicleMrOnlineCollector,
     VehicleMrOnlineSnapshot,
@@ -39,12 +40,16 @@ def run_vehicle_mr_online_collection(context: JobContext) -> dict[str, object]:
         raise ValueError("所选无线控制器 AC 不存在") from exc
     if not is_ac_device(ac):
         raise ValueError("所选设备不是无线控制器 AC")
+    try:
+        require_current_debug_device(ac)
+    except ValueError as exc:
+        raise ValueError(str(exc)) from exc
     protocol, port, username, password = _connection_fields(ac)
     if not protocol or not ac.primary_address or not username or not password:
         raise ValueError("AC 连接信息不完整")
 
     store = VehicleMrOnlineStore(context.paths, site_id)
-    devices = repository.list()
+    devices = filter_current_debug_devices(repository.list())
     mappings = store.list_mappings()
     registered = {
         **build_registered_trains(devices, load_group_names(repository, site_id)),

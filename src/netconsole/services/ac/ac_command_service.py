@@ -14,6 +14,7 @@ from netconsole.services.ac.ac_models import (
     is_ac_device_type,
 )
 from netconsole.services.h3c_ac_collect_service import AcCommandActionResult, run_h3c_ac_action
+from netconsole.services.device_scope import require_current_debug_device
 
 
 ProgressCallback = Callable[[str, int, int, str], None]
@@ -172,7 +173,7 @@ class AcCommandService:
         )
         if device is None:
             raise KeyError(f"AC device not found: {device_uuid}")
-        return device
+        return require_current_debug_device(device)
 
     @staticmethod
     def _error_code(message: str) -> str:

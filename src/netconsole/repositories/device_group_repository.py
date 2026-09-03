@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import re
 
 from netconsole.core.database import Database
 from netconsole.core.sqlite_utils import run_sqlite_with_retry
@@ -15,6 +16,13 @@ DEFAULT_DEVICE_GROUPS: tuple[tuple[str, int], ...] = (
     ("车载-3SW", 50),
 )
 LEGACY_CUSTOM_GROUP_NAME = "自定义"
+_GROUP_SEPARATOR_RE = re.compile(r"[\s\-_\u2010-\u2015]+")
+_BUSINESS_GROUP_RANK = {
+    "cocc": 0,
+    "bocc": 1,
+    "车站": 2,
+    "车载mr": 3,
+}
 
 
 class DuplicateGroupName(ValueError):
@@ -33,23 +41,16 @@ class DeviceGroupRepository:
                     """
                 SELECT * FROM device_groups
                 WHERE site_id = ?
-                ORDER BY
-                    CASE
-                        WHEN LOWER(name) = LOWER('COCC') THEN 10
-                        WHEN LOWER(name) = LOWER('BOCC') THEN 20
-                        WHEN name = '车站' THEN 30
-                        WHEN name = '车载-MR' THEN 40
-                        WHEN name = '车载-3SW' THEN 50
-                        WHEN name = '车载' THEN 60
-                        ELSE 100000 + sort_order
-                    END ASC,
-                    name COLLATE NOCASE ASC
+                ORDER BY sort_order ASC, name COLLATE NOCASE ASC, id ASC
                     """,
                     (self.site_id,),
                 ).fetchall()
 
         rows = run_sqlite_with_retry(_list_rows)
-        return [DeviceGroup(**dict(row)) for row in rows]
+        return sorted(
+            (DeviceGroup(**dict(row)) for row in rows),
+            key=lambda group: device_group_sort_key(group.name),
+        )
 
     def get(self, group_id: int) -> DeviceGroup:
         with self.database.connect() as conn:
@@ -142,3 +143,41 @@ def normalize_group_name(name: str) -> str:
     if len(value) > 64:
         raise ValueError("group name is too long")
     return value
+
+
+def canonical_device_group_name(name: object) -> str:
+    """Return only the comparison spelling for the fixed business groups.
+
+    Stored and displayed names are deliberately left untouched.  This keeps
+    historical spellings such as ``车载 MR`` usable while giving all callers
+    one ordering contract.
+    """
+
+    text = str(name or "").strip()
+    compact = _GROUP_SEPARATOR_RE.sub("", text).casefold()
+    if compact == "cocc":
+        return "COCC"
+    if compact == "bocc":
+        return "BOCC"
+    if text == "车站":
+        return "车站"
+    if compact == "车载mr":
+        return "车载-MR"
+    return text
+
+
+def _natural_group_name_key(name: object) -> tuple[tuple[int, object], ...]:
+    parts = re.split(r"(\d+)", str(name or "").strip().casefold())
+    return tuple(
+        (0, int(part)) if part.isdigit() else (1, part)
+        for part in parts
+    )
+
+
+def device_group_sort_key(name: object) -> tuple[object, ...]:
+    """Sort ``COCC > BOCC > 车站 > 车载-MR > OTHERS`` consistently."""
+
+    text = str(name or "").strip()
+    compact = _GROUP_SEPARATOR_RE.sub("", text).casefold()
+    rank = _BUSINESS_GROUP_RANK.get(compact, 4)
+    return rank, _natural_group_name_key(text), text.casefold(), text

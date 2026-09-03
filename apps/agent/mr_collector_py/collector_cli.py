@@ -121,6 +121,83 @@ def netmiko_params(target: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _is_host_key_negotiation_error(exc: BaseException) -> bool:
+    """只为 H3C 旧设备识别 host-key 协商失败，不放宽其它 SSH 错误。"""
+
+    text = str(exc or "").strip().casefold()
+    if not text or "authentication" in text or "timeout" in text:
+        return False
+    markers = (
+        "no matching host key",
+        "no acceptable host key",
+        "host key algorithm",
+        "hostkey algorithm",
+        "server only offered ssh-rsa",
+        "negotiation failed",
+    )
+    return "paramiko sshexception" in text and any(marker in text for marker in markers)
+
+
+def _legacy_ssh_rsa_params(params: dict[str, Any]) -> dict[str, Any]:
+    updated = dict(params)
+    disabled = dict(updated.get("disabled_algorithms") or {})
+    keys = list(disabled.get("keys") or ())
+    for algorithm in ("rsa-sha2-512", "rsa-sha2-256"):
+        if algorithm not in keys:
+            keys.append(algorithm)
+    disabled["keys"] = keys
+    updated["disabled_algorithms"] = disabled
+    return updated
+
+
+def ssh_connection_factory(
+    params: dict[str, Any],
+    *,
+    collector: str,
+    phase: str,
+    device_uuid: str,
+    log: Callable[[str, Any], None],
+) -> Any:
+    """MR sidecar 的独立进程适配器，遵循主 Backend 相同的兼容策略。"""
+
+    if ConnectHandler is None:
+        raise RuntimeError("netmiko is not installed; 请先安装/打包 netmiko")
+
+    def record(mode: str, attempt: int, result: str, exc: BaseException | None = None) -> None:
+        fields = (
+            f"collector={collector} phase={phase} device_uuid={device_uuid} "
+            f"host={params.get('host', '')} ssh_mode={mode} connection_mode={mode} "
+            f"attempt={attempt} result={result}"
+        )
+        if exc is not None:
+            fields += f" error_type={exc.__class__.__name__}"
+        log("[ssh_connection] %s", fields)
+
+    normal = dict(params)
+    record("normal", 1, "starting")
+    try:
+        connection = ConnectHandler(**normal)
+    except Exception as exc:
+        is_legacy_host_key_failure = (
+            str(normal.get("device_type") or "").casefold() == "hp_comware"
+            and _is_host_key_negotiation_error(exc)
+        )
+        record("normal", 1, "negotiation_failed" if is_legacy_host_key_failure else "failed", exc)
+        if not is_legacy_host_key_failure:
+            raise
+        legacy = _legacy_ssh_rsa_params(normal)
+        record("legacy_ssh_rsa", 2, "starting")
+        try:
+            connection = ConnectHandler(**legacy)
+        except Exception as legacy_exc:
+            record("legacy_ssh_rsa", 2, "failed", legacy_exc)
+            raise
+        record("legacy_ssh_rsa", 2, "success")
+        return connection
+    record("normal", 1, "success")
+    return connection
+
+
 def send_command_timing(connection: Any, command: str, timeout: int = 30) -> str:
     kwargs = {"read_timeout": timeout, "strip_prompt": False, "strip_command": False}
     try:
@@ -231,10 +308,21 @@ class MRCollectorApp:
         data = dict(self.request.get("items") or {})
         return {name: bool(data.get(name, True)) for name in (ITEM_TERMINAL_MONITOR, ITEM_MESH_LINK, ITEM_CHANNEL_BUSY, ITEM_AP_RADIO_STATISTICS, ITEM_SWITCH_HISTORY, ITEM_INTERFACE_RATE, ITEM_WIRELESS_STATUS)}
 
-    def connect(self) -> Any:
-        if ConnectHandler is None:
-            raise RuntimeError("netmiko is not installed; 请先安装/打包 netmiko")
-        return ConnectHandler(**netmiko_params(self.target()))
+    def connect(self, *, collector: str, phase: str = "collect") -> Any:
+        session = self.session()
+        device_uuid = str(
+            session.get("device_uuid")
+            or session.get("mr_id")
+            or session.get("device_id")
+            or ""
+        )
+        return ssh_connection_factory(
+            netmiko_params(self.target()),
+            collector=collector,
+            phase=phase,
+            device_uuid=device_uuid,
+            log=self.collector_log,
+        )
 
     def event(self, event_type: str, message: str, extra: dict[str, Any] | None = None) -> None:
         payload = {"ts": now_iso(), "type": event_type, "message": message}
@@ -371,7 +459,7 @@ class MRCollectorApp:
         self.collector_log("[collector=init] START %s", command_line(INIT_COMMANDS))
         connection = None
         try:
-            connection = self.connect()
+            connection = self.connect(collector="init")
             with (self.raw_dir / "init_raw.log").open("a", encoding="utf-8", errors="replace") as raw:
                 for command in INIT_COMMANDS:
                     if self.stop_event.is_set():
@@ -424,7 +512,7 @@ class MRCollectorApp:
             self.set_collector(item, "failed", error)
 
     def run_terminal_monitor(self) -> None:
-        connection = self.connect()
+        connection = self.connect(collector=ITEM_TERMINAL_MONITOR)
         try:
             writer, reader = getattr(connection, "write_channel", None), getattr(connection, "read_channel", None)
             if not callable(writer) or not callable(reader):
@@ -442,7 +530,7 @@ class MRCollectorApp:
                 pass
 
     def run_repeat_collector(self, item: str) -> None:
-        connection = self.connect()
+        connection = self.connect(collector=item)
         try:
             writer, reader = getattr(connection, "write_channel", None), getattr(connection, "read_channel", None)
             if not callable(writer) or not callable(reader):

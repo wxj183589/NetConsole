@@ -639,6 +639,20 @@ export interface DeviceListQuery {
   sort_order?: 'asc' | 'desc'
 }
 
+export interface DeviceManagementQueryState {
+  search: string
+  group: string
+  vendor: DeviceVendor | ''
+  device_type: string
+  connection_status: DeviceConnectionStatus | ''
+  project_phase: ProjectPhase | 'all'
+  work_scope_status: WorkScopeStatus | 'all'
+  sort_by: string
+  sort_order: 'asc' | 'desc'
+  page: number
+  page_size: number
+}
+
 export interface DeviceClassificationUpdateRequest {
   device_uuids: string[]
   project_phase?: ProjectPhase

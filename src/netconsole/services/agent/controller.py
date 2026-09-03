@@ -60,6 +60,12 @@ class AgentControllerService:
         self.settings = settings or AgentControllerSettings.from_environment()
         self._health_task: asyncio.Task[None] | None = None
 
+    def rebind_site(self, site_name: str) -> None:
+        """切换当前 Site 后重新绑定 Site-scoped Agent 状态库。"""
+
+        self.site_name = str(site_name or "demo")
+        self.repository = AgentRepository(self.paths.site_agents_db_path(self.site_name))
+
     def list_agents(self) -> list[dict[str, Any]]:
         return [self._record(config, runtime) for config, runtime in self.repository.list_with_runtime()]
 

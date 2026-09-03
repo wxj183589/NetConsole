@@ -90,6 +90,23 @@ class DesktopActionResolver:
     def directory(self, directory_id: str) -> Path:
         return self._path(directory_id, self._directories, "unknown_directory", expect_directory=True)
 
+    def update_directories(self, directories: Mapping[str, Path]) -> None:
+        """替换宿主已知的局点作用域目录映射，不改变受控根集合。"""
+
+        self._directories.update({key: Path(value) for key, value in directories.items()})
+
+    def replace_directory_group(
+        self, prefix: str, directories: Mapping[str, Path]
+    ) -> None:
+        """替换一组局点作用域目录，清掉旧 Site 的路径别名。"""
+
+        self._directories = {
+            key: value
+            for key, value in self._directories.items()
+            if not key.startswith(prefix)
+        }
+        self.update_directories(directories)
+
     def artifact(self, artifact_id: str) -> Path:
         return self._path(artifact_id, self._artifacts, "unknown_artifact", expect_directory=False)
 

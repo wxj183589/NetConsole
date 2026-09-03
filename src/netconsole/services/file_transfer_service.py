@@ -817,7 +817,9 @@ class FileTransferService:
             try:
                 with prepared_connection_target(target) as prepared:
                     with netmiko_connection.ssh_connection_context(
-                        "file_management", "collect"
+                        "file_management",
+                        "collect",
+                        device_uuid=str(device.device_uuid or device.id or ""),
                     ):
                         connection = netmiko_connection.ConnectHandler(
                             **build_netmiko_params(prepared)
@@ -861,7 +863,12 @@ class FileTransferService:
                         self._download_sftp(target, remote_file.remote_path, local_path)
                     except Exception as sftp_exc:
                         app_logger.log_error("FILE_DOWNLOAD_SFTP_FAILED", self._detail(device, remote_file, local_path, sanitize_sensitive_text(str(sftp_exc), device)))
-                        self._download_scp(target, remote_file.remote_path, local_path)
+                        self._download_scp(
+                            target,
+                            remote_file.remote_path,
+                            local_path,
+                            device_uuid=str(device.device_uuid or device.id or ""),
+                        )
                     if not local_path.exists() or local_path.stat().st_size == 0:
                         raise TransferVerificationFailed("Downloaded file is empty or missing.")
                     file_sha256(local_path)
@@ -947,7 +954,14 @@ class FileTransferService:
         if remote_tail != local_tail:
             raise TransferVerificationFailed("Tail verification failed.")
 
-    def _download_scp(self, target, remote_path: str, local_path: Path) -> None:
+    def _download_scp(
+        self,
+        target,
+        remote_path: str,
+        local_path: Path,
+        *,
+        device_uuid: str = "",
+    ) -> None:
         try:
             from netmiko import file_transfer
         except ImportError as exc:  # pragma: no cover - depends on optional runtime.
@@ -956,7 +970,9 @@ class FileTransferService:
         try:
             with prepared_connection_target(target) as prepared:
                 with netmiko_connection.ssh_connection_context(
-                    "file_management", "collect"
+                    "file_management",
+                    "collect",
+                    device_uuid=device_uuid,
                 ):
                     connection = netmiko_connection.ConnectHandler(
                         **build_netmiko_params(prepared)

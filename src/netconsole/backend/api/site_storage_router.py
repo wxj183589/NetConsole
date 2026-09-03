@@ -433,7 +433,7 @@ def preflight_site_activation(request: Request, site_id: str) -> dict[str, objec
 @router.post(
     "/sites/{site_id}/activate",
     summary="切换当前局点",
-    description="有活动任务时拒绝；成功后要求 Electron 受控重启 Backend，使所有 Service 使用同一 SiteContext。",
+    description="有活动任务时拒绝；成功后在 Backend 进程内热重绑定所有 Site-scoped Service，返回运行时切换修订号。",
     dependencies=[Depends(_desktop), Depends(_persistent_storage)],
 )
 def activate_site(

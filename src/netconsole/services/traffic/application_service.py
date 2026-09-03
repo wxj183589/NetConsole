@@ -24,8 +24,9 @@ from netconsole.models.traffic_test import (
 )
 from netconsole.repositories.traffic_run_repository import TrafficRunRepository
 from netconsole.services.job_center.task_application_service import TaskApplicationService
-from netconsole.services.network_tools.iperf_runner import IperfClientConfig, IperfServerConfig
+from netconsole.services.network_tools.iperf_runner import IperfClientConfig, IperfResultStore, IperfServerConfig
 from netconsole.services.traffic.errors import TrafficErrorCode, TrafficTestError
+from netconsole.services.traffic.event_store import TrafficEventStore
 
 
 TRAFFIC_CONTROLLER_TASK_TYPES = frozenset(
@@ -92,6 +93,26 @@ class TrafficTestApplicationService:
         self.supervisor = supervisor
         if reconcile_on_start:
             self.reconcile_local_runs()
+
+    def rebind_site(self, site_name: str) -> None:
+        """重新绑定当前局点的流量结果、事件与 Agent 映射存储。"""
+
+        self.site_name = str(site_name or "demo")
+        self.repository = TrafficRunRepository(self.paths.traffic_runs_db_path(self.site_name))
+        if self.local_adapter is not None:
+            self.local_adapter.site_name = self.site_name
+            self.local_adapter.repository = self.repository
+            self.local_adapter.event_store = TrafficEventStore(
+                self.paths, self.repository, self.site_name
+            )
+        if self.agent_adapter is not None:
+            self.agent_adapter.site_name = self.site_name
+            self.agent_adapter.repository = self.repository
+            self.agent_adapter.iperf_store = IperfResultStore(
+                self.paths.iperf_db_path(self.site_name)
+            )
+        if self.supervisor is not None:
+            self.supervisor.repository = self.repository
 
     def reconcile_local_runs(self) -> None:
         self._reconcile_local_runs()

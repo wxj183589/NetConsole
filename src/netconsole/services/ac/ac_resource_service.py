@@ -19,6 +19,7 @@ from netconsole.services.h3c_ac_collect_service import (
     collect_h3c_fit_ap_resources,
     collect_h3c_fit_ap_verbose,
 )
+from netconsole.services.device_scope import require_current_debug_device
 
 
 ProgressCallback = Callable[[str, int, int, str], None]
@@ -86,7 +87,19 @@ class AcResourceService:
         )
         if self._cancelled(should_cancel) or result.error_message == "用户已取消更新":
             raise AcResourceRefreshCancelled("用户已取消更新")
-        self._progress(progress_callback, "ac_info_collect", 2, 2, "AC 信息已持久化")
+        persisted_components = ["AC_BASIC"] if (
+            result.summary_updated or result.https_port_persisted
+        ) else []
+        failed_components = ["AC_BASIC"] if (
+            not result.success or result.error_message
+        ) else []
+        self._progress(
+            progress_callback,
+            "ac_info_collect",
+            2,
+            2,
+            "AC 信息已持久化" if persisted_components else "AC 信息未持久化",
+        )
         return AcResourceRefreshResult(
             success=result.success,
             source="cli",
@@ -98,6 +111,8 @@ class AcResourceService:
             https_port=result.https_port,
             https_port_persisted=result.https_port_persisted,
             error_message=str(result.error_message or ""),
+            persisted_components=persisted_components,
+            failed_components=failed_components,
             fit_ap_snapshot_status=str(
                 getattr(result, "fit_ap_snapshot_status", "NOT_COLLECTED")
             ),
@@ -123,7 +138,17 @@ class AcResourceService:
         )
         if self._cancelled(should_cancel) or result.error_message == "用户已取消更新":
             raise AcResourceRefreshCancelled("用户已取消更新")
-        self._progress(progress_callback, "ac_fit_ap_detail_collect", 2, 2, "FIT-AP 深度信息已持久化")
+        detail_rows_updated = int(getattr(result, "detail_rows_updated", 0))
+        persisted_components = ["AP_DETAIL"] if (
+            result.success and (detail_rows_updated > 0 or result.fit_ap_resources_updated > 0)
+        ) else []
+        self._progress(
+            progress_callback,
+            "ac_fit_ap_detail_collect",
+            2,
+            2,
+            "FIT-AP 深度信息已持久化" if persisted_components else "FIT-AP 深度信息未持久化",
+        )
         return AcResourceRefreshResult(
             success=result.success,
             source="cli",
@@ -140,7 +165,7 @@ class AcResourceService:
             failed_commands=[item.command for item in getattr(result, "command_results", []) if not item.success],
             target_ap_uuid=request.ap_uuid,
             error_message=str(result.error_message or ""),
-            detail_rows_updated=int(getattr(result, "detail_rows_updated", 0)),
+            detail_rows_updated=detail_rows_updated,
             detail_failed_count=int(getattr(result, "detail_failed_count", 0)),
             detail_mode=str(getattr(result, "detail_mode", "") or ""),
             batch_serial_duplicates=int(getattr(result, "batch_serial_duplicates", 0)),
@@ -150,6 +175,8 @@ class AcResourceService:
             fit_ap_snapshot_status=str(
                 getattr(result, "fit_ap_snapshot_status", "NOT_COLLECTED")
             ),
+            persisted_components=persisted_components,
+            failed_components=["AP_DETAIL"] if not result.success else [],
         )
 
     def refresh_fit_ap_verbose(
@@ -183,6 +210,8 @@ class AcResourceService:
             detail_failed_count=result.detail_failed_count,
             detail_mode=result.detail_mode,
             error_message=str(result.error_message or ""),
+            persisted_components=["AP_DETAIL"] if result.success and result.detail_rows_updated > 0 else [],
+            failed_components=["AP_DETAIL"] if not result.success else [],
         )
 
     def _refresh_cli(
@@ -204,7 +233,20 @@ class AcResourceService:
         if self._cancelled(should_cancel) or result.error_message == "用户已取消更新":
             raise AcResourceRefreshCancelled("用户已取消更新")
         snapshot = self.load_snapshot(request.device_uuid)
-        self._progress(progress_callback, "ac_fit_ap_collect", 2, 2, "FIT-AP 资源已持久化")
+        fit_ap_snapshot_status = str(
+            getattr(result, "fit_ap_snapshot_status", "NOT_COLLECTED")
+        )
+        persisted_components = ["FIT_AP"] if (
+            result.fit_ap_resources_updated > 0
+            or fit_ap_snapshot_status != "NOT_COLLECTED"
+        ) else []
+        self._progress(
+            progress_callback,
+            "ac_fit_ap_collect",
+            2,
+            2,
+            "FIT-AP 资源已持久化" if persisted_components else "FIT-AP 资源未持久化",
+        )
         return AcResourceRefreshResult(
             success=result.success,
             source="cli",
@@ -225,9 +267,9 @@ class AcResourceService:
             batch_serial_merged=int(getattr(result, "batch_serial_merged", 0)),
             serial_identity_conflicts=int(getattr(result, "serial_identity_conflicts", 0)),
             duplicate_ap_entity_created=int(getattr(result, "duplicate_ap_entity_created", 0)),
-            fit_ap_snapshot_status=str(
-                getattr(result, "fit_ap_snapshot_status", "NOT_COLLECTED")
-            ),
+            fit_ap_snapshot_status=fit_ap_snapshot_status,
+            persisted_components=persisted_components,
+            failed_components=["FIT_AP"] if not result.success else [],
         )
 
     def _load_device(self, device_uuid: str) -> Device:
@@ -242,7 +284,7 @@ class AcResourceService:
         )
         if device is None:
             raise KeyError(f"AC device not found: {device_uuid}")
-        return device
+        return require_current_debug_device(device)
 
     def _validate_source(self, request: AcResourceRefreshRequest) -> None:
         source = str(request.source or "auto").strip().lower()

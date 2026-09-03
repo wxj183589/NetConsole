@@ -770,10 +770,15 @@ class StationSourceDiscoveryService:
         if "station" not in selected or "group_id" not in selected:
             return []
         placeholders = ", ".join("?" for _ in ids)
+        scope_clause = (
+            " AND COALESCE(work_scope_status, 'included') = 'included'"
+            if "work_scope_status" in columns
+            else ""
+        )
         return [
             dict(row)
             for row in conn.execute(
-                f'SELECT {", ".join(selected)} FROM devices WHERE group_id IN ({placeholders})',
+                f'SELECT {", ".join(selected)} FROM devices WHERE group_id IN ({placeholders}){scope_clause}',
                 ids,
             )
         ]

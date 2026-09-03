@@ -10,8 +10,10 @@ from tests.support.ac_management_web_fixture import (
     sync_ac_management_optical_current,
 )
 from netconsole.core.database import Database
+from netconsole.models.device import Device
 from netconsole.models.api.ac_management import AcApDTO, AcLldpDTO, AcOpticalDTO
 from netconsole.repositories.ac_repository import AcRepository
+from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.ap_identity import ApIdentityQueryService
 from netconsole.services.ac.query_service import AcManagementQueryService
 from netconsole.services.config_lifecycle_service import extract_h3c_configuration_body
@@ -63,6 +65,36 @@ def test_ac_query_service_reads_summary_filters_and_details_without_writes(tmp_p
     assert "serial" not in str(detail.model_dump()).casefold()
     assert "SECRET-SN" not in str(detail.model_dump())
     assert _fingerprint(db_path) == before
+
+
+def test_ac_query_service_excludes_nonparticipating_ac_from_selector_and_ap_page(tmp_path: Path) -> None:
+    paths, db_path, _files = build_ac_management_fixture(tmp_path)
+    database = Database(db_path)
+    excluded = DeviceRepository(database).create(
+        Device(
+            name="暂不参与 AC",
+            primary_address="10.0.0.9",
+            device_type="AC",
+            work_scope_status="excluded",
+        )
+    )
+    ac_repository = AcRepository(database)
+    ac_repository.upsert_ac_ap_summary(
+        {"ac_device_uuid": str(excluded.device_uuid), "total_aps": 1}
+    )
+    ac_repository.upsert_fit_ap_resource(
+        str(excluded.device_uuid),
+        {"ap_name": "暂不参与 AP", "ap_ip": "10.0.9.1", "ap_mac": "0000-0000-0001"},
+    )
+
+    service = AcManagementQueryService(paths)
+    summary = service.get_summary("demo")
+    page = service.list_aps("demo", page_size=20)
+    details = service.list_ap_details_for_macs("demo", ["0000-0000-0001"])
+
+    assert [item.name for item in summary.acs] == ["测试 AC"]
+    assert all(item.name != "暂不参与 AP" for item in page.items)
+    assert all(item.ap.name != "暂不参与 AP" for item in details)
 
 
 def test_fit_ap_list_loads_detail_projection_for_current_page_only(

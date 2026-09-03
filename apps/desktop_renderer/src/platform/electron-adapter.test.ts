@@ -24,6 +24,7 @@ function bridge(runtime = {
     selectSitePackage: vi.fn(async () => ({ cancelled: true })),
     selectSiteExportDestination: vi.fn(async () => ({ cancelled: true })),
     restartBackend: vi.fn(async () => ({ success: true })),
+    restartApplication: vi.fn(async () => ({ success: true })),
     chooseSavePath: vi.fn(async () => ({ cancelled: true })),
     downloadBackendResource: vi.fn(async () => ({ status: 'cancelled' as const })),
     executeFileDesktopAction: vi.fn(async () => ({ success: true })),

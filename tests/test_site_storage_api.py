@@ -61,16 +61,21 @@ def test_site_registry_create_list_and_activate(tmp_path: Path) -> None:
 
     preflight = client.post("/api/v1/sites/line-12/activate/preflight")
     assert preflight.status_code == 200, preflight.text
-    assert preflight.json() == {
-        "ready": True,
-        "target_site_id": "line-12",
-        "previous_site_id": "demo",
-    }
+    preflight_payload = preflight.json()
+    assert preflight_payload["ready"] is True
+    assert preflight_payload["target_site_id"] == "line-12"
+    assert preflight_payload["previous_site_id"] == "demo"
+    assert isinstance(preflight_payload["registry_revision"], str)
     assert client.get("/api/v1/sites/active").json()["site_id"] == "demo"
 
     activated = client.post("/api/v1/sites/line-12/activate", json={"confirmed": True})
     assert activated.status_code == 200, activated.text
-    assert activated.json()["restart_required"] is True
+    activated_payload = activated.json()
+    assert activated_payload["restart_required"] is False
+    assert activated_payload["site_root"].endswith("sites\\line-12")
+    assert isinstance(activated_payload["registry_revision"], str)
+    assert isinstance(activated_payload["switch_revision"], str)
+    assert isinstance(activated_payload["runtime_revision"], str)
 
 
 def test_task_result_storage_diagnostics_defaults_off_and_exposes_no_payload(

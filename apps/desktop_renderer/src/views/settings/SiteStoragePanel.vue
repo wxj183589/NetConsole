@@ -17,6 +17,7 @@ const sites = ref<SiteRecord[]>([])
 const root = ref<DataRootSnapshot | null>(null)
 const loading = ref(false)
 const busy = ref(false)
+const restartingApplication = ref(false)
 const error = ref('')
 interface BlockingTask {
   task_id: string
@@ -148,7 +149,7 @@ async function switchSite(site: SiteRecord): Promise<void> {
         }),
         preflight: async (siteId) => { await preflightSiteActivation(siteId) },
         prepareWorkspace: (siteId, route) => workspace.prepareForSiteSwitch(siteId, route),
-        activate: async (siteId) => { await activateSite(siteId) },
+        activate: (siteId) => activateSite(siteId),
         restart: async (siteId) => {
           const restart = await getPlatformAdapter().restartBackend({ activeSiteId: siteId })
           if (!restart.success) throw new Error(restart.error || 'Backend 切换失败')
@@ -543,9 +544,32 @@ async function executeImport(): Promise<void> {
     } finally {
       await getPlatformAdapter().refreshSiteContext().catch(() => undefined)
     }
+    if (importMode.value !== 'merge' && !sites.value.some((site) => site.site_id === (importMode.value === 'new' ? importSiteId.value.trim() : importTargetSiteId.value))) {
+      throw new Error('导入已完成，但 Backend 尚未将新局点注册为可切换局点')
+    }
+    notifySiteContextChanged()
     ElMessage.success('局点数据包导入完成')
   } catch (cause) { showError(cause, '数据包导入失败') }
   finally { if (panelMounted) busy.value = false }
+}
+
+async function restartApplication(): Promise<void> {
+  if (busy.value || restartingApplication.value || !desktopOnly) return
+  const confirmed = await confirmAction({
+    type: 'WARNING',
+    title: '重启软件',
+    message: '确定要关闭并重新启动 NetConsole 吗？当前局点会在重启后恢复。',
+    confirmText: '重启软件',
+  })
+  if (!confirmed) return
+  restartingApplication.value = true
+  try {
+    const result = await getPlatformAdapter().restartApplication()
+    if (!result.success) throw new Error(result.error || 'NetConsole 重启失败')
+  } catch (cause) {
+    restartingApplication.value = false
+    showError(cause, 'NetConsole 重启失败')
+  }
 }
 
 async function chooseRoot(): Promise<void> {
@@ -656,6 +680,14 @@ function displayValue(value: unknown): string { if (value === null || value === 
       <div v-if="root?.persistent !== false" class="actions">
         <el-button data-testid="create-site" :loading="busy" @click="newSite">新建局点</el-button>
         <el-button data-testid="import-site" :loading="busy" @click="importPackage">导入数据包</el-button>
+        <el-button
+          v-if="desktopOnly"
+          data-testid="restart-application"
+          :loading="restartingApplication"
+          :disabled="busy || restartingApplication"
+          title="关闭并重新启动 NetConsole，用于运行时状态异常或局点切换无法恢复时。"
+          @click="restartApplication"
+        >重启软件</el-button>
         <el-dropdown :disabled="busy" trigger="click" @command="exportCurrent">
           <el-button data-testid="export-site" type="primary" :loading="busy">
             导出当前局点

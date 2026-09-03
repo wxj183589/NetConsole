@@ -10,6 +10,7 @@ import NcDataTable from '../../components/table/NcDataTable.vue'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import type { DeviceListItem, DevicePage } from '../../types/deviceManagement'
 import { useUserSelectedExport } from '../../composables/useUserSelectedExport'
+import { compareDeviceGroupNames } from '../../utils/deviceGroupOrder'
 
 const router = useRouter()
 const userSelectedExport = useUserSelectedExport()
@@ -31,7 +32,7 @@ const groupFilter = ref('')
 const selectedUuids = ref<string[]>([])
 const deviceTable = ref<{ clearSelection(): void } | null>(null)
 
-const deviceGroups = computed(() => [...pageData.value.groups].sort((left, right) => left.name.localeCompare(right.name)))
+const deviceGroups = computed(() => [...pageData.value.groups].sort((left, right) => compareDeviceGroupNames(left.name, right.name)))
 const selectedCount = computed(() => selectedUuids.value.length)
 const deviceColumns: NcTableColumn<DeviceListItem>[] = [
   { key: 'selection', label: '', type: 'selection', valueType: 'selection', hideable: false },

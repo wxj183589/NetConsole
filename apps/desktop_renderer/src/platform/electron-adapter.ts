@@ -25,6 +25,7 @@ export function createElectronAdapter(bridge: NetConsoleDesktopBridge): Platform
     selectSitePackage: () => bridge.selectSitePackage(),
     selectSiteExportDestination: (suggestedName) => bridge.selectSiteExportDestination(suggestedName),
     restartBackend: (request) => bridge.restartBackend(request),
+    restartApplication: () => bridge.restartApplication(),
     refreshSiteContext: async () => { await bridge.refreshSiteContext?.() },
     chooseSavePath: (options) => bridge.chooseSavePath(options),
     downloadBackendResource: (request) => bridge.downloadBackendResource(request),

@@ -44,6 +44,7 @@ import {
 } from './fileManagementModel'
 import { createFileManagementTranslator } from './fileManagementI18n'
 import { useConfirm } from '../../components/feedback/useConfirm'
+import { sortDeviceGroupNames } from '../../utils/deviceGroupOrder'
 
 const t = createFileManagementTranslator()
 const { confirm, confirmChoice } = useConfirm()
@@ -84,7 +85,7 @@ let refreshTimer: ReturnType<typeof setTimeout> | null = null
 
 const activeTasks = computed(() => activeDownloadTasks(tasks.value))
 const selectedDevice = computed(() => devices.value.find((device) => device.device_id === selectedDeviceId.value) || null)
-const deviceGroups = computed(() => [...new Set(devices.value.map((device) => device.group_name || '未分组'))].sort((a, b) => a.localeCompare(b)))
+const deviceGroups = computed(() => sortDeviceGroupNames([...new Set(devices.value.map((device) => device.group_name || '未分组'))]))
 const filteredDevices = computed(() => {
   const query = deviceSearch.value.trim().toLocaleLowerCase()
   return devices.value.filter((device) => {

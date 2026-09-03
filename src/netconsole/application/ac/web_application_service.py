@@ -41,6 +41,10 @@ from netconsole.repositories.ac_repository import AcRepository, TRACKSIDE_AP_PLA
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.ac.fit_ap_optical_task_guard import fit_ap_optical_resource_key
 from netconsole.services.ac.ac_models import is_ac_device_type
+from netconsole.services.device_scope import (
+    DeviceOutOfCurrentDebugScopeError,
+    require_current_debug_device,
+)
 from netconsole.services.ac.fit_ap_resource_export import make_fit_ap_resource_filename
 from netconsole.services.ac.query_service import AcManagementQueryService
 from netconsole.services.background_job import BackgroundJob
@@ -1305,10 +1309,16 @@ class AcWebApplicationService:
             "detail_failed_count",
             "detail_mode",
             "fit_ap_snapshot_status",
+            "partial_success",
+            "business_outcome",
         ):
             value = result.get(key)
             if isinstance(value, (bool, int, float, str, dict)):
                 summary[key] = redact_web_task_text(value) if isinstance(value, str) else value
+        for key in ("persisted_components", "failed_components", "skipped_components"):
+            value = result.get(key)
+            if isinstance(value, list):
+                summary[key] = [str(item) for item in value]
         for key in ("rows", "overview_rows", "resources", "optical_rows", "offline_ap_ledger_rows"):
             value = result.get(key)
             if isinstance(value, list):
@@ -1334,7 +1344,11 @@ class AcWebApplicationService:
                     "detail_failed_count",
                     "detail_mode",
                     "fit_ap_snapshot_status",
+                    "persisted_components",
+                    "failed_components",
+                    "skipped_components",
                     "partial_success",
+                    "business_outcome",
                     "refresh_scope",
                     "optical_rows_updated",
                     "failed_aps",
@@ -1413,6 +1427,13 @@ class AcWebApplicationService:
         device = DeviceRepository(Database(self.paths.site_db_path(self._site(site_id)))).get_by_uuid(target_id)
         if device is None or not is_ac_device_type(device.device_type):
             raise AcWebActionError("TARGET_NOT_AUTHORIZED", "目标 AC 在当前局点不存在")
+        try:
+            require_current_debug_device(device)
+        except DeviceOutOfCurrentDebugScopeError as exc:
+            raise AcWebActionError(
+                exc.code,
+                "目标 AC 当前未参与调试",
+            ) from exc
         return device
 
     def _revalidate_target(self, plan: dict[str, object]) -> None:

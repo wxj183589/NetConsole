@@ -143,6 +143,13 @@ def _connect_with_compatibility(
             raise
 
         legacy_params = _legacy_ssh_rsa_params(normal_params)
+        _log_ssh_connection_attempt(
+            context,
+            legacy_params,
+            "legacy_ssh_rsa",
+            2,
+            "starting",
+        )
         try:
             connection = connect_handler(**legacy_params)
         except Exception as legacy_exc:
@@ -214,10 +221,14 @@ def _legacy_ssh_rsa_params(params: dict[str, object]) -> dict[str, object]:
 def _is_host_key_negotiation_error(exc: BaseException) -> bool:
     """只识别 host-key 算法协商失败，不把认证/kex/cipher 失败当成 fallback 条件。"""
 
-    if _is_auth_exception(exc) or _is_timeout_exception(exc):
-        return False
     text = str(exc or "").strip().casefold()
     if not text:
+        return False
+    # Netmiko 将 Paramiko SSHException 包装为 NetmikoTimeoutException，
+    # 但保留 ``A paramiko SSHException ...`` 前缀。这个包装只在明确的
+    # host-key 协商文案下放行；普通 TCP/读超时仍不能触发 legacy retry。
+    wrapped_paramiko_exception = "a paramiko sshexception occurred during connection creation:" in text
+    if _is_auth_exception(exc) or (_is_timeout_exception(exc) and not wrapped_paramiko_exception):
         return False
     try:
         from paramiko.ssh_exception import SSHException
@@ -281,6 +292,7 @@ def _ssh_detail(
         f"device_uuid={context.device_uuid}",
         f"host={params.get('host', '')}",
         f"ssh_mode={mode}",
+        f"connection_mode={mode}",
         f"attempt={attempt}",
         f"result={result or ('success' if success else 'failed')}",
     ]

@@ -248,6 +248,19 @@ def test_device_groups_are_site_scoped_and_filter_devices(tmp_path):
     assert repository.get(int(grouped.id)).group_id is None
 
 
+def test_device_group_list_uses_fixed_business_order_and_natural_others(tmp_path):
+    db = Database(tmp_path / "devices.db")
+    db.initialize()
+    groups = DeviceGroupRepository(db, "demo")
+    for name in ("10组", "车载-3SW", "车载 MR", "车站", "bOcc", "cocc", "2组"):
+        groups.create(name)
+
+    names = [group.name for group in groups.list()]
+
+    assert names[:4] == ["cocc", "bOcc", "车站", "车载 MR"]
+    assert names[4:] == ["2组", "10组", "车载-3SW"]
+
+
 def test_group_filter_value_keeps_group_id_for_repository_filter(tmp_path):
     db = Database(tmp_path / "devices.db")
     db.initialize()

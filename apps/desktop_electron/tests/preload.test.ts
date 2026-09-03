@@ -54,6 +54,7 @@ describe('preload bridge', () => {
       'reportRendererReady',
       'reportRendererWorkload',
       'reportSiteSwitchState',
+      'restartApplication',
       'restartBackend',
       'revealExternalTool',
       'saveWorkspaceWindowState',

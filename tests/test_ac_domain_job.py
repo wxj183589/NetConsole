@@ -219,6 +219,50 @@ def test_ac_fit_ap_resource_job_finished_failed_and_cancelled(monkeypatch: pytes
     assert cancelled.error == "用户已取消更新"
 
 
+def test_ac_info_job_keeps_persisted_component_when_collection_fails_after_persist(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    snapshot = AcResourceSnapshot("ac-001", {"total_aps": 1}, [])
+
+    class FakeAcService:
+        def __init__(self, _resource_service) -> None:
+            pass
+
+        def refresh_ac_info(self, _request, *, progress_callback=None, should_cancel=None):
+            del progress_callback, should_cancel
+            return AcResourceRefreshResult(
+                False,
+                "cli",
+                snapshot,
+                collect_run_uuid="ac-info-partial-1",
+                summary_updated=True,
+                error_message="后续 collector 连接协商失败",
+            )
+
+    monkeypatch.setattr(ac_jobs, "AcService", FakeAcService)
+    result = run_job(
+        BackgroundJob(
+            job_id="ac-info-partial",
+            task_type="ac_info_refresh",
+            params={
+                "device_uuid": "ac-001",
+                "site_name": "demo",
+                "db_path": str(tmp_path / "devices.db"),
+                "data_root": str(tmp_path),
+            },
+        )
+    )
+
+    assert result.ok is True
+    assert result.result["business_outcome"] == "PARTIAL_SUCCESS"
+    assert result.result["partial_success"] is True
+    assert result.result["persisted_components"] == ["AC_BASIC"]
+    assert result.result["failed_components"] == ["AC_BASIC"]
+    assert result.result["data_persisted"] is True
+    assert result.result["collection"]["error_message"] == "后续 collector 连接协商失败"
+
+
 def test_ac_fit_ap_collect_terminal_payload_is_bounded_for_large_snapshot() -> None:
     resources = [
         {
@@ -275,6 +319,11 @@ def test_ac_fit_ap_collect_terminal_payload_is_bounded_for_large_snapshot() -> N
         "summary_updated": True,
         "snapshot_revision": "r-974",
         "fit_ap_snapshot_status": "NOT_COLLECTED",
+        "persisted_components": ["AC_BASIC"],
+        "failed_components": [],
+        "skipped_components": [],
+        "partial_success": False,
+        "business_outcome": "SUCCESS",
         "data_persisted": True,
         "reload_required": True,
         "collection": {
@@ -300,6 +349,11 @@ def test_ac_fit_ap_collect_terminal_payload_is_bounded_for_large_snapshot() -> N
             "serial_identity_conflicts": 0,
             "duplicate_ap_entity_created": 0,
             "fit_ap_snapshot_status": "NOT_COLLECTED",
+            "persisted_components": ["AC_BASIC"],
+            "failed_components": [],
+            "skipped_components": [],
+            "partial_success": False,
+            "business_outcome": "SUCCESS",
             "error_message": "",
         },
     }

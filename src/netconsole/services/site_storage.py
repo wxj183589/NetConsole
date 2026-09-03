@@ -416,6 +416,21 @@ class SiteRegistryRepository:
             ),
         )
 
+    def refresh(self) -> list[SiteRecord]:
+        """重新扫描 Registry 与受控局点目录，避免依赖进程级列表缓存。"""
+
+        return self.list()
+
+    def revision(self) -> str:
+        """返回当前 Registry 内容版本，供 API/Renderer 判断缓存是否过期。"""
+
+        self.refresh()
+        try:
+            payload = self.path.read_bytes()
+        except OSError:
+            payload = b"{}"
+        return hashlib.sha256(payload).hexdigest()
+
     def get(self, site_id: str) -> SiteRecord:
         wanted = validate_site_id(site_id)
         for record in self.list():
@@ -668,9 +683,19 @@ class SiteApplicationService:
         self.registry = SiteRegistryRepository(paths)
         self.manager = SiteManager(paths)
         self.task_service = task_service
+        self._runtime_rebind_handler: Callable[[str], None] | None = None
+
+    def set_runtime_rebind_handler(
+        self, handler: Callable[[str], None] | None
+    ) -> None:
+        """绑定宿主运行时的 SiteContext 热重绑定回调。"""
+
+        self._runtime_rebind_handler = handler
 
     def list_sites(self) -> list[dict[str, object]]:
         active = self.active_site_id()
+        records = self.registry.refresh()
+        registry_revision = self.registry.revision()
         from netconsole.services.site_lifecycle import SiteAuditService
 
         latest = SiteAuditService(self.paths).latest() or {}
@@ -679,19 +704,21 @@ class SiteApplicationService:
             for item in latest.get("sites", [])
             if isinstance(item, dict)
         }
-        return [
+        result = [
             {
                 **item.to_public(include_path=persistent_storage()),
                 "active": item.site_id == active,
                 "size_bytes": _directory_size(item.root_path),
+                "registry_revision": registry_revision,
                 **self._lifecycle_summary(
                     item,
                     audits.get(item.site_id),
                     str(latest.get("generated_at") or ""),
                 ),
             }
-            for item in self.registry.list()
+            for item in records
         ]
+        return result
 
     def get_site(self, site_id: str) -> dict[str, object]:
         item = self.registry.get(site_id)
@@ -710,6 +737,7 @@ class SiteApplicationService:
             **item.to_public(include_path=persistent_storage()),
             "active": item.site_id == self.active_site_id(),
             "size_bytes": _directory_size(item.root_path),
+            "registry_revision": self.registry.revision(),
             **self._lifecycle_summary(
                 item, audit, str(latest.get("generated_at") or "")
             ),
@@ -912,15 +940,23 @@ class SiteApplicationService:
             self.ensure_no_active_tasks_anywhere()
             try:
                 self.manager.switch_site(record.root_path.name)
+                if self._runtime_rebind_handler is not None:
+                    self._runtime_rebind_handler(record.root_path.name)
                 return {
                     **record.to_public(),
+                    "site_root": str(record.root_path),
                     "active": True,
                     "previous_site_id": previous,
-                    "restart_required": True,
+                    "registry_revision": self.registry.revision(),
+                    "switch_revision": uuid.uuid4().hex,
+                    "runtime_revision": uuid.uuid4().hex,
+                    "restart_required": False,
                 }
             except Exception as exc:
                 try:
                     self.manager.switch_site(previous_directory)
+                    if self._runtime_rebind_handler is not None:
+                        self._runtime_rebind_handler(previous_directory)
                 except Exception:
                     pass
                 app_logger.log_error(
@@ -942,6 +978,7 @@ class SiteApplicationService:
             "ready": True,
             "target_site_id": record.site_id,
             "previous_site_id": previous,
+            "registry_revision": self.registry.revision(),
         }
 
     def migrate_site(
@@ -2344,14 +2381,13 @@ class SitePackageService:
                 self.staging_lifecycle.finish_site_replacement(
                     replacement_journal
                 )
-                return {
-                    "site_id": wanted_id,
-                    "display_name": name,
-                    "package_type": package_type,
-                    "backup_created": backup is not None,
-                    "requires_credentials": reentry_count > 0,
-                    "credential_reentry_count": reentry_count,
-                }
+                return self._site_import_result(
+                    wanted_id,
+                    name,
+                    package_type,
+                    backup is not None,
+                    reentry_count,
+                )
             except SiteStorageError:
                 if replacement_journal is not None and replacement_journal.exists():
                     self.staging_lifecycle.promote_persisted_registry_commit(
@@ -2361,14 +2397,13 @@ class SitePackageService:
                         replacement_journal
                     )
                     if outcome == "COMMITTED":
-                        return {
-                            "site_id": wanted_id,
-                            "display_name": name,
-                            "package_type": package_type,
-                            "backup_created": backup is not None,
-                            "requires_credentials": reentry_count > 0,
-                            "credential_reentry_count": reentry_count,
-                        }
+                        return self._site_import_result(
+                            wanted_id,
+                            name,
+                            package_type,
+                            backup is not None,
+                            reentry_count,
+                        )
                 _remove_temporary_directory(staging)
                 raise
             except Exception as exc:
@@ -2381,19 +2416,50 @@ class SitePackageService:
                         replacement_journal
                     )
                     if outcome == "COMMITTED":
-                        return {
-                            "site_id": wanted_id,
-                            "display_name": name,
-                            "package_type": package_type,
-                            "backup_created": backup is not None,
-                            "requires_credentials": reentry_count > 0,
-                            "credential_reentry_count": reentry_count,
-                        }
+                        return self._site_import_result(
+                            wanted_id,
+                            name,
+                            package_type,
+                            backup is not None,
+                            reentry_count,
+                        )
                 raise SiteStorageError(
                     "SITE_IMPORT_FAILED", "局点导入失败，已保留原数据"
                 ) from exc
             finally:
                 _remove_temporary_directory(staging)
+
+    def _site_import_result(
+        self,
+        site_id: str,
+        display_name: str,
+        package_type: str,
+        backup_created: bool,
+        reentry_count: int,
+    ) -> dict[str, object]:
+        """在导入任务完成前确认 Registry 已刷新且目标可切换。"""
+
+        self.sites.registry.refresh()
+        record = self.sites.registry.get(site_id)
+        switchable = record.root_path.is_dir() and (
+            record.root_path / "db" / "devices.db"
+        ).is_file()
+        if not switchable:
+            raise SiteStorageError(
+                "SITE_IMPORT_RUNTIME_REFRESH_FAILED",
+                "局点已写入，但运行时 Registry 刷新后目标不可切换",
+            )
+        return {
+            "site_id": site_id,
+            "display_name": display_name,
+            "package_type": package_type,
+            "backup_created": backup_created,
+            "requires_credentials": reentry_count > 0,
+            "credential_reentry_count": reentry_count,
+            "site_registry_refreshed": True,
+            "site_switchable": True,
+            "registry_revision": self.sites.registry.revision(),
+        }
 
     @staticmethod
     def _read_manifest(package: Path) -> dict[str, object]:

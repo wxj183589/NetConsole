@@ -1489,6 +1489,7 @@ class AcRepository:
                 LEFT JOIN device_facts f ON f.device_uuid = d.device_uuid
                 LEFT JOIN device_interfaces i ON i.device_uuid = d.device_uuid
                 WHERE LOWER(TRIM(d.device_type)) IN ('sw', 'switch', '交换机')
+                  AND COALESCE(d.work_scope_status, 'included') = 'included'
                 ORDER BY d.device_uuid, i.interface_name
                 """
             ).fetchall()
@@ -1597,6 +1598,7 @@ class AcRepository:
                 JOIN device_groups g ON g.id = d.group_id
                 WHERE LOWER(TRIM(d.device_type)) IN ('sw', 'switch', '交换机')
                   AND TRIM(g.name) = '车站'
+                  AND COALESCE(d.work_scope_status, 'included') = 'included'
                 """
             ).fetchone()
             switch_identities = conn.execute(
@@ -1605,6 +1607,7 @@ class AcRepository:
                        COALESCE(MAX(d.updated_at), '') AS updated_at
                 FROM devices d
                 WHERE LOWER(TRIM(d.device_type)) IN ('sw', 'switch', '交换机')
+                  AND COALESCE(d.work_scope_status, 'included') = 'included'
                 """
             ).fetchone()
             switch_facts = conn.execute(
@@ -1614,6 +1617,7 @@ class AcRepository:
                 FROM device_facts f
                 JOIN devices d ON d.device_uuid = f.device_uuid
                 WHERE LOWER(TRIM(d.device_type)) IN ('sw', 'switch', '交换机')
+                  AND COALESCE(d.work_scope_status, 'included') = 'included'
                 """
             ).fetchone()
             switch_interfaces = conn.execute(
@@ -1623,6 +1627,7 @@ class AcRepository:
                 FROM device_interfaces i
                 JOIN devices d ON d.device_uuid = i.device_uuid
                 WHERE LOWER(TRIM(d.device_type)) IN ('sw', 'switch', '交换机')
+                  AND COALESCE(d.work_scope_status, 'included') = 'included'
                 """
             ).fetchone()
             lldp = conn.execute(
@@ -1633,6 +1638,7 @@ class AcRepository:
                 JOIN device_groups g ON g.id = d.group_id
                 WHERE LOWER(TRIM(d.device_type)) IN ('sw', 'switch', '交换机')
                   AND TRIM(g.name) = '车站'
+                  AND COALESCE(d.work_scope_status, 'included') = 'included'
                 """
             ).fetchone()
             identity_columns = {

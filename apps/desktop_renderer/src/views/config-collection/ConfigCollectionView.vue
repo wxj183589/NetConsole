@@ -65,7 +65,6 @@ const leftSnapshotChoice = ref<SnapshotChoice | null>(null)
 const rightSnapshotChoice = ref<SnapshotChoice | null>(null)
 const search = ref('')
 const groupFilter = ref('')
-const includeExcluded = ref(false)
 const snapshotType = ref('')
 const loading = ref(false)
 const snapshotLoading = ref(false)
@@ -173,7 +172,7 @@ async function loadDevices(): Promise<void> {
   loading.value = true
   error.value = ''
   try {
-    devicePage.value = await listConfigDevices({ search: search.value.trim(), group_filter: groupFilter.value, work_scope_status: includeExcluded.value ? 'all' : 'included', page: devicePage.value.page, page_size: devicePage.value.page_size })
+    devicePage.value = await listConfigDevices({ search: search.value.trim(), group_filter: groupFilter.value, work_scope_status: 'included', page: devicePage.value.page, page_size: devicePage.value.page_size })
     const currentId = selectedDevice.value?.id
     selectedDevice.value = devicePage.value.items.find((item) => item.id === currentId) || devicePage.value.items[0] || null
     selectedDevices.value = selectedDevices.value.filter((item) => devicePage.value.items.some((candidate) => candidate.id === item.id))
@@ -649,7 +648,6 @@ function formatBytes(value: number | null): string {
         <el-option label="未分组" value="__ungrouped__" />
         <el-option v-for="group in devicePage.groups" :key="group.id" :label="`${group.name} (${group.device_count})`" :value="String(group.id)" />
       </el-select>
-      <el-checkbox v-model="includeExcluded" @change="loadDevices">包含暂不参与当前调试的设备（手动调试）</el-checkbox>
       <div class="toolbar-actions">
         <el-button type="primary" :icon="Refresh" :loading="loading" @click="refreshAll">刷新</el-button>
         <el-button :icon="Search" :disabled="loading" @click="loadDevices">应用筛选</el-button>

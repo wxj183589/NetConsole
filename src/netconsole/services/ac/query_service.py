@@ -534,10 +534,21 @@ class AcManagementQueryService:
         optical_rows = repository.list_fit_ap_optical_for_macs(normalized)
         optical_by_ap = self._optical_index(optical_rows)
         with closing(self._connect(db_path)) as conn:
+            current_devices = self._safe_devices(conn, current_debug_only=True)
+            current_ac_ids = {
+                str(row["device_uuid"])
+                for row in current_devices
+                if is_ac_device_type(row["device_type"])
+            }
+            resources = [
+                row
+                for row in resources
+                if str(row.get("ac_device_uuid") or "") in current_ac_ids
+            ]
             context = self._switch_context_for_resources(conn, resources, optical_rows)
             ac_names = {
                 str(row["device_uuid"]): str(row["name"] or row["device_uuid"])
-                for row in self._safe_devices(conn)
+                for row in current_devices
             }
         context["fit_ap_details_by_uuid"] = {
             (
@@ -856,6 +867,14 @@ class AcManagementQueryService:
         if not db_path.is_file():
             return []
         repository = AcRepository(_ReadonlyDatabase(db_path))  # type: ignore[arg-type]
+        with closing(self._connect(db_path)) as conn:
+            current_ac_ids = {
+                str(row["device_uuid"])
+                for row in self._safe_devices(conn, current_debug_only=True)
+                if is_ac_device_type(row["device_type"])
+            }
+        if ac_id and str(ac_id) not in current_ac_ids:
+            return []
         resources = (
             repository.list_fit_ap_resources_with_metadata(ac_id)
             if ac_id
@@ -866,13 +885,24 @@ class AcManagementQueryService:
             if ac_id
             else repository.list_all_fit_ap_unauthenticated()
         )
+        resources = [
+            row for row in resources
+            if str(row.get("ac_device_uuid") or "") in current_ac_ids
+        ]
+        unauthenticated = [
+            row for row in unauthenticated
+            if str(row.get("ac_device_uuid") or "") in current_ac_ids
+        ]
         resources = self._append_unmatched_unauthenticated(resources, unauthenticated)
         resources = coalesce_fit_ap_resource_rows(resources)
         optical_rows = repository.list_fit_ap_optical(ac_id) if ac_id else repository.list_all_fit_ap_optical()
         optical_by_ap = self._optical_index(optical_rows)
         with closing(self._connect(db_path)) as conn:
             context = self._switch_context(conn)
-            ac_names = {str(row["device_uuid"]): str(row["name"] or row["device_uuid"]) for row in self._safe_devices(conn)}
+            ac_names = {
+                str(row["device_uuid"]): str(row["name"] or row["device_uuid"])
+                for row in self._safe_devices(conn, current_debug_only=True)
+            }
         context["fit_ap_details_by_uuid"] = (
             {
                 (
@@ -1346,7 +1376,7 @@ class AcManagementQueryService:
         )
 
     def _switch_context(self, conn: sqlite3.Connection) -> dict[str, Any]:
-        devices = self._safe_devices(conn)
+        devices = self._safe_devices(conn, current_debug_only=True)
         uuids_by_name: dict[str, set[str]] = {}
         ip_by_uuid: dict[str, str] = {}
         switch_uuids: set[str] = set()
@@ -1405,7 +1435,7 @@ class AcManagementQueryService:
         optical_rows: list[dict[str, object | None]],
     ) -> dict[str, Any]:
         """只为页内 AP 涉及的交换机读取端口和光模块上下文。"""
-        devices = self._safe_devices(conn)
+        devices = self._safe_devices(conn, current_debug_only=True)
         uuids_by_name: dict[str, set[str]] = {}
         ip_by_uuid: dict[str, str] = {}
         switch_uuids: set[str] = set()
@@ -1624,10 +1654,13 @@ class AcManagementQueryService:
             str(row["ac_device_uuid"]): dict(row)
             for row in conn.execute("SELECT * FROM ac_ap_summary")
         } if self._table_exists(conn, "ac_ap_summary") else {}
-        devices = {str(row["device_uuid"]): dict(row) for row in self._safe_devices(conn)}
+        devices = {
+            str(row["device_uuid"]): dict(row)
+            for row in self._safe_devices(conn, current_debug_only=True)
+        }
         ids = {
             uuid for uuid, row in devices.items() if is_ac_device_type(row.get("device_type"))
-        } | set(summaries)
+        } | (set(summaries) & set(devices))
         rows: list[dict[str, object]] = []
         for device_uuid in sorted(ids, key=lambda value: str(devices.get(value, {}).get("name") or value)):
             device = devices.get(device_uuid, {})
@@ -1646,9 +1679,15 @@ class AcManagementQueryService:
         return rows
 
     @staticmethod
-    def _safe_devices(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    def _safe_devices(
+        conn: sqlite3.Connection,
+        *,
+        current_debug_only: bool = False,
+    ) -> list[sqlite3.Row]:
+        where = "WHERE COALESCE(work_scope_status, 'included') = 'included'" if current_debug_only else ""
         return conn.execute(
-            "SELECT device_uuid, name, system_name, station, station_id, primary_address, https_port, device_type FROM devices ORDER BY name"
+            "SELECT device_uuid, name, system_name, station, station_id, primary_address, https_port, device_type, work_scope_status "
+            f"FROM devices {where} ORDER BY name"
         ).fetchall()
 
     @staticmethod

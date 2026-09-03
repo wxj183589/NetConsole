@@ -6,6 +6,7 @@ import { resolve } from 'node:path'
 import { DESKTOP_IPC, DESKTOP_SESSION_COOKIE, DESKTOP_SESSION_HEADER, type CloseToTrayState, type NativeActionResult, type RendererHostReport, type RendererRecoveryState, type RendererWorkloadReport, type SiteStorageRestartRequest, type TaskWindowContext, type WorkspaceWindowOpenRequest, type WorkspaceWindowSnapshot, type WorkspaceWindowStateResult } from '../shared/bridge'
 import { PythonBackendManager, type BackendRuntimeInfo } from './backend-manager'
 import { prepareWarmBackendHandoff } from './backend-handoff'
+import { waitForExpectedSiteContext } from './site-context-readiness'
 import { DesktopBootstrapStore } from './bootstrap'
 import { DESKTOP_SAFE_BACKGROUND_COLOR, isDevelopmentMenuEnabled, loadDesktopConfig, resolveDesktopBackgroundColor } from './config'
 import { registerDesktopIpc, type DesktopIpcRegistration } from './ipc'
@@ -85,6 +86,7 @@ let backendStatusUnsubscribe: (() => void) | undefined
 const retiringBackends = new Set<PythonBackendManager>()
 let allowQuit = false
 let shuttingDown = false
+let applicationRestartRequested = false
 let requestedExitCode = 0
 let shutdownStartedAt: bigint | undefined
 let shutdownPromise: Promise<void> | undefined
@@ -370,6 +372,7 @@ async function startDesktop(): Promise<void> {
     getCloseToTrayState,
     setCloseToTrayEnabled: updateCloseToTrayEnabled,
     restartBackend: restartManagedBackend,
+    restartApplication,
     refreshSiteContext: async () => { await refreshTraySiteContext() },
     setSiteSwitching: (switching) => trayController?.updateContext({ siteSwitching: switching }),
     appInfo: {
@@ -618,10 +621,10 @@ async function restartManagedBackend(update: SiteStorageRestartRequest): Promise
       current: currentBackend,
       candidate,
       verify: async (runtime) => {
-        candidateContext = await readBackendSiteContext(runtime.baseUrl, runtime.apiToken)
-        if (!candidateContext || candidateContext.activeSiteId !== nextSite) {
-          throw new Error('Backend ready 后返回的当前局点与目标局点不一致')
-        }
+        candidateContext = await waitForExpectedSiteContext({
+          read: () => readBackendSiteContext(runtime.baseUrl, runtime.apiToken),
+          expectedSiteId: nextSite,
+        })
       },
       commit: async (active, runtime) => {
         await applyManagedBackendRuntime(runtime, nextRoot, nextSite)
@@ -669,6 +672,21 @@ async function restartManagedBackend(update: SiteStorageRestartRequest): Promise
   }
 }
 
+async function restartApplication(): Promise<void> {
+  if (shuttingDown || applicationRestartRequested) {
+    throw new Error('NetConsole 正在重启或退出')
+  }
+  try {
+    app.relaunch()
+  } catch (cause) {
+    logger('ELECTRON_APPLICATION_RELAUNCH_FAILED', `type=${cause instanceof Error ? cause.name : 'unknown'}`)
+    throw cause
+  }
+  applicationRestartRequested = true
+  logger('ELECTRON_APPLICATION_RELAUNCH_SCHEDULED', `active_site_id=${desktopActiveSiteId}`)
+  requestExit(0)
+}
+
 async function restartManagedBackendForDataRoot(
   currentBackend: PythonBackendManager,
   previousRoot: string,
@@ -682,10 +700,11 @@ async function restartManagedBackendForDataRoot(
     currentBackend.configureStorage(nextRoot, nextSite)
     const runtime = await currentBackend.start()
     await applyManagedBackendRuntime(runtime, nextRoot, nextSite)
-    const verified = await refreshTraySiteContext(runtime, '')
-    if (!verified || verified.activeSiteId !== nextSite) {
-      throw new Error('Backend ready 后返回的当前局点与目标局点不一致')
-    }
+    const verified = await waitForExpectedSiteContext({
+      read: () => readBackendSiteContext(runtime.baseUrl, runtime.apiToken),
+      expectedSiteId: nextSite,
+    })
+    applyDesktopSiteContext(verified)
     logger('DATA_ROOT_BACKEND_RESTARTED')
     setImmediate(() => { void reloadManagedRenderersAfterBackendRestart() })
   } catch (cause) {

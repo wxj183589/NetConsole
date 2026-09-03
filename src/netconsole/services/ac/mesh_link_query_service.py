@@ -851,7 +851,11 @@ class AcMeshLinkQueryService:
             if not self._table_exists(conn, "devices"):
                 return []
             rows = conn.execute(
-                "SELECT id, device_uuid, name, system_name, mac_address, primary_address, device_type FROM devices"
+                """
+                SELECT id, device_uuid, name, system_name, mac_address, primary_address, device_type
+                FROM devices
+                WHERE COALESCE(work_scope_status, 'included') = 'included'
+                """
             ).fetchall()
         return [dict(row) for row in rows]
 

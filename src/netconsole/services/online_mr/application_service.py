@@ -32,6 +32,7 @@ from netconsole.services.job_center.task_application_service import TaskApplicat
 from netconsole.services.online_mr.collection_models import collection_config_to_payload
 from netconsole.services.online_mr.errors import OnlineMrApplicationError, OnlineMrApplicationErrorCode
 from netconsole.services.online_mr_session_store import OnlineMrSessionStore
+from netconsole.services.device_scope import is_current_debug_device
 
 if TYPE_CHECKING:
     from netconsole.services.agent.controller import AgentControllerService
@@ -107,6 +108,12 @@ class OnlineMrApplicationService:
             if callable(subscribe)
             else lambda: None
         )
+
+    def rebind_site(self, site_name: str) -> None:
+        """切换当前局点并丢弃旧局点的惰性 Repository 缓存。"""
+
+        self.site_name = str(site_name or "demo")
+        self._repositories.clear()
 
     def prepare_start(self, request: OnlineMrStartRequest) -> OnlineMrStartRequest:
         site_id = self._safe_component(request.site_id)
@@ -796,7 +803,8 @@ class OnlineMrApplicationService:
         if not db_path.is_file():
             return False
         try:
-            return DeviceRepository(Database(db_path)).get(int(device_id)) is not None
+            device = DeviceRepository(Database(db_path)).get(int(device_id))
+            return is_current_debug_device(device)
         except (KeyError, TypeError, ValueError):
             return False
 
@@ -806,6 +814,8 @@ class OnlineMrApplicationService:
                 int(request.device_id)
             )
         except (KeyError, OSError, sqlite3.Error, TypeError, ValueError):
+            return False
+        if not is_current_debug_device(device):
             return False
         hosts = {str(device.primary_address or "").strip(), str(device.backup_address or "").strip()}
         return (

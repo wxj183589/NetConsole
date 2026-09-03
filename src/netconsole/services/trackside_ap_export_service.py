@@ -78,6 +78,7 @@ from netconsole.services.rail_transit.trackside_ap_business_snapshot import (
     read_trackside_ap_source_revisions,
     write_export_snapshot,
 )
+from netconsole.services.device_scope import filter_current_debug_devices
 
 ProgressCallback = Callable[[str, int, int, str], None]
 CancelCheck = Callable[[], bool]
@@ -413,7 +414,7 @@ def _load_trackside_ap_business_snapshot_once(
         source_statuses["lldp"] = "failed"
         source_failure("lldp", "车站交换机 LLDP", "SWITCH_LLDP_UNAVAILABLE", exc)
     try:
-        all_devices = repository.list()
+        all_devices = filter_current_debug_devices(repository.list())
         devices = filter_station_switch_devices(
             all_devices,
             repository.database,

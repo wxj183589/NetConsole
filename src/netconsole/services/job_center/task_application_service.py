@@ -71,6 +71,11 @@ class TaskApplicationService:
         if self._reconcile_on_start:
             self.reconcile_orphaned_local_tasks()
 
+    def rebind_site(self, site_name: str) -> None:
+        """切换当前局点默认作用域；已完成任务仍按其记录的局点读取。"""
+
+        self.site_name = str(site_name or "demo")
+
     @property
     def events(self) -> TaskEventHub:
         return self.runtime.events

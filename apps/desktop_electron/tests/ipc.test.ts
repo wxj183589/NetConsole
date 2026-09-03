@@ -44,6 +44,7 @@ function createHarness(overrides: {
   saveWorkspaceWindowState?: (window: unknown, value: WorkspaceWindowSnapshot) => void
   setWorkspaceWindowTitle?: (window: unknown, title: string) => void
   restartBackend?: (value: { activeSiteId?: string; dataRoot?: string }) => Promise<void>
+  restartApplication?: () => Promise<void>
   refreshSiteContext?: () => Promise<void>
   setSiteSwitching?: (switching: boolean) => void
   windowForEvent?: (event: { sender: unknown }) => unknown
@@ -99,6 +100,7 @@ function createHarness(overrides: {
     saveWorkspaceWindowState: overrides.saveWorkspaceWindowState,
     setWorkspaceWindowTitle: overrides.setWorkspaceWindowTitle,
     restartBackend: overrides.restartBackend,
+    restartApplication: overrides.restartApplication,
     refreshSiteContext: overrides.refreshSiteContext,
     setSiteSwitching: overrides.setSiteSwitching,
     fetchImpl: overrides.fetchImpl,
@@ -293,6 +295,14 @@ describe('desktop IPC', () => {
     await expect(sensitive.ipcMain.handlers.get(DESKTOP_IPC.restartBackend)!({ sender: sensitive.sender }, {
       activeSiteId: 'line-12',
     })).resolves.toEqual({ success: false, error: '本地 Backend 重启失败，请检查日志后重试。' })
+  })
+
+  it('routes application restart through one trusted IPC action', async () => {
+    const restartApplication = vi.fn(async () => undefined)
+    const { ipcMain, sender } = createHarness({ restartApplication })
+
+    await expect(ipcMain.handlers.get(DESKTOP_IPC.restartApplication)!({ sender })).resolves.toEqual({ success: true })
+    expect(restartApplication).toHaveBeenCalledOnce()
   })
 
   it('refreshes tray site facts only for a trusted renderer and accepts boolean switch state', async () => {

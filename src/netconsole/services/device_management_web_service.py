@@ -255,6 +255,7 @@ class DeviceInventoryOperationService(Protocol):
         operation_id: str,
         *,
         idempotency_key: str | None = None,
+        allow_excluded: bool = False,
     ) -> DeviceOperationTask: ...
 
 
@@ -288,6 +289,15 @@ class DeviceManagementWebService:
         self._batch_refreshes: dict[str, dict[str, object]] = {}
         self._reconciled_import_sites: set[str] = set()
         self._reconciled_vehicle_mr_sites: set[str] = set()
+
+    def rebind_site(self, site_name: str) -> None:
+        """切换设备管理默认局点并使目标局点的惰性迁移检查重新生效。"""
+
+        selected = SiteManager(self.paths).validate_site_name(str(site_name or "demo"))
+        with self._mutation_lock:
+            self.site_name = selected
+            self._reconciled_import_sites.discard(selected)
+            self._reconciled_vehicle_mr_sites.discard(selected)
 
     def current_site_id(self) -> str:
         site = self.site_name or SiteManager(self.paths).get_current_site()
@@ -947,6 +957,7 @@ class DeviceManagementWebService:
                     device_uuid,
                     operation_id,
                     idempotency_key=f"{batch_id}:{index}",
+                    allow_excluded=True,
                 )
                 base.update(
                     {

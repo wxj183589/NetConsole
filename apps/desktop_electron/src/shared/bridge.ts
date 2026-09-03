@@ -436,6 +436,7 @@ export interface NetConsoleDesktopBridge {
   selectSitePackage(): Promise<SettingsPathResult>
   selectSiteExportDestination(suggestedName: string): Promise<SettingsPathResult>
   restartBackend(request: SiteStorageRestartRequest): Promise<NativeActionResult>
+  restartApplication(): Promise<NativeActionResult>
   chooseSavePath(options: ChooseSavePathOptions): Promise<ChooseSavePathResult>
   downloadBackendResource(request: BackendDownloadRequest): Promise<BackendDownloadResult>
   executeFileDesktopAction(actionRef: string): Promise<NativeActionResult>
@@ -501,6 +502,7 @@ export const DESKTOP_IPC = Object.freeze({
   selectSitePackage: 'netconsole:desktop:select-site-package',
   selectSiteExportDestination: 'netconsole:desktop:select-site-export-destination',
   restartBackend: 'netconsole:desktop:restart-backend',
+  restartApplication: 'netconsole:desktop:restart-application',
   chooseSavePath: 'netconsole:desktop:choose-save-path',
   downloadBackendResource: 'netconsole:desktop:download-backend-resource',
   executeFileDesktopAction: 'netconsole:desktop:execute-file-action',
@@ -560,6 +562,7 @@ export const DESKTOP_HANDLED_CHANNELS = Object.freeze([
   DESKTOP_IPC.selectSitePackage,
   DESKTOP_IPC.selectSiteExportDestination,
   DESKTOP_IPC.restartBackend,
+  DESKTOP_IPC.restartApplication,
   DESKTOP_IPC.chooseSavePath,
   DESKTOP_IPC.downloadBackendResource,
   DESKTOP_IPC.executeFileDesktopAction,

@@ -51,7 +51,7 @@ export interface SiteSwitchCoordinator {
   confirm(target: SiteSwitchTarget): Promise<boolean>
   preflight(targetSiteId: string): Promise<void>
   prepareWorkspace(targetSiteId: string, settingsRouteFullPath: string): Promise<unknown>
-  activate(targetSiteId: string): Promise<void>
+  activate(targetSiteId: string): Promise<unknown>
   restart(targetSiteId: string): Promise<void>
   restoreWorkspace(checkpoint: unknown): Promise<void>
   onSwitchingChanged?(switching: boolean): void
@@ -99,10 +99,20 @@ export async function coordinateSiteSwitch(
     stageStartedAt = siteSwitchStage('metadata_workspace', stageStartedAt, target.siteId)
     await coordinator.preflight(target.siteId)
     stageStartedAt = siteSwitchStage('preflight', stageStartedAt, target.siteId)
-    await coordinator.activate(target.siteId)
+    const activation = await coordinator.activate(target.siteId)
     stageStartedAt = siteSwitchStage('activate', stageStartedAt, target.siteId)
-    await coordinator.restart(target.siteId)
-    siteSwitchStage('backend_handoff', stageStartedAt, target.siteId)
+    const restartRequired = !(
+      activation
+      && typeof activation === 'object'
+      && (activation as Record<string, unknown>).restart_required === false
+    )
+    if (restartRequired) {
+      await coordinator.restart(target.siteId)
+      siteSwitchStage('backend_handoff', stageStartedAt, target.siteId)
+    } else {
+      siteSwitchStage('runtime_rebind', stageStartedAt, target.siteId)
+    }
+    notifySiteContextChanged()
     return 'completed'
   } catch (cause) {
     if (metadataPublished) notifySiteSwitchMetadata(target, 'rollback')

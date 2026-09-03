@@ -32,6 +32,7 @@ const adapter = {
   selectSitePackage: vi.fn(async () => ({ cancelled: true })),
   selectSiteExportDestination: vi.fn(async () => ({ cancelled: true })),
   restartBackend: vi.fn(async (): Promise<{ success: boolean; error?: string }> => ({ success: true })),
+  restartApplication: vi.fn(async (): Promise<{ success: boolean; error?: string }> => ({ success: true })),
   openTaskWindow: vi.fn(async () => ({ success: true })),
   executeSettingsAction: vi.fn(async () => ({ success: true })),
   refreshSiteContext: vi.fn(async () => undefined),
@@ -177,6 +178,17 @@ describe('SiteStoragePanel', () => {
     expect(wrapper.find('[data-testid="migrate-data-root"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('线路未填写')
     expect(wrapper.text()).toContain('项目类型未填写')
+  })
+
+  it('exposes a confirmed software restart action for desktop runtime recovery', async () => {
+    vi.spyOn(ElMessageBox, 'confirm').mockResolvedValueOnce('confirm' as never)
+    const wrapper = mount(SiteStoragePanel)
+    await flushPromises()
+
+    await wrapper.get('[data-testid="restart-application"]').trigger('click')
+    await flushPromises()
+
+    expect(adapter.restartApplication).toHaveBeenCalledOnce()
   })
 
   it('shows real site information and treats blank legacy fields as missing', async () => {

@@ -778,6 +778,7 @@ def _build_fit_ap_optical_rows(payload: Mapping[str, Any]) -> list[dict[str, obj
     from netconsole.repositories.device_fact_repository import DeviceFactRepository
     from netconsole.repositories.device_repository import DeviceRepository
     from netconsole.services.fit_ap_optical_export import evaluate_fit_ap_ap_status
+    from netconsole.services.device_scope import filter_current_debug_devices
     from netconsole.services.offline_ap_ledger import OFFLINE_AP_STATUS_TEXT, is_fit_ap_offline
     from netconsole.services.ap_identity.normalizers import normalize_mac
     from netconsole.utils.interface_sort import interface_sort_key
@@ -789,7 +790,7 @@ def _build_fit_ap_optical_rows(payload: Mapping[str, Any]) -> list[dict[str, obj
     fact_repository = DeviceFactRepository(database)
     resources = ac_repository.list_fit_ap_resources_with_metadata(ac_uuid)
     optical_rows = ac_repository.list_fit_ap_optical(ac_uuid)
-    devices = device_repository.list()
+    devices = filter_current_debug_devices(device_repository.list())
     optical_by_device = {str(device.device_uuid or ""): fact_repository.list_optical_modules(str(device.device_uuid or "")) for device in devices}
     switch_lookup = build_switch_data_lookup(devices, optical_by_device)
     resources_by_uuid = {str(row.get("ap_uuid") or ""): row for row in resources if row.get("ap_uuid")}
@@ -856,6 +857,7 @@ def _build_ap_online_overview_payload(payload: Mapping[str, Any]) -> dict[str, A
     from netconsole.repositories.device_repository import DeviceRepository
     from netconsole.services.ap_online_overview import ApOnlineOverviewService
     from netconsole.services.offline_ap_ledger import build_current_ap_history_indexes, build_device_lookup_by_name, build_offline_ap_ledger
+    from netconsole.services.device_scope import filter_current_debug_devices
 
     ac_uuid = str(payload.get("ac_uuid") or "").strip()
     database = Database(Path(str(payload.get("db_path") or "")))
@@ -877,7 +879,9 @@ def _build_ap_online_overview_payload(payload: Mapping[str, Any]) -> dict[str, A
     stats, ledger = build_offline_ap_ledger(
         fit_ap_resources=resources,
         latest_lldp_by_ap=latest_lldp,
-        device_lookup_by_name=build_device_lookup_by_name(DeviceRepository(database).list()),
+        device_lookup_by_name=build_device_lookup_by_name(
+            filter_current_debug_devices(DeviceRepository(database).list())
+        ),
     )
     return {"overview_rows": overview_rows, "offline_ap_stats": stats, "offline_ap_ledger_rows": ledger}
 
@@ -889,6 +893,7 @@ def export_omnipeek_name_table_task(path: Path, payload: Mapping[str, Any], prog
     from netconsole.repositories.device_group_repository import DeviceGroupRepository
     from netconsole.repositories.device_repository import DeviceRepository
     from netconsole.services.omnipeek_name_table_service import OmniPeekNameTableService, export_items_to_omnipeek_nam
+    from netconsole.services.device_scope import filter_current_debug_devices
 
     source = dict(payload.get("source") or {})
     database = Database(Path(str(payload.get("db_path") or "")))
@@ -896,7 +901,7 @@ def export_omnipeek_name_table_task(path: Path, payload: Mapping[str, Any], prog
     device_repository = DeviceRepository(database)
     filters = dict(source.get("device_filters") or {})
     allowed_filters = {key: filters.get(key) for key in ("search", "vendor", "device_type", "group_filter") if filters.get(key) is not None}
-    devices = device_repository.list(**allowed_filters)
+    devices = filter_current_debug_devices(device_repository.list(**allowed_filters))
     selected_device_uuids = {str(value) for value in source.get("selected_device_uuids") or [] if str(value)}
     if selected_device_uuids:
         devices = [device for device in devices if str(device.device_uuid or "") in selected_device_uuids]

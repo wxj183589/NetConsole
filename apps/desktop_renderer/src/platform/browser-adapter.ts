@@ -31,6 +31,7 @@ export function createBrowserAdapter(apiBaseUrl = '', developmentToken = ''): Pl
     selectSitePackage: async () => ({ cancelled: true }),
     selectSiteExportDestination: async () => ({ cancelled: true }),
     restartBackend: async () => ({ success: false, error: DESKTOP_ONLY_MESSAGE }),
+    restartApplication: async () => ({ success: false, error: DESKTOP_ONLY_MESSAGE }),
     refreshSiteContext: async () => undefined,
     chooseSavePath: async () => ({ cancelled: true }),
     downloadBackendResource: async (value) => startBrowserDownload(value, baseUrl),

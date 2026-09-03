@@ -33,6 +33,7 @@ from netconsole.models.task_state import TERMINAL_TASK_STATES, TaskState
 from netconsole.repositories.config_snapshot_repository import ConfigSnapshot, ConfigSnapshotRepository
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
+from netconsole.services.device_scope import require_current_debug_device
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.config_collection_job_handlers import (
     CONFIG_WEB_EXPORT_DIFF_TASK,
@@ -144,11 +145,15 @@ class ConfigCollectionApplicationService:
         database = self._database(site_name)
         if not database.path.is_file():
             return ConfigDevicePageDTO(page=page, page_size=page_size)
+        # Configuration collection is an operational module.  The device
+        # management page is the only place that may browse excluded assets;
+        # accepting ``all`` here would make the selector and execution scope
+        # disagree.
         devices = DeviceRepository(database).list(
             search=str(search or "").strip() or None,
             vendor="H3C",
             group_filter=self._group_filter(group_filter),
-            work_scope_status=work_scope_status,
+            work_scope_status="included",
         )
         current_page = max(1, int(page))
         size = max(1, min(int(page_size), 200))
@@ -222,7 +227,10 @@ class ConfigCollectionApplicationService:
             raise ValueError("一次最多选择 50 台设备")
         database = self._database(site_name)
         repository = DeviceRepository(database)
-        devices = [self._h3c_device(repository, int(device_id)) for device_id in dict.fromkeys(device_ids)]
+        devices = [
+            self._h3c_device(repository, int(device_id), current_debug_only=True)
+            for device_id in dict.fromkeys(device_ids)
+        ]
         return [self._start_device_job(site_name, task_type, device) for device in devices]
 
     def submit_snapshot_content(self, site_name: str, snapshot_id: int) -> ConfigTaskReferenceDTO:
@@ -236,7 +244,7 @@ class ConfigCollectionApplicationService:
 
     def submit_latest_diff(self, site_name: str, device_id: int) -> ConfigTaskReferenceDTO:
         database = self._database(site_name)
-        device = self._h3c_device(DeviceRepository(database), device_id)
+        device = self._h3c_device(DeviceRepository(database), device_id, current_debug_only=True)
         return self._start_job(
             site_name,
             "config_compare_latest_snapshots",
@@ -257,8 +265,8 @@ class ConfigCollectionApplicationService:
     def submit_device_diff(self, site_name: str, left_device_id: int, right_device_id: int) -> ConfigTaskReferenceDTO:
         database = self._database(site_name)
         repository = DeviceRepository(database)
-        left = self._h3c_device(repository, left_device_id)
-        right = self._h3c_device(repository, right_device_id)
+        left = self._h3c_device(repository, left_device_id, current_debug_only=True)
+        right = self._h3c_device(repository, right_device_id, current_debug_only=True)
         return self._start_job(
             site_name,
             "config_compare_latest_running_between_devices",
@@ -293,7 +301,10 @@ class ConfigCollectionApplicationService:
         if not ids or len(ids) > 50:
             raise ValueError("一次最多保存 50 台设备配置")
         repository = DeviceRepository(self._database(site_name))
-        devices = [self._h3c_device(repository, device_id) for device_id in ids]
+        devices = [
+            self._h3c_device(repository, device_id, current_debug_only=True)
+            for device_id in ids
+        ]
         summary = f"保存 {len(devices)} 台设备配置：{', '.join(str(device.name or device.device_uuid) for device in devices)}"
         return self._issue_confirmation(
             "save_force",
@@ -311,7 +322,10 @@ class ConfigCollectionApplicationService:
     ) -> ConfigTaskReferenceDTO:
         record = self._consume_confirmation("save_force", site_name, confirmation_token, digest)
         repository = DeviceRepository(self._database(site_name))
-        devices = [self._h3c_device(repository, device_id) for device_id in record.object_ids]
+        devices = [
+            self._h3c_device(repository, device_id, current_debug_only=True)
+            for device_id in record.object_ids
+        ]
         return self._start_job(
             site_name,
             CONFIG_WEB_SAVE_TASK,
@@ -818,14 +832,19 @@ class ConfigCollectionApplicationService:
         return Database(self.paths.site_db_path(site))
 
     @staticmethod
-    def _h3c_device(repository: DeviceRepository, device_id: int) -> Device:
+    def _h3c_device(
+        repository: DeviceRepository,
+        device_id: int,
+        *,
+        current_debug_only: bool = False,
+    ) -> Device:
         try:
             device = repository.get(int(device_id))
         except KeyError as exc:
             raise FileNotFoundError("设备不存在") from exc
         if device.vendor_key != "h3c":
             raise ValueError("配置中心仅支持 H3C 设备")
-        return device
+        return require_current_debug_device(device) if current_debug_only else device
 
     @staticmethod
     def _group_filter(value: str) -> int | str | None:

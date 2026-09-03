@@ -80,6 +80,48 @@ class AcResourceRefreshResult:
     serial_identity_conflicts: int = 0
     duplicate_ap_entity_created: int = 0
     fit_ap_snapshot_status: str = FIT_AP_SNAPSHOT_STATUS_NOT_COLLECTED
+    persisted_components: list[str] = field(default_factory=list)
+    failed_components: list[str] = field(default_factory=list)
+    skipped_components: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        """兼容旧 collector 返回值，同时给 Task Center 一个稳定的组件账本。"""
+
+        persisted = list(self.persisted_components)
+        failed = list(self.failed_components)
+        if not persisted:
+            if self.target_ap_uuid:
+                if self.detail_rows_updated > 0 or self.fit_ap_resources_updated > 0:
+                    persisted.append("AP_DETAIL")
+            elif self.summary_updated or self.https_port_persisted:
+                persisted.append("AC_BASIC")
+            elif (
+                self.fit_ap_resources_updated > 0
+                or self.bbssid_rows_parsed > 0
+                or self.lldp_rows_parsed > 0
+                or self.fit_ap_snapshot_status != FIT_AP_SNAPSHOT_STATUS_NOT_COLLECTED
+            ):
+                persisted.append("FIT_AP")
+        if not failed and not self.success:
+            if self.target_ap_uuid:
+                failed.append("AP_DETAIL")
+            elif self.summary_updated or self.https_port is not None or self.https_port_persisted:
+                failed.append("AC_BASIC")
+            elif persisted or self.fit_ap_snapshot_status != FIT_AP_SNAPSHOT_STATUS_NOT_COLLECTED:
+                failed.append("FIT_AP")
+        object.__setattr__(self, "persisted_components", persisted)
+        object.__setattr__(self, "failed_components", failed)
+        object.__setattr__(self, "skipped_components", list(self.skipped_components))
+
+    @property
+    def partial_success(self) -> bool:
+        return bool(self.persisted_components and self.failed_components)
+
+    @property
+    def business_outcome(self) -> str:
+        if self.partial_success:
+            return "PARTIAL_SUCCESS"
+        return "SUCCESS" if self.success else "FAILED"
 
     def to_payload(self) -> dict[str, object]:
         return {
@@ -109,6 +151,11 @@ class AcResourceRefreshResult:
                 "serial_identity_conflicts": self.serial_identity_conflicts,
                 "duplicate_ap_entity_created": self.duplicate_ap_entity_created,
                 "fit_ap_snapshot_status": self.fit_ap_snapshot_status,
+                "persisted_components": list(self.persisted_components),
+                "failed_components": list(self.failed_components),
+                "skipped_components": list(self.skipped_components),
+                "partial_success": self.partial_success,
+                "business_outcome": self.business_outcome,
                 "error_message": self.error_message,
             },
         }
@@ -145,6 +192,11 @@ class AcResourceRefreshResult:
             "serial_identity_conflicts": int(self.serial_identity_conflicts),
             "duplicate_ap_entity_created": int(self.duplicate_ap_entity_created),
             "fit_ap_snapshot_status": str(self.fit_ap_snapshot_status),
+            "persisted_components": list(self.persisted_components),
+            "failed_components": list(self.failed_components),
+            "skipped_components": list(self.skipped_components),
+            "partial_success": self.partial_success,
+            "business_outcome": self.business_outcome,
             "error_message": str(self.error_message),
         }
         return {
@@ -164,8 +216,13 @@ class AcResourceRefreshResult:
             "summary_updated": bool(self.summary_updated),
             "snapshot_revision": str(snapshot_revision),
             "fit_ap_snapshot_status": str(self.fit_ap_snapshot_status),
-            "data_persisted": bool(self.success),
-            "reload_required": bool(self.success),
+            "persisted_components": list(self.persisted_components),
+            "failed_components": list(self.failed_components),
+            "skipped_components": list(self.skipped_components),
+            "partial_success": self.partial_success,
+            "business_outcome": self.business_outcome,
+            "data_persisted": bool(self.persisted_components),
+            "reload_required": bool(self.persisted_components),
             "collection": collection,
         }
 

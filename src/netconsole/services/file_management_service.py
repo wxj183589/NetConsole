@@ -45,6 +45,7 @@ from netconsole.models.task_snapshot import TaskEvent, TaskSnapshot, utc_now_iso
 from netconsole.models.task_state import TaskState
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
+from netconsole.services.device_scope import require_current_debug_device
 from netconsole.repositories.mesh_mr_repository import MeshSchemaRebuildRequired
 from netconsole.repositories.mesh_catalog_repository import MeshCatalogRepository
 from netconsole.services.background_job import BackgroundJob
@@ -323,6 +324,25 @@ class FileManagementApplicationService:
         if self._owns_process_adapter and self.process_adapter is not None:
             self.process_adapter.shutdown()
 
+    def rebind_site(self, site_name: str) -> None:
+        """释放旧局点远程会话并切换下载队列的默认作用域。"""
+
+        with self._sessions_lock:
+            sessions = tuple(self._sessions.values())
+            self._sessions.clear()
+        with self._pending_host_keys_lock:
+            self._pending_host_keys.clear()
+        with self._pending_sftp_setups_lock:
+            self._pending_sftp_setups.clear()
+        for session in sessions:
+            try:
+                session.transfer.disconnect()
+            except Exception:
+                pass
+        self.site_name = str(site_name or "demo")
+        with self._queue_lock:
+            self._queue_sites = {self.site_name}
+
     def current_site_id(self) -> str:
         try:
             return SiteManager(self.paths).get_current_site()
@@ -456,7 +476,7 @@ class FileManagementApplicationService:
         if not database_path.is_file():
             return []
         database = Database(database_path)
-        devices = DeviceRepository(database).list()
+        devices = DeviceRepository(database).list(work_scope_status="included")
         groups = {
             int(group.id): group.name
             for group in DeviceGroupRepository(database, site).list()
@@ -1844,7 +1864,7 @@ class FileManagementApplicationService:
             device = self._device_resolver(site, value)
             if device is None:
                 raise FileReferenceNotFound("设备不存在")
-            return device
+            return require_current_debug_device(device)
         if not self.paths.site_db_path(site).is_file():
             raise FileReferenceNotFound("设备不存在")
         repository = DeviceRepository(Database(self.paths.site_db_path(site)))
@@ -1856,7 +1876,7 @@ class FileManagementApplicationService:
                 device = None
         if device is None:
             raise FileReferenceNotFound("设备不存在")
-        return device
+        return require_current_debug_device(device)
 
     def _session(self, site_id: str, connection_id: str) -> _RemoteSession:
         site = self._site_id(site_id)

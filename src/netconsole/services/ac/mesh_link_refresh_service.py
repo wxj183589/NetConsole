@@ -24,6 +24,7 @@ from netconsole.services.background_job import BackgroundJob
 from netconsole.services.job_center.job_context import BackgroundTaskCancelled, JobContext
 from netconsole.services.job_center.local_process_adapter import LocalProcessAdapter, LocalProcessCompletion
 from netconsole.services.job_center.task_application_service import TaskApplicationService
+from netconsole.services.device_scope import filter_current_debug_devices
 from netconsole.services.netmiko_connection import connection_targets
 from netconsole.services.online_mr_collector import NetmikoShellConnection
 from netconsole.services.vehicle_mr_online import (
@@ -544,7 +545,8 @@ class AcMeshLinkSnapshotCollector(AcMeshLinkRefreshWorkerService):
 
             mappings = store.list_mappings()
             registered = build_registered_trains(
-                repository.list(), load_group_names(repository, site)
+                filter_current_debug_devices(repository.list()),
+                load_group_names(repository, site),
             )
             registered.update(load_vehicle_mr_mapping_trains(repository))
             registered.update(build_mapping_trains(mappings))
@@ -670,7 +672,10 @@ def load_mesh_link_controller(
                 SELECT id, device_uuid, name, system_name, device_vendor, device_type,
                        primary_address, backup_address, protocol, port,
                        ssh_enabled, ssh_port, telnet_enabled, telnet_port
-                FROM devices WHERE device_uuid = ? LIMIT 1
+                FROM devices
+                WHERE device_uuid = ?
+                  AND COALESCE(work_scope_status, 'included') = 'included'
+                LIMIT 1
                 """,
                 (str(controller_id or ""),),
             ).fetchone()
@@ -688,7 +693,11 @@ def load_mesh_link_controller(
         return controller
     repository = DeviceRepository(Database(db_path))
     controller = next(
-        (item for item in repository.list() if str(item.device_uuid or "") == str(controller_id or "")),
+        (
+            item
+            for item in filter_current_debug_devices(repository.list())
+            if str(item.device_uuid or "") == str(controller_id or "")
+        ),
         None,
     )
     if controller is None or not is_ac_device(controller):

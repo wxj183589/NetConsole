@@ -31,6 +31,7 @@ from netconsole.services.device_command_profile_service import (
     resolve_device_operation_profile,
 )
 from netconsole.services.device_collection_support import resolve_device_collection_support
+from netconsole.services.device_scope import require_current_debug_device
 from netconsole.services.job_center.job_context import JobContext
 from netconsole.services.job_center.local_process_adapter import LocalProcessAdapter
 from netconsole.services.job_center.task_application_service import TaskApplicationService
@@ -143,10 +144,13 @@ class DeviceOperationService:
         operation_id: str,
         *,
         idempotency_key: str | None = None,
+        allow_excluded: bool = False,
     ) -> DeviceOperationTask:
         device = self.gateway.get_device(device_uuid)
         if device is None:
             raise KeyError(device_uuid)
+        if not allow_excluded:
+            require_current_debug_device(device)
         facts = self._platform_facts(device, self.gateway.get_fact(device_uuid))
         if operation_id == DEVICE_SFTP_ENABLE_OPERATION_ID and not facts.software_major:
             raise DeviceSftpEnableProfileUnresolved(
@@ -169,8 +173,16 @@ class DeviceOperationService:
                 profile_version=None,
                 reason_code=support.reason_code,
             )
-        plan = self._plan(device_uuid, operation_id)
-        return self._start_planned(plan, idempotency_key=idempotency_key)
+        plan = self._plan(
+            device_uuid,
+            operation_id,
+            allow_excluded=allow_excluded,
+        )
+        return self._start_planned(
+            plan,
+            idempotency_key=idempotency_key,
+            allow_excluded=allow_excluded,
+        )
 
     def start_many(
         self,
@@ -183,17 +195,24 @@ class DeviceOperationService:
         plans = [self._plan(device_uuid, operation_id) for device_uuid in values]
         return [
             self._start_planned(
-                plan, idempotency_key=f"{idempotency_key}:{index}"
+                plan,
+                idempotency_key=f"{idempotency_key}:{index}",
             )
             for index, plan in enumerate(plans, start=1)
         ]
 
     def _plan(
-        self, device_uuid: str, operation_id: str
+        self,
+        device_uuid: str,
+        operation_id: str,
+        *,
+        allow_excluded: bool = False,
     ) -> tuple[Device, DevicePlatformFacts, DeviceCommandProfile]:
         device = self.gateway.get_device(device_uuid)
         if device is None:
             raise KeyError(device_uuid)
+        if not allow_excluded:
+            require_current_debug_device(device)
         fact = self.gateway.get_fact(device_uuid)
         platform_facts = self._platform_facts(device, fact)
         if operation_id == DEVICE_SFTP_ENABLE_OPERATION_ID and not platform_facts.software_major:
@@ -213,6 +232,7 @@ class DeviceOperationService:
         plan: tuple[Device, DevicePlatformFacts, DeviceCommandProfile],
         *,
         idempotency_key: str | None,
+        allow_excluded: bool = False,
     ) -> DeviceOperationTask:
         device, platform_facts, profile = plan
         operation_id = str(profile.operation_id)
@@ -270,6 +290,7 @@ class DeviceOperationService:
                     "platform_confidence": platform_facts.confidence,
                     "platform_collected_at": platform_facts.collected_at,
                     "idempotency_key": str(idempotency_key or "") or None,
+                    "allow_excluded": bool(allow_excluded),
                     "task_name": f"{task_label} · {device.name}",
                     "owner": task_owner,
                     "task_source": "local",
@@ -387,6 +408,8 @@ def run_device_inventory_refresh(context: JobContext) -> dict[str, object]:
     devices = DeviceRepository(database)
     facts = DeviceFactRepository(database)
     selected = [_require_device(devices, value) for value in values]
+    if not bool(context.params.get("allow_excluded")):
+        selected = [require_current_debug_device(device) for device in selected]
     results: list[dict[str, object]] = []
     context.progress("device_detail_collect", 0, len(selected), "正在采集设备详情")
 

@@ -786,6 +786,7 @@ def _vehicle_mr_online_refresh_all(params: dict[str, Any], progress: ProgressCal
     from netconsole.core.database import Database
     from netconsole.models.device import Device
     from netconsole.repositories.device_repository import DeviceRepository
+    from netconsole.services.device_scope import filter_current_debug_devices
     from netconsole.services.vehicle_mr_online import (
         build_mapping_lookup,
         build_mapping_trains,
@@ -801,7 +802,7 @@ def _vehicle_mr_online_refresh_all(params: dict[str, Any], progress: ProgressCal
     repository = DeviceRepository(Database(Path(str(params.get("db_path") or ""))))
     paths = _path_resolver_from_params(params)
     store = VehicleMrOnlineStore(paths, site_name)
-    devices = repository.list()
+    devices = filter_current_debug_devices(repository.list())
     group_names = load_group_names(repository, site_name)
     device_trains = build_registered_trains(devices, group_names)
     mappings = store.list_mappings()
@@ -964,16 +965,33 @@ def _ac_overview_refresh(params: dict[str, Any], progress: ProgressCallback | No
     from netconsole.core.database import Database
     from netconsole.repositories.ac_repository import AcRepository
     from netconsole.repositories.device_repository import DeviceRepository
+    from netconsole.services.ac.ac_models import is_ac_device_type
     from netconsole.services.ap_online_overview import ApOnlineOverviewService
     from netconsole.services.offline_ap_ledger import build_current_ap_history_indexes, build_device_lookup_by_name, build_offline_ap_ledger
+    from netconsole.services.device_scope import filter_current_debug_devices
+    from netconsole.services.device_scope import require_current_debug_device
 
     _emit(progress, "ac_overview_refresh", 0, 4, "正在读取 FIT-AP 资源")
     _check_cancel(should_cancel)
     ac_uuid = str(params.get("ac_uuid") or "").strip()
     database = Database(Path(str(params.get("db_path") or "")))
+    device_repository = DeviceRepository(database)
+    active_ac_ids = {
+        str(device.device_uuid or "")
+        for device in filter_current_debug_devices(device_repository.list())
+        if is_ac_device_type(device.device_type) and device.device_uuid
+    }
+    if ac_uuid:
+        ac_device = device_repository.get_by_uuid(ac_uuid)
+        if ac_device is None or not is_ac_device_type(ac_device.device_type):
+            raise ValueError("目标 AC 在当前局点不存在")
+        require_current_debug_device(ac_device)
     repository = AcRepository(database)
     resources = repository.list_fit_ap_resources_with_metadata(ac_uuid)
     optical_rows = repository.list_fit_ap_optical(ac_uuid)
+    if not ac_uuid:
+        resources = [row for row in resources if str(row.get("ac_device_uuid") or "") in active_ac_ids]
+        optical_rows = [row for row in optical_rows if str(row.get("ac_device_uuid") or "") in active_ac_ids]
     metadata_rows = repository.list_fit_ap_metadata()
     _emit(progress, "ac_overview_refresh", 1, 4, "正在读取容量规划")
     _check_cancel(should_cancel)
@@ -992,7 +1010,7 @@ def _ac_overview_refresh(params: dict[str, Any], progress: ProgressCallback | No
     latest_lldp, _latest_optical = build_current_ap_history_indexes(
         repository.list_current_ap_lldp_states(), resources
     )
-    devices = DeviceRepository(database).list()
+    devices = filter_current_debug_devices(DeviceRepository(database).list())
     stats, ledger = build_offline_ap_ledger(
         fit_ap_resources=resources,
         latest_lldp_by_ap=latest_lldp,
@@ -1010,15 +1028,37 @@ def _ac_overview_refresh(params: dict[str, Any], progress: ProgressCallback | No
 def _ac_fit_ap_resources_refresh(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
     from netconsole.core.database import Database
     from netconsole.repositories.ac_repository import AcRepository
+    from netconsole.repositories.device_repository import DeviceRepository
+    from netconsole.services.ac.ac_models import is_ac_device_type
+    from netconsole.services.device_scope import filter_current_debug_devices, require_current_debug_device
 
     _emit(progress, "ac_fit_ap_resources_refresh", 0, 1, "正在读取 FIT-AP 资源")
     _check_cancel(should_cancel)
     ac_uuid = str(params.get("ac_uuid") or "").strip()
-    repository = AcRepository(Database(Path(str(params.get("db_path") or ""))))
+    database = Database(Path(str(params.get("db_path") or "")))
+    device_repository = DeviceRepository(database)
+    current_ac_ids = {
+        str(device.device_uuid or "")
+        for device in filter_current_debug_devices(device_repository.list())
+        if is_ac_device_type(device.device_type) and device.device_uuid
+    }
+    if ac_uuid:
+        target = device_repository.get_by_uuid(ac_uuid)
+        if target is None or not is_ac_device_type(target.device_type):
+            raise ValueError("目标 AC 在当前局点不存在")
+        require_current_debug_device(target)
+    repository = AcRepository(database)
+    resources = repository.list_fit_ap_resources_with_metadata(ac_uuid)
+    if not ac_uuid:
+        resources = [
+            row
+            for row in resources
+            if str(row.get("ac_device_uuid") or "") in current_ac_ids
+        ]
     result = {
         "ac_uuid": ac_uuid,
-        "summary": repository.get_ac_ap_summary(ac_uuid),
-        "resources": repository.list_fit_ap_resources_with_metadata(ac_uuid),
+        "summary": repository.get_ac_ap_summary(ac_uuid) if ac_uuid else None,
+        "resources": resources,
     }
     _emit(progress, "ac_fit_ap_resources_refresh", 1, 1, "FIT-AP 资源刷新完成")
     return result
@@ -1030,7 +1070,10 @@ def _ac_fit_ap_optical_refresh(params: dict[str, Any], progress: ProgressCallbac
     from netconsole.repositories.ac_repository import AcRepository
     from netconsole.repositories.device_fact_repository import DeviceFactRepository
     from netconsole.repositories.device_repository import DeviceRepository
+    from netconsole.services.ac.ac_models import is_ac_device_type
     from netconsole.services.offline_ap_ledger import OFFLINE_AP_STATUS_TEXT, is_fit_ap_offline
+    from netconsole.services.device_scope import filter_current_debug_devices
+    from netconsole.services.device_scope import require_current_debug_device
     from netconsole.services.ap_identity.normalizers import normalize_mac
     from netconsole.utils.interface_sort import interface_sort_key
 
@@ -1038,12 +1081,16 @@ def _ac_fit_ap_optical_refresh(params: dict[str, Any], progress: ProgressCallbac
     _check_cancel(should_cancel)
     ac_uuid = str(params.get("ac_uuid") or "").strip()
     database = Database(Path(str(params.get("db_path") or "")))
+    ac_device = DeviceRepository(database).get_by_uuid(ac_uuid)
+    if ac_device is None or not is_ac_device_type(ac_device.device_type):
+        raise ValueError("目标 AC 在当前局点不存在")
+    require_current_debug_device(ac_device)
     ac_repository = AcRepository(database)
     resources = ac_repository.list_fit_ap_resources_with_metadata(ac_uuid)
     optical_rows = ac_repository.list_fit_ap_optical(ac_uuid)
     _emit(progress, "ac_fit_ap_optical_refresh", 1, 3, "正在读取交换机光模块状态")
     _check_cancel(should_cancel)
-    devices = DeviceRepository(database).list()
+    devices = filter_current_debug_devices(DeviceRepository(database).list())
     fact_repository = DeviceFactRepository(database)
     optical_by_device = {
         str(device.device_uuid or ""): fact_repository.list_optical_modules(str(device.device_uuid or ""))
@@ -1116,6 +1163,7 @@ def _omnipeek_name_table_preview(params: dict[str, Any], progress: ProgressCallb
         build_omnipeek_entries,
         build_omnipeek_preview_rows,
     )
+    from netconsole.services.device_scope import filter_current_debug_devices
 
     _emit(progress, "omnipeek_name_table_preview", 0, 3, "正在后台收集 OmniPeek 名称数据")
     _check_cancel(should_cancel)
@@ -1125,7 +1173,7 @@ def _omnipeek_name_table_preview(params: dict[str, Any], progress: ProgressCallb
     ac_repository = AcRepository(database)
     filters = dict(params.get("device_filters") or {})
     allowed_filters = {key: filters.get(key) for key in ("search", "vendor", "device_type", "group_filter") if filters.get(key) is not None}
-    devices = device_repository.list(**allowed_filters)
+    devices = filter_current_debug_devices(device_repository.list(**allowed_filters))
     selected_device_uuids = {str(value) for value in params.get("selected_device_uuids") or [] if str(value)}
     if selected_device_uuids:
         devices = [device for device in devices if str(device.device_uuid or "") in selected_device_uuids]
@@ -1284,6 +1332,7 @@ def _ac_trackside_business_refresh(params: dict[str, Any], progress: ProgressCal
     from netconsole.repositories.device_repository import DeviceRepository
     from netconsole.services.offline_ap_ledger import build_current_ap_history_indexes, build_device_lookup_by_name, build_offline_ap_ledger
     from netconsole.services.trackside_ap_business import build_trackside_ap_business_rows, filter_station_switch_devices
+    from netconsole.services.device_scope import filter_current_debug_devices
     from netconsole.services.rail_transit.effective_trackside_ap_scope import resolve_effective_trackside_ap_scope_from_database
 
     _emit(progress, "ac_trackside_business_refresh", 0, 5, "正在读取设备和接口数据")
@@ -1294,7 +1343,11 @@ def _ac_trackside_business_refresh(params: dict[str, Any], progress: ProgressCal
     device_repository = DeviceRepository(database)
     fact_repository = DeviceFactRepository(database)
     ac_repository = AcRepository(database)
-    devices = filter_station_switch_devices(device_repository.list(), database, site_name)
+    devices = filter_station_switch_devices(
+        filter_current_debug_devices(device_repository.list()),
+        database,
+        site_name,
+    )
     interfaces_by_device: dict[str, list[dict[str, object | None]]] = {}
     optical_by_device: dict[str, list[dict[str, object | None]]] = {}
     lldp_by_device: dict[str, list[dict[str, object | None]]] = {}
@@ -1328,7 +1381,9 @@ def _ac_trackside_business_refresh(params: dict[str, Any], progress: ProgressCal
     _stats, ledger = build_offline_ap_ledger(
         fit_ap_resources=resources,
         latest_lldp_by_ap=latest_lldp,
-        device_lookup_by_name=build_device_lookup_by_name(device_repository.list()),
+        device_lookup_by_name=build_device_lookup_by_name(
+            filter_current_debug_devices(device_repository.list())
+        ),
     )
     _emit(progress, "ac_trackside_business_refresh", 4, 5, "正在构建轨旁 AP 业务行")
     _check_cancel(should_cancel)
@@ -1775,10 +1830,13 @@ def _ac_devices_refresh(params: dict[str, Any], progress: ProgressCallback | Non
     from netconsole.core.database import Database
     from netconsole.repositories.device_repository import DeviceRepository
     from netconsole.services.ac.ac_models import is_ac_device_type
+    from netconsole.services.device_scope import filter_current_debug_devices
 
     devices = [
         device
-        for device in DeviceRepository(Database(Path(str(params.get("db_path") or "")))).list(vendor="H3C")
+        for device in filter_current_debug_devices(
+            DeviceRepository(Database(Path(str(params.get("db_path") or "")))).list(vendor="H3C")
+        )
         if is_ac_device_type(device.device_type)
     ]
     return {"devices": [device.to_record() for device in devices]}
@@ -1800,6 +1858,16 @@ def _rebuild_ap_identity_index(params: dict[str, Any], reason: str) -> None:
 
 
 def _ac_fit_ap_delete_many(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    from netconsole.core.database import Database
+    from netconsole.repositories.device_repository import DeviceRepository
+    from netconsole.services.ac.ac_models import is_ac_device_type
+    from netconsole.services.device_scope import require_current_debug_device
+
+    database = Database(Path(str(params.get("db_path") or "")))
+    device = DeviceRepository(database).get_by_uuid(str(params.get("ac_uuid") or "").strip())
+    if device is None or not is_ac_device_type(device.device_type):
+        raise ValueError("目标 AC 在当前局点不存在")
+    require_current_debug_device(device)
     count = _ac_repository(params).delete_fit_aps(str(params.get("ac_uuid") or ""), [str(value) for value in params.get("names") or []])
     _rebuild_ap_identity_index(params, "ac_fit_ap_deleted")
     return {"count": count}
@@ -1887,8 +1955,17 @@ def _device_detail_load_all(params: dict[str, Any], progress: ProgressCallback |
 
 
 def _fit_ap_detail_load(params: dict[str, Any], progress: ProgressCallback | None, should_cancel: CancelCallback | None) -> dict[str, Any]:
+    from netconsole.core.database import Database
+    from netconsole.repositories.device_repository import DeviceRepository
+    from netconsole.services.ac.ac_models import is_ac_device_type
+    from netconsole.services.device_scope import require_current_debug_device
+
     repository = _ac_repository(params)
     ac_uuid = str(params.get("ac_uuid") or "")
+    ac_device = DeviceRepository(Database(Path(str(params.get("db_path") or "")))).get_by_uuid(ac_uuid)
+    if ac_device is None or not is_ac_device_type(ac_device.device_type):
+        raise ValueError("目标 AC 在当前局点不存在")
+    require_current_debug_device(ac_device)
     ap_key = str(params.get("ap_key") or "")
     resource = repository.get_fit_ap_resource_by_uuid(ac_uuid, ap_key) or repository.get_fit_ap_resource(ac_uuid, ap_key) or {}
     ap_uuid = str(resource.get("ap_uuid") or ap_key)
@@ -1910,9 +1987,10 @@ def _online_mr_collection_devices_refresh(params: dict[str, Any], progress: Prog
     from netconsole.core.database import Database
     from netconsole.repositories.device_group_repository import DeviceGroupRepository
     from netconsole.repositories.device_repository import DeviceRepository
+    from netconsole.services.device_scope import filter_current_debug_devices
 
     database = Database(Path(str(params.get("db_path") or "")))
-    devices = DeviceRepository(database).list()
+    devices = filter_current_debug_devices(DeviceRepository(database).list())
     groups = DeviceGroupRepository(database, str(params.get("site_name") or "")).list()
     return {
         "devices": [device.to_record() for device in devices],
@@ -1927,6 +2005,7 @@ def _mesh_mr_profiles_refresh(params: dict[str, Any], progress: ProgressCallback
     from netconsole.repositories.device_repository import DeviceRepository
     from netconsole.repositories.mesh_catalog_repository import MeshCatalogRepository
     from netconsole.services.mesh_storage_service import MeshStorageService
+    from netconsole.services.device_scope import filter_current_debug_devices
     from netconsole.services.rail_transit.constants import VEHICLE_MR_GROUP_NAME
     from netconsole.core.paths import PathResolver
 
@@ -1941,7 +2020,13 @@ def _mesh_mr_profiles_refresh(params: dict[str, Any], progress: ProgressCallback
     if db_path:
         database = Database(Path(db_path))
         group = DeviceGroupRepository(database, site_name).find_by_name(VEHICLE_MR_GROUP_NAME)
-        devices = DeviceRepository(database).list(group_filter=int(group.id)) if group and group.id is not None else []
+        devices = (
+            filter_current_debug_devices(
+                DeviceRepository(database).list(group_filter=int(group.id))
+            )
+            if group and group.id is not None
+            else []
+        )
         profiles = MeshStorageService(site_name, paths).sync_mr_profiles_from_devices(devices)
     else:
         profiles = MeshCatalogRepository(paths.mesh_catalog_path(site_name)).list_profiles()
@@ -1953,6 +2038,7 @@ def _file_management_navigation_refresh(params: dict[str, Any], progress: Progre
     from netconsole.repositories.device_group_repository import DeviceGroupRepository
     from netconsole.repositories.device_repository import DeviceRepository
     from netconsole.services.device_group_service import group_filter_to_repository_value
+    from netconsole.services.device_scope import filter_current_debug_devices
 
     database = Database(Path(str(params.get("db_path") or "")))
     site_name = str(params.get("site_name") or "")
@@ -1965,6 +2051,7 @@ def _file_management_navigation_refresh(params: dict[str, Any], progress: Progre
         )
     except TypeError:
         devices = repository.list()
+    devices = filter_current_debug_devices(devices)
     return {
         "groups": [{"id": group.id, "name": group.name} for group in groups],
         "devices": [device.to_record() for device in devices],

@@ -20,6 +20,7 @@ from netconsole.services.config_lifecycle_service import (
     compare_named_config_text,
     structure_diff,
 )
+from netconsole.services.device_scope import require_current_debug_device
 from netconsole.services.job_center.job_context import JobContext
 
 
@@ -252,7 +253,9 @@ def config_web_snapshot_fetch(context: JobContext) -> dict[str, object]:
     context.progress("config_collection", 0, 1, "正在连接设备")
     context.check_cancelled()
     _repository, service, database = _snapshot_context(context)
-    device = _device_by_uuid(database, str(context.params.get("device_uuid") or ""))
+    device = require_current_debug_device(
+        _device_by_uuid(database, str(context.params.get("device_uuid") or ""))
+    )
     result = service.fetch_configs(device)
     if not result.success:
         raise RuntimeError(result.error_message or "配置采集失败")

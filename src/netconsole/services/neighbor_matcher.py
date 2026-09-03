@@ -364,9 +364,10 @@ def match_neighbor_device(
                 FROM devices d
                 LEFT JOIN device_interfaces i ON i.device_uuid = d.device_uuid
                 LEFT JOIN device_facts f ON f.device_uuid = d.device_uuid
-                WHERE lower(replace(replace(replace(replace(COALESCE(d.mac_address, ''), ':', ''), '-', ''), '.', ''), ' ', '')) = ?
+                WHERE COALESCE(d.work_scope_status, 'included') = 'included'
+                  AND (lower(replace(replace(replace(replace(COALESCE(d.mac_address, ''), ':', ''), '-', ''), '.', ''), ' ', '')) = ?
                    OR lower(replace(replace(replace(replace(COALESCE(i.mac_address, ''), ':', ''), '-', ''), '.', ''), ' ', '')) = ?
-                   OR lower(replace(replace(replace(replace(COALESCE(f.mac_address, ''), ':', ''), '-', ''), '.', ''), ' ', '')) = ?
+                   OR lower(replace(replace(replace(replace(COALESCE(f.mac_address, ''), ':', ''), '-', ''), '.', ''), ' ', '')) = ?)
                 ORDER BY d.name, i.interface_name
                 """,
                 (compact_mac, compact_mac, compact_mac),
@@ -394,7 +395,8 @@ def match_neighbor_device(
                 SELECT DISTINCT d.device_uuid, d.name, d.station
                 FROM devices d
                 LEFT JOIN device_facts f ON f.device_uuid = d.device_uuid
-                WHERE f.sysname = ? OR d.system_name = ? OR d.name = ?
+                WHERE COALESCE(d.work_scope_status, 'included') = 'included'
+                  AND (f.sysname = ? OR d.system_name = ? OR d.name = ?)
                 ORDER BY d.name
                 """,
                 (sysname, sysname, sysname),
@@ -434,7 +436,8 @@ def match_ap_from_device_lldp(
                    d.device_uuid, d.name, d.station
             FROM device_lldp_neighbors l
             JOIN devices d ON d.device_uuid = l.device_uuid
-            WHERE lower(
+            WHERE COALESCE(d.work_scope_status, 'included') = 'included'
+              AND lower(
                 replace(replace(replace(l.neighbor_mac, ':', ''), '-', ''), '.', '')
             ) = ?
             ORDER BY l.id DESC

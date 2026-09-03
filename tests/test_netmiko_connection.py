@@ -1,6 +1,12 @@
 from __future__ import annotations
 
+import importlib.util
 import paramiko
+import sys
+from pathlib import Path
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 from netconsole.models.device import Device
 from netconsole.services import netmiko_connection
@@ -507,6 +513,32 @@ def test_h3c_legacy_ssh_rsa_fallback_is_scoped_and_logged(monkeypatch):
     assert all("secret" not in detail for _event, detail in events)
 
 
+def test_h3c_legacy_fallback_recognizes_netmiko_wrapped_paramiko_negotiation(monkeypatch):
+    from netmiko.exceptions import NetmikoTimeoutException
+
+    calls: list[dict[str, object]] = []
+
+    def fake_handler(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            raise NetmikoTimeoutException(
+                "A paramiko SSHException occurred during connection creation:\n\nNegotiation failed."
+            )
+        return object()
+
+    with netmiko_connection.ssh_connection_context("ac_basic", "collect", device_uuid="ac-1"):
+        result = netmiko_connection._connect_with_compatibility(
+            fake_handler,
+            {"device_type": "hp_comware", "host": "10.82.21.209"},
+        )
+
+    assert result is not None
+    assert len(calls) == 2
+    assert calls[1]["disabled_algorithms"] == {
+        "keys": ["rsa-sha2-512", "rsa-sha2-256"]
+    }
+
+
 def test_legacy_fallback_does_not_apply_to_auth_timeout_or_other_algorithm_errors(monkeypatch):
     for error in (
         paramiko.AuthenticationException("Authentication failed"),
@@ -547,3 +579,60 @@ def test_legacy_fallback_does_not_apply_to_non_h3c_device():
     except paramiko.SSHException:
         pass
     assert len(calls) == 1
+
+
+def test_mr_sidecar_connection_log_uses_actual_collector(monkeypatch, tmp_path):
+    module_name = "netconsole_test_mr_collector_cli"
+    spec = importlib.util.spec_from_file_location(
+        module_name,
+        PROJECT_ROOT / "apps" / "agent" / "mr_collector_py" / "collector_cli.py",
+    )
+    assert spec is not None and spec.loader is not None
+    sidecar = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = sidecar
+    try:
+        spec.loader.exec_module(sidecar)
+        calls = []
+
+        def fake_connect_handler(**kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                raise RuntimeError(
+                    "A paramiko SSHException occurred during connection creation:\n\nNegotiation failed."
+                )
+            return object()
+
+        monkeypatch.setattr(sidecar, "ConnectHandler", fake_connect_handler)
+        app = sidecar.MRCollectorApp(
+            {
+                "target": {
+                    "host": "10.82.21.209",
+                    "protocol": "ssh",
+                    "username": "admin",
+                    "password": "secret",
+                },
+                "session": {"device_uuid": "device-uuid"},
+            },
+            tmp_path / "session",
+            tmp_path / "stop",
+            tmp_path / "events.jsonl",
+            tmp_path / "status.json",
+        )
+        app.prepare()
+        connection = app.connect(collector=sidecar.ITEM_AP_RADIO_STATISTICS)
+
+        assert connection is not None
+        assert len(calls) == 2
+        assert calls[1]["disabled_algorithms"] == {
+            "keys": ["rsa-sha2-512", "rsa-sha2-256"]
+        }
+        log_text = (tmp_path / "session" / "logs" / "collector.log").read_text(encoding="utf-8")
+        assert "collector=ap_radio_statistics" in log_text
+        assert "device_uuid=device-uuid" in log_text
+        assert "host=10.82.21.209" in log_text
+        assert "ssh_mode=normal" in log_text
+        assert "result=negotiation_failed" in log_text
+        assert "ssh_mode=legacy_ssh_rsa" in log_text
+        assert "result=success" in log_text
+    finally:
+        sys.modules.pop(module_name, None)

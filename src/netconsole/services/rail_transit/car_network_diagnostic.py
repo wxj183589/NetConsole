@@ -44,12 +44,23 @@ from netconsole.services.vehicle_mr_online import (
 from netconsole.services.rail_transit.train_identity import canonical_train_id_for, train_identity_matches
 from netconsole.utils.excel_workbook import load_workbook_without_unsupported_image_warning
 from netconsole.utils.natural_sort import train_natural_sort_key
+from netconsole.services.device_scope import filter_current_debug_devices
 
 
 def ConnectHandler(**kwargs: object):  # noqa: N802 - 保持既有测试与调用入口兼容
-    from netconsole.services.netmiko_connection import ConnectHandler as connect_handler
+    from netconsole.services.netmiko_connection import (
+        ConnectHandler as connect_handler,
+        ssh_connection_context,
+    )
 
-    return connect_handler(**kwargs)
+    # 仅用于保留本模块的测试/调用兼容入口；真正的连接仍由共享 factory 创建。
+    device_uuid = str(kwargs.pop("_netconsole_device_uuid", "") or "")
+    with ssh_connection_context(
+        "car_network",
+        "collect",
+        device_uuid=device_uuid,
+    ):
+        return connect_handler(**kwargs)
 
 
 NODE_ORDER = ("TC1-MR", "TC1-SW", "TC1-SRV", "TC2-MR", "TC2-SW", "TC2-SRV")
@@ -433,7 +444,7 @@ def is_vehicle_mr_device(device: Device, group_name: str = "", *, allow_legacy_g
 def build_car_network_trains(repository, site_name: str) -> list[CarNetworkTrain]:
     group_names = load_group_names(repository, site_name)
     by_no: dict[str, dict[str, object]] = {}
-    for device in repository.list():
+    for device in filter_current_debug_devices(repository.list()):
         group_name = group_names.get(int(device.group_id or 0), "")
         if not _is_vehicle_group(group_name):
             continue
@@ -474,7 +485,7 @@ def build_train_3sw_bindings(repository, site_name: str, trains: list[CarNetwork
     group_names = load_group_names(repository, site_name)
     train_nos = {train.train_no for train in trains if train.train_no}
     result: dict[str, dict[str, Device]] = {}
-    for device in repository.list():
+    for device in filter_current_debug_devices(repository.list()):
         group_name = group_names.get(int(device.group_id or 0), "")
         if "车载-3SW" not in group_name:
             continue
@@ -487,7 +498,7 @@ def build_train_3sw_bindings(repository, site_name: str, trains: list[CarNetwork
 
 def discover_ac_devices(repository) -> list[Device]:
     devices: list[Device] = []
-    for device in repository.list():
+    for device in filter_current_debug_devices(repository.list()):
         text = " ".join(str(value or "") for value in (device.device_type, device.name, device.system_name)).upper()
         cn_text = " ".join(str(value or "") for value in (device.device_type, device.name, device.system_name))
         if "AC" in text or "WX" in text or "WIRELESS CONTROLLER" in text or "无线控制器" in cn_text:
@@ -499,7 +510,7 @@ def discover_core_switches(repository, site_name: str = "") -> list[Device]:
     return [device for device, candidate in discover_core_switch_candidates(repository, site_name) if candidate.selected]
     group_names = load_group_names(repository, site_name) if site_name else {}
     result: list[Device] = []
-    for device in repository.list():
+    for device in filter_current_debug_devices(repository.list()):
         group_name = group_names.get(int(device.group_id or 0), "")
         if site_name and group_name != "COCC":
             continue
@@ -521,7 +532,7 @@ def discover_core_switches(repository, site_name: str = "") -> list[Device]:
 def discover_core_switch_candidates(repository, site_name: str = "") -> list[tuple[Device, CoreDiscoveryCandidate]]:
     group_names = load_group_names(repository, site_name) if site_name else {}
     candidates: list[tuple[Device, str, str]] = []
-    for device in repository.list():
+    for device in filter_current_debug_devices(repository.list()):
         group_name = group_names.get(int(device.group_id or 0), "")
         excluded, exclude_reason = _is_excluded_core_ac(device)
         if excluded:
@@ -701,7 +712,7 @@ def generate_point_table_from_devices(
     generated: list[CarNetworkNode] = []
     discovered_keys: set[tuple[str, str]] = set()
     train_nos: set[str] = set()
-    for device in repository.list():
+    for device in filter_current_debug_devices(repository.list()):
         group_name = group_names.get(int(device.group_id or 0), "")
         if not _is_vehicle_group(group_name):
             continue
@@ -1503,6 +1514,7 @@ class CarNetworkDiagnosticService:
             target = build_netmiko_params(
                 ConnectionTarget("SSH", H3C_NETMIKO_DEVICE_TYPE, device.primary_address, int(device.ssh_port or 22), username, password, encoding_for_vendor(device.device_vendor))
             )
+        target["_netconsole_device_uuid"] = str(device.device_uuid or device.id or "")
         conn = ConnectHandler(**target)
         try:
             return safe_send_command(
@@ -1627,6 +1639,10 @@ class CarNetworkDiagnosticService:
             return self.ssh_command_func(host, command)
         target = replace(target, host=host)
         params = build_netmiko_params(target)
+        device = self.mr_devices.get(node.node_name)
+        params["_netconsole_device_uuid"] = str(
+            device.device_uuid or device.id or ""
+        ) if device is not None else ""
         conn = ConnectHandler(**params)
         try:
             if _is_h3c_ping_command(command):
@@ -2748,6 +2764,7 @@ def run_ac_commands(ac: Device, commands: Iterable[str]) -> dict[str, str]:
         target = build_netmiko_params(
             ConnectionTarget("SSH", H3C_NETMIKO_DEVICE_TYPE, ac.primary_address, int(ac.ssh_port or 22), username, password, encoding_for_vendor(ac.device_vendor))
         )
+    target["_netconsole_device_uuid"] = str(ac.device_uuid or ac.id or "")
     conn = ConnectHandler(**target)
     encoding = str(target.get("encoding") or "gb2312")
     try:

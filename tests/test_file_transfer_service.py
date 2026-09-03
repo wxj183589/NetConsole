@@ -446,7 +446,7 @@ def test_download_file_prefers_sftp_and_falls_back_to_scp(tmp_path, monkeypatch)
         calls.append("sftp")
         raise RuntimeError("sftp failed")
 
-    def fake_scp(_target, _remote_path, local_path):
+    def fake_scp(_target, _remote_path, local_path, *, device_uuid=""):
         calls.append("scp")
         local_path.write_text("downloaded", encoding="utf-8")
 

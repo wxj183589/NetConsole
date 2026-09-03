@@ -27,6 +27,7 @@ from netconsole.services.vehicle_mr_online import (
     VehicleMrTrainState,
     is_ac_device,
 )
+from netconsole.services.device_scope import filter_current_debug_devices
 
 
 _REASON_TEXT = {
@@ -202,7 +203,7 @@ class VehicleMrOnlineQueryService:
     def list_controllers(self, site_id: str) -> list[VehicleMrControllerDTO]:
         repository = DeviceRepository(Database(self.paths.site_db_path(site_id)))
         result = []
-        for device in repository.list():
+        for device in filter_current_debug_devices(repository.list()):
             if device.id is None or not is_ac_device(device):
                 continue
             protocol = (

@@ -129,6 +129,7 @@ export interface DesktopIpcDependencies {
   getCloseToTrayState?: () => CloseToTrayState
   setCloseToTrayEnabled?: (enabled: boolean) => Promise<CloseToTrayState> | CloseToTrayState
   restartBackend?: (value: SiteStorageRestartRequest) => Promise<void>
+  restartApplication?: () => Promise<void>
   refreshSiteContext?: () => Promise<void>
   setSiteSwitching?: (switching: boolean) => void
   appInfo: AppInfo
@@ -367,6 +368,17 @@ export function registerDesktopIpc(
         return { success: true }
       } catch (cause) {
         return { success: false, error: backendRestartErrorMessage(cause) }
+      }
+    }),
+  )
+  dependencies.ipcMain.handle(
+    DESKTOP_IPC.restartApplication,
+    trusted(async () => {
+      try {
+        await dependencies.restartApplication?.()
+        return { success: true }
+      } catch (cause) {
+        return { success: false, error: applicationRestartErrorMessage(cause) }
       }
     }),
   )
@@ -762,6 +774,13 @@ function backendRestartErrorMessage(cause: unknown): string {
   return allowed.has(cause.message)
     ? cause.message
     : '本地 Backend 重启失败，请检查日志后重试。'
+}
+
+function applicationRestartErrorMessage(cause: unknown): string {
+  if (!(cause instanceof Error)) return 'NetConsole 重启失败，请检查日志后重试。'
+  return cause.message === 'NetConsole 正在重启或退出'
+    ? cause.message
+    : 'NetConsole 重启失败，请检查日志后重试。'
 }
 
 interface ExternalWindowHandoff {

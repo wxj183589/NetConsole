@@ -28,6 +28,8 @@ from netconsole.models.omnipeek_name_table import (
 )
 from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.device_repository import DeviceRepository
+from netconsole.services.ac.ac_models import is_ac_device_type
+from netconsole.services.device_scope import filter_current_debug_devices, is_current_debug_device
 from netconsole.utils.mac_utils import H3cMacDeriveError, MacAddressError, derive_h3c_r1_mac, derive_h3c_r2_mac, normalize_mac
 
 
@@ -68,9 +70,9 @@ class OmniPeekNameTableService:
             )
         device_count = 0
         if devices is not None:
-            device_count = len(list(devices))
+            device_count = len(filter_current_debug_devices(list(devices)))
         elif self.device_repository is not None:
-            device_count = len(self.device_repository.list())
+            device_count = len(filter_current_debug_devices(self.device_repository.list()))
         return {
             SOURCE_AC_FIT_AP: fit_ap_count,
             SOURCE_AP_EXTENSION: extension_count,
@@ -114,7 +116,12 @@ class OmniPeekNameTableService:
         if include_device_mr:
             if devices is None and self.device_repository is not None:
                 devices = self.device_repository.list()
-            items.extend(collect_onboard_mr_items(list(devices or []), group_names=group_names or {}))
+            items.extend(
+                collect_onboard_mr_items(
+                    filter_current_debug_devices(list(devices or [])),
+                    group_names=group_names or {},
+                )
+            )
         prepared = prepare_omnipeek_items(merge_omnipeek_items(items))
         selected = {str(value) for value in selected_fit_ap_ids or [] if str(value)}
         if selected:
@@ -127,8 +134,20 @@ class OmniPeekNameTableService:
 
     def _fit_ap_rows(self, ac_device_uuid: str | None) -> list[dict[str, object | None]]:
         if ac_device_uuid:
-            return self.ac_repository.list_fit_ap_resources_with_metadata(ac_device_uuid)
-        return self.ac_repository.list_all_fit_ap_resources_with_metadata()
+            rows = self.ac_repository.list_fit_ap_resources_with_metadata(ac_device_uuid)
+            if self.device_repository is None:
+                return rows
+            device = self.device_repository.get_by_uuid(ac_device_uuid)
+            return rows if device is not None and is_current_debug_device(device) else []
+        rows = self.ac_repository.list_all_fit_ap_resources_with_metadata()
+        if self.device_repository is None:
+            return rows
+        active_ac_ids = {
+            str(device.device_uuid or "")
+            for device in filter_current_debug_devices(self.device_repository.list())
+            if is_ac_device_type(device.device_type)
+        }
+        return [row for row in rows if str(row.get("ac_device_uuid") or "") in active_ac_ids]
 
 
 def collect_trackside_ap_items(rows: Iterable[dict[str, object | None]]) -> list[OmniPeekDeviceItem]:

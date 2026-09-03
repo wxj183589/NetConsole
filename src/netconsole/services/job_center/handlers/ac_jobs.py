@@ -31,6 +31,8 @@ from netconsole.services.ac.mesh_link_resident_polling_service import (
     run_ac_mesh_link_resident_poll,
 )
 from netconsole.services.ap_identity import ApIdentityQueryService
+from netconsole.services.ac.ac_models import is_ac_device_type
+from netconsole.services.device_scope import require_current_debug_device
 
 
 def _string_list(value: object, fallback: object = None) -> list[str]:
@@ -66,6 +68,22 @@ def _integer(value: object) -> int:
         return int(value or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _require_current_ac(database: Database, ac_uuid: str):
+    device = DeviceRepository(database).get_by_uuid(str(ac_uuid or "").strip())
+    if device is None or not is_ac_device_type(device.device_type):
+        raise ValueError("目标 AC 在当前局点不存在")
+    return require_current_debug_device(device)
+
+
+def _ac_resource_terminal_result(result, failure_message: str) -> dict[str, object]:
+    """保留已写入的组件，避免将可识别的部分成功吞成裸 FAILED。"""
+
+    payload = result.to_terminal_payload()
+    if not result.success and not result.persisted_components:
+        raise RuntimeError(result.error_message or failure_message)
+    return payload
 
 
 def _overview_terminal_payload(result: dict[str, object]) -> dict[str, object]:
@@ -130,6 +148,7 @@ def ac_fit_ap_delete_many(context: JobContext) -> dict[str, object]:
         raise ValueError("批量删除 FIT-AP 缺少 AC 或 AP 标识")
     context.progress("ac_fit_ap_delete_many", 0, 1, "正在批量删除 FIT-AP")
     database = Database(Path(str(params.get("db_path") or "")))
+    _require_current_ac(database, ac_uuid)
     count = AcRepository(database).delete_fit_aps(ac_uuid, ap_uuids)
     ApIdentityQueryService(database).rebuild_index("ac_fit_ap_deleted")
     context.progress("ac_fit_ap_delete_many", 1, 1, f"FIT-AP 批量删除完成，共删除 {count} 条")
@@ -266,9 +285,7 @@ def ac_fit_ap_resources_refresh(context: JobContext) -> dict[str, object]:
         )
     except AcResourceRefreshCancelled as exc:
         raise BackgroundTaskCancelled(str(exc)) from exc
-    if not result.success:
-        raise RuntimeError(result.error_message or "FIT-AP 资源更新失败")
-    return result.to_terminal_payload()
+    return _ac_resource_terminal_result(result, "FIT-AP 资源更新失败")
 
 
 def ac_info_refresh(context: JobContext) -> dict[str, object]:
@@ -290,9 +307,7 @@ def ac_info_refresh(context: JobContext) -> dict[str, object]:
         )
     except AcResourceRefreshCancelled as exc:
         raise BackgroundTaskCancelled(str(exc)) from exc
-    if not result.success:
-        raise RuntimeError(result.error_message or "AC 信息更新失败")
-    return result.to_terminal_payload()
+    return _ac_resource_terminal_result(result, "AC 信息更新失败")
 
 
 def ac_fit_ap_detail_refresh(context: JobContext) -> dict[str, object]:
@@ -314,9 +329,7 @@ def ac_fit_ap_detail_refresh(context: JobContext) -> dict[str, object]:
         )
     except AcResourceRefreshCancelled as exc:
         raise BackgroundTaskCancelled(str(exc)) from exc
-    if not result.success:
-        raise RuntimeError(result.error_message or "FIT-AP 深度更新失败")
-    return result.to_terminal_payload()
+    return _ac_resource_terminal_result(result, "FIT-AP 深度更新失败")
 
 
 def _ac_fit_ap_verbose_refresh(context: JobContext, *, selected: bool) -> dict[str, object]:
@@ -339,9 +352,7 @@ def _ac_fit_ap_verbose_refresh(context: JobContext, *, selected: bool) -> dict[s
         )
     except AcResourceRefreshCancelled as exc:
         raise BackgroundTaskCancelled(str(exc)) from exc
-    if not result.success:
-        raise RuntimeError(result.error_message or "FIT-AP 详细信息更新失败")
-    return result.to_terminal_payload()
+    return _ac_resource_terminal_result(result, "FIT-AP 详细信息更新失败")
 
 
 def ac_fit_ap_verbose_all_refresh(context: JobContext) -> dict[str, object]:

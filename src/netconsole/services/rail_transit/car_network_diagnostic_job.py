@@ -13,6 +13,7 @@ from netconsole.services.rail_transit.car_network_diagnostic import (
     discover_core_switch_candidates,
 )
 from netconsole.services.rail_transit.train_identity import train_identity_matches
+from netconsole.services.device_scope import filter_current_debug_devices
 
 
 def run_car_network_diagnostic(context: JobContext) -> dict[str, object]:
@@ -58,7 +59,7 @@ def run_car_network_diagnostic(context: JobContext) -> dict[str, object]:
     )
     devices_by_id = {
         str(device.id): device
-        for device in repository.list()
+        for device in filter_current_debug_devices(repository.list())
         if getattr(device, "id", None) is not None
     } if needs_bound_device else {}
     point_devices = {

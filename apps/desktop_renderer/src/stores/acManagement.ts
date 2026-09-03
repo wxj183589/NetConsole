@@ -85,8 +85,13 @@ export const useAcManagementStore = defineStore('ac-management', () => {
     if (summaryBusy) return
     summaryBusy = true
     try {
-      summary.value = await getAcSummary()
-      if (!filters.ac_id && summary.value.acs.length) filters.ac_id = summary.value.acs[0].id
+      const nextSummary = await getAcSummary()
+      const selectedStillAvailable = nextSummary.acs.some((item) => item.id === filters.ac_id)
+      summary.value = nextSummary
+      if (!selectedStillAvailable) {
+        filters.ac_id = nextSummary.acs[0]?.id || ''
+        selected.value = null
+      }
       recordSuccess('summary')
     } catch (cause) {
       recordFailure('summary', cause)
@@ -100,6 +105,14 @@ export const useAcManagementStore = defineStore('ac-management', () => {
     apsBusy = true
     loading.value = !aps.value.length
     try {
+      if (!filters.ac_id && (summary.value?.acs.length ?? 0) > 0) {
+        aps.value = []
+        filterOptions.value = emptyFilterOptions()
+        total.value = 0
+        selected.value = null
+        recordSuccess('aps')
+        return
+      }
       const result = await listAcAps(filters)
       aps.value = result.items
       filterOptions.value = result.filter_options || emptyFilterOptions()
@@ -143,6 +156,12 @@ export const useAcManagementStore = defineStore('ac-management', () => {
     if (snapshotBusy) return
     snapshotBusy = true
     try {
+      if (!filters.ac_id && (summary.value?.acs.length ?? 0) > 0) {
+        snapshots.value = []
+        snapshotTotal.value = 0
+        recordSuccess('snapshots')
+        return
+      }
       const result = await listAcConfigSnapshots({
         ac_id: filters.ac_id,
         type: snapshotType.value,

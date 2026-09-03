@@ -16,6 +16,7 @@ from netconsole.core.database import Database
 from netconsole.repositories.config_snapshot_repository import ConfigSnapshotRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.config_lifecycle_service import ConfigLifecycleService, safe_artifact_display_name, safe_device_name
+from netconsole.services.device_scope import require_current_debug_device
 from netconsole.services.export.export_task_builders import config_diff_text_spec, config_snapshots_zip_spec
 from netconsole.services.job_center.job_context import BackgroundTaskCancelled, JobContext
 from netconsole.services.job_center.worker_protocol import parse_event_line
@@ -152,11 +153,17 @@ def config_web_save_force(context: JobContext) -> dict[str, object]:
         if device is None or device.vendor_key != "h3c":
             failed_items.append({"device_uuid": device_uuid, "error": "H3C 设备不存在"})
         else:
-            item_result = service.save_force(device)
-            if item_result.success:
-                completed_items.append({"device_uuid": device_uuid, "audit_recorded": bool(item_result.raw_log_path)})
-            else:
-                failed_items.append({"device_uuid": device_uuid, "error": str(item_result.error_message or "保存配置失败")})
+            try:
+                current_device = require_current_debug_device(device)
+            except Exception as exc:
+                failed_items.append({"device_uuid": device_uuid, "error": f"EXCLUDED_BY_SCOPE: {exc}"})
+                current_device = None
+            if current_device is not None:
+                item_result = service.save_force(current_device)
+                if item_result.success:
+                    completed_items.append({"device_uuid": device_uuid, "audit_recorded": bool(item_result.raw_log_path)})
+                else:
+                    failed_items.append({"device_uuid": device_uuid, "error": str(item_result.error_message or "保存配置失败")})
         write_irreversible_checkpoint(
             context,
             {
