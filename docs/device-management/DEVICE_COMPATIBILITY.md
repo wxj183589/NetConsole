@@ -38,3 +38,14 @@ ZTE 不代表“全系列完全适配”。既有 `REAL_DEVICE_VERIFIED` 证据�
 C89E 实机 `show opticalinfo brief` 的 Rx/Tx 可作为单端光功率事实保存；仍不能仅凭单端值计算正向或反向链路光衰。模块离线统一为 `no_module` 并清空身份和功率字段，`Unknown` 或 RX 缺失统一为 `no_light`；异常只按 ZTE 原生 RX/TX 严格越界判断，等于低阈值为正常。5960X 文档 fixture 不保存为现场业务数据，H3C 保持既有两端 DOM 计算规则。
 
 命令来源仍以 `resources/device_command_profiles.json`、命令说明和后端受控命令 Guard 为准。任何新增兼容配置不得引入删除网络设备、重启网络设备、恢复出厂、清空配置、格式化存储或任意 CLI 执行入口。
+
+## H3C Comware 9.1.081 / R1612P01 现场延期验收清单
+
+当前无可访问的真实 H3C AC 环境，本清单只记录恢复现场后需要执行的最小验证，不代表已完成真实设备验收：
+
+1. 确认目标 TCP 22 可达，并确认设备实际提供 `ssh-rsa` host key。
+2. 对 `HZDT09X-WX3540X-AC1` 执行“更新 AC 信息”，确认日志为 normal negotiation incompatibility → `legacy_ssh_rsa` retry → success。
+3. 确认 `R1612P01` 不再被判定为 unsupported，AC info refresh 为 SUCCESS。
+4. 对 FIT-AP、Radio、LLDP、Optical 做基本 smoke；暂不参与当前调试的 AC 不出现在 selector。
+
+本轮状态：`REAL_ENVIRONMENT_AVAILABLE=NO`、`REAL_ENV_VERIFICATION_CHECKLIST=READY`；真实设备与 Production 网络 smoke 延期。

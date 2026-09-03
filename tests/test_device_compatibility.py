@@ -159,6 +159,42 @@ def test_fingerprint_derives_comware_v9_from_short_h3c_version_line() -> None:
     assert fingerprint.software_version == "R1612P01"
 
 
+@pytest.mark.parametrize("release", ["R1608P01", "R1612P01", "R1701P02"])
+def test_h3c_comware9_wireless_controller_accepts_same_family_maintenance_releases(
+    release: str,
+) -> None:
+    service = DeviceCompatibilityService(PathResolver(app_root=ROOT))
+    fingerprint = fingerprint_from_record(
+        {
+            "vendor": "H3C",
+            "role": "AC",
+            "model": "WX3540X",
+            "software_version": f"Version 9.1.081 Release {release}",
+        }
+    )
+
+    resolution = CompatibilityResolver(service.profiles()).resolve(fingerprint)
+
+    assert fingerprint.platform_family == "comware"
+    assert fingerprint.platform_major_version == 9
+    assert resolution.profile is not None
+    assert resolution.profile.profile_id == "h3c-comware-v9-wireless-controller-generic.v1"
+
+
+def test_unknown_h3c_major_family_is_not_unconditionally_supported() -> None:
+    service = DeviceCompatibilityService(PathResolver(app_root=ROOT))
+    fingerprint = fingerprint_from_record(
+        {
+            "vendor": "H3C",
+            "role": "AC",
+            "model": "WX3540X",
+            "software_version": "Version 10.1.001 Release R1001P01",
+        }
+    )
+
+    assert CompatibilityResolver(service.profiles()).resolve(fingerprint).profile is None
+
+
 def test_incremental_scan_reports_only_unregistered_sanitized_candidates() -> None:
     exact = _profile("exact.v1", model="S5560X-54F-HI", version="R6628P47")
     rows = [

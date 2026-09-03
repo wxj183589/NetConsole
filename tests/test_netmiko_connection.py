@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import importlib.util
 import paramiko
+import pytest
 import sys
 from pathlib import Path
 
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 from netconsole.models.device import Device
 from netconsole.services import netmiko_connection
@@ -21,6 +20,9 @@ from netconsole.services.netmiko_connection import (
     test_device_connection,
     connection_targets,
 )
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_extract_sysname_from_angle_prompt():
@@ -537,6 +539,111 @@ def test_h3c_legacy_fallback_recognizes_netmiko_wrapped_paramiko_negotiation(mon
     assert calls[1]["disabled_algorithms"] == {
         "keys": ["rsa-sha2-512", "rsa-sha2-256"]
     }
+
+
+def test_h3c_normal_connection_success_does_not_trigger_fallback(monkeypatch):
+    calls: list[dict[str, object]] = []
+    events: list[tuple[str, str]] = []
+
+    def fake_handler(**kwargs):
+        calls.append(kwargs)
+        return object()
+
+    monkeypatch.setattr(
+        netmiko_connection.app_logger,
+        "log_info",
+        lambda event, detail="", **_kwargs: events.append((event, detail)),
+    )
+
+    with netmiko_connection.ssh_connection_context(
+        "ac_basic", "collect", device_uuid="ac-1"
+    ):
+        result = netmiko_connection._connect_with_compatibility(
+            fake_handler,
+            {"device_type": "hp_comware", "host": "192.0.2.209"},
+        )
+
+    assert result is not None
+    assert len(calls) == 1
+    assert "disabled_algorithms" not in calls[0]
+    assert any(
+        event == "ssh_connection_attempt"
+        and "collector=ac_basic" in detail
+        and "ssh_mode=normal" in detail
+        and "result=success" in detail
+        for event, detail in events
+    )
+    assert not any(event == "ssh_compatibility_fallback" for event, _detail in events)
+
+
+def test_h3c_legacy_fallback_failure_is_explicit_and_not_silent(monkeypatch):
+    calls: list[dict[str, object]] = []
+    events: list[tuple[str, str]] = []
+    negotiation = paramiko.SSHException("server only offered ssh-rsa")
+    fallback_error = paramiko.SSHException("legacy negotiation failed")
+
+    def fake_handler(**kwargs):
+        calls.append(kwargs)
+        raise negotiation if len(calls) == 1 else fallback_error
+
+    monkeypatch.setattr(
+        netmiko_connection.app_logger,
+        "log_info",
+        lambda event, detail="", **_kwargs: events.append((event, detail)),
+    )
+    monkeypatch.setattr(
+        netmiko_connection.app_logger,
+        "log_warning",
+        lambda event, detail="", **_kwargs: events.append((event, detail)),
+    )
+
+    with netmiko_connection.ssh_connection_context(
+        "fit_ap", "collect", device_uuid="ac-1"
+    ):
+        with pytest.raises(paramiko.SSHException, match="legacy negotiation failed"):
+            netmiko_connection._connect_with_compatibility(
+                fake_handler,
+                {"device_type": "hp_comware", "host": "192.0.2.209"},
+            )
+
+    assert len(calls) == 2
+    assert calls[1]["disabled_algorithms"] == {
+        "keys": ["rsa-sha2-512", "rsa-sha2-256"]
+    }
+    assert any(
+        event == "ssh_connection_attempt"
+        and "collector=fit_ap" in detail
+        and "ssh_mode=legacy_ssh_rsa" in detail
+        and "result=failed" in detail
+        for event, detail in events
+    )
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        paramiko.ssh_exception.NoValidConnectionsError(
+            {("192.0.2.209", 22): TimeoutError("timed out")}
+        ),
+        ConnectionRefusedError("connection refused"),
+    ],
+    ids=["tcp-timeout", "connection-refused"],
+)
+def test_h3c_tcp_failures_do_not_trigger_legacy_fallback(error):
+    calls: list[dict[str, object]] = []
+
+    def fake_handler(**kwargs):
+        calls.append(kwargs)
+        raise error
+
+    with netmiko_connection.ssh_connection_context("radio", "collect"):
+        with pytest.raises(type(error)):
+            netmiko_connection._connect_with_compatibility(
+                fake_handler,
+                {"device_type": "hp_comware", "host": "192.0.2.209"},
+            )
+
+    assert len(calls) == 1
 
 
 def test_legacy_fallback_does_not_apply_to_auth_timeout_or_other_algorithm_errors(monkeypatch):
