@@ -15,6 +15,13 @@ DEFAULT_DEVICE_GROUPS: tuple[tuple[str, int], ...] = (
     ("车载-MR", 40),
     ("车载-3SW", 50),
 )
+DEVICE_DEFAULT_GROUP_ORDER: tuple[str, ...] = (
+    "COCC",
+    "BOCC",
+    "车站",
+    "车载-MR",
+    "车载-SW",
+)
 LEGACY_CUSTOM_GROUP_NAME = "自定义"
 _GROUP_SEPARATOR_RE = re.compile(r"[\s\-_\u2010-\u2015]+")
 _BUSINESS_GROUP_RANK = {
@@ -22,7 +29,12 @@ _BUSINESS_GROUP_RANK = {
     "bocc": 1,
     "车站": 2,
     "车载mr": 3,
+    "车载sw": 4,
+    "车载3sw": 4,
+    "车载交换机": 4,
 }
+DEVICE_GROUP_OTHER_RANK = len(DEVICE_DEFAULT_GROUP_ORDER)
+DEVICE_GROUP_EMPTY_RANK = DEVICE_GROUP_OTHER_RANK + 1
 
 
 class DuplicateGroupName(ValueError):
@@ -163,6 +175,8 @@ def canonical_device_group_name(name: object) -> str:
         return "车站"
     if compact == "车载mr":
         return "车载-MR"
+    if compact in {"车载sw", "车载3sw", "车载交换机"}:
+        return "车载-SW"
     return text
 
 
@@ -175,9 +189,13 @@ def _natural_group_name_key(name: object) -> tuple[tuple[int, object], ...]:
 
 
 def device_group_sort_key(name: object) -> tuple[object, ...]:
-    """Sort ``COCC > BOCC > 车站 > 车载-MR > OTHERS`` consistently."""
+    """Sort ``COCC > BOCC > 车站 > 车载-MR > 车载-SW > OTHERS > EMPTY``."""
 
     text = str(name or "").strip()
+    if not text:
+        return DEVICE_GROUP_EMPTY_RANK, ()
     compact = _GROUP_SEPARATOR_RE.sub("", text).casefold()
-    rank = _BUSINESS_GROUP_RANK.get(compact, 4)
-    return rank, _natural_group_name_key(text), text.casefold(), text
+    rank = _BUSINESS_GROUP_RANK.get(compact, DEVICE_GROUP_OTHER_RANK)
+    if compact in _BUSINESS_GROUP_RANK:
+        return rank, (canonical_device_group_name(text).casefold(),)
+    return rank, _natural_group_name_key(text)

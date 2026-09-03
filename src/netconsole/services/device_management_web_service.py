@@ -98,7 +98,10 @@ from netconsole.models.device_detail import DeviceOperationTask
 from netconsole.models.task_snapshot import TaskSnapshot
 from netconsole.models.task_state import TaskState
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
-from netconsole.repositories.device_group_repository import DeviceGroupRepository
+from netconsole.repositories.device_group_repository import (
+    DeviceGroupRepository,
+    device_group_sort_key,
+)
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.config_lifecycle_service import safe_artifact_display_name
@@ -234,6 +237,7 @@ DEVICE_TASK_TYPES = frozenset(
         *EXPORT_TASK_TYPES,
     }
 )
+DEVICE_DEFAULT_SORT_FIELD = "default"
 SORT_FIELDS = {
     "name": lambda item: natural_text_key(item.name),
     "system_name": lambda item: natural_text_key(item.system_name),
@@ -399,7 +403,7 @@ class DeviceManagementWebService:
         work_scope_status: str = "included",
         page: int = 1,
         page_size: int = 10,
-        sort_by: str = "name",
+        sort_by: str = DEVICE_DEFAULT_SORT_FIELD,
         sort_order: str = "asc",
     ) -> DevicePageDTO:
         site = self.current_site_id()
@@ -421,10 +425,9 @@ class DeviceManagementWebService:
                 work_scope_status=work_scope_status,
             )
         selected_status = connection_status.strip().upper()
-        try:
-            sort_key = SORT_FIELDS[sort_by]
-        except KeyError as exc:
-            raise ValueError("不支持的设备排序字段") from exc
+        sort_key = SORT_FIELDS.get(sort_by)
+        if sort_key is None and sort_by != DEVICE_DEFAULT_SORT_FIELD:
+            raise ValueError("不支持的设备排序字段")
         requires_full_projection = bool(selected_status) or sort_by in {
             "last_collected_at",
             "last_collect_status",
@@ -475,7 +478,16 @@ class DeviceManagementWebService:
                 )
                 for device in devices
             ]
-        projected.sort(key=lambda pair: sort_key(pair[1]), reverse=sort_order == "desc")
+        if sort_by == DEVICE_DEFAULT_SORT_FIELD:
+            projected.sort(
+                key=lambda pair: self._default_device_sort_key(
+                    pair[0], group_names
+                ),
+                reverse=sort_order == "desc",
+            )
+        else:
+            assert sort_key is not None
+            projected.sort(key=lambda pair: sort_key(pair[1]), reverse=sort_order == "desc")
         total = len(projected)
         total_pages = max(1, math.ceil(total / page_size))
         selected_page = min(max(1, page), total_pages)
@@ -3761,6 +3773,23 @@ class DeviceManagementWebService:
                 str(getattr(device, "credential_status", "missing")),
                 str(getattr(device, "credential_error_code", "CREDENTIAL_MISSING")),
             ),
+        )
+
+    @staticmethod
+    def _default_device_sort_key(
+        device: Device, group_names: dict[int, str]
+    ) -> tuple[object, ...]:
+        group_name = (
+            group_names.get(int(device.group_id), "")
+            if device.group_id is not None
+            else ""
+        )
+        return (
+            *device_group_sort_key(group_name),
+            natural_text_key(device.name),
+            natural_text_key(device.system_name),
+            natural_text_key(device.primary_address),
+            int(device.id or 0),
         )
 
     def _write_result_item(

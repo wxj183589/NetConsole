@@ -2,7 +2,12 @@ import sqlite3
 
 from netconsole.core.database import Database
 from netconsole.models.device import Device
-from netconsole.repositories.device_group_repository import DeviceGroupRepository, DuplicateGroupName
+from netconsole.repositories.device_group_repository import (
+    DEVICE_DEFAULT_GROUP_ORDER,
+    DeviceGroupRepository,
+    DuplicateGroupName,
+    canonical_device_group_name,
+)
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.device_group_service import group_filter_to_repository_value
 
@@ -87,6 +92,19 @@ def test_device_repository_list_uses_name_natural_order(tmp_path):
     repository.create(Device(name="LC1", primary_address="10.0.0.1"))
 
     assert [device.name for device in repository.list()] == ["LC1", "LC2", "LC10"]
+
+
+def test_device_repository_natural_order_handles_padded_numeric_prefixes(tmp_path):
+    repository = make_repository(tmp_path)
+    for index, name in enumerate(
+        ("02xxx", "01.xxx", "02.xxx", "01-xxx", "02-xxx", "01xxx"),
+        start=1,
+    ):
+        repository.create(Device(name=name, primary_address=f"10.0.0.{index}"))
+
+    ordered_names = [device.name for device in repository.list()]
+
+    assert [int(name[:2]) for name in ordered_names] == [1, 1, 1, 2, 2, 2]
 
 
 def test_device_repository_search_includes_group_and_device_type(tmp_path):
@@ -257,8 +275,10 @@ def test_device_group_list_uses_fixed_business_order_and_natural_others(tmp_path
 
     names = [group.name for group in groups.list()]
 
-    assert names[:4] == ["cocc", "bOcc", "车站", "车载 MR"]
-    assert names[4:] == ["2组", "10组", "车载-3SW"]
+    assert names[:5] == ["cocc", "bOcc", "车站", "车载 MR", "车载-3SW"]
+    assert names[5:] == ["2组", "10组"]
+    assert DEVICE_DEFAULT_GROUP_ORDER == ("COCC", "BOCC", "车站", "车载-MR", "车载-SW")
+    assert canonical_device_group_name(" 车载-3SW ") == "车载-SW"
 
 
 def test_group_filter_value_keeps_group_id_for_repository_filter(tmp_path):

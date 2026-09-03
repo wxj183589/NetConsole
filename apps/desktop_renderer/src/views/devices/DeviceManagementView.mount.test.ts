@@ -30,7 +30,7 @@ const mocks = vi.hoisted(() => ({
   deviceQueryStore: {
     activateSite: vi.fn(() => ({
       search: '', group: '', vendor: '', device_type: '', connection_status: '',
-      project_phase: 'all', work_scope_status: 'included', sort_by: 'name',
+      project_phase: 'all', work_scope_status: 'included', sort_by: 'default',
       sort_order: 'asc', page: 1, page_size: 50,
     })),
     save: vi.fn(),

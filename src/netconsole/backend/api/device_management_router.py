@@ -128,8 +128,8 @@ def list_devices(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=10, ge=1, le=200),
     sort_by: str = Query(
-        default="name",
-        pattern="^(name|system_name|primary_address|station|device_type|updated_at|metadata_updated_at|last_collected_at|last_collect_status|status)$",
+        default="default",
+        pattern="^(default|name|system_name|primary_address|station|device_type|updated_at|metadata_updated_at|last_collected_at|last_collect_status|status)$",
     ),
     sort_order: str = Query(default="asc", pattern="^(asc|desc)$"),
 ) -> DevicePageDTO:

@@ -11,7 +11,7 @@ export const DEVICE_MANAGEMENT_QUERY_DEFAULTS: DeviceManagementQueryState = {
   connection_status: '',
   project_phase: 'all',
   work_scope_status: 'included',
-  sort_by: 'name',
+  sort_by: 'default',
   sort_order: 'asc',
   page: 1,
   page_size: 50,

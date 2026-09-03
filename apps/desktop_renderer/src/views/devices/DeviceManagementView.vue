@@ -70,6 +70,7 @@ import type {
   DeviceImportRowResult,
   DeviceImportWriteMode,
   DeviceListItem,
+  DeviceListSortField,
   ProjectPhase,
   WorkScopeStatus,
   DevicePage,
@@ -203,7 +204,7 @@ const filters = reactive({
   connection_status: '' as DeviceConnectionStatus | '',
   project_phase: 'all' as ProjectPhase | 'all',
   work_scope_status: 'included' as WorkScopeStatus | 'all',
-  sort_by: 'name',
+  sort_by: 'default' as DeviceListSortField,
   sort_order: 'asc' as 'asc' | 'desc',
   page: 1,
   page_size: 50,
@@ -1941,6 +1942,7 @@ function deviceListErrorMessage(cause: unknown): string {
         <el-option label="认证失败" value="AUTH_FAILED" /><el-option label="任务异常" value="ERROR" />
       </el-select>
       <el-select v-model="filters.sort_by" @change="loadDevices(true)">
+        <el-option label="默认排序（分组优先 + 名称自然排序）" value="default" />
         <el-option label="按名称" value="name" /><el-option label="按地址" value="primary_address" />
         <el-option label="按站点" value="station" /><el-option label="按资料更新时间" value="metadata_updated_at" />
         <el-option label="按最后采集时间" value="last_collected_at" />

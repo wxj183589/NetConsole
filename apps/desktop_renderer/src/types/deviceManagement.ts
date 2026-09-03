@@ -93,6 +93,19 @@ export interface DevicePage {
   total_pages: number
 }
 
+export type DeviceListSortField =
+  | 'default'
+  | 'name'
+  | 'system_name'
+  | 'primary_address'
+  | 'station'
+  | 'device_type'
+  | 'updated_at'
+  | 'metadata_updated_at'
+  | 'last_collected_at'
+  | 'last_collect_status'
+  | 'status'
+
 export interface DeviceTaskSummary {
   task_id: string
   task_type: string
@@ -635,7 +648,7 @@ export interface DeviceListQuery {
   work_scope_status?: WorkScopeStatus | 'all'
   page?: number
   page_size?: number
-  sort_by?: string
+  sort_by?: DeviceListSortField
   sort_order?: 'asc' | 'desc'
 }
 
@@ -647,7 +660,7 @@ export interface DeviceManagementQueryState {
   connection_status: DeviceConnectionStatus | ''
   project_phase: ProjectPhase | 'all'
   work_scope_status: WorkScopeStatus | 'all'
-  sort_by: string
+  sort_by: DeviceListSortField
   sort_order: 'asc' | 'desc'
   page: number
   page_size: number

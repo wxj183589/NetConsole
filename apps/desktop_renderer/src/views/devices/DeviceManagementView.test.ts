@@ -71,6 +71,12 @@ describe('Device Management Web view', () => {
     expect(source).not.toContain('等待共享 Job Runtime 非序列化 bootstrap 接入')
   })
 
+  it('uses backend default group-priority sorting and preserves explicit sort choices', () => {
+    expect(source).toContain("sort_by: 'default'")
+    expect(source).toContain('默认排序（分组优先 + 名称自然排序）')
+    expect(source).toContain('sort_by: filters.sort_by')
+  })
+
   it('submits background connection tests to the public task center', () => {
     expect(source).toContain('startBatchConnectionTests')
     expect(source).toContain('任务已提交，但')

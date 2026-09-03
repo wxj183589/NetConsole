@@ -391,12 +391,115 @@ def test_default_device_list_loads_facts_for_current_page_only(
 
     response = client.get(
         "/api/device-management/devices",
-        params={"sort_by": "name", "page": 1, "page_size": 1},
+        params={"page": 1, "page_size": 1},
     )
 
     assert response.status_code == 200
     assert len(response.json()["items"]) == 1
     assert requested_uuids == [[response.json()["items"][0]["device_uuid"]]]
+
+
+def test_default_device_list_sorts_group_priority_and_names_before_pagination(
+    tmp_path: Path,
+) -> None:
+    client, service, _adapter, devices, _facts, _mr, _sw = _fixture(tmp_path)
+    groups = DeviceGroupRepository(Database(service.paths.site_db_path("demo")), "demo")
+    cocc = groups.create(" cocc ")
+    bocc = groups.create("BOCC")
+    station = groups.create("车站")
+    vehicle_sw = groups.create("车载-3SW")
+    other = groups.create("其它已定义分组")
+
+    def add(name: str, group_id: int | None, address_suffix: int) -> None:
+        devices.create(
+            Device(
+                name=name,
+                primary_address=f"198.51.100.{address_suffix}",
+                group_id=group_id,
+                device_type="SW",
+            )
+        )
+
+    add("10-核心交换机", cocc.id, 10)
+    add("2-无线控制器", cocc.id, 11)
+    add("BOCC-SW01", bocc.id, 12)
+    add("15-舞阳车辆段", station.id, 13)
+    add("16-双陈站", station.id, 14)
+    add("01-MR-CT", _mr.group_id, 15)
+    add("01-车载交换机", vehicle_sw.id, 16)
+    add("9-其它设备", other.id, 17)
+    add("2-未分组", None, 18)
+
+    full = client.get(
+        "/api/device-management/devices",
+        params={"page": 1, "page_size": 100},
+    )
+    assert full.status_code == 200, full.text
+    items = full.json()["items"]
+    assert [item["group_name"] for item in items] == [
+        "cocc",
+        "cocc",
+        "BOCC",
+        "车站",
+        "车站",
+        "车载-MR",
+        "车载-MR",
+        "车载-3SW",
+        "其它已定义分组",
+        "未分组",
+        "未分组",
+    ]
+    assert [item["name"] for item in items[:7]] == [
+        "2-无线控制器",
+        "10-核心交换机",
+        "BOCC-SW01",
+        "15-舞阳车辆段",
+        "16-双陈站",
+        "01-MR-CT",
+        "MR2",
+    ]
+    assert [item["name"] for item in items[-4:]] == [
+        "01-车载交换机",
+        "9-其它设备",
+        "2-未分组",
+        "SW10",
+    ]
+
+    page_two = client.get(
+        "/api/device-management/devices",
+        params={"page": 2, "page_size": 2},
+    )
+    assert page_two.status_code == 200, page_two.text
+    assert [item["name"] for item in page_two.json()["items"]] == [
+        "BOCC-SW01",
+        "15-舞阳车辆段",
+    ]
+
+    filtered = client.get(
+        "/api/device-management/devices",
+        params={"device_type": "SW", "page": 1, "page_size": 100},
+    )
+    assert filtered.status_code == 200, filtered.text
+    assert [item["group_name"] for item in filtered.json()["items"]] == [
+        "cocc",
+        "cocc",
+        "BOCC",
+        "车站",
+        "车站",
+        "车载-MR",
+        "车载-3SW",
+        "其它已定义分组",
+        "未分组",
+        "未分组",
+    ]
+
+    explicit_name_sort = client.get(
+        "/api/device-management/devices",
+        params={"sort_by": "name", "page": 1, "page_size": 100},
+    )
+    assert explicit_name_sort.status_code == 200, explicit_name_sort.text
+    assert explicit_name_sort.json()["items"][0]["name"] == "01-MR-CT"
+    assert explicit_name_sort.json()["items"][0]["group_name"] == "车载-MR"
 
 
 def test_detail_returns_only_existing_fact_task_collection_and_sanitized_errors(
