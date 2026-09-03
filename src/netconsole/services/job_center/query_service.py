@@ -828,6 +828,11 @@ class JobCenterQueryService:
             "skipped_count",
             "warning_count",
             "partial_success",
+            "requested",
+            "deleted",
+            "failed",
+            "skipped",
+            "released_bytes",
             "artifact_id",
             "artifact_ref",
             "artifact_path",
@@ -1172,6 +1177,36 @@ class JobCenterQueryService:
             )
             if "nodes_count" not in details and isinstance(result.get("nodes"), list):
                 details["nodes_count"] = len(result["nodes"])
+        elif task_type == "database_backup_batch_delete":
+            details.update(
+                {
+                    key: result[key]
+                    for key in (
+                        "requested",
+                        "deleted",
+                        "failed",
+                        "skipped",
+                        "released_bytes",
+                        "success_count",
+                        "failed_count",
+                        "skipped_count",
+                        "partial_success",
+                        "business_status",
+                        "business_outcome",
+                    )
+                    if key in result and isinstance(result[key], (str, int, bool, float, type(None)))
+                }
+            )
+            if isinstance(result.get("items"), list):
+                details["items"] = [
+                    {
+                        key: item[key]
+                        for key in ("backup_id", "status", "code", "message", "released_bytes")
+                        if key in item and isinstance(item[key], (str, int, bool, float, type(None)))
+                    }
+                    for item in result["items"][:500]
+                    if isinstance(item, dict)
+                ]
         details.update(
             {
                 key: result[key]

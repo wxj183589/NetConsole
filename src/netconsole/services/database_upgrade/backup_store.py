@@ -30,6 +30,12 @@ def _safe_component(value: object) -> str:
 _BACKUP_LIFECYCLE_LOCK = threading.RLock()
 
 
+class DatabaseBackupDeleteError(ValueError):
+    def __init__(self, code: str, message: str) -> None:
+        self.code = str(code)
+        super().__init__(message)
+
+
 class DatabaseBackupStore:
     """统一数据库升级备份中心；只在明确的用户动作中删除。"""
 
@@ -286,11 +292,22 @@ class DatabaseBackupStore:
         path = Path(str(item["path"])).resolve()
         database_path = self._database_path(item)
         if any(database_path == active.resolve() for active in active_paths):
-            raise ValueError("当前活动数据库或其备份不能删除")
-        if self.root not in path.parents:
-            raise ValueError("数据库备份路径越界")
-        shutil.rmtree(path)
-        return {"backup_id": backup_id, "deleted": True}
+            raise DatabaseBackupDeleteError("BACKUP_IN_USE", "当前活动数据库或其备份不能删除")
+        if path == self.root or self.root not in path.parents:
+            raise DatabaseBackupDeleteError("BACKUP_PATH_INVALID", "数据库备份路径越界")
+        if not path.is_dir():
+            raise DatabaseBackupDeleteError("BACKUP_NOT_FOUND", "数据库备份目录不存在")
+        try:
+            shutil.rmtree(path)
+        except FileNotFoundError as exc:
+            raise DatabaseBackupDeleteError("BACKUP_NOT_FOUND", "数据库备份目录不存在") from exc
+        except OSError as exc:
+            raise DatabaseBackupDeleteError("BACKUP_DELETE_FAILED", "数据库备份目录删除失败") from exc
+        return {
+            "backup_id": backup_id,
+            "deleted": True,
+            "released_bytes": int(item.get("database_size") or item.get("size_bytes") or 0),
+        }
 
     def open_directory(self, backup_id: str) -> Path:
         path = Path(str(self.read(backup_id)["path"])).resolve()
@@ -309,14 +326,14 @@ class DatabaseBackupStore:
 
     def _database_path(self, item: dict[str, Any]) -> Path:
         directory = Path(str(item["path"])).resolve()
-        if self.root not in directory.parents:
-            raise ValueError("数据库备份路径越界")
+        if directory == self.root or self.root not in directory.parents:
+            raise DatabaseBackupDeleteError("BACKUP_PATH_INVALID", "数据库备份路径越界")
         database_path = (directory / "database.sqlite").resolve()
         if database_path.parent != directory:
-            raise ValueError("数据库备份文件路径越界")
+            raise DatabaseBackupDeleteError("BACKUP_PATH_INVALID", "数据库备份文件路径越界")
         declared = str(item.get("backup_database_path") or "").strip()
         if declared and Path(declared).resolve() != database_path:
-            raise ValueError("数据库备份 manifest 路径与受控目录不一致")
+            raise DatabaseBackupDeleteError("BACKUP_PATH_INVALID", "数据库备份 manifest 路径与受控目录不一致")
         return database_path
 
     def _find_reusable(
@@ -396,4 +413,4 @@ def _write_json(path: Path, value: dict[str, Any]) -> None:
     atomic_write_bytes(path, payload)
 
 
-__all__ = ["DatabaseBackupStore"]
+__all__ = ["DatabaseBackupDeleteError", "DatabaseBackupStore"]

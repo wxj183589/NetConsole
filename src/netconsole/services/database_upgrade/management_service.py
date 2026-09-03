@@ -12,7 +12,10 @@ from uuid import uuid4
 from netconsole.core.interprocess_lock import interprocess_file_lock
 from netconsole.core.paths import PathResolver
 from netconsole.services.database_upgrade.backup_lifecycle import BackupLifecycleService
-from netconsole.services.database_upgrade.backup_store import DatabaseBackupStore
+from netconsole.services.database_upgrade.backup_store import (
+    DatabaseBackupDeleteError,
+    DatabaseBackupStore,
+)
 from netconsole.services.database_upgrade.coordinator import DatabaseUpgradeCoordinator
 from netconsole.services.database_upgrade.history import LegacyDatabaseArchiveService
 from netconsole.services.database_upgrade.journal import list_upgrade_journals
@@ -81,7 +84,7 @@ class DatabaseUpgradeManagementService:
                             "result_status": str(backup.get("result_status") or ""),
                             "message": "数据库备份完成",
                         })
-                    except Exception as exc:
+                    except Exception:
                         results.append({
                             "profile_id": profile_id,
                             "profile_name": str(profile.get("display_name") or ""),
@@ -235,13 +238,97 @@ class DatabaseUpgradeManagementService:
     def delete_backup(self, backup_id: str, *, confirmed: bool = False, site_id: str | None = None) -> dict[str, Any]:
         if not confirmed:
             raise ValueError("删除数据库备份前必须明确确认")
-        with self._backup_action_lock(backup_id):
-            item = self.read_backup(backup_id, site_id=site_id)
-            self._ensure_not_in_use(backup_id)
-            active_paths = self._active_mesh_paths(str(item.get("scope_id") or ""))
-            result = self.backups.delete(backup_id, active_paths=active_paths)
-            self._audit("database_backup_delete", {"backup_id": backup_id, **result})
-            return result
+        with self.backups.lifecycle_lock():
+            _, result = self._delete_backup_item(backup_id, site_id=site_id)
+        self._audit("database_backup_delete", {"backup_id": backup_id, **result})
+        return result
+
+    def delete_backups(
+        self,
+        backup_ids: list[str] | tuple[str, ...],
+        *,
+        confirmed: bool = False,
+        site_id: str | None = None,
+        task_id: str = "",
+        progress: Callable[[str, int, int, str], None] | None = None,
+    ) -> dict[str, Any]:
+        """Delete selected backups item-by-item while retaining partial results."""
+
+        if not confirmed:
+            raise ValueError("批量删除数据库备份前必须明确确认")
+        selected = _unique_backup_ids(backup_ids)
+        results: list[dict[str, Any]] = []
+        with _DATABASE_BATCH_LOCK:
+            with self.backups.lifecycle_lock():
+                for index, backup_id in enumerate(selected, start=1):
+                    try:
+                        item, deleted = self._delete_backup_item(backup_id, site_id=site_id)
+                        released_bytes = int(
+                            deleted.get("released_bytes")
+                            or item.get("database_size")
+                            or item.get("size_bytes")
+                            or 0
+                        )
+                        outcome = {
+                            "backup_id": backup_id,
+                            "status": "deleted",
+                            "code": "DELETED",
+                            "message": "数据库备份已删除",
+                            "released_bytes": released_bytes,
+                        }
+                    except FileNotFoundError as exc:
+                        outcome = _backup_delete_outcome(
+                            backup_id,
+                            status="failed",
+                            code="BACKUP_NOT_FOUND",
+                            message=str(exc) or "数据库备份不存在",
+                        )
+                    except DatabaseBackupDeleteError as exc:
+                        outcome = _backup_delete_outcome(
+                            backup_id,
+                            status="skipped" if exc.code == "BACKUP_IN_USE" else "failed",
+                            code=exc.code,
+                            message=str(exc),
+                        )
+                    except ValueError as exc:
+                        outcome = _backup_delete_outcome(
+                            backup_id,
+                            status="skipped",
+                            code="BACKUP_IN_USE",
+                            message=str(exc) or "数据库备份正在使用中",
+                        )
+                    except OSError as exc:
+                        outcome = _backup_delete_outcome(
+                            backup_id,
+                            status="failed",
+                            code="BACKUP_DELETE_FAILED",
+                            message=str(exc) or "数据库备份目录删除失败",
+                        )
+                    except Exception as exc:
+                        outcome = _backup_delete_outcome(
+                            backup_id,
+                            status="failed",
+                            code="BACKUP_DELETE_FAILED",
+                            message="数据库备份删除失败",
+                        )
+                    results.append(outcome)
+                    self._audit(
+                        "database_backup_batch_delete_item",
+                        {"task_id": task_id, "site_id": site_id or "", **outcome},
+                    )
+                    if progress:
+                        progress(
+                            "database_backup_batch_delete",
+                            index,
+                            len(selected),
+                            f"已处理 {index}/{len(selected)} 个数据库备份",
+                        )
+        summary = _backup_delete_summary(site_id or "", results)
+        self._audit(
+            "database_backup_batch_delete",
+            {"task_id": task_id, **summary},
+        )
+        return summary
 
     def restore_backup(
         self,
@@ -363,7 +450,26 @@ class DatabaseUpgradeManagementService:
         }
         for journal in list_upgrade_journals(self.paths):
             if str(journal.get("backup_id") or "") == str(backup_id) and str(journal.get("stage") or "") not in terminal_stages:
-                raise ValueError("数据库备份正在用于升级或回滚，不能删除")
+                raise DatabaseBackupDeleteError("BACKUP_IN_USE", "数据库备份正在用于升级或回滚，不能删除")
+
+    def _delete_backup_item(
+        self,
+        backup_id: str,
+        *,
+        site_id: str | None,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        with self._backup_action_lock(backup_id):
+            item = self.read_backup(backup_id, site_id=site_id)
+            result_status = str(item.get("result_status") or "").strip().upper()
+            authority_status = str(item.get("authority_status") or "").strip().upper()
+            if result_status in {"CREATING", "RESTORING", "RESTORE_IN_PROGRESS", "MIGRATION_IN_PROGRESS"} or (
+                authority_status in {"PREPARING", "RESTORING", "IN_USE"}
+                and result_status != "CREATION_FAILED"
+            ):
+                raise DatabaseBackupDeleteError("BACKUP_IN_USE", "数据库备份正在创建或恢复，不能删除")
+            self._ensure_not_in_use(backup_id)
+            active_paths = self._active_mesh_paths(str(item.get("scope_id") or ""))
+            return item, self.backups.delete(backup_id, active_paths=active_paths)
 
 
 class _BackupRestoreAdapter:
@@ -416,6 +522,50 @@ class _BackupRestoreAdapter:
 
 def _unique_profile_ids(values: list[str] | tuple[str, ...]) -> list[str]:
     return list(dict.fromkeys(str(value).strip() for value in values if str(value).strip()))
+
+
+def _unique_backup_ids(values: list[str] | tuple[str, ...]) -> list[str]:
+    return list(dict.fromkeys(str(value).strip() for value in values if str(value).strip()))
+
+
+def _backup_delete_outcome(
+    backup_id: str,
+    *,
+    status: str,
+    code: str,
+    message: str,
+) -> dict[str, Any]:
+    return {
+        "backup_id": backup_id,
+        "status": status,
+        "code": code,
+        "message": message,
+        "released_bytes": 0,
+    }
+
+
+def _backup_delete_summary(site_id: str, results: list[dict[str, Any]]) -> dict[str, Any]:
+    deleted = sum(item.get("status") == "deleted" for item in results)
+    failed = sum(item.get("status") == "failed" for item in results)
+    skipped = sum(item.get("status") == "skipped" for item in results)
+    partial = bool(failed or skipped)
+    business_status = "SUCCESS" if not partial else "PARTIAL_SUCCESS" if deleted else "FAILED" if failed else "SKIPPED"
+    return {
+        "site_id": str(site_id),
+        "action": "batch_delete",
+        "requested": len(results),
+        "deleted": deleted,
+        "failed": failed,
+        "skipped": skipped,
+        "released_bytes": sum(int(item.get("released_bytes") or 0) for item in results if item.get("status") == "deleted"),
+        "success_count": deleted,
+        "failed_count": failed,
+        "skipped_count": skipped,
+        "partial_success": partial,
+        "business_status": business_status,
+        "business_outcome": f"批量删除完成：成功 {deleted} 个，失败 {failed} 个，跳过 {skipped} 个",
+        "items": results,
+    }
 
 
 def _batch_cancel_check(

@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Delete, FolderOpened, Refresh, RefreshLeft, Select, Upload } from '@element-plus/icons-vue'
 
 import {
   deleteDatabaseBackup,
+  deleteDatabaseBackups,
   getDatabaseUpgradeSnapshot,
   openDatabaseBackupDirectory,
   organizeLegacyDatabaseArchives,
@@ -22,6 +23,8 @@ import { isFeatureEnabled } from '../../features'
 import { t } from '../../i18n/runtime'
 import { useConfirm } from '../feedback/useConfirm'
 import { getPlatformAdapter } from '../../platform/runtime'
+import { getTask } from '../../api/tasks'
+import type { TaskItem } from '../../types/task'
 
 const snapshot = ref<DatabaseUpgradeSnapshot | null>(null)
 const loading = ref(false)
@@ -34,13 +37,29 @@ const backups = computed(() => snapshot.value?.backups || [])
 const selectedDatabases = ref<DatabaseStatus[]>([])
 const databaseTable = ref<{ clearSelection(): void; toggleAllSelection(): void } | null>(null)
 const selectedProfileIds = computed(() => selectedDatabases.value.map((item) => item.mr_id).filter(Boolean))
+const selectedBackups = ref<DatabaseBackup[]>([])
+const backupTable = ref<{
+  clearSelection(): void
+  toggleAllSelection(): void
+  toggleRowSelection(row: DatabaseBackup, selected?: boolean): void
+} | null>(null)
+const selectedBackupIds = computed(() => selectedBackups.value.map((item) => item.backup_id).filter(Boolean))
+const allBackupsSelected = computed(() => backups.value.length > 0 && selectedBackupIds.value.length === backups.value.length)
+const backupSelectionIndeterminate = computed(() => selectedBackupIds.value.length > 0 && !allBackupsSelected.value)
+const selectedBackupBytes = computed(() => selectedBackups.value.reduce((total, item) => total + backupSize(item), 0))
+const backupDeleteConfirming = ref(false)
+let syncingBackupSelection = false
 
 onMounted(() => { void reload() })
 
 async function reload(): Promise<void> {
   loading.value = true
   error.value = ''
-  try { snapshot.value = await getDatabaseUpgradeSnapshot() }
+  try {
+    const nextSnapshot = await getDatabaseUpgradeSnapshot()
+    snapshot.value = nextSnapshot
+    await pruneBackupSelection(nextSnapshot.backups)
+  }
   catch (cause) { showError(cause, t('database_upgrade.load_failed', '数据库升级状态加载失败')) }
   finally { loading.value = false }
 }
@@ -115,6 +134,85 @@ async function deleteBackup(item: DatabaseBackup): Promise<void> {
   await runTask(`delete:${item.backup_id}`, () => deleteDatabaseBackup(item.backup_id), t('database_upgrade.delete_submitted', '数据库备份删除任务已提交'))
 }
 
+async function deleteSelectedBackups(): Promise<void> {
+  const backupIds = [...selectedBackupIds.value]
+  if (!backupIds.length || actionId.value || backupDeleteConfirming.value) return
+  const selectedCount = backupIds.length
+  const estimatedBytes = selectedBackupBytes.value
+  backupDeleteConfirming.value = true
+  try {
+    const accepted = await confirm({
+      type: 'DESTRUCTIVE',
+      title: '批量删除数据库备份',
+      message: `确认永久删除已选择的 ${selectedCount} 个数据库备份？删除后无法通过 NetConsole 恢复。`,
+      detail: `已选择：${selectedCount} 个备份\n预计释放空间：${formatBytes(estimatedBytes)}\n删除后无法通过 NetConsole 恢复；当前活动数据库、正在创建或使用中的备份会被保护。`,
+      confirmText: '永久删除所选备份',
+      closeOnEscape: false,
+    })
+    if (!accepted || actionId.value) return
+    actionId.value = 'delete-backups-batch'
+    const task = await deleteDatabaseBackups(backupIds)
+    lastTask.value = task
+    await openTask(task.task_id)
+    const completed = await waitForTask(task.task_id)
+    const failed = taskMetric(completed, 'failed_count', 'failed')
+    const skipped = taskMetric(completed, 'skipped_count', 'skipped')
+    const deleted = taskMetric(completed, 'success_count', 'deleted')
+    const partial = Boolean(completed.partial_success) || failed > 0 || skipped > 0
+    if (completed.status === 'COMPLETED') {
+      if (!partial) clearSelectedBackups()
+      await reload()
+      if (partial) {
+        ElMessage.warning(`批量删除完成：成功 ${deleted} 个，失败 ${failed} 个，跳过 ${skipped} 个`)
+      } else {
+        ElMessage.success(`批量删除完成：已删除 ${deleted} 个备份，释放 ${formatBytes(taskMetric(completed, 'released_bytes'))}`)
+      }
+    } else {
+      await reload()
+      throw new Error(`批量删除任务状态：${completed.status}`)
+    }
+  } catch (cause) {
+    showError(cause, '批量删除数据库备份失败')
+  } finally {
+    backupDeleteConfirming.value = false
+    actionId.value = ''
+  }
+}
+
+function onBackupSelectionChange(rows: DatabaseBackup[]): void {
+  if (syncingBackupSelection) return
+  selectedBackups.value = rows.filter((item) => Boolean(item?.backup_id))
+}
+
+function toggleAllBackups(checked: boolean): void {
+  if (!backupTable.value) return
+  if (!checked) {
+    syncingBackupSelection = true
+    backupTable.value.clearSelection()
+    syncingBackupSelection = false
+    selectedBackups.value = []
+    return
+  }
+  if (!allBackupsSelected.value) backupTable.value.toggleAllSelection()
+}
+
+function clearSelectedBackups(): void {
+  selectedBackups.value = []
+  backupTable.value?.clearSelection()
+}
+
+async function pruneBackupSelection(rows: DatabaseBackup[]): Promise<void> {
+  const available = new Map(rows.map((item) => [item.backup_id, item]))
+  const retained = selectedBackupIds.value.map((id) => available.get(id)).filter((item): item is DatabaseBackup => Boolean(item))
+  selectedBackups.value = retained
+  await nextTick()
+  if (!backupTable.value) return
+  syncingBackupSelection = true
+  backupTable.value.clearSelection()
+  retained.forEach((item) => backupTable.value?.toggleRowSelection(item, true))
+  syncingBackupSelection = false
+}
+
 async function openDirectory(item: DatabaseBackup): Promise<void> {
   actionId.value = `open:${item.backup_id}`
   try {
@@ -127,6 +225,23 @@ async function openDirectory(item: DatabaseBackup): Promise<void> {
 async function openTask(taskId: string): Promise<void> {
   const result = await getPlatformAdapter().openTaskWindow({ taskId, module: 'logs' })
   if (!result.success && result.error) ElMessage.warning(result.error)
+}
+
+async function waitForTask(taskId: string): Promise<TaskItem> {
+  const deadline = Date.now() + 10 * 60_000
+  while (Date.now() < deadline) {
+    const task = await getTask(taskId)
+    if (['COMPLETED', 'FAILED', 'CANCELLED'].includes(task.status)) return task
+    await new Promise((resolve) => setTimeout(resolve, 750))
+  }
+  throw new Error('批量删除任务等待超时，请在任务中心确认状态')
+}
+
+function taskMetric(task: TaskItem, directKey: string, detailKey = directKey): number {
+  const direct = task[directKey as keyof TaskItem]
+  if (typeof direct === 'number') return direct
+  const detail = task.details?.[detailKey]
+  return typeof detail === 'number' ? detail : Number(detail || 0)
 }
 
 function databaseLabel(kind: string): string { return kind === 'mesh_derived' ? t('database_upgrade.database_mesh_derived', 'MESH 派生数据库') : kind }
@@ -154,6 +269,7 @@ function formatBytes(value: number): string {
   if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} MB`
   return `${(bytes / 1024 ** 3).toFixed(2)} GB`
 }
+function backupSize(item: DatabaseBackup): number { return Number(item.database_size ?? item.size_bytes ?? 0) }
 function formatTime(value: string): string { return value ? new Date(value).toLocaleString() : notRecordedLabel() }
 function shortVersion(value?: string): string { return value && value.length > 24 ? `${value.slice(0, 21)}...` : value || unknownLabel() }
 function unknownLabel(): string { return t('database_upgrade.unknown', '未知') }
@@ -203,8 +319,33 @@ function showError(cause: unknown, fallback: string): void {
       </el-tab-pane>
       <el-tab-pane :label="`${t('database_upgrade.history_tab', '历史数据库备份')} (${snapshot?.backup_count || 0})`">
         <div class="backup-summary">{{ t('database_upgrade.backup_usage', '备份占用') }} <strong>{{ formatBytes(snapshot?.backup_size_bytes || 0) }}</strong></div>
+        <div class="backup-selection-toolbar">
+          <el-checkbox
+            data-testid="history-backup-select-all"
+            :model-value="allBackupsSelected"
+            :indeterminate="backupSelectionIndeterminate"
+            :disabled="!backups.length || !!actionId || backupDeleteConfirming"
+            @change="toggleAllBackups"
+          >
+            全选当前结果
+          </el-checkbox>
+          <span data-testid="history-backup-selection-summary">已选 {{ selectedBackups.length }} / {{ backups.length }} 个备份</span>
+          <span data-testid="history-backup-selection-bytes">预计释放 {{ formatBytes(selectedBackupBytes) }}</span>
+          <el-button
+            v-if="isFeatureEnabled('capability.database_upgrade.backup_delete')"
+            data-testid="history-backup-batch-delete"
+            type="danger"
+            size="small"
+            :disabled="!selectedBackupIds.length || !!actionId || backupDeleteConfirming"
+            :loading="actionId === 'delete-backups-batch'"
+            @click="deleteSelectedBackups"
+          >
+            批量删除
+          </el-button>
+        </div>
         <div class="table-wrap">
-          <el-table :data="backups" row-key="backup_id" :empty-text="t('database_upgrade.no_backups', '尚无数据库升级备份')">
+          <el-table ref="backupTable" :data="backups" row-key="backup_id" :empty-text="t('database_upgrade.no_backups', '尚无数据库升级备份')" @selection-change="onBackupSelectionChange">
+            <el-table-column type="selection" width="52" :selectable="(row: DatabaseBackup) => Boolean(row.backup_id)" />
             <el-table-column type="expand">
               <template #default="{ row }"><dl class="backup-detail"><div><dt>{{ t('database_upgrade.backup_id', '备份 ID') }}</dt><dd><code>{{ row.backup_id }}</code></dd></div><div><dt>{{ t('database_upgrade.sha256', 'SHA-256') }}</dt><dd><code>{{ row.database_sha256 || notRecordedLabel() }}</code></dd></div><div><dt>{{ t('database_upgrade.task', '任务') }}</dt><dd><code>{{ row.task_id || notRecordedLabel() }}</code></dd></div><div><dt>{{ t('database_upgrade.scope', '范围') }}</dt><dd><code>{{ row.scope_id }}</code></dd></div></dl></template>
             </el-table-column>
@@ -231,5 +372,5 @@ function showError(cause: unknown, fallback: string): void {
 </template>
 
 <style scoped>
-.database-upgrade-panel{padding:18px 20px;background:var(--el-bg-color);border:1px solid var(--el-border-color-light);border-radius:8px}.panel-heading,.panel-actions,.icon-actions{display:flex;align-items:center;gap:10px}.panel-heading{justify-content:space-between;margin-bottom:12px}.panel-heading h2{margin:0 0 5px;font-size:17px}.panel-heading p{margin:0;color:var(--nc-text-secondary);font-size:13px}.panel-actions,.icon-actions{flex-wrap:wrap;justify-content:flex-end}.el-alert{margin:10px 0}.table-wrap{width:100%;overflow-x:auto}.table-wrap :deep(.el-table){min-width:900px}.backup-summary{margin-bottom:10px;color:var(--nc-text-secondary)}.backup-detail{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 18px;margin:0;padding:8px 28px}.backup-detail div{min-width:0}.backup-detail dt{color:var(--nc-text-secondary);font-size:12px}.backup-detail dd{margin:4px 0 0;overflow-wrap:anywhere}.el-table small{display:block;margin-top:4px;color:var(--nc-text-secondary)}code{overflow-wrap:anywhere}@media(max-width:900px){.panel-heading{align-items:flex-start;flex-direction:column}.panel-actions{justify-content:flex-start}.backup-detail{grid-template-columns:1fr}}
+.database-upgrade-panel{padding:18px 20px;background:var(--el-bg-color);border:1px solid var(--el-border-color-light);border-radius:8px}.panel-heading,.panel-actions,.icon-actions{display:flex;align-items:center;gap:10px}.panel-heading{justify-content:space-between;margin-bottom:12px}.panel-heading h2{margin:0 0 5px;font-size:17px}.panel-heading p{margin:0;color:var(--nc-text-secondary);font-size:13px}.panel-actions,.icon-actions{flex-wrap:wrap;justify-content:flex-end}.el-alert{margin:10px 0}.table-wrap{width:100%;overflow-x:auto}.table-wrap :deep(.el-table){min-width:900px}.backup-summary{margin-bottom:10px;color:var(--nc-text-secondary)}.backup-selection-toolbar{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:10px;color:var(--nc-text-secondary);font-size:13px}.backup-detail{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 18px;margin:0;padding:8px 28px}.backup-detail div{min-width:0}.backup-detail dt{color:var(--nc-text-secondary);font-size:12px}.backup-detail dd{margin:4px 0 0;overflow-wrap:anywhere}.el-table small{display:block;margin-top:4px;color:var(--nc-text-secondary)}code{overflow-wrap:anywhere}@media(max-width:900px){.panel-heading{align-items:flex-start;flex-direction:column}.panel-actions{justify-content:flex-start}.backup-detail{grid-template-columns:1fr}}
 </style>

@@ -137,6 +137,46 @@ def test_restore_and_delete_require_confirmation_and_submit_backup_id_only(tmp_p
     assert process.jobs[-1].params["backup_id"] == backup_id
 
 
+def test_batch_delete_requires_confirmation_and_submits_one_scoped_job(tmp_path: Path) -> None:
+    client, paths, process = _client(tmp_path)
+    database = tmp_path / "data" / "sites" / "demo" / "files" / "mesh.sqlite"
+    database.parent.mkdir(parents=True, exist_ok=True)
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute("CREATE TABLE marker(value TEXT)")
+        connection.commit()
+    backup = DatabaseBackupStore(paths).create(
+        source_path=database,
+        database_kind="mesh_derived",
+        scope_type="site_profile",
+        scope_id="demo:列车07-MR-CT",
+        task_id="seed",
+        old_version="old",
+        target_version="new",
+        strategy="SCHEMA_MIGRATION",
+    )
+    backup_id = str(backup["backup_id"])
+
+    rejected = client.post(
+        "/api/database-upgrades/backups/batch-delete",
+        json={"backup_ids": [backup_id], "confirmed": False},
+    )
+    assert rejected.status_code == 422
+
+    submitted = client.post(
+        "/api/database-upgrades/backups/batch-delete",
+        json={"backup_ids": [backup_id, "missing", backup_id], "confirmed": True},
+    )
+    assert submitted.status_code == 202, submitted.text
+    assert len(process.jobs) == 1
+    assert process.jobs[0].task_type == "database_backup_batch_delete"
+    assert process.jobs[0].params["backup_ids"] == [backup_id, "missing"]
+    assert process.jobs[0].params["site_id"] == "demo"
+    assert process.jobs[0].params["resource_keys"] == [
+        "database-backup-center:demo",
+        "database-upgrade-batch:demo",
+    ]
+
+
 def test_backup_actions_reject_a_backup_from_another_site(tmp_path: Path) -> None:
     client, paths, process = _client(tmp_path)
     database = tmp_path / "data" / "sites" / "other" / "files" / "mesh.sqlite"

@@ -33,6 +33,7 @@ export interface DatabaseBackup {
   old_schema_version?: string
   target_schema_version?: string
   database_size: number
+  size_bytes?: number
   database_sha256: string
   result_status: string
   integrity_check_result?: { valid?: boolean; restorable?: boolean; integrity_check?: string; quick_check?: string }
@@ -64,4 +65,7 @@ export const organizeLegacyDatabaseArchives = () => apiRequest<DatabaseTaskRefer
 export const validateDatabaseBackup = (backupId: string) => apiRequest<DatabaseTaskReference>(`${root}/backups/${encodeURIComponent(backupId)}/validate`, { method: 'POST' })
 export const restoreDatabaseBackup = (backupId: string) => apiRequest<DatabaseTaskReference>(`${root}/backups/${encodeURIComponent(backupId)}/restore`, { method: 'POST', body: JSON.stringify({ confirmed: true }) })
 export const deleteDatabaseBackup = (backupId: string) => apiRequest<DatabaseTaskReference>(`${root}/backups/${encodeURIComponent(backupId)}/delete`, { method: 'POST', body: JSON.stringify({ confirmed: true }) })
+export const deleteDatabaseBackups = (backupIds: string[]) => apiRequest<DatabaseTaskReference>(`${root}/backups/batch-delete`, {
+  method: 'POST', body: JSON.stringify({ backup_ids: backupIds, confirmed: true }),
+})
 export const openDatabaseBackupDirectory = (backupId: string) => apiRequest<DesktopActionResult>(`${root}/backups/${encodeURIComponent(backupId)}/open-directory`, { method: 'POST' })

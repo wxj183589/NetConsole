@@ -22,6 +22,11 @@ class DatabaseBackupActionRequest(ApiModel):
     confirmed: bool = False
 
 
+class DatabaseBackupBatchDeleteRequest(ApiModel):
+    backup_ids: list[str] = Field(min_length=1, max_length=500)
+    confirmed: bool = False
+
+
 class DatabaseTaskReferenceDTO(ApiModel):
     task_id: str
     task_type: str
@@ -29,6 +34,7 @@ class DatabaseTaskReferenceDTO(ApiModel):
 
 __all__ = [
     "DatabaseBackupActionRequest",
+    "DatabaseBackupBatchDeleteRequest",
     "DatabaseBatchRequest",
     "DatabaseTaskReferenceDTO",
     "DatabaseUpgradeRequest",

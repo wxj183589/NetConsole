@@ -15,9 +15,10 @@ DATABASE_UPGRADE_TASK_TYPES = frozenset(
         "legacy_database_archive_migration",
         "database_backup_restore",
         "database_backup_delete",
+        "database_backup_batch_delete",
     }
 )
-DATABASE_UPGRADE_NONCANCELLABLE_TASK_TYPES = frozenset({"database_backup_delete"})
+DATABASE_UPGRADE_NONCANCELLABLE_TASK_TYPES = frozenset({"database_backup_delete", "database_backup_batch_delete"})
 
 
 def database_upgrade(context: JobContext) -> dict[str, object]:
@@ -112,6 +113,30 @@ def database_backup_delete(context: JobContext) -> dict[str, object]:
     return result
 
 
+def database_backup_batch_delete(context: JobContext) -> dict[str, object]:
+    context.check_cancelled()
+    result = DatabaseUpgradeManagementService(context.paths).delete_backups(
+        [str(value) for value in context.params.get("backup_ids") or []],
+        confirmed=bool(context.params.get("confirmed")),
+        site_id=str(context.params.get("site_id") or context.params.get("site_name") or ""),
+        task_id=context.job_id,
+        progress=context.progress,
+    )
+    context.structured_progress(
+        "database_backup_batch_delete",
+        int(result.get("deleted") or 0),
+        int(result.get("requested") or 0),
+        "批量删除数据库备份完成",
+        requested=int(result.get("requested") or 0),
+        deleted=int(result.get("deleted") or 0),
+        failed=int(result.get("failed") or 0),
+        skipped=int(result.get("skipped") or 0),
+        released_bytes=int(result.get("released_bytes") or 0),
+        partial_success=bool(result.get("partial_success")),
+    )
+    return result
+
+
 HANDLERS = {
     "database_upgrade": database_upgrade,
     "database_batch_upgrade": database_batch_upgrade,
@@ -120,6 +145,7 @@ HANDLERS = {
     "legacy_database_archive_migration": legacy_database_archive_migration,
     "database_backup_restore": database_backup_restore,
     "database_backup_delete": database_backup_delete,
+    "database_backup_batch_delete": database_backup_batch_delete,
 }
 
 __all__ = [

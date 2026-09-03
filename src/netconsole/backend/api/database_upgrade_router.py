@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from netconsole.backend.api.feature_access import require_feature
 from netconsole.models.api.database_upgrade import (
     DatabaseBackupActionRequest,
+    DatabaseBackupBatchDeleteRequest,
     DatabaseBatchRequest,
     DatabaseTaskReferenceDTO,
     DatabaseUpgradeRequest,
@@ -170,6 +171,30 @@ def delete_backup(
 
 
 @router.post(
+    "/backups/batch-delete",
+    response_model=DatabaseTaskReferenceDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(require_feature("capability.database_upgrade.backup_delete"))],
+)
+def delete_backups(
+    request: Request,
+    payload: DatabaseBackupBatchDeleteRequest,
+) -> DatabaseTaskReferenceDTO:
+    if not payload.confirmed:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="批量删除数据库备份前必须明确确认")
+    selected = list(dict.fromkeys(str(value).strip() for value in payload.backup_ids if str(value).strip()))
+    if not selected:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="至少选择一个数据库备份")
+    site_id = _site_id(request)
+    return _submit(
+        request,
+        "database_backup_batch_delete",
+        {"backup_ids": selected, "confirmed": True, "site_id": site_id},
+        resource_keys=[f"database-backup-center:{site_id}", f"database-upgrade-batch:{site_id}"],
+    )
+
+
+@router.post(
     "/backups/{backup_id}/open-directory",
     response_model=DesktopActionDTO,
     dependencies=[Depends(require_feature("capability.database_upgrade.backup_open_directory"))],
@@ -197,6 +222,7 @@ def _submit(
         "legacy_database_archive_migration": "整理历史数据库归档",
         "database_backup_restore": "恢复数据库备份",
         "database_backup_delete": "删除数据库备份",
+        "database_backup_batch_delete": "批量删除数据库备份",
     }
     request.app.state.site_process_adapter.start_job(
         BackgroundJob(

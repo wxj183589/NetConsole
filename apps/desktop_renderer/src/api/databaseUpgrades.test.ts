@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import {
   deleteDatabaseBackup,
+  deleteDatabaseBackups,
   getDatabaseUpgradeSnapshot,
   openDatabaseBackupDirectory,
   organizeLegacyDatabaseArchives,
@@ -22,6 +23,7 @@ describe('database upgrade API client', () => {
     await restoreDatabaseBackup('backup / 1')
     await openDatabaseBackupDirectory('backup / 1')
     await deleteDatabaseBackup('backup / 1')
+    await deleteDatabaseBackups(['backup / 1', 'backup-2'])
 
     expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
       '/api/database-upgrades',
@@ -31,9 +33,11 @@ describe('database upgrade API client', () => {
       '/api/database-upgrades/backups/backup%20%2F%201/restore',
       '/api/database-upgrades/backups/backup%20%2F%201/open-directory',
       '/api/database-upgrades/backups/backup%20%2F%201/delete',
+      '/api/database-upgrades/backups/batch-delete',
     ])
     expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ database_kind: 'mesh_derived', profile_id: 'profile / 07' })
     expect(JSON.parse(fetchMock.mock.calls[4][1].body)).toEqual({ confirmed: true })
     expect(JSON.parse(fetchMock.mock.calls[6][1].body)).toEqual({ confirmed: true })
+    expect(JSON.parse(fetchMock.mock.calls[7][1].body)).toEqual({ backup_ids: ['backup / 1', 'backup-2'], confirmed: true })
   })
 })
