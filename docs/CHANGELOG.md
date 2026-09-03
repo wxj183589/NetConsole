@@ -1,6 +1,6 @@
 # NetConsole 更新日志
 
-## v1.5.5 - 2026-09-02
+## v1.5.5 - 2026-09-03
 
 ### 修复
 
@@ -13,6 +13,22 @@
 
 - 新增 MESH 当前来源的原始链路 Excel 导出，接入统一 Export Process 与 Task Center；导出绑定当前 Source，并保留持久化数值 `0`、`NULL` 和原始来源字段。
 - 收口轻量包与完整迁移包的数据包契约：两者统一使用 v4 manifest、SHA-256、ZIP 安全校验和“导入数据包”入口；轻量包保留当前局点基础数据及四类业务导出，可直接恢复局点，同时省略历史、原始文件、报告、缓存、临时和备份内容。
+
+### 设备管理与采集范围
+
+- 新增设备管理页按局点隔离的筛选、分组、厂商/类型/状态、项目阶段、当前调试范围、排序和分页状态恢复；局点切换后恢复查询条件，选中项和编辑态不持久化。
+- 统一设备组业务顺序为 `COCC > BOCC > 车站 > 车载-MR > 其他`；兼容历史分组别名并保留原显示名称，其他分组使用自然排序。
+- 统一“参与当前调试”的设备范围判断，收紧 AC、FIT-AP、Radio/LLDP、Optical、AP detail、device detail、Mesh/车载诊断、配置采集、导出及旧 Worker 入口；设备管理页仍可查看排除设备并执行明确的手动设备维护操作。
+
+### H3C 兼容与任务状态
+
+- 统一所有 H3C CLI collector 使用共享 SSH compatibility layer；正常协商确认发生 host-key 算法不兼容后，按同一规则重试 legacy `ssh-rsa`，覆盖 AC basic、FIT-AP、Radio/LLDP、Optical、AP/device detail、Mesh 相关 CLI 及车载/厂商/文件 CLI 入口。
+- 为每次 SSH session 增加 collector、phase、device UUID、host、模式、attempt 和 result 结构化日志，便于定位后续 collector 的独立连接失败；MR sidecar 保持等价的独立 factory 规则。
+- AC 信息已持久化但后续组件失败时保留 `persisted_components`、`failed_components`、`skipped_components` 和业务结果，支持 `PARTIAL_SUCCESS`，避免只显示无法解释的裸 `FAILED`。
+
+### 运行时与局点切换
+
+- 修复局点导入后的运行时上下文重新绑定和 Backend readiness 判断，新增软件重启入口并保持当前局点恢复，避免重启状态误判或导入后必须手工重启才能继续操作。
 
 ## v1.5.4 - 2026-09-02
 
