@@ -101,6 +101,8 @@ jobs:
           pnpm --dir apps/desktop_renderer build
       - name: Run Device Inventory CLI replay regression
         run: python -m pytest tests/test_device_inventory_replay.py -q --tb=short
+      - name: Run Interface Discovery Shadow regression
+        run: python -m pytest tests/test_interface_discovery_shadow.py -q --tb=short
       - name: Run Python regression with exact baseline deselection
         run: python -m scripts.quality.baseline_aware_pytest
       - name: Remove isolated test root
