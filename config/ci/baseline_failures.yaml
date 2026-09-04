@@ -1,0 +1,110 @@
+{
+  "schema_version": 1,
+  "policy": {
+    "allow_wildcards": false,
+    "allow_directory_ignores": false,
+    "allow_global_continue_on_error": false,
+    "new_finding": "FAIL",
+    "resolved_finding": "REPORT_SHRINK",
+    "same_product_version_decision": "UPDATE_POLICY_BASELINE_CONFLICT=BLOCKED_PRODUCT_DECISION"
+  },
+  "python": [
+    {
+      "nodeid": "tests/architecture/test_architecture_guards.py::test_all_architecture_checks_have_no_unwaived_findings",
+      "reason": "基线 Architecture guard 当前存在已记录的未豁免发现。"
+    },
+    {
+      "nodeid": "tests/architecture/test_architecture_guards.py::test_run_all_works_from_repository_root",
+      "reason": "基线 Architecture guard 汇总当前为 4/12 failed。"
+    },
+    {
+      "nodeid": "tests/test_version_build_identity.py::test_update_policy_ignores_build_and_hash_changes",
+      "reason": "同 ProductVersion 是否允许仅 build/hash 变化属于产品决策阻塞。"
+    },
+    {
+      "nodeid": "tests/test_web_architecture.py::test_web_and_electron_ast_guards_have_no_unwaived_findings",
+      "reason": "基线 Web/Electron AST guard 与已记录 UI business logic finding 对齐。"
+    }
+  ],
+  "architecture": [
+    {
+      "rule_id": "DIRECT_SQL_UNCLASSIFIED",
+      "path": "tests/test_database_backup_batch_delete.py",
+      "line": 23,
+      "message": "unclassified sqlite3.connect",
+      "reason": "测试中的直接 SQLite 连接尚未完成分类。"
+    },
+    {
+      "rule_id": "UI_BUSINESS_LOGIC_UNCLASSIFIED",
+      "path": "apps/desktop_renderer/src/components/mesh-analysis/meshRssiContext.ts",
+      "line": 177,
+      "message": "candidate symbol resolveMeshRssiPoint",
+      "reason": "先确认展示计算与业务决策边界，再决定是否迁移。"
+    },
+    {
+      "rule_id": "RUNTIME_PATH_CWD",
+      "path": "src/netconsole/services/job_center/handlers/site_jobs.py",
+      "line": 162,
+      "message": "production path depends on current working directory",
+      "reason": "Site job 旧路径依赖需结合站点切换与导出链路审计。"
+    },
+    {
+      "rule_id": "RUNTIME_PATH_CWD",
+      "path": "src/netconsole/services/job_center/handlers/site_jobs.py",
+      "line": 190,
+      "message": "production path depends on current working directory",
+      "reason": "Site job 旧路径依赖需结合站点切换与导出链路审计。"
+    },
+    {
+      "rule_id": "RUNTIME_PATH_CWD",
+      "path": "src/netconsole/services/site_storage.py",
+      "line": 1572,
+      "message": "production path depends on current working directory",
+      "reason": "Site storage 路径需先确认真实消费者与迁移边界。"
+    },
+    {
+      "rule_id": "RUNTIME_PATH_CWD",
+      "path": "src/netconsole/services/site_storage.py",
+      "line": 3100,
+      "message": "production path depends on current working directory",
+      "reason": "Site storage 路径需先确认真实消费者与迁移边界。"
+    },
+    {
+      "rule_id": "UNREGISTERED_STORAGE",
+      "path": "src/netconsole/services/job_center/handlers/site_jobs.py",
+      "line": 145,
+      "message": "UNREGISTERED STORAGE database='devices.db'; source location has no storage registry declaration",
+      "reason": "devices.db 注册归属需与 site job/export/backup 消费矩阵一并审计。"
+    }
+  ],
+  "ruff": [
+    {
+      "code": "F401",
+      "path": "src/netconsole/backend/api/main.py",
+      "line": 65,
+      "message": "`netconsole.repositories.agent_repository.AgentRepository` imported but unused",
+      "reason": "先验证导入副作用，再单独决定是否删除。"
+    },
+    {
+      "code": "F401",
+      "path": "src/netconsole/backend/api/main.py",
+      "line": 66,
+      "message": "`netconsole.repositories.traffic_run_repository.TrafficRunRepository` imported but unused",
+      "reason": "先验证导入副作用，再单独决定是否删除。"
+    },
+    {
+      "code": "F821",
+      "path": "src/netconsole/services/database_upgrade/management_service.py",
+      "line": 92,
+      "message": "Undefined name `exc`",
+      "reason": "可能是真实数据库升级异常处理缺陷，不能以忽略规则掩盖。"
+    },
+    {
+      "code": "F841",
+      "path": "src/netconsole/services/database_upgrade/management_service.py",
+      "line": 307,
+      "message": "Local variable `exc` is assigned to but never used",
+      "reason": "与相邻异常处理语义相关，需单独确认后修复。"
+    }
+  ]
+}
