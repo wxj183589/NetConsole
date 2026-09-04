@@ -590,6 +590,22 @@ class GroundHealthDTO(ApiModel):
     disk_free_bytes: int = 0
     last_error: str = ""
     updated_at: str = ""
+    receiver_alive: bool = False
+    writer_alive: bool = False
+    parser_alive: bool = False
+    received: int = 0
+    written: int = 0
+    parsed: int = 0
+    db_saved: int = 0
+    dropped: int = 0
+    memory_queue_size: int = 0
+    memory_queue_capacity: int = 0
+    disk_queue_count: int = 0
+    parser_queue_size: int = 0
+    parser_queue_capacity: int = 0
+    raw_file: str = ""
+    raw_file_size: int = 0
+    last_write_time: str = ""
 
 
 class GroundSyslogTransportStatusDTO(ApiModel):

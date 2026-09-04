@@ -292,6 +292,11 @@ export interface GroundHealth {
   raw_last_write_duration_ms: number; database_pending_count: number; database_last_batch_duration_ms: number; open_file_count: number
   ping_target_count: number; ping_process_count: number; deep_queue_length: number; archive_pending_count: number; ac_pollers: GroundAcPollerHealth[]
   disk_free_bytes: number; last_error: string; updated_at: string
+  receiver_alive: boolean; writer_alive: boolean; parser_alive: boolean
+  received: number; written: number; parsed: number; db_saved: number; dropped: number
+  memory_queue_size: number; memory_queue_capacity: number; disk_queue_count: number
+  parser_queue_size: number; parser_queue_capacity: number; raw_file: string
+  raw_file_size: number; last_write_time: string
 }
 export interface GroundRawFile { file_id: string; site_id: string; run_id: string; train_id: string; device_id: number | null; mr_role: string; data_type: string; relative_path: string; start_time: string; end_time: string; record_count: number; size_bytes: number; sha256: string; status: string; archive_status: string; parse_status: string; compressed_path: string; created_at: string; updated_at: string }
 
