@@ -1,0 +1,94 @@
+{
+  "fixture_id": "h3c-comware7-synthetic-s6850",
+  "fixture_type": "SYNTHETIC",
+  "operation_id": "device.inventory.collect",
+  "device": {
+    "vendor": "H3C",
+    "role": "switch",
+    "platform": "comware",
+    "software_version": "7.1.070",
+    "profile_id": "h3c.comware.switch.generic.device-inventory.v1"
+  },
+  "parser_contract": "netconsole.h3c.device-inventory.v1",
+  "facts": {
+    "vendor": "H3C",
+    "platform_family": "comware",
+    "software_family": "Comware",
+    "software_version": "Version 7.1.070 Release 6607P20",
+    "software_train": "7.1",
+    "software_release": "6607P20",
+    "software_major_version": 7,
+    "platform_major_version": 7,
+    "model": "S6850",
+    "serial_number": "SN-SW01-0001",
+    "mac_address": "105e-ae3e-0700",
+    "sysname": "SW01",
+    "bootrom_version": "当前:\n  flash:/s6850-cmw710-boot-t7064p15.bin\n  flash:/s6850-cmw710-system-t7064p15.bin\n\n主用:\n  flash:/s6850-cmw710-boot-t7064p15.bin\n  flash:/s6850-cmw710-system-t7064p15.bin\n\n备用:\n  flash:/s6850-cmw710-boot-t7064p15.bin\n  flash:/s6850-cmw710-system-t7064p15.bin",
+    "uptime_seconds": 7531500,
+    "uptime_precision_seconds": 60
+  },
+  "interfaces": [
+    {
+      "interface_name": "GigabitEthernet1/0/1",
+      "link_status": "UP",
+      "protocol_status": "UP",
+      "description": "Uplink to AC",
+      "speed": "1000Mbps",
+      "duplex": "Full",
+      "pvid": "1",
+      "interface_type": "三层",
+      "port_status": "route",
+      "vlan": "1,10,20"
+    },
+    {
+      "interface_name": "GigabitEthernet1/0/2",
+      "link_status": "DOWN",
+      "protocol_status": "DOWN",
+      "description": "Access Port",
+      "speed": "auto",
+      "duplex": "auto",
+      "pvid": "10",
+      "interface_type": "二层",
+      "port_status": "access",
+      "vlan": null
+    }
+  ],
+  "optical_modules": [
+    {
+      "interface_name": "GigabitEthernet1/0/1",
+      "module_model": "SFP-GE-LX-SM1310",
+      "module_serial_number": "OPT-MANU-SYNTH-0001",
+      "module_vendor": "H3C",
+      "wavelength": "1310 nm",
+      "transmission_distance": "10 km",
+      "connector_type": "LC",
+      "status": "normal",
+      "rx_power": "-3.21 dBm",
+      "tx_power": "-2.85 dBm",
+      "temperature": null,
+      "voltage": "3.31 V",
+      "bias_current": "6.2 mA"
+    }
+  ],
+  "lldp_neighbors": [
+    {
+      "local_interface": "GigabitEthernet1/0/1",
+      "neighbor_mac": "00:11:22:33:51:01",
+      "neighbor_interface": "GigabitEthernet1/0/1",
+      "neighbor_sysname": "AC-DEMO",
+      "neighbor_ip": "10.0.0.51"
+    }
+  ],
+  "statuses": {
+    "facts": "OK",
+    "interfaces": "OK",
+    "optical": "OK",
+    "lldp": "OK"
+  },
+  "warning_counts": {
+    "facts": 0,
+    "interfaces": 0,
+    "optical": 0,
+    "lldp": 0
+  }
+}

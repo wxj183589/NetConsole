@@ -1,0 +1,280 @@
+{
+  "fixture_id": "zte-zxr10-5960x-synthetic",
+  "fixture_type": "SYNTHETIC",
+  "operation_id": "device.inventory.collect",
+  "device": {
+    "vendor": "ZTE",
+    "role": "switch",
+    "platform": "zxr10",
+    "software_version": "V2.00.20.03B07",
+    "profile_id": "zte.zxr10.switch.generic.device-inventory.v3"
+  },
+  "parser_contract": "netconsole.zte.zxr10-switch.v3",
+  "facts": {
+    "vendor": "ZTE",
+    "platform": "ZXR10",
+    "platform_family": "ZXR10",
+    "product_family": "5960X-ES",
+    "model": "5960X-32U-ES",
+    "software_version": "V2.00.20.03B07",
+    "base_version": "V2.00.20.03",
+    "system_name": "ZXR10",
+    "uptime_seconds": 6600,
+    "sysname": "ZXR10"
+  },
+  "interfaces": [
+    {
+      "interface_name": "gei-0/3/0/2",
+      "normalized_name": "gei-0/3/0/2",
+      "media_type": "optical",
+      "speed": "1G",
+      "duplex": "Duplex/full",
+      "admin_status": "up",
+      "physical_status": "up",
+      "protocol_status": "up",
+      "oper_status": "UP",
+      "description": "",
+      "pvid": "71",
+      "pvid_source": "show_running_config_switchvlan",
+      "pvid_verified": true,
+      "port_mode": "hybrid",
+      "native_vlan": "71",
+      "tagged_vlans": {
+        "count": 1,
+        "first": "201",
+        "last": "201"
+      },
+      "untagged_vlans": {
+        "count": 0,
+        "first": null,
+        "last": null
+      },
+      "vlan_config_status": "current"
+    },
+    {
+      "interface_name": "gei-0/3/0/6",
+      "normalized_name": "gei-0/3/0/6",
+      "media_type": "optical",
+      "speed": "1G",
+      "duplex": "Duplex/full",
+      "admin_status": "up",
+      "physical_status": "down",
+      "protocol_status": "down",
+      "oper_status": "PHYSICAL_DOWN",
+      "description": "",
+      "pvid": "71",
+      "pvid_source": "show_vlan_pvid_ports",
+      "pvid_verified": false,
+      "port_mode": null,
+      "native_vlan": null,
+      "tagged_vlans": {
+        "count": 1,
+        "first": "201",
+        "last": "201"
+      },
+      "untagged_vlans": {
+        "count": 0,
+        "first": null,
+        "last": null
+      },
+      "vlan_config_status": "current"
+    },
+    {
+      "interface_name": "sci-0/1/0/1",
+      "normalized_name": "sci-0/1/0/1",
+      "media_type": "optical",
+      "speed": "10G",
+      "duplex": "Duplex/full",
+      "admin_status": "up",
+      "physical_status": "down",
+      "protocol_status": "down",
+      "oper_status": "PHYSICAL_DOWN",
+      "description": "",
+      "pvid": null,
+      "pvid_source": null,
+      "pvid_verified": false,
+      "port_mode": null,
+      "native_vlan": null,
+      "tagged_vlans": {
+        "count": 0,
+        "first": null,
+        "last": null
+      },
+      "untagged_vlans": {
+        "count": 0,
+        "first": null,
+        "last": null
+      },
+      "vlan_config_status": "unavailable"
+    },
+    {
+      "interface_name": "xgei-0/4/0/1",
+      "normalized_name": "xgei-0/4/0/1",
+      "media_type": "electric",
+      "speed": "10G",
+      "duplex": "Duplex/full",
+      "admin_status": "up",
+      "physical_status": "up",
+      "protocol_status": "down",
+      "oper_status": "PROTOCOL_DOWN",
+      "description": "TEST-DESCRIPTION",
+      "pvid": null,
+      "pvid_source": null,
+      "pvid_verified": false,
+      "port_mode": "trunk",
+      "native_vlan": "71",
+      "tagged_vlans": {
+        "count": 4093,
+        "first": "2",
+        "last": "4094"
+      },
+      "untagged_vlans": {
+        "count": 0,
+        "first": null,
+        "last": null
+      },
+      "vlan_config_status": "current"
+    }
+  ],
+  "optical_modules": [
+    {
+      "interface_name": "xgei-0/1/1/1",
+      "module_present": false,
+      "module_online": false,
+      "dom_supported": false,
+      "module_model": null,
+      "wavelength_nm": null,
+      "rx_power_dbm": null,
+      "tx_power_dbm": null,
+      "rx_low_threshold_dbm": null,
+      "rx_high_threshold_dbm": null,
+      "tx_low_threshold_dbm": null,
+      "tx_high_threshold_dbm": null,
+      "vendor_status": "offline",
+      "normalized_status": "NO_MODULE",
+      "status": "no_module",
+      "severity_reason": "设备返回 offline，未检测到光模块"
+    },
+    {
+      "interface_name": "xgei-0/1/1/2",
+      "module_present": true,
+      "module_online": true,
+      "dom_supported": false,
+      "module_model": "10G-300m-SFP+",
+      "wavelength_nm": 850,
+      "rx_power_dbm": -11.9,
+      "tx_power_dbm": -2.8,
+      "rx_low_threshold_dbm": -11.1,
+      "rx_high_threshold_dbm": 0.5,
+      "tx_low_threshold_dbm": -7.3,
+      "tx_high_threshold_dbm": -1,
+      "vendor_status": "Unknown",
+      "normalized_status": "NO_LIGHT",
+      "status": "no_light",
+      "severity_reason": "设备未返回接收光功率"
+    },
+    {
+      "interface_name": "xgei-0/1/1/3",
+      "module_present": true,
+      "module_online": true,
+      "dom_supported": true,
+      "module_model": "10G-10km-SFP+",
+      "wavelength_nm": 1310,
+      "rx_power_dbm": -8.2,
+      "tx_power_dbm": -2.1,
+      "rx_low_threshold_dbm": -14.4,
+      "rx_high_threshold_dbm": 0.5,
+      "tx_low_threshold_dbm": -8.2,
+      "tx_high_threshold_dbm": 0.5,
+      "vendor_status": "Normal",
+      "normalized_status": "NORMAL",
+      "status": "normal",
+      "severity_reason": "ZTE optical power is within module alarm thresholds"
+    },
+    {
+      "interface_name": "xgei-0/1/1/4",
+      "module_present": true,
+      "module_online": true,
+      "dom_supported": true,
+      "module_model": "10G-10km-SFP+",
+      "wavelength_nm": 1310,
+      "rx_power_dbm": -18.2,
+      "tx_power_dbm": -2.1,
+      "rx_low_threshold_dbm": -14.4,
+      "rx_high_threshold_dbm": 0.5,
+      "tx_low_threshold_dbm": -8.2,
+      "tx_high_threshold_dbm": 0.5,
+      "vendor_status": "Abnormal",
+      "normalized_status": "ABNORMAL",
+      "status": "abnormal",
+      "severity_reason": "RX power -18.2 dBm is below module low alarm threshold -14.4 dBm"
+    },
+    {
+      "interface_name": "xgei-0/1/1/5",
+      "module_present": true,
+      "module_online": true,
+      "dom_supported": false,
+      "module_model": "10G-10km-SFP+",
+      "wavelength_nm": 1310,
+      "rx_power_dbm": null,
+      "tx_power_dbm": null,
+      "rx_low_threshold_dbm": -14.4,
+      "rx_high_threshold_dbm": 0.5,
+      "tx_low_threshold_dbm": -8.2,
+      "tx_high_threshold_dbm": 0.5,
+      "vendor_status": "Unknown",
+      "normalized_status": "NO_LIGHT",
+      "status": "no_light",
+      "severity_reason": "设备未返回接收光功率"
+    }
+  ],
+  "lldp_neighbors": [
+    {
+      "local_interface": "gei-0/3/0/2",
+      "scope": "NB",
+      "chassis_id": "02aa.bbcc.0002",
+      "neighbor_mac": "02:aa:bb:cc:00:02",
+      "neighbor_interface": "GigabitEthernet1/0/2",
+      "neighbor_sysname": "ZXR10-TEST-AP",
+      "holdtime": 120,
+      "ttl": 120,
+      "neighbor_ip": "192.0.2.102",
+      "port_description": "Test AP uplink",
+      "system_capabilities": "Bridge, WLAN Access Point",
+      "pvid": 71
+    },
+    {
+      "local_interface": "gei-0/3/0/3",
+      "scope": "NB",
+      "chassis_id": "02aa.bbcc.0003",
+      "neighbor_mac": "02:aa:bb:cc:00:03",
+      "neighbor_interface": "GigabitEthernet1/0/3",
+      "neighbor_sysname": "ZXR10-TEST-PEER",
+      "holdtime": 120,
+      "ttl": 120,
+      "neighbor_ip": null,
+      "port_description": null,
+      "system_capabilities": null,
+      "pvid": null
+    }
+  ],
+  "statuses": {
+    "identity": "OK",
+    "interfaces": "OK",
+    "optical": "OK",
+    "switchvlan": "OK",
+    "vlan_table": "OK",
+    "lldp_brief": "OK",
+    "lldp_entry": "OK"
+  },
+  "warning_counts": {
+    "identity": 0,
+    "interfaces": 0,
+    "optical": 0,
+    "switchvlan": 1,
+    "vlan_table": 0,
+    "vlan_merge": 0,
+    "lldp_brief": 0,
+    "lldp_entry": 0
+  }
+}

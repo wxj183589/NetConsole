@@ -1,0 +1,94 @@
+{
+  "fixture_id": "h3c-comware9-synthetic-s9850",
+  "fixture_type": "SYNTHETIC",
+  "operation_id": "device.inventory.collect",
+  "device": {
+    "vendor": "H3C",
+    "role": "switch",
+    "platform": "comware",
+    "software_version": "9.1.081",
+    "profile_id": "h3c.comware.switch.generic.device-inventory.v1"
+  },
+  "parser_contract": "netconsole.h3c.device-inventory.v1",
+  "facts": {
+    "vendor": "H3C",
+    "platform_family": "comware",
+    "software_family": "Comware",
+    "software_version": "Version 9.1.081 Release 1608P01",
+    "software_train": "9.1",
+    "software_release": "1608P01",
+    "software_major_version": 9,
+    "platform_major_version": 9,
+    "model": "S9850",
+    "serial_number": "SYNTH-SW9-0001",
+    "mac_address": "02aa-bbcc-9901",
+    "sysname": "H3C9-SW",
+    "bootrom_version": "当前:\n  flash:/h3c9-cmw910-boot.bin\n  flash:/h3c9-cmw910-system.bin\n\n主用:\n  flash:/h3c9-cmw910-boot.bin\n  flash:/h3c9-cmw910-system.bin\n\n备用:\n  flash:/h3c9-cmw910-boot.bin\n  flash:/h3c9-cmw910-system.bin",
+    "uptime_seconds": 266460,
+    "uptime_precision_seconds": 60
+  },
+  "interfaces": [
+    {
+      "interface_name": "Twenty-FiveGigE1/0/1",
+      "link_status": "UP",
+      "protocol_status": "UP",
+      "description": "Uplink to test controller",
+      "speed": "25000Mbps",
+      "duplex": "Full",
+      "pvid": "71",
+      "interface_type": "三层",
+      "port_status": "route",
+      "vlan": "71,201"
+    },
+    {
+      "interface_name": "Twenty-FiveGigE1/0/2",
+      "link_status": "DOWN",
+      "protocol_status": "DOWN",
+      "description": "Test access port",
+      "speed": "auto",
+      "duplex": "auto",
+      "pvid": "201",
+      "interface_type": "二层",
+      "port_status": "access",
+      "vlan": null
+    }
+  ],
+  "optical_modules": [
+    {
+      "interface_name": "Twenty-FiveGigE1/0/1",
+      "module_model": "SFP28-25G-LR",
+      "module_serial_number": "SYNTH-OPT9-0001",
+      "module_vendor": "H3C",
+      "wavelength": "1310 nm",
+      "transmission_distance": "10 km",
+      "connector_type": "LC",
+      "status": "normal",
+      "rx_power": "-4.20 dBm",
+      "tx_power": "-2.20 dBm",
+      "temperature": null,
+      "voltage": "3.30 V",
+      "bias_current": "5.1 mA"
+    }
+  ],
+  "lldp_neighbors": [
+    {
+      "local_interface": "Twenty-FiveGigE1/0/1",
+      "neighbor_mac": "02:aa:bb:cc:9a:01",
+      "neighbor_interface": "GigabitEthernet1/0/1",
+      "neighbor_sysname": "H3C9-TEST-PEER",
+      "neighbor_ip": "192.0.2.92"
+    }
+  ],
+  "statuses": {
+    "facts": "OK",
+    "interfaces": "OK",
+    "optical": "OK",
+    "lldp": "OK"
+  },
+  "warning_counts": {
+    "facts": 0,
+    "interfaces": 0,
+    "optical": 0,
+    "lldp": 0
+  }
+}
