@@ -1037,10 +1037,13 @@ def test_udp_receiver_preserves_sequences_facility_and_identity_states(tmp_path:
     assert [row["source_receive_sequence"] for row in raw_rows] == [1, 2]
     assert raw_rows[0]["facility"] == "local7" and raw_rows[0]["severity"] == "notice"
     assert raw_rows[0]["identity_status"] == "VERIFIED"
-    assert raw_rows[0]["resolved_ap_name"] == "AP-01"
-    assert raw_rows[0]["parsed_details"]["identity_entity_id"]
-    assert raw_rows[0]["parsed_details"]["identity_revision"] == 1
     assert raw_rows[0]["raw_bytes_base64"]
+    assert "resolved_ap_name" not in raw_rows[0]
+    assert "parsed_details" not in raw_rows[0]
+    events = repository.list_wmesh_events(run_id="run-1")
+    assert events[0]["details"]["identity_entity_id"]
+    assert events[0]["details"]["identity_revision"] == 1
+    assert events[0]["peer_name"] == "AP-01"
     assert repository.latest_boot_session("mr-ct-01")["config_status"] == "LOG_ACTIVE"
     assert receiver._resolve_identity("127.0.0.1", "other-host")[1] == "UNCONFIRMED_SOURCE_IP"
     assert receiver._resolve_identity("203.0.113.9", "test-mr-ct")[1] == "UNCONFIRMED_HOSTNAME"
