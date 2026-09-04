@@ -5,6 +5,7 @@ import hashlib
 import json
 import queue
 import re
+import shutil
 import socket
 import threading
 import time
@@ -532,6 +533,7 @@ class SyslogUdpReceiver:
         self._reported_pressure = False
         self._disk_spool_path: Path | None = None
         self._parser_spool_path: Path | None = None
+        self._spool_dir: Path | None = None
         self._disk_spool_lock = threading.Lock()
         self._disk_spool_handle: Any | None = None
         self._parser_spool_handle: Any | None = None
@@ -547,6 +549,10 @@ class SyslogUdpReceiver:
         self._db_saved_count = 0
         self._last_write_time = ""
         self._raw_file_size = 0
+        self._spool_warning_percent = 70.0
+        self._spool_critical_percent = 85.0
+        self._spool_emergency_percent = 95.0
+        self._spool_guard_state = "NORMAL"
         self._ap_resolver = GroundApDisplayResolver(
             ap_identity_query_service
         )
@@ -564,6 +570,9 @@ class SyslogUdpReceiver:
         flush_interval_seconds: float,
         event_batch_size: int,
         event_batch_interval_seconds: float,
+        spool_warning_percent: float = 70.0,
+        spool_critical_percent: float = 85.0,
+        spool_emergency_percent: float = 95.0,
     ) -> None:
         if self.running and self._run_id == run_id:
             return
@@ -593,6 +602,21 @@ class SyslogUdpReceiver:
         self._db_saved_count = 0
         self._last_write_time = ""
         self._raw_file_size = 0
+        thresholds = (
+            float(spool_warning_percent),
+            float(spool_critical_percent),
+            float(spool_emergency_percent),
+        )
+        if any(value < 0.0 or value > 100.0 for value in thresholds):
+            raise ValueError("spool disk thresholds must be between 0 and 100")
+        if not thresholds[0] <= thresholds[1] <= thresholds[2]:
+            raise ValueError("spool disk thresholds must be ordered")
+        (
+            self._spool_warning_percent,
+            self._spool_critical_percent,
+            self._spool_emergency_percent,
+        ) = thresholds
+        self._spool_guard_state = "NORMAL"
         self._disk_spool_read_offset = 0
         self._parser_spool_count = 0
         self._parser_spool_since_flush = 0
@@ -611,6 +635,7 @@ class SyslogUdpReceiver:
         )
         spool_dir = Path(active_dir) / "realtime" / "syslog" / "_spool"
         spool_dir.mkdir(parents=True, exist_ok=True)
+        self._spool_dir = spool_dir
         self._disk_spool_path = spool_dir / f"{run_id}.ndjson"
         self._parser_spool_path = spool_dir / f"{run_id}.parser.ndjson"
         self._disk_spool_handle = self._disk_spool_path.open("a", encoding="utf-8", newline="\n")
@@ -733,6 +758,7 @@ class SyslogUdpReceiver:
         self._writer = None
         self._disk_spool_path = None
         self._parser_spool_path = None
+        self._spool_dir = None
         self._run_id = ""
         self._listen_address = ""
         self._listen_host = ""
@@ -782,6 +808,8 @@ class SyslogUdpReceiver:
     def health_snapshot(self) -> dict[str, Any]:
         elapsed = max(0.001, time.monotonic() - self._started_monotonic) if self._started_monotonic else 1.0
         writer = self._writer
+        self._refresh_spool_guard()
+        spool_metrics = self._spool_metrics()
         return {
             "udp_running": self.running,
             "udp_listen_address": self._listen_address,
@@ -817,7 +845,90 @@ class SyslogUdpReceiver:
             "receiver_alive": bool(self._recv_thread and self._recv_thread.is_alive()),
             "raw_file_size": self._raw_file_size,
             "last_write_time": self._last_write_time,
+            **spool_metrics,
+            "spool_guard_state": self._spool_guard_state,
+            "spool_warning_percent": self._spool_warning_percent,
+            "spool_critical_percent": self._spool_critical_percent,
+            "spool_emergency_percent": self._spool_emergency_percent,
         }
+
+    def _spool_metrics(self) -> dict[str, int | float]:
+        spool_dir = self._spool_dir
+        if spool_dir is None:
+            return {
+                "spool_bytes": 0,
+                "spool_files": 0,
+                "disk_free_bytes": 0,
+                "disk_usage_percent": 0.0,
+            }
+        spool_bytes = 0
+        spool_files = 0
+        try:
+            for path in spool_dir.rglob("*"):
+                if path.is_file() and not path.is_symlink():
+                    spool_files += 1
+                    spool_bytes += path.stat().st_size
+            usage = shutil.disk_usage(spool_dir)
+            disk_usage_percent = (
+                ((usage.total - usage.free) / usage.total * 100.0)
+                if usage.total
+                else 0.0
+            )
+            return {
+                "spool_bytes": spool_bytes,
+                "spool_files": spool_files,
+                "disk_free_bytes": int(usage.free),
+                "disk_usage_percent": round(disk_usage_percent, 3),
+            }
+        except OSError as exc:
+            self._last_error = f"spool disk metrics failed: {exc}"
+            return {
+                "spool_bytes": spool_bytes,
+                "spool_files": spool_files,
+                "disk_free_bytes": 0,
+                "disk_usage_percent": 0.0,
+            }
+
+    def _refresh_spool_guard(self) -> None:
+        metrics = self._spool_metrics()
+        usage = float(metrics["disk_usage_percent"])
+        if usage >= self._spool_emergency_percent:
+            state = "EMERGENCY"
+        elif usage >= self._spool_critical_percent:
+            state = "CRITICAL"
+        elif usage >= self._spool_warning_percent:
+            state = "WARNING"
+        else:
+            state = "NORMAL"
+        previous = self._spool_guard_state
+        self._spool_guard_state = state
+        if state == previous:
+            return
+        if state == "NORMAL" and previous != "NORMAL":
+            code = "SYSLOG_SPOOL_DISK_RECOVERED"
+            severity = "info"
+            message = "Syslog spool 磁盘占用已恢复正常"
+        else:
+            code = f"SYSLOG_SPOOL_DISK_{state}"
+            severity = "error" if state in {"CRITICAL", "EMERGENCY"} else "warning"
+            message = f"Syslog spool 磁盘占用达到 {state} 阈值"
+        try:
+            self.repository.add_health_event(
+                run_id=self._run_id,
+                component="syslog_spool",
+                severity=severity,
+                code=code,
+                message=message,
+                details={
+                    **metrics,
+                    "spool_guard_state": state,
+                    "warning_percent": self._spool_warning_percent,
+                    "critical_percent": self._spool_critical_percent,
+                    "emergency_percent": self._spool_emergency_percent,
+                },
+            )
+        except Exception as exc:
+            self._last_error = f"{exc.__class__.__name__}: {exc}"
 
     def _next_global_receive_sequence(self) -> int:
         self._global_receive_sequence += 1
@@ -1406,6 +1517,7 @@ class SyslogUdpReceiver:
         return "COMPLETE", None
 
     def _flush_if_due(self) -> None:
+        self._refresh_spool_guard()
         queue_length = self._queue.qsize()
         queue_capacity = self._queue.maxsize
         pressure = queue_length / queue_capacity if queue_capacity else 0.0

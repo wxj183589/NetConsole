@@ -297,6 +297,8 @@ export interface GroundHealth {
   memory_queue_size: number; memory_queue_capacity: number; disk_queue_count: number
   parser_queue_size: number; parser_queue_capacity: number; raw_file: string
   raw_file_size: number; last_write_time: string
+  spool_bytes: number; spool_files: number; disk_usage_percent: number
+  spool_guard_state: string; spool_warning_percent: number; spool_critical_percent: number; spool_emergency_percent: number
 }
 export interface GroundRawFile { file_id: string; site_id: string; run_id: string; train_id: string; device_id: number | null; mr_role: string; data_type: string; relative_path: string; start_time: string; end_time: string; record_count: number; size_bytes: number; sha256: string; status: string; archive_status: string; parse_status: string; compressed_path: string; created_at: string; updated_at: string }
 

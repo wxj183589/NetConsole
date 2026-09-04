@@ -165,6 +165,27 @@ def test_ready_archive_retry_repairs_raw_registry_before_active_cleanup(
     assert not active.exists()
 
 
+def test_archive_excludes_pending_spool_and_preserves_active_data(tmp_path) -> None:
+    paths, repo, service, run_id = _setup(tmp_path)
+    active = paths.ground_unattended_active_dir("site-a", "2026-07-25")
+    spool = active / "realtime" / "syslog" / "_spool"
+    spool.mkdir(parents=True)
+    pending = spool / "pending.ndjson"
+    pending.write_text('{"raw":"still pending"}\n', encoding="utf-8")
+
+    result = service.archive_run(run_id, repo.get_profile())
+
+    assert result.success is True
+    assert result.active_cleanup_pending is True
+    assert active.is_dir()
+    assert pending.read_text(encoding="utf-8") == '{"raw":"still pending"}\n'
+    archive = repo.get_archive(result.archive_id)
+    assert archive is not None
+    archive_path = paths.ground_unattended_root("site-a") / archive["relative_path"]
+    with zipfile.ZipFile(archive_path) as zipped:
+        assert not any("_spool" in name for name in zipped.namelist())
+
+
 def _setup(tmp_path):
     paths = PathResolver(tmp_path / "app", tmp_path / "data")
     repo = GroundUnattendedRepository(

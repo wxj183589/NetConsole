@@ -5,7 +5,9 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
+import netconsole.services.ground_unattended.syslog_runtime as syslog_runtime
 from netconsole.repositories.ground_unattended_repository import GroundUnattendedRepository
 from netconsole.services.ground_unattended.syslog_runtime import (
     RawStreamWriter,
@@ -233,4 +235,44 @@ def test_spool_is_managed_under_active_syslog_and_not_raw_recovery_input(tmp_pat
     assert parser_spool_path.resolve().is_relative_to(active_root)
     assert spool_path.parent.name == "_spool"
     assert parser_spool_path.parent == spool_path.parent
+    assert receiver.stop(timeout_seconds=10)["success"] is True
+
+
+def test_spool_metrics_report_growth_without_changing_raw_pipeline(tmp_path: Path) -> None:
+    receiver = _receiver(tmp_path, capacity=8)
+    spool_path = receiver._disk_spool_path
+    assert spool_path is not None
+    extra = spool_path.parent / "pending.ndjson"
+    extra.write_text('{"pending":true}\n', encoding="utf-8")
+    health = receiver.health_snapshot()
+    assert health["spool_bytes"] >= extra.stat().st_size
+    assert health["spool_files"] >= 3
+    assert health["spool_guard_state"] == "NORMAL"
+    assert receiver.stop(timeout_seconds=10)["success"] is True
+
+
+def test_spool_disk_guard_emits_threshold_and_recovery_events(tmp_path: Path, monkeypatch) -> None:
+    receiver = _receiver(tmp_path, capacity=8)
+    usage_percent = {"value": 10.0}
+
+    def fake_disk_usage(_path):
+        used = usage_percent["value"]
+        return SimpleNamespace(total=100, used=used, free=100 - used)
+
+    monkeypatch.setattr(syslog_runtime.shutil, "disk_usage", fake_disk_usage)
+    assert receiver.health_snapshot()["spool_guard_state"] == "NORMAL"
+    for expected_usage, expected_state, expected_code in (
+        (70.0, "WARNING", "SYSLOG_SPOOL_DISK_WARNING"),
+        (85.0, "CRITICAL", "SYSLOG_SPOOL_DISK_CRITICAL"),
+        (95.0, "EMERGENCY", "SYSLOG_SPOOL_DISK_EMERGENCY"),
+    ):
+        usage_percent["value"] = expected_usage
+        health = receiver.health_snapshot()
+        assert health["disk_usage_percent"] == expected_usage
+        assert health["disk_free_bytes"] == int(100 - expected_usage)
+        assert health["spool_guard_state"] == expected_state
+        assert receiver.repository.latest_health_event()["code"] == expected_code  # type: ignore[index]
+    usage_percent["value"] = 10.0
+    assert receiver.health_snapshot()["spool_guard_state"] == "NORMAL"
+    assert receiver.repository.latest_health_event()["code"] == "SYSLOG_SPOOL_DISK_RECOVERED"  # type: ignore[index]
     assert receiver.stop(timeout_seconds=10)["success"] is True

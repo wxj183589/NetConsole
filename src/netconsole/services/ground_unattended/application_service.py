@@ -803,6 +803,7 @@ class GroundUnattendedApplicationService:
         )
         archives = self.repository.list_archives()
         last_error = str(values.pop("last_error", "") or latest.get("message") or "")
+        spool_disk_free = values.pop("disk_free_bytes", None)
         run = self.repository.get_active_run()
         ac_pollers = self._ac_poller_health(
             site_id, str((run or {}).get("run_id") or "")
@@ -830,7 +831,11 @@ class GroundUnattendedApplicationService:
                 for row in archives
             ),
             ac_pollers=ac_pollers,
-            disk_free_bytes=disk.free,
+            disk_free_bytes=(
+                int(spool_disk_free)
+                if spool_disk_free is not None
+                else int(disk.free)
+            ),
             last_error=last_error,
             updated_at=datetime.now().astimezone().isoformat(timespec="milliseconds"),
         )

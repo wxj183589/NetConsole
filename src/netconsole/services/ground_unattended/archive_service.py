@@ -126,12 +126,12 @@ class GroundUnattendedArchiveService:
                 cleanup_pending = bool(existing.get("active_cleanup_pending"))
                 if not raw_registration_complete:
                     cleanup_pending = True
-                elif cleanup_pending and active_dir.is_dir():
+                elif active_dir.is_dir():
                     try:
                         self._safe_remove_active_dir(active_dir)
                         cleanup_pending = False
                     except OSError:
-                        pass
+                        cleanup_pending = True
                 if cleanup_pending != bool(existing.get("active_cleanup_pending")):
                     self.repository.upsert_archive(
                         {
@@ -529,6 +529,7 @@ class GroundUnattendedArchiveService:
                 not path.is_file()
                 or path.name.endswith(".tmp")
                 or path.name == "manifest.json"
+                or self._is_spool_path(path, active_dir)
             ):
                 continue
             self._validate_active_member(path, active_dir)
@@ -556,12 +557,16 @@ class GroundUnattendedArchiveService:
             target, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True
         ) as archive:
             for path in sorted(active_dir.rglob("*")):
-                if not path.is_dir():
+                if not path.is_dir() or self._is_spool_path(path, active_dir):
                     continue
                 self._validate_active_member(path, active_dir)
                 archive.writestr(f"{path.relative_to(active_dir).as_posix()}/", b"")
             for path in sorted(active_dir.rglob("*")):
-                if not path.is_file() or path.name.endswith(".tmp"):
+                if (
+                    not path.is_file()
+                    or path.name.endswith(".tmp")
+                    or self._is_spool_path(path, active_dir)
+                ):
                     continue
                 self._validate_active_member(path, active_dir)
                 archive.write(path, path.relative_to(active_dir).as_posix())
@@ -605,7 +610,32 @@ class GroundUnattendedArchiveService:
         resolved = active_dir.resolve(strict=True)
         if resolved.parent != root or resolved == root:
             raise OSError("active cleanup target is outside the managed run directory")
+        if self._has_pending_spool(resolved):
+            raise OSError("active cleanup blocked while Syslog spool has pending data")
         self._remove_tree(resolved)
+
+    @staticmethod
+    def _is_spool_path(path: Path, active_dir: Path) -> bool:
+        try:
+            relative = path.relative_to(active_dir)
+        except ValueError:
+            return False
+        return "_spool" in relative.parts
+
+    @staticmethod
+    def _has_pending_spool(active_dir: Path) -> bool:
+        spool_dir = active_dir / "realtime" / "syslog" / "_spool"
+        if not spool_dir.is_dir():
+            return False
+        try:
+            for path in spool_dir.rglob("*"):
+                if path.is_symlink():
+                    return True
+                if path.is_file() and path.stat().st_size > 0:
+                    return True
+        except OSError:
+            return True
+        return False
 
     def _remove_tree(self, root: Path) -> None:
         if root.is_symlink() or _is_junction(root):
