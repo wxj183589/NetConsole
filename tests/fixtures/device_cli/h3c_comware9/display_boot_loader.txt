@@ -1,0 +1,10 @@
+Current software images:
+  flash:/h3c9-cmw910-boot.bin
+  flash:/h3c9-cmw910-system.bin
+Main startup software images:
+  flash:/h3c9-cmw910-boot.bin
+  flash:/h3c9-cmw910-system.bin
+Backup startup software images:
+  flash:/h3c9-cmw910-boot.bin
+  flash:/h3c9-cmw910-system.bin
+

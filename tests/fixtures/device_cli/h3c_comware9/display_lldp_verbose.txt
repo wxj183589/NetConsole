@@ -1,0 +1,6 @@
+LLDP neighbor-information of port Twenty-FiveGigE1/0/1
+  Chassis ID          : 02aa-bbcc-9a01
+  Port ID             : GigabitEthernet1/0/1
+  System name         : H3C9-TEST-PEER
+  Management address  : 192.0.2.92
+

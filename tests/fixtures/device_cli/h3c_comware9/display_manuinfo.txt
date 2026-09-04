@@ -1,0 +1,5 @@
+DEVICE_NAME          : H3C S9850
+DEVICE_SERIAL_NUMBER : SYNTH-SW9-0001
+MAC_ADDRESS          : 02AA-BBCC-9901
+Vendor Name          : H3C
+

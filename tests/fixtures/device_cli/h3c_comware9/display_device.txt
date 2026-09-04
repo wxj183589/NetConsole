@@ -1,0 +1,3 @@
+Slot Type             State    Subslot  Soft Ver                 Patch Ver
+1    S9850             Master   0        S9850-9081               None
+

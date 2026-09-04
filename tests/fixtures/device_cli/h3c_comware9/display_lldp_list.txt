@@ -1,0 +1,3 @@
+Local Interface    Neighbor Sysname    Neighbor Interface    Management Address
+XGE1/0/1            H3C9-TEST-PEER      GigabitEthernet1/0/1    192.0.2.92
+

@@ -1,0 +1,24 @@
+{
+  "fixture_id": "h3c-comware9-synthetic-s9850",
+  "operation_id": "device.inventory.collect",
+  "fixture_type": "SYNTHETIC",
+  "source_note": "最小 Comware 9 CLI 形状样例；不代表真实设备或现场兼容性。",
+  "vendor": "H3C",
+  "role": "switch",
+  "platform": "comware",
+  "software_version": "9.1.081",
+  "profile_id": "h3c.comware.switch.generic.device-inventory.v1",
+  "outputs": {
+    "inventory.sysname": {"file": "h3c_comware9/display_current_configuration_sysname.txt"},
+    "inventory.version": {"file": "h3c_comware9/display_version.txt"},
+    "inventory.device": {"file": "h3c_comware9/display_device.txt"},
+    "inventory.manuinfo": {"file": "h3c_comware9/display_manuinfo.txt"},
+    "inventory.boot_loader": {"file": "h3c_comware9/display_boot_loader.txt"},
+    "inventory.interfaces": {"file": "h3c_comware9/display_interface.txt"},
+    "inventory.transceivers": {"file": "h3c_comware9/display_transceiver.txt"},
+    "inventory.transceiver_manuinfo": {"text": ""},
+    "inventory.transceiver_diagnosis": {"file": "h3c_comware9/display_transceiver_diagnosis.txt"},
+    "inventory.lldp_list": {"file": "h3c_comware9/display_lldp_list.txt"},
+    "inventory.lldp_verbose": {"file": "h3c_comware9/display_lldp_verbose.txt"}
+  }
+}

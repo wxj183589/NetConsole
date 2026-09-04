@@ -1,0 +1,163 @@
+from __future__ import annotations
+
+import inspect
+import json
+import re
+from dataclasses import replace
+from pathlib import Path
+
+import pytest
+
+from tests.support.device_inventory_replay import (
+    load_fixture,
+    replay_case,
+    replay_fixture,
+)
+
+FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "device_cli"
+GOLDEN_ROOT = Path(__file__).parent / "golden" / "device_inventory"
+CASE_PATHS = tuple(sorted(FIXTURE_ROOT.glob("*.json")))
+FORBIDDEN_FIXTURE_TOKENS = re.compile(
+    r"(?i)\b(password|community|token|secret|username)\b"
+)
+EXPECTED_CASES = {
+    "h3c_comware7_synthetic.json": "SYNTHETIC",
+    "h3c_comware9_synthetic.json": "SYNTHETIC",
+    "zte_zxr10_5960x_synthetic.json": "SYNTHETIC",
+    "zte_zxr10_c89e4_real_redacted.json": "REAL_CAPTURE",
+}
+
+
+@pytest.mark.parametrize("fixture_path", CASE_PATHS, ids=lambda path: path.stem)
+def test_device_inventory_replay_matches_golden(fixture_path: Path) -> None:
+    golden_path = GOLDEN_ROOT / fixture_path.name
+    assert golden_path.is_file()
+    expected = json.loads(golden_path.read_text(encoding="utf-8"))
+    assert replay_fixture(fixture_path) == expected
+
+
+@pytest.mark.parametrize("fixture_path", CASE_PATHS, ids=lambda path: path.stem)
+def test_device_inventory_replay_is_deterministic(fixture_path: Path) -> None:
+    first = replay_fixture(fixture_path)
+    second = replay_fixture(fixture_path)
+    assert first == second
+    assert json.dumps(first, ensure_ascii=False, sort_keys=True) == json.dumps(
+        second,
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+
+def test_first_batch_fixture_scope_and_source_counts() -> None:
+    assert {path.name for path in CASE_PATHS} == set(EXPECTED_CASES)
+    cases = [load_fixture(path) for path in CASE_PATHS]
+    assert {case.fixture_type for case in cases} == {"REAL_CAPTURE", "SYNTHETIC"}
+    assert sum(case.fixture_type == "REAL_CAPTURE" for case in cases) == 1
+    assert sum(case.fixture_type == "SYNTHETIC" for case in cases) == 3
+    assert {case.vendor for case in cases} == {"H3C", "ZTE"}
+    assert {case.software_version.split(".", 1)[0] for case in cases[:2]} == {
+        "7",
+        "9",
+    }
+    assert all(case.operation_id == "device.inventory.collect" for case in cases)
+    assert all("trackside" not in key.casefold() for case in cases for key in case.outputs)
+
+
+def test_fixture_text_has_no_credential_tokens() -> None:
+    for fixture_path in CASE_PATHS:
+        case = load_fixture(fixture_path)
+        text = "\n".join(case.outputs.values())
+        assert FORBIDDEN_FIXTURE_TOKENS.search(text) is None, fixture_path
+
+
+def test_empty_h3c_output_preserves_parser_contract_without_crashing() -> None:
+    original = load_fixture(FIXTURE_ROOT / "h3c_comware7_synthetic.json")
+    empty = replace(original, outputs={selector: "" for selector in original.outputs})
+    result = replay_case(empty)
+    assert result["facts"]["vendor"] == "H3C"
+    assert result["facts"]["model"] is None
+    assert result["interfaces"] == []
+    assert result["optical_modules"] == []
+    assert result["lldp_neighbors"] == []
+    assert result["statuses"] == {
+        "facts": "OK",
+        "interfaces": "EMPTY",
+        "optical": "EMPTY",
+        "lldp": "EMPTY",
+    }
+
+
+def test_empty_zte_output_keeps_explicit_parser_statuses() -> None:
+    original = load_fixture(FIXTURE_ROOT / "zte_zxr10_5960x_synthetic.json")
+    empty = replace(original, outputs={selector: "" for selector in original.outputs})
+    result = replay_case(empty)
+    assert result["facts"]["vendor"] is None
+    assert result["interfaces"] == []
+    assert result["optical_modules"] == []
+    assert result["lldp_neighbors"] == []
+    assert result["statuses"] == {
+        "identity": "NOT_RECOGNIZED",
+        "interfaces": "PARSE_FAILED",
+        "optical": "PARSE_FAILED",
+        "switchvlan": "NOT_RECOGNIZED",
+        "vlan_table": "NOT_RECOGNIZED",
+        "lldp_brief": "NO_NEIGHBOR",
+        "lldp_entry": "NO_NEIGHBOR",
+    }
+
+
+def test_malformed_cli_output_does_not_escape_replay_runner() -> None:
+    original = load_fixture(FIXTURE_ROOT / "h3c_comware9_synthetic.json")
+    malformed = replace(
+        original,
+        outputs={
+            **original.outputs,
+            "inventory.version": "% Unrecognized command",
+            "inventory.interfaces": "garbled interface output",
+            "inventory.transceiver_diagnosis": "unexpected fields",
+            "inventory.lldp_list": "unknown columns",
+        },
+    )
+    result = replay_case(malformed)
+    assert result["interfaces"] == []
+    assert result["optical_modules"]
+    assert result["lldp_neighbors"][0]["neighbor_sysname"] == "H3C9-TEST-PEER"
+
+
+def test_unknown_selector_does_not_change_known_normalized_result() -> None:
+    original = load_fixture(FIXTURE_ROOT / "h3c_comware7_synthetic.json")
+    baseline = replay_case(original)
+    with_unknown = replace(
+        original,
+        outputs={
+            **original.outputs,
+            "inventory.future_unknown_selector": "future output ignored by this replay contract",
+        },
+    )
+    assert replay_case(with_unknown) == baseline
+
+
+def test_invalid_fixture_metadata_is_rejected(tmp_path: Path) -> None:
+    source = json.loads(
+        (FIXTURE_ROOT / "h3c_comware7_synthetic.json").read_text(encoding="utf-8")
+    )
+    source["fixture_type"] = "UNDECLARED"
+    path = tmp_path / "invalid.json"
+    path.write_text(json.dumps(source), encoding="utf-8")
+    with pytest.raises(ValueError, match="unsupported fixture_type"):
+        load_fixture(path)
+
+
+def test_replay_runner_has_no_network_or_production_collector_imports() -> None:
+    from tests.support import device_inventory_replay
+
+    source = inspect.getsource(device_inventory_replay)
+    for forbidden in (
+        "netmiko",
+        "paramiko",
+        "h3c_collect_service",
+        "DeviceFactRepository",
+        "Trackside",
+        "FIT_AP",
+    ):
+        assert forbidden not in source

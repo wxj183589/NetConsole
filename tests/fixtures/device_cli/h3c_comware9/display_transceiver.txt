@@ -1,0 +1,8 @@
+Twenty-FiveGigE1/0/1 transceiver information:
+  Transceiver Type       : SFP28-25G-LR
+  Serial Number          : SYNTH-OPT9-0001
+  Vendor Name            : H3C
+  Wavelength             : 1310 nm
+  Transfer Distance      : 10 km
+  Connector Type         : LC
+

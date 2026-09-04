@@ -1,0 +1,3 @@
+<H3C9-SW>display current-configuration | include sysname
+ sysname H3C9-SW
+

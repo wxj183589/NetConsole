@@ -1,0 +1,26 @@
+{
+  "fixture_id": "h3c-comware7-synthetic-s6850",
+  "operation_id": "device.inventory.collect",
+  "fixture_type": "SYNTHETIC",
+  "source_note": "复用仓库既有脱敏样例文件；这些文件是测试样例，不是现场证据。",
+  "vendor": "H3C",
+  "role": "switch",
+  "platform": "comware",
+  "software_version": "7.1.070",
+  "profile_id": "h3c.comware.switch.generic.device-inventory.v1",
+  "outputs": {
+    "inventory.sysname": {"file": "../h3c/display_current_configuration_sysname.txt"},
+    "inventory.version": {"file": "../h3c/display_version.txt"},
+    "inventory.device": {"file": "../h3c/display_device_sw.txt"},
+    "inventory.manuinfo": {"file": "../h3c/display_device_manuinfo.txt"},
+    "inventory.boot_loader": {"file": "../h3c/display_boot_loader_sw.txt"},
+    "inventory.interfaces": {"file": "../h3c/display_interface.txt"},
+    "inventory.transceivers": {"file": "../h3c/display_transceiver_interface.txt"},
+    "inventory.transceiver_manuinfo": {
+      "text": "GigabitEthernet1/0/1 transceiver manufacture information:\n  Manu. Serial Number : OPT-MANU-SYNTH-0001\n  Vendor Name         : H3C\n"
+    },
+    "inventory.transceiver_diagnosis": {"file": "../h3c/display_transceiver_diagnosis_interface.txt"},
+    "inventory.lldp_list": {"file": "../h3c/display_lldp_neighbor_information_list.txt"},
+    "inventory.lldp_verbose": {"file": "../h3c/display_lldp_neighbor_information_verbose.txt"}
+  }
+}

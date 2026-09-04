@@ -1,0 +1,7 @@
+ZXR10-TEST#show lldp neighbor brief
+Local Interface   Scope  Chassis ID      Port ID           Holdtime  System Name
+----------------------------------------------------------------------------
+gei-0/3/0/2       NB     02aa.bbcc.0002  GigabitEthernet1/0/2 120     ZXR10-TEST-AP
+gei-0/3/0/3       NB     02aa.bbcc.0003  GigabitEthernet1/0/3 120     ZXR10-TEST-PEER
+ZXR10-TEST#
+

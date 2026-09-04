@@ -1,0 +1,5 @@
+H3C Comware Software, Version 9.1.081, Release 1608P01
+Copyright (c) 2004-2026 New H3C Technologies Co., Ltd. All rights reserved.
+H3C9-SW uptime is 3 days, 2 hours, 1 minute
+BootRom Version: 9.1
+

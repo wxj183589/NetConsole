@@ -1,0 +1,12 @@
+Twenty-FiveGigE1/0/1 transceiver diagnostic information:
+  Temperature            : 36.0 C
+  Voltage                : 3.30 V
+  Bias Current           : 5.1 mA
+  RX Power               : -4.20 dBm
+  TX Power               : -2.20 dBm
+  Rx low alarm           : Off
+  Rx high alarm          : Off
+  Tx low alarm           : Off
+  Tx high alarm          : Off
+  Status                 : normal
+

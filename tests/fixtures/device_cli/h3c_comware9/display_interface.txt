@@ -1,0 +1,21 @@
+Twenty-FiveGigE1/0/1 current state: UP
+Line protocol current state: UP
+Description: Uplink to test controller
+Internet Address is 192.0.2.91/24 Primary
+IP Packet Frame Type: PKTFMT_ETHNT_2, Hardware Address: 02aa-bbcc-9902
+The Maximum Transmit Unit is 1500
+Speed : 25000Mbps
+Duplex: Full
+PVID: 71
+Port link-type: trunk
+VLAN passing  : 71,201
+
+Twenty-FiveGigE1/0/2 current state: DOWN
+Line protocol current state: DOWN
+Description: Test access port
+IP Packet Frame Type: PKTFMT_ETHNT_2, Hardware Address: 02aa-bbcc-9903
+Speed : auto
+Duplex: auto
+PVID: 201
+Port link-type: access
+
