@@ -56,6 +56,8 @@ jobs:
         run: |
           pnpm --dir apps/desktop_renderer install --frozen-lockfile
           pnpm --dir apps/desktop_electron install --frozen-lockfile
+      - name: Run stable Architecture green gates
+        run: python -m scripts.quality.run_architecture_green_gates
       - name: Run architecture contract against exact baseline
         run: python -m scripts.quality.baseline_debt_audit --checks architecture
       - name: Remove isolated test root
