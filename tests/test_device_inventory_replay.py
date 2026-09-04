@@ -8,10 +8,19 @@ from pathlib import Path
 
 import pytest
 
+from netconsole.models.api.device_detail import (
+    DeviceInterfaceDTO,
+    DeviceLldpNeighborDTO,
+    DeviceTransceiverDTO,
+)
+from netconsole.models.api.device_management import DeviceFactDTO
 from tests.support.device_inventory_replay import (
     load_fixture,
     replay_case,
     replay_fixture,
+)
+from tests.support.device_inventory_snapshot_contract import (
+    validate_snapshot_contract,
 )
 
 FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "device_cli"
@@ -34,6 +43,42 @@ def test_device_inventory_replay_matches_golden(fixture_path: Path) -> None:
     assert golden_path.is_file()
     expected = json.loads(golden_path.read_text(encoding="utf-8"))
     assert replay_fixture(fixture_path) == expected
+
+
+@pytest.mark.parametrize("golden_path", sorted(GOLDEN_ROOT.glob("*.json")))
+def test_golden_snapshot_follows_field_contract(golden_path: Path) -> None:
+    snapshot = json.loads(golden_path.read_text(encoding="utf-8"))
+    validate_snapshot_contract(snapshot)
+
+
+@pytest.mark.parametrize(
+    ("model", "required_fields"),
+    (
+        (DeviceFactDTO, set()),
+        (DeviceInterfaceDTO, {"name", "normalized_name", "category"}),
+        (
+            DeviceTransceiverDTO,
+            {"interface_name", "normalized_interface_name", "severity"},
+        ),
+        (DeviceLldpNeighborDTO, {"local_interface", "normalized_local_interface"}),
+    ),
+)
+def test_golden_contract_uses_actual_dto_required_fields(model, required_fields) -> None:
+    actual = {
+        name for name, field in model.model_fields.items() if field.is_required()
+    }
+    assert actual == required_fields
+
+
+def test_golden_contract_rejects_runtime_fields(tmp_path: Path) -> None:
+    snapshot = json.loads(
+        (GOLDEN_ROOT / "h3c_comware9_synthetic.json").read_text(encoding="utf-8")
+    )
+    snapshot["facts"]["collected_at"] = "runtime-only"
+    path = tmp_path / "runtime-field.json"
+    path.write_text(json.dumps(snapshot), encoding="utf-8")
+    with pytest.raises(ValueError, match="ignored runtime fields"):
+        validate_snapshot_contract(json.loads(path.read_text(encoding="utf-8")))
 
 
 @pytest.mark.parametrize("fixture_path", CASE_PATHS, ids=lambda path: path.stem)
