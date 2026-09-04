@@ -14,4 +14,3 @@ Port VLAN ID(PVID) :71
 Operational MAU :1000BaseLXFD
 Maximum frame size :9216
 ZXR10-TEST#
-

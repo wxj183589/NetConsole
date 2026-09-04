@@ -7,4 +7,3 @@ Main startup software images:
 Backup startup software images:
   flash:/h3c9-cmw910-boot.bin
   flash:/h3c9-cmw910-system.bin
-

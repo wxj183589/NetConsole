@@ -9,4 +9,3 @@ Twenty-FiveGigE1/0/1 transceiver diagnostic information:
   Tx low alarm           : Off
   Tx high alarm          : Off
   Status                 : normal
-

@@ -18,4 +18,3 @@ Speed : auto
 Duplex: auto
 PVID: 201
 Port link-type: access
-
