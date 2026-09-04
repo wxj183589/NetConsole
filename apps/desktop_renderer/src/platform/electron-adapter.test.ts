@@ -65,6 +65,13 @@ describe('Electron platform adapter', () => {
     })
     adapter.reportRendererReady(true)
     expect(nativeBridge.reportRendererReady).toHaveBeenCalledWith({ healthOk: true, phase: 'interactive' })
+    adapter.reportRendererReady(true, 'interactive', 'main', 'hz10')
+    expect(nativeBridge.reportRendererReady).toHaveBeenLastCalledWith({
+      healthOk: true,
+      phase: 'interactive',
+      surface: 'main',
+      siteId: 'hz10',
+    })
     await adapter.downloadBackendResource({
       apiPath: '/api/file-management/downloads/task-1/file',
       suggestedName: 'report.zip',

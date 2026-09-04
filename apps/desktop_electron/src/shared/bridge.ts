@@ -252,6 +252,8 @@ export interface RendererReadyReport {
   healthOk: boolean
   phase: 'mounted' | 'interactive' | 'failed'
   surface?: 'main' | 'workspace-window'
+  /** Read-only current site observation for startup diagnostics. */
+  siteId?: string
 }
 
 export type DesktopResolvedTheme = 'light' | 'dark'

@@ -11,6 +11,7 @@ import { DesktopBootstrapStore } from './bootstrap'
 import { DESKTOP_SAFE_BACKGROUND_COLOR, isDevelopmentMenuEnabled, loadDesktopConfig, resolveDesktopBackgroundColor } from './config'
 import { registerDesktopIpc, type DesktopIpcRegistration } from './ipc'
 import { createFileLogger, type DesktopLogger, type ManagedDesktopLogger } from './logger'
+import { formatTraySyncDiagnostic } from './tray-sync-diagnostic'
 import { buildChildProcessGoneDiagnostic, logDevelopmentGpuFeatureStatus } from './gpu-diagnostics'
 import { ensureDesktopRuntimePaths, resolveDesktopStorageContext } from './development-data-root'
 import { resolveDesktopDataRootConfiguration } from './data-root-configuration'
@@ -1113,6 +1114,7 @@ function handleRendererReady(report: RendererHostReport, sourceWindow: unknown):
     startupTimeline?.mark('desktop.interactive')
     const summary = startupTimeline?.performanceSummary()
     if (summary) logger('STARTUP_PERFORMANCE_SUMMARY', JSON.stringify(summary))
+    void logTraySyncDiagnostic(report.siteId)
   }
   if (process.env.NETCONSOLE_ELECTRON_SMOKE_TEST !== '1' || report.phase === 'mounted') return
   if (!smokeMainWindowStartupValidated) {
@@ -1151,6 +1153,18 @@ function handleRendererReady(report: RendererHostReport, sourceWindow: unknown):
     return
   }
   scheduleSmokeStableExit()
+}
+
+async function logTraySyncDiagnostic(rendererSiteId?: string): Promise<void> {
+  const backendSiteContext = await readTraySiteState()
+  await trayController?.refreshTraySiteState(backendSiteContext)
+  const diagnostic = formatTraySyncDiagnostic({
+    backendSiteId: backendSiteContext?.activeSiteId,
+    rendererSiteId,
+    traySiteId: backendSiteContext?.activeSiteId,
+  })
+  logger('TRAY_SITE_SYNC_DIAGNOSTIC', diagnostic)
+  if (desktopRuntimeMode === 'DEV') console.info(diagnostic)
 }
 
 function handleRendererWorkload(report: RendererWorkloadReport, sourceWindow: unknown): void {

@@ -50,10 +50,11 @@ export function createElectronAdapter(bridge: NetConsoleDesktopBridge): Platform
       listener(request.siteId)
     }) ?? (() => undefined),
     reportSiteSwitchState: (switching) => bridge.reportSiteSwitchState?.(switching),
-    reportRendererReady: (healthOk, phase = 'interactive', surface) => bridge.reportRendererReady({
+    reportRendererReady: (healthOk, phase = 'interactive', surface, siteId) => bridge.reportRendererReady({
       healthOk,
       phase,
       ...(surface ? { surface } : {}),
+      ...(siteId ? { siteId } : {}),
     }),
   }
 }
