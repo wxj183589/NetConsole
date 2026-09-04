@@ -8,6 +8,7 @@ export interface DesktopBootstrap {
   schema_version: 1
   data_root: string
   active_site_id: string
+  runtime_mode?: 'DEV' | 'PRODUCTION'
 }
 
 export interface DesktopBootstrapLoadResult {
@@ -30,10 +31,12 @@ export class DesktopBootstrapStore {
       if (parsed.schema_version !== 1) return {}
       const dataRoot = safePath(parsed.data_root)
       const activeSiteId = safeSiteId(parsed.active_site_id)
+      const runtimeMode = safeRuntimeMode(parsed.runtime_mode)
       return {
         schema_version: 1,
         ...(dataRoot ? { data_root: dataRoot } : {}),
         ...(activeSiteId ? { active_site_id: activeSiteId } : {}),
+        ...(runtimeMode ? { runtime_mode: runtimeMode } : {}),
       }
     } catch {
       return {}
@@ -56,7 +59,10 @@ export class DesktopBootstrapStore {
     const backupPath = `${this.path}.invalid-${timestamp}`
     if (existsSync(this.path)) copyFileSync(this.path, backupPath)
     return {
-      value: value.active_site_id ? { active_site_id: value.active_site_id } : {},
+      value: {
+        ...(value.active_site_id ? { active_site_id: value.active_site_id } : {}),
+        ...(value.runtime_mode ? { runtime_mode: value.runtime_mode } : {}),
+      },
       rejectedEphemeralRoot: true,
       ...(existsSync(backupPath) ? { backupPath } : {}),
     }
@@ -65,11 +71,17 @@ export class DesktopBootstrapStore {
   save(value: DesktopBootstrap): void {
     const dataRoot = safePath(value.data_root)
     const activeSiteId = safeSiteId(value.active_site_id)
+    const runtimeMode = safeRuntimeMode(value.runtime_mode)
     if (!dataRoot || !activeSiteId) throw new TypeError('bootstrap value is invalid')
     mkdirSync(dirname(this.path), { recursive: true })
     const temporary = `${this.path}.${process.pid}.tmp`
     try {
-      writeFileSync(temporary, `${JSON.stringify({ schema_version: 1, data_root: dataRoot, active_site_id: activeSiteId }, null, 2)}\n`, { encoding: 'utf8', flag: 'w' })
+      writeFileSync(temporary, `${JSON.stringify({
+        schema_version: 1,
+        data_root: dataRoot,
+        active_site_id: activeSiteId,
+        ...(runtimeMode ? { runtime_mode: runtimeMode } : {}),
+      }, null, 2)}\n`, { encoding: 'utf8', flag: 'w' })
       renameSync(temporary, this.path)
     } finally {
       rmSync(temporary, { force: true })
@@ -93,4 +105,8 @@ function safePath(value: unknown): string | undefined {
 function safeSiteId(value: unknown): string | undefined {
   if (typeof value !== 'string' || !/^[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?$/.test(value)) return undefined
   return value
+}
+
+function safeRuntimeMode(value: unknown): DesktopBootstrap['runtime_mode'] {
+  return value === 'DEV' || value === 'PRODUCTION' ? value : undefined
 }

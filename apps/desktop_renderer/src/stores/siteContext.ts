@@ -19,11 +19,11 @@ let refreshPromise: Promise<SiteContext | null> | null = null
 export function siteContextFromRecord(value: unknown): SiteContext | null {
   if (!value || typeof value !== 'object') return null
   const record = value as Record<string, unknown>
-  const siteId = String(record.site_id || '').trim()
+  const siteId = String(record.site_id || record.siteId || '').trim()
   if (!siteId) return null
   return {
     siteId,
-    displayName: String(record.display_name || record.site_name || '').trim(),
+    displayName: String(record.display_name || record.site_name || record.displayName || '').trim(),
     revision: String(
       record.revision
       || record.switch_revision

@@ -8,9 +8,9 @@ import { ApiRequestError } from '../../api/client'
 import { getPlatformAdapter } from '../../platform/runtime'
 import { getTask } from '../../api/tasks'
 import { useConfirm } from '../../components/feedback/useConfirm'
-import { getSiteContextSnapshot, siteContextState } from '../../stores/siteContext'
+import { getSiteContextSnapshot, refreshSiteContext, siteContextState } from '../../stores/siteContext'
 import { useWorkspaceStore } from '../../stores/workspace'
-import { coordinateSiteSwitch, notifySiteContextChanged, SITE_CONTEXT_CHANGED_EVENT } from '../../workspace/site-switch'
+import { coordinateSiteSwitch, LEGACY_SITE_CONTEXT_CHANGED_EVENT, notifySiteContextChanged, SITE_CONTEXT_CHANGED_EVENT } from '../../workspace/site-switch'
 
 const props = defineProps<{ focused?: boolean; switchBlocked?: boolean }>()
 
@@ -53,6 +53,8 @@ const workspace = useWorkspaceStore()
 const panelRoot = ref<HTMLElement | null>(null)
 let panelMounted = false
 let reloadGeneration = 0
+let queuedTraySiteId = ''
+let traySwitchPromise: Promise<void> | undefined
 
 const retentionGroups = computed(() => {
   const candidates = retentionReport.value?.candidates || []
@@ -82,11 +84,13 @@ const selectedRetentionBytes = computed(() => selectedRetentionCandidates.value.
 onMounted(() => {
   panelMounted = true
   window.addEventListener(SITE_CONTEXT_CHANGED_EVENT, handleSiteContextChanged)
+  window.addEventListener(LEGACY_SITE_CONTEXT_CHANGED_EVENT, handleSiteContextChanged)
   if (desktopOnly) void reload().catch(() => undefined)
 })
 onBeforeUnmount(() => {
   panelMounted = false
   window.removeEventListener(SITE_CONTEXT_CHANGED_EVENT, handleSiteContextChanged)
+  window.removeEventListener(LEGACY_SITE_CONTEXT_CHANGED_EVENT, handleSiteContextChanged)
 })
 
 function handleSiteContextChanged(): void {
@@ -141,22 +145,26 @@ async function newSite(): Promise<void> {
   finally { busy.value = false }
 }
 
-async function switchSite(site: SiteRecord): Promise<void> {
-  if (busy.value || site.active) return
-  busy.value = true
+async function switchSite(site: SiteRecord, options: { confirm?: boolean; allowBusy?: boolean } = {}): Promise<boolean> {
+  if ((busy.value && !options.allowBusy) || site.active) return false
+  const ownsBusyState = !busy.value
+  if (ownsBusyState) busy.value = true
   error.value = ''
   blockingTasks.value = []
+  let completed = false
   try {
     const result = await coordinateSiteSwitch(
       { siteId: site.site_id, displayName: site.display_name },
       {
         isBlocked: () => Boolean(props.switchBlocked),
-        confirm: (target) => confirmAction({
-          type: 'WARNING',
-          title: '切换当前局点',
-          message: `切换到“${target.displayName}”？目标局点将在后台就绪后自动接管。`,
-          confirmText: '确认切换局点',
-        }),
+        confirm: options.confirm === false
+          ? async () => true
+          : (target) => confirmAction({
+            type: 'WARNING',
+            title: '切换当前局点',
+            message: `切换到“${target.displayName}”？目标局点将在后台就绪后自动接管。`,
+            confirmText: '确认切换局点',
+          }),
         preflight: async (siteId) => { await preflightSiteActivation(siteId) },
         prepareWorkspace: (siteId, route) => workspace.prepareForSiteSwitch(siteId, route),
         activate: (siteId) => activateSite(siteId),
@@ -169,6 +177,8 @@ async function switchSite(site: SiteRecord): Promise<void> {
             checkpoint as ReturnType<typeof workspace.createSnapshot>,
           )
         },
+        refreshCurrentContext: refreshSiteContext,
+        refreshTraySiteState: async () => { await getPlatformAdapter().refreshSiteContext() },
         onSwitchingChanged: (switching) => getPlatformAdapter().reportSiteSwitchState(switching),
       },
     )
@@ -177,26 +187,41 @@ async function switchSite(site: SiteRecord): Promise<void> {
     } else if (result === 'completed') {
       await reload({ reportError: false }).catch(() => undefined)
       ElMessage.success('局点已切换')
+      completed = true
     }
   } catch (cause) {
     blockingTasks.value = blockingTasksFrom(cause)
     showError(cause, '局点切换失败')
   }
-  finally { busy.value = false }
+  finally {
+    if (ownsBusyState) busy.value = false
+  }
+  return completed
 }
 
 async function requestSwitch(siteId: string): Promise<void> {
-  try {
-    await reload({ reportError: false })
-    const target = sites.value.find((site) => site.site_id === siteId)
-    if (!target) {
-      ElMessage.error('目标局点已不存在或当前不可用')
-      return
+  queuedTraySiteId = siteId
+  if (traySwitchPromise) return traySwitchPromise
+  const process = async (): Promise<void> => {
+    while (queuedTraySiteId) {
+      const nextSiteId = queuedTraySiteId
+      queuedTraySiteId = ''
+      await reload({ reportError: false })
+      const target = sites.value.find((site) => site.site_id === nextSiteId)
+      if (!target) {
+        ElMessage.error('目标局点已不存在或当前不可用')
+        continue
+      }
+      await switchSite(target, { confirm: false })
     }
-    await switchSite(target)
-  } finally {
-    getPlatformAdapter().reportSiteSwitchState(false)
   }
+  const currentPromise = process().finally(() => {
+    if (traySwitchPromise === currentPromise) traySwitchPromise = undefined
+    queuedTraySiteId = ''
+    getPlatformAdapter().reportSiteSwitchState(false)
+  })
+  traySwitchPromise = currentPromise
+  return currentPromise
 }
 
 defineExpose({ reload, focus, requestSwitch })
@@ -576,18 +601,25 @@ async function executeImport(): Promise<void> {
     ElMessage.success('数据包导入任务已提交')
     const completed = await waitForTask(task.task_id)
     if (completed !== 'COMPLETED') throw new Error(`局点导入任务状态：${completed}`)
-    try {
-      await reload({ reportError: false })
-    } catch {
-      ElMessage.warning('导入已完成，但局点列表刷新失败')
-      return
-    } finally {
-      await getPlatformAdapter().refreshSiteContext().catch(() => undefined)
-    }
-    if (importMode.value !== 'merge' && !sites.value.some((site) => site.site_id === (importMode.value === 'new' ? importSiteId.value.trim() : importTargetSiteId.value))) {
+    const importedSiteId = importMode.value === 'new'
+      ? importSiteId.value.trim()
+      : importMode.value === 'replace'
+        ? importTargetSiteId.value
+        : inspected.target_site_id || importTargetSiteId.value
+    await reload({ reportError: false })
+    const importedSite = sites.value.find((site) => site.site_id === importedSiteId)
+    if (importMode.value !== 'merge' && !importedSite) {
       throw new Error('导入已完成，但 Backend 尚未将新局点注册为可切换局点')
     }
-    notifySiteContextChanged()
+    if (importedSite && !importedSite.active) {
+      if (!await switchSite(importedSite, { confirm: false, allowBusy: true })) {
+        throw new Error('导入已完成，但当前局点切换失败')
+      }
+    } else {
+      const currentContext = await refreshSiteContext()
+      notifySiteContextChanged(currentContext)
+      await getPlatformAdapter().refreshSiteContext()
+    }
     ElMessage.success('局点数据包导入完成')
   } catch (cause) { showError(cause, '数据包导入失败') }
   finally { if (panelMounted) busy.value = false }

@@ -231,8 +231,6 @@ def site_import(context: JobContext) -> dict[str, object]:
             if isinstance(item, dict)
         ],
     )
-    if bool(context.params.get("activate")):
-        result["activation"] = sites.switch_site(str(result["site_id"]))
     context.progress("publish", 1, 1, "局点包导入完成")
     return result
 

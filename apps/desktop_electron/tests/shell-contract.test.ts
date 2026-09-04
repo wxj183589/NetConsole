@@ -60,6 +60,9 @@ describe('Electron shell product contract', () => {
     expect(source).toContain('function beginShutdownAndExit(): void')
     expect(source).toContain("app.on('window-all-closed'")
     expect(source).toContain('if (trayAvailable && closeToTrayEnabled && !explicitQuitRequested) return')
+    expect(source).toContain('async function refreshTraySiteState')
+    expect(source).toContain('app.relaunch()')
+    expect(source).toContain('runtime_mode: desktopRuntimeMode')
     expect(source).toContain('workspaceWindowController?.closeAllForQuit()')
     expect(source).not.toContain('process.exit(requestedExitCode)')
     expect(source).toContain("logger('ELECTRON_BACKEND_PROCESS_STILL_ALIVE')")
@@ -185,7 +188,7 @@ describe('Electron shell product contract', () => {
     )
     const switchSource = source.slice(
       source.indexOf('async function requestTraySiteSwitch'),
-      source.indexOf('async function refreshTraySiteContext'),
+      source.indexOf('async function refreshTraySiteState'),
     )
     expect(taskSource).toContain('shuttingDown')
     expect(workspaceSource).toContain('shuttingDown')

@@ -80,6 +80,7 @@ let taskNotificationController: TaskNotificationController | undefined
 let trayAvailable = false
 let closeToTrayEnabled = true
 let explicitQuitRequested = false
+let desktopSiteSwitching = false
 let backend: PythonBackendManager | undefined
 let createManagedBackend: ((dataRoot: string, activeSiteId: string, warmReplacement?: boolean) => PythonBackendManager) | undefined
 let backendStatusUnsubscribe: (() => void) | undefined
@@ -112,9 +113,7 @@ let shutdownProgressPage: ShutdownProgressPage | undefined
 let bootstrapStore: DesktopBootstrapStore | undefined
 let uiPreferenceStore: UiPreferenceStore | undefined
 let desktopDataRoot = ''
-let desktopActiveSiteId = ''
-let desktopActiveSiteName = ''
-let desktopSites: TraySiteSummary[] = []
+let desktopRuntimeMode: 'DEV' | 'PRODUCTION' = 'PRODUCTION'
 const windowDisplayGates = new WeakMap<BrowserWindow, RendererThemeDisplayGate>()
 const windowErrorCoordinators = new WeakMap<BrowserWindow, ManagedWindowErrorCoordinator>()
 const windowRetryNavigations = new WeakMap<BrowserWindow, ManagedRendererRetryNavigation>()
@@ -173,7 +172,10 @@ async function startDesktop(): Promise<void> {
     throw new Error('Electron、Backend 和持久化配置的数据根不一致，已停止启动。')
   }
   desktopDataRoot = config.dataRoot
-  desktopActiveSiteId = config.activeSiteId ?? ''
+  // This is only the persisted startup hint passed to the Backend. The live
+  // current site is always read from the Backend site API.
+  const startupSiteId = config.activeSiteId ?? ''
+  desktopRuntimeMode = config.runtimeMode === 'desktop-development' ? 'DEV' : 'PRODUCTION'
   managedLogger = createFileLogger(resolve(app.getPath('logs'), 'electron.log'), {
     minimumLevel: config.runtimeMode === 'desktop-development' ? 'DEBUG' : 'INFO',
   })
@@ -218,7 +220,7 @@ async function startDesktop(): Promise<void> {
       )
     },
   })
-  backend = createManagedBackend(config.dataRoot, config.activeSiteId ?? '')
+  backend = createManagedBackend(config.dataRoot, startupSiteId)
   const developmentMenu = isDevelopmentMenuEnabled(config.devServerUrl)
   if (!developmentMenu) Menu.setApplicationMenu(null)
   rendererDevelopment = Boolean(config.devServerUrl)
@@ -332,6 +334,8 @@ async function startDesktop(): Promise<void> {
       await openWorkspaceWindow({ routeFullPath: '/', title: 'Dashboard' })
     },
     requestSiteSwitch: requestTraySiteSwitch,
+    readSiteState: readTraySiteState,
+    restartApplication,
     setCloseToTrayEnabled: async (enabled) => {
       await updateCloseToTrayEnabled(enabled)
     },
@@ -341,9 +345,6 @@ async function startDesktop(): Promise<void> {
   trayAvailable = trayController.initialize()
   trayController.updateContext({
     backendState: 'starting',
-    activeSiteId: desktopActiveSiteId,
-    activeSiteName: desktopActiveSiteName,
-    sites: desktopSites,
     closeToTrayEnabled,
     visibleWindowCount: 1,
   })
@@ -373,8 +374,12 @@ async function startDesktop(): Promise<void> {
     setCloseToTrayEnabled: updateCloseToTrayEnabled,
     restartBackend: restartManagedBackend,
     restartApplication,
-    refreshSiteContext: async () => { await refreshTraySiteContext() },
-    setSiteSwitching: (switching) => trayController?.updateContext({ siteSwitching: switching }),
+    refreshSiteContext: async () => { await refreshTraySiteState() },
+    setSiteSwitching: (switching) => {
+      desktopSiteSwitching = switching
+      trayController?.updateContext({ siteSwitching: switching })
+      if (!switching) void refreshTraySiteState()
+    },
     appInfo: {
       version: app.getVersion(),
       platform: process.platform,
@@ -408,7 +413,7 @@ async function startDesktop(): Promise<void> {
     startupProgressPage.update('backend.spawn_started')
     const runtime = await backend.start()
     startupProgressPage.update('backend.health_ready')
-    await refreshTraySiteContext(runtime, desktopActiveSiteId)
+    const startupSiteContext = await refreshTraySiteState(runtime)
     const backendOrigin = new URL(runtime.baseUrl).origin
     rendererUrl = config.devServerUrl ?? runtime.baseUrl
     const rendererOrigin = new URL(rendererUrl).origin
@@ -428,15 +433,15 @@ async function startDesktop(): Promise<void> {
     if (process.env.NETCONSOLE_ELECTRON_SMOKE_TEST === '1') {
       await runManagedBackendWorkerTextSmoke(runtime)
     }
-    if (desktopStorageContext.persistent && desktopActiveSiteId) {
-      bootstrapStore.save({ schema_version: 1, data_root: desktopDataRoot, active_site_id: desktopActiveSiteId })
+    if (desktopStorageContext.persistent && startupSiteContext) {
+      bootstrapStore.save({
+        schema_version: 1,
+        data_root: desktopDataRoot,
+        active_site_id: startupSiteContext.activeSiteId,
+        runtime_mode: desktopRuntimeMode,
+      })
     }
-    trayController?.updateContext({
-      activeSiteId: desktopActiveSiteId,
-      activeSiteName: desktopActiveSiteName,
-      sites: desktopSites,
-      siteSwitching: false,
-    })
+    trayController?.updateContext({ siteSwitching: false })
     const restoredMainState = workspaceWindowController.getWindowState(mainWindow)
     const restoredMainRoute = restoredMainState.snapshot?.tabs.find(
       (tab) => tab.id === restoredMainState.snapshot?.activeTabId,
@@ -604,7 +609,9 @@ async function restartManagedBackend(update: SiteStorageRestartRequest): Promise
   const currentBackend = backend
   const previousRuntime = currentBackend.getRuntimeInfo()
   const previousRoot = desktopDataRoot
-  const previousSite = desktopActiveSiteId
+  const previousContext = await readBackendSiteContext(previousRuntime.baseUrl, previousRuntime.apiToken)
+  if (!previousContext) throw new Error('无法读取 Backend 当前局点，已取消切换')
+  const previousSite = previousContext.activeSiteId
   const nextRoot = update.dataRoot ?? previousRoot
   const nextSite = update.activeSiteId ?? previousSite
   logger('SITE_SWITCH_STARTED', `site_changed=${nextSite !== previousSite} data_root_changed=${nextRoot !== previousRoot}`)
@@ -614,14 +621,13 @@ async function restartManagedBackend(update: SiteStorageRestartRequest): Promise
   }
   const workspaceCheckpoint = workspaceWindowController?.prepareSiteSwitchSnapshots()
   const candidate = createManagedBackend(nextRoot, nextSite, true)
-  let candidateContext: DesktopSiteContext | null = null
   try {
     const handoffStartedAt = Date.now()
     await prepareWarmBackendHandoff({
       current: currentBackend,
       candidate,
       verify: async (runtime) => {
-        candidateContext = await waitForExpectedSiteContext({
+        await waitForExpectedSiteContext({
           read: () => readBackendSiteContext(runtime.baseUrl, runtime.apiToken),
           expectedSiteId: nextSite,
         })
@@ -631,15 +637,14 @@ async function restartManagedBackend(update: SiteStorageRestartRequest): Promise
         backend = active
         bindManagedBackendStatus(active)
         publishManagedBackendStatus(active.getStatus())
-        applyDesktopSiteContext(candidateContext!)
+        await refreshTraySiteState(runtime)
       },
       rollback: async () => {
         backend = currentBackend
         bindManagedBackendStatus(currentBackend)
         await applyManagedBackendRuntime(previousRuntime, previousRoot, previousSite)
         publishManagedBackendStatus(currentBackend.getStatus())
-        const previousContext = await readBackendSiteContext(previousRuntime.baseUrl, previousRuntime.apiToken)
-        if (previousContext) applyDesktopSiteContext(previousContext)
+        await refreshTraySiteState(previousRuntime)
       },
     })
     if (nextSite !== previousSite) {
@@ -660,7 +665,7 @@ async function restartManagedBackend(update: SiteStorageRestartRequest): Promise
       await restoreBackendSiteContext(previousRuntime, previousSite)
       const restored = await readBackendSiteContext(previousRuntime.baseUrl, previousRuntime.apiToken)
       if (!restored || restored.activeSiteId !== previousSite) throw new Error('previous site verification failed')
-      applyDesktopSiteContext(restored)
+      await refreshTraySiteState(previousRuntime)
     } catch (restoreCause) {
       if (workspaceCheckpoint) workspaceWindowController?.restoreSiteSwitchSnapshots(workspaceCheckpoint)
       logger('SITE_SWITCH_FAILED', `stage=warm_handoff_restore restored=false type=${restoreCause instanceof Error ? restoreCause.name : 'unknown'}`)
@@ -673,8 +678,23 @@ async function restartManagedBackend(update: SiteStorageRestartRequest): Promise
 }
 
 async function restartApplication(): Promise<void> {
-  if (shuttingDown || applicationRestartRequested) {
+  if (shuttingDown || applicationRestartRequested || desktopSiteSwitching) {
     throw new Error('NetConsole 正在重启或退出')
+  }
+  const currentBackend = backend
+  if (!currentBackend || currentBackend.getStatus().state !== 'ready' || !bootstrapStore) {
+    throw new Error('Backend 当前不可用，无法安全重启')
+  }
+  const currentRuntime = currentBackend.getRuntimeInfo()
+  const currentContext = await readBackendSiteContext(currentRuntime.baseUrl, currentRuntime.apiToken)
+  if (!currentContext) throw new Error('Backend 当前局点读取失败，无法安全重启')
+  if (desktopStorageContext.persistent) {
+    bootstrapStore.save({
+      schema_version: 1,
+      data_root: desktopDataRoot,
+      active_site_id: currentContext.activeSiteId,
+      runtime_mode: desktopRuntimeMode,
+    })
   }
   try {
     app.relaunch()
@@ -683,7 +703,7 @@ async function restartApplication(): Promise<void> {
     throw cause
   }
   applicationRestartRequested = true
-  logger('ELECTRON_APPLICATION_RELAUNCH_SCHEDULED', `active_site_id=${desktopActiveSiteId}`)
+  logger('ELECTRON_APPLICATION_RELAUNCH_SCHEDULED', `active_site_id=${currentContext.activeSiteId} data_root=${desktopDataRoot} runtime_mode=${desktopRuntimeMode}`)
   requestExit(0)
 }
 
@@ -704,7 +724,7 @@ async function restartManagedBackendForDataRoot(
       read: () => readBackendSiteContext(runtime.baseUrl, runtime.apiToken),
       expectedSiteId: nextSite,
     })
-    applyDesktopSiteContext(verified)
+    await refreshTraySiteState(runtime)
     logger('DATA_ROOT_BACKEND_RESTARTED')
     setImmediate(() => { void reloadManagedRenderersAfterBackendRestart() })
   } catch (cause) {
@@ -713,7 +733,7 @@ async function restartManagedBackendForDataRoot(
       currentBackend.configureStorage(previousRoot, previousSite)
       const restoredRuntime = await currentBackend.start()
       await applyManagedBackendRuntime(restoredRuntime, previousRoot, previousSite)
-      await refreshTraySiteContext(restoredRuntime, previousSite)
+      await refreshTraySiteState(restoredRuntime)
     } catch (restoreCause) {
       if (workspaceCheckpoint) workspaceWindowController?.restoreSiteSwitchSnapshots(workspaceCheckpoint)
       logger('SITE_SWITCH_FAILED', `stage=data_root_restore restored=false type=${restoreCause instanceof Error ? restoreCause.name : 'unknown'}`)
@@ -765,6 +785,7 @@ function publishManagedBackendStatus(status: ReturnType<PythonBackendManager['ge
     ...(status.error ? { error: '本地后端不可用' } : {}),
   }
   trayController?.updateContext({ backendState: status.state })
+  void refreshTraySiteState()
   for (const window of getAllDesktopWindows()) {
     if (window && !window.isDestroyed()) window.webContents.send(DESKTOP_IPC.backendStatusChanged, publicStatus)
   }
@@ -787,8 +808,12 @@ async function applyManagedBackendRuntime(runtime: BackendRuntimeInfo, dataRoot:
   const cookieWindow = getAllDesktopWindows()[0]
   if (!cookieWindow || !bootstrapStore) throw new Error('desktop runtime is unavailable')
   desktopDataRoot = dataRoot
-  desktopActiveSiteId = activeSiteId
-  bootstrapStore.save({ schema_version: 1, data_root: dataRoot, active_site_id: activeSiteId })
+  bootstrapStore.save({
+    schema_version: 1,
+    data_root: dataRoot,
+    active_site_id: activeSiteId,
+    runtime_mode: desktopRuntimeMode,
+  })
   const backendOrigin = new URL(runtime.baseUrl).origin
   connectionOrigins.add(backendOrigin)
   const cookiePath = desktopSessionCookiePath(rendererDevelopment)
@@ -846,39 +871,25 @@ async function requestTraySiteSwitch(siteId: string): Promise<void> {
   }
 }
 
-async function refreshTraySiteContext(
-  runtime?: BackendRuntimeInfo,
-  fallbackSiteId = desktopActiveSiteId,
-): Promise<DesktopSiteContext | null> {
-  const currentRuntime = runtime ?? backend?.getRuntimeInfo()
-  if (!currentRuntime) return null
+async function readTraySiteState(): Promise<DesktopSiteContext | null> {
+  const currentBackend = backend
+  if (!currentBackend || currentBackend.getStatus().state !== 'ready') return null
+  const runtime = currentBackend.getRuntimeInfo()
   try {
-    const context = await readBackendSiteContext(
-      currentRuntime.baseUrl,
-      currentRuntime.apiToken,
-    )
-    if (!context) return null
-    applyDesktopSiteContext({
-      ...context,
-      activeSiteId: context.activeSiteId || fallbackSiteId,
-    })
-    return context
+    return await readBackendSiteContext(runtime.baseUrl, runtime.apiToken)
   } catch {
     logger('ELECTRON_TRAY_SITE_CONTEXT_REFRESH_FAILED')
     return null
   }
 }
 
-function applyDesktopSiteContext(context: DesktopSiteContext): void {
-  desktopActiveSiteId = context.activeSiteId
-  desktopActiveSiteName = context.activeSiteName
-  desktopSites = context.sites
-  trayController?.updateContext({
-    activeSiteId: desktopActiveSiteId,
-    activeSiteName: desktopActiveSiteName,
-    sites: desktopSites,
-    siteSwitching: false,
-  })
+async function refreshTraySiteState(runtime?: BackendRuntimeInfo): Promise<DesktopSiteContext | null> {
+  const context = runtime
+    ? await readBackendSiteContext(runtime.baseUrl, runtime.apiToken).catch(() => null)
+    : await readTraySiteState()
+  await trayController?.refreshTraySiteState(context)
+  if (!context) logger('ELECTRON_TRAY_SITE_CONTEXT_REFRESH_FAILED')
+  return context
 }
 
 async function restoreBackendSiteContext(runtime: BackendRuntimeInfo, siteId: string): Promise<void> {
@@ -911,10 +922,9 @@ async function readBackendSiteContext(
     const site = toTraySiteSummary(item)
     return site ? [site] : []
   })
-  const selected = sites.find((site) => site.siteId === active.siteId) ?? active
   return {
-    activeSiteId: selected.siteId,
-    activeSiteName: selected.displayName,
+    activeSiteId: active.siteId,
+    activeSiteName: active.displayName,
     sites,
   }
 }
