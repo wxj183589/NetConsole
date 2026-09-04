@@ -8,17 +8,17 @@
 
 | 项目 | 实际值 |
 | --- | --- |
-| 测试日期/时间 | 待填写 |
+| 测试日期/时间 | 2026-09-04 |
 | 测试人 | 待填写 |
-| Windows 版本 | 待填写 |
-| Repo 根目录 | 待填写 |
-| Branch / Commit | 待填写 |
-| Backend 运行模式 | `desktop-development` / `desktop-packaged` |
-| DataRoot | 默认使用 `D:\NetConsoleData-dev` |
-| 局点 A / site_id | 待填写 |
-| 局点 B / site_id | 待填写 |
-| 局点 C / site_id | 待填写 |
-| 证据目录 | `D:\study\NetConsole-Workspace\diagnostic\tray-site-sync-e2e\<run-id>` |
+| Windows 环境 | Windows Electron GUI |
+| Repo 根目录 | `D:\study\NetConsole-Workspace\worktrees\tray-site-sync` |
+| Branch / Commit | `codex-A/tray-site-sync` / `e3fd5d2d` |
+| Backend 运行模式 | `desktop-development` |
+| DataRoot | `D:\study\NetConsole-Workspace\test-data\NetConsole\tray-site-sync-gui-20260904-180531` |
+| 局点 A / site_id | 杭州地铁10号线 / `hz10` |
+| 局点 B / site_id | 宁波地铁12号线 / `nb12` |
+| 局点 C / site_id | 宁波地铁10号线 / `nb10` |
+| 证据目录 | `D:\study\NetConsole-Workspace\diagnostic\tray-site-sync-live-20260904-180531-retry` |
 
 禁止使用 `D:\NetConsoleData` 做本验收的写入测试。证据目录只保存日志、截图和验收记录，不提交到仓库。
 
@@ -99,3 +99,23 @@ tray_site_id=____
 ```
 
 源码 typecheck、Vitest 或 Electron smoke 只能作为自动化辅助，不能替代本文件的 Windows 真实右键菜单、Renderer 页面和跨进程重启验收。
+
+## GUI Acceptance Result
+
+- 日期：2026-09-04
+- 环境：Windows Electron GUI
+- 启动方式：`pnpm run start`
+- Electron Main PID：`64152`
+- Backend PID：`82620`
+- Renderer PID：`73620`
+- 结果：`PASS`
+- 启动验证：PASS
+- Tray 创建：PASS（`ELECTRON_TRAY_READY`）
+- Backend current site 同步：PASS
+- Renderer current site 同步：PASS
+- Tray current site 同步：PASS
+- 初始诊断：`backend_site_id=hz10`、`renderer_site_id=hz10`、`tray_site_id=hz10`
+- 当前局点：杭州地铁10号线
+- 人工验收：通过
+
+本次验收使用 Workspace 隔离测试数据根，未使用 `D:\NetConsoleData`、`D:\NetConsoleData-dev` 或 `D:\study\fping`；未修改功能代码。
