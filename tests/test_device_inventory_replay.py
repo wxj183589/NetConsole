@@ -3,6 +3,7 @@ from __future__ import annotations
 import inspect
 import json
 import re
+from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
 
@@ -14,6 +15,9 @@ from netconsole.models.api.device_detail import (
     DeviceTransceiverDTO,
 )
 from netconsole.models.api.device_management import DeviceFactDTO
+from tests.support.device_inventory_equivalence import (
+    compare_normalized_device_inventory,
+)
 from tests.support.device_inventory_replay import (
     load_fixture,
     replay_case,
@@ -79,6 +83,48 @@ def test_golden_contract_rejects_runtime_fields(tmp_path: Path) -> None:
     path.write_text(json.dumps(snapshot), encoding="utf-8")
     with pytest.raises(ValueError, match="ignored runtime fields"):
         validate_snapshot_contract(json.loads(path.read_text(encoding="utf-8")))
+
+
+def test_migration_equivalence_compares_normalized_sections_and_ignores_runtime() -> None:
+    baseline = replay_fixture(FIXTURE_ROOT / "h3c_comware9_synthetic.json")
+    legacy = deepcopy(baseline)
+    baseline["capabilities"] = ["interface.discovery", "neighbor.discovery"]
+    legacy["capabilities"] = ["interface.discovery", "neighbor.discovery"]
+    legacy["facts"]["collected_at"] = "legacy-runtime"
+    legacy["interfaces"][0]["session_id"] = "legacy-session"
+    legacy["lldp_neighbors"][0]["runtime_metadata"] = {"duration_ms": 12}
+    legacy["raw_output"] = "legacy raw CLI is not compared"
+
+    assert compare_normalized_device_inventory(baseline, legacy)
+
+    changed_capabilities = deepcopy(legacy)
+    changed_capabilities["capabilities"] = ["transceiver.read"]
+    assert not compare_normalized_device_inventory(baseline, changed_capabilities)
+
+
+@pytest.mark.parametrize(
+    ("section", "field", "replacement"),
+    (
+        ("facts", "model", "DIFFERENT-MODEL"),
+        ("facts", "software_version", "DIFFERENT-VERSION"),
+        ("interfaces", "interface_name", "DifferentInterface"),
+        ("lldp_neighbors", "neighbor_mac", "02:ff:ff:ff:ff:ff"),
+    ),
+)
+def test_migration_equivalence_rejects_domain_field_differences(
+    section: str,
+    field: str,
+    replacement: str,
+) -> None:
+    baseline = replay_fixture(FIXTURE_ROOT / "h3c_comware9_synthetic.json")
+    changed = deepcopy(baseline)
+    records = (
+        changed[section]
+        if section in {"interfaces", "lldp_neighbors"}
+        else [changed[section]]
+    )
+    records[0][field] = replacement
+    assert not compare_normalized_device_inventory(baseline, changed)
 
 
 @pytest.mark.parametrize("fixture_path", CASE_PATHS, ids=lambda path: path.stem)

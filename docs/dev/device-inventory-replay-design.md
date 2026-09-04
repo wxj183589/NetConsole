@@ -182,6 +182,8 @@ test-only normalized result 不是生产 DTO，不改变 DeviceFactDTO、DeviceD
 
 Golden 文件位于 tests/golden/device_inventory/，文件名与 fixture case 一一对应。
 
+Golden 的字段级 Required/Optional/Ignored contract 见 `docs/dev/device-inventory-snapshot-contract.md`；未来 Legacy/Profile 的 normalized DTO 比较边界见 `docs/dev/device-inventory-migration-equivalence.md`。
+
 Golden 只保存：
 
 - fixture identity 和 source category；
