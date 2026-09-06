@@ -147,6 +147,7 @@ class GroundUnattendedProfileDTO(ApiModel):
     summary_retention_days: int = Field(default=180, ge=1, le=3650)
     storage_warning_free_gb: float = Field(default=5.0, ge=0.1, le=1024)
     storage_critical_free_gb: float = Field(default=1.0, ge=0.1, le=1024)
+    storage_io_profile: str = Field(default="AUTO", pattern=r"^(AUTO|FAST|CONSERVATIVE)$")
     created_at: str = ""
     updated_at: str = ""
 
@@ -613,6 +614,13 @@ class GroundHealthDTO(ApiModel):
     spool_warning_percent: float = 70.0
     spool_critical_percent: float = 85.0
     spool_emergency_percent: float = 95.0
+    data_root: str = ""
+    volume: str = ""
+    media_type: str = "UNKNOWN"
+    media_confidence: str = "LOW"
+    storage_profile: str = "CONSERVATIVE_STORAGE"
+    profile_source: str = "AUTO"
+    storage_detection_reason: str = ""
 
 
 class GroundSyslogTransportStatusDTO(ApiModel):

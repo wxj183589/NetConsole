@@ -2068,6 +2068,7 @@ onBeforeUnmount(() => {
           <article><span>未知来源</span><strong>{{ health?.udp_unidentified_count ?? 0 }}</strong></article>
           <article><span>原始写入</span><strong>{{ health?.raw_records_written ?? 0 }}</strong><small>{{ bytes(health?.raw_bytes_written ?? 0) }}</small></article>
           <article><span>数据库待写 / 耗时</span><strong>{{ health?.database_pending_count ?? 0 }} / {{ health?.database_last_batch_duration_ms?.toFixed(1) ?? 0 }} ms</strong></article>
+          <article><span>数据盘 / 策略</span><strong>{{ health?.volume || '—' }} · {{ health?.media_type || 'UNKNOWN' }}</strong><small>{{ health?.storage_profile === 'FAST_STORAGE' ? '高速存储模式' : '机械磁盘/RAID兼容模式' }} · {{ health?.profile_source === 'MANUAL' ? '手动覆盖' : '自动检测' }}</small></article>
           <article><span>Ping 目标 / 分片</span><strong>{{ health?.ping_target_count ?? 0 }} / {{ health?.ping_process_count ?? 0 }}</strong></article>
           <article><span>最近系统错误</span><strong>{{ health?.last_error || '—' }}</strong></article>
         </section>

@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 import queue
 import re
 import shutil
@@ -19,6 +20,7 @@ from typing import Any
 from netconsole.repositories.ground_unattended_repository import (
     GroundUnattendedRepository,
 )
+from netconsole.core.storage_io import StorageIOProfile
 from netconsole.services.ap_identity import ApIdentityQueryService
 from netconsole.services.ground_unattended.ap_resolver import (
     GroundApDisplayResolver,
@@ -142,6 +144,7 @@ class RawStreamWriter:
         directory_name: str | None = None,
         flush_records: int = 100,
         flush_interval_seconds: float = 1.0,
+        storage_profile: StorageIOProfile | None = None,
         defer_registry: bool = False,
     ) -> None:
         self.root = Path(root)
@@ -153,6 +156,11 @@ class RawStreamWriter:
         self.directory_name = directory_name or data_type
         self.flush_records = max(1, int(flush_records))
         self.flush_interval_seconds = max(0.1, float(flush_interval_seconds))
+        self.storage_profile = storage_profile or StorageIOProfile.fast()
+        self.raw_batch_bytes = max(1, int(self.storage_profile.raw_batch_bytes))
+        self.durable_sync_interval_seconds = max(
+            0.1, self.storage_profile.durable_sync_interval_ms / 1000
+        )
         self.defer_registry = bool(defer_registry)
         self._metadata_threads: list[threading.Thread] = []
         self._generation = uuid.uuid4().hex[:8]
@@ -160,6 +168,12 @@ class RawStreamWriter:
         self.records_written = 0
         self.bytes_written = 0
         self.last_write_duration_ms = 0.0
+        self.flush_count = 0
+        self.durable_sync_count = 0
+        self.flush_bytes_total = 0
+        self.durable_sync_latency_ms = 0.0
+        self._pending_bytes: dict[str, int] = {}
+        self._last_durable_sync_at = time.monotonic()
 
     @property
     def open_file_count(self) -> int:
@@ -193,14 +207,17 @@ class RawStreamWriter:
         current.record_count += 1
         self.records_written += 1
         self.bytes_written += len(encoded)
+        self._pending_bytes[current.file_id] = self._pending_bytes.get(current.file_id, 0) + len(encoded)
         if (
             current.record_count % self.flush_records == 0
             or time.monotonic() - current.last_flush_at
             >= self.flush_interval_seconds
+            or self._pending_bytes[current.file_id] >= self.raw_batch_bytes
         ):
-            current.handle.flush()
+            self._flush_one(current)
             current.flushed_record_count = current.record_count
             current.last_flush_at = time.monotonic()
+        self.durable_sync()
         self.last_write_duration_ms = (time.perf_counter() - started) * 1000
         return current.file_id, current.record_count
 
@@ -222,7 +239,7 @@ class RawStreamWriter:
                 raise ValueError("raw checkpoint exceeds written record count")
             if line_number <= current.flushed_record_count:
                 continue
-            current.handle.flush()
+            self._flush_one(current)
             current.flushed_record_count = current.record_count
             current.last_flush_at = time.monotonic()
 
@@ -232,6 +249,27 @@ class RawStreamWriter:
         for key in tuple(self._files):
             self._close_one(key, ended_at)
         return closed
+
+    def durable_sync(self) -> None:
+        now = time.monotonic()
+        if now - self._last_durable_sync_at < self.durable_sync_interval_seconds:
+            return
+        started = time.perf_counter()
+        for current in self._files.values():
+            self._flush_one(current)
+            try:
+                os.fsync(current.handle.fileno())
+            except (OSError, ValueError):
+                continue
+        self.durable_sync_count += 1
+        self.durable_sync_latency_ms = (time.perf_counter() - started) * 1000
+        self._last_durable_sync_at = now
+
+    def _flush_one(self, current: _OpenRawFile) -> None:
+        current.handle.flush()
+        pending = self._pending_bytes.pop(current.file_id, 0)
+        self.flush_count += 1
+        self.flush_bytes_total += pending
 
     def _open(
         self,
@@ -278,7 +316,12 @@ class RawStreamWriter:
         current = self._files.pop(key, None)
         if current is None:
             return
-        current.handle.flush()
+        self._flush_one(current)
+        try:
+            os.fsync(current.handle.fileno())
+            self.durable_sync_count += 1
+        except (OSError, ValueError):
+            pass
         current.handle.close()
         size = current.path.stat().st_size
         values = {
@@ -553,6 +596,7 @@ class SyslogUdpReceiver:
         self._spool_critical_percent = 85.0
         self._spool_emergency_percent = 95.0
         self._spool_guard_state = "NORMAL"
+        self._storage_profile = StorageIOProfile.fast()
         self._ap_resolver = GroundApDisplayResolver(
             ap_identity_query_service
         )
@@ -570,6 +614,7 @@ class SyslogUdpReceiver:
         flush_interval_seconds: float,
         event_batch_size: int,
         event_batch_interval_seconds: float,
+        storage_profile: StorageIOProfile | None = None,
         spool_warning_percent: float = 70.0,
         spool_critical_percent: float = 85.0,
         spool_emergency_percent: float = 95.0,
@@ -622,6 +667,10 @@ class SyslogUdpReceiver:
         self._parser_spool_since_flush = 0
         self._event_batch_size = max(1, int(event_batch_size))
         self._event_batch_interval = max(0.1, float(event_batch_interval_seconds))
+        self._storage_profile = storage_profile or StorageIOProfile.fast()
+        if storage_profile is not None:
+            self._event_batch_size = max(1, int(storage_profile.db_batch_size))
+            self._event_batch_interval = max(0.1, storage_profile.db_batch_interval_ms / 1000)
         self._writer = RawStreamWriter(
             root=Path(active_dir) / "realtime",
             repository=self.repository,
@@ -631,6 +680,7 @@ class SyslogUdpReceiver:
             data_type="syslog",
             flush_records=flush_records,
             flush_interval_seconds=flush_interval_seconds,
+            storage_profile=storage_profile,
             defer_registry=True,
         )
         spool_dir = Path(active_dir) / "realtime" / "syslog" / "_spool"
@@ -850,6 +900,17 @@ class SyslogUdpReceiver:
             "spool_warning_percent": self._spool_warning_percent,
             "spool_critical_percent": self._spool_critical_percent,
             "spool_emergency_percent": self._spool_emergency_percent,
+            "storage_profile": self._storage_profile.name,
+            "storage_profile_source": self._storage_profile.profile_source,
+            "raw_flush_count": writer.flush_count if writer else 0,
+            "raw_batch_bytes_avg": (
+                writer.flush_bytes_total / writer.flush_count
+                if writer and writer.flush_count else 0.0
+            ),
+            "durable_sync_count": writer.durable_sync_count if writer else 0,
+            "durable_sync_latency_ms": writer.durable_sync_latency_ms if writer else 0.0,
+            "db_batch_size": self._event_batch_size,
+            "db_batch_interval_ms": round(self._event_batch_interval * 1000),
         }
 
     def _spool_metrics(self) -> dict[str, int | float]:

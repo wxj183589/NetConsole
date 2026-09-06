@@ -3192,8 +3192,17 @@ class GroundUnattendedApplicationService:
 
     def _syslog_health(self) -> dict[str, Any]:
         receiver = getattr(self.supervisor, "syslog_receiver", None)
+        detection = getattr(self.supervisor, "_storage_detection", None)
+        detection_values = detection.to_dict() if detection is not None else {}
         if receiver is None:
             return {
+                "data_root": detection_values.get("data_root", str(self.paths.data_root)),
+                "volume": detection_values.get("volume", ""),
+                "media_type": detection_values.get("media_type", "UNKNOWN"),
+                "media_confidence": detection_values.get("confidence", "LOW"),
+                "storage_profile": detection_values.get("profile", "CONSERVATIVE_STORAGE"),
+                "profile_source": "MANUAL" if self.repository.get_profile().storage_io_profile != "AUTO" else "AUTO",
+                "storage_detection_reason": detection_values.get("reason", ""),
                 "udp_running": False,
                 "udp_listen_address": "",
                 "udp_receive_rate_per_second": 0.0,
@@ -3212,7 +3221,17 @@ class GroundUnattendedApplicationService:
                 "open_file_count": 0,
                 "last_error": "",
             }
-        return dict(receiver.health_snapshot())
+        values = dict(receiver.health_snapshot())
+        values.update({
+            "data_root": detection_values.get("data_root", str(self.paths.data_root)),
+            "volume": detection_values.get("volume", ""),
+            "media_type": detection_values.get("media_type", "UNKNOWN"),
+            "media_confidence": detection_values.get("confidence", "LOW"),
+            "storage_profile": detection_values.get("profile", values.get("storage_profile", "CONSERVATIVE_STORAGE")),
+            "profile_source": "MANUAL" if self.repository.get_profile().storage_io_profile != "AUTO" else "AUTO",
+            "storage_detection_reason": detection_values.get("reason", ""),
+        })
+        return values
 
     def _ap_display_resolver(self) -> GroundApDisplayResolver:
         return self._ap_display_cache
