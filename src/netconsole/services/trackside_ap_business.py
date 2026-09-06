@@ -455,6 +455,7 @@ _TRACKSIDE_LONG_TEXT_HEADER_TOKENS = (
 CURRENT_OPTICAL_ABNORMAL_SHEET_TITLE = "当前异常光衰"
 CURRENT_OPTICAL_ABNORMAL_EMPTY_TEXT = "当前无异常光衰（已排除无 AP 绑定、无光模块和非告警光功率）"
 TRACKSIDE_EXPORT_ROW_HEIGHT = 24.0
+TRACKSIDE_OVERVIEW_HEADER_ROW_HEIGHT = 32.0
 TRACKSIDE_OVERVIEW_SEPARATOR_ROW_HEIGHT = 16.0
 
 
@@ -3823,6 +3824,8 @@ def _format_export_sheet(
         sheet.row_dimensions[row[0].row].height = (
             TRACKSIDE_OVERVIEW_SEPARATOR_ROW_HEIGHT
             if is_history_sheet and row_is_blank
+            else TRACKSIDE_OVERVIEW_HEADER_ROW_HEIGHT
+            if is_history_sheet and row[0].row == header_row
             else TRACKSIDE_EXPORT_ROW_HEIGHT
         )
         for cell in row:

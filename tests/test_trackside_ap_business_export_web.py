@@ -630,6 +630,17 @@ def test_trackside_business_workbook_preserves_sheets_and_export_style(
     assert overview_headers == [
         i18n.t(key) for key, _field in AP_ONLINE_OVERVIEW_COLUMNS
     ]
+    optical_header_column = next(
+        index
+        for index, (_key, field) in enumerate(AP_ONLINE_OVERVIEW_COLUMNS, start=1)
+        if field == "optical_problem_count"
+    )
+    optical_header = overview.cell(3, optical_header_column)
+    assert optical_header.value == "已上线AP\n光衰问题数"
+    assert optical_header.alignment.horizontal == "center"
+    assert optical_header.alignment.vertical == "center"
+    assert optical_header.alignment.wrap_text is True
+    assert overview.row_dimensions[3].height == 32
     assert not any("再上线" in str(value) for value in overview_headers)
     assert overview["E4"].value == 0.5
     assert overview["E4"].number_format == "0.0%"
@@ -848,7 +859,7 @@ def test_ap_online_history_block_has_dynamic_blank_separator() -> None:
     ]
     headers = [
         "归属站点", "规划AP总数量", "上线", "未上线", "上线率",
-        "光衰问题数", "备注",
+        "已上线AP\n光衰问题数", "备注",
     ]
 
     block = build_ap_online_history_block(

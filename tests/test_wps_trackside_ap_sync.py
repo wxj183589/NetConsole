@@ -1074,6 +1074,60 @@ def test_workbook_dto_uses_prepend_mode_for_overview(tmp_path: Path) -> None:
     assert [sheet.sheet_order for sheet in dto.sheets] == [0, 1]
 
 
+def test_wps_workbook_dto_preserves_multiline_online_optical_header(
+    tmp_path: Path,
+) -> None:
+    from netconsole.core.i18n import I18n
+    from netconsole.services.ap_online_overview import AP_ONLINE_OVERVIEW_COLUMNS
+    from netconsole.services.trackside_ap_business import (
+        TRACKSIDE_AP_BUSINESS_EXPORT_COLUMNS,
+        export_trackside_ap_business_xlsx,
+    )
+
+    path = tmp_path / "trackside-ap-business.xlsx"
+    i18n = I18n("zh_CN")
+    export_trackside_ap_business_xlsx(
+        path,
+        [],
+        TRACKSIDE_AP_BUSINESS_EXPORT_COLUMNS,
+        [i18n.t(key) for key, _field in TRACKSIDE_AP_BUSINESS_EXPORT_COLUMNS],
+        [
+            {
+                "site": "01-小洋江站",
+                "total": 28,
+                "online": 28,
+                "offline": 0,
+                "online_rate": "100.0%",
+                "optical_problem_count": 1,
+                "remark": "",
+            }
+        ],
+        AP_ONLINE_OVERVIEW_COLUMNS,
+        [i18n.t(key) for key, _field in AP_ONLINE_OVERVIEW_COLUMNS],
+    )
+
+    dto = workbook_dto_from_xlsx(path, include_format_mirror=True)
+    overview = next(
+        sheet for sheet in dto.sheets if sheet.sheet_name == "AP上线情况概览"
+    )
+    optical_column = next(
+        index
+        for index, (_key, field) in enumerate(AP_ONLINE_OVERVIEW_COLUMNS)
+        if field == "optical_problem_count"
+    )
+    assert overview.cells[2][optical_column] == "已上线AP\n光衰问题数"
+    assert overview.cells[3][optical_column] == "1"
+    assert overview.row_heights["3"] == 32
+    assert any(
+        run.range == "A3:G3"
+        and run.alignment
+        and run.alignment["horizontal"] == "center"
+        and run.alignment["vertical"] == "center"
+        and run.alignment["wrap_text"] is True
+        for run in overview.format_runs
+    )
+
+
 def test_workbook_dto_preserves_sheet_order_and_compresses_format_runs(
     tmp_path: Path,
 ) -> None:

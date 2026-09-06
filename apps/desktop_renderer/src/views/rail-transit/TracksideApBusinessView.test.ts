@@ -1071,9 +1071,10 @@ describe('TracksideApBusinessView mounted behavior', () => {
 
     expect(api.getTracksideApOnlineStatus).toHaveBeenCalledOnce()
     const overview = wrapper.get('[data-testid="trackside-online-overview"]')
-    for (const expected of ['FIT-AP 总数992', '实际在线978', '上线率98.6%', '光衰问题3', '已关联上线932', '未完成关联在线 AP46', '实际离线14', '状态未知0']) {
+    for (const expected of ['FIT-AP 总数992', '实际在线978', '上线率98.6%', '已上线AP光衰问题数3', '已关联上线932', '未完成关联在线 AP46', '实际离线14', '状态未知0']) {
       expect(overview.text()).toContain(expected)
     }
+    expect(overview.get('.online-overview-optical-problem').findAll('small').map((item) => item.text())).toEqual(['已上线AP', '光衰问题数'])
     expect(onlineStatus().items.reduce((total, row) => total + (row.optical_problem_count ?? 0), 0)).toBe(onlineStatus().optical_problem_count)
 
     await button(wrapper, '查看站点明细').trigger('click')
@@ -1084,9 +1085,10 @@ describe('TracksideApBusinessView mounted behavior', () => {
     expect(dialog.attributes('data-align-center')).toBe('true')
     expect(dialog.find('.online-status-dialog-body').exists()).toBe(true)
     const summary = wrapper.get('[data-testid="trackside-online-status-summary"]')
-    for (const expected of ['总计', '规划 AP992', '实际在线978', '离线14', '上线率98.6%', '光衰问题数3', '站点11']) {
+    for (const expected of ['总计', '规划 AP992', '实际在线978', '离线14', '上线率98.6%', '已上线AP光衰问题数3', '站点11']) {
       expect(summary.text()).toContain(expected)
     }
+    expect(summary.get('.online-status-summary-optical-problem').findAll('small').map((item) => item.text())).toEqual(['已上线AP', '光衰问题数'])
     expect(summary.text()).not.toContain('再上线')
     const detailTable = wrapper.findAllComponents(NcDataTableStub).find(
       (table) => table.props('tableId') === 'trackside-ap-business-online-status',
@@ -1171,7 +1173,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
     const footer = summaryMethod({ columns: onlineStatusColumnsForTest(), data: onlineStatus().items })
 
     expect(footer[6]).toMatchObject({ props: { type: 'success' }, children: '正常' })
-    expect(wrapper.get('[data-testid="trackside-online-overview"]').text()).toContain('光衰问题0')
+    expect(wrapper.get('[data-testid="trackside-online-overview"]').text()).toContain('已上线AP光衰问题数0')
     wrapper.unmount()
   })
 
@@ -1359,7 +1361,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
     const overview = wrapper.get('[data-testid="trackside-online-overview"]')
     expect(overview.text()).toContain('实际在线104')
     expect(overview.text()).toContain('实际离线1')
-    expect(overview.text()).toContain('光衰问题3')
+    expect(overview.text()).toContain('已上线AP光衰问题数3')
     wrapper.unmount()
   })
 
@@ -1392,7 +1394,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
     expect(api.listTracksideApBusiness).toHaveBeenCalledTimes(1)
     expect(api.getTracksideApOnlineStatus).toHaveBeenCalledTimes(1)
     expect(host.getComponent(TracksideApBusinessView).text()).toContain('实际在线104')
-    expect(host.getComponent(TracksideApBusinessView).text()).toContain('光衰问题3')
+    expect(host.getComponent(TracksideApBusinessView).text()).toContain('已上线AP光衰问题数3')
 
     ;(host.vm as unknown as { active: boolean }).active = false
     await host.vm.$nextTick()
@@ -1429,7 +1431,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
     const overview = wrapper.get('[data-testid="trackside-online-overview"]')
     expect(overview.text()).toContain('实际在线103')
     expect(overview.text()).toContain('实际离线2')
-    expect(overview.text()).toContain('光衰问题4')
+    expect(overview.text()).toContain('已上线AP光衰问题数4')
     wrapper.unmount()
   })
 
@@ -2147,7 +2149,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
     expect(api.listTracksideApBusiness).toHaveBeenCalledTimes(1)
     expect(api.getTracksideApOnlineStatus).toHaveBeenCalledOnce()
     expect(wrapper.get('[data-testid="trackside-online-overview"]').text()).toContain('实际在线104')
-    expect(wrapper.get('[data-testid="trackside-online-overview"]').text()).toContain('光衰问题3')
+    expect(wrapper.get('[data-testid="trackside-online-overview"]').text()).toContain('已上线AP光衰问题数3')
     expect(wrapper.text()).not.toContain('轨旁 AP 光衰数据已刷新')
     expect((wrapper.find('.station-select').element as HTMLSelectElement).value).toBe('02-云龙火车站')
     wrapper.unmount()

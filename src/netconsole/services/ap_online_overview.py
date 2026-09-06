@@ -621,6 +621,7 @@ def _format_export_sheet(sheet) -> None:
     from netconsole.services.excel_autosize import apply_worksheet_autofit
 
     alignment = Alignment(horizontal="center", vertical="center", wrap_text=False)
+    header_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
     border = Border(
         left=Side(style="thin", color="D1D5DB"),
         right=Side(style="thin", color="D1D5DB"),
@@ -632,9 +633,9 @@ def _format_export_sheet(sheet) -> None:
     # its existing header freeze behavior.
     sheet.freeze_panes = "A2"
     for row in sheet.iter_rows():
-        sheet.row_dimensions[row[0].row].height = 24
+        sheet.row_dimensions[row[0].row].height = 32 if row[0].row == 1 else 24
         for cell in row:
-            cell.alignment = alignment
+            cell.alignment = header_alignment if cell.row == 1 else alignment
             cell.border = border
             if cell.row == 1:
                 cell.font = header_font
