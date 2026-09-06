@@ -6,7 +6,9 @@ import {
 } from '../stores/siteContext'
 
 export const BEFORE_SITE_SWITCH_EVENT = 'netconsole:before-site-switch'
-export const SITE_CONTEXT_CHANGED_EVENT = 'netconsole:site-context-changed'
+export const CURRENT_SITE_CHANGED_EVENT = 'netconsole:current-site-changed'
+export const SITE_CONTEXT_CHANGED_EVENT = CURRENT_SITE_CHANGED_EVENT
+export const LEGACY_SITE_CONTEXT_CHANGED_EVENT = 'netconsole:site-context-changed'
 export const SITE_SWITCH_METADATA_EVENT = 'netconsole:site-switch-metadata'
 
 export interface BeforeSiteSwitchDetail {
@@ -69,6 +71,8 @@ export interface SiteSwitchCoordinator {
   activate(targetSiteId: string): Promise<unknown>
   restart(targetSiteId: string): Promise<void>
   restoreWorkspace(checkpoint: unknown): Promise<void>
+  refreshCurrentContext?(): Promise<unknown>
+  refreshTraySiteState?(): Promise<void>
   onSwitchingChanged?(switching: boolean): void
 }
 
@@ -139,10 +143,24 @@ async function coordinateSiteSwitchInOrder(
     } else {
       siteSwitchStage('runtime_rebind', stageStartedAt, target.siteId)
     }
-    notifySiteContextChanged(activation || {
+    let committedContext: unknown
+    try {
+      committedContext = await coordinator.refreshCurrentContext?.()
+    } catch {
+      // Backend activation already succeeded. Keep its success response as
+      // the commit event if the follow-up read is temporarily unavailable.
+      committedContext = undefined
+    }
+    notifySiteContextChanged(committedContext || activation || {
       site_id: target.siteId,
       display_name: target.displayName,
     })
+    try {
+      await coordinator.refreshTraySiteState?.()
+    } catch {
+      // The Backend remains authoritative; a later status refresh will make
+      // the Tray converge without turning a committed switch into a failure.
+    }
     return 'completed'
   } catch (cause) {
     if (metadataPublished) notifySiteSwitchMetadata(target, 'rollback')

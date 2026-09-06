@@ -78,10 +78,17 @@ describe('workspace validation', () => {
       healthOk: true,
       phase: 'mounted',
       surface: 'workspace-window',
+      siteId: 'hz10',
     })).toEqual({
       healthOk: true,
       phase: 'mounted',
       surface: 'workspace-window',
+      siteId: 'hz10',
     })
+    expect(() => validateRendererReadyReport({
+      healthOk: true,
+      phase: 'interactive',
+      siteId: '杭州10号线',
+    })).toThrow()
   })
 })

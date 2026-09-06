@@ -4,11 +4,13 @@ import {
   TrayController,
   type TrayLike,
   type TrayMenuItem,
+  type TraySiteState,
 } from '../src/main/tray-controller'
 
 function createHarness(options: { fail?: boolean } = {}) {
   const listeners = new Map<string, () => void>()
   let menu: TrayMenuItem[] = []
+  let siteState: TraySiteState | null = null
   const tray: TrayLike = {
     setToolTip: vi.fn(),
     setContextMenu: vi.fn(),
@@ -22,6 +24,8 @@ function createHarness(options: { fail?: boolean } = {}) {
     showTaskCenter: vi.fn(),
     createWorkspaceWindow: vi.fn(),
     requestSiteSwitch: vi.fn(),
+    readSiteState: vi.fn(async () => siteState),
+    restartApplication: vi.fn(),
     setCloseToTrayEnabled: vi.fn(),
     explicitQuit: vi.fn(),
   }
@@ -37,7 +41,7 @@ function createHarness(options: { fail?: boolean } = {}) {
     ...callbacks,
     logger: vi.fn(),
   })
-  return { controller, tray, callbacks, listeners, getMenu: () => menu }
+  return { controller, tray, callbacks, listeners, getMenu: () => menu, setSiteState: (value: TraySiteState | null) => { siteState = value } }
 }
 
 describe('TrayController', () => {
@@ -50,19 +54,22 @@ describe('TrayController', () => {
       '新建工作区窗口',
       '打开任务中心',
       'Backend：正在启动',
-      '当前局点：未选择',
+      '当前局点：Backend Offline',
       '快速切换局点',
       '关闭主窗口后驻留通知区域',
+      '重启软件',
       '退出 NetConsole',
     ])
 
     harness.listeners.get('double-click')?.()
     harness.getMenu().find((item) => item.label === '新建工作区窗口')?.click?.()
     harness.getMenu().find((item) => item.label === '打开任务中心')?.click?.()
+    harness.getMenu().find((item) => item.label === '重启软件')?.click?.()
     harness.getMenu().find((item) => item.label === '退出 NetConsole')?.click?.()
     expect(harness.callbacks.showMainWindow).toHaveBeenCalledOnce()
     expect(harness.callbacks.createWorkspaceWindow).toHaveBeenCalledOnce()
     expect(harness.callbacks.showTaskCenter).toHaveBeenCalledOnce()
+    expect(harness.callbacks.restartApplication).toHaveBeenCalledOnce()
     expect(harness.callbacks.explicitQuit).toHaveBeenCalledOnce()
   })
 
@@ -70,9 +77,13 @@ describe('TrayController', () => {
     vi.useFakeTimers()
     const harness = createHarness()
     harness.controller.initialize()
+    harness.setSiteState({
+      activeSiteId: 'site-b',
+      activeSiteName: '宁波地铁12号线',
+      sites: [{ siteId: 'site-b', displayName: '宁波地铁12号线' }],
+    })
     harness.controller.updateContext({
       backendState: 'ready',
-      activeSiteName: '宁波地铁12号线',
       activeTaskCount: 2,
       failedTaskCount: 1,
     })
@@ -91,14 +102,16 @@ describe('TrayController', () => {
     vi.useFakeTimers()
     const harness = createHarness()
     harness.controller.initialize()
-    harness.controller.updateContext({
-      backendState: 'ready',
+    harness.setSiteState({
       activeSiteId: 'legacy-0d1a8935839e',
       activeSiteName: '宁波地铁6号线',
       sites: [
-        { siteId: 'legacy-0d1a8935839e', displayName: '宁波地铁6号线', active: true, selectable: false },
-        { siteId: 'line-1', displayName: '宁波地铁1号线', active: false, selectable: true },
+        { siteId: 'legacy-0d1a8935839e', displayName: '宁波地铁6号线' },
+        { siteId: 'line-1', displayName: '宁波地铁1号线' },
       ],
+    })
+    harness.controller.updateContext({
+      backendState: 'ready',
     })
     await vi.advanceTimersByTimeAsync(80)
 
@@ -118,14 +131,16 @@ describe('TrayController', () => {
     vi.useFakeTimers()
     const harness = createHarness()
     harness.controller.initialize()
-    harness.controller.updateContext({
-      backendState: 'ready',
+    harness.setSiteState({
       activeSiteId: 'line-a',
       activeSiteName: '同名局点',
       sites: [
-        { siteId: 'line-a', displayName: '同名局点', active: true, selectable: false },
-        { siteId: 'line-b', displayName: '同名局点', active: false, selectable: true },
+        { siteId: 'line-a', displayName: '同名局点' },
+        { siteId: 'line-b', displayName: '同名局点' },
       ],
+    })
+    harness.controller.updateContext({
+      backendState: 'ready',
       siteSwitching: true,
     })
     await vi.advanceTimersByTimeAsync(80)
@@ -139,9 +154,64 @@ describe('TrayController', () => {
     await vi.advanceTimersByTimeAsync(80)
     const quickSwitch = harness.getMenu().find((item) => item.label === '快速切换局点')
     expect(quickSwitch?.submenu?.map((item) => item.label)).toEqual([
-      '同名局点 (line-a)',
-      '同名局点 (line-b)',
+      '同名局点',
+      '同名局点',
     ])
+    vi.useRealTimers()
+  })
+
+  it('clears the current site when the Backend becomes unavailable', async () => {
+    vi.useFakeTimers()
+    const harness = createHarness()
+    harness.controller.initialize()
+    harness.setSiteState({
+      activeSiteId: 'site-a',
+      activeSiteName: '杭州地铁10号线',
+      sites: [{ siteId: 'site-a', displayName: '杭州地铁10号线' }],
+    })
+    harness.controller.updateContext({ backendState: 'ready' })
+    await vi.advanceTimersByTimeAsync(80)
+    expect(harness.getMenu().map((item) => item.label)).toContain('当前局点：杭州地铁10号线')
+
+    harness.setSiteState(null)
+    harness.controller.updateContext({ backendState: 'failed' })
+    await vi.advanceTimersByTimeAsync(80)
+    expect(harness.getMenu().map((item) => item.label)).toContain('当前局点：Backend Offline')
+    expect(harness.getMenu().map((item) => item.label)).not.toContain('当前局点：杭州地铁10号线')
+    vi.useRealTimers()
+  })
+
+  it('queries the Backend again and keeps radio selection bound to site id after reorder', async () => {
+    vi.useFakeTimers()
+    const harness = createHarness()
+    harness.controller.initialize()
+    harness.setSiteState({
+      activeSiteId: 'site-a',
+      activeSiteName: '杭州地铁10号线',
+      sites: [
+        { siteId: 'site-a', displayName: '杭州地铁10号线' },
+        { siteId: 'site-b', displayName: '宁波地铁12号线' },
+      ],
+    })
+    harness.controller.updateContext({ backendState: 'ready' })
+    await vi.advanceTimersByTimeAsync(80)
+
+    harness.setSiteState({
+      activeSiteId: 'site-b',
+      activeSiteName: '宁波地铁12号线',
+      sites: [
+        { siteId: 'site-b', displayName: '宁波地铁12号线' },
+        { siteId: 'site-a', displayName: '杭州地铁10号线' },
+      ],
+    })
+    await harness.controller.refreshTraySiteState()
+
+    const quickSwitch = harness.getMenu().find((item) => item.label === '快速切换局点')
+    expect(quickSwitch?.submenu).toMatchObject([
+      { label: '宁波地铁12号线', checked: true, enabled: false },
+      { label: '杭州地铁10号线', checked: false, enabled: true },
+    ])
+    expect(harness.callbacks.readSiteState).toHaveBeenCalledTimes(2)
     vi.useRealTimers()
   })
 

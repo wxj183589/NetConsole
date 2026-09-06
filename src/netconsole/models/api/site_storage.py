@@ -62,7 +62,6 @@ class SiteImportRequest(ApiModel):
     site_id: str = Field(default="", max_length=63)
     display_name: str = Field(default="", max_length=128)
     replace_site_id: str = Field(default="", max_length=63)
-    activate: bool = False
     raw_only: bool = False
     conflict_resolutions: list[SiteConflictResolution] = Field(
         default_factory=list, max_length=2_000

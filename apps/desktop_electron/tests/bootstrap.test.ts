@@ -13,14 +13,14 @@ afterEach(() => {
 })
 
 describe('desktop bootstrap', () => {
-  it('atomically persists only data root and active site id', () => {
+  it('atomically persists the restart checkpoint without credentials', () => {
     const root = mkdtempSync(join(tmpdir(), 'netconsole-bootstrap-'))
     roots.push(root)
     const store = new DesktopBootstrapStore(root)
 
-    store.save({ schema_version: 1, data_root: 'D:\\NetConsoleData', active_site_id: 'line-12' })
+    store.save({ schema_version: 1, data_root: 'D:\\NetConsoleData', active_site_id: 'line-12', runtime_mode: 'DEV' })
 
-    expect(store.load()).toEqual({ schema_version: 1, data_root: 'D:\\NetConsoleData', active_site_id: 'line-12' })
+    expect(store.load()).toEqual({ schema_version: 1, data_root: 'D:\\NetConsoleData', active_site_id: 'line-12', runtime_mode: 'DEV' })
     expect(readFileSync(store.path, 'utf8')).not.toMatch(/token|password/i)
   })
 

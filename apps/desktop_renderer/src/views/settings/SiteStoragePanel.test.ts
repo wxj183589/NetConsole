@@ -169,6 +169,7 @@ beforeEach(() => {
   workspace.prepareForSiteSwitch.mockResolvedValue(workspace.checkpoint)
   workspace.restoreAfterFailedSiteSwitch.mockResolvedValue(undefined)
   vi.mocked(api.listSites).mockResolvedValue([site()])
+  vi.mocked(api.getActiveSite).mockResolvedValue(site())
   vi.mocked(api.getDataRoot).mockResolvedValue({ data_root: 'C:\\data', default_data_root: 'C:\\default', site_count: 1, active_site_id: 'demo', storage_mode: 'persistent', data_root_kind: 'persistent', persistent: true })
   vi.mocked(api.preflightSiteActivation).mockResolvedValue({ ready: true, target_site_id: 'line-12', previous_site_id: 'demo' })
 })
@@ -778,6 +779,7 @@ describe('SiteStoragePanel', () => {
     vi.mocked(api.getDataRoot)
       .mockResolvedValueOnce({ data_root: 'C:\\data', default_data_root: 'C:\\default', site_count: 1, active_site_id: 'demo', storage_mode: 'persistent', data_root_kind: 'persistent', persistent: true })
       .mockResolvedValueOnce({ data_root: 'C:\\data', default_data_root: 'C:\\default', site_count: 2, active_site_id: 'demo', storage_mode: 'persistent', data_root_kind: 'persistent', persistent: true })
+      .mockResolvedValueOnce({ data_root: 'C:\\data', default_data_root: 'C:\\default', site_count: 2, active_site_id: 'line-6', storage_mode: 'persistent', data_root_kind: 'persistent', persistent: true })
     const success = vi.spyOn(ElMessage, 'success')
     const wrapper = mountPanel()
     await flushPromises()
@@ -790,13 +792,42 @@ describe('SiteStoragePanel', () => {
     await new Promise((resolve) => setTimeout(resolve, 800))
     await flushPromises()
 
-    expect(api.listSites).toHaveBeenCalledTimes(2)
-    expect(api.getDataRoot).toHaveBeenCalledTimes(2)
+    expect(api.listSites).toHaveBeenCalledTimes(3)
+    expect(api.getDataRoot).toHaveBeenCalledTimes(3)
     expect(wrapper.text()).toContain('宁波地铁6号线')
     expect(wrapper.text()).toContain('2 个局点')
     expect(adapter.refreshSiteContext).toHaveBeenCalledOnce()
     expect(success).toHaveBeenCalledWith('数据包导入任务已提交')
     expect(success).toHaveBeenCalledWith('局点数据包导入完成')
+  })
+
+  it('coalesces rapid Tray requests and finishes at the latest site id', async () => {
+    let activeSiteId = 'demo'
+    const line12 = site({ site_id: 'line-12', display_name: '宁波地铁12号线', active: false, site_kind: 'formal', classification: 'normal_site', managed_demo: false })
+    const line10 = site({ site_id: 'line-10', display_name: '宁波地铁10号线', active: false, site_kind: 'formal', classification: 'normal_site', managed_demo: false })
+    vi.mocked(api.listSites).mockImplementation(async () => [
+      site({ active: activeSiteId === 'demo' }),
+      { ...line12, active: activeSiteId === 'line-12' },
+      { ...line10, active: activeSiteId === 'line-10' },
+    ])
+    vi.mocked(api.getActiveSite).mockImplementation(async () => {
+      const current = activeSiteId === 'line-12' ? line12 : activeSiteId === 'line-10' ? line10 : site()
+      return { ...current, active: true }
+    })
+    vi.mocked(api.activateSite).mockImplementation(async (siteId) => {
+      activeSiteId = siteId
+      const current = siteId === 'line-12' ? line12 : line10
+      return { ...current, site_id: siteId, active: true, restart_required: false }
+    })
+    const wrapper = mountPanel()
+    await flushPromises()
+
+    const first = (wrapper.vm as unknown as { requestSwitch(siteId: string): Promise<void> }).requestSwitch('line-12')
+    const latest = (wrapper.vm as unknown as { requestSwitch(siteId: string): Promise<void> }).requestSwitch('line-10')
+    await Promise.all([first, latest])
+
+    expect(vi.mocked(api.activateSite).mock.calls.map(([siteId]) => siteId)).toEqual(['line-12', 'line-10'])
+    expect(activeSiteId).toBe('line-10')
   })
 
   it('does not report import completion or refresh sites when the import task fails', async () => {

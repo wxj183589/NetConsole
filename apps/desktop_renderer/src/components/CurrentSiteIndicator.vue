@@ -16,6 +16,7 @@ import {
 import { useWorkspaceStore } from '../stores/workspace'
 import {
   SITE_CONTEXT_CHANGED_EVENT,
+  LEGACY_SITE_CONTEXT_CHANGED_EVENT,
   SITE_SWITCH_METADATA_EVENT,
   type SiteSwitchMetadataDetail,
 } from '../workspace/site-switch'
@@ -73,6 +74,7 @@ async function openSiteStorage(): Promise<void> {
 
 onMounted(() => {
   window.addEventListener(SITE_CONTEXT_CHANGED_EVENT, handleSiteContextChanged)
+  window.addEventListener(LEGACY_SITE_CONTEXT_CHANGED_EVENT, handleSiteContextChanged)
   window.addEventListener(SITE_SWITCH_METADATA_EVENT, handleSiteSwitchMetadata)
   unsubscribe = onPlatformRuntimeStatusChanged((status) => {
     if (status.state === 'ready') {
@@ -86,6 +88,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener(SITE_CONTEXT_CHANGED_EVENT, handleSiteContextChanged)
+  window.removeEventListener(LEGACY_SITE_CONTEXT_CHANGED_EVENT, handleSiteContextChanged)
   window.removeEventListener(SITE_SWITCH_METADATA_EVENT, handleSiteSwitchMetadata)
   unsubscribe?.()
 })

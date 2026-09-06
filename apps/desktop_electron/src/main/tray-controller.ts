@@ -2,9 +2,6 @@ import type { BackendState } from '../shared/bridge'
 
 export interface TrayRuntimeContext {
   backendState: BackendState
-  activeSiteId?: string
-  activeSiteName?: string
-  sites: TraySiteSummary[]
   siteSwitching: boolean
   closeToTrayEnabled: boolean
   visibleWindowCount: number
@@ -16,8 +13,16 @@ export interface TrayRuntimeContext {
 export interface TraySiteSummary {
   siteId: string
   displayName: string
-  active: boolean
-  selectable: boolean
+  // Kept optional for callers that still carry the Backend list DTO. Tray
+  // identity decisions intentionally never use these display-side flags.
+  active?: boolean
+  selectable?: boolean
+}
+
+export interface TraySiteState {
+  activeSiteId: string
+  activeSiteName: string
+  sites: TraySiteSummary[]
 }
 
 export interface TrayMenuItem {
@@ -45,6 +50,8 @@ export interface TrayControllerOptions {
   showTaskCenter(): Promise<void> | void
   createWorkspaceWindow(): Promise<void> | void
   requestSiteSwitch(siteId: string): Promise<void> | void
+  readSiteState(): Promise<TraySiteState | null>
+  restartApplication(): Promise<void> | void
   setCloseToTrayEnabled(enabled: boolean): Promise<void> | void
   explicitQuit(): void
   logger(event: string): void
@@ -52,7 +59,6 @@ export interface TrayControllerOptions {
 
 const INITIAL_CONTEXT: TrayRuntimeContext = {
   backendState: 'starting',
-  sites: [],
   siteSwitching: false,
   closeToTrayEnabled: true,
   visibleWindowCount: 1,
@@ -65,6 +71,7 @@ export class TrayController {
   private tray: TrayLike | undefined
   private context: TrayRuntimeContext = { ...INITIAL_CONTEXT }
   private updateTimer: ReturnType<typeof setTimeout> | undefined
+  private siteRefreshGeneration = 0
   private backgroundHintShown = false
 
   constructor(private readonly options: TrayControllerOptions) {}
@@ -82,6 +89,7 @@ export class TrayController {
         void this.options.showMainWindow()
       })
       this.rebuildMenu()
+      void this.refreshTraySiteState()
       this.options.logger('ELECTRON_TRAY_READY')
       return true
     } catch {
@@ -92,14 +100,10 @@ export class TrayController {
   }
 
   updateContext(context: Partial<TrayRuntimeContext>): void {
+    this.siteRefreshGeneration += 1
     this.context = {
       ...this.context,
       ...context,
-      activeSiteName: sanitizeSiteName(context.activeSiteName ?? this.context.activeSiteName),
-      sites: (context.sites ?? this.context.sites).flatMap((site) => {
-        const displayName = sanitizeSiteName(site.displayName)
-        return displayName ? [{ ...site, displayName }] : []
-      }),
       activeTaskCount: sanitizeCount(context.activeTaskCount ?? this.context.activeTaskCount),
       failedTaskCount: sanitizeCount(context.failedTaskCount ?? this.context.failedTaskCount),
       warningTaskCount: sanitizeCount(context.warningTaskCount ?? this.context.warningTaskCount),
@@ -107,8 +111,23 @@ export class TrayController {
     if (this.updateTimer) clearTimeout(this.updateTimer)
     this.updateTimer = setTimeout(() => {
       this.updateTimer = undefined
-      this.rebuildMenu()
+      void this.refreshTraySiteState()
     }, 80)
+  }
+
+  async refreshTraySiteState(providedState?: TraySiteState | null): Promise<TraySiteState | null> {
+    const generation = ++this.siteRefreshGeneration
+    let siteState: TraySiteState | null = providedState === undefined ? null : sanitizeSiteState(providedState)
+    if (providedState === undefined && this.context.backendState === 'ready') {
+      try {
+        siteState = sanitizeSiteState(await this.options.readSiteState())
+      } catch {
+        siteState = null
+      }
+    }
+    if (generation !== this.siteRefreshGeneration) return siteState
+    this.rebuildMenu(siteState)
+    return siteState
   }
 
   showMainWindow(): void {
@@ -123,22 +142,29 @@ export class TrayController {
     void this.options.createWorkspaceWindow()
   }
 
-  rebuildMenu(): void {
+  restartApplication(): void {
+    void Promise.resolve(this.options.restartApplication()).catch(() => {
+      this.options.logger('ELECTRON_TRAY_RESTART_FAILED')
+    })
+  }
+
+  rebuildMenu(siteState: TraySiteState | null = null): void {
     const tray = this.tray
     if (!tray || tray.isDestroyed?.()) return
+    const backendOnline = this.context.backendState === 'ready' && Boolean(siteState)
     try {
-      tray.setToolTip(resolveTooltip(this.context))
+      tray.setToolTip(resolveTooltip(this.context, siteState))
       tray.setContextMenu(this.options.buildMenu([
         { label: '打开 NetConsole', click: () => this.showMainWindow() },
         { label: '新建工作区窗口', click: () => this.createWorkspaceWindow() },
         { label: taskCenterMenuLabel(this.context), click: () => this.showTaskCenter() },
         { type: 'separator' },
-        { label: `Backend：${backendStateLabel(this.context.backendState)}`, enabled: false },
-        { label: `当前局点：${this.context.activeSiteName || '未选择'}`, enabled: false },
+        { label: `Backend：${backendStateLabel(this.context.backendState, backendOnline)}`, enabled: false },
+        { label: `当前局点：${siteState?.activeSiteName || (backendOnline ? '未选择' : 'Backend Offline')}`, enabled: false },
         {
           label: this.context.siteSwitching ? '正在切换局点…' : '快速切换局点',
-          enabled: this.context.backendState === 'ready' && !this.context.siteSwitching && this.context.sites.length > 0,
-          submenu: this.buildSiteSwitchMenu(),
+          enabled: backendOnline && !this.context.siteSwitching && Boolean(siteState?.sites.length),
+          submenu: this.buildSiteSwitchMenu(siteState),
         },
         {
           label: '关闭主窗口后驻留通知区域',
@@ -149,6 +175,8 @@ export class TrayController {
           },
         },
         { type: 'separator' },
+        { label: '重启软件', enabled: !this.context.siteSwitching, click: () => this.restartApplication() },
+        { type: 'separator' },
         { label: '退出 NetConsole', click: () => this.options.explicitQuit() },
       ]))
       this.options.logger('ELECTRON_TRAY_MENU_UPDATED')
@@ -157,25 +185,17 @@ export class TrayController {
     }
   }
 
-  private buildSiteSwitchMenu(): TrayMenuItem[] {
+  private buildSiteSwitchMenu(siteState: TraySiteState | null): TrayMenuItem[] {
     if (this.context.siteSwitching) return [{ label: '正在切换局点…', enabled: false }]
-    if (this.context.backendState !== 'ready') return [{ label: 'Backend 未就绪', enabled: false }]
-    if (!this.context.sites.length) return [{ label: '暂无可切换局点', enabled: false }]
-    const duplicateNames = new Set(
-      [...this.context.sites]
-        .map((site) => site.displayName)
-        .filter((name, index, names) => names.indexOf(name) !== index),
-    )
-    return this.context.sites.map((site) => {
-      const active = site.siteId === this.context.activeSiteId
-      const label = duplicateNames.has(site.displayName)
-        ? `${site.displayName} (${site.siteId})`
-        : site.displayName
+    if (this.context.backendState !== 'ready' || !siteState) return [{ label: 'Backend Offline', enabled: false }]
+    if (!siteState.sites.length) return [{ label: '暂无可切换局点', enabled: false }]
+    return siteState.sites.map((site) => {
+      const active = site.siteId === siteState.activeSiteId
       return {
-        label,
+        label: site.displayName,
         type: 'radio',
         checked: active,
-        enabled: !active && site.selectable,
+        enabled: !active,
         click: () => { void this.options.requestSiteSwitch(site.siteId) },
       }
     })
@@ -204,25 +224,25 @@ export class TrayController {
   }
 }
 
-function backendStateLabel(state: BackendState): string {
-  if (state === 'ready') return '在线'
+function backendStateLabel(state: BackendState, online: boolean): string {
+  if (state === 'ready') return online ? '在线' : 'Backend Offline'
   if (state === 'starting') return '正在启动'
   return '离线'
 }
 
-function resolveTooltip(context: TrayRuntimeContext): string {
+function resolveTooltip(context: TrayRuntimeContext, siteState: TraySiteState | null): string {
   const taskStatus = context.failedTaskCount
     ? ` · 失败任务 ${context.failedTaskCount}`
     : context.activeTaskCount
       ? ` · 运行任务 ${context.activeTaskCount}`
       : ''
   if (context.backendState === 'starting') return 'NetConsole · 正在启动'
-  if (context.backendState === 'ready') {
-    return context.activeSiteName ? `NetConsole · ${context.activeSiteName}${taskStatus}` : `NetConsole · 未选择局点${taskStatus}`
+  if (context.backendState === 'ready' && siteState) {
+    return siteState.activeSiteName
+      ? `NetConsole · ${siteState.activeSiteName}${taskStatus}`
+      : `NetConsole · 未选择局点${taskStatus}`
   }
-  return context.activeSiteName
-    ? `NetConsole · ${context.activeSiteName} · Backend 离线`
-    : 'NetConsole · Backend 离线'
+  return `NetConsole · Backend Offline${taskStatus}`
 }
 
 function taskCenterMenuLabel(context: TrayRuntimeContext): string {
@@ -242,4 +262,27 @@ function sanitizeSiteName(value: string | undefined): string | undefined {
   if (!value) return undefined
   const safe = value.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim()
   return safe ? safe.slice(0, 80) : undefined
+}
+
+function sanitizeSiteState(value: TraySiteState | null): TraySiteState | null {
+  if (!value || typeof value !== 'object') return null
+  const activeSiteId = sanitizeSiteId(value.activeSiteId)
+  const activeSiteName = sanitizeSiteName(value.activeSiteName)
+  if (!activeSiteId || !activeSiteName || !Array.isArray(value.sites)) return null
+  const seenSiteIds = new Set<string>()
+  const sites = value.sites.flatMap((site) => {
+    const siteId = sanitizeSiteId(site?.siteId)
+    const displayName = sanitizeSiteName(site?.displayName)
+    if (!siteId || !displayName || seenSiteIds.has(siteId)) return []
+    seenSiteIds.add(siteId)
+    return [{ siteId, displayName }]
+  })
+  if (!sites.some((site) => site.siteId === activeSiteId)) return null
+  return { activeSiteId, activeSiteName, sites }
+}
+
+function sanitizeSiteId(value: string | undefined): string | undefined {
+  return typeof value === 'string' && /^[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?$/.test(value)
+    ? value
+    : undefined
 }

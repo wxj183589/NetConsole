@@ -5,6 +5,7 @@ import App from './App.vue'
 import router from './router'
 import { useWorkspaceStore } from './stores/workspace'
 import { getHealth } from './api/client'
+import { refreshSiteContext } from './stores/siteContext'
 import {
   getPlatformAdapter,
   initializePlatformRuntime,
@@ -46,7 +47,12 @@ async function bootstrap(): Promise<void> {
     runtime.reportRendererReady(true, 'mounted', surface)
     try {
       const health = await getHealth()
-      runtime.reportRendererReady(health.status === 'ok', 'interactive', surface)
+      const rendererSiteId = surface === 'main'
+        ? await refreshSiteContext()
+          .then((context) => context?.siteId)
+          .catch(() => undefined)
+        : undefined
+      runtime.reportRendererReady(health.status === 'ok', 'interactive', surface, rendererSiteId)
     } catch {
       runtime.reportRendererReady(false, 'failed', surface)
     }

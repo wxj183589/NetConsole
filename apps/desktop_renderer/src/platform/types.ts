@@ -55,6 +55,7 @@ export interface PlatformAdapter {
     healthOk: boolean,
     phase?: RendererReadyReport['phase'],
     surface?: RendererReadyReport['surface'],
+    siteId?: RendererReadyReport['siteId'],
   ): void
 }
 

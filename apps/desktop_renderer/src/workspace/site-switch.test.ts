@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   coordinateSiteSwitch,
+  CURRENT_SITE_CHANGED_EVENT,
   notifyBeforeSiteSwitch,
   SITE_CONTEXT_CHANGED_EVENT,
   SITE_SWITCH_METADATA_EVENT,
@@ -17,6 +18,10 @@ beforeEach(() => {
 })
 
 describe('site switch coordination', () => {
+  it('uses the canonical current-site-changed event after a successful commit', () => {
+    expect(CURRENT_SITE_CHANGED_EVENT).toBe('netconsole:current-site-changed')
+  })
+
   it('waits for active pages to resolve an asynchronous dirty-draft decision', async () => {
     let resolveDraft: ((value: boolean) => void) | undefined
     window.addEventListener('netconsole:before-site-switch', (event) => {
@@ -146,6 +151,8 @@ describe('site switch coordination', () => {
       activate: vi.fn(() => new Promise((resolve) => { finishActivation = resolve })),
       restart: vi.fn(async () => undefined),
       restoreWorkspace: vi.fn(async () => undefined),
+      refreshCurrentContext: vi.fn(async () => ({ site_id: 'line-b', display_name: '线路 B', revision: 'rev-b' })),
+      refreshTraySiteState: vi.fn(async () => undefined),
     }
 
     const switching = coordinateSiteSwitch(
@@ -158,6 +165,8 @@ describe('site switch coordination', () => {
     await expect(switching).resolves.toBe('completed')
     expect(getSiteContextSnapshot()).toEqual({ siteId: 'line-b', displayName: '线路 B', revision: 'rev-b' })
     expect(changed).toEqual([{ siteId: 'line-b', displayName: '线路 B', revision: 'rev-b' }])
+    expect(coordinator.refreshCurrentContext).toHaveBeenCalledOnce()
+    expect(coordinator.refreshTraySiteState).toHaveBeenCalledOnce()
     window.removeEventListener(SITE_CONTEXT_CHANGED_EVENT, listener)
   })
 
