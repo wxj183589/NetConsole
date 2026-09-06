@@ -1,5 +1,27 @@
 # NetConsole 更新日志
 
+## Unreleased
+
+### AP 光衰业务状态统一
+
+- 统一当前有效 AP Rx 的用户可见状态：Rx < -13.90 dBm 显示“光衰大”，Rx >= -13.90 dBm 显示“正常”。
+- FIT-AP 光衰筛选统一为“正常 / 光衰大 / 无数据”，移除“偏低关注 / 一般告警 / 严重告警”等容易产生歧义的业务展示；设备原始告警等级仍保留用于诊断。
+
+### 轨旁 AP 业务统计与数据边界
+
+- 修复普通列表、仅业务光衰异常筛选和顶部统计的口径不一致，DETAIL / FILTER / SUMMARY 统一使用 Backend canonical optical authority。
+- 仅当前有效采样参与 normal / abnormal 判断；stale、missing、unknown、collection_failed 不再使用历史 Rx 冒充当前异常，no_module、unsupported、not_applicable 等既有语义继续保留。
+- 修复已有可信 AP/FIT 与当前 LLDP MATCHED 时因 identity unresolved 被错误排除的问题，并保持 raw module unknown 不否决已规范化的业务状态。
+
+### Renderer 与概览展示
+
+- 轨旁 AP 业务 Renderer 不再根据 Rx 二次计算 business abnormal，改为由 Backend canonical status 驱动 presentation，避免 DETAIL、FILTER、SUMMARY 再次分裂。
+- AP 上线情况概览表头由“光衰问题数”改为两行“已上线AP / 光衰问题数”，统计字段和统计逻辑不变。
+
+### 回归验证
+
+- 真实 GUI 成功路径人工验收通过；Python 相关测试、Renderer 测试、`vue-tsc`、Ruff 和 `git diff --check` 通过。
+
 ## v1.5.5 - 2026-09-03
 
 ### 修复
