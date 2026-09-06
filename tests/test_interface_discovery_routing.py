@@ -250,6 +250,7 @@ def _collect_with_route(
     capability_output: str,
     *,
     capability_success: bool = True,
+    capability_exception: BaseException | None = None,
 ) -> tuple[object, _FakeConnection, list[list[dict[str, object | None]]]]:
     connection = _FakeConnection()
     monkeypatch.setattr(
@@ -267,6 +268,11 @@ def _collect_with_route(
 
     monkeypatch.setattr(repository, "replace_device_interfaces", counted_write)
 
+    def capability_executor(_connection, _step):
+        if capability_exception is not None:
+            raise capability_exception
+        return _capability_result(capability_output, success=capability_success)
+
     result = collect_h3c_device_details(
         _device(),
         "demo",
@@ -274,10 +280,7 @@ def _collect_with_route(
         paths=_paths(tmp_path),
         interface_discovery_route=CAPABILITY_PRIMARY_ROUTE,
         interface_discovery_platform_facts=_facts(),
-        interface_discovery_executor=lambda _connection, _step: _capability_result(
-            capability_output,
-            success=capability_success,
-        ),
+        interface_discovery_executor=capability_executor,
     )
     return result, connection, writes
 
@@ -316,6 +319,22 @@ def test_capability_failure_or_invalid_result_falls_back_before_single_writer(
         tmp_path,
         output,
         capability_success=success,
+    )
+
+    assert result.success is True
+    assert result.interfaces_updated == 2
+    assert connection.commands.count("display interface") == 1
+    assert len(writes) == 1
+
+
+def test_capability_timeout_falls_back_before_single_writer(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    result, connection, writes = _collect_with_route(
+        monkeypatch,
+        tmp_path,
+        _fixture("display_interface.txt"),
+        capability_exception=TimeoutError("capability timeout"),
     )
 
     assert result.success is True
