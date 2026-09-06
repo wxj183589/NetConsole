@@ -107,6 +107,7 @@ const extendedRowDefaults = {
   switch_optical_updated_at: '',
   switch_interface_data_status: 'current' as const,
   switch_optical_data_status: 'current' as const,
+  ap_optical_data_freshness: 'fresh',
   ap_tx_power: '',
   ap_match_source: '',
   ap_match_confidence: 0,
@@ -393,6 +394,7 @@ const NcDataTableStub = defineComponent({
   emits: ['selection-change'],
   template: `
     <div class="nc-data-table nc-data-table__scroll" :data-table-id="tableId" :data-height="height">
+      <div class="table-header"><slot name="header-optical_problem_count" /></div>
       <div v-for="(row, index) in data" :key="index" class="table-row">
         <slot name="cell-switch_rx_power" :row="row" />
         <slot name="cell-switch_tx_power" :row="row" />
@@ -1093,7 +1095,8 @@ describe('TracksideApBusinessView mounted behavior', () => {
     expect(detailTable?.props('height')).toBe('100%')
     expect(detailTable?.props('showSummary')).toBe(true)
     expect(wrapper.find('[data-table-id="trackside-ap-business-online-status"] [data-testid="nc-data-table-summary"]').exists()).toBe(true)
-    expect(detailTable?.props('columns')).toEqual(expect.arrayContaining([
+    const detailColumns = detailTable?.props('columns') as Array<{ key: string; label?: string }>
+    expect(detailColumns).toEqual(expect.arrayContaining([
       expect.objectContaining({ key: 'station_name' }),
       expect.objectContaining({ key: 'planned_ap_count' }),
       expect.objectContaining({ key: 'actual_online_count' }),
@@ -1103,6 +1106,12 @@ describe('TracksideApBusinessView mounted behavior', () => {
       expect.objectContaining({ key: 'status' }),
       expect.objectContaining({ key: 'warning' }),
     ]))
+    const opticalColumn = detailColumns.find((column) => column.key === 'optical_problem_count')
+    expect(opticalColumn?.label).toBe('已上线AP\n光衰问题数')
+    const opticalHeader = wrapper.get('[data-testid="trackside-optical-problem-header"]')
+    expect(opticalHeader.findAll('span').map((item) => item.text())).toEqual(['已上线AP', '光衰问题数'])
+    expect(opticalHeader.text()).toBe('已上线AP光衰问题数')
+    expect(summary.text()).toContain('光衰问题数3')
     wrapper.unmount()
   })
 
@@ -1698,14 +1707,14 @@ describe('TracksideApBusinessView mounted behavior', () => {
     wrapper.unmount()
   })
 
-  it('renders device module and AP business optical states independently', async () => {
+  it('renders canonical AP optical states without exposing raw warning levels', async () => {
     api.listTracksideApBusiness.mockResolvedValueOnce(page([{
       ...rows[0],
-      ap_rx_power: '-17.80',
-      ap_device_optical_status: 'normal',
+      ap_rx_power: '-8.00',
+      ap_device_optical_status: 'warning',
       ap_business_optical_status: 'abnormal',
       ap_optical_status: 'abnormal',
-      ap_business_reason: 'AP接收光功率 -17.80 dBm 低于业务门限 -13.90 dBm',
+      ap_business_reason: '后端业务状态为光衰大',
       optical_severity: 'abnormal',
     }]))
 
@@ -1714,19 +1723,17 @@ describe('TracksideApBusinessView mounted behavior', () => {
 
     expect(table.text()).toContain('正常')
     expect(table.text()).toContain('光衰大')
-    expect(table.get('.el-tooltip').attributes('data-content')).toContain(
-      '-17.80 dBm 低于业务门限 -13.90 dBm',
-    )
+    expect(table.text()).not.toContain('提示告警')
     wrapper.unmount()
   })
 
-  it('marks switch Rx and the combined status abnormal when backend normal is stale', async () => {
+  it('renders the canonical backend optical projection without recomputing from Rx', async () => {
     api.listTracksideApBusiness.mockResolvedValueOnce(page([{
       ...rows[0],
       model: 'WA6528X-E',
-      ap_rx_power: '-7.72',
+      ap_rx_power: '-20.00',
       ap_tx_power: '-19.10',
-      ap_device_optical_status: 'normal',
+      ap_device_optical_status: 'critical',
       ap_optical_status: 'normal',
       switch_rx_power: '-19.10',
       switch_tx_power: '-20.00',
@@ -1740,10 +1747,10 @@ describe('TracksideApBusinessView mounted behavior', () => {
     const table = wrapper.get('[data-table-id="trackside-ap-business"]')
 
     expect(table.get('[data-testid="trackside-ap-rx"]').classes()).toContain('optical-normal')
-    expect(table.get('[data-testid="trackside-switch-rx"]').classes()).toContain('optical-alarm')
+    expect(table.get('[data-testid="trackside-switch-rx"]').classes()).toContain('optical-normal')
     expect(table.get('[data-testid="trackside-switch-tx"]').classes()).not.toContain('optical-alarm')
     expect(table.get('[data-testid="trackside-ap-tx"]').classes()).not.toContain('optical-alarm')
-    expect(table.text()).toContain('光衰大')
+    expect(table.text()).not.toContain('光衰大')
     wrapper.unmount()
   })
 

@@ -492,7 +492,8 @@ describe('AC Management optical detail behavior', () => {
     expect(wrapper.get('[data-testid="optical-threshold-status"]').text()).toContain('光衰大')
     expect(wrapper.get('[data-testid="optical-judgement"]').text()).toBe('异常')
     expect(wrapper.text()).toContain('交换机侧收光异常：-19.10 dBm，低于 -13.90 dBm')
-    expect(wrapper.text()).toContain('严重告警')
+    expect(wrapper.text()).toContain('光衰大')
+    expect(wrapper.text()).not.toContain('严重告警')
     wrapper.unmount()
   })
 

@@ -8,6 +8,9 @@ import {
   displaySwitchVendor,
   displayTracksideSnapshotTime,
   displayTracksideValue,
+  tracksideApOpticalPresentation,
+  tracksideApDeviceOpticalPresentation,
+  tracksideApBusinessOpticalPresentation,
   tracksideBusinessOpticalPresentation,
   tracksideDeviceOpticalPresentation,
   tracksideApRecognitionPresentation,
@@ -91,12 +94,56 @@ describe('trackside AP business display', () => {
       className: 'optical-alarm',
     })
     expect(tracksideBusinessOpticalPresentation({
-      model: 'WA6528X-E',
-      ap_rx_power: '-7.72',
-      ap_device_optical_status: 'normal',
-      switch_rx_power: '-19.10',
-      switch_device_optical_status: 'normal',
+      optical_severity: 'abnormal',
     })).toMatchObject({ label: '光衰大', tagType: 'danger' })
+  })
+
+  it.each([
+    ['abnormal', '-8.00', '光衰大'],
+    ['normal', '-20.00', '正常'],
+  ])('uses backend AP business status %s even when Rx is %s', (backendStatus, rxPower, label) => {
+    expect(tracksideApBusinessOpticalPresentation({
+      ap_business_optical_status: backendStatus,
+      ap_rx_power: rxPower,
+      ap_optical_data_freshness: 'current',
+    })).toMatchObject({ label })
+    expect(tracksideApDeviceOpticalPresentation({
+      ap_rx_power: rxPower,
+      ap_device_optical_status: 'warning',
+      ap_optical_status: backendStatus,
+      ap_business_optical_status: backendStatus,
+      ap_optical_data_freshness: 'fresh',
+    })).toMatchObject({ label })
+  })
+
+  it('keeps stale AP canonical status visibly historical instead of current', () => {
+    expect(tracksideApOpticalPresentation('abnormal', 'stale')).toMatchObject({
+      label: '光衰大（数据已过期）',
+      tagType: 'warning',
+    })
+  })
+
+  it('keeps the existing no-module semantic ahead of a dirty AP Rx value', () => {
+    expect(tracksideApDeviceOpticalPresentation({
+      ap_device_optical_status: 'no_module',
+      ap_optical_status: 'abnormal',
+      ap_business_optical_status: 'abnormal',
+      ap_optical_data_freshness: 'current',
+    }).label).toBe('无光模块')
+  })
+
+  it('keeps collection failure ahead of a canonical abnormal status', () => {
+    expect(tracksideApOpticalPresentation('abnormal', 'collection_failed').label).toBe(
+      '采集失败/设备不可达',
+    )
+  })
+
+  it('does not expose legacy AP alarm levels without a backend canonical status', () => {
+    expect(tracksideApDeviceOpticalPresentation({
+      ap_device_optical_status: 'critical',
+      ap_optical_data_freshness: 'fresh',
+    }).label).toBe('未知')
+    expect(tracksideApOpticalPresentation('minor', 'fresh').label).toBe('未知')
   })
 
   it('keeps historical power visible while marking a failed switch collection', () => {
@@ -105,9 +152,7 @@ describe('trackside AP business display', () => {
       tagType: 'warning',
     })
     expect(tracksideBusinessOpticalPresentation({
-      model: 'WA6528X-E',
-      switch_rx_power: '-8.00',
-      switch_device_optical_status: 'collection_failed',
+      optical_severity: 'collection_failed',
       switch_optical_data_status: 'stale',
     })).toMatchObject({
       label: '采集失败/设备不可达（数据已过期）',
@@ -121,11 +166,7 @@ describe('trackside AP business display', () => {
       tagType: 'info',
     })
     expect(tracksideBusinessOpticalPresentation({
-      model: 'wa6522',
-      ap_rx_power: '-30',
-      ap_device_optical_status: 'critical',
-      switch_rx_power: '-30',
-      switch_device_optical_status: 'critical',
+      optical_severity: 'not_applicable',
     }).label).toBe('不适用')
     expect(tracksideDeviceOpticalPresentation('critical', 'wa6522').label).toBe('不适用')
   })

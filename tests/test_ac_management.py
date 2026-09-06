@@ -89,6 +89,12 @@ from netconsole.services.rail_transit.trackside_optical_collection import (
     collect_trackside_optical,
     dedupe_targets,
 )
+from netconsole.services.trackside_ap_export_service import (
+    select_trackside_ap_business_rows,
+)
+from netconsole.services.rail_transit.trackside_ap_business_snapshot import (
+    read_trackside_ap_source_revisions,
+)
 from netconsole.services.netmiko_connection import normalize_command_output
 from netconsole.services.neighbor_matcher import (
     NeighborMatchResult,
@@ -3947,7 +3953,7 @@ def test_current_optical_abnormal_is_independent_from_ap_online_state():
     )
 
 
-def test_current_optical_abnormal_keeps_stale_latest_valid_observation():
+def test_current_optical_abnormal_excludes_stale_latest_valid_observation():
     stale_abnormal = {
         "ap_mac": "30f5-2787-ab01",
         "ap_name": "AP-stale-abnormal",
@@ -3962,7 +3968,7 @@ def test_current_optical_abnormal_keeps_stale_latest_valid_observation():
         "ap_rx_power": "-7.10",
     }
 
-    assert is_current_optical_abnormal_row(stale_abnormal)
+    assert not is_current_optical_abnormal_row(stale_abnormal)
     assert not is_current_optical_abnormal_row(stale_normal)
 
 
@@ -5484,6 +5490,49 @@ def test_current_optical_problem_uses_one_business_predicate_and_excludes_non_pr
     assert count_current_optical_abnormal_by_site([unassigned]) == {"未归属": 1}
 
 
+def test_trackside_current_business_row_with_stale_identity_index_is_counted():
+    row = normalize_trackside_ap_business_row(
+        {
+            "business_row_id": "0123456789abcdef01234567",
+            "site": "01-测试站",
+            "device_name": "TEST-SW-01",
+            "interface_name": "GigabitEthernet1/0/13",
+            "model": "WA6624X",
+            "ap_uuid": "ap-test-01",
+            "ap_mac": "0011-2233-4466",
+            "ap_name": "AP-TEST-01",
+            "has_fit_ap_resource": True,
+            "has_current_lldp": True,
+            "lldp_match_status": "MATCHED",
+            "identity_match_status": "unresolved",
+            "identity_match_rule": "identity_index_stale",
+            "switch_rx_power": "-19.96",
+            "switch_optical_data_status": "current",
+            "switch_optical_collection_status": "success",
+            "switch_device_optical_status": "alarm",
+            "switch_optical_status": "abnormal",
+            "ap_rx_power": "-7.05",
+            "ap_device_optical_status": "normal",
+            "ap_optical_status": "normal",
+            "ap_side_has_data": True,
+        }
+    )
+
+    assert row["switch_rx_power"] == "-19.96"
+    assert row["switch_optical_data_status"] == "current"
+    assert row["switch_optical_status"] == "abnormal"
+    assert row["ap_optical_status"] == "normal"
+    assert row["optical_severity"] == "abnormal"
+    assert select_trackside_ap_business_rows(
+        [row],
+        station="01-测试站",
+        query="GigabitEthernet1/0/13",
+        optical_anomaly_only=True,
+    ) == [row]
+    assert count_current_optical_abnormal_aps([row]) == 1
+    assert count_current_optical_abnormal_by_site([row]) == {"01-测试站": 1}
+
+
 def test_trackside_wa6522_display_is_not_applicable_before_row_normalization():
     row = {
         "model": "WA6522",
@@ -6195,6 +6244,182 @@ def test_trackside_update_preserves_current_on_failed_or_invalid_snapshot(
     assert facts.list_device_interfaces(str(switch.device_uuid))[0]["pvid"] == "100"
     assert facts.list_optical_modules(str(switch.device_uuid))[0]["rx_power"] == "-7.00"
 
+
+def test_fit_ap_refresh_preserves_switch_optical_owner_in_business_sequence(tmp_path):
+    database = make_database(tmp_path)
+    repository = DeviceRepository(database)
+    switch = create_station_switch(
+        repository,
+        "demo",
+        name="SW-SEQUENCE",
+        station="Station A",
+        ip_address="192.0.2.30",
+        ssh_username="u",
+        ssh_password="p",
+    )
+    ac = repository.create(make_ac_device())
+    facts = DeviceFactRepository(database)
+    switch_uuid = str(switch.device_uuid)
+    switch_run = "switch-run-1"
+    facts.create_collect_run(
+        {
+            "collect_run_uuid": switch_run,
+            "collect_type": "trackside_switch_optical",
+            "status": "success",
+        }
+    )
+    fact_metadata = {
+        "collect_run_uuid": switch_run,
+        "collected_at": "2026-09-04T09:00:00",
+        "updated_at": "2026-09-04T09:00:00",
+    }
+    facts.upsert_device_fact(
+        {
+            "device_uuid": switch_uuid,
+            "model": "S6520X",
+            **fact_metadata,
+        }
+    )
+    facts.replace_device_interfaces(
+        switch_uuid,
+        [
+            {
+                "interface_name": "GigabitEthernet1/0/14",
+                "link_status": "UP",
+                "protocol_status": "UP",
+                "description": "To AP",
+                **fact_metadata,
+            }
+        ],
+    )
+    facts.replace_optical_modules(
+        switch_uuid,
+        [
+            {
+                "interface_name": "GigabitEthernet1/0/14",
+                "rx_power": "-36.96",
+                "status": "abnormal",
+                **fact_metadata,
+            }
+        ],
+    )
+    ac_repository = AcRepository(database)
+    ac_repository.replace_fit_ap_resources(
+        str(ac.device_uuid),
+        [
+            {
+                "ap_uuid": "ap-sequence",
+                "ap_mac": "0011-2233-4466",
+                "ap_name": "AP-SEQUENCE",
+                "model": "WA6528X-E",
+                "site": "Station A",
+                "state": "R/M",
+            }
+        ],
+    )
+    fit_row = {
+        "ac_device_uuid": str(ac.device_uuid),
+        "ap_uuid": "ap-sequence",
+        "ap_mac": "0011-2233-4466",
+        "ap_name": "AP-SEQUENCE",
+        "model": "WA6528X-E",
+        "neighbor_device_name": switch.name,
+        "neighbor_interface": "GigabitEthernet1/0/14",
+        "rx_power": "-8.0",
+        "status": "success",
+        "collect_run_uuid": "fit-run-1",
+        "updated_at": "2026-09-04T09:00:00",
+    }
+    ac_repository.replace_fit_ap_optical(str(ac.device_uuid), [fit_row])
+
+    def business_rows(
+        *,
+        latest_switch_run: str = switch_run,
+        collection_attempts: dict[str, dict[str, object | None]] | None = None,
+    ):
+        return build_trackside_ap_business_rows(
+            [switch],
+            {switch_uuid: facts.list_device_interfaces(switch_uuid)},
+            {switch_uuid: facts.list_optical_modules(switch_uuid)},
+            ac_repository.list_all_fit_ap_optical(),
+            {switch_uuid: []},
+            ac_repository.list_all_fit_ap_resources_with_metadata(),
+            latest_switch_collect_runs={switch_uuid: latest_switch_run},
+            latest_switch_collection_attempts=collection_attempts,
+        )
+
+    before = business_rows()
+    before_revisions = read_trackside_ap_source_revisions(database)
+
+    ac_repository.replace_fit_ap_optical(
+        str(ac.device_uuid),
+        [
+            {
+                **fit_row,
+                "collect_run_uuid": "fit-run-2",
+                "updated_at": "2026-09-04T10:01:00",
+            }
+        ],
+    )
+
+    after = business_rows()
+    after_revisions = read_trackside_ap_source_revisions(database)
+    assert len(before) == len(after) == 1
+    assert before[0]["switch_rx_power"] == after[0]["switch_rx_power"] == "-36.96"
+    assert before[0]["switch_optical_data_status"] == after[0]["switch_optical_data_status"] == "current"
+    assert before[0]["switch_optical_status"] == after[0]["switch_optical_status"] == "abnormal"
+    assert before[0]["optical_severity"] == after[0]["optical_severity"] == "abnormal"
+    assert select_trackside_ap_business_rows(
+        after,
+        station="Station A",
+        optical_anomaly_only=True,
+    ) == after
+    assert count_current_optical_abnormal_aps(after) == 1
+    assert count_current_optical_abnormal_by_site(after) == {"Station A": 1}
+    assert before_revisions["switch_facts_revision"] == after_revisions["switch_facts_revision"]
+    assert before_revisions["lldp_revision"] == after_revisions["lldp_revision"]
+    assert before_revisions["optical_data_revision"] < after_revisions["optical_data_revision"]
+
+    # A failed switch attempt must make the old sample visibly historical and
+    # keep it out of the current anomaly population, even though persistence
+    # deliberately retains the raw Rx for diagnostics.
+    failed_target = trackside_optical_collection.TracksideOpticalTarget(
+        key="device:sequence",
+        name=switch.name,
+        host="192.0.2.30",
+        port=22,
+        protocol="ssh",
+        target_type="SWITCH",
+        group_name="车站",
+        device=switch,
+        device_uuid=switch_uuid,
+    )
+    trackside_optical_collection._persist_result(
+        repository,
+        ac_repository,
+        trackside_optical_collection.TracksideDeviceCollectionResult(
+            failed_target,
+            False,
+            collect_run_uuid="switch-run-2-failed",
+            error_message="SSH 连接失败",
+        ),
+    )
+    failed_run = facts.get_collect_run("switch-run-2-failed")
+    failed_rows = business_rows(
+        latest_switch_run="switch-r101-failed",
+        collection_attempts={switch_uuid: failed_run or {}},
+    )
+    assert failed_rows[0]["switch_rx_power"] == "-36.96"
+    assert failed_rows[0]["switch_optical_data_status"] == "stale"
+    assert failed_rows[0]["switch_optical_status"] == "collection_failed"
+    assert failed_rows[0]["optical_severity"] == "collection_failed"
+    assert select_trackside_ap_business_rows(
+        failed_rows,
+        station="Station A",
+        optical_anomaly_only=True,
+    ) == []
+    assert count_current_optical_abnormal_aps(failed_rows) == 0
+    assert count_current_optical_abnormal_by_site(failed_rows) == {}
 
 def test_trackside_update_combines_fit_ap_service_and_station_switch_collection(
     tmp_path, monkeypatch

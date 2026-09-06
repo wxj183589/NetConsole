@@ -56,8 +56,9 @@ import {
   displayTracksideValue,
   tracksideApRecognitionPresentation,
   tracksideBusinessOpticalPresentation,
-  tracksideDeviceOpticalPresentation,
-  tracksideRxPresentation,
+  tracksideApBusinessOpticalPresentation,
+  tracksideApDeviceOpticalPresentation,
+  tracksideCanonicalOpticalPresentation,
 } from './tracksideApBusinessDisplay'
 
 const userSelectedExport = useUserSelectedExport()
@@ -231,7 +232,7 @@ const onlineStatusColumns: NcTableColumn<TracksideApOnlineStatusRow>[] = [
   { key: 'actual_online_count', label: '实际在线', valueType: 'number', width: 110 },
   { key: 'offline_count', label: '离线', valueType: 'number', width: 90 },
   { key: 'online_rate', label: '上线率', valueType: 'number', width: 100, displayValue: (row) => formatOnlineRate(row.online_rate) },
-  { key: 'optical_problem_count', label: '光衰问题数', valueType: 'number', width: 120, displayValue: (row) => String(row.optical_problem_count ?? 0) },
+  { key: 'optical_problem_count', label: '已上线AP\n光衰问题数', valueType: 'number', width: 120, displayValue: (row) => String(row.optical_problem_count ?? 0) },
   { key: 'status', label: '状态', valueType: 'status', width: 150, displayValue: (row) => onlineStatusLabel(row) },
   { key: 'warning', label: '告警', valueType: 'description', minWidth: 280, align: 'left', alignmentReason: 'long-text', showOverflowTooltip: true },
 ]
@@ -366,9 +367,8 @@ const unmatchedLabel = computed(() => {
 })
 
 function switchRxPresentation(row: TracksideApBusinessRow) {
-  return tracksideRxPresentation(
-    row.switch_rx_power,
-    row.switch_device_optical_status || row.switch_optical_status,
+  return tracksideCanonicalOpticalPresentation(
+    row.switch_optical_status,
     row.switch_optical_data_status,
     row.model,
     row.ap_optical_applicable,
@@ -376,21 +376,15 @@ function switchRxPresentation(row: TracksideApBusinessRow) {
 }
 
 function apRxPresentation(row: TracksideApBusinessRow) {
-  return tracksideRxPresentation(
-    row.ap_rx_power,
-    row.ap_device_optical_status || row.ap_optical_status,
-    row.ap_optical_data_freshness,
-    row.model,
-    row.ap_optical_applicable,
-  )
+  return tracksideApDeviceOpticalPresentation(row)
 }
 
 function apDeviceOpticalPresentation(row: TracksideApBusinessRow) {
-  return tracksideDeviceOpticalPresentation(
-    row.ap_device_optical_status || row.ap_optical_status,
-    row.model,
-    row.ap_optical_applicable,
-  )
+  return tracksideApDeviceOpticalPresentation(row)
+}
+
+function apBusinessOpticalPresentation(row: TracksideApBusinessRow) {
+  return tracksideApBusinessOpticalPresentation(row)
 }
 
 const businessContextMenuItems = computed<NcDataTableContextMenuItem<TracksideApBusinessRow>[]>(() => [
@@ -1341,7 +1335,7 @@ onBeforeUnmount(() => {
           <template #cell-ap_rx_power="{ row }"><span data-testid="trackside-ap-rx" :class="apRxPresentation(row).className">{{ displayTracksideValue(row.ap_rx_power) }}</span></template>
           <template #cell-ap_tx_power="{ row }"><span data-testid="trackside-ap-tx">{{ displayTracksideValue(row.ap_tx_power) }}</span></template>
           <template #cell-ap_device_optical_status="{ row }"><el-tag :type="apDeviceOpticalPresentation(row).tagType" :class="apDeviceOpticalPresentation(row).className">{{ apDeviceOpticalPresentation(row).label }}</el-tag></template>
-          <template #cell-ap_optical_status="{ row }"><el-tooltip :content="row.ap_business_reason || '无业务判定说明'"><el-tag :type="apRxPresentation(row).tagType" :class="apRxPresentation(row).className">{{ apRxPresentation(row).label }}</el-tag></el-tooltip></template>
+          <template #cell-ap_optical_status="{ row }"><el-tooltip :content="row.ap_business_reason || '无业务判定说明'"><el-tag :type="apBusinessOpticalPresentation(row).tagType" :class="apBusinessOpticalPresentation(row).className">{{ apBusinessOpticalPresentation(row).label }}</el-tag></el-tooltip></template>
           <template #cell-optical_severity="{ row }"><el-tag :type="tracksideBusinessOpticalPresentation(row).tagType" :class="tracksideBusinessOpticalPresentation(row).className">{{ tracksideBusinessOpticalPresentation(row).label }}</el-tag></template>
           <template #cell-actions="{ row }"><el-button link type="primary" :disabled="updateActionsDisabled || !row.site || !updateFeatureEnabled" @click="updateStation(row)">更新站点</el-button><el-button link type="primary" :title="hasApIdentity(row) ? '' : '缺少 AP 身份，无法定向更新'" :disabled="updateActionsDisabled || !hasApIdentity(row) || !updateFeatureEnabled" @click="updateAp(row)">更新 AP</el-button></template>
         </NcDataTable>
@@ -1384,6 +1378,12 @@ onBeforeUnmount(() => {
             :summary-method="onlineStatusSummaryMethod"
             empty-text="暂无站点上线数据"
           >
+            <template #header-optical_problem_count>
+              <span class="online-status-optical-problem-header" data-testid="trackside-optical-problem-header">
+                <span>已上线AP</span>
+                <span>光衰问题数</span>
+              </span>
+            </template>
             <template #cell-online_rate="{ row }">{{ formatOnlineRate(row.online_rate) }}</template>
             <template #cell-status="{ row }"><el-tag :type="onlineStatusTagType(row)">{{ onlineStatusLabel(row) }}</el-tag></template>
             <template #cell-warning="{ row }"><span>{{ row.warning || row.remark || '—' }}</span></template>
@@ -1438,6 +1438,7 @@ onBeforeUnmount(() => {
 .summary-grid article,.content-card,.online-overview,.diagnostic-summary{background:var(--el-bg-color);border:1px solid var(--el-border-color-lighter);border-radius:8px}
 .summary-grid article{height:64px;padding:9px 12px;box-sizing:border-box}.summary-grid span{color:var(--el-text-color-secondary);font-size:12px}.summary-grid strong{display:block;margin-top:4px;font-size:20px;line-height:1.15}
 .online-overview{display:flex;min-width:0;flex:none;align-items:center;gap:14px;padding:8px 12px}.online-overview-heading{display:flex;flex:none;align-items:center;gap:8px;white-space:nowrap}.online-overview-heading strong{font-size:14px}.online-overview-heading .el-button{padding:0}.online-overview-metrics{display:flex;min-width:0;flex:1;align-items:center;justify-content:space-between;gap:14px;overflow-x:auto}.online-overview-metrics span{display:flex;align-items:baseline;gap:5px;white-space:nowrap}.online-overview-metrics small{color:var(--el-text-color-secondary);font-size:12px}.online-overview-metrics strong{font-size:16px;line-height:1.2}.online-status-error{max-width:220px;overflow:hidden;color:var(--el-color-danger);font-size:12px;text-overflow:ellipsis;white-space:nowrap}
+.online-status-optical-problem-header{display:inline-flex;align-items:center;justify-content:center;vertical-align:middle;flex-direction:column;line-height:1.15;white-space:nowrap}
 .diagnostic-summary{display:flex;min-width:0;flex:none;align-items:center;gap:10px;padding:6px 10px}.diagnostic-title{flex:none;font-size:13px}.diagnostic-items{display:flex;min-width:0;flex:1;align-items:center;gap:4px;overflow:hidden}.diagnostic-item{border:0;background:transparent;color:var(--el-text-color-secondary);cursor:pointer;font:inherit;font-size:12px;line-height:22px;padding:0 6px;white-space:nowrap}.diagnostic-item:not(:last-child)::after{content:'|';margin-left:10px;color:var(--el-border-color)}.diagnostic-item b{font-weight:600}.diagnostic-warning{color:var(--el-color-warning)}.diagnostic-danger{color:var(--el-color-danger)}.diagnostic-toggle{flex:none;padding:0;white-space:nowrap}
 .content-card{display:flex;min-height:0;min-width:0;flex:1;flex-direction:column;padding:10px 12px;overflow:hidden}.business-table-host{min-height:0;min-width:0;flex:1;overflow:hidden}.toolbar{flex:none;margin-bottom:8px}.toolbar .el-input{width:230px}.station-select{width:260px}.refresh-indicator{color:var(--el-color-primary);font-size:13px}.work-scope-filter-hint{color:var(--el-text-color-secondary);font-size:12px}.pagination{flex-wrap:wrap;padding-top:8px}.optical-normal{color:var(--el-color-success)}.optical-notice,.optical-warning{color:var(--el-color-warning)}.optical-alarm,.optical-link-abnormal,.optical-link-down,.optical-no-light,.optical-offline{color:var(--el-color-danger);font-weight:600}.optical-no-module,.optical-missing,.optical-skipped,.optical-not-collected,.optical-unknown{color:var(--el-text-color-secondary)}
 .trackside-concurrency-select{width:112px}

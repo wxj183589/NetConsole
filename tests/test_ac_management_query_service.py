@@ -67,6 +67,61 @@ def test_ac_query_service_reads_summary_filters_and_details_without_writes(tmp_p
     assert _fingerprint(db_path) == before
 
 
+def test_fit_ap_optical_filter_uses_current_ap_rx_not_raw_alarm_level(tmp_path: Path) -> None:
+    paths, _db_path, _files = build_ac_management_fixture(tmp_path)
+    service = AcManagementQueryService(paths)
+    items = [
+        AcApDTO(
+            id="ap-low",
+            ac_id="ac-1",
+            name="AP-low",
+            optical_status="minor",
+            optical_data_freshness="fresh",
+            optical_rx_power="-13.99",
+        ),
+        AcApDTO(
+            id="ap-boundary",
+            ac_id="ac-1",
+            name="AP-boundary",
+            optical_status="critical",
+            optical_data_freshness="fresh",
+            optical_rx_power="-13.90",
+        ),
+        AcApDTO(
+            id="ap-normal",
+            ac_id="ac-1",
+            name="AP-normal",
+            optical_status="warning",
+            optical_data_freshness="fresh",
+            optical_rx_power="-13.89",
+        ),
+        AcApDTO(
+            id="ap-stale",
+            ac_id="ac-1",
+            name="AP-stale",
+            optical_status="abnormal",
+            optical_data_freshness="stale",
+            optical_rx_power="-20.00",
+        ),
+        AcApDTO(
+            id="ap-no-module",
+            ac_id="ac-1",
+            name="AP-no-module",
+            optical_status="no_module",
+            optical_data_freshness="fresh",
+            optical_rx_power="-20.00",
+        ),
+    ]
+
+    abnormal = service._filter_ap_items(items, optical_statuses={"abnormal"})
+    normal = service._filter_ap_items(items, optical_statuses={"normal"})
+    no_data = service._filter_ap_items(items, optical_statuses={"no_data"})
+
+    assert [item.id for item in abnormal] == ["ap-low"]
+    assert [item.id for item in normal] == ["ap-boundary", "ap-normal"]
+    assert [item.id for item in no_data] == ["ap-no-module", "ap-stale"]
+
+
 def test_ac_query_service_excludes_nonparticipating_ac_from_selector_and_ap_page(tmp_path: Path) -> None:
     paths, db_path, _files = build_ac_management_fixture(tmp_path)
     database = Database(db_path)

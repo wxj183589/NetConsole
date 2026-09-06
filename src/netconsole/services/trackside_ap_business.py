@@ -96,6 +96,8 @@ _COLLECTION_FAILED_STATUSES = frozenset(
 _OPTICAL_NO_CURRENT_DATA_STATUSES = frozenset(
     {
         "unknown",
+        "stale",
+        "missing",
         "not_collected",
         "failed",
         "failure",
@@ -676,10 +678,20 @@ def normalize_trackside_ap_business_row(
     normalized = dict(row)
     normalized["vlan"] = normalize_trackside_vlan_display(normalized.get("vlan"))
     switch_collection_failed = _is_switch_optical_collection_failed(normalized)
+    ap_data_freshness = str(
+        normalized.get("ap_optical_data_freshness")
+        or normalized.get("data_freshness")
+        or ""
+    ).strip().casefold()
+    switch_data_status = str(
+        normalized.get("switch_optical_data_status") or ""
+    ).strip().casefold()
+    ap_no_current_data = ap_data_freshness in _OPTICAL_NO_CURRENT_DATA_STATUSES
+    switch_no_current_data = switch_data_status in _OPTICAL_NO_CURRENT_DATA_STATUSES
     if normalized.get("switch_interface_data_status") in {"stale", "missing"}:
         normalized["link_status"] = "-"
         normalized["protocol_status"] = None
-    if normalized.get("switch_optical_data_status") in {"stale", "missing"} and not switch_collection_failed:
+    if switch_no_current_data and not switch_collection_failed:
         for field in (
             "switch_rx_power",
             "switch_tx_power",
@@ -732,10 +744,20 @@ def normalize_trackside_ap_business_row(
 
     ap_side_has_data = has_ap_side_optical_data(normalized)
     evaluation = evaluate_dual_rx_business_detail(
-        normalized.get("ap_rx_power") if ap_side_has_data else None,
-        normalized.get("switch_rx_power"),
-        ap_reported_status=device_status if ap_side_has_data else "",
-        switch_reported_status=switch_device_status,
+        normalized.get("ap_rx_power") if ap_side_has_data and not ap_no_current_data else None,
+        normalized.get("switch_rx_power") if not switch_no_current_data else None,
+        ap_reported_status=(
+            device_status
+            if ap_side_has_data
+            and (not ap_no_current_data or device_status in {"no_module", "not_applicable", "offline"})
+            else ""
+        ),
+        switch_reported_status=(
+            switch_device_status
+            if not switch_no_current_data
+            or switch_device_status in {"no_module", "not_applicable", "offline"}
+            else ""
+        ),
         ap_data_freshness=(
             normalized.get("ap_optical_data_freshness")
             or normalized.get("data_freshness")
@@ -3864,6 +3886,24 @@ def has_valid_ap_binding(row: dict[str, object | None]) -> bool:
     return not _is_missing_display(row.get("ap_mac")) or not _is_missing_display(row.get("ap_name"))
 
 
+def _has_current_trackside_ap_binding(row: Mapping[str, object | None]) -> bool:
+    """Allow optical counting when the AP binding is current but its index is stale."""
+
+    if not has_valid_ap_binding(dict(row)):
+        return False
+    if not _trackside_truthy(row.get("has_current_lldp")):
+        return False
+    if str(row.get("lldp_match_status") or "").strip().casefold() not in {
+        "matched",
+        "match",
+    }:
+        return False
+    return bool(
+        str(row.get("ap_uuid") or "").strip()
+        or _trackside_truthy(row.get("has_fit_ap_resource"))
+    )
+
+
 def _normalized_optical_status(value: object) -> str:
     text = str(value or "").strip().casefold()
     return {
@@ -3960,6 +4000,35 @@ def _has_explicit_optical_no_current_data(
     row: Mapping[str, object | None],
     side: str,
 ) -> bool:
+    # Freshness/data-availability is authoritative even when a row still
+    # carries a previously computed canonical status.  This prevents a
+    # residual RX value from becoming a current alarm when the sample is
+    # explicitly stale or missing.
+    freshness_fields = (
+        ("ap_optical_data_freshness", "data_freshness")
+        if side == "ap"
+        else ("switch_optical_data_status",)
+    )
+    if any(
+        str(row.get(field) or "").strip().casefold()
+        in _OPTICAL_NO_CURRENT_DATA_STATUSES
+        for field in freshness_fields
+        if str(row.get(field) or "").strip()
+    ):
+        return True
+    canonical_field = (
+        "ap_business_optical_status"
+        if side == "ap"
+        else "switch_optical_status"
+    )
+    canonical_status = _normalized_optical_status(row.get(canonical_field))
+    # The business projection is authoritative for a side once it has been
+    # computed.  The device/module status is a separate raw owner and may
+    # legitimately remain ``unknown`` while a valid Rx value produces a
+    # canonical business anomaly.  Letting that raw status veto the
+    # projection makes detail/count/filter disagree after an AP-only refresh.
+    if canonical_status and canonical_status not in _OPTICAL_NO_CURRENT_DATA_STATUSES:
+        return False
     fields = (
         (
             "ap_business_optical_status",
@@ -4030,16 +4099,20 @@ def is_current_optical_abnormal_export_row(row: dict[str, object | None]) -> boo
     """Return the single business-row optical problem predicate.
 
     This predicate is shared by the top-level business count and station
-    aggregation.  Collection/identity quality states are deliberately kept
-    out of the optical-problem population even when an older RX value is
-    still present on the row.
+    aggregation.  Collection failures, ambiguous/missing bindings, and
+    explicitly non-current optical samples are kept out of the optical-problem
+    population even when an older RX value is still present on the row.
     """
 
     if not is_ap_optical_applicable(row.get("model") or row.get("ap_model")):
         return False
     identity_status = str(row.get("identity_match_status") or "").strip().casefold()
     if identity_status and identity_status != "matched":
-        return False
+        # An out-of-date identity index must not hide a business row whose
+        # AP is still explicitly bound by the current LLDP/FIT-AP snapshot.
+        # Ambiguous, missing, and non-current bindings remain excluded.
+        if identity_status != "unresolved" or not _has_current_trackside_ap_binding(row):
+            return False
     if str(row.get("primary_reason_code") or "").strip().casefold() == "empty_configured_port":
         return False
     if _is_switch_optical_collection_failed(row):

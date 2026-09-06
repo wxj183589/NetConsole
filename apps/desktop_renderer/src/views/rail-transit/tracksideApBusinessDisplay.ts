@@ -1,5 +1,4 @@
 import {
-  dualOpticalStatusPresentation,
   isApOpticalApplicable,
   normalizedOpticalStatus,
   opticalRxStatusPresentation,
@@ -63,6 +62,7 @@ const classByStatus: Record<string, string> = {
   no_light: 'optical-no-light',
   no_module: 'optical-no-module',
   abnormal: 'optical-alarm',
+  no_data: 'optical-not-collected',
   unverified: 'optical-warning',
   dom_unavailable: 'optical-not-collected',
   skipped: 'optical-skipped',
@@ -88,6 +88,20 @@ export function tracksideOpticalPresentation(value: unknown): TracksideOpticalPr
     tagType: presentation.tagType,
     className: classByStatus[status] || 'optical-unknown',
   }
+}
+
+export function tracksideCanonicalOpticalPresentation(
+  value: unknown,
+  freshness: unknown = 'fresh',
+  model?: unknown,
+  opticalApplicable?: boolean,
+): TracksideOpticalPresentation {
+  if (!isApOpticalApplicable(model, opticalApplicable)) {
+    return tracksideOpticalPresentation('not_applicable')
+  }
+  return toTracksidePresentation(
+    withTracksideFreshness(opticalStatusPresentation(value), freshness),
+  )
 }
 
 export function tracksideRxPresentation(
@@ -118,33 +132,105 @@ export function tracksideDeviceOpticalPresentation(
   return tracksideOpticalPresentation(backendStatus)
 }
 
-export function tracksideBusinessOpticalPresentation(row: {
-  ap_rx_power?: unknown
-  switch_rx_power?: unknown
+const apDeviceSemanticStatuses = new Set([
+  'not_applicable',
+  'no_module',
+  'unverified',
+  'dom_unavailable',
+  'skipped',
+  'offline',
+  'collection_failed',
+  'link_abnormal',
+  'link_down',
+  'no_light',
+])
+const legacyApOpticalAlarmStatuses = new Set([
+  'notice',
+  'warning',
+  'alarm',
+  'critical',
+  'minor',
+  'major',
+])
+
+export function tracksideApDeviceOpticalPresentation(row: {
   ap_device_optical_status?: unknown
   ap_optical_status?: unknown
-  switch_device_optical_status?: unknown
-  switch_optical_status?: unknown
-  optical_severity?: unknown
+  ap_business_optical_status?: unknown
+  ap_rx_power?: unknown
+  ap_optical_data_freshness?: unknown
   model?: unknown
   ap_optical_applicable?: boolean
+}): TracksideOpticalPresentation {
+  const moduleStatus = normalizedOpticalStatus(row.ap_device_optical_status)
+  const canonicalStatus = apDeviceSemanticStatuses.has(moduleStatus)
+    ? moduleStatus
+    : [row.ap_optical_status, row.ap_business_optical_status]
+      .map(normalizedOpticalStatus)
+      .find((status) => status === 'normal' || status === 'abnormal' || apDeviceSemanticStatuses.has(status))
+      || 'unknown'
+  return tracksideApOpticalPresentation(
+    canonicalStatus,
+    row.ap_optical_data_freshness,
+    row.model,
+    row.ap_optical_applicable,
+  )
+}
+
+export function tracksideApBusinessOpticalPresentation(row: {
+  ap_business_optical_status?: unknown
+  ap_optical_data_freshness?: unknown
+  ap_rx_power?: unknown
+  model?: unknown
+  ap_optical_applicable?: boolean
+}): TracksideOpticalPresentation {
+  return tracksideApOpticalPresentation(
+    row.ap_business_optical_status,
+    row.ap_optical_data_freshness,
+    row.model,
+    row.ap_optical_applicable,
+  )
+}
+
+export function tracksideBusinessOpticalPresentation(row: {
+  ap_business_optical_status?: unknown
+  optical_severity?: unknown
   ap_optical_data_freshness?: unknown
   switch_optical_data_status?: unknown
 }): TracksideOpticalPresentation {
+  const canonicalStatus = row.optical_severity || row.ap_business_optical_status
   const freshness = normalizedOpticalStatus(row.ap_optical_data_freshness) === 'stale'
     || normalizedOpticalStatus(row.switch_optical_data_status) === 'stale'
     ? 'stale'
     : 'fresh'
-  const presentation = dualOpticalStatusPresentation({
-    apBackendStatus: row.ap_device_optical_status || row.ap_optical_status,
-    apRxPower: row.ap_rx_power,
-    switchBackendStatus: row.switch_device_optical_status || row.switch_optical_status,
-    switchRxPower: row.switch_rx_power,
-    model: row.model,
-    opticalApplicable: row.ap_optical_applicable,
+  return tracksideCanonicalOpticalPresentation(canonicalStatus, freshness)
+}
+
+export function tracksideApOpticalPresentation(
+  backendStatus: unknown,
+  freshness: unknown = 'fresh',
+  model?: unknown,
+  opticalApplicable?: boolean,
+): TracksideOpticalPresentation {
+  const freshnessStatus = normalizedOpticalStatus(freshness)
+  if (freshnessStatus === 'collection_failed') {
+    return tracksideOpticalPresentation('collection_failed')
+  }
+  if (
+    ['missing', 'unknown', 'not_collected'].includes(freshnessStatus)
+    && ['normal', 'abnormal'].includes(normalizedOpticalStatus(backendStatus))
+  ) {
+    return tracksideOpticalPresentation('no_data')
+  }
+  if (legacyApOpticalAlarmStatuses.has(normalizedOpticalStatus(backendStatus))) {
+    return tracksideOpticalPresentation('unknown')
+  }
+  return tracksideCanonicalOpticalPresentation(
+    backendStatus,
     freshness,
-  }).overall
-  return toTracksidePresentation(presentation)
+    model,
+    opticalApplicable,
+  )
 }
 
 function toTracksidePresentation(
@@ -155,6 +241,21 @@ function toTracksidePresentation(
     tagType: presentation.tagType,
     className: classByStatus[presentation.status] || 'optical-unknown',
   }
+}
+
+function withTracksideFreshness(
+  presentation: ReturnType<typeof opticalStatusPresentation>,
+  freshness: unknown,
+): ReturnType<typeof opticalStatusPresentation> {
+  if (normalizedOpticalStatus(freshness) === 'stale' && presentation.tone !== 'muted') {
+    return {
+      ...presentation,
+      label: `${presentation.label}（数据已过期）`,
+      tagType: 'warning',
+      tone: 'warning',
+    }
+  }
+  return presentation
 }
 
 export function displayTracksideValue(value: unknown): string {

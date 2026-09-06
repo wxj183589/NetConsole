@@ -644,11 +644,6 @@ function statusLabel(value: string): string {
   return { online: '在线', offline: '离线', unauthenticated: '未认证', unknown: '无数据' }[value] || value || '无数据'
 }
 
-function opticalLabel(value: string, freshness = 'fresh'): string {
-  const label = { normal: '正常', warning: '一般告警', critical: '严重告警', no_data: '无数据' }[value] || value
-  return freshness === 'stale' ? `${label}（数据已过期）` : label
-}
-
 function apOpticalPresentation(ap: AcAp) {
   return apOpticalStatusPresentation({
     backendStatus: ap.optical_status,
@@ -727,7 +722,7 @@ function opticalJudgement(optical: AcOptical): string {
 function opticalAlarmLevel(optical: AcOptical): string {
   const presentation = detailApOpticalPresentation(optical)
   if (presentation.status === 'not_applicable') return '不适用'
-  if (presentation.tone === 'danger') return '严重告警'
+  if (['notice', 'warning', 'alarm', 'critical', 'abnormal'].includes(presentation.status)) return '光衰大'
   return presentation.label
 }
 
@@ -837,7 +832,7 @@ function opticalEvidenceTitle(label: string, value: unknown, status: string, opt
               <el-option label="在线" value="online" /><el-option label="离线" value="offline" /><el-option label="未认证" value="unauthenticated" />
             </el-select>
             <el-select v-model="store.filters.optical_status" clearable placeholder="光衰状态">
-              <el-option label="正常" value="normal" /><el-option label="一般告警" value="warning" /><el-option label="严重告警" value="critical" />
+              <el-option label="正常" value="normal" /><el-option label="光衰大" value="abnormal" />
               <el-option label="无数据" value="no_data" />
             </el-select>
             <el-select v-model="store.filters.station" clearable filterable allow-create default-first-option placeholder="归属站点">

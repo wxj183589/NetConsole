@@ -30,10 +30,16 @@ from netconsole.services.rail_transit.effective_trackside_ap_scope import (
 from netconsole.services.trackside_ap_export_service import (
     TracksideApBusinessLoadResult,
     load_trackside_ap_business_snapshot,
+    select_trackside_ap_business_rows,
 )
 from netconsole.services.trackside_ap_plan_io import (
     bind_trackside_plan_station,
     normalize_trackside_plan_row,
+)
+from netconsole.services.trackside_ap_business import (
+    count_current_optical_abnormal_aps,
+    count_current_optical_abnormal_by_site,
+    normalize_trackside_ap_business_row,
 )
 from netconsole.repositories.ac_repository import AcRepository, TRACKSIDE_AP_PLAN_MODE
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
@@ -890,6 +896,320 @@ def test_trackside_query_applies_business_threshold_to_both_rx_sides(
     assert page.items[0].ap_business_threshold_dbm == -13.90
     assert "交换机侧收光 -19.10 dBm 低于业务门限 -13.90 dBm" in page.items[0].ap_business_reason
     assert page.items[0].optical_severity == "abnormal"
+
+
+def _optical_current_data_boundary_row(
+    **changes: object | None,
+) -> dict[str, object | None]:
+    row: dict[str, object | None] = {
+        "site": "01-测试站",
+        "device_uuid": "switch-a",
+        "interface_name": "XGE1/0/1",
+        "model": "WA6528X-E",
+        "ap_uuid": "ap-a",
+        "ap_mac": "0011-2233-4455",
+        "ap_name": "AP-A",
+        "ap_identity_entity_id": "entity-a",
+        "identity_match_status": "matched",
+        "ap_side_has_data": True,
+        "ap_rx_power": "-7.72",
+        "ap_device_optical_status": "normal",
+        "switch_rx_power": "-24.3",
+        "switch_device_optical_status": "unknown",
+        "switch_optical_status": "unknown",
+        "switch_optical_data_status": "current",
+        "switch_optical_collection_status": "success",
+    }
+    row.update(changes)
+    return row
+
+
+def test_trackside_optical_current_rx_with_raw_unknown_is_current_abnormal() -> None:
+    normalized = normalize_trackside_ap_business_row(
+        _optical_current_data_boundary_row()
+    )
+
+    assert normalized["switch_rx_power"] == "-24.3"
+    assert normalized["switch_device_optical_status"] == "unknown"
+    assert normalized["switch_optical_status"] == "abnormal"
+    assert normalized["ap_business_optical_status"] == "abnormal"
+    assert normalized["optical_severity"] == "abnormal"
+    assert select_trackside_ap_business_rows(
+        [normalized], optical_anomaly_only=True
+    ) == [normalized]
+    assert count_current_optical_abnormal_aps([normalized]) == 1
+    assert count_current_optical_abnormal_by_site([normalized]) == {
+        "01-测试站": 1,
+    }
+
+
+@pytest.mark.parametrize("no_current_status", ["stale", "missing", "unknown"])
+def test_trackside_optical_stale_rx_is_not_current_abnormal(no_current_status: str) -> None:
+    stale_row = _optical_current_data_boundary_row(
+        switch_optical_data_status=no_current_status,
+        switch_optical_status="abnormal",
+    )
+    assert count_current_optical_abnormal_aps([stale_row]) == 0
+
+    normalized = normalize_trackside_ap_business_row(
+        stale_row
+    )
+
+    assert normalized["switch_rx_power"] is None
+    assert normalized["switch_optical_data_status"] == no_current_status
+    assert normalized["switch_optical_status"] == "unknown"
+    assert normalized["ap_business_optical_status"] == "unknown"
+    assert normalized["optical_severity"] == "unknown"
+    assert select_trackside_ap_business_rows(
+        [normalized], optical_anomaly_only=True
+    ) == []
+    assert count_current_optical_abnormal_aps([normalized]) == 0
+    assert count_current_optical_abnormal_by_site([normalized]) == {}
+
+
+@pytest.mark.parametrize(
+    ("case_name", "changes", "expected_switch_status"),
+    [
+        (
+            "no-module",
+            {
+                "switch_optical_status": "no_module",
+                "switch_device_optical_status": "no_module",
+                "raw_status": "no module",
+            },
+            "no_module",
+        ),
+        ("unsupported-model", {"model": "WA6522"}, "not_applicable"),
+    ],
+)
+def test_trackside_optical_no_module_or_unsupported_never_becomes_current_alarm(
+    case_name: str,
+    changes: dict[str, object | None],
+    expected_switch_status: str,
+) -> None:
+    normalized = normalize_trackside_ap_business_row(
+        _optical_current_data_boundary_row(**changes)
+    )
+
+    assert case_name
+    assert normalized["switch_optical_status"] == expected_switch_status
+    assert normalized["optical_severity"] not in {"normal", "abnormal"}
+    assert select_trackside_ap_business_rows(
+        [normalized], optical_anomaly_only=True
+    ) == []
+    assert count_current_optical_abnormal_aps([normalized]) == 0
+    assert count_current_optical_abnormal_by_site([normalized]) == {}
+
+
+def test_trackside_optical_current_normal_rx_with_raw_unknown_is_not_alarm() -> None:
+    normalized = normalize_trackside_ap_business_row(
+        _optical_current_data_boundary_row(switch_rx_power="-8.0")
+    )
+
+    assert normalized["switch_rx_power"] == "-8.0"
+    assert normalized["switch_device_optical_status"] == "unknown"
+    assert normalized["switch_optical_status"] == "normal"
+    assert normalized["ap_business_optical_status"] == "normal"
+    assert normalized["optical_severity"] == "normal"
+    assert select_trackside_ap_business_rows(
+        [normalized], optical_anomaly_only=True
+    ) == []
+    assert count_current_optical_abnormal_aps([normalized]) == 0
+
+
+def _optical_sequence_snapshot(
+    *,
+    fit_ap_revision: str,
+    switch_device_status: str,
+) -> TracksideApBusinessLoadResult:
+    station_a = {
+        "business_row_id": "row-station-a-switch-a-xge1/0/1-ap-a",
+        "site": "01-测试站",
+        "station_id": "station-a",
+        "device_uuid": "switch-a",
+        "device_name": "Switch A",
+        "interface_name": "XGE1/0/1",
+        "link_status": "UP",
+        "model": "WA6528X-E",
+        "ap_uuid": "ap-a",
+        "ap_mac": "0011-2233-4455",
+        "ap_name": "AP-A",
+        "ap_identity_entity_id": "entity-a",
+        "identity_match_status": "matched",
+        "ap_side_has_data": True,
+        "ap_rx_power": "-7.72",
+        "ap_tx_power": "-2.00",
+        "ap_device_optical_status": "normal",
+        "ap_optical_status": "normal",
+        "switch_rx_power": "-24.3",
+        "switch_tx_power": "-2.00",
+        "switch_optical_status": "abnormal",
+        "switch_device_optical_status": switch_device_status,
+        "switch_optical_data_status": "current",
+        "switch_optical_collection_status": "success",
+        "switch_optical_updated_at": "2026-08-29T10:00:00+08:00",
+        "ap_optical_updated_at": "2026-09-04T09:30:00+08:00",
+        "updated_at": "2026-09-04T09:30:00+08:00",
+    }
+    station_b = {
+        **station_a,
+        "business_row_id": "row-station-b-switch-b-xge1/0/1-ap-b",
+        "site": "02-测试站",
+        "station_id": "station-b",
+        "device_uuid": "switch-b",
+        "device_name": "Switch B",
+        "ap_uuid": "ap-b",
+        "ap_mac": "0011-2233-4456",
+        "ap_name": "AP-B",
+        "ap_identity_entity_id": "entity-b",
+        "switch_rx_power": "-7.72",
+        "switch_device_optical_status": "normal",
+        "switch_optical_status": "normal",
+    }
+    return TracksideApBusinessLoadResult(
+        generation=0,
+        site_name="demo",
+        rows=[station_a, station_b],
+        device_count=2,
+        query_ms=1,
+        build_ms=1,
+        candidate_ap_interface_count=2,
+        row_count=2,
+        business_row_count=2,
+        fit_ap_resource_count=2,
+        business_revision=f"business-{fit_ap_revision}",
+        source_revisions={
+            "fit_ap_resource_revision": fit_ap_revision,
+            "lldp_revision": "lldp-r1",
+            "optical_data_revision": "optical-r1",
+        },
+        created_at="2026-09-04T10:00:00+08:00",
+    )
+
+
+def test_trackside_optical_filter_survives_station_query_and_fit_ap_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    before_fit_refresh = _optical_sequence_snapshot(
+        fit_ap_revision="fit-r1",
+        switch_device_status="normal",
+    )
+    after_fit_refresh = _optical_sequence_snapshot(
+        fit_ap_revision="fit-r2",
+        switch_device_status="unknown",
+    )
+    state = {"snapshot": before_fit_refresh}
+    monkeypatch.setattr(
+        trackside_ap_business_query_service,
+        "Database",
+        lambda _path: object(),
+    )
+    monkeypatch.setattr(
+        trackside_ap_business_query_service,
+        "DeviceRepository",
+        lambda _database: SimpleNamespace(list=lambda: []),
+    )
+    monkeypatch.setattr(
+        trackside_ap_business_query_service,
+        "load_trackside_ap_business_snapshot",
+        lambda *_args, **_kwargs: state["snapshot"],
+    )
+    service = trackside_ap_business_query_service.TracksideApBusinessQueryService(
+        PathResolver(app_root=tmp_path, data_root=tmp_path)
+    )
+
+    def assert_station_a_page(page) -> dict[str, object]:
+        assert page.total == 1
+        row = page.items[0]
+        assert row.row_id == "row-station-a-switch-a-xge1/0/1-ap-a"
+        assert row.site == "01-测试站"
+        assert row.switch_rx_power == "-24.3"
+        assert row.switch_optical_status == "abnormal"
+        assert row.ap_optical_status == "normal"
+        assert row.ap_business_optical_status == "abnormal"
+        assert row.optical_severity == "abnormal"
+        assert row.updated_at == "2026-09-04T09:30:00+08:00"
+        assert page.created_at == "2026-09-04T10:00:00+08:00"
+        assert page.optical_abnormal_count == 1
+        assert page.abnormal_count == 1
+        return {
+            "row_id": row.row_id,
+            "site": row.site,
+            "switch_rx": row.switch_rx_power,
+            "switch_collected_at": row.switch_optical_updated_at,
+            "switch_status": row.switch_optical_status,
+            "ap_status": row.ap_optical_status,
+            "overall": row.optical_severity,
+            "updated_at": row.updated_at,
+            "created_at": page.created_at,
+            "fit_revision": page.source_revisions["fit_ap_resource_revision"],
+            "lldp_revision": page.source_revisions["lldp_revision"],
+            "optical_revision": page.source_revisions["optical_data_revision"],
+            "business_revision": page.business_revision,
+        }
+
+    initial = assert_station_a_page(service.list_rows("demo", station="01-测试站"))
+    initial_filtered = assert_station_a_page(
+        service.list_rows("demo", station="01-测试站", optical_anomaly_only=True)
+    )
+    assert initial_filtered == initial
+
+    # A station query changes only selection scope; it must not change the
+    # business projection used by the next anomaly query.
+    assert_station_a_page(service.list_rows("demo", station="01-测试站"))
+    after_station_query = assert_station_a_page(
+        service.list_rows("demo", station="01-测试站", optical_anomaly_only=True)
+    )
+    assert after_station_query == initial
+
+    # FIT-AP standalone refresh advances only the FIT-AP source in this
+    # fixture.  The switch raw owner and its current optical sample remain.
+    state["snapshot"] = after_fit_refresh
+    assert after_fit_refresh.rows[0]["ap_optical_updated_at"] == "2026-09-04T09:30:00+08:00"
+    after_fit_rows = assert_station_a_page(
+        service.list_rows("demo", station="01-测试站")
+    )
+    after_fit_filtered = assert_station_a_page(
+        service.list_rows("demo", station="01-测试站", optical_anomaly_only=True)
+    )
+    assert after_fit_filtered == after_fit_rows
+    assert after_fit_rows["fit_revision"] == "fit-r2"
+    assert after_fit_rows["lldp_revision"] == "lldp-r1"
+    assert after_fit_rows["optical_revision"] == "optical-r1"
+    assert after_fit_rows["business_revision"] != initial["business_revision"]
+
+    all_sites = service.list_rows("demo", optical_anomaly_only=True)
+    assert all_sites.total == 1
+    assert all_sites.items[0].row_id == after_fit_rows["row_id"]
+    station_b = service.list_rows(
+        "demo",
+        station="02-测试站",
+        optical_anomaly_only=True,
+    )
+    assert station_b.total == 0
+    assert station_b.optical_abnormal_count == 1
+
+    restarted_service = trackside_ap_business_query_service.TracksideApBusinessQueryService(
+        PathResolver(app_root=tmp_path, data_root=tmp_path)
+    )
+    after_restart = assert_station_a_page(
+        restarted_service.list_rows(
+            "demo",
+            station="01-测试站",
+            optical_anomaly_only=True,
+        )
+    )
+    assert after_restart == after_fit_rows
+
+    canonical_rows = [
+        normalize_trackside_ap_business_row(row)
+        for row in after_fit_refresh.rows
+    ]
+    assert count_current_optical_abnormal_aps(canonical_rows) == 1
+    assert count_current_optical_abnormal_by_site(canonical_rows) == {
+        "01-测试站": 1,
+    }
 
 
 def test_trackside_query_counts_multiple_abnormal_interfaces_once_per_ap(monkeypatch, tmp_path: Path) -> None:

@@ -75,6 +75,14 @@ describe('AC Management resource view', () => {
     expect(source).not.toContain("openRecentChanges('optical')")
   })
 
+  it('exposes only the canonical AP optical filter labels', () => {
+    expect(source).toContain('label="正常" value="normal"')
+    expect(source).toContain('label="光衰大" value="abnormal"')
+    expect(source).toContain('label="无数据" value="no_data"')
+    expect(source).not.toContain('label="一般告警" value="warning"')
+    expect(source).not.toContain('label="严重告警" value="critical"')
+  })
+
   it('removes the page-level AC task banner without leaving its legacy task-window entry', () => {
     expect(source).not.toContain('AC 任务 · 运行中')
     expect(source).not.toContain('打开任务中心')

@@ -28,14 +28,15 @@ describe('optical presentation utilities', () => {
     ['-13.91', 'abnormal'],
     ['-13.90', 'normal'],
     ['-13.89', 'normal'],
-  ])('applies the fixed AP business threshold to %s', (rxPower, status) => {
-    expect(apOpticalStatusPresentation({ backendStatus: 'normal', rxPower }).status).toBe(status)
+  ])('applies the fixed AP business threshold to current Rx %s', (rxPower, status) => {
+    expect(apOpticalStatusPresentation({ backendStatus: 'normal', rxPower, freshness: 'fresh' }).status).toBe(status)
   })
 
   it('does not let a stale backend normal status hide low AP receive power', () => {
     const presentation = apOpticalStatusPresentation({
       backendStatus: 'normal',
       rxPower: '-17.80 dBm',
+      freshness: 'fresh',
     })
 
     expect(presentation.label).toBe('光衰大')
@@ -43,7 +44,7 @@ describe('optical presentation utilities', () => {
   })
 
   it.each([null, '', '--', 'invalid'])('shows missing or invalid AP receive power as not collected', (rxPower) => {
-    expect(apOpticalStatusPresentation({ backendStatus: 'normal', rxPower }).label).toBe('光诊断未采集')
+    expect(apOpticalStatusPresentation({ backendStatus: 'normal', rxPower, freshness: 'fresh' }).label).toBe('光诊断未采集')
   })
 
   it('treats WA6522 as not applicable regardless of legacy backend values', () => {
@@ -51,6 +52,7 @@ describe('optical presentation utilities', () => {
       backendStatus: 'critical',
       rxPower: '-30',
       model: ' wa6522 ',
+      freshness: 'fresh',
     })
 
     expect(presentation).toMatchObject({ status: 'not_applicable', label: '不适用', tagType: 'info' })
@@ -62,6 +64,7 @@ describe('optical presentation utilities', () => {
       apRxPower: '-7.72',
       switchBackendStatus: 'normal',
       switchRxPower: '-19.10',
+      freshness: 'fresh',
     }
     const presentation = dualOpticalStatusPresentation(input)
 
@@ -84,6 +87,7 @@ describe('optical presentation utilities', () => {
       apRxPower,
       switchBackendStatus: 'normal',
       switchRxPower,
+      freshness: 'fresh',
     }).overall.status).toBe(status)
   })
 
@@ -94,6 +98,7 @@ describe('optical presentation utilities', () => {
       switchBackendStatus: 'critical',
       switchRxPower: '-30',
       model: ' WA6522 ',
+      freshness: 'fresh',
     })
 
     expect(presentation.ap.status).toBe('not_applicable')

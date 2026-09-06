@@ -141,7 +141,32 @@ export function apOpticalStatusPresentation(input: ApOpticalPresentationInput): 
   if (!isApOpticalApplicable(input.model, input.opticalApplicable)) {
     return opticalStatusPresentation('not_applicable')
   }
-  return opticalRxStatusPresentation(input)
+  const backendStatus = normalizedOpticalStatus(input.backendStatus)
+  const preservedStatus = new Set([
+    'not_applicable',
+    'no_module',
+    'unverified',
+    'dom_unavailable',
+    'skipped',
+    'offline',
+    'collection_failed',
+    'link_abnormal',
+    'link_down',
+    'no_light',
+  ])
+  if (preservedStatus.has(backendStatus)) {
+    return opticalStatusPresentation(backendStatus)
+  }
+
+  const freshness = normalizedOpticalStatus(input.freshness)
+  const isCurrent = freshness === 'fresh' || freshness === 'current'
+  const rxPower = parseOpticalPower(input.rxPower)
+  if (!isCurrent || rxPower === null) {
+    return opticalStatusPresentation('no_data')
+  }
+  return opticalStatusPresentation(
+    rxPower < AP_BUSINESS_RX_MIN_DBM ? 'abnormal' : 'normal',
+  )
 }
 
 export function dualOpticalStatusPresentation(input: DualOpticalPresentationInput): DualOpticalStatusPresentation {
@@ -150,9 +175,11 @@ export function dualOpticalStatusPresentation(input: DualOpticalPresentationInpu
     return { ap: notApplicable, switch: notApplicable, overall: notApplicable }
   }
 
-  const ap = opticalRxStatusPresentation({
+  const ap = apOpticalStatusPresentation({
     backendStatus: input.apBackendStatus,
     rxPower: input.apRxPower,
+    model: input.model,
+    opticalApplicable: input.opticalApplicable,
     freshness: input.freshness,
   })
   const switchSide = opticalRxStatusPresentation({

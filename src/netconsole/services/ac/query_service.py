@@ -849,12 +849,56 @@ class AcManagementQueryService:
                 items = [item for item in items if needle in str(getattr(item, field) or "").casefold()]
         wanted_optical = {value for value in optical_statuses or set() if value}
         if wanted_optical:
-            items = [item for item in items if item.optical_status in wanted_optical]
+            canonical_optical = wanted_optical & {'normal', 'abnormal', 'no_data'}
+            legacy_optical = wanted_optical - canonical_optical
+            if canonical_optical:
+                items = [
+                    item
+                    for item in items
+                    if self._ap_optical_filter_status(item) in canonical_optical
+                    or item.optical_status in legacy_optical
+                ]
+            else:
+                items = [item for item in items if item.optical_status in legacy_optical]
         if current_optical_only:
             items = [item for item in items if item.optical_is_current_anomaly]
         reverse = str(sort_order or "asc").casefold() == "desc"
         items.sort(key=lambda item: self._ap_sort_key(item, sort_by), reverse=reverse)
         return items
+
+    @staticmethod
+    def _ap_optical_filter_status(item: AcApDTO) -> str:
+        """Return the AP-facing filter state from current AP Rx only.
+
+        Persisted severity may include the switch side or a vendor raw alarm;
+        neither is the AP optical business filter contract.  A non-current or
+        invalid AP sample is deliberately grouped as no_data so historical Rx
+        cannot satisfy the current optical anomaly filter.
+        """
+
+        if item.optical_applicable is False:
+            return "no_data"
+        freshness = str(item.optical_data_freshness or "").strip().casefold()
+        if freshness not in {"fresh", "current"}:
+            return "no_data"
+        rx_power = parse_optical_rx_dbm(item.optical_rx_power)
+        if rx_power is None:
+            return "no_data"
+        status = str(item.optical_status or "").strip().casefold()
+        if status in {
+            "not_applicable",
+            "no_module",
+            "unverified",
+            "dom_unavailable",
+            "skipped",
+            "offline",
+            "collection_failed",
+            "link_abnormal",
+            "link_down",
+            "no_light",
+        }:
+            return "no_data"
+        return "abnormal" if rx_power < OPTICAL_BUSINESS_RX_MIN_DBM else "normal"
 
     def _ap_records(
         self,
