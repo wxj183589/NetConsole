@@ -29,6 +29,11 @@ PHASE2D_B_READY=NO
 隔离回滚、Repository effect、备份清单、停启恢复和五类 Shadow 场景已在
 [`interface-discovery-rehearsal-report.md`](interface-discovery-rehearsal-report.md) 中完成演练并记录结果。该报告只证明工程侧可运行、可停止和零 Shadow 副作用；不包含真实设备连接或生产启用授权。
 
+### 1.2 Phase 2D-B2 authorization gate
+
+本轮 B2 preflight 已记录于
+[`interface-discovery-real-device-validation-report.md`](interface-discovery-real-device-validation-report.md)。当前执行上下文没有提供本轮明确的只读真实设备授权、C7/C9 批准目标或维护窗口授权，因此真实连接、真实命令、真实 cycle 和 REAL_CAPTURE 均保持 `NOT_EXECUTED`。该报告不授予设备连接或生产 Shadow 启用权限。
+
 ## 2. 权威边界与前置 Gate
 
 ### 2.1 本计划使用的现有契约
