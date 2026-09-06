@@ -390,3 +390,20 @@ PHASE2D_READY=NO
 ```
 
 本次没有连接真实设备、读取或修改 Production 数据、创建备份或修改生产源码。Wave 0 目标仍仅为 `DEVICE-NB10-C7-01`；Wave 1、Comware 9、AC、无线控制器、移动路由器、ZTE、其他 C7 Switch、`neighbor.discovery` 和 `transceiver.read` 均未扩大。详细阻断记录见 `docs/dev/interface-discovery-wave0-production-cutover-report.md`。
+
+## 15. Phase 2D-E backup preflight reassessment
+
+最新执行复核确认：项目现有正式 `DatabaseBackupStore` 仅接入 `mesh_derived` 数据库升级备份，不覆盖 Wave 0 所需 Production 核心数据库、配置和必要文件的完整一致备份。当前 Production backup manifest count 为 0；没有可证明完整恢复边界的正式机制，因此没有调用不完整备份，也没有使用手工复制替代。
+
+```text
+PHASE2D_E_STATUS=BLOCKED_BACKUP
+BACKUP_CONSISTENCY_BLOCKER=YES
+PRODUCTION_BACKUP_EXECUTED=NO
+RESTORE_EVIDENCE=NOT_EXECUTED
+MAINTENANCE_WINDOW_APPROVED=NO
+WAVE0_OWNER_APPROVED=NO
+PRODUCTION_CUTOVER_EXECUTED=NO
+PRODUCTION_PATH=LEGACY
+```
+
+本次仅完成 Production 目录元数据级 preflight，未读取文件内容、未修改 Production、未连接设备、未激活 Wave 0。后续必须先具备可证明覆盖范围与一致性的正式 Production backup，再重新确认维护窗口和 Wave 0 Owner 批准；不得因 preflight 完成而进入 Activation。

@@ -182,3 +182,26 @@ BASELINE_DEBT_MATCH=PASS
 3. 重新执行目标范围双重校验、正式 Production Backup、SHA-256 校验和隔离 Restore Evidence。
 
 在上述条件满足前，Production path 保持 `LEGACY`。Wave 1 不执行、不自动扩大；Comware 9、AC、无线控制器、移动路由器、ZTE、其他 C7 Switch、`neighbor.discovery` 和 `transceiver.read` 继续保持 Legacy。
+
+## 2026-09-07 最新执行复核
+
+本节追加记录最新任务正文允许在维护窗口缺失时先做安全 Backup / preflight 的复核结果，不改写前述历史阻断记录。
+
+```text
+REASSESSMENT_HEAD=7ff14232dec9dc7d2d24352c1bf17c004e87b103
+MAINTENANCE_WINDOW_APPROVED=NO (UNSET)
+WAVE0_OWNER_APPROVED=NO (UNSET)
+FORMAL_BACKUP_SCOPE=DATABASE_UPGRADE_MESH_DERIVED_ONLY
+FULL_PRODUCTION_BACKUP_MECHANISM=NOT_FOUND_IN_SOURCE
+FORMAL_BACKUP_MANIFEST_COUNT=0
+PRODUCTION_BACKUP_EXECUTED=NO
+BACKUP_CONSISTENCY_BLOCKER=YES
+RESTORE_EVIDENCE=NOT_EXECUTED
+SCOPED_ACTIVATION_EXECUTED=NO
+PRODUCTION_CUTOVER_EXECUTED=NO
+PHASE2D_E_STATUS=BLOCKED_BACKUP
+```
+
+Production 结构 preflight 仅检查目录、文件数量和扩展名元数据，没有读取文件内容；Production 数据根未被修改。由于现有正式机制只覆盖 `mesh_derived`，不能证明 Wave 0 所需 Production 核心数据库、配置和必要文件的完整一致备份，也不能生成合格的全量 manifest，因此没有调用不完整的数据库升级备份，也没有执行隔离恢复验证。
+
+维护窗口和 Wave 0 Owner 批准仍然缺失；即使未来补齐 Backup Gate，本轮也必须先补齐这两个 Gate，才能进入任何 Activation。当前 Production path 继续 `LEGACY`，所有设备和其他 Capability 均不扩大。
