@@ -18,9 +18,16 @@
 - 轨旁 AP 业务 Renderer 不再根据 Rx 二次计算 business abnormal，改为由 Backend canonical status 驱动 presentation，避免 DETAIL、FILTER、SUMMARY 再次分裂。
 - AP 上线情况概览页面、Excel 导出和 WPS 云文档统一使用两行表头“已上线AP / 光衰问题数”，实际写入换行符并保持居中、自动换行和完整行高；统计字段和统计逻辑不变。
 
+### Windows 托盘局点同步与重启
+
+- 托盘当前局点和快速切换菜单改为每次从 Backend 读取，按稳定 `site_id` 判断当前项；Backend 离线或状态无效时 fail-closed，不复用旧局点快照。
+- 系统设置、托盘快速切换和数据包导入后的自动切换共用同一局点切换协调器，成功后同步 Renderer 与托盘，失败时保留原状态。
+- 新增托盘“重启软件”入口，受控保存当前局点、数据根和运行模式后执行真实 Electron relaunch；重启完成后重新从 Backend 恢复局点状态。
+- 增加托盘 site_id 启动诊断和 Windows GUI 交互验收记录，已完成 Backend、Renderer、Tray 当前局点同步验收。
+
 ### 回归验证
 
-- 真实 GUI 成功路径人工验收通过；Python 相关测试、Renderer 测试、`vue-tsc`、Ruff 和 `git diff --check` 通过。
+- 轨旁 AP 已完成真实 WPS 云文档现场同步验收；页面、Excel、WPS 云文档数值保持一致。Python 相关测试、Renderer 测试、`vue-tsc`、Ruff 和 `git diff --check` 通过。
 
 ## v1.5.5 - 2026-09-03
 

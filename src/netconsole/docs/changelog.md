@@ -1,4 +1,7 @@
 v1.5.5 - 2026-09-03
+- 轨旁 AP 上线情况概览、Excel 导出和 WPS 云文档统一使用两行表头“已上线AP / 光衰问题数”，实际写入换行符并保持居中、自动换行和完整行高；继续复用 `optical_problem_count` 统计字段与原有统计逻辑。
+- 托盘当前局点和快速切换菜单改为从 Backend 当前 `site_id` 重新读取，离线时 fail-closed；系统设置、托盘切换和数据包导入后的自动切换共用同一协调器。
+- 新增托盘“重启软件”入口，受控保存当前局点、数据根和运行模式并执行 Electron relaunch，重启后从 Backend 重新恢复局点状态；补充 site_id 诊断和 Windows GUI 验收记录。
 - 修复局点切换时 Renderer、系统设置卡片和顶部当前局点指示器上下文分裂；统一以稳定 `site_id`、显示名称和 revision 提交切换结果，旧物理目录指针同步更新，失败回滚及快速连续切换不会提前显示目标局点。
 - 修复当前局点轻量包导出把稳定 ID 当历史物理目录、导致 `unable to open database file`；Worker 通过 Registry 解析源库，先只读校验并用 SQLite Backup API 创建快照，再生成 ZIP，缺失源库不自动创建空库。
 - 修复 MESH RSSI 主用链路全量采样悬停仅显示时间和 RSSI；按精确采样及同一链路区段解析状态、AP/Radio、MAC、RSSI、LinkCnt、站点/区间、持续时间和空口负载，禁止跨 AP 切换边界取上下文。
