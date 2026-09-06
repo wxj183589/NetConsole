@@ -1,44 +1,48 @@
 # Interface Discovery Limited Real-device Validation Report
 
 > Phase: `PHASE 2D-B2`
-> Status: `BLOCKED_MAINTENANCE_WINDOW`
+> Status: `PARTIAL` (`COMWARE7_VALIDATION=PASS`; C9 not authorized/executed)
 > Scope: H3C interface discovery Shadow only
-> Real device connection: `NO`
+> Real device connection: `YES` (one authorized C7 target only)
 > Production Shadow enabled: `NO`
 
 ## 1. Result and authorization gate
 
-本轮已收到 H3C、授权线路范围和只读验证边界，完成了离线候选筛选；当前执行上下文仍没有提供维护窗口授权。依据 Phase 2D-B2 安全门禁，真实连接和真实命令均未尝试；这不是工程失败，而是等待维护窗口确认。
+本轮在取得目标设备和维护窗口的明确人工批准后，仅对 `DEVICE-NB10-C7-01` 建立了一次既有连接路径，确认实际软件版本为 Comware 7，并完成三个串行 interface discovery capture cycle。Legacy 是唯一事实来源；Shadow 只在内存中比较同一份真实 CLI capture 的 normalized interface projection，不调用正式 Legacy collector，也不写入 Repository。
 
 ```text
-PHASE2D_B2_STATUS=BLOCKED_MAINTENANCE_WINDOW
+PHASE2D_B2_STATUS=PARTIAL
 REAL_DEVICE_READONLY_AUTHORIZED=YES
-MAINTENANCE_WINDOW_APPROVED=NO
-REAL_DEVICE_CONNECTION_ATTEMPTED=NO
+MAINTENANCE_WINDOW_APPROVED=YES
+REAL_DEVICE_CONNECTION_ATTEMPTED=YES
+VALIDATION_TARGET_COMWARE7=DEVICE-NB10-C7-01
+VALIDATION_TARGET_COMWARE9=NONE
+COMWARE7_VALIDATION=PASS
+COMWARE9_VALIDATION=NOT_EXECUTED
 ENGINEERING_GATES_READY=YES
 PHASE2D_C_READY=NO
 PHASE2D_READY=NO
 ```
 
-本报告不从历史设备记录、凭据存在性、旧任务授权或 `REAL_DEVICE_READY=YES` 推断维护窗口授权，也不选择生产设备来凑足验证范围。
+本报告不把数据库历史记录当作现场版本的唯一证据：实际版本由本次真实只读 `display version` capture 确认。没有连接 C9、杭州10号线或任何其它设备，也没有因为 C7 通过而扩大范围。
 
 ## 2. Preflight identity and scope
 
 ```text
 BRANCH=codex-A/engineering-hardening
-START_HEAD=a80b8daa224b7c16da14764466f81282968eff2e
-HEAD=a80b8daa224b7c16da14764466f81282968eff2e
+START_HEAD=df6a31b352d9cc2a1bf77302e515a8572c6f37fc
+HEAD=df6a31b352d9cc2a1bf77302e515a8572c6f37fc (validation source HEAD; report commit follows)
 WORKTREE_DIRTY=NO
 VENDOR=H3C
 AUTHORIZED_SITE_SCOPE=杭州10号线; 宁波10号线
-COMWARE7_TARGET=NONE
+COMWARE7_TARGET=DEVICE-NB10-C7-01
 COMWARE9_TARGET=NONE
 SERIAL_EXECUTION=YES
-MAX_DEVICES=2
+MAX_DEVICES=1 (this run)
 CYCLES_PER_DEVICE=3
 ```
 
-范围冻结为最多一台 Comware 7 和最多一台 Comware 9，按设备串行、每台最多三个连续可比 cycle。已授权线路范围为杭州10号线、宁波10号线；没有维护窗口和明确目标确认时不扫描网络、不建立连接、不执行命令，也不扩展到 ZTE、MR、AC、Optical、LLDP、MESH 或其它角色。
+本次人工授权进一步收窄为一台宁波10号线 H3C Comware 7 switch，最多三个连续 cycle；Comware 9 明确为 `NONE`。验证期间不扫描网络，不连接杭州10号线、C9 AC、其它设备，也不扩展到 ZTE、MR、AC、Optical、LLDP、MESH 或其它角色。
 
 ### 2.1 Candidate screening result
 
@@ -52,44 +56,65 @@ ROLE=SW
 VERSION_EVIDENCE=Version 7.1.070 Release 7756P10
 ```
 
-`DEVICE-NB10-C7-01` 是去标识化候选别名：数据库记录为 `in_service`、`included`，现有 `device_facts` 有 Comware 7 版本证据、当前接口记录和成功 Legacy 采集状态。未找到符合首轮默认 H3C switch 范围的 Comware 9 候选；现有 Comware 9 记录属于 AC/wireless-controller，需独立 role/profile/owner 审查，本轮不自行纳入。候选不等于已批准目标，仍需维护窗口和目标确认。
+`DEVICE-NB10-C7-01` 是去标识化目标别名：本次绑定前只读核验其仍为 `in_service`、`included` 的宁波10号线 H3C/SW，既有 `device_facts` 为 `S10508X-G`、Comware 7，且关联 Legacy 采集成功。连接前使用既有 credential resolver/preflight，未输出凭据。实际 CLI 版本仍为 `Version 7.1.070 Release 7756P10`；未执行 C9。
 
 ## 3. Existing-path reuse preflight
 
-离线检查确认未来获得授权后应复用以下现有能力：
+运行前和运行中确认并复用以下现有能力：
 
 | Boundary | Existing path | Preflight result |
 | --- | --- | --- |
-| Operation envelope | `device.inventory.collect` / `DeviceOperationService` | 已存在；本轮未调用 |
-| Profile | `resolve_device_inventory_profile` / `resources/device_command_profiles.json` | 已存在；C7/C9 profile 需现场版本证据再次绑定 |
-| Command safety | `validate_operation_commands` / `command_reject_reason` | 已存在；不绕过 Guard |
-| Connection/session | `netmiko_connection.ssh_connection_context`、`ConnectHandler` | 已存在；本轮未建立 session |
-| H3C collection/parser | `collect_h3c_device_details`、既有 H3C interface parser | 已存在；正式 collector 会写 collect run/Repository，不作为 Shadow writer；本轮未调用 |
-| Repository | `DeviceFactRepository`、`Database.connect_readonly()` | fingerprint 可只读；本轮仅筛选候选，未对真实候选执行 fingerprint |
-| Shadow/compare | `InterfaceDiscoveryShadowRunner`、既有 normalized comparator | 已在 B1 隔离演练通过 |
+| Operation envelope | `device.inventory.collect` / `DeviceOperationService` | 正式 worker 未调用，避免 LLDP/Optical 与 Repository 写入 |
+| Profile | `resolve_device_inventory_profile` / `resources/device_command_profiles.json` | `h3c.comware.switch.generic.device-inventory.v1` v1；只取既有 `session.pagination`、`inventory.version`、`inventory.interfaces` |
+| Command safety | `validate_command_list` / `command_reject_reason` | 三条实际命令逐条通过既有 `device.inventory.collect` Guard |
+| Connection/session | `ssh_connection_context`、`ConnectHandler`、`choose_connection_target`、`prepared_connection_target` | 使用既有唯一 SSH target；单次 session，未手工拼接地址或凭据 |
+| H3C collection/parser | 既有 `H3CParser.parse_interfaces`、Comware version parser | Legacy/Shadow 均只消费本次 CLI capture；正式 `collect_h3c_device_details` 未调用 |
+| Repository | `Database.connect_readonly()`、现有 repository fingerprint/effect helper | 每个 cycle 前后均只读 fingerprint；Current/Recent/History/Revision 均 `NONE` |
+| Shadow/compare | `InterfaceDiscoveryShadowRunner`、既有 normalized comparator | B1 已通过；本轮内存调用 3 次，无 writer/transport/repository 依赖 |
 
-正式 `collect_h3c_device_details` 会创建 collect run、保存运行产物并写入既有 Repository。因此真实验证必须先冻结 Legacy 预期 delta，再证明 Shadow 没有额外 writer/effect；不得新增第二套采集、连接、Parser、Repository 或 Task runtime。
+正式 `collect_h3c_device_details` 会创建 collect run、保存运行产物并写入既有 Repository，因此本轮没有调用它。operator-only harness 只复用既有 Profile/Guard/connection/parser/Shadow comparator；Shadow callback 只接收第二个 parser instance 生成的同一 capture normalized 结果，不得把该 capture-only 证据解释为生产 Shadow 已启用。
 
 ## 4. Device validation matrix
 
 | Device | Version | Cycle 1 | Cycle 2 | Cycle 3 | Repo Effect | Resume | Result |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| DEVICE-NB10-C7-01 | Comware 7 (database evidence only) | `NOT_EXECUTED` | `NOT_EXECUTED` | `NOT_EXECUTED` | `NOT_EXECUTED` | `NOT_EXECUTED` | `NOT_EXECUTED` |
-| No eligible C9 switch candidate | Comware 9 | `NOT_EXECUTED` | `NOT_EXECUTED` | `NOT_EXECUTED` | `NOT_EXECUTED` | `NOT_EXECUTED` | `NOT_EXECUTED` |
+| DEVICE-NB10-C7-01 | `Version 7.1.070 Release 7756P10` / `S10508X-G` | `MATCH` | `MATCH` | `MATCH` | `NONE` | `PASS` | `PASS` |
+| C9 target `NONE` | Comware 9 | `NOT_EXECUTED` | `NOT_EXECUTED` | `NOT_EXECUTED` | `NOT_EXECUTED` | `NOT_EXECUTED` | `NOT_EXECUTED` |
 
 ```text
-COMWARE7_EXECUTED=NO
-COMWARE7_MODEL_FAMILY=S10508X-G (database evidence only)
-COMWARE7_VERSION=Version 7.1.070 Release 7756P10 (database evidence only)
-COMWARE7_MATCH_COUNT=0
+COMWARE7_EXECUTED=YES
+COMWARE7_MODEL_FAMILY=S10508X-G
+COMWARE7_VERSION=Version 7.1.070 Release 7756P10
+COMWARE7_MATCH_COUNT=3
 COMWARE7_DIFFERENT_COUNT=0
 COMWARE7_ERROR_COUNT=0
 COMWARE7_TIMEOUT_COUNT=0
-COMWARE7_REPOSITORY_EFFECT=NOT_EXECUTED
+COMWARE7_REPOSITORY_EFFECT=NONE
 COMWARE7_UNEXPECTED_WRITES=0
-COMWARE7_STOP_SHADOW=NOT_EXECUTED
-COMWARE7_LEGACY_RESUME=NOT_EXECUTED
-COMWARE7_DEVICE_RESULT=NOT_EXECUTED
+COMWARE7_STOP_SHADOW=PASS
+COMWARE7_LEGACY_RESUME=PASS (capture-only Legacy parser health; no fourth device command)
+COMWARE7_DEVICE_RESULT=PASS
+COMWARE7_CYCLE1_LEGACY=SUCCESS
+COMWARE7_CYCLE1_SHADOW=SUCCESS
+COMWARE7_CYCLE1_COMPARE=MATCH
+COMWARE7_CYCLE1_INTERFACE_COUNTS=220/220
+COMWARE7_CYCLE1_ADDED_REMOVED_CHANGED=0/0/0
+COMWARE7_CYCLE1_DURATION_MS=29275.3
+COMWARE7_CYCLE1_REPOSITORY=current:NONE,recent:NONE,history:NONE,revision:NONE,writes:0
+COMWARE7_CYCLE2_LEGACY=SUCCESS
+COMWARE7_CYCLE2_SHADOW=SUCCESS
+COMWARE7_CYCLE2_COMPARE=MATCH
+COMWARE7_CYCLE2_INTERFACE_COUNTS=220/220
+COMWARE7_CYCLE2_ADDED_REMOVED_CHANGED=0/0/0
+COMWARE7_CYCLE2_DURATION_MS=27684.2
+COMWARE7_CYCLE2_REPOSITORY=current:NONE,recent:NONE,history:NONE,revision:NONE,writes:0
+COMWARE7_CYCLE3_LEGACY=SUCCESS
+COMWARE7_CYCLE3_SHADOW=SUCCESS
+COMWARE7_CYCLE3_COMPARE=MATCH
+COMWARE7_CYCLE3_INTERFACE_COUNTS=220/220
+COMWARE7_CYCLE3_ADDED_REMOVED_CHANGED=0/0/0
+COMWARE7_CYCLE3_DURATION_MS=28431.9
+COMWARE7_CYCLE3_REPOSITORY=current:NONE,recent:NONE,history:NONE,revision:NONE,writes:0
 
 COMWARE9_EXECUTED=NO
 COMWARE9_MODEL_FAMILY=NONE
@@ -105,7 +130,7 @@ COMWARE9_LEGACY_RESUME=NOT_EXECUTED
 COMWARE9_DEVICE_RESULT=NOT_EXECUTED
 ```
 
-由于维护窗口未批准，以下证据链没有开始：Repository fingerprint BEFORE、Legacy evidence/DTO、Shadow command/DTO、compare/difference report、fingerprint AFTER 和 Legacy health confirmation。
+每个 cycle 均完成了 Repository fingerprint BEFORE/AFTER、Legacy normalized interface DTO、Shadow normalized projection、compare/difference 和 effect 检查；第三个 cycle 后停止 Shadow invocation。停止后只对最后一份已保存 capture 做内存中的 Legacy-only parser health confirmation，没有执行第四次真实设备命令。
 
 ## 5. Production and repository safety
 
@@ -129,67 +154,63 @@ REVISION_UNEXPECTED_EFFECT=NONE
 UNEXPECTED_SHADOW_WRITES=0
 ```
 
-本轮没有连接设备、没有执行命令、没有访问 `D:\NetConsoleData`；对 `D:\NetConsoleData-dev` 仅进行了上述候选筛选的只读查询，没有修改数据、运行真实设备 harness、执行 production backup、schema migration、SQL 写入或 Cutover。
+本轮只连接了授权目标一次并执行了五条既有只读会话/查询命令：`screen-length disable` 一次、`display version` 一次、`display interface` 三次；未执行 `system-view/configure/save/reboot/reset/shutdown/undo` 或 VLAN/interface 配置命令。`D:\NetConsoleData` 未访问；`D:\NetConsoleData-dev` 只读打开，未执行 SQL 写入、production backup、schema migration、History rebuild、Process restart 或 Cutover。设备配置未观察到变化。
 
 ## 6. Evidence and credential handling
 
 ```text
-RAW_EVIDENCE_LOCAL_ONLY=YES (no raw evidence created)
-REAL_CAPTURE_C7=NO
+RAW_EVIDENCE_LOCAL_ONLY=YES
+REAL_CAPTURE_C7=YES (raw CLI retained locally only)
 REAL_CAPTURE_C9=NO
 REAL_CAPTURE_DEIDENTIFIED=NO
-SECRET_SCAN=PASS (no real evidence submitted)
-EVIDENCE_BUNDLE=NOT_EXECUTED
+SECRET_SCAN=PASS (summary and raw-file credential-pattern scan)
+EVIDENCE_BUNDLE=PASS (local ignored bundle; no fixture submitted)
+EVIDENCE_PATH=.local-reports/phase2d-b2-real-device/20260906T124204Z
+REPORT_PATH=docs/dev/interface-discovery-real-device-validation-report.md
 ```
 
-没有保存真实 CLI、IP、hostname、serial、MAC、username、credential 或任何现场标识；没有把模拟 fixture 标记为 `REAL_CAPTURE`。未来获批后，Raw Evidence 只能保存在 gitignored 本地证据目录，提交前仅允许人工复核后的去标识化 fixture。
+真实 CLI raw files 仅保存在仓库 `.local-reports` ignored 目录，未打印、未提交，也未生成 `REAL_CAPTURE` fixture；raw 文件可能包含现场标识，因此 `REAL_CAPTURE_DEIDENTIFIED=NO`。已完成 summary 与 raw-file credential-pattern scan，未发现凭据模式；凭据本身未输出。若后续需要长期 fixture，必须另行脱敏并明确标记 `REAL_CAPTURE`。
 
 ## 7. Offline regression record
 
-本轮只执行隔离测试和文档/工程门禁，不宣称真实设备验证完成：
+真实 C7 证据完成后，重新执行以下隔离测试和工程门禁；这些门禁不把 C9 或 Production Cutover 标记为完成：
 
 ```text
-REAL_CAPTURE_REGRESSION=NOT_EXECUTED
+REAL_CAPTURE_REGRESSION=NOT_EXECUTED (no deidentified fixture submitted)
 SHADOW_TESTS=PASS
 B1_REHEARSAL=PASS
 REPLAY=PASS
 REPOSITORY=PASS
-DOCS_PATH=22 passed
+DOCS_PATH=23 passed
 MAIN_CONTRACT=12 passed, 3 warnings
 ARCHITECTURE=PASS (stable green gates 8/8)
 BASELINE_AUDIT=PASS
 RUFF=PASS
 COMPILE=PASS
 DIFF_CHECK=PASS
-CI_SELECTION=1 passed
-FULL_SUITE=KNOWN_ENV_ORDER_SENSITIVE_FAILURE
+CI_SELECTION=1 passed (included in DOCS_PATH gate)
+FULL_SUITE=4696 passed, 2 skipped, 4 deselected, 33 warnings
 NEW_FAILURES=0
 BASELINE_DEBT_MATCH=PASS
 ```
 
-本轮离线定向回归共 `167 passed`；另执行文档/路径测试 `22 passed`、CI selection `1 passed`、Main Contract `12 passed, 3 warnings`、稳定架构绿门 `8/8 PASS`、baseline audit `NEW_FAILURES=0`。架构聚合测试仍报告 2 个既有失败，对应 4 项未豁免 finding（direct SQL、UI business logic、runtime path、storage registry）；不属于本次 B2 文档变更，未修改也未归因于 B2。
+本轮真实验证后，定向核心回归为 `167 passed`；文档/目录/CI selection 合计 `23 passed`；Main Contract 为 `12 passed, 3 warnings`；稳定架构绿门 `8/8 PASS`；baseline audit 为 Architecture expected/actual `7/7`、new `0`，Ruff new `0`，`BASELINE_DEBT_MATCH=PASS`；Ruff、compileall、diff check 均通过。baseline-aware Python 全量为 `4696 passed, 2 skipped, 4 deselected, 33 warnings`，退出码通过并输出 `NEW_FAILURES=0`。没有生成去标识化真实 fixture，因此 Real Capture regression 标记为 `NOT_EXECUTED`，不影响本次 raw-local C7 结果。
 
-既有全量基线记录为 `4695 passed, 2 skipped, 4 deselected, 1 failed`；失败为 release runtime subset 的既有顺序/环境敏感测试，隔离重跑通过，未归因于 B2。真实验证完成前不将该记录写成 Full Suite Green。
+此前一次未排除基线项的全量记录为 `4695 passed, 2 skipped, 4 deselected, 1 failed`；该历史失败为 release runtime subset 的顺序/环境敏感问题，隔离重跑通过，未归因于 B2。本轮按精确 baseline exclusions 的全量回归已通过，见上方 `FULL_SUITE`。
 
-## 8. Remaining blockers and next authorization request
+## 8. Remaining boundary and next decision gate
 
-开始真实验证前必须由人工明确提供：
-
-1. `MAINTENANCE_WINDOW_APPROVED=YES`，或明确当前验证可立即执行；
-2. 确认 `DEVICE-NB10-C7-01` 是否作为本次 C7 目标；
-3. `VALIDATION_TARGET_COMWARE7=<approved target or NONE>`；
-4. `VALIDATION_TARGET_COMWARE9=<approved target or NONE>`；
-5. 设备 owner、低风险维护状态、Legacy 正常基线和 stop/resume 责任人。
-
-在这些条件满足前：
+本轮 C7 已按批准范围完成并通过；C9 没有授权目标、没有连接、没有执行，不能据此宣称 Phase 2D-B2 完整完成。下一步若要进入 Phase 2D-C，必须重新取得独立 C9 目标/版本/维护窗口批准，并满足全量 B2 通过条件；本轮不得启用生产 Shadow 或执行 Production Cutover。
 
 ```text
-PHASE2D_B2_STATUS=BLOCKED_MAINTENANCE_WINDOW
+PHASE2D_B2_STATUS=PARTIAL
 REAL_DEVICE_READONLY_AUTHORIZED=YES
-MAINTENANCE_WINDOW_APPROVED=NO
-REAL_DEVICE_CONNECTION_ATTEMPTED=NO
+MAINTENANCE_WINDOW_APPROVED=YES
+REAL_DEVICE_CONNECTION_ATTEMPTED=YES
+COMWARE7_VALIDATION=PASS
+COMWARE9_VALIDATION=NOT_EXECUTED
 PHASE2D_C_READY=NO
 PHASE2D_READY=NO
 ```
 
-即使未来 B2 完整通过，也不得在本轮启用生产 Shadow、替换 Legacy、删除 Legacy 或直接进入 Cutover；下一阶段仅为 `Phase 2D-C Interface Discovery Production Cutover Decision`。
+即使 C7 验证通过，也不得启用生产 Shadow、替换 Legacy、删除 Legacy 或直接进入 Cutover；本轮的下一阶段决策仍保持 `Phase 2D-C Interface Discovery Production Cutover Decision` 未就绪。
