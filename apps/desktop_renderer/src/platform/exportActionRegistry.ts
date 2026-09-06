@@ -36,6 +36,7 @@ export const userSelectedExportDefinitions = {
   'config.snapshots': zipDefinition('config', '配置快照'),
   'command-reference.markdown': textDefinition('command-reference', '命令说明', 'md'),
   'system.logs': csvDefinition('logs', '应用日志'),
+  'system.field_diagnostic': zipDefinition('logs', '现场诊断包'),
   'system.open_source_txt': textDefinition('logs', '开源清单', 'txt'),
   'system.open_source_xlsx': xlsxDefinition('logs', '开源清单'),
   'network.toolbox_csv': csvDefinition('network', '网络工具结果'),

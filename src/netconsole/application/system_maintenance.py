@@ -60,6 +60,7 @@ class SystemMaintenanceResolver:
         "logs_all": ("system_logs_all", "csv", "web_export_app_logs_csv", "app_log_all.csv"),
         "open_source_txt": ("system_open_source_txt", "txt", "web_export_open_source_notices", "open_source_notices.txt"),
         "open_source_xlsx": ("system_open_source_xlsx", "xlsx", "web_export_open_source_notices", "open_source_notices.xlsx"),
+        "field_diagnostic": ("system_field_diagnostic", "zip", "web_export_field_diagnostic_bundle", "NetConsole-Diagnostic.zip"),
     }
     DIRECTORIES = {"logs": "system_logs", "cache": "system_cache"}
 
@@ -95,6 +96,7 @@ SYSTEM_MAINTENANCE_TASK_TYPES = frozenset(
         "open_source_notice_scan",
         "web_export_app_logs_csv",
         "web_export_open_source_notices",
+        "web_export_field_diagnostic_bundle",
     }
 )
 
@@ -306,6 +308,41 @@ class SystemMaintenanceApplicationService:
             base_dir=self.paths.app_root,
             format=format,
             title="导出开源许可说明",
+        )
+        return self._start_export(site_id, spec, reservation, kind)
+
+    def start_field_diagnostic(
+        self,
+        site_id: str,
+        *,
+        sample_duration_minutes: int = 5,
+        log_window_minutes: int = 30,
+        raw_sample: bool = True,
+    ) -> MaintenanceTaskDTO:
+        site_id = self._site(site_id)
+        if sample_duration_minutes not in {0, 1, 5, 15, 30}:
+            raise SystemMaintenanceError("DIAGNOSTIC_REQUEST_INVALID", "性能采样时长无效")
+        if log_window_minutes not in {10, 30, 60}:
+            raise SystemMaintenanceError("DIAGNOSTIC_REQUEST_INVALID", "日志范围无效")
+        kind = "field_diagnostic"
+        source, artifact_type, task_type, name = self.resolver.artifact(kind)
+        task_id = f"field-diagnostic-{uuid4().hex}"
+        reservation = self._reserve(site_id, task_id, source, artifact_type, task_type, name)
+        spec = ExportTaskSpec(
+            task_type="field_diagnostic_bundle",
+            output_path=str(reservation.output_path),
+            title="导出现场诊断包",
+            site_name=site_id,
+            payload={
+                "data_root": str(self.paths.data_root),
+                "site_name": site_id,
+                "sample_duration_minutes": sample_duration_minutes,
+                "log_window_minutes": log_window_minutes,
+                "raw_sample": bool(raw_sample),
+                "git_revision": "",
+                "runtime_snapshot": {},
+                "runtime_config": {"data_root": str(self.paths.data_root), "site_name": site_id},
+            },
         )
         return self._start_export(site_id, spec, reservation, kind)
 

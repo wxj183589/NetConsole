@@ -123,6 +123,12 @@ class OpenSourceExportRequest(ApiModel):
     format: Literal["txt", "xlsx"]
 
 
+class FieldDiagnosticRequest(ApiModel):
+    sample_duration_minutes: Literal[0, 1, 5, 15, 30] = 5
+    log_window_minutes: Literal[10, 30, 60] = 30
+    raw_sample: bool = True
+
+
 class ChangelogDTO(ApiModel):
     title: str
     version: str
@@ -167,4 +173,5 @@ __all__ = [
     "MaintenanceTaskDTO",
     "OpenSourceComponentDTO",
     "OpenSourceExportRequest",
+    "FieldDiagnosticRequest",
 ]

@@ -22,6 +22,10 @@ Canonical 目录定义见[仓库目录规范](../development/repository-layout.m
 - [History Storage V2](./HISTORY_STORAGE_V2.md)：月分片 V2 格式、V1/mixed 兼容、物理基线和真实 snapshot/query 结果。
 - [数据布局](./DATA_LAYOUT.md)：Legacy external HistoryStore 已退役；Current/Recent10 与 TaskHistoryStore 的当前边界。
 - [安全边界](./SECURITY.md)：路径、ZIP、API 和 Electron IPC 约束。
+- [现场诊断包审计](./FIELD_DIAGNOSTIC_AUDIT.md)：现有健康指标复用与新增只读采集。
+- [现场诊断包设计](./FIELD_DIAGNOSTIC_DESIGN.md)：Worker、脱敏、限额和完整性契约。
+- [现场诊断包使用](./FIELD_DIAGNOSTIC_USAGE.md)：现场人员操作步骤。
+- [现场诊断包测试报告](./FIELD_DIAGNOSTIC_TEST_REPORT.md)：自动化覆盖与现场验证边界。
 
 机器可读的 owner、authority、分类、package/backup/migration policy 位于
 [`config/storage_registry.yaml`](../../config/storage_registry.yaml)。注册表用于架构门和生命周期
