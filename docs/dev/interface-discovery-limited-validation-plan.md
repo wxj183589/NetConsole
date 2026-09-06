@@ -24,6 +24,11 @@ PHASE2D_B_READY=NO
 4. Shadow 执行前后 Repository 是否保持不变（Legacy 自身的预期写入须单独归因）。
 5. 出现异常时，是否能停止 Shadow 并让 Legacy 继续，必要时按既有备份/恢复边界回滚。
 
+### 1.1 Phase 2D-B1 rehearsal 状态
+
+隔离回滚、Repository effect、备份清单、停启恢复和五类 Shadow 场景已在
+[`interface-discovery-rehearsal-report.md`](interface-discovery-rehearsal-report.md) 中完成演练并记录结果。该报告只证明工程侧可运行、可停止和零 Shadow 副作用；不包含真实设备连接或生产启用授权。
+
 ## 2. 权威边界与前置 Gate
 
 ### 2.1 本计划使用的现有契约
@@ -44,7 +49,7 @@ PHASE2D_B_READY=NO
 - 预期的 Parser 状态、允许的空结果语义、报告保存位置、证据保留期限和访问人。
 - 备份/恢复责任人、停止 Shadow 的操作人、异常升级路径及明确的终止时间。
 
-进入 Gate 的最低条件为：`Replay PASS`、`Shadow PASS`、`Golden PASS`、`Contract PASS`、`Rollback PASS`、`Evidence Ready`。目前 Replay/Shadow/Golden/Contract 已有代码或测试证据；Rollback 真实演练和 Evidence Ready 尚未完成，因此不能把 `PHASE2D_B_READY` 设为 `YES`。
+进入 Gate 的最低条件为：`Replay PASS`、`Shadow PASS`、`Golden PASS`、`Contract PASS`、`Rollback PASS`、`Evidence Ready`。Phase 2D-B1 已完成隔离 rollback/effect/backup/evidence rehearsal；`PHASE2D_B_REAL_DEVICE_READY=YES` 仅表示工程 Gate 已就绪，真实设备验证和授权仍未完成，因此 `PHASE2D_B_READY` 与 `PHASE2D_READY` 继续为 `NO`。
 
 ## 3. 有限验证范围与设备选择
 
@@ -216,14 +221,16 @@ Repository Effect `PASS` 要求：Shadow 前后 Current/Recent10/`*_history` 内
 | Shadow | `PASS` | Shadow Runner 的只读、注入式执行和报告测试已完成。 |
 | Golden | `PASS` | 既有 Golden/normalized equivalence 证据已完成。 |
 | Contract | `PASS` | Migration、Parser、Snapshot 和 Repository 单写者契约已核对。 |
-| Rollback | `NOT_READY` | 本阶段只定义演练，尚未执行真实或隔离演练证据。 |
-| Evidence Ready | `NOT_READY` | 尚无本窗口的真实 device/version/CLI/parse/report/effect evidence。 |
+| Rollback | `PASS` | Phase 2D-B1 已完成隔离 MATCH、ERROR/TIMEOUT stop/resume rehearsal；真实设备仍未执行。 |
+| Evidence Ready | `PASS`（隔离） | 已有 machine-readable rehearsal evidence schema、fingerprint 和 secret scan；真实 device/version/CLI/parse/report/effect evidence 仍待现场。 |
 
 因此：
 
 ```text
+PHASE2D_B1_STATUS=PASS
+PHASE2D_B_REAL_DEVICE_READY=YES
 PHASE2D_B_READY=NO
-BLOCKERS=Rollback rehearsal evidence; real-device evidence; controlled stop/restore approval
+BLOCKERS=Real-device evidence; real-environment controlled stop/restore approval
 ```
 
 ### 11.2 本轮允许的检查
